@@ -1,0 +1,17 @@
+{
+    "python.analysis.autoImportCompletions": false,
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.extraPaths": [
+        "./py",
+        "./py/app",
+        "./py/app/Exchange_API"
+    ],
+
+    "cursorpyright.analysis.autoImportCompletions": false,
+    "cursorpyright.analysis.typeCheckingMode": "basic",
+    "cursorpyright.analysis.extraPaths": [
+        "./py",
+        "./py/app",
+        "./py/app/Exchange_API"
+    ]
+}

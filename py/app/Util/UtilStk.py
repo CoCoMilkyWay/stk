@@ -115,8 +115,8 @@ def prepare_all_files(filter_list: Optional[List[str]] = None):
     dump_json(cfg_stk.wt_tradedays_file, wt_tradedays, "wt_tradedays")
     dump_json(cfg_stk.wt_holidays_file, wt_holidays, "wt_holidays")
 
-    lxr_meta = _lxr_fundamental_file(cfg_stk.STOCK_DB_FUND_DIR, wt_asset, wt_tradedays)
-    dump_json(f"{cfg_stk.STOCK_DB_FUND_DIR}/meta.json", lxr_meta, 'lxr_index_meta')
+    # lxr_meta = _lxr_fundamental_file(cfg_stk.STOCK_DB_FUND_DIR, wt_asset, wt_tradedays)
+    # dump_json(f"{cfg_stk.STOCK_DB_FUND_DIR}/meta.json", lxr_meta, 'lxr_index_meta')
 
     if filter_list:
         filtered_wt_asset = {}

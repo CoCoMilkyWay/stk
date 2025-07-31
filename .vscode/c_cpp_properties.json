@@ -7,8 +7,8 @@
             "cppStandard": "c++23",
             "intelliSenseMode": "windows-msvc-x64",
             "includePath": [
-                "${workspaceFolder}/src",
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/cpp/src",
+                "${workspaceFolder}/cpp/include"
             ],
             "defines": [
                 "_DEBUG",
