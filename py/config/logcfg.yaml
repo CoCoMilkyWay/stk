@@ -1,0 +1,56 @@
+root:                   # 根日志对象的配置，通常是框架信息
+    level: none        # 日志等级
+    async: false        # 是否异步
+    sinks:              # 输出流的配置，即日志信息会被输出到哪些位置
+    -   type: basic_file_sink                           # 类型，基本的文件输出
+        filename: logs/Runner.log                     # 日志文件保存位置
+        pattern: '[%Y.%m.%d %H: %M: %S - %-5l] %v'      # 日志输出模板
+        truncate: true                                  # 日志是否自动截断，截断可以避免日志文件过大
+        type: console_sink                              # 输出到控制台
+        pattern: '[%m.%d %H: %M: %S - %^%-5l%$] %v'
+        
+risk:
+    async: false
+    level: debug
+    sinks:
+    -   filename: logs/Riskmon/Riskmon.log
+        pattern: '[%Y.%m.%d %H:%M:%S - %-5l] %v'
+        truncate: true
+        type: daily_file_sink
+
+dyn_pattern:
+    executer:
+        async: false
+        level: debug
+        sinks:
+        -   filename: logs/Executer/%s.log
+            pattern: '[%Y.%m.%d %H:%M:%S - %-5l] %v'
+            truncate: true
+            type: daily_file_sink
+
+    parser:
+        async: false
+        level: debug
+        sinks:
+        -   filename: logs/Parser/%s.log
+            pattern: '[%Y.%m.%d %H:%M:%S - %-5l] %v'
+            truncate: true
+            type: daily_file_sink
+
+    strategy:
+        async: false
+        level: debug
+        sinks:
+        -   filename: logs/Strategy/%s.log
+            pattern: '[%Y.%m.%d %H:%M:%S - %-5l] %v'
+            truncate: true
+            type: daily_file_sink
+            
+    trader:
+        async: false
+        level: debug
+        sinks:
+        -   filename: logs/Trader/%s.log
+            pattern: '[%Y.%m.%d %H:%M:%S - %-5l] %v'
+            truncate: true
+            type: daily_file_sink

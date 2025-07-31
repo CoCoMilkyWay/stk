@@ -1,0 +1,5 @@
+{
+    "input_root": "E:/stock/tick/2017_11",
+    "target_file": "sz000725_104362.bin",
+    "output_file": "sz000725_104362.csv"
+}

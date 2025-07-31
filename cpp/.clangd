@@ -1,0 +1,4 @@
+CompileFlags:
+  Add:
+    - "--driver-mode=cl"
+    - "/std:c++latest"
