@@ -463,7 +463,7 @@
         "listingStatus": "normally_listed"
     },
     {
-        "name": "三维股份",
+        "name": "三维装备",
         "exchange": "bj",
         "market": "a",
         "areaCode": "cn",
@@ -2686,11 +2686,61 @@
         "listingStatus": "normally_listed"
     },
     {
+        "name": "同享科技",
+        "market": "a",
+        "exchange": "bj",
+        "areaCode": "cn",
+        "stockCode": "920167",
+        "fsTableType": "non_financial",
+        "listingStatus": "normally_listed",
+        "ipoDate": "2020-07-27T00:00:00+08:00"
+    },
+    {
+        "name": "龙竹科技",
+        "market": "a",
+        "exchange": "bj",
+        "areaCode": "cn",
+        "stockCode": "920445",
+        "fsTableType": "non_financial",
+        "ipoDate": "2020-07-27T00:00:00+08:00",
+        "listingStatus": "normally_listed"
+    },
+    {
+        "name": "佳先股份",
+        "market": "a",
+        "exchange": "bj",
+        "areaCode": "cn",
+        "stockCode": "920489",
+        "fsTableType": "non_financial",
+        "ipoDate": "2020-07-27T00:00:00+08:00",
+        "listingStatus": "normally_listed"
+    },
+    {
+        "name": "球冠电缆",
+        "market": "a",
+        "exchange": "bj",
+        "areaCode": "cn",
+        "stockCode": "920682",
+        "fsTableType": "non_financial",
+        "ipoDate": "2020-07-27T00:00:00+08:00",
+        "listingStatus": "normally_listed"
+    },
+    {
         "name": "艾融软件",
         "exchange": "bj",
         "market": "a",
         "areaCode": "cn",
         "stockCode": "920799",
+        "fsTableType": "non_financial",
+        "ipoDate": "2020-07-27T00:00:00+08:00",
+        "listingStatus": "normally_listed"
+    },
+    {
+        "name": "颖泰生物",
+        "market": "a",
+        "exchange": "bj",
+        "areaCode": "cn",
+        "stockCode": "920819",
         "fsTableType": "non_financial",
         "ipoDate": "2020-07-27T00:00:00+08:00",
         "listingStatus": "normally_listed"
@@ -18604,7 +18654,7 @@
         "areaCode": "cn",
         "stockCode": "603262",
         "fsTableType": "non_financial",
-        "listingStatus": "issued_but_not_listed",
+        "listingStatus": "normally_listed",
         "ipoDate": "2025-07-23T00:00:00+08:00"
     },
     {
@@ -25165,10 +25215,7 @@
         "market": "a",
         "ipoDate": "2021-05-20T00:00:00+08:00",
         "listingStatus": "special_treatment",
-        "name": "ST诺泰",
-        "mutualMarkets": [
-            "ha"
-        ]
+        "name": "ST诺泰"
     },
     {
         "stockCode": "688077",
@@ -33190,7 +33237,7 @@
         "areaCode": "cn",
         "fsTableType": "non_financial",
         "listingStatus": "normally_listed",
-        "name": "中润资源",
+        "name": "招金黄金",
         "mutualMarkets": [
             "ha"
         ]
@@ -38002,7 +38049,8 @@
         "areaCode": "cn",
         "stockCode": "001221",
         "fsTableType": "non_financial",
-        "listingStatus": "issued_but_not_listed"
+        "listingStatus": "normally_listed",
+        "ipoDate": "2025-07-30T00:00:00+08:00"
     },
     {
         "name": "源飞宠物",
@@ -57666,8 +57714,8 @@
         "mutualMarkets": [
             "ha"
         ],
-        "listingStatus": "normally_listed",
-        "name": "中船应急"
+        "listingStatus": "special_treatment",
+        "name": "ST应急"
     },
     {
         "stockCode": "300528",
@@ -67506,7 +67554,7 @@
         "areaCode": "cn",
         "stockCode": "301609",
         "fsTableType": "non_financial",
-        "listingStatus": "issued_but_not_listed",
+        "listingStatus": "normally_listed",
         "ipoDate": "2025-07-23T00:00:00+08:00"
     },
     {
@@ -67645,6 +67693,15 @@
         "mutualMarkets": [
             "ha"
         ]
+    },
+    {
+        "name": "广东建科",
+        "market": "a",
+        "exchange": "sz",
+        "areaCode": "cn",
+        "stockCode": "301632",
+        "fsTableType": "non_financial",
+        "listingStatus": "issued_but_not_listed"
     },
     {
         "name": "港迪技术",

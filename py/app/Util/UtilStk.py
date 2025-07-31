@@ -270,11 +270,11 @@ def _wt_asset_file(path: str) -> Dict:
     else:  # non-exist
         old = {}
 
-    # TODO: just being lazy here
+    state = _check_state(path, "LXR-AssetInfo", 1)
     raw_path = cfg_stk.lxr_asset_file
-    if os.path.exists(raw_path):
+    if state == 2: # new
         new = load_json(raw_path)
-    else:
+    else:  # non-exist
         print('HTTP Querying A-stock ExchangeInfo...')
         new = LXR_API.query("basic_all")
         dump_json(raw_path, new)
@@ -567,9 +567,9 @@ def _wt_tradedays_holidays_file(tradedays_path: str, holidays_path: str):
     holidays = sorted(
         [date for date in all_weekdays if date not in trade_dates_set])
     # Convert holidays list to a DataFrame
-    tradedays_df = pd.DataFrame(tradedays, columns=['CHINA'])
+    tradedays_df = pd.DataFrame({'CHINA': tradedays})
     tradedays_df['CHINA'] = tradedays_df['CHINA'].dt.strftime('%Y%m%d')
-    holidays_df = pd.DataFrame(holidays, columns=['CHINA'])
+    holidays_df = pd.DataFrame({'CHINA': holidays})
     holidays_df['CHINA'] = holidays_df['CHINA'].dt.strftime('%Y%m%d')
     # Create a JSON object with "CHINA" as the key and the formatted dates as a list
     tradedays_json = {"CHINA": tradedays_df['CHINA'].tolist()}

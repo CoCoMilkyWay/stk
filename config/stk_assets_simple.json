@@ -7914,6 +7914,12 @@
             "name": "*ST立航",
             "product": "STK"
         },
+        "603262": {
+            "code": "603262",
+            "exchg": "SSE",
+            "name": "技源集团",
+            "product": "STK"
+        },
         "603266": {
             "code": "603266",
             "exchg": "SSE",
@@ -15521,7 +15527,7 @@
         "000506": {
             "code": "000506",
             "exchg": "SZSE",
-            "name": "中润资源",
+            "name": "招金黄金",
             "product": "STK"
         },
         "000507": {
@@ -17964,6 +17970,12 @@
             "code": "001219",
             "exchg": "SZSE",
             "name": "青岛食品",
+            "product": "STK"
+        },
+        "001221": {
+            "code": "001221",
+            "exchg": "SZSE",
+            "name": "悍高集团",
             "product": "STK"
         },
         "001222": {
@@ -28079,7 +28091,7 @@
         "300527": {
             "code": "300527",
             "exchg": "SZSE",
-            "name": "中船应急",
+            "name": "ST应急",
             "product": "STK"
         },
         "300528": {
@@ -33344,6 +33356,12 @@
             "name": "博实结",
             "product": "STK"
         },
+        "301609": {
+            "code": "301609",
+            "exchg": "SZSE",
+            "name": "山大电力",
+            "product": "STK"
+        },
         "301611": {
             "code": "301611",
             "exchg": "SZSE",
@@ -33733,7 +33751,7 @@
         "831834": {
             "code": "831834",
             "exchg": "BJSE",
-            "name": "三维股份",
+            "name": "三维装备",
             "product": "STK"
         },
         "831855": {
@@ -35062,10 +35080,40 @@
             "name": "胜业电气",
             "product": "STK"
         },
+        "920167": {
+            "code": "920167",
+            "exchg": "BJSE",
+            "name": "同享科技",
+            "product": "STK"
+        },
+        "920445": {
+            "code": "920445",
+            "exchg": "BJSE",
+            "name": "龙竹科技",
+            "product": "STK"
+        },
+        "920489": {
+            "code": "920489",
+            "exchg": "BJSE",
+            "name": "佳先股份",
+            "product": "STK"
+        },
+        "920682": {
+            "code": "920682",
+            "exchg": "BJSE",
+            "name": "球冠电缆",
+            "product": "STK"
+        },
         "920799": {
             "code": "920799",
             "exchg": "BJSE",
             "name": "艾融软件",
+            "product": "STK"
+        },
+        "920819": {
+            "code": "920819",
+            "exchg": "BJSE",
+            "name": "颖泰生物",
             "product": "STK"
         }
     }
