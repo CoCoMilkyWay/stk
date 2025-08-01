@@ -51,9 +51,9 @@ if exist "build\compile_commands.json" (
 )
 
 REM Move executable to root directory
-if exist "build\binary_parser.exe" (
+if exist "build\bin\Release\binary_parser.exe" (
     echo Moving executable to root directory...
-    move "build\binary_parser.exe" "binary_parser.exe"
+    move "build\bin\Release\binary_parser.exe" "binary_parser.exe"
     echo Executable moved to: binary_parser.exe
 ) else (
     echo Warning: Executable not found at expected location

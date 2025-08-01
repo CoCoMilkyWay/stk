@@ -37,8 +37,8 @@ if(MSVC)
 endif()
 
 set(HEADERS
-    src/include/binary_parser.hpp
-    src/include/miniz.h
+    include/binary_parser.hpp
+    include/miniz.h
 )
 
 # Create executable
@@ -47,7 +47,7 @@ add_executable(binary_parser ${SOURCES} ${HEADERS})
 # Include directories
 target_include_directories(binary_parser PRIVATE 
     src 
-    src/include 
+    include 
     
 )
 

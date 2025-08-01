@@ -5,7 +5,7 @@
 int main() {
     try {
         // Load configuration from JSON file
-        std::string config_file = "config.json";
+        std::string config_file = "../config/config.json";
         std::cout << "Loading configuration from: " << config_file << "\n";
         
         BinaryParser::Config config = BinaryParser::ReadConfigFromJson(config_file);
