@@ -46,8 +46,9 @@ class CleanBookmapVisualizer:
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        return df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
+        assert isinstance(df, pd.DataFrame)
+        return df
     
     def calculate_coordinates(self, df: pd.DataFrame):
         """Pre-calculate all coordinates for unified plotting"""
@@ -119,7 +120,7 @@ class CleanBookmapVisualizer:
                 volume_col = f'{side}{num}量'
                 if volume_col in df.columns:
                     col_max = df[volume_col].max()
-                    if not pd.isna(col_max):
+                    if col_max == col_max:  # NaN check
                         max_order_size = max(max_order_size, col_max)
         max_order_size = max(max_order_size, 100)
         
@@ -206,6 +207,12 @@ class CleanBookmapVisualizer:
         significant_volumes = volume_diff[significant_volume_mask]
         significant_price_changes = price_diff[significant_volume_mask]
         
+        # Convert to arrays for consistent indexing
+        assert isinstance(significant_volumes, pd.Series)
+        assert isinstance(significant_price_changes, pd.Series)
+        significant_volumes_array = significant_volumes.values
+        significant_price_changes_array = significant_price_changes.values
+        
         # Aggregate nearby trades to reduce visual clutter
         aggregation_window = max(1, coords['n_points'] // 200)  # Aggregate within small windows
         aggregated_data = []
@@ -219,8 +226,8 @@ class CleanBookmapVisualizer:
             
             # Aggregate all trades within the window
             while i < len(significant_indices) and significant_indices[i] <= window_start + aggregation_window:
-                window_volume += significant_volumes.iloc[i]
-                window_price_change += significant_price_changes.iloc[i]
+                window_volume += significant_volumes_array[i]
+                window_price_change += significant_price_changes_array[i]
                 window_end = significant_indices[i]
                 i += 1
             
@@ -456,6 +463,10 @@ class CleanBookmapVisualizer:
         trade_volumes = volume_diff[significant_mask]
         trade_price_changes = price_diff[significant_mask]
         
+        # Convert to arrays for consistent indexing
+        assert isinstance(trade_price_changes, pd.Series)
+        trade_price_changes_array = trade_price_changes.values
+        
         # Position bubbles at actual execution prices
         # Active BUY orders execute at ASK price (卖一价) - taking liquidity from sellers
         # Active SELL orders execute at BID price (买一价) - taking liquidity from buyers
@@ -463,7 +474,7 @@ class CleanBookmapVisualizer:
         trade_types = []
         
         for i, idx in enumerate(trade_indices):
-            price_change = trade_price_changes.iloc[i]
+            price_change = trade_price_changes_array[i]
             
             if price_change > 0:
                 # Positive price change = Active BUY = executed at ASK price
@@ -674,13 +685,25 @@ class CleanBookmapVisualizer:
         fig = self.create_bookmap(df, symbol)
         
         # Save and show
-        output_file = f"{filepath}/bookmap_{symbol}_{df['时间'].iloc[0].strftime('%Y%m%d')}.html"
-        fig.write_html(output_file)
-        print(f"Saved to {output_file}")
+        output_dir = os.path.dirname(filepath)
+        base_filename = f"bookmap_{symbol}_{df['时间'].iloc[0].strftime('%Y%m%d')}"
+        
+        # Save HTML
+        html_file = os.path.join(output_dir, f"{base_filename}.html")
+        fig.write_html(html_file)
+        print(f"Saved HTML to {html_file}")
+        
+        # Save high resolution PNG (requires kaleido: pip install kaleido)
+        png_file = os.path.join(output_dir, f"{base_filename}.png")
+        try:
+            fig.write_image(png_file, width=1920, height=1080, scale=2)
+            print(f"Saved high-res PNG to {png_file}")
+        except Exception as e:
+            print(f"Failed to save PNG (install kaleido with 'pip install kaleido'): {e}")
         
         fig.show()
     
-    def process_all_files(self, data_dir: str = "sample L2 snapshot"):
+    def process_all_files(self, data_dir: str = ""):
         """Process all CSV files"""
         if not os.path.exists(data_dir):
             print(f"Directory {data_dir} not found!")
@@ -706,8 +729,9 @@ def main():
     print("Clean Bookmap Visualizer")
     print("=" * 50)
     
+    data = "config/sample/sh600000_20250603.csv"
     visualizer = CleanBookmapVisualizer(min_order_size=20)
-    visualizer.process_all_files()
+    visualizer.process_file(data)
     
     print("Visualization complete!")
 
