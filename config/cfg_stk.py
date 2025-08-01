@@ -42,6 +42,7 @@ class cfg_stk:  # Constants Configs
     wt_adj_factor_file = script_dir + '/stk_adjfactors.json'
     wt_tradedays_file = script_dir + '/stk_tradedays.json'
     wt_holidays_file = script_dir + '/stk_holidays.json'
+    guoren_asset_file = script_dir + '/daily_holding/stock_info.json'
     
     # MISC =========================================
     FEE = 0.0015

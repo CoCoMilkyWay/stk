@@ -32,7 +32,9 @@ def parse_daily_holdings():
             stock_info[code] = {
                 "name": row["股票名"],
                 "industry": row["行业分类"],
-                "sub_industry": row["二级行业"]
+                "sub_industry": row["二级行业"],
+                "ipo_date": "",
+                "delist_date": "",
             }
 
     # === 输出结果为 JSON 格式 ===

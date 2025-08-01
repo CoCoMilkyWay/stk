@@ -107,6 +107,7 @@ def prepare_all_files(filter_list: Optional[List[str]] = None):
     lxr_industry, wt_asset = _lxr_industry_file(cfg_stk.lxr_industry_file, wt_asset)
     wt_adj_factor, wt_asset = _wt_adj_factor_file(cfg_stk.wt_adj_factor_file, wt_asset)
     wt_tradedays, wt_holidays = _wt_tradedays_holidays_file(cfg_stk.wt_tradedays_file, cfg_stk.wt_holidays_file)
+    guoren_asset = _guoren_asset_file(cfg_stk.guoren_asset_file, wt_asset)
 
     dump_json(cfg_stk.wt_asset_file, wt_asset, "wt_asset")
     dump_json(cfg_stk.lxr_profile_file, lxr_profile, "lxr_profile")
@@ -114,18 +115,20 @@ def prepare_all_files(filter_list: Optional[List[str]] = None):
     dump_json(cfg_stk.wt_adj_factor_file, wt_adj_factor, "wt_adj_factor")
     dump_json(cfg_stk.wt_tradedays_file, wt_tradedays, "wt_tradedays")
     dump_json(cfg_stk.wt_holidays_file, wt_holidays, "wt_holidays")
+    dump_json(cfg_stk.guoren_asset_file, guoren_asset, "guoren_asset")
 
     # lxr_meta = _lxr_fundamental_file(cfg_stk.STOCK_DB_FUND_DIR, wt_asset, wt_tradedays)
     # dump_json(f"{cfg_stk.STOCK_DB_FUND_DIR}/meta.json", lxr_meta, 'lxr_index_meta')
 
-    if filter_list:
-        filtered_wt_asset = {}
-        for exg in wt_asset:
-            filtered_wt_asset[exg] = {}
-            for key in wt_asset[exg]:
-                if wt_asset[exg][key]['code'] in filter_list:
-                    filtered_wt_asset[exg][key] = wt_asset[exg][key]
-        wt_asset = filtered_wt_asset
+    # if filter_list:
+    #     filtered_wt_asset = {}
+    #     for exg in wt_asset:
+    #         filtered_wt_asset[exg] = {}
+    #         for key in wt_asset[exg]:
+    #             if wt_asset[exg][key]['code'] in filter_list:
+    #                 filtered_wt_asset[exg][key] = wt_asset[exg][key]
+    #     wt_asset = filtered_wt_asset
+    
 
     return wt_asset
 
@@ -768,3 +771,55 @@ def time_diff_in_min(start: int, end: int) -> int:
     # Convert the time difference to minutes and return it as an integer
     min_diff = int(delta.total_seconds() // 60)
     return min_diff
+
+# ================================================
+# Others
+# ================================================
+
+def _guoren_asset_file(stock_info_path, wt_asset):
+    """
+    Complete the IPO and delist dates in stock_info.json using data from wt_asset
+    """
+    
+    # Load the stock_info.json file
+    stock_info = load_json(stock_info_path)
+    
+    # Track how many stocks we update
+    updated_count = 0
+    
+    # Iterate through each stock in stock_info
+    for stock_code, info in stock_info.items():
+        # Check if ipo_date or delist_date are empty
+        if info.get("ipo_date") == "" or info.get("delist_date") == "":
+            # Look for this stock in wt_asset across all exchanges
+            found = False
+            for exchange in wt_asset:
+                if stock_code in wt_asset[exchange]:
+                    asset_data = wt_asset[exchange][stock_code]
+                    extras = asset_data.get("extras", {})
+                    
+                    # Update ipo_date if empty
+                    if info.get("ipo_date") == "":
+                        ipo_date = extras.get("ipoDate")
+                        if ipo_date:
+                            # Convert from ISO format to simple date format YYYY-MM-DD
+                            info["ipo_date"] = ipo_date.split("T")[0]
+                    
+                    # Update delist_date if empty  
+                    if info.get("delist_date") == "":
+                        delist_date = extras.get("delistedDate")
+                        if delist_date:
+                            # Convert from ISO format to simple date format YYYY-MM-DD
+                            info["delist_date"] = delist_date.split("T")[0]
+                        else:
+                            # If no delist date, keep as empty string (still listed)
+                            info["delist_date"] = ""
+                    
+                    found = True
+                    updated_count += 1
+                    break
+            
+            if not found:
+                print(f"Stock {stock_code} not found in asset data")
+    
+    return stock_info

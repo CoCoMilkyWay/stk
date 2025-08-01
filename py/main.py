@@ -32,7 +32,7 @@ def run_cpp_build():
 def run_bt():
     from Util.UtilStk import prepare_all_files, mkdir
     from config.cfg_stk import cfg_stk
-    # wt_asset = prepare_all_files()
+    wt_asset = prepare_all_files()
 
     # wt_assets: List[str] = []
     # ipo_dates: List[str] = []
@@ -53,7 +53,7 @@ def run_bt():
     #     code_info[code] = {'idx':idx}
     # print(wt_asset)
 
-    run_cpp_build()
+    # run_cpp_build()
 
 
 if __name__ == '__main__':
