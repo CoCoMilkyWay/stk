@@ -9,16 +9,6 @@
 
 namespace BinaryParser {
 
-// Configuration structure
-struct Config {
-  std::string input_root;
-  std::string target_file;
-  std::string output_file;
-};
-
-// JSON config reader
-Config ReadConfigFromJson(const std::string &config_file);
-
 // Binary record structure (54 bytes total)
 #pragma pack(push, 1)
 struct TickRecord {
@@ -56,10 +46,6 @@ constexpr bool DIFF_FIELDS[] = {
 
 class Parser {
 private:
-  std::string input_root_;
-  std::string output_file_;
-  std::ofstream output_stream_;
-
   // Efficient I/O buffers
   static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
   std::vector<uint8_t> read_buffer_;
@@ -70,12 +56,14 @@ private:
   size_t total_files_processed_ = 0;
 
 public:
-  explicit Parser(const std::string &input_root,
-                  const std::string &output_file);
+  Parser();
   ~Parser();
 
-  // Main parsing functions
-  void ParseSingleFile(const std::string &target_file);
+  // Main parsing function
+  void ParseAssetLifespan(const std::string &asset_code, 
+                         const std::string &snapshot_dir,
+                         const std::vector<std::string> &month_folders,
+                         const std::string &output_dir);
 
 private:
   // Core parsing functions
@@ -83,23 +71,20 @@ private:
   std::vector<TickRecord>
   ParseBinaryData(const std::vector<uint8_t> &binary_data);
   void ReverseDifferentialEncoding(std::vector<TickRecord> &records);
-  void WriteRecordsToText(const std::vector<TickRecord> &records,
-                          const std::string &symbol);
+  void WriteRecordsToCSV(const std::vector<TickRecord> &records,
+                         const std::string &symbol,
+                         std::ofstream &csv_file,
+                         bool write_header = false);
 
   // File system utilities
-  std::vector<std::filesystem::path> GetMonthFolders();
-  std::vector<std::filesystem::path>
-  GetBinaryFiles(const std::filesystem::path &month_folder);
-  std::string ExtractSymbolFromFilename(const std::string &filename);
   size_t ExtractRecordCountFromFilename(const std::string &filename);
+  std::string FindAssetFile(const std::string &month_folder, 
+                           const std::string &asset_code);
 
   // Formatting utilities
   inline double TickToPrice(int16_t tick) const { return tick * 0.01; }
   inline std::string FormatTime(uint16_t time_s) const;
   inline const char *FormatDirection(uint8_t direction) const;
-
-  // Performance optimization
-  void OptimizeIOBuffers();
 };
 
 } // namespace BinaryParser

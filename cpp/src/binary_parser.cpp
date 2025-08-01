@@ -14,119 +14,19 @@ extern "C" {
 
 namespace BinaryParser {
 
-Config ReadConfigFromJson(const std::string &config_file) {
-  std::ifstream file(config_file);
-  if (!file.is_open()) {
-    throw std::runtime_error("Failed to open config file: " + config_file);
-  }
-
-  nlohmann::json json_config;
-  file >> json_config;
-
-  Config config;
-  config.input_root = json_config.at("input_root").get<std::string>();
-  config.target_file = json_config.at("target_file").get<std::string>();
-  config.output_file = json_config.at("output_file").get<std::string>();
-
-  return config;
-}
-
-Parser::Parser(const std::string &input_root, const std::string &output_file)
-    : input_root_(input_root), output_file_(output_file) {
-
+Parser::Parser() {
   // Pre-allocate buffers for efficiency
   read_buffer_.reserve(BUFFER_SIZE);
   write_buffer_.resize(BUFFER_SIZE);
-
-  // Open output file with optimized settings
-  output_stream_.open(output_file_, std::ios::out | std::ios::trunc);
-  if (!output_stream_) {
-    throw std::runtime_error("Failed to open output file: " + output_file_);
-  }
-
-  // Set buffer for faster writing
-  output_stream_.rdbuf()->pubsetbuf(write_buffer_.data(), write_buffer_.size());
-
-  // Write CSV header
-  output_stream_
-      << "Symbol,Date,Time,LatestPrice,TradeCount,Turnover,Volume,Direction,";
-  output_stream_ << "BidPrice1,BidPrice2,BidPrice3,BidPrice4,BidPrice5,";
-  output_stream_ << "BidVol1,BidVol2,BidVol3,BidVol4,BidVol5,";
-  output_stream_ << "AskPrice1,AskPrice2,AskPrice3,AskPrice4,AskPrice5,";
-  output_stream_ << "AskVol1,AskVol2,AskVol3,AskVol4,AskVol5\n";
 }
 
 Parser::~Parser() {
-  if (output_stream_.is_open()) {
-    output_stream_.close();
-  }
-
   std::cout << "Parsing completed!\n";
   std::cout << "Total files processed: " << total_files_processed_ << "\n";
   std::cout << "Total records processed: " << total_records_processed_ << "\n";
 }
 
-void Parser::ParseSingleFile(const std::string &target_file) {
-  auto start_time = std::chrono::high_resolution_clock::now();
 
-  // Construct full path
-  std::filesystem::path full_path =
-      std::filesystem::path(input_root_) / target_file;
-
-  std::cout << "Processing single file: " << full_path.string() << "\n";
-
-  try {
-    // Check if file exists
-    if (!std::filesystem::exists(full_path)) {
-      throw std::runtime_error("File does not exist: " + full_path.string());
-    }
-
-    // Extract symbol from filename
-    std::string symbol =
-        ExtractSymbolFromFilename(full_path.filename().string());
-    if (symbol.empty()) {
-      throw std::runtime_error("Could not extract symbol from filename: " +
-                               full_path.filename().string());
-    }
-
-    std::cout << "Symbol: " << symbol << "\n";
-
-    // Decompress binary file
-    auto decompressed_data = DecompressFile(full_path.string());
-    if (decompressed_data.empty()) {
-      throw std::runtime_error("Failed to decompress file or file is empty");
-    }
-
-    std::cout << "Decompressed " << decompressed_data.size() << " bytes\n";
-
-    // Parse binary records
-    auto records = ParseBinaryData(decompressed_data);
-    if (records.empty()) {
-      throw std::runtime_error("No records found in file");
-    }
-
-    std::cout << "Parsed " << records.size() << " records\n";
-
-    // Reverse differential encoding
-    ReverseDifferentialEncoding(records);
-
-    // Write records to text
-    WriteRecordsToText(records, symbol);
-
-    total_files_processed_ = 1;
-    total_records_processed_ = records.size();
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
-    std::cout << "Processing time: " << duration.count() << " ms\n";
-
-  } catch (const std::exception &e) {
-    std::cerr << "Error processing file " << full_path.string() << ": "
-              << e.what() << "\n";
-    throw;
-  }
-}
 
 std::vector<uint8_t> Parser::DecompressFile(const std::string &filepath) {
   std::ifstream file(filepath, std::ios::binary);
@@ -238,129 +138,9 @@ void Parser::ReverseDifferentialEncoding(std::vector<TickRecord> &records) {
   }
 }
 
-void Parser::WriteRecordsToText(const std::vector<TickRecord> &records,
-                                const std::string &symbol) {
-  // Use a stringstream for batch writing to improve performance
-  std::ostringstream batch_output;
-  batch_output.precision(2);
-  batch_output << std::fixed;
 
-  for (const auto &record : records) {
-    // Symbol
-    batch_output << symbol << ",";
 
-    // Date (assuming it's day of month)
-    batch_output << static_cast<int>(record.date) << ",";
 
-    // Time
-    batch_output << FormatTime(record.time_s) << ",";
-
-    // Latest price
-    batch_output << TickToPrice(record.latest_price_tick) << ",";
-
-    // Trade count, turnover, volume
-    batch_output << static_cast<int>(record.trade_count) << ","
-                 << record.turnover << "," << record.volume << ",";
-
-    // Direction
-    batch_output << FormatDirection(record.direction) << ",";
-
-    // Bid prices
-    for (int i = 0; i < 5; ++i) {
-      batch_output << TickToPrice(record.bid_price_ticks[i]);
-      if (i < 4)
-        batch_output << ",";
-    }
-    batch_output << ",";
-
-    // Bid volumes
-    for (int i = 0; i < 5; ++i) {
-      batch_output << record.bid_volumes[i];
-      if (i < 4)
-        batch_output << ",";
-    }
-    batch_output << ",";
-
-    // Ask prices
-    for (int i = 0; i < 5; ++i) {
-      batch_output << TickToPrice(record.ask_price_ticks[i]);
-      if (i < 4)
-        batch_output << ",";
-    }
-    batch_output << ",";
-
-    // Ask volumes
-    for (int i = 0; i < 5; ++i) {
-      batch_output << record.ask_volumes[i];
-      if (i < 4)
-        batch_output << ",";
-    }
-    batch_output << "\n";
-  }
-
-  // Write entire batch to file
-  output_stream_ << batch_output.str();
-}
-
-std::vector<std::filesystem::path> Parser::GetMonthFolders() {
-  std::vector<std::filesystem::path> month_folders;
-
-  try {
-    for (const auto &entry : std::filesystem::directory_iterator(input_root_)) {
-      if (entry.is_directory()) {
-        month_folders.push_back(entry.path());
-      }
-    }
-
-    // Sort folders for consistent processing order
-    std::sort(month_folders.begin(), month_folders.end());
-
-  } catch (const std::filesystem::filesystem_error &e) {
-    std::cerr << "Error reading directory: " << e.what() << "\n";
-  }
-
-  return month_folders;
-}
-
-std::vector<std::filesystem::path>
-Parser::GetBinaryFiles(const std::filesystem::path &month_folder) {
-  std::vector<std::filesystem::path> binary_files;
-
-  try {
-    for (const auto &entry :
-         std::filesystem::directory_iterator(month_folder)) {
-      if (entry.is_regular_file() && entry.path().extension() == ".bin") {
-        binary_files.push_back(entry.path());
-      }
-    }
-
-    // Sort files for consistent processing order
-    std::sort(binary_files.begin(), binary_files.end());
-
-  } catch (const std::filesystem::filesystem_error &e) {
-    std::cerr << "Error reading directory: " << e.what() << "\n";
-  }
-
-  return binary_files;
-}
-
-std::string Parser::ExtractSymbolFromFilename(const std::string &filename) {
-  // Extract symbol from filename like "sh600000_12345.bin"
-  if (filename.length() >= 10 &&
-      filename.substr(filename.length() - 4) == ".bin") {
-    std::string basename = filename.substr(0, filename.length() - 4);
-
-    // Find last underscore to separate symbol from record count
-    size_t last_underscore = basename.find_last_of('_');
-    if (last_underscore != std::string::npos) {
-      return basename.substr(0, last_underscore);
-    }
-
-    // Fallback for old format without record count
-    return basename;
-  }
-  return "";
-}
 
 size_t Parser::ExtractRecordCountFromFilename(const std::string &filename) {
   // Extract record count from filename like "sh600000_12345.bin"
@@ -405,5 +185,130 @@ const char *Parser::FormatDirection(uint8_t direction) const {
     return "-"; // Unknown
   }
 }
+
+void Parser::ParseAssetLifespan(const std::string &asset_code, 
+                               const std::string &snapshot_dir,
+                               const std::vector<std::string> &month_folders,
+                               const std::string &output_dir) {
+  
+  std::string output_filename = output_dir + "/" + asset_code + "_lifespan.csv";
+  std::ofstream csv_file(output_filename, std::ios::out | std::ios::trunc);
+  
+  if (!csv_file.is_open()) {
+    throw std::runtime_error("Failed to create output file: " + output_filename);
+  }
+  
+  bool header_written = false;
+  size_t total_records = 0;
+  
+  std::cout << "Processing asset " << asset_code << " across " << month_folders.size() << " months\n";
+  
+  for (const std::string &month_folder : month_folders) {
+    std::string month_path = snapshot_dir + "/" + month_folder;
+    std::string asset_file = FindAssetFile(month_path, asset_code);
+    
+    if (asset_file.empty()) {
+      std::cout << "  No file found for " << asset_code << " in " << month_folder << "\n";
+      continue;
+    }
+    
+    try {
+      std::cout << "  Processing " << asset_file << "\n";
+      
+      // Decompress and parse binary data
+      auto decompressed_data = DecompressFile(asset_file);
+      if (decompressed_data.empty()) {
+        std::cout << "  Warning: Empty file " << asset_file << "\n";
+        continue;
+      }
+      
+      auto records = ParseBinaryData(decompressed_data);
+      ReverseDifferentialEncoding(records);
+      
+      // Write records to CSV
+      WriteRecordsToCSV(records, asset_code, csv_file, !header_written);
+      header_written = true;
+      total_records += records.size();
+      
+    } catch (const std::exception &e) {
+      std::cout << "  Warning: Error processing " << asset_file << ": " << e.what() << "\n";
+    }
+  }
+  
+  csv_file.close();
+  std::cout << "Completed " << asset_code << ": " << total_records << " records written to " << output_filename << "\n";
+}
+
+void Parser::WriteRecordsToCSV(const std::vector<TickRecord> &records,
+                              const std::string &symbol,
+                              std::ofstream &csv_file,
+                              bool write_header) {
+  
+  if (write_header) {
+    csv_file << "Symbol,Date,Time,LatestPrice,TradeCount,Turnover,Volume,Direction,";
+    csv_file << "BidPrice1,BidPrice2,BidPrice3,BidPrice4,BidPrice5,";
+    csv_file << "BidVol1,BidVol2,BidVol3,BidVol4,BidVol5,";
+    csv_file << "AskPrice1,AskPrice2,AskPrice3,AskPrice4,AskPrice5,";
+    csv_file << "AskVol1,AskVol2,AskVol3,AskVol4,AskVol5\n";
+  }
+  
+  std::ostringstream batch_output;
+  batch_output << std::fixed << std::setprecision(2);
+  
+  for (const auto &record : records) {
+    batch_output << symbol << "," << static_cast<int>(record.date) << ","
+                 << FormatTime(record.time_s) << ","
+                 << TickToPrice(record.latest_price_tick) << ","
+                 << static_cast<int>(record.trade_count) << ","
+                 << record.turnover << "," << record.volume << ","
+                 << FormatDirection(record.direction);
+
+    // Bid prices and volumes
+    for (int i = 0; i < 5; ++i) {
+      batch_output << "," << TickToPrice(record.bid_price_ticks[i]);
+    }
+    for (int i = 0; i < 5; ++i) {
+      batch_output << "," << record.bid_volumes[i];
+    }
+
+    // Ask prices and volumes
+    for (int i = 0; i < 5; ++i) {
+      batch_output << "," << TickToPrice(record.ask_price_ticks[i]);
+    }
+    for (int i = 0; i < 5; ++i) {
+      batch_output << "," << record.ask_volumes[i];
+    }
+
+    batch_output << "\n";
+  }
+  
+  csv_file << batch_output.str();
+}
+
+std::string Parser::FindAssetFile(const std::string &month_folder, 
+                                 const std::string &asset_code) {
+  try {
+    for (const auto &entry : std::filesystem::directory_iterator(month_folder)) {
+      if (entry.is_regular_file() && entry.path().extension() == ".bin") {
+        std::string filename = entry.path().filename().string();
+        
+        // Extract asset code from filename: e.g. "sh600004_58381.bin" -> "600004"
+        size_t underscore_pos = filename.find('_');
+        if (underscore_pos != std::string::npos && underscore_pos > 2) {
+          std::string file_asset_code = filename.substr(2, underscore_pos - 2);
+          if (file_asset_code == asset_code) {
+            return entry.path().string();
+          }
+        }
+      }
+    }
+  } catch (const std::filesystem::filesystem_error &e) {
+    std::cout << "Error reading directory " << month_folder << ": " << e.what() << "\n";
+  }
+  
+  return ""; // Not found
+}
+
+
 
 } // namespace BinaryParser

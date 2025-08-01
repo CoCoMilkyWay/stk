@@ -27,6 +27,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(SOURCES
     src/main.cpp
     src/binary_parser.cpp
+    src/json_config.cpp
     src/miniz.c
 )
 
@@ -38,6 +39,7 @@ endif()
 
 set(HEADERS
     include/binary_parser.hpp
+    include/json_config.hpp
     include/miniz.h
 )
 
