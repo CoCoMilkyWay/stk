@@ -58,8 +58,16 @@ int main() {
     JsonConfig::AppConfig app_config = JsonConfig::ParseAppConfig(config_file);
     auto stock_info_map = JsonConfig::ParseStockInfo(stock_info_file);
 
+    // Override delist_date for active stocks using configured end_month
+    for (auto &pair : stock_info_map) {
+      if (!pair.second.is_delisted) {
+        pair.second.delist_date = app_config.end_month;
+      }
+    }
+
     std::cout << "Configuration loaded successfully:" << "\n";
     std::cout << "  Snapshot directory: " << app_config.snapshot_dir << "\n";
+    std::cout << "  Data available through: " << JsonConfig::FormatYearMonth(app_config.end_month) << "\n";
     std::cout << "  Total assets found: " << stock_info_map.size() << "\n";
     std::cout << "  Output directory: " << output_dir << "\n\n";
 

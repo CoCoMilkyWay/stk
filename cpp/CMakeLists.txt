@@ -25,10 +25,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # Source files
 set(SOURCES
-    src/main.cpp
-    src/binary_parser.cpp
     src/json_config.cpp
     src/miniz.c
+    src/binary_parser.cpp
+    src/main.cpp
 )
 
 # Set C language for miniz.c and suppress external library warnings
@@ -38,9 +38,12 @@ if(MSVC)
 endif()
 
 set(HEADERS
-    include/binary_parser.hpp
+    include/misc/misc.hpp
+    include/misc/print.hpp
+    include/define/CBuffer.hpp
     include/json_config.hpp
     include/miniz.h
+    include/binary_parser.hpp
 )
 
 # Create executable

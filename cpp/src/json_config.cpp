@@ -5,7 +5,6 @@
 #include <iostream>
 #include <sstream>
 
-
 namespace JsonConfig {
 
 std::unordered_map<std::string, StockInfo> ParseStockInfo(const std::string &stock_info_file) {
@@ -32,9 +31,9 @@ std::unordered_map<std::string, StockInfo> ParseStockInfo(const std::string &sto
       stock_info.is_delisted = true;
     } else {
       stock_info.is_delisted = false;
-      // Set delist date to current year + 1 for active stocks
+      // Set delist date to the current month for active stocks
       auto now = std::chrono::year_month_day{std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now())};
-      stock_info.delist_date = std::chrono::year_month{now.year() + std::chrono::years{1}, std::chrono::December};
+      stock_info.delist_date = std::chrono::year_month{now.year(), now.month()};
     }
 
     result[stock_code] = stock_info;
@@ -55,11 +54,17 @@ AppConfig ParseAppConfig(const std::string &config_file) {
   AppConfig config;
   config.snapshot_dir = j["snapshot_dir"];
 
+  // upper bound month for data availability
+  std::string end_month_str = j.value("end_month", "");
+  config.end_month = ParseDateString(end_month_str);
+  // auto now = std::chrono::year_month_day{std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now())};
+  // config.end_month = std::chrono::year_month{now.year(), now.month()};
+
   return config;
 }
 
 std::chrono::year_month ParseDateString(const std::string &date_str) {
-  // Expected format: "YYYY-MM-DD"
+  // Expected formats: "YYYY-MM" or "YYYY-MM-DD"
   if (date_str.length() < 7) {
     throw std::runtime_error("Invalid date format: " + date_str);
   }

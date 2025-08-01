@@ -54,6 +54,10 @@ private:
   // Performance counters
   size_t total_records_processed_ = 0;
   size_t total_files_processed_ = 0;
+  
+  // Optimization: pre-calculated asset info
+  size_t estimated_total_records_ = 0;
+  std::vector<TickRecord> asset_records_buffer_;
 
 public:
   Parser();
@@ -80,6 +84,11 @@ private:
   size_t ExtractRecordCountFromFilename(const std::string &filename);
   std::string FindAssetFile(const std::string &month_folder, 
                            const std::string &asset_code);
+  
+  // Optimization: pre-calculate total records for efficient allocation
+  size_t CalculateTotalRecordsForAsset(const std::string &asset_code,
+                                      const std::string &snapshot_dir,
+                                      const std::vector<std::string> &month_folders);
 
   // Formatting utilities
   inline double TickToPrice(int16_t tick) const { return tick * 0.01; }

@@ -1,3 +1,4 @@
 {
-    "snapshot_dir": "E:/stock/tick"
+    "snapshot_dir": "E:/stock/tick",
+    "end_month": "2025-06"
 }

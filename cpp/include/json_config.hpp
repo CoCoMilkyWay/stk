@@ -21,6 +21,7 @@ struct StockInfo {
 // Application configuration
 struct AppConfig {
     std::string snapshot_dir;
+    std::chrono::year_month end_month;  // Upper bound month for data availability
 };
 
 // Stock info parser
@@ -30,9 +31,10 @@ std::unordered_map<std::string, StockInfo> ParseStockInfo(const std::string& sto
 AppConfig ParseAppConfig(const std::string& config_file);
 
 // Date utilities
+// Accepts "YYYY-MM" or "YYYY-MM-DD"
 std::chrono::year_month ParseDateString(const std::string& date_str);
 std::vector<std::chrono::year_month> GetMonthRange(
-    const std::chrono::year_month& start, 
+    const std::chrono::year_month& start,
     const std::chrono::year_month& end);
 std::string FormatYearMonth(const std::chrono::year_month& ym);
 
