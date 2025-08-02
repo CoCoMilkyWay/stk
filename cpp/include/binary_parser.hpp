@@ -50,10 +50,6 @@ private:
   static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
   std::vector<uint8_t> read_buffer_;
   std::vector<char> write_buffer_;
-
-  // Performance counters
-  size_t total_records_processed_ = 0;
-  size_t total_files_processed_ = 0;
   
   // Optimization: pre-calculated asset info
   size_t estimated_total_records_ = 0;

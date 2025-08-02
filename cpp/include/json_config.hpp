@@ -21,6 +21,7 @@ struct StockInfo {
 // Application configuration
 struct AppConfig {
     std::string snapshot_dir;
+    std::chrono::year_month start_month;  // Lower bound month for data availability
     std::chrono::year_month end_month;  // Upper bound month for data availability
 };
 

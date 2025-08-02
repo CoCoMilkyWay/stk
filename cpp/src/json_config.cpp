@@ -54,6 +54,10 @@ AppConfig ParseAppConfig(const std::string &config_file) {
   AppConfig config;
   config.snapshot_dir = j["snapshot_dir"];
 
+  // lower bound month for data availability
+  std::string start_month_str = j.value("start_month", "");
+  config.start_month = ParseDateString(start_month_str);
+
   // upper bound month for data availability
   std::string end_month_str = j.value("end_month", "");
   config.end_month = ParseDateString(end_month_str);

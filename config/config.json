@@ -1,4 +1,5 @@
 {
     "snapshot_dir": "E:/stock/tick",
+    "start_month": "2013-01",
     "end_month": "2025-06"
 }

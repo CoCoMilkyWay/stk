@@ -58,8 +58,13 @@ int main() {
     JsonConfig::AppConfig app_config = JsonConfig::ParseAppConfig(config_file);
     auto stock_info_map = JsonConfig::ParseStockInfo(stock_info_file);
 
-    // Override delist_date for active stocks using configured end_month
+    // Override IPO date if earlier than start_month, and delist_date for active stocks using configured end_month
     for (auto &pair : stock_info_map) {
+      // If IPO date is earlier than start_month, use start_month
+      if (pair.second.ipo_date < app_config.start_month) {
+        pair.second.ipo_date = app_config.start_month;
+      }
+      // Override delist_date for active stocks using configured end_month
       if (!pair.second.is_delisted) {
         pair.second.delist_date = app_config.end_month;
       }
@@ -128,8 +133,7 @@ int main() {
     }
 
     std::cout << "\n=== Processing completed successfully! ===" << "\n";
-    std::cout << "All asset lifespans have been processed and saved to: "
-              << output_dir << "\n";
+    std::cout << "All asset lifespans have been processed and saved to: " << output_dir << "\n";
 
     return 0;
 

@@ -1,10 +1,11 @@
+#include <cassert>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <chrono>
 
 #include "binary_parser.hpp"
-#include "misc/misc.hpp"
 
 extern "C" {
 #include "miniz.h"
@@ -19,9 +20,7 @@ Parser::Parser() {
 }
 
 Parser::~Parser() {
-  std::cout << "Parsing completed!\n";
-  std::cout << "Total files processed: " << total_files_processed_ << "\n";
-  std::cout << "Total records processed: " << total_records_processed_ << "\n";
+  // std::cout << "\nParsing completed!\n";
 }
 
 std::vector<uint8_t> Parser::DecompressFile(const std::string &filepath) {
@@ -49,49 +48,17 @@ std::vector<uint8_t> Parser::DecompressFile(const std::string &filepath) {
   std::vector<uint8_t> decompressed_data;
   int result;
 
-  if (record_count > 0) {
-    // Use exact buffer size from record count - extremely fast single
-    // decompression
-    mz_ulong exact_size =
-        static_cast<mz_ulong>(record_count * sizeof(TickRecord));
-    decompressed_data.resize(static_cast<size_t>(exact_size));
+  // Use exact buffer size from record count - extremely fast single
+  // decompression
+  mz_ulong exact_size = static_cast<mz_ulong>(record_count * sizeof(TickRecord));
+  decompressed_data.resize(static_cast<size_t>(exact_size));
 
-    result = mz_uncompress(decompressed_data.data(), &exact_size,
-                           compressed_data.data(),
-                           static_cast<mz_ulong>(compressed_size));
+  result = mz_uncompress(decompressed_data.data(), &exact_size,
+                         compressed_data.data(),
+                         static_cast<mz_ulong>(compressed_size));
 
-    if (result == MZ_OK) {
-      decompressed_data.resize(exact_size);
-      return decompressed_data;
-    } else {
-      std::cerr << "Fast decompression failed for: " << filepath
-                << " (error: " << result
-                << "), falling back to iterative method\n";
-    }
-  }
-
-  // Fallback to iterative method for old format or if fast method fails
-  mz_ulong decompressed_size = static_cast<mz_ulong>(compressed_size * 8);
-  result = MZ_BUF_ERROR;
-
-  while (result == MZ_BUF_ERROR &&
-         decompressed_size < static_cast<mz_ulong>(compressed_size * 32)) {
-    decompressed_data.resize(static_cast<size_t>(decompressed_size));
-    result = mz_uncompress(decompressed_data.data(), &decompressed_size,
-                           compressed_data.data(),
-                           static_cast<mz_ulong>(compressed_size));
-    if (result == MZ_BUF_ERROR) {
-      decompressed_size *= 2;
-    }
-  }
-
-  if (result != MZ_OK) {
-    std::cerr << "Decompression failed for: " << filepath
-              << " (error: " << result << ")\n";
-    return {};
-  }
-
-  decompressed_data.resize(decompressed_size);
+  assert(result == MZ_OK);
+  decompressed_data.resize(exact_size);
   return decompressed_data;
 }
 
@@ -189,23 +156,16 @@ void Parser::ParseAssetLifespan(const std::string &asset_code,
                                 const std::vector<std::string> &month_folders,
                                 const std::string &output_dir) {
 
-  std::string output_filename = output_dir + "/" + asset_code + "_lifespan.csv";
-  std::ofstream csv_file(output_filename, std::ios::out | std::ios::trunc);
-
-  if (!csv_file.is_open()) {
-    throw std::runtime_error("Failed to create output file: " + output_filename);
-  }
+  auto start_time = std::chrono::high_resolution_clock::now();
 
   // Pre-calculate total records for efficient allocation
   estimated_total_records_ = CalculateTotalRecordsForAsset(asset_code, snapshot_dir, month_folders);
-  std::cout << "Processing asset " << asset_code << " across " << month_folders.size()
-            << " months (estimated " << estimated_total_records_ << " total records)\n";
 
   // Pre-allocate buffer for entire asset lifespan - major optimization!
   asset_records_buffer_.clear();
   asset_records_buffer_.reserve(estimated_total_records_);
 
-  size_t total_records = 0;
+  // size_t total_records = 0;
 
   for (const std::string &month_folder : month_folders) {
     std::string month_path = snapshot_dir + "/" + month_folder;
@@ -231,21 +191,31 @@ void Parser::ParseAssetLifespan(const std::string &asset_code,
 
       // Append records to pre-allocated buffer for batch processing
       asset_records_buffer_.insert(asset_records_buffer_.end(), records.begin(), records.end());
-      total_records += records.size();
+      // total_records += records.size();
 
     } catch (const std::exception &e) {
       std::cout << "  Warning: Error processing " << asset_file << ": " << e.what() << "\n";
     }
   }
 
-  // Batch write all records to CSV - single operation for entire asset lifespan
-  if (!asset_records_buffer_.empty()) {
-    WriteRecordsToCSV(asset_records_buffer_, asset_code, csv_file, true);
-    std::cout << "Batch wrote " << asset_records_buffer_.size() << " records to CSV\n";
-  }
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+  
+  std::cout << "Processed asset " << asset_code << " across " << month_folders.size()
+          << " months (estimated " << estimated_total_records_ << " total records (" << duration.count() << "ms))\n";
 
-  csv_file.close();
-  std::cout << "Completed " << asset_code << ": " << total_records << " records written to " << output_filename << "\n";
+  // std::string output_filename = output_dir + "/" + asset_code + ".csv";
+  // std::ofstream csv_file(output_filename, std::ios::out | std::ios::trunc);
+  // if (!csv_file.is_open()) {
+  //   throw std::runtime_error("Failed to create output file: " + output_filename);
+  // }
+  // // Batch write all records to CSV - single operation for entire asset lifespan
+  // if (!asset_records_buffer_.empty()) {
+  //   WriteRecordsToCSV(asset_records_buffer_, asset_code, csv_file, true);
+  //   std::cout << "Batch wrote " << asset_records_buffer_.size() << " records to CSV\n";
+  // }
+  // csv_file.close();
+  // std::cout << "Completed " << asset_code << ": " << total_records << " records written to " << output_filename << "\n";
 
   // Clear buffer to free memory
   asset_records_buffer_.clear();
