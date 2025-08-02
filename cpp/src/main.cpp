@@ -30,7 +30,7 @@ void ProcessAsset(const std::string &asset_code,
     BinaryParser::Parser parser;
 
     // Process the asset across its entire lifespan
-    parser.ParseAssetLifespan(asset_code, snapshot_dir, month_folders, output_dir);
+    parser.ParseAssetLifespan(asset_code, snapshot_dir, month_folders);
 
   } catch (const std::exception &e) {
     std::cerr << "Error processing asset " << asset_code << ": " << e.what() << "\n";

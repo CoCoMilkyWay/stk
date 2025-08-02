@@ -1,9 +1,10 @@
 #include <cassert>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <chrono>
+#include <filesystem>
 
 #include "binary_parser.hpp"
 
@@ -151,10 +152,10 @@ const char *Parser::FormatDirection(uint8_t direction) const {
   }
 }
 
-void Parser::ParseAssetLifespan(const std::string &asset_code,
-                                const std::string &snapshot_dir,
-                                const std::vector<std::string> &month_folders,
-                                const std::string &output_dir) {
+void Parser::ParseAssetLifespan(
+    const std::string &asset_code,
+    const std::string &snapshot_dir,
+    const std::vector<std::string> &month_folders) {
 
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -200,9 +201,9 @@ void Parser::ParseAssetLifespan(const std::string &asset_code,
 
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-  
+
   std::cout << "Processed asset " << asset_code << " across " << month_folders.size()
-          << " months (estimated " << estimated_total_records_ << " total records (" << duration.count() << "ms))\n";
+            << " months (estimated " << estimated_total_records_ << " total records (" << duration.count() << "ms))\n";
 
   // std::string output_filename = output_dir + "/" + asset_code + ".csv";
   // std::ofstream csv_file(output_filename, std::ios::out | std::ios::trunc);

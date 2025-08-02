@@ -5,7 +5,6 @@
 #include <fstream>
 #include <string>
 #include <vector>
-#include <filesystem>
 
 namespace BinaryParser {
 
@@ -50,7 +49,7 @@ private:
   static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
   std::vector<uint8_t> read_buffer_;
   std::vector<char> write_buffer_;
-  
+
   // Optimization: pre-calculated asset info
   size_t estimated_total_records_ = 0;
   std::vector<TickRecord> asset_records_buffer_;
@@ -60,10 +59,11 @@ public:
   ~Parser();
 
   // Main parsing function
-  void ParseAssetLifespan(const std::string &asset_code, 
-                         const std::string &snapshot_dir,
-                         const std::vector<std::string> &month_folders,
-                         const std::string &output_dir);
+  void ParseAssetLifespan(const std::string &asset_code,
+                          const std::string &snapshot_dir,
+                          const std::vector<std::string> &month_folders
+                          // const std::string &output_dir
+  );
 
 private:
   // Core parsing functions
@@ -78,13 +78,13 @@ private:
 
   // File system utilities
   size_t ExtractRecordCountFromFilename(const std::string &filename);
-  std::string FindAssetFile(const std::string &month_folder, 
-                           const std::string &asset_code);
-  
+  std::string FindAssetFile(const std::string &month_folder,
+                            const std::string &asset_code);
+
   // Optimization: pre-calculate total records for efficient allocation
   size_t CalculateTotalRecordsForAsset(const std::string &asset_code,
-                                      const std::string &snapshot_dir,
-                                      const std::vector<std::string> &month_folders);
+                                       const std::string &snapshot_dir,
+                                       const std::vector<std::string> &month_folders);
 
   // Formatting utilities
   inline double TickToPrice(int16_t tick) const { return tick * 0.01; }
