@@ -1,16 +1,9 @@
 {
-    "300519": {
-        "name": "新光药业",
-        "industry": "医药生物",
-        "sub_industry": "中药",
-        "ipo_date": "2016-06-24",
-        "delist_date": ""
-    },
     "603968": {
         "name": "醋化股份",
         "industry": "基础化工",
         "sub_industry": "化学制品",
-        "ipo_date": "2015-05-18",
+        "ipo_date": "2017-01-01",
         "delist_date": ""
     }
 }

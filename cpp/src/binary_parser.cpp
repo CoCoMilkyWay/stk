@@ -1,5 +1,4 @@
 #include "binary_parser.hpp"
-#include "misc/misc.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -15,7 +14,11 @@ extern "C" {
 #include "miniz.h"
 }
 
-#define DEBUG_TIMER
+// #define DEBUG_TIMER
+
+#ifdef DEBUG_TIMER
+#include "misc/misc.hpp"
+#endif
 
 namespace BinaryParser {
 
@@ -26,11 +29,13 @@ namespace BinaryParser {
 // CSV output utility functions
 void DumpSnapshotCSV(const std::vector<Table::Snapshot_3s_Record> &records,
                      const std::string &asset_code,
-                     const std::string &output_dir);
+                     const std::string &output_dir,
+                     size_t last_n = 0);
 
 void DumpBarCSV(const std::vector<Table::Bar_1m_Record> &records,
                 const std::string &asset_code,
-                const std::string &output_dir);
+                const std::string &output_dir,
+                size_t last_n = 0);
 
 // ============================================================================
 // CONSTRUCTOR AND DESTRUCTOR
@@ -109,7 +114,7 @@ void Parser::ReverseDifferentialEncoding(std::vector<BinaryRecord> &records) {
 
   // Process each record starting from index 1
   for (size_t i = 1; i < records.size(); ++i) {
-    // Reverse differential encoding for date
+    // Reverse differential encoding for day
     records[i].day += records[i - 1].day;
 
     // Reverse differential encoding for time_s
@@ -142,57 +147,68 @@ void Parser::ConvertToSnapshot3sAndBar1m(const std::vector<BinaryRecord> &binary
     return;
 
   uint32_t current_minute_index = 0;
-  uint16_t last_day = 0;
-  uint16_t last_minute = 0;
+  uint8_t last_minute = 0;
+  uint8_t last_hour = 0;
 
   for (const auto &record : binary_records) {
-    // Calculate minute index based on date and time
-    uint16_t current_day = record.day;
-    uint16_t current_minute = record.time_s / 60;
+    // Calculate minute index based on day and time (optimized to reduce costly division operations)
+    uint8_t current_day = record.day;
+    uint8_t current_hour = static_cast<uint8_t>(record.time_s / 3600);
+    uint16_t remaining_seconds = static_cast<uint16_t>(record.time_s - static_cast<uint32_t>(current_hour) * 3600);
+    uint8_t current_minute = static_cast<uint8_t>(remaining_seconds / 60);
+    uint8_t current_second = static_cast<uint8_t>(remaining_seconds - static_cast<uint16_t>(current_minute) * 60);
+    // std::cout << "year: " << static_cast<int>(year)
+    //           << ", month: " << static_cast<int>(month)
+    //           << ", day: " << static_cast<int>(current_day)
+    //           << ", hour: " << static_cast<int>(current_hour)
+    //           << ", minute: " << static_cast<int>(current_minute)
+    //           << ", second: " << static_cast<int>(current_second)
+    //           << ", trade_count: " << static_cast<int>(record.trade_count)
+    //           << ", volume: " << static_cast<int>(record.volume)
+    //           << ", turnover: " << static_cast<int>(record.turnover)
+    //           << ", latest_price_tick: " << static_cast<int>(record.latest_price_tick)
+    //           << ", direction: " << static_cast<int>(record.direction)
+    //           << "\n";
 
-    // Check if we've moved to a new minute
-    if (current_day != last_day || current_minute != last_minute) {
-      // Create new Bar_1m_Record if this is a new minute
-      if (!bar_1m_buffer_.empty() || (current_day != last_day || current_minute != last_minute)) {
-        current_minute_index = static_cast<uint32_t>(bar_1m_buffer_.size());
+    // Trigger a new bar when either minute or hour changes
+    if (current_minute != last_minute || current_hour != last_hour) {
+      current_minute_index = static_cast<uint32_t>(bar_1m_buffer_.size());
 
-        Table::Bar_1m_Record new_bar;
-        // Convert date and time using year and month from folder structure
-        new_bar.year = year;
-        new_bar.month = month;
-        new_bar.day = static_cast<uint8_t>(current_day);
-        new_bar.hour = static_cast<uint8_t>(current_minute / 60);
-        new_bar.minute = static_cast<uint8_t>(current_minute % 60);
-        new_bar.open = static_cast<float>(TickToPrice(record.latest_price_tick));
-        new_bar.high = static_cast<float>(TickToPrice(record.latest_price_tick));
-        new_bar.low = static_cast<float>(TickToPrice(record.latest_price_tick));
-        new_bar.close = static_cast<float>(TickToPrice(record.latest_price_tick));
-        new_bar.volume = static_cast<float>(record.volume);
-        new_bar.turnover = static_cast<float>(record.turnover);
+      Table::Bar_1m_Record new_bar;
+      new_bar.year = year;
+      new_bar.month = month;
+      new_bar.day = current_day;
+      new_bar.hour = current_hour;
+      new_bar.minute = current_minute;
+      new_bar.open = static_cast<float>(TickToPrice(record.latest_price_tick));
+      new_bar.high = static_cast<float>(TickToPrice(record.latest_price_tick));
+      new_bar.low = static_cast<float>(TickToPrice(record.latest_price_tick));
+      new_bar.close = static_cast<float>(TickToPrice(record.latest_price_tick));
+      new_bar.volume = static_cast<float>(record.volume);
+      new_bar.turnover = static_cast<float>(record.turnover);
 
-        bar_1m_buffer_.push_back(new_bar);
-      }
+      bar_1m_buffer_.push_back(new_bar);
 
-      last_day = current_day;
       last_minute = current_minute;
+      last_hour = current_hour;
     } else {
       // Update existing Bar_1m_Record for the current minute
-      if (!bar_1m_buffer_.empty()) {
-        UpdateBar1mRecord(bar_1m_buffer_.back(), record);
-      }
+      UpdateBar1mRecord(bar_1m_buffer_.back(), record);
     }
 
     // Convert to Snapshot_3s_Record
-    auto snapshot_record = ConvertToSnapshot3s(record, current_minute_index);
+    auto snapshot_record = ConvertToSnapshot3s(record, current_minute_index, current_second);
     snapshot_3s_buffer_.push_back(snapshot_record);
+
+    technical_analysis
   }
 }
 
-Table::Snapshot_3s_Record Parser::ConvertToSnapshot3s(const BinaryRecord &record, uint32_t minute_index) {
+Table::Snapshot_3s_Record Parser::ConvertToSnapshot3s(const BinaryRecord &record, uint32_t minute_index, uint8_t second) {
   Table::Snapshot_3s_Record snapshot;
 
   snapshot.index_1m = minute_index;
-  snapshot.seconds = record.time_s % 60; // Extract seconds from time_s
+  snapshot.seconds = second;
   snapshot.latest_price_tick = record.latest_price_tick;
   snapshot.trade_count = record.trade_count;
   snapshot.turnover = record.turnover;
@@ -359,10 +375,6 @@ void Parser::ParseAsset(const std::string &asset_code,
                         const std::string &snapshot_dir,
                         const std::vector<std::string> &month_folders,
                         const std::string &output_dir) {
-#ifdef DEBUG_TIMER
-  std::cout << "========================================================\n";
-  misc::Timer timer("ParseAsset");
-#endif
   auto start_time = std::chrono::high_resolution_clock::now();
 
   // Pre-calculate total records for efficient allocation
@@ -372,9 +384,12 @@ void Parser::ParseAsset(const std::string &asset_code,
   snapshot_3s_buffer_.clear();
   snapshot_3s_buffer_.reserve(estimated_total_records_);
   bar_1m_buffer_.clear();
-  bar_1m_buffer_.reserve(estimated_total_records_ / 20); // Rough estimate: 1 minute per ~20 records
+  bar_1m_buffer_.reserve(estimated_total_records_ / 20 / 24 * 5); // Rough estimate: 5 hours of 3s data per day
 
   for (const std::string &month_folder : month_folders) {
+#ifdef DEBUG_TIMER
+    std::cout << "\n========================================================";
+#endif
     std::string month_path = snapshot_dir + "/" + month_folder;
     std::string asset_file = FindAssetFile(month_path, asset_code);
 
@@ -414,8 +429,8 @@ void Parser::ParseAsset(const std::string &asset_code,
             << bar_1m_buffer_.size() << " bar records (" << duration.count() << "ms))\n";
 
   // Export results to CSV files
-  DumpBarCSV(bar_1m_buffer_, asset_code, output_dir);
-  DumpSnapshotCSV(snapshot_3s_buffer_, asset_code, output_dir);
+  DumpBarCSV(bar_1m_buffer_, asset_code, output_dir, 10000);
+  DumpSnapshotCSV(snapshot_3s_buffer_, asset_code, output_dir, 10000);
 
   // Clear buffers to free memory
   snapshot_3s_buffer_.clear();
@@ -465,7 +480,8 @@ template <typename RecordType>
 inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
                              const std::string &asset_code,
                              const std::string &output_dir,
-                             const std::string &suffix) {
+                             const std::string &suffix,
+                             size_t last_n = 0) {
   if (records.empty())
     return;
 
@@ -492,7 +508,9 @@ inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
   std::ostringstream batch_output;
   batch_output << std::fixed << std::setprecision(2);
 
-  for (const auto &record : records) {
+  size_t start_index = (last_n == 0 || last_n >= records.size()) ? 0 : records.size() - last_n;
+  for (size_t i = start_index; i < records.size(); ++i) {
+    const auto &record = records[i];
     bool first = true;
 
     if constexpr (std::is_same_v<RecordType, Table::Snapshot_3s_Record>) {
@@ -533,7 +551,8 @@ inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
   file << batch_output.str();
   file.close();
 
-  std::cout << "Dumped " << records.size() << " " << suffix << " records to " << filename << "\n";
+  size_t dumped_count = records.size() - start_index;
+  std::cout << "Dumped " << dumped_count << " " << suffix << " records to " << filename << "\n";
 }
 
 } // anonymous namespace
@@ -541,14 +560,16 @@ inline void DumpRecordsToCSV(const std::vector<RecordType> &records,
 // Convenience wrappers for specific record types
 void DumpSnapshotCSV(const std::vector<Table::Snapshot_3s_Record> &records,
                      const std::string &asset_code,
-                     const std::string &output_dir) {
-  DumpRecordsToCSV(records, asset_code, output_dir, "snapshot_3s");
+                     const std::string &output_dir,
+                     size_t last_n) {
+  DumpRecordsToCSV(records, asset_code, output_dir, "snapshot_3s", last_n);
 }
 
 void DumpBarCSV(const std::vector<Table::Bar_1m_Record> &records,
                 const std::string &asset_code,
-                const std::string &output_dir) {
-  DumpRecordsToCSV(records, asset_code, output_dir, "bar_1m");
+                const std::string &output_dir,
+                size_t last_n) {
+  DumpRecordsToCSV(records, asset_code, output_dir, "bar_1m", last_n);
 }
 
 } // namespace BinaryParser

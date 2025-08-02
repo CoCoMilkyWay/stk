@@ -1,9 +1,9 @@
 #pragma once
 
+#include "define/Dtype.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
-#include "define/Dtype.hpp"
 
 namespace BinaryParser {
 
@@ -15,7 +15,7 @@ namespace BinaryParser {
 #pragma pack(push, 1)
 struct BinaryRecord {
   bool sync;                  // 1 byte
-  uint8_t day;               // 1 byte  
+  uint8_t day;                // 1 byte
   uint16_t time_s;            // 2 bytes - seconds in day
   int16_t latest_price_tick;  // 2 bytes - price * 100
   uint8_t trade_count;        // 1 byte
@@ -66,7 +66,7 @@ private:
   // ========================================================================
   // CORE PARSING FUNCTIONS
   // ========================================================================
-  
+
   // File I/O and decompression
   std::vector<uint8_t> DecompressFile(const std::string &filepath, size_t record_count);
   std::vector<BinaryRecord> ParseBinaryData(const std::vector<uint8_t> &binary_data);
@@ -75,44 +75,44 @@ private:
   // ========================================================================
   // DATA CONVERSION FUNCTIONS
   // ========================================================================
-  
+
   void ConvertToSnapshot3sAndBar1m(const std::vector<BinaryRecord> &binary_records, uint16_t year, uint8_t month);
-  Table::Snapshot_3s_Record ConvertToSnapshot3s(const BinaryRecord &record, uint32_t minute_index);
+  Table::Snapshot_3s_Record ConvertToSnapshot3s(const BinaryRecord &record, uint32_t minute_index, uint8_t second);
   void UpdateBar1mRecord(Table::Bar_1m_Record &bar_record, const BinaryRecord &binary_record);
 
   // ========================================================================
   // FILE SYSTEM UTILITIES
   // ========================================================================
-  
+
   std::string FindAssetFile(const std::string &month_folder,
                             const std::string &asset_code);
   size_t ExtractRecordCountFromFilename(const std::string &filename);
   size_t CalculateTotalRecordsForAsset(const std::string &asset_code,
                                        const std::string &snapshot_dir,
                                        const std::vector<std::string> &month_folders);
-  
+
   // Helper function to extract record count and year/month from filename and folder
   std::tuple<size_t, uint16_t, uint8_t> ExtractRecordCountAndDateFromPath(const std::string &filepath);
 
   // ========================================================================
   // FORMATTING UTILITIES
   // ========================================================================
-  
+
   inline double TickToPrice(int16_t tick) const { return tick * 0.01; }
   std::string FormatTime(uint16_t time_s) const;
-  const char* FormatDirection(uint8_t direction) const;
+  const char *FormatDirection(uint8_t direction) const;
 
   // ========================================================================
   // MEMBER VARIABLES
   // ========================================================================
-  
+
   // Buffer configuration
   static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
-  
+
   // I/O buffers
   std::vector<uint8_t> read_buffer_;
   std::vector<char> write_buffer_;
-  
+
   // Pre-allocated data buffers for efficiency
   size_t estimated_total_records_ = 0;
   std::vector<Table::Snapshot_3s_Record> snapshot_3s_buffer_;
