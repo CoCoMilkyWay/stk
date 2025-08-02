@@ -30,7 +30,7 @@ void ProcessAsset(const std::string &asset_code,
     BinaryParser::Parser parser;
 
     // Process the asset across its entire lifespan
-    parser.ParseAssetLifespan(asset_code, snapshot_dir, month_folders);
+    parser.ParseAsset(asset_code, snapshot_dir, month_folders, output_dir);
 
   } catch (const std::exception &e) {
     std::cerr << "Error processing asset " << asset_code << ": " << e.what() << "\n";
@@ -112,7 +112,8 @@ int main() {
       const std::string &asset_code = stock_iter->first;
       const JsonConfig::StockInfo &stock_info = stock_iter->second;
 
-      std::cout << "Queuing asset: " << asset_code << " (" << stock_info.name << ")\n";
+      std::cout << "Queuing asset: " << asset_code << " (" << stock_info.name
+                << ") (" << stock_info.ipo_date << " - " << stock_info.delist_date << ")\n";
 
       futures.push_back(
           std::async(
@@ -127,7 +128,6 @@ int main() {
     }
 
     // Wait for all remaining tasks to complete
-    std::cout << "\nWaiting for all processing to complete...\n";
     for (auto &future : futures) {
       future.wait();
     }

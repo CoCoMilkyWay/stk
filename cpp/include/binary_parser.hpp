@@ -1,18 +1,21 @@
 #pragma once
 
 #include <cstdint>
-#include <cstring>
-#include <fstream>
 #include <string>
 #include <vector>
+#include "define/Dtype.hpp"
 
 namespace BinaryParser {
 
+// ============================================================================
+// DATA STRUCTURES AND CONSTANTS
+// ============================================================================
+
 // Binary record structure (54 bytes total)
 #pragma pack(push, 1)
-struct TickRecord {
+struct BinaryRecord {
   bool sync;                  // 1 byte
-  uint8_t date;               // 1 byte
+  uint8_t day;               // 1 byte  
   uint16_t time_s;            // 2 bytes - seconds in day
   int16_t latest_price_tick;  // 2 bytes - price * 100
   uint8_t trade_count;        // 1 byte
@@ -27,10 +30,10 @@ struct TickRecord {
 };
 #pragma pack(pop)
 
-// Differential encoding fields (from Python code)
+// Differential encoding configuration
 constexpr bool DIFF_FIELDS[] = {
     false, // sync
-    true,  // date
+    true,  // day
     true,  // time_s
     true,  // latest_price_tick
     false, // trade_count
@@ -43,53 +46,77 @@ constexpr bool DIFF_FIELDS[] = {
     false  // direction
 };
 
+// ============================================================================
+// MAIN PARSER CLASS
+// ============================================================================
+
 class Parser {
-private:
-  // Efficient I/O buffers
-  static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
-  std::vector<uint8_t> read_buffer_;
-  std::vector<char> write_buffer_;
-
-  // Optimization: pre-calculated asset info
-  size_t estimated_total_records_ = 0;
-  std::vector<TickRecord> asset_records_buffer_;
-
 public:
+  // Constructor and destructor
   Parser();
   ~Parser();
 
-  // Main parsing function
-  void ParseAssetLifespan(const std::string &asset_code,
-                          const std::string &snapshot_dir,
-                          const std::vector<std::string> &month_folders
-                          // const std::string &output_dir
-  );
+  // Main public interface
+  void ParseAsset(const std::string &asset_code,
+                  const std::string &snapshot_dir,
+                  const std::vector<std::string> &month_folders,
+                  const std::string &output_dir);
 
 private:
-  // Core parsing functions
-  std::vector<uint8_t> DecompressFile(const std::string &filepath);
-  std::vector<TickRecord>
-  ParseBinaryData(const std::vector<uint8_t> &binary_data);
-  void ReverseDifferentialEncoding(std::vector<TickRecord> &records);
-  void WriteRecordsToCSV(const std::vector<TickRecord> &records,
-                         const std::string &symbol,
-                         std::ofstream &csv_file,
-                         bool write_header = false);
+  // ========================================================================
+  // CORE PARSING FUNCTIONS
+  // ========================================================================
+  
+  // File I/O and decompression
+  std::vector<uint8_t> DecompressFile(const std::string &filepath, size_t record_count);
+  std::vector<BinaryRecord> ParseBinaryData(const std::vector<uint8_t> &binary_data);
+  void ReverseDifferentialEncoding(std::vector<BinaryRecord> &records);
 
-  // File system utilities
-  size_t ExtractRecordCountFromFilename(const std::string &filename);
+  // ========================================================================
+  // DATA CONVERSION FUNCTIONS
+  // ========================================================================
+  
+  void ConvertToSnapshot3sAndBar1m(const std::vector<BinaryRecord> &binary_records, uint16_t year, uint8_t month);
+  Table::Snapshot_3s_Record ConvertToSnapshot3s(const BinaryRecord &record, uint32_t minute_index);
+  void UpdateBar1mRecord(Table::Bar_1m_Record &bar_record, const BinaryRecord &binary_record);
+
+  // ========================================================================
+  // FILE SYSTEM UTILITIES
+  // ========================================================================
+  
   std::string FindAssetFile(const std::string &month_folder,
                             const std::string &asset_code);
-
-  // Optimization: pre-calculate total records for efficient allocation
+  size_t ExtractRecordCountFromFilename(const std::string &filename);
   size_t CalculateTotalRecordsForAsset(const std::string &asset_code,
                                        const std::string &snapshot_dir,
                                        const std::vector<std::string> &month_folders);
+  
+  // Helper function to extract record count and year/month from filename and folder
+  std::tuple<size_t, uint16_t, uint8_t> ExtractRecordCountAndDateFromPath(const std::string &filepath);
 
-  // Formatting utilities
+  // ========================================================================
+  // FORMATTING UTILITIES
+  // ========================================================================
+  
   inline double TickToPrice(int16_t tick) const { return tick * 0.01; }
-  inline std::string FormatTime(uint16_t time_s) const;
-  inline const char *FormatDirection(uint8_t direction) const;
+  std::string FormatTime(uint16_t time_s) const;
+  const char* FormatDirection(uint8_t direction) const;
+
+  // ========================================================================
+  // MEMBER VARIABLES
+  // ========================================================================
+  
+  // Buffer configuration
+  static constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
+  
+  // I/O buffers
+  std::vector<uint8_t> read_buffer_;
+  std::vector<char> write_buffer_;
+  
+  // Pre-allocated data buffers for efficiency
+  size_t estimated_total_records_ = 0;
+  std::vector<Table::Snapshot_3s_Record> snapshot_3s_buffer_;
+  std::vector<Table::Bar_1m_Record> bar_1m_buffer_;
 };
 
 } // namespace BinaryParser

@@ -1,144 +1,4 @@
 {
-    "688109": {
-        "name": "品茗科技",
-        "industry": "计算机",
-        "sub_industry": "软件开发",
-        "ipo_date": "2021-03-30",
-        "delist_date": ""
-    },
-    "605258": {
-        "name": "协和电子",
-        "industry": "电子",
-        "sub_industry": "元件",
-        "ipo_date": "2020-12-03",
-        "delist_date": ""
-    },
-    "688056": {
-        "name": "莱伯泰科",
-        "industry": "机械设备",
-        "sub_industry": "通用设备",
-        "ipo_date": "2020-09-02",
-        "delist_date": ""
-    },
-    "600302": {
-        "name": "标准股份",
-        "industry": "机械设备",
-        "sub_industry": "专用设备",
-        "ipo_date": "2000-12-13",
-        "delist_date": ""
-    },
-    "300988": {
-        "name": "津荣天宇",
-        "industry": "机械设备",
-        "sub_industry": "专用设备",
-        "ipo_date": "2021-05-12",
-        "delist_date": ""
-    },
-    "001266": {
-        "name": "宏英智能",
-        "industry": "机械设备",
-        "sub_industry": "自动化设备",
-        "ipo_date": "2022-02-28",
-        "delist_date": ""
-    },
-    "688607": {
-        "name": "康众医疗",
-        "industry": "医药生物",
-        "sub_industry": "医疗器械",
-        "ipo_date": "2021-02-01",
-        "delist_date": ""
-    },
-    "300780": {
-        "name": "德恩精工",
-        "industry": "机械设备",
-        "sub_industry": "通用设备",
-        "ipo_date": "2019-05-31",
-        "delist_date": ""
-    },
-    "688350": {
-        "name": "富淼科技",
-        "industry": "基础化工",
-        "sub_industry": "化学制品",
-        "ipo_date": "2021-01-28",
-        "delist_date": ""
-    },
-    "603681": {
-        "name": "永冠新材",
-        "industry": "基础化工",
-        "sub_industry": "化学制品",
-        "ipo_date": "2019-03-26",
-        "delist_date": ""
-    },
-    "603051": {
-        "name": "鹿山新材",
-        "industry": "基础化工",
-        "sub_industry": "化学制品",
-        "ipo_date": "2022-03-25",
-        "delist_date": ""
-    },
-    "002159": {
-        "name": "三特索道",
-        "industry": "社会服务",
-        "sub_industry": "旅游及景区",
-        "ipo_date": "2007-08-17",
-        "delist_date": ""
-    },
-    "002760": {
-        "name": "凤形股份",
-        "industry": "机械设备",
-        "sub_industry": "通用设备",
-        "ipo_date": "2015-06-11",
-        "delist_date": ""
-    },
-    "300736": {
-        "name": "百邦科技",
-        "industry": "电子",
-        "sub_industry": "其他电子",
-        "ipo_date": "2018-01-09",
-        "delist_date": ""
-    },
-    "301037": {
-        "name": "保立佳",
-        "industry": "基础化工",
-        "sub_industry": "化学制品",
-        "ipo_date": "2021-07-30",
-        "delist_date": ""
-    },
-    "000790": {
-        "name": "华神科技",
-        "industry": "医药生物",
-        "sub_industry": "中药",
-        "ipo_date": "1998-03-27",
-        "delist_date": ""
-    },
-    "301272": {
-        "name": "英华特",
-        "industry": "机械设备",
-        "sub_industry": "通用设备",
-        "ipo_date": "2023-07-13",
-        "delist_date": ""
-    },
-    "603700": {
-        "name": "宁水集团",
-        "industry": "机械设备",
-        "sub_industry": "通用设备",
-        "ipo_date": "2019-01-22",
-        "delist_date": ""
-    },
-    "301166": {
-        "name": "优宁维",
-        "industry": "医药生物",
-        "sub_industry": "生物制品",
-        "ipo_date": "2021-12-28",
-        "delist_date": ""
-    },
-    "603968": {
-        "name": "醋化股份",
-        "industry": "基础化工",
-        "sub_industry": "化学制品",
-        "ipo_date": "2015-05-18",
-        "delist_date": ""
-    },
     "300519": {
         "name": "新光药业",
         "industry": "医药生物",
@@ -146,11 +6,11 @@
         "ipo_date": "2016-06-24",
         "delist_date": ""
     },
-    "688051": {
-        "name": "佳华科技",
-        "industry": "计算机",
-        "sub_industry": "IT服务",
-        "ipo_date": "2020-03-20",
+    "603968": {
+        "name": "醋化股份",
+        "industry": "基础化工",
+        "sub_industry": "化学制品",
+        "ipo_date": "2015-05-18",
         "delist_date": ""
     }
 }

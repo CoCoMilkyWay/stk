@@ -8,6 +8,7 @@
 
 namespace misc {
 
+
 inline void print_progress(int current, int total) {
   int next = current++;
   int step = int(total * 0.1f);
