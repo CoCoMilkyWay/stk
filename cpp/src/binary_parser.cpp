@@ -1,4 +1,5 @@
 #include "binary_parser.hpp"
+#include "technical_analysis.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -200,7 +201,8 @@ void Parser::ConvertToSnapshot3sAndBar1m(const std::vector<BinaryRecord> &binary
     auto snapshot_record = ConvertToSnapshot3s(record, current_minute_index, current_second);
     snapshot_3s_buffer_.push_back(snapshot_record);
 
-    technical_analysis
+    // Trigger feature update
+    technical_analysis_->update();
   }
 }
 
@@ -386,6 +388,8 @@ void Parser::ParseAsset(const std::string &asset_code,
   bar_1m_buffer_.clear();
   bar_1m_buffer_.reserve(estimated_total_records_ / 20 / 24 * 5); // Rough estimate: 5 hours of 3s data per day
 
+  technical_analysis_ = std::make_unique<::TechnicalAnalysis>(snapshot_3s_buffer_, bar_1m_buffer_);
+
   for (const std::string &month_folder : month_folders) {
 #ifdef DEBUG_TIMER
     std::cout << "\n========================================================";
@@ -443,12 +447,12 @@ void Parser::ParseAsset(const std::string &asset_code,
 // CSV OUTPUT UTILITIES
 // ============================================================================
 
-namespace {
-
 // Helper to convert price ticks to actual prices
 inline double TickToPrice(int16_t tick) {
   return tick * 0.01;
 }
+
+namespace {
 
 // Helper to output a single field to CSV
 template <typename T>

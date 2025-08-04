@@ -1,7 +1,9 @@
 #pragma once
 
 #include "define/Dtype.hpp"
+#include "technical_analysis.hpp"
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -117,6 +119,9 @@ private:
   size_t estimated_total_records_ = 0;
   std::vector<Table::Snapshot_3s_Record> snapshot_3s_buffer_;
   std::vector<Table::Bar_1m_Record> bar_1m_buffer_;
+
+  // Technical analysis engine operating on the two buffers
+  std::unique_ptr<::TechnicalAnalysis> technical_analysis_;
 };
 
 } // namespace BinaryParser

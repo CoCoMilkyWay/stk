@@ -7,15 +7,30 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # for clangd syntax highlighting
 
+# MSVC (Visual Studio) Optimizations:
+# /GL - Whole program optimization
+# /Gy - Function-level linking
+# /Gw - Optimize global data
+# /arch:AVX2 - Use AVX2 instructions
+# /fp:fast - Fast floating-point model
+# /LTCG - Link time code generation
+# /OPT:REF - Remove unreferenced functions
+# /OPT:ICF - Identical COMDAT folding
+
+# GCC/Clang Optimizations:
+# -flto - Link time optimization
+# -ffast-math - Fast math operations
+
 # Compiler-specific options
 if(MSVC)
-    # MSVC specific flags
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /W4")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /DNDEBUG")
+    # MSVC specific flags - Maximum optimization
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /W4 /EHsc")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2 /DNDEBUG /GL /Gy /Gw /arch:AVX2 /fp:fast")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG /OPT:REF /OPT:ICF")
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # GCC/Clang flags
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -Wextra -march=native")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -Wextra -march=native -flto")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG -ffast-math")
 endif()
 
 # Output directories
@@ -28,6 +43,7 @@ set(SOURCES
     src/json_config.cpp
     src/miniz.c
     src/binary_parser.cpp
+    src/technical_analysis.cpp
     src/main.cpp
 )
 
@@ -44,6 +60,7 @@ set(HEADERS
     include/json_config.hpp
     include/miniz.h
     include/binary_parser.hpp
+    include/technical_analysis.hpp
 )
 
 # Create executable
