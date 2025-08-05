@@ -1,5 +1,7 @@
 #include "binary_parser.hpp"
+#include "misc/misc.hpp"
 #include "technical_analysis.hpp"
+
 
 #include <cassert>
 #include <chrono>
@@ -152,6 +154,9 @@ void Parser::ConvertToSnapshot3sAndBar1m(const std::vector<BinaryRecord> &binary
   uint8_t last_hour = 0;
 
   for (const auto &record : binary_records) {
+    ++records_count_;
+    misc::print_progress(records_count_, total_records_);
+
     // Calculate minute index based on day and time (optimized to reduce costly division operations)
     uint8_t current_day = record.day;
     uint8_t current_hour = static_cast<uint8_t>(record.time_s / 3600);
@@ -380,13 +385,13 @@ void Parser::ParseAsset(const std::string &asset_code,
   auto start_time = std::chrono::high_resolution_clock::now();
 
   // Pre-calculate total records for efficient allocation
-  estimated_total_records_ = CalculateTotalRecordsForAsset(asset_code, snapshot_dir, month_folders);
+  total_records_ = CalculateTotalRecordsForAsset(asset_code, snapshot_dir, month_folders);
 
   // Pre-allocate buffers for entire asset lifespan - major optimization!
   snapshot_3s_buffer_.clear();
-  snapshot_3s_buffer_.reserve(estimated_total_records_);
+  snapshot_3s_buffer_.reserve(total_records_);
   bar_1m_buffer_.clear();
-  bar_1m_buffer_.reserve(estimated_total_records_ / 20 / 24 * 5); // Rough estimate: 5 hours of 3s data per day
+  bar_1m_buffer_.reserve(total_records_ / (60 / snapshot_interval) / 24 * trade_hrs_in_a_day);
 
   technical_analysis_ = std::make_unique<::TechnicalAnalysis>(snapshot_3s_buffer_, bar_1m_buffer_);
 
@@ -428,7 +433,7 @@ void Parser::ParseAsset(const std::string &asset_code,
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
   std::cout << "Processed asset " << asset_code << " across " << month_folders.size()
-            << " months (estimated " << estimated_total_records_ << " total records, "
+            << " months (estimated " << total_records_ << " total records, "
             << snapshot_3s_buffer_.size() << " snapshot records, "
             << bar_1m_buffer_.size() << " bar records (" << duration.count() << "ms))\n";
 

@@ -116,7 +116,8 @@ private:
   std::vector<char> write_buffer_;
 
   // Pre-allocated data buffers for efficiency
-  size_t estimated_total_records_ = 0;
+  size_t total_records_ = 0;
+  size_t records_count_ = 0;
   std::vector<Table::Snapshot_3s_Record> snapshot_3s_buffer_;
   std::vector<Table::Bar_1m_Record> bar_1m_buffer_;
 

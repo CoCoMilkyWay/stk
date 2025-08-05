@@ -9,9 +9,9 @@
 namespace misc {
 
 
-inline void print_progress(int current, int total) {
-  int next = current++;
-  int step = int(total * 0.1f);
+inline void print_progress(size_t current, size_t total) {
+  size_t next = current++;
+  size_t step = static_cast<size_t>(total * 0.1f);
   if ((next % step == 0 || next == total - 1)) [[unlikely]] {
     const int bar_width = 50;
     float progress = static_cast<float>(current) / total;
@@ -26,7 +26,7 @@ inline void print_progress(int current, int total) {
       else
         std::cout << " ";
     }
-    std::cout << "] " << std::setw(3) << static_cast<int>(progress * 100.0f)
+    std::cout << "] " << std::setw(3) << static_cast<size_t>(progress * 100.0f)
               << "% (" << current << "/" << total << ")" << std::flush;
   }
 }

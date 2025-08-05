@@ -38,3 +38,8 @@ struct Bar_1m_Record {
 };
 #pragma pack(pop)
 } // namespace Table
+
+// Data Struct
+inline constexpr int BLen = 100;
+inline constexpr int snapshot_interval = 3;
+inline constexpr int trade_hrs_in_a_day = 5;
