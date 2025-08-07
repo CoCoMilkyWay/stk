@@ -30,7 +30,7 @@ if %ERRORLEVEL% neq 0 (
 
 REM Build the project
 echo Building project...
-cmake --build build --config Release
+cmake --build build --config Release --parallel
 
 REM Check if build was successful
 if %ERRORLEVEL% neq 0 (

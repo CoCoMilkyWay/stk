@@ -3,38 +3,48 @@
 #include <cstdint>
 
 namespace Table {
-#pragma pack(push, 1)
-struct Snapshot_3s_Record {
-  uint32_t index_1m;          // 1 byte - index to corresponding 1m bar table (20years of data)
-  uint8_t seconds;            // 1 byte - seconds in minute
-  int16_t latest_price_tick;  // 2 bytes - price * 100
-  uint8_t trade_count;        // 1 byte
-  uint32_t turnover;          // 4 bytes - RMB * 100
-  uint16_t volume;            // 2 bytes - units of 100 shares
-  int16_t bid_price_ticks[5]; // 10 bytes - prices * 100
-  uint16_t bid_volumes[5];    // 10 bytes - units of 100 shares
-  int16_t ask_price_ticks[5]; // 10 bytes - prices * 100
-  uint16_t ask_volumes[5];    // 10 bytes - units of 100 shares
-  uint8_t direction;          // 1 byte
-                              // Total: 54 bytes
+
+// because no need to dump whole snapshot table, we dont pack it tight in memory
+struct Snapshot_Record {   // discrete or 3s fixed interval
+  // timestamp ============================================
+  uint16_t year;           // 2 bytes
+  uint8_t month;           // 1 byte
+  uint8_t day;             // 1 byte
+  uint8_t hour;            // 1 byte
+  uint8_t minute;          // 1 byte
+  uint8_t second;          // 1 byte
+  uint32_t seconds_in_day; // 4 bytes - no guarantee that every day start exactly at market open
+  // LOB ==================================================
+  float latest_price_tick;  // 4 bytes - price in RMB
+  uint8_t trade_count;      // 1 byte
+  uint16_t volume;          // 2 bytes - units of 100 shares
+  uint32_t turnover;        // 4 bytes - RMB * 100
+  float bid_price_ticks[5]; // 20 bytes - prices in RMB
+  uint16_t bid_volumes[5];  // 10 bytes - units of 100 shares
+  float ask_price_ticks[5]; // 20 bytes - prices in RMB
+  uint16_t ask_volumes[5];  // 10 bytes - units of 100 shares
+  uint8_t direction;        // 1 byte - 0: buy, 1: sell
+
+  
+
+                            // Total:  bytes
 };
-#pragma pack(pop)
 
 // low-freq data should be aligned to 32b boundary for better cache performance
 #pragma pack(push, 1)
 struct Bar_1m_Record {
-  uint16_t year;              // 2 bytes
-  uint8_t month;              // 1 byte
-  uint8_t day;                // 1 byte
-  uint8_t hour;               // 1 byte
-  uint8_t minute;             // 1 byte
-  float open;                 // 4 bytes
-  float high;                 // 4 bytes
-  float low;                  // 4 bytes
-  float close;                // 4 bytes
-  float volume;               // 4 bytes
-  float turnover;             // 4 bytes
-                              // Total: 24 bytes
+  uint16_t year;  // 2 bytes
+  uint8_t month;  // 1 byte
+  uint8_t day;    // 1 byte
+  uint8_t hour;   // 1 byte
+  uint8_t minute; // 1 byte
+  float open;     // 4 bytes
+  float high;     // 4 bytes
+  float low;      // 4 bytes
+  float close;    // 4 bytes
+  float volume;   // 4 bytes
+  float turnover; // 4 bytes
+                  // Total: 24 bytes
 };
 #pragma pack(pop)
 } // namespace Table

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "define/Dtype.hpp"
 #include "technical_analysis.hpp"
 #include <cstdint>
 #include <memory>
@@ -78,9 +77,7 @@ private:
   // DATA CONVERSION FUNCTIONS
   // ========================================================================
 
-  void ConvertToSnapshot3sAndBar1m(const std::vector<BinaryRecord> &binary_records, uint16_t year, uint8_t month);
-  Table::Snapshot_3s_Record ConvertToSnapshot3s(const BinaryRecord &record, uint32_t minute_index, uint8_t second);
-  void UpdateBar1mRecord(Table::Bar_1m_Record &bar_record, const BinaryRecord &binary_record);
+  void ProcessBinaryRecords(const std::vector<BinaryRecord> &binary_records, uint16_t year, uint8_t month);
 
   // ========================================================================
   // FILE SYSTEM UTILITIES
@@ -100,9 +97,7 @@ private:
   // FORMATTING UTILITIES
   // ========================================================================
 
-  inline double TickToPrice(int16_t tick) const { return tick * 0.01; }
-  std::string FormatTime(uint16_t time_s) const;
-  const char *FormatDirection(uint8_t direction) const;
+  inline float TickToPrice(int16_t tick) const { return static_cast<float>(tick * 0.01); }
 
   // ========================================================================
   // MEMBER VARIABLES
@@ -115,13 +110,11 @@ private:
   std::vector<uint8_t> read_buffer_;
   std::vector<char> write_buffer_;
 
-  // Pre-allocated data buffers for efficiency
+  // Progress tracking
   size_t total_records_ = 0;
   size_t records_count_ = 0;
-  std::vector<Table::Snapshot_3s_Record> snapshot_3s_buffer_;
-  std::vector<Table::Bar_1m_Record> bar_1m_buffer_;
 
-  // Technical analysis engine operating on the two buffers
+  // Technical analysis engine
   std::unique_ptr<::TechnicalAnalysis> technical_analysis_;
 };
 

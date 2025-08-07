@@ -1,11 +1,11 @@
 #include "binary_parser.hpp"
 #include "json_config.hpp"
+#include "misc/affinity.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <future>
 #include <iostream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -15,7 +15,14 @@
 void ProcessAsset(const std::string &asset_code,
                   const JsonConfig::StockInfo &stock_info,
                   const std::string &snapshot_dir,
-                  const std::string &output_dir) {
+                  const std::string &output_dir,
+                  unsigned int core_id) {
+  // Set thread affinity to specific core (if supported on this platform)
+  if (misc::Affinity::supported()) {
+    if (!misc::Affinity::pin_to_core(core_id)) {
+      std::cerr << "Warning: Failed to set thread affinity for asset " << asset_code << " to core " << core_id << "\n";
+    }
+  }
   try {
     // Get month range for this asset
     auto month_range = JsonConfig::GetMonthRange(stock_info.ipo_date, stock_info.delist_date);
@@ -80,11 +87,15 @@ int main() {
     std::filesystem::create_directories(output_dir);
 
     // Determine optimal thread count
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0)
-      num_threads = 4; // Fallback
+    unsigned int num_threads = misc::Affinity::core_count();
 
-    std::cout << "Using " << num_threads << " threads for parallel processing\n\n";
+    std::cout << "Using " << num_threads << " threads for parallel processing";
+    if (misc::Affinity::supported()) {
+      std::cout << " (with CPU affinity)";
+    } else {
+      std::cout << " (CPU affinity not supported on this platform)";
+    }
+    std::cout << "\n\n";
 
     // Process assets in batches using thread pool
     std::vector<std::future<void>> futures;
@@ -115,6 +126,9 @@ int main() {
       std::cout << "Queuing asset: " << asset_code << " (" << stock_info.name
                 << ") (" << stock_info.ipo_date << " - " << stock_info.delist_date << ")\n";
 
+      // Calculate core ID for this thread (round-robin assignment)
+      unsigned int core_id = futures.size() % num_threads;
+
       futures.push_back(
           std::async(
               std::launch::async,
@@ -122,7 +136,8 @@ int main() {
               asset_code,
               stock_info,
               app_config.snapshot_dir,
-              output_dir));
+              output_dir,
+              core_id));
 
       ++stock_iter;
     }

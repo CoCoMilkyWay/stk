@@ -1,7 +1,11 @@
 #pragma once
 #include <iostream>
+#include <iomanip>
 #include <tuple>
 #include <type_traits>
+#include <sstream>
+
+constexpr int DEFAULT_WIDTH = 8;  // Default width for each field
 
 // Forward declaration
 template<typename T>
@@ -58,7 +62,13 @@ void print(const std::tuple<Ts...>& t) {
 // Fallback print (for primitive types, string, etc.)
 template<typename T>
 void print(const T& value) {
-    std::cout << value;
+    std::stringstream ss;
+    ss << value;
+    std::string str = ss.str();
+    if (str.length() > DEFAULT_WIDTH) {
+        str = str.substr(0, DEFAULT_WIDTH - 3) + "...";
+    }
+    std::cout << std::left << std::setw(DEFAULT_WIDTH) << str;
 }
 
 // Variadic print

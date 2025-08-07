@@ -1,13 +1,11 @@
 #pragma once
 
-// System headers
 #include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <string>
 
 namespace misc {
-
 
 inline void print_progress(size_t current, size_t total) {
   size_t next = current++;
@@ -28,26 +26,28 @@ inline void print_progress(size_t current, size_t total) {
     }
     std::cout << "] " << std::setw(3) << static_cast<size_t>(progress * 100.0f)
               << "% (" << current << "/" << total << ")" << std::flush;
+    if (next == total - 1) [[unlikely]] {
+      std::cout << "\n";
+    }
   }
+
+  class Timer {
+  public:
+    Timer(const std::string &label = "")
+        : label_(label), start_(std::chrono::high_resolution_clock::now()) {
+      std::cout << "\n";
+    }
+
+    ~Timer() {
+      auto end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<float> elapsed = end - start_;
+      // std::cout << "\n[Timer] " << label_ << " Elapsed time: " << elapsed.count() * 1000 << " ms\n";
+      std::cout << label_ << " " << elapsed.count() * 1000 << "ms";
+    }
+
+  private:
+    std::string label_;
+    std::chrono::time_point<std::chrono::high_resolution_clock> start_;
+  };
 }
-
-class Timer {
-public:
-  Timer(const std::string &label = "")
-      : label_(label), start_(std::chrono::high_resolution_clock::now()) {
-    std::cout << "\n";
-  }
-
-  ~Timer() {
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<float> elapsed = end - start_;
-    // std::cout << "\n[Timer] " << label_ << " Elapsed time: " << elapsed.count() * 1000 << " ms\n";
-    std::cout << label_ << " " << elapsed.count() * 1000 << "ms";
-  }
-
-private:
-  std::string label_;
-  std::chrono::time_point<std::chrono::high_resolution_clock> start_;
-};
-
 } // namespace misc

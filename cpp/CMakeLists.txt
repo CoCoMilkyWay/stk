@@ -56,6 +56,7 @@ endif()
 set(HEADERS
     include/misc/misc.hpp
     include/misc/print.hpp
+    include/misc/affinity.hpp
     include/define/CBuffer.hpp
     include/json_config.hpp
     include/miniz.h
