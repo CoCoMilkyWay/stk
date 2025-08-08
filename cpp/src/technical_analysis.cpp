@@ -1,14 +1,18 @@
-#include "technical_analysis.hpp"
-#include "define/CBuffer.hpp"
-#include "define/Dtype.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 
+#include "define/CBuffer.hpp"
+#include "define/Dtype.hpp"
+#include "math/OrderFlowImbalance.hpp"
+#include "technical_analysis.hpp"
+
 // #define PRINT_SNAPSHOT
 // #define PRINT_BAR
+
+// #define FILL_GAP_SNAPSHOT
 
 #if defined(PRINT_BAR) || defined(PRINT_SNAPSHOT)
 #include "misc/print.hpp"
@@ -16,7 +20,7 @@
 
 TechnicalAnalysis::TechnicalAnalysis() {
   // Reserve memory for efficient operation - reduce reallocations
-  continuous_snapshots_.reserve(100000);                    // Increased for better performance
+  continuous_snapshots_.reserve(100000);
   minute_bars_.reserve(15 * 250 * trade_hrs_in_a_day * 60); // 15 years of 1m bars
 
   // Note: CBuffer objects are fixed-size arrays, no reservation needed
@@ -104,6 +108,7 @@ void TechnicalAnalysis::AnalyzeMinuteBar(const Table::Bar_1m_Record &bar) {
 void TechnicalAnalysis::ProcessSingleSnapshot(const Table::Snapshot_Record &snapshot) {
 
   // Fill gaps by creating intermediate snapshots and processing each one
+#ifdef FILL_GAP_SNAPSHOT
   if (has_previous_snapshot_) [[likely]] {
     uint32_t gap_time = last_processed_time_ + snapshot_interval;
     // NOTE: this also check the causality of last and current snapshot
@@ -114,6 +119,7 @@ void TechnicalAnalysis::ProcessSingleSnapshot(const Table::Snapshot_Record &snap
       gap_time += snapshot_interval;
     }
   }
+#endif
 
   // Process the actual incoming snapshot
   ProcessSnapshotInternal(snapshot);

@@ -5,7 +5,7 @@
 namespace Table {
 
 // because no need to dump whole snapshot table, we dont pack it tight in memory
-struct Snapshot_Record {   // discrete or 3s fixed interval
+struct Snapshot_Record { // discrete or 3s fixed interval
   // timestamp ============================================
   uint16_t year;           // 2 bytes
   uint8_t month;           // 1 byte
@@ -24,10 +24,11 @@ struct Snapshot_Record {   // discrete or 3s fixed interval
   float ask_price_ticks[5]; // 20 bytes - prices in RMB
   uint16_t ask_volumes[5];  // 10 bytes - units of 100 shares
   uint8_t direction;        // 1 byte - 0: buy, 1: sell
+  // features =============================================
+  float ofi_ask[5]; // 20 bytes
+  float ofi_bid[5]; // 20 bytes
 
-  
-
-                            // Total:  bytes
+  // Total:  bytes
 };
 
 // low-freq data should be aligned to 32b boundary for better cache performance

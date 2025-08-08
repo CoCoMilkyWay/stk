@@ -3,3 +3,7 @@
 
 // 2021-Deep Order Flow Imbalance: Extracting Alpha at Multiple Horizons from the Limit Order Book
 // https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3900141
+
+#include "define/CBuffer.hpp"
+#include "define/Dtype.hpp"
+
