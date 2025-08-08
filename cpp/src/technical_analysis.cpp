@@ -6,8 +6,9 @@
 
 #include "define/CBuffer.hpp"
 #include "define/Dtype.hpp"
-#include "math/OrderFlowImbalance.hpp"
 #include "technical_analysis.hpp"
+
+#include "math/LimitOrderBook.hpp"
 
 // #define PRINT_SNAPSHOT
 // #define PRINT_BAR
@@ -18,12 +19,18 @@
 #include "misc/print.hpp"
 #endif
 
-TechnicalAnalysis::TechnicalAnalysis() {
+TechnicalAnalysis::TechnicalAnalysis(size_t capacity)
+    : lob(&snapshot_delta_t_,
+          &snapshot_prices_,
+          &snapshot_volumes_,
+          &snapshot_turnovers_,
+          &snapshot_vwaps_,
+          &snapshot_directions_,
+          &snapshot_spreads_,
+          &snapshot_mid_prices_) {
   // Reserve memory for efficient operation - reduce reallocations
-  continuous_snapshots_.reserve(100000);
+  continuous_snapshots_.reserve(capacity);
   minute_bars_.reserve(15 * 250 * trade_hrs_in_a_day * 60); // 15 years of 1m bars
-
-  // Note: CBuffer objects are fixed-size arrays, no reservation needed
 }
 
 TechnicalAnalysis::~TechnicalAnalysis() {
@@ -31,29 +38,8 @@ TechnicalAnalysis::~TechnicalAnalysis() {
 }
 
 void TechnicalAnalysis::AnalyzeSnapshot(const Table::Snapshot_Record &snapshot) {
-  // Optimized version with reduced calculations and better memory access patterns
-  const float bid_price = snapshot.bid_price_ticks[0];
-  const float ask_price = snapshot.ask_price_ticks[0];
-
-  // Calculate derived metrics with conditional moves instead of branches
-  const float mid_price = bid_price + ask_price * 0.5f;
-  const float spread = ask_price - bid_price;
-
-  // Optimize volume calculations
-  const float volume_f = static_cast<float>(snapshot.volume);
-  const float volume_scaled = volume_f * 100.0f;
-  const float turnover_f = static_cast<float>(snapshot.turnover);
-  const float vwap = (volume_f > 0) ? (turnover_f / volume_scaled) : snapshot_vwaps_.back();
-
-  // Batch update analysis buffers for better cache locality
-  snapshot_timestamps_.push_back(snapshot.seconds_in_day);
-  snapshot_prices_.push_back(snapshot.latest_price_tick);
-  snapshot_volumes_.push_back(volume_scaled);
-  snapshot_turnovers_.push_back(turnover_f);
-  snapshot_vwaps_.push_back(vwap);
-  snapshot_directions_.push_back(snapshot.direction);
-  snapshot_spreads_.push_back(spread);
-  snapshot_mid_prices_.push_back(mid_price);
+  const bool is_new_session_start_ = IsNewSessionStart(snapshot);
+  lob.update(&snapshot, is_new_session_start_);
 
   // Debug output
 #ifdef PRINT_SNAPSHOT
@@ -150,6 +136,17 @@ void TechnicalAnalysis::ProcessSnapshotInternal(const Table::Snapshot_Record &sn
     // Update current bar
     UpdateCurrentBar(snapshot);
   }
+}
+
+bool TechnicalAnalysis::IsNewSessionStart(const Table::Snapshot_Record &snapshot) {
+  // 09:30:01-11:30:01, 13:00:01-14:57:01
+  if (snapshot.hour != last_hour_) [[unlikely]] {
+    if ((snapshot.hour == 9 && snapshot.minute >= 30) || (snapshot.hour == 13 && snapshot.minute >= 0)) {
+      return true;
+    }
+    last_hour_ = snapshot.hour;
+  }
+  return false;
 }
 
 bool TechnicalAnalysis::IsNewMinuteBar(const Table::Snapshot_Record &snapshot) {

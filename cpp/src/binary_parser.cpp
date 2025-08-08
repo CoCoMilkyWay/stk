@@ -307,7 +307,7 @@ void Parser::ParseAsset(const std::string &asset_code,
   records_count_ = 0;
 
   // Initialize technical analysis engine
-  technical_analysis_ = std::make_unique<::TechnicalAnalysis>();
+  technical_analysis_ = std::make_unique<::TechnicalAnalysis>(total_records_);
 
   for (const std::string &month_folder : month_folders) {
 #ifdef DEBUG_TIMER
@@ -346,8 +346,7 @@ void Parser::ParseAsset(const std::string &asset_code,
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-  std::cout << "Processed asset " << asset_code << " across " << month_folders.size()
-            << " months (estimated " << total_records_ << " total records, "
+  std::cout << "Processed asset " << asset_code << " across " << month_folders.size() << " months ("
             << technical_analysis_->GetSnapshotCount() << " snapshot records, "
             << technical_analysis_->GetBarCount() << " bar records (" << duration.count() << "ms))\n";
 

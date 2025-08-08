@@ -17,8 +17,8 @@ struct Snapshot_Record { // discrete or 3s fixed interval
   // LOB ==================================================
   float latest_price_tick;  // 4 bytes - price in RMB
   uint8_t trade_count;      // 1 byte
-  uint16_t volume;          // 2 bytes - units of 100 shares
-  uint32_t turnover;        // 4 bytes - RMB * 100
+  uint16_t volume;          // 2 bytes - unit in hands (100 shares)
+  uint32_t turnover;        // 4 bytes - RMB
   float bid_price_ticks[5]; // 20 bytes - prices in RMB
   uint16_t bid_volumes[5];  // 10 bytes - units of 100 shares
   float ask_price_ticks[5]; // 20 bytes - prices in RMB

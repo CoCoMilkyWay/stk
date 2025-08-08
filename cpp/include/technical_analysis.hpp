@@ -2,14 +2,14 @@
 
 #include "define/CBuffer.hpp"
 #include "define/Dtype.hpp"
+#include "math/LimitOrderBook.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
 
-
 class TechnicalAnalysis {
 public:
-  TechnicalAnalysis();
+  TechnicalAnalysis(size_t capacity);
   ~TechnicalAnalysis();
 
   // Main interface - processes single snapshot with richer info
@@ -52,8 +52,13 @@ private:
   std::vector<Table::Snapshot_Record> continuous_snapshots_;
   std::vector<Table::Bar_1m_Record> minute_bars_;
 
-  // Analysis buffers for snapshot data
-  CBuffer<uint32_t, BLen> snapshot_timestamps_;
+  // Check new session start
+  uint32_t last_hour_ = 0;
+  bool new_session_start_ = false;
+  inline bool IsNewSessionStart(const Table::Snapshot_Record &snapshot);
+
+  // intermediate data for feature computation
+  CBuffer<uint16_t, BLen> snapshot_delta_t_;
   CBuffer<float, BLen> snapshot_prices_;
   CBuffer<float, BLen> snapshot_volumes_;
   CBuffer<float, BLen> snapshot_turnovers_;
@@ -62,6 +67,11 @@ private:
   CBuffer<float, BLen> snapshot_spreads_;
   CBuffer<float, BLen> snapshot_mid_prices_;
 
+  // features =============================================
+  CBuffer<float, BLen> delta_t_;
+  CBuffer<float, BLen> norm_spread_;
+  CBuffer<std::array<float, 5>, BLen> norm_ofi_ask_;
+  CBuffer<std::array<float, 5>, BLen> norm_ofi_bid_;
   // Analysis buffers for minute bar data
   CBuffer<uint32_t, BLen> bar_timestamps_;
   CBuffer<float, BLen> bar_opens_;
@@ -71,6 +81,9 @@ private:
   CBuffer<float, BLen> bar_volumes_;
   CBuffer<float, BLen> bar_turnovers_;
   CBuffer<float, BLen> bar_vwaps_;
+
+  // Limit Order Book for snapshot analysis
+  LimitOrderBook<float, uint16_t, uint8_t, BLen> lob;
 };
 
 // Configuration constants
