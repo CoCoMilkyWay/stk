@@ -61,7 +61,7 @@
 //
 //   2. CS Worker (单线程):
 //      - 等待: cs_check_ready(date, t) → 检查 min(ts_progress[all_assets]) > t
-//      - 读写: CS_READ_ALL_ASSETS() / CS_WRITE_ALL_ASSETS()
+//      - 读写: CS_READ_ALL() / CS_WRITE_ALL()
 //      - 完成: cs_mark_complete(date) → 设置 state = CS_DONE
 //
 //   3. IO Worker (单线程，异步):
@@ -94,26 +94,22 @@
 // 【Public API 速查】
 //
 // TS Worker:
-//   ts_mark_progress(date, core_id, asset_id, l0_t)       更新进度 (atomic)
-//   ts_mark_done(date, core_id)                           标记完成
-//   ts_write_link(date, l0_t, asset, link_offset, v, wid) 写时间映射
+//   ts_mark_progress(date, core_id, asset_id, l0_t)    更新进度 (atomic)
+//   ts_mark_done(date, core_id)                        标记完成
+//   TS_WRITE_FEATURES(store, date, lvl, t, a, f0, f1, src, wid)  批量写
+//   TS_WRITE_SINGLE(store, date, lvl, t, f, a, val, wid)         单值写
+//   TS_WRITE_LINK(store, date, l0_t, a, link_off, val, wid)      写link元数据
 //
 // CS Worker:
-//   cs_check_ready(date, l0_t) → bool                轮询等待 TS 完成
-//   cs_mark_complete(date)                           标记 CS_DONE
+//   cs_check_ready(date, l0_t) → bool                  轮询等待 TS 完成
+//   cs_mark_complete(date)                             标记 CS_DONE
+//   CS_READ_ALL(store, date, lvl, t, f) → _Float16*    读取所有assets
+//   CS_WRITE_ALL(store, date, lvl, t, f, src, count)   写入所有assets
 //
 // IO Worker:
-//   io_flush_once() → bool                           flush 一个 CS_DONE tensor
+//   io_flush_once() → bool                             flush 一个 CS_DONE tensor
 //
-// 宏 (推荐使用):
-//   TS_WRITE_FEATURES(store, date, lvl, t, a, f0, f1, src, worker_id)
-//   CS_READ_ALL_ASSETS(store, date, lvl, t, f) → ptr[A] (自动使用cs_worker_id)
-//   CS_WRITE_ALL_ASSETS(store, date, lvl, t, f, src, count) (自动使用cs_worker_id)
-//   READ_FEATURE(store, date, lvl, t, f, a) (自动使用cs_worker_id)
-//   WRITE_FEATURE(store, date, lvl, t, f, a, val) (自动使用cs_worker_id)
-//   WRITE_LINK_FEATURE(store, date, l0_t, a, link_f, val, worker_id)
-//
-// 元数据:
+// 元数据查询:
 //   query_F(lvl), query_A(), query_T(lvl), query_num_dates()
 //
 // ============================================================================
@@ -296,7 +292,7 @@ constexpr uint16_t AFTERNOON_START_MIN = 13 * 60;   // 780 (13:00)
 constexpr uint16_t AFTERNOON_END_MIN = 15 * 60;     // 900 (15:00)
 
 // Helper: Map clock time to trading seconds (comptime)
-// Returns: -1 for pre-market, 0-7199 for morning, 7200-14399 for afternoon, 14400 for post-market
+// Returns: -1 for pre-market, 0-7199 for morning, 7200-14399 for afternoon, 14399 for post-market (clamped)
 constexpr int16_t map_clock_to_trading_seconds(uint8_t hour, uint8_t minute) {
   const uint16_t total_minutes = hour * 60 + minute;
 
@@ -320,8 +316,8 @@ constexpr int16_t map_clock_to_trading_seconds(uint8_t hour, uint8_t minute) {
     return -1;
   }
 
-  // Post-market: clamp to end
-  return 14400;
+  // Post-market: clamp to last valid index (14399, not 14400)
+  return 14399;
 }
 
 // Constexpr function to generate lookup table at compile time
@@ -342,15 +338,17 @@ static constexpr auto TRADING_OFFSET_LUT = generate_trading_offset_table();
 // TIME CONVERSION - O(1) Branchless Lookup
 // ============================================================================
 
-// Convert time to trading seconds (0-14400)
+// Convert time to trading seconds (0-14399)
+// High-performance branchless implementation using compile-time LUT
 inline constexpr size_t time_to_trading_seconds(uint8_t hour, uint8_t minute, uint8_t second) {
   const size_t hm_idx = hour * 60 + minute;
   const int16_t base = TRADING_OFFSET_LUT[hm_idx];
-  const size_t trading_seconds = (base < 0 ? 0 : static_cast<size_t>(base)) + second;
-  return trading_seconds;
+  // Branchless clamp: negative → 0, positive → value
+  const size_t clamped_base = base & ~(base >> 15);  // Sign bit mask: if negative, result is 0
+  return clamped_base + second;
 }
 
-// Convert time to trading milliseconds (0-14400000)
+// Convert time to trading milliseconds (0-14399999)
 inline constexpr size_t time_to_trading_milliseconds(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond) {
   return time_to_trading_seconds(hour, minute, second) * 1000 + millisecond;
 }

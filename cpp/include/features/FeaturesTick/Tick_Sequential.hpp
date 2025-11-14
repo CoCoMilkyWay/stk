@@ -59,7 +59,7 @@ public:
     TS_WRITE_FEATURES(feature_store_, date_str_, level_idx, t, asset_id_, L0_TS_START, L0_TS_END, features, worker_id_);
 
     // Write asset validity flag (business logic, not backend requirement)
-    WRITE_FEATURE(feature_store_, date_str_, level_idx, t, L0_FieldOffset::asset_valid, asset_id_, is_valid ? 1.0f : 0.0f);
+    TS_WRITE_SINGLE(feature_store_, date_str_, level_idx, t, L0_FieldOffset::asset_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
 
     // Note: mark_ts_core_done is now called in CoreSequential after all levels computed
   }

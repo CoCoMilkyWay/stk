@@ -287,9 +287,6 @@ int main() {
 
     GlobalFeatureStore feature_store(num_assets, num_ts_workers, feature_dir, static_cast<int>(cs_worker_core), static_cast<int>(io_worker_core));
 
-    // Preallocate all DayData upfront to avoid runtime malloc contention
-    feature_store.preallocate_dates(state.all_dates);
-
     // Launch (N-2) TS workers + 1 CS worker + 1 IO worker = N total workers
     auto analysis_progress = std::make_shared<misc::ParallelProgress>(num_workers);
     std::vector<std::future<void>> workers;
@@ -325,13 +322,6 @@ int main() {
       worker.wait();
     }
     analysis_progress->stop();
-
-    // Print feature storage summary
-    std::cout << "\n";
-    std::cout << "Feature Storage Summary:\n";
-    std::cout << "  Total assets: " << feature_store.query_num_assets() << "\n";
-    std::cout << "  Total dates: " << feature_store.query_num_dates() << "\n";
-    std::cout << "\n";
 
     Logger::close();
 

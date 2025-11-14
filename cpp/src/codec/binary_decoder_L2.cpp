@@ -282,7 +282,7 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
 }
 
 // decoder functions
-bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots) {
+bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots, size_t &snapshot_num) {
   // First extract count from filename to estimate required size
   size_t estimated_count = extract_count_from_filename(filepath);
   if (estimated_count == 0) {
@@ -315,11 +315,22 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
     std::exit(1);
   }
 
-  // Extract snapshots from decompressed data
-  snapshots.resize(count);
-  std::memcpy(snapshots.data(), data_buffer.get() + header_size, snapshots_size);
+  // CRITICAL: Check if count exceeds vector SIZE (vector must be pre-sized at init)
+  // Vector should be resized ONCE in worker init, not here (zero-overhead reuse)
+  if (count > snapshots.size()) {
+    std::cerr << "L2 Decoder: FATAL: Snapshot count " << count 
+              << " exceeds vector size " << snapshots.size() 
+              << " for file " << filepath << std::endl;
+    std::cerr << "Solution: Increase decoded_snapshots.resize() in worker init" << std::endl;
+    std::exit(1);
+  }
 
-  // std::cout << "L2 Decoder: Successfully decoded " << snapshots.size() << " snapshots from " << filepath << std::endl;
+  // Extract snapshots directly into pre-allocated vector memory (zero overhead)
+  // No resize() per file - vector is sized once at worker init for maximum reuse
+  std::memcpy(snapshots.data(), data_buffer.get() + header_size, snapshots_size);
+  snapshot_num = count;  // Caller uses only [0, snapshot_num) range
+
+  // std::cout << "L2 Decoder: Successfully decoded " << snapshot_num << " snapshots from " << filepath << std::endl;
 
   return true;
 }
@@ -357,19 +368,20 @@ bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Or
     std::exit(1);
   }
 
-  // CRITICAL: Check if count exceeds vector capacity (no reallocation allowed)
-  if (count > orders.capacity()) {
+  // CRITICAL: Check if count exceeds vector SIZE (vector must be pre-sized at init)
+  // Vector should be resized ONCE in worker init, not here (zero-overhead reuse)
+  if (count > orders.size()) {
     std::cerr << "L2 Decoder: FATAL: Order count " << count 
-              << " exceeds vector capacity " << orders.capacity() 
+              << " exceeds vector size " << orders.size() 
               << " for file " << filepath << std::endl;
-    std::cerr << "Solution: Increase decoded_orders.reserve() in sequential_worker.cpp" << std::endl;
+    std::cerr << "Solution: Increase decoded_orders.resize() in sequential_worker.cpp" << std::endl;
     std::exit(1);
   }
 
-  // Extract orders directly into vector data (no resize, preserves capacity)
-  // We write directly to the underlying array and tell caller the actual count
+  // Extract orders directly into pre-allocated vector memory (zero overhead)
+  // No resize() per file - vector is sized once at worker init for maximum reuse
   std::memcpy(orders.data(), data_buffer.get() + header_size, orders_size);
-  order_num = count;
+  order_num = count;  // Caller uses only [0, order_num) range
 
   // std::cout << "L2 Decoder: Successfully decoded " << order_num << " orders from " << filepath << std::endl;
 

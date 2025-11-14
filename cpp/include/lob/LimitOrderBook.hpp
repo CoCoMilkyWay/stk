@@ -560,8 +560,7 @@ private:
       // ORDER DOESN'T EXIST - Create new order (LESS FREQUENT)
       const uint32_t ts = DEBUG_ANOMALY_PRINT ? curr_tick_ : 0;
       Order *new_order = order_memory_pool_.construct(quantity_delta, order_id, ts, flags);
-      if (!new_order) [[unlikely]]
-        return false;
+      // Note: BumpPool never returns nullptr, it throws on OOM
 
       // Get level: use hint if provided (optimization), otherwise get or create atomically
       Level *level = level_hint ? level_hint : level_get_or_create(price);

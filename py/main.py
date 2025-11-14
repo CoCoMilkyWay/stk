@@ -11,18 +11,13 @@ import sys
 
 def build_main_project():
     """Trigger build.sh for main project."""
-    # Get paths
     script_dir = os.path.dirname(os.path.abspath(__file__))
     cpp_project_dir = os.path.join(script_dir, "../cpp/projects/main")
     
-    # TODO: Add project-specific preparation here if needed
-    # Example: prepare config files, generate code, etc.
-    
-    # Trigger build.sh
     print("Building C++ project: main")
     
+    # Pass through PROFILE_MODE and DEBUG_MODE to build.sh
     env = os.environ.copy()
-    profile_mode = env.get('PROFILE_MODE', 'OFF')
     
     result = subprocess.run(
         ["./build.sh"],

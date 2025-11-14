@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -16,14 +17,17 @@ import time
 # ============================================================================
 # Configuration
 # ============================================================================
-ENABLE_PROFILE = False
-ENABLE_BACKTRACE = False
-APP_NAME = "main"                              # C++ project name
-CPUPROFILE_FREQUENCY = 1000000                 # Profiler sampling rate (Hz)
-PROFILER_LIB = '/usr/lib/x86_64-linux-gnu/libprofiler.so.0'
+APP_NAME = "main"
 
-# Profiler report settings
-TARGET_NAMESPACE = "Analysis"            # Focus namespace
+# Build & Run modes (set ONE to True, others to False)
+ENABLE_PROFILE = False                         # Profile mode: -O0 -g, no optimizations
+ENABLE_DEBUG   = True                          # Debug mode: -O0 -g3 -ggdb
+# Default: production mode with -O3 optimizations
+
+# Profiler settings
+CPUPROFILE_FREQUENCY = 1000000                 # Sampling rate (Hz)
+PROFILER_LIB = '/usr/lib/x86_64-linux-gnu/libprofiler.so.0'
+TARGET_NAMESPACE = "Analysis"                  # Focus namespace
 PPROF_PORT = 8080                              # Web GUI port
 PPROF_IGNORE = "std::|__gnu_cxx::"             # Filter standard library
 
@@ -123,7 +127,7 @@ def run_with_profiling(binary_path, working_dir):
             "\nProfile not generated. Install: sudo apt-get install libgoogle-perftools-dev")
 
 
-def build_project(app_name, enable_profile_mode, enable_backtrace):
+def build_project(app_name, enable_profile, enable_debug):
     """Trigger build via py/{app_name}.py -> build.sh."""
     py_script = f"./py/{app_name}.py"
 
@@ -132,8 +136,8 @@ def build_project(app_name, enable_profile_mode, enable_backtrace):
         sys.exit(1)
 
     env = os.environ.copy()
-    env['PROFILE_MODE'] = 'ON' if enable_profile_mode else 'OFF'
-    env['ENABLE_BACKTRACE'] = 'ON' if enable_backtrace else 'OFF'
+    env['PROFILE_MODE'] = 'ON' if enable_profile else 'OFF'
+    env['DEBUG_MODE']   = 'ON' if enable_debug   else 'OFF'
 
     result = subprocess.run(["python3", py_script], env=env, check=False)
 
@@ -142,13 +146,119 @@ def build_project(app_name, enable_profile_mode, enable_backtrace):
         sys.exit(1)
 
 
-def run_binary(binary_path, working_dir, use_profiler):
-    """Run binary with optional profiling."""
+def run_with_gdb_debug(binary_path, working_dir):
+    """Run binary under GDB with automatic thread stack trace capture."""
+    log_dir = os.path.abspath("output/log")
+    os.makedirs(log_dir, exist_ok=True)
+
+    trace_file = os.path.join(log_dir, "gdb_trace.txt")
+    gdb_script = os.path.join(working_dir, "auto_debug.gdb")
+
+    # Generate GDB script for automatic trace capture
+    gdb_commands = f"""# Auto-generated GDB script
+set pagination off
+set logging file {trace_file}
+set logging overwrite on
+set logging on
+set confirm off
+
+# Catch signals and crashes
+catch signal SIGSEGV SIGABRT SIGFPE SIGILL SIGBUS
+commands
+  echo \\n=== CRASH DETECTED ===\\n
+  info threads
+  echo \\n=== STACK TRACES ===\\n
+  thread apply all bt
+  quit
+end
+
+# Run program
+run
+
+# Normal exit
+echo \\n=== NORMAL EXIT ===\\n
+info threads
+thread apply all bt
+
+set logging off
+quit
+"""
+
+    with open(gdb_script, 'w') as f:
+        f.write(gdb_commands)
+
+    print(f"Running under GDB with automatic stack trace capture...")
+    print(f"Trace will be saved to: {trace_file}")
+    print(f"Press Ctrl+C to capture current thread state.\n")
+
+    start_time = time.time()
+
+    # Run under GDB
+    proc = subprocess.Popen(
+        ["gdb", "-x", gdb_script, binary_path],
+        cwd=working_dir,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    try:
+        # Stream output in real-time
+        if proc.stdout:
+            for line in proc.stdout:
+                print(line, end='')
+
+        proc.wait()
+        elapsed = time.time() - start_time
+
+        if proc.returncode == 0:
+            print(f"\n✓ Program completed successfully")
+            print(f"Execution time: {elapsed:.2f}s ({elapsed/60:.2f}min)")
+        else:
+            print(f"\n✗ Program exited with code {proc.returncode}")
+
+    except KeyboardInterrupt:
+        print("\n\n=== Ctrl+C detected - Capturing thread state ===")
+
+        # Send interrupt to GDB (which forwards to program)
+        proc.send_signal(signal.SIGINT)
+        time.sleep(0.5)
+
+        # Send GDB commands to capture state
+        capture_commands = """
+echo \\n=== MANUAL INTERRUPT (Ctrl+C) ===\\n
+info threads
+echo \\n=== STACK TRACES ===\\n
+thread apply all bt
+quit
+"""
+        if proc.stdin:
+            proc.stdin.write(capture_commands)
+            proc.stdin.flush()
+
+        # Wait for GDB to finish
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+        elapsed = time.time() - start_time
+        print(f"\n✓ Thread trace captured to: {trace_file}")
+        print(f"Execution time: {elapsed:.2f}s ({elapsed/60:.2f}min)")
+        print(f"Analyze with: less {trace_file}")
+        sys.exit(1)
+
+
+def run_binary(binary_path, working_dir, enable_profile, enable_debug):
+    """Run binary with optional profiling or GDB debugging."""
     if not os.path.exists(binary_path):
         print(f"Error: Binary not found: {binary_path}")
         sys.exit(1)
 
-    if use_profiler:
+    if enable_debug:
+        run_with_gdb_debug(binary_path, working_dir)
+    elif enable_profile:
         run_with_profiling(binary_path, working_dir)
     else:
         start_time = time.time()
@@ -167,12 +277,12 @@ def main():
     _cleanup_background_processes()
 
     # Build project
-    build_project(APP_NAME, ENABLE_PROFILE, ENABLE_BACKTRACE)
+    build_project(APP_NAME, ENABLE_PROFILE, ENABLE_DEBUG)
 
     # Run binary from build directory (binary expects to run from build/ for relative paths)
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
     binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}")
-    run_binary(binary_path, build_dir, ENABLE_PROFILE)
+    run_binary(binary_path, build_dir, ENABLE_PROFILE, ENABLE_DEBUG)
 
 
 if __name__ == "__main__":

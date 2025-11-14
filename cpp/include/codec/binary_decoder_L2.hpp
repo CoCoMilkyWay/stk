@@ -16,10 +16,15 @@ public:
   // Constructor with optional capacity hints for better memory allocation
   BinaryDecoder_L2(size_t estimated_snapshots = 100000, size_t estimated_orders = 500000);
 
-  // decoder functions
-  bool decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots);
-  // decode_orders: fills orders vector up to its capacity, returns actual count via out parameter
-  // Returns false if: file error, decompression error, or order count exceeds vector capacity
+  // Decoder functions (zero-overhead design: vectors pre-sized once at worker init)
+  // Usage: resize vector once at init, decode writes directly, caller uses [0, count) range
+  
+  // decode_snapshots: writes to pre-sized vector, returns actual count via snapshot_num
+  // Returns false if: file error, decompression error, or count exceeds vector size
+  bool decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots, size_t &snapshot_num);
+  
+  // decode_orders: writes to pre-sized vector, returns actual count via order_num
+  // Returns false if: file error, decompression error, or count exceeds vector size
   bool decode_orders(const std::string &filepath, std::vector<Order> &orders, size_t &order_num);
 
   // Zstandard decompression helper functions (pure standard decompression)

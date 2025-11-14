@@ -91,7 +91,7 @@ inline void compute_cs_for_timeslot(GlobalFeatureStore *store, const std::string
   constexpr size_t level_idx = 0;
 
   // Read asset_valid flags to filter assets (_Float16 auto-converts to float)
-  const _Float16 *valid_flags = CS_READ_ALL_ASSETS(store, date, level_idx, t, L0_FieldOffset::asset_valid);
+  const _Float16 *valid_flags = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::asset_valid);
 
   // Build valid asset indices
   std::vector<size_t> valid_indices;
@@ -111,37 +111,37 @@ inline void compute_cs_for_timeslot(GlobalFeatureStore *store, const std::string
 
   // CS feature 1: cs_spread_rank (from spread_momentum)
   {
-    const _Float16 *input = CS_READ_ALL_ASSETS(store, date, level_idx, t, L0_FieldOffset::spread_momentum);
+    const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::spread_momentum);
     for (size_t a = 0; a < A; ++a)
       input_fp32[a] = input[a]; // Auto-convert
     std::fill(output_fp32.begin(), output_fp32.end(), 0.0f);
     compute_rank_inverse_normal_sparse(input_fp32.data(), valid_indices, output_fp32.data());
     for (size_t a = 0; a < A; ++a)
       output_fp16[a] = output_fp32[a]; // Auto-convert
-    CS_WRITE_ALL_ASSETS(store, date, level_idx, t, L0_FieldOffset::cs_spread_rank, output_fp16.data(), A);
+    CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_spread_rank, output_fp16.data(), A);
   }
 
   // CS feature 2: cs_tobi_rank (from tobi_osc)
   {
-    const _Float16 *input = CS_READ_ALL_ASSETS(store, date, level_idx, t, L0_FieldOffset::tobi_osc);
+    const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::tobi_osc);
     for (size_t a = 0; a < A; ++a)
       input_fp32[a] = input[a];
     std::fill(output_fp32.begin(), output_fp32.end(), 0.0f);
     compute_rank_inverse_normal_sparse(input_fp32.data(), valid_indices, output_fp32.data());
     for (size_t a = 0; a < A; ++a)
       output_fp16[a] = output_fp32[a];
-    CS_WRITE_ALL_ASSETS(store, date, level_idx, t, L0_FieldOffset::cs_tobi_rank, output_fp16.data(), A);
+    CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_tobi_rank, output_fp16.data(), A);
   }
 
   // CS feature 3: cs_liquidity_ratio (from signed_volume_imb)
   {
-    const _Float16 *input = CS_READ_ALL_ASSETS(store, date, level_idx, t, L0_FieldOffset::signed_volume_imb);
+    const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::signed_volume_imb);
     for (size_t a = 0; a < A; ++a)
       input_fp32[a] = input[a];
     std::fill(output_fp32.begin(), output_fp32.end(), 0.0f);
     compute_zscore_sparse(input_fp32.data(), valid_indices, output_fp32.data());
     for (size_t a = 0; a < A; ++a)
       output_fp16[a] = output_fp32[a];
-    CS_WRITE_ALL_ASSETS(store, date, level_idx, t, L0_FieldOffset::cs_liquidity_ratio, output_fp16.data(), A);
+    CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_liquidity_ratio, output_fp16.data(), A);
   }
 }

@@ -17,16 +17,16 @@ namespace {
 // ============================================================================
 
 struct ArchiveErrors {
-    std::vector<std::string> naming_errors;
-    std::vector<std::string> format_errors;
-    std::vector<std::string> structure_errors;
-    std::vector<std::string> zip_files;
+  std::vector<std::string> naming_errors;
+  std::vector<std::string> format_errors;
+  std::vector<std::string> structure_errors;
+  std::vector<std::string> zip_files;
 };
 
 struct ArchiveCheckResult {
-    bool is_valid;
-    ArchiveErrors errors;
-    std::vector<std::string> valid_archives;
+  bool is_valid;
+  ArchiveErrors errors;
+  std::vector<std::string> valid_archives;
 };
 
 // ============================================================================
@@ -89,7 +89,8 @@ bool check_required_commands() {
   std::vector<CommandInfo> required_commands = {
       {"unrar", "sudo apt install unrar"},
       {"7z", "sudo apt install p7zip-full"},
-      {"rar", "sudo apt install rar"}};
+      {"rar", "sudo apt install rar"},
+      {"gdb", "sudo apt install gdb"}};
 
   bool ok = true;
   for (const auto &cmd : required_commands) {
@@ -171,11 +172,9 @@ bool detect_solid_rar(const std::string &archive_path) {
   return false;
 }
 
-
 // ============================================================================
 // CHECK 3: INCOMPATIBLE ARCHIVE STRUCTURE
 // ============================================================================
-
 
 // ============================================================================
 // UNIFIED ARCHIVE VALIDATION
@@ -294,7 +293,6 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
 
   return result;
 }
-
 
 } // anonymous namespace
 
