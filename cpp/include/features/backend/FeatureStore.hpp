@@ -535,7 +535,6 @@ public:
         size_t progress = day->ts_progress[asset_id].load(std::memory_order_acquire);
         if (progress < min_progress) {
           min_progress = progress;
-          Logger::log_worker(cs_worker_id_, "cs_check_ready: date=" + date + " asset=" + std::to_string(asset_id) + " progress=" + std::to_string(progress) + " min_progress=" + std::to_string(min_progress));
         }
       }
       // Update cached safe_index
@@ -665,7 +664,7 @@ public:
     // TEMP: Comment out release to debug
     // Release only the data arrays, keep DayData structure with asset_progress/core_progress/slowest_asset/ts_done/state
     // day_to_flush->release_data();
-    // Logger::log_worker(io_worker_id_, "io_flush_once: Released data for " + date_to_flush);
+    Logger::log_worker(io_worker_id_, "io_flush_once: Released data for " + date_to_flush);
 
     // Mark as UNUSED (but keep in map, memory can be reclaimed by OS)
     day_to_flush->state.store(TensorState::UNUSED, std::memory_order_release);
