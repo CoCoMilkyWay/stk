@@ -39,6 +39,9 @@ void log_encode(const std::string &message);
 // Analysis logging functions
 void log_analyze(const std::string &message);
 
+// Worker-specific logging functions (each worker has its own log file)
+void log_worker(int worker_id, const std::string &message);
+
 // Check if logging is initialized
 bool is_initialized();
 

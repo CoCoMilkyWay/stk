@@ -92,7 +92,7 @@ constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/I/AM/A/FAKE/PATH/TO/SKIP/ARCHI
 
 constexpr const char *DEFAULT_DATABASE_DIR = "../../../../output/database";
 constexpr const char *DEFAULT_FEATURE_DIR = "../../../../output/features";
-constexpr const char *DEFAULT_CRASH_LOG_DIR = "../../../../output/crash";
+constexpr const char *DEFAULT_LOG_DIR = "../../../../output/log";
 
 // Processing settings - modify for different behaviors
 const bool CLEANUP_AFTER_PROCESSING = false; // Clean up temp files after processing (saves disk space)
@@ -111,18 +111,7 @@ int main() {
   const std::string l2_archive_base = Config::DEFAULT_L2_ARCHIVE_BASE;
   const std::string database_dir = Config::DEFAULT_DATABASE_DIR;
   const std::string feature_dir = Config::DEFAULT_FEATURE_DIR;
-  const std::string crash_log_dir = Config::DEFAULT_CRASH_LOG_DIR;
-
-  // Create crash log directory and clear old logs
-  std::filesystem::create_directories(crash_log_dir);
-  for (const auto &entry : std::filesystem::directory_iterator(crash_log_dir)) {
-    if (entry.is_regular_file() && entry.path().extension() == ".log") {
-      std::filesystem::remove(entry.path());
-    }
-  }
-
-  // Initialize crash handler globally (once, all threads auto-register)
-  // misc::init_tracer(crash_log_dir.c_str());
+  const std::string log_dir = Config::DEFAULT_LOG_DIR;
 
   try {
     std::cout << "=== L2 Data Processor (CSV Mode) ===" << "\n";
@@ -154,7 +143,7 @@ int main() {
     std::cout << "  Auto cleanup: " << (Config::CLEANUP_AFTER_PROCESSING ? "Yes" : "No") << "\n\n";
 
     std::filesystem::create_directories(database_dir);
-    Logger::init(database_dir);
+    Logger::init(log_dir);
 
     const unsigned int num_threads = misc::Affinity::core_count();
     const unsigned int num_workers = std::min(num_threads, static_cast<unsigned int>(stock_info_map.size()));
@@ -268,15 +257,13 @@ int main() {
     // Initialize global feature store
     // Analysis phase: (N-2) TS workers + 1 CS worker + 1 Flush IO worker = N total workers
     const unsigned int num_ts_workers = num_workers - 2;
-    const unsigned int flush_io_core = num_workers - 1;  // Last core for Flush IO
     const unsigned int cs_worker_core = num_workers - 2; // Second-to-last core for CS
+    const unsigned int io_worker_core = num_workers - 1; // Last core for Flush IO
     const size_t num_assets = state.assets.size();
 
     // Tensor pool size: small fixed size (10-20), recycled through flush_and_recycle
     // Rule of thumb: ~2x number of TS workers to allow pipeline overlap
     const size_t total_dates = state.all_dates.size();
-
-    GlobalFeatureStore feature_store(num_assets, num_ts_workers, feature_dir);
 
     // Load balancing: sort assets by order count (already collected during encoding!)
     std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, order_count)
@@ -298,16 +285,21 @@ int main() {
       worker_loads[min_worker] += order_count;
     }
 
+    GlobalFeatureStore feature_store(num_assets, num_ts_workers, feature_dir, static_cast<int>(cs_worker_core), static_cast<int>(io_worker_core));
+
+    // Preallocate all DayData upfront to avoid runtime malloc contention
+    feature_store.preallocate_dates(state.all_dates);
+
     // Launch (N-2) TS workers + 1 CS worker + 1 IO worker = N total workers
     auto analysis_progress = std::make_shared<misc::ParallelProgress>(num_workers);
     std::vector<std::future<void>> workers;
 
     // IO worker (core N-1, last core)
-    workers.push_back(std::async(std::launch::async, [&feature_store, analysis_progress, flush_io_core, total_dates]() {
+    workers.push_back(std::async(std::launch::async, [&feature_store, analysis_progress, io_worker_core, total_dates]() {
       if (misc::Affinity::supported()) {
-        misc::Affinity::pin_to_core(flush_io_core);
+        misc::Affinity::pin_to_core(io_worker_core);
       }
-      io_worker(&feature_store, analysis_progress->get_handle(static_cast<int>(flush_io_core)), total_dates, static_cast<int>(flush_io_core));
+      io_worker(&feature_store, analysis_progress->get_handle(static_cast<int>(io_worker_core)), total_dates, static_cast<int>(io_worker_core));
     }));
 
     // TS workers (cores 0 to N-3)

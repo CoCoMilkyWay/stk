@@ -10,15 +10,18 @@ class Tick_Sequential {
 public:
   explicit Tick_Sequential(const LOB_Feature *lob_feature,
                            GlobalFeatureStore *store = nullptr,
-                           size_t asset_id = 0)
+                           size_t asset_id = 0,
+                           size_t worker_id = 0)
       : lob_feature_(lob_feature),
         feature_store_(store),
-        asset_id_(asset_id) {
+        asset_id_(asset_id),
+        worker_id_(worker_id) {
   }
 
-  void set_store_context(GlobalFeatureStore *store, size_t asset_id) {
+  void set_store_context(GlobalFeatureStore *store, size_t asset_id, size_t worker_id) {
     feature_store_ = store;
     asset_id_ = asset_id;
+    worker_id_ = worker_id;
   }
 
   void set_date(const std::string &date_str) {
@@ -53,7 +56,7 @@ public:
 
     // Write TS features
     constexpr size_t level_idx = 0;
-    TS_WRITE_FEATURES(feature_store_, date_str_, level_idx, t, asset_id_, L0_TS_START, L0_TS_END, features);
+    TS_WRITE_FEATURES(feature_store_, date_str_, level_idx, t, asset_id_, L0_TS_START, L0_TS_END, features, worker_id_);
 
     // Write asset validity flag (business logic, not backend requirement)
     WRITE_FEATURE(feature_store_, date_str_, level_idx, t, L0_FieldOffset::asset_valid, asset_id_, is_valid ? 1.0f : 0.0f);
@@ -77,5 +80,6 @@ private:
   const LOB_Feature *lob_feature_;
   GlobalFeatureStore *feature_store_ = nullptr;
   size_t asset_id_ = 0;
+  size_t worker_id_ = 0;
   std::string date_str_;
 };

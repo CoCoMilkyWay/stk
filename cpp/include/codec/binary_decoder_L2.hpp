@@ -18,7 +18,9 @@ public:
 
   // decoder functions
   bool decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots);
-  bool decode_orders(const std::string &filepath, std::vector<Order> &orders);
+  // decode_orders: fills orders vector up to its capacity, returns actual count via out parameter
+  // Returns false if: file error, decompression error, or order count exceeds vector capacity
+  bool decode_orders(const std::string &filepath, std::vector<Order> &orders, size_t &order_num);
 
   // Zstandard decompression helper functions (pure standard decompression)
   static bool read_and_decompress_data(const std::string &filepath, void *data, size_t expected_size, size_t &actual_size);

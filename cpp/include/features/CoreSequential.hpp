@@ -44,14 +44,14 @@ public:
                  size_t asset_id = 0,
                  size_t core_id = 0)
       : lob_feature_(lob_feature),
-        tick_sequential_(lob_feature, feature_store, asset_id),
+        tick_sequential_(lob_feature, feature_store, asset_id, core_id),
         minute_sequential_(&minute_bar_),
         hour_sequential_(&hour_bar_),
         feature_store_(feature_store),
         asset_id_(asset_id),
         core_id_(core_id) {
     if (feature_store_) {
-      tick_sequential_.set_store_context(feature_store_, asset_id_);
+      tick_sequential_.set_store_context(feature_store_, asset_id_, core_id_);
       minute_sequential_.set_store_context(feature_store_, asset_id_);
       hour_sequential_.set_store_context(feature_store_, asset_id_);
     }
@@ -84,7 +84,7 @@ public:
       // CS worker needs to know each tick is done
       if (feature_store_ && !date_str_.empty()) {
         size_t l0_t = time_to_trading_seconds(lob.hour, lob.minute, lob.second);
-        feature_store_->ts_mark_done(date_str_, 0, core_id_, l0_t);
+        feature_store_->ts_mark_progress(date_str_, core_id_, asset_id_, l0_t);
       }
       return;
     }
@@ -106,7 +106,7 @@ public:
     // This ensures order-level synchronization for real-time CS computation
     if (feature_store_ && !date_str_.empty()) {
       size_t l0_t = time_to_trading_seconds(lob.hour, lob.minute, lob.second);
-      feature_store_->ts_mark_done(date_str_, 0, core_id_, l0_t);
+      feature_store_->ts_mark_progress(date_str_, core_id_, asset_id_, l0_t);
     }
   }
 

@@ -36,8 +36,8 @@ public:
   //======================================================================================
 
   explicit LimitOrderBook(size_t ORDER_SIZE = L2::DEFAULT_ENCODER_ORDER_SIZE,
-                          ExchangeType exchange_type = ExchangeType::SSE,
                           GlobalFeatureStore *feature_store = nullptr,
+                          ExchangeType exchange_type = ExchangeType::SSE,
                           size_t asset_id = 0,
                           size_t core_id = 0)
       : price_levels_(1024),
@@ -46,9 +46,9 @@ public:
         exchange_type_(exchange_type),
         core_sequential_(&LOB_feature_, feature_store, asset_id, core_id) {
   }
-  
+
   // Set current date for feature computation
-  void set_current_date(const std::string& date_str) {
+  void set_current_date(const std::string &date_str) {
     core_sequential_.set_date(date_str);
   }
 

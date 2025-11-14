@@ -324,7 +324,7 @@ bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector
   return true;
 }
 
-bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Order> &orders) {
+bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Order> &orders, size_t &order_num) {
   // First extract count from filename to estimate required size
   size_t estimated_count = extract_count_from_filename(filepath);
   if (estimated_count == 0) {
@@ -357,11 +357,21 @@ bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Or
     std::exit(1);
   }
 
-  // Extract orders from decompressed data
-  orders.resize(count);
-  std::memcpy(orders.data(), data_buffer.get() + header_size, orders_size);
+  // CRITICAL: Check if count exceeds vector capacity (no reallocation allowed)
+  if (count > orders.capacity()) {
+    std::cerr << "L2 Decoder: FATAL: Order count " << count 
+              << " exceeds vector capacity " << orders.capacity() 
+              << " for file " << filepath << std::endl;
+    std::cerr << "Solution: Increase decoded_orders.reserve() in sequential_worker.cpp" << std::endl;
+    std::exit(1);
+  }
 
-  // std::cout << "L2 Decoder: Successfully decoded " << orders.size() << " orders from " << filepath << std::endl;
+  // Extract orders directly into vector data (no resize, preserves capacity)
+  // We write directly to the underlying array and tell caller the actual count
+  std::memcpy(orders.data(), data_buffer.get() + header_size, orders_size);
+  order_num = count;
+
+  // std::cout << "L2 Decoder: Successfully decoded " << order_num << " orders from " << filepath << std::endl;
 
   return true;
 }

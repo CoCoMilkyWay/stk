@@ -81,7 +81,7 @@ constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to ch
 
 // Effective TOB filter parameters
 namespace EffectiveTOBFilter {
-constexpr uint32_t MIN_TIME_INTERVAL_MS = 100; // Minimum time interval in milliseconds for effective TOB update
+constexpr uint32_t MIN_TIME_INTERVAL_MS = 500; // Minimum time interval in milliseconds for effective TOB update
 }
 
 //========================================================================================
