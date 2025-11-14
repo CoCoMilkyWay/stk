@@ -20,8 +20,8 @@ import time
 APP_NAME = "main"
 
 # Build & Run modes (set ONE to True, others to False)
-ENABLE_PROFILE = False                         # Profile mode: -O0 -g, no optimizations
-ENABLE_DEBUG   = True                          # Debug mode: -O0 -g3 -ggdb
+ENABLE_PROFILE = False
+ENABLE_DEBUG   = False
 # Default: production mode with -O3 optimizations
 
 # Profiler settings
