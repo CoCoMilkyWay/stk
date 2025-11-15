@@ -69,7 +69,8 @@ private:
 
     ~DayData() {
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        if (data[lvl]) std::free(data[lvl]);
+        if (data[lvl])
+          std::free(data[lvl]);
       }
       delete[] ts_progress;
       delete[] ts_done;
@@ -81,14 +82,18 @@ private:
   std::atomic<TensorState> *pool_states_ = nullptr;
   std::map<std::string, size_t> date_to_pool_idx_;
   mutable std::mutex pool_mutex_;
-  
+
   // Per-date allocation control (call_once)
   std::map<std::string, std::once_flag> alloc_flags_;
   mutable std::mutex alloc_flags_mutex_;
 
-  // Worker cache (lock-free hot path)
+  // TS worker cache (lock-free hot path)
   mutable std::vector<std::string> worker_cache_date_;
   mutable std::vector<DayData *> worker_cache_data_;
+
+  // CS worker cache (single-threaded, simple)
+  mutable std::string cs_cache_date_;
+  mutable DayData *cs_cache_day_ = nullptr;
 
   // Config
   const size_t num_assets_;
@@ -159,29 +164,37 @@ private:
 
   // Allocate pool slot for date (called exactly once per date via call_once)
   void allocate_for_date(const std::string &date, int worker_id) {
+    size_t pool_idx;
+    DayData *allocated;
+
+    // Step 1: Find and reserve an UNUSED slot
     while (true) {
       std::unique_lock<std::mutex> lock(pool_mutex_);
-
-      // Find UNUSED slot
       for (size_t i = 0; i < pool_size_; ++i) {
         if (pool_states_[i].load(std::memory_order_acquire) == TensorState::UNUSED) {
           pool_states_[i].store(TensorState::IN_USE, std::memory_order_release);
-          date_to_pool_idx_[date] = i;
-          DayData *allocated = pool_[i];
-          
-          Logger::log_worker(worker_id, "Bound " + date + " to pool[" + std::to_string(i) + "], resetting...");
+          pool_idx = i;
+          allocated = pool_[i];
           lock.unlock();
-          
-          // Reset outside lock (safe: call_once guarantees single execution)
-          allocated->reset(num_assets_, num_ts_cores_);
-          Logger::log_worker(worker_id, "Pool[" + std::to_string(i) + "] reset complete");
-          return;
+              Logger::log_worker(worker_id, "Bound " + date + " to pool[" + std::to_string(pool_idx) + "]");
+          goto found;
         }
       }
-
       Logger::log_worker(worker_id, "Pool exhausted, waiting...");
       lock.unlock();
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+  found:
+    // Step 2: Reset data (without lock, no one can see this date yet)
+    allocated->reset(num_assets_, num_ts_cores_);
+    Logger::log_worker(worker_id, "Pool[" + std::to_string(pool_idx) + "] reset complete");
+
+    // Step 3: Publish to map (now CS can see it, and data is ready)
+    {
+      std::lock_guard<std::mutex> lock(pool_mutex_);
+      date_to_pool_idx_[date] = pool_idx;
+      Logger::log_worker(worker_id, "Published " + date + " to pool[" + std::to_string(pool_idx) + "]");
     }
   }
 
@@ -246,9 +259,9 @@ public:
     std::cout << "\nPhysical allocation complete in " << elapsed << " ms\n";
     std::cout << "=================================\n\n";
 
-    // Initialize worker cache
-    worker_cache_date_.resize(num_ts_cores + 1);
-    worker_cache_data_.resize(num_ts_cores + 1, nullptr);
+    // Initialize worker cache (TS workers only, CS/IO bypass cache)
+    worker_cache_date_.resize(num_ts_cores);
+    worker_cache_data_.resize(num_ts_cores, nullptr);
   }
 
   ~GlobalFeatureStore() {
@@ -261,83 +274,125 @@ public:
     delete[] pool_states_;
   }
 
-  DayData *get(const std::string &date, int worker_id, bool allow_allocate = true) {
-    // Fast path: cache hit
-    if (worker_cache_date_[worker_id] == date && worker_cache_data_[worker_id]) {
-      return worker_cache_data_[worker_id];
+  // TS worker get: cached, allocates on demand
+  // Called billions of times - optimized hot path
+  [[gnu::hot, gnu::always_inline]]
+  inline DayData *ts_get(const std::string &date, int ts_worker_id) {
+    assert(ts_worker_id >= 0 && ts_worker_id < static_cast<int>(num_ts_cores_));
+    // Fast path: cache hit (no lock, no branch)
+    if (worker_cache_date_[ts_worker_id] == date) [[likely]] {
+      return worker_cache_data_[ts_worker_id];
     }
 
-    // Check if already allocated
+    // Slow path: cache miss, need allocation
+    return ts_get_slow(date, ts_worker_id);
+  }
+
+  // CS worker get: direct map lookup with pool state validation
+  // Used by CS_READ_ALL/CS_WRITE_ALL macros (after cs_check_ready ensures data is ready)
+  [[gnu::hot, gnu::always_inline]]
+  inline DayData *cs_get(const std::string &date) const {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto it = date_to_pool_idx_.find(date);
+    if (it == date_to_pool_idx_.end()) {
+      return nullptr;
+    }
+    // Validate pool state
+    size_t pool_idx = it->second;
+    TensorState state = pool_states_[pool_idx].load(std::memory_order_acquire);
+    if (state != TensorState::IN_USE && state != TensorState::CS_DONE) {
+      return nullptr; // Being flushed or recycled
+    }
+    return pool_[pool_idx];
+  }
+
+private:
+  // TS slow path: allocate and cache
+  [[gnu::cold, gnu::noinline]]
+  DayData *ts_get_slow(const std::string &date, int ts_worker_id) {
+    // Check if already allocated by another TS worker
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
       auto it = date_to_pool_idx_.find(date);
       if (it != date_to_pool_idx_.end()) {
         DayData *day = pool_[it->second];
-        worker_cache_date_[worker_id] = date;
-        worker_cache_data_[worker_id] = day;
+        worker_cache_date_[ts_worker_id] = date;
+        worker_cache_data_[ts_worker_id] = day;
         return day;
       }
     }
 
-    // Not allocated yet
-    if (!allow_allocate) {
-      return nullptr;
-    }
-
-    // Get or create once_flag for this date
+    // Not allocated yet, allocate once
     std::once_flag *flag;
     {
       std::lock_guard<std::mutex> lock(alloc_flags_mutex_);
       flag = &alloc_flags_[date];
     }
 
-    // Exactly one thread will allocate, others wait
-    std::call_once(*flag, [this, date, worker_id]() {
-      allocate_for_date(date, worker_id);
+    std::call_once(*flag, [this, &date, ts_worker_id]() {
+      allocate_for_date(date, ts_worker_id);
     });
 
-    // Now it's allocated, get pointer
+    // Now it's allocated, update cache
     std::lock_guard<std::mutex> lock(pool_mutex_);
     auto it = date_to_pool_idx_.find(date);
     assert(it != date_to_pool_idx_.end());
     DayData *day = pool_[it->second];
-    
-    worker_cache_date_[worker_id] = date;
-    worker_cache_data_[worker_id] = day;
+
+    worker_cache_date_[ts_worker_id] = date;
+    worker_cache_data_[ts_worker_id] = day;
     return day;
   }
 
+public:
   // ===== TS WORKER API =====
   void ts_mark_progress(const std::string &date, size_t core_id, size_t asset_id, size_t l0_time_index) {
-    DayData *day = get(date, core_id);
+    DayData *day = ts_get(date, core_id);
     day->ts_progress[asset_id].store(l0_time_index + 1, std::memory_order_release);
   }
 
   void ts_mark_done(const std::string &date, size_t core_id) {
-    DayData *day = get(date, core_id);
+    DayData *day = ts_get(date, core_id);
     day->ts_done[core_id].store(true, std::memory_order_release);
     Logger::log_worker(core_id, "ts_mark_done: " + date);
   }
 
   // ===== CS WORKER API =====
-  bool cs_check_ready(const std::string &date, size_t l0_time_index) const {
-    DayData *day = const_cast<GlobalFeatureStore *>(this)->get(date, cs_worker_id_, false);
-    if (!day) {
-      return false;
-    }
-
-    if (l0_time_index >= day->cs_safe_index) {
-      size_t min_progress = SIZE_MAX;
-      for (size_t a = 0; a < num_assets_; ++a) {
-        size_t progress = day->ts_progress[a].load(std::memory_order_acquire);
-        if (progress < min_progress) {
-          min_progress = progress;
+  // Block until data is ready (simple!)
+  void cs_wait_ready(const std::string &date, size_t l0_time_index) const {
+    // Step 1: Get DayData pointer
+    DayData *day = nullptr;
+    if (cs_cache_date_ == date && cs_cache_day_) {
+      day = cs_cache_day_; // Cache hit
+    } else {
+      // Wait for TS to allocate
+      while (!day) {
+        {
+          std::lock_guard<std::mutex> lock(pool_mutex_);
+          auto it = date_to_pool_idx_.find(date);
+          if (it != date_to_pool_idx_.end()) {
+            day = pool_[it->second];
+            cs_cache_date_ = date;
+            cs_cache_day_ = day;
+          }
+        }
+        if (!day) {
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
       }
-      day->cs_safe_index = min_progress;
     }
 
-    return day->cs_safe_index > l0_time_index;
+    // Step 2: Wait for TS to progress
+    while (true) {
+      size_t min_progress = SIZE_MAX;
+      for (size_t a = 0; a < num_assets_; ++a) {
+        min_progress = std::min(min_progress,
+                                day->ts_progress[a].load(std::memory_order_acquire));
+      }
+      if (min_progress > l0_time_index)
+        return;
+      std::this_thread::sleep_for(std::chrono::microseconds(10));
+    }
   }
 
   void cs_mark_complete(const std::string &date) {
@@ -354,6 +409,10 @@ public:
     }
 
     pool_states_[pool_idx].store(TensorState::CS_DONE, std::memory_order_release);
+
+    // Invalidate CS cache (moving to next date)
+    cs_cache_day_ = nullptr;
+
     Logger::log_worker(cs_worker_id_, "cs_mark_complete: " + date);
   }
 
@@ -384,24 +443,24 @@ public:
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
       date_to_pool_idx_.erase(date_to_flush);
-      
-      // Invalidate caches
-      for (size_t w = 0; w <= num_ts_cores_; ++w) {
+
+      // Invalidate TS worker caches only (CS/IO don't use cache)
+      for (size_t w = 0; w < num_ts_cores_; ++w) {
         if (worker_cache_date_[w] == date_to_flush) {
           worker_cache_date_[w].clear();
           worker_cache_data_[w] = nullptr;
         }
       }
-      
+
       pool_states_[pool_idx].store(TensorState::UNUSED, std::memory_order_release);
     }
-    
+
     // Clean up once_flag
     {
       std::lock_guard<std::mutex> lock(alloc_flags_mutex_);
       alloc_flags_.erase(date_to_flush);
     }
-    
+
     Logger::log_worker(io_worker_id_, "io_flush_once: " + date_to_flush + " complete");
     return true;
   }
@@ -418,14 +477,23 @@ public:
     std::string result = "[";
     bool first = true;
     for (const auto &[date, idx] : date_to_pool_idx_) {
-      if (!first) result += ", ";
+      if (!first)
+        result += ", ";
       first = false;
       const char *state = "?";
       switch (pool_states_[idx].load(std::memory_order_acquire)) {
-      case TensorState::UNUSED: state = "U"; break;
-      case TensorState::IN_USE: state = "I"; break;
-      case TensorState::CS_DONE: state = "D"; break;
-      case TensorState::FLUSHING: state = "F"; break;
+      case TensorState::UNUSED:
+        state = "U";
+        break;
+      case TensorState::IN_USE:
+        state = "I";
+        break;
+      case TensorState::CS_DONE:
+        state = "D";
+        break;
+      case TensorState::FLUSHING:
+        state = "F";
+        break;
       }
       result += date + ":" + state;
     }
@@ -441,84 +509,84 @@ public:
 
 // Batch write: write features [f_start, f_end) for asset a at time t
 #define TS_WRITE_FEATURES(store, date, lvl, t, a, f_start, f_end, src, worker_id) \
-  do { \
-    auto *_day = (store)->get(date, worker_id); \
-    assert(_day && "_day is null"); \
-    assert(_day->data[lvl] && "data[lvl] is null"); \
-    const size_t _F = (store)->query_F(lvl); \
-    const size_t _A = (store)->query_A(); \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl); \
-    assert((t) < _T && "time index out of bounds"); \
-    assert((a) < _A && "asset index out of bounds"); \
-    assert((f_start) <= (f_end) && "invalid feature range"); \
-    assert((f_end) <= _F && "feature end out of bounds"); \
-    for (size_t _f = (f_start); _f < (f_end); ++_f) { \
-      const size_t _idx = ((t) * _F + _f) * _A + (a); \
-      _day->data[lvl][_idx] = (src)[_f - (f_start)]; \
-    } \
+  do {                                                                            \
+    auto *_day = (store)->ts_get(date, worker_id);                                \
+    assert(_day && "_day is null");                                               \
+    assert(_day->data[lvl] && "data[lvl] is null");                               \
+    const size_t _F = (store)->query_F(lvl);                                      \
+    const size_t _A = (store)->query_A();                                         \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                     \
+    assert((t) < _T && "time index out of bounds");                               \
+    assert((a) < _A && "asset index out of bounds");                              \
+    assert((f_start) <= (f_end) && "invalid feature range");                      \
+    assert((f_end) <= _F && "feature end out of bounds");                         \
+    for (size_t _f = (f_start); _f < (f_end); ++_f) {                             \
+      const size_t _idx = ((t) * _F + _f) * _A + (a);                             \
+      _day->data[lvl][_idx] = (src)[_f - (f_start)];                              \
+    }                                                                             \
   } while (0)
 
 // Single write: write feature f for asset a at time t
 #define TS_WRITE_SINGLE(store, date, lvl, t, f, a, value, worker_id) \
-  do { \
-    auto *_day = (store)->get(date, worker_id); \
-    assert(_day && "_day is null"); \
-    assert(_day->data[lvl] && "data[lvl] is null"); \
-    const size_t _F = (store)->query_F(lvl); \
-    const size_t _A = (store)->query_A(); \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl); \
-    assert((t) < _T && "time index out of bounds"); \
-    assert((f) < _F && "feature index out of bounds"); \
-    assert((a) < _A && "asset index out of bounds"); \
-    const size_t _idx = ((t) * _F + (f)) * _A + (a); \
-    _day->data[lvl][_idx] = (value); \
+  do {                                                               \
+    auto *_day = (store)->ts_get(date, worker_id);                   \
+    assert(_day && "_day is null");                                  \
+    assert(_day->data[lvl] && "data[lvl] is null");                  \
+    const size_t _F = (store)->query_F(lvl);                         \
+    const size_t _A = (store)->query_A();                            \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);        \
+    assert((t) < _T && "time index out of bounds");                  \
+    assert((f) < _F && "feature index out of bounds");               \
+    assert((a) < _A && "asset index out of bounds");                 \
+    const size_t _idx = ((t) * _F + (f)) * _A + (a);                 \
+    _day->data[lvl][_idx] = (value);                                 \
   } while (0)
 
 // Write link metadata (L0 only, auto-triggered by resampling)
 #define TS_WRITE_LINK(store, date, l0_t, a, link_offset, value, worker_id) \
-  do { \
-    auto *_day = (store)->get(date, worker_id); \
-    assert(_day && "_day is null"); \
-    assert(_day->data[0] && "data[0] is null"); \
-    const size_t _F = (store)->query_F(0); \
-    const size_t _A = (store)->query_A(); \
-    [[maybe_unused]] const size_t _T = (store)->query_T(0); \
-    assert((l0_t) < _T && "l0_t out of bounds"); \
-    assert((link_offset) < _F && "link_offset out of bounds"); \
-    assert((a) < _A && "asset index out of bounds"); \
-    const size_t _idx = ((l0_t) * _F + (link_offset)) * _A + (a); \
-    _day->data[0][_idx] = static_cast<_Float16>(value); \
+  do {                                                                     \
+    auto *_day = (store)->ts_get(date, worker_id);                         \
+    assert(_day && "_day is null");                                        \
+    assert(_day->data[0] && "data[0] is null");                            \
+    const size_t _F = (store)->query_F(0);                                 \
+    const size_t _A = (store)->query_A();                                  \
+    [[maybe_unused]] const size_t _T = (store)->query_T(0);                \
+    assert((l0_t) < _T && "l0_t out of bounds");                           \
+    assert((link_offset) < _F && "link_offset out of bounds");             \
+    assert((a) < _A && "asset index out of bounds");                       \
+    const size_t _idx = ((l0_t) * _F + (link_offset)) * _A + (a);          \
+    _day->data[0][_idx] = static_cast<_Float16>(value);                    \
   } while (0)
 
 // ===== CS WORKER API (automatically use cs_worker_id) =====
 
 // Read all assets for feature f at time t → returns _Float16*
-#define CS_READ_ALL(store, date, lvl, t, f) \
-  [&]() -> feature_storage_t* { \
-    auto *_day = (store)->get(date, (store)->query_cs_worker_id()); \
-    assert(_day && "_day is null"); \
-    assert(_day->data[lvl] && "data[lvl] is null"); \
-    const size_t _F = (store)->query_F(lvl); \
-    const size_t _A = (store)->query_A(); \
+#define CS_READ_ALL(store, date, lvl, t, f)                   \
+  [&]() -> feature_storage_t * {                              \
+    auto *_day = (store)->cs_get(date);                       \
+    assert(_day && "_day is null");                           \
+    assert(_day->data[lvl] && "data[lvl] is null");           \
+    const size_t _F = (store)->query_F(lvl);                  \
+    const size_t _A = (store)->query_A();                     \
     [[maybe_unused]] const size_t _T = (store)->query_T(lvl); \
-    assert((t) < _T && "time index out of bounds"); \
-    assert((f) < _F && "feature index out of bounds"); \
-    const size_t _offset = ((t) * _F + (f)) * _A; \
-    return _day->data[lvl] + _offset; \
+    assert((t) < _T && "time index out of bounds");           \
+    assert((f) < _F && "feature index out of bounds");        \
+    const size_t _offset = ((t) * _F + (f)) * _A;             \
+    return _day->data[lvl] + _offset;                         \
   }()
 
 // Write all assets for feature f at time t
-#define CS_WRITE_ALL(store, date, lvl, t, f, src, count) \
-  do { \
-    auto *_day = (store)->get(date, (store)->query_cs_worker_id()); \
-    assert(_day && "_day is null"); \
-    assert(_day->data[lvl] && "data[lvl] is null"); \
-    const size_t _F = (store)->query_F(lvl); \
-    const size_t _A = (store)->query_A(); \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl); \
-    assert((t) < _T && "time index out of bounds"); \
-    assert((f) < _F && "feature index out of bounds"); \
-    assert((count) <= _A && "count exceeds num_assets"); \
-    const size_t _offset = ((t) * _F + (f)) * _A; \
+#define CS_WRITE_ALL(store, date, lvl, t, f, src, count)                                \
+  do {                                                                                  \
+    auto *_day = (store)->cs_get(date);                                                 \
+    assert(_day && "_day is null");                                                     \
+    assert(_day->data[lvl] && "data[lvl] is null");                                     \
+    const size_t _F = (store)->query_F(lvl);                                            \
+    const size_t _A = (store)->query_A();                                               \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                           \
+    assert((t) < _T && "time index out of bounds");                                     \
+    assert((f) < _F && "feature index out of bounds");                                  \
+    assert((count) <= _A && "count exceeds num_assets");                                \
+    const size_t _offset = ((t) * _F + (f)) * _A;                                       \
     std::memcpy(_day->data[lvl] + _offset, (src), (count) * sizeof(feature_storage_t)); \
   } while (0)

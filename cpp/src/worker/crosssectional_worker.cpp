@@ -5,9 +5,7 @@
 #include "features/backend/FeatureStore.hpp"
 #include "misc/logging.hpp"
 
-#include <chrono>
 #include <cstdio>
-#include <thread>
 
 void crosssectional_worker(const SharedState &state,
                            GlobalFeatureStore *feature_store,
@@ -31,29 +29,12 @@ void crosssectional_worker(const SharedState &state,
     progress_handle.set_label(label_buf);
 
     // Process each time slot as it becomes ready
-    size_t t = 0;
-    size_t total_wait_time = 0;
-    while (t < capacity) {
-      // Wait for time slot t to be ready (simple polling)
-      size_t wait_count = 0;
-      while (!feature_store->cs_check_ready(date_str, t)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        wait_count++;
-        if (wait_count % 10000 == 0) {
-          Logger::log_worker(worker_id, date_str + " waiting for timeslot " + std::to_string(t) + "/" + std::to_string(capacity) + " (" + std::to_string(wait_count) + "ms)");
-        }
-      }
-      total_wait_time += wait_count;
+    for (size_t t = 0; t < capacity; ++t) {
+      // Wait for TS to finish this timeslot (blocks until ready)
+      feature_store->cs_wait_ready(date_str, t);
 
       // Compute CS features for this time slot
       compute_cs_for_timeslot(feature_store, date_str, t);
-
-      ++t;
-
-      // Update progress every 100 time slots
-      if (t % 100 == 0) {
-        progress_handle.update(date_idx + 1, total_dates, "");
-      }
     }
 
     ++completed_dates;
@@ -61,9 +42,8 @@ void crosssectional_worker(const SharedState &state,
 
     // Mark this date as complete for tensor pool recycling
     feature_store->cs_mark_complete(date_str);
-    
-    Logger::log_worker(worker_id, date_str + " completed: " + std::to_string(capacity) + " timeslots" + 
-                      (total_wait_time > 0 ? ", waited " + std::to_string(total_wait_time) + "ms" : ""));
+
+    Logger::log_worker(worker_id, date_str + " completed: " + std::to_string(capacity) + " timeslots");
   }
 
   // Final update

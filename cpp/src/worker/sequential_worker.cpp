@@ -78,25 +78,24 @@ void sequential_worker(const SharedState &state,
     for (size_t i = 0; i < my_asset_ids.size(); ++i) {
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = state.assets[asset_id];
+      auto asset_missing = false;
 
       // Check if this asset has data for this date
       auto it = asset.date_info.find(date_str);
       if (it == asset.date_info.end()) {
-        const size_t capacity = feature_store->query_T(0);
-        feature_store->ts_mark_progress(date_str, worker_id, asset_id, capacity - 1);
-        continue;
+        asset_missing = true;
       }
 
-      const auto &date_info = it->second;
+      const auto &asset_info = it->second;
 
       // Set date for feature computation
       lobs[i]->set_current_date(date_str);
 
-      if (date_info.has_binaries()) {
+      if (!asset_missing && asset_info.has_binaries()) {
         size_t order_num = 0;
-        if (!date_info.orders_file.empty()) {
+        if (!asset_info.orders_file.empty()) {
           // decode_orders fills the preallocated vector without resizing, returns actual count
-          if (decoders[i]->decode_orders(date_info.orders_file, decoded_orders, order_num)) {
+          if (decoders[i]->decode_orders(asset_info.orders_file, decoded_orders, order_num)) {
 
             // Sanity check: order_num should be reasonable
             assert(order_num <= decoded_orders.size() && "order_num exceeds vector size");
@@ -123,7 +122,7 @@ void sequential_worker(const SharedState &state,
             date_assets_processed++;
 
           } else {
-            Logger::log_worker(worker_id, "WARNING: " + date_str + " failed to decode " + date_info.orders_file);
+            Logger::log_worker(worker_id, "WARNING: " + date_str + " failed to decode " + asset_info.orders_file);
           }
         }
         cumulative_orders += order_num;
