@@ -593,7 +593,9 @@ private:
   }
 
   // Allocate slot for date (caller must hold pool_mutex_)
-  void allocate_slot_locked(const std::string &date, int worker_id) const {
+  void allocate_slot_locked(const std::string &date, int worker_id, int wait_count = 0) const {
+    constexpr int RETRY_MS = 10;
+
     // Defense: check if already allocated
     if (date_to_slot_.find(date) != date_to_slot_.end()) {
       return;
@@ -604,11 +606,18 @@ private:
 
     if (slot_idx < 0) {
       // Pool exhausted, wait for IO to free slots
-      Logger::log_worker(worker_id, "Pool exhausted, waiting...");
+      if (wait_count == 0) {
+        Logger::log_worker(worker_id, "Pool exhausted, waiting...");
+      }
       pool_mutex_.unlock();
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(RETRY_MS));
       pool_mutex_.lock();
-      return allocate_slot_locked(date, worker_id); // Retry
+      return allocate_slot_locked(date, worker_id, wait_count + 1); // Retry
+    }
+
+    if (wait_count > 0) {
+      int wait_ms = wait_count * RETRY_MS;
+      Logger::log_worker(worker_id, "Pool slot available, resuming... (waited " + std::to_string(wait_ms) + "ms)");
     }
 
     Slot &s = pool_[slot_idx];
