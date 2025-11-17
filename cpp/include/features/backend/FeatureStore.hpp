@@ -126,7 +126,7 @@ private:
 
   // Dynamic asset tracking: lazily populated during ts_update()
   // Each worker records which assets it has actually written (decoupled from top-level assignment)
-  mutable std::vector<std::unordered_set<size_t>> assigned_assets_;  // [worker_id] → {asset_ids}
+  mutable std::vector<std::unordered_set<size_t>> assigned_assets_; // [worker_id] → {asset_ids}
 
 public:
   GlobalFeatureStore(size_t num_assets, size_t num_ts_workers,
@@ -194,7 +194,7 @@ public:
 
     // Initialize TS worker cache and dynamic asset tracking
     ts_cache_.resize(num_ts_workers_);
-    assigned_assets_.resize(num_ts_workers_);  // Empty sets, populated lazily during ts_update()
+    assigned_assets_.resize(num_ts_workers_); // Empty sets, populated lazily during ts_update()
 
     std::cout << "=================================\n\n";
   }
@@ -206,38 +206,50 @@ public:
   }
 
   // ===== TS WORKER API (NEW ARCHITECTURE with two-level sync) =====
-  
+
   // Update progress after writing to (asset_id, l0_time_index)
   // Called by TS_WRITE_* macros or LimitOrderBook internally
   void ts_update(const std::string &date, int worker_id, size_t asset_id, size_t l0_time_index) const {
     Slot &slot = ts_get_slot(date, worker_id);
 
-    // Lazily record this asset as written by this worker (first write triggers insertion)
-    assigned_assets_[worker_id].insert(asset_id);
+    // Thread-local tracking: O(1) bitset instead of O(log N) unordered_set
+    static thread_local std::vector<std::vector<bool>> asset_written(num_ts_workers_);
+    if (asset_written[worker_id].empty()) [[unlikely]] {
+      asset_written[worker_id].resize(num_assets_, false);
+    }
+
+    // Mark asset as written (O(1), cache-friendly)
+    if (!asset_written[worker_id][asset_id]) [[unlikely]] {
+      asset_written[worker_id][asset_id] = true;
+      assigned_assets_[worker_id].insert(asset_id); // Global record for ts_done (cold path)
+    }
 
     // Update per-asset write position
-    slot.ts_write_pos[asset_id].store(l0_time_index + 1, std::memory_order_release);
-
-    // Update worker_min (incremental maintenance)
-    static thread_local std::vector<size_t> worker_local_min(num_ts_workers_, 0);
-
-    size_t old_pos = l0_time_index; // Previous position
     size_t new_pos = l0_time_index + 1;
+    slot.ts_write_pos[asset_id].store(new_pos, std::memory_order_release);
 
-    // If the updated asset was the min, rescan this worker's written assets
-    if (old_pos == worker_local_min[worker_id]) {
+    // Update worker_min (only if this asset affects the min)
+    // Initialize to SIZE_MAX (no progress yet)
+    static thread_local std::vector<size_t> worker_local_min;
+    if (worker_local_min.empty()) [[unlikely]] {
+      worker_local_min.resize(num_ts_workers_, SIZE_MAX);
+    }
+
+    size_t old_min = worker_local_min[worker_id];
+
+    // Optimization: skip update if current asset is not the bottleneck
+    // If new_pos > worker_min, this asset is ahead, min unchanged, no publish needed
+    if (new_pos <= old_min) {
+      // This asset is at or behind the min, need to rescan
       size_t new_min = SIZE_MAX;
       for (size_t a : assigned_assets_[worker_id]) {
         new_min = std::min(new_min, slot.ts_write_pos[a].load(std::memory_order_relaxed));
       }
       worker_local_min[worker_id] = new_min;
-    } else {
-      // Simple update (new_pos >= old_min)
-      worker_local_min[worker_id] = std::min(worker_local_min[worker_id], new_pos);
+      // Publish only when worker_min actually changed
+      slot.ts_worker_min_pos[worker_id].store(new_min, std::memory_order_release);
     }
-
-    // Publish worker_min
-    slot.ts_worker_min_pos[worker_id].store(worker_local_min[worker_id], std::memory_order_release);
+    // else: fast asset, doesn't affect worker_min, skip publish (huge optimization!)
   }
 
   // Mark worker done for this date (API name from architecture doc)
@@ -267,7 +279,7 @@ public:
   }
 
   // ===== CS WORKER API (NEW ARCHITECTURE with O(W) scan) =====
-  
+
   // Wait until time_index is ready (API name from architecture doc)
   void cs_wait(const std::string &date, size_t l0_time_index) const {
     // Step 1: Get Slot (with cache and epoch validation)
