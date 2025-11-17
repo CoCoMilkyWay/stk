@@ -103,7 +103,7 @@ bool check_required_commands() {
   }
 
   if (ok) {
-    std::cout << "✓ Required commands      : all available (unrar, 7z, rar)\n";
+    std::cout << "✓ Required commands      : all available (unrar, 7z, rar, gdb)\n";
   }
   return ok;
 }

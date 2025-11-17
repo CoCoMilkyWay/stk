@@ -6,6 +6,7 @@
 #include "misc/logging.hpp"
 
 #include <cstdio>
+#include <vector>
 
 void crosssectional_worker(const SharedState &state,
                            GlobalFeatureStore *feature_store,
@@ -16,6 +17,14 @@ void crosssectional_worker(const SharedState &state,
   size_t completed_dates = 0;
 
   Logger::log_worker(worker_id, "Started: " + std::to_string(total_dates) + " dates to process");
+
+  // Preallocate reusable buffers (avoid per-timeslot allocation)
+  const size_t A = feature_store->query_A();
+  std::vector<size_t> valid_indices;
+  std::vector<float> input_fp32(A);
+  std::vector<float> output_fp32(A);
+  std::vector<_Float16> output_fp16(A);
+  valid_indices.reserve(A);
 
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < state.all_dates.size(); ++date_idx) {
@@ -28,20 +37,19 @@ void crosssectional_worker(const SharedState &state,
              worker_id, date_idx + 1, total_dates, date_str.c_str());
     progress_handle.set_label(label_buf);
 
-    // Process each time slot as it becomes ready
+    // Process each time slot (per-slot sync for live trading compatibility)
     for (size_t t = 0; t < capacity; ++t) {
-      // Wait for TS to finish this timeslot (blocks until ready)
-      feature_store->cs_wait_ready(date_str, t);
+      feature_store->cs_wait_until_ready(date_str, t);
 
-      // Compute CS features for this time slot
-      compute_cs_for_timeslot(feature_store, date_str, t);
+      // Compute CS features (reuse buffers to avoid allocation)
+      compute_cs_for_timeslot(feature_store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
     }
 
     ++completed_dates;
     progress_handle.update(completed_dates, total_dates, "");
 
     // Mark this date as complete for tensor pool recycling
-    feature_store->cs_mark_complete(date_str);
+    feature_store->cs_mark_done(date_str);
 
     Logger::log_worker(worker_id, date_str + " completed: " + std::to_string(capacity) + " timeslots");
   }

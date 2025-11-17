@@ -84,7 +84,7 @@ public:
       // CS worker needs to know each tick is done
       if (feature_store_ && !date_str_.empty()) {
         size_t l0_t = time_to_trading_seconds(lob.hour, lob.minute, lob.second);
-        feature_store_->ts_mark_progress(date_str_, core_id_, asset_id_, l0_t);
+        feature_store_->ts_update_progress(date_str_, core_id_, asset_id_, l0_t);
       }
       return;
     }
@@ -106,7 +106,7 @@ public:
     // This ensures order-level synchronization for real-time CS computation
     if (feature_store_ && !date_str_.empty()) {
       size_t l0_t = time_to_trading_seconds(lob.hour, lob.minute, lob.second);
-      feature_store_->ts_mark_progress(date_str_, core_id_, asset_id_, l0_t);
+      feature_store_->ts_update_progress(date_str_, core_id_, asset_id_, l0_t);
     }
   }
 

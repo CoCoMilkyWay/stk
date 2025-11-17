@@ -165,7 +165,7 @@ int main() {
     // ========================================================================
     // PHASE 1: ENCODING (can be out-of-order, uses RAR locks)
     // ========================================================================
-    std::cout << "=== Phase 1: Encoding (generate binaries to output/database, run only once) ===" << "\n";
+    std::cout << "=== Phase 1: Encoding ===" << "\n";
 
     // Build shared state
     SharedState state;
@@ -219,6 +219,8 @@ int main() {
       }
     }
     std::cout << "\n";
+
+    std::cout << "Encoding: 二进制数据库创建中, 下次运行可直接快速读取...\n";
 
     // Build asset ID queue for work distribution
     std::vector<size_t> asset_id_queue;

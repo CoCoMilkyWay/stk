@@ -20,6 +20,14 @@ CMAKE_ARGS="-S . -B build -G Ninja"
 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_BUILD_TYPE=$BUILD_TYPE"
 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 
+# ThreadSanitizer mode
+if [ "$TSAN_MODE" = "ON" ]; then
+    echo "ThreadSanitizer mode: ENABLED"
+    CMAKE_ARGS="$CMAKE_ARGS -DTSAN_MODE=ON"
+else
+    CMAKE_ARGS="$CMAKE_ARGS -DTSAN_MODE=OFF"
+fi
+
 # Profile mode
 if [ "$PROFILE_MODE" = "ON" ]; then
     echo "Profile mode: ENABLED"

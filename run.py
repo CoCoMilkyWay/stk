@@ -9,9 +9,19 @@ import time
 # ============================================================================
 # Calling chain: run.py -> py/{APP_NAME}.py -> cpp/projects/{APP_NAME}/build.sh
 #
-# - run.py: orchestrates build -> run -> profiling
+# - run.py: orchestrates build -> run -> profiling/debugging
 # - py/{APP_NAME}.py: project-specific preparation + triggers build.sh
 # - build.sh: compiles C++ + copies compile_commands.json for clangd
+#
+# Usage:
+#   1. Set ONE mode flag (ENABLE_TSAN/DEBUG/PROFILE) to True
+#   2. Run: python run.py
+#
+# Modes:
+#   - TSAN:    Detect race conditions (5-15x slower, auto-detect bugs)
+#   - DEBUG:   Interactive GDB debugging (very slow, manual inspection)
+#   - PROFILE: CPU profiling with gperftools (slow, performance analysis)
+#   - Default: Production build (-O3, fastest)
 # ============================================================================
 
 # ============================================================================
@@ -20,8 +30,10 @@ import time
 APP_NAME = "main"
 
 # Build & Run modes (set ONE to True, others to False)
-ENABLE_PROFILE = False
-ENABLE_DEBUG   = False
+# Priority: TSAN > DEBUG > PROFILE > PRODUCTION
+ENABLE_TSAN = False  # ThreadSanitizer: race condition detection (-O1)
+ENABLE_PROFILE = False  # gperftools: CPU profiling (-O0)
+ENABLE_DEBUG = False   # GDB: interactive debugging (-O0)
 # Default: production mode with -O3 optimizations
 
 # Profiler settings
@@ -127,25 +139,6 @@ def run_with_profiling(binary_path, working_dir):
             "\nProfile not generated. Install: sudo apt-get install libgoogle-perftools-dev")
 
 
-def build_project(app_name, enable_profile, enable_debug):
-    """Trigger build via py/{app_name}.py -> build.sh."""
-    py_script = f"./py/{app_name}.py"
-
-    if not os.path.exists(py_script):
-        print(f"Error: Build script not found: {py_script}")
-        sys.exit(1)
-
-    env = os.environ.copy()
-    env['PROFILE_MODE'] = 'ON' if enable_profile else 'OFF'
-    env['DEBUG_MODE']   = 'ON' if enable_debug   else 'OFF'
-
-    result = subprocess.run(["python3", py_script], env=env, check=False)
-
-    if result.returncode != 0:
-        print(f"\nBuild failed with exit code {result.returncode}")
-        sys.exit(1)
-
-
 def run_with_gdb_debug(binary_path, working_dir):
     """Run binary under GDB with automatic thread stack trace capture."""
     log_dir = os.path.abspath("output/log")
@@ -159,7 +152,7 @@ def run_with_gdb_debug(binary_path, working_dir):
 set pagination off
 set logging file {trace_file}
 set logging overwrite on
-set logging on
+set logging enabled on
 set confirm off
 
 # Catch signals and crashes
@@ -180,7 +173,7 @@ echo \\n=== NORMAL EXIT ===\\n
 info threads
 thread apply all bt
 
-set logging off
+set logging enabled off
 quit
 """
 
@@ -250,13 +243,100 @@ quit
         sys.exit(1)
 
 
-def run_binary(binary_path, working_dir, enable_profile, enable_debug):
-    """Run binary with optional profiling or GDB debugging."""
+def run_with_tsan_debug(binary_path, working_dir):
+    """Run binary with ThreadSanitizer for race condition detection."""
+    log_dir = os.path.abspath("output/log")
+    os.makedirs(log_dir, exist_ok=True)
+    tsan_log = os.path.join(log_dir, "tsan_report.log")
+    
+    # Configure TSan options: halt on first error
+    env = os.environ.copy()
+    tsan_options = [
+        "history_size=3",
+        "halt_on_error=1",
+        "second_deadlock_stack=0",
+        "print_suppressions=0",
+        "report_signal_unsafe=0",
+    ]
+    env['TSAN_OPTIONS'] = ':'.join(tsan_options)
+    
+    print("Running with ThreadSanitizer (expect 5-15x slowdown)...")
+    print(f"TSan report will be saved to: {tsan_log}\n")
+    
+    start_time = time.time()
+    
+    # Run and capture stderr (TSan output)
+    result = subprocess.run(
+        [binary_path],
+        cwd=working_dir,
+        env=env,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    # Save stderr to file after process completes
+    if result.stderr:
+        with open(tsan_log, 'w') as log_file:
+            log_file.write(result.stderr)
+    
+    elapsed = time.time() - start_time
+    
+    print(f"\n✓ TSan run completed")
+    print(f"Execution time: {elapsed:.2f}s ({elapsed/60:.2f}min)")
+    
+    # Show summary
+    if os.path.exists(tsan_log) and os.path.getsize(tsan_log) > 0:
+        print(f"\n{'='*80}")
+        print("ThreadSanitizer Report")
+        print(f"{'='*80}\n")
+        
+        with open(tsan_log, 'r') as f:
+            lines = f.readlines()
+            # Show first 300 lines
+            for line in lines[:300]:
+                print(line, end='')
+            
+            if len(lines) > 300:
+                print(f"\n... ({len(lines) - 300} more lines)")
+        
+        print(f"\n{'='*80}")
+        print(f"Full report: {tsan_log}")
+        print(f"{'='*80}\n")
+    else:
+        print(f"\n✓ No race conditions detected!")
+    
+    sys.exit(result.returncode)
+
+
+def build_project(app_name, enable_tsan, enable_profile, enable_debug):
+    """Trigger build via py/{app_name}.py -> build.sh."""
+    py_script = f"./py/{app_name}.py"
+
+    if not os.path.exists(py_script):
+        print(f"Error: Build script not found: {py_script}")
+        sys.exit(1)
+
+    env = os.environ.copy()
+    env['TSAN_MODE'] = 'ON' if enable_tsan else 'OFF'
+    env['PROFILE_MODE'] = 'ON' if enable_profile else 'OFF'
+    env['DEBUG_MODE'] = 'ON' if enable_debug else 'OFF'
+
+    result = subprocess.run(["python3", py_script], env=env, check=False)
+
+    if result.returncode != 0:
+        print(f"\nBuild failed with exit code {result.returncode}")
+        sys.exit(1)
+
+
+def run_binary(binary_path, working_dir, enable_tsan, enable_profile, enable_debug):
+    """Run binary with optional TSan/profiling/GDB."""
     if not os.path.exists(binary_path):
         print(f"Error: Binary not found: {binary_path}")
         sys.exit(1)
 
-    if enable_debug:
+    if enable_tsan:
+        run_with_tsan_debug(binary_path, working_dir)
+    elif enable_debug:
         run_with_gdb_debug(binary_path, working_dir)
     elif enable_profile:
         run_with_profiling(binary_path, working_dir)
@@ -277,12 +357,13 @@ def main():
     _cleanup_background_processes()
 
     # Build project
-    build_project(APP_NAME, ENABLE_PROFILE, ENABLE_DEBUG)
+    build_project(APP_NAME, ENABLE_TSAN, ENABLE_PROFILE, ENABLE_DEBUG)
 
     # Run binary from build directory (binary expects to run from build/ for relative paths)
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
     binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}")
-    run_binary(binary_path, build_dir, ENABLE_PROFILE, ENABLE_DEBUG)
+    run_binary(binary_path, build_dir, ENABLE_TSAN,
+               ENABLE_PROFILE, ENABLE_DEBUG)
 
 
 if __name__ == "__main__":

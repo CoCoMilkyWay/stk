@@ -19,7 +19,7 @@ void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t to
   size_t wait_count = 0;
   while (flush_count < total_dates) {
     // Flush oldest CS_DONE tensor (one at a time, maintains date order)
-    bool flushed = store->io_flush_once();
+    bool flushed = store->io_try_flush_one();
 
     if (flushed) {
       flush_count++;

@@ -85,16 +85,18 @@ inline void compute_zscore_sparse(const float *input,
   }
 }
 
-// Compute all CS features for a single time slot
-inline void compute_cs_for_timeslot(GlobalFeatureStore *store, const std::string &date, size_t t) {
-  const size_t A = store->query_A();
+// Compute all CS features for a single time slot (with reusable buffers)
+inline void compute_cs_for_timeslot(GlobalFeatureStore *store, const std::string &date, size_t t,
+                                    std::vector<size_t> &valid_indices,
+                                    std::vector<float> &input_fp32,
+                                    std::vector<float> &output_fp32,
+                                    std::vector<_Float16> &output_fp16) {
   constexpr size_t level_idx = 0;
+  const size_t A = input_fp32.size();
 
-  // Read asset_valid flags to filter assets (_Float16 auto-converts to float)
+  // Build valid indices
   const _Float16 *valid_flags = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::asset_valid);
-
-  // Build valid asset indices
-  std::vector<size_t> valid_indices;
+  valid_indices.clear();
   for (size_t a = 0; a < A; ++a) {
     if (static_cast<float>(valid_flags[a]) > 0.5f) {
       valid_indices.push_back(a);
@@ -104,24 +106,19 @@ inline void compute_cs_for_timeslot(GlobalFeatureStore *store, const std::string
   if (valid_indices.empty())
     return;
 
-  // Allocate buffers (use float for computation precision)
-  std::vector<float> input_fp32(A);
-  std::vector<float> output_fp32(A);
-  std::vector<_Float16> output_fp16(A);
-
-  // CS feature 1: cs_spread_rank (from spread_momentum)
+  // CS feature 1: cs_spread_rank
   {
     const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::spread_momentum);
     for (size_t a = 0; a < A; ++a)
-      input_fp32[a] = input[a]; // Auto-convert
+      input_fp32[a] = input[a];
     std::fill(output_fp32.begin(), output_fp32.end(), 0.0f);
     compute_rank_inverse_normal_sparse(input_fp32.data(), valid_indices, output_fp32.data());
     for (size_t a = 0; a < A; ++a)
-      output_fp16[a] = output_fp32[a]; // Auto-convert
+      output_fp16[a] = output_fp32[a];
     CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_spread_rank, output_fp16.data(), A);
   }
 
-  // CS feature 2: cs_tobi_rank (from tobi_osc)
+  // CS feature 2: cs_tobi_rank
   {
     const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::tobi_osc);
     for (size_t a = 0; a < A; ++a)
@@ -133,7 +130,7 @@ inline void compute_cs_for_timeslot(GlobalFeatureStore *store, const std::string
     CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_tobi_rank, output_fp16.data(), A);
   }
 
-  // CS feature 3: cs_liquidity_ratio (from signed_volume_imb)
+  // CS feature 3: cs_liquidity_ratio
   {
     const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::signed_volume_imb);
     for (size_t a = 0; a < A; ++a)

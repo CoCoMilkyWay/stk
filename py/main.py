@@ -16,7 +16,7 @@ def build_main_project():
     
     print("Building C++ project: main")
     
-    # Pass through PROFILE_MODE and DEBUG_MODE to build.sh
+    # Pass through TSAN_MODE, PROFILE_MODE, and DEBUG_MODE to build.sh
     env = os.environ.copy()
     
     result = subprocess.run(

@@ -46,40 +46,540 @@
 // stride<32KB: L1访问优化; 
 // stride<1MB: L2访问优化; 
 //
-// 【Worker分工】N cores = (N-2) TS + 1 CS + 1 IO
-//   - TS Workers: 时序特征计算，按 asset 分配，date-first 遍历
-//   - CS Worker:  截面特征计算，等待 TS 完成后处理
-//   - IO Worker:  异步flush，独立扫描 pool，写磁盘 
-
-// 【核心数据流】
-//   1. TS Workers (并行，按 asset 分配):
-//      - 遍历所有 dates (date-first)，处理分配给自己的 assets
-//      - 写入: lobs[i]->process(order) → 内部调用 ts_mark_progress()
-//      - 同步: ts_mark_progress(date, core_id, asset_id, l0_t)
-//              → 更新 day->ts_progress[asset_id] (atomic, lock-free)
-//      - 完成: ts_mark_done(date, core_id) → 标记该 worker 完成该日期
+// ============================================================================
+// 【Tensor Pool 架构 - 事件驱动 + 无锁设计
+// ============================================================================
 //
-//   2. CS Worker (单线程):
-//      - 等待: cs_check_ready(date, t) → 检查 min(ts_progress[all_assets]) > t
-//      - 读写: CS_READ_ALL() / CS_WRITE_ALL()
-//      - 完成: cs_mark_complete(date) → 设置 state = CS_DONE
+// 【Worker 分工】N cores = (N-2) TS + 1 CS + 1 IO (分别设置cpu亲和)
+//   - TS Workers (10): 时序特征计算，按 asset 分配，date-first 遍历(在time index级别是 顺序, 稀疏, 而且per asset不同的, 所以需要progress机制)
+//   - CS Worker  (1):  截面特征计算，等待 TS 完成后处理 (与TS的sync粒度必须细, 到time index级别, 这样和实盘行为才是一致的)
+//   - IO Worker  (1):  异步 flush，独立扫描 pool，写磁盘
 //
-//   3. IO Worker (单线程，异步):
-//      - 扫描: io_flush_once() → 找 state == CS_DONE 的最老日期
-//      - 写盘: flush_to_disk() → 写 features_L0/L1/L2.bin
-//      - 回收: 可选 release_data() 或保留 (当前暂时保留便于 debug)
+// 【核心数据结构】
 //
-// 【Tensor Pool 机制】(当前实现为 map-based 动态分配，pool 将来恢复)
-//   - 状态机: UNUSED → IN_USE → CS_DONE → FLUSHING → (删除或 UNUSED)
-//   - 当前: std::map<date, DayData*> + mutex (简化 debug，将来改回 pool)
-//   - 未来: 固定 pool[N] (预分配) + CAS 分配 (UNUSED→IN_USE，无锁)
-//   - 优势: 预分配内存，运行时零 malloc/free，TS 无阻塞
+//   // Tensor lifecycle states
+//   enum class TensorState : uint8_t {
+//     FREE = 0,        // Available for allocation
+//     INIT = 1,        // Being initialized
+//     BUSY = 2,        // Active (TS writing + CS reading/writing)
+//     DONE = 3,        // CS finished, ready for flush
+//     FLUSH = 4        // IO worker writing to disk
+//   };
 //
-// 【同步机制】最小锁设计
-//   - 数据写入: 无锁 (不同 worker 写不同 asset，无竞争)
-//   - 进度追踪: ts_progress[asset_id] atomic (lock-free 轮询)
-//   - 控制平面: map_mutex_ 仅在 get_or_create/flush 时使用
-//   - Worker 缓存: 每个 worker 缓存当前 date 的 DayData*，避免重复加锁
+//   // Per-date tensor slot (position-based 同步 + 事件驱动)
+//   struct Slot {
+//     // 状态机: FREE → INIT → BUSY → DONE → FLUSH → FREE
+//     std::atomic<TensorState> state;
+//     std::atomic<uint32_t> epoch;               // Generation number (检测 slot 回收, 用 acq_rel)
+//     char date[16];                             // 当前绑定的日期 (format: "YYYYMMDD\0", 固定大小, 可原子拷贝)
+//     _Float16* data[3];                         // [T,F,A] tensors for L0/L1/L2
+//
+//     // 同步机制（核心：two-level write_pos，优化 CS 扫描）
+//     std::atomic<size_t>* ts_write_pos;         // length = A (每个 asset 的 L0 写入位置)
+//                                                // ts_write_pos[a] = asset a 已写入的最大 L0 时间索引 + 1
+//                                                // TS worker: 写完 (a, t) 后 store(t+1, release)
+//                                                // 用于准确维护，支持细粒度查询
+//     std::atomic<size_t>* ts_worker_min_pos;    // length = num_ts_workers (每个 TS worker 的最小写入位置)
+//                                                // ts_worker_min_pos[w] = worker w 负责的所有 assets 的 min(write_pos)
+//                                                // TS worker: 维护 thread-local min，定期 store(min, release)
+//                                                // CS: 快速扫描 O(W) vs O(A)，W=10, A=1000
+//     std::atomic<bool>* ts_done_flag;           // length = num_ts_workers (每个 TS worker 的完成标志)
+//                                                // TS worker: 完成 date 后 store(true, release)
+//                                                // CS: 全部 true 时不再等待 min_pos 增长
+//
+//     // CS 读取位置缓存（避免重复扫描 ts_worker_min_pos）
+//     std::atomic<size_t> cs_read_pos;           // CS 已验证的安全读位置 (atomic 支持未来多 CS worker 扩展)
+//                                                // cs_read_pos = N 表示 [0, N-1] 的 time_idx 已验证就绪
+//                                                // CS 每次 sweep 扫描 ts_worker_min_pos 得到 min_pos，
+//                                                // 一次可以推进几百个 time_idx（O(W) 扫描，极快）
+//                                                // 当前单 CS worker: 使用 relaxed load/store 即可
+//
+//     // Freelist linkage
+//     std::atomic<int> next_free;                // Freelist 链表指针 (-1 = end)
+//   };
+//
+//   // TS worker cache entry (per-worker, lock-free hot path)
+//   struct TSCacheEntry {
+//     std::string date;                          // Cached date
+//     int idx;                                   // Slot index in pool
+//     uint32_t epoch;                            // Cached epoch (detect slot recycling)
+//   };
+//
+//   // CS worker cache entry (single-threaded)
+//   struct CSCacheEntry {
+//     std::string date;                          // Cached date
+//     int idx;                                   // Slot index in pool
+//     uint32_t epoch;                            // Cached epoch (detect slot recycling)
+//   };
+//
+//   全局变量:
+//     Slot pool[POOL_SIZE];                      // 预分配 slot 数组
+//     std::atomic<uint64_t> free_head{0};        // 无锁栈头 + ABA 防护
+//                                                // 格式: (tag << 32) | slot_idx
+//                                                // 高 32 位: version tag (防 ABA)
+//                                                // 低 32 位: slot index (-1 = empty)
+//                                                // 初始值: 0 (tag=0, idx=0→1→2...)
+//     std::counting_semaphore<POOL_SIZE> pool_sem(POOL_SIZE);  // 信号量，阻塞分配
+//                                                // acquire: 分配 slot 前; release: 回收 slot 后
+//     std::map<string, int> date_map;            // date → slot_idx 映射 (需要 mutex 保护)
+//     std::mutex map_mtx;                        // 仅保护 date_map
+//     TSCacheEntry ts_cache[num_ts_workers];     // TS worker cache 数组 (lock-free)
+//     CSCacheEntry cs_cache;                     // CS worker cache (单线程)
+//
+//     // 事件队列（无锁/有界）
+//     lf_queue<pair<string,int>> ready_queue;    // (date, slot_idx) - CS 等待 slot 分配完成
+//                                                // TS 在 state=BUSY 后 push
+//     lf_queue<int> flush_queue;                 // slot_idx - CS 在完成后 push
+//                                                // IO worker pop 并异步写盘
+//
+//     // TS worker 分配表（静态分配，启动时初始化）
+//     std::vector<int> assigned_assets[num_ts_workers];  // 每个 worker 负责的 asset 列表
+//                                                // 示例: 10 workers, 1000 assets → 每个 worker 100 assets
+//                                                // assigned_assets[0] = {0,1,2,...,99}
+//                                                // assigned_assets[1] = {100,101,...,199}
+//
+//   Thread-local 变量 (每个 TS worker 独立维护):
+//     thread_local size_t worker_local_min[num_ts_workers];  // 当前 worker_min 缓存
+//
+//   常量定义:
+//     constexpr size_t A = 1000;                 // 最大 asset 数量
+//     constexpr size_t T0 = 14400/1440000 + 1;   // L0 最大 time_idx (4 小时 × 3600 秒/360000*10微秒)
+//     constexpr size_t F = 1000;                 // 最大 feature 数量
+//     constexpr size_t num_ts_workers = 10;      // TS worker 数量
+//     constexpr size_t POOL_SIZE = 30;           // Slot pool 大小
+//     constexpr size_t PUBLISH_INTERVAL = 10;    // worker_min 发布间隔（每 N 次写入）
+//
+//   内存估算 (按设计最大容量):
+//     - data[L0]: T × F × A × 2B = 100,000 × 1,000 × 1,000 × 2 = 200 GB
+//     - data[L1]: T × F × A × 2B (分钟级，T 约几百，F 约几百) ≈ 数百 MB
+//     - data[L2]: T × F × A × 2B (小时级，T 约十几，F 约几百) ≈ 数十 MB
+//     - remaining_count: T0 × 4B = 100,000 × 4 = 400 KB
+//     - Total per slot: ~200 GB (L0 占主导)
+//     - 设计上限: Pool 30 slots = 6 TB (需大内存机器或外存支持)
+//
+//   实际配置示例 (当前测试规模):
+//     - A=107, F0=15, T0=14401 → ~47 MB/slot, Pool 30 = 1.4 GB
+//
+//   Pool Size 建议: pool_size >= max(2 × TS_workers, TS_workers + 10)
+//                   典型配置: 10 TS workers → pool >= 20 slots
+//
+//   辅助函数声明:
+//     void write_data(Slot &s, size_t t, size_t a, const data&);  // 写入特征数据到 slot
+//     void write_disk(const char date[16], Slot &s);   // 异步写盘
+//     std::atomic<bool> running{true};               // IO worker 运行标志
+//
+//   初始化:
+//     void init_pool() {
+//       // 1. 初始化 freelist: 所有 slot 串成链表
+//       for (size_t i = 0; i < POOL_SIZE - 1; ++i) {
+//         pool[i].next_free.store(i + 1, memory_order_relaxed);
+//         pool[i].state.store(FREE, memory_order_relaxed);
+//       }
+//       pool[POOL_SIZE - 1].next_free.store(-1, memory_order_relaxed);  // 末尾
+//       pool[POOL_SIZE - 1].state.store(FREE, memory_order_relaxed);
+//       
+//       // 2. 初始化 free_head: tag=0, idx=0 (指向第一个 slot)
+//       free_head.store(0, memory_order_release);  // (0 << 32) | 0
+//       
+//       // 3. 初始化 TS worker 分配表 (静态分配 assets 到 workers)
+//       //    示例: 10 workers, 1000 assets → 每个 worker 负责 100 assets
+//       //    策略: round-robin 或 contiguous block
+//       const size_t assets_per_worker = (A + num_ts_workers - 1) / num_ts_workers;
+//       for (size_t w = 0; w < num_ts_workers; ++w) {
+//         size_t start = w * assets_per_worker;
+//         size_t end = std::min(start + assets_per_worker, A);
+//         for (size_t a = start; a < end; ++a) {
+//           assigned_assets[w].push_back(a);
+//         }
+//       }
+//     }
+//
+//
+// ============================================================================
+// 【完整数据流 - 伪代码】
+// ============================================================================
+//
+// === TS Worker: 获取 slot ===
+// int ts_get_slot(date, worker_id) {
+//   // 1. 检查 cache (lock-free)
+//   if (ts_cache[worker_id].date == date && pool[ts_cache[worker_id].idx].epoch.load(memory_order_acquire) == ts_cache[worker_id].epoch) {
+//     return ts_cache[worker_id].idx;  // Cache hit
+//   }
+//
+//   // 2. Cache miss: 需要分配或等待其他 worker 分配完成
+//   //    关键: 使用 map_mtx + state 双重保护，避免重复分配同一 date
+//   {
+//     lock_guard lk(map_mtx);
+//     auto it = date_map.find(date);
+//     
+//     // 2a. 其他 worker 已分配: 等待 state != INIT 后使用
+//     if (it != date_map.end()) {
+//       int slot_idx = it->second;
+//       lk.unlock();  // 释放锁后等待（避免阻塞其他 worker）
+//       
+//       // Spin-wait 直到 slot 初始化完成（INIT → BUSY）
+//       //   state 顺序: INIT (分配中) → BUSY (可用)
+//       //   使用 acquire 确保看到初始化操作
+//       while (pool[slot_idx].state.load(memory_order_acquire) == INIT) {
+//         std::this_thread::yield();  // 短暂等待，避免 busy-loop
+//       }
+//       
+//       // 更新 cache 并返回
+//       uint32_t epoch = pool[slot_idx].epoch.load(memory_order_acquire);
+//       ts_cache[worker_id] = {date, slot_idx, epoch};
+//       return slot_idx;
+//     }
+//     
+//     // 2b. 我们是第一个: 分配新 slot (持有 map_mtx)
+//     pool_sem.acquire();                        // 阻塞直到有空闲 slot
+//     int slot_idx = pop_free();                 // CAS 无锁弹出
+//     Slot &s = pool[slot_idx];
+//     
+//     // 立即标记为 INIT 并插入 map (原子发布分配意图)
+//     s.state.store(INIT, memory_order_relaxed);
+//     s.epoch.fetch_add(1, memory_order_acq_rel);  // 使旧 cache 失效
+//     date_map[date] = slot_idx;  // 持有锁，原子插入
+//   }  // 释放 map_mtx，允许其他 worker 发现此 slot 正在初始化
+//   
+//   // 3. 初始化 slot (昂贵操作，不持有锁)
+//   int slot_idx = date_map[date];  // Safe: 我们已插入 map
+//   Slot &s = pool[slot_idx];
+//   std::strncpy(s.date, date.c_str(), sizeof(s.date) - 1);  // 固定大小拷贝 "YYYYMMDD"
+//   s.date[sizeof(s.date) - 1] = '\0';  // 确保 null-terminated
+//   
+//   // 3a. 初始化同步变量
+//   for (int a = 0; a < A; ++a) {
+//     s.ts_write_pos[a].store(0, memory_order_relaxed);  // A = total assets
+//   }
+//   for (int w = 0; w < num_ts_workers; ++w) {
+//     s.ts_worker_min_pos[w].store(0, memory_order_relaxed);
+//     s.ts_done_flag[w].store(false, memory_order_relaxed);
+//   }
+//   s.cs_read_pos.store(0, memory_order_relaxed);
+//   memset(s.data, 0, ...);  // 清零数据
+//   
+//   // 4. 原子发布: 状态转为 BUSY (确保所有初始化对后续 reader 可见)
+//   s.state.store(BUSY, memory_order_release);
+//   
+//   // 5. 通知 CS worker: slot 已可用 (事件驱动，避免 CS 轮询 map)
+//   ready_queue.push({date, slot_idx});
+//   
+//   // 6. 更新 cache
+//   ts_cache[worker_id] = {date, slot_idx, s.epoch.load(memory_order_relaxed)};
+//   
+//   // 7. 初始化 thread-local worker_min (新 date 开始)
+//   worker_local_min[worker_id] = 0;
+//   
+//   return slot_idx;
+// }
+//
+// === TS Worker: 辅助函数 (增量 min 维护优化) ===
+// void update_local_min(int worker_id, int a, size_t old_pos, size_t new_pos, Slot &s) {
+//   // 增量维护 worker_min（避免每次都扫描所有 assets）
+//   if (old_pos == worker_local_min[worker_id]) {
+//     // 被修改的是当前 min，重新扫描
+//     size_t new_min = SIZE_MAX;
+//     for (int a : assigned_assets[worker_id]) {
+//       new_min = std::min(new_min, s.ts_write_pos[a].load(memory_order_relaxed));
+//     }
+//     worker_local_min[worker_id] = new_min;
+//   } else {
+//     // 被修改的不是 min，简单更新
+//     worker_local_min[worker_id] = std::min(worker_local_min[worker_id], new_pos);
+//   }
+// }
+//
+// === TS Worker: 写入特征 (增量维护 worker_min) ===
+// void ts_write(date, t, a, worker_id, data) {
+//   int slot_idx = ts_get_slot(date, worker_id);
+//   Slot &s = pool[slot_idx];
+//
+//   // 1. 写入数据到 slot (普通写，非 atomic)
+//   //    顺序: write_data → store write_pos → update local_min → publish worker_min
+//   write_data(s, t, a, data);
+//
+//   // 2. 获取旧位置 (用于增量维护 min)
+//   size_t old_pos = s.ts_write_pos[a].load(memory_order_relaxed);
+//
+//   // 3. 更新 asset 写入位置 (memory_order_release)
+//   //    release: 确保数据写入对后续 acquire 可见
+//   //    注意: 每个 TS worker 负责不同的 asset，无竞争，简单 store 即可
+//   size_t new_pos = t + 1;
+//   s.ts_write_pos[a].store(new_pos, memory_order_release);
+//
+//   // 4. 增量维护 worker_min (thread-local 缓存)
+//   //    只有 old_pos == worker_min 时才需要重新扫描
+//   update_local_min(worker_id, a, old_pos, new_pos, s);
+//
+//   // 5. 发布 worker_min_pos
+//     size_t local_min = worker_local_min[worker_id];  // 返回缓存的 worker_min
+//     s.ts_worker_min_pos[worker_id].store(local_min, memory_order_release);
+//   
+//   // 6. CS 通过扫描 min(ts_worker_min_pos[all workers]) 判断 time_idx 就绪
+//   //    扫描复杂度: O(W) vs O(A)，W=10, A=1000，快 100 倍
+// }
+//
+// === TS Worker: 完成标记 ===
+// void ts_done(date, worker_id) {
+//   int slot_idx = ts_cache[worker_id].idx;
+//   Slot &s = pool[slot_idx];
+//
+//   // 1. 批量更新所有负责的 asset 位置为最终值 (使用 relaxed 提高性能)
+//   //    每个 TS worker 负责固定的 asset 子集，无竞争
+//   for (int a : assigned_assets[worker_id]) {
+//     s.ts_write_pos[a].store(T0, memory_order_relaxed);
+//   }
+//
+//   // 2. 插入 fence 确保上述写入对后续 acquire 可见
+//   //    关键: release fence 建立 happens-before 关系
+//   //    CS 的 acquire load 能看到 fence 之前的所有 relaxed store
+//   std::atomic_thread_fence(memory_order_release);
+//
+//   // 3. 发布最终 worker_min_pos = T0 (确保 CS 快速扫描时不会阻塞)
+//   s.ts_worker_min_pos[worker_id].store(T0, memory_order_release);
+//
+//   // 4. 最后标记该 worker 完成 (memory_order_release)
+//   //    CS 通过 acquire 读取此 flag，建立同步点
+//   s.ts_done_flag[worker_id].store(true, memory_order_release);
+//
+//   // 5. 清除 cache (避免 stale access，防止后续误用)
+//   ts_cache[worker_id] = {"",-1,0};
+// }
+//
+// === CS Worker: 等待 time_idx 就绪 (two-level position sweep) ===
+// void cs_wait(date, t) {
+//   // 1. 获取 slot (cache hit 或从 ready_queue 获取)
+//   Slot &s = cs_get_slot(date);  // 细节见下方 cs_get_slot
+//
+//   // 2. Fast path: cs_read_pos 缓存已验证的读位置
+//   //    如果 t < cs_read_pos，说明该 time_idx 已验证就绪，直接返回
+//   if (t < s.cs_read_pos.load(memory_order_relaxed)) [[likely]] {
+//     return;  // Cache hit，无需扫描 (单 CS worker 用 relaxed 即可)
+//   }
+//
+//   // 3. Slow path: 扫描所有 worker 的 ts_worker_min_pos，计算 min_pos
+//   //    (O(W) 扫描，W=10, 极快)
+//   size_t backoff_us = 1;  // 初始退避时间 1us
+//   while (true) {
+//     size_t min_pos = SIZE_MAX;
+//     for (size_t w = 0; w < num_ts_workers; ++w) {
+//       min_pos = std::min(min_pos,
+//                          s.ts_worker_min_pos[w].load(memory_order_acquire));
+//     }
+//
+//     // 4. 如果 min_pos > t，说明所有 asset 都写到了 t 之后
+//     //    更新 cs_read_pos = min_pos (一次 sweep 可推进几百个 time_idx)
+//     if (min_pos > t) {
+//       s.cs_read_pos.store(min_pos, memory_order_relaxed);  // 批量验证 [cs_read_pos, min_pos) 就绪
+//       return;  // 该 time_idx 就绪
+//     }
+//
+//     // 5. 如果所有 TS worker 都完成了，min_pos 不会再增长
+//     //    直接返回（处理部分 asset 无数据的情况）
+//     bool all_done = true;
+//     for (size_t w = 0; w < num_ts_workers; ++w) {
+//       if (!s.ts_done_flag[w].load(memory_order_acquire)) {
+//         all_done = false;
+//         break;
+//       }
+//     }
+//     if (all_done) {
+//       s.cs_read_pos.store(T0, memory_order_relaxed);  // 强制所有 time_idx 就绪
+//       return;
+//     }
+//
+//     // 6. 等待后重试 (exponential backoff 避免 busy-loop)
+//     //    backoff 策略: 1us → 2us → 4us → ... → 100us (上限)
+//     //    理由: TS 发布频率约每 10 次写入，间隔 < 1us，初始 1us 足够
+//     std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
+//     backoff_us = std::min(backoff_us * 2, 100UL);  // 指数增长，最大 100us
+//   }
+// }
+//
+// === CS Worker: 获取 slot (cache + event queue) ===
+// Slot& cs_get_slot(const string& date) {
+//   // Cache hit
+//   if (cs_cache.date == date) {
+//     int slot_idx = cs_cache.idx;
+//     uint32_t epoch = cs_cache.epoch;
+//     if (pool[slot_idx].epoch.load(memory_order_acquire) == epoch) {
+//       return pool[slot_idx];  // Cache valid
+//     }
+//   }
+//
+//   // Cache miss: 从 ready_queue 获取 (阻塞等待 TS 分配完成)
+//   pair<string, int> ev;
+//   while (true) {
+//     if (ready_queue.pop_blocking(ev)) {
+//       if (ev.first == date) {
+//         int slot_idx = ev.second;
+//         uint32_t epoch = pool[slot_idx].epoch.load(memory_order_acquire);
+//         cs_cache = {date, slot_idx, epoch};
+//         return pool[slot_idx];
+//       } else {
+//         // 不是当前要处理的 date，push 回队列 (或缓存多个 date)
+//         ready_queue.push(ev);
+//       }
+//     }
+//   }
+// }
+//
+// === CS Worker: 完成标记 ===
+// void cs_done(date) {
+//   int slot_idx = cs_cache.idx;
+//   Slot &s = pool[slot_idx];
+//
+//   // 1. 等待所有 TS worker 完成 (确保不会有新数据写入)
+//   //    使用 exponential backoff 避免 busy-loop
+//   size_t backoff_us = 1;
+//   while (true) {
+//     bool all_done = true;
+//     for (size_t w = 0; w < num_ts_workers; ++w) {
+//       if (!s.ts_done_flag[w].load(memory_order_acquire)) {
+//         all_done = false;
+//         break;
+//       }
+//     }
+//     if (all_done) break;
+//     
+//     std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
+//     backoff_us = std::min(backoff_us * 2, 100UL);  // 指数增长，最大 100us
+//   }
+//
+//   // 2. CAS 转换状态 BUSY → DONE (原子状态转换)
+//   TensorState expected = BUSY;
+//   if (!s.state.compare_exchange_strong(expected, DONE,
+//                                        memory_order_acq_rel,
+//                                        memory_order_relaxed)) {
+//     // 状态异常，记录错误 (理论上不应该发生)
+//     // expected 现在包含实际状态，可用于调试
+//   }
+//
+//   // 3. 通知 IO worker flush (事件驱动)
+//   flush_queue.push(slot_idx);
+//
+//   // 4. 清除 cache (防止后续误用)
+//   cs_cache = {"", -1, 0};
+// }
+//
+// === CS Worker: 辅助函数 ===
+// float* cs_read(Slot &s, size_t lvl, size_t t, size_t f) {
+//   // 返回指向 (lvl, t, f) 的所有 A 个 assets 的指针
+//   // 调用前确保 cs_wait(date, t) 已验证 time_idx t 就绪
+//   return &s.data[lvl][(t * F + f) * A];
+// }
+//
+// void cs_write(Slot &s, size_t lvl, size_t t, size_t f, const _Float16* src, size_t count) {
+//   // 写入 (lvl, t, f) 的前 count 个 assets
+//   memcpy(&s.data[lvl][(t * F + f) * A], src, count * sizeof(_Float16));
+// }
+//
+// === IO Worker: 主循环 (事件驱动) ===
+// void io_flush() {
+//   while (running) {
+//     // 1. 从 flush_queue 阻塞获取下一个要 flush 的 slot
+//     //    flush_queue 由 CS worker 在 cs_done 时 push
+//     int slot_idx;
+//     if (!flush_queue.pop_blocking(slot_idx)) continue;  // 阻塞等待
+//
+//     Slot &s = pool[slot_idx];
+//
+//     // 2. CAS 转换状态 DONE → FLUSH (原子抢占，防止重复 flush)
+//     TensorState expected = DONE;
+//     if (!s.state.compare_exchange_strong(expected, FLUSH,
+//                                          memory_order_acq_rel,
+//                                          memory_order_relaxed)) {
+//       continue;  // 状态不对 (slot 已被回收或其他异常), skip
+//     }
+//
+//     // 3. 异步写盘 (不持有锁，独占 slot)
+//     //    内部可以使用 io_uring/AIO 实现异步 I/O
+//     //    这里简化为同步接口 (实际实现可以异步)
+//     char date_copy[16];  // 拷贝 date (避免写盘期间 slot 被修改)
+//     std::strncpy(date_copy, s.date, sizeof(date_copy));
+//     date_copy[sizeof(date_copy) - 1] = '\0';
+//     write_disk(date_copy, s);   // 异步写盘 (可阻塞直到完成)
+//
+//     // 4. 回收 slot
+//     {
+//       lock_guard lk(map_mtx);
+//       date_map.erase(date_copy);  // 使用拷贝的 date 字符串
+//     }
+//
+//     // 5. 使 cache 失效并回收 slot
+//     s.epoch.fetch_add(1, memory_order_acq_rel);  // 使所有 cache 失效
+//     s.state.store(FREE, memory_order_release);   // 发布 FREE 状态
+//     push_free(slot_idx);   // CAS 无锁压栈
+//     pool_sem.release();    // 唤醒阻塞的 TS worker
+//   }
+// }
+//
+// === 无锁 Freelist 操作 (Tagged pointer 防 ABA) ===
+// int pop_free() {
+//   while (true) {
+//     uint64_t head_tagged = free_head.load(memory_order_acquire);
+//     int head_idx = static_cast<int>(head_tagged & 0xFFFFFFFF);
+//     uint32_t head_tag = static_cast<uint32_t>(head_tagged >> 32);
+//     
+//     if (head_idx < 0) return -1;  // Empty (防御性检查)
+//     
+//     int next_idx = pool[head_idx].next_free.load(memory_order_relaxed);
+//     uint64_t next_tagged = (static_cast<uint64_t>(head_tag + 1) << 32) | static_cast<uint32_t>(next_idx);
+//     
+//     // CAS: success 用 acq_rel (获取旧 head，发布新 head，tag+1 防 ABA)
+//     if (free_head.compare_exchange_weak(head_tagged, next_tagged,
+//                                         memory_order_acq_rel,
+//                                         memory_order_acquire)) {
+//       return head_idx;  // 成功弹出
+//     }
+//     // CAS 失败（被其他线程修改或 ABA），重试
+//   }
+// }
+//
+// void push_free(int slot_idx) {
+//   while (true) {
+//     uint64_t old_head_tagged = free_head.load(memory_order_acquire);
+//     int old_head_idx = static_cast<int>(old_head_tagged & 0xFFFFFFFF);
+//     uint32_t old_tag = static_cast<uint32_t>(old_head_tagged >> 32);
+//     
+//     pool[slot_idx].next_free.store(old_head_idx, memory_order_relaxed);
+//     uint64_t new_head_tagged = (static_cast<uint64_t>(old_tag + 1) << 32) | static_cast<uint32_t>(slot_idx);
+//     
+//     // CAS: success 用 acq_rel (获取旧 head，发布新 head，tag+1 防 ABA)
+//     if (free_head.compare_exchange_weak(old_head_tagged, new_head_tagged,
+//                                         memory_order_acq_rel,
+//                                         memory_order_acquire)) {
+//       return;  // 成功压入
+//     }
+//     // CAS 失败（被其他线程修改或 ABA），重试
+//   }
+// }
+//
+// ============================================================================
+// MEMORY ORDER SUMMARY (关键操作的 memory_order 选择)
+// ============================================================================
+//
+// 操作                             Memory Order         理由
+// ---------------------------------------------------------------------------------
+// epoch.fetch_add                  acq_rel             同步 slot 失效，双向可见性
+// state.store(BUSY)                release             发布 slot 初始化完成
+// state.load                       acquire             获取 slot 状态并同步数据
+// state.compare_exchange_strong    acq_rel, relaxed    状态转换需要双向同步
+// ts_write_pos[a].store(0)         relaxed             初始化无需同步（后续 release 建立）
+// ts_write_pos[a].store(t+1)       release             发布数据写入完成（写入 → store pos）
+// ts_write_pos[a].load             acquire             读取位置并同步数据（仅调试用）
+// ts_worker_min_pos[w].store(0)    relaxed             初始化无需同步
+// ts_worker_min_pos[w].store(min)  release             发布 worker 最小位置
+// ts_worker_min_pos[w].load        acquire             CS 读取 worker min 并同步
+// ts_done_flag[w].store(false)     relaxed             初始化无需同步
+// ts_done_flag[w].store(true)      release             发布 worker 完成状态
+// ts_done_flag[w].load             acquire             读取完成状态并同步
+// cs_read_pos.store                relaxed             单 CS worker 独占写，无竞争
+// cs_read_pos.load                 relaxed             单 CS worker 独占读，无竞争
+// free_head CAS (tagged)           acq_rel, acquire    Freelist pop/push 双向同步 + ABA 防护
+//                                                      格式: (tag << 32) | idx, tag++ 防 ABA
+//
+// ============================================================================
 //
 // 【时间映射】L0 ↔ L1/L2
 //   - L0 包含 _link_to_L1, _link_to_L2 两个 META feature
@@ -94,20 +594,23 @@
 // 【Public API 速查】
 //
 // TS Worker:
-//   ts_mark_progress(date, core_id, asset_id, l0_t)    更新进度 (atomic)
-//   ts_mark_done(date, core_id)                        标记完成
-//   TS_WRITE_FEATURES(store, date, lvl, t, a, f0, f1, src, wid)  批量写
-//   TS_WRITE_SINGLE(store, date, lvl, t, f, a, val, wid)         单值写
-//   TS_WRITE_LINK(store, date, l0_t, a, link_off, val, wid)      写link元数据
+//   ts_get_slot(date, worker_id) → slot_idx            获取 slot
+//   ts_write(date, t, a, worker_id, data)              写入特征
+//   ts_done(date, worker_id)                           完成标记
 //
 // CS Worker:
-//   cs_check_ready(date, l0_t) → bool                  轮询等待 TS 完成
-//   cs_mark_complete(date)                             标记 CS_DONE
-//   CS_READ_ALL(store, date, lvl, t, f) → _Float16*    读取所有assets
-//   CS_WRITE_ALL(store, date, lvl, t, f, src, count)   写入所有assets
+//   cs_get_slot(date) → slot_idx                       获取 slot
+//   cs_wait(date, t)                                   等待 time_idx 就绪
+//   cs_read(slot, lvl, t, f) → _Float16*               读取所有 assets
+//   cs_write(slot, lvl, t, f, src, count)              写入所有 assets
+//   cs_done(date)                                      完成标记
 //
 // IO Worker:
-//   io_flush_once() → bool                             flush 一个 CS_DONE tensor
+//   io_flush()                                         主循环
+//
+// Freelist:
+//   pop_free() → slot_idx                              弹出空闲 slot
+//   push_free(slot_idx)                                压入空闲 slot
 //
 // 元数据查询:
 //   query_F(lvl), query_A(), query_T(lvl), query_num_dates()

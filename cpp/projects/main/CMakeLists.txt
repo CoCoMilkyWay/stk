@@ -15,10 +15,29 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Build mode options
 option(PROFILE_MODE "Profile mode: -O0 -g, disable optimizations for profiling" OFF)
 option(DEBUG_MODE   "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
+option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
+
+# Clear default CMAKE build type flags to avoid conflicts
+set(CMAKE_CXX_FLAGS_RELEASE "")
+set(CMAKE_CXX_FLAGS_DEBUG "")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "")
+set(CMAKE_CXX_FLAGS_MINSIZEREL "")
+set(CMAKE_C_FLAGS_RELEASE "")
+set(CMAKE_C_FLAGS_DEBUG "")
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "")
+set(CMAKE_C_FLAGS_MINSIZEREL "")
 
 # Compiler flags configuration
-if(DEBUG_MODE)
-    message(STATUS "Build mode: DEBUG (GDB)")
+if(TSAN_MODE)
+    message(STATUS "Build mode: TSAN (ThreadSanitizer - race detection)")
+    add_compile_definitions(TSAN_MODE)
+    
+    set(CMAKE_CXX_FLAGS "-O1 -g -Wall -Wextra -fsanitize=thread")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+
+elseif(DEBUG_MODE)
+    message(STATUS "Build mode: DEBUG (GDB - interactive debugging)")
     add_compile_definitions(DEBUG_MODE)
     
     set(CMAKE_CXX_FLAGS "-O0 -g3 -ggdb -Wall -Wextra")

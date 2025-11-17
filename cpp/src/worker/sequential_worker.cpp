@@ -68,7 +68,6 @@ void sequential_worker(const SharedState &state,
   std::vector<L2::Order> decoded_orders;
   decoded_orders.resize(1000000); // Size once at init, never resize again (max capacity)
 
-  // Date-first traversal
   for (size_t date_idx = 0; date_idx < state.all_dates.size(); ++date_idx) {
     const std::string &date_str = state.all_dates[date_idx];
     size_t date_orders = 0;
@@ -78,70 +77,47 @@ void sequential_worker(const SharedState &state,
     for (size_t i = 0; i < my_asset_ids.size(); ++i) {
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = state.assets[asset_id];
-      auto asset_missing = false;
-
-      // Check if this asset has data for this date
       auto it = asset.date_info.find(date_str);
-      if (it == asset.date_info.end()) {
-        asset_missing = true;
-      }
-
-      const auto &asset_info = it->second;
-
-      // Set date for feature computation
       lobs[i]->set_current_date(date_str);
+      // Hot path: has data and binaries
+      if (it != asset.date_info.end() && it->second.has_binaries() && !it->second.orders_file.empty()) [[likely]] {
 
-      if (!asset_missing && asset_info.has_binaries()) {
         size_t order_num = 0;
-        if (!asset_info.orders_file.empty()) {
-          // decode_orders fills the preallocated vector without resizing, returns actual count
-          if (decoders[i]->decode_orders(asset_info.orders_file, decoded_orders, order_num)) {
+        if (decoders[i]->decode_orders(it->second.orders_file, decoded_orders, order_num)) {
+          assert(order_num <= decoded_orders.size());
 
-            // Sanity check: order_num should be reasonable
-            assert(order_num <= decoded_orders.size() && "order_num exceeds vector size");
-
-            // Process only the actual orders (0 to order_num-1)
-            size_t invalid_count = 0;
-            for (size_t ord_idx = 0; ord_idx < order_num; ++ord_idx) {
-              const auto &order = decoded_orders[ord_idx];
-
-              bool success = lobs[i]->process(order);
-              if (!success) [[unlikely]] {
-                ++invalid_count;
-              }
+          size_t invalid_count = 0;
+          for (size_t ord_idx = 0; ord_idx < order_num; ++ord_idx) {
+            if (!lobs[i]->process(decoded_orders[ord_idx])) [[unlikely]] {
+              ++invalid_count;
             }
-            if (invalid_count > 100) {
-              Logger::log_worker(worker_id, "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " skipped " + std::to_string(invalid_count) + " invalid orders");
-              std::exit(1);
-            }
-
-            Logger::log_worker(worker_id, date_str + " asset_id=" + std::to_string(asset_id) + " decoded=" + std::to_string(order_num) + (invalid_count > 0 ? " invalid=" + std::to_string(invalid_count) : ""));
-
-            lobs[i]->clear();
-            date_orders += order_num;
-            date_assets_processed++;
-
-          } else {
-            Logger::log_worker(worker_id, "WARNING: " + date_str + " failed to decode " + asset_info.orders_file);
           }
+
+          if (invalid_count > 100) {
+            Logger::log_worker(worker_id, "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " invalid=" + std::to_string(invalid_count));
+            std::exit(1);
+          }
+
+          if (order_num > 0) {
+            Logger::log_worker(worker_id, date_str + " asset_id=" + std::to_string(asset_id) + " decoded=" + std::to_string(order_num) + (invalid_count > 0 ? " invalid=" + std::to_string(invalid_count) : ""));
+          }
+
+          lobs[i]->clear();
+          date_orders += order_num;
+          date_assets_processed++;
+          cumulative_orders += order_num;
+        } else {
+          Logger::log_worker(worker_id, "WARNING: " + date_str + " failed to decode " + it->second.orders_file);
         }
-        cumulative_orders += order_num;
       }
-      const size_t capacity = feature_store->query_T(0);
-      feature_store->ts_mark_progress(date_str, worker_id, asset_id, capacity - 1);
     }
 
     if (date_assets_processed > 0) {
       Logger::log_worker(worker_id, date_str + " completed: " + std::to_string(date_assets_processed) + " assets, " + std::to_string(date_orders) + " orders");
     }
 
-    // Mark this core as done for this date (for CS sync)
-    // Even if this core had no data, CS worker needs to know this core is done
-    // By marking the last timeslot, all previous timeslots are implicitly marked as done
-    {
-      // L0: Update progress to last timeslot
-      feature_store->ts_mark_done(date_str, worker_id);
-    }
+    // Mark this worker done for this date (will also set all asset progress atomically)
+    feature_store->ts_mark_done(date_str, worker_id);
 
     // Update progress
     auto current_time = std::chrono::steady_clock::now();
