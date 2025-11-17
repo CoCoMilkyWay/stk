@@ -275,7 +275,7 @@ private:
       std::ostringstream oss;
       oss << "[BumpPool] Expansion #" << chunks_.size()
           << " (" << (bytes / 1024.0 / 1024.0) << " MB)";
-      Logger::log_analyze(oss.str());
+      Logger::log("analyzing", oss.str());
     }
 #endif
   }
@@ -582,7 +582,7 @@ private:
       std::ostringstream oss;
       oss << "[BitmapPool] Expansion #" << chunks_.size()
           << " (" << (bytes / 1024.0 / 1024.0) << " MB)";
-      Logger::log_analyze(oss.str());
+      Logger::log("analyzing", oss.str());
     }
 #endif
   }

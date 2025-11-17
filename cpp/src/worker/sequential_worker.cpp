@@ -42,7 +42,7 @@ void sequential_worker(const SharedState &state,
     decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE));
   }
 
-  Logger::log_worker(worker_id, "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
+  Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
                                     std::to_string(state.all_dates.size()) + " dates, " +
                                     std::to_string(total_orders) + " total orders");
 
@@ -94,12 +94,12 @@ void sequential_worker(const SharedState &state,
           }
 
           if (invalid_count > 100) {
-            Logger::log_worker(worker_id, "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " invalid=" + std::to_string(invalid_count));
+            Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " invalid=" + std::to_string(invalid_count));
             std::exit(1);
           }
 
           if (order_num > 0) {
-            Logger::log_worker(worker_id, date_str + " asset_id=" + std::to_string(asset_id) + " decoded=" + std::to_string(order_num) + (invalid_count > 0 ? " invalid=" + std::to_string(invalid_count) : ""));
+            Logger::log("worker_" + std::to_string(worker_id), date_str + " asset_id=" + std::to_string(asset_id) + " decoded=" + std::to_string(order_num) + (invalid_count > 0 ? " invalid=" + std::to_string(invalid_count) : ""));
           }
 
           lobs[i]->clear();
@@ -107,13 +107,13 @@ void sequential_worker(const SharedState &state,
           date_assets_processed++;
           cumulative_orders += order_num;
         } else {
-          Logger::log_worker(worker_id, "WARNING: " + date_str + " failed to decode " + it->second.orders_file);
+          Logger::log("worker_" + std::to_string(worker_id), "WARNING: " + date_str + " failed to decode " + it->second.orders_file);
         }
       }
     }
 
     if (date_assets_processed > 0) {
-      Logger::log_worker(worker_id, date_str + " completed: " + std::to_string(date_assets_processed) + " assets, " + std::to_string(date_orders) + " orders");
+      Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(date_assets_processed) + " assets, " + std::to_string(date_orders) + " orders");
     }
 
     // Mark this worker done for this date (will also set all asset progress atomically)
@@ -129,5 +129,5 @@ void sequential_worker(const SharedState &state,
     progress_handle.update(date_idx + 1, state.all_dates.size(), msg_buf);
   }
 
-  Logger::log_worker(worker_id, "Completed: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(state.all_dates.size()) + " dates");
+  Logger::log("worker_" + std::to_string(worker_id), "Completed: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(state.all_dates.size()) + " dates");
 }

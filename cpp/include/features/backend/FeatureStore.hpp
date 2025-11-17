@@ -286,7 +286,7 @@ public:
     // Invalidate cache
     ts_cache_[worker_id] = {"", SIZE_MAX, 0};
 
-    Logger::log_worker(worker_id, "ts_done: " + date);
+    Logger::log("worker_" + std::to_string(worker_id), "ts_done: " + date);
   }
 
   // ===== CS WORKER API (NEW ARCHITECTURE with O(W) scan) =====
@@ -401,7 +401,7 @@ public:
     // Invalidate cache
     cs_cache_ = {"", SIZE_MAX, 0};
 
-    Logger::log_worker(cs_worker_id_, "cs_done: " + date);
+    Logger::log("worker_" + std::to_string(cs_worker_id_), "cs_done: " + date);
   }
 
   // ===== IO WORKER API (NEW ARCHITECTURE with lock-free freelist) =====
@@ -451,7 +451,7 @@ public:
     slot.state.store(TensorState::FREE, std::memory_order_release);
     push_free(slot_idx);
 
-    Logger::log_worker(io_worker_id_, "io_try_flush_one: " + std::string(date_copy) + " complete");
+    Logger::log("worker_" + std::to_string(io_worker_id_), "io_try_flush_one: " + std::string(date_copy) + " complete");
     return true;
   }
 
@@ -607,7 +607,7 @@ private:
     if (slot_idx < 0) {
       // Pool exhausted, wait for IO to free slots
       if (wait_count == 0) {
-        Logger::log_worker(worker_id, "Pool exhausted, waiting...");
+        Logger::log("worker_" + std::to_string(worker_id), "Pool exhausted, waiting...");
       }
       pool_mutex_.unlock();
       std::this_thread::sleep_for(std::chrono::milliseconds(RETRY_MS));
@@ -617,7 +617,7 @@ private:
 
     if (wait_count > 0) {
       int wait_ms = wait_count * RETRY_MS;
-      Logger::log_worker(worker_id, "Pool slot available, resuming... (waited " + std::to_string(wait_ms) + "ms)");
+      Logger::log("worker_" + std::to_string(worker_id), "Pool slot available, resuming... (waited " + std::to_string(wait_ms) + "ms)");
     }
 
     Slot &s = pool_[slot_idx];
@@ -627,7 +627,7 @@ private:
     s.epoch.fetch_add(1, std::memory_order_acq_rel); // Invalidate old caches
     date_to_slot_[date] = slot_idx;
 
-    Logger::log_worker(worker_id, "Bound " + date + " to pool[" + std::to_string(slot_idx) + "]");
+    Logger::log("worker_" + std::to_string(worker_id), "Bound " + date + " to pool[" + std::to_string(slot_idx) + "]");
 
     // Release lock during expensive reset operation
     pool_mutex_.unlock();
@@ -637,11 +637,11 @@ private:
     std::strncpy(s.date, date.c_str(), sizeof(s.date) - 1);
     s.date[sizeof(s.date) - 1] = '\0';
 
-    Logger::log_worker(worker_id, "Pool[" + std::to_string(slot_idx) + "] reset complete");
+    Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] reset complete");
 
     // Publish BUSY state (slot ready for use)
     s.state.store(TensorState::BUSY, std::memory_order_release);
-    Logger::log_worker(worker_id, "Published " + date + " to pool[" + std::to_string(slot_idx) + "] (BUSY)");
+    Logger::log("worker_" + std::to_string(worker_id), "Published " + date + " to pool[" + std::to_string(slot_idx) + "] (BUSY)");
 
     pool_mutex_.lock(); // Re-acquire lock before returning
   }
@@ -649,7 +649,7 @@ private:
   // Write to disk
   void write_to_disk(const std::string &date_str, Slot *slot) {
     assert(slot && date_str.size() == 8);
-    Logger::log_worker(io_worker_id_, "write_to_disk: START " + date_str);
+    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: START " + date_str);
 
     std::string year = date_str.substr(0, 4);
     std::string month = date_str.substr(4, 2);
@@ -702,7 +702,7 @@ private:
       }
     }
 #endif
-    Logger::log_worker(io_worker_id_, "write_to_disk: END " + date_str);
+    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: END " + date_str);
   }
 
 public:
@@ -756,7 +756,7 @@ public:
       msg += date + " not found in pool";
     }
 
-    Logger::log_worker(worker_id, msg);
+    Logger::log("worker_" + std::to_string(worker_id), msg);
   }
 };
 

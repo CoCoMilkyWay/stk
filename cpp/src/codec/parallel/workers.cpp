@@ -264,7 +264,7 @@ bool decompress_7z(const std::string &archive_path, const std::string &output_di
 }
 
 void decompression_worker(unsigned int worker_id) {
-  Logger::log_decomp("Decompression Worker " + std::to_string(worker_id) + " Started");
+  Logger::log("decompression", "Worker " + std::to_string(worker_id) + " Started");
 
   while (!g_shutdown_requested.load()) {
     // STEP 2: TAKE NEXT ARCHIVE
@@ -289,7 +289,7 @@ void decompression_worker(unsigned int worker_id) {
     // Construct folder_token early for RAII (will cleanup on any failure)
     FolderToken folder_token(temp_root);
 
-    Logger::log_decomp("Decompression Worker " + std::to_string(worker_id) + " Processing: " + archive_name);
+    Logger::log("decompression", "Worker " + std::to_string(worker_id) + " Processing: " + archive_name);
 
     // STEP 3: DECOMPRESS
     if (!decompress_7z(archive_path, temp_root)) {
@@ -342,11 +342,11 @@ void decompression_worker(unsigned int worker_id) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    Logger::log_decomp("Decompression Worker " + std::to_string(worker_id) + " Completed: " + archive_name +
+    Logger::log("decompression", "Worker " + std::to_string(worker_id) + " Completed: " + archive_name +
                " (" + std::to_string(asset_count) + " assets)");
   }
 
-  Logger::log_decomp("Decompression Worker " + std::to_string(worker_id) + " Finished");
+  Logger::log("decompression", "Worker " + std::to_string(worker_id) + " Finished");
 }
 
 void encoding_worker(unsigned int core_id) {
@@ -431,13 +431,6 @@ void encoding_worker(unsigned int core_id) {
   }
 }
 
-void init_decompression_logging() {
-  Logger::init(L2::TEMP_DIR);
-}
-
-void close_decompression_logging() {
-  Logger::close();
-}
 
 } // namespace Parallel
 } // namespace L2

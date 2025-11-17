@@ -14,7 +14,7 @@ void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t to
   handle.set_label(label_buf);
   handle.update(0, total_dates, "");
 
-  Logger::log_worker(worker_id, "Started: " + std::to_string(total_dates) + " dates to flush");
+  Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to flush");
 
   size_t wait_count = 0;
   while (flush_count < total_dates) {
@@ -24,7 +24,7 @@ void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t to
     if (flushed) {
       flush_count++;
       wait_count = 0;
-      Logger::log_worker(worker_id, "Flushed: " + std::to_string(flush_count) + "/" + std::to_string(total_dates));
+      Logger::log("worker_" + std::to_string(worker_id), "Flushed: " + std::to_string(flush_count) + "/" + std::to_string(total_dates));
 
       // Update progress with pool status
       snprintf(label_buf, sizeof(label_buf), "IO核心  %2d: %3zu/%3zu", worker_id, flush_count, total_dates);
@@ -35,7 +35,7 @@ void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t to
       // No tensors ready yet, sleep briefly
       wait_count++;
       if (wait_count % 100 == 0) {
-        Logger::log_worker(worker_id, "Waiting for tensors (" + std::to_string(wait_count * 10) + "ms)");
+        Logger::log("worker_" + std::to_string(worker_id), "Waiting for tensors (" + std::to_string(wait_count * 10) + "ms)");
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -46,5 +46,5 @@ void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t to
   handle.set_label(label_buf);
   handle.update(total_dates, total_dates, "");
 
-  Logger::log_worker(worker_id, "Completed: " + std::to_string(total_dates) + " dates flushed");
+  Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates flushed");
 }

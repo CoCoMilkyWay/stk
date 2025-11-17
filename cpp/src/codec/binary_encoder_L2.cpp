@@ -276,7 +276,7 @@ bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
       if (curr_trade_count >= prev_trade_count) {
         snap.trade_count = curr_trade_count - prev_trade_count;
       } else {
-        Logger::log_encode("Trade count decreased at line " + std::to_string(line_number) + ": " + filepath);
+        Logger::log("encoding", "Trade count decreased at line " + std::to_string(line_number) + ": " + filepath);
         snap.trade_count = 0;
       }
       prev_trade_count = curr_trade_count;
@@ -296,7 +296,7 @@ bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
 
       snapshots.push_back(snap);
     } catch (const std::exception &e) {
-      Logger::log_encode("Error parsing snapshot: " + std::string(e.what()));
+      Logger::log("encoding", "Error parsing snapshot: " + std::string(e.what()));
       return;
     }
   };
@@ -304,7 +304,7 @@ bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
   // Auto-detect delimiter and parse
   char delimiter = detect_csv_delimiter(filepath);
   if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log_encode("Cannot parse snapshot CSV: " + filepath);
+    Logger::log("encoding", "Cannot parse snapshot CSV: " + filepath);
     return false;
   }
 
@@ -348,7 +348,7 @@ bool BinaryEncoder_L2::parse_order_csv(const std::string &filepath,
 
       orders.push_back(order);
     } catch (const std::exception &e) {
-      Logger::log_encode("Error parsing order: " + std::string(e.what()));
+      Logger::log("encoding", "Error parsing order: " + std::string(e.what()));
       return;
     }
   };
@@ -356,7 +356,7 @@ bool BinaryEncoder_L2::parse_order_csv(const std::string &filepath,
   // Auto-detect delimiter and parse
   char delimiter = detect_csv_delimiter(filepath);
   if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log_encode("Cannot parse order CSV: " + filepath);
+    Logger::log("encoding", "Cannot parse order CSV: " + filepath);
     return false;
   }
 
@@ -398,7 +398,7 @@ bool BinaryEncoder_L2::parse_trade_csv(const std::string &filepath,
 
       trades.push_back(trade);
     } catch (const std::exception &e) {
-      Logger::log_encode("Error parsing trade: " + std::string(e.what()));
+      Logger::log("encoding", "Error parsing trade: " + std::string(e.what()));
       return;
     }
   };
@@ -406,7 +406,7 @@ bool BinaryEncoder_L2::parse_trade_csv(const std::string &filepath,
   // Auto-detect delimiter and parse
   char delimiter = detect_csv_delimiter(filepath);
   if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log_encode("Cannot parse trade CSV: " + filepath);
+    Logger::log("encoding", "Cannot parse trade CSV: " + filepath);
     return false;
   }
 
@@ -567,7 +567,7 @@ BinaryEncoder_L2::~BinaryEncoder_L2() {
 bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot> &snapshots,
                                         const std::string &filepath) {
   if (snapshots.empty()) {
-    Logger::log_encode("No snapshots to encode: " + filepath);
+    Logger::log("encoding", "No snapshots to encode: " + filepath);
     return true;
   }
 
@@ -588,7 +588,7 @@ bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot> &snapshots,
 bool BinaryEncoder_L2::encode_orders(const std::vector<Order> &orders,
                                      const std::string &filepath) {
   if (orders.empty()) {
-    Logger::log_encode("No orders to encode: " + filepath);
+    Logger::log("encoding", "No orders to encode: " + filepath);
     return false;
   }
 
@@ -615,7 +615,7 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
                                                const void *data, size_t data_size) {
   std::ofstream file(filepath, std::ios::binary);
   if (!file.is_open()) [[unlikely]] {
-    Logger::log_encode("Cannot open file for writing: " + filepath);
+    Logger::log("encoding", "Cannot open file for writing: " + filepath);
     return false;
   }
 
@@ -626,7 +626,7 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
       zstd_ctx_, compressed.get(), bound, data, data_size);
 
   if (ZSTD_isError(compressed_size)) [[unlikely]] {
-    Logger::log_encode("Compression failed: " + std::string(ZSTD_getErrorName(compressed_size)));
+    Logger::log("encoding", "Compression failed: " + std::string(ZSTD_getErrorName(compressed_size)));
     return false;
   }
 
@@ -634,13 +634,13 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
   file.write(reinterpret_cast<const char *>(&data_size), sizeof(data_size));
   file.write(reinterpret_cast<const char *>(&compressed_size), sizeof(compressed_size));
   if (file.fail()) [[unlikely]] {
-    Logger::log_encode("Failed to write header: " + filepath);
+    Logger::log("encoding", "Failed to write header: " + filepath);
     return false;
   }
 
   file.write(compressed.get(), compressed_size);
   if (file.fail()) [[unlikely]] {
-    Logger::log_encode("Failed to write data: " + filepath);
+    Logger::log("encoding", "Failed to write data: " + filepath);
     return false;
   }
 
@@ -698,7 +698,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     // Validate snapshot count
     constexpr size_t MIN_EXPECTED_COUNT = 10;
     if (snapshots.size() < MIN_EXPECTED_COUNT) {
-      Logger::log_encode("Abnormal snapshot count: " + stock_code + " " + stock_dir +
+      Logger::log("encoding", "Abnormal snapshot count: " + stock_code + " " + stock_dir +
                          " has only " + std::to_string(snapshots.size()) + " snapshots");
       // std::exit(1);
       return false;
@@ -748,7 +748,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     // Validate order count
     constexpr size_t MIN_EXPECTED_COUNT = 500;
     if (all_orders.size() < MIN_EXPECTED_COUNT) {
-      Logger::log_encode("Abnormal order count: " + stock_code + " " + stock_dir +
+      Logger::log("encoding", "Abnormal order count: " + stock_code + " " + stock_dir +
                          " has only " + std::to_string(all_orders.size()) + " orders");
       // std::exit(1);
       return false;

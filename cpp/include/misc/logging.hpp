@@ -1,21 +1,20 @@
 /*
- * UNIFIED LOGGING SYSTEM FOR L2 DATABASE
+ * UNIFIED LOGGING SYSTEM
  *
- * Provides centralized logging functionality with minimal visibility in functional code.
- * All logs are placed under the temp directory for easy cleanup.
+ * Generic logging system with automatic initialization and lazy file creation.
  *
  * Features:
- * - Decompression logging: Track worker progress and archive processing
- * - Parsing error logging: Capture CSV parsing errors and file issues
- * - Thread-safe logging with proper mutex protection
- * - Automatic log file placement in temp directory
- * - Minimal impact on functional code performance
+ * - Auto-initialization on first use (no manual init required)
+ * - Thread-safe logging with per-file mutex protection
+ * - Lazy log file creation (only creates files that are actually used)
+ * - Generic naming: any log name creates a corresponding .log file
+ * - Minimal performance impact with [[unlikely]] annotations
  *
  * Usage:
- *   Logger::init(temp_base_path);
- *   Logger::log_decomp("Worker started");
- *   Logger::log_encode("Failed to parse CSV: " + filepath);
- *   Logger::close();
+ *   Logger::log("decompression", "Worker started");
+ *   Logger::log("encoding", "Failed to parse CSV: " + filepath);
+ *   Logger::log("worker_" + std::to_string(worker_id), "Processing...");
+ *   Logger::close();  // Optional: called automatically on program exit
  */
 
 #pragma once
@@ -30,17 +29,11 @@ void init(const std::string &temp_base_path);
 // Close all log files
 void close();
 
-// Decompression logging functions
-void log_decomp(const std::string &message);
+// Register a new log file by name (thread-safe, creates file lazily)
+void reg(const std::string &log_name);
 
-// Parsing error logging functions
-void log_encode(const std::string &message);
-
-// Analysis logging functions
-void log_analyze(const std::string &message);
-
-// Worker-specific logging functions (each worker has its own log file)
-void log_worker(int worker_id, const std::string &message);
+// Generic logging function (thread-safe)
+void log(const std::string &log_name, const std::string &message);
 
 // Check if logging is initialized
 bool is_initialized();

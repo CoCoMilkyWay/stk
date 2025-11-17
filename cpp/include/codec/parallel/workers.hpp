@@ -40,15 +40,5 @@ void encoding_worker(unsigned int core_id);
  */
 bool decompress_7z(const std::string &archive_path, const std::string &output_dir);
 
-/**
- * Initialize decompression logging
- */
-void init_decompression_logging();
-
-/**
- * Close decompression logging
- */
-void close_decompression_logging();
-
 } // namespace Parallel
 } // namespace L2

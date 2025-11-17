@@ -16,7 +16,7 @@ void crosssectional_worker(const SharedState &state,
   const size_t total_dates = state.all_dates.size();
   size_t completed_dates = 0;
 
-  Logger::log_worker(worker_id, "Started: " + std::to_string(total_dates) + " dates to process");
+  Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to process");
 
   // Preallocate reusable buffers (avoid per-timeslot allocation)
   const size_t A = feature_store->query_A();
@@ -51,7 +51,7 @@ void crosssectional_worker(const SharedState &state,
     // Mark this date as complete for tensor pool recycling
     feature_store->cs_done(date_str);
 
-    Logger::log_worker(worker_id, date_str + " completed: " + std::to_string(capacity) + " timeslots");
+    Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(capacity) + " timeslots");
   }
 
   // Final update
@@ -61,5 +61,5 @@ void crosssectional_worker(const SharedState &state,
   progress_handle.set_label(label_buf);
   progress_handle.update(total_dates, total_dates, "");
 
-  Logger::log_worker(worker_id, "Completed: " + std::to_string(total_dates) + " dates processed");
+  Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates processed");
 }

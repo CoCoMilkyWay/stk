@@ -12,15 +12,13 @@
 namespace Logger {
 
 // Internal state
-static std::ofstream decomp_log;
-static std::ofstream parsing_log;
-static std::ofstream analyze_log;
-static std::mutex decomp_log_mutex;
-static std::mutex parsing_log_mutex;
-static std::mutex analyze_log_mutex;
-static std::unordered_map<int, std::ofstream> worker_logs;
-static std::unordered_map<int, std::mutex> worker_log_mutexes;
-static std::shared_mutex worker_logs_map_mutex;
+struct LogEntry {
+  std::ofstream stream;
+  std::mutex mutex;
+};
+
+static std::unordered_map<std::string, LogEntry> logs;
+static std::shared_mutex logs_map_mutex;
 static bool initialized = false;
 static std::string log_dir_path;
 
@@ -55,36 +53,6 @@ void init(const std::string &temp_base_path) {
     }
   }
 
-  // Initialize decompression log
-  std::filesystem::path decomp_log_path = log_dir / "decompression.log";
-  decomp_log.open(decomp_log_path);
-  if (decomp_log.is_open()) {
-    decomp_log << "[" << get_timestamp() << "] Decompression Log Started at: " << decomp_log_path << std::endl;
-    std::cout << "Decompression log: \"" << decomp_log_path << "\"" << std::endl;
-  } else {
-    std::cerr << "Failed to create decompression log at: " << decomp_log_path << std::endl;
-  }
-
-  // Initialize parsing error log
-  std::filesystem::path parsing_log_path = log_dir / "encoding.log";
-  parsing_log.open(parsing_log_path);
-  if (parsing_log.is_open()) {
-    parsing_log << "[" << get_timestamp() << "] Parsing Error Log Started at: " << parsing_log_path << std::endl;
-    std::cout << "Parsing error log: \"" << parsing_log_path << "\"" << std::endl;
-  } else {
-    std::cerr << "Failed to create parsing error log at: " << parsing_log_path << std::endl;
-  }
-
-  // Initialize analysis log
-  std::filesystem::path analyze_log_path = log_dir / "analyzing.log";
-  analyze_log.open(analyze_log_path);
-  if (analyze_log.is_open()) {
-    analyze_log << "[" << get_timestamp() << "] Analysis Log Started at: " << analyze_log_path << std::endl;
-    std::cout << "Analysis log: \"" << analyze_log_path << "\"" << std::endl;
-  } else {
-    std::cerr << "Failed to create analysis log at: " << analyze_log_path << std::endl;
-  }
-
   initialized = true;
 }
 
@@ -93,105 +61,68 @@ void close() {
     return;
   }
 
-  // Close decompression log
-  if (decomp_log.is_open()) {
-    decomp_log << "[" << get_timestamp() << "] Decompression Log Ended" << std::endl;
-    decomp_log.close();
-  }
-
-  // Close parsing error log
-  if (parsing_log.is_open()) {
-    parsing_log << "[" << get_timestamp() << "] Parsing Error Log Ended" << std::endl;
-    parsing_log.close();
-  }
-
-  // Close analysis log
-  if (analyze_log.is_open()) {
-    analyze_log << "[" << get_timestamp() << "] Analysis Log Ended" << std::endl;
-    analyze_log.close();
-  }
-
-  // Close all worker logs
-  std::unique_lock<std::shared_mutex> lock(worker_logs_map_mutex);
-  for (auto &[worker_id, log_stream] : worker_logs) {
-    if (log_stream.is_open()) {
-      log_stream << "[" << get_timestamp() << "] Worker " << worker_id << " Log Ended" << std::endl;
-      log_stream.close();
+  std::unique_lock<std::shared_mutex> lock(logs_map_mutex);
+  for (auto &[log_name, entry] : logs) {
+    std::lock_guard<std::mutex> stream_lock(entry.mutex);
+    if (entry.stream.is_open()) {
+      entry.stream << "[" << get_timestamp() << "] Log Ended" << std::endl;
+      entry.stream.close();
     }
   }
-  worker_logs.clear();
+  logs.clear();
 
   initialized = false;
 }
 
-void log_decomp(const std::string &message) {
+void reg(const std::string &log_name) {
   if (!initialized)
     return;
 
-  std::lock_guard<std::mutex> lock(decomp_log_mutex);
-  if (decomp_log.is_open()) {
-    decomp_log << "[" << get_timestamp() << "] " << message << std::endl;
-    decomp_log.flush();
+  std::unique_lock<std::shared_mutex> lock(logs_map_mutex);
+  if (logs.find(log_name) == logs.end()) {
+    std::filesystem::path log_path = std::filesystem::path(log_dir_path) / (log_name + ".log");
+    logs[log_name].stream.open(log_path);
+    if (logs[log_name].stream.is_open()) {
+      logs[log_name].stream << "[" << get_timestamp() << "] Log Started: " << log_name << " at " << log_path << std::endl;
+      std::cout << "Log: \"" << log_name << "\" -> \"" << log_path << "\"" << std::endl;
+    }
   }
 }
 
-void log_encode(const std::string &message) {
-  if (!initialized)
-    return;
-
-  std::lock_guard<std::mutex> lock(parsing_log_mutex);
-  if (parsing_log.is_open()) {
-    parsing_log << "[" << get_timestamp() << "] " << message << std::endl;
-    parsing_log.flush();
+void log(const std::string &log_name, const std::string &message) {
+  if (!initialized) [[unlikely]] {
+    std::cout << "Logging system " << log_name << " not initialized" << std::endl;
+    std::exit(1);
   }
-}
 
-void log_analyze(const std::string &message) {
-  if (!initialized)
-    return;
-
-  std::lock_guard<std::mutex> lock(analyze_log_mutex);
-  if (analyze_log.is_open()) {
-    analyze_log << "[" << get_timestamp() << "] " << message << std::endl;
-    analyze_log.flush();
-  }
-}
-
-void log_worker(int worker_id, const std::string &message) {
-  if (!initialized)
-    return;
-
-  // Double-checked locking: fast path with shared lock
+  // Fast path with shared lock
   {
-    std::shared_lock<std::shared_mutex> shared_lock(worker_logs_map_mutex);
-    if (worker_logs.find(worker_id) != worker_logs.end()) {
-      // Worker log already exists, proceed to write
+    std::shared_lock<std::shared_mutex> shared_lock(logs_map_mutex);
+    if (logs.find(log_name) != logs.end()) {
       shared_lock.unlock();
-      std::lock_guard<std::mutex> lock(worker_log_mutexes[worker_id]);
-      worker_logs[worker_id] << "[" << get_timestamp() << "] " << message << std::endl;
-      worker_logs[worker_id].flush();
+      std::lock_guard<std::mutex> stream_lock(logs[log_name].mutex);
+      logs[log_name].stream << "[" << get_timestamp() << "] " << message << std::endl;
+      logs[log_name].stream.flush();
       return;
     }
   }
 
-  // Slow path: worker log doesn't exist, create it with unique lock
+  // Slow path: log doesn't exist, create it
   {
-    std::unique_lock<std::shared_mutex> unique_lock(worker_logs_map_mutex);
-    // Double-check after acquiring unique lock
-    if (worker_logs.find(worker_id) == worker_logs.end()) {
-      std::filesystem::path log_path = std::filesystem::path(log_dir_path) / ("worker_" + std::to_string(worker_id) + ".log");
-      worker_logs[worker_id].open(log_path);
-      worker_log_mutexes[worker_id]; // Create mutex entry
-      if (worker_logs[worker_id].is_open()) {
-        worker_logs[worker_id] << "[" << get_timestamp() << "] Worker " << worker_id << " Log Started at: " << log_path << std::endl;
+    std::unique_lock<std::shared_mutex> unique_lock(logs_map_mutex);
+    if (logs.find(log_name) == logs.end()) {
+      std::filesystem::path log_path = std::filesystem::path(log_dir_path) / (log_name + ".log");
+      logs[log_name].stream.open(log_path);
+      if (logs[log_name].stream.is_open()) {
+        logs[log_name].stream << "[" << get_timestamp() << "] Log Started: " << log_name << " at " << log_path << std::endl;
       }
     }
   }
 
   // Write the log message
-  std::lock_guard<std::mutex> lock(worker_log_mutexes[worker_id]);
-  worker_logs[worker_id] << "[" << get_timestamp() << "] " << message << std::endl;
-  worker_logs[worker_id].flush();
+  std::lock_guard<std::mutex> stream_lock(logs[log_name].mutex);
+  logs[log_name].stream << "[" << get_timestamp() << "] " << message << std::endl;
+  logs[log_name].stream.flush();
 }
 
 bool is_initialized() {
