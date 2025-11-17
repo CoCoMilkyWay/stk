@@ -151,10 +151,21 @@ public:
       bytes_per_day += MAX_ROWS_PER_LEVEL[lvl] * num_assets * FIELDS_PER_LEVEL[lvl] * sizeof(feature_storage_t);
     }
 
-    std::cout << "\n=== Feature Store Tensor Pool (NEW ARCH) ===\n";
-    std::cout << "Pool: " << pool_size_ << " slots | Assets: " << num_assets << " | TS workers: " << num_ts_workers << "\n";
-    printf("Per-day tensor: %.2f MB | Pool total: %.2f GB\n",
+    std::cout << "\n=== Feature Store Tensor Pool ===\n";
+
+    // Detailed dimension breakdown
+    std::cout << "Dimension Details:\n";
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      const size_t T = MAX_ROWS_PER_LEVEL[lvl];
+      const size_t A = num_assets;
+      const size_t F = FIELDS_PER_LEVEL[lvl];
+      const size_t bytes = T * A * F * sizeof(feature_storage_t);
+      printf("  L%zu: [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", lvl, T, F, A, bytes / (1024.0 * 1024.0));
+    }
+
+    printf("\nPer-day tensor: %.2f MB |Pool size: %zu slots | Total: %.2f GB\n",
            bytes_per_day / (1024.0 * 1024.0),
+           pool_size_,
            (bytes_per_day * pool_size_) / (1024.0 * 1024.0 * 1024.0));
 
     // Allocate pool (Slot array)
