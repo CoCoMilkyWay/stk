@@ -132,11 +132,11 @@
 //     lf_queue<int> flush_queue;                 // slot_idx - CS 在完成后 push
 //                                                // IO worker pop 并异步写盘
 //
-//     // TS worker 分配表（静态分配，启动时初始化）
-//     std::vector<int> assigned_assets[num_ts_workers];  // 每个 worker 负责的 asset 列表
-//                                                // 示例: 10 workers, 1000 assets → 每个 worker 100 assets
-//                                                // assigned_assets[0] = {0,1,2,...,99}
-//                                                // assigned_assets[1] = {100,101,...,199}
+//     // TS worker 动态资产跟踪（运行时记录，解耦业务分配逻辑）
+//     std::unordered_set<size_t> assigned_assets_[num_ts_workers];  // 每个 worker 实际写过的 asset 集合
+//                                                // 在 ts_update() 首次写入时自动记录
+//                                                // Store 层通过实际写入行为学习分配关系
+//                                                // 支持业务层任意负载均衡策略（无需预先告知 Store）
 //
 //   Thread-local 变量 (每个 TS worker 独立维护):
 //     thread_local size_t worker_local_min[num_ts_workers];  // 当前 worker_min 缓存
@@ -181,17 +181,10 @@
 //       // 2. 初始化 free_head: tag=0, idx=0 (指向第一个 slot)
 //       free_head.store(0, memory_order_release);  // (0 << 32) | 0
 //       
-//       // 3. 初始化 TS worker 分配表 (静态分配 assets 到 workers)
-//       //    示例: 10 workers, 1000 assets → 每个 worker 负责 100 assets
-//       //    策略: round-robin 或 contiguous block
-//       const size_t assets_per_worker = (A + num_ts_workers - 1) / num_ts_workers;
-//       for (size_t w = 0; w < num_ts_workers; ++w) {
-//         size_t start = w * assets_per_worker;
-//         size_t end = std::min(start + assets_per_worker, A);
-//         for (size_t a = start; a < end; ++a) {
-//           assigned_assets[w].push_back(a);
-//         }
-//       }
+//       // 3. 初始化动态资产跟踪集合 (空集合，运行时自动填充)
+//       //    assigned_assets_[w] = {}  // 所有 worker 的集合初始为空
+//       //    Store 层无需知道业务层的负载均衡策略
+//       //    首次 ts_update(date, worker_id, asset_id, t) 时自动记录 asset_id
 //     }
 //
 //
@@ -279,7 +272,7 @@
 //   if (old_pos == worker_local_min[worker_id]) {
 //     // 被修改的是当前 min，重新扫描
 //     size_t new_min = SIZE_MAX;
-//     for (int a : assigned_assets[worker_id]) {
+//     for (int a : assigned_assets_[worker_id]) {  // 扫描实际写过的 assets
 //       new_min = std::min(new_min, s.ts_write_pos[a].load(memory_order_relaxed));
 //     }
 //     worker_local_min[worker_id] = new_min;
@@ -294,28 +287,31 @@
 //   int slot_idx = ts_get_slot(date, worker_id);
 //   Slot &s = pool[slot_idx];
 //
-//   // 1. 写入数据到 slot (普通写，非 atomic)
-//   //    顺序: write_data → store write_pos → update local_min → publish worker_min
+//   // 1. 动态记录 asset (首次写入时自动插入，解耦业务分配逻辑)
+//   assigned_assets_[worker_id].insert(a);  // O(1) amortized, 重复插入无副作用
+//
+//   // 2. 写入数据到 slot (普通写，非 atomic)
+//   //    顺序: record asset → write_data → store write_pos → update local_min → publish worker_min
 //   write_data(s, t, a, data);
 //
-//   // 2. 获取旧位置 (用于增量维护 min)
+//   // 3. 获取旧位置 (用于增量维护 min)
 //   size_t old_pos = s.ts_write_pos[a].load(memory_order_relaxed);
 //
-//   // 3. 更新 asset 写入位置 (memory_order_release)
+//   // 4. 更新 asset 写入位置 (memory_order_release)
 //   //    release: 确保数据写入对后续 acquire 可见
 //   //    注意: 每个 TS worker 负责不同的 asset，无竞争，简单 store 即可
 //   size_t new_pos = t + 1;
 //   s.ts_write_pos[a].store(new_pos, memory_order_release);
 //
-//   // 4. 增量维护 worker_min (thread-local 缓存)
+//   // 5. 增量维护 worker_min (thread-local 缓存)
 //   //    只有 old_pos == worker_min 时才需要重新扫描
 //   update_local_min(worker_id, a, old_pos, new_pos, s);
 //
-//   // 5. 发布 worker_min_pos
+//   // 6. 发布 worker_min_pos
 //     size_t local_min = worker_local_min[worker_id];  // 返回缓存的 worker_min
 //     s.ts_worker_min_pos[worker_id].store(local_min, memory_order_release);
 //   
-//   // 6. CS 通过扫描 min(ts_worker_min_pos[all workers]) 判断 time_idx 就绪
+//   // 7. CS 通过扫描 min(ts_worker_min_pos[all workers]) 判断 time_idx 就绪
 //   //    扫描复杂度: O(W) vs O(A)，W=10, A=1000，快 100 倍
 // }
 //
@@ -324,9 +320,9 @@
 //   int slot_idx = ts_cache[worker_id].idx;
 //   Slot &s = pool[slot_idx];
 //
-//   // 1. 批量更新所有负责的 asset 位置为最终值 (使用 relaxed 提高性能)
-//   //    每个 TS worker 负责固定的 asset 子集，无竞争
-//   for (int a : assigned_assets[worker_id]) {
+//   // 1. 批量更新所有实际写过的 asset 位置为最终值 (使用 relaxed 提高性能)
+//   //    动态记录机制：只更新实际写过的 assets，无需预知分配
+//   for (int a : assigned_assets_[worker_id]) {
 //     s.ts_write_pos[a].store(T0, memory_order_relaxed);
 //   }
 //
@@ -594,12 +590,11 @@
 // 【Public API 速查】
 //
 // TS Worker:
-//   ts_get_slot(date, worker_id) → slot_idx            获取 slot
 //   ts_write(date, t, a, worker_id, data)              写入特征
+//   ts_update(date, worker_id, asset_id, l0_t)         更新时间进度
 //   ts_done(date, worker_id)                           完成标记
 //
 // CS Worker:
-//   cs_get_slot(date) → slot_idx                       获取 slot
 //   cs_wait(date, t)                                   等待 time_idx 就绪
 //   cs_read(slot, lvl, t, f) → _Float16*               读取所有 assets
 //   cs_write(slot, lvl, t, f, src, count)              写入所有 assets

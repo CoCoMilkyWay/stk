@@ -39,7 +39,7 @@ void crosssectional_worker(const SharedState &state,
 
     // Process each time slot (per-slot sync for live trading compatibility)
     for (size_t t = 0; t < capacity; ++t) {
-      feature_store->cs_wait_until_ready(date_str, t);
+      feature_store->cs_wait(date_str, t);
 
       // Compute CS features (reuse buffers to avoid allocation)
       compute_cs_for_timeslot(feature_store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
@@ -49,7 +49,7 @@ void crosssectional_worker(const SharedState &state,
     progress_handle.update(completed_dates, total_dates, "");
 
     // Mark this date as complete for tensor pool recycling
-    feature_store->cs_mark_done(date_str);
+    feature_store->cs_done(date_str);
 
     Logger::log_worker(worker_id, date_str + " completed: " + std::to_string(capacity) + " timeslots");
   }

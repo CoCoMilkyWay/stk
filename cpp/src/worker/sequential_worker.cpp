@@ -117,7 +117,7 @@ void sequential_worker(const SharedState &state,
     }
 
     // Mark this worker done for this date (will also set all asset progress atomically)
-    feature_store->ts_mark_done(date_str, worker_id);
+    feature_store->ts_done(date_str, worker_id);
 
     // Update progress
     auto current_time = std::chrono::steady_clock::now();

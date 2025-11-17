@@ -15,13 +15,14 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 // ============================================================================
 // FEATURE STORE CONFIGURATION
 // ============================================================================
 #define STORE_UNIFIED_DAILY_TENSOR false
-#define POOL_SIZE_FACTOR 1.5
+#define POOL_SIZE_FACTOR 2
 
 // ============================================================================
 // FEATURE STORE - Simple, robust, no race conditions
@@ -123,8 +124,9 @@ private:
   };
   mutable CSCacheEntry cs_cache_;
 
-  // Worker-local min tracking (thread_local declared in implementation)
-  mutable std::vector<std::vector<size_t>> assigned_assets_; // [worker_id][asset_list]
+  // Dynamic asset tracking: lazily populated during ts_update()
+  // Each worker records which assets it has actually written (decoupled from top-level assignment)
+  mutable std::vector<std::unordered_set<size_t>> assigned_assets_;  // [worker_id] → {asset_ids}
 
 public:
   GlobalFeatureStore(size_t num_assets, size_t num_ts_workers,
@@ -190,18 +192,9 @@ public:
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     std::cout << "\nPhysical allocation complete in " << elapsed << " ms\n";
 
-    // Initialize TS worker cache and assign assets
+    // Initialize TS worker cache and dynamic asset tracking
     ts_cache_.resize(num_ts_workers_);
-    assigned_assets_.resize(num_ts_workers_);
-    const size_t assets_per_worker = (num_assets_ + num_ts_workers_ - 1) / num_ts_workers_;
-    for (size_t w = 0; w < num_ts_workers_; ++w) {
-      size_t start_asset = w * assets_per_worker;
-      size_t end_asset = std::min(start_asset + assets_per_worker, num_assets_);
-      for (size_t a = start_asset; a < end_asset; ++a) {
-        assigned_assets_[w].push_back(a);
-      }
-      std::cout << "Worker " << w << " assigned assets [" << start_asset << ", " << end_asset << ")\n";
-    }
+    assigned_assets_.resize(num_ts_workers_);  // Empty sets, populated lazily during ts_update()
 
     std::cout << "=================================\n\n";
   }
@@ -213,10 +206,14 @@ public:
   }
 
   // ===== TS WORKER API (NEW ARCHITECTURE with two-level sync) =====
-
+  
   // Update progress after writing to (asset_id, l0_time_index)
-  void ts_update_progress(const std::string &date, int worker_id, size_t asset_id, size_t l0_time_index) const {
+  // Called by TS_WRITE_* macros or LimitOrderBook internally
+  void ts_update(const std::string &date, int worker_id, size_t asset_id, size_t l0_time_index) const {
     Slot &slot = ts_get_slot(date, worker_id);
+
+    // Lazily record this asset as written by this worker (first write triggers insertion)
+    assigned_assets_[worker_id].insert(asset_id);
 
     // Update per-asset write position
     slot.ts_write_pos[asset_id].store(l0_time_index + 1, std::memory_order_release);
@@ -227,7 +224,7 @@ public:
     size_t old_pos = l0_time_index; // Previous position
     size_t new_pos = l0_time_index + 1;
 
-    // If the updated asset was the min, rescan this worker's assets
+    // If the updated asset was the min, rescan this worker's written assets
     if (old_pos == worker_local_min[worker_id]) {
       size_t new_min = SIZE_MAX;
       for (size_t a : assigned_assets_[worker_id]) {
@@ -243,11 +240,12 @@ public:
     slot.ts_worker_min_pos[worker_id].store(worker_local_min[worker_id], std::memory_order_release);
   }
 
-  void ts_mark_done(const std::string &date, int worker_id) const {
+  // Mark worker done for this date (API name from architecture doc)
+  void ts_done(const std::string &date, int worker_id) const {
     Slot &slot = ts_get_slot(date, worker_id);
     const size_t final_progress = MAX_ROWS_PER_LEVEL[0];
 
-    // Set all assigned assets to final progress (batch update with relaxed)
+    // Set all written assets to final progress (batch update with relaxed)
     for (size_t a : assigned_assets_[worker_id]) {
       slot.ts_write_pos[a].store(final_progress, std::memory_order_relaxed);
     }
@@ -265,11 +263,13 @@ public:
     // Invalidate cache
     ts_cache_[worker_id] = {"", SIZE_MAX, 0};
 
-    Logger::log_worker(worker_id, "ts_mark_done: " + date);
+    Logger::log_worker(worker_id, "ts_done: " + date);
   }
 
   // ===== CS WORKER API (NEW ARCHITECTURE with O(W) scan) =====
-  void cs_wait_until_ready(const std::string &date, size_t l0_time_index) const {
+  
+  // Wait until time_index is ready (API name from architecture doc)
+  void cs_wait(const std::string &date, size_t l0_time_index) const {
     // Step 1: Get Slot (with cache and epoch validation)
     Slot *slot = nullptr;
     if (cs_cache_.date == date && cs_cache_.slot_idx < pool_size_) [[likely]] {
@@ -342,7 +342,8 @@ public:
     }
   }
 
-  void cs_mark_done(const std::string &date) const {
+  // Mark CS done for this date (API name from architecture doc)
+  void cs_done(const std::string &date) const {
     // Get Slot from cache
     assert(cs_cache_.date == date && cs_cache_.slot_idx < pool_size_ && "CS cache mismatch");
     Slot &slot = pool_[cs_cache_.slot_idx];
@@ -377,7 +378,7 @@ public:
     // Invalidate cache
     cs_cache_ = {"", SIZE_MAX, 0};
 
-    Logger::log_worker(cs_worker_id_, "cs_mark_done: " + date);
+    Logger::log_worker(cs_worker_id_, "cs_done: " + date);
   }
 
   // ===== IO WORKER API (NEW ARCHITECTURE with lock-free freelist) =====
@@ -456,7 +457,7 @@ public:
     return ts_get_slot_slow(date, worker_id);
   }
 
-  // CS worker get: use cached slot (set by cs_wait_until_ready)
+  // CS worker get: use cached slot (set by cs_wait)
   [[gnu::hot, gnu::always_inline]]
   inline Slot &cs_get_slot(const std::string &date) const {
     // Fast path: cache hit with epoch validation
