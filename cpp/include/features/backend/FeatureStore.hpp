@@ -171,7 +171,7 @@ public:
     // Allocate pool (Slot array)
     pool_ = new Slot[pool_size_];
 
-    std::cout << "Allocating and touching physical pages...\n";
+    std::cout << "Allocating physical pages...\n";
     auto start = std::chrono::steady_clock::now();
 
     for (size_t i = 0; i < pool_size_; ++i) {
@@ -392,7 +392,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
       TensorState expected = TensorState::BUSY;
-      bool success = slot.state.compare_exchange_strong(
+      [[maybe_unused]] bool success = slot.state.compare_exchange_strong(
           expected, TensorState::DONE,
           std::memory_order_acq_rel, std::memory_order_relaxed);
       assert(success && "CS state transition failed");
@@ -498,7 +498,7 @@ public:
 
     size_t slot_idx = it->second;
     Slot &s = pool_[slot_idx];
-    TensorState state = s.state.load(std::memory_order_acquire);
+    [[maybe_unused]] TensorState state = s.state.load(std::memory_order_acquire);
     assert((state == TensorState::BUSY || state == TensorState::DONE) && "CS accessing wrong state");
 
     cs_cache_.date = date;

@@ -63,13 +63,26 @@ elseif(PROFILE_MODE)
 else()
     message(STATUS "Build mode: PRODUCTION")
     
-    set(CMAKE_CXX_FLAGS "-O3 -Wall -Wextra")
+    # Optimization level and definitions
+    # set(CMAKE_CXX_FLAGS "-O3 -DNDEBUG")
+    set(CMAKE_CXX_FLAGS "-O3")
+    # Warning flags
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+    # Architecture optimization
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
+    # Specific optimizations
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math")
+    # Link-time optimization
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
     
+    # Linker selection
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
+    # Linker optimization level
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-O3")
+    # Linker features
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=all")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--as-needed")
 endif()
 
 # Output directories
