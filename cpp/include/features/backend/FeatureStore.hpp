@@ -14,6 +14,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <sys/mman.h>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -61,6 +62,10 @@ private:
         const size_t aligned_bytes = ((total_bytes + 63) / 64) * 64;
         data[lvl] = static_cast<feature_storage_t *>(std::aligned_alloc(64, aligned_bytes));
         assert(data[lvl]);
+        
+        // Enable huge pages for large tensors (L0/L1/L2)
+        // 2MB huge pages significantly reduce TLB pressure for sequential scans
+        madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
       }
       ts_write_pos = new std::atomic<size_t>[num_assets]();
       ts_worker_min_pos = new std::atomic<size_t>[num_ts_workers]();
