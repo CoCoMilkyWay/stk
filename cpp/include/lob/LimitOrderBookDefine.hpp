@@ -68,20 +68,12 @@ constexpr uint8_t CLOSING_CALL_AUCTION_END_HOUR = 15;
 constexpr uint8_t CLOSING_CALL_AUCTION_END_MINUTE = 0;
 } // namespace TradingSession
 
-// LOB visualization parameters
-namespace BookDisplay {
-constexpr size_t MAX_DISPLAY_LEVELS = 10; // Number of price levels to display
-constexpr size_t LEVEL_WIDTH = 12;        // Width for each price level display
-} // namespace BookDisplay
-
-// Anomaly detection parameters
-namespace AnomalyDetection {
-constexpr uint16_t MIN_DISTANCE_FROM_TOB = 5; // Minimum distance from TOB to check anomalies
-}
+// LOB Feature depth levels configuration
+inline constexpr size_t LOB_FEATURE_DEPTH_LEVELS = 10; // Number of depth levels to maintain (one-side)
 
 // Effective TOB filter parameters
 namespace EffectiveTOBFilter {
-constexpr uint32_t MIN_TIME_INTERVAL_MS = 500; // Minimum time interval in milliseconds for effective TOB update
+constexpr uint32_t MIN_TIME_INTERVAL_MS = 1000; // Minimum time interval in milliseconds for effective TOB update
 }
 
 //========================================================================================
@@ -204,7 +196,7 @@ static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) +
 //   2. consumed_ask = process_taker_side(order, ask_id, +volume)
 //      → lookup(ask_id) → order_upsert(抵扣qty) → 返回是否完全消耗
 //      └─ visibility: 同上
-//   3. update_tob_one_side(is_active_bid, consumed_bid, price)
+//   3. update_tob(is_active_bid, consumed_bid, price)
 //
 // 特殊情况 (1%-):
 //   - 价格不匹配 → order_move_to_price() + flags=ANOMALY_MATCH
@@ -223,7 +215,7 @@ static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) +
 //      └─ visibility: 检查 level.has_visible_quantity()
 //         - 仍有挂单(≠0): 无操作
 //         - 变空(=0): bitmap.clear(price)
-//   3. update_tob_one_side(is_bid, consumed, price)
+//   3. update_tob(is_bid, consumed, price)
 //
 // 特殊情况 (1%-): 与双边相同
 //
@@ -425,9 +417,6 @@ struct OrderIdHash {
 //========================================================================================
 // LOB FEATURE STRUCTURE
 //========================================================================================
-
-// LOB Feature depth levels configuration
-inline constexpr size_t LOB_FEATURE_DEPTH_LEVELS = 20; // Number of depth levels to maintain
 
 // Forward declaration
 struct Level;

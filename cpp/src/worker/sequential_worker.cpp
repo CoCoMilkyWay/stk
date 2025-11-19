@@ -43,8 +43,8 @@ void sequential_worker(const SharedState &state,
   }
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
-                                    std::to_string(state.all_dates.size()) + " dates, " +
-                                    std::to_string(total_orders) + " total orders");
+                                                         std::to_string(state.all_dates.size()) + " dates, " +
+                                                         std::to_string(total_orders) + " total orders");
 
   // Progress label
   char label_buf[128];
@@ -86,20 +86,25 @@ void sequential_worker(const SharedState &state,
         if (decoders[i]->decode_orders(it->second.orders_file, decoded_orders, order_num)) {
           assert(order_num <= decoded_orders.size());
 
-          size_t invalid_count = 0;
+          size_t order_invalid_cnt = 0;
           for (size_t ord_idx = 0; ord_idx < order_num; ++ord_idx) {
             if (!lobs[i]->process(decoded_orders[ord_idx])) [[unlikely]] {
-              ++invalid_count;
+              ++order_invalid_cnt;
             }
           }
 
-          if (invalid_count > 100) {
-            Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " invalid=" + std::to_string(invalid_count));
+          if (order_invalid_cnt > 100) {
+            Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " order_invalid=" + std::to_string(order_invalid_cnt));
             std::exit(1);
           }
 
           if (order_num > 0) {
-            Logger::log("worker_" + std::to_string(worker_id), date_str + " asset_id=" + std::to_string(asset_id) + " decoded=" + std::to_string(order_num) + (invalid_count > 0 ? " invalid=" + std::to_string(invalid_count) : ""));
+            Logger::log("worker_" + std::to_string(worker_id),
+                        date_str + " asset_id=" + std::to_string(asset_id) +
+                            " decoded=" + std::to_string(order_num) +
+                            " order_invalid=" + std::to_string(order_invalid_cnt) +
+                            " tob_invalid=" + std::to_string(lobs[i]->get_tob_invalid_count()) +
+                            " tob_refresh=" + std::to_string(lobs[i]->get_tob_refresh_count()));
           }
 
           lobs[i]->clear();

@@ -1,13 +1,14 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <deque>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <vector>
 
-#include "codec/L2_DataType.hpp"
+// #include "codec/L2_DataType.hpp"
 #include "define/FastBitmap.hpp"
 #include "define/MemPool.hpp"
 #include "features/CoreSequential.hpp"
@@ -18,6 +19,17 @@
 #if DEBUG_ANOMALY_PRINT == 1
 #include <unordered_set>
 #endif
+
+#if DEBUG_ORDER_FLAGS_CREATE || DEBUG_ORDER_FLAGS_RESOLVE || DEBUG_ANOMALY_PRINT || DEBUG_BOOK_PRINT
+#include "misc/logging.hpp"
+#endif
+
+// Debug asset ID list - only dump logs for assets in this list
+constexpr size_t DEBUG_ASSET_IDS[] = {
+    // Add asset IDs here to enable debug logging for specific assets
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+constexpr size_t DEBUG_ASSET_IDS_COUNT = sizeof(DEBUG_ASSET_IDS) / sizeof(DEBUG_ASSET_IDS[0]);
+constexpr size_t DEBUG_PRINT_DAYS = 1; // Number of days to print for matched asset IDs
 
 //========================================================================================
 // Use ExchangeType from L2 namespace (defined in L2_DataType.hpp)
@@ -40,16 +52,28 @@ public:
                           ExchangeType exchange_type = ExchangeType::SSE,
                           size_t asset_id = 0,
                           size_t core_id = 0)
-      : price_levels_(1024),
+      : price_levels_{},                // Zero-initialize direct array (all nullptr)
         order_lookup_(ORDER_SIZE),      // BumpDict with pre-allocated capacity
         order_memory_pool_(ORDER_SIZE), // BumpPool for Order objects
         exchange_type_(exchange_type),
+        asset_id_(asset_id),
         core_sequential_(&LOB_feature_, feature_store, asset_id, core_id) {
+    init_sentinel_levels();
   }
 
   // Set current date for feature computation
   void set_current_date(const std::string &date_str) {
     core_sequential_.set_date(date_str);
+  }
+
+  // Get TOB invalid count
+  size_t get_tob_invalid_count() const {
+    return tob_invalid_cnt_;
+  }
+
+  // Get TOB refresh count
+  size_t get_tob_refresh_count() const {
+    return tob_refresh_cnt_;
   }
 
   //======================================================================================
@@ -94,7 +118,6 @@ public:
     }
     was_in_matching_period = in_matching_period_;
 
-    LOB_feature_.depth_updated = sync_tob_to_depth_center();
     // ==================== depth update triggered =======================
 
     // // Process resampling (only for TAKER orders)
@@ -105,7 +128,7 @@ public:
     // }
 
     // 计算特征(depth 更新后)
-    if (LOB_feature_.depth_updated) {
+    if (update_depth()) {
 #if DEBUG_BOOK_PRINT
       print_book();
 #endif
@@ -129,14 +152,18 @@ public:
 
   // Complete reset
   HOT_NOINLINE void clear() {
-    price_levels_.clear();
+    price_levels_.fill(nullptr); // Reset direct array (all nullptr)
     level_storage_.clear();
     order_lookup_.clear();
     order_memory_pool_.reset();
     visible_price_bitmap_.reset();
+    tob_price_ = 0;
+    tob_dir_ = false;
+    tob_valid_ = false;
+    tob_invalid_cnt_ = 0;
+    tob_refresh_cnt_ = 0;
     best_bid_ = 0;
     best_ask_ = 0;
-    tob_dirty_ = true;
     LOB_feature_ = {};
     LOB_feature_.depth_buffer.clear();
     last_depth_update_tick_ = 0;
@@ -155,12 +182,37 @@ public:
     debug_.printed_anomalies.clear();
 #endif
 
-    if (DEBUG_BOOK_PRINT) { // exit to only print 1 day
-      exit(0);
+    // Increment debug day counter for matched assets
+    if (should_log(false)) {
+      debug_day_count_++;
     }
+
+    // Reinitialize sentinel levels
+    init_sentinel_levels();
   }
 
 private:
+  //======================================================================================
+  // INITIALIZATION
+  //======================================================================================
+
+  // Initialize sentinel levels at price range boundaries to ensure depth buffer can always be filled
+  void init_sentinel_levels() {
+    // Low price end (bid side): price 1 to LOB_FEATURE_DEPTH_LEVELS, net_quantity = +1
+    for (Price p = 1; p <= LOB_FEATURE_DEPTH_LEVELS; ++p) {
+      Level *level = level_create(p);
+      level->net_quantity = 1;
+      visibility_mark_visible(p);
+    }
+
+    // High price end (ask side): price (PRICE_RANGE_SIZE - LOB_FEATURE_DEPTH_LEVELS) to (PRICE_RANGE_SIZE - 1), net_quantity = -1
+    for (Price p = PRICE_RANGE_SIZE - LOB_FEATURE_DEPTH_LEVELS; p < PRICE_RANGE_SIZE - 1; ++p) {
+      Level *level = level_create(p);
+      level->net_quantity = -1;
+      visibility_mark_visible(p);
+    }
+  }
+
   //======================================================================================
   // DATA STRUCTURES (按层次组织)
   //======================================================================================
@@ -168,8 +220,8 @@ private:
   //------------------------------------------------------------------------------------
   // Layer 1: Price Level Storage (价格档位基础层)
   //------------------------------------------------------------------------------------
-  std::deque<Level> level_storage_;                // All price levels (deque guarantees stable pointers)
-  MemPool::BumpDict<Price, Level *> price_levels_; // Price -> Level* mapping for O(1) lookup (few erases, BumpDict is fine)
+  std::deque<Level> level_storage_;                    // All price levels (deque guarantees stable pointers)
+  std::array<Level *, PRICE_RANGE_SIZE> price_levels_; // Direct array: Price -> Level* mapping for O(1) lookup (512 KB)
 
   //------------------------------------------------------------------------------------
   // Layer 2: Order Tracking Infrastructure (订单追踪层)
@@ -187,9 +239,13 @@ private:
   //------------------------------------------------------------------------------------
   // Layer 4: Tick-by-Tick TOB (逐笔盘口层)
   //------------------------------------------------------------------------------------
-  mutable Price best_bid_ = 0;    // Tick-by-tick best bid (highest buy price with visible quantity)
-  mutable Price best_ask_ = 0;    // Tick-by-tick best ask (lowest sell price with visible quantity)
-  mutable bool tob_dirty_ = true; // TOB needs recalculation flag
+  mutable Price tob_price_ = 0;        // Tick-by-tick (one-side) TOB price
+  mutable bool tob_dir_ = false;       // Tick-by-tick TOB direction: false=bid, true=ask
+  mutable bool tob_valid_ = false;     // Tick-by-tick TOB validity: false=invalid, true=valid
+  mutable size_t tob_invalid_cnt_ = 0; // Tick-by-tick TOB invalid count
+  mutable size_t tob_refresh_cnt_ = 0; // Tick-by-tick TOB invalid count
+  mutable Price best_bid_ = 0;         // Tick-by-tick best bid (highest buy price with visible quantity)
+  mutable Price best_ask_ = 0;         // Tick-by-tick best ask (lowest sell price with visible quantity)
 
   //------------------------------------------------------------------------------------
   // Layer 5: Feature Depth (特征深度层 - 时间驱动低频更新)
@@ -220,6 +276,10 @@ private:
   // Exchange type - determines matching mechanism (SSE vs SZSE)
   ExchangeType exchange_type_ = ExchangeType::SSE;
 
+  // Asset ID for debug logging
+  size_t asset_id_ = 0;
+  mutable size_t debug_day_count_ = 0; // Counter for debug printing days
+
   // Hot path temporary variable cache (reduce allocation overhead)
   mutable Quantity delta_qty_; // Signed quantity change (+add/-deduct)
   mutable OrderId target_id_;  // Target order ID for current operation
@@ -241,28 +301,22 @@ private:
   // LEVEL MANAGEMENT (价格档位基础操作)
   //======================================================================================
 
-  // Query: Find existing level by price (returns nullptr if not found)
-  HOT_INLINE Level *level_find(Price price) const {
-    Level *const *level_ptr = price_levels_.find(price);
-    return level_ptr ? *level_ptr : nullptr;
-  }
-
-  // Get or create: Atomically get existing level or create new one (single hash lookup)
-  [[gnu::hot, gnu::always_inline]]
-  inline Level *level_get_or_create(Price price) {
-    auto [level_ptr, inserted] = price_levels_.try_emplace(price, nullptr);
-    if (inserted) [[unlikely]] {
+  // Get or create: Atomically get existing level or create new one (single array access)
+  HOT_INLINE Level *level_get_or_create(Price price) {
+    Level *level = price_levels_[price];
+    if (level == nullptr) [[unlikely]] {
       level_storage_.emplace_back(price);
-      *level_ptr = &level_storage_.back();
+      level = &level_storage_.back();
+      price_levels_[price] = level;
     }
-    return *level_ptr;
+    return level;
   }
 
   // Create: Create new level (assumes level doesn't exist)
   HOT_INLINE Level *level_create(Price price) {
     level_storage_.emplace_back(price);
     Level *level = &level_storage_.back();
-    price_levels_.insert(price, level);
+    price_levels_[price] = level;
     return level;
   }
 
@@ -289,7 +343,11 @@ private:
   HOT_INLINE void visibility_mark_visible(Price price) {
     visible_price_bitmap_.set(price);
     // Order-driven depth update: level became visible
-    Level *level = level_find(price);
+    Level *level = price_levels_[price];
+    assert(level && "set level not found");
+    // if (should_log()) {
+    //   Logger::log(std::to_string(asset_id_), "set visible: " + std::to_string(price));
+    // }
     if (level) {
       depth_on_level_add_remove(level, true);
     }
@@ -299,7 +357,11 @@ private:
   HOT_INLINE void visibility_mark_invisible(Price price) {
     visible_price_bitmap_.clear(price);
     // Order-driven depth update: level became invisible
-    Level *level = level_find(price);
+    Level *level = price_levels_[price];
+    assert(level && "clear level not found");
+    // if (should_log()) {
+    //   Logger::log(std::to_string(asset_id_), "clear visible: " + std::to_string(price));
+    // }
     if (level) {
       depth_on_level_add_remove(level, false);
     }
@@ -404,22 +466,22 @@ private:
 
   // Clear CALL_AUCTION flags at 9:30:00 (orders stay at current levels)
   HOT_NOINLINE void flush_call_auction_flags() {
-    price_levels_.for_each([
-#if DEBUG_ORDER_FLAGS_RESOLVE
-                               this
-#endif
-    ](const Price &price, Level *const &level) {
+    for (uint32_t price = 0; price < PRICE_RANGE_SIZE; ++price) {
+      Level *level = price_levels_[price];
+      if (level == nullptr)
+        continue;
+
       for (Order *order : level->orders) {
         if (order->flags == OrderFlags::CALL_AUCTION) {
 #if DEBUG_ORDER_FLAGS_RESOLVE
-          print_order_flags_resolve(order->id, price, price, order->qty, order->qty, OrderFlags::CALL_AUCTION, OrderFlags::NORMAL, "FLUSH_930 ");
+          print_order_flags_resolve(order->id, static_cast<Price>(price), static_cast<Price>(price), order->qty, order->qty, OrderFlags::CALL_AUCTION, OrderFlags::NORMAL, "FLUSH_930 ");
 #else
           (void)price;
 #endif
           order->flags = OrderFlags::NORMAL;
         }
       }
-    });
+    }
     // TOB will be updated by first continuous trading order
   }
 
@@ -650,40 +712,47 @@ private:
   // TOB MANAGEMENT (盘口管理)
   //======================================================================================
 
-  // Bootstrap TOB from visible prices (lazy initialization)
-  HOT_INLINE void init_tob() const {
-    if (!tob_dirty_)
-      return;
+  // Update TOB: scan from tob_price_ to find bid/ask boundary
+  // Key: farther side is true TOB, derive the other side from it
+  HOT_INLINE void update_tob() {
+    int bid_dist = 0, ask_dist = 0;
 
-    if (best_bid_ == 0 && best_ask_ == 0) {
-      // Find max visible price (best bid candidate)
-      best_bid_ = next_bid_below(PRICE_RANGE_SIZE - 1);
-      // Find min visible price (best ask candidate)
-      best_ask_ = next_ask_above(0);
+    // Scan down for bid (qty > 0), count distance
+    for (Price p = tob_price_; p != 0; p = next_bid_below(p)) {
+      if (Level *lv = price_levels_[p]; lv && lv->net_quantity > 0) {
+        best_bid_ = p;
+        break;
+      }
+      ++bid_dist;
     }
 
-    tob_dirty_ = false;
-  }
-
-  // Update one side of TOB after trade
-  HOT_INLINE void update_tob_one_side(bool is_active_bid, bool was_fully_consumed, Price trade_price) {
-    // Update tick-by-tick TOB
-    if (was_fully_consumed) {
-      // Level emptied - advance to next level
-      if (is_active_bid) {
-        best_ask_ = next_ask_above(trade_price);
-      } else {
-        best_bid_ = next_bid_below(trade_price);
+    // Scan up for ask (qty < 0), count distance
+    for (Price p = tob_price_; p != 0; p = next_ask_above(p)) {
+      if (Level *lv = price_levels_[p]; lv && lv->net_quantity < 0) {
+        best_ask_ = p;
+        break;
       }
+      ++ask_dist;
+    }
+
+    // Valid: at least one side at tob_price_ (distance = 0)
+    if (bid_dist <= 1 || ask_dist <= 1) {
+      // Farther side is true, derive closer side from it
+      if (bid_dist > ask_dist) {
+        best_ask_ = next_ask_above(best_bid_);
+      } else {
+        best_bid_ = next_bid_below(best_ask_);
+      }
+      tob_valid_ = true;
     } else {
-      // Level partially filled - TOB stays at trade_price
-      if (is_active_bid) {
-        best_ask_ = trade_price;
-      } else {
-        best_bid_ = trade_price;
-      }
+      tob_valid_ = false;
+      tob_invalid_cnt_++;
+      // if (should_log()) {
+      //   Logger::log(std::to_string(asset_id_), "TOB: bid_dist=" + std::to_string(bid_dist) + ", ask_dist=" + std::to_string(ask_dist) + ", best_bid_=" + std::to_string(best_bid_) + ", best_ask_=" + std::to_string(best_ask_) + ", tob_price_=" + std::to_string(tob_price_));
+      // }
     }
-    tob_dirty_ = false;
+
+    tob_refresh_cnt_++;
   }
 
   //======================================================================================
@@ -756,11 +825,13 @@ private:
       //==================================================================================
       const bool is_active_bid = (order.bid_order_id > order.ask_order_id);
 
-      bool consumed_bid = process_taker_side(order, order.bid_order_id, -static_cast<Quantity>(order.volume));
-      bool consumed_ask = process_taker_side(order, order.ask_order_id, +static_cast<Quantity>(order.volume));
+      [[maybe_unused]] bool consumed_bid = process_taker_side(order, order.bid_order_id, -static_cast<Quantity>(order.volume));
+      [[maybe_unused]] bool consumed_ask = process_taker_side(order, order.ask_order_id, +static_cast<Quantity>(order.volume));
 
-      actual_price_ = order.price;
-      update_tob_one_side(is_active_bid, is_active_bid ? consumed_ask : consumed_bid, actual_price_);
+      actual_price_ = order.price; // for safety
+      tob_price_ = actual_price_;
+      tob_dir_ = is_active_bid;
+      // update_tob(is_active_bid, is_active_bid ? consumed_ask : consumed_bid, actual_price_);
       return true;
 
     } else {
@@ -771,10 +842,12 @@ private:
       if (delta_qty_ == 0 || target_id_ == 0) [[unlikely]]
         return false;
 
-      bool consumed = process_taker_side(order, target_id_, delta_qty_);
+      [[maybe_unused]] bool consumed = process_taker_side(order, target_id_, delta_qty_);
 
       if (is_taker_) {
-        update_tob_one_side(is_bid_, consumed, actual_price_);
+        tob_price_ = actual_price_;
+        tob_dir_ = is_bid_;
+        // update_tob(is_bid_, consumed, actual_price_);
       }
       return true;
     }
@@ -834,7 +907,7 @@ private:
       const bool both_ids_present = (order.bid_order_id != 0 && order.ask_order_id != 0);
 
       // Handle target order (counterparty)
-      bool was_fully_consumed = false;
+      bool fully_consumed = false;
       if (found) {
         Price target_price = loc->level->price;
 
@@ -853,12 +926,12 @@ private:
         }
 
         actual_price_ = order.price;
-        was_fully_consumed = order_upsert(target_id_, actual_price_, delta_qty_, loc);
+        fully_consumed = order_upsert(target_id_, actual_price_, delta_qty_, loc);
       } else {
         // OUT_OF_ORDER: create placeholder
         actual_price_ = order.price;
         order_upsert(target_id_, actual_price_, delta_qty_, loc, OrderFlags::OUT_OF_ORDER);
-        was_fully_consumed = false;
+        fully_consumed = false;
       }
 
       // Handle self order (market orders from Level[0])
@@ -880,7 +953,7 @@ private:
         }
       }
 
-      return was_fully_consumed;
+      return fully_consumed;
     }
 
     //====================================================================================
@@ -943,7 +1016,7 @@ private:
       if (next_price == 0)
         break;
 
-      Level *next_level = level_find(next_price);
+      Level *next_level = price_levels_[next_price];
       if (next_level && next_level->has_visible_quantity()) {
         levels.push_back(next_level);
         current_price = next_price;
@@ -963,12 +1036,13 @@ private:
     // Check if price is within current range
     Price high_price = LOB_feature_.depth_buffer.front()->price;
     Price low_price = LOB_feature_.depth_buffer.back()->price;
-    if (level->price >= high_price || low_price <= level->price)
+    if (level->price > high_price || low_price > level->price)
       return;
 
     // Binary search to find insert position
     size_t idx = depth_binary_search(level->price);
 
+    // Logger::log(std::to_string(asset_id_), std::to_string(level->price) + ": add/remove " + std::to_string(add) + " high_price=" + std::to_string(high_price) + " low_price=" + std::to_string(low_price) + " idx=" + std::to_string(idx));
     if (add) {
       // Just insert, CBuffer will auto-pop front when full
       LOB_feature_.depth_buffer.insert(idx, level);
@@ -983,56 +1057,58 @@ private:
   //======================================================================================
 
   // Update depth if TOB is valid (called from process() when time interval reached)
-  HOT_NOINLINE bool sync_tob_to_depth_center() {
+  HOT_NOINLINE bool update_depth() {
 
-    if (!(new_tick_ && curr_tick_ >= next_depth_update_tick_))
+    if (!(new_tick_ && curr_tick_ >= next_depth_update_tick_)) {
+      // if (!(new_tick_)) {
+      LOB_feature_.depth_updated = false;
       return false;
+    };
 
-    Level *bid_level = level_find(best_bid_);
-    Level *ask_level = level_find(best_ask_);
-    if (!(best_bid_ < best_ask_ && bid_level && bid_level->net_quantity > 0 && ask_level && ask_level->net_quantity < 0))
-      return false;
+    update_tob();
 
     // Determine if rebuild needed
     size_t current_depth = LOB_feature_.depth_buffer.size();
-    bool need_rebuild = current_depth <= 2;
-    if (!need_rebuild) {
-      Price depth_high = LOB_feature_.depth_buffer.front()->price;
-      Price depth_low = LOB_feature_.depth_buffer.back()->price;
-      need_rebuild = (best_ask_ <= depth_low || best_ask_ >= depth_high ||
-                      best_bid_ <= depth_low || best_bid_ >= depth_high);
-    }
 
     // Calculate insertion counts
-    size_t bid_idx = need_rebuild ? 0 : depth_binary_search(best_bid_);
-    int ask_count = need_rebuild ? LOB_FEATURE_DEPTH_LEVELS : static_cast<int>(LOB_FEATURE_DEPTH_LEVELS) - static_cast<int>(bid_idx);
-    int bid_count = need_rebuild ? LOB_FEATURE_DEPTH_LEVELS : static_cast<int>(bid_idx + LOB_FEATURE_DEPTH_LEVELS) - static_cast<int>(current_depth);
+    size_t bid_idx = depth_binary_search(best_bid_);
+    size_t ask_count = static_cast<int>(LOB_FEATURE_DEPTH_LEVELS) - static_cast<int>(bid_idx);
+    size_t bid_count = static_cast<int>(bid_idx + LOB_FEATURE_DEPTH_LEVELS) - static_cast<int>(current_depth);
+
+    bool need_rebuild = current_depth <= 2 || ask_count >= LOB_FEATURE_DEPTH_LEVELS || bid_count >= LOB_FEATURE_DEPTH_LEVELS;
+
+    ask_count = need_rebuild ? LOB_FEATURE_DEPTH_LEVELS : ask_count;
+    bid_count = need_rebuild ? LOB_FEATURE_DEPTH_LEVELS : bid_count;
+
+    // if (should_log()) {
+    //   Logger::log(std::to_string(asset_id_), "update_depth: need_rebuild=" + std::to_string(need_rebuild) + ", bid_idx=" + std::to_string(bid_idx) + ", ask_count=" + std::to_string(ask_count) + ", bid_count=" + std::to_string(bid_count));
+    // }
 
     if (need_rebuild)
       LOB_feature_.depth_buffer.clear();
 
     // Fill ask side (upper half)
     Price price = need_rebuild ? best_ask_ : LOB_feature_.depth_buffer.front()->price;
-    for (int i = 0; i < ask_count && price > 0; ++i) {
+    for (size_t i = 0; i < ask_count && price > 0; ++i) {
       if (!need_rebuild) {
         price = next_ask_above(price);
         if (price == 0)
           break;
       }
-      LOB_feature_.depth_buffer.push_front(level_find(price));
+      LOB_feature_.depth_buffer.push_front(price_levels_[price]);
       if (need_rebuild)
         price = next_ask_above(price);
     }
 
     // Fill bid side (lower half)
     price = need_rebuild ? best_bid_ : LOB_feature_.depth_buffer.back()->price;
-    for (int i = 0; i < bid_count && price > 0; ++i) {
+    for (size_t i = 0; i < bid_count && price > 0; ++i) {
       if (!need_rebuild) {
         price = next_bid_below(price);
         if (price == 0)
           break;
       }
-      LOB_feature_.depth_buffer.push_back(level_find(price));
+      LOB_feature_.depth_buffer.push_back(price_levels_[price]);
       if (need_rebuild)
         price = next_bid_below(price);
     }
@@ -1040,14 +1116,33 @@ private:
     last_depth_update_tick_ = curr_tick_;
     next_depth_update_tick_ = curr_tick_ + (EffectiveTOBFilter::MIN_TIME_INTERVAL_MS / 10);
 
-    return (LOB_feature_.depth_buffer.size() >= LOB_FEATURE_DEPTH_LEVELS &&
-            LOB_feature_.depth_buffer[LOB_FEATURE_DEPTH_LEVELS - 1]->price == best_ask_ &&
-            LOB_feature_.depth_buffer[LOB_FEATURE_DEPTH_LEVELS]->price == best_bid_);
+    return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= LOB_FEATURE_DEPTH_LEVELS;
   }
 
   //======================================================================================
   // DEBUG UTILITIES (调试工具)
   //======================================================================================
+
+  // Check if current asset should dump debug logs
+  // check_day_limit: if true, also check if we haven't exceeded DEBUG_PRINT_DAYS
+  inline bool
+  should_log(bool check_day_limit = true) const {
+    if (DEBUG_ASSET_IDS_COUNT == 0)
+      return false;
+
+    bool id_matched = false;
+    for (size_t i = 0; i < DEBUG_ASSET_IDS_COUNT; ++i) {
+      if (DEBUG_ASSET_IDS[i] == asset_id_) {
+        id_matched = true;
+        break;
+      }
+    }
+
+    if (!id_matched)
+      return false;
+
+    return !check_day_limit || (debug_day_count_ < DEBUG_PRINT_DAYS);
+  }
 
   // Helper: Get flags string for debug output
   static const char *get_order_flags_str(OrderFlags flags) {
@@ -1076,14 +1171,18 @@ private:
   void print_order_flags_create(OrderId order_id, Price price, Quantity qty, OrderFlags flags) const {
     if (flags == OrderFlags::NORMAL)
       return; // Skip normal orders
+    if (!should_log())
+      return;
 
-    std::cout << "\033[33m[CREATE] " << format_time()
-              << " | " << get_order_flags_str(flags)
-              << " | ID=" << std::setw(7) << std::right << order_id
-              << " Price=" << std::setw(5) << std::right << price
-              << " Qty=" << std::setw(6) << std::right << qty
-              << " | TotalOrders=" << std::setw(5) << std::right << (order_lookup_.size() + 1)
-              << "\033[0m\n";
+    std::ostringstream msg;
+    msg << "\033[33m[CREATE] " << format_time()
+        << " | " << get_order_flags_str(flags)
+        << " | ID=" << std::setw(7) << std::right << order_id
+        << " Price=" << std::setw(5) << std::right << price
+        << " Qty=" << std::setw(6) << std::right << qty
+        << " | TotalOrders=" << std::setw(5) << std::right << (order_lookup_.size() + 1)
+        << "\033[0m";
+    Logger::log(std::to_string(asset_id_), msg.str());
   }
 #endif
 
@@ -1096,30 +1195,34 @@ private:
                                  const char *action) const {
     if (old_flags == OrderFlags::NORMAL && new_flags == OrderFlags::NORMAL)
       return; // Skip normal orders
+    if (!should_log())
+      return;
 
-    std::cout << "\033[36m[" << action << "] " << format_time()
-              << " | " << get_order_flags_str(old_flags)
-              << " → " << get_order_flags_str(new_flags)
-              << " | ID=" << std::setw(7) << std::right << order_id;
+    std::ostringstream msg;
+    msg << "\033[36m[" << action << "] " << format_time()
+        << " | " << get_order_flags_str(old_flags)
+        << " → " << get_order_flags_str(new_flags)
+        << " | ID=" << std::setw(7) << std::right << order_id;
 
     // Price field: show old→new if changed, otherwise single value (12 chars total)
     if (old_price != new_price) {
-      std::cout << " Price=" << std::setw(5) << std::right << old_price
-                << "→" << std::setw(5) << std::right << new_price;
+      msg << " Price=" << std::setw(5) << std::right << old_price
+          << "→" << std::setw(5) << std::right << new_price;
     } else {
-      std::cout << " Price=" << std::setw(5) << std::right << old_price << "      ";
+      msg << " Price=" << std::setw(5) << std::right << old_price << "      ";
     }
 
     // Qty field: show old→new if changed, otherwise single value (12 chars total)
     if (old_qty != new_qty) {
-      std::cout << " Qty=" << std::setw(6) << std::right << old_qty
-                << "→" << std::setw(5) << std::right << new_qty;
+      msg << " Qty=" << std::setw(6) << std::right << old_qty
+          << "→" << std::setw(5) << std::right << new_qty;
     } else {
-      std::cout << " Qty=" << std::setw(6) << std::right << new_qty << "      ";
+      msg << " Qty=" << std::setw(6) << std::right << new_qty << "      ";
     }
 
-    std::cout << " | TotalOrders=" << std::setw(5) << std::right << order_lookup_.size()
-              << "\033[0m\n";
+    msg << " | TotalOrders=" << std::setw(5) << std::right << order_lookup_.size()
+        << "\033[0m";
+    Logger::log(std::to_string(asset_id_), msg.str());
   }
 #endif
 
@@ -1134,16 +1237,9 @@ private:
   // Check for sign anomaly in level (print far anomalies N+ ticks from TOB during continuous trading)
   void check_anomaly(Level *level) const {
     using namespace TradingSession;
-    using namespace AnomalyDetection;
 
     // Skip level 0 (special level)
     if (level->price == 0)
-      return;
-
-    // Step 1: Distance filter - only check far levels (N+ ticks from TOB)
-    const bool is_far_below_bid = (best_bid_ > 0 && level->price < best_bid_ - MIN_DISTANCE_FROM_TOB);
-    const bool is_far_above_ask = (best_ask_ > 0 && level->price > best_ask_ + MIN_DISTANCE_FROM_TOB);
-    if (!is_far_below_bid && !is_far_above_ask)
       return;
 
     // Step 2: Classify by price relative to TOB mid price
@@ -1170,6 +1266,9 @@ private:
 
   // Print detailed anomaly information for a level
   void print_anomaly_level(Level *level, bool is_bid_side) const {
+    if (!should_log())
+      return;
+
     // Collect all reverse-sign orders (unmatched orders)
     std::vector<Order *> anomaly_orders;
     anomaly_orders.reserve(level->order_count); // Pre-allocate
@@ -1187,19 +1286,23 @@ private:
               [](const Order *a, const Order *b) { return a->id < b->id; });
 
     // Print level summary header
-    std::cout << "\033[35m[ANOMALY_LEVEL] " << format_time()
-              << " Level=" << level->price << " ExpectedSide=" << (is_bid_side ? "BID" : "ASK")
-              << " NetQty=" << level->net_quantity << " TotalOrders=" << level->order_count
-              << " UnmatchedOrders=" << anomaly_orders.size()
-              << " | TOB: Bid=" << best_bid_ << " Ask=" << best_ask_ << "\033[0m\n";
+    std::ostringstream msg;
+    msg << "\033[35m[ANOMALY_LEVEL] " << format_time()
+        << " Level=" << level->price << " ExpectedSide=" << (is_bid_side ? "BID" : "ASK")
+        << " NetQty=" << level->net_quantity << " TotalOrders=" << level->order_count
+        << " UnmatchedOrders=" << anomaly_orders.size()
+        << " | TOB: Bid=" << best_bid_ << " Ask=" << best_ask_ << "\033[0m";
+    Logger::log(std::to_string(asset_id_), msg.str());
 
     // Print all unmatched orders sorted by size
     for (size_t i = 0; i < anomaly_orders.size(); ++i) {
       const Order *order = anomaly_orders[i];
-      std::cout << "\033[35m  [" << (i + 1) << "] ID=" << order->id
+      std::ostringstream order_msg;
+      order_msg << "\033[35m  [" << (i + 1) << "] ID=" << order->id
                 << " Qty=" << order->qty
                 << " Created=" << format_timestamp(order->timestamp)
-                << " Age=" << (tick_to_ms(curr_tick_) - tick_to_ms(order->timestamp)) << "ms\033[0m\n";
+                << " Age=" << (tick_to_ms(curr_tick_) - tick_to_ms(order->timestamp)) << "ms\033[0m";
+      Logger::log(std::to_string(asset_id_), order_msg.str());
     }
   }
 
@@ -1210,6 +1313,8 @@ private:
   //======================================================================================
 
 #if DEBUG_BOOK_PRINT
+
+  inline static constexpr size_t LEVEL_WIDTH = 12;
 
   // Helper: Calculate display width excluding ANSI codes
   inline size_t display_width(const std::string &s) const {
@@ -1233,8 +1338,8 @@ private:
 #if DEBUG_BOOK_AS_AMOUNT == 0
     const std::string qty_str = std::to_string(volume);
 #else
-    const double amount = volume * price / (DEBUG_BOOK_AS_AMOUNT * 10000.0);
-    const std::string qty_str = (volume < 0 ? "-" : "") + std::to_string(static_cast<int>(std::abs(amount) + 0.5));
+    const double amount = std::abs(volume) * price / (DEBUG_BOOK_AS_AMOUNT * 10000.0);
+    const std::string qty_str = (volume < 0 ? "-" : "") + std::to_string(std::max(1, static_cast<int>(std::ceil(amount))));
 #endif
     const std::string level_str = std::to_string(price) + "x" + qty_str;
     return is_anomaly ? "\033[31m" + level_str + "\033[0m" : level_str;
@@ -1244,20 +1349,21 @@ private:
   void inline print_book_realtime() const {
     if (!in_continuous_trading_)
       return;
+    if (!should_log())
+      return;
 
-    using namespace BookDisplay;
-    constexpr size_t N = std::min(MAX_DISPLAY_LEVELS, LOB_FEATURE_DEPTH_LEVELS);
+    constexpr size_t N = LOB_FEATURE_DEPTH_LEVELS;
 
     std::ostringstream out;
     out << "\033[32m[RT] " << format_time() << "\033[0m ["
-        << std::setfill('0') << std::setw(3) << (level_find(0) ? level_find(0)->order_count : 0)
+        << std::setfill('0') << std::setw(3) << (price_levels_[0] ? price_levels_[0]->order_count : 0)
         << std::setfill(' ') << "] ";
 
     // Collect ask/bid levels
     auto collect = [&](Price start, auto next_func, size_t count) {
       std::vector<std::pair<Price, int32_t>> levels;
       for (Price p = start; levels.size() < count && p > 0; p = next_func(p)) {
-        if (Level *lv = level_find(p); lv && lv->has_visible_quantity())
+        if (Level *lv = price_levels_[p]; lv) // && lv->has_visible_quantity())
           levels.push_back({lv->price, lv->net_quantity});
       }
       return levels;
@@ -1267,7 +1373,7 @@ private:
     auto bids = collect(best_bid_, [&](Price p) { return next_bid_below(p); }, N);
 
     // Display asks (reverse)
-    for (size_t i = 0; i < MAX_DISPLAY_LEVELS - N; ++i)
+    for (size_t i = 0; i < LOB_FEATURE_DEPTH_LEVELS - N; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
     for (int i = asks.size() - 1; i >= 0; --i) {
       std::string level_str = format_level(asks[i].first, -asks[i].second);
@@ -1276,34 +1382,35 @@ private:
     for (size_t i = asks.size(); i < N; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
 
-    out << " (" << std::setw(4) << best_ask_ << ")ASK | BID(" << std::setw(4) << best_bid_ << ") ";
+    out << " (" << std::setw(4) << best_ask_ << ")ASK " << (tob_dir_ ? "<|" : "|>") << " BID(" << std::setw(4) << best_bid_ << ") ";
 
     // Display bids
     for (size_t i = 0; i < bids.size(); ++i) {
       std::string level_str = format_level(bids[i].first, bids[i].second);
       out << level_str << std::string(LEVEL_WIDTH > display_width(level_str) ? LEVEL_WIDTH - display_width(level_str) : 0, ' ');
     }
-    for (size_t i = bids.size(); i < MAX_DISPLAY_LEVELS; ++i)
+    for (size_t i = bids.size(); i < LOB_FEATURE_DEPTH_LEVELS; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
 
-    std::cout << out.str() << "\n";
+    Logger::log(std::to_string(asset_id_), out.str());
   }
 
   // Depth-buffer-based printer: Display from LOB_feature_ (buffered depth)
   void inline print_book_buffered() const {
     if (!in_continuous_trading_)
       return;
+    if (!should_log())
+      return;
 
-    using namespace BookDisplay;
-    constexpr size_t N = std::min(MAX_DISPLAY_LEVELS, LOB_FEATURE_DEPTH_LEVELS);
+    constexpr size_t N = LOB_FEATURE_DEPTH_LEVELS;
 
     std::ostringstream out;
     out << "\033[34m[BUF]" << format_time() << "\033[0m ["
-        << std::setfill('0') << std::setw(3) << (level_find(0) ? level_find(0)->order_count : 0)
+        << std::setfill('0') << std::setw(3) << (price_levels_[0] ? price_levels_[0]->order_count : 0)
         << std::setfill(' ') << "] ";
 
     // Display asks (reverse)
-    for (size_t i = 0; i < MAX_DISPLAY_LEVELS - N; ++i)
+    for (size_t i = 0; i < LOB_FEATURE_DEPTH_LEVELS - N; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
     for (int i = N - 1; i >= 0; --i) {
       const size_t buf_idx = LOB_FEATURE_DEPTH_LEVELS - 1 - i;
@@ -1317,7 +1424,7 @@ private:
       }
     }
 
-    out << " (" << std::setw(4) << best_ask_ << ")ASK | BID(" << std::setw(4) << best_bid_ << ") ";
+    out << " (" << std::setw(4) << best_ask_ << ")ASK " << (tob_dir_ ? "<|" : "|>") << " BID(" << std::setw(4) << best_bid_ << ") ";
 
     // Display bids
     for (size_t i = 0; i < N; ++i) {
@@ -1331,15 +1438,15 @@ private:
         out << std::setw(LEVEL_WIDTH) << " ";
       }
     }
-    for (size_t i = N; i < MAX_DISPLAY_LEVELS; ++i)
+    for (size_t i = N; i < LOB_FEATURE_DEPTH_LEVELS; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
 
-    std::cout << out.str() << "\n";
+    Logger::log(std::to_string(asset_id_), out.str());
   }
 
   // Unified printer: calls both real-time and buffered for comparison
   void inline print_book() const {
-    // print_book_realtime();
+    print_book_realtime();
     print_book_buffered();
   }
 

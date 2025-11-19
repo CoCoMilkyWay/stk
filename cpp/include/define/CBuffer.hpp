@@ -390,8 +390,11 @@ public:
 
   // ========== 7. Range Insertion & Deletion ==========
 
-  // NOTE: insert() overflow policy: when buffer is full, drop oldest (head) element first
-  // This maintains sliding-window semantics. If you need reject-insert semantics, check
+  // NOTE: insert() overflow policy: when buffer is full, drop newest (tail) element first
+  // by implicitly calling pop_back(). This keeps index semantics consistent between full
+  // and non-full cases: index always refers to the same logical position relative to the
+  // anchor point (index=0). This maintains sliding-window semantics where the head (oldest
+  // data) is preserved and the tail is sacrificed. If you need different semantics, check
   // size() < capacity() before calling insert().
 
   void insert(size_t index, const T &value) {
@@ -399,30 +402,20 @@ public:
       assert(false && "insert() index out of range");
     }
 
-    if (size_ < N)
-      CBUFFER_NOT_FULL_HINT {
-        // Not full: shift right from old_size-1 down to index
-        size_t old_size = size_;
-        ++size_;
-        for (size_t i = old_size; i-- > index;) {
-          (*this)[i + 1] = (*this)[i];
-        }
-        (*this)[index] = value;
+    // Full buffer: implicitly pop_back() to make space
+    // This keeps index semantics consistent (index=0 anchor unchanged)
+    if (size_ >= N)
+      CBUFFER_FULL_HINT {
+        --size_;
       }
-    else {
-      // Buffer is full: pop_front (head_ advance, size becomes N-1), insert, then restore size to N
-      head_ = (head_ == N - 1) ? 0 : (head_ + 1);
-      --size_; // Now size_ = N - 1
-      if (index > size_)
-        index = size_;
-      // Insert at index (same as non-full case)
-      size_t old_size = size_;
-      ++size_;
-      for (size_t i = old_size; i-- > index;) {
-        (*this)[i + 1] = (*this)[i];
-      }
-      (*this)[index] = value;
+
+    // Unified insertion logic: shift [index, size) right by 1
+    size_t old_size = size_;
+    ++size_;
+    for (size_t i = old_size; i-- > index;) {
+      (*this)[i + 1] = (*this)[i];
     }
+    (*this)[index] = value;
   }
 
   void insert(size_t index, T &&value) {
@@ -430,30 +423,20 @@ public:
       assert(false && "insert() index out of range");
     }
 
-    if (size_ < N)
-      CBUFFER_NOT_FULL_HINT {
-        // Not full: shift right from old_size-1 down to index
-        size_t old_size = size_;
-        ++size_;
-        for (size_t i = old_size; i-- > index;) {
-          (*this)[i + 1] = (*this)[i];
-        }
-        (*this)[index] = std::move(value);
+    // Full buffer: implicitly pop_back() to make space
+    // This keeps index semantics consistent (index=0 anchor unchanged)
+    if (size_ >= N)
+      CBUFFER_FULL_HINT {
+        --size_;
       }
-    else {
-      // Buffer is full: pop_front (head_ advance, size becomes N-1), insert, then restore size to N
-      head_ = (head_ == N - 1) ? 0 : (head_ + 1);
-      --size_; // Now size_ = N - 1
-      if (index > size_)
-        index = size_;
-      // Insert at index (same as non-full case)
-      size_t old_size = size_;
-      ++size_;
-      for (size_t i = old_size; i-- > index;) {
-        (*this)[i + 1] = (*this)[i];
-      }
-      (*this)[index] = std::move(value);
+
+    // Unified insertion logic: shift [index, size) right by 1
+    size_t old_size = size_;
+    ++size_;
+    for (size_t i = old_size; i-- > index;) {
+      (*this)[i + 1] = (*this)[i];
     }
+    (*this)[index] = std::move(value);
   }
 
   template <typename InputIt>
@@ -482,19 +465,17 @@ public:
         }
       }
     else {
-      // Overflow: need to drop oldest elements
-      size_t old_size = size_;
+      // Overflow: drop newest (tail) elements to make space
+      // This keeps index semantics consistent (index=0 anchor unchanged)
       size_t excess = (size_ + count) - N;
 
-      // Advance head_ to drop oldest 'excess' elements
+      // Implicitly pop_back 'excess' elements
       if (excess > 0) {
-        const size_t new_head = head_ + excess;
-        head_ = (new_head >= N) ? (new_head - N) : new_head;
         size_ -= excess;
       }
 
       // Now insert as usual (guaranteed to fit)
-      old_size = size_;
+      size_t old_size = size_;
       size_t insert_count = (count <= N - size_) ? count : (N - size_);
       size_ += insert_count;
 
@@ -515,7 +496,8 @@ public:
   void erase(size_t index) {
     if (index >= size_) [[unlikely]]
       return;
-    // Move suffix left by 1 using std::move to avoid copy overhead
+    // Dense-pack strategy: keep [0, index) unchanged (anchor at index=0)
+    // Move suffix [index+1, size) left by 1 to fill the gap
     const size_t move_count = size_ - index - 1;
     for (size_t i = 0; i < move_count; ++i) {
       (*this)[index + i] = std::move((*this)[index + i + 1]);
@@ -530,7 +512,8 @@ public:
       return;
     if (start + count > size_)
       count = size_ - start;
-    // Move suffix left by count using std::move to avoid copy overhead
+    // Dense-pack strategy: keep [0, start) unchanged (anchor at index=0)
+    // Move suffix [start+count, size) left by count to fill the gap
     const size_t move_count = size_ - start - count;
     for (size_t i = 0; i < move_count; ++i) {
       (*this)[start + i] = std::move((*this)[start + i + count]);
