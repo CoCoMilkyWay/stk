@@ -1,39 +1,10 @@
 #pragma once
 
-#include "features/FeaturesHour/Hour_Sequential.hpp"
-#include "features/FeaturesMinute/Minute_Sequential.hpp"
 #include "features/FeaturesTick/Tick_Sequential.hpp"
+#include "features/FeaturesMinute/Minute_Sequential.hpp"
+#include "features/FeaturesHour/Hour_Sequential.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
-
-// Resampled minute-level bar data
-struct MinuteBar {
-  uint64_t timestamp_1m;    // minute timestamp
-  uint32_t instrument_id;   // asset identifier
-  double open_1m;           // open price
-  double high_1m;           // high price
-  double low_1m;            // low price
-  double close_1m;          // close price
-  double vwap_1m;           // volume-weighted average price
-  uint64_t volume_1m;       // total volume
-  uint32_t universe_ids_1m; // universe membership flags
-  bool market_close_1m;     // market close flag
-};
-
-// Resampled hour-level bar data
-struct HourBar {
-  uint64_t timestamp_1h;    // hour timestamp
-  uint32_t instrument_id;   // asset identifier
-  double open_1h;           // open price
-  double high_1h;           // high price
-  double low_1h;            // low price
-  double close_1h;          // close price
-  double vwap_1h;           // volume-weighted average price
-  uint64_t volume_1h;       // total volume
-  uint32_t universe_ids_1h; // universe membership flags
-  bool market_close_1h;     // market close flag
-  double prev_day_close;    // previous day close
-};
 
 // Sequential Core: Hierarchical 3-level feature computation with resampling
 // Architecture: LOB -> Tick -> (resample) -> Minute -> (resample) -> Hour
@@ -53,14 +24,17 @@ public:
     if (feature_store_) {
       tick_sequential_.set_store_context(feature_store_, asset_id_, core_id_);
       minute_sequential_.set_store_context(feature_store_, asset_id_);
+      minute_sequential_.set_worker_id(core_id_);
       hour_sequential_.set_store_context(feature_store_, asset_id_);
+      hour_sequential_.set_worker_id(core_id_);
     }
   }
 
   void set_date(const std::string &date_str) {
     date_str_ = date_str;
     tick_sequential_.set_date(date_str);
-    // TODO: add set_date for minute/hour when needed
+    minute_sequential_.set_date(date_str);
+    hour_sequential_.set_date(date_str);
   }
 
   // Main entry: compute all 3 levels with cascading resampling
@@ -115,9 +89,14 @@ private:
   void resample_tick_to_minute(double close_price, uint32_t current_minute, bool is_minute_close) noexcept {
     last_minute_ = current_minute;
 
+    // Convert clock minute to trading minute index (0-239)
+    const uint8_t hour = current_minute / 60;
+    const uint8_t minute = current_minute % 60;
+    const size_t trading_minute_idx = time_to_trading_seconds(hour, minute, 0) / 60;
+
     // Build minute bar from accumulated tick data
     minute_bar_ = {
-        .timestamp_1m = current_minute,
+        .timestamp_1m = trading_minute_idx,
         .instrument_id = static_cast<uint32_t>(asset_id_),
         .open_1m = minute_accumulator_.open,
         .high_1m = minute_accumulator_.high,
@@ -137,9 +116,14 @@ private:
 
     bool is_close = (current_hour == 11 || current_hour == 15);
 
+    // Convert clock hour to trading hour index (0-3)
+    // Morning: 9, 10, 11 → 0, 1, 2
+    // Afternoon: 13, 14 → 2, 3 (overlapping with hour 11-12 boundary)
+    const size_t trading_hour_idx = time_to_trading_seconds(current_hour, 0, 0) / 3600;
+
     // Build hour bar from accumulated minute data
     hour_bar_ = {
-        .timestamp_1h = current_hour,
+        .timestamp_1h = trading_hour_idx,
         .instrument_id = static_cast<uint32_t>(asset_id_),
         .open_1h = hour_accumulator_.open,
         .high_1h = hour_accumulator_.high,

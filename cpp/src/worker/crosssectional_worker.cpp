@@ -1,7 +1,7 @@
 #include "worker/crosssectional_worker.hpp"
 #include "worker/shared_state.hpp"
 
-#include "features/CoreCrosssection.hpp"
+#include "features/FeaturesTick/Tick_Crosssection.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "misc/logging.hpp"
 
@@ -42,7 +42,7 @@ void crosssectional_worker(const SharedState &state,
       feature_store->cs_wait(date_str, t);
 
       // Compute CS features (reuse buffers to avoid allocation)
-      compute_cs_for_timeslot(feature_store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
+      compute_cs_tick(feature_store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
     }
 
     ++completed_dates;
