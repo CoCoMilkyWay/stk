@@ -27,6 +27,9 @@ set(CMAKE_C_FLAGS_DEBUG "")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "")
 set(CMAKE_C_FLAGS_MINSIZEREL "")
 
+# Enable colored diagnostics for Clang
+add_compile_options(-fcolor-diagnostics -fansi-escape-codes)
+
 # Compiler flags configuration
 if(TSAN_MODE)
     message(STATUS "Build mode: TSAN (ThreadSanitizer - race detection)")
@@ -106,6 +109,7 @@ set(SOURCES
     ../../src/worker/sequential_worker.cpp
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/io_worker.cpp
+    ../../src/gui/gui.cpp
     ../../src/main.cpp
 )
 
@@ -128,6 +132,7 @@ set(HEADERS
     ../../include/worker/sequential_worker.hpp
     ../../include/worker/crosssectional_worker.hpp
     ../../include/worker/io_worker.hpp
+    ../../include/gui/gui.h
 )
 
 # Disable fast-math for JSON library to avoid infinity issues
@@ -165,4 +170,124 @@ message(STATUS "C++ compiler: ${CMAKE_CXX_COMPILER_ID}")
 message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "Output directory: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 message(STATUS "app_main sources: ${SOURCES}")
+
+# ============================================================================
+# GUI Libraries (ImGui, ImPlot, GLFW, OpenGL)
+# ============================================================================
+
+message(STATUS "")
+message(STATUS "=== Checking GUI Dependencies ===")
+
+# Platform-specific notes
+if(UNIX)
+    message(STATUS "  Platform: Linux (using X11 for windowing)")
+elseif(APPLE)
+    message(STATUS "  Platform: macOS (using Cocoa for windowing)")
+elseif(WIN32)
+    message(STATUS "  Platform: Windows (using Win32 for windowing)")
+else()
+    message(FATAL_ERROR "Unsupported platform")
+endif()
+
+# Check OpenGL
+find_package(OpenGL QUIET)
+if(NOT OpenGL_FOUND)
+    message(FATAL_ERROR 
+        "OpenGL not found! Please install:\n"
+        "  Ubuntu/Debian: sudo apt-get install libgl1-mesa-dev\n"
+        "  Fedora/RHEL:   sudo dnf install mesa-libGL-devel\n"
+        "  Arch:          sudo pacman -S mesa\n"
+        "  macOS:         OpenGL is pre-installed (this error should not happen)\n")
+endif()
+message(STATUS "✓ OpenGL found: ${OPENGL_LIBRARIES}")
+
+# Check X11 (required by GLFW on Linux)
+if(UNIX)
+    find_package(X11 QUIET)
+    if(NOT X11_FOUND)
+        message(FATAL_ERROR 
+            "X11 not found! Please install:\n"
+            "  Ubuntu/Debian: sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev\n"
+            "  Fedora/RHEL:   sudo dnf install libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel\n"
+            "  Arch:          sudo pacman -S libx11 libxrandr libxinerama libxcursor libxi\n")
+    endif()
+    message(STATUS "✓ X11 found: ${X11_X11_LIB}")
+endif()
+
+# Check Cocoa framework (required by GLFW on macOS)
+if(APPLE)
+    find_library(COCOA_LIBRARY Cocoa REQUIRED)
+    find_library(IOKIT_LIBRARY IOKit REQUIRED)
+    find_library(COREVIDEO_LIBRARY CoreVideo REQUIRED)
+    if(NOT COCOA_LIBRARY OR NOT IOKIT_LIBRARY OR NOT COREVIDEO_LIBRARY)
+        message(FATAL_ERROR 
+            "macOS system frameworks not found!\n"
+            "  This should not happen on a standard macOS installation.\n"
+            "  Please ensure Xcode Command Line Tools are installed:\n"
+            "  xcode-select --install\n")
+    endif()
+    message(STATUS "✓ Cocoa framework found")
+    message(STATUS "✓ IOKit framework found")
+    message(STATUS "✓ CoreVideo framework found")
+endif()
+
+# Check Windows SDK (required by GLFW on Windows)
+if(WIN32)
+    if(NOT MSVC AND NOT MINGW)
+        message(WARNING "Windows build requires MSVC or MinGW compiler")
+    endif()
+    message(STATUS "✓ Windows SDK available (Win32 API)")
+endif()
+
+message(STATUS "All GUI dependencies satisfied")
+message(STATUS "")
+
+# Setup GLFW library from local source
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(../../package/glfw ${CMAKE_BINARY_DIR}/glfw)
+
+# Setup ImGui library from local source
+set(IMGUI_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/imgui)
+set(IMGUI_SOURCE
+    ${IMGUI_SOURCE_DIR}/imgui.cpp
+    ${IMGUI_SOURCE_DIR}/imgui_demo.cpp
+    ${IMGUI_SOURCE_DIR}/imgui_draw.cpp
+    ${IMGUI_SOURCE_DIR}/imgui_tables.cpp
+    ${IMGUI_SOURCE_DIR}/imgui_widgets.cpp
+    ${IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+add_library(imgui STATIC ${IMGUI_SOURCE})
+target_include_directories(imgui PUBLIC 
+    ${IMGUI_SOURCE_DIR}
+    ${IMGUI_SOURCE_DIR}/backends
+)
+target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+
+# Setup ImPlot library from local source
+set(IMPLOT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/implot)
+set(IMPLOT_SOURCE
+    ${IMPLOT_SOURCE_DIR}/implot.cpp
+    ${IMPLOT_SOURCE_DIR}/implot_demo.cpp
+    ${IMPLOT_SOURCE_DIR}/implot_items.cpp
+)
+add_library(implot STATIC ${IMPLOT_SOURCE})
+target_include_directories(implot PUBLIC ${IMPLOT_SOURCE_DIR})
+target_link_libraries(implot PUBLIC imgui)
+
+# Disable fast-math for ImPlot library to support infinity/NaN
+set_source_files_properties(${IMPLOT_SOURCE} PROPERTIES
+    COMPILE_OPTIONS "-fno-fast-math"
+)
+
+# Link GUI libraries to main executable
+target_link_libraries(app_main PRIVATE implot)
+
+# Silence OpenGL deprecation warnings on macOS
+if(APPLE)
+    target_compile_definitions(app_main PRIVATE GL_SILENCE_DEPRECATION)
+endif()
 

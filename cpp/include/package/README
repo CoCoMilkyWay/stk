@@ -1,0 +1,4 @@
+high-perf header-only libraries:
+  1. compile-time-visible
+  2. template-friendly
+  3. not reliant on LTO
