@@ -114,22 +114,7 @@ int main() {
   const std::string feature_dir = Config::DEFAULT_FEATURE_DIR;
   const std::string log_dir = Config::DEFAULT_LOG_DIR;
 
-  std::cout << "\n=== Launching GUI ===" << "\n";
-
-  std::cout << "平台窗口库        : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)\n"
-            << "跨平台窗口管理库  : GLFW(Graphics Library Framework)\n"
-            << "GPU 渲染库        : OpenGL/Vulkan\n"
-            << "UI库(即时模式)    : ImGui\n"
-            << "绘图库            : ImPlot\n";
-
-  // Ask user if they want to launch GUI
-  std::cout << "\nLaunch GUI? (y/n): ";
-  std::string response;
-  std::getline(std::cin, response);
-
-  if (!response.empty() && (response[0] == 'y' || response[0] == 'Y')) {
-    GUI::RunGUI();
-  }
+  GUI::RunGUI();
 
   std::cout << "=== L2 Data Processor (CSV Mode) ===" << "\n";
 

@@ -25,7 +25,6 @@ private:
   // ============================================================================
   static constexpr int HISTORY_SAMPLES = 100;
   static constexpr int UPDATE_INTERVAL_MS = 100;
-  static constexpr int GPU_UPDATE_INTERVAL_MS = 1000; // GPU queries are slow, update less frequently
   static constexpr int SMOOTH_WINDOW_SECONDS = 2;
   static constexpr int PLOT_LABEL_X_POS = 40;
   static constexpr int PLOT_LABEL_Y_POS = 95;
@@ -752,13 +751,6 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateGPUUsage(std::chrono::steady_clock::time_point now) {
-    // GPU queries are slow (external commands), update less frequently
-    auto gpu_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_gpu_update_time).count();
-    if (gpu_elapsed_ms < GPU_UPDATE_INTERVAL_MS) {
-      return;
-    }
-    last_gpu_update_time = now;
-
     if (hw_info.gpu_vendor == HardwareInfo::GPUVendor::None || !hw_info.gpu_tool_available) {
       return;
     }
