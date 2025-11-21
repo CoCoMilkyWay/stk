@@ -118,7 +118,7 @@ int main() {
 
   std::cout << "平台窗口库        : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)\n"
             << "跨平台窗口管理库  : GLFW(Graphics Library Framework)\n"
-            << "GPU 渲染库        : OpenGL\n"
+            << "GPU 渲染库        : OpenGL/Vulkan\n"
             << "UI库(即时模式)    : ImGui\n"
             << "绘图库            : ImPlot\n";
 

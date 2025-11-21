@@ -13,6 +13,7 @@
 #include <vulkan/vulkan.h>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <vector>
 #include "shared/SharedData.hpp"
 #include "gui/GuiTask.hpp"
@@ -371,6 +372,14 @@ void RunGUI() {
   int selected_task = 0;
   tasks[selected_task]->OnExpand();
   
+  // Print startup banner (1 Chinese char = 2 English chars width in monospace font)
+  guiState.AddTerminalLog("=== Launching GUI ===");
+  guiState.AddTerminalLog("平台窗口库        : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)");
+  guiState.AddTerminalLog("跨平台窗口管理库  : GLFW (Graphics Library Framework)");
+  guiState.AddTerminalLog("GPU 渲染库        : Vulkan");
+  guiState.AddTerminalLog("UI库(即时模式)    : ImGui");
+  guiState.AddTerminalLog("绘图库            : ImPlot");
+  guiState.AddTerminalLog("");
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (Vulkan backend, %.0f FPS)", TARGET_FPS);
   guiState.AddTerminalLog(init_msg);
@@ -427,6 +436,24 @@ void RunGUI() {
 
   // Setup style
   ImGui::StyleColorsDark();
+  
+  // Setup Chinese font
+  ImGuiIO& io = ImGui::GetIO();
+  io.Fonts->Clear();
+  
+  ImFontConfig config;
+  config.MergeMode = false;
+  config.PixelSnapH = true;
+  
+  // Load Chinese font from bundled fonts
+  const char* font_path = "fonts/NotoSansCJK-Regular.ttc";
+  if (std::ifstream(font_path).good()) {
+    io.Fonts->AddFontFromFileTTF(font_path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+  } else {
+    // Fallback to default font
+    io.Fonts->AddFontDefault();
+    guiState.AddTerminalLog("[Warning] Chinese font not found, using default font");
+  }
 
   // Setup Platform/Renderer backends
   ImGui_ImplGlfw_InitForVulkan(window, true);

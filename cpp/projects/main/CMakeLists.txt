@@ -343,3 +343,11 @@ if(APPLE AND NOT USE_VULKAN_BACKEND)
     target_compile_definitions(app_main PRIVATE GL_SILENCE_DEPRECATION)
 endif()
 
+# Copy fonts directory to build directory
+add_custom_command(TARGET app_main POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/../../fonts
+    ${CMAKE_BINARY_DIR}/fonts
+    COMMENT "Copying fonts to build directory"
+)
+
