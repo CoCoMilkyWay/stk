@@ -64,11 +64,11 @@ void RunGUI() {
   
   // Print startup banner
   guiState.AddTerminalLog("=== Launching GUI ===", TerminalColor::Green());
-  guiState.AddTerminalLog("平台窗口库           : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", TerminalColor::Green());
-  guiState.AddTerminalLog("跨平台窗口管理库      : GLFW (Graphics Library Framework)", TerminalColor::Green());
-  guiState.AddTerminalLog("GPU 渲染库          : Vulkan", TerminalColor::Green());
-  guiState.AddTerminalLog("UI库(即时模式)       : ImGui", TerminalColor::Green());
-  guiState.AddTerminalLog("绘图库              : ImPlot", TerminalColor::Green());
+  guiState.AddTerminalLog("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", TerminalColor::Green());
+  guiState.AddTerminalLog("跨平台窗口管理库 : GLFW (Graphics Library Framework)", TerminalColor::Green());
+  guiState.AddTerminalLog("GPU 渲染库 : Vulkan", TerminalColor::Green());
+  guiState.AddTerminalLog("UI库(即时模式) : ImGui", TerminalColor::Green());
+  guiState.AddTerminalLog("绘图库 : ImPlot", TerminalColor::Green());
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (OpenGL backend, %.0f FPS)", TARGET_FPS);
   guiState.AddTerminalLog(init_msg, TerminalColor::Blue());

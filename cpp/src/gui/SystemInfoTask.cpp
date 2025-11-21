@@ -25,6 +25,7 @@ private:
   // ============================================================================
   static constexpr int HISTORY_SAMPLES = 100;
   static constexpr int UPDATE_INTERVAL_MS = 100;
+  static constexpr int GPU_UPDATE_INTERVAL_MS = 1000; // GPU queries are slow, update less frequently
   static constexpr int SMOOTH_WINDOW_SECONDS = 2;
   static constexpr int PLOT_LABEL_X_POS = 40;
   static constexpr int PLOT_LABEL_Y_POS = 95;
@@ -157,6 +158,7 @@ private:
   bool is_expanded = false;
   int history_write_index = 0;
   std::chrono::steady_clock::time_point last_update_time;
+  std::chrono::steady_clock::time_point last_gpu_update_time;
 
 public:
   // ============================================================================
@@ -192,6 +194,7 @@ public:
       InitializeHardware();
       initialized = true;
       last_update_time = std::chrono::steady_clock::now();
+      last_gpu_update_time = last_update_time;
     }
 
     // Dynamic stats update (only when expanded)
@@ -749,6 +752,13 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateGPUUsage(std::chrono::steady_clock::time_point now) {
+    // GPU queries are slow (external commands), update less frequently
+    auto gpu_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_gpu_update_time).count();
+    if (gpu_elapsed_ms < GPU_UPDATE_INTERVAL_MS) {
+      return;
+    }
+    last_gpu_update_time = now;
+
     if (hw_info.gpu_vendor == HardwareInfo::GPUVendor::None || !hw_info.gpu_tool_available) {
       return;
     }
