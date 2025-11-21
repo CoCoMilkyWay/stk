@@ -62,18 +62,16 @@ void RunGUI() {
   int selected_task = 0;
   tasks[selected_task]->OnExpand();
   
-  // Print startup banner (1 Chinese char = 2 English chars width in monospace font)
-  guiState.AddTerminalLog("=== Launching GUI ===");
-  guiState.AddTerminalLog("平台窗口库        : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)");
-  guiState.AddTerminalLog("跨平台窗口管理库  : GLFW (Graphics Library Framework)");
-  guiState.AddTerminalLog("GPU 渲染库        : OpenGL");
-  guiState.AddTerminalLog("UI库(即时模式)    : ImGui");
-  guiState.AddTerminalLog("绘图库            : ImPlot");
-  guiState.AddTerminalLog("");
+  // Print startup banner
+  guiState.AddTerminalLog("=== Launching GUI ===", TerminalColor::Green());
+  guiState.AddTerminalLog("平台窗口库           : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", TerminalColor::Green());
+  guiState.AddTerminalLog("跨平台窗口管理库      : GLFW (Graphics Library Framework)", TerminalColor::Green());
+  guiState.AddTerminalLog("GPU 渲染库          : Vulkan", TerminalColor::Green());
+  guiState.AddTerminalLog("UI库(即时模式)       : ImGui", TerminalColor::Green());
+  guiState.AddTerminalLog("绘图库              : ImPlot", TerminalColor::Green());
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (OpenGL backend, %.0f FPS)", TARGET_FPS);
-  guiState.AddTerminalLog(init_msg);
-  guiState.AddTerminalLog("Press Ctrl+C to exit");
+  guiState.AddTerminalLog(init_msg, TerminalColor::Blue());
   
   // Initialize icon bar
   InitIconBar();
@@ -129,7 +127,7 @@ void RunGUI() {
   config.PixelSnapH = true;
   
   // Load Chinese font from bundled fonts
-  const char* font_path = "fonts/NotoSansCJK-Regular.ttc";
+  const char* font_path = "fonts/NotoSansMonoCJKsc-Regular.otf";
   if (std::ifstream(font_path).good()) {
     io.Fonts->AddFontFromFileTTF(font_path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
   } else {

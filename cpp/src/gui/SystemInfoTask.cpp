@@ -661,7 +661,6 @@ private:
     hw_info.gpu_name = "Intel Integrated Graphics";
   }
 
-
   // ============================================================================
   // DYNAMIC MONITORING (RUN IN LOOP)
   // ============================================================================
@@ -1019,7 +1018,7 @@ private:
       ImGui::SameLine(0, 4);
       ImGui::TextColored(COLOR_INFO, "[WSL]");
     }
-    
+
     // CPU Model
     ImGui::SameLine(0, 8);
     ImGui::TextColored(COLOR_DIM, "│");
@@ -1041,8 +1040,8 @@ private:
     // Cores
     ImGui::TextColored(COLOR_LABEL, "     ");
     ImGui::SameLine(0, 2);
-    ImGui::TextColored(COLOR_VALUE, "%dL/%dP", hw_info.cpu_logical_cores, hw_info.cpu_physical_cores);
-    
+    ImGui::TextColored(COLOR_VALUE, "%dLogical(%dPhysical)", hw_info.cpu_logical_cores, hw_info.cpu_physical_cores);
+
     // Cache
     if (hw_info.cpu_cache_l1_kb > 0 || hw_info.cpu_cache_l2_kb > 0 || hw_info.cpu_cache_l3_kb > 0) {
       ImGui::SameLine(0, 8);
@@ -1057,32 +1056,40 @@ private:
         first = false;
       }
       if (hw_info.cpu_cache_l2_kb > 0) {
-        if (!first) snprintf(cache_buf + strlen(cache_buf), sizeof(cache_buf) - strlen(cache_buf), " ");
+        if (!first)
+          snprintf(cache_buf + strlen(cache_buf), sizeof(cache_buf) - strlen(cache_buf), " ");
         snprintf(cache_buf + strlen(cache_buf), sizeof(cache_buf) - strlen(cache_buf), "L2:%ldK", hw_info.cpu_cache_l2_kb);
         first = false;
       }
       if (hw_info.cpu_cache_l3_kb > 0) {
-        if (!first) snprintf(cache_buf + strlen(cache_buf), sizeof(cache_buf) - strlen(cache_buf), " ");
+        if (!first)
+          snprintf(cache_buf + strlen(cache_buf), sizeof(cache_buf) - strlen(cache_buf), " ");
         snprintf(cache_buf + strlen(cache_buf), sizeof(cache_buf) - strlen(cache_buf), "L3:%ldK", hw_info.cpu_cache_l3_kb);
       }
       ImGui::TextColored(COLOR_VALUE, "%s", cache_buf);
     }
-    
+
     // ISA
     ImGui::SameLine(0, 8);
     ImGui::TextColored(COLOR_DIM, "│");
     ImGui::SameLine(0, 8);
     ImGui::TextColored(COLOR_LABEL, "ISA:");
     ImGui::SameLine(0, 2);
-    
+
     bool first_isa = true;
     if (hw_info.cpu_has_sse4_2) {
-      if (!first_isa) { ImGui::SameLine(0, 2); }
+      if (!first_isa) {
+        ImGui::SameLine(0, 2);
+      }
       ImGui::TextColored(COLOR_GOOD, "SSE4.2");
       first_isa = false;
     }
     if (hw_info.cpu_has_avx) {
-      if (!first_isa) { ImGui::SameLine(0, 2); } else { first_isa = false; }
+      if (!first_isa) {
+        ImGui::SameLine(0, 2);
+      } else {
+        first_isa = false;
+      }
       ImGui::TextColored(COLOR_GOOD, "AVX");
     }
     if (hw_info.cpu_has_avx2) {
@@ -1107,7 +1114,7 @@ private:
     if (first_isa) {
       ImGui::TextColored(COLOR_WARNING, "Limited");
     }
-    
+
     // RAM
     ImGui::SameLine(0, 8);
     ImGui::TextColored(COLOR_DIM, "│");
@@ -1119,7 +1126,7 @@ private:
     // ========== LINE 3: GPU & Tools Status ==========
     ImGui::TextColored(COLOR_LABEL, "GPU:");
     ImGui::SameLine(0, 2);
-    
+
     if (hw_info.gpu_vendor != HardwareInfo::GPUVendor::None) {
       ImVec4 gpu_color = COLOR_VALUE;
       const char *vendor_tag = "";
@@ -1133,22 +1140,22 @@ private:
         gpu_color = ImVec4(0.3f, 0.6f, 0.9f, 1.0f);
         vendor_tag = "[Intel]";
       }
-      
+
       ImGui::TextColored(gpu_color, "%s", vendor_tag);
       ImGui::SameLine(0, 4);
-      
+
       // Shorten GPU name if needed
       std::string gpu_name = hw_info.gpu_name;
       if (gpu_name.length() > 60) {
         gpu_name = gpu_name.substr(0, 57) + "...";
       }
       ImGui::TextColored(COLOR_VALUE, "%s", gpu_name.c_str());
-      
+
       if (hw_info.gpu_vram_total_gb > 0) {
         ImGui::SameLine(0, 4);
         ImGui::TextColored(COLOR_INFO, "(%.1fGB)", hw_info.gpu_vram_total_gb);
       }
-      
+
       if (!hw_info.gpu_tool_available && !hw_info.gpu_install_message.empty()) {
         ImGui::SameLine(0, 8);
         ImGui::TextColored(COLOR_WARNING, "⚠");
@@ -1162,7 +1169,7 @@ private:
         ImGui::TextColored(COLOR_INFO, "(WSL: need Windows drivers + kernel≥5.10.43.3)");
       }
     }
-    
+
     // System Tools
     if (!sys_tools.missing_tools.empty()) {
       ImGui::SameLine(0, 8);
@@ -1211,8 +1218,8 @@ private:
 
   void RenderStatsTable() {
     float table_height = ImGui::GetContentRegionAvail().y;
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 0.0f));
 
     if (ImGui::BeginTable("StatsTable", 3,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoPadOuterX,
