@@ -17,6 +17,9 @@ option(PROFILE_MODE "Profile mode: -O0 -g, disable optimizations for profiling" 
 option(DEBUG_MODE   "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
 option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
 
+# GUI backend selection
+option(USE_VULKAN_BACKEND "Use Vulkan backend instead of OpenGL for GUI rendering" OFF)
+
 # Clear default CMAKE build type flags to avoid conflicts
 set(CMAKE_CXX_FLAGS_RELEASE "")
 set(CMAKE_CXX_FLAGS_DEBUG "")
@@ -109,9 +112,23 @@ set(SOURCES
     ../../src/worker/sequential_worker.cpp
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/io_worker.cpp
-    ../../src/gui/gui.cpp
+    ../../src/shared/Config.cpp
+    ../../src/shared/SharedData.cpp
+    ../../src/gui/Gui.cpp
+    ../../src/gui/IconBar.cpp
+    ../../src/gui/SettingsTask.cpp
+    ../../src/gui/SystemInfoTask.cpp
     ../../src/main.cpp
 )
+
+# Add GUI backend pipeline based on selection
+if(USE_VULKAN_BACKEND)
+    list(APPEND SOURCES ../../src/gui/Run_Vulkan.cpp)
+    message(STATUS "GUI Pipeline: Vulkan")
+else()
+    list(APPEND SOURCES ../../src/gui/Run_OpenGL.cpp)
+    message(STATUS "GUI Pipeline: OpenGL")
+endif()
 
 set(HEADERS
     ../../include/misc/timer.hpp
@@ -132,12 +149,18 @@ set(HEADERS
     ../../include/worker/sequential_worker.hpp
     ../../include/worker/crosssectional_worker.hpp
     ../../include/worker/io_worker.hpp
-    ../../include/gui/gui.h
+    ../../include/shared/Config.hpp
+    ../../include/shared/SharedData.hpp
+    ../../include/gui/Gui.h
+    ../../include/gui/GuiTask.hpp
+    ../../include/gui/GuiState.hpp
 )
 
 # Disable fast-math for JSON library to avoid infinity issues
-set_source_files_properties(../../src/codec/json_config.cpp PROPERTIES
-    COMPILE_OPTIONS "-fno-fast-math"
+set_source_files_properties(
+    ../../src/codec/json_config.cpp
+    ../../src/shared/Config.cpp
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
 )
 
 # Executable
@@ -189,17 +212,32 @@ else()
     message(FATAL_ERROR "Unsupported platform")
 endif()
 
-# Check OpenGL
-find_package(OpenGL QUIET)
-if(NOT OpenGL_FOUND)
-    message(FATAL_ERROR 
-        "OpenGL not found! Please install:\n"
-        "  Ubuntu/Debian: sudo apt-get install libgl1-mesa-dev\n"
-        "  Fedora/RHEL:   sudo dnf install mesa-libGL-devel\n"
-        "  Arch:          sudo pacman -S mesa\n"
-        "  macOS:         OpenGL is pre-installed (this error should not happen)\n")
+# Check graphics API based on backend selection
+if(USE_VULKAN_BACKEND)
+    # Check Vulkan
+    find_package(Vulkan QUIET)
+    if(NOT Vulkan_FOUND)
+        message(FATAL_ERROR 
+            "Vulkan not found! Please install:\n"
+            "  Ubuntu/Debian: sudo apt-get install libvulkan-dev vulkan-tools\n"
+            "  Fedora/RHEL:   sudo dnf install vulkan-loader-devel vulkan-tools\n"
+            "  Arch:          sudo pacman -S vulkan-devel\n"
+            "  macOS:         Install Vulkan SDK from https://vulkan.lunarg.com/\n")
+    endif()
+    message(STATUS "✓ Vulkan found: ${Vulkan_LIBRARIES}")
+else()
+    # Check OpenGL
+    find_package(OpenGL QUIET)
+    if(NOT OpenGL_FOUND)
+        message(FATAL_ERROR 
+            "OpenGL not found! Please install:\n"
+            "  Ubuntu/Debian: sudo apt-get install libgl1-mesa-dev\n"
+            "  Fedora/RHEL:   sudo dnf install mesa-libGL-devel\n"
+            "  Arch:          sudo pacman -S mesa\n"
+            "  macOS:         OpenGL is pre-installed (this error should not happen)\n")
+    endif()
+    message(STATUS "✓ OpenGL found: ${OPENGL_LIBRARIES}")
 endif()
-message(STATUS "✓ OpenGL found: ${OPENGL_LIBRARIES}")
 
 # Check X11 (required by GLFW on Linux)
 if(UNIX)
@@ -258,14 +296,28 @@ set(IMGUI_SOURCE
     ${IMGUI_SOURCE_DIR}/imgui_tables.cpp
     ${IMGUI_SOURCE_DIR}/imgui_widgets.cpp
     ${IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
 )
+
+# Add backend-specific ImGui implementation
+if(USE_VULKAN_BACKEND)
+    list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+else()
+    list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+endif()
+
 add_library(imgui STATIC ${IMGUI_SOURCE})
 target_include_directories(imgui PUBLIC 
     ${IMGUI_SOURCE_DIR}
     ${IMGUI_SOURCE_DIR}/backends
 )
-target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+
+# Link appropriate graphics libraries
+if(USE_VULKAN_BACKEND)
+    find_package(Vulkan REQUIRED)
+    target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
+else()
+    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+endif()
 
 # Setup ImPlot library from local source
 set(IMPLOT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/implot)
@@ -286,8 +338,8 @@ set_source_files_properties(${IMPLOT_SOURCE} PROPERTIES
 # Link GUI libraries to main executable
 target_link_libraries(app_main PRIVATE implot)
 
-# Silence OpenGL deprecation warnings on macOS
-if(APPLE)
+# Silence OpenGL deprecation warnings on macOS (only for OpenGL backend)
+if(APPLE AND NOT USE_VULKAN_BACKEND)
     target_compile_definitions(app_main PRIVATE GL_SILENCE_DEPRECATION)
 endif()
 
