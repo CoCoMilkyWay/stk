@@ -1,11 +1,12 @@
 #include "imgui.h"
+#include "gui/GuiState.hpp"
+#include "gui/coro/CoroNetwork.hpp"
 #include <array>
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <memory>
 #include <sys/sysinfo.h>
 
 // ============================================================================
@@ -14,7 +15,6 @@
 namespace IconBarConfig {
 // Update intervals
 constexpr int UPDATE_INTERVAL_MS = 500;     // CPU, Memory update interval
-constexpr int NETWORK_CHECK_INTERVAL_S = 5; // Network check interval
 
 // Smoothing
 constexpr int SMOOTHING_WINDOW_MS = 2000; // 2-second smoothing window (2s / 500ms = 4 samples)
@@ -22,9 +22,11 @@ constexpr int FPS_HISTORY_SIZE = SMOOTHING_WINDOW_MS / UPDATE_INTERVAL_MS;
 constexpr int CPU_HISTORY_SIZE = SMOOTHING_WINDOW_MS / UPDATE_INTERVAL_MS;
 constexpr int MEM_HISTORY_SIZE = SMOOTHING_WINDOW_MS / UPDATE_INTERVAL_MS;
 
-// Network
-constexpr const char *PING_HOST = "8.8.8.8";         // Target host for ping
-constexpr const char *PING_HOST_NAME = "Google DNS"; // Display name
+// Network ping targets
+constexpr const char* PING_TARGET_GOOGLE = "1.1.1.1";  // Cloudflare DNS
+constexpr const char* PING_TARGET_GOOGLE_NAME = "Cloudflare";
+constexpr const char* PING_TARGET_BAIDU = "www.baidu.com";
+constexpr const char* PING_TARGET_BAIDU_NAME = "Baidu";
 
 // Thresholds for color coding
 namespace Thresholds {
@@ -70,22 +72,14 @@ private:
   float mem_avg = 0.0f;
   std::chrono::steady_clock::time_point last_mem_update;
 
-  // Network status
-  enum class NetworkStatus { Unknown,
-                             Good,
-                             Medium,
-                             Bad,
-                             Error };
-  NetworkStatus network_status = NetworkStatus::Unknown;
-  int ping_ms = -1;
-  std::chrono::steady_clock::time_point last_network_check;
+  // Network status (read from global coroutine-managed state)
+  using NetworkStatus = NetworkMonitor::Status;
 
 public:
   IconBar() {
     last_fps_update = std::chrono::steady_clock::now();
     last_cpu_update = std::chrono::steady_clock::now();
     last_mem_update = std::chrono::steady_clock::now();
-    last_network_check = std::chrono::steady_clock::now();
 
     // Initialize history arrays with reasonable defaults
     for (auto &val : fps_history)
@@ -271,20 +265,16 @@ private:
   void DrawNetworkIcon() {
     using namespace IconBarConfig::Thresholds;
 
-    // Check network periodically
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_network_check);
-
-    if (elapsed.count() >= IconBarConfig::NETWORK_CHECK_INTERVAL_S) {
-      CheckNetwork();
-      last_network_check = now;
-    }
+    // Read network status from global coroutine-managed state
+    auto& net = NetworkMonitor::Instance();
+    auto status = net.GetStatus();
+    int ping = net.GetPingMs();
 
     // Get color based on status
     ImVec4 color;
     const char *icon;
 
-    switch (network_status) {
+    switch (status) {
     case NetworkStatus::Good:
       color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
       icon = "NET";
@@ -311,14 +301,38 @@ private:
 
     if (ImGui::IsItemHovered()) {
       ImGui::BeginTooltip();
-      ImGui::Text("Network: %s", GetStatusString());
-      ImGui::Text("Target: %s (%s)", IconBarConfig::PING_HOST_NAME, IconBarConfig::PING_HOST);
-      ImGui::Text("Ping: %d ms", ping_ms);
+      ImGui::Text("Network: %s", GetStatusString(status));
+      ImGui::Separator();
+      
+      // Display all target pings dynamically
+      auto target_pings = net.GetTargetPings();
+      const char* target_names[] = {
+        IconBarConfig::PING_TARGET_GOOGLE_NAME,
+        IconBarConfig::PING_TARGET_BAIDU_NAME
+      };
+      const char* target_hosts[] = {
+        IconBarConfig::PING_TARGET_GOOGLE,
+        IconBarConfig::PING_TARGET_BAIDU
+      };
+      
+      for (size_t i = 0; i < target_pings.size(); ++i) {
+        const char* name = (i < 2) ? target_names[i] : "Unknown";
+        const char* host = (i < 2) ? target_hosts[i] : "unknown";
+        
+        if (target_pings[i] >= 0) {
+          ImGui::Text("%s (%s): %d ms", name, host, target_pings[i]);
+        } else {
+          ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s (%s): Timeout", name, host);
+        }
+      }
+      
+      ImGui::Text("Best: %d ms", ping);
       ImGui::Separator();
       ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Green:  < %dms", NET_GREEN);
       ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Yellow: %d-%dms", NET_GREEN, NET_YELLOW);
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Orange: > %dms", NET_YELLOW);
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Red:    Offline");
+      ImGui::Text("(Async ASIO coroutine)");
       ImGui::EndTooltip();
     }
   }
@@ -351,51 +365,8 @@ private:
     }
   }
 
-  void CheckNetwork() {
-    using namespace IconBarConfig::Thresholds;
-
-    // Simple ping check using system command
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "ping -c 1 -W 1 %s > /dev/null 2>&1", IconBarConfig::PING_HOST);
-
-    int result = system(cmd);
-
-    if (result == 0) {
-      // Ping successful, try to measure actual latency
-      char cmd_with_time[256];
-      snprintf(cmd_with_time, sizeof(cmd_with_time),
-               "ping -c 1 -W 1 %s 2>/dev/null | grep 'time=' | sed 's/.*time=\\([0-9.]*\\).*/\\1/' | cut -d. -f1",
-               IconBarConfig::PING_HOST);
-
-      FILE *fp = popen(cmd_with_time, "r");
-      if (fp) {
-        char buffer[32];
-        if (fgets(buffer, sizeof(buffer), fp)) {
-          ping_ms = atoi(buffer);
-        } else {
-          ping_ms = 50; // Default if can't parse
-        }
-        pclose(fp);
-      }
-
-      // Set status based on ping thresholds
-      if (ping_ms < 0) {
-        network_status = NetworkStatus::Error;
-      } else if (ping_ms < NET_GREEN) {
-        network_status = NetworkStatus::Good;
-      } else if (ping_ms < NET_YELLOW) {
-        network_status = NetworkStatus::Medium;
-      } else {
-        network_status = NetworkStatus::Bad;
-      }
-    } else {
-      network_status = NetworkStatus::Error;
-      ping_ms = -1;
-    }
-  }
-
-  const char *GetStatusString() {
-    switch (network_status) {
+  const char *GetStatusString(NetworkStatus status) {
+    switch (status) {
     case NetworkStatus::Good:
       return "Good";
     case NetworkStatus::Medium:
@@ -413,9 +384,26 @@ private:
 // Global icon bar instance
 static IconBar *g_icon_bar = nullptr;
 
-void InitIconBar() {
+// Network monitoring coroutine (managed by IconBar)
+static std::unique_ptr<CoroNetwork> g_coro_network;
+
+void InitIconBar(GuiState& gui_state) {
   if (!g_icon_bar) {
     g_icon_bar = new IconBar();
+  }
+  
+  // Initialize network monitoring with IconBar-specific targets
+  if (!g_coro_network) {
+    g_coro_network = std::make_unique<CoroNetwork>();
+    
+    // Configure ping targets (IconBar business logic)
+    std::vector<CoroNetwork::PingTarget> targets = {
+      {IconBarConfig::PING_TARGET_GOOGLE, IconBarConfig::PING_TARGET_GOOGLE_NAME},
+      {IconBarConfig::PING_TARGET_BAIDU, IconBarConfig::PING_TARGET_BAIDU_NAME}
+    };
+    
+    // Start network monitoring coroutine
+    g_coro_network->Start(gui_state.Coro(), targets, std::chrono::seconds(5));
   }
 }
 

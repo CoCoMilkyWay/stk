@@ -1,8 +1,10 @@
 #pragma once
-#include <string>
+#include <vector>
+#include <memory>
 
 struct SharedData;
 struct GuiState;
+class CoroutineHandle;
 
 // Status colors
 struct StatusColor {
@@ -35,5 +37,21 @@ struct IGuiTask {
   
   // Called when task is collapsed
   virtual void OnCollapse() {}
+};
+
+// Base class for tasks that use coroutines
+// Provides automatic coroutine lifetime management
+class TaskWithCoroutines : public IGuiTask {
+protected:
+  std::vector<std::unique_ptr<CoroutineHandle>> coroutines_;
+  
+  // Register a coroutine (automatically managed)
+  void AddCoroutine(std::unique_ptr<CoroutineHandle> handle);
+  
+  // Cancel all coroutines
+  void CancelAllCoroutines();
+  
+public:
+  ~TaskWithCoroutines() override;
 };
 

@@ -25,7 +25,7 @@ IGuiTask* CreateSettingsTask();
 IGuiTask* CreateSystemInfoTask();
 
 // Forward declarations for icon bar
-void InitIconBar();
+void InitIconBar(GuiState& gui_state);
 void CleanupIconBar();
 
 namespace GUI {
@@ -38,7 +38,7 @@ void glfw_error_callback(int error, const char *description) {
   char buffer[512];
   snprintf(buffer, sizeof(buffer), "GLFW Error %d: %s", error, description);
   if (g_gui_state) {
-    g_gui_state->AddTerminalLog(buffer);
+    g_gui_state->terminal.AddLine(buffer);
   }
 }
 
@@ -63,25 +63,25 @@ void RunGUI() {
   tasks[selected_task]->OnExpand();
   
   // Print startup banner
-  guiState.AddTerminalLog("=== Launching GUI ===", TerminalColor::Green());
-  guiState.AddTerminalLog("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", TerminalColor::Green());
-  guiState.AddTerminalLog("跨平台窗口管理库 : GLFW (Graphics Library Framework)", TerminalColor::Green());
-  guiState.AddTerminalLog("GPU 渲染库 : Vulkan", TerminalColor::Green());
-  guiState.AddTerminalLog("UI库(即时模式) : ImGui", TerminalColor::Green());
-  guiState.AddTerminalLog("绘图库 : ImPlot", TerminalColor::Green());
+  guiState.terminal.AddLine("=== Launching GUI ===", Color::Green());
+  guiState.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
+  guiState.terminal.AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
+  guiState.terminal.AddLine("GPU 渲染库 : OpenGL", Color::Green());
+  guiState.terminal.AddLine("UI库(即时模式) : ImGui", Color::Green());
+  guiState.terminal.AddLine("绘图库 : ImPlot", Color::Green());
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (OpenGL backend, %.0f FPS)", TARGET_FPS);
-  guiState.AddTerminalLog(init_msg, TerminalColor::Blue());
+  guiState.terminal.AddLine(init_msg, Color::Blue());
   
-  // Initialize icon bar
-  InitIconBar();
+  // Initialize icon bar with network monitoring
+  InitIconBar(guiState);
 
   // Setup error callback
   glfwSetErrorCallback(glfw_error_callback);
 
   // Initialize GLFW
   if (!glfwInit()) {
-    guiState.AddTerminalLog("Failed to initialize GLFW");
+    guiState.terminal.AddLine("Failed to initialize GLFW");
     return;
   }
 
@@ -103,7 +103,7 @@ void RunGUI() {
   // Create window
   GLFWwindow *window = glfwCreateWindow(1280, 720, "L2 Data Processor (OpenGL)", nullptr, nullptr);
   if (!window) {
-    guiState.AddTerminalLog("Failed to create GLFW window");
+    guiState.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
     return;
   }
@@ -133,7 +133,7 @@ void RunGUI() {
   } else {
     // Fallback to default font
     io.Fonts->AddFontDefault();
-    guiState.AddTerminalLog("[Warning] Chinese font not found, using default font");
+    guiState.terminal.AddLine("[Warning] Chinese font not found, using default font");
   }
 
   // Setup backend

@@ -10,7 +10,7 @@ IGuiTask *CreateSettingsTask();
 IGuiTask *CreateSystemInfoTask();
 
 // Forward declarations for icon bar
-void InitIconBar();
+void InitIconBar(GuiState& gui_state);
 void DrawIconBar();
 void CleanupIconBar();
 
@@ -82,25 +82,27 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
 
   // Clear button
   if (ImGui::Button("Clear")) {
-    guiState.ClearTerminal();
+    guiState.terminal.Clear();
   }
   ImGui::SameLine();
-  ImGui::Checkbox("Auto-scroll", &guiState.terminal_auto_scroll);
+  bool auto_scroll = guiState.terminal.IsAutoScroll();
+  if (ImGui::Checkbox("Auto-scroll", &auto_scroll)) {
+    guiState.terminal.SetAutoScroll(auto_scroll);
+  }
 
   ImGui::Separator();
 
   // Terminal output area
   ImGui::BeginChild("TerminalOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-  {
-    std::lock_guard<std::mutex> lock(guiState.terminal_mutex);
-    for (const auto &line : guiState.terminal_lines) {
+  guiState.terminal.ReadLines([](const std::vector<Terminal::Line>& lines) {
+    for (const auto& line : lines) {
       ImGui::TextColored(ImVec4(line.color.r, line.color.g, line.color.b, line.color.a), "%s", line.text.c_str());
     }
-  }
+  });
 
   // Auto-scroll to bottom
-  if (guiState.terminal_auto_scroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+  if (guiState.terminal.IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
     ImGui::SetScrollHereY(1.0f);
   }
 

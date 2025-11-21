@@ -161,6 +161,16 @@ private:
 
 public:
   // ============================================================================
+  // CONSTRUCTOR - Initialize on creation, not lazily
+  // ============================================================================
+  SystemInfoTask() {
+    InitializeHardware();
+    initialized = true;
+    last_update_time = std::chrono::steady_clock::now();
+    last_gpu_update_time = last_update_time;
+  }
+
+  // ============================================================================
   // INTERFACE IMPLEMENTATION
   // ============================================================================
   const char *GetName() const override {
@@ -177,10 +187,6 @@ public:
 
   void OnExpand() override {
     is_expanded = true;
-    if (!initialized) {
-      InitializeHardware();
-      initialized = true;
-    }
   }
 
   void OnCollapse() override {
@@ -188,14 +194,6 @@ public:
   }
 
   void DrawPanel(SharedData & /*data*/, GuiState & /*gui_state*/) override {
-    // One-time initialization
-    if (!initialized) {
-      InitializeHardware();
-      initialized = true;
-      last_update_time = std::chrono::steady_clock::now();
-      last_gpu_update_time = last_update_time;
-    }
-
     // Dynamic stats update (only when expanded)
     if (is_expanded) {
       auto now = std::chrono::steady_clock::now();
@@ -1042,7 +1040,7 @@ private:
     // Cores
     ImGui::TextColored(COLOR_LABEL, "     ");
     ImGui::SameLine(0, 2);
-    ImGui::TextColored(COLOR_VALUE, "%dLogical(%dPhysical)", hw_info.cpu_logical_cores, hw_info.cpu_physical_cores);
+    ImGui::TextColored(COLOR_VALUE, "%d Logical(%d Physical)", hw_info.cpu_logical_cores, hw_info.cpu_physical_cores);
 
     // Cache
     if (hw_info.cpu_cache_l1_kb > 0 || hw_info.cpu_cache_l2_kb > 0 || hw_info.cpu_cache_l3_kb > 0) {
