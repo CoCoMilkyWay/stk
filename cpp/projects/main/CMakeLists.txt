@@ -120,6 +120,10 @@ set(SOURCES
     ../../src/gui/task_icon_bar/CoroNetwork.cpp
     ../../src/gui/task_icon_bar/TaskIconBar.cpp
     ../../src/gui/task_crawler/CoroCrawler.cpp
+    ../../src/gui/task_database/AssetInfo.cpp
+    ../../src/gui/task_database/CoroScanner.cpp
+    ../../src/gui/task_database/CoroCrawler.cpp
+    ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
     ../../src/main.cpp
@@ -164,6 +168,10 @@ set(HEADERS
     ../../include/gui/coro/CoroManager.hpp
     ../../include/gui/coro/CoroUtils.hpp
     ../../include/gui/task_crawler/CoroCrawler.hpp
+    ../../include/gui/task_database/AssetInfo.hpp
+    ../../include/gui/task_database/CoroScanner.hpp
+    ../../include/gui/task_database/CoroCrawler.hpp
+    ../../include/gui/task_database/TaskDatabase.hpp
     ../../include/gui/task_settings/TaskSettings.hpp
     ../../include/gui/task_system_info/TaskSystemInfo.hpp
     ../../include/gui/task_icon_bar/CoroNetwork.hpp

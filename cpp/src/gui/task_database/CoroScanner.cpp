@@ -1,7 +1,7 @@
 #include "gui/task_database/CoroScanner.hpp"
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/this_coro.hpp>
-#include <nlohmann/json.hpp>
+#include "package/nlohmann/json.hpp"
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -86,10 +86,12 @@ void CoroScanner::scan_binary_directory(const std::string &db_dir) {
   
   size_t asset_id = 0;
   for (const auto &full_code : codes_found) {
-    if (full_code.length() < 3) continue;
+    // Parse format: CODE.EXCHANGE (e.g., "000023.SZ" or "600000.SH")
+    size_t dot_pos = full_code.find('.');
+    if (dot_pos == std::string::npos || dot_pos == 0) continue;
     
-    std::string exchange = full_code.substr(0, 2);
-    std::string code = full_code.substr(2);
+    std::string code = full_code.substr(0, dot_pos);
+    std::string exchange = full_code.substr(dot_pos + 1);
     
     if (exchange != "SH" && exchange != "SZ") continue;
     
