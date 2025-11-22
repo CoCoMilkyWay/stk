@@ -1,9 +1,9 @@
 #pragma once
 #include <vector>
 
-struct IGuiTask;
-struct GuiState;
 struct SharedData;
+struct GuiState;
+struct TaskHandle;
 
 namespace GUI {
 
@@ -11,7 +11,7 @@ namespace GUI {
 void RunGUI();
 
 // Shared business logic: Draw GUI layout (used by both OpenGL and Vulkan)
-void DrawGUILayout(SharedData& sharedData, GuiState& guiState, 
-                   std::vector<IGuiTask*>& tasks, int& selected_task);
+void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
+                   std::vector<TaskHandle> &tasks, int &selected_task);
 
 } // namespace GUI

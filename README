@@ -1,66 +1,93 @@
-本项目基于A股L2数据, 数据储存单元: 每日行情(单标的 快照+逐笔成交+逐笔委托), 总文件数在数千万级别
-
-二进制数据库存储格式(高效压缩 + 急速读取):
-output/database/YYYY/MM/DD/ASSET_CODE/逐笔合并_订单数 + 快照_快照数.bin
-
-请务必使用XFS格式化高速SSD, 作为数据储存
-
-# ================================================
-首次运行，请先配置文件系统, 请参考 doc/filesystem.md
-
-# ================================================
-# 项目架构图谱
-
-## 运行流程 (Execution Flow)
 ```
 入口: run.py ──► py/main.py ──► cpp/projects/main/build.sh ──► CMake ──► app_main (C++可执行文件)
 ```
 
-## 项目树状结构 (Project Hierarchy)
-
 ```
 stk/
-├── run.py                 # 🚀 主入口脚本 (Python orchestrator)
-├── config/                # ⚙️ 配置管理中心
-│   ├── cfg_stk.py         # Python配置接口
-│   ├── config.json        # 全局配置
-│   ├── stk_*.json         # 股票相关配置 (资产、交易日、费用等)
-│   └── daily_holding/     # 日持仓数据
-├── cpp/                   # 🔥 C++核心引擎 (高性能数据处理)
-│   ├── include/           # 头文件模块化组织
-│   │   ├── codec/         # 数据编解码核心 (L2协议解析/压缩)
-│   │   │   ├── L2_DataType.hpp          # L2数据类型定义
-│   │   │   ├── binary_*_L2.hpp          # 二进制编解码器
-│   │   │   └── parallel/                # 并行处理优化
-│   │   ├── features/      # 特征工程模块 (多时间尺度)
-│   │   │   ├── Features*.hpp            # 特征计算引擎
-│   │   │   └── Features*/               # 各时间尺度特征实现
-│   │   ├── lob/           # 限价订单簿核心 (LOB - Limit Order Book)
-│   │   │   ├── LimitOrderBook.hpp       # LOB主引擎
-│   │   │   └── LimitOrderBookDefine.hpp # LOB数据结构定义
-│   │   ├── math/          # 数学计算库
-│   │   ├── mining/        # 数据挖掘算法
-│   │   └── utils/         # 工具函数库
-│   ├── src/               # 源文件实现
-│   └── projects/main/     # 🏗️ 构建配置 (CMake项目)
-│       ├── build.sh       # Bash构建脚本 (调用CMake)
-│       ├── CMakeLists.txt # CMake配置 (C++23, Clang, 性能优化)
-│       └── build/         # 构建输出目录
-│           └── bin/app_main # 🎯 最终生成的可执行文件
+├── run.py                 # 🚀 主入口 → py/main.py → build.sh
+├── config/config.json     # ⚙️ 全局配置
 ├── py/                    # 🐍 Python工具链
-│   ├── main.py            # Python构建脚本 (触发build.sh)
-│   └── app/               # 应用逻辑
-├── doc/                   # 📚 文档
-└── output/                # 💾 输出目录 (二进制数据库/日志/临时文件)
+│   ├── main.py            # 🐍 构建脚本: 调用cpp/projects/main/build.sh
+│   └── app/               # 🐍 DataProvider_API / FileRepair / Util
+└── cpp/
+    ├── include/
+    │   ├── shared/                       # 📦 跨模块数据层
+    │   │   ├── SharedData.hpp            # 📦 顶层数据容器 (全局状态)
+    │   │   ├── Config.hpp                # 📦 配置数据结构
+    │   │   └── GuiState.hpp              # 📦 GUI状态句柄 (持有指针)
+    │   ├── define/                       # 🔷 底层数据结构
+    │   │   ├── CBuffer.hpp               # 🔷 循环缓冲区
+    │   │   ├── FastBitmap.hpp            # 🔷 快速位图
+    │   │   └── MemPool.hpp               # 🔷 内存池
+    │   ├── lob/                          # 📊 限价订单簿引擎 (LOB)
+    │   │   ├── LimitOrderBook.hpp        # 📊 LOB主引擎: 维护买卖盘+撮合逻辑
+    │   │   └── LimitOrderBookDefine.hpp  # 📊 订单/价格档位数据结构
+    │   ├── codec/                        # 🔄 L2数据编解码
+    │   │   ├── L2_DataType.hpp           # 🔄 L2数据类型: 快照/逐笔成交/逐笔委托
+    │   │   ├── L2_Gateway_DataType.hpp   # 🔄 L2网关数据类型
+    │   │   ├── binary_decoder_L2.hpp     # 🔄 二进制解码: .bin -> L2对象
+    │   │   ├── binary_encoder_L2.hpp     # 🔄 二进制编码: L2对象 -> .bin
+    │   │   └── json_config.hpp           # 🔄 JSON配置解析
+    │   ├── features/                     # 🧮 特征工程 (多时间尺度)
+    │   │   ├── FeaturesDefine.hpp        # 🧮 特征定义: ID/元数据
+    │   │   ├── CoreCrosssection.hpp      # 🧮 截面特征核心: 横截面处理
+    │   │   ├── CoreSequential.hpp        # 🧮 序列特征核心: 时间序列处理
+    │   │   ├── FeaturesTick/             # 🧮 Tick级特征 (逐笔粒度)
+    │   │   ├── FeaturesMinute/           # 🧮 分钟级特征
+    │   │   ├── FeaturesHour/             # 🧮 小时级特征
+    │   │   └── backend/                  # 🧮 特征存储后端
+    │   ├── worker/                       # ⚡ 多线程工作流编排
+    │   │   ├── shared_state.hpp          # ⚡ Worker间共享状态
+    │   │   ├── io_worker.hpp             # ⚡ IO工作器: 文件读写
+    │   │   ├── encoding_worker.hpp       # ⚡ 编码工作器
+    │   │   ├── sequential_worker.hpp     # ⚡ 序列特征工作器
+    │   │   └── crosssectional_worker.hpp # ⚡ 截面特征工作器
+    │   ├── label/                        # 🏷️ 标签生成
+    │   │   └── LabelCalmar.hpp           # 🏷️ Calmar比率标签
+    │   ├── gui/                          # 🖥️ GUI (ImGui + 协程)
+    │   │   ├── Gui.hpp                   # 🖥️ GUI主循环: ImGui渲染 + 事件分发
+    │   │   ├── Config.hpp                # 🖥️ GUI配置: 颜色/字体/布局
+    │   │   ├── Tasks.hpp                 # 🖥️ 任务注册表
+    │   │   ├── util/Color.hpp            # 🖥️
+    │   │   ├── coro/                     # 🖥️ 协程基础设施
+    │   │   │   ├── CoroManager.hpp       # 🖥️ 协程管理器: 调度/生命周期
+    │   │   │   └── CoroUtils.hpp         # 🖥️ 协程工具
+    │   │   ├── task_terminal/            # 🖥️ GUI任务模块
+    │   │   │   └── TaskTerminal.hpp      # 🖥️ 终端: 命令输出/日志显示
+    │   │   ├── task_settings/            # 🖥️
+    │   │   │   └── TaskSettings.hpp      # 🖥️ 设置: 配置管理 [synced/syncing/writing]
+    │   │   ├── task_system_info/         # 🖥️
+    │   │   │   └── TaskSystemInfo.hpp    # 🖥️ 系统信息: CPU/内存/磁盘监控 [/live]
+    │   │   ├── task_icon_bar/            # 🖥️
+    │   │   │   ├── TaskIconBar.hpp       # 🖥️ 图标栏: 网络状态/FPS
+    │   │   │   └── CoroNetwork.hpp       # 🖥️ 网络子协程: 异步请求
+    │   │   └── task_crawler/             # 🖥️
+    │   │       └── CoroCrawler.hpp       # 🖥️ 爬虫: 数据抓取协程
+    │   │   GUI布局:
+    │   │   ┌───────────────────────────────────────────────────────────────────────────┐
+    │   │   │ Tasks                                │ Panel:                             │
+    │   │   │  > Settings[synced/syncing/writing]  │                                    │
+    │   │   │  > SystemInfo[""/live]               │                                    │
+    │   │   │  > DataBase                          │                                    │
+    │   │   │  > Features                          ├────────────────────────────────────┤
+    │   │   │  ...                                 │ Terminal:                          │
+    │   │   │                                      │                                    │
+    │   │   │ Icon:                                │                                    │
+    │   │   │  |Network|FPS│                       |                                    │
+    │   │   └───────────────────────────────────────────────────────────────────────────┘
+    │   ├── math/                         # 📐 autoencoder / normalize / sample / model
+    │   ├── mining/                       # ⛏️ 数据挖掘(特征->因子)
+    │   ├── misc/                         # 🔧 logging / timer / progress / affinity
+    │   ├── package/nlohmann/             # 📚 JSON库
+    │   └── boost/                        # 📚 asio / beast / optional
+    ├── src/                              # 💾 源文件实现 (多数对应include/)
+    │   ├── main.cpp                      # 💾 程序入口
+    │   ├── gui/Run_OpenGL.cpp            # 💾 OpenGL后端入口
+    │   ├── gui/Run_Vulkan.cpp            # 💾 Vulkan后端入口
+    └── projects/main/                    # 🏗️ 构建系统
+        ├── build.sh                      # 🏗️ 构建脚本: 调用CMake
+        ├── CMakeLists.txt                # 🏗️ CMake配置 (C++23, Clang)
+        └── build/bin/app_main            # 🎯 最终可执行文件
 ```
 
 # ================================================
-
-自用脚本:
-# cmd
-net localgroup Administrators Chuyin.Wang /add
-runas /user:amlogic\chuyin.wang "powershell.exe -NoExit -Command cd '%USERPROFILE%'"
-# powershell
-wsl --mount "\\.\PHYSICALDRIVE1" --bare
-# wsl-2
-sudo mount -o noatime,nodiratime,attr2,inode64,logbufs=8,logbsize=32k /dev/sde1 /mnt/dev/sde

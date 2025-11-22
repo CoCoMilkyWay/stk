@@ -1,24 +1,17 @@
 #include "gui/Gui.hpp"
-#include "gui/GuiState.hpp"
-#include "gui/GuiTask.hpp"
+#include "gui/Tasks.hpp"
+#include "gui/task_icon_bar/TaskIconBar.hpp"
+#include "gui/task_terminal/TaskTerminal.hpp"
+#include "gui/util/Color.hpp"
 #include "imgui.h"
+#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
-#include <vector>
-
-// Forward declarations for task creation
-IGuiTask *CreateSettingsTask();
-IGuiTask *CreateSystemInfoTask();
-
-// Forward declarations for icon bar
-void InitIconBar(GuiState& gui_state);
-void DrawIconBar();
-void CleanupIconBar();
 
 namespace GUI {
 
 // Shared business logic: Draw GUI layout (called by both OpenGL and Vulkan pipelines)
 void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
-                   std::vector<IGuiTask *> &tasks, int &selected_task) {
+                   std::vector<TaskHandle> &tasks, int &selected_task) {
 
   // Get window size
   int display_w = (int)ImGui::GetIO().DisplaySize.x;
@@ -37,22 +30,36 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
 
     // Draw task name
     char name_label[256];
-    snprintf(name_label, sizeof(name_label), "> %s", tasks[i]->GetName());
+    snprintf(name_label, sizeof(name_label), "> %s", tasks[i].name.c_str());
 
     if (ImGui::Selectable(name_label, is_selected, 0, ImVec2(0, 0))) {
       if (selected_task != i) {
-        tasks[selected_task]->OnCollapse();
+        tasks[selected_task].OnCollapse();
         selected_task = i;
-        tasks[selected_task]->OnExpand();
+        tasks[selected_task].OnExpand();
       }
     }
 
-    // Draw status with color on the same line
-    const char *status = tasks[i]->GetStatus();
+    // Draw status
+    const char *status = tasks[i].GetStatus();
     if (status && status[0] != '\0') {
       ImGui::SameLine();
-      auto color = tasks[i]->GetStatusColor();
-      ImGui::TextColored(ImVec4(color.r, color.g, color.b, color.a), "[%s]", status);
+
+      // Choose color based on status text
+      ImVec4 color;
+      if (strcmp(status, "live") == 0 || strcmp(status, "syncing") == 0) {
+        color = ImVec4(0.7f, 0.4f, 1.0f, 1.0f); // Purple
+      } else if (strcmp(status, "synced") == 0) {
+        color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
+      } else if (strcmp(status, "writing") == 0) {
+        color = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
+      } else if (strcmp(status, "initializing") == 0) {
+        color = ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // Gray
+      } else {
+        color = ImVec4(0.0f, 1.0f, 1.0f, 1.0f); // Cyan
+      }
+
+      ImGui::TextColored(color, "[%s]", status);
     }
   }
 
@@ -60,7 +67,7 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
 
   // Icon bar at bottom
   ImGui::Separator();
-  DrawIconBar();
+  TaskIconBar::DrawIconBar();
 
   ImGui::End();
 
@@ -70,7 +77,7 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
   ImGui::Begin("Panel", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
   if (selected_task >= 0 && selected_task < (int)tasks.size()) {
-    tasks[selected_task]->DrawPanel(sharedData, guiState);
+    tasks[selected_task].DrawPanel(sharedData, guiState);
   }
 
   ImGui::End();
@@ -82,12 +89,12 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
 
   // Clear button
   if (ImGui::Button("Clear")) {
-    guiState.terminal.Clear();
+    guiState.terminal->Clear();
   }
   ImGui::SameLine();
-  bool auto_scroll = guiState.terminal.IsAutoScroll();
+  bool auto_scroll = guiState.terminal->IsAutoScroll();
   if (ImGui::Checkbox("Auto-scroll", &auto_scroll)) {
-    guiState.terminal.SetAutoScroll(auto_scroll);
+    guiState.terminal->SetAutoScroll(auto_scroll);
   }
 
   ImGui::Separator();
@@ -95,14 +102,14 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
   // Terminal output area
   ImGui::BeginChild("TerminalOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-  guiState.terminal.ReadLines([](const std::vector<Terminal::Line>& lines) {
-    for (const auto& line : lines) {
+  guiState.terminal->ReadLines([](const std::vector<TaskTerminal::Line> &lines) {
+    for (const auto &line : lines) {
       ImGui::TextColored(ImVec4(line.color.r, line.color.g, line.color.b, line.color.a), "%s", line.text.c_str());
     }
   });
 
   // Auto-scroll to bottom
-  if (guiState.terminal.IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+  if (guiState.terminal->IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
     ImGui::SetScrollHereY(1.0f);
   }
 

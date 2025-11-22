@@ -13,13 +13,10 @@
 // ============================================================================
 // CONFIG EXTERNS
 // ============================================================================
-
 namespace Config {
 extern const char *ARCHIVE_EXTENSION;
-extern const char *BIN_EXTENSION;
-extern const bool CLEANUP_AFTER_PROCESSING;
-extern const bool SKIP_EXISTING_BINARIES;
-}
+extern const char *BINARY_EXTENSION;
+} // namespace Config
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -99,7 +96,7 @@ struct AssetInfo {
     size_t order_count{0};      // Order count (written during encoding)
     uint8_t encoded{0};         // 0=not encoded, 1=encoded (has binary or csv)
     uint8_t analyzed{0};        // 0=not analyzed, 1=analyzed
-    std::string database_dir;       // Cached temp directory path
+    std::string database_dir;   // Cached temp directory path
     std::string snapshots_file; // Full path to snapshots binary file
     std::string orders_file;    // Full path to orders binary file
 
@@ -148,9 +145,9 @@ struct AssetInfo {
 
       for (const auto &entry : std::filesystem::directory_iterator(di.database_dir)) {
         const std::string filename = entry.path().filename().string();
-        if (filename.starts_with(asset_code + "_snapshots_") && filename.ends_with(Config::BIN_EXTENSION)) {
+        if (filename.starts_with(asset_code + "_snapshots_") && filename.ends_with(Config::BINARY_EXTENSION)) {
           di.snapshots_file = entry.path().string();
-        } else if (filename.starts_with(asset_code + "_orders_") && filename.ends_with(Config::BIN_EXTENSION)) {
+        } else if (filename.starts_with(asset_code + "_orders_") && filename.ends_with(Config::BINARY_EXTENSION)) {
           di.orders_file = entry.path().string();
           di.order_count = L2::BinaryDecoder_L2::extract_count_from_filename(di.orders_file);
         }
@@ -282,4 +279,3 @@ struct SharedState {
     return total;
   }
 };
-

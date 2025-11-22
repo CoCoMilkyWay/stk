@@ -18,7 +18,7 @@ option(DEBUG_MODE   "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
 option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
 
 # GUI backend selection
-set(USE_VULKAN_BACKEND OFF CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
+set(USE_VULKAN_BACKEND ON CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
 
 # Clear default CMAKE build type flags to avoid conflicts
 set(CMAKE_CXX_FLAGS_RELEASE "")
@@ -113,16 +113,15 @@ set(SOURCES
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/io_worker.cpp
     ../../src/shared/Config.cpp
-    ../../src/shared/SharedData.cpp
+    ../../src/shared/GuiState.cpp
     ../../src/gui/Gui.cpp
-    ../../src/gui/GuiState.cpp
-    ../../src/gui/GuiTask.cpp
-    ../../src/gui/IconBarTask.cpp
-    ../../src/gui/SettingsTask.cpp
-    ../../src/gui/SystemInfoTask.cpp
+    ../../src/gui/Tasks.cpp
     ../../src/gui/coro/CoroManager.cpp
-    ../../src/gui/coro/network/CoroNetwork.cpp
-    ../../src/gui/coro/crawler/CoroCrawler.cpp
+    ../../src/gui/task_icon_bar/CoroNetwork.cpp
+    ../../src/gui/task_icon_bar/TaskIconBar.cpp
+    ../../src/gui/task_crawler/CoroCrawler.cpp
+    ../../src/gui/task_settings/TaskSettings.cpp
+    ../../src/gui/task_system_info/TaskSystemInfo.cpp
     ../../src/main.cpp
 )
 
@@ -157,11 +156,19 @@ set(HEADERS
     ../../include/worker/crosssectional_worker.hpp
     ../../include/worker/io_worker.hpp
     ../../include/shared/Config.hpp
+    ../../include/shared/GuiState.hpp
     ../../include/shared/SharedData.hpp
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp
-    ../../include/gui/GuiTask.hpp
-    ../../include/gui/GuiState.hpp
+    ../../include/gui/Tasks.hpp
+    ../../include/gui/coro/CoroManager.hpp
+    ../../include/gui/coro/CoroUtils.hpp
+    ../../include/gui/task_crawler/CoroCrawler.hpp
+    ../../include/gui/task_settings/TaskSettings.hpp
+    ../../include/gui/task_system_info/TaskSystemInfo.hpp
+    ../../include/gui/task_icon_bar/CoroNetwork.hpp
+    ../../include/gui/task_icon_bar/TaskIconBar.hpp
+    ../../include/gui/task_terminal/TaskTerminal.hpp
 )
 
 # Disable fast-math for JSON library to avoid infinity issues

@@ -23,48 +23,33 @@
 #include <vector>
 
 // ============================================================================
-// L2数据处理架构 - 两阶段并行处理
+// L2数据处理架构
 // ============================================================================
 //
-// 【核心设计】
-//   数据结构: SharedState 统一管理所有共享状态
-//     - assets[]: 所有资产信息(元数据 + 每日统计 + 文件路径 + 状态位图)
-//     - all_dates[]: 全局交易日序列(用于横截面因子同步)
+//   - 统一管理所有共享状态的 SharedState：
+//       · 资产信息 assets[]：存储所有资产的元数据、每日统计、文件路径及状态位图，支持断点续传和精确状态追踪（date_info.encoded / date_info.analyzed）
+//       · 全局交易日序列 all_dates[]：用于横截面因子同步，保证分析阶段跨资产日期的顺序一致和高效缓存（预留 cross_sectional_cache）
 //
-//   Phase 1 (Encoding): Asset并行，Date乱序
-//     - Worker领取asset，shuffle日期顺序以分散RAR访问压力
-//     - RAR锁(阻塞模式):确保同一压缩包不被并发解压
-//     - 记录统计信息到 asset.date_info[]，零额外扫描
+//   - Phase 1 (Encoding)：
+//       · 资产并行处理，日期顺序打乱(shuffle)以分散RAR压缩包访问压力，实现负载均衡（利用已累积的order_count，无需预扫描）
+//       · 按archive_path加锁保证RAR解压的细粒度并发，阻塞等待锁避免同一压缩包并发解压冲突
+//       · 零重复扫描：在Encoding阶段直接统计order_count及文件路径，缓存到 asset.date_info[]，Analysis阶段无须额外扫描
+//       · 路径缓存与类型缓存：所有文件路径初始化时生成并缓存，exchange_type推导一次，避免字符串重复解析
+//       · 每个worker只写所属asset，使用relaxed无锁操作，保证线程安全且无锁开销
+//       · 支持跳过已编码文件，提升断点续传效率
+//       · 日期shuffle结合CPU亲和性减少缓存未命中，提升处理性能
 //
-//   Phase 2 (Analysis): Date-first遍历，横截面同步
-//     - 所有worker按 all_dates[] 顺序同步推进
-//     - 每个date处理完成后可插入横截面因子计算
-//     - 无锁读取:所有路径/统计信息已在Phase 1缓存
+//   - Phase 2 (Analysis)：
+//       · 以全局日期顺序（all_dates[]）为主线，所有worker同步推进，方便横截面因子计算和缓存共享
+//       · 无锁读取共享状态，所有路径及统计信息在Phase 1已缓存，避免重复IO和扫描
+//       · 处理流程：Binary文件 → 解压解码（Zstd解压速度1300+ MB/s）→ Order Book还原 → 特征提取 → 写入FeatureStore
 //
-// 【数据流】
-//   RAR → CSV → L2结构 → Zstd压缩 → Binary文件
-//                ↓ (统计信息记录到 date_info)
-//   Binary文件 → 解压解码 → Order Book → 特征提取 → FeatureStore
+//   - 线程安全设计细节：
+//       · Encoding阶段为写隔离（每线程写自己asset），无锁relaxed操作
+//       · Analysis阶段为只读共享，零锁访问
+//       · RAR解压采用基于archive_path的细粒度加锁，最大化并行度
 //
-// 【Key Insights】
-//   1. 零重复扫描: Encoding时记录order_count/文件路径，Analysis直接读取
-//   2. 路径缓存: 所有路径初始化时生成一次，存储在 date_info.database_dir
-//   3. 类型缓存: exchange_type 构造时推导一次，避免字符串解析
-//   4. 状态位图: date_info.encoded/analyzed 支持断点续传和精确追踪
-//   5. 负载均衡: 使用encoding时累积的order_count，无需预扫描
-//   6. 横截面准备: all_dates[] 全局同步，预留 cross_sectional_cache
-//
-// 【线程安全】
-//   - Encoding: 每个worker只写自己的asset，relaxed无锁
-//   - Analysis: 只读共享状态，零锁开销
-//   - RAR解压: 按archive_path加锁，细粒度并发
-//
-// 【性能优化】
-//   - 跳过已编码文件 + 断点续传支持
-//   - 日期shuffle分散RAR访问热点
-//   - CPU亲和性减少cache miss
-//   - Zstd解压速度 1300+ MB/s
-//
+
 // ============================================================================
 // CONFIGURATION SECTION
 // ============================================================================
@@ -76,7 +61,7 @@ const char *ARCHIVE_TOOL = "unrar";     // Archive extraction tool (unrar/7z/unz
 const char *ARCHIVE_EXTRACT_CMD = "x";  // Extract command (x for unrar, x for 7z)
 
 // File extensions and names - standard CSV filenames from data supplier
-const char *BIN_EXTENSION = ".bin";
+const char *BINARY_EXTENSION = ".bin";
 // CSV filenames defined here for documentation and potential future use
 // Currently the encoder auto-detects these files, but explicit names reserved for future API changes
 [[maybe_unused]] constexpr const char *CSV_MARKET_DATA = "行情.csv";    // Market snapshot CSV filename
@@ -84,20 +69,15 @@ const char *BIN_EXTENSION = ".bin";
 [[maybe_unused]] constexpr const char *CSV_TICK_ORDER = "逐笔委托.csv"; // Tick-by-tick order CSV filename
 
 // Path settings - modify these for your environment
-constexpr const char *DEFAULT_CONFIG_FILE = "../../../../config/config.json";
 constexpr const char *DEFAULT_STOCK_INFO_FILE = "../../../../config/daily_holding/asset_list.json";
 
-constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/I/AM/A/FAKE/PATH/TO/SKIP/ARCHIVE/CHECK";
-// constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/mnt/dev/sde/A_stock/L2";
-// constexpr const char *DEFAULT_L2_ARCHIVE_BASE = "/media/chuyin/48ac8067-d3b7-4332-b652-45e367a1ebcc/A_stock/L2";
+constexpr const char *ARCHIVE_DIR = "/I/AM/A/FAKE/PATH/TO/SKIP/ARCHIVE/CHECK";
+// constexpr const char *ARCHIVE_DIR = "/mnt/dev/sde/A_stock/L2";
+// constexpr const char *ARCHIVE_DIR = "/media/chuyin/48ac8067-d3b7-4332-b652-45e367a1ebcc/A_stock/L2";
 
-constexpr const char *DEFAULT_DATABASE_DIR = "../../../../output/database";
-constexpr const char *DEFAULT_FEATURE_DIR = "../../../../output/features";
-constexpr const char *DEFAULT_LOG_DIR = "../../../../output/log";
-
-// Processing settings - modify for different behaviors
-const bool CLEANUP_AFTER_PROCESSING = false; // Clean up temp files after processing (saves disk space)
-const bool SKIP_EXISTING_BINARIES = true;    // Skip extraction/encoding if binary files exist (faster rerun)
+constexpr const char *DATABASE_DIR = "../../../../output/database";
+constexpr const char *FEATURE_DIR = "../../../../output/features";
+constexpr const char *LOG_DIR = "../../../../output/log";
 
 } // namespace Config
 
@@ -107,18 +87,17 @@ const bool SKIP_EXISTING_BINARIES = true;    // Skip extraction/encoding if bina
 
 int main() {
   // Load configuration paths first
-  const std::string config_file = Config::DEFAULT_CONFIG_FILE;
   const std::string stock_info_file = Config::DEFAULT_STOCK_INFO_FILE;
-  const std::string l2_archive_base = Config::DEFAULT_L2_ARCHIVE_BASE;
-  const std::string database_dir = Config::DEFAULT_DATABASE_DIR;
-  const std::string feature_dir = Config::DEFAULT_FEATURE_DIR;
-  const std::string log_dir = Config::DEFAULT_LOG_DIR;
+  const std::string l2_archive_base = Config::ARCHIVE_DIR;
+  const std::string database_dir = Config::DATABASE_DIR;
+  const std::string feature_dir = Config::FEATURE_DIR;
+  const std::string log_dir = Config::LOG_DIR;
 
   GUI::RunGUI();
-
+/*
   std::cout << "=== L2 Data Processor (CSV Mode) ===" << "\n";
 
-  const JsonConfig::AppConfig app_config = JsonConfig::ParseAppConfig(config_file);
+  const JsonConfig::AppConfig app_config = JsonConfig::ParseAppConfig("../../../../config/config.json");
   auto stock_info_map = JsonConfig::ParseStockInfo(stock_info_file);
 
   // Adjust stock dates based on config
@@ -141,8 +120,6 @@ int main() {
   std::cout << "  Period: " << JsonConfig::FormatYearMonthDay(app_config.start_date)
             << " → " << JsonConfig::FormatYearMonthDay(app_config.end_date) << "\n";
   std::cout << "  Assets: " << stock_info_map.size() << "\n";
-  std::cout << "  Skip existing: " << (Config::SKIP_EXISTING_BINARIES ? "Yes" : "No") << "\n";
-  std::cout << "  Auto cleanup: " << (Config::CLEANUP_AFTER_PROCESSING ? "Yes" : "No") << "\n\n";
 
   std::filesystem::create_directories(database_dir);
   Logger::init(log_dir);
@@ -328,12 +305,6 @@ int main() {
   analysis_progress->stop();
 
   Logger::close();
-
-  if (Config::CLEANUP_AFTER_PROCESSING) {
-    if (std::filesystem::exists(database_dir)) {
-      std::filesystem::remove_all(database_dir);
-    }
-  }
-
   return 0;
+  */
 }

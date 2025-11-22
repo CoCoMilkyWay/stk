@@ -20,13 +20,6 @@
 
 namespace L2 {
 
-// Processing configuration constants
-inline constexpr uint32_t DECOMPRESSION_THREADS = 8;
-inline constexpr uint32_t MAX_TEMP_FOLDERS = 16; // disk backpressure limit
-inline const char *INPUT_DIR = "/mnt/dev/sde/A_stock/L2";
-inline const char *OUTPUT_DIR = "../../../output/database/L2_binary";
-inline const char *TEMP_DIR = "../../../output/database";
-
 inline constexpr size_t DEFAULT_ENCODER_SNAPSHOT_SIZE = 5000; // 3秒全量快照 4*3600/3=4800
 inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000;  // 逐笔合并(增删改成交)
 

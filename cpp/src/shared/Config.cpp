@@ -36,8 +36,21 @@ void Config::MarkDirty() {
 }
 
 void Config::SyncStringBuffers() {
-  snprintf(data_path_buf, sizeof(data_path_buf), "%s", data_path.c_str());
-  snprintf(output_file_buf, sizeof(output_file_buf), "%s", output_file.c_str());
+  snprintf(start_date_buf, sizeof(start_date_buf), "%s", start_date.c_str());
+  snprintf(end_date_buf, sizeof(end_date_buf), "%s", end_date.c_str());
+  snprintf(archive_dir_buf, sizeof(archive_dir_buf), "%s", archive_dir.c_str());
+  snprintf(database_dir_buf, sizeof(database_dir_buf), "%s", database_dir.c_str());
+  snprintf(feature_dir_buf, sizeof(feature_dir_buf), "%s", feature_dir.c_str());
+  snprintf(factor_dir_buf, sizeof(factor_dir_buf), "%s", factor_dir.c_str());
+  snprintf(log_dir_buf, sizeof(log_dir_buf), "%s", log_dir.c_str());
+  snprintf(config_dir_buf, sizeof(config_dir_buf), "%s", config_dir.c_str());
+  snprintf(csv_market_data_buf, sizeof(csv_market_data_buf), "%s", csv_market_data.c_str());
+  snprintf(csv_tick_trade_buf, sizeof(csv_tick_trade_buf), "%s", csv_market_trade.c_str());
+  snprintf(csv_tick_order_buf, sizeof(csv_tick_order_buf), "%s", csv_market_order.c_str());
+  snprintf(archive_extension_buf, sizeof(archive_extension_buf), "%s", archive_extension.c_str());
+  snprintf(archive_tool_buf, sizeof(archive_tool_buf), "%s", archive_tool.c_str());
+  snprintf(archive_extract_cmd_buf, sizeof(archive_extract_cmd_buf), "%s", archive_extract_cmd.c_str());
+  snprintf(binary_extension_buf, sizeof(binary_extension_buf), "%s", binary_extension.c_str());
 }
 
 void Config::AutoSync() {
@@ -80,16 +93,21 @@ bool Config::LoadFromFile() {
   file >> j;
 
   // Parse JSON to Config with default values as fallback
-  port = j.value("port", port);
-  buffer_size = j.value("buffer_size", buffer_size);
-  sample_rate = j.value("sample_rate", sample_rate);
-  threshold = j.value("threshold", threshold);
-  enable_logging = j.value("enable_logging", enable_logging);
-  auto_save = j.value("auto_save", auto_save);
-  data_path = j.value("data_path", data_path);
-  output_file = j.value("output_file", output_file);
-  window_sizes = j.value("window_sizes", window_sizes);
-  coefficients = j.value("coefficients", coefficients);
+  start_date = j.value("start_date", start_date);
+  end_date = j.value("end_date", end_date);
+  archive_dir = j.value("archive_dir", archive_dir);
+  database_dir = j.value("database_dir", database_dir);
+  feature_dir = j.value("feature_dir", feature_dir);
+  factor_dir = j.value("factor_dir", factor_dir);
+  log_dir = j.value("log_dir", log_dir);
+  config_dir = j.value("config_dir", config_dir);
+  csv_market_data = j.value("csv_market_data", csv_market_data);
+  csv_market_trade = j.value("csv_market_trade", csv_market_trade);
+  csv_market_order = j.value("csv_market_order", csv_market_order);
+  archive_extension = j.value("archive_extension", archive_extension);
+  archive_tool = j.value("archive_tool", archive_tool);
+  archive_extract_cmd = j.value("archive_extract_cmd", archive_extract_cmd);
+  binary_extension = j.value("binary_extension", binary_extension);
 
   return true;
 }
@@ -98,16 +116,21 @@ bool Config::SaveToFile() {
   json j;
   
   // Convert Config to JSON
-  j["port"] = port;
-  j["buffer_size"] = buffer_size;
-  j["sample_rate"] = sample_rate;
-  j["threshold"] = threshold;
-  j["enable_logging"] = enable_logging;
-  j["auto_save"] = auto_save;
-  j["data_path"] = data_path;
-  j["output_file"] = output_file;
-  j["window_sizes"] = window_sizes;
-  j["coefficients"] = coefficients;
+  j["start_date"] = start_date;
+  j["end_date"] = end_date;
+  j["archive_dir"] = archive_dir;
+  j["database_dir"] = database_dir;
+  j["feature_dir"] = feature_dir;
+  j["factor_dir"] = factor_dir;
+  j["log_dir"] = log_dir;
+  j["config_dir"] = config_dir;
+  j["csv_market_data"] = csv_market_data;
+  j["csv_market_trade"] = csv_market_trade;
+  j["csv_market_order"] = csv_market_order;
+  j["archive_extension"] = archive_extension;
+  j["archive_tool"] = archive_tool;
+  j["archive_extract_cmd"] = archive_extract_cmd;
+  j["binary_extension"] = binary_extension;
 
   std::ofstream file(filepath);
   if (!file.is_open()) {

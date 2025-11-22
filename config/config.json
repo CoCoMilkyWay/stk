@@ -1,5 +1,17 @@
 {
-    "dir": "",
-    "start_date": "2025-01-01",
-    "end_date": "2025-01-10"
+  "archive_dir": "/mnt/dev/sde/A_stock/L2",
+  "archive_extension": ".rar",
+  "archive_extract_cmd": "x",
+  "archive_tool": "unrar",
+  "binary_extension": ".bin",
+  "config_dir": "../../../../config",
+  "csv_market_data": "行情.csv",
+  "csv_market_order": "逐笔委托.csv",
+  "csv_market_trade": "逐笔成交.csv",
+  "database_dir": "../../../../output/database",
+  "end_date": "2025-02-01",
+  "factor_dir": "../../../../output/factors",
+  "feature_dir": "../../../../output/features",
+  "log_dir": "../../../../output/log",
+  "start_date": "2025-01-01"
 }

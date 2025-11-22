@@ -18,10 +18,8 @@ namespace Config {
 extern const char *ARCHIVE_EXTENSION;
 extern const char *ARCHIVE_TOOL;
 extern const char *ARCHIVE_EXTRACT_CMD;
-extern const char *BIN_EXTENSION;
-extern const bool CLEANUP_AFTER_PROCESSING;
-extern const bool SKIP_EXISTING_BINARIES;
-}
+extern const char *BINARY_EXTENSION;
+} // namespace Config
 
 // ============================================================================
 // RAR LOCK MANAGER
@@ -105,7 +103,7 @@ static bool extract_and_encode(const std::string &archive_path,
     const std::string path = entry.path().string();
     if (path.ends_with(".csv")) {
       std::filesystem::remove(entry.path()); // Clean up CSV
-    } else if (path.ends_with(Config::BIN_EXTENSION)) {
+    } else if (path.ends_with(Config::BINARY_EXTENSION)) {
       const std::string filename = entry.path().filename().string();
       if (filename.starts_with(asset_code + "_snapshots_")) {
         date_info.snapshots_file = path;
@@ -118,13 +116,13 @@ static bool extract_and_encode(const std::string &archive_path,
   return true;
 }
 
-void encoding_worker(SharedState &state, 
-                    std::vector<size_t> &asset_id_queue, 
-                    std::mutex &queue_mutex, 
-                    const std::string &l2_archive_base, 
-                    const std::string &database_dir, 
-                    unsigned int core_id, 
-                    misc::ProgressHandle progress_handle) {
+void encoding_worker(SharedState &state,
+                     std::vector<size_t> &asset_id_queue,
+                     std::mutex &queue_mutex,
+                     const std::string &l2_archive_base,
+                     const std::string &database_dir,
+                     unsigned int core_id,
+                     misc::ProgressHandle progress_handle) {
   static thread_local bool affinity_set = false;
   if (!affinity_set && misc::Affinity::supported()) {
     affinity_set = misc::Affinity::pin_to_core(core_id);
@@ -168,7 +166,7 @@ void encoding_worker(SharedState &state,
       auto &date_info = asset.date_info[date_str];
 
       // Skip if binary already exists
-      if (date_info.encoded && Config::SKIP_EXISTING_BINARIES) {
+      if (date_info.encoded) {
         progress_handle.update(i + 1, date_keys.size(), date_str);
         continue;
       }
@@ -185,10 +183,6 @@ void encoding_worker(SharedState &state,
 
       if (success) {
         date_info.encoded = 1;
-
-        if (Config::CLEANUP_AFTER_PROCESSING) {
-          std::filesystem::remove_all(date_info.database_dir);
-        }
       }
 
       progress_handle.update(i + 1, date_keys.size(), date_str);
