@@ -1,13 +1,8 @@
 #pragma once
 #include "gui/task_database/AssetInfo.hpp"
 #include <boost/asio/awaitable.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/asio/ip/tcp.hpp>
 
 namespace asio = boost::asio;
-namespace beast = boost::beast;
-namespace http = beast::http;
 
 namespace GUI::Database {
 

@@ -145,9 +145,9 @@ asio::awaitable<void> CoroCrawler::fetch_sh_stock(AssetInfo &asset) {
       }
     }
     
-    // Close connection
+    // Close connection gracefully
     beast::error_code ec;
-    stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+    [[maybe_unused]] auto shutdown_result = stream.socket().shutdown(tcp::socket::shutdown_both, ec);
     
   } catch (...) {
     // Silently fail for individual stocks
@@ -217,7 +217,8 @@ void CoroCrawler::save_cache(const std::string &path) {
       j.push_back(asset_json);
     }
     
-    fs::create_directories(fs::path(path).parent_path());
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
     std::ofstream file(path);
     file << j.dump(2);
     

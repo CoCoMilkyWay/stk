@@ -183,6 +183,8 @@ set(HEADERS
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
+    ../../src/gui/task_database/CoroScanner.cpp
+    ../../src/gui/task_database/CoroCrawler.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
 )
 

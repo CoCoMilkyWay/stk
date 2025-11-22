@@ -293,18 +293,20 @@ private:
     const ImVec4 COLOR_GREEN = ImVec4(0.3f, 0.95f, 0.4f, 1.0f);
     const ImVec4 COLOR_YELLOW = ImVec4(1.0f, 0.95f, 0.3f, 1.0f);
     
-    if (ImGui::BeginTable("AssetsTable", 7,
+    if (ImGui::BeginTable("AssetsTable", 9,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY |
                           ImGuiTableFlags_Resizable)) {
       
       ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-      ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-      ImGui::TableSetupColumn("Exch", ImGuiTableColumnFlags_WidthFixed, 60.0f);
-      ImGui::TableSetupColumn("Encoded", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-      ImGui::TableSetupColumn("Missing", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-      ImGui::TableSetupColumn("Orders", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-      ImGui::TableSetupColumn("%", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+      ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+      ImGui::TableSetupColumn("Exch", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+      ImGui::TableSetupColumn("Days", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+      ImGui::TableSetupColumn("Snap", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+      ImGui::TableSetupColumn("Order", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+      ImGui::TableSetupColumn("Missing", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+      ImGui::TableSetupColumn("Orders", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+      ImGui::TableSetupColumn("%", ImGuiTableColumnFlags_WidthFixed, 50.0f);
       ImGui::TableSetupScrollFreeze(0, 1);
       ImGui::TableHeadersRow();
       
@@ -333,18 +335,30 @@ private:
         ImGui::TextColored(asset.exchange == "SH" ? COLOR_SH : COLOR_SZ,
                           "%s", asset.exchange.c_str());
         
-        // Encoded
+        // Days
         ImGui::TableSetColumnIndex(3);
-        ImGui::Text("%zu/%zu", asset.get_encoded_count(), asset.get_total_trading_days());
+        ImGui::Text("%zu", asset.get_total_trading_days());
+        
+        // Snapshots encoded
+        ImGui::TableSetColumnIndex(4);
+        size_t snap_encoded = asset.get_snapshots_encoded_count();
+        ImGui::TextColored(snap_encoded == asset.get_total_trading_days() ? COLOR_GREEN : COLOR_YELLOW,
+                          "%zu", snap_encoded);
+        
+        // Orders encoded
+        ImGui::TableSetColumnIndex(5);
+        size_t ord_encoded = asset.get_orders_encoded_count();
+        ImGui::TextColored(ord_encoded == asset.get_total_trading_days() ? COLOR_GREEN : COLOR_YELLOW,
+                          "%zu", ord_encoded);
         
         // Missing
-        ImGui::TableSetColumnIndex(4);
+        ImGui::TableSetColumnIndex(6);
         size_t missing = asset.get_missing_count();
         ImGui::TextColored(missing > 0 ? COLOR_YELLOW : COLOR_GREEN,
                           "%zu", missing);
         
-        // Orders
-        ImGui::TableSetColumnIndex(5);
+        // Total Orders
+        ImGui::TableSetColumnIndex(7);
         size_t orders = asset.get_total_order_count();
         if (orders >= 1000000) {
           ImGui::Text("%.1fM", orders / 1000000.0);
@@ -354,8 +368,8 @@ private:
           ImGui::Text("%zu", orders);
         }
         
-        // Percentage
-        ImGui::TableSetColumnIndex(6);
+        // Percentage (fully encoded)
+        ImGui::TableSetColumnIndex(8);
         float pct = asset.get_total_trading_days() > 0
                        ? 100.0f * asset.get_encoded_count() / asset.get_total_trading_days()
                        : 0.0f;
