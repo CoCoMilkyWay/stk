@@ -18,7 +18,7 @@ option(DEBUG_MODE   "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
 option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
 
 # GUI backend selection
-option(USE_VULKAN_BACKEND "Use Vulkan backend instead of OpenGL for GUI rendering" ON)
+set(USE_VULKAN_BACKEND OFF CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
 
 # Clear default CMAKE build type flags to avoid conflicts
 set(CMAKE_CXX_FLAGS_RELEASE "")
