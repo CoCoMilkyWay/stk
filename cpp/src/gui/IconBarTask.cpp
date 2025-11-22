@@ -1,5 +1,6 @@
 #include "imgui.h"
 #include "gui/GuiState.hpp"
+#include "gui/Config.hpp"
 #include "gui/coro/CoroNetwork.hpp"
 #include <array>
 #include <chrono>
@@ -361,6 +362,13 @@ private:
       ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Green:  >= %.0f", FPS_GREEN);
       ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Yellow: %.0f-%.0f", FPS_YELLOW, FPS_GREEN);
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Red:    < %.0f", FPS_YELLOW);
+      ImGui::Separator();
+      ImGui::TextDisabled("Configuration:");
+      ImGui::Text("TARGET_FPS:   %.1f", TARGET_FPS);
+      ImGui::Text("HIGH_FPS_ON_EVENTS: %s", HIGH_FPS_ON_EVENTS ? "Enabled" : "Disabled");
+      ImGui::Text("VSYNC_ENABLE:  %s", VSYNC_ENABLE ? "Enabled" : "Disabled");
+      ImGui::Separator();
+      ImGui::TextDisabled("To modify: cpp/include/gui/Config.hpp");
       ImGui::EndTooltip();
     }
   }

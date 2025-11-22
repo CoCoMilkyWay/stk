@@ -6,7 +6,7 @@
 
 #include "codec/json_config.hpp"
 #include "features/backend/FeatureStore.hpp"
-#include "gui/Gui.h"
+#include "gui/Gui.hpp"
 #include "misc/affinity.hpp"
 #include "misc/file_check.hpp"
 #include "misc/logging.hpp"

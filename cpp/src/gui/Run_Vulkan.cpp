@@ -2,35 +2,32 @@
 // This file contains only Vulkan-specific rendering code
 // Business logic is in Gui.cpp and shared between OpenGL and Vulkan
 
-#include "gui/Gui.h"
+#include "gui/Gui.hpp"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "implot.h"
 #define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
+#include "gui/Config.hpp"
 #include "gui/GuiState.hpp"
 #include "gui/GuiTask.hpp"
 #include "shared/SharedData.hpp"
 #include <GLFW/glfw3.h>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <thread>
 #include <vector>
 #include <vulkan/vulkan.h>
-
-// ============================================================================
-// Configuration: Frame rate limit
-// ============================================================================
-constexpr double TARGET_FPS = 10.0; // Adjust this to control CPU usage
-constexpr double FRAME_TIME = 1.0 / TARGET_FPS;
 
 // Forward declarations for task creation
 IGuiTask *CreateSettingsTask();
 IGuiTask *CreateSystemInfoTask();
 
 // Forward declarations for icon bar
-void InitIconBar(GuiState& gui_state);
+void InitIconBar(GuiState &gui_state);
 void CleanupIconBar();
 
 namespace GUI {
@@ -244,8 +241,9 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, VkSurfaceKHR surface
       g_PhysicalDevice, wd->Surface, requestSurfaceImageFormat,
       (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
-  // Select Present Mode (FIFO for VSync)
-  VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
+  // Select Present Mode
+  VkPresentModeKHR present_modes[] = {
+      VSYNC_ENABLE ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR};
   wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(
       g_PhysicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
 
@@ -397,7 +395,7 @@ void RunGUI() {
 
   // Create window with Vulkan context
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  GLFWwindow *window = glfwCreateWindow(1280, 720, "L2 Data Processor (Vulkan)", nullptr, nullptr);
+  GLFWwindow *window = glfwCreateWindow(1920, 1080, "L2 Data Processor (Vulkan)", nullptr, nullptr);
   if (!window) {
     guiState.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
@@ -475,7 +473,14 @@ void RunGUI() {
 
   // Main loop
   while (!glfwWindowShouldClose(window)) {
-    glfwWaitEventsTimeout(FRAME_TIME);
+    double frame_start = 0.0;
+
+    if constexpr (HIGH_FPS_ON_EVENTS) {
+      glfwWaitEventsTimeout(FRAME_TIME);
+    } else {
+      frame_start = glfwGetTime();
+      glfwPollEvents();
+    }
 
     // Update GUI state
     guiState.Update(static_cast<float>(FRAME_TIME));
@@ -518,6 +523,16 @@ void RunGUI() {
       wd->ClearValue.color.float32[3] = 1.0f;
       FrameRender(wd, draw_data);
       FramePresent(wd);
+    }
+
+    // Enforce fixed frame rate (only when HIGH_FPS_ON_EVENTS is disabled)
+    if constexpr (!HIGH_FPS_ON_EVENTS) {
+      double frame_end = glfwGetTime();
+      double elapsed = frame_end - frame_start;
+      if (elapsed < FRAME_TIME) {
+        auto sleep_duration = std::chrono::duration<double>(FRAME_TIME - elapsed);
+        std::this_thread::sleep_for(sleep_duration);
+      }
     }
   }
 

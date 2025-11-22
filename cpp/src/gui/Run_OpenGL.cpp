@@ -2,36 +2,33 @@
 // This file contains only OpenGL-specific rendering code
 // Business logic is in Gui.cpp and shared between OpenGL and Vulkan
 
-#include "gui/Gui.h"
+#include "gui/Config.hpp"
+#include "gui/Gui.hpp"
+#include "gui/GuiState.hpp"
+#include "gui/GuiTask.hpp"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
-#include <GLFW/glfw3.h>
-#include <fstream>
-#include <vector>
 #include "shared/SharedData.hpp"
-#include "gui/GuiTask.hpp"
-#include "gui/GuiState.hpp"
-
-// ============================================================================
-// Configuration: Frame rate limit
-// ============================================================================
-constexpr double TARGET_FPS = 10.0;  // Adjust this to control CPU usage
-constexpr double FRAME_TIME = 1.0 / TARGET_FPS;
+#include <GLFW/glfw3.h>
+#include <chrono>
+#include <fstream>
+#include <thread>
+#include <vector>
 
 // Forward declarations for task creation
-IGuiTask* CreateSettingsTask();
-IGuiTask* CreateSystemInfoTask();
+IGuiTask *CreateSettingsTask();
+IGuiTask *CreateSystemInfoTask();
 
 // Forward declarations for icon bar
-void InitIconBar(GuiState& gui_state);
+void InitIconBar(GuiState &gui_state);
 void CleanupIconBar();
 
 namespace GUI {
 
 // Global pointer to GUI state for error callback
-static GuiState* g_gui_state = nullptr;
+static GuiState *g_gui_state = nullptr;
 
 // GLFW error callback
 void glfw_error_callback(int error, const char *description) {
@@ -45,23 +42,23 @@ void glfw_error_callback(int error, const char *description) {
 void RunGUI() {
   // Initialize shared data
   SharedData sharedData;
-  
+
   // Initialize GUI state
   GuiState guiState;
-  
+
   // Link GUI state to shared data for logging
   sharedData.gui_state = &guiState;
   g_gui_state = &guiState;
-  
+
   // Create GUI tasks
-  std::vector<IGuiTask*> tasks;
+  std::vector<IGuiTask *> tasks;
   tasks.push_back(CreateSettingsTask());
   tasks.push_back(CreateSystemInfoTask());
-  
+
   // Track selected task
   int selected_task = 0;
   tasks[selected_task]->OnExpand();
-  
+
   // Print startup banner
   guiState.terminal.AddLine("=== Launching GUI ===", Color::Green());
   guiState.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
@@ -72,7 +69,7 @@ void RunGUI() {
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (OpenGL backend, %.0f FPS)", TARGET_FPS);
   guiState.terminal.AddLine(init_msg, Color::Blue());
-  
+
   // Initialize icon bar with network monitoring
   InitIconBar(guiState);
 
@@ -101,14 +98,14 @@ void RunGUI() {
 #endif
 
   // Create window
-  GLFWwindow *window = glfwCreateWindow(1280, 720, "L2 Data Processor (OpenGL)", nullptr, nullptr);
+  GLFWwindow *window = glfwCreateWindow(1920, 1080, "L2 Data Processor (OpenGL)", nullptr, nullptr);
   if (!window) {
     guiState.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
     return;
   }
   glfwMakeContextCurrent(window);
-  glfwSwapInterval(1); // Enable vsync
+  glfwSwapInterval(VSYNC_ENABLE ? 1 : 0);
 
   // Setup ImGui context
   IMGUI_CHECKVERSION();
@@ -117,17 +114,17 @@ void RunGUI() {
 
   // Setup style
   ImGui::StyleColorsDark();
-  
+
   // Setup Chinese font
-  ImGuiIO& io = ImGui::GetIO();
+  ImGuiIO &io = ImGui::GetIO();
   io.Fonts->Clear();
-  
+
   ImFontConfig config;
   config.MergeMode = false;
   config.PixelSnapH = true;
-  
+
   // Load Chinese font from bundled fonts
-  const char* font_path = "fonts/NotoSansMonoCJKsc-Regular.otf";
+  const char *font_path = "fonts/NotoSansMonoCJKsc-Regular.otf";
   if (std::ifstream(font_path).good()) {
     io.Fonts->AddFontFromFileTTF(font_path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
   } else {
@@ -142,8 +139,15 @@ void RunGUI() {
 
   // Main loop
   while (!glfwWindowShouldClose(window)) {
-    glfwWaitEventsTimeout(FRAME_TIME);
-    
+    double frame_start = 0.0;
+
+    if constexpr (HIGH_FPS_ON_EVENTS) {
+      glfwWaitEventsTimeout(FRAME_TIME);
+    } else {
+      frame_start = glfwGetTime();
+      glfwPollEvents();
+    }
+
     // Update GUI state
     guiState.Update(static_cast<float>(FRAME_TIME));
 
@@ -166,6 +170,16 @@ void RunGUI() {
 
     // Swap buffers
     glfwSwapBuffers(window);
+
+    // Enforce fixed frame rate (only when HIGH_FPS_ON_EVENTS is disabled)
+    if constexpr (!HIGH_FPS_ON_EVENTS) {
+      double frame_end = glfwGetTime();
+      double elapsed = frame_end - frame_start;
+      if (elapsed < FRAME_TIME) {
+        auto sleep_duration = std::chrono::duration<double>(FRAME_TIME - elapsed);
+        std::this_thread::sleep_for(sleep_duration);
+      }
+    }
   }
 
   // Cleanup tasks
@@ -173,7 +187,7 @@ void RunGUI() {
     delete task;
   }
   tasks.clear();
-  
+
   // Cleanup
   CleanupIconBar();
   g_gui_state = nullptr;
@@ -186,4 +200,3 @@ void RunGUI() {
 }
 
 } // namespace GUI
-

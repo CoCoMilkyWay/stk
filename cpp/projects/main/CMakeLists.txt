@@ -129,9 +129,11 @@ set(SOURCES
 # Add GUI backend pipeline based on selection
 if(USE_VULKAN_BACKEND)
     list(APPEND SOURCES ../../src/gui/Run_Vulkan.cpp)
+    add_compile_definitions(USE_VULKAN_BACKEND)
     message(STATUS "GUI Pipeline: Vulkan")
 else()
     list(APPEND SOURCES ../../src/gui/Run_OpenGL.cpp)
+    add_compile_definitions(USE_OPENGL_BACKEND)
     message(STATUS "GUI Pipeline: OpenGL")
 endif()
 
@@ -156,7 +158,8 @@ set(HEADERS
     ../../include/worker/io_worker.hpp
     ../../include/shared/Config.hpp
     ../../include/shared/SharedData.hpp
-    ../../include/gui/Gui.h
+    ../../include/gui/Config.hpp
+    ../../include/gui/Gui.hpp
     ../../include/gui/GuiTask.hpp
     ../../include/gui/GuiState.hpp
 )
