@@ -30,10 +30,7 @@ private:
   Config *config_ = nullptr;
   std::vector<std::string> stock_codes_;
 
-  // Metadata
-  std::string last_weekly_update_;
-  std::string last_daily_update_;
-  std::map<std::string, std::string> stock_factor_last_update_;
+  // Metadata (stock_info only needs unified checked_date)
   std::map<std::string, std::string> stock_info_last_update_;
 
   // Data structures
@@ -50,7 +47,10 @@ private:
 
   // Progress callback: (file_type, current_item, current, total, stage)
   // file_type: "stock_days", "stock_factor", "stock_info"
-  std::function<void(const std::string& file_type, const std::string& current_item, size_t current, size_t total, UpdateStage stage)> progress_callback_;
+  std::function<void(const std::string &file_type, const std::string &current_item, size_t current, size_t total, UpdateStage stage)> progress_callback_;
+
+  // User session state (IP-level, shared across all workers)
+  bool user_logged_in_;
 
   // Helper methods - Date utilities
   std::string get_today_date() const;
@@ -72,12 +72,12 @@ public:
               Config *config,
               TaskTerminal *terminal = nullptr);
   ~DataManager() = default;
-  
+
   // Logging helper
   void Log(const std::string &message, bool is_error = false);
 
   // Progress callback
-  void set_progress_callback(std::function<void(const std::string&, const std::string&, size_t, size_t, UpdateStage)> callback) {
+  void set_progress_callback(std::function<void(const std::string &, const std::string &, size_t, size_t, UpdateStage)> callback) {
     progress_callback_ = callback;
   }
 
@@ -86,12 +86,15 @@ public:
   const StockInfoMap &get_stock_info() const { return stock_info_; }
   const StockDaysVec &get_stock_days() const { return stock_days_; }
 
+  // Login status (read-only, managed internally by ensure_logged_in/out)
+  bool is_logged_in() const { return user_logged_in_; }
+
   // Initialization and cleanup
   awaitable<bool> initialize();
   awaitable<void> shutdown();
   awaitable<bool> login_all();
   awaitable<bool> ensure_logged_in();  // Lazy login helper
-  awaitable<void> logout_all();
+  awaitable<void> ensure_logged_out(); // Logout helper
 
   // Configuration
   awaitable<void> load_config(const std::string &config_file);
@@ -106,10 +109,10 @@ public:
   awaitable<void> save_stock_days();
 
   // Update operations
-  awaitable<void> update_stock_factor(bool force = false);
-  awaitable<void> update_stock_info_weekly(bool force = false);
-  awaitable<void> update_stock_info_daily(bool force = false);
-  awaitable<void> update_stock_days(bool force = false);
+  awaitable<void> update_stock_factor(bool force = false, bool skip_login = false, bool skip_logout = false);
+  awaitable<void> update_stock_info_weekly(bool force = false, bool skip_days = false, bool skip_login = false, bool skip_logout = false);
+  awaitable<void> update_stock_info_daily(bool force = false, bool skip_days = false, bool skip_login = false, bool skip_logout = false);
+  awaitable<void> update_stock_days(bool force = false, bool skip_login = false, bool skip_logout = false);
   awaitable<void> update_all(bool force = false);
 
   // Integrity checks

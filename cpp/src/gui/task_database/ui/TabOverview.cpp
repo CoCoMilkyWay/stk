@@ -4,6 +4,7 @@
 #include "gui/task_database/ui/TabOverview.hpp"
 #include "imgui.h"
 #include <cstdio>
+#include <string>
 
 namespace GUI::Database {
 
@@ -41,6 +42,34 @@ void RenderCompactJsonCard(
   ImGui::SameLine();
 
   ImGui::Text("Integrity:");
+
+  // Hover to show integrity check rules
+  if (ImGui::IsItemHovered()) {
+    ImGui::BeginTooltip();
+    ImGui::TextColored(COLOR_CYAN, "Integrity Check Rules:");
+    ImGui::Separator();
+
+    if (std::string(title) == "stock_days.json") {
+      ImGui::BulletText("Must contain trading date records");
+      ImGui::BulletText("Dates must be sorted chronologically");
+      ImGui::BulletText("No duplicate dates allowed");
+      ImGui::BulletText("Each record: [date, is_trading_day]");
+    } else if (std::string(title) == "stock_factor.json") {
+      ImGui::BulletText("Must have data for all configured stocks");
+      ImGui::BulletText("Each stock: {last_update, data[]}");
+      ImGui::BulletText("Factor data must be sorted by date");
+      ImGui::BulletText("No duplicate dates per stock");
+      ImGui::BulletText("Each record: [date, adjust_factor]");
+    } else if (std::string(title) == "stock_info.json") {
+      ImGui::BulletText("Must have info for all configured stocks");
+      ImGui::BulletText("Required weekly: name, ipoDate, industry");
+      ImGui::BulletText("Required daily: volume, amount, turn, etc");
+      ImGui::BulletText("Delisted stocks (outDate set) skip daily check");
+    }
+
+    ImGui::EndTooltip();
+  }
+
   ImGui::SameLine();
 
   if (state.integrity_passed) {
@@ -123,15 +152,15 @@ void RenderCompactJsonCard(
     case UpdateStage::UpdatingStockFactor:
     case UpdateStage::UpdatingStockInfoWeekly:
     case UpdateStage::UpdatingStockInfoDaily:
-        return COLOR_CYAN;
+      return COLOR_CYAN;
     case UpdateStage::Fetching:
-        return COLOR_BLUE;
+      return COLOR_BLUE;
     case UpdateStage::Saving:
-        return COLOR_YELLOW;
+      return COLOR_YELLOW;
     case UpdateStage::CheckingIntegrity:
-        return COLOR_GRAY;
+      return COLOR_GRAY;
     default:
-        return COLOR_BLUE;
+      return COLOR_BLUE;
     }
   };
 
@@ -139,33 +168,33 @@ void RenderCompactJsonCard(
   if (state.status == JsonFileStatus::Updating) {
     ImVec4 stage_color = get_stage_color(state.progress.stage);
     if (show_progress) {
-    // Show current item being processed
-    if (!state.progress.current_item.empty()) {
-      ImGui::TextColored(stage_color, "%s", state.progress.current_item.c_str());
+      // Show current item being processed
+      if (!state.progress.current_item.empty()) {
+        ImGui::TextColored(stage_color, "%s", state.progress.current_item.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("│");
+        ImGui::SameLine();
+      }
+
+      // Show progress
+      ImGui::Text("%.1f%%", state.progress.percentage * 100.0f);
+      ImGui::SameLine();
+      if (state.progress.total > 0) {
+        ImGui::Text("(%zu/%zu)", state.progress.current_index, state.progress.total);
+      }
       ImGui::SameLine();
       ImGui::TextDisabled("│");
       ImGui::SameLine();
-    }
+      ImGui::TextColored(stage_color, "%s", GetStageName(state.progress.stage));
 
-    // Show progress
-    ImGui::Text("%.1f%%", state.progress.percentage * 100.0f);
-    ImGui::SameLine();
-    if (state.progress.total > 0) {
-      ImGui::Text("(%zu/%zu)", state.progress.current_index, state.progress.total);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("│");
-    ImGui::SameLine();
-    ImGui::TextColored(stage_color, "%s", GetStageName(state.progress.stage));
+      // Progress bar (with unique ID to avoid sharing)
+      ImGui::PushID("progress_bar");
+      ImGui::ProgressBar(state.progress.percentage, ImVec2(-1, 0));
+      ImGui::PopID();
 
-    // Progress bar (with unique ID to avoid sharing)
-    ImGui::PushID("progress_bar");
-    ImGui::ProgressBar(state.progress.percentage, ImVec2(-1, 0));
-    ImGui::PopID();
-
-    // Speed and ETA
-    if (state.progress.speed > 0.001) {
-      ImGui::Text("Speed: %.1f/s  │  ETA: %ds", state.progress.speed, state.progress.eta_seconds);
+      // Speed and ETA
+      if (state.progress.speed > 0.001) {
+        ImGui::Text("Speed: %.1f/s  │  ETA: %ds", state.progress.speed, state.progress.eta_seconds);
       }
     } else {
       if (!state.progress.current_item.empty()) {
@@ -361,6 +390,7 @@ void RenderTabOverview(
     bool *stock_days_remove,
     bool *stock_days_view,
     bool *update_all_clicked,
+    bool *check_integrity_clicked,
     bool *refresh_scan_clicked,
     size_t l2_asset_count,
     size_t l2_encoded_count,
@@ -389,7 +419,7 @@ void RenderTabOverview(
 
   ImGui::BeginDisabled(disable_update_controls);
   if (ImGui::Button("Check Integrity")) {
-    // TODO: Implement integrity check
+    *check_integrity_clicked = true;
   }
   ImGui::EndDisabled();
 

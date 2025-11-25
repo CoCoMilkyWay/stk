@@ -38,8 +38,12 @@ struct StockInfo {
 // Data Containers
 // ============================================================================
 
-// StockFactor: code -> [[date, adjustFactor], ...]
-using StockFactorMap = std::map<std::string, std::vector<std::vector<std::string>>>;
+// StockFactor: code -> {last_update, data}
+struct StockFactorData {
+  std::string last_update;
+  std::vector<std::vector<std::string>> data;
+};
+using StockFactorMap = std::map<std::string, StockFactorData>;
 
 // StockInfo: code -> StockInfo
 using StockInfoMap = std::map<std::string, StockInfo>;

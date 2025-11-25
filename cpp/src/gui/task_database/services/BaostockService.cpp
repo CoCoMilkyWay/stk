@@ -103,8 +103,8 @@ awaitable<void> BaostockService::update_stock_info(bool force) {
   stock_info_state_.status = JsonFileStatus::Updating;
   crawler_state_.status = CrawlerStatus::Running;
 
-  co_await data_mgr_->update_stock_info_weekly(force);
-  co_await data_mgr_->update_stock_info_daily(force);
+  co_await data_mgr_->update_stock_info_weekly(force, false);
+  co_await data_mgr_->update_stock_info_daily(force, true); // skip_days=true to avoid redundant update
 
   update_stock_info_state();
   crawler_state_.status = CrawlerStatus::Complete;
@@ -258,7 +258,7 @@ void BaostockService::update_stock_factor_state() {
   stock_factor_state_.stock_count = data.size();
   stock_factor_state_.record_count = 0;
   for (const auto &[code, records] : data) {
-    stock_factor_state_.record_count += records.size();
+    stock_factor_state_.record_count += records.data.size();
   }
 
   // Check integrity

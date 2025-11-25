@@ -24,6 +24,7 @@ void RenderTabOverview(
     bool *stock_days_remove,
     bool *stock_days_view,
     bool *update_all_clicked,
+    bool *check_integrity_clicked,
     bool *refresh_scan_clicked,
     size_t l2_asset_count,
     size_t l2_encoded_count,

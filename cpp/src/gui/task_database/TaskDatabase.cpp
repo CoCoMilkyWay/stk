@@ -228,6 +228,8 @@ private:
     bool scan_busy = l2_scan_inflight_ ||
                      l2_svc_->get_status() == L2ScanStatus::Scanning;
 
+    bool check_integrity = false;
+
     RenderTabOverview(
         stock_factor_state,
         stock_info_state,
@@ -236,7 +238,7 @@ private:
         &stock_factor_update, &stock_factor_remove, &stock_factor_view,
         &stock_info_update, &stock_info_remove, &stock_info_view,
         &stock_days_update, &stock_days_remove, &stock_days_view,
-        &update_all, &refresh_scan,
+        &update_all, &check_integrity, &refresh_scan,
         l2_summary.total_assets,
         l2_summary.encoded_assets,
         l2_summary.missing_assets,
@@ -338,6 +340,11 @@ private:
       if (baostock_svc_->force_remove_stock_days()) {
         state_mgr_->refresh_state();
       }
+    }
+
+    if (check_integrity) {
+      baostock_svc_->check_all_integrity();
+      state_mgr_->refresh_state();
     }
 
     if (refresh_scan && !json_update_inflight_ && !l2_scan_inflight_) {
