@@ -1,4 +1,4 @@
-// Data source: Baostock (证券宝) - http://baostock.com
+// Data source: Baostock (证券宝) - http://www.baostock.com
 // Free, open-source financial data API for Chinese stock market
 // Provides: stock metadata, historical K-data, adjust factors, trading calendar
 //

@@ -57,6 +57,14 @@ enum class CrawlerStatus {
   Error
 };
 
+// Baostock session status (for detailed network activity tracking)
+enum class BaostockSessionStatus {
+  Idle,        // No active session
+  LoggingIn,   // Login in progress
+  Active,      // Session active, can query
+  LoggingOut   // Logout in progress
+};
+
 enum class L2ScanStatus {
   NotScanned,
   Scanning,
@@ -71,6 +79,7 @@ enum class L2ScanStatus {
 enum class UpdateStage {
   Idle,
   CheckingIntegrity,
+  Networking,          // Network activity (login/logout/querying)
   UpdatingStockDays,
   UpdatingStockFactor,
   UpdatingStockInfoWeekly,
@@ -84,6 +93,7 @@ inline const char *GetStageName(UpdateStage stage) {
   switch (stage) {
   case UpdateStage::Idle: return "Idle";
   case UpdateStage::CheckingIntegrity: return "Checking Integrity";
+  case UpdateStage::Networking: return "Networking";
   case UpdateStage::UpdatingStockDays: return "Updating Stock Days";
   case UpdateStage::UpdatingStockFactor: return "Updating Stock Factor";
   case UpdateStage::UpdatingStockInfoWeekly: return "Updating Stock Info (Weekly)";
@@ -103,8 +113,12 @@ struct CrawlerProgress {
   // Current stage
   UpdateStage current_stage = UpdateStage::Idle;
   
+  // Session status (for Baostock)
+  BaostockSessionStatus session_status = BaostockSessionStatus::Idle;
+  size_t session_query_count = 0; // Total queries in current session
+  
   // Worker stats
-  size_t active_workers = 0;
+  size_t active_workers = 0;  // Workers currently making TCP requests
   size_t total_workers = 0;
   
   // Task progress (per stage)

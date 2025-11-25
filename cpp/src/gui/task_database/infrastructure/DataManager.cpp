@@ -1,4 +1,4 @@
-// Data source: Baostock (证券宝) - http://baostock.com
+// Data source: Baostock (证券宝) - http://www.baostock.com
 // Stock Data Manager - Implementation
 // Robust data management with automatic updates and integrity checks
 
@@ -42,7 +42,8 @@ namespace fs = std::filesystem;
 DataManager::DataManager(boost::asio::io_context &io_context,
                          Config *config,
                          TaskTerminal *terminal)
-    : config_(config), io_context_(io_context), terminal_(terminal), user_logged_in_(false) {
+    : config_(config), io_context_(io_context), terminal_(terminal), 
+      user_logged_in_(false), session_query_count_(0) {
 
   if (!config_) {
     throw std::runtime_error("DataManager: config is null");
@@ -219,10 +220,12 @@ awaitable<bool> DataManager::login_all() {
 awaitable<void> DataManager::ensure_logged_out() {
   if (!user_logged_in_) {
     Log("Already logged out");
+    report_session_status(BaostockSessionStatus::Idle);
     co_return;
   }
 
   Log("Logging out user session...");
+  report_session_status(BaostockSessionStatus::LoggingOut);
 
   // Logout is at user level - only need to call once
   if (!pool_->clients_.empty()) {
@@ -232,6 +235,8 @@ awaitable<void> DataManager::ensure_logged_out() {
   } else {
     Log("[ERROR] No workers available to logout");
   }
+  
+  report_session_status(BaostockSessionStatus::Idle);
 }
 
 awaitable<bool> DataManager::initialize() {
@@ -243,12 +248,16 @@ awaitable<bool> DataManager::initialize() {
   Log(std::format("[DataManager] Loaded config: {} stocks", stock_codes_.size()));
 
   // Initialize pool (create clients + first login)
+  report_session_status(BaostockSessionStatus::LoggingIn);
   bool pool_init = co_await pool_->initialize();
   if (pool_init) {
     user_logged_in_ = true;
+    session_query_count_ = 0; // Reset query counter for new session
     Log("[DataManager] Pool initialized and logged in");
+    report_session_status(BaostockSessionStatus::Active);
   } else {
     Log("[DataManager] [ERROR] Failed to initialize pool", true);
+    report_session_status(BaostockSessionStatus::Idle);
     co_return false;
   }
 
@@ -294,13 +303,17 @@ awaitable<bool> DataManager::ensure_logged_in() {
   }
   
   Log("[DataManager] User session inactive, re-logging in...");
+  report_session_status(BaostockSessionStatus::LoggingIn);
   
   bool success = co_await login_all();
   if (success) {
     user_logged_in_ = true;
+    session_query_count_ = 0; // Reset query counter for new session
     Log("[DataManager] User session active");
+    report_session_status(BaostockSessionStatus::Active);
   } else {
     Log("[DataManager] [ERROR] Failed to activate user session");
+    report_session_status(BaostockSessionStatus::Idle);
   }
   
   co_return success;
@@ -592,27 +605,14 @@ awaitable<void> DataManager::update_stock_days(bool force, bool skip_login, bool
     progress_callback_("stock_days", "", 0, 0, UpdateStage::UpdatingStockDays);
   }
 
-  // Force update: reload JSON and check integrity first
-  if (force) {
-    co_await load_stock_days();
-    auto integrity = check_stock_days_integrity();
-    if (!integrity.passed) {
-      Log("[WARN] stock_days integrity check failed after reload", true);
-    }
+  // Step 1: Load local file + check integrity (always, not just force)
+  co_await load_stock_days();
+  auto integrity = check_stock_days_integrity();
+  if (!integrity.passed) {
+    Log("[WARN] stock_days integrity check failed", true);
   }
 
-  // Ensure logged in (unless skipped)
-  if (!skip_login) {
-    if (!co_await ensure_logged_in()) {
-      Log("[ERROR] Failed to login workers", true);
-      if (progress_callback_) {
-        progress_callback_("stock_days", "Login failed", 0, 0, UpdateStage::Complete);
-      }
-      co_return;
-    }
-  }
-
-  // Check if last day is today (no checked_date needed, just check the data itself)
+  // Step 2: Check if update is needed
   if (!force && !stock_days_.empty()) {
     std::string last_date = stock_days_.back()[0];
     std::string today = get_today_date();
@@ -621,14 +621,9 @@ awaitable<void> DataManager::update_stock_days(bool force, bool skip_login, bool
       if (progress_callback_) {
         progress_callback_("stock_days", "Already up-to-date", 0, 0, UpdateStage::Complete);
       }
-      if (!skip_logout) {
-        co_await ensure_logged_out();
-      }
-      co_return;
+      co_return; // No login needed!
     }
   }
-
-  Log("=== Updating stock_days ===");
 
   std::string start_date = stock_days_.empty() ? get_date_from_days_ago(30)
                                                : increment_date(stock_days_.back()[0]);
@@ -640,10 +635,20 @@ awaitable<void> DataManager::update_stock_days(bool force, bool skip_login, bool
     if (progress_callback_) {
       progress_callback_("stock_days", "Already up-to-date", 0, 0, UpdateStage::Complete);
     }
-    if (!skip_logout) {
-      co_await ensure_logged_out();
+    co_return; // No login needed!
+  }
+
+  // Step 3: Update needed → Lazy login
+  Log("=== Updating stock_days ===");
+  
+  if (!skip_login) {
+    if (!co_await ensure_logged_in()) {
+      Log("[ERROR] Failed to login workers", true);
+      if (progress_callback_) {
+        progress_callback_("stock_days", "Login failed", 0, 0, UpdateStage::Complete);
+      }
+      co_return;
     }
-    co_return;
   }
 
   if (progress_callback_) {
@@ -652,6 +657,11 @@ awaitable<void> DataManager::update_stock_days(bool force, bool skip_login, bool
 
   auto client = pool_->get_client(0);
   auto result = co_await client->query_trade_dates(start_date, end_date);
+  
+  // Increment query count after each query
+  if (result.success()) {
+    increment_query_count();
+  }
 
   if (result.success()) {
     if (progress_callback_) {
@@ -691,30 +701,63 @@ awaitable<void> DataManager::update_stock_factor(bool force, bool skip_login, bo
     progress_callback_("stock_factor", "", 0, stock_codes_.size(), UpdateStage::UpdatingStockFactor);
   }
 
-  // Force update: reload JSON and check integrity first
-  if (force) {
-    co_await load_stock_factor();
-    auto integrity = check_stock_factor_integrity();
-    if (!integrity.passed) {
-      Log("[WARN] stock_factor integrity check failed after reload", true);
-    }
+  // Step 1: Load local file + check integrity (always)
+  co_await load_stock_factor();
+  auto integrity = check_stock_factor_integrity();
+  if (!integrity.passed) {
+    Log("[WARN] stock_factor integrity check failed", true);
   }
 
-  // Ensure logged in (unless skipped)
+  // Step 2: Update stock_days first (needed for date range calculations)
+  co_await update_stock_days(false, true, true);
+
+  // Step 3: Check if any stock needs update
+  std::string today = get_today_date();
+  size_t total_stocks = stock_codes_.size();
+  bool needs_update = false;
+
+  for (const auto &code : stock_codes_) {
+    if (stock_factor_.find(code) != stock_factor_.end() &&
+        !stock_factor_[code].data.empty()) {
+      // Check if already updated today
+      if (!force && stock_factor_[code].last_update == today) {
+        continue; // Skip this stock
+      }
+      
+      std::string start_date = increment_date(stock_factor_[code].data.back()[0]);
+      // Skip if start_date is beyond today
+      if (start_date > today) {
+        continue;
+      }
+    }
+    
+    // At least one stock needs update
+    needs_update = true;
+    break;
+  }
+
+  if (!needs_update) {
+    Log("stock_factor already up to date (all stocks current)");
+    if (progress_callback_) {
+      progress_callback_("stock_factor", "Already up-to-date", total_stocks, total_stocks, UpdateStage::Complete);
+    }
+    co_return; // No login needed!
+  }
+
+  // Step 4: Update needed → Lazy login
+  Log("=== Updating stock_factor ===");
+  
   if (!skip_login) {
     if (!co_await ensure_logged_in()) {
       Log("[ERROR] Failed to login workers", true);
       if (progress_callback_) {
-        progress_callback_("stock_factor", "Login failed", 0, stock_codes_.size(), UpdateStage::Complete);
+        progress_callback_("stock_factor", "Login failed", 0, total_stocks, UpdateStage::Complete);
       }
       co_return;
     }
   }
 
-  co_await update_stock_days(false, true, true);
-
-  std::string today = get_today_date();
-  size_t total_stocks = stock_codes_.size();
+  // Step 5: Submit tasks
   auto processed_count = std::make_shared<std::atomic<size_t>>(0);
   int updated_count = 0;
   int error_count = 0;
@@ -771,6 +814,12 @@ awaitable<void> DataManager::update_stock_factor(bool force, bool skip_login, bo
             std::string code = desc.substr(desc.find(':') + 1);
 
             auto result = co_await task_opt->executor(*client);
+            
+            // Increment query count after each query
+            if (result.success()) {
+              increment_query_count();
+            }
+            
             if (result.success() && !result.records.empty()) {
               for (const auto &record : result.records) {
                 stock_factor_[code].data.push_back({record[1], record[4]});
@@ -819,16 +868,47 @@ awaitable<void> DataManager::update_stock_info_weekly(bool force, bool skip_days
     progress_callback_("stock_info", "", 0, 0, UpdateStage::UpdatingStockInfoWeekly);
   }
 
-  // Force update: reload JSON and check integrity first
-  if (force) {
-    co_await load_stock_info();
-    auto integrity = check_stock_info_integrity();
-    if (!integrity.passed) {
-      Log("[WARN] stock_info integrity check failed after reload", true);
-    }
+  // Step 1: Load local file + check integrity (always)
+  co_await load_stock_info();
+  auto integrity = check_stock_info_integrity();
+  if (!integrity.passed) {
+    Log("[WARN] stock_info integrity check failed", true);
   }
 
-  // Ensure logged in (unless skipped)
+  // Step 2: Update stock_days if not already done
+  if (!skip_days) {
+    co_await update_stock_days(false, true, true);
+  }
+
+  // Step 3: Check if update is needed
+  bool is_weekly_schedule = should_run_weekly_update();
+  bool update_all_basics = force || is_weekly_schedule;
+  
+  // Check if any stock is incomplete
+  bool has_incomplete = false;
+  for (const auto &code : stock_codes_) {
+    if (stock_info_.find(code) == stock_info_.end()) {
+      has_incomplete = true;
+      break;
+    }
+    const auto &info = stock_info_[code];
+    if (info.name.empty() || info.ipoDate.empty()) {
+      has_incomplete = true;
+      break;
+    }
+  }
+  
+  if (!update_all_basics && !has_incomplete) {
+    Log("stock_info_weekly already up to date (not weekly schedule, no incomplete stocks)");
+    if (progress_callback_) {
+      progress_callback_("stock_info", "Already up-to-date", 0, 0, UpdateStage::Complete);
+    }
+    co_return; // No login needed!
+  }
+
+  // Step 4: Update needed → Lazy login
+  Log("=== Updating stock_info (weekly) ===");
+  
   if (!skip_login) {
     if (!co_await ensure_logged_in()) {
       Log("[ERROR] Failed to login workers", true);
@@ -839,16 +919,15 @@ awaitable<void> DataManager::update_stock_info_weekly(bool force, bool skip_days
     }
   }
 
-  // Only update stock_days if not already done (e.g., when called standalone)
-  if (!skip_days) {
-    co_await update_stock_days(false, true, true);
-  }
-
+  // Step 5: Fetch industry data
   std::map<std::string, std::pair<std::string, std::string>> industry_map;
-
-  // Always fetch industry data as it's a single cheap call and useful for any update
   auto client = pool_->get_client(0);
   auto result = co_await client->query_stock_industry();
+  
+  // Increment query count after each query
+  if (result.success()) {
+    increment_query_count();
+  }
 
   if (result.success()) {
     for (const auto &record : result.records) {
@@ -867,11 +946,11 @@ awaitable<void> DataManager::update_stock_info_weekly(bool force, bool skip_days
     if (progress_callback_) {
       progress_callback_("stock_info", "Failed to fetch industry data", 0, 0, UpdateStage::Complete);
     }
+    if (!skip_logout) {
+      co_await ensure_logged_out();
+    }
     co_return;
   }
-
-  bool is_weekly_schedule = should_run_weekly_update();
-  bool update_all_basics = force || is_weekly_schedule;
   size_t total_stocks = stock_codes_.size();
   auto processed_count = std::make_shared<std::atomic<size_t>>(0);
 
@@ -922,6 +1001,11 @@ awaitable<void> DataManager::update_stock_info_weekly(bool force, bool skip_days
             std::string code = desc.substr(desc.find(':') + 1);
 
             auto result = co_await task_opt->executor(*client);
+            
+            // Increment query count after each query
+            if (result.success()) {
+              increment_query_count();
+            }
 
             StockInfo info;
             if (result.success() && !result.records.empty()) {
@@ -995,16 +1079,51 @@ awaitable<void> DataManager::update_stock_info_daily(bool force, bool skip_days,
     progress_callback_("stock_info", "", 0, 0, UpdateStage::UpdatingStockInfoDaily);
   }
 
-  // Force update: reload JSON and check integrity first
-  if (force) {
-    co_await load_stock_info();
-    auto integrity = check_stock_info_integrity();
-    if (!integrity.passed) {
-      Log("[WARN] stock_info integrity check failed after reload", true);
-    }
+  // Step 1: Load local file + check integrity (always)
+  co_await load_stock_info();
+  auto integrity = check_stock_info_integrity();
+  if (!integrity.passed) {
+    Log("[WARN] stock_info integrity check failed", true);
   }
 
-  // Ensure logged in (unless skipped)
+  // Step 2: Update stock_days if not already done
+  if (!skip_days) {
+    co_await update_stock_days(false, true, true);
+  }
+
+  // Step 3: Check if update is needed
+  std::string target_date = get_last_trading_day();
+  bool needs_update = false;
+  
+  for (const auto &code : stock_codes_) {
+    // Skip delisted stocks
+    if (stock_info_.find(code) != stock_info_.end() &&
+        !stock_info_[code].outDate.empty()) {
+      continue;
+    }
+
+    // Check if already updated to target date
+    if (!force && stock_info_.find(code) != stock_info_.end() &&
+        stock_info_[code].update_date >= target_date) {
+      continue;
+    }
+
+    // At least one stock needs update
+    needs_update = true;
+    break;
+  }
+
+  if (!needs_update) {
+    Log("stock_info_daily already up to date (all stocks current for " + target_date + ")");
+    if (progress_callback_) {
+      progress_callback_("stock_info", "Already up-to-date", 0, 0, UpdateStage::Complete);
+    }
+    co_return; // No login needed!
+  }
+
+  // Step 4: Update needed → Lazy login
+  Log(std::format("=== Updating stock_info (daily) for {} ===", target_date));
+  
   if (!skip_login) {
     if (!co_await ensure_logged_in()) {
       Log("[ERROR] Failed to login workers", true);
@@ -1015,14 +1134,7 @@ awaitable<void> DataManager::update_stock_info_daily(bool force, bool skip_days,
     }
   }
 
-  // Only update stock_days if not already done (e.g., when called standalone)
-  if (!skip_days) {
-    co_await update_stock_days(false, true, true);
-  }
-
-  std::string target_date = get_last_trading_day();
-  Log(std::format("Querying data for: {}", target_date));
-
+  // Step 5: Submit tasks
   size_t total_stocks = stock_codes_.size();
   auto processed_count = std::make_shared<std::atomic<size_t>>(0);
   int updated_count = 0;
@@ -1049,7 +1161,7 @@ awaitable<void> DataManager::update_stock_info_daily(bool force, bool skip_days,
       continue;
     }
 
-    // Only submit task if needed
+    // Submit task for update
     Task task;
     task.description = "k_data:" + code;
     task.executor = [code, target_date](BaostockClient &client) -> awaitable<QueryResult> {
@@ -1076,6 +1188,11 @@ awaitable<void> DataManager::update_stock_info_daily(bool force, bool skip_days,
             std::string code = desc.substr(desc.find(':') + 1);
 
             auto result = co_await task_opt->executor(*client);
+            
+            // Increment query count after each query
+            if (result.success()) {
+              increment_query_count();
+            }
 
             if (stock_info_.find(code) == stock_info_.end()) {
               stock_info_[code] = StockInfo();
@@ -1217,10 +1334,10 @@ IntegrityResult DataManager::check_stock_factor_integrity() {
   IntegrityResult result;
 
   for (const auto &code : stock_codes_) {
-    if (stock_factor_.find(code) == stock_factor_.end()) {
-      result.missing_stocks.push_back(code);
-      continue;
-    }
+    // if (stock_factor_.find(code) == stock_factor_.end()) {
+    //   result.missing_stocks.push_back(code);
+    //   continue;
+    // }
 
     auto &records = stock_factor_[code].data;
     if (records.empty()) {
@@ -1468,6 +1585,38 @@ bool DataManager::is_stock_days_uptodate() const {
   }
   std::string today = get_today_date();
   return stock_days_.back()[0] >= today;
+}
+
+// ============================================================================
+// Session Status Reporting
+// ============================================================================
+
+void DataManager::report_session_status(BaostockSessionStatus status) {
+  if (!crawler_progress_callback_) {
+    return;
+  }
+
+  CrawlerProgress progress;
+  progress.session_status = status;
+  progress.session_query_count = session_query_count_;
+  progress.total_workers = config_->baostock_max_workers;
+  progress.active_workers = 0; // Updated by pool during queries
+
+  crawler_progress_callback_(progress);
+}
+
+void DataManager::increment_query_count() {
+  ++session_query_count_;
+  
+  // Report updated count
+  if (crawler_progress_callback_) {
+    CrawlerProgress progress;
+    progress.session_status = BaostockSessionStatus::Active;
+    progress.session_query_count = session_query_count_;
+    progress.total_workers = config_->baostock_max_workers;
+    
+    crawler_progress_callback_(progress);
+  }
 }
 
 } // namespace GUI::Database

@@ -7,7 +7,7 @@
 # https://www.tushare.pro/document/2
 
 # Baostock
-# http://baostock.com
+# http://www.baostock.com
 
 # Efinance
 # https://efinance.readthedocs.io

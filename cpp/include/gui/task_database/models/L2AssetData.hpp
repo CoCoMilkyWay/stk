@@ -76,19 +76,37 @@ struct AssetInfo {
 };
 
 // ============================================================================
-// L2 Database Summary (lightweight statistics)
+// L2 Database Summary (detailed statistics)
 // ============================================================================
 
 struct L2Summary {
+  // Date range
+  std::string date_range_start; // YYYYMMDD
+  std::string date_range_end;   // YYYYMMDD
+  
+  // Assets
   size_t total_assets = 0;
   size_t encoded_assets = 0;
   size_t missing_assets = 0;
   double coverage_percent = 0.0;
-  double disk_usage_gb = 0.0;
-
+  
+  // Snapshots
+  size_t snapshots_encoded_count = 0;
+  double snapshots_size_gb = 0.0;
+  
+  // Orders
+  size_t orders_encoded_count = 0;
+  double orders_size_gb = 0.0;
+  
+  // Missing data per asset
+  size_t assets_missing_snapshots = 0;
+  size_t assets_missing_orders = 0;
+  
+  // Legacy fields (optional)
   size_t total_trading_days = 0;
   size_t total_encoded_days = 0;
   size_t total_missing_days = 0;
+  double disk_usage_gb = 0.0; // Total (snapshots + orders)
 };
 
 } // namespace GUI::Database

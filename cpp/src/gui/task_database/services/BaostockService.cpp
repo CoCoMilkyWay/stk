@@ -46,6 +46,11 @@ BaostockService::BaostockService(boost::asio::io_context &io,
       }
     }
   });
+  
+  // Setup crawler progress callback (for session status and query count)
+  data_mgr_->set_crawler_progress_callback([this](const CrawlerProgress &progress) {
+    crawler_state_.progress = progress;
+  });
 }
 
 BaostockService::~BaostockService() = default;

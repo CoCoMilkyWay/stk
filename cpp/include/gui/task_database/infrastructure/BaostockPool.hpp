@@ -1,4 +1,4 @@
-// Data source: Baostock (证券宝) - http://baostock.com
+// Data source: Baostock (证券宝) - http://www.baostock.com
 // BaoStock Connection Pool and Task Consumer
 // High-performance concurrent query executor with progress reporting
 

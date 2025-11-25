@@ -2,6 +2,7 @@
 #include "gui/task_database/services/L2DatabaseService.hpp"
 #include "gui/task_database/infrastructure/CoroScanner.hpp"
 #include <boost/asio/this_coro.hpp>
+#include <filesystem>
 
 namespace GUI::Database {
 
@@ -58,7 +59,14 @@ awaitable<void> L2DatabaseService::refresh_asset(size_t asset_idx) {
 // ============================================================================
 
 L2Summary L2DatabaseService::get_summary() const {
+  namespace fs = std::filesystem;
   L2Summary summary;
+
+  // Date range from all_dates_
+  if (!all_dates_.empty()) {
+    summary.date_range_start = all_dates_.front();
+    summary.date_range_end = all_dates_.back();
+  }
 
   summary.total_assets = assets_.size();
   summary.total_trading_days = 0;
@@ -66,6 +74,8 @@ L2Summary L2DatabaseService::get_summary() const {
   summary.total_missing_days = 0;
 
   size_t fully_encoded_assets = 0;
+  size_t total_snapshots_size = 0; // in bytes
+  size_t total_orders_size = 0;    // in bytes
 
   for (const auto &asset : assets_) {
     size_t total_days = asset.get_total_trading_days();
@@ -79,6 +89,51 @@ L2Summary L2DatabaseService::get_summary() const {
     if (missing_days == 0 && total_days > 0) {
       fully_encoded_assets++;
     }
+
+    // Count encoded snapshots and orders, and accumulate file sizes
+    bool has_missing_snapshots = false;
+    bool has_missing_orders = false;
+    
+    for (const auto &[date, info] : asset.date_info) {
+      // Count encoded files
+      if (info.snapshots_encoded) {
+        summary.snapshots_encoded_count++;
+        
+        // Get actual file size
+        if (!info.snapshots_file.empty() && fs::exists(info.snapshots_file)) {
+          try {
+            total_snapshots_size += fs::file_size(info.snapshots_file);
+          } catch (...) {
+            // Ignore errors
+          }
+        }
+      } else {
+        has_missing_snapshots = true;
+      }
+      
+      if (info.orders_encoded) {
+        summary.orders_encoded_count++;
+        
+        // Get actual file size
+        if (!info.orders_file.empty() && fs::exists(info.orders_file)) {
+          try {
+            total_orders_size += fs::file_size(info.orders_file);
+          } catch (...) {
+            // Ignore errors
+          }
+        }
+      } else {
+        has_missing_orders = true;
+      }
+    }
+    
+    // Count assets with missing data
+    if (has_missing_snapshots) {
+      summary.assets_missing_snapshots++;
+    }
+    if (has_missing_orders) {
+      summary.assets_missing_orders++;
+    }
   }
 
   summary.encoded_assets = fully_encoded_assets;
@@ -89,19 +144,10 @@ L2Summary L2DatabaseService::get_summary() const {
         (double)summary.total_encoded_days / summary.total_trading_days * 100.0;
   }
 
-  // Estimate disk usage (rough calculation)
-  // Assume average: 1 snapshot ~= 500 bytes, 1 order ~= 200 bytes
-  size_t total_snapshots = 0;
-  size_t total_orders = 0;
-  for (const auto &asset : assets_) {
-    for (const auto &[date, info] : asset.date_info) {
-      total_snapshots += info.snapshot_count;
-      total_orders += info.order_count;
-    }
-  }
-
-  double bytes = total_snapshots * 500.0 + total_orders * 200.0;
-  summary.disk_usage_gb = bytes / (1024.0 * 1024.0 * 1024.0);
+  // Convert sizes to GB
+  summary.snapshots_size_gb = total_snapshots_size / (1024.0 * 1024.0 * 1024.0);
+  summary.orders_size_gb = total_orders_size / (1024.0 * 1024.0 * 1024.0);
+  summary.disk_usage_gb = summary.snapshots_size_gb + summary.orders_size_gb;
 
   return summary;
 }

@@ -2,6 +2,7 @@
 // Compact card layout with stage-based crawler monitoring
 
 #include "gui/task_database/ui/TabOverview.hpp"
+#include "gui/task_database/models/L2AssetData.hpp"
 #include "imgui.h"
 #include <cstdio>
 #include <string>
@@ -55,7 +56,7 @@ void RenderCompactJsonCard(
       ImGui::BulletText("No duplicate dates allowed");
       ImGui::BulletText("Each record: [date, is_trading_day]");
     } else if (std::string(title) == "stock_factor.json") {
-      ImGui::BulletText("Must have data for all configured stocks");
+      // ImGui::BulletText("Must have data for all configured stocks");
       ImGui::BulletText("Each stock: {last_update, data[]}");
       ImGui::BulletText("Factor data must be sorted by date");
       ImGui::BulletText("No duplicate dates per stock");
@@ -148,6 +149,8 @@ void RenderCompactJsonCard(
 
   auto get_stage_color = [](UpdateStage stage) {
     switch (stage) {
+    case UpdateStage::Networking:
+      return ImVec4(1.0f, 0.5f, 0.0f, 1.0f); // Orange for networking
     case UpdateStage::UpdatingStockDays:
     case UpdateStage::UpdatingStockFactor:
     case UpdateStage::UpdatingStockInfoWeekly:
@@ -260,113 +263,148 @@ void RenderCompactJsonCard(
 }
 
 // ============================================================================
-// Helper: Render Baostock Crawler Monitor (Stage-based)
+// Helper: Render Baostock Crawler Monitor (Compact single-line)
 // ============================================================================
 
 void RenderCrawlerMonitor(const CrawlerState &state) {
-  static bool expanded = true;
+  ImGui::BeginChild("CrawlerMonitor", ImVec2(0, 50), true);
 
-  ImGui::BeginChild("CrawlerMonitor", ImVec2(0, expanded ? 250 : 60), true);
+  const auto &prog = state.progress;
 
-  // ===== Title with Baostock link =====
-  ImGui::TextColored(COLOR_CYAN, "Baostock Crawler Monitor");
+  // ===== Data Source Label =====
+  ImGui::TextColored(COLOR_CYAN, "数据源:");
+  ImGui::SameLine();
+  ImGui::Text("Baostock(证券宝)");
+  
+  // Hover for website URL
   if (ImGui::IsItemHovered()) {
     ImGui::BeginTooltip();
     ImGui::TextColored(COLOR_CYAN, "Baostock - 证券宝");
     ImGui::Separator();
-    ImGui::Text("官网: http://baostock.com");
+    ImGui::Text("官网: http://www.baostock.com");
     ImGui::Text("数据类型: A股历史行情、财务数据、复权因子");
     ImGui::Text("免费开源、无需token");
     ImGui::EndTooltip();
   }
 
+  // ===== Session Status (colorful) =====
+  ImVec4 session_color = COLOR_GRAY;
+  const char *session_text = "idle";
+  
+  switch (prog.session_status) {
+  case BaostockSessionStatus::Idle:
+    session_color = COLOR_GRAY;
+    session_text = "idle";
+    break;
+  case BaostockSessionStatus::LoggingIn:
+    session_color = ImVec4(1.0f, 0.65f, 0.0f, 1.0f); // Orange
+    session_text = "logging in";
+    break;
+  case BaostockSessionStatus::Active:
+    session_color = COLOR_GREEN;
+    session_text = "active";
+    break;
+  case BaostockSessionStatus::LoggingOut:
+    session_color = COLOR_YELLOW;
+    session_text = "logging out";
+    break;
+  }
+
   ImGui::SameLine();
-  ImGui::TextColored(COLOR_GRAY, "  数据源: 证券宝");
+  ImGui::TextDisabled("│");
+  ImGui::SameLine();
+  ImGui::Text("Status:");
+  ImGui::SameLine();
+  ImGui::TextColored(session_color, "%s", session_text);
+  
+  // ===== Workers (colorful) =====
+  ImGui::SameLine();
+  ImGui::TextDisabled("│");
+  ImGui::SameLine();
+  ImGui::Text("Workers:");
+  ImGui::SameLine();
+  ImGui::TextColored(prog.active_workers > 0 ? COLOR_CYAN : COLOR_GRAY, 
+                     "%zu/%zu", prog.active_workers, prog.total_workers);
+  
+  // ===== Session Query Count (colorful) =====
+  ImGui::SameLine();
+  ImGui::TextDisabled("│");
+  ImGui::SameLine();
+  ImGui::Text("Queries:");
+  ImGui::SameLine();
+  ImGui::TextColored(COLOR_BLUE, "%zu", prog.session_query_count);
 
-  ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120);
-  if (ImGui::SmallButton(expanded ? "▼ Hide Details" : "▶ Show Details")) {
-    expanded = !expanded;
-  }
-
-  ImGui::Separator();
-
-  if (!expanded) {
-    // Collapsed view - one line summary
-    const auto &prog = state.progress;
-    ImGui::Text("%s  │  %zu/%zu active  │  %.1f req/s  │  %zu/%zu (%.1f%%)",
-                GetStageName(prog.current_stage),
-                prog.active_workers,
-                prog.total_workers,
-                prog.requests_per_second,
-                prog.completed_tasks,
-                prog.total_tasks,
-                prog.total_tasks > 0 ? (prog.completed_tasks * 100.0 / prog.total_tasks) : 0.0);
-
-    ImGui::EndChild();
-    return;
-  }
-
-  // ===== Expanded view =====
-  const auto &prog = state.progress;
-
-  // Overall Status Section
-  ImGui::BeginChild("OverallStatus", ImVec2(0, 90), true);
-  ImGui::Text("Current Stage: %s", GetStageName(prog.current_stage));
-
-  ImGui::Text("Workers: %zu/%zu active", prog.active_workers, prog.total_workers);
-  ImGui::SameLine(0, 30);
-  ImGui::Text("│  Throughput: %.1f req/s", prog.requests_per_second);
-  ImGui::SameLine(0, 30);
-  ImGui::Text("│  Success: %.1f%%", prog.success_rate * 100.0);
-  ImGui::SameLine(0, 30);
-  ImGui::Text("│  Errors: %zu", prog.error_count);
-
-  ImGui::Text("Progress: %zu/%zu", prog.completed_tasks, prog.total_tasks);
-  ImGui::SameLine(0, 30);
-  if (prog.elapsed_seconds > 0.001) {
-    ImGui::Text("│  Elapsed: %.0fs", prog.elapsed_seconds);
-    ImGui::SameLine(0, 30);
-  }
-  if (prog.eta_seconds > 0.001) {
-    ImGui::Text("│  ETA: %.0fs", prog.eta_seconds);
-  }
-
-  // Progress bar
-  float progress_pct = prog.total_tasks > 0 ? (float)prog.completed_tasks / prog.total_tasks : 0.0f;
-  ImGui::ProgressBar(progress_pct, ImVec2(-1, 0));
-
-  ImGui::EndChild();
-
-  // Stage Activity Log (simplified - just showing current stage status)
-  ImGui::BeginChild("StageActivity", ImVec2(0, 80), true);
-  ImGui::Text("Stage Activity:");
-  ImGui::Separator();
-
-  if (!prog.current_item.empty()) {
-    ImGui::Text("Processing: %s", prog.current_item.c_str());
-  } else {
-    ImGui::TextColored(COLOR_GRAY, "Waiting for tasks...");
-  }
-
-  if (prog.error_count > 0) {
-    ImGui::TextColored(COLOR_YELLOW, "[Warning] %zu items skipped due to errors", prog.error_count);
+  // Tooltip on queries for more details
+  if (ImGui::IsItemHovered()) {
+    ImGui::BeginTooltip();
+    ImGui::TextColored(COLOR_CYAN, "Session Statistics");
+    ImGui::Separator();
+    ImGui::Text("Session Status: %s", session_text);
+    ImGui::Text("Active Workers: %zu/%zu", prog.active_workers, prog.total_workers);
+    ImGui::Text("Session Queries: %zu", prog.session_query_count);
+    ImGui::Text("Throughput: %.1f req/s", prog.requests_per_second);
+    ImGui::Text("Success Rate: %.1f%%", prog.success_rate * 100.0);
+    ImGui::Text("Errors: %zu", prog.error_count);
+    ImGui::EndTooltip();
   }
 
   ImGui::EndChild();
+}
 
-  // Control buttons
+// ============================================================================
+// Helper: Render L2 Database Summary (Expanded details)
+// ============================================================================
+
+void RenderL2DatabaseSummary(const L2Summary &summary) {
+  ImGui::BeginChild("L2Summary", ImVec2(0, 0), true);
+
+  ImGui::TextColored(COLOR_CYAN, "L2 Database Summary");
+  ImGui::Separator();
+
+  // Date range
+  if (!summary.date_range_start.empty() && !summary.date_range_end.empty()) {
+    ImGui::Text("Date Range:");
+    ImGui::SameLine();
+    ImGui::TextColored(COLOR_BLUE, "%s ~ %s", 
+                       summary.date_range_start.c_str(), 
+                       summary.date_range_end.c_str());
+  }
+
   ImGui::Spacing();
-  bool is_running = (state.status == CrawlerStatus::Running);
 
-  ImGui::BeginDisabled(!is_running);
-  if (ImGui::Button("Pause All")) {
-    // TODO: Implement pause
-  }
+  // Assets
+  ImGui::Text("Assets:");
   ImGui::SameLine();
-  if (ImGui::Button("Stop All")) {
-    // TODO: Implement stop
+  ImGui::TextColored(COLOR_GREEN, "%zu", summary.total_assets);
+  
+  // Snapshots
+  ImGui::Text("Snapshots Encoded:");
+  ImGui::SameLine();
+  ImGui::TextColored(COLOR_CYAN, "%zu", summary.snapshots_encoded_count);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(%.2f GB)", summary.snapshots_size_gb);
+  
+  // Orders
+  ImGui::Text("Orders Encoded:");
+  ImGui::SameLine();
+  ImGui::TextColored(COLOR_CYAN, "%zu", summary.orders_encoded_count);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(%.2f GB)", summary.orders_size_gb);
+
+  ImGui::Spacing();
+
+  // Missing data
+  if (summary.assets_missing_snapshots > 0) {
+    ImGui::Text("Missing Snapshots:");
+    ImGui::SameLine();
+    ImGui::TextColored(COLOR_YELLOW, "%zu assets", summary.assets_missing_snapshots);
   }
-  ImGui::EndDisabled();
+  
+  if (summary.assets_missing_orders > 0) {
+    ImGui::Text("Missing Orders:");
+    ImGui::SameLine();
+    ImGui::TextColored(COLOR_YELLOW, "%zu assets", summary.assets_missing_orders);
+  }
 
   ImGui::EndChild();
 }
@@ -427,7 +465,7 @@ void RenderTabOverview(
   ImGui::Separator();
   ImGui::Spacing();
 
-  // Split layout: 60% left (JSON files), 40% right (crawler)
+  // Split layout: 60% left (JSON files), 40% right (crawler + L2)
   ImGui::BeginChild("LeftPanel", ImVec2(ImGui::GetContentRegionAvail().x * 0.6f, 0), false);
 
   // Render JSON file cards (in update order)
@@ -441,26 +479,29 @@ void RenderTabOverview(
 
   RenderCompactJsonCard("stock_info.json", stock_info_state, stock_info_update, stock_info_remove, stock_info_view, true);
 
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::Spacing();
-
-  // L2 Database Summary (compact)
-  ImGui::BeginChild("L2Summary", ImVec2(0, 80), true);
-  ImGui::Text("L2 Database Summary:");
-  ImGui::Separator();
-  ImGui::Text("Assets: %zu  │  Encoded: %zu  │  Missing: %zu  │  Coverage: %.1f%%  │  Disk: %.2f GB",
-              l2_asset_count, l2_encoded_count, l2_missing_count, l2_coverage_pct, l2_disk_usage_gb);
-  ImGui::EndChild();
-
   ImGui::EndChild(); // End LeftPanel
 
   ImGui::SameLine();
 
-  // Right panel: Crawler monitor
+  // Right panel: Crawler monitor + L2 Database Summary
   ImGui::BeginChild("RightPanel", ImVec2(0, 0), false);
-  RenderCrawlerMonitor(crawler_state); // Real data
-  ImGui::EndChild();                   // End RightPanel
+  
+  // Baostock Crawler (compact single line)
+  RenderCrawlerMonitor(crawler_state);
+  
+  ImGui::Spacing();
+  
+  // L2 Database Summary (expanded details)
+  L2Summary l2_summary;
+  l2_summary.total_assets = l2_asset_count;
+  l2_summary.encoded_assets = l2_encoded_count;
+  l2_summary.missing_assets = l2_missing_count;
+  l2_summary.coverage_percent = l2_coverage_pct;
+  l2_summary.disk_usage_gb = l2_disk_usage_gb;
+  // TODO: Add detailed fields (date range, snapshots/orders sizes, etc.)
+  RenderL2DatabaseSummary(l2_summary);
+  
+  ImGui::EndChild(); // End RightPanel
 }
 
 } // namespace GUI::Database

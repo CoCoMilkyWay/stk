@@ -1,4 +1,4 @@
-// Data source: Baostock (证券宝) - http://baostock.com
+// Data source: Baostock (证券宝) - http://www.baostock.com
 // Stock Data Manager - Core data management logic
 // Handles stock_factor, stock_info, and stock_days with automatic updates
 
@@ -49,8 +49,12 @@ private:
   // file_type: "stock_days", "stock_factor", "stock_info"
   std::function<void(const std::string &file_type, const std::string &current_item, size_t current, size_t total, UpdateStage stage)> progress_callback_;
 
+  // Crawler progress callback (for pool-level progress with session info)
+  std::function<void(const CrawlerProgress &)> crawler_progress_callback_;
+
   // User session state (IP-level, shared across all workers)
   bool user_logged_in_;
+  size_t session_query_count_; // Track queries in current login session
 
   // Helper methods - Date utilities
   std::string get_today_date() const;
@@ -76,9 +80,13 @@ public:
   // Logging helper
   void Log(const std::string &message, bool is_error = false);
 
-  // Progress callback
+  // Progress callbacks
   void set_progress_callback(std::function<void(const std::string &, const std::string &, size_t, size_t, UpdateStage)> callback) {
     progress_callback_ = callback;
+  }
+  
+  void set_crawler_progress_callback(std::function<void(const CrawlerProgress &)> callback) {
+    crawler_progress_callback_ = callback;
   }
 
   // Data access
@@ -137,6 +145,11 @@ public:
   bool is_stock_factor_uptodate() const;
   bool is_stock_info_uptodate() const;
   bool is_stock_days_uptodate() const;
+
+private:
+  // Session status reporting helpers
+  void report_session_status(BaostockSessionStatus status);
+  void increment_query_count();
 };
 
 } // namespace GUI::Database
