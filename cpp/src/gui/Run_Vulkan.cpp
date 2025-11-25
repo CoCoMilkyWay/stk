@@ -437,7 +437,7 @@ void RunGUI() {
   config.PixelSnapH = true;
 
   // Load Chinese font from bundled fonts
-  const char *font_path = "fonts/NotoSansMonoCJKsc-Regular.otf";
+  const char *font_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
   if (std::ifstream(font_path).good()) {
     io.Fonts->AddFontFromFileTTF(font_path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
   } else {

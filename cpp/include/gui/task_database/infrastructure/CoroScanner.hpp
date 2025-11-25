@@ -1,25 +1,29 @@
 #pragma once
-#include "gui/task_database/AssetInfo.hpp"
+#include "gui/task_database/models/L2AssetData.hpp"
 #include <boost/asio/awaitable.hpp>
-
-namespace asio = boost::asio;
+#include <string>
+#include <vector>
 
 namespace GUI::Database {
 
+// Simple result structure for scanner
+struct ScanResult {
+  std::vector<AssetInfo> assets;
+  std::vector<std::string> all_dates;
+};
+
 class CoroScanner {
 public:
-  CoroScanner(DatabaseState &state);
-  
+  CoroScanner(ScanResult &result);
+
   // Scan binary database directory or load from targets.json
-  asio::awaitable<void> scan_database();
   void scan_binary_directory(const std::string &db_dir);
   void load_targets_json(const std::string &config_path);
-  
+
 private:
-  DatabaseState &state_;
-  
+  ScanResult &result_;
+
   std::string infer_exchange(const std::string &code);
 };
 
 } // namespace GUI::Database
-

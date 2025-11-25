@@ -8,7 +8,6 @@ import os
 import subprocess
 import sys
 
-
 def build_main_project():
     """Trigger build.sh for main project."""
     script_dir = os.path.dirname(os.path.abspath(__file__))

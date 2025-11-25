@@ -1,0 +1,26 @@
+{
+  "metadata": {
+    "last_daily_update": "2025-11-25",
+    "last_weekly_update": "2025-11-25",
+    "stock_factor_last_update": {
+      "__dataset__": "2025-11-25"
+    },
+    "stock_info_last_update": {
+      "daily": "2025-11-24",
+      "weekly": "2025-11-25"
+    }
+  },
+  "settings": {
+    "weekly_update_day": 1
+  },
+  "stocks": [
+    "sh.600000",
+    "sh.600519",
+    "sz.000001",
+    "sz.000002",
+    "sh.688001",
+    "sh.688009",
+    "sz.300001",
+    "sz.300750"
+  ]
+}

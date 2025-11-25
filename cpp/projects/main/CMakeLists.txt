@@ -18,7 +18,7 @@ option(DEBUG_MODE   "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
 option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
 
 # GUI backend selection
-set(USE_VULKAN_BACKEND ON CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
+set(USE_VULKAN_BACKEND OFF CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
 
 # Clear default CMAKE build type flags to avoid conflicts
 set(CMAKE_CXX_FLAGS_RELEASE "")
@@ -120,9 +120,15 @@ set(SOURCES
     ../../src/gui/task_icon_bar/CoroNetwork.cpp
     ../../src/gui/task_icon_bar/TaskIconBar.cpp
     ../../src/gui/task_crawler/CoroCrawler.cpp
-    ../../src/gui/task_database/AssetInfo.cpp
-    ../../src/gui/task_database/CoroScanner.cpp
-    ../../src/gui/task_database/CoroCrawler.cpp
+    ../../src/gui/task_database/models/L2AssetData.cpp
+    ../../src/gui/task_database/services/BaostockService.cpp
+    ../../src/gui/task_database/services/L2DatabaseService.cpp
+    ../../src/gui/task_database/services/StateManager.cpp
+    ../../src/gui/task_database/infrastructure/DataManager.cpp
+    ../../src/gui/task_database/infrastructure/CoroScanner.cpp
+    ../../src/gui/task_database/ui/TabOverview.cpp
+    ../../src/gui/task_database/ui/TabTable.cpp
+    ../../src/gui/task_database/ui/TabBrowser.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
@@ -168,9 +174,20 @@ set(HEADERS
     ../../include/gui/coro/CoroManager.hpp
     ../../include/gui/coro/CoroUtils.hpp
     ../../include/gui/task_crawler/CoroCrawler.hpp
-    ../../include/gui/task_database/AssetInfo.hpp
-    ../../include/gui/task_database/CoroScanner.hpp
-    ../../include/gui/task_database/CoroCrawler.hpp
+    ../../include/gui/task_database/models/SharedTypes.hpp
+    ../../include/gui/task_database/models/BaostockData.hpp
+    ../../include/gui/task_database/models/L2AssetData.hpp
+    ../../include/gui/task_database/services/ClassifierService.hpp
+    ../../include/gui/task_database/services/BaostockService.hpp
+    ../../include/gui/task_database/services/L2DatabaseService.hpp
+    ../../include/gui/task_database/services/StateManager.hpp
+    ../../include/gui/task_database/infrastructure/BaostockClient.hpp
+    ../../include/gui/task_database/infrastructure/BaostockPool.hpp
+    ../../include/gui/task_database/infrastructure/DataManager.hpp
+    ../../include/gui/task_database/infrastructure/CoroScanner.hpp
+    ../../include/gui/task_database/ui/TabOverview.hpp
+    ../../include/gui/task_database/ui/TabTable.hpp
+    ../../include/gui/task_database/ui/TabBrowser.hpp
     ../../include/gui/task_database/TaskDatabase.hpp
     ../../include/gui/task_settings/TaskSettings.hpp
     ../../include/gui/task_system_info/TaskSystemInfo.hpp
@@ -183,8 +200,12 @@ set(HEADERS
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
-    ../../src/gui/task_database/CoroScanner.cpp
-    ../../src/gui/task_database/CoroCrawler.cpp
+    ../../src/gui/task_database/infrastructure/DataManager.cpp
+    ../../src/gui/task_database/infrastructure/CoroScanner.cpp
+    ../../src/gui/task_database/services/BaostockService.cpp
+    ../../src/gui/task_database/services/L2DatabaseService.cpp
+    ../../src/gui/task_database/services/StateManager.cpp
+    ../../src/gui/task_database/TaskDatabase.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
 )
 
@@ -196,7 +217,7 @@ target_include_directories(app_main PRIVATE
     ../../package/zstd-1.5.7
 )
 
-target_link_libraries(app_main PRIVATE ${ZSTD_LIB_PATH})
+target_link_libraries(app_main PRIVATE ${ZSTD_LIB_PATH} z)
 
 if(PROFILE_MODE)
     target_link_libraries(app_main PRIVATE profiler)

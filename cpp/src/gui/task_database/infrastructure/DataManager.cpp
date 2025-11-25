@@ -1,0 +1,1335 @@
+// Data source: Baostock (证券宝) - http://baostock.com
+// Stock Data Manager - Implementation
+// Robust data management with automatic updates and integrity checks
+
+#include "gui/task_database/infrastructure/DataManager.hpp"
+#include "gui/task_database/infrastructure/BaostockPool.hpp"
+#include "gui/task_terminal/TaskTerminal.hpp"
+#include "gui/util/Color.hpp"
+#include "package/nlohmann/json.hpp"
+#include <algorithm>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <set>
+#include <sstream>
+
+using json = nlohmann::json;
+
+namespace GUI::Database {
+
+namespace {
+// Default stock list - immutable constant
+const std::vector<std::string> kDefaultStocks = {
+    "sh.600000", "sh.600519", // SH Main: 浦发银行, 贵州茅台
+    "sz.000001", "sz.000002", // SZ Main: 平安银行, 万科A
+    "sh.688001", "sh.688009", // STAR: 华兴源创, 中国通号
+    "sz.300001", "sz.300750"  // ChiNext: 特锐德, 宁德时代
+};
+
+constexpr const char *kMetaStockFactorDataset = "__dataset__";
+constexpr const char *kMetaStockInfoWeekly = "weekly";
+constexpr const char *kMetaStockInfoDaily = "daily";
+} // namespace
+
+namespace fs = std::filesystem;
+
+// ============================================================================
+// Constructor
+// ============================================================================
+
+DataManager::DataManager(boost::asio::io_context &io_context,
+                         Config *config,
+                         TaskTerminal *terminal)
+    : config_(config), io_context_(io_context), terminal_(terminal) {
+
+  if (!config_) {
+    throw std::runtime_error("DataManager: config is null");
+  }
+
+  pool_ = std::make_shared<BaostockPool>(io_context_, config_->baostock_max_workers);
+}
+
+// ============================================================================
+// Logging Helper
+// ============================================================================
+
+void DataManager::Log(const std::string &message, bool is_error) {
+  if (terminal_) {
+    Color color = is_error ? Color::Red() : Color::White();
+    terminal_->AddLine(message, color);
+  }
+}
+
+// ============================================================================
+// Helper methods
+// ============================================================================
+
+std::string DataManager::get_today_date() const {
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  std::ostringstream oss;
+  oss << std::put_time(&tm_now, "%Y-%m-%d");
+  return oss.str();
+}
+
+std::string DataManager::get_date_from_days_ago(int days) const {
+  auto now = std::chrono::system_clock::now();
+  auto past = now - std::chrono::hours(24 * days);
+  auto time_t_past = std::chrono::system_clock::to_time_t(past);
+  std::tm tm_past;
+  localtime_r(&time_t_past, &tm_past);
+
+  std::ostringstream oss;
+  oss << std::put_time(&tm_past, "%Y-%m-%d");
+  return oss.str();
+}
+
+std::string DataManager::increment_date(const std::string &date) const {
+  std::tm tm = {};
+  std::istringstream ss(date);
+  ss >> std::get_time(&tm, "%Y-%m-%d");
+
+  auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+  time_point += std::chrono::hours(24);
+  auto time_t_result = std::chrono::system_clock::to_time_t(time_point);
+  std::tm tm_result;
+  localtime_r(&time_t_result, &tm_result);
+
+  std::ostringstream oss;
+  oss << std::put_time(&tm_result, "%Y-%m-%d");
+  return oss.str();
+}
+
+bool DataManager::is_trading_day(const std::string &date) const {
+  for (const auto &day : stock_days_) {
+    if (day[0] == date && day[1] == "1") {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string DataManager::get_last_trading_day() const {
+  std::string today = get_today_date();
+  std::string yesterday = get_date_from_days_ago(1);
+
+  for (auto it = stock_days_.rbegin(); it != stock_days_.rend(); ++it) {
+    if ((*it)[0] <= yesterday && (*it)[1] == "1") {
+      return (*it)[0];
+    }
+  }
+
+  return yesterday;
+}
+
+bool DataManager::should_run_weekly_update() const {
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  int weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
+  if (weekday != config_->baostock_weekly_update_day) {
+    return false;
+  }
+
+  return last_weekly_update_ != get_today_date();
+}
+
+bool DataManager::should_run_daily_update() const {
+  std::string today = get_today_date();
+
+  if (!is_trading_day(today)) {
+    return false;
+  }
+
+  return last_daily_update_ != today;
+}
+
+void DataManager::deduplicate_and_sort_factor(const std::string &code) {
+  auto &records = stock_factor_[code];
+  if (records.empty())
+    return;
+
+  std::sort(records.begin(), records.end(),
+            [](const auto &a, const auto &b) { return a[0] < b[0]; });
+
+  auto it = std::unique(records.rbegin(), records.rend(),
+                        [](const auto &a, const auto &b) { return a[0] == b[0]; });
+  records.erase(records.begin(), it.base());
+}
+
+void DataManager::deduplicate_and_sort_days() {
+  if (stock_days_.empty())
+    return;
+
+  std::sort(stock_days_.begin(), stock_days_.end(),
+            [](const auto &a, const auto &b) { return a[0] < b[0]; });
+
+  auto it = std::unique(stock_days_.rbegin(), stock_days_.rend(),
+                        [](const auto &a, const auto &b) { return a[0] == b[0]; });
+  stock_days_.erase(stock_days_.begin(), it.base());
+}
+
+// ============================================================================
+// Initialization
+// ============================================================================
+
+awaitable<bool> DataManager::login_all() {
+  Log(std::format("[DataManager] Logging in {} workers...", config_->baostock_max_workers));
+  bool success = co_await pool_->initialize();
+  if (!success) {
+    Log("[DataManager] [ERROR] Failed to login workers", true);
+  } else {
+    Log(std::format("[DataManager] [OK] All {} workers logged in", config_->baostock_max_workers));
+  }
+  co_return success;
+}
+
+awaitable<void> DataManager::logout_all() {
+  Log("Logging out all workers...");
+  for (auto &client : pool_->clients_) {
+    co_await client->logout();
+  }
+  Log("All workers logged out");
+}
+
+awaitable<bool> DataManager::initialize() {
+  Log("[DataManager] ========================================");
+  Log("[DataManager] Initializing DataManager...");
+  Log("[DataManager] ========================================");
+
+  co_await load_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+  Log(std::format("[DataManager] Loaded config: {} stocks", stock_codes_.size()));
+
+  // Don't login here - will be done lazily on first API call
+  co_await load_stock_days();
+  co_await load_stock_factor();
+  co_await load_stock_info();
+
+  if (progress_callback_) {
+    progress_callback_("all", "", 0, 1, UpdateStage::CheckingIntegrity);
+  }
+
+  auto days_result = check_stock_days_integrity();
+  if (!days_result.passed) {
+    Log("[DataManager] [WARNING] Stock days integrity issues detected, auto-fixing...");
+    deduplicate_and_sort_days();
+  }
+
+  for (const auto &code : stock_codes_) {
+    if (stock_factor_.find(code) != stock_factor_.end()) {
+      deduplicate_and_sort_factor(code);
+    }
+  }
+
+  // Final check
+  auto final_integrity = check_all_integrity();
+  if (!final_integrity.passed) {
+    Log("[DataManager] Integrity check failed. Resetting update timers to force fresh update.");
+    last_weekly_update_ = "";
+    last_daily_update_ = "";
+    co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+  }
+
+  if (progress_callback_) {
+    progress_callback_("all", "", 1, 1, UpdateStage::Complete);
+  }
+
+  Log("[DataManager] [OK] DataManager initialized successfully!");
+  co_return true;
+}
+
+awaitable<bool> DataManager::ensure_logged_in() {
+  // Check if already logged in
+  if (pool_->size() > 0) {
+    co_return true; // Already logged in
+  }
+
+  // Lazy login on first use
+  Log("[DataManager] First API call detected, logging in workers...");
+  bool success = co_await login_all();
+  co_return success;
+}
+
+awaitable<void> DataManager::shutdown() {
+  Log("=== Shutting down DataManager ===");
+
+  co_await save_stock_factor();
+  co_await save_stock_info();
+  co_await save_stock_days();
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+
+  co_await logout_all();
+
+  Log("DataManager shutdown complete");
+}
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+awaitable<void> DataManager::load_config(const std::string &config_file) {
+  std::string filepath = config_file;
+
+  if (!fs::exists(filepath)) {
+    stock_codes_ = kDefaultStocks;
+    last_weekly_update_ = "";
+    last_daily_update_ = "";
+    stock_factor_last_update_.clear();
+    stock_info_last_update_.clear();
+    config_->baostock_weekly_update_day = 1;
+
+    co_await save_config(config_file);
+    Log(std::format("Created config with {} default stocks", stock_codes_.size()));
+    co_return;
+  }
+
+  std::ifstream infile(filepath);
+  json j;
+  infile >> j;
+  infile.close();
+
+  stock_codes_ = j.value("stocks", kDefaultStocks);
+
+  if (j.contains("metadata")) {
+    last_weekly_update_ = j["metadata"].value("last_weekly_update", "");
+    last_daily_update_ = j["metadata"].value("last_daily_update", "");
+    stock_factor_last_update_ = j["metadata"].value("stock_factor_last_update", std::map<std::string, std::string>{});
+    stock_info_last_update_ = j["metadata"].value("stock_info_last_update", std::map<std::string, std::string>{});
+  }
+
+  if (j.contains("settings")) {
+    config_->baostock_weekly_update_day = j["settings"].value("weekly_update_day", 1);
+  }
+
+  Log(std::format("Loaded config: {} stocks", stock_codes_.size()));
+  co_return;
+}
+
+awaitable<void> DataManager::save_config(const std::string &config_file) {
+  json j;
+  j["stocks"] = stock_codes_;
+  j["metadata"]["last_weekly_update"] = last_weekly_update_;
+  j["metadata"]["last_daily_update"] = last_daily_update_;
+  j["metadata"]["stock_factor_last_update"] = stock_factor_last_update_;
+  j["metadata"]["stock_info_last_update"] = stock_info_last_update_;
+  j["settings"]["weekly_update_day"] = config_->baostock_weekly_update_day;
+
+  std::string filepath = config_file;
+  std::string temp_filepath = filepath + ".tmp";
+
+  std::ofstream outfile(temp_filepath);
+  outfile << j.dump(2) << std::endl;
+  outfile.close();
+
+  fs::rename(temp_filepath, filepath);
+  co_return;
+}
+
+// ============================================================================
+// JSON Persistence
+// ============================================================================
+
+awaitable<void> DataManager::load_stock_factor() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_factor_file;
+
+  if (!fs::exists(filepath)) {
+    Log("stock_factor.json not found, creating empty structure");
+    stock_factor_.clear();
+    co_return;
+  }
+
+  try {
+    std::ifstream infile(filepath);
+    json j;
+    infile >> j;
+    infile.close();
+
+    stock_factor_.clear();
+    for (auto &[code, records] : j.items()) {
+      stock_factor_[code] = records.get<std::vector<std::vector<std::string>>>();
+    }
+
+    Log(std::format("Loaded stock_factor.json: {} stocks", stock_factor_.size()));
+  } catch (const std::exception &e) {
+    Log(std::format("Error loading stock_factor.json: {}", e.what()), true);
+    stock_factor_.clear();
+    if (fs::exists(filepath))
+      fs::remove(filepath);
+  }
+
+  co_return;
+}
+
+awaitable<void> DataManager::load_stock_info() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_info_file;
+
+  if (!fs::exists(filepath)) {
+    Log("stock_info.json not found, creating empty structure");
+    stock_info_.clear();
+    co_return;
+  }
+
+  try {
+    std::ifstream infile(filepath);
+    json j;
+    infile >> j;
+    infile.close();
+
+    stock_info_.clear();
+    for (auto &[code, info_json] : j.items()) {
+      StockInfo info;
+      info.name = info_json.value("name", "");
+      info.ipoDate = info_json.value("ipoDate", "");
+      info.outDate = info_json.value("outDate", "");
+      info.ind_code = info_json.value("ind_code", "");
+      info.ind_name = info_json.value("ind_name", "");
+      info.update_date = info_json.value("update_date", "");
+      info.volume = info_json.value("volume", "");
+      info.amount = info_json.value("amount", "");
+      info.turn = info_json.value("turn", "");
+      info.tradestatus = info_json.value("tradestatus", "");
+      info.isST = info_json.value("isST", "");
+      info.peTTM = info_json.value("peTTM", "");
+      info.pbMRQ = info_json.value("pbMRQ", "");
+      info.psTTM = info_json.value("psTTM", "");
+      info.pcfNcfTTM = info_json.value("pcfNcfTTM", "");
+      stock_info_[code] = info;
+    }
+
+    Log(std::format("Loaded stock_info.json: {} stocks", stock_info_.size()));
+  } catch (const std::exception &e) {
+    Log(std::format("Error loading stock_info.json: {}", e.what()), true);
+    stock_info_.clear();
+    if (fs::exists(filepath))
+      fs::remove(filepath);
+  }
+
+  co_return;
+}
+
+awaitable<void> DataManager::load_stock_days() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_days_file;
+
+  if (!fs::exists(filepath)) {
+    Log("stock_days.json not found, will fetch initial data");
+    stock_days_.clear();
+    co_return;
+  }
+
+  try {
+    std::ifstream infile(filepath);
+    json j;
+    infile >> j;
+    infile.close();
+
+    stock_days_ = j.get<std::vector<std::vector<std::string>>>();
+    Log(std::format("Loaded stock_days.json: {} days", stock_days_.size()));
+  } catch (const std::exception &e) {
+    Log(std::format("Error loading stock_days.json: {}", e.what()), true);
+    stock_days_.clear();
+    if (fs::exists(filepath))
+      fs::remove(filepath);
+  }
+
+  co_return;
+}
+
+awaitable<void> DataManager::save_stock_factor() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_factor_file;
+  std::string temp_filepath = filepath + ".tmp";
+
+  std::ofstream outfile(temp_filepath);
+  outfile << "{\n";
+
+  bool first_stock = true;
+  for (const auto &[code, records] : stock_factor_) {
+    if (!first_stock)
+      outfile << ",\n";
+    first_stock = false;
+
+    outfile << "  \"" << code << "\": [\n";
+    for (size_t i = 0; i < records.size(); ++i) {
+      outfile << "    [\"" << records[i][0] << "\",\"" << records[i][1] << "\"]";
+      if (i < records.size() - 1)
+        outfile << ",";
+      outfile << "\n";
+    }
+    outfile << "  ]";
+  }
+
+  outfile << "\n}\n";
+  outfile.close();
+
+  fs::rename(temp_filepath, filepath);
+  Log("Saved stock_factor.json");
+  co_return;
+}
+
+awaitable<void> DataManager::save_stock_info() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_info_file;
+  std::string temp_filepath = filepath + ".tmp";
+
+  std::ofstream outfile(temp_filepath);
+  outfile << "{\n";
+
+  bool first_stock = true;
+  for (const auto &[code, info] : stock_info_) {
+    if (!first_stock)
+      outfile << ",\n";
+    first_stock = false;
+
+    outfile << "  \"" << code << "\": {";
+    outfile << "\"name\":\"" << info.name << "\",";
+    outfile << "\"ipoDate\":\"" << info.ipoDate << "\",";
+    outfile << "\"outDate\":\"" << info.outDate << "\",";
+    outfile << "\"ind_code\":\"" << info.ind_code << "\",";
+    outfile << "\"ind_name\":\"" << info.ind_name << "\",";
+    outfile << "\"update_date\":\"" << info.update_date << "\",";
+    outfile << "\"volume\":\"" << info.volume << "\",";
+    outfile << "\"amount\":\"" << info.amount << "\",";
+    outfile << "\"turn\":\"" << info.turn << "\",";
+    outfile << "\"tradestatus\":\"" << info.tradestatus << "\",";
+    outfile << "\"isST\":\"" << info.isST << "\",";
+    outfile << "\"peTTM\":\"" << info.peTTM << "\",";
+    outfile << "\"pbMRQ\":\"" << info.pbMRQ << "\",";
+    outfile << "\"psTTM\":\"" << info.psTTM << "\",";
+    outfile << "\"pcfNcfTTM\":\"" << info.pcfNcfTTM << "\"}";
+  }
+
+  outfile << "\n}\n";
+  outfile.close();
+
+  fs::rename(temp_filepath, filepath);
+  Log("Saved stock_info.json");
+  co_return;
+}
+
+awaitable<void> DataManager::save_stock_days() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_days_file;
+  std::string temp_filepath = filepath + ".tmp";
+
+  std::ofstream outfile(temp_filepath);
+  outfile << "[\n";
+
+  for (size_t i = 0; i < stock_days_.size(); ++i) {
+    outfile << "  [\"" << stock_days_[i][0] << "\",\"" << stock_days_[i][1] << "\"]";
+    if (i < stock_days_.size() - 1)
+      outfile << ",";
+    outfile << "\n";
+  }
+
+  outfile << "]\n";
+  outfile.close();
+
+  fs::rename(temp_filepath, filepath);
+  Log("Saved stock_days.json");
+  co_return;
+}
+
+// ============================================================================
+// Update Operations
+// ============================================================================
+
+awaitable<void> DataManager::update_stock_days(bool force) {
+  if (progress_callback_) {
+    progress_callback_("stock_days", "", 0, 0, UpdateStage::UpdatingStockDays);
+  }
+
+  if (!co_await ensure_logged_in()) {
+    Log("[ERROR] Failed to login workers", true);
+    if (progress_callback_) {
+      progress_callback_("stock_days", "Login failed", 0, 0, UpdateStage::Complete);
+    }
+    co_return;
+  }
+
+  if (!force && !stock_days_.empty()) {
+    std::string last_date = stock_days_.back()[0];
+    std::string today = get_today_date();
+    if (last_date >= today) {
+      Log("stock_days already up to date");
+      if (progress_callback_) {
+        progress_callback_("stock_days", "Already up-to-date", 0, 0, UpdateStage::Complete);
+      }
+      co_return;
+    }
+  }
+
+  Log("=== Updating stock_days ===");
+
+  std::string start_date = stock_days_.empty() ? get_date_from_days_ago(30)
+                                               : increment_date(stock_days_.back()[0]);
+  std::string end_date = get_today_date();
+
+  // Check if start_date is beyond end_date (already up-to-date)
+  if (start_date > end_date) {
+    Log("stock_days already up to date (no new days to fetch)");
+    if (progress_callback_) {
+      progress_callback_("stock_days", "Already up-to-date", 0, 0, UpdateStage::Complete);
+    }
+    co_return;
+  }
+
+  if (progress_callback_) {
+    progress_callback_("stock_days", "Fetching trade dates", 0, 0, UpdateStage::Fetching);
+  }
+
+  auto client = pool_->get_client(0);
+  auto result = co_await client->query_trade_dates(start_date, end_date);
+
+  if (result.success()) {
+    if (progress_callback_) {
+      progress_callback_("stock_days", std::format("Adding {} days", result.records.size()), 0, 0, UpdateStage::Saving);
+    }
+    
+    for (const auto &record : result.records) {
+      stock_days_.push_back(record);
+    }
+    deduplicate_and_sort_days();
+    co_await save_stock_days();
+    Log(std::format("Updated stock_days: added {} days", result.records.size()));
+    
+    if (progress_callback_) {
+      progress_callback_("stock_days", "", 0, 0, UpdateStage::Complete);
+    }
+  } else {
+    Log(std::format("Failed to update stock_days: {}", result.error_msg), true);
+    if (progress_callback_) {
+      progress_callback_("stock_days", "Failed: " + result.error_msg, 0, 0, UpdateStage::Complete);
+    }
+  }
+
+  co_return;
+}
+
+awaitable<void> DataManager::update_stock_factor(bool force) {
+  if (progress_callback_) {
+    progress_callback_("stock_factor", "", 0, stock_codes_.size(), UpdateStage::UpdatingStockFactor);
+  }
+
+  if (!co_await ensure_logged_in()) {
+    Log("[ERROR] Failed to login workers", true);
+    if (progress_callback_) {
+      progress_callback_("stock_factor", "Login failed", 0, stock_codes_.size(), UpdateStage::Complete);
+    }
+    co_return;
+  }
+
+  co_await update_stock_days(false);
+
+  std::string today = get_today_date();
+  size_t total_stocks = stock_codes_.size();
+  auto processed_count = std::make_shared<std::atomic<size_t>>(0);
+  int updated_count = 0;
+  int error_count = 0;
+  bool is_weekly_schedule = should_run_weekly_update();
+
+  for (const auto &code : stock_codes_) {
+    std::string start_date = "1990-01-01";
+    bool has_data = false;
+
+    if (stock_factor_.find(code) != stock_factor_.end() &&
+        !stock_factor_[code].empty()) {
+      start_date = increment_date(stock_factor_[code].back()[0]);
+      has_data = true;
+
+      // Skip if already up-to-date (no future data available)
+      if (start_date > today) {
+        size_t current = processed_count->fetch_add(1) + 1;
+        if (progress_callback_) {
+          progress_callback_("stock_factor", code + " (up-to-date)", current, total_stocks, UpdateStage::Fetching);
+        }
+        continue;
+      }
+    }
+
+    // Logic: Update if FORCE or SCHEDULED or DATA MISSING
+    bool should_update = force || is_weekly_schedule || !has_data;
+    if (!should_update) {
+      size_t current = processed_count->fetch_add(1) + 1;
+      if (progress_callback_) {
+        progress_callback_("stock_factor", code + " (skipped)", current, total_stocks, UpdateStage::Fetching);
+      }
+      continue;
+    }
+
+    // Only submit task if needed
+    Task task;
+    task.description = "adjust_factor:" + code;
+    task.executor = [code, start_date, today](BaostockClient &client) -> awaitable<QueryResult> {
+      co_return co_await client.query_adjust_factor(code, start_date, today);
+    };
+
+    pool_->submit_task(std::move(task));
+  }
+
+  auto pending_workers = std::make_shared<std::atomic<int>>(config_->baostock_max_workers);
+
+  for (size_t i = 0; i < static_cast<size_t>(config_->baostock_max_workers); ++i) {
+    boost::asio::co_spawn(
+        io_context_,
+        [this, i, pending_workers, &updated_count, &error_count, processed_count, total_stocks]() -> awaitable<void> {
+          auto client = pool_->get_client(i);
+          while (pool_->has_pending_tasks()) {
+            auto task_opt = pool_->get_next_task();
+            if (!task_opt)
+              break;
+
+            std::string desc = task_opt->description;
+            std::string code = desc.substr(desc.find(':') + 1);
+
+            auto result = co_await task_opt->executor(*client);
+            if (result.success() && !result.records.empty()) {
+              for (const auto &record : result.records) {
+                stock_factor_[code].push_back({record[1], record[4]});
+              }
+              deduplicate_and_sort_factor(code);
+              ++updated_count;
+            } else if (!result.success()) {
+              ++error_count;
+            }
+
+            size_t current = processed_count->fetch_add(1) + 1;
+            if (progress_callback_) {
+              progress_callback_("stock_factor", code, current, total_stocks, UpdateStage::Fetching);
+            }
+          }
+          pending_workers->fetch_sub(1);
+        },
+        boost::asio::detached);
+  }
+
+  while (pending_workers->load() > 0) {
+    co_await boost::asio::post(boost::asio::use_awaitable);
+  }
+
+  if (progress_callback_) {
+    progress_callback_("stock_factor", "", total_stocks, total_stocks, UpdateStage::Saving);
+  }
+
+  co_await save_stock_factor();
+  stock_factor_last_update_[kMetaStockFactorDataset] = today;
+  last_weekly_update_ = today;
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+
+  if (progress_callback_) {
+    progress_callback_("stock_factor", "", total_stocks, total_stocks, UpdateStage::Complete);
+  }
+
+  co_return;
+}
+
+awaitable<void> DataManager::update_stock_info_weekly(bool force) {
+  if (progress_callback_) {
+    progress_callback_("stock_info", "", 0, 0, UpdateStage::UpdatingStockInfoWeekly);
+  }
+
+  if (!co_await ensure_logged_in()) {
+    Log("[ERROR] Failed to login workers", true);
+    if (progress_callback_) {
+      progress_callback_("stock_info", "Login failed", 0, 0, UpdateStage::Complete);
+    }
+    co_return;
+  }
+
+  co_await update_stock_days(false);
+
+  std::map<std::string, std::pair<std::string, std::string>> industry_map;
+
+  // Always fetch industry data as it's a single cheap call and useful for any update
+  auto client = pool_->get_client(0);
+  auto result = co_await client->query_stock_industry();
+
+  if (result.success()) {
+    for (const auto &record : result.records) {
+      std::string code = record[1];
+      std::string industry = record[3];
+      std::string ind_code, ind_name;
+      if (industry.length() > 3) {
+        ind_code = industry.substr(0, 3);
+        ind_name = industry.substr(3);
+      }
+      industry_map[code] = {ind_code, ind_name};
+    }
+    Log(std::format("Fetched industry data for {} stocks", industry_map.size()));
+  } else {
+    Log("Failed to fetch industry data, aborting weekly update", true);
+    if (progress_callback_) {
+      progress_callback_("stock_info", "Failed to fetch industry data", 0, 0, UpdateStage::Complete);
+    }
+    co_return;
+  }
+
+  bool is_weekly_schedule = should_run_weekly_update();
+  bool update_all_basics = force || is_weekly_schedule;
+  size_t total_stocks = stock_codes_.size();
+  auto processed_count = std::make_shared<std::atomic<size_t>>(0);
+
+  for (const auto &code : stock_codes_) {
+    // Check completeness
+    bool is_incomplete = false;
+    if (stock_info_.find(code) == stock_info_.end()) {
+      is_incomplete = true;
+    } else {
+      const auto &info = stock_info_[code];
+      // Check for mandatory weekly fields
+      if (info.name.empty() || info.ipoDate.empty()) {
+        is_incomplete = true;
+      }
+    }
+
+    if (!update_all_basics && !is_incomplete) {
+      size_t current = processed_count->fetch_add(1) + 1;
+      if (progress_callback_) {
+        progress_callback_("stock_info", code + " (skipped)", current, total_stocks, UpdateStage::Fetching);
+      }
+      continue;
+    }
+
+    Task task;
+    task.description = "stock_basic:" + code;
+    task.executor = [code](BaostockClient &client) -> awaitable<QueryResult> {
+      co_return co_await client.query_stock_basic(code);
+    };
+    pool_->submit_task(std::move(task));
+  }
+
+  int updated_count = 0;
+  int error_count = 0;
+  auto pending_workers = std::make_shared<std::atomic<int>>(config_->baostock_max_workers);
+
+  for (size_t i = 0; i < static_cast<size_t>(config_->baostock_max_workers); ++i) {
+    boost::asio::co_spawn(
+        io_context_,
+        [this, i, pending_workers, &industry_map, &updated_count, &error_count, processed_count, total_stocks]() -> awaitable<void> {
+          auto client = pool_->get_client(i);
+          while (pool_->has_pending_tasks()) {
+            auto task_opt = pool_->get_next_task();
+            if (!task_opt)
+              break;
+
+            std::string desc = task_opt->description;
+            std::string code = desc.substr(desc.find(':') + 1);
+
+            auto result = co_await task_opt->executor(*client);
+
+            StockInfo info;
+            if (result.success() && !result.records.empty()) {
+              auto &record = result.records[0];
+              info.name = record[1];
+              info.ipoDate = record[2];
+              info.outDate = record[3];
+
+              if (industry_map.find(code) != industry_map.end()) {
+                info.ind_code = industry_map[code].first;
+                info.ind_name = industry_map[code].second;
+              }
+              ++updated_count;
+            } else {
+              if (stock_info_.find(code) != stock_info_.end()) {
+                info = stock_info_[code];
+              }
+              ++error_count;
+            }
+
+            info.update_date = "";
+            info.volume = "";
+            info.amount = "";
+            info.turn = "";
+            info.tradestatus = "";
+            info.isST = "";
+            info.peTTM = "";
+            info.pbMRQ = "";
+            info.psTTM = "";
+            info.pcfNcfTTM = "";
+
+            stock_info_[code] = info;
+
+            size_t current = processed_count->fetch_add(1) + 1;
+            if (progress_callback_) {
+              progress_callback_("stock_info", code, current, total_stocks, UpdateStage::Fetching);
+            }
+          }
+          pending_workers->fetch_sub(1);
+        },
+        boost::asio::detached);
+  }
+
+  while (pending_workers->load() > 0) {
+    co_await boost::asio::post(boost::asio::use_awaitable);
+  }
+
+  if (progress_callback_) {
+    progress_callback_("stock_info", "", total_stocks, total_stocks, UpdateStage::Saving);
+  }
+
+  co_await save_stock_info();
+  std::string today = get_today_date();
+  stock_info_last_update_[kMetaStockInfoWeekly] = today;
+  last_weekly_update_ = today;
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+
+  if (progress_callback_) {
+    progress_callback_("stock_info", "", total_stocks, total_stocks, UpdateStage::Complete);
+  }
+
+  co_return;
+}
+
+awaitable<void> DataManager::update_stock_info_daily(bool force) {
+  if (progress_callback_) {
+    progress_callback_("stock_info", "", 0, 0, UpdateStage::UpdatingStockInfoDaily);
+  }
+
+  if (!co_await ensure_logged_in()) {
+    Log("[ERROR] Failed to login workers", true);
+    if (progress_callback_) {
+      progress_callback_("stock_info", "Login failed", 0, 0, UpdateStage::Complete);
+    }
+    co_return;
+  }
+
+  co_await update_stock_days(false);
+
+  std::string target_date = get_last_trading_day();
+  Log(std::format("Querying data for: {}", target_date));
+
+  size_t total_stocks = stock_codes_.size();
+  auto processed_count = std::make_shared<std::atomic<size_t>>(0);
+  int updated_count = 0;
+  int error_count = 0;
+
+  for (const auto &code : stock_codes_) {
+    // Skip delisted stocks
+    if (stock_info_.find(code) != stock_info_.end() &&
+        !stock_info_[code].outDate.empty()) {
+      size_t current = processed_count->fetch_add(1) + 1;
+      if (progress_callback_) {
+        progress_callback_("stock_info", code + " (delisted)", current, total_stocks, UpdateStage::Fetching);
+      }
+      continue;
+    }
+
+    // Skip if already updated to target date
+    if (!force && stock_info_.find(code) != stock_info_.end() &&
+        stock_info_[code].update_date >= target_date) {
+      size_t current = processed_count->fetch_add(1) + 1;
+      if (progress_callback_) {
+        progress_callback_("stock_info", code + " (skipped)", current, total_stocks, UpdateStage::Fetching);
+      }
+      continue;
+    }
+
+    // Only submit task if needed
+    Task task;
+    task.description = "k_data:" + code;
+    task.executor = [code, target_date](BaostockClient &client) -> awaitable<QueryResult> {
+      co_return co_await client.query_history_k_data_plus(
+          code, "date,volume,amount,turn,tradestatus,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM",
+          target_date, target_date, "d", "3");
+    };
+    pool_->submit_task(std::move(task));
+  }
+
+  auto pending_workers = std::make_shared<std::atomic<int>>(config_->baostock_max_workers);
+
+  for (size_t i = 0; i < static_cast<size_t>(config_->baostock_max_workers); ++i) {
+    boost::asio::co_spawn(
+        io_context_,
+        [this, i, pending_workers, target_date, &updated_count, &error_count, processed_count, total_stocks]() -> awaitable<void> {
+          auto client = pool_->get_client(i);
+          while (pool_->has_pending_tasks()) {
+            auto task_opt = pool_->get_next_task();
+            if (!task_opt)
+              break;
+
+            std::string desc = task_opt->description;
+            std::string code = desc.substr(desc.find(':') + 1);
+
+            auto result = co_await task_opt->executor(*client);
+
+            if (stock_info_.find(code) == stock_info_.end()) {
+              stock_info_[code] = StockInfo();
+            }
+
+            if (result.success() && !result.records.empty()) {
+              auto &record = result.records[0];
+              stock_info_[code].update_date = record[0];
+              stock_info_[code].volume = record[1];
+              stock_info_[code].amount = record[2];
+              stock_info_[code].turn = record[3];
+              stock_info_[code].tradestatus = record[4];
+              stock_info_[code].isST = record[5];
+              stock_info_[code].peTTM = record[6];
+              stock_info_[code].pbMRQ = record[7];
+              stock_info_[code].psTTM = record[8];
+              stock_info_[code].pcfNcfTTM = record[9];
+              ++updated_count;
+            } else if (result.success() && result.records.empty()) {
+              stock_info_[code].update_date = target_date;
+              stock_info_[code].volume = "";
+              stock_info_[code].amount = "";
+              stock_info_[code].turn = "";
+              stock_info_[code].tradestatus = "";
+              stock_info_[code].isST = "";
+              stock_info_[code].peTTM = "";
+              stock_info_[code].pbMRQ = "";
+              stock_info_[code].psTTM = "";
+              stock_info_[code].pcfNcfTTM = "";
+              ++updated_count;
+            } else {
+              ++error_count;
+            }
+
+            size_t current = processed_count->fetch_add(1) + 1;
+            if (progress_callback_) {
+              progress_callback_("stock_info", code, current, total_stocks, UpdateStage::Fetching);
+            }
+          }
+          pending_workers->fetch_sub(1);
+        },
+        boost::asio::detached);
+  }
+
+  while (pending_workers->load() > 0) {
+    co_await boost::asio::post(boost::asio::use_awaitable);
+  }
+
+  if (progress_callback_) {
+    progress_callback_("stock_info", "", total_stocks, total_stocks, UpdateStage::Saving);
+  }
+
+  co_await save_stock_info();
+  stock_info_last_update_[kMetaStockInfoDaily] = target_date;
+  last_daily_update_ = get_today_date();
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+
+  if (progress_callback_) {
+    progress_callback_("stock_info", "", total_stocks, total_stocks, UpdateStage::Complete);
+  }
+
+  co_return;
+}
+
+awaitable<void> DataManager::update_all(bool force) {
+  Log("=== Running full update cycle ===");
+
+  // Step 1: Update stock_days
+  co_await update_stock_days(force);
+
+  // Step 2: Update stock_factor
+  co_await update_stock_factor(force);
+
+  // Step 3: Update stock_info (weekly + daily)
+  co_await update_stock_info_weekly(force);
+  co_await update_stock_info_daily(force);
+
+  if (progress_callback_) {
+    progress_callback_("all", "", 0, 0, UpdateStage::Complete);
+  }
+
+  Log("=== Full update cycle complete ===");
+  co_return;
+}
+
+// ============================================================================
+// Integrity Checks
+// ============================================================================
+
+IntegrityResult DataManager::check_stock_days_integrity() {
+  IntegrityResult result;
+
+  if (stock_days_.empty()) {
+    result.passed = false;
+    result.errors.push_back("stock_days is empty");
+    return result;
+  }
+
+  std::set<std::string> seen_dates;
+  for (const auto &day : stock_days_) {
+    if (seen_dates.count(day[0])) {
+      result.warnings.push_back("Duplicate date: " + day[0]);
+    }
+    seen_dates.insert(day[0]);
+  }
+
+  for (size_t i = 1; i < stock_days_.size(); ++i) {
+    std::string prev = stock_days_[i - 1][0];
+    std::string curr = stock_days_[i][0];
+    std::string expected = increment_date(prev);
+    if (curr != expected) {
+      result.warnings.push_back("Date gap: " + prev + " -> " + curr);
+    }
+  }
+
+  result.passed = result.errors.empty();
+  return result;
+}
+
+IntegrityResult DataManager::check_stock_factor_integrity() {
+  IntegrityResult result;
+
+  for (const auto &code : stock_codes_) {
+    if (stock_factor_.find(code) == stock_factor_.end()) {
+      result.missing_stocks.push_back(code);
+      continue;
+    }
+
+    auto &records = stock_factor_[code];
+    if (records.empty()) {
+      result.missing_stocks.push_back(code);
+      continue;
+    }
+
+    for (size_t i = 1; i < records.size(); ++i) {
+      if (records[i][0] < records[i - 1][0]) {
+        result.warnings.push_back(code + ": dates not sorted");
+        break;
+      }
+    }
+
+    std::set<std::string> seen_dates;
+    for (const auto &record : records) {
+      if (seen_dates.count(record[0])) {
+        result.warnings.push_back(code + ": duplicate date " + record[0]);
+      }
+      seen_dates.insert(record[0]);
+    }
+  }
+
+  result.passed = result.missing_stocks.empty() && result.errors.empty();
+  return result;
+}
+
+IntegrityResult DataManager::check_stock_info_integrity() {
+  IntegrityResult result;
+
+  for (const auto &code : stock_codes_) {
+    if (stock_info_.find(code) == stock_info_.end()) {
+      result.missing_stocks.push_back(code);
+      continue;
+    }
+
+    const auto &info = stock_info_.at(code);
+
+    if (info.outDate.empty()) {
+      if (info.name.empty() || info.ipoDate.empty()) {
+        result.incomplete_stocks.push_back(code);
+      }
+    }
+  }
+
+  result.passed = result.missing_stocks.empty() &&
+                  result.incomplete_stocks.empty() &&
+                  result.errors.empty();
+  return result;
+}
+
+IntegrityResult DataManager::check_all_integrity() {
+  IntegrityResult combined;
+
+  auto days_result = check_stock_days_integrity();
+  auto factor_result = check_stock_factor_integrity();
+  auto info_result = check_stock_info_integrity();
+
+  combined.passed = days_result.passed && factor_result.passed && info_result.passed;
+
+  combined.errors.insert(combined.errors.end(), days_result.errors.begin(), days_result.errors.end());
+  combined.errors.insert(combined.errors.end(), factor_result.errors.begin(), factor_result.errors.end());
+  combined.errors.insert(combined.errors.end(), info_result.errors.begin(), info_result.errors.end());
+
+  combined.warnings.insert(combined.warnings.end(), days_result.warnings.begin(), days_result.warnings.end());
+  combined.warnings.insert(combined.warnings.end(), factor_result.warnings.begin(), factor_result.warnings.end());
+  combined.warnings.insert(combined.warnings.end(), info_result.warnings.begin(), info_result.warnings.end());
+
+  combined.missing_stocks.insert(combined.missing_stocks.end(),
+                                 factor_result.missing_stocks.begin(),
+                                 factor_result.missing_stocks.end());
+  combined.missing_stocks.insert(combined.missing_stocks.end(),
+                                 info_result.missing_stocks.begin(),
+                                 info_result.missing_stocks.end());
+
+  combined.incomplete_stocks = info_result.incomplete_stocks;
+
+  return combined;
+}
+
+// ============================================================================
+// Progress Tracking
+// ============================================================================
+
+std::string DataManager::get_next_update_time_weekly() const {
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  int current_weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
+  int days_until_monday = (config_->baostock_weekly_update_day - current_weekday + 7) % 7;
+  if (days_until_monday == 0 && last_weekly_update_ == get_today_date()) {
+    days_until_monday = 7;
+  }
+
+  auto next_update = now + std::chrono::hours(24 * days_until_monday);
+  auto time_t_next = std::chrono::system_clock::to_time_t(next_update);
+  std::tm tm_next;
+  localtime_r(&time_t_next, &tm_next);
+
+  std::ostringstream oss;
+  oss << std::put_time(&tm_next, "%Y-%m-%d");
+  return oss.str();
+}
+
+std::string DataManager::get_next_update_time_daily() const {
+  std::string today = get_today_date();
+
+  for (size_t i = 0; i < stock_days_.size(); ++i) {
+    if (stock_days_[i][0] > today && stock_days_[i][1] == "1") {
+      return stock_days_[i][0];
+    }
+  }
+
+  return "Unknown";
+}
+
+double DataManager::get_update_progress_weekly() const {
+  auto now = std::chrono::system_clock::now();
+
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  int current_weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
+  int days_since_monday = (current_weekday - config_->baostock_weekly_update_day + 7) % 7;
+
+  return (days_since_monday / 7.0) * 100.0;
+}
+
+double DataManager::get_update_progress_daily() const {
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  double hours_elapsed = tm_now.tm_hour + tm_now.tm_min / 60.0;
+  return (hours_elapsed / 24.0) * 100.0;
+}
+
+StatusSummary DataManager::get_status_summary() const {
+  StatusSummary summary;
+
+  summary.last_weekly_update = last_weekly_update_;
+  summary.last_daily_update = last_daily_update_;
+  summary.weekly_progress_pct = get_update_progress_weekly();
+  summary.daily_progress_pct = get_update_progress_daily();
+  summary.next_weekly_update = get_next_update_time_weekly();
+  summary.next_daily_update = get_next_update_time_daily();
+  summary.total_stocks = stock_codes_.size();
+  summary.stocks_with_factor_data = stock_factor_.size();
+  summary.stocks_with_info_data = stock_info_.size();
+  summary.trading_days_count = stock_days_.size();
+
+  return summary;
+}
+
+// ============================================================================
+// Force Remove Operations
+// ============================================================================
+
+bool DataManager::force_remove_stock_factor() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_factor_file;
+  if (fs::exists(filepath)) {
+    fs::remove(filepath);
+    stock_factor_.clear();
+    stock_factor_last_update_.clear();
+    last_weekly_update_ = ""; // Reset timer to trigger update
+    Log("Removed stock_factor.json (timer reset)");
+    return true;
+  }
+  return false;
+}
+
+bool DataManager::force_remove_stock_info() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_info_file;
+  if (fs::exists(filepath)) {
+    fs::remove(filepath);
+    stock_info_.clear();
+    stock_info_last_update_.clear();
+    last_weekly_update_ = ""; // Reset weekly timer
+    last_daily_update_ = "";  // Reset daily timer
+    Log("Removed stock_info.json (timers reset)");
+    return true;
+  }
+  return false;
+}
+
+bool DataManager::force_remove_stock_days() {
+  std::string filepath = config_->config_dir + "/" + config_->baostock_stock_days_file;
+  if (fs::exists(filepath)) {
+    fs::remove(filepath);
+    stock_days_.clear();
+    last_daily_update_ = ""; // Reset timer to trigger update
+    Log("Removed stock_days.json (timer reset)");
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
+// Up-to-date Checks
+// ============================================================================
+
+bool DataManager::is_stock_factor_uptodate() const {
+  if (stock_factor_.empty()) {
+    return false;
+  }
+
+  auto it = stock_factor_last_update_.find(kMetaStockFactorDataset);
+  if (it == stock_factor_last_update_.end() || it->second.empty()) {
+      return false;
+    }
+
+  std::string last_trading_day = get_last_trading_day();
+  return it->second >= last_trading_day;
+}
+
+bool DataManager::is_stock_info_uptodate() const {
+  if (stock_info_.empty()) {
+    return false;
+  }
+  std::string last_trading_day = get_last_trading_day();
+  for (const auto &code : stock_codes_) {
+    auto it = stock_info_.find(code);
+    if (it == stock_info_.end()) {
+      return false;
+    }
+    if (it->second.name.empty() || it->second.ipoDate.empty()) {
+      return false;
+    }
+    if (!it->second.outDate.empty()) {
+      continue;
+    }
+    if (it->second.update_date < last_trading_day) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool DataManager::is_stock_days_uptodate() const {
+  if (stock_days_.empty()) {
+    return false;
+  }
+  std::string today = get_today_date();
+  return stock_days_.back()[0] >= today;
+}
+
+} // namespace GUI::Database

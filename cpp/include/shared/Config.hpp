@@ -33,6 +33,14 @@ struct Config {
   // Config file path
   std::string filepath = "../../../../config/config.json";
 
+  // Database (Baostock) Configuration
+  std::string baostock_data_manager_config = "data_manager_config.json";
+  std::string baostock_stock_factor_file = "stock_factor.json";
+  std::string baostock_stock_info_file = "stock_info.json";
+  std::string baostock_stock_days_file = "stock_days.json";
+  int baostock_max_workers = 4;
+  int baostock_weekly_update_day = 1; // Monday
+
   // String buffers for GUI (max 512 chars for path)
   char start_date_buf[64] = "";
   char end_date_buf[64] = "";
@@ -49,6 +57,11 @@ struct Config {
   char archive_tool_buf[64] = "";
   char archive_extract_cmd_buf[32] = "";
   char binary_extension_buf[32] = "";
+  char baostock_stock_factor_file_buf[128] = "";
+  char baostock_stock_info_file_buf[128] = "";
+  char baostock_stock_days_file_buf[128] = "";
+  int baostock_max_workers_buf = 4;
+  int baostock_weekly_update_day_buf = 1;
 
   // Auto-sync state
   bool dirty = false;

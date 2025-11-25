@@ -18,7 +18,7 @@ void Config::Initialize() {
       return;
     }
   }
-  
+
   // File doesn't exist, create with default values
   if (log_callback) {
     log_callback("Config file not found, creating with default values: " + filepath);
@@ -51,6 +51,11 @@ void Config::SyncStringBuffers() {
   snprintf(archive_tool_buf, sizeof(archive_tool_buf), "%s", archive_tool.c_str());
   snprintf(archive_extract_cmd_buf, sizeof(archive_extract_cmd_buf), "%s", archive_extract_cmd.c_str());
   snprintf(binary_extension_buf, sizeof(binary_extension_buf), "%s", binary_extension.c_str());
+  snprintf(baostock_stock_factor_file_buf, sizeof(baostock_stock_factor_file_buf), "%s", baostock_stock_factor_file.c_str());
+  snprintf(baostock_stock_info_file_buf, sizeof(baostock_stock_info_file_buf), "%s", baostock_stock_info_file.c_str());
+  snprintf(baostock_stock_days_file_buf, sizeof(baostock_stock_days_file_buf), "%s", baostock_stock_days_file.c_str());
+  baostock_max_workers_buf = baostock_max_workers;
+  baostock_weekly_update_day_buf = baostock_weekly_update_day;
 }
 
 void Config::AutoSync() {
@@ -68,7 +73,7 @@ void Config::AutoSync() {
       return;
     }
   }
-  
+
   // Debounced auto-save (200ms after last modification)
   if (dirty) {
     auto now = std::chrono::steady_clock::now();
@@ -109,12 +114,20 @@ bool Config::LoadFromFile() {
   archive_extract_cmd = j.value("archive_extract_cmd", archive_extract_cmd);
   binary_extension = j.value("binary_extension", binary_extension);
 
+  // Baostock configuration
+  baostock_data_manager_config = j.value("baostock_data_manager_config", baostock_data_manager_config);
+  baostock_stock_factor_file = j.value("baostock_stock_factor_file", baostock_stock_factor_file);
+  baostock_stock_info_file = j.value("baostock_stock_info_file", baostock_stock_info_file);
+  baostock_stock_days_file = j.value("baostock_stock_days_file", baostock_stock_days_file);
+  baostock_max_workers = j.value("baostock_max_workers", baostock_max_workers);
+  baostock_weekly_update_day = j.value("baostock_weekly_update_day", baostock_weekly_update_day);
+
   return true;
 }
 
 bool Config::SaveToFile() {
   json j;
-  
+
   // Convert Config to JSON
   j["start_date"] = start_date;
   j["end_date"] = end_date;
@@ -132,6 +145,14 @@ bool Config::SaveToFile() {
   j["archive_extract_cmd"] = archive_extract_cmd;
   j["binary_extension"] = binary_extension;
 
+  // Baostock configuration
+  j["baostock_data_manager_config"] = baostock_data_manager_config;
+  j["baostock_stock_factor_file"] = baostock_stock_factor_file;
+  j["baostock_stock_info_file"] = baostock_stock_info_file;
+  j["baostock_stock_days_file"] = baostock_stock_days_file;
+  j["baostock_max_workers"] = baostock_max_workers;
+  j["baostock_weekly_update_day"] = baostock_weekly_update_day;
+
   std::ofstream file(filepath);
   if (!file.is_open()) {
     if (log_callback) {
@@ -146,4 +167,3 @@ bool Config::SaveToFile() {
   }
   return true;
 }
-
