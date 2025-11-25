@@ -84,7 +84,7 @@ public:
   void set_progress_callback(std::function<void(const std::string &, const std::string &, size_t, size_t, UpdateStage)> callback) {
     progress_callback_ = callback;
   }
-  
+
   void set_crawler_progress_callback(std::function<void(const CrawlerProgress &)> callback) {
     crawler_progress_callback_ = callback;
   }
@@ -93,9 +93,14 @@ public:
   const StockFactorMap &get_stock_factor() const { return stock_factor_; }
   const StockInfoMap &get_stock_info() const { return stock_info_; }
   const StockDaysVec &get_stock_days() const { return stock_days_; }
+  const std::vector<std::string> &get_stock_codes() const { return stock_codes_; }
 
   // Login status (read-only, managed internally by ensure_logged_in/out)
   bool is_logged_in() const { return user_logged_in_; }
+
+  // Update scheduling checks (exposed for service layer)
+  std::string get_last_trading_day_public() const { return get_last_trading_day(); }
+  bool should_run_weekly_update_public() const { return should_run_weekly_update(); }
 
   // Initialization and cleanup
   awaitable<bool> initialize();
@@ -117,11 +122,11 @@ public:
   awaitable<void> save_stock_days();
 
   // Update operations
-  awaitable<void> update_stock_factor(bool force = false, bool skip_login = false, bool skip_logout = false);
-  awaitable<void> update_stock_info_weekly(bool force = false, bool skip_days = false, bool skip_login = false, bool skip_logout = false);
-  awaitable<void> update_stock_info_daily(bool force = false, bool skip_days = false, bool skip_login = false, bool skip_logout = false);
-  awaitable<void> update_stock_days(bool force = false, bool skip_login = false, bool skip_logout = false);
-  awaitable<void> update_all(bool force = false);
+  awaitable<void> update_stock_factor(bool skip_login = false, bool skip_logout = false);
+  awaitable<void> update_stock_info_weekly(bool skip_days = false, bool skip_login = false, bool skip_logout = false);
+  awaitable<void> update_stock_info_daily(bool skip_days = false, bool skip_login = false, bool skip_logout = false);
+  awaitable<void> update_stock_days(bool skip_login = false, bool skip_logout = false);
+  awaitable<void> update_all();
 
   // Integrity checks
   IntegrityResult check_stock_factor_integrity();

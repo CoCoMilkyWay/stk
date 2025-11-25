@@ -56,16 +56,17 @@ void RenderCompactJsonCard(
       ImGui::BulletText("No duplicate dates allowed");
       ImGui::BulletText("Each record: [date, is_trading_day]");
     } else if (std::string(title) == "stock_factor.json") {
-      // ImGui::BulletText("Must have data for all configured stocks");
       ImGui::BulletText("Each stock: {last_update, data[]}");
       ImGui::BulletText("Factor data must be sorted by date");
       ImGui::BulletText("No duplicate dates per stock");
       ImGui::BulletText("Each record: [date, adjust_factor]");
+      ImGui::TextDisabled("  (Missing stocks can be updated individually)");
     } else if (std::string(title) == "stock_info.json") {
-      ImGui::BulletText("Must have info for all configured stocks");
+      ImGui::BulletText("Must have ALL configured stocks present");
       ImGui::BulletText("Required weekly: name, ipoDate, industry");
       ImGui::BulletText("Required daily: volume, amount, turn, etc");
       ImGui::BulletText("Delisted stocks (outDate set) skip daily check");
+      ImGui::TextDisabled("  (Missing any stock triggers full re-query)");
     }
 
     ImGui::EndTooltip();
@@ -244,7 +245,7 @@ void RenderCompactJsonCard(
   bool is_updating = (state.status == JsonFileStatus::Updating);
   ImGui::BeginDisabled(is_updating);
 
-  if (ImGui::Button("Force Update")) {
+  if (ImGui::Button("Trigger Update")) {
     *force_update_clicked = true;
   }
   ImGui::SameLine();
@@ -275,7 +276,7 @@ void RenderCrawlerMonitor(const CrawlerState &state) {
   ImGui::TextColored(COLOR_CYAN, "数据源:");
   ImGui::SameLine();
   ImGui::Text("Baostock(证券宝)");
-  
+
   // Hover for website URL
   if (ImGui::IsItemHovered()) {
     ImGui::BeginTooltip();
@@ -290,7 +291,7 @@ void RenderCrawlerMonitor(const CrawlerState &state) {
   // ===== Session Status (colorful) =====
   ImVec4 session_color = COLOR_GRAY;
   const char *session_text = "idle";
-  
+
   switch (prog.session_status) {
   case BaostockSessionStatus::Idle:
     session_color = COLOR_GRAY;
@@ -316,16 +317,16 @@ void RenderCrawlerMonitor(const CrawlerState &state) {
   ImGui::Text("Status:");
   ImGui::SameLine();
   ImGui::TextColored(session_color, "%s", session_text);
-  
+
   // ===== Workers (colorful) =====
   ImGui::SameLine();
   ImGui::TextDisabled("│");
   ImGui::SameLine();
   ImGui::Text("Workers:");
   ImGui::SameLine();
-  ImGui::TextColored(prog.active_workers > 0 ? COLOR_CYAN : COLOR_GRAY, 
+  ImGui::TextColored(prog.active_workers > 0 ? COLOR_CYAN : COLOR_GRAY,
                      "%zu/%zu", prog.active_workers, prog.total_workers);
-  
+
   // ===== Session Query Count (colorful) =====
   ImGui::SameLine();
   ImGui::TextDisabled("│");
@@ -361,49 +362,104 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
   ImGui::TextColored(COLOR_CYAN, "L2 Database Summary");
   ImGui::Separator();
 
-  // Date range
-  if (!summary.date_range_start.empty() && !summary.date_range_end.empty()) {
-    ImGui::Text("Date Range:");
+  // Database range
+  ImGui::Text("Database Range:");
+  ImGui::SameLine();
+  if (!summary.database_range_start.empty() && !summary.database_range_end.empty()) {
+    ImGui::TextColored(COLOR_BLUE, "%s ~ %s",
+                       summary.database_range_start.c_str(),
+                       summary.database_range_end.c_str());
     ImGui::SameLine();
-    ImGui::TextColored(COLOR_BLUE, "%s ~ %s", 
-                       summary.date_range_start.c_str(), 
-                       summary.date_range_end.c_str());
+    ImGui::TextDisabled("(%zu trade days)", summary.database_trade_days);
+  } else {
+    ImGui::TextDisabled("N/A");
+  }
+
+  // Backtest range
+  ImGui::Text("Backtest Range:");
+  ImGui::SameLine();
+  if (!summary.backtest_range_start.empty() && !summary.backtest_range_end.empty()) {
+    ImGui::TextColored(COLOR_BLUE, "%s ~ %s",
+                       summary.backtest_range_start.c_str(),
+                       summary.backtest_range_end.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%zu trade days)", summary.backtest_trade_days);
+  } else {
+    ImGui::TextDisabled("N/A");
+  }
+
+  // Backtest missing days
+  ImGui::Text("Backtest Missing Days:");
+  ImGui::SameLine();
+  if (summary.backtest_missing_days > 0) {
+    ImGui::TextColored(COLOR_YELLOW, "%zu", summary.backtest_missing_days);
+  } else {
+    ImGui::TextColored(COLOR_GREEN, "0");
+  }
+
+  // In range check
+  ImGui::Text("In Range:");
+  ImGui::SameLine();
+  if (!summary.backtest_range_start.empty()) {
+    if (summary.backtest_in_range) {
+      ImGui::TextColored(COLOR_GREEN, "Yes");
+    } else {
+      ImGui::TextColored(COLOR_RED, "No");
+    }
+  } else {
+    ImGui::TextDisabled("N/A");
   }
 
   ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
 
-  // Assets
+  // Assets count
   ImGui::Text("Assets:");
   ImGui::SameLine();
   ImGui::TextColored(COLOR_GREEN, "%zu", summary.total_assets);
-  
-  // Snapshots
+
+  ImGui::Spacing();
+
+  // Snapshots: count/total + size (in backtest range if available)
   ImGui::Text("Snapshots Encoded:");
   ImGui::SameLine();
-  ImGui::TextColored(COLOR_CYAN, "%zu", summary.snapshots_encoded_count);
+  if (summary.backtest_trade_days > 0) {
+    ImGui::TextColored(COLOR_CYAN, "%zu/%zu", summary.backtest_snapshots_encoded, summary.backtest_trade_days);
+  } else {
+    ImGui::TextColored(COLOR_CYAN, "%zu", summary.snapshots_encoded_count);
+  }
   ImGui::SameLine();
   ImGui::TextDisabled("(%.2f GB)", summary.snapshots_size_gb);
-  
-  // Orders
+
+  // Orders: count/total + size (in backtest range if available)
   ImGui::Text("Orders Encoded:");
   ImGui::SameLine();
-  ImGui::TextColored(COLOR_CYAN, "%zu", summary.orders_encoded_count);
+  if (summary.backtest_trade_days > 0) {
+    ImGui::TextColored(COLOR_CYAN, "%zu/%zu", summary.backtest_orders_encoded, summary.backtest_trade_days);
+  } else {
+    ImGui::TextColored(COLOR_CYAN, "%zu", summary.orders_encoded_count);
+  }
   ImGui::SameLine();
   ImGui::TextDisabled("(%.2f GB)", summary.orders_size_gb);
 
   ImGui::Spacing();
 
-  // Missing data
+  // Missing data (always show)
+  ImGui::Text("Assets w/ Missing Snapshots:");
+  ImGui::SameLine();
   if (summary.assets_missing_snapshots > 0) {
-    ImGui::Text("Missing Snapshots:");
-    ImGui::SameLine();
-    ImGui::TextColored(COLOR_YELLOW, "%zu assets", summary.assets_missing_snapshots);
+    ImGui::TextColored(COLOR_YELLOW, "%zu", summary.assets_missing_snapshots);
+  } else {
+    ImGui::TextColored(COLOR_GREEN, "0");
   }
-  
+
+  ImGui::Text("Assets w/ Missing Orders:");
+  ImGui::SameLine();
   if (summary.assets_missing_orders > 0) {
-    ImGui::Text("Missing Orders:");
-    ImGui::SameLine();
-    ImGui::TextColored(COLOR_YELLOW, "%zu assets", summary.assets_missing_orders);
+    ImGui::TextColored(COLOR_YELLOW, "%zu", summary.assets_missing_orders);
+  } else {
+    ImGui::TextColored(COLOR_GREEN, "0");
   }
 
   ImGui::EndChild();
@@ -430,11 +486,7 @@ void RenderTabOverview(
     bool *update_all_clicked,
     bool *check_integrity_clicked,
     bool *refresh_scan_clicked,
-    size_t l2_asset_count,
-    size_t l2_encoded_count,
-    size_t l2_missing_count,
-    double l2_coverage_pct,
-    double l2_disk_usage_gb,
+    const L2Summary &l2_summary,
     bool disable_update_controls,
     bool disable_scan_controls) {
 
@@ -485,22 +537,15 @@ void RenderTabOverview(
 
   // Right panel: Crawler monitor + L2 Database Summary
   ImGui::BeginChild("RightPanel", ImVec2(0, 0), false);
-  
+
   // Baostock Crawler (compact single line)
   RenderCrawlerMonitor(crawler_state);
-  
+
   ImGui::Spacing();
-  
-  // L2 Database Summary (expanded details)
-  L2Summary l2_summary;
-  l2_summary.total_assets = l2_asset_count;
-  l2_summary.encoded_assets = l2_encoded_count;
-  l2_summary.missing_assets = l2_missing_count;
-  l2_summary.coverage_percent = l2_coverage_pct;
-  l2_summary.disk_usage_gb = l2_disk_usage_gb;
-  // TODO: Add detailed fields (date range, snapshots/orders sizes, etc.)
+
+  // L2 Database Summary (expanded details with all fields)
   RenderL2DatabaseSummary(l2_summary);
-  
+
   ImGui::EndChild(); // End RightPanel
 }
 

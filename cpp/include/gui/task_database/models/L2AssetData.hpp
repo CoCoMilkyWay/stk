@@ -80,9 +80,17 @@ struct AssetInfo {
 // ============================================================================
 
 struct L2Summary {
-  // Date range
-  std::string date_range_start; // YYYYMMDD
-  std::string date_range_end;   // YYYYMMDD
+  // Database date range
+  std::string database_range_start; // YYYYMMDD
+  std::string database_range_end;   // YYYYMMDD
+  size_t database_trade_days = 0;   // Number of trading days in database
+  
+  // Backtest date range (from config)
+  std::string backtest_range_start; // YYYYMMDD
+  std::string backtest_range_end;   // YYYYMMDD
+  size_t backtest_trade_days = 0;   // Number of trading days in backtest range
+  size_t backtest_missing_days = 0; // Missing trading days in backtest range
+  bool backtest_in_range = false;   // Is backtest range within database range?
   
   // Assets
   size_t total_assets = 0;
@@ -90,13 +98,17 @@ struct L2Summary {
   size_t missing_assets = 0;
   double coverage_percent = 0.0;
   
-  // Snapshots
+  // Snapshots (all database)
   size_t snapshots_encoded_count = 0;
   double snapshots_size_gb = 0.0;
   
-  // Orders
+  // Orders (all database)
   size_t orders_encoded_count = 0;
   double orders_size_gb = 0.0;
+  
+  // Snapshots/Orders in backtest range
+  size_t backtest_snapshots_encoded = 0;
+  size_t backtest_orders_encoded = 0;
   
   // Missing data per asset
   size_t assets_missing_snapshots = 0;

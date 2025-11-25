@@ -10,6 +10,7 @@
 #include "imgui.h"
 #include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -40,6 +41,7 @@ private:
   bool initialized_ = false;
   CoroManager *coro_mgr_ = nullptr;
   std::string database_dir_;
+  Config *config_ = nullptr; // Pointer to config for accessing backtest dates
   std::string config_dir_ = "../../config";
 
 public:
@@ -67,6 +69,7 @@ public:
     if (!coro_mgr_) {
       coro_mgr_ = gui_state.coro_mgr;
       database_dir_ = data.config.database_dir;
+      config_ = &data.config;
     }
 
     // Initialize services on first draw (non-blocking)
@@ -98,7 +101,7 @@ private:
 
           {
             FlagReset update_reset{json_update_inflight_};
-            co_await baostock_svc_->update_all(false);
+            co_await baostock_svc_->update_all();
             state_mgr_->refresh_state();
           }
 
@@ -212,7 +215,20 @@ private:
     bool refresh_scan = false;
 
     // Safe to call - returns empty summary if not scanned yet
-    auto l2_summary = l2_svc_->get_summary();
+    // Pass backtest dates and trading days for detailed statistics
+    std::string backtest_start = config_ ? config_->start_date : "";
+    std::string backtest_end = config_ ? config_->end_date : "";
+    const auto &trading_days = baostock_svc_->get_stock_days_data();
+    
+    // Convert start_date and end_date from "YYYY-MM-DD" to "YYYYMMDD"
+    if (!backtest_start.empty()) {
+      backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
+    }
+    if (!backtest_end.empty()) {
+      backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
+    }
+    
+    auto l2_summary = l2_svc_->get_summary(backtest_start, backtest_end, trading_days);
 
     const auto &stock_factor_state = baostock_svc_->get_stock_factor_state();
     const auto &stock_info_state = baostock_svc_->get_stock_info_state();
@@ -239,11 +255,7 @@ private:
         &stock_info_update, &stock_info_remove, &stock_info_view,
         &stock_days_update, &stock_days_remove, &stock_days_view,
         &update_all, &check_integrity, &refresh_scan,
-        l2_summary.total_assets,
-        l2_summary.encoded_assets,
-        l2_summary.missing_assets,
-        l2_summary.coverage_percent,
-        l2_summary.disk_usage_gb,
+        l2_summary,
         json_busy,
         scan_busy);
 
@@ -260,7 +272,7 @@ private:
 
             {
               FlagReset update_reset{json_update_inflight_};
-              co_await baostock_svc_->update_all(false);
+              co_await baostock_svc_->update_all();
               state_mgr_->refresh_state();
             }
 
@@ -286,7 +298,7 @@ private:
               ~FlagReset() { flag = false; }
             } reset{json_update_inflight_};
 
-            co_await baostock_svc_->update_stock_factor(true);
+            co_await baostock_svc_->update_stock_factor();
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -302,7 +314,7 @@ private:
               ~FlagReset() { flag = false; }
             } reset{json_update_inflight_};
 
-            co_await baostock_svc_->update_stock_info(true);
+            co_await baostock_svc_->update_stock_info();
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -318,7 +330,7 @@ private:
               ~FlagReset() { flag = false; }
             } reset{json_update_inflight_};
 
-            co_await baostock_svc_->update_stock_days(true);
+            co_await baostock_svc_->update_stock_days();
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);

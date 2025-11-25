@@ -44,11 +44,10 @@ public:
   // ============================================================================
 
   awaitable<void> load_all_json();
-
-  awaitable<void> update_stock_factor(bool force = false);
-  awaitable<void> update_stock_info(bool force = false);
-  awaitable<void> update_stock_days(bool force = false);
-  awaitable<void> update_all(bool force = false);
+  awaitable<void> update_stock_factor();
+  awaitable<void> update_stock_info();
+  awaitable<void> update_stock_days();
+  awaitable<void> update_all();
 
   // Force remove operations (with backup)
   bool force_remove_stock_factor();

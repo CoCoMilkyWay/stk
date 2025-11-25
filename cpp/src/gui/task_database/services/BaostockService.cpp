@@ -46,7 +46,7 @@ BaostockService::BaostockService(boost::asio::io_context &io,
       }
     }
   });
-  
+
   // Setup crawler progress callback (for session status and query count)
   data_mgr_->set_crawler_progress_callback([this](const CrawlerProgress &progress) {
     crawler_state_.progress = progress;
@@ -94,41 +94,110 @@ awaitable<void> BaostockService::load_all_json() {
   refresh_state();
 }
 
-awaitable<void> BaostockService::update_stock_factor(bool force) {
+awaitable<void> BaostockService::update_stock_factor() {
   stock_factor_state_.status = JsonFileStatus::Updating;
   crawler_state_.status = CrawlerStatus::Running;
 
-  co_await data_mgr_->update_stock_factor(force);
+  co_await data_mgr_->update_stock_factor();
 
   update_stock_factor_state();
   crawler_state_.status = CrawlerStatus::Complete;
 }
 
-awaitable<void> BaostockService::update_stock_info(bool force) {
+awaitable<void> BaostockService::update_stock_info() {
   stock_info_state_.status = JsonFileStatus::Updating;
   crawler_state_.status = CrawlerStatus::Running;
 
-  co_await data_mgr_->update_stock_info_weekly(force, false);
-  co_await data_mgr_->update_stock_info_daily(force, true); // skip_days=true to avoid redundant update
+  // Load config to get stock codes
+  const auto &stock_codes = data_mgr_->get_stock_codes();
+
+  // Load current data and check integrity
+  const auto &data = get_stock_info_data();
+  auto integrity = data_mgr_->check_stock_info_integrity();
+
+  bool any_update = false;
+
+  // Decision 1: trigger weekly?
+  // Conditions: integrity failed OR has incomplete weekly data OR should_run_weekly_update
+  bool trigger_weekly = false;
+
+  if (!integrity.passed) {
+    // Integrity fail → must run weekly (will clear and refetch all)
+    trigger_weekly = true;
+  } else {
+    // Check for incomplete weekly fields (name or ipoDate missing)
+    for (const auto &code : stock_codes) {
+      auto it = data.find(code);
+      if (it == data.end() || it->second.name.empty() || it->second.ipoDate.empty()) {
+        trigger_weekly = true;
+        break;
+      }
+    }
+
+    // Also check if it's weekly update day
+    if (!trigger_weekly && data_mgr_->should_run_weekly_update_public()) {
+      trigger_weekly = true;
+    }
+  }
+
+  if (trigger_weekly) {
+    co_await data_mgr_->update_stock_info_weekly(false, false, false);
+    any_update = true;
+  }
+
+  // Decision 2: trigger daily?
+  // Conditions: integrity passed AND any stock's update_date < last_trading_day
+  bool trigger_daily = false;
+
+  if (!trigger_weekly || integrity.passed) { // Only if weekly wasn't triggered OR data is valid
+    std::string target_date = data_mgr_->get_last_trading_day_public();
+
+    for (const auto &code : stock_codes) {
+      auto it = data.find(code);
+      if (it == data.end())
+        continue;
+
+      // Skip delisted stocks
+      if (!it->second.outDate.empty())
+        continue;
+
+      // Check if update_date is outdated
+      if (it->second.update_date < target_date) {
+        trigger_daily = true;
+        break;
+      }
+    }
+
+    if (trigger_daily) {
+      // skip_days=true: daily doesn't need to update days again
+      co_await data_mgr_->update_stock_info_daily(true, false, false);
+      any_update = true;
+    }
+  }
+
+  // If neither was triggered, nothing to do
+  if (!any_update) {
+    data_mgr_->Log("[Stock Info] No update needed - data is up-to-date");
+  }
 
   update_stock_info_state();
   crawler_state_.status = CrawlerStatus::Complete;
 }
 
-awaitable<void> BaostockService::update_stock_days(bool force) {
+awaitable<void> BaostockService::update_stock_days() {
   stock_days_state_.status = JsonFileStatus::Updating;
   crawler_state_.status = CrawlerStatus::Running;
 
-  co_await data_mgr_->update_stock_days(force);
+  co_await data_mgr_->update_stock_days();
 
   update_stock_days_state();
   crawler_state_.status = CrawlerStatus::Complete;
 }
 
-awaitable<void> BaostockService::update_all(bool force) {
+awaitable<void> BaostockService::update_all() {
   crawler_state_.status = CrawlerStatus::Running;
 
-  co_await data_mgr_->update_all(force);
+  co_await data_mgr_->update_all();
 
   refresh_state();
   crawler_state_.status = CrawlerStatus::Complete;

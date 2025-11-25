@@ -648,12 +648,9 @@ void TaskDatabase::CheckAllIntegrity() {
 std::vector<std::string> TaskDatabase::CheckStockFactorIntegrity() {
   std::vector<std::string> errors;
   
-  // 规则1: 所有股票必须有记录
-  for (const auto& code : stock_list_) {
-    if (!data_mgr_.stock_factor_data_.contains(code)) {
-      errors.push_back(fmt::format("Missing data for {}", code));
-    }
-  }
+  // 规则1: 检查每个股票的数据质量
+  // 注意: stock_factor 支持增量更新，缺失单个股票可以单独补充
+  //      (不会触发完整重新查询)
   
   // 规则2: 日期必须排序且无重复
   for (const auto& [code, records] : data_mgr_.stock_factor_data_) {
@@ -674,6 +671,9 @@ std::vector<std::string> TaskDatabase::CheckStockInfoIntegrity() {
   std::vector<std::string> errors;
   
   // 规则1: 所有股票必须有记录
+  // 注意: stock_info 与 stock_factor 不同
+  //      - stock_factor: 缺失单个股票可以单独补充
+  //      - stock_info: 缺失任何股票都需要触发完整的周频+日频更新
   for (const auto& code : stock_list_) {
     if (!data_mgr_.stock_info_data_.contains(code)) {
       errors.push_back(fmt::format("Missing entry for {}", code));
@@ -1061,25 +1061,25 @@ void TaskDatabase::Draw() {
   // 每帧调用（60 FPS）
   
   if (ImGui::BeginTabBar("DatabaseTabs")) {
-    if (ImGui::BeginTabItem("Overview")) {
-      DrawOverviewTab();
-      ImGui::EndTabItem();
-    }
-    
-    // Table和Browser标签需要JSON数据就绪
-    ImGui::BeginDisabled(!all_json_ready());
-    if (ImGui::BeginTabItem("Table")) {
-      DrawTableTab();
-      ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Browser")) {
-      DrawBrowserTab();
-      ImGui::EndTabItem();
-    }
-    ImGui::EndDisabled();
-    
-    ImGui::EndTabBar();
+  if (ImGui::BeginTabItem("Overview")) {
+    DrawOverviewTab();
+    ImGui::EndTabItem();
   }
+  
+    // Table和Browser标签需要JSON数据就绪
+  ImGui::BeginDisabled(!all_json_ready());
+  if (ImGui::BeginTabItem("Table")) {
+    DrawTableTab();
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("Browser")) {
+    DrawBrowserTab();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndDisabled();
+  
+  ImGui::EndTabBar();
+}
 }
 
 bool TaskDatabase::all_json_ready() const {

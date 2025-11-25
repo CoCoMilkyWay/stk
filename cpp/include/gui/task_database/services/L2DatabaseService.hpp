@@ -47,7 +47,9 @@ public:
   // Statistics
   // ============================================================================
 
-  L2Summary get_summary() const;
+  L2Summary get_summary(const std::string &backtest_start = "",
+                        const std::string &backtest_end = "",
+                        const std::vector<std::vector<std::string>> &trading_days = {}) const;
 
   // ============================================================================
   // Status Query
