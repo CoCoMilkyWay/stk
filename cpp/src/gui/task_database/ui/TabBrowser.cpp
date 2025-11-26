@@ -291,13 +291,6 @@ void RenderMonthGrid(
     if (row > max_row)
       max_row = row;
 
-    // Calculate position for dense packing
-    ImVec2 cell_pos = ImVec2(
-        grid_start.x + col * (CELL_SIZE + CELL_SPACING),
-        grid_start.y + row * (CELL_SIZE + ROW_SPACING));
-
-    ImGui::SetCursorScreenPos(cell_pos);
-
     // Build date string YYYYMMDD
     char date_dense[16];
     snprintf(date_dense, sizeof(date_dense), "%04d%02d%02d", year, month, day);
@@ -307,7 +300,18 @@ void RenderMonthGrid(
     auto stats_it = daily_stats.find(date_key);
     const DailyStats *stats = (stats_it != daily_stats.end()) ? &stats_it->second : nullptr;
 
-    // Draw cell - now with multiple layers from left to right
+    // Calculate position for dense packing
+    ImVec2 cell_pos = ImVec2(
+        grid_start.x + col * (CELL_SIZE + CELL_SPACING),
+        grid_start.y + row * (CELL_SIZE + ROW_SPACING));
+
+    // Set cursor position and create invisible button FIRST for proper hit testing
+    ImGui::SetCursorScreenPos(cell_pos);
+    ImGui::InvisibleButton(
+        ("##day" + date_key).c_str(),
+        ImVec2(CELL_SIZE, CELL_SIZE));
+    
+    // Now draw on top using DrawList (doesn't affect cursor/layout)
     ImDrawList *draw_list = ImGui::GetWindowDrawList();
 
     // Define layer widths (4 layers + background)
@@ -412,12 +416,7 @@ void RenderMonthGrid(
           1.0f);
     }
 
-    // Invisible button for interaction (cursor is already at cell_pos from SetCursorScreenPos)
-    ImGui::InvisibleButton(
-        ("##day" + date_key).c_str(),
-        ImVec2(CELL_SIZE, CELL_SIZE));
-
-    // Handle hover
+    // Handle hover (button was created above before drawing)
     if (ImGui::IsItemHovered()) {
       state.hover_date = DateToDashed(date_key);
 
