@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <numeric>
 
 namespace GUI::Database {
 
@@ -270,51 +271,50 @@ void RenderDataTable(
   ImGui::TableSetupColumn("Orders");
 
   ImGui::TableSetupScrollFreeze(0, 1);
-  
+
   // Custom headers with tooltips
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-  const char* header_labels[] = {"Code", "Name", "Exch", "Board", "ST", "DL", "Listed", "Ind", 
-                                   "PE", "PB", "PS", "PCF", "Cap", "Days", "Snap%", "Order%", "Miss", "Snaps", "Orders"};
-  const char* header_tooltips[] = {
-    "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
-    
-    "股票名称 (Name)\n公司在交易所的简称",
-    
-    "交易所 (Exchange)\nSH = 上海证券交易所 (Shanghai Stock Exchange)\nSZ = 深圳证券交易所 (Shenzhen Stock Exchange)",
-    
-    "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (87/88/92)",
-    
-    "ST股 (Special Treatment)\nisST: 是否为特别处理股票\n1 = 是ST股, 0 = 否\n\n说明:连续两年亏损的股票会被标记为ST\n投资风险较高,涨跌幅限制为±5%",
-    
-    "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\noutDate字段记录退市日期",
-    
-    "上市天数 (Listed Days)\n从IPO日期到现在的天数\n= 当前日期 - ipoDate\n可用于判断新股或老股",
-    
-    "行业 (Industry)\n所属行业分类代码 (ind_code)\n由交易所或数据提供商分类",
-    
-    "滚动市盈率 (PE TTM)\npeTTM = Trailing Twelve Months P/E Ratio\n= 股票收盘价 / 每股盈余TTM\n= (收盘价 x 总股本) / 归属母公司股东净利润TTM\n\nTTM = 过去12个月滚动数据\n反映公司盈利能力,数值越低估值越便宜",
-    
-    "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 股票收盘价 / 每股净资产\n= 总市值 / (归属母公司股东权益 - 其他权益工具)\n\nMRQ = 最近季度数据\n反映账面价值,通常>1,<1可能破净",
-    
-    "滚动市销率 (PS TTM)\npsTTM = Price-to-Sales Ratio (TTM)\n= 股票收盘价 / 每股销售额\n= (收盘价 x 总股本) / 营业总收入TTM\n\n反映每单位营收对应的市值\n适用于尚未盈利但有营收的公司",
-    
-    "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 股票收盘价 / 每股现金流TTM\n= (收盘价 x 总股本) / 现金及现金等价物净增加额TTM\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵",
-    
-    "总市值 (Market Cap)\n计算公式:市值(亿元) = 成交额 x 100 / 换手率 / 1亿\n= amount x 100 / turn / 1e8\n\n说明:\n- amount = 成交额(元)\n- turn = 换手率(%)\n- 通过成交额和换手率反推流通市值\n- 换手率 = 成交量/流通股数x100%\n- 流通市值 = 成交额/换手率x100",
-    
-    "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info.size()\n可用于判断数据完整性",
-    
-    "快照覆盖率 (Snapshot Coverage %)\n= (有编码快照数据的天数 / 总交易日数) x 100%\n= snapshots_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码快照的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2快照数据的完整性",
-    
-    "订单覆盖率 (Order Coverage %)\n= (有编码订单数据的天数 / 总交易日数) x 100%\n= orders_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码逐笔委托的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2逐笔委托数据的完整性",
-    
-    "缺失天数 (Missing Days)\n在交易日范围内缺失数据的天数\n= 预期交易日总数 - 实际有数据的天数\n\n说明:\n- 数值越大说明数据缺失越严重\n- 需要补充下载或检查数据源",
-    
-    "快照总数 (Total Snapshots)\n所有交易日的快照记录总数量\n= Σ snapshot_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2行情快照的总数据量",
-    
-    "订单总数 (Total Orders)\n所有交易日的逐笔委托记录总数量\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2逐笔委托的总数据量"
-  };
-  
+  const char *header_labels[] = {"Code", "Name", "Exch", "Board", "ST", "DL", "Listed", "Ind",
+                                 "PE", "PB", "PS", "PCF", "Cap", "Days", "Snap%", "Order%", "Miss", "Snaps", "Orders"};
+  const char *header_tooltips[] = {
+      "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
+
+      "股票名称 (Name)\n公司在交易所的简称",
+
+      "交易所 (Exchange)\nSH = 上海证券交易所 (Shanghai Stock Exchange)\nSZ = 深圳证券交易所 (Shenzhen Stock Exchange)",
+
+      "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (87/88/92)",
+
+      "ST股 (Special Treatment)\nisST: 是否为特别处理股票\n1 = 是ST股, 0 = 否\n\n说明:连续两年亏损的股票会被标记为ST\n投资风险较高,涨跌幅限制为±5%",
+
+      "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\noutDate字段记录退市日期",
+
+      "上市天数 (Listed Days)\n从IPO日期到现在的天数\n= 当前日期 - ipoDate\n可用于判断新股或老股",
+
+      "行业 (Industry)\n所属行业分类代码 (ind_code)\n由交易所或数据提供商分类",
+
+      "滚动市盈率 (PE TTM)\npeTTM = Trailing Twelve Months P/E Ratio\n= 股票收盘价 / 每股盈余TTM\n= (收盘价 x 总股本) / 归属母公司股东净利润TTM\n\nTTM = 过去12个月滚动数据\n反映公司盈利能力,数值越低估值越便宜",
+
+      "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 股票收盘价 / 每股净资产\n= 总市值 / (归属母公司股东权益 - 其他权益工具)\n\nMRQ = 最近季度数据\n反映账面价值,通常>1,<1可能破净",
+
+      "滚动市销率 (PS TTM)\npsTTM = Price-to-Sales Ratio (TTM)\n= 股票收盘价 / 每股销售额\n= (收盘价 x 总股本) / 营业总收入TTM\n\n反映每单位营收对应的市值\n适用于尚未盈利但有营收的公司",
+
+      "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 股票收盘价 / 每股现金流TTM\n= (收盘价 x 总股本) / 现金及现金等价物净增加额TTM\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵",
+
+      "总市值 (Market Cap)\n计算公式:市值(亿元) = 成交额 x 100 / 换手率 / 1亿\n= amount x 100 / turn / 1e8\n\n说明:\n- amount = 成交额(元)\n- turn = 换手率(%)\n- 通过成交额和换手率反推流通市值\n- 换手率 = 成交量/流通股数x100%\n- 流通市值 = 成交额/换手率x100",
+
+      "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info.size()\n可用于判断数据完整性",
+
+      "快照覆盖率 (Snapshot Coverage %)\n= (有编码快照数据的天数 / 总交易日数) x 100%\n= snapshots_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码快照的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2快照数据的完整性",
+
+      "订单覆盖率 (Order Coverage %)\n= (有编码订单数据的天数 / 总交易日数) x 100%\n= orders_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码逐笔委托的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2逐笔委托数据的完整性",
+
+      "缺失天数 (Missing Days)\n在交易日范围内缺失数据的天数\n= 预期交易日总数 - 实际有数据的天数\n\n说明:\n- 数值越大说明数据缺失越严重\n- 需要补充下载或检查数据源",
+
+      "快照总数 (Total Snapshots)\n所有交易日的快照记录总数量\n= Σ snapshot_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2行情快照的总数据量",
+
+      "订单总数 (Total Orders)\n所有交易日的逐笔委托记录总数量\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2逐笔委托的总数据量"};
+
   for (int col = 0; col < 19; col++) {
     ImGui::TableSetColumnIndex(col);
     ImGui::PushID(col);
@@ -1038,65 +1038,98 @@ static void RenderNumericAnalysis(
 
   if (!filtered_values.empty()) {
     const int num_bins = 100;
-    
-    // Calculate histogram bins
+
+    // Calculate statistics for Gaussian fit
     auto minmax = std::minmax_element(filtered_values.begin(), filtered_values.end());
     double min_val = *minmax.first;
     double max_val = *minmax.second;
     double range = max_val - min_val;
     double bin_width = range / num_bins;
-    
+
+    double sum = std::accumulate(filtered_values.begin(), filtered_values.end(), 0.0);
+    double mean = sum / filtered_values.size();
+
+    double sq_sum = 0.0;
+    for (double v : filtered_values) {
+      sq_sum += (v - mean) * (v - mean);
+    }
+    double std_dev = std::sqrt(sq_sum / filtered_values.size());
+
+    // Calculate histogram bins
     std::vector<double> hist_bins(num_bins, 0.0);
     for (double v : filtered_values) {
       int bin_idx = static_cast<int>((v - min_val) / bin_width);
-      if (bin_idx >= num_bins) bin_idx = num_bins - 1;
-      if (bin_idx < 0) bin_idx = 0;
+      if (bin_idx >= num_bins)
+        bin_idx = num_bins - 1;
+      if (bin_idx < 0)
+        bin_idx = 0;
       hist_bins[bin_idx] += 1.0;
     }
-    
-    // Normalize histogram to PDF
-    double total_area = 0.0;
-    for (double count : hist_bins) {
-      total_area += count * bin_width;
-    }
-    std::vector<double> pdf_bins(num_bins);
+
+    // Normalize histogram to density
+    double n = filtered_values.size();
+    std::vector<double> hist_density(num_bins);
     for (int i = 0; i < num_bins; ++i) {
-      pdf_bins[i] = hist_bins[i] / total_area;
+      hist_density[i] = hist_bins[i] / (n * bin_width);
     }
-    
-    // Calculate CDF
-    std::vector<double> cdf_bins(num_bins);
-    double cumsum = 0.0;
-    for (int i = 0; i < num_bins; ++i) {
-      cumsum += pdf_bins[i] * bin_width;
-      cdf_bins[i] = cumsum;
-    }
-    
-    // Prepare X axis positions
+
+    // Prepare X axis positions for histogram
     std::vector<double> x_positions(num_bins);
     for (int i = 0; i < num_bins; ++i) {
       x_positions[i] = min_val + (i + 0.5) * bin_width;
     }
-    
-    if (ImPlot::BeginPlot("##Distribution", ImVec2(-1, 300))) {
-      ImPlot::SetupAxes("Value", "Density / Probability");
-      ImPlot::SetupAxesLimits(min_val, max_val, 0, 1.2, ImPlotCond_Once);
+
+    // Generate fitted Gaussian PDF (200 points for smooth curve)
+    const int pdf_points = 200;
+    std::vector<double> pdf_x(pdf_points);
+    std::vector<double> pdf_y(pdf_points);
+    const double pi = 3.14159265358979323846;
+
+    for (int i = 0; i < pdf_points; ++i) {
+      double x = min_val + (i * range) / (pdf_points - 1);
+      pdf_x[i] = x;
+      double z = (x - mean) / std_dev;
+      pdf_y[i] = (1.0 / (std_dev * std::sqrt(2.0 * pi))) * std::exp(-0.5 * z * z);
+    }
+
+    // Calculate empirical CDF
+    std::vector<double> sorted_vals = filtered_values;
+    std::sort(sorted_vals.begin(), sorted_vals.end());
+    std::vector<double> cdf_x(pdf_points);
+    std::vector<double> cdf_y(pdf_points);
+
+    for (int i = 0; i < pdf_points; ++i) {
+      double x = min_val + (i * range) / (pdf_points - 1);
+      cdf_x[i] = x;
+      auto it = std::upper_bound(sorted_vals.begin(), sorted_vals.end(), x);
+      cdf_y[i] = (double)std::distance(sorted_vals.begin(), it) / sorted_vals.size();
+    }
+
+    // Find max density for Y axis
+    double max_hist_density = *std::max_element(hist_density.begin(), hist_density.end());
+    double max_pdf = *std::max_element(pdf_y.begin(), pdf_y.end());
+    double y_max = std::max(max_hist_density, max_pdf) * 1.15;
+
+    if (ImPlot::BeginPlot("##Distribution", ImVec2(-1, 350))) {
+      ImPlot::SetupAxes("Value", "Density");
+      ImPlot::SetupAxisLimits(ImAxis_X1, min_val, max_val, ImPlotCond_Always);
+      ImPlot::SetupAxisLimits(ImAxis_Y1, 0, y_max, ImPlotCond_Always);
       ImPlot::SetupAxis(ImAxis_Y2, "CDF", ImPlotAxisFlags_AuxDefault);
-      ImPlot::SetupAxisLimits(ImAxis_Y2, 0, 1.05, ImPlotCond_Once);
-      
-      // Plot histogram bars (PDF normalized)
-      ImPlot::SetNextFillStyle(ImVec4(0.5f, 0.7f, 1.0f, 0.5f));
-      ImPlot::PlotBars("##hist", x_positions.data(), pdf_bins.data(), num_bins, bin_width * 0.9);
-      
-      // Plot PDF line
-      ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.5f, 1.0f, 1.0f), 2.0f);
-      ImPlot::PlotLine("PDF", x_positions.data(), pdf_bins.data(), num_bins);
-      
-      // Plot CDF on secondary Y axis
+      ImPlot::SetupAxisLimits(ImAxis_Y2, 0, 1.05, ImPlotCond_Always);
+
+      // Plot histogram bars
+      ImPlot::SetNextFillStyle(ImVec4(0.5f, 0.7f, 1.0f, 0.4f));
+      ImPlot::PlotBars("Histogram", x_positions.data(), hist_density.data(), num_bins, bin_width * 0.9);
+
+      // Plot fitted Gaussian PDF
+      ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), 2.5f);
+      ImPlot::PlotLine("Fitted PDF", pdf_x.data(), pdf_y.data(), pdf_points);
+
+      // Plot empirical CDF on secondary Y axis
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-      ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), 2.0f);
-      ImPlot::PlotLine("CDF", x_positions.data(), cdf_bins.data(), num_bins);
-      
+      ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), 2.5f);
+      ImPlot::PlotLine("Empirical CDF", cdf_x.data(), cdf_y.data(), pdf_points);
+
       ImPlot::EndPlot();
     }
   }
