@@ -259,13 +259,25 @@ void RenderMonthGrid(
   // Month label and day headers in one line
   ImGui::Text("%s 一...日", month_names[month - 1]);
 
+  // Get the day of week for the 1st day of this month
+  char first_date[16];
+  snprintf(first_date, sizeof(first_date), "%04d%02d%02d", year, month, 1);
+  int first_dow = GetDayOfWeek(std::string(first_date)); // 0=Sunday, 1=Monday, ..., 6=Saturday
+  
   // Get starting position for grid
   ImVec2 grid_start = ImGui::GetCursorScreenPos();
   
-  // Day grid (approximately 31 days, arranged in rows of 7)
+  // Day grid (up to 31 days, arranged in rows of 7, aligned by day of week)
   for (int day = 1; day <= 31; ++day) {
-    int col = (day - 1) % 7;
-    int row = (day - 1) / 7;
+    // Calculate column based on day of week (Mon=0, ..., Sun=6 for display)
+    char date_str[16];
+    snprintf(date_str, sizeof(date_str), "%04d%02d%02d", year, month, day);
+    int dow = GetDayOfWeek(std::string(date_str));
+    if (dow < 0) break; // Invalid date
+    
+    // Convert to grid position: Mon=0, Tue=1, ..., Sun=6
+    int col = (dow + 6) % 7; // Sunday=6, Monday=0
+    int row = (day + first_dow - 1) / 7;
     
     // Calculate position for dense packing
     ImVec2 cell_pos = ImVec2(
@@ -283,43 +295,67 @@ void RenderMonthGrid(
     auto stats_it = daily_stats.find(date_key);
     const DailyStats *stats = (stats_it != daily_stats.end()) ? &stats_it->second : nullptr;
 
-    // Determine fill color based on priority (highest to lowest)
-    ImVec4 fill_color = COLOR_GRAY; // Default: non-backtest or non-trading
+    // Draw cell - now with multiple layers from left to right
+    ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
+    ImDrawList *draw_list = ImGui::GetWindowDrawList();
+
+    // Define layer widths (4 layers + background)
+    constexpr int NUM_LAYERS = 4;
+    const float layer_width = CELL_SIZE / NUM_LAYERS;
+    
+    // Draw background (gray)
+    draw_list->AddRectFilled(
+        cursor_pos,
+        ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+        ImGui::GetColorU32(COLOR_GRAY));
 
     if (stats) {
-      // Priority 4: Has L2 data (lowest)
-      bool has_data = false;
-      if (state.view_mode == BrowserViewMode::All) {
-        has_data = stats->assets_with_both > 0;
-      } else if (state.view_mode == BrowserViewMode::Snapshots) {
-        has_data = stats->assets_with_snapshots > 0;
-      } else { // Orders
-        has_data = stats->assets_with_orders > 0;
+      // Layer 1: Dividend/Split (Yellow) - leftmost
+      if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
+        draw_list->AddRectFilled(
+            ImVec2(cursor_pos.x, cursor_pos.y),
+            ImVec2(cursor_pos.x + layer_width, cursor_pos.y + CELL_SIZE),
+            ImGui::GetColorU32(COLOR_YELLOW));
       }
 
-      if (has_data) {
-        fill_color = COLOR_BLUE; // Has L2 data
+      // Layer 2: Holiday (Purple)
+      if (state.layers.show_holiday && stats->is_holiday) {
+        draw_list->AddRectFilled(
+            ImVec2(cursor_pos.x + layer_width, cursor_pos.y),
+            ImVec2(cursor_pos.x + layer_width * 2, cursor_pos.y + CELL_SIZE),
+            ImGui::GetColorU32(COLOR_PURPLE));
       }
 
-      // Priority 3: Backtest range trading day (overrides blue)
-      if (stats->is_in_backtest_range && stats->is_trading_day) {
-        fill_color = COLOR_GREEN;
+      // Layer 3: Backtest Range (Green)
+      if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
+        draw_list->AddRectFilled(
+            ImVec2(cursor_pos.x + layer_width * 2, cursor_pos.y),
+            ImVec2(cursor_pos.x + layer_width * 3, cursor_pos.y + CELL_SIZE),
+            ImGui::GetColorU32(COLOR_GREEN));
       }
 
-      // Priority 2: Holiday (overrides green and blue)
-      if (stats->is_holiday) {
-        fill_color = COLOR_PURPLE;
-      }
-
-      // Priority 1: Dividend/split events (HIGHEST, overrides all)
-      if (stats->dividend_split_count > 0) {
-        fill_color = COLOR_YELLOW;
+      // Layer 4: L2 Data (Blue) - rightmost
+      if (state.layers.show_l2_data) {
+        bool has_data = false;
+        if (state.view_mode == BrowserViewMode::All) {
+          has_data = stats->assets_with_both > 0;
+        } else if (state.view_mode == BrowserViewMode::Snapshots) {
+          has_data = stats->assets_with_snapshots > 0;
+        } else {
+          has_data = stats->assets_with_orders > 0;
+        }
+        
+        if (has_data) {
+          draw_list->AddRectFilled(
+              ImVec2(cursor_pos.x + layer_width * 3, cursor_pos.y),
+              ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+              ImGui::GetColorU32(COLOR_BLUE));
+        }
       }
     }
 
-    // Determine border color based on completeness
-    ImVec4 border_color = ImVec4(0.15f, 0.15f, 0.15f, 1.0f); // Very dark gray for non-backtest
-    if (stats && stats->is_trading_day) {
+    // Draw border (completeness)
+    if (state.layers.show_completeness && stats && stats->is_trading_day) {
       float completeness = 0.0f;
       if (state.view_mode == BrowserViewMode::All) {
         completeness = stats->completeness_all();
@@ -329,38 +365,35 @@ void RenderMonthGrid(
         completeness = stats->completeness_orders();
       }
 
-      // Only show colored borders for backtest range trading days
+      ImVec4 border_color;
       if (stats->is_in_backtest_range) {
-        if (completeness >= 0.9999f) // 100% (allowing floating point precision)
+        if (completeness >= 0.9999f)
           border_color = BORDER_GREEN;
-        else if (completeness >= 0.95f) // 95-99.9%
+        else if (completeness >= 0.95f)
           border_color = BORDER_YELLOW;
-        else // <95%
+        else
           border_color = BORDER_RED;
       } else {
-        // Non-backtest trading days: subtle border
         border_color = ImVec4(0.4f, 0.4f, 0.4f, 1.0f);
       }
+
+      draw_list->AddRect(
+          cursor_pos,
+          ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+          ImGui::GetColorU32(border_color),
+          0.0f,
+          0,
+          BORDER_WIDTH);
+    } else {
+      // Default dark border for non-trading days
+      draw_list->AddRect(
+          cursor_pos,
+          ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+          ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f)),
+          0.0f,
+          0,
+          1.0f);
     }
-
-    // Draw cell
-    ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
-    ImDrawList *draw_list = ImGui::GetWindowDrawList();
-
-    // Fill
-    draw_list->AddRectFilled(
-        cursor_pos,
-        ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
-        ImGui::GetColorU32(fill_color));
-
-    // Border
-    draw_list->AddRect(
-        cursor_pos,
-        ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
-        ImGui::GetColorU32(border_color),
-        0.0f,
-        0,
-        BORDER_WIDTH);
 
     // Invisible button for interaction
     ImGui::InvisibleButton(
@@ -510,6 +543,51 @@ void RenderTabBrowser(
     browser_state.daily_stats_cache = BuildDailyStats(
         stock_days, stock_factors, assets, backtest_start, backtest_end);
   }
+  
+  // Layer Toggle Buttons
+  ImGui::Text("Layers:");
+  ImGui::SameLine();
+  
+  // Dividend/Split layer (Yellow)
+  ImVec4 yellow_btn = browser_state.layers.show_dividend_split ? COLOR_YELLOW : ImVec4(0.3f, 0.3f, 0.1f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, yellow_btn);
+  if (ImGui::SmallButton("除权除息")) {
+    browser_state.layers.show_dividend_split = !browser_state.layers.show_dividend_split;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  
+  // Holiday layer (Purple)
+  ImVec4 purple_btn = browser_state.layers.show_holiday ? COLOR_PURPLE : ImVec4(0.2f, 0.1f, 0.3f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, purple_btn);
+  if (ImGui::SmallButton("节假日")) {
+    browser_state.layers.show_holiday = !browser_state.layers.show_holiday;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  
+  // Backtest range layer (Green)
+  ImVec4 green_btn = browser_state.layers.show_backtest_range ? COLOR_GREEN : ImVec4(0.1f, 0.3f, 0.1f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, green_btn);
+  if (ImGui::SmallButton("回测区间")) {
+    browser_state.layers.show_backtest_range = !browser_state.layers.show_backtest_range;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  
+  // L2 data layer (Blue)
+  ImVec4 blue_btn = browser_state.layers.show_l2_data ? COLOR_BLUE : ImVec4(0.1f, 0.1f, 0.3f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, blue_btn);
+  if (ImGui::SmallButton("L2数据")) {
+    browser_state.layers.show_l2_data = !browser_state.layers.show_l2_data;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  
+  // Completeness border toggle
+  if (ImGui::SmallButton(browser_state.layers.show_completeness ? "完整性边框✓" : "完整性边框✗")) {
+    browser_state.layers.show_completeness = !browser_state.layers.show_completeness;
+  }
 
   ImGui::Spacing();
   ImGui::Separator();
@@ -554,28 +632,24 @@ void RenderTabBrowser(
 
   ImGui::Spacing();
 
-  // Legend - Fill Colors
-  ImGui::Text("Fill:");
+  // Legend - Multi-layer Display (Left to Right)
+  ImGui::Text("Layers (Left → Right):");
   ImGui::SameLine();
   ImGui::TextColored(COLOR_YELLOW, "■");
   ImGui::SameLine(0, 2);
-  ImGui::Text("Dividend/Split (Priority 1)");
+  ImGui::Text("除权除息");
   ImGui::SameLine(0, 10);
   ImGui::TextColored(COLOR_PURPLE, "■");
   ImGui::SameLine(0, 2);
-  ImGui::Text("Holiday (Priority 2)");
+  ImGui::Text("节假日");
   ImGui::SameLine(0, 10);
   ImGui::TextColored(COLOR_GREEN, "■");
   ImGui::SameLine(0, 2);
-  ImGui::Text("Backtest Trading Day (Priority 3)");
+  ImGui::Text("回测区间");
   ImGui::SameLine(0, 10);
   ImGui::TextColored(COLOR_BLUE, "■");
   ImGui::SameLine(0, 2);
-  ImGui::Text("Has L2 Data (Priority 4)");
-  ImGui::SameLine(0, 10);
-  ImGui::TextColored(COLOR_GRAY, "■");
-  ImGui::SameLine(0, 2);
-  ImGui::Text("Other");
+  ImGui::Text("L2数据");
 
   // Legend - Border Colors
   ImGui::Text("Border:");
