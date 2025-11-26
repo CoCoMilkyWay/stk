@@ -57,6 +57,7 @@ private:
   // User session state (IP-level, shared across all workers)
   bool user_logged_in_;
   size_t session_query_count_; // Track queries in current login session
+  std::atomic<int> active_workers_; // Track number of workers currently executing queries
 
   // Helper methods - Date utilities
   std::string get_today_date() const;
@@ -103,7 +104,7 @@ public:
   // Update scheduling checks (exposed for service layer)
   std::string get_last_trading_day_public() const { return get_last_trading_day(); }
   bool should_run_weekly_update_public() const { return should_run_weekly_update(); }
-  
+
   // Set stock codes from external source (e.g., L2 database scan)
   awaitable<void> set_stock_codes(const std::vector<std::string> &codes);
 
@@ -138,7 +139,7 @@ public:
   IntegrityResult check_stock_info_integrity();
   IntegrityResult check_stock_days_integrity();
   IntegrityResult check_all_integrity();
-  
+
   // L2 database date range management
   void set_l2_database_date_range(const std::string &start_date, const std::string &end_date);
   std::string get_l2_database_start_date() const { return l2_database_start_date_; }

@@ -32,9 +32,10 @@ private:
   // UI state
   TableState table_state_;
   BrowserState browser_state_;
-  bool overview_tab_was_open_ = false; // Track if Overview tab was open last frame
-  bool json_update_inflight_ = false;  // Prevent concurrent JSON update flows
-  bool l2_scan_inflight_ = false;      // Prevent overlapping L2 scans
+  bool overview_tab_was_open_ = false;  // Track if Overview tab was open last frame
+  bool refresh_flow_triggered_ = false; // Track if refresh flow has been triggered (only once per session)
+  bool json_update_inflight_ = false;   // Prevent concurrent JSON update flows
+  bool l2_scan_inflight_ = false;       // Prevent overlapping L2 scans
 
   // Cached L2 Summary (to avoid recalculating every frame - very expensive!)
   L2Summary cached_l2_summary_;
@@ -95,7 +96,7 @@ private:
     auto &io = coro_mgr_->GetIoContext();
     l2_scan_inflight_ = true;
     json_update_inflight_ = true;
-    l2_summary_valid_ = false; // Invalidate cache at start
+    l2_summary_valid_ = false; // Invalidate cache - will recalculate after JSONs ready
 
     boost::asio::co_spawn(
         io,
@@ -110,7 +111,6 @@ private:
 
           // Step 1: Scan L2 database first to get asset list and date range
           co_await l2_svc_->scan_database();
-          l2_summary_valid_ = false; // Invalidate after L2 scan
           state_mgr_->refresh_state();
 
           // Step 2: Extract stock codes and database start date from L2 scan results
@@ -141,24 +141,26 @@ private:
               l2_end_date = end_yyyymmdd.substr(0, 4) + "-" + end_yyyymmdd.substr(4, 2) + "-" + end_yyyymmdd.substr(6, 2);
             }
 
-            // Store L2 database date range in DataManager (and save to config)
+            // Store L2 database date range in DataManager
             if (!start_yyyymmdd.empty() && !end_yyyymmdd.empty()) {
               baostock_svc_->get_data_manager()->set_l2_database_date_range(start_yyyymmdd, end_yyyymmdd);
-              co_await baostock_svc_->get_data_manager()->save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+              // Note: Will be saved together with stock_codes below
             }
           }
 
-          // Step 3: Update DataManager with L2-derived stock codes
+          // Step 3: Update DataManager with L2-derived stock codes (this will save config)
           if (!stock_codes.empty()) {
             co_await baostock_svc_->get_data_manager()->set_stock_codes(stock_codes);
+          } else {
+            // If no stock codes, still need to save L2 date range
+            co_await baostock_svc_->get_data_manager()->save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
           }
 
           // Step 4: Update all JSON files based on L2 assets (use L2 start date from config)
           co_await baostock_svc_->get_data_manager()->update_all(l2_start_date);
-          l2_summary_valid_ = false; // Invalidate cache so next frame will recalculate
           state_mgr_->refresh_state();
-          
-          // Note: No need to rescan L2 database - binary files don't change from JSON updates
+
+          // Note: L2 summary will be calculated on next frame when JSONs are ready
         }(),
         boost::asio::detached);
   }
@@ -205,9 +207,10 @@ private:
       // Overview tab - always accessible
       bool overview_tab_is_open = ImGui::BeginTabItem("Overview");
       if (overview_tab_is_open) {
-        // Trigger refresh flow when user switches to Overview tab
-        if (!overview_tab_was_open_ && baostock_svc_ && l2_svc_ && !json_update_inflight_) {
+        // Trigger refresh flow ONLY ONCE when first opening Overview tab
+        if (!refresh_flow_triggered_ && !overview_tab_was_open_ && baostock_svc_ && l2_svc_ && !json_update_inflight_) {
           TriggerRefreshFlow();
+          refresh_flow_triggered_ = true;
         }
 
         DrawTabOverview();
@@ -261,8 +264,9 @@ private:
     bool refresh_scan = false;
 
     // Get or calculate L2 summary (cached to avoid expensive recalculation every frame)
-    if (!l2_summary_valid_) {
-      // Only recalculate if cache is invalid
+    // Only calculate once when JSONs are ready
+    if (!l2_summary_valid_ && state_mgr_->get_state().all_json_ready()) {
+      // Only recalculate if cache is invalid AND JSONs are ready
       std::string backtest_start = config_ ? config_->start_date : "";
       std::string backtest_end = config_ ? config_->end_date : "";
       const auto &trading_days = baostock_svc_->get_stock_days_data();
@@ -313,7 +317,7 @@ private:
     // Handle button events
     if (update_all && !json_update_inflight_) {
       json_update_inflight_ = true;
-      l2_summary_valid_ = false; // Invalidate cache before update
+      // Don't invalidate cache yet - only invalidate if update actually changes data
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
@@ -324,8 +328,10 @@ private:
 
             {
               FlagReset update_reset{json_update_inflight_};
+              // TODO: update_all should return whether data changed
               co_await baostock_svc_->update_all();
-              l2_summary_valid_ = false; // Invalidate cache after update
+              // For now, don't invalidate if no network calls were made
+              // The cache is only invalid if actual data changed
               state_mgr_->refresh_state();
             }
 
@@ -352,7 +358,7 @@ private:
             } reset{json_update_inflight_};
 
             co_await baostock_svc_->update_stock_factor();
-            l2_summary_valid_ = false; // Invalidate cache after update
+            // Don't invalidate L2 cache - stock_factor doesn't affect L2 binaries
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -369,7 +375,7 @@ private:
             } reset{json_update_inflight_};
 
             co_await baostock_svc_->update_stock_info();
-            l2_summary_valid_ = false; // Invalidate cache after update
+            // Don't invalidate L2 cache - stock_info doesn't affect L2 binaries
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -386,7 +392,8 @@ private:
             } reset{json_update_inflight_};
 
             co_await baostock_svc_->update_stock_days();
-            l2_summary_valid_ = false; // Invalidate cache after update
+            // Invalidate L2 cache after stock_days update (affects backtest trade days calculation)
+            l2_summary_valid_ = false;
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -412,7 +419,7 @@ private:
 
     if (check_integrity) {
       baostock_svc_->check_all_integrity();
-      l2_summary_valid_ = false; // Invalidate cache after integrity check
+      // Don't invalidate L2 cache - integrity check doesn't change data
       state_mgr_->refresh_state();
     }
 

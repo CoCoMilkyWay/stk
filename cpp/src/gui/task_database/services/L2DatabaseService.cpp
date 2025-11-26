@@ -19,7 +19,7 @@ awaitable<void> L2DatabaseService::scan_database() {
   if (scanned_once_) {
     co_return;
   }
-
+  
   scan_status_ = L2ScanStatus::Scanning;
   error_message_.clear();
 

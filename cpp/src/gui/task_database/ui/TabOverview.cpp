@@ -472,18 +472,30 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
   ImGui::SameLine();
   if (summary.assets_missing_snapshots > 0) {
     ImGui::TextColored(COLOR_YELLOW, "%zu", summary.assets_missing_snapshots);
-    if (ImGui::IsItemHovered() && !summary.missing_snapshots_by_asset.empty()) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_Stationary) && !summary.missing_snapshots_by_asset.empty()) {
       ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(600.0f); // Enable text wrapping at 600px
       ImGui::Text("Missing Snapshots by Asset (in backtest range):");
       ImGui::Separator();
+      
+      // Scrollable child window
+      ImGui::BeginChild("MissingSnapshotsScroll", ImVec2(600, 400), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
       for (const auto &[asset, dates] : summary.missing_snapshots_by_asset) {
-        ImGui::Text("\"%s\":", asset.c_str());
-        ImGui::Indent();
-        for (const auto &date : dates) {
-          ImGui::TextDisabled("%s", date.c_str());
-        }
-        ImGui::Unindent();
+        ImGui::TextColored(COLOR_YELLOW, "\"%s\":", asset.c_str());
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", [&dates]() {
+          std::string all_dates;
+          for (const auto &date : dates) {
+            if (!all_dates.empty()) all_dates += ", ";
+            all_dates += date;
+          }
+          return all_dates;
+        }().c_str());
+        ImGui::Spacing();
       }
+      ImGui::EndChild();
+      
+      ImGui::PopTextWrapPos();
       ImGui::EndTooltip();
     }
   } else {
@@ -494,18 +506,30 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
   ImGui::SameLine();
   if (summary.assets_missing_orders > 0) {
     ImGui::TextColored(COLOR_YELLOW, "%zu", summary.assets_missing_orders);
-    if (ImGui::IsItemHovered() && !summary.missing_orders_by_asset.empty()) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_Stationary) && !summary.missing_orders_by_asset.empty()) {
       ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(600.0f); // Enable text wrapping at 600px
       ImGui::Text("Missing Orders by Asset (in backtest range):");
       ImGui::Separator();
+      
+      // Scrollable child window
+      ImGui::BeginChild("MissingOrdersScroll", ImVec2(600, 400), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
       for (const auto &[asset, dates] : summary.missing_orders_by_asset) {
-        ImGui::Text("\"%s\":", asset.c_str());
-        ImGui::Indent();
-        for (const auto &date : dates) {
-          ImGui::TextDisabled("%s", date.c_str());
-        }
-        ImGui::Unindent();
+        ImGui::TextColored(COLOR_YELLOW, "\"%s\":", asset.c_str());
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", [&dates]() {
+          std::string all_dates;
+          for (const auto &date : dates) {
+            if (!all_dates.empty()) all_dates += ", ";
+            all_dates += date;
+          }
+          return all_dates;
+        }().c_str());
+        ImGui::Spacing();
       }
+      ImGui::EndChild();
+      
+      ImGui::PopTextWrapPos();
       ImGui::EndTooltip();
     }
   } else {
