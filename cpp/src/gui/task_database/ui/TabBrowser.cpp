@@ -267,10 +267,10 @@ void RenderMonthGrid(
 
   // Get starting position for grid
   ImVec2 grid_start = ImGui::GetCursorScreenPos();
-  
+
   // Get draw list once (outside loop)
   ImDrawList *draw_list = ImGui::GetWindowDrawList();
-  
+
   // Pre-convert colors to U32 (avoid repeated conversions)
   const ImU32 color_bg_weekday = ImGui::GetColorU32(COLOR_GRAY);
   const ImU32 color_bg_weekend = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
@@ -294,7 +294,7 @@ void RenderMonthGrid(
     char date_dense[16];
     snprintf(date_dense, sizeof(date_dense), "%04d%02d%02d", year, month, day);
     std::string date_key(date_dense);
-    
+
     // Check if date is valid
     int dow = GetDayOfWeek(date_key);
     if (dow < 0)
@@ -304,7 +304,8 @@ void RenderMonthGrid(
     int total_offset = first_col + day - 1;
     int col = total_offset % 7;
     int row = total_offset / 7;
-    if (row > max_row) max_row = row;
+    if (row > max_row)
+      max_row = row;
 
     // Get daily stats
     auto stats_it = daily_stats.find(date_key);
@@ -320,53 +321,55 @@ void RenderMonthGrid(
 
     // Step 1: Draw border (completeness indicator)
     if (state.layers.show_completeness && stats && stats->is_trading_day) {
-      float completeness = (state.view_mode == BrowserViewMode::All) ? stats->completeness_all()
-                         : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
-                         : stats->completeness_orders();
+      float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all()
+                           : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
+                                                                             : stats->completeness_orders();
 
-      ImU32 border_color = stats->is_in_backtest_range 
-        ? (completeness >= 0.9999f ? color_border_green : completeness >= 0.95f ? color_border_yellow : color_border_red)
-        : color_border_default;
+      ImU32 border_color = stats->is_in_backtest_range
+                               ? (completeness >= 0.9999f ? color_border_green : completeness >= 0.95f ? color_border_yellow
+                                                                                                       : color_border_red)
+                               : color_border_default;
 
-      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE), 
-                        border_color, 0.0f, 0, BORDER_WIDTH);
+      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
+                         border_color, 0.0f, 0, BORDER_WIDTH);
     } else {
-      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE), 
-                        color_border_dark, 0.0f, 0, 1.0f);
+      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
+                         color_border_dark, 0.0f, 0, 1.0f);
     }
 
-    // Step 2: Pixel-aligned coordinates (12px cell = 4 stripes of 3px each)
-    const float x0 = floorf(cell_pos.x);
-    const float x1 = floorf(cell_pos.x + 3.0f);
-    const float x2 = floorf(cell_pos.x + 6.0f);
-    const float x3 = floorf(cell_pos.x + 9.0f);
-    const float x4 = floorf(cell_pos.x + 12.0f);
-    const float y0 = floorf(cell_pos.y);
-    const float y1 = floorf(cell_pos.y + 12.0f);
-
-    // Step 3: Draw background
-    draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x4, y1), bg_color);
-
-    // Step 4: Draw 4 vertical stripes (only if layer visible and condition met)
+    // Step 2: Determine fill color based on priority (highest visible layer wins)
+    // Priority: Yellow > Purple > Green > Blue > Background
+    ImU32 fill_color = bg_color;
+    
     if (stats) {
-      if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
-        draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), color_yellow);
-      }
-      if (state.layers.show_holiday && stats->is_holiday) {
-        draw_list->AddRectFilled(ImVec2(x1, y0), ImVec2(x2, y1), color_purple);
-      }
-      if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
-        draw_list->AddRectFilled(ImVec2(x2, y0), ImVec2(x3, y1), color_green);
-      }
+      // Check from lowest to highest priority (last match wins)
       if (state.layers.show_l2_data) {
-        bool has_data = (state.view_mode == BrowserViewMode::All) ? (stats->assets_with_both > 0)
-                      : (state.view_mode == BrowserViewMode::Snapshots) ? (stats->assets_with_snapshots > 0)
-                      : (stats->assets_with_orders > 0);
-        if (has_data) {
-          draw_list->AddRectFilled(ImVec2(x3, y0), ImVec2(x4, y1), color_blue);
-        }
+        bool has_data = (state.view_mode == BrowserViewMode::All)         ? (stats->assets_with_both > 0)
+                        : (state.view_mode == BrowserViewMode::Snapshots) ? (stats->assets_with_snapshots > 0)
+                                                                          : (stats->assets_with_orders > 0);
+        if (has_data) fill_color = color_blue;
+      }
+      
+      if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
+        fill_color = color_green;
+      }
+      
+      if (state.layers.show_holiday && stats->is_holiday) {
+        fill_color = color_purple;
+      }
+      
+      if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
+        fill_color = color_yellow;
       }
     }
+
+    // Step 3: Draw entire cell with the selected color
+    const float x0 = floorf(cell_pos.x);
+    const float x4 = floorf(cell_pos.x + CELL_SIZE);
+    const float y0 = floorf(cell_pos.y);
+    const float y1 = floorf(cell_pos.y + CELL_SIZE);
+    
+    draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x4, y1), fill_color);
 
     // Step 5: Hover detection and tooltip
     const ImVec2 cell_max(x4, y1);
@@ -378,10 +381,10 @@ void RenderMonthGrid(
       if (stats) {
         static const char *dow_names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         const char *dow_name = (dow >= 0 && dow <= 6) ? dow_names[dow] : "?";
-        
-        float completeness = (state.view_mode == BrowserViewMode::All) ? stats->completeness_all() * 100.0f
-                           : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots() * 100.0f
-                           : stats->completeness_orders() * 100.0f;
+
+        float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all() * 100.0f
+                             : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots() * 100.0f
+                                                                               : stats->completeness_orders() * 100.0f;
 
         ImGui::BeginTooltip();
         ImGui::Text("Date: %s (%s)%s", state.hover_date.c_str(), dow_name,
@@ -409,7 +412,7 @@ void RenderMonthGrid(
       } else {
         ImGui::SetTooltip("%s (No data)", state.hover_date.c_str());
       }
-      
+
       // Handle click
       if (ImGui::IsMouseClicked(0)) {
         state.selected_year = year;
