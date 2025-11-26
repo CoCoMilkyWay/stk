@@ -24,10 +24,11 @@ constexpr ImVec4 BORDER_GREEN = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);   // 100%
 constexpr ImVec4 BORDER_YELLOW = ImVec4(0.95f, 0.9f, 0.2f, 1.0f); // 95-99%
 constexpr ImVec4 BORDER_RED = ImVec4(0.95f, 0.2f, 0.2f, 1.0f);    // <95%
 
-constexpr float CELL_SIZE = 10.0f;
-constexpr float CELL_SPACING = 0.5f;   // Dense packing within month
+constexpr float CELL_SIZE = 12.0f;
+constexpr float CELL_SPACING = 0.5f;   // Dense packing horizontally
+constexpr float ROW_SPACING = 0.5f;    // Dense packing vertically
 constexpr float BORDER_WIDTH = 2.5f;   // Thick border for visibility
-constexpr float MONTH_SPACING = 12.0f; // Space between months
+constexpr float MONTH_SPACING = 15.0f; // Space between months
 
 // ============================================================================
 // Helper: Date conversion utilities
@@ -75,6 +76,10 @@ std::map<std::string, DailyStats> BuildDailyStats(
     const std::string &backtest_end) {
 
   std::map<std::string, DailyStats> stats_map;
+  
+  // Convert backtest dates from YYYY-MM-DD to YYYYMMDD for comparison
+  std::string backtest_start_dense = DateToDense(backtest_start);
+  std::string backtest_end_dense = DateToDense(backtest_end);
 
   // Step 1: Initialize from stock_days (trading calendar)
   for (const auto &day_info : stock_days) {
@@ -99,7 +104,7 @@ std::map<std::string, DailyStats> BuildDailyStats(
     }
 
     // Mark backtest range
-    if (date_dense >= backtest_start && date_dense <= backtest_end) {
+    if (date_dense >= backtest_start_dense && date_dense <= backtest_end_dense) {
       stats.is_in_backtest_range = true;
     }
   }
@@ -134,7 +139,13 @@ std::map<std::string, DailyStats> BuildDailyStats(
       if (data[i].size() < 2 || data[i - 1].size() < 2)
         continue;
 
-      const std::string &date_dense = data[i][0]; // YYYYMMDD
+      // Convert date from YYYY-MM-DD to YYYYMMDD
+      const std::string &date_dashed = data[i][0];
+      std::string date_dense = DateToDense(date_dashed);
+      
+      if (date_dense.empty())
+        continue;
+
       double factor_curr = std::stod(data[i][1]);
       double factor_prev = std::stod(data[i - 1][1]);
 
@@ -248,15 +259,20 @@ void RenderMonthGrid(
   // Month label and day headers in one line
   ImGui::Text("%s 一...日", month_names[month - 1]);
 
+  // Get starting position for grid
+  ImVec2 grid_start = ImGui::GetCursorScreenPos();
+  
   // Day grid (approximately 31 days, arranged in rows of 7)
   for (int day = 1; day <= 31; ++day) {
-    if (day == 1) {
-      ImGui::NewLine();
-    } else if ((day - 1) % 7 == 0) {
-      ImGui::NewLine();
-    } else {
-      ImGui::SameLine(0, CELL_SPACING);
-    }
+    int col = (day - 1) % 7;
+    int row = (day - 1) / 7;
+    
+    // Calculate position for dense packing
+    ImVec2 cell_pos = ImVec2(
+        grid_start.x + col * (CELL_SIZE + CELL_SPACING),
+        grid_start.y + row * (CELL_SIZE + ROW_SPACING));
+    
+    ImGui::SetCursorScreenPos(cell_pos);
 
     // Build date string YYYYMMDD
     char date_dense[16];
@@ -415,6 +431,11 @@ void RenderMonthGrid(
     }
   }
 
+  // Calculate total height: 5 rows (31 days / 7 = 5 rows with some empty cells)
+  float total_height = 5 * (CELL_SIZE + ROW_SPACING) - ROW_SPACING;
+  ImGui::SetCursorScreenPos(ImVec2(grid_start.x, grid_start.y + total_height));
+  ImGui::Dummy(ImVec2(7 * CELL_SIZE + 6 * CELL_SPACING, 0)); // Reserve horizontal space
+
   ImGui::EndGroup();
 }
 
@@ -467,7 +488,7 @@ void RenderTabBrowser(
         stock_days, stock_factors, assets, backtest_start, backtest_end);
   }
 
-  // View Mode Selector
+  // View Mode Selector and Refresh Button
   ImGui::Text("View Mode:");
   ImGui::SameLine();
   if (ImGui::RadioButton("All", browser_state.view_mode == BrowserViewMode::All)) {
@@ -480,6 +501,14 @@ void RenderTabBrowser(
   ImGui::SameLine();
   if (ImGui::RadioButton("Orders", browser_state.view_mode == BrowserViewMode::Orders)) {
     browser_state.view_mode = BrowserViewMode::Orders;
+  }
+  ImGui::SameLine();
+  ImGui::Spacing();
+  ImGui::SameLine();
+  if (ImGui::Button("Refresh Data")) {
+    browser_state.daily_stats_cache.clear();
+    browser_state.daily_stats_cache = BuildDailyStats(
+        stock_days, stock_factors, assets, backtest_start, backtest_end);
   }
 
   ImGui::Spacing();
