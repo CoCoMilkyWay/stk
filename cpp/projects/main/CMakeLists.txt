@@ -128,6 +128,7 @@ set(SOURCES
     ../../src/gui/task_database/infrastructure/CoroScanner.cpp
     ../../src/gui/task_database/ui/TabOverview.cpp
     ../../src/gui/task_database/ui/TabTable.cpp
+    ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_database/ui/TabBrowser.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
@@ -206,6 +207,7 @@ set_source_files_properties(
     ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
+    ../../src/gui/task_database/ui/TabTable.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
 )
 

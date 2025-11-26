@@ -72,6 +72,7 @@ struct AssetInfo {
   size_t get_missing_count() const;
   size_t get_analyzed_count() const;
   size_t get_total_order_count() const;
+  size_t get_total_snapshot_count() const; // Total snapshot count across all dates
   std::vector<std::string> get_missing_dates() const;
   std::string get_display_name() const; // Simple display name
 };

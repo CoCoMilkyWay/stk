@@ -36,6 +36,44 @@ inline const char *GetBoardName(BoardType type) {
   }
 }
 
+inline BoardType GetBoardType(const std::string &code) {
+  if (code.length() < 3)
+    return BoardType::Unknown;
+
+  std::string prefix = code.substr(0, 3);
+
+  // Shanghai Main Board
+  if (prefix == "600" || prefix == "601" || prefix == "603" || prefix == "605") {
+    return BoardType::SH_Main;
+  }
+
+  // Shenzhen Main Board
+  if (prefix == "000" || prefix == "001" || prefix == "002" ||
+      prefix == "003" || prefix == "004") {
+    return BoardType::SZ_Main;
+  }
+
+  // STAR Board (科创板)
+  if (prefix == "688" || prefix == "689") {
+    return BoardType::STAR;
+  }
+
+  // ChiNext (创业板)
+  if (prefix == "300" || prefix == "301" || prefix == "302" || prefix == "309") {
+    return BoardType::ChiNext;
+  }
+
+  // Beijing Stock Exchange
+  if (code.length() >= 2) {
+    std::string prefix2 = code.substr(0, 2);
+    if (prefix2 == "87" || prefix2 == "88" || prefix2 == "92") {
+      return BoardType::BSE;
+    }
+  }
+
+  return BoardType::Unknown;
+}
+
 // ============================================================================
 // Status Enums
 // ============================================================================

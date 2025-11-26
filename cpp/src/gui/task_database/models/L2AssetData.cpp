@@ -157,6 +157,14 @@ size_t AssetInfo::get_total_order_count() const {
   return total;
 }
 
+size_t AssetInfo::get_total_snapshot_count() const {
+  size_t total = 0;
+  for (const auto &[date, info] : date_info) {
+    total += info.snapshot_count;
+  }
+  return total;
+}
+
 std::vector<std::string> AssetInfo::get_missing_dates() const {
   std::vector<std::string> missing;
   for (const auto &[date, info] : date_info) {
