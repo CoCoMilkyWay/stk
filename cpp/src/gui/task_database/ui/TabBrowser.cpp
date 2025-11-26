@@ -3,6 +3,7 @@
 
 #include "gui/task_database/ui/TabBrowser.hpp"
 #include "imgui.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -25,7 +26,7 @@ constexpr ImVec4 BORDER_YELLOW = ImVec4(0.95f, 0.9f, 0.2f, 1.0f); // 95-99%
 constexpr ImVec4 BORDER_RED = ImVec4(0.95f, 0.2f, 0.2f, 1.0f);    // <95%
 
 constexpr float CELL_SIZE = 12.0f;     // 12px cell
-constexpr float BORDER_WIDTH = 3.5f;   // Thick border for visibility
+constexpr float BORDER_THICKNESS = 2.0f; // Border thickness in pixels (1/2/3)
 constexpr float MONTH_SPACING = 15.0f; // Space between months
 
 // ============================================================================
@@ -69,6 +70,7 @@ int GetDayOfWeek(const std::string &date_dense) {
 std::map<std::string, DailyStats> BuildDailyStats(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const std::vector<AssetInfo> &assets,
     const std::string &backtest_start,
     const std::string &backtest_end) {
@@ -111,8 +113,23 @@ std::map<std::string, DailyStats> BuildDailyStats(
   // For each date, count how many assets SHOULD be listed, then check data availability
   for (auto &[date_dense, stats] : stats_map) {
     for (const auto &asset : assets) {
+      // Build full stock code (e.g., "sh.600128") - convert to lowercase
+      std::string exchange_lower = asset.exchange;
+      std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
+      std::string full_code = exchange_lower + "." + asset.asset_code;
+
+      // Get delisting date from stock_info (outDate is YYYY-MM-DD or empty)
+      std::string delist_date_dense;
+      auto info_it = stock_info.find(full_code);
+      if (info_it != stock_info.end() && !info_it->second.outDate.empty()) {
+        delist_date_dense = DateToDense(info_it->second.outDate);
+      }
+
       // Check if asset should be listed on this date
-      if (date_dense < asset.start_date || date_dense > asset.end_date)
+      // Listed if: date >= start_date AND (not delisted OR date <= delist_date)
+      if (date_dense < asset.start_date)
+        continue;
+      if (!delist_date_dense.empty() && date_dense > delist_date_dense)
         continue;
 
       // This asset should be listed on this date
@@ -323,59 +340,64 @@ void RenderMonthGrid(
     // Determine background color: weekend or weekday
     const ImU32 bg_color = (dow == 0 || dow == 6) ? color_bg_weekend : color_bg_weekday;
 
-    // Step 1: Draw border (all cells have border for consistent appearance)
+    // Pre-calculate pixel-aligned coordinates for reuse
+    const float x0 = floorf(cell_pos.x);
+    const float y0 = floorf(cell_pos.y);
+    const float x1 = floorf(cell_pos.x + CELL_SIZE);
+    const float y1 = floorf(cell_pos.y + CELL_SIZE);
+
+    // Step 1: Determine border color
     ImU32 border_color = color_border_dark; // Default: dark gray
-    
+
     // For backtest trading days with completeness enabled: show green/yellow/red
     if (state.layers.show_completeness && stats && stats->is_trading_day && stats->is_in_backtest_range) {
       float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all()
                            : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
                                                                              : stats->completeness_orders();
-      
-      border_color = (completeness >= 0.9999f) ? color_border_green 
-                   : (completeness >= 0.95f)   ? color_border_yellow 
-                   : color_border_red;
-    }
-    
-    draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-                       border_color, 0.0f, 0, BORDER_WIDTH);
 
-    // Step 2: Determine fill color based on priority (highest visible layer wins)
+      border_color = (completeness >= 0.9999f) ? color_border_green
+                     : (completeness >= 0.95f) ? color_border_yellow
+                                               : color_border_red;
+    }
+
+    // Step 2: Draw border (entire cell first)
+    draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), border_color);
+
+    // Step 3: Determine fill color based on priority (highest visible layer wins)
     // Priority: Yellow > Purple > Green > Blue > Background
     ImU32 fill_color = bg_color;
-    
+
     if (stats) {
       // Check from lowest to highest priority (last match wins)
       if (state.layers.show_l2_data) {
         bool has_data = (state.view_mode == BrowserViewMode::All)         ? (stats->assets_with_both > 0)
                         : (state.view_mode == BrowserViewMode::Snapshots) ? (stats->assets_with_snapshots > 0)
                                                                           : (stats->assets_with_orders > 0);
-        if (has_data) fill_color = color_blue;
+        if (has_data)
+          fill_color = color_blue;
       }
-      
+
       if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
         fill_color = color_green;
       }
-      
+
       if (state.layers.show_holiday && stats->is_holiday) {
         fill_color = color_purple;
       }
-      
+
       if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
         fill_color = color_yellow;
       }
     }
 
-    // Step 3: Draw entire cell with the selected color
-    const float x0 = floorf(cell_pos.x);
-    const float x4 = floorf(cell_pos.x + CELL_SIZE);
-    const float y0 = floorf(cell_pos.y);
-    const float y1 = floorf(cell_pos.y + CELL_SIZE);
-    
-    draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x4, y1), fill_color);
+    // Step 4: Draw inner fill (inset by BORDER_THICKNESS from all sides)
+    draw_list->AddRectFilled(
+        ImVec2(x0 + BORDER_THICKNESS, y0 + BORDER_THICKNESS),
+        ImVec2(x1 - BORDER_THICKNESS, y1 - BORDER_THICKNESS),
+        fill_color);
 
     // Step 5: Hover detection and tooltip
-    const ImVec2 cell_max(x4, y1);
+    const ImVec2 cell_max(x1, y1);
     if (ImGui::IsMouseHoveringRect(cell_pos, cell_max)) {
       state.hover_date = DateToDashed(date_key);
       draw_list->AddRect(cell_pos, cell_max, color_hover, 0.0f, 0, 2.0f);
@@ -461,6 +483,7 @@ void RenderYearRow(
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const std::vector<AssetInfo> &assets,
     const std::string &backtest_start,
     const std::string &backtest_end,
@@ -479,7 +502,7 @@ void RenderTabBrowser(
   // Build or reuse daily statistics cache
   if (browser_state.daily_stats_cache.empty()) {
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, assets, backtest_start, backtest_end);
+        stock_days, stock_factors, stock_info, assets, backtest_start, backtest_end);
   }
 
   // View Mode Selector and Refresh Button
@@ -502,7 +525,7 @@ void RenderTabBrowser(
   if (ImGui::Button("Refresh Data")) {
     browser_state.daily_stats_cache.clear();
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, assets, backtest_start, backtest_end);
+        stock_days, stock_factors, stock_info, assets, backtest_start, backtest_end);
   }
 
   // Layer Toggle Buttons

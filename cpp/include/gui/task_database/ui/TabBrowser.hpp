@@ -70,6 +70,7 @@ struct BrowserState {
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const std::vector<AssetInfo> &assets,
     const std::string &backtest_start,
     const std::string &backtest_end,
