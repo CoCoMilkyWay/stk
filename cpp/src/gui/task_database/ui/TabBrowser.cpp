@@ -25,8 +25,8 @@ constexpr ImVec4 BORDER_YELLOW = ImVec4(0.95f, 0.9f, 0.2f, 1.0f); // 95-99%
 constexpr ImVec4 BORDER_RED = ImVec4(0.95f, 0.2f, 0.2f, 1.0f);    // <95%
 
 constexpr float CELL_SIZE = 12.0f;
-constexpr float CELL_SPACING = 0.5f;   // Dense packing horizontally
-constexpr float ROW_SPACING = 0.5f;    // Dense packing vertically
+constexpr float CELL_SPACING = 0.0f;   // Dense packing horizontally (no gap)
+constexpr float ROW_SPACING = 0.0f;    // Dense packing vertically (no gap)
 constexpr float BORDER_WIDTH = 2.5f;   // Thick border for visibility
 constexpr float MONTH_SPACING = 15.0f; // Space between months
 
@@ -369,35 +369,34 @@ void RenderMonthGrid(
         ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
         ImGui::GetColorU32(bg_color));
 
-    // Step 3: Draw 4 vertical color stripes (each 1/4 width)
+    // Step 3: Draw 4 vertical color stripes (each 1/4 width = 3px for 12px cell)
+    // Use integer pixel positions to avoid floating point precision issues
     if (stats) {
-      const float stripe_width = CELL_SIZE / NUM_LAYERS;
+      const int stripe_w = static_cast<int>(CELL_SIZE) / NUM_LAYERS; // 12/4 = 3
+      const float x0 = cell_pos.x;
+      const float x1 = cell_pos.x + stripe_w;
+      const float x2 = cell_pos.x + stripe_w * 2;
+      const float x3 = cell_pos.x + stripe_w * 3;
+      const float x4 = cell_pos.x + CELL_SIZE;
+      const float y0 = cell_pos.y;
+      const float y1 = cell_pos.y + CELL_SIZE;
       
-      // Stripe 1: Dividend/Split (Yellow)
+      // Stripe 1: Dividend/Split (Yellow) [0-3px]
       if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
-        draw_list->AddRectFilled(
-            ImVec2(cell_pos.x + 0 * stripe_width, cell_pos.y),
-            ImVec2(cell_pos.x + 1 * stripe_width, cell_pos.y + CELL_SIZE),
-            ImGui::GetColorU32(COLOR_YELLOW));
+        draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(COLOR_YELLOW));
       }
 
-      // Stripe 2: Holiday (Purple)
+      // Stripe 2: Holiday (Purple) [3-6px]
       if (state.layers.show_holiday && stats->is_holiday) {
-        draw_list->AddRectFilled(
-            ImVec2(cell_pos.x + 1 * stripe_width, cell_pos.y),
-            ImVec2(cell_pos.x + 2 * stripe_width, cell_pos.y + CELL_SIZE),
-            ImGui::GetColorU32(COLOR_PURPLE));
+        draw_list->AddRectFilled(ImVec2(x1, y0), ImVec2(x2, y1), ImGui::GetColorU32(COLOR_PURPLE));
       }
 
-      // Stripe 3: Backtest Range (Green)
+      // Stripe 3: Backtest Range (Green) [6-9px]
       if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
-        draw_list->AddRectFilled(
-            ImVec2(cell_pos.x + 2 * stripe_width, cell_pos.y),
-            ImVec2(cell_pos.x + 3 * stripe_width, cell_pos.y + CELL_SIZE),
-            ImGui::GetColorU32(COLOR_GREEN));
+        draw_list->AddRectFilled(ImVec2(x2, y0), ImVec2(x3, y1), ImGui::GetColorU32(COLOR_GREEN));
       }
 
-      // Stripe 4: L2 Data (Blue)
+      // Stripe 4: L2 Data (Blue) [9-12px]
       if (state.layers.show_l2_data) {
         bool has_data = false;
         if (state.view_mode == BrowserViewMode::All) {
@@ -409,10 +408,7 @@ void RenderMonthGrid(
         }
 
         if (has_data) {
-          draw_list->AddRectFilled(
-              ImVec2(cell_pos.x + 3 * stripe_width, cell_pos.y),
-              ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-              ImGui::GetColorU32(COLOR_BLUE));
+          draw_list->AddRectFilled(ImVec2(x3, y0), ImVec2(x4, y1), ImGui::GetColorU32(COLOR_BLUE));
         }
       }
     }
