@@ -76,7 +76,7 @@ std::map<std::string, DailyStats> BuildDailyStats(
     const std::string &backtest_end) {
 
   std::map<std::string, DailyStats> stats_map;
-  
+
   // Convert backtest dates from YYYY-MM-DD to YYYYMMDD for comparison
   std::string backtest_start_dense = DateToDense(backtest_start);
   std::string backtest_end_dense = DateToDense(backtest_end);
@@ -142,7 +142,7 @@ std::map<std::string, DailyStats> BuildDailyStats(
       // Convert date from YYYY-MM-DD to YYYYMMDD
       const std::string &date_dashed = data[i][0];
       std::string date_dense = DateToDense(date_dashed);
-      
+
       if (date_dense.empty())
         continue;
 
@@ -263,27 +263,39 @@ void RenderMonthGrid(
   char first_date[16];
   snprintf(first_date, sizeof(first_date), "%04d%02d%02d", year, month, 1);
   int first_dow = GetDayOfWeek(std::string(first_date)); // 0=Sunday, 1=Monday, ..., 6=Saturday
-  
+
+  // Convert first_dow to Mon=0 format: Sunday=6, Monday=0
+  int first_col = (first_dow + 6) % 7;
+
   // Get starting position for grid
   ImVec2 grid_start = ImGui::GetCursorScreenPos();
-  
+
+  // Track maximum row for height calculation
+  int max_row = 0;
+
   // Day grid (up to 31 days, arranged in rows of 7, aligned by day of week)
   for (int day = 1; day <= 31; ++day) {
-    // Calculate column based on day of week (Mon=0, ..., Sun=6 for display)
+    // Check if date is valid
     char date_str[16];
     snprintf(date_str, sizeof(date_str), "%04d%02d%02d", year, month, day);
     int dow = GetDayOfWeek(std::string(date_str));
-    if (dow < 0) break; // Invalid date
-    
-    // Convert to grid position: Mon=0, Tue=1, ..., Sun=6
-    int col = (dow + 6) % 7; // Sunday=6, Monday=0
-    int row = (day + first_dow - 1) / 7;
-    
+    if (dow < 0)
+      break; // Invalid date
+
+    // Calculate grid position based on first day's column
+    int total_offset = first_col + day - 1;
+    int col = total_offset % 7;
+    int row = total_offset / 7;
+
+    // Track maximum row
+    if (row > max_row)
+      max_row = row;
+
     // Calculate position for dense packing
     ImVec2 cell_pos = ImVec2(
         grid_start.x + col * (CELL_SIZE + CELL_SPACING),
         grid_start.y + row * (CELL_SIZE + ROW_SPACING));
-    
+
     ImGui::SetCursorScreenPos(cell_pos);
 
     // Build date string YYYYMMDD
@@ -296,41 +308,46 @@ void RenderMonthGrid(
     const DailyStats *stats = (stats_it != daily_stats.end()) ? &stats_it->second : nullptr;
 
     // Draw cell - now with multiple layers from left to right
-    ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
     ImDrawList *draw_list = ImGui::GetWindowDrawList();
 
     // Define layer widths (4 layers + background)
     constexpr int NUM_LAYERS = 4;
     const float layer_width = CELL_SIZE / NUM_LAYERS;
-    
-    // Draw background (gray)
+
+    // Determine background color: weekend (darker gray) vs weekday (light gray)
+    ImVec4 bg_color = COLOR_GRAY;
+    if (dow == 0 || dow == 6) {                     // Sunday or Saturday
+      bg_color = ImVec4(0.15f, 0.15f, 0.15f, 1.0f); // Darker gray for weekends
+    }
+
+    // Draw background
     draw_list->AddRectFilled(
-        cursor_pos,
-        ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
-        ImGui::GetColorU32(COLOR_GRAY));
+        cell_pos,
+        ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
+        ImGui::GetColorU32(bg_color));
 
     if (stats) {
       // Layer 1: Dividend/Split (Yellow) - leftmost
       if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
         draw_list->AddRectFilled(
-            ImVec2(cursor_pos.x, cursor_pos.y),
-            ImVec2(cursor_pos.x + layer_width, cursor_pos.y + CELL_SIZE),
+            ImVec2(cell_pos.x, cell_pos.y),
+            ImVec2(cell_pos.x + layer_width, cell_pos.y + CELL_SIZE),
             ImGui::GetColorU32(COLOR_YELLOW));
       }
 
       // Layer 2: Holiday (Purple)
       if (state.layers.show_holiday && stats->is_holiday) {
         draw_list->AddRectFilled(
-            ImVec2(cursor_pos.x + layer_width, cursor_pos.y),
-            ImVec2(cursor_pos.x + layer_width * 2, cursor_pos.y + CELL_SIZE),
+            ImVec2(cell_pos.x + layer_width, cell_pos.y),
+            ImVec2(cell_pos.x + layer_width * 2, cell_pos.y + CELL_SIZE),
             ImGui::GetColorU32(COLOR_PURPLE));
       }
 
       // Layer 3: Backtest Range (Green)
       if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
         draw_list->AddRectFilled(
-            ImVec2(cursor_pos.x + layer_width * 2, cursor_pos.y),
-            ImVec2(cursor_pos.x + layer_width * 3, cursor_pos.y + CELL_SIZE),
+            ImVec2(cell_pos.x + layer_width * 2, cell_pos.y),
+            ImVec2(cell_pos.x + layer_width * 3, cell_pos.y + CELL_SIZE),
             ImGui::GetColorU32(COLOR_GREEN));
       }
 
@@ -344,11 +361,11 @@ void RenderMonthGrid(
         } else {
           has_data = stats->assets_with_orders > 0;
         }
-        
+
         if (has_data) {
           draw_list->AddRectFilled(
-              ImVec2(cursor_pos.x + layer_width * 3, cursor_pos.y),
-              ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+              ImVec2(cell_pos.x + layer_width * 3, cell_pos.y),
+              ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
               ImGui::GetColorU32(COLOR_BLUE));
         }
       }
@@ -378,24 +395,24 @@ void RenderMonthGrid(
       }
 
       draw_list->AddRect(
-          cursor_pos,
-          ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+          cell_pos,
+          ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
           ImGui::GetColorU32(border_color),
           0.0f,
           0,
           BORDER_WIDTH);
     } else {
-      // Default dark border for non-trading days
+      // Default thin border for non-trading days
       draw_list->AddRect(
-          cursor_pos,
-          ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+          cell_pos,
+          ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
           ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f)),
           0.0f,
           0,
           1.0f);
     }
 
-    // Invisible button for interaction
+    // Invisible button for interaction (cursor is already at cell_pos from SetCursorScreenPos)
     ImGui::InvisibleButton(
         ("##day" + date_key).c_str(),
         ImVec2(CELL_SIZE, CELL_SIZE));
@@ -406,8 +423,8 @@ void RenderMonthGrid(
 
       // Hover highlight
       draw_list->AddRect(
-          cursor_pos,
-          ImVec2(cursor_pos.x + CELL_SIZE, cursor_pos.y + CELL_SIZE),
+          cell_pos,
+          ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
           ImGui::GetColorU32(COLOR_HOVER),
           0.0f,
           0,
@@ -464,10 +481,10 @@ void RenderMonthGrid(
     }
   }
 
-  // Calculate total height: 5 rows (31 days / 7 = 5 rows with some empty cells)
-  float total_height = 5 * (CELL_SIZE + ROW_SPACING) - ROW_SPACING;
+  // Calculate total height based on actual rows used
+  float total_height = (max_row + 1) * (CELL_SIZE + ROW_SPACING);
   ImGui::SetCursorScreenPos(ImVec2(grid_start.x, grid_start.y + total_height));
-  ImGui::Dummy(ImVec2(7 * CELL_SIZE + 6 * CELL_SPACING, 0)); // Reserve horizontal space
+  ImGui::Dummy(ImVec2(7 * (CELL_SIZE + CELL_SPACING), 0)); // Reserve horizontal space for 7 columns
 
   ImGui::EndGroup();
 }
@@ -543,11 +560,11 @@ void RenderTabBrowser(
     browser_state.daily_stats_cache = BuildDailyStats(
         stock_days, stock_factors, assets, backtest_start, backtest_end);
   }
-  
+
   // Layer Toggle Buttons
   ImGui::Text("Layers:");
   ImGui::SameLine();
-  
+
   // Dividend/Split layer (Yellow)
   ImVec4 yellow_btn = browser_state.layers.show_dividend_split ? COLOR_YELLOW : ImVec4(0.3f, 0.3f, 0.1f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, yellow_btn);
@@ -556,7 +573,7 @@ void RenderTabBrowser(
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
-  
+
   // Holiday layer (Purple)
   ImVec4 purple_btn = browser_state.layers.show_holiday ? COLOR_PURPLE : ImVec4(0.2f, 0.1f, 0.3f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, purple_btn);
@@ -565,7 +582,7 @@ void RenderTabBrowser(
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
-  
+
   // Backtest range layer (Green)
   ImVec4 green_btn = browser_state.layers.show_backtest_range ? COLOR_GREEN : ImVec4(0.1f, 0.3f, 0.1f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, green_btn);
@@ -574,7 +591,7 @@ void RenderTabBrowser(
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
-  
+
   // L2 data layer (Blue)
   ImVec4 blue_btn = browser_state.layers.show_l2_data ? COLOR_BLUE : ImVec4(0.1f, 0.1f, 0.3f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, blue_btn);
@@ -583,7 +600,7 @@ void RenderTabBrowser(
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
-  
+
   // Completeness border toggle
   if (ImGui::SmallButton(browser_state.layers.show_completeness ? "完整性边框✓" : "完整性边框✗")) {
     browser_state.layers.show_completeness = !browser_state.layers.show_completeness;

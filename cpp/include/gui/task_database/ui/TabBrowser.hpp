@@ -48,11 +48,11 @@ struct DailyStats {
 
 // Layer visibility toggle state
 struct LayerVisibility {
-  bool show_dividend_split = true;   // Layer 1: Yellow
-  bool show_holiday = true;          // Layer 2: Purple
-  bool show_backtest_range = true;   // Layer 3: Green
-  bool show_l2_data = true;          // Layer 4: Blue
-  bool show_completeness = true;     // Border: Green/Yellow/Red
+  bool show_dividend_split = true; // Layer 1: Yellow
+  bool show_holiday = true;        // Layer 2: Purple
+  bool show_backtest_range = true; // Layer 3: Green
+  bool show_l2_data = true;        // Layer 4: Blue
+  bool show_completeness = true;   // Border: Green/Yellow/Red
 };
 
 // Browser state
