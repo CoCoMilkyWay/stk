@@ -437,6 +437,10 @@ private:
   void DrawTabBrowser() {
     RenderTabBrowser(
         baostock_svc_->get_stock_days_data(),
+        baostock_svc_->get_stock_factor_data(),
+        l2_svc_->get_assets(),
+        config_->start_date,
+        config_->end_date,
         browser_state_);
   }
 };
