@@ -1,6 +1,6 @@
 # 撮合反推引擎(Inverse Matching Engine(Trade Inference from LOB Snapshots))
 # NOTE:
-#    1. 达到或跨对手价的限价单，成交部分会被交易所自动转换为taker，如有剩余，则为maker
+#    1. 达到或跨对手价的限价单,成交部分会被交易所自动转换为taker,如有剩余,则为maker
 #    2. 跨档taker单会被交易所拆分为多个单档taker成交
 # 美式行情:
 # L1(采样:逐笔成交; 数据:逐笔成交 + 快照) (TAQ:trade&quote):

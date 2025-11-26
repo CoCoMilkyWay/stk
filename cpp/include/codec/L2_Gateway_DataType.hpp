@@ -102,7 +102,7 @@ namespace L2_sz {
 
 //上海L2低延时行情发布系统 (LDDS: Low latency Data Distribution System)
 namespace L2_sh {
-    // 08:30-16:00:静态数据准备完毕，VSS 可以发起 Rebuild 请求
+    // 08:30-16:00:静态数据准备完毕,VSS 可以发起 Rebuild 请求
     // 08:45-16:00:竞价行情数据、指数行情数据、市场总览数据、竞价逐笔通道序号数据
     // 09:15-15:35:竞价逐笔合并数据
     // 09:25-16:00:逐笔合并数据重建
@@ -141,7 +141,7 @@ namespace L2_sh {
                                               // TRADE: 连续自动撮合
                                               // SUSP:  停牌
                                               // CCALL: 收盘集合竞价
-                                              // CLOSE: 闭市，自动计算闭市价格
+                                              // CLOSE: 闭市,自动计算闭市价格
                                               // ENDTR: 交易结束
         char TradingPhaseCode[8];             // 产品实时阶段及标志
                                               // [0]: S:启动(开市前) C:开盘集合竞价 T:连续交易 E:闭市 P:产品停牌 M:可恢复交易的熔断 N:不可恢复交易的熔断 U:收盘集合竞价
@@ -246,7 +246,7 @@ namespace L2_sh {
         int32_t TemplateID;                   // 模板标示号 = 3209
         char MessageType[8];                  // UA3209
         int32_t DataStatus;                   // 1=重复数据 2=未获授权
-        int32_t TradeIndex;                   // 成交序号，从1开始，按Channel连续
+        int32_t TradeIndex;                   // 成交序号,从1开始,按Channel连续
         int32_t TradeChannel;                 // 通道
         char SecurityID[8];                   // 证券代码
         int32_t TradeTime;                    // 成交时间(百分之一秒)15102506表示15:10:25.06
@@ -269,7 +269,7 @@ namespace L2_sh {
         // FAST Message Content
         int32_t TemplateID;                   // 模板标示号 = 5803
         char MessageType[8];                  // UA5803
-        int64_t BizIndex;                     // 逐笔序号，从1开始，按Channel连续
+        int64_t BizIndex;                     // 逐笔序号,从1开始,按Channel连续
         int32_t Channel;                      // 通道
         char SecurityID[8];                   // 证券代码
         int32_t TickTime;                     // 订单或成交时间(百分之一秒)14302506表示14:30:25.06
@@ -279,7 +279,7 @@ namespace L2_sh {
         int32_t Price;                        // 价格(元)(若为产品状态订单、删除订单无意义)
         int64_t Qty;                          // 数量(若为产品状态订单无意义)
         int64_t TradeMoney;                   // 对于新增委托:已成交的委托数量(精度为三位)
-                                              // 对于成交:成交金额(单位为元，精度为五位)
+                                              // 对于成交:成交金额(单位为元,精度为五位)
                                               // 其他无意义
         char TickBSFlag[8];                   // 若为新增或删除委托订单:B=买单 S=卖单
                                               // 若为产品状态订单:START=启动 OCALL=开市集合竞价 TRADE=连续自动撮合

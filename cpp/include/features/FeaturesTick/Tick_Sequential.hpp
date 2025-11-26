@@ -264,7 +264,7 @@ private:
     if (volume_imb_window_.size() > 20)
       volume_imb_window_.pop_front();
     
-    // Σ(sign×size) / Σ|size|
+    // Σ(signxsize) / Σ|size|
     double sum_signed = 0, sum_abs = 0;
     for (const auto &[sv, v] : volume_imb_window_) {
       sum_signed += sv;

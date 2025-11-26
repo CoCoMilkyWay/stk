@@ -42,7 +42,7 @@
 内存模型:
   - 分块存储:每块 2^N 个对象(目标 ~1MB)
   - 自动扩容:指针永久有效
-  - 缓存友好:块内连续，64字节对齐
+  - 缓存友好:块内连续,64字节对齐
 
 ═══════════════════════════════════════════════════════════════════════════
 */
@@ -59,18 +59,18 @@ static constexpr size_t DEFAULT_CAPACITY = 10000;  // 默认初始容量
 static constexpr size_t MIN_BUCKET_COUNT = 16;     // HashMap最小桶数
 static constexpr double TARGET_LOAD_FACTOR = 0.50; // HashMap目标负载因子 (降低以减少冲突)
 
-// 自适应块大小:根据对象大小自动选择，目标 ~1MB/块
+// 自适应块大小:根据对象大小自动选择,目标 ~1MB/块
 template <typename T>
 struct ChunkConfig {
   static constexpr size_t SHIFT =
-      sizeof(T) <= 16 ? 16 : // 16B  × 2^16 = 1.0 MB
+      sizeof(T) <= 16 ? 16 : // 16B  x 2^16 = 1.0 MB
           sizeof(T) <= 32 ? 15
-                          : // 32B  × 2^15 = 1.0 MB
+                          : // 32B  x 2^15 = 1.0 MB
           sizeof(T) <= 64 ? 14
-                          : // 64B  × 2^14 = 1.0 MB
+                          : // 64B  x 2^14 = 1.0 MB
           sizeof(T) <= 128 ? 13
-                           : // 128B × 2^13 = 1.0 MB
-          12;                // 256B × 2^12 = 1.0 MB
+                           : // 128B x 2^13 = 1.0 MB
+          12;                // 256B x 2^12 = 1.0 MB
 
   static constexpr size_t SIZE = size_t{1} << SHIFT; // 块大小(对象数)
   static constexpr size_t MASK = SIZE - 1;           // 块掩码(快速取模)
@@ -96,7 +96,7 @@ template <typename T>
 } // namespace detail
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 第三层:BumpPool(极简分配器，渐进式引入概念)
+// 第三层:BumpPool(极简分配器,渐进式引入概念)
 // ═══════════════════════════════════════════════════════════════════════════
 
 template <typename T>
@@ -172,7 +172,7 @@ public:
     return ptr;
   }
 
-  // 4. 重置:析构所有对象，重置状态
+  // 4. 重置:析构所有对象,重置状态
   void reset(bool shrink = false) {
     // 析构所有已分配对象
     if constexpr (!std::is_trivially_destructible_v<T>) {
@@ -324,10 +324,10 @@ public:
   // 核心操作(按使用频率排序)
   // ─────────────────────────────────────────────────────────────────────────
 
-  // 1. 分配:优先复用空闲slot，否则扩展
+  // 1. 分配:优先复用空闲slot,否则扩展
   [[nodiscard, gnu::hot]]
   T *allocate() {
-    // 策略1:从已用区域找空闲slot(热路径，cache友好)
+    // 策略1:从已用区域找空闲slot(热路径,cache友好)
     size_t search_limit = (peak_allocated_ + 63) >> 6; // 转换为word数
     for (size_t word_idx = 0; word_idx < search_limit; ++word_idx) {
       uint64_t free_bits = freelist_[word_idx];
@@ -417,7 +417,7 @@ public:
     return ptr;
   }
 
-  // 4. 重置:析构所有对象，重置状态
+  // 4. 重置:析构所有对象,重置状态
   void reset(bool shrink = false) {
 #ifdef MEMPOOL_ENABLE_STATS
     if (num_constructed_ > 0) {
@@ -522,7 +522,7 @@ private:
   // ─────────────────────────────────────────────────────────────────────────
 
   std::vector<T *> chunks_;                  // 内存块数组
-  std::vector<uint64_t> freelist_;           // 空闲位图(1=空闲，0=占用)
+  std::vector<uint64_t> freelist_;           // 空闲位图(1=空闲,0=占用)
   std::vector<size_t> sorted_chunk_indices_; // 按地址排序的chunk索引
 
   size_t num_alive_;          // 当前存活对象数
@@ -599,7 +599,7 @@ private:
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 第五层:HashMap(应用层，基于Pool构建)
+// 第五层:HashMap(应用层,基于Pool构建)
 // ═══════════════════════════════════════════════════════════════════════════
 
 template <typename Key, typename Value, template <typename> class Pool = BitmapPool,
@@ -620,7 +620,7 @@ private:
   std::vector<Node *> buckets_; // 哈希桶数组
   Hash hasher_;                 // 哈希函数
   size_t num_entries_;          // 当前条目数
-  size_t bucket_mask_;          // 桶掩码(count-1，用于快速取模)
+  size_t bucket_mask_;          // 桶掩码(count-1,用于快速取模)
 
 #ifdef MEMPOOL_ENABLE_STATS
   size_t num_erased_ = 0; // 统计:删除次数
@@ -633,7 +633,7 @@ public:
 
   explicit HashMap(size_t expected_size = Config::DEFAULT_CAPACITY)
       : node_pool_(expected_size), num_entries_(0) {
-    // 计算桶数:目标负载因子 ~0.67，向上对齐到2的幂
+    // 计算桶数:目标负载因子 ~0.67,向上对齐到2的幂
     size_t target = std::max(Config::MIN_BUCKET_COUNT,
                              static_cast<size_t>(expected_size / Config::TARGET_LOAD_FACTOR));
     size_t bucket_count = detail::round_up_pow2(target);
@@ -680,7 +680,7 @@ public:
     return const_cast<HashMap *>(this)->find(key);
   }
 
-  // 2. 插入/更新:存在则更新，不存在则插入
+  // 2. 插入/更新:存在则更新,不存在则插入
   [[gnu::hot]]
   bool insert(const Key &key, const Value &value) {
     size_t bucket_idx = hasher_(key) & bucket_mask_;
@@ -703,7 +703,7 @@ public:
     return true;
   }
 
-  // 3. 尝试插入:存在则返回现有值，不存在则插入
+  // 3. 尝试插入:存在则返回现有值,不存在则插入
   [[gnu::hot, gnu::always_inline]]
   inline std::pair<Value *, bool> try_emplace(const Key &key, const Value &value) {
     size_t bucket_idx = hasher_(key) & bucket_mask_;

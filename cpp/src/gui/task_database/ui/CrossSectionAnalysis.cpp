@@ -4,8 +4,8 @@
 #include "gui/task_database/models/SharedTypes.hpp" // For BoardType
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 #include <map>
+#include <numeric>
 
 namespace GUI::Database {
 
@@ -30,7 +30,8 @@ static std::vector<double> FilterValidValues(const std::vector<double> &values) 
 
 std::vector<double> RemoveOutliers(const std::vector<double> &values, double percentile) {
   auto valid = FilterValidValues(values);
-  if (valid.empty()) return {};
+  if (valid.empty())
+    return {};
 
   std::sort(valid.begin(), valid.end());
 
@@ -65,9 +66,9 @@ ColumnStats CalculateRobustStats(const std::vector<double> &values) {
   stats.mean = sum / sorted.size();
 
   size_t mid = sorted.size() / 2;
-  stats.median = (sorted.size() % 2 == 0) 
-      ? (sorted[mid - 1] + sorted[mid]) / 2.0 
-      : sorted[mid];
+  stats.median = (sorted.size() % 2 == 0)
+                     ? (sorted[mid - 1] + sorted[mid]) / 2.0
+                     : sorted[mid];
 
   size_t q25_idx = sorted.size() / 4;
   size_t q75_idx = (sorted.size() * 3) / 4;
@@ -86,7 +87,7 @@ ColumnStats CalculateRobustStats(const std::vector<double> &values) {
 std::vector<BoardStats> GroupNumericByBoard(
     const std::vector<std::string> &codes,
     const std::vector<double> &values) {
-  
+
   std::vector<BoardStats> result;
 
   if (codes.size() != values.size()) {
@@ -98,10 +99,12 @@ std::vector<BoardStats> GroupNumericByBoard(
 
   for (size_t i = 0; i < codes.size(); ++i) {
     double v = values[i];
-    if (!std::isfinite(v)) continue;
+    if (!std::isfinite(v))
+      continue;
 
     BoardType board = GetBoardType(codes[i]);
-    if (board == BoardType::All || board == BoardType::Unknown) continue;
+    if (board == BoardType::All || board == BoardType::Unknown)
+      continue;
 
     std::string board_name = GetBoardName(board);
     board_values[board_name].push_back(v);
@@ -109,7 +112,8 @@ std::vector<BoardStats> GroupNumericByBoard(
 
   // Calculate stats for each board
   for (const auto &[board_name, vals] : board_values) {
-    if (vals.empty()) continue;
+    if (vals.empty())
+      continue;
 
     BoardStats bs;
     bs.board_name = board_name;
@@ -122,9 +126,9 @@ std::vector<BoardStats> GroupNumericByBoard(
     bs.mean = sum / sorted.size();
 
     size_t mid = sorted.size() / 2;
-    bs.median = (sorted.size() % 2 == 0) 
-        ? (sorted[mid - 1] + sorted[mid]) / 2.0 
-        : sorted[mid];
+    bs.median = (sorted.size() % 2 == 0)
+                    ? (sorted[mid - 1] + sorted[mid]) / 2.0
+                    : sorted[mid];
 
     double sq_sum = 0.0;
     for (double v : sorted) {
@@ -143,7 +147,7 @@ std::vector<std::pair<std::string, double>> GetTopN(
     const std::vector<double> &values,
     int n,
     bool descending) {
-  
+
   std::vector<std::pair<std::string, double>> result;
 
   if (names.size() != values.size() || names.empty()) {
@@ -214,7 +218,7 @@ std::vector<CategoryCount> CountCategories(const std::vector<std::string> &categ
 std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
     const std::vector<std::string> &codes,
     const std::vector<std::string> &categories) {
-  
+
   std::vector<BoardCategoryBreakdown> result;
 
   if (codes.size() != categories.size()) {
@@ -225,10 +229,12 @@ std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
   std::map<std::string, std::vector<std::string>> board_categories;
 
   for (size_t i = 0; i < codes.size(); ++i) {
-    if (categories[i].empty()) continue;
+    if (categories[i].empty())
+      continue;
 
     BoardType board = GetBoardType(codes[i]);
-    if (board == BoardType::All || board == BoardType::Unknown) continue;
+    if (board == BoardType::All || board == BoardType::Unknown)
+      continue;
 
     std::string board_name = GetBoardName(board);
     board_categories[board_name].push_back(categories[i]);
@@ -246,4 +252,3 @@ std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
 }
 
 } // namespace GUI::Database
-

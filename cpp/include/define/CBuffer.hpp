@@ -35,7 +35,7 @@
 // | pop_back/front       | O(1)                            | Avg O(1), worst O(n)       | O(1)                       | O(1)                                  |
 // | operator[] Access    | O(1) + modulo                   | O(1)                       | O(1) + no modulo           | O(1) + pointer chase                  |
 // | span() Operations    | May return 2 segments           | Single contiguous ptr      | Single contiguous ptr      | Multiple segments                     |
-// | Insert/Erase Mid     | O(n) elem-by-elem, fast         | O(n) memmove               | O(n) memmove×2 (mirror)    | O(1) amortized                        |
+// | Insert/Erase Mid     | O(n) elem-by-elem, fast         | O(n) memmove               | O(n) memmovex2 (mirror)    | O(1) amortized                        |
 // | Memory Locality      | Moderate (modulo overhead)      | Good                       | Excellent (no modulo)      | Moderate (pointer jumps)              |
 // | Cache Friendliness   | Good for sequential             | Excellent                  | Excellent (pre-fetching)   | Moderate                              |
 // | Best For             | General queue, balanced perf    | Compact memory footprint   | Hot-path random access     | Large buffer, frequent mid-ops        |

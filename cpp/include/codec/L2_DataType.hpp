@@ -107,12 +107,12 @@ struct ColumnMeta {
 // clang-format off
 constexpr ColumnMeta Snapshot_Schema[] = {
     // snapshot
-    {"hour",               5  },// "取值范围 0-23，5bit 足够"},
-    {"minute",             6  },// "取值范围 0-59，6bit 足够"},
-    {"second",             6  },// "取值范围 0-59，6bit 足够"},
+    {"hour",               5  },// "取值范围 0-23,5bit 足够"},
+    {"minute",             6  },// "取值范围 0-59,6bit 足够"},
+    {"second",             6  },// "取值范围 0-59,6bit 足够"},
     {"trade_count",        8  },// "波动较大, 多数时候为0或小值"},
     {"volume",             22 },// "成交量(股), expanded to 22bit to support up to 4M shares"},
-    {"turnover",           32 },// "波动较大，但也有大量0"},
+    {"turnover",           32 },// "波动较大,但也有大量0"},
     {"close",              14 },// "价格(0.01 RMB units)"},
     {"bid_price_ticks[10]",14 },// "订单价(0.01 RMB units)"},
     {"bid_volumes[10]",    22 },// "订单量(股), expanded to 22bit to support up to 4M shares per level"},
@@ -125,7 +125,7 @@ constexpr ColumnMeta Snapshot_Schema[] = {
     {"all_ask_volume",    22  },// "总量(股)"},
 
     // order
-    {"millisecond",       7   },// "取值范围 0-127，7bit 足够"},
+    {"millisecond",       7   },// "取值范围 0-127,7bit 足够"},
     {"order_type",        2   },// "仅增删改成交四种值"},
     {"order_dir",         1   },// "仅bid ask 两种值"},
     {"price",             14  },// "价格(0.01 RMB units)"},

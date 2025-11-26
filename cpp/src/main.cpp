@@ -26,28 +26,28 @@
 // L2数据处理架构
 // ============================================================================
 //
-//   - 统一管理所有共享状态的 SharedState：
-//       · 资产信息 assets[]：存储所有资产的元数据、每日统计、文件路径及状态位图，支持断点续传和精确状态追踪（date_info.encoded / date_info.analyzed）
-//       · 全局交易日序列 all_dates[]：用于横截面因子同步，保证分析阶段跨资产日期的顺序一致和高效缓存（预留 cross_sectional_cache）
+//   - 统一管理所有共享状态的 SharedState:
+//       · 资产信息 assets[]:存储所有资产的元数据、每日统计、文件路径及状态位图,支持断点续传和精确状态追踪(date_info.encoded / date_info.analyzed)
+//       · 全局交易日序列 all_dates[]:用于横截面因子同步,保证分析阶段跨资产日期的顺序一致和高效缓存(预留 cross_sectional_cache)
 //
-//   - Phase 1 (Encoding)：
-//       · 资产并行处理，日期顺序打乱(shuffle)以分散RAR压缩包访问压力，实现负载均衡（利用已累积的order_count，无需预扫描）
-//       · 按archive_path加锁保证RAR解压的细粒度并发，阻塞等待锁避免同一压缩包并发解压冲突
-//       · 零重复扫描：在Encoding阶段直接统计order_count及文件路径，缓存到 asset.date_info[]，Analysis阶段无须额外扫描
-//       · 路径缓存与类型缓存：所有文件路径初始化时生成并缓存，exchange_type推导一次，避免字符串重复解析
-//       · 每个worker只写所属asset，使用relaxed无锁操作，保证线程安全且无锁开销
-//       · 支持跳过已编码文件，提升断点续传效率
-//       · 日期shuffle结合CPU亲和性减少缓存未命中，提升处理性能
+//   - Phase 1 (Encoding):
+//       · 资产并行处理,日期顺序打乱(shuffle)以分散RAR压缩包访问压力,实现负载均衡(利用已累积的order_count,无需预扫描)
+//       · 按archive_path加锁保证RAR解压的细粒度并发,阻塞等待锁避免同一压缩包并发解压冲突
+//       · 零重复扫描:在Encoding阶段直接统计order_count及文件路径,缓存到 asset.date_info[],Analysis阶段无须额外扫描
+//       · 路径缓存与类型缓存:所有文件路径初始化时生成并缓存,exchange_type推导一次,避免字符串重复解析
+//       · 每个worker只写所属asset,使用relaxed无锁操作,保证线程安全且无锁开销
+//       · 支持跳过已编码文件,提升断点续传效率
+//       · 日期shuffle结合CPU亲和性减少缓存未命中,提升处理性能
 //
-//   - Phase 2 (Analysis)：
-//       · 以全局日期顺序（all_dates[]）为主线，所有worker同步推进，方便横截面因子计算和缓存共享
-//       · 无锁读取共享状态，所有路径及统计信息在Phase 1已缓存，避免重复IO和扫描
-//       · 处理流程：Binary文件 → 解压解码（Zstd解压速度1300+ MB/s）→ Order Book还原 → 特征提取 → 写入FeatureStore
+//   - Phase 2 (Analysis):
+//       · 以全局日期顺序(all_dates[])为主线,所有worker同步推进,方便横截面因子计算和缓存共享
+//       · 无锁读取共享状态,所有路径及统计信息在Phase 1已缓存,避免重复IO和扫描
+//       · 处理流程:Binary文件 → 解压解码(Zstd解压速度1300+ MB/s)→ Order Book还原 → 特征提取 → 写入FeatureStore
 //
-//   - 线程安全设计细节：
-//       · Encoding阶段为写隔离（每线程写自己asset），无锁relaxed操作
-//       · Analysis阶段为只读共享，零锁访问
-//       · RAR解压采用基于archive_path的细粒度加锁，最大化并行度
+//   - 线程安全设计细节:
+//       · Encoding阶段为写隔离(每线程写自己asset),无锁relaxed操作
+//       · Analysis阶段为只读共享,零锁访问
+//       · RAR解压采用基于archive_path的细粒度加锁,最大化并行度
 //
 
 // ============================================================================

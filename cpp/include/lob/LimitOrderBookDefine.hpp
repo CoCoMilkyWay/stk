@@ -152,7 +152,7 @@ static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) +
 // └─────────────────────────────────────────────────────────────────────────────────┘
 //
 // 触发: order_type == MAKER
-// 特点: 永不进入循环，单次lookup → order_upsert → 返回
+// 特点: 永不进入循环,单次lookup → order_upsert → 返回
 //
 // 流程 (99%+):
 //   1. lookup(order_id) → not found
@@ -173,7 +173,7 @@ static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) +
 //
 // 触发: order_type == TAKER
 // 交易所差异:
-//   - SSE: 集合竞价撮合期(9:25-9:30, 14:57-15:00)双边，连续竞价(9:30-14:57)单边
+//   - SSE: 集合竞价撮合期(9:25-9:30, 14:57-15:00)双边,连续竞价(9:30-14:57)单边
 //   - SZSE: 全天双边
 //
 // 核心函数: process_taker_side(order, order_id, delta)
@@ -224,7 +224,7 @@ static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) +
 // └─────────────────────────────────────────────────────────────────────────────────┘
 //
 // 触发: order_type == CANCEL
-// 特点: 复用process_taker_side()，但不更新TOB
+// 特点: 复用process_taker_side(),但不更新TOB
 //
 // 流程 (99%+):
 //   1. order_extract_params(order) → (target_id, delta_qty, is_bid)

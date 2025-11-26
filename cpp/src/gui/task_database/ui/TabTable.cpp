@@ -2,8 +2,8 @@
 // 18-column table with enhanced filtering and cross-section analysis panel
 
 #include "gui/task_database/ui/TabTable.hpp"
-#include "gui/task_database/ui/CrossSectionAnalysis.hpp"
 #include "gui/task_database/models/SharedTypes.hpp"
+#include "gui/task_database/ui/CrossSectionAnalysis.hpp"
 #include "imgui.h"
 #include "implot.h"
 #include <chrono>
@@ -26,7 +26,8 @@ constexpr ImVec4 COLOR_GRAY = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
 // ============================================================================
 
 int CalculateDaysSinceIPO(const std::string &ipo_date) {
-  if (ipo_date.empty() || ipo_date.length() != 10) return 0;
+  if (ipo_date.empty() || ipo_date.length() != 10)
+    return 0;
 
   // Parse YYYY-MM-DD
   int year = std::stoi(ipo_date.substr(0, 4));
@@ -41,7 +42,7 @@ int CalculateDaysSinceIPO(const std::string &ipo_date) {
   auto ipo_time = std::chrono::system_clock::from_time_t(std::mktime(&tm_ipo));
   auto now = std::chrono::system_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::hours>(now - ipo_time);
-  
+
   return static_cast<int>(duration.count() / 24);
 }
 
@@ -50,15 +51,17 @@ int CalculateDaysSinceIPO(const std::string &ipo_date) {
 // ============================================================================
 
 double CalculateMarketCap(const StockInfo &info) {
-  // Market cap (billion) = amount (yuan) × 100 / turn (%) / 1e8
-  if (info.amount.empty() || info.turn.empty()) return 0.0;
-  
+  // Market cap (billion) = amount (yuan) x 100 / turn (%) / 1e8
+  if (info.amount.empty() || info.turn.empty())
+    return 0.0;
+
   try {
     double amount = std::stod(info.amount);
     double turn = std::stod(info.turn);
-    
-    if (turn <= 0) return 0.0;
-    
+
+    if (turn <= 0)
+      return 0.0;
+
     return amount * 100.0 / turn / 1e8;
   } catch (...) {
     return 0.0;
@@ -73,7 +76,7 @@ bool ShouldShowAsset(
     const AssetInfo &asset,
     const TableState &state,
     const StockInfoMap &stock_info) {
-  
+
   // Convert to lowercase format: sh.600000
   std::string exchange_lower = asset.exchange;
   std::transform(exchange_lower.begin(), exchange_lower.end(),
@@ -143,12 +146,12 @@ bool ShouldShowAsset(
 // ============================================================================
 
 void RenderFilterBar(
-    TableState &state, 
-    size_t visible_count, 
+    TableState &state,
+    size_t visible_count,
     size_t total_count,
     const std::vector<AssetInfo> &assets,
     const StockInfoMap &stock_info) {
-  
+
   // Search box
   static char search_buf[256] = "";
   ImGui::SetNextItemWidth(250.0f);
@@ -178,7 +181,7 @@ void RenderFilterBar(
   // Industry filter - collect all unique industries
   static std::vector<std::pair<std::string, std::string>> industries; // code, name
   static bool industries_cached = false;
-  
+
   if (!industries_cached) {
     std::map<std::string, std::string> ind_map; // code -> name
     for (const auto &asset : assets) {
@@ -201,8 +204,8 @@ void RenderFilterBar(
 
   ImGui::SameLine();
   ImGui::SetNextItemWidth(150.0f);
-  if (ImGui::BeginCombo("Industry##IndFilter", 
-      state.industry_filter.empty() ? "All" : state.industry_filter.c_str())) {
+  if (ImGui::BeginCombo("Industry##IndFilter",
+                        state.industry_filter.empty() ? "All" : state.industry_filter.c_str())) {
     for (const auto &[code, display] : industries) {
       bool is_selected = (state.industry_filter == code);
       if (ImGui::Selectable(display.c_str(), is_selected)) {
@@ -235,7 +238,7 @@ void RenderDataTable(
     const std::vector<AssetInfo> &assets,
     const StockInfoMap &stock_info,
     TableState &table_state) {
-  
+
   ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY |
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
@@ -265,9 +268,64 @@ void RenderDataTable(
   ImGui::TableSetupColumn("Miss");
   ImGui::TableSetupColumn("Snaps");
   ImGui::TableSetupColumn("Orders");
-  
+
   ImGui::TableSetupScrollFreeze(0, 1);
-  ImGui::TableHeadersRow();
+  
+  // Custom headers with tooltips
+  ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+  const char* header_labels[] = {"Code", "Name", "Exch", "Board", "ST", "DL", "Listed", "Ind", 
+                                   "PE", "PB", "PS", "PCF", "Cap", "Days", "Snap%", "Order%", "Miss", "Snaps", "Orders"};
+  const char* header_tooltips[] = {
+    "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
+    
+    "股票名称 (Name)\n公司在交易所的简称",
+    
+    "交易所 (Exchange)\nSH = 上海证券交易所 (Shanghai Stock Exchange)\nSZ = 深圳证券交易所 (Shenzhen Stock Exchange)",
+    
+    "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (87/88/92)",
+    
+    "ST股 (Special Treatment)\nisST: 是否为特别处理股票\n1 = 是ST股, 0 = 否\n\n说明:连续两年亏损的股票会被标记为ST\n投资风险较高,涨跌幅限制为±5%",
+    
+    "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\noutDate字段记录退市日期",
+    
+    "上市天数 (Listed Days)\n从IPO日期到现在的天数\n= 当前日期 - ipoDate\n可用于判断新股或老股",
+    
+    "行业 (Industry)\n所属行业分类代码 (ind_code)\n由交易所或数据提供商分类",
+    
+    "滚动市盈率 (PE TTM)\npeTTM = Trailing Twelve Months P/E Ratio\n= 股票收盘价 / 每股盈余TTM\n= (收盘价 x 总股本) / 归属母公司股东净利润TTM\n\nTTM = 过去12个月滚动数据\n反映公司盈利能力,数值越低估值越便宜",
+    
+    "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 股票收盘价 / 每股净资产\n= 总市值 / (归属母公司股东权益 - 其他权益工具)\n\nMRQ = 最近季度数据\n反映账面价值,通常>1,<1可能破净",
+    
+    "滚动市销率 (PS TTM)\npsTTM = Price-to-Sales Ratio (TTM)\n= 股票收盘价 / 每股销售额\n= (收盘价 x 总股本) / 营业总收入TTM\n\n反映每单位营收对应的市值\n适用于尚未盈利但有营收的公司",
+    
+    "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 股票收盘价 / 每股现金流TTM\n= (收盘价 x 总股本) / 现金及现金等价物净增加额TTM\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵",
+    
+    "总市值 (Market Cap)\n计算公式:市值(亿元) = 成交额 x 100 / 换手率 / 1亿\n= amount x 100 / turn / 1e8\n\n说明:\n- amount = 成交额(元)\n- turn = 换手率(%)\n- 通过成交额和换手率反推流通市值\n- 换手率 = 成交量/流通股数x100%\n- 流通市值 = 成交额/换手率x100",
+    
+    "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info.size()\n可用于判断数据完整性",
+    
+    "快照覆盖率 (Snapshot Coverage %)\n= (有编码快照数据的天数 / 总交易日数) x 100%\n= snapshots_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码快照的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2快照数据的完整性",
+    
+    "订单覆盖率 (Order Coverage %)\n= (有编码订单数据的天数 / 总交易日数) x 100%\n= orders_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码逐笔委托的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2逐笔委托数据的完整性",
+    
+    "缺失天数 (Missing Days)\n在交易日范围内缺失数据的天数\n= 预期交易日总数 - 实际有数据的天数\n\n说明:\n- 数值越大说明数据缺失越严重\n- 需要补充下载或检查数据源",
+    
+    "快照总数 (Total Snapshots)\n所有交易日的快照记录总数量\n= Σ snapshot_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2行情快照的总数据量",
+    
+    "订单总数 (Total Orders)\n所有交易日的逐笔委托记录总数量\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2逐笔委托的总数据量"
+  };
+  
+  for (int col = 0; col < 19; col++) {
+    ImGui::TableSetColumnIndex(col);
+    ImGui::PushID(col);
+    ImGui::TableHeader(header_labels[col]);
+    if (ImGui::IsItemHovered()) {
+      ImGui::BeginTooltip();
+      ImGui::TextUnformatted(header_tooltips[col]);
+      ImGui::EndTooltip();
+    }
+    ImGui::PopID();
+  }
 
   // Build filtered asset list for sorting
   struct AssetRow {
@@ -275,14 +333,14 @@ void RenderDataTable(
     const StockInfo *info;
     std::string full_code;
   };
-  
+
   std::vector<AssetRow> filtered_rows;
   filtered_rows.reserve(assets.size());
-  
+
   for (const auto &asset : assets) {
     if (!ShouldShowAsset(asset, table_state, stock_info))
       continue;
-    
+
     std::string exchange_lower = asset.exchange;
     std::transform(exchange_lower.begin(), exchange_lower.end(),
                    exchange_lower.begin(), ::tolower);
@@ -297,16 +355,19 @@ void RenderDataTable(
 
   // Safe string to double conversion with extra safety for sorting
   auto safe_stod = [](const std::string &s, double default_val = -1e9) -> double {
-    if (s.empty()) return default_val;
+    if (s.empty())
+      return default_val;
     try {
       double val = std::stod(s);
       // Extra safety: check for NaN explicitly before isfinite
-      if (val != val) return default_val; // NaN check
-      if (!std::isfinite(val)) return default_val;
+      if (val != val)
+        return default_val; // NaN check
+      if (!std::isfinite(val))
+        return default_val;
       return val;
-    } catch (const std::invalid_argument&) {
+    } catch (const std::invalid_argument &) {
       return default_val;
-    } catch (const std::out_of_range&) {
+    } catch (const std::out_of_range &) {
       return default_val;
     } catch (...) {
       return default_val;
@@ -314,118 +375,128 @@ void RenderDataTable(
   };
 
   // Apply sorting (restore from table_state if needed)
-  if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+  if (ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs()) {
     if (sort_specs->SpecsDirty || table_state.sort_column >= 0) {
       int col = table_state.sort_column;
       bool ascending = table_state.sort_ascending;
-      
+
       // Update from ImGui if dirty
       if (sort_specs->SpecsDirty && sort_specs->SpecsCount > 0) {
-        const auto& spec = sort_specs->Specs[0];
+        const auto &spec = sort_specs->Specs[0];
         col = spec.ColumnIndex;
         ascending = spec.SortDirection == ImGuiSortDirection_Ascending;
         table_state.sort_column = col;
         table_state.sort_ascending = ascending;
       }
-      
+
       if (col >= 0) {
         std::stable_sort(filtered_rows.begin(), filtered_rows.end(),
-          [col, ascending, &safe_stod](const AssetRow &a, const AssetRow &b) -> bool {
-            try {
-              bool result = false;
-              
-              switch (col) {
-              case 0: result = a.asset->asset_code < b.asset->asset_code; break; // Code
-              case 1: { // Name
-                std::string name_a = a.info && !a.info->name.empty() ? a.info->name : a.asset->asset_code;
-                std::string name_b = b.info && !b.info->name.empty() ? b.info->name : b.asset->asset_code;
-                result = name_a < name_b;
-                break;
-              }
-              case 2: result = a.asset->exchange < b.asset->exchange; break; // Exchange
-              case 3: result = (int)GetBoardType(a.asset->asset_code) < (int)GetBoardType(b.asset->asset_code); break; // Board
-              case 4: { // ST
-                bool a_st = a.info && a.info->isST == "1";
-                bool b_st = b.info && b.info->isST == "1";
-                result = a_st < b_st;
-                break;
-              }
-              case 5: { // DL (Delisted)
-                bool a_dl = a.info && a.info->outDate != "" && a.info->outDate != "0";
-                bool b_dl = b.info && b.info->outDate != "" && b.info->outDate != "0";
-                result = a_dl < b_dl;
-                break;
-              }
-              case 6: { // Listed days
-                int a_days = (a.info && !a.info->ipoDate.empty()) ? CalculateDaysSinceIPO(a.info->ipoDate) : 0;
-                int b_days = (b.info && !b.info->ipoDate.empty()) ? CalculateDaysSinceIPO(b.info->ipoDate) : 0;
-                result = a_days < b_days;
-                break;
-              }
-              case 7: { // Industry
-                std::string a_ind = a.info ? a.info->ind_code : "";
-                std::string b_ind = b.info ? b.info->ind_code : "";
-                result = a_ind < b_ind;
-                break;
-              }
-              case 8: { // PE
-                double a_val = a.info ? safe_stod(a.info->peTTM) : -1e9;
-                double b_val = b.info ? safe_stod(b.info->peTTM) : -1e9;
-                result = a_val < b_val;
-                break;
-              }
-              case 9: { // PB
-                double a_val = a.info ? safe_stod(a.info->pbMRQ) : -1e9;
-                double b_val = b.info ? safe_stod(b.info->pbMRQ) : -1e9;
-                result = a_val < b_val;
-                break;
-              }
-              case 10: { // PS
-                double a_val = a.info ? safe_stod(a.info->psTTM) : -1e9;
-                double b_val = b.info ? safe_stod(b.info->psTTM) : -1e9;
-                result = a_val < b_val;
-                break;
-              }
-              case 11: { // PCF
-                double a_val = a.info ? safe_stod(a.info->pcfNcfTTM) : -1e9;
-                double b_val = b.info ? safe_stod(b.info->pcfNcfTTM) : -1e9;
-                result = a_val < b_val;
-                break;
-              }
-              case 12: { // Market Cap
-                double a_cap = a.info ? CalculateMarketCap(*a.info) : 0;
-                double b_cap = b.info ? CalculateMarketCap(*b.info) : 0;
-                result = a_cap < b_cap;
-                break;
-              }
-              case 13: result = a.asset->get_total_trading_days() < b.asset->get_total_trading_days(); break; // Days
-              case 14: { // Snap%
-                double a_pct = a.asset->get_total_trading_days() > 0 ?
-                  (double)a.asset->get_snapshots_encoded_count() / a.asset->get_total_trading_days() : 0;
-                double b_pct = b.asset->get_total_trading_days() > 0 ?
-                  (double)b.asset->get_snapshots_encoded_count() / b.asset->get_total_trading_days() : 0;
-                result = a_pct < b_pct;
-                break;
-              }
-              case 15: { // Order%
-                double a_pct = a.asset->get_total_trading_days() > 0 ?
-                  (double)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
-                double b_pct = b.asset->get_total_trading_days() > 0 ?
-                  (double)b.asset->get_orders_encoded_count() / b.asset->get_total_trading_days() : 0;
-                result = a_pct < b_pct;
-                break;
-              }
-              case 16: result = a.asset->get_missing_count() < b.asset->get_missing_count(); break; // Miss
-              case 17: result = a.asset->get_total_snapshot_count() < b.asset->get_total_snapshot_count(); break; // Snaps
-              case 18: result = a.asset->get_total_order_count() < b.asset->get_total_order_count(); break; // Orders
-            }
-            
-            return ascending ? result : !result;
-          } catch (...) {
-            // If comparison fails, maintain consistent ordering by comparing addresses
-            return &a < &b;
-          }
-          });
+                         [col, ascending, &safe_stod](const AssetRow &a, const AssetRow &b) -> bool {
+                           try {
+                             bool result = false;
+
+                             switch (col) {
+                             case 0:
+                               result = a.asset->asset_code < b.asset->asset_code;
+                               break;  // Code
+                             case 1: { // Name
+                               std::string name_a = a.info && !a.info->name.empty() ? a.info->name : a.asset->asset_code;
+                               std::string name_b = b.info && !b.info->name.empty() ? b.info->name : b.asset->asset_code;
+                               result = name_a < name_b;
+                               break;
+                             }
+                             case 2:
+                               result = a.asset->exchange < b.asset->exchange;
+                               break; // Exchange
+                             case 3:
+                               result = (int)GetBoardType(a.asset->asset_code) < (int)GetBoardType(b.asset->asset_code);
+                               break;  // Board
+                             case 4: { // ST
+                               bool a_st = a.info && a.info->isST == "1";
+                               bool b_st = b.info && b.info->isST == "1";
+                               result = a_st < b_st;
+                               break;
+                             }
+                             case 5: { // DL (Delisted)
+                               bool a_dl = a.info && a.info->outDate != "" && a.info->outDate != "0";
+                               bool b_dl = b.info && b.info->outDate != "" && b.info->outDate != "0";
+                               result = a_dl < b_dl;
+                               break;
+                             }
+                             case 6: { // Listed days
+                               int a_days = (a.info && !a.info->ipoDate.empty()) ? CalculateDaysSinceIPO(a.info->ipoDate) : 0;
+                               int b_days = (b.info && !b.info->ipoDate.empty()) ? CalculateDaysSinceIPO(b.info->ipoDate) : 0;
+                               result = a_days < b_days;
+                               break;
+                             }
+                             case 7: { // Industry
+                               std::string a_ind = a.info ? a.info->ind_code : "";
+                               std::string b_ind = b.info ? b.info->ind_code : "";
+                               result = a_ind < b_ind;
+                               break;
+                             }
+                             case 8: { // PE
+                               double a_val = a.info ? safe_stod(a.info->peTTM) : -1e9;
+                               double b_val = b.info ? safe_stod(b.info->peTTM) : -1e9;
+                               result = a_val < b_val;
+                               break;
+                             }
+                             case 9: { // PB
+                               double a_val = a.info ? safe_stod(a.info->pbMRQ) : -1e9;
+                               double b_val = b.info ? safe_stod(b.info->pbMRQ) : -1e9;
+                               result = a_val < b_val;
+                               break;
+                             }
+                             case 10: { // PS
+                               double a_val = a.info ? safe_stod(a.info->psTTM) : -1e9;
+                               double b_val = b.info ? safe_stod(b.info->psTTM) : -1e9;
+                               result = a_val < b_val;
+                               break;
+                             }
+                             case 11: { // PCF
+                               double a_val = a.info ? safe_stod(a.info->pcfNcfTTM) : -1e9;
+                               double b_val = b.info ? safe_stod(b.info->pcfNcfTTM) : -1e9;
+                               result = a_val < b_val;
+                               break;
+                             }
+                             case 12: { // Market Cap
+                               double a_cap = a.info ? CalculateMarketCap(*a.info) : 0;
+                               double b_cap = b.info ? CalculateMarketCap(*b.info) : 0;
+                               result = a_cap < b_cap;
+                               break;
+                             }
+                             case 13:
+                               result = a.asset->get_total_trading_days() < b.asset->get_total_trading_days();
+                               break;   // Days
+                             case 14: { // Snap%
+                               double a_pct = a.asset->get_total_trading_days() > 0 ? (double)a.asset->get_snapshots_encoded_count() / a.asset->get_total_trading_days() : 0;
+                               double b_pct = b.asset->get_total_trading_days() > 0 ? (double)b.asset->get_snapshots_encoded_count() / b.asset->get_total_trading_days() : 0;
+                               result = a_pct < b_pct;
+                               break;
+                             }
+                             case 15: { // Order%
+                               double a_pct = a.asset->get_total_trading_days() > 0 ? (double)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
+                               double b_pct = b.asset->get_total_trading_days() > 0 ? (double)b.asset->get_orders_encoded_count() / b.asset->get_total_trading_days() : 0;
+                               result = a_pct < b_pct;
+                               break;
+                             }
+                             case 16:
+                               result = a.asset->get_missing_count() < b.asset->get_missing_count();
+                               break; // Miss
+                             case 17:
+                               result = a.asset->get_total_snapshot_count() < b.asset->get_total_snapshot_count();
+                               break; // Snaps
+                             case 18:
+                               result = a.asset->get_total_order_count() < b.asset->get_total_order_count();
+                               break; // Orders
+                             }
+
+                             return ascending ? result : !result;
+                           } catch (...) {
+                             // If comparison fails, maintain consistent ordering by comparing addresses
+                             return &a < &b;
+                           }
+                         });
       }
       sort_specs->SpecsDirty = false;
     }
@@ -777,7 +848,7 @@ void RenderCrossSectionPanel(
     const std::vector<AssetInfo> &assets,
     const StockInfoMap &stock_info,
     const TableState &table_state) {
-  
+
   if (table_state.selected_column_idx < 0) {
     ImGui::TextWrapped("Click on any cell to view cross-section analysis.");
     return;
@@ -785,10 +856,9 @@ void RenderCrossSectionPanel(
 
   // Column names for display
   const char *col_names[] = {
-    "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days", "Industry",
-    "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "Market Cap", "Trading Days",
-    "Snapshot %", "Order %", "Missing", "Total Snapshots", "Total Orders"
-  };
+      "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days", "Industry",
+      "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "Market Cap", "Trading Days",
+      "Snapshot %", "Order %", "Missing", "Total Snapshots", "Total Orders"};
 
   int col_idx = table_state.selected_column_idx;
   if (col_idx >= 19) {
@@ -844,78 +914,80 @@ static void RenderNumericAnalysis(
     bool is_valid = false;
 
     switch (col_idx) {
-      case 6: // Listed Days
-        if (info && !info->ipoDate.empty()) {
-          value = CalculateDaysSinceIPO(info->ipoDate);
-          is_valid = (value > 0);
+    case 6: // Listed Days
+      if (info && !info->ipoDate.empty()) {
+        value = CalculateDaysSinceIPO(info->ipoDate);
+        is_valid = (value > 0);
+      }
+      break;
+    case 8: // PE
+      if (info && !info->peTTM.empty()) {
+        try {
+          value = std::stod(info->peTTM);
+          is_valid = std::isfinite(value);
+        } catch (...) {
         }
-        break;
-      case 8: // PE
-        if (info && !info->peTTM.empty()) {
-          try { 
-            value = std::stod(info->peTTM); 
-            is_valid = std::isfinite(value);
-          } catch (...) {}
+      }
+      break;
+    case 9: // PB
+      if (info && !info->pbMRQ.empty()) {
+        try {
+          value = std::stod(info->pbMRQ);
+          is_valid = std::isfinite(value);
+        } catch (...) {
         }
-        break;
-      case 9: // PB
-        if (info && !info->pbMRQ.empty()) {
-          try { 
-            value = std::stod(info->pbMRQ); 
-            is_valid = std::isfinite(value);
-          } catch (...) {}
+      }
+      break;
+    case 10: // PS
+      if (info && !info->psTTM.empty()) {
+        try {
+          value = std::stod(info->psTTM);
+          is_valid = std::isfinite(value);
+        } catch (...) {
         }
-        break;
-      case 10: // PS
-        if (info && !info->psTTM.empty()) {
-          try { 
-            value = std::stod(info->psTTM); 
-            is_valid = std::isfinite(value);
-          } catch (...) {}
+      }
+      break;
+    case 11: // PCF
+      if (info && !info->pcfNcfTTM.empty()) {
+        try {
+          value = std::stod(info->pcfNcfTTM);
+          is_valid = std::isfinite(value);
+        } catch (...) {
         }
-        break;
-      case 11: // PCF
-        if (info && !info->pcfNcfTTM.empty()) {
-          try { 
-            value = std::stod(info->pcfNcfTTM); 
-            is_valid = std::isfinite(value);
-          } catch (...) {}
-        }
-        break;
-      case 12: // Market Cap
-        if (info) {
-          value = CalculateMarketCap(*info);
-          is_valid = (value > 0);
-        }
-        break;
-      case 13: // Trading Days
-        value = asset.get_total_trading_days();
-        is_valid = true;
-        break;
-      case 14: // Snapshot %
-        value = asset.get_total_trading_days() > 0 ?
-                (double)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
-        is_valid = true;
-        break;
-      case 15: // Order %
-        value = asset.get_total_trading_days() > 0 ?
-                (double)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
-        is_valid = true;
-        break;
-      case 16: // Missing
-        value = asset.get_missing_count();
-        is_valid = true;
-        break;
-      case 17: // Total Snapshots
-        value = asset.get_total_snapshot_count();
-        is_valid = true;
-        break;
-      case 18: // Total Orders
-        value = asset.get_total_order_count();
-        is_valid = true;
-        break;
-      default:
-        break;
+      }
+      break;
+    case 12: // Market Cap
+      if (info) {
+        value = CalculateMarketCap(*info);
+        is_valid = (value > 0);
+      }
+      break;
+    case 13: // Trading Days
+      value = asset.get_total_trading_days();
+      is_valid = true;
+      break;
+    case 14: // Snapshot %
+      value = asset.get_total_trading_days() > 0 ? (double)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+      is_valid = true;
+      break;
+    case 15: // Order %
+      value = asset.get_total_trading_days() > 0 ? (double)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+      is_valid = true;
+      break;
+    case 16: // Missing
+      value = asset.get_missing_count();
+      is_valid = true;
+      break;
+    case 17: // Total Snapshots
+      value = asset.get_total_snapshot_count();
+      is_valid = true;
+      break;
+    case 18: // Total Orders
+      value = asset.get_total_order_count();
+      is_valid = true;
+      break;
+    default:
+      break;
     }
 
     if (is_valid) {
@@ -933,7 +1005,7 @@ static void RenderNumericAnalysis(
   // === 1. Board Statistics Table (Compact) ===
   ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Board Statistics");
   auto board_stats = GroupNumericByBoard(codes, values);
-  
+
   if (ImGui::BeginTable("BoardStatsTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
     ImGui::TableSetupColumn("Board");
     ImGui::TableSetupColumn("Mean");
@@ -944,11 +1016,16 @@ static void RenderNumericAnalysis(
 
     for (const auto &bs : board_stats) {
       ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0); ImGui::Text("%s", bs.board_name.c_str());
-      ImGui::TableSetColumnIndex(1); ImGui::Text("%.2f", bs.mean);
-      ImGui::TableSetColumnIndex(2); ImGui::Text("%.2f", bs.median);
-      ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", bs.std_dev);
-      ImGui::TableSetColumnIndex(4); ImGui::Text("%zu", bs.count);
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("%s", bs.board_name.c_str());
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("%.2f", bs.mean);
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("%.2f", bs.median);
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("%.2f", bs.std_dev);
+      ImGui::TableSetColumnIndex(4);
+      ImGui::Text("%zu", bs.count);
     }
     ImGui::EndTable();
   }
@@ -958,17 +1035,77 @@ static void RenderNumericAnalysis(
   // === 2. Distribution Plot (Remove top/bottom 5% outliers) ===
   ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Distribution (Outliers Removed)");
   auto filtered_values = RemoveOutliers(values, 5.0);
-  
-  if (!filtered_values.empty() && ImPlot::BeginPlot("##Distribution", ImVec2(-1, 200))) {
-    ImPlot::PlotHistogram("##hist", filtered_values.data(), (int)filtered_values.size(), 20);
-    ImPlot::EndPlot();
+
+  if (!filtered_values.empty()) {
+    const int num_bins = 100;
+    
+    // Calculate histogram bins
+    auto minmax = std::minmax_element(filtered_values.begin(), filtered_values.end());
+    double min_val = *minmax.first;
+    double max_val = *minmax.second;
+    double range = max_val - min_val;
+    double bin_width = range / num_bins;
+    
+    std::vector<double> hist_bins(num_bins, 0.0);
+    for (double v : filtered_values) {
+      int bin_idx = static_cast<int>((v - min_val) / bin_width);
+      if (bin_idx >= num_bins) bin_idx = num_bins - 1;
+      if (bin_idx < 0) bin_idx = 0;
+      hist_bins[bin_idx] += 1.0;
+    }
+    
+    // Normalize histogram to PDF
+    double total_area = 0.0;
+    for (double count : hist_bins) {
+      total_area += count * bin_width;
+    }
+    std::vector<double> pdf_bins(num_bins);
+    for (int i = 0; i < num_bins; ++i) {
+      pdf_bins[i] = hist_bins[i] / total_area;
+    }
+    
+    // Calculate CDF
+    std::vector<double> cdf_bins(num_bins);
+    double cumsum = 0.0;
+    for (int i = 0; i < num_bins; ++i) {
+      cumsum += pdf_bins[i] * bin_width;
+      cdf_bins[i] = cumsum;
+    }
+    
+    // Prepare X axis positions
+    std::vector<double> x_positions(num_bins);
+    for (int i = 0; i < num_bins; ++i) {
+      x_positions[i] = min_val + (i + 0.5) * bin_width;
+    }
+    
+    if (ImPlot::BeginPlot("##Distribution", ImVec2(-1, 300))) {
+      ImPlot::SetupAxes("Value", "Density / Probability");
+      ImPlot::SetupAxesLimits(min_val, max_val, 0, 1.2, ImPlotCond_Once);
+      ImPlot::SetupAxis(ImAxis_Y2, "CDF", ImPlotAxisFlags_AuxDefault);
+      ImPlot::SetupAxisLimits(ImAxis_Y2, 0, 1.05, ImPlotCond_Once);
+      
+      // Plot histogram bars (PDF normalized)
+      ImPlot::SetNextFillStyle(ImVec4(0.5f, 0.7f, 1.0f, 0.5f));
+      ImPlot::PlotBars("##hist", x_positions.data(), pdf_bins.data(), num_bins, bin_width * 0.9);
+      
+      // Plot PDF line
+      ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.5f, 1.0f, 1.0f), 2.0f);
+      ImPlot::PlotLine("PDF", x_positions.data(), pdf_bins.data(), num_bins);
+      
+      // Plot CDF on secondary Y axis
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+      ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), 2.0f);
+      ImPlot::PlotLine("CDF", x_positions.data(), cdf_bins.data(), num_bins);
+      
+      ImPlot::EndPlot();
+    }
   }
 
   ImGui::Spacing();
 
   // === 3. Rankings (Top 10 / Bottom 10) ===
   float half_width = ImGui::GetContentRegionAvail().x * 0.48f;
-  
+
   // Top 10
   ImGui::BeginChild("Top10", ImVec2(half_width, 250), true);
   ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Top 10");
@@ -1001,7 +1138,7 @@ static void RenderCategoricalAnalysis(
     int col_idx,
     const char *col_name) {
   (void)col_name; // Unused
-  
+
   // Extract categorical data
   std::vector<std::string> categories;
   std::vector<std::string> codes;
@@ -1022,20 +1159,20 @@ static void RenderCategoricalAnalysis(
 
     std::string category;
     switch (col_idx) {
-      case 3: // Board
-        category = GetBoardName(GetBoardType(asset.asset_code));
-        break;
-      case 4: // ST
-        category = (info && info->isST == "1") ? "ST" : "Normal";
-        break;
-      case 5: // DL
-        category = (info && !info->outDate.empty()) ? "Delisted" : "Active";
-        break;
-      case 7: // Industry
-        category = info ? info->ind_code : "Unknown";
-        break;
-      default:
-        break;
+    case 3: // Board
+      category = GetBoardName(GetBoardType(asset.asset_code));
+      break;
+    case 4: // ST
+      category = (info && info->isST == "1") ? "ST" : "Normal";
+      break;
+    case 5: // DL
+      category = (info && !info->outDate.empty()) ? "Delisted" : "Active";
+      break;
+    case 7: // Industry
+      category = info ? info->ind_code : "Unknown";
+      break;
+    default:
+      break;
     }
 
     if (!category.empty()) {
@@ -1052,9 +1189,9 @@ static void RenderCategoricalAnalysis(
   // === 1. Overall Pie Chart ===
   ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Overall Distribution");
   auto overall_counts = CountCategories(categories);
-  
+
   if (!overall_counts.empty() && ImPlot::BeginPlot("##OverallPie", ImVec2(-1, 250))) {
-    std::vector<const char*> labels;
+    std::vector<const char *> labels;
     std::vector<double> counts;
     for (const auto &cc : overall_counts) {
       labels.push_back(cc.label.c_str());
@@ -1075,16 +1212,16 @@ static void RenderCategoricalAnalysis(
 
   for (size_t i = 0; i < board_breakdown.size(); ++i) {
     const auto &breakdown = board_breakdown[i];
-    
+
     if (i % charts_per_row != 0) {
       ImGui::SameLine();
     }
 
     ImGui::BeginChild(("BoardPie_" + std::to_string(i)).c_str(), ImVec2(chart_width, 220), true);
     ImGui::Text("%s", breakdown.board_name.c_str());
-    
+
     if (!breakdown.categories.empty() && ImPlot::BeginPlot("##BoardPie", ImVec2(-1, 180))) {
-      std::vector<const char*> labels;
+      std::vector<const char *> labels;
       std::vector<double> counts;
       for (const auto &cc : breakdown.categories) {
         labels.push_back(cc.label.c_str());
@@ -1093,7 +1230,7 @@ static void RenderCategoricalAnalysis(
       ImPlot::PlotPieChart(labels.data(), counts.data(), (int)counts.size(), 0.5, 0.5, 0.35);
       ImPlot::EndPlot();
     }
-    
+
     ImGui::EndChild();
   }
 }
@@ -1106,7 +1243,7 @@ void RenderTabTable(
     const std::vector<AssetInfo> &assets,
     const StockInfoMap &stock_info,
     TableState &table_state) {
-  
+
   // Count visible assets
   size_t visible_count = 0;
   for (const auto &asset : assets) {
@@ -1124,9 +1261,7 @@ void RenderTabTable(
   float window_height = ImGui::GetContentRegionAvail().y;
 
   // Calculate left table width
-  float left_width = table_state.show_cross_section_panel ?
-                     window_width * table_state.table_split_ratio :
-                     window_width;
+  float left_width = table_state.show_cross_section_panel ? window_width * table_state.table_split_ratio : window_width;
 
   // Left: Data Table
   ImGui::BeginChild("LeftTable", ImVec2(left_width, window_height), true,

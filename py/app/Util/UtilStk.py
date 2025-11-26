@@ -138,31 +138,31 @@ def _wt_asset_file(path: str) -> Dict:
     Status = {
         "normally_listed": {
             "name": "正常上市",
-            "description": "指公司目前在证券交易所上市，并正常交易，没有任何限制。"
+            "description": "指公司目前在证券交易所上市,并正常交易,没有任何限制。"
         },
         "delisted": {
             "name": "已退市",
-            "description": "指公司的股票已从交易所撤销，不能再进行交易。这可能由于多种原因，包括财务不稳定或未能满足上市要求。"
+            "description": "指公司的股票已从交易所撤销,不能再进行交易。这可能由于多种原因,包括财务不稳定或未能满足上市要求。"
         },
         "listing_suspended": {
             "name": "暂停上市",
-            "description": "意味着公司的股票交易已被暂时暂停，可能由于正在进行的调查、财务困难或其他需要解决的问题。"
+            "description": "意味着公司的股票交易已被暂时暂停,可能由于正在进行的调查、财务困难或其他需要解决的问题。"
         },
         "special_treatment": {
             "name": "ST板块",
-            "description": "该类别的股票因财务困难或其他重大风险而受到特别处理，通常会受到更严格的监管和监控。"
+            "description": "该类别的股票因财务困难或其他重大风险而受到特别处理,通常会受到更严格的监管和监控。"
         },
         "delisting_risk_warning": {
             "name": "*ST",
-            "description": "该标识表示公司因财务状况或其他严重问题而面临退市风险，提醒投资者可能会被退市的风险。"
+            "description": "该标识表示公司因财务状况或其他严重问题而面临退市风险,提醒投资者可能会被退市的风险。"
         },
         "issued_but_not_listed": {
             "name": "已发行未上市",
-            "description": "指已发行但目前未在任何证券交易所上市的证券，因此无法进行公开交易。"
+            "description": "指已发行但目前未在任何证券交易所上市的证券,因此无法进行公开交易。"
         },
         "pre_disclosure": {
             "name": "预披露",
-            "description": "该状态表示公司计划上市，并已就其意图进行初步披露，通常是在首次公开募股(IPO)之前。"
+            "description": "该状态表示公司计划上市,并已就其意图进行初步披露,通常是在首次公开募股(IPO)之前。"
         },
         "unauthorized": {
             "name": "未过会",
@@ -170,23 +170,23 @@ def _wt_asset_file(path: str) -> Dict:
         },
         "issue_failure": {
             "name": "发行失败",
-            "description": "该术语指公司未能成功发行证券，通常意味着没有吸引到足够的投资者兴趣。"
+            "description": "该术语指公司未能成功发行证券,通常意味着没有吸引到足够的投资者兴趣。"
         },
         "delisting_transitional_period": {
             "name": "进入退市整理期",
-            "description": "该状态表示公司在正式退市之前的一个阶段，此期间可能还会继续交易，但会受到密切监控。"
+            "description": "该状态表示公司在正式退市之前的一个阶段,此期间可能还会继续交易,但会受到密切监控。"
         },
         "ipo_suspension": {
             "name": "暂缓发行",
-            "description": "意味着公司的首次公开募股(IPO)计划已被暂时暂停，可能由于监管问题或市场状况。"
+            "description": "意味着公司的首次公开募股(IPO)计划已被暂时暂停,可能由于监管问题或市场状况。"
         },
         "ipo_listing_suspension": {
             "name": "暂缓上市",
-            "description": "类似于上面，表示某项证券的上市已被推迟。"
+            "description": "类似于上面,表示某项证券的上市已被推迟。"
         },
         "transfer_suspended": {
             "name": "停止转让",
-            "description": "表示股票的所有权转让已被暂停，这可能是由于监管问题或其他复杂情况。"
+            "description": "表示股票的所有权转让已被暂停,这可能是由于监管问题或其他复杂情况。"
         },
         "normally_transferred": {
             "name": "正常转让",
@@ -194,19 +194,19 @@ def _wt_asset_file(path: str) -> Dict:
         },
         "investor_suitability_management_implemented": {
             "name": "投资者适当性管理标识",
-            "description": "该标识表示公司正在实施投资者适当性管理措施，确保其投资产品适合目标投资者群体。"
+            "description": "该标识表示公司正在实施投资者适当性管理措施,确保其投资产品适合目标投资者群体。"
         },
         "non_listed": {
             "name": "非上市",
-            "description": "该术语描述的是未在任何证券交易所上市的证券，因此不进行公开交易。"
+            "description": "该术语描述的是未在任何证券交易所上市的证券,因此不进行公开交易。"
         },
         "transfer_as_specific_bond": {
             "name": "特定债券转让",
-            "description": "指在特定条款和条件下转让某些债券，通常不在常规交易框架内进行。"
+            "description": "指在特定条款和条件下转让某些债券,通常不在常规交易框架内进行。"
         },
         "transfer_under_agreement": {
             "name": "协议转让",
-            "description": "表示所有权的转让是基于双方之间的协议进行的，而不是通过公共交易过程。"
+            "description": "表示所有权的转让是基于双方之间的协议进行的,而不是通过公共交易过程。"
         },
         "others": {
             "name": "其它",

@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-本项目基于A股L2数据，数据储存单元:每日行情(单标的 快照+逐笔成交+逐笔委托)，总文件数在数千万级别。
+本项目基于A股L2数据,数据储存单元:每日行情(单标的 快照+逐笔成交+逐笔委托),总文件数在数千万级别。
 
 ## 配置要求
 
@@ -11,13 +11,13 @@
 - **分区方法**: GPT(不选MBR, APM)
 - **文件系统**: XFS(不选NTFS, EXT4, Btrfs, F2FS)
 - **IO调度**: Noop(不选Deadline, 不选CFQ)
-- **挂载参数**: 特殊优化(这些参数是session only的，不改变存储数据和文件系统本身，重载后失效)
+- **挂载参数**: 特殊优化(这些参数是session only的,不改变存储数据和文件系统本身,重载后失效)
 
 **注意事项:**
 - 下面为wsl在windows下的flow(用来调试), 纯linux环境(用来生产)可以参考, 配置更简单
-- 对于m.2的机器，用fstab持久化挂载
-- 对于usb测试机器，每次需要手动挂载
-- 记得每次用ssd前检查挂载状态，不要把数据写到wsl的虚拟盘里
+- 对于m.2的机器,用fstab持久化挂载
+- 对于usb测试机器,每次需要手动挂载
+- 记得每次用ssd前检查挂载状态,不要把数据写到wsl的虚拟盘里
 
 **查看设备状态:**
 ```bash
@@ -47,7 +47,7 @@ Number FriendlyName             SerialNumber                             BusType
 ```powershell
 $disk_id = 1
 wsl --shutdown
-# 裸盘透传(不让 Windows 挂载分区)，这样进 WSL 里才能分区/格式化
+# 裸盘透传(不让 Windows 挂载分区),这样进 WSL 里才能分区/格式化
 wsl --mount "\\.\PHYSICALDRIVE$disk_id" --bare
 ```
 
@@ -141,11 +141,11 @@ sudo mount -o noatime,nodiratime,attr2,inode64,logbufs=8,logbsize=32k $PART /mnt
 ```
 
 **挂载参数说明:**
-- `noatime,nodiratime`: 避免每次访问更新时间戳，减少写 I/O
+- `noatime,nodiratime`: 避免每次访问更新时间戳,减少写 I/O
 - `attr2`: 优化扩展属性存储
-- `inode64`: 大盘随机分布 inode，减少 AG 内热点
-- `logbufs=8`: 日志缓冲区数量，提高并发写入性能
-- `logbsize=32k`: 日志块增大，减少日志写入频率
+- `inode64`: 大盘随机分布 inode,减少 AG 内热点
+- `logbufs=8`: 日志缓冲区数量,提高并发写入性能
+- `logbsize=32k`: 日志块增大,减少日志写入频率
 
 ### 8. 配置 I/O 调度器
 
@@ -162,7 +162,7 @@ df -h /mnt/$DEV
 xfs_info /mnt/$DEV | sed -n '1,25p'
 ```
 
-**注意:** 持久化挂载(fstab)对于USB用处不大，不考虑。
+**注意:** 持久化挂载(fstab)对于USB用处不大,不考虑。
 
 ---
 
