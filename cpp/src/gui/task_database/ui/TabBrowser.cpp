@@ -24,9 +24,7 @@ constexpr ImVec4 BORDER_GREEN = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);   // 100%
 constexpr ImVec4 BORDER_YELLOW = ImVec4(0.95f, 0.9f, 0.2f, 1.0f); // 95-99%
 constexpr ImVec4 BORDER_RED = ImVec4(0.95f, 0.2f, 0.2f, 1.0f);    // <95%
 
-constexpr float CELL_SIZE = 12.0f;
-constexpr float CELL_SPACING = 0.0f;   // Dense packing horizontally (no gap)
-constexpr float ROW_SPACING = 0.0f;    // Dense packing vertically (no gap)
+constexpr float CELL_SIZE = 12.0f;     // 12px cell (4 stripes × 3px each)
 constexpr float BORDER_WIDTH = 2.5f;   // Thick border for visibility
 constexpr float MONTH_SPACING = 15.0f; // Space between months
 
@@ -269,32 +267,44 @@ void RenderMonthGrid(
 
   // Get starting position for grid
   ImVec2 grid_start = ImGui::GetCursorScreenPos();
+  
+  // Get draw list once (outside loop)
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  
+  // Pre-convert colors to U32 (avoid repeated conversions)
+  const ImU32 color_bg_weekday = ImGui::GetColorU32(COLOR_GRAY);
+  const ImU32 color_bg_weekend = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+  const ImU32 color_yellow = ImGui::GetColorU32(COLOR_YELLOW);
+  const ImU32 color_purple = ImGui::GetColorU32(COLOR_PURPLE);
+  const ImU32 color_green = ImGui::GetColorU32(COLOR_GREEN);
+  const ImU32 color_blue = ImGui::GetColorU32(COLOR_BLUE);
+  const ImU32 color_hover = ImGui::GetColorU32(COLOR_HOVER);
+  const ImU32 color_border_green = ImGui::GetColorU32(BORDER_GREEN);
+  const ImU32 color_border_yellow = ImGui::GetColorU32(BORDER_YELLOW);
+  const ImU32 color_border_red = ImGui::GetColorU32(BORDER_RED);
+  const ImU32 color_border_default = ImGui::GetColorU32(ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
+  const ImU32 color_border_dark = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
 
   // Track maximum row for height calculation
   int max_row = 0;
 
   // Day grid (up to 31 days, arranged in rows of 7, aligned by day of week)
   for (int day = 1; day <= 31; ++day) {
-    // Check if date is valid
-    char date_str[16];
-    snprintf(date_str, sizeof(date_str), "%04d%02d%02d", year, month, day);
-    int dow = GetDayOfWeek(std::string(date_str));
-    if (dow < 0)
-      break; // Invalid date
-
-    // Calculate grid position based on first day's column
-    int total_offset = first_col + day - 1;
-    int col = total_offset % 7;
-    int row = total_offset / 7;
-
-    // Track maximum row
-    if (row > max_row)
-      max_row = row;
-
-    // Build date string YYYYMMDD
+    // Build date string YYYYMMDD (only once)
     char date_dense[16];
     snprintf(date_dense, sizeof(date_dense), "%04d%02d%02d", year, month, day);
     std::string date_key(date_dense);
+    
+    // Check if date is valid
+    int dow = GetDayOfWeek(date_key);
+    if (dow < 0)
+      break; // Invalid date
+
+    // Calculate grid position
+    int total_offset = first_col + day - 1;
+    int col = total_offset % 7;
+    int row = total_offset / 7;
+    if (row > max_row) max_row = row;
 
     // Get daily stats
     auto stats_it = daily_stats.find(date_key);
@@ -302,147 +312,76 @@ void RenderMonthGrid(
 
     // Calculate position for dense packing
     ImVec2 cell_pos = ImVec2(
-        grid_start.x + col * (CELL_SIZE + CELL_SPACING),
-        grid_start.y + row * (CELL_SIZE + ROW_SPACING));
+        grid_start.x + col * CELL_SIZE,
+        grid_start.y + row * CELL_SIZE);
 
-    // Get DrawList for drawing
-    ImDrawList *draw_list = ImGui::GetWindowDrawList();
+    // Determine background color: weekend or weekday
+    const ImU32 bg_color = (dow == 0 || dow == 6) ? color_bg_weekend : color_bg_weekday;
 
-    // Define number of layers
-    constexpr int NUM_LAYERS = 4;
-
-    // Determine background color: weekend (darker gray) vs weekday (light gray)
-    ImVec4 bg_color = COLOR_GRAY;
-    if (dow == 0 || dow == 6) {                     // Sunday or Saturday
-      bg_color = ImVec4(0.15f, 0.15f, 0.15f, 1.0f); // Darker gray for weekends
-    }
-
-    // ============================================================
-    // Drawing order: border FIRST, then background, then layers
-    // This prevents thick border from covering the layer colors
-    // ============================================================
-    
-    // Step 1: Draw border FIRST (completeness)
+    // Step 1: Draw border (completeness indicator)
     if (state.layers.show_completeness && stats && stats->is_trading_day) {
-      float completeness = 0.0f;
-      if (state.view_mode == BrowserViewMode::All) {
-        completeness = stats->completeness_all();
-      } else if (state.view_mode == BrowserViewMode::Snapshots) {
-        completeness = stats->completeness_snapshots();
-      } else {
-        completeness = stats->completeness_orders();
-      }
+      float completeness = (state.view_mode == BrowserViewMode::All) ? stats->completeness_all()
+                         : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
+                         : stats->completeness_orders();
 
-      ImVec4 border_color;
-      if (stats->is_in_backtest_range) {
-        if (completeness >= 0.9999f)
-          border_color = BORDER_GREEN;
-        else if (completeness >= 0.95f)
-          border_color = BORDER_YELLOW;
-        else
-          border_color = BORDER_RED;
-      } else {
-        border_color = ImVec4(0.4f, 0.4f, 0.4f, 1.0f);
-      }
+      ImU32 border_color = stats->is_in_backtest_range 
+        ? (completeness >= 0.9999f ? color_border_green : completeness >= 0.95f ? color_border_yellow : color_border_red)
+        : color_border_default;
 
-      draw_list->AddRect(
-          cell_pos,
-          ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-          ImGui::GetColorU32(border_color),
-          0.0f,
-          0,
-          BORDER_WIDTH);
+      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE), 
+                        border_color, 0.0f, 0, BORDER_WIDTH);
     } else {
-      // Default thin border for non-trading days
-      draw_list->AddRect(
-          cell_pos,
-          ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-          ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f)),
-          0.0f,
-          0,
-          1.0f);
+      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE), 
+                        color_border_dark, 0.0f, 0, 1.0f);
     }
 
-    // Step 2: Draw background (on top of border)
-    draw_list->AddRectFilled(
-        cell_pos,
-        ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-        ImGui::GetColorU32(bg_color));
+    // Step 2: Pixel-aligned coordinates (12px cell = 4 stripes of 3px each)
+    const float x0 = floorf(cell_pos.x);
+    const float x1 = floorf(cell_pos.x + 3.0f);
+    const float x2 = floorf(cell_pos.x + 6.0f);
+    const float x3 = floorf(cell_pos.x + 9.0f);
+    const float x4 = floorf(cell_pos.x + 12.0f);
+    const float y0 = floorf(cell_pos.y);
+    const float y1 = floorf(cell_pos.y + 12.0f);
 
-    // Step 3: Draw 4 vertical color stripes (each 1/4 width = 3px for 12px cell)
-    // Use integer pixel positions to avoid floating point precision issues
+    // Step 3: Draw background
+    draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x4, y1), bg_color);
+
+    // Step 4: Draw 4 vertical stripes (only if layer visible and condition met)
     if (stats) {
-      const int stripe_w = static_cast<int>(CELL_SIZE) / NUM_LAYERS; // 12/4 = 3
-      const float x0 = cell_pos.x;
-      const float x1 = cell_pos.x + stripe_w;
-      const float x2 = cell_pos.x + stripe_w * 2;
-      const float x3 = cell_pos.x + stripe_w * 3;
-      const float x4 = cell_pos.x + CELL_SIZE;
-      const float y0 = cell_pos.y;
-      const float y1 = cell_pos.y + CELL_SIZE;
-      
-      // Stripe 1: Dividend/Split (Yellow) [0-3px]
       if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
-        draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImGui::GetColorU32(COLOR_YELLOW));
+        draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), color_yellow);
       }
-
-      // Stripe 2: Holiday (Purple) [3-6px]
       if (state.layers.show_holiday && stats->is_holiday) {
-        draw_list->AddRectFilled(ImVec2(x1, y0), ImVec2(x2, y1), ImGui::GetColorU32(COLOR_PURPLE));
+        draw_list->AddRectFilled(ImVec2(x1, y0), ImVec2(x2, y1), color_purple);
       }
-
-      // Stripe 3: Backtest Range (Green) [6-9px]
       if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
-        draw_list->AddRectFilled(ImVec2(x2, y0), ImVec2(x3, y1), ImGui::GetColorU32(COLOR_GREEN));
+        draw_list->AddRectFilled(ImVec2(x2, y0), ImVec2(x3, y1), color_green);
       }
-
-      // Stripe 4: L2 Data (Blue) [9-12px]
       if (state.layers.show_l2_data) {
-        bool has_data = false;
-        if (state.view_mode == BrowserViewMode::All) {
-          has_data = stats->assets_with_both > 0;
-        } else if (state.view_mode == BrowserViewMode::Snapshots) {
-          has_data = stats->assets_with_snapshots > 0;
-        } else {
-          has_data = stats->assets_with_orders > 0;
-        }
-
+        bool has_data = (state.view_mode == BrowserViewMode::All) ? (stats->assets_with_both > 0)
+                      : (state.view_mode == BrowserViewMode::Snapshots) ? (stats->assets_with_snapshots > 0)
+                      : (stats->assets_with_orders > 0);
         if (has_data) {
-          draw_list->AddRectFilled(ImVec2(x3, y0), ImVec2(x4, y1), ImGui::GetColorU32(COLOR_BLUE));
+          draw_list->AddRectFilled(ImVec2(x3, y0), ImVec2(x4, y1), color_blue);
         }
       }
     }
 
-    // Step 4: Manual hover detection using mouse position (no widget interference)
-    ImVec2 cell_max = ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE);
-    bool is_hovered = ImGui::IsMouseHoveringRect(cell_pos, cell_max);
-    
-    if (is_hovered) {
+    // Step 5: Hover detection and tooltip
+    const ImVec2 cell_max(x4, y1);
+    if (ImGui::IsMouseHoveringRect(cell_pos, cell_max)) {
       state.hover_date = DateToDashed(date_key);
+      draw_list->AddRect(cell_pos, cell_max, color_hover, 0.0f, 0, 2.0f);
 
-      // Hover highlight drawn on top
-      draw_list->AddRect(
-          cell_pos,
-          cell_max,
-          ImGui::GetColorU32(COLOR_HOVER),
-          0.0f,
-          0,
-          2.0f);
-
-      // Enhanced tooltip
+      // Tooltip
       if (stats) {
-        float completeness = 0.0f;
-        if (state.view_mode == BrowserViewMode::All) {
-          completeness = stats->completeness_all() * 100.0f;
-        } else if (state.view_mode == BrowserViewMode::Snapshots) {
-          completeness = stats->completeness_snapshots() * 100.0f;
-        } else {
-          completeness = stats->completeness_orders() * 100.0f;
-        }
-
-        const char *dow_names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-        int dow = GetDayOfWeek(date_key);
+        static const char *dow_names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         const char *dow_name = (dow >= 0 && dow <= 6) ? dow_names[dow] : "?";
+        
+        float completeness = (state.view_mode == BrowserViewMode::All) ? stats->completeness_all() * 100.0f
+                           : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots() * 100.0f
+                           : stats->completeness_orders() * 100.0f;
 
         ImGui::BeginTooltip();
         ImGui::Text("Date: %s (%s)%s", state.hover_date.c_str(), dow_name,
@@ -470,20 +409,20 @@ void RenderMonthGrid(
       } else {
         ImGui::SetTooltip("%s (No data)", state.hover_date.c_str());
       }
-    }
-
-    // Handle click (manual detection)
-    if (is_hovered && ImGui::IsMouseClicked(0)) {
-      state.selected_year = year;
-      state.selected_month = month;
-      state.selected_day = day;
+      
+      // Handle click
+      if (ImGui::IsMouseClicked(0)) {
+        state.selected_year = year;
+        state.selected_month = month;
+        state.selected_day = day;
+      }
     }
   }
 
-  // Calculate total height based on actual rows used
-  float total_height = (max_row + 1) * (CELL_SIZE + ROW_SPACING);
+  // Reserve space for the grid
+  float total_height = (max_row + 1) * CELL_SIZE;
   ImGui::SetCursorScreenPos(ImVec2(grid_start.x, grid_start.y + total_height));
-  ImGui::Dummy(ImVec2(7 * (CELL_SIZE + CELL_SPACING), 0)); // Reserve horizontal space for 7 columns
+  ImGui::Dummy(ImVec2(7 * CELL_SIZE, 0));
 
   ImGui::EndGroup();
 }
