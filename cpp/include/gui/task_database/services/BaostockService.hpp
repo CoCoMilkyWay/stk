@@ -47,7 +47,7 @@ public:
   awaitable<void> update_stock_factor();
   awaitable<void> update_stock_info();
   awaitable<void> update_stock_days();
-  awaitable<void> update_all();
+  awaitable<void> update_all(const std::string &l2_database_start_date = "");
 
   // Force remove operations (with backup)
   bool force_remove_stock_factor();

@@ -140,20 +140,6 @@ bool DataManager::should_run_weekly_update() const {
   return it->second != get_today_date();
 }
 
-bool DataManager::should_run_daily_update() const {
-  std::string today = get_today_date();
-
-  if (!is_trading_day(today)) {
-    return false;
-  }
-
-  auto it = stock_info_last_update_.find(kMetaStockInfoDaily);
-  if (it == stock_info_last_update_.end()) {
-    return true;
-  }
-  return it->second != today;
-}
-
 void DataManager::deduplicate_and_sort_factor(const std::string &code) {
   auto &records = stock_factor_[code].data;
   if (records.empty())
@@ -387,17 +373,17 @@ awaitable<void> DataManager::load_config(const std::string &config_file) {
 
 awaitable<void> DataManager::save_config(const std::string &config_file) {
   json j;
-  
+
   // L2 database date range
   j["l2_database"]["date_range_start"] = l2_database_start_date_;
   j["l2_database"]["date_range_end"] = l2_database_end_date_;
-  
+
   // Stocks list
   j["stocks"] = stock_codes_;
-  
+
   // Metadata
   j["metadata"]["stock_info_last_update"] = stock_info_last_update_;
-  
+
   // Settings
   j["settings"]["weekly_update_day"] = config_->baostock_weekly_update_day;
 
@@ -652,43 +638,52 @@ awaitable<void> DataManager::update_stock_days(bool skip_login, bool skip_logout
     progress_callback_("stock_days", "", 0, 0, UpdateStage::UpdatingStockDays);
   }
 
-  // Step 1: Load local file + check integrity (always, not just force)
+  // Step 1: Load local file + check integrity
   co_await load_stock_days();
-  auto integrity = check_stock_days_integrity();
-  if (!integrity.passed) {
-    Log("[WARN] stock_days integrity check failed", true);
-  }
+  auto integrity = check_stock_days_integrity(l2_database_start_date_);
 
-  // Step 2: Check if update is needed
-  if (!stock_days_.empty()) {
-    std::string last_date = stock_days_.back()[0];
-    std::string today = get_today_date();
-    if (last_date == today) {
-      Log("stock_days already up to date (last day is today)");
-      if (progress_callback_) {
-        progress_callback_("stock_days", "Already up-to-date", 0, 0, UpdateStage::Complete);
-      }
-      co_return; // No login needed!
-    }
-  }
-
+  // Step 2: Determine start date
   std::string start_date;
-  if (stock_days_.empty()) {
-    // First-time: use force_start_date if provided (from L2 database), otherwise last 30 days
-    start_date = !force_start_date.empty() ? force_start_date : get_date_from_days_ago(30);
-    Log(std::format("stock_days is empty, fetching from {}", start_date));
+
+  if (stock_days_.empty() || !integrity.passed) {
+    // Empty file OR integrity failed → rebuild from L2 database start
+    std::string l2_start = !force_start_date.empty() ? force_start_date : l2_database_start_date_;
+
+    if (l2_start.empty()) {
+      Log("[ERROR] Cannot update stock_days: L2 database start date not available. Please run 'Update All' or 'Scan Assets' first.", true);
+      if (progress_callback_) {
+        progress_callback_("stock_days", "ERROR: Missing L2 database start date", 0, 0, UpdateStage::Complete);
+      }
+      co_return;
+    }
+
+    // Convert from YYYYMMDD to YYYY-MM-DD
+    if (l2_start.length() == 8) {
+      start_date = l2_start.substr(0, 4) + "-" + l2_start.substr(4, 2) + "-" + l2_start.substr(6, 2);
+    } else {
+      start_date = l2_start; // Already in YYYY-MM-DD format
+    }
+
+    if (!integrity.passed) {
+      Log("[WARN] stock_days integrity check failed - rebuilding from L2 database start", true);
+    }
+    Log(std::format("Fetching stock_days from L2 database start: {}", start_date));
+    stock_days_.clear(); // Clear corrupted data
+
   } else {
+    // Incremental update from last day
     start_date = increment_date(stock_days_.back()[0]);
   }
+
   std::string end_date = get_today_date();
 
-  // Check if start_date is beyond end_date (already up-to-date)
+  // Step 3: Check if already up-to-date
   if (start_date > end_date) {
-    Log("stock_days already up to date (no new days to fetch)");
+    Log("stock_days already up to date");
     if (progress_callback_) {
       progress_callback_("stock_days", "Already up-to-date", 0, 0, UpdateStage::Complete);
     }
-    co_return; // No login needed!
+    co_return;
   }
 
   // Step 3: Update needed → Lazy login
@@ -873,12 +868,13 @@ awaitable<void> DataManager::update_stock_factor(bool skip_login, bool skip_logo
 
             ++active_workers_; // Start executing query
             auto result = co_await task_opt->executor(*client);
-            --active_workers_; // Finish executing query
 
-            // Increment query count after each query
+            // Increment query count BEFORE decrementing active workers (so UI sees active workers)
             if (result.success()) {
               increment_query_count();
             }
+
+            --active_workers_; // Finish executing query
 
             if (result.success() && !result.records.empty()) {
               for (const auto &record : result.records) {
@@ -1073,24 +1069,23 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
 
             ++active_workers_; // Start executing query
             auto result = co_await task_opt->executor(*client);
-            --active_workers_; // Finish executing query
 
-            // Increment query count after each query
+            // Increment query count BEFORE decrementing active workers (so UI sees active workers)
             if (result.success()) {
               increment_query_count();
             }
 
-            // Preserve existing daily fields if stock already exists
-            StockInfo info;
-            bool is_new_stock = (stock_info_.find(code) == stock_info_.end());
+            --active_workers_; // Finish executing query
 
-            if (!is_new_stock) {
-              info = stock_info_[code]; // Start with existing data (preserves daily fields)
+            // Create or get existing stock info
+            StockInfo info;
+            if (stock_info_.find(code) != stock_info_.end()) {
+              info = stock_info_[code]; // Keep existing data if integrity_failed=false
             }
 
             if (result.success() && !result.records.empty()) {
               auto &record = result.records[0];
-              // Update only weekly fields
+              // Update weekly fields
               info.name = record[1];
               info.ipoDate = record[2];
               info.outDate = record[3];
@@ -1101,24 +1096,9 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
               }
               ++updated_count;
             } else {
-              // Query failed, keep existing data if available
+              // Query failed
               ++error_count;
             }
-
-            // Only initialize daily fields to empty if this is a new stock
-            if (is_new_stock) {
-              info.update_date = "";
-              info.volume = "";
-              info.amount = "";
-              info.turn = "";
-              info.tradestatus = "";
-              info.isST = "";
-              info.peTTM = "";
-              info.pbMRQ = "";
-              info.psTTM = "";
-              info.pcfNcfTTM = "";
-            }
-            // Otherwise, daily fields are already preserved from existing data
 
             stock_info_[code] = info;
 
@@ -1145,10 +1125,11 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
   stock_info_last_update_[kMetaStockInfoWeekly] = today;
   co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
 
-  // Ensure logged out (unless skipped)
-  if (!skip_logout) {
-    co_await ensure_logged_out();
-  }
+  Log("=== Weekly update complete, now updating daily fields ===");
+
+  // Weekly update = complete update, so also update daily fields
+  // skip_days=true, skip_login=true (already logged in), skip_logout=skip_logout (inherited)
+  co_await update_stock_info_daily(true, true, skip_logout);
 
   if (progress_callback_) {
     progress_callback_("stock_info", "", total_stocks, total_stocks, UpdateStage::Complete);
@@ -1280,12 +1261,13 @@ awaitable<void> DataManager::update_stock_info_daily(bool skip_days, bool skip_l
 
             ++active_workers_; // Start executing query
             auto result = co_await task_opt->executor(*client);
-            --active_workers_; // Finish executing query
 
-            // Increment query count after each query
+            // Increment query count BEFORE decrementing active workers (so UI sees active workers)
             if (result.success()) {
               increment_query_count();
             }
+
+            --active_workers_; // Finish executing query
 
             if (stock_info_.find(code) == stock_info_.end()) {
               stock_info_[code] = StockInfo();
@@ -1423,9 +1405,10 @@ awaitable<void> DataManager::update_all(const std::string &l2_database_start_dat
     }
   }
 
-  // If nothing needs updating, skip login entirely
+  // If nothing needs updating, ensure logged out and return
   if (!needs_days && !needs_factor && !needs_info_weekly && !needs_info_daily) {
     Log("All data is up-to-date, no update needed");
+    co_await ensure_logged_out(); // Ensure clean state
     if (progress_callback_) {
       progress_callback_("all", "All up-to-date", 0, 0, UpdateStage::Complete);
     }
@@ -1438,6 +1421,7 @@ awaitable<void> DataManager::update_all(const std::string &l2_database_start_dat
 
   if (!co_await ensure_logged_in()) {
     Log("[ERROR] Failed to login workers for update_all", true);
+    co_await ensure_logged_out(); // Ensure clean state
     if (progress_callback_) {
       progress_callback_("all", "Login failed", 0, 0, UpdateStage::Complete);
     }
@@ -1479,7 +1463,7 @@ awaitable<void> DataManager::update_all(const std::string &l2_database_start_dat
 // Integrity Checks
 // ============================================================================
 
-IntegrityResult DataManager::check_stock_days_integrity() {
+IntegrityResult DataManager::check_stock_days_integrity(const std::string &l2_database_start_date) {
   IntegrityResult result;
 
   if (stock_days_.empty()) {
@@ -1489,23 +1473,23 @@ IntegrityResult DataManager::check_stock_days_integrity() {
   }
 
   // Check if stock_days starts from L2 database start (if available)
-  if (!l2_database_start_date_.empty()) {
+  std::string l2_start = !l2_database_start_date.empty() ? l2_database_start_date : l2_database_start_date_;
+  if (!l2_start.empty()) {
     // Get stock_days start date (YYYY-MM-DD format)
     std::string stock_days_start = stock_days_[0][0];
     // Remove dashes: YYYY-MM-DD -> YYYYMMDD
     std::string stock_days_start_yyyymmdd = stock_days_start;
-    stock_days_start_yyyymmdd.erase(std::remove(stock_days_start_yyyymmdd.begin(), 
-                                                stock_days_start_yyyymmdd.end(), '-'), 
-                                   stock_days_start_yyyymmdd.end());
-    
+    stock_days_start_yyyymmdd.erase(std::remove(stock_days_start_yyyymmdd.begin(),
+                                                stock_days_start_yyyymmdd.end(), '-'),
+                                    stock_days_start_yyyymmdd.end());
+
     // Compare with L2 database start (YYYYMMDD format)
-    if (stock_days_start_yyyymmdd > l2_database_start_date_) {
+    if (stock_days_start_yyyymmdd > l2_start) {
       result.passed = false;
       result.errors.push_back(
-        "stock_days starts at " + stock_days_start + 
-        " but L2 database starts at " + l2_database_start_date_ +
-        " - missing date coverage! Delete stock_days.json to rebuild from L2 start."
-      );
+          "stock_days starts at " + stock_days_start +
+          " but L2 database starts at " + l2_start +
+          " - missing date coverage! Delete stock_days.json to rebuild from L2 start.");
     }
   }
 
@@ -1589,10 +1573,10 @@ IntegrityResult DataManager::check_stock_info_integrity() {
   return result;
 }
 
-IntegrityResult DataManager::check_all_integrity() {
+IntegrityResult DataManager::check_all_integrity(const std::string &l2_database_start_date) {
   IntegrityResult combined;
 
-  auto days_result = check_stock_days_integrity();
+  auto days_result = check_stock_days_integrity(l2_database_start_date);
   auto factor_result = check_stock_factor_integrity();
   auto info_result = check_stock_info_integrity();
 

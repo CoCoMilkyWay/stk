@@ -337,20 +337,6 @@ void RenderCrawlerMonitor(const CrawlerState &state) {
   ImGui::SameLine();
   ImGui::TextColored(COLOR_BLUE, "%zu", prog.session_query_count);
 
-  // Tooltip on queries for more details
-  if (ImGui::IsItemHovered()) {
-    ImGui::BeginTooltip();
-    ImGui::TextColored(COLOR_CYAN, "Session Statistics");
-    ImGui::Separator();
-    ImGui::Text("Session Status: %s", session_text);
-    ImGui::Text("Active Workers: %zu/%zu", prog.active_workers, prog.total_workers);
-    ImGui::Text("Session Queries: %zu", prog.session_query_count);
-    ImGui::Text("Throughput: %.1f req/s", prog.requests_per_second);
-    ImGui::Text("Success Rate: %.1f%%", prog.success_rate * 100.0);
-    ImGui::Text("Errors: %zu", prog.error_count);
-    ImGui::EndTooltip();
-  }
-
   ImGui::EndChild();
 }
 

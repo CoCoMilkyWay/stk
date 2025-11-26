@@ -29,6 +29,10 @@ private:
   L2ScanStatus scan_status_ = L2ScanStatus::NotScanned;
   std::string error_message_;
   bool scanned_once_ = false; // Flag to prevent repeated scans
+  
+  // Summary cache (only compute once)
+  mutable bool summary_computed_ = false;
+  mutable L2Summary cached_summary_;
 
 public:
   L2DatabaseService(const std::string &db_dir, const Config *config)

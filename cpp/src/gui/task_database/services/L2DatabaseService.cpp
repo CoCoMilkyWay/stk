@@ -69,6 +69,17 @@ awaitable<void> L2DatabaseService::refresh_asset(size_t asset_idx) {
 L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
                                          const std::string &backtest_end,
                                          const std::vector<std::vector<std::string>> &trading_days) const {
+  // STRICT: Only compute summary once per program execution
+  if (summary_computed_) {
+    return cached_summary_;
+  }
+  
+  // Wait until JSON is ready (trading_days is non-empty)
+  // This ensures we compute with valid data
+  if (trading_days.empty()) {
+    return L2Summary{}; // Return empty summary until JSON is ready
+  }
+  
   // Suppress unused variable warning - config_ is reserved for future use
   (void)config_;
   namespace fs = std::filesystem;
@@ -173,8 +184,6 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
     // Track missing dates for this asset
     std::vector<std::string> missing_snapshots_dates;
     std::vector<std::string> missing_orders_dates;
-    bool has_missing_snapshots = false;
-    bool has_missing_orders = false;
 
     for (const auto &[date, info] : asset.date_info) {
       // Check if this date is in backtest range
@@ -199,7 +208,7 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
           }
         }
       } else {
-        has_missing_snapshots = true;
+        // Only track missing dates in backtest range
         if (in_backtest_range) {
           missing_snapshots_dates.push_back(date);
         }
@@ -222,27 +231,22 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
           }
         }
       } else {
-        has_missing_orders = true;
+        // Only track missing dates in backtest range
         if (in_backtest_range) {
           missing_orders_dates.push_back(date);
         }
       }
     }
 
-    // Count assets with missing data
-    if (has_missing_snapshots) {
-      summary.assets_missing_snapshots++;
-    }
-    if (has_missing_orders) {
-      summary.assets_missing_orders++;
-    }
-
-    // Store missing dates for this asset (only if there are missing dates in backtest range)
+    // Count assets with missing data IN BACKTEST RANGE (not entire database)
+    // Only count if the asset has missing dates in backtest range
     if (!missing_snapshots_dates.empty()) {
+      summary.assets_missing_snapshots++;
       std::string asset_name = asset.asset_code + "." + asset.exchange;
       summary.missing_snapshots_by_asset[asset_name] = missing_snapshots_dates;
     }
     if (!missing_orders_dates.empty()) {
+      summary.assets_missing_orders++;
       std::string asset_name = asset.asset_code + "." + asset.exchange;
       summary.missing_orders_by_asset[asset_name] = missing_orders_dates;
     }
@@ -265,6 +269,10 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
   summary.orders_size_gb = total_orders_size / (1024.0 * 1024.0 * 1024.0);
   summary.disk_usage_gb = summary.snapshots_size_gb + summary.orders_size_gb;
 
+  // Cache the result and mark as computed
+  cached_summary_ = summary;
+  summary_computed_ = true;
+  
   return summary;
 }
 

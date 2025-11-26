@@ -136,7 +136,6 @@ struct JsonFileState {
 struct CrawlerState {
   CrawlerStatus status = CrawlerStatus::Idle;
   CrawlerProgress progress;
-  std::string error_message;
 };
 
 } // namespace GUI::Database

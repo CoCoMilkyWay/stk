@@ -64,11 +64,6 @@ private:
   std::string get_date_from_days_ago(int days) const;
   std::string increment_date(const std::string &date) const;
   bool is_trading_day(const std::string &date) const;
-  std::string get_last_trading_day() const;
-
-  // Helper methods - Update scheduling
-  bool should_run_weekly_update() const;
-  bool should_run_daily_update() const;
 
   // Helper methods - File operations
   void deduplicate_and_sort_factor(const std::string &code);
@@ -101,9 +96,9 @@ public:
   // Login status (read-only, managed internally by ensure_logged_in/out)
   bool is_logged_in() const { return user_logged_in_; }
 
-  // Update scheduling checks (exposed for service layer)
-  std::string get_last_trading_day_public() const { return get_last_trading_day(); }
-  bool should_run_weekly_update_public() const { return should_run_weekly_update(); }
+  // Update scheduling checks
+  std::string get_last_trading_day() const;
+  bool should_run_weekly_update() const;
 
   // Set stock codes from external source (e.g., L2 database scan)
   awaitable<void> set_stock_codes(const std::vector<std::string> &codes);
@@ -137,8 +132,8 @@ public:
   // Integrity checks
   IntegrityResult check_stock_factor_integrity();
   IntegrityResult check_stock_info_integrity();
-  IntegrityResult check_stock_days_integrity();
-  IntegrityResult check_all_integrity();
+  IntegrityResult check_stock_days_integrity(const std::string &l2_database_start_date = "");
+  IntegrityResult check_all_integrity(const std::string &l2_database_start_date = "");
 
   // L2 database date range management
   void set_l2_database_date_range(const std::string &start_date, const std::string &end_date);

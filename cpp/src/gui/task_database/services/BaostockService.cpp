@@ -135,43 +135,45 @@ awaitable<void> BaostockService::update_stock_info() {
     }
 
     // Also check if it's weekly update day
-    if (!trigger_weekly && data_mgr_->should_run_weekly_update_public()) {
+    if (!trigger_weekly && data_mgr_->should_run_weekly_update()) {
       trigger_weekly = true;
     }
   }
 
   if (trigger_weekly) {
+    // Weekly update = complete update (includes weekly + daily fields)
     co_await data_mgr_->update_stock_info_weekly(false, false, false);
     any_update = true;
-  }
+  } else {
+    // Decision 2: trigger daily (only if weekly wasn't triggered)?
+    // Weekly and Daily are completely independent flows
+    bool trigger_daily = false;
 
-  // Decision 2: trigger daily?
-  // Conditions: integrity passed AND any stock's update_date < last_trading_day
-  bool trigger_daily = false;
+    if (integrity.passed) {
+      std::string target_date = data_mgr_->get_last_trading_day();
 
-  if (!trigger_weekly || integrity.passed) { // Only if weekly wasn't triggered OR data is valid
-    std::string target_date = data_mgr_->get_last_trading_day_public();
+      for (const auto &code : stock_codes) {
+        auto it = data.find(code);
+        if (it == data.end())
+          continue;
 
-    for (const auto &code : stock_codes) {
-      auto it = data.find(code);
-      if (it == data.end())
-        continue;
+        // Skip delisted stocks
+        if (!it->second.outDate.empty())
+          continue;
 
-      // Skip delisted stocks
-      if (!it->second.outDate.empty())
-        continue;
-
-      // Check if update_date is outdated
-      if (it->second.update_date < target_date) {
-        trigger_daily = true;
-        break;
+        // Check if update_date is outdated (empty string counts as outdated)
+        if (it->second.update_date < target_date) {
+          trigger_daily = true;
+          break;
+        }
       }
-    }
 
-    if (trigger_daily) {
-      // skip_days=true: daily doesn't need to update days again
-      co_await data_mgr_->update_stock_info_daily(true, false, false);
-      any_update = true;
+      if (trigger_daily) {
+        // Daily update = incremental update (only daily fields)
+        // skip_days=true: daily doesn't need to update days again
+        co_await data_mgr_->update_stock_info_daily(true, false, false);
+        any_update = true;
+      }
     }
   }
 
@@ -194,10 +196,10 @@ awaitable<void> BaostockService::update_stock_days() {
   crawler_state_.status = CrawlerStatus::Complete;
 }
 
-awaitable<void> BaostockService::update_all() {
+awaitable<void> BaostockService::update_all(const std::string &l2_database_start_date) {
   crawler_state_.status = CrawlerStatus::Running;
 
-  co_await data_mgr_->update_all();
+  co_await data_mgr_->update_all(l2_database_start_date);
 
   refresh_state();
   crawler_state_.status = CrawlerStatus::Complete;
