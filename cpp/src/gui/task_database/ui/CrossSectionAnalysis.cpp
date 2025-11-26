@@ -5,63 +5,75 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <map>
 
 namespace GUI::Database {
 
 // ============================================================================
-// Statistical Analysis Implementation
+// Helper: Filter Valid Values
 // ============================================================================
 
-ColumnStats CalculateColumnStats(const std::vector<double> &values) {
+static std::vector<double> FilterValidValues(const std::vector<double> &values) {
+  std::vector<double> valid;
+  valid.reserve(values.size());
+  for (double v : values) {
+    if (std::isfinite(v) && v > -1e300 && v < 1e300) {
+      valid.push_back(v);
+    }
+  }
+  return valid;
+}
+
+// ============================================================================
+// Numeric Data Analysis Implementation
+// ============================================================================
+
+std::vector<double> RemoveOutliers(const std::vector<double> &values, double percentile) {
+  auto valid = FilterValidValues(values);
+  if (valid.empty()) return {};
+
+  std::sort(valid.begin(), valid.end());
+
+  size_t lower_idx = static_cast<size_t>(valid.size() * percentile / 100.0);
+  size_t upper_idx = static_cast<size_t>(valid.size() * (100.0 - percentile) / 100.0);
+
+  if (upper_idx > lower_idx && upper_idx < valid.size()) {
+    return std::vector<double>(valid.begin() + lower_idx, valid.begin() + upper_idx);
+  }
+
+  return valid;
+}
+
+ColumnStats CalculateRobustStats(const std::vector<double> &values) {
   ColumnStats stats;
   stats.total_count = values.size();
 
-  if (values.empty()) {
+  auto filtered = RemoveOutliers(values, 5.0); // Remove top/bottom 5%
+  stats.valid_count = filtered.size();
+
+  if (filtered.empty()) {
     return stats;
   }
 
-  // Filter out invalid values (NaN, Inf)
-  std::vector<double> valid_values;
-  valid_values.reserve(values.size());
-  for (double v : values) {
-    // Valid if finite: not NaN and within reasonable bounds
-    if (v == v && v > -1e300 && v < 1e300) {
-      valid_values.push_back(v);
-    }
-  }
-
-  stats.valid_count = valid_values.size();
-  if (valid_values.empty()) {
-    return stats;
-  }
-
-  // Sort for median and percentiles
-  std::vector<double> sorted = valid_values;
+  std::vector<double> sorted = filtered;
   std::sort(sorted.begin(), sorted.end());
 
-  // Min and Max
   stats.min = sorted.front();
   stats.max = sorted.back();
 
-  // Mean
   double sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
   stats.mean = sum / sorted.size();
 
-  // Median
   size_t mid = sorted.size() / 2;
-  if (sorted.size() % 2 == 0) {
-    stats.median = (sorted[mid - 1] + sorted[mid]) / 2.0;
-  } else {
-    stats.median = sorted[mid];
-  }
+  stats.median = (sorted.size() % 2 == 0) 
+      ? (sorted[mid - 1] + sorted[mid]) / 2.0 
+      : sorted[mid];
 
-  // Percentiles
   size_t q25_idx = sorted.size() / 4;
   size_t q75_idx = (sorted.size() * 3) / 4;
   stats.q25 = sorted[q25_idx];
   stats.q75 = sorted[q75_idx];
 
-  // Standard Deviation
   double sq_sum = 0.0;
   for (double v : sorted) {
     sq_sum += (v - stats.mean) * (v - stats.mean);
@@ -71,54 +83,59 @@ ColumnStats CalculateColumnStats(const std::vector<double> &values) {
   return stats;
 }
 
-std::vector<HistogramBin> GenerateHistogram(const std::vector<double> &values, int num_bins) {
-  std::vector<HistogramBin> bins;
+std::vector<BoardStats> GroupNumericByBoard(
+    const std::vector<std::string> &codes,
+    const std::vector<double> &values) {
+  
+  std::vector<BoardStats> result;
 
-  // Filter valid values
-  std::vector<double> valid_values;
-  for (double v : values) {
-    if (v == v && v > -1e300 && v < 1e300) {
-      valid_values.push_back(v);
+  if (codes.size() != values.size()) {
+    return result;
+  }
+
+  // Group by board
+  std::map<std::string, std::vector<double>> board_values;
+
+  for (size_t i = 0; i < codes.size(); ++i) {
+    double v = values[i];
+    if (!std::isfinite(v)) continue;
+
+    BoardType board = GetBoardType(codes[i]);
+    if (board == BoardType::All || board == BoardType::Unknown) continue;
+
+    std::string board_name = GetBoardName(board);
+    board_values[board_name].push_back(v);
+  }
+
+  // Calculate stats for each board
+  for (const auto &[board_name, vals] : board_values) {
+    if (vals.empty()) continue;
+
+    BoardStats bs;
+    bs.board_name = board_name;
+    bs.count = vals.size();
+
+    auto sorted = vals;
+    std::sort(sorted.begin(), sorted.end());
+
+    double sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
+    bs.mean = sum / sorted.size();
+
+    size_t mid = sorted.size() / 2;
+    bs.median = (sorted.size() % 2 == 0) 
+        ? (sorted[mid - 1] + sorted[mid]) / 2.0 
+        : sorted[mid];
+
+    double sq_sum = 0.0;
+    for (double v : sorted) {
+      sq_sum += (v - bs.mean) * (v - bs.mean);
     }
+    bs.std_dev = std::sqrt(sq_sum / sorted.size());
+
+    result.push_back(bs);
   }
 
-  if (valid_values.empty() || num_bins <= 0) {
-    return bins;
-  }
-
-  // Find range
-  double min_val = *std::min_element(valid_values.begin(), valid_values.end());
-  double max_val = *std::max_element(valid_values.begin(), valid_values.end());
-
-  // Handle edge case where all values are the same
-  if (min_val == max_val) {
-    HistogramBin bin;
-    bin.range_start = min_val;
-    bin.range_end = max_val;
-    bin.count = valid_values.size();
-    bins.push_back(bin);
-    return bins;
-  }
-
-  // Create bins
-  double range = max_val - min_val;
-  double bin_width = range / num_bins;
-
-  bins.resize(num_bins);
-  for (int i = 0; i < num_bins; ++i) {
-    bins[i].range_start = min_val + i * bin_width;
-    bins[i].range_end = min_val + (i + 1) * bin_width;
-    bins[i].count = 0;
-  }
-
-  // Count values in each bin
-  for (double v : valid_values) {
-    int bin_idx = static_cast<int>((v - min_val) / bin_width);
-    if (bin_idx >= num_bins) bin_idx = num_bins - 1; // Edge case for max value
-    bins[bin_idx].count++;
-  }
-
-  return bins;
+  return result;
 }
 
 std::vector<std::pair<std::string, double>> GetTopN(
@@ -163,67 +180,66 @@ std::vector<std::pair<std::string, double>> GetTopN(
   return result;
 }
 
-std::map<std::string, double> GroupByBoard(
-    const std::vector<std::string> &codes,
-    const std::vector<double> &values) {
-  
-  std::map<std::string, double> result;
+// ============================================================================
+// Categorical Data Analysis Implementation
+// ============================================================================
 
-  if (codes.size() != values.size()) {
-    return result;
-  }
+std::vector<CategoryCount> CountCategories(const std::vector<std::string> &categories) {
+  std::map<std::string, size_t> count_map;
+  size_t total = 0;
 
-  // Group by board
-  std::map<std::string, std::vector<double>> board_values;
-
-  for (size_t i = 0; i < codes.size(); ++i) {
-    double v = values[i];
-    if (v != v || v <= -1e300 || v >= 1e300) continue;
-
-    BoardType board = GetBoardType(codes[i]);
-    std::string board_name = GetBoardName(board);
-
-    if (board != BoardType::All && board != BoardType::Unknown) {
-      board_values[board_name].push_back(values[i]);
+  for (const auto &cat : categories) {
+    if (!cat.empty()) {
+      count_map[cat]++;
+      total++;
     }
   }
 
-  // Calculate average for each board
-  for (const auto &[board_name, vals] : board_values) {
-    if (!vals.empty()) {
-      double sum = std::accumulate(vals.begin(), vals.end(), 0.0);
-      result[board_name] = sum / vals.size();
-    }
+  std::vector<CategoryCount> result;
+  for (const auto &[label, count] : count_map) {
+    CategoryCount cc;
+    cc.label = label;
+    cc.count = count;
+    cc.percentage = (total > 0) ? (count * 100.0 / total) : 0.0;
+    result.push_back(cc);
   }
+
+  // Sort by count descending
+  std::sort(result.begin(), result.end(),
+            [](const auto &a, const auto &b) { return a.count > b.count; });
 
   return result;
 }
 
-std::map<std::string, double> GroupByIndustry(
-    const std::vector<std::string> &ind_codes,
-    const std::vector<double> &values) {
+std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
+    const std::vector<std::string> &codes,
+    const std::vector<std::string> &categories) {
   
-  std::map<std::string, double> result;
+  std::vector<BoardCategoryBreakdown> result;
 
-  if (ind_codes.size() != values.size()) {
+  if (codes.size() != categories.size()) {
     return result;
   }
 
-  // Group by industry
-  std::map<std::string, std::vector<double>> ind_values;
+  // Group by board
+  std::map<std::string, std::vector<std::string>> board_categories;
 
-  for (size_t i = 0; i < ind_codes.size(); ++i) {
-    double v = values[i];
-    if (v != v || v <= -1e300 || v >= 1e300 || ind_codes[i].empty()) continue;
-    ind_values[ind_codes[i]].push_back(v);
+  for (size_t i = 0; i < codes.size(); ++i) {
+    if (categories[i].empty()) continue;
+
+    BoardType board = GetBoardType(codes[i]);
+    if (board == BoardType::All || board == BoardType::Unknown) continue;
+
+    std::string board_name = GetBoardName(board);
+    board_categories[board_name].push_back(categories[i]);
   }
 
-  // Calculate average for each industry
-  for (const auto &[ind_code, vals] : ind_values) {
-    if (!vals.empty()) {
-      double sum = std::accumulate(vals.begin(), vals.end(), 0.0);
-      result[ind_code] = sum / vals.size();
-    }
+  // Count categories for each board
+  for (const auto &[board_name, cats] : board_categories) {
+    BoardCategoryBreakdown breakdown;
+    breakdown.board_name = board_name;
+    breakdown.categories = CountCategories(cats);
+    result.push_back(breakdown);
   }
 
   return result;

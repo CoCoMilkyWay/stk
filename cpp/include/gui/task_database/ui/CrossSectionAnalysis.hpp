@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,7 +10,16 @@
 namespace GUI::Database {
 
 // ============================================================================
-// Data Structures
+// Column Type Classification
+// ============================================================================
+
+enum class ColumnDataType {
+  Numeric,      // 有序数据: PE, PB, 市值, 交易日数等
+  Categorical   // 分类数据: 板块, 行业, ST, DL等
+};
+
+// ============================================================================
+// Data Structures for Numeric Analysis
 // ============================================================================
 
 struct ColumnStats {
@@ -26,38 +34,62 @@ struct ColumnStats {
   size_t total_count = 0;
 };
 
-struct HistogramBin {
-  double range_start = 0.0;
-  double range_end = 0.0;
+struct BoardStats {
+  std::string board_name;
+  double mean = 0.0;
+  double median = 0.0;
+  double std_dev = 0.0;
   size_t count = 0;
 };
 
 // ============================================================================
-// Statistical Analysis Functions
+// Data Structures for Categorical Analysis
 // ============================================================================
 
-// Calculate basic statistics for a column
-ColumnStats CalculateColumnStats(const std::vector<double> &values);
+struct CategoryCount {
+  std::string label;
+  size_t count = 0;
+  double percentage = 0.0;
+};
 
-// Generate histogram bins for visualization
-std::vector<HistogramBin> GenerateHistogram(const std::vector<double> &values, int num_bins = 15);
+struct BoardCategoryBreakdown {
+  std::string board_name;
+  std::vector<CategoryCount> categories;
+};
 
-// Get top N or bottom N items (returns name-value pairs)
+// ============================================================================
+// Numeric Data Analysis Functions
+// ============================================================================
+
+// Remove top/bottom 5% outliers and return filtered data
+std::vector<double> RemoveOutliers(const std::vector<double> &values, double percentile = 5.0);
+
+// Calculate statistics with outliers removed
+ColumnStats CalculateRobustStats(const std::vector<double> &values);
+
+// Group numeric values by board and calculate stats for each board
+std::vector<BoardStats> GroupNumericByBoard(
+    const std::vector<std::string> &codes,
+    const std::vector<double> &values);
+
+// Get top/bottom N rankings
 std::vector<std::pair<std::string, double>> GetTopN(
     const std::vector<std::string> &names,
     const std::vector<double> &values,
     int n,
     bool descending = true);
 
-// Group values by board type and calculate average per board
-std::map<std::string, double> GroupByBoard(
-    const std::vector<std::string> &codes,     // Stock codes (e.g. "000785")
-    const std::vector<double> &values);
+// ============================================================================
+// Categorical Data Analysis Functions
+// ============================================================================
 
-// Group values by industry code and calculate average per industry
-std::map<std::string, double> GroupByIndustry(
-    const std::vector<std::string> &ind_codes, // Industry codes (e.g. "C26")
-    const std::vector<double> &values);
+// Count occurrences of each category
+std::vector<CategoryCount> CountCategories(const std::vector<std::string> &categories);
+
+// Group categorical data by board
+std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
+    const std::vector<std::string> &codes,
+    const std::vector<std::string> &categories);
 
 } // namespace GUI::Database
 

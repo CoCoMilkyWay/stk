@@ -197,7 +197,7 @@ set(HEADERS
     ../../include/gui/task_terminal/TaskTerminal.hpp
 )
 
-# Disable fast-math for JSON library to avoid infinity issues
+# Disable fast-math for JSON library and UI math to avoid infinity issues
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
@@ -208,6 +208,7 @@ set_source_files_properties(
     ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/ui/TabTable.cpp
+    ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
 )
 

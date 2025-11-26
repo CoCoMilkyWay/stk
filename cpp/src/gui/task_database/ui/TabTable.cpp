@@ -5,9 +5,11 @@
 #include "gui/task_database/ui/CrossSectionAnalysis.hpp"
 #include "gui/task_database/models/SharedTypes.hpp"
 #include "imgui.h"
+#include "implot.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 namespace GUI::Database {
 
@@ -237,18 +239,19 @@ void RenderDataTable(
   ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY |
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
-                          ImGuiTableFlags_SizingStretchProp;
+                          ImGuiTableFlags_SizingFixedFit;
 
-  if (!ImGui::BeginTable("AssetsTable", 18, flags)) {
+  if (!ImGui::BeginTable("AssetsTable", 19, flags)) {
     return;
   }
 
-  // Setup columns (18 columns) - use auto width (default)
+  // Setup columns (19 columns) - use auto width (default)
   ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortAscending);
   ImGui::TableSetupColumn("Name");
   ImGui::TableSetupColumn("Exch");
   ImGui::TableSetupColumn("Board");
   ImGui::TableSetupColumn("ST");
+  ImGui::TableSetupColumn("DL");
   ImGui::TableSetupColumn("Listed");
   ImGui::TableSetupColumn("Ind");
   ImGui::TableSetupColumn("PE");
@@ -292,13 +295,19 @@ void RenderDataTable(
     filtered_rows.push_back({&asset, info, full_code});
   }
 
-  // Safe string to double conversion
+  // Safe string to double conversion with extra safety for sorting
   auto safe_stod = [](const std::string &s, double default_val = -1e9) -> double {
     if (s.empty()) return default_val;
     try {
       double val = std::stod(s);
+      // Extra safety: check for NaN explicitly before isfinite
+      if (val != val) return default_val; // NaN check
       if (!std::isfinite(val)) return default_val;
       return val;
+    } catch (const std::invalid_argument&) {
+      return default_val;
+    } catch (const std::out_of_range&) {
+      return default_val;
     } catch (...) {
       return default_val;
     }
@@ -320,11 +329,12 @@ void RenderDataTable(
       }
       
       if (col >= 0) {
-        std::sort(filtered_rows.begin(), filtered_rows.end(),
-          [col, ascending, &safe_stod](const AssetRow &a, const AssetRow &b) {
-            bool result = false;
-            
-            switch (col) {
+        std::stable_sort(filtered_rows.begin(), filtered_rows.end(),
+          [col, ascending, &safe_stod](const AssetRow &a, const AssetRow &b) -> bool {
+            try {
+              bool result = false;
+              
+              switch (col) {
               case 0: result = a.asset->asset_code < b.asset->asset_code; break; // Code
               case 1: { // Name
                 std::string name_a = a.info && !a.info->name.empty() ? a.info->name : a.asset->asset_code;
@@ -340,50 +350,56 @@ void RenderDataTable(
                 result = a_st < b_st;
                 break;
               }
-              case 5: { // Listed days
+              case 5: { // DL (Delisted)
+                bool a_dl = a.info && a.info->outDate != "" && a.info->outDate != "0";
+                bool b_dl = b.info && b.info->outDate != "" && b.info->outDate != "0";
+                result = a_dl < b_dl;
+                break;
+              }
+              case 6: { // Listed days
                 int a_days = (a.info && !a.info->ipoDate.empty()) ? CalculateDaysSinceIPO(a.info->ipoDate) : 0;
                 int b_days = (b.info && !b.info->ipoDate.empty()) ? CalculateDaysSinceIPO(b.info->ipoDate) : 0;
                 result = a_days < b_days;
                 break;
               }
-              case 6: { // Industry
+              case 7: { // Industry
                 std::string a_ind = a.info ? a.info->ind_code : "";
                 std::string b_ind = b.info ? b.info->ind_code : "";
                 result = a_ind < b_ind;
                 break;
               }
-              case 7: { // PE
+              case 8: { // PE
                 double a_val = a.info ? safe_stod(a.info->peTTM) : -1e9;
                 double b_val = b.info ? safe_stod(b.info->peTTM) : -1e9;
                 result = a_val < b_val;
                 break;
               }
-              case 8: { // PB
+              case 9: { // PB
                 double a_val = a.info ? safe_stod(a.info->pbMRQ) : -1e9;
                 double b_val = b.info ? safe_stod(b.info->pbMRQ) : -1e9;
                 result = a_val < b_val;
                 break;
               }
-              case 9: { // PS
+              case 10: { // PS
                 double a_val = a.info ? safe_stod(a.info->psTTM) : -1e9;
                 double b_val = b.info ? safe_stod(b.info->psTTM) : -1e9;
                 result = a_val < b_val;
                 break;
               }
-              case 10: { // PCF
+              case 11: { // PCF
                 double a_val = a.info ? safe_stod(a.info->pcfNcfTTM) : -1e9;
                 double b_val = b.info ? safe_stod(b.info->pcfNcfTTM) : -1e9;
                 result = a_val < b_val;
                 break;
               }
-              case 11: { // Market Cap
+              case 12: { // Market Cap
                 double a_cap = a.info ? CalculateMarketCap(*a.info) : 0;
                 double b_cap = b.info ? CalculateMarketCap(*b.info) : 0;
                 result = a_cap < b_cap;
                 break;
               }
-              case 12: result = a.asset->get_total_trading_days() < b.asset->get_total_trading_days(); break; // Days
-              case 13: { // Snap%
+              case 13: result = a.asset->get_total_trading_days() < b.asset->get_total_trading_days(); break; // Days
+              case 14: { // Snap%
                 double a_pct = a.asset->get_total_trading_days() > 0 ?
                   (double)a.asset->get_snapshots_encoded_count() / a.asset->get_total_trading_days() : 0;
                 double b_pct = b.asset->get_total_trading_days() > 0 ?
@@ -391,7 +407,7 @@ void RenderDataTable(
                 result = a_pct < b_pct;
                 break;
               }
-              case 14: { // Order%
+              case 15: { // Order%
                 double a_pct = a.asset->get_total_trading_days() > 0 ?
                   (double)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
                 double b_pct = b.asset->get_total_trading_days() > 0 ?
@@ -399,31 +415,36 @@ void RenderDataTable(
                 result = a_pct < b_pct;
                 break;
               }
-              case 15: result = a.asset->get_missing_count() < b.asset->get_missing_count(); break; // Miss
-              case 16: result = a.asset->get_total_snapshot_count() < b.asset->get_total_snapshot_count(); break; // Snaps
-              case 17: result = a.asset->get_total_order_count() < b.asset->get_total_order_count(); break; // Orders
+              case 16: result = a.asset->get_missing_count() < b.asset->get_missing_count(); break; // Miss
+              case 17: result = a.asset->get_total_snapshot_count() < b.asset->get_total_snapshot_count(); break; // Snaps
+              case 18: result = a.asset->get_total_order_count() < b.asset->get_total_order_count(); break; // Orders
             }
             
             return ascending ? result : !result;
+          } catch (...) {
+            // If comparison fails, maintain consistent ordering by comparing addresses
+            return &a < &b;
+          }
           });
       }
       sort_specs->SpecsDirty = false;
     }
   }
 
-  // Helper lambda to handle column highlight and click
+  // Helper lambda to handle column highlight and click (left-click to trigger analysis)
   auto handle_column_click = [&table_state](int col_idx) {
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-      if (table_state.selected_column_idx_for_highlight == col_idx) {
-        table_state.selected_column_idx_for_highlight = -1;
+      if (table_state.selected_column_idx == col_idx) {
         table_state.selected_column_idx = -1;
       } else {
-        table_state.selected_column_idx_for_highlight = col_idx;
         table_state.selected_column_idx = col_idx;
         table_state.show_cross_section_panel = true;
       }
     }
   };
+
+  // Get hovered column for highlight
+  int hovered_col = ImGui::TableGetHoveredColumn();
 
   // Render rows
   int row_idx = 0;
@@ -437,19 +458,20 @@ void RenderDataTable(
 
     // Col 0: Code
     ImGui::TableSetColumnIndex(0);
-    if (table_state.selected_column_idx_for_highlight == 0) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+    if (hovered_col == 0) {
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.26f, 0.59f, 0.98f, 0.35f)));
     }
-    bool is_selected = is_row_selected;
-    if (ImGui::Selectable(asset.asset_code.c_str(), is_selected,
-                          ImGuiSelectableFlags_SpanAllColumns)) {
-      table_state.selected_asset_idx = row_idx;
+    // Use Text instead of Selectable to allow column click
+    if (is_row_selected) {
+      ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "%s", asset.asset_code.c_str());
+    } else {
+      ImGui::Text("%s", asset.asset_code.c_str());
     }
     handle_column_click(0);
 
     // Col 1: Name
     ImGui::TableSetColumnIndex(1);
-    if (table_state.selected_column_idx_for_highlight == 1) {
+    if (hovered_col == 1) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && !info->name.empty()) {
@@ -461,7 +483,7 @@ void RenderDataTable(
 
     // Col 2: Exchange
     ImGui::TableSetColumnIndex(2);
-    if (table_state.selected_column_idx_for_highlight == 2) {
+    if (hovered_col == 2) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     ImGui::TextColored(asset.exchange == "SH" ? COLOR_SH : COLOR_SZ,
@@ -470,7 +492,7 @@ void RenderDataTable(
 
     // Col 3: Board
     ImGui::TableSetColumnIndex(3);
-    if (table_state.selected_column_idx_for_highlight == 3) {
+    if (hovered_col == 3) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     BoardType board = GetBoardType(asset.asset_code);
@@ -479,7 +501,7 @@ void RenderDataTable(
 
     // Col 4: ST
     ImGui::TableSetColumnIndex(4);
-    if (table_state.selected_column_idx_for_highlight == 4) {
+    if (hovered_col == 4) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && info->isST == "1") {
@@ -489,9 +511,24 @@ void RenderDataTable(
     }
     handle_column_click(4);
 
-    // Col 5: Listed (days)
+    // Col 5: DL (Delisted - 退市)
     ImGui::TableSetColumnIndex(5);
-    if (table_state.selected_column_idx_for_highlight == 5) {
+    if (hovered_col == 5) {
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+    }
+    if (info && !info->outDate.empty() && info->outDate != "0") {
+      ImGui::TextColored(COLOR_GRAY, "DL");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Delisted: %s", info->outDate.c_str());
+      }
+    } else {
+      ImGui::Text("-");
+    }
+    handle_column_click(5);
+
+    // Col 6: Listed (days)
+    ImGui::TableSetColumnIndex(6);
+    if (hovered_col == 6) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && !info->ipoDate.empty()) {
@@ -500,11 +537,11 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(5);
+    handle_column_click(6);
 
-    // Col 6: Industry
-    ImGui::TableSetColumnIndex(6);
-    if (table_state.selected_column_idx_for_highlight == 6) {
+    // Col 7: Industry
+    ImGui::TableSetColumnIndex(7);
+    if (hovered_col == 7) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && !info->ind_code.empty()) {
@@ -515,11 +552,11 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(6);
+    handle_column_click(7);
 
-    // Col 7: PE(TTM)
-    ImGui::TableSetColumnIndex(7);
-    if (table_state.selected_column_idx_for_highlight == 7) {
+    // Col 8: PE(TTM)
+    ImGui::TableSetColumnIndex(8);
+    if (hovered_col == 8) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && !info->peTTM.empty()) {
@@ -536,11 +573,11 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(7);
+    handle_column_click(8);
 
-    // Col 8: PB(MRQ)
-    ImGui::TableSetColumnIndex(8);
-    if (table_state.selected_column_idx_for_highlight == 8) {
+    // Col 9: PB(MRQ)
+    ImGui::TableSetColumnIndex(9);
+    if (hovered_col == 9) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && !info->pbMRQ.empty()) {
@@ -557,11 +594,11 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(8);
+    handle_column_click(9);
 
-    // Col 9: PS(TTM)
-    ImGui::TableSetColumnIndex(9);
-    if (table_state.selected_column_idx_for_highlight == 9) {
+    // Col 10: PS(TTM)
+    ImGui::TableSetColumnIndex(10);
+    if (hovered_col == 10) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && !info->psTTM.empty()) {
@@ -578,11 +615,11 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(9);
+    handle_column_click(10);
 
-    // Col 10: PCF
-    ImGui::TableSetColumnIndex(10);
-    if (table_state.selected_column_idx_for_highlight == 10) {
+    // Col 11: PCF
+    ImGui::TableSetColumnIndex(11);
+    if (hovered_col == 11) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info && !info->pcfNcfTTM.empty()) {
@@ -599,11 +636,11 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(10);
+    handle_column_click(11);
 
-    // Col 11: Market Cap (billion yuan)
-    ImGui::TableSetColumnIndex(11);
-    if (table_state.selected_column_idx_for_highlight == 11) {
+    // Col 12: Market Cap (billion yuan)
+    ImGui::TableSetColumnIndex(12);
+    if (hovered_col == 12) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info) {
@@ -616,51 +653,51 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(11);
+    handle_column_click(12);
 
-    // Col 12: Trading Days
-    ImGui::TableSetColumnIndex(12);
-    if (table_state.selected_column_idx_for_highlight == 12) {
+    // Col 13: Trading Days
+    ImGui::TableSetColumnIndex(13);
+    if (hovered_col == 13) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t total_days = asset.get_total_trading_days();
     ImGui::Text("%zu", total_days);
-    handle_column_click(12);
+    handle_column_click(13);
 
-    // Col 13: Snapshots Encoded %
-    ImGui::TableSetColumnIndex(13);
-    if (table_state.selected_column_idx_for_highlight == 13) {
+    // Col 14: Snapshots Encoded %
+    ImGui::TableSetColumnIndex(14);
+    if (hovered_col == 14) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t snap_encoded = asset.get_snapshots_encoded_count();
     double snap_pct = total_days > 0 ? (double)snap_encoded / total_days * 100.0 : 0.0;
     ImVec4 snap_color = snap_pct >= 95.0 ? COLOR_GREEN : (snap_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
     ImGui::TextColored(snap_color, "%.1f%%", snap_pct);
-    handle_column_click(13);
+    handle_column_click(14);
 
-    // Col 14: Orders Encoded %
-    ImGui::TableSetColumnIndex(14);
-    if (table_state.selected_column_idx_for_highlight == 14) {
+    // Col 15: Orders Encoded %
+    ImGui::TableSetColumnIndex(15);
+    if (hovered_col == 15) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t ord_encoded = asset.get_orders_encoded_count();
     double ord_pct = total_days > 0 ? (double)ord_encoded / total_days * 100.0 : 0.0;
     ImVec4 ord_color = ord_pct >= 95.0 ? COLOR_GREEN : (ord_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
     ImGui::TextColored(ord_color, "%.1f%%", ord_pct);
-    handle_column_click(14);
+    handle_column_click(15);
 
-    // Col 15: Missing Days
-    ImGui::TableSetColumnIndex(15);
-    if (table_state.selected_column_idx_for_highlight == 15) {
+    // Col 16: Missing Days
+    ImGui::TableSetColumnIndex(16);
+    if (hovered_col == 16) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t missing = asset.get_missing_count();
     ImGui::TextColored(missing > 0 ? COLOR_YELLOW : COLOR_GREEN, "%zu", missing);
-    handle_column_click(15);
+    handle_column_click(16);
 
-    // Col 16: Total Snapshots
-    ImGui::TableSetColumnIndex(16);
-    if (table_state.selected_column_idx_for_highlight == 16) {
+    // Col 17: Total Snapshots
+    ImGui::TableSetColumnIndex(17);
+    if (hovered_col == 17) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t total_snaps = asset.get_total_snapshot_count();
@@ -671,11 +708,11 @@ void RenderDataTable(
     } else {
       ImGui::Text("%zu", total_snaps);
     }
-    handle_column_click(16);
+    handle_column_click(17);
 
-    // Col 17: Total Orders
-    ImGui::TableSetColumnIndex(17);
-    if (table_state.selected_column_idx_for_highlight == 17) {
+    // Col 18: Total Orders
+    ImGui::TableSetColumnIndex(18);
+    if (hovered_col == 18) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t total_orders = asset.get_total_order_count();
@@ -686,13 +723,50 @@ void RenderDataTable(
     } else {
       ImGui::Text("%zu", total_orders);
     }
-    handle_column_click(17);
+    handle_column_click(18);
 
     ImGui::PopID();
     row_idx++;
   }
 
   ImGui::EndTable();
+}
+
+// ============================================================================
+// Forward declarations
+// ============================================================================
+
+static void RenderNumericAnalysis(
+    const std::vector<AssetInfo> &assets,
+    const StockInfoMap &stock_info,
+    const TableState &table_state,
+    int col_idx,
+    const char *col_name);
+
+static void RenderCategoricalAnalysis(
+    const std::vector<AssetInfo> &assets,
+    const StockInfoMap &stock_info,
+    const TableState &table_state,
+    int col_idx,
+    const char *col_name);
+
+// ============================================================================
+// Helper: Determine column data type
+// ============================================================================
+
+static ColumnDataType GetColumnDataType(int col_idx) {
+  // Categorical: Board(3), ST(4), DL(5), Industry(7)
+  if (col_idx == 3 || col_idx == 4 || col_idx == 5 || col_idx == 7) {
+    return ColumnDataType::Categorical;
+  }
+  // Numeric: Listed Days(6), PE(8), PB(9), PS(10), PCF(11), Market Cap(12),
+  //          Trading Days(13), Snapshot%(14), Order%(15), Missing(16),
+  //          Total Snapshots(17), Total Orders(18)
+  if (col_idx >= 6 && col_idx <= 18) {
+    return ColumnDataType::Numeric;
+  }
+  // Others (Code, Name, Exchange) not analyzable
+  return ColumnDataType::Categorical; // Default
 }
 
 // ============================================================================
@@ -705,37 +779,56 @@ void RenderCrossSectionPanel(
     const TableState &table_state) {
   
   if (table_state.selected_column_idx < 0) {
-    ImGui::TextWrapped("Click on a column header to view cross-section analysis for that metric.");
+    ImGui::TextWrapped("Click on any cell to view cross-section analysis.");
     return;
   }
 
   // Column names for display
   const char *col_names[] = {
-    "Code", "Name", "Exchange", "Board", "ST", "Listed Days", "Industry",
+    "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days", "Industry",
     "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "Market Cap", "Trading Days",
     "Snapshot %", "Order %", "Missing", "Total Snapshots", "Total Orders"
   };
 
   int col_idx = table_state.selected_column_idx;
-  if (col_idx >= 18) {
+  if (col_idx >= 19) {
     ImGui::Text("Invalid column index");
     return;
   }
 
-  ImGui::Text("Analysis: %s", col_names[col_idx]);
+  ImGui::Text("Column: %s", col_names[col_idx]);
   ImGui::Separator();
 
-  // Extract column data (only for filtered assets)
+  ColumnDataType data_type = GetColumnDataType(col_idx);
+
+  if (data_type == ColumnDataType::Categorical) {
+    RenderCategoricalAnalysis(assets, stock_info, table_state, col_idx, col_names[col_idx]);
+  } else {
+    RenderNumericAnalysis(assets, stock_info, table_state, col_idx, col_names[col_idx]);
+  }
+}
+
+// ============================================================================
+// Numeric Column Analysis
+// ============================================================================
+
+static void RenderNumericAnalysis(
+    const std::vector<AssetInfo> &assets,
+    const StockInfoMap &stock_info,
+    const TableState &table_state,
+    int col_idx,
+    const char *col_name) {
+  (void)col_name; // Unused
+
+  // Extract numeric data (only for filtered assets)
   std::vector<std::string> names;
   std::vector<double> values;
   std::vector<std::string> codes;
-  std::vector<std::string> ind_codes;
 
   for (const auto &asset : assets) {
     if (!ShouldShowAsset(asset, table_state, stock_info))
       continue;
 
-    // Convert to lowercase format: sh.600000
     std::string exchange_lower = asset.exchange;
     std::transform(exchange_lower.begin(), exchange_lower.end(),
                    exchange_lower.begin(), ::tolower);
@@ -747,138 +840,261 @@ void RenderCrossSectionPanel(
     }
 
     std::string display_name = info && !info->name.empty() ? info->name : asset.asset_code;
-    double value = -999999.0; // Sentinel value for invalid
+    double value = std::numeric_limits<double>::quiet_NaN();
+    bool is_valid = false;
 
-    // Extract value based on column index
     switch (col_idx) {
-      case 5: // Listed Days
+      case 6: // Listed Days
         if (info && !info->ipoDate.empty()) {
           value = CalculateDaysSinceIPO(info->ipoDate);
+          is_valid = (value > 0);
         }
         break;
-      case 7: // PE
+      case 8: // PE
         if (info && !info->peTTM.empty()) {
-          try { value = std::stod(info->peTTM); } catch (...) {}
+          try { 
+            value = std::stod(info->peTTM); 
+            is_valid = std::isfinite(value);
+          } catch (...) {}
         }
         break;
-      case 8: // PB
+      case 9: // PB
         if (info && !info->pbMRQ.empty()) {
-          try { value = std::stod(info->pbMRQ); } catch (...) {}
+          try { 
+            value = std::stod(info->pbMRQ); 
+            is_valid = std::isfinite(value);
+          } catch (...) {}
         }
         break;
-      case 9: // PS
+      case 10: // PS
         if (info && !info->psTTM.empty()) {
-          try { value = std::stod(info->psTTM); } catch (...) {}
+          try { 
+            value = std::stod(info->psTTM); 
+            is_valid = std::isfinite(value);
+          } catch (...) {}
         }
         break;
-      case 10: // PCF
+      case 11: // PCF
         if (info && !info->pcfNcfTTM.empty()) {
-          try { value = std::stod(info->pcfNcfTTM); } catch (...) {}
+          try { 
+            value = std::stod(info->pcfNcfTTM); 
+            is_valid = std::isfinite(value);
+          } catch (...) {}
         }
         break;
-      case 11: // Market Cap
+      case 12: // Market Cap
         if (info) {
           value = CalculateMarketCap(*info);
+          is_valid = (value > 0);
         }
         break;
-      case 12: // Trading Days
+      case 13: // Trading Days
         value = asset.get_total_trading_days();
+        is_valid = true;
         break;
-      case 13: // Snapshot %
+      case 14: // Snapshot %
         value = asset.get_total_trading_days() > 0 ?
                 (double)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+        is_valid = true;
         break;
-      case 14: // Order %
+      case 15: // Order %
         value = asset.get_total_trading_days() > 0 ?
                 (double)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+        is_valid = true;
         break;
-      case 15: // Missing
+      case 16: // Missing
         value = asset.get_missing_count();
+        is_valid = true;
         break;
-      case 16: // Total Snapshots
+      case 17: // Total Snapshots
         value = asset.get_total_snapshot_count();
+        is_valid = true;
         break;
-      case 17: // Total Orders
+      case 18: // Total Orders
         value = asset.get_total_order_count();
+        is_valid = true;
         break;
       default:
-        value = -999999.0;
+        break;
     }
 
-    if (value != -999999.0 && value == value && value > -1e300 && value < 1e300) {
+    if (is_valid) {
       names.push_back(display_name);
       values.push_back(value);
       codes.push_back(asset.asset_code);
-      if (info) {
-        ind_codes.push_back(info->ind_code);
-      } else {
-        ind_codes.push_back("");
-      }
     }
   }
 
   if (values.empty()) {
-    ImGui::Text("No valid data for this column");
+    ImGui::Text("No valid data");
     return;
   }
 
-  // 1. Basic Statistics
-  if (ImGui::CollapsingHeader("Basic Statistics", ImGuiTreeNodeFlags_DefaultOpen)) {
-    auto stats = CalculateColumnStats(values);
-    ImGui::Text("Valid Samples: %zu / %zu", stats.valid_count, stats.total_count);
-    ImGui::Text("Min:     %.2f", stats.min);
-    ImGui::Text("Max:     %.2f", stats.max);
-    ImGui::Text("Median:  %.2f", stats.median);
-    ImGui::Text("Mean:    %.2f", stats.mean);
-    ImGui::Text("Std Dev: %.2f", stats.std_dev);
-    ImGui::Text("25%%:     %.2f", stats.q25);
-    ImGui::Text("75%%:     %.2f", stats.q75);
+  // === 1. Board Statistics Table (Compact) ===
+  ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Board Statistics");
+  auto board_stats = GroupNumericByBoard(codes, values);
+  
+  if (ImGui::BeginTable("BoardStatsTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+    ImGui::TableSetupColumn("Board");
+    ImGui::TableSetupColumn("Mean");
+    ImGui::TableSetupColumn("Median");
+    ImGui::TableSetupColumn("StdDev");
+    ImGui::TableSetupColumn("Count");
+    ImGui::TableHeadersRow();
+
+    for (const auto &bs : board_stats) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0); ImGui::Text("%s", bs.board_name.c_str());
+      ImGui::TableSetColumnIndex(1); ImGui::Text("%.2f", bs.mean);
+      ImGui::TableSetColumnIndex(2); ImGui::Text("%.2f", bs.median);
+      ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", bs.std_dev);
+      ImGui::TableSetColumnIndex(4); ImGui::Text("%zu", bs.count);
+    }
+    ImGui::EndTable();
   }
 
-  // 2. Distribution Histogram
-  if (ImGui::CollapsingHeader("Distribution Histogram")) {
-    auto histogram = GenerateHistogram(values, 15);
-    if (!histogram.empty()) {
-      // Find max count for scaling
-      size_t max_count = 0;
-      for (const auto &bin : histogram) {
-        if (bin.count > max_count) max_count = bin.count;
+  ImGui::Spacing();
+
+  // === 2. Distribution Plot (Remove top/bottom 5% outliers) ===
+  ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Distribution (Outliers Removed)");
+  auto filtered_values = RemoveOutliers(values, 5.0);
+  
+  if (!filtered_values.empty() && ImPlot::BeginPlot("##Distribution", ImVec2(-1, 200))) {
+    ImPlot::PlotHistogram("##hist", filtered_values.data(), (int)filtered_values.size(), 20);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::Spacing();
+
+  // === 3. Rankings (Top 10 / Bottom 10) ===
+  float half_width = ImGui::GetContentRegionAvail().x * 0.48f;
+  
+  // Top 10
+  ImGui::BeginChild("Top10", ImVec2(half_width, 250), true);
+  ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Top 10");
+  auto top10 = GetTopN(names, values, 10, true);
+  for (size_t i = 0; i < top10.size(); ++i) {
+    ImGui::Text("%zu. %s: %.2f", i + 1, top10[i].first.c_str(), top10[i].second);
+  }
+  ImGui::EndChild();
+
+  ImGui::SameLine();
+
+  // Bottom 10
+  ImGui::BeginChild("Bottom10", ImVec2(half_width, 250), true);
+  ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Bottom 10");
+  auto bottom10 = GetTopN(names, values, 10, false);
+  for (size_t i = 0; i < bottom10.size(); ++i) {
+    ImGui::Text("%zu. %s: %.2f", i + 1, bottom10[i].first.c_str(), bottom10[i].second);
+  }
+  ImGui::EndChild();
+}
+
+// ============================================================================
+// Categorical Column Analysis
+// ============================================================================
+
+static void RenderCategoricalAnalysis(
+    const std::vector<AssetInfo> &assets,
+    const StockInfoMap &stock_info,
+    const TableState &table_state,
+    int col_idx,
+    const char *col_name) {
+  (void)col_name; // Unused
+  
+  // Extract categorical data
+  std::vector<std::string> categories;
+  std::vector<std::string> codes;
+
+  for (const auto &asset : assets) {
+    if (!ShouldShowAsset(asset, table_state, stock_info))
+      continue;
+
+    std::string exchange_lower = asset.exchange;
+    std::transform(exchange_lower.begin(), exchange_lower.end(),
+                   exchange_lower.begin(), ::tolower);
+    std::string full_code = exchange_lower + "." + asset.asset_code;
+    const StockInfo *info = nullptr;
+    auto it = stock_info.find(full_code);
+    if (it != stock_info.end()) {
+      info = &it->second;
+    }
+
+    std::string category;
+    switch (col_idx) {
+      case 3: // Board
+        category = GetBoardName(GetBoardType(asset.asset_code));
+        break;
+      case 4: // ST
+        category = (info && info->isST == "1") ? "ST" : "Normal";
+        break;
+      case 5: // DL
+        category = (info && !info->outDate.empty()) ? "Delisted" : "Active";
+        break;
+      case 7: // Industry
+        category = info ? info->ind_code : "Unknown";
+        break;
+      default:
+        break;
+    }
+
+    if (!category.empty()) {
+      categories.push_back(category);
+      codes.push_back(asset.asset_code);
+    }
+  }
+
+  if (categories.empty()) {
+    ImGui::Text("No valid data");
+    return;
+  }
+
+  // === 1. Overall Pie Chart ===
+  ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Overall Distribution");
+  auto overall_counts = CountCategories(categories);
+  
+  if (!overall_counts.empty() && ImPlot::BeginPlot("##OverallPie", ImVec2(-1, 250))) {
+    std::vector<const char*> labels;
+    std::vector<double> counts;
+    for (const auto &cc : overall_counts) {
+      labels.push_back(cc.label.c_str());
+      counts.push_back((double)cc.count);
+    }
+    ImPlot::PlotPieChart(labels.data(), counts.data(), (int)counts.size(), 0.5, 0.5, 0.4);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::Spacing();
+
+  // === 2. Board Breakdown Pie Charts (Multi-column) ===
+  ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Board Breakdown");
+  auto board_breakdown = GroupCategoricalByBoard(codes, categories);
+
+  int charts_per_row = 2;
+  float chart_width = ImGui::GetContentRegionAvail().x / charts_per_row - 10;
+
+  for (size_t i = 0; i < board_breakdown.size(); ++i) {
+    const auto &breakdown = board_breakdown[i];
+    
+    if (i % charts_per_row != 0) {
+      ImGui::SameLine();
+    }
+
+    ImGui::BeginChild(("BoardPie_" + std::to_string(i)).c_str(), ImVec2(chart_width, 220), true);
+    ImGui::Text("%s", breakdown.board_name.c_str());
+    
+    if (!breakdown.categories.empty() && ImPlot::BeginPlot("##BoardPie", ImVec2(-1, 180))) {
+      std::vector<const char*> labels;
+      std::vector<double> counts;
+      for (const auto &cc : breakdown.categories) {
+        labels.push_back(cc.label.c_str());
+        counts.push_back((double)cc.count);
       }
-
-      // Render histogram as text bars
-      for (size_t i = 0; i < histogram.size(); ++i) {
-        const auto &bin = histogram[i];
-        float pct = max_count > 0 ? (float)bin.count / max_count : 0.0f;
-        int bar_len = static_cast<int>(pct * 30);
-        std::string bar(bar_len, '=');
-        ImGui::Text("[%.1f-%.1f]: %s (%zu)", bin.range_start, bin.range_end, bar.c_str(), bin.count);
-      }
+      ImPlot::PlotPieChart(labels.data(), counts.data(), (int)counts.size(), 0.5, 0.5, 0.35);
+      ImPlot::EndPlot();
     }
-  }
-
-  // 3. Top/Bottom Rankings
-  if (ImGui::CollapsingHeader("Rankings")) {
-    auto top10 = GetTopN(names, values, 10, true);
-    auto bottom10 = GetTopN(names, values, 10, false);
-
-    ImGui::Text("Top 10:");
-    for (size_t i = 0; i < top10.size(); ++i) {
-      ImGui::Text("  %zu. %s: %.2f", i + 1, top10[i].first.c_str(), top10[i].second);
-    }
-
-    ImGui::Spacing();
-    ImGui::Text("Bottom 10:");
-    for (size_t i = 0; i < bottom10.size(); ++i) {
-      ImGui::Text("  %zu. %s: %.2f", i + 1, bottom10[i].first.c_str(), bottom10[i].second);
-    }
-  }
-
-  // 4. Board Statistics
-  if (ImGui::CollapsingHeader("Board Statistics")) {
-    auto board_stats = GroupByBoard(codes, values);
-    for (const auto &[board_name, avg_value] : board_stats) {
-      ImGui::Text("%s: %.2f", board_name.c_str(), avg_value);
-    }
+    
+    ImGui::EndChild();
   }
 }
 
