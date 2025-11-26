@@ -21,14 +21,8 @@ using json = nlohmann::json;
 namespace GUI::Database {
 
 namespace {
-// Default stock list - immutable constant
-const std::vector<std::string> kDefaultStocks = {
-    "sh.600000", "sh.600519", // SH Main: 浦发银行, 贵州茅台
-    "sz.000001", "sz.000002", // SZ Main: 平安银行, 万科A
-    "sh.688001", "sh.688009", // STAR: 华兴源创, 中国通号
-    "sz.300001", "sz.300750"  // ChiNext: 特锐德, 宁德时代
-};
-
+// No default stock list - stocks will be derived from L2 database scan
+// Config file will be empty initially until first scan completes
 constexpr const char *kMetaStockInfoWeekly = "weekly";
 constexpr const char *kMetaStockInfoDaily = "daily";
 } // namespace
@@ -344,12 +338,13 @@ awaitable<void> DataManager::load_config(const std::string &config_file) {
   std::string filepath = config_file;
 
   if (!fs::exists(filepath)) {
-    stock_codes_ = kDefaultStocks;
+    // Start with empty stock list - will be populated from L2 scan
+    stock_codes_.clear();
     stock_info_last_update_.clear();
     config_->baostock_weekly_update_day = 1;
 
     co_await save_config(config_file);
-    Log(std::format("Created config with {} default stocks", stock_codes_.size()));
+    Log("Created config with empty stock list (will be populated from L2 database scan)");
     co_return;
   }
 
@@ -358,7 +353,14 @@ awaitable<void> DataManager::load_config(const std::string &config_file) {
   infile >> j;
   infile.close();
 
-  stock_codes_ = j.value("stocks", kDefaultStocks);
+  // Load stocks from config, default to empty if not present
+  stock_codes_ = j.value("stocks", std::vector<std::string>{});
+
+  // Load L2 database date range
+  if (j.contains("l2_database")) {
+    l2_database_start_date_ = j["l2_database"].value("date_range_start", "");
+    l2_database_end_date_ = j["l2_database"].value("date_range_end", "");
+  }
 
   if (j.contains("metadata")) {
     stock_info_last_update_ = j["metadata"].value("stock_info_last_update", std::map<std::string, std::string>{});
@@ -368,14 +370,28 @@ awaitable<void> DataManager::load_config(const std::string &config_file) {
     config_->baostock_weekly_update_day = j["settings"].value("weekly_update_day", 1);
   }
 
-  Log(std::format("Loaded config: {} stocks", stock_codes_.size()));
+  if (stock_codes_.empty()) {
+    Log("Loaded config with empty stock list (waiting for L2 database scan)");
+  } else {
+    Log(std::format("Loaded config: {} stocks", stock_codes_.size()));
+  }
   co_return;
 }
 
 awaitable<void> DataManager::save_config(const std::string &config_file) {
   json j;
+  
+  // L2 database date range
+  j["l2_database"]["date_range_start"] = l2_database_start_date_;
+  j["l2_database"]["date_range_end"] = l2_database_end_date_;
+  
+  // Stocks list
   j["stocks"] = stock_codes_;
+  
+  // Metadata
   j["metadata"]["stock_info_last_update"] = stock_info_last_update_;
+  
+  // Settings
   j["settings"]["weekly_update_day"] = config_->baostock_weekly_update_day;
 
   std::string filepath = config_file;
@@ -386,6 +402,30 @@ awaitable<void> DataManager::save_config(const std::string &config_file) {
   outfile.close();
 
   fs::rename(temp_filepath, filepath);
+  co_return;
+}
+
+void DataManager::set_l2_database_date_range(const std::string &start_date, const std::string &end_date) {
+  l2_database_start_date_ = start_date;
+  l2_database_end_date_ = end_date;
+  Log(std::format("Updated L2 database date range: {} ~ {}", start_date, end_date));
+}
+
+awaitable<void> DataManager::set_stock_codes(const std::vector<std::string> &codes) {
+  if (codes.empty()) {
+    Log("[WARNING] Attempt to set empty stock codes list, ignoring", true);
+    co_return;
+  }
+
+  Log(std::format("Updating stock codes from {} to {} stocks",
+                  stock_codes_.size(), codes.size()));
+
+  stock_codes_ = codes;
+
+  // Save to config file
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+
+  Log(std::format("Stock codes updated successfully: {} stocks", stock_codes_.size()));
   co_return;
 }
 
@@ -600,7 +640,7 @@ awaitable<void> DataManager::save_stock_days() {
 // Update Operations
 // ============================================================================
 
-awaitable<void> DataManager::update_stock_days(bool skip_login, bool skip_logout) {
+awaitable<void> DataManager::update_stock_days(bool skip_login, bool skip_logout, const std::string &force_start_date) {
   if (progress_callback_) {
     progress_callback_("stock_days", "", 0, 0, UpdateStage::UpdatingStockDays);
   }
@@ -625,8 +665,14 @@ awaitable<void> DataManager::update_stock_days(bool skip_login, bool skip_logout
     }
   }
 
-  std::string start_date = stock_days_.empty() ? get_date_from_days_ago(30)
-                                               : increment_date(stock_days_.back()[0]);
+  std::string start_date;
+  if (stock_days_.empty()) {
+    // First-time: use force_start_date if provided (from L2 database), otherwise last 30 days
+    start_date = !force_start_date.empty() ? force_start_date : get_date_from_days_ago(30);
+    Log(std::format("stock_days is empty, fetching from {}", start_date));
+  } else {
+    start_date = increment_date(stock_days_.back()[0]);
+  }
   std::string end_date = get_today_date();
 
   // Check if start_date is beyond end_date (already up-to-date)
@@ -1026,7 +1072,7 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
             // Preserve existing daily fields if stock already exists
             StockInfo info;
             bool is_new_stock = (stock_info_.find(code) == stock_info_.end());
-            
+
             if (!is_new_stock) {
               info = stock_info_[code]; // Start with existing data (preserves daily fields)
             }
@@ -1295,7 +1341,7 @@ awaitable<void> DataManager::update_stock_info_daily(bool skip_days, bool skip_l
   co_return;
 }
 
-awaitable<void> DataManager::update_all() {
+awaitable<void> DataManager::update_all(const std::string &l2_database_start_date) {
   Log("=== Running full update cycle ===");
 
   // Step 0: Quick check if ANY update is needed (without login)
@@ -1387,7 +1433,7 @@ awaitable<void> DataManager::update_all() {
 
   // Step 2: Update stock_days (skip login/logout, managed by update_all)
   if (needs_days) {
-    co_await update_stock_days(true, true);
+    co_await update_stock_days(true, true, l2_database_start_date);
   }
 
   // Step 3: Update stock_factor (skip login/logout, managed by update_all)
@@ -1427,6 +1473,27 @@ IntegrityResult DataManager::check_stock_days_integrity() {
     result.passed = false;
     result.errors.push_back("stock_days is empty");
     return result;
+  }
+
+  // Check if stock_days starts from L2 database start (if available)
+  if (!l2_database_start_date_.empty()) {
+    // Get stock_days start date (YYYY-MM-DD format)
+    std::string stock_days_start = stock_days_[0][0];
+    // Remove dashes: YYYY-MM-DD -> YYYYMMDD
+    std::string stock_days_start_yyyymmdd = stock_days_start;
+    stock_days_start_yyyymmdd.erase(std::remove(stock_days_start_yyyymmdd.begin(), 
+                                                stock_days_start_yyyymmdd.end(), '-'), 
+                                   stock_days_start_yyyymmdd.end());
+    
+    // Compare with L2 database start (YYYYMMDD format)
+    if (stock_days_start_yyyymmdd > l2_database_start_date_) {
+      result.passed = false;
+      result.errors.push_back(
+        "stock_days starts at " + stock_days_start + 
+        " but L2 database starts at " + l2_database_start_date_ +
+        " - missing date coverage! Delete stock_days.json to rebuild from L2 start."
+      );
+    }
   }
 
   std::set<std::string> seen_dates;

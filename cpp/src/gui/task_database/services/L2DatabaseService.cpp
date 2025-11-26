@@ -1,9 +1,10 @@
 // L2 Database Service Implementation
 #include "gui/task_database/services/L2DatabaseService.hpp"
 #include "gui/task_database/infrastructure/CoroScanner.hpp"
-#include <boost/asio/this_coro.hpp>
 #include <algorithm>
+#include <boost/asio/this_coro.hpp>
 #include <filesystem>
+#include <set>
 
 namespace GUI::Database {
 
@@ -14,6 +15,11 @@ namespace asio = boost::asio;
 // ============================================================================
 
 awaitable<void> L2DatabaseService::scan_database() {
+  // Skip if already scanned
+  if (scanned_once_) {
+    co_return;
+  }
+
   scan_status_ = L2ScanStatus::Scanning;
   error_message_.clear();
 
@@ -37,6 +43,7 @@ awaitable<void> L2DatabaseService::scan_database() {
     all_dates_ = std::move(result.all_dates);
 
     scan_status_ = L2ScanStatus::Scanned;
+    scanned_once_ = true; // Mark as scanned to prevent repeated scans
 
   } catch (const std::exception &e) {
     scan_status_ = L2ScanStatus::Error;
@@ -62,6 +69,8 @@ awaitable<void> L2DatabaseService::refresh_asset(size_t asset_idx) {
 L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
                                          const std::string &backtest_end,
                                          const std::vector<std::vector<std::string>> &trading_days) const {
+  // Suppress unused variable warning - config_ is reserved for future use
+  (void)config_;
   namespace fs = std::filesystem;
   L2Summary summary;
 
@@ -71,41 +80,63 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
     summary.database_range_end = all_dates_.back();
     summary.database_trade_days = all_dates_.size();
   }
-  
+
   // Backtest date range (from config)
   summary.backtest_range_start = backtest_start;
   summary.backtest_range_end = backtest_end;
-  
+
   // Calculate backtest statistics
-  if (!backtest_start.empty() && !backtest_end.empty() && !trading_days.empty()) {
-    // Count trading days in backtest range (only days with is_trading_day == "1")
-    for (const auto &day : trading_days) {
-      if (day.size() >= 2) {
-        std::string date = day[0]; // First column is date (YYYY-MM-DD)
-        std::string is_trading = day[1]; // Second column is is_trading_day ("0" or "1")
-        
-        // Remove dashes to get YYYYMMDD format
-        date.erase(std::remove(date.begin(), date.end(), '-'), date.end());
-        
-        // Only count actual trading days
-        if (date >= backtest_start && date <= backtest_end && is_trading == "1") {
-          summary.backtest_trade_days++;
+  if (!backtest_start.empty() && !backtest_end.empty()) {
+    // Collect trade days from JSON (in backtest range)
+    std::set<std::string> json_trade_days;
+    if (!trading_days.empty()) {
+      for (const auto &day : trading_days) {
+        if (day.size() >= 2) {
+          std::string date = day[0];       // First column is date (YYYY-MM-DD)
+          std::string is_trading = day[1]; // Second column is is_trading_day ("0" or "1")
+
+          // Remove dashes to get YYYYMMDD format
+          date.erase(std::remove(date.begin(), date.end(), '-'), date.end());
+
+          // Only count actual trading days in backtest range
+          if (date >= backtest_start && date <= backtest_end && is_trading == "1") {
+            json_trade_days.insert(date);
+          }
         }
       }
     }
-    
-    // Calculate missing days: trade days in backtest range that don't have binaries
-    // Count days in all_dates_ that fall within backtest range
-    size_t backtest_encoded_days = 0;
+    summary.backtest_trade_days_in_json = json_trade_days.size();
+
+    // Collect trade days with binaries (in backtest range)
+    std::set<std::string> binary_trade_days;
     for (const auto &date : all_dates_) {
       if (date >= backtest_start && date <= backtest_end) {
-        backtest_encoded_days++;
+        binary_trade_days.insert(date);
       }
     }
-    summary.backtest_missing_days = summary.backtest_trade_days > backtest_encoded_days 
-                                    ? summary.backtest_trade_days - backtest_encoded_days 
-                                    : 0;
-    
+    summary.backtest_trade_days_with_binary = binary_trade_days.size();
+
+    // Calculate non-intersection (error days)
+    // Days in JSON but not in binary OR days in binary but not in JSON
+    std::vector<std::string> json_only;
+    std::vector<std::string> binary_only;
+
+    std::set_difference(json_trade_days.begin(), json_trade_days.end(),
+                        binary_trade_days.begin(), binary_trade_days.end(),
+                        std::back_inserter(json_only));
+
+    std::set_difference(binary_trade_days.begin(), binary_trade_days.end(),
+                        json_trade_days.begin(), json_trade_days.end(),
+                        std::back_inserter(binary_only));
+
+    // Combine both differences into error_dates
+    summary.backtest_error_dates = json_only;
+    summary.backtest_error_dates.insert(summary.backtest_error_dates.end(),
+                                        binary_only.begin(), binary_only.end());
+    std::sort(summary.backtest_error_dates.begin(), summary.backtest_error_dates.end());
+
+    summary.backtest_error_days = summary.backtest_error_dates.size();
+
     // Check if backtest is within database range
     summary.backtest_in_range = !summary.database_range_start.empty() &&
                                 !summary.database_range_end.empty() &&
@@ -122,6 +153,10 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
   size_t total_snapshots_size = 0; // in bytes
   size_t total_orders_size = 0;    // in bytes
 
+  // Track unique dates with binaries in backtest range
+  std::set<std::string> backtest_dates_with_snapshots;
+  std::set<std::string> backtest_dates_with_orders;
+
   for (const auto &asset : assets_) {
     size_t total_days = asset.get_total_trading_days();
     size_t encoded_days = asset.get_encoded_count();
@@ -135,24 +170,26 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
       fully_encoded_assets++;
     }
 
-    // Count encoded snapshots and orders, and accumulate file sizes
+    // Track missing dates for this asset
+    std::vector<std::string> missing_snapshots_dates;
+    std::vector<std::string> missing_orders_dates;
     bool has_missing_snapshots = false;
     bool has_missing_orders = false;
-    
+
     for (const auto &[date, info] : asset.date_info) {
       // Check if this date is in backtest range
       bool in_backtest_range = !backtest_start.empty() && !backtest_end.empty() &&
                                date >= backtest_start && date <= backtest_end;
-      
+
       // Count encoded files
       if (info.snapshots_encoded) {
         summary.snapshots_encoded_count++;
-        
-        // Count snapshots in backtest range
+
+        // Track unique dates with snapshots in backtest range
         if (in_backtest_range) {
-          summary.backtest_snapshots_encoded++;
+          backtest_dates_with_snapshots.insert(date);
         }
-        
+
         // Get actual file size
         if (!info.snapshots_file.empty() && fs::exists(info.snapshots_file)) {
           try {
@@ -163,16 +200,19 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
         }
       } else {
         has_missing_snapshots = true;
+        if (in_backtest_range) {
+          missing_snapshots_dates.push_back(date);
+        }
       }
-      
+
       if (info.orders_encoded) {
         summary.orders_encoded_count++;
-        
-        // Count orders in backtest range
+
+        // Track unique dates with orders in backtest range
         if (in_backtest_range) {
-          summary.backtest_orders_encoded++;
+          backtest_dates_with_orders.insert(date);
         }
-        
+
         // Get actual file size
         if (!info.orders_file.empty() && fs::exists(info.orders_file)) {
           try {
@@ -183,9 +223,12 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
         }
       } else {
         has_missing_orders = true;
+        if (in_backtest_range) {
+          missing_orders_dates.push_back(date);
+        }
       }
     }
-    
+
     // Count assets with missing data
     if (has_missing_snapshots) {
       summary.assets_missing_snapshots++;
@@ -193,7 +236,21 @@ L2Summary L2DatabaseService::get_summary(const std::string &backtest_start,
     if (has_missing_orders) {
       summary.assets_missing_orders++;
     }
+
+    // Store missing dates for this asset (only if there are missing dates in backtest range)
+    if (!missing_snapshots_dates.empty()) {
+      std::string asset_name = asset.asset_code + "." + asset.exchange;
+      summary.missing_snapshots_by_asset[asset_name] = missing_snapshots_dates;
+    }
+    if (!missing_orders_dates.empty()) {
+      std::string asset_name = asset.asset_code + "." + asset.exchange;
+      summary.missing_orders_by_asset[asset_name] = missing_orders_dates;
+    }
   }
+
+  // Set backtest encoded counts to unique date counts
+  summary.backtest_snapshots_encoded = backtest_dates_with_snapshots.size();
+  summary.backtest_orders_encoded = backtest_dates_with_orders.size();
 
   summary.encoded_assets = fully_encoded_assets;
   summary.missing_assets = summary.total_assets - fully_encoded_assets;

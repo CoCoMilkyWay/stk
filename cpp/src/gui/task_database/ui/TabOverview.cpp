@@ -51,6 +51,8 @@ void RenderCompactJsonCard(
     ImGui::Separator();
 
     if (std::string(title) == "stock_days.json") {
+      ImGui::BulletText("Date range MUST start from L2 database start date");
+      ImGui::BulletText("(or earlier) to cover all binary data");
       ImGui::BulletText("Must contain trading date records");
       ImGui::BulletText("Dates must be sorted chronologically");
       ImGui::BulletText("No duplicate dates allowed");
@@ -370,7 +372,7 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
                        summary.database_range_start.c_str(),
                        summary.database_range_end.c_str());
     ImGui::SameLine();
-    ImGui::TextDisabled("(%zu trade days)", summary.database_trade_days);
+    ImGui::TextDisabled("(%zu binary trade days)", summary.database_trade_days);
   } else {
     ImGui::TextDisabled("N/A");
   }
@@ -383,16 +385,32 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
                        summary.backtest_range_start.c_str(),
                        summary.backtest_range_end.c_str());
     ImGui::SameLine();
-    ImGui::TextDisabled("(%zu trade days)", summary.backtest_trade_days);
+    ImGui::TextDisabled("(%zu json trade days, %zu binary trade days)",
+                        summary.backtest_trade_days_in_json,
+                        summary.backtest_trade_days_with_binary);
   } else {
     ImGui::TextDisabled("N/A");
   }
 
-  // Backtest missing days
-  ImGui::Text("Backtest Missing Days:");
+  // Backtest error days (non-intersection between JSON and binary)
+  ImGui::Text("Backtest Error Days:");
   ImGui::SameLine();
-  if (summary.backtest_missing_days > 0) {
-    ImGui::TextColored(COLOR_YELLOW, "%zu", summary.backtest_missing_days);
+  if (summary.backtest_error_days > 0) {
+    ImGui::TextColored(COLOR_RED, "%zu", summary.backtest_error_days);
+
+    // Tooltip with error dates
+    if (ImGui::IsItemHovered() && !summary.backtest_error_dates.empty()) {
+      ImGui::BeginTooltip();
+      ImGui::TextColored(COLOR_RED, "Non-intersection dates:");
+      ImGui::Separator();
+      ImGui::Text("Dates in JSON but not in L2 database,");
+      ImGui::Text("OR dates in L2 database but not in JSON:");
+      ImGui::Separator();
+      for (const auto &date : summary.backtest_error_dates) {
+        ImGui::TextDisabled("  %s", date.c_str());
+      }
+      ImGui::EndTooltip();
+    }
   } else {
     ImGui::TextColored(COLOR_GREEN, "0");
   }
@@ -424,24 +442,28 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
   // Snapshots: count/total + size (in backtest range if available)
   ImGui::Text("Snapshots Encoded:");
   ImGui::SameLine();
-  if (summary.backtest_trade_days > 0) {
-    ImGui::TextColored(COLOR_CYAN, "%zu/%zu", summary.backtest_snapshots_encoded, summary.backtest_trade_days);
+  if (summary.backtest_trade_days_with_binary > 0) {
+    ImGui::TextColored(COLOR_CYAN, "%zu/%zu",
+                       summary.backtest_snapshots_encoded,
+                       summary.backtest_trade_days_with_binary);
   } else {
     ImGui::TextColored(COLOR_CYAN, "%zu", summary.snapshots_encoded_count);
   }
   ImGui::SameLine();
-  ImGui::TextDisabled("(%.2f GB)", summary.snapshots_size_gb);
+  ImGui::TextDisabled("(%.2f GB, whole database)", summary.snapshots_size_gb);
 
   // Orders: count/total + size (in backtest range if available)
   ImGui::Text("Orders Encoded:");
   ImGui::SameLine();
-  if (summary.backtest_trade_days > 0) {
-    ImGui::TextColored(COLOR_CYAN, "%zu/%zu", summary.backtest_orders_encoded, summary.backtest_trade_days);
+  if (summary.backtest_trade_days_with_binary > 0) {
+    ImGui::TextColored(COLOR_CYAN, "%zu/%zu",
+                       summary.backtest_orders_encoded,
+                       summary.backtest_trade_days_with_binary);
   } else {
     ImGui::TextColored(COLOR_CYAN, "%zu", summary.orders_encoded_count);
   }
   ImGui::SameLine();
-  ImGui::TextDisabled("(%.2f GB)", summary.orders_size_gb);
+  ImGui::TextDisabled("(%.2f GB, whole database)", summary.orders_size_gb);
 
   ImGui::Spacing();
 
@@ -450,6 +472,20 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
   ImGui::SameLine();
   if (summary.assets_missing_snapshots > 0) {
     ImGui::TextColored(COLOR_YELLOW, "%zu", summary.assets_missing_snapshots);
+    if (ImGui::IsItemHovered() && !summary.missing_snapshots_by_asset.empty()) {
+      ImGui::BeginTooltip();
+      ImGui::Text("Missing Snapshots by Asset (in backtest range):");
+      ImGui::Separator();
+      for (const auto &[asset, dates] : summary.missing_snapshots_by_asset) {
+        ImGui::Text("\"%s\":", asset.c_str());
+        ImGui::Indent();
+        for (const auto &date : dates) {
+          ImGui::TextDisabled("%s", date.c_str());
+        }
+        ImGui::Unindent();
+      }
+      ImGui::EndTooltip();
+    }
   } else {
     ImGui::TextColored(COLOR_GREEN, "0");
   }
@@ -458,6 +494,20 @@ void RenderL2DatabaseSummary(const L2Summary &summary) {
   ImGui::SameLine();
   if (summary.assets_missing_orders > 0) {
     ImGui::TextColored(COLOR_YELLOW, "%zu", summary.assets_missing_orders);
+    if (ImGui::IsItemHovered() && !summary.missing_orders_by_asset.empty()) {
+      ImGui::BeginTooltip();
+      ImGui::Text("Missing Orders by Asset (in backtest range):");
+      ImGui::Separator();
+      for (const auto &[asset, dates] : summary.missing_orders_by_asset) {
+        ImGui::Text("\"%s\":", asset.c_str());
+        ImGui::Indent();
+        for (const auto &date : dates) {
+          ImGui::TextDisabled("%s", date.c_str());
+        }
+        ImGui::Unindent();
+      }
+      ImGui::EndTooltip();
+    }
   } else {
     ImGui::TextColored(COLOR_GREEN, "0");
   }

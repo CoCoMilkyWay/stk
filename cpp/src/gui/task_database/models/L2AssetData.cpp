@@ -37,11 +37,11 @@ void AssetInfo::init_paths(const std::string &db_dir,
     if (date < start_date || date > end_date)
       continue;
 
-    // Build path: database/YYYY/MM/DD/EXCHANGE+CODE
+    // Build path: database/YYYY/MM/DD/CODE.EXCHANGE (e.g., 000785.SZ)
     std::string year = date.substr(0, 4);
     std::string month = date.substr(4, 2);
     std::string day = date.substr(6, 2);
-    std::string asset_dir = exchange + asset_code;
+    std::string asset_dir = asset_code + "." + exchange;
 
     std::string full_path = db_dir + "/" + year + "/" + month + "/" + day + "/" + asset_dir;
 

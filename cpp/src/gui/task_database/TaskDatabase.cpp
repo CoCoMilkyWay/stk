@@ -36,6 +36,10 @@ private:
   bool json_update_inflight_ = false;  // Prevent concurrent JSON update flows
   bool l2_scan_inflight_ = false;      // Prevent overlapping L2 scans
 
+  // Cached L2 Summary (to avoid recalculating every frame - very expensive!)
+  L2Summary cached_l2_summary_;
+  bool l2_summary_valid_ = false;
+
   // Lifecycle
   bool is_expanded_ = false;
   bool initialized_ = false;
@@ -83,13 +87,15 @@ public:
   }
 
 private:
-  // Trigger unified refresh flow: update + scan
+  // Trigger unified refresh flow: scan L2 first, then update JSONs
   void TriggerRefreshFlow() {
-    if (json_update_inflight_ || !baostock_svc_ || !l2_svc_)
+    if (json_update_inflight_ || l2_scan_inflight_ || !baostock_svc_ || !l2_svc_)
       return;
 
     auto &io = coro_mgr_->GetIoContext();
+    l2_scan_inflight_ = true;
     json_update_inflight_ = true;
+    l2_summary_valid_ = false; // Invalidate cache at start
 
     boost::asio::co_spawn(
         io,
@@ -99,20 +105,60 @@ private:
             ~FlagReset() { flag = false; }
           };
 
-          {
-            FlagReset update_reset{json_update_inflight_};
-            co_await baostock_svc_->update_all();
-            state_mgr_->refresh_state();
+          FlagReset scan_reset{l2_scan_inflight_};
+          FlagReset update_reset{json_update_inflight_};
+
+          // Step 1: Scan L2 database first to get asset list and date range
+          co_await l2_svc_->scan_database();
+          l2_summary_valid_ = false; // Invalidate after L2 scan
+          state_mgr_->refresh_state();
+
+          // Step 2: Extract stock codes and database start date from L2 scan results
+          const auto &assets = l2_svc_->get_assets();
+          const auto &all_dates = l2_svc_->get_all_dates();
+          std::vector<std::string> stock_codes;
+          stock_codes.reserve(assets.size());
+
+          for (const auto &asset : assets) {
+            // Convert AssetInfo to Baostock format: sh.600000, sz.000001
+            std::string exchange_lower = asset.exchange;
+            std::transform(exchange_lower.begin(), exchange_lower.end(),
+                           exchange_lower.begin(), ::tolower);
+            stock_codes.push_back(exchange_lower + "." + asset.asset_code);
           }
 
-          if (!state_mgr_->get_state().all_json_ready() || l2_scan_inflight_)
-            co_return;
+          // Get L2 database start date and convert format: YYYYMMDD -> YYYY-MM-DD
+          std::string l2_start_date;
+          std::string l2_end_date;
+          if (!all_dates.empty()) {
+            std::string start_yyyymmdd = all_dates.front();
+            std::string end_yyyymmdd = all_dates.back();
 
-          l2_scan_inflight_ = true;
-          FlagReset scan_reset{l2_scan_inflight_};
+            if (start_yyyymmdd.length() == 8) {
+              l2_start_date = start_yyyymmdd.substr(0, 4) + "-" + start_yyyymmdd.substr(4, 2) + "-" + start_yyyymmdd.substr(6, 2);
+            }
+            if (end_yyyymmdd.length() == 8) {
+              l2_end_date = end_yyyymmdd.substr(0, 4) + "-" + end_yyyymmdd.substr(4, 2) + "-" + end_yyyymmdd.substr(6, 2);
+            }
 
-          co_await l2_svc_->scan_database();
+            // Store L2 database date range in DataManager (and save to config)
+            if (!start_yyyymmdd.empty() && !end_yyyymmdd.empty()) {
+              baostock_svc_->get_data_manager()->set_l2_database_date_range(start_yyyymmdd, end_yyyymmdd);
+              co_await baostock_svc_->get_data_manager()->save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+            }
+          }
+
+          // Step 3: Update DataManager with L2-derived stock codes
+          if (!stock_codes.empty()) {
+            co_await baostock_svc_->get_data_manager()->set_stock_codes(stock_codes);
+          }
+
+          // Step 4: Update all JSON files based on L2 assets (use L2 start date from config)
+          co_await baostock_svc_->get_data_manager()->update_all(l2_start_date);
+          l2_summary_valid_ = false; // Invalidate cache so next frame will recalculate
           state_mgr_->refresh_state();
+          
+          // Note: No need to rescan L2 database - binary files don't change from JSON updates
         }(),
         boost::asio::detached);
   }
@@ -122,7 +168,7 @@ private:
 
     // Create services
     baostock_svc_ = std::make_unique<BaostockService>(io, &data.config, gui_state.terminal);
-    l2_svc_ = std::make_unique<L2DatabaseService>(database_dir_);
+    l2_svc_ = std::make_unique<L2DatabaseService>(database_dir_, &data.config);
     state_mgr_ = std::make_unique<StateManager>(baostock_svc_.get(), l2_svc_.get());
 
     // Initialize: login workers + load existing JSON
@@ -214,21 +260,26 @@ private:
     bool update_all = false;
     bool refresh_scan = false;
 
-    // Safe to call - returns empty summary if not scanned yet
-    // Pass backtest dates and trading days for detailed statistics
-    std::string backtest_start = config_ ? config_->start_date : "";
-    std::string backtest_end = config_ ? config_->end_date : "";
-    const auto &trading_days = baostock_svc_->get_stock_days_data();
-    
-    // Convert start_date and end_date from "YYYY-MM-DD" to "YYYYMMDD"
-    if (!backtest_start.empty()) {
-      backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
+    // Get or calculate L2 summary (cached to avoid expensive recalculation every frame)
+    if (!l2_summary_valid_) {
+      // Only recalculate if cache is invalid
+      std::string backtest_start = config_ ? config_->start_date : "";
+      std::string backtest_end = config_ ? config_->end_date : "";
+      const auto &trading_days = baostock_svc_->get_stock_days_data();
+
+      // Convert start_date and end_date from "YYYY-MM-DD" to "YYYYMMDD"
+      if (!backtest_start.empty()) {
+        backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
+      }
+      if (!backtest_end.empty()) {
+        backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
+      }
+
+      cached_l2_summary_ = l2_svc_->get_summary(backtest_start, backtest_end, trading_days);
+      l2_summary_valid_ = true;
     }
-    if (!backtest_end.empty()) {
-      backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
-    }
-    
-    auto l2_summary = l2_svc_->get_summary(backtest_start, backtest_end, trading_days);
+
+    const auto &l2_summary = cached_l2_summary_;
 
     const auto &stock_factor_state = baostock_svc_->get_stock_factor_state();
     const auto &stock_info_state = baostock_svc_->get_stock_info_state();
@@ -262,6 +313,7 @@ private:
     // Handle button events
     if (update_all && !json_update_inflight_) {
       json_update_inflight_ = true;
+      l2_summary_valid_ = false; // Invalidate cache before update
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
@@ -273,6 +325,7 @@ private:
             {
               FlagReset update_reset{json_update_inflight_};
               co_await baostock_svc_->update_all();
+              l2_summary_valid_ = false; // Invalidate cache after update
               state_mgr_->refresh_state();
             }
 
@@ -299,6 +352,7 @@ private:
             } reset{json_update_inflight_};
 
             co_await baostock_svc_->update_stock_factor();
+            l2_summary_valid_ = false; // Invalidate cache after update
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -315,6 +369,7 @@ private:
             } reset{json_update_inflight_};
 
             co_await baostock_svc_->update_stock_info();
+            l2_summary_valid_ = false; // Invalidate cache after update
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -331,6 +386,7 @@ private:
             } reset{json_update_inflight_};
 
             co_await baostock_svc_->update_stock_days();
+            l2_summary_valid_ = false; // Invalidate cache after update
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -356,6 +412,7 @@ private:
 
     if (check_integrity) {
       baostock_svc_->check_all_integrity();
+      l2_summary_valid_ = false; // Invalidate cache after integrity check
       state_mgr_->refresh_state();
     }
 

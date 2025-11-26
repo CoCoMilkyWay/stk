@@ -71,6 +71,9 @@ public:
   const JsonFileState &get_stock_info_state() const { return stock_info_state_; }
   const JsonFileState &get_stock_days_state() const { return stock_days_state_; }
   const CrawlerState &get_crawler_state() const { return crawler_state_; }
+  
+  // Access to underlying DataManager
+  DataManager *get_data_manager() { return data_mgr_.get(); }
 
   // ============================================================================
   // Data Access (Read-Only)

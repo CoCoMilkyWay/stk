@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 
+// Forward declarations
+struct Config;
+
 namespace GUI::Database {
 
 using boost::asio::awaitable;
@@ -21,13 +24,15 @@ private:
   std::vector<AssetInfo> assets_;
   std::vector<std::string> all_dates_;
   std::string database_dir_;
+  const Config *config_ = nullptr;
 
   L2ScanStatus scan_status_ = L2ScanStatus::NotScanned;
   std::string error_message_;
+  bool scanned_once_ = false; // Flag to prevent repeated scans
 
 public:
-  L2DatabaseService(const std::string &db_dir)
-      : database_dir_(db_dir) {}
+  L2DatabaseService(const std::string &db_dir, const Config *config)
+      : database_dir_(db_dir), config_(config) {}
 
   // ============================================================================
   // Lifecycle
@@ -56,7 +61,7 @@ public:
   // ============================================================================
 
   L2ScanStatus get_status() const { return scan_status_; }
-  bool is_scanned() const { return scan_status_ == L2ScanStatus::Scanned; }
+  bool is_scanned() const { return scanned_once_; }
   bool is_scanning() const { return scan_status_ == L2ScanStatus::Scanning; }
   const std::string &get_error_message() const { return error_message_; }
 };

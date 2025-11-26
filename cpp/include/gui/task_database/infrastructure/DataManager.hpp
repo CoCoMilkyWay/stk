@@ -30,8 +30,10 @@ private:
   Config *config_ = nullptr;
   std::vector<std::string> stock_codes_;
 
-  // Metadata (stock_info only needs unified checked_date)
+  // Metadata
   std::map<std::string, std::string> stock_info_last_update_;
+  std::string l2_database_start_date_; // YYYYMMDD format, from L2 database scan
+  std::string l2_database_end_date_;   // YYYYMMDD format
 
   // Data structures
   StockFactorMap stock_factor_;
@@ -101,6 +103,9 @@ public:
   // Update scheduling checks (exposed for service layer)
   std::string get_last_trading_day_public() const { return get_last_trading_day(); }
   bool should_run_weekly_update_public() const { return should_run_weekly_update(); }
+  
+  // Set stock codes from external source (e.g., L2 database scan)
+  awaitable<void> set_stock_codes(const std::vector<std::string> &codes);
 
   // Initialization and cleanup
   awaitable<bool> initialize();
@@ -125,14 +130,19 @@ public:
   awaitable<void> update_stock_factor(bool skip_login = false, bool skip_logout = false);
   awaitable<void> update_stock_info_weekly(bool skip_days = false, bool skip_login = false, bool skip_logout = false);
   awaitable<void> update_stock_info_daily(bool skip_days = false, bool skip_login = false, bool skip_logout = false);
-  awaitable<void> update_stock_days(bool skip_login = false, bool skip_logout = false);
-  awaitable<void> update_all();
+  awaitable<void> update_stock_days(bool skip_login = false, bool skip_logout = false, const std::string &force_start_date = "");
+  awaitable<void> update_all(const std::string &l2_database_start_date = "");
 
   // Integrity checks
   IntegrityResult check_stock_factor_integrity();
   IntegrityResult check_stock_info_integrity();
   IntegrityResult check_stock_days_integrity();
   IntegrityResult check_all_integrity();
+  
+  // L2 database date range management
+  void set_l2_database_date_range(const std::string &start_date, const std::string &end_date);
+  std::string get_l2_database_start_date() const { return l2_database_start_date_; }
+  std::string get_l2_database_end_date() const { return l2_database_end_date_; }
 
   // Progress tracking
   std::string get_next_update_time_weekly() const;

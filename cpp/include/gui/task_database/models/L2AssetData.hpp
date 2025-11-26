@@ -3,6 +3,7 @@
 
 #include "codec/L2_DataType.hpp"
 #include <cstdint>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -84,36 +85,40 @@ struct L2Summary {
   std::string database_range_start; // YYYYMMDD
   std::string database_range_end;   // YYYYMMDD
   size_t database_trade_days = 0;   // Number of trading days in database
-  
+
   // Backtest date range (from config)
-  std::string backtest_range_start; // YYYYMMDD
-  std::string backtest_range_end;   // YYYYMMDD
-  size_t backtest_trade_days = 0;   // Number of trading days in backtest range
-  size_t backtest_missing_days = 0; // Missing trading days in backtest range
-  bool backtest_in_range = false;   // Is backtest range within database range?
-  
+  std::string backtest_range_start;              // YYYYMMDD
+  std::string backtest_range_end;                // YYYYMMDD
+  size_t backtest_trade_days_in_json = 0;        // Trading days defined in stock_days.json
+  size_t backtest_trade_days_with_binary = 0;    // Trading days that have binaries in L2 database
+  size_t backtest_error_days = 0;                // Non-intersection count between json and binary
+  std::vector<std::string> backtest_error_dates; // Dates in non-intersection (for tooltip)
+  bool backtest_in_range = false;                // Is backtest range within database range?
+
   // Assets
   size_t total_assets = 0;
   size_t encoded_assets = 0;
   size_t missing_assets = 0;
   double coverage_percent = 0.0;
-  
+
   // Snapshots (all database)
   size_t snapshots_encoded_count = 0;
   double snapshots_size_gb = 0.0;
-  
+
   // Orders (all database)
   size_t orders_encoded_count = 0;
   double orders_size_gb = 0.0;
-  
+
   // Snapshots/Orders in backtest range
   size_t backtest_snapshots_encoded = 0;
   size_t backtest_orders_encoded = 0;
-  
+
   // Missing data per asset
   size_t assets_missing_snapshots = 0;
   size_t assets_missing_orders = 0;
-  
+  std::map<std::string, std::vector<std::string>> missing_snapshots_by_asset; // asset -> missing dates
+  std::map<std::string, std::vector<std::string>> missing_orders_by_asset;    // asset -> missing dates
+
   // Legacy fields (optional)
   size_t total_trading_days = 0;
   size_t total_encoded_days = 0;
