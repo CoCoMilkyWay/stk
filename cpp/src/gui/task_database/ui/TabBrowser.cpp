@@ -305,18 +305,11 @@ void RenderMonthGrid(
         grid_start.x + col * (CELL_SIZE + CELL_SPACING),
         grid_start.y + row * (CELL_SIZE + ROW_SPACING));
 
-    // Set cursor position and create invisible button FIRST for proper hit testing
-    ImGui::SetCursorScreenPos(cell_pos);
-    ImGui::InvisibleButton(
-        ("##day" + date_key).c_str(),
-        ImVec2(CELL_SIZE, CELL_SIZE));
-    
-    // Now draw on top using DrawList (doesn't affect cursor/layout)
+    // Get DrawList for drawing
     ImDrawList *draw_list = ImGui::GetWindowDrawList();
 
-    // Define layer widths (4 layers + background)
+    // Define number of layers
     constexpr int NUM_LAYERS = 4;
-    const float layer_width = CELL_SIZE / NUM_LAYERS;
 
     // Determine background color: weekend (darker gray) vs weekday (light gray)
     ImVec4 bg_color = COLOR_GRAY;
@@ -324,58 +317,12 @@ void RenderMonthGrid(
       bg_color = ImVec4(0.15f, 0.15f, 0.15f, 1.0f); // Darker gray for weekends
     }
 
-    // Draw background
-    draw_list->AddRectFilled(
-        cell_pos,
-        ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-        ImGui::GetColorU32(bg_color));
-
-    if (stats) {
-      // Layer 1: Dividend/Split (Yellow) - leftmost
-      if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
-        draw_list->AddRectFilled(
-            ImVec2(cell_pos.x, cell_pos.y),
-            ImVec2(cell_pos.x + layer_width, cell_pos.y + CELL_SIZE),
-            ImGui::GetColorU32(COLOR_YELLOW));
-      }
-
-      // Layer 2: Holiday (Purple)
-      if (state.layers.show_holiday && stats->is_holiday) {
-        draw_list->AddRectFilled(
-            ImVec2(cell_pos.x + layer_width, cell_pos.y),
-            ImVec2(cell_pos.x + layer_width * 2, cell_pos.y + CELL_SIZE),
-            ImGui::GetColorU32(COLOR_PURPLE));
-      }
-
-      // Layer 3: Backtest Range (Green)
-      if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
-        draw_list->AddRectFilled(
-            ImVec2(cell_pos.x + layer_width * 2, cell_pos.y),
-            ImVec2(cell_pos.x + layer_width * 3, cell_pos.y + CELL_SIZE),
-            ImGui::GetColorU32(COLOR_GREEN));
-      }
-
-      // Layer 4: L2 Data (Blue) - rightmost
-      if (state.layers.show_l2_data) {
-        bool has_data = false;
-        if (state.view_mode == BrowserViewMode::All) {
-          has_data = stats->assets_with_both > 0;
-        } else if (state.view_mode == BrowserViewMode::Snapshots) {
-          has_data = stats->assets_with_snapshots > 0;
-        } else {
-          has_data = stats->assets_with_orders > 0;
-        }
-
-        if (has_data) {
-          draw_list->AddRectFilled(
-              ImVec2(cell_pos.x + layer_width * 3, cell_pos.y),
-              ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-              ImGui::GetColorU32(COLOR_BLUE));
-        }
-      }
-    }
-
-    // Draw border (completeness)
+    // ============================================================
+    // Drawing order: border FIRST, then background, then layers
+    // This prevents thick border from covering the layer colors
+    // ============================================================
+    
+    // Step 1: Draw border FIRST (completeness)
     if (state.layers.show_completeness && stats && stats->is_trading_day) {
       float completeness = 0.0f;
       if (state.view_mode == BrowserViewMode::All) {
@@ -416,14 +363,71 @@ void RenderMonthGrid(
           1.0f);
     }
 
-    // Handle hover (button was created above before drawing)
-    if (ImGui::IsItemHovered()) {
+    // Step 2: Draw background (on top of border)
+    draw_list->AddRectFilled(
+        cell_pos,
+        ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
+        ImGui::GetColorU32(bg_color));
+
+    // Step 3: Draw 4 vertical color stripes (each 1/4 width)
+    if (stats) {
+      const float stripe_width = CELL_SIZE / NUM_LAYERS;
+      
+      // Stripe 1: Dividend/Split (Yellow)
+      if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
+        draw_list->AddRectFilled(
+            ImVec2(cell_pos.x + 0 * stripe_width, cell_pos.y),
+            ImVec2(cell_pos.x + 1 * stripe_width, cell_pos.y + CELL_SIZE),
+            ImGui::GetColorU32(COLOR_YELLOW));
+      }
+
+      // Stripe 2: Holiday (Purple)
+      if (state.layers.show_holiday && stats->is_holiday) {
+        draw_list->AddRectFilled(
+            ImVec2(cell_pos.x + 1 * stripe_width, cell_pos.y),
+            ImVec2(cell_pos.x + 2 * stripe_width, cell_pos.y + CELL_SIZE),
+            ImGui::GetColorU32(COLOR_PURPLE));
+      }
+
+      // Stripe 3: Backtest Range (Green)
+      if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
+        draw_list->AddRectFilled(
+            ImVec2(cell_pos.x + 2 * stripe_width, cell_pos.y),
+            ImVec2(cell_pos.x + 3 * stripe_width, cell_pos.y + CELL_SIZE),
+            ImGui::GetColorU32(COLOR_GREEN));
+      }
+
+      // Stripe 4: L2 Data (Blue)
+      if (state.layers.show_l2_data) {
+        bool has_data = false;
+        if (state.view_mode == BrowserViewMode::All) {
+          has_data = stats->assets_with_both > 0;
+        } else if (state.view_mode == BrowserViewMode::Snapshots) {
+          has_data = stats->assets_with_snapshots > 0;
+        } else {
+          has_data = stats->assets_with_orders > 0;
+        }
+
+        if (has_data) {
+          draw_list->AddRectFilled(
+              ImVec2(cell_pos.x + 3 * stripe_width, cell_pos.y),
+              ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
+              ImGui::GetColorU32(COLOR_BLUE));
+        }
+      }
+    }
+
+    // Step 4: Manual hover detection using mouse position (no widget interference)
+    ImVec2 cell_max = ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE);
+    bool is_hovered = ImGui::IsMouseHoveringRect(cell_pos, cell_max);
+    
+    if (is_hovered) {
       state.hover_date = DateToDashed(date_key);
 
-      // Hover highlight
+      // Hover highlight drawn on top
       draw_list->AddRect(
           cell_pos,
-          ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
+          cell_max,
           ImGui::GetColorU32(COLOR_HOVER),
           0.0f,
           0,
@@ -472,8 +476,8 @@ void RenderMonthGrid(
       }
     }
 
-    // Handle click
-    if (ImGui::IsItemClicked()) {
+    // Handle click (manual detection)
+    if (is_hovered && ImGui::IsMouseClicked(0)) {
       state.selected_year = year;
       state.selected_month = month;
       state.selected_day = day;
