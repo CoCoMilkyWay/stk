@@ -234,19 +234,16 @@ awaitable<bool> DataManager::initialize() {
   co_await load_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
   Log(std::format("[DataManager] Loaded config: {} stocks", stock_codes_.size()));
 
-  // Initialize pool (create clients + first login)
-  report_session_status(BaostockSessionStatus::LoggingIn);
-  bool pool_init = co_await pool_->initialize();
-  if (pool_init) {
-    user_logged_in_ = true;
-    session_query_count_ = 0; // Reset query counter for new session
-    Log("[DataManager] Pool initialized and logged in");
-    report_session_status(BaostockSessionStatus::Active);
-  } else {
-    Log("[DataManager] [ERROR] Failed to initialize pool", true);
-    report_session_status(BaostockSessionStatus::Idle);
-    co_return false;
+  // Initialize pool (create clients WITHOUT login - lazy init)
+  // Login will be done lazily on first API call via ensure_logged_in()
+  for (size_t i = 0; i < static_cast<size_t>(config_->baostock_max_workers); ++i) {
+    auto client = std::make_shared<BaostockClient>(io_context_);
+    pool_->clients_.push_back(client);
   }
+  user_logged_in_ = false; // Not logged in yet
+  session_query_count_ = 0;
+  Log("[DataManager] Pool created (login deferred to first use)");
+  report_session_status(BaostockSessionStatus::Idle);
 
   co_await load_stock_days();
   co_await load_stock_factor();
