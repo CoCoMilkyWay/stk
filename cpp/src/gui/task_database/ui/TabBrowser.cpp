@@ -24,8 +24,8 @@ constexpr ImVec4 BORDER_GREEN = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);   // 100%
 constexpr ImVec4 BORDER_YELLOW = ImVec4(0.95f, 0.9f, 0.2f, 1.0f); // 95-99%
 constexpr ImVec4 BORDER_RED = ImVec4(0.95f, 0.2f, 0.2f, 1.0f);    // <95%
 
-constexpr float CELL_SIZE = 12.0f;     // 12px cell (4 stripes × 3px each)
-constexpr float BORDER_WIDTH = 2.5f;   // Thick border for visibility
+constexpr float CELL_SIZE = 12.0f;     // 12px cell
+constexpr float BORDER_WIDTH = 3.5f;   // Thick border for visibility
 constexpr float MONTH_SPACING = 15.0f; // Space between months
 
 // ============================================================================
@@ -108,24 +108,29 @@ std::map<std::string, DailyStats> BuildDailyStats(
   }
 
   // Step 2: Count L2 data availability per date from assets
-  for (const auto &asset : assets) {
-    for (const auto &[date_dense, date_info] : asset.date_info) {
-      auto it = stats_map.find(date_dense);
-      if (it == stats_map.end())
+  // For each date, count how many assets SHOULD be listed, then check data availability
+  for (auto &[date_dense, stats] : stats_map) {
+    for (const auto &asset : assets) {
+      // Check if asset should be listed on this date
+      if (date_dense < asset.start_date || date_dense > asset.end_date)
         continue;
 
-      DailyStats &stats = it->second;
+      // This asset should be listed on this date
       stats.total_assets++;
 
-      bool has_snapshots = date_info.snapshots_encoded;
-      bool has_orders = date_info.orders_encoded;
+      // Check if we have L2 data for this asset on this date
+      auto date_it = asset.date_info.find(date_dense);
+      if (date_it != asset.date_info.end()) {
+        bool has_snapshots = date_it->second.snapshots_encoded;
+        bool has_orders = date_it->second.orders_encoded;
 
-      if (has_snapshots)
-        stats.assets_with_snapshots++;
-      if (has_orders)
-        stats.assets_with_orders++;
-      if (has_snapshots && has_orders)
-        stats.assets_with_both++;
+        if (has_snapshots)
+          stats.assets_with_snapshots++;
+        if (has_orders)
+          stats.assets_with_orders++;
+        if (has_snapshots && has_orders)
+          stats.assets_with_both++;
+      }
     }
   }
 
@@ -282,7 +287,6 @@ void RenderMonthGrid(
   const ImU32 color_border_green = ImGui::GetColorU32(BORDER_GREEN);
   const ImU32 color_border_yellow = ImGui::GetColorU32(BORDER_YELLOW);
   const ImU32 color_border_red = ImGui::GetColorU32(BORDER_RED);
-  const ImU32 color_border_default = ImGui::GetColorU32(ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
   const ImU32 color_border_dark = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
 
   // Track maximum row for height calculation
@@ -319,23 +323,22 @@ void RenderMonthGrid(
     // Determine background color: weekend or weekday
     const ImU32 bg_color = (dow == 0 || dow == 6) ? color_bg_weekend : color_bg_weekday;
 
-    // Step 1: Draw border (completeness indicator)
-    if (state.layers.show_completeness && stats && stats->is_trading_day) {
+    // Step 1: Draw border (all cells have border for consistent appearance)
+    ImU32 border_color = color_border_dark; // Default: dark gray
+    
+    // For backtest trading days with completeness enabled: show green/yellow/red
+    if (state.layers.show_completeness && stats && stats->is_trading_day && stats->is_in_backtest_range) {
       float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all()
                            : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
                                                                              : stats->completeness_orders();
-
-      ImU32 border_color = stats->is_in_backtest_range
-                               ? (completeness >= 0.9999f ? color_border_green : completeness >= 0.95f ? color_border_yellow
-                                                                                                       : color_border_red)
-                               : color_border_default;
-
-      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-                         border_color, 0.0f, 0, BORDER_WIDTH);
-    } else {
-      draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
-                         color_border_dark, 0.0f, 0, 1.0f);
+      
+      border_color = (completeness >= 0.9999f) ? color_border_green 
+                   : (completeness >= 0.95f)   ? color_border_yellow 
+                   : color_border_red;
     }
+    
+    draw_list->AddRect(cell_pos, ImVec2(cell_pos.x + CELL_SIZE, cell_pos.y + CELL_SIZE),
+                       border_color, 0.0f, 0, BORDER_WIDTH);
 
     // Step 2: Determine fill color based on priority (highest visible layer wins)
     // Priority: Yellow > Purple > Green > Blue > Background
