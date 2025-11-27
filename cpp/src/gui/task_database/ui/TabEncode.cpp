@@ -14,6 +14,14 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
     return;
   }
 
+  // Auto-detect max cores on first run
+  if (state.num_workers <= 0) {
+    int max_workers = std::thread::hardware_concurrency();
+    if (max_workers <= 0)
+      max_workers = 8;
+    state.num_workers = max_workers;
+  }
+
   const bool is_running = service->is_running();
   const auto status = service->get_status();
   const auto progress = service->get_progress();
@@ -96,8 +104,7 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Encoding in progress...");
     } else {
       if (ImGui::Button("Start Encoding", ImVec2(150, 0))) {
-        // Trigger start (non-blocking)
-        // service->start_encoding() should be called from coroutine context
+        state.show_confirm_dialog = true;
       }
 
       ImGui::SameLine();
@@ -116,46 +123,200 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
   }
 
   // ========================================================================
-  // Progress Statistics
+  // Confirmation Dialog (Fullscreen Modal)
   // ========================================================================
-
-  if (ImGui::CollapsingHeader("Progress", ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::Indent();
-
-    // Assets
-    ImGui::Text("Assets:");
-    ImGui::SameLine(150);
-    ImGui::Text("%zu / %zu (%.1f%%)",
-                progress.completed_assets,
-                progress.total_assets,
-                progress.total_assets > 0 ? 100.0 * progress.completed_assets / progress.total_assets : 0.0);
-
-    // Dates
-    ImGui::Text("Trading Days:");
-    ImGui::SameLine(150);
-    ImGui::Text("%zu / %zu (%.1f%%)",
-                progress.encoded_dates,
-                progress.total_dates,
-                progress.total_dates > 0 ? 100.0 * progress.encoded_dates / progress.total_dates : 0.0);
-
-    // Orders
-    ImGui::Text("Total Orders:");
-    ImGui::SameLine(150);
-    ImGui::Text("%zu", progress.total_orders);
-
-    if (is_running) {
-      ImGui::Separator();
-      ImGui::Text("Elapsed Time:");
-      ImGui::SameLine(150);
-      ImGui::Text("%.1f s", progress.elapsed_seconds);
-
-      ImGui::Text("Encoding Rate:");
-      ImGui::SameLine(150);
-      ImGui::Text("%.2f assets/s", progress.encoding_rate);
-    }
-
-    ImGui::Unindent();
+  
+  if (state.show_confirm_dialog) {
+    ImGui::OpenPopup("Confirm Encoding");
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(600, 400));
   }
+  
+  if (ImGui::BeginPopupModal("Confirm Encoding", &state.show_confirm_dialog, ImGuiWindowFlags_NoResize)) {
+    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "WARNING");
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    ImGui::TextWrapped("Encoding may overwrite or corrupt existing database files. Please consider moving your database to a backup location before proceeding.");
+    
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    // Check prerequisites
+    bool archive_in_range = false;
+    if (!asset.backtest.start.empty() && !asset.backtest.end.empty() &&
+        !asset.archive.min_date.empty() && !asset.archive.max_date.empty()) {
+      archive_in_range = (asset.archive.min_date <= asset.backtest.start &&
+                          asset.backtest.end <= asset.archive.max_date);
+    }
+    
+    bool can_encode = asset.archive.exists && archive_in_range;
+    
+    ImGui::Text("Prerequisites:");
+    ImGui::Spacing();
+    
+    ImGui::BulletText("Archive Path Exists:");
+    ImGui::SameLine();
+    if (asset.archive.exists) {
+      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "Yes");
+    } else {
+      ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "No");
+    }
+    
+    ImGui::BulletText("Archive In Range:");
+    ImGui::SameLine();
+    if (archive_in_range) {
+      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "Yes");
+    } else {
+      ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "No");
+    }
+    
+    if (!can_encode) {
+      ImGui::Spacing();
+      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Cannot encode: Prerequisites not met!");
+    }
+    
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    ImGui::Text("Encoding Parameters:");
+    ImGui::Spacing();
+    ImGui::BulletText("Worker Threads: %d", state.num_workers);
+    ImGui::BulletText("Skip Existing: %s", state.skip_existing ? "Yes" : "No");
+    
+    ImGui::Spacing();
+    ImGui::Text("Paths:");
+    ImGui::Spacing();
+    ImGui::BulletText("Archive Path:");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.archive.path.c_str());
+    
+    ImGui::BulletText("Binary Path:");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.binary.path.c_str());
+    
+    ImGui::Spacing();
+    ImGui::Text("Date Ranges:");
+    ImGui::Spacing();
+    ImGui::BulletText("Backtest Range: %s ~ %s", 
+                      asset.backtest.start.c_str(), asset.backtest.end.c_str());
+    if (asset.archive.exists) {
+      ImGui::BulletText("Archive Range: %s ~ %s", 
+                        asset.archive.min_date.c_str(), asset.archive.max_date.c_str());
+    }
+    if (asset.binary.exists) {
+      ImGui::BulletText("Binary Range: %s ~ %s", 
+                        asset.binary.min_date.c_str(), asset.binary.max_date.c_str());
+    }
+    
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    float button_width = 120;
+    float spacing = ImGui::GetStyle().ItemSpacing.x;
+    float total_width = button_width * 2 + spacing;
+    float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
+    
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+    
+    ImGui::BeginDisabled(!can_encode);
+    if (ImGui::Button("Confirm and Start", ImVec2(button_width, 40))) {
+      state.show_confirm_dialog = false;
+      state.show_progress_fullscreen = true;
+      // Trigger start encoding
+      // service->start_encoding() should be called from coroutine context
+    }
+    ImGui::EndDisabled();
+    
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(button_width, 40))) {
+      state.show_confirm_dialog = false;
+    }
+    
+    ImGui::EndPopup();
+  }
+
+  // ========================================================================
+  // Fullscreen Progress View (when encoding is running)
+  // ========================================================================
+  
+  if (state.show_progress_fullscreen && is_running) {
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    if (ImGui::Begin("Encoding Progress", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
+      
+      ImVec2 window_size = ImGui::GetWindowSize();
+      float center_x = window_size.x * 0.5f;
+      float center_y = window_size.y * 0.5f;
+      
+      ImGui::SetCursorPosY(center_y - 150);
+      
+      // Title
+      ImGui::SetCursorPosX(center_x - 100);
+      ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "Encoding in Progress...");
+      
+      ImGui::Spacing();
+      ImGui::Spacing();
+      
+      // Assets Progress
+      float assets_progress = progress.total_assets > 0 ? (float)progress.completed_assets / progress.total_assets : 0.0f;
+      ImGui::SetCursorPosX(center_x - 200);
+      ImGui::Text("Assets: %zu / %zu (%.1f%%)", 
+                  progress.completed_assets, progress.total_assets,
+                  assets_progress * 100.0f);
+      ImGui::SetCursorPosX(center_x - 200);
+      ImGui::ProgressBar(assets_progress, ImVec2(400, 30));
+      
+      ImGui::Spacing();
+      ImGui::Spacing();
+      
+      // Dates Progress
+      float dates_progress = progress.total_dates > 0 ? (float)progress.encoded_dates / progress.total_dates : 0.0f;
+      ImGui::SetCursorPosX(center_x - 200);
+      ImGui::Text("Trading Days: %zu / %zu (%.1f%%)", 
+                  progress.encoded_dates, progress.total_dates,
+                  dates_progress * 100.0f);
+      ImGui::SetCursorPosX(center_x - 200);
+      ImGui::ProgressBar(dates_progress, ImVec2(400, 30));
+      
+      ImGui::Spacing();
+      ImGui::Spacing();
+      ImGui::Spacing();
+      
+      // Statistics
+      ImGui::SetCursorPosX(center_x - 150);
+      ImGui::Text("Total Orders: %zu", progress.total_orders);
+      
+      ImGui::SetCursorPosX(center_x - 150);
+      ImGui::Text("Elapsed Time: %.1f s", progress.elapsed_seconds);
+      
+      ImGui::SetCursorPosX(center_x - 150);
+      ImGui::Text("Encoding Rate: %.2f assets/s", progress.encoding_rate);
+      
+      ImGui::Spacing();
+      ImGui::Spacing();
+      ImGui::Spacing();
+      
+      // Stop button
+      ImGui::SetCursorPosX(center_x - 75);
+      if (ImGui::Button("Stop Encoding", ImVec2(150, 40))) {
+        // Trigger stop
+        // service->stop_encoding() should be called from coroutine context
+      }
+      
+      ImGui::End();
+    }
+  } else if (state.show_progress_fullscreen && !is_running) {
+    // Encoding finished, close fullscreen view
+    state.show_progress_fullscreen = false;
+  }
+
+  // Only show Asset Summary when not in fullscreen progress mode
+  if (!state.show_progress_fullscreen) {
 
   // ========================================================================
   // Asset Summary
@@ -195,6 +356,11 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
           archive_in_range = (asset.archive.min_date <= asset.backtest.start &&
                               asset.backtest.end <= asset.archive.max_date);
         }
+
+        // Database Path
+        ImGui::Text("Database Path:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.archive.path.c_str());
 
         // In Range (first line)
         ImGui::Text("In Range:");
@@ -397,6 +563,11 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
           snap_in_range = (asset.binary.min_date <= asset.backtest.start &&
                            asset.backtest.end <= asset.binary.max_date);
         }
+
+        // Database Path
+        ImGui::Text("Database Path:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.binary.path.c_str());
 
         // In Range (first line)
         ImGui::Text("In Range:");
@@ -607,6 +778,11 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
                             asset.backtest.end <= asset.binary.max_date);
         }
 
+        // Database Path
+        ImGui::Text("Database Path:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.binary.path.c_str());
+
         // In Range (first line)
         ImGui::Text("In Range:");
         ImGui::SameLine();
@@ -803,6 +979,8 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
 
     ImGui::Unindent();
   }
+  
+  } // End: if (!state.show_progress_fullscreen)
 }
 
 } // namespace GUI::Database

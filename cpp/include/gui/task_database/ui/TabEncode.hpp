@@ -17,10 +17,14 @@ namespace GUI::Database {
 // ============================================================================
 
 struct EncodeState {
-  int num_workers = 4;
+  int num_workers = 0; // 0 means auto-detect (use max cores)
   bool skip_existing = true;
   bool show_missing_assets = true;
   bool show_missing_details = false;
+  
+  // Encoding dialog states
+  bool show_confirm_dialog = false;
+  bool show_progress_fullscreen = false;
 };
 
 // ============================================================================
