@@ -98,7 +98,7 @@ int main() {
   // ========================================================================
   // STAGE 0: ARCHIVE FORMAT VALIDATION AND CONVERSION
   // ========================================================================
-  if (!FileCheck::check_src_archives(l2_archive_base)) {
+  if (!FileCheck::check_src_archives_print(l2_archive_base)) {
     return 1;
   }
 

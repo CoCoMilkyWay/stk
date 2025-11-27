@@ -11,6 +11,16 @@ struct GuiState {
   CoroNetwork *network = nullptr;
   CoroManager *coro_mgr = nullptr;
 
+  // High Performance Mode: GUI thread sleeps, all CPU for compute tasks
+  // Use cases: encoding, feature calculation, heavy batch processing
+  bool high_performance_mode = false;
+
   void Update(float dt);
   CoroManager &Coro();
+  
+  // Enable high performance mode (GUI sleeps)
+  void EnableHighPerformanceMode() { high_performance_mode = true; }
+  
+  // Disable high performance mode (GUI resumes)
+  void DisableHighPerformanceMode() { high_performance_mode = false; }
 };

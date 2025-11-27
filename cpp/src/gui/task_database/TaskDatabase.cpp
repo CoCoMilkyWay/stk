@@ -18,6 +18,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <memory>
+#include <thread>
 
 namespace GUI::Tasks {
 namespace {
@@ -103,6 +104,20 @@ public:
 
     // Always render UI - show initialization progress if not ready
     RenderUI();
+    
+    // Handle encoding trigger from UI
+    if (encode_state_.trigger_start && encoding_svc_ && !encoding_svc_->is_running()) {
+      encode_state_.trigger_start = false;
+      
+      int workers = encode_state_.num_workers;
+      if (workers <= 0) {
+        workers = std::thread::hardware_concurrency();
+        if (workers <= 0) workers = 8;
+      }
+      
+      // Start encoding in background thread (non-blocking)
+      encoding_svc_->start_encoding(workers, encode_state_.skip_existing);
+    }
   }
 
 private:

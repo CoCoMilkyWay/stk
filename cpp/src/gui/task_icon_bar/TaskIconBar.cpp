@@ -3,6 +3,7 @@
 #include "gui/task_icon_bar/CoroNetwork.hpp"
 #include "imgui.h"
 #include "shared/GuiState.hpp"
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <fstream>
@@ -97,33 +98,33 @@ public:
   void Draw() {
     UpdateMetrics();
 
+    // Ultra-compact layout with minimal spacing
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 0.0f));
     ImGui::BeginGroup();
 
     // Network icon
     DrawNetworkIcon();
-
-    ImGui::SameLine();
-    ImGui::Text("|");
-    ImGui::SameLine();
+    ImGui::SameLine(0, 2.0f);
+    ImGui::TextDisabled("|");
 
     // CPU icon
+    ImGui::SameLine(0, 2.0f);
     DrawCPUIcon();
-
-    ImGui::SameLine();
-    ImGui::Text("|");
-    ImGui::SameLine();
+    ImGui::SameLine(0, 2.0f);
+    ImGui::TextDisabled("|");
 
     // Memory icon
+    ImGui::SameLine(0, 2.0f);
     DrawMemoryIcon();
-
-    ImGui::SameLine();
-    ImGui::Text("|");
-    ImGui::SameLine();
+    ImGui::SameLine(0, 2.0f);
+    ImGui::TextDisabled("|");
 
     // FPS icon
+    ImGui::SameLine(0, 2.0f);
     DrawFPSIcon();
 
     ImGui::EndGroup();
+    ImGui::PopStyleVar();
   }
 
 private:
@@ -216,6 +217,7 @@ private:
     using namespace IconBarConfig::Thresholds;
 
     ImVec4 color;
+    float cpu_clamped = std::min(cpu_avg, 99.0f);
     if (cpu_avg < CPU_GREEN) {
       color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
     } else if (cpu_avg < CPU_YELLOW) {
@@ -225,8 +227,8 @@ private:
     }
 
     ImGui::Text("C:");
-    ImGui::SameLine();
-    ImGui::TextColored(color, "%3.0f", cpu_avg);
+    ImGui::SameLine(0, 0);
+    ImGui::TextColored(color, "%2.0f", cpu_clamped);
 
     if (ImGui::IsItemHovered()) {
       ImGui::BeginTooltip();
@@ -243,6 +245,7 @@ private:
     using namespace IconBarConfig::Thresholds;
 
     ImVec4 color;
+    float mem_clamped = std::min(mem_avg, 99.0f);
     if (mem_avg < MEM_GREEN) {
       color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
     } else if (mem_avg < MEM_YELLOW) {
@@ -252,8 +255,8 @@ private:
     }
 
     ImGui::Text("M:");
-    ImGui::SameLine();
-    ImGui::TextColored(color, "%3.0f", mem_avg);
+    ImGui::SameLine(0, 0);
+    ImGui::TextColored(color, "%2.0f", mem_clamped);
 
     if (ImGui::IsItemHovered()) {
       ImGui::BeginTooltip();
@@ -344,6 +347,7 @@ private:
 
     // Color based on smoothed FPS
     ImVec4 color;
+    float fps_clamped = std::min(fps_avg, 99.0f);
     if (fps_avg >= FPS_GREEN) {
       color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
     } else if (fps_avg >= FPS_YELLOW) {
@@ -353,8 +357,8 @@ private:
     }
 
     ImGui::Text("F:");
-    ImGui::SameLine();
-    ImGui::TextColored(color, "%3.0f", fps_avg);
+    ImGui::SameLine(0, 0);
+    ImGui::TextColored(color, "%2.0f", fps_clamped);
 
     if (ImGui::IsItemHovered()) {
       ImGui::BeginTooltip();

@@ -241,15 +241,15 @@ void RenderDataTable(
     TableState &table_state) {
 
   ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                          ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY |
+                          ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
                           ImGuiTableFlags_SizingFixedFit;
 
-  if (!ImGui::BeginTable("AssetsTable", 19, flags)) {
+  if (!ImGui::BeginTable("AssetsTable", 20, flags)) {
     return;
   }
 
-  // Setup columns (19 columns) - use auto width (default)
+  // Setup columns (20 columns) - use auto width (default)
   ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortAscending);
   ImGui::TableSetupColumn("Name");
   ImGui::TableSetupColumn("Exch");
@@ -264,18 +264,19 @@ void RenderDataTable(
   ImGui::TableSetupColumn("PCF");
   ImGui::TableSetupColumn("Cap");
   ImGui::TableSetupColumn("Days");
-  ImGui::TableSetupColumn("Snap%");
-  ImGui::TableSetupColumn("Order%");
-  ImGui::TableSetupColumn("Miss");
   ImGui::TableSetupColumn("Snaps");
   ImGui::TableSetupColumn("Orders");
+  ImGui::TableSetupColumn("Snap%");
+  ImGui::TableSetupColumn("Order%");
+  ImGui::TableSetupColumn("Miss_S");
+  ImGui::TableSetupColumn("Miss_O");
 
   ImGui::TableSetupScrollFreeze(0, 1);
 
   // Custom headers with tooltips
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   const char *header_labels[] = {"Code", "Name", "Exch", "Board", "ST", "DL", "Listed", "Ind",
-                                 "PE", "PB", "PS", "PCF", "Cap", "Days", "Snap%", "Order%", "Miss", "Snaps", "Orders"};
+                                 "PE", "PB", "PS", "PCF", "Cap", "Days", "Snaps", "Orders", "Snap%", "Order%", "Miss_S", "Miss_O"};
   const char *header_tooltips[] = {
       "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
 
@@ -305,17 +306,19 @@ void RenderDataTable(
 
       "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info.size()\n可用于判断数据完整性",
 
+      "快照总数 (Total Snapshots)\n所有交易日的快照记录总数量\n= Σ snapshot_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2行情快照的总数据量",
+
+      "订单总数 (Total Orders)\n所有交易日的逐笔委托记录总数量\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2逐笔委托的总数据量",
+
       "快照覆盖率 (Snapshot Coverage %)\n= (有编码快照数据的天数 / 总交易日数) x 100%\n= snapshots_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码快照的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2快照数据的完整性",
 
       "订单覆盖率 (Order Coverage %)\n= (有编码订单数据的天数 / 总交易日数) x 100%\n= orders_encoded_count / total_trading_days x 100%\n\n说明:\n- 统计有二进制编码逐笔委托的交易日比例\n- ≥95%为优秀(绿色), ≥90%为良好(黄色), <90%需关注(红色)\n- 反映Level-2逐笔委托数据的完整性",
 
-      "缺失天数 (Missing Days)\n在交易日范围内缺失数据的天数\n= 预期交易日总数 - 实际有数据的天数\n\n说明:\n- 数值越大说明数据缺失越严重\n- 需要补充下载或检查数据源",
+      "快照缺失天数 (Missing Snapshot Days)\n在交易日范围内缺失快照数据的天数\n= 数据库总交易日数 - 有snapshots文件的天数\n\n说明:\n- 数值越大说明快照数据缺失越严重\n- 需要补充编码或检查archive源文件",
 
-      "快照总数 (Total Snapshots)\n所有交易日的快照记录总数量\n= Σ snapshot_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2行情快照的总数据量",
+      "订单缺失天数 (Missing Order Days)\n在交易日范围内缺失订单数据的天数\n= 数据库总交易日数 - 有orders文件的天数\n\n说明:\n- 数值越大说明订单数据缺失越严重\n- 需要补充编码或检查archive源文件"};
 
-      "订单总数 (Total Orders)\n所有交易日的逐笔委托记录总数量\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 反映Level-2逐笔委托的总数据量"};
-
-  for (int col = 0; col < 19; col++) {
+  for (int col = 0; col < 20; col++) {
     ImGui::TableSetColumnIndex(col);
     ImGui::PushID(col);
     ImGui::TableHeader(header_labels[col]);
@@ -467,28 +470,37 @@ void RenderDataTable(
                              }
                              case 13:
                                result = a.asset->get_total_trading_days() < b.asset->get_total_trading_days();
-                               break;   // Days
-                             case 14: { // Snap%
+                               break; // Days
+                             case 14:
+                               result = a.asset->get_total_snapshot_count() < b.asset->get_total_snapshot_count();
+                               break; // Snaps
+                             case 15:
+                               result = a.asset->get_total_order_count() < b.asset->get_total_order_count();
+                               break;   // Orders
+                             case 16: { // Snap%
                                double a_pct = a.asset->get_total_trading_days() > 0 ? (double)a.asset->get_snapshots_encoded_count() / a.asset->get_total_trading_days() : 0;
                                double b_pct = b.asset->get_total_trading_days() > 0 ? (double)b.asset->get_snapshots_encoded_count() / b.asset->get_total_trading_days() : 0;
                                result = a_pct < b_pct;
                                break;
                              }
-                             case 15: { // Order%
+                             case 17: { // Order%
                                double a_pct = a.asset->get_total_trading_days() > 0 ? (double)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
                                double b_pct = b.asset->get_total_trading_days() > 0 ? (double)b.asset->get_orders_encoded_count() / b.asset->get_total_trading_days() : 0;
                                result = a_pct < b_pct;
                                break;
                              }
-                             case 16:
-                               result = a.asset->get_missing_count() < b.asset->get_missing_count();
-                               break; // Miss
-                             case 17:
-                               result = a.asset->get_total_snapshot_count() < b.asset->get_total_snapshot_count();
-                               break; // Snaps
-                             case 18:
-                               result = a.asset->get_total_order_count() < b.asset->get_total_order_count();
-                               break; // Orders
+                             case 18: { // Miss_S
+                               size_t a_miss = a.asset->get_total_trading_days() - a.asset->get_snapshots_encoded_count();
+                               size_t b_miss = b.asset->get_total_trading_days() - b.asset->get_snapshots_encoded_count();
+                               result = a_miss < b_miss;
+                               break;
+                             }
+                             case 19: { // Miss_O
+                               size_t a_miss = a.asset->get_total_trading_days() - a.asset->get_orders_encoded_count();
+                               size_t b_miss = b.asset->get_total_trading_days() - b.asset->get_orders_encoded_count();
+                               result = a_miss < b_miss;
+                               break;
+                             }
                              }
 
                              return ascending ? result : !result;
@@ -735,40 +747,9 @@ void RenderDataTable(
     ImGui::Text("%zu", total_days);
     handle_column_click(13);
 
-    // Col 14: Snapshots Encoded %
+    // Col 14: Total Snapshots
     ImGui::TableSetColumnIndex(14);
     if (hovered_col == 14) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    size_t snap_encoded = asset.get_snapshots_encoded_count();
-    double snap_pct = total_days > 0 ? (double)snap_encoded / total_days * 100.0 : 0.0;
-    ImVec4 snap_color = snap_pct >= 95.0 ? COLOR_GREEN : (snap_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
-    ImGui::TextColored(snap_color, "%.1f%%", snap_pct);
-    handle_column_click(14);
-
-    // Col 15: Orders Encoded %
-    ImGui::TableSetColumnIndex(15);
-    if (hovered_col == 15) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    size_t ord_encoded = asset.get_orders_encoded_count();
-    double ord_pct = total_days > 0 ? (double)ord_encoded / total_days * 100.0 : 0.0;
-    ImVec4 ord_color = ord_pct >= 95.0 ? COLOR_GREEN : (ord_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
-    ImGui::TextColored(ord_color, "%.1f%%", ord_pct);
-    handle_column_click(15);
-
-    // Col 16: Missing Days
-    ImGui::TableSetColumnIndex(16);
-    if (hovered_col == 16) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    size_t missing = asset.get_missing_count();
-    ImGui::TextColored(missing > 0 ? COLOR_YELLOW : COLOR_GREEN, "%zu", missing);
-    handle_column_click(16);
-
-    // Col 17: Total Snapshots
-    ImGui::TableSetColumnIndex(17);
-    if (hovered_col == 17) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t total_snaps = asset.get_total_snapshot_count();
@@ -779,11 +760,11 @@ void RenderDataTable(
     } else {
       ImGui::Text("%zu", total_snaps);
     }
-    handle_column_click(17);
+    handle_column_click(14);
 
-    // Col 18: Total Orders
-    ImGui::TableSetColumnIndex(18);
-    if (hovered_col == 18) {
+    // Col 15: Total Orders
+    ImGui::TableSetColumnIndex(15);
+    if (hovered_col == 15) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t total_orders = asset.get_total_order_count();
@@ -794,7 +775,47 @@ void RenderDataTable(
     } else {
       ImGui::Text("%zu", total_orders);
     }
+    handle_column_click(15);
+
+    // Col 16: Snapshots Encoded %
+    ImGui::TableSetColumnIndex(16);
+    if (hovered_col == 16) {
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+    }
+    size_t snap_encoded = asset.get_snapshots_encoded_count();
+    double snap_pct = total_days > 0 ? (double)snap_encoded / total_days * 100.0 : 0.0;
+    ImVec4 snap_color = snap_pct >= 95.0 ? COLOR_GREEN : (snap_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
+    ImGui::TextColored(snap_color, "%.1f%%", snap_pct);
+    handle_column_click(16);
+
+    // Col 17: Orders Encoded %
+    ImGui::TableSetColumnIndex(17);
+    if (hovered_col == 17) {
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+    }
+    size_t ord_encoded = asset.get_orders_encoded_count();
+    double ord_pct = total_days > 0 ? (double)ord_encoded / total_days * 100.0 : 0.0;
+    ImVec4 ord_color = ord_pct >= 95.0 ? COLOR_GREEN : (ord_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
+    ImGui::TextColored(ord_color, "%.1f%%", ord_pct);
+    handle_column_click(17);
+
+    // Col 18: Missing Snapshot Days
+    ImGui::TableSetColumnIndex(18);
+    if (hovered_col == 18) {
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+    }
+    size_t snap_missing = total_days - snap_encoded;
+    ImGui::TextColored(snap_missing > 0 ? COLOR_YELLOW : COLOR_GREEN, "%zu", snap_missing);
     handle_column_click(18);
+
+    // Col 19: Missing Order Days
+    ImGui::TableSetColumnIndex(19);
+    if (hovered_col == 19) {
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+    }
+    size_t ord_missing = total_days - ord_encoded;
+    ImGui::TextColored(ord_missing > 0 ? COLOR_YELLOW : COLOR_GREEN, "%zu", ord_missing);
+    handle_column_click(19);
 
     ImGui::PopID();
     row_idx++;
@@ -861,7 +882,7 @@ void RenderCrossSectionPanel(
       "Snapshot %", "Order %", "Missing", "Total Snapshots", "Total Orders"};
 
   int col_idx = table_state.selected_column_idx;
-  if (col_idx >= 19) {
+  if (col_idx >= 20) {
     ImGui::Text("Invalid column index");
     return;
   }
@@ -966,24 +987,28 @@ static void RenderNumericAnalysis(
       value = asset.get_total_trading_days();
       is_valid = true;
       break;
-    case 14: // Snapshot %
-      value = asset.get_total_trading_days() > 0 ? (double)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
-      is_valid = true;
-      break;
-    case 15: // Order %
-      value = asset.get_total_trading_days() > 0 ? (double)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
-      is_valid = true;
-      break;
-    case 16: // Missing
-      value = asset.get_missing_count();
-      is_valid = true;
-      break;
-    case 17: // Total Snapshots
+    case 14: // Total Snapshots
       value = asset.get_total_snapshot_count();
       is_valid = true;
       break;
-    case 18: // Total Orders
+    case 15: // Total Orders
       value = asset.get_total_order_count();
+      is_valid = true;
+      break;
+    case 16: // Snapshot %
+      value = asset.get_total_trading_days() > 0 ? (double)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+      is_valid = true;
+      break;
+    case 17: // Order %
+      value = asset.get_total_trading_days() > 0 ? (double)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+      is_valid = true;
+      break;
+    case 18: // Miss_S
+      value = asset.get_total_trading_days() - asset.get_snapshots_encoded_count();
+      is_valid = true;
+      break;
+    case 19: // Miss_O
+      value = asset.get_total_trading_days() - asset.get_orders_encoded_count();
       is_valid = true;
       break;
     default:

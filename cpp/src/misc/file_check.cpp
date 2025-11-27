@@ -96,15 +96,15 @@ bool check_required_commands() {
   for (const auto &cmd : required_commands) {
     int result = std::system(("which " + cmd.command + " > /dev/null 2>&1").c_str());
     if (result != 0) {
-      std::cout << "✗ Missing command: " << cmd.command << "\n";
-      std::cout << "  Install: " << cmd.install_hint << "\n";
+      // std::cout << "✗ Missing command: " << cmd.command << "\n";
+      // std::cout << "  Install: " << cmd.install_hint << "\n";
       ok = false;
     }
   }
 
-  if (ok) {
-    std::cout << "✓ Required commands      : all available (unrar, 7z, rar, gdb)\n";
-  }
+  // if (ok) {
+  //   std::cout << "✓ Required commands      : all available (unrar, 7z, rar, gdb)\n";
+  // }
   return ok;
 }
 
@@ -300,16 +300,75 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
 // PUBLIC API
 // ============================================================================
 
-bool check_src_archives(const std::string &archive_base_dir) {
+FileCheckResult check_src_archives(const std::string &archive_base_dir) {
+  FileCheckResult result;
+
+  // Check if path exists
+  if (!std::filesystem::exists(archive_base_dir)) {
+    result.archive_dir_exists = false;
+    result.passed = true; // OK to proceed with built binaries
+    return result;
+  }
+
+  result.archive_dir_exists = true;
+
+  // Check 1: Required commands
+  bool cmd_ok = check_required_commands();
+  result.commands_available = cmd_ok;
+
+  if (!cmd_ok) {
+    result.passed = false;
+    result.error_messages.push_back("Required commands not available");
+    return result;
+  }
+
+  // Unified validation: naming, format, and structure checks in single pass
+  ArchiveCheckResult arch_result = validate_archive_structure(archive_base_dir);
+
+  // Fill in statistics
+  result.valid_archives = arch_result.valid_archives.size();
+  result.naming_errors = arch_result.errors.naming_errors.size();
+  result.format_errors = arch_result.errors.format_errors.size();
+  result.structure_errors = arch_result.errors.structure_errors.size();
+  result.zip_files = arch_result.errors.zip_files.size();
+  result.total_archives = result.valid_archives + result.naming_errors +
+                          result.format_errors + result.structure_errors +
+                          result.zip_files;
+
+  // Copy all error file paths
+  result.naming_error_files = arch_result.errors.naming_errors;
+  result.format_error_files = arch_result.errors.format_errors;
+  result.structure_error_files = arch_result.errors.structure_errors;
+  result.zip_error_files = arch_result.errors.zip_files;
+
+  // Collect error messages (first few of each type)
+  for (size_t i = 0; i < std::min(size_t(3), arch_result.errors.naming_errors.size()); ++i) {
+    result.error_messages.push_back("Naming: " + arch_result.errors.naming_errors[i]);
+  }
+  for (size_t i = 0; i < std::min(size_t(3), arch_result.errors.format_errors.size()); ++i) {
+    result.error_messages.push_back("Format: " + arch_result.errors.format_errors[i]);
+  }
+  for (size_t i = 0; i < std::min(size_t(3), arch_result.errors.structure_errors.size()); ++i) {
+    result.error_messages.push_back("Structure: " + arch_result.errors.structure_errors[i]);
+  }
+  for (size_t i = 0; i < std::min(size_t(3), arch_result.errors.zip_files.size()); ++i) {
+    result.error_messages.push_back("ZIP file: " + arch_result.errors.zip_files[i]);
+  }
+
+  result.passed = arch_result.is_valid;
+  return result;
+}
+
+bool check_src_archives_print(const std::string &archive_base_dir) {
 
   // Check if path exists, return ok if not
   if (!std::filesystem::exists(archive_base_dir)) {
-    std::cout << "✗ Archive base directory does not exist, use built binaries ...: " << archive_base_dir << "\n\n";
+    // std::cout << "✗ Archive base directory does not exist, use built binaries ...: " << archive_base_dir << "\n\n";
     return true;
   }
-  std::cout << "✓ Archive base directory does exist, continue checking ...: " << archive_base_dir << "\n\n";
+  // std::cout << "✓ Archive base directory does exist, continue checking ...: " << archive_base_dir << "\n\n";
 
-  std::cout << "=== Archive Validation ===" << "\n\n";
+  // std::cout << "=== Archive Validation ===" << "\n\n";
 
   bool ok = true;
 
@@ -327,73 +386,73 @@ bool check_src_archives(const std::string &archive_base_dir) {
 
   // Report naming errors
   if (!result.errors.naming_errors.empty()) {
-    std::cout << "✗ Archive naming         : " << result.errors.naming_errors.size() << " problem(s) found\n";
-    for (const auto &error : result.errors.naming_errors) {
-      std::cout << "  " << error << "\n";
-    }
-    std::cout << "\n";
-    std::cout << "  Expected structure: YYYY/YYYYMM/YYYYMMDD.rar\n";
-    std::cout << "  Example: 2024/202411/20241119.rar\n";
-    std::cout << "\n";
+    // std::cout << "✗ Archive naming         : " << result.errors.naming_errors.size() << " problem(s) found\n";
+    // for (const auto &error : result.errors.naming_errors) {
+    //   std::cout << "  " << error << "\n";
+    // }
+    // std::cout << "\n";
+    // std::cout << "  Expected structure: YYYY/YYYYMM/YYYYMMDD.rar\n";
+    // std::cout << "  Example: 2024/202411/20241119.rar\n";
+    // std::cout << "\n";
     ok = false;
   } else {
-    std::cout << "✓ Archive naming         : all correct (YYYY/YYYYMM/YYYYMMDD.rar)\n";
+    // std::cout << "✓ Archive naming         : all correct (YYYY/YYYYMM/YYYYMMDD.rar)\n";
   }
 
   // Report format errors
   if (!result.errors.format_errors.empty()) {
-    std::cout << "✗ Archive format         : " << result.errors.format_errors.size() << " problem(s) found\n";
-    for (const auto &error : result.errors.format_errors) {
-      std::cout << "  " << error << "\n";
-    }
-    std::cout << "\n";
-    std::cout << "  Fix: Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py\n";
-    std::cout << "\n";
+    // std::cout << "✗ Archive format         : " << result.errors.format_errors.size() << " problem(s) found\n";
+    // for (const auto &error : result.errors.format_errors) {
+    //   std::cout << "  " << error << "\n";
+    // }
+    // std::cout << "\n";
+    // std::cout << "  Fix: Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py\n";
+    // std::cout << "\n";
     ok = false;
   } else {
-    std::cout << "✓ Archive format         : all correct (RAR non-solid)\n";
+    // std::cout << "✓ Archive format         : all correct (RAR non-solid)\n";
   }
 
   // Report structure errors
   if (!result.errors.structure_errors.empty()) {
-    std::cout << "✗ Internal hierarchy     : " << result.errors.structure_errors.size() << " problem(s) found\n";
-    for (const auto &error : result.errors.structure_errors) {
-      std::cout << "  " << error << "\n";
-    }
-    std::cout << "\n";
-    std::cout << "  Expected: YYYYMMDD/asset_code/*.csv\n";
-    std::cout << "  Example: 20240925/000001.SZ/行情.csv\n";
-    std::cout << "\n";
-    std::cout << "  Fix: Run py/app/FileRepair/fix_archive_structure.py\n";
-    std::cout << "\n";
+    // std::cout << "✗ Internal hierarchy     : " << result.errors.structure_errors.size() << " problem(s) found\n";
+    // for (const auto &error : result.errors.structure_errors) {
+    //   std::cout << "  " << error << "\n";
+    // }
+    // std::cout << "\n";
+    // std::cout << "  Expected: YYYYMMDD/asset_code/*.csv\n";
+    // std::cout << "  Example: 20240925/000001.SZ/行情.csv\n";
+    // std::cout << "\n";
+    // std::cout << "  Fix: Run py/app/FileRepair/fix_archive_structure.py\n";
+    // std::cout << "\n";
     ok = false;
   } else {
-    std::cout << "✓ Internal hierarchy     : all correct (YYYYMMDD/asset_code/*.csv)\n";
+    // std::cout << "✓ Internal hierarchy     : all correct (YYYYMMDD/asset_code/*.csv)\n";
   }
 
   // Report zip files separately
   if (!result.errors.zip_files.empty()) {
-    std::cout << "✗ Found .zip files       : " << result.errors.zip_files.size() << " file(s) need conversion\n";
-    for (const auto &zip_file : result.errors.zip_files) {
-      std::cout << "  " << zip_file << "\n";
-    }
-    std::cout << "\n";
-    std::cout << "  Fix .zip files: Run py/app/FileRepair/fix_zip_to_rar.py\n";
-    std::cout << "\n";
+    // std::cout << "✗ Found .zip files       : " << result.errors.zip_files.size() << " file(s) need conversion\n";
+    // for (const auto &zip_file : result.errors.zip_files) {
+    //   std::cout << "  " << zip_file << "\n";
+    // }
+    // std::cout << "\n";
+    // std::cout << "  Fix .zip files: Run py/app/FileRepair/fix_zip_to_rar.py\n";
+    // std::cout << "\n";
     ok = false;
   }
 
   // Summary
-  std::cout << "\n";
-  if (ok) {
-    std::cout << "========================================\n";
-    std::cout << "✓ All checks passed (" << result.valid_archives.size() << " valid archives)\n";
-    std::cout << "========================================\n";
-  } else {
-    std::cout << "========================================\n";
-    std::cout << "✗ Some checks failed. Please fix the issues above.\n";
-    std::cout << "========================================\n";
-  }
+  // std::cout << "\n";
+  // if (ok) {
+  //   std::cout << "========================================\n";
+  //   std::cout << "✓ All checks passed (" << result.valid_archives.size() << " valid archives)\n";
+  //   std::cout << "========================================\n";
+  // } else {
+  //   std::cout << "========================================\n";
+  //   std::cout << "✗ Some checks failed. Please fix the issues above.\n";
+  //   std::cout << "========================================\n";
+  // }
 
   return ok;
 }

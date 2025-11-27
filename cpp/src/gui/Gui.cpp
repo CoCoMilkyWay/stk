@@ -17,13 +17,13 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
   int display_w = (int)ImGui::GetIO().DisplaySize.x;
   int display_h = (int)ImGui::GetIO().DisplaySize.y;
 
-  // Left panel: Tasks list
+  // Left panel: Tasks list (compressed width)
   ImGui::SetNextWindowPos(ImVec2(0, 0));
-  ImGui::SetNextWindowSize(ImVec2(300, display_h));
+  ImGui::SetNextWindowSize(ImVec2(200, display_h));
   ImGui::Begin("Tasks", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
-  // Task list
-  ImGui::BeginChild("TaskList", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing() * 1.5f), false);
+  // Task list (leave minimal space for compact icon bar)
+  ImGui::BeginChild("TaskList", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing() * 1.2f), false);
 
   for (int i = 0; i < (int)tasks.size(); i++) {
     bool is_selected = (selected_task == i);
@@ -72,8 +72,8 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
   ImGui::End();
 
   // Right top panel: Selected task content
-  ImGui::SetNextWindowPos(ImVec2(300, 0));
-  ImGui::SetNextWindowSize(ImVec2(display_w - 300, display_h * 0.7f));
+  ImGui::SetNextWindowPos(ImVec2(200, 0));
+  ImGui::SetNextWindowSize(ImVec2(display_w - 200, display_h * 0.7f));
   ImGui::Begin("Panel", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
   if (selected_task >= 0 && selected_task < (int)tasks.size()) {
@@ -83,8 +83,8 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
   ImGui::End();
 
   // Right bottom panel: Terminal
-  ImGui::SetNextWindowPos(ImVec2(300, display_h * 0.7f));
-  ImGui::SetNextWindowSize(ImVec2(display_w - 300, display_h * 0.3f));
+  ImGui::SetNextWindowPos(ImVec2(200, display_h * 0.7f));
+  ImGui::SetNextWindowSize(ImVec2(display_w - 200, display_h * 0.3f));
   ImGui::Begin("Terminal", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
   // Clear button

@@ -1,6 +1,7 @@
 // Encoding Service - Manages L2 binary database encoding from CSV archives
 #pragma once
 
+#include "misc/file_check.hpp"
 #include "misc/progress_parallel.hpp"
 #include <atomic>
 #include <boost/asio/awaitable.hpp>
@@ -35,10 +36,10 @@ enum class EncodingStatus {
 // ============================================================================
 
 enum class DatabaseStatus {
-  Pass,        // Binary完整覆盖backtest period，可以回测
-  Incomplete,  // Binary不完整，但可以从archive encode补全
-  NeedArchive, // Binary不完整，缺失日期无对应archive
-  NotEncoded,  // Binary不存在，需要encode
+  Pass,        // Binary完整覆盖backtest period,可以回测
+  Incomplete,  // Binary不完整,但可以从archive encode补全
+  NeedArchive, // Binary不完整,缺失日期无对应archive
+  NotEncoded,  // Binary不存在,需要encode
   NoData,      // Binary和archive都不存在
   Error        // 配置错误或其他异常
 };
@@ -135,12 +136,17 @@ private:
   bool skip_existing_ = true;
   std::chrono::steady_clock::time_point start_time_;
 
+  DatabaseCheckResult last_check_;               // Cache last database check result
+  FileCheck::FileCheckResult file_check_result_; // Cache file check result
+  
+  std::future<void> encoding_thread_; // Background encoding thread
+
 public:
   EncodingService(SharedData &data, io_context &io, TaskTerminal *term);
 
-  // Lifecycle
-  awaitable<void> start_encoding(int num_workers, bool skip_existing);
-  awaitable<void> stop_encoding();
+  // Lifecycle (changed to non-coroutine, uses background threads)
+  void start_encoding(int num_workers, bool skip_existing);
+  void stop_encoding();
 
   // Query
   EncodingStatus get_status() const { return status_; }
@@ -150,11 +156,13 @@ public:
 
   // Scan and check database coverage
   DatabaseCheckResult check_database_coverage();
- 
+
   // Get last check result
   const DatabaseCheckResult &get_last_check_result() const { return last_check_; }
- 
-  DatabaseCheckResult last_check_; // Cache last check result
+
+  // File check (archive validation)
+  void run_file_check(const std::string &archive_base_dir);
+  const FileCheck::FileCheckResult &get_file_check_result() const { return file_check_result_; }
 };
 
 } // namespace GUI::Database

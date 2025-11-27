@@ -136,6 +136,15 @@ void RunGUI() {
   while (!glfwWindowShouldClose(window)) {
     double frame_start = 0.0;
 
+    // High Performance Mode: GUI sleeps 5 seconds, all CPU for compute tasks
+    if (guiState.high_performance_mode) {
+      std::this_thread::sleep_for(std::chrono::seconds(5)); // 0.2 FPS
+      glfwPollEvents();
+      guiState.Update(5.0f);
+      continue; // Skip rendering entirely
+    }
+
+    // Normal Mode: Full GUI rendering
     if constexpr (HIGH_FPS_ON_EVENTS) {
       glfwWaitEventsTimeout(FRAME_TIME);
     } else {

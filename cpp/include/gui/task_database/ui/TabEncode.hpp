@@ -6,7 +6,7 @@
 namespace GUI::Database {
 class EncodingService;
 struct EncodingProgress;
-}
+} // namespace GUI::Database
 
 struct Asset;
 
@@ -21,10 +21,13 @@ struct EncodeState {
   bool skip_existing = true;
   bool show_missing_assets = true;
   bool show_missing_details = false;
-  
+
   // Encoding dialog states
   bool show_confirm_dialog = false;
   bool show_progress_fullscreen = false;
+  
+  // Trigger for starting encoding (set by UI, consumed by TaskDatabase)
+  bool trigger_start = false;
 };
 
 // ============================================================================
@@ -37,4 +40,3 @@ void RenderTabEncode(
     Asset &asset);
 
 } // namespace GUI::Database
-

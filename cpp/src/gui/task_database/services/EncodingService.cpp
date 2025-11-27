@@ -1,31 +1,21 @@
 // Encoding Service Implementation
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
-#include "misc/affinity.hpp"
+#include "misc/logging.hpp"
+#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/encoding_worker.hpp"
 
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/this_coro.hpp>
+#include <iostream>
 #include <mutex>
 
 namespace GUI::Database {
 
-namespace asio = boost::asio;
-
 EncodingService::EncodingService(SharedData &data, io_context & /*io*/, TaskTerminal *term)
     : data_(data), terminal_(term) {}
 
-awaitable<void> EncodingService::start_encoding(int num_workers, bool skip_existing) {
-  if (status_ == EncodingStatus::Running) {
-    co_return;
-  }
-
-  // Note: Asset scanning is already done in StateManager::initialize()
-  // No need to re-scan here, just use existing data
-
-  co_await asio::this_coro::executor;
+void EncodingService::start_encoding(int num_workers, bool skip_existing) {
+  if (status_ == EncodingStatus::Running) return;
 
   status_ = EncodingStatus::Running;
   cancel_flag_.store(false);
@@ -33,155 +23,112 @@ awaitable<void> EncodingService::start_encoding(int num_workers, bool skip_exist
   skip_existing_ = skip_existing;
   start_time_ = std::chrono::steady_clock::now();
 
-  if (terminal_) {
-    terminal_->Clear();
-    terminal_->AddLine("[Encoding] Starting with " + std::to_string(num_workers) + " workers...");
-    terminal_->AddLine("[Encoding] Total assets: " + std::to_string(data_.asset.items.size()));
-    terminal_->AddLine("[Encoding] Total dates: " + std::to_string(data_.asset.all_dates.size()));
+  // Enable High Performance Mode: GUI sleeps, all CPU for encoding
+  if (data_.gui_state) {
+    data_.gui_state->EnableHighPerformanceMode();
+    std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n" << std::endl;
   }
 
-  // Create asset queue
-  std::vector<size_t> asset_queue;
-  for (size_t i = 0; i < data_.asset.items.size(); ++i) {
-    if (!skip_existing_ || data_.asset.items[i].get_missing_count() > 0) {
+  // Launch encoding in background thread
+  encoding_thread_ = std::async(std::launch::async, [this]() {
+    std::cout << "\n=== Encoding Started ===\n"
+              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size() 
+              << " | Dates: " << data_.asset.all_dates.size() << "\n" << std::endl;
+
+    // Initialize date_info for all assets (if not already done)
+    for (auto &asset : data_.asset.items) {
+      for (const auto &date_str : data_.asset.all_dates) {
+        if (date_str >= asset.start_date && date_str <= asset.end_date) {
+          // Create DateInfo if not exists (may already exist from binary scan)
+          if (asset.date_info.find(date_str) == asset.date_info.end()) {
+            DateInfo &di = asset.date_info[date_str];
+            di.database_dir = Utils::generate_temp_asset_dir(data_.config.database_dir, date_str, 
+                                                             asset.asset_code, asset.exchange);
+            di.snapshots_encoded = 0;
+            di.orders_encoded = 0;
+          }
+        }
+      }
+    }
+
+    // Build asset queue (all assets, skip logic handled per-date in worker)
+    std::vector<size_t> asset_queue;
+    asset_queue.reserve(data_.asset.items.size());
+    for (size_t i = 0; i < data_.asset.items.size(); ++i) {
       asset_queue.push_back(i);
     }
-  }
 
-  if (asset_queue.empty()) {
-    if (terminal_) {
-      terminal_->AddLine("[Encoding] All assets already encoded. Nothing to do.");
+    std::cout << "Encoding: 二进制数据库创建中...\n" << std::endl;
+
+    // Initialize logger for all encoding workers (shared log file)
+    Logger::init(data_.config.log_dir);
+    Logger::reg("encoding");
+
+    // Launch worker threads
+    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_);
+    std::mutex queue_mutex;
+    workers_.clear();
+    workers_.reserve(num_workers_);
+
+    for (int i = 0; i < num_workers_; ++i) {
+      workers_.push_back(std::async(std::launch::async, [this, i, &asset_queue, &queue_mutex]() {
+        encoding_worker(data_, asset_queue, queue_mutex, &cancel_flag_, i, progress_->get_handle(i));
+      }));
     }
-    status_ = EncodingStatus::Completed;
 
-    // Check database coverage
-    check_database_coverage();
+    // Wait for completion
+    for (auto &worker : workers_) worker.wait();
+    progress_->stop();
+    workers_.clear();
 
-    co_return;
-  }
+    // Finalize
+    status_ = cancel_flag_.load() ? EncodingStatus::Cancelled : EncodingStatus::Completed;
+    
+    std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
+              << "Encoded: " << data_.asset.binary.dates.size() << " dates" << std::endl;
 
-  if (terminal_) {
-    terminal_->AddLine("[Encoding] Assets to encode: " + std::to_string(asset_queue.size()));
-  }
+    // Check coverage
+    auto check = check_database_coverage();
+    std::cout << "\nDatabase: " << check.get_status_string() << std::endl;
 
-  // Create progress tracker
-  progress_ = std::make_shared<misc::ParallelProgress>(num_workers);
-
-  // Launch worker threads
-  std::mutex queue_mutex;
-  workers_.clear();
-  workers_.reserve(num_workers);
-
-  for (int i = 0; i < num_workers; ++i) {
-    workers_.push_back(std::async(std::launch::async, [this, i, &asset_queue, &queue_mutex]() {
-      unsigned int core_id = misc::Affinity::core_count() > 0 ? i % misc::Affinity::core_count() : 0;
-      encoding_worker(data_, asset_queue, queue_mutex, &cancel_flag_, core_id, progress_->get_handle(i));
-    }));
-  }
-
-  // Wait for all workers to complete
-  for (auto &worker : workers_) {
-    worker.wait();
-  }
-
-  // Update status
-  if (cancel_flag_.load()) {
-    status_ = EncodingStatus::Cancelled;
-    if (terminal_) {
-      terminal_->AddLine("[Encoding] Cancelled by user.");
+    // Disable High Performance Mode: GUI resumes
+    if (data_.gui_state) {
+      data_.gui_state->DisableHighPerformanceMode();
+      std::cout << "\n[High Performance Mode] Disabled - GUI thread resumed\n" << std::endl;
     }
-  } else {
-    status_ = EncodingStatus::Completed;
-    if (terminal_) {
-      terminal_->AddLine("[Encoding] Completed successfully.");
-      terminal_->AddLine("[Encoding] Encoded: " + std::to_string(data_.asset.binary.dates.size()) + " dates");
-    }
-  }
-
-  // Check database coverage after encoding
-  auto check_result = check_database_coverage();
-  if (terminal_) {
-    terminal_->AddLine("[Check] Database status: " + std::string(check_result.get_status_string()));
-
-    switch (check_result.status) {
-    case DatabaseStatus::Pass:
-      terminal_->AddLine("[Check] Binary database完整覆盖backtest period", Color::Green());
-      break;
-
-    case DatabaseStatus::Incomplete:
-      terminal_->AddLine("[Check] Missing " + std::to_string(check_result.missing_dates.size()) +
-                             " dates, " + std::to_string(check_result.missing_can_encode.size()) +
-                             " can encode from archive",
-                         Color::Yellow());
-      break;
-
-    case DatabaseStatus::NeedArchive:
-      terminal_->AddLine("[Check] Missing " + std::to_string(check_result.missing_no_archive.size()) +
-                             " dates without archive",
-                         Color::Red());
-      break;
-
-    case DatabaseStatus::NotEncoded:
-      terminal_->AddLine("[Check] Archive available, need to encode", Color::Yellow());
-      break;
-
-    case DatabaseStatus::NoData:
-    case DatabaseStatus::Error:
-      terminal_->AddLine("[Check] " + check_result.error_message, Color::Red());
-      break;
-    }
-  }
-
-  workers_.clear();
+  });
 }
 
-awaitable<void> EncodingService::stop_encoding() {
+void EncodingService::stop_encoding() {
   if (status_ != EncodingStatus::Running) {
-    co_return;
+    return;
   }
-
-  co_await asio::this_coro::executor;
 
   cancel_flag_.store(true);
+  std::cout << "[Encoding] Cancelling..." << std::endl;
 
-  if (terminal_) {
-    terminal_->AddLine("[Encoding] Cancelling...");
+  // Wait for encoding thread to finish
+  if (encoding_thread_.valid()) {
+    encoding_thread_.wait();
   }
-
-  // Wait for workers to finish
-  for (auto &worker : workers_) {
-    if (worker.valid()) {
-      worker.wait();
-    }
-  }
-
-  status_ = EncodingStatus::Cancelled;
 }
 
 EncodingProgress EncodingService::get_progress() const {
   EncodingProgress prog;
-
   prog.total_assets = data_.asset.items.size();
   prog.total_dates = data_.asset.all_dates.size();
   prog.encoded_dates = data_.asset.binary.dates.size();
-
-  // Calculate total orders
-  size_t total_orders = 0;
-  for (const auto &item : data_.asset.items) {
-    total_orders += item.get_total_order_count();
-  }
-  prog.total_orders = total_orders;
-
-  // Completed assets tracking would need additional state
-  // For now, just use basic progress metrics
   prog.completed_assets = 0;
+  
+  // Calculate total orders
+  for (const auto &item : data_.asset.items) {
+    prog.total_orders += item.get_total_order_count();
+  }
 
   if (status_ == EncodingStatus::Running) {
-    auto now = std::chrono::steady_clock::now();
-    prog.elapsed_seconds = std::chrono::duration<double>(now - start_time_).count();
-    if (prog.elapsed_seconds > 0) {
-      prog.encoding_rate = prog.completed_assets / prog.elapsed_seconds;
-    }
+    prog.elapsed_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start_time_).count();
+    prog.encoding_rate = prog.elapsed_seconds > 0 ? prog.completed_assets / prog.elapsed_seconds : 0;
   }
 
   return prog;
@@ -272,9 +219,9 @@ DatabaseCheckResult EncodingService::check_database_coverage() {
         // Extract required_dates (from backtest period)
         // Extract binary_coverage (binary dates in backtest period)
         // Calculate missing_dates = required_dates - binary_coverage
-      if (result.missing_dates.empty()) {
-        result.status = DatabaseStatus::Pass;
-      } else {
+        if (result.missing_dates.empty()) {
+          result.status = DatabaseStatus::Pass;
+        } else {
           result.status = DatabaseStatus::Incomplete;
         }
       } else {
@@ -303,6 +250,92 @@ DatabaseCheckResult EncodingService::check_database_coverage() {
   // Cache result
   last_check_ = result;
   return result;
+}
+
+void EncodingService::run_file_check(const std::string &archive_base_dir) {
+  if (!terminal_) return;
+
+  terminal_->AddLine("========================================");
+  terminal_->AddLine("[File Check] Starting Archive Validation");
+  terminal_->AddLine("========================================");
+  terminal_->AddLine("[File Check] Archive path: " + archive_base_dir);
+  terminal_->AddLine("");
+
+  // Step 1: Check directory exists
+  terminal_->AddLine("[File Check] Step 1: Checking archive directory...");
+  file_check_result_ = FileCheck::check_src_archives(archive_base_dir);
+
+  if (!file_check_result_.archive_dir_exists) {
+    terminal_->AddLine("[File Check] ✗ Archive directory does not exist", Color::Yellow());
+    terminal_->AddLine("[File Check] Will use built binaries instead");
+    terminal_->AddLine("========================================");
+    return;
+  }
+
+  terminal_->AddLine("[File Check] ✓ Archive directory exists", Color::Green());
+  terminal_->AddLine("");
+
+  // Step 2: Check required commands
+  terminal_->AddLine("[File Check] Step 2: Checking required commands (unrar, 7z, rar, gdb)...");
+  if (!file_check_result_.commands_available) {
+    terminal_->AddLine("[File Check] ✗ Some required commands are missing", Color::Red());
+    terminal_->AddLine("[File Check] Please install: unrar, 7z, rar, gdb");
+    terminal_->AddLine("========================================");
+    return;
+  }
+  terminal_->AddLine("[File Check] ✓ All required commands available", Color::Green());
+  terminal_->AddLine("");
+
+  // Step 3: Scan archives
+  terminal_->AddLine("[File Check] Step 3: Scanning archive files...");
+  terminal_->AddLine("[File Check] Total archives found: " + std::to_string(file_check_result_.total_archives), Color::Green());
+  terminal_->AddLine("");
+
+  // Step 4-7: Validate naming, format, structure, ZIP files
+  auto print_errors = [this](const std::string &step, const std::string &desc, size_t count, 
+                             const std::vector<std::string> &files, const std::string &fix = "") {
+    terminal_->AddLine("[File Check] " + step + ": " + desc + "...");
+    if (count > 0) {
+      terminal_->AddLine("[File Check] ✗ Found " + std::to_string(count) + " error(s)", Color::Red());
+      if (!fix.empty()) terminal_->AddLine("[File Check]   Fix: " + fix);
+      for (const auto &file : files) {
+        terminal_->AddLine("[File Check]   - " + file, Color::Yellow());
+      }
+    } else {
+      terminal_->AddLine("[File Check] ✓ All correct", Color::Green());
+    }
+    terminal_->AddLine("");
+  };
+
+  print_errors("Step 4", "Checking archive naming (YYYY/YYYYMM/YYYYMMDD.rar)", 
+               file_check_result_.naming_errors, file_check_result_.naming_error_files);
+  
+  print_errors("Step 5", "Checking archive format (RAR non-solid)", 
+               file_check_result_.format_errors, file_check_result_.format_error_files,
+               "Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py");
+  
+  print_errors("Step 6", "Checking internal structure (YYYYMMDD/asset_code/*.csv)", 
+               file_check_result_.structure_errors, file_check_result_.structure_error_files,
+               "Run py/app/FileRepair/fix_archive_structure.py");
+  
+  print_errors("Step 7", "Checking for ZIP files (should be RAR)", 
+               file_check_result_.zip_files, file_check_result_.zip_error_files,
+               "Run py/app/FileRepair/fix_zip_to_rar.py");
+
+  // Summary
+  terminal_->AddLine("========================================");
+  if (file_check_result_.passed) {
+    terminal_->AddLine("[File Check] ✓ ALL CHECKS PASSED", Color::Green());
+    terminal_->AddLine("[File Check] Valid archives: " + std::to_string(file_check_result_.valid_archives));
+  } else {
+    terminal_->AddLine("[File Check] ✗ SOME CHECKS FAILED", Color::Red());
+    terminal_->AddLine("[File Check] Valid: " + std::to_string(file_check_result_.valid_archives) + 
+                      " / Total: " + std::to_string(file_check_result_.total_archives));
+    terminal_->AddLine("[File Check] Total errors: " + std::to_string(
+        file_check_result_.naming_errors + file_check_result_.format_errors +
+        file_check_result_.structure_errors + file_check_result_.zip_files));
+  }
+  terminal_->AddLine("========================================");
 }
 
 } // namespace GUI::Database
