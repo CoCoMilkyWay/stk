@@ -300,10 +300,10 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
   binary.database_snap_days = snap_dates_set.size();
   binary.database_order_days = order_dates_set.size();
 
-  // Fully encoded dates
+  // Binary dates: any date with at least one asset fully encoded
   binary.dates.clear();
   for (const auto &[date, count] : date_coverage) {
-    if (count == binary.total_assets) {
+    if (count > 0) {  // At least one asset has data
       binary.dates.insert(date);
     }
   }

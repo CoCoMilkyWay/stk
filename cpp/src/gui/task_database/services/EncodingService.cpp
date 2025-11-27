@@ -81,6 +81,10 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     progress_->stop();
     workers_.clear();
 
+    // Rescan after encoding
+    data_.asset.scan_binary_database(data_.config.database_dir, data_.config.binary_extension);
+    data_.asset.compute_backtest_coverage(data_.config.start_date, data_.config.end_date);
+
     // Finalize
     status_ = cancel_flag_.load() ? EncodingStatus::Cancelled : EncodingStatus::Completed;
     
