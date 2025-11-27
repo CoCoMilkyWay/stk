@@ -433,7 +433,7 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("并发爬虫数");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("同时运行的爬虫工作线程数 (1-100)");
+          ImGui::SetTooltip("ASIO异步并发网络爬虫协程数 (1-100)");
         }
         ImGui::TableNextColumn();
         ImGui::PushItemWidth(-1);
