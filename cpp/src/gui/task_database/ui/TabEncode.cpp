@@ -220,10 +220,11 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Encoding may overwrite or corrupt existing database files. Please consider moving your database to a backup location before proceeding.");
-    
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
+    ImGui::TextWrapped("Encoding may overwrite or corrupt existing database files. Please consider moving your database to a backup location before proceeding.");
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Encoding process takes a long time and cannot be interrupted once started. Please be ready.");
+    ImGui::TextWrapped("Encoding process takes a long time and cannot be interrupted once started. Please be ready.");
+    ImGui::PopStyleColor();
 
     ImGui::Spacing();
     ImGui::Separator();
