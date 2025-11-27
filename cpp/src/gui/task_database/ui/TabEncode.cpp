@@ -216,11 +216,14 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
   }
 
   if (ImGui::BeginPopupModal("Confirm Encoding", &state.show_confirm_dialog, ImGuiWindowFlags_NoResize)) {
-    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "WARNING");
+    ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "WARNING");
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::TextWrapped("Encoding may overwrite or corrupt existing database files. Please consider moving your database to a backup location before proceeding.");
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Encoding may overwrite or corrupt existing database files. Please consider moving your database to a backup location before proceeding.");
+    
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Encoding process takes a long time and cannot be interrupted once started. Please be ready.");
 
     ImGui::Spacing();
     ImGui::Separator();
