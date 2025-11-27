@@ -440,8 +440,8 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
           ImGui::Text("Snapshots Encoded:");
           ImGui::SameLine();
           double snap_pct = asset.binary.total_snapshots > 0 ? 100.0 * asset.binary.backtest_snapshots / asset.binary.total_snapshots : 0.0;
-          ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.1fK / %.1fK (%.1f%%)",
-                             asset.binary.backtest_snapshots / 1000.0, asset.binary.total_snapshots / 1000.0, snap_pct);
+          ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.1fM / %.1fM (%.1f%%)",
+                             asset.binary.backtest_snapshots / 1000000.0, asset.binary.total_snapshots / 1000000.0, snap_pct);
 
           ImGui::Text("Snapshots Size:");
           ImGui::SameLine();
