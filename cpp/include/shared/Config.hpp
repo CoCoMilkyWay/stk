@@ -34,6 +34,7 @@ struct Config {
   std::string filepath = "../../../../config/config.json";
 
   // Database (Baostock) Configuration
+  std::string assets_file = "assets.json";
   std::string baostock_data_manager_config = "data_manager_config.json";
   std::string baostock_stock_factor_file = "stock_factor.json";
   std::string baostock_stock_info_file = "stock_info.json";
@@ -57,6 +58,7 @@ struct Config {
   char archive_tool_buf[64] = "";
   char archive_extract_cmd_buf[32] = "";
   char binary_extension_buf[32] = "";
+  char assets_file_buf[128] = "";
   char baostock_stock_factor_file_buf[128] = "";
   char baostock_stock_info_file_buf[128] = "";
   char baostock_stock_days_file_buf[128] = "";

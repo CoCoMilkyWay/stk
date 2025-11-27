@@ -2,7 +2,7 @@
 #include "worker/encoding_worker.hpp"
 #include "worker/io_worker.hpp"
 #include "worker/sequential_worker.hpp"
-#include "worker/shared_state.hpp"
+#include "shared/SharedData.hpp"
 
 #include "codec/json_config.hpp"
 #include "features/backend/FeatureStore.hpp"
@@ -28,7 +28,6 @@
 //
 //   - 统一管理所有共享状态的 SharedState:
 //       · 资产信息 assets[]:存储所有资产的元数据、每日统计、文件路径及状态位图,支持断点续传和精确状态追踪(date_info.encoded / date_info.analyzed)
-//       · 全局交易日序列 all_dates[]:用于横截面因子同步,保证分析阶段跨资产日期的顺序一致和高效缓存(预留 cross_sectional_cache)
 //
 //   - Phase 1 (Encoding):
 //       · 资产并行处理,日期顺序打乱(shuffle)以分散RAR压缩包访问压力,实现负载均衡(利用已累积的order_count,无需预扫描)
@@ -51,48 +50,10 @@
 //
 
 // ============================================================================
-// CONFIGURATION SECTION
-// ============================================================================
-// Modify these constants to adapt to different environments or data suppliers
-namespace Config {
-// Archive settings - modify these for different compression formats
-const char *ARCHIVE_EXTENSION = ".rar"; // Archive file extension (.rar/.7z/.zip)
-const char *ARCHIVE_TOOL = "unrar";     // Archive extraction tool (unrar/7z/unzip)
-const char *ARCHIVE_EXTRACT_CMD = "x";  // Extract command (x for unrar, x for 7z)
-
-// File extensions and names - standard CSV filenames from data supplier
-const char *BINARY_EXTENSION = ".bin";
-// CSV filenames defined here for documentation and potential future use
-// Currently the encoder auto-detects these files, but explicit names reserved for future API changes
-[[maybe_unused]] constexpr const char *CSV_MARKET_DATA = "行情.csv";    // Market snapshot CSV filename
-[[maybe_unused]] constexpr const char *CSV_TICK_TRADE = "逐笔成交.csv"; // Tick-by-tick trade CSV filename
-[[maybe_unused]] constexpr const char *CSV_TICK_ORDER = "逐笔委托.csv"; // Tick-by-tick order CSV filename
-
-// Path settings - modify these for your environment
-constexpr const char *DEFAULT_STOCK_INFO_FILE = "../../../../config/daily_holding/asset_list.json";
-
-constexpr const char *ARCHIVE_DIR = "/I/AM/A/FAKE/PATH/TO/SKIP/ARCHIVE/CHECK";
-// constexpr const char *ARCHIVE_DIR = "/mnt/dev/sde/A_stock/L2";
-// constexpr const char *ARCHIVE_DIR = "/media/chuyin/48ac8067-d3b7-4332-b652-45e367a1ebcc/A_stock/L2";
-
-constexpr const char *DATABASE_DIR = "../../../../output/database";
-constexpr const char *FEATURE_DIR = "../../../../output/features";
-constexpr const char *LOG_DIR = "../../../../output/log";
-
-} // namespace Config
-
-// ============================================================================
 // MAIN ENTRY POINT
 // ============================================================================
 
 int main() {
-  // Load configuration paths first
-  const std::string stock_info_file = Config::DEFAULT_STOCK_INFO_FILE;
-  const std::string l2_archive_base = Config::ARCHIVE_DIR;
-  const std::string database_dir = Config::DATABASE_DIR;
-  const std::string feature_dir = Config::FEATURE_DIR;
-  const std::string log_dir = Config::LOG_DIR;
-
   GUI::RunGUI();
 /*
   std::cout << "=== L2 Data Processor (CSV Mode) ===" << "\n";

@@ -1,5 +1,5 @@
 #include "worker/encoding_worker.hpp"
-#include "worker/shared_state.hpp"
+#include "shared/SharedData.hpp"
 
 #include "codec/L2_DataType.hpp"
 #include "codec/binary_encoder_L2.hpp"
@@ -13,13 +13,6 @@
 #include <random>
 #include <string>
 #include <unordered_map>
-
-namespace Config {
-extern const char *ARCHIVE_EXTENSION;
-extern const char *ARCHIVE_TOOL;
-extern const char *ARCHIVE_EXTRACT_CMD;
-extern const char *BINARY_EXTENSION;
-} // namespace Config
 
 // ============================================================================
 // RAR LOCK MANAGER
@@ -47,8 +40,11 @@ static bool extract_and_encode(const std::string &archive_path,
                                const std::string &asset_code,
                                const std::string &date_str,
                                const std::string &database_dir,
+                               const std::string &archive_tool,
+                               const std::string &archive_extract_cmd,
+                               const std::string &binary_extension,
                                L2::BinaryEncoder_L2 &encoder,
-                               AssetInfo::DateInfo &date_info) {
+                               DateInfo &date_info) {
   // Acquire lock (blocking)
   std::mutex *archive_lock = RarLockManager::get_or_create_lock(archive_path);
   std::lock_guard<std::mutex> lock(*archive_lock);
@@ -61,8 +57,7 @@ static bool extract_and_encode(const std::string &archive_path,
   const std::string asset_path_in_archive = archive_name + "/" + asset_code + "/*";
 
   // Use unrar to extract
-  std::string command = std::string(Config::ARCHIVE_TOOL) + " " +
-                        std::string(Config::ARCHIVE_EXTRACT_CMD) + " \"" +
+  std::string command = archive_tool + " " + archive_extract_cmd + " \"" +
                         archive_path + "\" \"" + asset_path_in_archive + "\" \"" +
                         temp_extract_dir + "/\" -y > /dev/null 2>&1";
 
@@ -103,7 +98,7 @@ static bool extract_and_encode(const std::string &archive_path,
     const std::string path = entry.path().string();
     if (path.ends_with(".csv")) {
       std::filesystem::remove(entry.path()); // Clean up CSV
-    } else if (path.ends_with(Config::BINARY_EXTENSION)) {
+    } else if (path.ends_with(binary_extension)) {
       const std::string filename = entry.path().filename().string();
       if (filename.starts_with(asset_code + "_snapshots_")) {
         date_info.snapshots_file = path;
@@ -116,11 +111,10 @@ static bool extract_and_encode(const std::string &archive_path,
   return true;
 }
 
-void encoding_worker(SharedState &state,
+void encoding_worker(SharedData &data,
                      std::vector<size_t> &asset_id_queue,
                      std::mutex &queue_mutex,
-                     const std::string &l2_archive_base,
-                     const std::string &database_dir,
+                     std::atomic<bool> *cancel_flag,
                      unsigned int core_id,
                      misc::ProgressHandle progress_handle) {
   static thread_local bool affinity_set = false;
@@ -135,6 +129,11 @@ void encoding_worker(SharedState &state,
   progress_handle.update(1, 1, "");
 
   while (true) {
+    // Check cancellation flag
+    if (cancel_flag && cancel_flag->load()) {
+      break;
+    }
+
     size_t asset_id;
 
     // Get an asset
@@ -147,7 +146,7 @@ void encoding_worker(SharedState &state,
       asset_id_queue.pop_back();
     }
 
-    AssetInfo &asset = state.assets[asset_id];
+    AssetItem &asset = data.asset.items[asset_id];
     progress_handle.set_label(asset.asset_code + " (" + asset.asset_name + ")");
 
     // Collect and shuffle dates to spread RAR access
@@ -162,27 +161,35 @@ void encoding_worker(SharedState &state,
 
     // Process all dates for this asset
     for (size_t i = 0; i < date_keys.size(); ++i) {
+      // Check cancellation flag
+      if (cancel_flag && cancel_flag->load()) {
+        return;
+      }
+
       const std::string &date_str = date_keys[i];
       auto &date_info = asset.date_info[date_str];
 
       // Skip if binary already exists
-      if (date_info.encoded) {
+      if (date_info.snapshots_encoded && date_info.orders_encoded) {
         progress_handle.update(i + 1, date_keys.size(), date_str);
         continue;
       }
 
       // Check archive exists before attempting extraction
-      const std::string archive_path = Utils::generate_archive_path(l2_archive_base, date_str);
+      const std::string archive_path = Utils::generate_archive_path(data.config.archive_dir, date_str, data.config.archive_extension);
       if (!std::filesystem::exists(archive_path)) {
         progress_handle.update(i + 1, date_keys.size(), date_str);
         continue;
       }
 
       // Encode (blocking on RAR lock if needed)
-      bool success = extract_and_encode(archive_path, asset.asset_code, date_str, database_dir, encoder, date_info);
+      bool success = extract_and_encode(archive_path, asset.asset_code, date_str, data.config.database_dir,
+                                        data.config.archive_tool, data.config.archive_extract_cmd, data.config.binary_extension,
+                                        encoder, date_info);
 
       if (success) {
-        date_info.encoded = 1;
+        date_info.snapshots_encoded = 1;
+        date_info.orders_encoded = 1;
       }
 
       progress_handle.update(i + 1, date_keys.size(), date_str);

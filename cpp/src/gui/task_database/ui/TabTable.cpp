@@ -74,7 +74,7 @@ double CalculateMarketCap(const StockInfo &info) {
 // ============================================================================
 
 bool ShouldShowAsset(
-    const AssetInfo &asset,
+    const AssetItem &asset,
     const TableState &state,
     const StockInfoMap &stock_info) {
 
@@ -150,7 +150,7 @@ void RenderFilterBar(
     TableState &state,
     size_t visible_count,
     size_t total_count,
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info) {
 
   // Search box
@@ -236,7 +236,7 @@ void RenderFilterBar(
 // ============================================================================
 
 void RenderDataTable(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     TableState &table_state) {
 
@@ -329,7 +329,7 @@ void RenderDataTable(
 
   // Build filtered asset list for sorting
   struct AssetRow {
-    const AssetInfo *asset;
+    const AssetItem *asset;
     const StockInfo *info;
     std::string full_code;
   };
@@ -520,7 +520,7 @@ void RenderDataTable(
   // Render rows
   int row_idx = 0;
   for (const auto &row : filtered_rows) {
-    const AssetInfo &asset = *row.asset;
+    const AssetItem &asset = *row.asset;
     const StockInfo *info = row.info;
 
     ImGui::TableNextRow();
@@ -808,14 +808,14 @@ void RenderDataTable(
 // ============================================================================
 
 static void RenderNumericAnalysis(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
     const char *col_name);
 
 static void RenderCategoricalAnalysis(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
@@ -845,7 +845,7 @@ static ColumnDataType GetColumnDataType(int col_idx) {
 // ============================================================================
 
 void RenderCrossSectionPanel(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     const TableState &table_state) {
 
@@ -883,7 +883,7 @@ void RenderCrossSectionPanel(
 // ============================================================================
 
 static void RenderNumericAnalysis(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
@@ -1165,7 +1165,7 @@ static void RenderNumericAnalysis(
 // ============================================================================
 
 static void RenderCategoricalAnalysis(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     const TableState &table_state,
     int col_idx,
@@ -1273,7 +1273,7 @@ static void RenderCategoricalAnalysis(
 // ============================================================================
 
 void RenderTabTable(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     TableState &table_state) {
 

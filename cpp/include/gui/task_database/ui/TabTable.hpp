@@ -4,7 +4,7 @@
 #pragma once
 
 #include "gui/task_database/models/BaostockData.hpp"
-#include "gui/task_database/models/L2AssetData.hpp"
+#include "shared/Asset.hpp"
 #include <string>
 #include <vector>
 
@@ -35,7 +35,7 @@ struct TableState {
 
 // Render the table tab
 void RenderTabTable(
-    const std::vector<AssetInfo> &assets,
+    const std::vector<AssetItem> &assets,
     const StockInfoMap &stock_info,
     TableState &table_state);
 

@@ -2,22 +2,21 @@
 
 #include "misc/progress_parallel.hpp"
 
+#include <atomic>
 #include <mutex>
-#include <string>
 #include <vector>
 
 // Forward declarations
-struct SharedState;
+struct SharedData;
 
 // ============================================================================
 // PHASE 1: ENCODING WORKER
 // ============================================================================
 
-void encoding_worker(SharedState &state, 
+void encoding_worker(SharedData &data, 
                     std::vector<size_t> &asset_id_queue, 
                     std::mutex &queue_mutex, 
-                    const std::string &l2_archive_base, 
-                    const std::string &database_dir, 
+                    std::atomic<bool> *cancel_flag,
                     unsigned int core_id, 
                     misc::ProgressHandle progress_handle);
 

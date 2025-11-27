@@ -343,8 +343,8 @@ awaitable<void> DataManager::load_config(const std::string &config_file) {
   infile >> j;
   infile.close();
 
-  // Load stocks from config, default to empty if not present
-  stock_codes_ = j.value("stocks", std::vector<std::string>{});
+  // Stock codes are derived from assets.json (via set_stock_codes)
+  stock_codes_.clear();
 
   // Load L2 database date range
   if (j.contains("l2_database")) {
@@ -375,8 +375,10 @@ awaitable<void> DataManager::save_config(const std::string &config_file) {
   j["l2_database"]["date_range_start"] = l2_database_start_date_;
   j["l2_database"]["date_range_end"] = l2_database_end_date_;
 
-  // Stocks list
-  j["stocks"] = stock_codes_;
+  // Stock codes are now derived from assets.json and managed separately
+  // Keep this field for backward compatibility but it will be empty or stale
+  // Real source of truth: config/assets.json
+  // j["stocks"] = stock_codes_;  // Removed: redundant with assets.json
 
   // Metadata
   j["metadata"]["stock_info_last_update"] = stock_info_last_update_;

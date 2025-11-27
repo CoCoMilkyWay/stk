@@ -11,58 +11,79 @@ stk/
 │   └── app/               # 🐍 DataProvider_API / FileRepair / Util
 └── cpp/
     ├── include/
-    │   ├── shared/                       # 📦 跨模块数据层
-    │   │   ├── SharedData.hpp            # 📦 顶层数据容器 (全局状态)
-    │   │   ├── Config.hpp                # 📦 配置数据结构
-    │   │   └── GuiState.hpp              # 📦 GUI状态句柄 (持有指针)
-    │   ├── define/                       # 🔷 底层数据结构
-    │   │   ├── CBuffer.hpp               # 🔷 循环缓冲区
-    │   │   ├── FastBitmap.hpp            # 🔷 快速位图
-    │   │   └── MemPool.hpp               # 🔷 内存池
-    │   ├── lob/                          # 📊 限价订单簿引擎 (LOB)
-    │   │   ├── LimitOrderBook.hpp        # 📊 LOB主引擎: 维护买卖盘+撮合逻辑
-    │   │   └── LimitOrderBookDefine.hpp  # 📊 订单/价格档位数据结构
-    │   ├── codec/                        # 🔄 L2数据编解码
-    │   │   ├── L2_DataType.hpp           # 🔄 L2数据类型: 快照/逐笔成交/逐笔委托
-    │   │   ├── L2_Gateway_DataType.hpp   # 🔄 L2网关数据类型
-    │   │   ├── binary_decoder_L2.hpp     # 🔄 二进制解码: .bin -> L2对象
-    │   │   ├── binary_encoder_L2.hpp     # 🔄 二进制编码: L2对象 -> .bin
-    │   │   └── json_config.hpp           # 🔄 JSON配置解析
-    │   ├── features/                     # 🧮 特征工程 (多时间尺度)
-    │   │   ├── FeaturesDefine.hpp        # 🧮 特征定义: ID/元数据
-    │   │   ├── CoreCrosssection.hpp      # 🧮 截面特征核心: 横截面处理
-    │   │   ├── CoreSequential.hpp        # 🧮 序列特征核心: 时间序列处理
-    │   │   ├── FeaturesTick/             # 🧮 Tick级特征 (逐笔粒度)
-    │   │   ├── FeaturesMinute/           # 🧮 分钟级特征
-    │   │   ├── FeaturesHour/             # 🧮 小时级特征
-    │   │   └── backend/                  # 🧮 特征存储后端
-    │   ├── worker/                       # ⚡ 多线程工作流编排
-    │   │   ├── shared_state.hpp          # ⚡ Worker间共享状态
-    │   │   ├── io_worker.hpp             # ⚡ IO工作器: 文件读写
-    │   │   ├── encoding_worker.hpp       # ⚡ 编码工作器
-    │   │   ├── sequential_worker.hpp     # ⚡ 序列特征工作器
-    │   │   └── crosssectional_worker.hpp # ⚡ 截面特征工作器
-    │   ├── label/                        # 🏷️ 标签生成
-    │   │   └── LabelCalmar.hpp           # 🏷️ Calmar比率标签
-    │   ├── gui/                          # 🖥️ GUI (ImGui + 协程)
-    │   │   ├── Gui.hpp                   # 🖥️ GUI主循环: ImGui渲染 + 事件分发
-    │   │   ├── Config.hpp                # 🖥️ GUI配置: 颜色/字体/布局
-    │   │   ├── Tasks.hpp                 # 🖥️ 任务注册表
-    │   │   ├── util/Color.hpp            # 🖥️
-    │   │   ├── coro/                     # 🖥️ 协程基础设施
-    │   │   │   ├── CoroManager.hpp       # 🖥️ 协程管理器: 调度/生命周期
-    │   │   │   └── CoroUtils.hpp         # 🖥️ 协程工具
-    │   │   ├── task_terminal/            # 🖥️ GUI任务模块
-    │   │   │   └── TaskTerminal.hpp      # 🖥️ 终端: 命令输出/日志显示
-    │   │   ├── task_settings/            # 🖥️
-    │   │   │   └── TaskSettings.hpp      # 🖥️ 设置: 配置管理 [synced/syncing/writing]
-    │   │   ├── task_system_info/         # 🖥️
-    │   │   │   └── TaskSystemInfo.hpp    # 🖥️ 系统信息: CPU/内存/磁盘监控 [/live]
-    │   │   ├── task_icon_bar/            # 🖥️
-    │   │   │   ├── TaskIconBar.hpp       # 🖥️ 图标栏: 网络状态/FPS
-    │   │   │   └── CoroNetwork.hpp       # 🖥️ 网络子协程: 异步请求
-    │   │   └── task_crawler/             # 🖥️
-    │   │       └── CoroCrawler.hpp       # 🖥️ 爬虫: 数据抓取协程
+    │   ├── shared/                               # 📦 跨模块数据层
+    │   │   ├── SharedData.hpp                    # 📦 顶层数据容器 (全局状态)
+    │   │   ├── Config.hpp                        # 📦 配置数据结构
+    │   │   └── GuiState.hpp                      # 📦 GUI状态句柄 (持有指针)
+    │   ├── define/                               # 🔷 底层数据结构
+    │   │   ├── CBuffer.hpp                       # 🔷 循环缓冲区
+    │   │   ├── FastBitmap.hpp                    # 🔷 快速位图
+    │   │   └── MemPool.hpp                       # 🔷 内存池
+    │   ├── lob/                                  # 📊 限价订单簿引擎 (LOB)
+    │   │   ├── LimitOrderBook.hpp                # 📊 LOB主引擎: 维护买卖盘+撮合逻辑
+    │   │   └── LimitOrderBookDefine.hpp          # 📊 订单/价格档位数据结构
+    │   ├── codec/                                # 🔄 L2数据编解码
+    │   │   ├── L2_DataType.hpp                   # 🔄 L2数据类型: 快照/逐笔成交/逐笔委托
+    │   │   ├── L2_Gateway_DataType.hpp           # 🔄 L2网关数据类型
+    │   │   ├── binary_decoder_L2.hpp             # 🔄 二进制解码: .bin -> L2对象
+    │   │   ├── binary_encoder_L2.hpp             # 🔄 二进制编码: L2对象 -> .bin
+    │   │   └── json_config.hpp                   # 🔄 JSON配置解析
+    │   ├── features/                             # 🧮 特征工程 (多时间尺度)
+    │   │   ├── FeaturesDefine.hpp                # 🧮 特征定义: ID/元数据
+    │   │   ├── CoreCrosssection.hpp              # 🧮 截面特征核心: 横截面处理
+    │   │   ├── CoreSequential.hpp                # 🧮 序列特征核心: 时间序列处理
+    │   │   ├── FeaturesTick/                     # 🧮 Tick级特征 (逐笔粒度)
+    │   │   ├── FeaturesMinute/                   # 🧮 分钟级特征
+    │   │   ├── FeaturesHour/                     # 🧮 小时级特征
+    │   │   └── backend/                          # 🧮 特征存储后端
+    │   ├── worker/                               # ⚡ 多线程工作流编排
+    │   │   ├── shared_state.hpp                  # ⚡ Worker间共享状态
+    │   │   ├── io_worker.hpp                     # ⚡ IO工作器: 文件读写
+    │   │   ├── encoding_worker.hpp               # ⚡ 编码工作器
+    │   │   ├── sequential_worker.hpp             # ⚡ 序列特征工作器
+    │   │   └── crosssectional_worker.hpp         # ⚡ 截面特征工作器
+    │   ├── label/                                # 🏷️ 标签生成
+    │   │   └── LabelCalmar.hpp                   # 🏷️ Calmar比率标签
+    │   ├── gui/                                  # 🖥️ GUI (ImGui + 协程)
+    │   │   ├── Gui.hpp                           # 🖥️ GUI主循环: ImGui渲染 + 事件分发
+    │   │   ├── Config.hpp                        # 🖥️ GUI配置: 颜色/字体/布局
+    │   │   ├── Tasks.hpp                         # 🖥️ 任务注册表
+    │   │   ├── util/Color.hpp                    # 🖥️
+    │   │   ├── coro/                             # 🖥️ 协程基础设施
+    │   │   │   ├── CoroManager.hpp               # 🖥️ 协程管理器: 调度/生命周期
+    │   │   │   └── CoroUtils.hpp                 # 🖥️ 协程工具
+    │   │   ├── task_terminal/                    # 🖥️ GUI任务模块
+    │   │   │   └── TaskTerminal.hpp              # 🖥️ 终端: 命令输出/日志显示
+    │   │   ├── task_settings/                    # 🖥️
+    │   │   │   └── TaskSettings.hpp              # 🖥️ 设置: 配置管理 [synced/syncing/writing]
+    │   │   ├── task_system_info/                 # 🖥️
+    │   │   │   └── TaskSystemInfo.hpp            # 🖥️ 系统信息: CPU/内存/磁盘监控 [/live]
+    │   │   ├── task_icon_bar/                    # 🖥️
+    │   │   │   ├── TaskIconBar.hpp               # 🖥️ 图标栏: 网络状态/FPS
+    │   │   │   └── CoroNetwork.hpp               # 🖥️ 网络子协程: 异步请求
+    │   │   ├── task_crawler/                     # 🖥️
+    │   │   │   └── CoroCrawler.hpp               # 🖥️ 爬虫: 数据抓取协程
+    │   │   └── task_database/                    # 🖥️ 数据库管理
+    │   │       ├── TaskDatabase.hpp              # 🖥️ 数据库任务主界面
+    │   │       ├── models/                       # 🖥️ 数据模型
+    │   │       │   ├── SharedTypes.hpp           # 🖥️ 共享类型定义
+    │   │       │   ├── BaostockData.hpp          # 🖥️ Baostock数据模型
+    │   │       │   └── L2AssetData.hpp           # 🖥️ L2资产数据模型
+    │   │       ├── services/                     # 🖥️ 业务服务层
+    │   │       │   ├── StateManager.hpp          # 🖥️ 状态管理器
+    │   │       │   ├── BaostockService.hpp       # 🖥️ Baostock数据服务
+    │   │       │   ├── L2DatabaseService.hpp     # 🖥️ L2数据库服务
+    │   │       │   └── ClassifierService.hpp     # 🖥️ 分类器服务
+    │   │       ├── infrastructure/               # 🖥️ 基础设施层
+    │   │       │   ├── DataManager.hpp           # 🖥️ 数据管理器
+    │   │       │   ├── CoroScanner.hpp           # 🖥️ 协程扫描器
+    │   │       │   ├── BaostockClient.hpp        # 🖥️ Baostock客户端
+    │   │       │   └── BaostockPool.hpp          # 🖥️ Baostock连接池
+    │   │       └── ui/                           # 🖥️ UI组件
+    │   │           ├── TabOverview.hpp           # 🖥️ 概览标签页
+    │   │           ├── TabTable.hpp              # 🖥️ 表格标签页
+    │   │           ├── TabBrowser.hpp            # 🖥️ 浏览器标签页
+    │   │           └── CrossSectionAnalysis.hpp  # 🖥️ 横截面分析
     │   │   GUI布局:
     │   │   ┌───────────────────────────────────────────────────────────────────────────┐
     │   │   │ Tasks                                │ Panel:                             │
@@ -75,19 +96,20 @@ stk/
     │   │   │ Icon:                                │                                    │
     │   │   │  |Network|FPS│                       |                                    │
     │   │   └───────────────────────────────────────────────────────────────────────────┘
-    │   ├── math/                         # 📐 autoencoder / normalize / sample / model
-    │   ├── mining/                       # ⛏️ 数据挖掘(特征->因子)
-    │   ├── misc/                         # 🔧 logging / timer / progress / affinity
-    │   ├── package/nlohmann/             # 📚 JSON库
-    │   └── boost/                        # 📚 asio / beast / optional
-    ├── src/                              # 💾 源文件实现 (多数对应include/)
-    │   ├── main.cpp                      # 💾 程序入口
-    │   ├── gui/Run_OpenGL.cpp            # 💾 OpenGL后端入口
-    │   ├── gui/Run_Vulkan.cpp            # 💾 Vulkan后端入口
-    └── projects/main/                    # 🏗️ 构建系统
-        ├── build.sh                      # 🏗️ 构建脚本: 调用CMake
-        ├── CMakeLists.txt                # 🏗️ CMake配置 (C++23, Clang)
-        └── build/bin/app_main            # 🎯 最终可执行文件
+    │   ├── math/                                 # 📐 autoencoder / normalize / sample / model
+    │   ├── mining/                               # ⛏️ 数据挖掘(特征->因子)
+    │   ├── misc/                                 # 🔧 logging / timer / progress / affinity
+    │   ├── utils/                                # 🔧 工具函数
+    │   ├── package/nlohmann/                     # 📚 JSON库
+    │   └── boost/                                # 📚 asio / beast / optional
+    ├── src/                                      # 💾 源文件实现 (多数对应include/)
+    │   ├── main.cpp                              # 💾 程序入口
+    │   ├── gui/Run_OpenGL.cpp                    # 💾 OpenGL后端入口
+    │   ├── gui/Run_Vulkan.cpp                    # 💾 Vulkan后端入口
+    └── projects/main/                            # 🏗️ 构建系统
+        ├── build.sh                              # 🏗️ 构建脚本: 调用CMake
+        ├── CMakeLists.txt                        # 🏗️ CMake配置 (C++23, Clang)
+        └── build/bin/app_main                    # 🎯 最终可执行文件
 ```
 
 # ================================================

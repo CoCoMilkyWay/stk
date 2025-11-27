@@ -1,15 +1,11 @@
-// L2 Database Service - Encapsulates Scanner with clean interface
-// Manages L2 binary database scanning and statistics
+// L2 Database Service - Manages L2 binary database statistics
 #pragma once
 
-#include "gui/task_database/models/L2AssetData.hpp"
-#include "gui/task_database/models/SharedTypes.hpp"
+#include "shared/Asset.hpp"
+#include "shared/SharedData.hpp"
 #include <boost/asio/awaitable.hpp>
 #include <string>
 #include <vector>
-
-// Forward declarations
-struct Config;
 
 namespace GUI::Database {
 
@@ -21,53 +17,20 @@ using boost::asio::awaitable;
 
 class L2DatabaseService {
 private:
-  std::vector<AssetInfo> assets_;
-  std::vector<std::string> all_dates_;
-  std::string database_dir_;
-  const Config *config_ = nullptr;
-
-  L2ScanStatus scan_status_ = L2ScanStatus::NotScanned;
-  std::string error_message_;
-  bool scanned_once_ = false; // Flag to prevent repeated scans
-  
-  // Summary cache (only compute once)
-  mutable bool summary_computed_ = false;
-  mutable L2Summary cached_summary_;
+  SharedData &data_;
 
 public:
-  L2DatabaseService(const std::string &db_dir, const Config *config)
-      : database_dir_(db_dir), config_(config) {}
-
-  // ============================================================================
-  // Lifecycle
-  // ============================================================================
-
-  awaitable<void> scan_database();
-  awaitable<void> refresh_asset(size_t asset_idx);
+  L2DatabaseService(SharedData &data)
+      : data_(data) {}
 
   // ============================================================================
   // Data Access (Read-Only)
   // ============================================================================
+  // Note: No refresh methods needed - asset scanning done once at startup
 
-  const std::vector<AssetInfo> &get_assets() const { return assets_; }
-  const std::vector<std::string> &get_all_dates() const { return all_dates_; }
-
-  // ============================================================================
-  // Statistics
-  // ============================================================================
-
-  L2Summary get_summary(const std::string &backtest_start = "",
-                        const std::string &backtest_end = "",
-                        const std::vector<std::vector<std::string>> &trading_days = {}) const;
-
-  // ============================================================================
-  // Status Query
-  // ============================================================================
-
-  L2ScanStatus get_status() const { return scan_status_; }
-  bool is_scanned() const { return scanned_once_; }
-  bool is_scanning() const { return scan_status_ == L2ScanStatus::Scanning; }
-  const std::string &get_error_message() const { return error_message_; }
+  const std::vector<AssetItem> &get_assets() const { return data_.asset.items; }
+  const std::vector<std::string> &get_all_dates() const { return data_.asset.all_dates; }
+  const Asset &get_asset_data() const { return data_.asset; }
 };
 
 } // namespace GUI::Database

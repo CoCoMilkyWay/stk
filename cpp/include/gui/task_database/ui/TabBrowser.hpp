@@ -4,10 +4,9 @@
 #pragma once
 
 #include "gui/task_database/models/BaostockData.hpp"
-#include "gui/task_database/models/L2AssetData.hpp"
+#include "shared/Asset.hpp"
 #include <map>
 #include <string>
-#include <vector>
 
 namespace GUI::Database {
 
@@ -70,8 +69,7 @@ struct BrowserState {
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
-    const StockInfoMap &stock_info,
-    const std::vector<AssetInfo> &assets,
+    const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end,
     BrowserState &browser_state);

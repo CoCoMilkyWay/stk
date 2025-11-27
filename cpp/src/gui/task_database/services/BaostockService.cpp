@@ -81,7 +81,92 @@ awaitable<void> BaostockService::shutdown() {
 }
 
 // ============================================================================
-// JSON File Operations
+// Data Access (Getters)
+// ============================================================================
+
+const StockFactorMap &BaostockService::get_stock_factor_data() const {
+  return data_mgr_->get_stock_factor();
+}
+
+const StockInfoMap &BaostockService::get_stock_info_data() const {
+  return data_mgr_->get_stock_info();
+}
+
+const StockDaysVec &BaostockService::get_stock_days_data() const {
+  return data_mgr_->get_stock_days();
+}
+
+// ============================================================================
+// Ready Checks
+// ============================================================================
+
+bool BaostockService::is_stock_factor_ready() const {
+  return stock_factor_state_.status == JsonFileStatus::Ready;
+}
+
+bool BaostockService::is_stock_info_ready() const {
+  return stock_info_state_.status == JsonFileStatus::Ready;
+}
+
+bool BaostockService::is_stock_days_ready() const {
+  return stock_days_state_.status == JsonFileStatus::Ready;
+}
+
+bool BaostockService::all_ready() const {
+  return is_stock_factor_ready() &&
+         is_stock_info_ready() &&
+         is_stock_days_ready();
+}
+
+// ============================================================================
+// Status Summary
+// ============================================================================
+
+StatusSummary BaostockService::get_status_summary() const {
+  return data_mgr_->get_status_summary();
+}
+
+// ============================================================================
+// Integrity Checks
+// ============================================================================
+
+IntegrityResult BaostockService::check_integrity_stock_factor() {
+  auto result = data_mgr_->check_stock_factor_integrity();
+  stock_factor_state_.integrity_passed = result.passed;
+  stock_factor_state_.integrity_errors = result.errors;
+  stock_factor_state_.integrity_warnings = result.warnings;
+  return result;
+}
+
+IntegrityResult BaostockService::check_integrity_stock_info() {
+  auto result = data_mgr_->check_stock_info_integrity();
+  stock_info_state_.integrity_passed = result.passed;
+  stock_info_state_.integrity_errors = result.errors;
+  stock_info_state_.integrity_warnings = result.warnings;
+  return result;
+}
+
+IntegrityResult BaostockService::check_integrity_stock_days() {
+  auto result = data_mgr_->check_stock_days_integrity();
+  stock_days_state_.integrity_passed = result.passed;
+  stock_days_state_.integrity_errors = result.errors;
+  stock_days_state_.integrity_warnings = result.warnings;
+  return result;
+}
+
+IntegrityResult BaostockService::check_all_integrity() {
+  auto result = data_mgr_->check_all_integrity();
+
+  // Update all state integrity info
+  stock_factor_state_.integrity_passed = true;
+  stock_info_state_.integrity_passed = true;
+  stock_days_state_.integrity_passed = true;
+
+  return result;
+}
+
+// ============================================================================
+// Update Operations
 // ============================================================================
 
 awaitable<void> BaostockService::load_all_json() {
@@ -97,6 +182,7 @@ awaitable<void> BaostockService::load_all_json() {
 awaitable<void> BaostockService::update_stock_factor() {
   stock_factor_state_.status = JsonFileStatus::Updating;
   crawler_state_.status = CrawlerStatus::Running;
+  crawler_state_.progress.session_query_count = 0; // Clear query count at start
 
   co_await data_mgr_->update_stock_factor();
 
@@ -107,6 +193,7 @@ awaitable<void> BaostockService::update_stock_factor() {
 awaitable<void> BaostockService::update_stock_info() {
   stock_info_state_.status = JsonFileStatus::Updating;
   crawler_state_.status = CrawlerStatus::Running;
+  crawler_state_.progress.session_query_count = 0; // Clear query count at start
 
   // Load config to get stock codes
   const auto &stock_codes = data_mgr_->get_stock_codes();
@@ -189,6 +276,7 @@ awaitable<void> BaostockService::update_stock_info() {
 awaitable<void> BaostockService::update_stock_days() {
   stock_days_state_.status = JsonFileStatus::Updating;
   crawler_state_.status = CrawlerStatus::Running;
+  crawler_state_.progress.session_query_count = 0; // Clear query count at start
 
   co_await data_mgr_->update_stock_days();
 
@@ -198,12 +286,17 @@ awaitable<void> BaostockService::update_stock_days() {
 
 awaitable<void> BaostockService::update_all(const std::string &l2_database_start_date) {
   crawler_state_.status = CrawlerStatus::Running;
+  crawler_state_.progress.session_query_count = 0; // Clear query count at start
 
   co_await data_mgr_->update_all(l2_database_start_date);
 
   refresh_state();
   crawler_state_.status = CrawlerStatus::Complete;
 }
+
+// ============================================================================
+// Remove Operations
+// ============================================================================
 
 bool BaostockService::force_remove_stock_factor() {
   bool success = data_mgr_->force_remove_stock_factor();
@@ -231,91 +324,6 @@ bool BaostockService::force_remove_stock_days() {
     stock_days_state_.trading_days_count = 0;
   }
   return success;
-}
-
-// ============================================================================
-// Integrity Checks
-// ============================================================================
-
-IntegrityResult BaostockService::check_integrity_stock_factor() {
-  auto result = data_mgr_->check_stock_factor_integrity();
-  stock_factor_state_.integrity_passed = result.passed;
-  stock_factor_state_.integrity_errors = result.errors;
-  stock_factor_state_.integrity_warnings = result.warnings;
-  return result;
-}
-
-IntegrityResult BaostockService::check_integrity_stock_info() {
-  auto result = data_mgr_->check_stock_info_integrity();
-  stock_info_state_.integrity_passed = result.passed;
-  stock_info_state_.integrity_errors = result.errors;
-  stock_info_state_.integrity_warnings = result.warnings;
-  return result;
-}
-
-IntegrityResult BaostockService::check_integrity_stock_days() {
-  auto result = data_mgr_->check_stock_days_integrity();
-  stock_days_state_.integrity_passed = result.passed;
-  stock_days_state_.integrity_errors = result.errors;
-  stock_days_state_.integrity_warnings = result.warnings;
-  return result;
-}
-
-IntegrityResult BaostockService::check_all_integrity() {
-  auto result = data_mgr_->check_all_integrity();
-
-  // Update all state integrity info
-  stock_factor_state_.integrity_passed = true;
-  stock_info_state_.integrity_passed = true;
-  stock_days_state_.integrity_passed = true;
-
-  return result;
-}
-
-// ============================================================================
-// Data Access
-// ============================================================================
-
-const StockFactorMap &BaostockService::get_stock_factor_data() const {
-  return data_mgr_->get_stock_factor();
-}
-
-const StockInfoMap &BaostockService::get_stock_info_data() const {
-  return data_mgr_->get_stock_info();
-}
-
-const StockDaysVec &BaostockService::get_stock_days_data() const {
-  return data_mgr_->get_stock_days();
-}
-
-// ============================================================================
-// Ready Checks
-// ============================================================================
-
-bool BaostockService::is_stock_factor_ready() const {
-  return stock_factor_state_.status == JsonFileStatus::Ready;
-}
-
-bool BaostockService::is_stock_info_ready() const {
-  return stock_info_state_.status == JsonFileStatus::Ready;
-}
-
-bool BaostockService::is_stock_days_ready() const {
-  return stock_days_state_.status == JsonFileStatus::Ready;
-}
-
-bool BaostockService::all_ready() const {
-  return is_stock_factor_ready() &&
-         is_stock_info_ready() &&
-         is_stock_days_ready();
-}
-
-// ============================================================================
-// Status Summary
-// ============================================================================
-
-StatusSummary BaostockService::get_status_summary() const {
-  return data_mgr_->get_status_summary();
 }
 
 // ============================================================================

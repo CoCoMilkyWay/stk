@@ -2,9 +2,11 @@
 #include "gui/Tasks.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_database/services/BaostockService.hpp"
+#include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/L2DatabaseService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/task_database/ui/TabBrowser.hpp"
+#include "gui/task_database/ui/TabEncode.hpp"
 #include "gui/task_database/ui/TabOverview.hpp"
 #include "gui/task_database/ui/TabTable.hpp"
 #include "imgui.h"
@@ -26,10 +28,12 @@ class DatabaseTask {
 private:
   // Service layer
   std::unique_ptr<BaostockService> baostock_svc_;
+  std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<L2DatabaseService> l2_svc_;
   std::unique_ptr<StateManager> state_mgr_;
 
   // UI state
+  EncodeState encode_state_;
   TableState table_state_;
   BrowserState browser_state_;
   bool overview_tab_was_open_ = false;  // Track if Overview tab was open last frame
@@ -42,7 +46,8 @@ private:
   bool initialized_ = false;
   CoroManager *coro_mgr_ = nullptr;
   std::string database_dir_;
-  Config *config_ = nullptr; // Pointer to config for accessing backtest dates
+  SharedData *data_ = nullptr; // Pointer to shared data
+  Config *config_ = nullptr;   // Pointer to config for accessing backtest dates
   std::string config_dir_ = "../../config";
 
 public:
@@ -53,9 +58,25 @@ public:
   }
 
   const char *GetStatus() const {
-    if (!state_mgr_)
+    if (!state_mgr_ || !encoding_svc_)
       return "";
-    return state_mgr_->get_state().get_overall_status();
+
+    auto check_result = encoding_svc_->get_last_check_result();
+    const auto &state = state_mgr_->get_state();
+
+    // Priority: Error > Incomplete > Ready
+    if (check_result.status == DatabaseStatus::Error ||
+        check_result.status == DatabaseStatus::NoData ||
+        check_result.status == DatabaseStatus::NeedArchive) {
+      return "error";
+    }
+    if (check_result.status != DatabaseStatus::Pass) {
+      return "incomplete";
+    }
+    if (!state.all_json_ready()) {
+      return "incomplete";
+    }
+    return "ready";
   }
 
   void OnExpand() {
@@ -70,6 +91,7 @@ public:
     if (!coro_mgr_) {
       coro_mgr_ = gui_state.coro_mgr;
       database_dir_ = data.config.database_dir;
+      data_ = &data;
       config_ = &data.config;
     }
 
@@ -104,11 +126,11 @@ private:
           FlagReset scan_reset{l2_scan_inflight_};
           FlagReset update_reset{json_update_inflight_};
 
-          // Step 1: Scan L2 database first to get asset list and date range
-          co_await l2_svc_->scan_database();
+          // Assets are already loaded and scanned in StateManager::initialize()
+          // Just refresh state to update UI
           state_mgr_->refresh_state();
 
-          // Step 2: Extract stock codes and database start date from L2 scan results
+          // Step 2: Extract stock codes from shared data (already loaded from assets.json)
           const auto &assets = l2_svc_->get_assets();
           const auto &all_dates = l2_svc_->get_all_dates();
           std::vector<std::string> stock_codes;
@@ -165,8 +187,9 @@ private:
 
     // Create services
     baostock_svc_ = std::make_unique<BaostockService>(io, &data.config, gui_state.terminal);
-    l2_svc_ = std::make_unique<L2DatabaseService>(database_dir_, &data.config);
-    state_mgr_ = std::make_unique<StateManager>(baostock_svc_.get(), l2_svc_.get());
+    encoding_svc_ = std::make_unique<EncodingService>(data, io, gui_state.terminal);
+    l2_svc_ = std::make_unique<L2DatabaseService>(data);
+    state_mgr_ = std::make_unique<StateManager>(data, baostock_svc_.get(), encoding_svc_.get());
 
     // Initialize: login workers + load existing JSON
     // Non-blocking, user sees progress in terminal
@@ -182,56 +205,113 @@ private:
       return;
     }
 
+    // Refresh state before rendering
+    state_mgr_->refresh_state();
     const auto &state = state_mgr_->get_state();
 
+    // Get database check result
+    auto check_result = encoding_svc_->get_last_check_result();
+
     // Status indicator at top
-    ImGui::Text("Status: ");
+    ImGui::Text("Database Status: ");
     ImGui::SameLine();
-    if (state.all_json_ready()) {
-      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "[Ready]");
-    } else {
+
+    // Primary status: database coverage check
+    switch (check_result.status) {
+    case DatabaseStatus::Pass:
+      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "[Pass]");
+      if (!state.all_json_ready()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.95f, 0.3f, 1.0f), "(JSON Incomplete)");
+      }
+      break;
+
+    case DatabaseStatus::Incomplete:
       ImGui::TextColored(ImVec4(1.0f, 0.95f, 0.3f, 1.0f), "[Incomplete]");
       ImGui::SameLine();
-      ImGui::TextDisabled("(Update data in Overview tab)");
+      ImGui::TextDisabled("(Missing %zu dates, %zu can encode)",
+                          check_result.missing_dates.size(),
+                          check_result.missing_can_encode.size());
+      break;
+
+    case DatabaseStatus::NeedArchive:
+      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.0f, 1.0f), "[NeedArchive]");
+      ImGui::SameLine();
+      ImGui::TextDisabled("(Missing %zu dates without archive)",
+                          check_result.missing_no_archive.size());
+      break;
+
+    case DatabaseStatus::NotEncoded:
+      ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[NotEncoded]");
+      ImGui::SameLine();
+      ImGui::TextDisabled("(Archive available, need to encode)");
+      break;
+
+    case DatabaseStatus::NoData:
+    case DatabaseStatus::Error:
+      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "[ERROR]");
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", check_result.error_message.c_str());
+      break;
     }
 
     ImGui::Separator();
 
     // TabBar structure
     if (ImGui::BeginTabBar("DatabaseTabs", ImGuiTabBarFlags_None)) {
-      // Overview tab - always accessible
+      // Encode tab - always accessible (first step: create binary database)
+      if (ImGui::BeginTabItem("Encode")) {
+        DrawTabEncode();
+        ImGui::EndTabItem();
+      }
+
+      // Get tab access control (managed centrally)
+      const auto &tabs = state.tabs;
+
+      // Overview tab - unlocked when database check passes
+      ImGui::BeginDisabled(!tabs.can_access_overview);
       bool overview_tab_is_open = ImGui::BeginTabItem("Overview");
-      if (overview_tab_is_open) {
+      if (overview_tab_is_open && tabs.can_access_overview) {
         // Trigger refresh flow ONLY ONCE when first opening Overview tab
         if (!refresh_flow_triggered_ && !overview_tab_was_open_ && baostock_svc_ && l2_svc_ && !json_update_inflight_) {
           TriggerRefreshFlow();
           refresh_flow_triggered_ = true;
         }
-
         DrawTabOverview();
         ImGui::EndTabItem();
+      } else if (overview_tab_is_open) {
+        ImGui::EndTabItem();
+      }
+      ImGui::EndDisabled();
+
+      if (!tabs.can_access_overview && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Complete encoding in Encode tab first");
       }
       overview_tab_was_open_ = overview_tab_is_open;
 
-      // Table/Browser tabs - gated by data readiness
-      bool can_access = state_mgr_->can_access_table_tab();
-
-      ImGui::BeginDisabled(!can_access);
+      // Table tab - unlocked when all JSON files ready
+      ImGui::BeginDisabled(!tabs.can_access_table);
       if (ImGui::BeginTabItem("Table")) {
-        if (can_access)
+        if (tabs.can_access_table)
           DrawTabTable();
         ImGui::EndTabItem();
       }
+      ImGui::EndDisabled();
 
+      if (!tabs.can_access_table && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Update all JSON files in Overview tab first");
+      }
+
+      // Browser tab - unlocked when all JSON files ready
+      ImGui::BeginDisabled(!tabs.can_access_browser);
       if (ImGui::BeginTabItem("Browser")) {
-        if (can_access)
+        if (tabs.can_access_browser)
           DrawTabBrowser();
         ImGui::EndTabItem();
       }
       ImGui::EndDisabled();
 
-      // Tooltip for disabled tabs
-      if (!can_access && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      if (!tabs.can_access_browser && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         ImGui::SetTooltip("Update all JSON files in Overview tab first");
       }
 
@@ -261,7 +341,8 @@ private:
     // Get L2 summary (internally cached, will only compute once when JSONs are ready)
     std::string backtest_start = config_ ? config_->start_date : "";
     std::string backtest_end = config_ ? config_->end_date : "";
-    const auto &trading_days = baostock_svc_->get_stock_days_data();
+    // Trading days data available in baostock service if needed
+    // const auto &trading_days = baostock_svc_->get_stock_days_data();
 
     // Convert start_date and end_date from "YYYY-MM-DD" to "YYYYMMDD"
     if (!backtest_start.empty()) {
@@ -270,9 +351,6 @@ private:
     if (!backtest_end.empty()) {
       backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
     }
-
-    // get_summary() internally caches and only computes once
-    const auto &l2_summary = l2_svc_->get_summary(backtest_start, backtest_end, trading_days);
 
     const auto &stock_factor_state = baostock_svc_->get_stock_factor_state();
     const auto &stock_info_state = baostock_svc_->get_stock_info_state();
@@ -285,8 +363,7 @@ private:
                      stock_days_state.status == JsonFileStatus::Updating ||
                      crawler_state.status == CrawlerStatus::Running;
 
-    bool scan_busy = l2_scan_inflight_ ||
-                     l2_svc_->get_status() == L2ScanStatus::Scanning;
+    bool scan_busy = l2_scan_inflight_;
 
     bool check_integrity = false;
 
@@ -299,7 +376,6 @@ private:
         &stock_info_update, &stock_info_remove, &stock_info_view,
         &stock_days_update, &stock_days_remove, &stock_days_view,
         &update_all, &check_integrity, &refresh_scan,
-        l2_summary,
         json_busy,
         scan_busy);
 
@@ -324,13 +400,8 @@ private:
               state_mgr_->refresh_state();
             }
 
-            if (!state_mgr_->get_state().all_json_ready() || l2_scan_inflight_)
-              co_return;
-
-            l2_scan_inflight_ = true;
-            FlagReset scan_reset{l2_scan_inflight_};
-
-            co_await l2_svc_->scan_database();
+            // Assets are already scanned in StateManager::initialize()
+            // No need to rescan, just refresh state
             state_mgr_->refresh_state();
           }(),
           boost::asio::detached);
@@ -411,19 +482,9 @@ private:
     }
 
     if (refresh_scan && !json_update_inflight_ && !l2_scan_inflight_) {
-      l2_scan_inflight_ = true;
-      boost::asio::co_spawn(
-          coro_mgr_->GetIoContext(),
-          [this]() -> boost::asio::awaitable<void> {
-            struct FlagReset {
-              bool &flag;
-              ~FlagReset() { flag = false; }
-            } reset{l2_scan_inflight_};
-
-            co_await l2_svc_->scan_database();
-            state_mgr_->refresh_state();
-          }(),
-          boost::asio::detached);
+      // Assets are already scanned in StateManager::initialize()
+      // No need for async operation, just refresh state directly
+      state_mgr_->refresh_state();
     }
   }
 
@@ -438,11 +499,18 @@ private:
     RenderTabBrowser(
         baostock_svc_->get_stock_days_data(),
         baostock_svc_->get_stock_factor_data(),
-        baostock_svc_->get_stock_info_data(),
-        l2_svc_->get_assets(),
+        data_->asset,
         config_->start_date,
         config_->end_date,
         browser_state_);
+  }
+
+  void DrawTabEncode() {
+    if (!encoding_svc_ || !data_) {
+      ImGui::TextDisabled("Encoding service not initialized...");
+      return;
+    }
+    RenderTabEncode(encoding_svc_.get(), encode_state_, data_->asset);
   }
 };
 

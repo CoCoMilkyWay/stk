@@ -51,6 +51,7 @@ void Config::SyncStringBuffers() {
   snprintf(archive_tool_buf, sizeof(archive_tool_buf), "%s", archive_tool.c_str());
   snprintf(archive_extract_cmd_buf, sizeof(archive_extract_cmd_buf), "%s", archive_extract_cmd.c_str());
   snprintf(binary_extension_buf, sizeof(binary_extension_buf), "%s", binary_extension.c_str());
+  snprintf(assets_file_buf, sizeof(assets_file_buf), "%s", assets_file.c_str());
   snprintf(baostock_stock_factor_file_buf, sizeof(baostock_stock_factor_file_buf), "%s", baostock_stock_factor_file.c_str());
   snprintf(baostock_stock_info_file_buf, sizeof(baostock_stock_info_file_buf), "%s", baostock_stock_info_file.c_str());
   snprintf(baostock_stock_days_file_buf, sizeof(baostock_stock_days_file_buf), "%s", baostock_stock_days_file.c_str());
@@ -115,6 +116,7 @@ bool Config::LoadFromFile() {
   binary_extension = j.value("binary_extension", binary_extension);
 
   // Baostock configuration
+  assets_file = j.value("assets_file", assets_file);
   baostock_data_manager_config = j.value("baostock_data_manager_config", baostock_data_manager_config);
   baostock_stock_factor_file = j.value("baostock_stock_factor_file", baostock_stock_factor_file);
   baostock_stock_info_file = j.value("baostock_stock_info_file", baostock_stock_info_file);
@@ -146,6 +148,7 @@ bool Config::SaveToFile() {
   j["binary_extension"] = binary_extension;
 
   // Baostock configuration
+  j["assets_file"] = assets_file;
   j["baostock_data_manager_config"] = baostock_data_manager_config;
   j["baostock_stock_factor_file"] = baostock_stock_factor_file;
   j["baostock_stock_info_file"] = baostock_stock_info_file;

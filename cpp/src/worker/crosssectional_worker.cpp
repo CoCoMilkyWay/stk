@@ -1,5 +1,5 @@
 #include "worker/crosssectional_worker.hpp"
-#include "worker/shared_state.hpp"
+#include "shared/SharedData.hpp"
 
 #include "features/FeaturesTick/Tick_Crosssection.hpp"
 #include "features/backend/FeatureStore.hpp"
@@ -8,12 +8,12 @@
 #include <cstdio>
 #include <vector>
 
-void crosssectional_worker(const SharedState &state,
+void crosssectional_worker(SharedData &data,
                            GlobalFeatureStore *feature_store,
                            int worker_id,
                            misc::ProgressHandle progress_handle) {
 
-  const size_t total_dates = state.all_dates.size();
+  const size_t total_dates = data.asset.all_dates.size();
   size_t completed_dates = 0;
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to process");
@@ -27,8 +27,8 @@ void crosssectional_worker(const SharedState &state,
   valid_indices.reserve(A);
 
   // Date-first traversal
-  for (size_t date_idx = 0; date_idx < state.all_dates.size(); ++date_idx) {
-    const std::string &date_str = state.all_dates[date_idx];
+  for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
+    const std::string &date_str = data.asset.all_dates[date_idx];
     const size_t capacity = feature_store->query_T(0);
 
     // Update progress label

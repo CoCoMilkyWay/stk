@@ -103,33 +103,35 @@ include_directories(../../package/zstd-1.5.7)
 
 # Source files
 set(SOURCES
+    ../../src/shared/Config.cpp
+    ../../src/shared/Asset.cpp
+    ../../src/shared/GuiState.cpp
+    ../../src/misc/logging.cpp
+    ../../src/misc/file_check.cpp
     ../../src/codec/json_config.cpp
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
-    ../../src/misc/logging.cpp
-    ../../src/misc/file_check.cpp
     ../../src/worker/encoding_worker.cpp
     ../../src/worker/sequential_worker.cpp
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/io_worker.cpp
-    ../../src/shared/Config.cpp
-    ../../src/shared/GuiState.cpp
     ../../src/gui/Gui.cpp
     ../../src/gui/Tasks.cpp
     ../../src/gui/coro/CoroManager.cpp
-    ../../src/gui/task_icon_bar/CoroNetwork.cpp
     ../../src/gui/task_icon_bar/TaskIconBar.cpp
+    ../../src/gui/task_icon_bar/CoroNetwork.cpp
     ../../src/gui/task_crawler/CoroCrawler.cpp
-    ../../src/gui/task_database/models/L2AssetData.cpp
+    ../../src/gui/task_database/services/AssetLoader.cpp
+    ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/services/BaostockService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
-    ../../src/gui/task_database/services/StateManager.cpp
+    ../../src/gui/task_database/services/EncodingService.cpp
     ../../src/gui/task_database/infrastructure/DataManager.cpp
-    ../../src/gui/task_database/infrastructure/CoroScanner.cpp
     ../../src/gui/task_database/ui/TabOverview.cpp
     ../../src/gui/task_database/ui/TabTable.cpp
-    ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_database/ui/TabBrowser.cpp
+    ../../src/gui/task_database/ui/TabEncode.cpp
+    ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
@@ -161,7 +163,6 @@ set(HEADERS
     ../../include/codec/binary_encoder_L2.hpp
     ../../include/codec/L2_DataType.hpp
     ../../include/lob/LimitOrderBook.hpp
-    ../../include/worker/shared_state.hpp
     ../../include/worker/encoding_worker.hpp
     ../../include/worker/sequential_worker.hpp
     ../../include/worker/crosssectional_worker.hpp
@@ -174,10 +175,11 @@ set(HEADERS
     ../../include/gui/Tasks.hpp
     ../../include/gui/coro/CoroManager.hpp
     ../../include/gui/coro/CoroUtils.hpp
+    ../../include/gui/task_icon_bar/TaskIconBar.hpp
+    ../../include/gui/task_icon_bar/CoroNetwork.hpp
     ../../include/gui/task_crawler/CoroCrawler.hpp
     ../../include/gui/task_database/models/SharedTypes.hpp
     ../../include/gui/task_database/models/BaostockData.hpp
-    ../../include/gui/task_database/models/L2AssetData.hpp
     ../../include/gui/task_database/services/ClassifierService.hpp
     ../../include/gui/task_database/services/BaostockService.hpp
     ../../include/gui/task_database/services/L2DatabaseService.hpp
@@ -185,15 +187,12 @@ set(HEADERS
     ../../include/gui/task_database/infrastructure/BaostockClient.hpp
     ../../include/gui/task_database/infrastructure/BaostockPool.hpp
     ../../include/gui/task_database/infrastructure/DataManager.hpp
-    ../../include/gui/task_database/infrastructure/CoroScanner.hpp
     ../../include/gui/task_database/ui/TabOverview.hpp
     ../../include/gui/task_database/ui/TabTable.hpp
     ../../include/gui/task_database/ui/TabBrowser.hpp
     ../../include/gui/task_database/TaskDatabase.hpp
     ../../include/gui/task_settings/TaskSettings.hpp
     ../../include/gui/task_system_info/TaskSystemInfo.hpp
-    ../../include/gui/task_icon_bar/CoroNetwork.hpp
-    ../../include/gui/task_icon_bar/TaskIconBar.hpp
     ../../include/gui/task_terminal/TaskTerminal.hpp
 )
 
@@ -202,7 +201,7 @@ set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
     ../../src/gui/task_database/infrastructure/DataManager.cpp
-    ../../src/gui/task_database/infrastructure/CoroScanner.cpp
+    ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/BaostockService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/StateManager.cpp

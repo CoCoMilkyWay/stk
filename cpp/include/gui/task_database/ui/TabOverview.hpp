@@ -4,7 +4,7 @@
 #pragma once
 
 #include "gui/task_database/models/BaostockData.hpp"
-#include "gui/task_database/models/L2AssetData.hpp"
+#include "shared/Asset.hpp"
 
 namespace GUI::Database {
 
@@ -26,7 +26,6 @@ void RenderTabOverview(
     bool *update_all_clicked,
     bool *check_integrity_clicked,
     bool *refresh_scan_clicked,
-    const L2Summary &l2_summary,
     bool disable_update_controls,
     bool disable_scan_controls);
 

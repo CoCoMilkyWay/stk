@@ -248,7 +248,7 @@ def run_with_tsan_debug(binary_path, working_dir):
     log_dir = os.path.abspath("output/log")
     os.makedirs(log_dir, exist_ok=True)
     tsan_log = os.path.join(log_dir, "tsan_report.log")
-    
+
     # Configure TSan options: halt on first error
     env = os.environ.copy()
     tsan_options = [
@@ -259,12 +259,12 @@ def run_with_tsan_debug(binary_path, working_dir):
         "report_signal_unsafe=0",
     ]
     env['TSAN_OPTIONS'] = ':'.join(tsan_options)
-    
+
     print("Running with ThreadSanitizer (expect 5-15x slowdown)...")
     print(f"TSan report will be saved to: {tsan_log}\n")
-    
+
     start_time = time.time()
-    
+
     # Run and capture stderr (TSan output)
     result = subprocess.run(
         [binary_path],
@@ -273,38 +273,38 @@ def run_with_tsan_debug(binary_path, working_dir):
         stderr=subprocess.PIPE,
         text=True
     )
-    
+
     # Save stderr to file after process completes
     if result.stderr:
         with open(tsan_log, 'w') as log_file:
             log_file.write(result.stderr)
-    
+
     elapsed = time.time() - start_time
-    
+
     print(f"\n✓ TSan run completed")
     print(f"Execution time: {elapsed:.2f}s ({elapsed/60:.2f}min)")
-    
+
     # Show summary
     if os.path.exists(tsan_log) and os.path.getsize(tsan_log) > 0:
         print(f"\n{'='*80}")
         print("ThreadSanitizer Report")
         print(f"{'='*80}\n")
-        
+
         with open(tsan_log, 'r') as f:
             lines = f.readlines()
             # Show first 300 lines
             for line in lines[:300]:
                 print(line, end='')
-            
+
             if len(lines) > 300:
                 print(f"\n... ({len(lines) - 300} more lines)")
-        
+
         print(f"\n{'='*80}")
         print(f"Full report: {tsan_log}")
         print(f"{'='*80}\n")
     else:
         print(f"\n✓ No race conditions detected!")
-    
+
     sys.exit(result.returncode)
 
 

@@ -3,7 +3,6 @@
 
 #include "gui/task_database/ui/TabBrowser.hpp"
 #include "imgui.h"
-#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -25,9 +24,9 @@ constexpr ImVec4 BORDER_GREEN = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);   // 100%
 constexpr ImVec4 BORDER_YELLOW = ImVec4(0.95f, 0.9f, 0.2f, 1.0f); // 95-99%
 constexpr ImVec4 BORDER_RED = ImVec4(0.95f, 0.2f, 0.2f, 1.0f);    // <95%
 
-constexpr float CELL_SIZE = 12.0f;     // 12px cell
+constexpr float CELL_SIZE = 12.0f;       // 12px cell
 constexpr float BORDER_THICKNESS = 2.0f; // Border thickness in pixels (1/2/3)
-constexpr float MONTH_SPACING = 15.0f; // Space between months
+constexpr float MONTH_SPACING = 15.0f;   // Space between months
 
 // ============================================================================
 // Helper: Date conversion utilities
@@ -70,8 +69,7 @@ int GetDayOfWeek(const std::string &date_dense) {
 std::map<std::string, DailyStats> BuildDailyStats(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
-    const StockInfoMap &stock_info,
-    const std::vector<AssetInfo> &assets,
+    const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end) {
 
@@ -109,45 +107,14 @@ std::map<std::string, DailyStats> BuildDailyStats(
     }
   }
 
-  // Step 2: Count L2 data availability per date from assets
-  // For each date, count how many assets SHOULD be listed, then check data availability
-  for (auto &[date_dense, stats] : stats_map) {
-    for (const auto &asset : assets) {
-      // Build full stock code (e.g., "sh.600128") - convert to lowercase
-      std::string exchange_lower = asset.exchange;
-      std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-      std::string full_code = exchange_lower + "." + asset.asset_code;
-
-      // Get delisting date from stock_info (outDate is YYYY-MM-DD or empty)
-      std::string delist_date_dense;
-      auto info_it = stock_info.find(full_code);
-      if (info_it != stock_info.end() && !info_it->second.outDate.empty()) {
-        delist_date_dense = DateToDense(info_it->second.outDate);
-      }
-
-      // Check if asset should be listed on this date
-      // Listed if: date >= start_date AND (not delisted OR date <= delist_date)
-      if (date_dense < asset.start_date)
-        continue;
-      if (!delist_date_dense.empty() && date_dense > delist_date_dense)
-        continue;
-
-      // This asset should be listed on this date
-      stats.total_assets++;
-
-      // Check if we have L2 data for this asset on this date
-      auto date_it = asset.date_info.find(date_dense);
-      if (date_it != asset.date_info.end()) {
-        bool has_snapshots = date_it->second.snapshots_encoded;
-        bool has_orders = date_it->second.orders_encoded;
-
-        if (has_snapshots)
-          stats.assets_with_snapshots++;
-        if (has_orders)
-          stats.assets_with_orders++;
-        if (has_snapshots && has_orders)
-          stats.assets_with_both++;
-      }
+  // Step 2: Copy L2 data statistics from precomputed Asset::date_stats
+  for (const auto &[date_dense, date_stat] : asset_data.date_stats) {
+    auto it = stats_map.find(date_dense);
+    if (it != stats_map.end()) {
+      it->second.total_assets = date_stat.total_assets;
+      it->second.assets_with_snapshots = date_stat.assets_with_snapshots;
+      it->second.assets_with_orders = date_stat.assets_with_orders;
+      it->second.assets_with_both = date_stat.assets_with_both;
     }
   }
 
@@ -346,11 +313,12 @@ void RenderMonthGrid(
     const float x1 = floorf(cell_pos.x + CELL_SIZE);
     const float y1 = floorf(cell_pos.y + CELL_SIZE);
 
-    // Step 1: Determine border color
+    // Step 1: Determine border color (shows completeness only when total_assets > 0)
     ImU32 border_color = color_border_dark; // Default: dark gray
 
-    // For backtest trading days with completeness enabled: show green/yellow/red
-    if (state.layers.show_completeness && stats && stats->is_trading_day && stats->is_in_backtest_range) {
+    // For trading days with assets and completeness enabled: show green/yellow/red
+    // If total_assets == 0, it means this date is outside database range, keep default gray
+    if (state.layers.show_completeness && stats && stats->is_trading_day && stats->total_assets > 0) {
       float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all()
                            : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
                                                                              : stats->completeness_orders();
@@ -483,8 +451,7 @@ void RenderYearRow(
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
-    const StockInfoMap &stock_info,
-    const std::vector<AssetInfo> &assets,
+    const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end,
     BrowserState &browser_state) {
@@ -502,7 +469,7 @@ void RenderTabBrowser(
   // Build or reuse daily statistics cache
   if (browser_state.daily_stats_cache.empty()) {
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, stock_info, assets, backtest_start, backtest_end);
+        stock_days, stock_factors, asset_data, backtest_start, backtest_end);
   }
 
   // View Mode Selector and Refresh Button
@@ -525,7 +492,7 @@ void RenderTabBrowser(
   if (ImGui::Button("Refresh Data")) {
     browser_state.daily_stats_cache.clear();
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, stock_info, assets, backtest_start, backtest_end);
+        stock_days, stock_factors, asset_data, backtest_start, backtest_end);
   }
 
   // Layer Toggle Buttons
