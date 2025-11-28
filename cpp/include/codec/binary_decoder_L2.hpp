@@ -16,16 +16,20 @@ public:
   // Constructor with optional capacity hints for better memory allocation
   BinaryDecoder_L2(size_t estimated_snapshots = 100000, size_t estimated_orders = 500000);
 
-  // Decoder functions (zero-overhead design: vectors pre-sized once at worker init)
-  // Usage: resize vector once at init, decode writes directly, caller uses [0, count) range
+  // Decoder functions (zero-copy streaming design)
+  // Internal buffer is reused across decode calls for maximum efficiency
   
-  // decode_snapshots: writes to pre-sized vector, returns actual count via snapshot_num
-  // Returns false if: file error, decompression error, or count exceeds vector size
-  bool decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots, size_t &snapshot_num);
+  // decode_snapshots_stream: zero-copy streaming decode, returns pointer to internal buffer
+  // Returns: pointer to Snapshot array (valid until next decode_* call), or nullptr on error
+  // snapshot_num: output parameter for actual snapshot count
+  // Note: Caller must process snapshots before next decode call (buffer is reused)
+  const Snapshot* decode_snapshots_stream(const std::string &filepath, size_t &snapshot_num);
   
-  // decode_orders: writes to pre-sized vector, returns actual count via order_num
-  // Returns false if: file error, decompression error, or count exceeds vector size
-  bool decode_orders(const std::string &filepath, std::vector<Order> &orders, size_t &order_num);
+  // decode_orders_stream: zero-copy streaming decode, returns pointer to internal buffer
+  // Returns: pointer to Order array (valid until next decode_* call), or nullptr on error
+  // order_num: output parameter for actual order count
+  // Note: Caller must process orders before next decode call (buffer is reused)
+  const Order* decode_orders_stream(const std::string &filepath, size_t &order_num);
 
   // Zstandard decompression helper functions (pure standard decompression)
   static bool read_and_decompress_data(const std::string &filepath, void *data, size_t expected_size, size_t &actual_size);
@@ -70,6 +74,10 @@ private:
   mutable std::vector<uint8_t> temp_order_hours, temp_order_minutes, temp_order_seconds, temp_order_milliseconds;
   mutable std::vector<uint16_t> temp_order_prices;
   mutable std::vector<uint32_t> temp_bid_order_ids, temp_ask_order_ids;
+
+  // Streaming decompression buffer (reused across all decode calls for zero-allocation)
+  mutable std::vector<char> stream_decompression_buffer_;
+  mutable std::vector<char> stream_compressed_buffer_;
 
   static const char *order_type_to_string(uint8_t order_type);
   static const char *order_dir_to_string(uint8_t order_dir);

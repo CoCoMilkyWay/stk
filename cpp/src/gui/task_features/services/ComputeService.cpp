@@ -41,11 +41,11 @@ void ComputeService::start_compute(int num_workers) {
     // Filter dates to backtest period only
     std::string backtest_start = data_.config.start_date;
     std::string backtest_end = data_.config.end_date;
-    
+
     // Convert YYYY-MM-DD to YYYYMMDD
     backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
     backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
-    
+
     // Filter all_dates to backtest period
     std::vector<std::string> backtest_dates;
     for (const auto &date : data_.asset.all_dates) {
@@ -148,7 +148,7 @@ void ComputeService::start_compute(int num_workers) {
       worker.wait();
     progress_->stop();
     workers_.clear();
-    
+
     // Restore original all_dates
     data_.asset.all_dates = std::move(original_dates);
 

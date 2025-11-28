@@ -282,110 +282,156 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
 }
 
 // decoder functions
-bool BinaryDecoder_L2::decode_snapshots(const std::string &filepath, std::vector<Snapshot> &snapshots, size_t &snapshot_num) {
-  // First extract count from filename to estimate required size
+const Snapshot* BinaryDecoder_L2::decode_snapshots_stream(const std::string &filepath, size_t &snapshot_num) {
+  // Extract count from filename to calculate required buffer size
   size_t estimated_count = extract_count_from_filename(filepath);
-  if (estimated_count == 0) {
+  if (estimated_count == 0) [[unlikely]] {
     std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
-    std::exit(1);
+    return nullptr;
   }
 
-  // Calculate expected decompressed size
-  size_t header_size = sizeof(size_t); // size_t count
-  size_t snapshots_size = estimated_count * sizeof(Snapshot);
-  size_t expected_size = header_size + snapshots_size;
+  // Calculate buffer sizes
+  constexpr size_t header_size = sizeof(size_t); // size_t count
+  const size_t snapshots_size = estimated_count * sizeof(Snapshot);
+  const size_t decompressed_size = header_size + snapshots_size;
 
-  // Allocate buffer for decompressed data
-  auto data_buffer = std::make_unique<char[]>(expected_size);
-
-  // Read and decompress data
-  size_t actual_size;
-  if (!read_and_decompress_data(filepath, data_buffer.get(), expected_size, actual_size)) {
-    std::exit(1);
+  // Open file and read compression metadata
+  std::ifstream file(filepath, std::ios::binary);
+  if (!file.is_open()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to open file: " << filepath << std::endl;
+    return nullptr;
   }
 
-  // Extract count from decompressed data
+  size_t original_size, compressed_size;
+  file.read(reinterpret_cast<char*>(&original_size), sizeof(original_size));
+  file.read(reinterpret_cast<char*>(&compressed_size), sizeof(compressed_size));
+  
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
+    return nullptr;
+  }
+
+  // Verify size matches expectation
+  if (original_size != decompressed_size) [[unlikely]] {
+    std::cerr << "L2 Decoder: Size mismatch - expected " << decompressed_size
+              << " but header says " << original_size << std::endl;
+    return nullptr;
+  }
+
+  // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
+  if (stream_compressed_buffer_.size() < compressed_size) {
+    stream_compressed_buffer_.resize(compressed_size);
+  }
+  if (stream_decompression_buffer_.size() < decompressed_size) {
+    stream_decompression_buffer_.resize(decompressed_size);
+  }
+
+  // Read compressed data into reusable buffer
+  file.read(stream_compressed_buffer_.data(), compressed_size);
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
+    return nullptr;
+  }
+
+  // Streaming decompression: decompress directly to reusable buffer (zero-allocation hot path)
+  size_t decompressed_bytes = ZSTD_decompress(
+      stream_decompression_buffer_.data(), decompressed_size,
+      stream_compressed_buffer_.data(), compressed_size);
+
+  if (ZSTD_isError(decompressed_bytes)) [[unlikely]] {
+    std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_bytes) << std::endl;
+    return nullptr;
+  }
+
+  // Extract and verify count from decompressed header
   size_t count;
-  std::memcpy(&count, data_buffer.get(), header_size);
+  std::memcpy(&count, stream_decompression_buffer_.data(), header_size);
 
-  // Verify count matches filename
-  if (count != estimated_count) {
+  if (count != estimated_count) [[unlikely]] {
     std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count
               << " but data says " << count << std::endl;
-    std::exit(1);
+    return nullptr;
   }
 
-  // CRITICAL: Check if count exceeds vector SIZE (vector must be pre-sized at init)
-  // Vector should be resized ONCE in worker init, not here (zero-overhead reuse)
-  if (count > snapshots.size()) {
-    std::cerr << "L2 Decoder: FATAL: Snapshot count " << count 
-              << " exceeds vector size " << snapshots.size() 
-              << " for file " << filepath << std::endl;
-    std::cerr << "Solution: Increase decoded_snapshots.resize() in worker init" << std::endl;
-    std::exit(1);
-  }
-
-  // Extract snapshots directly into pre-allocated vector memory (zero overhead)
-  // No resize() per file - vector is sized once at worker init for maximum reuse
-  std::memcpy(snapshots.data(), data_buffer.get() + header_size, snapshots_size);
-  snapshot_num = count;  // Caller uses only [0, snapshot_num) range
-
-  // std::cout << "L2 Decoder: Successfully decoded " << snapshot_num << " snapshots from " << filepath << std::endl;
-
-  return true;
+  // Return pointer to Snapshot array (skip header) - ZERO COPY
+  snapshot_num = count;
+  return reinterpret_cast<const Snapshot*>(stream_decompression_buffer_.data() + header_size);
 }
 
-bool BinaryDecoder_L2::decode_orders(const std::string &filepath, std::vector<Order> &orders, size_t &order_num) {
-  // First extract count from filename to estimate required size
+const Order* BinaryDecoder_L2::decode_orders_stream(const std::string &filepath, size_t &order_num) {
+  // Extract count from filename to calculate required buffer size
   size_t estimated_count = extract_count_from_filename(filepath);
-  if (estimated_count == 0) {
+  if (estimated_count == 0) [[unlikely]] {
     std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
-    std::exit(1);
+    return nullptr;
   }
 
-  // Calculate expected decompressed size
-  size_t header_size = sizeof(size_t); // size_t count
-  size_t orders_size = estimated_count * sizeof(Order);
-  size_t expected_size = header_size + orders_size;
+  // Calculate buffer sizes
+  constexpr size_t header_size = sizeof(size_t); // size_t count
+  const size_t orders_size = estimated_count * sizeof(Order);
+  const size_t decompressed_size = header_size + orders_size;
 
-  // Allocate buffer for decompressed data
-  auto data_buffer = std::make_unique<char[]>(expected_size);
-
-  // Read and decompress data
-  size_t actual_size;
-  if (!read_and_decompress_data(filepath, data_buffer.get(), expected_size, actual_size)) {
-    std::exit(1);
+  // Open file and read compression metadata
+  std::ifstream file(filepath, std::ios::binary);
+  if (!file.is_open()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to open file: " << filepath << std::endl;
+    return nullptr;
   }
 
-  // Extract count from decompressed data
+  size_t original_size, compressed_size;
+  file.read(reinterpret_cast<char*>(&original_size), sizeof(original_size));
+  file.read(reinterpret_cast<char*>(&compressed_size), sizeof(compressed_size));
+  
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
+    return nullptr;
+  }
+
+  // Verify size matches expectation
+  if (original_size != decompressed_size) [[unlikely]] {
+    std::cerr << "L2 Decoder: Size mismatch - expected " << decompressed_size
+              << " but header says " << original_size << std::endl;
+    return nullptr;
+  }
+
+  // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
+  if (stream_compressed_buffer_.size() < compressed_size) {
+    stream_compressed_buffer_.resize(compressed_size);
+  }
+  if (stream_decompression_buffer_.size() < decompressed_size) {
+    stream_decompression_buffer_.resize(decompressed_size);
+  }
+
+  // Read compressed data into reusable buffer
+  file.read(stream_compressed_buffer_.data(), compressed_size);
+  if (file.fail()) [[unlikely]] {
+    std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
+    return nullptr;
+  }
+
+  // Streaming decompression: decompress directly to reusable buffer (zero-allocation hot path)
+  size_t decompressed_bytes = ZSTD_decompress(
+      stream_decompression_buffer_.data(), decompressed_size,
+      stream_compressed_buffer_.data(), compressed_size);
+
+  if (ZSTD_isError(decompressed_bytes)) [[unlikely]] {
+    std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_bytes) << std::endl;
+    return nullptr;
+  }
+
+  // Extract and verify count from decompressed header
   size_t count;
-  std::memcpy(&count, data_buffer.get(), header_size);
+  std::memcpy(&count, stream_decompression_buffer_.data(), header_size);
 
-  // Verify count matches filename
-  if (count != estimated_count) {
+  if (count != estimated_count) [[unlikely]] {
     std::cerr << "L2 Decoder: Count mismatch - filename says " << estimated_count
               << " but data says " << count << std::endl;
-    std::exit(1);
+    return nullptr;
   }
 
-  // CRITICAL: Check if count exceeds vector SIZE (vector must be pre-sized at init)
-  // Vector should be resized ONCE in worker init, not here (zero-overhead reuse)
-  if (count > orders.size()) {
-    std::cerr << "L2 Decoder: FATAL: Order count " << count 
-              << " exceeds vector size " << orders.size() 
-              << " for file " << filepath << std::endl;
-    std::cerr << "Solution: Increase decoded_orders.resize() in sequential_worker.cpp" << std::endl;
-    std::exit(1);
-  }
-
-  // Extract orders directly into pre-allocated vector memory (zero overhead)
-  // No resize() per file - vector is sized once at worker init for maximum reuse
-  std::memcpy(orders.data(), data_buffer.get() + header_size, orders_size);
-  order_num = count;  // Caller uses only [0, order_num) range
-
-  // std::cout << "L2 Decoder: Successfully decoded " << order_num << " orders from " << filepath << std::endl;
-
-  return true;
+  // Return pointer to Order array (skip header) - ZERO COPY
+  order_num = count;
+  return reinterpret_cast<const Order*>(stream_decompression_buffer_.data() + header_size);
 }
 
 // Zstandard decompression helper function (pure standard decompression)

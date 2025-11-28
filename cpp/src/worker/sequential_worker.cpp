@@ -68,11 +68,8 @@ void sequential_worker(SharedData &data,
   size_t cumulative_orders = 0;
   auto start_time = std::chrono::steady_clock::now();
 
-  // Preallocate decoded_orders vector once (zero-overhead reuse across all dates/assets)
-  // CRITICAL: Use resize() not reserve() - decode_orders writes directly to data()
-  // Using reserve() alone would leave size=0, making data() access undefined behavior
-  std::vector<L2::Order> decoded_orders;
-  decoded_orders.resize(1000000); // Size once at init, never resize again (max capacity)
+  // Zero-copy streaming: decoder maintains internal buffer, worker receives const pointer
+  // No memory allocation in worker - decoder reuses buffer across all decode calls
 
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
     const std::string &date_str = data.asset.all_dates[date_idx];
@@ -89,12 +86,12 @@ void sequential_worker(SharedData &data,
       if (it != asset.date_info.end() && it->second.has_binaries() && !it->second.orders_file.empty()) [[likely]] {
 
         size_t order_num = 0;
-        if (decoders[i]->decode_orders(it->second.orders_file, decoded_orders, order_num)) {
-          assert(order_num <= decoded_orders.size());
-
+        const L2::Order* orders = decoders[i]->decode_orders_stream(it->second.orders_file, order_num);
+        
+        if (orders != nullptr) [[likely]] {
           size_t order_invalid_cnt = 0;
           for (size_t ord_idx = 0; ord_idx < order_num; ++ord_idx) {
-            if (!lobs[i]->process(decoded_orders[ord_idx])) [[unlikely]] {
+            if (!lobs[i]->process(orders[ord_idx])) [[unlikely]] {
               ++order_invalid_cnt;
             }
           }
