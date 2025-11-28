@@ -120,7 +120,6 @@ set(SOURCES
     ../../src/gui/coro/CoroManager.cpp
     ../../src/gui/task_icon_bar/TaskIconBar.cpp
     ../../src/gui/task_icon_bar/CoroNetwork.cpp
-    ../../src/gui/task_crawler/CoroCrawler.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/services/BaostockService.cpp
@@ -177,7 +176,6 @@ set(HEADERS
     ../../include/gui/coro/CoroUtils.hpp
     ../../include/gui/task_icon_bar/TaskIconBar.hpp
     ../../include/gui/task_icon_bar/CoroNetwork.hpp
-    ../../include/gui/task_crawler/CoroCrawler.hpp
     ../../include/gui/task_database/models/SharedTypes.hpp
     ../../include/gui/task_database/models/BaostockData.hpp
     ../../include/gui/task_database/services/ClassifierService.hpp

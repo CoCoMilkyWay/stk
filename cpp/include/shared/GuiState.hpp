@@ -1,15 +1,11 @@
 #pragma once
-
-class TaskTerminal;
-class CoroManager;
-class CoroNetwork;
+#include "gui/task_terminal/TaskTerminal.hpp"
+#include "gui/coro/CoroManager.hpp"
 
 // GUI State - Container for GUI-specific state
-// Acts as a thin wrapper, actual implementations are in gui/ module
 struct GuiState {
-  TaskTerminal *terminal = nullptr;
-  CoroNetwork *network = nullptr;
-  CoroManager *coro_mgr = nullptr;
+  TaskTerminal terminal;
+  CoroManager coro_mgr;
 
   // High Performance Mode: GUI thread sleeps, all CPU for compute tasks
   // Use cases: encoding, feature calculation, heavy batch processing

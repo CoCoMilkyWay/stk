@@ -168,5 +168,11 @@ bool Config::SaveToFile() {
   if (log_callback) {
     log_callback("Config auto-saved to: " + filepath);
   }
+  
+  // Trigger GUI reinitialization after config save
+  if (reinit_callback) {
+    reinit_callback();
+  }
+  
   return true;
 }

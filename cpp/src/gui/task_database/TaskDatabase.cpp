@@ -88,9 +88,9 @@ public:
     is_expanded_ = false;
   }
 
-  void DrawPanel(SharedData &data, GuiState &gui_state) {
+  void DrawPanel(SharedData &data) {
     if (!coro_mgr_) {
-      coro_mgr_ = gui_state.coro_mgr;
+      coro_mgr_ = &data.gui.Coro();
       database_dir_ = data.config.database_dir;
       data_ = &data;
       config_ = &data.config;
@@ -98,7 +98,7 @@ public:
 
     // Initialize services on first draw (non-blocking)
     if (!initialized_) {
-      InitializeServices(data, gui_state);
+      InitializeServices(data);
       initialized_ = true;
     }
 
@@ -197,12 +197,12 @@ private:
         boost::asio::detached);
   }
 
-  void InitializeServices(SharedData &data, GuiState &gui_state) {
+  void InitializeServices(SharedData &data) {
     auto &io = coro_mgr_->GetIoContext();
 
     // Create services
-    baostock_svc_ = std::make_unique<BaostockService>(io, &data.config, gui_state.terminal);
-    encoding_svc_ = std::make_unique<EncodingService>(data, io, gui_state.terminal);
+    baostock_svc_ = std::make_unique<BaostockService>(io, &data.config, &data.gui.terminal);
+    encoding_svc_ = std::make_unique<EncodingService>(data, io, &data.gui.terminal);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
     state_mgr_ = std::make_unique<StateManager>(data, baostock_svc_.get(), encoding_svc_.get());
 
@@ -541,8 +541,8 @@ TaskHandle CreateDatabaseTask() {
   handle.GetStatus = [instance]() { return instance->GetStatus(); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
-  handle.DrawPanel = [instance](SharedData &data, GuiState &gui) {
-    instance->DrawPanel(data, gui);
+  handle.DrawPanel = [instance](SharedData &data) {
+    instance->DrawPanel(data);
   };
   handle.Destroy = [instance]() mutable { instance.reset(); };
 

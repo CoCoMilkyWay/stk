@@ -13,7 +13,7 @@ struct TaskHandle {
   std::function<const char *()> GetStatus;
   std::function<void()> OnExpand;
   std::function<void()> OnCollapse;
-  std::function<void(SharedData &, GuiState &)> DrawPanel;
+  std::function<void(SharedData &)> DrawPanel;
   std::function<void()> Destroy;
   std::shared_ptr<void> storage;
   void *task_instance = nullptr; // Optional raw pointer for debugging
@@ -26,5 +26,8 @@ std::vector<TaskHandle> CreateAllTasks();
 
 // Cleanup tasks
 void CleanupAllTasks(std::vector<TaskHandle> &tasks);
+
+// Reinitialize all tasks (cleanup + recreate)
+void ReinitAllTasks(std::vector<TaskHandle> &tasks, int &selected_task, SharedData &data);
 
 } // namespace GUI

@@ -4,7 +4,7 @@ struct GuiState;
 
 namespace GUI::TaskIconBar {
 
-void InitIconBar(GuiState &gui_state);
+void InitIconBar(GuiState &gui);
 void DrawIconBar();
 void CleanupIconBar();
 

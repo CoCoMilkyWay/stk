@@ -72,6 +72,9 @@ struct Config {
 
   // Log callback
   std::function<void(const std::string &)> log_callback;
+  
+  // Reinit callback (triggered after config save)
+  std::function<void()> reinit_callback;
 
   // Initialize config (load or create default)
   void Initialize();

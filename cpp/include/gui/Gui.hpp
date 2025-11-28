@@ -11,7 +11,6 @@ namespace GUI {
 void RunGUI();
 
 // Shared business logic: Draw GUI layout (used by both OpenGL and Vulkan)
-void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
-                   std::vector<TaskHandle> &tasks, int &selected_task);
+void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &selected_task);
 
 } // namespace GUI

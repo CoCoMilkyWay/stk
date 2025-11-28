@@ -2,7 +2,6 @@
 #include "gui/Tasks.hpp"
 #include "imgui.h"
 #include "implot.h"
-#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 #include <array>
 #include <chrono>
@@ -193,7 +192,7 @@ public:
     is_expanded = false;
   }
 
-  void DrawPanel(SharedData & /*data*/, GuiState & /*gui_state*/) {
+  void DrawPanel(SharedData & /*data*/) {
     // Dynamic stats update (only when expanded)
     if (is_expanded) {
       auto now = std::chrono::steady_clock::now();
@@ -1636,7 +1635,7 @@ TaskHandle CreateSystemInfoTask() {
   handle.GetStatus = [instance]() { return instance->GetStatus(); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
-  handle.DrawPanel = [instance](SharedData &data, GuiState &gui) { instance->DrawPanel(data, gui); };
+  handle.DrawPanel = [instance](SharedData &data) { instance->DrawPanel(data); };
   handle.Destroy = [instance]() mutable { instance.reset(); };
 
   return handle;

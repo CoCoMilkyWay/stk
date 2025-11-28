@@ -10,8 +10,7 @@
 namespace GUI {
 
 // Shared business logic: Draw GUI layout (called by both OpenGL and Vulkan pipelines)
-void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
-                   std::vector<TaskHandle> &tasks, int &selected_task) {
+void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &selected_task) {
 
   // Get window size
   int display_w = (int)ImGui::GetIO().DisplaySize.x;
@@ -77,7 +76,7 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
   ImGui::Begin("Panel", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
   if (selected_task >= 0 && selected_task < (int)tasks.size()) {
-    tasks[selected_task].DrawPanel(sharedData, guiState);
+    tasks[selected_task].DrawPanel(data);
   }
 
   ImGui::End();
@@ -89,12 +88,12 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
 
   // Clear button
   if (ImGui::Button("Clear")) {
-    guiState.terminal->Clear();
+    data.gui.terminal.Clear();
   }
   ImGui::SameLine();
-  bool auto_scroll = guiState.terminal->IsAutoScroll();
+  bool auto_scroll = data.gui.terminal.IsAutoScroll();
   if (ImGui::Checkbox("Auto-scroll", &auto_scroll)) {
-    guiState.terminal->SetAutoScroll(auto_scroll);
+    data.gui.terminal.SetAutoScroll(auto_scroll);
   }
 
   ImGui::Separator();
@@ -102,14 +101,14 @@ void DrawGUILayout(SharedData &sharedData, GuiState &guiState,
   // Terminal output area
   ImGui::BeginChild("TerminalOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-  guiState.terminal->ReadLines([](const std::vector<TaskTerminal::Line> &lines) {
+  data.gui.terminal.ReadLines([](const std::vector<TaskTerminal::Line> &lines) {
     for (const auto &line : lines) {
       ImGui::TextColored(ImVec4(line.color.r, line.color.g, line.color.b, line.color.a), "%s", line.text.c_str());
     }
   });
 
   // Auto-scroll to bottom
-  if (guiState.terminal->IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+  if (data.gui.terminal.IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
     ImGui::SetScrollHereY(1.0f);
   }
 

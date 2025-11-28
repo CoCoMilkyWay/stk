@@ -9,9 +9,10 @@ struct GuiState;
 #include "./GuiState.hpp"
 
 struct SharedData {
-  SharedData() = default;
-
   Config config;
   Asset asset;
-  GuiState *gui_state = nullptr;
+  GuiState gui;
+  
+  // Request full GUI reinitialization (triggered by config sync)
+  bool request_reinit = false;
 };

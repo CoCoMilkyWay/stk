@@ -402,7 +402,7 @@ static std::unique_ptr<CoroNetwork> g_coro_network;
 
 } // namespace
 
-void InitIconBar(GuiState &gui_state) {
+void InitIconBar(GuiState &gui) {
   if (!g_icon_bar) {
     g_icon_bar = new IconBar();
   }
@@ -420,7 +420,7 @@ void InitIconBar(GuiState &gui_state) {
     NetworkMonitor::Instance().Initialize(targets.size());
 
     // Start network monitoring coroutine
-    g_coro_network->Start(gui_state.Coro(), targets, std::chrono::seconds(5));
+    g_coro_network->Start(gui.Coro(), targets, std::chrono::seconds(5));
   }
 }
 

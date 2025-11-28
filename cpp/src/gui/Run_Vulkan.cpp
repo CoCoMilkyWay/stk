@@ -45,7 +45,7 @@ void glfw_error_callback(int error, const char *description) {
   char buffer[512];
   snprintf(buffer, sizeof(buffer), "GLFW Error %d: %s", error, description);
   if (g_gui_state) {
-    g_gui_state->terminal->AddLine(buffer);
+    g_gui_state->terminal.AddLine(buffer);
   }
 }
 
@@ -56,7 +56,7 @@ static void check_vk_result(VkResult err) {
   char buffer[256];
   snprintf(buffer, sizeof(buffer), "[Vulkan] Error: VkResult = %d", err);
   if (g_gui_state) {
-    g_gui_state->terminal->AddLine(buffer);
+    g_gui_state->terminal.AddLine(buffer);
   }
   if (err < 0) {
     abort();
@@ -220,7 +220,7 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, VkSurfaceKHR surface
   vkGetPhysicalDeviceSurfaceSupportKHR(g_PhysicalDevice, g_QueueFamily, wd->Surface, &res);
   if (res != VK_TRUE) {
     if (g_gui_state) {
-      g_gui_state->terminal->AddLine("Error: No WSI support on physical device");
+      g_gui_state->terminal.AddLine("Error: No WSI support on physical device");
     }
     exit(-1);
   }
@@ -344,17 +344,16 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
 }
 
 void RunGUI() {
-  // Initialize shared data
-  SharedData sharedData;
-
-  // Initialize GUI state
-  GuiState guiState;
-  TaskTerminal terminal;
-  guiState.terminal = &terminal;
-
-  // Link GUI state to shared data for logging
-  sharedData.gui_state = &guiState;
-  g_gui_state = &guiState;
+  // Initialize shared data (contains everything)
+  SharedData data;
+  
+  // Setup global state for logging
+  g_gui_state = &data.gui;
+  
+  // Setup config reinit callback
+  data.config.reinit_callback = [&data]() {
+    data.request_reinit = true;
+  };
 
   // Create GUI tasks
   auto tasks = GUI::CreateAllTasks();
@@ -366,25 +365,25 @@ void RunGUI() {
   }
 
   // Print startup banner
-  guiState.terminal->AddLine("=== Launching GUI ===", Color::Green());
-  guiState.terminal->AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
-  guiState.terminal->AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
-  guiState.terminal->AddLine("GPU 渲染库 : Vulkan", Color::Green());
-  guiState.terminal->AddLine("UI库(即时模式) : ImGui", Color::Green());
-  guiState.terminal->AddLine("绘图库 : ImPlot", Color::Green());
+  data.gui.terminal.AddLine("=== Launching GUI ===", Color::Green());
+  data.gui.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
+  data.gui.terminal.AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
+  data.gui.terminal.AddLine("GPU 渲染库 : Vulkan", Color::Green());
+  data.gui.terminal.AddLine("UI库(即时模式) : ImGui", Color::Green());
+  data.gui.terminal.AddLine("绘图库 : ImPlot", Color::Green());
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (Vulkan backend, %.0f FPS)", TARGET_FPS);
-  guiState.terminal->AddLine(init_msg, Color::Blue());
+  data.gui.terminal.AddLine(init_msg, Color::Blue());
 
   // Initialize icon bar with network monitoring
-  TaskIconBar::InitIconBar(guiState);
+  TaskIconBar::InitIconBar(data.gui);
 
   // Setup error callback
   glfwSetErrorCallback(glfw_error_callback);
 
   // Initialize GLFW
   if (!glfwInit()) {
-    guiState.terminal->AddLine("Failed to initialize GLFW");
+    data.gui.terminal.AddLine("Failed to initialize GLFW");
     return;
   }
 
@@ -392,13 +391,13 @@ void RunGUI() {
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   GLFWwindow *window = glfwCreateWindow(1920, 1080, "L2 Data Processor (Vulkan)", nullptr, nullptr);
   if (!window) {
-    guiState.terminal->AddLine("Failed to create GLFW window");
+    data.gui.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
     return;
   }
 
   if (!glfwVulkanSupported()) {
-    guiState.terminal->AddLine("GLFW: Vulkan Not Supported");
+    data.gui.terminal.AddLine("GLFW: Vulkan Not Supported");
     glfwDestroyWindow(window);
     glfwTerminate();
     return;
@@ -443,7 +442,7 @@ void RunGUI() {
   } else {
     // Fallback to default font
     io.Fonts->AddFontDefault();
-    guiState.terminal->AddLine("[Warning] Chinese font not found, using default font");
+    data.gui.terminal.AddLine("[Warning] Chinese font not found, using default font");
   }
 
   // Setup Platform/Renderer backends
@@ -464,17 +463,27 @@ void RunGUI() {
   init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
   ImGui_ImplVulkan_Init(&init_info);
 
-  guiState.terminal->AddLine("Vulkan initialized successfully");
+  data.gui.terminal.AddLine("Vulkan initialized successfully");
 
   // Main loop
   while (!glfwWindowShouldClose(window)) {
     double frame_start = 0.0;
+    
+    // Check for reinit request (triggered by config save)
+    if (data.request_reinit) {
+      data.gui.terminal.AddLine("=== Reinitializing GUI (config changed) ===", Color::Yellow());
+      
+      // Cleanup and recreate all tasks and state
+      GUI::ReinitAllTasks(tasks, selected_task, data);
+      
+      data.gui.terminal.AddLine("GUI reinitialized successfully", Color::Green());
+    }
 
     // High Performance Mode: GUI sleeps 5 seconds, all CPU for compute tasks
-    if (guiState.high_performance_mode) {
+    if (data.gui.high_performance_mode) {
       std::this_thread::sleep_for(std::chrono::seconds(5)); // 0.2 FPS
       glfwPollEvents();
-      guiState.Update(5.0f);
+      data.gui.Update(5.0f);
       continue; // Skip rendering entirely
     }
 
@@ -487,7 +496,7 @@ void RunGUI() {
     }
 
     // Update GUI state
-    guiState.Update(static_cast<float>(FRAME_TIME));
+    data.gui.Update(static_cast<float>(FRAME_TIME));
 
     // Resize swap chain?
     int fb_width, fb_height;
@@ -514,7 +523,7 @@ void RunGUI() {
     ImGui::NewFrame();
 
     // Draw GUI layout (shared business logic)
-    GUI::DrawGUILayout(sharedData, guiState, tasks, selected_task);
+    GUI::DrawGUILayout(data, tasks, selected_task);
 
     // Render
     ImGui::Render();

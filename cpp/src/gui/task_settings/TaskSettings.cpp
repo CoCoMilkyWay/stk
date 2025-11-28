@@ -175,12 +175,12 @@ private:
     return changed;
   }
 
-  void EnsureConfigReady(SharedData &data, GuiState &gui_state) {
+  void EnsureConfigReady(SharedData &data) {
     if (initial_sync_done) {
       return;
     }
-    data.config.log_callback = [&gui_state](const std::string &msg) {
-      gui_state.terminal->AddLine(msg);
+    data.config.log_callback = [&data](const std::string &msg) {
+      data.gui.terminal.AddLine(msg);
     };
     data.config.Initialize();
     initial_sync_done = true;
@@ -580,8 +580,8 @@ public:
     is_expanded = false;
   }
 
-  void DrawPanel(SharedData &data, GuiState &gui_state) {
-    EnsureConfigReady(data, gui_state);
+  void DrawPanel(SharedData &data) {
+    EnsureConfigReady(data);
     MaintainAutoSync(data.config);
 
     Config &cfg = data.config;
@@ -620,7 +620,7 @@ TaskHandle CreateSettingsTask() {
   handle.GetStatus = [instance]() { return instance->GetStatus(); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
-  handle.DrawPanel = [instance](SharedData &data, GuiState &gui) { instance->DrawPanel(data, gui); };
+  handle.DrawPanel = [instance](SharedData &data) { instance->DrawPanel(data); };
   handle.Destroy = [instance]() mutable { instance.reset(); };
 
   return handle;

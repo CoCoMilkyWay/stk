@@ -24,10 +24,8 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   start_time_ = std::chrono::steady_clock::now();
 
   // Enable High Performance Mode: GUI sleeps, all CPU for encoding
-  if (data_.gui_state) {
-    data_.gui_state->EnableHighPerformanceMode();
-    std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n" << std::endl;
-  }
+  data_.gui.EnableHighPerformanceMode();
+  std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n" << std::endl;
 
   // Launch encoding in background thread
   encoding_thread_ = std::async(std::launch::async, [this]() {
@@ -96,10 +94,8 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     std::cout << "\nDatabase: " << check.get_status_string() << std::endl;
 
     // Disable High Performance Mode: GUI resumes
-    if (data_.gui_state) {
-      data_.gui_state->DisableHighPerformanceMode();
-      std::cout << "\n[High Performance Mode] Disabled - GUI thread resumed\n" << std::endl;
-    }
+    data_.gui.DisableHighPerformanceMode();
+    std::cout << "\n[High Performance Mode] Disabled - GUI thread resumed\n" << std::endl;
   });
 }
 
