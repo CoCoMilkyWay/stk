@@ -168,12 +168,21 @@ DatabaseCheckResult EncodingService::check_database_coverage() {
   }
 
   // Scan databases (if not already scanned)
+  if (!data_.asset.binary.scanned || !data_.asset.archive.scanned) {
+    status_ = EncodingStatus::Scanning;
+  }
+  
   if (!data_.asset.binary.scanned) {
     data_.asset.scan_binary_database(data_.config.database_dir, data_.config.binary_extension);
   }
 
   if (!data_.asset.archive.scanned) {
     data_.asset.scan_archive_database(data_.config.archive_dir, data_.config.archive_extension);
+  }
+  
+  // Reset to Idle after scanning
+  if (status_ == EncodingStatus::Scanning) {
+    status_ = EncodingStatus::Idle;
   }
 
   // Compute backtest coverage (also calculates backtest range statistics)

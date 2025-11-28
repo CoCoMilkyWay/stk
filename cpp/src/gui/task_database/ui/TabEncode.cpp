@@ -89,7 +89,10 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
     ImGui::Text("Status:");
     ImGui::SameLine(150);
 
-    if (check_result.status == DatabaseStatus::Error) {
+    if (status == EncodingStatus::Scanning) {
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Scanning...");
+      ImGui::TextDisabled("Scanning database directories for coverage check");
+    } else if (check_result.status == DatabaseStatus::Error) {
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "ERROR");
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", check_result.error_message.c_str());
     } else if (check_result.status == DatabaseStatus::Pass) {

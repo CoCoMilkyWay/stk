@@ -25,6 +25,7 @@ using boost::asio::io_context;
 
 enum class EncodingStatus {
   Idle,
+  Scanning,  // Scanning database for coverage check
   Running,
   Completed,
   Cancelled,
