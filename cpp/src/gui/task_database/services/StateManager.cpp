@@ -33,8 +33,8 @@ awaitable<void> StateManager::initialize() {
   // This will populate archive metadata for coverage check
   data_.asset.scan_archive_database(data_.config.archive_dir, data_.config.archive_extension);
 
-  // Step 6: Check database coverage for backtest period
-  encoding_svc_->check_database_coverage();
+  // Step 6: Check database coverage for backtest period (async)
+  encoding_svc_->start_database_check();
 
   // Step 7: Initialize JSON files (fast, no network)
   // Workers will login lazily when first API call is made

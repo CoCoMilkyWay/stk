@@ -89,8 +89,9 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
               << "Encoded: " << data_.asset.binary.dates.size() << " dates" << std::endl;
 
-    // Check coverage
-    auto check = check_database_coverage();
+    // Check coverage (sync, we're already in background thread)
+    auto check = check_database_coverage_sync();
+    last_check_ = check;
     std::cout << "\nDatabase: " << check.get_status_string() << std::endl;
 
     // Disable High Performance Mode: GUI resumes
@@ -134,7 +135,21 @@ EncodingProgress EncodingService::get_progress() const {
   return prog;
 }
 
-DatabaseCheckResult EncodingService::check_database_coverage() {
+void EncodingService::start_database_check() {
+  if (status_ == EncodingStatus::Scanning) {
+    return; // Already scanning
+  }
+
+  status_ = EncodingStatus::Scanning;
+
+  // Launch async scan
+  scan_thread_ = std::async(std::launch::async, [this]() {
+    last_check_ = check_database_coverage_sync();
+    status_ = EncodingStatus::Idle;
+  });
+}
+
+DatabaseCheckResult EncodingService::check_database_coverage_sync() {
   namespace fs = std::filesystem;
   DatabaseCheckResult result;
 
@@ -168,21 +183,12 @@ DatabaseCheckResult EncodingService::check_database_coverage() {
   }
 
   // Scan databases (if not already scanned)
-  if (!data_.asset.binary.scanned || !data_.asset.archive.scanned) {
-    status_ = EncodingStatus::Scanning;
-  }
-  
   if (!data_.asset.binary.scanned) {
     data_.asset.scan_binary_database(data_.config.database_dir, data_.config.binary_extension);
   }
 
   if (!data_.asset.archive.scanned) {
     data_.asset.scan_archive_database(data_.config.archive_dir, data_.config.archive_extension);
-  }
-  
-  // Reset to Idle after scanning
-  if (status_ == EncodingStatus::Scanning) {
-    status_ = EncodingStatus::Idle;
   }
 
   // Compute backtest coverage (also calculates backtest range statistics)

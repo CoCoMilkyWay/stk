@@ -141,6 +141,7 @@ private:
   FileCheck::FileCheckResult file_check_result_; // Cache file check result
   
   std::future<void> encoding_thread_; // Background encoding thread
+  std::future<void> scan_thread_;     // Background scan thread
 
 public:
   EncodingService(SharedData &data, io_context &io, TaskTerminal *term);
@@ -155,8 +156,9 @@ public:
   bool is_running() const { return status_ == EncodingStatus::Running; }
   bool is_idle() const { return status_ == EncodingStatus::Idle || status_ == EncodingStatus::Completed || status_ == EncodingStatus::Cancelled; }
 
-  // Scan and check database coverage
-  DatabaseCheckResult check_database_coverage();
+  // Scan and check database coverage (async)
+  void start_database_check();
+  DatabaseCheckResult check_database_coverage_sync(); // Internal sync version
 
   // Get last check result
   const DatabaseCheckResult &get_last_check_result() const { return last_check_; }
