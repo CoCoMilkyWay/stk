@@ -1,0 +1,216 @@
+// Compute Service Implementation
+#include "gui/task_features/services/ComputeService.hpp"
+#include "features/backend/FeatureStore.hpp"
+#include "misc/affinity.hpp"
+#include "misc/logging.hpp"
+#include "shared/SharedData.hpp"
+#include "worker/crosssectional_worker.hpp"
+#include "worker/io_worker.hpp"
+#include "worker/sequential_worker.hpp"
+
+#include <algorithm>
+#include <iostream>
+
+namespace GUI::Features {
+
+ComputeService::ComputeService(SharedData &data)
+    : data_(data) {}
+
+ComputeService::~ComputeService() {
+  if (is_running()) {
+    stop_compute();
+  }
+}
+
+void ComputeService::start_compute(int num_workers) {
+  if (status_ == ComputeStatus::Running)
+    return;
+
+  status_ = ComputeStatus::Running;
+  cancel_flag_.store(false);
+  num_workers_ = num_workers;
+  start_time_ = std::chrono::steady_clock::now();
+
+  // Enable High Performance Mode: GUI sleeps, all CPU for computation
+  data_.gui.EnableHighPerformanceMode();
+  std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
+            << std::endl;
+
+  // Launch compute in background thread
+  compute_thread_ = std::async(std::launch::async, [this]() {
+    // Filter dates to backtest period only
+    std::string backtest_start = data_.config.start_date;
+    std::string backtest_end = data_.config.end_date;
+    
+    // Convert YYYY-MM-DD to YYYYMMDD
+    backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
+    backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
+    
+    // Filter all_dates to backtest period
+    std::vector<std::string> backtest_dates;
+    for (const auto &date : data_.asset.all_dates) {
+      if (date >= backtest_start && date <= backtest_end) {
+        backtest_dates.push_back(date);
+      }
+    }
+    
+    compute_total_dates_ = backtest_dates.size();
+    
+    std::cout << "\n=== Phase 2: Feature Computation ===\n"
+              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
+              << " | Total dates: " << data_.asset.all_dates.size() 
+              << " | Backtest dates: " << backtest_dates.size()
+              << " (" << backtest_start << " - " << backtest_end << ")\n"
+              << std::endl;
+
+    // Analysis phase: (N-2) TS workers + 1 CS worker + 1 Flush IO worker = N total workers
+    const unsigned int num_ts_workers = num_workers_ - 2;
+    const unsigned int cs_worker_core = num_workers_ - 2; // Second-to-last core for CS
+    const unsigned int io_worker_core = num_workers_ - 1; // Last core for Flush IO
+    const size_t num_assets = data_.asset.items.size();
+    const size_t total_dates = backtest_dates.size();
+
+    std::cout << "Worker configuration:\n"
+              << "  TS workers: " << num_ts_workers << " (cores 0-" << (num_ts_workers - 1) << ")\n"
+              << "  CS worker: 1 (core " << cs_worker_core << ")\n"
+              << "  IO worker: 1 (core " << io_worker_core << ")\n"
+              << std::endl;
+
+    // Load balancing: sort assets by order count
+    std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, order_count)
+    asset_workloads.reserve(data_.asset.items.size());
+
+    for (size_t i = 0; i < data_.asset.items.size(); ++i) {
+      asset_workloads.push_back({i, data_.asset.items[i].get_total_order_count()});
+    }
+
+    std::sort(asset_workloads.begin(), asset_workloads.end(),
+              [](const auto &a, const auto &b) { return a.second > b.second; });
+
+    // Greedy assignment: each asset goes to TS worker with minimum current load
+    std::vector<size_t> worker_loads(num_ts_workers, 0);
+
+    for (const auto &[asset_id, order_count] : asset_workloads) {
+      size_t min_worker = std::min_element(worker_loads.begin(), worker_loads.end()) - worker_loads.begin();
+      data_.asset.items[asset_id].assigned_worker_id = min_worker;
+      worker_loads[min_worker] += order_count;
+    }
+
+    std::cout << "Load balancing (assets per TS worker):\n";
+    for (size_t i = 0; i < num_ts_workers; ++i) {
+      size_t asset_count = std::count_if(data_.asset.items.begin(), data_.asset.items.end(), [i](const auto &a) { return a.assigned_worker_id == static_cast<int>(i); });
+      std::cout << "  Worker " << i << ": " << asset_count << " assets, "
+                << worker_loads[i] << " total orders\n";
+    }
+    std::cout << std::endl;
+    
+    // Temporarily replace all_dates with backtest_dates for workers
+    // Save original dates and restore after computation
+    std::vector<std::string> original_dates = std::move(data_.asset.all_dates);
+    data_.asset.all_dates = backtest_dates;
+
+    // Initialize global feature store
+    feature_store_ = std::make_unique<GlobalFeatureStore>(
+        num_assets, num_ts_workers, data_.config.feature_dir,
+        static_cast<int>(cs_worker_core), static_cast<int>(io_worker_core));
+
+    // Initialize logger for all workers (shared log file)
+    Logger::init(data_.config.log_dir);
+    Logger::reg("compute");
+
+    // Launch workers: IO + TS[] + CS
+    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_);
+    workers_.clear();
+    workers_.reserve(num_workers_);
+
+    // IO worker (core N-1, last core)
+    workers_.push_back(std::async(std::launch::async, [this, io_worker_core, total_dates]() {
+      if (misc::Affinity::supported()) {
+        misc::Affinity::pin_to_core(io_worker_core);
+      }
+      io_worker(feature_store_.get(), progress_->get_handle(static_cast<int>(io_worker_core)),
+                total_dates, static_cast<int>(io_worker_core));
+    }));
+
+    // TS workers (cores 0 to N-3)
+    for (unsigned int i = 0; i < num_ts_workers; ++i) {
+      workers_.push_back(std::async(std::launch::async, [this, i]() {
+        if (misc::Affinity::supported()) {
+          misc::Affinity::pin_to_core(i);
+        }
+        sequential_worker(data_, static_cast<int>(i), feature_store_.get(),
+                          progress_->get_handle(static_cast<int>(i)));
+      }));
+    }
+
+    // CS worker (core N-2, second-to-last core)
+    workers_.push_back(std::async(std::launch::async, [this, cs_worker_core]() {
+      if (misc::Affinity::supported()) {
+        misc::Affinity::pin_to_core(cs_worker_core);
+      }
+      crosssectional_worker(data_, feature_store_.get(), static_cast<int>(cs_worker_core),
+                            progress_->get_handle(static_cast<int>(cs_worker_core)));
+    }));
+
+    // Wait for completion
+    for (auto &worker : workers_)
+      worker.wait();
+    progress_->stop();
+    workers_.clear();
+    
+    // Restore original all_dates
+    data_.asset.all_dates = std::move(original_dates);
+
+    // Cleanup feature store
+    feature_store_.reset();
+
+    // Finalize
+    status_ = cancel_flag_.load() ? ComputeStatus::Cancelled : ComputeStatus::Completed;
+
+    std::cout << "\n=== Feature Computation "
+              << (status_ == ComputeStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
+              << "Processed: " << total_dates << " dates\n"
+              << std::endl;
+
+    // Disable High Performance Mode: GUI resumes
+    data_.gui.DisableHighPerformanceMode();
+    std::cout << "[High Performance Mode] Disabled - GUI thread resumed\n"
+              << std::endl;
+  });
+}
+
+void ComputeService::stop_compute() {
+  if (status_ != ComputeStatus::Running) {
+    return;
+  }
+
+  cancel_flag_.store(true);
+  std::cout << "[Compute] Cancelling..." << std::endl;
+
+  // Wait for compute thread to finish
+  if (compute_thread_.valid()) {
+    compute_thread_.wait();
+  }
+}
+
+ComputeProgress ComputeService::get_progress() const {
+  ComputeProgress prog;
+  prog.total_dates = data_.asset.all_dates.size();
+  prog.total_assets = data_.asset.items.size();
+  prog.completed_dates = 0; // TODO: track from feature store
+
+  prog.num_ts_workers = num_workers_ - 2;
+  prog.num_cs_workers = 1;
+  prog.num_io_workers = 1;
+
+  if (status_ == ComputeStatus::Running) {
+    prog.elapsed_seconds = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - start_time_)
+                               .count();
+    prog.compute_rate = prog.elapsed_seconds > 0 ? prog.completed_dates / prog.elapsed_seconds : 0;
+  }
+
+  return prog;
+}
+
+} // namespace GUI::Features
