@@ -12,26 +12,25 @@
 #include <memory>
 #include <vector>
 
-// Profiling control: signal external profiler when TS computation starts/ends
-// Only worker_0 sends signals to keep it simple (one worker is enough for profiling)
+// Profiling control: only profile worker_0 with gperftools
 #ifdef PROFILE_MODE
-#include <fstream>
-#include <unistd.h>
+#include <gperftools/profiler.h>
 
 namespace {
-// Signal file in exe working directory (build/)
-constexpr const char *PROFILE_FLAG = ".profile";
-
-void signal_profiler_start(int worker_id) {
+void start_profiling(int worker_id) {
   if (worker_id == 0) {
-    std::ofstream flag(PROFILE_FLAG);
-    flag << ::getpid() << std::endl; // Write PID for perf to attach
+    if (ProfilerStart("lob.prof")) {
+      Logger::log("profile", "Started");
+    } else {
+      Logger::log("profile", "ERROR: Failed to start!");
+    }
   }
 }
 
-void signal_profiler_stop(int worker_id) {
+void stop_profiling(int worker_id) {
   if (worker_id == 0) {
-    std::remove(PROFILE_FLAG);
+    ProfilerStop();
+    Logger::log("profile", "Stopped");
   }
 }
 } // namespace
@@ -78,8 +77,8 @@ void sequential_worker(SharedData &data,
                                                          std::to_string(total_orders) + " total orders");
 
 #ifdef PROFILE_MODE
-  // Signal external profiler: LOB computation starts (only worker_0)
-  signal_profiler_start(worker_id);
+  // Start profiling: only worker_0
+  start_profiling(worker_id);
 #endif
 
   // Progress label
@@ -166,7 +165,7 @@ void sequential_worker(SharedData &data,
   Logger::log("worker_" + std::to_string(worker_id), "Completed: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(data.asset.all_dates.size()) + " dates");
 
 #ifdef PROFILE_MODE
-  // Signal external profiler: LOB computation ends (only worker_0)
-  signal_profiler_stop(worker_id);
+  // Stop profiling: only worker_0
+  stop_profiling(worker_id);
 #endif
 }
