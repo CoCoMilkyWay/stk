@@ -80,71 +80,22 @@ public:
   // PUBLIC API: Order Processing
   //======================================================================================
 
-  // Process single order and update LOB state
+  // Process single order (live trading interface - keeps function boundary for hooks/monitoring)
   HOT_NOINLINE bool process(const L2::Order &order) {
-    // Parse timestamp
-    curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
-    new_tick_ = curr_tick_ != prev_tick_;
-    curr_sec_ = (curr_tick_ >> 8);
-    new_sec_ = curr_sec_ != prev_sec_;
+    return process_impl(order);
+  }
 
-    // Update feature timestamp (only on new tick)
-    if (new_tick_) {
-      LOB_feature_.hour = order.hour;
-      LOB_feature_.minute = order.minute;
-      LOB_feature_.second = order.second;
-      LOB_feature_.millisecond = order.millisecond;
-      update_trading_session_state();
+  // Process batch of orders (backtesting optimized - zero-overhead inlined loop)
+  // Returns count of invalid orders
+  HOT_INLINE size_t process_batch(const L2::Order *orders, size_t count) {
+    size_t invalid_count = 0;
+    for (size_t i = 0; i < count; ++i) {
+      if (!process_impl(orders[i])) [[unlikely]] {
+        ++invalid_count;
+      }
     }
-
-    // Parse order metadata (cache for reuse)
-    is_maker_ = (order.order_type == L2::OrderType::MAKER);
-    is_taker_ = (order.order_type == L2::OrderType::TAKER);
-    is_cancel_ = (order.order_type == L2::OrderType::CANCEL);
-    is_bid_ = (order.order_dir == L2::OrderDirection::BID);
-
-    // Update feature order metadata (every order)
-    LOB_feature_.is_maker = is_maker_;
-    LOB_feature_.is_taker = is_taker_;
-    LOB_feature_.is_cancel = is_cancel_;
-    LOB_feature_.is_bid = is_bid_;
-    LOB_feature_.price = order.price;
-    LOB_feature_.volume = order.volume;
-
-    // Detect transition from matching period to continuous trading
-    static bool was_in_matching_period = false; // only inited at 1st call of process(), persist across calls
-    if (was_in_matching_period && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
-      flush_call_auction_flags();
-    }
-    was_in_matching_period = in_matching_period_;
-
-    // ==================== depth update triggered =======================
-
-    // // Process resampling (only for TAKER orders)
-    // if (is_taker_) {
-    //   if (resampler_.resample(curr_tick_, is_bid_, order.volume)) {
-    //     // std::cout << "[RESAMPLE] Bar formed at " << format_time() << std::endl;
-    //   }
-    // }
-
-    // 计算特征(depth 更新后)
-    if (update_depth()) {
-#if DEBUG_BOOK_PRINT
-      print_book();
-#endif
-
-      // Trigger sequential core (handles 3-level cascade with resampling internally)
-      core_sequential_.compute_and_store();
-    }
-
-    // ========================= lob update ==============================
-    bool result = update_lob(order);
-
-    prev_tick_ = curr_tick_;
-    prev_sec_ = curr_tick_ >> 8;
-
-    return result;
-  };
+    return invalid_count;
+  }
 
   //======================================================================================
   // PUBLIC API: Utilities
@@ -758,6 +709,73 @@ private:
   //======================================================================================
   // HIGH-LEVEL PROCESSING (高层处理逻辑)
   //======================================================================================
+
+  // Core order processing implementation (shared by single/batch interfaces)
+  // Always inlined for zero-overhead - single order overhead moved here
+  [[gnu::always_inline]] inline bool process_impl(const L2::Order &order) {
+    // Parse timestamp
+    curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
+    new_tick_ = curr_tick_ != prev_tick_;
+    curr_sec_ = (curr_tick_ >> 8);
+    new_sec_ = curr_sec_ != prev_sec_;
+
+    // Update feature timestamp (only on new tick)
+    if (new_tick_) {
+      LOB_feature_.hour = order.hour;
+      LOB_feature_.minute = order.minute;
+      LOB_feature_.second = order.second;
+      LOB_feature_.millisecond = order.millisecond;
+      update_trading_session_state();
+    }
+
+    // Parse order metadata (cache for reuse)
+    is_maker_ = (order.order_type == L2::OrderType::MAKER);
+    is_taker_ = (order.order_type == L2::OrderType::TAKER);
+    is_cancel_ = (order.order_type == L2::OrderType::CANCEL);
+    is_bid_ = (order.order_dir == L2::OrderDirection::BID);
+
+    // Update feature order metadata (every order)
+    LOB_feature_.is_maker = is_maker_;
+    LOB_feature_.is_taker = is_taker_;
+    LOB_feature_.is_cancel = is_cancel_;
+    LOB_feature_.is_bid = is_bid_;
+    LOB_feature_.price = order.price;
+    LOB_feature_.volume = order.volume;
+
+    // Detect transition from matching period to continuous trading
+    static bool was_in_matching_period = false; // only inited at 1st call of process(), persist across calls
+    if (was_in_matching_period && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
+      flush_call_auction_flags();
+    }
+    was_in_matching_period = in_matching_period_;
+
+    // ==================== depth update triggered =======================
+
+    // // Process resampling (only for TAKER orders)
+    // if (is_taker_) {
+    //   if (resampler_.resample(curr_tick_, is_bid_, order.volume)) {
+    //     // std::cout << "[RESAMPLE] Bar formed at " << format_time() << std::endl;
+    //   }
+    // }
+
+    // 计算特征(depth 更新后)
+    if (update_depth()) {
+#if DEBUG_BOOK_PRINT
+      print_book();
+#endif
+
+      // Trigger sequential core (handles 3-level cascade with resampling internally)
+      core_sequential_.compute_and_store();
+    }
+
+    // ========================= lob update ==============================
+    bool result = update_lob(order);
+
+    prev_tick_ = curr_tick_;
+    prev_sec_ = curr_tick_ >> 8;
+
+    return result;
+  }
 
   // Helper: Process one taker side (for bilateral or unilateral)
   // Returns: true if order was fully consumed

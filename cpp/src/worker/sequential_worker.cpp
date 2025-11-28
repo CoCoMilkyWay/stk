@@ -89,12 +89,8 @@ void sequential_worker(SharedData &data,
         const L2::Order* orders = decoders[i]->decode_orders_stream(it->second.orders_file, order_num);
         
         if (orders != nullptr) [[likely]] {
-          size_t order_invalid_cnt = 0;
-          for (size_t ord_idx = 0; ord_idx < order_num; ++ord_idx) {
-            if (!lobs[i]->process(orders[ord_idx])) [[unlikely]] {
-              ++order_invalid_cnt;
-            }
-          }
+          // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
+          size_t order_invalid_cnt = lobs[i]->process_batch(orders, order_num);
 
           if (order_invalid_cnt > 100) {
             Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " order_invalid=" + std::to_string(order_invalid_cnt));
