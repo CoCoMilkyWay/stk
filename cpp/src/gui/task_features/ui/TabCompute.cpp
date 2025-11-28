@@ -3,15 +3,24 @@
 #include "gui/task_features/services/ComputeService.hpp"
 #include "misc/affinity.hpp"
 #include "shared/Asset.hpp"
+#include "shared/Config.hpp"
 
 #include "imgui.h"
 
 namespace GUI::Features {
 
-void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/) {
+void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/, Config &config) {
   const auto status = service->get_status();
   const auto progress = service->get_progress();
   const bool is_running = status == ComputeStatus::Running;
+
+  // Close popup and reset state when computation finishes or is not running
+  if (!is_running && state.show_warning_popup && state.trigger_start) {
+    state.show_warning_popup = false;
+    state.warning_display_time = 0.0f;
+    state.trigger_start = false;
+    ImGui::CloseCurrentPopup();
+  }
 
   ImGui::TextWrapped("Feature Computation - Multi-threaded feature extraction from binary database");
   ImGui::Spacing();
@@ -144,60 +153,62 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   } else {
     if (ImGui::Button("Start Compute", ImVec2(200, 30))) {
       state.show_warning_popup = true;
-      state.warning_popup_timer = 0.0f;
+      state.warning_display_time = 0.0f;
     }
   }
 
-  // Warning popup with auto-start
+  // Info popup (will be displayed for a moment before GUI enters sleep mode)
   if (state.show_warning_popup) {
-    ImGui::OpenPopup("Feature Computation Warning##Compute");
-    state.show_warning_popup = false;
+    // Set popup position to center on first frame
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::OpenPopup("Feature Computation##Compute");
   }
 
-  if (ImGui::BeginPopupModal("Feature Computation Warning##Compute", nullptr, 
-                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+  if (ImGui::BeginPopupModal("Feature Computation##Compute", nullptr,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f));
-    ImGui::TextWrapped("NOTICE: Starting Feature Computation");
+    ImGui::Text("Feature Computation Starting");
     ImGui::PopStyleColor();
-    
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    
-    ImGui::TextWrapped("The following will happen:");
-    ImGui::BulletText("GUI will enter sleep mode (unresponsive)");
-    ImGui::BulletText("All %d CPU cores will be used for computation", actual_workers);
-    ImGui::BulletText("Extract features from binary database");
-    ImGui::BulletText("Process backtest period dates only");
-    ImGui::BulletText("This may take several minutes or hours");
-    
+
+    ImGui::Text("Backtest Period:");
+    ImGui::Indent();
+    ImGui::BulletText("Start: %s", config.start_date.c_str());
+    ImGui::BulletText("End: %s", config.end_date.c_str());
+    ImGui::Unindent();
+
+    ImGui::Spacing();
+    ImGui::Text("System Status:");
+    ImGui::Indent();
+    ImGui::BulletText("GUI entering sleep mode");
+    ImGui::BulletText("Using %d CPU cores", actual_workers);
+    ImGui::BulletText("Processing backtest period only");
+    ImGui::Unindent();
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    
-    // Auto-start countdown
-    const float auto_start_delay = 3.0f; // 3 seconds
-    state.warning_popup_timer += ImGui::GetIO().DeltaTime;
-    
-    if (state.warning_popup_timer < auto_start_delay) {
-      float remaining = auto_start_delay - state.warning_popup_timer;
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), 
-                        "Starting in %.1f seconds...", remaining);
-      ImGui::ProgressBar(state.warning_popup_timer / auto_start_delay, ImVec2(-1, 0));
+
+    // Wait a moment for popup to fully render before starting
+    // Only increment timer if not already triggered
+    if (!state.trigger_start) {
+      const float display_delay = 0.5f; // 0.5 seconds
+      state.warning_display_time += ImGui::GetIO().DeltaTime;
+
+      if (state.warning_display_time >= display_delay) {
+        // Trigger start after delay (only once)
+        state.trigger_start = true;
+      } else {
+        ImGui::TextWrapped("Preparing to start...");
+      }
     } else {
-      // Auto-start triggered
-      state.trigger_start = true;
-      ImGui::CloseCurrentPopup();
+      ImGui::TextWrapped("Starting computation...");
     }
-    
-    ImGui::Spacing();
-    
-    // Manual cancel button
-    if (ImGui::Button("Cancel", ImVec2(-1, 0))) {
-      state.warning_popup_timer = 0.0f;
-      ImGui::CloseCurrentPopup();
-    }
-    
+
     ImGui::EndPopup();
   }
 }

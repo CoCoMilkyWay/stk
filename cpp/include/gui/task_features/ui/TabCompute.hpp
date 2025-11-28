@@ -9,6 +9,7 @@ struct ComputeProgress;
 } // namespace GUI::Features
 
 struct Asset;
+struct Config;
 
 namespace GUI::Features {
 
@@ -21,7 +22,7 @@ struct ComputeState {
 
   // Compute dialog states
   bool show_warning_popup = false;
-  float warning_popup_timer = 0.0f; // Auto-close timer
+  float warning_display_time = 0.0f; // Time to display warning before starting
   
   // Trigger for starting compute (set by UI, consumed by TaskFeatures)
   bool trigger_start = false;
@@ -34,6 +35,7 @@ struct ComputeState {
 void RenderTabCompute(
     ComputeService *service,
     ComputeState &state,
-    Asset &asset);
+    Asset &asset,
+    Config &config);
 
 } // namespace GUI::Features

@@ -93,7 +93,7 @@ TaskHandle CreateFeaturesTask() {
       // Tab: Compute
       if (ImGui::BeginTabItem("Compute")) {
         ImGui::Spacing();
-        Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset);
+        Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset, data.config);
         ImGui::EndTabItem();
       }
 
