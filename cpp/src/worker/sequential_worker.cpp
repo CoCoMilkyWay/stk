@@ -12,6 +12,31 @@
 #include <memory>
 #include <vector>
 
+// Profiling control: signal external profiler when TS computation starts/ends
+// Only worker_0 sends signals to keep it simple (one worker is enough for profiling)
+#ifdef PROFILE_MODE
+#include <fstream>
+#include <unistd.h>
+
+namespace {
+// Signal file in exe working directory (build/)
+constexpr const char *PROFILE_FLAG = ".profile";
+
+void signal_profiler_start(int worker_id) {
+  if (worker_id == 0) {
+    std::ofstream flag(PROFILE_FLAG);
+    flag << ::getpid() << std::endl; // Write PID for perf to attach
+  }
+}
+
+void signal_profiler_stop(int worker_id) {
+  if (worker_id == 0) {
+    std::remove(PROFILE_FLAG);
+  }
+}
+} // namespace
+#endif
+
 void sequential_worker(SharedData &data,
                        int worker_id,
                        GlobalFeatureStore *feature_store,
@@ -52,6 +77,11 @@ void sequential_worker(SharedData &data,
                                                          std::to_string(data.asset.all_dates.size()) + " dates, " +
                                                          std::to_string(total_orders) + " total orders");
 
+#ifdef PROFILE_MODE
+  // Signal external profiler: LOB computation starts (only worker_0)
+  signal_profiler_start(worker_id);
+#endif
+
   // Progress label
   char label_buf[128];
   if (!my_asset_ids.empty()) {
@@ -86,8 +116,8 @@ void sequential_worker(SharedData &data,
       if (it != asset.date_info.end() && it->second.has_binaries() && !it->second.orders_file.empty()) [[likely]] {
 
         size_t order_num = 0;
-        const L2::Order* orders = decoders[i]->decode_orders_stream(it->second.orders_file, order_num);
-        
+        const L2::Order *orders = decoders[i]->decode_orders_stream(it->second.orders_file, order_num);
+
         if (orders != nullptr) [[likely]] {
           // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
           size_t order_invalid_cnt = lobs[i]->process_batch(orders, order_num);
@@ -134,4 +164,9 @@ void sequential_worker(SharedData &data,
   }
 
   Logger::log("worker_" + std::to_string(worker_id), "Completed: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(data.asset.all_dates.size()) + " dates");
+
+#ifdef PROFILE_MODE
+  // Signal external profiler: LOB computation ends (only worker_0)
+  signal_profiler_stop(worker_id);
+#endif
 }

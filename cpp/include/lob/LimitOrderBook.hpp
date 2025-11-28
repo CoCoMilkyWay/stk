@@ -711,8 +711,7 @@ private:
   //======================================================================================
 
   // Core order processing implementation (shared by single/batch interfaces)
-  // Always inlined for zero-overhead - single order overhead moved here
-  [[gnu::always_inline]] inline bool process_impl(const L2::Order &order) {
+  HOT_INLINE bool process_impl(const L2::Order &order) {
     // Parse timestamp
     curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
     new_tick_ = curr_tick_ != prev_tick_;

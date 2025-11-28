@@ -32,7 +32,7 @@ APP_NAME = "main"
 # Build & Run modes (set ONE to True, others to False)
 # Priority: TSAN > DEBUG > PROFILE > PRODUCTION
 ENABLE_TSAN = False  # ThreadSanitizer: race condition detection (-O1)
-ENABLE_PROFILE = False  # gperftools: CPU profiling (-O0)
+ENABLE_PROFILE = True  # gperftools: CPU profiling (-O0)
 ENABLE_DEBUG = False   # GDB: interactive debugging (-O0)
 # Default: production mode with -O3 optimizations
 
@@ -111,32 +111,158 @@ def _show_profile_report(binary_path, profile_file):
 
 
 def run_with_profiling(binary_path, working_dir):
-    """Run C++ binary with gperftools profiler."""
-    profile_file = os.path.join(working_dir, "profile.out")
-
-    _cleanup_old_profiler()
-    if os.path.exists(profile_file):
-        os.remove(profile_file)
-
-    print(f"Running with gperftools profiler ({CPUPROFILE_FREQUENCY} Hz)...")
-
-    env = os.environ.copy()
-    env['CPUPROFILE'] = profile_file
-    env['CPUPROFILE_FREQUENCY'] = str(CPUPROFILE_FREQUENCY)
-    if os.path.exists(PROFILER_LIB):
-        env['LD_PRELOAD'] = PROFILER_LIB
-
+    """Run C++ binary with perf profiler (high-precision sampling)."""
+    import threading
+    
+    # All profiling files in output/profile directory
+    profile_dir = os.path.abspath("output/profile")
+    os.makedirs(profile_dir, exist_ok=True)
+    
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    perf_data = os.path.join(profile_dir, f"lob_{timestamp}.data")
+    flamegraph_svg = os.path.join(profile_dir, f"flamegraph_{timestamp}.svg")
+    
+    # Signal file in exe working directory (build/)
+    PROFILE_FLAG = os.path.join(working_dir, ".profile")
+    
+    # Clean up old signal file if exists
+    if os.path.exists(PROFILE_FLAG):
+        os.remove(PROFILE_FLAG)
+    
+    # Check perf availability
+    if subprocess.run(["which", "perf"], capture_output=True).returncode != 0:
+        print("ERROR: perf not found. Install: sudo apt install linux-tools-generic linux-tools-$(uname -r)")
+        sys.exit(1)
+    
+    # FlameGraph tools in output/profile/tools/
+    flamegraph_dir = os.path.join(profile_dir, "tools", "FlameGraph")
+    if not os.path.exists(flamegraph_dir):
+        print("Installing FlameGraph tools...")
+        os.makedirs(os.path.dirname(flamegraph_dir), exist_ok=True)
+        subprocess.run(["git", "clone", "--depth=1", 
+                       "https://github.com/brendangregg/FlameGraph.git", 
+                       flamegraph_dir], check=True)
+    
+    perf_proc = None
+    
+    def monitor_and_profile():
+        """Background thread: monitor flag file and control perf."""
+        nonlocal perf_proc
+        
+        print("\n[Profiler] Waiting for LOB computation to start...")
+        print("[Profiler] (GUI操作不会被采样，只有点击\"开始计算\"后才会 profile)\n")
+        
+        # Wait for flag file
+        while not os.path.exists(PROFILE_FLAG):
+            time.sleep(0.1)
+        
+        # Read PID from flag file
+        try:
+            with open(PROFILE_FLAG, 'r') as f:
+                pid = f.read().strip()
+        except:
+            return
+        
+        print(f"\n{'='*80}")
+        print(f"[Profiler] LOB computation started! Profiling PID={pid} at MAX frequency...")
+        print(f"{'='*80}\n")
+        
+        # Start perf with maximum precision
+        perf_cmd = [
+            "sudo", "perf", "record",
+            "-F", "99999",           # Maximum sampling frequency (99999 Hz, ~10μs间隔)
+            "-p", pid,               # Attach to process
+            "-g",                    # Call graph (stack traces)
+            "--call-graph", "dwarf", # DWARF unwinding (most accurate)
+            "-o", perf_data,         # Output file
+        ]
+        
+        perf_proc = subprocess.Popen(perf_cmd, 
+                                     stdout=subprocess.DEVNULL, 
+                                     stderr=subprocess.DEVNULL)
+        
+        # Wait for flag file to disappear (computation done)
+        while os.path.exists(PROFILE_FLAG):
+            time.sleep(0.1)
+        
+        # Stop perf
+        if perf_proc:
+            perf_proc.send_signal(signal.SIGINT)
+            perf_proc.wait()
+        
+        print(f"\n{'='*80}")
+        print(f"[Profiler] LOB computation finished! Generating flame graph...")
+        print(f"{'='*80}\n")
+    
+    # Start profiler thread
+    profiler_thread = threading.Thread(target=monitor_and_profile, daemon=True)
+    profiler_thread.start()
+    
+    # Run the binary
+    print(f"Starting GUI (PROFILE_MODE: LOB functions visible)...\n")
     start_time = time.time()
-    subprocess.run([binary_path], cwd=working_dir, env=env, check=True)
+    
+    try:
+        subprocess.run([binary_path], cwd=working_dir, check=True)
+    except KeyboardInterrupt:
+        print("\n[Interrupted by user]")
+    
     elapsed_time = time.time() - start_time
-
-    print(f"\nProfiling complete (Time: {elapsed_time:.2f}s)")
-
-    if os.path.exists(profile_file):
-        _show_profile_report(binary_path, profile_file)
+    
+    # Wait for profiler to finish
+    profiler_thread.join(timeout=5)
+    
+    # Generate flame graph
+    if os.path.exists(perf_data):
+        print("Generating flame graph...")
+        
+        try:
+            # Convert perf.data to stacks
+            perf_script = subprocess.run(
+                ["sudo", "perf", "script", "-i", perf_data],
+                capture_output=True, text=True, check=True
+            )
+            
+            # Collapse stacks
+            stackcollapse = subprocess.run(
+                [os.path.join(flamegraph_dir, "stackcollapse-perf.pl")],
+                input=perf_script.stdout, capture_output=True, text=True, check=True
+            )
+            
+            # Generate flame graph
+            with open(flamegraph_svg, 'w') as f:
+                subprocess.run(
+                    [os.path.join(flamegraph_dir, "flamegraph.pl"),
+                     "--title", f"LOB Profile - {timestamp}",
+                     "--width", "1920",
+                     "--colors", "hot"],
+                    input=stackcollapse.stdout, stdout=f, text=True, check=True
+                )
+            
+            print(f"\n{'='*80}")
+            print(f"✓ Profiling Complete! (Time: {elapsed_time:.2f}s)")
+            print(f"{'='*80}\n")
+            print(f"📊 Flame graph: {flamegraph_svg}")
+            print(f"🔍 Raw data:    {perf_data}")
+            print(f"\n🌐 View in browser:")
+            print(f"   firefox {flamegraph_svg}")
+            print(f"\n📈 Interactive analysis:")
+            print(f"   sudo perf report -i {perf_data}\n")
+            
+            # Clean up signal file
+            if os.path.exists(PROFILE_FLAG):
+                os.remove(PROFILE_FLAG)
+            
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Failed to generate flame graph: {e}")
+            # Clean up on error
+            if os.path.exists(PROFILE_FLAG):
+                os.remove(PROFILE_FLAG)
     else:
-        print(
-            "\nProfile not generated. Install: sudo apt-get install libgoogle-perftools-dev")
+        print("No profiling data collected (computation may not have started)")
+        # Clean up signal file
+        if os.path.exists(PROFILE_FLAG):
+            os.remove(PROFILE_FLAG)
 
 
 def run_with_gdb_debug(binary_path, working_dir):
