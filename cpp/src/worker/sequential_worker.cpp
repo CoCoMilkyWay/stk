@@ -27,7 +27,13 @@ void sequential_worker(SharedData &data,
   for (size_t i = 0; i < data.asset.items.size(); ++i) {
     if (data.asset.items[i].assigned_worker_id == worker_id) {
       my_asset_ids.push_back(i);
-      total_orders += data.asset.items[i].get_total_order_count();
+      // Count orders only in current date range (backtest period)
+      for (const auto &date : data.asset.all_dates) {
+        auto it = data.asset.items[i].date_info.find(date);
+        if (it != data.asset.items[i].date_info.end()) {
+          total_orders += it->second.order_count;
+        }
+      }
     }
   }
 
