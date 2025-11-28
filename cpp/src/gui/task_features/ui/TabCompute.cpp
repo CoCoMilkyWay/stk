@@ -17,36 +17,36 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   // State Machine Logic
   // ========================================================================
   switch (state.ui_state) {
-    case ComputeUIState::Idle:
-      // Do nothing, waiting for user action
-      break;
-      
-    case ComputeUIState::ShowingPopup:
-      // Wait for popup to render (at least 1 frame)
-      state.popup_frame_count++;
-      if (state.popup_frame_count >= 2) {
-        // Popup has been rendered, trigger start immediately
-        state.trigger_start = true;
-        state.ui_state = ComputeUIState::WaitingStart;
-      }
-      break;
-      
-    case ComputeUIState::WaitingStart:
-      // Wait for computation to actually start
-      if (is_running) {
-        state.ui_state = ComputeUIState::Computing;
-      }
-      break;
-      
-    case ComputeUIState::Computing:
-      // Wait for computation to finish
-      if (!is_running) {
-        // Reset to idle
-        state.ui_state = ComputeUIState::Idle;
-        state.popup_frame_count = 0;
-        state.trigger_start = false;
-      }
-      break;
+  case ComputeUIState::Idle:
+    // Do nothing, waiting for user action
+    break;
+
+  case ComputeUIState::ShowingPopup:
+    // Wait for popup to render (at least 1 frame)
+    state.popup_frame_count++;
+    if (state.popup_frame_count >= 2) {
+      // Popup has been rendered, trigger start immediately
+      state.trigger_start = true;
+      state.ui_state = ComputeUIState::WaitingStart;
+    }
+    break;
+
+  case ComputeUIState::WaitingStart:
+    // Wait for computation to actually start
+    if (is_running) {
+      state.ui_state = ComputeUIState::Computing;
+    }
+    break;
+
+  case ComputeUIState::Computing:
+    // Wait for computation to finish
+    if (!is_running) {
+      // Reset to idle
+      state.ui_state = ComputeUIState::Idle;
+      state.popup_frame_count = 0;
+      state.trigger_start = false;
+    }
+    break;
   }
 
   ImGui::TextWrapped("Feature Computation - Multi-threaded feature extraction from binary database");
@@ -181,7 +181,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       ImGui::EndPopup();
       return; // Exit early to avoid rendering popup content
     }
-    
+
     // Fixed width to prevent resize when text changes
     ImGui::PushItemWidth(500.0f);
 

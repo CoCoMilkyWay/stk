@@ -50,16 +50,15 @@ void ComputeService::start_compute(int num_workers) {
     std::vector<std::string> backtest_dates;
     for (const auto &date : data_.asset.all_dates) {
       if (date >= backtest_start && date <= backtest_end) {
-      backtest_dates.push_back(date);
+        backtest_dates.push_back(date);
+      }
     }
-  }
-  
-  std::cout << "\n=== Phase 2: Feature Computation ===\n"
-            << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
-            << " | Total dates: " << data_.asset.all_dates.size() 
-            << " | Backtest dates: " << backtest_dates.size()
-            << " (" << backtest_start << " - " << backtest_end << ")\n"
-            << std::endl;
+
+    std::cout << "\n=== Phase 2: Feature Computation ===\n"
+              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
+              << " | Backtest dates: " << backtest_dates.size()
+              << " (" << backtest_start << " - " << backtest_end << ")\n"
+              << std::endl;
 
     // Analysis phase: (N-2) TS workers + 1 CS worker + 1 Flush IO worker = N total workers
     const unsigned int num_ts_workers = num_workers_ - 2;
@@ -68,18 +67,20 @@ void ComputeService::start_compute(int num_workers) {
     const size_t num_assets = data_.asset.items.size();
     const size_t total_dates = backtest_dates.size();
 
-    std::cout << "Worker configuration:\n"
-              << "  TS workers: " << num_ts_workers << " (cores 0-" << (num_ts_workers - 1) << ")\n"
-              << "  CS worker: 1 (core " << cs_worker_core << ")\n"
-              << "  IO worker: 1 (core " << io_worker_core << ")\n"
-              << std::endl;
-
-    // Load balancing: sort assets by order count
+    // Load balancing: sort assets by order count (in backtest period only)
     std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, order_count)
     asset_workloads.reserve(data_.asset.items.size());
 
     for (size_t i = 0; i < data_.asset.items.size(); ++i) {
-      asset_workloads.push_back({i, data_.asset.items[i].get_total_order_count()});
+      // Calculate order count only for backtest dates
+      size_t backtest_order_count = 0;
+      for (const auto &date : backtest_dates) {
+        auto it = data_.asset.items[i].date_info.find(date);
+        if (it != data_.asset.items[i].date_info.end()) {
+          backtest_order_count += it->second.order_count;
+        }
+      }
+      asset_workloads.push_back({i, backtest_order_count});
     }
 
     std::sort(asset_workloads.begin(), asset_workloads.end(),
@@ -94,14 +95,6 @@ void ComputeService::start_compute(int num_workers) {
       worker_loads[min_worker] += order_count;
     }
 
-    std::cout << "Load balancing (assets per TS worker):\n";
-    for (size_t i = 0; i < num_ts_workers; ++i) {
-      size_t asset_count = std::count_if(data_.asset.items.begin(), data_.asset.items.end(), [i](const auto &a) { return a.assigned_worker_id == static_cast<int>(i); });
-      std::cout << "  Worker " << i << ": " << asset_count << " assets, "
-                << worker_loads[i] << " total orders\n";
-    }
-    std::cout << std::endl;
-    
     // Temporarily replace all_dates with backtest_dates for workers
     // Save original dates and restore after computation
     std::vector<std::string> original_dates = std::move(data_.asset.all_dates);
