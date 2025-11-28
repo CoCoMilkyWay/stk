@@ -379,6 +379,22 @@ private:
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
+        // Assets file
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("目标标的文件名");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("assets.json - Target assets list configuration file");
+        }
+        ImGui::TableNextColumn();
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##assets_file", cfg.assets_file_buf, sizeof(cfg.assets_file_buf))) {
+          cfg.assets_file = cfg.assets_file_buf;
+          changed = true;
+        }
+        ImGui::PopItemWidth();
+
         // Stock factor file
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
@@ -523,13 +539,18 @@ private:
   }
 
   void DrawStatusFooter(const Config &cfg) const {
+    ImGui::TextWrapped("File:");
+    ImGui::TextDisabled("%s", cfg.filepath.c_str());
+    
+    ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextDisabled("File: %s", cfg.filepath.c_str());
-    ImGui::SameLine();
+    ImGui::Spacing();
+    
+    ImGui::Text("Status:");
     if (cfg.dirty) {
-      ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "[Pending save...]");
+      ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Pending\nsave...");
     } else {
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "[Synced]");
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Synced");
     }
   }
 
@@ -566,6 +587,7 @@ public:
     Config &cfg = data.config;
     bool changed = false;
 
+    // Left side: Config panel
     ImGui::BeginChild("ConfigPanel", ImVec2(800, 0), false);
     changed |= DrawPeriodSection(cfg);
     changed |= DrawPathSection(cfg);
@@ -576,7 +598,11 @@ public:
     if (changed) {
       cfg.MarkDirty();
     }
+    ImGui::EndChild();
 
+    // Right side: Status bar
+    ImGui::SameLine();
+    ImGui::BeginChild("StatusPanel", ImVec2(200, 0), false);
     DrawStatusFooter(cfg);
     ImGui::EndChild();
   }
