@@ -185,7 +185,7 @@ private:
             co_await baostock_svc_->get_data_manager()->set_stock_codes(stock_codes);
           } else {
             // If no stock codes, still need to save L2 date range
-            co_await baostock_svc_->get_data_manager()->save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+            co_await baostock_svc_->get_data_manager()->save_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
           }
 
           // Step 4: Update all JSON files based on L2 assets (use L2 start date from config)

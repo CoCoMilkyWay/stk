@@ -117,7 +117,7 @@ bool Config::LoadFromFile() {
 
   // Baostock configuration
   assets_file = j.value("assets_file", assets_file);
-  baostock_data_manager_config = j.value("baostock_data_manager_config", baostock_data_manager_config);
+  baostock_data_manager_file = j.value("baostock_data_manager_file", baostock_data_manager_file);
   baostock_stock_factor_file = j.value("baostock_stock_factor_file", baostock_stock_factor_file);
   baostock_stock_info_file = j.value("baostock_stock_info_file", baostock_stock_info_file);
   baostock_stock_days_file = j.value("baostock_stock_days_file", baostock_stock_days_file);
@@ -149,7 +149,7 @@ bool Config::SaveToFile() {
 
   // Baostock configuration
   j["assets_file"] = assets_file;
-  j["baostock_data_manager_config"] = baostock_data_manager_config;
+  j["baostock_data_manager_file"] = baostock_data_manager_file;
   j["baostock_stock_factor_file"] = baostock_stock_factor_file;
   j["baostock_stock_info_file"] = baostock_stock_info_file;
   j["baostock_stock_days_file"] = baostock_stock_days_file;

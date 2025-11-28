@@ -231,7 +231,7 @@ awaitable<bool> DataManager::initialize() {
   Log("[DataManager] Initializing DataManager...");
   Log("[DataManager] ========================================");
 
-  co_await load_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+  co_await load_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
   Log(std::format("[DataManager] Loaded config: {} stocks", stock_codes_.size()));
 
   // Initialize pool (create clients WITHOUT login - lazy init)
@@ -270,7 +270,7 @@ awaitable<bool> DataManager::initialize() {
   if (!final_integrity.passed) {
     Log("[DataManager] Integrity check failed. Resetting update timers to force fresh update.");
     stock_info_last_update_.clear();
-    co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+    co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
   }
 
   if (progress_callback_) {
@@ -309,7 +309,7 @@ awaitable<void> DataManager::shutdown() {
   co_await save_stock_factor();
   co_await save_stock_info();
   co_await save_stock_days();
-  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
 
   // Logout user session
   co_await ensure_logged_out();
@@ -415,7 +415,7 @@ awaitable<void> DataManager::set_stock_codes(const std::vector<std::string> &cod
   stock_codes_ = codes;
 
   // Save to config file
-  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
 
   Log(std::format("Stock codes updated successfully: {} stocks", stock_codes_.size()));
   co_return;
@@ -1122,7 +1122,7 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
   co_await save_stock_info();
   std::string today = get_today_date();
   stock_info_last_update_[kMetaStockInfoWeekly] = today;
-  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
 
   Log("=== Weekly update complete, now updating daily fields ===");
 
@@ -1321,7 +1321,7 @@ awaitable<void> DataManager::update_stock_info_daily(bool skip_days, bool skip_l
 
   co_await save_stock_info();
   stock_info_last_update_[kMetaStockInfoDaily] = target_date;
-  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_config);
+  co_await save_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
 
   // Ensure logged out (unless skipped)
   if (!skip_logout) {
