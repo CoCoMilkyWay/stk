@@ -20,9 +20,9 @@ struct ComputeState {
   int num_workers = 0; // 0 means auto-detect (use max cores)
 
   // Compute dialog states
-  bool show_confirm_dialog = false;
-  bool show_progress_fullscreen = false;
-
+  bool show_warning_popup = false;
+  float warning_popup_timer = 0.0f; // Auto-close timer
+  
   // Trigger for starting compute (set by UI, consumed by TaskFeatures)
   bool trigger_start = false;
 };

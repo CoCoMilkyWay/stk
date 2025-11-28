@@ -195,7 +195,7 @@ void ComputeService::stop_compute() {
 
 ComputeProgress ComputeService::get_progress() const {
   ComputeProgress prog;
-  prog.total_dates = data_.asset.all_dates.size();
+  prog.total_dates = compute_total_dates_;
   prog.total_assets = data_.asset.items.size();
   prog.completed_dates = 0; // TODO: track from feature store
 
@@ -205,8 +205,8 @@ ComputeProgress ComputeService::get_progress() const {
 
   if (status_ == ComputeStatus::Running) {
     prog.elapsed_seconds = std::chrono::duration<double>(
-                               std::chrono::steady_clock::now() - start_time_)
-                               .count();
+                                std::chrono::steady_clock::now() - start_time_)
+                                .count();
     prog.compute_rate = prog.elapsed_seconds > 0 ? prog.completed_dates / prog.elapsed_seconds : 0;
   }
 

@@ -143,35 +143,61 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     }
   } else {
     if (ImGui::Button("Start Compute", ImVec2(200, 30))) {
-      state.show_confirm_dialog = true;
+      state.show_warning_popup = true;
+      state.warning_popup_timer = 0.0f;
     }
   }
 
-  // Confirmation dialog
-  if (state.show_confirm_dialog) {
-    ImGui::OpenPopup("Confirm Start##Compute");
-    state.show_confirm_dialog = false;
+  // Warning popup with auto-start
+  if (state.show_warning_popup) {
+    ImGui::OpenPopup("Feature Computation Warning##Compute");
+    state.show_warning_popup = false;
   }
 
-  if (ImGui::BeginPopupModal("Confirm Start##Compute", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Start feature computation?");
-    ImGui::Spacing();
-    ImGui::TextDisabled("This will:");
-    ImGui::BulletText("Extract features from binary database");
-    ImGui::BulletText("Use %d CPU cores (TS+CS+IO workers)", actual_workers);
-    ImGui::BulletText("GUI will sleep during computation");
+  if (ImGui::BeginPopupModal("Feature Computation Warning##Compute", nullptr, 
+                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f));
+    ImGui::TextWrapped("NOTICE: Starting Feature Computation");
+    ImGui::PopStyleColor();
+    
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-
-    if (ImGui::Button("Start", ImVec2(120, 0))) {
+    
+    ImGui::TextWrapped("The following will happen:");
+    ImGui::BulletText("GUI will enter sleep mode (unresponsive)");
+    ImGui::BulletText("All %d CPU cores will be used for computation", actual_workers);
+    ImGui::BulletText("Extract features from binary database");
+    ImGui::BulletText("Process backtest period dates only");
+    ImGui::BulletText("This may take several minutes or hours");
+    
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    // Auto-start countdown
+    const float auto_start_delay = 3.0f; // 3 seconds
+    state.warning_popup_timer += ImGui::GetIO().DeltaTime;
+    
+    if (state.warning_popup_timer < auto_start_delay) {
+      float remaining = auto_start_delay - state.warning_popup_timer;
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), 
+                        "Starting in %.1f seconds...", remaining);
+      ImGui::ProgressBar(state.warning_popup_timer / auto_start_delay, ImVec2(-1, 0));
+    } else {
+      // Auto-start triggered
       state.trigger_start = true;
       ImGui::CloseCurrentPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+    
+    ImGui::Spacing();
+    
+    // Manual cancel button
+    if (ImGui::Button("Cancel", ImVec2(-1, 0))) {
+      state.warning_popup_timer = 0.0f;
       ImGui::CloseCurrentPopup();
     }
+    
     ImGui::EndPopup();
   }
 }
