@@ -17,12 +17,23 @@ namespace GUI::Features {
 // Compute Tab State
 // ============================================================================
 
+// ============================================================================
+// Compute Tab State
+// ============================================================================
+
+enum class ComputeUIState {
+  Idle,          // Waiting for user to click start
+  ShowingPopup,  // Popup displayed, rendering first frame
+  WaitingStart,  // Triggered, waiting for computation to start
+  Computing      // Computation running (GUI frozen)
+};
+
 struct ComputeState {
   int num_workers = 0; // 0 means auto-detect (use max cores)
 
-  // Compute dialog states
-  bool show_warning_popup = false;
-  float warning_display_time = 0.0f; // Time to display warning before starting
+  // State machine
+  ComputeUIState ui_state = ComputeUIState::Idle;
+  int popup_frame_count = 0; // Frame counter to ensure popup is rendered
   
   // Trigger for starting compute (set by UI, consumed by TaskFeatures)
   bool trigger_start = false;

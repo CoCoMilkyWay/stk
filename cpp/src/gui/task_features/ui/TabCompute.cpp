@@ -12,12 +12,41 @@ namespace GUI::Features {
 void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/, Config &config) {
   const auto status = service->get_status();
   const bool is_running = status == ComputeStatus::Running;
-  
-  // Close popup only when computation finishes (not running and was triggered)
-  if (!is_running && state.show_warning_popup && state.trigger_start) {
-    state.show_warning_popup = false;
-    state.warning_display_time = 0.0f;
-    state.trigger_start = false;
+
+  // ========================================================================
+  // State Machine Logic
+  // ========================================================================
+  switch (state.ui_state) {
+    case ComputeUIState::Idle:
+      // Do nothing, waiting for user action
+      break;
+      
+    case ComputeUIState::ShowingPopup:
+      // Wait for popup to render (at least 1 frame)
+      state.popup_frame_count++;
+      if (state.popup_frame_count >= 2) {
+        // Popup has been rendered, trigger start immediately
+        state.trigger_start = true;
+        state.ui_state = ComputeUIState::WaitingStart;
+      }
+      break;
+      
+    case ComputeUIState::WaitingStart:
+      // Wait for computation to actually start
+      if (is_running) {
+        state.ui_state = ComputeUIState::Computing;
+      }
+      break;
+      
+    case ComputeUIState::Computing:
+      // Wait for computation to finish
+      if (!is_running) {
+        // Reset to idle
+        state.ui_state = ComputeUIState::Idle;
+        state.popup_frame_count = 0;
+        state.trigger_start = false;
+      }
+      break;
   }
 
   ImGui::TextWrapped("Feature Computation - Multi-threaded feature extraction from binary database");
@@ -121,26 +150,41 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Actions");
   ImGui::Spacing();
 
-  if (!is_running) {
+  if (state.ui_state == ComputeUIState::Idle) {
     if (ImGui::Button("Start Compute", ImVec2(200, 30))) {
-      state.show_warning_popup = true;
-      state.warning_display_time = 0.0f;
+      state.ui_state = ComputeUIState::ShowingPopup;
+      state.popup_frame_count = 0;
     }
   } else {
-    ImGui::TextWrapped("Computation running... GUI is in sleep mode.");
+    ImGui::TextWrapped("Computation in progress...");
   }
 
-  // Info popup (will be displayed throughout computation due to GUI freeze)
-  // Only open popup on button click
-  if (state.show_warning_popup) {
+  // ========================================================================
+  // Popup Display (based on state machine)
+  // ========================================================================
+  const bool should_show_popup = (state.ui_state == ComputeUIState::ShowingPopup ||
+                                  state.ui_state == ComputeUIState::WaitingStart ||
+                                  state.ui_state == ComputeUIState::Computing);
+
+  if (should_show_popup) {
     // Set popup position to center on first frame
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::OpenPopup("Feature Computation##Compute");
   }
 
-  if (ImGui::BeginPopupModal("Feature Computation##Compute", nullptr, 
-                             ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal("Feature Computation##Compute", nullptr,
+                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)) {
+    // Check if we should close popup (state returned to Idle)
+    if (state.ui_state == ComputeUIState::Idle) {
+      ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
+      return; // Exit early to avoid rendering popup content
+    }
+    
+    // Fixed width to prevent resize when text changes
+    ImGui::PushItemWidth(500.0f);
+
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f));
     ImGui::Text("Feature Computation Starting");
     ImGui::PopStyleColor();
@@ -166,27 +210,26 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    
-    // Wait a moment for popup to fully render before starting
-    // Only increment timer if not already triggered
-    if (!state.trigger_start) {
-      const float display_delay = 1.0f; // 1 second
-      state.warning_display_time += ImGui::GetIO().DeltaTime;
-      
-      if (state.warning_display_time >= display_delay) {
-        // Trigger start after delay (only once)
-        // DON'T close popup - let it stay visible during freeze
-        state.trigger_start = true;
-      } else {
-        float remaining = display_delay - state.warning_display_time;
-        ImGui::TextWrapped("Starting in %.1f seconds...", remaining);
-      }
-    } else {
-      // After trigger, show that computation is running
-      // This message will be frozen on screen
-      ImGui::TextWrapped("Computing... GUI is frozen, please wait.");
+
+    // Fixed-width text area to prevent popup resize
+    ImGui::BeginChild("StatusText", ImVec2(450.0f, 30.0f), false, ImGuiWindowFlags_NoScrollbar);
+
+    // Display status based on state machine
+    switch (state.ui_state) {
+    case ComputeUIState::ShowingPopup:
+      ImGui::Text("Starting computation...");
+      break;
+    case ComputeUIState::WaitingStart:
+    case ComputeUIState::Computing:
+      ImGui::Text("Computing... GUI is frozen, please wait.");
+      break;
+    default:
+      break;
     }
-    
+
+    ImGui::EndChild();
+    ImGui::PopItemWidth();
+
     ImGui::EndPopup();
   }
 }
