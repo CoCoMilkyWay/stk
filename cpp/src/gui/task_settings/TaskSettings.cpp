@@ -47,7 +47,7 @@ private:
 
     ImGui::SameLine();
     char btn_id[64];
-    snprintf(btn_id, sizeof(btn_id), "📅##%s", popup_id);
+    snprintf(btn_id, sizeof(btn_id), "\xef\x81\xb3##%s", popup_id); // Nerd Font calendar icon
     if (ImGui::Button(btn_id)) {
       // Parse date when opening popup
       if (strlen(date_buf) >= 10) {
