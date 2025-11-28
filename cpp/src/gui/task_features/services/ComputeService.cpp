@@ -50,18 +50,16 @@ void ComputeService::start_compute(int num_workers) {
     std::vector<std::string> backtest_dates;
     for (const auto &date : data_.asset.all_dates) {
       if (date >= backtest_start && date <= backtest_end) {
-        backtest_dates.push_back(date);
-      }
+      backtest_dates.push_back(date);
     }
-    
-    compute_total_dates_ = backtest_dates.size();
-    
-    std::cout << "\n=== Phase 2: Feature Computation ===\n"
-              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
-              << " | Total dates: " << data_.asset.all_dates.size() 
-              << " | Backtest dates: " << backtest_dates.size()
-              << " (" << backtest_start << " - " << backtest_end << ")\n"
-              << std::endl;
+  }
+  
+  std::cout << "\n=== Phase 2: Feature Computation ===\n"
+            << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
+            << " | Total dates: " << data_.asset.all_dates.size() 
+            << " | Backtest dates: " << backtest_dates.size()
+            << " (" << backtest_start << " - " << backtest_end << ")\n"
+            << std::endl;
 
     // Analysis phase: (N-2) TS workers + 1 CS worker + 1 Flush IO worker = N total workers
     const unsigned int num_ts_workers = num_workers_ - 2;
@@ -191,26 +189,6 @@ void ComputeService::stop_compute() {
   if (compute_thread_.valid()) {
     compute_thread_.wait();
   }
-}
-
-ComputeProgress ComputeService::get_progress() const {
-  ComputeProgress prog;
-  prog.total_dates = compute_total_dates_;
-  prog.total_assets = data_.asset.items.size();
-  prog.completed_dates = 0; // TODO: track from feature store
-
-  prog.num_ts_workers = num_workers_ - 2;
-  prog.num_cs_workers = 1;
-  prog.num_io_workers = 1;
-
-  if (status_ == ComputeStatus::Running) {
-    prog.elapsed_seconds = std::chrono::duration<double>(
-                                std::chrono::steady_clock::now() - start_time_)
-                                .count();
-    prog.compute_rate = prog.elapsed_seconds > 0 ? prog.completed_dates / prog.elapsed_seconds : 0;
-  }
-
-  return prog;
 }
 
 } // namespace GUI::Features

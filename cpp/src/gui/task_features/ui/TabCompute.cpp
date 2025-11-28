@@ -11,15 +11,13 @@ namespace GUI::Features {
 
 void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/, Config &config) {
   const auto status = service->get_status();
-  const auto progress = service->get_progress();
   const bool is_running = status == ComputeStatus::Running;
-
-  // Close popup and reset state when computation finishes or is not running
+  
+  // Close popup only when computation finishes (not running and was triggered)
   if (!is_running && state.show_warning_popup && state.trigger_start) {
     state.show_warning_popup = false;
     state.warning_display_time = 0.0f;
     state.trigger_start = false;
-    ImGui::CloseCurrentPopup();
   }
 
   ImGui::TextWrapped("Feature Computation - Multi-threaded feature extraction from binary database");
@@ -118,46 +116,22 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Spacing();
 
   // ========================================================================
-  // Section 3: Progress (if running)
-  // ========================================================================
-  if (is_running) {
-    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Progress");
-    ImGui::Spacing();
-
-    ImGui::Text("Dates: %zu / %zu (%.1f%%)",
-                progress.completed_dates, progress.total_dates, progress.progress_percent());
-    ImGui::ProgressBar(progress.progress_percent() / 100.0f, ImVec2(-1, 0));
-
-    ImGui::Text("Assets: %zu", progress.total_assets);
-    ImGui::Text("Elapsed: %.1f s", progress.elapsed_seconds);
-
-    if (progress.compute_rate > 0) {
-      ImGui::Text("Rate: %.2f dates/s", progress.compute_rate);
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-  }
-
-  // ========================================================================
-  // Section 4: Actions
+  // Section 3: Actions
   // ========================================================================
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Actions");
   ImGui::Spacing();
 
-  if (is_running) {
-    if (ImGui::Button("Stop Compute", ImVec2(200, 30))) {
-      service->stop_compute();
-    }
-  } else {
+  if (!is_running) {
     if (ImGui::Button("Start Compute", ImVec2(200, 30))) {
       state.show_warning_popup = true;
       state.warning_display_time = 0.0f;
     }
+  } else {
+    ImGui::TextWrapped("Computation running... GUI is in sleep mode.");
   }
 
-  // Info popup (will be displayed for a moment before GUI enters sleep mode)
+  // Info popup (will be displayed throughout computation due to GUI freeze)
+  // Only open popup on button click
   if (state.show_warning_popup) {
     // Set popup position to center on first frame
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
@@ -165,7 +139,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::OpenPopup("Feature Computation##Compute");
   }
 
-  if (ImGui::BeginPopupModal("Feature Computation##Compute", nullptr,
+  if (ImGui::BeginPopupModal("Feature Computation##Compute", nullptr, 
                              ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f));
     ImGui::Text("Feature Computation Starting");
@@ -192,23 +166,27 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-
+    
     // Wait a moment for popup to fully render before starting
     // Only increment timer if not already triggered
     if (!state.trigger_start) {
-      const float display_delay = 0.5f; // 0.5 seconds
+      const float display_delay = 1.0f; // 1 second
       state.warning_display_time += ImGui::GetIO().DeltaTime;
-
+      
       if (state.warning_display_time >= display_delay) {
         // Trigger start after delay (only once)
+        // DON'T close popup - let it stay visible during freeze
         state.trigger_start = true;
       } else {
-        ImGui::TextWrapped("Preparing to start...");
+        float remaining = display_delay - state.warning_display_time;
+        ImGui::TextWrapped("Starting in %.1f seconds...", remaining);
       }
     } else {
-      ImGui::TextWrapped("Starting computation...");
+      // After trigger, show that computation is running
+      // This message will be frozen on screen
+      ImGui::TextWrapped("Computing... GUI is frozen, please wait.");
     }
-
+    
     ImGui::EndPopup();
   }
 }
