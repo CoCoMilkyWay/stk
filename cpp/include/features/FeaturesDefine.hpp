@@ -14,11 +14,8 @@
 // A (Asset):   max = 1,000    (1K assets in universe)
 // F (Feature): max = 1,000    (all feature types combined)
 //
-// Sub-features:
-// - F_TS:  ~60-70%  (e.g., 600 TS features)
-// - F_CS:  ~20-30%  (e.g., 250 CS features)
-// - F_LB:  ~5-10%   (e.g., 50 Label features)
-// - F_OT:  ~5-10%   (e.g., 100 Other features(shared intermediate values))
+// 子特征例子:
+// F_TS: (600 时序特征) F_CS (250 截面特征) F_LB (50 标签) F_SH (50 共享中间值) F_META (50 元数据)
 //
 // 访问模式分析 (优化目标: 最小化总内存访问时间)
 //

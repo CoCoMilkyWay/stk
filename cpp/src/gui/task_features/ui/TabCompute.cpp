@@ -145,7 +145,189 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Spacing();
 
   // ========================================================================
-  // Section 3: Actions
+  // Section 3: Architecture
+  // ========================================================================
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Architecture");
+  ImGui::Spacing();
+
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f)); // Gray text
+  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);                      // Use smaller font if available
+
+  ImGui::TextWrapped("按照日期, 切分多频率Tensor: {[T, F, A]_level0(tick), [T, F, A]_level1(minute), [T, F, A]_level2(hour)}_dayN");
+  ImGui::Text("T (Time):    max = 100,000  (100K time indices per day (ms/s))");
+  ImGui::Text("A (Asset):   max = 1,000    (1K assets in universe)");
+  ImGui::Text("F (Feature): max = 1,000    (all feature types combined)");
+  ImGui::Text("特征子类型示例: F_TS: (600 时序特征) F_CS (250 截面特征) F_LB (50 标签) F_SH (50 共享中间值) F_META (50 元数据)");
+  ImGui::Text("访问模式分析 (优化目标: 最小化总内存访问时间)");
+
+  // Access pattern table
+  if (ImGui::BeginTable("AccessPattern", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+    ImGui::TableSetupColumn("操作");
+    ImGui::TableSetupColumn("循环结构");
+    ImGui::TableSetupColumn("单次vector访问");
+    ImGui::TableSetupColumn("总内存访问量");
+    ImGui::TableSetupColumn("权重");
+    ImGui::TableSetupColumn("并行度");
+    ImGui::TableSetupColumn("描述", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("TS_write_TS");
+    ImGui::TableNextColumn();
+    ImGui::Text("for a: for t: write[F_TS]");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续写600个");
+    ImGui::TableNextColumn();
+    ImGui::Text("TxAxF_TS = 240GB");
+    ImGui::TableNextColumn();
+    ImGui::Text("39%%");
+    ImGui::TableNextColumn();
+    ImGui::Text("10 cores");
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("每个core处理~100个assets, 对每个asset遍历时间, 在(a,t)处连续写F_TS个features");
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("CS_read_TS");
+    ImGui::TableNextColumn();
+    ImGui::Text("for t: for f: read[A]");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续读1000个");
+    ImGui::TableNextColumn();
+    ImGui::Text("Tx(F_TS+F_OT)xA = 280GB");
+    ImGui::TableNextColumn();
+    ImGui::Text("45%%");
+    ImGui::TableNextColumn();
+    ImGui::Text("1 core");
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("在每个时刻t, 对每个feature f, 连续读取所有A个assets的值(截面计算)");
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("CS_write_CS");
+    ImGui::TableNextColumn();
+    ImGui::Text("for t: for f: write[A]");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续写1000个");
+    ImGui::TableNextColumn();
+    ImGui::Text("TxF_CSxA = 100GB");
+    ImGui::TableNextColumn();
+    ImGui::Text("16%%");
+    ImGui::TableNextColumn();
+    ImGui::Text("1 core");
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("在每个时刻t, 对每个feature f, 连续写入所有A个assets的值(截面结果)");
+
+    ImGui::EndTable();
+  }
+
+  // Memory layout table
+  if (ImGui::BeginTable("MemoryLayout", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+    ImGui::TableSetupColumn("布局");
+    ImGui::TableSetupColumn("地址公式");
+    ImGui::TableSetupColumn("TS_write(39%%)");
+    ImGui::TableSetupColumn("CS_read(45%%)");
+    ImGui::TableSetupColumn("CS_write(16%%)");
+    ImGui::TableSetupColumn("推荐度");
+    ImGui::TableHeadersRow();
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("[T][A][F]");
+    ImGui::TableNextColumn();
+    ImGui::Text("(t*A+a)*F+f");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳4KB");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳4KB");
+    ImGui::TableNextColumn();
+    ImGui::Text("良好");
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("[T][F][A]");
+    ImGui::TableNextColumn();
+    ImGui::Text("(t*F+f)*A+a");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳4KB");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续");
+    ImGui::TableNextColumn();
+    ImGui::Text("最优 √√√");
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("[A][T][F]");
+    ImGui::TableNextColumn();
+    ImGui::Text("(a*T+t)*F+f");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400MB");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400MB");
+    ImGui::TableNextColumn();
+    ImGui::Text("较差");
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("[A][F][T]");
+    ImGui::TableNextColumn();
+    ImGui::Text("(a*F+f)*T+t");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400KB");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400MB");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400MB");
+    ImGui::TableNextColumn();
+    ImGui::Text("极差");
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("[F][T][A]");
+    ImGui::TableNextColumn();
+    ImGui::Text("(f*T+t)*A+a");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400MB");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续");
+    ImGui::TableNextColumn();
+    ImGui::Text("连续");
+    ImGui::TableNextColumn();
+    ImGui::Text("不推荐");
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("[F][A][T]");
+    ImGui::TableNextColumn();
+    ImGui::Text("(f*A+a)*T+t");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400MB");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400KB");
+    ImGui::TableNextColumn();
+    ImGui::Text("跳400KB");
+    ImGui::TableNextColumn();
+    ImGui::Text("极差");
+
+    ImGui::EndTable();
+  }
+
+  ImGui::PopFont();
+  ImGui::PopStyleColor();
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+
+  // ========================================================================
+  // Section 4: Actions
   // ========================================================================
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Actions");
   ImGui::Spacing();
