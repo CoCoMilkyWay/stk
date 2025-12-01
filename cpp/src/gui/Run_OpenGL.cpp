@@ -149,7 +149,7 @@ void RunGUI() {
     if (data.gui.high_performance_mode) {
       std::this_thread::sleep_for(std::chrono::seconds(5)); // 0.2 FPS
       glfwPollEvents();
-      data.gui.Update(5.0f);
+      data.gui.Update(1.0f);
       continue; // Skip rendering entirely
     }
 
