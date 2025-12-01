@@ -5,6 +5,7 @@
 #include "features/FeaturesHour/Hour_Sequential.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
+#include "math/sample/ResampleTimeBar.hpp"
 
 // Sequential Core: Hierarchical 3-level feature computation with resampling
 // Architecture: LOB -> Tick -> (resample) -> Minute -> (resample) -> Hour
@@ -102,7 +103,7 @@ private:
         .high_1m = minute_accumulator_.high,
         .low_1m = minute_accumulator_.low,
         .close_1m = close_price,
-        .vwap_1m = minute_accumulator_.get_vwap(),
+        .vwap_1m = minute_accumulator_.vwap(),
         .volume_1m = minute_accumulator_.volume,
         .universe_ids_1m = 0,
         .market_close_1m = is_minute_close};
@@ -129,7 +130,7 @@ private:
         .high_1h = hour_accumulator_.high,
         .low_1h = hour_accumulator_.low,
         .close_1h = minute_bar_.close_1m,
-        .vwap_1h = hour_accumulator_.get_vwap(),
+        .vwap_1h = hour_accumulator_.vwap(),
         .volume_1h = hour_accumulator_.volume,
         .universe_ids_1h = 0,
         .market_close_1h = is_close,
@@ -150,36 +151,6 @@ private:
     return (best_ask && best_bid) ? (best_bid->price + best_ask->price) * 0.5 : lob_feature_->price;
   }
 
-  // OHLCV accumulator for resampling
-  struct BarAccumulator {
-    double open = 0;
-    double high = 0;
-    double low = 0;
-    uint64_t volume = 0;
-    double sum_price_volume = 0;
-
-    void reset(double price) {
-      open = high = low = price;
-      volume = 0;
-      sum_price_volume = 0;
-    }
-
-    void update(double price, uint64_t vol) {
-      if (volume == 0)
-        open = price;
-      if (price > high)
-        high = price;
-      if (price < low)
-        low = price;
-      sum_price_volume += price * vol;
-      volume += vol;
-    }
-
-    double get_vwap() const {
-      return volume > 0 ? sum_price_volume / volume : open;
-    }
-  };
-
   const LOB_Feature *lob_feature_;
   Tick_Sequential tick_sequential_;
   Minute_Sequential minute_sequential_;
@@ -197,7 +168,7 @@ private:
   // Resampling state
   uint32_t last_minute_ = 0;
   uint32_t last_hour_ = 0;
-  BarAccumulator minute_accumulator_;
-  BarAccumulator hour_accumulator_;
+  ResampleTimeBar<> minute_accumulator_;
+  ResampleTimeBar<> hour_accumulator_;
   double prev_day_close_ = 0;
 };

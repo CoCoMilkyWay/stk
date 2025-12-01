@@ -50,18 +50,89 @@ private:
     long cpu_cache_l3_kb = 0;
     std::string cpu_vendor;
     std::string cpu_model;
+    std::string cpu_architecture; // x86_64, aarch64, etc.
 
-    // CPU Instruction Sets
-    bool cpu_has_sse = false;
-    bool cpu_has_sse2 = false;
-    bool cpu_has_sse3 = false;
-    bool cpu_has_sse4_1 = false;
-    bool cpu_has_sse4_2 = false;
-    bool cpu_has_avx = false;
-    bool cpu_has_avx2 = false;
-    bool cpu_has_avx512 = false;
-    bool cpu_has_fma = false;
-    bool cpu_has_aes = false;
+    // x64 Instruction Sets (Intel/AMD)
+    struct X64InstructionSets {
+      // Legacy SIMD
+      bool sse = false;
+      bool sse2 = false;
+      bool sse3 = false;
+      bool ssse3 = false;
+      bool sse4_1 = false;
+      bool sse4_2 = false;
+      // SIMD main
+      bool avx = false;
+      bool avx2 = false;
+      bool fma = false;
+      bool f16c = false;
+      // AVX512 base
+      bool avx512f = false;
+      bool avx512cd = false;
+      bool avx512vl = false;
+      bool avx512bw = false;
+      bool avx512dq = false;
+      // AI/ML acceleration
+      bool avx512_fp16 = false;
+      bool avx512_bf16 = false;
+      bool avx512_vnni = false;
+      bool avx_vnni = false;
+      bool amx_tile = false;
+      // Crypto/Hash
+      bool aes = false;
+      bool sha = false;
+      bool gfni = false;
+      bool avx512_ifma = false;
+      // Memory/Cache
+      bool prefetchw = false;
+      bool clflushopt = false;
+      bool clwb = false;
+      bool movdir64b = false;
+      bool rtm = false;
+      // System
+      bool rdrand = false;
+      bool rdseed = false;
+    } x64_isa;
+
+    // AArch64 Instruction Sets (ARM/Apple)
+    struct AArch64InstructionSets {
+      // Legacy SIMD (对应x86的SSE系列)
+      bool neon = false;
+      bool neon_fp16 = false;
+      bool neon_bf16 = false;
+      bool neon_i8mm = false;
+      bool neon_dotprod = false;
+      bool neon_fcma = false;
+      // SIMD main (对应x86的AVX系列)
+      bool sve = false;
+      bool sve2 = false;
+      bool sme = false;
+      bool sme2 = false;
+      // Matrix extensions (对应x86的AMX)
+      bool amx = false;           // Apple Matrix Extension
+      bool neural_engine = false; // Apple Neural Engine
+      // Float/Math (标准扩展)
+      bool fp64 = false;
+      // AI/ML acceleration (对应x86的VNNI)
+      bool bf16 = false;
+      bool i8mm = false;
+      // Crypto/Hash (对应x86的AES/SHA)
+      bool aes = false;
+      bool sha1 = false;
+      bool sha2 = false;
+      bool sha3 = false;
+      bool sha512 = false;
+      bool pmull = false;
+      bool crc32 = false;
+      // Memory/Cache (对应x86的prefetch系列)
+      bool prefetch = false;
+      bool dc_zva = false;
+      // System (对应x86的RNG和事务内存)
+      bool rndr = false;   // Random number (对应RDRAND)
+      bool rndrrs = false; // Reseeded random (对应RDSEED)
+      bool pac = false;    // Pointer Authentication
+      bool mte = false;    // Memory Tagging Extension
+    } aarch64_isa;
 
     // Memory Info
     long ram_total_gb = 0;
@@ -216,7 +287,8 @@ private:
     DetectSystemTools();
     DetectOS();
     DetectCPU();
-    DetectCPUInstructions();
+    DetectX64Instructions();
+    DetectAArch64Instructions();
     DetectMemory();
     DetectGPU();
 
@@ -282,6 +354,12 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectCPU() {
+    // Detect CPU architecture
+    struct utsname uts;
+    if (uname(&uts) == 0) {
+      hw_info.cpu_architecture = uts.machine;
+    }
+
     // Get logical and physical core counts
     hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
 
@@ -362,33 +440,161 @@ private:
   }
 
   // ----------------------------------------------------------------------------
-  // CPU Instruction Set Detection
+  // x64 Instruction Set Detection (Intel/AMD)
   // ----------------------------------------------------------------------------
 
-  void DetectCPUInstructions() {
+  void DetectX64Instructions() {
+    // Only detect x64 instructions on x64 architecture
+    if (hw_info.cpu_architecture != "x86_64" && hw_info.cpu_architecture != "i686") {
+      return;
+    }
+
     std::ifstream cpuinfo("/proc/cpuinfo");
     std::string line;
 
     while (std::getline(cpuinfo, line)) {
-      if (line.find("flags") == 0 || line.find("Features") == 0) {
+      if (line.find("flags") == 0) {
         // Convert to lowercase for easier matching
         for (auto &c : line)
           c = std::tolower(c);
 
-        hw_info.cpu_has_sse = line.find(" sse ") != std::string::npos;
-        hw_info.cpu_has_sse2 = line.find(" sse2 ") != std::string::npos;
-        hw_info.cpu_has_sse3 = line.find(" sse3 ") != std::string::npos ||
+        // SSE series
+        hw_info.x64_isa.sse = line.find(" sse ") != std::string::npos;
+        hw_info.x64_isa.sse2 = line.find(" sse2 ") != std::string::npos;
+        hw_info.x64_isa.sse3 = line.find(" sse3 ") != std::string::npos ||
                                line.find(" pni ") != std::string::npos;
-        hw_info.cpu_has_sse4_1 = line.find(" sse4_1 ") != std::string::npos;
-        hw_info.cpu_has_sse4_2 = line.find(" sse4_2 ") != std::string::npos;
-        hw_info.cpu_has_avx = line.find(" avx ") != std::string::npos;
-        hw_info.cpu_has_avx2 = line.find(" avx2 ") != std::string::npos;
-        hw_info.cpu_has_avx512 = line.find(" avx512") != std::string::npos;
-        hw_info.cpu_has_fma = line.find(" fma ") != std::string::npos;
-        hw_info.cpu_has_aes = line.find(" aes ") != std::string::npos;
+        hw_info.x64_isa.ssse3 = line.find(" ssse3 ") != std::string::npos;
+        hw_info.x64_isa.sse4_1 = line.find(" sse4_1 ") != std::string::npos;
+        hw_info.x64_isa.sse4_2 = line.find(" sse4_2 ") != std::string::npos;
+
+        // SIMD main
+        hw_info.x64_isa.avx = line.find(" avx ") != std::string::npos;
+        hw_info.x64_isa.avx2 = line.find(" avx2 ") != std::string::npos;
+        hw_info.x64_isa.fma = line.find(" fma ") != std::string::npos;
+        hw_info.x64_isa.f16c = line.find(" f16c ") != std::string::npos;
+
+        // AVX512 base modules
+        hw_info.x64_isa.avx512f = line.find(" avx512f ") != std::string::npos;
+        hw_info.x64_isa.avx512cd = line.find(" avx512cd ") != std::string::npos;
+        hw_info.x64_isa.avx512vl = line.find(" avx512vl ") != std::string::npos;
+        hw_info.x64_isa.avx512bw = line.find(" avx512bw ") != std::string::npos;
+        hw_info.x64_isa.avx512dq = line.find(" avx512dq ") != std::string::npos;
+
+        // AI/ML acceleration
+        hw_info.x64_isa.avx512_fp16 = line.find(" avx512_fp16 ") != std::string::npos;
+        hw_info.x64_isa.avx512_bf16 = line.find(" avx512_bf16 ") != std::string::npos;
+        hw_info.x64_isa.avx512_vnni = line.find(" avx512_vnni ") != std::string::npos ||
+                                      line.find(" avx512vnni ") != std::string::npos;
+        hw_info.x64_isa.avx_vnni = line.find(" avx_vnni ") != std::string::npos ||
+                                   line.find(" avxvnni ") != std::string::npos;
+        hw_info.x64_isa.amx_tile = line.find(" amx_tile ") != std::string::npos;
+
+        // Crypto/Hash acceleration
+        hw_info.x64_isa.aes = line.find(" aes ") != std::string::npos;
+        hw_info.x64_isa.sha = line.find(" sha_ni ") != std::string::npos ||
+                              line.find(" sha ") != std::string::npos;
+        hw_info.x64_isa.gfni = line.find(" gfni ") != std::string::npos;
+        hw_info.x64_isa.avx512_ifma = line.find(" avx512ifma ") != std::string::npos ||
+                                      line.find(" avx512_ifma ") != std::string::npos;
+
+        // Memory/Cache operations
+        hw_info.x64_isa.prefetchw = line.find(" prefetchw ") != std::string::npos;
+        hw_info.x64_isa.clflushopt = line.find(" clflushopt ") != std::string::npos;
+        hw_info.x64_isa.clwb = line.find(" clwb ") != std::string::npos;
+        hw_info.x64_isa.movdir64b = line.find(" movdir64b ") != std::string::npos;
+        hw_info.x64_isa.rtm = line.find(" rtm ") != std::string::npos;
+
+        // System
+        hw_info.x64_isa.rdrand = line.find(" rdrand ") != std::string::npos;
+        hw_info.x64_isa.rdseed = line.find(" rdseed ") != std::string::npos;
+
         break; // Only need first occurrence
       }
     }
+  }
+
+  // ----------------------------------------------------------------------------
+  // AArch64 Instruction Set Detection (ARM/Apple)
+  // ----------------------------------------------------------------------------
+
+  void DetectAArch64Instructions() {
+    // Only detect AArch64 instructions on ARM architecture
+    if (hw_info.cpu_architecture != "aarch64" && hw_info.cpu_architecture != "arm64") {
+      return;
+    }
+
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::string line;
+    std::string features_line;
+
+    // Read features line
+    while (std::getline(cpuinfo, line)) {
+      if (line.find("Features") == 0 || line.find("features") == 0) {
+        auto colon_pos = line.find(':');
+        if (colon_pos != std::string::npos) {
+          features_line = line.substr(colon_pos + 1);
+          // Convert to lowercase
+          for (auto &c : features_line)
+            c = std::tolower(c);
+          break;
+        }
+      }
+    }
+
+    // Detect Apple Silicon
+    bool is_apple = (hw_info.cpu_model.find("Apple") != std::string::npos);
+
+    // Legacy SIMD - NEON is standard on ARMv8+
+    hw_info.aarch64_isa.neon = true; // All modern ARM has NEON
+    hw_info.aarch64_isa.neon_fp16 = features_line.find("fphp") != std::string::npos ||
+                                    features_line.find("asimdhp") != std::string::npos;
+    hw_info.aarch64_isa.neon_bf16 = features_line.find("bf16") != std::string::npos;
+    hw_info.aarch64_isa.neon_i8mm = features_line.find("i8mm") != std::string::npos;
+    hw_info.aarch64_isa.neon_dotprod = features_line.find("asimddp") != std::string::npos ||
+                                       features_line.find("dotprod") != std::string::npos;
+    hw_info.aarch64_isa.neon_fcma = features_line.find("fcma") != std::string::npos;
+
+    // SIMD main (对应x86的AVX系列)
+    hw_info.aarch64_isa.sve = features_line.find("sve") != std::string::npos;
+    hw_info.aarch64_isa.sve2 = features_line.find("sve2") != std::string::npos;
+    hw_info.aarch64_isa.sme = features_line.find("sme") != std::string::npos;
+    hw_info.aarch64_isa.sme2 = features_line.find("sme2") != std::string::npos;
+
+    // Matrix extensions (对应x86的AMX)
+    if (is_apple) {
+      // Check if M4 or later (AMX available on M4+)
+      hw_info.aarch64_isa.amx = (hw_info.cpu_model.find("M4") != std::string::npos ||
+                                 hw_info.cpu_model.find("M5") != std::string::npos);
+      // Apple Neural Engine on all Apple Silicon
+      hw_info.aarch64_isa.neural_engine = true;
+    }
+
+    // Float/Math extensions
+    hw_info.aarch64_isa.fp64 = features_line.find("fp") != std::string::npos ||
+                               hw_info.cpu_architecture == "aarch64"; // ARMv8+ has FP64
+
+    // AI/ML (对应x86的VNNI)
+    hw_info.aarch64_isa.bf16 = features_line.find("bf16") != std::string::npos;
+    hw_info.aarch64_isa.i8mm = features_line.find("i8mm") != std::string::npos;
+
+    // Crypto/Security (对应x86的AES/SHA)
+    hw_info.aarch64_isa.aes = features_line.find("aes") != std::string::npos;
+    hw_info.aarch64_isa.sha1 = features_line.find("sha1") != std::string::npos;
+    hw_info.aarch64_isa.sha2 = features_line.find("sha2") != std::string::npos;
+    hw_info.aarch64_isa.sha3 = features_line.find("sha3") != std::string::npos;
+    hw_info.aarch64_isa.sha512 = features_line.find("sha512") != std::string::npos;
+    hw_info.aarch64_isa.pmull = features_line.find("pmull") != std::string::npos;
+    hw_info.aarch64_isa.crc32 = features_line.find("crc32") != std::string::npos;
+
+    // Memory/Cache - standard on ARMv8+
+    hw_info.aarch64_isa.prefetch = true; // PRFM instruction standard on ARMv8
+    hw_info.aarch64_isa.dc_zva = true;   // DC ZVA standard on ARMv8
+
+    // System (对应x86的RNG和事务内存)
+    hw_info.aarch64_isa.rndr = features_line.find("rng") != std::string::npos;
+    hw_info.aarch64_isa.rndrrs = features_line.find("rng") != std::string::npos; // Same feature bit
+    hw_info.aarch64_isa.pac = features_line.find("paca") != std::string::npos;
+    hw_info.aarch64_isa.mte = features_line.find("mte") != std::string::npos;
   }
 
   // ----------------------------------------------------------------------------
@@ -995,10 +1201,10 @@ private:
   void RenderStaticHardwareInfo() {
     const ImVec4 COLOR_LABEL = ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
     const ImVec4 COLOR_VALUE = ImVec4(0.95f, 0.95f, 0.95f, 1.0f);
-    const ImVec4 COLOR_GOOD = ImVec4(0.2f, 1.0f, 0.3f, 1.0f);
     const ImVec4 COLOR_WARNING = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
     const ImVec4 COLOR_INFO = ImVec4(0.5f, 0.8f, 1.0f, 1.0f);
     const ImVec4 COLOR_DIM = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+    const ImVec4 COLOR_COMMENT = ImVec4(0.5f, 0.7f, 0.9f, 1.0f);
 
     ImGui::BeginGroup();
 
@@ -1066,52 +1272,6 @@ private:
         snprintf(cache_buf + strlen(cache_buf), sizeof(cache_buf) - strlen(cache_buf), "L3:%ldK", hw_info.cpu_cache_l3_kb);
       }
       ImGui::TextColored(COLOR_VALUE, "%s", cache_buf);
-    }
-
-    // ISA
-    ImGui::SameLine(0, 8);
-    ImGui::TextColored(COLOR_DIM, "│");
-    ImGui::SameLine(0, 8);
-    ImGui::TextColored(COLOR_LABEL, "ISA:");
-    ImGui::SameLine(0, 2);
-
-    bool first_isa = true;
-    if (hw_info.cpu_has_sse4_2) {
-      if (!first_isa) {
-        ImGui::SameLine(0, 2);
-      }
-      ImGui::TextColored(COLOR_GOOD, "SSE4.2");
-      first_isa = false;
-    }
-    if (hw_info.cpu_has_avx) {
-      if (!first_isa) {
-        ImGui::SameLine(0, 2);
-      } else {
-        first_isa = false;
-      }
-      ImGui::TextColored(COLOR_GOOD, "AVX");
-    }
-    if (hw_info.cpu_has_avx2) {
-      ImGui::SameLine(0, 2);
-      ImGui::TextColored(COLOR_GOOD, "AVX2");
-    } else if (hw_info.cpu_has_avx) {
-      ImGui::SameLine(0, 2);
-      ImGui::TextColored(COLOR_WARNING, "AVX2✗");
-    }
-    if (hw_info.cpu_has_avx512) {
-      ImGui::SameLine(0, 2);
-      ImGui::TextColored(COLOR_GOOD, "AVX512");
-    }
-    if (hw_info.cpu_has_fma) {
-      ImGui::SameLine(0, 2);
-      ImGui::TextColored(COLOR_GOOD, "FMA");
-    }
-    if (hw_info.cpu_has_aes) {
-      ImGui::SameLine(0, 2);
-      ImGui::TextColored(COLOR_GOOD, "AES");
-    }
-    if (first_isa) {
-      ImGui::TextColored(COLOR_WARNING, "Limited");
     }
 
     // RAM
@@ -1194,7 +1354,133 @@ private:
       }
     }
 
+    // ========== ISA: Instruction Set Architecture ==========
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextColored(COLOR_LABEL, "ISA:");
+    ImGui::SameLine(0, 4);
+    ImGui::TextColored(COLOR_COMMENT, "Instruction Set Architecture (x64 vs AArch64)");
+
+    RenderCPUInstructionSets();
+
     ImGui::EndGroup();
+  }
+
+  // ----------------------------------------------------------------------------
+  // CPU Instruction Sets Rendering (categorized, side-by-side, dual-architecture)
+  // ----------------------------------------------------------------------------
+
+  void RenderCPUInstructionSets() {
+    const ImVec4 COLOR_LABEL = ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
+    const ImVec4 COLOR_GOOD = ImVec4(0.2f, 1.0f, 0.3f, 1.0f);    // Green - available (standard)
+    const ImVec4 COLOR_APPLE = ImVec4(1.0f, 0.9f, 0.2f, 1.0f);   // Yellow - Apple proprietary
+    const ImVec4 COLOR_MISSING = ImVec4(0.3f, 0.3f, 0.3f, 1.0f); // Gray - not available
+    const ImVec4 COLOR_COMMENT = ImVec4(0.5f, 0.7f, 0.9f, 1.0f);
+
+    bool is_x64 = (hw_info.cpu_architecture == "x86_64" || hw_info.cpu_architecture == "i686");
+    bool is_aarch64 = (hw_info.cpu_architecture == "aarch64" || hw_info.cpu_architecture == "arm64");
+
+    struct Extension {
+      const char *name;
+      bool has_ext;
+      bool is_proprietary = false; // Apple-only feature (default: false)
+    };
+
+    // Fixed column widths for alignment
+    const float CATEGORY_WIDTH = 70.0f;
+    const float COMMENT_WIDTH = 200.0f;
+    const float X64_LABEL_POS = CATEGORY_WIDTH + COMMENT_WIDTH;
+    const float AARCH64_LABEL_POS = X64_LABEL_POS + 300.0f; // Reserve space for x64 extensions
+
+    auto render_isa_row = [&](const char *category_label, const char *comment,
+                              const std::vector<Extension> &x64_exts,
+                              const std::vector<Extension> &aarch64_exts) {
+      float start_x = ImGui::GetCursorPosX();
+
+      // Category label (fixed width)
+      ImGui::TextColored(COLOR_LABEL, "%s", category_label);
+
+      // Comment (fixed position)
+      ImGui::SameLine(start_x + CATEGORY_WIDTH);
+      ImGui::TextColored(COLOR_COMMENT, "%s", comment);
+
+      // x64 column (fixed position)
+      ImGui::SameLine(start_x + X64_LABEL_POS);
+      ImGui::TextColored(COLOR_LABEL, "x64:");
+      ImGui::SameLine(0, 2);
+      bool first = true;
+      for (const auto &ext : x64_exts) {
+        if (!first) {
+          ImGui::SameLine(0, 2);
+        }
+        ImVec4 color = ext.has_ext ? (is_x64 ? COLOR_GOOD : COLOR_MISSING) : COLOR_MISSING;
+        if (!is_x64 && ext.has_ext)
+          color.w = 0.5f; // Semi-transparent if not current arch
+        ImGui::TextColored(color, "%s", ext.name);
+        first = false;
+      }
+
+      // AArch64 column (fixed position)
+      ImGui::SameLine(start_x + AARCH64_LABEL_POS);
+      ImGui::TextColored(COLOR_LABEL, "AArch64:");
+      ImGui::SameLine(0, 2);
+      first = true;
+      for (const auto &ext : aarch64_exts) {
+        if (!first) {
+          ImGui::SameLine(0, 2);
+        }
+        ImVec4 color;
+        if (ext.has_ext) {
+          if (is_aarch64) {
+            color = ext.is_proprietary ? COLOR_APPLE : COLOR_GOOD;
+          } else {
+            color = COLOR_MISSING;
+            color.w = 0.5f; // Semi-transparent if not current arch
+          }
+        } else {
+          color = COLOR_MISSING;
+        }
+        ImGui::TextColored(color, "%s", ext.name);
+        first = false;
+      }
+    };
+
+    // Legacy SIMD (128-bit)
+    render_isa_row("Legacy:", "128-bit SIMD",
+                   {{"SSE", hw_info.x64_isa.sse}, {"SSE2", hw_info.x64_isa.sse2}, {"SSE3", hw_info.x64_isa.sse3}, {"SSSE3", hw_info.x64_isa.ssse3}, {"SSE4.1", hw_info.x64_isa.sse4_1}, {"SSE4.2", hw_info.x64_isa.sse4_2}},
+                   {{"NEON", hw_info.aarch64_isa.neon}, {"FP16", hw_info.aarch64_isa.neon_fp16}, {"DotProd", hw_info.aarch64_isa.neon_dotprod}, {"FCMA", hw_info.aarch64_isa.neon_fcma}});
+
+    // SIMD Main (256/512-bit or scalable)
+    render_isa_row("SIMD:", "256+bit wide vector",
+                   {{"AVX", hw_info.x64_isa.avx}, {"AVX2", hw_info.x64_isa.avx2}, {"FMA", hw_info.x64_isa.fma}, {"F16C", hw_info.x64_isa.f16c}},
+                   {{"SVE", hw_info.aarch64_isa.sve}, {"SVE2", hw_info.aarch64_isa.sve2}, {"SME", hw_info.aarch64_isa.sme}, {"SME2", hw_info.aarch64_isa.sme2}});
+
+    // AVX512 / Advanced SIMD
+    render_isa_row("AVX512:", "512-bit SIMD modules",
+                   {{"F", hw_info.x64_isa.avx512f}, {"CD", hw_info.x64_isa.avx512cd}, {"VL", hw_info.x64_isa.avx512vl}, {"BW", hw_info.x64_isa.avx512bw}, {"DQ", hw_info.x64_isa.avx512dq}},
+                   {{"FP64", hw_info.aarch64_isa.fp64}, {"BF16", hw_info.aarch64_isa.neon_bf16}, {"I8MM", hw_info.aarch64_isa.neon_i8mm}});
+
+    // AI/ML Acceleration
+    render_isa_row("AI/ML:", "FP16/BF16/INT8 accel",
+                   {{"FP16", hw_info.x64_isa.avx512_fp16}, {"BF16", hw_info.x64_isa.avx512_bf16}, {"VNNI", hw_info.x64_isa.avx512_vnni}, {"AVX-VNNI", hw_info.x64_isa.avx_vnni}, {"AMX", hw_info.x64_isa.amx_tile}},
+                   {{"BF16", hw_info.aarch64_isa.bf16}, {"I8MM", hw_info.aarch64_isa.i8mm}, {"AMX", hw_info.aarch64_isa.amx, true}, {"NeuralEngine", hw_info.aarch64_isa.neural_engine, true}});
+
+    // Crypto/Hash
+    render_isa_row("Crypto:", "AES/SHA hardware accel",
+                   {{"AES", hw_info.x64_isa.aes}, {"SHA", hw_info.x64_isa.sha}, {"GFNI", hw_info.x64_isa.gfni}, {"IFMA", hw_info.x64_isa.avx512_ifma}},
+                   {{"AES", hw_info.aarch64_isa.aes}, {"SHA1", hw_info.aarch64_isa.sha1}, {"SHA2", hw_info.aarch64_isa.sha2}, {"SHA3", hw_info.aarch64_isa.sha3}, {"PMULL", hw_info.aarch64_isa.pmull}, {"CRC32", hw_info.aarch64_isa.crc32}});
+
+    // Memory/Cache
+    render_isa_row("Memory:", "cache/prefetch ops",
+                   {{"PREFETCHW", hw_info.x64_isa.prefetchw}, {"CLFLUSHOPT", hw_info.x64_isa.clflushopt}, {"CLWB", hw_info.x64_isa.clwb}, {"MOVDIR64B", hw_info.x64_isa.movdir64b}, {"RTM", hw_info.x64_isa.rtm}},
+                   {{"PREFETCH", hw_info.aarch64_isa.prefetch}, {"DC_ZVA", hw_info.aarch64_isa.dc_zva}});
+
+    // System
+    render_isa_row("System:", "RNG/security features",
+                   {{"RDRAND", hw_info.x64_isa.rdrand}, {"RDSEED", hw_info.x64_isa.rdseed}},
+                   {{"RNDR", hw_info.aarch64_isa.rndr}, {"RNDRRS", hw_info.aarch64_isa.rndrrs}, {"PAC", hw_info.aarch64_isa.pac}, {"MTE", hw_info.aarch64_isa.mte}});
   }
 
   // ----------------------------------------------------------------------------

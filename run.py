@@ -26,7 +26,7 @@ APP_NAME = "main"
 # Build & Run modes (set ONE to True)
 ENABLE_TSAN = False
 ENABLE_DEBUG = False
-ENABLE_PROFILE = False
+ENABLE_PROFILE = True
 
 
 def _cleanup_processes():
