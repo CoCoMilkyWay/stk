@@ -50,8 +50,8 @@ awaitable<void> StateManager::initialize() {
   // Workers will login lazily when first API call is made
   co_await baostock_svc_->load_all_json();
 
-  // Step 8: Compute browser statistics (requires stock_info for delist dates and stock_days for all trading days)
-  data_.asset.compute_browser_statistics(baostock_svc_->get_stock_info_data(), baostock_svc_->get_stock_days_data());
+  // Step 8: Browser statistics computed lazily on first Browser tab access
+  // (after database scan completes and baostock data is ready)
 
   refresh_state();
 }

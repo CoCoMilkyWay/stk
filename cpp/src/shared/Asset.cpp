@@ -112,6 +112,9 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   namespace fs = std::filesystem;
   using boost::asio::use_awaitable;
 
+  // Clear browser statistics cache - will be recomputed on next Browser tab access
+  date_stats.clear();
+
   binary.scanned = true;
   binary.path = database_dir;
   binary.exists = fs::exists(database_dir) && fs::is_directory(database_dir);
@@ -368,6 +371,9 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
 
   namespace fs = std::filesystem;
   using boost::asio::use_awaitable;
+
+  // Clear browser statistics cache - will be recomputed on next Browser tab access
+  date_stats.clear();
 
   archive.scanned = true;
   archive.path = archive_dir;

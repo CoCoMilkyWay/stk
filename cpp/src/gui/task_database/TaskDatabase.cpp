@@ -104,17 +104,18 @@ public:
 
     // Always render UI - show initialization progress if not ready
     RenderUI();
-    
+
     // Handle encoding trigger from UI
     if (encode_state_.trigger_start && encoding_svc_ && !encoding_svc_->is_running()) {
       encode_state_.trigger_start = false;
-      
+
       int workers = encode_state_.num_workers;
       if (workers <= 0) {
         workers = std::thread::hardware_concurrency();
-        if (workers <= 0) workers = 8;
+        if (workers <= 0)
+          workers = 8;
       }
-      
+
       // Start encoding in background thread (non-blocking)
       encoding_svc_->start_encoding(workers, encode_state_.skip_existing);
     }
@@ -517,6 +518,19 @@ private:
   }
 
   void DrawTabBrowser() {
+    // Lazy compute browser statistics on first access
+    // Requirements: (1) Binary database scanned (has date_info)
+    //               (2) Baostock data ready (stock_info, stock_days)
+    //               (3) Not yet computed (date_stats empty)
+    if (data_->asset.date_stats.empty() &&
+        data_->asset.binary.scanned &&
+        !data_->asset.items.empty() &&
+        baostock_svc_->all_ready()) [[unlikely]] {
+      data_->asset.compute_browser_statistics(
+          baostock_svc_->get_stock_info_data(),
+          baostock_svc_->get_stock_days_data());
+    }
+ 
     RenderTabBrowser(
         baostock_svc_->get_stock_days_data(),
         baostock_svc_->get_stock_factor_data(),
