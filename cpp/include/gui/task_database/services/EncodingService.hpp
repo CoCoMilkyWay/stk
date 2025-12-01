@@ -25,8 +25,19 @@ using boost::asio::io_context;
 
 enum class EncodingStatus {
   Idle,
-  Scanning,  // Scanning database for coverage check
+  
+  // Database check phases (fine-grained)
+  InitializingCheck,     // Starting database check coroutine
+  CheckingFileSystem,    // Checking if directories exist
+  ScanningBinary,        // Scanning binary database
+  ScanningArchive,       // Scanning archive database
+  ComputingCoverage,     // Computing backtest coverage
+  AnalyzingStatus,       // Determining database status
+  
+  // Encoding phases
   Running,
+  
+  // Final states
   Completed,
   Cancelled,
   Error
@@ -37,6 +48,7 @@ enum class EncodingStatus {
 // ============================================================================
 
 enum class DatabaseStatus {
+  Unchecked,   // 尚未检查（初始状态）
   Pass,        // Binary完整覆盖backtest period,可以回测
   Incomplete,  // Binary不完整,但可以从archive encode补全
   NeedArchive, // Binary不完整,缺失日期无对应archive
@@ -62,7 +74,7 @@ struct ArchiveDatabaseInfo {
 };
 
 struct DatabaseCheckResult {
-  DatabaseStatus status = DatabaseStatus::Error;
+  DatabaseStatus status = DatabaseStatus::Unchecked;  // 默认为未检查，不是 Error
   std::string error_message;
 
   // Binary database
@@ -88,6 +100,8 @@ struct DatabaseCheckResult {
 
   const char *get_status_string() const {
     switch (status) {
+    case DatabaseStatus::Unchecked:
+      return "Not checked";
     case DatabaseStatus::Pass:
       return "Pass";
     case DatabaseStatus::Incomplete:
@@ -124,8 +138,12 @@ struct EncodingProgress {
 // ============================================================================
 
 class EncodingService {
+  // StateManager needs direct access to spawn coroutine and update status inline
+  friend class StateManager;
+
 private:
   SharedData &data_;
+  io_context &io_;
   TaskTerminal *terminal_;
 
   std::atomic<bool> cancel_flag_{false};
@@ -139,9 +157,11 @@ private:
 
   DatabaseCheckResult last_check_;               // Cache last database check result
   FileCheck::FileCheckResult file_check_result_; // Cache file check result
-  
+
   std::future<void> encoding_thread_; // Background encoding thread
   std::future<void> scan_thread_;     // Background scan thread
+
+  // Scan operations now implemented directly in Asset class
 
 public:
   EncodingService(SharedData &data, io_context &io, TaskTerminal *term);
@@ -154,14 +174,44 @@ public:
   EncodingStatus get_status() const { return status_; }
   EncodingProgress get_progress() const;
   bool is_running() const { return status_ == EncodingStatus::Running; }
-  bool is_idle() const { return status_ == EncodingStatus::Idle || status_ == EncodingStatus::Completed || status_ == EncodingStatus::Cancelled; }
+  bool is_idle() const { 
+    return status_ == EncodingStatus::Idle || 
+           status_ == EncodingStatus::Completed || 
+           status_ == EncodingStatus::Cancelled; 
+  }
+  bool is_checking() const {
+    return status_ == EncodingStatus::InitializingCheck ||
+           status_ == EncodingStatus::CheckingFileSystem ||
+           status_ == EncodingStatus::ScanningBinary ||
+           status_ == EncodingStatus::ScanningArchive ||
+           status_ == EncodingStatus::ComputingCoverage ||
+           status_ == EncodingStatus::AnalyzingStatus;
+  }
+  
+  // Status string helper (for GUI display)
+  const char* get_status_string() const {
+    switch (status_) {
+    case EncodingStatus::Idle: return "Idle";
+    case EncodingStatus::InitializingCheck: return "Initializing check...";
+    case EncodingStatus::CheckingFileSystem: return "Checking filesystem...";
+    case EncodingStatus::ScanningBinary: return "Scanning binary database...";
+    case EncodingStatus::ScanningArchive: return "Scanning archive database...";
+    case EncodingStatus::ComputingCoverage: return "Computing coverage...";
+    case EncodingStatus::AnalyzingStatus: return "Analyzing status...";
+    case EncodingStatus::Running: return "Encoding...";
+    case EncodingStatus::Completed: return "Completed";
+    case EncodingStatus::Cancelled: return "Cancelled";
+    case EncodingStatus::Error: return "Error";
+    default: return "Unknown";
+    }
+  }
 
-  // Scan and check database coverage (async)
-  void start_database_check();
-  DatabaseCheckResult check_database_coverage_sync(); // Internal sync version
+  // Scan and check database coverage (async, using coroutines)
+  awaitable<void> coro_database_check();              // Internal coroutine implementation
 
   // Get last check result
   const DatabaseCheckResult &get_last_check_result() const { return last_check_; }
+
 
   // File check (archive validation)
   void run_file_check(const std::string &archive_base_dir);

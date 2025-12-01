@@ -1,10 +1,19 @@
 #include "shared/Asset.hpp"
 #include "codec/binary_decoder_L2.hpp"
+#include "gui/task_database/infrastructure/ScanThreadPool.hpp"
+
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_awaitable.hpp>
+
+#include <chrono>
+#include <filesystem>
 #include <future>
 #include <map>
 #include <mutex>
-#include <thread>
-#include <vector>
+#include <set>
+#include <unordered_map>
 
 // ============================================================================
 // AssetItem Implementation
@@ -91,11 +100,17 @@ std::string AssetItem::get_display_name() const {
 // ============================================================================
 
 // ============================================================================
-// Binary Database Scan and Statistics
+// Binary Database Scan (Coroutine Version)
 // ============================================================================
 
-void Asset::scan_binary_database(const std::string &database_dir, const std::string &binary_extension) {
+boost::asio::awaitable<void> Asset::coro_scan_binary_database(
+    boost::asio::io_context &io,
+    const std::string &database_dir,
+    const std::string &binary_extension,
+    std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
+
   namespace fs = std::filesystem;
+  using boost::asio::use_awaitable;
 
   binary.scanned = true;
   binary.path = database_dir;
@@ -113,18 +128,18 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
     binary.snapshots_size_gb = 0.0;
     binary.orders_size_gb = 0.0;
     all_dates.clear();
-    return;
+    co_return;
   }
 
-  // EXTREME OPTIMIZATION: Parallel scan by month
-  // Collect all year/month directories first
+  // Month path structure
   struct MonthPath {
     std::string path;
     std::string year_str;
     std::string month_str;
   };
-  std::vector<MonthPath> month_paths;
 
+  // Collect all month paths
+  std::vector<MonthPath> month_paths;
   for (const auto &year_entry : fs::directory_iterator(database_dir)) {
     if (!year_entry.is_directory())
       continue;
@@ -132,32 +147,34 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
     for (const auto &month_entry : fs::directory_iterator(year_entry.path())) {
       if (!month_entry.is_directory())
         continue;
-      month_paths.push_back({month_entry.path().string(),
-                             year_str,
+      month_paths.push_back({month_entry.path().string(), year_str,
                              month_entry.path().filename().string()});
     }
   }
 
-  // Build asset lookup map (shared, read-only)
+  // Build asset lookup map
   std::unordered_map<std::string, size_t> asset_map;
   for (size_t i = 0; i < items.size(); ++i) {
     asset_map[items[i].asset_code + "." + items[i].exchange] = i;
   }
 
-  // Shared data structures (protected by mutex)
-  std::mutex data_mutex;
-  std::set<std::string> all_dates_set;
-  std::set<std::string> snap_dates_set;
-  std::set<std::string> order_dates_set;
-  std::map<std::string, size_t> date_coverage;
-  size_t total_snapshots = 0;
-  size_t total_orders = 0;
-  double total_snapshots_size = 0.0;
-  double total_orders_size = 0.0;
+  // Shared result accumulator
+  struct ScanResult {
+    std::mutex mutex;
+    std::set<std::string> all_dates;
+    std::set<std::string> snap_dates;
+    std::set<std::string> order_dates;
+    std::map<std::string, size_t> date_coverage;
+    size_t total_snapshots = 0;
+    size_t total_orders = 0;
+    double total_snapshots_size = 0.0;
+    double total_orders_size = 0.0;
+    std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> asset_date_info;
+  };
+  auto result = std::make_shared<ScanResult>();
 
-  // Parallel scan function
-  auto scan_month = [&](const MonthPath &month_path) {
-    // Local accumulators (no locking needed)
+  // Lambda for scanning a single month (runs in thread pool)
+  auto scan_month = [&asset_map, &binary_extension, result](const MonthPath &month_path) {
     std::set<std::string> local_dates;
     std::set<std::string> local_snap_dates;
     std::set<std::string> local_order_dates;
@@ -166,8 +183,6 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
     size_t local_total_orders = 0;
     double local_snapshots_size = 0.0;
     double local_orders_size = 0.0;
-
-    // Temporary storage for date_info updates (per asset)
     std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> local_date_info;
 
     for (const auto &day_entry : fs::directory_iterator(month_path.path)) {
@@ -190,7 +205,6 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
         DateInfo di;
         di.database_dir = asset_entry.path().string();
 
-        // Scan files
         std::string snap_prefix = asset_folder + "_snapshots_";
         std::string order_prefix = asset_folder + "_orders_";
 
@@ -234,86 +248,84 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
       }
     }
 
-    // Merge local results into shared data (single lock per month)
-    std::lock_guard<std::mutex> lock(data_mutex);
-    all_dates_set.insert(local_dates.begin(), local_dates.end());
-    snap_dates_set.insert(local_snap_dates.begin(), local_snap_dates.end());
-    order_dates_set.insert(local_order_dates.begin(), local_order_dates.end());
-    for (const auto &[date, count] : local_date_coverage) {
-      date_coverage[date] += count;
-    }
-    total_snapshots += local_total_snapshots;
-    total_orders += local_total_orders;
-    total_snapshots_size += local_snapshots_size;
-    total_orders_size += local_orders_size;
+    // Merge into shared result
+    {
+      std::lock_guard<std::mutex> lock(result->mutex);
+      result->all_dates.insert(local_dates.begin(), local_dates.end());
+      result->snap_dates.insert(local_snap_dates.begin(), local_snap_dates.end());
+      result->order_dates.insert(local_order_dates.begin(), local_order_dates.end());
+      for (const auto &[date, count] : local_date_coverage) {
+        result->date_coverage[date] += count;
+      }
+      result->total_snapshots += local_total_snapshots;
+      result->total_orders += local_total_orders;
+      result->total_snapshots_size += local_snapshots_size;
+      result->total_orders_size += local_orders_size;
 
-    // Update items date_info
-    for (const auto &[asset_idx, date_map] : local_date_info) {
-      for (const auto &[date, info] : date_map) {
-        items[asset_idx].date_info[date] = info;
+      for (const auto &[asset_idx, date_map] : local_date_info) {
+        for (const auto &[date, info] : date_map) {
+          result->asset_date_info[asset_idx][date] = info;
+        }
       }
     }
   };
 
-  // Launch parallel scans
-  unsigned int num_threads = std::min(std::thread::hardware_concurrency(),
-                                      static_cast<unsigned int>(month_paths.size()));
-  if (num_threads < 2)
-    num_threads = 1;
+  // Submit all month scan tasks to thread pool
+  std::vector<std::future<void>> futures;
+  futures.reserve(month_paths.size());
+  for (const auto &month_path : month_paths) {
+    futures.push_back(thread_pool->submit([scan_month, month_path]() { scan_month(month_path); }));
+  }
 
-  if (num_threads == 1 || month_paths.size() <= 1) {
-    // Single-threaded fallback
-    for (const auto &mp : month_paths) {
-      scan_month(mp);
-    }
-  } else {
-    // Parallel execution
-    std::vector<std::future<void>> futures;
-    size_t months_per_thread = (month_paths.size() + num_threads - 1) / num_threads;
-
-    for (size_t t = 0; t < num_threads; ++t) {
-      size_t start = t * months_per_thread;
-      size_t end = std::min(start + months_per_thread, month_paths.size());
-      if (start >= end)
+  // Wait for all tasks, yielding to GUI periodically
+  while (true) {
+    bool all_done = true;
+    for (auto &future : futures) {
+      if (future.valid() && future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        all_done = false;
         break;
-
-      futures.push_back(std::async(std::launch::async, [&, start, end]() {
-        for (size_t i = start; i < end; ++i) {
-          scan_month(month_paths[i]);
-        }
-      }));
+      }
     }
+    if (all_done)
+      break;
 
-    // Wait for all threads
-    for (auto &f : futures) {
-      f.get();
+    boost::asio::steady_timer timer(io, std::chrono::milliseconds(50));
+    co_await timer.async_wait(use_awaitable);
+  }
+
+  // Collect all futures
+  for (auto &future : futures) {
+    if (future.valid()) {
+      future.get();
     }
   }
 
-  // Store results
-  all_dates.assign(all_dates_set.begin(), all_dates_set.end());
+  // Merge results into Asset
+  all_dates.assign(result->all_dates.begin(), result->all_dates.end());
   binary.total_assets = items.size();
-  binary.total_snapshots = total_snapshots;
-  binary.total_orders = total_orders;
-  binary.snapshots_size_gb = total_snapshots_size / (1024.0 * 1024.0 * 1024.0);
-  binary.orders_size_gb = total_orders_size / (1024.0 * 1024.0 * 1024.0);
-  binary.database_snap_days = snap_dates_set.size();
-  binary.database_order_days = order_dates_set.size();
+  binary.total_snapshots = result->total_snapshots;
+  binary.total_orders = result->total_orders;
+  binary.snapshots_size_gb = result->total_snapshots_size / (1024.0 * 1024.0 * 1024.0);
+  binary.orders_size_gb = result->total_orders_size / (1024.0 * 1024.0 * 1024.0);
+  binary.database_snap_days = result->snap_dates.size();
+  binary.database_order_days = result->order_dates.size();
 
-  // Binary dates: any date with at least one asset fully encoded
   binary.dates.clear();
-  for (const auto &[date, count] : date_coverage) {
-    if (count > 0) {  // At least one asset has data
+  for (const auto &[date, count] : result->date_coverage) {
+    if (count > 0) {
       binary.dates.insert(date);
     }
   }
 
-  // Date range
+  for (const auto &[asset_idx, date_map] : result->asset_date_info) {
+    for (const auto &[date, info] : date_map) {
+      items[asset_idx].date_info[date] = info;
+    }
+  }
+
   if (!all_dates.empty()) {
     binary.min_date = all_dates.front();
     binary.max_date = all_dates.back();
-    
-    // Update all assets to use actual database date range
     for (auto &item : items) {
       item.start_date = binary.min_date;
       item.end_date = binary.max_date;
@@ -323,7 +335,6 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
     binary.max_date.clear();
   }
 
-  // Count encoded and complete assets
   binary.encoded_assets = 0;
   binary.complete_assets = 0;
   for (const auto &item : items) {
@@ -341,51 +352,73 @@ void Asset::scan_binary_database(const std::string &database_dir, const std::str
       }
     }
   }
+
+  co_return;
 }
 
 // ============================================================================
-// Archive Database Scan and Statistics
+// Archive Database Scan (Coroutine Version)
 // ============================================================================
 
-void Asset::scan_archive_database(const std::string &archive_dir, const std::string &archive_extension) {
+boost::asio::awaitable<void> Asset::coro_scan_archive_database(
+    boost::asio::io_context &io,
+    const std::string &archive_dir,
+    const std::string &archive_extension,
+    std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
+
   namespace fs = std::filesystem;
+  using boost::asio::use_awaitable;
 
   archive.scanned = true;
   archive.path = archive_dir;
   archive.exists = fs::exists(archive_dir) && fs::is_directory(archive_dir);
 
   if (!archive.exists) {
-    // Clear all data if not exists
     archive.dates.clear();
     archive.min_date.clear();
     archive.max_date.clear();
     archive.total_files = 0;
     archive.total_size_gb = 0.0;
-
-    // If all_dates is empty, archive scan failed
     if (all_dates.empty()) {
       all_dates.clear();
     }
-    return;
+    co_return;
   }
 
-  // Scan archive structure: archive_dir/YYYY/YYYYMM/YYYYMMDD.ext
-  std::set<std::string> archive_dates_set;
-  size_t total_files = 0;
-  double total_size = 0.0; // bytes
+  // Year path structure
+  struct YearPath {
+    std::string path;
+    std::string year_str;
+  };
 
-  try {
-    // Iterate through year folders
-    for (const auto &year_entry : fs::directory_iterator(archive_dir)) {
-      if (!year_entry.is_directory())
-        continue;
+  // Collect all year paths
+  std::vector<YearPath> year_paths;
+  for (const auto &year_entry : fs::directory_iterator(archive_dir)) {
+    if (!year_entry.is_directory())
+      continue;
+    year_paths.push_back({year_entry.path().string(), year_entry.path().filename().string()});
+  }
 
-      // Iterate through month folders
-      for (const auto &month_entry : fs::directory_iterator(year_entry.path())) {
+  // Shared result accumulator
+  struct ScanResult {
+    std::mutex mutex;
+    std::set<std::string> archive_dates;
+    size_t total_files = 0;
+    double total_size = 0.0;
+  };
+  auto result = std::make_shared<ScanResult>();
+
+  // Lambda for scanning a single year (runs in thread pool)
+  auto scan_year = [&archive_extension, result](const YearPath &year_path) {
+    std::set<std::string> local_dates;
+    size_t local_files = 0;
+    double local_size = 0.0;
+
+    try {
+      for (const auto &month_entry : fs::directory_iterator(year_path.path)) {
         if (!month_entry.is_directory())
           continue;
 
-        // Iterate through archive files
         for (const auto &file_entry : fs::directory_iterator(month_entry.path())) {
           if (!file_entry.is_regular_file())
             continue;
@@ -393,43 +426,64 @@ void Asset::scan_archive_database(const std::string &archive_dir, const std::str
           const std::string ext = file_entry.path().extension().string();
           if (ext == archive_extension) {
             const std::string filename = file_entry.path().stem().string();
-
-            // Validate date format: YYYYMMDD (8 digits)
             if (filename.size() == 8 && std::all_of(filename.begin(), filename.end(), ::isdigit)) {
-              archive_dates_set.insert(filename);
-              total_files++;
-
-              // Get file size
+              local_dates.insert(filename);
+              local_files++;
               try {
-                total_size += static_cast<double>(fs::file_size(file_entry.path()));
-              } catch (const std::exception &e) {
-                // Ignore file size errors
+                local_size += static_cast<double>(fs::file_size(file_entry.path()));
+              } catch (...) {
               }
             }
           }
         }
       }
+    } catch (...) {
     }
-  } catch (const std::exception &e) {
-    // If scan fails, mark as not exists
-    archive.exists = false;
-    archive.dates.clear();
-    archive.min_date.clear();
-    archive.max_date.clear();
-    archive.total_files = 0;
-    archive.total_size_gb = 0.0;
-    if (all_dates.empty()) {
-      all_dates.clear();
+
+    // Merge into shared result
+    {
+      std::lock_guard<std::mutex> lock(result->mutex);
+      result->archive_dates.insert(local_dates.begin(), local_dates.end());
+      result->total_files += local_files;
+      result->total_size += local_size;
     }
-    return;
+  };
+
+  // Submit all year scan tasks to thread pool
+  std::vector<std::future<void>> futures;
+  futures.reserve(year_paths.size());
+  for (const auto &year_path : year_paths) {
+    futures.push_back(thread_pool->submit([scan_year, year_path]() { scan_year(year_path); }));
   }
 
-  // Store results
-  archive.dates = archive_dates_set;
-  archive.total_files = total_files;
-  archive.total_size_gb = total_size / (1024.0 * 1024.0 * 1024.0);
+  // Wait for all tasks, yielding to GUI periodically
+  while (true) {
+    bool all_done = true;
+    for (auto &future : futures) {
+      if (future.valid() && future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        all_done = false;
+        break;
+      }
+    }
+    if (all_done)
+      break;
 
-  // Set date range
+    boost::asio::steady_timer timer(io, std::chrono::milliseconds(50));
+    co_await timer.async_wait(use_awaitable);
+  }
+
+  // Collect all futures
+  for (auto &future : futures) {
+    if (future.valid()) {
+      future.get();
+    }
+  }
+
+  // Merge results into Asset
+  archive.dates = result->archive_dates;
+  archive.total_files = result->total_files;
+  archive.total_size_gb = result->total_size / (1024.0 * 1024.0 * 1024.0);
+
   if (!archive.dates.empty()) {
     archive.min_date = *archive.dates.begin();
     archive.max_date = *archive.dates.rbegin();
@@ -438,26 +492,19 @@ void Asset::scan_archive_database(const std::string &archive_dir, const std::str
     archive.max_date.clear();
   }
 
-  // If all_dates is empty, use archive dates as ground truth
   if (all_dates.empty()) {
     all_dates.assign(archive.dates.begin(), archive.dates.end());
-
-    // Initialize date_info for each asset (for future encoding)
     for (auto &item : items) {
       for (const auto &date_str : all_dates) {
         if (date_str >= item.start_date && date_str <= item.end_date) {
-          // Don't create DateInfo yet, will be created during encoding
-          // Just reserve space in the map is not necessary
+          // Date info will be created during encoding
         }
       }
     }
   }
 
-  // Archive statistics already computed during scan above
+  co_return;
 }
-
-// Deleted: update_binary_statistics() and update_archive_statistics()
-// All statistics are now computed inline during scan and coverage analysis
 
 // ============================================================================
 // Backtest Coverage Analysis

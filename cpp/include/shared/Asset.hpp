@@ -1,5 +1,6 @@
 #pragma once
 
+#include "boost/asio/awaitable.hpp"
 #include "codec/L2_DataType.hpp"
 
 #include <algorithm>
@@ -12,6 +13,9 @@
 // Forward declarations
 namespace L2 {
 class BinaryDecoder_L2;
+}
+namespace GUI::Database {
+class ScanThreadPool;
 }
 
 // ============================================================================
@@ -189,9 +193,18 @@ struct Asset {
   // ========================================
   // Methods
   // ========================================
-  // Scan operations (heavy, call once)
-  void scan_binary_database(const std::string &database_dir, const std::string &binary_extension);
-  void scan_archive_database(const std::string &archive_dir, const std::string &archive_extension);
+  // Scan operations (asynchronous coroutine-based)
+  boost::asio::awaitable<void> coro_scan_binary_database(
+      boost::asio::io_context &io,
+      const std::string &database_dir,
+      const std::string &binary_extension,
+      std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
+      
+  boost::asio::awaitable<void> coro_scan_archive_database(
+      boost::asio::io_context &io,
+      const std::string &archive_dir,
+      const std::string &archive_extension,
+      std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
   
   // Coverage analysis (lightweight, call after config changes)
   // Also computes backtest range statistics using cached data

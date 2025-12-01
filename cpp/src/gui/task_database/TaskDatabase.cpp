@@ -233,6 +233,12 @@ private:
 
     // Primary status: database coverage check
     switch (check_result.status) {
+    case DatabaseStatus::Unchecked:
+      ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[Not checked]");
+      ImGui::SameLine();
+      ImGui::TextDisabled("(Click 'Check Database' in Encode tab)");
+      break;
+
     case DatabaseStatus::Pass:
       ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "[Pass]");
       if (!state.all_json_ready()) {

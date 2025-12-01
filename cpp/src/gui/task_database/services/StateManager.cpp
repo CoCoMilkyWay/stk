@@ -12,6 +12,9 @@ awaitable<void> StateManager::initialize() {
   // Step 1: Load asset list from assets.json (single source of truth, path from config)
   AssetLoader::load_from_config(data_);
 
+  // Yield immediately after asset loading to let GUI render
+  co_await boost::asio::steady_timer(co_await boost::asio::this_coro::executor, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+
   // Step 2: Build stock codes list from assets (format: exchange.code, lowercase exchange)
   std::vector<std::string> stock_codes;
   for (const auto &item : data_.asset.items) {
@@ -25,25 +28,30 @@ awaitable<void> StateManager::initialize() {
     co_await baostock_svc_->get_data_manager()->set_stock_codes(stock_codes);
   }
 
-  // Step 4: Scan binary database (heavy operation, done once)
-  // This will initialize all_dates, date_info, and scan all existing binaries
-  data_.asset.scan_binary_database(data_.config.database_dir, data_.config.binary_extension);
+  // Step 4-6: Start database check (inline - immediately update status then yield)
+  auto enc_status = encoding_svc_->get_status();
+  if (enc_status == EncodingStatus::Idle ||
+      enc_status == EncodingStatus::Completed ||
+      enc_status == EncodingStatus::Cancelled ||
+      enc_status == EncodingStatus::Error) {
 
-  // Step 5: Scan archive database (heavy operation, done once)
-  // This will populate archive metadata for coverage check
-  data_.asset.scan_archive_database(data_.config.archive_dir, data_.config.archive_extension);
+    // Immediately clear old result and update status (BEFORE spawning coroutine)
+    encoding_svc_->last_check_ = DatabaseCheckResult{};
+    encoding_svc_->status_ = EncodingStatus::InitializingCheck;
 
-  // Step 6: Check database coverage for backtest period (async)
-  encoding_svc_->start_database_check();
+    // Yield immediately to let GUI render the InitializingCheck status
+    co_await boost::asio::steady_timer(co_await boost::asio::this_coro::executor, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+
+    // Now spawn the coroutine (after GUI has rendered the status)
+    boost::asio::co_spawn(encoding_svc_->io_, encoding_svc_->coro_database_check(), boost::asio::detached);
+  }
 
   // Step 7: Initialize JSON files (fast, no network)
   // Workers will login lazily when first API call is made
   co_await baostock_svc_->load_all_json();
 
   // Step 8: Compute browser statistics (requires stock_info for delist dates and stock_days for all trading days)
-  data_.asset.compute_browser_statistics(
-      baostock_svc_->get_stock_info_data(),
-      baostock_svc_->get_stock_days_data());
+  data_.asset.compute_browser_statistics(baostock_svc_->get_stock_info_data(), baostock_svc_->get_stock_days_data());
 
   refresh_state();
 }

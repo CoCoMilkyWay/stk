@@ -1,6 +1,5 @@
 #include "gui/task_icon_bar/CoroNetwork.hpp"
 #include "gui/coro/CoroManager.hpp"
-#include "gui/coro/CoroUtils.hpp"
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
@@ -115,7 +114,7 @@ std::vector<int> CoroNetwork::GetTargetPings() const {
 void CoroNetwork::SetStatus(Status status, int best_ping) {
   status_.store(status);
   ping_ms_.store(best_ping);
-  
+
   // Update NetworkMonitor singleton
   NetworkMonitor::Instance().SetStatus(static_cast<NetworkMonitor::Status>(status), best_ping);
 }
@@ -125,7 +124,7 @@ void CoroNetwork::SetTargetPing(size_t index, int ping_ms) {
   if (index < results_.size()) {
     results_[index]->store(ping_ms);
   }
-  
+
   // Update NetworkMonitor singleton
   NetworkMonitor::Instance().SetTargetPing(index, ping_ms);
 }
@@ -172,7 +171,10 @@ asio::awaitable<void> CoroNetwork::PingLoop(size_t target_index) {
     }
 
     // Wait before next ping
-    co_await CoroSleep(interval_);
+    co_await boost::asio::steady_timer(
+        co_await boost::asio::this_coro::executor,
+        interval_)
+        .async_wait(boost::asio::use_awaitable);
   }
 }
 

@@ -176,7 +176,6 @@ set(HEADERS
     ../../include/gui/Gui.hpp
     ../../include/gui/Tasks.hpp
     ../../include/gui/coro/CoroManager.hpp
-    ../../include/gui/coro/CoroUtils.hpp
     ../../include/gui/task_icon_bar/TaskIconBar.hpp
     ../../include/gui/task_icon_bar/CoroNetwork.hpp
     ../../include/gui/task_database/models/SharedTypes.hpp

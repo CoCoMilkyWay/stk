@@ -1,21 +1,29 @@
 // Encoding Service Implementation
 #include "gui/task_database/services/EncodingService.hpp"
+#include "gui/task_database/infrastructure/ScanThreadPool.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/logging.hpp"
 #include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/encoding_worker.hpp"
 
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <iostream>
 #include <mutex>
 
 namespace GUI::Database {
 
-EncodingService::EncodingService(SharedData &data, io_context & /*io*/, TaskTerminal *term)
-    : data_(data), terminal_(term) {}
+EncodingService::EncodingService(SharedData &data, io_context &io, TaskTerminal *term)
+    : data_(data), io_(io), terminal_(term) {
+  // Scan operations now in Asset class
+}
 
 void EncodingService::start_encoding(int num_workers, bool skip_existing) {
-  if (status_ == EncodingStatus::Running) return;
+  if (status_ == EncodingStatus::Running)
+    return;
 
   status_ = EncodingStatus::Running;
   cancel_flag_.store(false);
@@ -25,13 +33,15 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
 
   // Enable High Performance Mode: GUI sleeps, all CPU for encoding
   data_.gui.EnableHighPerformanceMode();
-  std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n" << std::endl;
+  std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
+            << std::endl;
 
   // Launch encoding in background thread
   encoding_thread_ = std::async(std::launch::async, [this]() {
     std::cout << "\n=== Encoding Started ===\n"
-              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size() 
-              << " | Dates: " << data_.asset.all_dates.size() << "\n" << std::endl;
+              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
+              << " | Dates: " << data_.asset.all_dates.size() << "\n"
+              << std::endl;
 
     // Initialize date_info for all assets (if not already done)
     for (auto &asset : data_.asset.items) {
@@ -40,7 +50,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
           // Create DateInfo if not exists (may already exist from binary scan)
           if (asset.date_info.find(date_str) == asset.date_info.end()) {
             DateInfo &di = asset.date_info[date_str];
-            di.database_dir = Utils::generate_temp_asset_dir(data_.config.database_dir, date_str, 
+            di.database_dir = Utils::generate_temp_asset_dir(data_.config.database_dir, date_str,
                                                              asset.asset_code, asset.exchange);
             di.snapshots_encoded = 0;
             di.orders_encoded = 0;
@@ -56,7 +66,8 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
       asset_queue.push_back(i);
     }
 
-    std::cout << "Encoding: 二进制数据库创建中...\n" << std::endl;
+    std::cout << "Encoding: 二进制数据库创建中...\n"
+              << std::endl;
 
     // Initialize logger for all encoding workers (shared log file)
     Logger::init(data_.config.log_dir);
@@ -75,28 +86,27 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     }
 
     // Wait for completion
-    for (auto &worker : workers_) worker.wait();
+    for (auto &worker : workers_)
+      worker.wait();
     progress_->stop();
     workers_.clear();
 
-    // Rescan after encoding
-    data_.asset.scan_binary_database(data_.config.database_dir, data_.config.binary_extension);
-    data_.asset.compute_backtest_coverage(data_.config.start_date, data_.config.end_date);
-
     // Finalize
     status_ = cancel_flag_.load() ? EncodingStatus::Cancelled : EncodingStatus::Completed;
-    
+
     std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
               << "Encoded: " << data_.asset.binary.dates.size() << " dates" << std::endl;
 
-    // Check coverage (sync, we're already in background thread)
-    auto check = check_database_coverage_sync();
-    last_check_ = check;
-    std::cout << "\nDatabase: " << check.get_status_string() << std::endl;
+    // Trigger database check coroutine to update coverage after encoding
+    boost::asio::co_spawn(io_, [this]() -> boost::asio::awaitable<void> {
+      co_await coro_database_check();
+      std::cout << "\nDatabase: " << last_check_.get_status_string() << std::endl;
+    }(), boost::asio::detached);
 
     // Disable High Performance Mode: GUI resumes
     data_.gui.DisableHighPerformanceMode();
-    std::cout << "\n[High Performance Mode] Disabled - GUI thread resumed\n" << std::endl;
+    std::cout << "\n[High Performance Mode] Disabled - GUI thread resumed\n"
+              << std::endl;
   });
 }
 
@@ -120,7 +130,7 @@ EncodingProgress EncodingService::get_progress() const {
   prog.total_dates = data_.asset.all_dates.size();
   prog.encoded_dates = data_.asset.binary.dates.size();
   prog.completed_assets = 0;
-  
+
   // Calculate total orders
   for (const auto &item : data_.asset.items) {
     prog.total_orders += item.get_total_order_count();
@@ -128,31 +138,35 @@ EncodingProgress EncodingService::get_progress() const {
 
   if (status_ == EncodingStatus::Running) {
     prog.elapsed_seconds = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - start_time_).count();
+                               std::chrono::steady_clock::now() - start_time_)
+                               .count();
     prog.encoding_rate = prog.elapsed_seconds > 0 ? prog.completed_assets / prog.elapsed_seconds : 0;
   }
 
   return prog;
 }
 
-void EncodingService::start_database_check() {
-  if (status_ == EncodingStatus::Scanning) {
-    return; // Already scanning
-  }
+// ============================================================================
+// Database Check - Coroutine Version (uses thread pool for heavy scan)
+// ============================================================================
 
-  status_ = EncodingStatus::Scanning;
-
-  // Launch async scan
-  scan_thread_ = std::async(std::launch::async, [this]() {
-    last_check_ = check_database_coverage_sync();
-    status_ = EncodingStatus::Idle;
-  });
-}
-
-DatabaseCheckResult EncodingService::check_database_coverage_sync() {
+awaitable<void> EncodingService::coro_database_check() {
+  using namespace std::chrono;
   namespace fs = std::filesystem;
+
   DatabaseCheckResult result;
 
+  // ========================================
+  // Phase 0: Initialization - yield immediately, let GUI render
+  // ========================================
+  // Status already set to InitializingCheck in start_database_check()
+  // Yield immediately to let GUI render the status
+  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+
+  // ========================================
+  // Phase 1: Validate config (before any FS operations)
+  // ========================================
+  
   // Input: backtest_start, backtest_end
   std::string backtest_start = data_.config.start_date;
   std::string backtest_end = data_.config.end_date;
@@ -165,10 +179,19 @@ DatabaseCheckResult EncodingService::check_database_coverage_sync() {
     result.status = DatabaseStatus::Error;
     result.error_message = "Backtest period not configured";
     last_check_ = result;
-    return result;
+    status_ = EncodingStatus::Error;
+    co_return;
   }
 
-  // Step 1: Lightweight check - folder existence
+  // ========================================
+  // Phase 2: Check file system - update status, yield, then check
+  // ========================================
+  
+  status_ = EncodingStatus::CheckingFileSystem;
+  // Yield BEFORE doing any FS operations
+  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+
+  // Now do the actual FS checks (after GUI has rendered the status)
   bool binary_exists = fs::exists(data_.config.database_dir) &&
                        !fs::is_empty(data_.config.database_dir);
   bool archive_exists = fs::exists(data_.config.archive_dir) &&
@@ -179,22 +202,61 @@ DatabaseCheckResult EncodingService::check_database_coverage_sync() {
     result.status = DatabaseStatus::NoData;
     result.error_message = "No binary or archive database found";
     last_check_ = result;
-    return result;
+    status_ = EncodingStatus::Idle;
+    co_return;
   }
 
-  // Scan databases (if not already scanned)
+  // ========================================
+  // Phase 3: Scan binary database - update status, yield, then scan
+  // ========================================
+
   if (!data_.asset.binary.scanned) {
-    data_.asset.scan_binary_database(data_.config.database_dir, data_.config.binary_extension);
+    status_ = EncodingStatus::ScanningBinary;
+    // Yield BEFORE creating thread pool and scanning
+    co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+    
+    // Now do the actual scanning (after GUI has rendered the status)
+    auto scan_pool = std::make_shared<ScanThreadPool>(std::thread::hardware_concurrency());
+    co_await data_.asset.coro_scan_binary_database(io_, data_.config.database_dir,
+                                                    data_.config.binary_extension, scan_pool);
   }
+
+  // ========================================
+  // Phase 4: Scan archive database - update status, yield, then scan
+  // ========================================
 
   if (!data_.asset.archive.scanned) {
-    data_.asset.scan_archive_database(data_.config.archive_dir, data_.config.archive_extension);
+    status_ = EncodingStatus::ScanningArchive;
+    // Yield BEFORE creating thread pool and scanning
+    co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+    
+    // Now do the actual scanning (after GUI has rendered the status)
+    auto scan_pool = std::make_shared<ScanThreadPool>(std::thread::hardware_concurrency());
+    co_await data_.asset.coro_scan_archive_database(io_, data_.config.archive_dir,
+                                                     data_.config.archive_extension, scan_pool);
   }
 
-  // Compute backtest coverage (also calculates backtest range statistics)
+  // ========================================
+  // Phase 5: Compute backtest coverage - update status, yield, then compute
+  // ========================================
+
+  status_ = EncodingStatus::ComputingCoverage;
+  // Yield BEFORE computing coverage
+  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+
+  // Now do the actual computation (after GUI has rendered the status)
   data_.asset.compute_backtest_coverage(backtest_start, backtest_end);
 
-  // Populate result
+  // ========================================
+  // Phase 6: Analyze and determine status - update status, yield, then analyze
+  // ========================================
+  
+  status_ = EncodingStatus::AnalyzingStatus;
+  // Yield BEFORE analyzing
+  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+
+  // Now do the actual analysis (after GUI has rendered the status)
+  // Populate result from Asset data
   result.binary.exists = data_.asset.binary.exists;
   result.binary.path = data_.asset.binary.path;
   result.binary.total_dates = data_.asset.binary.dates.size();
@@ -214,13 +276,9 @@ DatabaseCheckResult EncodingService::check_database_coverage_sync() {
   result.missing_no_archive.assign(data_.asset.backtest.need_download.begin(),
                                    data_.asset.backtest.need_download.end());
 
-  // Decision Tree (from Untitled-1)
+  // Decision Tree
   if (binary_exists) {
     // Case 1: binary exists
-    // Step: Scan binary database, collect all encoded dates
-    // Check all assets have snapshot + order files for each date
-
-    // Check range coverage
     if (data_.asset.binary.min_date.empty() || data_.asset.binary.min_date > backtest_start) {
       result.status = DatabaseStatus::NeedArchive;
       result.error_message = "Binary starts too late (" + data_.asset.binary.min_date + " > " + backtest_start + ")";
@@ -231,9 +289,6 @@ DatabaseCheckResult EncodingService::check_database_coverage_sync() {
       // Range OK
       if (archive_exists) {
         // Has archive: use archive as ground truth
-        // Extract required_dates (from backtest period)
-        // Extract binary_coverage (binary dates in backtest period)
-        // Calculate missing_dates = required_dates - binary_coverage
         if (result.missing_dates.empty()) {
           result.status = DatabaseStatus::Pass;
         } else {
@@ -241,15 +296,11 @@ DatabaseCheckResult EncodingService::check_database_coverage_sync() {
         }
       } else {
         // No archive: binary is ground truth
-        // Directly pass (cannot judge completeness without reference)
         result.status = DatabaseStatus::Pass;
       }
     }
   } else {
     // Case 2: binary doesn't exist, but archive exists
-    // Scan archive database, collect all archive dates
-
-    // Check range coverage
     if (data_.asset.archive.min_date.empty() || data_.asset.archive.min_date > backtest_start) {
       result.status = DatabaseStatus::NeedArchive;
       result.error_message = "Archive starts too late (" + data_.asset.archive.min_date + " > " + backtest_start + ")";
@@ -257,18 +308,21 @@ DatabaseCheckResult EncodingService::check_database_coverage_sync() {
       result.status = DatabaseStatus::NeedArchive;
       result.error_message = "Archive ends too early (" + data_.asset.archive.max_date + " < " + backtest_end + ")";
     } else {
-      // Range OK -> NotEncoded (need to encode all, but data is sufficient)
+      // Range OK -> NotEncoded
       result.status = DatabaseStatus::NotEncoded;
     }
   }
 
-  // Cache result
+  // Cache result and finalize
   last_check_ = result;
-  return result;
+  status_ = EncodingStatus::Idle;
+  co_return;
 }
 
+
 void EncodingService::run_file_check(const std::string &archive_base_dir) {
-  if (!terminal_) return;
+  if (!terminal_)
+    return;
 
   terminal_->AddLine("========================================");
   terminal_->AddLine("[File Check] Starting Archive Validation");
@@ -307,12 +361,13 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
   terminal_->AddLine("");
 
   // Step 4-7: Validate naming, format, structure, ZIP files
-  auto print_errors = [this](const std::string &step, const std::string &desc, size_t count, 
+  auto print_errors = [this](const std::string &step, const std::string &desc, size_t count,
                              const std::vector<std::string> &files, const std::string &fix = "") {
     terminal_->AddLine("[File Check] " + step + ": " + desc + "...");
     if (count > 0) {
       terminal_->AddLine("[File Check] ✗ Found " + std::to_string(count) + " error(s)", Color::Red());
-      if (!fix.empty()) terminal_->AddLine("[File Check]   Fix: " + fix);
+      if (!fix.empty())
+        terminal_->AddLine("[File Check]   Fix: " + fix);
       for (const auto &file : files) {
         terminal_->AddLine("[File Check]   - " + file, Color::Yellow());
       }
@@ -322,18 +377,18 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
     terminal_->AddLine("");
   };
 
-  print_errors("Step 4", "Checking archive naming (YYYY/YYYYMM/YYYYMMDD.rar)", 
+  print_errors("Step 4", "Checking archive naming (YYYY/YYYYMM/YYYYMMDD.rar)",
                file_check_result_.naming_errors, file_check_result_.naming_error_files);
-  
-  print_errors("Step 5", "Checking archive format (RAR non-solid)", 
+
+  print_errors("Step 5", "Checking archive format (RAR non-solid)",
                file_check_result_.format_errors, file_check_result_.format_error_files,
                "Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py");
-  
-  print_errors("Step 6", "Checking internal structure (YYYYMMDD/asset_code/*.csv)", 
+
+  print_errors("Step 6", "Checking internal structure (YYYYMMDD/asset_code/*.csv)",
                file_check_result_.structure_errors, file_check_result_.structure_error_files,
                "Run py/app/FileRepair/fix_archive_structure.py");
-  
-  print_errors("Step 7", "Checking for ZIP files (should be RAR)", 
+
+  print_errors("Step 7", "Checking for ZIP files (should be RAR)",
                file_check_result_.zip_files, file_check_result_.zip_error_files,
                "Run py/app/FileRepair/fix_zip_to_rar.py");
 
@@ -344,11 +399,11 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
     terminal_->AddLine("[File Check] Valid archives: " + std::to_string(file_check_result_.valid_archives));
   } else {
     terminal_->AddLine("[File Check] ✗ SOME CHECKS FAILED", Color::Red());
-    terminal_->AddLine("[File Check] Valid: " + std::to_string(file_check_result_.valid_archives) + 
-                      " / Total: " + std::to_string(file_check_result_.total_archives));
+    terminal_->AddLine("[File Check] Valid: " + std::to_string(file_check_result_.valid_archives) +
+                       " / Total: " + std::to_string(file_check_result_.total_archives));
     terminal_->AddLine("[File Check] Total errors: " + std::to_string(
-        file_check_result_.naming_errors + file_check_result_.format_errors +
-        file_check_result_.structure_errors + file_check_result_.zip_files));
+                                                           file_check_result_.naming_errors + file_check_result_.format_errors +
+                                                           file_check_result_.structure_errors + file_check_result_.zip_files));
   }
   terminal_->AddLine("========================================");
 }

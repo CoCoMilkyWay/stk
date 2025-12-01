@@ -73,10 +73,12 @@ stk/
     │   │       │   ├── StateManager.hpp          # 🖥️ 状态管理器
     │   │       │   ├── BaostockService.hpp       # 🖥️ Baostock数据服务
     │   │       │   ├── L2DatabaseService.hpp     # 🖥️ L2数据库服务
+    │   │       │   ├── EncodingService.hpp       # 🖥️ 编码服务 (协程+线程池)
     │   │       │   └── ClassifierService.hpp     # 🖥️ 分类器服务
     │   │       ├── infrastructure/               # 🖥️ 基础设施层
     │   │       │   ├── DataManager.hpp           # 🖥️ 数据管理器
     │   │       │   ├── CoroScanner.hpp           # 🖥️ 协程扫描器
+    │   │       │   ├── ScanThreadPool.hpp        # 🖥️ 扫描线程池 (1000+天*1000+资产)
     │   │       │   ├── BaostockClient.hpp        # 🖥️ Baostock客户端
     │   │       │   └── BaostockPool.hpp          # 🖥️ Baostock连接池
     │   │       └── ui/                           # 🖥️ UI组件
