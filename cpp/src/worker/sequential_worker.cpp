@@ -36,9 +36,9 @@ void stop_profiling(int worker_id) {
 } // namespace
 #endif
 
-void sequential_worker(SharedData &data,
-                       int worker_id,
-                       GlobalFeatureStore *feature_store,
+void sequential_worker(int worker_id,
+                       SharedData &data,
+                       GlobalFeatureStore &store,
                        misc::ProgressHandle progress_handle) {
 
   // Initialize as idle (will be updated if assets are assigned)
@@ -68,7 +68,7 @@ void sequential_worker(SharedData &data,
   for (size_t i = 0; i < my_asset_ids.size(); ++i) {
     const size_t asset_id = my_asset_ids[i];
     const auto &asset = data.asset.items[asset_id];
-    lobs.push_back(std::make_unique<LimitOrderBook>(L2::DEFAULT_ENCODER_ORDER_SIZE, feature_store, asset.exchange_type, asset.asset_id, worker_id));
+    lobs.push_back(std::make_unique<LimitOrderBook>(L2::DEFAULT_ENCODER_ORDER_SIZE, store, asset.exchange_type, asset.asset_id, worker_id));
     decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE));
   }
 
@@ -150,7 +150,7 @@ void sequential_worker(SharedData &data,
     }
 
     // Mark this worker done for this date (will also set all asset progress atomically)
-    feature_store->ts_done(date_str, worker_id);
+    store.ts_done(date_str, worker_id);
 
     // Update progress
     auto current_time = std::chrono::steady_clock::now();

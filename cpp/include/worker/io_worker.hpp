@@ -7,5 +7,8 @@
 // - Scans tensor pool for CS_DONE state (lockfree, IO worker exclusive access)
 // - Flushes to disk and resets to UNUSED
 // - Updates progress display
-void io_worker(GlobalFeatureStore* store, misc::ProgressHandle handle, size_t total_dates, int worker_id);
+void io_worker(int worker_id,
+               GlobalFeatureStore &store,
+               misc::ProgressHandle progress_handle,
+               size_t total_dates);
 

@@ -5,21 +5,24 @@
 #include <string>
 #include <thread>
 
-void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t total_dates, int worker_id) {
+void io_worker(int worker_id,
+               GlobalFeatureStore &store,
+               misc::ProgressHandle progress_handle,
+               size_t total_dates) {
   size_t flush_count = 0;
 
   // Update initial label
   char label_buf[1024];
   snprintf(label_buf, sizeof(label_buf), "IO核心  %2d:   0/%3zu 等待数据", worker_id, total_dates);
-  handle.set_label(label_buf);
-  handle.update(0, total_dates, "");
+  progress_handle.set_label(label_buf);
+  progress_handle.update(0, total_dates, "");
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to flush");
 
   size_t wait_count = 0;
   while (flush_count < total_dates) {
     // Flush oldest CS_DONE tensor (one at a time, maintains date order)
-    bool flushed = store->io_try_flush_one();
+    bool flushed = store.io_try_flush_one();
 
     if (flushed) {
       flush_count++;
@@ -29,8 +32,8 @@ void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t to
       // Update progress with pool status
       snprintf(label_buf, sizeof(label_buf), "IO核心  %2d: %3zu/%3zu", worker_id, flush_count, total_dates);
       std::string label_with_status = std::string(label_buf);
-      handle.set_label(label_with_status);
-      handle.update(flush_count, total_dates, "");
+      progress_handle.set_label(label_with_status);
+      progress_handle.update(flush_count, total_dates, "");
     } else {
       // No tensors ready yet, sleep briefly
       wait_count++;
@@ -43,8 +46,8 @@ void io_worker(GlobalFeatureStore *store, misc::ProgressHandle handle, size_t to
 
   // Final update
   snprintf(label_buf, sizeof(label_buf), "IO核心  %2d: %3zu/%3zu Complete", worker_id, total_dates, total_dates);
-  handle.set_label(label_buf);
-  handle.update(total_dates, total_dates, "");
+  progress_handle.set_label(label_buf);
+  progress_handle.update(total_dates, total_dates, "");
 
   Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates flushed");
 }

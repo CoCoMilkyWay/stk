@@ -25,29 +25,26 @@ struct HourBar {
 // Input: HourBar (resampled OHLCV data)
 class Hour_Sequential {
 public:
-  explicit Hour_Sequential(const HourBar* hour_bar)
+  explicit Hour_Sequential(const HourBar &hour_bar)
       : hour_bar_(hour_bar) {
   }
 
-  void set_store_context(GlobalFeatureStore* store, size_t asset_id) {
-    feature_store_ = store;
+  void set_store_context(GlobalFeatureStore &store, size_t asset_id, size_t worker_id = 0) {
+    store_ = &store;
     asset_id_ = asset_id;
+    worker_id_ = worker_id;
   }
 
   void set_date(const std::string &date_str) {
     date_str_ = date_str;
   }
 
-  void set_worker_id(size_t worker_id) {
-    worker_id_ = worker_id;
-  }
-
   // Main computation entry (called by CoreSequential)
   void compute_and_store() {
-    if (!feature_store_ || !hour_bar_ || date_str_.empty())
+    if (!store_ || date_str_.empty())
       return;
 
-    const HourBar &bar = *hour_bar_;
+    const HourBar &bar = hour_bar_;
     bool is_valid = bar.close_1h > 0 && bar.volume_1h > 0;
     size_t t = bar.timestamp_1h;
 
@@ -73,14 +70,14 @@ private:
 
     // Write TS features
     constexpr size_t level_idx = 2;
-    TS_WRITE_FEATURES(feature_store_, date_str_, level_idx, t, asset_id_, L2_TS_RANGE.start, L2_TS_RANGE.end, features, worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L2_TS_RANGE.start, L2_TS_RANGE.end, features, worker_id_);
 
     // Write asset validity flag
-    TS_WRITE_SINGLE(feature_store_, date_str_, level_idx, t, L2_FieldOffset::universe_size, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L2_FieldOffset::universe_size, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
   }
   // Feature 1: hour_ret_12h_mom - 12-hour momentum z-score
   float compute_hour_ret_12h_mom() const {
-    const auto &bar = *hour_bar_;
+    const auto &bar = hour_bar_;
     
     hour_return_window_.push_back(bar.close_1h);
     if (hour_return_window_.size() > 48)
@@ -117,7 +114,7 @@ private:
 
   // Feature 2: hour_volatility - 24-hour realized volatility (log normalized)
   float compute_hour_volatility() const {
-    const auto &bar = *hour_bar_;
+    const auto &bar = hour_bar_;
     
     hour_vol_window_.push_back(bar.close_1h);
     if (hour_vol_window_.size() > 24)
@@ -142,7 +139,7 @@ private:
 
   // Feature 3: pivot_dev - Pivot point deviation
   float compute_pivot_dev() const {
-    const auto &bar = *hour_bar_;
+    const auto &bar = hour_bar_;
     
     // Pivot point: (high + low + close) / 3
     double pivot = (bar.high_1h + bar.low_1h + bar.close_1h) / 3.0;
@@ -159,7 +156,7 @@ private:
 
   // Feature 4: dominant_persist - Dominant side persistence (EMA of buy/sell pressure)
   float compute_dominant_persist() const {
-    const auto &bar = *hour_bar_;
+    const auto &bar = hour_bar_;
     
     // Compute dominant side: volume-weighted buy/sell indicator
     // Positive volume = buying pressure, negative = selling pressure
@@ -194,7 +191,7 @@ private:
 
   // Feature 5: hour_overnight_gap - Overnight gap (if applicable)
   float compute_hour_overnight_gap() const {
-    const auto &bar = *hour_bar_;
+    const auto &bar = hour_bar_;
     
     // Only compute gap at market open
     if (bar.prev_day_close <= 0)
@@ -223,8 +220,8 @@ private:
     return static_cast<float>(std::clamp(normalized_gap, -3.0, 3.0));
   }
 
-  const HourBar* hour_bar_;
-  GlobalFeatureStore* feature_store_ = nullptr;
+  const HourBar &hour_bar_;
+  GlobalFeatureStore *store_ = nullptr;
   size_t asset_id_ = 0;
   size_t worker_id_ = 0;
   std::string date_str_;

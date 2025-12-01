@@ -11,24 +11,22 @@
 // Architecture: LOB -> Tick -> (resample) -> Minute -> (resample) -> Hour
 class CoreSequential {
 public:
-  CoreSequential(const LOB_Feature *lob_feature,
-                 GlobalFeatureStore *feature_store = nullptr,
+  CoreSequential(const LOB_Feature &lob_feature,
+                 GlobalFeatureStore &store,
                  size_t asset_id = 0,
                  size_t core_id = 0)
       : lob_feature_(lob_feature),
-        tick_sequential_(lob_feature, feature_store, asset_id, core_id),
-        minute_sequential_(&minute_bar_),
-        hour_sequential_(&hour_bar_),
-        feature_store_(feature_store),
+        store_(store),
         asset_id_(asset_id),
-        core_id_(core_id) {
-    if (feature_store_) {
-      tick_sequential_.set_store_context(feature_store_, asset_id_, core_id_);
-      minute_sequential_.set_store_context(feature_store_, asset_id_);
-      minute_sequential_.set_worker_id(core_id_);
-      hour_sequential_.set_store_context(feature_store_, asset_id_);
-      hour_sequential_.set_worker_id(core_id_);
-    }
+        core_id_(core_id),
+        minute_bar_(),
+        hour_bar_(),
+        tick_sequential_(lob_feature),
+        minute_sequential_(minute_bar_),
+        hour_sequential_(hour_bar_) {
+    tick_sequential_.set_store_context(store_, asset_id_, core_id_);
+    minute_sequential_.set_store_context(store_, asset_id_, core_id_);
+    hour_sequential_.set_store_context(store_, asset_id_, core_id_);
   }
 
   void set_date(const std::string &date_str) {
@@ -40,7 +38,7 @@ public:
 
   // Main entry: compute all 3 levels with cascading resampling
   void compute_and_store() noexcept {
-    const LOB_Feature &lob = *lob_feature_;
+    const LOB_Feature &lob = lob_feature_;
     const double mid_price = get_mid_price();
     const uint64_t tick_volume = lob.volume;
     const uint32_t minute_now = lob.hour * 60u + lob.minute;
@@ -57,9 +55,9 @@ public:
     if (minute_now == last_minute_) [[likely]] {
       // CRITICAL: Mark L0 even in fast path!
       // CS worker needs to know each tick is done
-      if (feature_store_ && !date_str_.empty()) {
+      if (!date_str_.empty()) {
         size_t l0_t = time_to_trading_seconds(lob.hour, lob.minute, lob.second);
-        feature_store_->ts_update(date_str_, core_id_, asset_id_, l0_t);
+        store_.ts_update(date_str_, core_id_, asset_id_, l0_t);
       }
       return;
     }
@@ -79,9 +77,9 @@ public:
     // CRITICAL: Mark L0 progress after ALL levels (L0/L1/L2) computed
     // CS worker depends on L1/L2 being ready when L0 timeslot is marked
     // This ensures order-level synchronization for real-time CS computation
-    if (feature_store_ && !date_str_.empty()) {
+    if (!date_str_.empty()) {
       size_t l0_t = time_to_trading_seconds(lob.hour, lob.minute, lob.second);
-      feature_store_->ts_update(date_str_, core_id_, asset_id_, l0_t);
+      store_.ts_update(date_str_, core_id_, asset_id_, l0_t);
     }
   }
 
@@ -143,27 +141,28 @@ private:
 
   // Get mid price from depth buffer
   double get_mid_price() const noexcept {
-    if (lob_feature_->depth_buffer.size() < 2 * LOB_FEATURE_DEPTH_LEVELS) {
-      return lob_feature_->price;
+    if (lob_feature_.depth_buffer.size() < 2 * LOB_FEATURE_DEPTH_LEVELS) {
+      return lob_feature_.price;
     }
-    Level *best_ask = lob_feature_->depth_buffer[LOB_FEATURE_DEPTH_LEVELS - 1];
-    Level *best_bid = lob_feature_->depth_buffer[LOB_FEATURE_DEPTH_LEVELS];
-    return (best_ask && best_bid) ? (best_bid->price + best_ask->price) * 0.5 : lob_feature_->price;
+    Level *best_ask = lob_feature_.depth_buffer[LOB_FEATURE_DEPTH_LEVELS - 1];
+    Level *best_bid = lob_feature_.depth_buffer[LOB_FEATURE_DEPTH_LEVELS];
+    return (best_ask && best_bid) ? (best_bid->price + best_ask->price) * 0.5 : lob_feature_.price;
   }
 
-  const LOB_Feature *lob_feature_;
-  Tick_Sequential tick_sequential_;
-  Minute_Sequential minute_sequential_;
-  Hour_Sequential hour_sequential_;
-
-  GlobalFeatureStore *feature_store_;
+  const LOB_Feature &lob_feature_;
+  GlobalFeatureStore &store_;
   size_t asset_id_;
   size_t core_id_;
   std::string date_str_;
 
-  // Resampled data buffers
+  // Resampled data buffers (must be declared before Sequential objects that reference them)
   MinuteBar minute_bar_;
   HourBar hour_bar_;
+
+  // Sequential feature processors (reference the buffers above)
+  Tick_Sequential tick_sequential_;
+  Minute_Sequential minute_sequential_;
+  Hour_Sequential hour_sequential_;
 
   // Resampling state
   uint32_t last_minute_ = 0;

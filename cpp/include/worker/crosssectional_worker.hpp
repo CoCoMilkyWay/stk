@@ -10,8 +10,8 @@ class GlobalFeatureStore;
 // CROSS-SECTIONAL WORKER (DATE-FIRST, SINGLE-THREADED)
 // ============================================================================
 
-void crosssectional_worker(SharedData &data,
-                           GlobalFeatureStore* feature_store,
-                           int worker_id,
+void crosssectional_worker(int worker_id,
+                           SharedData &data,
+                           GlobalFeatureStore &store,
                            misc::ProgressHandle progress_handle);
 

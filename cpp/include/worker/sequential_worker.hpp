@@ -10,8 +10,8 @@ class GlobalFeatureStore;
 // PHASE 2: SEQUENTIAL WORKER (TIME-SERIES, DATE-FIRST TRAVERSAL)
 // ============================================================================
 
-void sequential_worker(SharedData &data,
-                      int worker_id,
-                      GlobalFeatureStore *feature_store,
+void sequential_worker(int worker_id,
+                      SharedData &data,
+                      GlobalFeatureStore &store,
                       misc::ProgressHandle progress_handle);
 

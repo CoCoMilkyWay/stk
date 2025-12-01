@@ -8,9 +8,9 @@
 #include <cstdio>
 #include <vector>
 
-void crosssectional_worker(SharedData &data,
-                           GlobalFeatureStore *feature_store,
-                           int worker_id,
+void crosssectional_worker(int worker_id,
+                           SharedData &data,
+                           GlobalFeatureStore &store,
                            misc::ProgressHandle progress_handle) {
 
   const size_t total_dates = data.asset.all_dates.size();
@@ -19,7 +19,7 @@ void crosssectional_worker(SharedData &data,
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to process");
 
   // Preallocate reusable buffers (avoid per-timeslot allocation)
-  const size_t A = feature_store->query_A();
+  const size_t A = store.query_A();
   std::vector<size_t> valid_indices;
   std::vector<float> input_fp32(A);
   std::vector<float> output_fp32(A);
@@ -29,7 +29,7 @@ void crosssectional_worker(SharedData &data,
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
     const std::string &date_str = data.asset.all_dates[date_idx];
-    const size_t capacity = feature_store->query_T(0);
+    const size_t capacity = store.query_T(0);
 
     // Update progress label
     char label_buf[128];
@@ -39,17 +39,17 @@ void crosssectional_worker(SharedData &data,
 
     // Process each time slot (per-slot sync for live trading compatibility)
     for (size_t t = 0; t < capacity; ++t) {
-      feature_store->cs_wait(date_str, t);
+      store.cs_wait(date_str, t);
 
       // Compute CS features (reuse buffers to avoid allocation)
-      compute_cs_tick(feature_store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
+      compute_cs_tick(&store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
     }
 
     ++completed_dates;
     progress_handle.update(completed_dates, total_dates, "");
 
     // Mark this date as complete for tensor pool recycling
-    feature_store->cs_done(date_str);
+    store.cs_done(date_str);
 
     Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(capacity) + " timeslots");
   }

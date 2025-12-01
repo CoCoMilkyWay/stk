@@ -47,8 +47,8 @@ public:
   // CONSTRUCTOR & CONFIGURATION
   //======================================================================================
 
-  explicit LimitOrderBook(size_t ORDER_SIZE = L2::DEFAULT_ENCODER_ORDER_SIZE,
-                          GlobalFeatureStore *feature_store = nullptr,
+  explicit LimitOrderBook(size_t ORDER_SIZE,
+                          GlobalFeatureStore &store,
                           ExchangeType exchange_type = ExchangeType::SSE,
                           size_t asset_id = 0,
                           size_t core_id = 0)
@@ -57,7 +57,7 @@ public:
         order_memory_pool_(ORDER_SIZE), // BumpPool for Order objects
         exchange_type_(exchange_type),
         asset_id_(asset_id),
-        core_sequential_(&LOB_feature_, feature_store, asset_id, core_id) {
+        core_sequential_(LOB_feature_, store, asset_id, core_id) {
     init_sentinel_levels();
   }
 

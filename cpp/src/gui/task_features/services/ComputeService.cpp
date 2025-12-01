@@ -119,8 +119,7 @@ void ComputeService::start_compute(int num_workers) {
       if (misc::Affinity::supported()) {
         misc::Affinity::pin_to_core(io_worker_core);
       }
-      io_worker(feature_store_.get(), progress_->get_handle(static_cast<int>(io_worker_core)),
-                total_dates, static_cast<int>(io_worker_core));
+      io_worker(static_cast<int>(io_worker_core), *feature_store_, progress_->get_handle(static_cast<int>(io_worker_core)), total_dates);
     }));
 
     // TS workers (cores 0 to N-3)
@@ -129,8 +128,7 @@ void ComputeService::start_compute(int num_workers) {
         if (misc::Affinity::supported()) {
           misc::Affinity::pin_to_core(i);
         }
-        sequential_worker(data_, static_cast<int>(i), feature_store_.get(),
-                          progress_->get_handle(static_cast<int>(i)));
+        sequential_worker(static_cast<int>(i), data_, *feature_store_, progress_->get_handle(static_cast<int>(i)));
       }));
     }
 
@@ -139,8 +137,7 @@ void ComputeService::start_compute(int num_workers) {
       if (misc::Affinity::supported()) {
         misc::Affinity::pin_to_core(cs_worker_core);
       }
-      crosssectional_worker(data_, feature_store_.get(), static_cast<int>(cs_worker_core),
-                            progress_->get_handle(static_cast<int>(cs_worker_core)));
+      crosssectional_worker(static_cast<int>(cs_worker_core), data_, *feature_store_, progress_->get_handle(static_cast<int>(cs_worker_core)));
     }));
 
     // Wait for completion

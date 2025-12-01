@@ -24,29 +24,26 @@ struct MinuteBar {
 // Input: MinuteBar (resampled OHLCV data)
 class Minute_Sequential {
 public:
-  explicit Minute_Sequential(const MinuteBar* minute_bar)
+  explicit Minute_Sequential(const MinuteBar &minute_bar)
       : minute_bar_(minute_bar) {
   }
 
-  void set_store_context(GlobalFeatureStore* store, size_t asset_id) {
-    feature_store_ = store;
+  void set_store_context(GlobalFeatureStore &store, size_t asset_id, size_t worker_id = 0) {
+    store_ = &store;
     asset_id_ = asset_id;
+    worker_id_ = worker_id;
   }
 
   void set_date(const std::string &date_str) {
     date_str_ = date_str;
   }
 
-  void set_worker_id(size_t worker_id) {
-    worker_id_ = worker_id;
-  }
-
   // Main computation entry (called by CoreSequential)
   void compute_and_store() {
-    if (!feature_store_ || !minute_bar_ || date_str_.empty())
+    if (!store_ || date_str_.empty())
       return;
 
-    const MinuteBar &bar = *minute_bar_;
+    const MinuteBar &bar = minute_bar_;
     bool is_valid = bar.close_1m > 0 && bar.volume_1m > 0;
     size_t t = bar.timestamp_1m;
 
@@ -72,14 +69,14 @@ private:
 
     // Write TS features
     constexpr size_t level_idx = 1;
-    TS_WRITE_FEATURES(feature_store_, date_str_, level_idx, t, asset_id_, L1_TS_RANGE.start, L1_TS_RANGE.end, features, worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L1_TS_RANGE.start, L1_TS_RANGE.end, features, worker_id_);
 
     // Write asset validity flag
-    TS_WRITE_SINGLE(feature_store_, date_str_, level_idx, t, L1_FieldOffset::universe_size, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::universe_size, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
   }
   // Feature 1: min_ret_z - Minute return z-score (rolling 60m)
   float compute_min_ret_z() const {
-    const auto &bar = *minute_bar_;
+    const auto &bar = minute_bar_;
     double ret = 0;
     
     if (!minute_return_window_.empty() && minute_return_window_.back() > 0) {
@@ -115,7 +112,7 @@ private:
 
   // Feature 2: rv_5m_norm - 5-minute realized volatility (log normalized)
   float compute_rv_5m_norm() const {
-    const auto &bar = *minute_bar_;
+    const auto &bar = minute_bar_;
     
     rv_window_.push_back(bar.close_1m);
     if (rv_window_.size() > 5)
@@ -140,7 +137,7 @@ private:
 
   // Feature 3: vwap_gap_pct - VWAP gap percentage (rolling z-score)
   float compute_vwap_gap_pct() const {
-    const auto &bar = *minute_bar_;
+    const auto &bar = minute_bar_;
     
     if (bar.vwap_1m <= 0)
       return 0.0f;
@@ -169,7 +166,7 @@ private:
 
   // Feature 4: momentum_15m - 15-minute momentum (cumulative z-score)
   float compute_momentum_15m() const {
-    const auto &bar = *minute_bar_;
+    const auto &bar = minute_bar_;
     
     if (!momentum_window_.empty() && momentum_window_.back() > 0) {
       double ret = std::log(bar.close_1m / momentum_window_.back());
@@ -205,7 +202,7 @@ private:
 
   // Feature 5: range_squeeze - Range squeeze indicator
   float compute_range_squeeze() const {
-    const auto &bar = *minute_bar_;
+    const auto &bar = minute_bar_;
     
     double range = bar.high_1m - bar.low_1m;
     
@@ -231,8 +228,8 @@ private:
     return static_cast<float>(std::clamp(ratio, -3.0, 3.0));
   }
 
-  const MinuteBar* minute_bar_;
-  GlobalFeatureStore* feature_store_ = nullptr;
+  const MinuteBar &minute_bar_;
+  GlobalFeatureStore *store_ = nullptr;
   size_t asset_id_ = 0;
   size_t worker_id_ = 0;
   std::string date_str_;

@@ -145,10 +145,10 @@ void RunGUI() {
       data.gui.terminal.AddLine("GUI reinitialized successfully", Color::Green());
     }
 
-    // High Performance Mode: GUI sleeps 5 seconds, all CPU for compute tasks
+    // High Performance Mode: GUI sleeps 1 second, all CPU for compute tasks
     if (data.gui.high_performance_mode) {
-      std::this_thread::sleep_for(std::chrono::seconds(5)); // 0.2 FPS
-      glfwPollEvents();
+      std::this_thread::sleep_for(std::chrono::seconds(1)); // 1 FPS
+      glfwPollEvents(); 
       data.gui.Update(1.0f);
       continue; // Skip rendering entirely
     }
