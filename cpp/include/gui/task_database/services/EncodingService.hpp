@@ -25,18 +25,18 @@ using boost::asio::io_context;
 
 enum class EncodingStatus {
   Idle,
-  
+
   // Database check phases (fine-grained)
-  InitializingCheck,     // Starting database check coroutine
-  CheckingFileSystem,    // Checking if directories exist
-  ScanningBinary,        // Scanning binary database
-  ScanningArchive,       // Scanning archive database
-  ComputingCoverage,     // Computing backtest coverage
-  AnalyzingStatus,       // Determining database status
-  
+  InitializingCheck,  // Starting database check coroutine
+  CheckingFileSystem, // Checking if directories exist
+  ScanningBinary,     // Scanning binary database
+  ScanningArchive,    // Scanning archive database
+  ComputingCoverage,  // Computing backtest coverage
+  AnalyzingStatus,    // Determining database status
+
   // Encoding phases
   Running,
-  
+
   // Final states
   Completed,
   Cancelled,
@@ -74,7 +74,7 @@ struct ArchiveDatabaseInfo {
 };
 
 struct DatabaseCheckResult {
-  DatabaseStatus status = DatabaseStatus::Unchecked;  // 默认为未检查，不是 Error
+  DatabaseStatus status = DatabaseStatus::Unchecked; // 默认为未检查，不是 Error
   std::string error_message;
 
   // Binary database
@@ -174,10 +174,10 @@ public:
   EncodingStatus get_status() const { return status_; }
   EncodingProgress get_progress() const;
   bool is_running() const { return status_ == EncodingStatus::Running; }
-  bool is_idle() const { 
-    return status_ == EncodingStatus::Idle || 
-           status_ == EncodingStatus::Completed || 
-           status_ == EncodingStatus::Cancelled; 
+  bool is_idle() const {
+    return status_ == EncodingStatus::Idle ||
+           status_ == EncodingStatus::Completed ||
+           status_ == EncodingStatus::Cancelled;
   }
   bool is_checking() const {
     return status_ == EncodingStatus::InitializingCheck ||
@@ -187,31 +187,42 @@ public:
            status_ == EncodingStatus::ComputingCoverage ||
            status_ == EncodingStatus::AnalyzingStatus;
   }
-  
+
   // Status string helper (for GUI display)
-  const char* get_status_string() const {
+  const char *get_status_string() const {
     switch (status_) {
-    case EncodingStatus::Idle: return "Idle";
-    case EncodingStatus::InitializingCheck: return "Initializing check...";
-    case EncodingStatus::CheckingFileSystem: return "Checking filesystem...";
-    case EncodingStatus::ScanningBinary: return "Scanning binary database...";
-    case EncodingStatus::ScanningArchive: return "Scanning archive database...";
-    case EncodingStatus::ComputingCoverage: return "Computing coverage...";
-    case EncodingStatus::AnalyzingStatus: return "Analyzing status...";
-    case EncodingStatus::Running: return "Encoding...";
-    case EncodingStatus::Completed: return "Completed";
-    case EncodingStatus::Cancelled: return "Cancelled";
-    case EncodingStatus::Error: return "Error";
-    default: return "Unknown";
+    case EncodingStatus::Idle:
+      return "Idle";
+    case EncodingStatus::InitializingCheck:
+      return "Initializing check...";
+    case EncodingStatus::CheckingFileSystem:
+      return "Checking filesystem...";
+    case EncodingStatus::ScanningBinary:
+      return "Scanning binary database...";
+    case EncodingStatus::ScanningArchive:
+      return "Scanning archive database...";
+    case EncodingStatus::ComputingCoverage:
+      return "Computing coverage...";
+    case EncodingStatus::AnalyzingStatus:
+      return "Analyzing status...";
+    case EncodingStatus::Running:
+      return "Encoding...";
+    case EncodingStatus::Completed:
+      return "Completed";
+    case EncodingStatus::Cancelled:
+      return "Cancelled";
+    case EncodingStatus::Error:
+      return "Error";
+    default:
+      return "Unknown";
     }
   }
 
   // Scan and check database coverage (async, using coroutines)
-  awaitable<void> coro_database_check();              // Internal coroutine implementation
+  awaitable<void> coro_database_check(); // Internal coroutine implementation
 
   // Get last check result
   const DatabaseCheckResult &get_last_check_result() const { return last_check_; }
-
 
   // File check (archive validation)
   void run_file_check(const std::string &archive_base_dir);

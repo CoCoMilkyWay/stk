@@ -100,8 +100,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     // Trigger database check coroutine to update coverage after encoding
     boost::asio::co_spawn(io_, [this]() -> boost::asio::awaitable<void> {
       co_await coro_database_check();
-      std::cout << "\nDatabase: " << last_check_.get_status_string() << std::endl;
-    }(), boost::asio::detached);
+      std::cout << "\nDatabase: " << last_check_.get_status_string() << std::endl; }(), boost::asio::detached);
 
     // Disable High Performance Mode: GUI resumes
     data_.gui.DisableHighPerformanceMode();
@@ -166,7 +165,7 @@ awaitable<void> EncodingService::coro_database_check() {
   // ========================================
   // Phase 1: Validate config (before any FS operations)
   // ========================================
-  
+
   // Input: backtest_start, backtest_end
   std::string backtest_start = data_.config.start_date;
   std::string backtest_end = data_.config.end_date;
@@ -186,7 +185,7 @@ awaitable<void> EncodingService::coro_database_check() {
   // ========================================
   // Phase 2: Check file system - update status, yield, then check
   // ========================================
-  
+
   status_ = EncodingStatus::CheckingFileSystem;
   // Yield BEFORE doing any FS operations
   co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
@@ -214,11 +213,11 @@ awaitable<void> EncodingService::coro_database_check() {
     status_ = EncodingStatus::ScanningBinary;
     // Yield BEFORE creating thread pool and scanning
     co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
-    
+
     // Now do the actual scanning (after GUI has rendered the status)
     auto scan_pool = std::make_shared<ScanThreadPool>(std::thread::hardware_concurrency());
     co_await data_.asset.coro_scan_binary_database(io_, data_.config.database_dir,
-                                                    data_.config.binary_extension, scan_pool);
+                                                   data_.config.binary_extension, scan_pool);
   }
 
   // ========================================
@@ -229,11 +228,11 @@ awaitable<void> EncodingService::coro_database_check() {
     status_ = EncodingStatus::ScanningArchive;
     // Yield BEFORE creating thread pool and scanning
     co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
-    
+
     // Now do the actual scanning (after GUI has rendered the status)
     auto scan_pool = std::make_shared<ScanThreadPool>(std::thread::hardware_concurrency());
     co_await data_.asset.coro_scan_archive_database(io_, data_.config.archive_dir,
-                                                     data_.config.archive_extension, scan_pool);
+                                                    data_.config.archive_extension, scan_pool);
   }
 
   // ========================================
@@ -250,7 +249,7 @@ awaitable<void> EncodingService::coro_database_check() {
   // ========================================
   // Phase 6: Analyze and determine status - update status, yield, then analyze
   // ========================================
-  
+
   status_ = EncodingStatus::AnalyzingStatus;
   // Yield BEFORE analyzing
   co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
@@ -318,7 +317,6 @@ awaitable<void> EncodingService::coro_database_check() {
   status_ = EncodingStatus::Idle;
   co_return;
 }
-
 
 void EncodingService::run_file_check(const std::string &archive_base_dir) {
   if (!terminal_)
