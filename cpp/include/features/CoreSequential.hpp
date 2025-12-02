@@ -21,7 +21,7 @@ public:
         core_id_(core_id),
         minute_bar_(),
         hour_bar_(),
-        tick_sequential_(lob_feature),
+        tick_sequential_(lob_feature_),
         minute_sequential_(minute_bar_),
         hour_sequential_(hour_bar_) {
     tick_sequential_.set_store_context(store_, asset_id_, core_id_);
