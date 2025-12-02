@@ -1,39 +1,24 @@
 #pragma once
 
+#include "features/DataDefine.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include <algorithm>
 #include <cmath>
 #include <deque>
 #include <cstdint>
 
-// Resampled hour-level bar data
-struct HourBar {
-  uint64_t timestamp_1h;    // hour timestamp
-  uint32_t instrument_id;   // asset identifier
-  double open_1h;           // open price
-  double high_1h;           // high price
-  double low_1h;            // low price
-  double close_1h;          // close price
-  double vwap_1h;           // volume-weighted average price
-  uint64_t volume_1h;       // total volume
-  uint32_t universe_ids_1h; // universe membership flags
-  bool market_close_1h;     // market close flag
-  double prev_day_close;    // previous day close
-};
-
 // Hour-level sequential feature computation
-// Input: HourBar (resampled OHLCV data)
+// Input: HourData (time-series hour-level data)
 class Hour_Sequential {
 public:
-  explicit Hour_Sequential(const HourBar &hour_bar)
-      : hour_bar_(hour_bar) {
-  }
-
-  void set_store_context(GlobalFeatureStore &store, size_t asset_id, size_t worker_id = 0) {
-    store_ = &store;
-    asset_id_ = asset_id;
-    worker_id_ = worker_id;
-  }
+  Hour_Sequential(const HourData &hour_data,
+                  GlobalFeatureStore &store,
+                  size_t asset_id,
+                  size_t worker_id)
+      : hour_data_(hour_data),
+        store_(&store),
+        asset_id_(asset_id),
+        worker_id_(worker_id) {}
 
   void set_date(const std::string &date_str) {
     date_str_ = date_str;
@@ -44,9 +29,18 @@ public:
     if (!store_ || date_str_.empty())
       return;
 
-    const HourBar &bar = hour_bar_;
-    bool is_valid = bar.close_1h > 0 && bar.volume_1h > 0;
-    size_t t = bar.timestamp_1h;
+    // Check if we have data
+    if (hour_data_.close.empty())
+      return;
+
+    // Read latest bar from CBuffers
+    const double close = hour_data_.close.back();
+    const uint32_t bid_vol = hour_data_.bid_volume.back();
+    const uint32_t ask_vol = hour_data_.ask_volume.back();
+    const uint32_t total_volume = bid_vol + ask_vol;
+
+    bool is_valid = close > 0 && total_volume > 0;
+    size_t t = hour_data_.timestamp;
 
     // Compute and write hour-level TS features
     compute_ts_hour(is_valid, t);
@@ -77,9 +71,9 @@ private:
   }
   // Feature 1: hour_ret_12h_mom - 12-hour momentum z-score
   float compute_hour_ret_12h_mom() const {
-    const auto &bar = hour_bar_;
+    const double close = hour_data_.close.back();
     
-    hour_return_window_.push_back(bar.close_1h);
+    hour_return_window_.push_back(close);
     if (hour_return_window_.size() > 48)
       hour_return_window_.pop_front();
     
@@ -114,9 +108,9 @@ private:
 
   // Feature 2: hour_volatility - 24-hour realized volatility (log normalized)
   float compute_hour_volatility() const {
-    const auto &bar = hour_bar_;
+    const double close = hour_data_.close.back();
     
-    hour_vol_window_.push_back(bar.close_1h);
+    hour_vol_window_.push_back(close);
     if (hour_vol_window_.size() > 24)
       hour_vol_window_.pop_front();
     
@@ -139,16 +133,18 @@ private:
 
   // Feature 3: pivot_dev - Pivot point deviation
   float compute_pivot_dev() const {
-    const auto &bar = hour_bar_;
+    const double high = hour_data_.high.back();
+    const double low = hour_data_.low.back();
+    const double close = hour_data_.close.back();
     
     // Pivot point: (high + low + close) / 3
-    double pivot = (bar.high_1h + bar.low_1h + bar.close_1h) / 3.0;
-    double range = bar.high_1h - bar.low_1h;
+    double pivot = (high + low + close) / 3.0;
+    double range = high - low;
     
     if (range < 1e-10)
       return 0.0f;
     
-    double dev = (bar.close_1h - pivot) / range;
+    double dev = (close - pivot) / range;
     
     // Clip to [-3, 3]
     return static_cast<float>(std::clamp(dev, -3.0, 3.0));
@@ -156,12 +152,18 @@ private:
 
   // Feature 4: dominant_persist - Dominant side persistence (EMA of buy/sell pressure)
   float compute_dominant_persist() const {
-    const auto &bar = hour_bar_;
+    const double close = hour_data_.close.back();
+    const double bid_vol = hour_data_.bid_volume.back();
+    const double ask_vol = hour_data_.ask_volume.back();
+    const double bid_amt = hour_data_.bid_amount.back();
+    const double ask_amt = hour_data_.ask_amount.back();
+    const double total_vol = bid_vol + ask_vol;
+    const double vwap = (total_vol > 0) ? ((bid_amt + ask_amt) / total_vol) : close;
     
     // Compute dominant side: volume-weighted buy/sell indicator
     // Positive volume = buying pressure, negative = selling pressure
     // For simplicity, use VWAP vs close as proxy
-    double dominant = (bar.close_1h > bar.vwap_1h) ? 1.0 : -1.0;
+    double dominant = (close > vwap) ? 1.0 : -1.0;
     
     dominant_window_.push_back(dominant);
     if (dominant_window_.size() > 20)
@@ -191,17 +193,18 @@ private:
 
   // Feature 5: hour_overnight_gap - Overnight gap (if applicable)
   float compute_hour_overnight_gap() const {
-    const auto &bar = hour_bar_;
+    const double open = hour_data_.open.back();
     
-    // Only compute gap at market open
-    if (bar.prev_day_close <= 0)
+    // Use first value in return window as reference
+    if (hour_return_window_.empty() || hour_return_window_.front() <= 0)
       return 0.0f;
     
-    double gap = bar.open_1h - bar.prev_day_close;
+    const double reference_close = hour_return_window_.front();
+    double gap = open - reference_close;
     
     // Compute intraday volatility from historical data
     if (hour_vol_window_.size() < 5)
-      return static_cast<float>(gap / bar.prev_day_close);
+      return static_cast<float>(gap / reference_close);
     
     double sum_sq = 0;
     for (size_t i = 1; i < hour_vol_window_.size(); ++i) {
@@ -216,11 +219,11 @@ private:
       return 0.0f;
     
     // Winsorize gap
-    double normalized_gap = gap / (bar.prev_day_close * intraday_vol);
+    double normalized_gap = gap / (reference_close * intraday_vol);
     return static_cast<float>(std::clamp(normalized_gap, -3.0, 3.0));
   }
 
-  const HourBar &hour_bar_;
+  const HourData &hour_data_;
   GlobalFeatureStore *store_ = nullptr;
   size_t asset_id_ = 0;
   size_t worker_id_ = 0;

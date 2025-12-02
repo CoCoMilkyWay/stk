@@ -52,12 +52,11 @@ public:
                           ExchangeType exchange_type = ExchangeType::SSE,
                           size_t asset_id = 0,
                           size_t core_id = 0)
-      : price_levels_{},                // Zero-initialize direct array (all nullptr)
-        order_lookup_(ORDER_SIZE),      // BumpDict with pre-allocated capacity
+      : order_lookup_(ORDER_SIZE),      // BumpDict with pre-allocated capacity
         order_memory_pool_(ORDER_SIZE), // BumpPool for Order objects
         exchange_type_(exchange_type),
         asset_id_(asset_id),
-        core_sequential_(LOB_feature_, store, asset_id, core_id) {
+        core_sequential_(tick_data_, store, asset_id, core_id) {
     init_sentinel_levels();
   }
 
@@ -201,7 +200,8 @@ private:
   //------------------------------------------------------------------------------------
   // Layer 5: Feature Depth (特征深度层 - 时间驱动低频更新)
   //------------------------------------------------------------------------------------
-  mutable LOB_Feature LOB_feature_; // Feature depth data with integrated depth_buffer
+  mutable TickData tick_data_;                // Tick data wrapper containing LOB_feature
+  LOB_Feature &LOB_feature_ = tick_data_.lob; // Feature depth data with integrated depth_buffer (reference for convenience)
 
   // Time-driven depth update control
   mutable uint32_t last_depth_update_tick_ = 0; // Last tick when depth was updated
@@ -399,17 +399,26 @@ private:
     const uint16_t hhmm = ((curr_tick_ >> 16) & 0xFFFF); // hour * 256 + minute
 
     // Time boundaries
-    constexpr uint16_t T_0915 = (9 << 8) | 15;  // 9:15
-    constexpr uint16_t T_0925 = (9 << 8) | 25;  // 9:25
-    constexpr uint16_t T_0930 = (9 << 8) | 30;  // 9:30
-    constexpr uint16_t T_1457 = (14 << 8) | 57; // 14:57
-    constexpr uint16_t T_1500 = (15 << 8) | 0;  // 15:00
+    constexpr uint16_t T_0915 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_START_MINUTE;                 // 9:15
+    constexpr uint16_t T_0925 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_END_MINUTE;                   // 9:25
+    constexpr uint16_t T_0930 = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;       // 9:30
+    constexpr uint16_t T_1130 = (L2::CONTINUOUS_TRADING_MORNING_END_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;         // 11:30
+    constexpr uint16_t T_1300 = (L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE; // 13:00
+    constexpr uint16_t T_1457 = (L2::CLOSING_CALL_AUCTION_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;           // 14:57
+    constexpr uint16_t T_1500 = (L2::CLOSING_CALL_AUCTION_END_HOUR << 8) | L2::CLOSING_CALL_AUCTION_END_MINUTE;                     // 15:00
 
-    // Matching period: 9:25-9:30, 14:57-15:00
-    in_matching_period_ = (hhmm >= T_0925 && hhmm < T_0930) || (hhmm >= T_1457 && hhmm <= T_1500);
+    LOB_feature_.is_opening_call_auction = (hhmm >= T_0915 && hhmm < T_0925);
+    LOB_feature_.is_opening_matching_period = (hhmm >= T_0925 && hhmm < T_0930);
+    LOB_feature_.is_continuous_trading_morning = (hhmm >= T_0930 && hhmm < T_1130);
+    LOB_feature_.is_continuous_trading_afternoon = (hhmm >= T_1300 && hhmm < T_1457);
+    LOB_feature_.is_closing_call_auction = (hhmm >= T_1457 && hhmm < T_1500);
+    LOB_feature_.is_closing_matching_period = hhmm == T_1500;
+
+    // Matching period: 9:25-9:30, 15:00
+    in_matching_period_ = LOB_feature_.is_opening_matching_period || LOB_feature_.is_closing_matching_period;
 
     // Call auction: 9:15-9:30, 14:57-15:00 (includes matching period)
-    in_call_auction_ = (hhmm >= T_0915 && hhmm < T_0930) || (hhmm >= T_1457 && hhmm <= T_1500);
+    in_call_auction_ = LOB_feature_.is_opening_call_auction || LOB_feature_.is_closing_call_auction || in_matching_period_;
 
     // Continuous trading: outside call auction
     in_continuous_trading_ = !in_call_auction_;
@@ -741,7 +750,7 @@ private:
     LOB_feature_.is_taker = is_taker_;
     LOB_feature_.is_cancel = is_cancel_;
     LOB_feature_.is_bid = is_bid_;
-    LOB_feature_.price = order.price;
+    LOB_feature_.price = order.price * 0.01;
     LOB_feature_.volume = order.volume;
 
     // Detect transition from matching period to continuous trading
@@ -1256,7 +1265,6 @@ private:
 
   // Check for sign anomaly in level (print far anomalies N+ ticks from TOB during continuous trading)
   void check_anomaly(Level *level) const {
-    using namespace TradingSession;
 
     // Skip level 0 (special level)
     if (level->price == 0)

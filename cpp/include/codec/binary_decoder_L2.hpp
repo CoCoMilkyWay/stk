@@ -10,6 +10,60 @@
 
 namespace L2 {
 
+// Helper to find column index by name in schema
+constexpr size_t find_column_index(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
+  for (size_t i = 0; i < schema_size; ++i) {
+    if (schema[i].column_name == column_name) {
+      return i;
+    }
+  }
+  return schema_size; // Return invalid index if not found
+}
+
+// Get bitwidth for a column from schema
+constexpr uint8_t get_column_bitwidth(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
+  size_t index = find_column_index(schema, schema_size, column_name);
+  return (index < schema_size) ? schema[index].bit_width : 0;
+}
+
+// Calculate decimal digits needed for given bit width
+constexpr int calc_digits_from_bitwidth(uint8_t bit_width) {
+  if (bit_width == 0)
+    return 1;
+  uint64_t max_val = (1ull << bit_width) - 1;
+
+  int digits = 0;
+  do {
+    digits++;
+    max_val /= 10;
+  } while (max_val > 0);
+
+  return digits;
+}
+
+constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
+
+// Snapshot field display widths extracted from schema
+constexpr int HOUR_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
+constexpr int MINUTE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
+constexpr int SECOND_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
+constexpr int TRADE_COUNT_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "trade_count"));
+constexpr int VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
+constexpr int TURNOVER_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
+constexpr int PRICE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
+constexpr int DIRECTION_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "direction"));
+constexpr int VWAP_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_vwap"));
+constexpr int TOTAL_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_volume"));
+constexpr int BID_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
+constexpr int ASK_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "ask_volumes[10]"));
+
+// Order field display widths extracted from schema
+constexpr int MILLISECOND_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "millisecond"));
+constexpr int ORDER_TYPE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
+constexpr int ORDER_DIR_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
+constexpr int ORDER_PRICE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "price"));
+constexpr int ORDER_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
+constexpr int ORDER_ID_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
 
 class BinaryDecoder_L2 {
 public:
@@ -18,18 +72,18 @@ public:
 
   // Decoder functions (zero-copy streaming design)
   // Internal buffer is reused across decode calls for maximum efficiency
-  
+
   // decode_snapshots_stream: zero-copy streaming decode, returns pointer to internal buffer
   // Returns: pointer to Snapshot array (valid until next decode_* call), or nullptr on error
   // snapshot_num: output parameter for actual snapshot count
   // Note: Caller must process snapshots before next decode call (buffer is reused)
-  const Snapshot* decode_snapshots_stream(const std::string &filepath, size_t &snapshot_num);
-  
+  const Snapshot *decode_snapshots_stream(const std::string &filepath, size_t &snapshot_num);
+
   // decode_orders_stream: zero-copy streaming decode, returns pointer to internal buffer
   // Returns: pointer to Order array (valid until next decode_* call), or nullptr on error
   // order_num: output parameter for actual order count
   // Note: Caller must process orders before next decode call (buffer is reused)
-  const Order* decode_orders_stream(const std::string &filepath, size_t &order_num);
+  const Order *decode_orders_stream(const std::string &filepath, size_t &order_num);
 
   // Zstandard decompression helper functions (pure standard decompression)
   static bool read_and_decompress_data(const std::string &filepath, void *data, size_t expected_size, size_t &actual_size);

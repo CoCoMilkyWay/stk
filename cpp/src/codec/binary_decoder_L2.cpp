@@ -168,7 +168,6 @@ void BinaryDecoder_L2::print_all_snapshots(const std::vector<Snapshot> &snapshot
   std::cout << "=== All Snapshots ===" << std::endl;
 
   // Print aligned header using compile-time bit width calculations
-  using namespace SchemaUtils;
 
   std::cout << std::setw(HOUR_WIDTH) << std::right << "hr" << " "
             << std::setw(MINUTE_WIDTH) << std::right << "mn" << " "
@@ -253,7 +252,6 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
   // 9  15  0   2 0 1   727     1          0     137524
 
   // Print aligned header using compile-time bit width calculations
-  using namespace SchemaUtils;
 
   std::cout << std::setw(HOUR_WIDTH) << std::right << "hr" << " "
             << std::setw(MINUTE_WIDTH) << std::right << "mn" << " "
@@ -282,7 +280,7 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
 }
 
 // decoder functions
-const Snapshot* BinaryDecoder_L2::decode_snapshots_stream(const std::string &filepath, size_t &snapshot_num) {
+const Snapshot *BinaryDecoder_L2::decode_snapshots_stream(const std::string &filepath, size_t &snapshot_num) {
   // Extract count from filename to calculate required buffer size
   size_t estimated_count = extract_count_from_filename(filepath);
   if (estimated_count == 0) [[unlikely]] {
@@ -303,9 +301,9 @@ const Snapshot* BinaryDecoder_L2::decode_snapshots_stream(const std::string &fil
   }
 
   size_t original_size, compressed_size;
-  file.read(reinterpret_cast<char*>(&original_size), sizeof(original_size));
-  file.read(reinterpret_cast<char*>(&compressed_size), sizeof(compressed_size));
-  
+  file.read(reinterpret_cast<char *>(&original_size), sizeof(original_size));
+  file.read(reinterpret_cast<char *>(&compressed_size), sizeof(compressed_size));
+
   if (file.fail()) [[unlikely]] {
     std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
     return nullptr;
@@ -355,10 +353,10 @@ const Snapshot* BinaryDecoder_L2::decode_snapshots_stream(const std::string &fil
 
   // Return pointer to Snapshot array (skip header) - ZERO COPY
   snapshot_num = count;
-  return reinterpret_cast<const Snapshot*>(stream_decompression_buffer_.data() + header_size);
+  return reinterpret_cast<const Snapshot *>(stream_decompression_buffer_.data() + header_size);
 }
 
-const Order* BinaryDecoder_L2::decode_orders_stream(const std::string &filepath, size_t &order_num) {
+const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath, size_t &order_num) {
   // Extract count from filename to calculate required buffer size
   size_t estimated_count = extract_count_from_filename(filepath);
   if (estimated_count == 0) [[unlikely]] {
@@ -379,9 +377,9 @@ const Order* BinaryDecoder_L2::decode_orders_stream(const std::string &filepath,
   }
 
   size_t original_size, compressed_size;
-  file.read(reinterpret_cast<char*>(&original_size), sizeof(original_size));
-  file.read(reinterpret_cast<char*>(&compressed_size), sizeof(compressed_size));
-  
+  file.read(reinterpret_cast<char *>(&original_size), sizeof(original_size));
+  file.read(reinterpret_cast<char *>(&compressed_size), sizeof(compressed_size));
+
   if (file.fail()) [[unlikely]] {
     std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
     return nullptr;
@@ -431,7 +429,7 @@ const Order* BinaryDecoder_L2::decode_orders_stream(const std::string &filepath,
 
   // Return pointer to Order array (skip header) - ZERO COPY
   order_num = count;
-  return reinterpret_cast<const Order*>(stream_decompression_buffer_.data() + header_size);
+  return reinterpret_cast<const Order *>(stream_decompression_buffer_.data() + header_size);
 }
 
 // Zstandard decompression helper function (pure standard decompression)

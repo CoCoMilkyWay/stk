@@ -16,6 +16,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(PROFILE_MODE "Profile mode: -O0 -g, disable optimizations for profiling" OFF)
 option(DEBUG_MODE   "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
 option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
+option(ASSERT_MODE  "Assert mode: -O3 with assert checks enabled" OFF)
 
 # GUI backend selection
 set(USE_VULKAN_BACKEND OFF CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
@@ -66,12 +67,35 @@ elseif(PROFILE_MODE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-slp-vectorize")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin")
 
+elseif(ASSERT_MODE)
+    message(STATUS "Build mode: ASSERT")
+    add_compile_definitions(ASSERT_MODE)
+    
+    # Optimization level (no NDEBUG - asserts enabled)
+    set(CMAKE_CXX_FLAGS "-O3")
+    # Warning flags
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+    # Architecture optimization
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+    # Specific optimizations
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math")
+    # Link-time optimization
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
+    
+    # Linker selection
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
+    # Linker optimization level
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-O3")
+    # Linker features
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=all")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--as-needed")
+
 else()
     message(STATUS "Build mode: PRODUCTION")
     
     # Optimization level and definitions
-    # set(CMAKE_CXX_FLAGS "-O3 -DNDEBUG")
-    set(CMAKE_CXX_FLAGS "-O3")
+    set(CMAKE_CXX_FLAGS "-O3 -DNDEBUG")
     # Warning flags
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
     # Architecture optimization
@@ -175,6 +199,7 @@ set(HEADERS
     ../../include/features/FeaturesTick/Tick_Crosssection.hpp
     ../../include/features/CoreSequential.hpp
     ../../include/features/CoreCrosssection.hpp
+    ../../include/lob/LimitOrderBookDefine.hpp
     ../../include/lob/LimitOrderBook.hpp
     ../../include/worker/encoding_worker.hpp
     ../../include/worker/sequential_worker.hpp

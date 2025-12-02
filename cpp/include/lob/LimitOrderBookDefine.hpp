@@ -44,32 +44,8 @@
 // CONFIGURATION PARAMETERS
 //========================================================================================
 
-// Trading session time points (China A-share market)
-namespace TradingSession {
-// Morning call auction (集合竞价)
-constexpr uint8_t MORNING_CALL_AUCTION_START_HOUR = 9;
-constexpr uint8_t MORNING_CALL_AUCTION_START_MINUTE = 15;
-constexpr uint8_t MORNING_CALL_AUCTION_END_MINUTE = 25;
-
-// Morning matching period (集合竞价撮合期)
-constexpr uint8_t MORNING_MATCHING_START_MINUTE = 25;
-constexpr uint8_t MORNING_MATCHING_END_MINUTE = 30;
-
-// Continuous auction (连续竞价)
-constexpr uint8_t CONTINUOUS_TRADING_START_HOUR = 9;
-constexpr uint8_t CONTINUOUS_TRADING_START_MINUTE = 30;
-constexpr uint8_t CONTINUOUS_TRADING_END_HOUR = 15;
-constexpr uint8_t CONTINUOUS_TRADING_END_MINUTE = 0;
-
-// Closing call auction (收盘集合竞价 - Shenzhen only)
-constexpr uint8_t CLOSING_CALL_AUCTION_START_HOUR = 14;
-constexpr uint8_t CLOSING_CALL_AUCTION_START_MINUTE = 57;
-constexpr uint8_t CLOSING_CALL_AUCTION_END_HOUR = 15;
-constexpr uint8_t CLOSING_CALL_AUCTION_END_MINUTE = 0;
-} // namespace TradingSession
-
 // LOB Feature depth levels configuration
-inline constexpr size_t LOB_FEATURE_DEPTH_LEVELS = 10; // Number of depth levels to maintain (one-side)
+inline constexpr size_t LOB_FEATURE_DEPTH_LEVELS = 30; // Number of depth levels to maintain (one-side)
 
 // Effective TOB filter parameters
 namespace EffectiveTOBFilter {
@@ -423,23 +399,30 @@ struct Level;
 
 // 订单簿逐笔特征流(用于高频因子计算)
 struct LOB_Feature {
-  uint8_t hour;        // 5bit
-  uint8_t minute;      // 6bit
-  uint8_t second;      // 6bit
-  uint8_t millisecond; // 7bit (in 10ms)
+  uint8_t hour = 0;        // 5bit
+  uint8_t minute = 0;      // 6bit
+  uint8_t second = 0;      // 6bit
+  uint8_t millisecond = 0; // 7bit (in 10ms)
 
-  bool is_maker;   // 1bit
-  bool is_taker;   // 1bit
-  bool is_cancel;  // 1bit
-  bool is_bid;     // 1bit - 0:ask 1:bid
-  uint16_t price;  // 14bit - price in 0.01 RMB units
-  uint32_t volume; // 22bit - in shares (expanded to support up to 4M shares)
+  bool is_opening_call_auction = false;         // 1bit
+  bool is_opening_matching_period = false;      // 1bit
+  bool is_continuous_trading_morning = false;   // 1bit
+  bool is_continuous_trading_afternoon = false; // 1bit
+  bool is_closing_call_auction = false;         // 1bit
+  bool is_closing_matching_period = false;      // 1bit
 
-  uint32_t all_bid_volume; // 22bit - volume of all bid orders in shares
-  uint32_t all_ask_volume; // 22bit - volume of all bid orders in shares
+  bool is_maker = false;  // 1bit
+  bool is_taker = false;  // 1bit
+  bool is_cancel = false; // 1bit
+  bool is_bid = false;    // 1bit - 0:ask 1:bid
+  double price = 0.0;     // 14bit - price in 1 RMB unit
+  uint32_t volume = 0;    // 22bit - in shares (expanded to support up to 4M shares)
+
+  uint32_t all_bid_volume = 0; // 22bit - volume of all bid orders in shares
+  uint32_t all_ask_volume = 0; // 22bit - volume of all bid orders in shares
 
   // N-level depth buffer (订单+时间双驱动):
   // CBuffer: [0]:卖N, [N-1]:卖1, [N]:买1, ..., [2N-1]:买N, 价格单调下降
   CBuffer<Level *, 2 * LOB_FEATURE_DEPTH_LEVELS> depth_buffer;
-  bool depth_updated; // 低频条件过滤, 表示depth_buffer已更新, 可以进行相关特征计算
+  bool depth_updated = false; // 低频条件过滤, 表示depth_buffer已更新, 可以进行相关特征计算
 };

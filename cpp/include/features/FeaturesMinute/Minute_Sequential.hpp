@@ -1,38 +1,24 @@
 #pragma once
 
+#include "features/DataDefine.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include <algorithm>
 #include <cmath>
 #include <deque>
 #include <cstdint>
 
-// Resampled minute-level bar data
-struct MinuteBar {
-  uint64_t timestamp_1m;    // minute timestamp
-  uint32_t instrument_id;   // asset identifier
-  double open_1m;           // open price
-  double high_1m;           // high price
-  double low_1m;            // low price
-  double close_1m;          // close price
-  double vwap_1m;           // volume-weighted average price
-  uint64_t volume_1m;       // total volume
-  uint32_t universe_ids_1m; // universe membership flags
-  bool market_close_1m;     // market close flag
-};
-
 // Minute-level sequential feature computation
-// Input: MinuteBar (resampled OHLCV data)
+// Input: MinuteData (time-series minute-level data)
 class Minute_Sequential {
 public:
-  explicit Minute_Sequential(const MinuteBar &minute_bar)
-      : minute_bar_(minute_bar) {
-  }
-
-  void set_store_context(GlobalFeatureStore &store, size_t asset_id, size_t worker_id = 0) {
-    store_ = &store;
-    asset_id_ = asset_id;
-    worker_id_ = worker_id;
-  }
+  Minute_Sequential(const MinuteData &minute_data,
+                    GlobalFeatureStore &store,
+                    size_t asset_id,
+                    size_t worker_id)
+      : minute_data_(minute_data),
+        store_(&store),
+        asset_id_(asset_id),
+        worker_id_(worker_id) {}
 
   void set_date(const std::string &date_str) {
     date_str_ = date_str;
@@ -43,9 +29,18 @@ public:
     if (!store_ || date_str_.empty())
       return;
 
-    const MinuteBar &bar = minute_bar_;
-    bool is_valid = bar.close_1m > 0 && bar.volume_1m > 0;
-    size_t t = bar.timestamp_1m;
+    // Check if we have data
+    if (minute_data_.close.empty())
+      return;
+
+    // Read latest bar from CBuffers
+    const double close = minute_data_.close.back();
+    const uint32_t bid_vol = minute_data_.bid_volume.back();
+    const uint32_t ask_vol = minute_data_.ask_volume.back();
+    const uint32_t total_volume = bid_vol + ask_vol;
+
+    bool is_valid = close > 0 && total_volume > 0;
+    size_t t = minute_data_.timestamp;
 
     // Compute and write minute-level TS features
     compute_ts_minute(is_valid, t);
@@ -76,14 +71,14 @@ private:
   }
   // Feature 1: min_ret_z - Minute return z-score (rolling 60m)
   float compute_min_ret_z() const {
-    const auto &bar = minute_bar_;
+    const double close = minute_data_.close.back();
     double ret = 0;
     
     if (!minute_return_window_.empty() && minute_return_window_.back() > 0) {
-      ret = std::log(bar.close_1m / minute_return_window_.back());
+      ret = std::log(close / minute_return_window_.back());
     }
     
-    minute_return_window_.push_back(bar.close_1m);
+    minute_return_window_.push_back(close);
     if (minute_return_window_.size() > 60)
       minute_return_window_.pop_front();
     
@@ -112,9 +107,9 @@ private:
 
   // Feature 2: rv_5m_norm - 5-minute realized volatility (log normalized)
   float compute_rv_5m_norm() const {
-    const auto &bar = minute_bar_;
+    const double close = minute_data_.close.back();
     
-    rv_window_.push_back(bar.close_1m);
+    rv_window_.push_back(close);
     if (rv_window_.size() > 5)
       rv_window_.pop_front();
     
@@ -137,12 +132,18 @@ private:
 
   // Feature 3: vwap_gap_pct - VWAP gap percentage (rolling z-score)
   float compute_vwap_gap_pct() const {
-    const auto &bar = minute_bar_;
+    const double close = minute_data_.close.back();
+    const double bid_vol = minute_data_.bid_volume.back();
+    const double ask_vol = minute_data_.ask_volume.back();
+    const double bid_amt = minute_data_.bid_amount.back();
+    const double ask_amt = minute_data_.ask_amount.back();
+    const double total_vol = bid_vol + ask_vol;
+    const double vwap = (total_vol > 0) ? ((bid_amt + ask_amt) / total_vol) : close;
     
-    if (bar.vwap_1m <= 0)
+    if (vwap <= 0)
       return 0.0f;
     
-    double gap = (bar.close_1m - bar.vwap_1m) / bar.vwap_1m;
+    double gap = (close - vwap) / vwap;
     
     vwap_window_.push_back(gap);
     if (vwap_window_.size() > 30)
@@ -166,14 +167,14 @@ private:
 
   // Feature 4: momentum_15m - 15-minute momentum (cumulative z-score)
   float compute_momentum_15m() const {
-    const auto &bar = minute_bar_;
+    const double close = minute_data_.close.back();
     
     if (!momentum_window_.empty() && momentum_window_.back() > 0) {
-      double ret = std::log(bar.close_1m / momentum_window_.back());
+      double ret = std::log(close / momentum_window_.back());
       momentum_returns_.push_back(ret);
     }
     
-    momentum_window_.push_back(bar.close_1m);
+    momentum_window_.push_back(close);
     if (momentum_window_.size() > 15) {
       momentum_window_.pop_front();
       if (!momentum_returns_.empty())
@@ -202,11 +203,13 @@ private:
 
   // Feature 5: range_squeeze - Range squeeze indicator
   float compute_range_squeeze() const {
-    const auto &bar = minute_bar_;
+    const double high = minute_data_.high.back();
+    const double low = minute_data_.low.back();
+    const double close = minute_data_.close.back();
     
-    double range = bar.high_1m - bar.low_1m;
+    double range = high - low;
     
-    range_window_.push_back({range, bar.close_1m});
+    range_window_.push_back({range, close});
     if (range_window_.size() > 30)
       range_window_.pop_front();
     
@@ -224,11 +227,11 @@ private:
     double vol = std::sqrt(sum_sq / (range_window_.size() - 1));
     
     // Range / volatility ratio (clipped)
-    double ratio = range / (vol * bar.close_1m + 1e-10);
+    double ratio = range / (vol * close + 1e-10);
     return static_cast<float>(std::clamp(ratio, -3.0, 3.0));
   }
 
-  const MinuteBar &minute_bar_;
+  const MinuteData &minute_data_;
   GlobalFeatureStore *store_ = nullptr;
   size_t asset_id_ = 0;
   size_t worker_id_ = 0;

@@ -44,6 +44,14 @@ else
     CMAKE_ARGS="$CMAKE_ARGS -DDEBUG_MODE=OFF"
 fi
 
+# Assert mode
+if [ "$ASSERT_MODE" = "ON" ]; then
+    echo "Assert mode: ENABLED"
+    CMAKE_ARGS="$CMAKE_ARGS -DASSERT_MODE=ON"
+else
+    CMAKE_ARGS="$CMAKE_ARGS -DASSERT_MODE=OFF"
+fi
+
 # Configure
 echo ""
 echo "Configuring with CMake..."

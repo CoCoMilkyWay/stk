@@ -37,6 +37,33 @@ inline constexpr int RESAMPLE_EMA_DAYS_PERIOD = 5;     // shouldn't be too large
 // days   3   5   10  25
 // stddev 108 110 114 124
 
+// Morning call auction (集合竞价)
+constexpr uint8_t MORNING_CALL_AUCTION_START_HOUR = 9;
+constexpr uint8_t MORNING_CALL_AUCTION_START_MINUTE = 15;
+constexpr uint8_t MORNING_CALL_AUCTION_END_MINUTE = 25;
+
+// Morning matching period (集合竞价撮合期)
+// constexpr uint8_t MORNING_MATCHING_START_MINUTE = 25;
+constexpr uint8_t MORNING_MATCHING_END_MINUTE = 30;
+
+// Continuous auction (连续竞价-上午)
+constexpr uint8_t CONTINUOUS_TRADING_MORNING_START_HOUR = 9;
+// constexpr uint8_t CONTINUOUS_TRADING_MORNING_START_MINUTE = 30;
+constexpr uint8_t CONTINUOUS_TRADING_MORNING_END_HOUR = 11;
+constexpr uint8_t CONTINUOUS_TRADING_MORNING_END_MINUTE = 30;
+
+// Continuous auction (连续竞价-下午)
+constexpr uint8_t CONTINUOUS_TRADING_AFTERNOON_START_HOUR = 13;
+constexpr uint8_t CONTINUOUS_TRADING_AFTERNOON_START_MINUTE = 0;
+constexpr uint8_t CONTINUOUS_TRADING_AFTERNOON_END_HOUR = 14;
+constexpr uint8_t CONTINUOUS_TRADING_AFTERNOON_END_MINUTE = 57;
+
+// Closing call auction (收盘集合竞价 - Shenzhen only)
+constexpr uint8_t CLOSING_CALL_AUCTION_START_HOUR = 14;
+// constexpr uint8_t CLOSING_CALL_AUCTION_START_MINUTE = 57;
+constexpr uint8_t CLOSING_CALL_AUCTION_END_HOUR = 15;
+constexpr uint8_t CLOSING_CALL_AUCTION_END_MINUTE = 0;
+
 // | Compressor name     | Ratio | Compression | Decompress |
 // |---------------------|-------|-------------|------------|
 // | zstd 1.5.7 -1       | 2.896 | 510 MB/s    | 1550 MB/s  |
@@ -50,6 +77,7 @@ inline constexpr int RESAMPLE_EMA_DAYS_PERIOD = 5;     // shouldn't be too large
 // | snappy 1.2.1        | 2.089 | 520 MB/s    | 1500 MB/s  |
 // | lzf 3.6 -1          | 2.077 | 410 MB/s    | 820 MB/s   |
 
+// 三秒快照(tick) (可能低于3秒更新)
 struct Snapshot {
   uint8_t hour;                 // 5bit
   uint8_t minute;               // 6bit
@@ -218,129 +246,5 @@ inline ExchangeType infer_exchange_type(const std::string &asset_code) {
 
   return ExchangeType::UNKNOWN;
 }
-
-// Market asset validation function
-// Returns true ONLY for test assets (600000-600020, 300000-300020)
-// Returns false for all actual market assets
-inline bool is_valid_market_asset(const std::string &asset_code) {
-  if (asset_code.length() < 6)
-    return false;
-
-  const std::string prefix_3 = asset_code.substr(0, 3);
-
-  // Special case: Test assets 600000-600020 and 300000-300020
-  if (prefix_3 == "600" || prefix_3 == "300") {
-    try {
-      int code_num = std::stoi(asset_code.substr(3));
-      if (code_num >= 0 && code_num <= 20)
-        return true; // Test asset
-    } catch (...) {
-      // Fall through to normal validation
-    }
-  }
-
-  // Exclude all actual market assets
-  if (is_sse_asset(prefix_3))
-    return false; // 上交所
-  if (is_szse_asset(prefix_3))
-    return false; // 深交所
-  if (is_bse_asset(asset_code))
-    return false; // 北交所
-  if (is_neeq_asset(asset_code))
-    return false; // 新三板
-
-  return false; // Not a valid market asset (likely an index or other instrument)
-}
-
-//========================================================================================
-// SCHEMA UTILITIES
-//========================================================================================
-
-// Compile-time upper bound calculations based on schema definitions
-namespace SchemaUtils {
-// Helper to find column index by name in schema
-constexpr size_t find_column_index(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
-  for (size_t i = 0; i < schema_size; ++i) {
-    if (schema[i].column_name == column_name) {
-      return i;
-    }
-  }
-  return schema_size; // Return invalid index if not found
-}
-
-// Get bitwidth for a column from schema
-constexpr uint8_t get_column_bitwidth(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
-  size_t index = find_column_index(schema, schema_size, column_name);
-  return (index < schema_size) ? schema[index].bit_width : 0;
-}
-
-// Calculate max value from bitwidth
-constexpr uint64_t bitwidth_to_max(uint8_t bitwidth) {
-  return bitwidth > 0 ? ((1ull << bitwidth) - 1) : 0;
-}
-
-// Helper functions for safe casting with bounds checking
-template <typename T>
-constexpr T clamp_to_bound(uint64_t value, T bound_val) {
-  return static_cast<T>(value > bound_val ? bound_val : value);
-}
-
-// Calculate decimal digits needed for given bit width
-constexpr int calc_digits_from_bitwidth(uint8_t bit_width) {
-  if (bit_width == 0)
-    return 1;
-  uint64_t max_val = (1ull << bit_width) - 1;
-
-  int digits = 0;
-  do {
-    digits++;
-    max_val /= 10;
-  } while (max_val > 0);
-
-  return digits;
-}
-
-constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
-
-// Snapshot field upper bounds extracted from schema
-constexpr uint32_t HOUR_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
-constexpr uint32_t MINUTE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
-constexpr uint32_t SECOND_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
-constexpr uint32_t TRADE_COUNT_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "trade_count"));
-constexpr uint32_t VOLUME_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
-constexpr uint64_t TURNOVER_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
-constexpr uint32_t PRICE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
-constexpr uint32_t ORDERBOOK_VOLUME_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
-constexpr uint32_t VWAP_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_vwap"));
-constexpr uint32_t TOTAL_VOLUME_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_volume"));
-
-// Order field upper bounds extracted from schema
-constexpr uint32_t MILLISECOND_BOUND = 127; // 7 bits for millisecond in 10ms units (not in schema)
-constexpr uint32_t ORDER_TYPE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
-constexpr uint32_t ORDER_DIR_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
-constexpr uint64_t ORDER_ID_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
-
-// Snapshot field display widths extracted from schema
-constexpr int HOUR_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
-constexpr int MINUTE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
-constexpr int SECOND_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
-constexpr int TRADE_COUNT_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "trade_count"));
-constexpr int VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
-constexpr int TURNOVER_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
-constexpr int PRICE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
-constexpr int DIRECTION_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "direction"));
-constexpr int VWAP_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_vwap"));
-constexpr int TOTAL_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_volume"));
-constexpr int BID_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
-constexpr int ASK_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "ask_volumes[10]"));
-
-// Order field display widths extracted from schema
-constexpr int MILLISECOND_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "millisecond"));
-constexpr int ORDER_TYPE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
-constexpr int ORDER_DIR_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
-constexpr int ORDER_PRICE_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "price"));
-constexpr int ORDER_VOLUME_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
-constexpr int ORDER_ID_WIDTH = calc_digits_from_bitwidth(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
-} // namespace SchemaUtils
 
 } // namespace L2

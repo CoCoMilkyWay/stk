@@ -422,30 +422,30 @@ Snapshot BinaryEncoder_L2::csv_to_snapshot(const CSVSnapshot &csv) {
 
   // Time fields
   uint32_t time_ms = parse_time_to_ms(csv.time);
-  snap.hour = SchemaUtils::clamp_to_bound(extract_hour(time_ms), SchemaUtils::HOUR_BOUND);
-  snap.minute = SchemaUtils::clamp_to_bound(extract_minute(time_ms), SchemaUtils::MINUTE_BOUND);
-  snap.second = SchemaUtils::clamp_to_bound(extract_second(time_ms), SchemaUtils::SECOND_BOUND);
+  snap.hour = clamp_to_bound(extract_hour(time_ms), HOUR_BOUND);
+  snap.minute = clamp_to_bound(extract_minute(time_ms), MINUTE_BOUND);
+  snap.second = clamp_to_bound(extract_second(time_ms), SECOND_BOUND);
 
   // Trade info
-  snap.trade_count = SchemaUtils::clamp_to_bound(csv.trade_count, SchemaUtils::TRADE_COUNT_BOUND);
-  snap.volume = SchemaUtils::clamp_to_bound(csv.volume, SchemaUtils::VOLUME_BOUND);
-  snap.turnover = SchemaUtils::clamp_to_bound(csv.turnover, SchemaUtils::TURNOVER_BOUND);
-  snap.close = SchemaUtils::clamp_to_bound(csv.price, SchemaUtils::PRICE_BOUND);
+  snap.trade_count = clamp_to_bound(csv.trade_count, TRADE_COUNT_BOUND);
+  snap.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
+  snap.turnover = clamp_to_bound(csv.turnover, TURNOVER_BOUND);
+  snap.close = clamp_to_bound(csv.price, PRICE_BOUND);
   snap.direction = false; // Default
 
   // 10-level orderbook
   for (int i = 0; i < 10; ++i) {
-    snap.bid_price_ticks[i] = SchemaUtils::clamp_to_bound(csv.bid_prices[i], SchemaUtils::PRICE_BOUND);
-    snap.bid_volumes[i] = SchemaUtils::clamp_to_bound(csv.bid_volumes[i], SchemaUtils::ORDERBOOK_VOLUME_BOUND);
-    snap.ask_price_ticks[i] = SchemaUtils::clamp_to_bound(csv.ask_prices[i], SchemaUtils::PRICE_BOUND);
-    snap.ask_volumes[i] = SchemaUtils::clamp_to_bound(csv.ask_volumes[i], SchemaUtils::ORDERBOOK_VOLUME_BOUND);
+    snap.bid_price_ticks[i] = clamp_to_bound(csv.bid_prices[i], PRICE_BOUND);
+    snap.bid_volumes[i] = clamp_to_bound(csv.bid_volumes[i], ORDERBOOK_VOLUME_BOUND);
+    snap.ask_price_ticks[i] = clamp_to_bound(csv.ask_prices[i], PRICE_BOUND);
+    snap.ask_volumes[i] = clamp_to_bound(csv.ask_volumes[i], ORDERBOOK_VOLUME_BOUND);
   }
 
   // Aggregated bid/ask info
-  snap.all_bid_vwap = SchemaUtils::clamp_to_bound(csv.weighted_avg_bid_price, SchemaUtils::VWAP_BOUND);
-  snap.all_ask_vwap = SchemaUtils::clamp_to_bound(csv.weighted_avg_ask_price, SchemaUtils::VWAP_BOUND);
-  snap.all_bid_volume = SchemaUtils::clamp_to_bound(csv.total_bid_volume, SchemaUtils::TOTAL_VOLUME_BOUND);
-  snap.all_ask_volume = SchemaUtils::clamp_to_bound(csv.total_ask_volume, SchemaUtils::TOTAL_VOLUME_BOUND);
+  snap.all_bid_vwap = clamp_to_bound(csv.weighted_avg_bid_price, VWAP_BOUND);
+  snap.all_ask_vwap = clamp_to_bound(csv.weighted_avg_ask_price, VWAP_BOUND);
+  snap.all_bid_volume = clamp_to_bound(csv.total_bid_volume, TOTAL_VOLUME_BOUND);
+  snap.all_ask_volume = clamp_to_bound(csv.total_ask_volume, TOTAL_VOLUME_BOUND);
 
   return snap;
 }
@@ -455,29 +455,29 @@ Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv) {
 
   // Time fields
   uint32_t time_ms = parse_time_to_ms(csv.time);
-  order.hour = SchemaUtils::clamp_to_bound(extract_hour(time_ms), SchemaUtils::HOUR_BOUND);
-  order.minute = SchemaUtils::clamp_to_bound(extract_minute(time_ms), SchemaUtils::MINUTE_BOUND);
-  order.second = SchemaUtils::clamp_to_bound(extract_second(time_ms), SchemaUtils::SECOND_BOUND);
-  order.millisecond = SchemaUtils::clamp_to_bound(extract_millisecond_10ms(time_ms), SchemaUtils::MILLISECOND_BOUND);
+  order.hour = clamp_to_bound(extract_hour(time_ms), HOUR_BOUND);
+  order.minute = clamp_to_bound(extract_minute(time_ms), MINUTE_BOUND);
+  order.second = clamp_to_bound(extract_second(time_ms), SECOND_BOUND);
+  order.millisecond = clamp_to_bound(extract_millisecond_10ms(time_ms), MILLISECOND_BOUND);
 
   // Order attributes
   bool is_szse = is_shenzhen_market(csv.stock_code);
-  order.order_type = SchemaUtils::clamp_to_bound(
+  order.order_type = clamp_to_bound(
       determine_order_type(csv.order_type, '0', false, is_szse),
-      SchemaUtils::ORDER_TYPE_BOUND);
-  order.order_dir = SchemaUtils::clamp_to_bound(
+      ORDER_TYPE_BOUND);
+  order.order_dir = clamp_to_bound(
       determine_order_direction(csv.order_side),
-      SchemaUtils::ORDER_DIR_BOUND);
-  order.price = SchemaUtils::clamp_to_bound(csv.price, SchemaUtils::PRICE_BOUND);
-  order.volume = SchemaUtils::clamp_to_bound(csv.volume, SchemaUtils::VOLUME_BOUND);
+      ORDER_DIR_BOUND);
+  order.price = clamp_to_bound(csv.price, PRICE_BOUND);
+  order.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
 
   // Order IDs (only one side is set based on direction)
   if (order.order_dir == 0) { // Bid
-    order.bid_order_id = SchemaUtils::clamp_to_bound(csv.exchange_order_id, SchemaUtils::ORDER_ID_BOUND);
+    order.bid_order_id = clamp_to_bound(csv.exchange_order_id, ORDER_ID_BOUND);
     order.ask_order_id = 0;
   } else { // Ask
     order.bid_order_id = 0;
-    order.ask_order_id = SchemaUtils::clamp_to_bound(csv.exchange_order_id, SchemaUtils::ORDER_ID_BOUND);
+    order.ask_order_id = clamp_to_bound(csv.exchange_order_id, ORDER_ID_BOUND);
   }
 
   return order;
@@ -488,35 +488,35 @@ Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv) {
 
   // Time fields
   uint32_t time_ms = parse_time_to_ms(csv.time);
-  order.hour = SchemaUtils::clamp_to_bound(extract_hour(time_ms), SchemaUtils::HOUR_BOUND);
-  order.minute = SchemaUtils::clamp_to_bound(extract_minute(time_ms), SchemaUtils::MINUTE_BOUND);
-  order.second = SchemaUtils::clamp_to_bound(extract_second(time_ms), SchemaUtils::SECOND_BOUND);
-  order.millisecond = SchemaUtils::clamp_to_bound(extract_millisecond_10ms(time_ms), SchemaUtils::MILLISECOND_BOUND);
+  order.hour = clamp_to_bound(extract_hour(time_ms), HOUR_BOUND);
+  order.minute = clamp_to_bound(extract_minute(time_ms), MINUTE_BOUND);
+  order.second = clamp_to_bound(extract_second(time_ms), SECOND_BOUND);
+  order.millisecond = clamp_to_bound(extract_millisecond_10ms(time_ms), MILLISECOND_BOUND);
 
   // Trade attributes
   bool is_szse = is_shenzhen_market(csv.stock_code);
-  order.order_type = SchemaUtils::clamp_to_bound(
+  order.order_type = clamp_to_bound(
       determine_order_type('0', csv.trade_code, true, is_szse),
-      SchemaUtils::ORDER_TYPE_BOUND);
+      ORDER_TYPE_BOUND);
 
   // Direction: for SZSE cancellation (bs_flag empty), infer from bid_order_id
   if (is_szse && (csv.bs_flag == ' ' || csv.bs_flag == '\0')) {
     char effective_side = (csv.bid_order_id != 0) ? 'B' : 'S';
-    order.order_dir = SchemaUtils::clamp_to_bound(
+    order.order_dir = clamp_to_bound(
         determine_order_direction(effective_side),
-        SchemaUtils::ORDER_DIR_BOUND);
+        ORDER_DIR_BOUND);
   } else {
-    order.order_dir = SchemaUtils::clamp_to_bound(
+    order.order_dir = clamp_to_bound(
         determine_order_direction(csv.bs_flag),
-        SchemaUtils::ORDER_DIR_BOUND);
+        ORDER_DIR_BOUND);
   }
 
-  order.price = SchemaUtils::clamp_to_bound(csv.price, SchemaUtils::PRICE_BOUND);
-  order.volume = SchemaUtils::clamp_to_bound(csv.volume, SchemaUtils::VOLUME_BOUND);
+  order.price = clamp_to_bound(csv.price, PRICE_BOUND);
+  order.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
 
   // Trade has both order IDs
-  order.bid_order_id = SchemaUtils::clamp_to_bound(csv.bid_order_id, SchemaUtils::ORDER_ID_BOUND);
-  order.ask_order_id = SchemaUtils::clamp_to_bound(csv.ask_order_id, SchemaUtils::ORDER_ID_BOUND);
+  order.bid_order_id = clamp_to_bound(csv.bid_order_id, ORDER_ID_BOUND);
+  order.ask_order_id = clamp_to_bound(csv.ask_order_id, ORDER_ID_BOUND);
 
   return order;
 }
@@ -699,7 +699,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     constexpr size_t MIN_EXPECTED_COUNT = 10;
     if (snapshots.size() < MIN_EXPECTED_COUNT) {
       Logger::log("encoding", "Abnormal snapshot count: " + stock_code + " " + stock_dir +
-                         " has only " + std::to_string(snapshots.size()) + " snapshots");
+                                  " has only " + std::to_string(snapshots.size()) + " snapshots");
       // std::exit(1);
       return false;
     }
@@ -749,7 +749,7 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     constexpr size_t MIN_EXPECTED_COUNT = 500;
     if (all_orders.size() < MIN_EXPECTED_COUNT) {
       Logger::log("encoding", "Abnormal order count: " + stock_code + " " + stock_dir +
-                         " has only " + std::to_string(all_orders.size()) + " orders");
+                                  " has only " + std::to_string(all_orders.size()) + " orders");
       // std::exit(1);
       return false;
     }
