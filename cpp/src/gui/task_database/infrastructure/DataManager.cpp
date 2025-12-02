@@ -1640,7 +1640,7 @@ std::string DataManager::get_next_update_time_daily() const {
   return "Unknown";
 }
 
-double DataManager::get_update_progress_weekly() const {
+float DataManager::get_update_progress_weekly() const {
   auto now = std::chrono::system_clock::now();
 
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -1653,13 +1653,13 @@ double DataManager::get_update_progress_weekly() const {
   return (days_since_monday / 7.0) * 100.0;
 }
 
-double DataManager::get_update_progress_daily() const {
+float DataManager::get_update_progress_daily() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
   std::tm tm_now;
   localtime_r(&time_t_now, &tm_now);
 
-  double hours_elapsed = tm_now.tm_hour + tm_now.tm_min / 60.0;
+  float hours_elapsed = tm_now.tm_hour + tm_now.tm_min / 60.0;
   return (hours_elapsed / 24.0) * 100.0;
 }
 

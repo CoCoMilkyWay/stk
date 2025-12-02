@@ -184,7 +184,7 @@ public:
     // Calculate speed and ETA
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time_);
-    double elapsed_seconds = elapsed.count() / 1000.0;
+    float elapsed_seconds = elapsed.count() / 1000.0;
 
     if (elapsed_seconds > 0 && completed_tasks_ > 0) {
       progress.requests_per_second = completed_tasks_ / elapsed_seconds;

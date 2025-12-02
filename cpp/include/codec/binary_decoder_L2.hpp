@@ -104,10 +104,10 @@ public:
   static std::string time_to_string(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond_10ms = 0);
 
   // Convert price from internal format to readable format (hot path - inlined)
-  static inline double price_to_rmb(uint16_t price_ticks);
+  static inline float price_to_rmb(uint16_t price_ticks);
 
   // Convert VWAP price from internal format to readable format (0.001 RMB units)
-  static inline double vwap_to_rmb(uint16_t vwap_ticks);
+  static inline float vwap_to_rmb(uint16_t vwap_ticks);
 
   // Get volume as-is (no conversion needed, already in shares)
   static inline uint32_t get_volume(uint32_t volume_shares);

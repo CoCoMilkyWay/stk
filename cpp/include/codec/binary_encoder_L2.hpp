@@ -85,7 +85,7 @@ struct CSVTrade {
 struct CompressionStats {
   size_t original_size = 0;
   size_t compressed_size = 0;
-  double ratio = 0.0;
+  float ratio = 0.0;
 };
 
 // Helper to find column index by name in schema

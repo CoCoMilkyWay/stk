@@ -23,22 +23,22 @@ enum class ColumnDataType {
 // ============================================================================
 
 struct ColumnStats {
-  double min = 0.0;
-  double max = 0.0;
-  double mean = 0.0;
-  double median = 0.0;
-  double std_dev = 0.0;
-  double q25 = 0.0; // 25th percentile
-  double q75 = 0.0; // 75th percentile
+  float min = 0.0;
+  float max = 0.0;
+  float mean = 0.0;
+  float median = 0.0;
+  float std_dev = 0.0;
+  float q25 = 0.0; // 25th percentile
+  float q75 = 0.0; // 75th percentile
   size_t valid_count = 0;
   size_t total_count = 0;
 };
 
 struct BoardStats {
   std::string board_name;
-  double mean = 0.0;
-  double median = 0.0;
-  double std_dev = 0.0;
+  float mean = 0.0;
+  float median = 0.0;
+  float std_dev = 0.0;
   size_t count = 0;
 };
 
@@ -49,7 +49,7 @@ struct BoardStats {
 struct CategoryCount {
   std::string label;
   size_t count = 0;
-  double percentage = 0.0;
+  float percentage = 0.0;
 };
 
 struct BoardCategoryBreakdown {
@@ -62,20 +62,20 @@ struct BoardCategoryBreakdown {
 // ============================================================================
 
 // Remove top/bottom 5% outliers and return filtered data
-std::vector<double> RemoveOutliers(const std::vector<double> &values, double percentile = 5.0);
+std::vector<float> RemoveOutliers(const std::vector<float> &values, float percentile = 5.0);
 
 // Calculate statistics with outliers removed
-ColumnStats CalculateRobustStats(const std::vector<double> &values);
+ColumnStats CalculateRobustStats(const std::vector<float> &values);
 
 // Group numeric values by board and calculate stats for each board
 std::vector<BoardStats> GroupNumericByBoard(
     const std::vector<std::string> &codes,
-    const std::vector<double> &values);
+    const std::vector<float> &values);
 
 // Get top/bottom N rankings
-std::vector<std::pair<std::string, double>> GetTopN(
+std::vector<std::pair<std::string, float>> GetTopN(
     const std::vector<std::string> &names,
-    const std::vector<double> &values,
+    const std::vector<float> &values,
     int n,
     bool descending = true);
 

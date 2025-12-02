@@ -25,20 +25,20 @@ public:
     history_.push_back(v);
     ++count_;
     sum_ += v;
-    sumsq_ += static_cast<double>(v) * static_cast<double>(v);
+    sumsq_ += static_cast<float>(v) * static_cast<float>(v);
   }
 
   inline size_t size() const { return count_; }
 
   inline float mean() const {
     assert(count_ > 0);
-    return static_cast<float>(sum_ / static_cast<double>(count_));
+    return static_cast<float>(sum_ / static_cast<float>(count_));
   }
 
   inline float stddev() const {
     assert(count_ > 0);
-    double m = sum_ / static_cast<double>(count_);
-    double variance = (sumsq_ / static_cast<double>(count_)) - m * m;
+    float m = sum_ / static_cast<float>(count_);
+    float variance = (sumsq_ / static_cast<float>(count_)) - m * m;
     return static_cast<float>(std::sqrt(variance));
   }
 
@@ -67,9 +67,9 @@ public:
   }
 
 private:
-  inline float percentile_(double q) const {
+  inline float percentile_(float q) const {
     assert(count_ > 0);
-    size_t idx = static_cast<size_t>(q * static_cast<double>(count_ - 1));
+    size_t idx = static_cast<size_t>(q * static_cast<float>(count_ - 1));
     std::vector<float> tmp = history_;
     std::nth_element(tmp.begin(), tmp.begin() + static_cast<std::ptrdiff_t>(idx), tmp.end());
     return tmp[idx];
@@ -77,6 +77,6 @@ private:
 
   std::vector<float> history_;
   size_t count_ = 0;
-  double sum_ = 0.0;
-  double sumsq_ = 0.0;
+  float sum_ = 0.0;
+  float sumsq_ = 0.0;
 };

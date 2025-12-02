@@ -136,7 +136,7 @@ EncodingProgress EncodingService::get_progress() const {
   }
 
   if (status_ == EncodingStatus::Running) {
-    prog.elapsed_seconds = std::chrono::duration<double>(
+    prog.elapsed_seconds = std::chrono::duration<float>(
                                std::chrono::steady_clock::now() - start_time_)
                                .count();
     prog.encoding_rate = prog.elapsed_seconds > 0 ? prog.completed_assets / prog.elapsed_seconds : 0;

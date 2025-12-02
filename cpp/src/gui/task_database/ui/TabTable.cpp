@@ -51,14 +51,14 @@ int CalculateDaysSinceIPO(const std::string &ipo_date) {
 // Helper: Calculate market cap (billion yuan)
 // ============================================================================
 
-double CalculateMarketCap(const StockInfo &info) {
+float CalculateMarketCap(const StockInfo &info) {
   // Market cap (billion) = amount (yuan) x 100 / turn (%) / 1e8
   if (info.amount.empty() || info.turn.empty())
     return 0.0;
 
   try {
-    double amount = std::stod(info.amount);
-    double turn = std::stod(info.turn);
+    float amount = std::stod(info.amount);
+    float turn = std::stod(info.turn);
 
     if (turn <= 0)
       return 0.0;
@@ -356,12 +356,12 @@ void RenderDataTable(
     filtered_rows.push_back({&asset, info, full_code});
   }
 
-  // Safe string to double conversion with extra safety for sorting
-  auto safe_stod = [](const std::string &s, double default_val = -1e9) -> double {
+  // Safe string to float conversion with extra safety for sorting
+  auto safe_stod = [](const std::string &s, float default_val = -1e9) -> float {
     if (s.empty())
       return default_val;
     try {
-      double val = std::stod(s);
+      float val = std::stod(s);
       // Extra safety: check for NaN explicitly before isfinite
       if (val != val)
         return default_val; // NaN check
@@ -439,32 +439,32 @@ void RenderDataTable(
                                break;
                              }
                              case 8: { // PE
-                               double a_val = a.info ? safe_stod(a.info->peTTM) : -1e9;
-                               double b_val = b.info ? safe_stod(b.info->peTTM) : -1e9;
+                               float a_val = a.info ? safe_stod(a.info->peTTM) : -1e9;
+                               float b_val = b.info ? safe_stod(b.info->peTTM) : -1e9;
                                result = a_val < b_val;
                                break;
                              }
                              case 9: { // PB
-                               double a_val = a.info ? safe_stod(a.info->pbMRQ) : -1e9;
-                               double b_val = b.info ? safe_stod(b.info->pbMRQ) : -1e9;
+                               float a_val = a.info ? safe_stod(a.info->pbMRQ) : -1e9;
+                               float b_val = b.info ? safe_stod(b.info->pbMRQ) : -1e9;
                                result = a_val < b_val;
                                break;
                              }
                              case 10: { // PS
-                               double a_val = a.info ? safe_stod(a.info->psTTM) : -1e9;
-                               double b_val = b.info ? safe_stod(b.info->psTTM) : -1e9;
+                               float a_val = a.info ? safe_stod(a.info->psTTM) : -1e9;
+                               float b_val = b.info ? safe_stod(b.info->psTTM) : -1e9;
                                result = a_val < b_val;
                                break;
                              }
                              case 11: { // PCF
-                               double a_val = a.info ? safe_stod(a.info->pcfNcfTTM) : -1e9;
-                               double b_val = b.info ? safe_stod(b.info->pcfNcfTTM) : -1e9;
+                               float a_val = a.info ? safe_stod(a.info->pcfNcfTTM) : -1e9;
+                               float b_val = b.info ? safe_stod(b.info->pcfNcfTTM) : -1e9;
                                result = a_val < b_val;
                                break;
                              }
                              case 12: { // Market Cap
-                               double a_cap = a.info ? CalculateMarketCap(*a.info) : 0;
-                               double b_cap = b.info ? CalculateMarketCap(*b.info) : 0;
+                               float a_cap = a.info ? CalculateMarketCap(*a.info) : 0;
+                               float b_cap = b.info ? CalculateMarketCap(*b.info) : 0;
                                result = a_cap < b_cap;
                                break;
                              }
@@ -478,14 +478,14 @@ void RenderDataTable(
                                result = a.asset->get_total_order_count() < b.asset->get_total_order_count();
                                break;   // Orders
                              case 16: { // Snap%
-                               double a_pct = a.asset->get_total_trading_days() > 0 ? (double)a.asset->get_snapshots_encoded_count() / a.asset->get_total_trading_days() : 0;
-                               double b_pct = b.asset->get_total_trading_days() > 0 ? (double)b.asset->get_snapshots_encoded_count() / b.asset->get_total_trading_days() : 0;
+                               float a_pct = a.asset->get_total_trading_days() > 0 ? (float)a.asset->get_snapshots_encoded_count() / a.asset->get_total_trading_days() : 0;
+                               float b_pct = b.asset->get_total_trading_days() > 0 ? (float)b.asset->get_snapshots_encoded_count() / b.asset->get_total_trading_days() : 0;
                                result = a_pct < b_pct;
                                break;
                              }
                              case 17: { // Order%
-                               double a_pct = a.asset->get_total_trading_days() > 0 ? (double)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
-                               double b_pct = b.asset->get_total_trading_days() > 0 ? (double)b.asset->get_orders_encoded_count() / b.asset->get_total_trading_days() : 0;
+                               float a_pct = a.asset->get_total_trading_days() > 0 ? (float)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
+                               float b_pct = b.asset->get_total_trading_days() > 0 ? (float)b.asset->get_orders_encoded_count() / b.asset->get_total_trading_days() : 0;
                                result = a_pct < b_pct;
                                break;
                              }
@@ -644,7 +644,7 @@ void RenderDataTable(
     }
     if (info && !info->peTTM.empty()) {
       try {
-        double pe = std::stod(info->peTTM);
+        float pe = std::stod(info->peTTM);
         if (std::isfinite(pe)) {
           ImGui::Text("%.1f", pe);
         } else {
@@ -665,7 +665,7 @@ void RenderDataTable(
     }
     if (info && !info->pbMRQ.empty()) {
       try {
-        double pb = std::stod(info->pbMRQ);
+        float pb = std::stod(info->pbMRQ);
         if (std::isfinite(pb)) {
           ImGui::Text("%.2f", pb);
         } else {
@@ -686,7 +686,7 @@ void RenderDataTable(
     }
     if (info && !info->psTTM.empty()) {
       try {
-        double ps = std::stod(info->psTTM);
+        float ps = std::stod(info->psTTM);
         if (std::isfinite(ps)) {
           ImGui::Text("%.2f", ps);
         } else {
@@ -707,7 +707,7 @@ void RenderDataTable(
     }
     if (info && !info->pcfNcfTTM.empty()) {
       try {
-        double pcf = std::stod(info->pcfNcfTTM);
+        float pcf = std::stod(info->pcfNcfTTM);
         if (std::isfinite(pcf)) {
           ImGui::Text("%.1f", pcf);
         } else {
@@ -727,7 +727,7 @@ void RenderDataTable(
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info) {
-      double cap = CalculateMarketCap(*info);
+      float cap = CalculateMarketCap(*info);
       if (cap > 0) {
         ImGui::Text("%.1f", cap);
       } else {
@@ -783,7 +783,7 @@ void RenderDataTable(
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t snap_encoded = asset.get_snapshots_encoded_count();
-    double snap_pct = total_days > 0 ? (double)snap_encoded / total_days * 100.0 : 0.0;
+    float snap_pct = total_days > 0 ? (float)snap_encoded / total_days * 100.0 : 0.0;
     ImVec4 snap_color = snap_pct >= 95.0 ? COLOR_GREEN : (snap_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
     ImGui::TextColored(snap_color, "%.1f%%", snap_pct);
     handle_column_click(16);
@@ -794,7 +794,7 @@ void RenderDataTable(
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t ord_encoded = asset.get_orders_encoded_count();
-    double ord_pct = total_days > 0 ? (double)ord_encoded / total_days * 100.0 : 0.0;
+    float ord_pct = total_days > 0 ? (float)ord_encoded / total_days * 100.0 : 0.0;
     ImVec4 ord_color = ord_pct >= 95.0 ? COLOR_GREEN : (ord_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
     ImGui::TextColored(ord_color, "%.1f%%", ord_pct);
     handle_column_click(17);
@@ -913,7 +913,7 @@ static void RenderNumericAnalysis(
 
   // Extract numeric data (only for filtered assets)
   std::vector<std::string> names;
-  std::vector<double> values;
+  std::vector<float> values;
   std::vector<std::string> codes;
 
   for (const auto &asset : assets) {
@@ -931,7 +931,7 @@ static void RenderNumericAnalysis(
     }
 
     std::string display_name = info && !info->name.empty() ? info->name : asset.asset_code;
-    double value = std::numeric_limits<double>::quiet_NaN();
+    float value = std::numeric_limits<float>::quiet_NaN();
     bool is_valid = false;
 
     switch (col_idx) {
@@ -996,11 +996,11 @@ static void RenderNumericAnalysis(
       is_valid = true;
       break;
     case 16: // Snapshot %
-      value = asset.get_total_trading_days() > 0 ? (double)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+      value = asset.get_total_trading_days() > 0 ? (float)asset.get_snapshots_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
       is_valid = true;
       break;
     case 17: // Order %
-      value = asset.get_total_trading_days() > 0 ? (double)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
+      value = asset.get_total_trading_days() > 0 ? (float)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
       is_valid = true;
       break;
     case 18: // Miss_S
@@ -1066,23 +1066,23 @@ static void RenderNumericAnalysis(
 
     // Calculate statistics for Gaussian fit
     auto minmax = std::minmax_element(filtered_values.begin(), filtered_values.end());
-    double min_val = *minmax.first;
-    double max_val = *minmax.second;
-    double range = max_val - min_val;
-    double bin_width = range / num_bins;
+    float min_val = *minmax.first;
+    float max_val = *minmax.second;
+    float range = max_val - min_val;
+    float bin_width = range / num_bins;
 
-    double sum = std::accumulate(filtered_values.begin(), filtered_values.end(), 0.0);
-    double mean = sum / filtered_values.size();
+    float sum = std::accumulate(filtered_values.begin(), filtered_values.end(), 0.0);
+    float mean = sum / filtered_values.size();
 
-    double sq_sum = 0.0;
-    for (double v : filtered_values) {
+    float sq_sum = 0.0;
+    for (float v : filtered_values) {
       sq_sum += (v - mean) * (v - mean);
     }
-    double std_dev = std::sqrt(sq_sum / filtered_values.size());
+    float std_dev = std::sqrt(sq_sum / filtered_values.size());
 
     // Calculate histogram bins
-    std::vector<double> hist_bins(num_bins, 0.0);
-    for (double v : filtered_values) {
+    std::vector<float> hist_bins(num_bins, 0.0);
+    for (float v : filtered_values) {
       int bin_idx = static_cast<int>((v - min_val) / bin_width);
       if (bin_idx >= num_bins)
         bin_idx = num_bins - 1;
@@ -1092,48 +1092,48 @@ static void RenderNumericAnalysis(
     }
 
     // Normalize histogram to density
-    double n = filtered_values.size();
-    std::vector<double> hist_density(num_bins);
+    float n = filtered_values.size();
+    std::vector<float> hist_density(num_bins);
     for (int i = 0; i < num_bins; ++i) {
       hist_density[i] = hist_bins[i] / (n * bin_width);
     }
 
     // Prepare X axis positions for histogram
-    std::vector<double> x_positions(num_bins);
+    std::vector<float> x_positions(num_bins);
     for (int i = 0; i < num_bins; ++i) {
       x_positions[i] = min_val + (i + 0.5) * bin_width;
     }
 
     // Generate fitted Gaussian PDF (200 points for smooth curve)
     const int pdf_points = 200;
-    std::vector<double> pdf_x(pdf_points);
-    std::vector<double> pdf_y(pdf_points);
-    const double pi = 3.14159265358979323846;
+    std::vector<float> pdf_x(pdf_points);
+    std::vector<float> pdf_y(pdf_points);
+    const float pi = 3.14159265358979323846;
 
     for (int i = 0; i < pdf_points; ++i) {
-      double x = min_val + (i * range) / (pdf_points - 1);
+      float x = min_val + (i * range) / (pdf_points - 1);
       pdf_x[i] = x;
-      double z = (x - mean) / std_dev;
+      float z = (x - mean) / std_dev;
       pdf_y[i] = (1.0 / (std_dev * std::sqrt(2.0 * pi))) * std::exp(-0.5 * z * z);
     }
 
     // Calculate empirical CDF
-    std::vector<double> sorted_vals = filtered_values;
+    std::vector<float> sorted_vals = filtered_values;
     std::sort(sorted_vals.begin(), sorted_vals.end());
-    std::vector<double> cdf_x(pdf_points);
-    std::vector<double> cdf_y(pdf_points);
+    std::vector<float> cdf_x(pdf_points);
+    std::vector<float> cdf_y(pdf_points);
 
     for (int i = 0; i < pdf_points; ++i) {
-      double x = min_val + (i * range) / (pdf_points - 1);
+      float x = min_val + (i * range) / (pdf_points - 1);
       cdf_x[i] = x;
       auto it = std::upper_bound(sorted_vals.begin(), sorted_vals.end(), x);
-      cdf_y[i] = (double)std::distance(sorted_vals.begin(), it) / sorted_vals.size();
+      cdf_y[i] = (float)std::distance(sorted_vals.begin(), it) / sorted_vals.size();
     }
 
     // Find max density for Y axis
-    double max_hist_density = *std::max_element(hist_density.begin(), hist_density.end());
-    double max_pdf = *std::max_element(pdf_y.begin(), pdf_y.end());
-    double y_max = std::max(max_hist_density, max_pdf) * 1.15;
+    float max_hist_density = *std::max_element(hist_density.begin(), hist_density.end());
+    float max_pdf = *std::max_element(pdf_y.begin(), pdf_y.end());
+    float y_max = std::max(max_hist_density, max_pdf) * 1.15;
 
     if (ImPlot::BeginPlot("##Distribution", ImVec2(-1, 350))) {
       ImPlot::SetupAxes("Value", "Density");
@@ -1250,10 +1250,10 @@ static void RenderCategoricalAnalysis(
 
   if (!overall_counts.empty() && ImPlot::BeginPlot("##OverallPie", ImVec2(-1, 250))) {
     std::vector<const char *> labels;
-    std::vector<double> counts;
+    std::vector<float> counts;
     for (const auto &cc : overall_counts) {
       labels.push_back(cc.label.c_str());
-      counts.push_back((double)cc.count);
+      counts.push_back((float)cc.count);
     }
     ImPlot::PlotPieChart(labels.data(), counts.data(), (int)counts.size(), 0.5, 0.5, 0.4);
     ImPlot::EndPlot();
@@ -1280,10 +1280,10 @@ static void RenderCategoricalAnalysis(
 
     if (!breakdown.categories.empty() && ImPlot::BeginPlot("##BoardPie", ImVec2(-1, 180))) {
       std::vector<const char *> labels;
-      std::vector<double> counts;
+      std::vector<float> counts;
       for (const auto &cc : breakdown.categories) {
         labels.push_back(cc.label.c_str());
-        counts.push_back((double)cc.count);
+        counts.push_back((float)cc.count);
       }
       ImPlot::PlotPieChart(labels.data(), counts.data(), (int)counts.size(), 0.5, 0.5, 0.35);
       ImPlot::EndPlot();

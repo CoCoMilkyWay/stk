@@ -492,7 +492,7 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
           ImGui::SameLine();
           if (!asset.backtest.start.empty() && !asset.backtest.end.empty()) {
             if (archive_in_range && total_archive_days > 0) {
-              double pct = 100.0 * archive_days_in_backtest / total_archive_days;
+              float pct = 100.0 * archive_days_in_backtest / total_archive_days;
               ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu days, %.1f%%)",
                                  asset.backtest.start.c_str(), asset.backtest.end.c_str(),
                                  archive_days_in_backtest, total_archive_days, pct);
@@ -766,7 +766,7 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
           ImGui::SameLine();
           if (!asset.backtest.start.empty() && !asset.backtest.end.empty()) {
             if (snap_in_range && total_days_in_database > 0) {
-              double pct = 100.0 * snap_days_in_backtest / total_days_in_database;
+              float pct = 100.0 * snap_days_in_backtest / total_days_in_database;
               ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu days, %.1f%%)",
                                  asset.backtest.start.c_str(), asset.backtest.end.c_str(),
                                  snap_days_in_backtest, total_days_in_database, pct);
@@ -793,13 +793,13 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
             // Snapshots Encoded (backtest / whole database)
             ImGui::Text("Snapshots Encoded:");
             ImGui::SameLine();
-            double snap_pct = asset.binary.total_snapshots > 0 ? 100.0 * asset.binary.backtest_snapshots / asset.binary.total_snapshots : 0.0;
+            float snap_pct = asset.binary.total_snapshots > 0 ? 100.0 * asset.binary.backtest_snapshots / asset.binary.total_snapshots : 0.0;
             ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.1fM / %.1fM (%.1f%%)",
                                asset.binary.backtest_snapshots / 1000000.0, asset.binary.total_snapshots / 1000000.0, snap_pct);
 
             ImGui::Text("Snapshots Size:");
             ImGui::SameLine();
-            double snap_size_pct = asset.binary.snapshots_size_gb > 0 ? 100.0 * asset.binary.backtest_snapshots_size_gb / asset.binary.snapshots_size_gb : 0.0;
+            float snap_size_pct = asset.binary.snapshots_size_gb > 0 ? 100.0 * asset.binary.backtest_snapshots_size_gb / asset.binary.snapshots_size_gb : 0.0;
             ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.2fGB / %.2fGB (%.1f%%)",
                                asset.binary.backtest_snapshots_size_gb, asset.binary.snapshots_size_gb, snap_size_pct);
 
@@ -1047,7 +1047,7 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
           ImGui::SameLine();
           if (!asset.backtest.start.empty() && !asset.backtest.end.empty()) {
             if (order_in_range && total_days_in_database > 0) {
-              double pct = 100.0 * order_days_in_backtest / total_days_in_database;
+              float pct = 100.0 * order_days_in_backtest / total_days_in_database;
               ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu days, %.1f%%)",
                                  asset.backtest.start.c_str(), asset.backtest.end.c_str(),
                                  order_days_in_backtest, total_days_in_database, pct);
@@ -1074,13 +1074,13 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
             // Orders Encoded (backtest / whole database)
             ImGui::Text("Orders Encoded:");
             ImGui::SameLine();
-            double order_pct = asset.binary.total_orders > 0 ? 100.0 * asset.binary.backtest_orders / asset.binary.total_orders : 0.0;
+            float order_pct = asset.binary.total_orders > 0 ? 100.0 * asset.binary.backtest_orders / asset.binary.total_orders : 0.0;
             ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.1fM / %.1fM (%.1f%%)",
                                asset.binary.backtest_orders / 1000000.0, asset.binary.total_orders / 1000000.0, order_pct);
 
             ImGui::Text("Orders Size:");
             ImGui::SameLine();
-            double order_size_pct = asset.binary.orders_size_gb > 0 ? 100.0 * asset.binary.backtest_orders_size_gb / asset.binary.orders_size_gb : 0.0;
+            float order_size_pct = asset.binary.orders_size_gb > 0 ? 100.0 * asset.binary.backtest_orders_size_gb / asset.binary.orders_size_gb : 0.0;
             ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.2fGB / %.2fGB (%.1f%%)",
                                asset.binary.backtest_orders_size_gb, asset.binary.orders_size_gb, order_size_pct);
 

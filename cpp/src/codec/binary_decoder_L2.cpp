@@ -67,12 +67,12 @@ std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8
   return oss.str();
 }
 
-inline double BinaryDecoder_L2::price_to_rmb(uint16_t price_ticks) {
-  return static_cast<double>(price_ticks) * 0.01; // Convert from 0.01 RMB units to RMB
+inline float BinaryDecoder_L2::price_to_rmb(uint16_t price_ticks) {
+  return static_cast<float>(price_ticks) * 0.01; // Convert from 0.01 RMB units to RMB
 }
 
-inline double BinaryDecoder_L2::vwap_to_rmb(uint16_t vwap_ticks) {
-  return static_cast<double>(vwap_ticks) * 0.001; // Convert from 0.001 RMB units to RMB
+inline float BinaryDecoder_L2::vwap_to_rmb(uint16_t vwap_ticks) {
+  return static_cast<float>(vwap_ticks) * 0.001; // Convert from 0.001 RMB units to RMB
 }
 
 inline uint32_t BinaryDecoder_L2::get_volume(uint32_t volume_shares) {
@@ -485,7 +485,7 @@ bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, voi
   actual_size = decompressed_size;
 
   // Print decompression statistics
-  // double compression_ratio = static_cast<double>(original_size) / static_cast<double>(compressed_size);
+  // float compression_ratio = static_cast<float>(original_size) / static_cast<float>(compressed_size);
   // std::cout << "L2 Decoder: Decompressed " << compressed_size << " bytes to " << original_size
   //           << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
 

@@ -70,8 +70,8 @@ struct IntegrityResult {
 struct StatusSummary {
   std::string last_weekly_update;
   std::string last_daily_update;
-  double weekly_progress_pct; // 0-100
-  double daily_progress_pct;  // 0-100
+  float weekly_progress_pct; // 0-100
+  float daily_progress_pct;  // 0-100
   std::string next_weekly_update;
   std::string next_daily_update;
   int total_stocks;
@@ -101,11 +101,11 @@ struct JsonFileState {
 
   // Update progress details
   struct UpdateProgress {
-    double percentage = 0.0;  // 0.0 - 1.0
+    float percentage = 0.0;  // 0.0 - 1.0
     size_t current_index = 0; // current item being processed
     size_t total = 0;         // total items to process
     std::string current_item; // e.g. "sh.600448"
-    double speed = 0.0;       // items per second
+    float speed = 0.0;       // items per second
     int eta_seconds = 0;      // estimated time remaining
     UpdateStage stage = UpdateStage::Idle;
   } progress;
@@ -116,7 +116,7 @@ struct JsonFileState {
     progress.current_item = item;
     progress.current_index = current;
     progress.total = total;
-    progress.percentage = total > 0 ? static_cast<double>(current) / total : 0.0;
+    progress.percentage = total > 0 ? static_cast<float>(current) / total : 0.0;
     progress.stage = stage;
   }
 

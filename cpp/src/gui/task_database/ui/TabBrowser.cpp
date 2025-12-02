@@ -133,11 +133,11 @@ std::map<std::string, DailyStats> BuildDailyStats(
       if (date_dense.empty())
         continue;
 
-      double factor_curr = std::stod(data[i][1]);
-      double factor_prev = std::stod(data[i - 1][1]);
+      float factor_curr = std::stod(data[i][1]);
+      float factor_prev = std::stod(data[i - 1][1]);
 
       // Check if there's a significant factor change (dividend/split)
-      double ratio = std::abs(factor_curr / factor_prev - 1.0);
+      float ratio = std::abs(factor_curr / factor_prev - 1.0);
       if (ratio > 0.0001) { // Threshold for detecting events
         auto it = stats_map.find(date_dense);
         if (it != stats_map.end()) {

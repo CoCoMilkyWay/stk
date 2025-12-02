@@ -132,8 +132,8 @@ struct Asset {
     // Whole database statistics
     size_t total_snapshots = 0;
     size_t total_orders = 0;
-    double snapshots_size_gb = 0.0;
-    double orders_size_gb = 0.0;
+    float snapshots_size_gb = 0.0;
+    float orders_size_gb = 0.0;
     
     // Whole database days (trading days with at least one asset having data)
     size_t database_snap_days = 0;  // Days with at least one snapshot in database
@@ -142,8 +142,8 @@ struct Asset {
     // Backtest range statistics (only within backtest period)
     size_t backtest_snapshots = 0;
     size_t backtest_orders = 0;
-    double backtest_snapshots_size_gb = 0.0;
-    double backtest_orders_size_gb = 0.0;
+    float backtest_snapshots_size_gb = 0.0;
+    float backtest_orders_size_gb = 0.0;
     
     // Backtest range days (trading days with at least one asset having data)
     size_t backtest_snap_days = 0;  // Days with at least one snapshot in backtest
@@ -165,7 +165,7 @@ struct Asset {
     
     // Statistics (computed from file scan)
     size_t total_files = 0;
-    double total_size_gb = 0.0;
+    float total_size_gb = 0.0;
   } archive;
   
   // ========================================
@@ -187,7 +187,7 @@ struct Asset {
     std::set<std::string> need_download;
     
     // Statistics
-    double coverage_percent = 0.0;
+    float coverage_percent = 0.0;
   } backtest;
   
   // ========================================

@@ -170,8 +170,8 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     std::map<std::string, size_t> date_coverage;
     size_t total_snapshots = 0;
     size_t total_orders = 0;
-    double total_snapshots_size = 0.0;
-    double total_orders_size = 0.0;
+    float total_snapshots_size = 0.0;
+    float total_orders_size = 0.0;
     std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> asset_date_info;
   };
   auto result = std::make_shared<ScanResult>();
@@ -184,8 +184,8 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     std::map<std::string, size_t> local_date_coverage;
     size_t local_total_snapshots = 0;
     size_t local_total_orders = 0;
-    double local_snapshots_size = 0.0;
-    double local_orders_size = 0.0;
+    float local_snapshots_size = 0.0;
+    float local_orders_size = 0.0;
     std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> local_date_info;
 
     for (const auto &day_entry : fs::directory_iterator(month_path.path)) {
@@ -224,7 +224,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
               di.snapshots_file_size = 0;
             }
             local_total_snapshots += di.snapshot_count;
-            local_snapshots_size += static_cast<double>(di.snapshots_file_size);
+            local_snapshots_size += static_cast<float>(di.snapshots_file_size);
             local_snap_dates.insert(date_str);
 
           } else if (filename.find(order_prefix) == 0 && filename.ends_with(binary_extension)) {
@@ -237,7 +237,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
               di.orders_file_size = 0;
             }
             local_total_orders += di.order_count;
-            local_orders_size += static_cast<double>(di.orders_file_size);
+            local_orders_size += static_cast<float>(di.orders_file_size);
             local_order_dates.insert(date_str);
           }
         }
@@ -410,7 +410,7 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
     std::mutex mutex;
     std::set<std::string> archive_dates;
     size_t total_files = 0;
-    double total_size = 0.0;
+    float total_size = 0.0;
   };
   auto result = std::make_shared<ScanResult>();
 
@@ -418,7 +418,7 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
   auto scan_year = [&archive_extension, result](const YearPath &year_path) {
     std::set<std::string> local_dates;
     size_t local_files = 0;
-    double local_size = 0.0;
+    float local_size = 0.0;
 
     try {
       for (const auto &month_entry : fs::directory_iterator(year_path.path)) {
@@ -436,7 +436,7 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
               local_dates.insert(filename);
               local_files++;
               try {
-                local_size += static_cast<double>(fs::file_size(file_entry.path()));
+                local_size += static_cast<float>(fs::file_size(file_entry.path()));
               } catch (...) {
               }
             }
@@ -573,8 +573,8 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
 
   // Step 4: Compute coverage percentage
   if (!backtest.required_dates.empty()) {
-    backtest.coverage_percent = 100.0 * static_cast<double>(backtest.covered_dates.size()) /
-                                static_cast<double>(backtest.required_dates.size());
+    backtest.coverage_percent = 100.0 * static_cast<float>(backtest.covered_dates.size()) /
+                                static_cast<float>(backtest.required_dates.size());
   } else {
     backtest.coverage_percent = 0.0;
   }
@@ -582,8 +582,8 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
   // Step 5: Calculate backtest range statistics (single pass)
   binary.backtest_snapshots = 0;
   binary.backtest_orders = 0;
-  double backtest_snapshots_size = 0.0;
-  double backtest_orders_size = 0.0;
+  float backtest_snapshots_size = 0.0;
+  float backtest_orders_size = 0.0;
 
   std::set<std::string> snap_dates_in_backtest;
   std::set<std::string> order_dates_in_backtest;
@@ -594,12 +594,12 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
       if (date >= start && date <= end) {
         if (info.snapshots_encoded) {
           binary.backtest_snapshots += info.snapshot_count;
-          backtest_snapshots_size += static_cast<double>(info.snapshots_file_size);
+          backtest_snapshots_size += static_cast<float>(info.snapshots_file_size);
           snap_dates_in_backtest.insert(date);
         }
         if (info.orders_encoded) {
           binary.backtest_orders += info.order_count;
-          backtest_orders_size += static_cast<double>(info.orders_file_size);
+          backtest_orders_size += static_cast<float>(info.orders_file_size);
           order_dates_in_backtest.insert(date);
         }
       }

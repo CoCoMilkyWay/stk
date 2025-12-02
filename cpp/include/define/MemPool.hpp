@@ -57,7 +57,7 @@ namespace Config {
 static constexpr size_t CACHE_LINE_SIZE = 64;      // 缓存行大小
 static constexpr size_t DEFAULT_CAPACITY = 10000;  // 默认初始容量
 static constexpr size_t MIN_BUCKET_COUNT = 16;     // HashMap最小桶数
-static constexpr double TARGET_LOAD_FACTOR = 0.50; // HashMap目标负载因子 (降低以减少冲突)
+static constexpr float TARGET_LOAD_FACTOR = 0.50; // HashMap目标负载因子 (降低以减少冲突)
 
 // 自适应块大小:根据对象大小自动选择,目标 ~1MB/块
 template <typename T>
@@ -213,9 +213,9 @@ public:
     return chunks_.size() * Chunk::SIZE;
   }
 
-  [[nodiscard]] double utilization() const noexcept {
+  [[nodiscard]] float utilization() const noexcept {
     size_t cap = capacity();
-    return cap > 0 ? static_cast<double>(num_allocated_) / cap : 0.0;
+    return cap > 0 ? static_cast<float>(num_allocated_) / cap : 0.0;
   }
 
 #ifdef MEMPOOL_ENABLE_STATS
@@ -478,8 +478,8 @@ public:
     return chunks_.size() * Chunk::SIZE;
   }
 
-  [[nodiscard]] double utilization() const noexcept {
-    return peak_allocated_ > 0 ? static_cast<double>(num_alive_) / peak_allocated_ : 1.0;
+  [[nodiscard]] float utilization() const noexcept {
+    return peak_allocated_ > 0 ? static_cast<float>(num_alive_) / peak_allocated_ : 1.0;
   }
 
 #ifdef MEMPOOL_ENABLE_STATS
@@ -498,11 +498,11 @@ public:
 
   void print_stats(const char *name = "BitmapPool") const noexcept {
     size_t cap = capacity();
-    double turnover = num_constructed_ > 0
+    float turnover = num_constructed_ > 0
                           ? num_deallocated_ * 100.0 / num_constructed_
                           : 0.0;
-    double reclaimed = num_constructed_ > 0
-                           ? (1.0 - static_cast<double>(num_alive_) / num_constructed_) * 100.0
+    float reclaimed = num_constructed_ > 0
+                           ? (1.0 - static_cast<float>(num_alive_) / num_constructed_) * 100.0
                            : 0.0;
 
     std::cout << "\n[" << name << " Stats]\n"
@@ -805,7 +805,7 @@ public:
   }
 
   void print_stats(const char *name = "HashMap") const noexcept {
-    double load_factor = static_cast<double>(num_entries_) / (bucket_mask_ + 1);
+    float load_factor = static_cast<float>(num_entries_) / (bucket_mask_ + 1);
     std::cout << "\n[" << name << " Stats]\n"
               << "  Entries:      " << num_entries_ << "\n"
               << "  Erased:       " << num_erased_ << "\n"

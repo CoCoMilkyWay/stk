@@ -154,8 +154,8 @@ void sequential_worker(int worker_id,
 
     // Update progress
     auto current_time = std::chrono::steady_clock::now();
-    double elapsed_seconds = std::chrono::duration<double>(current_time - start_time).count();
-    double speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
+    float elapsed_seconds = std::chrono::duration<float>(current_time - start_time).count();
+    float speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
 
     char msg_buf[128];
     snprintf(msg_buf, sizeof(msg_buf), "%s [%.1fM/s (%.1fM)]", date_str.c_str(), speed_M_per_sec, total_orders / 1e6);

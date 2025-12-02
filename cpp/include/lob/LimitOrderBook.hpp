@@ -398,29 +398,59 @@ private:
   HOT_NOINLINE void update_trading_session_state() {
     const uint16_t hhmm = ((curr_tick_ >> 16) & 0xFFFF); // hour * 256 + minute
 
-    // Time boundaries
-    constexpr uint16_t T_0915 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_START_MINUTE;                 // 9:15
-    constexpr uint16_t T_0925 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_END_MINUTE;                   // 9:25
-    constexpr uint16_t T_0930 = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;       // 9:30
-    constexpr uint16_t T_1130 = (L2::CONTINUOUS_TRADING_MORNING_END_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;         // 11:30
-    constexpr uint16_t T_1300 = (L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE; // 13:00
-    constexpr uint16_t T_1457 = (L2::CLOSING_CALL_AUCTION_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;           // 14:57
-    constexpr uint16_t T_1500 = (L2::CLOSING_CALL_AUCTION_END_HOUR << 8) | L2::CLOSING_CALL_AUCTION_END_MINUTE;                     // 15:00
+    // Lookup table for market state (indexed by hhmm)
+    // Size: 24 * 256 = 6144 bytes (covers all possible hour:minute combinations)
+    static const auto& state_table = []() {
+      static std::array<MarketState, 24 * 256> table;
+      table.fill(MarketState::CLOSED);
 
-    LOB_feature_.is_opening_call_auction = (hhmm >= T_0915 && hhmm < T_0925);
-    LOB_feature_.is_opening_matching_period = (hhmm >= T_0925 && hhmm < T_0930);
-    LOB_feature_.is_continuous_trading_morning = (hhmm >= T_0930 && hhmm < T_1130);
-    LOB_feature_.is_continuous_trading_afternoon = (hhmm >= T_1300 && hhmm < T_1457);
-    LOB_feature_.is_closing_call_auction = (hhmm >= T_1457 && hhmm < T_1500);
-    LOB_feature_.is_closing_matching_period = hhmm == T_1500;
+      constexpr uint16_t T_0915 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_START_MINUTE;
+      constexpr uint16_t T_0925 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_END_MINUTE;
+      constexpr uint16_t T_0930 = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;
+      constexpr uint16_t T_1130 = (L2::CONTINUOUS_TRADING_MORNING_END_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;
+      constexpr uint16_t T_1300 = (L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE;
+      constexpr uint16_t T_1457 = (L2::CLOSING_CALL_AUCTION_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;
+      constexpr uint16_t T_1500 = (L2::CLOSING_CALL_AUCTION_END_HOUR << 8) | L2::CLOSING_CALL_AUCTION_END_MINUTE;
 
-    // Matching period: 9:25-9:30, 15:00
-    in_matching_period_ = LOB_feature_.is_opening_matching_period || LOB_feature_.is_closing_matching_period;
+      for (uint16_t h = 0; h < 24; ++h) {
+        for (uint16_t m = 0; m < 60; ++m) {
+          uint16_t time = (h << 8) | m;
+          if (time >= T_0915 && time < T_0925) {
+            table[time] = MarketState::OPENING_CALL_AUCTION;
+          } else if (time >= T_0925 && time < T_0930) {
+            table[time] = MarketState::OPENING_MATCHING_PERIOD;
+          } else if (time >= T_0930 && time < T_1130) {
+            table[time] = MarketState::CONTINUOUS_TRADING_MORNING;
+          } else if (time >= T_1300 && time < T_1457) {
+            table[time] = MarketState::CONTINUOUS_TRADING_AFTERNOON;
+          } else if (time >= T_1457 && time < T_1500) {
+            table[time] = MarketState::CLOSING_CALL_AUCTION;
+          } else if (time == T_1500) {
+            table[time] = MarketState::CLOSING_MATCHING_PERIOD;
+          }
+        }
+      }
+      return table;
+    }();
 
-    // Call auction: 9:15-9:30, 14:57-15:00 (includes matching period)
-    in_call_auction_ = LOB_feature_.is_opening_call_auction || LOB_feature_.is_closing_call_auction || in_matching_period_;
+    // Single lookup instead of multiple branches
+    LOB_feature_.market_state = state_table[hhmm];
 
-    // Continuous trading: outside call auction
+    // Precompute flags using lookup table for faster access
+    static constexpr bool is_matching[7] = {
+      false, // CLOSED
+      false, // OPENING_CALL_AUCTION
+      true,  // OPENING_MATCHING_PERIOD
+      false, // CONTINUOUS_TRADING_MORNING
+      false, // CONTINUOUS_TRADING_AFTERNOON
+      false, // CLOSING_CALL_AUCTION
+      true,  // CLOSING_MATCHING_PERIOD
+    };
+
+    in_matching_period_ = is_matching[LOB_feature_.market_state];
+    in_call_auction_ = (LOB_feature_.market_state == MarketState::OPENING_CALL_AUCTION ||
+                        LOB_feature_.market_state == MarketState::CLOSING_CALL_AUCTION ||
+                        in_matching_period_);
     in_continuous_trading_ = !in_call_auction_;
   }
 
@@ -1366,7 +1396,7 @@ private:
 #if DEBUG_BOOK_AS_AMOUNT == 0
     const std::string qty_str = std::to_string(volume);
 #else
-    const double amount = std::abs(volume) * price / (DEBUG_BOOK_AS_AMOUNT * 10000.0);
+    const float amount = std::abs(volume) * price / (DEBUG_BOOK_AS_AMOUNT * 10000.0);
     const std::string qty_str = (volume < 0 ? "-" : "") + std::to_string(std::max(1, static_cast<int>(std::ceil(amount))));
 #endif
     const std::string level_str = std::to_string(price) + "x" + qty_str;

@@ -274,8 +274,8 @@ void BinaryDict_L2::analyze_compression_results(const std::string& original_dir,
             size_t orig_size = std::filesystem::file_size(orig_file);
             size_t comp_size = std::filesystem::file_size(comp_file);
             
-            double ratio = static_cast<double>(orig_size) / static_cast<double>(comp_size);
-            double savings = (1.0 - static_cast<double>(comp_size) / static_cast<double>(orig_size)) * 100.0;
+            float ratio = static_cast<float>(orig_size) / static_cast<float>(comp_size);
+            float savings = (1.0 - static_cast<float>(comp_size) / static_cast<float>(orig_size)) * 100.0;
             
             std::cout << std::left << std::setw(30) << filename
                       << std::setw(12) << orig_size
@@ -289,8 +289,8 @@ void BinaryDict_L2::analyze_compression_results(const std::string& original_dir,
     }
     
     std::cout << std::string(76, '-') << std::endl;
-    double overall_ratio = static_cast<double>(total_original) / static_cast<double>(total_compressed);
-    double overall_savings = (1.0 - static_cast<double>(total_compressed) / static_cast<double>(total_original)) * 100.0;
+    float overall_ratio = static_cast<float>(total_original) / static_cast<float>(total_compressed);
+    float overall_savings = (1.0 - static_cast<float>(total_compressed) / static_cast<float>(total_original)) * 100.0;
     
     std::cout << std::left << std::setw(30) << "TOTAL"
               << std::setw(12) << total_original
@@ -354,7 +354,7 @@ bool BinaryDict_L2::compress_data_with_dict(const std::string& filepath, const v
     }
     
     // Print compression statistics
-    double compression_ratio = static_cast<double>(data_size) / static_cast<double>(compressed_size);
+    float compression_ratio = static_cast<float>(data_size) / static_cast<float>(compressed_size);
     std::cout << "Dict compressed " << data_size << " bytes to " << compressed_size 
               << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
     

@@ -13,10 +13,10 @@ namespace GUI::Database {
 // Helper: Filter Valid Values
 // ============================================================================
 
-static std::vector<double> FilterValidValues(const std::vector<double> &values) {
-  std::vector<double> valid;
+static std::vector<float> FilterValidValues(const std::vector<float> &values) {
+  std::vector<float> valid;
   valid.reserve(values.size());
-  for (double v : values) {
+  for (float v : values) {
     if (std::isfinite(v) && v > -1e300 && v < 1e300) {
       valid.push_back(v);
     }
@@ -28,7 +28,7 @@ static std::vector<double> FilterValidValues(const std::vector<double> &values) 
 // Numeric Data Analysis Implementation
 // ============================================================================
 
-std::vector<double> RemoveOutliers(const std::vector<double> &values, double percentile) {
+std::vector<float> RemoveOutliers(const std::vector<float> &values, float percentile) {
   auto valid = FilterValidValues(values);
   if (valid.empty())
     return {};
@@ -39,13 +39,13 @@ std::vector<double> RemoveOutliers(const std::vector<double> &values, double per
   size_t upper_idx = static_cast<size_t>(valid.size() * (100.0 - percentile) / 100.0);
 
   if (upper_idx > lower_idx && upper_idx < valid.size()) {
-    return std::vector<double>(valid.begin() + lower_idx, valid.begin() + upper_idx);
+    return std::vector<float>(valid.begin() + lower_idx, valid.begin() + upper_idx);
   }
 
   return valid;
 }
 
-ColumnStats CalculateRobustStats(const std::vector<double> &values) {
+ColumnStats CalculateRobustStats(const std::vector<float> &values) {
   ColumnStats stats;
   stats.total_count = values.size();
 
@@ -56,13 +56,13 @@ ColumnStats CalculateRobustStats(const std::vector<double> &values) {
     return stats;
   }
 
-  std::vector<double> sorted = filtered;
+  std::vector<float> sorted = filtered;
   std::sort(sorted.begin(), sorted.end());
 
   stats.min = sorted.front();
   stats.max = sorted.back();
 
-  double sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
+  float sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
   stats.mean = sum / sorted.size();
 
   size_t mid = sorted.size() / 2;
@@ -75,8 +75,8 @@ ColumnStats CalculateRobustStats(const std::vector<double> &values) {
   stats.q25 = sorted[q25_idx];
   stats.q75 = sorted[q75_idx];
 
-  double sq_sum = 0.0;
-  for (double v : sorted) {
+  float sq_sum = 0.0;
+  for (float v : sorted) {
     sq_sum += (v - stats.mean) * (v - stats.mean);
   }
   stats.std_dev = std::sqrt(sq_sum / sorted.size());
@@ -86,7 +86,7 @@ ColumnStats CalculateRobustStats(const std::vector<double> &values) {
 
 std::vector<BoardStats> GroupNumericByBoard(
     const std::vector<std::string> &codes,
-    const std::vector<double> &values) {
+    const std::vector<float> &values) {
 
   std::vector<BoardStats> result;
 
@@ -95,10 +95,10 @@ std::vector<BoardStats> GroupNumericByBoard(
   }
 
   // Group by board
-  std::map<std::string, std::vector<double>> board_values;
+  std::map<std::string, std::vector<float>> board_values;
 
   for (size_t i = 0; i < codes.size(); ++i) {
-    double v = values[i];
+    float v = values[i];
     if (!std::isfinite(v))
       continue;
 
@@ -122,7 +122,7 @@ std::vector<BoardStats> GroupNumericByBoard(
     auto sorted = vals;
     std::sort(sorted.begin(), sorted.end());
 
-    double sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
+    float sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
     bs.mean = sum / sorted.size();
 
     size_t mid = sorted.size() / 2;
@@ -130,8 +130,8 @@ std::vector<BoardStats> GroupNumericByBoard(
                     ? (sorted[mid - 1] + sorted[mid]) / 2.0
                     : sorted[mid];
 
-    double sq_sum = 0.0;
-    for (double v : sorted) {
+    float sq_sum = 0.0;
+    for (float v : sorted) {
       sq_sum += (v - bs.mean) * (v - bs.mean);
     }
     bs.std_dev = std::sqrt(sq_sum / sorted.size());
@@ -142,23 +142,23 @@ std::vector<BoardStats> GroupNumericByBoard(
   return result;
 }
 
-std::vector<std::pair<std::string, double>> GetTopN(
+std::vector<std::pair<std::string, float>> GetTopN(
     const std::vector<std::string> &names,
-    const std::vector<double> &values,
+    const std::vector<float> &values,
     int n,
     bool descending) {
 
-  std::vector<std::pair<std::string, double>> result;
+  std::vector<std::pair<std::string, float>> result;
 
   if (names.size() != values.size() || names.empty()) {
     return result;
   }
 
   // Create pairs and filter valid values
-  std::vector<std::pair<std::string, double>> pairs;
+  std::vector<std::pair<std::string, float>> pairs;
   pairs.reserve(names.size());
   for (size_t i = 0; i < names.size(); ++i) {
-    double v = values[i];
+    float v = values[i];
     if (v == v && v > -1e300 && v < 1e300) {
       pairs.emplace_back(names[i], v);
     }

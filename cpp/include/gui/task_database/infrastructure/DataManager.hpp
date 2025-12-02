@@ -143,8 +143,8 @@ public:
   // Progress tracking
   std::string get_next_update_time_weekly() const;
   std::string get_next_update_time_daily() const;
-  double get_update_progress_weekly() const;
-  double get_update_progress_daily() const;
+  float get_update_progress_weekly() const;
+  float get_update_progress_daily() const;
   StatusSummary get_status_summary() const;
 
   // Force remove operations

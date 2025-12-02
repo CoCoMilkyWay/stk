@@ -175,14 +175,14 @@ struct CrawlerProgress {
   size_t total_tasks = 0;
 
   // Performance metrics
-  double requests_per_second = 0.0;
-  double eta_seconds = 0.0;
-  double elapsed_seconds = 0.0;
+  float requests_per_second = 0.0;
+  float eta_seconds = 0.0;
+  float elapsed_seconds = 0.0;
 
   // Success/Error tracking
   size_t success_count = 0;
   size_t error_count = 0;
-  double success_rate = 0.0; // 0.0 - 1.0
+  float success_rate = 0.0; // 0.0 - 1.0
 
   // Current item being processed (for display)
   std::string current_item;

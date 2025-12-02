@@ -647,7 +647,7 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
   // Store stats
   compression_stats.original_size = data_size;
   compression_stats.compressed_size = compressed_size;
-  compression_stats.ratio = static_cast<double>(data_size) / compressed_size;
+  compression_stats.ratio = static_cast<float>(data_size) / compressed_size;
 
   return true;
 }

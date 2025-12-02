@@ -79,7 +79,7 @@ public:
       bar_low_ = price;
 
     // Accumulate volume and amount by side
-    const double amount = price * volume;
+    const float amount = price * volume;
     if (is_bid) {
       bar_bid_volume_ += volume;
       bar_bid_amount_ += amount;
@@ -99,12 +99,12 @@ private:
 
   // State: current bar accumulator
   uint32_t last_bar_time_{0};
-  double bar_open_{0};
-  double bar_high_{0};
-  double bar_low_{0};
-  double bar_close_{0};
+  float bar_open_{0};
+  float bar_high_{0};
+  float bar_low_{0};
+  float bar_close_{0};
   uint32_t bar_bid_volume_{0};
   uint32_t bar_ask_volume_{0};
-  double bar_bid_amount_{0};
-  double bar_ask_amount_{0};
+  float bar_bid_amount_{0};
+  float bar_ask_amount_{0};
 };

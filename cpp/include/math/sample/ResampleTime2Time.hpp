@@ -35,15 +35,15 @@ public:
     assert(end_idx <= input_.open.size());
 
     // OHLC aggregation
-    double agg_open = input_.open[start_idx];
-    double agg_high = input_.high[start_idx];
-    double agg_low = input_.low[start_idx];
-    double agg_close = input_.close[end_idx - 1];
+    float agg_open = input_.open[start_idx];
+    float agg_high = input_.high[start_idx];
+    float agg_low = input_.low[start_idx];
+    float agg_close = input_.close[end_idx - 1];
 
     uint32_t agg_bid_volume = 0;
     uint32_t agg_ask_volume = 0;
-    double agg_bid_amount = 0.0;
-    double agg_ask_amount = 0.0;
+    float agg_bid_amount = 0.0;
+    float agg_ask_amount = 0.0;
 
     for (size_t i = start_idx; i < end_idx; ++i) {
       // Update high/low

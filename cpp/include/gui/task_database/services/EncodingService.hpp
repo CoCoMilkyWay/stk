@@ -129,8 +129,8 @@ struct EncodingProgress {
   size_t total_dates = 0;
   size_t encoded_dates = 0;
   size_t total_orders = 0;
-  double elapsed_seconds = 0.0;
-  double encoding_rate = 0.0; // Assets per second
+  float elapsed_seconds = 0.0;
+  float encoding_rate = 0.0; // Assets per second
 };
 
 // ============================================================================
