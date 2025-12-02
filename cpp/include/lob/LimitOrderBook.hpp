@@ -403,8 +403,8 @@ private:
     // Lookup table for market state (indexed by hhmm)
     // Size: 24 * 256 = 6144 bytes (covers all possible hour:minute combinations)
     static const auto &state_table = []() {
-      static std::array<MarketState, 24 * 256> table;
-      table.fill(MarketState::CLOSED);
+      static std::array<L2::MarketState, 24 * 256> table;
+      table.fill(L2::MarketState::CLOSED);
 
       constexpr uint16_t T_0915 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_START_MINUTE;
       constexpr uint16_t T_0925 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_END_MINUTE;
@@ -418,17 +418,17 @@ private:
         for (uint16_t m = 0; m < 60; ++m) {
           uint16_t time = (h << 8) | m;
           if (time >= T_0915 && time < T_0925) {
-            table[time] = MarketState::OPENING_CALL_AUCTION;
+            table[time] = L2::MarketState::OPENING_CALL_AUCTION;
           } else if (time >= T_0925 && time < T_0930) {
-            table[time] = MarketState::OPENING_MATCHING_PERIOD;
+            table[time] = L2::MarketState::OPENING_MATCHING_PERIOD;
           } else if (time >= T_0930 && time < T_1130) {
-            table[time] = MarketState::CONTINUOUS_TRADING_MORNING;
+            table[time] = L2::MarketState::CONTINUOUS_TRADING_MORNING;
           } else if (time >= T_1300 && time < T_1457) {
-            table[time] = MarketState::CONTINUOUS_TRADING_AFTERNOON;
+            table[time] = L2::MarketState::CONTINUOUS_TRADING_AFTERNOON;
           } else if (time >= T_1457 && time < T_1500) {
-            table[time] = MarketState::CLOSING_CALL_AUCTION;
+            table[time] = L2::MarketState::CLOSING_CALL_AUCTION;
           } else if (time == T_1500) {
-            table[time] = MarketState::CLOSING_MATCHING_PERIOD;
+            table[time] = L2::MarketState::CLOSING_MATCHING_PERIOD;
           }
         }
       }
@@ -451,8 +451,8 @@ private:
     };
 
     in_matching_period_ = is_matching[LOB_feature_.market_state];
-    in_call_auction_ = (LOB_feature_.market_state == MarketState::OPENING_CALL_AUCTION ||
-                        LOB_feature_.market_state == MarketState::CLOSING_CALL_AUCTION ||
+    in_call_auction_ = (LOB_feature_.market_state == L2::MarketState::OPENING_CALL_AUCTION ||
+                        LOB_feature_.market_state == L2::MarketState::CLOSING_CALL_AUCTION ||
                         in_matching_period_);
     in_continuous_trading_ = !in_call_auction_;
   }
@@ -779,10 +779,8 @@ private:
     is_bid_ = (order.order_dir == L2::OrderDirection::BID);
 
     // Update feature order metadata (every order)
-    LOB_feature_.is_maker = is_maker_;
-    LOB_feature_.is_taker = is_taker_;
-    LOB_feature_.is_cancel = is_cancel_;
-    LOB_feature_.is_bid = is_bid_;
+    LOB_feature_.order_type = order.order_type;
+    LOB_feature_.order_dir = order.order_dir;
     LOB_feature_.price = order.price * 0.01;
     LOB_feature_.volume = order.volume;
 
@@ -807,10 +805,9 @@ private:
 #if DEBUG_BOOK_PRINT
       print_book();
 #endif
-
-      // Trigger sequential core (handles 3-level cascade with resampling internally)
-      core_sequential_.compute_and_store();
     }
+
+    core_sequential_.compute_and_store();
 
     // ========================= lob update ==============================
     bool result = update_lob(order);

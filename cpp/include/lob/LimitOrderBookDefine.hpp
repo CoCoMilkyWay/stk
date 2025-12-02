@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 
 //========================================================================================
@@ -397,16 +398,6 @@ struct OrderIdHash {
 // Forward declaration
 struct Level;
 
-enum MarketState : uint8_t {
-  CLOSED = 0,
-  OPENING_CALL_AUCTION = 1,
-  OPENING_MATCHING_PERIOD = 2,
-  CONTINUOUS_TRADING_MORNING = 3,
-  CONTINUOUS_TRADING_AFTERNOON = 4,
-  CLOSING_CALL_AUCTION = 5,
-  CLOSING_MATCHING_PERIOD = 6,
-};
-
 // 订单簿逐笔特征流(用于高频因子计算)
 struct LOB_Feature {
   uint8_t hour = 0;        // 5bit
@@ -414,14 +405,12 @@ struct LOB_Feature {
   uint8_t second = 0;      // 6bit
   uint8_t millisecond = 0; // 7bit (in 10ms)
 
-  MarketState market_state = MarketState::CLOSED;
-
-  bool is_maker = false;  // 1bit
-  bool is_taker = false;  // 1bit
-  bool is_cancel = false; // 1bit
-  bool is_bid = false;    // 1bit - 0:ask 1:bid
-  float price = 0.0;     // 14bit - price in 1 RMB unit
-  uint32_t volume = 0;    // 22bit - in shares (expanded to support up to 4M shares)
+  L2::MarketState market_state = L2::MarketState::CLOSED;
+  L2::OrderType order_type = L2::OrderType::MAKER;
+  L2::OrderDirection order_dir = L2::OrderDirection::BID;
+  
+  float price = 0.0;   // 14bit - price in 1 RMB unit
+  uint32_t volume = 0; // 22bit - in shares (expanded to support up to 4M shares)
 
   uint32_t all_bid_volume = 0; // 22bit - volume of all bid orders in shares
   uint32_t all_ask_volume = 0; // 22bit - volume of all bid orders in shares

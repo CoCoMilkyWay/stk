@@ -12,7 +12,7 @@
 // Architecture: LOB -> Tick -> (resample) -> Minute -> (resample) -> Hour
 class CoreSequential {
 public:
-  CoreSequential(const TickData &tick_data,
+  CoreSequential(TickData &tick_data,
                  GlobalFeatureStore &store,
                  size_t asset_id = 0,
                  size_t core_id = 0)
@@ -30,8 +30,12 @@ public:
         tick2min_resampler_(tick_data_, minute_data_, 60),
         min2hour_resampler_(minute_data_, hour_data_, 60) {
     // Initialize metadata
+    tick_data_.asset_id = static_cast<uint32_t>(asset_id_);
     minute_data_.asset_id = static_cast<uint32_t>(asset_id_);
     hour_data_.asset_id = static_cast<uint32_t>(asset_id_);
+    tick_data_.core_id = static_cast<uint32_t>(core_id);
+    minute_data_.core_id = static_cast<uint32_t>(core_id);
+    hour_data_.core_id = static_cast<uint32_t>(core_id);
   }
 
   void set_date(const std::string &date_str) {
@@ -99,7 +103,7 @@ private:
   std::string date_str_;
 
   // Hierarchical data structures
-  TickData tick_data_;
+  TickData &tick_data_;
   MinuteData minute_data_;
   HourData hour_data_;
 

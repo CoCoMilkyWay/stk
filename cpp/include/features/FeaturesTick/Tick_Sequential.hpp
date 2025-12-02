@@ -244,8 +244,8 @@ private:
   float compute_signed_volume_imb() const {
 
     float sign = 0;
-    if (tick_data_.lob.is_taker) {
-      sign = tick_data_.lob.is_bid ? 1.0 : -1.0; // buy=+1, sell=-1
+    if (tick_data_.lob.order_type == L2::OrderType::TAKER) {
+      sign = tick_data_.lob.order_dir == L2::OrderDirection::BID ? 1.0 : -1.0; // buy=+1, sell=-1
     }
 
     float signed_vol = sign * tick_data_.lob.volume;

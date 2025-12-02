@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "features/DataDefine.hpp"
+// #include "misc/logging.hpp"
 
 //========================================================================================
 // TICK-TO-TIME RESAMPLER
@@ -24,12 +25,13 @@ public:
   // Trigger resampling logic
   void update() {
     // Only process taker orders
-    if (!input_.lob.is_taker)
+    if (input_.lob.order_type != L2::OrderType::TAKER) {
       return;
+    };
 
     const float price = input_.lob.price;
     const uint32_t volume = input_.lob.volume;
-    const bool is_bid = input_.lob.is_bid;
+    const bool is_bid = input_.lob.order_dir == L2::OrderDirection::BID;
 
     const uint32_t current_time_seconds = input_.lob.hour * 3600 + input_.lob.minute * 60 + input_.lob.second;
 
@@ -45,6 +47,7 @@ public:
       output_.ask_volume.push_back(bar_ask_volume_);
       output_.bid_amount.push_back(bar_bid_amount_);
       output_.ask_amount.push_back(bar_ask_amount_);
+      // Logger::log(std::to_string(output_.asset_id), "min_bar " + std::to_string(input_.lob.hour) + ":" + std::to_string(input_.lob.minute) + ":" + std::to_string(input_.lob.second) + " price: " + std::to_string(bar_close_) + " volume: " + std::to_string(bar_bid_volume_ + bar_ask_volume_) + " amount: " + std::to_string(bar_bid_amount_ + bar_ask_amount_) + " current_time_seconds: " + std::to_string(current_time_seconds));
     }
 
     // Start new bar (first tick or after emit)

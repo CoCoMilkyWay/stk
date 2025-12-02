@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "features/DataDefine.hpp"
+// #include "misc/logging.hpp"
 
 //========================================================================================
 // TIME-TO-TIME RESAMPLER
@@ -73,6 +74,7 @@ public:
     output_.ask_volume.push_back(agg_ask_volume);
     output_.bid_amount.push_back(agg_bid_amount);
     output_.ask_amount.push_back(agg_ask_amount);
+    // Logger::log(std::to_string(output_.asset_id), "hour_bar idx:" + std::to_string(end_idx) + " price: " + std::to_string(agg_close) + " volume: " + std::to_string(agg_bid_volume + agg_ask_volume) + " amount: " + std::to_string(agg_bid_amount + agg_ask_amount));
 
     last_processed_index_ = end_idx;
   }

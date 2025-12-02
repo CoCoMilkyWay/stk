@@ -124,26 +124,26 @@ static inline bool is_shenzhen_market(const std::string &stock_code) {
 }
 
 // Order type determination based on exchange rules
-static inline uint8_t determine_order_type(char csv_order_type, char csv_trade_code,
-                                           bool is_trade, bool is_shenzhen) {
+static inline L2::OrderType determine_order_type(char csv_order_type, char csv_trade_code,
+                                                 bool is_trade, bool is_shenzhen) {
   if (is_trade) {
     // Trade: cancel(1) or taker(3)
-    return (is_shenzhen && csv_trade_code == 'C') ? 1 : 3;
+    return (is_shenzhen && csv_trade_code == 'C') ? L2::OrderType::CANCEL : L2::OrderType::TAKER;
   }
 
   // Order: all maker(0) for SZSE; maker(0) or cancel(1) for SSE
   if (is_shenzhen) {
-    return 0; // SZSE orders are all maker
+    return L2::OrderType::MAKER; // SZSE orders are all maker
   } else {
     // SSE: A/a=add/maker, D/d=delete/cancel
-    return (csv_order_type == 'A' || csv_order_type == 'a') ? 0 : (csv_order_type == 'D' || csv_order_type == 'd') ? 1
-                                                                                                                   : 0;
+    return (csv_order_type == 'A' || csv_order_type == 'a') ? L2::OrderType::MAKER : (csv_order_type == 'D' || csv_order_type == 'd') ? L2::OrderType::CANCEL
+                                                                                                                                      : L2::OrderType::MAKER;
   }
 }
 
 // Order direction: false=bid(B), true=ask(S)
-static inline bool determine_order_direction(char side_flag) {
-  return side_flag == 'S' || side_flag == 's';
+static inline L2::OrderDirection determine_order_direction(char side_flag) {
+  return (side_flag == 'S' || side_flag == 's') ? L2::OrderDirection::ASK : L2::OrderDirection::BID;
 }
 
 // ============================================================================
@@ -462,17 +462,13 @@ Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv) {
 
   // Order attributes
   bool is_szse = is_shenzhen_market(csv.stock_code);
-  order.order_type = clamp_to_bound(
-      determine_order_type(csv.order_type, '0', false, is_szse),
-      ORDER_TYPE_BOUND);
-  order.order_dir = clamp_to_bound(
-      determine_order_direction(csv.order_side),
-      ORDER_DIR_BOUND);
+  order.order_type = determine_order_type(csv.order_type, '0', false, is_szse);
+  order.order_dir = determine_order_direction(csv.order_side);
   order.price = clamp_to_bound(csv.price, PRICE_BOUND);
   order.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
 
   // Order IDs (only one side is set based on direction)
-  if (order.order_dir == 0) { // Bid
+  if (order.order_dir == L2::OrderDirection::BID) { // Bid
     order.bid_order_id = clamp_to_bound(csv.exchange_order_id, ORDER_ID_BOUND);
     order.ask_order_id = 0;
   } else { // Ask
@@ -495,20 +491,14 @@ Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv) {
 
   // Trade attributes
   bool is_szse = is_shenzhen_market(csv.stock_code);
-  order.order_type = clamp_to_bound(
-      determine_order_type('0', csv.trade_code, true, is_szse),
-      ORDER_TYPE_BOUND);
+  order.order_type = determine_order_type('0', csv.trade_code, true, is_szse);
 
   // Direction: for SZSE cancellation (bs_flag empty), infer from bid_order_id
   if (is_szse && (csv.bs_flag == ' ' || csv.bs_flag == '\0')) {
     char effective_side = (csv.bid_order_id != 0) ? 'B' : 'S';
-    order.order_dir = clamp_to_bound(
-        determine_order_direction(effective_side),
-        ORDER_DIR_BOUND);
+    order.order_dir = determine_order_direction(effective_side);
   } else {
-    order.order_dir = clamp_to_bound(
-        determine_order_direction(csv.bs_flag),
-        ORDER_DIR_BOUND);
+    order.order_dir = determine_order_direction(csv.bs_flag);
   }
 
   order.price = clamp_to_bound(csv.price, PRICE_BOUND);

@@ -77,6 +77,27 @@ constexpr uint8_t CLOSING_CALL_AUCTION_END_MINUTE = 0;
 // | snappy 1.2.1        | 2.089 | 520 MB/s    | 1500 MB/s  |
 // | lzf 3.6 -1          | 2.077 | 410 MB/s    | 820 MB/s   |
 
+enum OrderType : uint8_t {
+  MAKER = 0,
+  CANCEL = 1,
+  TAKER = 3,
+};
+
+enum OrderDirection : uint8_t {
+  BID = 0,
+  ASK = 1,
+};
+
+enum MarketState : uint8_t {
+  CLOSED = 0,
+  OPENING_CALL_AUCTION = 1,
+  OPENING_MATCHING_PERIOD = 2,
+  CONTINUOUS_TRADING_MORNING = 3,
+  CONTINUOUS_TRADING_AFTERNOON = 4,
+  CLOSING_CALL_AUCTION = 5,
+  CLOSING_MATCHING_PERIOD = 6,
+};
+
 // 三秒快照(tick) (可能低于3秒更新)
 struct Snapshot {
   uint8_t hour;                 // 5bit
@@ -104,10 +125,10 @@ struct Order {
   uint8_t second;      // 6bit
   uint8_t millisecond; // 7bit (in 10ms)
 
-  uint8_t order_type; // 2bit - 0:maker(order) 1:cancel 2:change 3:taker(trade)
-  uint8_t order_dir;  // 1bit - 0:bid 1:ask
-  uint16_t price;     // 14bit - price in 0.01 RMB units
-  uint32_t volume;    // 22bit - in shares (expanded to support up to 4M shares)
+  OrderType order_type;     // 2bit - 0:maker(order) 1:cancel 2:change 3:taker(trade)
+  OrderDirection order_dir; // 1bit - 0:bid 1:ask
+  uint16_t price;           // 14bit - price in 0.01 RMB units
+  uint32_t volume;          // 22bit - in shares (expanded to support up to 4M shares)
 
   uint32_t bid_order_id; // 32bit
   uint32_t ask_order_id; // 32bit
@@ -115,17 +136,6 @@ struct Order {
   // bid_order_id:             |buy_maker_id |0             |buy_cancel_id |0              |0     |0     |buy_taker_id  |buy_maker_id
   // ask_order_id:             |0            |sell_maker_id |0             |sell_cancel_id |0     |0     |sell_maker_id |sell_taker_id
 };
-
-namespace OrderType {
-constexpr uint8_t MAKER = 0;
-constexpr uint8_t CANCEL = 1;
-constexpr uint8_t TAKER = 3;
-} // namespace OrderType
-
-namespace OrderDirection {
-constexpr uint8_t BID = 0;
-constexpr uint8_t ASK = 1;
-} // namespace OrderDirection
 
 struct ColumnMeta {
   std::string_view column_name; // 列名
