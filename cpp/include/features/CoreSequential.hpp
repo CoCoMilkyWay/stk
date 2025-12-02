@@ -45,8 +45,8 @@ public:
     const uint32_t hour_now = lob.hour;
 
     // Update accumulators with current tick data
-    minute_accumulator_.update(mid_price, tick_volume);
-    hour_accumulator_.update(mid_price, tick_volume);
+    minute_resampler_.update(mid_price, tick_volume);
+    hour_resampler_.update(mid_price, tick_volume);
 
     // LEVEL 0: Tick-level features (direct from LOB_feature_)
     tick_sequential_.compute_and_store();
@@ -97,16 +97,16 @@ private:
     minute_bar_ = {
         .timestamp_1m = trading_minute_idx,
         .instrument_id = static_cast<uint32_t>(asset_id_),
-        .open_1m = minute_accumulator_.open,
-        .high_1m = minute_accumulator_.high,
-        .low_1m = minute_accumulator_.low,
+        .open_1m = minute_resampler_.open,
+        .high_1m = minute_resampler_.high,
+        .low_1m = minute_resampler_.low,
         .close_1m = close_price,
-        .vwap_1m = minute_accumulator_.vwap(),
-        .volume_1m = minute_accumulator_.volume,
+        .vwap_1m = minute_resampler_.vwap(),
+        .volume_1m = minute_resampler_.volume,
         .universe_ids_1m = 0,
         .market_close_1m = is_minute_close};
 
-    minute_accumulator_.reset(close_price);
+    minute_resampler_.reset(close_price);
   }
 
   // Minute → Hour resampling
@@ -124,19 +124,19 @@ private:
     hour_bar_ = {
         .timestamp_1h = trading_hour_idx,
         .instrument_id = static_cast<uint32_t>(asset_id_),
-        .open_1h = hour_accumulator_.open,
-        .high_1h = hour_accumulator_.high,
-        .low_1h = hour_accumulator_.low,
+        .open_1h = hour_resampler_.open,
+        .high_1h = hour_resampler_.high,
+        .low_1h = hour_resampler_.low,
         .close_1h = minute_bar_.close_1m,
-        .vwap_1h = hour_accumulator_.vwap(),
-        .volume_1h = hour_accumulator_.volume,
+        .vwap_1h = hour_resampler_.vwap(),
+        .volume_1h = hour_resampler_.volume,
         .universe_ids_1h = 0,
         .market_close_1h = is_close,
         .prev_day_close = prev_day_close_};
 
     if (is_close)
       prev_day_close_ = hour_bar_.close_1h;
-    hour_accumulator_.reset(hour_bar_.close_1h);
+    hour_resampler_.reset(hour_bar_.close_1h);
   }
 
   // Get mid price from depth buffer
@@ -167,7 +167,7 @@ private:
   // Resampling state
   uint32_t last_minute_ = 0;
   uint32_t last_hour_ = 0;
-  ResampleTimeBar<> minute_accumulator_;
-  ResampleTimeBar<> hour_accumulator_;
+  ResampleTimeBar<> minute_resampler_;
+  ResampleTimeBar<> hour_resampler_;
   double prev_day_close_ = 0;
 };

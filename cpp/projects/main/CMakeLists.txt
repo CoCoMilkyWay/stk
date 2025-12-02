@@ -164,6 +164,17 @@ set(HEADERS
     ../../include/codec/binary_decoder_L2.hpp
     ../../include/codec/binary_encoder_L2.hpp
     ../../include/codec/L2_DataType.hpp
+    ../../include/features/FeaturesDefine.hpp
+    ../../include/features/backend/FeatureStoreConfig.hpp
+    ../../include/features/backend/FeatureStore.hpp
+    ../../include/features/FeaturesHour/Hour_Sequential.hpp
+    ../../include/features/FeaturesMinute/Minute_Sequential.hpp
+    ../../include/features/FeaturesTick/Tick_Sequential.hpp
+    ../../include/features/FeaturesHour/Hour_Crosssection.hpp
+    ../../include/features/FeaturesMinute/Minute_Crosssection.hpp
+    ../../include/features/FeaturesTick/Tick_Crosssection.hpp
+    ../../include/features/CoreSequential.hpp
+    ../../include/features/CoreCrosssection.hpp
     ../../include/lob/LimitOrderBook.hpp
     ../../include/worker/encoding_worker.hpp
     ../../include/worker/sequential_worker.hpp
