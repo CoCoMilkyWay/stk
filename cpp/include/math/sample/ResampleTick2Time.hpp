@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 
 #include "features/DataDefine.hpp"
@@ -22,33 +23,16 @@ public:
 
   // Trigger resampling logic
   void update() {
-    // Cache frequently accessed fields
-    const auto price = input_.lob.price;
-    const auto volume = input_.lob.volume;
-    const auto is_bid = input_.lob.is_bid;
+    const float price = input_.lob.price;
+    const uint32_t volume = input_.lob.volume;
+    const bool is_bid = input_.lob.is_bid;
 
-    const uint32_t current_time_seconds =
-        input_.lob.hour * 3600 + input_.lob.minute * 60 + input_.lob.second;
+    const uint32_t current_time_seconds = input_.lob.hour * 3600 + input_.lob.minute * 60 + input_.lob.second;
 
-    // Check if we crossed a bar boundary
-    if (last_bar_time_ == 0) {
-      // First tick: initialize bar
-      last_bar_time_ = current_time_seconds;
-      bar_open_ = price;
-      bar_high_ = bar_open_;
-      bar_low_ = bar_open_;
-      bar_close_ = bar_open_;
-      bar_bid_volume_ = 0;
-      bar_ask_volume_ = 0;
-      bar_bid_amount_ = 0.0;
-      bar_ask_amount_ = 0.0;
-    }
+    // Check if we need to emit previous bar and start new one
+    const bool emit_bar = (last_bar_time_ != 0) && (current_time_seconds - last_bar_time_ >= bar_period_seconds_);
 
-    const uint32_t time_diff = current_time_seconds - last_bar_time_;
-
-    // Emit bar if time boundary crossed
-    if (time_diff >= bar_period_seconds_) {
-      // Push accumulated bar to output buffers
+    if (emit_bar) {
       output_.open.push_back(bar_open_);
       output_.high.push_back(bar_high_);
       output_.low.push_back(bar_low_);
@@ -57,26 +41,20 @@ public:
       output_.ask_volume.push_back(bar_ask_volume_);
       output_.bid_amount.push_back(bar_bid_amount_);
       output_.ask_amount.push_back(bar_ask_amount_);
+    }
 
-      // Reset bar accumulators
+    // Start new bar (first tick or after emit)
+    if (last_bar_time_ == 0 || emit_bar) {
       last_bar_time_ = current_time_seconds;
-      bar_open_ = price;
-      bar_high_ = bar_open_;
-      bar_low_ = bar_open_;
-      bar_close_ = bar_open_;
-      bar_bid_volume_ = 0;
-      bar_ask_volume_ = 0;
-      bar_bid_amount_ = 0.0;
-      bar_ask_amount_ = 0.0;
+      bar_open_ = bar_high_ = bar_low_ = bar_close_ = price;
+      bar_bid_volume_ = bar_ask_volume_ = 0;
+      bar_bid_amount_ = bar_ask_amount_ = 0.0f;
     }
 
     // Update current bar with new tick
     bar_close_ = price;
-
-    if (price > bar_high_)
-      bar_high_ = price;
-    if (price < bar_low_)
-      bar_low_ = price;
+    bar_high_ = (price > bar_high_) ? price : bar_high_;
+    bar_low_ = (price < bar_low_) ? price : bar_low_;
 
     // Accumulate volume and amount by side
     const float amount = price * volume;
