@@ -170,8 +170,8 @@ private:
   //------------------------------------------------------------------------------------
   // Layer 1: Price Level Storage (价格档位基础层)
   //------------------------------------------------------------------------------------
-  std::deque<Level> level_storage_;                    // All price levels (deque guarantees stable pointers)
-  std::array<Level *, PRICE_RANGE_SIZE> price_levels_; // Direct array: Price -> Level* mapping for O(1) lookup (512 KB)
+  std::deque<Level> level_storage_;                      // All price levels (deque guarantees stable pointers)
+  std::array<Level *, PRICE_RANGE_SIZE> price_levels_{}; // Direct array: Price -> Level* mapping for O(1) lookup (512 KB), initialized to all nullptr
 
   //------------------------------------------------------------------------------------
   // Layer 2: Order Tracking Infrastructure (订单追踪层)
@@ -397,10 +397,12 @@ private:
   // Update session state flags based on current time (called when tick changes)
   HOT_NOINLINE void update_trading_session_state() {
     const uint16_t hhmm = ((curr_tick_ >> 16) & 0xFFFF); // hour * 256 + minute
+    assert(((hhmm >> 8) < 24) && "hour out of range");
+    assert(((hhmm & 0xFF) < 60) && "minute out of range");
 
     // Lookup table for market state (indexed by hhmm)
     // Size: 24 * 256 = 6144 bytes (covers all possible hour:minute combinations)
-    static const auto& state_table = []() {
+    static const auto &state_table = []() {
       static std::array<MarketState, 24 * 256> table;
       table.fill(MarketState::CLOSED);
 
@@ -434,17 +436,18 @@ private:
     }();
 
     // Single lookup instead of multiple branches
+    assert(hhmm < state_table.size() && "market state table index out of bounds");
     LOB_feature_.market_state = state_table[hhmm];
 
     // Precompute flags using lookup table for faster access
     static constexpr bool is_matching[7] = {
-      false, // CLOSED
-      false, // OPENING_CALL_AUCTION
-      true,  // OPENING_MATCHING_PERIOD
-      false, // CONTINUOUS_TRADING_MORNING
-      false, // CONTINUOUS_TRADING_AFTERNOON
-      false, // CLOSING_CALL_AUCTION
-      true,  // CLOSING_MATCHING_PERIOD
+        false, // CLOSED
+        false, // OPENING_CALL_AUCTION
+        true,  // OPENING_MATCHING_PERIOD
+        false, // CONTINUOUS_TRADING_MORNING
+        false, // CONTINUOUS_TRADING_AFTERNOON
+        false, // CLOSING_CALL_AUCTION
+        true,  // CLOSING_MATCHING_PERIOD
     };
 
     in_matching_period_ = is_matching[LOB_feature_.market_state];

@@ -23,6 +23,10 @@ public:
 
   // Trigger resampling logic
   void update() {
+    // Only process taker orders
+    if (!input_.lob.is_taker)
+      return;
+
     const float price = input_.lob.price;
     const uint32_t volume = input_.lob.volume;
     const bool is_bid = input_.lob.is_bid;

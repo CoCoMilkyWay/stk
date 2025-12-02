@@ -28,7 +28,7 @@ APP_NAME = "main"
 ENABLE_TSAN = False
 ENABLE_DEBUG = False
 ENABLE_PROFILE = False
-ENABLE_ASSERT = True
+ENABLE_ASSERT = False
 
 
 def _cleanup_processes():
