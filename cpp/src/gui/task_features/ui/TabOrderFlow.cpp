@@ -266,40 +266,40 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
     const auto &current_asset = data.asset.items[asset_idx];
     const std::string &latest_date = data.asset.all_dates.back();
     const bool current_delisted = current_asset.end_date < latest_date;
-    
+
     char preview_buf[256];
     std::snprintf(preview_buf, sizeof(preview_buf), "%s-%s-%s%s",
                   current_asset.asset_code.c_str(),
                   current_asset.exchange.c_str(),
                   current_asset.asset_name.c_str(),
                   current_delisted ? " (DL)" : "");
-    
+
     if (ImGui::BeginCombo("##asset", preview_buf)) {
       for (size_t i = 0; i < num_assets; ++i) {
         const auto &asset = data.asset.items[i];
         const bool is_delisted = asset.end_date < latest_date;
-        
+
         char label[256];
         std::snprintf(label, sizeof(label), "%s-%s-%s%s",
                       asset.asset_code.c_str(),
                       asset.exchange.c_str(),
                       asset.asset_name.c_str(),
                       is_delisted ? " (DL)" : "");
-        
+
         if (is_delisted) {
           ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
         }
-        
+
         const bool is_selected = (ui.selected_asset_idx == static_cast<int>(i));
         if (ImGui::Selectable(label, is_selected, is_delisted ? ImGuiSelectableFlags_Disabled : 0)) {
           ui.selected_asset_idx = static_cast<int>(i);
           of.l1.build_plot_data(i);
         }
-        
+
         if (is_delisted) {
           ImGui::PopStyleColor();
         }
-        
+
         if (is_selected) {
           ImGui::SetItemDefaultFocus();
         }
@@ -308,15 +308,17 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
     }
   }
 
-  // Status
+  // Integrated status line
   ImGui::SameLine();
-  if (of.l1.loaded) {
-    ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "[L1: %zu days]", of.l1.num_days);
+  if (of.l1.loaded && asset_idx < of.l1.plot_data.size()) {
+    const auto &pd = of.l1.plot_data[asset_idx];
+    ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "[L1: %zu days, %zu points]",
+                       of.l1.num_days, pd.x.size());
   }
   ImGui::SameLine();
   if (!ui.l1_anchor_date.empty()) {
     char date_buf[16];
-    FormatDate(date_buf, sizeof(date_buf), ui.l1_anchor_date);
+    FormatDateShort(date_buf, sizeof(date_buf), ui.l1_anchor_date);
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Anchor: %s", date_buf);
   }
   ImGui::SameLine();
@@ -331,12 +333,6 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 
   if (of.l1.loaded && asset_idx < of.l1.plot_data.size()) {
     const auto &pd = of.l1.plot_data[asset_idx];
-
-    // Debug: show current asset data stats
-    ImGui::Text("Asset %zu: %zu points, x_range=[%.0f, %.0f]",
-                asset_idx, pd.x.size(),
-                pd.x.empty() ? 0.0 : pd.x.front(),
-                pd.x.empty() ? 0.0 : pd.x.back());
 
     if (ImPlot::BeginPlot("##KLine", ImVec2(-1, kline_height))) {
       // Setup axis with uniform time scale (all days)
