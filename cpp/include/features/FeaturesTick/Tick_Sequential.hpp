@@ -64,8 +64,8 @@ private:
     constexpr size_t level_idx = 0;
     TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L0_TS_RANGE.start, L0_TS_RANGE.end, features, worker_id_);
 
-    // Write asset validity flag (business logic, not backend requirement)
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::asset_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
+    // Write data validity flag (event-driven sparsity marker)
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
   }
 
   // Write LOB depth snapshot (N levels bid/ask price/volume for GUI)
@@ -94,6 +94,10 @@ private:
       TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_volume_offset + i, asset_id_, bid_level ? static_cast<float>(bid_level->net_quantity) : 0.0f, worker_id_);
       TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_volume_offset + i, asset_id_, ask_level ? static_cast<float>(-ask_level->net_quantity) : 0.0f, worker_id_);
     }
+
+    // Write mid_price for GUI (OrderFlow visualization)
+    float mid = get_mid_price();
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::mid_price, asset_id_, mid, worker_id_);
   }
 
   // Check if LOB has valid data

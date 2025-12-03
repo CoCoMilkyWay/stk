@@ -158,6 +158,7 @@ set(SOURCES
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_features/services/ComputeService.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
+    ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/TaskFeatures.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp

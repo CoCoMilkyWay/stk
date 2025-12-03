@@ -2,7 +2,9 @@
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
+#include "gui/task_features/services/DataLoader.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
+#include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/affinity.hpp"
 #include "shared/SharedData.hpp"
@@ -18,10 +20,14 @@ namespace GUI::Tasks {
 struct TaskFeaturesState {
   // Services
   std::unique_ptr<Features::ComputeService> compute_service;
+  std::unique_ptr<Features::DataLoader> data_loader;
 
   // UI State
   int selected_tab = 0;
   Features::ComputeState compute_state;
+  
+  // OrderFlow tab state
+  bool orderflow_tab_was_active = false;
 
   // Terminal reference
   TaskTerminal *terminal = nullptr;
@@ -76,6 +82,9 @@ TaskHandle CreateFeaturesTask() {
       state->terminal = &data.gui.terminal;
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
+    if (!state->data_loader) {
+      state->data_loader = std::make_unique<Features::DataLoader>(data.config.feature_dir);
+    }
 
     // Handle trigger from UI
     if (state->compute_state.trigger_start) {
@@ -95,9 +104,25 @@ TaskHandle CreateFeaturesTask() {
         ImGui::Spacing();
         Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset, data.config);
         ImGui::EndTabItem();
+        
+        // Stop OrderFlow loader if was active
+        if (state->orderflow_tab_was_active) {
+          Features::StopTabOrderFlow(state->data_loader.get(), data);
+          state->orderflow_tab_was_active = false;
+        }
       }
 
-      // Future tabs can be added here (e.g., Analysis, Visualization, etc.)
+      // Tab: OrderFlow
+      if (ImGui::BeginTabItem("OrderFlow")) {
+        state->orderflow_tab_was_active = true;
+        ImGui::Spacing();
+        Features::RenderTabOrderFlow(state->data_loader.get(), data);
+        ImGui::EndTabItem();
+      } else if (state->orderflow_tab_was_active) {
+        // Tab was closed or switched away
+        Features::StopTabOrderFlow(state->data_loader.get(), data);
+        state->orderflow_tab_was_active = false;
+      }
 
       ImGui::EndTabBar();
     }
@@ -107,12 +132,15 @@ TaskHandle CreateFeaturesTask() {
 
   // Destroy
   handle.Destroy = [state]() {
+    // Note: OrderFlow loader's CoroutineHandle will auto-cancel on destruction
+    
     if (state->compute_service) {
       if (state->compute_service->is_running()) {
         state->compute_service->stop_compute();
       }
       state->compute_service.reset();
     }
+    state->data_loader.reset();
   };
 
   return handle;

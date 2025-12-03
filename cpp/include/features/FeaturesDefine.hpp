@@ -23,7 +23,6 @@
   X(cs_liquidity_ratio, 1,             CS,   LIQUIDITY,      RATIO,      ZSCORE,    "CS Liquidity Ratio",     "流动性比率截面", "(top_size/median)/z",         "top-of-book size截面z-score")                   \
   X(next_tick_ret,      1,             LB,   LABEL,          FUTURE_RET, NONE,      "Next Tick Return",       "下tick收益",     "log(mid_{t+1}/mid_t)",        "下一tick对数收益")                              \
   X(next_5tick_ret,     1,             LB,   LABEL,          FUTURE_RET, NONE,      "Next 5-Tick Return",     "未来5tick收益",  "log(mid_{t+5}/mid_t)",        "未来5tick累计对数收益")                         \
-  X(asset_valid,        1,             SH,   META,           RAW,        NONE,      "Asset Valid Flag",       "资产有效标志",   "1.0=valid, 0.0=invalid",      "标记asset是否有效")                             \
   X(universe_size,      1,             SH,   META,           UNIVERSE,   NONE,      "Universe Size",          "全域规模",       "count(valid)",                "当前有效合约数量")                              \
   X(market_mid_price,   1,             SH,   META,           BENCHMARK,  NONE,      "Market Mid Price",       "市场基准价格",   "benchmark_mid",               "基准合约mid价格")                               \
   X(_link_to_L1,        1,             META, META,           RAW,        NONE,      "Link to L1",             "L1时间索引",     "L1_time_index",               "L0→L1时间映射")                                 \
@@ -31,7 +30,9 @@
   X(bid_price,          L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Bid Prices",             "买盘价格",       "bid_price[0:N]",              "GUI:N档买盘价格")                               \
   X(ask_price,          L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Prices",             "卖盘价格",       "ask_price[0:N]",              "GUI:N档卖盘价格")                               \
   X(bid_volume,         L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Bid Volumes",            "买盘数量",       "bid_volume[0:N]",             "GUI:N档买盘数量")                               \
-  X(ask_volume,         L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Volumes",            "卖盘数量",       "ask_volume[0:N]",             "GUI:N档卖盘数量")
+  X(ask_volume,         L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Volumes",            "卖盘数量",       "ask_volume[0:N]",             "GUI:N档卖盘数量")                               \
+  X(mid_price,          1,             META, META,           RAW,        NONE,      "Mid Price",              "中间价",         "(bid1+ask1)/2",               "GUI:实时中间价")                                \
+  X(data_valid,         1,             META, META,           RAW,        NONE,      "Data Valid Flag",        "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")                            \
 
 // ============================================================================
 // LEVEL 1: Minute-level Features (聚合分钟条, 窗口: 1/5/15/60 minutes)
@@ -49,7 +50,13 @@
   X(next_1m_ret,        1, LB, LABEL,      FUTURE_RET, NONE,      "Next 1-Minute Return",        "下1分钟收益",    "log(close_{t+1}/close_t)",    "下一分钟对数收益")                                     \
   X(calmar_score,       1, LB, LABEL,      SCORE,      NONE,      "Calmar Score",                "Calmar评分",     "ret/maxDD",                   "年化收益/最大回撤")                                    \
   X(universe_size,      1, SH, META,       UNIVERSE,   NONE,      "Universe Size",               "全域规模",       "count(valid)",                "当前有效合约数量")                                     \
-  X(market_return,      1, SH, META,       BENCHMARK,  NONE,      "Market Return",               "市场收益",       "log(mkt_t/mkt_{t-1})",        "市场基准收益率")
+  X(market_return,      1, SH, META,       BENCHMARK,  NONE,      "Market Return",               "市场收益",       "log(mkt_t/mkt_{t-1})",        "市场基准收益率")                                       \
+  X(ohlc_open,          1, META, META,     RAW,        NONE,      "OHLC Open",                   "开盘价",         "open",                        "GUI:分钟开盘价")                                       \
+  X(ohlc_high,          1, META, META,     RAW,        NONE,      "OHLC High",                   "最高价",         "high",                        "GUI:分钟最高价")                                       \
+  X(ohlc_low,           1, META, META,     RAW,        NONE,      "OHLC Low",                    "最低价",         "low",                         "GUI:分钟最低价")                                       \
+  X(ohlc_close,         1, META, META,     RAW,        NONE,      "OHLC Close",                  "收盘价",         "close",                       "GUI:分钟收盘价")                                       \
+  X(ohlc_volume,        1, META, META,     RAW,        NONE,      "OHLC Volume",                 "成交量",         "vol",                         "GUI:分钟成交量")                                       \
+  X(data_valid,         1, META, META,     RAW,        NONE,      "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")
 
 // ============================================================================
 // LEVEL 2: Hour-level Features (小时级, 窗口: 1h/3h/6h/24h)
@@ -67,7 +74,8 @@
   X(next_1h_ret,         1, LB, LABEL,      FUTURE_RET, NONE,      "Next 1-Hour Return",          "下1小时收益",    "log(close_{t+1h}/close_t)",  "下一小时对数收益")                                     \
   X(sharpe_score,        1, LB, LABEL,      SCORE,      NONE,      "Sharpe Score",                "Sharpe评分",     "(μ-rf)/σ",                   "超额收益/波动率")                                      \
   X(universe_size,       1, SH, META,       UNIVERSE,   NONE,      "Universe Size",               "全域规模",       "count(valid)",               "当前有效合约数量")                                     \
-  X(market_volatility,   1, SH, META,       BENCHMARK,  NONE,      "Market Volatility",           "市场波动率",     "std(mkt_ret_24h)",           "市场24小时波动率")
+  X(market_volatility,   1, SH, META,       BENCHMARK,  NONE,      "Market Volatility",           "市场波动率",     "std(mkt_ret_24h)",           "市场24小时波动率")                                     \
+  X(data_valid,          1, META, META,     RAW,        NONE,      "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",     "事件驱动稀疏性标记")
 
 // clang-format on
 
@@ -252,6 +260,74 @@ inline constexpr size_t time_to_trading_seconds(uint8_t hour, uint8_t minute, ui
 // Convert time to trading milliseconds (0-15299999)
 inline constexpr size_t time_to_trading_milliseconds(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond) {
   return time_to_trading_seconds(hour, minute, second) * 1000 + millisecond;
+}
+
+// ============================================================================
+// INVERSE TIME CONVERSION - Index to Clock Time
+// ============================================================================
+
+// Time structure for inverse mapping
+struct ClockTime {
+  uint8_t hour = 0;
+  uint8_t minute = 0;
+  uint8_t second = 0;
+};
+
+// Convert trading seconds index (0-15299) back to clock time
+// Morning: 0-8099 → 09:15:00 - 11:29:59
+// Afternoon: 8100-15299 → 13:00:00 - 14:59:59
+inline constexpr ClockTime trading_seconds_to_clock(size_t index) {
+  ClockTime t;
+  
+  if (index < 8100) {
+    // Morning session: 09:15 + index seconds
+    size_t total_seconds = MORNING_START_MIN * 60 + index;
+    t.hour = static_cast<uint8_t>(total_seconds / 3600);
+    t.minute = static_cast<uint8_t>((total_seconds % 3600) / 60);
+    t.second = static_cast<uint8_t>(total_seconds % 60);
+  } else {
+    // Afternoon session: 13:00 + (index - 8100) seconds
+    size_t afternoon_seconds = index - 8100;
+    size_t total_seconds = AFTERNOON_START_MIN * 60 + afternoon_seconds;
+    t.hour = static_cast<uint8_t>(total_seconds / 3600);
+    t.minute = static_cast<uint8_t>((total_seconds % 3600) / 60);
+    t.second = static_cast<uint8_t>(total_seconds % 60);
+  }
+  
+  return t;
+}
+
+// Convert trading minute index (0-254) back to clock time
+// Morning: 0-134 → 09:15 - 11:29
+// Afternoon: 135-254 → 13:00 - 14:59
+inline constexpr ClockTime trading_minutes_to_clock(size_t index) {
+  ClockTime t;
+  t.second = 0;
+  
+  if (index < 135) {
+    // Morning session: 09:15 + index minutes
+    size_t total_minutes = MORNING_START_MIN + index;
+    t.hour = static_cast<uint8_t>(total_minutes / 60);
+    t.minute = static_cast<uint8_t>(total_minutes % 60);
+  } else {
+    // Afternoon session: 13:00 + (index - 135) minutes
+    size_t afternoon_minutes = index - 135;
+    size_t total_minutes = AFTERNOON_START_MIN + afternoon_minutes;
+    t.hour = static_cast<uint8_t>(total_minutes / 60);
+    t.minute = static_cast<uint8_t>(total_minutes % 60);
+  }
+  
+  return t;
+}
+
+// Format time as string "HH:MM:SS" (for display)
+inline void format_time(char* buf, size_t buf_size, const ClockTime& t) {
+  std::snprintf(buf, buf_size, "%02d:%02d:%02d", t.hour, t.minute, t.second);
+}
+
+// Format time as string "HH:MM" (for display)
+inline void format_time_hm(char* buf, size_t buf_size, const ClockTime& t) {
+  std::snprintf(buf, buf_size, "%02d:%02d", t.hour, t.minute);
 }
 
 // ============================================================================
