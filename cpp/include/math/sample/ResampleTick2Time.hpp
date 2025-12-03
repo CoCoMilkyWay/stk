@@ -24,10 +24,10 @@ public:
 
   // Trigger resampling logic
   void update() {
-    // Only process taker orders
-    if (input_.lob.order_type != L2::OrderType::TAKER) {
+    // Only process taker orders (most ticks are takers, but still worth filtering early)
+    if (input_.lob.order_type != L2::OrderType::TAKER) [[unlikely]] {
       return;
-    };
+    }
 
     const float price = input_.lob.price;
     const uint32_t volume = input_.lob.volume;
@@ -38,7 +38,7 @@ public:
     // Check if we need to emit previous bar and start new one
     const bool emit_bar = (last_bar_time_ != 0) && (current_time_seconds - last_bar_time_ >= bar_period_seconds_);
 
-    if (emit_bar) {
+    if (emit_bar) [[unlikely]] {
       output_.open.push_back(bar_open_);
       output_.high.push_back(bar_high_);
       output_.low.push_back(bar_low_);
@@ -51,14 +51,25 @@ public:
     }
 
     // Start new bar (first tick or after emit)
-    if (last_bar_time_ == 0 || emit_bar) {
+    if (last_bar_time_ == 0 || emit_bar) [[unlikely]] {
+      // For intraday continuity: open = previous close (except first bar)
+      // This ensures candles connect, gaps shown in wick only
+      if (last_bar_time_ == 0) [[unlikely]] {
+        // First bar: initialize with current price
+        bar_open_ = price;
+      } else [[likely]] {
+        // Subsequent bars: open = previous bar's close for continuity
+        bar_open_ = bar_close_;
+      }
+
       last_bar_time_ = current_time_seconds;
-      bar_open_ = bar_high_ = bar_low_ = bar_close_ = price;
+      bar_high_ = bar_low_ = bar_open_;
+      bar_close_ = bar_open_;
       bar_bid_volume_ = bar_ask_volume_ = 0;
       bar_bid_amount_ = bar_ask_amount_ = 0.0f;
     }
 
-    // Update current bar with new tick
+    // Update current bar with new tick (hot path - always executed)
     bar_close_ = price;
     bar_high_ = (price > bar_high_) ? price : bar_high_;
     bar_low_ = (price < bar_low_) ? price : bar_low_;

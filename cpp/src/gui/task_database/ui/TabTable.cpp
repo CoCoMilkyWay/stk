@@ -439,27 +439,47 @@ void RenderDataTable(
                                break;
                              }
                              case 8: { // PE
+                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
                                float a_val = a.info ? safe_stod(a.info->peTTM) : -1e9;
                                float b_val = b.info ? safe_stod(b.info->peTTM) : -1e9;
-                               result = a_val < b_val;
+                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
+                                                                          : 2;
+                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
+                                                                          : 2;
+                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
                                break;
                              }
                              case 9: { // PB
+                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
                                float a_val = a.info ? safe_stod(a.info->pbMRQ) : -1e9;
                                float b_val = b.info ? safe_stod(b.info->pbMRQ) : -1e9;
-                               result = a_val < b_val;
+                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
+                                                                          : 2;
+                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
+                                                                          : 2;
+                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
                                break;
                              }
                              case 10: { // PS
+                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
                                float a_val = a.info ? safe_stod(a.info->psTTM) : -1e9;
                                float b_val = b.info ? safe_stod(b.info->psTTM) : -1e9;
-                               result = a_val < b_val;
+                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
+                                                                          : 2;
+                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
+                                                                          : 2;
+                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
                                break;
                              }
                              case 11: { // PCF
+                               // Valuation sorting: positive (cheap to expensive) -> negative (high risk) -> invalid
                                float a_val = a.info ? safe_stod(a.info->pcfNcfTTM) : -1e9;
                                float b_val = b.info ? safe_stod(b.info->pcfNcfTTM) : -1e9;
-                               result = a_val < b_val;
+                               int a_tier = (a_val > 0) ? 0 : (a_val < 0) ? 1
+                                                                          : 2;
+                               int b_tier = (b_val > 0) ? 0 : (b_val < 0) ? 1
+                                                                          : 2;
+                               result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
                                break;
                              }
                              case 12: { // Market Cap

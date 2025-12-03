@@ -29,8 +29,10 @@ public:
     const size_t input_size = input_.open.size();
     const size_t new_bars = input_size - last_processed_index_;
 
-    if (new_bars < bar_period_factor__)
+    // Early return if not enough bars to aggregate (common case during accumulation)
+    if (new_bars < bar_period_factor__) [[likely]] {
       return;
+    }
 
     const size_t start_idx = last_processed_index_;
     const size_t end_idx = start_idx + bar_period_factor__;
