@@ -79,6 +79,11 @@ public:
     last_processed_index_ = end_idx;
   }
 
+  // Reset resampler state (called when starting a new day)
+  void reset() {
+    last_processed_index_ = 0;
+  }
+
 private:
   // Input/Output references
   const MinuteData &input_;

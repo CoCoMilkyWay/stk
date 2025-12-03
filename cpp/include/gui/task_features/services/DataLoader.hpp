@@ -1,8 +1,8 @@
 // DataLoader - Load tensor data into OrderFlow data structure
 // Design:
-//   - Sparse storage: only load valid data points
-//   - Pre-reserved vectors for performance
-//   - Even time indexing: global_idx = day_n * CAPACITY + local_idx
+//   - L1: Synchronous loading (blocking, first tab open)
+//   - L0: Coroutine for async loading (triggered by K-line anchor)
+//   - Tab switch: Blocking start/stop of coroutine
 #pragma once
 
 #include "features/backend/FeatureReader.hpp"
@@ -15,8 +15,11 @@
 #include <boost/asio/use_awaitable.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
+#include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace asio = boost::asio;
@@ -29,54 +32,86 @@ public:
       : reader_(features_dir), features_dir_(features_dir) {}
 
   // ========================================================================
-  // Loader Coroutine
+  // L1: Synchronous Loading (blocking)
   // ========================================================================
 
-  asio::awaitable<void> LoaderLoop(OrderFlow &of, size_t num_assets) {
-    // Load L1 once at startup
-    of.loader.l1_loading = true;
+  void EnsureL1Loaded(OrderFlow &of, size_t num_assets) {
+    if (of.l1.loaded)
+      return;
+
     load_all_l1(of.l1, num_assets);
-    of.loader.l1_loading = false;
 
     // Set initial anchor
     if (of.l1.loaded && !of.l1.dates.empty()) {
-      of.ui.l1_anchor_x = 0; // Day 0, minute 0
+      of.ui.l1_anchor_x = 0;
       of.ui.l1_anchor_date = of.l1.dates[0];
       of.ui.prev_l1_anchor_date = of.ui.l1_anchor_date;
-
-      of.loader.l0_request_date = of.ui.l1_anchor_date;
-      of.loader.l0_request_asset = static_cast<size_t>(of.ui.selected_asset_idx);
-      of.loader.l0_load_requested = true;
     }
+  }
 
-    // Monitor loop
-    while (true) {
+  // ========================================================================
+  // L0: Coroutine for async loading
+  // ========================================================================
+
+  asio::awaitable<void> L0LoaderLoop(OrderFlow &of) {
+    of.loader.coro_running = true;
+
+    while (!of.loader.coro_should_exit) {
+      // Check for L0 load request
       if (of.loader.l0_load_requested.exchange(false)) {
-        of.loader.l0_loading = true;
         load_l0(of.l0, of.loader.l0_request_date, of.loader.l0_request_asset, of.l1);
-        of.loader.l0_loading = false;
-
-        // Snap L0 anchor to first valid tick
         of.ui.l0_anchor_plot_idx = 0;
       }
 
+      // Yield to allow other tasks
       co_await asio::steady_timer(
           co_await asio::this_coro::executor,
           std::chrono::milliseconds(16))
           .async_wait(asio::use_awaitable);
     }
+
+    of.loader.coro_running = false;
   }
 
-  void StartLoader(CoroManager &coro_mgr, OrderFlow &of, size_t num_assets) {
-    if (of.loader.tab_active)
+  // Start L0 loader coroutine (blocking until started)
+  void StartL0Loader(CoroManager &coro_mgr, OrderFlow &of) {
+    if (of.loader.coro_running)
       return;
-    of.loader.tab_active = true;
-    of.loader.handle = coro_mgr.Spawn(LoaderLoop(of, num_assets));
+
+    of.loader.coro_should_exit = false;
+    of.loader.handle = coro_mgr.Spawn(L0LoaderLoop(of));
+
+    // Blocking wait until coroutine starts
+    while (!of.loader.coro_running) {
+      coro_mgr.Poll();
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
   }
 
-  void StopLoader(OrderFlow &of) {
+  // Stop L0 loader coroutine (blocking until stopped)
+  void StopL0Loader(CoroManager &coro_mgr, OrderFlow &of) {
+    if (!of.loader.coro_running)
+      return;
+
+    of.loader.coro_should_exit = true;
+
+    // Blocking wait until coroutine exits
+    while (of.loader.coro_running) {
+      coro_mgr.Poll();
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
     of.loader.handle.reset();
-    of.loader.tab_active = false;
+  }
+
+  // Request L0 load (non-blocking, coroutine will handle)
+  void RequestL0Load(OrderFlow &of, const std::string &date, size_t asset_idx) {
+    if (of.l0.matches(date, asset_idx))
+      return;
+
+    of.loader.l0_request_date = date;
+    of.loader.l0_request_asset = asset_idx;
+    of.loader.l0_load_requested = true;
   }
 
   // ========================================================================
@@ -102,15 +137,20 @@ public:
       cache.date_to_idx[date] = d;
       cache.days[d].resize(num_assets);
 
-      // Load only L1 data (skip L0/L2 for speed)
+      // Initialize all days with correct day_idx (even if load fails)
+      for (size_t a = 0; a < num_assets; ++a) {
+        cache.days[d][a].date = date;
+        cache.days[d][a].day_idx = d;
+      }
+
       FeatureReader::DayTensor tensor;
-      if (!reader_.load_day_level(date, 1, tensor))
+      if (!reader_.load_day_level(date, 1, tensor)) {
+        std::cerr << "[DataLoader] Failed to load L1 for date: " << date << std::endl;
         continue;
+      }
 
       for (size_t a = 0; a < num_assets && a < tensor.A; ++a) {
         auto &day = cache.days[d][a];
-        day.date = date;
-        day.day_idx = d;
         day.reserve(OrderFlowConst::L1_CAPACITY);
 
         for (size_t t = 0; t < tensor.T[1]; ++t) {
@@ -129,10 +169,22 @@ public:
       }
     }
 
-    // Build plot data for all assets
     cache.plot_data.resize(num_assets);
     for (size_t a = 0; a < num_assets; ++a) {
       cache.build_plot_data(a);
+    }
+
+    // Debug: print load stats
+    std::cerr << "[DataLoader] L1 loaded: " << dates.size() << " days, " << num_assets << " assets" << std::endl;
+    for (size_t d = 0; d < std::min(dates.size(), size_t(5)); ++d) {
+      size_t total_valid = 0;
+      for (size_t a = 0; a < num_assets; ++a) {
+        total_valid += cache.days[d][a].valid_count();
+      }
+      std::cerr << "  Day " << d << " (" << dates[d] << "): " << total_valid << " valid bars across all assets" << std::endl;
+    }
+    if (num_assets > 0) {
+      std::cerr << "  Asset 0 plot_data: " << cache.plot_data[0].x.size() << " points" << std::endl;
     }
 
     cache.loaded = true;
@@ -149,11 +201,9 @@ public:
     cache.clear();
     cache.asset_idx = asset_idx;
 
-    // Find day index from L1 cache
     auto it = l1_cache.date_to_idx.find(date);
     size_t day_idx = (it != l1_cache.date_to_idx.end()) ? it->second : 0;
 
-    // Load only L0 data (skip L1/L2 for speed)
     FeatureReader::DayTensor tensor;
     if (!reader_.load_day_level(date, 0, tensor)) {
       cache.loaded = true;

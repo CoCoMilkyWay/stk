@@ -104,22 +104,22 @@ TaskHandle CreateFeaturesTask() {
         ImGui::Spacing();
         Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset, data.config);
         ImGui::EndTabItem();
-        
-        // Stop OrderFlow loader if was active
-        if (state->orderflow_tab_was_active) {
-          Features::StopTabOrderFlow(state->data_loader.get(), data);
-          state->orderflow_tab_was_active = false;
-        }
       }
 
       // Tab: OrderFlow
-      if (ImGui::BeginTabItem("OrderFlow")) {
-        state->orderflow_tab_was_active = true;
+      bool orderflow_tab_open = ImGui::BeginTabItem("OrderFlow");
+      if (orderflow_tab_open) {
         ImGui::Spacing();
         Features::RenderTabOrderFlow(state->data_loader.get(), data);
         ImGui::EndTabItem();
-      } else if (state->orderflow_tab_was_active) {
-        // Tab was closed or switched away
+      }
+
+      // Handle tab lifecycle (blocking start/stop)
+      if (orderflow_tab_open && !state->orderflow_tab_was_active) {
+        // Tab just opened - coroutine started in RenderTabOrderFlow
+        state->orderflow_tab_was_active = true;
+      } else if (!orderflow_tab_open && state->orderflow_tab_was_active) {
+        // Tab just closed - stop coroutine (blocking)
         Features::StopTabOrderFlow(state->data_loader.get(), data);
         state->orderflow_tab_was_active = false;
       }

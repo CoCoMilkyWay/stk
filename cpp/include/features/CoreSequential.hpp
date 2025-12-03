@@ -45,6 +45,28 @@ public:
     hour_sequential_.set_date(date_str);
   }
 
+  // Reset all resampler and data buffer state (called when starting a new day)
+  void reset() {
+    tick2min_resampler_.reset();
+    min2hour_resampler_.reset();
+    minute_data_.open.clear();
+    minute_data_.high.clear();
+    minute_data_.low.clear();
+    minute_data_.close.clear();
+    minute_data_.bid_volume.clear();
+    minute_data_.ask_volume.clear();
+    minute_data_.bid_amount.clear();
+    minute_data_.ask_amount.clear();
+    hour_data_.open.clear();
+    hour_data_.high.clear();
+    hour_data_.low.clear();
+    hour_data_.close.clear();
+    hour_data_.bid_volume.clear();
+    hour_data_.ask_volume.clear();
+    hour_data_.bid_amount.clear();
+    hour_data_.ask_amount.clear();
+  }
+
   // Main entry: compute all 3 levels with cascading resampling
   void compute_and_store() noexcept {
     // LEVEL 0: Tick-level features (direct from LOB_feature_)

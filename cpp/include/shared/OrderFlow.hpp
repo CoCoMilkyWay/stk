@@ -371,28 +371,27 @@ struct L0Cache {
 };
 
 // ============================================================================
-// Loader State (for async loading)
+// Loader State (for L0 async loading via coroutine)
 // ============================================================================
 
 struct OrderFlowLoaderState {
-  std::atomic<bool> l1_loading{false};
-  std::atomic<bool> l0_loading{false};
+  // L0 request (set by UI, consumed by coroutine)
   std::atomic<bool> l0_load_requested{false};
-
   std::string l0_request_date;
   size_t l0_request_asset = 0;
 
+  // Coroutine lifecycle
   std::unique_ptr<CoroutineHandle> handle;
-  bool tab_active = false;
+  std::atomic<bool> coro_running{false};  // True while coroutine is alive
+  std::atomic<bool> coro_should_exit{false};  // Signal to exit
 
   void clear() {
-    l1_loading = false;
-    l0_loading = false;
     l0_load_requested = false;
     l0_request_date.clear();
     l0_request_asset = 0;
     handle.reset();
-    tab_active = false;
+    coro_running = false;
+    coro_should_exit = false;
   }
 };
 

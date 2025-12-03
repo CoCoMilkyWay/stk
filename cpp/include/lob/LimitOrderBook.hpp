@@ -132,6 +132,9 @@ public:
       debug_day_count_++;
     }
 
+    // Reset feature state for new day
+    core_sequential_.reset();
+
     // Reinitialize sentinel levels
     init_sentinel_levels();
   }

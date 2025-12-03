@@ -125,19 +125,26 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
   // ========================================================================
-  // Lifecycle: spawn loader coroutine on tab open
+  // Data Loading
   // ========================================================================
-  if (!of.loader.tab_active && num_assets > 0) {
-    loader->StartLoader(data.gui.Coro(), of, num_assets);
+
+  // L1: Synchronous load once on first render
+  if (num_assets > 0) {
+    loader->EnsureL1Loaded(of, num_assets);
   }
 
-  // ========================================================================
-  // Check if L0 reload needed
-  // ========================================================================
+  // Start L0 coroutine if not running
+  if (of.l1.loaded && !of.loader.coro_running) {
+    loader->StartL0Loader(data.gui.Coro(), of);
+    // Request initial L0 load
+    if (!ui.l1_anchor_date.empty()) {
+      loader->RequestL0Load(of, ui.l1_anchor_date, asset_idx);
+    }
+  }
+
+  // L0: Request load on anchor/asset change (coroutine handles it)
   if (ui.check_and_update() && !ui.l1_anchor_date.empty()) {
-    of.loader.l0_request_date = ui.l1_anchor_date;
-    of.loader.l0_request_asset = asset_idx;
-    of.loader.l0_load_requested = true;
+    loader->RequestL0Load(of, ui.l1_anchor_date, asset_idx);
   }
 
   // ========================================================================
@@ -157,24 +164,23 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
   ImGui::BeginChild("L0Chart", ImVec2(chart_width, -1), false);
 
-  if (of.loader.l0_loading) {
-    ImGui::TextDisabled("Loading L0...");
-  } else if (of.l0.loaded && !of.l0.plot_x.empty()) {
+  // Always show plot if data exists, show loading indicator as overlay
+  if (of.l0.loaded && !of.l0.plot_x.empty()) {
     if (ImPlot::BeginPlot("##L0Price", ImVec2(-1, -1))) {
       // Get current day's range for axis limits
       size_t day_idx = of.l0.days.empty() ? 0 : of.l0.days[0].day_idx;
       double x_min = static_cast<double>(day_idx * OrderFlowConst::L0_CAPACITY);
       double x_max = static_cast<double>((day_idx + 1) * OrderFlowConst::L0_CAPACITY);
-      
+
       ImPlot::SetupAxes("Time", "Price", 0, ImPlotAxisFlags_AutoFit);
       ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
-      
+
       // Setup L0 axis ticks: every 15 minutes (15 * 60 = 900 seconds)
       constexpr size_t TICK_INTERVAL = 15 * 60; // 15 minutes in seconds
       std::vector<double> tick_positions;
-      std::vector<const char*> tick_labels;
+      std::vector<const char *> tick_labels;
       std::vector<std::string> tick_label_storage;
-      
+
       for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += TICK_INTERVAL) {
         tick_positions.push_back(x_min + static_cast<double>(t));
         ClockTime ct = trading_seconds_to_clock(t);
@@ -182,12 +188,14 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
         std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
         tick_label_storage.push_back(buf);
       }
-      for (const auto& s : tick_label_storage) {
+      for (const auto &s : tick_label_storage) {
         tick_labels.push_back(s.c_str());
       }
-      
-      ImPlot::SetupAxisTicks(ImAxis_X1, tick_positions.data(), static_cast<int>(tick_positions.size()),
-                             tick_labels.data());
+
+      if (!tick_positions.empty()) {
+        ImPlot::SetupAxisTicks(ImAxis_X1, tick_positions.data(), static_cast<int>(tick_positions.size()),
+                               tick_labels.data());
+      }
 
       // Plot sparse data (only valid ticks) on uniform time axis
       ImPlot::PlotLine("Mid Price", of.l0.plot_x.data(), of.l0.plot_y.data(),
@@ -266,9 +274,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 
   // Status
   ImGui::SameLine();
-  if (of.loader.l1_loading) {
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[Loading L1...]");
-  } else if (of.l1.loaded) {
+  if (of.l1.loaded) {
     ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "[L1: %zu days]", of.l1.num_days);
   }
   ImGui::SameLine();
@@ -278,7 +284,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Anchor: %s", date_buf);
   }
   ImGui::SameLine();
-  if (of.loader.l0_loading) {
+  if (of.loader.l0_load_requested) {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[Loading L0...]");
   } else if (of.l0.loaded) {
     ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu valid]", of.l0.total_valid());
@@ -287,36 +293,45 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   // K-line chart (ALL dates for current asset)
   const float kline_height = ImGui::GetContentRegionAvail().y;
 
-  if (of.loader.l1_loading) {
-    ImGui::TextDisabled("Loading L1 data...");
-  } else if (of.l1.loaded && asset_idx < of.l1.plot_data.size()) {
+  if (of.l1.loaded && asset_idx < of.l1.plot_data.size()) {
     const auto &pd = of.l1.plot_data[asset_idx];
+
+    // Debug: show current asset data stats
+    ImGui::Text("Asset %zu: %zu points, x_range=[%.0f, %.0f]",
+                asset_idx, pd.x.size(),
+                pd.x.empty() ? 0.0 : pd.x.front(),
+                pd.x.empty() ? 0.0 : pd.x.back());
 
     if (ImPlot::BeginPlot("##KLine", ImVec2(-1, kline_height))) {
       // Setup axis with uniform time scale (all days)
       double x_min = 0;
       double x_max = static_cast<double>(of.l1.num_days * OrderFlowConst::L1_CAPACITY);
-      
-      ImPlot::SetupAxes("Date", "Price", 0, ImPlotAxisFlags_AutoFit);
-      ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Once);
-      
+      if (x_max <= x_min)
+        x_max = x_min + 1; // Guard against empty
+
+      // Lock X axis to full range (linear, time-uniform), Y auto-fits
+      ImPlot::SetupAxes("Time Index", "Price", 0, ImPlotAxisFlags_AutoFit);
+      ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
+
       // Setup K-line axis ticks: only at day starts, format YY/MM/DD
       std::vector<double> tick_positions;
-      std::vector<const char*> tick_labels;
+      std::vector<const char *> tick_labels;
       std::vector<std::string> tick_label_storage;
-      
+
       for (size_t d = 0; d < of.l1.num_days; ++d) {
         tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
         char buf[16];
         FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
         tick_label_storage.push_back(buf);
       }
-      for (const auto& s : tick_label_storage) {
+      for (const auto &s : tick_label_storage) {
         tick_labels.push_back(s.c_str());
       }
-      
-      ImPlot::SetupAxisTicks(ImAxis_X1, tick_positions.data(), static_cast<int>(tick_positions.size()),
-                             tick_labels.data());
+
+      if (!tick_positions.empty()) {
+        ImPlot::SetupAxisTicks(ImAxis_X1, tick_positions.data(), static_cast<int>(tick_positions.size()),
+                               tick_labels.data());
+      }
 
       // Plot sparse data (only valid bars) on uniform time axis
       if (!pd.x.empty()) {
@@ -363,8 +378,8 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 }
 
 void StopTabOrderFlow(DataLoader *loader, SharedData &data) {
-  if (loader) {
-    loader->StopLoader(data.orderflow);
+  if (loader && data.orderflow.loader.coro_running) {
+    loader->StopL0Loader(data.gui.Coro(), data.orderflow);
   }
 }
 

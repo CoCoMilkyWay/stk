@@ -74,6 +74,19 @@ public:
     }
   }
 
+  // Reset resampler state (called when starting a new day)
+  void reset() {
+    last_bar_time_ = 0;
+    bar_open_ = 0;
+    bar_high_ = 0;
+    bar_low_ = 0;
+    bar_close_ = 0;
+    bar_bid_volume_ = 0;
+    bar_ask_volume_ = 0;
+    bar_bid_amount_ = 0;
+    bar_ask_amount_ = 0;
+  }
+
 private:
   // Input/Output references
   const TickData &input_;
