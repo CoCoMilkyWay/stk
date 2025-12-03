@@ -3,22 +3,29 @@
 #include "shared/SharedData.hpp"
 #include "package/nlohmann/json.hpp"
 
-#include <fstream>
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 
 namespace GUI::Database {
 
 using json = nlohmann::json;
 
 void AssetLoader::load_from_config(SharedData &data) {
-  // Clear existing assets
   data.asset.items.clear();
   
-  // Build full path from config
   std::filesystem::path assets_path = std::filesystem::path(data.config.config_dir) / data.config.assets_file;
   
   if (!std::filesystem::exists(assets_path)) {
     return;
+  }
+  
+  // Load stock_info.json for names and delist dates
+  std::filesystem::path stock_info_path = std::filesystem::path(data.config.config_dir) / data.config.baostock_stock_info_file;
+  json stock_info_j;
+  if (std::filesystem::exists(stock_info_path)) {
+    std::ifstream stock_info_file(stock_info_path);
+    stock_info_file >> stock_info_j;
   }
   
   try {
@@ -45,12 +52,34 @@ void AssetLoader::load_from_config(SharedData &data) {
       
       std::string exchange = infer_exchange(code);
       
-      // Use a very wide date range - actual listing dates will come from stock_info
-      // This is just a fallback for the date_info map initialization
-      std::string start_date = "19900101";  // Before any A-share listing
-      std::string end_date = "20991231";    // Far future
+      // Build key for stock_info lookup: "exchange.code" (lowercase exchange)
+      std::string exchange_lower = exchange;
+      std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
+      std::string stock_key = exchange_lower + "." + code;
       
-      AssetItem asset(i, code, "", exchange, start_date, end_date);
+      std::string asset_name = "";
+      std::string start_date = "19900101";
+      std::string end_date = "20991231";
+      
+      // Load from stock_info if available
+      if (stock_info_j.contains(stock_key)) {
+        const auto &info = stock_info_j[stock_key];
+        asset_name = info.value("name", "");
+        
+        std::string ipo_date = info.value("ipoDate", "");
+        if (!ipo_date.empty()) {
+          ipo_date.erase(std::remove(ipo_date.begin(), ipo_date.end(), '-'), ipo_date.end());
+          start_date = ipo_date;
+        }
+        
+        std::string out_date = info.value("outDate", "");
+        if (!out_date.empty()) {
+          out_date.erase(std::remove(out_date.begin(), out_date.end(), '-'), out_date.end());
+          end_date = out_date;
+        }
+      }
+      
+      AssetItem asset(i, code, asset_name, exchange, start_date, end_date);
       data.asset.items.push_back(std::move(asset));
     }
     

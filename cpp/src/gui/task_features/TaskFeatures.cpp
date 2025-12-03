@@ -29,6 +29,9 @@ struct TaskFeaturesState {
   // OrderFlow tab state
   bool orderflow_tab_was_active = false;
 
+  // Compute status tracking (to detect completion)
+  Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
+
   // Terminal reference
   TaskTerminal *terminal = nullptr;
 };
@@ -93,6 +96,18 @@ TaskHandle CreateFeaturesTask() {
                                   ? misc::Affinity::core_count()
                                   : state->compute_state.num_workers;
       state->compute_service->start_compute(num_workers);
+    }
+
+    // Detect compute completion and mark L1 for reload
+    {
+      auto current_status = state->compute_service->get_status();
+      if (state->prev_compute_status == Features::ComputeStatus::Running &&
+          (current_status == Features::ComputeStatus::Completed || 
+           current_status == Features::ComputeStatus::Cancelled)) {
+        // Compute just finished - mark OrderFlow L1 cache for reload
+        data.orderflow.loader.l1_needs_reload = true;
+      }
+      state->prev_compute_status = current_status;
     }
 
     // Render tabs

@@ -7,6 +7,8 @@
 #include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 
+#include <algorithm>
+
 namespace GUI {
 
 // Shared business logic: Draw GUI layout (called by both OpenGL and Vulkan pipelines)
@@ -70,50 +72,91 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
 
   ImGui::End();
 
+  // Calculate heights
+  float terminal_height = data.gui.terminal_visible ? (display_h * data.gui.terminal_height_ratio) : 0.0f;
+  float panel_height = display_h - terminal_height;
+
   // Right top panel: Selected task content
   ImGui::SetNextWindowPos(ImVec2(200, 0));
-  ImGui::SetNextWindowSize(ImVec2(display_w - 200, display_h * 0.7f));
+  ImGui::SetNextWindowSize(ImVec2(display_w - 200, panel_height));
   ImGui::Begin("Panel", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
   if (selected_task >= 0 && selected_task < (int)tasks.size()) {
+    // Main content area
+    const float button_bar_height = data.gui.terminal_visible ? 0.0f : 25.0f;
+    ImGui::BeginChild("PanelContent", ImVec2(0, -button_bar_height), false);
     tasks[selected_task].DrawPanel(data);
-  }
+    ImGui::EndChild();
 
-  ImGui::End();
-
-  // Right bottom panel: Terminal
-  ImGui::SetNextWindowPos(ImVec2(200, display_h * 0.7f));
-  ImGui::SetNextWindowSize(ImVec2(display_w - 200, display_h * 0.3f));
-  ImGui::Begin("Terminal", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
-
-  // Clear button
-  if (ImGui::Button("Clear")) {
-    data.gui.terminal.Clear();
-  }
-  ImGui::SameLine();
-  bool auto_scroll = data.gui.terminal.IsAutoScroll();
-  if (ImGui::Checkbox("Auto-scroll", &auto_scroll)) {
-    data.gui.terminal.SetAutoScroll(auto_scroll);
-  }
-
-  ImGui::Separator();
-
-  // Terminal output area
-  ImGui::BeginChild("TerminalOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-
-  data.gui.terminal.ReadLines([](const std::vector<TaskTerminal::Line> &lines) {
-    for (const auto &line : lines) {
-      ImGui::TextColored(ImVec4(line.color.r, line.color.g, line.color.b, line.color.a), "%s", line.text.c_str());
+    // Show "Show Terminal" button at bottom when terminal is hidden
+    if (!data.gui.terminal_visible) {
+      ImGui::Separator();
+      if (ImGui::Button("Show Terminal", ImVec2(150, 0))) {
+        data.gui.terminal_visible = true;
+      }
     }
-  });
-
-  // Auto-scroll to bottom
-  if (data.gui.terminal.IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-    ImGui::SetScrollHereY(1.0f);
   }
 
-  ImGui::EndChild();
   ImGui::End();
+
+  // Right bottom: Terminal (only when visible)
+  if (data.gui.terminal_visible) {
+    ImGui::SetNextWindowPos(ImVec2(200, panel_height));
+    ImGui::SetNextWindowSize(ImVec2(display_w - 200, terminal_height));
+    ImGui::Begin("Terminal", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+
+    // Control buttons
+    if (ImGui::Button("Clear")) {
+      data.gui.terminal.Clear();
+    }
+    ImGui::SameLine();
+    bool auto_scroll = data.gui.terminal.IsAutoScroll();
+    if (ImGui::Checkbox("Auto-scroll", &auto_scroll)) {
+      data.gui.terminal.SetAutoScroll(auto_scroll);
+    }
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(20, 0));
+    ImGui::SameLine();
+    if (ImGui::Button("Hide")) {
+      data.gui.terminal_visible = false;
+    }
+
+    // Drag separator (static colors)
+    static const ImVec4 splitter_col = ImVec4(0.3f, 0.3f, 0.3f, 0.5f);
+    static const ImVec4 splitter_hover = ImVec4(0.4f, 0.4f, 0.4f, 0.7f);
+    static const ImVec4 splitter_active = ImVec4(0.5f, 0.5f, 0.5f, 0.9f);
+    
+    ImGui::PushStyleColor(ImGuiCol_Button, splitter_col);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, splitter_hover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, splitter_active);
+    ImGui::Button("##splitter", ImVec2(-1, 4));
+    const bool is_hovered = ImGui::IsItemHovered();
+    const bool is_active = ImGui::IsItemActive();
+    ImGui::PopStyleColor(3);
+    
+    if (is_hovered) {
+      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    }
+    if (is_active) {
+      float delta = ImGui::GetIO().MouseDelta.y;
+      data.gui.terminal_height_ratio -= delta / display_h;
+      data.gui.terminal_height_ratio = std::max(0.1f, std::min(0.5f, data.gui.terminal_height_ratio));
+    }
+
+    // Terminal output
+    ImGui::BeginChild("TerminalOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    data.gui.terminal.ReadLines([](const std::vector<TaskTerminal::Line> &lines) {
+      for (const auto &line : lines) {
+        ImGui::TextColored(ImVec4(line.color.r, line.color.g, line.color.b, line.color.a), "%s", line.text.c_str());
+      }
+    });
+    if (data.gui.terminal.IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+      ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
+  }
 }
 
 } // namespace GUI

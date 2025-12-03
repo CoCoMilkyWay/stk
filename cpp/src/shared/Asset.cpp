@@ -329,10 +329,6 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   if (!all_dates.empty()) {
     binary.min_date = all_dates.front();
     binary.max_date = all_dates.back();
-    for (auto &item : items) {
-      item.start_date = binary.min_date;
-      item.end_date = binary.max_date;
-    }
   } else {
     binary.min_date.clear();
     binary.max_date.clear();

@@ -259,16 +259,52 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   // Control row
   ImGui::Text("Asset:");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(120);
+  ImGui::SetNextItemWidth(400);
 
-  std::vector<const char *> asset_names;
-  for (const auto &a : data.asset.items) {
-    asset_names.push_back(a.asset_code.c_str());
-  }
-
-  if (!asset_names.empty()) {
-    if (ImGui::Combo("##asset", &ui.selected_asset_idx, asset_names.data(), static_cast<int>(asset_names.size()))) {
-      of.l1.build_plot_data(static_cast<size_t>(ui.selected_asset_idx));
+  // Asset combo with formatted labels: 代码-SZ/SH-汉语名字+(DL/"")
+  if (num_assets > 0) {
+    const auto &current_asset = data.asset.items[asset_idx];
+    const std::string &latest_date = data.asset.all_dates.back();
+    const bool current_delisted = current_asset.end_date < latest_date;
+    
+    char preview_buf[256];
+    std::snprintf(preview_buf, sizeof(preview_buf), "%s-%s-%s%s",
+                  current_asset.asset_code.c_str(),
+                  current_asset.exchange.c_str(),
+                  current_asset.asset_name.c_str(),
+                  current_delisted ? " (DL)" : "");
+    
+    if (ImGui::BeginCombo("##asset", preview_buf)) {
+      for (size_t i = 0; i < num_assets; ++i) {
+        const auto &asset = data.asset.items[i];
+        const bool is_delisted = asset.end_date < latest_date;
+        
+        char label[256];
+        std::snprintf(label, sizeof(label), "%s-%s-%s%s",
+                      asset.asset_code.c_str(),
+                      asset.exchange.c_str(),
+                      asset.asset_name.c_str(),
+                      is_delisted ? " (DL)" : "");
+        
+        if (is_delisted) {
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+        }
+        
+        const bool is_selected = (ui.selected_asset_idx == static_cast<int>(i));
+        if (ImGui::Selectable(label, is_selected, is_delisted ? ImGuiSelectableFlags_Disabled : 0)) {
+          ui.selected_asset_idx = static_cast<int>(i);
+          of.l1.build_plot_data(i);
+        }
+        
+        if (is_delisted) {
+          ImGui::PopStyleColor();
+        }
+        
+        if (is_selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
     }
   }
 

@@ -11,6 +11,10 @@ struct GuiState {
   // Use cases: encoding, feature calculation, heavy batch processing
   bool high_performance_mode = false;
 
+  // Terminal panel state
+  bool terminal_visible = true;
+  float terminal_height_ratio = 0.15f; // 15% of screen height
+
   void Update(float dt);
   CoroManager &Coro();
   

@@ -380,6 +380,9 @@ struct OrderFlowLoaderState {
   std::string l0_request_date;
   size_t l0_request_asset = 0;
 
+  // L1 reload flag (set after compute completes)
+  std::atomic<bool> l1_needs_reload{false};
+
   // Coroutine lifecycle
   std::unique_ptr<CoroutineHandle> handle;
   std::atomic<bool> coro_running{false};  // True while coroutine is alive
@@ -389,6 +392,7 @@ struct OrderFlowLoaderState {
     l0_load_requested = false;
     l0_request_date.clear();
     l0_request_asset = 0;
+    l1_needs_reload = false;
     handle.reset();
     coro_running = false;
     coro_should_exit = false;

@@ -36,8 +36,16 @@ public:
   // ========================================================================
 
   void EnsureL1Loaded(OrderFlow &of, size_t num_assets) {
-    if (of.l1.loaded)
+    // Check if reload is needed (e.g., after compute)
+    bool force_reload = of.loader.l1_needs_reload.exchange(false);
+    
+    if (of.l1.loaded && !force_reload)
       return;
+
+    // Clear existing data before reload
+    if (force_reload) {
+      of.l1.clear();
+    }
 
     load_all_l1(of.l1, num_assets);
 
