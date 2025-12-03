@@ -5,63 +5,71 @@
 #include <cstddef>
 #include <cstdint>
 
+// clang-format off
+
 // ============================================================================
 // LEVEL 0: Tick-level Features (瞬时微结构信号, 短窗口: 5-200 ticks)
 // ============================================================================
 // Format: X(code, width, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description)
 
-#define LEVEL_0_FIELDS(X)                                                                                                                                                                           \
-  X(tick_ret_z, 1, TS, MOMENTUM, NORMALIZED, ZSCORE, "Tick Return Z-score", "微小对数收益", "(r-μ_W)/σ_W, r=log(mid_t/mid_{t-1}), W=50", "滚动窗口标准化的tick级对数收益,中性动量/瞬时冲击")        \
-  X(tobi_osc, 1, TS, IMBALANCE, OSCILLATOR, CLIP, "TOBI Oscillator", "订单失衡震荡", "clip((tobi-mean_W)/MAD_W, -3, 3), W=50", "top-of-book买卖压力震荡器,对称性好")                                \
-  X(micro_gap_norm, 1, TS, MICROSTRUCTURE, NORMALIZED, TANH, "Micro Gap Normalized", "微观价差标准化", "tanh((micro_price-mid)/σ_W), W=50", "micro_price与mid_price的标准化偏离,有界对称")          \
-  X(spread_momentum, 1, TS, LIQUIDITY, DEVIATION, ZSCORE, "Spread Momentum", "价差动量", "Δs = s - EMA_α(s), α~20ticks", "spread的短期变动,表示流动性瞬变")                                         \
-  X(signed_volume_imb, 1, TS, VOLUME, OSCILLATOR, NONE, "Signed Volume Imbalance", "签名成交量失衡", "Σ(sign_ixsize_i)/Σ|size_i|, N ticks", "近N ticks签名成交量不对称,直接为[-1,1]")               \
-  X(cs_spread_rank, 1, CS, LIQUIDITY, RANK, RANK_NORM, "CS Spread Rank", "价差截面排名", "Φ^{-1}(percentile(spread))", "spread在universe中的截面rank→inverse normal")                               \
-  X(cs_tobi_rank, 1, CS, IMBALANCE, RANK, RANK_NORM, "CS TOBI Rank", "失衡截面排名", "Φ^{-1}(percentile(tobi))", "tobi在universe中的截面rank→inverse normal")                                       \
-  X(cs_liquidity_ratio, 1, CS, LIQUIDITY, RATIO, ZSCORE, "CS Liquidity Ratio", "流动性比率截面", "(top_size/median_H)/z-score", "当前top-of-book size相对历史中位数的截面z-score")                  \
-  X(next_tick_ret, 1, LB, LABEL, FUTURE_RET, NONE, "Next Tick Return", "下tick收益", "log(mid_{t+1}/mid_t)", "下一个tick的对数收益,作为预测目标")                                                   \
-  X(next_5tick_ret, 1, LB, LABEL, FUTURE_RET, NONE, "Next 5-Tick Return", "未来5tick收益", "log(mid_{t+5}/mid_t)", "未来5个tick的累计对数收益,中期预测目标")                                        \
-  X(asset_valid, 1, SH, META, RAW, NONE, "Asset Valid Flag", "资产有效标志", "1.0=valid, 0.0=invalid(inactive/suspended)", "TS/CS共享:标记该asset数据是否有效(停牌/无数据则为0),业务逻辑使用")      \
-  X(universe_size, 1, SH, META, UNIVERSE, NONE, "Universe Size", "全域规模", "count(valid_instruments)", "TS/CS共享:当前时刻universe中有效合约数量")                                                \
-  X(market_mid_price, 1, SH, META, BENCHMARK, NONE, "Market Mid Price", "市场基准价格", "benchmark_instrument_mid_price", "TS/CS共享:市场基准合约的mid价格")                                        \
-  X(_link_to_L1, 1, META, META, RAW, NONE, "Link to L1 Time Index", "L1时间索引", "static_cast<_Float16>(size_t_L1_index)", "Backend元数据:L0时刻对应的L1时间索引,存储为_Float16,导出时转为size_t") \
-  X(_link_to_L2, 1, META, META, RAW, NONE, "Link to L2 Time Index", "L2时间索引", "static_cast<_Float16>(size_t_L2_index)", "Backend元数据:L0时刻对应的L2时间索引,存储为_Float16,导出时转为size_t")
+#define LEVEL_0_FIELDS(X)                                                                                                                                                                                         \
+  X(tick_ret_z,         1,             TS,   MOMENTUM,       NORMALIZED, ZSCORE,    "Tick Return Z-score",    "微小对数收益",   "(r-μ)/σ, W=50",               "滚动窗口标准化的tick级对数收益")               \
+  X(tobi_osc,           1,             TS,   IMBALANCE,      OSCILLATOR, CLIP,      "TOBI Oscillator",        "订单失衡震荡",   "clip((tobi-μ)/MAD, ±3)",      "top-of-book买卖压力震荡器")                     \
+  X(micro_gap_norm,     1,             TS,   MICROSTRUCTURE, NORMALIZED, TANH,      "Micro Gap Normalized",   "微观价差标准化", "tanh((micro-mid)/σ)",         "micro与mid价格标准化偏离")                      \
+  X(spread_momentum,    1,             TS,   LIQUIDITY,      DEVIATION,  ZSCORE,    "Spread Momentum",        "价差动量",       "s - EMA(s)",                  "spread的短期变动")                              \
+  X(signed_volume_imb,  1,             TS,   VOLUME,         OSCILLATOR, NONE,      "Signed Volume Imbalance","签名成交量失衡", "Σ(sign×size)/Σ|size|",        "近N ticks签名成交量不对称")                     \
+  X(cs_spread_rank,     1,             CS,   LIQUIDITY,      RANK,       RANK_NORM, "CS Spread Rank",         "价差截面排名",   "Φ⁻¹(pctl(spread))",           "spread截面rank→inverse normal")                 \
+  X(cs_tobi_rank,       1,             CS,   IMBALANCE,      RANK,       RANK_NORM, "CS TOBI Rank",           "失衡截面排名",   "Φ⁻¹(pctl(tobi))",             "tobi截面rank→inverse normal")                   \
+  X(cs_liquidity_ratio, 1,             CS,   LIQUIDITY,      RATIO,      ZSCORE,    "CS Liquidity Ratio",     "流动性比率截面", "(top_size/median)/z",         "top-of-book size截面z-score")                   \
+  X(next_tick_ret,      1,             LB,   LABEL,          FUTURE_RET, NONE,      "Next Tick Return",       "下tick收益",     "log(mid_{t+1}/mid_t)",        "下一tick对数收益")                              \
+  X(next_5tick_ret,     1,             LB,   LABEL,          FUTURE_RET, NONE,      "Next 5-Tick Return",     "未来5tick收益",  "log(mid_{t+5}/mid_t)",        "未来5tick累计对数收益")                         \
+  X(asset_valid,        1,             SH,   META,           RAW,        NONE,      "Asset Valid Flag",       "资产有效标志",   "1.0=valid, 0.0=invalid",      "标记asset是否有效")                             \
+  X(universe_size,      1,             SH,   META,           UNIVERSE,   NONE,      "Universe Size",          "全域规模",       "count(valid)",                "当前有效合约数量")                              \
+  X(market_mid_price,   1,             SH,   META,           BENCHMARK,  NONE,      "Market Mid Price",       "市场基准价格",   "benchmark_mid",               "基准合约mid价格")                               \
+  X(_link_to_L1,        1,             META, META,           RAW,        NONE,      "Link to L1",             "L1时间索引",     "L1_time_index",               "L0→L1时间映射")                                 \
+  X(_link_to_L2,        1,             META, META,           RAW,        NONE,      "Link to L2",             "L2时间索引",     "L2_time_index",               "L0→L2时间映射")                                 \
+  X(bid_price,          L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Bid Prices",             "买盘价格",       "bid_price[0:N]",              "GUI:N档买盘价格")                               \
+  X(ask_price,          L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Prices",             "卖盘价格",       "ask_price[0:N]",              "GUI:N档卖盘价格")                               \
+  X(bid_volume,         L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Bid Volumes",            "买盘数量",       "bid_volume[0:N]",             "GUI:N档买盘数量")                               \
+  X(ask_volume,         L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Volumes",            "卖盘数量",       "ask_volume[0:N]",             "GUI:N档卖盘数量")
 
 // ============================================================================
 // LEVEL 1: Minute-level Features (聚合分钟条, 窗口: 1/5/15/60 minutes)
 // ============================================================================
 
-#define LEVEL_1_FIELDS(X)                                                                                                                                                                   \
-  X(min_ret_z, 1, TS, MOMENTUM, NORMALIZED, WINSOR, "Minute Return Z-score", "分钟收益", "(r-μ_60m)/σ_60m, r=log(close_t/close_{t-1})", "一分钟对数收益标准化,rolling 60m")                 \
-  X(rv_5m_norm, 1, TS, VOLATILITY, NORMALIZED, LOG_NORM, "Realized Vol 5m Normalized", "5分钟波动率", "log(σ_5m) rank-normalize", "5分钟实际波动率标准化,减小偏斜")                         \
-  X(vwap_gap_pct, 1, TS, PRICE, DEVIATION, ZSCORE, "VWAP Gap Percent", "VWAP偏离", "(close-vwap)/vwap rolling z-score", "close与vwap相对偏离,表示价格是否偏离当期交易价")                   \
-  X(momentum_15m, 1, TS, MOMENTUM, OSCILLATOR, ZSCORE, "Momentum 15m", "15分钟动量", "Σr_{1m}/σ_rolling, 15m累计", "15分钟累计动量标准化")                                                  \
-  X(range_squeeze, 1, TS, VOLATILITY, RATIO, CLIP, "Range Squeeze", "Range收窄", "(high-low)/(σ_30m+ε), clip[-3,3]", "range/vol,衡量盘面窄幅,收窄为正")                                     \
-  X(cs_min_return_rank, 1, CS, MOMENTUM, RANK, RANK_NORM, "CS Minute Return Rank", "分钟收益截面", "Φ^{-1}(percentile(minute_return))", "分钟收益在universe中的截面rank→inverse normal")    \
-  X(cs_min_volume_pct, 1, CS, VOLUME, RANK, RANK_NORM, "CS Minute Volume Percentile", "分钟量能百分位", "percentile(log(volume)) rank-normalize", "分钟volume在universe中的截面百分位排名") \
-  X(cs_min_spread_z, 1, CS, LIQUIDITY, NORMALIZED, ZSCORE, "CS Minute Spread Z-score", "分钟价差截面", "z-score(spread) cross-sectional", "分钟spread的截面z-score,反映相对交易成本")       \
-  X(next_1m_ret, 1, LB, LABEL, FUTURE_RET, NONE, "Next 1-Minute Return", "下1分钟收益", "log(close_{t+1}/close_t)", "下一分钟的对数收益,作为预测目标")                                      \
-  X(calmar_score, 1, LB, LABEL, SCORE, NONE, "Calmar Score", "Calmar评分", "annual_return/max_drawdown", "Calmar比率,年化收益与最大回撤之比,风险调整收益指标")                              \
-  X(universe_size, 1, SH, META, UNIVERSE, NONE, "Universe Size", "全域规模", "count(valid_instruments)", "TS/CS共享:当前时刻universe中有效合约数量")                                        \
-  X(market_return, 1, SH, META, BENCHMARK, NONE, "Market Return", "市场收益", "log(market_close_t/market_close_{t-1})", "TS/CS共享:市场基准收益率")
+#define LEVEL_1_FIELDS(X)                                                                                                                                                                                \
+  X(min_ret_z,          1, TS, MOMENTUM,   NORMALIZED, WINSOR,    "Minute Return Z-score",       "分钟收益",       "(r-μ)/σ, 60m rolling",        "分钟对数收益标准化")                                   \
+  X(rv_5m_norm,         1, TS, VOLATILITY, NORMALIZED, LOG_NORM,  "Realized Vol 5m",             "5分钟波动率",    "log(σ_5m) rank-norm",         "5分钟波动率标准化")                                    \
+  X(vwap_gap_pct,       1, TS, PRICE,      DEVIATION,  ZSCORE,    "VWAP Gap Percent",            "VWAP偏离",       "(close-vwap)/vwap z",         "价格相对VWAP偏离")                                     \
+  X(momentum_15m,       1, TS, MOMENTUM,   OSCILLATOR, ZSCORE,    "Momentum 15m",                "15分钟动量",     "Σr/σ, 15m",                   "15分钟累计动量标准化")                                 \
+  X(range_squeeze,      1, TS, VOLATILITY, RATIO,      CLIP,      "Range Squeeze",               "Range收窄",      "(H-L)/σ, clip±3",             "盘面窄幅程度")                                         \
+  X(cs_min_return_rank, 1, CS, MOMENTUM,   RANK,       RANK_NORM, "CS Minute Return Rank",       "分钟收益截面",   "Φ⁻¹(pctl(ret))",              "分钟收益截面rank")                                     \
+  X(cs_min_volume_pct,  1, CS, VOLUME,     RANK,       RANK_NORM, "CS Minute Volume Percentile", "分钟量能百分位", "pctl(log(vol)) rank",         "分钟volume截面排名")                                   \
+  X(cs_min_spread_z,    1, CS, LIQUIDITY,  NORMALIZED, ZSCORE,    "CS Minute Spread Z-score",    "分钟价差截面",   "z(spread) cross-sect",        "分钟spread截面z-score")                                \
+  X(next_1m_ret,        1, LB, LABEL,      FUTURE_RET, NONE,      "Next 1-Minute Return",        "下1分钟收益",    "log(close_{t+1}/close_t)",    "下一分钟对数收益")                                     \
+  X(calmar_score,       1, LB, LABEL,      SCORE,      NONE,      "Calmar Score",                "Calmar评分",     "ret/maxDD",                   "年化收益/最大回撤")                                    \
+  X(universe_size,      1, SH, META,       UNIVERSE,   NONE,      "Universe Size",               "全域规模",       "count(valid)",                "当前有效合约数量")                                     \
+  X(market_return,      1, SH, META,       BENCHMARK,  NONE,      "Market Return",               "市场收益",       "log(mkt_t/mkt_{t-1})",        "市场基准收益率")
 
 // ============================================================================
 // LEVEL 2: Hour-level Features (小时级, 窗口: 1h/3h/6h/24h)
 // ============================================================================
 
-#define LEVEL_2_FIELDS(X)                                                                                                                                                            \
-  X(hour_ret_12h_mom, 1, TS, MOMENTUM, NORMALIZED, ZSCORE, "Hour Return 12h Momentum", "12小时动量", "Σr_{1h}^{12}/z-score_{48h}", "12小时动量标准化,捕捉中期趋势")                  \
-  X(hour_volatility, 1, TS, VOLATILITY, NORMALIZED, LOG_NORM, "Hour Volatility 24h", "24小时波动率", "log(σ_24h) rank-normalize", "24小时realized vol,log后rank标准化减小偏斜")      \
-  X(pivot_dev, 1, TS, PRICE, DEVIATION, CLIP, "Pivot Deviation", "Pivot偏差", "(close-pivot)/price_range, clip", "收盘相对pivot point的偏差,标准化")                                 \
-  X(dominant_persist, 1, TS, IMBALANCE, OSCILLATOR, ZSCORE, "Dominant Persistence", "主导持续性", "EMA(dominant_side, α) normalized", "dominant_side的EMA标准化,表示买卖主导延续性") \
-  X(hour_overnight_gap, 1, TS, PRICE, DEVIATION, WINSOR, "Hour Overnight Gap", "隔夜跳空", "(open-prev_close)/σ_intraday, winsorize", "当小时起点与前一日收盘gap,捕捉消息型跳空")    \
-  X(cs_hour_return_beta, 1, CS, MOMENTUM, RANK, RANK_NORM, "CS Hour Return Beta", "小时收益残差", "residual(r_t ~ r_market) rank-normalize", "小时回报相对市场的回归残差,截面排名")  \
-  X(cs_hour_liq_adj_ret, 1, CS, MOMENTUM, RANK, RANK_NORM, "CS Hour Liquidity Adj Return", "流动性调整收益", "hour_ret/sqrt(volume) rank", "小时收益按流动性调整后的截面排名")       \
-  X(cs_hour_range_rank, 1, CS, VOLATILITY, RANK, RANK_NORM, "CS Hour Range Rank", "小时Range排名", "Φ^{-1}(percentile(price_range))", "price_range在universe中的截面百分位排名")     \
-  X(next_1h_ret, 1, LB, LABEL, FUTURE_RET, NONE, "Next 1-Hour Return", "下1小时收益", "log(close_{t+1h}/close_t)", "下一小时的对数收益,作为预测目标")                                \
-  X(sharpe_score, 1, LB, LABEL, SCORE, NONE, "Sharpe Score", "Sharpe评分", "(mean_return-rf)/std_return", "Sharpe比率,超额收益与波动率之比,风险调整收益指标")                        \
-  X(universe_size, 1, SH, META, UNIVERSE, NONE, "Universe Size", "全域规模", "count(valid_instruments)", "TS/CS共享:当前时刻universe中有效合约数量")                                 \
-  X(market_volatility, 1, SH, META, BENCHMARK, NONE, "Market Volatility", "市场波动率", "std(market_returns_24h)", "TS/CS共享:市场24小时波动率")
+#define LEVEL_2_FIELDS(X)                                                                                                                                                                               \
+  X(hour_ret_12h_mom,    1, TS, MOMENTUM,   NORMALIZED, ZSCORE,    "Hour Return 12h Momentum",    "12小时动量",     "Σr/z, 12h",                  "12小时动量标准化")                                     \
+  X(hour_volatility,     1, TS, VOLATILITY, NORMALIZED, LOG_NORM,  "Hour Volatility 24h",         "24小时波动率",   "log(σ_24h) rank",            "24小时波动率标准化")                                   \
+  X(pivot_dev,           1, TS, PRICE,      DEVIATION,  CLIP,      "Pivot Deviation",             "Pivot偏差",      "(close-pivot)/range",        "收盘相对pivot偏差")                                    \
+  X(dominant_persist,    1, TS, IMBALANCE,  OSCILLATOR, ZSCORE,    "Dominant Persistence",        "主导持续性",     "EMA(side) norm",             "买卖主导延续性")                                       \
+  X(hour_overnight_gap,  1, TS, PRICE,      DEVIATION,  WINSOR,    "Hour Overnight Gap",          "隔夜跳空",       "(open-prev_close)/σ",        "隔夜gap捕捉消息冲击")                                  \
+  X(cs_hour_return_beta, 1, CS, MOMENTUM,   RANK,       RANK_NORM, "CS Hour Return Beta",         "小时收益残差",   "residual(r~mkt) rank",       "相对市场回归残差排名")                                 \
+  X(cs_hour_liq_adj_ret, 1, CS, MOMENTUM,   RANK,       RANK_NORM, "CS Hour Liq Adj Return",      "流动性调整收益", "ret/√vol rank",              "流动性调整后收益排名")                                 \
+  X(cs_hour_range_rank,  1, CS, VOLATILITY, RANK,       RANK_NORM, "CS Hour Range Rank",          "小时Range排名",  "Φ⁻¹(pctl(range))",           "价格区间截面排名")                                     \
+  X(next_1h_ret,         1, LB, LABEL,      FUTURE_RET, NONE,      "Next 1-Hour Return",          "下1小时收益",    "log(close_{t+1h}/close_t)",  "下一小时对数收益")                                     \
+  X(sharpe_score,        1, LB, LABEL,      SCORE,      NONE,      "Sharpe Score",                "Sharpe评分",     "(μ-rf)/σ",                   "超额收益/波动率")                                      \
+  X(universe_size,       1, SH, META,       UNIVERSE,   NONE,      "Universe Size",               "全域规模",       "count(valid)",               "当前有效合约数量")                                     \
+  X(market_volatility,   1, SH, META,       BENCHMARK,  NONE,      "Market Volatility",           "市场波动率",     "std(mkt_ret_24h)",           "市场24小时波动率")
+
+// clang-format on
 
 // ============================================================================
 // FEATURE METADATA ENCODING SYSTEM

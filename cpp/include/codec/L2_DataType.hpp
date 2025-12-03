@@ -37,18 +37,24 @@ inline constexpr int RESAMPLE_EMA_DAYS_PERIOD = 5;     // shouldn't be too large
 // days   3   5   10  25
 // stddev 108 110 114 124
 
+// LimitOrderBook
+inline constexpr size_t LOB_DEPTH = 30;                   // Number of depth levels to maintain (one-side)
+inline constexpr uint32_t L2_MIN_TIME_INTERVAL_MS = 1000; // Minimum time interval in milliseconds for effective TOB update
+
+// Trading Sessions
 // Morning call auction (集合竞价)
 constexpr uint8_t MORNING_CALL_AUCTION_START_HOUR = 9;
 constexpr uint8_t MORNING_CALL_AUCTION_START_MINUTE = 15;
 constexpr uint8_t MORNING_CALL_AUCTION_END_MINUTE = 25;
 
 // Morning matching period (集合竞价撮合期)
-// constexpr uint8_t MORNING_MATCHING_START_MINUTE = 25;
+constexpr uint8_t MORNING_MATCHING_START_HOUR = 9;
+constexpr uint8_t MORNING_MATCHING_START_MINUTE = 25;
 constexpr uint8_t MORNING_MATCHING_END_MINUTE = 30;
 
 // Continuous auction (连续竞价-上午)
 constexpr uint8_t CONTINUOUS_TRADING_MORNING_START_HOUR = 9;
-// constexpr uint8_t CONTINUOUS_TRADING_MORNING_START_MINUTE = 30;
+constexpr uint8_t CONTINUOUS_TRADING_MORNING_START_MINUTE = 30;
 constexpr uint8_t CONTINUOUS_TRADING_MORNING_END_HOUR = 11;
 constexpr uint8_t CONTINUOUS_TRADING_MORNING_END_MINUTE = 30;
 
@@ -60,7 +66,7 @@ constexpr uint8_t CONTINUOUS_TRADING_AFTERNOON_END_MINUTE = 57;
 
 // Closing call auction (收盘集合竞价 - Shenzhen only)
 constexpr uint8_t CLOSING_CALL_AUCTION_START_HOUR = 14;
-// constexpr uint8_t CLOSING_CALL_AUCTION_START_MINUTE = 57;
+constexpr uint8_t CLOSING_CALL_AUCTION_START_MINUTE = 57;
 constexpr uint8_t CLOSING_CALL_AUCTION_END_HOUR = 15;
 constexpr uint8_t CLOSING_CALL_AUCTION_END_MINUTE = 0;
 

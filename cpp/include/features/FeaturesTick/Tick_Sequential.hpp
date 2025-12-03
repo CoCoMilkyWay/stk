@@ -37,6 +37,9 @@ public:
 
     // Compute and write tick-level TS features
     compute_ts_tick(is_valid, t);
+
+    // Write LOB depth snapshot for GUI (META features)
+    write_lob_depth(is_valid, t);
   }
 
 private:
@@ -65,19 +68,47 @@ private:
     TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::asset_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
   }
 
+  // Write LOB depth snapshot (N levels bid/ask price/volume for GUI)
+  void write_lob_depth(bool is_valid, size_t t) {
+    constexpr size_t N = L2::LOB_DEPTH;
+    const auto &depth = tick_data_.lob.depth_buffer;
+
+    // Tensor auto-cleared, skip if invalid
+    if (!is_valid || depth.size() < 2 * N)
+      return;
+
+    constexpr size_t level_idx = 0;
+    constexpr size_t bid_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::bid_price];
+    constexpr size_t ask_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::ask_price];
+    constexpr size_t bid_volume_offset = L0_FIELD_OFFSETS[L0_FieldOffset::bid_volume];
+    constexpr size_t ask_volume_offset = L0_FIELD_OFFSETS[L0_FieldOffset::ask_volume];
+
+    // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
+    // Output: bid[0]=bid1(best), ask[0]=ask1(best)
+    for (size_t i = 0; i < N; ++i) {
+      Level *bid_level = depth[N + i];
+      Level *ask_level = depth[N - 1 - i];
+
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_price_offset + i, asset_id_, bid_level ? bid_level->price * 0.01f : 0.0f, worker_id_);
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_price_offset + i, asset_id_, ask_level ? ask_level->price * 0.01f : 0.0f, worker_id_);
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_volume_offset + i, asset_id_, bid_level ? static_cast<float>(bid_level->net_quantity) : 0.0f, worker_id_);
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_volume_offset + i, asset_id_, ask_level ? static_cast<float>(-ask_level->net_quantity) : 0.0f, worker_id_);
+    }
+  }
+
   // Check if LOB has valid data
   bool check_lob_valid(const TickData &) const {
-    return tick_data_.lob.price > 0 && tick_data_.lob.depth_buffer.size() >= 2 * LOB_FEATURE_DEPTH_LEVELS;
+    return tick_data_.lob.price > 0 && tick_data_.lob.depth_buffer.size() >= 2 * L2::LOB_DEPTH;
   }
 
   // Get mid price from depth buffer
   float get_mid_price() const {
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() < 2 * LOB_FEATURE_DEPTH_LEVELS)
+    if (depth.size() < 2 * L2::LOB_DEPTH)
       return tick_data_.lob.price;
 
-    Level *best_ask = depth[LOB_FEATURE_DEPTH_LEVELS - 1]; // sell1
-    Level *best_bid = depth[LOB_FEATURE_DEPTH_LEVELS];     // buy1
+    Level *best_ask = depth[L2::LOB_DEPTH - 1]; // sell1
+    Level *best_bid = depth[L2::LOB_DEPTH];     // buy1
 
     if (best_ask && best_bid)
       return (best_ask->price + best_bid->price) * 0.005; // 0.01/2
@@ -88,11 +119,11 @@ private:
   // Get spread from depth buffer
   float get_spread() const {
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() < 2 * LOB_FEATURE_DEPTH_LEVELS)
+    if (depth.size() < 2 * L2::LOB_DEPTH)
       return 0.0;
 
-    Level *best_ask = depth[LOB_FEATURE_DEPTH_LEVELS - 1];
-    Level *best_bid = depth[LOB_FEATURE_DEPTH_LEVELS];
+    Level *best_ask = depth[L2::LOB_DEPTH - 1];
+    Level *best_bid = depth[L2::LOB_DEPTH];
 
     if (best_ask && best_bid)
       return (best_ask->price - best_bid->price) * 0.01;
@@ -103,11 +134,11 @@ private:
   // Get top-of-book imbalance (TOBI)
   float get_tobi() const {
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() < 2 * LOB_FEATURE_DEPTH_LEVELS)
+    if (depth.size() < 2 * L2::LOB_DEPTH)
       return 0.0;
 
-    Level *best_ask = depth[LOB_FEATURE_DEPTH_LEVELS - 1];
-    Level *best_bid = depth[LOB_FEATURE_DEPTH_LEVELS];
+    Level *best_ask = depth[L2::LOB_DEPTH - 1];
+    Level *best_bid = depth[L2::LOB_DEPTH];
 
     if (!best_ask || !best_bid)
       return 0.0;

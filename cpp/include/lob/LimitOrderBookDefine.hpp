@@ -42,18 +42,6 @@
 #endif
 
 //========================================================================================
-// CONFIGURATION PARAMETERS
-//========================================================================================
-
-// LOB Feature depth levels configuration
-inline constexpr size_t LOB_FEATURE_DEPTH_LEVELS = 30; // Number of depth levels to maintain (one-side)
-
-// Effective TOB filter parameters
-namespace EffectiveTOBFilter {
-constexpr uint32_t MIN_TIME_INTERVAL_MS = 1000; // Minimum time interval in milliseconds for effective TOB update
-}
-
-//========================================================================================
 // CONSTANTS AND TYPES
 //========================================================================================
 
@@ -417,6 +405,6 @@ struct LOB_Feature {
 
   // N-level depth buffer (订单+时间双驱动):
   // CBuffer: [0]:卖N, [N-1]:卖1, [N]:买1, ..., [2N-1]:买N, 价格单调下降
-  CBuffer<Level *, 2 * LOB_FEATURE_DEPTH_LEVELS> depth_buffer;
+  CBuffer<Level *, 2 * L2::LOB_DEPTH> depth_buffer;
   bool depth_updated = false; // 低频条件过滤, 表示depth_buffer已更新, 可以进行相关特征计算
 };

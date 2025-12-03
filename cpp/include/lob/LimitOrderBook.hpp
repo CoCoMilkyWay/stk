@@ -32,11 +32,6 @@ constexpr size_t DEBUG_ASSET_IDS_COUNT = sizeof(DEBUG_ASSET_IDS) / sizeof(DEBUG_
 constexpr size_t DEBUG_PRINT_DAYS = 1; // Number of days to print for matched asset IDs
 
 //========================================================================================
-// Use ExchangeType from L2 namespace (defined in L2_DataType.hpp)
-//========================================================================================
-using ExchangeType = L2::ExchangeType;
-
-//========================================================================================
 // MAIN CLASS
 //========================================================================================
 
@@ -49,7 +44,7 @@ public:
 
   explicit LimitOrderBook(size_t ORDER_SIZE,
                           GlobalFeatureStore &store,
-                          ExchangeType exchange_type = ExchangeType::SSE,
+                          L2::ExchangeType exchange_type = L2::ExchangeType::SSE,
                           size_t asset_id = 0,
                           size_t core_id = 0)
       : order_lookup_(ORDER_SIZE),      // BumpDict with pre-allocated capacity
@@ -148,15 +143,15 @@ private:
 
   // Initialize sentinel levels at price range boundaries to ensure depth buffer can always be filled
   void init_sentinel_levels() {
-    // Low price end (bid side): price 1 to LOB_FEATURE_DEPTH_LEVELS, net_quantity = +1
-    for (Price p = 1; p <= (LOB_FEATURE_DEPTH_LEVELS - 1 + 1); ++p) {
+    // Low price end (bid side): price 1 to L2::LOB_DEPTH, net_quantity = +1
+    for (Price p = 1; p <= (L2::LOB_DEPTH - 1 + 1); ++p) {
       Level *level = level_create(p);
       level->net_quantity = 1;
       visibility_mark_visible(p);
     }
 
-    // High price end (ask side): price (PRICE_RANGE_SIZE - LOB_FEATURE_DEPTH_LEVELS) to (PRICE_RANGE_SIZE - 1), net_quantity = -1
-    for (Price p = (PRICE_RANGE_SIZE - LOB_FEATURE_DEPTH_LEVELS - 1); p <= (PRICE_RANGE_SIZE - 1 - 1); ++p) {
+    // High price end (ask side): price (PRICE_RANGE_SIZE - L2::LOB_DEPTH) to (PRICE_RANGE_SIZE - 1), net_quantity = -1
+    for (Price p = (PRICE_RANGE_SIZE - L2::LOB_DEPTH - 1); p <= (PRICE_RANGE_SIZE - 1 - 1); ++p) {
       Level *level = level_create(p);
       level->net_quantity = -1;
       visibility_mark_visible(p);
@@ -225,7 +220,7 @@ private:
   bool in_continuous_trading_ = false;
 
   // Exchange type - determines matching mechanism (SSE vs SZSE)
-  ExchangeType exchange_type_ = ExchangeType::SSE;
+  L2::ExchangeType exchange_type_ = L2::ExchangeType::SSE;
 
   // Asset ID for debug logging
   size_t asset_id_ = 0;
@@ -407,11 +402,11 @@ private:
       table.fill(L2::MarketState::CLOSED);
 
       constexpr uint16_t T_0915 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_START_MINUTE;
-      constexpr uint16_t T_0925 = (L2::MORNING_CALL_AUCTION_START_HOUR << 8) | L2::MORNING_CALL_AUCTION_END_MINUTE;
-      constexpr uint16_t T_0930 = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;
+      constexpr uint16_t T_0925 = (L2::MORNING_MATCHING_START_HOUR << 8) | L2::MORNING_MATCHING_START_MINUTE;
+      constexpr uint16_t T_0930 = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_START_MINUTE;
       constexpr uint16_t T_1130 = (L2::CONTINUOUS_TRADING_MORNING_END_HOUR << 8) | L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;
       constexpr uint16_t T_1300 = (L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE;
-      constexpr uint16_t T_1457 = (L2::CLOSING_CALL_AUCTION_START_HOUR << 8) | L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;
+      constexpr uint16_t T_1457 = (L2::CLOSING_CALL_AUCTION_START_HOUR << 8) | L2::CLOSING_CALL_AUCTION_START_MINUTE;
       constexpr uint16_t T_1500 = (L2::CLOSING_CALL_AUCTION_END_HOUR << 8) | L2::CLOSING_CALL_AUCTION_END_MINUTE;
 
       for (uint16_t h = 0; h < 24; ++h) {
@@ -875,7 +870,7 @@ private:
     //====================================================================================
     // TAKER/CANCEL: May be bilateral or unilateral
     //====================================================================================
-    const bool need_bilateral = (exchange_type_ == ExchangeType::SZSE) || (exchange_type_ == ExchangeType::SSE && in_matching_period_);
+    const bool need_bilateral = (exchange_type_ == L2::ExchangeType::SZSE) || (exchange_type_ == L2::ExchangeType::SSE && in_matching_period_);
     const bool is_bilateral = is_taker_ && need_bilateral && order.bid_order_id != 0 && order.ask_order_id != 0;
 
     if (is_bilateral) {
@@ -1131,13 +1126,13 @@ private:
 
     // Calculate insertion counts
     size_t bid_idx = depth_binary_search(best_bid_);
-    size_t ask_count = static_cast<int>(LOB_FEATURE_DEPTH_LEVELS) - static_cast<int>(bid_idx);
-    size_t bid_count = static_cast<int>(bid_idx + LOB_FEATURE_DEPTH_LEVELS) - static_cast<int>(current_depth);
+    size_t ask_count = static_cast<int>(L2::LOB_DEPTH) - static_cast<int>(bid_idx);
+    size_t bid_count = static_cast<int>(bid_idx + L2::LOB_DEPTH) - static_cast<int>(current_depth);
 
-    bool need_rebuild = current_depth <= 2 || ask_count >= LOB_FEATURE_DEPTH_LEVELS || bid_count >= LOB_FEATURE_DEPTH_LEVELS;
+    bool need_rebuild = current_depth <= 2 || ask_count >= L2::LOB_DEPTH || bid_count >= L2::LOB_DEPTH;
 
-    ask_count = need_rebuild ? LOB_FEATURE_DEPTH_LEVELS : ask_count;
-    bid_count = need_rebuild ? LOB_FEATURE_DEPTH_LEVELS : bid_count;
+    ask_count = need_rebuild ? L2::LOB_DEPTH : ask_count;
+    bid_count = need_rebuild ? L2::LOB_DEPTH : bid_count;
 
     // if (should_log()) {
     //   Logger::log(std::to_string(asset_id_), "update_depth: need_rebuild=" + std::to_string(need_rebuild) + ", bid_idx=" + std::to_string(bid_idx) + ", ask_count=" + std::to_string(ask_count) + ", bid_count=" + std::to_string(bid_count));
@@ -1173,9 +1168,9 @@ private:
     }
 
     last_depth_update_tick_ = curr_tick_;
-    next_depth_update_tick_ = curr_tick_ + (EffectiveTOBFilter::MIN_TIME_INTERVAL_MS / 10);
+    next_depth_update_tick_ = curr_tick_ + (L2::L2_MIN_TIME_INTERVAL_MS / 10);
 
-    return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= LOB_FEATURE_DEPTH_LEVELS;
+    return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= L2::LOB_DEPTH;
   }
 
   //======================================================================================
@@ -1410,7 +1405,7 @@ private:
     if (!should_log())
       return;
 
-    constexpr size_t N = LOB_FEATURE_DEPTH_LEVELS;
+    constexpr size_t N = L2::LOB_DEPTH;
 
     std::ostringstream out;
     out << "\033[32m[RT] " << format_time() << "\033[0m ["
@@ -1431,7 +1426,7 @@ private:
     auto bids = collect(best_bid_, [&](Price p) { return next_bid_below(p); }, N);
 
     // Display asks (reverse)
-    for (size_t i = 0; i < LOB_FEATURE_DEPTH_LEVELS - N; ++i)
+    for (size_t i = 0; i < L2::LOB_DEPTH - N; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
     for (int i = asks.size() - 1; i >= 0; --i) {
       std::string level_str = format_level(asks[i].first, -asks[i].second);
@@ -1447,7 +1442,7 @@ private:
       std::string level_str = format_level(bids[i].first, bids[i].second);
       out << level_str << std::string(LEVEL_WIDTH > display_width(level_str) ? LEVEL_WIDTH - display_width(level_str) : 0, ' ');
     }
-    for (size_t i = bids.size(); i < LOB_FEATURE_DEPTH_LEVELS; ++i)
+    for (size_t i = bids.size(); i < L2::LOB_DEPTH; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
 
     Logger::log(std::to_string(asset_id_), out.str());
@@ -1460,7 +1455,7 @@ private:
     if (!should_log())
       return;
 
-    constexpr size_t N = LOB_FEATURE_DEPTH_LEVELS;
+    constexpr size_t N = L2::LOB_DEPTH;
 
     std::ostringstream out;
     out << "\033[34m[BUF]" << format_time() << "\033[0m ["
@@ -1468,10 +1463,10 @@ private:
         << std::setfill(' ') << "] ";
 
     // Display asks (reverse)
-    for (size_t i = 0; i < LOB_FEATURE_DEPTH_LEVELS - N; ++i)
+    for (size_t i = 0; i < L2::LOB_DEPTH - N; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
     for (int i = N - 1; i >= 0; --i) {
-      const size_t buf_idx = LOB_FEATURE_DEPTH_LEVELS - 1 - i;
+      const size_t buf_idx = L2::LOB_DEPTH - 1 - i;
       if (buf_idx < LOB_feature_.depth_buffer.size() && LOB_feature_.depth_buffer[buf_idx]) {
         Price p = LOB_feature_.depth_buffer[buf_idx]->price;
         int32_t v = LOB_feature_.depth_buffer[buf_idx]->net_quantity;
@@ -1486,7 +1481,7 @@ private:
 
     // Display bids
     for (size_t i = 0; i < N; ++i) {
-      const size_t buf_idx = LOB_FEATURE_DEPTH_LEVELS + i;
+      const size_t buf_idx = L2::LOB_DEPTH + i;
       if (buf_idx < LOB_feature_.depth_buffer.size() && LOB_feature_.depth_buffer[buf_idx]) {
         Price p = LOB_feature_.depth_buffer[buf_idx]->price;
         int32_t v = LOB_feature_.depth_buffer[buf_idx]->net_quantity;
@@ -1496,7 +1491,7 @@ private:
         out << std::setw(LEVEL_WIDTH) << " ";
       }
     }
-    for (size_t i = N; i < LOB_FEATURE_DEPTH_LEVELS; ++i)
+    for (size_t i = N; i < L2::LOB_DEPTH; ++i)
       out << std::setw(LEVEL_WIDTH) << " ";
 
     Logger::log(std::to_string(asset_id_), out.str());
