@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <vector>
 
 // Tick-level sequential feature computation
 class Tick_Sequential {
@@ -166,26 +167,28 @@ private:
       tobi_window_.pop_front();
 
     if (tobi_window_.size() < 10)
-      return static_cast<float>(tobi);
+      return tobi;
 
-    // Compute median absolute deviation (MAD)
-    std::vector<float> sorted_tobi(tobi_window_.begin(), tobi_window_.end());
-    std::sort(sorted_tobi.begin(), sorted_tobi.end());
-    float median = sorted_tobi[sorted_tobi.size() / 2];
+    // Reuse scratch buffer (no heap allocation)
+    scratch_.assign(tobi_window_.begin(), tobi_window_.end());
+    size_t mid_idx = scratch_.size() / 2;
 
-    std::vector<float> abs_dev;
-    abs_dev.reserve(tobi_window_.size());
-    for (float val : tobi_window_)
-      abs_dev.push_back(std::abs(val - median));
-    std::sort(abs_dev.begin(), abs_dev.end());
-    float mad = abs_dev[abs_dev.size() / 2];
+    // O(N) median via nth_element instead of O(N log N) sort
+    std::nth_element(scratch_.begin(), scratch_.begin() + mid_idx, scratch_.end());
+    float median = scratch_[mid_idx];
 
-    if (mad < 1e-8)
+    // Compute abs deviations in-place, reuse same buffer
+    for (float &val : scratch_)
+      val = std::abs(val - median);
+
+    // O(N) MAD via nth_element
+    std::nth_element(scratch_.begin(), scratch_.begin() + mid_idx, scratch_.end());
+    float mad = scratch_[mid_idx];
+
+    if (mad < 1e-8f)
       return 0.0f;
 
-    // Clip to [-3, 3]
-    float normalized = (tobi - median) / mad;
-    return static_cast<float>(std::clamp(normalized, -3.0f, 3.0f));
+    return std::clamp((tobi - median) / mad, -3.0f, 3.0f);
   }
 
   // Feature 3: micro_gap_norm - Micro price gap normalized (optimized incremental)
@@ -285,4 +288,7 @@ private:
   // Cached rolling statistics (avoid recomputation)
   float mid_sum_ = 0;
   float mid_sq_sum_ = 0;
+
+  // Scratch buffer for median computation (avoids heap allocation per call)
+  mutable std::vector<float> scratch_;
 };
