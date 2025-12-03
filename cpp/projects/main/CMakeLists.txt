@@ -245,6 +245,7 @@ set_source_files_properties(
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
+    ../../src/gui/task_features/ui/TabOrderFlow.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
 )
 
