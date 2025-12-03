@@ -38,7 +38,7 @@ public:
   void EnsureL1Loaded(OrderFlow &of, size_t num_assets) {
     // Check if reload is needed (e.g., after compute)
     bool force_reload = of.loader.l1_needs_reload.exchange(false);
-    
+
     if (of.l1.loaded && !force_reload)
       return;
 
@@ -130,6 +130,7 @@ public:
       return true;
 
     cache.clear();
+    cache.invalidate_plot_data(); // Force rebuild on reload
     cache.num_assets = num_assets;
 
     std::vector<std::string> dates = scan_available_dates();

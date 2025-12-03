@@ -14,6 +14,7 @@
 
 #include "imgui.h"
 #include "implot.h"
+#include "implot_internal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,6 +28,46 @@ namespace GUI::Features {
 
 static void FormatTimeHMS(char *buf, size_t size, const TimeHMS &t) {
   std::snprintf(buf, size, "%02d:%02d:%02d", t.hour, t.minute, t.second);
+}
+
+// ============================================================================
+// Candlestick Plotting Helper
+// ============================================================================
+
+static void PlotCandlestick(const char *label_id, const double *xs, const double *opens,
+                            const double *highs, const double *lows, const double *closes,
+                            int count) {
+  if (count <= 0)
+    return;
+
+  ImDrawList *draw_list = ImPlot::GetPlotDrawList();
+  double half_width = count > 1 ? (xs[1] - xs[0]) * 0.25 : 0.25;
+
+  if (ImPlot::BeginItem(label_id)) {
+    ImPlot::GetCurrentItem()->Color = IM_COL32(128, 128, 128, 255);
+
+    if (ImPlot::FitThisFrame()) {
+      for (int i = 0; i < count; ++i) {
+        ImPlot::FitPoint(ImPlotPoint(xs[i], lows[i]));
+        ImPlot::FitPoint(ImPlotPoint(xs[i], highs[i]));
+      }
+    }
+
+    for (int i = 0; i < count; ++i) {
+      double o = opens[i], h = highs[i], l = lows[i], c = closes[i];
+      ImVec2 open_pos = ImPlot::PlotToPixels(xs[i] - half_width, o);
+      ImVec2 close_pos = ImPlot::PlotToPixels(xs[i] + half_width, c);
+      ImVec2 low_pos = ImPlot::PlotToPixels(xs[i], l);
+      ImVec2 high_pos = ImPlot::PlotToPixels(xs[i], h);
+
+      ImU32 color = c >= o ? IM_COL32(0, 200, 0, 255) : IM_COL32(200, 0, 0, 255);
+
+      draw_list->AddLine(low_pos, high_pos, color);
+      draw_list->AddRectFilled(open_pos, close_pos, color);
+    }
+
+    ImPlot::EndItem();
+  }
 }
 
 static void FormatDate(char *buf, size_t size, const std::string &date) {
@@ -172,21 +213,37 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
       double x_min = static_cast<double>(day_idx * OrderFlowConst::L0_CAPACITY);
       double x_max = static_cast<double>((day_idx + 1) * OrderFlowConst::L0_CAPACITY);
 
-      ImPlot::SetupAxes("Time", "Price", 0, ImPlotAxisFlags_AutoFit);
-      ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
+      // Use cached Y range with margin
+      ImPlot::SetupAxes("Time", "Price", 0, 0);
+      ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Once);
+      ImPlot::SetupAxisLimits(ImAxis_Y1, of.l0.y_min_with_margin, of.l0.y_max_with_margin, ImPlotCond_Once);
 
-      // Setup L0 axis ticks: every 15 minutes (15 * 60 = 900 seconds)
-      constexpr size_t TICK_INTERVAL = 15 * 60; // 15 minutes in seconds
+      // Setup L0 axis ticks: every 15 minutes (static, cached)
+      static const std::vector<double> tick_offsets = []() {
+        std::vector<double> offsets;
+        constexpr size_t TICK_INTERVAL = 15 * 60; // 15 minutes in seconds
+        for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += TICK_INTERVAL) {
+          offsets.push_back(static_cast<double>(t));
+        }
+        return offsets;
+      }();
+      
+      static const std::vector<std::string> tick_label_storage = []() {
+        std::vector<std::string> labels;
+        constexpr size_t TICK_INTERVAL = 15 * 60;
+        for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += TICK_INTERVAL) {
+          ClockTime ct = trading_seconds_to_clock(t);
+          char buf[16];
+          std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
+          labels.push_back(buf);
+        }
+        return labels;
+      }();
+      
       std::vector<double> tick_positions;
       std::vector<const char *> tick_labels;
-      std::vector<std::string> tick_label_storage;
-
-      for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += TICK_INTERVAL) {
-        tick_positions.push_back(x_min + static_cast<double>(t));
-        ClockTime ct = trading_seconds_to_clock(t);
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
-        tick_label_storage.push_back(buf);
+      for (double offset : tick_offsets) {
+        tick_positions.push_back(x_min + offset);
       }
       for (const auto &s : tick_label_storage) {
         tick_labels.push_back(s.c_str());
@@ -341,23 +398,35 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
       if (x_max <= x_min)
         x_max = x_min + 1; // Guard against empty
 
-      // Lock X axis to full range (linear, time-uniform), Y auto-fits
-      ImPlot::SetupAxes("Time Index", "Price", 0, ImPlotAxisFlags_AutoFit);
-      ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
+      // Use cached Y range
+      ImPlot::SetupAxes("Time Index", "Price", 0, 0);
+      ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Once);
+      ImPlot::SetupAxisLimits(ImAxis_Y1, pd.y_min, pd.y_max, ImPlotCond_Once);
 
       // Setup K-line axis ticks: only at day starts, format YY/MM/DD
-      std::vector<double> tick_positions;
-      std::vector<const char *> tick_labels;
-      std::vector<std::string> tick_label_storage;
-
-      for (size_t d = 0; d < of.l1.num_days; ++d) {
-        tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
-        char buf[16];
-        FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
-        tick_label_storage.push_back(buf);
-      }
-      for (const auto &s : tick_label_storage) {
-        tick_labels.push_back(s.c_str());
+      // Build tick labels on-demand (dates can change, but only when L1 reloads)
+      static std::vector<double> tick_positions;
+      static std::vector<const char *> tick_labels;
+      static std::vector<std::string> tick_label_storage;
+      static size_t cached_num_days = 0;
+      
+      if (cached_num_days != of.l1.num_days) {
+        tick_positions.clear();
+        tick_label_storage.clear();
+        
+        for (size_t d = 0; d < of.l1.num_days; ++d) {
+          tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
+          char buf[16];
+          FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
+          tick_label_storage.push_back(buf);
+        }
+        
+        tick_labels.clear();
+        for (const auto &s : tick_label_storage) {
+          tick_labels.push_back(s.c_str());
+        }
+        
+        cached_num_days = of.l1.num_days;
       }
 
       if (!tick_positions.empty()) {
@@ -365,9 +434,10 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
                                tick_labels.data());
       }
 
-      // Plot sparse data (only valid bars) on uniform time axis
+      // Plot sparse data (only valid bars) on uniform time axis as candlesticks
       if (!pd.x.empty()) {
-        ImPlot::PlotLine("Close", pd.x.data(), pd.y.data(), static_cast<int>(pd.x.size()));
+        PlotCandlestick("OHLC", pd.x.data(), pd.open.data(), pd.high.data(), pd.low.data(),
+                        pd.close.data(), static_cast<int>(pd.x.size()));
 
         // Anchor line (orange, snaps to day start)
         double anchor_x = ui.l1_anchor_x;
@@ -389,8 +459,8 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
           double anchor_y = 0;
           if (it != pd.x.end()) {
             size_t idx = static_cast<size_t>(it - pd.x.begin());
-            if (idx < pd.y.size())
-              anchor_y = pd.y[idx];
+            if (idx < pd.close.size())
+              anchor_y = pd.close[idx];
           }
 
           char date_buf[16];

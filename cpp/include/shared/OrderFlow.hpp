@@ -164,9 +164,17 @@ struct L1Cache {
   // Pre-computed plot data per asset (only valid points, global X)
   struct AssetPlotData {
     std::vector<double> x;                  // Global X (day_n * L1_CAPACITY + minute_idx)
-    std::vector<double> y;                  // Close price (valid only)
+    std::vector<double> open;               // Open price (valid only)
+    std::vector<double> high;               // High price (valid only)
+    std::vector<double> low;                // Low price (valid only)
+    std::vector<double> close;              // Close price (valid only)
     std::vector<size_t> day_start_plot_idx; // Index in x/y where each day starts
     std::vector<size_t> day_start_global_x; // Global X at day start (for boundary lines)
+    
+    // Cached Y range for performance
+    double y_min = 0.0;
+    double y_max = 0.0;
+    bool built = false; // Whether plot_data has been built
   };
   std::vector<AssetPlotData> plot_data; // [asset_idx]
 
@@ -178,8 +186,16 @@ struct L1Cache {
       plot_data.resize(num_assets);
 
     auto &pd = plot_data[asset_idx];
+    
+    // Skip if already built
+    if (pd.built)
+      return;
+    
     pd.x.clear();
-    pd.y.clear();
+    pd.open.clear();
+    pd.high.clear();
+    pd.low.clear();
+    pd.close.clear();
     pd.day_start_plot_idx.clear();
     pd.day_start_global_x.clear();
 
@@ -193,8 +209,18 @@ struct L1Cache {
       // Add valid bars
       for (size_t i = 0; i < day.valid_count(); ++i) {
         pd.x.push_back(day.global_x(i));
-        pd.y.push_back(static_cast<double>(day.close[i]));
+        pd.open.push_back(static_cast<double>(day.open[i]));
+        pd.high.push_back(static_cast<double>(day.high[i]));
+        pd.low.push_back(static_cast<double>(day.low[i]));
+        pd.close.push_back(static_cast<double>(day.close[i]));
       }
+    }
+    
+    // Cache Y range
+    if (!pd.low.empty()) {
+      pd.y_min = *std::min_element(pd.low.begin(), pd.low.end());
+      pd.y_max = *std::max_element(pd.high.begin(), pd.high.end());
+      pd.built = true;
     }
   }
 
@@ -225,6 +251,13 @@ struct L1Cache {
     num_assets = 0;
     num_days = 0;
   }
+  
+  // Force rebuild of all plot data (e.g. after reload)
+  void invalidate_plot_data() {
+    for (auto &pd : plot_data) {
+      pd.built = false;
+    }
+  }
 };
 
 // ============================================================================
@@ -241,6 +274,10 @@ struct L0Cache {
   std::vector<double> plot_y;             // Mid price (valid only)
   std::vector<size_t> day_start_plot_idx; // Index in plot_x/y where each day starts
   std::vector<size_t> day_start_global_x; // Global X at day start
+  
+  // Cached Y range with margin for performance
+  double y_min_with_margin = 0.0;
+  double y_max_with_margin = 0.0;
 
   // Build plot data (call after load)
   void build_plot_data() {
@@ -257,6 +294,16 @@ struct L0Cache {
         plot_x.push_back(day.global_x(i));
         plot_y.push_back(static_cast<double>(day.mid_price[i]));
       }
+    }
+    
+    // Cache Y range with 15% margin
+    if (!plot_y.empty()) {
+      double y_min = *std::min_element(plot_y.begin(), plot_y.end());
+      double y_max = *std::max_element(plot_y.begin(), plot_y.end());
+      double y_range = y_max - y_min;
+      double margin = y_range * 0.15;
+      y_min_with_margin = y_min - margin;
+      y_max_with_margin = y_max + margin;
     }
   }
 
