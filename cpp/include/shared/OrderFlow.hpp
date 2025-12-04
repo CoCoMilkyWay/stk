@@ -6,7 +6,6 @@
 //   - X-axis: uniform time display (HH:MM for L1, HH:MM:SS for L0)
 #pragma once
 
-#include "features/FeaturesDefine.hpp"
 #include "features/backend/FeatureStoreConfig.hpp"
 #include "gui/coro/CoroManager.hpp"
 
@@ -18,15 +17,41 @@
 #include <string>
 #include <vector>
 
+// ============================================================================
+// Constants
+// ============================================================================
+
 namespace OrderFlowConst {
-// Capacity per day (from FeatureStoreConfig)
+// Capacity per day
 constexpr size_t L0_CAPACITY = MAX_ROWS_PER_LEVEL[0]; // ~15300 ticks/day
 constexpr size_t L1_CAPACITY = MAX_ROWS_PER_LEVEL[1]; // ~255 bars/day
-constexpr size_t LOB_DEPTH = 30;
+constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;           // 30 levels
+
+// Price and volume conversion
+constexpr float TICK_SIZE = 0.01f;          // Minimum price step (RMB)
+constexpr float SHARES_PER_LOT = 100.0f;    // 1 lot = 100 shares
+constexpr float PRICE_SCALE = 100.0f;       // Price stored as integer * 100
+constexpr float ROUNDING_OFFSET = 0.5f;     // For float to int conversion
+
+// Cache reserve sizes (aggressive allocation)
+constexpr size_t ESTIMATED_PRICE_LEVELS = 100;      // Unique price levels per side
+constexpr size_t ESTIMATED_RECTS_PER_LEVEL = 1000;  // Merged rects per price level
+
+// Display parameters
+constexpr float Y_MARGIN_RATIO = 0.15f;  // Y-axis margin for plots (15%)
+
+// Amount thresholds (RMB)
+constexpr float AMOUNT_MIN_VISIBLE = 1000.0f;       // 1K RMB (transparent in heatmap)
+constexpr float AMOUNT_MAX_VISIBLE = 10000000.0f;   // 10M RMB (solid in heatmap)
+constexpr float AMOUNT_FILTER_MIN = 1000.0f;        // Filter sentinel data below this
+
+// Sentinel price bounds (for filtering invalid data)
+constexpr float PRICE_MIN_VALID = 0.01f;   // Minimum valid price
+constexpr float PRICE_MAX_VALID = 650.0f;  // Maximum valid price (650 RMB)
 } // namespace OrderFlowConst
 
 // ============================================================================
-// Time Structure
+// Basic Types
 // ============================================================================
 
 struct TimeHMS {
@@ -36,505 +61,259 @@ struct TimeHMS {
 };
 
 // ============================================================================
-// L1 Day - Sparse storage for one day's minute bars
+// L1 Data Structures (Minute-level, ~255 bars/day)
 // ============================================================================
 
 struct L1Day {
   std::string date;
-  size_t day_idx = 0; // Day number in dataset (0, 1, 2, ...)
+  size_t day_idx = 0;
 
   // Sparse storage: only valid bars
-  std::vector<size_t> indices; // Original minute indices [0, L1_CAPACITY)
+  std::vector<size_t> indices;
   std::vector<float> open;
   std::vector<float> high;
   std::vector<float> low;
   std::vector<float> close;
   std::vector<float> volume;
 
+  // Query
   size_t valid_count() const { return indices.size(); }
-
-  // Reserve space for expected valid count
-  void reserve(size_t expected) {
-    indices.reserve(expected);
-    open.reserve(expected);
-    high.reserve(expected);
-    low.reserve(expected);
-    close.reserve(expected);
-    volume.reserve(expected);
-  }
-
-  // Add valid bar
-  void push(size_t idx, float o, float h, float l, float c, float v) {
-    indices.push_back(idx);
-    open.push_back(o);
-    high.push_back(h);
-    low.push_back(l);
-    close.push_back(c);
-    volume.push_back(v);
-  }
-
-  // Get global X for plotting: day_idx * L1_CAPACITY + local_idx
-  double global_x(size_t i) const {
-    return static_cast<double>(day_idx * OrderFlowConst::L1_CAPACITY + indices[i]);
-  }
-
-  void clear() {
-    date.clear();
-    day_idx = 0;
-    indices.clear();
-    open.clear();
-    high.clear();
-    low.clear();
-    close.clear();
-    volume.clear();
-  }
+  double global_x(size_t i) const;
+  
+  // Modification
+  void reserve(size_t expected);
+  void push(size_t idx, float o, float h, float l, float c, float v);
+  void clear();
 };
-
-// ============================================================================
-// L0 Day - Sparse storage for one day's ticks
-// ============================================================================
-
-struct L0Day {
-  std::string date;
-  size_t day_idx = 0;
-
-  // Sparse storage: only valid ticks
-  std::vector<size_t> indices; // Original tick indices [0, L0_CAPACITY)
-  std::vector<float> mid_price;
-  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> bid_price;
-  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> ask_price;
-  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> bid_volume; // Volume in lots (1 lot = 100 shares)
-  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> ask_volume; // Volume in lots (1 lot = 100 shares)
-
-  size_t valid_count() const { return indices.size(); }
-
-  void reserve(size_t expected) {
-    indices.reserve(expected);
-    mid_price.reserve(expected);
-    bid_price.reserve(expected);
-    ask_price.reserve(expected);
-    bid_volume.reserve(expected);
-    ask_volume.reserve(expected);
-  }
-
-  // Add valid tick
-  void push(size_t idx, float mid,
-            const std::array<float, OrderFlowConst::LOB_DEPTH> &bp,
-            const std::array<float, OrderFlowConst::LOB_DEPTH> &ap,
-            const std::array<float, OrderFlowConst::LOB_DEPTH> &bv,
-            const std::array<float, OrderFlowConst::LOB_DEPTH> &av) {
-    indices.push_back(idx);
-    mid_price.push_back(mid);
-    bid_price.push_back(bp);
-    ask_price.push_back(ap);
-    bid_volume.push_back(bv);
-    ask_volume.push_back(av);
-  }
-
-  // Get global X for plotting: day_idx * L0_CAPACITY + local_idx
-  double global_x(size_t i) const {
-    return static_cast<double>(day_idx * OrderFlowConst::L0_CAPACITY + indices[i]);
-  }
-
-  void clear() {
-    date.clear();
-    day_idx = 0;
-    indices.clear();
-    mid_price.clear();
-    bid_price.clear();
-    ask_price.clear();
-    bid_volume.clear();
-    ask_volume.clear();
-  }
-};
-
-// ============================================================================
-// L1 Cache - All dates, all assets (sparse, pre-reserved)
-// ============================================================================
 
 struct L1Cache {
   std::vector<std::string> dates;
-  std::vector<std::vector<L1Day>> days; // [date_idx][asset_idx]
+  std::vector<std::vector<L1Day>> days;  // [date_idx][asset_idx]
   std::map<std::string, size_t> date_to_idx;
 
   bool loaded = false;
   size_t num_assets = 0;
   size_t num_days = 0;
 
-  // Pre-computed plot data per asset (only valid points, global X)
+  // Pre-computed plot data per asset
   struct AssetPlotData {
-    std::vector<double> x;                  // Global X (day_n * L1_CAPACITY + minute_idx)
-    std::vector<double> open;               // Open price (valid only)
-    std::vector<double> high;               // High price (valid only)
-    std::vector<double> low;                // Low price (valid only)
-    std::vector<double> close;              // Close price (valid only)
-    std::vector<size_t> day_start_plot_idx; // Index in x/y where each day starts
-    std::vector<size_t> day_start_global_x; // Global X at day start (for boundary lines)
-    
-    // Cached Y range for performance
+    std::vector<double> x;
+    std::vector<double> open;
+    std::vector<double> high;
+    std::vector<double> low;
+    std::vector<double> close;
+    std::vector<size_t> day_start_plot_idx;
+    std::vector<size_t> day_start_global_x;
     double y_min = 0.0;
     double y_max = 0.0;
-    bool built = false; // Whether plot_data has been built
+    bool built = false;
   };
-  std::vector<AssetPlotData> plot_data; // [asset_idx]
+  std::vector<AssetPlotData> plot_data;  // [asset_idx]
 
-  // Build plot data for an asset (call after load)
-  void build_plot_data(size_t asset_idx) {
-    if (asset_idx >= num_assets)
-      return;
-    if (plot_data.size() < num_assets)
-      plot_data.resize(num_assets);
-
-    auto &pd = plot_data[asset_idx];
-    
-    // Skip if already built
-    if (pd.built)
-      return;
-    
-    pd.x.clear();
-    pd.open.clear();
-    pd.high.clear();
-    pd.low.clear();
-    pd.close.clear();
-    pd.day_start_plot_idx.clear();
-    pd.day_start_global_x.clear();
-
-    for (size_t d = 0; d < num_days; ++d) {
-      const auto &day = days[d][asset_idx];
-
-      // Record day boundary
-      pd.day_start_plot_idx.push_back(pd.x.size());
-      pd.day_start_global_x.push_back(d * OrderFlowConst::L1_CAPACITY);
-
-      // Add valid bars
-      for (size_t i = 0; i < day.valid_count(); ++i) {
-        pd.x.push_back(day.global_x(i));
-        pd.open.push_back(static_cast<double>(day.open[i]));
-        pd.high.push_back(static_cast<double>(day.high[i]));
-        pd.low.push_back(static_cast<double>(day.low[i]));
-        pd.close.push_back(static_cast<double>(day.close[i]));
-      }
-    }
-    
-    // Cache Y range
-    if (!pd.low.empty()) {
-      pd.y_min = *std::min_element(pd.low.begin(), pd.low.end());
-      pd.y_max = *std::max_element(pd.high.begin(), pd.high.end());
-      pd.built = true;
-    }
-  }
-
-  // Get day index from global X
-  size_t get_day_idx(double global_x) const {
-    return static_cast<size_t>(global_x) / OrderFlowConst::L1_CAPACITY;
-  }
-
-  // Get date string from global X
-  const std::string &get_date(double global_x) const {
-    static const std::string empty;
-    size_t d = get_day_idx(global_x);
-    return (d < dates.size()) ? dates[d] : empty;
-  }
-
-  // Snap to day start global X
-  double snap_to_day_start(double global_x) const {
-    size_t d = get_day_idx(global_x);
-    return static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
-  }
-
-  void clear() {
-    dates.clear();
-    days.clear();
-    date_to_idx.clear();
-    plot_data.clear();
-    loaded = false;
-    num_assets = 0;
-    num_days = 0;
-  }
+  // Query
+  size_t get_day_idx(double global_x) const;
+  const std::string &get_date(double global_x) const;
+  double snap_to_day_start(double global_x) const;
   
-  // Force rebuild of all plot data (e.g. after reload)
-  void invalidate_plot_data() {
-    for (auto &pd : plot_data) {
-      pd.built = false;
-    }
-  }
+  // Modification
+  void build_plot_data(size_t asset_idx);
+  void invalidate_plot_data();
+  void clear();
 };
 
 // ============================================================================
-// L0 Cache - Single day, single asset (or multi-day in future)
+// L0 Data Structures (Tick-level, ~15300 ticks/day)
 // ============================================================================
 
-// Heatmap render cache - 2-level design for performance
-// Level 1: Raw data cache (plot-space coordinates + computed amount from volume)
-// Level 2: Colored rects cache (plot-space + computed colors based on threshold)
-struct HeatmapRectCache {
-  // Level 1: Raw data (rebuild only when L0 data changes)
-  struct RawRect {
-    double x1, y1, x2, y2;  // Plot-space coordinates
-    float amount;           // Amount in RMB (computed from volume * price * 100, with sign: positive=bid, negative=ask)
-  };
-  std::vector<RawRect> raw_rects;  // Contiguous memory for cache efficiency
-  size_t cached_data_version = 0;
-  bool level1_valid = false;
+// L0 Tick - Single tick with complete LOB snapshot
+struct L0Tick {
+  size_t tick_idx;
   
-  // Level 2: Colored rects (rebuild when threshold changes)
-  struct ColoredRect {
-    double x1, y1, x2, y2;  // Plot-space coordinates
-    uint32_t color;         // RGBA color
-  };
-  std::vector<ColoredRect> colored_rects;  // Contiguous memory for render loop
+  // Validity flags
+  bool depth_valid;  // LOB depth buffer complete
+  bool data_valid;   // Event-driven data present
+  
+  // LOB depth features (requires depth_valid=true)
+  float mid_price;
+  std::array<float, OrderFlowConst::LOB_DEPTH> bid_price;
+  std::array<float, OrderFlowConst::LOB_DEPTH> ask_price;
+  std::array<float, OrderFlowConst::LOB_DEPTH> bid_volume;  // In lots (100 shares)
+  std::array<float, OrderFlowConst::LOB_DEPTH> ask_volume;  // In lots (100 shares)
+};
+
+struct L0Day {
+  std::string date;
+  size_t day_idx = 0;
+  std::vector<L0Tick> ticks;  // Sparse: only valid ticks
+
+  // Query
+  size_t valid_count() const { return ticks.size(); }
+  double global_x(size_t i) const;
+  
+  // Modification
+  void reserve(size_t expected);
+  void push(size_t idx, bool depth_valid, bool data_valid, float mid,
+            const std::array<float, OrderFlowConst::LOB_DEPTH> &bp,
+            const std::array<float, OrderFlowConst::LOB_DEPTH> &ap,
+            const std::array<float, OrderFlowConst::LOB_DEPTH> &bv,
+            const std::array<float, OrderFlowConst::LOB_DEPTH> &av);
+  void clear();
+};
+
+// ============================================================================
+// L0 Heatmap Cache (Multi-level cache for efficient rendering)
+// ============================================================================
+
+// Level 1: Merged rectangles by price level
+struct L0HeatmapMergedRect {
+  size_t tick_start;
+  size_t tick_end;
+  float price_top;
+  float price_bottom;
+  int32_t amount_rmb;  // Signed amount in RMB (rounded to integer, +bid/-ask)
+};
+
+struct L0HeatmapPriceLevel {
+  float price;
+  std::vector<L0HeatmapMergedRect> rects;
+  
+  void reserve(size_t expected);
+  void clear();
+};
+
+struct L0HeatmapMergedCache {
+  std::vector<L0HeatmapPriceLevel> levels;  // Unified: all price levels (bid and ask)
+  size_t data_version = 0;
+  bool valid = false;
+
+  void reserve_levels(size_t expected);
+  void clear();
+};
+
+// Level 2: Colored rectangles ready for rendering
+struct L0HeatmapColoredRect {
+  double x1, y1, x2, y2;
+  uint32_t color;
+};
+
+struct L0HeatmapColoredCache {
+  std::vector<L0HeatmapColoredRect> rects;
   float cached_threshold = -1.0f;
-  bool level2_valid = false;
-  
-  void clear() {
-    raw_rects.clear();
-    colored_rects.clear();
-    level1_valid = false;
-    level2_valid = false;
-    cached_data_version = 0;
-    cached_threshold = -1.0f;
-  }
-  
-  void invalidate_level2() {
-    colored_rects.clear();
-    level2_valid = false;
-  }
+  size_t cached_data_version = 0;
+  bool valid = false;
+
+  void reserve(size_t expected);
+  void clear();
 };
+
+// ============================================================================
+// L0 Cache (Main cache for L0 data and heatmap)
+// ============================================================================
 
 struct L0Cache {
-  std::vector<L0Day> days; // Support multi-day in future
+  // Raw storage (sparse)
+  std::vector<L0Day> days;
   size_t asset_idx = 0;
   bool loaded = false;
-  size_t data_version = 0;  // Increment when data changes
+  size_t data_version = 0;
 
-  // Pre-computed plot data
-  std::vector<double> plot_t;             // Global X (day_n * L0_CAPACITY + tick_idx)
-  std::vector<double> plot_mid_price;     // Mid price (valid only)
-  std::vector<double> plot_best_bid;      // Best bid price (valid only)
-  std::vector<double> plot_best_ask;      // Best ask price (valid only)
-  std::vector<size_t> day_start_plot_idx; // Index in plot_t/mid_price where each day starts
-  std::vector<size_t> day_start_global_x; // Global X at day start
-  
-  // Cached Y range with margin for performance
+  // Plot data (for line plots: mid/bid/ask)
+  std::vector<double> plot_t;
+  std::vector<double> plot_mid_price;
+  std::vector<double> plot_best_bid;
+  std::vector<double> plot_best_ask;
+  std::vector<size_t> day_start_plot_idx;
+  std::vector<size_t> day_start_global_x;
   double y_min_with_margin = 0.0;
   double y_max_with_margin = 0.0;
+
+  // Heatmap cache (multi-level)
+  L0HeatmapMergedCache heatmap_merged_cache;
+  L0HeatmapColoredCache heatmap_colored_cache;
+
+  // Scratch buffers for heatmap build (reused across ticks, avoid reallocation)
+  struct {
+    std::vector<int> price_keys;       // Current tick's price keys (fixed capacity)
+    std::vector<int32_t> amounts;      // Current tick's amounts (parallel to price_keys)
+    std::vector<int> keys_to_update;   // All keys needing update (fixed capacity)
+  } heatmap_scratch_;
+
+  // Query - Index conversion
+  size_t get_day_idx(double global_x) const;
+  size_t get_local_idx(double global_x) const;
+  size_t find_plot_idx(double global_x) const;
+  size_t snap_to_valid_plot_idx(double global_x) const;
   
-  // Heatmap render cache
-  HeatmapRectCache heatmap_cache;
-
-  // Build plot data (call after load)
-  void build_plot_data() {
-    plot_t.clear();
-    plot_mid_price.clear();
-    plot_best_bid.clear();
-    plot_best_ask.clear();
-    day_start_plot_idx.clear();
-    day_start_global_x.clear();
-
-    for (const auto &day : days) {
-      day_start_plot_idx.push_back(plot_t.size());
-      day_start_global_x.push_back(day.day_idx * OrderFlowConst::L0_CAPACITY);
-
-      for (size_t i = 0; i < day.valid_count(); ++i) {
-        plot_t.push_back(day.global_x(i));
-        plot_mid_price.push_back(static_cast<double>(day.mid_price[i]));
-        plot_best_bid.push_back(static_cast<double>(day.bid_price[i][0]));
-        plot_best_ask.push_back(static_cast<double>(day.ask_price[i][0]));
-      }
-    }
-    
-    // Cache Y range with 15% margin
-    if (!plot_mid_price.empty()) {
-      double y_min = *std::min_element(plot_mid_price.begin(), plot_mid_price.end());
-      double y_max = *std::max_element(plot_mid_price.begin(), plot_mid_price.end());
-      double y_range = y_max - y_min;
-      double margin = y_range * 0.15;
-      y_min_with_margin = y_min - margin;
-      y_max_with_margin = y_max + margin;
-    }
-    
-    // Increment data version and invalidate heatmap cache
-    ++data_version;
-    heatmap_cache.clear();
-  }
-
-  // Get day index from global X
-  size_t get_day_idx(double global_x) const {
-    return static_cast<size_t>(global_x) / OrderFlowConst::L0_CAPACITY;
-  }
-
-  // Get tick local index from global X
-  size_t get_local_idx(double global_x) const {
-    return static_cast<size_t>(global_x) % OrderFlowConst::L0_CAPACITY;
-  }
-
-  // Find sparse index for a global X (binary search in plot_t)
-  // Returns the index in plot_t/plot_mid_price, or SIZE_MAX if not found
-  size_t find_plot_idx(double global_x) const {
-    auto it = std::lower_bound(plot_t.begin(), plot_t.end(), global_x);
-    if (it == plot_t.end())
-      return plot_t.empty() ? SIZE_MAX : plot_t.size() - 1;
-    return static_cast<size_t>(it - plot_t.begin());
-  }
-
-  // Snap to next valid tick (in plot_t space)
-  size_t snap_to_valid_plot_idx(double global_x) const {
-    return find_plot_idx(global_x);
-  }
-
-  // Get LOB depth data at plot index
+  // Query - Data access
   struct DepthData {
     float mid_price = 0;
     const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_price = nullptr;
     const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_price = nullptr;
-    const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_volume = nullptr; // Volume in lots (1 lot = 100 shares)
-    const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_volume = nullptr; // Volume in lots (1 lot = 100 shares)
+    const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_volume = nullptr;
+    const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_volume = nullptr;
     size_t tick_idx = 0;
     size_t day_idx = 0;
     TimeHMS time{};
     bool valid = false;
   };
-
-  DepthData get_depth(size_t plot_idx) const {
-    DepthData d;
-    if (plot_idx >= plot_t.size())
-      return d;
-
-    // Find which day this plot_idx belongs to
-    size_t day_i = 0;
-    for (size_t i = 1; i < day_start_plot_idx.size(); ++i) {
-      if (plot_idx < day_start_plot_idx[i])
-        break;
-      day_i = i;
-    }
-
-    const auto &day = days[day_i];
-    size_t local_plot_idx = plot_idx - day_start_plot_idx[day_i];
-    if (local_plot_idx >= day.valid_count())
-      return d;
-
-    d.mid_price = day.mid_price[local_plot_idx];
-    d.bid_price = &day.bid_price[local_plot_idx];
-    d.ask_price = &day.ask_price[local_plot_idx];
-    d.bid_volume = &day.bid_volume[local_plot_idx];
-    d.ask_volume = &day.ask_volume[local_plot_idx];
-    d.tick_idx = day.indices[local_plot_idx];
-    d.day_idx = day.day_idx;
-
-    // Convert tick index to time
-    ClockTime ct = trading_seconds_to_clock(d.tick_idx);
-    d.time.hour = ct.hour;
-    d.time.minute = ct.minute;
-    d.time.second = ct.second;
-    d.valid = true;
-
-    return d;
-  }
-
-  // Get date for plot index
-  const std::string &get_date(size_t plot_idx) const {
-    static const std::string empty;
-    if (plot_idx >= plot_t.size() || days.empty())
-      return empty;
-
-    // Find which day
-    size_t day_i = 0;
-    for (size_t i = 1; i < day_start_plot_idx.size(); ++i) {
-      if (plot_idx < day_start_plot_idx[i])
-        break;
-      day_i = i;
-    }
-    return days[day_i].date;
-  }
-
-  // Check if cache matches request
-  bool matches(const std::string &date, size_t asset) const {
-    if (!loaded || days.empty())
-      return false;
-    // For single day load, check if first day matches
-    return days[0].date == date && asset_idx == asset;
-  }
-
+  DepthData get_depth(size_t plot_idx) const;
+  const std::string &get_date(size_t plot_idx) const;
+  
+  // Query - Statistics
+  struct ValidCounts {
+    size_t depth_valid = 0;
+    size_t data_valid = 0;
+  };
+  ValidCounts count_valid() const;
   size_t total_valid() const { return plot_t.size(); }
-
-  void clear() {
-    days.clear();
-    asset_idx = 0;
-    plot_t.clear();
-    plot_mid_price.clear();
-    plot_best_bid.clear();
-    plot_best_ask.clear();
-    day_start_plot_idx.clear();
-    day_start_global_x.clear();
-    loaded = false;
-    data_version = 0;
-    heatmap_cache.clear();
-  }
+  bool matches(const std::string &date, size_t asset) const;
+  
+  // Modification - Build caches
+  void build_plot_data();
+  void build_heatmap_merged_cache();
+  void build_heatmap_colored_cache(float log_threshold);
+  void clear();
 };
 
 // ============================================================================
-// Loader State (for L0 async loading via coroutine)
+// Auxiliary Structures
 // ============================================================================
 
+// Loader state for async L0 loading
 struct OrderFlowLoaderState {
-  // L0 request (set by UI, consumed by coroutine)
   std::atomic<bool> l0_load_requested{false};
   std::string l0_request_date;
   size_t l0_request_asset = 0;
 
-  // L1 reload flag (set after compute completes)
   std::atomic<bool> l1_needs_reload{false};
 
-  // Coroutine lifecycle
   std::unique_ptr<CoroutineHandle> handle;
-  std::atomic<bool> coro_running{false};  // True while coroutine is alive
-  std::atomic<bool> coro_should_exit{false};  // Signal to exit
+  std::atomic<bool> coro_running{false};
+  std::atomic<bool> coro_should_exit{false};
 
-  void clear() {
-    l0_load_requested = false;
-    l0_request_date.clear();
-    l0_request_asset = 0;
-    l1_needs_reload = false;
-    handle.reset();
-    coro_running = false;
-    coro_should_exit = false;
-  }
+  void clear();
 };
 
-// ============================================================================
-// OrderFlow UI State
-// ============================================================================
-
+// UI state tracking
 struct OrderFlowUI {
   int selected_asset_idx = 0;
 
-  // L1 anchor (global X, snaps to day start)
   double l1_anchor_x = 0;
   std::string l1_anchor_date;
 
-  // L0 anchor (plot index, snaps to valid tick)
   size_t l0_anchor_plot_idx = 0;
 
-  // Heatmap controls
   bool show_heatmap = true;
-  float log_amount_threshold = 3.0f;  // log10(amount) lower bound, range [3.0, 7.0]
-                                       // 3.0 = 1K RMB (thin), 7.0 = 10M RMB (thick)
+  float log_amount_threshold = 3.0f;  // log10(amount) [3.0, 7.0]
 
-  // Track changes
   int prev_asset_idx = -1;
   std::string prev_l1_anchor_date;
 
-  bool check_and_update() {
-    bool changed = (selected_asset_idx != prev_asset_idx ||
-                    l1_anchor_date != prev_l1_anchor_date);
-    prev_asset_idx = selected_asset_idx;
-    prev_l1_anchor_date = l1_anchor_date;
-    return changed;
-  }
+  bool check_and_update();
 };
 
 // ============================================================================
-// Main OrderFlow Data
+// Main OrderFlow Structure
 // ============================================================================
 
 struct OrderFlow {
@@ -543,10 +322,5 @@ struct OrderFlow {
   OrderFlowUI ui;
   OrderFlowLoaderState loader;
 
-  void clear() {
-    l1.clear();
-    l0.clear();
-    ui = OrderFlowUI{};
-    loader.clear();
-  }
+  void clear();
 };

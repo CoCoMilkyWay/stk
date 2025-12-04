@@ -130,6 +130,7 @@ set(SOURCES
     ../../src/shared/Config.cpp
     ../../src/shared/Asset.cpp
     ../../src/shared/GuiState.cpp
+    ../../src/shared/OrderFlow.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/file_check.cpp
     ../../src/codec/json_config.cpp

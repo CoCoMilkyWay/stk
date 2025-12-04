@@ -227,60 +227,31 @@ public:
     L0Day day;
     day.date = date;
     day.day_idx = day_idx;
+    
+    constexpr size_t N = OrderFlowConst::LOB_DEPTH;
+    
+    // Reserve full capacity for aggressive allocation
     day.reserve(OrderFlowConst::L0_CAPACITY);
 
-    constexpr size_t N = OrderFlowConst::LOB_DEPTH;
-
-    // Forward-fill strategy: ImGui heatmap requires dense data (no gaps in trading period)
-    // Two-pass approach:
-    //   1. Find first valid depth (after 集合竞价)
-    //   2. Forward-fill from first valid to end (dense in trading period)
-    //   Note: Opening gap before first valid depth is intentional (集合竞价)
-    
-    // Pass 1: Find first valid depth and load it (marks start of continuous trading)
-    size_t first_valid_t = 0;
-    float first_valid_mid = 0.0f;
-    std::array<float, N> first_valid_bp{}, first_valid_ap{}, first_valid_bv{}, first_valid_av{};
-    bool found_first_valid = false;
-    
+    // Sparse loading: only store valid ticks (depth_valid=true or data_valid=true)
+    // Line plots and heatmap will use ImPlot step mode to handle sparsity
     for (size_t t = 0; t < tensor.T[0]; ++t) {
-      float depth_valid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_depth_valid, asset_idx));
-      if (depth_valid > 0.5f) {
-        first_valid_t = t;
-        first_valid_mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
-        
-        for (size_t i = 0; i < N; ++i) {
-          first_valid_bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
-          first_valid_ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
-          first_valid_bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_volume] + i, asset_idx));
-          first_valid_av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
-        }
-        found_first_valid = true;
-        break;
-      }
-    }
-    
-    if (!found_first_valid) {
-      // No valid depth in entire day, skip
-      cache.loaded = true;
-      return true;
-    }
+      // Read validity flags
+      float depth_valid_val = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_depth_valid, asset_idx));
+      float data_valid_val = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_data_valid, asset_idx));
+      
+      bool depth_valid = (depth_valid_val > 0.5f);
+      bool data_valid = (data_valid_val > 0.5f);
+      
+      // Skip if neither valid
+      if (!depth_valid && !data_valid)
+        continue;
 
-    // Pass 2: Forward-fill from first valid to end (fully dense)
-    float last_valid_mid = first_valid_mid;
-    std::array<float, N> last_valid_bp = first_valid_bp;
-    std::array<float, N> last_valid_ap = first_valid_ap;
-    std::array<float, N> last_valid_bv = first_valid_bv;
-    std::array<float, N> last_valid_av = first_valid_av;
-
-    for (size_t t = first_valid_t; t < tensor.T[0]; ++t) {
-      float depth_valid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_depth_valid, asset_idx));
-
-      float mid;
-      std::array<float, N> bp, ap, bv, av;
-
-      // If depth is valid, load fresh data and update cache
-      if (depth_valid > 0.5f) {
+      // Load depth features (only if depth_valid)
+      float mid = 0.0f;
+      std::array<float, N> bp{}, ap{}, bv{}, av{};
+      
+      if (depth_valid) {
         mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
         
         for (size_t i = 0; i < N; ++i) {
@@ -290,28 +261,21 @@ public:
           av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
         }
 
-        // Update last valid cache
-        last_valid_mid = mid;
-        last_valid_bp = bp;
-        last_valid_ap = ap;
-        last_valid_bv = bv;
-        last_valid_av = av;
-      } else {
-        // Depth not valid: forward-fill from last valid depth
-        mid = last_valid_mid;
-        bp = last_valid_bp;
-        ap = last_valid_ap;
-        bv = last_valid_bv;
-        av = last_valid_av;
+        // Filter sentinel data
+        if (mid <= 0 || 
+            bp[0] < OrderFlowConst::PRICE_MIN_VALID || bp[0] > OrderFlowConst::PRICE_MAX_VALID ||
+            ap[0] < OrderFlowConst::PRICE_MIN_VALID || ap[0] > OrderFlowConst::PRICE_MAX_VALID) {
+          depth_valid = false;  // Mark as invalid if sentinel detected
+        }
       }
 
-      // Push with continuous index (t - first_valid_t gives 0, 1, 2, ...)
-      // But we still want original global positioning, so use t
-      day.push(t, mid, bp, ap, bv, av);
+      // Push sparse tick with validity flags
+      day.push(t, depth_valid, data_valid, mid, bp, ap, bv, av);
     }
 
     cache.days.push_back(std::move(day));
     cache.build_plot_data();
+    cache.build_heatmap_merged_cache();  // Build Level 1 heatmap cache
     cache.loaded = true;
     return true;
   }
