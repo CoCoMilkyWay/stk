@@ -136,7 +136,8 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
   for (int i = 9; i >= 0; --i) {
     float price = (*depth.ask_price)[i];
-    float amount = (*depth.ask_amount)[i];  // Keep sign
+    float volume = (*depth.ask_volume)[i];  // Volume in lots (1 lot = 100 shares), already negative for ask
+    float amount = volume * price * 100.0f; // amount (RMB) = volume (lots) * price (RMB/share) * 100 (shares/lot)
     
     if (price <= 0) continue;  // Skip invalid levels
     
@@ -167,7 +168,8 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   // Bid side (green) - 10 levels, from top (bid1) to bottom (bid10)
   for (int i = 0; i < 10; ++i) {
     float price = (*depth.bid_price)[i];
-    float amount = (*depth.bid_amount)[i];  // Keep sign
+    float volume = (*depth.bid_volume)[i];  // Volume in lots (1 lot = 100 shares)
+    float amount = volume * price * 100.0f; // amount (RMB) = volume (lots) * price (RMB/share) * 100 (shares/lot)
     
     if (price <= 0) continue;  // Skip invalid levels
     
@@ -201,25 +203,26 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
 // ============================================================================
 
 // Helper: Map log10(amount) to color intensity [0, 1]
-// Amount range: 1000 RMB (log10=3) to 10M RMB (log10=7)
-static float MapAmountToIntensity(float amount) {
+// Amount range: threshold to 10M RMB (log10=7)
+// Below threshold: transparent (0), at 10M: full intensity (1)
+static float MapAmountToIntensity(float amount, float log_threshold) {
   float abs_amount = std::abs(amount);
-  if (abs_amount < 1000.0f) return 0.0f;  // Below 1000 RMB threshold
+  if (abs_amount < std::pow(10.0f, log_threshold)) return 0.0f;  // Below threshold
   
   float log_amount = std::log10(abs_amount);
-  constexpr float log_min = 3.0f;   // log10(1000) = 3
-  constexpr float log_max = 7.0f;   // log10(10M) = 7
+  constexpr float log_max = 7.0f;  // log10(10M) = 7
   
-  // Map [3, 7] to [0, 1]
-  float normalized = (log_amount - log_min) / (log_max - log_min);
+  // Map [threshold, 7] to [0, 1]
+  float normalized = (log_amount - log_threshold) / (log_max - log_threshold);
   return std::min(1.0f, std::max(0.0f, normalized));
 }
 
-// Helper: Convert amount to color based on sign (positive=bid/green, negative=ask/red) and magnitude
-static ImU32 AmountToColor(float amount) {
-  if (std::abs(amount) < 1000.0f) return IM_COL32(0, 0, 0, 0);  // Transparent if below threshold
+// Helper: Convert amount to color based on sign and intensity
+// Positive amount (bid) = green, Negative amount (ask) = red
+static ImU32 AmountToColor(float amount, float log_threshold) {
+  float intensity = MapAmountToIntensity(amount, log_threshold);
+  if (intensity <= 0.0f) return IM_COL32(0, 0, 0, 0);  // Transparent
   
-  float intensity = MapAmountToIntensity(amount);
   uint8_t alpha = static_cast<uint8_t>(intensity * 200 + 55);  // [55, 255]
   
   if (amount > 0) {
@@ -289,22 +292,24 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
                              static_cast<int>(tick_positions.size()), tick_labels.data());
     }
 
-    // Render heatmap if enabled
+    // Render heatmap if enabled (2-level cache design)
     if (ui.show_heatmap && !of.l0.days.empty()) {
       auto &cache = of.l0.heatmap_cache;
       
-      // Check if cache needs rebuild
-      bool need_rebuild = !cache.valid || 
-                          cache.cached_data_version != of.l0.data_version;
+      // ========================================================================
+      // LEVEL 1: Raw data cache (rebuild only when L0 data changes)
+      // ========================================================================
+      bool need_rebuild_level1 = !cache.level1_valid || 
+                                  cache.cached_data_version != of.l0.data_version;
       
-      if (need_rebuild) {
-        cache.rects.clear();
-        cache.rects.reserve(of.l0.plot_t.size() * 20);  // Estimate ~20 visible levels per tick
+      if (need_rebuild_level1) {
+        cache.raw_rects.clear();
+        cache.raw_rects.reserve(of.l0.plot_t.size() * 20);  // Estimate ~20 visible levels per tick
         
-        // Fixed level height in price space (relative to mid price, ~0.05% tick size)
-        const double fixed_level_height_ratio = 0.0005;
+        // Fixed level height: 0.01 RMB (minimum tick size in Chinese market)
+        constexpr double TICK_SIZE = 0.01;
         
-        // Build rect cache
+        // Build raw rect cache (no color computation)
         for (size_t plot_idx = 0; plot_idx < of.l0.plot_t.size(); ++plot_idx) {
           auto depth = of.l0.get_depth(plot_idx);
           if (!depth.valid) continue;
@@ -319,25 +324,20 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
             x_half_width = std::min(dx_prev, dx_next) * 0.5;
           }
           
-          // Fixed height calculation based on mid price
-          double mid_price = depth.mid_price;
-          double level_height = mid_price * fixed_level_height_ratio;
-          
           // Process bid levels (positive amount, below mid)
           for (int level = 0; level < 30; ++level) {
             if ((*depth.bid_price)[level] <= 0) continue;
             
             float price = (*depth.bid_price)[level];
-            float amount = (*depth.bid_amount)[level];  // Keep sign
+            float volume = (*depth.bid_volume)[level];  // Volume in lots (1 lot = 100 shares)
+            float amount = volume * price * 100.0f; // amount (RMB) = volume (lots) * price (RMB/share) * 100 (shares/lot)
             
-            ImU32 color = AmountToColor(amount);
-            if (color != IM_COL32(0, 0, 0, 0)) {
-              cache.rects.push_back({
-                x - x_half_width, price, 
-                x + x_half_width, price - level_height, 
-                color
-              });
-            }
+            // Rect spans from price to (price - TICK_SIZE) with no gap
+            cache.raw_rects.push_back({
+              x - x_half_width, price, 
+              x + x_half_width, price - TICK_SIZE, 
+              amount
+            });
           }
           
           // Process ask levels (negative amount, above mid)
@@ -345,28 +345,54 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
             if ((*depth.ask_price)[level] <= 0) continue;
             
             float price = (*depth.ask_price)[level];
-            float amount = (*depth.ask_amount)[level];  // Keep sign (negative)
+            float volume = (*depth.ask_volume)[level];  // Volume in lots (1 lot = 100 shares), already negative for ask
+            float amount = volume * price * 100.0f; // amount (RMB) = volume (lots) * price (RMB/share) * 100 (shares/lot)
             
-            ImU32 color = AmountToColor(amount);
-            if (color != IM_COL32(0, 0, 0, 0)) {
-              cache.rects.push_back({
-                x - x_half_width, price,
-                x + x_half_width, price + level_height,
-                color
-              });
-            }
+            // Rect spans from price to (price + TICK_SIZE) with no gap
+            cache.raw_rects.push_back({
+              x - x_half_width, price,
+              x + x_half_width, price + TICK_SIZE,
+              amount
+            });
           }
         }
         
         cache.cached_data_version = of.l0.data_version;
-        cache.valid = true;
+        cache.level1_valid = true;
+        cache.invalidate_level2();  // Invalidate level 2 when level 1 changes
       }
       
-      // Render cached rects (convert plot-space to pixels on-the-fly)
+      // ========================================================================
+      // LEVEL 2: Colored rects cache (rebuild when threshold changes)
+      // ========================================================================
+      bool need_rebuild_level2 = !cache.level2_valid || 
+                                  cache.cached_threshold != ui.log_amount_threshold;
+      
+      if (need_rebuild_level2) {
+        cache.colored_rects.clear();
+        cache.colored_rects.reserve(cache.raw_rects.size());
+        
+        // Compute colors from raw data based on current threshold
+        for (const auto &raw : cache.raw_rects) {
+          ImU32 color = AmountToColor(raw.amount, ui.log_amount_threshold);
+          if (color != IM_COL32(0, 0, 0, 0)) {  // Skip transparent
+            cache.colored_rects.push_back({
+              raw.x1, raw.y1, raw.x2, raw.y2, color
+            });
+          }
+        }
+        
+        cache.cached_threshold = ui.log_amount_threshold;
+        cache.level2_valid = true;
+      }
+      
+      // ========================================================================
+      // RENDER: Use level 2 cache (static, no CPU work per frame)
+      // ========================================================================
       ImPlot::PushPlotClipRect();
       ImDrawList* draw_list = ImPlot::GetPlotDrawList();
       
-      for (const auto &rect : cache.rects) {
+      for (const auto &rect : cache.colored_rects) {
         ImVec2 p_min = ImPlot::PlotToPixels(rect.x1, rect.y1);
         ImVec2 p_max = ImPlot::PlotToPixels(rect.x2, rect.y2);
         draw_list->AddRectFilled(p_min, p_max, rect.color);
@@ -375,11 +401,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
       ImPlot::PopPlotClipRect();
     }
 
-    // Draw mid price line on top
-    ImPlot::PlotLine("Mid Price", of.l0.plot_t.data(), of.l0.plot_mid_price.data(),
-                     static_cast<int>(of.l0.plot_t.size()));
-    
-    // Draw best bid and ask lines
+    // Draw best bid and ask lines with fill between
     ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.3f, 0.8f, 0.3f, 0.7f));
     ImPlot::PlotLine("Best Bid", of.l0.plot_t.data(), of.l0.plot_best_bid.data(),
                      static_cast<int>(of.l0.plot_t.size()));
@@ -387,6 +409,18 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     
     ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.8f, 0.3f, 0.3f, 0.7f));
     ImPlot::PlotLine("Best Ask", of.l0.plot_t.data(), of.l0.plot_best_ask.data(),
+                     static_cast<int>(of.l0.plot_t.size()));
+    ImPlot::PopStyleColor();
+    
+    // Fill between best bid and best ask with solid yellow
+    ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(1.0f, 1.0f, 0.0f, 0.6f));
+    ImPlot::PlotShaded("Spread", of.l0.plot_t.data(), of.l0.plot_best_bid.data(), 
+                       of.l0.plot_best_ask.data(), static_cast<int>(of.l0.plot_t.size()));
+    ImPlot::PopStyleColor();
+    
+    // Draw mid price line on top
+    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
+    ImPlot::PlotLine("Mid Price", of.l0.plot_t.data(), of.l0.plot_mid_price.data(),
                      static_cast<int>(of.l0.plot_t.size()));
     ImPlot::PopStyleColor();
 
@@ -593,7 +627,31 @@ static void RenderStatusBar(const OrderFlow &of, size_t asset_idx) {
 
 static void RenderHeatmapControls(OrderFlow &of) {
   auto &ui = of.ui;
+  
   ImGui::Checkbox("Heatmap", &ui.show_heatmap);
+  
+  if (ui.show_heatmap) {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    ImGui::SliderFloat("Threshold", &ui.log_amount_threshold, 3.0f, 7.0f, "%.1f");
+    
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Always);
+      ImGui::BeginTooltip();
+      ImGui::Text("Log10(Amount) Lower Threshold");
+      ImGui::Separator();
+      ImGui::Text("3.0 = 1K RMB (show all levels >= 1K)");
+      ImGui::Text("4.0 = 10K RMB");
+      ImGui::Text("5.0 = 100K RMB");
+      ImGui::Text("6.0 = 1M RMB");
+      ImGui::Text("7.0 = 10M RMB (only show thick levels)");
+      ImGui::Separator();
+      ImGui::TextWrapped("Range: [threshold, 10M] maps to [transparent, full color]");
+      ImGui::TextWrapped("Lower threshold: see more thin levels");
+      ImGui::TextWrapped("Higher threshold: focus on thick levels only");
+      ImGui::EndTooltip();
+    }
+  }
 }
 
 // ============================================================================

@@ -29,9 +29,10 @@
   X(_link_to_L2,        1,             META, META,           RAW,        NONE,      "Link to L2",             "L2时间索引",     "L2_time_index",               "L0→L2时间映射")                    \
   X(_bid_price,         L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Bid Prices",             "买盘价格",       "bid_price[0:N]",              "GUI:N档买盘价格")                  \
   X(_ask_price,         L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Prices",             "卖盘价格",       "ask_price[0:N]",              "GUI:N档卖盘价格")                  \
-  X(_bid_amount,        L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Bid Amounts",            "买盘金额",       "bid_amount[0:N]",             "GUI:N档买盘金额")                  \
-  X(_ask_amount,        L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Amounts",            "卖盘金额",       "ask_amount[0:N]",             "GUI:N档卖盘金额")                  \
+  X(_bid_volume,        L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Bid Volumes",            "买盘量",         "bid_volume[0:N]",             "GUI:N档买盘量(手,100股)")           \
+  X(_ask_volume,        L2::LOB_DEPTH, META, META,           RAW,        NONE,      "Ask Volumes",            "卖盘量",         "ask_volume[0:N]",             "GUI:N档卖盘量(手,100股)")           \
   X(_mid_price,         1,             META, META,           RAW,        NONE,      "Mid Price",              "中间价",         "(bid1+ask1)/2",               "GUI:实时中间价")                   \
+  X(_depth_valid,       1,             META, META,           RAW,        NONE,      "Depth Valid Flag",       "深度有效标志",   "1.0=valid, 0.0=invalid",      "LOB深度缓冲区完整性标记")           \
   X(_data_valid,        1,             META, META,           RAW,        NONE,      "Data Valid Flag",        "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")                \
 
 // ============================================================================

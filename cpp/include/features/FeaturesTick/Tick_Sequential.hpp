@@ -51,88 +51,102 @@ private:
     TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
   }
 
-  // Write LOB depth snapshot (N levels bid/ask price/amount for GUI)
-  // No validity check - always write available depth (may be partial)
+  // Write LOB depth snapshot (N levels bid/ask price/volume for GUI)
+  // Store volume (net_quantity) instead of amount to prevent overflow
   void write_lob_depth(size_t t) {
+    if (!tick_data_.lob.depth_updated)
+      return;
+
     constexpr size_t N = L2::LOB_DEPTH;
     const auto &depth = tick_data_.lob.depth_buffer;
 
     constexpr size_t level_idx = 0;
     constexpr size_t bid_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price];
-    constexpr size_t mid_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_mid_price];
+    constexpr size_t depth_valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid];
 
     // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
     // Output: bid[0]=bid1(best), ask[0]=ask1(best)
-    // Fill all N levels, unfilled slots will have price/amount = 0
+    // Fill all N levels, unfilled slots will have price/volume = 0
     for (size_t i = 0; i < N; ++i) {
       Level *bid_level = (N + i < depth.size()) ? depth[N + i] : nullptr;
       Level *ask_level = (N - 1 >= i && N - 1 - i < depth.size()) ? depth[N - 1 - i] : nullptr;
 
       float bid_price = bid_level ? bid_level->price * 0.01f : 0.0f;
       float ask_price = ask_level ? ask_level->price * 0.01f : 0.0f;
-      float bid_amount = bid_level ? bid_level->net_quantity * bid_price : 0.0f;
-      float ask_amount = ask_level ? -ask_level->net_quantity * ask_price : 0.0f;
+      float bid_volume = bid_level ? bid_level->net_quantity * 0.01f : 0.0f; // Store volume in lots (1 lot = 100 shares)
+      float ask_volume = ask_level ? ask_level->net_quantity * 0.01f : 0.0f; // net_quantity already negative for ask
 
-      lob_depth_buffer_[i] = bid_price;          // [0:N-1]
-      lob_depth_buffer_[N + i] = ask_price;      // [N:2N-1]
-      lob_depth_buffer_[2 * N + i] = bid_amount; // [2N:3N-1]
-      lob_depth_buffer_[3 * N + i] = ask_amount; // [3N:4N-1]
+      lob_depth_buffer_[0 * N + i] = bid_price;   // [0:N-1]
+      lob_depth_buffer_[1 * N + i] = ask_price;   // [N:2N-1]
+      lob_depth_buffer_[2 * N + i] = bid_volume;  // [2N:3N-1]
+      lob_depth_buffer_[3 * N + i] = ask_volume;  // [3N:4N-1]
     }
 
-    // Write mid_price at the end
+    // Write mid_price and depth_valid at the end
     lob_depth_buffer_[4 * N] = get_mid_price();
+    lob_depth_buffer_[4 * N + 1] = 1.0f;
 
-    // Batch write all depth features + mid_price
-    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, bid_price_offset, mid_price_offset + 1, lob_depth_buffer_, worker_id_);
+    // Batch write all depth features + mid_price + depth_valid
+    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, bid_price_offset, depth_valid_offset + 1, lob_depth_buffer_, worker_id_);
   }
 
   // Get mid price from depth buffer
+  // Use depth_updated flag instead of size check (size may be < 60 temporarily between order-driven erase and time-driven rebuild)
   float get_mid_price() const {
+    if (!tick_data_.lob.depth_updated)
+      return 0.0f;
+
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() < 2 * L2::LOB_DEPTH)
-      return tick_data_.lob.price;
+    if (depth.size() <= L2::LOB_DEPTH)
+      return 0.0f;
 
     Level *best_ask = depth[L2::LOB_DEPTH - 1]; // sell1
     Level *best_bid = depth[L2::LOB_DEPTH];     // buy1
 
-    if (best_ask && best_bid)
+    if (best_ask && best_bid && best_ask->price > 0 && best_bid->price > 0)
       return (best_ask->price + best_bid->price) * 0.005; // 0.01/2
 
-    return tick_data_.lob.price;
+    return 0.0f;
   }
 
   // Get spread from depth buffer
   float get_spread() const {
+    if (!tick_data_.lob.depth_updated)
+      return 0.0f;
+
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() < 2 * L2::LOB_DEPTH)
-      return 0.0;
+    if (depth.size() <= L2::LOB_DEPTH)
+      return 0.0f;
 
     Level *best_ask = depth[L2::LOB_DEPTH - 1];
     Level *best_bid = depth[L2::LOB_DEPTH];
 
-    if (best_ask && best_bid)
-      return (best_ask->price - best_bid->price) * 0.01;
+    if (best_ask && best_bid && best_ask->price > 0 && best_bid->price > 0)
+      return (best_ask->price - best_bid->price) * 0.01f;
 
-    return 0.0;
+    return 0.0f;
   }
 
   // Get top-of-book imbalance (TOBI)
   float get_tobi() const {
+    if (!tick_data_.lob.depth_updated)
+      return 0.0f;
+
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() < 2 * L2::LOB_DEPTH)
-      return 0.0;
+    if (depth.size() <= L2::LOB_DEPTH)
+      return 0.0f;
 
     Level *best_ask = depth[L2::LOB_DEPTH - 1];
     Level *best_bid = depth[L2::LOB_DEPTH];
 
     if (!best_ask || !best_bid)
-      return 0.0;
+      return 0.0f;
 
     int32_t bid_qty = best_bid->net_quantity;
     int32_t ask_qty = -best_ask->net_quantity; // ask is negative
 
     if (bid_qty + ask_qty == 0)
-      return 0.0;
+      return 0.0f;
 
     return static_cast<float>(bid_qty - ask_qty) / (bid_qty + ask_qty);
   }
@@ -310,5 +324,5 @@ private:
 
   // Reusable buffers for batch writes (high-frequency hot path)
   float ts_features_buffer_[L0_TS_RANGE.end - L0_TS_RANGE.start]; // TS features batch write
-  float lob_depth_buffer_[4 * L2::LOB_DEPTH + 1];                 // LOB depth + mid_price batch write
+  float lob_depth_buffer_[4 * L2::LOB_DEPTH + 2];                 // LOB depth + mid_price + depth_valid batch write
 };

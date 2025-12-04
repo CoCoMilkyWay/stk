@@ -232,21 +232,31 @@ public:
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
 
     for (size_t t = 0; t < tensor.T[0]; ++t) {
-      float valid_flag = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_data_valid, asset_idx));
-      if (valid_flag <= 0.5f)
+      float data_valid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_data_valid, asset_idx));
+      float depth_valid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_depth_valid, asset_idx));
+      
+      // Skip if no valid data at all
+      if (data_valid <= 0.5f)
+        continue;
+      
+      // LOB depth features require depth_valid (depth_valid implies data_valid)
+      // If depth is not valid, skip this tick for GUI display (we only show ticks with complete LOB)
+      if (depth_valid <= 0.5f)
         continue;
 
       float mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
 
-      std::array<float, N> bp{}, ap{}, ba{}, aa{};
+      std::array<float, N> bp{}, ap{}, bv{}, av{};
       for (size_t i = 0; i < N; ++i) {
         bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
         ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
-        ba[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_amount] + i, asset_idx));
-        aa[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_amount] + i, asset_idx));
+        
+        // Load volume (in lots, 1 lot = 100 shares)
+        bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_volume] + i, asset_idx));
+        av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
       }
 
-      day.push(t, mid, bp, ap, ba, aa);
+      day.push(t, mid, bp, ap, bv, av);
     }
 
     cache.days.push_back(std::move(day));
