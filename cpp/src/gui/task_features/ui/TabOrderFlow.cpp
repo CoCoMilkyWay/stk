@@ -120,44 +120,54 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   FormatDateFull(date_buf, sizeof(date_buf), date);
   FormatTimeHMS(time_buf, sizeof(time_buf), depth.time);
 
-  // Use minimal font and spacing
+  // Use smaller font and tighter spacing for more compact display
   ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);               // Use default small font
+  ImGui::SetWindowFontScale(0.85f);                              // Scale down to 85%
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));  // No spacing
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 1)); // Minimal padding
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1, 0)); // Ultra minimal padding
 
   ImGui::Text("%s %s", date_buf, time_buf);
   ImGui::Separator();
 
-  const float bar_max_width = panel_width - 70.0f;
+  const float bar_max_width = panel_width - 100.0f;
 
-  // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
-  for (int i = 9; i >= 0; --i) {
-    float price = (*depth.ask_price)[i];
-    float volume = (*depth.ask_volume)[i]; // Volume in lots (1 lot = 100 shares), already negative for ask
-    float amount = volume * price * OrderFlowConst::SHARES_PER_LOT;
-
+  // Helper lambda to render a single depth level
+  auto render_level = [&](float price, float volume, bool is_bid) {
     if (price <= 0)
-      continue; // Skip invalid levels
+      return; // Skip invalid levels
 
+    float amount = volume_to_amount(volume, price);
     float abs_amount = std::abs(amount);
-    float ratio = std::min(1.0f, abs_amount / OrderFlowConst::AMOUNT_MAX_VISIBLE);
+    float ratio = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);  // 100W = full bar
+    float amount_in_wan = amount_to_wan(amount);
 
-    // Color based on amount sign and magnitude
+    // Color intensity based on depth bar max (100W)
     ImVec4 bar_color;
-    if (amount < 0) {
-      // Negative (ask side): red
-      float intensity = std::min(1.0f, abs_amount / OrderFlowConst::AMOUNT_MAX_VISIBLE);
-      bar_color = ImVec4(0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.3f * (1.0f - intensity * 0.5f), 0.8f);
+    bool expected_sign = is_bid ? (amount > 0) : (amount < 0);
+    
+    if (expected_sign) {
+      // Normal case: green for bid (amount > 0), red for ask (amount < 0)
+      float intensity = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
+      if (is_bid) {
+        bar_color = ImVec4(0.3f * (1.0f - intensity * 0.5f), 0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.8f);
+      } else {
+        bar_color = ImVec4(0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.3f * (1.0f - intensity * 0.5f), 0.8f);
+      }
     } else {
-      // Positive (anomaly on ask side): show as yellow warning
+      // Anomaly: wrong sign, show as yellow warning
       bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
     }
 
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), ""); // Minimal height
+    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 5.0f), ""); // Compact height
     ImGui::PopStyleColor();
     ImGui::SameLine();
-    ImGui::Text("%.2f", price);
+    ImGui::Text("%6.2f %+7.2f", price, amount_in_wan);  // Fixed format: xxx.xx +-xxx.xx
+  };
+
+  // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
+  for (int i = 9; i >= 0; --i) {
+    render_level((*depth.ask_price)[i], (*depth.ask_volume)[i], false);
   }
 
   // Mid price - no separator to save space
@@ -165,34 +175,10 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
 
   // Bid side (green) - 10 levels, from top (bid1) to bottom (bid10)
   for (int i = 0; i < 10; ++i) {
-    float price = (*depth.bid_price)[i];
-    float volume = (*depth.bid_volume)[i]; // Volume in lots (1 lot = 100 shares)
-    float amount = volume * price * OrderFlowConst::SHARES_PER_LOT;
-
-    if (price <= 0)
-      continue; // Skip invalid levels
-
-    float abs_amount = std::abs(amount);
-    float ratio = std::min(1.0f, abs_amount / OrderFlowConst::AMOUNT_MAX_VISIBLE);
-
-    // Color based on amount sign and magnitude
-    ImVec4 bar_color;
-    if (amount > 0) {
-      // Positive (bid side): green
-      float intensity = std::min(1.0f, abs_amount / OrderFlowConst::AMOUNT_MAX_VISIBLE);
-      bar_color = ImVec4(0.3f * (1.0f - intensity * 0.5f), 0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.8f);
-    } else {
-      // Negative (anomaly on bid side): show as yellow warning
-      bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
-    }
-
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), ""); // Minimal height
-    ImGui::PopStyleColor();
-    ImGui::SameLine();
-    ImGui::Text("%.2f", price);
+    render_level((*depth.bid_price)[i], (*depth.bid_volume)[i], true);
   }
 
+  ImGui::SetWindowFontScale(1.0f); // Reset font scale
   ImGui::PopStyleVar(2);
   ImGui::PopFont();
 }
@@ -362,13 +348,13 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
 
     // Draw best bid and ask lines with fill between
     ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.3f, 0.8f, 0.3f, 0.7f));
-    ImPlot::PlotLine("Best Bid", of.l0.plot_t.data(), of.l0.plot_best_bid.data(),
-                     static_cast<int>(of.l0.plot_t.size()));
+    ImPlot::PlotStairs("Best Bid", of.l0.plot_t.data(), of.l0.plot_best_bid.data(),
+                       static_cast<int>(of.l0.plot_t.size()));
     ImPlot::PopStyleColor();
 
     ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.8f, 0.3f, 0.3f, 0.7f));
-    ImPlot::PlotLine("Best Ask", of.l0.plot_t.data(), of.l0.plot_best_ask.data(),
-                     static_cast<int>(of.l0.plot_t.size()));
+    ImPlot::PlotStairs("Best Ask", of.l0.plot_t.data(), of.l0.plot_best_ask.data(),
+                       static_cast<int>(of.l0.plot_t.size()));
     ImPlot::PopStyleColor();
 
     // Fill between best bid and best ask with solid yellow

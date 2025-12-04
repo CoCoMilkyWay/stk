@@ -415,42 +415,27 @@ void L0Cache::build_heatmap_merged_cache() {
       int min_key = std::numeric_limits<int>::max();
       int max_key = std::numeric_limits<int>::min();
 
+      // Helper lambda to collect a single price level
+      auto collect_level = [&](float price, float volume) {
+        if (price <= 0)
+          return;
+        
+        float amount_float = volume_to_amount(volume, price);
+        int32_t amount_rmb = round_amount_to_rmb(amount_float);
+
+        if (amount_rmb != 0) {
+          int price_key = price_to_key(price);
+          price_keys.push_back(price_key);
+          amounts.push_back(amount_rmb);
+          min_key = std::min(min_key, price_key);
+          max_key = std::max(max_key, price_key);
+        }
+      };
+
+      // Collect bid and ask levels
       for (size_t level = 0; level < DEPTH; ++level) {
-        // Collect bid
-        {
-          float price = tick.bid_price[level];
-          if (price > 0) {
-            float volume = tick.bid_volume[level];
-            float amount_float = volume * price * OrderFlowConst::SHARES_PER_LOT;
-            int32_t amount_rmb = static_cast<int32_t>(std::round(amount_float / static_cast<float>(OrderFlowConst::AMOUNT_ROUND_TO_RMB))) * OrderFlowConst::AMOUNT_ROUND_TO_RMB;
-
-            if (amount_rmb != 0) {
-              int price_key = static_cast<int>(price * OrderFlowConst::PRICE_SCALE + OrderFlowConst::ROUNDING_OFFSET);
-              price_keys.push_back(price_key);
-              amounts.push_back(amount_rmb);
-              min_key = std::min(min_key, price_key);
-              max_key = std::max(max_key, price_key);
-            }
-          }
-        }
-
-        // Collect ask
-        {
-          float price = tick.ask_price[level];
-          if (price > 0) {
-            float volume = tick.ask_volume[level];
-            float amount_float = volume * price * OrderFlowConst::SHARES_PER_LOT;
-            int32_t amount_rmb = static_cast<int32_t>(std::round(amount_float / static_cast<float>(OrderFlowConst::AMOUNT_ROUND_TO_RMB))) * OrderFlowConst::AMOUNT_ROUND_TO_RMB;
-
-            if (amount_rmb != 0) {
-              int price_key = static_cast<int>(price * OrderFlowConst::PRICE_SCALE + OrderFlowConst::ROUNDING_OFFSET);
-              price_keys.push_back(price_key);
-              amounts.push_back(amount_rmb);
-              min_key = std::min(min_key, price_key);
-              max_key = std::max(max_key, price_key);
-            }
-          }
-        }
+        collect_level(tick.bid_price[level], tick.bid_volume[level]);
+        collect_level(tick.ask_price[level], tick.ask_volume[level]);
       }
 
       // Step 2: Collect all price keys that need updating

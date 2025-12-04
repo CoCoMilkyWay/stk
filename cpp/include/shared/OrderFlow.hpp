@@ -33,10 +33,10 @@ constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;           // 30 levels
 // Price and Volume Conversion
 // ============================================================================
 constexpr float TICK_SIZE = 0.01f;           // Minimum price step (RMB)
-constexpr float SHARES_PER_LOT = 100.0f;     // 1 lot = 100 shares
-constexpr float PRICE_SCALE = 100.0f;        // Price stored as integer * 100
+constexpr float SHARES_PER_LOT = 100.0f;     // 1 lot = N shares
+constexpr float PRICE_SCALE = 100.0f;        // Price stored as integer * N
 constexpr float ROUNDING_OFFSET = 0.5f;      // For float to int conversion
-constexpr int32_t AMOUNT_ROUND_TO_RMB = 1000; // Round amount to nearest 100 RMB
+constexpr int32_t AMOUNT_ROUND_TO_RMB = 1000; // Round amount to nearest N RMB
 
 // ============================================================================
 // Cache Reserve Sizes (Aggressive Pre-allocation)
@@ -48,9 +48,10 @@ constexpr size_t MAX_KEYS_PER_TICK = LOB_DEPTH * 2; // bid30 + ask30 = 60
 // ============================================================================
 // Amount Thresholds (RMB)
 // ============================================================================
-constexpr float AMOUNT_MIN_VISIBLE = 1000.0f;     // 1K RMB (transparent in heatmap)
-constexpr float AMOUNT_MAX_VISIBLE = 10000000.0f; // 10M RMB (solid in heatmap)
-constexpr float AMOUNT_FILTER_MIN = 1000.0f;      // Filter sentinel data below this
+constexpr float AMOUNT_MIN_VISIBLE = 1000.0f;       // 1K RMB (transparent in heatmap)
+constexpr float AMOUNT_MAX_VISIBLE = 10000000.0f;   // 10M RMB (solid in heatmap)
+constexpr float AMOUNT_FILTER_MIN = 1000.0f;        // Filter sentinel data below this
+constexpr float DEPTH_BAR_MAX_AMOUNT = 1000000.0f;  // 100W RMB (full bar in depth panel)
 
 // ============================================================================
 // Price Validity Bounds (Sentinel Filtering)
@@ -86,6 +87,30 @@ struct TimeHMS {
   uint8_t minute = 0;
   uint8_t second = 0;
 };
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// Convert volume and price to amount (RMB)
+inline float volume_to_amount(float volume, float price) {
+  return volume * price * OrderFlowConst::SHARES_PER_LOT;
+}
+
+// Convert price to integer key for heatmap
+inline int price_to_key(float price) {
+  return static_cast<int>(price * OrderFlowConst::PRICE_SCALE + OrderFlowConst::ROUNDING_OFFSET);
+}
+
+// Round amount to nearest AMOUNT_ROUND_TO_RMB
+inline int32_t round_amount_to_rmb(float amount) {
+  return static_cast<int32_t>(std::round(amount / static_cast<float>(OrderFlowConst::AMOUNT_ROUND_TO_RMB))) * OrderFlowConst::AMOUNT_ROUND_TO_RMB;
+}
+
+// Convert amount (RMB) to 万元 (10K RMB)
+inline float amount_to_wan(float amount) {
+  return amount / 10000.0f;
+}
 
 // ============================================================================
 // L1 Data Structures (Minute-level, ~255 bars/day)
@@ -332,7 +357,7 @@ struct OrderFlowUI {
   size_t l0_anchor_plot_idx = 0;
 
   bool show_heatmap = true;
-  float log_amount_threshold = 3.0f; // log10(amount) [3.0, 7.0]
+  float log_amount_threshold = 5.0f; // log10(amount) [3.0, 7.0] (default: 5.0 = 100K RMB)
 
   int prev_asset_idx = -1;
   std::string prev_l1_anchor_date;
