@@ -163,15 +163,15 @@ public:
         day.reserve(OrderFlowConst::L1_CAPACITY);
 
         for (size_t t = 0; t < tensor.T[1]; ++t) {
-          float valid_flag = static_cast<float>(tensor.get(1, t, L1_FieldOffset::data_valid, a));
+          float valid_flag = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_data_valid, a));
           if (valid_flag <= 0.5f)
             continue;
 
-          float o = static_cast<float>(tensor.get(1, t, L1_FieldOffset::ohlc_open, a));
-          float h = static_cast<float>(tensor.get(1, t, L1_FieldOffset::ohlc_high, a));
-          float l = static_cast<float>(tensor.get(1, t, L1_FieldOffset::ohlc_low, a));
-          float c = static_cast<float>(tensor.get(1, t, L1_FieldOffset::ohlc_close, a));
-          float v = static_cast<float>(tensor.get(1, t, L1_FieldOffset::ohlc_volume, a));
+          float o = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_open, a));
+          float h = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_high, a));
+          float l = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_low, a));
+          float c = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_close, a));
+          float v = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_volume, a));
 
           day.push(t, o, h, l, c, v);
         }
@@ -232,21 +232,21 @@ public:
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
 
     for (size_t t = 0; t < tensor.T[0]; ++t) {
-      float valid_flag = static_cast<float>(tensor.get(0, t, L0_FieldOffset::data_valid, asset_idx));
+      float valid_flag = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_data_valid, asset_idx));
       if (valid_flag <= 0.5f)
         continue;
 
-      float mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::mid_price, asset_idx));
+      float mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
 
-      std::array<float, N> bp{}, ap{}, bv{}, av{};
+      std::array<float, N> bp{}, ap{}, ba{}, aa{};
       for (size_t i = 0; i < N; ++i) {
-        bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::bid_price] + i, asset_idx));
-        ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::ask_price] + i, asset_idx));
-        bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::bid_volume] + i, asset_idx));
-        av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::ask_volume] + i, asset_idx));
+        bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
+        ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
+        ba[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_amount] + i, asset_idx));
+        aa[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_amount] + i, asset_idx));
       }
 
-      day.push(t, mid, bp, ap, bv, av);
+      day.push(t, mid, bp, ap, ba, aa);
     }
 
     cache.days.push_back(std::move(day));

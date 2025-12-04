@@ -67,7 +67,7 @@ private:
     TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L1_TS_RANGE.start, L1_TS_RANGE.end, features, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
 
     // Write OHLC + volume for GUI (OrderFlow visualization)
     write_ohlc_meta(is_valid, t);
@@ -87,11 +87,11 @@ private:
     const float close = minute_data_.close.back();
     const float volume = static_cast<float>(minute_data_.bid_volume.back() + minute_data_.ask_volume.back());
 
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::ohlc_open, asset_id_, open, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::ohlc_high, asset_id_, high, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::ohlc_low, asset_id_, low, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::ohlc_close, asset_id_, close, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::ohlc_volume, asset_id_, volume, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_open, asset_id_, open, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_high, asset_id_, high, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_low, asset_id_, low, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_close, asset_id_, close, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_volume, asset_id_, volume, worker_id_);
   }
   // Feature 1: min_ret_z - Minute return z-score (rolling 60m)
   float compute_min_ret_z() const {

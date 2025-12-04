@@ -103,8 +103,8 @@ struct L0Day {
   std::vector<float> mid_price;
   std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> bid_price;
   std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> ask_price;
-  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> bid_volume;
-  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> ask_volume;
+  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> bid_amount;
+  std::vector<std::array<float, OrderFlowConst::LOB_DEPTH>> ask_amount;
 
   size_t valid_count() const { return indices.size(); }
 
@@ -113,22 +113,22 @@ struct L0Day {
     mid_price.reserve(expected);
     bid_price.reserve(expected);
     ask_price.reserve(expected);
-    bid_volume.reserve(expected);
-    ask_volume.reserve(expected);
+    bid_amount.reserve(expected);
+    ask_amount.reserve(expected);
   }
 
   // Add valid tick
   void push(size_t idx, float mid,
             const std::array<float, OrderFlowConst::LOB_DEPTH> &bp,
             const std::array<float, OrderFlowConst::LOB_DEPTH> &ap,
-            const std::array<float, OrderFlowConst::LOB_DEPTH> &bv,
-            const std::array<float, OrderFlowConst::LOB_DEPTH> &av) {
+            const std::array<float, OrderFlowConst::LOB_DEPTH> &ba,
+            const std::array<float, OrderFlowConst::LOB_DEPTH> &aa) {
     indices.push_back(idx);
     mid_price.push_back(mid);
     bid_price.push_back(bp);
     ask_price.push_back(ap);
-    bid_volume.push_back(bv);
-    ask_volume.push_back(av);
+    bid_amount.push_back(ba);
+    ask_amount.push_back(aa);
   }
 
   // Get global X for plotting: day_idx * L0_CAPACITY + local_idx
@@ -143,8 +143,8 @@ struct L0Day {
     mid_price.clear();
     bid_price.clear();
     ask_price.clear();
-    bid_volume.clear();
-    ask_volume.clear();
+    bid_amount.clear();
+    ask_amount.clear();
   }
 };
 
@@ -336,8 +336,8 @@ struct L0Cache {
     float mid_price = 0;
     const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_price = nullptr;
     const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_price = nullptr;
-    const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_volume = nullptr;
-    const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_volume = nullptr;
+    const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_amount = nullptr;
+    const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_amount = nullptr;
     size_t tick_idx = 0;
     size_t day_idx = 0;
     TimeHMS time{};
@@ -365,8 +365,8 @@ struct L0Cache {
     d.mid_price = day.mid_price[local_plot_idx];
     d.bid_price = &day.bid_price[local_plot_idx];
     d.ask_price = &day.ask_price[local_plot_idx];
-    d.bid_volume = &day.bid_volume[local_plot_idx];
-    d.ask_volume = &day.ask_volume[local_plot_idx];
+    d.bid_amount = &day.bid_amount[local_plot_idx];
+    d.ask_amount = &day.ask_amount[local_plot_idx];
     d.tick_idx = day.indices[local_plot_idx];
     d.day_idx = day.day_idx;
 

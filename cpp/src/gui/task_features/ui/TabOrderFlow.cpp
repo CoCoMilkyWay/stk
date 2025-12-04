@@ -124,10 +124,10 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   ImGui::Text("%s", time_buf);
   ImGui::Separator();
 
-  float max_vol = 1.0f;
+  float max_amount = 1.0f;
   for (int i = 0; i < 10; ++i) {
-    max_vol = std::max(max_vol, std::abs((*depth.bid_volume)[i]));
-    max_vol = std::max(max_vol, std::abs((*depth.ask_volume)[i]));
+    max_amount = std::max(max_amount, std::abs((*depth.bid_amount)[i]));
+    max_amount = std::max(max_amount, std::abs((*depth.ask_amount)[i]));
   }
 
   const float bar_max_width = panel_width - 80.0f;
@@ -135,7 +135,7 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   // Ask side (red)
   for (int i = 4; i >= 0; --i) {
     if ((*depth.ask_price)[i] <= 0) continue;
-    float ratio = std::abs((*depth.ask_volume)[i]) / max_vol;
+    float ratio = std::abs((*depth.ask_amount)[i]) / max_amount;
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.8f, 0.3f, 0.3f, 0.8f));
     ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 14.0f), "");
     ImGui::PopStyleColor();
@@ -150,7 +150,7 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   // Bid side (green)
   for (int i = 0; i < 5; ++i) {
     if ((*depth.bid_price)[i] <= 0) continue;
-    float ratio = std::abs((*depth.bid_volume)[i]) / max_vol;
+    float ratio = std::abs((*depth.bid_amount)[i]) / max_amount;
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.3f, 0.8f, 0.3f, 0.8f));
     ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 14.0f), "");
     ImGui::PopStyleColor();
