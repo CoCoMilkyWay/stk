@@ -58,12 +58,11 @@ private:
       features[4] = compute_range_squeeze();
     }
 
-    // Write TS features
-    constexpr size_t level_idx = 1;
-    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L1_TS_RANGE.start, L1_TS_RANGE.end, features, worker_id_);
+    // Write TS features: [min_ret_z, cs_min_return_rank)
+    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min_ret_z, L1_FieldOffset::cs_min_return_rank, features, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
 
     // Write OHLC + volume for GUI (OrderFlow visualization)
     write_ohlc_meta(is_valid, t);
@@ -71,8 +70,6 @@ private:
 
   // Write OHLC and volume META features for GUI
   void write_ohlc_meta(bool is_valid, size_t t) {
-    constexpr size_t level_idx = 1;
-
     if (!is_valid) {
       return; // Tensor auto-cleared
     }
@@ -84,11 +81,11 @@ private:
     const float volume = static_cast<float>(minute_data_.bid_volume.back() + minute_data_.ask_volume.back());
 
     // Store prices as integer cents for fp16 precision (price in yuan * 100)
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_open, asset_id_, open * 100.0f, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_high, asset_id_, high * 100.0f, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_low, asset_id_, low * 100.0f, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_close, asset_id_, close * 100.0f, worker_id_);
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L1_FieldOffset::_ohlc_volume, asset_id_, volume, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::_ohlc_open, asset_id_, open * 100.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::_ohlc_high, asset_id_, high * 100.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::_ohlc_low, asset_id_, low * 100.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::_ohlc_close, asset_id_, close * 100.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::_ohlc_volume, asset_id_, volume, worker_id_);
   }
   // Feature 1: min_ret_z - Minute return z-score (rolling 60m)
   float compute_min_ret_z() const {

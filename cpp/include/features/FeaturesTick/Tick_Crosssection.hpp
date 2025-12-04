@@ -30,11 +30,10 @@ inline void compute_cs_tick(GlobalFeatureStore *store,
                             std::vector<float> &input_fp32,
                             std::vector<float> &output_fp32,
                             std::vector<_Float16> &output_fp16) {
-  constexpr size_t level_idx = 0;
   const size_t A = input_fp32.size();
 
   // Build valid indices (optimized: check valid_flags once)
-  const _Float16 *valid_flags = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::_data_valid);
+  const _Float16 *valid_flags = CS_READ_ALL(store, date, 0, t, L0_FieldOffset::_data_valid);
   valid_indices.clear();
   for (size_t a = 0; a < A; ++a) {
     if (static_cast<float>(valid_flags[a]) > 0.5f) {
@@ -47,32 +46,32 @@ inline void compute_cs_tick(GlobalFeatureStore *store,
 
   // CS feature 1: cs_spread_rank (optimized conversion)
   {
-    const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::spread_momentum);
+    const _Float16 *input = CS_READ_ALL(store, date, 0, t, L0_FieldOffset::spread_momentum);
     convert_fp16_to_fp32(input, input_fp32.data(), A);
     std::fill(output_fp32.begin(), output_fp32.end(), 0.0f);
     compute_rank_inverse_normal_sparse(input_fp32.data(), valid_indices, output_fp32.data());
     convert_fp32_to_fp16(output_fp32.data(), output_fp16.data(), A);
-    CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_spread_rank, output_fp16.data(), A);
+    CS_WRITE_ALL(store, date, 0, t, L0_FieldOffset::cs_spread_rank, output_fp16.data(), A);
   }
 
   // CS feature 2: cs_tobi_rank
   {
-    const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::tobi_osc);
+    const _Float16 *input = CS_READ_ALL(store, date, 0, t, L0_FieldOffset::tobi_osc);
     convert_fp16_to_fp32(input, input_fp32.data(), A);
     std::fill(output_fp32.begin(), output_fp32.end(), 0.0f);
     compute_rank_inverse_normal_sparse(input_fp32.data(), valid_indices, output_fp32.data());
     convert_fp32_to_fp16(output_fp32.data(), output_fp16.data(), A);
-    CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_tobi_rank, output_fp16.data(), A);
+    CS_WRITE_ALL(store, date, 0, t, L0_FieldOffset::cs_tobi_rank, output_fp16.data(), A);
   }
 
   // CS feature 3: cs_liquidity_ratio
   {
-    const _Float16 *input = CS_READ_ALL(store, date, level_idx, t, L0_FieldOffset::signed_volume_imb);
+    const _Float16 *input = CS_READ_ALL(store, date, 0, t, L0_FieldOffset::signed_volume_imb);
     convert_fp16_to_fp32(input, input_fp32.data(), A);
     std::fill(output_fp32.begin(), output_fp32.end(), 0.0f);
     compute_zscore_sparse(input_fp32.data(), valid_indices, output_fp32.data());
     convert_fp32_to_fp16(output_fp32.data(), output_fp16.data(), A);
-    CS_WRITE_ALL(store, date, level_idx, t, L0_FieldOffset::cs_liquidity_ratio, output_fp16.data(), A);
+    CS_WRITE_ALL(store, date, 0, t, L0_FieldOffset::cs_liquidity_ratio, output_fp16.data(), A);
   }
 
   // Cascade: If this tick crosses minute boundary, trigger minute computation

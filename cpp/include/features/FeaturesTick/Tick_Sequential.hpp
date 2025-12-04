@@ -44,12 +44,11 @@ private:
     ts_features_buffer_[3] = compute_spread_momentum();
     ts_features_buffer_[4] = compute_signed_volume_imb();
 
-    // Write TS features
-    constexpr size_t level_idx = 0;
-    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L0_TS_RANGE.start, L0_TS_RANGE.end, ts_features_buffer_, worker_id_);
+    // Write TS features: [tick_ret_z, cs_spread_rank)
+    TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, L0_FieldOffset::tick_ret_z, L0_FieldOffset::cs_spread_rank, ts_features_buffer_, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
   }
 
   // Write LOB depth snapshot (N levels bid/ask price/volume for GUI)
@@ -60,10 +59,6 @@ private:
 
     constexpr size_t N = L2::LOB_DEPTH;
     const auto &depth = tick_data_.lob.depth_buffer;
-
-    constexpr size_t level_idx = 0;
-    constexpr size_t bid_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price];
-    constexpr size_t depth_valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid];
 
     // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
     // Output: bid[0]=bid1(best), ask[0]=ask1(best)
@@ -88,8 +83,8 @@ private:
     lob_depth_buffer_[4 * N] = static_cast<float>((best_bid->price + best_ask->price) >> 1);
     lob_depth_buffer_[4 * N + 1] = 1.0f;
 
-    // Batch write all depth features + mid_price + depth_valid
-    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, bid_price_offset, depth_valid_offset + 1, lob_depth_buffer_, worker_id_);
+    // Batch write: _bid_price to _data_valid
+    TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, L0_FieldOffset::_bid_price, L0_FieldOffset::_data_valid, lob_depth_buffer_, worker_id_);
   }
 
   // Get mid price from depth buffer
@@ -321,6 +316,6 @@ private:
   mutable std::vector<float> scratch_;
 
   // Reusable buffers for batch writes (high-frequency hot path)
-  float ts_features_buffer_[L0_TS_RANGE.end - L0_TS_RANGE.start]; // TS features batch write
+  float ts_features_buffer_[5]; // tick_ret_z, tobi_osc, micro_gap_norm, spread_momentum, signed_volume_imb
   float lob_depth_buffer_[4 * L2::LOB_DEPTH + 2];                 // LOB depth + mid_price + depth_valid batch write
 };

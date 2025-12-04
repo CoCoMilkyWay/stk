@@ -6,7 +6,6 @@
 #pragma once
 
 #include "features/backend/FeatureReader.hpp"
-#include "features/backend/FeatureStoreConfig.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "shared/OrderFlow.hpp"
 
@@ -163,16 +162,16 @@ public:
         day.reserve(OrderFlowConst::L1_CAPACITY);
 
         for (size_t t = 0; t < tensor.T[1]; ++t) {
-          float valid_flag = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_data_valid], a));
+          float valid_flag = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_data_valid, a));
           if (valid_flag <= 0.5f)
             continue;
 
           // Read prices as integer cents and convert to yuan
-          float o_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_open], a));
-          float h_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_high], a));
-          float l_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_low], a));
-          float c_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_close], a));
-          float v = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_volume], a));
+          float o_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_open, a));
+          float h_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_high, a));
+          float l_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_low, a));
+          float c_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_close, a));
+          float v = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_volume, a));
 
           float o = o_cents * 0.01f;
           float h = h_cents * 0.01f;
@@ -243,8 +242,8 @@ public:
     // Line plots and heatmap will use ImPlot step mode to handle sparsity
     for (size_t t = 0; t < tensor.T[0]; ++t) {
       // Read validity flags
-      float depth_valid_val = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid], asset_idx));
-      float data_valid_val = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_data_valid], asset_idx));
+      float depth_valid_val = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_depth_valid, asset_idx));
+      float data_valid_val = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_data_valid, asset_idx));
 
       bool depth_valid = (depth_valid_val > 0.5f);
       bool data_valid = (data_valid_val > 0.5f);
@@ -259,17 +258,18 @@ public:
 
       if (depth_valid) {
         // Read prices as integers (cents) and convert to yuan
-        float mid_cents = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_mid_price], asset_idx));
+        float mid_cents = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_mid_price, asset_idx));
         mid = mid_cents * 0.01f;
 
+        // Multi-width fields: use TENSOR_GET_MULTI macro
         for (size_t i = 0; i < N; ++i) {
-          float bp_cents = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
-          float ap_cents = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
+          float bp_cents = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_bid_price, i, asset_idx));
+          float ap_cents = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_ask_price, i, asset_idx));
           
           bp[i] = bp_cents * 0.01f;  // Convert cents to yuan
           ap[i] = ap_cents * 0.01f;  // Convert cents to yuan
-          bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_volume] + i, asset_idx));
-          av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
+          bv[i] = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_bid_volume, i, asset_idx));
+          av[i] = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_ask_volume, i, asset_idx));
         }
 
         // Filter sentinel data (prices already in yuan)

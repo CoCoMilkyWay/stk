@@ -195,53 +195,6 @@ inline constexpr size_t get_field_width(size_t level_idx, size_t field_idx) {
 //   // Full width:    &base[t * F * A + f_offset * A + a] through [f_offset + f_width - 1]
 
 // ============================================================================
-// FEATURE TYPE RANGES - Optimized TS/CS/LB/SH/META Access
-// ============================================================================
-
-struct FeatureRange {
-  size_t start;
-  size_t end;
-  size_t count() const { return end - start; }
-};
-
-// Compile-time range computation
-template <size_t Level, const FieldTypeMeta *types, size_t count>
-constexpr FeatureRange compute_feature_range(FeatureDataType type) {
-  size_t start = count;
-  size_t end = 0;
-  for (size_t i = 0; i < count; ++i) {
-    if (types[i].type == type) {
-      if (types[i].offset < start)
-        start = types[i].offset;
-      if (types[i].offset >= end)
-        end = types[i].offset + 1;
-    }
-  }
-  return {start, end};
-}
-
-// Template specializations (generic)
-template <size_t Level>
-constexpr FeatureRange get_feature_range(FeatureDataType type);
-
-#define GENERATE_FEATURE_RANGE_SPECIALIZATION(level_name, level_num, fields)                      \
-  template <>                                                                                     \
-  constexpr FeatureRange get_feature_range<level_num>(FeatureDataType type) {                     \
-    return compute_feature_range<level_num, level_name##_FIELD_TYPES,                             \
-                                 sizeof(level_name##_FIELD_TYPES) / sizeof(FieldTypeMeta)>(type); \
-  }
-ALL_LEVELS(GENERATE_FEATURE_RANGE_SPECIALIZATION)
-
-// Per-level range constants: L*_TS_RANGE, L*_CS_RANGE, ...
-#define GENERATE_RANGE_CONSTANTS(level_name, level_num, fields)                             \
-  constexpr auto level_name##_TS_RANGE = get_feature_range<level_num>(FeatureDataType::TS); \
-  constexpr auto level_name##_CS_RANGE = get_feature_range<level_num>(FeatureDataType::CS); \
-  constexpr auto level_name##_LB_RANGE = get_feature_range<level_num>(FeatureDataType::LB); \
-  constexpr auto level_name##_SH_RANGE = get_feature_range<level_num>(FeatureDataType::SH); \
-  constexpr auto level_name##_META_RANGE = get_feature_range<level_num>(FeatureDataType::META);
-ALL_LEVELS(GENERATE_RANGE_CONSTANTS)
-
-// ============================================================================
 // TIME INDEX CONVERSION
 // ============================================================================
 

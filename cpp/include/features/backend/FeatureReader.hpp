@@ -29,18 +29,48 @@ public:
     size_t A = 0;                          // Asset dimension
     std::vector<feature_storage_t> data[LEVEL_COUNT]; // Flat [T][F][A] data
 
-    // Access: data[level][(t * F[level] + f) * A + a]
-    feature_storage_t get(size_t level, size_t t, size_t f, size_t a) const {
-      assert(level < LEVEL_COUNT);
-      assert(t < T[level] && f < F[level] && a < A);
-      return data[level][(t * F[level] + f) * A + a];
+    // Template access by field enum (FOOL-PROOF + ZERO-COST: compile-time optimization)
+    // Level: compile-time constant (0, 1, 2)
+    // f_enum: field enum index (e.g., L0_FieldOffset::_mid_price)
+    // Get single value by enum (auto-converts to offset)
+    template<size_t Level>
+    inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
+      static_assert(Level < LEVEL_COUNT, "Invalid level");
+      assert(t < T[Level] && a < A);
+      
+      // Compile-time selection of offset array (zero runtime cost with if constexpr)
+      size_t f_offset;
+      if constexpr (Level == 0) {
+        f_offset = L0_FIELD_OFFSETS[f_enum];
+      } else if constexpr (Level == 1) {
+        f_offset = L1_FIELD_OFFSETS[f_enum];
+      } else {
+        f_offset = L2_FIELD_OFFSETS[f_enum];
+      }
+      
+      assert(f_offset < F[Level] && "Field offset out of bounds");
+      return data[Level][(t * F[Level] + f_offset) * A + a];
     }
 
-    // Get pointer to all assets for a specific (level, t, f)
-    const feature_storage_t *get_all_assets(size_t level, size_t t, size_t f) const {
-      assert(level < LEVEL_COUNT);
-      assert(t < T[level] && f < F[level]);
-      return data[level].data() + (t * F[level] + f) * A;
+
+    // Template get pointer to all assets (ZERO-COST: compile-time optimization)
+    template<size_t Level>
+    inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
+      static_assert(Level < LEVEL_COUNT, "Invalid level");
+      assert(t < T[Level]);
+      
+      // Compile-time selection of offset array (zero runtime cost with if constexpr)
+      size_t f_offset;
+      if constexpr (Level == 0) {
+        f_offset = L0_FIELD_OFFSETS[f_enum];
+      } else if constexpr (Level == 1) {
+        f_offset = L1_FIELD_OFFSETS[f_enum];
+      } else {
+        f_offset = L2_FIELD_OFFSETS[f_enum];
+      }
+      
+      assert(f_offset < F[Level] && "Field offset out of bounds");
+      return data[Level].data() + (t * F[Level] + f_offset) * A;
     }
 
     bool is_loaded() const { return A > 0; }
@@ -244,4 +274,17 @@ private:
     return result;
   }
 };
+
+// ============================================================================
+// MULTI-WIDTH FIELD ACCESS MACROS - Only use enums, 100% static compilation
+// ============================================================================
+// TENSOR_GET(tensor, lvl, t, field_enum, a)           - Single-width field
+// TENSOR_GET_MULTI(tensor, lvl, t, field_enum, i, a)  - Multi-width field[i]
+// ============================================================================
+
+#define TENSOR_GET(tensor, lvl, t, field_enum, a) \
+  ((tensor).data[lvl][((t) * (tensor).F[lvl] + L##lvl##_FIELD_OFFSETS[field_enum]) * (tensor).A + (a)])
+
+#define TENSOR_GET_MULTI(tensor, lvl, t, field_enum, i, a) \
+  ((tensor).data[lvl][((t) * (tensor).F[lvl] + L##lvl##_FIELD_OFFSETS[field_enum] + (i)) * (tensor).A + (a)])
 

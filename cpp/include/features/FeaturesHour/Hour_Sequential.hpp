@@ -58,12 +58,11 @@ private:
       features[4] = compute_hour_overnight_gap();
     }
 
-    // Write TS features
-    constexpr size_t level_idx = 2;
-    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L2_TS_RANGE.start, L2_TS_RANGE.end, features, worker_id_);
+    // Write TS features: [hour_ret_12h_mom, cs_hour_return_beta)
+    TS_WRITE_FEATURES(store_, date_str_, 2, t, asset_id_, L2_FieldOffset::hour_ret_12h_mom, L2_FieldOffset::cs_hour_return_beta, features, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L2_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, 2, t, L2_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
   }
   // Feature 1: hour_ret_12h_mom - 12-hour momentum z-score
   float compute_hour_ret_12h_mom() const {

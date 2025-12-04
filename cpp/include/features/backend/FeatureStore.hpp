@@ -675,8 +675,8 @@ private:
     ofs.write(reinterpret_cast<const char *>(&F_total), sizeof(size_t));
     ofs.write(reinterpret_cast<const char *>(&A), sizeof(size_t));
 
-    const size_t link_L1 = L0_FieldOffset::_link_to_L1;
-    const size_t link_L2 = L0_FieldOffset::_link_to_L2;
+    const size_t link_L1 = L0_FIELD_OFFSETS[L0_FieldOffset::_link_to_L1];
+    const size_t link_L2 = L0_FIELD_OFFSETS[L0_FieldOffset::_link_to_L2];
 
     for (size_t t0 = 0; t0 < T[0]; ++t0) {
       const size_t t1 = static_cast<size_t>(slot->data[0][t0 * F[0] * A + link_L1 * A]);
@@ -766,71 +766,81 @@ public:
 };
 
 // ============================================================================
-// MACRO API - High-performance direct access (NEW ARCHITECTURE)
+// PUBLIC API - 4 macros, only use field enums, 100% static compilation
+// ============================================================================
+// TS_WRITE_SINGLE(store, date, lvl, t, field_enum, asset, value, worker_id)
+// TS_WRITE_FEATURES(store, date, lvl, t, asset, f_start, f_end, src, worker_id)
+// CS_READ_ALL(store, date, lvl, t, field_enum)
+// CS_WRITE_ALL(store, date, lvl, t, field_enum, src, count)
+//
+// Usage: Pass field enum directly (e.g., L0_FieldOffset::_data_valid)
+//        lvl must be literal 0, 1, or 2 for static compilation
 // ============================================================================
 
-// ===== TS WORKER API (explicitly pass worker_id) =====
+// TS_WRITE_SINGLE: Write single field for one asset
+#define TS_WRITE_SINGLE(store, date, lvl, t, field_enum, a, value, worker_id)   \
+  do {                                                                          \
+    auto &_slot = (store)->ts_get_slot(date, worker_id);                        \
+    assert(_slot.data[lvl] && "data[lvl] is null");                             \
+    const size_t _F = (store)->query_F(lvl);                                    \
+    const size_t _A = (store)->query_A();                                       \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                   \
+    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                       \
+    assert((t) < _T && "time index out of bounds");                             \
+    assert(_f < _F && "feature index out of bounds");                           \
+    assert((a) < _A && "asset index out of bounds");                            \
+    const size_t _idx = ((t) * _F + _f) * _A + (a);                             \
+    _slot.data[lvl][_idx] = (value);                                            \
+  } while (0)
 
-// Batch write: write features [f_start, f_end) for asset a at time t
-#define TS_WRITE_FEATURES(store, date, lvl, t, a, f_start, f_end, src, worker_id) \
+// TS_WRITE_FEATURES: Write field range [f_start_enum, f_end_enum) for one asset
+// Pass enums directly, macro converts to offsets via L##lvl##_FIELD_OFFSETS
+#define TS_WRITE_FEATURES(store, date, lvl, t, a, f_start_enum, f_end_enum, src, worker_id) \
   do {                                                                            \
     auto &_slot = (store)->ts_get_slot(date, worker_id);                          \
     assert(_slot.data[lvl] && "data[lvl] is null");                               \
     const size_t _F = (store)->query_F(lvl);                                      \
     const size_t _A = (store)->query_A();                                         \
     [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                     \
+    const size_t _f_start = L##lvl##_FIELD_OFFSETS[f_start_enum];                 \
+    const size_t _f_end = L##lvl##_FIELD_OFFSETS[f_end_enum];                     \
     assert((t) < _T && "time index out of bounds");                               \
     assert((a) < _A && "asset index out of bounds");                              \
-    assert((f_start) <= (f_end) && "invalid feature range");                      \
-    assert((f_end) <= _F && "feature end out of bounds");                         \
-    for (size_t _f = (f_start); _f < (f_end); ++_f) {                             \
+    assert(_f_start <= _f_end && "invalid feature range");                        \
+    assert(_f_end <= _F && "feature end out of bounds");                          \
+    for (size_t _f = _f_start; _f < _f_end; ++_f) {                               \
       const size_t _idx = ((t) * _F + _f) * _A + (a);                             \
-      _slot.data[lvl][_idx] = (src)[_f - (f_start)];                              \
+      _slot.data[lvl][_idx] = (src)[_f - _f_start];                               \
     }                                                                             \
   } while (0)
 
-// Single write: write feature f for asset a at time t
-#define TS_WRITE_SINGLE(store, date, lvl, t, f, a, value, worker_id) \
-  do {                                                               \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);             \
-    assert(_slot.data[lvl] && "data[lvl] is null");                  \
-    const size_t _F = (store)->query_F(lvl);                         \
-    const size_t _A = (store)->query_A();                            \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);        \
-    assert((t) < _T && "time index out of bounds");                  \
-    assert((f) < _F && "feature index out of bounds");               \
-    assert((a) < _A && "asset index out of bounds");                 \
-    const size_t _idx = ((t) * _F + (f)) * _A + (a);                 \
-    _slot.data[lvl][_idx] = (value);                                 \
-  } while (0)
-
-// ===== CS WORKER API (automatically use cs_worker_id) =====
-
-// Read all assets for feature f at time t → returns _Float16*
-#define CS_READ_ALL(store, date, lvl, t, f)                   \
-  [&]() -> feature_storage_t * {                              \
-    auto &_slot = (store)->cs_get_slot(date);                 \
-    assert(_slot.data[lvl] && "data[lvl] is null");           \
-    const size_t _F = (store)->query_F(lvl);                  \
-    const size_t _A = (store)->query_A();                     \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl); \
-    assert((t) < _T && "time index out of bounds");           \
-    assert((f) < _F && "feature index out of bounds");        \
-    const size_t _offset = ((t) * _F + (f)) * _A;             \
-    return _slot.data[lvl] + _offset;                         \
+// CS_READ_ALL: Read all assets for one field → returns _Float16*
+#define CS_READ_ALL(store, date, lvl, t, field_enum)              \
+  [&]() -> feature_storage_t * {                                  \
+    auto &_slot = (store)->cs_get_slot(date);                     \
+    assert(_slot.data[lvl] && "data[lvl] is null");               \
+    const size_t _F = (store)->query_F(lvl);                      \
+    const size_t _A = (store)->query_A();                         \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);     \
+    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];         \
+    assert((t) < _T && "time index out of bounds");               \
+    assert(_f < _F && "feature index out of bounds");             \
+    const size_t _offset = ((t) * _F + _f) * _A;                  \
+    return _slot.data[lvl] + _offset;                             \
   }()
 
-// Write all assets for feature f at time t
-#define CS_WRITE_ALL(store, date, lvl, t, f, src, count)                                \
-  do {                                                                                  \
-    auto &_slot = (store)->cs_get_slot(date);                                           \
-    assert(_slot.data[lvl] && "data[lvl] is null");                                     \
-    const size_t _F = (store)->query_F(lvl);                                            \
-    const size_t _A = (store)->query_A();                                               \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                           \
-    assert((t) < _T && "time index out of bounds");                                     \
-    assert((f) < _F && "feature index out of bounds");                                  \
-    assert((count) <= _A && "count exceeds num_assets");                                \
-    const size_t _offset = ((t) * _F + (f)) * _A;                                       \
-    std::memcpy(_slot.data[lvl] + _offset, (src), (count) * sizeof(feature_storage_t)); \
+// CS_WRITE_ALL: Write all assets for one field
+#define CS_WRITE_ALL(store, date, lvl, t, field_enum, src, count)                           \
+  do {                                                                                      \
+    auto &_slot = (store)->cs_get_slot(date);                                               \
+    assert(_slot.data[lvl] && "data[lvl] is null");                                         \
+    const size_t _F = (store)->query_F(lvl);                                                \
+    const size_t _A = (store)->query_A();                                                   \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                               \
+    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                                   \
+    assert((t) < _T && "time index out of bounds");                                         \
+    assert(_f < _F && "feature index out of bounds");                                       \
+    assert((count) <= _A && "count exceeds num_assets");                                    \
+    const size_t _offset = ((t) * _F + _f) * _A;                                            \
+    std::memcpy(_slot.data[lvl] + _offset, (src), (count) * sizeof(feature_storage_t));     \
   } while (0)
