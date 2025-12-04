@@ -251,7 +251,7 @@ inline size_t time_to_index(size_t level_idx, uint8_t hour, uint8_t minute,
 
   switch (cfg.unit) {
   case TimeUnit::MILLISECOND: {
-    const size_t ms = time_to_trading_milliseconds(hour, minute, second, millisecond);
+    const size_t ms = time_to_trading_seconds(hour, minute, second) * 1000 + millisecond;
     return ms / cfg.interval;
   }
   case TimeUnit::SECOND: {

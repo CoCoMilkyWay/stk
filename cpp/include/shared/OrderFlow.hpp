@@ -264,47 +264,80 @@ struct L1Cache {
 // L0 Cache - Single day, single asset (or multi-day in future)
 // ============================================================================
 
+// Heatmap render cache to avoid recomputation every frame
+// Cache plot-space coordinates, convert to pixels on render (handles zoom/pan)
+struct HeatmapRectCache {
+  struct Rect {
+    double x1, y1, x2, y2;  // Plot-space coordinates (invariant to zoom/pan)
+    uint32_t color;         // RGBA color
+  };
+  
+  std::vector<Rect> rects;
+  size_t cached_data_version = 0;
+  bool valid = false;
+  
+  void clear() {
+    rects.clear();
+    valid = false;
+    cached_data_version = 0;
+  }
+};
+
 struct L0Cache {
   std::vector<L0Day> days; // Support multi-day in future
   size_t asset_idx = 0;
   bool loaded = false;
+  size_t data_version = 0;  // Increment when data changes
 
   // Pre-computed plot data
-  std::vector<double> plot_x;             // Global X (day_n * L0_CAPACITY + tick_idx)
-  std::vector<double> plot_y;             // Mid price (valid only)
-  std::vector<size_t> day_start_plot_idx; // Index in plot_x/y where each day starts
+  std::vector<double> plot_t;             // Global X (day_n * L0_CAPACITY + tick_idx)
+  std::vector<double> plot_mid_price;     // Mid price (valid only)
+  std::vector<double> plot_best_bid;      // Best bid price (valid only)
+  std::vector<double> plot_best_ask;      // Best ask price (valid only)
+  std::vector<size_t> day_start_plot_idx; // Index in plot_t/mid_price where each day starts
   std::vector<size_t> day_start_global_x; // Global X at day start
   
   // Cached Y range with margin for performance
   double y_min_with_margin = 0.0;
   double y_max_with_margin = 0.0;
+  
+  // Heatmap render cache
+  HeatmapRectCache heatmap_cache;
 
   // Build plot data (call after load)
   void build_plot_data() {
-    plot_x.clear();
-    plot_y.clear();
+    plot_t.clear();
+    plot_mid_price.clear();
+    plot_best_bid.clear();
+    plot_best_ask.clear();
     day_start_plot_idx.clear();
     day_start_global_x.clear();
 
     for (const auto &day : days) {
-      day_start_plot_idx.push_back(plot_x.size());
+      day_start_plot_idx.push_back(plot_t.size());
       day_start_global_x.push_back(day.day_idx * OrderFlowConst::L0_CAPACITY);
 
       for (size_t i = 0; i < day.valid_count(); ++i) {
-        plot_x.push_back(day.global_x(i));
-        plot_y.push_back(static_cast<double>(day.mid_price[i]));
+        plot_t.push_back(day.global_x(i));
+        plot_mid_price.push_back(static_cast<double>(day.mid_price[i]));
+        plot_best_bid.push_back(static_cast<double>(day.bid_price[i][0]));  // Best bid
+        plot_best_ask.push_back(static_cast<double>(day.ask_price[i][0]));  // Best ask
       }
     }
     
     // Cache Y range with 15% margin
-    if (!plot_y.empty()) {
-      double y_min = *std::min_element(plot_y.begin(), plot_y.end());
-      double y_max = *std::max_element(plot_y.begin(), plot_y.end());
+    if (!plot_mid_price.empty()) {
+      double y_min = *std::min_element(plot_mid_price.begin(), plot_mid_price.end());
+      double y_max = *std::max_element(plot_mid_price.begin(), plot_mid_price.end());
       double y_range = y_max - y_min;
       double margin = y_range * 0.15;
       y_min_with_margin = y_min - margin;
       y_max_with_margin = y_max + margin;
     }
+    
+    // Increment data version and invalidate heatmap cache
+    ++data_version;
+    heatmap_cache.clear();
   }
 
   // Get day index from global X
@@ -317,16 +350,16 @@ struct L0Cache {
     return static_cast<size_t>(global_x) % OrderFlowConst::L0_CAPACITY;
   }
 
-  // Find sparse index for a global X (binary search in plot_x)
-  // Returns the index in plot_x/plot_y, or SIZE_MAX if not found
+  // Find sparse index for a global X (binary search in plot_t)
+  // Returns the index in plot_t/plot_mid_price, or SIZE_MAX if not found
   size_t find_plot_idx(double global_x) const {
-    auto it = std::lower_bound(plot_x.begin(), plot_x.end(), global_x);
-    if (it == plot_x.end())
-      return plot_x.empty() ? SIZE_MAX : plot_x.size() - 1;
-    return static_cast<size_t>(it - plot_x.begin());
+    auto it = std::lower_bound(plot_t.begin(), plot_t.end(), global_x);
+    if (it == plot_t.end())
+      return plot_t.empty() ? SIZE_MAX : plot_t.size() - 1;
+    return static_cast<size_t>(it - plot_t.begin());
   }
 
-  // Snap to next valid tick (in plot_x space)
+  // Snap to next valid tick (in plot_t space)
   size_t snap_to_valid_plot_idx(double global_x) const {
     return find_plot_idx(global_x);
   }
@@ -346,7 +379,7 @@ struct L0Cache {
 
   DepthData get_depth(size_t plot_idx) const {
     DepthData d;
-    if (plot_idx >= plot_x.size())
+    if (plot_idx >= plot_t.size())
       return d;
 
     // Find which day this plot_idx belongs to
@@ -383,7 +416,7 @@ struct L0Cache {
   // Get date for plot index
   const std::string &get_date(size_t plot_idx) const {
     static const std::string empty;
-    if (plot_idx >= plot_x.size() || days.empty())
+    if (plot_idx >= plot_t.size() || days.empty())
       return empty;
 
     // Find which day
@@ -404,16 +437,20 @@ struct L0Cache {
     return days[0].date == date && asset_idx == asset;
   }
 
-  size_t total_valid() const { return plot_x.size(); }
+  size_t total_valid() const { return plot_t.size(); }
 
   void clear() {
     days.clear();
     asset_idx = 0;
-    plot_x.clear();
-    plot_y.clear();
+    plot_t.clear();
+    plot_mid_price.clear();
+    plot_best_bid.clear();
+    plot_best_ask.clear();
     day_start_plot_idx.clear();
     day_start_global_x.clear();
     loaded = false;
+    data_version = 0;
+    heatmap_cache.clear();
   }
 };
 
@@ -462,8 +499,6 @@ struct OrderFlowUI {
 
   // Heatmap controls
   bool show_heatmap = true;
-  float log_amount_threshold = 3.0f;  // log10(amount) threshold, range [1.0, 6.0]
-                                       // 1.0 = 10 RMB (thin), 6.0 = 1M RMB (thick)
 
   // Track changes
   int prev_asset_idx = -1;

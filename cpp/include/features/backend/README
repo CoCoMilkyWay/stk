@@ -666,9 +666,8 @@
 // TS Worker:
 //   ts_update(date, worker_id, asset_id, l0_time_index)  更新时间进度 (写入后调用)
 //   ts_done(date, worker_id)                             完成标记
-//   TS_WRITE_FEATURES(store, date, lvl, t, a, f_start, f_end, src, worker_id)  批量写特征
+//   TS_WRITE_FEATURES(store, date, lvl, t, a, f_start, f_end, src, worker_id)  批量写特征(只查询一次, 更快, 优先用)
 //   TS_WRITE_SINGLE(store, date, lvl, t, f, a, value, worker_id)               单个写特征
-//   TS_WRITE_LINK(store, date, l0_t, a, link_offset, value, worker_id)         写 L1/L2 link
 //
 // CS Worker:
 //   cs_wait(date, l0_time_index)                         等待 time_idx 就绪

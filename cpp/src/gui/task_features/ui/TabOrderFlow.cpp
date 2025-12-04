@@ -120,48 +120,80 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   char date_buf[16], time_buf[16];
   FormatDateFull(date_buf, sizeof(date_buf), date);
   FormatTimeHMS(time_buf, sizeof(time_buf), depth.time);
-  ImGui::Text("%s", date_buf);
-  ImGui::Text("%s", time_buf);
+  
+  // Use minimal font and spacing
+  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);  // Use default small font
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));  // No spacing
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 1));  // Minimal padding
+  
+  ImGui::Text("%s %s", date_buf, time_buf);
   ImGui::Separator();
 
-  // Calculate max_amount only from valid levels (price > 0 and amount > 0)
-  float max_amount = 1.0f;
+  // Fixed max at 1M RMB for full bar
+  constexpr float MAX_AMOUNT_FOR_FULL_BAR = 1000000.0f;
+  const float bar_max_width = panel_width - 70.0f;
+
+  // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
+  for (int i = 9; i >= 0; --i) {
+    float price = (*depth.ask_price)[i];
+    float amount = (*depth.ask_amount)[i];  // Keep sign
+    
+    if (price <= 0) continue;  // Skip invalid levels
+    
+    float abs_amount = std::abs(amount);
+    float ratio = std::min(1.0f, abs_amount / MAX_AMOUNT_FOR_FULL_BAR);
+    
+    // Color based on amount sign and magnitude
+    ImVec4 bar_color;
+    if (amount < 0) {
+      // Negative (ask side): red
+      float intensity = std::min(1.0f, abs_amount / MAX_AMOUNT_FOR_FULL_BAR);
+      bar_color = ImVec4(0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.3f * (1.0f - intensity * 0.5f), 0.8f);
+    } else {
+      // Positive (anomaly on ask side): show as yellow warning
+      bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
+    }
+    
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
+    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), "");  // Minimal height
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::Text("%.2f", price);
+  }
+
+  // Mid price - no separator to save space
+  ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.2f", depth.mid_price);
+
+  // Bid side (green) - 10 levels, from top (bid1) to bottom (bid10)
   for (int i = 0; i < 10; ++i) {
-    if ((*depth.bid_price)[i] > 0 && (*depth.bid_amount)[i] > 0) {
-      max_amount = std::max(max_amount, std::abs((*depth.bid_amount)[i]));
+    float price = (*depth.bid_price)[i];
+    float amount = (*depth.bid_amount)[i];  // Keep sign
+    
+    if (price <= 0) continue;  // Skip invalid levels
+    
+    float abs_amount = std::abs(amount);
+    float ratio = std::min(1.0f, abs_amount / MAX_AMOUNT_FOR_FULL_BAR);
+    
+    // Color based on amount sign and magnitude
+    ImVec4 bar_color;
+    if (amount > 0) {
+      // Positive (bid side): green
+      float intensity = std::min(1.0f, abs_amount / MAX_AMOUNT_FOR_FULL_BAR);
+      bar_color = ImVec4(0.3f * (1.0f - intensity * 0.5f), 0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.8f);
+    } else {
+      // Negative (anomaly on bid side): show as yellow warning
+      bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
     }
-    if ((*depth.ask_price)[i] > 0 && (*depth.ask_amount)[i] > 0) {
-      max_amount = std::max(max_amount, std::abs((*depth.ask_amount)[i]));
-    }
-  }
-
-  const float bar_max_width = panel_width - 80.0f;
-
-  // Ask side (red) - skip if price or amount is 0
-  for (int i = 4; i >= 0; --i) {
-    if ((*depth.ask_price)[i] <= 0 || (*depth.ask_amount)[i] <= 0) continue;
-    float ratio = std::abs((*depth.ask_amount)[i]) / max_amount;
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.8f, 0.3f, 0.3f, 0.8f));
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 14.0f), "");
+    
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
+    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), "");  // Minimal height
     ImGui::PopStyleColor();
     ImGui::SameLine();
-    ImGui::Text("%.2f", (*depth.ask_price)[i]);
+    ImGui::Text("%.2f", price);
   }
-
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "MID: %.2f", depth.mid_price);
-  ImGui::Separator();
-
-  // Bid side (green) - skip if price or amount is 0
-  for (int i = 0; i < 5; ++i) {
-    if ((*depth.bid_price)[i] <= 0 || (*depth.bid_amount)[i] <= 0) continue;
-    float ratio = std::abs((*depth.bid_amount)[i]) / max_amount;
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.3f, 0.8f, 0.3f, 0.8f));
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 14.0f), "");
-    ImGui::PopStyleColor();
-    ImGui::SameLine();
-    ImGui::Text("%.2f", (*depth.bid_price)[i]);
-  }
+  
+  ImGui::PopStyleVar(2);
+  ImGui::PopFont();
 }
 
 // ============================================================================
@@ -169,31 +201,34 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
 // ============================================================================
 
 // Helper: Map log10(amount) to color intensity [0, 1]
-// Amounts below threshold map to 0 (transparent), above map to [0, 1]
-static float MapAmountToIntensity(float amount, float log_threshold) {
-  if (amount <= 0) return 0.0f;
-  float log_amount = std::log10(amount);
-  if (log_amount < log_threshold) return 0.0f;
+// Amount range: 1000 RMB (log10=3) to 10M RMB (log10=7)
+static float MapAmountToIntensity(float amount) {
+  float abs_amount = std::abs(amount);
+  if (abs_amount < 1000.0f) return 0.0f;  // Below 1000 RMB threshold
   
-  // Map [threshold, threshold+3] to [0, 1] smoothly
-  float range = 3.0f;  // 3 orders of magnitude range
-  float normalized = (log_amount - log_threshold) / range;
+  float log_amount = std::log10(abs_amount);
+  constexpr float log_min = 3.0f;   // log10(1000) = 3
+  constexpr float log_max = 7.0f;   // log10(10M) = 7
+  
+  // Map [3, 7] to [0, 1]
+  float normalized = (log_amount - log_min) / (log_max - log_min);
   return std::min(1.0f, std::max(0.0f, normalized));
 }
 
-// Helper: Convert intensity to color (blue for bid, red for ask)
-static ImU32 IntensityToColor(float intensity, bool is_bid) {
-  if (intensity <= 0) return IM_COL32(0, 0, 0, 0);  // Transparent
+// Helper: Convert amount to color based on sign (positive=bid/green, negative=ask/red) and magnitude
+static ImU32 AmountToColor(float amount) {
+  if (std::abs(amount) < 1000.0f) return IM_COL32(0, 0, 0, 0);  // Transparent if below threshold
   
+  float intensity = MapAmountToIntensity(amount);
   uint8_t alpha = static_cast<uint8_t>(intensity * 200 + 55);  // [55, 255]
   
-  if (is_bid) {
-    // Bid: green/blue spectrum
+  if (amount > 0) {
+    // Positive amount (bid side): green spectrum
     uint8_t g = static_cast<uint8_t>(100 + intensity * 155);
     uint8_t b = static_cast<uint8_t>(intensity * 100);
     return IM_COL32(0, g, b, alpha);
   } else {
-    // Ask: red/orange spectrum
+    // Negative amount (ask side): red spectrum
     uint8_t r = static_cast<uint8_t>(150 + intensity * 105);
     uint8_t g = static_cast<uint8_t>(intensity * 50);
     return IM_COL32(r, g, 0, alpha);
@@ -201,7 +236,7 @@ static ImU32 IntensityToColor(float intensity, bool is_bid) {
 }
 
 static void RenderL0Plot(OrderFlow &of, bool force_reset) {
-  if (!of.l0.loaded || of.l0.plot_x.empty()) {
+  if (!of.l0.loaded || of.l0.plot_t.empty()) {
     ImGui::TextDisabled(of.l0.loaded ? "No L0 data for this date" : "Waiting for L1 load...");
     return;
   }
@@ -256,85 +291,107 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
 
     // Render heatmap if enabled
     if (ui.show_heatmap && !of.l0.days.empty()) {
+      auto &cache = of.l0.heatmap_cache;
+      
+      // Check if cache needs rebuild
+      bool need_rebuild = !cache.valid || 
+                          cache.cached_data_version != of.l0.data_version;
+      
+      if (need_rebuild) {
+        cache.rects.clear();
+        cache.rects.reserve(of.l0.plot_t.size() * 20);  // Estimate ~20 visible levels per tick
+        
+        // Fixed level height in price space (relative to mid price, ~0.05% tick size)
+        const double fixed_level_height_ratio = 0.0005;
+        
+        // Build rect cache
+        for (size_t plot_idx = 0; plot_idx < of.l0.plot_t.size(); ++plot_idx) {
+          auto depth = of.l0.get_depth(plot_idx);
+          if (!depth.valid) continue;
+
+          double x = of.l0.plot_t[plot_idx];
+          
+          // Determine X span (use half-distance to neighbors)
+          double x_half_width = 0.5;  // Default half-width
+          if (plot_idx > 0 && plot_idx + 1 < of.l0.plot_t.size()) {
+            double dx_prev = x - of.l0.plot_t[plot_idx - 1];
+            double dx_next = of.l0.plot_t[plot_idx + 1] - x;
+            x_half_width = std::min(dx_prev, dx_next) * 0.5;
+          }
+          
+          // Fixed height calculation based on mid price
+          double mid_price = depth.mid_price;
+          double level_height = mid_price * fixed_level_height_ratio;
+          
+          // Process bid levels (positive amount, below mid)
+          for (int level = 0; level < 30; ++level) {
+            if ((*depth.bid_price)[level] <= 0) continue;
+            
+            float price = (*depth.bid_price)[level];
+            float amount = (*depth.bid_amount)[level];  // Keep sign
+            
+            ImU32 color = AmountToColor(amount);
+            if (color != IM_COL32(0, 0, 0, 0)) {
+              cache.rects.push_back({
+                x - x_half_width, price, 
+                x + x_half_width, price - level_height, 
+                color
+              });
+            }
+          }
+          
+          // Process ask levels (negative amount, above mid)
+          for (int level = 0; level < 30; ++level) {
+            if ((*depth.ask_price)[level] <= 0) continue;
+            
+            float price = (*depth.ask_price)[level];
+            float amount = (*depth.ask_amount)[level];  // Keep sign (negative)
+            
+            ImU32 color = AmountToColor(amount);
+            if (color != IM_COL32(0, 0, 0, 0)) {
+              cache.rects.push_back({
+                x - x_half_width, price,
+                x + x_half_width, price + level_height,
+                color
+              });
+            }
+          }
+        }
+        
+        cache.cached_data_version = of.l0.data_version;
+        cache.valid = true;
+      }
+      
+      // Render cached rects (convert plot-space to pixels on-the-fly)
+      ImPlot::PushPlotClipRect();
       ImDrawList* draw_list = ImPlot::GetPlotDrawList();
       
-      // Fixed level height in price space (relative to mid price, ~0.05% tick size)
-      const double fixed_level_height_ratio = 0.0005;
-      
-      // Sentinel filter: minimum 1000 RMB to avoid guard levels (1 share sentinels)
-      constexpr float MIN_AMOUNT_RMB = 1000.0f;
-      
-      // For each valid tick, draw depth levels as rectangles
-      for (size_t plot_idx = 0; plot_idx < of.l0.plot_x.size(); ++plot_idx) {
-        auto depth = of.l0.get_depth(plot_idx);
-        if (!depth.valid) continue;
-
-        double x = of.l0.plot_x[plot_idx];
-        
-        // Determine X span (use half-distance to neighbors)
-        double x_half_width = 0.5;  // Default half-width
-        if (plot_idx > 0 && plot_idx + 1 < of.l0.plot_x.size()) {
-          double dx_prev = x - of.l0.plot_x[plot_idx - 1];
-          double dx_next = of.l0.plot_x[plot_idx + 1] - x;
-          x_half_width = std::min(dx_prev, dx_next) * 0.5;
-        }
-        
-        // Fixed height calculation based on mid price
-        double mid_price = depth.mid_price;
-        double level_height = mid_price * fixed_level_height_ratio;
-        
-        // Draw bid levels (below mid)
-        for (int level = 0; level < 30; ++level) {
-          if ((*depth.bid_price)[level] <= 0) continue;
-          
-          float price = (*depth.bid_price)[level];
-          float amount = std::abs((*depth.bid_amount)[level]);
-          
-          // Filter sentinel levels
-          if (amount < MIN_AMOUNT_RMB) continue;
-          
-          float intensity = MapAmountToIntensity(amount, ui.log_amount_threshold);
-          
-          if (intensity > 0) {
-            // Fixed height rectangle: from price to (price - level_height)
-            ImVec2 p_min = ImPlot::PlotToPixels(x - x_half_width, price);
-            ImVec2 p_max = ImPlot::PlotToPixels(x + x_half_width, price - level_height);
-            
-            ImU32 color = IntensityToColor(intensity, true);
-            draw_list->AddRectFilled(p_min, p_max, color);
-          }
-        }
-        
-        // Draw ask levels (above mid)
-        for (int level = 0; level < 30; ++level) {
-          if ((*depth.ask_price)[level] <= 0) continue;
-          
-          float price = (*depth.ask_price)[level];
-          float amount = std::abs((*depth.ask_amount)[level]);
-          
-          // Filter sentinel levels
-          if (amount < MIN_AMOUNT_RMB) continue;
-          
-          float intensity = MapAmountToIntensity(amount, ui.log_amount_threshold);
-          
-          if (intensity > 0) {
-            // Fixed height rectangle: from price to (price + level_height)
-            ImVec2 p_min = ImPlot::PlotToPixels(x - x_half_width, price);
-            ImVec2 p_max = ImPlot::PlotToPixels(x + x_half_width, price + level_height);
-            
-            ImU32 color = IntensityToColor(intensity, false);
-            draw_list->AddRectFilled(p_min, p_max, color);
-          }
-        }
+      for (const auto &rect : cache.rects) {
+        ImVec2 p_min = ImPlot::PlotToPixels(rect.x1, rect.y1);
+        ImVec2 p_max = ImPlot::PlotToPixels(rect.x2, rect.y2);
+        draw_list->AddRectFilled(p_min, p_max, rect.color);
       }
+      
+      ImPlot::PopPlotClipRect();
     }
 
     // Draw mid price line on top
-    ImPlot::PlotLine("Mid Price", of.l0.plot_x.data(), of.l0.plot_y.data(),
-                     static_cast<int>(of.l0.plot_x.size()));
+    ImPlot::PlotLine("Mid Price", of.l0.plot_t.data(), of.l0.plot_mid_price.data(),
+                     static_cast<int>(of.l0.plot_t.size()));
+    
+    // Draw best bid and ask lines
+    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.3f, 0.8f, 0.3f, 0.7f));
+    ImPlot::PlotLine("Best Bid", of.l0.plot_t.data(), of.l0.plot_best_bid.data(),
+                     static_cast<int>(of.l0.plot_t.size()));
+    ImPlot::PopStyleColor();
+    
+    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.8f, 0.3f, 0.3f, 0.7f));
+    ImPlot::PlotLine("Best Ask", of.l0.plot_t.data(), of.l0.plot_best_ask.data(),
+                     static_cast<int>(of.l0.plot_t.size()));
+    ImPlot::PopStyleColor();
 
-    double anchor_x = ui.l0_anchor_plot_idx < of.l0.plot_x.size()
-                          ? of.l0.plot_x[ui.l0_anchor_plot_idx] : x_min;
+    double anchor_x = ui.l0_anchor_plot_idx < of.l0.plot_t.size()
+                          ? of.l0.plot_t[ui.l0_anchor_plot_idx] : x_min;
 
     if (ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f)) {
       ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(anchor_x);
@@ -345,12 +402,12 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
       ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(mouse.x);
     }
 
-    if (ui.l0_anchor_plot_idx < of.l0.plot_x.size()) {
+    if (ui.l0_anchor_plot_idx < of.l0.plot_t.size()) {
       auto depth = of.l0.get_depth(ui.l0_anchor_plot_idx);
       if (depth.valid) {
         char time_buf[16];
         FormatTimeHMS(time_buf, sizeof(time_buf), depth.time);
-        ImPlot::Annotation(anchor_x, of.l0.plot_y[ui.l0_anchor_plot_idx],
+        ImPlot::Annotation(anchor_x, of.l0.plot_mid_price[ui.l0_anchor_plot_idx],
                            ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", time_buf);
       }
     }
@@ -536,32 +593,7 @@ static void RenderStatusBar(const OrderFlow &of, size_t asset_idx) {
 
 static void RenderHeatmapControls(OrderFlow &of) {
   auto &ui = of.ui;
-  
-  ImGui::Checkbox("Show Heatmap", &ui.show_heatmap);
-  
-  if (ui.show_heatmap) {
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(200);
-    ImGui::SliderFloat("Log Threshold", &ui.log_amount_threshold, 1.0f, 6.0f, "%.1f");
-    
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) {
-      ImGui::BeginTooltip();
-      ImGui::Text("Log10(Amount) Threshold");
-      ImGui::Separator();
-      ImGui::Text("1.0 = 10 RMB (thin levels)");
-      ImGui::Text("2.0 = 100 RMB");
-      ImGui::Text("3.0 = 1K RMB");
-      ImGui::Text("4.0 = 10K RMB");
-      ImGui::Text("5.0 = 100K RMB");
-      ImGui::Text("6.0 = 1M RMB (thick levels)");
-      ImGui::Separator();
-      ImGui::TextWrapped("Lower threshold: observe thin level differences");
-      ImGui::TextWrapped("Higher threshold: observe thick level differences");
-      ImGui::EndTooltip();
-    }
-  }
+  ImGui::Checkbox("Heatmap", &ui.show_heatmap);
 }
 
 // ============================================================================
@@ -643,7 +675,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   ImGui::SameLine();
   ImGui::BeginChild("DepthPanel", ImVec2(DEPTH_PANEL_WIDTH, -1), true);
 
-  if (of.l0.loaded && ui.l0_anchor_plot_idx < of.l0.plot_x.size()) {
+  if (of.l0.loaded && ui.l0_anchor_plot_idx < of.l0.plot_t.size()) {
     auto depth = of.l0.get_depth(ui.l0_anchor_plot_idx);
     std::string date = of.l0.get_date(ui.l0_anchor_plot_idx);
     RenderDepthPanel(depth, date, DEPTH_PANEL_WIDTH);

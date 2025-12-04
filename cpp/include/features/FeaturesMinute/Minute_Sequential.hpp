@@ -26,11 +26,8 @@ public:
 
   // Main computation entry (called by CoreSequential)
   void compute_and_store() {
-    if (!store_ || date_str_.empty())
-      return;
-
     // Check if we have data
-    if (minute_data_.close.empty())
+    if (minute_data_.close.empty()) [[unlikely]]
       return;
 
     // Read latest bar from CBuffers
@@ -40,10 +37,9 @@ public:
     const uint32_t total_volume = bid_vol + ask_vol;
 
     bool is_valid = close > 0 && total_volume > 0;
-    size_t t = minute_data_.timestamp;
 
     // Compute and write minute-level TS features
-    compute_ts_minute(is_valid, t);
+    compute_ts_minute(is_valid, minute_data_.l1_index);
   }
 
 private:

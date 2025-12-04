@@ -24,14 +24,14 @@ public:
     assert(input_.open.capacity() > bar_period_factor__);
   }
 
-  // Trigger resampling logic
-  void update() {
+  // Trigger resampling logic, returns true if a new bar was generated
+  bool update() {
     const size_t input_size = input_.open.size();
     const size_t new_bars = input_size - last_processed_index_;
 
     // Early return if not enough bars to aggregate (common case during accumulation)
     if (new_bars < bar_period_factor__) [[likely]] {
-      return;
+      return false;
     }
 
     const size_t start_idx = last_processed_index_;
@@ -51,7 +51,7 @@ public:
     // Skip this aggregation if first bar has invalid data
     if (agg_open == 0.0f) [[unlikely]] {
       last_processed_index_ = end_idx;
-      return;
+      return false;
     }
 
     // Aggregate remaining bars (start from start_idx+1)
@@ -85,6 +85,7 @@ public:
     // Logger::log(std::to_string(output_.asset_id), "hour_bar idx:" + std::to_string(end_idx) + " price: " + std::to_string(agg_close) + " volume: " + std::to_string(agg_bid_volume + agg_ask_volume) + " amount: " + std::to_string(agg_bid_amount + agg_ask_amount));
 
     last_processed_index_ = end_idx;
+    return true;
   }
 
   // Reset resampler state (called when starting a new day)

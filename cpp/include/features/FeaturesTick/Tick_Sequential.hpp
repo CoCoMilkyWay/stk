@@ -1,7 +1,6 @@
 #pragma once
 
 #include "features/DataDefine.hpp"
-#include "features/FeaturesDefine.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include <algorithm>
 #include <cmath>
@@ -26,63 +25,45 @@ public:
 
   // Main computation entry (called by CoreSequential)
   void compute_and_store() {
-    if (!store_ || date_str_.empty())
-      return;
-
-    const TickData &tick_data = tick_data_;
-    size_t t = time_to_trading_seconds(tick_data_.lob.hour, tick_data_.lob.minute, tick_data_.lob.second);
-
-    // Check if this asset is active (has valid LOB data)
-    bool is_valid = check_lob_valid(tick_data);
 
     // Compute and write tick-level TS features
-    compute_ts_tick(is_valid, t);
+    compute_ts_tick(tick_data_.l0_index);
 
     // Write LOB depth snapshot for GUI (META features)
-    write_lob_depth(is_valid, t);
+    write_lob_depth(tick_data_.l0_index);
   }
 
 private:
   // Level 0: Tick-level TS features computation
-  void compute_ts_tick(bool is_valid, size_t t) {
-    // Allocate feature array (only TS features)
-    float features[L0_TS_RANGE.end - L0_TS_RANGE.start];
-
-    if (!is_valid) {
-      // Asset inactive: write zeros
-      std::memset(features, 0, sizeof(features));
-    } else {
-      // Compute TS features
-      features[0] = compute_tick_ret_z();
-      features[1] = compute_tobi_osc();
-      features[2] = compute_micro_gap_norm();
-      features[3] = compute_spread_momentum();
-      features[4] = compute_signed_volume_imb();
-    }
+  void compute_ts_tick(size_t t) {
+    // Compute TS features (reuse member buffer)
+    ts_features_buffer_[0] = compute_tick_ret_z();
+    ts_features_buffer_[1] = compute_tobi_osc();
+    ts_features_buffer_[2] = compute_micro_gap_norm();
+    ts_features_buffer_[3] = compute_spread_momentum();
+    ts_features_buffer_[4] = compute_signed_volume_imb();
 
     // Write TS features
     constexpr size_t level_idx = 0;
-    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L0_TS_RANGE.start, L0_TS_RANGE.end, features, worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, L0_TS_RANGE.start, L0_TS_RANGE.end, ts_features_buffer_, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);
+    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
   }
 
   // Write LOB depth snapshot (N levels bid/ask price/amount for GUI)
   // No validity check - always write available depth (may be partial)
-  void write_lob_depth(bool, size_t t) {
+  void write_lob_depth(size_t t) {
     constexpr size_t N = L2::LOB_DEPTH;
     const auto &depth = tick_data_.lob.depth_buffer;
 
     constexpr size_t level_idx = 0;
     constexpr size_t bid_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price];
-    constexpr size_t ask_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price];
-    constexpr size_t bid_amount_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_bid_amount];
-    constexpr size_t ask_amount_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_ask_amount];
+    constexpr size_t mid_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_mid_price];
 
     // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
     // Output: bid[0]=bid1(best), ask[0]=ask1(best)
-    // Write all N levels, unfilled slots will have price/amount = 0
+    // Fill all N levels, unfilled slots will have price/amount = 0
     for (size_t i = 0; i < N; ++i) {
       Level *bid_level = (N + i < depth.size()) ? depth[N + i] : nullptr;
       Level *ask_level = (N - 1 >= i && N - 1 - i < depth.size()) ? depth[N - 1 - i] : nullptr;
@@ -92,20 +73,17 @@ private:
       float bid_amount = bid_level ? bid_level->net_quantity * bid_price : 0.0f;
       float ask_amount = ask_level ? -ask_level->net_quantity * ask_price : 0.0f;
 
-      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_price_offset + i, asset_id_, bid_price, worker_id_);
-      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_price_offset + i, asset_id_, ask_price, worker_id_);
-      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_amount_offset + i, asset_id_, bid_amount, worker_id_);
-      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_amount_offset + i, asset_id_, ask_amount, worker_id_);
+      lob_depth_buffer_[i] = bid_price;          // [0:N-1]
+      lob_depth_buffer_[N + i] = ask_price;      // [N:2N-1]
+      lob_depth_buffer_[2 * N + i] = bid_amount; // [2N:3N-1]
+      lob_depth_buffer_[3 * N + i] = ask_amount; // [3N:4N-1]
     }
 
-    // Write mid_price for GUI (OrderFlow visualization)
-    float mid = get_mid_price();
-    TS_WRITE_SINGLE(store_, date_str_, level_idx, t, L0_FieldOffset::_mid_price, asset_id_, mid, worker_id_);
-  }
+    // Write mid_price at the end
+    lob_depth_buffer_[4 * N] = get_mid_price();
 
-  // Check if LOB has valid data
-  bool check_lob_valid(const TickData &) const {
-    return tick_data_.lob.price > 0 && tick_data_.lob.depth_buffer.size() >= 2 * L2::LOB_DEPTH;
+    // Batch write all depth features + mid_price
+    TS_WRITE_FEATURES(store_, date_str_, level_idx, t, asset_id_, bid_price_offset, mid_price_offset + 1, lob_depth_buffer_, worker_id_);
   }
 
   // Get mid price from depth buffer
@@ -329,4 +307,8 @@ private:
 
   // Scratch buffer for median computation (avoids heap allocation per call)
   mutable std::vector<float> scratch_;
+
+  // Reusable buffers for batch writes (high-frequency hot path)
+  float ts_features_buffer_[L0_TS_RANGE.end - L0_TS_RANGE.start]; // TS features batch write
+  float lob_depth_buffer_[4 * L2::LOB_DEPTH + 1];                 // LOB depth + mid_price batch write
 };

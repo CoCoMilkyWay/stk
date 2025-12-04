@@ -804,21 +804,6 @@ public:
     _slot.data[lvl][_idx] = (value);                                 \
   } while (0)
 
-// Write link metadata (L0 only, auto-triggered by resampling)
-#define TS_WRITE_LINK(store, date, l0_t, a, link_offset, value, worker_id) \
-  do {                                                                     \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                   \
-    assert(_slot.data[0] && "data[0] is null");                            \
-    const size_t _F = (store)->query_F(0);                                 \
-    const size_t _A = (store)->query_A();                                  \
-    [[maybe_unused]] const size_t _T = (store)->query_T(0);                \
-    assert((l0_t) < _T && "l0_t out of bounds");                           \
-    assert((link_offset) < _F && "link_offset out of bounds");             \
-    assert((a) < _A && "asset index out of bounds");                       \
-    const size_t _idx = ((l0_t) * _F + (link_offset)) * _A + (a);          \
-    _slot.data[0][_idx] = static_cast<_Float16>(value);                    \
-  } while (0)
-
 // ===== CS WORKER API (automatically use cs_worker_id) =====
 
 // Read all assets for feature f at time t → returns _Float16*

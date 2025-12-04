@@ -257,11 +257,6 @@ inline constexpr size_t time_to_trading_seconds(uint8_t hour, uint8_t minute, ui
   return result < TRADE_SECONDS_PER_DAY ? result : TRADE_SECONDS_PER_DAY - 1;
 }
 
-// Convert time to trading milliseconds (0-15299999)
-inline constexpr size_t time_to_trading_milliseconds(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond) {
-  return time_to_trading_seconds(hour, minute, second) * 1000 + millisecond;
-}
-
 // ============================================================================
 // INVERSE TIME CONVERSION - Index to Clock Time
 // ============================================================================
@@ -278,7 +273,7 @@ struct ClockTime {
 // Afternoon: 8100-15299 → 13:00:00 - 14:59:59
 inline constexpr ClockTime trading_seconds_to_clock(size_t index) {
   ClockTime t;
-  
+
   if (index < 8100) {
     // Morning session: 09:15 + index seconds
     size_t total_seconds = MORNING_START_MIN * 60 + index;
@@ -293,7 +288,7 @@ inline constexpr ClockTime trading_seconds_to_clock(size_t index) {
     t.minute = static_cast<uint8_t>((total_seconds % 3600) / 60);
     t.second = static_cast<uint8_t>(total_seconds % 60);
   }
-  
+
   return t;
 }
 
@@ -303,7 +298,7 @@ inline constexpr ClockTime trading_seconds_to_clock(size_t index) {
 inline constexpr ClockTime trading_minutes_to_clock(size_t index) {
   ClockTime t;
   t.second = 0;
-  
+
   if (index < 135) {
     // Morning session: 09:15 + index minutes
     size_t total_minutes = MORNING_START_MIN + index;
@@ -316,17 +311,17 @@ inline constexpr ClockTime trading_minutes_to_clock(size_t index) {
     t.hour = static_cast<uint8_t>(total_minutes / 60);
     t.minute = static_cast<uint8_t>(total_minutes % 60);
   }
-  
+
   return t;
 }
 
 // Format time as string "HH:MM:SS" (for display)
-inline void format_time(char* buf, size_t buf_size, const ClockTime& t) {
+inline void format_time(char *buf, size_t buf_size, const ClockTime &t) {
   std::snprintf(buf, buf_size, "%02d:%02d:%02d", t.hour, t.minute, t.second);
 }
 
 // Format time as string "HH:MM" (for display)
-inline void format_time_hm(char* buf, size_t buf_size, const ClockTime& t) {
+inline void format_time_hm(char *buf, size_t buf_size, const ClockTime &t) {
   std::snprintf(buf, buf_size, "%02d:%02d", t.hour, t.minute);
 }
 

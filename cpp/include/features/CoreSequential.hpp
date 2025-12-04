@@ -73,25 +73,15 @@ public:
     update_tick_metadata();
     tick_sequential_.compute_and_store();
 
-    // Track sizes before resampling
-    const size_t prev_minute_count = minute_data_.open.size();
-    const size_t prev_hour_count = hour_data_.open.size();
-
     // Trigger tick -> minute resampling
-    tick2min_resampler_.update();
-
-    // Check if new minute bar was generated
-    if (minute_data_.open.size() > prev_minute_count) {
-      // Update minute metadata
+    if (tick2min_resampler_.update()) {
+      // New minute bar generated
       update_minute_metadata();
       minute_sequential_.compute_and_store();
 
       // Trigger minute -> hour resampling
-      min2hour_resampler_.update();
-
-      // Check if new hour bar was generated
-      if (hour_data_.open.size() > prev_hour_count) {
-        // Update hour metadata
+      if (min2hour_resampler_.update()) {
+        // New hour bar generated
         update_hour_metadata();
         hour_sequential_.compute_and_store();
       }
@@ -99,24 +89,24 @@ public:
 
     // Mark L0 progress after all levels (L0/L1/L2) computed
     if (!date_str_.empty()) {
-      store_.ts_update(date_str_, core_id_, asset_id_, tick_data_.timestamp);
+      store_.ts_update(date_str_, core_id_, asset_id_, tick_data_.l0_index);
     }
   }
 
 private:
   // Update tick-level metadata
   void inline update_tick_metadata() noexcept {
-    tick_data_.timestamp = time_to_trading_seconds(tick_data_.lob.hour, tick_data_.lob.minute, tick_data_.lob.second);
+    tick_data_.l0_index = time_to_trading_seconds(tick_data_.lob.hour, tick_data_.lob.minute, tick_data_.lob.second);
   }
 
   // Update minute-level metadata
   void inline update_minute_metadata() noexcept {
-    minute_data_.timestamp = tick_data_.timestamp / 60;
+    minute_data_.l1_index = tick_data_.l0_index / 60;
   }
 
   // Update hour-level metadata
   void inline update_hour_metadata() noexcept {
-    hour_data_.timestamp = minute_data_.timestamp / 60;
+    hour_data_.l2_index = minute_data_.l1_index / 60;
   }
 
   GlobalFeatureStore &store_;

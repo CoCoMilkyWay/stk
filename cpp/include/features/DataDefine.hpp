@@ -24,7 +24,7 @@ struct TickData {
   // Metadata
   uint32_t asset_id{0};  // static: asset identifier
   uint32_t core_id{0};   // static: core identifier
-  uint32_t timestamp{0}; // dynamic: current tick timestamp (trading second index 0-?)
+  uint32_t l0_index{0}; // dynamic: current tick index (trading second index 0-?)
 
   LOB_Feature lob;
 };
@@ -36,7 +36,7 @@ struct MinuteData {
   // Metadata
   uint32_t asset_id{0};  // static: asset identifier
   uint32_t core_id{0};   // static: core identifier
-  uint32_t timestamp{0}; // dynamic: current minute timestamp (trading minute index 0-239)
+  uint32_t l1_index{0}; // dynamic: current minute index (trading minute index 0-239)
 
   // Time-series: OHLC (240 minutes in a trading day)
   CBuffer<float, 240> open;
@@ -58,7 +58,7 @@ struct HourData {
   // Metadata
   uint32_t asset_id{0};  // static: asset identifier
   uint32_t core_id{0};   // static: core identifier
-  uint32_t timestamp{0}; // current hour timestamp (trading hour index 0-3)
+  uint32_t l2_index{0}; // current hour index (trading hour index 0-3)
 
   // Time-series: OHLC (4 hours in a trading day)
   CBuffer<float, 4> open;

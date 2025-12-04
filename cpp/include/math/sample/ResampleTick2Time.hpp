@@ -22,11 +22,11 @@ public:
   ResampleTick2Time(const TickData &input, MinuteData &output, uint32_t bar_period_seconds)
       : input_(input), output_(output), bar_period_seconds_(bar_period_seconds) {}
 
-  // Trigger resampling logic
-  void update() {
+  // Trigger resampling logic, returns true if a new bar was generated
+  bool update() {
     // Only process taker orders (most ticks are takers, but still worth filtering early)
-    if (input_.lob.order_type != L2::OrderType::TAKER) [[unlikely]] {
-      return;
+    if (input_.lob.order_type != L2::OrderType::TAKER) {
+      return false;
     }
 
     const float price = input_.lob.price;
@@ -39,6 +39,7 @@ public:
     const bool emit_bar = (last_bar_time_ != 0) && (current_time_seconds - last_bar_time_ >= bar_period_seconds_);
 
     // Only emit if we have valid data (at least one tick processed)
+    bool bar_generated = false;
     if (emit_bar && bar_open_ != 0.0f) [[unlikely]] {
       output_.open.push_back(bar_open_);
       output_.high.push_back(bar_high_);
@@ -49,6 +50,7 @@ public:
       output_.bid_amount.push_back(bar_bid_amount_);
       output_.ask_amount.push_back(bar_ask_amount_);
       // Logger::log(std::to_string(output_.asset_id), "min_bar " + std::to_string(input_.lob.hour) + ":" + std::to_string(input_.lob.minute) + ":" + std::to_string(input_.lob.second) + " price: " + std::to_string(bar_close_) + " volume: " + std::to_string(bar_bid_volume_ + bar_ask_volume_) + " amount: " + std::to_string(bar_bid_amount_ + bar_ask_amount_) + " current_time_seconds: " + std::to_string(current_time_seconds));
+      bar_generated = true;
     }
 
     // Start new bar (first tick or after emit)
@@ -66,7 +68,7 @@ public:
         bar_high_ = bar_open_;
         bar_low_ = bar_open_;
       }
-      
+
       last_bar_time_ = current_time_seconds;
       bar_close_ = bar_open_;
       bar_bid_volume_ = bar_ask_volume_ = 0;
@@ -87,6 +89,8 @@ public:
       bar_ask_volume_ += volume;
       bar_ask_amount_ += amount;
     }
+
+    return bar_generated;
   }
 
   // Reset resampler state (called when starting a new day)
