@@ -38,7 +38,8 @@ public:
     // Check if we need to emit previous bar and start new one
     const bool emit_bar = (last_bar_time_ != 0) && (current_time_seconds - last_bar_time_ >= bar_period_seconds_);
 
-    if (emit_bar) [[unlikely]] {
+    // Only emit if we have valid data (at least one tick processed)
+    if (emit_bar && bar_open_ != 0.0f) [[unlikely]] {
       output_.open.push_back(bar_open_);
       output_.high.push_back(bar_high_);
       output_.low.push_back(bar_low_);
@@ -54,16 +55,19 @@ public:
     if (last_bar_time_ == 0 || emit_bar) [[unlikely]] {
       // For intraday continuity: open = previous close (except first bar)
       // This ensures candles connect, gaps shown in wick only
-      if (last_bar_time_ == 0) [[unlikely]] {
-        // First bar: initialize with current price
+      if (last_bar_time_ == 0 || bar_close_ == 0.0f) [[unlikely]] {
+        // First bar or previous bar had no data: initialize with current price
         bar_open_ = price;
+        bar_high_ = price;
+        bar_low_ = price;
       } else [[likely]] {
         // Subsequent bars: open = previous bar's close for continuity
         bar_open_ = bar_close_;
+        bar_high_ = bar_open_;
+        bar_low_ = bar_open_;
       }
-
+      
       last_bar_time_ = current_time_seconds;
-      bar_high_ = bar_low_ = bar_open_;
       bar_close_ = bar_open_;
       bar_bid_volume_ = bar_ask_volume_ = 0;
       bar_bid_amount_ = bar_ask_amount_ = 0.0f;

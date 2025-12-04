@@ -85,8 +85,22 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
       const ImVec2 high_pos = ImPlot::PlotToPixels(xs[i], h);
       const ImU32 color = c >= o ? IM_COL32(0, 200, 0, 255) : IM_COL32(200, 0, 0, 255);
 
+      // Draw wick (high to low line)
       draw_list->AddLine(low_pos, high_pos, color);
-      draw_list->AddRectFilled(open_pos, close_pos, color);
+      
+      // Draw body - ensure minimum visible height when open == close
+      ImVec2 body_top = open_pos;
+      ImVec2 body_bottom = close_pos;
+      
+      constexpr float min_body_height = 1.0f;  // At least 1 pixel visible
+      if (std::abs(body_bottom.y - body_top.y) < min_body_height) {
+        // Draw horizontal line when body is too small
+        const float mid_y = (body_top.y + body_bottom.y) * 0.5f;
+        body_top.y = mid_y - min_body_height * 0.5f;
+        body_bottom.y = mid_y + min_body_height * 0.5f;
+      }
+      
+      draw_list->AddRectFilled(body_top, body_bottom, color);
     }
 
     ImPlot::EndItem();
@@ -411,6 +425,13 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   if (!loader) {
     ImGui::TextDisabled("DataLoader not initialized");
     return;
+  }
+
+  // Configure input mapping: Left-click for box select, Right-click for pan
+  static bool input_map_configured = false;
+  if (!input_map_configured) {
+    ImPlot::MapInputReverse();
+    input_map_configured = true;
   }
 
   auto &of = data.orderflow;

@@ -48,6 +48,12 @@ public:
     float agg_bid_amount = input_.bid_amount[start_idx];
     float agg_ask_amount = input_.ask_amount[start_idx];
 
+    // Skip this aggregation if first bar has invalid data
+    if (agg_open == 0.0f) [[unlikely]] {
+      last_processed_index_ = end_idx;
+      return;
+    }
+
     // Aggregate remaining bars (start from start_idx+1)
     for (size_t i = start_idx + 1; i < end_idx; ++i) {
       const float high = input_.high[i];
