@@ -22,32 +22,59 @@
 // ============================================================================
 
 namespace OrderFlowConst {
-// Capacity per day
+// ============================================================================
+// Data Capacity
+// ============================================================================
 constexpr size_t L0_CAPACITY = MAX_ROWS_PER_LEVEL[0]; // ~15300 ticks/day
 constexpr size_t L1_CAPACITY = MAX_ROWS_PER_LEVEL[1]; // ~255 bars/day
 constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;           // 30 levels
 
-// Price and volume conversion
-constexpr float TICK_SIZE = 0.01f;          // Minimum price step (RMB)
-constexpr float SHARES_PER_LOT = 100.0f;    // 1 lot = 100 shares
-constexpr float PRICE_SCALE = 100.0f;       // Price stored as integer * 100
-constexpr float ROUNDING_OFFSET = 0.5f;     // For float to int conversion
+// ============================================================================
+// Price and Volume Conversion
+// ============================================================================
+constexpr float TICK_SIZE = 0.01f;           // Minimum price step (RMB)
+constexpr float SHARES_PER_LOT = 100.0f;     // 1 lot = 100 shares
+constexpr float PRICE_SCALE = 100.0f;        // Price stored as integer * 100
+constexpr float ROUNDING_OFFSET = 0.5f;      // For float to int conversion
+constexpr int32_t AMOUNT_ROUND_TO_RMB = 1000; // Round amount to nearest 100 RMB
 
-// Cache reserve sizes (aggressive allocation)
+// ============================================================================
+// Cache Reserve Sizes (Aggressive Pre-allocation)
+// ============================================================================
 constexpr size_t ESTIMATED_PRICE_LEVELS = 100;      // Unique price levels per side
 constexpr size_t ESTIMATED_RECTS_PER_LEVEL = 1000;  // Merged rects per price level
+constexpr size_t MAX_KEYS_PER_TICK = LOB_DEPTH * 2; // bid30 + ask30 = 60
 
-// Display parameters
-constexpr float Y_MARGIN_RATIO = 0.15f;  // Y-axis margin for plots (15%)
+// ============================================================================
+// Amount Thresholds (RMB)
+// ============================================================================
+constexpr float AMOUNT_MIN_VISIBLE = 1000.0f;     // 1K RMB (transparent in heatmap)
+constexpr float AMOUNT_MAX_VISIBLE = 10000000.0f; // 10M RMB (solid in heatmap)
+constexpr float AMOUNT_FILTER_MIN = 1000.0f;      // Filter sentinel data below this
 
-// Amount thresholds (RMB)
-constexpr float AMOUNT_MIN_VISIBLE = 1000.0f;       // 1K RMB (transparent in heatmap)
-constexpr float AMOUNT_MAX_VISIBLE = 10000000.0f;   // 10M RMB (solid in heatmap)
-constexpr float AMOUNT_FILTER_MIN = 1000.0f;        // Filter sentinel data below this
+// ============================================================================
+// Price Validity Bounds (Sentinel Filtering)
+// ============================================================================
+constexpr float PRICE_MIN_VALID = 0.01f;  // Minimum valid price
+constexpr float PRICE_MAX_VALID = 650.0f; // Maximum valid price (650 RMB)
 
-// Sentinel price bounds (for filtering invalid data)
-constexpr float PRICE_MIN_VALID = 0.01f;   // Minimum valid price
-constexpr float PRICE_MAX_VALID = 650.0f;  // Maximum valid price (650 RMB)
+// ============================================================================
+// GUI Layout Parameters
+// ============================================================================
+constexpr float DEPTH_PANEL_WIDTH = 160.0f; // Width of depth panel (pixels)
+constexpr float TOP_VIEW_RATIO = 0.55f;     // Top view height ratio (55%)
+constexpr float Y_MARGIN_RATIO = 0.15f;     // Y-axis margin for plots (15%)
+
+// ============================================================================
+// GUI Rendering Parameters
+// ============================================================================
+constexpr float MIN_CANDLESTICK_BODY_HEIGHT = 1.0f; // Minimum visible body (pixels)
+constexpr double CANDLESTICK_HALF_WIDTH = 0.5;      // Half width of candlestick bar
+
+// ============================================================================
+// Time Parameters
+// ============================================================================
+constexpr size_t L0_TICK_INTERVAL = 15 * 60; // 15 minutes in seconds (for tick labels)
 } // namespace OrderFlowConst
 
 // ============================================================================
@@ -79,7 +106,7 @@ struct L1Day {
   // Query
   size_t valid_count() const { return indices.size(); }
   double global_x(size_t i) const;
-  
+
   // Modification
   void reserve(size_t expected);
   void push(size_t idx, float o, float h, float l, float c, float v);
@@ -88,7 +115,7 @@ struct L1Day {
 
 struct L1Cache {
   std::vector<std::string> dates;
-  std::vector<std::vector<L1Day>> days;  // [date_idx][asset_idx]
+  std::vector<std::vector<L1Day>> days; // [date_idx][asset_idx]
   std::map<std::string, size_t> date_to_idx;
 
   bool loaded = false;
@@ -108,13 +135,13 @@ struct L1Cache {
     double y_max = 0.0;
     bool built = false;
   };
-  std::vector<AssetPlotData> plot_data;  // [asset_idx]
+  std::vector<AssetPlotData> plot_data; // [asset_idx]
 
   // Query
   size_t get_day_idx(double global_x) const;
   const std::string &get_date(double global_x) const;
   double snap_to_day_start(double global_x) const;
-  
+
   // Modification
   void build_plot_data(size_t asset_idx);
   void invalidate_plot_data();
@@ -128,28 +155,28 @@ struct L1Cache {
 // L0 Tick - Single tick with complete LOB snapshot
 struct L0Tick {
   size_t tick_idx;
-  
+
   // Validity flags
-  bool depth_valid;  // LOB depth buffer complete
-  bool data_valid;   // Event-driven data present
-  
+  bool depth_valid; // LOB depth buffer complete
+  bool data_valid;  // Event-driven data present
+
   // LOB depth features (requires depth_valid=true)
   float mid_price;
   std::array<float, OrderFlowConst::LOB_DEPTH> bid_price;
   std::array<float, OrderFlowConst::LOB_DEPTH> ask_price;
-  std::array<float, OrderFlowConst::LOB_DEPTH> bid_volume;  // In lots (100 shares)
-  std::array<float, OrderFlowConst::LOB_DEPTH> ask_volume;  // In lots (100 shares)
+  std::array<float, OrderFlowConst::LOB_DEPTH> bid_volume; // In lots (100 shares)
+  std::array<float, OrderFlowConst::LOB_DEPTH> ask_volume; // In lots (100 shares)
 };
 
 struct L0Day {
   std::string date;
   size_t day_idx = 0;
-  std::vector<L0Tick> ticks;  // Sparse: only valid ticks
+  std::vector<L0Tick> ticks; // Sparse: only valid ticks
 
   // Query
   size_t valid_count() const { return ticks.size(); }
   double global_x(size_t i) const;
-  
+
   // Modification
   void reserve(size_t expected);
   void push(size_t idx, bool depth_valid, bool data_valid, float mid,
@@ -170,19 +197,19 @@ struct L0HeatmapMergedRect {
   size_t tick_end;
   float price_top;
   float price_bottom;
-  int32_t amount_rmb;  // Signed amount in RMB (rounded to integer, +bid/-ask)
+  int32_t amount_rmb; // Signed amount in RMB (rounded to integer, +bid/-ask)
 };
 
 struct L0HeatmapPriceLevel {
   float price;
   std::vector<L0HeatmapMergedRect> rects;
-  
+
   void reserve(size_t expected);
   void clear();
 };
 
 struct L0HeatmapMergedCache {
-  std::vector<L0HeatmapPriceLevel> levels;  // Unified: all price levels (bid and ask)
+  std::vector<L0HeatmapPriceLevel> levels; // Unified: all price levels (bid and ask)
   size_t data_version = 0;
   bool valid = false;
 
@@ -233,9 +260,9 @@ struct L0Cache {
 
   // Scratch buffers for heatmap build (reused across ticks, avoid reallocation)
   struct {
-    std::vector<int> price_keys;       // Current tick's price keys (fixed capacity)
-    std::vector<int32_t> amounts;      // Current tick's amounts (parallel to price_keys)
-    std::vector<int> keys_to_update;   // All keys needing update (fixed capacity)
+    std::vector<int> price_keys;     // Current tick's price keys (fixed capacity)
+    std::vector<int32_t> amounts;    // Current tick's amounts (parallel to price_keys)
+    std::vector<int> keys_to_update; // All keys needing update (fixed capacity)
   } heatmap_scratch_;
 
   // Query - Index conversion
@@ -243,7 +270,7 @@ struct L0Cache {
   size_t get_local_idx(double global_x) const;
   size_t find_plot_idx(double global_x) const;
   size_t snap_to_valid_plot_idx(double global_x) const;
-  
+
   // Query - Data access
   struct DepthData {
     float mid_price = 0;
@@ -258,17 +285,17 @@ struct L0Cache {
   };
   DepthData get_depth(size_t plot_idx) const;
   const std::string &get_date(size_t plot_idx) const;
-  
+
   // Query - Statistics
   struct ValidCounts {
-    size_t rect_merged = 0;   // Total merged rectangles in heatmap cache
-    size_t depth_valid = 0;   // Ticks with valid depth data
-    size_t data_valid = 0;    // Ticks with valid event-driven data
+    size_t rect_merged = 0; // Total merged rectangles in heatmap cache
+    size_t depth_valid = 0; // Ticks with valid depth data
+    size_t data_valid = 0;  // Ticks with valid event-driven data
   };
   ValidCounts count_valid() const;
   size_t total_valid() const { return plot_t.size(); }
   bool matches(const std::string &date, size_t asset) const;
-  
+
   // Modification - Build caches
   void build_plot_data();
   void build_heatmap_merged_cache();
@@ -305,7 +332,7 @@ struct OrderFlowUI {
   size_t l0_anchor_plot_idx = 0;
 
   bool show_heatmap = true;
-  float log_amount_threshold = 3.0f;  // log10(amount) [3.0, 7.0]
+  float log_amount_threshold = 3.0f; // log10(amount) [3.0, 7.0]
 
   int prev_asset_idx = -1;
   std::string prev_l1_anchor_date;

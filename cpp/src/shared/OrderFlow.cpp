@@ -255,14 +255,14 @@ const std::string &L0Cache::get_date(size_t plot_idx) const {
 
 L0Cache::ValidCounts L0Cache::count_valid() const {
   ValidCounts counts;
-  
+
   // Count merged rectangles in heatmap cache
   if (heatmap_merged_cache.valid) {
     for (const auto &level : heatmap_merged_cache.levels) {
       counts.rect_merged += level.rects.size();
     }
   }
-  
+
   // Count valid ticks
   for (const auto &day : days) {
     for (const auto &tick : day.ticks) {
@@ -272,7 +272,7 @@ L0Cache::ValidCounts L0Cache::count_valid() const {
         ++counts.data_valid;
     }
   }
-  
+
   return counts;
 }
 
@@ -308,7 +308,7 @@ void L0Cache::build_plot_data() {
       const auto &tick = day.ticks[i];
       if (!tick.depth_valid)
         continue;
-      
+
       plot_t.push_back(day.global_x(i));
       plot_mid_price.push_back(static_cast<double>(tick.mid_price));
       plot_best_bid.push_back(static_cast<double>(tick.bid_price[0]));
@@ -334,22 +334,21 @@ void L0Cache::build_plot_data() {
 
 void L0Cache::build_heatmap_merged_cache() {
   heatmap_merged_cache.clear();
-  
+
   if (days.empty())
     return;
 
   constexpr size_t DEPTH = OrderFlowConst::LOB_DEPTH;
-  constexpr size_t MAX_KEYS_PER_TICK = DEPTH * 2;  // bid30 + ask30
 
   heatmap_merged_cache.reserve_levels(OrderFlowConst::ESTIMATED_PRICE_LEVELS * 2);
 
   // Unified map: price_key -> level index (handles both bid and ask)
   std::map<int, size_t> price_to_level;
-  
+
   // Reserve scratch buffers (reused across all ticks)
-  heatmap_scratch_.price_keys.reserve(MAX_KEYS_PER_TICK);
-  heatmap_scratch_.amounts.reserve(MAX_KEYS_PER_TICK);
-  heatmap_scratch_.keys_to_update.reserve(MAX_KEYS_PER_TICK * 2);
+  heatmap_scratch_.price_keys.reserve(OrderFlowConst::MAX_KEYS_PER_TICK);
+  heatmap_scratch_.amounts.reserve(OrderFlowConst::MAX_KEYS_PER_TICK);
+  heatmap_scratch_.keys_to_update.reserve(OrderFlowConst::MAX_KEYS_PER_TICK * 2);
 
   // Helper lambda to update a single price level with amount
   auto update_price_level = [&](int price_key, float price, int32_t amount_rmb, size_t global_tick_idx) {
@@ -383,16 +382,14 @@ void L0Cache::build_heatmap_merged_cache() {
 
     // Create new rectangle (bid: bottom, ask: top determines direction)
     bool is_bid = (amount_rmb > 0);
-    float price_bottom = is_bid ? (price - OrderFlowConst::TICK_SIZE) 
+    float price_bottom = is_bid ? (price - OrderFlowConst::TICK_SIZE)
                                 : (price + OrderFlowConst::TICK_SIZE);
-    
-    level_cache.rects.push_back({
-        global_tick_idx,
-        global_tick_idx + 1,
-        price,
-        price_bottom,
-        amount_rmb
-    });
+
+    level_cache.rects.push_back({global_tick_idx,
+                                 global_tick_idx + 1,
+                                 price,
+                                 price_bottom,
+                                 amount_rmb});
   };
 
   for (const auto &day : days) {
@@ -400,24 +397,24 @@ void L0Cache::build_heatmap_merged_cache() {
 
     for (size_t tick_i = 0; tick_i < day.valid_count(); ++tick_i) {
       const auto &tick = day.ticks[tick_i];
-      
+
       if (!tick.depth_valid)
         continue;
-      
+
       size_t global_tick_idx = day_base + tick.tick_idx;
 
       // Step 1: Collect current tick's bid/ask data (reuse scratch buffers)
       auto &price_keys = heatmap_scratch_.price_keys;
       auto &amounts = heatmap_scratch_.amounts;
       auto &keys_to_update = heatmap_scratch_.keys_to_update;
-      
+
       price_keys.clear();
       amounts.clear();
       keys_to_update.clear();
-      
+
       int min_key = std::numeric_limits<int>::max();
       int max_key = std::numeric_limits<int>::min();
-      
+
       for (size_t level = 0; level < DEPTH; ++level) {
         // Collect bid
         {
@@ -425,11 +422,10 @@ void L0Cache::build_heatmap_merged_cache() {
           if (price > 0) {
             float volume = tick.bid_volume[level];
             float amount_float = volume * price * OrderFlowConst::SHARES_PER_LOT;
-            int32_t amount_rmb = static_cast<int32_t>(std::round(amount_float / 100.0f)) * 100;
-            
+            int32_t amount_rmb = static_cast<int32_t>(std::round(amount_float / static_cast<float>(OrderFlowConst::AMOUNT_ROUND_TO_RMB))) * OrderFlowConst::AMOUNT_ROUND_TO_RMB;
+
             if (amount_rmb != 0) {
-              int price_key = static_cast<int>(price * OrderFlowConst::PRICE_SCALE + 
-                                               OrderFlowConst::ROUNDING_OFFSET);
+              int price_key = static_cast<int>(price * OrderFlowConst::PRICE_SCALE + OrderFlowConst::ROUNDING_OFFSET);
               price_keys.push_back(price_key);
               amounts.push_back(amount_rmb);
               min_key = std::min(min_key, price_key);
@@ -437,18 +433,17 @@ void L0Cache::build_heatmap_merged_cache() {
             }
           }
         }
-        
+
         // Collect ask
         {
           float price = tick.ask_price[level];
           if (price > 0) {
             float volume = tick.ask_volume[level];
             float amount_float = volume * price * OrderFlowConst::SHARES_PER_LOT;
-            int32_t amount_rmb = static_cast<int32_t>(std::round(amount_float / 100.0f)) * 100;
-            
+            int32_t amount_rmb = static_cast<int32_t>(std::round(amount_float / static_cast<float>(OrderFlowConst::AMOUNT_ROUND_TO_RMB))) * OrderFlowConst::AMOUNT_ROUND_TO_RMB;
+
             if (amount_rmb != 0) {
-              int price_key = static_cast<int>(price * OrderFlowConst::PRICE_SCALE + 
-                                               OrderFlowConst::ROUNDING_OFFSET);
+              int price_key = static_cast<int>(price * OrderFlowConst::PRICE_SCALE + OrderFlowConst::ROUNDING_OFFSET);
               price_keys.push_back(price_key);
               amounts.push_back(amount_rmb);
               min_key = std::min(min_key, price_key);
@@ -457,13 +452,13 @@ void L0Cache::build_heatmap_merged_cache() {
           }
         }
       }
-      
+
       // Step 2: Collect all price keys that need updating
       // Add current tick's keys
       for (int key : price_keys) {
         keys_to_update.push_back(key);
       }
-      
+
       // Add existing keys within current min/max range (may need to close as amount=0)
       if (min_key <= max_key) {
         for (const auto &[key, level_idx] : price_to_level) {
@@ -486,11 +481,11 @@ void L0Cache::build_heatmap_merged_cache() {
           }
         }
       }
-      
+
       // Step 3: Update only the collected keys
       for (int price_key : keys_to_update) {
         float price = static_cast<float>(price_key) / OrderFlowConst::PRICE_SCALE;
-        
+
         // Linear search in price_keys (small size ~60)
         int32_t amount_rmb = 0;
         for (size_t i = 0; i < price_keys.size(); ++i) {
@@ -499,7 +494,7 @@ void L0Cache::build_heatmap_merged_cache() {
             break;
           }
         }
-        
+
         update_price_level(price_key, price, amount_rmb, global_tick_idx);
       }
     }

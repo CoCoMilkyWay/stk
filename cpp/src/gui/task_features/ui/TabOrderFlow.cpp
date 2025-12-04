@@ -24,9 +24,7 @@ namespace GUI::Features {
 // ============================================================================
 
 namespace {
-  constexpr float DEPTH_PANEL_WIDTH = 160.0f;
-  constexpr float TOP_VIEW_RATIO = 0.55f;
-  constexpr size_t L0_TICK_INTERVAL = 15 * 60; // 15 minutes
+// All parameters moved to OrderFlowConst namespace in OrderFlow.hpp
 }
 
 // ============================================================================
@@ -61,11 +59,12 @@ static void FormatDateShort(char *buf, size_t size, const std::string &date) {
 
 static void PlotCandlestick(const char *label_id, const double *xs, const double *opens,
                             const double *highs, const double *lows, const double *closes, int count) {
-  if (count <= 0) return;
+  if (count <= 0)
+    return;
 
   ImDrawList *draw_list = ImPlot::GetPlotDrawList();
   // Each bar occupies 1 X-unit (index), no gap between bars
-  constexpr double half_width = 0.5;
+  constexpr double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH;
 
   if (ImPlot::BeginItem(label_id)) {
     ImPlot::GetCurrentItem()->Color = IM_COL32(128, 128, 128, 255);
@@ -87,19 +86,19 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
 
       // Draw wick (high to low line)
       draw_list->AddLine(low_pos, high_pos, color);
-      
+
       // Draw body - ensure minimum visible height when open == close
       ImVec2 body_top = open_pos;
       ImVec2 body_bottom = close_pos;
-      
-      constexpr float min_body_height = 1.0f;  // At least 1 pixel visible
+
+      constexpr float min_body_height = OrderFlowConst::MIN_CANDLESTICK_BODY_HEIGHT;
       if (std::abs(body_bottom.y - body_top.y) < min_body_height) {
         // Draw horizontal line when body is too small
         const float mid_y = (body_top.y + body_bottom.y) * 0.5f;
         body_top.y = mid_y - min_body_height * 0.5f;
         body_bottom.y = mid_y + min_body_height * 0.5f;
       }
-      
+
       draw_list->AddRectFilled(body_top, body_bottom, color);
     }
 
@@ -120,12 +119,12 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   char date_buf[16], time_buf[16];
   FormatDateFull(date_buf, sizeof(date_buf), date);
   FormatTimeHMS(time_buf, sizeof(time_buf), depth.time);
-  
+
   // Use minimal font and spacing
-  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);  // Use default small font
+  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);               // Use default small font
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));  // No spacing
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 1));  // Minimal padding
-  
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 1)); // Minimal padding
+
   ImGui::Text("%s %s", date_buf, time_buf);
   ImGui::Separator();
 
@@ -134,14 +133,15 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
   for (int i = 9; i >= 0; --i) {
     float price = (*depth.ask_price)[i];
-    float volume = (*depth.ask_volume)[i];  // Volume in lots (1 lot = 100 shares), already negative for ask
+    float volume = (*depth.ask_volume)[i]; // Volume in lots (1 lot = 100 shares), already negative for ask
     float amount = volume * price * OrderFlowConst::SHARES_PER_LOT;
-    
-    if (price <= 0) continue;  // Skip invalid levels
-    
+
+    if (price <= 0)
+      continue; // Skip invalid levels
+
     float abs_amount = std::abs(amount);
     float ratio = std::min(1.0f, abs_amount / OrderFlowConst::AMOUNT_MAX_VISIBLE);
-    
+
     // Color based on amount sign and magnitude
     ImVec4 bar_color;
     if (amount < 0) {
@@ -152,9 +152,9 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
       // Positive (anomaly on ask side): show as yellow warning
       bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
     }
-    
+
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), "");  // Minimal height
+    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), ""); // Minimal height
     ImGui::PopStyleColor();
     ImGui::SameLine();
     ImGui::Text("%.2f", price);
@@ -166,14 +166,15 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
   // Bid side (green) - 10 levels, from top (bid1) to bottom (bid10)
   for (int i = 0; i < 10; ++i) {
     float price = (*depth.bid_price)[i];
-    float volume = (*depth.bid_volume)[i];  // Volume in lots (1 lot = 100 shares)
+    float volume = (*depth.bid_volume)[i]; // Volume in lots (1 lot = 100 shares)
     float amount = volume * price * OrderFlowConst::SHARES_PER_LOT;
-    
-    if (price <= 0) continue;  // Skip invalid levels
-    
+
+    if (price <= 0)
+      continue; // Skip invalid levels
+
     float abs_amount = std::abs(amount);
     float ratio = std::min(1.0f, abs_amount / OrderFlowConst::AMOUNT_MAX_VISIBLE);
-    
+
     // Color based on amount sign and magnitude
     ImVec4 bar_color;
     if (amount > 0) {
@@ -184,14 +185,14 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
       // Negative (anomaly on bid side): show as yellow warning
       bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
     }
-    
+
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), "");  // Minimal height
+    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 8.0f), ""); // Minimal height
     ImGui::PopStyleColor();
     ImGui::SameLine();
     ImGui::Text("%.2f", price);
   }
-  
+
   ImGui::PopStyleVar(2);
   ImGui::PopFont();
 }
@@ -205,11 +206,12 @@ static void RenderDepthPanel(const L0Cache::DepthData &depth, const std::string 
 // Below threshold: transparent (0), at 10M: full intensity (1)
 static float MapAmountToIntensity(float amount, float log_threshold) {
   float abs_amount = std::abs(amount);
-  if (abs_amount < std::pow(10.0f, log_threshold)) return 0.0f;  // Below threshold
-  
+  if (abs_amount < std::pow(10.0f, log_threshold))
+    return 0.0f; // Below threshold
+
   float log_amount = std::log10(abs_amount);
   float log_max = std::log10(OrderFlowConst::AMOUNT_MAX_VISIBLE);
-  
+
   // Map [threshold, log_max] to [0, 1]
   float normalized = (log_amount - log_threshold) / (log_max - log_threshold);
   return std::min(1.0f, std::max(0.0f, normalized));
@@ -220,10 +222,11 @@ static float MapAmountToIntensity(float amount, float log_threshold) {
 static ImU32 AmountToColor(int32_t amount_rmb, float log_threshold) {
   float amount = static_cast<float>(amount_rmb);
   float intensity = MapAmountToIntensity(amount, log_threshold);
-  if (intensity <= 0.0f) return IM_COL32(0, 0, 0, 0);  // Transparent
-  
-  uint8_t alpha = static_cast<uint8_t>(intensity * 200 + 55);  // [55, 255]
-  
+  if (intensity <= 0.0f)
+    return IM_COL32(0, 0, 0, 0); // Transparent
+
+  uint8_t alpha = static_cast<uint8_t>(intensity * 200 + 55); // [55, 255]
+
   if (amount_rmb > 0) {
     // Positive amount (bid side): green spectrum
     uint8_t g = static_cast<uint8_t>(100 + intensity * 155);
@@ -260,7 +263,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     // Setup L0 ticks (static labels, dynamic positions)
     static const std::vector<double> tick_offsets = []() {
       std::vector<double> v;
-      for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += L0_TICK_INTERVAL) {
+      for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += OrderFlowConst::L0_TICK_INTERVAL) {
         v.push_back(static_cast<double>(t));
       }
       return v;
@@ -268,7 +271,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
 
     static const std::vector<std::string> tick_label_storage = []() {
       std::vector<std::string> labels;
-      for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += L0_TICK_INTERVAL) {
+      for (size_t t = 0; t < OrderFlowConst::L0_CAPACITY; t += OrderFlowConst::L0_TICK_INTERVAL) {
         ClockTime ct = trading_seconds_to_clock(t);
         char buf[16];
         std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
@@ -278,7 +281,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     }();
 
     std::vector<double> tick_positions;
-    std::vector<const char*> tick_labels;
+    std::vector<const char *> tick_labels;
     for (double offset : tick_offsets) {
       tick_positions.push_back(x_min + offset);
     }
@@ -295,7 +298,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     if (ui.show_heatmap && !of.l0.days.empty()) {
       auto &merged_cache = of.l0.heatmap_merged_cache;
       auto &colored_cache = of.l0.heatmap_colored_cache;
-      
+
       // ========================================================================
       // LEVEL 1: Merged cache (already built in DataLoader)
       // ========================================================================
@@ -303,58 +306,57 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
         // Fallback: rebuild if somehow invalid
         of.l0.build_heatmap_merged_cache();
       }
-      
+
       // ========================================================================
       // LEVEL 2: Colored cache (rebuild only when threshold changes)
       // ========================================================================
-      bool need_rebuild_colored = !colored_cache.valid || 
-                                   colored_cache.cached_threshold != ui.log_amount_threshold ||
-                                   colored_cache.cached_data_version != of.l0.data_version;
-      
+      bool need_rebuild_colored = !colored_cache.valid ||
+                                  colored_cache.cached_threshold != ui.log_amount_threshold ||
+                                  colored_cache.cached_data_version != of.l0.data_version;
+
       if (need_rebuild_colored) {
         colored_cache.clear();
-        
+
         // Reserve space for colored rects (aggressive allocation)
-        constexpr size_t ESTIMATED_PRICE_LEVELS = 100;
-        constexpr size_t ESTIMATED_RECTS_PER_LEVEL = 1000;
-        constexpr size_t ESTIMATED_COLORED_RECTS = ESTIMATED_PRICE_LEVELS * ESTIMATED_RECTS_PER_LEVEL;
-        
+        constexpr size_t ESTIMATED_COLORED_RECTS =
+            OrderFlowConst::ESTIMATED_PRICE_LEVELS * OrderFlowConst::ESTIMATED_RECTS_PER_LEVEL;
+
         colored_cache.reserve(ESTIMATED_COLORED_RECTS);
-        
+
         // Convert merged rects to colored rects (unified levels, bid and ask)
         for (const auto &price_level : merged_cache.levels) {
           for (const auto &merged_rect : price_level.rects) {
             ImU32 color = AmountToColor(merged_rect.amount_rmb, ui.log_amount_threshold);
-            if (color == IM_COL32(0, 0, 0, 0))  // Skip transparent
+            if (color == IM_COL32(0, 0, 0, 0)) // Skip transparent
               continue;
-            
+
             // Convert tick indices to global X coordinates
             double x1 = static_cast<double>(merged_rect.tick_start);
             double x2 = static_cast<double>(merged_rect.tick_end);
             double y1 = static_cast<double>(merged_rect.price_top);
             double y2 = static_cast<double>(merged_rect.price_bottom);
-            
+
             colored_cache.rects.push_back({x1, y1, x2, y2, color});
           }
         }
-        
+
         colored_cache.cached_threshold = ui.log_amount_threshold;
         colored_cache.cached_data_version = of.l0.data_version;
         colored_cache.valid = true;
       }
-      
+
       // ========================================================================
       // RENDER: Use colored cache (static, no CPU work per frame)
       // ========================================================================
       ImPlot::PushPlotClipRect();
-      ImDrawList* draw_list = ImPlot::GetPlotDrawList();
-      
+      ImDrawList *draw_list = ImPlot::GetPlotDrawList();
+
       for (const auto &rect : colored_cache.rects) {
         ImVec2 p_min = ImPlot::PlotToPixels(rect.x1, rect.y1);
         ImVec2 p_max = ImPlot::PlotToPixels(rect.x2, rect.y2);
         draw_list->AddRectFilled(p_min, p_max, rect.color);
       }
-      
+
       ImPlot::PopPlotClipRect();
     }
 
@@ -363,15 +365,15 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     ImPlot::PlotLine("Best Bid", of.l0.plot_t.data(), of.l0.plot_best_bid.data(),
                      static_cast<int>(of.l0.plot_t.size()));
     ImPlot::PopStyleColor();
-    
+
     ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.8f, 0.3f, 0.3f, 0.7f));
     ImPlot::PlotLine("Best Ask", of.l0.plot_t.data(), of.l0.plot_best_ask.data(),
                      static_cast<int>(of.l0.plot_t.size()));
     ImPlot::PopStyleColor();
-    
+
     // Fill between best bid and best ask with solid yellow
     ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(1.0f, 1.0f, 0.0f, 0.6f));
-    ImPlot::PlotShaded("Spread", of.l0.plot_t.data(), of.l0.plot_best_bid.data(), 
+    ImPlot::PlotShaded("Spread", of.l0.plot_t.data(), of.l0.plot_best_bid.data(),
                        of.l0.plot_best_ask.data(), static_cast<int>(of.l0.plot_t.size()));
     ImPlot::PopStyleColor();
 
@@ -382,7 +384,8 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     ImPlot::PopStyleColor();
 
     double anchor_x = ui.l0_anchor_plot_idx < of.l0.plot_t.size()
-                          ? of.l0.plot_t[ui.l0_anchor_plot_idx] : x_min;
+                          ? of.l0.plot_t[ui.l0_anchor_plot_idx]
+                          : x_min;
 
     if (ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f)) {
       ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(anchor_x);
@@ -423,7 +426,8 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
   if (ImPlot::BeginPlot("##KLine", ImVec2(-1, height))) {
     const double x_min = 0;
     double x_max = static_cast<double>(of.l1.num_days * OrderFlowConst::L1_CAPACITY);
-    if (x_max <= x_min) x_max = x_min + 1;
+    if (x_max <= x_min)
+      x_max = x_min + 1;
 
     // Reset view when params changed or on first load
     ImPlotCond cond = force_reset ? ImPlotCond_Always : ImPlotCond_Once;
@@ -434,7 +438,7 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
 
     // Setup K-line ticks (cached, rebuild on data change)
     static std::vector<double> tick_positions;
-    static std::vector<const char*> tick_labels;
+    static std::vector<const char *> tick_labels;
     static std::vector<std::string> tick_label_storage;
     static size_t cached_num_days = 0;
 
@@ -483,7 +487,8 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
         double anchor_y = 0;
         if (it != pd.x.end()) {
           size_t idx = static_cast<size_t>(it - pd.x.begin());
-          if (idx < pd.close.size()) anchor_y = pd.close[idx];
+          if (idx < pd.close.size())
+            anchor_y = pd.close[idx];
         }
 
         char date_buf[16];
@@ -503,7 +508,8 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
 
 static void RenderAssetSelector(SharedData &data, OrderFlow &of) {
   const size_t num_assets = data.asset.items.size();
-  if (num_assets == 0) return;
+  if (num_assets == 0)
+    return;
 
   auto &ui = of.ui;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
@@ -580,7 +586,7 @@ static void RenderStatusBar(const OrderFlow &of, size_t asset_idx) {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[Loading L0...]");
   } else if (of.l0.loaded) {
     auto counts = of.l0.count_valid();
-    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu/%zu/%zu]", 
+    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu/%zu/%zu]",
                        counts.rect_merged, counts.depth_valid, counts.data_valid);
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("合并矩形数 / 有效深度 / 有效数据\n"
@@ -597,14 +603,14 @@ static void RenderStatusBar(const OrderFlow &of, size_t asset_idx) {
 
 static void RenderHeatmapControls(OrderFlow &of) {
   auto &ui = of.ui;
-  
+
   ImGui::Checkbox("Heatmap", &ui.show_heatmap);
-  
+
   if (ui.show_heatmap) {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(150);
     ImGui::SliderFloat("Threshold", &ui.log_amount_threshold, 3.0f, 7.0f, "%.1f");
-    
+
     if (ImGui::IsItemHovered()) {
       ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Always);
       ImGui::BeginTooltip();
@@ -685,9 +691,9 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 
   const float content_height = ImGui::GetContentRegionAvail().y;
   const float content_width = ImGui::GetContentRegionAvail().x;
-  const float top_view_height = content_height * TOP_VIEW_RATIO;
-  const float bottom_view_height = content_height * (1.0f - TOP_VIEW_RATIO) - 5.0f;
-  const float chart_width = content_width - DEPTH_PANEL_WIDTH - 10.0f;
+  const float top_view_height = content_height * OrderFlowConst::TOP_VIEW_RATIO;
+  const float bottom_view_height = content_height * (1.0f - OrderFlowConst::TOP_VIEW_RATIO) - 5.0f;
+  const float chart_width = content_width - OrderFlowConst::DEPTH_PANEL_WIDTH - 10.0f;
 
   // ==========================================================================
   // TOP SECTION: L0 Order Flow + Depth
@@ -701,12 +707,12 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   ImGui::EndChild();
 
   ImGui::SameLine();
-  ImGui::BeginChild("DepthPanel", ImVec2(DEPTH_PANEL_WIDTH, -1), true);
+  ImGui::BeginChild("DepthPanel", ImVec2(OrderFlowConst::DEPTH_PANEL_WIDTH, -1), true);
 
   if (of.l0.loaded && ui.l0_anchor_plot_idx < of.l0.plot_t.size()) {
     auto depth = of.l0.get_depth(ui.l0_anchor_plot_idx);
     std::string date = of.l0.get_date(ui.l0_anchor_plot_idx);
-    RenderDepthPanel(depth, date, DEPTH_PANEL_WIDTH);
+    RenderDepthPanel(depth, date, OrderFlowConst::DEPTH_PANEL_WIDTH);
   } else {
     ImGui::TextDisabled("No L0 data");
   }
@@ -724,7 +730,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   RenderAssetSelector(data, of);
   ImGui::SameLine();
   RenderHeatmapControls(of);
-  
+
   // Second line: Status bar
   RenderStatusBar(of, asset_idx);
 
