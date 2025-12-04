@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+// #include <iostream>
 #include <vector>
 
 // Tick-level sequential feature computation
@@ -66,24 +67,25 @@ private:
 
     // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
     // Output: bid[0]=bid1(best), ask[0]=ask1(best)
-    // Fill all N levels, unfilled slots will have price/volume = 0
+    // Depth buffer is always complete (2*N elements), no bounds checks needed
+    
+    constexpr float volume_scale = 0.01f;  // 1 lot = 100 shares
+    
+    // Direct pointer access, no branches
     for (size_t i = 0; i < N; ++i) {
-      Level *bid_level = (N + i < depth.size()) ? depth[N + i] : nullptr;
-      Level *ask_level = (N - 1 >= i && N - 1 - i < depth.size()) ? depth[N - 1 - i] : nullptr;
-
-      float bid_price = bid_level ? bid_level->price * 0.01f : 0.0f;
-      float ask_price = ask_level ? ask_level->price * 0.01f : 0.0f;
-      float bid_volume = bid_level ? bid_level->net_quantity * 0.01f : 0.0f; // Store volume in lots (1 lot = 100 shares)
-      float ask_volume = ask_level ? ask_level->net_quantity * 0.01f : 0.0f; // net_quantity already negative for ask
-
-      lob_depth_buffer_[0 * N + i] = bid_price;   // [0:N-1]
-      lob_depth_buffer_[1 * N + i] = ask_price;   // [N:2N-1]
-      lob_depth_buffer_[2 * N + i] = bid_volume;  // [2N:3N-1]
-      lob_depth_buffer_[3 * N + i] = ask_volume;  // [3N:4N-1]
+      const Level *bid_level = depth[N + i];
+      const Level *ask_level = depth[N - 1 - i];
+      
+      lob_depth_buffer_[i]           = static_cast<float>(bid_level->price);
+      lob_depth_buffer_[N + i]       = static_cast<float>(ask_level->price);
+      lob_depth_buffer_[2 * N + i]   = bid_level->net_quantity * volume_scale;
+      lob_depth_buffer_[3 * N + i]   = ask_level->net_quantity * volume_scale;
     }
-
-    // Write mid_price and depth_valid at the end
-    lob_depth_buffer_[4 * N] = get_mid_price();
+    
+    // Mid_price: integer average for max fp16 precision
+    const Level *best_bid = depth[N];
+    const Level *best_ask = depth[N - 1];
+    lob_depth_buffer_[4 * N] = static_cast<float>((best_bid->price + best_ask->price) >> 1);
     lob_depth_buffer_[4 * N + 1] = 1.0f;
 
     // Batch write all depth features + mid_price + depth_valid
@@ -97,8 +99,6 @@ private:
       return 0.0f;
 
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() <= L2::LOB_DEPTH)
-      return 0.0f;
 
     Level *best_ask = depth[L2::LOB_DEPTH - 1]; // sell1
     Level *best_bid = depth[L2::LOB_DEPTH];     // buy1
@@ -115,8 +115,6 @@ private:
       return 0.0f;
 
     const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() <= L2::LOB_DEPTH)
-      return 0.0f;
 
     Level *best_ask = depth[L2::LOB_DEPTH - 1];
     Level *best_bid = depth[L2::LOB_DEPTH];

@@ -27,7 +27,8 @@
 // Debug asset ID list - only dump logs for assets in this list
 constexpr size_t DEBUG_ASSET_IDS[] = {
     // Add asset IDs here to enable debug logging for specific assets
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    // 0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    97, 98, 99, 100};
 constexpr size_t DEBUG_ASSET_IDS_COUNT = sizeof(DEBUG_ASSET_IDS) / sizeof(DEBUG_ASSET_IDS[0]);
 constexpr size_t DEBUG_PRINT_DAYS = 1; // Number of days to print for matched asset IDs
 
@@ -1394,8 +1395,10 @@ private:
 #if DEBUG_BOOK_AS_AMOUNT == 0
     const std::string qty_str = std::to_string(volume);
 #else
-    const float amount = std::abs(volume) * price / (DEBUG_BOOK_AS_AMOUNT * 10000.0);
-    const std::string qty_str = (volume < 0 ? "-" : "") + std::to_string(std::max(1, static_cast<int>(std::ceil(amount))));
+    const float amount = std::abs(volume) * price / (DEBUG_BOOK_AS_AMOUNT * 1000000.0);
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2) << amount;
+    const std::string qty_str = (volume < 0 ? "-" : "") + oss.str();
 #endif
     const std::string level_str = std::to_string(price) + "x" + qty_str;
     return is_anomaly ? "\033[31m" + level_str + "\033[0m" : level_str;

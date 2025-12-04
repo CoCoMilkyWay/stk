@@ -128,7 +128,7 @@ void sequential_worker(int worker_id,
 
           if (order_num > 0) {
             Logger::log("worker_" + std::to_string(worker_id),
-                        date_str + " asset_id=" + std::to_string(asset_id) +
+                        date_str + " asset:" + std::to_string(asset_id) + " " + asset.asset_code + "." + asset.exchange + " " + asset.asset_name +
                             " decoded=" + std::to_string(order_num) +
                             " order_invalid=" + std::to_string(order_invalid_cnt) +
                             " tob_invalid=" + std::to_string(lobs[i]->get_tob_invalid_count()) +

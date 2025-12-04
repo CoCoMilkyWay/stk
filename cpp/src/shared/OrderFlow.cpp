@@ -3,25 +3,47 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 // ============================================================================
-// L1Day Implementation
+// TimeAxisLUT Implementation (Global Singleton)
 // ============================================================================
 
-double L1Day::global_x(size_t i) const {
+TimeAxisLUT::TimeAxisLUT() {
+  // Pre-compute L0 time axis labels (every 15 minutes)
+  for (size_t offset = 0; offset < OrderFlowConst::L0_CAPACITY; offset += OrderFlowConst::L0_TICK_INTERVAL) {
+    l0_tick_offsets.push_back(offset);
+    
+    ClockTime ct = trading_seconds_to_clock(offset);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
+    l0_tick_labels.push_back(buf);
+  }
+}
+
+const TimeAxisLUT& TimeAxisLUT::instance() {
+  static TimeAxisLUT lut;
+  return lut;
+}
+
+// ============================================================================
+// OrderFlow::L1Cache::Day Implementation
+// ============================================================================
+
+double OrderFlow::L1Cache::Day::to_global_x(size_t i) const {
   return static_cast<double>(day_idx * OrderFlowConst::L1_CAPACITY + indices[i]);
 }
 
-void L1Day::reserve(size_t expected) {
-  indices.reserve(expected);
-  open.reserve(expected);
-  high.reserve(expected);
-  low.reserve(expected);
-  close.reserve(expected);
-  volume.reserve(expected);
+void OrderFlow::L1Cache::Day::reserve(size_t n) {
+  indices.reserve(n);
+  open.reserve(n);
+  high.reserve(n);
+  low.reserve(n);
+  close.reserve(n);
+  volume.reserve(n);
 }
 
-void L1Day::push(size_t idx, float o, float h, float l, float c, float v) {
+void OrderFlow::L1Cache::Day::push(size_t idx, float o, float h, float l, float c, float v) {
   indices.push_back(idx);
   open.push_back(o);
   high.push_back(h);
@@ -30,7 +52,7 @@ void L1Day::push(size_t idx, float o, float h, float l, float c, float v) {
   volume.push_back(v);
 }
 
-void L1Day::clear() {
+void OrderFlow::L1Cache::Day::clear() {
   date.clear();
   day_idx = 0;
   indices.clear();
@@ -42,51 +64,58 @@ void L1Day::clear() {
 }
 
 // ============================================================================
-// L1Cache Implementation
+// OrderFlow::L1Cache::PlotData Implementation
 // ============================================================================
 
-size_t L1Cache::get_day_idx(double global_x) const {
+void OrderFlow::L1Cache::PlotData::clear() {
+  x.clear();
+  open.clear();
+  high.clear();
+  low.clear();
+  close.clear();
+  day_boundaries.clear();
+  y_min = y_max = 0.0;
+  valid = false;
+}
+
+// ============================================================================
+// OrderFlow::L1Cache Implementation
+// ============================================================================
+
+size_t OrderFlow::L1Cache::day_idx_from_x(double global_x) const {
   return static_cast<size_t>(global_x) / OrderFlowConst::L1_CAPACITY;
 }
 
-const std::string &L1Cache::get_date(double global_x) const {
+const std::string &OrderFlow::L1Cache::date_from_x(double global_x) const {
   static const std::string empty;
-  size_t d = get_day_idx(global_x);
+  size_t d = day_idx_from_x(global_x);
   return (d < dates.size()) ? dates[d] : empty;
 }
 
-double L1Cache::snap_to_day_start(double global_x) const {
-  size_t d = get_day_idx(global_x);
+double OrderFlow::L1Cache::snap_to_day_start(double global_x) const {
+  size_t d = day_idx_from_x(global_x);
   return static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
 }
 
-void L1Cache::build_plot_data(size_t asset_idx) {
+void OrderFlow::L1Cache::build_plot_data(size_t asset_idx) {
   if (asset_idx >= num_assets)
     return;
   if (plot_data.size() < num_assets)
     plot_data.resize(num_assets);
 
   auto &pd = plot_data[asset_idx];
-
-  if (pd.built)
+  if (pd.valid)
     return;
 
-  pd.x.clear();
-  pd.open.clear();
-  pd.high.clear();
-  pd.low.clear();
-  pd.close.clear();
-  pd.day_start_plot_idx.clear();
-  pd.day_start_global_x.clear();
+  pd.clear();
 
   for (size_t d = 0; d < num_days; ++d) {
     const auto &day = days[d][asset_idx];
 
-    pd.day_start_plot_idx.push_back(pd.x.size());
-    pd.day_start_global_x.push_back(d * OrderFlowConst::L1_CAPACITY);
+    pd.day_boundaries.push_back(pd.x.size());
 
-    for (size_t i = 0; i < day.valid_count(); ++i) {
-      pd.x.push_back(day.global_x(i));
+    for (size_t i = 0; i < day.count_valid(); ++i) {
+      pd.x.push_back(day.to_global_x(i));
       pd.open.push_back(static_cast<double>(day.open[i]));
       pd.high.push_back(static_cast<double>(day.high[i]));
       pd.low.push_back(static_cast<double>(day.low[i]));
@@ -97,17 +126,17 @@ void L1Cache::build_plot_data(size_t asset_idx) {
   if (!pd.low.empty()) {
     pd.y_min = *std::min_element(pd.low.begin(), pd.low.end());
     pd.y_max = *std::max_element(pd.high.begin(), pd.high.end());
-    pd.built = true;
+    pd.valid = true;
   }
 }
 
-void L1Cache::invalidate_plot_data() {
+void OrderFlow::L1Cache::invalidate_all_plots() {
   for (auto &pd : plot_data) {
-    pd.built = false;
+    pd.invalidate();
   }
 }
 
-void L1Cache::clear() {
+void OrderFlow::L1Cache::clear() {
   dates.clear();
   days.clear();
   date_to_idx.clear();
@@ -118,18 +147,22 @@ void L1Cache::clear() {
 }
 
 // ============================================================================
-// L0Day Implementation
+// OrderFlow::L0Cache::Day::Tick Implementation (inline, no cpp needed)
 // ============================================================================
 
-double L0Day::global_x(size_t i) const {
+// ============================================================================
+// OrderFlow::L0Cache::Day Implementation
+// ============================================================================
+
+double OrderFlow::L0Cache::Day::to_global_x(size_t i) const {
   return static_cast<double>(day_idx * OrderFlowConst::L0_CAPACITY + ticks[i].tick_idx);
 }
 
-void L0Day::reserve(size_t expected) {
-  ticks.reserve(expected);
+void OrderFlow::L0Cache::Day::reserve(size_t n) {
+  ticks.reserve(n);
 }
 
-void L0Day::push(size_t idx, bool depth_valid, bool data_valid, float mid,
+void OrderFlow::L0Cache::Day::push(size_t idx, bool depth_valid, bool data_valid, float mid,
                  const std::array<float, OrderFlowConst::LOB_DEPTH> &bp,
                  const std::array<float, OrderFlowConst::LOB_DEPTH> &ap,
                  const std::array<float, OrderFlowConst::LOB_DEPTH> &bv,
@@ -137,129 +170,157 @@ void L0Day::push(size_t idx, bool depth_valid, bool data_valid, float mid,
   ticks.push_back({idx, depth_valid, data_valid, mid, bp, ap, bv, av});
 }
 
-void L0Day::clear() {
+void OrderFlow::L0Cache::Day::clear() {
   date.clear();
   day_idx = 0;
   ticks.clear();
 }
 
 // ============================================================================
-// L0 Heatmap Cache Implementation
+// OrderFlow::L0Cache::PlotData Implementation
 // ============================================================================
 
-void L0HeatmapPriceLevel::reserve(size_t expected) {
-  rects.reserve(expected);
+void OrderFlow::L0Cache::PlotData::clear() {
+  x.clear();
+  mid_price.clear();
+  best_bid.clear();
+  best_ask.clear();
+  day_boundaries.clear();
+  tick_idx_map.clear();
+  y_min = y_max = 0.0;
+  version = 0;
+  valid = false;
 }
 
-void L0HeatmapPriceLevel::clear() {
+// ============================================================================
+// OrderFlow::L0Cache::HeatmapMerged::Level Implementation
+// ============================================================================
+
+void OrderFlow::L0Cache::HeatmapMerged::Level::reserve(size_t n) {
+  rects.reserve(n);
+}
+
+void OrderFlow::L0Cache::HeatmapMerged::Level::clear() {
   rects.clear();
 }
 
-void L0HeatmapMergedCache::reserve_levels(size_t expected) {
-  levels.reserve(expected);
+// ============================================================================
+// OrderFlow::L0Cache::HeatmapMerged Implementation
+// ============================================================================
+
+void OrderFlow::L0Cache::HeatmapMerged::reserve_levels(size_t n) {
+  levels.reserve(n);
 }
 
-void L0HeatmapMergedCache::clear() {
+void OrderFlow::L0Cache::HeatmapMerged::clear() {
   levels.clear();
   valid = false;
 }
 
-void L0HeatmapColoredCache::reserve(size_t expected) {
-  rects.reserve(expected);
+// ============================================================================
+// OrderFlow::L0Cache::HeatmapColored Implementation
+// ============================================================================
+
+void OrderFlow::L0Cache::HeatmapColored::reserve(size_t n) {
+  rects.reserve(n);
 }
 
-void L0HeatmapColoredCache::clear() {
+void OrderFlow::L0Cache::HeatmapColored::clear() {
   rects.clear();
   valid = false;
 }
 
 // ============================================================================
-// L0Cache Implementation
+// OrderFlow::L0Cache Implementation
 // ============================================================================
 
-// Query - Index conversion
-
-size_t L0Cache::get_day_idx(double global_x) const {
+size_t OrderFlow::L0Cache::day_idx_from_x(double global_x) const {
   return static_cast<size_t>(global_x) / OrderFlowConst::L0_CAPACITY;
 }
 
-size_t L0Cache::get_local_idx(double global_x) const {
+size_t OrderFlow::L0Cache::local_idx_from_x(double global_x) const {
   return static_cast<size_t>(global_x) % OrderFlowConst::L0_CAPACITY;
 }
 
-size_t L0Cache::find_plot_idx(double global_x) const {
-  auto it = std::lower_bound(plot_t.begin(), plot_t.end(), global_x);
-  if (it == plot_t.end())
-    return plot_t.empty() ? SIZE_MAX : plot_t.size() - 1;
-  return static_cast<size_t>(it - plot_t.begin());
+size_t OrderFlow::L0Cache::plot_idx_from_x(double global_x) const {
+  auto it = std::lower_bound(plot.x.begin(), plot.x.end(), global_x);
+  if (it == plot.x.end())
+    return plot.x.empty() ? SIZE_MAX : plot.x.size() - 1;
+  return static_cast<size_t>(it - plot.x.begin());
 }
 
-size_t L0Cache::snap_to_valid_plot_idx(double global_x) const {
-  return find_plot_idx(global_x);
+size_t OrderFlow::L0Cache::snap_to_valid_plot_idx(double global_x) const {
+  // Fast path: O(1) lookup if tick_idx_map is built
+  size_t global_tick_idx = static_cast<size_t>(global_x);
+  if (global_tick_idx < plot.tick_idx_map.size()) {
+    size_t mapped = plot.tick_idx_map[global_tick_idx];
+    if (mapped != SIZE_MAX) {
+      return mapped;
+    }
+  }
+  
+  // Fallback: O(log n) binary search
+  return plot_idx_from_x(global_x);
 }
 
-// Query - Data access
-
-L0Cache::DepthData L0Cache::get_depth(size_t plot_idx) const {
-  DepthData d;
-  if (plot_idx >= plot_t.size())
-    return d;
+OrderFlow::L0Cache::DepthSnapshot OrderFlow::L0Cache::query_depth(size_t plot_idx) const {
+  DepthSnapshot result;
+  if (plot_idx >= plot.x.size())
+    return result;
 
   // Find which day this plot_idx belongs to
   size_t day_i = 0;
-  for (size_t i = 1; i < day_start_plot_idx.size(); ++i) {
-    if (plot_idx < day_start_plot_idx[i])
+  for (size_t i = 1; i < plot.day_boundaries.size(); ++i) {
+    if (plot_idx < plot.day_boundaries[i])
       break;
     day_i = i;
   }
 
   const auto &day = days[day_i];
-  size_t local_plot_idx = plot_idx - day_start_plot_idx[day_i];
-  if (local_plot_idx >= day.valid_count())
-    return d;
+  size_t local_plot_idx = plot_idx - plot.day_boundaries[day_i];
+  if (local_plot_idx >= day.count_valid())
+    return result;
 
   const auto &tick = day.ticks[local_plot_idx];
-  d.mid_price = tick.mid_price;
-  d.bid_price = &tick.bid_price;
-  d.ask_price = &tick.ask_price;
-  d.bid_volume = &tick.bid_volume;
-  d.ask_volume = &tick.ask_volume;
-  d.tick_idx = tick.tick_idx;
-  d.day_idx = day.day_idx;
+  result.mid_price = tick.mid_price;
+  result.bid_price = &tick.bid_price;
+  result.ask_price = &tick.ask_price;
+  result.bid_volume = &tick.bid_volume;
+  result.ask_volume = &tick.ask_volume;
+  result.tick_idx = tick.tick_idx;
+  result.day_idx = day.day_idx;
 
   // Convert tick index to time
-  ClockTime ct = trading_seconds_to_clock(d.tick_idx);
-  d.time.hour = ct.hour;
-  d.time.minute = ct.minute;
-  d.time.second = ct.second;
-  d.valid = true;
+  ClockTime ct = trading_seconds_to_clock(result.tick_idx);
+  result.time.hour = ct.hour;
+  result.time.minute = ct.minute;
+  result.time.second = ct.second;
+  result.valid = true;
 
-  return d;
+  return result;
 }
 
-const std::string &L0Cache::get_date(size_t plot_idx) const {
+const std::string &OrderFlow::L0Cache::date_from_plot_idx(size_t plot_idx) const {
   static const std::string empty;
-  if (plot_idx >= plot_t.size() || days.empty())
+  if (plot_idx >= plot.x.size() || days.empty())
     return empty;
 
   size_t day_i = 0;
-  for (size_t i = 1; i < day_start_plot_idx.size(); ++i) {
-    if (plot_idx < day_start_plot_idx[i])
+  for (size_t i = 1; i < plot.day_boundaries.size(); ++i) {
+    if (plot_idx < plot.day_boundaries[i])
       break;
     day_i = i;
   }
   return days[day_i].date;
 }
 
-// Query - Statistics
-
-L0Cache::ValidCounts L0Cache::count_valid() const {
-  ValidCounts counts;
+OrderFlow::L0Cache::Stats OrderFlow::L0Cache::compute_stats() const {
+  Stats stats;
 
   // Count merged rectangles in heatmap cache
-  if (heatmap_merged_cache.valid) {
-    for (const auto &level : heatmap_merged_cache.levels) {
-      counts.rect_merged += level.rects.size();
+  if (heatmap_merged.valid) {
+    for (const auto &level : heatmap_merged.levels) {
+      stats.heatmap_rects += level.rects.size();
     }
   }
 
@@ -267,105 +328,102 @@ L0Cache::ValidCounts L0Cache::count_valid() const {
   for (const auto &day : days) {
     for (const auto &tick : day.ticks) {
       if (tick.depth_valid)
-        ++counts.depth_valid;
+        ++stats.depth_valid;
       if (tick.data_valid)
-        ++counts.data_valid;
+        ++stats.data_valid;
     }
   }
 
-  return counts;
+  return stats;
 }
 
-bool L0Cache::matches(const std::string &date, size_t asset) const {
+bool OrderFlow::L0Cache::matches(const std::string &date, size_t asset) const {
   if (!loaded || days.empty())
     return false;
   return days[0].date == date && asset_idx == asset;
 }
 
-// Modification - Build caches
+void OrderFlow::L0Cache::build_plot() {
+  plot.clear();
 
-void L0Cache::build_plot_data() {
-  plot_t.clear();
-  plot_mid_price.clear();
-  plot_best_bid.clear();
-  plot_best_ask.clear();
-  day_start_plot_idx.clear();
-  day_start_global_x.clear();
-
-  // Reserve space for plot data (full capacity for aggressive allocation)
+  // Reserve space for plot data
   size_t total_estimated = days.size() * OrderFlowConst::L0_CAPACITY;
-  plot_t.reserve(total_estimated);
-  plot_mid_price.reserve(total_estimated);
-  plot_best_bid.reserve(total_estimated);
-  plot_best_ask.reserve(total_estimated);
+  plot.x.reserve(total_estimated);
+  plot.mid_price.reserve(total_estimated);
+  plot.best_bid.reserve(total_estimated);
+  plot.best_ask.reserve(total_estimated);
+  
+  // Pre-allocate tick_idx_map for all days (O(1) lookup)
+  plot.tick_idx_map.resize(days.size() * OrderFlowConst::L0_CAPACITY, SIZE_MAX);
 
   for (const auto &day : days) {
-    day_start_plot_idx.push_back(plot_t.size());
-    day_start_global_x.push_back(day.day_idx * OrderFlowConst::L0_CAPACITY);
+    plot.day_boundaries.push_back(plot.x.size());
+    size_t day_base = day.day_idx * OrderFlowConst::L0_CAPACITY;
 
     // Only add depth_valid ticks (sparse)
-    for (size_t i = 0; i < day.valid_count(); ++i) {
+    for (size_t i = 0; i < day.count_valid(); ++i) {
       const auto &tick = day.ticks[i];
       if (!tick.depth_valid)
         continue;
 
-      plot_t.push_back(day.global_x(i));
-      plot_mid_price.push_back(static_cast<double>(tick.mid_price));
-      plot_best_bid.push_back(static_cast<double>(tick.bid_price[0]));
-      plot_best_ask.push_back(static_cast<double>(tick.ask_price[0]));
+      size_t plot_idx = plot.x.size();
+      plot.x.push_back(day.to_global_x(i));
+      plot.mid_price.push_back(static_cast<double>(tick.mid_price));
+      plot.best_bid.push_back(static_cast<double>(tick.bid_price[0]));
+      plot.best_ask.push_back(static_cast<double>(tick.ask_price[0]));
+      
+      // Build reverse mapping: tick_idx → plot_idx
+      size_t global_tick_idx = day_base + tick.tick_idx;
+      if (global_tick_idx < plot.tick_idx_map.size()) {
+        plot.tick_idx_map[global_tick_idx] = plot_idx;
+      }
     }
   }
 
-  // Cache Y range with margin
-  if (!plot_mid_price.empty()) {
-    double y_min = *std::min_element(plot_mid_price.begin(), plot_mid_price.end());
-    double y_max = *std::max_element(plot_mid_price.begin(), plot_mid_price.end());
-    double y_range = y_max - y_min;
+  // Cache Y range with margin (pre-compute for rendering)
+  if (!plot.mid_price.empty()) {
+    plot.y_min = *std::min_element(plot.mid_price.begin(), plot.mid_price.end());
+    plot.y_max = *std::max_element(plot.mid_price.begin(), plot.mid_price.end());
+    
+    double y_range = plot.y_max - plot.y_min;
     double margin = y_range * OrderFlowConst::Y_MARGIN_RATIO;
-    y_min_with_margin = y_min - margin;
-    y_max_with_margin = y_max + margin;
+    plot.y_min_with_margin = plot.y_min - margin;
+    plot.y_max_with_margin = plot.y_max + margin;
   }
 
-  // Increment data version and invalidate heatmap caches
-  ++data_version;
-  heatmap_merged_cache.clear();
-  heatmap_colored_cache.clear();
+  plot.version = version;
+  plot.valid = true;
 }
 
-void L0Cache::build_heatmap_merged_cache() {
-  heatmap_merged_cache.clear();
+void OrderFlow::L0Cache::build_heatmap_merged() {
+  heatmap_merged.clear();
 
   if (days.empty())
     return;
 
   constexpr size_t DEPTH = OrderFlowConst::LOB_DEPTH;
 
-  heatmap_merged_cache.reserve_levels(OrderFlowConst::ESTIMATED_PRICE_LEVELS * 2);
+  heatmap_merged.reserve_levels(OrderFlowConst::ESTIMATED_PRICE_LEVELS * 2);
 
   // Unified map: price_key -> level index (handles both bid and ask)
   std::map<int, size_t> price_to_level;
 
-  // Reserve scratch buffers (reused across all ticks)
-  heatmap_scratch_.price_keys.reserve(OrderFlowConst::MAX_KEYS_PER_TICK);
-  heatmap_scratch_.amounts.reserve(OrderFlowConst::MAX_KEYS_PER_TICK);
-  heatmap_scratch_.keys_to_update.reserve(OrderFlowConst::MAX_KEYS_PER_TICK * 2);
-
   // Helper lambda to update a single price level with amount
   auto update_price_level = [&](int price_key, float price, int32_t amount_rmb, size_t global_tick_idx) {
-    auto it = price_to_level.find(price_key);
-    if (it == price_to_level.end()) {
-      size_t level_idx = heatmap_merged_cache.levels.size();
-      heatmap_merged_cache.levels.push_back({price, {}});
-      heatmap_merged_cache.levels[level_idx].reserve(OrderFlowConst::ESTIMATED_RECTS_PER_LEVEL);
-      price_to_level[price_key] = level_idx;
-      it = price_to_level.find(price_key);
+    auto [it, inserted] = price_to_level.try_emplace(price_key, 0);
+    if (inserted) {
+      // New price level: create and reserve
+      size_t level_idx = heatmap_merged.levels.size();
+      it->second = level_idx;
+      heatmap_merged.levels.push_back({price, {}});
+      heatmap_merged.levels[level_idx].reserve(OrderFlowConst::ESTIMATED_RECTS_PER_LEVEL);
     }
 
     size_t level_idx = it->second;
-    auto &level_cache = heatmap_merged_cache.levels[level_idx];
+    auto &level = heatmap_merged.levels[level_idx];
 
-    if (!level_cache.rects.empty()) {
-      auto &last_rect = level_cache.rects.back();
+    if (!level.rects.empty()) {
+      auto &last_rect = level.rects.back();
       if (last_rect.amount_rmb == amount_rmb) {
         // Same signed volume: extend (挂单未动)
         last_rect.tick_end = global_tick_idx + 1;
@@ -377,25 +435,35 @@ void L0Cache::build_heatmap_merged_cache() {
     }
 
     // Skip creating rect for amount=0 if no previous rect exists
-    if (amount_rmb == 0 && level_cache.rects.empty())
+    if (amount_rmb == 0 && level.rects.empty())
       return;
 
-    // Create new rectangle (bid: bottom, ask: top determines direction)
+    // Create new rectangle
+    // NOTE: Use price_high/price_low naming (always high >= low)
+    // - Bid (amount > 0): high=price, low=price-tick → rect extends downward
+    // - Ask (amount < 0): high=price+tick, low=price → rect extends upward
     bool is_bid = (amount_rmb > 0);
-    float price_bottom = is_bid ? (price - OrderFlowConst::TICK_SIZE)
-                                : (price + OrderFlowConst::TICK_SIZE);
+    float price_high, price_low;
+    
+    if (is_bid) {
+      price_high = price;
+      price_low = price - OrderFlowConst::TICK_SIZE;
+    } else {
+      price_high = price + OrderFlowConst::TICK_SIZE;
+      price_low = price;
+    }
 
-    level_cache.rects.push_back({global_tick_idx,
-                                 global_tick_idx + 1,
-                                 price,
-                                 price_bottom,
-                                 amount_rmb});
+    level.rects.push_back({global_tick_idx,
+                           global_tick_idx + 1,
+                           price_high,
+                           price_low,
+                           amount_rmb});
   };
 
   for (const auto &day : days) {
     size_t day_base = day.day_idx * OrderFlowConst::L0_CAPACITY;
 
-    for (size_t tick_i = 0; tick_i < day.valid_count(); ++tick_i) {
+    for (size_t tick_i = 0; tick_i < day.count_valid(); ++tick_i) {
       const auto &tick = day.ticks[tick_i];
 
       if (!tick.depth_valid)
@@ -403,32 +471,23 @@ void L0Cache::build_heatmap_merged_cache() {
 
       size_t global_tick_idx = day_base + tick.tick_idx;
 
-      // Step 1: Collect current tick's bid/ask data (reuse scratch buffers)
-      auto &price_keys = heatmap_scratch_.price_keys;
-      auto &amounts = heatmap_scratch_.amounts;
-      auto &keys_to_update = heatmap_scratch_.keys_to_update;
-
-      price_keys.clear();
-      amounts.clear();
-      keys_to_update.clear();
-
-      int min_key = std::numeric_limits<int>::max();
-      int max_key = std::numeric_limits<int>::min();
+      // Step 1: Collect current tick's bid/ask data (use new scratch structure)
+      scratch_.clear_per_tick();
 
       // Helper lambda to collect a single price level
+      // NOTE: volume is SIGNED (bid_volume > 0, ask_volume < 0), so amount_rmb preserves sign
       auto collect_level = [&](float price, float volume) {
         if (price <= 0)
           return;
         
-        float amount_float = volume_to_amount(volume, price);
+        float amount_float = volume_to_amount(volume, price);  // Preserves sign: bid+, ask-
         int32_t amount_rmb = round_amount_to_rmb(amount_float);
 
         if (amount_rmb != 0) {
           int price_key = price_to_key(price);
-          price_keys.push_back(price_key);
-          amounts.push_back(amount_rmb);
-          min_key = std::min(min_key, price_key);
-          max_key = std::max(max_key, price_key);
+          scratch_.current_tick[price_key] = amount_rmb;
+          scratch_.min_key = std::min(scratch_.min_key, price_key);
+          scratch_.max_key = std::max(scratch_.max_key, price_key);
         }
       };
 
@@ -440,44 +499,32 @@ void L0Cache::build_heatmap_merged_cache() {
 
       // Step 2: Collect all price keys that need updating
       // Add current tick's keys
-      for (int key : price_keys) {
-        keys_to_update.push_back(key);
+      for (const auto &[key, amount] : scratch_.current_tick) {
+        scratch_.keys_to_update.insert(key);
       }
 
       // Add existing keys within current min/max range (may need to close as amount=0)
-      if (min_key <= max_key) {
+      if (scratch_.min_key <= scratch_.max_key) {
         for (const auto &[key, level_idx] : price_to_level) {
-          if (key >= min_key && key <= max_key) {
+          if (key >= scratch_.min_key && key <= scratch_.max_key) {
             // Check if this level has active rects that need closing
-            const auto &level_cache = heatmap_merged_cache.levels[level_idx];
-            if (!level_cache.rects.empty()) {
-              // Check if already in keys_to_update
-              bool found = false;
-              for (int k : keys_to_update) {
-                if (k == key) {
-                  found = true;
-                  break;
-                }
-              }
-              if (!found) {
-                keys_to_update.push_back(key);
-              }
+            const auto &level = heatmap_merged.levels[level_idx];
+            if (!level.rects.empty()) {
+              scratch_.keys_to_update.insert(key);
             }
           }
         }
       }
 
       // Step 3: Update only the collected keys
-      for (int price_key : keys_to_update) {
+      for (int price_key : scratch_.keys_to_update) {
         float price = static_cast<float>(price_key) / OrderFlowConst::PRICE_SCALE;
 
-        // Linear search in price_keys (small size ~60)
+        // O(1) lookup in unordered_map
         int32_t amount_rmb = 0;
-        for (size_t i = 0; i < price_keys.size(); ++i) {
-          if (price_keys[i] == price_key) {
-            amount_rmb = amounts[i];
-            break;
-          }
+        auto it = scratch_.current_tick.find(price_key);
+        if (it != scratch_.current_tick.end()) {
+          amount_rmb = it->second;
         }
 
         update_price_level(price_key, price, amount_rmb, global_tick_idx);
@@ -485,62 +532,143 @@ void L0Cache::build_heatmap_merged_cache() {
     }
   }
 
-  heatmap_merged_cache.data_version = data_version;
-  heatmap_merged_cache.valid = true;
+  heatmap_merged.version = version;
+  heatmap_merged.valid = true;
 }
 
-void L0Cache::build_heatmap_colored_cache(float log_threshold) {
-  heatmap_colored_cache.clear();
-  heatmap_colored_cache.cached_threshold = log_threshold;
-  heatmap_colored_cache.cached_data_version = data_version;
-  heatmap_colored_cache.valid = true;
+// Helper: Map log10(amount) to color intensity [0, 1]
+static float map_amount_to_intensity(float amount, float log_threshold) {
+  float abs_amount = std::abs(amount);
+  if (abs_amount < std::pow(10.0f, log_threshold))
+    return 0.0f; // Below threshold
+
+  float log_amount = std::log10(abs_amount);
+  float log_max = std::log10(OrderFlowConst::AMOUNT_MAX_VISIBLE);
+
+  // Map [threshold, log_max] to [0, 1]
+  float normalized = (log_amount - log_threshold) / (log_max - log_threshold);
+  return std::min(1.0f, std::max(0.0f, normalized));
 }
 
-void L0Cache::clear() {
+// Helper: Convert signed amount (int32_t) to color based on sign and intensity
+// Positive amount (bid) = green, Negative amount (ask) = red
+// Returns RGBA color packed as uint32_t (compatible with ImU32)
+static uint32_t amount_to_color(int32_t amount_rmb, float log_threshold) {
+  float amount = static_cast<float>(amount_rmb);
+  float intensity = map_amount_to_intensity(amount, log_threshold);
+  if (intensity <= 0.0f)
+    return 0; // Transparent (0x00000000)
+
+  uint8_t alpha = static_cast<uint8_t>(intensity * 200 + 55); // [55, 255]
+
+  if (amount_rmb > 0) {
+    // Positive amount (bid side): green spectrum
+    uint8_t g = static_cast<uint8_t>(100 + intensity * 155);
+    uint8_t b = static_cast<uint8_t>(intensity * 100);
+    // Pack as ABGR (ImGui format)
+    return static_cast<uint32_t>(alpha) << 24 | static_cast<uint32_t>(b) << 16 | 
+           static_cast<uint32_t>(g) << 8 | 0;
+  } else {
+    // Negative amount (ask side): red spectrum
+    uint8_t r = static_cast<uint8_t>(150 + intensity * 105);
+    uint8_t g = static_cast<uint8_t>(intensity * 50);
+    // Pack as ABGR (ImGui format)
+    return static_cast<uint32_t>(alpha) << 24 | 0 << 16 | 
+           static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(r);
+  }
+}
+
+void OrderFlow::L0Cache::build_heatmap_colored(float log_threshold) {
+  heatmap_colored.clear();
+
+  if (!heatmap_merged.valid)
+    return;
+
+  // Reserve space for colored rects (aggressive allocation)
+  constexpr size_t ESTIMATED_COLORED_RECTS =
+      OrderFlowConst::ESTIMATED_PRICE_LEVELS * OrderFlowConst::ESTIMATED_RECTS_PER_LEVEL;
+
+  heatmap_colored.reserve(ESTIMATED_COLORED_RECTS);
+
+  // Convert merged rects to colored rects
+  for (const auto &level : heatmap_merged.levels) {
+    for (const auto &merged_rect : level.rects) {
+      uint32_t color = amount_to_color(merged_rect.amount_rmb, log_threshold);
+      if (color == 0) // Skip transparent
+        continue;
+
+      // Convert tick indices to global X coordinates
+      double x1 = static_cast<double>(merged_rect.tick_start);
+      double x2 = static_cast<double>(merged_rect.tick_end);
+      double y1 = static_cast<double>(merged_rect.price_high);
+      double y2 = static_cast<double>(merged_rect.price_low);
+
+      heatmap_colored.rects.push_back({x1, y1, x2, y2, color});
+    }
+  }
+
+  heatmap_colored.threshold = log_threshold;
+  heatmap_colored.version = heatmap_merged.version;
+  heatmap_colored.valid = true;
+}
+
+void OrderFlow::L0Cache::invalidate_all_caches() {
+  ++version;
+  plot.invalidate();
+  heatmap_merged.clear();
+  heatmap_colored.clear();
+}
+
+void OrderFlow::L0Cache::clear() {
   days.clear();
   asset_idx = 0;
-  plot_t.clear();
-  plot_mid_price.clear();
-  plot_best_bid.clear();
-  plot_best_ask.clear();
-  day_start_plot_idx.clear();
-  day_start_global_x.clear();
-  heatmap_merged_cache.clear();
-  heatmap_colored_cache.clear();
+  plot.clear();
+  heatmap_merged.clear();
+  heatmap_colored.clear();
   loaded = false;
-  data_version = 0;
-  asset_idx = 0;
+  version = 0;
 }
 
 // ============================================================================
-// Auxiliary Structures Implementation
+// OrderFlow::UI Implementation
 // ============================================================================
 
-void OrderFlowLoaderState::clear() {
-  l0_load_requested = false;
-  l0_request_date.clear();
-  l0_request_asset = 0;
-  l1_needs_reload = false;
-  handle.reset();
-  coro_running = false;
-  coro_should_exit = false;
-}
-
-bool OrderFlowUI::check_and_update() {
-  bool changed = (selected_asset_idx != prev_asset_idx ||
-                  l1_anchor_date != prev_l1_anchor_date);
-  prev_asset_idx = selected_asset_idx;
-  prev_l1_anchor_date = l1_anchor_date;
+bool OrderFlow::UI::detect_and_update_changes() {
+  bool changed = (cached_asset_idx != selected_asset_idx ||
+                  cached_anchor_date != l1_anchor_date);
+  if (changed) {
+    cached_asset_idx = selected_asset_idx;
+    cached_anchor_date = l1_anchor_date;
+  }
   return changed;
 }
 
+void OrderFlow::UI::clear() {
+  *this = UI{};
+}
+
 // ============================================================================
-// Main OrderFlow Implementation
+// OrderFlow::Loader Implementation
+// ============================================================================
+
+void OrderFlow::Loader::clear() {
+  l0_requested = false;
+  l0_date.clear();
+  l0_asset = 0;
+  l1_needs_reload = false;
+  coro.reset();
+  coro_running = false;
+  coro_should_stop = false;
+}
+
+// ============================================================================
+// OrderFlow Implementation
 // ============================================================================
 
 void OrderFlow::clear() {
   l1.clear();
   l0.clear();
-  ui = OrderFlowUI{};
+  ui.clear();
   loader.clear();
 }
+

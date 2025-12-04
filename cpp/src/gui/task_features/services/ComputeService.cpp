@@ -9,6 +9,7 @@
 #include "worker/sequential_worker.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 
 namespace GUI::Features {
@@ -104,6 +105,16 @@ void ComputeService::start_compute(int num_workers) {
     feature_store_ = std::make_unique<GlobalFeatureStore>(
         num_assets, num_ts_workers, data_.config.feature_dir,
         static_cast<int>(cs_worker_core), static_cast<int>(io_worker_core));
+
+    // Clean up directories before compute
+    namespace fs = std::filesystem;
+
+    // Delete and recreate log_dir
+    fs::path log_path(data_.config.log_dir);
+    if (fs::exists(log_path)) {
+      fs::remove_all(log_path);
+    }
+    fs::create_directories(log_path);
 
     // Initialize logger for all workers (shared log file)
     Logger::init(data_.config.log_dir);

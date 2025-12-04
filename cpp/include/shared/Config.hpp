@@ -39,7 +39,7 @@ struct Config {
   std::string baostock_stock_factor_file = "stock_factor.json";
   std::string baostock_stock_info_file = "stock_info.json";
   std::string baostock_stock_days_file = "stock_days.json";
-  int baostock_max_workers = 4;
+  int baostock_max_workers = 10;
   int baostock_weekly_update_day = 1; // Monday
 
   // String buffers for GUI (max 512 chars for path)

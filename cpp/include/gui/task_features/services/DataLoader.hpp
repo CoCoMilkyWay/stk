@@ -53,7 +53,7 @@ public:
     if (of.l1.loaded && !of.l1.dates.empty()) {
       of.ui.l1_anchor_x = 0;
       of.ui.l1_anchor_date = of.l1.dates[0];
-      of.ui.prev_l1_anchor_date = of.ui.l1_anchor_date;
+      of.ui.cached_anchor_date = of.ui.l1_anchor_date;
     }
   }
 
@@ -64,10 +64,10 @@ public:
   asio::awaitable<void> L0LoaderLoop(OrderFlow &of) {
     of.loader.coro_running = true;
 
-    while (!of.loader.coro_should_exit) {
+    while (!of.loader.coro_should_stop) {
       // Check for L0 load request
-      if (of.loader.l0_load_requested.exchange(false)) {
-        load_l0(of.l0, of.loader.l0_request_date, of.loader.l0_request_asset, of.l1);
+      if (of.loader.l0_requested.exchange(false)) {
+        load_l0(of.l0, of.loader.l0_date, of.loader.l0_asset, of.l1);
         of.ui.l0_anchor_plot_idx = 0;
       }
 
@@ -86,8 +86,8 @@ public:
     if (of.loader.coro_running)
       return;
 
-    of.loader.coro_should_exit = false;
-    of.loader.handle = coro_mgr.Spawn(L0LoaderLoop(of));
+    of.loader.coro_should_stop = false;
+    of.loader.coro = coro_mgr.Spawn(L0LoaderLoop(of));
 
     // Blocking wait until coroutine starts
     while (!of.loader.coro_running) {
@@ -101,7 +101,7 @@ public:
     if (!of.loader.coro_running)
       return;
 
-    of.loader.coro_should_exit = true;
+    of.loader.coro_should_stop = true;
 
     // Blocking wait until coroutine exits
     while (of.loader.coro_running) {
@@ -109,7 +109,7 @@ public:
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
 
-    of.loader.handle.reset();
+    of.loader.coro.reset();
   }
 
   // Request L0 load (non-blocking, coroutine will handle)
@@ -117,20 +117,20 @@ public:
     if (of.l0.matches(date, asset_idx))
       return;
 
-    of.loader.l0_request_date = date;
-    of.loader.l0_request_asset = asset_idx;
-    of.loader.l0_load_requested = true;
+    of.loader.l0_date = date;
+    of.loader.l0_asset = asset_idx;
+    of.loader.l0_requested = true;
   }
 
   // ========================================================================
   // Load all L1 data (sparse, pre-reserved)
   // ========================================================================
-  bool load_all_l1(L1Cache &cache, size_t num_assets) {
+  bool load_all_l1(OrderFlow::L1Cache &cache, size_t num_assets) {
     if (cache.loaded)
       return true;
 
     cache.clear();
-    cache.invalidate_plot_data(); // Force rebuild on reload
+    cache.invalidate_all_plots(); // Force rebuild on reload
     cache.num_assets = num_assets;
 
     std::vector<std::string> dates = scan_available_dates();
@@ -163,15 +163,21 @@ public:
         day.reserve(OrderFlowConst::L1_CAPACITY);
 
         for (size_t t = 0; t < tensor.T[1]; ++t) {
-          float valid_flag = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_data_valid, a));
+          float valid_flag = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_data_valid], a));
           if (valid_flag <= 0.5f)
             continue;
 
-          float o = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_open, a));
-          float h = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_high, a));
-          float l = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_low, a));
-          float c = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_close, a));
-          float v = static_cast<float>(tensor.get(1, t, L1_FieldOffset::_ohlc_volume, a));
+          // Read prices as integer cents and convert to yuan
+          float o_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_open], a));
+          float h_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_high], a));
+          float l_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_low], a));
+          float c_cents = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_close], a));
+          float v = static_cast<float>(tensor.get(1, t, L1_FIELD_OFFSETS[L1_FieldOffset::_ohlc_volume], a));
+
+          float o = o_cents * 0.01f;
+          float h = h_cents * 0.01f;
+          float l = l_cents * 0.01f;
+          float c = c_cents * 0.01f;
 
           day.push(t, o, h, l, c, v);
         }
@@ -188,13 +194,13 @@ public:
     for (size_t d = 0; d < std::min(dates.size(), size_t(5)); ++d) {
       size_t total_valid = 0;
       for (size_t a = 0; a < num_assets; ++a) {
-        total_valid += cache.days[d][a].valid_count();
+        total_valid += cache.days[d][a].count_valid();
       }
       std::cerr << "  Day " << d << " (" << dates[d] << "): " << total_valid << " valid bars across all assets" << std::endl;
     }
-    if (num_assets > 0) {
-      std::cerr << "  Asset 0 plot_data: " << cache.plot_data[0].x.size() << " points" << std::endl;
-    }
+    // if (num_assets > 0) {
+    //   std::cerr << "  Asset 0 plot_data: " << cache.plot_data[0].x.size() << " points" << std::endl;
+    // }
 
     cache.loaded = true;
     return true;
@@ -203,7 +209,7 @@ public:
   // ========================================================================
   // Load L0 data for single day (sparse, pre-reserved)
   // ========================================================================
-  bool load_l0(L0Cache &cache, const std::string &date, size_t asset_idx, const L1Cache &l1_cache) {
+  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, const OrderFlow::L1Cache &l1_cache) {
     if (cache.matches(date, asset_idx))
       return true;
 
@@ -224,12 +230,12 @@ public:
       return false;
     }
 
-    L0Day day;
+    OrderFlow::L0Cache::Day day;
     day.date = date;
     day.day_idx = day_idx;
-    
+
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
-    
+
     // Reserve full capacity for aggressive allocation
     day.reserve(OrderFlowConst::L0_CAPACITY);
 
@@ -237,12 +243,12 @@ public:
     // Line plots and heatmap will use ImPlot step mode to handle sparsity
     for (size_t t = 0; t < tensor.T[0]; ++t) {
       // Read validity flags
-      float depth_valid_val = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_depth_valid, asset_idx));
-      float data_valid_val = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_data_valid, asset_idx));
-      
+      float depth_valid_val = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid], asset_idx));
+      float data_valid_val = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_data_valid], asset_idx));
+
       bool depth_valid = (depth_valid_val > 0.5f);
       bool data_valid = (data_valid_val > 0.5f);
-      
+
       // Skip if neither valid
       if (!depth_valid && !data_valid)
         continue;
@@ -250,22 +256,27 @@ public:
       // Load depth features (only if depth_valid)
       float mid = 0.0f;
       std::array<float, N> bp{}, ap{}, bv{}, av{};
-      
+
       if (depth_valid) {
-        mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
-        
+        // Read prices as integers (cents) and convert to yuan
+        float mid_cents = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_mid_price], asset_idx));
+        mid = mid_cents * 0.01f;
+
         for (size_t i = 0; i < N; ++i) {
-          bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
-          ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
+          float bp_cents = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
+          float ap_cents = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
+          
+          bp[i] = bp_cents * 0.01f;  // Convert cents to yuan
+          ap[i] = ap_cents * 0.01f;  // Convert cents to yuan
           bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_volume] + i, asset_idx));
           av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
         }
 
-        // Filter sentinel data
-        if (mid <= 0 || 
+        // Filter sentinel data (prices already in yuan)
+        if (mid <= 0 ||
             bp[0] < OrderFlowConst::PRICE_MIN_VALID || bp[0] > OrderFlowConst::PRICE_MAX_VALID ||
             ap[0] < OrderFlowConst::PRICE_MIN_VALID || ap[0] > OrderFlowConst::PRICE_MAX_VALID) {
-          depth_valid = false;  // Mark as invalid if sentinel detected
+          depth_valid = false; // Mark as invalid if sentinel detected
         }
       }
 
@@ -274,8 +285,8 @@ public:
     }
 
     cache.days.push_back(std::move(day));
-    cache.build_plot_data();
-    cache.build_heatmap_merged_cache();  // Build Level 1 heatmap cache
+    cache.build_plot();
+    cache.build_heatmap_merged(); // Build Level 2 heatmap cache
     cache.loaded = true;
     return true;
   }
