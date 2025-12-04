@@ -255,6 +255,15 @@ const std::string &L0Cache::get_date(size_t plot_idx) const {
 
 L0Cache::ValidCounts L0Cache::count_valid() const {
   ValidCounts counts;
+  
+  // Count merged rectangles in heatmap cache
+  if (heatmap_merged_cache.valid) {
+    for (const auto &level : heatmap_merged_cache.levels) {
+      counts.rect_merged += level.rects.size();
+    }
+  }
+  
+  // Count valid ticks
   for (const auto &day : days) {
     for (const auto &tick : day.ticks) {
       if (tick.depth_valid)
@@ -263,6 +272,7 @@ L0Cache::ValidCounts L0Cache::count_valid() const {
         ++counts.data_valid;
     }
   }
+  
   return counts;
 }
 

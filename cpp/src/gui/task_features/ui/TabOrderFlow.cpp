@@ -564,8 +564,9 @@ static void RenderStatusBar(const OrderFlow &of, size_t asset_idx) {
     ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "[L1: %zu days, %zu points]",
                        of.l1.num_days, pd.x.size());
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("L1 (Minute-level) uses data_valid only\n"
-                        "All displayed bars have valid OHLCV data");
+      ImGui::SetTooltip("L1 (分钟级别):\n"
+                        "所有显示的K线都有完整的OHLCV数据\n"
+                        "仅使用 data_valid 标记");
     }
   }
   ImGui::SameLine();
@@ -579,11 +580,13 @@ static void RenderStatusBar(const OrderFlow &of, size_t asset_idx) {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[Loading L0...]");
   } else if (of.l0.loaded) {
     auto counts = of.l0.count_valid();
-    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu/%zu]", counts.depth_valid, counts.data_valid);
+    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu/%zu/%zu]", 
+                       counts.rect_merged, counts.depth_valid, counts.data_valid);
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Depth Valid / Data Valid\n"
-                        "Depth Valid: LOB depth buffer complete (bid/ask prices/volumes, mid_price)\n"
-                        "Data Valid: Event-driven data present (other tick features)");
+      ImGui::SetTooltip("合并矩形数 / 有效深度 / 有效数据\n"
+                        "合并矩形数: 热力图缓存中的矩形总数(已合并)\n"
+                        "有效深度: LOB深度缓冲完整的tick数(含买卖价格/挂单量/中间价)\n"
+                        "有效数据: 事件驱动数据存在的tick数(含其他tick特征)");
     }
   }
 }
@@ -605,17 +608,17 @@ static void RenderHeatmapControls(OrderFlow &of) {
     if (ImGui::IsItemHovered()) {
       ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Always);
       ImGui::BeginTooltip();
-      ImGui::Text("Log10(Amount) Lower Threshold");
+      ImGui::Text("Log10(金额) 下限阈值");
       ImGui::Separator();
-      ImGui::Text("3.0 = 1K RMB (show all levels >= 1K)");
-      ImGui::Text("4.0 = 10K RMB");
-      ImGui::Text("5.0 = 100K RMB");
-      ImGui::Text("6.0 = 1M RMB");
-      ImGui::Text("7.0 = 10M RMB (only show thick levels)");
+      ImGui::Text("3.0 = 1千元 (显示所有 >= 1千的档位)");
+      ImGui::Text("4.0 = 1万元");
+      ImGui::Text("5.0 = 10万元");
+      ImGui::Text("6.0 = 100万元");
+      ImGui::Text("7.0 = 1000万元 (仅显示大额档位)");
       ImGui::Separator();
-      ImGui::TextWrapped("Range: [threshold, 10M] maps to [transparent, full color]");
-      ImGui::TextWrapped("Lower threshold: see more thin levels");
-      ImGui::TextWrapped("Higher threshold: focus on thick levels only");
+      ImGui::TextWrapped("范围: [阈值, 1000万] 映射到 [透明, 完全实色]");
+      ImGui::TextWrapped("降低阈值: 看到更多薄档位");
+      ImGui::TextWrapped("提高阈值: 只关注大额档位");
       ImGui::EndTooltip();
     }
   }

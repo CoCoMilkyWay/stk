@@ -261,8 +261,9 @@ struct L0Cache {
   
   // Query - Statistics
   struct ValidCounts {
-    size_t depth_valid = 0;
-    size_t data_valid = 0;
+    size_t rect_merged = 0;   // Total merged rectangles in heatmap cache
+    size_t depth_valid = 0;   // Ticks with valid depth data
+    size_t data_valid = 0;    // Ticks with valid event-driven data
   };
   ValidCounts count_valid() const;
   size_t total_valid() const { return plot_t.size(); }

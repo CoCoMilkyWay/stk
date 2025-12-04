@@ -48,7 +48,7 @@ enum class EncodingStatus {
 // ============================================================================
 
 enum class DatabaseStatus {
-  Unchecked,   // 尚未检查（初始状态）
+  Unchecked,   // 尚未检查(初始状态)
   Pass,        // Binary完整覆盖backtest period,可以回测
   Incomplete,  // Binary不完整,但可以从archive encode补全
   NeedArchive, // Binary不完整,缺失日期无对应archive
