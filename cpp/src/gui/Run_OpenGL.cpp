@@ -92,7 +92,7 @@ void RunGUI() {
 #endif
 
   // Create window
-  GLFWwindow *window = glfwCreateWindow(1920, 1080, "L2 Data Processor (OpenGL)", nullptr, nullptr);
+  GLFWwindow *window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "L2 Data Processor (OpenGL)", nullptr, nullptr);
   if (!window) {
     data.gui.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();

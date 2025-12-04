@@ -69,46 +69,33 @@ private:
   }
 
   // Write LOB depth snapshot (N levels bid/ask price/amount for GUI)
-  // Filtering rule: top 5 levels always included, beyond 5 filter out amount < 50k RMB
-  void write_lob_depth(bool is_valid, size_t t) {
+  // No validity check - always write available depth (may be partial)
+  void write_lob_depth(bool, size_t t) {
     constexpr size_t N = L2::LOB_DEPTH;
     const auto &depth = tick_data_.lob.depth_buffer;
-
-    // Tensor auto-cleared, skip if invalid
-    if (!is_valid || depth.size() < 2 * N)
-      return;
 
     constexpr size_t level_idx = 0;
     constexpr size_t bid_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price];
     constexpr size_t ask_price_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price];
     constexpr size_t bid_amount_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_bid_amount];
     constexpr size_t ask_amount_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_ask_amount];
-    constexpr float MIN_AMOUNT_RMB = 50000.0f;
 
     // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
     // Output: bid[0]=bid1(best), ask[0]=ask1(best)
-    size_t output_idx = 0;
-    for (size_t i = 0; i < N && output_idx < N; ++i) {
-      Level *bid_level = depth[N + i];
-      Level *ask_level = depth[N - 1 - i];
+    // Write all N levels, unfilled slots will have price/amount = 0
+    for (size_t i = 0; i < N; ++i) {
+      Level *bid_level = (N + i < depth.size()) ? depth[N + i] : nullptr;
+      Level *ask_level = (N - 1 >= i && N - 1 - i < depth.size()) ? depth[N - 1 - i] : nullptr;
 
       float bid_price = bid_level ? bid_level->price * 0.01f : 0.0f;
       float ask_price = ask_level ? ask_level->price * 0.01f : 0.0f;
       float bid_amount = bid_level ? bid_level->net_quantity * bid_price : 0.0f;
       float ask_amount = ask_level ? -ask_level->net_quantity * ask_price : 0.0f;
 
-      // Filter logic: top 5 always include, beyond 5 check amount threshold
-      bool bid_pass = (i < 5) || (bid_amount >= MIN_AMOUNT_RMB);
-      bool ask_pass = (i < 5) || (ask_amount >= MIN_AMOUNT_RMB);
-      
-      // Only write if both sides pass (keep bid/ask aligned)
-      if (bid_pass && ask_pass) {
-        TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_price_offset + output_idx, asset_id_, bid_price, worker_id_);
-        TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_price_offset + output_idx, asset_id_, ask_price, worker_id_);
-        TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_amount_offset + output_idx, asset_id_, bid_amount, worker_id_);
-        TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_amount_offset + output_idx, asset_id_, ask_amount, worker_id_);
-        output_idx++;
-      }
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_price_offset + i, asset_id_, bid_price, worker_id_);
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_price_offset + i, asset_id_, ask_price, worker_id_);
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, bid_amount_offset + i, asset_id_, bid_amount, worker_id_);
+      TS_WRITE_SINGLE(store_, date_str_, level_idx, t, ask_amount_offset + i, asset_id_, ask_amount, worker_id_);
     }
 
     // Write mid_price for GUI (OrderFlow visualization)

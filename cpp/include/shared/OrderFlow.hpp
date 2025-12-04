@@ -460,6 +460,11 @@ struct OrderFlowUI {
   // L0 anchor (plot index, snaps to valid tick)
   size_t l0_anchor_plot_idx = 0;
 
+  // Heatmap controls
+  bool show_heatmap = true;
+  float log_amount_threshold = 3.0f;  // log10(amount) threshold, range [1.0, 6.0]
+                                       // 1.0 = 10 RMB (thin), 6.0 = 1M RMB (thick)
+
   // Track changes
   int prev_asset_idx = -1;
   std::string prev_l1_anchor_date;

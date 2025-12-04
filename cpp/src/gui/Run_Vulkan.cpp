@@ -389,7 +389,7 @@ void RunGUI() {
 
   // Create window with Vulkan context
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  GLFWwindow *window = glfwCreateWindow(1920, 1080, "L2 Data Processor (Vulkan)", nullptr, nullptr);
+  GLFWwindow *window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "L2 Data Processor (Vulkan)", nullptr, nullptr);
   if (!window) {
     data.gui.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
