@@ -231,31 +231,82 @@ public:
 
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
 
+    // Forward-fill strategy: ImGui heatmap requires dense data (no gaps in trading period)
+    // Two-pass approach:
+    //   1. Find first valid depth (after 集合竞价)
+    //   2. Forward-fill from first valid to end (dense in trading period)
+    //   Note: Opening gap before first valid depth is intentional (集合竞价)
+    
+    // Pass 1: Find first valid depth and load it (marks start of continuous trading)
+    size_t first_valid_t = 0;
+    float first_valid_mid = 0.0f;
+    std::array<float, N> first_valid_bp{}, first_valid_ap{}, first_valid_bv{}, first_valid_av{};
+    bool found_first_valid = false;
+    
     for (size_t t = 0; t < tensor.T[0]; ++t) {
-      float data_valid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_data_valid, asset_idx));
       float depth_valid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_depth_valid, asset_idx));
-      
-      // Skip if no valid data at all
-      if (data_valid <= 0.5f)
-        continue;
-      
-      // LOB depth features require depth_valid (depth_valid implies data_valid)
-      // If depth is not valid, skip this tick for GUI display (we only show ticks with complete LOB)
-      if (depth_valid <= 0.5f)
-        continue;
-
-      float mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
-
-      std::array<float, N> bp{}, ap{}, bv{}, av{};
-      for (size_t i = 0; i < N; ++i) {
-        bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
-        ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
+      if (depth_valid > 0.5f) {
+        first_valid_t = t;
+        first_valid_mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
         
-        // Load volume (in lots, 1 lot = 100 shares)
-        bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_volume] + i, asset_idx));
-        av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
+        for (size_t i = 0; i < N; ++i) {
+          first_valid_bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
+          first_valid_ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
+          first_valid_bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_volume] + i, asset_idx));
+          first_valid_av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
+        }
+        found_first_valid = true;
+        break;
+      }
+    }
+    
+    if (!found_first_valid) {
+      // No valid depth in entire day, skip
+      cache.loaded = true;
+      return true;
+    }
+
+    // Pass 2: Forward-fill from first valid to end (fully dense)
+    float last_valid_mid = first_valid_mid;
+    std::array<float, N> last_valid_bp = first_valid_bp;
+    std::array<float, N> last_valid_ap = first_valid_ap;
+    std::array<float, N> last_valid_bv = first_valid_bv;
+    std::array<float, N> last_valid_av = first_valid_av;
+
+    for (size_t t = first_valid_t; t < tensor.T[0]; ++t) {
+      float depth_valid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_depth_valid, asset_idx));
+
+      float mid;
+      std::array<float, N> bp, ap, bv, av;
+
+      // If depth is valid, load fresh data and update cache
+      if (depth_valid > 0.5f) {
+        mid = static_cast<float>(tensor.get(0, t, L0_FieldOffset::_mid_price, asset_idx));
+        
+        for (size_t i = 0; i < N; ++i) {
+          bp[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_price] + i, asset_idx));
+          ap[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_price] + i, asset_idx));
+          bv[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_bid_volume] + i, asset_idx));
+          av[i] = static_cast<float>(tensor.get(0, t, L0_FIELD_OFFSETS[L0_FieldOffset::_ask_volume] + i, asset_idx));
+        }
+
+        // Update last valid cache
+        last_valid_mid = mid;
+        last_valid_bp = bp;
+        last_valid_ap = ap;
+        last_valid_bv = bv;
+        last_valid_av = av;
+      } else {
+        // Depth not valid: forward-fill from last valid depth
+        mid = last_valid_mid;
+        bp = last_valid_bp;
+        ap = last_valid_ap;
+        bv = last_valid_bv;
+        av = last_valid_av;
       }
 
+      // Push with continuous index (t - first_valid_t gives 0, 1, 2, ...)
+      // But we still want original global positioning, so use t
       day.push(t, mid, bp, ap, bv, av);
     }
 

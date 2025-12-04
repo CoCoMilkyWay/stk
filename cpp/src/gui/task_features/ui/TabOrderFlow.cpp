@@ -300,7 +300,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
       // LEVEL 1: Raw data cache (rebuild only when L0 data changes)
       // ========================================================================
       bool need_rebuild_level1 = !cache.level1_valid || 
-                                  cache.cached_data_version != of.l0.data_version;
+                          cache.cached_data_version != of.l0.data_version;
       
       if (need_rebuild_level1) {
         cache.raw_rects.clear();
@@ -334,10 +334,10 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
             
             // Rect spans from price to (price - TICK_SIZE) with no gap
             cache.raw_rects.push_back({
-              x - x_half_width, price, 
+                x - x_half_width, price, 
               x + x_half_width, price - TICK_SIZE, 
               amount
-            });
+              });
           }
           
           // Process ask levels (negative amount, above mid)
@@ -350,7 +350,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
             
             // Rect spans from price to (price + TICK_SIZE) with no gap
             cache.raw_rects.push_back({
-              x - x_half_width, price,
+                x - x_half_width, price,
               x + x_half_width, price + TICK_SIZE,
               amount
             });
@@ -378,7 +378,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
           if (color != IM_COL32(0, 0, 0, 0)) {  // Skip transparent
             cache.colored_rects.push_back({
               raw.x1, raw.y1, raw.x2, raw.y2, color
-            });
+              });
           }
         }
         
@@ -417,7 +417,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     ImPlot::PlotShaded("Spread", of.l0.plot_t.data(), of.l0.plot_best_bid.data(), 
                        of.l0.plot_best_ask.data(), static_cast<int>(of.l0.plot_t.size()));
     ImPlot::PopStyleColor();
-    
+
     // Draw mid price line on top
     ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
     ImPlot::PlotLine("Mid Price", of.l0.plot_t.data(), of.l0.plot_mid_price.data(),
