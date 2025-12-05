@@ -31,6 +31,21 @@ namespace {
 // Formatters
 // ============================================================================
 
+// Custom formatter converts X coordinate → time index → actual time
+// Example: X=900 → tick_idx=900 → index2tick(900) → 09:30
+static int L0TimeFormatter(double value, char *buff, int size, void* /*user_data*/) {
+  // Extract time index from global_x
+  // global_x = day_idx * L0_CAPACITY + tick_idx, where tick_idx is time index
+  const size_t global_x = static_cast<size_t>(value);
+  const size_t tick_idx = global_x % OrderFlowConst::L0_CAPACITY;
+  
+  // Convert time index (0-15299) to ClockTime
+  ClockTime ct = index2tick(tick_idx);
+  
+  // Format as HH:MM (matching TimeAxisLUT labels)
+  return std::snprintf(buff, size, "%02d:%02d", ct.hour, ct.minute);
+}
+
 static void FormatTimeHMS(char *buf, size_t size, uint8_t hour, uint8_t minute, uint8_t second) {
   std::snprintf(buf, size, "%02d:%02d:%02d", hour, minute, second);
 }
@@ -137,15 +152,15 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
     if (price <= 0)
       return; // Skip invalid levels
 
-    float amount = volume_to_amount(volume, price);  // Preserves sign: bid+, ask-
+    float amount = volume_to_amount(volume, price); // Preserves sign: bid+, ask-
     float abs_amount = std::abs(amount);
-    float ratio = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);  // 100W = full bar
+    float ratio = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT); // 100W = full bar
     float amount_in_wan = amount_to_wan(amount);
 
     // Color intensity based on depth bar max (100W)
     ImVec4 bar_color;
     bool expected_sign = is_bid ? (amount > 0) : (amount < 0);
-    
+
     if (expected_sign) {
       // Normal case: green for bid (amount > 0), red for ask (amount < 0)
       float intensity = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
@@ -163,7 +178,7 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
     ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 5.0f), ""); // Compact height
     ImGui::PopStyleColor();
     ImGui::SameLine();
-    ImGui::Text("%6.2f元 %+7.2f万", price, amount_in_wan);  // Fixed format: xxx.xx +-xxx.xx
+    ImGui::Text("%6.2f元 %+7.2f万", price, amount_in_wan); // Fixed format: xxx.xx +-xxx.xx
   };
 
   // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
@@ -207,6 +222,10 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     ImPlot::SetupAxes("Time", "Price", 0, 0);
     ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, cond);
     ImPlot::SetupAxisLimits(ImAxis_Y1, of.l0.plot.y_min_with_margin, of.l0.plot.y_max_with_margin, cond);
+    
+    // Setup X-axis formatter: converts X coordinates (time index) to time strings
+    // This ensures correct time display for ALL positions, not just tick marks
+    ImPlot::SetupAxisFormat(ImAxis_X1, L0TimeFormatter);
 
     // Setup L0 ticks (use pre-computed TimeAxisLUT)
     static std::vector<double> tick_positions;
@@ -215,17 +234,18 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
 
     if (cached_day_idx != day_idx) {
       const auto &lut = TimeAxisLUT::instance();
-      
+
       tick_positions.clear();
       tick_labels.clear();
-      
+
       for (size_t offset : lut.l0_tick_offsets) {
-        tick_positions.push_back(x_min + static_cast<double>(offset));
+        double tick_pos = x_min + static_cast<double>(offset);
+        tick_positions.push_back(tick_pos);
       }
       for (const auto &label : lut.l0_tick_labels) {
         tick_labels.push_back(label.c_str());
       }
-      
+
       cached_day_idx = day_idx;
     }
 
@@ -289,25 +309,31 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
                        static_cast<int>(of.l0.plot.x.size()));
     ImPlot::PopStyleColor();
 
+    // Anchor: get snapped X from plot_idx (single source of truth)
     double anchor_x = ui.l0_anchor_plot_idx < of.l0.plot.x.size()
                           ? of.l0.plot.x[ui.l0_anchor_plot_idx]
                           : x_min;
 
-    if (ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f)) {
+    // DragLineX: modifies anchor_x during drag, returns true when changed
+    bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
+    bool drag_active = ImGui::IsItemActive();
+
+    // Snap only when drag is released (changed but no longer active)
+    if (drag_changed && !drag_active) {
       ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(anchor_x);
     }
 
     if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-      ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-      ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(mouse.x);
+      ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(ImPlot::GetPlotMousePos().x);
     }
 
+    // Annotation: use snapped data (re-fetch from plot_idx for consistency)
     if (ui.l0_anchor_plot_idx < of.l0.plot.x.size()) {
       auto depth = of.l0.query_depth(ui.l0_anchor_plot_idx);
       if (depth.valid) {
         char time_buf[16];
         FormatTimeHMS(time_buf, sizeof(time_buf), depth.time.hour, depth.time.minute, depth.time.second);
-        ImPlot::Annotation(anchor_x, of.l0.plot.mid_price[ui.l0_anchor_plot_idx],
+        ImPlot::Annotation(of.l0.plot.x[ui.l0_anchor_plot_idx], of.l0.plot.mid_price[ui.l0_anchor_plot_idx],
                            ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", time_buf);
       }
     }
@@ -376,20 +402,26 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
       PlotCandlestick("OHLC", pd.x.data(), pd.open.data(), pd.high.data(),
                       pd.low.data(), pd.close.data(), static_cast<int>(pd.x.size()));
 
+      // Anchor: use snapped X (ui.l1_anchor_x is source of truth)
       double anchor_x = ui.l1_anchor_x;
-      if (ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f)) {
+
+      // DragLineX: snap only when drag is released
+      bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
+      bool drag_active = ImGui::IsItemActive();
+
+      if (drag_changed && !drag_active) {
         ui.l1_anchor_x = of.l1.snap_to_day_start(anchor_x);
         ui.l1_anchor_date = of.l1.date_from_x(ui.l1_anchor_x);
       }
 
       if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-        ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-        ui.l1_anchor_x = of.l1.snap_to_day_start(mouse.x);
+        ui.l1_anchor_x = of.l1.snap_to_day_start(ImPlot::GetPlotMousePos().x);
         ui.l1_anchor_date = of.l1.date_from_x(ui.l1_anchor_x);
       }
 
+      // Annotation: use snapped position and find corresponding Y value
       if (!ui.l1_anchor_date.empty()) {
-        auto it = std::lower_bound(pd.x.begin(), pd.x.end(), anchor_x);
+        auto it = std::lower_bound(pd.x.begin(), pd.x.end(), ui.l1_anchor_x);
         double anchor_y = 0;
         if (it != pd.x.end()) {
           size_t idx = static_cast<size_t>(it - pd.x.begin());
@@ -399,7 +431,7 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
 
         char date_buf[16];
         FormatDateShort(date_buf, sizeof(date_buf), ui.l1_anchor_date);
-        ImPlot::Annotation(anchor_x, anchor_y, ImVec4(1, 0.5f, 0, 1),
+        ImPlot::Annotation(ui.l1_anchor_x, anchor_y, ImVec4(1, 0.5f, 0, 1),
                            ImVec2(5, -15), false, "%s", date_buf);
       }
     }

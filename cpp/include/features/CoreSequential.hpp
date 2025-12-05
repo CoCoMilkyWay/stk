@@ -96,7 +96,7 @@ public:
 private:
   // Update tick-level metadata
   void inline update_tick_metadata() noexcept {
-    tick_data_.l0_index = time_to_trading_seconds(tick_data_.lob.hour, tick_data_.lob.minute, tick_data_.lob.second);
+    tick_data_.l0_index = tick2index(tick_data_.lob.hour, tick_data_.lob.minute, tick_data_.lob.second);
   }
 
   // Update minute-level metadata

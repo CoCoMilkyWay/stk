@@ -10,11 +10,13 @@
 // ============================================================================
 
 TimeAxisLUT::TimeAxisLUT() {
-  // Pre-compute L0 time axis labels (every 15 minutes)
+  // Pre-compute L0 time axis labels (every 15 minutes = 900 seconds)
+  // offset is time index (0-15299), directly used for X-axis positioning
+  // These offsets MUST match the tick_idx stored in tensor data
   for (size_t offset = 0; offset < OrderFlowConst::L0_CAPACITY; offset += OrderFlowConst::L0_TICK_INTERVAL) {
     l0_tick_offsets.push_back(offset);
     
-    ClockTime ct = trading_seconds_to_clock(offset);
+    ClockTime ct = index2tick(offset);
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
     l0_tick_labels.push_back(buf);
@@ -186,6 +188,7 @@ void OrderFlow::L0Cache::PlotData::clear() {
   best_bid.clear();
   best_ask.clear();
   day_boundaries.clear();
+  tick_indices.clear();
   tick_idx_map.clear();
   y_min = y_max = 0.0;
   version = 0;
@@ -277,11 +280,14 @@ OrderFlow::L0Cache::DepthSnapshot OrderFlow::L0Cache::query_depth(size_t plot_id
   }
 
   const auto &day = days[day_i];
-  size_t local_plot_idx = plot_idx - plot.day_boundaries[day_i];
-  if (local_plot_idx >= day.count_valid())
+  if (plot_idx >= plot.tick_indices.size())
     return result;
 
-  const auto &tick = day.ticks[local_plot_idx];
+  size_t tick_i = plot.tick_indices[plot_idx];
+  if (tick_i >= day.count_valid())
+    return result;
+
+  const auto &tick = day.ticks[tick_i];
   result.mid_price = tick.mid_price;
   result.bid_price = &tick.bid_price;
   result.ask_price = &tick.ask_price;
@@ -291,7 +297,7 @@ OrderFlow::L0Cache::DepthSnapshot OrderFlow::L0Cache::query_depth(size_t plot_id
   result.day_idx = day.day_idx;
 
   // Convert tick index to time
-  ClockTime ct = trading_seconds_to_clock(result.tick_idx);
+  ClockTime ct = index2tick(result.tick_idx);
   result.time.hour = ct.hour;
   result.time.minute = ct.minute;
   result.time.second = ct.second;
@@ -352,6 +358,7 @@ void OrderFlow::L0Cache::build_plot() {
   plot.mid_price.reserve(total_estimated);
   plot.best_bid.reserve(total_estimated);
   plot.best_ask.reserve(total_estimated);
+  plot.tick_indices.reserve(total_estimated);
   
   // Pre-allocate tick_idx_map for all days (O(1) lookup)
   plot.tick_idx_map.resize(days.size() * OrderFlowConst::L0_CAPACITY, SIZE_MAX);
@@ -366,11 +373,15 @@ void OrderFlow::L0Cache::build_plot() {
       if (!tick.depth_valid)
         continue;
 
+      assert(tick.tick_idx < OrderFlowConst::L0_CAPACITY && "tick_idx out of intra-day range");
+
       size_t plot_idx = plot.x.size();
-      plot.x.push_back(day.to_global_x(i));
+      double global_x = day.to_global_x(i);
+      plot.x.push_back(global_x);
       plot.mid_price.push_back(static_cast<double>(tick.mid_price));
       plot.best_bid.push_back(static_cast<double>(tick.bid_price[0]));
       plot.best_ask.push_back(static_cast<double>(tick.ask_price[0]));
+      plot.tick_indices.push_back(i);
       
       // Build reverse mapping: tick_idx → plot_idx
       size_t global_tick_idx = day_base + tick.tick_idx;

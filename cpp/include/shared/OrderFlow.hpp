@@ -212,6 +212,7 @@ struct OrderFlow {
     struct PlotData {
       std::vector<double> x, mid_price, best_bid, best_ask;
       std::vector<size_t> day_boundaries;  // plot_idx where each day starts
+      std::vector<size_t> tick_indices;    // plot_idx -> day.ticks index (depth_valid only)
       double y_min = 0.0, y_max = 0.0;
       double y_min_with_margin = 0.0, y_max_with_margin = 0.0;  // Pre-computed with margin
       

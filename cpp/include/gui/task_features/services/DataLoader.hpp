@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cassert>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -224,6 +225,8 @@ public:
       return false;
     }
 
+    assert(tensor.T[0] == OrderFlowConst::L0_CAPACITY && "L0 tensor must be dense with time index semantics");
+
     if (asset_idx >= tensor.A) {
       cache.loaded = true;
       return false;
@@ -241,6 +244,8 @@ public:
     // Sparse loading: only store valid ticks (depth_valid=true or data_valid=true)
     // Line plots and heatmap will use ImPlot step mode to handle sparsity
     for (size_t t = 0; t < tensor.T[0]; ++t) {
+      assert(t < OrderFlowConst::L0_CAPACITY && "tensor row exceeds L0_CAPACITY");
+
       // Read validity flags
       float depth_valid_val = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_depth_valid, asset_idx));
       float data_valid_val = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_data_valid, asset_idx));
@@ -281,6 +286,7 @@ public:
       }
 
       // Push sparse tick with validity flags
+      // CRITICAL: t is time index (0-15299), directly used as tick_idx
       day.push(t, depth_valid, data_valid, mid, bp, ap, bv, av);
     }
 

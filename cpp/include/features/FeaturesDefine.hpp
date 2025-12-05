@@ -200,7 +200,7 @@ constexpr uint16_t AFTERNOON_END_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_END_HOUR
 
 // Helper: Map clock time to trading seconds (comptime)
 // Returns: -1 for pre-market, 0-8099 for morning, 8100-15299 for afternoon, 15299 for post-market (clamped)
-constexpr int16_t map_clock_to_trading_seconds(uint8_t hour, uint8_t minute) {
+constexpr int16_t minute_offset(uint8_t hour, uint8_t minute) {
   const uint16_t total_minutes = hour * 60 + minute;
 
   // Morning session: 09:15-11:30 → 0-8099 seconds (135 minutes)
@@ -228,18 +228,18 @@ constexpr int16_t map_clock_to_trading_seconds(uint8_t hour, uint8_t minute) {
 }
 
 // Constexpr function to generate lookup table at compile time
-constexpr auto generate_trading_offset_table() {
+constexpr auto generate_minute_offset_table() {
   std::array<int16_t, 24 * 60> table{};
   for (size_t i = 0; i < 24 * 60; ++i) {
     const uint8_t hour = i / 60;
     const uint8_t minute = i % 60;
-    table[i] = map_clock_to_trading_seconds(hour, minute);
+    table[i] = minute_offset(hour, minute);
   }
   return table;
 }
 
 // Compile-time generated lookup table (1440 entries x 2 bytes = 2.88 KB)
-static constexpr auto TRADING_OFFSET_LUT = generate_trading_offset_table();
+static constexpr auto MINUTE_OFFSET_LUT = generate_minute_offset_table();
 
 // ============================================================================
 // TIME CONVERSION - O(1) Branchless Lookup
@@ -247,9 +247,9 @@ static constexpr auto TRADING_OFFSET_LUT = generate_trading_offset_table();
 
 // Convert time to trading seconds (0-15299)
 // High-performance branchless implementation using compile-time LUT
-inline constexpr size_t time_to_trading_seconds(uint8_t hour, uint8_t minute, uint8_t second) {
+inline constexpr size_t tick2index(uint8_t hour, uint8_t minute, uint8_t second) {
   const size_t hm_idx = hour * 60 + minute;
-  const int16_t base = TRADING_OFFSET_LUT[hm_idx];
+  const int16_t base = MINUTE_OFFSET_LUT[hm_idx];
   // Branchless clamp: negative → 0, positive → value
   const size_t clamped_base = base & ~(base >> 15); // Sign bit mask: if negative, result is 0
   const size_t result = clamped_base + second;
@@ -271,7 +271,7 @@ struct ClockTime {
 // Convert trading seconds index (0-15299) back to clock time
 // Morning: 0-8099 → 09:15:00 - 11:29:59
 // Afternoon: 8100-15299 → 13:00:00 - 14:59:59
-inline constexpr ClockTime trading_seconds_to_clock(size_t index) {
+inline constexpr ClockTime index2tick(size_t index) {
   ClockTime t;
 
   if (index < 8100) {
@@ -295,7 +295,7 @@ inline constexpr ClockTime trading_seconds_to_clock(size_t index) {
 // Convert trading minute index (0-254) back to clock time
 // Morning: 0-134 → 09:15 - 11:29
 // Afternoon: 135-254 → 13:00 - 14:59
-inline constexpr ClockTime trading_minutes_to_clock(size_t index) {
+inline constexpr ClockTime index2minute(size_t index) {
   ClockTime t;
   t.second = 0;
 
