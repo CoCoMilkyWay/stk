@@ -4,6 +4,7 @@
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
+#include <algorithm>
 
 namespace GUI::Features {
 
@@ -269,42 +270,95 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
   ImGui::Text("Showing %d / %d", (int)filtered_indices.size(), (int)features.size());
 
-  // Feature table
-  if (ImGui::BeginTable("FeatureTable", 8,
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-                            ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable,
+  // Feature table - compact auto-fit style
+  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f)); // Tighter padding
+
+  if (ImGui::BeginTable("FeatureTable", 9,
+                        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_Sortable,
                         ImVec2(0, 400))) {
 
-    // Table headers
-    ImGui::TableSetupColumn("Primary", ImGuiTableColumnFlags_WidthFixed, 60.0f);
-    ImGui::TableSetupColumn("Multi", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-    ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-    ImGui::TableSetupColumn("Width", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-    ImGui::TableSetupColumn("DataType", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-    ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-    ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-    ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthStretch);
+    // Table headers - fixed fit (auto shrink to content)
+    ImGui::TableSetupColumn("Primary", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
+    ImGui::TableSetupColumn("Multi", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
+    ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort);
+    ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("DataType", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Norm", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[] = {"Primary", "Multi", "Code", "Width", "DataType", "Cat L1", "Cat L2", "Name CN"};
+    const char *headers[] = {"Primary", "Multi", "Code", "W", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm"};
     const char *tooltips[] = {
         "主特征：用于分析的主要特征",
         "多选：选择多个特征进行对比",
         "代码：特征的唯一标识符",
         "宽度：特征的维度数量",
+        "中文名称：特征的描述性名称",
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
         "一级分类：特征的主要类别",
         "二级分类：特征的子类别",
-        "中文名称：特征的描述性名称"};
+        "标准化方法：特征的归一化处理方式",
+    };
 
-    for (int column = 0; column < 8; column++) {
+    for (int column = 0; column < 9; column++) {
       ImGui::TableSetColumnIndex(column);
       ImGui::TableHeader(headers[column]);
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", tooltips[column]);
       }
+    }
+
+    // Handle sorting
+    ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs();
+    if (sort_specs && sort_specs->SpecsDirty) {
+      // Update persistent sort state
+      if (sort_specs->SpecsCount > 0) {
+        const ImGuiTableColumnSortSpecs &spec = sort_specs->Specs[0];
+        ui_state.sort_column = spec.ColumnIndex;
+        ui_state.sort_ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+      }
+      sort_specs->SpecsDirty = false;
+    }
+
+    // Apply persistent sorting
+    if (ui_state.sort_column >= 0) {
+      std::sort(filtered_indices.begin(), filtered_indices.end(), [&](int a, int b) {
+        const FeatureMetadata &fa = features[a];
+        const FeatureMetadata &fb = features[b];
+        int cmp = 0;
+
+        switch (ui_state.sort_column) {
+        case 2:
+          cmp = strcmp(fa.code, fb.code);
+          break; // Code
+        case 3:
+          cmp = fa.width - fb.width;
+          break; // Width
+        case 4:
+          cmp = strcmp(fa.name_cn, fb.name_cn);
+          break; // Name CN
+        case 5:
+          cmp = (int)fa.data_type - (int)fb.data_type;
+          break; // DataType
+        case 6:
+          cmp = (int)fa.cat_l1 - (int)fb.cat_l1;
+          break; // Cat L1
+        case 7:
+          cmp = (int)fa.cat_l2 - (int)fb.cat_l2;
+          break; // Cat L2
+        case 8:
+          cmp = (int)fa.norm_method - (int)fb.norm_method;
+          break; // Norm
+        }
+
+        return ui_state.sort_ascending ? cmp < 0 : cmp > 0;
+      });
     }
 
     // Table rows
@@ -357,6 +411,23 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TableNextColumn();
       ImGui::Text("%d", f.width);
 
+      // Column: Name CN (with tooltip)
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(f.name_cn);
+      if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", f.name_en);
+        ImGui::Separator();
+        ImGui::Text("Formula:");
+        ImGui::TextWrapped("%s", f.formula);
+        ImGui::Spacing();
+        ImGui::Text("Description:");
+        ImGui::TextWrapped("%s", f.description);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+      }
+
       // Column: DataType
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.data_type));
@@ -369,30 +440,15 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.cat_l2));
 
-      // Column: Name CN (with tooltip)
+      // Column: Norm Method
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(f.name_cn);
-
-      // Tooltip on hover (show long fields)
-      if (ImGui::IsItemHovered()) {
-        ImGui::BeginTooltip();
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", f.name_en);
-        ImGui::Separator();
-        ImGui::Text("Formula:");
-        ImGui::TextWrapped("%s", f.formula);
-        ImGui::Spacing();
-        ImGui::Text("Description:");
-        ImGui::TextWrapped("%s", f.description);
-        ImGui::Spacing();
-        ImGui::Text("Norm Method: %s", to_string(f.norm_method));
-        ImGui::PopTextWrapPos();
-        ImGui::EndTooltip();
-      }
+      ImGui::TextUnformatted(to_string(f.norm_method));
     }
 
     ImGui::EndTable();
   }
+
+  ImGui::PopStyleVar(); // CellPadding
 
   // Select all filtered button
   if (ImGui::Button("Select All Multi", ImVec2(120, 0))) {
