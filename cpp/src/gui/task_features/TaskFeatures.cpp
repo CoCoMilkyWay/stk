@@ -3,6 +3,7 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
 #include "gui/task_features/services/DataLoader.hpp"
+#include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
@@ -24,6 +25,7 @@ struct TaskFeaturesState {
 
   // UI State
   int selected_tab = 0;
+  Features::FeatureUIState feature_ui_state;
   Features::ComputeState compute_state;
   
   // OrderFlow tab state
@@ -114,14 +116,21 @@ TaskHandle CreateFeaturesTask() {
     ImGui::BeginChild("FeaturesTabs", ImVec2(0, 0), false);
 
     if (ImGui::BeginTabBar("FeaturesTabBar", ImGuiTabBarFlags_None)) {
-      // Tab: Compute
+      // Tab 1: Feature (NEW - first tab)
+      if (ImGui::BeginTabItem("Feature")) {
+        ImGui::Spacing();
+        Features::RenderTabFeature(data, state->feature_ui_state);
+        ImGui::EndTabItem();
+      }
+
+      // Tab 2: Compute
       if (ImGui::BeginTabItem("Compute")) {
         ImGui::Spacing();
         Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset, data.config);
         ImGui::EndTabItem();
       }
 
-      // Tab: OrderFlow
+      // Tab 3: OrderFlow
       bool orderflow_tab_open = ImGui::BeginTabItem("OrderFlow");
       if (orderflow_tab_open) {
         ImGui::Spacing();

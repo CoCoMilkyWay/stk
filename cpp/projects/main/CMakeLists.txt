@@ -131,6 +131,7 @@ set(SOURCES
     ../../src/shared/Asset.cpp
     ../../src/shared/GuiState.cpp
     ../../src/shared/OrderFlow.cpp
+    ../../src/shared/Feature.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/file_check.cpp
     ../../src/codec/json_config.cpp
@@ -158,6 +159,7 @@ set(SOURCES
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_features/services/ComputeService.cpp
+    ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/TaskFeatures.cpp
@@ -209,6 +211,8 @@ set(HEADERS
     ../../include/worker/io_worker.hpp
     ../../include/shared/Config.hpp
     ../../include/shared/GuiState.hpp
+    ../../include/shared/OrderFlow.hpp
+    ../../include/shared/Feature.hpp
     ../../include/shared/SharedData.hpp
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp

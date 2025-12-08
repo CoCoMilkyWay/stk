@@ -1,6 +1,10 @@
 #pragma once
 
+#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
+#include "features/FeaturesTick/DeltaT.hpp"
+#include "features/FeaturesTick/MicroPrice.hpp"
+#include "features/FeaturesTick/MidPrice.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include <algorithm>
 #include <cmath>
@@ -37,12 +41,18 @@ public:
 private:
   // Level 0: Tick-level TS features computation
   void compute_ts_tick(size_t t) {
-    // Compute TS features (reuse member buffer)
-    ts_features_buffer_[0] = compute_tick_ret_z();
-    ts_features_buffer_[1] = compute_tobi_osc();
-    ts_features_buffer_[2] = compute_micro_gap_norm();
-    ts_features_buffer_[3] = compute_spread_momentum();
-    ts_features_buffer_[4] = compute_signed_volume_imb();
+    delta_t_.compute();
+
+    if (tick_data_.lob.depth_updated) {
+      mid_price_.compute();
+      micro_price_.compute();
+
+      ts_features_buffer_[0] = compute_tick_ret_z();
+      ts_features_buffer_[1] = compute_tobi_osc();
+      ts_features_buffer_[2] = compute_micro_gap_norm();
+      ts_features_buffer_[3] = compute_spread_momentum();
+      ts_features_buffer_[4] = compute_signed_volume_imb();
+    };
 
     // Write TS features: [tick_ret_z, cs_spread_rank)
     TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, L0_FieldOffset::tick_ret_z, L0_FieldOffset::cs_spread_rank, ts_features_buffer_, worker_id_);
@@ -63,20 +73,20 @@ private:
     // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
     // Output: bid[0]=bid1(best), ask[0]=ask1(best)
     // Depth buffer is always complete (2*N elements), no bounds checks needed
-    
-    constexpr float volume_scale = 0.01f;  // 1 lot = 100 shares
-    
+
+    constexpr float volume_scale = 0.01f; // 1 lot = 100 shares
+
     // Direct pointer access, no branches
     for (size_t i = 0; i < N; ++i) {
       const Level *bid_level = depth[N + i];
       const Level *ask_level = depth[N - 1 - i];
-      
-      lob_depth_buffer_[i]           = static_cast<float>(bid_level->price);
-      lob_depth_buffer_[N + i]       = static_cast<float>(ask_level->price);
-      lob_depth_buffer_[2 * N + i]   = bid_level->net_quantity * volume_scale;
-      lob_depth_buffer_[3 * N + i]   = ask_level->net_quantity * volume_scale;
+
+      lob_depth_buffer_[i] = static_cast<float>(bid_level->price);
+      lob_depth_buffer_[N + i] = static_cast<float>(ask_level->price);
+      lob_depth_buffer_[2 * N + i] = bid_level->net_quantity * volume_scale;
+      lob_depth_buffer_[3 * N + i] = ask_level->net_quantity * volume_scale;
     }
-    
+
     // Mid_price: integer average for max fp16 precision
     const Level *best_bid = depth[N];
     const Level *best_ask = depth[N - 1];
@@ -316,6 +326,17 @@ private:
   mutable std::vector<float> scratch_;
 
   // Reusable buffers for batch writes (high-frequency hot path)
-  float ts_features_buffer_[5]; // tick_ret_z, tobi_osc, micro_gap_norm, spread_momentum, signed_volume_imb
-  float lob_depth_buffer_[4 * L2::LOB_DEPTH + 2];                 // LOB depth + mid_price + depth_valid batch write
+  float ts_features_buffer_[5];                   // tick_ret_z, tobi_osc, micro_gap_norm, spread_momentum, signed_volume_imb
+  float lob_depth_buffer_[4 * L2::LOB_DEPTH + 2]; // LOB depth + mid_price + depth_valid batch write
+
+  // CBuffer and instance for features
+  CBuffer<float, L2::BLEN> DeltaTMaker_;
+  CBuffer<float, L2::BLEN> DeltaTTaker_;
+  CBuffer<float, L2::BLEN> DeltaTCancel_;
+  CBuffer<float, L2::BLEN> MidPrice_;
+  CBuffer<float, L2::BLEN> MicroPrice_;
+
+  DeltaT delta_t_{tick_data_, DeltaTMaker_, DeltaTTaker_, DeltaTCancel_};
+  MidPrice mid_price_{tick_data_, MidPrice_};
+  MicroPrice micro_price_{tick_data_, MicroPrice_};
 };
