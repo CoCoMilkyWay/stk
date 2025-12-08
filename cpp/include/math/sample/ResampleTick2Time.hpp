@@ -29,7 +29,10 @@ public:
       return false;
     }
 
-    const float price = input_.lob.price;
+    float price = input_.lob.price;
+    if (price <= 0.0f) [[unlikely]] {
+      price = bar_close_; // Use last valid price if current is zero
+    }
     const uint32_t volume = input_.lob.volume;
     const bool is_bid = input_.lob.order_dir == L2::OrderDirection::BID;
 
@@ -38,9 +41,9 @@ public:
     // Check if we need to emit previous bar and start new one
     const bool emit_bar = (last_bar_time_ != 0) && (current_time_seconds - last_bar_time_ >= bar_period_seconds_);
 
-    // Only emit if we have valid data (at least one tick processed)
+    // Emit previous bar if time window elapsed
     bool bar_generated = false;
-    if (emit_bar && bar_open_ != 0.0f) [[unlikely]] {
+    if (emit_bar) [[unlikely]] {
       output_.open.push_back(bar_open_);
       output_.high.push_back(bar_high_);
       output_.low.push_back(bar_low_);
@@ -57,8 +60,8 @@ public:
     if (last_bar_time_ == 0 || emit_bar) [[unlikely]] {
       // For intraday continuity: open = previous close (except first bar)
       // This ensures candles connect, gaps shown in wick only
-      if (last_bar_time_ == 0 || bar_close_ == 0.0f) [[unlikely]] {
-        // First bar or previous bar had no data: initialize with current price
+      if (last_bar_time_ == 0) [[unlikely]] {
+        // First bar: initialize with current price
         bar_open_ = price;
         bar_high_ = price;
         bar_low_ = price;
