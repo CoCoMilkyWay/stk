@@ -24,13 +24,13 @@
 #include "misc/logging.hpp"
 #endif
 
-// Debug asset ID list - only dump logs for assets in this list
-constexpr size_t DEBUG_ASSET_IDS[] = {
-    // Add asset IDs here to enable debug logging for specific assets
-    // 0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    97, 98, 99, 100};
-constexpr size_t DEBUG_ASSET_IDS_COUNT = sizeof(DEBUG_ASSET_IDS) / sizeof(DEBUG_ASSET_IDS[0]);
-constexpr size_t DEBUG_PRINT_DAYS = 1; // Number of days to print for matched asset IDs
+inline constexpr size_t DEBUG_ASSET_IDS[] = {3};
+
+inline constexpr size_t DEBUG_PRINT_DAYS = 0;                    // print first N consecutive days: 0
+inline constexpr const char *DEBUG_PRINT_DATES[] = {"20250318"}; // print on specific dates
+
+inline constexpr size_t DEBUG_ASSET_IDS_COUNT = sizeof(DEBUG_ASSET_IDS) / sizeof(DEBUG_ASSET_IDS[0]);
+inline constexpr size_t DEBUG_PRINT_DATES_COUNT = sizeof(DEBUG_PRINT_DATES) / sizeof(DEBUG_PRINT_DATES[0]);
 
 //========================================================================================
 // MAIN CLASS
@@ -59,6 +59,32 @@ public:
   // Set current date for feature computation
   void set_current_date(const std::string &date_str) {
     core_sequential_.set_date(date_str);
+
+#if DEBUG_BOOK_PRINT
+    should_log_this_day_ = false;
+
+    // Check if asset_id is in debug list
+    for (size_t i = 0; i < DEBUG_ASSET_IDS_COUNT; ++i) {
+      if (DEBUG_ASSET_IDS[i] == asset_id_) {
+        // Found debug asset - increment day counter
+        debug_day_count_++;
+
+        // Condition 1: First N consecutive days
+        if (DEBUG_PRINT_DAYS > 0 && debug_day_count_ <= DEBUG_PRINT_DAYS) {
+          should_log_this_day_ = true;
+        }
+
+        // Condition 2: Specific dates (both conditions can trigger)
+        for (size_t j = 0; j < DEBUG_PRINT_DATES_COUNT; ++j) {
+          if (date_str == DEBUG_PRINT_DATES[j]) {
+            should_log_this_day_ = true;
+            break;
+          }
+        }
+        break;
+      }
+    }
+#endif
   }
 
   // Get TOB invalid count
@@ -127,11 +153,6 @@ public:
 #if DEBUG_ANOMALY_PRINT
     debug_.printed_anomalies.clear();
 #endif
-
-    // Increment debug day counter for matched assets
-    if (should_log(false)) {
-      debug_day_count_++;
-    }
 
     // Reset feature state for new day
     core_sequential_.reset();
@@ -227,8 +248,12 @@ private:
   L2::ExchangeType exchange_type_ = L2::ExchangeType::SSE;
 
   // Asset ID for debug logging
-  size_t asset_id_ = 0;
-  mutable size_t debug_day_count_ = 0; // Counter for debug printing days
+  [[maybe_unused]] size_t asset_id_ = 0;
+#if DEBUG_BOOK_PRINT
+  // Debug printing control (computed once per day)
+  bool should_log_this_day_ = false;
+  size_t debug_day_count_ = 0; // Counter for consecutive days (for DEBUG_PRINT_DAYS)
+#endif
 
   // Hot path temporary variable cache (reduce allocation overhead)
   mutable Quantity delta_qty_; // Signed quantity change (+add/-deduct)
@@ -1181,25 +1206,13 @@ private:
   // DEBUG UTILITIES (调试工具)
   //======================================================================================
 
-  // Check if current asset should dump debug logs
-  // check_day_limit: if true, also check if we haven't exceeded DEBUG_PRINT_DAYS
-  inline bool
-  should_log(bool check_day_limit = true) const {
-    if (DEBUG_ASSET_IDS_COUNT == 0)
-      return false;
-
-    bool id_matched = false;
-    for (size_t i = 0; i < DEBUG_ASSET_IDS_COUNT; ++i) {
-      if (DEBUG_ASSET_IDS[i] == asset_id_) {
-        id_matched = true;
-        break;
-      }
-    }
-
-    if (!id_matched)
-      return false;
-
-    return !check_day_limit || (debug_day_count_ < DEBUG_PRINT_DAYS);
+  // Check if current asset should dump debug logs for this day
+  inline bool should_log() const {
+#if DEBUG_BOOK_PRINT
+    return should_log_this_day_;
+#else
+    return false;
+#endif
   }
 
   // Helper: Get flags string for debug output
@@ -1395,7 +1408,7 @@ private:
 #if DEBUG_BOOK_AS_AMOUNT == 0
     const std::string qty_str = std::to_string(volume);
 #else
-    const float amount = std::abs(volume) * price / (DEBUG_BOOK_AS_AMOUNT * 1000000.0);
+    const float amount = std::abs(volume) * price / 1000000.0;
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(2) << amount;
     const std::string qty_str = (volume < 0 ? "-" : "") + oss.str();

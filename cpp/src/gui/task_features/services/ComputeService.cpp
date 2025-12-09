@@ -118,7 +118,6 @@ void ComputeService::start_compute(int num_workers) {
 
     // Initialize logger for all workers (shared log file)
     Logger::init(data_.config.log_dir);
-    Logger::reg("compute");
 
     // Launch workers: IO + TS[] + CS
     progress_ = std::make_shared<misc::ParallelProgress>(num_workers_);

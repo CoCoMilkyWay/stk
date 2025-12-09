@@ -13,7 +13,8 @@
 // Key features:
 // - Input: TickData (tick-by-tick order book events)
 // - Output: MinuteData (directly writes to CBuffers)
-// - update() only triggers resampling logic
+// - Auto-detects day rollover (time going backwards) and flushes last bar
+// - Preserves price continuity across days
 //========================================================================================
 
 class ResampleTick2Time {
@@ -24,26 +25,19 @@ public:
 
   // Trigger resampling logic, returns true if a new bar was generated
   bool update() {
-    // Only process taker orders (most ticks are takers, but still worth filtering early)
     if (input_.lob.order_type != L2::OrderType::TAKER) {
       return false;
     }
 
-    float price = input_.lob.price;
-    if (price <= 0.0f) [[unlikely]] {
-      price = bar_close_; // Use last valid price if current is zero
-    }
-    const uint32_t volume = input_.lob.volume;
-    const bool is_bid = input_.lob.order_dir == L2::OrderDirection::BID;
-
     const uint32_t current_time_seconds = input_.lob.hour * 3600 + input_.lob.minute * 60 + input_.lob.second;
 
-    // Check if we need to emit previous bar and start new one
-    const bool emit_bar = (last_bar_time_ != 0) && (current_time_seconds - last_bar_time_ >= bar_period_seconds_);
+    // Detect emit conditions (day rollover or period elapsed)
+    const bool day_rollover = (last_bar_time_ != 0) && (current_time_seconds < last_bar_time_);
+    const bool period_elapsed = !day_rollover && (last_bar_time_ != 0) && (current_time_seconds - last_bar_time_ >= bar_period_seconds_);
+    const bool should_emit = day_rollover || period_elapsed;
 
-    // Emit previous bar if time window elapsed
-    bool bar_generated = false;
-    if (emit_bar) [[unlikely]] {
+    // Emit previous bar if needed (single emit logic for all cases)
+    if (should_emit) [[unlikely]] {
       output_.open.push_back(bar_open_);
       output_.high.push_back(bar_high_);
       output_.low.push_back(bar_low_);
@@ -52,38 +46,31 @@ public:
       output_.ask_volume.push_back(bar_ask_volume_);
       output_.bid_amount.push_back(bar_bid_amount_);
       output_.ask_amount.push_back(bar_ask_amount_);
-      // Logger::log(std::to_string(output_.asset_id), "min_bar " + std::to_string(input_.lob.hour) + ":" + std::to_string(input_.lob.minute) + ":" + std::to_string(input_.lob.second) + " price: " + std::to_string(bar_close_) + " volume: " + std::to_string(bar_bid_volume_ + bar_ask_volume_) + " amount: " + std::to_string(bar_bid_amount_ + bar_ask_amount_) + " current_time_seconds: " + std::to_string(current_time_seconds));
-      bar_generated = true;
     }
 
-    // Start new bar (first tick or after emit)
-    if (last_bar_time_ == 0 || emit_bar) [[unlikely]] {
-      // For intraday continuity: open = previous close (except first bar)
-      // This ensures candles connect, gaps shown in wick only
-      if (last_bar_time_ == 0) [[unlikely]] {
-        // First bar: initialize with current price
-        bar_open_ = price;
-        bar_high_ = price;
-        bar_low_ = price;
-      } else [[likely]] {
-        // Subsequent bars: open = previous bar's close for continuity
-        bar_open_ = bar_close_;
-        bar_high_ = bar_open_;
-        bar_low_ = bar_open_;
-      }
+    float price = input_.lob.price;
+    if (price <= 0.0f) [[unlikely]] {
+      price = bar_close_;
+    }
+    const uint32_t volume = input_.lob.volume;
+    const bool is_bid = input_.lob.order_dir == L2::OrderDirection::BID;
 
+    // Initialize new bar (first tick or after emit)
+    if (last_bar_time_ == 0 || should_emit) [[unlikely]] {
       last_bar_time_ = current_time_seconds;
+      bar_open_ = (bar_close_ == 0.0f) ? price : bar_close_; // First ever vs continuity
+      bar_high_ = bar_open_;
+      bar_low_ = bar_open_;
       bar_close_ = bar_open_;
       bar_bid_volume_ = bar_ask_volume_ = 0;
       bar_bid_amount_ = bar_ask_amount_ = 0.0f;
     }
 
-    // Update current bar with new tick (hot path - always executed)
+    // Update current bar (hot path - always executed)
     bar_close_ = price;
     bar_high_ = (price > bar_high_) ? price : bar_high_;
     bar_low_ = (price < bar_low_) ? price : bar_low_;
 
-    // Accumulate volume and amount by side
     const float amount = price * volume;
     if (is_bid) {
       bar_bid_volume_ += volume;
@@ -93,10 +80,10 @@ public:
       bar_ask_amount_ += amount;
     }
 
-    return bar_generated;
+    return should_emit;
   }
 
-  // Reset resampler state (called when starting a new day)
+  // Manual reset (rarely needed - update() auto-handles day rollover)
   void reset() {
     last_bar_time_ = 0;
     bar_open_ = 0;
@@ -110,6 +97,7 @@ public:
   }
 
 private:
+
   // Input/Output references
   const TickData &input_;
   MinuteData &output_;
