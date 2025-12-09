@@ -101,6 +101,18 @@ static const char *to_string_cn(NormMethod method) {
   return "未知";
 }
 
+static const char *to_string_cn(L2::ValidType type) {
+  switch (type) {
+  case L2::ValidType::ALL:
+    return "全部";
+  case L2::ValidType::DATA:
+    return "数据";
+  case L2::ValidType::DEPTH:
+    return "深度";
+  }
+  return "未知";
+}
+
 // Get current level features based on selection
 static const std::vector<FeatureMetadata> &get_current_level_features(const Feature &feature) {
   switch (feature.selection.selected_level) {
@@ -273,7 +285,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // Feature table - compact auto-fit style
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f)); // Tighter padding
 
-  if (ImGui::BeginTable("FeatureTable", 9,
+  if (ImGui::BeginTable("FeatureTable", 10,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
                             ImGuiTableFlags_Sortable,
@@ -284,6 +296,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("Multi", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
     ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort);
     ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("DataType", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);
@@ -293,12 +306,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[] = {"Primary", "Multi", "Code", "W", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm"};
+    const char *headers[] = {"Primary", "Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm"};
     const char *tooltips[] = {
         "主特征：用于分析的主要特征",
         "多选：选择多个特征进行对比",
         "代码：特征的唯一标识符",
         "宽度：特征的维度数量",
+        "有效粒度: ALL=全部, DATA=数据, DEPTH=深度(仅L0)",
         "中文名称：特征的描述性名称",
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
         "一级分类：特征的主要类别",
@@ -306,7 +320,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "标准化方法：特征的归一化处理方式",
     };
 
-    for (int column = 0; column < 9; column++) {
+    for (int column = 0; column < 10; column++) {
       ImGui::TableSetColumnIndex(column);
       ImGui::TableHeader(headers[column]);
       if (ImGui::IsItemHovered()) {
@@ -341,18 +355,21 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
           cmp = fa.width - fb.width;
           break; // Width
         case 4:
+          cmp = (int)fa.valid_type - (int)fb.valid_type;
+          break; // Valid
+        case 5:
           cmp = strcmp(fa.name_cn, fb.name_cn);
           break; // Name CN
-        case 5:
+        case 6:
           cmp = (int)fa.data_type - (int)fb.data_type;
           break; // DataType
-        case 6:
+        case 7:
           cmp = (int)fa.cat_l1 - (int)fb.cat_l1;
           break; // Cat L1
-        case 7:
+        case 8:
           cmp = (int)fa.cat_l2 - (int)fb.cat_l2;
           break; // Cat L2
-        case 8:
+        case 9:
           cmp = (int)fa.norm_method - (int)fb.norm_method;
           break; // Norm
         }
@@ -410,6 +427,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       // Column: Width
       ImGui::TableNextColumn();
       ImGui::Text("%d", f.width);
+
+      // Column: ValidType
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(to_string(f.valid_type));
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", to_string_cn(f.valid_type));
+      }
 
       // Column: Name CN (with tooltip)
       ImGui::TableNextColumn();

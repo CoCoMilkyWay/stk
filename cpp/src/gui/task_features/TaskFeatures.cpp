@@ -3,9 +3,11 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
 #include "gui/task_features/services/DataLoader.hpp"
+#include "gui/task_features/services/DistService.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
+#include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/affinity.hpp"
 #include "shared/SharedData.hpp"
@@ -22,14 +24,17 @@ struct TaskFeaturesState {
   // Services
   std::unique_ptr<Features::ComputeService> compute_service;
   std::unique_ptr<Features::DataLoader> data_loader;
+  std::unique_ptr<Features::DistService> dist_service;
 
   // UI State
   int selected_tab = 0;
   Features::FeatureUIState feature_ui_state;
   Features::ComputeState compute_state;
+  Features::DistUIState dist_ui_state;
   
-  // OrderFlow tab state
+  // Tab state
   bool orderflow_tab_was_active = false;
+  bool dist_tab_was_active = false;
 
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
@@ -90,6 +95,9 @@ TaskHandle CreateFeaturesTask() {
     if (!state->data_loader) {
       state->data_loader = std::make_unique<Features::DataLoader>(data.config.feature_dir);
     }
+    if (!state->dist_service) {
+      state->dist_service = std::make_unique<Features::DistService>(data.config.feature_dir);
+    }
 
     // Handle trigger from UI
     if (state->compute_state.trigger_start) {
@@ -138,7 +146,7 @@ TaskHandle CreateFeaturesTask() {
         ImGui::EndTabItem();
       }
 
-      // Handle tab lifecycle (blocking start/stop)
+      // Handle OrderFlow tab lifecycle (blocking start/stop)
       if (orderflow_tab_open && !state->orderflow_tab_was_active) {
         // Tab just opened - coroutine started in RenderTabOrderFlow
         state->orderflow_tab_was_active = true;
@@ -146,6 +154,24 @@ TaskHandle CreateFeaturesTask() {
         // Tab just closed - stop coroutine (blocking)
         Features::StopTabOrderFlow(state->data_loader.get(), data);
         state->orderflow_tab_was_active = false;
+      }
+
+      // Tab 4: Distribution
+      bool dist_tab_open = ImGui::BeginTabItem("Distribution");
+      if (dist_tab_open) {
+        ImGui::Spacing();
+        Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
+        ImGui::EndTabItem();
+      }
+
+      // Handle Distribution tab lifecycle (blocking start/stop)
+      if (dist_tab_open && !state->dist_tab_was_active) {
+        // Tab just opened - coroutine started in RenderTabDist
+        state->dist_tab_was_active = true;
+      } else if (!dist_tab_open && state->dist_tab_was_active) {
+        // Tab just closed - stop coroutine (blocking)
+        Features::StopTabDist(state->dist_service.get(), data);
+        state->dist_tab_was_active = false;
       }
 
       ImGui::EndTabBar();
@@ -156,7 +182,7 @@ TaskHandle CreateFeaturesTask() {
 
   // Destroy
   handle.Destroy = [state]() {
-    // Note: OrderFlow loader's CoroutineHandle will auto-cancel on destruction
+    // Note: OrderFlow and Dist coroutines will auto-cancel on CoroutineHandle destruction
     
     if (state->compute_service) {
       if (state->compute_service->is_running()) {
@@ -164,7 +190,9 @@ TaskHandle CreateFeaturesTask() {
       }
       state->compute_service.reset();
     }
+    
     state->data_loader.reset();
+    state->dist_service.reset(); // DistService destructor will handle cleanup
   };
 
   return handle;

@@ -2,7 +2,6 @@
 
 #include "features/FeaturesDefine.hpp"
 #include <set>
-#include <string>
 #include <vector>
 
 // ============================================================================
@@ -12,6 +11,7 @@
 struct FeatureMetadata {
   const char *code;          // tick_ret_z
   uint8_t width;             // 1 or LOB_DEPTH
+  L2::ValidType valid_type;  // ALL/DATA/DEPTH (valid粒度)
   FeatureDataType data_type; // TS/CS/LB/SH/META
   FeatureCategoryL1 cat_l1;  // MOMENTUM, IMBALANCE, etc.
   FeatureCategoryL2 cat_l2;  // NORMALIZED, OSCILLATOR, etc.
@@ -28,8 +28,8 @@ struct FeatureMetadata {
 // ============================================================================
 
 // Macro to expand LEVEL_X_FIELDS into FeatureMetadata array
-#define GENERATE_METADATA(code, width, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description) \
-  {#code, width, FeatureDataType::data_type, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, name_en, name_cn, formula, description, 255},
+#define GENERATE_METADATA(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description) \
+  {#code, width, L2::ValidType::valid_type, FeatureDataType::data_type, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, name_en, name_cn, formula, description, 255},
 
 // Compile-time generated constexpr arrays
 namespace FeatureMetadataRegistry {

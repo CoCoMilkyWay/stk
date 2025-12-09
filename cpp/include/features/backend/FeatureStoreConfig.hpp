@@ -53,27 +53,27 @@ constexpr size_t MAX_ROWS_PER_LEVEL[LEVEL_COUNT] = {
 // 3. Done! All arrays/enums auto-generated
 // ============================================================================
 
-// Field format: X(code, width, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description)
+// Field format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description)
 
 // Count auxiliary (level-agnostic)
-#define COUNT_FIELD(code, width, dtype, c1, c2, norm, en, cn, formula, desc) +1
+#define COUNT_FIELD(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) +1
 
 // Width extractors (per-level)
-#define GENERATE_FIELD_WIDTH_L0(code, width, dtype, c1, c2, norm, en, cn, formula, desc) width,
-#define GENERATE_FIELD_WIDTH_L1(code, width, dtype, c1, c2, norm, en, cn, formula, desc) width,
-#define GENERATE_FIELD_WIDTH_L2(code, width, dtype, c1, c2, norm, en, cn, formula, desc) width,
+#define GENERATE_FIELD_WIDTH_L0(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) width,
+#define GENERATE_FIELD_WIDTH_L1(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) width,
+#define GENERATE_FIELD_WIDTH_L2(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) width,
 
 // Index extractors (per-level)
-#define GENERATE_FIELD_INDEX_L0(code, width, dtype, c1, c2, norm, en, cn, formula, desc) code,
-#define GENERATE_FIELD_INDEX_L1(code, width, dtype, c1, c2, norm, en, cn, formula, desc) code,
-#define GENERATE_FIELD_INDEX_L2(code, width, dtype, c1, c2, norm, en, cn, formula, desc) code,
+#define GENERATE_FIELD_INDEX_L0(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) code,
+#define GENERATE_FIELD_INDEX_L1(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) code,
+#define GENERATE_FIELD_INDEX_L2(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) code,
 
 // Type metadata extractors (per-level)
-#define GENERATE_FIELD_TYPE_META_L0(code, width, dtype, c1, c2, norm, en, cn, formula, desc) \
+#define GENERATE_FIELD_TYPE_META_L0(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) \
   {L0_FieldOffset::code, FeatureDataType::dtype},
-#define GENERATE_FIELD_TYPE_META_L1(code, width, dtype, c1, c2, norm, en, cn, formula, desc) \
+#define GENERATE_FIELD_TYPE_META_L1(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) \
   {L1_FieldOffset::code, FeatureDataType::dtype},
-#define GENERATE_FIELD_TYPE_META_L2(code, width, dtype, c1, c2, norm, en, cn, formula, desc) \
+#define GENERATE_FIELD_TYPE_META_L2(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) \
   {L2_FieldOffset::code, FeatureDataType::dtype},
 
 // ============================================================================

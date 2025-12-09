@@ -104,6 +104,12 @@ enum MarketState : uint8_t {
   CLOSING_MATCHING_PERIOD = 6,
 };
 
+enum ValidType : uint8_t {
+  ALL= 0,
+  DATA = 1,
+  DEPTH = 2, // depth valid ⊆ data valid
+};
+
 // 三秒快照(tick) (可能低于3秒更新)
 struct Snapshot {
   uint8_t hour;                 // 5bit

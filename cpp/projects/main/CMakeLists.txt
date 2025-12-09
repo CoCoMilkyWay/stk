@@ -132,6 +132,7 @@ set(SOURCES
     ../../src/shared/GuiState.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Feature.cpp
+    ../../src/shared/Dist.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/file_check.cpp
     ../../src/codec/json_config.cpp
@@ -159,9 +160,11 @@ set(SOURCES
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_features/services/ComputeService.cpp
+    ../../src/gui/task_features/services/DistService.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
+    ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/TaskFeatures.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
@@ -213,6 +216,7 @@ set(HEADERS
     ../../include/shared/GuiState.hpp
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/Feature.hpp
+    ../../include/shared/Dist.hpp
     ../../include/shared/SharedData.hpp
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp
@@ -242,6 +246,7 @@ set(HEADERS
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
+    ../../src/shared/Dist.cpp
     ../../src/gui/task_database/infrastructure/DataManager.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/BaostockService.cpp
@@ -251,6 +256,7 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
+    ../../src/gui/task_features/ui/TabDist.cpp
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
 )
 
