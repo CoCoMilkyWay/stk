@@ -56,9 +56,54 @@
 //   - TS Workers (N-2): 时序特征计算,按 asset 分配,date-first 遍历(在time index级别是 顺序, 稀疏, 而且per asset不同的, 所以需要progress机制)
 //   - CS Worker  (1):  截面特征计算,等待 TS 完成后处理 (与TS的sync粒度必须细, 到time index级别, 这样和实盘行为才是一致的)
 //   - IO Worker  (1):  扫描 pool,异步 flush 完成的 date
+// ============================================================================
+// MEMORY ORDER SUMMARY - 按 Slot 生命周期排序 (仅列出 atomic 变量)
+// ============================================================================
+// 操作                             Memory Order         作用域(线程)       触发频率              理由
+// -------------------------------------------------------------------------------------------------------------------
 //
+// 【阶段 1: Slot 分配】FREE → INIT → BUSY
+//
+// free_head_ CAS (pop)             acq_rel             TS                低: 分配 slot         pop_free + ABA 防护
+// epoch.fetch_add                  acq_rel             TS                低: 分配 slot         失效旧缓存(双向同步)
+// state.store(INIT)                relaxed             TS                低: 分配 slot         持有 pool_mutex_
+// state.load                       acquire             TS                低: 慢路径(冲突)      检查其他 worker 分配状态
+//   [reset 操作: ts_worker_min_pos/ts_done_flag 初始化]
+// ts_worker_min_pos[w].store(0)    relaxed             TS                低: reset             BUSY release 同步保证可见性
+// ts_done_flag[w].store(false)     relaxed             TS                低: reset             BUSY release 同步保证可见性
+// state.store(BUSY)                release             TS                低: 分配完成          发布 slot 就绪
+//
+// 【阶段 2: TS 写入 + CS 读取】BUSY 状态
+//
+//   [子阶段 2.1: TS 内部]
+//     (ts_write_pos[a] = ... 普通变量, TS-local, 无 atomic)
+//
+//   [子阶段 2.2: TS → CS 进度同步]
+// ts_worker_min_pos[w].store(min)  release             TS                中: 条件发布          发布 worker 最小位置
+// ts_worker_min_pos[w].load        acquire             CS                高: cs_wait 扫描      读取最小进度
+// state.load                       acquire             CS                低: cs_wait 慢路径    等待 BUSY 状态
+//
+//   [子阶段 2.3: TS/CS 完成]
+// ts_worker_min_pos[w].store(MAX)  release             TS                低: 每日一次          发布最终进度
+// ts_done_flag[w].store(true)      release             TS                低: 每日一次          标记 worker 完成
+// ts_done_flag[w].load             acquire             CS                中: cs_wait 轮询      等待所有 TS 完成
+//     (cs_read_pos = ... 普通变量, CS-local, 无 atomic)
+//
+// 【阶段 3: CS 完成】BUSY → DONE
+//
+// state.compare_exchange_strong    acq_rel, acquire    CS                低: 每日一次          BUSY→DONE 发布完成
+//
+// 【阶段 4: IO 写盘】DONE → FLUSH → FREE
+//
+// state.compare_exchange_strong    acq_rel, acquire    IO                低: 扫描 pool         DONE→FLUSH 获取写入权
+// epoch.fetch_add                  acq_rel             IO                低: 回收前            失效旧缓存(双向同步)
+// state.store(FREE)                release             IO                低: 回收完成          发布 slot 可用
+// free_head_ CAS (push)            acq_rel             IO                低: 回收 slot         push_free + ABA 防护
+//
+//
+// ============================================================================
 // 【核心数据结构】
-//
+// ============================================================================
 //   // Tensor lifecycle states
 //   enum class TensorState : uint8_t {
 //     FREE = 0,        // Available for allocation
@@ -77,25 +122,28 @@
 //     _Float16* data[3];                         // [T,F,A] tensors for L0/L1/L2
 //
 //     // 同步机制(核心:two-level write_pos,优化 CS 扫描)
-//     std::atomic<size_t>* ts_write_pos;         // length = A (每个 asset 的 L0 写入位置)
+//     size_t* ts_write_pos;                      // length = A (每个 asset 的 L0 写入位置, TS-local, 普通变量)
 //                                                // ts_write_pos[a] = asset a 已写入的最大 L0 时间索引 + 1
-//                                                // TS worker: 写完 (a, t) 后 store(t+1, release)
-//                                                // 用于准确维护,支持细粒度查询
+//                                                // TS worker: 写完 (a, t) 后普通写入 ts_write_pos[a] = t+1
+//                                                // 单线程访问(每个 asset 只属于一个 TS worker), 无需 atomic
+//                                                // 用于 TS 内部计算 worker_min
 //     std::atomic<size_t>* ts_worker_min_pos;    // length = num_ts_workers (每个 TS worker 的最小写入位置)
 //                                                // ts_worker_min_pos[w] = worker w 负责的所有 assets 的 min(write_pos)
 //                                                // 初始值: 0 (Slot::reset 时初始化, 表示没有进度)
 //                                                // TS worker: 维护 thread-local min,定期 store(min, release)
 //                                                // CS: 快速扫描 O(W) vs O(A),W=10, A=1000
+//                                                // ★ TS→CS 真正同步点
 //     std::atomic<bool>* ts_done_flag;           // length = num_ts_workers (每个 TS worker 的完成标志)
 //                                                // TS worker: 完成 date 后 store(true, release)
 //                                                // CS: 全部 true 时不再等待 min_pos 增长
+//                                                // ★ TS→CS 真正同步点
 //
 //     // CS 读取位置缓存(避免重复扫描 ts_worker_min_pos)
-//     std::atomic<size_t> cs_read_pos;           // CS 已验证的安全读位置 (atomic 支持未来多 CS worker 扩展)
+//     size_t cs_read_pos;                        // CS 已验证的安全读位置 (CS-local, 普通变量)
 //                                                // cs_read_pos = N 表示 [0, N-1] 的 time_idx 已验证就绪
 //                                                // CS 每次 sweep 扫描 ts_worker_min_pos 得到 min_pos,
 //                                                // 一次可以推进几百个 time_idx(O(W) 扫描,极快)
-//                                                // 当前单 CS worker: 使用 relaxed load/store 即可
+//                                                // 单 CS worker 访问, 无需 atomic
 //
 //     // Freelist linkage
 //     std::atomic<int> next_free;                // Freelist 链表指针 (-1 = end)
@@ -309,10 +357,10 @@
 //     assigned_assets_[worker_id].insert(asset_id);  // 全局记录 (用于 ts_done)
 //   }
 //
-//   // 2. 更新 per-asset 写入位置 (memory_order_release)
-//   //    release: 确保 TS_WRITE_* 的数据写入对后续 CS acquire 可见
+//   // 2. 更新 per-asset 写入位置 (TS-local, 普通写入)
+//   //    单线程访问 (每个 asset 只属于一个 TS worker), 无需 atomic
 //   size_t new_pos = l0_time_index + 1;
-//   slot.ts_write_pos[asset_id].store(new_pos, memory_order_release);
+//   slot.ts_write_pos[asset_id] = new_pos;
 //
 //   // 3. 增量维护 worker_min (thread-local 缓存)
 //   static thread_local vector<size_t> worker_local_min;
@@ -325,13 +373,13 @@
 //   // 4. 条件发布优化: 只有当 new_pos <= old_min 时才需要更新 worker_min
 //   //    如果 new_pos > old_min, 说明当前 asset 在前面, 不影响 min, 跳过发布
 //   if (new_pos <= old_min) {
-//     // 当前 asset 可能是瓶颈, 重新扫描所有已写 assets
+//     // 当前 asset 可能是瓶颈, 重新扫描所有已写 assets (TS-local 读取)
 //     size_t new_min = SIZE_MAX;
 //     for (size_t a : assigned_assets_[worker_id]) {
-//       new_min = std::min(new_min, slot.ts_write_pos[a].load(memory_order_relaxed));
+//       new_min = std::min(new_min, slot.ts_write_pos[a]);  // 普通读取
 //     }
 //     worker_local_min[worker_id] = new_min;
-//     // 发布新的 worker_min (memory_order_release)
+//     // 发布新的 worker_min (memory_order_release) ★ TS→CS 真正同步点
 //     slot.ts_worker_min_pos[worker_id].store(new_min, memory_order_release);
 //   }
 //   // else: fast asset, 不影响 worker_min, 跳过发布 (huge optimization!)
@@ -345,26 +393,21 @@
 //   Slot &slot = ts_get_slot(date, worker_id);
 //   const size_t final_progress = MAX_ROWS_PER_LEVEL[0];  // L0 最大 time_idx
 //
-//   // 1. 批量更新所有实际写过的 asset 位置为最终值 (使用 relaxed 提高性能)
+//   // 1. 更新 TS-local 元数据 (CS 不读, 无需同步)
 //   //    动态记录机制: 只更新实际写过的 assets, 无需预知分配
 //   for (size_t a : assigned_assets_[worker_id]) {
-//     slot.ts_write_pos[a].store(final_progress, memory_order_relaxed);
+//     slot.ts_write_pos[a] = final_progress;  // 普通写入
 //   }
 //
-//   // 2. 插入 release fence 确保上述写入对后续 acquire 可见
-//   //    关键: release fence 建立 happens-before 关系
-//   //    CS 的 acquire load 能看到 fence 之前的所有 relaxed store
-//   std::atomic_thread_fence(memory_order_release);
-//
-//   // 3. 发布最终 worker_min_pos (确保 CS 快速扫描时不会阻塞)
+//   // 2. 发布最终 worker_min_pos (TS→CS 同步点, sequenced-after 上述写入)
+//   //    普通写入 happens-before release store, 无需额外 fence
 //   slot.ts_worker_min_pos[worker_id].store(final_progress, memory_order_release);
 //
-//   // 4. 最后标记该 worker 完成 (memory_order_release)
-//   //    CS 通过 acquire 读取此 flag, 建立同步点
+//   // 3. 标记该 worker 完成 (TS→CS 同步点)
 //   assert(!slot.ts_done_flag[worker_id].load(memory_order_acquire) && "TS worker already marked done");
 //   slot.ts_done_flag[worker_id].store(true, memory_order_release);
 //
-//   // 5. 清除 cache (避免 stale access, 防止后续误用)
+//   // 4. 清除 cache (避免 stale access, 防止后续误用)
 //   ts_cache_[worker_id] = {"", SIZE_MAX, 0};
 // }
 //
@@ -403,9 +446,9 @@
 //     }
 //   }
 //
-//   // Step 2: Fast path - cs_read_pos cache
+//   // Step 2: Fast path - cs_read_pos cache (CS-local, 普通读取)
 //   //   cs_read_pos = N 表示 [0, N-1] 已验证就绪
-//   if (l0_time_index < slot->cs_read_pos.load(memory_order_relaxed)) [[likely]] {
+//   if (l0_time_index < slot->cs_read_pos) [[likely]] {
 //     return;  // Cache hit
 //   }
 //
@@ -420,7 +463,7 @@
 //
 //     // 3b. 如果 min_pos > l0_time_index, time_idx 就绪
 //     if (min_pos > l0_time_index) {
-//       slot->cs_read_pos.store(min_pos, memory_order_relaxed);  // 批量验证 [0, min_pos)
+//       slot->cs_read_pos = min_pos;  // 批量验证 [0, min_pos), CS-local 普通写入
 //       return;
 //     }
 //
@@ -433,7 +476,7 @@
 //       }
 //     }
 //     if (all_done) {
-//       slot->cs_read_pos.store(MAX_ROWS_PER_LEVEL[0], memory_order_relaxed);  // 强制所有就绪
+//       slot->cs_read_pos = MAX_ROWS_PER_LEVEL[0];  // 强制所有就绪, CS-local 普通写入
 //       return;
 //     }
 //
@@ -626,33 +669,6 @@
 //     // CAS 失败 (被其他线程修改或 ABA), 重试
 //   }
 // }
-//
-// ============================================================================
-// MEMORY ORDER SUMMARY (关键操作的 memory_order 选择)
-// ============================================================================
-//
-// 操作                             Memory Order         理由
-// ---------------------------------------------------------------------------------
-// epoch.fetch_add                  acq_rel             同步 slot 失效, 双向可见性
-// state.store(INIT)                relaxed             持有 pool_mutex_, 无需额外同步
-// state.store(BUSY)                release             发布 slot 初始化完成 (在 reset 后)
-// state.store(FREE)                release             发布 slot 回收完成
-// state.load                       acquire             获取 slot 状态并同步数据
-// state.compare_exchange_strong    acq_rel, relaxed    状态转换需要双向同步
-// ts_write_pos[a].store(0)         relaxed             reset 中初始化, 后续 state.store(BUSY, release) 建立同步
-// ts_write_pos[a].store(new_pos)   release             发布数据写入完成 (TS_WRITE_* → store pos)
-// ts_write_pos[a].load             relaxed             TS worker 内部读取 (无竞争, 单写者)
-// ts_worker_min_pos[w].store(0)    relaxed             reset 中初始化, 后续 state.store(BUSY, release) 建立同步
-// ts_worker_min_pos[w].store(min)  release             发布 worker 最小位置 (条件发布优化)
-// ts_worker_min_pos[w].load        acquire             CS 读取 worker min 并同步
-// ts_done_flag[w].store(false)     relaxed             reset 中初始化
-// ts_done_flag[w].store(true)      release             发布 worker 完成状态
-// ts_done_flag[w].load             acquire             读取完成状态并同步
-// cs_read_pos.store                relaxed             单 CS worker 独占写, 无竞争
-// cs_read_pos.load                 relaxed             单 CS worker 独占读, 无竞争
-// free_head_ CAS (tagged)          acq_rel             Freelist pop/push 双向同步 + ABA 防护
-//                                                      格式: (tag << 32) | idx, tag++ 防 ABA
-// atomic_thread_fence              release             ts_done 批量发布 relaxed stores
 //
 // ============================================================================
 //

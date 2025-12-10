@@ -48,10 +48,10 @@ private:
     feature_storage_t *data[LEVEL_COUNT] = {nullptr};
 
     // Two-level synchronization (key optimization: O(W) scan instead of O(A))
-    std::atomic<size_t> *ts_write_pos = nullptr;      // [A] per-asset write position
-    std::atomic<size_t> *ts_worker_min_pos = nullptr; // [W] per-worker min position
-    std::atomic<bool> *ts_done_flag = nullptr;        // [W] per-worker done flag
-    std::atomic<size_t> cs_read_pos{0};               // CS cached safe position
+    size_t *ts_write_pos = nullptr;                   // [A] per-asset write position (TS-local, no sync)
+    std::atomic<size_t> *ts_worker_min_pos = nullptr; // [W] per-worker min position (TS→CS sync)
+    std::atomic<bool> *ts_done_flag = nullptr;        // [W] per-worker done flag (TS→CS sync)
+    size_t cs_read_pos{0};                            // CS cached safe position (CS-local, no sync)
 
     // Freelist linkage
     std::atomic<int> next_free{-1};
@@ -62,12 +62,12 @@ private:
         const size_t aligned_bytes = ((total_bytes + 63) / 64) * 64;
         data[lvl] = static_cast<feature_storage_t *>(std::aligned_alloc(64, aligned_bytes));
         assert(data[lvl]);
-        
+
         // Enable huge pages for large tensors (L0/L1/L2)
         // 2MB huge pages significantly reduce TLB pressure for sequential scans
         madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
       }
-      ts_write_pos = new std::atomic<size_t>[num_assets]();
+      ts_write_pos = new size_t[num_assets]();
       ts_worker_min_pos = new std::atomic<size_t>[num_ts_workers]();
       ts_done_flag = new std::atomic<bool>[num_ts_workers]();
     }
@@ -78,13 +78,13 @@ private:
         std::memset(data[lvl], 0, total_bytes);
       }
       for (size_t i = 0; i < num_assets; ++i) {
-        ts_write_pos[i].store(0, std::memory_order_relaxed);
+        ts_write_pos[i] = 0;
       }
       for (size_t i = 0; i < num_ts_workers; ++i) {
         ts_worker_min_pos[i].store(0, std::memory_order_relaxed);
         ts_done_flag[i].store(false, std::memory_order_relaxed);
       }
-      cs_read_pos.store(0, std::memory_order_relaxed);
+      cs_read_pos = 0;
       std::memset(date, 0, sizeof(date));
     }
 
@@ -240,9 +240,9 @@ public:
       assigned_assets_[worker_id].insert(asset_id); // Global record for ts_done (cold path)
     }
 
-    // Update per-asset write position
+    // Update per-asset write position (TS-local, no sync needed)
     size_t new_pos = l0_time_index + 1;
-    slot.ts_write_pos[asset_id].store(new_pos, std::memory_order_release);
+    slot.ts_write_pos[asset_id] = new_pos;
 
     // Update worker_min (only if this asset affects the min)
     // Initialize to SIZE_MAX (no progress yet)
@@ -256,13 +256,13 @@ public:
     // Optimization: skip update if current asset is not the bottleneck
     // If new_pos > worker_min, this asset is ahead, min unchanged, no publish needed
     if (new_pos <= old_min) {
-      // This asset is at or behind the min, need to rescan
+      // This asset is at or behind the min, need to rescan (TS-local read)
       size_t new_min = SIZE_MAX;
       for (size_t a : assigned_assets_[worker_id]) {
-        new_min = std::min(new_min, slot.ts_write_pos[a].load(std::memory_order_relaxed));
+        new_min = std::min(new_min, slot.ts_write_pos[a]);
       }
       worker_local_min[worker_id] = new_min;
-      // Publish only when worker_min actually changed
+      // Publish only when worker_min actually changed (TS→CS sync)
       slot.ts_worker_min_pos[worker_id].store(new_min, std::memory_order_release);
     }
     // else: fast asset, doesn't affect worker_min, skip publish (huge optimization!)
@@ -273,18 +273,15 @@ public:
     Slot &slot = ts_get_slot(date, worker_id);
     const size_t final_progress = MAX_ROWS_PER_LEVEL[0];
 
-    // Set all written assets to final progress (batch update with relaxed)
+    // Update TS-local metadata (not read by CS, no sync needed)
     for (size_t a : assigned_assets_[worker_id]) {
-      slot.ts_write_pos[a].store(final_progress, std::memory_order_relaxed);
+      slot.ts_write_pos[a] = final_progress;
     }
 
-    // Release fence ensures all writes visible before done flag
-    std::atomic_thread_fence(std::memory_order_release);
-
-    // Publish final worker_min
+    // Publish final worker_min (TS→CS sync point, sequenced-after above writes)
     slot.ts_worker_min_pos[worker_id].store(final_progress, std::memory_order_release);
 
-    // Mark worker done
+    // Mark worker done (TS→CS sync point)
     assert(!slot.ts_done_flag[worker_id].load(std::memory_order_acquire) && "TS worker already marked done");
     slot.ts_done_flag[worker_id].store(true, std::memory_order_release);
 
@@ -331,8 +328,8 @@ public:
       }
     }
 
-    // Fast path: cs_read_pos cache (cs_read_pos = N means [0, N-1] verified)
-    if (l0_time_index < slot->cs_read_pos.load(std::memory_order_relaxed)) [[likely]] {
+    // Fast path: cs_read_pos cache (cs_read_pos = N means [0, N-1] verified, CS-local)
+    if (l0_time_index < slot->cs_read_pos) [[likely]] {
       return;
     }
 
@@ -347,7 +344,7 @@ public:
 
       // If min_pos > l0_time_index, time_index is ready
       if (min_pos > l0_time_index) {
-        slot->cs_read_pos.store(min_pos, std::memory_order_relaxed); // Batch verify [0, min_pos)
+        slot->cs_read_pos = min_pos; // Batch verify [0, min_pos), CS-local
         return;
       }
 
@@ -360,7 +357,7 @@ public:
         }
       }
       if (all_done) {
-        slot->cs_read_pos.store(MAX_ROWS_PER_LEVEL[0], std::memory_order_relaxed); // Force all ready
+        slot->cs_read_pos = MAX_ROWS_PER_LEVEL[0]; // Force all ready, CS-local
         return;
       }
 
@@ -397,9 +394,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
       TensorState expected = TensorState::BUSY;
-      [[maybe_unused]] bool success = slot.state.compare_exchange_strong(
-          expected, TensorState::DONE,
-          std::memory_order_acq_rel, std::memory_order_relaxed);
+      [[maybe_unused]] bool success = slot.state.compare_exchange_strong(expected, TensorState::DONE, std::memory_order_acq_rel, std::memory_order_acquire);
       assert(success && "CS state transition failed");
     }
 
@@ -419,9 +414,7 @@ public:
       std::lock_guard<std::mutex> lock(pool_mutex_);
       for (const auto &[date, idx] : date_to_slot_) {
         TensorState expected = TensorState::DONE;
-        if (pool_[idx].state.compare_exchange_strong(
-                expected, TensorState::FLUSH,
-                std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        if (pool_[idx].state.compare_exchange_strong(expected, TensorState::FLUSH, std::memory_order_acq_rel, std::memory_order_acquire)) {
           date_to_flush = date;
           slot_idx = idx;
           break;
@@ -442,7 +435,7 @@ public:
 
     // Write to disk (expensive, no lock held)
     write_to_disk(date_copy, &slot);
-    
+
     // Clean up: erase mapping, invalidate epoch, recycle slot
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
@@ -778,69 +771,69 @@ public:
 // ============================================================================
 
 // TS_WRITE_SINGLE: Write single field for one asset
-#define TS_WRITE_SINGLE(store, date, lvl, t, field_enum, a, value, worker_id)   \
-  do {                                                                          \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                        \
-    assert(_slot.data[lvl] && "data[lvl] is null");                             \
-    const size_t _F = (store)->query_F(lvl);                                    \
-    const size_t _A = (store)->query_A();                                       \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                   \
-    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                       \
-    assert((t) < _T && "time index out of bounds");                             \
-    assert(_f < _F && "feature index out of bounds");                           \
-    assert((a) < _A && "asset index out of bounds");                            \
-    const size_t _idx = ((t) * _F + _f) * _A + (a);                             \
-    _slot.data[lvl][_idx] = (value);                                            \
+#define TS_WRITE_SINGLE(store, date, lvl, t, field_enum, a, value, worker_id) \
+  do {                                                                        \
+    auto &_slot = (store)->ts_get_slot(date, worker_id);                      \
+    assert(_slot.data[lvl] && "data[lvl] is null");                           \
+    const size_t _F = (store)->query_F(lvl);                                  \
+    const size_t _A = (store)->query_A();                                     \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                 \
+    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                     \
+    assert((t) < _T && "time index out of bounds");                           \
+    assert(_f < _F && "feature index out of bounds");                         \
+    assert((a) < _A && "asset index out of bounds");                          \
+    const size_t _idx = ((t) * _F + _f) * _A + (a);                           \
+    _slot.data[lvl][_idx] = (value);                                          \
   } while (0)
 
 // TS_WRITE_FEATURES: Write field range [f_start_enum, f_end_enum) for one asset
 // Pass enums directly, macro converts to offsets via L##lvl##_FIELD_OFFSETS
 #define TS_WRITE_FEATURES(store, date, lvl, t, a, f_start_enum, f_end_enum, src, worker_id) \
-  do {                                                                            \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                          \
-    assert(_slot.data[lvl] && "data[lvl] is null");                               \
-    const size_t _F = (store)->query_F(lvl);                                      \
-    const size_t _A = (store)->query_A();                                         \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                     \
-    const size_t _f_start = L##lvl##_FIELD_OFFSETS[f_start_enum];                 \
-    const size_t _f_end = L##lvl##_FIELD_OFFSETS[f_end_enum];                     \
-    assert((t) < _T && "time index out of bounds");                               \
-    assert((a) < _A && "asset index out of bounds");                              \
-    assert(_f_start <= _f_end && "invalid feature range");                        \
-    assert(_f_end <= _F && "feature end out of bounds");                          \
-    for (size_t _f = _f_start; _f < _f_end; ++_f) {                               \
-      const size_t _idx = ((t) * _F + _f) * _A + (a);                             \
-      _slot.data[lvl][_idx] = (src)[_f - _f_start];                               \
-    }                                                                             \
-  } while (0)
-
-// CS_READ_ALL: Read all assets for one field → returns _Float16*
-#define CS_READ_ALL(store, date, lvl, t, field_enum)              \
-  [&]() -> feature_storage_t * {                                  \
-    auto &_slot = (store)->cs_get_slot(date);                     \
-    assert(_slot.data[lvl] && "data[lvl] is null");               \
-    const size_t _F = (store)->query_F(lvl);                      \
-    const size_t _A = (store)->query_A();                         \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);     \
-    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];         \
-    assert((t) < _T && "time index out of bounds");               \
-    assert(_f < _F && "feature index out of bounds");             \
-    const size_t _offset = ((t) * _F + _f) * _A;                  \
-    return _slot.data[lvl] + _offset;                             \
-  }()
-
-// CS_WRITE_ALL: Write all assets for one field
-#define CS_WRITE_ALL(store, date, lvl, t, field_enum, src, count)                           \
   do {                                                                                      \
-    auto &_slot = (store)->cs_get_slot(date);                                               \
+    auto &_slot = (store)->ts_get_slot(date, worker_id);                                    \
     assert(_slot.data[lvl] && "data[lvl] is null");                                         \
     const size_t _F = (store)->query_F(lvl);                                                \
     const size_t _A = (store)->query_A();                                                   \
     [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                               \
-    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                                   \
+    const size_t _f_start = L##lvl##_FIELD_OFFSETS[f_start_enum];                           \
+    const size_t _f_end = L##lvl##_FIELD_OFFSETS[f_end_enum];                               \
     assert((t) < _T && "time index out of bounds");                                         \
-    assert(_f < _F && "feature index out of bounds");                                       \
-    assert((count) <= _A && "count exceeds num_assets");                                    \
-    const size_t _offset = ((t) * _F + _f) * _A;                                            \
-    std::memcpy(_slot.data[lvl] + _offset, (src), (count) * sizeof(feature_storage_t));     \
+    assert((a) < _A && "asset index out of bounds");                                        \
+    assert(_f_start <= _f_end && "invalid feature range");                                  \
+    assert(_f_end <= _F && "feature end out of bounds");                                    \
+    for (size_t _f = _f_start; _f < _f_end; ++_f) {                                         \
+      const size_t _idx = ((t) * _F + _f) * _A + (a);                                       \
+      _slot.data[lvl][_idx] = (src)[_f - _f_start];                                         \
+    }                                                                                       \
+  } while (0)
+
+// CS_READ_ALL: Read all assets for one field → returns _Float16*
+#define CS_READ_ALL(store, date, lvl, t, field_enum)          \
+  [&]() -> feature_storage_t * {                              \
+    auto &_slot = (store)->cs_get_slot(date);                 \
+    assert(_slot.data[lvl] && "data[lvl] is null");           \
+    const size_t _F = (store)->query_F(lvl);                  \
+    const size_t _A = (store)->query_A();                     \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl); \
+    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];     \
+    assert((t) < _T && "time index out of bounds");           \
+    assert(_f < _F && "feature index out of bounds");         \
+    const size_t _offset = ((t) * _F + _f) * _A;              \
+    return _slot.data[lvl] + _offset;                         \
+  }()
+
+// CS_WRITE_ALL: Write all assets for one field
+#define CS_WRITE_ALL(store, date, lvl, t, field_enum, src, count)                       \
+  do {                                                                                  \
+    auto &_slot = (store)->cs_get_slot(date);                                           \
+    assert(_slot.data[lvl] && "data[lvl] is null");                                     \
+    const size_t _F = (store)->query_F(lvl);                                            \
+    const size_t _A = (store)->query_A();                                               \
+    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                           \
+    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                               \
+    assert((t) < _T && "time index out of bounds");                                     \
+    assert(_f < _F && "feature index out of bounds");                                   \
+    assert((count) <= _A && "count exceeds num_assets");                                \
+    const size_t _offset = ((t) * _F + _f) * _A;                                        \
+    std::memcpy(_slot.data[lvl] + _offset, (src), (count) * sizeof(feature_storage_t)); \
   } while (0)
