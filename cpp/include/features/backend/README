@@ -62,43 +62,36 @@
 // 操作                             Memory Order         作用域(线程)       触发频率              理由
 // -------------------------------------------------------------------------------------------------------------------
 //
-// 【阶段 1: Slot 分配】FREE → INIT → BUSY
+// 【TS 分配 Slot】FREE → INIT → BUSY
 //
-// free_head_ CAS (pop)             acq_rel             TS                低: 分配 slot         pop_free + ABA 防护
-// epoch.fetch_add                  acq_rel             TS                低: 分配 slot         失效旧缓存(双向同步)
-// state.store(INIT)                relaxed             TS                低: 分配 slot         持有 pool_mutex_
-// state.load                       acquire             TS                低: 慢路径(冲突)      检查其他 worker 分配状态
-//   [reset 操作: ts_worker_min_pos/ts_done_flag 初始化]
-// ts_worker_min_pos[w].store(0)    relaxed             TS                低: reset             BUSY release 同步保证可见性
-// ts_done_flag[w].store(false)     relaxed             TS                低: reset             BUSY release 同步保证可见性
-// state.store(BUSY)                release             TS                低: 分配完成          发布 slot 就绪
+// epoch.fetch_add                  acq_rel             TS                低: 分配              失效旧缓存(双向同步)
+// state.store(INIT)                release             TS                低: 分配              发布初始化状态
+// state.load                       acquire             TS                低: 冲突检测          检查是否 INIT, 等待 reset
+// ts_worker_state[w].store(0)      relaxed             TS                低: 分配              初始化进度, BUSY release 同步
+// state.store(BUSY)                release             TS                低: 分配完成          发布 slot 可用, 同步 reset 完成
 //
-// 【阶段 2: TS 写入 + CS 读取】BUSY 状态
+// 【TS 写入数据】BUSY
 //
-//   [子阶段 2.1: TS 内部]
-//     (ts_write_pos[a] = ... 普通变量, TS-local, 无 atomic)
+// epoch.load                       acquire             TS                高: cache 验证        检测 slot 回收, 快路径
+// ts_worker_state[w].store         release             TS                中: 进度发布          发布 min_pos, 条件触发
+// ts_worker_state[w].store         release             TS                低: 完成标记          发布最终 min_pos + done=true
 //
-//   [子阶段 2.2: TS → CS 进度同步]
-// ts_worker_min_pos[w].store(min)  release             TS                中: 条件发布          发布 worker 最小位置
-// ts_worker_min_pos[w].load        acquire             CS                高: cs_wait 扫描      读取最小进度
-// state.load                       acquire             CS                低: cs_wait 慢路径    等待 BUSY 状态
+// 【CS 读取数据】BUSY
 //
-//   [子阶段 2.3: TS/CS 完成]
-// ts_worker_min_pos[w].store(MAX)  release             TS                低: 每日一次          发布最终进度
-// ts_done_flag[w].store(true)      release             TS                低: 每日一次          标记 worker 完成
-// ts_done_flag[w].load             acquire             CS                中: cs_wait 轮询      等待所有 TS 完成
-//     (cs_read_pos = ... 普通变量, CS-local, 无 atomic)
+// epoch.load                       acquire             CS                低: cache 验证        检测 slot 回收, 慢路径
+// state.load                       acquire             CS                低: 等待就绪          等待 BUSY 状态
+// ts_worker_state[w].load          acquire             CS                高: 进度扫描          读取 min_pos + done, O(W) 扫描
 //
-// 【阶段 3: CS 完成】BUSY → DONE
+// 【CS 标记完成】BUSY → DONE
 //
-// state.compare_exchange_strong    acq_rel, acquire    CS                低: 每日一次          BUSY→DONE 发布完成
+// state.compare_exchange_strong    acq_rel, acquire    CS                低: 每日一次          BUSY→DONE 转换
 //
-// 【阶段 4: IO 写盘】DONE → FLUSH → FREE
+// 【IO 写盘回收】DONE → FLUSH → FREE
 //
-// state.compare_exchange_strong    acq_rel, acquire    IO                低: 扫描 pool         DONE→FLUSH 获取写入权
-// epoch.fetch_add                  acq_rel             IO                低: 回收前            失效旧缓存(双向同步)
+// state.load                       acquire             IO                低: 扫描 pool         查找 DONE slot
+// state.compare_exchange_strong    acq_rel, acquire    IO                低: 获取写入权        DONE→FLUSH 转换
+// epoch.fetch_add                  acq_rel             IO                低: 回收              失效旧缓存, reset 后执行
 // state.store(FREE)                release             IO                低: 回收完成          发布 slot 可用
-// free_head_ CAS (push)            acq_rel             IO                低: 回收 slot         push_free + ABA 防护
 //
 //
 // ============================================================================
@@ -127,26 +120,24 @@
 //                                                // TS worker: 写完 (a, t) 后普通写入 ts_write_pos[a] = t+1
 //                                                // 单线程访问(每个 asset 只属于一个 TS worker), 无需 atomic
 //                                                // 用于 TS 内部计算 worker_min
-//     std::atomic<size_t>* ts_worker_min_pos;    // length = num_ts_workers (每个 TS worker 的最小写入位置)
-//                                                // ts_worker_min_pos[w] = worker w 负责的所有 assets 的 min(write_pos)
-//                                                // 初始值: 0 (Slot::reset 时初始化, 表示没有进度)
-//                                                // TS worker: 维护 thread-local min,定期 store(min, release)
-//                                                // CS: 快速扫描 O(W) vs O(A),W=10, A=1000
-//                                                // ★ TS→CS 真正同步点
-//     std::atomic<bool>* ts_done_flag;           // length = num_ts_workers (每个 TS worker 的完成标志)
-//                                                // TS worker: 完成 date 后 store(true, release)
-//                                                // CS: 全部 true 时不再等待 min_pos 增长
+//     std::atomic<uint64_t>* ts_worker_state;    // length = num_ts_workers
+//                                                // 位布局: [48b:min_pos][1b:done][15b:reserved]
+//                                                // ts_worker_state[w] = worker w 的最小写入位置 + 完成标志
+//                                                // 初始值: 0 (Slot::reset 时初始化, min_pos=0, done=false)
+//                                                // TS worker: 维护 thread-local min, 定期 store(pack(min, false), release)
+//                                                // TS worker: 完成 date 后 store(pack(MAX, true), release)
+//                                                // CS: 单次 load 读取 min_pos + done, 快速扫描 O(W) vs O(A), W=10, A=1000
 //                                                // ★ TS→CS 真正同步点
 //
-//     // CS 读取位置缓存(避免重复扫描 ts_worker_min_pos)
+//     // CS 读取位置缓存(避免重复扫描 ts_worker_state)
 //     size_t cs_read_pos;                        // CS 已验证的安全读位置 (CS-local, 普通变量)
 //                                                // cs_read_pos = N 表示 [0, N-1] 的 time_idx 已验证就绪
-//                                                // CS 每次 sweep 扫描 ts_worker_min_pos 得到 min_pos,
+//                                                // CS 每次 sweep 扫描 ts_worker_state 得到 min_pos,
 //                                                // 一次可以推进几百个 time_idx(O(W) 扫描,极快)
 //                                                // 单 CS worker 访问, 无需 atomic
 //
-//     // Freelist linkage
-//     std::atomic<int> next_free;                // Freelist 链表指针 (-1 = end)
+//     // Reset management
+//     bool needs_reset;                          // 标志: 下次分配时是否需要 reset
 //   };
 //
 //   // TS worker cache entry (per-worker, lock-free hot path)
@@ -166,13 +157,9 @@
 //   全局变量:
 //     Slot* pool;                                // 预分配 slot 数组
 //     size_t pool_size = num_ts_workers * POOL_SIZE_FACTOR;  // Pool 大小 (POOL_SIZE_FACTOR=2)
-//     std::atomic<uint64_t> free_head{0};        // 无锁栈头 + ABA 防护
-//                                                // 格式: (tag << 32) | slot_idx
-//                                                // 高 32 位: version tag (防 ABA)
-//                                                // 低 32 位: slot index
-//                                                // 初始值: 0 (tag=0, idx=0→1→2...)
+//     std::vector<int> free_list;                // 简单 freelist (protected by pool_mutex_)
 //     std::map<string, size_t> date_to_slot_;    // date → slot_idx 映射 (需要 mutex 保护)
-//     std::mutex pool_mutex_;                    // 保护 date_to_slot_ 和状态转换
+//     std::mutex pool_mutex_;                    // 保护 date_to_slot_ 和 free_list_
 //     vector<TSCacheEntry> ts_cache_;            // TS worker cache 数组 (per-worker, 需 epoch 验证)
 //     CSCacheEntry cs_cache_;                    // CS worker cache (单线程, 需 epoch 验证)
 //
@@ -184,8 +171,8 @@
 //
 //   Thread-local 变量 (每个 TS worker 独立维护):
 //     thread_local vector<size_t> worker_local_min;          // 当前 worker_min 缓存 (初始化为 SIZE_MAX)
-//                                                            // 与 slot.ts_worker_min_pos[w] 不同:
-//                                                            // - slot.ts_worker_min_pos[w] 初始为 0 (全局可见)
+//                                                            // 与 slot.ts_worker_state[w] 不同:
+//                                                            // - slot.ts_worker_state[w] 初始为 0 (全局可见, min_pos=0)
 //                                                            // - worker_local_min[w] 初始为 SIZE_MAX (thread-local)
 //                                                            // 首次调用 ts_update 时, SIZE_MAX > new_pos, 触发重扫并发布到全局
 //     thread_local vector<vector<bool>> asset_written;       // O(1) bitset 追踪写过的 assets
@@ -223,21 +210,24 @@
 //       
 //       // 1. 分配和初始化每个 slot
 //       for (size_t i = 0; i < pool_size_; ++i) {
-//         pool_[i].allocate(num_assets_, num_ts_workers_);  // 分配 data/ts_write_pos/ts_worker_min_pos/ts_done_flag
+//         pool_[i].allocate(num_assets_, num_ts_workers_);  // 分配 data/ts_write_pos/ts_worker_state
 //         
 //         // Touch all pages (force physical allocation)
 //         for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-//           // 按 4KB page 触碰所有内存
+//           // 按 4KB page 触碰所有内存, 写入0
 //         }
 //         
-//         // 初始化 freelist linkage
-//         pool_[i].next_free.store(i + 1, memory_order_relaxed);
+//         // 初始化状态
 //         pool_[i].state.store(FREE, memory_order_relaxed);
+//         pool_[i].reset(num_assets_, num_ts_workers_);    // 初始化 ts_worker_state/ts_write_pos
+//         pool_[i].needs_reset = false;                     // 标记已完成 reset
 //       }
-//       pool_[pool_size_ - 1].next_free.store(-1, memory_order_relaxed);  // 末尾
 //       
-//       // 2. 初始化 free_head: tag=0, idx=0 (指向第一个 slot)
-//       free_head_.store(0, memory_order_release);  // (0 << 32) | 0
+//       // 2. 初始化 free_list (reverse order, LIFO)
+//       free_list_.reserve(pool_size_);
+//       for (int i = pool_size_ - 1; i >= 0; --i) {
+//         free_list_.push_back(i);
+//       }
 //       
 //       // 3. 初始化 worker cache 和动态资产跟踪
 //       ts_cache_.resize(num_ts_workers_);           // 空 cache
@@ -291,11 +281,21 @@
 //   // 2. 我们是第一个: 分配新 slot (持有 pool_mutex_)
 //   allocate_slot_locked(date, worker_id);
 //
-//   // 3. 分配完成, 更新 cache 并返回
+//   // 3. 分配完成, 检查状态并返回
 //   it = date_to_slot_.find(date);
 //   assert(it != date_to_slot_.end());
 //   size_t slot_idx = it->second;
 //   Slot &s = pool_[slot_idx];
+//   
+//   // 3a. CRITICAL: 检查 state, 可能其他 worker 已分配且正在 reset
+//   TensorState state = s.state.load(memory_order_acquire);
+//   if (state == INIT) {
+//     pool_mutex_.unlock();
+//     sleep_for(microseconds(10));
+//     return ts_get_slot_slow(date, worker_id);  // 递归重试
+//   }
+//   
+//   // 3b. Ready to use (BUSY state), 更新 cache 并返回
 //   ts_cache_[worker_id].date = date;
 //   ts_cache_[worker_id].slot_idx = slot_idx;
 //   ts_cache_[worker_id].epoch = s.epoch.load(memory_order_acquire);
@@ -309,28 +309,32 @@
 //   // 1. Defense: double-check
 //   if (date_to_slot_.find(date) != date_to_slot_.end()) return;
 //
-//   // 2. Pop from freelist (lock-free CAS)
-//   int slot_idx = pop_free();
-//   if (slot_idx < 0) {
+//   // 2. Pop from freelist (protected by pool_mutex_)
+//   if (free_list_.empty()) {
 //     // Pool exhausted, 释放锁并等待 IO 释放 slot
 //     pool_mutex_.unlock();
 //     sleep_for(milliseconds(10));
 //     pool_mutex_.lock();
 //     return allocate_slot_locked(date, worker_id, wait_count + 1);  // 递归重试
 //   }
+//   int slot_idx = free_list_.back();
+//   free_list_.pop_back();
 //
 //   Slot &s = pool_[slot_idx];
 //
 //   // 3. 立即标记为 INIT 并插入 map (持有锁, 发布分配意图)
-//   s.state.store(INIT, memory_order_relaxed);
 //   s.epoch.fetch_add(1, memory_order_acq_rel);  // 使旧 cache 失效
+//   s.state.store(INIT, memory_order_release);   // 发布初始化状态
 //   date_to_slot_[date] = slot_idx;
 //
-//   // 4. 释放锁, 执行昂贵的 reset 操作
+//   // 4. 释放锁, 执行 reset 操作 (如果需要)
 //   pool_mutex_.unlock();
 //
-//   // 5. Reset slot (清零数据, 初始化同步变量)
-//   s.reset(num_assets_, num_ts_workers_);  // 调用 Slot::reset()
+//   // 5. Reset slot (异步 reset 优化: 如果 IO 已 reset, 跳过)
+//   if (s.needs_reset) {
+//     s.reset(num_assets_, num_ts_workers_);  // 清零数据, 初始化 ts_worker_state
+//     s.needs_reset = false;
+//   }
 //   strncpy(s.date, date.c_str(), sizeof(s.date) - 1);
 //   s.date[sizeof(s.date) - 1] = '\0';
 //
@@ -380,11 +384,11 @@
 //     }
 //     worker_local_min[worker_id] = new_min;
 //     // 发布新的 worker_min (memory_order_release) ★ TS→CS 真正同步点
-//     slot.ts_worker_min_pos[worker_id].store(new_min, memory_order_release);
+//     slot.ts_worker_state[worker_id].store(pack_worker_state(new_min, false), memory_order_release);
 //   }
 //   // else: fast asset, 不影响 worker_min, 跳过发布 (huge optimization!)
 //
-//   // 5. CS 通过扫描 min(ts_worker_min_pos[all workers]) 判断 time_idx 就绪
+//   // 5. CS 通过扫描 min(ts_worker_state[all workers]) 判断 time_idx 就绪
 //   //    扫描复杂度: O(W) vs O(A), W=10, A=1000, 快 100 倍
 // }
 //
@@ -399,13 +403,13 @@
 //     slot.ts_write_pos[a] = final_progress;  // 普通写入
 //   }
 //
-//   // 2. 发布最终 worker_min_pos (TS→CS 同步点, sequenced-after 上述写入)
-//   //    普通写入 happens-before release store, 无需额外 fence
-//   slot.ts_worker_min_pos[worker_id].store(final_progress, memory_order_release);
+//   // 2. 读取旧状态
+//   uint64_t old_state = slot.ts_worker_state[worker_id].load(memory_order_acquire);
 //
-//   // 3. 标记该 worker 完成 (TS→CS 同步点)
-//   assert(!slot.ts_done_flag[worker_id].load(memory_order_acquire) && "TS worker already marked done");
-//   slot.ts_done_flag[worker_id].store(true, memory_order_release);
+//   // 3. 发布最终进度 + 完成标志 (单次 store, memory_order_release)
+//   //    普通写入 happens-before release store, 无需额外 fence
+//   worker_local_min[worker_id] = final_progress;
+//   slot.ts_worker_state[worker_id].store(pack_worker_state(final_progress, true), memory_order_release);
 //
 //   // 4. 清除 cache (避免 stale access, 防止后续误用)
 //   ts_cache_[worker_id] = {"", SIZE_MAX, 0};
@@ -452,13 +456,18 @@
 //     return;  // Cache hit
 //   }
 //
-//   // Step 3: Slow path - 扫描 ts_worker_min_pos (O(W) 扫描)
+//   // Step 3: Slow path - 扫描 ts_worker_state (O(W) 扫描)
 //   size_t backoff_us = 1;
 //   while (true) {
-//     // 3a. 扫描所有 worker 的 min_pos
+//     // 3a. 扫描所有 worker 的 state (单次 load 读取 min_pos + done)
 //     size_t min_pos = SIZE_MAX;
+//     bool all_done = true;
 //     for (size_t w = 0; w < num_ts_workers_; ++w) {
-//       min_pos = std::min(min_pos, slot->ts_worker_min_pos[w].load(memory_order_acquire));
+//       uint64_t state = slot->ts_worker_state[w].load(memory_order_acquire);
+//       min_pos = std::min(min_pos, unpack_min_pos(state));
+//       if (!unpack_done(state)) {
+//         all_done = false;
+//       }
 //     }
 //
 //     // 3b. 如果 min_pos > l0_time_index, time_idx 就绪
@@ -467,14 +476,7 @@
 //       return;
 //     }
 //
-//     // 3c. 检查所有 TS worker 是否完成 (无更多进度)
-//     bool all_done = true;
-//     for (size_t w = 0; w < num_ts_workers_; ++w) {
-//       if (!slot->ts_done_flag[w].load(memory_order_acquire)) {
-//         all_done = false;
-//         break;
-//       }
-//     }
+//     // 3c. 如果所有 worker 完成, 强制所有就绪
 //     if (all_done) {
 //       slot->cs_read_pos = MAX_ROWS_PER_LEVEL[0];  // 强制所有就绪, CS-local 普通写入
 //       return;
@@ -525,7 +527,8 @@
 //   while (true) {
 //     bool all_done = true;
 //     for (size_t w = 0; w < num_ts_workers_; ++w) {
-//       if (!slot.ts_done_flag[w].load(memory_order_acquire)) {
+//       uint64_t state = slot.ts_worker_state[w].load(memory_order_acquire);
+//       if (!unpack_done(state)) {
 //         all_done = false;
 //         break;
 //       }
@@ -603,16 +606,20 @@
 //   // 4. 写盘 (昂贵操作, 不持有锁)
 //   write_to_disk(date_copy, &slot);
 //
-//   // 5. 清理: 删除 date_to_slot_ 映射
+//   // 5. 异步 reset: 立即执行 reset (避免下次分配时执行)
+//   slot.reset(num_assets_, num_ts_workers_);
+//   slot.needs_reset = false;
+//
+//   // 6. 清理: 删除 date_to_slot_ 映射, 回收 slot
 //   {
 //     lock_guard<mutex> lock(pool_mutex_);
 //     date_to_slot_.erase(date_copy);
+//     
+//     // 使 epoch 失效并回收 slot
+//     slot.epoch.fetch_add(1, memory_order_acq_rel);  // 使所有 cache 失效
+//     slot.state.store(FREE, memory_order_release);   // 发布 FREE 状态
+//     free_list_.push_back(slot_idx);                 // 压入 freelist
 //   }
-//
-//   // 6. 使 epoch 失效并回收 slot
-//   slot.epoch.fetch_add(1, memory_order_acq_rel);  // 使所有 cache 失效
-//   slot.state.store(FREE, memory_order_release);   // 发布 FREE 状态
-//   push_free(slot_idx);                            // CAS 无锁压栈
 //
 //   return true;
 // }

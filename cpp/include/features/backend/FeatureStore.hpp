@@ -49,12 +49,27 @@ private:
 
     // Two-level synchronization (key optimization: O(W) scan instead of O(A))
     size_t *ts_write_pos = nullptr;                   // [A] per-asset write position (TS-local, no sync)
-    std::atomic<size_t> *ts_worker_min_pos = nullptr; // [W] per-worker min position (TS→CS sync)
-    std::atomic<bool> *ts_done_flag = nullptr;        // [W] per-worker done flag (TS→CS sync)
+    std::atomic<uint64_t> *ts_worker_state = nullptr; // [W] packed: [48b:min_pos][1b:done][15b:reserved]
     size_t cs_read_pos{0};                            // CS cached safe position (CS-local, no sync)
 
-    // Freelist linkage
-    std::atomic<int> next_free{-1};
+    // WorkerState bit layout helpers
+    static constexpr uint64_t MIN_POS_MASK = 0x0000FFFFFFFFFFFF; // bits 0-47
+    static constexpr uint64_t DONE_FLAG_BIT = 1ULL << 48;        // bit 48
+
+    static uint64_t pack_worker_state(size_t min_pos, bool done) {
+      return (min_pos & MIN_POS_MASK) | (done ? DONE_FLAG_BIT : 0);
+    }
+
+    static size_t unpack_min_pos(uint64_t state) {
+      return state & MIN_POS_MASK;
+    }
+
+    static bool unpack_done(uint64_t state) {
+      return (state & DONE_FLAG_BIT) != 0;
+    }
+
+    // Async reset support
+    bool needs_reset{false};
 
     void allocate(size_t num_assets, size_t num_ts_workers) {
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
@@ -68,8 +83,7 @@ private:
         madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
       }
       ts_write_pos = new size_t[num_assets]();
-      ts_worker_min_pos = new std::atomic<size_t>[num_ts_workers]();
-      ts_done_flag = new std::atomic<bool>[num_ts_workers]();
+      ts_worker_state = new std::atomic<uint64_t>[num_ts_workers]();
     }
 
     void reset(size_t num_assets, size_t num_ts_workers) {
@@ -81,8 +95,7 @@ private:
         ts_write_pos[i] = 0;
       }
       for (size_t i = 0; i < num_ts_workers; ++i) {
-        ts_worker_min_pos[i].store(0, std::memory_order_relaxed);
-        ts_done_flag[i].store(false, std::memory_order_relaxed);
+        ts_worker_state[i].store(pack_worker_state(0, false), std::memory_order_relaxed);
       }
       cs_read_pos = 0;
       std::memset(date, 0, sizeof(date));
@@ -94,8 +107,7 @@ private:
           std::free(data[lvl]);
       }
       delete[] ts_write_pos;
-      delete[] ts_worker_min_pos;
-      delete[] ts_done_flag;
+      delete[] ts_worker_state;
     }
   };
 
@@ -108,10 +120,10 @@ private:
   const int io_worker_id_;
 
   // Pool management (NEW ARCHITECTURE)
-  Slot *pool_ = nullptr;                       // Slot array instead of pointer-to-pointer
-  mutable std::atomic<uint64_t> free_head_{0}; // Lock-free freelist with ABA prevention: (tag << 32) | idx
+  Slot *pool_ = nullptr;               // Slot array instead of pointer-to-pointer
+  mutable std::vector<int> free_list_; // Simple freelist (protected by pool_mutex_)
   mutable std::map<std::string, size_t> date_to_slot_;
-  mutable std::mutex pool_mutex_; // Only for date_to_slot_ map
+  mutable std::mutex pool_mutex_; // For date_to_slot_ and free_list_
 
   // TS worker cache (lock-free hot path with epoch validation)
   struct TSCacheEntry {
@@ -192,18 +204,21 @@ public:
         reinterpret_cast<volatile char *>(pool_[i].data[lvl])[total_bytes - 1] = 0;
       }
 
-      // Initialize freelist linkage
-      pool_[i].next_free.store(i + 1, std::memory_order_relaxed);
+      // Initialize state and reset slot
       pool_[i].state.store(TensorState::FREE, std::memory_order_relaxed);
+      pool_[i].reset(num_assets_, num_ts_workers_);
+      pool_[i].needs_reset = false;
 
       if ((i + 1) % 5 == 0 || i + 1 == pool_size_) {
         std::cout << "  " << (i + 1) << "/" << pool_size_ << " slots\r" << std::flush;
       }
     }
-    pool_[pool_size_ - 1].next_free.store(-1, std::memory_order_relaxed); // End of list
 
-    // Initialize free_head: tag=0, idx=0
-    free_head_.store(0, std::memory_order_release);
+    // Initialize free_list (all slots available, reverse order for stack-like LIFO)
+    free_list_.reserve(pool_size_);
+    for (int i = static_cast<int>(pool_size_) - 1; i >= 0; --i) {
+      free_list_.push_back(i);
+    }
 
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     std::cout << "\nPhysical allocation complete in " << elapsed << " ms\n";
@@ -227,6 +242,7 @@ public:
   // Called by TS_WRITE_* macros or LimitOrderBook internally
   void ts_update(const std::string &date, int worker_id, size_t asset_id, size_t l0_time_index) const {
     Slot &slot = ts_get_slot(date, worker_id);
+    // Note: ts_get_slot handles INIT→BUSY transition wait internally, no need to assert here
 
     // Thread-local tracking: O(1) bitset instead of O(log N) unordered_set
     static thread_local std::vector<std::vector<bool>> asset_written(num_ts_workers_);
@@ -263,7 +279,7 @@ public:
       }
       worker_local_min[worker_id] = new_min;
       // Publish only when worker_min actually changed (TS→CS sync)
-      slot.ts_worker_min_pos[worker_id].store(new_min, std::memory_order_release);
+      slot.ts_worker_state[worker_id].store(Slot::pack_worker_state(new_min, false), std::memory_order_release);
     }
     // else: fast asset, doesn't affect worker_min, skip publish (huge optimization!)
   }
@@ -278,12 +294,10 @@ public:
       slot.ts_write_pos[a] = final_progress;
     }
 
-    // Publish final worker_min (TS→CS sync point, sequenced-after above writes)
-    slot.ts_worker_min_pos[worker_id].store(final_progress, std::memory_order_release);
-
-    // Mark worker done (TS→CS sync point)
-    assert(!slot.ts_done_flag[worker_id].load(std::memory_order_acquire) && "TS worker already marked done");
-    slot.ts_done_flag[worker_id].store(true, std::memory_order_release);
+    // Publish final worker state: min_pos and done flag (TS→CS sync point)
+    uint64_t old_state = slot.ts_worker_state[worker_id].load(std::memory_order_acquire);
+    assert(!Slot::unpack_done(old_state) && "TS worker already marked done");
+    slot.ts_worker_state[worker_id].store(Slot::pack_worker_state(final_progress, true), std::memory_order_release);
 
     // Invalidate cache
     ts_cache_[worker_id] = {"", SIZE_MAX, 0};
@@ -336,10 +350,15 @@ public:
     // Slow path: scan ts_worker_min_pos (O(W) = O(10), not O(A) = O(1000))
     size_t backoff_us = 1;
     while (true) {
-      // Scan all workers for min_pos
+      // Scan all workers for min_pos and check if all done (single pass optimization)
       size_t min_pos = SIZE_MAX;
+      bool all_done = true;
       for (size_t w = 0; w < num_ts_workers_; ++w) {
-        min_pos = std::min(min_pos, slot->ts_worker_min_pos[w].load(std::memory_order_acquire));
+        uint64_t state = slot->ts_worker_state[w].load(std::memory_order_acquire);
+        min_pos = std::min(min_pos, Slot::unpack_min_pos(state));
+        if (!Slot::unpack_done(state)) {
+          all_done = false;
+        }
       }
 
       // If min_pos > l0_time_index, time_index is ready
@@ -348,14 +367,7 @@ public:
         return;
       }
 
-      // Check if all TS workers done (no more progress expected)
-      bool all_done = true;
-      for (size_t w = 0; w < num_ts_workers_; ++w) {
-        if (!slot->ts_done_flag[w].load(std::memory_order_acquire)) {
-          all_done = false;
-          break;
-        }
-      }
+      // If all TS workers done, no more progress expected
       if (all_done) {
         slot->cs_read_pos = MAX_ROWS_PER_LEVEL[0]; // Force all ready, CS-local
         return;
@@ -378,7 +390,8 @@ public:
     while (true) {
       bool all_done = true;
       for (size_t w = 0; w < num_ts_workers_; ++w) {
-        if (!slot.ts_done_flag[w].load(std::memory_order_acquire)) {
+        uint64_t state = slot.ts_worker_state[w].load(std::memory_order_acquire);
+        if (!Slot::unpack_done(state)) {
           all_done = false;
           break;
         }
@@ -436,18 +449,22 @@ public:
     // Write to disk (expensive, no lock held)
     write_to_disk(date_copy, &slot);
 
+    // Async reset: reset immediately after flush (avoid reset during allocation)
+    slot.reset(num_assets_, num_ts_workers_);
+    slot.needs_reset = false;
+
     // Clean up: erase mapping, invalidate epoch, recycle slot
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
       date_to_slot_.erase(date_copy);
+
+      // Invalidate epoch (makes all cached references stale)
+      slot.epoch.fetch_add(1, std::memory_order_acq_rel);
+
+      // Transition to FREE and push to freelist
+      slot.state.store(TensorState::FREE, std::memory_order_release);
+      push_free(slot_idx);
     }
-
-    // Invalidate epoch (makes all cached references stale)
-    slot.epoch.fetch_add(1, std::memory_order_acq_rel);
-
-    // Transition to FREE and push to freelist
-    slot.state.store(TensorState::FREE, std::memory_order_release);
-    push_free(slot_idx);
 
     Logger::log("worker_" + std::to_string(io_worker_id_), "io_try_flush_one: " + std::string(date_copy) + " complete");
     return true;
@@ -509,43 +526,20 @@ public:
 private:
   // ===== INTERNAL HELPERS (NEW ARCHITECTURE) =====
 
-  // Lock-free freelist operations (ABA prevention with tagged pointers)
+  // Simple freelist operations (protected by pool_mutex_)
   int pop_free() const {
-    while (true) {
-      uint64_t head_tagged = free_head_.load(std::memory_order_acquire);
-      int head_idx = static_cast<int>(head_tagged & 0xFFFFFFFF);
-      uint32_t head_tag = static_cast<uint32_t>(head_tagged >> 32);
-
-      if (head_idx < 0 || head_idx >= static_cast<int>(pool_size_)) {
-        return -1; // Empty or corrupted
-      }
-
-      int next_idx = pool_[head_idx].next_free.load(std::memory_order_relaxed);
-      uint64_t next_tagged = (static_cast<uint64_t>(head_tag + 1) << 32) | (next_idx >= 0 ? static_cast<uint32_t>(next_idx) : 0xFFFFFFFFU);
-
-      uint64_t expected = head_tagged;
-      if (free_head_.compare_exchange_weak(expected, next_tagged,
-                                           std::memory_order_acq_rel)) {
-        return head_idx;
-      }
+    // Caller must hold pool_mutex_
+    if (free_list_.empty()) {
+      return -1;
     }
+    int slot_idx = free_list_.back();
+    free_list_.pop_back();
+    return slot_idx;
   }
 
   void push_free(int slot_idx) const {
-    while (true) {
-      uint64_t old_head_tagged = free_head_.load(std::memory_order_acquire);
-      int old_head_idx = static_cast<int>(old_head_tagged & 0xFFFFFFFF);
-      uint32_t old_tag = static_cast<uint32_t>(old_head_tagged >> 32);
-
-      pool_[slot_idx].next_free.store(old_head_idx, std::memory_order_relaxed);
-      uint64_t new_head_tagged = (static_cast<uint64_t>(old_tag + 1) << 32) | static_cast<uint32_t>(slot_idx);
-
-      uint64_t expected = old_head_tagged;
-      if (free_head_.compare_exchange_weak(expected, new_head_tagged,
-                                           std::memory_order_acq_rel)) {
-        return;
-      }
-    }
+    // Caller must hold pool_mutex_
+    free_list_.push_back(slot_idx);
   }
 
   // TS slow path: allocate and cache
@@ -583,6 +577,16 @@ private:
     assert(it != date_to_slot_.end());
     size_t slot_idx = it->second;
     Slot &s = pool_[slot_idx];
+
+    // CRITICAL: Must check state even after allocate_slot_locked returns
+    // If another worker allocated during pool exhausted wait, state may still be INIT
+    TensorState state = s.state.load(std::memory_order_acquire);
+    if (state == TensorState::INIT) {
+      pool_mutex_.unlock();
+      std::this_thread::sleep_for(std::chrono::microseconds(10));
+      return ts_get_slot_slow(date, worker_id);
+    }
+
     ts_cache_[worker_id].date = date;
     ts_cache_[worker_id].slot_idx = slot_idx;
     ts_cache_[worker_id].epoch = s.epoch.load(std::memory_order_acquire);
@@ -620,22 +624,29 @@ private:
 
     Slot &s = pool_[slot_idx];
 
-    // Immediately mark as INIT and insert into map (publish allocation intent)
-    s.state.store(TensorState::INIT, std::memory_order_relaxed);
-    s.epoch.fetch_add(1, std::memory_order_acq_rel); // Invalidate old caches
+    // Invalidate old caches and mark as initializing
+    s.epoch.fetch_add(1, std::memory_order_acq_rel);
+    s.state.store(TensorState::INIT, std::memory_order_release);
     date_to_slot_[date] = slot_idx;
 
     Logger::log("worker_" + std::to_string(worker_id), "Bound " + date + " to pool[" + std::to_string(slot_idx) + "]");
 
-    // Release lock during expensive reset operation
+    // Release lock during expensive reset operation (if needed)
     pool_mutex_.unlock();
 
-    // Reset slot
-    s.reset(num_assets_, num_ts_workers_);
+    // Async reset optimization: skip reset if already done by IO worker
+    if (s.needs_reset) {
+      // Reset slot (expensive: 80-120ms for 400MB memset)
+      s.reset(num_assets_, num_ts_workers_);
+      Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] reset complete");
+    } else {
+      Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] skip reset (async)");
+    }
+
+    // Set date
     std::strncpy(s.date, date.c_str(), sizeof(s.date) - 1);
     s.date[sizeof(s.date) - 1] = '\0';
-
-    Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] reset complete");
+    s.needs_reset = true; // Mark for reset next time
 
     // Publish BUSY state (slot ready for use)
     s.state.store(TensorState::BUSY, std::memory_order_release);
@@ -700,6 +711,7 @@ private:
       }
     }
 #endif
+
     Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: END " + date_str);
   }
 
@@ -744,8 +756,9 @@ public:
 
       msg += date + " worker_min: ";
       for (size_t w = 0; w < num_ts_workers_; ++w) {
-        size_t min_pos = slot.ts_worker_min_pos[w].load(std::memory_order_acquire);
-        bool done = slot.ts_done_flag[w].load(std::memory_order_acquire);
+        uint64_t state = slot.ts_worker_state[w].load(std::memory_order_acquire);
+        size_t min_pos = Slot::unpack_min_pos(state);
+        bool done = Slot::unpack_done(state);
         msg += std::to_string(min_pos) + (done ? "✓" : "");
         if (w + 1 < num_ts_workers_)
           msg += ",";

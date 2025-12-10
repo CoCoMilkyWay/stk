@@ -73,7 +73,7 @@ void Dist::RawData::merge_buffers(const std::vector<PerDateBuffer> &buffers,
   size_t total_nan = 0;
   size_t total_pos_inf = 0;
   size_t total_neg_inf = 0;
-  
+
   for (const auto &buf : buffers) {
     total_samples += buf.n_samples;
     total_invalid += buf.n_invalid;
@@ -207,7 +207,7 @@ void Dist::load_data_async(const FeatureReader::MultiDayCache &cache,
   int level = feature.selection.selected_level;
 
   assert(primary_idx >= 0 && "No primary feature selected");
-  assert(level >= 0 && level < LEVEL_COUNT && "Invalid level");
+  assert(level >= 0 && static_cast<size_t>(level) < LEVEL_COUNT && "Invalid level");
 
   // Clear existing data
   raw.clear();
@@ -337,7 +337,8 @@ void Dist::apply_time_grouping_async() {
 
     for (size_t i = 0; i < raw.n_samples; ++i) {
       uint8_t h = raw.hour[i];
-      if (h >= 24) continue; // Skip invalid hour
+      if (h >= 24)
+        continue; // Skip invalid hour
       grouped.bins[h].values.push_back(raw.values[i]);
       grouped.bins[h].asset_indices.push_back(raw.asset_idx[i]);
       ++grouped.bins[h].n_samples;
@@ -354,7 +355,8 @@ void Dist::apply_time_grouping_async() {
 
     for (size_t i = 0; i < raw.n_samples; ++i) {
       uint8_t wd = raw.weekday[i];
-      if (wd >= 7) continue; // Skip invalid weekday
+      if (wd >= 7)
+        continue; // Skip invalid weekday
       grouped.bins[wd].values.push_back(raw.values[i]);
       grouped.bins[wd].asset_indices.push_back(raw.asset_idx[i]);
       ++grouped.bins[wd].n_samples;
@@ -370,7 +372,8 @@ void Dist::apply_time_grouping_async() {
 
     for (size_t i = 0; i < raw.n_samples; ++i) {
       uint8_t m = raw.month[i];
-      if (m < 1 || m > 12) continue; // Skip invalid month
+      if (m < 1 || m > 12)
+        continue;                                          // Skip invalid month
       grouped.bins[m - 1].values.push_back(raw.values[i]); // 1-12 -> 0-11
       grouped.bins[m - 1].asset_indices.push_back(raw.asset_idx[i]);
       ++grouped.bins[m - 1].n_samples;
@@ -397,7 +400,8 @@ void Dist::apply_time_grouping_async() {
     for (size_t i = 0; i < raw.n_samples; ++i) {
       uint16_t y = raw.year[i];
       auto it = std::find(unique_years.begin(), unique_years.end(), y);
-      if (it == unique_years.end()) continue; // Skip if year not found (shouldn't happen)
+      if (it == unique_years.end())
+        continue; // Skip if year not found (shouldn't happen)
       size_t bin_idx = it - unique_years.begin();
       grouped.bins[bin_idx].values.push_back(raw.values[i]);
       grouped.bins[bin_idx].asset_indices.push_back(raw.asset_idx[i]);
@@ -419,20 +423,20 @@ void Dist::compute_integrity() {
 
   // Data already filtered during loading, just aggregate statistics
   stats.integrity = Statistics::Integrity{};
-  stats.integrity.total_count = raw.n_samples;      // Finite values only
-  stats.integrity.valid_count = raw.n_samples;      // Same as total
-  stats.integrity.invalid_count = raw.n_invalid;    // Filtered by valid flag
-  stats.integrity.zero_count = raw.n_zero;          // Counted during loading
-  stats.integrity.nan_count = raw.n_nan;            // Filtered during loading
-  stats.integrity.pos_inf_count = raw.n_pos_inf;    // Filtered during loading
-  stats.integrity.neg_inf_count = raw.n_neg_inf;    // Filtered during loading
-  
+  stats.integrity.total_count = raw.n_samples;   // Finite values only
+  stats.integrity.valid_count = raw.n_samples;   // Same as total
+  stats.integrity.invalid_count = raw.n_invalid; // Filtered by valid flag
+  stats.integrity.zero_count = raw.n_zero;       // Counted during loading
+  stats.integrity.nan_count = raw.n_nan;         // Filtered during loading
+  stats.integrity.pos_inf_count = raw.n_pos_inf; // Filtered during loading
+  stats.integrity.neg_inf_count = raw.n_neg_inf; // Filtered during loading
+
   // Calculate percentages
   size_t total_examined = stats.integrity.valid_count + stats.integrity.invalid_count;
   if (total_examined > 0) {
     stats.integrity.valid_pct = 100.0f * stats.integrity.valid_count / total_examined;
   }
-  
+
   size_t total_before_finite_filter = raw.n_samples + raw.n_nan + raw.n_pos_inf + raw.n_neg_inf;
   if (total_before_finite_filter > 0) {
     stats.integrity.zero_pct = 100.0f * stats.integrity.zero_count / total_before_finite_filter;
@@ -883,7 +887,7 @@ Dist::dispatch_parallel_loading(const std::vector<std::string> &available_dates,
   const size_t n_dates = available_dates.size();
   const int level = feature.selection.selected_level;
   const int primary_idx = feature.selection.primary_feature_idx;
-  
+
   // Get feature metadata to determine valid_type
   const FeatureMetadata *meta_list = nullptr;
   size_t meta_count = 0;
@@ -897,7 +901,7 @@ Dist::dispatch_parallel_loading(const std::vector<std::string> &available_dates,
     meta_list = feature.metadata.features_l2.data();
     meta_count = feature.metadata.features_l2.size();
   }
-  
+
   L2::ValidType valid_type = L2::ValidType::ALL;
   if (primary_idx >= 0 && static_cast<size_t>(primary_idx) < meta_count) {
     valid_type = meta_list[primary_idx].valid_type;
@@ -989,7 +993,7 @@ Dist::dispatch_parallel_loading(const std::vector<std::string> &available_dates,
         } else {
           all_assets = tensor.get_all_assets<2>(t, primary_idx);
         }
-        
+
         // Get valid flags if needed
         const feature_storage_t *valid_flags = nullptr;
         if (valid_flag_idx >= 0) {
@@ -1004,7 +1008,7 @@ Dist::dispatch_parallel_loading(const std::vector<std::string> &available_dates,
 
         for (size_t a = 0; a < A; ++a) {
           float val = static_cast<float>(all_assets[a]);
-          
+
           // Check valid flag (if applicable)
           if (valid_flags) {
             float valid_flag = static_cast<float>(valid_flags[a]);
@@ -1015,30 +1019,30 @@ Dist::dispatch_parallel_loading(const std::vector<std::string> &available_dates,
           }
 
           // Statistics + filtering in one pass (unlikely branch prediction)
-          
+
           // Check NaN
           if (__builtin_expect(val != val, 0)) {
             ++buf.n_nan;
-            continue;  // Filter out NaN
+            continue; // Filter out NaN
           }
-          
+
           // Check +Inf
           if (__builtin_expect(val > 1e38f, 0)) {
             ++buf.n_pos_inf;
             continue;
           }
-          
+
           // Check -Inf
           if (__builtin_expect(val < -1e38f, 0)) {
             ++buf.n_neg_inf;
             continue;
           }
-          
+
           // Count Zero (but keep it)
           if (val == 0.0f) {
             ++buf.n_zero;
           }
-          
+
           // Keep finite values only
           buf.values.push_back(val);
           buf.day_idx.push_back(static_cast<uint32_t>(date_idx));
