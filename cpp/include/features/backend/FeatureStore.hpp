@@ -8,14 +8,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <string>
 #include <sys/mman.h>
 #include <thread>
+#include <unistd.h>
 #include <unordered_set>
 #include <vector>
 
@@ -671,44 +672,85 @@ private:
     const size_t A = num_assets_;
 
 #if STORE_UNIFIED_DAILY_TENSOR
-    // Unified mode: [T_L0, F_total, A]
+    // Unified mode: [T_L0, F_total, A] - optimized with POSIX write + fallocate
     const size_t F_total = F[0] + F[1] + F[2];
-    std::ofstream ofs(out_dir + "/features.bin", std::ios::binary);
-    assert(ofs && "Failed to open file for writing");
-    ofs.write(reinterpret_cast<const char *>(&T[0]), sizeof(size_t));
-    ofs.write(reinterpret_cast<const char *>(&F_total), sizeof(size_t));
-    ofs.write(reinterpret_cast<const char *>(&A), sizeof(size_t));
+    int fd = open((out_dir + "/features.bin").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    assert(fd >= 0);
+    
+    // Calculate and pre-allocate file size
+    const size_t data_bytes = T[0] * F_total * A * sizeof(feature_storage_t);
+    const size_t file_size = 3 * sizeof(size_t) + data_bytes;
+    int ret_alloc = posix_fallocate(fd, 0, file_size);
+    assert(ret_alloc == 0);
+    posix_fadvise(fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
+    
+    // Write metadata
+    ssize_t ret = 0;
+    ret = ::write(fd, &T[0], sizeof(size_t));
+    assert(ret == sizeof(size_t));
+    ret = ::write(fd, &F_total, sizeof(size_t));
+    assert(ret == sizeof(size_t));
+    ret = ::write(fd, &A, sizeof(size_t));
+    assert(ret == sizeof(size_t));
 
     const size_t link_L1 = L0_FIELD_OFFSETS[L0_FieldOffset::_link_to_L1];
     const size_t link_L2 = L0_FIELD_OFFSETS[L0_FieldOffset::_link_to_L2];
 
+    // Write data in larger chunks (per level per time index)
     for (size_t t0 = 0; t0 < T[0]; ++t0) {
       const size_t t1 = static_cast<size_t>(slot->data[0][t0 * F[0] * A + link_L1 * A]);
       const size_t t2 = static_cast<size_t>(slot->data[0][t0 * F[0] * A + link_L2 * A]);
-      for (size_t f = 0; f < F[0]; ++f) {
-        ofs.write(reinterpret_cast<const char *>(slot->data[0] + t0 * F[0] * A + f * A), A * sizeof(feature_storage_t));
-      }
-      for (size_t f = 0; f < F[1]; ++f) {
-        ofs.write(reinterpret_cast<const char *>(slot->data[1] + t1 * F[1] * A + f * A), A * sizeof(feature_storage_t));
-      }
-      for (size_t f = 0; f < F[2]; ++f) {
-        ofs.write(reinterpret_cast<const char *>(slot->data[2] + t2 * F[2] * A + f * A), A * sizeof(feature_storage_t));
-      }
+      
+      // Write L0 for this time index (all fields at once)
+      const size_t chunk_bytes_L0 = F[0] * A * sizeof(feature_storage_t);
+      ret = ::write(fd, slot->data[0] + t0 * F[0] * A, chunk_bytes_L0);
+      assert(ret == static_cast<ssize_t>(chunk_bytes_L0));
+      
+      // Write L1 for this time index (all fields at once)
+      const size_t chunk_bytes_L1 = F[1] * A * sizeof(feature_storage_t);
+      ret = ::write(fd, slot->data[1] + t1 * F[1] * A, chunk_bytes_L1);
+      assert(ret == static_cast<ssize_t>(chunk_bytes_L1));
+      
+      // Write L2 for this time index (all fields at once)
+      const size_t chunk_bytes_L2 = F[2] * A * sizeof(feature_storage_t);
+      ret = ::write(fd, slot->data[2] + t2 * F[2] * A, chunk_bytes_L2);
+      assert(ret == static_cast<ssize_t>(chunk_bytes_L2));
     }
+    
+    close(fd);
 #else
-    // Separate mode: 3 files
+    // Separate mode: 3 files - optimized with POSIX write + fallocate
     for (size_t lvl = 0; lvl < 3; ++lvl) {
       std::string filename = out_dir + "/features_L" + std::to_string(lvl) + ".bin";
-      std::ofstream ofs(filename, std::ios::binary);
-      assert(ofs);
-      ofs.write(reinterpret_cast<const char *>(&T[lvl]), sizeof(size_t));
-      ofs.write(reinterpret_cast<const char *>(&F[lvl]), sizeof(size_t));
-      ofs.write(reinterpret_cast<const char *>(&A), sizeof(size_t));
-      for (size_t t = 0; t < T[lvl]; ++t) {
-        for (size_t f = 0; f < F[lvl]; ++f) {
-          ofs.write(reinterpret_cast<const char *>(slot->data[lvl] + t * F[lvl] * A + f * A), A * sizeof(feature_storage_t));
-        }
-      }
+      int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      assert(fd >= 0);
+      
+      // Calculate total file size
+      const size_t total_elements = T[lvl] * F[lvl] * A;
+      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
+      const size_t file_size = 3 * sizeof(size_t) + total_bytes;
+      
+      // Pre-allocate file space to avoid fragmentation and reduce allocation overhead
+      int ret_alloc = posix_fallocate(fd, 0, file_size);
+      assert(ret_alloc == 0);
+      
+      // Hint kernel for sequential write pattern
+      posix_fadvise(fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
+      
+      // Write metadata
+      ssize_t ret = 0;
+      ret = ::write(fd, &T[lvl], sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      ret = ::write(fd, &F[lvl], sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      ret = ::write(fd, &A, sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      
+      // Write entire tensor in one go (data is already contiguous in [T][F][A] layout)
+      ret = ::write(fd, slot->data[lvl], total_bytes);
+      assert(ret == static_cast<ssize_t>(total_bytes));
+      
+      close(fd);
     }
 #endif
 
