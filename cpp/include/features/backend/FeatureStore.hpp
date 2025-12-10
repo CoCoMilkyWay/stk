@@ -442,7 +442,7 @@ public:
 
     // Write to disk (expensive, no lock held)
     write_to_disk(date_copy, &slot);
-
+    
     // Clean up: erase mapping, invalidate epoch, recycle slot
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
@@ -670,7 +670,7 @@ private:
     // Unified mode: [T_L0, F_total, A]
     const size_t F_total = F[0] + F[1] + F[2];
     std::ofstream ofs(out_dir + "/features.bin", std::ios::binary);
-    assert(ofs);
+    assert(ofs && "Failed to open file for writing");
     ofs.write(reinterpret_cast<const char *>(&T[0]), sizeof(size_t));
     ofs.write(reinterpret_cast<const char *>(&F_total), sizeof(size_t));
     ofs.write(reinterpret_cast<const char *>(&A), sizeof(size_t));

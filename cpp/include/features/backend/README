@@ -83,6 +83,7 @@
 //                                                // 用于准确维护,支持细粒度查询
 //     std::atomic<size_t>* ts_worker_min_pos;    // length = num_ts_workers (每个 TS worker 的最小写入位置)
 //                                                // ts_worker_min_pos[w] = worker w 负责的所有 assets 的 min(write_pos)
+//                                                // 初始值: 0 (Slot::reset 时初始化, 表示没有进度)
 //                                                // TS worker: 维护 thread-local min,定期 store(min, release)
 //                                                // CS: 快速扫描 O(W) vs O(A),W=10, A=1000
 //     std::atomic<bool>* ts_done_flag;           // length = num_ts_workers (每个 TS worker 的完成标志)
@@ -135,6 +136,10 @@
 //
 //   Thread-local 变量 (每个 TS worker 独立维护):
 //     thread_local vector<size_t> worker_local_min;          // 当前 worker_min 缓存 (初始化为 SIZE_MAX)
+//                                                            // 与 slot.ts_worker_min_pos[w] 不同:
+//                                                            // - slot.ts_worker_min_pos[w] 初始为 0 (全局可见)
+//                                                            // - worker_local_min[w] 初始为 SIZE_MAX (thread-local)
+//                                                            // 首次调用 ts_update 时, SIZE_MAX > new_pos, 触发重扫并发布到全局
 //     thread_local vector<vector<bool>> asset_written;       // O(1) bitset 追踪写过的 assets
 //
 //   常量定义:
@@ -634,10 +639,10 @@
 // state.store(FREE)                release             发布 slot 回收完成
 // state.load                       acquire             获取 slot 状态并同步数据
 // state.compare_exchange_strong    acq_rel, relaxed    状态转换需要双向同步
-// ts_write_pos[a].store(0)         relaxed             reset 中初始化, 后续 release fence 建立同步
+// ts_write_pos[a].store(0)         relaxed             reset 中初始化, 后续 state.store(BUSY, release) 建立同步
 // ts_write_pos[a].store(new_pos)   release             发布数据写入完成 (TS_WRITE_* → store pos)
 // ts_write_pos[a].load             relaxed             TS worker 内部读取 (无竞争, 单写者)
-// ts_worker_min_pos[w].store(0)    relaxed             reset 中初始化
+// ts_worker_min_pos[w].store(0)    relaxed             reset 中初始化, 后续 state.store(BUSY, release) 建立同步
 // ts_worker_min_pos[w].store(min)  release             发布 worker 最小位置 (条件发布优化)
 // ts_worker_min_pos[w].load        acquire             CS 读取 worker min 并同步
 // ts_done_flag[w].store(false)     relaxed             reset 中初始化
