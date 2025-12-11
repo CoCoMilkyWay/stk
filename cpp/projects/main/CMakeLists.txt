@@ -196,6 +196,7 @@ set(HEADERS
     ../../include/codec/binary_encoder_L2.hpp
     ../../include/codec/L2_DataType.hpp
     ../../include/features/FeaturesDefine.hpp
+    ../../include/features/backend/FeatureReader.hpp
     ../../include/features/backend/FeatureStoreConfig.hpp
     ../../include/features/backend/FeatureStore.hpp
     ../../include/features/FeaturesHour/Hour_Sequential.hpp

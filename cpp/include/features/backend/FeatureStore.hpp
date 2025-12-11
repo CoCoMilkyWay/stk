@@ -447,10 +447,10 @@ public:
     std::strncpy(date_copy, slot.date, sizeof(date_copy));
     date_copy[sizeof(date_copy) - 1] = '\0';
 
-    // Write to disk (expensive, no lock held)
-    write_to_disk(date_copy, &slot);
+    // Synchronous write + immediate flush (blocks until disk write completes)
+    disk_write(date_copy, &slot);
 
-    // Async reset: reset immediately after flush (avoid reset during allocation)
+    // Reset after write completes
     slot.reset(num_assets_, num_ts_workers_);
     slot.needs_reset = false;
 
@@ -464,7 +464,7 @@ public:
 
       // Transition to FREE and push to freelist
       slot.state.store(TensorState::FREE, std::memory_order_release);
-      push_free(slot_idx);
+      freelist_push(slot_idx);
     }
 
     Logger::log("worker_" + std::to_string(io_worker_id_), "io_try_flush_one: " + std::string(date_copy) + " complete");
@@ -493,7 +493,7 @@ public:
     }
 
     // Slow path: cache miss or epoch mismatch, need allocation
-    return ts_get_slot_slow(date, worker_id);
+    return slot_get_ts_slow(date, worker_id);
   }
 
   // CS worker get: use cached slot (set by cs_wait)
@@ -525,11 +525,10 @@ public:
   }
 
 private:
-  // ===== INTERNAL HELPERS (NEW ARCHITECTURE) =====
+  // ===== INTERNAL HELPERS =====
 
-  // Simple freelist operations (protected by pool_mutex_)
-  int pop_free() const {
-    // Caller must hold pool_mutex_
+  // Freelist management
+  int freelist_pop() const {
     if (free_list_.empty()) {
       return -1;
     }
@@ -538,84 +537,28 @@ private:
     return slot_idx;
   }
 
-  void push_free(int slot_idx) const {
-    // Caller must hold pool_mutex_
+  void freelist_push(int slot_idx) const {
     free_list_.push_back(slot_idx);
   }
 
-  // TS slow path: allocate and cache
-  [[gnu::cold, gnu::noinline]]
-  Slot &ts_get_slot_slow(const std::string &date, int worker_id) const {
-    pool_mutex_.lock();
-
-    // Check if another worker already allocated
-    auto it = date_to_slot_.find(date);
-    if (it != date_to_slot_.end()) {
-      size_t slot_idx = it->second;
-      Slot &s = pool_[slot_idx];
-      TensorState state = s.state.load(std::memory_order_acquire);
-
-      // If INIT, another thread is initializing, wait and retry
-      if (state == TensorState::INIT) {
-        pool_mutex_.unlock();
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
-        return ts_get_slot_slow(date, worker_id);
-      }
-
-      // Ready to use (BUSY state)
-      ts_cache_[worker_id].date = date;
-      ts_cache_[worker_id].slot_idx = slot_idx;
-      ts_cache_[worker_id].epoch = s.epoch.load(std::memory_order_acquire);
-      pool_mutex_.unlock();
-      return s;
-    }
-
-    // We need to allocate (lock held, only one worker will do this)
-    allocate_slot_locked(date, worker_id);
-
-    // Now it's allocated
-    it = date_to_slot_.find(date);
-    assert(it != date_to_slot_.end());
-    size_t slot_idx = it->second;
-    Slot &s = pool_[slot_idx];
-
-    // CRITICAL: Must check state even after allocate_slot_locked returns
-    // If another worker allocated during pool exhausted wait, state may still be INIT
-    TensorState state = s.state.load(std::memory_order_acquire);
-    if (state == TensorState::INIT) {
-      pool_mutex_.unlock();
-      std::this_thread::sleep_for(std::chrono::microseconds(10));
-      return ts_get_slot_slow(date, worker_id);
-    }
-
-    ts_cache_[worker_id].date = date;
-    ts_cache_[worker_id].slot_idx = slot_idx;
-    ts_cache_[worker_id].epoch = s.epoch.load(std::memory_order_acquire);
-    pool_mutex_.unlock();
-    return s;
-  }
-
-  // Allocate slot for date (caller must hold pool_mutex_)
-  void allocate_slot_locked(const std::string &date, int worker_id, int wait_count = 0) const {
+  // Slot management
+  void slot_alloc_locked(const std::string &date, int worker_id, int wait_count = 0) const {
     constexpr int RETRY_MS = 10;
 
-    // Defense: check if already allocated
     if (date_to_slot_.find(date) != date_to_slot_.end()) {
       return;
     }
 
-    // Pop from freelist (lock-free)
-    int slot_idx = pop_free();
+    int slot_idx = freelist_pop();
 
     if (slot_idx < 0) {
-      // Pool exhausted, wait for IO to free slots
       if (wait_count == 0) {
         Logger::log("worker_" + std::to_string(worker_id), "Pool exhausted, waiting...");
       }
       pool_mutex_.unlock();
       std::this_thread::sleep_for(std::chrono::milliseconds(RETRY_MS));
       pool_mutex_.lock();
-      return allocate_slot_locked(date, worker_id, wait_count + 1); // Retry
+      return slot_alloc_locked(date, worker_id, wait_count + 1);
     }
 
     if (wait_count > 0) {
@@ -625,65 +568,102 @@ private:
 
     Slot &s = pool_[slot_idx];
 
-    // Invalidate old caches and mark as initializing
     s.epoch.fetch_add(1, std::memory_order_acq_rel);
     s.state.store(TensorState::INIT, std::memory_order_release);
     date_to_slot_[date] = slot_idx;
 
     Logger::log("worker_" + std::to_string(worker_id), "Bound " + date + " to pool[" + std::to_string(slot_idx) + "]");
 
-    // Release lock during expensive reset operation (if needed)
     pool_mutex_.unlock();
 
-    // Async reset optimization: skip reset if already done by IO worker
     if (s.needs_reset) {
-      // Reset slot (expensive: 80-120ms for 400MB memset)
       s.reset(num_assets_, num_ts_workers_);
       Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] reset complete");
     } else {
       Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] skip reset (async)");
     }
 
-    // Set date
     std::strncpy(s.date, date.c_str(), sizeof(s.date) - 1);
     s.date[sizeof(s.date) - 1] = '\0';
-    s.needs_reset = true; // Mark for reset next time
+    s.needs_reset = true;
 
-    // Publish BUSY state (slot ready for use)
     s.state.store(TensorState::BUSY, std::memory_order_release);
     Logger::log("worker_" + std::to_string(worker_id), "Published " + date + " to pool[" + std::to_string(slot_idx) + "] (BUSY)");
 
-    pool_mutex_.lock(); // Re-acquire lock before returning
+    pool_mutex_.lock();
   }
 
-  // Write to disk
-  void write_to_disk(const std::string &date_str, Slot *slot) {
+  [[gnu::cold, gnu::noinline]]
+  Slot &slot_get_ts_slow(const std::string &date, int worker_id) const {
+    pool_mutex_.lock();
+
+    auto it = date_to_slot_.find(date);
+    if (it != date_to_slot_.end()) {
+      size_t slot_idx = it->second;
+      Slot &s = pool_[slot_idx];
+      TensorState state = s.state.load(std::memory_order_acquire);
+
+      if (state == TensorState::INIT) {
+        pool_mutex_.unlock();
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
+        return slot_get_ts_slow(date, worker_id);
+      }
+
+      ts_cache_[worker_id].date = date;
+      ts_cache_[worker_id].slot_idx = slot_idx;
+      ts_cache_[worker_id].epoch = s.epoch.load(std::memory_order_acquire);
+      pool_mutex_.unlock();
+      return s;
+    }
+
+    slot_alloc_locked(date, worker_id);
+
+    it = date_to_slot_.find(date);
+    assert(it != date_to_slot_.end());
+    size_t slot_idx = it->second;
+    Slot &s = pool_[slot_idx];
+
+    TensorState state = s.state.load(std::memory_order_acquire);
+    if (state == TensorState::INIT) {
+      pool_mutex_.unlock();
+      std::this_thread::sleep_for(std::chrono::microseconds(10));
+      return slot_get_ts_slow(date, worker_id);
+    }
+
+    ts_cache_[worker_id].date = date;
+    ts_cache_[worker_id].slot_idx = slot_idx;
+    ts_cache_[worker_id].epoch = s.epoch.load(std::memory_order_acquire);
+    pool_mutex_.unlock();
+    return s;
+  }
+
+  // Disk IO (write to page cache + trigger writeback without blocking)
+  void disk_write(const std::string &date_str, Slot *slot) {
     assert(slot && date_str.size() == 8);
+
+    auto t_start = std::chrono::high_resolution_clock::now();
     Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: START " + date_str);
 
     std::string year = date_str.substr(0, 4);
     std::string month = date_str.substr(4, 2);
     std::string day_str = date_str.substr(6, 2);
     std::string out_dir = output_dir_ + "/" + year + "/" + month + "/" + day_str;
-    std::filesystem::create_directories(out_dir);
+
+    auto t_before_mkdir = std::chrono::high_resolution_clock::now();
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    auto t_after_mkdir = std::chrono::high_resolution_clock::now();
 
     const size_t T[3] = {MAX_ROWS_PER_LEVEL[0], MAX_ROWS_PER_LEVEL[1], MAX_ROWS_PER_LEVEL[2]};
     const size_t F[3] = {FIELDS_PER_LEVEL[0], FIELDS_PER_LEVEL[1], FIELDS_PER_LEVEL[2]};
     const size_t A = num_assets_;
 
 #if STORE_UNIFIED_DAILY_TENSOR
-    // Unified mode: [T_L0, F_total, A] - optimized with POSIX write + fallocate
+    // Unified mode: [T_L0, F_total, A]
     const size_t F_total = F[0] + F[1] + F[2];
     int fd = open((out_dir + "/features.bin").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     assert(fd >= 0);
-    
-    // Calculate and pre-allocate file size
-    const size_t data_bytes = T[0] * F_total * A * sizeof(feature_storage_t);
-    const size_t file_size = 3 * sizeof(size_t) + data_bytes;
-    int ret_alloc = posix_fallocate(fd, 0, file_size);
-    assert(ret_alloc == 0);
-    posix_fadvise(fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
-    
+
     // Write metadata
     ssize_t ret = 0;
     ret = ::write(fd, &T[0], sizeof(size_t));
@@ -700,43 +680,35 @@ private:
     for (size_t t0 = 0; t0 < T[0]; ++t0) {
       const size_t t1 = static_cast<size_t>(slot->data[0][t0 * F[0] * A + link_L1 * A]);
       const size_t t2 = static_cast<size_t>(slot->data[0][t0 * F[0] * A + link_L2 * A]);
-      
+
       // Write L0 for this time index (all fields at once)
       const size_t chunk_bytes_L0 = F[0] * A * sizeof(feature_storage_t);
       ret = ::write(fd, slot->data[0] + t0 * F[0] * A, chunk_bytes_L0);
       assert(ret == static_cast<ssize_t>(chunk_bytes_L0));
-      
+
       // Write L1 for this time index (all fields at once)
       const size_t chunk_bytes_L1 = F[1] * A * sizeof(feature_storage_t);
       ret = ::write(fd, slot->data[1] + t1 * F[1] * A, chunk_bytes_L1);
       assert(ret == static_cast<ssize_t>(chunk_bytes_L1));
-      
+
       // Write L2 for this time index (all fields at once)
       const size_t chunk_bytes_L2 = F[2] * A * sizeof(feature_storage_t);
       ret = ::write(fd, slot->data[2] + t2 * F[2] * A, chunk_bytes_L2);
       assert(ret == static_cast<ssize_t>(chunk_bytes_L2));
     }
-    
+
+    // Trigger writeback (non-blocking, kernel will flush in background)
+    sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
     close(fd);
 #else
-    // Separate mode: 3 files - optimized with POSIX write + fallocate
+    // Separate mode: 3 files - buffered IO with background writeback
+    // Better for userspace IO threads: page cache absorbs write latency,
+    // kernel manages disk scheduling more efficiently than O_DIRECT
     for (size_t lvl = 0; lvl < 3; ++lvl) {
       std::string filename = out_dir + "/features_L" + std::to_string(lvl) + ".bin";
       int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
       assert(fd >= 0);
-      
-      // Calculate total file size
-      const size_t total_elements = T[lvl] * F[lvl] * A;
-      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
-      const size_t file_size = 3 * sizeof(size_t) + total_bytes;
-      
-      // Pre-allocate file space to avoid fragmentation and reduce allocation overhead
-      int ret_alloc = posix_fallocate(fd, 0, file_size);
-      assert(ret_alloc == 0);
-      
-      // Hint kernel for sequential write pattern
-      posix_fadvise(fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
-      
+
       // Write metadata
       ssize_t ret = 0;
       ret = ::write(fd, &T[lvl], sizeof(size_t));
@@ -745,16 +717,29 @@ private:
       assert(ret == sizeof(size_t));
       ret = ::write(fd, &A, sizeof(size_t));
       assert(ret == sizeof(size_t));
-      
+
       // Write entire tensor in one go (data is already contiguous in [T][F][A] layout)
+      const size_t total_elements = T[lvl] * F[lvl] * A;
+      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
       ret = ::write(fd, slot->data[lvl], total_bytes);
       assert(ret == static_cast<ssize_t>(total_bytes));
-      
+
+      // Trigger writeback (non-blocking, kernel will flush in background)
+      sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
       close(fd);
     }
 #endif
 
-    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: END " + date_str);
+    auto t_end = std::chrono::high_resolution_clock::now();
+    auto mkdir_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_mkdir - t_before_mkdir).count();
+    auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_after_mkdir).count();
+    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
+
+    Logger::log("worker_" + std::to_string(io_worker_id_),
+                "write_to_disk: END " + date_str +
+                    " [mkdir:" + std::to_string(mkdir_ms) + "ms" +
+                    " write:" + std::to_string(write_ms) + "ms" +
+                    " total:" + std::to_string(total_ms) + "ms]");
   }
 
 public:
