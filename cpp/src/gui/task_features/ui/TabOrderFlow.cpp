@@ -33,15 +33,15 @@ namespace {
 
 // Custom formatter converts X coordinate → time index → actual time
 // Example: X=900 → tick_idx=900 → index2tick(900) → 09:30
-static int L0TimeFormatter(double value, char *buff, int size, void* /*user_data*/) {
+static int L0TimeFormatter(double value, char *buff, int size, void * /*user_data*/) {
   // Extract time index from global_x
   // global_x = day_idx * L0_CAPACITY + tick_idx, where tick_idx is time index
   const size_t global_x = static_cast<size_t>(value);
   const size_t tick_idx = global_x % OrderFlowConst::L0_CAPACITY;
-  
+
   // Convert time index (0-15299) to ClockTime
   ClockTime ct = index2tick(tick_idx);
-  
+
   // Format as HH:MM (matching TimeAxisLUT labels)
   return std::snprintf(buff, size, "%02d:%02d", ct.hour, ct.minute);
 }
@@ -219,10 +219,10 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     // Reset view when params changed or on first load
     ImPlotCond cond = force_reset ? ImPlotCond_Always : ImPlotCond_Once;
 
-    ImPlot::SetupAxes("Time", "Price", 0, 0);
+    ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
     ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, cond);
     ImPlot::SetupAxisLimits(ImAxis_Y1, of.l0.plot.y_min_with_margin, of.l0.plot.y_max_with_margin, cond);
-    
+
     // Setup X-axis formatter: converts X coordinates (time index) to time strings
     // This ensures correct time display for ALL positions, not just tick marks
     ImPlot::SetupAxisFormat(ImAxis_X1, L0TimeFormatter);
@@ -364,11 +364,11 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
     // Reset view when params changed or on first load
     ImPlotCond cond = force_reset ? ImPlotCond_Always : ImPlotCond_Once;
 
-    ImPlot::SetupAxes("Time Index", "Price", 0, 0);
+    ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
     ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, cond);
     ImPlot::SetupAxisLimits(ImAxis_Y1, pd.y_min, pd.y_max, cond);
 
-    // Setup K-line ticks (cached, rebuild on data change)
+    // Setup K-line ticks: show all tick lines, but only label at intervals
     static std::vector<double> tick_positions;
     static std::vector<const char *> tick_labels;
     static std::vector<std::string> tick_label_storage;
@@ -378,11 +378,30 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
       tick_positions.clear();
       tick_label_storage.clear();
 
+      // Adaptive label interval: avoid overcrowding
+      size_t label_interval = 1;
+      if (of.l1.num_days > 250)
+        label_interval = 20; // ~1 label per month
+      else if (of.l1.num_days > 100)
+        label_interval = 10; // ~1 label per 2 weeks
+      else if (of.l1.num_days > 50)
+        label_interval = 5; // ~1 label per week
+      else if (of.l1.num_days > 20)
+        label_interval = 2; // ~1 label per 2 days
+      // else label_interval = 1;                          // 1 label per day
+
+      // Add tick positions for ALL days (to show grid lines)
+      // But only add labels at intervals
       for (size_t d = 0; d < of.l1.num_days; ++d) {
         tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
-        char buf[16];
-        FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
-        tick_label_storage.push_back(buf);
+
+        if (d % label_interval == 0) {
+          char buf[16];
+          FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
+          tick_label_storage.push_back(buf);
+        } else {
+          tick_label_storage.push_back(""); // Empty label, but keep tick line
+        }
       }
 
       tick_labels.clear();
