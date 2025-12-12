@@ -23,17 +23,6 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-// Forward declarations and core types for kll_detail
-namespace kll_detail {
-
-struct WeightedPoint {
-    double value;
-    double cum_prob;   // cumulative probability at this point (after including this point)
-    double weight;     // normalized weight of this point
-};
-
-} // namespace kll_detail
-
 /**
  * KLLcache.hpp
  *
@@ -504,6 +493,12 @@ private:
         size_t capacity;              // 该层允许的最大元素数（触发 compaction）
     };
 
+    struct WeightedPoint {
+        double value;
+        double cum_prob;   // cumulative probability at this point (after including this point)
+        double weight;     // normalized weight of this point
+    };
+
     // ----------------
     // 缓存结构（延迟计算，查询时构建）
     // ----------------
@@ -516,7 +511,7 @@ private:
         std::vector<uint64_t> weights;
         
         // Level 2: sorted CDF points
-        std::vector<kll_detail::WeightedPoint> sorted_pts;
+        std::vector<WeightedPoint> sorted_pts;
         
         // Level 3: CDF knots (xk, Fk) and PCHIP slopes
         std::vector<double> xk;
@@ -567,6 +562,53 @@ private:
 
     // 重建完整缓存
     void rebuildCache() const;
+
+    // ----------------
+    // 内部算法（静态工具函数）
+    // ----------------
+
+    // Build sorted weighted samples with cumulative CDF
+    static void buildSortedCDF(
+        const std::vector<double>& values,
+        const std::vector<uint64_t>& weights,
+        std::vector<WeightedPoint>& pts_out,
+        std::vector<size_t>& idx_buf);
+
+    // Compute PCHIP slopes (Fritsch-Carlson algorithm)
+    static void computePCHIPSlopes(
+        const std::vector<double>& x,
+        const std::vector<double>& y,
+        std::vector<double>& d_out,
+        std::vector<double>& h_buf,
+        std::vector<double>& delta_buf);
+
+    // Evaluate PCHIP at single point
+    static std::pair<double, double> evalPCHIP(
+        double x,
+        const std::vector<double>& xk,
+        const std::vector<double>& yk,
+        const std::vector<double>& dk) noexcept;
+
+    // Evaluate PCHIP at batch of points (optimized for sequential access)
+    static void evalPCHIPBatch(
+        const std::vector<double>& x_grid,
+        const std::vector<double>& xk,
+        const std::vector<double>& yk,
+        const std::vector<double>& dk,
+        std::vector<double>& F_out,
+        std::vector<double>* dF_out = nullptr) noexcept;
+
+    // Simplified MaxEnt PDF (piecewise constant)
+    static std::vector<double> maxEntPDF_Simplified(
+        const std::vector<double>& x_grid,
+        const std::vector<double>& xk,
+        const std::vector<double>& Fk);
+
+    // Simplified MaxEnt CDF (piecewise linear)
+    static double maxEntCDF_Simplified(
+        double x,
+        const std::vector<double>& xk,
+        const std::vector<double>& Fk) noexcept;
 
     // ----------------
     // 禁止复制
@@ -834,10 +876,8 @@ inline std::pair<double, double> KLLcache::range() const noexcept {
 }
 
 // ----------------------------------------------------------------------------
-// Helper: Build sorted weighted samples with cumulative CDF
+// Internal Algorithms (Static Member Functions)
 // ----------------------------------------------------------------------------
-
-namespace kll_detail {
 
 /**
  * buildSortedCDF
@@ -859,7 +899,7 @@ namespace kll_detail {
  *
  * 【注意】idx_buf 作为参数传入以复用内存，避免重复分配
  */
-inline void buildSortedCDF(
+inline void KLLcache::buildSortedCDF(
     const std::vector<double>& values,
     const std::vector<uint64_t>& weights,
     std::vector<WeightedPoint>& pts_out,
@@ -924,7 +964,7 @@ inline void buildSortedCDF(
  * 【参考】Fritsch & Carlson, "Monotone Piecewise Cubic Interpolation",
  *        SIAM J. Numer. Anal. 17(2), 1980.
  */
-inline void computePCHIPSlopes(
+inline void KLLcache::computePCHIPSlopes(
     const std::vector<double>& x,
     const std::vector<double>& y,
     std::vector<double>& d_out,
@@ -1039,7 +1079,7 @@ inline void computePCHIPSlopes(
  *
  * @return {F(x), F'(x)} — 函数值和导数
  */
-inline std::pair<double, double> evalPCHIP(
+inline std::pair<double, double> KLLcache::evalPCHIP(
     double x,
     const std::vector<double>& xk,
     const std::vector<double>& yk,
@@ -1106,13 +1146,13 @@ inline std::pair<double, double> evalPCHIP(
  *
  * @param dF_out  可选，若非空则同时输出导数 F'(x)
  */
-inline void evalPCHIPBatch(
+inline void KLLcache::evalPCHIPBatch(
     const std::vector<double>& x_grid,
     const std::vector<double>& xk,
     const std::vector<double>& yk,
     const std::vector<double>& dk,
     std::vector<double>& F_out,
-    std::vector<double>* dF_out = nullptr) noexcept
+    std::vector<double>* dF_out) noexcept
 {
     size_t m = x_grid.size();
     size_t n = xk.size();
@@ -1207,7 +1247,7 @@ inline void evalPCHIPBatch(
  *   - 优点：O(n) 计算，无需迭代
  *   - 缺点：密度在 knot 处不连续
  */
-inline std::vector<double> maxEntPDF_Simplified(
+inline std::vector<double> KLLcache::maxEntPDF_Simplified(
     const std::vector<double>& x_grid,
     const std::vector<double>& xk,
     const std::vector<double>& Fk)
@@ -1259,7 +1299,7 @@ inline std::vector<double> maxEntPDF_Simplified(
  *
  * 【说明】对应 maxEntPDF_Simplified 的积分，即 knot 间线性插值
  */
-inline double maxEntCDF_Simplified(
+inline double KLLcache::maxEntCDF_Simplified(
     double x,
     const std::vector<double>& xk,
     const std::vector<double>& Fk) noexcept
@@ -1288,8 +1328,6 @@ inline double maxEntCDF_Simplified(
     double t = (dx > 0) ? (x - xk_ptr[lo]) / dx : 0.0;
     return Fk_ptr[lo] + t * (Fk_ptr[lo + 1] - Fk_ptr[lo]);
 }
-
-} // namespace kll_detail
 
 // ----------------------------------------------------------------------------
 // Cache Management
@@ -1336,7 +1374,7 @@ inline void KLLcache::rebuildCache() const {
     
     // Level 2: Build sorted CDF
     std::vector<size_t> idx_buf;
-    kll_detail::buildSortedCDF(cache_.values, cache_.weights, cache_.sorted_pts, idx_buf);
+    buildSortedCDF(cache_.values, cache_.weights, cache_.sorted_pts, idx_buf);
     
     // Level 3: Build CDF knots
     cache_.xk.clear();
@@ -1368,7 +1406,7 @@ inline void KLLcache::rebuildCache() const {
     // Compute PCHIP slopes for CDF
     if (cache_.xk.size() >= 2) {
         std::vector<double> h_buf, delta_buf;
-        kll_detail::computePCHIPSlopes(cache_.xk, cache_.Fk, cache_.dk_cdf, h_buf, delta_buf);
+        computePCHIPSlopes(cache_.xk, cache_.Fk, cache_.dk_cdf, h_buf, delta_buf);
     }
     
     // Level 4: Build Quantile knots
@@ -1399,7 +1437,7 @@ inline void KLLcache::rebuildCache() const {
     // Compute PCHIP slopes for Quantile
     if (cache_.Fk_quantile.size() >= 2) {
         std::vector<double> h_buf, delta_buf;
-        kll_detail::computePCHIPSlopes(cache_.Fk_quantile, cache_.Qk, cache_.dk_quantile, h_buf, delta_buf);
+        computePCHIPSlopes(cache_.Fk_quantile, cache_.Qk, cache_.dk_quantile, h_buf, delta_buf);
     }
     
     cache_.valid = true;
@@ -1496,7 +1534,7 @@ inline double KLLcache::queryPDF(double x, ReconstructionMethod method) const {
     
     if (method == ReconstructionMethod::PCHIP) {
         assert(xk.size() >= 2);
-        auto [F, dF] = kll_detail::evalPCHIP(x, xk, Fk, cache_.dk_cdf);
+        auto [F, dF] = evalPCHIP(x, xk, Fk, cache_.dk_cdf);
         return std::max(0.0, dF);
     } else {
         // MaxEntropy: piecewise constant
@@ -1551,7 +1589,7 @@ KLLcache::reconstructCDF(size_t num_points, ReconstructionMethod method) const {
     if (method == ReconstructionMethod::PCHIP) {
         assert(xk.size() >= 2);
         // Use batch evaluation for better cache locality
-        kll_detail::evalPCHIPBatch(x_grid, xk, Fk, cache_.dk_cdf, F_grid, nullptr);
+        evalPCHIPBatch(x_grid, xk, Fk, cache_.dk_cdf, F_grid, nullptr);
         // Clamp to [0, 1]
         for (size_t i = 0; i < num_points; i++) {
             F_grid[i] = std::clamp(F_grid[i], 0.0, 1.0);
@@ -1559,7 +1597,7 @@ KLLcache::reconstructCDF(size_t num_points, ReconstructionMethod method) const {
     } else {
         // MaxEntropy (Simplified): piecewise linear CDF
         for (size_t i = 0; i < num_points; i++) {
-            F_grid[i] = kll_detail::maxEntCDF_Simplified(x_grid[i], xk, Fk);
+            F_grid[i] = maxEntCDF_Simplified(x_grid[i], xk, Fk);
         }
     }
     
@@ -1601,14 +1639,14 @@ KLLcache::reconstructPDF(size_t num_points, ReconstructionMethod method) const {
         assert(xk.size() >= 2);
         // Use batch evaluation with derivative computation
         std::vector<double> F_dummy;
-        kll_detail::evalPCHIPBatch(x_grid, xk, Fk, cache_.dk_cdf, F_dummy, &f_grid);
+        evalPCHIPBatch(x_grid, xk, Fk, cache_.dk_cdf, F_dummy, &f_grid);
         // Ensure non-negative
         for (size_t i = 0; i < num_points; i++) {
             f_grid[i] = std::max(0.0, f_grid[i]);
         }
     } else {
         // MaxEntropy (Simplified): piecewise constant PDF
-        f_grid = kll_detail::maxEntPDF_Simplified(x_grid, xk, Fk);
+        f_grid = maxEntPDF_Simplified(x_grid, xk, Fk);
     }
     
     return {x_grid, f_grid};
@@ -1637,7 +1675,7 @@ KLLcache::reconstructQuantile(size_t num_points, ReconstructionMethod method) co
     
     if (method == ReconstructionMethod::PCHIP) {
         // Use batch evaluation for quantile function
-        kll_detail::evalPCHIPBatch(u_grid, Fk, Qk, cache_.dk_quantile, Q_grid, nullptr);
+        evalPCHIPBatch(u_grid, Fk, Qk, cache_.dk_quantile, Q_grid, nullptr);
         // Clamp to [min, max]
         for (size_t i = 0; i < num_points; i++) {
             Q_grid[i] = std::clamp(Q_grid[i], min_v_, max_v_);
