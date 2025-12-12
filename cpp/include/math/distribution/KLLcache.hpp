@@ -5,6 +5,30 @@
 #include <random>
 
 /**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Implementation Uncertainty List
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * 1. [MaxEntropy] 当前 MaxEnt 实现是简化版（piecewise constant PDF）
+ *    - 数学上正确：给定 CDF 约束 F(x_i)=F_i，区间内均匀分布确实是 MaxEnt 解
+ *    - 但不是完整的指数族形式：f*(x) = exp(Σ λ_j φ_j(x)) / Z
+ *    - 完整实现需要：Newton 迭代求解 Lagrange 乘子 + 数值积分 + 正则化
+ *    - 当前实现：已标记为 "Simplified MaxEnt"，待替换为完整版本
+ *
+ * 2. [PCHIP Endpoint Slopes] 端点斜率计算可能不够精确
+ *    - 当前：简单使用单侧差分 d[0] = h[0], d[n-1] = h[n-2]
+ *    - Fritsch-Carlson 论文原版：有更复杂的端点处理
+ *    - 影响：端点附近的 PDF 可能不够平滑
+ *
+ * 3. [PCHIP α²+β²≤9 Constraint] 约束执行顺序可能影响结果
+ *    - 当前：从左到右遍历，逐个区间修正
+ *    - 问题：修正 d[i+1] 后会影响下一个区间的 α 值
+ *    - 需要验证：是否应该迭代直到收敛？
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/**
  * KLLcache.hpp
  *
  * KLLcache —— 基于 KLL Sketch 的在线概率分布缓存
@@ -504,3 +528,808 @@ private:
     KLLcache(const KLLcache&) = delete;
     KLLcache& operator=(const KLLcache&) = delete;
 };
+
+
+// ============================================================================
+// Implementation
+// ============================================================================
+
+#include <algorithm>
+#include <numeric>
+#include <cmath>
+#include <cassert>
+#include <limits>
+
+// ----------------------------------------------------------------------------
+// Constructor / clear
+// ----------------------------------------------------------------------------
+
+inline KLLcache::KLLcache(size_t k)
+    : k_(k), n_total_(0), min_v_(0.0), max_v_(0.0),
+      rng_(std::random_device{}()) {
+    assert(k_ >= 1);
+    levels_.reserve(32);  // O(log log n) levels typical
+    ensureLevel(0);
+}
+
+inline void KLLcache::clear() {
+    n_total_ = 0;
+    for (auto& lv : levels_) {
+        lv.buffer.clear();
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Internal: Level management and Compaction
+// ----------------------------------------------------------------------------
+
+inline void KLLcache::ensureLevel(size_t idx) {
+    assert(idx < 64);
+    while (levels_.size() <= idx) {
+        assert(levels_.size() < 64);
+        Level lv;
+        // capacity[ℓ] = ⌈k · (2/3)^ℓ⌉
+        double factor = std::pow(2.0 / 3.0, static_cast<double>(levels_.size()));
+        lv.capacity = static_cast<size_t>(std::ceil(static_cast<double>(k_) * factor));
+        if (lv.capacity < 2) lv.capacity = 2;  // minimum capacity for valid compaction
+        levels_.push_back(std::move(lv));
+    }
+}
+
+inline void KLLcache::tryCompactLevel(size_t idx) {
+    if (levels_[idx].buffer.size() > levels_[idx].capacity) {
+        compactLevel(idx);
+    }
+}
+
+inline void KLLcache::compactLevel(size_t idx) {
+    auto& buf = levels_[idx].buffer;
+    
+    // Sort the buffer using introsort (std::sort) - O(n log n)
+    std::sort(buf.begin(), buf.end());
+    
+    // Ensure next level exists
+    ensureLevel(idx + 1);
+    
+    // Randomly choose odd (1) or even (0) indices (single RNG draw).
+    // Note: for odd buf.size(), offset=0 and offset=1 will promote different counts (ceil/floor).
+    // This is intended; do not introduce leftovers, pairing, or extra randomness here.
+    size_t offset = static_cast<size_t>(rng_() & 1ULL);
+    
+    // Promote selected half to next level
+    for (size_t i = offset; i < buf.size(); i += 2) {
+        levels_[idx + 1].buffer.push_back(buf[i]);
+    }
+    
+    // Clear this level (discard the non-promoted items)
+    buf.clear();
+    
+    // Recursively compact if needed
+    tryCompactLevel(idx + 1);
+}
+
+// ----------------------------------------------------------------------------
+// Insertion / Merge
+// ----------------------------------------------------------------------------
+
+inline void KLLcache::addValue(double x) {
+    assert(n_total_ != std::numeric_limits<uint64_t>::max());
+    if (n_total_ == 0) {
+        min_v_ = max_v_ = x;
+    } else {
+        if (x < min_v_) min_v_ = x;
+        if (x > max_v_) max_v_ = x;
+    }
+    
+    n_total_++;
+    levels_[0].buffer.push_back(x);
+    tryCompactLevel(0);
+}
+
+inline void KLLcache::addBatch(const std::vector<double>& X) {
+    for (double x : X) {
+        addValue(x);
+    }
+}
+
+inline void KLLcache::mergeWith(const KLLcache& other) {
+    if (other.empty()) return;
+    
+    if (empty()) {
+        min_v_ = other.min_v_;
+        max_v_ = other.max_v_;
+    } else {
+        if (other.min_v_ < min_v_) min_v_ = other.min_v_;
+        if (other.max_v_ > max_v_) max_v_ = other.max_v_;
+    }
+    
+    assert(n_total_ <= (std::numeric_limits<uint64_t>::max() - other.n_total_));
+    n_total_ += other.n_total_;
+    
+    // Merge buffers from each level
+    for (size_t i = 0; i < other.levels_.size(); i++) {
+        ensureLevel(i);
+        for (double v : other.levels_[i].buffer) {
+            levels_[i].buffer.push_back(v);
+        }
+    }
+    
+    // Compact from level 0 upward
+    for (size_t i = 0; i < levels_.size(); i++) {
+        tryCompactLevel(i);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Export / Debug / Status
+// ----------------------------------------------------------------------------
+
+inline std::pair<std::vector<double>, std::vector<uint64_t>>
+KLLcache::exportWeightedSamples() const {
+    std::vector<double> values;
+    std::vector<uint64_t> weights;
+    
+    size_t total_size = 0;
+    for (const auto& lv : levels_) {
+        total_size += lv.buffer.size();
+    }
+    values.reserve(total_size);
+    weights.reserve(total_size);
+    
+    for (size_t i = 0; i < levels_.size(); i++) {
+        assert(i < 64);
+        uint64_t w = 1ULL << i;  // weight = 2^i
+        for (double v : levels_[i].buffer) {
+            values.push_back(v);
+            weights.push_back(w);
+        }
+    }
+    
+    return {values, weights};
+}
+
+inline std::vector<std::vector<double>> KLLcache::dumpLevels() const {
+    std::vector<std::vector<double>> result;
+    result.reserve(levels_.size());
+    for (const auto& lv : levels_) {
+        result.push_back(lv.buffer);
+    }
+    return result;
+}
+
+inline size_t KLLcache::storedSize() const {
+    size_t m = 0;
+    for (const auto& lv : levels_) {
+        m += lv.buffer.size();
+    }
+    return m;
+}
+
+inline uint64_t KLLcache::totalCount() const {
+    return n_total_;
+}
+
+inline std::pair<double, double> KLLcache::range() const {
+    assert(!empty());
+    return {min_v_, max_v_};
+}
+
+// ----------------------------------------------------------------------------
+// Helper: Build sorted weighted samples with cumulative CDF
+// Returns: sorted vector of (value, cumulative_prob_before, weight_normalized)
+// ----------------------------------------------------------------------------
+
+namespace kll_detail {
+
+struct WeightedPoint {
+    double value;
+    double cum_prob;   // cumulative probability at this point (after including this point)
+    double weight;     // normalized weight of this point
+};
+
+inline std::vector<WeightedPoint> buildSortedCDF(
+    const std::vector<double>& values,
+    const std::vector<uint64_t>& weights)
+{
+    size_t n = values.size();
+    assert(weights.size() == n);
+    if (n == 0) return {};
+    
+    // Build index array for indirect sort
+    std::vector<size_t> idx(n);
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(),
+              [&](size_t a, size_t b) { return values[a] < values[b]; });
+    
+    // Compute total weight
+    uint64_t total_w = 0;
+    for (uint64_t w : weights) {
+        assert(total_w <= (std::numeric_limits<uint64_t>::max() - w));
+        total_w += w;
+    }
+    assert(total_w > 0);
+    double inv_total = 1.0 / static_cast<double>(total_w);
+    
+    // Build sorted weighted points with cumulative CDF
+    std::vector<WeightedPoint> pts;
+    pts.reserve(n);
+    
+    double cum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        size_t j = idx[i];
+        double w_norm = static_cast<double>(weights[j]) * inv_total;
+        cum += w_norm;
+        pts.push_back({values[j], cum, w_norm});
+    }
+    
+    return pts;
+}
+
+// PCHIP: Compute monotone slopes using Fritsch-Carlson method
+// Input: x[i], y[i] - knot points (sorted by x, y monotonically increasing)
+// Output: d[i] - slope at each knot
+inline std::vector<double> computePCHIPSlopes(
+    const std::vector<double>& x,
+    const std::vector<double>& y)
+{
+    size_t n = x.size();
+    assert(n >= 2);
+    
+    std::vector<double> d(n, 0.0);
+    
+    if (n == 2) {
+        // Linear case
+        double slope = (y[1] - y[0]) / (x[1] - x[0]);
+        d[0] = d[1] = slope;
+        return d;
+    }
+    
+    // Step 1: Compute secant slopes h[i] = (y[i+1] - y[i]) / (x[i+1] - x[i])
+    std::vector<double> h(n - 1);
+    std::vector<double> delta(n - 1);  // interval lengths
+    for (size_t i = 0; i < n - 1; i++) {
+        delta[i] = x[i + 1] - x[i];
+        h[i] = (delta[i] > 0) ? (y[i + 1] - y[i]) / delta[i] : 0.0;
+    }
+    
+    // Step 2: Initialize interior slopes using weighted harmonic mean (Fritsch-Carlson)
+    for (size_t i = 1; i < n - 1; i++) {
+        if (h[i - 1] * h[i] <= 0) {
+            // Sign change or zero - set slope to zero for monotonicity
+            d[i] = 0.0;
+        } else {
+            // Weighted harmonic mean: preserves monotonicity
+            double w1 = 2.0 * delta[i] + delta[i - 1];
+            double w2 = delta[i] + 2.0 * delta[i - 1];
+            d[i] = (w1 + w2) / (w1 / h[i - 1] + w2 / h[i]);
+        }
+    }
+    
+    // Step 3: Endpoints - use one-sided difference with monotonicity constraint
+    d[0] = h[0];
+    d[n - 1] = h[n - 2];
+    
+    // Step 4: Ensure monotonicity constraint: |d[i]| ≤ 3 * min(|h[i-1]|, |h[i]|)
+    // For monotone increasing CDF, we ensure d[i] >= 0
+    for (size_t i = 0; i < n - 1; i++) {
+        if (h[i] == 0) {
+            d[i] = 0.0;
+            d[i + 1] = 0.0;
+        } else {
+            double alpha = d[i] / h[i];
+            double beta = d[i + 1] / h[i];
+            // Fritsch-Carlson condition: alpha^2 + beta^2 <= 9
+            double r2 = alpha * alpha + beta * beta;
+            if (r2 > 9.0) {
+                double tau = 3.0 / std::sqrt(r2);
+                d[i] = tau * alpha * h[i];
+                d[i + 1] = tau * beta * h[i];
+            }
+        }
+    }
+    
+    // Ensure non-negativity for monotone increasing CDF
+    for (size_t i = 0; i < n; i++) {
+        if (d[i] < 0) d[i] = 0.0;
+    }
+    
+    return d;
+}
+
+// Evaluate PCHIP at point x, given knots and slopes
+// Returns (F(x), F'(x))
+inline std::pair<double, double> evalPCHIP(
+    double x,
+    const std::vector<double>& xk,
+    const std::vector<double>& yk,
+    const std::vector<double>& dk)
+{
+    size_t n = xk.size();
+    
+    // Handle boundaries
+    if (x <= xk[0]) return {yk[0], dk[0]};
+    if (x >= xk[n - 1]) return {yk[n - 1], dk[n - 1]};
+    
+    // Binary search for interval [xk[i], xk[i+1]]
+    size_t lo = 0, hi = n - 2;
+    while (lo < hi) {
+        size_t mid = (lo + hi + 1) / 2;
+        if (xk[mid] <= x) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    size_t i = lo;
+    
+    // Hermite basis: t ∈ [0, 1]
+    double h = xk[i + 1] - xk[i];
+    double t = (x - xk[i]) / h;
+    double t2 = t * t;
+    double t3 = t2 * t;
+    
+    // Hermite basis functions:
+    // H00(t) = 2t³ - 3t² + 1
+    // H10(t) = t³ - 2t² + t
+    // H01(t) = -2t³ + 3t²
+    // H11(t) = t³ - t²
+    double H00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    double H10 = t3 - 2.0 * t2 + t;
+    double H01 = -2.0 * t3 + 3.0 * t2;
+    double H11 = t3 - t2;
+    
+    // F(x) = y[i]*H00 + h*d[i]*H10 + y[i+1]*H01 + h*d[i+1]*H11
+    double F = yk[i] * H00 + h * dk[i] * H10 + yk[i + 1] * H01 + h * dk[i + 1] * H11;
+    
+    // Derivatives of Hermite basis:
+    // H00'(t) = 6t² - 6t
+    // H10'(t) = 3t² - 4t + 1
+    // H01'(t) = -6t² + 6t
+    // H11'(t) = 3t² - 2t
+    double dH00 = 6.0 * t2 - 6.0 * t;
+    double dH10 = 3.0 * t2 - 4.0 * t + 1.0;
+    double dH01 = -6.0 * t2 + 6.0 * t;
+    double dH11 = 3.0 * t2 - 2.0 * t;
+    
+    // dF/dx = (1/h) * dF/dt
+    double dF = (yk[i] * dH00 + h * dk[i] * dH10 + yk[i + 1] * dH01 + h * dk[i + 1] * dH11) / h;
+    
+    return {F, dF};
+}
+
+// ----------------------------------------------------------------------------
+// MaxEntropy (Simplified): piecewise-constant density implied by CDF knots.
+// In interval (xk[j], xk[j+1]), f(x) = (Fk[j+1] - Fk[j]) / (xk[j+1] - xk[j]).
+// ----------------------------------------------------------------------------
+inline std::vector<double> maxEntPDF_Simplified(
+    const std::vector<double>& x_grid,
+    const std::vector<double>& xk,
+    const std::vector<double>& Fk)
+{
+    size_t n_grid = x_grid.size();
+    size_t n_knots = xk.size();
+    std::vector<double> f(n_grid, 0.0);
+    
+    if (n_knots < 2) return f;
+    
+    // For MaxEnt with CDF constraints only:
+    // In interval (x_{j}, x_{j+1}), the density is constant:
+    // f(x) = (F_{j+1} - F_j) / (x_{j+1} - x_j)
+    
+    for (size_t i = 0; i < n_grid; i++) {
+        double x = x_grid[i];
+        
+        // Find interval
+        if (x <= xk[0] || x >= xk[n_knots - 1]) {
+            f[i] = 0.0;
+            continue;
+        }
+        
+        // Binary search
+        size_t lo = 0, hi = n_knots - 2;
+        while (lo < hi) {
+            size_t mid = (lo + hi + 1) / 2;
+            if (xk[mid] <= x) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        
+        double dx = xk[lo + 1] - xk[lo];
+        double dF = Fk[lo + 1] - Fk[lo];
+        f[i] = (dx > 0) ? dF / dx : 0.0;
+    }
+    
+    return f;
+}
+
+// MaxEnt CDF (Simplified): Linear interpolation between knots
+inline double maxEntCDF_Simplified(
+    double x,
+    const std::vector<double>& xk,
+    const std::vector<double>& Fk)
+{
+    size_t n = xk.size();
+
+    if (n == 0) return 0.0;
+    if (n == 1) {
+        // Degenerate distribution: all mass at xk[0]
+        return (x < xk[0]) ? 0.0 : 1.0;
+    }
+    
+    if (x <= xk[0]) return 0.0;
+    if (x >= xk[n - 1]) return 1.0;
+    
+    // Binary search for interval
+    size_t lo = 0, hi = n - 2;
+    while (lo < hi) {
+        size_t mid = (lo + hi + 1) / 2;
+        if (xk[mid] <= x) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    
+    // Linear interpolation within interval (piecewise uniform)
+    double t = (x - xk[lo]) / (xk[lo + 1] - xk[lo]);
+    return Fk[lo] + t * (Fk[lo + 1] - Fk[lo]);
+}
+
+} // namespace kll_detail
+
+// ----------------------------------------------------------------------------
+// Single-point Queries
+// ----------------------------------------------------------------------------
+
+inline double KLLcache::queryQuantile(double phi) const {
+    assert(!empty());
+    
+    if (phi <= 0.0) return min_v_;
+    if (phi >= 1.0) return max_v_;
+    
+    auto [values, weights] = exportWeightedSamples();
+    auto pts = kll_detail::buildSortedCDF(values, weights);
+    
+    // Binary search for smallest j s.t. pts[j].cum_prob >= phi
+    // Then interpolate for accuracy
+    size_t lo = 0, hi = pts.size() - 1;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (pts[mid].cum_prob < phi) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    
+    // Linear interpolation between adjacent points for accuracy
+    if (lo == 0) {
+        // phi is below first cumulative prob
+        double t = phi / pts[0].cum_prob;
+        return min_v_ + t * (pts[0].value - min_v_);
+    }
+    
+    double F_lo = pts[lo - 1].cum_prob;
+    double F_hi = pts[lo].cum_prob;
+    double v_lo = pts[lo - 1].value;
+    double v_hi = pts[lo].value;
+    
+    if (F_hi == F_lo) return v_hi;
+    
+    double t = (phi - F_lo) / (F_hi - F_lo);
+    return v_lo + t * (v_hi - v_lo);
+}
+
+inline double KLLcache::queryCDF(double x) const {
+    assert(!empty());
+    
+    if (x < min_v_) return 0.0;
+    if (x >= max_v_) return 1.0;
+    
+    auto [values, weights] = exportWeightedSamples();
+    
+    // Compute weighted sum of 1(v_i <= x)
+    uint64_t total_w = 0;
+    uint64_t cum_w = 0;
+    for (size_t i = 0; i < values.size(); i++) {
+        total_w += weights[i];
+        if (values[i] <= x) {
+            cum_w += weights[i];
+        }
+    }
+    
+    return static_cast<double>(cum_w) / static_cast<double>(total_w);
+}
+
+inline double KLLcache::queryPDF(double x, ReconstructionMethod method) const {
+    assert(!empty());
+    
+    if (x < min_v_ || x > max_v_) return 0.0;
+    if (min_v_ == max_v_) return 0.0;
+    
+    auto [values, weights] = exportWeightedSamples();
+    auto pts = kll_detail::buildSortedCDF(values, weights);
+    
+    if (pts.size() < 2) return 0.0;
+    
+    // Build knots: include min and max as boundary
+    std::vector<double> xk, Fk;
+    xk.reserve(pts.size() + 2);
+    Fk.reserve(pts.size() + 2);
+    
+    xk.push_back(min_v_);
+    Fk.push_back(0.0);
+    
+    for (const auto& p : pts) {
+        // Skip duplicates
+        if (!xk.empty() && p.value == xk.back()) {
+            Fk.back() = p.cum_prob;
+        } else {
+            xk.push_back(p.value);
+            Fk.push_back(p.cum_prob);
+        }
+    }
+    
+    if (xk.back() < max_v_) {
+        xk.push_back(max_v_);
+        Fk.push_back(1.0);
+    } else {
+        Fk.back() = 1.0;
+    }
+    
+    if (method == ReconstructionMethod::PCHIP) {
+        assert(xk.size() >= 2);
+        auto dk = kll_detail::computePCHIPSlopes(xk, Fk);
+        auto [F, dF] = kll_detail::evalPCHIP(x, xk, Fk, dk);
+        return std::max(0.0, dF);  // PDF must be non-negative
+    } else {
+        // MaxEntropy: piecewise constant
+        size_t n = xk.size();
+        if (x <= xk[0] || x >= xk[n - 1]) return 0.0;
+        
+        // Binary search
+        size_t lo = 0, hi = n - 2;
+        while (lo < hi) {
+            size_t mid = (lo + hi + 1) / 2;
+            if (xk[mid] <= x) lo = mid;
+            else hi = mid - 1;
+        }
+        
+        double dx = xk[lo + 1] - xk[lo];
+        double dF = Fk[lo + 1] - Fk[lo];
+        return (dx > 0) ? dF / dx : 0.0;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Reconstruction: CDF
+// ----------------------------------------------------------------------------
+
+inline std::pair<std::vector<double>, std::vector<double>>
+KLLcache::reconstructCDF(size_t num_points, ReconstructionMethod method) const {
+    assert(!empty());
+    assert(num_points >= 2);
+    
+    std::vector<double> x_grid(num_points);
+    std::vector<double> F_grid(num_points);
+    
+    double x_min = min_v_;
+    double x_max = max_v_;
+    if (x_min == x_max) {
+        for (size_t i = 0; i < num_points; i++) {
+            x_grid[i] = x_min;
+            F_grid[i] = 1.0;
+        }
+        return {x_grid, F_grid};
+    }
+    double dx = (x_max - x_min) / static_cast<double>(num_points - 1);
+    
+    for (size_t i = 0; i < num_points; i++) {
+        x_grid[i] = x_min + static_cast<double>(i) * dx;
+    }
+    
+    // Build knot data
+    auto [values, weights] = exportWeightedSamples();
+    auto pts = kll_detail::buildSortedCDF(values, weights);
+    
+    // Build unique knots
+    std::vector<double> xk, Fk;
+    xk.reserve(pts.size() + 2);
+    Fk.reserve(pts.size() + 2);
+    
+    xk.push_back(x_min);
+    Fk.push_back(0.0);
+    
+    for (const auto& p : pts) {
+        if (!xk.empty() && p.value == xk.back()) {
+            Fk.back() = p.cum_prob;
+        } else {
+            xk.push_back(p.value);
+            Fk.push_back(p.cum_prob);
+        }
+    }
+    
+    if (xk.back() < x_max) {
+        xk.push_back(x_max);
+        Fk.push_back(1.0);
+    } else {
+        Fk.back() = 1.0;
+    }
+    
+    if (method == ReconstructionMethod::PCHIP) {
+        assert(xk.size() >= 2);
+        auto dk = kll_detail::computePCHIPSlopes(xk, Fk);
+        for (size_t i = 0; i < num_points; i++) {
+            auto [F, dF] = kll_detail::evalPCHIP(x_grid[i], xk, Fk, dk);
+            F_grid[i] = std::clamp(F, 0.0, 1.0);
+        }
+    } else {
+        // MaxEntropy (Simplified): piecewise linear CDF
+        for (size_t i = 0; i < num_points; i++) {
+            F_grid[i] = kll_detail::maxEntCDF_Simplified(x_grid[i], xk, Fk);
+        }
+    }
+    
+    return {x_grid, F_grid};
+}
+
+// ----------------------------------------------------------------------------
+// Reconstruction: PDF
+// ----------------------------------------------------------------------------
+
+inline std::pair<std::vector<double>, std::vector<double>>
+KLLcache::reconstructPDF(size_t num_points, ReconstructionMethod method) const {
+    assert(!empty());
+    assert(num_points >= 2);
+    
+    std::vector<double> x_grid(num_points);
+    std::vector<double> f_grid(num_points);
+    
+    double x_min = min_v_;
+    double x_max = max_v_;
+    if (x_min == x_max) {
+        for (size_t i = 0; i < num_points; i++) {
+            x_grid[i] = x_min;
+            f_grid[i] = 0.0;
+        }
+        return {x_grid, f_grid};
+    }
+    double dx = (x_max - x_min) / static_cast<double>(num_points - 1);
+    
+    for (size_t i = 0; i < num_points; i++) {
+        x_grid[i] = x_min + static_cast<double>(i) * dx;
+    }
+    
+    // Build knot data
+    auto [values, weights] = exportWeightedSamples();
+    auto pts = kll_detail::buildSortedCDF(values, weights);
+    
+    // Build unique knots
+    std::vector<double> xk, Fk;
+    xk.reserve(pts.size() + 2);
+    Fk.reserve(pts.size() + 2);
+    
+    xk.push_back(x_min);
+    Fk.push_back(0.0);
+    
+    for (const auto& p : pts) {
+        if (!xk.empty() && p.value == xk.back()) {
+            Fk.back() = p.cum_prob;
+        } else {
+            xk.push_back(p.value);
+            Fk.push_back(p.cum_prob);
+        }
+    }
+    
+    if (xk.back() < x_max) {
+        xk.push_back(x_max);
+        Fk.push_back(1.0);
+    } else {
+        Fk.back() = 1.0;
+    }
+    
+    if (method == ReconstructionMethod::PCHIP) {
+        assert(xk.size() >= 2);
+        auto dk = kll_detail::computePCHIPSlopes(xk, Fk);
+        for (size_t i = 0; i < num_points; i++) {
+            auto [F, dF] = kll_detail::evalPCHIP(x_grid[i], xk, Fk, dk);
+            f_grid[i] = std::max(0.0, dF);
+        }
+    } else {
+        // MaxEntropy (Simplified): piecewise constant PDF
+        f_grid = kll_detail::maxEntPDF_Simplified(x_grid, xk, Fk);
+    }
+    
+    return {x_grid, f_grid};
+}
+
+// ----------------------------------------------------------------------------
+// Reconstruction: Quantile
+// ----------------------------------------------------------------------------
+
+inline std::pair<std::vector<double>, std::vector<double>>
+KLLcache::reconstructQuantile(size_t num_points, ReconstructionMethod method) const {
+    assert(!empty());
+    assert(num_points >= 2);
+    
+    std::vector<double> u_grid(num_points);
+    std::vector<double> Q_grid(num_points);
+    
+    double du = 1.0 / static_cast<double>(num_points - 1);
+    
+    for (size_t i = 0; i < num_points; i++) {
+        u_grid[i] = static_cast<double>(i) * du;
+    }
+    
+    // Build knot data for inverse CDF (quantile function)
+    auto [values, weights] = exportWeightedSamples();
+    auto pts = kll_detail::buildSortedCDF(values, weights);
+    
+    // Build quantile knots: (F_j, v_j) with F as x-axis, v as y-axis
+    std::vector<double> Fk, Qk;
+    Fk.reserve(pts.size() + 2);
+    Qk.reserve(pts.size() + 2);
+    
+    Fk.push_back(0.0);
+    Qk.push_back(min_v_);
+    
+    for (const auto& p : pts) {
+        // For quantile, we need F -> Q, so accumulate
+        if (!Fk.empty() && p.cum_prob == Fk.back()) {
+            // Same F, take larger Q (right-continuous inverse)
+            Qk.back() = p.value;
+        } else {
+            Fk.push_back(p.cum_prob);
+            Qk.push_back(p.value);
+        }
+    }
+    
+    // Ensure we end at (1, max)
+    if (Fk.back() < 1.0) {
+        Fk.push_back(1.0);
+        Qk.push_back(max_v_);
+    } else {
+        Qk.back() = max_v_;
+    }
+    
+    if (method == ReconstructionMethod::PCHIP) {
+        // PCHIP on (F, Q) - monotone interpolation of quantile function
+        auto dk = kll_detail::computePCHIPSlopes(Fk, Qk);
+        for (size_t i = 0; i < num_points; i++) {
+            auto [Q, dQ] = kll_detail::evalPCHIP(u_grid[i], Fk, Qk, dk);
+            Q_grid[i] = std::clamp(Q, min_v_, max_v_);
+        }
+    } else {
+        // MaxEntropy: piecewise linear quantile (inverse of piecewise linear CDF)
+        for (size_t i = 0; i < num_points; i++) {
+            double u = u_grid[i];
+            
+            if (u <= 0.0) {
+                Q_grid[i] = min_v_;
+                continue;
+            }
+            if (u >= 1.0) {
+                Q_grid[i] = max_v_;
+                continue;
+            }
+            
+            // Binary search for interval [Fk[j], Fk[j+1]] containing u
+            size_t lo = 0, hi = Fk.size() - 2;
+            while (lo < hi) {
+                size_t mid = (lo + hi + 1) / 2;
+                if (Fk[mid] <= u) lo = mid;
+                else hi = mid - 1;
+            }
+            
+            // Linear interpolation
+            double t = (Fk[lo + 1] > Fk[lo]) 
+                       ? (u - Fk[lo]) / (Fk[lo + 1] - Fk[lo])
+                       : 0.0;
+            Q_grid[i] = Qk[lo] + t * (Qk[lo + 1] - Qk[lo]);
+        }
+    }
+    
+    return {u_grid, Q_grid};
+}
