@@ -7,7 +7,9 @@
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "gui/util/Color.hpp"
 #include "package/nlohmann/json.hpp"
+#include <boost/asio/steady_timer.hpp>
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -36,8 +38,7 @@ namespace fs = std::filesystem;
 DataManager::DataManager(boost::asio::io_context &io_context,
                          Config *config,
                          TaskTerminal *terminal)
-    : config_(config), io_context_(io_context), terminal_(terminal),
-      user_logged_in_(false), session_query_count_(0), active_workers_(0) {
+    : config_(config), io_context_(io_context), terminal_(terminal) {
 
   if (!config_) {
     throw std::runtime_error("DataManager: config is null");
@@ -198,32 +199,30 @@ awaitable<bool> DataManager::login_all() {
 }
 
 awaitable<void> DataManager::ensure_logged_out() {
-  if (!user_logged_in_) {
+  if (session_status_ == BaostockSessionStatus::Idle) {
     Log("Already logged out");
-    report_session_status(BaostockSessionStatus::Idle);
+    report_progress();
     co_return;
   }
 
   Log("Logging out user session...");
-  report_session_status(BaostockSessionStatus::LoggingOut);
+  session_status_ = BaostockSessionStatus::LoggingOut;
+  report_progress();
 
   // Logout is at user level - only need to call once
   if (!pool_->clients_.empty()) {
     try {
       co_await pool_->clients_[0]->logout();
-      user_logged_in_ = false;
       Log("User session logged out (all workers logged out)");
     } catch (const std::exception &e) {
       Log(std::format("[ERROR] Logout failed: {}", e.what()), true);
-      user_logged_in_ = false; // Still mark as logged out locally
     }
   } else {
     Log("[ERROR] No workers available to logout", true);
-    user_logged_in_ = false; // Still mark as logged out locally
   }
 
-  // Always set to Idle after logout attempt
-  report_session_status(BaostockSessionStatus::Idle);
+  session_status_ = BaostockSessionStatus::Idle;
+  report_progress();
 }
 
 awaitable<bool> DataManager::initialize() {
@@ -240,10 +239,11 @@ awaitable<bool> DataManager::initialize() {
     auto client = std::make_shared<BaostockClient>(io_context_);
     pool_->clients_.push_back(client);
   }
-  user_logged_in_ = false; // Not logged in yet
+  
+  session_status_ = BaostockSessionStatus::Idle;
   session_query_count_ = 0;
   Log("[DataManager] Pool created (login deferred to first use)");
-  report_session_status(BaostockSessionStatus::Idle);
+  report_progress();
 
   co_await load_stock_days();
   co_await load_stock_factor();
@@ -282,22 +282,24 @@ awaitable<bool> DataManager::initialize() {
 }
 
 awaitable<bool> DataManager::ensure_logged_in() {
-  if (user_logged_in_) {
+  if (session_status_ == BaostockSessionStatus::Active) {
     co_return true; // User session already active
   }
 
   Log("[DataManager] User session inactive, re-logging in...");
-  report_session_status(BaostockSessionStatus::LoggingIn);
+  session_status_ = BaostockSessionStatus::LoggingIn;
+  report_progress();
 
   bool success = co_await login_all();
   if (success) {
-    user_logged_in_ = true;
     session_query_count_ = 0; // Reset query counter for new session
     Log("[DataManager] User session active");
-    report_session_status(BaostockSessionStatus::Active);
+    session_status_ = BaostockSessionStatus::Active;
+    report_progress();
   } else {
     Log("[DataManager] [ERROR] Failed to activate user session");
-    report_session_status(BaostockSessionStatus::Idle);
+    session_status_ = BaostockSessionStatus::Idle;
+    report_progress();
   }
 
   co_return success;
@@ -705,9 +707,9 @@ awaitable<void> DataManager::update_stock_days(bool skip_login, bool skip_logout
   auto client = pool_->get_client(0);
   auto result = co_await client->query_trade_dates(start_date, end_date);
 
-  // Increment query count after each query
   if (result.success()) {
-    increment_query_count();
+    ++session_query_count_;
+    report_progress();
   }
 
   if (result.success()) {
@@ -865,15 +867,17 @@ awaitable<void> DataManager::update_stock_factor(bool skip_login, bool skip_logo
             std::string desc = task_opt->description;
             std::string code = desc.substr(desc.find(':') + 1);
 
-            ++active_workers_; // Start executing query
+            ++active_workers_;
+            report_progress();
+            
             auto result = co_await task_opt->executor(*client);
 
-            // Increment query count BEFORE decrementing active workers (so UI sees active workers)
             if (result.success()) {
-              increment_query_count();
+              ++session_query_count_;
             }
 
-            --active_workers_; // Finish executing query
+            --active_workers_;
+            report_progress();
 
             if (result.success() && !result.records.empty()) {
               for (const auto &record : result.records) {
@@ -900,8 +904,13 @@ awaitable<void> DataManager::update_stock_factor(bool skip_login, bool skip_logo
         boost::asio::detached);
   }
 
+  // Wait for all workers to complete
+  boost::asio::steady_timer wait_timer(io_context_);
   while (pending_workers->load() > 0) {
-    co_await boost::asio::post(boost::asio::use_awaitable);
+    // Avoid busy spinning (post() is always-ready and can starve GUI rendering).
+    // Timer yields across frames, so UI can update and show on-the-fly worker counts.
+    wait_timer.expires_after(std::chrono::milliseconds(16));
+    co_await wait_timer.async_wait(boost::asio::use_awaitable);
   }
 
   if (progress_callback_) {
@@ -989,9 +998,9 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
   auto client = pool_->get_client(0);
   auto result = co_await client->query_stock_industry();
 
-  // Increment query count after each query
   if (result.success()) {
-    increment_query_count();
+    ++session_query_count_;
+    report_progress();
   }
 
   if (result.success()) {
@@ -1066,15 +1075,17 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
             std::string desc = task_opt->description;
             std::string code = desc.substr(desc.find(':') + 1);
 
-            ++active_workers_; // Start executing query
+            ++active_workers_;
+            report_progress();
+            
             auto result = co_await task_opt->executor(*client);
 
-            // Increment query count BEFORE decrementing active workers (so UI sees active workers)
             if (result.success()) {
-              increment_query_count();
+              ++session_query_count_;
             }
 
-            --active_workers_; // Finish executing query
+            --active_workers_;
+            report_progress();
 
             // Create or get existing stock info
             StockInfo info;
@@ -1111,8 +1122,11 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
         boost::asio::detached);
   }
 
+  // Wait for all workers to complete
+  boost::asio::steady_timer wait_timer(io_context_);
   while (pending_workers->load() > 0) {
-    co_await boost::asio::post(boost::asio::use_awaitable);
+    wait_timer.expires_after(std::chrono::milliseconds(16));
+    co_await wait_timer.async_wait(boost::asio::use_awaitable);
   }
 
   if (progress_callback_) {
@@ -1258,15 +1272,17 @@ awaitable<void> DataManager::update_stock_info_daily(bool skip_days, bool skip_l
             std::string desc = task_opt->description;
             std::string code = desc.substr(desc.find(':') + 1);
 
-            ++active_workers_; // Start executing query
+            ++active_workers_;
+            report_progress();
+            
             auto result = co_await task_opt->executor(*client);
 
-            // Increment query count BEFORE decrementing active workers (so UI sees active workers)
             if (result.success()) {
-              increment_query_count();
+              ++session_query_count_;
             }
 
-            --active_workers_; // Finish executing query
+            --active_workers_;
+            report_progress();
 
             if (stock_info_.find(code) == stock_info_.end()) {
               stock_info_[code] = StockInfo();
@@ -1311,8 +1327,11 @@ awaitable<void> DataManager::update_stock_info_daily(bool skip_days, bool skip_l
         boost::asio::detached);
   }
 
+  // Wait for all workers to complete
+  boost::asio::steady_timer wait_timer(io_context_);
   while (pending_workers->load() > 0) {
-    co_await boost::asio::post(boost::asio::use_awaitable);
+    wait_timer.expires_after(std::chrono::milliseconds(16));
+    co_await wait_timer.async_wait(boost::asio::use_awaitable);
   }
 
   if (progress_callback_) {
@@ -1771,36 +1790,21 @@ bool DataManager::is_stock_days_uptodate() const {
 }
 
 // ============================================================================
-// Session Status Reporting
+// Progress Reporting - Single Unified API
 // ============================================================================
 
-void DataManager::report_session_status(BaostockSessionStatus status) {
+void DataManager::report_progress() {
   if (!crawler_progress_callback_) {
     return;
   }
 
   CrawlerProgress progress;
-  progress.session_status = status;
+  progress.session_status = session_status_;
   progress.session_query_count = session_query_count_;
   progress.total_workers = config_->baostock_max_workers;
   progress.active_workers = active_workers_.load();
 
   crawler_progress_callback_(progress);
-}
-
-void DataManager::increment_query_count() {
-  ++session_query_count_;
-
-  // Report updated count
-  if (crawler_progress_callback_) {
-    CrawlerProgress progress;
-    progress.session_status = BaostockSessionStatus::Active;
-    progress.session_query_count = session_query_count_;
-    progress.total_workers = config_->baostock_max_workers;
-    progress.active_workers = active_workers_.load();
-
-    crawler_progress_callback_(progress);
-  }
 }
 
 } // namespace GUI::Database

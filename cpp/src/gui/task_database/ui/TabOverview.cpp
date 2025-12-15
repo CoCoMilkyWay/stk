@@ -269,7 +269,7 @@ void RenderCompactJsonCard(
 // ============================================================================
 
 void RenderCrawlerMonitor(const CrawlerState &state) {
-  ImGui::BeginChild("CrawlerMonitor", ImVec2(0, 50), true);
+  ImGui::BeginChild("CrawlerMonitor", ImVec2(0, 120), true);
 
   const auto &prog = state.progress;
 
@@ -312,27 +312,18 @@ void RenderCrawlerMonitor(const CrawlerState &state) {
     break;
   }
 
-  ImGui::SameLine();
-  ImGui::TextDisabled("│");
-  ImGui::SameLine();
-  ImGui::Text("Status:");
+  ImGui::TextColored(COLOR_CYAN, "Status:");
   ImGui::SameLine();
   ImGui::TextColored(session_color, "%s", session_text);
 
   // ===== Workers (colorful) =====
-  ImGui::SameLine();
-  ImGui::TextDisabled("│");
-  ImGui::SameLine();
-  ImGui::Text("Workers:");
+  ImGui::TextColored(COLOR_CYAN, "Workers:");
   ImGui::SameLine();
   ImGui::TextColored(prog.active_workers > 0 ? COLOR_CYAN : COLOR_GRAY,
                      "%zu/%zu", prog.active_workers, prog.total_workers);
 
   // ===== Session Query Count (colorful) =====
-  ImGui::SameLine();
-  ImGui::TextDisabled("│");
-  ImGui::SameLine();
-  ImGui::Text("Queries:");
+  ImGui::TextColored(COLOR_CYAN, "Queries:");
   ImGui::SameLine();
   ImGui::TextColored(COLOR_BLUE, "%zu", prog.session_query_count);
 

@@ -55,9 +55,9 @@ private:
   std::function<void(const CrawlerProgress &)> crawler_progress_callback_;
 
   // User session state (IP-level, shared across all workers)
-  bool user_logged_in_;
-  size_t session_query_count_; // Track queries in current login session
-  std::atomic<int> active_workers_; // Track number of workers currently executing queries
+  BaostockSessionStatus session_status_ = BaostockSessionStatus::Idle;
+  size_t session_query_count_ = 0; // Track queries in current login session
+  std::atomic<int> active_workers_{0}; // Track number of workers currently executing queries
 
   // Helper methods - Date utilities
   std::string get_today_date() const;
@@ -94,7 +94,7 @@ public:
   const std::vector<std::string> &get_stock_codes() const { return stock_codes_; }
 
   // Login status (read-only, managed internally by ensure_logged_in/out)
-  bool is_logged_in() const { return user_logged_in_; }
+  bool is_logged_in() const { return session_status_ == BaostockSessionStatus::Active; }
 
   // Update scheduling checks
   std::string get_last_trading_day() const;
@@ -158,9 +158,8 @@ public:
   bool is_stock_days_uptodate() const;
 
 private:
-  // Session status reporting helpers
-  void report_session_status(BaostockSessionStatus status);
-  void increment_query_count();
+  // Progress reporting - single unified API
+  void report_progress();
 };
 
 } // namespace GUI::Database
