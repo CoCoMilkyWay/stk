@@ -1,11 +1,12 @@
 #pragma once
 
-#include "features/backend/FeatureReader.hpp"
+#include "math/distribution/KLLcache.hpp"
+#include <array>
 #include <atomic>
-#include <chrono>
+#include <cassert>
+#include <cmath>
 #include <cstdint>
-#include <future>
-#include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -15,396 +16,443 @@ struct Config;
 struct Asset;
 
 // ============================================================================
-// Distribution Analysis Data Structure
+// Distribution Analysis Data Structure (KLL-based)
 // ============================================================================
-// Designed for primary feature cross-sectional distribution analysis
-// Multi-level cache architecture with version control
-// Supports async computation with thread pool
+// Per-month KLL caches with Welford moments
+// Thread pool: one thread per month
 // ============================================================================
+
+static constexpr size_t kMinSamples = 1000;
+static constexpr size_t kKLLCacheSize = 400;
 
 struct Dist {
-  // ==========================================================================
-  // Input Control - User configuration (reuses existing structures)
-  // ==========================================================================
-
-  struct Input {
-    // Time grouping dimension for binning
-    enum class TimeGrouping : uint8_t {
-      NONE = 0,    // No grouping (all data together)
-      HOUR = 1,    // Group by hour of day (0-23)
-      WEEKDAY = 2, // Group by weekday (Mon-Sun)
-      MONTH = 3,   // Group by month (1-12)
-      YEAR = 4     // Group by year
-    };
-
-    TimeGrouping time_grouping = TimeGrouping::NONE;
-
-    // PDF sensitivity (for kernel density estimation bandwidth)
-    float pdf_sensitivity = 1.0f; // Range: [0.1, 10.0]
-
-    // Asset filter (empty = all assets)
-    std::vector<size_t> selected_asset_indices; // Indices into Asset.items
-
-    // UI state
-    bool show_by_asset = false;          // Show per-asset breakdown in plots
-    bool show_trajectory = true;         // Show trajectory plot
-    bool show_quantile_heatmap = true;   // Show quantile heatmap
-
-    // Change detection cache
-    int cached_primary_feature_idx = -1;
-    int cached_level = -1;
-    std::string cached_date_range;
-    TimeGrouping cached_grouping = TimeGrouping::NONE;
-
-    // Check if input configuration has changed (const version)
-    bool has_changes(const Feature &feature, const Config &config) const;
-    
-    // Detect and update cache (non-const version)
-    void update_cache(const Feature &feature, const Config &config);
-  };
 
   // ==========================================================================
-  // RawData - Level 1 Cache: Raw feature data from FeatureReader
+  // Foundation Types
   // ==========================================================================
 
-  // ==========================================================================
-  // PerDateBuffer - Internal: Per-worker buffer (zero-contention)
-  // ==========================================================================
-  
-  struct PerDateBuffer {
-    std::vector<float> values;
-    std::vector<uint32_t> day_idx;
-    std::vector<uint32_t> time_idx;
-    std::vector<uint16_t> asset_idx;
-    std::vector<uint8_t> hour;
-    std::vector<uint8_t> weekday;
-    std::vector<uint8_t> month;
-    std::vector<uint16_t> year;
-    
-    // Counts (for parallel aggregation)
-    size_t n_samples = 0;      // Finite values only
-    size_t n_invalid = 0;      // Filtered by valid flag
-    size_t n_zero = 0;         // Zero values (kept)
-    size_t n_nan = 0;          // NaN values (filtered)
-    size_t n_pos_inf = 0;      // +Inf values (filtered)
-    size_t n_neg_inf = 0;      // -Inf values (filtered)
-    
-    void reserve(size_t n) {
-      values.reserve(n);
-      day_idx.reserve(n);
-      time_idx.reserve(n);
-      asset_idx.reserve(n);
-      hour.reserve(n);
-      weekday.reserve(n);
-      month.reserve(n);
-      year.reserve(n);
+  // Welford online moments accumulator (mergeable)
+  struct MomentsAccum {
+    size_t n = 0;
+    double mean = 0.0;
+    double M2 = 0.0; // for variance
+    double M3 = 0.0; // for skewness
+    double M4 = 0.0; // for kurtosis
+
+    void add(double x) {
+      size_t n1 = n;
+      n++;
+      double delta = x - mean;
+      double delta_n = delta / n;
+      double delta_n2 = delta_n * delta_n;
+      double term1 = delta * delta_n * n1;
+
+      mean += delta_n;
+
+      // Update M4 before M3 before M2 (order matters)
+      M4 += term1 * delta_n2 * (n * n - 3 * n + 3) + 6 * delta_n2 * M2 -
+            4 * delta_n * M3;
+      M3 += term1 * delta_n * (n - 2) - 3 * delta_n * M2;
+      M2 += term1;
     }
-    
+
+    void merge(const MomentsAccum &o) {
+      if (o.n == 0)
+        return;
+      if (n == 0) {
+        *this = o;
+        return;
+      }
+
+      size_t n_ab = n + o.n;
+      double delta = o.mean - mean;
+      double delta2 = delta * delta;
+      double delta3 = delta2 * delta;
+      double delta4 = delta2 * delta2;
+
+      double n_a = static_cast<double>(n);
+      double n_b = static_cast<double>(o.n);
+      double n_ab_d = static_cast<double>(n_ab);
+
+      double new_mean = (n_a * mean + n_b * o.mean) / n_ab_d;
+
+      double new_M2 = M2 + o.M2 + delta2 * n_a * n_b / n_ab_d;
+
+      double new_M3 = M3 + o.M3 + delta3 * n_a * n_b * (n_a - n_b) / (n_ab_d * n_ab_d) +
+                      3.0 * delta * (n_a * o.M2 - n_b * M2) / n_ab_d;
+
+      double new_M4 =
+          M4 + o.M4 +
+          delta4 * n_a * n_b * (n_a * n_a - n_a * n_b + n_b * n_b) /
+              (n_ab_d * n_ab_d * n_ab_d) +
+          6.0 * delta2 * (n_a * n_a * o.M2 + n_b * n_b * M2) / (n_ab_d * n_ab_d) +
+          4.0 * delta * (n_a * o.M3 - n_b * M3) / n_ab_d;
+
+      n = n_ab;
+      mean = new_mean;
+      M2 = new_M2;
+      M3 = new_M3;
+      M4 = new_M4;
+    }
+
+    double var() const { return n > 1 ? M2 / n : 0.0; }
+
+    double skew() const {
+      if (n < 3 || M2 < 1e-14)
+        return 0.0;
+      double s = std::sqrt(M2 / n);
+      return (M3 / n) / (s * s * s);
+    }
+
+    double kurt() const {
+      if (n < 4 || M2 < 1e-14)
+        return 0.0;
+      return (n * M4) / (M2 * M2) - 3.0;
+    }
+
     void clear() {
-      values.clear();
-      day_idx.clear();
-      time_idx.clear();
-      asset_idx.clear();
-      hour.clear();
-      weekday.clear();
-      month.clear();
-      year.clear();
-      n_samples = 0;
-      n_invalid = 0;
-      n_zero = 0;
-      n_nan = 0;
-      n_pos_inf = 0;
-      n_neg_inf = 0;
+      n = 0;
+      mean = M2 = M3 = M4 = 0.0;
     }
   };
 
-  struct RawData {
-    // Flattened feature values from [T][F][A] tensor
-    std::vector<float> values;          // Feature values [n_samples]
-    std::vector<uint32_t> day_idx;      // Day index [n_samples]
-    std::vector<uint32_t> time_idx;     // Time index within day [n_samples]
-    std::vector<uint16_t> asset_idx;    // Asset index [n_samples]
+  // KLL + Moments bundle
+  struct KLLWithMoments {
+    KLLcache kll;
+    MomentsAccum mom;
 
-    // Time metadata for grouping
-    std::vector<uint8_t> hour;    // Hour (0-23) [n_samples]
-    std::vector<uint8_t> weekday; // Weekday (0-6, Mon=0) [n_samples]
-    std::vector<uint8_t> month;   // Month (1-12) [n_samples]
-    std::vector<uint16_t> year;   // Year (e.g., 2025) [n_samples]
+    explicit KLLWithMoments(size_t k = kKLLCacheSize) : kll(k) {}
 
-    size_t n_samples = 0;      // Finite values (after all filtering)
-    size_t n_invalid = 0;      // Invalid samples (filtered by valid flag)
-    size_t n_zero = 0;         // Zero values (kept in data)
-    size_t n_nan = 0;          // NaN values (filtered out)
-    size_t n_pos_inf = 0;      // +Inf values (filtered out)
-    size_t n_neg_inf = 0;      // -Inf values (filtered out)
-    size_t n_assets = 0;
+    // Move only (KLLcache is move-only)
+    KLLWithMoments(KLLWithMoments &&) noexcept = default;
+    KLLWithMoments &operator=(KLLWithMoments &&) noexcept = default;
+    KLLWithMoments(const KLLWithMoments &) = delete;
+    KLLWithMoments &operator=(const KLLWithMoments &) = delete;
 
-    // Version control
-    size_t version = 0;
-    bool loaded = false;
-
-    // Reserve space (call before loading)
-    void reserve(size_t estimated_samples);
-
-    // Push single sample (during loading)
-    void push(float value, uint32_t day, uint32_t time, uint16_t asset,
-              uint8_t h, uint8_t wd, uint8_t m, uint16_t y);
-    
-    // Merge per-date buffers into RawData (called after parallel loading)
-    void merge_buffers(const std::vector<PerDateBuffer> &buffers, size_t n_assets);
-
-    // Invalidate and clear
-    void clear();
-  };
-
-  // ==========================================================================
-  // GroupedData - Level 2 Cache: Time-grouped data
-  // ==========================================================================
-
-  struct GroupedData {
-    struct Bin {
-      std::string key;                     // e.g., "hour_09", "weekday_1", "all"
-      std::vector<float> values;           // Feature values in this bin
-      std::vector<uint16_t> asset_indices; // Corresponding asset indices
-      size_t n_samples = 0;
-
-      void reserve(size_t n);
-      void clear();
-    };
-
-    std::vector<Bin> bins;
-    Input::TimeGrouping grouping_type = Input::TimeGrouping::NONE;
-
-    // Version control (bound to RawData version)
-    size_t raw_version = 0;
-    bool valid = false;
-
-    // Query
-    size_t n_bins() const { return bins.size(); }
-    const Bin &get_bin(size_t idx) const;
-
-    // Check cache validity
-    bool is_valid(size_t current_raw_version) const {
-      return valid && raw_version == current_raw_version;
+    void add(double x) {
+      kll.addValue(x);
+      mom.add(x);
     }
 
-    void clear();
+    void merge(const KLLWithMoments &o) {
+      kll.mergeWith(o.kll);
+      mom.merge(o.mom);
+    }
+
+    void clear() {
+      kll.clear();
+      mom.clear();
+    }
+
+    bool empty() const { return mom.n == 0; }
+    size_t count() const { return mom.n; }
+
+    // Accessors
+    double mean() const { return mom.mean; }
+    double var() const { return mom.var(); }
+    double skew() const { return mom.skew(); }
+    double kurt() const { return mom.kurt(); }
+
+    double quantile(double q) const { return kll.queryQuantile(q); }
+
+    std::pair<std::vector<double>, std::vector<double>> pdf(size_t n_bins) const {
+      return kll.reconstructPDF(n_bins);
+    }
+
+    // Export native PDF (non-uniform, highest resolution ~K points)
+    void exportPDF(const double *&x, const double *&f, size_t &n) const {
+      kll.exportPDF(x, f, n);
+    }
+
+    // Export native CDF
+    void exportCDF(const double *&x, const double *&F, size_t &n) const {
+      kll.exportCDF(x, F, n);
+    }
+
+    // Export native quantile
+    void exportQuantile(const double *&u, const double *&Q, size_t &n) const {
+      kll.exportQuantile(u, Q, n);
+    }
+  };
+
+  // Data integrity counters
+  struct Integrity {
+    size_t n_total = 0;
+    size_t n_valid = 0;
+    size_t n_zero = 0;
+    size_t n_nan = 0;
+    size_t n_pos_inf = 0;
+    size_t n_neg_inf = 0;
+
+    void add(const Integrity &o) {
+      n_total += o.n_total;
+      n_valid += o.n_valid;
+      n_zero += o.n_zero;
+      n_nan += o.n_nan;
+      n_pos_inf += o.n_pos_inf;
+      n_neg_inf += o.n_neg_inf;
+    }
+
+    float valid_pct() const {
+      return n_total > 0 ? 100.0f * n_valid / n_total : 0.0f;
+    }
+
+    float zero_pct() const {
+      return n_valid > 0 ? 100.0f * n_zero / n_valid : 0.0f;
+    }
+
+    float nan_pct() const {
+      return n_total > 0 ? 100.0f * n_nan / n_total : 0.0f;
+    }
+
+    float inf_pct() const {
+      return n_total > 0 ? 100.0f * (n_pos_inf + n_neg_inf) / n_total : 0.0f;
+    }
+
+    void clear() { *this = Integrity{}; }
   };
 
   // ==========================================================================
-  // Statistics - Level 3 Cache: Statistical results
+  // Monthly Cache
   // ==========================================================================
 
-  struct Statistics {
-    // 4.1 Data Integrity
-    struct Integrity {
-      size_t total_count = 0;      // Total samples after valid filtering
-      size_t valid_count = 0;      // Samples with valid flag = 1
-      size_t invalid_count = 0;    // Samples with valid flag = 0 (filtered out)
-      size_t zero_count = 0;
-      size_t nan_count = 0;
-      size_t pos_inf_count = 0;
-      size_t neg_inf_count = 0;
-      float valid_pct = 0.0f;      // valid / (valid + invalid)
-      float zero_pct = 0.0f;       // zero / total_count
-      float nan_pct = 0.0f;        // nan / total_count
-      float pos_inf_pct = 0.0f;    // +inf / total_count
-      float neg_inf_pct = 0.0f;    // -inf / total_count
-    };
+  struct MonthlyCache {
+    std::string month; // "YYYYMM"
+
     Integrity integrity;
 
-    // 4.2 Moments (per bin, per asset)
-    struct MomentsPerAsset {
-      float mean = 0.0f;     // 1st raw moment
-      float variance = 0.0f; // 2nd central moment
-      float skewness = 0.0f; // 3rd standardized moment (colored)
-      float kurtosis = 0.0f; // 4th standardized moment (colored)
-    };
+    std::vector<KLLWithMoments> by_asset;   // [n_assets]
+    std::vector<KLLWithMoments> by_hour;    // [24] dynamic
+    std::vector<KLLWithMoments> by_weekday; // [7] dynamic
+    KLLWithMoments total;
 
-    struct MomentsPerBin {
-      std::vector<MomentsPerAsset> per_asset; // [n_assets]
-    };
-    std::vector<MomentsPerBin> moments; // [n_bins]
-
-    // 4.3 Quantiles (per bin, cross-sectional)
-    struct QuantilesPerBin {
-      float q01 = 0.0f, q05 = 0.0f, q25 = 0.0f, q50 = 0.0f;
-      float q75 = 0.0f, q95 = 0.0f, q99 = 0.0f;
-    };
-    std::vector<QuantilesPerBin> quantiles; // [n_bins]
-
-    // 4.4 PDF (per bin, per asset) - for distribution density plot
-    struct PDFPerAsset {
-      std::vector<float> bins;    // X-axis bins
-      std::vector<float> density; // Y-axis density
-      float bandwidth = 0.0f;     // KDE bandwidth
-    };
-
-    struct PDFPerBin {
-      std::vector<PDFPerAsset> per_asset; // [n_assets]
-    };
-    std::vector<PDFPerBin> pdf; // [n_bins]
-
-    // 4.5 Trajectory (per bin, per asset) - for trajectory scatter plot
-    struct TrajectoryPerAsset {
-      float tail_thickness = 0.0f;  // Y-axis
-      float robust_skewness = 0.0f; // X-axis
-      float peakedness_ccr = 0.0f;  // Color (central concentration ratio)
-      float variance = 0.0f;        // Size
-    };
-
-    struct TrajectoryPerBin {
-      std::vector<TrajectoryPerAsset> per_asset; // [n_assets]
-    };
-    std::vector<TrajectoryPerBin> trajectory; // [n_bins]
-
-    // 4.6 Heterogeneity (per bin, cross-sectional)
-    struct HeterogeneityPerBin {
-      float gini = 0.0f; // Gini coefficient
-      float hhi = 0.0f;  // Herfindahl-Hirschman Index
-    };
-    std::vector<HeterogeneityPerBin> heterogeneity; // [n_bins]
-
-    // 4.7 Scale Robustness (global, rank correlation)
-    struct ScaleRobustness {
-      float rank_corr_raw_zscore = 0.0f; // Raw vs Z-score
-      float rank_corr_raw_minmax = 0.0f; // Raw vs MinMax
-      float rank_corr_raw_robust = 0.0f; // Raw vs Robust
-    };
-    ScaleRobustness scale_robustness;
-
-    // Version control (bound to GroupedData version)
-    size_t grouped_version = 0;
+    size_t n_assets = 0;
     bool valid = false;
 
-    // Check cache validity
-    bool is_valid(size_t current_grouped_version) const {
-      return valid && grouped_version == current_grouped_version;
+    void clear() {
+      month.clear();
+      integrity.clear();
+      by_asset.clear();
+      by_hour.clear();
+      by_weekday.clear();
+      total.clear();
+      n_assets = 0;
+      valid = false;
     }
 
-    void clear();
+    void init(size_t n_assets_val, size_t kll_k = 400) {
+      n_assets = n_assets_val;
+      by_asset.clear();
+      by_asset.reserve(n_assets);
+      for (size_t i = 0; i < n_assets; ++i) {
+        by_asset.emplace_back(kll_k);
+      }
+      by_hour.clear();
+      by_hour.reserve(24);
+      for (size_t i = 0; i < 24; ++i) {
+        by_hour.emplace_back(kll_k);
+      }
+      by_weekday.clear();
+      by_weekday.reserve(7);
+      for (size_t i = 0; i < 7; ++i) {
+        by_weekday.emplace_back(kll_k);
+      }
+      total = KLLWithMoments(kll_k);
+    }
+
+    void add_sample(double value, uint8_t hour, uint8_t weekday, uint16_t asset) {
+      assert(asset < n_assets);
+      assert(hour < 24);
+      assert(weekday < 7);
+
+      by_asset[asset].add(value);
+      by_hour[hour].add(value);
+      by_weekday[weekday].add(value);
+      total.add(value);
+    }
   };
 
   // ==========================================================================
-  // VisualizationCache - Level 4 Cache: Pre-computed rendering data
+  // Query Result
   // ==========================================================================
 
-  struct VisualizationCache {
-    // 5.1 PDF Plot Data (pre-computed for ImPlot)
-    struct PDFPlot {
-      std::vector<double> x;       // Combined X-axis for all assets
-      std::vector<double> y;       // Combined Y-axis for all assets
-      std::vector<size_t> offsets; // Start index for each asset [n_assets+1]
-      float y_min = 0.0f, y_max = 0.0f;
-    };
-    std::vector<PDFPlot> pdf_plots; // [n_bins]
+  struct QueryResult {
+    struct BinStats {
+      std::string key;
+      size_t n_samples = 0;
 
-    // 5.2 Trajectory Scatter Plot Data
-    struct TrajectoryPlot {
-      std::vector<double> x;        // Robust skewness [n_assets]
-      std::vector<double> y;        // Tail thickness [n_assets]
-      std::vector<uint32_t> colors; // Point color (from peakedness) [n_assets]
-      std::vector<float> sizes;     // Point size (from variance) [n_assets]
-      float x_min = 0.0f, x_max = 0.0f;
-      float y_min = 0.0f, y_max = 0.0f;
-    };
-    std::vector<TrajectoryPlot> trajectory_plots; // [n_bins]
+      // Moments
+      float mean = 0.0f;
+      float variance = 0.0f;
+      float skewness = 0.0f;
+      float kurtosis = 0.0f;
 
-    // 5.3 Quantile Heatmap Data (time × quantile matrix)
-    struct QuantileHeatmap {
-      std::vector<float> matrix;           // [n_bins × 7 quantiles], row-major
-      size_t n_rows = 7;                   // q01, q05, q25, q50, q75, q95, q99
-      size_t n_cols = 0;                   // n_bins
-      std::vector<std::string> col_labels; // Bin keys
-      float min_val = 0.0f, max_val = 0.0f;
-    };
-    QuantileHeatmap quantile_heatmap;
+      // Quantiles: q01, q05, q25, q50, q75, q95, q99
+      std::array<float, 7> quantiles = {};
 
-    // 5.4 Moments Display Data (pre-formatted strings)
-    struct MomentsDisplay {
-      std::string mean_text;   // e.g., "0.0023"
-      std::string var_text;    // e.g., "1.452"
-      std::string skew_text;   // e.g., "-0.34"
-      std::string kurt_text;   // e.g., "3.12"
-      uint32_t skew_color = 0; // Color for skewness
-      uint32_t kurt_color = 0; // Color for kurtosis
-    };
-    std::vector<std::vector<MomentsDisplay>> moments_display; // [n_bins][n_assets]
+      // PDF (zero-copy pointers to KLL internal cache)
+      const double *pdf_x = nullptr;
+      const double *pdf_y = nullptr;
+      size_t pdf_n = 0;
 
-    // Version control (bound to Statistics version)
-    size_t stats_version = 0;
-    float cached_pdf_sensitivity = -1.0f;
+      void extract_from(const KLLWithMoments &src) {
+        n_samples = src.count();
+        mean = static_cast<float>(src.mean());
+        variance = static_cast<float>(src.var());
+        skewness = static_cast<float>(src.skew());
+        kurtosis = static_cast<float>(src.kurt());
+
+        if (n_samples > 0) {
+          quantiles[0] = static_cast<float>(src.quantile(0.01));
+          quantiles[1] = static_cast<float>(src.quantile(0.05));
+          quantiles[2] = static_cast<float>(src.quantile(0.25));
+          quantiles[3] = static_cast<float>(src.quantile(0.50));
+          quantiles[4] = static_cast<float>(src.quantile(0.75));
+          quantiles[5] = static_cast<float>(src.quantile(0.95));
+          quantiles[6] = static_cast<float>(src.quantile(0.99));
+
+          // Zero-copy: get pointers to KLL internal cache
+          src.exportPDF(pdf_x, pdf_y, pdf_n);
+        }
+      }
+    };
+
+    // Storage for merged KLLs (keeps pointers valid)
+    std::vector<KLLWithMoments> kll_storage;
+    std::vector<BinStats> bins;
+    Integrity integrity;
     bool valid = false;
 
-    // Check cache validity
-    bool is_valid(size_t current_stats_version, float pdf_sens) const {
-      return valid && stats_version == current_stats_version &&
-             cached_pdf_sensitivity == pdf_sens;
+    void clear() {
+      kll_storage.clear();
+      bins.clear();
+      integrity.clear();
+      valid = false;
     }
-
-    void clear();
   };
 
   // ==========================================================================
-  // Compute - Async computation control
+  // Trajectory
+  // ==========================================================================
+
+  struct TrajectoryPoint {
+    float x = 0.0f;     // robust_skewness: (Q75+Q25-2*Q50)/(Q75-Q25)
+    float y = 0.0f;     // tail_thickness: (Q95-Q05)/(Q75-Q25)
+    float color = 0.0f; // peakedness: CDF(mean+std) - CDF(mean-std)
+    float size = 0.0f;  // variance
+    size_t n = 0;       // sample count
+
+    void extract_from(const KLLWithMoments &src) {
+      n = src.count();
+      if (n < 10)
+        return;
+
+      double q05 = src.quantile(0.05);
+      double q25 = src.quantile(0.25);
+      double q50 = src.quantile(0.50);
+      double q75 = src.quantile(0.75);
+      double q95 = src.quantile(0.95);
+
+      double iqr = q75 - q25;
+      if (iqr > 1e-10) {
+        x = static_cast<float>((q75 + q25 - 2 * q50) / iqr);
+        y = static_cast<float>((q95 - q05) / iqr);
+      }
+
+      double var = src.var();
+      size = static_cast<float>(var);
+
+      if (var > 1e-10) {
+        double std = std::sqrt(var);
+        double mean = src.mean();
+        double cdf_lo = src.kll.queryCDF(mean - std);
+        double cdf_hi = src.kll.queryCDF(mean + std);
+        color = static_cast<float>(cdf_hi - cdf_lo);
+      }
+    }
+  };
+
+  struct Trajectory {
+    // [n_assets][n_months]
+    std::vector<std::vector<TrajectoryPoint>> paths;
+    std::vector<std::string> months;
+    size_t n_assets = 0;
+    bool valid = false;
+
+    void clear() {
+      paths.clear();
+      months.clear();
+      n_assets = 0;
+      valid = false;
+    }
+  };
+
+  // ==========================================================================
+  // Compute Control
   // ==========================================================================
 
   struct Compute {
     enum class Status : uint8_t {
-      Idle = 0,
-      LoadingData = 1,
-      Grouping = 2,
-      Computing = 3,
-      BuildingCache = 4,
-      Completed = 5,
-      Error = 6,
-      Cancelled = 7
+      Idle,
+      Building,
+      Querying,
+      Done,
+      Error,
+      Cancelled
     };
 
     Status status = Status::Idle;
-    std::string error_message;
+    std::string error;
 
-    // Thread pool (shared, managed by GUI)
-    // Type-erased thread pool for async computation
-    std::shared_ptr<void> thread_pool;
+    std::atomic<size_t> done{0};
+    std::atomic<size_t> total{0};
+    std::atomic<bool> cancel{false};
 
-    // Progress tracking
-    std::atomic<size_t> progress_current{0};
-    std::atomic<size_t> progress_total{0};
+    float progress() const {
+      size_t t = total.load();
+      return t > 0 ? 100.0f * done.load() / t : 0.0f;
+    }
 
-    // Cancel control
-    std::atomic<bool> cancel_flag{false};
-
-    // Futures for async tasks
-    std::vector<std::future<void>> futures;
-
-    // Async loading state (managed by DistService)
-    size_t load_tasks_total = 0;
-    size_t load_tasks_completed = 0;
-    std::shared_ptr<void> load_buffers; // Type-erased per-date buffers
-    std::shared_ptr<std::atomic<size_t>> load_completed_counter;
-    std::shared_ptr<std::atomic<size_t>> load_failed_counter;
-
-    // Timing
-    std::chrono::steady_clock::time_point start_time;
-
-    // Query
     bool is_idle() const {
-      return status == Status::Idle || status == Status::Completed;
+      return status == Status::Idle || status == Status::Done;
     }
-    bool is_running() const {
-      return status >= Status::LoadingData && status <= Status::BuildingCache;
-    }
-    float get_progress_pct() const {
-      size_t total = progress_total.load();
-      return total > 0 ? 100.0f * progress_current.load() / total : 0.0f;
+
+    bool is_busy() const {
+      return status == Status::Building || status == Status::Querying;
     }
 
     void reset() {
-      cancel_flag = false;
-      progress_current = 0;
-      progress_total = 0;
-      futures.clear();
+      status = Status::Idle;
+      error.clear();
+      done = 0;
+      total = 0;
+      cancel = false;
+    }
+  };
+
+  // ==========================================================================
+  // Input Control
+  // ==========================================================================
+
+  struct Input {
+    enum class GroupBy : uint8_t { NONE, HOUR, WEEKDAY, MONTH };
+
+    GroupBy group_by = GroupBy::NONE;
+    int focus_month_idx = -1; // for trajectory highlight
+
+    // Cache keys for change detection
+    int feature_idx = -1;
+    int level = -1;
+    std::string month_range;
+
+    bool has_changes(int feat_idx, int lvl, const std::string &range) const {
+      return feature_idx != feat_idx || level != lvl || month_range != range;
+    }
+
+    void update_cache(int feat_idx, int lvl, const std::string &range) {
+      feature_idx = feat_idx;
+      level = lvl;
+      month_range = range;
     }
   };
 
@@ -413,105 +461,57 @@ struct Dist {
   // ==========================================================================
 
   Input input;
-  RawData raw;
-  GroupedData grouped;
-  Statistics stats;
-  VisualizationCache vis_cache;
+  std::vector<MonthlyCache> cache; // [n_months], sorted by month
+  QueryResult result;
+  Trajectory trajectory;
   Compute compute;
 
-  // Version control (increment on data change)
-  size_t version = 0;
-
   // ==========================================================================
-  // Methods - Data Loading
+  // Methods - Build
   // ==========================================================================
 
-  // Load raw feature data from FeatureReader cache (async)
-  void load_data_async(const FeatureReader::MultiDayCache &cache,
-                       const Feature &feature, const Config &config,
-                       const Asset &asset);
-  
-  // Load data with parallel workflow (dispatch to thread pool)
-  // Returns tuple: (buffers, completed_counter, failed_counter) for async polling
-  // After all tasks complete, call raw.merge_buffers() to integrate
-  std::tuple<std::shared_ptr<std::vector<PerDateBuffer>>,
-             std::shared_ptr<std::atomic<size_t>>,
-             std::shared_ptr<std::atomic<size_t>>>
-  dispatch_parallel_loading(const std::vector<std::string> &available_dates,
-                            const std::string &features_dir,
-                            const Feature &feature,
-                            const Config &config,
-                            const Asset &asset,
-                            std::function<void(std::function<void()>)> submit_task);
+  // Build single month cache (thread-safe, called from worker)
+  void build_month(size_t cache_idx, const std::string &features_dir,
+                   const Feature &feature, const Asset &asset);
 
-  bool is_data_loaded() const { return raw.loaded; }
+  // Build all months (dispatch to thread pool)
+  void build_all(const std::vector<std::string> &months,
+                 const std::string &features_dir, const Feature &feature,
+                 const Asset &asset,
+                 std::function<void(std::function<void()>)> submit);
 
   // ==========================================================================
-  // Methods - Time Grouping
+  // Methods - Query
   // ==========================================================================
 
-  // Apply time grouping (reorganize raw data into bins) (async)
-  void apply_time_grouping_async();
-
-  bool is_grouped() const { return grouped.valid; }
+  // Query with grouping and min_samples filter
+  void query(Input::GroupBy group_by);
 
   // ==========================================================================
-  // Methods - Statistics Computation
+  // Methods - Trajectory
   // ==========================================================================
 
-  // Compute all statistics (parallel on thread pool)
-  void compute_all_statistics_async();
-
-  // Individual compute functions (can be called separately)
-  void compute_integrity();
-  void compute_moments_parallel();        // Parallel over bins
-  void compute_quantiles_parallel();      // Parallel over bins
-  void compute_pdf_parallel();            // Parallel over bins×assets
-  void compute_trajectory_parallel();     // Parallel over bins×assets
-  void compute_heterogeneity_parallel();  // Parallel over bins
-  void compute_scale_robustness();
-
-  bool is_stats_computed() const { return stats.valid; }
-
-  // ==========================================================================
-  // Methods - Visualization Cache
-  // ==========================================================================
-
-  // Build visualization cache (call from main/GUI thread after stats computed)
-  // This is fast and synchronous
-  void build_visualization_cache();
-
-  bool is_vis_cache_valid() const {
-    return vis_cache.is_valid(stats.grouped_version, input.pdf_sensitivity);
-  }
+  // Build trajectory for all assets across months
+  void build_trajectory();
 
   // ==========================================================================
   // Methods - Control
   // ==========================================================================
 
-  // Full computation pipeline (async)
-  void start_full_compute(const FeatureReader::MultiDayCache &cache,
-                          const Feature &feature, const Config &config,
-                          const Asset &asset);
-
-  // Cancel computation
-  void cancel_compute();
-
-  // Check if cache is valid (for re-rendering)
-  bool need_recompute(const Feature &feature, const Config &config) const {
-    return input.has_changes(feature, config);
+  void cancel() {
+    compute.cancel = true;
+    compute.status = Compute::Status::Cancelled;
   }
 
-  // Invalidate all caches and increment version
-  void invalidate_all() {
-    ++version;
-    raw.clear();
-    grouped.clear();
-    stats.clear();
-    vis_cache.clear();
+  void clear() {
+    input = Input{};
+    cache.clear();
+    result.clear();
+    trajectory.clear();
+    compute.reset();
   }
 
-  // Full clear
-  void clear();
+  bool need_rebuild(int feat_idx, int lvl, const std::string &range) const {
+    return input.has_changes(feat_idx, lvl, range);
+  }
 };
-

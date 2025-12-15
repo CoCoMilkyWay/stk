@@ -433,6 +433,62 @@ public:
     std::pair<std::vector<double>, std::vector<uint64_t>> exportWeightedSamples() const;
 
     /**
+     * exportCDF
+     *  - 输出：非均匀 CDF 采样点 (x, F) 的指针和长度
+     *  - 前提：!empty()
+     *
+     * 【数据来源】
+     *   返回缓存的 CDF knots：
+     *   - x[i] = xk[i]（非均匀 x 坐标，来自加权样本）
+     *   - F[i] = Fk[i]（累积概率 F(x[i])）
+     *
+     * 【缓存机制】
+     *   首次调用时构建缓存，后续调用直接返回指针。
+     *   数据在 addValue/mergeWith/clear 后失效并重建。
+     *
+     * 【用途】
+     *   高分辨率非均匀 CDF 可直接用于可视化（线性插值）。
+     */
+    void exportCDF(const double*& x, const double*& F, size_t& n) const;
+
+    /**
+     * exportPDF
+     *  - 输出：非均匀 PDF 采样点 (x, f) 的指针和长度
+     *  - 前提：!empty()
+     *
+     * 【数据来源】
+     *   返回缓存的 PDF knots：
+     *   - x[i] = xk[i]（非均匀 x 坐标）
+     *   - f[i] = dk_cdf[i]（PDF 值 f(x[i]) = dF/dx 在该点的精确值）
+     *
+     * 【数学说明】
+     *   dk_cdf 是 PCHIP 算法计算的 CDF 斜率，等于该点的 PDF 值。
+     *   线性插值后积分近似 1（knot 密集时误差很小）。
+     *
+     * 【缓存机制】
+     *   同 exportCDF。
+     */
+    void exportPDF(const double*& x, const double*& f, size_t& n) const;
+
+    /**
+     * exportQuantile
+     *  - 输出：非均匀 Quantile 采样点 (u, Q) 的指针和长度
+     *  - 前提：!empty()
+     *
+     * 【数据来源】
+     *   返回缓存的 Quantile knots：
+     *   - u[i] = Fk_quantile[i]（非均匀累积概率坐标）
+     *   - Q[i] = Qk[i]（分位数 Q(u[i])）
+     *
+     * 【缓存机制】
+     *   同 exportCDF。
+     *
+     * 【用途】
+     *   高分辨率非均匀 Quantile 可直接用于可视化（线性插值）。
+     */
+    void exportQuantile(const double*& u, const double*& Q, size_t& n) const;
+
+    /**
      * dumpLevels
      *  - 输出：每层的原始 buffer（调试用）
      *
@@ -847,6 +903,30 @@ KLLcache::exportWeightedSamples() const {
     }
     
     return {values, weights};
+}
+
+inline void KLLcache::exportCDF(const double*& x, const double*& F, size_t& n) const {
+    assert(!empty());
+    ensureCacheValid();
+    x = cache_.xk.data();
+    F = cache_.Fk.data();
+    n = cache_.xk.size();
+}
+
+inline void KLLcache::exportPDF(const double*& x, const double*& f, size_t& n) const {
+    assert(!empty());
+    ensureCacheValid();
+    x = cache_.xk.data();
+    f = cache_.dk_cdf.data();
+    n = cache_.xk.size();
+}
+
+inline void KLLcache::exportQuantile(const double*& u, const double*& Q, size_t& n) const {
+    assert(!empty());
+    ensureCacheValid();
+    u = cache_.Fk_quantile.data();
+    Q = cache_.Qk.data();
+    n = cache_.Fk_quantile.size();
 }
 
 inline std::vector<std::vector<double>> KLLcache::dumpLevels() const {

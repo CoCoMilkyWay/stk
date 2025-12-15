@@ -1,10 +1,14 @@
-// TabDist - Distribution Analysis Tab
-// Displays comprehensive distribution statistics and visualizations
-// for the primary feature across all assets
+// TabDist - Distribution Analysis Tab (KLL-based Monthly View)
 //
-// Lifecycle:
-//   - RenderTabDist: spawns compute coroutine on first call
-//   - StopTabDist: stops compute coroutine when tab closes
+// UI Layout:
+//   1. Integrity panel - Zero/NaN/Inf counts
+//   2. Window control - By selector | Status (n/m) | Compute | Cancel | Month slider
+//   3. Moments panel (color bands) + PDF evolution (side by side)
+//   4. Trajectory plot - Asset distribution evolution
+//
+// Threading:
+//   - UI runs on main thread
+//   - Computation via coroutine -> thread pool (one thread per month)
 #pragma once
 
 struct SharedData;
@@ -14,38 +18,28 @@ namespace GUI::Features {
 class DistService;
 
 // ============================================================================
-// Distribution Tab UI State
+// UI State
 // ============================================================================
 
 struct DistUIState {
-  // Time grouping selection
-  int selected_grouping = 0; // 0=NONE, 1=HOUR, 2=WEEKDAY, 3=MONTH, 4=YEAR
-  
-  // PDF sensitivity slider
-  float pdf_sensitivity_ui = 1.0f;
-  
-  // Display options
-  bool show_by_asset = false;
-  bool show_trajectory = true;
-  bool show_quantile_heatmap = true;
-  
-  // Selected bin for detail view
-  int selected_bin_idx = 0;
-  
-  // Asset filter
-  bool show_asset_filter = false;
-  char asset_filter_buffer[256] = {0};
+  // Grouping: 0=NONE, 1=HOUR, 2=WEEKDAY, 3=MONTH
+  int group_by = 3;
+
+  // Month focus slider (index into available months)
+  int focus_month_idx = 0;
+
+  // Hovered asset in trajectory (for tooltip)
+  int hovered_asset = -1;
 };
 
 // ============================================================================
-// Render Functions
+// API
 // ============================================================================
 
-// Render distribution analysis tab - spawns compute coroutine on first call
-void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui_state);
+// Render tab - auto-spawns compute coroutine
+void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui);
 
-// Stop compute coroutine - call when tab is closed
+// Stop coroutine on tab close
 void StopTabDist(DistService *service, SharedData &data);
 
 } // namespace GUI::Features
-

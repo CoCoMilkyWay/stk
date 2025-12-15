@@ -1,19 +1,18 @@
-// DistService - Distribution Analysis Service
-// Design:
-//   - Main thread: GUI rendering
-//   - Coroutine: Manages computation lifecycle
-//   - Thread pool: Parallel statistics computation
+// DistService - Distribution Analysis Service (KLL-based)
 //
-// Lifecycle:
-//   1. UI triggers computation request
-//   2. Coroutine checks request flag
-//   3. Spawns thread pool tasks for statistics
-//   4. Updates progress atomically
-//   5. GUI polls status and renders results
+// Threading Model:
+//   - Main thread: GUI rendering, polls status
+//   - Coroutine: Manages computation lifecycle, yields to allow polling
+//   - Thread pool: One thread per month for parallel KLL building
+//
+// Data Flow:
+//   1. UI calls RequestCompute()
+//   2. Coroutine dispatches build_all() to thread pool
+//   3. Each worker builds one month's KLLs
+//   4. Coroutine polls completion, then calls query() and build_trajectory()
+//   5. UI renders results from Dist.result and Dist.trajectory
 #pragma once
 
-#include "shared/Dist.hpp"
-#include "features/backend/FeatureReader.hpp"
 #include "gui/coro/CoroManager.hpp"
 
 #include <boost/asio/awaitable.hpp>
@@ -21,22 +20,21 @@
 #include <boost/asio/use_awaitable.hpp>
 
 #include <atomic>
+#include <condition_variable>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 namespace asio = boost::asio;
 
-// Forward declarations
 struct SharedData;
-struct Feature;
-struct Config;
-struct Asset;
 
 namespace GUI::Features {
 
 // ============================================================================
-// Simple Thread Pool for Parallel Computation
+// Thread Pool (CPU count threads)
 // ============================================================================
 
 class SimpleThreadPool {
@@ -44,35 +42,30 @@ public:
   explicit SimpleThreadPool(size_t num_threads);
   ~SimpleThreadPool();
 
-  // Submit a task to the pool
-  template<typename Func>
-  void submit(Func&& task) {
+  template <typename Func> void submit(Func &&task) {
     {
-      std::lock_guard<std::mutex> lock(queue_mutex_);
+      std::lock_guard<std::mutex> lock(mutex_);
       tasks_.emplace_back(std::forward<Func>(task));
     }
-    condition_.notify_one();
+    cv_.notify_one();
   }
 
-  // Wait for all pending tasks to complete
   void wait_all();
-
-  // Get number of threads
   size_t size() const { return threads_.size(); }
 
 private:
-  void worker_thread();
+  void worker();
 
   std::vector<std::thread> threads_;
   std::vector<std::function<void()>> tasks_;
-  std::mutex queue_mutex_;
-  std::condition_variable condition_;
-  std::atomic<bool> stop_flag_{false};
-  std::atomic<size_t> active_tasks_{0};
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::atomic<bool> stop_{false};
+  std::atomic<size_t> active_{0};
 };
 
 // ============================================================================
-// Distribution Analysis Service
+// DistService
 // ============================================================================
 
 class DistService {
@@ -80,76 +73,35 @@ public:
   explicit DistService(const std::string &features_dir);
   ~DistService();
 
-  // ========================================================================
-  // Coroutine Loop
-  // ========================================================================
-
-  // Main computation loop (runs in coroutine)
+  // Coroutine loop (runs async)
   asio::awaitable<void> ComputeLoop(SharedData &data);
 
-  // Start computation coroutine
-  void StartCompute(CoroManager &coro_mgr, SharedData &data);
+  // Lifecycle
+  void StartCompute(CoroManager &coro, SharedData &data);
+  void StopCompute(CoroManager &coro, SharedData &data);
 
-  // Stop computation coroutine (blocking)
-  void StopCompute(CoroManager &coro_mgr, SharedData &data);
-
-  // ========================================================================
-  // UI Triggers
-  // ========================================================================
-
-  // Request full computation (non-blocking, coroutine will handle)
+  // UI requests (non-blocking)
   void RequestCompute();
+  void RequestQuery();
 
-  // Request visualization cache rebuild only
-  void RequestCacheRebuild();
-
-  // Cancel current computation
-  void CancelCompute();
-
-  // ========================================================================
-  // Query Status
-  // ========================================================================
-
+  // Status
   bool is_running() const { return coro_running_.load(); }
-  bool is_computing() const;
-  float get_progress() const;
-  std::string get_status_text() const;
 
 private:
-  // ========================================================================
-  // Internal Computation Functions
-  // ========================================================================
-
-  // Load data from reader
-  void load_data(Dist &dist, const Feature &feature, const Config &config,
-                 const Asset &asset);
-
-  // Apply time grouping
-  void apply_grouping(Dist &dist);
-
-  // Compute all statistics using thread pool
-  void compute_statistics(Dist &dist);
-
-  // Build visualization cache
-  void build_cache(Dist &dist);
-
-  // ========================================================================
-  // Members
-  // ========================================================================
-
-  FeatureReader reader_;
+  // Features directory
   std::string features_dir_;
-  std::unique_ptr<SimpleThreadPool> thread_pool_;
 
-  // Coroutine control
+  // Thread pool (CPU count)
+  std::unique_ptr<SimpleThreadPool> pool_;
+
+  // Coroutine state
   std::unique_ptr<CoroutineHandle> coro_;
   std::atomic<bool> coro_running_{false};
-  std::atomic<bool> coro_should_stop_{false};
+  std::atomic<bool> coro_stop_{false};
 
-  // Computation requests
+  // Request flags
   std::atomic<bool> compute_requested_{false};
-  std::atomic<bool> cache_rebuild_requested_{false};
+  std::atomic<bool> query_requested_{false};
 };
 
 } // namespace GUI::Features
-
