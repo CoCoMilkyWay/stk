@@ -116,10 +116,13 @@ void EncodingService::stop_encoding() {
   cancel_flag_.store(true);
   std::cout << "[Encoding] Cancelling..." << std::endl;
 
-  // Wait for encoding thread to finish
+  // Wait for encoding thread to finish (which will also wait for workers)
   if (encoding_thread_.valid()) {
     encoding_thread_.wait();
   }
+
+  // Clear any remaining worker futures (though they should already be cleared in the encoding thread)
+  workers_.clear();
 }
 
 EncodingProgress EncodingService::get_progress() const {

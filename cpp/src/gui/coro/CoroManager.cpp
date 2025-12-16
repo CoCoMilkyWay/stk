@@ -24,7 +24,10 @@ void CoroutineHandle::Cancel() {
 
 CoroManager::CoroManager() = default;
 
-CoroManager::~CoroManager() = default;
+CoroManager::~CoroManager() {
+  // Stop the io_context to cancel all pending operations
+  io_ctx_.stop();
+}
 
 void CoroManager::Poll() {
   io_ctx_.poll();
