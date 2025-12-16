@@ -22,8 +22,9 @@ struct Asset;
 // Thread pool: one thread per month
 // ============================================================================
 
-static constexpr size_t kMinSamples = 1000;
-static constexpr size_t kKLLCacheSize = 400;
+static constexpr size_t kMinSamples = 1000; // sample不够的不纳入统计
+static constexpr size_t KLL_CAPACITY = 512;
+static constexpr size_t KLL_RESOLUTION = 1024;
 
 struct Dist {
 
@@ -121,7 +122,8 @@ struct Dist {
     KLLcache kll;
     MomentsAccum mom;
 
-    explicit KLLWithMoments(size_t k = kKLLCacheSize) : kll(k) {}
+    explicit KLLWithMoments(size_t k = KLL_CAPACITY, size_t n_recon = KLL_RESOLUTION) 
+        : kll(k, n_recon) {}
 
     // Move only (KLLcache is move-only)
     KLLWithMoments(KLLWithMoments &&) noexcept = default;
@@ -129,9 +131,11 @@ struct Dist {
     KLLWithMoments(const KLLWithMoments &) = delete;
     KLLWithMoments &operator=(const KLLWithMoments &) = delete;
 
-    void add(double x) {
-      kll.addValue(x);
-      mom.add(x);
+    void addBatch(const std::vector<float> &samples) {
+      kll.addBatch(samples);
+      for (float x : samples) {
+        mom.add(x);
+      }
     }
 
     void merge(const KLLWithMoments &o) {
@@ -153,26 +157,82 @@ struct Dist {
     double skew() const { return mom.skew(); }
     double kurt() const { return mom.kurt(); }
 
-    double quantile(double q) const { return kll.queryQuantile(q); }
-
-    std::pair<std::vector<double>, std::vector<double>> pdf(size_t n_bins) const {
-      return kll.reconstructPDF(n_bins);
+    // Quantile query: simple linear interpolation on ICDF grid
+    double quantile(double q) const {
+      if (kll.empty()) return 0.0;
+      auto icdf = kll.exportICDF();
+      return interpolate(q, icdf.x, icdf.y, icdf.n);
     }
 
-    // Export native PDF (non-uniform, highest resolution ~K points)
-    void exportPDF(const double *&x, const double *&f, size_t &n) const {
-      kll.exportPDF(x, f, n);
+    // CDF query: simple linear interpolation on CDF grid
+    double queryCDF(double x) const {
+      if (kll.empty()) return 0.0;
+      auto cdf = kll.exportCDF();
+      return interpolate(x, cdf.x, cdf.y, cdf.n);
     }
 
-    // Export native CDF
-    void exportCDF(const double *&x, const double *&F, size_t &n) const {
-      kll.exportCDF(x, F, n);
+    // Export PDF grid (zero-copy)
+    void exportPDF(const float *&x, const float *&f, size_t &n) const {
+      if (kll.empty()) {
+        x = nullptr;
+        f = nullptr;
+        n = 0;
+        return;
+      }
+      auto pdf = kll.exportPDF();
+      x = pdf.x;
+      f = pdf.y;
+      n = pdf.n;
     }
 
-    // Export native quantile
-    void exportQuantile(const double *&u, const double *&Q, size_t &n) const {
-      kll.exportQuantile(u, Q, n);
+    // Export CDF grid (zero-copy)
+    void exportCDF(const float *&x, const float *&F, size_t &n) const {
+      if (kll.empty()) {
+        x = nullptr;
+        F = nullptr;
+        n = 0;
+        return;
+      }
+      auto cdf = kll.exportCDF();
+      x = cdf.x;
+      F = cdf.y;
+      n = cdf.n;
     }
+
+    // Export ICDF grid (zero-copy)
+    void exportQuantile(const float *&u, const float *&Q, size_t &n) const {
+      if (kll.empty()) {
+        u = nullptr;
+        Q = nullptr;
+        n = 0;
+        return;
+      }
+      auto icdf = kll.exportICDF();
+      u = icdf.x;
+      Q = icdf.y;
+      n = icdf.n;
+    }
+
+  private:
+    // Simple linear interpolation on precomputed grid
+    static double interpolate(double query, const float* x, const float* y, size_t n) {
+      if (n == 0) return 0.0;
+      if (n == 1) return y[0];
+      if (query <= x[0]) return y[0];
+      if (query >= x[n-1]) return y[n-1];
+      
+      size_t lo = 0, hi = n - 1;
+      while (hi - lo > 1) {
+        size_t mid = (lo + hi) / 2;
+        if (x[mid] <= query) lo = mid;
+        else hi = mid;
+      }
+      
+      double t = (query - x[lo]) / (x[hi] - x[lo]);
+      return y[lo] + t * (y[hi] - y[lo]);
+    }
+
+  public:
   };
 
   // Data integrity counters
@@ -240,7 +300,7 @@ struct Dist {
       valid = false;
     }
 
-    void init(size_t n_assets_val, size_t kll_k = 400) {
+    void init(size_t n_assets_val, size_t kll_k = KLL_CAPACITY) {
       n_assets = n_assets_val;
       by_asset.clear();
       by_asset.reserve(n_assets);
@@ -260,16 +320,6 @@ struct Dist {
       total = KLLWithMoments(kll_k);
     }
 
-    void add_sample(double value, uint8_t hour, uint8_t weekday, uint16_t asset) {
-      assert(asset < n_assets);
-      assert(hour < 24);
-      assert(weekday < 7);
-
-      by_asset[asset].add(value);
-      by_hour[hour].add(value);
-      by_weekday[weekday].add(value);
-      total.add(value);
-    }
   };
 
   // ==========================================================================
@@ -291,8 +341,8 @@ struct Dist {
       std::array<float, 7> quantiles = {};
 
       // PDF (zero-copy pointers to KLL internal cache)
-      const double *pdf_x = nullptr;
-      const double *pdf_y = nullptr;
+      const float *pdf_x = nullptr;
+      const float *pdf_y = nullptr;
       size_t pdf_n = 0;
 
       void extract_from(const KLLWithMoments &src) {
@@ -365,8 +415,8 @@ struct Dist {
       if (var > 1e-10) {
         double std = std::sqrt(var);
         double mean = src.mean();
-        double cdf_lo = src.kll.queryCDF(mean - std);
-        double cdf_hi = src.kll.queryCDF(mean + std);
+        double cdf_lo = src.queryCDF(mean - std);
+        double cdf_hi = src.queryCDF(mean + std);
         color = static_cast<float>(cdf_hi - cdf_lo);
       }
     }

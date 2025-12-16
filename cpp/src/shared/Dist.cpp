@@ -88,15 +88,15 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
     auto [year, month_val, day] = parse_date(date);
     uint8_t weekday = calc_weekday(year, month_val, day);
 
-      // Load tensor
-      FeatureReader::DayTensor tensor;
-      if (!reader.load_day_level(date, level, tensor)) {
+    // Load tensor
+    FeatureReader::DayTensor tensor;
+    if (!reader.load_day_level(date, level, tensor)) {
       continue;
-      }
+    }
 
-      const size_t T = tensor.T[level];
-      const size_t F = tensor.F[level];
-      const size_t A = tensor.A;
+    const size_t T = tensor.T[level];
+    const size_t F = tensor.F[level];
+    const size_t A = tensor.A;
     assert(A == n_assets);
 
     if (static_cast<size_t>(primary_idx) >= F) {
@@ -104,88 +104,124 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
     }
 
     // Find valid flag index
-      int valid_flag_idx = -1;
-      if (valid_type == L2::ValidType::DEPTH) {
+    int valid_flag_idx = -1;
+    if (valid_type == L2::ValidType::DEPTH) {
       for (size_t i = 0; i < meta_count; ++i) {
         if (std::string(meta_list[i].code) == "_depth_valid") {
           valid_flag_idx = static_cast<int>(i);
-            break;
-          }
+          break;
         }
-      } else if (valid_type == L2::ValidType::DATA) {
+      }
+    } else if (valid_type == L2::ValidType::DATA) {
       for (size_t i = 0; i < meta_count; ++i) {
         if (std::string(meta_list[i].code) == "_data_valid") {
           valid_flag_idx = static_cast<int>(i);
-            break;
-          }
+          break;
         }
       }
+    }
+
+    // Accumulate samples per day
+    std::vector<float> day_samples;
+    std::vector<std::vector<float>> asset_samples(A);
+    std::vector<std::vector<float>> hour_samples(24);
+    std::vector<std::vector<float>> weekday_samples(7);
+
+    day_samples.reserve(T * A);
+    for (auto &v : asset_samples) v.reserve(T);
+    for (auto &v : hour_samples) v.reserve((T * A) / 24);
+    for (auto &v : weekday_samples) v.reserve((T * A) / 7);
 
     // Process all (t, a) samples
-      for (size_t t = 0; t < T; ++t) {
+    for (size_t t = 0; t < T; ++t) {
       uint8_t hour = static_cast<uint8_t>(t % 24);
 
       // Get feature values
       const feature_storage_t *values = nullptr;
-        if (level == 0) {
+      if (level == 0) {
         values = tensor.get_all_assets<0>(t, primary_idx);
-        } else if (level == 1) {
+      } else if (level == 1) {
         values = tensor.get_all_assets<1>(t, primary_idx);
-        } else {
+      } else {
         values = tensor.get_all_assets<2>(t, primary_idx);
-        }
+      }
 
       // Get valid flags
-        const feature_storage_t *valid_flags = nullptr;
-        if (valid_flag_idx >= 0) {
-          if (level == 0) {
-            valid_flags = tensor.get_all_assets<0>(t, valid_flag_idx);
-          } else if (level == 1) {
-            valid_flags = tensor.get_all_assets<1>(t, valid_flag_idx);
-          } else {
-            valid_flags = tensor.get_all_assets<2>(t, valid_flag_idx);
-          }
+      const feature_storage_t *valid_flags = nullptr;
+      if (valid_flag_idx >= 0) {
+        if (level == 0) {
+          valid_flags = tensor.get_all_assets<0>(t, valid_flag_idx);
+        } else if (level == 1) {
+          valid_flags = tensor.get_all_assets<1>(t, valid_flag_idx);
+        } else {
+          valid_flags = tensor.get_all_assets<2>(t, valid_flag_idx);
         }
+      }
 
-        for (size_t a = 0; a < A; ++a) {
+      for (size_t a = 0; a < A; ++a) {
         float val = static_cast<float>(values[a]);
         mc.integrity.n_total++;
 
         // Check valid flag
-          if (valid_flags) {
+        if (valid_flags) {
           float vf = static_cast<float>(valid_flags[a]);
           if (vf <= 0.5f) {
             continue; // Skip invalid
           }
         }
 
-          // Check NaN
+        // Check NaN
         if (val != val) {
           mc.integrity.n_nan++;
           continue;
-          }
+        }
 
-          // Check +Inf
+        // Check +Inf
         if (val > 1e38f) {
           mc.integrity.n_pos_inf++;
-            continue;
-          }
+          continue;
+        }
 
-          // Check -Inf
+        // Check -Inf
         if (val < -1e38f) {
           mc.integrity.n_neg_inf++;
-            continue;
-          }
+          continue;
+        }
 
         // Count zero
-          if (val == 0.0f) {
+        if (val == 0.0f) {
           mc.integrity.n_zero++;
         }
 
-        // Add to KLLs
+        // Accumulate valid samples
         mc.integrity.n_valid++;
-        mc.add_sample(static_cast<double>(val), hour, weekday,
-                      static_cast<uint16_t>(a));
+        day_samples.push_back(val);
+        asset_samples[a].push_back(val);
+        hour_samples[hour].push_back(val);
+        weekday_samples[weekday].push_back(val);
+      }
+    }
+
+    // Batch insert once per day
+    if (!day_samples.empty()) {
+      mc.total.addBatch(day_samples);
+    }
+
+    for (size_t a = 0; a < A; ++a) {
+      if (!asset_samples[a].empty()) {
+        mc.by_asset[a].addBatch(asset_samples[a]);
+      }
+    }
+
+    for (size_t h = 0; h < 24; ++h) {
+      if (!hour_samples[h].empty()) {
+        mc.by_hour[h].addBatch(hour_samples[h]);
+      }
+    }
+
+    for (size_t wd = 0; wd < 7; ++wd) {
+      if (!weekday_samples[wd].empty()) {
+        mc.by_weekday[wd].addBatch(weekday_samples[wd]);
       }
     }
   }
@@ -243,7 +279,7 @@ void Dist::query(Input::GroupBy group_by) {
   switch (group_by) {
   case Input::GroupBy::NONE: {
     // Merge all months into single bin, store in kll_storage
-    result.kll_storage.emplace_back(kKLLCacheSize);
+    result.kll_storage.emplace_back(KLL_CAPACITY);
     auto &merged = result.kll_storage.back();
     for (const auto &mc : cache) {
       merged.merge(mc.total);
@@ -260,7 +296,7 @@ void Dist::query(Input::GroupBy group_by) {
     // Merge by hour across all months, store in kll_storage
     result.kll_storage.reserve(24);
     for (size_t i = 0; i < 24; ++i) {
-      result.kll_storage.emplace_back(kKLLCacheSize);
+      result.kll_storage.emplace_back(KLL_CAPACITY);
     }
     for (const auto &mc : cache) {
       for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
@@ -281,7 +317,7 @@ void Dist::query(Input::GroupBy group_by) {
     // Merge by weekday across all months, store in kll_storage
     result.kll_storage.reserve(7);
     for (size_t i = 0; i < 7; ++i) {
-      result.kll_storage.emplace_back(kKLLCacheSize);
+      result.kll_storage.emplace_back(KLL_CAPACITY);
     }
     const char *wd_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
     for (const auto &mc : cache) {
