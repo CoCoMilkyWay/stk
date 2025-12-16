@@ -352,65 +352,62 @@ void Dist::query(Input::GroupBy group_by) {
 }
 
 // ============================================================================
-// Build Global Assets
+// Finalize (after build_all completes)
 // ============================================================================
 
-void Dist::build_global_assets() {
-  global_by_asset.clear();
-  
+void Dist::finalize() {
   if (cache.empty()) return;
   
-  const size_t n_assets = cache[0].n_assets;
-  global_by_asset.reserve(n_assets);
-  for (size_t a = 0; a < n_assets; ++a) {
-    global_by_asset.emplace_back(KLL_CAPACITY);
+  // 1. Build global hour/weekday aggregations
+  {
+    global_by_hour.clear();
+    global_by_hour.reserve(24);
+    for (size_t h = 0; h < 24; ++h) {
+      global_by_hour.emplace_back(KLL_CAPACITY);
+    }
+
+    global_by_weekday.clear();
+    global_by_weekday.reserve(7);
+    for (size_t wd = 0; wd < 7; ++wd) {
+      global_by_weekday.emplace_back(KLL_CAPACITY);
+    }
+
+    for (const auto &mc : cache) {
+      if (!mc.valid) continue;
+
+      for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
+        if (mc.by_hour[h].count() > 0) {
+          global_by_hour[h].merge(mc.by_hour[h]);
+        }
+      }
+
+      for (size_t wd = 0; wd < mc.by_weekday.size() && wd < 7; ++wd) {
+        if (mc.by_weekday[wd].count() > 0) {
+          global_by_weekday[wd].merge(mc.by_weekday[wd]);
+        }
+      }
+    }
   }
   
-  // Merge from all months
-  for (const auto &mc : cache) {
-    if (!mc.valid) continue;
-    for (size_t a = 0; a < mc.by_asset.size() && a < n_assets; ++a) {
-      if (mc.by_asset[a].count() > 0) {
-        global_by_asset[a].merge(mc.by_asset[a]);
+  // 2. Build global asset aggregations
+  {
+    global_by_asset.clear();
+    const size_t n_assets = cache[0].n_assets;
+    global_by_asset.reserve(n_assets);
+    for (size_t a = 0; a < n_assets; ++a) {
+      global_by_asset.emplace_back(KLL_CAPACITY);
+    }
+    
+    for (const auto &mc : cache) {
+      if (!mc.valid) continue;
+      for (size_t a = 0; a < mc.by_asset.size() && a < n_assets; ++a) {
+        if (mc.by_asset[a].count() > 0) {
+          global_by_asset[a].merge(mc.by_asset[a]);
+        }
       }
     }
   }
-}
-
-// ============================================================================
-// Build Global Aggregations
-// ============================================================================
-
-void Dist::build_globals() {
-  // Initialize 24 hours
-  global_by_hour.clear();
-  global_by_hour.reserve(24);
-  for (size_t h = 0; h < 24; ++h) {
-    global_by_hour.emplace_back(KLL_CAPACITY);
-  }
-
-  // Initialize 7 weekdays
-  global_by_weekday.clear();
-  global_by_weekday.reserve(7);
-  for (size_t wd = 0; wd < 7; ++wd) {
-    global_by_weekday.emplace_back(KLL_CAPACITY);
-  }
-
-  // Merge from all months
-  for (const auto &mc : cache) {
-    if (!mc.valid)
-      continue;
-
-    for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
-      if (mc.by_hour[h].count() > 0) {
-        global_by_hour[h].merge(mc.by_hour[h]);
-      }
-    }
-
-    for (size_t wd = 0; wd < mc.by_weekday.size() && wd < 7; ++wd) {
-      if (mc.by_weekday[wd].count() > 0) {
-        global_by_weekday[wd].merge(mc.by_weekday[wd]);
-      }
-    }
-  }
+  
+  // 3. Query with MONTH grouping (default)
+  query(Input::GroupBy::MONTH);
 }

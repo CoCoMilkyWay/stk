@@ -385,8 +385,9 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
     ImPlot::SetNextAxesToFit();
   }
 
-  if (ImPlot::BeginPlot(plot_id, ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
-    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels, 
+  if (ImPlot::BeginPlot(plot_id, ImVec2(-1, -1))) {
+    ImPlot::SetupAxes(nullptr, nullptr, 
+                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels, 
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
 
     int n_items = static_cast<int>(pdfs.size());
@@ -600,7 +601,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_auto
   int hovered_asset = -1;
   double min_dist_sq = 1e9;
 
-  if (ImPlot::BeginPlot("##AssetsPDF", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+  if (ImPlot::BeginPlot("##AssetsPDF", ImVec2(-1, -1))) {
     ImPlot::SetupAxes(nullptr, nullptr, 
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels, 
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
@@ -665,6 +666,14 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_auto
 // ============================================================================
 
 void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
+  // Prefer box-zoom on LMB drag (consistent with other tabs, e.g. TabOrderFlow).
+  // Default ImPlot mapping is pan=LMB drag, box-select=RMB drag.
+  static bool input_map_configured = false;
+  if (!input_map_configured) {
+    ImPlot::MapInputReverse();
+    input_map_configured = true;
+  }
+
   // Auto-start coroutine
   if (!service->is_running()) {
     service->StartCompute(data.gui.Coro(), data);
@@ -681,13 +690,13 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   last_status = dist.compute.status;
 
   // Integrity (auto-fit height)
-  float integrity_height = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y * 1;
+  float integrity_height = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y * 1.5;
   ImGui::BeginChild("IntegrityBar", ImVec2(0, integrity_height), true);
   RenderIntegrity(dist.result.integrity);
   ImGui::EndChild();
 
   // Window control (auto-fit height: 2 rows + padding)
-  float ctrl_height = ImGui::GetFrameHeightWithSpacing() * 2 + ImGui::GetStyle().WindowPadding.y * 1;
+  float ctrl_height = ImGui::GetFrameHeightWithSpacing() * 2 + ImGui::GetStyle().WindowPadding.y * 1.5;
   ImGui::BeginChild("WindowCtrl", ImVec2(0, ctrl_height), true);
   RenderWindowControl(service, data, ui);
   ImGui::EndChild();

@@ -480,21 +480,14 @@ struct Dist {
                  std::function<void(std::function<void()>)> submit);
 
   // ==========================================================================
-  // Methods - Query
+  // Methods - Finalize & Query
   // ==========================================================================
 
-  // Query with grouping and min_samples filter
+  // Finalize after build_all completes: build globals + assets + query
+  void finalize();
+
+  // Re-query with different grouping (for UI group_by switching)
   void query(Input::GroupBy group_by);
-
-  // ==========================================================================
-  // Methods - Global Aggregations
-  // ==========================================================================
-
-  // Build global hour/weekday aggregations (call once after build_all)
-  void build_globals();
-
-  // Build global asset aggregations (merge across all months)
-  void build_global_assets();
 
   // ==========================================================================
   // Methods - Control

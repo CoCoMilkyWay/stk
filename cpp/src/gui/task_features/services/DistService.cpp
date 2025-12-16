@@ -151,11 +151,9 @@ asio::awaitable<void> DistService::ComputeLoop(SharedData &data) {
         }
 
         if (dist.compute.status != Dist::Compute::Status::Cancelled) {
-          // Query with default grouping
+          // Finalize: build globals + assets + query
           dist.compute.status = Dist::Compute::Status::Querying;
-          dist.query(Dist::Input::GroupBy::MONTH);
-          dist.build_globals();
-          dist.build_global_assets();
+          dist.finalize();
           dist.compute.status = Dist::Compute::Status::Done;
         }
       } else {
@@ -169,12 +167,11 @@ asio::awaitable<void> DistService::ComputeLoop(SharedData &data) {
                                   data.config.end_date);
     }
 
-    // Handle query request
+    // Handle query request (group_by switching)
     if (query_requested_.exchange(false)) {
       if (!dist.cache.empty()) {
         dist.compute.status = Dist::Compute::Status::Querying;
         dist.query(dist.input.group_by);
-        dist.build_global_assets();
         dist.compute.status = Dist::Compute::Status::Done;
       }
     }
