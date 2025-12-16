@@ -1,6 +1,7 @@
 // Tab Encode Implementation
 #include "gui/task_database/ui/TabEncode.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
+#include "gui/task_database/services/ScanService.hpp"
 #include "imgui.h"
 #include "shared/Asset.hpp"
 
@@ -8,9 +9,9 @@
 
 namespace GUI::Database {
 
-void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset) {
-  if (!service) {
-    ImGui::TextDisabled("Service not initialized");
+void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_service, EncodeState &state, Asset &asset) {
+  if (!encoding_service || !scan_service) {
+    ImGui::TextDisabled("Services not initialized");
     return;
   }
 
@@ -22,11 +23,11 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
     state.num_workers = max_workers;
   }
 
-  const bool is_running = service->is_running();
-  const auto status = service->get_status();
-  const auto progress = service->get_progress();
-  const auto check_result = service->get_last_check_result();
-  const auto file_check_result = service->get_file_check_result();
+  const bool is_running = encoding_service->is_running();
+  const auto status = encoding_service->get_status();
+  const auto progress = encoding_service->get_progress();
+  const auto check_result = scan_service->get_last_check_result();
+  const auto file_check_result = encoding_service->get_file_check_result();
 
   // ========================================================================
   // File Check (Archive Validation)
@@ -70,7 +71,7 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
 
     ImGui::Spacing();
     if (ImGui::Button("Run File Check", ImVec2(150, 0))) {
-      service->run_file_check(asset.archive.path);
+      encoding_service->run_file_check(asset.archive.path);
     }
     ImGui::SameLine();
     ImGui::TextDisabled("Check archive format and structure");
@@ -89,8 +90,8 @@ void RenderTabEncode(EncodingService *service, EncodeState &state, Asset &asset)
     ImGui::Text("Status:");
     ImGui::SameLine(150);
 
-    if (service->is_checking()) {
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "%s", service->get_status_string());
+    if (scan_service->is_scanning()) {
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "%s", scan_service->get_status_string());
       ImGui::TextDisabled("Database check in progress...");
     } else if (check_result.status == DatabaseStatus::Unchecked) {
       ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Not checked");

@@ -4,8 +4,7 @@
 
 #include "gui/task_database/services/AssetLoader.hpp"
 #include "gui/task_database/services/BaostockService.hpp"
-#include "gui/task_database/services/EncodingService.hpp"
-#include "gui/task_database/services/L2DatabaseService.hpp"
+#include "gui/task_database/services/ScanService.hpp"
 #include <boost/asio/awaitable.hpp>
 
 // Forward declaration
@@ -56,12 +55,12 @@ class StateManager {
 private:
   SharedData &data_;
   BaostockService *baostock_svc_;
-  EncodingService *encoding_svc_;
+  ScanService *scan_svc_;
   AggregatedState state_;
 
 public:
-  StateManager(SharedData &data, BaostockService *bs, EncodingService *enc)
-      : data_(data), baostock_svc_(bs), encoding_svc_(enc) {}
+  StateManager(SharedData &data, BaostockService *bs, ScanService *scan)
+      : data_(data), baostock_svc_(bs), scan_svc_(scan) {}
 
   // ============================================================================
   // Lifecycle

@@ -2,6 +2,7 @@
 #include "gui/Tasks.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_database/services/BaostockService.hpp"
+#include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/L2DatabaseService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
@@ -29,6 +30,7 @@ class DatabaseTask {
 private:
   // Service layer
   std::unique_ptr<BaostockService> baostock_svc_;
+  std::unique_ptr<ScanService> scan_svc_;
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<L2DatabaseService> l2_svc_;
   std::unique_ptr<StateManager> state_mgr_;
@@ -59,10 +61,10 @@ public:
   }
 
   const char *GetStatus() const {
-    if (!state_mgr_ || !encoding_svc_)
+    if (!state_mgr_ || !scan_svc_)
       return "";
 
-    auto check_result = encoding_svc_->get_last_check_result();
+    auto check_result = scan_svc_->get_last_check_result();
     const auto &state = state_mgr_->get_state();
 
     // Priority: Error > Incomplete > Ready
@@ -201,11 +203,17 @@ private:
   void InitializeServices(SharedData &data) {
     auto &io = coro_mgr_->GetIoContext();
 
-    // Create services
+    // Create services (in dependency order)
     baostock_svc_ = std::make_unique<BaostockService>(io, &data.config, &data.gui.terminal);
-    encoding_svc_ = std::make_unique<EncodingService>(data, io, &data.gui.terminal);
+    scan_svc_ = std::make_unique<ScanService>(data, io, &data.gui.terminal);
+    encoding_svc_ = std::make_unique<EncodingService>(data, &data.gui.terminal);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
-    state_mgr_ = std::make_unique<StateManager>(data, baostock_svc_.get(), encoding_svc_.get());
+    state_mgr_ = std::make_unique<StateManager>(data, baostock_svc_.get(), scan_svc_.get());
+
+    // Set encoding completion callback to trigger scan
+    encoding_svc_->set_scan_callback([this]() {
+      scan_svc_->trigger_scan();
+    });
 
     // Initialize: login workers + load existing JSON
     // Non-blocking, user sees progress in terminal
@@ -225,8 +233,8 @@ private:
     state_mgr_->refresh_state();
     const auto &state = state_mgr_->get_state();
 
-    // Get database check result
-    auto check_result = encoding_svc_->get_last_check_result();
+    // Get database check result from scan service
+    auto check_result = scan_svc_->get_last_check_result();
 
     // Status indicator at top
     ImGui::Text("Database Status: ");
@@ -541,11 +549,11 @@ private:
   }
 
   void DrawTabEncode() {
-    if (!encoding_svc_ || !data_) {
-      ImGui::TextDisabled("Encoding service not initialized...");
+    if (!encoding_svc_ || !scan_svc_ || !data_) {
+      ImGui::TextDisabled("Services not initialized...");
       return;
     }
-    RenderTabEncode(encoding_svc_.get(), encode_state_, data_->asset);
+    RenderTabEncode(encoding_svc_.get(), scan_svc_.get(), encode_state_, data_->asset);
   }
 };
 

@@ -5,6 +5,7 @@
 // Forward declarations
 namespace GUI::Database {
 class EncodingService;
+class ScanService;
 struct EncodingProgress;
 } // namespace GUI::Database
 
@@ -35,7 +36,8 @@ struct EncodeState {
 // ============================================================================
 
 void RenderTabEncode(
-    EncodingService *service,
+    EncodingService *encoding_service,
+    ScanService *scan_service,
     EncodeState &state,
     Asset &asset);
 

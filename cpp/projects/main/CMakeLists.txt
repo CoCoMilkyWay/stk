@@ -150,6 +150,7 @@ set(SOURCES
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/services/BaostockService.cpp
+    ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/EncodingService.cpp
     ../../src/gui/task_database/infrastructure/DataManager.cpp
@@ -229,6 +230,7 @@ set(HEADERS
     ../../include/gui/task_database/models/BaostockData.hpp
     ../../include/gui/task_database/services/ClassifierService.hpp
     ../../include/gui/task_database/services/BaostockService.hpp
+    ../../include/gui/task_database/services/ScanService.hpp
     ../../include/gui/task_database/services/L2DatabaseService.hpp
     ../../include/gui/task_database/services/StateManager.hpp
     ../../include/gui/task_database/infrastructure/BaostockClient.hpp
@@ -251,6 +253,7 @@ set_source_files_properties(
     ../../src/gui/task_database/infrastructure/DataManager.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/BaostockService.cpp
+    ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/TaskDatabase.cpp
