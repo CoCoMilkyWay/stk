@@ -59,6 +59,7 @@ private:
 
     // Write data validity flag (event-driven sparsity marker)
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
+    DEPTH_WRITE_SINGLE(store_, date_str_, t, DepthFieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
   }
 
   // Write LOB depth snapshot (N levels bid/ask price/volume for GUI)
@@ -93,8 +94,8 @@ private:
     lob_depth_buffer_[4 * N] = static_cast<float>((best_bid->price + best_ask->price) >> 1);
     lob_depth_buffer_[4 * N + 1] = 1.0f;
 
-    // Batch write: _bid_price to _data_valid
-    TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, L0_FieldOffset::_bid_price, L0_FieldOffset::_data_valid, lob_depth_buffer_, worker_id_);
+    // Batch write: _bid_price to _depth_valid (inclusive, now using depth store)
+    DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, DepthFieldOffset::_bid_price, DepthFieldOffset::_data_valid, lob_depth_buffer_, worker_id_);
   }
 
   // Get mid price from depth buffer

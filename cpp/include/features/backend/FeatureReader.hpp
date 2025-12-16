@@ -76,6 +76,33 @@ public:
     bool is_loaded() const { return A > 0; }
   };
 
+  // Depth tensor for a single day
+  struct DepthTensor {
+    std::string date;                      // "YYYYMMDD"
+    size_t T = 0;                          // Time dimension (same as L0)
+    size_t F = 0;                          // Depth field dimension
+    size_t A = 0;                          // Asset dimension
+    std::vector<feature_storage_t> data;   // Flat [T][F][A]
+    
+    // Access single value by field enum
+    inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
+      assert(t < T && a < A);
+      size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
+      assert(f_offset < F && "Field offset out of bounds");
+      return data[(t * F + f_offset) * A + a];
+    }
+    
+    // Get pointer to all assets for one field
+    inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
+      assert(t < T);
+      size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
+      assert(f_offset < F && "Field offset out of bounds");
+      return data.data() + (t * F + f_offset) * A;
+    }
+    
+    bool is_loaded() const { return A > 0; }
+  };
+
   // Multi-day tensor cache
   struct MultiDayCache {
     std::vector<DayTensor> days;
@@ -139,6 +166,43 @@ public:
     std::string dir = base_dir_ + "/" + year + "/" + month + "/" + day;
 
     return load_level(dir, level, out);
+  }
+
+  // Load depth data for a single date
+  bool load_depth(const std::string &date, DepthTensor &out) const {
+    assert(date.size() == 8);
+    out.date = date;
+    
+    std::string year = date.substr(0, 4);
+    std::string month = date.substr(4, 2);
+    std::string day = date.substr(6, 2);
+    std::string dir = base_dir_ + "/" + year + "/" + month + "/" + day;
+    std::string path = dir + "/depth.bin";
+    
+    if (!std::filesystem::exists(path))
+      return false;
+    
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs)
+      return false;
+    
+    // Read header
+    ifs.read(reinterpret_cast<char*>(&out.T), sizeof(size_t));
+    ifs.read(reinterpret_cast<char*>(&out.F), sizeof(size_t));
+    ifs.read(reinterpret_cast<char*>(&out.A), sizeof(size_t));
+    
+    // Validate dimensions
+    assert(out.T > 0 && out.T <= MAX_ROWS_PER_LEVEL[0]);
+    assert(out.F == DEPTH_TOTAL_WIDTH);
+    assert(out.A > 0);
+    
+    // Read data
+    size_t total_elements = out.T * out.F * out.A;
+    out.data.resize(total_elements);
+    ifs.read(reinterpret_cast<char*>(out.data.data()), 
+             total_elements * sizeof(feature_storage_t));
+    
+    return true;
   }
 
 private:
@@ -287,4 +351,11 @@ private:
 
 #define TENSOR_GET_MULTI(tensor, lvl, t, field_enum, i, a) \
   ((tensor).data[lvl][((t) * (tensor).F[lvl] + L##lvl##_FIELD_OFFSETS[field_enum] + (i)) * (tensor).A + (a)])
+
+// Depth tensor access macros
+#define DEPTH_GET(depth_tensor, t, field_enum, a) \
+  ((depth_tensor).data[((t) * (depth_tensor).F + DEPTH_FIELD_OFFSETS[field_enum]) * (depth_tensor).A + (a)])
+
+#define DEPTH_GET_MULTI(depth_tensor, t, field_enum, i, a) \
+  ((depth_tensor).data[((t) * (depth_tensor).F + DEPTH_FIELD_OFFSETS[field_enum] + (i)) * (depth_tensor).A + (a)])
 

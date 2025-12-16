@@ -153,6 +153,29 @@ constexpr size_t FIELDS_PER_LEVEL[LEVEL_COUNT] = {
     ALL_LEVELS(GENERATE_FIELDS_PER_LEVEL_ENTRY)};
 
 // ============================================================================
+// DEPTH METADATA (separate from levels)
+// ============================================================================
+
+// Depth field count
+constexpr size_t DEPTH_FIELD_COUNT = 0 DEPTH_FIELDS(COUNT_FIELD);
+
+// Depth field widths
+inline constexpr size_t DEPTH_FIELD_WIDTHS[] = { DEPTH_FIELDS(GENERATE_FIELD_WIDTH_L0) };
+
+// Depth field offsets
+inline constexpr auto DEPTH_FIELD_OFFSETS = generate_offsets(DEPTH_FIELD_WIDTHS);
+
+// Depth total width
+constexpr size_t DEPTH_TOTAL_WIDTH = array_sum(DEPTH_FIELD_WIDTHS, DEPTH_FIELD_COUNT);
+
+// Depth field enum
+namespace DepthFieldOffset {
+  enum : size_t {
+    DEPTH_FIELDS(GENERATE_FIELD_INDEX_L0)
+  };
+}
+
+// ============================================================================
 // STORAGE LAYOUT (No Structs)
 // ============================================================================
 // Flat [T][F_total][A] layout for optimal cache/SIMD performance

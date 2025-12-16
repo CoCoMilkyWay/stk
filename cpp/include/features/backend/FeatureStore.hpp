@@ -47,6 +47,9 @@ private:
     std::atomic<uint32_t> epoch{0}; // Generation number for cache invalidation
     char date[16] = {0};            // Fixed-size date string "YYYYMMDD"
     feature_storage_t *data[LEVEL_COUNT] = {nullptr};
+    
+    // Depth data [T][F_depth][A] (separate storage for orderflow)
+    feature_storage_t *depth_data = nullptr;
 
     // Two-level synchronization (key optimization: O(W) scan instead of O(A))
     size_t *ts_write_pos = nullptr;                   // [A] per-asset write position (TS-local, no sync)
@@ -83,6 +86,14 @@ private:
         // 2MB huge pages significantly reduce TLB pressure for sequential scans
         madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
       }
+      
+      // Allocate depth data (same T as L0)
+      const size_t depth_total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
+      const size_t depth_aligned_bytes = ((depth_total_bytes + 63) / 64) * 64;
+      depth_data = static_cast<feature_storage_t *>(std::aligned_alloc(64, depth_aligned_bytes));
+      assert(depth_data);
+      madvise(depth_data, depth_aligned_bytes, MADV_HUGEPAGE);
+      
       ts_write_pos = new size_t[num_assets]();
       ts_worker_state = new std::atomic<uint64_t>[num_ts_workers]();
     }
@@ -92,6 +103,11 @@ private:
         const size_t total_bytes = MAX_ROWS_PER_LEVEL[lvl] * FIELDS_PER_LEVEL[lvl] * num_assets * sizeof(feature_storage_t);
         std::memset(data[lvl], 0, total_bytes);
       }
+      
+      // Reset depth data
+      const size_t depth_total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
+      std::memset(depth_data, 0, depth_total_bytes);
+      
       for (size_t i = 0; i < num_assets; ++i) {
         ts_write_pos[i] = 0;
       }
@@ -107,6 +123,8 @@ private:
         if (data[lvl])
           std::free(data[lvl]);
       }
+      if (depth_data)
+        std::free(depth_data);
       delete[] ts_write_pos;
       delete[] ts_worker_state;
     }
@@ -168,6 +186,9 @@ public:
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
       bytes_per_day += MAX_ROWS_PER_LEVEL[lvl] * num_assets * FIELDS_PER_LEVEL[lvl] * sizeof(feature_storage_t);
     }
+    // Add depth data size
+    const size_t depth_bytes = MAX_ROWS_PER_LEVEL[0] * num_assets * DEPTH_TOTAL_WIDTH * sizeof(feature_storage_t);
+    bytes_per_day += depth_bytes;
 
     std::cout << "\n=== Feature Store Tensor Pool ===\n";
 
@@ -178,10 +199,17 @@ public:
       const size_t A = num_assets;
       const size_t F = FIELDS_PER_LEVEL[lvl];
       const size_t bytes = T * A * F * sizeof(feature_storage_t);
-      printf("  L%zu: [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", lvl, T, F, A, bytes / (1024.0 * 1024.0));
+      printf("  L%-5zu [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", lvl, T, F, A, bytes / (1024.0 * 1024.0));
+    }
+    // Add depth info
+    {
+      const size_t T = MAX_ROWS_PER_LEVEL[0];
+      const size_t A = num_assets;
+      const size_t F = DEPTH_TOTAL_WIDTH;
+      printf("  Depth  [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", T, F, A, depth_bytes / (1024.0 * 1024.0));
     }
 
-    printf("\nPer-day tensor: %.2f MB |Pool size: %zu slots | Total: %.2f GB\n",
+    printf("\nPer-day tensor: %.2f MB (features + depth) | Pool size: %zu slots | Total: %.2f GB\n",
            bytes_per_day / (1024.0 * 1024.0),
            pool_size_,
            (bytes_per_day * pool_size_) / (1024.0 * 1024.0 * 1024.0));
@@ -203,6 +231,16 @@ public:
           reinterpret_cast<volatile char *>(pool_[i].data[lvl])[offset] = 0;
         }
         reinterpret_cast<volatile char *>(pool_[i].data[lvl])[total_bytes - 1] = 0;
+      }
+      
+      // Touch depth data pages
+      {
+        const size_t total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
+        const size_t page_size = 4096;
+        for (size_t offset = 0; offset < total_bytes; offset += page_size) {
+          reinterpret_cast<volatile char *>(pool_[i].depth_data)[offset] = 0;
+        }
+        reinterpret_cast<volatile char *>(pool_[i].depth_data)[total_bytes - 1] = 0;
       }
 
       // Initialize state and reset slot
@@ -642,7 +680,7 @@ private:
     assert(slot && date_str.size() == 8);
 
     auto t_start = std::chrono::high_resolution_clock::now();
-    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: START " + date_str);
+    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: START " + date_str + " (features_L0/L1/L2 + depth)");
 
     std::string year = date_str.substr(0, 4);
     std::string month = date_str.substr(4, 2);
@@ -728,6 +766,32 @@ private:
       sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
       close(fd);
     }
+    
+    // Write depth.bin (separate storage for orderflow)
+    {
+      std::string filename = out_dir + "/depth.bin";
+      int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      assert(fd >= 0);
+      
+      const size_t T_depth = T[0];  // Same as L0
+      const size_t F_depth = DEPTH_TOTAL_WIDTH;
+      
+      ssize_t ret = 0;
+      ret = ::write(fd, &T_depth, sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      ret = ::write(fd, &F_depth, sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      ret = ::write(fd, &A, sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      
+      const size_t total_elements = T_depth * F_depth * A;
+      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
+      ret = ::write(fd, slot->depth_data, total_bytes);
+      assert(ret == static_cast<ssize_t>(total_bytes));
+      
+      sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
+      close(fd);
+    }
 #endif
 
     auto t_end = std::chrono::high_resolution_clock::now();
@@ -737,7 +801,8 @@ private:
 
     Logger::log("worker_" + std::to_string(io_worker_id_),
                 "write_to_disk: END " + date_str +
-                    " [mkdir:" + std::to_string(mkdir_ms) + "ms" +
+                    " [files:4(L0/L1/L2+depth)" +
+                    " mkdir:" + std::to_string(mkdir_ms) + "ms" +
                     " write:" + std::to_string(write_ms) + "ms" +
                     " total:" + std::to_string(total_ms) + "ms]");
   }
@@ -845,6 +910,42 @@ public:
       const size_t _idx = ((t) * _F + _f) * _A + (a);                                       \
       _slot.data[lvl][_idx] = (src)[_f - _f_start];                                         \
     }                                                                                       \
+  } while (0)
+
+// DEPTH_WRITE_SINGLE: Write single depth field (similar to TS_WRITE_SINGLE but for depth store)
+#define DEPTH_WRITE_SINGLE(store, date, t, field_enum, a, value, worker_id) \
+  do {                                                                       \
+    auto &_slot = (store)->ts_get_slot(date, worker_id);                     \
+    assert(_slot.depth_data && "depth_data is null");                        \
+    const size_t _F = DEPTH_TOTAL_WIDTH;                                     \
+    const size_t _A = (store)->query_A();                                    \
+    [[maybe_unused]] const size_t _T = (store)->query_T(0);                  \
+    const size_t _f = DEPTH_FIELD_OFFSETS[field_enum];                       \
+    assert((t) < _T && "time index out of bounds");                          \
+    assert(_f < _F && "feature index out of bounds");                        \
+    assert((a) < _A && "asset index out of bounds");                         \
+    const size_t _idx = ((t) * _F + _f) * _A + (a);                          \
+    _slot.depth_data[_idx] = (value);                                        \
+  } while (0)
+
+// DEPTH_WRITE_FEATURES: Write depth data (similar to TS_WRITE_FEATURES but for depth store)
+#define DEPTH_WRITE_FEATURES(store, date, t, a, f_start_enum, f_end_enum, src, worker_id) \
+  do {                                                                                    \
+    auto &_slot = (store)->ts_get_slot(date, worker_id);                                  \
+    assert(_slot.depth_data && "depth_data is null");                                     \
+    const size_t _F = DEPTH_TOTAL_WIDTH;                                                  \
+    const size_t _A = (store)->query_A();                                                 \
+    [[maybe_unused]] const size_t _T = (store)->query_T(0);                               \
+    const size_t _f_start = DEPTH_FIELD_OFFSETS[f_start_enum];                            \
+    const size_t _f_end = DEPTH_FIELD_OFFSETS[f_end_enum];                                \
+    assert((t) < _T && "time index out of bounds");                                       \
+    assert((a) < _A && "asset index out of bounds");                                      \
+    assert(_f_start <= _f_end && "invalid feature range");                                \
+    assert(_f_end <= _F && "feature end out of bounds");                                  \
+    for (size_t _f = _f_start; _f < _f_end; ++_f) {                                       \
+      const size_t _idx = ((t) * _F + _f) * _A + (a);                                     \
+      _slot.depth_data[_idx] = (src)[_f - _f_start];                                      \
+    }                                                                                     \
   } while (0)
 
 // CS_READ_ALL: Read all assets for one field → returns _Float16*

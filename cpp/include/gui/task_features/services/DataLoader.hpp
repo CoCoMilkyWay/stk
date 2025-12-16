@@ -219,15 +219,16 @@ public:
     auto it = l1_cache.date_to_idx.find(date);
     size_t day_idx = (it != l1_cache.date_to_idx.end()) ? it->second : 0;
 
-    FeatureReader::DayTensor tensor;
-    if (!reader_.load_day_level(date, 0, tensor)) {
+    // Load depth data (for orderflow visualization and validity flags)
+    FeatureReader::DepthTensor depth_tensor;
+    if (!reader_.load_depth(date, depth_tensor)) {
       cache.loaded = true;
       return false;
     }
 
-    assert(tensor.T[0] == OrderFlowConst::L0_CAPACITY && "L0 tensor must be dense with time index semantics");
+    assert(depth_tensor.T == OrderFlowConst::L0_CAPACITY && "Depth tensor must be dense with time index semantics");
 
-    if (asset_idx >= tensor.A) {
+    if (asset_idx >= depth_tensor.A) {
       cache.loaded = true;
       return false;
     }
@@ -243,12 +244,12 @@ public:
 
     // Sparse loading: only store valid ticks (depth_valid=true or data_valid=true)
     // Line plots and heatmap will use ImPlot step mode to handle sparsity
-    for (size_t t = 0; t < tensor.T[0]; ++t) {
-      assert(t < OrderFlowConst::L0_CAPACITY && "tensor row exceeds L0_CAPACITY");
+    for (size_t t = 0; t < depth_tensor.T; ++t) {
+      assert(t < OrderFlowConst::L0_CAPACITY && "depth tensor row exceeds L0_CAPACITY");
 
-      // Read validity flags
-      float depth_valid_val = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_depth_valid, asset_idx));
-      float data_valid_val = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_data_valid, asset_idx));
+      // Read validity flags (from depth tensor)
+      float depth_valid_val = static_cast<float>(DEPTH_GET(depth_tensor, t, DepthFieldOffset::_depth_valid, asset_idx));
+      float data_valid_val = static_cast<float>(DEPTH_GET(depth_tensor, t, DepthFieldOffset::_data_valid, asset_idx));
 
       bool depth_valid = (depth_valid_val > 0.5f);
       bool data_valid = (data_valid_val > 0.5f);
@@ -262,19 +263,19 @@ public:
       std::array<float, N> bp{}, ap{}, bv{}, av{};
 
       if (depth_valid) {
-        // Read prices as integers (cents) and convert to yuan
-        float mid_cents = static_cast<float>(TENSOR_GET(tensor, 0, t, L0_FieldOffset::_mid_price, asset_idx));
+        // Read prices as integers (cents) and convert to yuan (from depth tensor)
+        float mid_cents = static_cast<float>(DEPTH_GET(depth_tensor, t, DepthFieldOffset::_mid_price, asset_idx));
         mid = mid_cents * 0.01f;
 
-        // Multi-width fields: use TENSOR_GET_MULTI macro
+        // Multi-width fields: use DEPTH_GET_MULTI macro
         for (size_t i = 0; i < N; ++i) {
-          float bp_cents = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_bid_price, i, asset_idx));
-          float ap_cents = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_ask_price, i, asset_idx));
+          float bp_cents = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_bid_price, i, asset_idx));
+          float ap_cents = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_ask_price, i, asset_idx));
           
           bp[i] = bp_cents * 0.01f;  // Convert cents to yuan
           ap[i] = ap_cents * 0.01f;  // Convert cents to yuan
-          bv[i] = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_bid_volume, i, asset_idx));
-          av[i] = static_cast<float>(TENSOR_GET_MULTI(tensor, 0, t, L0_FieldOffset::_ask_volume, i, asset_idx));
+          bv[i] = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_bid_volume, i, asset_idx));
+          av[i] = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_ask_volume, i, asset_idx));
         }
 
         // Filter sentinel data (prices already in yuan)

@@ -26,11 +26,6 @@
   X(universe_size,      1,             DATA,  SH,   META,           UNIVERSE,   NONE,      "Universe Size",          "全域规模",       "count(valid)",                "当前有效合约数量")                 \
   X(_link_to_L1,        1,             ALL,   META, META,           RAW,        NONE,      "Link to L1",             "L1时间索引",     "L1_time_index",               "L0→L1时间映射")                    \
   X(_link_to_L2,        1,             ALL,   META, META,           RAW,        NONE,      "Link to L2",             "L2时间索引",     "L2_time_index",               "L0→L2时间映射")                    \
-  X(_bid_price,         L2::LOB_DEPTH, DEPTH, META, META,           RAW,        NONE,      "Bid Prices",             "买盘价格",       "bid_price[0:N]",              "GUI:N档买盘价格(分)")               \
-  X(_ask_price,         L2::LOB_DEPTH, DEPTH, META, META,           RAW,        NONE,      "Ask Prices",             "卖盘价格",       "ask_price[0:N]",              "GUI:N档卖盘价格(分)")               \
-  X(_bid_volume,        L2::LOB_DEPTH, DEPTH, META, META,           RAW,        NONE,      "Bid Volumes",            "买盘量",         "bid_volume[0:N]",             "GUI:N档买盘量(手,100股)")           \
-  X(_ask_volume,        L2::LOB_DEPTH, DEPTH, META, META,           RAW,        NONE,      "Ask Volumes",            "卖盘量",         "ask_volume[0:N]",             "GUI:N档卖盘量(手,100股)")           \
-  X(_mid_price,         1,             DEPTH, META, META,           RAW,        NONE,      "Mid Price",              "中间价",         "(bid1+ask1)/2",               "GUI:实时中间价(分)")                \
   X(_depth_valid,       1,             ALL,   META, META,           RAW,        NONE,      "Depth Valid Flag",       "深度有效标志",   "1.0=valid, 0.0=invalid",      "LOB深度缓冲区完整性标记")           \
   X(_data_valid,        1,             ALL,   META, META,           RAW,        NONE,      "Data Valid Flag",        "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")                \
 
@@ -76,6 +71,20 @@
   X(universe_size,       1, DATA, SH,   META,       UNIVERSE,   NONE,      "Universe Size",               "全域规模",       "count(valid)",               "当前有效合约数量")      \
   X(market_volatility,   1, DATA, SH,   META,       BENCHMARK,  NONE,      "Market Volatility",           "市场波动率",     "std(mkt_ret_24h)",           "市场24小时波动率")      \
   X(_data_valid,         1, ALL,  META, META,       RAW,        NONE,      "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",     "事件驱动稀疏性标记")
+
+// ============================================================================
+// DEPTH: LOB Snapshot Data (separate storage for orderflow visualization)
+// ============================================================================
+// Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description)
+
+#define DEPTH_FIELDS(X)                                                                                                                                                        \
+  X(_bid_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "Bid Prices",        "买盘价格", "bid_price[0:N]",      "GUI:N档买盘价格(分)")      \
+  X(_ask_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "Ask Prices",        "卖盘价格", "ask_price[0:N]",      "GUI:N档卖盘价格(分)")      \
+  X(_bid_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "Bid Volumes",       "买盘量",   "bid_volume[0:N]",     "GUI:N档买盘量(手,100股)")  \
+  X(_ask_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "Ask Volumes",       "卖盘量",   "ask_volume[0:N]",     "GUI:N档卖盘量(手,100股)")  \
+  X(_mid_price,    1,             DEPTH, META, META, RAW, NONE, "Mid Price",         "中间价",   "(bid1+ask1)/2",       "GUI:实时中间价(分)")       \
+  X(_depth_valid,  1,             ALL,   META, META, RAW, NONE, "Depth Valid Flag",  "深度有效", "1.0=valid",           "LOB深度缓冲区完整性标记")  \
+  X(_data_valid,   1,             ALL,   META, META, RAW, NONE, "Data Valid Flag",   "数据有效", "1.0=valid",           "事件驱动稀疏性标记")
 
 // clang-format on
 

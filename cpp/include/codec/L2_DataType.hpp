@@ -38,7 +38,7 @@ inline constexpr int RESAMPLE_EMA_DAYS_PERIOD = 5;     // shouldn't be too large
 // stddev 108 110 114 124
 
 // LimitOrderBook
-inline constexpr size_t LOB_DEPTH = 5;                    // Number of depth levels to maintain (one-side)
+inline constexpr size_t LOB_DEPTH = 30;                   // Number of depth levels to maintain (one-side)
 inline constexpr uint32_t L2_MIN_TIME_INTERVAL_MS = 1000; // Minimum time interval in milliseconds for effective TOB update
 
 // Trading Sessions
