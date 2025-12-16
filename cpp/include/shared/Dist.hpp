@@ -381,61 +381,6 @@ struct Dist {
     }
   };
 
-  // ==========================================================================
-  // Trajectory
-  // ==========================================================================
-
-  struct TrajectoryPoint {
-    float x = 0.0f;     // robust_skewness: (Q75+Q25-2*Q50)/(Q75-Q25)
-    float y = 0.0f;     // tail_thickness: (Q95-Q05)/(Q75-Q25)
-    float color = 0.0f; // peakedness: CDF(mean+std) - CDF(mean-std)
-    float size = 0.0f;  // variance
-    size_t n = 0;       // sample count
-
-    void extract_from(const KLLWithMoments &src) {
-      n = src.count();
-      if (n < 10)
-        return;
-
-      double q05 = src.quantile(0.05);
-      double q25 = src.quantile(0.25);
-      double q50 = src.quantile(0.50);
-      double q75 = src.quantile(0.75);
-      double q95 = src.quantile(0.95);
-
-      double iqr = q75 - q25;
-      if (iqr > 1e-10) {
-        x = static_cast<float>((q75 + q25 - 2 * q50) / iqr);
-        y = static_cast<float>((q95 - q05) / iqr);
-      }
-
-      double var = src.var();
-      size = static_cast<float>(var);
-
-      if (var > 1e-10) {
-        double std = std::sqrt(var);
-        double mean = src.mean();
-        double cdf_lo = src.queryCDF(mean - std);
-        double cdf_hi = src.queryCDF(mean + std);
-        color = static_cast<float>(cdf_hi - cdf_lo);
-      }
-    }
-  };
-
-  struct Trajectory {
-    // [n_assets][n_months]
-    std::vector<std::vector<TrajectoryPoint>> paths;
-    std::vector<std::string> months;
-    size_t n_assets = 0;
-    bool valid = false;
-
-    void clear() {
-      paths.clear();
-      months.clear();
-      n_assets = 0;
-      valid = false;
-    }
-  };
 
   // ==========================================================================
   // Compute Control
@@ -513,8 +458,12 @@ struct Dist {
   Input input;
   std::vector<MonthlyCache> cache; // [n_months], sorted by month
   QueryResult result;
-  Trajectory trajectory;
   Compute compute;
+
+  // Global aggregations (computed once, reused for PDF visualization)
+  std::vector<KLLWithMoments> global_by_hour;    // [24]
+  std::vector<KLLWithMoments> global_by_weekday; // [7]
+  std::vector<KLLWithMoments> global_by_asset;   // [n_assets]
 
   // ==========================================================================
   // Methods - Build
@@ -538,11 +487,14 @@ struct Dist {
   void query(Input::GroupBy group_by);
 
   // ==========================================================================
-  // Methods - Trajectory
+  // Methods - Global Aggregations
   // ==========================================================================
 
-  // Build trajectory for all assets across months
-  void build_trajectory();
+  // Build global hour/weekday aggregations (call once after build_all)
+  void build_globals();
+
+  // Build global asset aggregations (merge across all months)
+  void build_global_assets();
 
   // ==========================================================================
   // Methods - Control
@@ -557,8 +509,10 @@ struct Dist {
     input = Input{};
     cache.clear();
     result.clear();
-    trajectory.clear();
     compute.reset();
+    global_by_hour.clear();
+    global_by_weekday.clear();
+    global_by_asset.clear();
   }
 
   bool need_rebuild(int feat_idx, int lvl, const std::string &range) const {

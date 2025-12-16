@@ -28,8 +28,8 @@ struct DistUIState {
   // Month focus slider (index into available months)
   int focus_month_idx = 0;
 
-  // Hovered asset in trajectory (for tooltip)
-  int hovered_asset = -1;
+  // Autofit trigger (set when compute completes)
+  bool need_autofit = false;
 };
 
 // ============================================================================

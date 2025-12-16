@@ -352,37 +352,65 @@ void Dist::query(Input::GroupBy group_by) {
 }
 
 // ============================================================================
-// Build Trajectory
+// Build Global Assets
 // ============================================================================
 
-void Dist::build_trajectory() {
-  trajectory.clear();
-
-  if (cache.empty()) {
-    trajectory.valid = true;
-    return;
-  }
-
-  const size_t n_months = cache.size();
+void Dist::build_global_assets() {
+  global_by_asset.clear();
+  
+  if (cache.empty()) return;
+  
   const size_t n_assets = cache[0].n_assets;
-
-  trajectory.n_assets = n_assets;
-  trajectory.months.reserve(n_months);
-  for (const auto &mc : cache) {
-    trajectory.months.push_back(mc.month);
-  }
-
-  // [n_assets][n_months]
-  trajectory.paths.resize(n_assets);
+  global_by_asset.reserve(n_assets);
   for (size_t a = 0; a < n_assets; ++a) {
-    trajectory.paths[a].resize(n_months);
-    for (size_t m = 0; m < n_months; ++m) {
-      const auto &mc = cache[m];
-      if (a < mc.by_asset.size()) {
-        trajectory.paths[a][m].extract_from(mc.by_asset[a]);
+    global_by_asset.emplace_back(KLL_CAPACITY);
+  }
+  
+  // Merge from all months
+  for (const auto &mc : cache) {
+    if (!mc.valid) continue;
+    for (size_t a = 0; a < mc.by_asset.size() && a < n_assets; ++a) {
+      if (mc.by_asset[a].count() > 0) {
+        global_by_asset[a].merge(mc.by_asset[a]);
       }
     }
   }
+}
 
-  trajectory.valid = true;
+// ============================================================================
+// Build Global Aggregations
+// ============================================================================
+
+void Dist::build_globals() {
+  // Initialize 24 hours
+  global_by_hour.clear();
+  global_by_hour.reserve(24);
+  for (size_t h = 0; h < 24; ++h) {
+    global_by_hour.emplace_back(KLL_CAPACITY);
+  }
+
+  // Initialize 7 weekdays
+  global_by_weekday.clear();
+  global_by_weekday.reserve(7);
+  for (size_t wd = 0; wd < 7; ++wd) {
+    global_by_weekday.emplace_back(KLL_CAPACITY);
+  }
+
+  // Merge from all months
+  for (const auto &mc : cache) {
+    if (!mc.valid)
+      continue;
+
+    for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
+      if (mc.by_hour[h].count() > 0) {
+        global_by_hour[h].merge(mc.by_hour[h]);
+      }
+    }
+
+    for (size_t wd = 0; wd < mc.by_weekday.size() && wd < 7; ++wd) {
+      if (mc.by_weekday[wd].count() > 0) {
+        global_by_weekday[wd].merge(mc.by_weekday[wd]);
+      }
+    }
+  }
 }

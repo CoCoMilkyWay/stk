@@ -154,7 +154,8 @@ asio::awaitable<void> DistService::ComputeLoop(SharedData &data) {
           // Query with default grouping
           dist.compute.status = Dist::Compute::Status::Querying;
           dist.query(Dist::Input::GroupBy::MONTH);
-          dist.build_trajectory();
+          dist.build_globals();
+          dist.build_global_assets();
           dist.compute.status = Dist::Compute::Status::Done;
         }
       } else {
@@ -173,7 +174,7 @@ asio::awaitable<void> DistService::ComputeLoop(SharedData &data) {
       if (!dist.cache.empty()) {
         dist.compute.status = Dist::Compute::Status::Querying;
         dist.query(dist.input.group_by);
-        dist.build_trajectory();
+        dist.build_global_assets();
         dist.compute.status = Dist::Compute::Status::Done;
       }
     }
