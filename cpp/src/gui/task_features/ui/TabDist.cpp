@@ -37,6 +37,47 @@ static const char *StatusText(Dist::Compute::Status s) {
   return "?";
 }
 
+// Calculate distance from point to line segment (normalized coords)
+static double point_to_segment_dist_sq(double px, double py, double x1, double y1,
+                                       double x2, double y2) {
+  double dx = x2 - x1;
+  double dy = y2 - y1;
+  double len_sq = dx * dx + dy * dy;
+  if (len_sq < 1e-10)
+    return (px - x1) * (px - x1) + (py - y1) * (py - y1);
+
+  double t = ((px - x1) * dx + (py - y1) * dy) / len_sq;
+  t = std::max(0.0, std::min(1.0, t));
+  double closest_x = x1 + t * dx;
+  double closest_y = y1 + t * dy;
+  return (px - closest_x) * (px - closest_x) + (py - closest_y) * (py - closest_y);
+}
+
+// Compute median and MAD from a vector of values
+static std::pair<float, float> compute_median_mad(const std::vector<float> &vals) {
+  if (vals.empty())
+    return {0.0f, 0.0f};
+  std::vector<float> sorted = vals;
+  std::sort(sorted.begin(), sorted.end());
+  float median = sorted[sorted.size() / 2];
+  std::vector<float> abs_devs;
+  abs_devs.reserve(vals.size());
+  for (float v : vals) {
+    abs_devs.push_back(std::abs(v - median));
+  }
+  std::sort(abs_devs.begin(), abs_devs.end());
+  float mad = abs_devs[abs_devs.size() / 2];
+  return {median, mad};
+}
+
+// Compute alpha based on distance from focus index
+static float compute_focus_alpha(int idx, int focus_idx, float decay_rate = 0.1f) {
+  if (focus_idx < 0)
+    return 1.0f;
+  int dist_from_focus = std::abs(idx - focus_idx);
+  return std::max(0.1f, 1.0f - dist_from_focus * decay_rate);
+}
+
 // ============================================================================
 // Integrity Panel
 // ============================================================================
@@ -152,8 +193,7 @@ static void RenderWindowControl(DistService *service, SharedData &data,
 
     std::string label = get_month_label(dist, ui.focus_month_idx, months);
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::SliderInt("##FocusMonth", &ui.focus_month_idx, 0, n_months - 1,
-                         label.c_str())) {
+    if (ImGui::SliderInt("##FocusMonth", &ui.focus_month_idx, 0, n_months - 1, label.c_str())) {
       dist.input.focus_month_idx = ui.focus_month_idx;
     }
   }
@@ -176,7 +216,7 @@ static int get_zone(float val, float normal_lo, float normal_hi, float warn_lo,
 
 static ImU32 zone_color(int zone) {
   if (zone == 0)
-    return IM_COL32(60, 200, 60, 255);  // green
+    return IM_COL32(60, 200, 60, 255); // green
   if (zone == 1)
     return IM_COL32(220, 200, 60, 255); // yellow
   return IM_COL32(220, 80, 80, 255);    // red
@@ -278,23 +318,6 @@ static void RenderMomentBand(const char *label, float current_val,
   ImGui::Text(")");
 }
 
-// Compute median and MAD from a vector of values
-static std::pair<float, float> compute_median_mad(const std::vector<float> &vals) {
-  if (vals.empty())
-    return {0.0f, 0.0f};
-  std::vector<float> sorted = vals;
-  std::sort(sorted.begin(), sorted.end());
-  float median = sorted[sorted.size() / 2];
-  std::vector<float> abs_devs;
-  abs_devs.reserve(vals.size());
-  for (float v : vals) {
-    abs_devs.push_back(std::abs(v - median));
-  }
-  std::sort(abs_devs.begin(), abs_devs.end());
-  float mad = abs_devs[abs_devs.size() / 2];
-  return {median, mad};
-}
-
 static void RenderMomentsPanel(const Dist &dist, int focus_idx) {
   ImGui::BeginChild("MomentsPanel", ImVec2(350, 0), true);
   ImGui::Text("[Moments Status]");
@@ -346,85 +369,206 @@ static void RenderMomentsPanel(const Dist &dist, int focus_idx) {
 }
 
 // ============================================================================
-// PDF Evolution Panel (Right Column) - No legend, tooltip on hover
+// PDF Panels - Multiple views with hover tooltips
 // ============================================================================
 
-static void RenderPDFEvolution(const Dist &dist, int focus_idx) {
-  ImGui::BeginChild("PDFPanel", ImVec2(0, 0), true);
-  ImGui::Text("[PDF Evolution]");
-  ImGui::Separator();
+// Common PDF data structure
+struct PDFData {
+  const float *x = nullptr;
+  const float *y = nullptr;
+  size_t n = 0;
+  std::string label;
+};
 
-  if (dist.result.bins.empty()) {
-    ImGui::Text("No data");
-    ImGui::EndChild();
-    return;
-  }
+// Generic PDF rendering with hover detection
+template <typename GetTooltipFunc>
+static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
+                         int focus_idx, GetTooltipFunc get_tooltip) {
+  int hovered_idx = -1;
+  double min_dist_sq = 1e9;
 
-  // Track hovered bin for tooltip
-  int hovered_bin = -1;
-  double hover_dist_sq = 1e9;
+  if (ImPlot::BeginPlot(plot_id, ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
 
-  if (ImPlot::BeginPlot("##PDFEvolution", ImVec2(-1, -1),
-                        ImPlotFlags_NoLegend)) {
-    ImPlot::SetupAxes("Value", "Density");
+    int n_items = static_cast<int>(pdfs.size());
 
-    int n_bins = static_cast<int>(dist.result.bins.size());
-
-    // First pass: draw all lines (zero-copy, direct double pointers)
-    for (int i = 0; i < n_bins; ++i) {
-      const auto &bin = dist.result.bins[i];
-      if (bin.pdf_n == 0)
+    // Draw all lines with alpha based on distance from focus
+    for (int i = 0; i < n_items; ++i) {
+      if (pdfs[i].n == 0)
         continue;
 
-      // Alpha decay based on distance from focus
-      float alpha = 1.0f;
-      if (focus_idx >= 0) {
-        int dist_from_focus = std::abs(i - focus_idx);
-        alpha = std::max(0.1f, 1.0f - dist_from_focus * 0.2f);
-      }
+      float alpha = compute_focus_alpha(i, focus_idx);
+      float hue = static_cast<float>(i) / static_cast<float>(n_items);
+      ImVec4 color = ImPlot::SampleColormap(hue, ImPlotColormap_Viridis);
 
-      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight,
-                           i == focus_idx ? 2.0f : 1.0f);
-      ImPlot::SetNextLineStyle(IMPLOT_AUTO_COL, alpha);
-      // Zero-copy: use KLL internal pointers directly
-      ImPlot::PlotLine("##pdf", bin.pdf_x, bin.pdf_y, static_cast<int>(bin.pdf_n));
+      float line_weight = (i == focus_idx) ? 2.0f : 1.0f;
+      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, line_weight);
+      ImPlot::SetNextLineStyle(color, alpha);
+      ImPlot::PlotLine("##pdf", pdfs[i].x, pdfs[i].y, static_cast<int>(pdfs[i].n));
       ImPlot::PopStyleVar();
     }
 
-    // Second pass: find hovered line
+    // Detect hover
     if (ImPlot::IsPlotHovered()) {
       ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-      for (int i = 0; i < n_bins; ++i) {
-        const auto &bin = dist.result.bins[i];
-        if (bin.pdf_n == 0)
+      ImPlotRect limits = ImPlot::GetPlotLimits();
+      double x_range = limits.X.Max - limits.X.Min;
+      double y_range = limits.Y.Max - limits.Y.Min;
+
+      for (int i = 0; i < n_items; ++i) {
+        if (pdfs[i].n < 2)
           continue;
 
-        // Find closest point on this line
-        for (size_t j = 0; j < bin.pdf_n; ++j) {
-          double dx = mouse.x - bin.pdf_x[j];
-          double dy = mouse.y - bin.pdf_y[j];
-          double d2 = dx * dx + dy * dy * 100.0; // Scale y more since density range smaller
-          if (d2 < hover_dist_sq && d2 < 0.1) {
-            hover_dist_sq = d2;
-            hovered_bin = i;
+        for (size_t j = 0; j + 1 < pdfs[i].n; ++j) {
+          double nx1 = (pdfs[i].x[j] - limits.X.Min) / x_range;
+          double ny1 = (pdfs[i].y[j] - limits.Y.Min) / y_range;
+          double nx2 = (pdfs[i].x[j + 1] - limits.X.Min) / x_range;
+          double ny2 = (pdfs[i].y[j + 1] - limits.Y.Min) / y_range;
+          double nmx = (mouse.x - limits.X.Min) / x_range;
+          double nmy = (mouse.y - limits.Y.Min) / y_range;
+
+          double d_sq = point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2);
+          if (d_sq < min_dist_sq) {
+            min_dist_sq = d_sq;
+            hovered_idx = i;
           }
         }
       }
     }
 
+    // Highlight hovered line
+    if (hovered_idx >= 0 && min_dist_sq < 0.001) {
+      float hue = static_cast<float>(hovered_idx) / static_cast<float>(n_items);
+      ImVec4 color = ImPlot::SampleColormap(hue, ImPlotColormap_Viridis);
+
+      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 4.0f);
+      ImPlot::SetNextLineStyle(color, 1.0f);
+      ImPlot::PlotLine("##hovered", pdfs[hovered_idx].x, pdfs[hovered_idx].y,
+                       static_cast<int>(pdfs[hovered_idx].n));
+      ImPlot::PopStyleVar();
+    }
+
     ImPlot::EndPlot();
   }
 
-  // Tooltip for hovered bin
-  if (hovered_bin >= 0 && hovered_bin < static_cast<int>(dist.result.bins.size())) {
-    const auto &bin = dist.result.bins[hovered_bin];
+  // Tooltip
+  if (hovered_idx >= 0 && min_dist_sq < 0.001) {
     ImGui::BeginTooltip();
-    ImGui::Text("%s", bin.key.c_str());
-    ImGui::Text("n=%zu", bin.n_samples);
-    ImGui::Text("mean=%.4f var=%.4f", bin.mean, bin.variance);
-    ImGui::Text("skew=%.4f kurt=%.4f", bin.skewness, bin.kurtosis);
+    get_tooltip(hovered_idx);
     ImGui::EndTooltip();
   }
+
+  return hovered_idx;
+}
+
+static void RenderPDFByMonth(const Dist &dist, int focus_month_idx) {
+  ImGui::BeginChild("PDFByMonth", ImVec2(0, 0), true);
+  ImGui::Text("[PDF by Month]");
+  ImGui::Separator();
+
+  if (dist.cache.empty()) {
+    ImGui::Text("No data");
+    ImGui::EndChild();
+    return;
+  }
+
+  int n_months = static_cast<int>(dist.cache.size());
+  std::vector<PDFData> pdfs(n_months);
+
+  for (int m = 0; m < n_months; ++m) {
+    const auto &mc = dist.cache[m];
+    if (mc.valid && mc.total.count() >= 10) {
+      mc.total.exportPDF(pdfs[m].x, pdfs[m].y, pdfs[m].n);
+      pdfs[m].label = mc.month;
+    }
+  }
+
+  RenderPDFPlot("##PDFMonth", pdfs, focus_month_idx, [&](int idx) {
+    const auto &kll = dist.cache[idx].total;
+    ImGui::Text("%s", pdfs[idx].label.c_str());
+    ImGui::Text("n=%zu", kll.count());
+    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
+    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
+  });
+
+  ImGui::EndChild();
+}
+
+static void RenderPDFByWeekday(const Dist &dist, int focus_month_idx) {
+  ImGui::BeginChild("PDFByWeekday", ImVec2(0, 0), true);
+  ImGui::Text("[PDF by Weekday]");
+  ImGui::Separator();
+
+  if (dist.cache.empty() || focus_month_idx < 0 ||
+      focus_month_idx >= static_cast<int>(dist.cache.size())) {
+    ImGui::Text("No data");
+    ImGui::EndChild();
+    return;
+  }
+
+  const auto &month_cache = dist.cache[focus_month_idx];
+  if (!month_cache.valid || month_cache.by_weekday.size() != 7) {
+    ImGui::Text("No data");
+    ImGui::EndChild();
+    return;
+  }
+
+  const char *wd_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+  std::vector<PDFData> pdfs(7);
+
+  for (size_t wd = 0; wd < 7; ++wd) {
+    if (month_cache.by_weekday[wd].count() >= 10) {
+      month_cache.by_weekday[wd].exportPDF(pdfs[wd].x, pdfs[wd].y, pdfs[wd].n);
+      pdfs[wd].label = wd_names[wd];
+    }
+  }
+
+  RenderPDFPlot("##PDFWeekday", pdfs, -1, [&](int idx) {
+    const auto &kll = month_cache.by_weekday[idx];
+    ImGui::Text("%s", wd_names[idx]);
+    ImGui::Text("n=%zu", kll.count());
+    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
+    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
+  });
+
+  ImGui::EndChild();
+}
+
+static void RenderPDFByHour(const Dist &dist, int focus_month_idx) {
+  ImGui::BeginChild("PDFByHour", ImVec2(0, 0), true);
+  ImGui::Text("[PDF by Hour]");
+  ImGui::Separator();
+
+  if (dist.cache.empty() || focus_month_idx < 0 ||
+      focus_month_idx >= static_cast<int>(dist.cache.size())) {
+    ImGui::Text("No data");
+    ImGui::EndChild();
+    return;
+  }
+
+  const auto &month_cache = dist.cache[focus_month_idx];
+  if (!month_cache.valid || month_cache.by_hour.size() != 24) {
+    ImGui::Text("No data");
+    ImGui::EndChild();
+    return;
+  }
+
+  std::vector<PDFData> pdfs(24);
+
+  for (size_t h = 0; h < 24; ++h) {
+    if (month_cache.by_hour[h].count() >= 10) {
+      month_cache.by_hour[h].exportPDF(pdfs[h].x, pdfs[h].y, pdfs[h].n);
+      pdfs[h].label = "Hour " + std::to_string(h);
+    }
+  }
+
+  RenderPDFPlot("##PDFHour", pdfs, -1, [&](int idx) {
+    const auto &kll = month_cache.by_hour[idx];
+    ImGui::Text("Hour %d", idx);
+    ImGui::Text("n=%zu", kll.count());
+    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
+    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
+  });
 
   ImGui::EndChild();
 }
@@ -433,7 +577,7 @@ static void RenderPDFEvolution(const Dist &dist, int focus_idx) {
 // Trajectory Plot
 // ============================================================================
 
-static void RenderTrajectory(Dist &dist, const Asset &asset, DistUIState &ui) {
+static void RenderTrajectory(Dist &dist, const Asset &asset, DistUIState &ui, int focus_month_idx) {
   ImGui::Text("[Cross-Section Distribution Trajectory]");
   ImGui::Separator();
 
@@ -442,34 +586,39 @@ static void RenderTrajectory(Dist &dist, const Asset &asset, DistUIState &ui) {
     return;
   }
 
-  if (ImPlot::BeginPlot("##Trajectory", ImVec2(-1, 400))) {
+  if (ImPlot::BeginPlot("##Trajectory", ImVec2(-1, -1))) {
     ImPlot::SetupAxes("Robust Skewness", "Tail Thickness");
 
     size_t n_assets = dist.trajectory.n_assets;
     size_t n_months = dist.trajectory.months.size();
 
     ui.hovered_asset = -1;
+    double min_hover_dist = 1e9;
 
     for (size_t a = 0; a < n_assets; ++a) {
       const auto &path = dist.trajectory.paths[a];
       if (path.empty())
         continue;
 
-      // Collect valid points
-      std::vector<double> xs, ys, sizes;
+      // Collect valid points with alpha based on distance from focus
+      std::vector<double> xs, ys;
+      std::vector<float> alphas;
+      std::vector<int> month_indices;
+
       for (size_t m = 0; m < n_months; ++m) {
         const auto &pt = path[m];
         if (pt.n < 10)
           continue;
+
         xs.push_back(pt.x);
         ys.push_back(pt.y);
-        sizes.push_back(std::sqrt(pt.size) * 10.0); // Scale size
+        month_indices.push_back(static_cast<int>(m));
+        alphas.push_back(compute_focus_alpha(static_cast<int>(m), focus_month_idx));
       }
 
       if (xs.empty())
         continue;
 
-      // Plot as scatter with paths
       std::string label =
           a < asset.items.size() ? asset.items[a].asset_code : std::to_string(a);
 
@@ -481,15 +630,25 @@ static void RenderTrajectory(Dist &dist, const Asset &asset, DistUIState &ui) {
       avg_color /= path.size();
       ImVec4 color = ImPlot::SampleColormap(avg_color);
 
-      ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 4, color, 1.0f, color);
-      ImPlot::PlotScatter(label.c_str(), xs.data(), ys.data(),
-                          static_cast<int>(xs.size()));
+      // Draw points individually with different alphas
+      for (size_t i = 0; i < xs.size(); ++i) {
+        ImVec4 alpha_color = color;
+        alpha_color.w = alphas[i];
+        float marker_size = (month_indices[i] == focus_month_idx) ? 6.0f : 4.0f;
 
-      // Draw path lines connecting consecutive months
-      if (xs.size() > 1) {
-        ImPlot::SetNextLineStyle(color, 0.5f);
-        ImPlot::PlotLine(("##path" + std::to_string(a)).c_str(), xs.data(),
-                         ys.data(), static_cast<int>(xs.size()));
+        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, marker_size, alpha_color, alphas[i], alpha_color);
+        ImPlot::PlotScatter(("##pt" + std::to_string(a) + "_" + std::to_string(i)).c_str(),
+                            &xs[i], &ys[i], 1);
+      }
+
+      // Draw path lines with alpha
+      for (size_t i = 0; i + 1 < xs.size(); ++i) {
+        float line_alpha = std::min(alphas[i], alphas[i + 1]);
+        ImPlot::SetNextLineStyle(color, line_alpha);
+        double seg_x[2] = {xs[i], xs[i + 1]};
+        double seg_y[2] = {ys[i], ys[i + 1]};
+        ImPlot::PlotLine(("##path" + std::to_string(a) + "_" + std::to_string(i)).c_str(),
+                         seg_x, seg_y, 2);
       }
 
       // Check hover
@@ -498,9 +657,10 @@ static void RenderTrajectory(Dist &dist, const Asset &asset, DistUIState &ui) {
         for (size_t i = 0; i < xs.size(); ++i) {
           double dx = mouse.x - xs[i];
           double dy = mouse.y - ys[i];
-          if (dx * dx + dy * dy < 0.01) {
+          double dist = dx * dx + dy * dy;
+          if (dist < min_hover_dist && dist < 0.01) {
+            min_hover_dist = dist;
             ui.hovered_asset = static_cast<int>(a);
-            break;
           }
         }
       }
@@ -512,7 +672,9 @@ static void RenderTrajectory(Dist &dist, const Asset &asset, DistUIState &ui) {
   // Tooltip
   if (ui.hovered_asset >= 0 &&
       static_cast<size_t>(ui.hovered_asset) < asset.items.size()) {
+    ImGui::BeginTooltip();
     ImGui::Text("Asset: %s", asset.items[ui.hovered_asset].asset_code.c_str());
+    ImGui::EndTooltip();
   }
 }
 
@@ -534,14 +696,17 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   ImGui::EndChild();
 
   // Window control
-  ImGui::BeginChild("WindowCtrl", ImVec2(0, 80), true);
+  ImGui::BeginChild("WindowCtrl", ImVec2(0, 50), true);
   RenderWindowControl(service, data, ui);
   ImGui::EndChild();
 
-  // Moments + PDF (side by side)
-  float h = ImGui::GetContentRegionAvail().y * 0.4f;
-  ImGui::BeginChild("MomentsPDF", ImVec2(0, h), false);
-  ImGui::Columns(2, "MomPDFCols", true);
+  // Main content: Left (Moments) + Right (PDFs + Trajectory)
+  float content_height = ImGui::GetContentRegionAvail().y;
+  ImGui::Columns(2, "MainCols", true);
+  ImGui::SetColumnWidth(0, 350);
+
+  // Left column: Moments Panel
+  ImGui::BeginChild("MomentsSection", ImVec2(0, content_height), false);
 
   // Find focus bin index for MONTH grouping
   int focus_bin_idx = -1;
@@ -550,18 +715,40 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   }
 
   RenderMomentsPanel(dist, focus_bin_idx);
+  ImGui::EndChild();
 
   ImGui::NextColumn();
 
-  RenderPDFEvolution(dist, focus_bin_idx);
+  // Right column: PDF panels + Trajectory
+  ImGui::BeginChild("RightSection", ImVec2(0, content_height), false);
+
+  // Top: Three PDF panels in a row
+  float pdf_height = content_height * 0.5f;
+  ImGui::BeginChild("PDFRow", ImVec2(0, pdf_height), false);
+  ImGui::Columns(3, "PDFCols", false);
+
+  // PDF by Month (focus month only)
+  RenderPDFByMonth(dist, ui.focus_month_idx);
+  ImGui::NextColumn();
+
+  // PDF by Weekday (from focus month)
+  RenderPDFByWeekday(dist, ui.focus_month_idx);
+  ImGui::NextColumn();
+
+  // PDF by Hour (from focus month)
+  RenderPDFByHour(dist, ui.focus_month_idx);
 
   ImGui::Columns(1);
   ImGui::EndChild();
 
-  // Trajectory
-  ImGui::BeginChild("TrajectorySection", ImVec2(0, 0), false);
-  RenderTrajectory(dist, data.asset, ui);
+  // Bottom: Trajectory
+  ImGui::BeginChild("TrajectorySection", ImVec2(0, 0), true);
+  RenderTrajectory(dist, data.asset, ui, ui.focus_month_idx);
   ImGui::EndChild();
+
+  ImGui::EndChild();
+
+  ImGui::Columns(1);
 }
 
 void StopTabDist(DistService *service, SharedData &data) {
