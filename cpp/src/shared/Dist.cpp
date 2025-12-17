@@ -54,7 +54,7 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
   const size_t n_assets = asset.items.size();
   mc.init(n_assets);
 
-  // Get feature metadata for valid_type
+  // Get feature metadata for valid_type (constexpr branch elimination)
   const FeatureMetadata *meta_list = nullptr;
   size_t meta_count = 0;
   if (level == 0) {
@@ -68,162 +68,124 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
     meta_count = feature.metadata.features_l2.size();
   }
 
+  // Determine columns to load
+  std::vector<size_t> columns = {static_cast<size_t>(primary_idx)};
+  
   L2::ValidType valid_type = L2::ValidType::ALL;
   if (primary_idx >= 0 && static_cast<size_t>(primary_idx) < meta_count) {
     valid_type = meta_list[primary_idx].valid_type;
   }
 
-  // Find all dates in this month
+  // Find valid flag index
+  if (valid_type != L2::ValidType::ALL) {
+    const char *flag_name = (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
+    for (size_t i = 0; i < meta_count; ++i) {
+      if (std::strcmp(meta_list[i].code, flag_name) == 0) {
+        columns.push_back(i);
+        break;
+      }
+    }
+  }
+
+  // Batch load entire month (columnar compressed format)
   FeatureReader reader(features_dir);
   std::string year = mc.month.substr(0, 4);
   std::string month_str = mc.month.substr(4, 2);
-  auto month_dates = reader.list_dates(year, month_str);
 
-  // Process each date
-  for (const auto &date : month_dates) {
+  FeatureReader::MonthTensor month_tensor;
+  if (!reader.load_month_columns(year, month_str, level, columns, month_tensor)) {
+    return;
+  }
+
+  const size_t A = month_tensor.A;
+  assert(A == n_assets);
+  const size_t F_selected = columns.size();
+  const bool has_valid_flag = (F_selected > 1);
+
+  // Pre-allocate sample buffers
+  size_t total_T = month_tensor.day_offsets.back();
+  std::vector<float> month_samples;
+  std::vector<std::vector<float>> asset_samples(A);
+  std::vector<std::vector<float>> hour_samples(24);
+  std::vector<std::vector<float>> weekday_samples(7);
+
+  month_samples.reserve(total_T * A);
+  for (auto &v : asset_samples) v.reserve(total_T);
+  for (auto &v : hour_samples) v.reserve((total_T * A) / 24);
+  for (auto &v : weekday_samples) v.reserve((total_T * A) / 7);
+
+  // Process entire month (zero-copy pointers into month_tensor.data)
+  for (size_t day_idx = 0; day_idx < month_tensor.dates.size(); ++day_idx) {
     if (compute.cancel.load())
       return;
 
-    // Parse date for hour/weekday
-    auto [year, month_val, day] = parse_date(date);
-    uint8_t weekday = calc_weekday(year, month_val, day);
+    // Parse date for weekday (cached)
+    auto [year_val, month_val, day] = parse_date(month_tensor.dates[day_idx]);
+    uint8_t weekday = calc_weekday(year_val, month_val, day);
 
-    // Load tensor
-    FeatureReader::DayTensor tensor;
-    if (!reader.load_day_level(date, level, tensor)) {
-      continue;
-    }
+    size_t t_start = month_tensor.day_offsets[day_idx];
+    size_t t_end = month_tensor.day_offsets[day_idx + 1];
 
-    const size_t T = tensor.T[level];
-    const size_t F = tensor.F[level];
-    const size_t A = tensor.A;
-    assert(A == n_assets);
+    for (size_t t = t_start; t < t_end; ++t) {
+      uint8_t hour = static_cast<uint8_t>((t - t_start) % 24);
 
-    if (static_cast<size_t>(primary_idx) >= F) {
-      continue;
-    }
-
-    // Find valid flag index
-    int valid_flag_idx = -1;
-    if (valid_type == L2::ValidType::DEPTH) {
-      for (size_t i = 0; i < meta_count; ++i) {
-        if (std::string(meta_list[i].code) == "_depth_valid") {
-          valid_flag_idx = static_cast<int>(i);
-          break;
-        }
-      }
-    } else if (valid_type == L2::ValidType::DATA) {
-      for (size_t i = 0; i < meta_count; ++i) {
-        if (std::string(meta_list[i].code) == "_data_valid") {
-          valid_flag_idx = static_cast<int>(i);
-          break;
-        }
-      }
-    }
-
-    // Accumulate samples per day
-    std::vector<float> day_samples;
-    std::vector<std::vector<float>> asset_samples(A);
-    std::vector<std::vector<float>> hour_samples(24);
-    std::vector<std::vector<float>> weekday_samples(7);
-
-    day_samples.reserve(T * A);
-    for (auto &v : asset_samples) v.reserve(T);
-    for (auto &v : hour_samples) v.reserve((T * A) / 24);
-    for (auto &v : weekday_samples) v.reserve((T * A) / 7);
-
-    // Process all (t, a) samples
-    for (size_t t = 0; t < T; ++t) {
-      uint8_t hour = static_cast<uint8_t>(t % 24);
-
-      // Get feature values
-      const feature_storage_t *values = nullptr;
-      if (level == 0) {
-        values = tensor.get_all_assets<0>(t, primary_idx);
-      } else if (level == 1) {
-        values = tensor.get_all_assets<1>(t, primary_idx);
-      } else {
-        values = tensor.get_all_assets<2>(t, primary_idx);
-      }
-
-      // Get valid flags
-      const feature_storage_t *valid_flags = nullptr;
-      if (valid_flag_idx >= 0) {
-        if (level == 0) {
-          valid_flags = tensor.get_all_assets<0>(t, valid_flag_idx);
-        } else if (level == 1) {
-          valid_flags = tensor.get_all_assets<1>(t, valid_flag_idx);
-        } else {
-          valid_flags = tensor.get_all_assets<2>(t, valid_flag_idx);
-        }
-      }
+      // Zero-copy pointers into month tensor
+      const feature_storage_t *values = &month_tensor.data[t * F_selected * A];
+      const feature_storage_t *valid_flags = has_valid_flag ? &month_tensor.data[t * F_selected * A + A] : nullptr;
 
       for (size_t a = 0; a < A; ++a) {
         float val = static_cast<float>(values[a]);
         mc.integrity.n_total++;
 
         // Check valid flag
-        if (valid_flags) {
-          float vf = static_cast<float>(valid_flags[a]);
-          if (vf <= 0.5f) {
-            continue; // Skip invalid
-          }
-        }
+        if (valid_flags && static_cast<float>(valid_flags[a]) <= 0.5f)
+          continue;
 
-        // Check NaN
+        // Check NaN/Inf (branchless where possible)
         if (val != val) {
           mc.integrity.n_nan++;
           continue;
         }
-
-        // Check +Inf
         if (val > 1e38f) {
           mc.integrity.n_pos_inf++;
           continue;
         }
-
-        // Check -Inf
         if (val < -1e38f) {
           mc.integrity.n_neg_inf++;
           continue;
         }
 
         // Count zero
-        if (val == 0.0f) {
+        if (val == 0.0f)
           mc.integrity.n_zero++;
-        }
 
         // Accumulate valid samples
         mc.integrity.n_valid++;
-        day_samples.push_back(val);
+        month_samples.push_back(val);
         asset_samples[a].push_back(val);
         hour_samples[hour].push_back(val);
         weekday_samples[weekday].push_back(val);
       }
     }
+  }
 
-    // Batch insert once per day
-    if (!day_samples.empty()) {
-      mc.total.addBatch(day_samples);
-    }
+  // Batch insert once per month (amortized allocation)
+  if (!month_samples.empty())
+    mc.total.addBatch(month_samples);
 
-    for (size_t a = 0; a < A; ++a) {
-      if (!asset_samples[a].empty()) {
-        mc.by_asset[a].addBatch(asset_samples[a]);
-      }
-    }
+  for (size_t a = 0; a < A; ++a) {
+    if (!asset_samples[a].empty())
+      mc.by_asset[a].addBatch(asset_samples[a]);
+  }
 
-    for (size_t h = 0; h < 24; ++h) {
-      if (!hour_samples[h].empty()) {
-        mc.by_hour[h].addBatch(hour_samples[h]);
-      }
-    }
+  for (size_t h = 0; h < 24; ++h) {
+    if (!hour_samples[h].empty())
+      mc.by_hour[h].addBatch(hour_samples[h]);
+  }
 
-    for (size_t wd = 0; wd < 7; ++wd) {
-      if (!weekday_samples[wd].empty()) {
-        mc.by_weekday[wd].addBatch(weekday_samples[wd]);
-      }
-    }
+  for (size_t wd = 0; wd < 7; ++wd) {
+    if (!weekday_samples[wd].empty())
+      mc.by_weekday[wd].addBatch(weekday_samples[wd]);
   }
 
   mc.valid = true;

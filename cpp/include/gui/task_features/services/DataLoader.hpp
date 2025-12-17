@@ -163,16 +163,16 @@ public:
         day.reserve(OrderFlowConst::L1_CAPACITY);
 
         for (size_t t = 0; t < tensor.T[1]; ++t) {
-          float valid_flag = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_data_valid, a));
+          float valid_flag = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_data_valid, a));
           if (valid_flag <= 0.5f)
             continue;
 
           // Read prices as integer cents and convert to yuan
-          float o_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_open, a));
-          float h_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_high, a));
-          float l_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_low, a));
-          float c_cents = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_close, a));
-          float v = static_cast<float>(TENSOR_GET(tensor, 1, t, L1_FieldOffset::_ohlc_volume, a));
+          float o_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_open, a));
+          float h_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_high, a));
+          float l_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_low, a));
+          float c_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_close, a));
+          float v = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_volume, a));
 
           float o = o_cents * 0.01f;
           float h = h_cents * 0.01f;
@@ -248,8 +248,8 @@ public:
       assert(t < OrderFlowConst::L0_CAPACITY && "depth tensor row exceeds L0_CAPACITY");
 
       // Read validity flags (from depth tensor)
-      float depth_valid_val = static_cast<float>(DEPTH_GET(depth_tensor, t, DepthFieldOffset::_depth_valid, asset_idx));
-      float data_valid_val = static_cast<float>(DEPTH_GET(depth_tensor, t, DepthFieldOffset::_data_valid, asset_idx));
+      float depth_valid_val = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_depth_valid, asset_idx));
+      float data_valid_val = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_data_valid, asset_idx));
 
       bool depth_valid = (depth_valid_val > 0.5f);
       bool data_valid = (data_valid_val > 0.5f);
@@ -264,18 +264,23 @@ public:
 
       if (depth_valid) {
         // Read prices as integers (cents) and convert to yuan (from depth tensor)
-        float mid_cents = static_cast<float>(DEPTH_GET(depth_tensor, t, DepthFieldOffset::_mid_price, asset_idx));
+        float mid_cents = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_mid_price, asset_idx));
         mid = mid_cents * 0.01f;
 
-        // Multi-width fields: use DEPTH_GET_MULTI macro
+        // Multi-width fields: manual offset calculation
         for (size_t i = 0; i < N; ++i) {
-          float bp_cents = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_bid_price, i, asset_idx));
-          float ap_cents = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_ask_price, i, asset_idx));
+          size_t bp_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_price] + i;
+          size_t ap_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_price] + i;
+          size_t bv_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_volume] + i;
+          size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
+          
+          float bp_cents = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + bp_offset) * depth_tensor.A + asset_idx]);
+          float ap_cents = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + ap_offset) * depth_tensor.A + asset_idx]);
           
           bp[i] = bp_cents * 0.01f;  // Convert cents to yuan
           ap[i] = ap_cents * 0.01f;  // Convert cents to yuan
-          bv[i] = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_bid_volume, i, asset_idx));
-          av[i] = static_cast<float>(DEPTH_GET_MULTI(depth_tensor, t, DepthFieldOffset::_ask_volume, i, asset_idx));
+          bv[i] = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + bv_offset) * depth_tensor.A + asset_idx]);
+          av[i] = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + av_offset) * depth_tensor.A + asset_idx]);
         }
 
         // Filter sentinel data (prices already in yuan)
@@ -329,7 +334,7 @@ public:
           if (day.size() != 2)
             continue;
 
-          std::string l1_path = day_entry.path().string() + "/features_L1.bin";
+          std::string l1_path = day_entry.path().string() + "/features_L1.zst";
           if (std::filesystem::exists(l1_path)) {
             dates.push_back(year + month + day);
           }

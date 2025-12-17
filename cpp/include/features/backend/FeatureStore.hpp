@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FeatureStoreConfig.hpp"
+#include "ZstdHelper.hpp"
 #include "misc/logging.hpp"
 #include <atomic>
 #include <cassert>
@@ -675,12 +676,12 @@ private:
     return s;
   }
 
-  // Disk IO (write to page cache + trigger writeback without blocking)
+  // Disk IO (write columnar compressed files)
   void disk_write(const std::string &date_str, Slot *slot) {
     assert(slot && date_str.size() == 8);
 
     auto t_start = std::chrono::high_resolution_clock::now();
-    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: START " + date_str + " (features_L0/L1/L2 + depth)");
+    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: START " + date_str + " (L0-columnar+L1/L2-merged)");
 
     std::string year = date_str.substr(0, 4);
     std::string month = date_str.substr(4, 2);
@@ -696,58 +697,53 @@ private:
     const size_t F[3] = {FIELDS_PER_LEVEL[0], FIELDS_PER_LEVEL[1], FIELDS_PER_LEVEL[2]};
     const size_t A = num_assets_;
 
-#if STORE_UNIFIED_DAILY_TENSOR
-    // Unified mode: [T_L0, F_total, A]
-    const size_t F_total = F[0] + F[1] + F[2];
-    int fd = open((out_dir + "/features.bin").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    assert(fd >= 0);
+    size_t total_files = 0;
 
-    // Write metadata
-    ssize_t ret = 0;
-    ret = ::write(fd, &T[0], sizeof(size_t));
-    assert(ret == sizeof(size_t));
-    ret = ::write(fd, &F_total, sizeof(size_t));
-    assert(ret == sizeof(size_t));
-    ret = ::write(fd, &A, sizeof(size_t));
-    assert(ret == sizeof(size_t));
+    // L0: Write individual feature columns (for Dist analysis selective loading)
+    for (size_t f = 0; f < F[0]; ++f) {
+      const size_t col_elements = T[0] * A;
+      const size_t col_bytes = col_elements * sizeof(feature_storage_t);
+      std::vector<feature_storage_t> column(col_elements);
 
-    const size_t link_L1 = L0_FIELD_OFFSETS[L0_FieldOffset::_link_to_L1];
-    const size_t link_L2 = L0_FIELD_OFFSETS[L0_FieldOffset::_link_to_L2];
+      for (size_t t = 0; t < T[0]; ++t) {
+        for (size_t a = 0; a < A; ++a) {
+          column[t * A + a] = slot->data[0][t * F[0] * A + f * A + a];
+        }
+      }
 
-    // Write data in larger chunks (per level per time index)
-    for (size_t t0 = 0; t0 < T[0]; ++t0) {
-      const size_t t1 = static_cast<size_t>(slot->data[0][t0 * F[0] * A + link_L1 * A]);
-      const size_t t2 = static_cast<size_t>(slot->data[0][t0 * F[0] * A + link_L2 * A]);
+      auto compressed = ZstdHelper::compress(column.data(), col_bytes);
 
-      // Write L0 for this time index (all fields at once)
-      const size_t chunk_bytes_L0 = F[0] * A * sizeof(feature_storage_t);
-      ret = ::write(fd, slot->data[0] + t0 * F[0] * A, chunk_bytes_L0);
-      assert(ret == static_cast<ssize_t>(chunk_bytes_L0));
-
-      // Write L1 for this time index (all fields at once)
-      const size_t chunk_bytes_L1 = F[1] * A * sizeof(feature_storage_t);
-      ret = ::write(fd, slot->data[1] + t1 * F[1] * A, chunk_bytes_L1);
-      assert(ret == static_cast<ssize_t>(chunk_bytes_L1));
-
-      // Write L2 for this time index (all fields at once)
-      const size_t chunk_bytes_L2 = F[2] * A * sizeof(feature_storage_t);
-      ret = ::write(fd, slot->data[2] + t2 * F[2] * A, chunk_bytes_L2);
-      assert(ret == static_cast<ssize_t>(chunk_bytes_L2));
-    }
-
-    // Trigger writeback (non-blocking, kernel will flush in background)
-    sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
-    close(fd);
-#else
-    // Separate mode: 3 files - buffered IO with background writeback
-    // Better for userspace IO threads: page cache absorbs write latency,
-    // kernel manages disk scheduling more efficiently than O_DIRECT
-    for (size_t lvl = 0; lvl < 3; ++lvl) {
-      std::string filename = out_dir + "/features_L" + std::to_string(lvl) + ".bin";
+      std::string filename = out_dir + "/features_L0_f" + std::to_string(f) + ".zst";
       int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
       assert(fd >= 0);
 
-      // Write metadata
+      ssize_t ret = 0;
+      ret = ::write(fd, &T[0], sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      const size_t F_single = 1;
+      ret = ::write(fd, &F_single, sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      ret = ::write(fd, &A, sizeof(size_t));
+      assert(ret == sizeof(size_t));
+      ret = ::write(fd, compressed.data(), compressed.size());
+      assert(ret == static_cast<ssize_t>(compressed.size()));
+
+      sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
+      close(fd);
+      total_files++;
+    }
+
+    // L1 and L2: Write merged compressed files (for GUI, no selective loading needed)
+    for (size_t lvl = 1; lvl < 3; ++lvl) {
+      const size_t total_elements = T[lvl] * F[lvl] * A;
+      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
+
+      auto compressed = ZstdHelper::compress(slot->data[lvl], total_bytes);
+
+      std::string filename = out_dir + "/features_L" + std::to_string(lvl) + ".zst";
+      int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      assert(fd >= 0);
+
       ssize_t ret = 0;
       ret = ::write(fd, &T[lvl], sizeof(size_t));
       assert(ret == sizeof(size_t));
@@ -755,27 +751,28 @@ private:
       assert(ret == sizeof(size_t));
       ret = ::write(fd, &A, sizeof(size_t));
       assert(ret == sizeof(size_t));
+      ret = ::write(fd, compressed.data(), compressed.size());
+      assert(ret == static_cast<ssize_t>(compressed.size()));
 
-      // Write entire tensor in one go (data is already contiguous in [T][F][A] layout)
-      const size_t total_elements = T[lvl] * F[lvl] * A;
-      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
-      ret = ::write(fd, slot->data[lvl], total_bytes);
-      assert(ret == static_cast<ssize_t>(total_bytes));
-
-      // Trigger writeback (non-blocking, kernel will flush in background)
       sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
       close(fd);
+      total_files++;
     }
-    
-    // Write depth.bin (separate storage for orderflow)
+
+    // Write depth.zst (compressed, single file)
     {
-      std::string filename = out_dir + "/depth.bin";
+      const size_t T_depth = T[0];
+      const size_t F_depth = DEPTH_TOTAL_WIDTH;
+      const size_t total_elements = T_depth * F_depth * A;
+      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
+
+      // Compress entire depth tensor
+      auto compressed = ZstdHelper::compress(slot->depth_data, total_bytes);
+
+      std::string filename = out_dir + "/depth.zst";
       int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
       assert(fd >= 0);
-      
-      const size_t T_depth = T[0];  // Same as L0
-      const size_t F_depth = DEPTH_TOTAL_WIDTH;
-      
+
       ssize_t ret = 0;
       ret = ::write(fd, &T_depth, sizeof(size_t));
       assert(ret == sizeof(size_t));
@@ -783,16 +780,14 @@ private:
       assert(ret == sizeof(size_t));
       ret = ::write(fd, &A, sizeof(size_t));
       assert(ret == sizeof(size_t));
-      
-      const size_t total_elements = T_depth * F_depth * A;
-      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
-      ret = ::write(fd, slot->depth_data, total_bytes);
-      assert(ret == static_cast<ssize_t>(total_bytes));
-      
+
+      ret = ::write(fd, compressed.data(), compressed.size());
+      assert(ret == static_cast<ssize_t>(compressed.size()));
+
       sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
       close(fd);
+      total_files++;
     }
-#endif
 
     auto t_end = std::chrono::high_resolution_clock::now();
     auto mkdir_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_mkdir - t_before_mkdir).count();
@@ -801,7 +796,7 @@ private:
 
     Logger::log("worker_" + std::to_string(io_worker_id_),
                 "write_to_disk: END " + date_str +
-                    " [files:4(L0/L1/L2+depth)" +
+                    " [files:" + std::to_string(total_files) + "(L0-columnar+L1/L2-merged+depth)" +
                     " mkdir:" + std::to_string(mkdir_ms) + "ms" +
                     " write:" + std::to_string(write_ms) + "ms" +
                     " total:" + std::to_string(total_ms) + "ms]");

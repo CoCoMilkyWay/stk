@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FeatureStoreConfig.hpp"
+#include "ZstdHelper.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -11,173 +12,227 @@
 #include <vector>
 
 // ============================================================================
-// FEATURE READER - Read tensor binary files for GUI visualization
+// FEATURE READER - Hybrid Compressed Format
 // ============================================================================
-// File format (per level):
-//   Header: [T: size_t] [F: size_t] [A: size_t]
-//   Data:   [T × F × A] row-major (_Float16)
-//   Access: data[(t * F + f) * A + a]
+// Storage format:
+//   L0: features_L0_f{idx}.zst - [Header: T,1,A][Zstd compressed column]
+//       (columnar for selective loading in Dist analysis)
+//   L1: features_L1.zst - [Header: T,F_L1,A][Zstd compressed merged data]
+//   L2: features_L2.zst - [Header: T,F_L2,A][Zstd compressed merged data]
+//       (merged for fewer files and faster writes)
+//   Depth: depth.zst - [Header: T,F_depth,A][Zstd compressed data]
+// 
+// APIs:
+//   1. load_day_level() - for GUI visualization (all features, single day)
+//   2. load_depth() - for OrderFlow GUI visualization
+//   3. load_month_columns() - for Dist analysis (batch monthly loading, selective features)
 // ============================================================================
 
 class FeatureReader {
 public:
-  // Tensor data for a single day
-  struct DayTensor {
-    std::string date;                      // "YYYYMMDD"
-    size_t T[LEVEL_COUNT] = {0};           // Time dimension per level
-    size_t F[LEVEL_COUNT] = {0};           // Feature dimension per level
-    size_t A = 0;                          // Asset dimension
-    std::vector<feature_storage_t> data[LEVEL_COUNT]; // Flat [T][F][A] data
-
-    // Template access by field enum (FOOL-PROOF + ZERO-COST: compile-time optimization)
-    // Level: compile-time constant (0, 1, 2)
-    // f_enum: field enum index (e.g., L0_FieldOffset::_mid_price)
-    // Get single value by enum (auto-converts to offset)
-    template<size_t Level>
-    inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
-      static_assert(Level < LEVEL_COUNT, "Invalid level");
-      assert(t < T[Level] && a < A);
-      
-      // Compile-time selection of offset array (zero runtime cost with if constexpr)
-      size_t f_offset;
-      if constexpr (Level == 0) {
-        f_offset = L0_FIELD_OFFSETS[f_enum];
-      } else if constexpr (Level == 1) {
-        f_offset = L1_FIELD_OFFSETS[f_enum];
-      } else {
-        f_offset = L2_FIELD_OFFSETS[f_enum];
-      }
-      
-      assert(f_offset < F[Level] && "Field offset out of bounds");
-      return data[Level][(t * F[Level] + f_offset) * A + a];
-    }
-
-
-    // Template get pointer to all assets (ZERO-COST: compile-time optimization)
-    template<size_t Level>
-    inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
-      static_assert(Level < LEVEL_COUNT, "Invalid level");
-      assert(t < T[Level]);
-      
-      // Compile-time selection of offset array (zero runtime cost with if constexpr)
-      size_t f_offset;
-      if constexpr (Level == 0) {
-        f_offset = L0_FIELD_OFFSETS[f_enum];
-      } else if constexpr (Level == 1) {
-        f_offset = L1_FIELD_OFFSETS[f_enum];
-      } else {
-        f_offset = L2_FIELD_OFFSETS[f_enum];
-      }
-      
-      assert(f_offset < F[Level] && "Field offset out of bounds");
-      return data[Level].data() + (t * F[Level] + f_offset) * A;
-    }
-
-    bool is_loaded() const { return A > 0; }
-  };
-
-  // Depth tensor for a single day
+  // Depth tensor for OrderFlow visualization
   struct DepthTensor {
-    std::string date;                      // "YYYYMMDD"
-    size_t T = 0;                          // Time dimension (same as L0)
-    size_t F = 0;                          // Depth field dimension
-    size_t A = 0;                          // Asset dimension
-    std::vector<feature_storage_t> data;   // Flat [T][F][A]
+    std::string date;
+    size_t T = 0;
+    size_t F = 0;
+    size_t A = 0;
+    std::vector<feature_storage_t> data;
     
-    // Access single value by field enum
     inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
       assert(t < T && a < A);
       size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
-      assert(f_offset < F && "Field offset out of bounds");
+      assert(f_offset < F);
       return data[(t * F + f_offset) * A + a];
     }
     
-    // Get pointer to all assets for one field
     inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
       assert(t < T);
       size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
-      assert(f_offset < F && "Field offset out of bounds");
+      assert(f_offset < F);
       return data.data() + (t * F + f_offset) * A;
     }
     
     bool is_loaded() const { return A > 0; }
   };
 
-  // Multi-day tensor cache
-  struct MultiDayCache {
-    std::vector<DayTensor> days;
-    std::string anchor_date;
-    size_t span_days = 0;
-
-    // Get total time indices across all days for a level
-    size_t total_T(size_t level) const {
-      size_t total = 0;
-      for (const auto &day : days)
-        total += day.T[level];
-      return total;
+  // Month tensor for Dist analysis (temporary, zero-copy optimized)
+  struct MonthTensor {
+    std::vector<std::string> dates;           // [N_days]
+    std::vector<size_t> day_offsets;          // [N_days+1] cumulative T
+    std::vector<feature_storage_t> data;      // [total_T × F_selected × A]
+    size_t A = 0;
+    std::vector<size_t> feature_indices;      // which features loaded
+    
+    void clear() {
+      dates.clear();
+      day_offsets.clear();
+      data.clear();
+      A = 0;
+      feature_indices.clear();
     }
-
-    // Find day and local time index from global time index
-    std::pair<size_t, size_t> locate(size_t level, size_t global_t) const {
-      size_t acc = 0;
-      for (size_t d = 0; d < days.size(); ++d) {
-        if (global_t < acc + days[d].T[level]) {
-          return {d, global_t - acc};
-        }
-        acc += days[d].T[level];
-      }
-      assert(false && "global_t out of range");
-      return {0, 0};
-    }
-
-    bool is_loaded() const { return !days.empty() && days[0].is_loaded(); }
   };
 
   explicit FeatureReader(const std::string &base_dir) : base_dir_(base_dir) {}
 
-  // Load tensor data for a single date (all levels)
-  bool load_day(const std::string &date, DayTensor &out) const {
-    assert(date.size() == 8);
-    out.date = date;
-
-    std::string year = date.substr(0, 4);
-    std::string month = date.substr(4, 2);
-    std::string day = date.substr(6, 2);
-    std::string dir = base_dir_ + "/" + year + "/" + month + "/" + day;
-
-    // Load each level
-    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-      if (!load_level(dir, lvl, out))
-        return false;
+  // ========================================================================
+  // Single Day Loading (for OrderFlow GUI - loads all features)
+  // ========================================================================
+  
+  // DayTensor structure (for OrderFlow GUI compatibility)
+  struct DayTensor {
+    std::string date;
+    size_t T[LEVEL_COUNT] = {0};
+    size_t F[LEVEL_COUNT] = {0};
+    size_t A = 0;
+    std::vector<feature_storage_t> data[LEVEL_COUNT];
+    
+    template<size_t Level>
+    inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
+      static_assert(Level < LEVEL_COUNT);
+      assert(t < T[Level] && a < A);
+      size_t f_offset;
+      if constexpr (Level == 0) {
+        f_offset = L0_FIELD_OFFSETS[f_enum];
+      } else if constexpr (Level == 1) {
+        f_offset = L1_FIELD_OFFSETS[f_enum];
+      } else {
+        f_offset = L2_FIELD_OFFSETS[f_enum];
+      }
+      assert(f_offset < F[Level]);
+      return data[Level][(t * F[Level] + f_offset) * A + a];
     }
-
-    return true;
-  }
-
-  // Load tensor data for a single date, specific level only
+    
+    template<size_t Level>
+    inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
+      static_assert(Level < LEVEL_COUNT);
+      assert(t < T[Level]);
+      size_t f_offset;
+      if constexpr (Level == 0) {
+        f_offset = L0_FIELD_OFFSETS[f_enum];
+      } else if constexpr (Level == 1) {
+        f_offset = L1_FIELD_OFFSETS[f_enum];
+      } else {
+        f_offset = L2_FIELD_OFFSETS[f_enum];
+      }
+      assert(f_offset < F[Level]);
+      return data[Level].data() + (t * F[Level] + f_offset) * A;
+    }
+    
+    bool is_loaded() const { return A > 0; }
+  };
+  
+  // Load single day, specific level, all features (for GUI)
   bool load_day_level(const std::string &date, size_t level, DayTensor &out) const {
     assert(date.size() == 8);
     assert(level < LEVEL_COUNT);
     out.date = date;
-
-    std::string year = date.substr(0, 4);
-    std::string month = date.substr(4, 2);
-    std::string day = date.substr(6, 2);
-    std::string dir = base_dir_ + "/" + year + "/" + month + "/" + day;
-
-    return load_level(dir, level, out);
+    
+    std::string day_dir = base_dir_ + "/" + date.substr(0, 4) + "/" + 
+                          date.substr(4, 2) + "/" + date.substr(6, 2);
+    
+    const size_t F_level = FIELDS_PER_LEVEL[level];
+    
+    if (level == 0) {
+      // L0: Read individual feature columns
+      std::vector<std::vector<feature_storage_t>> columns(F_level);
+      
+      for (size_t f = 0; f < F_level; ++f) {
+        std::string col_path = day_dir + "/features_L0_f" + std::to_string(f) + ".zst";
+        
+        if (!std::filesystem::exists(col_path))
+          return false;
+        
+        std::ifstream ifs(col_path, std::ios::binary);
+        size_t T, F, A;
+        ifs.read(reinterpret_cast<char*>(&T), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&F), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&A), sizeof(size_t));
+        
+        assert(F == 1);
+        
+        if (f == 0) {
+          out.T[level] = T;
+          out.F[level] = F_level;
+          out.A = A;
+        } else {
+          assert(out.T[level] == T && out.A == A);
+        }
+        
+        // Read and decompress column
+        ifs.seekg(0, std::ios::end);
+        size_t file_size = ifs.tellg();
+        size_t compressed_size = file_size - 3 * sizeof(size_t);
+        ifs.seekg(3 * sizeof(size_t), std::ios::beg);
+        
+        std::vector<uint8_t> compressed(compressed_size);
+        ifs.read(reinterpret_cast<char*>(compressed.data()), compressed_size);
+        
+        columns[f].resize(T * A);
+        size_t decompressed_size = T * A * sizeof(feature_storage_t);
+        ZstdHelper::decompress(compressed.data(), compressed_size,
+                               columns[f].data(), decompressed_size);
+      }
+      
+      // Interleave columns into row-major tensor
+      out.data[level].resize(out.T[level] * out.F[level] * out.A);
+      for (size_t t = 0; t < out.T[level]; ++t) {
+        for (size_t f = 0; f < out.F[level]; ++f) {
+          std::memcpy(&out.data[level][(t * out.F[level] + f) * out.A],
+                      &columns[f][t * out.A],
+                      out.A * sizeof(feature_storage_t));
+        }
+      }
+    } else {
+      // L1/L2: Read merged compressed file
+      std::string merged_path = day_dir + "/features_L" + std::to_string(level) + ".zst";
+      
+      if (!std::filesystem::exists(merged_path))
+        return false;
+      
+      std::ifstream ifs(merged_path, std::ios::binary);
+      if (!ifs)
+        return false;
+      
+      // Read header
+      size_t T, F, A;
+      ifs.read(reinterpret_cast<char*>(&T), sizeof(size_t));
+      ifs.read(reinterpret_cast<char*>(&F), sizeof(size_t));
+      ifs.read(reinterpret_cast<char*>(&A), sizeof(size_t));
+      
+      assert(F == F_level);
+      out.T[level] = T;
+      out.F[level] = F;
+      out.A = A;
+      
+      // Read compressed data
+      ifs.seekg(0, std::ios::end);
+      size_t file_size = ifs.tellg();
+      size_t compressed_size = file_size - 3 * sizeof(size_t);
+      ifs.seekg(3 * sizeof(size_t), std::ios::beg);
+      
+      std::vector<uint8_t> compressed(compressed_size);
+      ifs.read(reinterpret_cast<char*>(compressed.data()), compressed_size);
+      
+      // Decompress directly into output tensor
+      size_t decompressed_size = T * F * A * sizeof(feature_storage_t);
+      out.data[level].resize(T * F * A);
+      ZstdHelper::decompress(compressed.data(), compressed_size,
+                             out.data[level].data(), decompressed_size);
+    }
+    
+    return true;
   }
-
-  // Load depth data for a single date
+  
+  // ========================================================================
+  // Depth Loading (for OrderFlow GUI)
+  // ========================================================================
+  
   bool load_depth(const std::string &date, DepthTensor &out) const {
     assert(date.size() == 8);
     out.date = date;
     
-    std::string year = date.substr(0, 4);
-    std::string month = date.substr(4, 2);
-    std::string day = date.substr(6, 2);
-    std::string dir = base_dir_ + "/" + year + "/" + month + "/" + day;
-    std::string path = dir + "/depth.bin";
+    std::string path = base_dir_ + "/" + date.substr(0, 4) + "/" + 
+                       date.substr(4, 2) + "/" + date.substr(6, 2) + "/depth.zst";
     
     if (!std::filesystem::exists(path))
       return false;
@@ -191,89 +246,214 @@ public:
     ifs.read(reinterpret_cast<char*>(&out.F), sizeof(size_t));
     ifs.read(reinterpret_cast<char*>(&out.A), sizeof(size_t));
     
-    // Validate dimensions
-    assert(out.T > 0 && out.T <= MAX_ROWS_PER_LEVEL[0]);
-    assert(out.F == DEPTH_TOTAL_WIDTH);
-    assert(out.A > 0);
-    
-    // Read data
-    size_t total_elements = out.T * out.F * out.A;
-    out.data.resize(total_elements);
-    ifs.read(reinterpret_cast<char*>(out.data.data()), 
-             total_elements * sizeof(feature_storage_t));
+    // Read compressed data
+    ifs.seekg(0, std::ios::end);
+    size_t file_size = ifs.tellg();
+    size_t compressed_size = file_size - 3 * sizeof(size_t);
+    ifs.seekg(3 * sizeof(size_t), std::ios::beg);
+
+    std::vector<uint8_t> compressed(compressed_size);
+    ifs.read(reinterpret_cast<char*>(compressed.data()), compressed_size);
+
+    // Decompress directly into output
+    size_t decompressed_size = out.T * out.F * out.A * sizeof(feature_storage_t);
+    out.data.resize(out.T * out.F * out.A);
+    ZstdHelper::decompress(compressed.data(), compressed_size,
+                           out.data.data(), decompressed_size);
     
     return true;
   }
 
-private:
-  // Load a single level from directory
-  bool load_level(const std::string &dir, size_t lvl, DayTensor &out) const {
-    std::string path = dir + "/features_L" + std::to_string(lvl) + ".bin";
+  // ========================================================================
+  // Batch Monthly Loading (for Dist analysis)
+  // ========================================================================
+  
+  bool load_month_columns(
+      const std::string &year,
+      const std::string &month,
+      size_t level,
+      const std::vector<size_t> &feature_indices,
+      MonthTensor &out) const {
+    
+    assert(level < LEVEL_COUNT);
+    out.clear();
 
-    if (!std::filesystem::exists(path)) {
+    out.dates = list_dates(year, month);
+    if (out.dates.empty())
       return false;
-    }
 
-    std::ifstream ifs(path, std::ios::binary);
-    if (!ifs) {
-      return false;
-    }
+    out.feature_indices = feature_indices;
+    const size_t F_selected = feature_indices.size();
 
-    // Read header
-    ifs.read(reinterpret_cast<char *>(&out.T[lvl]), sizeof(size_t));
-    ifs.read(reinterpret_cast<char *>(&out.F[lvl]), sizeof(size_t));
-    ifs.read(reinterpret_cast<char *>(&out.A), sizeof(size_t));
+    if (level == 0) {
+      // L0: Read individual column files
+      out.day_offsets.push_back(0);
+      size_t total_T = 0;
+      
+      for (const auto &date : out.dates) {
+        std::string first_col = base_dir_ + "/" + date.substr(0, 4) + "/" + 
+                               date.substr(4, 2) + "/" + date.substr(6, 2) + 
+                               "/features_L0_f" + std::to_string(feature_indices[0]) + ".zst";
+        
+        if (!std::filesystem::exists(first_col))
+          return false;
 
-    // Validate dimensions
-    assert(out.T[lvl] > 0 && out.T[lvl] <= MAX_ROWS_PER_LEVEL[lvl]);
-    assert(out.F[lvl] > 0 && out.F[lvl] <= FIELDS_PER_LEVEL[lvl]);
-    assert(out.A > 0);
+        std::ifstream ifs(first_col, std::ios::binary);
+        size_t T, F, A;
+        ifs.read(reinterpret_cast<char*>(&T), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&F), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&A), sizeof(size_t));
+        
+        assert(F == 1);
+        
+        if (out.A == 0) {
+          out.A = A;
+        } else {
+          assert(out.A == A);
+        }
 
-    // Read data
-    size_t total_elements = out.T[lvl] * out.F[lvl] * out.A;
-    out.data[lvl].resize(total_elements);
-    ifs.read(reinterpret_cast<char *>(out.data[lvl].data()),
-             total_elements * sizeof(feature_storage_t));
+        total_T += T;
+        out.day_offsets.push_back(total_T);
+      }
 
-    return true;
-  }
+      out.data.resize(total_T * F_selected * out.A);
 
-public:
+      size_t global_t_offset = 0;
+      for (size_t day_idx = 0; day_idx < out.dates.size(); ++day_idx) {
+        const auto &date = out.dates[day_idx];
+        std::string day_dir = base_dir_ + "/" + date.substr(0, 4) + "/" + 
+                              date.substr(4, 2) + "/" + date.substr(6, 2);
+        
+        size_t day_T = out.day_offsets[day_idx + 1] - out.day_offsets[day_idx];
 
-  // Load tensor data for anchor_date + span_days forward
-  // Returns: [anchor_date, anchor_date + span_days - 1]
-  bool load_days(const std::string &anchor_date, size_t span_days, MultiDayCache &out) const {
-    out.anchor_date = anchor_date;
-    out.span_days = span_days;
-    out.days.clear();
-    out.days.resize(span_days);
+        for (size_t f_local = 0; f_local < F_selected; ++f_local) {
+          size_t f_global = feature_indices[f_local];
+          std::string col_path = day_dir + "/features_L0_f" + std::to_string(f_global) + ".zst";
 
-    // Generate date list (forward from anchor)
-    std::vector<std::string> dates = generate_date_range(anchor_date, span_days);
+          if (!std::filesystem::exists(col_path))
+            return false;
 
-    // Load each day
-    for (size_t i = 0; i < dates.size(); ++i) {
-      if (!load_day(dates[i], out.days[i])) {
-        // Day not available, clear cache
-        out.days.clear();
-        return false;
+          std::ifstream ifs(col_path, std::ios::binary);
+          size_t T, F, A;
+          ifs.read(reinterpret_cast<char*>(&T), sizeof(size_t));
+          ifs.read(reinterpret_cast<char*>(&F), sizeof(size_t));
+          ifs.read(reinterpret_cast<char*>(&A), sizeof(size_t));
+          
+          assert(T == day_T && F == 1 && A == out.A);
+
+          ifs.seekg(0, std::ios::end);
+          size_t file_size = ifs.tellg();
+          size_t compressed_size = file_size - 3 * sizeof(size_t);
+          ifs.seekg(3 * sizeof(size_t), std::ios::beg);
+
+          std::vector<uint8_t> compressed(compressed_size);
+          ifs.read(reinterpret_cast<char*>(compressed.data()), compressed_size);
+
+          std::vector<feature_storage_t> col_data(T * A);
+          size_t decompressed_size = T * A * sizeof(feature_storage_t);
+          ZstdHelper::decompress(compressed.data(), compressed_size,
+                                 col_data.data(), decompressed_size);
+
+          for (size_t t = 0; t < T; ++t) {
+            std::memcpy(&out.data[(global_t_offset + t) * F_selected * out.A + f_local * out.A],
+                        &col_data[t * out.A],
+                        out.A * sizeof(feature_storage_t));
+          }
+        }
+
+        global_t_offset += day_T;
+      }
+    } else {
+      // L1/L2: Read merged files and extract selected columns
+      out.day_offsets.push_back(0);
+      size_t total_T = 0;
+      
+      for (const auto &date : out.dates) {
+        std::string merged_file = base_dir_ + "/" + date.substr(0, 4) + "/" + 
+                                 date.substr(4, 2) + "/" + date.substr(6, 2) + 
+                                 "/features_L" + std::to_string(level) + ".zst";
+        
+        if (!std::filesystem::exists(merged_file))
+          return false;
+
+        std::ifstream ifs(merged_file, std::ios::binary);
+        size_t T, F, A;
+        ifs.read(reinterpret_cast<char*>(&T), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&F), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&A), sizeof(size_t));
+        
+        if (out.A == 0) {
+          out.A = A;
+        } else {
+          assert(out.A == A);
+        }
+
+        total_T += T;
+        out.day_offsets.push_back(total_T);
+      }
+
+      out.data.resize(total_T * F_selected * out.A);
+
+      size_t global_t_offset = 0;
+      for (size_t day_idx = 0; day_idx < out.dates.size(); ++day_idx) {
+        const auto &date = out.dates[day_idx];
+        std::string merged_file = base_dir_ + "/" + date.substr(0, 4) + "/" + 
+                                 date.substr(4, 2) + "/" + date.substr(6, 2) + 
+                                 "/features_L" + std::to_string(level) + ".zst";
+
+        std::ifstream ifs(merged_file, std::ios::binary);
+        size_t T, F, A;
+        ifs.read(reinterpret_cast<char*>(&T), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&F), sizeof(size_t));
+        ifs.read(reinterpret_cast<char*>(&A), sizeof(size_t));
+        
+        assert(A == out.A);
+        size_t day_T = out.day_offsets[day_idx + 1] - out.day_offsets[day_idx];
+        assert(T == day_T);
+
+        ifs.seekg(0, std::ios::end);
+        size_t file_size = ifs.tellg();
+        size_t compressed_size = file_size - 3 * sizeof(size_t);
+        ifs.seekg(3 * sizeof(size_t), std::ios::beg);
+
+        std::vector<uint8_t> compressed(compressed_size);
+        ifs.read(reinterpret_cast<char*>(compressed.data()), compressed_size);
+
+        // Decompress entire day tensor
+        std::vector<feature_storage_t> day_data(T * F * A);
+        size_t decompressed_size = T * F * A * sizeof(feature_storage_t);
+        ZstdHelper::decompress(compressed.data(), compressed_size,
+                               day_data.data(), decompressed_size);
+
+        // Extract selected features
+        for (size_t t = 0; t < T; ++t) {
+          for (size_t f_local = 0; f_local < F_selected; ++f_local) {
+            size_t f_global = feature_indices[f_local];
+            std::memcpy(&out.data[(global_t_offset + t) * F_selected * out.A + f_local * out.A],
+                        &day_data[t * F * A + f_global * A],
+                        A * sizeof(feature_storage_t));
+          }
+        }
+
+        global_t_offset += day_T;
       }
     }
 
     return true;
   }
 
-  // Check if data exists for a date
+  // ========================================================================
+  // Utility Functions
+  // ========================================================================
+  
   bool has_date(const std::string &date) const {
     assert(date.size() == 8);
-    std::string year = date.substr(0, 4);
-    std::string month = date.substr(4, 2);
-    std::string day = date.substr(6, 2);
-    std::string path = base_dir_ + "/" + year + "/" + month + "/" + day + "/features_L0.bin";
+    std::string path = base_dir_ + "/" + date.substr(0, 4) + "/" + 
+                       date.substr(4, 2) + "/" + date.substr(6, 2) + 
+                       "/features_L0_f0.zst";
     return std::filesystem::exists(path);
   }
 
-  // List available dates in a year-month
   std::vector<std::string> list_dates(const std::string &year, const std::string &month) const {
     std::vector<std::string> dates;
     std::string dir = base_dir_ + "/" + year + "/" + month;
@@ -299,63 +479,4 @@ public:
 
 private:
   std::string base_dir_;
-
-  // Generate date range [start, start + days - 1]
-  // Simple implementation: just increment day, handle month/year overflow
-  static std::vector<std::string> generate_date_range(const std::string &start, size_t days) {
-    std::vector<std::string> result;
-    result.reserve(days);
-
-    int year = std::stoi(start.substr(0, 4));
-    int month = std::stoi(start.substr(4, 2));
-    int day = std::stoi(start.substr(6, 2));
-
-    for (size_t i = 0; i < days; ++i) {
-      char buf[16];
-      std::snprintf(buf, sizeof(buf), "%04d%02d%02d", year, month, day);
-      result.push_back(buf);
-
-      // Increment day
-      ++day;
-
-      // Days per month (simplified, no leap year check for trading days)
-      static const int days_in_month[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-      int max_day = days_in_month[month];
-      if (month == 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
-        max_day = 29; // Leap year
-      }
-
-      if (day > max_day) {
-        day = 1;
-        ++month;
-        if (month > 12) {
-          month = 1;
-          ++year;
-        }
-      }
-    }
-
-    return result;
-  }
 };
-
-// ============================================================================
-// MULTI-WIDTH FIELD ACCESS MACROS - Only use enums, 100% static compilation
-// ============================================================================
-// TENSOR_GET(tensor, lvl, t, field_enum, a)           - Single-width field
-// TENSOR_GET_MULTI(tensor, lvl, t, field_enum, i, a)  - Multi-width field[i]
-// ============================================================================
-
-#define TENSOR_GET(tensor, lvl, t, field_enum, a) \
-  ((tensor).data[lvl][((t) * (tensor).F[lvl] + L##lvl##_FIELD_OFFSETS[field_enum]) * (tensor).A + (a)])
-
-#define TENSOR_GET_MULTI(tensor, lvl, t, field_enum, i, a) \
-  ((tensor).data[lvl][((t) * (tensor).F[lvl] + L##lvl##_FIELD_OFFSETS[field_enum] + (i)) * (tensor).A + (a)])
-
-// Depth tensor access macros
-#define DEPTH_GET(depth_tensor, t, field_enum, a) \
-  ((depth_tensor).data[((t) * (depth_tensor).F + DEPTH_FIELD_OFFSETS[field_enum]) * (depth_tensor).A + (a)])
-
-#define DEPTH_GET_MULTI(depth_tensor, t, field_enum, i, a) \
-  ((depth_tensor).data[((t) * (depth_tensor).F + DEPTH_FIELD_OFFSETS[field_enum] + (i)) * (depth_tensor).A + (a)])
-
