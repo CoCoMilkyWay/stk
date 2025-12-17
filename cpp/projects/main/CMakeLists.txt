@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(Main VERSION 1.0.0 LANGUAGES CXX C)
 
-# Force Clang compiler
+# Force Clang compiler (clang-cl on Windows)
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     message(FATAL_ERROR "This project requires Clang compiler. Current compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
@@ -44,10 +44,10 @@ if(TSAN_MODE)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
 
 elseif(DEBUG_MODE)
-    message(STATUS "Build mode: DEBUG (GDB - interactive debugging)")
+    message(STATUS "Build mode: DEBUG (interactive debugging)")
     add_compile_definitions(DEBUG_MODE)
     
-    set(CMAKE_CXX_FLAGS "-O0 -g3 -ggdb -Wall -Wextra")
+    set(CMAKE_CXX_FLAGS "-O0 -g -Wall -Wextra")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-optimize-sibling-calls")
@@ -83,13 +83,8 @@ elseif(ASSERT_MODE)
     # Link-time optimization
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
     
-    # Linker selection
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
-    # Linker optimization level
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-O3")
-    # Linker features
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=all")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--as-needed")
+    # Linker optimization (Windows-style)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
 
 else()
     message(STATUS "Build mode: PRODUCTION")
@@ -106,13 +101,8 @@ else()
     # Link-time optimization
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
     
-    # Linker selection
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
-    # Linker optimization level
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-O3")
-    # Linker features
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=all")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--as-needed")
+    # Linker optimization (Windows-style)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
 endif()
 
 # Output directories
@@ -302,104 +292,29 @@ message(STATUS "app_main sources: ${SOURCES}")
 message(STATUS "")
 message(STATUS "=== Checking GUI Dependencies ===")
 
-# Platform-specific notes
-if(UNIX)
-    message(STATUS "  Platform: Linux (using X11 for windowing)")
-elseif(APPLE)
-    message(STATUS "  Platform: macOS (using Cocoa for windowing)")
-elseif(WIN32)
-    message(STATUS "  Platform: Windows (using Win32 for windowing)")
+# Platform check
+if(NOT WIN32)
+    message(FATAL_ERROR "This project only supports Windows")
+endif()
+message(STATUS "Platform: Windows (using Win32 for windowing)")
+
+# Check graphics API
+if(USE_VULKAN_BACKEND)
+    find_package(Vulkan QUIET)
+    if(NOT Vulkan_FOUND)
+        message(FATAL_ERROR "Vulkan not found! Install Vulkan SDK from https://vulkan.lunarg.com/")
+    endif()
+    message(STATUS "✓ Vulkan found: ${Vulkan_LIBRARIES}")
 else()
-    message(FATAL_ERROR "Unsupported platform")
+    find_package(OpenGL QUIET)
+    if(NOT OpenGL_FOUND)
+        message(FATAL_ERROR "OpenGL not found! OpenGL should be available via graphics drivers")
+    endif()
+    message(STATUS "✓ OpenGL found: ${OPENGL_LIBRARIES}")
 endif()
 
-# Use pkg-config for faster dependency detection on Linux
-if(UNIX AND NOT APPLE)
-    find_package(PkgConfig REQUIRED)
-    
-    # Check graphics API based on backend selection
-    if(USE_VULKAN_BACKEND)
-        # Check Vulkan using pkg-config
-        pkg_check_modules(Vulkan vulkan)
-        if(NOT Vulkan_FOUND)
-            message(FATAL_ERROR 
-                "Vulkan not found! Please install:\n"
-                "  Ubuntu/Debian: sudo apt-get install libvulkan-dev vulkan-tools\n"
-                "  Fedora/RHEL:   sudo dnf install vulkan-loader-devel vulkan-tools\n"
-                "  Arch:          sudo pacman -S vulkan-devel\n")
-        endif()
-        message(STATUS "✓ Vulkan found: ${Vulkan_LIBRARIES}")
-    else()
-        # Check OpenGL using pkg-config
-        pkg_check_modules(OpenGL gl)
-        if(NOT OpenGL_FOUND)
-            message(FATAL_ERROR 
-                "OpenGL not found! Please install:\n"
-                "  Ubuntu/Debian: sudo apt-get install libgl1-mesa-dev\n"
-                "  Fedora/RHEL:   sudo dnf install mesa-libGL-devel\n"
-                "  Arch:          sudo pacman -S mesa\n")
-        endif()
-        message(STATUS "✓ OpenGL found: ${OpenGL_LIBRARIES}")
-    endif()
-
-    # Check X11 using pkg-config
-    pkg_check_modules(X11 x11)
-    if(NOT X11_FOUND)
-        message(FATAL_ERROR 
-            "X11 not found! Please install:\n"
-            "  Ubuntu/Debian: sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev\n"
-            "  Fedora/RHEL:   sudo dnf install libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel\n"
-            "  Arch:          sudo pacman -S libx11 libxrandr libxinerama libxcursor libxi\n")
-    endif()
-    message(STATUS "✓ X11 found: ${X11_LIBRARIES}")
-    
-else()
-    # Use find_package for macOS and Windows
-    if(USE_VULKAN_BACKEND)
-        find_package(Vulkan QUIET)
-        if(NOT Vulkan_FOUND)
-            message(FATAL_ERROR 
-                "Vulkan not found! Please install:\n"
-                "  macOS: Install Vulkan SDK from https://vulkan.lunarg.com/\n"
-                "  Windows: Install Vulkan SDK from https://vulkan.lunarg.com/\n")
-        endif()
-        message(STATUS "✓ Vulkan found: ${Vulkan_LIBRARIES}")
-    else()
-        find_package(OpenGL QUIET)
-        if(NOT OpenGL_FOUND)
-            message(FATAL_ERROR 
-                "OpenGL not found! Please install:\n"
-                "  macOS: OpenGL is pre-installed (this error should not happen)\n"
-                "  Windows: OpenGL should be available via graphics drivers\n")
-        endif()
-        message(STATUS "✓ OpenGL found: ${OPENGL_LIBRARIES}")
-    endif()
-endif()
-
-# Check Cocoa framework (required by GLFW on macOS)
-if(APPLE)
-    find_library(COCOA_LIBRARY Cocoa REQUIRED)
-    find_library(IOKIT_LIBRARY IOKit REQUIRED)
-    find_library(COREVIDEO_LIBRARY CoreVideo REQUIRED)
-    if(NOT COCOA_LIBRARY OR NOT IOKIT_LIBRARY OR NOT COREVIDEO_LIBRARY)
-        message(FATAL_ERROR 
-            "macOS system frameworks not found!\n"
-            "  This should not happen on a standard macOS installation.\n"
-            "  Please ensure Xcode Command Line Tools are installed:\n"
-            "  xcode-select --install\n")
-    endif()
-    message(STATUS "✓ Cocoa framework found")
-    message(STATUS "✓ IOKit framework found")
-    message(STATUS "✓ CoreVideo framework found")
-endif()
-
-# Check Windows SDK (required by GLFW on Windows)
-if(WIN32)
-    if(NOT MSVC AND NOT MINGW)
-        message(WARNING "Windows build requires MSVC or MinGW compiler")
-    endif()
-    message(STATUS "✓ Windows SDK available (Win32 API)")
-endif()
+# Check Windows SDK
+message(STATUS "✓ Windows SDK available (Win32 API)")
 
 message(STATUS "All GUI dependencies satisfied")
 
@@ -436,25 +351,11 @@ target_include_directories(imgui PUBLIC
     ${IMGUI_SOURCE_DIR}/backends
 )
 
-# Link appropriate graphics libraries (packages already found above)
+# Link graphics libraries
 if(USE_VULKAN_BACKEND)
-    if(UNIX AND NOT APPLE)
-        # Use pkg-config variables on Linux
-        target_link_libraries(imgui PUBLIC glfw ${Vulkan_LIBRARIES})
-        target_include_directories(imgui PUBLIC ${Vulkan_INCLUDE_DIRS})
-    else()
-        # Use imported target on macOS/Windows
-        target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
-    endif()
+    target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
 else()
-    if(UNIX AND NOT APPLE)
-        # Use pkg-config variables on Linux
-        target_link_libraries(imgui PUBLIC glfw ${OpenGL_LIBRARIES})
-        target_include_directories(imgui PUBLIC ${OpenGL_INCLUDE_DIRS})
-    else()
-        # Use imported target on macOS/Windows
-        target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
-    endif()
+    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 endif()
 
 # Setup ImPlot library from local source
@@ -475,11 +376,6 @@ set_source_files_properties(${IMPLOT_SOURCE} PROPERTIES
 
 # Link GUI libraries to main executable
 target_link_libraries(app_main PRIVATE implot)
-
-# Silence OpenGL deprecation warnings on macOS (only for OpenGL backend)
-if(APPLE AND NOT USE_VULKAN_BACKEND)
-    target_compile_definitions(app_main PRIVATE GL_SILENCE_DEPRECATION)
-endif()
 
 # Copy fonts directory to build directory
 add_custom_command(TARGET app_main POST_BUILD

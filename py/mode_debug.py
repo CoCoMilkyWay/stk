@@ -1,4 +1,4 @@
-"""Debug mode: Interactive debugging with GDB"""
+"""Debug mode: Interactive debugging with LLDB (Windows)"""
 import os
 import signal
 import subprocess
@@ -7,53 +7,44 @@ import time
 
 
 def run(binary_path, working_dir):
-    """Run with GDB debugger."""
+    """Run with LLDB debugger."""
     log_dir = os.path.abspath("output/log")
     os.makedirs(log_dir, exist_ok=True)
-    trace_file = os.path.join(log_dir, "gdb_trace.txt")
-    gdb_script = os.path.join(working_dir, "auto_debug.gdb")
+    trace_file = os.path.join(log_dir, "lldb_trace.txt")
+    lldb_script = os.path.join(working_dir, "auto_debug.lldb")
     
-    # Generate GDB script
-    gdb_commands = f"""# Auto-generated GDB script
-set pagination off
-set logging file {trace_file}
-set logging overwrite on
-set logging enabled on
-set confirm off
+    # Generate LLDB script
+    lldb_commands = f"""# Auto-generated LLDB script
+settings set stop-line-count-after 3
+settings set stop-line-count-before 3
+log enable lldb all -f {trace_file}
 
 # Catch signals and crashes
-catch signal SIGSEGV SIGABRT SIGFPE SIGILL SIGBUS
-commands
-  echo \\n=== CRASH DETECTED ===\\n
-  info threads
-  echo \\n=== STACK TRACES ===\\n
-  thread apply all bt
-  quit
-end
+breakpoint set -n main
+breakpoint command add
+bt all
+continue
+DONE
 
 # Run program
 run
 
-# Normal exit
-echo \\n=== NORMAL EXIT ===\\n
-info threads
-thread apply all bt
-
-set logging enabled off
+# Capture final state
+thread backtrace all
 quit
 """
     
-    with open(gdb_script, 'w') as f:
-        f.write(gdb_commands)
+    with open(lldb_script, 'w') as f:
+        f.write(lldb_commands)
     
-    # Run under GDB
-    print("Running under GDB (automatic stack trace capture)...")
+    # Run under LLDB
+    print("Running under LLDB (automatic stack trace capture)...")
     print(f"Trace: {trace_file}")
     print(f"Press Ctrl+C to capture thread state\n")
     start_time = time.time()
     
     proc = subprocess.Popen(
-        ["gdb", "-x", gdb_script, binary_path],
+        ["lldb", "-s", lldb_script, binary_path],
         cwd=working_dir,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -83,13 +74,7 @@ quit
         time.sleep(0.5)
         
         if proc.stdin:
-            proc.stdin.write("""
-echo \\n=== MANUAL INTERRUPT ===\\n
-info threads
-echo \\n=== STACK TRACES ===\\n
-thread apply all bt
-quit
-""")
+            proc.stdin.write("bt all\nquit\n")
             proc.stdin.flush()
         
         try:

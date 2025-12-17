@@ -1,13 +1,13 @@
-"""Build & Run Pipeline
-Calling chain: run.py -> py/{APP_NAME}.py -> cpp/projects/{APP_NAME}/build.sh
+"""Build & Run Pipeline (Windows)
+Calling chain: run.py -> py/{APP_NAME}.py -> CMake
 
 Usage:
     Set ONE mode flag to True, then: python run.py
 
 Modes:
     - TSAN:    Race condition detection (5-15x slower)
-    - DEBUG:   Interactive GDB debugging (very slow)
-    - PROFILE: CPU profiling with gperftools (slow)
+    - DEBUG:   Interactive debugging (very slow)
+    - PROFILE: CPU profiling (slow)
     - ASSERT:  Assert checks enabled (optimized build with asserts)
     - Default: Production build (-O3, fastest)
 """
@@ -33,16 +33,16 @@ ENABLE_ASSERT = True
 
 def _cleanup_processes():
     """Kill old processes."""
-    patterns = ["pprof.*8080", f"app_{APP_NAME}"]
-    for pattern in patterns:
-        subprocess.run(["pkill", "-9", "-f", pattern],
+    process_names = [f"app_{APP_NAME}.exe"]
+    for name in process_names:
+        subprocess.run(["taskkill", "/F", "/IM", name],
                        capture_output=True, check=False)
     time.sleep(0.3)
 
 
 def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert):
-    """Build project via py/{app_name}.py -> build.sh."""
-    py_script = f"./py/{app_name}.py"
+    """Build project via py/{app_name}.py."""
+    py_script = f"py/{app_name}.py"
 
     if not os.path.exists(py_script):
         print(f"ERROR: Build script not found: {py_script}")
@@ -54,7 +54,7 @@ def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert):
     env['PROFILE_MODE'] = 'ON' if enable_profile else 'OFF'
     env['ASSERT_MODE'] = 'ON' if enable_assert else 'OFF'
 
-    result = subprocess.run(["python3", py_script], env=env)
+    result = subprocess.run(["python", py_script], env=env)
     if result.returncode != 0:
         sys.exit(1)
 
@@ -100,7 +100,7 @@ def main():
 
     print("Running...")
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
-    binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}")
+    binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}.exe")
     _run(binary_path, build_dir, ENABLE_TSAN,
          ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT)
 

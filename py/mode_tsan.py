@@ -1,4 +1,4 @@
-"""TSan mode: Race condition detection with ThreadSanitizer"""
+"""TSan mode: Race condition detection with ThreadSanitizer (Windows)"""
 import os
 import subprocess
 import sys
@@ -18,7 +18,6 @@ def run(binary_path, working_dir):
         "halt_on_error=1",
         "second_deadlock_stack=0",
         "print_suppressions=0",
-        "report_signal_unsafe=0",
     ]
     env['TSAN_OPTIONS'] = ':'.join(tsan_options)
     
@@ -39,7 +38,7 @@ def run(binary_path, working_dir):
     
     # Save report
     if result.stderr:
-        with open(tsan_log, 'w') as f:
+        with open(tsan_log, 'w', encoding='utf-8') as f:
             f.write(result.stderr)
     
     # Show summary
@@ -48,7 +47,7 @@ def run(binary_path, working_dir):
     print(f"{'='*80}\n")
     
     if os.path.exists(tsan_log) and os.path.getsize(tsan_log) > 0:
-        with open(tsan_log, 'r') as f:
+        with open(tsan_log, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             for line in lines[:300]:
                 print(line, end='')
