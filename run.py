@@ -17,7 +17,7 @@ import sys
 import time
 
 # Import mode handlers
-from py import mode_profile, mode_tsan, mode_debug, platform_check
+from py import mode_profile, mode_tsan, mode_debug
 
 # ============================================================================
 # Configuration
@@ -91,10 +91,6 @@ def _run(binary_path, working_dir, enable_tsan, enable_debug, enable_profile, en
 
 def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-    print("Checking GUI environment...")
-    if not platform_check.check_and_setup():
-        sys.exit(1)
 
     print("Cleanup...")
     _cleanup_processes()
