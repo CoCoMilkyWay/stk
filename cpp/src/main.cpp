@@ -1,5 +1,5 @@
 #include "gui/Gui.hpp"
 
 int main() {
-  GUI::RunGUI();
+  return GUI::RunGUI();
 }

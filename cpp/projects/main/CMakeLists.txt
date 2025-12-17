@@ -34,6 +34,19 @@ set(CMAKE_C_FLAGS_MINSIZEREL "")
 # Enable colored diagnostics for Clang
 add_compile_options(-fcolor-diagnostics -fansi-escape-codes)
 
+# Check for lld linker (required)
+execute_process(
+    COMMAND ${CMAKE_CXX_COMPILER} -fuse-ld=lld -Wl,--version
+    OUTPUT_QUIET ERROR_QUIET 
+    RESULT_VARIABLE LLD_CHECK_RESULT
+)
+if(NOT LLD_CHECK_RESULT EQUAL 0)
+    message(FATAL_ERROR 
+        "lld linker not found!\n"
+        "Install: sudo apt-get install lld")
+endif()
+message(STATUS "✓ lld linker found")
+
 # Compiler flags configuration
 if(TSAN_MODE)
     message(STATUS "Build mode: TSAN (ThreadSanitizer - race detection)")
@@ -404,6 +417,15 @@ endif()
 message(STATUS "All GUI dependencies satisfied")
 
 message(STATUS "")
+
+# WSL1 workaround: CMake's FindThreads test may fail in WSL1,
+# but pthread is actually available in libc. Set variables to skip the test.
+if(UNIX AND NOT APPLE)
+    set(CMAKE_THREAD_LIBS_INIT "-lpthread" CACHE STRING "" FORCE)
+    set(CMAKE_USE_PTHREADS_INIT 1 CACHE BOOL "" FORCE)
+    set(THREADS_PREFER_PTHREAD_FLAG ON CACHE BOOL "" FORCE)
+    set(Threads_FOUND TRUE CACHE BOOL "" FORCE)
+endif()
 
 # Setup GLFW library from local source
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

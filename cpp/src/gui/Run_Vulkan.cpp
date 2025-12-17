@@ -343,7 +343,7 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
   wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount;
 }
 
-void RunGUI() {
+int RunGUI() {
   // Initialize shared data (contains everything)
   SharedData data;
   
@@ -383,24 +383,42 @@ void RunGUI() {
 
   // Initialize GLFW
   if (!glfwInit()) {
+    const char *err_desc = nullptr;
+    int err_code = glfwGetError(&err_desc);
+    if (err_desc) {
+      fprintf(stderr, "ERROR: Failed to initialize GLFW (code %d): %s\n", err_code, err_desc);
+    } else {
+      fprintf(stderr, "ERROR: Failed to initialize GLFW (code %d)\n", err_code);
+    }
+    fprintf(stderr, "Hint: Check DISPLAY environment variable and X Server status\n");
     data.gui.terminal.AddLine("Failed to initialize GLFW");
-    return;
+    return 1;
   }
 
   // Create window with Vulkan context
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   GLFWwindow *window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "L2 Data Processor (Vulkan)", nullptr, nullptr);
   if (!window) {
+    const char *err_desc = nullptr;
+    int err_code = glfwGetError(&err_desc);
+    if (err_desc) {
+      fprintf(stderr, "ERROR: Failed to create GLFW window (code %d): %s\n", err_code, err_desc);
+    } else {
+      fprintf(stderr, "ERROR: Failed to create GLFW window (code %d)\n", err_code);
+    }
+    fprintf(stderr, "Hint: Check X Server compatibility\n");
     data.gui.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
-    return;
+    return 1;
   }
 
   if (!glfwVulkanSupported()) {
+    fprintf(stderr, "ERROR: Vulkan not supported on this system\n");
+    fprintf(stderr, "Hint: Check Vulkan drivers or use OpenGL backend instead\n");
     data.gui.terminal.AddLine("GLFW: Vulkan Not Supported");
     glfwDestroyWindow(window);
     glfwTerminate();
-    return;
+    return 1;
   }
 
   // Setup Vulkan
@@ -427,18 +445,30 @@ void RunGUI() {
   // Setup style
   ImGui::StyleColorsDark();
 
-  // Setup Chinese font
+  // Setup Chinese font with DPI scaling
   ImGuiIO &io = ImGui::GetIO();
   io.Fonts->Clear();
+
+  // Get DPI scale from GLFW
+  float xscale, yscale;
+  glfwGetWindowContentScale(window, &xscale, &yscale);
+  float dpi_scale = xscale; // Use x-axis scale
+  
+  char dpi_msg[128];
+  snprintf(dpi_msg, sizeof(dpi_msg), "Display DPI scale: %.2f (font size will be adjusted)", dpi_scale);
+  data.gui.terminal.AddLine(dpi_msg, Color::Blue());
 
   ImFontConfig config;
   config.MergeMode = false;
   config.PixelSnapH = true;
 
-  // Load Chinese font from bundled fonts
+  // Load Chinese font from bundled fonts with DPI-scaled size
   const char *font_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
+  float base_font_size = 16.0f;
+  float scaled_font_size = base_font_size * dpi_scale;
+  
   if (std::ifstream(font_path).good()) {
-    io.Fonts->AddFontFromFileTTF(font_path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+    io.Fonts->AddFontFromFileTTF(font_path, scaled_font_size, &config, io.Fonts->GetGlyphRangesChineseFull());
   } else {
     // Fallback to default font
     io.Fonts->AddFontDefault();
@@ -566,6 +596,8 @@ void RunGUI() {
   CleanupVulkan();
   glfwDestroyWindow(window);
   glfwTerminate();
+  
+  return 0;
 }
 
 } // namespace GUI
