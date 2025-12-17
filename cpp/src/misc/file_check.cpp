@@ -45,7 +45,7 @@ bool is_valid_number_string(const std::string &str, size_t expected_len) {
 
 std::pair<bool, std::string> check_single_archive_structure(const std::string &archive_path) {
   std::string cmd = "unrar lb \"" + archive_path + "\" 2>/dev/null | head -1";
-  FILE *pipe = popen(cmd.c_str(), "r");
+  FILE *pipe = _popen(cmd.c_str(), "r");
   if (!pipe) {
     return {false, "cannot read archive"};
   }
@@ -58,7 +58,7 @@ std::pair<bool, std::string> check_single_archive_structure(const std::string &a
       first_entry.pop_back();
     }
   }
-  pclose(pipe);
+  _pclose(pipe);
 
   if (first_entry.empty()) {
     return {false, "empty archive"};
@@ -122,8 +122,8 @@ bool detect_7z_format(const std::string &archive_path) {
   file.read(magic, 6);
 
   return (magic[0] == '7' && magic[1] == 'z' &&
-          magic[2] == (char)0xbc && magic[3] == (char)0xaf &&
-          magic[4] == (char)0x27 && magic[5] == (char)0x1c);
+          magic[2] == static_cast<char>(0xbc) && magic[3] == static_cast<char>(0xaf) &&
+          magic[4] == static_cast<char>(0x27) && magic[5] == static_cast<char>(0x1c));
 }
 
 bool detect_solid_rar(const std::string &archive_path) {
@@ -160,7 +160,7 @@ bool detect_solid_rar(const std::string &archive_path) {
     file.read(block, 7);
 
     unsigned char head_type = block[2];
-    unsigned short head_flags = (unsigned char)block[3] | ((unsigned char)block[4] << 8);
+    unsigned short head_flags = static_cast<unsigned char>(block[3]) | (static_cast<unsigned char>(block[4]) << 8);
 
     // Archive header has type 0x73
     if (head_type == 0x73) {

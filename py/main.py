@@ -4,6 +4,7 @@ Directly invokes CMake to configure and build the project.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -17,14 +18,23 @@ def build_main_project():
     print("  C++ Build Script (Windows)")
     print("=" * 40)
     
+    # Clean build directory
+    if os.path.exists(build_dir):
+        print("\nCleaning build directory...")
+        shutil.rmtree(build_dir)
+        print("✓ Build directory cleaned")
+    
     env = os.environ.copy()
     
     # Build configuration
     build_type = "Release"
     cmake_args = [
         "cmake",
+        "-G", "Ninja",
         "-S", ".",
         "-B", "build",
+        "-DCMAKE_CXX_COMPILER=clang-cl",
+        "-DCMAKE_C_COMPILER=clang-cl",
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
     ]
@@ -79,7 +89,6 @@ def build_main_project():
     compile_commands = os.path.join(build_dir, "compile_commands.json")
     if os.path.exists(compile_commands):
         dest = os.path.join(cpp_project_dir, "../../compile_commands.json")
-        import shutil
         shutil.copy(compile_commands, dest)
         print("\n✓ compile_commands.json copied for clangd")
     

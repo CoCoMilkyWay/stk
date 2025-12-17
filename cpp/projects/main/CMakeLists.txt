@@ -14,9 +14,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Build mode options
 option(PROFILE_MODE "Profile mode: -O0 -g, disable optimizations for profiling" OFF)
-option(DEBUG_MODE   "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
-option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
-option(ASSERT_MODE  "Assert mode: -O3 with assert checks enabled" OFF)
+option(DEBUG_MODE "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
+option(TSAN_MODE "ThreadSanitizer mode: -O1 -g for race detection" OFF)
+option(ASSERT_MODE "Assert mode: -O3 with assert checks enabled" OFF)
 
 # GUI backend selection
 set(USE_VULKAN_BACKEND OFF CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
@@ -38,16 +38,16 @@ add_compile_options(-fcolor-diagnostics -fansi-escape-codes)
 if(TSAN_MODE)
     message(STATUS "Build mode: TSAN (ThreadSanitizer - race detection)")
     add_compile_definitions(TSAN_MODE)
-    
-    set(CMAKE_CXX_FLAGS "-O1 -g -Wall -Wextra -fsanitize=thread")
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O1 /Zi -fsanitize=thread")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
 
 elseif(DEBUG_MODE)
     message(STATUS "Build mode: DEBUG (interactive debugging)")
     add_compile_definitions(DEBUG_MODE)
-    
-    set(CMAKE_CXX_FLAGS "-O0 -g -Wall -Wextra")
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-optimize-sibling-calls")
@@ -55,8 +55,8 @@ elseif(DEBUG_MODE)
 elseif(PROFILE_MODE)
     message(STATUS "Build mode: PROFILE (gperftools)")
     add_compile_definitions(PROFILE_MODE)
-    
-    set(CMAKE_CXX_FLAGS "-O0 -g -Wall -Wextra -march=native")
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline-functions")
@@ -70,37 +70,31 @@ elseif(PROFILE_MODE)
 elseif(ASSERT_MODE)
     message(STATUS "Build mode: ASSERT")
     add_compile_definitions(ASSERT_MODE)
-    
+
     # Optimization level (no NDEBUG - asserts enabled)
-    set(CMAKE_CXX_FLAGS "-O3")
-    # Warning flags
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
-    # Architecture optimization
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2")
+    # Architecture optimization (clang-cl specific)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-    # Specific optimizations
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math")
+    # Fast math
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
     # Link-time optimization
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
-    
+
     # Linker optimization (Windows-style)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
 
 else()
     message(STATUS "Build mode: PRODUCTION")
-    
+
     # Optimization level and definitions
-    set(CMAKE_CXX_FLAGS "-O3 -DNDEBUG")
-    # Warning flags
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
-    # Architecture optimization
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 -DNDEBUG")
+    # Architecture optimization (clang-cl specific)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-    # Specific optimizations
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math")
+    # Fast math
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
     # Link-time optimization
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
-    
+
     # Linker optimization (Windows-style)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
 endif()
@@ -235,7 +229,7 @@ set(HEADERS
     ../../include/gui/task_terminal/TaskTerminal.hpp
 )
 
-# Disable fast-math for JSON library and UI math to avoid infinity issues
+# Disable fast-math for JSON library and UI math to avoid infinity issues (Windows: /fp:precise)
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
@@ -251,7 +245,7 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
-    PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    PROPERTIES COMPILE_OPTIONS "/fp:precise"
 )
 
 # Executable
@@ -283,7 +277,6 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ compiler: ${CMAKE_CXX_COMPILER_ID}")
 message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "Output directory: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-message(STATUS "app_main sources: ${SOURCES}")
 
 # ============================================================================
 # GUI Libraries (ImGui, ImPlot, GLFW, OpenGL)
@@ -346,7 +339,7 @@ else()
 endif()
 
 add_library(imgui STATIC ${IMGUI_SOURCE})
-target_include_directories(imgui PUBLIC 
+target_include_directories(imgui SYSTEM PUBLIC
     ${IMGUI_SOURCE_DIR}
     ${IMGUI_SOURCE_DIR}/backends
 )
@@ -366,13 +359,11 @@ set(IMPLOT_SOURCE
     ${IMPLOT_SOURCE_DIR}/implot_items.cpp
 )
 add_library(implot STATIC ${IMPLOT_SOURCE})
-target_include_directories(implot PUBLIC ${IMPLOT_SOURCE_DIR})
+target_include_directories(implot SYSTEM PUBLIC ${IMPLOT_SOURCE_DIR})
 target_link_libraries(implot PUBLIC imgui)
 
-# Disable fast-math for ImPlot library to support infinity/NaN
-set_source_files_properties(${IMPLOT_SOURCE} PROPERTIES
-    COMPILE_OPTIONS "-fno-fast-math"
-)
+# Disable fast-math for ImPlot library to support infinity/NaN (Windows: /fp:precise)
+target_compile_options(implot PRIVATE /fp:precise)
 
 # Link GUI libraries to main executable
 target_link_libraries(app_main PRIVATE implot)
