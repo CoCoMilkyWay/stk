@@ -74,7 +74,6 @@ def _test_x11_connection(host, display_num=0):
     except:
         return False
 
-
 def check_and_setup():
     """Check GUI environment and setup DISPLAY if needed.
     
