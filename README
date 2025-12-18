@@ -9,12 +9,16 @@ stk/
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 调用cpp/projects/main/build.sh
 │   └── app/               # 🐍 DataProvider_API / FileRepair / Util
-└── cpp/
+└─── cpp/
     ├── include/
     │   ├── shared/                               # 📦 跨模块数据层
     │   │   ├── SharedData.hpp                    # 📦 顶层数据容器 (全局状态)
     │   │   ├── Config.hpp                        # 📦 配置数据结构
-    │   │   └── GuiState.hpp                      # 📦 GUI状态句柄 (持有指针)
+    │   │   ├── GuiState.hpp                      # 📦 GUI状态句柄 (持有指针)
+    │   │   ├── Asset.hpp                         # 📦 资产定义
+    │   │   ├── Feature.hpp                       # 📦 特征数据结构
+    │   │   ├── OrderFlow.hpp                     # 📦 订单流数据
+    │   │   └── Dist.hpp                          # 📦 分布式数据结构
     │   ├── define/                               # 🔷 底层数据结构
     │   │   ├── CBuffer.hpp                       # 🔷 循环缓冲区
     │   │   ├── FastBitmap.hpp                    # 🔷 快速位图
@@ -30,6 +34,7 @@ stk/
     │   │   └── json_config.hpp                   # 🔄 JSON配置解析
     │   ├── features/                             # 🧮 特征工程 (多时间尺度)
     │   │   ├── FeaturesDefine.hpp                # 🧮 特征定义: ID/元数据
+    │   │   ├── DataDefine.hpp                    # 🧮 数据定义: 基础数据类型
     │   │   ├── CoreCrosssection.hpp              # 🧮 截面特征核心: 横截面处理
     │   │   ├── CoreSequential.hpp                # 🧮 序列特征核心: 时间序列处理
     │   │   ├── FeaturesTick/                     # 🧮 Tick级特征 (逐笔粒度)
@@ -63,38 +68,32 @@ stk/
     │   │   │   └── CoroNetwork.hpp               # 🖥️ 网络子协程: 异步请求
     │   │   ├── task_crawler/                     # 🖥️
     │   │   │   └── CoroCrawler.hpp               # 🖥️ 爬虫: 数据抓取协程
-    │   │   └── task_database/                    # 🖥️ 数据库管理
-    │   │       ├── TaskDatabase.hpp              # 🖥️ 数据库任务主界面
-    │   │       ├── models/                       # 🖥️ 数据模型
-    │   │       │   ├── SharedTypes.hpp           # 🖥️ 共享类型定义
-    │   │       │   ├── BaostockData.hpp          # 🖥️ Baostock数据模型
-    │   │       │   └── L2AssetData.hpp           # 🖥️ L2资产数据模型
-    │   │       ├── services/                     # 🖥️ 业务服务层
-    │   │       │   ├── StateManager.hpp          # 🖥️ 状态管理器
-    │   │       │   ├── BaostockService.hpp       # 🖥️ Baostock数据服务
-    │   │       │   ├── L2DatabaseService.hpp     # 🖥️ L2数据库服务
-    │   │       │   ├── EncodingService.hpp       # 🖥️ 编码服务 (协程+线程池)
-    │   │       │   └── ClassifierService.hpp     # 🖥️ 分类器服务
-    │   │       ├── infrastructure/               # 🖥️ 基础设施层
-    │   │       │   ├── DataManager.hpp           # 🖥️ 数据管理器
-    │   │       │   ├── CoroScanner.hpp           # 🖥️ 协程扫描器
-    │   │       │   ├── ScanThreadPool.hpp        # 🖥️ 扫描线程池 (1000+天*1000+资产)
-    │   │       │   ├── BaostockClient.hpp        # 🖥️ Baostock客户端
-    │   │       │   └── BaostockPool.hpp          # 🖥️ Baostock连接池
+    │   │   ├── task_database/                    # 🖥️ 数据库管理
+    │   │   │   ├── TaskDatabase.hpp              # 🖥️ 数据库任务主界面
+    │   │   │   ├── models/                       # 🖥️ 数据模型
+    │   │   │   ├── services/                     # 🖥️ 业务服务层
+    │   │   │   ├── infrastructure/               # 🖥️ 基础设施层
+    │   │   │   └── ui/                           # 🖥️ UI组件
+    │   │   └── task_features/                    # 🖥️ 特征计算管理
+    │   │       ├── TaskFeatures.hpp              # 🖥️ 特征任务主界面
+    │   │       ├── services/                     # 🖥️ 特征服务层
+    │   │       │   ├── ComputeService.hpp        # 🖥️ 计算服务
+    │   │       │   ├── DataLoader.hpp            # 🖥️ 数据加载器
+    │   │       │   └── DistService.hpp           # 🖥️ 分布式服务
     │   │       └── ui/                           # 🖥️ UI组件
-    │   │           ├── TabOverview.hpp           # 🖥️ 概览标签页
-    │   │           ├── TabTable.hpp              # 🖥️ 表格标签页
-    │   │           ├── TabBrowser.hpp            # 🖥️ 浏览器标签页
-    │   │           └── CrossSectionAnalysis.hpp  # 🖥️ 横截面分析
+    │   │           ├── TabFeature.hpp            # 🖥️ 特征标签页
+    │   │           ├── TabCompute.hpp            # 🖥️ 计算标签页
+    │   │           ├── TabOrderFlow.hpp          # 🖥️ 订单流标签页
+    │   │           └── TabDist.hpp               # 🖥️ 分布标签页
     │   │   GUI布局:
     │   │   ┌───────────────────────────────────────────────────────────────────────────┐
     │   │   │ Tasks                                │ Panel:                             │
     │   │   │  > Settings[synced/syncing/writing]  │                                    │
     │   │   │  > SystemInfo[""/live]               │                                    │
     │   │   │  > DataBase                          │                                    │
-    │   │   │  > Features                          ├────────────────────────────────────┤
-    │   │   │  ...                                 │ Terminal:                          │
-    │   │   │                                      │                                    │
+    │   │   │  > Features                          │                                    │
+    │   │   │  ...                                 ├────────────────────────────────────┤
+    │   │   │                                      │ Terminal:                          │
     │   │   │ Icon:                                │                                    │
     │   │   │  |Network|FPS│                       |                                    │
     │   │   └───────────────────────────────────────────────────────────────────────────┘
