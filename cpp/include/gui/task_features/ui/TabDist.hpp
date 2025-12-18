@@ -22,8 +22,8 @@ class DistService;
 // ============================================================================
 
 struct DistUIState {
-  // Grouping: 0=NONE, 1=HOUR, 2=WEEKDAY, 3=MONTH
-  int group_by = 3;
+  // Selected dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS
+  int selected_dimension = 0;
 
   // Month focus slider (index into available months)
   int focus_month_idx = 0;

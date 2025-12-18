@@ -167,16 +167,6 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   ImGui::Text("Status: %s (%zu/%zu)", StatusText(dist.compute.status), done,
               total);
 
-  ImGui::SameLine(ImGui::GetWindowWidth() - 150);
-  ImGui::Text("By:");
-  ImGui::SameLine();
-  const char *items[] = {"None", "Hour", "Weekday", "Month"};
-  ImGui::SetNextItemWidth(100);
-  if (ImGui::Combo("##GroupBy", &ui.group_by, items, 4)) {
-    dist.input.group_by = static_cast<Dist::Input::GroupBy>(ui.group_by);
-    service->RequestQuery();
-  }
-
   // Row 2: Month slider (always visible from config date range)
   auto months = generate_months(data.config.start_date, data.config.end_date);
   if (!months.empty()) {
@@ -215,11 +205,37 @@ static ImU32 zone_color(int zone) {
 }
 
 // Color band with boundary labels
-// Format: |range_lo |warn_lo | | | warn_hi| range_hi|
+// Format: Label text first, then bar below
 static void RenderMomentBand(const char *label, float current_val,
-                             float global_mean, float global_mad,
+                             float bound_lo, float bound_hi,
                              float range_lo, float range_hi, float normal_lo,
                              float normal_hi, float warn_lo, float warn_hi) {
+  // Text: "Label: current (bound_lo/bound_hi)" with zone colors, first
+  int zone_cur = get_zone(current_val, normal_lo, normal_hi, warn_lo, warn_hi);
+  int zone_bound_lo = get_zone(bound_lo, normal_lo, normal_hi, warn_lo, warn_hi);
+  int zone_bound_hi = get_zone(bound_hi, normal_lo, normal_hi, warn_lo, warn_hi);
+
+  ImGui::Text("%s: ", label);
+  ImGui::SameLine(0, 0);
+  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_cur));
+  ImGui::Text("%.2f", current_val);
+  ImGui::PopStyleColor();
+  ImGui::SameLine(0, 0);
+  ImGui::Text(" (");
+  ImGui::SameLine(0, 0);
+  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_bound_lo));
+  ImGui::Text("%.2f", bound_lo);
+  ImGui::PopStyleColor();
+  ImGui::SameLine(0, 0);
+  ImGui::Text("/");
+  ImGui::SameLine(0, 0);
+  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_bound_hi));
+  ImGui::Text("%.2f", bound_hi);
+  ImGui::PopStyleColor();
+  ImGui::SameLine(0, 0);
+  ImGui::Text(")");
+
+  // Now draw the bar below
   ImDrawList *draw = ImGui::GetWindowDrawList();
   ImVec2 pos = ImGui::GetCursorScreenPos();
   float width = ImGui::GetContentRegionAvail().x;
@@ -231,7 +247,7 @@ static void RenderMomentBand(const char *label, float current_val,
     return pos.x + std::clamp((v - range_lo) / range, 0.0f, 1.0f) * width;
   };
 
-  // All bands share same vertical bounds
+  // Bar vertical bounds
   float y_top = pos.y + label_height;
   float y_bot = y_top + bar_height;
 
@@ -257,11 +273,9 @@ static void RenderMomentBand(const char *label, float current_val,
                       ImVec2(to_x(normal_hi), y_bot),
                       IM_COL32(60, 160, 60, 200));
 
-  // MAD range markers (slightly inset)
-  float mad_lo = global_mean - 2.5f * global_mad;
-  float mad_hi = global_mean + 2.5f * global_mad;
-  draw->AddRect(ImVec2(to_x(mad_lo), y_top + 2),
-                ImVec2(to_x(mad_hi), y_bot - 2),
+  // Bound range markers (slightly inset) - either MAD or min/max
+  draw->AddRect(ImVec2(to_x(bound_lo), y_top + 2),
+                ImVec2(to_x(bound_hi), y_bot - 2),
                 IM_COL32(255, 255, 255, 180), 0.0f, 0, 2.0f);
 
   // Current value marker (cyan diamond, centered)
@@ -271,7 +285,7 @@ static void RenderMomentBand(const char *label, float current_val,
                       ImVec2(cv_x, cy + 5), ImVec2(cv_x - 4, cy),
                       IM_COL32(0, 255, 255, 255));
 
-  // Boundary labels (1.1f format, skip middle)
+  // Boundary labels (on top of bar)
   char buf[16];
   snprintf(buf, sizeof(buf), "%.1f", range_lo);
   draw->AddText(ImVec2(to_x(range_lo), pos.y), IM_COL32(200, 200, 200, 255), buf);
@@ -283,78 +297,184 @@ static void RenderMomentBand(const char *label, float current_val,
   draw->AddText(ImVec2(to_x(range_hi) - 25, pos.y), IM_COL32(200, 200, 200, 255), buf);
 
   ImGui::Dummy(ImVec2(width, label_height + bar_height));
-
-  // Text: "Label: current (mad_lo/mad_hi)" with zone colors, bold
-  int zone_cur = get_zone(current_val, normal_lo, normal_hi, warn_lo, warn_hi);
-  int zone_mad_lo = get_zone(mad_lo, normal_lo, normal_hi, warn_lo, warn_hi);
-  int zone_mad_hi = get_zone(mad_hi, normal_lo, normal_hi, warn_lo, warn_hi);
-
-  ImGui::Text("%s: ", label);
-  ImGui::SameLine(0, 0);
-  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_cur));
-  ImGui::Text("%.2f", current_val);
-  ImGui::PopStyleColor();
-  ImGui::SameLine(0, 0);
-  ImGui::Text(" (");
-  ImGui::SameLine(0, 0);
-  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_mad_lo));
-  ImGui::Text("%.2f", mad_lo);
-  ImGui::PopStyleColor();
-  ImGui::SameLine(0, 0);
-  ImGui::Text("/");
-  ImGui::SameLine(0, 0);
-  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_mad_hi));
-  ImGui::Text("%.2f", mad_hi);
-  ImGui::PopStyleColor();
-  ImGui::SameLine(0, 0);
-  ImGui::Text(")");
 }
 
-static void RenderMomentsPanel(const Dist &dist, int focus_idx) {
+static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int focus_month_idx) {
   ImGui::BeginChild("MomentsPanel", ImVec2(350, 0), true);
-  ImGui::Text("[Moments Status]");
+  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // Use default font with bold style
+  ImGui::TextUnformatted("[阶矩展开]");
+  ImGui::PopFont();
   ImGui::Separator();
 
-  if (dist.result.bins.empty()) {
+  if (dist.compute.status != Dist::Compute::Status::Done) {
     ImGui::Text("No data");
     ImGui::EndChild();
     return;
   }
 
-  // Collect all bin values for computing MAD
+  // Collect moment values based on selected dimension
   std::vector<float> means, vars, skews, kurts;
-  for (const auto &b : dist.result.bins) {
-    means.push_back(b.mean);
-    vars.push_back(b.variance);
-    skews.push_back(b.skewness);
-    kurts.push_back(b.kurtosis);
+  
+  // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS
+  if (selected_dimension == 0) {
+    // MONTH dimension
+    for (const auto &mc : dist.cache) {
+      if (mc.valid && mc.total.count() >= kMinSamples) {
+        means.push_back(static_cast<float>(mc.total.mean()));
+        vars.push_back(static_cast<float>(mc.total.var()));
+        skews.push_back(static_cast<float>(mc.total.skew()));
+        kurts.push_back(static_cast<float>(mc.total.kurt()));
+      }
+    }
+  } else if (selected_dimension == 1) {
+    // WEEKDAY dimension
+    for (size_t wd = 0; wd < dist.global_by_weekday.size() && wd < 7; ++wd) {
+      const auto &kll = dist.global_by_weekday[wd];
+      if (kll.count() >= kMinSamples) {
+        means.push_back(static_cast<float>(kll.mean()));
+        vars.push_back(static_cast<float>(kll.var()));
+        skews.push_back(static_cast<float>(kll.skew()));
+        kurts.push_back(static_cast<float>(kll.kurt()));
+      }
+    }
+  } else if (selected_dimension == 2) {
+    // HOUR dimension
+    for (size_t h = 0; h < dist.global_by_hour.size() && h < 24; ++h) {
+      const auto &kll = dist.global_by_hour[h];
+      if (kll.count() >= kMinSamples) {
+        means.push_back(static_cast<float>(kll.mean()));
+        vars.push_back(static_cast<float>(kll.var()));
+        skews.push_back(static_cast<float>(kll.skew()));
+        kurts.push_back(static_cast<float>(kll.kurt()));
+      }
+    }
+  } else if (selected_dimension == 3) {
+    // ASSETS dimension
+    for (size_t a = 0; a < dist.global_by_asset.size(); ++a) {
+      const auto &kll = dist.global_by_asset[a];
+      if (kll.count() >= kMinSamples) {
+        means.push_back(static_cast<float>(kll.mean()));
+        vars.push_back(static_cast<float>(kll.var()));
+        skews.push_back(static_cast<float>(kll.skew()));
+        kurts.push_back(static_cast<float>(kll.kurt()));
+      }
+    }
   }
 
-  auto [med_mean, mad_mean] = compute_median_mad(means);
-  auto [med_var, mad_var] = compute_median_mad(vars);
-  auto [med_skew, mad_skew] = compute_median_mad(skews);
-  auto [med_kurt, mad_kurt] = compute_median_mad(kurts);
+  if (means.empty()) {
+    ImGui::Text("No data");
+    ImGui::EndChild();
+    return;
+  }
 
-  // Get focus bin (current month)
-  const auto *bin = &dist.result.bins[0];
-  if (focus_idx >= 0 && focus_idx < static_cast<int>(dist.result.bins.size())) {
-    bin = &dist.result.bins[focus_idx];
+  // Compute mean (average) for each moment type
+  auto compute_mean = [](const std::vector<float> &vals) -> float {
+    if (vals.empty()) return 0.0f;
+    float sum = 0.0f;
+    for (float v : vals) sum += v;
+    return sum / vals.size();
+  };
+
+  // Compute min/max
+  auto compute_min = [](const std::vector<float> &vals) -> float {
+    if (vals.empty()) return 0.0f;
+    return *std::min_element(vals.begin(), vals.end());
+  };
+
+  auto compute_max = [](const std::vector<float> &vals) -> float {
+    if (vals.empty()) return 0.0f;
+    return *std::max_element(vals.begin(), vals.end());
+  };
+
+  // Compute MAD for each moment type
+  auto compute_mad = [](const std::vector<float> &vals) -> float {
+    if (vals.empty()) return 0.0f;
+    // Compute median
+    std::vector<float> sorted = vals;
+    std::sort(sorted.begin(), sorted.end());
+    float median = sorted[sorted.size() / 2];
+    // Compute MAD
+    std::vector<float> abs_devs;
+    abs_devs.reserve(vals.size());
+    for (float v : vals) {
+      abs_devs.push_back(std::abs(v - median));
+    }
+    std::sort(abs_devs.begin(), abs_devs.end());
+    return abs_devs[abs_devs.size() / 2];
+  };
+
+  float mean_mean = compute_mean(means);
+  float mean_var = compute_mean(vars);
+  float mean_skew = compute_mean(skews);
+  float mean_kurt = compute_mean(kurts);
+
+  // For dimensions 0,1,2 (MONTH, WEEKDAY, HOUR): use min/max
+  // For dimension 3 (ASSETS): use MAD
+  float lower_mean, upper_mean, lower_var, upper_var;
+  float lower_skew, upper_skew, lower_kurt, upper_kurt;
+
+  if (selected_dimension == 3) {
+    // ASSETS dimension: use MAD
+    float mad_mean = compute_mad(means);
+    float mad_var = compute_mad(vars);
+    float mad_skew = compute_mad(skews);
+    float mad_kurt = compute_mad(kurts);
+    
+    lower_mean = mean_mean - 2.5f * mad_mean;
+    upper_mean = mean_mean + 2.5f * mad_mean;
+    lower_var = mean_var - 2.5f * mad_var;
+    upper_var = mean_var + 2.5f * mad_var;
+    lower_skew = mean_skew - 2.5f * mad_skew;
+    upper_skew = mean_skew + 2.5f * mad_skew;
+    lower_kurt = mean_kurt - 2.5f * mad_kurt;
+    upper_kurt = mean_kurt + 2.5f * mad_kurt;
+  } else {
+    // MONTH, WEEKDAY, HOUR dimensions: use min/max
+    lower_mean = compute_min(means);
+    upper_mean = compute_max(means);
+    lower_var = compute_min(vars);
+    upper_var = compute_max(vars);
+    lower_skew = compute_min(skews);
+    upper_skew = compute_max(skews);
+    lower_kurt = compute_min(kurts);
+    upper_kurt = compute_max(kurts);
+  }
+
+  // Get current value to display
+  // For MONTH: use slider month value; for others: use mean
+  float display_mean, display_var, display_skew, display_kurt;
+  
+  if (selected_dimension == 0 && focus_month_idx >= 0 && 
+      focus_month_idx < static_cast<int>(dist.cache.size()) &&
+      dist.cache[focus_month_idx].valid) {
+    // MONTH dimension: show slider month value
+    const auto &mc = dist.cache[focus_month_idx];
+    display_mean = static_cast<float>(mc.total.mean());
+    display_var = static_cast<float>(mc.total.var());
+    display_skew = static_cast<float>(mc.total.skew());
+    display_kurt = static_cast<float>(mc.total.kurt());
+  } else {
+    // Other dimensions: show mean value
+    display_mean = mean_mean;
+    display_var = mean_var;
+    display_skew = mean_skew;
+    display_kurt = mean_kurt;
   }
 
   // Color bands with boundaries
-  RenderMomentBand("Mean", bin->mean, med_mean, mad_mean, -1.0f, 1.0f, -0.1f,
+  RenderMomentBand("Mean", display_mean, lower_mean, upper_mean, -1.0f, 1.0f, -0.1f,
                    0.1f, -0.3f, 0.3f);
   ImGui::Spacing();
 
-  RenderMomentBand("Variance", bin->variance, med_var, mad_var, 0.0f, 3.0f,
+  RenderMomentBand("Variance", display_var, lower_var, upper_var, 0.0f, 3.0f,
                    0.5f, 1.2f, 0.2f, 2.0f);
   ImGui::Spacing();
 
-  RenderMomentBand("Skewness", bin->skewness, med_skew, mad_skew, -4.0f, 4.0f,
+  RenderMomentBand("Skewness", display_skew, lower_skew, upper_skew, -4.0f, 4.0f,
                    -0.5f, 0.5f, -1.5f, 1.5f);
   ImGui::Spacing();
 
-  RenderMomentBand("Kurtosis", bin->kurtosis, med_kurt, mad_kurt, -3.0f, 15.0f,
+  RenderMomentBand("Kurtosis", display_kurt, lower_kurt, upper_kurt, -3.0f, 15.0f,
                    0.0f, 3.0f, -1.0f, 6.0f);
 
   ImGui::EndChild();
@@ -455,6 +575,11 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
 
     // Note: no visual hover highlight; tooltip is enough and won't fight the focus line.
 
+    // Click detection for dimension selection
+    if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(0)) {
+      hovered_idx = -2; // Signal that plot was clicked
+    }
+
     ImPlot::EndPlot();
   }
 
@@ -468,11 +593,12 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
   return hovered_idx;
 }
 
-static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_autofit) {
+static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_autofit, 
+                              int selected_dimension, int &clicked_dimension) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
   ImGui::BeginChild("PDFByMonth", ImVec2(0, 0), false);
   ImGui::PopStyleVar();
-  ImGui::Text("[PDF by Month]");
+  ImGui::Text("PDF密度(月度漂移)");
   ImGui::Separator();
 
   // Unified check: wait for compute to finish
@@ -494,7 +620,7 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
     }
   }
 
-  RenderPDFPlot("##PDFMonth", pdfs, focus_month_idx, need_autofit, [&](int idx) {
+  int hovered = RenderPDFPlot("##PDFMonth", pdfs, focus_month_idx, need_autofit, [&](int idx) {
     const auto &kll = dist.cache[idx].total;
     ImGui::Text("%s", pdfs[idx].label.c_str());
     ImGui::Text("n=%zu", kll.count());
@@ -502,14 +628,28 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
 
+  // Click detection
+  if (hovered == -2) {
+    clicked_dimension = 0; // MONTH
+  }
+
+  // Highlight border if selected
+  if (selected_dimension == 0) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 p_min = ImGui::GetItemRectMin();
+    ImVec2 p_max = ImGui::GetItemRectMax();
+    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
+  }
+
   ImGui::EndChild();
 }
 
-static void RenderPDFByWeekday(const Dist &dist, bool need_autofit) {
+static void RenderPDFByWeekday(const Dist &dist, bool need_autofit, 
+                                int selected_dimension, int &clicked_dimension) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
   ImGui::BeginChild("PDFByWeekday", ImVec2(0, 0), false);
   ImGui::PopStyleVar();
-  ImGui::Text("[PDF by Weekday (Global)]");
+  ImGui::Text("PDF密度(周内偏移)");
   ImGui::Separator();
 
   // Unified check: wait for compute to finish
@@ -532,7 +672,7 @@ static void RenderPDFByWeekday(const Dist &dist, bool need_autofit) {
     }
   }
 
-  RenderPDFPlot("##PDFWeekday", pdfs, -1, need_autofit, [&](int idx) {
+  int hovered = RenderPDFPlot("##PDFWeekday", pdfs, -1, need_autofit, [&](int idx) {
     const auto &kll = global_weekday[idx];
     ImGui::Text("%s", wd_names[idx]);
     ImGui::Text("n=%zu", kll.count());
@@ -540,14 +680,28 @@ static void RenderPDFByWeekday(const Dist &dist, bool need_autofit) {
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
 
+  // Click detection
+  if (hovered == -2) {
+    clicked_dimension = 1; // WEEKDAY
+  }
+
+  // Highlight border if selected
+  if (selected_dimension == 1) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 p_min = ImGui::GetItemRectMin();
+    ImVec2 p_max = ImGui::GetItemRectMax();
+    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
+  }
+
   ImGui::EndChild();
 }
 
-static void RenderPDFByHour(const Dist &dist, bool need_autofit) {
+static void RenderPDFByHour(const Dist &dist, bool need_autofit, 
+                             int selected_dimension, int &clicked_dimension) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
   ImGui::BeginChild("PDFByHour", ImVec2(0, 0), false);
   ImGui::PopStyleVar();
-  ImGui::Text("[PDF by Hour (Global)]");
+  ImGui::Text("PDF密度(日内偏移)");
   ImGui::Separator();
 
   // Unified check: wait for compute to finish
@@ -569,13 +723,26 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit) {
     }
   }
 
-  RenderPDFPlot("##PDFHour", pdfs, -1, need_autofit, [&](int idx) {
+  int hovered = RenderPDFPlot("##PDFHour", pdfs, -1, need_autofit, [&](int idx) {
     const auto &kll = global_hour[idx];
     ImGui::Text("Hour %d", idx);
     ImGui::Text("n=%zu", kll.count());
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
+
+  // Click detection
+  if (hovered == -2) {
+    clicked_dimension = 2; // HOUR
+  }
+
+  // Highlight border if selected
+  if (selected_dimension == 2) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 p_min = ImGui::GetItemRectMin();
+    ImVec2 p_max = ImGui::GetItemRectMax();
+    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
+  }
 
   ImGui::EndChild();
 }
@@ -584,8 +751,9 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit) {
 // Assets PDF Plot
 // ============================================================================
 
-static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_autofit) {
-  ImGui::Text("[Assets PDF (All Months)]");
+static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_autofit, 
+                             int selected_dimension, int &clicked_dimension) {
+  ImGui::Text("PDF密度(资产截面)");
   ImGui::Separator();
 
   if (dist.compute.status != Dist::Compute::Status::Done || dist.global_by_asset.empty()) {
@@ -600,6 +768,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_auto
   size_t n_assets = dist.global_by_asset.size();
   int hovered_asset = -1;
   double min_dist_sq = 1e9;
+  bool plot_clicked = false;
 
   if (ImPlot::BeginPlot("##AssetsPDF", ImVec2(-1, -1))) {
     ImPlot::SetupAxes(nullptr, nullptr, 
@@ -646,17 +815,61 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_auto
       }
     }
     ImPlot::PopStyleVar();
+    
+    // Click detection
+    if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(0)) {
+      plot_clicked = true;
+    }
+    
     ImPlot::EndPlot();
+  }
+
+  // Click detection
+  if (plot_clicked) {
+    clicked_dimension = 3; // ASSETS
+  }
+
+  // Highlight border if selected
+  if (selected_dimension == 3) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 p_min = ImGui::GetItemRectMin();
+    ImVec2 p_max = ImGui::GetItemRectMax();
+    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
   }
 
   // Tooltip
   if (hovered_asset >= 0 && min_dist_sq < 0.001 &&
       static_cast<size_t>(hovered_asset) < asset.items.size()) {
     ImGui::BeginTooltip();
+    const auto &asset_item = asset.items[hovered_asset];
     const auto &kll = dist.global_by_asset[hovered_asset];
-    ImGui::Text("Asset: %s", asset.items[hovered_asset].asset_code.c_str());
+    
+    // Format: 华夏银行(000000.SH)
+    ImGui::Text("%s(%s.%s)", 
+                asset_item.asset_name.c_str(), 
+                asset_item.asset_code.c_str(),
+                asset_item.exchange.c_str());
+    
+    // Format date: YYYYMMDD -> YYYY/MM/DD
+    auto format_date = [](const std::string &date) -> std::string {
+      if (date.size() == 8) {
+        return date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
+      }
+      return date;
+    };
+    
+    // Format: 1998/01/01 - today/ 2020/01/01(DL)
+    std::string start_str = format_date(asset_item.start_date);
+    std::string end_str = asset_item.end_date.empty() ? "today" : format_date(asset_item.end_date);
+    if (!asset_item.end_date.empty()) {
+      end_str += "(DL)"; // Delisted
+    }
+    ImGui::Text("%s - %s", start_str.c_str(), end_str.c_str());
+    
+    // Statistics
     ImGui::Text("n=%zu", kll.count());
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
+    
     ImGui::EndTooltip();
   }
 }
@@ -709,13 +922,8 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Left column: Moments Panel
   ImGui::BeginChild("MomentsSection", ImVec2(0, content_height), false);
 
-  // Find focus bin index for MONTH grouping
-  int focus_bin_idx = -1;
-  if (ui.group_by == 3 && ui.focus_month_idx >= 0) {
-    focus_bin_idx = ui.focus_month_idx;
-  }
-
-  RenderMomentsPanel(dist, focus_bin_idx);
+  // Pass selected dimension and focus month to moments panel
+  RenderMomentsPanel(dist, ui.selected_dimension, ui.focus_month_idx);
   ImGui::EndChild();
 
   ImGui::NextColumn();
@@ -730,16 +938,19 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
   ImGui::Columns(3, "PDFCols", false);
 
+  // Track clicked dimension (-1 = none clicked)
+  int clicked_dimension = -1;
+
   // PDF by Month (focus month only)
-  RenderPDFByMonth(dist, ui.focus_month_idx, ui.need_autofit);
+  RenderPDFByMonth(dist, ui.focus_month_idx, ui.need_autofit, ui.selected_dimension, clicked_dimension);
   ImGui::NextColumn();
 
   // PDF by Weekday (global)
-  RenderPDFByWeekday(dist, ui.need_autofit);
+  RenderPDFByWeekday(dist, ui.need_autofit, ui.selected_dimension, clicked_dimension);
   ImGui::NextColumn();
 
   // PDF by Hour (global)
-  RenderPDFByHour(dist, ui.need_autofit);
+  RenderPDFByHour(dist, ui.need_autofit, ui.selected_dimension, clicked_dimension);
 
   ImGui::Columns(1);
   ImGui::PopStyleVar();
@@ -747,8 +958,13 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   // Bottom: Assets PDF
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(dist, data.asset, ui.need_autofit);
+  RenderAssetsPDF(dist, data.asset, ui.need_autofit, ui.selected_dimension, clicked_dimension);
   ImGui::EndChild();
+
+  // Update selected dimension if any plot was clicked
+  if (clicked_dimension >= 0) {
+    ui.selected_dimension = clicked_dimension;
+  }
 
   ImGui::EndChild();
 

@@ -430,9 +430,9 @@ struct Dist {
   // ==========================================================================
 
   struct Input {
-    enum class GroupBy : uint8_t { NONE, HOUR, WEEKDAY, MONTH };
+    enum class GroupBy : uint8_t { MONTH, WEEKDAY, HOUR, ASSETS };
 
-    GroupBy group_by = GroupBy::NONE;
+    GroupBy group_by = GroupBy::MONTH;
     int focus_month_idx = -1; // for trajectory highlight
 
     // Cache keys for change detection

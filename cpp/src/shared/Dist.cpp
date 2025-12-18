@@ -252,37 +252,13 @@ void Dist::query(Input::GroupBy group_by) {
   }
 
   switch (group_by) {
-  case Input::GroupBy::NONE: {
-    // Merge all months into single bin, store in kll_storage
-    result.kll_storage.emplace_back(KLL_CAPACITY);
-    auto &merged = result.kll_storage.back();
+  case Input::GroupBy::MONTH: {
+    // Each month as a bin - pointers directly to cache (already persistent)
     for (const auto &mc : cache) {
-      merged.merge(mc.total);
-    }
-    if (merged.count() >= min_samples) {
-      result.bins.emplace_back();
-      result.bins.back().key = "all";
-      result.bins.back().extract_from(merged);
-    }
-    break;
-  }
-
-  case Input::GroupBy::HOUR: {
-    // Merge by hour across all months, store in kll_storage
-    result.kll_storage.reserve(24);
-    for (size_t i = 0; i < 24; ++i) {
-      result.kll_storage.emplace_back(KLL_CAPACITY);
-    }
-    for (const auto &mc : cache) {
-      for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
-        result.kll_storage[h].merge(mc.by_hour[h]);
-      }
-    }
-    for (size_t h = 0; h < 24; ++h) {
-      if (result.kll_storage[h].count() >= min_samples) {
+      if (mc.total.count() >= min_samples) {
         result.bins.emplace_back();
-        result.bins.back().key = "hour_" + std::to_string(h);
-        result.bins.back().extract_from(result.kll_storage[h]);
+        result.bins.back().key = mc.month;
+        result.bins.back().extract_from(mc.total);
       }
     }
     break;
@@ -310,13 +286,34 @@ void Dist::query(Input::GroupBy group_by) {
     break;
   }
 
-  case Input::GroupBy::MONTH: {
-    // Each month as a bin - pointers directly to cache (already persistent)
+  case Input::GroupBy::HOUR: {
+    // Merge by hour across all months, store in kll_storage
+    result.kll_storage.reserve(24);
+    for (size_t i = 0; i < 24; ++i) {
+      result.kll_storage.emplace_back(KLL_CAPACITY);
+    }
     for (const auto &mc : cache) {
-      if (mc.total.count() >= min_samples) {
+      for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
+        result.kll_storage[h].merge(mc.by_hour[h]);
+      }
+    }
+    for (size_t h = 0; h < 24; ++h) {
+      if (result.kll_storage[h].count() >= min_samples) {
         result.bins.emplace_back();
-        result.bins.back().key = mc.month;
-        result.bins.back().extract_from(mc.total);
+        result.bins.back().key = "hour_" + std::to_string(h);
+        result.bins.back().extract_from(result.kll_storage[h]);
+      }
+    }
+    break;
+  }
+
+  case Input::GroupBy::ASSETS: {
+    // Per-asset statistics from global aggregation
+    for (size_t a = 0; a < global_by_asset.size(); ++a) {
+      if (global_by_asset[a].count() >= min_samples) {
+        result.bins.emplace_back();
+        result.bins.back().key = "asset_" + std::to_string(a);
+        result.bins.back().extract_from(global_by_asset[a]);
       }
     }
     break;
