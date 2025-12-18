@@ -20,7 +20,6 @@
 #include <io.h>
 #include <fcntl.h>
 #include <share.h>
-#include <cerrno>
 #include <windows.h>
 #undef min
 #undef max
