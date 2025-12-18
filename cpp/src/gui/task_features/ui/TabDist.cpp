@@ -462,19 +462,19 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
   }
 
   // Color bands with boundaries
-  RenderMomentBand("Mean", display_mean, lower_mean, upper_mean, -1.0f, 1.0f, -0.1f,
+  RenderMomentBand("Mean/均值(1阶普通矩)", display_mean, lower_mean, upper_mean, -1.0f, 1.0f, -0.1f,
                    0.1f, -0.3f, 0.3f);
   ImGui::Spacing();
 
-  RenderMomentBand("Variance", display_var, lower_var, upper_var, 0.0f, 3.0f,
+  RenderMomentBand("Var/方差(2阶中心矩)", display_var, lower_var, upper_var, 0.0f, 3.0f,
                    0.5f, 1.2f, 0.2f, 2.0f);
   ImGui::Spacing();
 
-  RenderMomentBand("Skewness", display_skew, lower_skew, upper_skew, -4.0f, 4.0f,
+  RenderMomentBand("Skew/偏度(3阶标准矩)", display_skew, lower_skew, upper_skew, -4.0f, 4.0f,
                    -0.5f, 0.5f, -1.5f, 1.5f);
   ImGui::Spacing();
 
-  RenderMomentBand("Kurtosis", display_kurt, lower_kurt, upper_kurt, -3.0f, 15.0f,
+  RenderMomentBand("Kurt/峰度(4阶标准矩)", display_kurt, lower_kurt, upper_kurt, -3.0f, 15.0f,
                    0.0f, 3.0f, -1.0f, 6.0f);
 
   ImGui::EndChild();
@@ -844,11 +844,23 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     const auto &asset_item = asset.items[hovered_asset];
     const auto &kll = dist.global_by_asset[hovered_asset];
     
-    // Format: 华夏银行(000000.SH)
-    ImGui::Text("%s(%s.%s)", 
-                asset_item.asset_name.c_str(), 
-                asset_item.asset_code.c_str(),
-                asset_item.exchange.c_str());
+    // Get real-time info from AssetInfo
+    std::string exchange_lower = asset_item.exchange;
+    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
+    std::string stock_key = exchange_lower + "." + asset_item.asset_code;
+    const StockInfo *stock_info = asset_info.find_stock_info(stock_key);
+    
+    // Format: 华夏银行(000000.SH) - name from AssetInfo
+    if (stock_info && !stock_info->name.empty()) {
+      ImGui::Text("%s(%s.%s)", 
+                  stock_info->name.c_str(),
+                  asset_item.asset_code.c_str(),
+                  asset_item.exchange.c_str());
+    } else {
+      ImGui::Text("%s.%s", 
+                  asset_item.asset_code.c_str(),
+                  asset_item.exchange.c_str());
+    }
     
     // Format date: YYYYMMDD -> YYYY/MM/DD
     auto format_date = [](const std::string &date) -> std::string {
@@ -858,26 +870,46 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
       return date;
     };
     
-    // Format: 1998/01/01 - today/ 2020/01/01(DL)
-    std::string start_str = format_date(asset_item.start_date);
-    std::string end_str = asset_item.end_date.empty() ? "today" : format_date(asset_item.end_date);
-    if (!asset_item.end_date.empty()) {
-      end_str += "(DL)"; // Delisted
+    // Format: 1998/01/01 - today/ 2020/01/01(DL) (from AssetInfo dynamic data)
+    if (stock_info) {
+      std::string start_str = format_date(stock_info->ipoDate);
+      std::string end_str = stock_info->outDate.empty() ? "today" : format_date(stock_info->outDate);
+      if (!stock_info->outDate.empty()) {
+        end_str += "(DL)"; // Delisted
+      }
+      ImGui::Text("%s - %s", start_str.c_str(), end_str.c_str());
     }
-    ImGui::Text("%s - %s", start_str.c_str(), end_str.c_str());
     
-    // Market cap (from stock_info)
-    std::string exchange_lower = asset_item.exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-    std::string stock_key = exchange_lower + "." + asset_item.asset_code;
+    // Market cap (from AssetInfo real-time data)
     float market_cap = asset_info.calculate_market_cap(stock_key);
     if (market_cap > 0.0f) {
       ImGui::Text("市值: %.2f亿", market_cap);
     }
     
+    // Four valuation metrics (from AssetInfo real-time data) - format as +3.2f
+    if (stock_info) {
+      auto format_val = [](const std::string &s) -> std::string {
+        if (s.empty()) return "--";
+        try {
+          float v = std::stof(s);
+          char buf[16];
+          std::snprintf(buf, sizeof(buf), "%+6.2f", v);
+          return buf;
+        } catch (...) {
+          return "--";
+        }
+      };
+      ImGui::Text("PE(TTM): %s  PB(MRQ): %s  PS(TTM): %s  PCF(NCF): %s",
+                  format_val(stock_info->peTTM).c_str(),
+                  format_val(stock_info->pbMRQ).c_str(),
+                  format_val(stock_info->psTTM).c_str(),
+                  format_val(stock_info->pcfNcfTTM).c_str());
+    }
+    
     // Statistics
     ImGui::Text("n=%zu", kll.count());
-    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
+    ImGui::Text("Mean/均值=%.4f Var/方差=%.4f", kll.mean(), kll.var());
+    ImGui::Text("Skew/偏度=%.4f Kurt/峰度=%.4f", kll.skew(), kll.kurt());
     
     ImGui::EndTooltip();
   }

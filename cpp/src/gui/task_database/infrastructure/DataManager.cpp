@@ -449,6 +449,11 @@ awaitable<void> DataManager::load_stock_info() {
   data_.asset_info.load_stock_info_from_json(data_.config.config_dir, data_.config);
   Log(std::format("Loaded stock_info.json: {} stocks", 
                   data_.asset_info.get_stock_info().size()));
+  
+  // Sync AssetItem fields from updated AssetInfo
+  data_.asset.sync_from_asset_info(data_.asset_info.get_stock_info());
+  Log("Synced AssetItem fields from AssetInfo");
+  
   co_return;
 }
 
@@ -468,6 +473,11 @@ awaitable<void> DataManager::save_stock_factor() {
 awaitable<void> DataManager::save_stock_info() {
   data_.asset_info.save_stock_info_to_json(data_.config.config_dir, data_.config);
   Log("Saved stock_info.json");
+  
+  // Sync AssetItem fields from updated AssetInfo
+  data_.asset.sync_from_asset_info(data_.asset_info.get_stock_info());
+  Log("Synced AssetItem fields from AssetInfo");
+  
   co_return;
 }
 

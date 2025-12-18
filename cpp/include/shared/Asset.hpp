@@ -210,6 +210,42 @@ struct Asset {
   // Also computes backtest range statistics using cached data
   void compute_backtest_coverage(const std::string &start, const std::string &end);
   
+  // Sync AssetItem fields from AssetInfo (call after AssetInfo updates)
+  template<typename StockInfoMap>
+  void sync_from_asset_info(const StockInfoMap &stock_info) {
+    for (auto &asset : items) {
+      // Build stock key: "exchange.code" (lowercase exchange)
+      std::string exchange_lower = asset.exchange;
+      std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
+      std::string stock_key = exchange_lower + "." + asset.asset_code;
+      
+      // Find stock info
+      auto info_it = stock_info.find(stock_key);
+      if (info_it != stock_info.end()) {
+        const auto &info = info_it->second;
+        
+        // Update name
+        asset.asset_name = info.name;
+        
+        // Update start_date (ipoDate: YYYY-MM-DD -> YYYYMMDD)
+        if (!info.ipoDate.empty()) {
+          std::string ipo_date = info.ipoDate;
+          ipo_date.erase(std::remove(ipo_date.begin(), ipo_date.end(), '-'), ipo_date.end());
+          asset.start_date = ipo_date;
+        }
+        
+        // Update end_date (outDate: YYYY-MM-DD -> YYYYMMDD)
+        if (!info.outDate.empty()) {
+          std::string out_date = info.outDate;
+          out_date.erase(std::remove(out_date.begin(), out_date.end(), '-'), out_date.end());
+          asset.end_date = out_date;
+        } else {
+          asset.end_date = "20991231"; // Not delisted
+        }
+      }
+    }
+  }
+  
   // Compute per-date browser statistics (requires stock_info for delist dates)
   // Should be called once after loading stock_info and stock_days
   template<typename StockInfoMap, typename StockDaysVec>
