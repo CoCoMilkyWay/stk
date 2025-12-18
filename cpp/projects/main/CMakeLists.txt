@@ -37,8 +37,9 @@ add_compile_options(-fcolor-diagnostics -fansi-escape-codes)
 # Suppress overriding option warnings (expected when mixing /fp:fast and /fp:precise)
 add_compile_options(-Wno-overriding-option)
 
-# Define Windows version for Boost ASIO (Windows 10)
 add_compile_definitions(_WIN32_WINNT=0x0A00)
+add_compile_definitions(WIN32_LEAN_AND_MEAN)
+add_compile_definitions(NOMINMAX)
 
 # Compiler flags configuration
 if(TSAN_MODE)
@@ -111,12 +112,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # External libraries
-set(ZSTD_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../../package/zstd-1.5.7/libzstd.a)
 include_directories(../../include)
-include_directories(../../package/zstd-1.5.7)
 
-# Build zlib as subdirectory (generates libz.a automatically)
+# Build zlib and zstd as subdirectories
 add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
+add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
 
 # Source files
 set(SOURCES
@@ -262,10 +262,9 @@ add_executable(app_main ${SOURCES} ${HEADERS})
 
 target_include_directories(app_main PRIVATE
     ../../include
-    ../../package/zstd-1.5.7
 )
 
-target_link_libraries(app_main PRIVATE ${ZSTD_LIB_PATH} z)
+target_link_libraries(app_main PRIVATE libzstd_static z)
 
 # Windows system libraries for TaskSystemInfo
 target_link_libraries(app_main PRIVATE

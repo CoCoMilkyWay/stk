@@ -316,14 +316,14 @@ struct OrderFlow {
       std::unordered_set<int> keys_to_update;
       
       // Price key range for efficient iteration
-      int min_key = std::numeric_limits<int>::max();
-      int max_key = std::numeric_limits<int>::min();
+      int min_key = (std::numeric_limits<int>::max)();
+      int max_key = (std::numeric_limits<int>::min)();
       
       void clear_per_tick() {
         current_tick.clear();
         keys_to_update.clear();
-        min_key = std::numeric_limits<int>::max();
-        max_key = std::numeric_limits<int>::min();
+        min_key = (std::numeric_limits<int>::max)();
+        max_key = (std::numeric_limits<int>::min)();
       }
     } scratch_;
     

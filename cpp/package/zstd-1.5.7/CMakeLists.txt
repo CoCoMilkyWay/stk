@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
+
+# Set policy to suppress MSVC ASM warning
+if(POLICY CMP0194)
+    cmake_policy(SET CMP0194 NEW)
+endif()
+
+# Set MSVC warning level to minimal
+if(MSVC)
+    add_compile_options(/W1)
+endif()
+
+# Configure zstd to only build static library
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+
+# Add the cmake subdirectory for zstd library
+add_subdirectory(build/cmake)

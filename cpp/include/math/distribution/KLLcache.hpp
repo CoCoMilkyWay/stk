@@ -624,7 +624,7 @@ inline void KLLcache::addBatch(const std::vector<float> &X) {
       max_ = batch_max;
   }
 
-  assert(count_ <= (std::numeric_limits<uint64_t>::max() - X.size()));
+  assert(count_ <= ((std::numeric_limits<uint64_t>::max)() - X.size()));
   count_ += X.size();
 
   // 批量插入到 level 0，保持 size ≤ k+1
@@ -635,7 +635,7 @@ inline void KLLcache::addBatch(const std::vector<float> &X) {
   while (idx < X.size()) {
     // 计算可插入数量（插入到 k+1 触发 compact）
     size_t remaining = capacity_ + 1 - buf.size();
-    size_t to_insert = std::min(remaining, X.size() - idx);
+    size_t to_insert = (std::min)(remaining, X.size() - idx);
 
     // 批量插入（无 reallocation，因为 capacity = 2k > k+1）
     buf.insert(buf.end(), X.begin() + idx, X.begin() + idx + to_insert);
@@ -667,7 +667,7 @@ inline void KLLcache::mergeWith(const KLLcache &other) {
       max_ = other.max_;
   }
 
-  assert(count_ <= (std::numeric_limits<uint64_t>::max() - other.count_));
+  assert(count_ <= ((std::numeric_limits<uint64_t>::max)() - other.count_));
   count_ += other.count_;
 
   // 合并各层：每层已 reserve 2k，足够容纳合并
@@ -1056,7 +1056,7 @@ inline void KLLcache::densityFromCumulative(const float *x, const float *y,
     float dx = x[i + 1] - x[i];
     float dy = y[i + 1] - y[i];
     x_mid[i] = (x[i] + x[i + 1]) * 0.5;
-    density[i] = (dx > 0) ? std::max(0.0f, dy / dx) : 0.0f;
+    density[i] = (dx > 0) ? (std::max)(0.0f, dy / dx) : 0.0f;
   }
 }
 

@@ -7,6 +7,9 @@
 
 #pragma once
 
+#include <winsock2.h>
+#include <windows.h>
+
 #include "package/nlohmann/json.hpp"
 #include <boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -403,7 +406,7 @@ public:
       auto now = std::chrono::system_clock::now();
       auto now_t = std::chrono::system_clock::to_time_t(now);
       std::tm now_tm;
-      localtime_r(&now_t, &now_tm);
+      localtime_s(&now_tm, &now_t);
       char timestamp[15];
       std::strftime(timestamp, sizeof(timestamp), "%Y%m%d%H%M%S", &now_tm);
 
