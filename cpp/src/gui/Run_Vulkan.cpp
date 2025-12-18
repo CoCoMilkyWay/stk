@@ -8,25 +8,22 @@
 #include "gui/task_icon_bar/TaskIconBar.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
+#include "imgui_freetype.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "implot.h"
 #include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
+
 #define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <fstream>
 #include <thread>
 #include <vector>
 #include <vulkan/vulkan.h>
-
-struct ImFontAtlas;
-namespace ImGuiFreeType {
-bool BuildFontAtlas(ImFontAtlas *atlas, unsigned int extra_flags = 0);
-}
 
 namespace GUI {
 
@@ -351,10 +348,10 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
 int RunGUI() {
   // Initialize shared data (contains everything)
   SharedData data;
-  
+
   // Setup global state for logging
   g_gui_state = &data.gui;
-  
+
   // Setup config reinit callback
   data.config.reinit_callback = [&data]() {
     data.request_reinit = true;
@@ -450,38 +447,44 @@ int RunGUI() {
   // Setup style
   ImGui::StyleColorsDark();
 
-  // Setup Chinese font with DPI scaling
+  // Get actual framebuffer size and window size
+  int fb_width, fb_height;
+  int win_width, win_height;
+  glfwGetFramebufferSize(window, &fb_width, &fb_height);
+  glfwGetWindowSize(window, &win_width, &win_height);
+
+  // Calculate actual DPI scale from framebuffer vs window size
+  float dpi_scale = (float)fb_width / (float)win_width;
+
+  // Use physical pixels approach: DisplaySize = framebuffer, FramebufferScale = 1.0
   ImGuiIO &io = ImGui::GetIO();
+  io.DisplaySize = ImVec2((float)fb_width, (float)fb_height);
+  io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
   io.Fonts->Clear();
 
-  // Get DPI scale from GLFW
-  float xscale, yscale;
-  glfwGetWindowContentScale(window, &xscale, &yscale);
-  float dpi_scale = xscale; // Use x-axis scale
-  
-  char dpi_msg[128];
-  snprintf(dpi_msg, sizeof(dpi_msg), "Display DPI scale: %.2f (font size will be adjusted)", dpi_scale);
-  data.gui.terminal.AddLine(dpi_msg, Color::Blue());
-
-  ImFontConfig config;
-  config.MergeMode = false;
-  config.PixelSnapH = true;
-
-  // Load Chinese font from bundled fonts with DPI-scaled size
+  // Font configuration with RasterizerDensity for crisp rendering
   const char *font_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
   float base_font_size = 16.0f;
-  float scaled_font_size = base_font_size * dpi_scale;
-  
-  if (std::ifstream(font_path).good()) {
-    io.Fonts->AddFontFromFileTTF(font_path, scaled_font_size, &config, io.Fonts->GetGlyphRangesChineseFull());
-  } else {
-    // Fallback to default font
-    io.Fonts->AddFontDefault();
-    data.gui.terminal.AddLine("[Warning] Chinese font not found, using default font");
-  }
+  float font_size = base_font_size * dpi_scale;
 
-  // Build font atlas via FreeType (enable hinting)
-  IM_ASSERT(ImGuiFreeType::BuildFontAtlas(io.Fonts));
+  assert(std::ifstream(font_path).good() && "Font file not found!");
+
+  // Log font configuration
+  char config_msg[256];
+  snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)", 
+           font_size, base_font_size, dpi_scale);
+  data.gui.terminal.AddLine(config_msg, Color::Blue());
+
+  // Load font with FreeType + RasterizerDensity
+  ImFontConfig config;
+  config.MergeMode = false;
+  config.PixelSnapH = false; // Better for CJK
+  config.OversampleH = 1;
+  config.OversampleV = 1;
+  config.RasterizerDensity = dpi_scale; // Key: high-res font rendering
+  config.FontLoaderFlags = ImGuiFreeTypeLoaderFlags_NoHinting;
+
+  io.Fonts->AddFontFromFileTTF(font_path, font_size, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
 
   // Setup Platform/Renderer backends
   ImGui_ImplGlfw_InitForVulkan(window, true);
@@ -506,14 +509,14 @@ int RunGUI() {
   // Main loop
   while (!glfwWindowShouldClose(window)) {
     double frame_start = 0.0;
-    
+
     // Check for reinit request (triggered by config save)
     if (data.request_reinit) {
       data.gui.terminal.AddLine("=== Reinitializing GUI (config changed) ===", Color::Yellow());
-      
+
       // Cleanup and recreate all tasks and state
       GUI::ReinitAllTasks(tasks, selected_task, data);
-      
+
       data.gui.terminal.AddLine("GUI reinitialized successfully", Color::Green());
     }
 
@@ -591,8 +594,6 @@ int RunGUI() {
   err = vkDeviceWaitIdle(g_Device);
   check_vk_result(err);
 
-  TaskIconBar::CleanupIconBar();
-
   // Cleanup
   TaskIconBar::CleanupIconBar();
   g_gui_state = nullptr;
@@ -604,7 +605,7 @@ int RunGUI() {
   CleanupVulkan();
   glfwDestroyWindow(window);
   glfwTerminate();
-  
+
   return 0;
 }
 

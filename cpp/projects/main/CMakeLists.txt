@@ -1,25 +1,35 @@
 cmake_minimum_required(VERSION 3.20)
 project(Main VERSION 1.0.0 LANGUAGES CXX C)
 
+# ============================================================================
+# Project Configuration
+# ============================================================================
+
 # Force Clang compiler (clang-cl on Windows)
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     message(FATAL_ERROR "This project requires Clang compiler. Current compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
 
-# Set C++ standard
+# C++ standard
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Build mode options
+# Output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# ============================================================================
+# Build Mode Options
+# ============================================================================
+
 option(PROFILE_MODE "Profile mode: -O0 -g, disable optimizations for profiling" OFF)
 option(DEBUG_MODE "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
 option(TSAN_MODE "ThreadSanitizer mode: -O1 -g for race detection" OFF)
 option(ASSERT_MODE "Assert mode: -O3 with assert checks enabled" OFF)
-
-# GUI backend selection
-set(USE_VULKAN_BACKEND OFF CACHE BOOL "Use Vulkan backend instead of OpenGL for GUI rendering" FORCE)
+option(USE_VULKAN_BACKEND "Use Vulkan backend instead of OpenGL for GUI rendering" OFF)
 
 # Clear default CMAKE build type flags to avoid conflicts
 set(CMAKE_CXX_FLAGS_RELEASE "")
@@ -31,93 +41,66 @@ set(CMAKE_C_FLAGS_DEBUG "")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "")
 set(CMAKE_C_FLAGS_MINSIZEREL "")
 
-# Enable colored diagnostics for Clang
-add_compile_options(-fcolor-diagnostics -fansi-escape-codes)
-
-# Suppress overriding option warnings (expected when mixing /fp:fast and /fp:precise)
-add_compile_options(-Wno-overriding-option)
-
-add_compile_definitions(_WIN32_WINNT=0x0A00)
-add_compile_definitions(WIN32_LEAN_AND_MEAN)
-add_compile_definitions(NOMINMAX)
-
-# Compiler flags configuration
+# Build mode configuration
 if(TSAN_MODE)
     message(STATUS "Build mode: TSAN (ThreadSanitizer - race detection)")
     add_compile_definitions(TSAN_MODE)
-
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O1 /Zi -fsanitize=thread")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O1 /Zi -fsanitize=thread -fno-omit-frame-pointer")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
 
 elseif(DEBUG_MODE)
     message(STATUS "Build mode: DEBUG (interactive debugging)")
     add_compile_definitions(DEBUG_MODE)
-
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-optimize-sibling-calls")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -fno-omit-frame-pointer -fno-inline -fno-optimize-sibling-calls")
 
 elseif(PROFILE_MODE)
     message(STATUS "Build mode: PROFILE (gperftools)")
     add_compile_definitions(PROFILE_MODE)
-
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline-functions")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mllvm -inline-threshold=0")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-optimize-sibling-calls")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-unroll-loops")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-vectorize")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-slp-vectorize")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native -fno-omit-frame-pointer")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline -fno-inline-functions -mllvm -inline-threshold=0")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-optimize-sibling-calls -fno-unroll-loops")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-vectorize -fno-slp-vectorize -fno-builtin")
 
 elseif(ASSERT_MODE)
     message(STATUS "Build mode: ASSERT")
     add_compile_definitions(ASSERT_MODE)
-
-    # Optimization level (no NDEBUG - asserts enabled)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2")
-    # Architecture optimization (clang-cl specific)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-    # Fast math
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
-    # Link-time optimization (disabled due to FP16 intrinsics issue)
-    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
-
-    # Linker optimization (Windows-style)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 -march=native /fp:fast")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
 
 else()
     message(STATUS "Build mode: PRODUCTION")
-
-    # Optimization level and definitions
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 -DNDEBUG")
-    # Architecture optimization (clang-cl specific)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-    # Fast math
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
-    # Link-time optimization (disabled due to FP16 intrinsics issue)
-    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
-
-    # Linker optimization (Windows-style)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 -DNDEBUG -march=native /fp:fast")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
 endif()
 
-# Output directories
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+# ============================================================================
+# Global Compile Options
+# ============================================================================
 
-# External libraries
+add_compile_options(-fcolor-diagnostics -fansi-escape-codes -Wno-overriding-option)
+add_compile_definitions(_WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# GUI backend selection
+if(USE_VULKAN_BACKEND)
+    add_compile_definitions(USE_VULKAN_BACKEND)
+    message(STATUS "GUI Pipeline: Vulkan")
+else()
+    add_compile_definitions(USE_OPENGL_BACKEND)
+    message(STATUS "GUI Pipeline: OpenGL")
+endif()
+
+# ============================================================================
+# External Dependencies
+# ============================================================================
+
 include_directories(../../include)
-
 add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
 add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
 
-# Source files
+# ============================================================================
+# Source Files
+# ============================================================================
+
 set(SOURCES
     ../../src/shared/Config.cpp
     ../../src/shared/Asset.cpp
@@ -164,15 +147,11 @@ set(SOURCES
     ../../src/main.cpp
 )
 
-# Add GUI backend pipeline based on selection
+# Add GUI backend implementation
 if(USE_VULKAN_BACKEND)
     list(APPEND SOURCES ../../src/gui/Run_Vulkan.cpp)
-    add_compile_definitions(USE_VULKAN_BACKEND)
-    message(STATUS "GUI Pipeline: Vulkan")
 else()
     list(APPEND SOURCES ../../src/gui/Run_OpenGL.cpp)
-    add_compile_definitions(USE_OPENGL_BACKEND)
-    message(STATUS "GUI Pipeline: OpenGL")
 endif()
 
 set(HEADERS
@@ -237,7 +216,15 @@ set(HEADERS
     ../../include/gui/task_terminal/TaskTerminal.hpp
 )
 
-# Disable fast-math for JSON library and UI math to avoid infinity issues (Windows: /fp:precise)
+# ============================================================================
+# Executable Configuration
+# ============================================================================
+
+add_executable(app_main ${SOURCES} ${HEADERS})
+
+target_include_directories(app_main PRIVATE ../../include)
+
+# Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise)
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
@@ -256,45 +243,20 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "/fp:precise"
 )
 
-# Executable
-add_executable(app_main ${SOURCES} ${HEADERS})
-
-target_include_directories(app_main PRIVATE
-    ../../include
-)
-
+# Link core libraries
 target_link_libraries(app_main PRIVATE
-    libzstd_static # zstd library
-    z # zlib library
-    pdh # Performance Data Helper (CPU/disk monitoring)
-    iphlpapi # IP Helper API (network monitoring)
-    setupapi # Device enumeration
-    dxgi # DirectX Graphics Infrastructure (GPU detection)
-    advapi32 # Advanced Windows API (Registry)
+    libzstd_static
+    z
+    pdh
+    iphlpapi
+    setupapi
+    dxgi
+    advapi32
+    # profiler
 )
-
-if(PROFILE_MODE)
-    target_link_libraries(app_main PRIVATE profiler)
-endif()
-
-install(TARGETS app_main RUNTIME DESTINATION bin)
-
-# Custom target for running
-add_custom_target(run_main
-    COMMAND app_main
-    DEPENDS app_main
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running app_main"
-)
-
-# Print configuration info
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "C++ compiler: ${CMAKE_CXX_COMPILER_ID}")
-message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "Output directory: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 
 # ============================================================================
-# GUI Libraries (ImGui, ImPlot, GLFW, OpenGL)
+# GUI Dependencies and Libraries
 # ============================================================================
 
 message(STATUS "")
@@ -321,31 +283,21 @@ else()
     message(STATUS "✓ OpenGL found: ${OPENGL_LIBRARIES}")
 endif()
 
-# Check Windows SDK
 message(STATUS "✓ Windows SDK available (Win32 API)")
-
 message(STATUS "All GUI dependencies satisfied")
-
 message(STATUS "")
 
-# Setup GLFW library from local source
+# GLFW library
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(../../package/glfw ${CMAKE_BINARY_DIR}/glfw)
 
-# Setup FreeType library from local source (for ImGui font rasterizer)
+# FreeType library (for ImGui font rasterizer)
 add_subdirectory(../../package/freetype ${CMAKE_BINARY_DIR}/freetype)
-if(TARGET freetype)
-    set(STK_FREETYPE_TARGET freetype)
-elseif(TARGET freetype-static)
-    set(STK_FREETYPE_TARGET freetype-static)
-else()
-    message(FATAL_ERROR "FreeType target not found after add_subdirectory(../../package/freetype). Expected target 'freetype' or 'freetype-static'.")
-endif()
 
-# Setup ImGui library from local source
+# ImGui library
 set(IMGUI_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/imgui)
 set(IMGUI_SOURCE
     ${IMGUI_SOURCE_DIR}/imgui.cpp
@@ -354,6 +306,7 @@ set(IMGUI_SOURCE
     ${IMGUI_SOURCE_DIR}/imgui_tables.cpp
     ${IMGUI_SOURCE_DIR}/imgui_widgets.cpp
     ${IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
 )
 
 # Add backend-specific ImGui implementation
@@ -363,9 +316,6 @@ else()
     list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
 endif()
 
-# Enable FreeType font rasterizer for ImGui
-list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp)
-
 add_library(imgui STATIC ${IMGUI_SOURCE})
 target_include_directories(imgui SYSTEM PUBLIC
     ${IMGUI_SOURCE_DIR}
@@ -374,15 +324,14 @@ target_include_directories(imgui SYSTEM PUBLIC
 )
 target_compile_definitions(imgui PUBLIC IMGUI_ENABLE_FREETYPE)
 
-# Link graphics libraries
+# Link graphics libraries to ImGui
 if(USE_VULKAN_BACKEND)
-    target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
+    target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan freetype)
 else()
-    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+    target_link_libraries(imgui PUBLIC glfw OpenGL::GL freetype)
 endif()
-target_link_libraries(imgui PUBLIC ${STK_FREETYPE_TARGET})
 
-# Setup ImPlot library from local source
+# ImPlot library
 set(IMPLOT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/implot)
 set(IMPLOT_SOURCE
     ${IMPLOT_SOURCE_DIR}/implot.cpp
@@ -392,12 +341,24 @@ set(IMPLOT_SOURCE
 add_library(implot STATIC ${IMPLOT_SOURCE})
 target_include_directories(implot SYSTEM PUBLIC ${IMPLOT_SOURCE_DIR})
 target_link_libraries(implot PUBLIC imgui)
-
-# Disable fast-math for ImPlot library to support infinity/NaN (Windows: /fp:precise)
 target_compile_options(implot PRIVATE /fp:precise)
 
 # Link GUI libraries to main executable
 target_link_libraries(app_main PRIVATE implot)
+
+# ============================================================================
+# Install and Post-Build
+# ============================================================================
+
+install(TARGETS app_main RUNTIME DESTINATION bin)
+
+# Custom target for running
+add_custom_target(run_main
+    COMMAND app_main
+    DEPENDS app_main
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running app_main"
+)
 
 # Copy fonts directory to build directory
 add_custom_command(TARGET app_main POST_BUILD
@@ -407,3 +368,8 @@ add_custom_command(TARGET app_main POST_BUILD
     COMMENT "Copying fonts to build directory"
 )
 
+# Print configuration summary
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "C++ compiler: ${CMAKE_CXX_COMPILER_ID}")
+message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "Output directory: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")

@@ -538,6 +538,7 @@ private:
     return changed;
   }
 
+
   void DrawStatusFooter(const Config &cfg) const {
     ImGui::TextWrapped("File:");
     ImGui::TextDisabled("%s", cfg.filepath.c_str());

@@ -8,6 +8,7 @@
 #include "gui/task_icon_bar/TaskIconBar.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
+#include "imgui_freetype.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
@@ -18,11 +19,6 @@
 #include <cstdio>
 #include <fstream>
 #include <thread>
-
-struct ImFontAtlas;
-namespace ImGuiFreeType {
-bool BuildFontAtlas(ImFontAtlas *atlas, unsigned int extra_flags = 0);
-}
 
 namespace GUI {
 
@@ -131,28 +127,44 @@ int RunGUI() {
   // Setup style
   ImGui::StyleColorsDark();
 
-  // Setup Chinese font (fixed size, no DPI scaling)
+  // Get actual framebuffer size and window size
+  int fb_width, fb_height;
+  int win_width, win_height;
+  glfwGetFramebufferSize(window, &fb_width, &fb_height);
+  glfwGetWindowSize(window, &win_width, &win_height);
+
+  // Calculate actual DPI scale from framebuffer vs window size
+  float dpi_scale = (float)fb_width / (float)win_width;
+
+  // Use physical pixels approach: DisplaySize = framebuffer, FramebufferScale = 1.0
   ImGuiIO &io = ImGui::GetIO();
+  io.DisplaySize = ImVec2((float)fb_width, (float)fb_height);
+  io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
   io.Fonts->Clear();
 
+  // Font configuration with RasterizerDensity for crisp rendering
+  const char *font_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
+  float base_font_size = 16.0f;
+  float font_size = base_font_size * dpi_scale;
+
+  assert(std::ifstream(font_path).good() && "Font file not found!");
+
+  // Log font configuration
+  char config_msg[256];
+  snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)", 
+           font_size, base_font_size, dpi_scale);
+  data.gui.terminal.AddLine(config_msg, Color::Blue());
+
+  // Load font with FreeType + RasterizerDensity
   ImFontConfig config;
   config.MergeMode = false;
-  config.PixelSnapH = true;
+  config.PixelSnapH = false; // Better for CJK
+  config.OversampleH = 1;
+  config.OversampleV = 1;
+  config.RasterizerDensity = dpi_scale; // Key: high-res font rendering
+  config.FontLoaderFlags = ImGuiFreeTypeLoaderFlags_ForceAutoHint;
 
-  // Load Chinese font from bundled fonts with fixed size
-  const char *font_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
-  float font_size = 18.0f;
-  
-  if (std::ifstream(font_path).good()) {
-    io.Fonts->AddFontFromFileTTF(font_path, font_size, &config, io.Fonts->GetGlyphRangesChineseFull());
-  } else {
-    // Fallback to default font
-    io.Fonts->AddFontDefault();
-    data.gui.terminal.AddLine("[Warning] Chinese font not found, using default font");
-  }
-
-  // Build font atlas via FreeType (enable hinting)
-  IM_ASSERT(ImGuiFreeType::BuildFontAtlas(io.Fonts));
+  io.Fonts->AddFontFromFileTTF(font_path, font_size, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
 
   // Setup backend
   ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -175,7 +187,7 @@ int RunGUI() {
     // High Performance Mode: GUI sleeps 1 second, all CPU for compute tasks
     if (data.gui.high_performance_mode) {
       std::this_thread::sleep_for(std::chrono::seconds(1)); // 1 FPS
-      glfwPollEvents(); 
+      glfwPollEvents();
       data.gui.Update(1.0f);
       continue; // Skip rendering entirely
     }
@@ -222,8 +234,6 @@ int RunGUI() {
     }
   }
 
-  TaskIconBar::CleanupIconBar();
-
   // Cleanup
   TaskIconBar::CleanupIconBar();
   g_gui_state = nullptr;
@@ -233,7 +243,7 @@ int RunGUI() {
   ImGui::DestroyContext();
   glfwDestroyWindow(window);
   glfwTerminate();
-  
+
   return 0;
 }
 
