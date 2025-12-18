@@ -1,5 +1,6 @@
 #include "shared/Dist.hpp"
 #include "features/backend/FeatureReader.hpp"
+#include "features/FeaturesDefine.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Feature.hpp"
 
@@ -126,7 +127,20 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
     size_t t_end = month_tensor.day_offsets[day_idx + 1];
 
     for (size_t t = t_start; t < t_end; ++t) {
-      uint8_t hour = static_cast<uint8_t>((t - t_start) % 24);
+      // Convert time index to clock hour (按小时整数边界分配)
+      uint8_t hour;
+      if (level == 0) {
+        // Level 0 (tick/second): use index2tick
+        ClockTime time = index2tick(t - t_start);
+        hour = time.hour;
+      } else if (level == 1) {
+        // Level 1 (minute): use index2minute
+        ClockTime time = index2minute(t - t_start);
+        hour = time.hour;
+      } else {
+        // Level 2 (hour): use index2hour (returns hour directly)
+        hour = index2hour(t - t_start);
+      }
 
       // Zero-copy pointers into month tensor
       const feature_storage_t *values = &month_tensor.data[t * F_selected * A];
