@@ -299,9 +299,6 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(../../package/glfw ${CMAKE_BINARY_DIR}/glfw)
 
-# FreeType library (for ImGui font rasterizer)
-add_subdirectory(../../package/freetype ${CMAKE_BINARY_DIR}/freetype)
-
 # ImGui library
 set(IMGUI_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/imgui)
 set(IMGUI_SOURCE
@@ -311,7 +308,6 @@ set(IMGUI_SOURCE
     ${IMGUI_SOURCE_DIR}/imgui_tables.cpp
     ${IMGUI_SOURCE_DIR}/imgui_widgets.cpp
     ${IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
 )
 
 # Add backend-specific ImGui implementation
@@ -325,15 +321,13 @@ add_library(imgui STATIC ${IMGUI_SOURCE})
 target_include_directories(imgui SYSTEM PUBLIC
     ${IMGUI_SOURCE_DIR}
     ${IMGUI_SOURCE_DIR}/backends
-    ${IMGUI_SOURCE_DIR}/misc/freetype
 )
-target_compile_definitions(imgui PUBLIC IMGUI_ENABLE_FREETYPE)
 
 # Link graphics libraries to ImGui
 if(USE_VULKAN_BACKEND)
-    target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan freetype)
+    target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
 else()
-    target_link_libraries(imgui PUBLIC glfw OpenGL::GL freetype)
+    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 endif()
 
 # ImPlot library

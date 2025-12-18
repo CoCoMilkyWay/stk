@@ -8,7 +8,6 @@
 #include "gui/task_icon_bar/TaskIconBar.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
-#include "imgui_freetype.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
@@ -155,14 +154,13 @@ int RunGUI() {
            font_size, base_font_size, dpi_scale);
   data.gui.terminal.AddLine(config_msg, Color::Blue());
 
-  // Load font with FreeType + RasterizerDensity
+  // Load font with RasterizerDensity
   ImFontConfig config;
   config.MergeMode = false;
   config.PixelSnapH = false; // Better for CJK
   config.OversampleH = 1;
   config.OversampleV = 1;
   config.RasterizerDensity = dpi_scale; // Key: high-res font rendering
-  config.FontLoaderFlags = ImGuiFreeTypeLoaderFlags_ForceAutoHint;
 
   io.Fonts->AddFontFromFileTTF(font_path, font_size, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
 
