@@ -34,6 +34,12 @@ set(CMAKE_C_FLAGS_MINSIZEREL "")
 # Enable colored diagnostics for Clang
 add_compile_options(-fcolor-diagnostics -fansi-escape-codes)
 
+# Suppress overriding option warnings (expected when mixing /fp:fast and /fp:precise)
+add_compile_options(-Wno-overriding-option)
+
+# Define Windows version for Boost ASIO (Windows 10)
+add_compile_definitions(_WIN32_WINNT=0x0A00)
+
 # Compiler flags configuration
 if(TSAN_MODE)
     message(STATUS "Build mode: TSAN (ThreadSanitizer - race detection)")
@@ -108,6 +114,9 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(ZSTD_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../../package/zstd-1.5.7/libzstd.a)
 include_directories(../../include)
 include_directories(../../package/zstd-1.5.7)
+
+# Build zlib as subdirectory (generates libz.a automatically)
+add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
 
 # Source files
 set(SOURCES
@@ -257,6 +266,15 @@ target_include_directories(app_main PRIVATE
 )
 
 target_link_libraries(app_main PRIVATE ${ZSTD_LIB_PATH} z)
+
+# Windows system libraries for TaskSystemInfo
+target_link_libraries(app_main PRIVATE
+    pdh          # Performance Data Helper (CPU/disk monitoring)
+    iphlpapi     # IP Helper API (network monitoring)
+    setupapi     # Device enumeration
+    dxgi         # DirectX Graphics Infrastructure (GPU detection)
+    advapi32     # Advanced Windows API (Registry)
+)
 
 if(PROFILE_MODE)
     target_link_libraries(app_main PRIVATE profiler)

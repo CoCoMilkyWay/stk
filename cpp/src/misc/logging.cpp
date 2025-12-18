@@ -30,8 +30,11 @@ static std::string get_timestamp() {
                 now.time_since_epoch()) %
             1000;
 
+  std::tm tm_buf;
+  localtime_s(&tm_buf, &time_t);
+  
   std::stringstream ss;
-  ss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+  ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
   ss << '.' << std::setfill('0') << std::setw(3) << ms.count();
   return ss.str();
 }

@@ -4,6 +4,8 @@ REM Compiles the project and copies compile_commands.json for clangd
 
 setlocal enabledelayedexpansion
 
+clear
+
 echo ========================================
 echo   C++ Build Script (Windows)
 echo ========================================

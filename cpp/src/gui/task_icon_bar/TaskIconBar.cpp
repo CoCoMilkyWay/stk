@@ -9,7 +9,9 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <sys/sysinfo.h>
+#include <windows.h>
+#include <pdh.h>
+#include <pdhmsg.h>
 
 // ============================================================================
 // Configuration Parameters
@@ -67,8 +69,8 @@ private:
   std::array<float, IconBarConfig::CPU_HISTORY_SIZE> cpu_history = {};
   int cpu_history_idx = 0;
   float cpu_avg = 0.0f;
-  long last_cpu_total = 0;
-  long last_cpu_idle = 0;
+  PDH_HQUERY cpu_query = nullptr;
+  PDH_HCOUNTER cpu_counter = nullptr;
   std::chrono::steady_clock::time_point last_cpu_update;
 
   // Memory tracking with smoothing
@@ -93,6 +95,17 @@ public:
       val = 0.0f;
     for (auto &val : mem_history)
       val = 0.0f;
+
+    // Initialize Windows PDH for CPU monitoring
+    PdhOpenQueryW(nullptr, 0, &cpu_query);
+    PdhAddCounterW(cpu_query, L"\\Processor(_Total)\\% Processor Time", 0, &cpu_counter);
+    PdhCollectQueryData(cpu_query); // Initial sample
+  }
+
+  ~IconBar() {
+    if (cpu_query) {
+      PdhCloseQuery(cpu_query);
+    }
   }
 
   void Draw() {
@@ -183,32 +196,21 @@ private:
   }
 
   float GetCPUUsage() {
-    std::ifstream stat_file("/proc/stat");
-    std::string line;
-    if (std::getline(stat_file, line)) {
-      std::istringstream ss(line);
-      std::string cpu;
-      long user, nice, system, idle;
-      ss >> cpu >> user >> nice >> system >> idle;
-
-      long total = user + nice + system + idle;
-      long total_diff = total - last_cpu_total;
-      long idle_diff = idle - last_cpu_idle;
-
-      last_cpu_total = total;
-      last_cpu_idle = idle;
-
-      if (total_diff > 0) {
-        return 100.0f * (1.0f - (float)idle_diff / (float)total_diff);
-      }
+    if (!cpu_query || !cpu_counter) return 0.0f;
+    
+    PDH_FMT_COUNTERVALUE counter_value;
+    PdhCollectQueryData(cpu_query);
+    if (PdhGetFormattedCounterValue(cpu_counter, PDH_FMT_DOUBLE, nullptr, &counter_value) == ERROR_SUCCESS) {
+      return static_cast<float>(counter_value.doubleValue);
     }
     return 0.0f;
   }
 
   float GetMemoryUsage() {
-    struct sysinfo si;
-    if (sysinfo(&si) == 0) {
-      return 100.0f * (1.0f - (float)si.freeram / (float)si.totalram);
+    MEMORYSTATUSEX mem_info;
+    mem_info.dwLength = sizeof(mem_info);
+    if (GlobalMemoryStatusEx(&mem_info)) {
+      return static_cast<float>(mem_info.dwMemoryLoad);
     }
     return 0.0f;
   }

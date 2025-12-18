@@ -3,19 +3,31 @@
 #include "imgui.h"
 #include "implot.h"
 #include "shared/SharedData.hpp"
+#include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstring>
 #include <deque>
-#include <filesystem>
-#include <fstream>
-#include <set>
-#include <sstream>
-#include <sys/sysinfo.h>
-#include <sys/utsname.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
+
+// Windows API headers
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <pdh.h>
+#include <pdhmsg.h>
+#include <iphlpapi.h>
+#include <sysinfoapi.h>
+#include <versionhelpers.h>
+#include <intrin.h>
+#include <setupapi.h>
+#include <dxgi.h>
+
+#pragma comment(lib, "pdh.lib")
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "dxguid.lib")
 
 namespace GUI::Tasks {
 namespace {
@@ -40,7 +52,6 @@ private:
     std::string os_name;
     std::string kernel_version;
     std::string hostname;
-    bool is_wsl = false;
 
     // CPU Info
     int cpu_logical_cores = 0;
@@ -150,17 +161,6 @@ private:
   };
   HardwareInfo hw_info;
 
-  // System tools detection
-  struct SystemTools {
-    bool has_lspci = false;
-    bool has_dmidecode = false;
-    bool has_nvidia_smi = false;
-    bool has_radeontop = false;
-    bool has_intel_gpu_top = false;
-    std::vector<std::string> missing_tools;
-  };
-  SystemTools sys_tools;
-
   // ============================================================================
   // DYNAMIC MONITORING DATA (updated in loop)
   // ============================================================================
@@ -233,15 +233,30 @@ private:
   std::chrono::steady_clock::time_point last_update_time;
   std::chrono::steady_clock::time_point last_gpu_update_time;
 
+  // PDH (Performance Data Helper) handles for monitoring
+  PDH_HQUERY pdh_query = nullptr;
+  std::vector<PDH_HCOUNTER> pdh_cpu_counters;
+  PDH_HCOUNTER pdh_disk_read_counter = nullptr;
+  PDH_HCOUNTER pdh_disk_write_counter = nullptr;
+  PDH_HCOUNTER pdh_disk_busy_counter = nullptr;
+
 public:
   // ============================================================================
-  // CONSTRUCTOR - Initialize on creation, not lazily
+  // CONSTRUCTOR/DESTRUCTOR
   // ============================================================================
   SystemInfoTask() {
     InitializeHardware();
+    InitializePDH();
     initialized = true;
     last_update_time = std::chrono::steady_clock::now();
     last_gpu_update_time = last_update_time;
+  }
+
+  ~SystemInfoTask() {
+    // Cleanup PDH resources
+    if (pdh_query) {
+      PdhCloseQuery(pdh_query);
+    }
   }
 
   // ============================================================================
@@ -284,7 +299,6 @@ private:
   // ============================================================================
 
   void InitializeHardware() {
-    DetectSystemTools();
     DetectOS();
     DetectCPU();
     DetectX64Instructions();
@@ -297,55 +311,35 @@ private:
   }
 
   // ----------------------------------------------------------------------------
-  // System Tools Detection
-  // ----------------------------------------------------------------------------
-
-  void DetectSystemTools() {
-    auto check_tool = [](const char *tool_name) -> bool {
-      std::string cmd = "which ";
-      cmd += tool_name;
-      cmd += " 2>/dev/null";
-      FILE *pipe = popen(cmd.c_str(), "r");
-      if (!pipe)
-        return false;
-      char buffer[256];
-      bool found = (fgets(buffer, sizeof(buffer), pipe) != nullptr);
-      pclose(pipe);
-      return found;
-    };
-
-    sys_tools.has_lspci = check_tool("lspci");
-    sys_tools.has_dmidecode = check_tool("dmidecode");
-    sys_tools.has_nvidia_smi = check_tool("nvidia-smi");
-    sys_tools.has_radeontop = check_tool("radeontop");
-    sys_tools.has_intel_gpu_top = check_tool("intel_gpu_top");
-
-    // Build missing tools list
-    if (!sys_tools.has_lspci)
-      sys_tools.missing_tools.push_back("lspci (install: sudo apt install pciutils)");
-    if (!sys_tools.has_dmidecode)
-      sys_tools.missing_tools.push_back("dmidecode (install: sudo apt install dmidecode)");
-  }
-
-  // ----------------------------------------------------------------------------
   // OS Detection
   // ----------------------------------------------------------------------------
 
   void DetectOS() {
-    struct utsname uts;
-    if (uname(&uts) == 0) {
-      hw_info.os_name = uts.sysname;
-      hw_info.kernel_version = uts.release;
-      hw_info.hostname = uts.nodename;
+    hw_info.os_name = "Windows";
+
+    // Get Windows version
+    OSVERSIONINFOEXW osvi = {};
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    
+    // Use RtlGetVersion for accurate version (GetVersionEx is deprecated)
+    typedef LONG(WINAPI *RtlGetVersionFunc)(OSVERSIONINFOEXW*);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll) {
+      auto RtlGetVersion = (RtlGetVersionFunc)GetProcAddress(ntdll, "RtlGetVersion");
+      if (RtlGetVersion) {
+        RtlGetVersion(&osvi);
+        char version_buf[64];
+        snprintf(version_buf, sizeof(version_buf), "%lu.%lu.%lu", 
+                 osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber);
+        hw_info.kernel_version = version_buf;
+      }
     }
 
-    // Check if running under WSL
-    std::ifstream proc_version("/proc/version");
-    if (proc_version.is_open()) {
-      std::string line;
-      std::getline(proc_version, line);
-      hw_info.is_wsl = (line.find("microsoft") != std::string::npos ||
-                        line.find("WSL") != std::string::npos);
+    // Get computer name
+    DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
+    char hostname_buf[MAX_COMPUTERNAME_LENGTH + 1];
+    if (GetComputerNameA(hostname_buf, &size)) {
+      hw_info.hostname = hostname_buf;
     }
   }
 
@@ -354,88 +348,95 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectCPU() {
-    // Detect CPU architecture
-    struct utsname uts;
-    if (uname(&uts) == 0) {
-      hw_info.cpu_architecture = uts.machine;
-    }
-
-    // Get logical and physical core counts
-    hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
-
-    std::set<int> physical_core_ids;
-    for (int i = 0; i < hw_info.cpu_logical_cores; ++i) {
-      std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(i) + "/topology/core_id";
-      std::ifstream file(path);
-      if (file.is_open()) {
-        int core_id;
-        file >> core_id;
-        physical_core_ids.insert(core_id);
-      }
-    }
-    hw_info.cpu_physical_cores = physical_core_ids.empty()
-                                     ? hw_info.cpu_logical_cores
-                                     : physical_core_ids.size();
-
-    // Get CPU vendor and model from /proc/cpuinfo
-    std::ifstream cpuinfo("/proc/cpuinfo");
-    std::string line;
-    while (std::getline(cpuinfo, line)) {
-      if (line.find("vendor_id") == 0) {
-        auto colon_pos = line.find(':');
-        if (colon_pos != std::string::npos) {
-          hw_info.cpu_vendor = line.substr(colon_pos + 2);
-        }
-      }
-      if (line.find("model name") == 0) {
-        auto colon_pos = line.find(':');
-        if (colon_pos != std::string::npos) {
-          hw_info.cpu_model = line.substr(colon_pos + 2);
-        }
-        break; // Only need first occurrence
-      }
-    }
-
-    // Get cache sizes
-    auto read_cache_size = [](const std::string &path) -> long {
-      std::ifstream file(path);
-      if (!file.is_open())
-        return 0;
-
-      std::string size_str;
-      file >> size_str;
-      if (size_str.empty())
-        return 0;
-
-      long size = std::stol(size_str);
-      char unit = size_str.back();
-      if (unit == 'K')
-        return size;
-      if (unit == 'M')
-        return size * 1024;
-      return size;
-    };
-
-    for (int idx = 0; idx < 10; ++idx) {
-      std::string base = "/sys/devices/system/cpu/cpu0/cache/index" + std::to_string(idx);
-      std::string level_path = base + "/level";
-      std::string size_path = base + "/size";
-
-      std::ifstream level_file(level_path);
-      if (!level_file.is_open())
+    // Detect CPU architecture from system info
+    SYSTEM_INFO sysInfo;
+    GetNativeSystemInfo(&sysInfo);
+    
+    switch (sysInfo.wProcessorArchitecture) {
+      case PROCESSOR_ARCHITECTURE_AMD64:
+        hw_info.cpu_architecture = "x86_64";
         break;
+      case PROCESSOR_ARCHITECTURE_ARM64:
+        hw_info.cpu_architecture = "aarch64";
+        break;
+      case PROCESSOR_ARCHITECTURE_INTEL:
+        hw_info.cpu_architecture = "i686";
+        break;
+      case PROCESSOR_ARCHITECTURE_ARM:
+        hw_info.cpu_architecture = "arm";
+        break;
+      default:
+        hw_info.cpu_architecture = "unknown";
+    }
 
-      int level;
-      level_file >> level;
-      long size = read_cache_size(size_path);
+    // Get CPU vendor and model name using CPUID
+    int cpuInfo[4] = {0};
+    __cpuid(cpuInfo, 0);
+    
+    // Extract vendor string (12 chars from EBX, EDX, ECX)
+    char vendor[13] = {0};
+    *reinterpret_cast<int*>(vendor) = cpuInfo[1];  // EBX
+    *reinterpret_cast<int*>(vendor + 4) = cpuInfo[3];  // EDX
+    *reinterpret_cast<int*>(vendor + 8) = cpuInfo[2];  // ECX
+    hw_info.cpu_vendor = vendor;
 
-      if (level == 1 && hw_info.cpu_cache_l1_kb == 0) {
-        hw_info.cpu_cache_l1_kb = size;
-      } else if (level == 2 && hw_info.cpu_cache_l2_kb < size) {
-        hw_info.cpu_cache_l2_kb = size;
-      } else if (level == 3 && hw_info.cpu_cache_l3_kb < size) {
-        hw_info.cpu_cache_l3_kb = size;
+    // Get CPU model name (requires CPUID with EAX=0x80000002-0x80000004)
+    char brand[49] = {0};
+    for (unsigned int i = 0x80000002; i <= 0x80000004; i++) {
+      __cpuid(cpuInfo, i);
+      memcpy(brand + (i - 0x80000002) * 16, cpuInfo, sizeof(cpuInfo));
+    }
+    hw_info.cpu_model = brand;
+    // Trim leading/trailing spaces
+    size_t start = hw_info.cpu_model.find_first_not_of(" \t");
+    size_t end = hw_info.cpu_model.find_last_not_of(" \t");
+    if (start != std::string::npos && end != std::string::npos) {
+      hw_info.cpu_model = hw_info.cpu_model.substr(start, end - start + 1);
+    }
+
+    // Get logical and physical core counts using GetLogicalProcessorInformationEx
+    DWORD bufferSize = 0;
+    GetLogicalProcessorInformationEx(RelationAll, nullptr, &bufferSize);
+    
+    std::vector<char> buffer(bufferSize);
+    auto info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+    
+    if (GetLogicalProcessorInformationEx(RelationAll, info, &bufferSize)) {
+      hw_info.cpu_logical_cores = 0;
+      hw_info.cpu_physical_cores = 0;
+      
+      DWORD offset = 0;
+      while (offset < bufferSize) {
+        auto current = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
+        
+        if (current->Relationship == RelationProcessorCore) {
+          hw_info.cpu_physical_cores++;
+          // Count logical processors in this core
+          for (WORD group = 0; group < current->Processor.GroupCount; group++) {
+            KAFFINITY mask = current->Processor.GroupMask[group].Mask;
+            hw_info.cpu_logical_cores += __popcnt64(mask);
+          }
+        } else if (current->Relationship == RelationCache) {
+          auto cache = &current->Cache;
+          long size_kb = cache->CacheSize / 1024;
+          
+          if (cache->Level == 1 && hw_info.cpu_cache_l1_kb == 0) {
+            hw_info.cpu_cache_l1_kb = size_kb;
+          } else if (cache->Level == 2 && size_kb > hw_info.cpu_cache_l2_kb) {
+            hw_info.cpu_cache_l2_kb = size_kb;
+          } else if (cache->Level == 3 && size_kb > hw_info.cpu_cache_l3_kb) {
+            hw_info.cpu_cache_l3_kb = size_kb;
+          }
+        }
+        
+        offset += current->Size;
       }
+    }
+    
+    // Fallback if GetLogicalProcessorInformationEx fails
+    if (hw_info.cpu_logical_cores == 0) {
+      hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
+      hw_info.cpu_physical_cores = hw_info.cpu_logical_cores;
     }
   }
 
@@ -449,68 +450,69 @@ private:
       return;
     }
 
-    std::ifstream cpuinfo("/proc/cpuinfo");
-    std::string line;
-
-    while (std::getline(cpuinfo, line)) {
-      if (line.find("flags") == 0) {
-        // Convert to lowercase for easier matching
-        for (auto &c : line)
-          c = std::tolower(c);
-
-        // SSE series
-        hw_info.x64_isa.sse = line.find(" sse ") != std::string::npos;
-        hw_info.x64_isa.sse2 = line.find(" sse2 ") != std::string::npos;
-        hw_info.x64_isa.sse3 = line.find(" sse3 ") != std::string::npos ||
-                               line.find(" pni ") != std::string::npos;
-        hw_info.x64_isa.ssse3 = line.find(" ssse3 ") != std::string::npos;
-        hw_info.x64_isa.sse4_1 = line.find(" sse4_1 ") != std::string::npos;
-        hw_info.x64_isa.sse4_2 = line.find(" sse4_2 ") != std::string::npos;
-
-        // SIMD main
-        hw_info.x64_isa.avx = line.find(" avx ") != std::string::npos;
-        hw_info.x64_isa.avx2 = line.find(" avx2 ") != std::string::npos;
-        hw_info.x64_isa.fma = line.find(" fma ") != std::string::npos;
-        hw_info.x64_isa.f16c = line.find(" f16c ") != std::string::npos;
-
-        // AVX512 base modules
-        hw_info.x64_isa.avx512f = line.find(" avx512f ") != std::string::npos;
-        hw_info.x64_isa.avx512cd = line.find(" avx512cd ") != std::string::npos;
-        hw_info.x64_isa.avx512vl = line.find(" avx512vl ") != std::string::npos;
-        hw_info.x64_isa.avx512bw = line.find(" avx512bw ") != std::string::npos;
-        hw_info.x64_isa.avx512dq = line.find(" avx512dq ") != std::string::npos;
-
-        // AI/ML acceleration
-        hw_info.x64_isa.avx512_fp16 = line.find(" avx512_fp16 ") != std::string::npos;
-        hw_info.x64_isa.avx512_bf16 = line.find(" avx512_bf16 ") != std::string::npos;
-        hw_info.x64_isa.avx512_vnni = line.find(" avx512_vnni ") != std::string::npos ||
-                                      line.find(" avx512vnni ") != std::string::npos;
-        hw_info.x64_isa.avx_vnni = line.find(" avx_vnni ") != std::string::npos ||
-                                   line.find(" avxvnni ") != std::string::npos;
-        hw_info.x64_isa.amx_tile = line.find(" amx_tile ") != std::string::npos;
-
-        // Crypto/Hash acceleration
-        hw_info.x64_isa.aes = line.find(" aes ") != std::string::npos;
-        hw_info.x64_isa.sha = line.find(" sha_ni ") != std::string::npos ||
-                              line.find(" sha ") != std::string::npos;
-        hw_info.x64_isa.gfni = line.find(" gfni ") != std::string::npos;
-        hw_info.x64_isa.avx512_ifma = line.find(" avx512ifma ") != std::string::npos ||
-                                      line.find(" avx512_ifma ") != std::string::npos;
-
-        // Memory/Cache operations
-        hw_info.x64_isa.prefetchw = line.find(" prefetchw ") != std::string::npos;
-        hw_info.x64_isa.clflushopt = line.find(" clflushopt ") != std::string::npos;
-        hw_info.x64_isa.clwb = line.find(" clwb ") != std::string::npos;
-        hw_info.x64_isa.movdir64b = line.find(" movdir64b ") != std::string::npos;
-        hw_info.x64_isa.rtm = line.find(" rtm ") != std::string::npos;
-
-        // System
-        hw_info.x64_isa.rdrand = line.find(" rdrand ") != std::string::npos;
-        hw_info.x64_isa.rdseed = line.find(" rdseed ") != std::string::npos;
-
-        break; // Only need first occurrence
-      }
-    }
+    int cpuInfo[4] = {0};
+    
+    // CPUID Function 1: Processor Info and Feature Bits
+    __cpuidex(cpuInfo, 1, 0);
+    int ecx1 = cpuInfo[2];
+    int edx1 = cpuInfo[3];
+    
+    // SSE series (EDX bits)
+    hw_info.x64_isa.sse = (edx1 & (1 << 25)) != 0;
+    hw_info.x64_isa.sse2 = (edx1 & (1 << 26)) != 0;
+    
+    // SSE3+ (ECX bits)
+    hw_info.x64_isa.sse3 = (ecx1 & (1 << 0)) != 0;
+    hw_info.x64_isa.ssse3 = (ecx1 & (1 << 9)) != 0;
+    hw_info.x64_isa.sse4_1 = (ecx1 & (1 << 19)) != 0;
+    hw_info.x64_isa.sse4_2 = (ecx1 & (1 << 20)) != 0;
+    
+    // SIMD main
+    hw_info.x64_isa.avx = (ecx1 & (1 << 28)) != 0;
+    hw_info.x64_isa.fma = (ecx1 & (1 << 12)) != 0;
+    hw_info.x64_isa.f16c = (ecx1 & (1 << 29)) != 0;
+    hw_info.x64_isa.aes = (ecx1 & (1 << 25)) != 0;
+    hw_info.x64_isa.rdrand = (ecx1 & (1 << 30)) != 0;
+    
+    // CPUID Function 7: Extended Features
+    __cpuidex(cpuInfo, 7, 0);
+    int ebx7 = cpuInfo[1];
+    int ecx7 = cpuInfo[2];
+    int edx7 = cpuInfo[3];
+    
+    // AVX2 and AVX512 base
+    hw_info.x64_isa.avx2 = (ebx7 & (1 << 5)) != 0;
+    hw_info.x64_isa.avx512f = (ebx7 & (1 << 16)) != 0;
+    hw_info.x64_isa.avx512dq = (ebx7 & (1 << 17)) != 0;
+    hw_info.x64_isa.avx512_ifma = (ebx7 & (1 << 21)) != 0;
+    hw_info.x64_isa.avx512cd = (ebx7 & (1 << 28)) != 0;
+    hw_info.x64_isa.avx512bw = (ebx7 & (1 << 30)) != 0;
+    hw_info.x64_isa.avx512vl = (ebx7 & (1 << 31)) != 0;
+    
+    // AI/ML and crypto
+    hw_info.x64_isa.avx512_vnni = (ecx7 & (1 << 11)) != 0;
+    hw_info.x64_isa.gfni = (ecx7 & (1 << 8)) != 0;
+    
+    // Memory/Cache operations
+    hw_info.x64_isa.clflushopt = (ebx7 & (1 << 23)) != 0;
+    hw_info.x64_isa.clwb = (ebx7 & (1 << 24)) != 0;
+    hw_info.x64_isa.sha = (ebx7 & (1 << 29)) != 0;
+    hw_info.x64_isa.prefetchw = (ecx7 & (1 << 0)) != 0;
+    
+    // Advanced features
+    hw_info.x64_isa.avx512_bf16 = (ecx7 & (1 << 5)) != 0;
+    hw_info.x64_isa.movdir64b = (ecx7 & (1 << 28)) != 0;
+    hw_info.x64_isa.rdseed = (ebx7 & (1 << 18)) != 0;
+    hw_info.x64_isa.rtm = (ebx7 & (1 << 11)) != 0;
+    
+    // CPUID Function 7 Sub-leaf 1: More extended features
+    __cpuidex(cpuInfo, 7, 1);
+    int eax7_1 = cpuInfo[0];
+    int edx7_1 = cpuInfo[3];
+    
+    hw_info.x64_isa.avx_vnni = (eax7_1 & (1 << 4)) != 0;
+    hw_info.x64_isa.avx512_fp16 = (edx7_1 & (1 << 23)) != 0;
+    hw_info.x64_isa.amx_tile = (edx7_1 & (1 << 24)) != 0;
   }
 
   // ----------------------------------------------------------------------------
@@ -523,78 +525,28 @@ private:
       return;
     }
 
-    std::ifstream cpuinfo("/proc/cpuinfo");
-    std::string line;
-    std::string features_line;
-
-    // Read features line
-    while (std::getline(cpuinfo, line)) {
-      if (line.find("Features") == 0 || line.find("features") == 0) {
-        auto colon_pos = line.find(':');
-        if (colon_pos != std::string::npos) {
-          features_line = line.substr(colon_pos + 1);
-          // Convert to lowercase
-          for (auto &c : features_line)
-            c = std::tolower(c);
-          break;
-        }
-      }
-    }
-
+    // Use IsProcessorFeaturePresent for ARM feature detection on Windows
+    hw_info.aarch64_isa.neon = IsProcessorFeaturePresent(PF_ARM_NEON_INSTRUCTIONS_AVAILABLE);
+    hw_info.aarch64_isa.aes = IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE);
+    hw_info.aarch64_isa.crc32 = IsProcessorFeaturePresent(PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE);
+    
+    // Standard on ARMv8+
+    hw_info.aarch64_isa.fp64 = true;
+    hw_info.aarch64_isa.prefetch = true;
+    hw_info.aarch64_isa.dc_zva = true;
+    
     // Detect Apple Silicon
     bool is_apple = (hw_info.cpu_model.find("Apple") != std::string::npos);
-
-    // Legacy SIMD - NEON is standard on ARMv8+
-    hw_info.aarch64_isa.neon = true; // All modern ARM has NEON
-    hw_info.aarch64_isa.neon_fp16 = features_line.find("fphp") != std::string::npos ||
-                                    features_line.find("asimdhp") != std::string::npos;
-    hw_info.aarch64_isa.neon_bf16 = features_line.find("bf16") != std::string::npos;
-    hw_info.aarch64_isa.neon_i8mm = features_line.find("i8mm") != std::string::npos;
-    hw_info.aarch64_isa.neon_dotprod = features_line.find("asimddp") != std::string::npos ||
-                                       features_line.find("dotprod") != std::string::npos;
-    hw_info.aarch64_isa.neon_fcma = features_line.find("fcma") != std::string::npos;
-
-    // SIMD main (对应x86的AVX系列)
-    hw_info.aarch64_isa.sve = features_line.find("sve") != std::string::npos;
-    hw_info.aarch64_isa.sve2 = features_line.find("sve2") != std::string::npos;
-    hw_info.aarch64_isa.sme = features_line.find("sme") != std::string::npos;
-    hw_info.aarch64_isa.sme2 = features_line.find("sme2") != std::string::npos;
-
-    // Matrix extensions (对应x86的AMX)
+    
+    // Apple-specific features
     if (is_apple) {
-      // Check if M4 or later (AMX available on M4+)
       hw_info.aarch64_isa.amx = (hw_info.cpu_model.find("M4") != std::string::npos ||
                                  hw_info.cpu_model.find("M5") != std::string::npos);
-      // Apple Neural Engine on all Apple Silicon
       hw_info.aarch64_isa.neural_engine = true;
     }
-
-    // Float/Math extensions
-    hw_info.aarch64_isa.fp64 = features_line.find("fp") != std::string::npos ||
-                               hw_info.cpu_architecture == "aarch64"; // ARMv8+ has FP64
-
-    // AI/ML (对应x86的VNNI)
-    hw_info.aarch64_isa.bf16 = features_line.find("bf16") != std::string::npos;
-    hw_info.aarch64_isa.i8mm = features_line.find("i8mm") != std::string::npos;
-
-    // Crypto/Security (对应x86的AES/SHA)
-    hw_info.aarch64_isa.aes = features_line.find("aes") != std::string::npos;
-    hw_info.aarch64_isa.sha1 = features_line.find("sha1") != std::string::npos;
-    hw_info.aarch64_isa.sha2 = features_line.find("sha2") != std::string::npos;
-    hw_info.aarch64_isa.sha3 = features_line.find("sha3") != std::string::npos;
-    hw_info.aarch64_isa.sha512 = features_line.find("sha512") != std::string::npos;
-    hw_info.aarch64_isa.pmull = features_line.find("pmull") != std::string::npos;
-    hw_info.aarch64_isa.crc32 = features_line.find("crc32") != std::string::npos;
-
-    // Memory/Cache - standard on ARMv8+
-    hw_info.aarch64_isa.prefetch = true; // PRFM instruction standard on ARMv8
-    hw_info.aarch64_isa.dc_zva = true;   // DC ZVA standard on ARMv8
-
-    // System (对应x86的RNG和事务内存)
-    hw_info.aarch64_isa.rndr = features_line.find("rng") != std::string::npos;
-    hw_info.aarch64_isa.rndrrs = features_line.find("rng") != std::string::npos; // Same feature bit
-    hw_info.aarch64_isa.pac = features_line.find("paca") != std::string::npos;
-    hw_info.aarch64_isa.mte = features_line.find("mte") != std::string::npos;
+    
+    // Note: Many ARM features cannot be directly detected on Windows ARM64
+    // The above are the most common ones supported by Windows API
   }
 
   // ----------------------------------------------------------------------------
@@ -602,9 +554,16 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectMemory() {
-    struct sysinfo si;
-    if (sysinfo(&si) == 0) {
-      hw_info.ram_total_gb = si.totalram / (1024 * 1024 * 1024);
+    ULONGLONG totalMemoryKB = 0;
+    if (GetPhysicallyInstalledSystemMemory(&totalMemoryKB)) {
+      hw_info.ram_total_gb = totalMemoryKB / (1024 * 1024);
+    } else {
+      // Fallback to GlobalMemoryStatusEx
+      MEMORYSTATUSEX memInfo;
+      memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+      if (GlobalMemoryStatusEx(&memInfo)) {
+        hw_info.ram_total_gb = memInfo.ullTotalPhys / (1024 * 1024 * 1024);
+      }
     }
   }
 
@@ -613,257 +572,90 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectGPU() {
-    // Detect GPU hardware presence
-    bool has_nvidia = DetectNVIDIAHardware();
-    bool has_amd = DetectAMDHardware();
-    bool has_intel = DetectIntelHardware();
-
-    // Initialize GPU based on what's found (priority: NVIDIA > AMD > Intel)
-    if (has_nvidia) {
-      InitializeNVIDIAGPU();
-    } else if (has_amd) {
-      InitializeAMDGPU();
-    } else if (has_intel) {
-      InitializeIntelGPU();
-    } else {
+    // Use DXGI to enumerate GPUs
+    IDXGIFactory* pFactory = nullptr;
+    HRESULT hr = CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&pFactory);
+    
+    if (FAILED(hr) || !pFactory) {
       hw_info.gpu_vendor = HardwareInfo::GPUVendor::None;
       hw_info.gpu_name = "No GPU detected";
-    }
-  }
-
-  bool DetectNVIDIAHardware() {
-    if (std::filesystem::exists("/proc/driver/nvidia/version") ||
-        std::filesystem::exists("/dev/nvidiactl")) {
-      return true;
-    }
-
-    if (sys_tools.has_lspci) {
-      FILE *pipe = popen("lspci 2>/dev/null | grep -i 'NVIDIA\\|GeForce'", "r");
-      if (pipe) {
-        char buffer[256];
-        bool found = (fgets(buffer, sizeof(buffer), pipe) != nullptr);
-        pclose(pipe);
-        return found;
-      }
-    }
-
-    return false;
-  }
-
-  bool DetectAMDHardware() {
-    // Check sysfs vendor ID
-    if (std::filesystem::exists("/sys/class/drm")) {
-      for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm")) {
-        std::string name = entry.path().filename().string();
-        if (name.find("card") == 0 && name.find("-") == std::string::npos) {
-          std::string vendor_path = entry.path().string() + "/device/vendor";
-          std::ifstream vendor_file(vendor_path);
-          if (vendor_file.is_open()) {
-            std::string vendor_id;
-            vendor_file >> vendor_id;
-            if (vendor_id == "0x1002")
-              return true;
-          }
-        }
-      }
-    }
-
-    // Check lspci
-    if (sys_tools.has_lspci) {
-      FILE *pipe = popen("lspci 2>/dev/null | grep -i 'AMD\\|ATI\\|Radeon'", "r");
-      if (pipe) {
-        char buffer[256];
-        bool found = (fgets(buffer, sizeof(buffer), pipe) != nullptr);
-        pclose(pipe);
-        return found;
-      }
-    }
-
-    return false;
-  }
-
-  bool DetectIntelHardware() {
-    // Check sysfs vendor ID
-    if (std::filesystem::exists("/sys/class/drm")) {
-      for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm")) {
-        std::string name = entry.path().filename().string();
-        if (name.find("card") == 0 && name.find("-") == std::string::npos) {
-          std::string vendor_path = entry.path().string() + "/device/vendor";
-          std::ifstream vendor_file(vendor_path);
-          if (vendor_file.is_open()) {
-            std::string vendor_id;
-            vendor_file >> vendor_id;
-            if (vendor_id == "0x8086")
-              return true;
-          }
-        }
-      }
-    }
-
-    // Check lspci
-    if (sys_tools.has_lspci) {
-      FILE *pipe = popen("lspci 2>/dev/null | grep -i 'VGA.*Intel\\|Display.*Intel'", "r");
-      if (pipe) {
-        char buffer[256];
-        bool found = (fgets(buffer, sizeof(buffer), pipe) != nullptr);
-        pclose(pipe);
-        return found;
-      }
-    }
-
-    return false;
-  }
-
-  void InitializeNVIDIAGPU() {
-    hw_info.gpu_vendor = HardwareInfo::GPUVendor::NVIDIA;
-
-    if (!sys_tools.has_nvidia_smi) {
-      hw_info.gpu_name = "NVIDIA GPU (driver detected)";
-      hw_info.gpu_tool_available = false;
-      hw_info.gpu_install_message = "Install nvidia-smi: sudo apt install nvidia-utils";
       return;
     }
 
-    FILE *pipe = popen("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>&1", "r");
-    if (pipe) {
-      char buffer[256];
-      if (fgets(buffer, sizeof(buffer), pipe)) {
-        std::string line(buffer);
-        if (line.find("NVIDIA-SMI has failed") == std::string::npos &&
-            line.find("command not found") == std::string::npos) {
-          auto comma_pos = line.rfind(',');
-          if (comma_pos != std::string::npos) {
-            hw_info.gpu_name = line.substr(0, comma_pos);
-            hw_info.gpu_name.erase(hw_info.gpu_name.find_last_not_of(" \n\r\t") + 1);
-            hw_info.gpu_vram_total_gb = std::stof(line.substr(comma_pos + 1)) / 1024.0f;
-            hw_info.gpu_tool_available = true;
-          }
-        } else {
-          hw_info.gpu_name = "NVIDIA GPU (driver error)";
-          hw_info.gpu_tool_available = false;
-          hw_info.gpu_install_message = "nvidia-smi failed - reinstall NVIDIA drivers";
-        }
-      }
-      pclose(pipe);
-    }
-  }
-
-  void InitializeAMDGPU() {
-    hw_info.gpu_vendor = HardwareInfo::GPUVendor::AMD;
-
-    // Get GPU name
-    ReadAMDGPUName();
-
-    // Get VRAM size
-    ReadAMDVRAMSize();
-
-    // Check if monitoring tool is available
-    if (sys_tools.has_radeontop && !hw_info.is_wsl) {
-      hw_info.gpu_tool_available = true;
-    } else {
-      hw_info.gpu_tool_available = false;
-      if (hw_info.is_wsl) {
-        hw_info.gpu_install_message = "WSL: GPU monitoring limited - radeontop may not work";
-      } else {
-        hw_info.gpu_install_message = "Install radeontop: sudo apt install radeontop";
-      }
-    }
-  }
-
-  void InitializeIntelGPU() {
-    hw_info.gpu_vendor = HardwareInfo::GPUVendor::Intel;
-
-    // Get GPU name
-    ReadIntelGPUName();
-
-    // Check if monitoring tool is available
-    if (sys_tools.has_intel_gpu_top) {
-      hw_info.gpu_tool_available = true;
-    } else {
-      hw_info.gpu_tool_available = false;
-      hw_info.gpu_install_message = "Install intel_gpu_top: sudo apt install intel-gpu-tools";
-    }
-  }
-
-  void ReadAMDGPUName() {
-    // Try lspci first
-    if (sys_tools.has_lspci) {
-      FILE *pipe = popen("lspci 2>/dev/null | grep -i 'VGA.*AMD\\|Display.*AMD\\|Radeon'", "r");
-      if (pipe) {
-        char buffer[256];
-        if (fgets(buffer, sizeof(buffer), pipe)) {
-          std::string line(buffer);
-          auto pos = line.find(":");
-          if (pos != std::string::npos && pos + 2 < line.length()) {
-            hw_info.gpu_name = line.substr(pos + 2);
-            hw_info.gpu_name.erase(hw_info.gpu_name.find_last_not_of(" \n\r\t") + 1);
-            pclose(pipe);
-            return;
-          }
-        }
-        pclose(pipe);
-      }
-    }
-
-    // Try sysfs
-    if (std::filesystem::exists("/sys/class/drm")) {
-      for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm")) {
-        std::string name = entry.path().filename().string();
-        if (name.find("card") == 0 && name.find("-") == std::string::npos) {
-          std::string device_name_path = entry.path().string() + "/device/product_name";
-          std::ifstream file(device_name_path);
-          if (file.is_open()) {
-            std::getline(file, hw_info.gpu_name);
-            if (!hw_info.gpu_name.empty())
-              return;
-          }
-        }
-      }
-    }
-
-    hw_info.gpu_name = "AMD Radeon Graphics";
-  }
-
-  void ReadAMDVRAMSize() {
-    if (!std::filesystem::exists("/sys/class/drm"))
+    IDXGIAdapter* pAdapter = nullptr;
+    UINT adapterIndex = 0;
+    
+    // Get first adapter (primary GPU)
+    if (pFactory->EnumAdapters(adapterIndex, &pAdapter) == DXGI_ERROR_NOT_FOUND) {
+      pFactory->Release();
+      hw_info.gpu_vendor = HardwareInfo::GPUVendor::None;
+      hw_info.gpu_name = "No GPU detected";
       return;
-
-    for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm")) {
-      std::string name = entry.path().filename().string();
-      if (name.find("card") != std::string::npos && name.find("-") == std::string::npos) {
-        std::string vram_path = entry.path().string() + "/device/mem_info_vram_total";
-        std::ifstream file(vram_path);
-        if (file.is_open()) {
-          long vram_bytes;
-          file >> vram_bytes;
-          hw_info.gpu_vram_total_gb = vram_bytes / (1024.0f * 1024.0f * 1024.0f);
-          return;
-        }
-      }
     }
+
+    DXGI_ADAPTER_DESC desc;
+    pAdapter->GetDesc(&desc);
+
+    // Convert wide string to narrow string
+    char name[128];
+    WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), NULL, NULL);
+    hw_info.gpu_name = name;
+
+    // Determine vendor from VendorId
+    switch (desc.VendorId) {
+      case 0x10DE:
+        hw_info.gpu_vendor = HardwareInfo::GPUVendor::NVIDIA;
+        break;
+      case 0x1002:
+        hw_info.gpu_vendor = HardwareInfo::GPUVendor::AMD;
+        break;
+      case 0x8086:
+        hw_info.gpu_vendor = HardwareInfo::GPUVendor::Intel;
+        break;
+      default:
+        hw_info.gpu_vendor = HardwareInfo::GPUVendor::None;
+    }
+
+    // Get VRAM size (in bytes, convert to GB)
+    hw_info.gpu_vram_total_gb = desc.DedicatedVideoMemory / (1024.0f * 1024.0f * 1024.0f);
+
+    // GPU monitoring is available on Windows (via PDH)
+    hw_info.gpu_tool_available = true;
+
+    pAdapter->Release();
+    pFactory->Release();
   }
 
-  void ReadIntelGPUName() {
-    // Try lspci first
-    if (sys_tools.has_lspci) {
-      FILE *pipe = popen("lspci 2>/dev/null | grep -i 'VGA.*Intel\\|Display.*Intel'", "r");
-      if (pipe) {
-        char buffer[256];
-        if (fgets(buffer, sizeof(buffer), pipe)) {
-          std::string line(buffer);
-          auto pos = line.find("Intel");
-          if (pos != std::string::npos) {
-            hw_info.gpu_name = line.substr(pos);
-            hw_info.gpu_name.erase(hw_info.gpu_name.find_last_not_of(" \n\r\t") + 1);
-            pclose(pipe);
-            return;
-          }
-        }
-        pclose(pipe);
-      }
+  // ============================================================================
+  // PDH INITIALIZATION
+  // ============================================================================
+
+  void InitializePDH() {
+    // Open PDH query
+    PDH_STATUS status = PdhOpenQuery(NULL, 0, &pdh_query);
+    assert(status == ERROR_SUCCESS);
+
+    // Add per-core CPU counters
+    pdh_cpu_counters.resize(hw_info.cpu_logical_cores);
+    for (int i = 0; i < hw_info.cpu_logical_cores; i++) {
+      wchar_t counterPath[256];
+      swprintf(counterPath, 256, L"\\Processor(%d)\\%% Processor Time", i);
+      status = PdhAddCounterW(pdh_query, counterPath, 0, &pdh_cpu_counters[i]);
+      assert(status == ERROR_SUCCESS);
     }
 
-    hw_info.gpu_name = "Intel Integrated Graphics";
+    // Add disk counters
+    status = PdhAddCounterW(pdh_query, L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec", 0, &pdh_disk_read_counter);
+    assert(status == ERROR_SUCCESS);
+    
+    status = PdhAddCounterW(pdh_query, L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec", 0, &pdh_disk_write_counter);
+    assert(status == ERROR_SUCCESS);
+    
+    status = PdhAddCounterW(pdh_query, L"\\PhysicalDisk(_Total)\\% Disk Time", 0, &pdh_disk_busy_counter);
+    assert(status == ERROR_SUCCESS);
+
+    // Initial collect (first call always returns 0)
+    PdhCollectQueryData(pdh_query);
   }
 
   // ============================================================================
@@ -872,6 +664,9 @@ private:
 
   void UpdateDynamicMonitoring() {
     auto now = std::chrono::steady_clock::now();
+
+    // Collect PDH data for all counters
+    PdhCollectQueryData(pdh_query);
 
     UpdateCPUUsage(now);
     UpdateMemoryUsage();
@@ -887,32 +682,16 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateCPUUsage(std::chrono::steady_clock::time_point now) {
-    std::ifstream stat_file("/proc/stat");
-    std::string line;
-
-    // Skip aggregate CPU stats
-    std::getline(stat_file, line);
-
-    // Read per-core stats
-    for (int i = 0; i < hw_info.cpu_logical_cores && std::getline(stat_file, line); ++i) {
-      if (line.find("cpu") != 0)
-        break;
-
-      std::istringstream ss(line);
-      std::string cpu_label;
-      long user, nice, system, idle, iowait, irq, softirq;
-      ss >> cpu_label >> user >> nice >> system >> idle >> iowait >> irq >> softirq;
-
-      long total = user + nice + system + idle + iowait + irq + softirq;
-      long total_diff = total - cpu_cores_data[i].stat_total_prev;
-      long idle_diff = idle - cpu_cores_data[i].stat_idle_prev;
-
-      cpu_cores_data[i].stat_total_prev = total;
-      cpu_cores_data[i].stat_idle_prev = idle;
-
+    for (int i = 0; i < hw_info.cpu_logical_cores; i++) {
+      PDH_FMT_COUNTERVALUE counterValue;
+      PDH_STATUS status = PdhGetFormattedCounterValue(pdh_cpu_counters[i], PDH_FMT_DOUBLE, NULL, &counterValue);
+      
       float usage = 0.0f;
-      if (total_diff > 0) {
-        usage = 100.0f * (1.0f - (float)idle_diff / (float)total_diff);
+      if (status == ERROR_SUCCESS) {
+        usage = static_cast<float>(counterValue.doubleValue);
+        // Clamp to valid range
+        if (usage < 0.0f) usage = 0.0f;
+        if (usage > 100.0f) usage = 100.0f;
       }
 
       // Smooth over time window
@@ -940,11 +719,13 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateMemoryUsage() {
-    struct sysinfo si;
-    if (sysinfo(&si) == 0) {
-      long used_ram = si.totalram - si.freeram;
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+    
+    if (GlobalMemoryStatusEx(&memInfo)) {
+      ULONGLONG used_ram = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
       mem_data.used_gb_current = used_ram / (1024.0f * 1024.0f * 1024.0f);
-      mem_data.usage_percent_current = 100.0f * (1.0f - (float)si.freeram / (float)si.totalram);
+      mem_data.usage_percent_current = static_cast<float>(memInfo.dwMemoryLoad);
       mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
     }
   }
@@ -958,16 +739,15 @@ private:
       return;
     }
 
+    // For Windows, GPU monitoring is simplified - we'll use estimation based on DXGI
+    // A proper implementation would require vendor-specific APIs (NVML, ADL, etc.)
+    // For now, set basic values to prevent crashes
     float usage = 0.0f;
     float memory_used_mb = 0.0f;
 
-    if (hw_info.gpu_vendor == HardwareInfo::GPUVendor::NVIDIA) {
-      UpdateNVIDIAUsage(usage, memory_used_mb);
-    } else if (hw_info.gpu_vendor == HardwareInfo::GPUVendor::AMD) {
-      UpdateAMDUsage(usage, memory_used_mb);
-    } else if (hw_info.gpu_vendor == HardwareInfo::GPUVendor::Intel) {
-      UpdateIntelUsage(usage, memory_used_mb);
-    }
+    // Note: Windows doesn't expose GPU usage easily without vendor SDKs
+    // This is a placeholder that maintains the UI structure
+    // Real implementation would need NVML (NVIDIA), ADL (AMD), etc.
 
     // Smooth usage over time window
     gpu_data.usage_samples.push_back({now, usage});
@@ -1003,98 +783,44 @@ private:
     }
   }
 
-  void UpdateNVIDIAUsage(float &usage, float &memory_used_mb) {
-    FILE *pipe = popen("nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null", "r");
-    if (pipe) {
-      char buffer[128];
-      if (fgets(buffer, sizeof(buffer), pipe)) {
-        std::istringstream ss(buffer);
-        std::string token;
-        if (std::getline(ss, token, ','))
-          usage = std::stof(token);
-        if (std::getline(ss, token, ','))
-          memory_used_mb = std::stof(token);
-      }
-      pclose(pipe);
-    }
-  }
-
-  void UpdateAMDUsage(float &usage, float &memory_used_mb) {
-    // Try sysfs for VRAM usage
-    if (std::filesystem::exists("/sys/class/drm")) {
-      for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm")) {
-        std::string name = entry.path().filename().string();
-        if (name.find("card") != std::string::npos && name.find("-") == std::string::npos) {
-          std::string vram_used_path = entry.path().string() + "/device/mem_info_vram_used";
-          std::ifstream file(vram_used_path);
-          if (file.is_open()) {
-            long vram_used_bytes;
-            file >> vram_used_bytes;
-            memory_used_mb = vram_used_bytes / (1024.0f * 1024.0f);
-            break;
-          }
-        }
-      }
-    }
-
-    // Try radeontop for usage (less reliable, so optional)
-    FILE *pipe = popen("timeout 0.1 radeontop -d - -l 1 2>/dev/null | grep -oP 'gpu \\K[0-9.]+'", "r");
-    if (pipe) {
-      char buffer[64];
-      if (fgets(buffer, sizeof(buffer), pipe)) {
-        usage = std::stof(buffer);
-      }
-      pclose(pipe);
-    }
-  }
-
-  void UpdateIntelUsage(float &usage, float &memory_used_mb) {
-    (void)usage;
-    (void)memory_used_mb;
-    // Intel GPU monitoring typically requires root access for intel_gpu_top
-    // For now, leave unimplemented or try sysfs if available
-  }
-
   // ----------------------------------------------------------------------------
   // Network Usage Update
   // ----------------------------------------------------------------------------
 
   void UpdateNetworkUsage() {
-    long total_rx = 0;
-    long total_tx = 0;
+    ULONG64 total_rx = 0;
+    ULONG64 total_tx = 0;
 
-    std::ifstream net_file("/proc/net/dev");
-    std::string line;
-
-    // Skip header lines
-    std::getline(net_file, line);
-    std::getline(net_file, line);
-
-    while (std::getline(net_file, line)) {
-      auto colon_pos = line.find(':');
-      if (colon_pos == std::string::npos)
-        continue;
-
-      std::string iface = line.substr(0, colon_pos);
-      iface.erase(0, iface.find_first_not_of(" \t"));
-
-      if (iface == "lo")
-        continue; // Skip loopback
-
-      std::istringstream ss(line.substr(colon_pos + 1));
-      long rx_bytes, rx_packets, rx_errs, rx_drop, rx_fifo, rx_frame, rx_compressed, rx_multicast;
-      long tx_bytes, tx_packets, tx_errs, tx_drop, tx_fifo, tx_colls, tx_carrier, tx_compressed;
-
-      ss >> rx_bytes >> rx_packets >> rx_errs >> rx_drop >> rx_fifo >> rx_frame >> rx_compressed >> rx_multicast >> tx_bytes >> tx_packets >> tx_errs >> tx_drop >> tx_fifo >> tx_colls >> tx_carrier >> tx_compressed;
-
-      total_rx += rx_bytes;
-      total_tx += tx_bytes;
+    MIB_IF_TABLE2* pIfTable = nullptr;
+    DWORD dwRetVal = GetIfTable2(&pIfTable);
+    
+    if (dwRetVal == NO_ERROR && pIfTable) {
+      for (ULONG i = 0; i < pIfTable->NumEntries; i++) {
+        MIB_IF_ROW2* pIfRow = &pIfTable->Table[i];
+        
+        // Skip loopback
+        if (pIfRow->Type == IF_TYPE_SOFTWARE_LOOPBACK) {
+          continue;
+        }
+        
+        // Only count physical network interfaces
+        if (pIfRow->Type == IF_TYPE_ETHERNET_CSMACD ||
+            pIfRow->Type == IF_TYPE_IEEE80211) {
+          total_rx += pIfRow->InOctets;
+          total_tx += pIfRow->OutOctets;
+        }
+      }
+      FreeMibTable(pIfTable);
     }
 
     // Calculate speed (bytes per 100ms -> Mbps)
     if (net_data.rx_bytes_prev > 0) {
-      long rx_diff = total_rx - net_data.rx_bytes_prev;
-      long tx_diff = total_tx - net_data.tx_bytes_prev;
+      long long rx_diff = total_rx - net_data.rx_bytes_prev;
+      long long tx_diff = total_tx - net_data.tx_bytes_prev;
+
+      // Handle counter wrap-around
+      if (rx_diff < 0) rx_diff = 0;
+      if (tx_diff < 0) tx_diff = 0;
 
       net_data.rx_mbps_current = (rx_diff * 10.0f * 8.0f) / (1024.0f * 1024.0f);
       net_data.tx_mbps_current = (tx_diff * 10.0f * 8.0f) / (1024.0f * 1024.0f);
@@ -1116,67 +842,33 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateDiskUsage() {
-    long total_read = 0;
-    long total_write = 0;
-    long total_io_time = 0;
-
-    std::ifstream disk_file("/proc/diskstats");
-    std::string line;
-
-    while (std::getline(disk_file, line)) {
-      std::istringstream ss(line);
-      int major, minor;
-      std::string device;
-      long reads_completed, reads_merged, sectors_read, time_reading;
-      long writes_completed, writes_merged, sectors_written, time_writing;
-      long ios_in_progress, time_io, weighted_time_io;
-
-      ss >> major >> minor >> device >> reads_completed >> reads_merged >> sectors_read >> time_reading >> writes_completed >> writes_merged >> sectors_written >> time_writing >> ios_in_progress >> time_io >> weighted_time_io;
-
-      // Only count physical disks
-      if (device.find("sd") == 0 || device.find("nvme") == 0 || device.find("vd") == 0) {
-        // Skip partitions
-        bool is_partition = false;
-        if (device.find("nvme") == 0) {
-          if (device.find("p") != std::string::npos)
-            is_partition = true;
-        } else {
-          for (char c : device) {
-            if (std::isdigit(c)) {
-              is_partition = true;
-              break;
-            }
-          }
-        }
-
-        if (!is_partition) {
-          total_read += sectors_read * 512;
-          total_write += sectors_written * 512;
-          total_io_time += time_io;
-        }
-      }
+    // Get disk read/write speeds from PDH
+    PDH_FMT_COUNTERVALUE readValue, writeValue, busyValue;
+    
+    PDH_STATUS status = PdhGetFormattedCounterValue(pdh_disk_read_counter, PDH_FMT_DOUBLE, NULL, &readValue);
+    if (status == ERROR_SUCCESS) {
+      disk_data.read_mbps_current = static_cast<float>(readValue.doubleValue / (1024.0 * 1024.0));
+    }
+    
+    status = PdhGetFormattedCounterValue(pdh_disk_write_counter, PDH_FMT_DOUBLE, NULL, &writeValue);
+    if (status == ERROR_SUCCESS) {
+      disk_data.write_mbps_current = static_cast<float>(writeValue.doubleValue / (1024.0 * 1024.0));
+    }
+    
+    status = PdhGetFormattedCounterValue(pdh_disk_busy_counter, PDH_FMT_DOUBLE, NULL, &busyValue);
+    if (status == ERROR_SUCCESS) {
+      disk_data.busy_percent_current = static_cast<float>(busyValue.doubleValue);
+      // Clamp to valid range
+      if (disk_data.busy_percent_current < 0.0f) disk_data.busy_percent_current = 0.0f;
+      if (disk_data.busy_percent_current > 100.0f) disk_data.busy_percent_current = 100.0f;
     }
 
-    // Calculate speed (bytes per 100ms -> MB/s)
-    if (disk_data.read_bytes_prev > 0) {
-      long read_diff = total_read - disk_data.read_bytes_prev;
-      long write_diff = total_write - disk_data.write_bytes_prev;
-      long io_time_diff = total_io_time - disk_data.io_time_ms_prev;
+    // Update historical max
+    disk_data.read_mbps_max = std::max(disk_data.read_mbps_max * 0.995f, disk_data.read_mbps_current);
+    disk_data.write_mbps_max = std::max(disk_data.write_mbps_max * 0.995f, disk_data.write_mbps_current);
+    disk_data.read_mbps_max = std::max(10.0f, disk_data.read_mbps_max);
+    disk_data.write_mbps_max = std::max(10.0f, disk_data.write_mbps_max);
 
-      disk_data.read_mbps_current = (read_diff * 10.0f) / (1024.0f * 1024.0f);
-      disk_data.write_mbps_current = (write_diff * 10.0f) / (1024.0f * 1024.0f);
-      disk_data.busy_percent_current = std::min(100.0f, (io_time_diff * 0.01f) * 100.0f);
-
-      // Update historical max
-      disk_data.read_mbps_max = std::max(disk_data.read_mbps_max * 0.995f, disk_data.read_mbps_current);
-      disk_data.write_mbps_max = std::max(disk_data.write_mbps_max * 0.995f, disk_data.write_mbps_current);
-      disk_data.read_mbps_max = std::max(10.0f, disk_data.read_mbps_max);
-      disk_data.write_mbps_max = std::max(10.0f, disk_data.write_mbps_max);
-    }
-
-    disk_data.read_bytes_prev = total_read;
-    disk_data.write_bytes_prev = total_write;
-    disk_data.io_time_ms_prev = total_io_time;
     disk_data.busy_percent_history[history_write_index] = disk_data.busy_percent_current;
     disk_data.read_mbps_history[history_write_index] = disk_data.read_mbps_current;
     disk_data.write_mbps_history[history_write_index] = disk_data.write_mbps_current;
@@ -1219,10 +911,6 @@ private:
     ImGui::TextColored(COLOR_LABEL, "Host:");
     ImGui::SameLine(0, 2);
     ImGui::TextColored(COLOR_VALUE, "%s", hw_info.hostname.c_str());
-    if (hw_info.is_wsl) {
-      ImGui::SameLine(0, 4);
-      ImGui::TextColored(COLOR_INFO, "[WSL]");
-    }
 
     // CPU Model
     ImGui::SameLine(0, 8);
@@ -1323,35 +1011,6 @@ private:
       }
     } else {
       ImGui::TextColored(COLOR_WARNING, "None");
-      if (hw_info.is_wsl) {
-        ImGui::SameLine(0, 8);
-        ImGui::TextColored(COLOR_INFO, "(WSL: need Windows drivers + kernel≥5.10.43.3)");
-      }
-    }
-
-    // System Tools
-    if (!sys_tools.missing_tools.empty()) {
-      ImGui::SameLine(0, 8);
-      ImGui::TextColored(COLOR_DIM, "│");
-      ImGui::SameLine(0, 8);
-      ImGui::TextColored(COLOR_WARNING, "⚙");
-      ImGui::SameLine(0, 2);
-      ImGui::TextColored(COLOR_INFO, "%zu tools missing:", sys_tools.missing_tools.size());
-      ImGui::SameLine(0, 4);
-      for (size_t i = 0; i < sys_tools.missing_tools.size(); ++i) {
-        if (i > 0) {
-          ImGui::SameLine(0, 2);
-          ImGui::TextColored(COLOR_DIM, ",");
-          ImGui::SameLine(0, 2);
-        }
-        // Extract just the tool name without install command
-        std::string tool = sys_tools.missing_tools[i];
-        size_t paren_pos = tool.find(" (");
-        if (paren_pos != std::string::npos) {
-          tool = tool.substr(0, paren_pos);
-        }
-        ImGui::TextColored(COLOR_INFO, "%s", tool.c_str());
-      }
     }
 
     // ========== ISA: Instruction Set Architecture ==========

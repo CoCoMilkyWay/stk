@@ -7,7 +7,6 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
-#include <unistd.h>
 
 namespace GUI::Tasks {
 namespace {

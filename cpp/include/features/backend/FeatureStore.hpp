@@ -9,17 +9,22 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fcntl.h>
 #include <filesystem>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <string>
-#include <sys/mman.h>
 #include <thread>
-#include <unistd.h>
 #include <unordered_set>
 #include <vector>
+#include <io.h>
+#include <fcntl.h>
+#include <share.h>
+#include <cerrno>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#undef min
+#undef max
 
 // ============================================================================
 // FEATURE STORE CONFIGURATION
@@ -80,20 +85,15 @@ private:
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
         const size_t total_bytes = MAX_ROWS_PER_LEVEL[lvl] * FIELDS_PER_LEVEL[lvl] * num_assets * sizeof(feature_storage_t);
         const size_t aligned_bytes = ((total_bytes + 63) / 64) * 64;
-        data[lvl] = static_cast<feature_storage_t *>(std::aligned_alloc(64, aligned_bytes));
+        data[lvl] = static_cast<feature_storage_t *>(_aligned_malloc(aligned_bytes, 64));
         assert(data[lvl]);
-
-        // Enable huge pages for large tensors (L0/L1/L2)
-        // 2MB huge pages significantly reduce TLB pressure for sequential scans
-        madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
       }
 
       // Allocate depth data (same T as L0)
       const size_t depth_total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
       const size_t depth_aligned_bytes = ((depth_total_bytes + 63) / 64) * 64;
-      depth_data = static_cast<feature_storage_t *>(std::aligned_alloc(64, depth_aligned_bytes));
+      depth_data = static_cast<feature_storage_t *>(_aligned_malloc(depth_aligned_bytes, 64));
       assert(depth_data);
-      madvise(depth_data, depth_aligned_bytes, MADV_HUGEPAGE);
 
       ts_write_pos = new size_t[num_assets]();
       ts_worker_state = new std::atomic<uint64_t>[num_ts_workers]();
@@ -122,10 +122,10 @@ private:
     ~Slot() {
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
         if (data[lvl])
-          std::free(data[lvl]);
+          _aligned_free(data[lvl]);
       }
       if (depth_data)
-        std::free(depth_data);
+        _aligned_free(depth_data);
       delete[] ts_write_pos;
       delete[] ts_worker_state;
     }
@@ -415,7 +415,7 @@ public:
 
       // Exponential backoff
       std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
-      backoff_us = std::min(backoff_us * 2, 100UL);
+      backoff_us = std::min(backoff_us * 2, 100ULL);
     }
   }
 
@@ -440,7 +440,7 @@ public:
         break;
 
       std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
-      backoff_us = std::min(backoff_us * 2, 100UL);
+      backoff_us = std::min(backoff_us * 2, 100ULL);
     }
 
     // Atomic state transition BUSY -> DONE
@@ -483,8 +483,8 @@ public:
 
     // Copy date before writing (slot may be recycled)
     char date_copy[16];
-    std::strncpy(date_copy, slot.date, sizeof(date_copy));
-    date_copy[sizeof(date_copy) - 1] = '\0';
+    errno_t err = strncpy_s(date_copy, sizeof(date_copy), slot.date, _TRUNCATE);
+    assert(err == 0);
 
     // Synchronous write + immediate flush (blocks until disk write completes)
     disk_write(date_copy, &slot);
@@ -622,8 +622,8 @@ private:
       Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] skip reset (async)");
     }
 
-    std::strncpy(s.date, date.c_str(), sizeof(s.date) - 1);
-    s.date[sizeof(s.date) - 1] = '\0';
+    errno_t err = strncpy_s(s.date, sizeof(s.date), date.c_str(), _TRUNCATE);
+    assert(err == 0);
     s.needs_reset = true;
 
     s.state.store(TensorState::BUSY, std::memory_order_release);
@@ -714,22 +714,23 @@ private:
       auto compressed = ZstdHelper::compress(column.data(), col_bytes);
 
       std::string filename = out_dir + "/features_L0_f" + std::to_string(f) + ".zst";
-      int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-      assert(fd >= 0);
+      int fd;
+      errno_t err = _sopen_s(&fd, filename.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO, _S_IREAD | _S_IWRITE);
+      assert(err == 0 && fd >= 0);
 
-      ssize_t ret = 0;
-      ret = ::write(fd, &T[0], sizeof(size_t));
+      int ret = 0;
+      ret = _write(fd, &T[0], sizeof(size_t));
       assert(ret == sizeof(size_t));
       const size_t F_single = 1;
-      ret = ::write(fd, &F_single, sizeof(size_t));
+      ret = _write(fd, &F_single, sizeof(size_t));
       assert(ret == sizeof(size_t));
-      ret = ::write(fd, &A, sizeof(size_t));
+      ret = _write(fd, &A, sizeof(size_t));
       assert(ret == sizeof(size_t));
-      ret = ::write(fd, compressed.data(), compressed.size());
-      assert(ret == static_cast<ssize_t>(compressed.size()));
+      ret = _write(fd, compressed.data(), static_cast<unsigned int>(compressed.size()));
+      assert(ret == static_cast<int>(compressed.size()));
 
-      sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
-      close(fd);
+      _commit(fd);
+      _close(fd);
       total_files++;
     }
 
@@ -741,21 +742,22 @@ private:
       auto compressed = ZstdHelper::compress(slot->data[lvl], total_bytes);
 
       std::string filename = out_dir + "/features_L" + std::to_string(lvl) + ".zst";
-      int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-      assert(fd >= 0);
+      int fd;
+      errno_t err = _sopen_s(&fd, filename.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO, _S_IREAD | _S_IWRITE);
+      assert(err == 0 && fd >= 0);
 
-      ssize_t ret = 0;
-      ret = ::write(fd, &T[lvl], sizeof(size_t));
+      int ret = 0;
+      ret = _write(fd, &T[lvl], sizeof(size_t));
       assert(ret == sizeof(size_t));
-      ret = ::write(fd, &F[lvl], sizeof(size_t));
+      ret = _write(fd, &F[lvl], sizeof(size_t));
       assert(ret == sizeof(size_t));
-      ret = ::write(fd, &A, sizeof(size_t));
+      ret = _write(fd, &A, sizeof(size_t));
       assert(ret == sizeof(size_t));
-      ret = ::write(fd, compressed.data(), compressed.size());
-      assert(ret == static_cast<ssize_t>(compressed.size()));
+      ret = _write(fd, compressed.data(), static_cast<unsigned int>(compressed.size()));
+      assert(ret == static_cast<int>(compressed.size()));
 
-      sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
-      close(fd);
+      _commit(fd);
+      _close(fd);
       total_files++;
     }
 
@@ -770,22 +772,23 @@ private:
       auto compressed = ZstdHelper::compress(slot->depth_data, total_bytes);
 
       std::string filename = out_dir + "/depth.zst";
-      int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-      assert(fd >= 0);
+      int fd;
+      errno_t err = _sopen_s(&fd, filename.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO, _S_IREAD | _S_IWRITE);
+      assert(err == 0 && fd >= 0);
 
-      ssize_t ret = 0;
-      ret = ::write(fd, &T_depth, sizeof(size_t));
+      int ret = 0;
+      ret = _write(fd, &T_depth, sizeof(size_t));
       assert(ret == sizeof(size_t));
-      ret = ::write(fd, &F_depth, sizeof(size_t));
+      ret = _write(fd, &F_depth, sizeof(size_t));
       assert(ret == sizeof(size_t));
-      ret = ::write(fd, &A, sizeof(size_t));
+      ret = _write(fd, &A, sizeof(size_t));
       assert(ret == sizeof(size_t));
 
-      ret = ::write(fd, compressed.data(), compressed.size());
-      assert(ret == static_cast<ssize_t>(compressed.size()));
+      ret = _write(fd, compressed.data(), static_cast<unsigned int>(compressed.size()));
+      assert(ret == static_cast<int>(compressed.size()));
 
-      sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
-      close(fd);
+      _commit(fd);
+      _close(fd);
       total_files++;
     }
 
