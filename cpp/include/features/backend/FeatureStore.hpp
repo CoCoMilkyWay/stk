@@ -674,120 +674,99 @@ private:
     return s;
   }
 
-  // Disk IO (write columnar compressed files)
+  // Write file with header + compressed data
+  void write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
+                               const void *raw_data, size_t raw_size) {
+    const size_t header_size = 3 * sizeof(size_t);
+    const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
+    const size_t buffer_size = header_size + compressed_bound;
+
+    std::vector<uint8_t> buffer(buffer_size);
+    size_t *header = reinterpret_cast<size_t *>(buffer.data());
+    header[0] = T;
+    header[1] = F;
+    header[2] = A;
+
+    size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size, 
+                                                             buffer.data() + header_size, 
+                                                             compressed_bound);
+    const size_t final_size = header_size + compressed_size;
+
+    // Fast write with pre-allocation
+    HANDLE hFile = CreateFileA(filepath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    assert(hFile != INVALID_HANDLE_VALUE);
+
+    LARGE_INTEGER file_size;
+    file_size.QuadPart = final_size;
+    BOOL result = SetFilePointerEx(hFile, file_size, NULL, FILE_BEGIN);
+    assert(result);
+    result = SetEndOfFile(hFile);
+    assert(result);
+
+    LARGE_INTEGER zero = {0};
+    result = SetFilePointerEx(hFile, zero, NULL, FILE_BEGIN);
+    assert(result);
+
+    const size_t WRITE_CHUNK = 4 * 1024 * 1024;
+    size_t remaining = final_size;
+    const char *current = reinterpret_cast<const char *>(buffer.data());
+
+    while (remaining > 0) {
+      DWORD to_write = (remaining > WRITE_CHUNK) ? static_cast<DWORD>(WRITE_CHUNK) : static_cast<DWORD>(remaining);
+      DWORD written;
+      result = WriteFile(hFile, current, to_write, &written, NULL);
+      assert(result && written == to_write);
+      current += written;
+      remaining -= written;
+    }
+
+    CloseHandle(hFile);
+  }
+
   void disk_write(const std::string &date_str, Slot *slot) {
     assert(slot && date_str.size() == 8);
 
     auto t_start = std::chrono::high_resolution_clock::now();
-    Logger::log("worker_" + std::to_string(io_worker_id_), "write_to_disk: START " + date_str + " (L0-columnar+L1/L2-merged)");
+    Logger::log("worker_" + std::to_string(io_worker_id_), "disk_write: START " + date_str);
 
-    std::string year = date_str.substr(0, 4);
-    std::string month = date_str.substr(4, 2);
-    std::string day_str = date_str.substr(6, 2);
-    std::string out_dir = output_dir_ + "/" + year + "/" + month + "/" + day_str;
+    std::string out_dir = output_dir_ + "/" + date_str.substr(0, 4) + "/" + 
+                          date_str.substr(4, 2) + "/" + date_str.substr(6, 2);
 
     auto t_before_mkdir = std::chrono::high_resolution_clock::now();
-    std::error_code ec;
-    std::filesystem::create_directories(out_dir, ec);
+    std::filesystem::create_directories(out_dir);
     auto t_after_mkdir = std::chrono::high_resolution_clock::now();
 
     const size_t T[3] = {MAX_ROWS_PER_LEVEL[0], MAX_ROWS_PER_LEVEL[1], MAX_ROWS_PER_LEVEL[2]};
     const size_t F[3] = {FIELDS_PER_LEVEL[0], FIELDS_PER_LEVEL[1], FIELDS_PER_LEVEL[2]};
     const size_t A = num_assets_;
 
-    size_t total_files = 0;
-
-    // L0: Write individual feature columns (for Dist analysis selective loading)
+    // L0: columnar (extract each feature column)
     for (size_t f = 0; f < F[0]; ++f) {
       const size_t col_elements = T[0] * A;
-      const size_t col_bytes = col_elements * sizeof(feature_storage_t);
       std::vector<feature_storage_t> column(col_elements);
 
+      const feature_storage_t *src = slot->data[0];
       for (size_t t = 0; t < T[0]; ++t) {
-        for (size_t a = 0; a < A; ++a) {
-          column[t * A + a] = slot->data[0][t * F[0] * A + f * A + a];
-        }
+        std::memcpy(&column[t * A], &src[(t * F[0] + f) * A], A * sizeof(feature_storage_t));
       }
 
-      auto compressed = ZstdHelper::compress(column.data(), col_bytes);
-
-      std::string filename = out_dir + "/features_L0_f" + std::to_string(f) + ".zst";
-      int fd;
-      errno_t err = _sopen_s(&fd, filename.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO, _S_IREAD | _S_IWRITE);
-      assert(err == 0 && fd >= 0);
-
-      int ret = 0;
-      ret = _write(fd, &T[0], sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      const size_t F_single = 1;
-      ret = _write(fd, &F_single, sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      ret = _write(fd, &A, sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      ret = _write(fd, compressed.data(), static_cast<unsigned int>(compressed.size()));
-      assert(ret == static_cast<int>(compressed.size()));
-
-      _commit(fd);
-      _close(fd);
-      total_files++;
+      write_file_with_header(out_dir + "/features_L0_f" + std::to_string(f) + ".zst",
+                             T[0], 1, A, column.data(), col_elements * sizeof(feature_storage_t));
     }
 
-    // L1 and L2: Write merged compressed files (for GUI, no selective loading needed)
+    // L1, L2: write entire level
     for (size_t lvl = 1; lvl < 3; ++lvl) {
-      const size_t total_elements = T[lvl] * F[lvl] * A;
-      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
-
-      auto compressed = ZstdHelper::compress(slot->data[lvl], total_bytes);
-
-      std::string filename = out_dir + "/features_L" + std::to_string(lvl) + ".zst";
-      int fd;
-      errno_t err = _sopen_s(&fd, filename.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO, _S_IREAD | _S_IWRITE);
-      assert(err == 0 && fd >= 0);
-
-      int ret = 0;
-      ret = _write(fd, &T[lvl], sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      ret = _write(fd, &F[lvl], sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      ret = _write(fd, &A, sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      ret = _write(fd, compressed.data(), static_cast<unsigned int>(compressed.size()));
-      assert(ret == static_cast<int>(compressed.size()));
-
-      _commit(fd);
-      _close(fd);
-      total_files++;
+      const size_t total_bytes = T[lvl] * F[lvl] * A * sizeof(feature_storage_t);
+      write_file_with_header(out_dir + "/features_L" + std::to_string(lvl) + ".zst",
+                             T[lvl], F[lvl], A, slot->data[lvl], total_bytes);
     }
 
-    // Write depth.zst (compressed, single file)
+    // Depth
     {
-      const size_t T_depth = T[0];
-      const size_t F_depth = DEPTH_TOTAL_WIDTH;
-      const size_t total_elements = T_depth * F_depth * A;
-      const size_t total_bytes = total_elements * sizeof(feature_storage_t);
-
-      // Compress entire depth tensor
-      auto compressed = ZstdHelper::compress(slot->depth_data, total_bytes);
-
-      std::string filename = out_dir + "/depth.zst";
-      int fd;
-      errno_t err = _sopen_s(&fd, filename.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO, _S_IREAD | _S_IWRITE);
-      assert(err == 0 && fd >= 0);
-
-      int ret = 0;
-      ret = _write(fd, &T_depth, sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      ret = _write(fd, &F_depth, sizeof(size_t));
-      assert(ret == sizeof(size_t));
-      ret = _write(fd, &A, sizeof(size_t));
-      assert(ret == sizeof(size_t));
-
-      ret = _write(fd, compressed.data(), static_cast<unsigned int>(compressed.size()));
-      assert(ret == static_cast<int>(compressed.size()));
-
-      _commit(fd);
-      _close(fd);
-      total_files++;
+      const size_t total_bytes = T[0] * DEPTH_TOTAL_WIDTH * A * sizeof(feature_storage_t);
+      write_file_with_header(out_dir + "/depth.zst", T[0], DEPTH_TOTAL_WIDTH, A, 
+                             slot->depth_data, total_bytes);
     }
 
     auto t_end = std::chrono::high_resolution_clock::now();
@@ -796,11 +775,8 @@ private:
     auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
 
     Logger::log("worker_" + std::to_string(io_worker_id_),
-                "write_to_disk: END " + date_str +
-                    " [files:" + std::to_string(total_files) + "(L0-columnar+L1/L2-merged+depth)" +
-                    " mkdir:" + std::to_string(mkdir_ms) + "ms" +
-                    " write:" + std::to_string(write_ms) + "ms" +
-                    " total:" + std::to_string(total_ms) + "ms]");
+                "disk_write: END " + date_str + " [mkdir:" + std::to_string(mkdir_ms) + 
+                "ms write:" + std::to_string(write_ms) + "ms total:" + std::to_string(total_ms) + "ms]");
   }
 
 public:
