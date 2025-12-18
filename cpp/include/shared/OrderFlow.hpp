@@ -104,7 +104,7 @@ constexpr float PRICE_MAX_VALID = 650.0f; // Maximum valid price (650 RMB)
 // ============================================================================
 constexpr float DEPTH_PANEL_WIDTH = 160.0f; // Width of depth panel (pixels)
 constexpr float TOP_VIEW_RATIO = 0.55f;     // Top view height ratio (55%)
-constexpr float Y_MARGIN_RATIO = 0.15f;     // Y-axis margin for plots (15%)
+constexpr float Y_MARGIN_RATIO = 0.20f;     // Y-axis margin for plots (20%)
 
 // ============================================================================
 // GUI Rendering Parameters

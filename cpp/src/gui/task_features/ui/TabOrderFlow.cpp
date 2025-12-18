@@ -378,30 +378,17 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
       tick_positions.clear();
       tick_label_storage.clear();
 
-      // Adaptive label interval: avoid overcrowding
-      size_t label_interval = 1;
-      if (of.l1.num_days > 250)
-        label_interval = 20; // ~1 label per month
-      else if (of.l1.num_days > 100)
-        label_interval = 10; // ~1 label per 2 weeks
-      else if (of.l1.num_days > 50)
-        label_interval = 5; // ~1 label per week
-      else if (of.l1.num_days > 20)
-        label_interval = 2; // ~1 label per 2 days
-      // else label_interval = 1;                          // 1 label per day
+      // Adaptive label interval: limit to max 16 ticks
+      constexpr size_t MAX_TICKS = 16;
+      size_t label_interval = std::max<size_t>(1, (of.l1.num_days + MAX_TICKS - 1) / MAX_TICKS);
 
-      // Add tick positions for ALL days (to show grid lines)
-      // But only add labels at intervals
-      for (size_t d = 0; d < of.l1.num_days; ++d) {
+      // Add tick positions only at label intervals (to avoid overcrowding grid lines)
+      for (size_t d = 0; d < of.l1.num_days; d += label_interval) {
         tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
-
-        if (d % label_interval == 0) {
-          char buf[16];
-          FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
-          tick_label_storage.push_back(buf);
-        } else {
-          tick_label_storage.push_back(""); // Empty label, but keep tick line
-        }
+        
+        char buf[16];
+        FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
+        tick_label_storage.push_back(buf);
       }
 
       tick_labels.clear();

@@ -397,7 +397,7 @@ void OrderFlow::L0Cache::build_plot() {
     plot.y_max = *std::max_element(plot.mid_price.begin(), plot.mid_price.end());
     
     double y_range = plot.y_max - plot.y_min;
-    double margin = y_range * OrderFlowConst::Y_MARGIN_RATIO;
+    double margin = std::max(y_range * OrderFlowConst::Y_MARGIN_RATIO, 0.1);
     plot.y_min_with_margin = plot.y_min - margin;
     plot.y_max_with_margin = plot.y_max + margin;
   }
