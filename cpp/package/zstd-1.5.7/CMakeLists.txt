@@ -1,13 +1,14 @@
-cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
+﻿cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
 # Set policy to suppress MSVC ASM warning
 if(POLICY CMP0194)
     cmake_policy(SET CMP0194 NEW)
 endif()
 
-# Set MSVC warning level to minimal
-if(MSVC)
-    add_compile_options(/W1)
+# Suppress warnings
+if(MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(/W0)
+    add_compile_options(-Wno-unused-function)
 endif()
 
 # Configure zstd to only build static library

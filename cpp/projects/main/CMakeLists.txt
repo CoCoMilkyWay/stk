@@ -84,8 +84,8 @@ elseif(ASSERT_MODE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
     # Fast math
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
-    # Link-time optimization
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
+    # Link-time optimization (disabled due to FP16 intrinsics issue)
+    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
 
     # Linker optimization (Windows-style)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
@@ -99,8 +99,8 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
     # Fast math
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
-    # Link-time optimization
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
+    # Link-time optimization (disabled due to FP16 intrinsics issue)
+    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
 
     # Linker optimization (Windows-style)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")

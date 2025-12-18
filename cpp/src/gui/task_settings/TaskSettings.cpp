@@ -50,7 +50,7 @@ private:
     if (ImGui::Button(btn_id)) {
       // Parse date when opening popup
       if (strlen(date_buf) >= 10) {
-        sscanf(date_buf, "%d-%d-%d", &state.year, &state.month, &state.day);
+        sscanf_s(date_buf, "%d-%d-%d", &state.year, &state.month, &state.day);
       }
       state.is_open = true;
       ImGui::OpenPopup(popup_id);
@@ -151,10 +151,11 @@ private:
       ImGui::Separator();
       if (ImGui::Button("今天", ImVec2(80, 0))) {
         auto now = std::time(nullptr);
-        std::tm *tm_now = std::localtime(&now);
-        state.year = tm_now->tm_year + 1900;
-        state.month = tm_now->tm_mon + 1;
-        state.day = tm_now->tm_mday;
+        std::tm tm_now;
+        localtime_s(&tm_now, &now);
+        state.year = tm_now.tm_year + 1900;
+        state.month = tm_now.tm_mon + 1;
+        state.day = tm_now.tm_mday;
         snprintf(date_buf, buf_size, "%04d-%02d-%02d", state.year, state.month, state.day);
         changed = true;
         state.is_open = false;

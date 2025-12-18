@@ -35,8 +35,7 @@ def _cleanup_processes():
     """Kill old processes."""
     process_names = [f"app_{APP_NAME}.exe"]
     for name in process_names:
-        subprocess.run(["taskkill", "/F", "/IM", name],
-                       capture_output=True, check=False)
+        subprocess.run(["taskkill", "/F", "/IM", name],capture_output=True, check=False)
     time.sleep(0.3)
 
 
