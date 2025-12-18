@@ -171,6 +171,7 @@ set(HEADERS
     ../../include/features/backend/FeatureReader.hpp
     ../../include/features/backend/FeatureStoreConfig.hpp
     ../../include/features/backend/FeatureStore.hpp
+    ../../include/features/backend/ZstdHelper.hpp
     ../../include/features/FeaturesHour/Hour_Sequential.hpp
     ../../include/features/FeaturesMinute/Minute_Sequential.hpp
     ../../include/features/FeaturesTick/Tick_Sequential.hpp
@@ -222,7 +223,11 @@ set(HEADERS
 
 add_executable(app_main ${SOURCES} ${HEADERS})
 
-target_include_directories(app_main PRIVATE ../../include)
+target_include_directories(app_main PRIVATE
+    ../../include
+    ../../package/zstd-1.5.7/lib/
+    ../../package/zlib-1.3.1/
+)
 
 # Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise)
 set_source_files_properties(

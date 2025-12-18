@@ -1,12 +1,11 @@
 #pragma once
 
 #include "L2_DataType.hpp"
-#include <cmath>
 #include <string>
 #include <vector>
 
 // Zstandard compression library
-#include "../../package/zstd-1.5.7/zstd.h"
+#include "zstd.h"
 
 namespace L2 {
 

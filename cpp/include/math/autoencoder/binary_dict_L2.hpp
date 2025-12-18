@@ -4,8 +4,8 @@
 #include <vector>
 
 // Zstandard dictionary training and compression
-#include "../../package/zstd-1.5.7/zstd.h"
-#include "../../package/zstd-1.5.7/zdict.h"
+#include "zstd.h"
+#include "zdict.h"
 
 namespace L2 {
 

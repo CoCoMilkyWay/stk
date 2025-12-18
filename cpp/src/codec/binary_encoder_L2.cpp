@@ -1,7 +1,6 @@
 #include "codec/binary_encoder_L2.hpp"
 #include "misc/logging.hpp"
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>

@@ -6,9 +6,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <fstream>
-#include <sstream>
-#include <string>
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>

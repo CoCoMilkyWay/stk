@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../../package/zstd-1.5.7/zstd.h"
+#include <zstd.h>
 
 namespace L2 {
 

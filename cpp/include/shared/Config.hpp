@@ -1,6 +1,5 @@
 #pragma once
 #include <chrono>
-#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <string>

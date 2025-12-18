@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-#include <zstd.h>
+#include "../../../package/zstd-1.5.7/lib/zstd.h"
 
 // ============================================================================
 // ZSTD COMPRESSION HELPER
@@ -16,7 +16,7 @@
 class ZstdHelper {
 public:
   // Compression level (1=fastest, 22=best compression)
-  static constexpr int DEFAULT_LEVEL = 6;
+  static constexpr int DEFAULT_LEVEL = 0;
 
   // ========================================================================
   // Compression
