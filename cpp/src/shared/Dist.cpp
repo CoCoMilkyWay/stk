@@ -4,7 +4,6 @@
 #include "shared/Feature.hpp"
 
 #include <cassert>
-#include <cmath>
 
 // ============================================================================
 // Helper: Date parsing
