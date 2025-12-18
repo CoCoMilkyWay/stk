@@ -114,7 +114,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # External libraries
 include_directories(../../include)
 
-# Build zlib and zstd as subdirectories
 add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
 add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
 
@@ -264,15 +263,14 @@ target_include_directories(app_main PRIVATE
     ../../include
 )
 
-target_link_libraries(app_main PRIVATE libzstd_static z)
-
-# Windows system libraries for TaskSystemInfo
 target_link_libraries(app_main PRIVATE
-    pdh          # Performance Data Helper (CPU/disk monitoring)
-    iphlpapi     # IP Helper API (network monitoring)
-    setupapi     # Device enumeration
-    dxgi         # DirectX Graphics Infrastructure (GPU detection)
-    advapi32     # Advanced Windows API (Registry)
+    libzstd_static # zstd library
+    z # zlib library
+    pdh # Performance Data Helper (CPU/disk monitoring)
+    iphlpapi # IP Helper API (network monitoring)
+    setupapi # Device enumeration
+    dxgi # DirectX Graphics Infrastructure (GPU detection)
+    advapi32 # Advanced Windows API (Registry)
 )
 
 if(PROFILE_MODE)
