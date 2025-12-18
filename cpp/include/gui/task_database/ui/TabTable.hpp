@@ -3,8 +3,9 @@
 
 #pragma once
 
-#include "gui/task_database/models/BaostockData.hpp"
+#include "gui/task_database/models/SharedTypes.hpp"
 #include "shared/Asset.hpp"
+#include "shared/AssetInfo.hpp"
 #include <string>
 #include <vector>
 

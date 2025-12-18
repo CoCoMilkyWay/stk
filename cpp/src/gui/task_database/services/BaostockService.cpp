@@ -11,9 +11,9 @@ namespace GUI::Database {
 // ============================================================================
 
 BaostockService::BaostockService(boost::asio::io_context &io,
-                                 Config *config,
+                                 SharedData &data,
                                  TaskTerminal *terminal) {
-  data_mgr_ = std::make_unique<DataManager>(io, config, terminal);
+  data_mgr_ = std::make_unique<DataManager>(io, data, terminal);
 
   // Setup progress callback - clean routing based on file_type
   data_mgr_->set_progress_callback([this](const std::string &file_type, const std::string &item, size_t current, size_t total, UpdateStage stage) {

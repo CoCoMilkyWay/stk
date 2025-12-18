@@ -6,7 +6,7 @@
 
 #include "gui/task_database/infrastructure/BaostockPool.hpp"
 #include "gui/task_database/models/BaostockData.hpp"
-#include "shared/Config.hpp"
+#include "shared/AssetInfo.hpp"
 #include <boost/asio/awaitable.hpp>
 #include <functional>
 #include <map>
@@ -14,6 +14,7 @@
 #include <vector>
 
 // Forward declarations
+struct SharedData;
 class TaskTerminal;
 
 namespace GUI::Database {
@@ -26,19 +27,16 @@ using boost::asio::awaitable;
 
 class DataManager {
 private:
+  // Shared data reference (contains asset_info with stock data)
+  SharedData &data_;
+  
   // Configuration
-  Config *config_ = nullptr;
   std::vector<std::string> stock_codes_;
 
   // Metadata
   std::map<std::string, std::string> stock_info_last_update_;
   std::string l2_database_start_date_; // YYYYMMDD format, from L2 database scan
   std::string l2_database_end_date_;   // YYYYMMDD format
-
-  // Data structures
-  StockFactorMap stock_factor_;
-  StockInfoMap stock_info_;
-  StockDaysVec stock_days_;
 
   // Connection pool for API calls
   std::shared_ptr<BaostockPool> pool_;
@@ -71,7 +69,7 @@ private:
 
 public:
   DataManager(boost::asio::io_context &io_context,
-              Config *config,
+              SharedData &data,
               TaskTerminal *terminal = nullptr);
   ~DataManager() = default;
 
@@ -87,10 +85,10 @@ public:
     crawler_progress_callback_ = callback;
   }
 
-  // Data access
-  const StockFactorMap &get_stock_factor() const { return stock_factor_; }
-  const StockInfoMap &get_stock_info() const { return stock_info_; }
-  const StockDaysVec &get_stock_days() const { return stock_days_; }
+  // Data access (delegated to SharedData::asset_info)
+  const StockFactorMap &get_stock_factor() const;
+  const StockInfoMap &get_stock_info() const;
+  const StockDaysVec &get_stock_days() const;
   const std::vector<std::string> &get_stock_codes() const { return stock_codes_; }
 
   // Login status (read-only, managed internally by ensure_logged_in/out)

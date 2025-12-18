@@ -1,55 +1,13 @@
 // Baostock data structures
 // Pure data types + State structures for JSON files and crawler
+// Core data structures (StockInfo, StockInfoMap, etc.) moved to shared/AssetInfo.hpp
 #pragma once
 
 #include "SharedTypes.hpp"
-#include <map>
 #include <string>
 #include <vector>
 
 namespace GUI::Database {
-
-// ============================================================================
-// Stock Info - Complete stock information
-// ============================================================================
-
-struct StockInfo {
-  // Weekly fields (full update on Monday)
-  std::string name;
-  std::string ipoDate;
-  std::string outDate;
-  std::string ind_code;
-  std::string ind_name;
-
-  // Daily fields (incremental update on trading days)
-  std::string update_date;
-  std::string volume;
-  std::string amount;
-  std::string turn;
-  std::string tradestatus;
-  std::string isST;
-  std::string peTTM;
-  std::string pbMRQ;
-  std::string psTTM;
-  std::string pcfNcfTTM;
-};
-
-// ============================================================================
-// Data Containers
-// ============================================================================
-
-// StockFactor: code -> {last_update, data}
-struct StockFactorData {
-  std::string last_update;
-  std::vector<std::vector<std::string>> data;
-};
-using StockFactorMap = std::map<std::string, StockFactorData>;
-
-// StockInfo: code -> StockInfo
-using StockInfoMap = std::map<std::string, StockInfo>;
-
-// StockDays: [[date, is_trading_day], ...]
-using StockDaysVec = std::vector<std::vector<std::string>>;
 
 // ============================================================================
 // Integrity Check Results

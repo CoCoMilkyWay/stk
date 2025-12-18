@@ -204,7 +204,7 @@ private:
     auto &io = coro_mgr_->GetIoContext();
 
     // Create services (in dependency order)
-    baostock_svc_ = std::make_unique<BaostockService>(io, &data.config, &data.gui.terminal);
+    baostock_svc_ = std::make_unique<BaostockService>(io, data, &data.gui.terminal);
     scan_svc_ = std::make_unique<ScanService>(data, io, &data.gui.terminal);
     encoding_svc_ = std::make_unique<EncodingService>(data, &data.gui.terminal);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
@@ -521,7 +521,7 @@ private:
   void DrawTabTable() {
     RenderTabTable(
         l2_svc_->get_assets(),
-        baostock_svc_->get_stock_info_data(),
+        data_->asset_info.get_stock_info(),
         table_state_);
   }
 
@@ -535,13 +535,13 @@ private:
         !data_->asset.items.empty() &&
         baostock_svc_->all_ready()) [[unlikely]] {
       data_->asset.compute_browser_statistics(
-          baostock_svc_->get_stock_info_data(),
-          baostock_svc_->get_stock_days_data());
+          data_->asset_info.get_stock_info(),
+          data_->asset_info.get_stock_days());
     }
  
     RenderTabBrowser(
-        baostock_svc_->get_stock_days_data(),
-        baostock_svc_->get_stock_factor_data(),
+        data_->asset_info.get_stock_days(),
+        data_->asset_info.get_stock_factor(),
         data_->asset,
         config_->start_date,
         config_->end_date,

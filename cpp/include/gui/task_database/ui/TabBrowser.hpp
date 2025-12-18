@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "gui/task_database/models/BaostockData.hpp"
 #include "shared/Asset.hpp"
+#include "shared/AssetInfo.hpp"
 #include <map>
 #include <string>
 

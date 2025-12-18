@@ -4,10 +4,12 @@
 
 #include "gui/task_database/infrastructure/DataManager.hpp"
 #include "gui/task_database/models/BaostockData.hpp"
+#include "shared/AssetInfo.hpp"
 #include <boost/asio/awaitable.hpp>
 #include <memory>
 
 // Forward declarations
+struct SharedData;
 class TaskTerminal;
 
 namespace GUI::Database {
@@ -29,7 +31,7 @@ private:
   CrawlerState crawler_state_;
 
 public:
-  BaostockService(boost::asio::io_context &io, Config *config, TaskTerminal *terminal = nullptr);
+  BaostockService(boost::asio::io_context &io, SharedData &data, TaskTerminal *terminal = nullptr);
   ~BaostockService();
 
   // ============================================================================

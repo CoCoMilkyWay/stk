@@ -20,13 +20,8 @@ void AssetLoader::load_from_config(SharedData &data) {
     return;
   }
   
-  // Load stock_info.json for names and delist dates
-  std::filesystem::path stock_info_path = std::filesystem::path(data.config.config_dir) / data.config.baostock_stock_info_file;
-  json stock_info_j;
-  if (std::filesystem::exists(stock_info_path)) {
-    std::ifstream stock_info_file(stock_info_path);
-    stock_info_file >> stock_info_j;
-  }
+  // Get stock_info from shared data
+  const auto &stock_info_map = data.asset_info.get_stock_info();
   
   try {
     std::ifstream file(assets_path);
@@ -62,17 +57,18 @@ void AssetLoader::load_from_config(SharedData &data) {
       std::string end_date = "20991231";
       
       // Load from stock_info if available
-      if (stock_info_j.contains(stock_key)) {
-        const auto &info = stock_info_j[stock_key];
-        asset_name = info.value("name", "");
+      auto info_it = stock_info_map.find(stock_key);
+      if (info_it != stock_info_map.end()) {
+        const auto &info = info_it->second;
+        asset_name = info.name;
         
-        std::string ipo_date = info.value("ipoDate", "");
+        std::string ipo_date = info.ipoDate;
         if (!ipo_date.empty()) {
           ipo_date.erase(std::remove(ipo_date.begin(), ipo_date.end(), '-'), ipo_date.end());
           start_date = ipo_date;
         }
         
-        std::string out_date = info.value("outDate", "");
+        std::string out_date = info.outDate;
         if (!out_date.empty()) {
           out_date.erase(std::remove(out_date.begin(), out_date.end(), '-'), out_date.end());
           end_date = out_date;

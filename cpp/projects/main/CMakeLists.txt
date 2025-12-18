@@ -104,6 +104,7 @@ add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_
 set(SOURCES
     ../../src/shared/Config.cpp
     ../../src/shared/Asset.cpp
+    ../../src/shared/AssetInfo.cpp
     ../../src/shared/GuiState.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Feature.cpp
@@ -187,6 +188,8 @@ set(HEADERS
     ../../include/worker/crosssectional_worker.hpp
     ../../include/worker/io_worker.hpp
     ../../include/shared/Config.hpp
+    ../../include/shared/Asset.hpp
+    ../../include/shared/AssetInfo.hpp
     ../../include/shared/GuiState.hpp
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/Feature.hpp
@@ -233,6 +236,7 @@ target_include_directories(app_main PRIVATE
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
+    ../../src/shared/AssetInfo.cpp
     ../../src/shared/Dist.cpp
     ../../src/gui/task_database/infrastructure/DataManager.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp

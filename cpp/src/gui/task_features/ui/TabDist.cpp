@@ -751,8 +751,8 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
 // Assets PDF Plot
 // ============================================================================
 
-static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_autofit, 
-                             int selected_dimension, int &clicked_dimension) {
+static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInfo &asset_info,
+                             bool need_autofit, int selected_dimension, int &clicked_dimension) {
   ImGui::Text("PDF密度(资产截面)");
   ImGui::Separator();
 
@@ -866,6 +866,15 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, bool need_auto
     }
     ImGui::Text("%s - %s", start_str.c_str(), end_str.c_str());
     
+    // Market cap (from stock_info)
+    std::string exchange_lower = asset_item.exchange;
+    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
+    std::string stock_key = exchange_lower + "." + asset_item.asset_code;
+    float market_cap = asset_info.calculate_market_cap(stock_key);
+    if (market_cap > 0.0f) {
+      ImGui::Text("市值: %.2f亿", market_cap);
+    }
+    
     // Statistics
     ImGui::Text("n=%zu", kll.count());
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
@@ -958,7 +967,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   // Bottom: Assets PDF
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(dist, data.asset, ui.need_autofit, ui.selected_dimension, clicked_dimension);
+  RenderAssetsPDF(dist, data.asset, data.asset_info, ui.need_autofit, ui.selected_dimension, clicked_dimension);
   ImGui::EndChild();
 
   // Update selected dimension if any plot was clicked
