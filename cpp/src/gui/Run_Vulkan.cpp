@@ -23,6 +23,11 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 
+struct ImFontAtlas;
+namespace ImGuiFreeType {
+bool BuildFontAtlas(ImFontAtlas *atlas, unsigned int extra_flags = 0);
+}
+
 namespace GUI {
 
 // Global pointer to GUI state for error callback
@@ -474,6 +479,9 @@ int RunGUI() {
     io.Fonts->AddFontDefault();
     data.gui.terminal.AddLine("[Warning] Chinese font not found, using default font");
   }
+
+  // Build font atlas via FreeType (enable hinting)
+  IM_ASSERT(ImGuiFreeType::BuildFontAtlas(io.Fonts));
 
   // Setup Platform/Renderer backends
   ImGui_ImplGlfw_InitForVulkan(window, true);

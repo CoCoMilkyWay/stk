@@ -335,6 +335,16 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(../../package/glfw ${CMAKE_BINARY_DIR}/glfw)
 
+# Setup FreeType library from local source (for ImGui font rasterizer)
+add_subdirectory(../../package/freetype ${CMAKE_BINARY_DIR}/freetype)
+if(TARGET freetype)
+    set(STK_FREETYPE_TARGET freetype)
+elseif(TARGET freetype-static)
+    set(STK_FREETYPE_TARGET freetype-static)
+else()
+    message(FATAL_ERROR "FreeType target not found after add_subdirectory(../../package/freetype). Expected target 'freetype' or 'freetype-static'.")
+endif()
+
 # Setup ImGui library from local source
 set(IMGUI_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/imgui)
 set(IMGUI_SOURCE
@@ -353,11 +363,16 @@ else()
     list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
 endif()
 
+# Enable FreeType font rasterizer for ImGui
+list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp)
+
 add_library(imgui STATIC ${IMGUI_SOURCE})
 target_include_directories(imgui SYSTEM PUBLIC
     ${IMGUI_SOURCE_DIR}
     ${IMGUI_SOURCE_DIR}/backends
+    ${IMGUI_SOURCE_DIR}/misc/freetype
 )
+target_compile_definitions(imgui PUBLIC IMGUI_ENABLE_FREETYPE)
 
 # Link graphics libraries
 if(USE_VULKAN_BACKEND)
@@ -365,6 +380,7 @@ if(USE_VULKAN_BACKEND)
 else()
     target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 endif()
+target_link_libraries(imgui PUBLIC ${STK_FREETYPE_TARGET})
 
 # Setup ImPlot library from local source
 set(IMPLOT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/implot)
