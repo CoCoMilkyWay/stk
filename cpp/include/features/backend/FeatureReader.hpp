@@ -31,11 +31,15 @@
 
 class FeatureReader {
 private:
-  // Fully deterministic read: T, F, A all known beforehand
-  // Header only used for assert check
+  // Read compressed data with optional header validation
+  // T_max, F_max, A: max capacity (for buffer size validation)
+  // T_actual, F_actual, A_actual: optional output for actual dimensions from header
   void read_compressed_data(const std::string &filepath,
-                            size_t T, size_t F, size_t A,
-                            feature_storage_t *buffer_ptr) const {
+                            size_t T_max, size_t F_max, size_t A,
+                            feature_storage_t *buffer_ptr,
+                            size_t *T_actual = nullptr,
+                            size_t *F_actual = nullptr,
+                            size_t *A_actual = nullptr) const {
     Trace;
 
     HANDLE hFile;
@@ -48,13 +52,27 @@ private:
 
     constexpr size_t header_size = 3 * sizeof(size_t);
 
+    size_t T, F, A_file;
     {
       TraceN("ReadHeader");
       size_t header[3];
       DWORD bytes_read;
       BOOL result = ReadFile(hFile, header, header_size, &bytes_read, NULL);
       assert(result && bytes_read == header_size);
-      assert(header[0] == T && header[1] == F && header[2] == A && "Header mismatch");
+      
+      T = header[0];
+      F = header[1];
+      A_file = header[2];
+      
+      // Return actual dimensions if requested
+      if (T_actual) *T_actual = T;
+      if (F_actual) *F_actual = F;
+      if (A_actual) *A_actual = A_file;
+      
+      // Validate dimensions don't exceed buffer capacity
+      assert(T <= T_max && "T exceeds buffer capacity");
+      assert(F <= F_max && "F exceeds buffer capacity");
+      assert(A_file == A && "A mismatch");
     }
 
     size_t compressed_size;
@@ -97,25 +115,30 @@ public:
   // Depth tensor for OrderFlow visualization
   struct DepthTensor {
     std::string date;
+    size_t T = 0;  // Actual rows (read from file header)
+    size_t F = 0;  // Actual feature width (read from file header)
     size_t A = 0;
     std::vector<feature_storage_t> data;
 
     inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
-      assert(t < MAX_ROWS_PER_LEVEL[0] && a < A);
+      assert(t < T && a < A);
       size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
-      return data[(t * DEPTH_TOTAL_WIDTH + f_offset) * A + a];
+      assert(f_offset < F);
+      return data[(t * F + f_offset) * A + a];
     }
 
     inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
-      assert(t < MAX_ROWS_PER_LEVEL[0]);
+      assert(t < T);
       size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
-      return data.data() + (t * DEPTH_TOTAL_WIDTH + f_offset) * A;
+      assert(f_offset < F);
+      return data.data() + (t * F + f_offset) * A;
     }
 
     bool is_loaded() const { return A > 0; }
 
     void preallocate(size_t A_) {
       A = A_;
+      // Preallocate for max capacity, actual T/F set by load_depth from header
       data.resize(MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * A);
     }
   };
@@ -168,6 +191,8 @@ public:
   // DayTensor structure (for OrderFlow GUI compatibility)
   struct DayTensor {
     std::string date;
+    size_t T[LEVEL_COUNT] = {0};  // Actual rows per level (read from file header)
+    size_t F[LEVEL_COUNT] = {0};  // Actual feature width per level (read from file header)
     size_t A = 0;
     std::vector<feature_storage_t> data[LEVEL_COUNT];
     std::vector<feature_storage_t> temp_column;  // L0 interleave buffer (reused)
@@ -175,7 +200,7 @@ public:
     template <size_t Level>
     inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
       static_assert(Level < LEVEL_COUNT);
-      assert(t < MAX_ROWS_PER_LEVEL[Level] && a < A);
+      assert(t < T[Level] && a < A);
       size_t f_offset;
       if constexpr (Level == 0) {
         f_offset = L0_FIELD_OFFSETS[f_enum];
@@ -184,13 +209,14 @@ public:
       } else {
         f_offset = L2_FIELD_OFFSETS[f_enum];
       }
-      return data[Level][(t * FIELDS_PER_LEVEL[Level] + f_offset) * A + a];
+      assert(f_offset < F[Level]);
+      return data[Level][(t * F[Level] + f_offset) * A + a];
     }
 
     template <size_t Level>
     inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
       static_assert(Level < LEVEL_COUNT);
-      assert(t < MAX_ROWS_PER_LEVEL[Level]);
+      assert(t < T[Level]);
       size_t f_offset;
       if constexpr (Level == 0) {
         f_offset = L0_FIELD_OFFSETS[f_enum];
@@ -199,22 +225,26 @@ public:
       } else {
         f_offset = L2_FIELD_OFFSETS[f_enum];
       }
-      return data[Level].data() + (t * FIELDS_PER_LEVEL[Level] + f_offset) * A;
+      assert(f_offset < F[Level]);
+      return data[Level].data() + (t * F[Level] + f_offset) * A;
     }
 
     bool is_loaded() const { return A > 0; }
 
-    void preallocate(size_t A_) {
+    // Preallocate for specific level only (on-demand allocation)
+    // Upper layer manages buffer lifetime and reuses across multiple loads
+    void preallocate_level(size_t A_, size_t level) {
       A = A_;
-      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        data[lvl].resize(MAX_ROWS_PER_LEVEL[lvl] * FIELDS_PER_LEVEL[lvl] * A);
+      // Preallocate for max capacity, actual T/F set by load_day_level from header
+      data[level].resize(MAX_ROWS_PER_LEVEL[level] * FIELDS_PER_LEVEL[level] * A);
+      if (level == 0) {
+        temp_column.resize(MAX_ROWS_PER_LEVEL[0] * 1 * A);  // L0 needs interleave buffer
       }
-      temp_column.resize(MAX_ROWS_PER_LEVEL[0] * 1 * A);  // L0 single column buffer
     }
   };
 
   // Load single day, specific level, all features (for GUI)
-  // Fully deterministic: T/F from constants, A from preallocate()
+  // Reads actual T/F from file headers, buffer already preallocated
   void load_day_level(const std::string &date, size_t level, DayTensor &out) const {
     Trace;
     assert(date.size() == 8);
@@ -225,8 +255,8 @@ public:
     std::string day_dir = base_dir_ + "/" + date.substr(0, 4) + "/" +
                           date.substr(4, 2) + "/" + date.substr(6, 2);
 
-    const size_t T = MAX_ROWS_PER_LEVEL[level];
-    const size_t F = FIELDS_PER_LEVEL[level];
+    const size_t T_max = MAX_ROWS_PER_LEVEL[level];
+    const size_t F_max = FIELDS_PER_LEVEL[level];
     const size_t A = out.A;
 
     if (level == 0) {
@@ -234,27 +264,45 @@ public:
       feature_storage_t *dest = out.data[level].data();
       feature_storage_t *temp = out.temp_column.data();
 
+      size_t T_actual = 0;
       {
         TraceN("ReadL0Columns");
-        for (size_t f = 0; f < F; ++f) {
+        for (size_t f = 0; f < F_max; ++f) {
           std::string col_path = day_dir + "/features_L0_f" + std::to_string(f) + ".zst";
           assert(std::filesystem::exists(col_path) && "L0 column file missing");
           
-          // Read column into temp buffer
-          read_compressed_data(col_path, T, 1, A, temp);
+          // Read column into temp buffer and get actual dimensions
+          size_t T_col, F_col, A_col;
+          read_compressed_data(col_path, T_max, 1, A, temp, &T_col, &F_col, &A_col);
+          
+          if (f == 0) {
+            T_actual = T_col;  // First column sets T
+          } else {
+            assert(T_col == T_actual && "Column T mismatch");
+          }
           
           // Interleave into destination
-          for (size_t t = 0; t < T; ++t) {
-            std::memcpy(&dest[(t * F + f) * A], &temp[t * A], A * sizeof(feature_storage_t));
+          for (size_t t = 0; t < T_actual; ++t) {
+            std::memcpy(&dest[(t * F_max + f) * A], &temp[t * A], A * sizeof(feature_storage_t));
           }
         }
       }
+      
+      // Update dynamic dimensions
+      out.T[level] = T_actual;
+      out.F[level] = F_max;  // F is total column count
     } else {
       // L1/L2: merged storage - read directly into data buffer
       std::string merged_path = day_dir + "/features_L" + std::to_string(level) + ".zst";
       assert(std::filesystem::exists(merged_path) && "Merged file missing");
       
-      read_compressed_data(merged_path, T, F, A, out.data[level].data());
+      size_t T_actual, F_actual, A_actual;
+      read_compressed_data(merged_path, T_max, F_max, A, out.data[level].data(),
+                          &T_actual, &F_actual, &A_actual);
+      
+      // Update dynamic dimensions
+      out.T[level] = T_actual;
+      out.F[level] = F_actual;
     }
   }
 
@@ -272,7 +320,15 @@ public:
                        date.substr(4, 2) + "/" + date.substr(6, 2) + "/depth.zst";
     assert(std::filesystem::exists(path) && "Depth file missing");
 
-    read_compressed_data(path, MAX_ROWS_PER_LEVEL[0], DEPTH_TOTAL_WIDTH, out.A, out.data.data());
+    // Read data and get actual dimensions from header
+    size_t T_actual, F_actual, A_actual;
+    read_compressed_data(path, MAX_ROWS_PER_LEVEL[0], DEPTH_TOTAL_WIDTH, out.A, 
+                        out.data.data(), &T_actual, &F_actual, &A_actual);
+    
+    // Update dynamic dimensions (buffer already preallocated, no resize)
+    out.T = T_actual;
+    out.F = F_actual;
+    assert(out.A == A_actual && "Asset count mismatch");
   }
 
   // ========================================================================

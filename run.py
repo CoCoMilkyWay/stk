@@ -26,8 +26,8 @@ APP_NAME = "main"
 # Build & Run modes (set ONLY ONE to True)
 ENABLE_TSAN       = False
 ENABLE_DEBUG      = False
-ENABLE_PROFILE    = True
-ENABLE_ASSERT     = False
+ENABLE_PROFILE    = False
+ENABLE_ASSERT     = True
 ENABLE_PRODUCTION = False  # Auto-enabled if all others are False
 
 

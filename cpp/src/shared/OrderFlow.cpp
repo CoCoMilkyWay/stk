@@ -1,5 +1,6 @@
 // OrderFlow Implementation
 #include "shared/OrderFlow.hpp"
+#include "misc/profiler.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -100,6 +101,8 @@ double OrderFlow::L1Cache::snap_to_day_start(double global_x) const {
 }
 
 void OrderFlow::L1Cache::build_plot_data(size_t asset_idx) {
+  Trace;
+  
   if (asset_idx >= num_assets)
     return;
   if (plot_data.size() < num_assets)

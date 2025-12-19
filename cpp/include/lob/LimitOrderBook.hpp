@@ -27,7 +27,7 @@
 inline constexpr size_t DEBUG_ASSET_IDS[] = {3};
 
 inline constexpr size_t DEBUG_PRINT_DAYS = 0;                    // print first N consecutive days: 0
-inline constexpr const char *DEBUG_PRINT_DATES[] = {"20250318"}; // print on specific dates
+inline constexpr const char *DEBUG_PRINT_DATES[] = {"20240124"}; // print on specific dates
 
 inline constexpr size_t DEBUG_ASSET_IDS_COUNT = sizeof(DEBUG_ASSET_IDS) / sizeof(DEBUG_ASSET_IDS[0]);
 inline constexpr size_t DEBUG_PRINT_DATES_COUNT = sizeof(DEBUG_PRINT_DATES) / sizeof(DEBUG_PRINT_DATES[0]);

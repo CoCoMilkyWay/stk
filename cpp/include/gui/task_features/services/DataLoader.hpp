@@ -7,6 +7,7 @@
 
 #include "features/backend/FeatureReader.hpp"
 #include "gui/coro/CoroManager.hpp"
+#include "misc/profiler.hpp"
 #include "shared/OrderFlow.hpp"
 
 #include <boost/asio/awaitable.hpp>
@@ -14,13 +15,14 @@
 #include <boost/asio/use_awaitable.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <cassert>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
+
 
 namespace asio = boost::asio;
 
@@ -132,6 +134,8 @@ public:
   // Load all L1 data (sparse, pre-reserved)
   // ========================================================================
   bool load_all_l1(OrderFlow::L1Cache &cache, size_t num_assets) {
+    Trace;
+
     if (cache.loaded)
       return true;
 
@@ -147,50 +151,62 @@ public:
     cache.num_days = dates.size();
     cache.days.resize(dates.size());
 
-    for (size_t d = 0; d < dates.size(); ++d) {
-      const std::string &date = dates[d];
-      cache.date_to_idx[date] = d;
-      cache.days[d].resize(num_assets);
+    // Create L1 buffer once, reuse across all days
+    // Only allocate L1 level memory (T=255, F=~20, A=num_assets)
+    // Avoids repeated allocation/deallocation of ~50MB buffer per day
+    FeatureReader::DayTensor tensor;
+    tensor.preallocate_level(num_assets, 1);
 
-      // Initialize all days with correct day_idx (even if load fails)
-      for (size_t a = 0; a < num_assets; ++a) {
-        cache.days[d][a].date = date;
-        cache.days[d][a].day_idx = d;
-      }
+    {
+      TraceN("LoadAllDays");
+      for (size_t d = 0; d < dates.size(); ++d) {
+        const std::string &date = dates[d];
+        cache.date_to_idx[date] = d;
+        cache.days[d].resize(num_assets);
 
-      FeatureReader::DayTensor tensor;
-      tensor.preallocate(num_assets);
-      reader_.load_day_level(date, 1, tensor);
+        // Initialize all days with correct day_idx (even if load fails)
+        for (size_t a = 0; a < num_assets; ++a) {
+          cache.days[d][a].date = date;
+          cache.days[d][a].day_idx = d;
+        }
+
+      reader_.load_day_level(date, 1, tensor); // Reuse same buffer, reads actual T/F from header
 
       for (size_t a = 0; a < num_assets && a < tensor.A; ++a) {
         auto &day = cache.days[d][a];
         day.reserve(OrderFlowConst::L1_CAPACITY);
 
-        for (size_t t = 0; t < MAX_ROWS_PER_LEVEL[1]; ++t) {
-          float valid_flag = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_data_valid, a));
-          if (valid_flag <= 0.5f)
-            continue;
+        // Use actual T from file header (not constant)
+        for (size_t t = 0; t < tensor.T[1]; ++t) {
+            float valid_flag = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_data_valid, a));
+            if (valid_flag <= 0.5f)
+              continue;
 
-          // Read prices as integer cents and convert to yuan
-          float o_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_open, a));
-          float h_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_high, a));
-          float l_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_low, a));
-          float c_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_close, a));
-          float v = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_volume, a));
+            // Read prices as integer cents and convert to yuan
+            float o_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_open, a));
+            float h_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_high, a));
+            float l_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_low, a));
+            float c_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_close, a));
+            float v = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_volume, a));
 
-          float o = o_cents * 0.01f;
-          float h = h_cents * 0.01f;
-          float l = l_cents * 0.01f;
-          float c = c_cents * 0.01f;
+            float o = o_cents * 0.01f;
+            float h = h_cents * 0.01f;
+            float l = l_cents * 0.01f;
+            float c = c_cents * 0.01f;
 
-          day.push(t, o, h, l, c, v);
+            day.push(t, o, h, l, c, v);
+          }
         }
       }
     }
 
     cache.plot_data.resize(num_assets);
-    for (size_t a = 0; a < num_assets; ++a) {
-      cache.build_plot_data(a);
+
+    {
+      TraceN("BuildAllPlotData");
+      for (size_t a = 0; a < num_assets; ++a) {
+        cache.build_plot_data(a);
+      }
     }
 
     // Debug: print load stats
@@ -213,8 +229,7 @@ public:
   // ========================================================================
   // Load L0 data for single day (sparse, pre-reserved)
   // ========================================================================
-  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, 
-               const OrderFlow::L1Cache &l1_cache, FeatureReader::DepthTensor &depth_tensor) {
+  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, const OrderFlow::L1Cache &l1_cache, FeatureReader::DepthTensor &depth_tensor) {
     if (cache.matches(date, asset_idx))
       return true;
 
@@ -226,6 +241,7 @@ public:
 
     // Load depth data into reusable buffer (for orderflow visualization and validity flags)
     // Buffer is managed by coroutine lifetime, not reallocated per load
+    // Actual T/F dimensions read from file header
     reader_.load_depth(date, depth_tensor);
 
     assert(MAX_ROWS_PER_LEVEL[0] == OrderFlowConst::L0_CAPACITY && "Depth tensor must be dense with time index semantics");
@@ -246,7 +262,8 @@ public:
 
     // Sparse loading: only store valid ticks (depth_valid=true or data_valid=true)
     // Line plots and heatmap will use ImPlot step mode to handle sparsity
-    for (size_t t = 0; t < MAX_ROWS_PER_LEVEL[0]; ++t) {
+    // Use actual T from file header (not constant)
+    for (size_t t = 0; t < depth_tensor.T; ++t) {
       assert(t < OrderFlowConst::L0_CAPACITY && "depth tensor row exceeds L0_CAPACITY");
 
       // Read validity flags (from depth tensor)
@@ -275,12 +292,12 @@ public:
           size_t ap_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_price] + i;
           size_t bv_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_volume] + i;
           size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
-          
+
           float bp_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
           float ap_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
-          
-          bp[i] = bp_cents * 0.01f;  // Convert cents to yuan
-          ap[i] = ap_cents * 0.01f;  // Convert cents to yuan
+
+          bp[i] = bp_cents * 0.01f; // Convert cents to yuan
+          ap[i] = ap_cents * 0.01f; // Convert cents to yuan
           bv[i] = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bv_offset) * depth_tensor.A + asset_idx]);
           av[i] = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + av_offset) * depth_tensor.A + asset_idx]);
         }
