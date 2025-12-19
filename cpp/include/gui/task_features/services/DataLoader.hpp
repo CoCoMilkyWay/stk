@@ -153,16 +153,14 @@ public:
       }
 
       FeatureReader::DayTensor tensor;
-      if (!reader_.load_day_level(date, 1, tensor)) {
-        std::cerr << "[DataLoader] Failed to load L1 for date: " << date << std::endl;
-        continue;
-      }
+      tensor.preallocate(num_assets);
+      reader_.load_day_level(date, 1, tensor);
 
       for (size_t a = 0; a < num_assets && a < tensor.A; ++a) {
         auto &day = cache.days[d][a];
         day.reserve(OrderFlowConst::L1_CAPACITY);
 
-        for (size_t t = 0; t < tensor.T[1]; ++t) {
+        for (size_t t = 0; t < MAX_ROWS_PER_LEVEL[1]; ++t) {
           float valid_flag = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_data_valid, a));
           if (valid_flag <= 0.5f)
             continue;
@@ -221,12 +219,10 @@ public:
 
     // Load depth data (for orderflow visualization and validity flags)
     FeatureReader::DepthTensor depth_tensor;
-    if (!reader_.load_depth(date, depth_tensor)) {
-      cache.loaded = true;
-      return false;
-    }
+    depth_tensor.preallocate(l1_cache.num_assets);
+    reader_.load_depth(date, depth_tensor);
 
-    assert(depth_tensor.T == OrderFlowConst::L0_CAPACITY && "Depth tensor must be dense with time index semantics");
+    assert(MAX_ROWS_PER_LEVEL[0] == OrderFlowConst::L0_CAPACITY && "Depth tensor must be dense with time index semantics");
 
     if (asset_idx >= depth_tensor.A) {
       cache.loaded = true;
@@ -244,7 +240,7 @@ public:
 
     // Sparse loading: only store valid ticks (depth_valid=true or data_valid=true)
     // Line plots and heatmap will use ImPlot step mode to handle sparsity
-    for (size_t t = 0; t < depth_tensor.T; ++t) {
+    for (size_t t = 0; t < MAX_ROWS_PER_LEVEL[0]; ++t) {
       assert(t < OrderFlowConst::L0_CAPACITY && "depth tensor row exceeds L0_CAPACITY");
 
       // Read validity flags (from depth tensor)
@@ -274,13 +270,13 @@ public:
           size_t bv_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_volume] + i;
           size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
           
-          float bp_cents = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + bp_offset) * depth_tensor.A + asset_idx]);
-          float ap_cents = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + ap_offset) * depth_tensor.A + asset_idx]);
+          float bp_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
+          float ap_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
           
           bp[i] = bp_cents * 0.01f;  // Convert cents to yuan
           ap[i] = ap_cents * 0.01f;  // Convert cents to yuan
-          bv[i] = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + bv_offset) * depth_tensor.A + asset_idx]);
-          av[i] = static_cast<float>(depth_tensor.data[(t * depth_tensor.F + av_offset) * depth_tensor.A + asset_idx]);
+          bv[i] = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bv_offset) * depth_tensor.A + asset_idx]);
+          av[i] = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + av_offset) * depth_tensor.A + asset_idx]);
         }
 
         // Filter sentinel data (prices already in yuan)

@@ -93,9 +93,8 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
   std::string month_str = mc.month.substr(4, 2);
 
   FeatureReader::MonthTensor month_tensor;
-  if (!reader.load_month_columns(year, month_str, level, columns, month_tensor)) {
-    return;
-  }
+  month_tensor.preallocate(n_assets, 31, columns.size(), level);
+  reader.load_month_columns(year, month_str, columns, month_tensor);
 
   const size_t A = month_tensor.A;
   assert(A == n_assets);

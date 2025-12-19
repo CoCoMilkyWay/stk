@@ -1,13 +1,3 @@
-/**
- * Tracy Profiler Wrapper
- *
- * Clean macros for instrumentation profiling.
- * All macros are no-op when PROFILE_MODE is not defined.
- *
- * IMPORTANT: These macros do NOT automatically instrument nested calls.
- * You must manually add macros to each scope you want to profile.
- */
-
 #pragma once
 
 #ifdef PROFILE_MODE

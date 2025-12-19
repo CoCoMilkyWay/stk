@@ -1,4 +1,5 @@
 CompileFlags:
-  Add: ['-std:c++latest']
+  Add: 
+    - '-std:c++latest'
 
 

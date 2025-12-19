@@ -91,7 +91,12 @@ endif()
 # External Dependencies
 # ============================================================================
 
-include_directories(../../include)
+include_directories(
+    ../../include
+    ../../package/zstd-1.5.7/lib/
+    ../../package/zlib-1.3.1/
+    ../../package/tracy/public/tracy
+)
 add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
 add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
 
@@ -162,6 +167,7 @@ set(HEADERS
     ../../include/misc/affinity.hpp
     ../../include/misc/logging.hpp
     ../../include/misc/file_check.hpp
+    ../../include/misc/profiler.hpp
     ../../include/define/CBuffer.hpp
     ../../include/codec/json_config.hpp
     ../../include/codec/binary_decoder_L2.hpp
@@ -224,13 +230,6 @@ set(HEADERS
 # ============================================================================
 
 add_executable(app_main ${SOURCES} ${HEADERS})
-
-target_include_directories(app_main PRIVATE
-    ../../include
-    ../../package/zstd-1.5.7/lib/
-    ../../package/zlib-1.3.1/
-    ../../package/tracy/public/tracy
-)
 
 # Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise)
 set_source_files_properties(
