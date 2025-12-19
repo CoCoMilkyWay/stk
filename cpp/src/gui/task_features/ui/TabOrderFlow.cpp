@@ -228,30 +228,26 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     ImPlot::SetupAxisFormat(ImAxis_X1, L0TimeFormatter);
 
     // Setup L0 ticks (use pre-computed TimeAxisLUT)
-    static std::vector<double> tick_positions;
-    static std::vector<const char *> tick_labels;
-    static size_t cached_day_idx = SIZE_MAX;
-
-    if (cached_day_idx != day_idx) {
+    if (ui.l0_cached_day_idx != day_idx) {
       const auto &lut = TimeAxisLUT::instance();
 
-      tick_positions.clear();
-      tick_labels.clear();
+      ui.l0_tick_positions.clear();
+      ui.l0_tick_labels.clear();
 
       for (size_t offset : lut.l0_tick_offsets) {
         double tick_pos = x_min + static_cast<double>(offset);
-        tick_positions.push_back(tick_pos);
+        ui.l0_tick_positions.push_back(tick_pos);
       }
       for (const auto &label : lut.l0_tick_labels) {
-        tick_labels.push_back(label.c_str());
+        ui.l0_tick_labels.push_back(label.c_str());
       }
 
-      cached_day_idx = day_idx;
+      ui.l0_cached_day_idx = day_idx;
     }
 
-    if (!tick_positions.empty()) {
-      ImPlot::SetupAxisTicks(ImAxis_X1, tick_positions.data(),
-                             static_cast<int>(tick_positions.size()), tick_labels.data());
+    if (!ui.l0_tick_positions.empty()) {
+      ImPlot::SetupAxisTicks(ImAxis_X1, ui.l0_tick_positions.data(),
+                             static_cast<int>(ui.l0_tick_positions.size()), ui.l0_tick_labels.data());
     }
 
     // Render heatmap if enabled (using multi-level cache)
@@ -369,14 +365,9 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
     ImPlot::SetupAxisLimits(ImAxis_Y1, pd.y_min, pd.y_max, cond);
 
     // Setup K-line ticks: show all tick lines, but only label at intervals
-    static std::vector<double> tick_positions;
-    static std::vector<const char *> tick_labels;
-    static std::vector<std::string> tick_label_storage;
-    static size_t cached_num_days = 0;
-
-    if (cached_num_days != of.l1.num_days) {
-      tick_positions.clear();
-      tick_label_storage.clear();
+    if (ui.l1_cached_num_days != of.l1.num_days) {
+      ui.l1_tick_positions.clear();
+      ui.l1_tick_label_storage.clear();
 
       // Adaptive label interval: limit to max 16 ticks
       constexpr size_t MAX_TICKS = 16;
@@ -384,24 +375,24 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
 
       // Add tick positions only at label intervals (to avoid overcrowding grid lines)
       for (size_t d = 0; d < of.l1.num_days; d += label_interval) {
-        tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
+        ui.l1_tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
         
         char buf[16];
         FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
-        tick_label_storage.push_back(buf);
+        ui.l1_tick_label_storage.push_back(buf);
       }
 
-      tick_labels.clear();
-      for (const auto &s : tick_label_storage) {
-        tick_labels.push_back(s.c_str());
+      ui.l1_tick_labels.clear();
+      for (const auto &s : ui.l1_tick_label_storage) {
+        ui.l1_tick_labels.push_back(s.c_str());
       }
 
-      cached_num_days = of.l1.num_days;
+      ui.l1_cached_num_days = of.l1.num_days;
     }
 
-    if (!tick_positions.empty()) {
-      ImPlot::SetupAxisTicks(ImAxis_X1, tick_positions.data(),
-                             static_cast<int>(tick_positions.size()), tick_labels.data());
+    if (!ui.l1_tick_positions.empty()) {
+      ImPlot::SetupAxisTicks(ImAxis_X1, ui.l1_tick_positions.data(),
+                             static_cast<int>(ui.l1_tick_positions.size()), ui.l1_tick_labels.data());
     }
 
     if (!pd.x.empty()) {
@@ -622,9 +613,8 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   }
 
   // Detect L0 data just finished loading (for auto-zoom)
-  static bool prev_l0_loading = false;
-  const bool l0_just_loaded = prev_l0_loading && !of.loader.l0_requested;
-  prev_l0_loading = of.loader.l0_requested;
+  const bool l0_just_loaded = ui.prev_l0_loading && !of.loader.l0_requested;
+  ui.prev_l0_loading = of.loader.l0_requested;
 
   // Force reset when params changed OR when L0 data just finished loading
   const bool force_reset = params_changed || l0_just_loaded;

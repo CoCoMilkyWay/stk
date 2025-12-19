@@ -378,6 +378,20 @@ struct OrderFlow {
     int cached_asset_idx = -1;
     std::string cached_anchor_date;
 
+    // L0 axis cache (avoid redundant tick label generation)
+    std::vector<double> l0_tick_positions;
+    std::vector<const char *> l0_tick_labels;
+    size_t l0_cached_day_idx = SIZE_MAX;
+
+    // L1 axis cache (avoid redundant tick label generation)
+    std::vector<double> l1_tick_positions;
+    std::vector<const char *> l1_tick_labels;
+    std::vector<std::string> l1_tick_label_storage;
+    size_t l1_cached_num_days = 0;
+
+    // L0 load detection (for auto-zoom)
+    bool prev_l0_loading = false;
+
     bool detect_and_update_changes();
     void clear();
   };

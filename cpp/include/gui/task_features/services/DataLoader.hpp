@@ -64,10 +64,15 @@ public:
   asio::awaitable<void> L0LoaderLoop(OrderFlow &of) {
     of.loader.coro_running = true;
 
+    // Create depth buffer once for entire coroutine lifetime (~500MB)
+    // Reused across all L0 loads within this tab session
+    FeatureReader::DepthTensor depth_buffer;
+    depth_buffer.preallocate(of.l1.num_assets);
+
     while (!of.loader.coro_should_stop) {
       // Check for L0 load request
       if (of.loader.l0_requested.exchange(false)) {
-        load_l0(of.l0, of.loader.l0_date, of.loader.l0_asset, of.l1);
+        load_l0(of.l0, of.loader.l0_date, of.loader.l0_asset, of.l1, depth_buffer);
         of.ui.l0_anchor_plot_idx = 0;
       }
 
@@ -79,6 +84,7 @@ public:
     }
 
     of.loader.coro_running = false;
+    // depth_buffer automatically destroyed when coroutine exits
   }
 
   // Start L0 loader coroutine (blocking until started)
@@ -207,7 +213,8 @@ public:
   // ========================================================================
   // Load L0 data for single day (sparse, pre-reserved)
   // ========================================================================
-  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, const OrderFlow::L1Cache &l1_cache) {
+  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, 
+               const OrderFlow::L1Cache &l1_cache, FeatureReader::DepthTensor &depth_tensor) {
     if (cache.matches(date, asset_idx))
       return true;
 
@@ -217,9 +224,8 @@ public:
     auto it = l1_cache.date_to_idx.find(date);
     size_t day_idx = (it != l1_cache.date_to_idx.end()) ? it->second : 0;
 
-    // Load depth data (for orderflow visualization and validity flags)
-    FeatureReader::DepthTensor depth_tensor;
-    depth_tensor.preallocate(l1_cache.num_assets);
+    // Load depth data into reusable buffer (for orderflow visualization and validity flags)
+    // Buffer is managed by coroutine lifetime, not reallocated per load
     reader_.load_depth(date, depth_tensor);
 
     assert(MAX_ROWS_PER_LEVEL[0] == OrderFlowConst::L0_CAPACITY && "Depth tensor must be dense with time index semantics");
