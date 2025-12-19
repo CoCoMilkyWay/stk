@@ -12,7 +12,6 @@
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>

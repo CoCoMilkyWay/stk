@@ -44,8 +44,11 @@ public:
     if (of.l1.loaded && !force_reload)
       return;
 
+    TraceN("L1_Load");
+
     // Clear existing data before reload
     if (force_reload) {
+      TraceN("L1_Clear");
       of.l1.clear();
     }
 
@@ -94,13 +97,18 @@ public:
     if (of.loader.coro_running)
       return;
 
+    TraceN("L0_StartCoroutine");
+
     of.loader.coro_should_stop = false;
     of.loader.coro = coro_mgr.Spawn(L0LoaderLoop(of));
 
     // Blocking wait until coroutine starts
-    while (!of.loader.coro_running) {
-      coro_mgr.Poll();
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    {
+      TraceN("L0_WaitStart");
+      while (!of.loader.coro_running) {
+        coro_mgr.Poll();
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+      }
     }
   }
 
@@ -109,12 +117,17 @@ public:
     if (!of.loader.coro_running)
       return;
 
+    TraceN("L0_StopCoroutine");
+
     of.loader.coro_should_stop = true;
 
     // Blocking wait until coroutine exits
-    while (of.loader.coro_running) {
-      coro_mgr.Poll();
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    {
+      TraceN("L0_WaitStop");
+      while (of.loader.coro_running) {
+        coro_mgr.Poll();
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+      }
     }
 
     of.loader.coro.reset();
@@ -233,6 +246,8 @@ public:
     if (cache.matches(date, asset_idx))
       return true;
 
+    TraceN("L0_Load");
+
     cache.clear();
     cache.asset_idx = asset_idx;
 
@@ -242,7 +257,10 @@ public:
     // Load depth data into reusable buffer (for orderflow visualization and validity flags)
     // Buffer is managed by coroutine lifetime, not reallocated per load
     // Actual T/F dimensions read from file header
-    reader_.load_depth(date, depth_tensor);
+    {
+      TraceN("L0_LoadDepth");
+      reader_.load_depth(date, depth_tensor);
+    }
 
     assert(MAX_ROWS_PER_LEVEL[0] == OrderFlowConst::L0_CAPACITY && "Depth tensor must be dense with time index semantics");
 

@@ -388,13 +388,19 @@ public:
             assert(std::filesystem::exists(col_path) && "L0 column file missing");
 
             // Read into temp buffer
-            read_compressed_data(col_path, T_per_day, 1, A, temp);
+            {
+              TraceN("ReadColumn");
+              read_compressed_data(col_path, T_per_day, 1, A, temp);
+            }
 
             // Copy to destination
-            for (size_t t = 0; t < T_per_day; ++t) {
-              std::memcpy(&out.data[(t_offset + t) * F_selected * A + f_local * A],
-                          &temp[t * A],
-                          A * sizeof(feature_storage_t));
+            {
+              TraceN("InterleaveColumn");
+              for (size_t t = 0; t < T_per_day; ++t) {
+                std::memcpy(&out.data[(t_offset + t) * F_selected * A + f_local * A],
+                            &temp[t * A],
+                            A * sizeof(feature_storage_t));
+              }
             }
           }
         }
@@ -417,7 +423,10 @@ public:
         const size_t t_offset = day_idx * T_per_day;
 
         // Read into temp buffer
-        read_compressed_data(merged_file, T_per_day, F_total, A, temp);
+        {
+          TraceN("ReadMerged");
+          read_compressed_data(merged_file, T_per_day, F_total, A, temp);
+        }
 
         // Extract selected features
         {

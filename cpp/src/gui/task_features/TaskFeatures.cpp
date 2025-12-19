@@ -4,13 +4,14 @@
 #include "gui/task_features/services/ComputeService.hpp"
 #include "gui/task_features/services/DataLoader.hpp"
 #include "gui/task_features/services/DistService.hpp"
-#include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
-#include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabDist.hpp"
+#include "gui/task_features/ui/TabFeature.hpp"
+#include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/affinity.hpp"
 #include "shared/SharedData.hpp"
+
 
 #include "imgui.h"
 
@@ -31,13 +32,17 @@ struct TaskFeaturesState {
   Features::FeatureUIState feature_ui_state;
   Features::ComputeState compute_state;
   Features::DistUIState dist_ui_state;
-  
+
   // Tab state
   bool orderflow_tab_was_active = false;
   bool dist_tab_was_active = false;
 
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
+
+  // Auto-compute tracking
+  int prev_primary_feature_idx = -1; // Track feature selection changes
+  int prev_selected_level = 0;       // Track level changes
 
   // Terminal reference
   TaskTerminal *terminal = nullptr;
@@ -99,6 +104,36 @@ TaskHandle CreateFeaturesTask() {
       state->dist_service = std::make_unique<Features::DistService>(data.config.feature_dir);
     }
 
+    // Auto-trigger Dist compute on feature selection change
+    if (state->dist_service) {
+      auto &sel = data.feature.selection;
+
+      // Detect change
+      bool feature_changed = (sel.primary_feature_idx != state->prev_primary_feature_idx);
+      bool level_changed = (sel.selected_level != state->prev_selected_level);
+      bool has_valid_selection = (sel.primary_feature_idx >= 0);
+
+      if ((feature_changed || level_changed) && has_valid_selection) {
+        // Cancel old computation if running
+        if (data.dist.compute.is_busy()) {
+          data.dist.cancel();
+        }
+
+        // Trigger new computation
+        state->dist_service->RequestCompute();
+
+        // Update tracking
+        state->prev_primary_feature_idx = sel.primary_feature_idx;
+        state->prev_selected_level = sel.selected_level;
+      }
+
+      // Update tracking even if no change (initialization case)
+      if (!feature_changed && state->prev_primary_feature_idx == -1) {
+        state->prev_primary_feature_idx = sel.primary_feature_idx;
+        state->prev_selected_level = sel.selected_level;
+      }
+    }
+
     // Handle trigger from UI
     if (state->compute_state.trigger_start) {
       state->compute_state.trigger_start = false;
@@ -112,7 +147,7 @@ TaskHandle CreateFeaturesTask() {
     {
       auto current_status = state->compute_service->get_status();
       if (state->prev_compute_status == Features::ComputeStatus::Running &&
-          (current_status == Features::ComputeStatus::Completed || 
+          (current_status == Features::ComputeStatus::Completed ||
            current_status == Features::ComputeStatus::Cancelled)) {
         // Compute just finished - mark OrderFlow L1 cache for reload
         data.orderflow.loader.l1_needs_reload = true;
@@ -183,14 +218,14 @@ TaskHandle CreateFeaturesTask() {
   // Destroy
   handle.Destroy = [state]() {
     // Note: OrderFlow and Dist coroutines will auto-cancel on CoroutineHandle destruction
-    
+
     if (state->compute_service) {
       if (state->compute_service->is_running()) {
         state->compute_service->stop_compute();
       }
       state->compute_service.reset();
     }
-    
+
     state->data_loader.reset();
     state->dist_service.reset(); // DistService destructor will handle cleanup
   };
