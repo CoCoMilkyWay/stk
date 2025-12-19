@@ -54,12 +54,10 @@ elseif(DEBUG_MODE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -fno-omit-frame-pointer -fno-inline -fno-optimize-sibling-calls")
 
 elseif(PROFILE_MODE)
-    message(STATUS "Build mode: PROFILE (gperftools)")
-    add_compile_definitions(PROFILE_MODE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native -fno-omit-frame-pointer")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline -fno-inline-functions -mllvm -inline-threshold=0")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-optimize-sibling-calls -fno-unroll-loops")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-vectorize -fno-slp-vectorize -fno-builtin")
+    message(STATUS "Build mode: PROFILE (tracy manual callstack)")
+    add_compile_definitions(PROFILE_MODE TRACY_ENABLE TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Ob0 -mllvm -inline-threshold=0")
 
 elseif(ASSERT_MODE)
     message(STATUS "Build mode: ASSERT")
@@ -146,6 +144,7 @@ set(SOURCES
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
     ../../src/main.cpp
+    ../../package/tracy/public/TracyClient.cpp
 )
 
 # Add GUI backend implementation
@@ -230,6 +229,7 @@ target_include_directories(app_main PRIVATE
     ../../include
     ../../package/zstd-1.5.7/lib/
     ../../package/zlib-1.3.1/
+    ../../package/tracy/public/tracy
 )
 
 # Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise)
@@ -261,7 +261,8 @@ target_link_libraries(app_main PRIVATE
     setupapi
     dxgi
     advapi32
-    # profiler
+    ws2_32
+    dbghelp
 )
 
 # ============================================================================

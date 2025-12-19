@@ -4,6 +4,7 @@
 #include "features/FeaturesTick/Tick_Crosssection.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "misc/logging.hpp"
+#include "misc/profiler.hpp"
 
 #include <cstdio>
 #include <vector>
@@ -12,6 +13,9 @@ void crosssectional_worker(int worker_id,
                            SharedData &data,
                            GlobalFeatureStore &store,
                            misc::ProgressHandle progress_handle) {
+  TraceNS("CSWorker", 5);
+  TraceValue(worker_id);
+  TraceThread(("cs_worker_" + std::to_string(worker_id)).c_str());
 
   const size_t total_dates = data.asset.all_dates.size();
   size_t completed_dates = 0;
@@ -28,7 +32,9 @@ void crosssectional_worker(int worker_id,
 
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
+    TraceN("DateLoop");
     const std::string &date_str = data.asset.all_dates[date_idx];
+    TraceTextS(date_str.c_str());
     const size_t capacity = store.query_T(0);
 
     // Update progress label
@@ -39,10 +45,20 @@ void crosssectional_worker(int worker_id,
 
     // Process each time slot (per-slot sync for live trading compatibility)
     for (size_t t = 0; t < capacity; ++t) {
-      store.cs_wait(date_str, t);
+      TraceN("TimeslotLoop");
+      TraceValue(t);
+
+      {
+        TraceN("WaitSync");
+        TraceColor(C_Orange);
+        store.cs_wait(date_str, t);
+      }
 
       // Compute CS features (reuse buffers to avoid allocation)
-      compute_cs_tick(&store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
+      {
+        TraceN("ComputeCS");
+        compute_cs_tick(&store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
+      }
     }
 
     ++completed_dates;
@@ -52,6 +68,8 @@ void crosssectional_worker(int worker_id,
     store.cs_done(date_str);
 
     Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(capacity) + " timeslots");
+
+    TraceFrame;
   }
 
   // Final update

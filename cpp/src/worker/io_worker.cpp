@@ -1,5 +1,6 @@
 #include "worker/io_worker.hpp"
 #include "misc/logging.hpp"
+#include "misc/profiler.hpp"
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -9,6 +10,10 @@ void io_worker(int worker_id,
                GlobalFeatureStore &store,
                misc::ProgressHandle progress_handle,
                size_t total_dates) {
+  TraceNS("IOWorker", 5);
+  TraceValue(worker_id);
+  TraceThread(("io_worker_" + std::to_string(worker_id)).c_str());
+
   size_t flush_count = 0;
 
   // Update initial label
@@ -21,8 +26,16 @@ void io_worker(int worker_id,
 
   size_t wait_count = 0;
   while (flush_count < total_dates) {
+    TraceN("FlushLoop");
+    TraceValue(flush_count);
+
     // Flush oldest CS_DONE tensor (one at a time, maintains date order)
-    bool flushed = store.io_try_flush_one();
+    bool flushed = false;
+    {
+      TraceN("TryFlush");
+      TraceColor(C_Red);
+      flushed = store.io_try_flush_one();
+    }
 
     if (flushed) {
       flush_count++;
@@ -34,7 +47,10 @@ void io_worker(int worker_id,
       std::string label_with_status = std::string(label_buf);
       progress_handle.set_label(label_with_status);
       progress_handle.update(flush_count, total_dates, "");
+      TraceFrame;
     } else {
+      TraceN("WaitForData");
+      TraceColor(C_Orange);
       // No tensors ready yet, sleep briefly
       wait_count++;
       if (wait_count % 100 == 0) {

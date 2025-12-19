@@ -6,40 +6,20 @@
 #include "features/backend/FeatureStore.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/logging.hpp"
+#include "misc/profiler.hpp"
 
 #include <chrono>
 #include <cstdio>
 #include <memory>
 #include <vector>
 
-// Profiling control: only profile worker_0 with gperftools
-#ifdef PROFILE_MODE
-#include <gperftools/profiler.h>
-
-namespace {
-void start_profiling(int worker_id) {
-  if (worker_id == 0) {
-    if (ProfilerStart("lob.prof")) {
-      Logger::log("profile", "Started");
-    } else {
-      Logger::log("profile", "ERROR: Failed to start!");
-    }
-  }
-}
-
-void stop_profiling(int worker_id) {
-  if (worker_id == 0) {
-    ProfilerStop();
-    Logger::log("profile", "Stopped");
-  }
-}
-} // namespace
-#endif
-
 void sequential_worker(int worker_id,
                        SharedData &data,
                        GlobalFeatureStore &store,
                        misc::ProgressHandle progress_handle) {
+  TraceNS("TSWorker", 5);
+  TraceValue(worker_id);
+  TraceThread(("ts_worker_" + std::to_string(worker_id)).c_str());
 
   // Initialize as idle (will be updated if assets are assigned)
   progress_handle.set_label("Idle");
@@ -65,21 +45,19 @@ void sequential_worker(int worker_id,
   std::vector<std::unique_ptr<LimitOrderBook>> lobs;
   std::vector<std::unique_ptr<L2::BinaryDecoder_L2>> decoders;
 
-  for (size_t i = 0; i < my_asset_ids.size(); ++i) {
-    const size_t asset_id = my_asset_ids[i];
-    const auto &asset = data.asset.items[asset_id];
-    lobs.push_back(std::make_unique<LimitOrderBook>(L2::DEFAULT_ENCODER_ORDER_SIZE, store, asset.exchange_type, asset.asset_id, worker_id));
-    decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE));
+  {
+    TraceN("InitLOBs");
+    for (size_t i = 0; i < my_asset_ids.size(); ++i) {
+      const size_t asset_id = my_asset_ids[i];
+      const auto &asset = data.asset.items[asset_id];
+      lobs.push_back(std::make_unique<LimitOrderBook>(L2::DEFAULT_ENCODER_ORDER_SIZE, store, asset.exchange_type, asset.asset_id, worker_id));
+      decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE));
+    }
   }
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
                                                          std::to_string(data.asset.all_dates.size()) + " dates, " +
                                                          std::to_string(total_orders) + " total orders");
-
-#ifdef PROFILE_MODE
-  // Start profiling: only worker_0
-  start_profiling(worker_id);
-#endif
 
   // Progress label
   char label_buf[128];
@@ -101,7 +79,9 @@ void sequential_worker(int worker_id,
   // No memory allocation in worker - decoder reuses buffer across all decode calls
 
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
+    TraceN("DateLoop");
     const std::string &date_str = data.asset.all_dates[date_idx];
+    TraceTextS(date_str.c_str());
     size_t date_orders = 0;
     size_t date_assets_processed = 0;
 
@@ -115,11 +95,20 @@ void sequential_worker(int worker_id,
       if (it != asset.date_info.end() && it->second.has_binaries() && !it->second.orders_file.empty()) [[likely]] {
 
         size_t order_num = 0;
-        const L2::Order *orders = decoders[i]->decode_orders_stream(it->second.orders_file, order_num);
+        const L2::Order *orders = nullptr;
+        {
+          TraceN("DecodeOrders");
+          orders = decoders[i]->decode_orders_stream(it->second.orders_file, order_num);
+        }
 
         if (orders != nullptr) [[likely]] {
           // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
-          size_t order_invalid_cnt = lobs[i]->process_batch(orders, order_num);
+          size_t order_invalid_cnt = 0;
+          {
+            TraceN("ProcessBatch");
+            TraceValue(order_num);
+            order_invalid_cnt = lobs[i]->process_batch(orders, order_num);
+          }
 
           if (order_invalid_cnt > 100) {
             Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " order_invalid=" + std::to_string(order_invalid_cnt));
@@ -150,7 +139,10 @@ void sequential_worker(int worker_id,
     }
 
     // Mark this worker done for this date (will also set all asset progress atomically)
-    store.ts_done(date_str, worker_id);
+    {
+      TraceN("StoreDone");
+      store.ts_done(date_str, worker_id);
+    }
 
     // Update progress
     auto current_time = std::chrono::steady_clock::now();
@@ -160,12 +152,9 @@ void sequential_worker(int worker_id,
     char msg_buf[128];
     snprintf(msg_buf, sizeof(msg_buf), "%s [%.1fM/s (%.1fM)]", date_str.c_str(), speed_M_per_sec, total_orders / 1e6);
     progress_handle.update(date_idx + 1, data.asset.all_dates.size(), msg_buf);
+
+    TraceFrame; // Mark frame boundary for timeline
   }
 
   Logger::log("worker_" + std::to_string(worker_id), "Completed: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(data.asset.all_dates.size()) + " dates");
-
-#ifdef PROFILE_MODE
-  // Stop profiling: only worker_0
-  stop_profiling(worker_id);
-#endif
 }

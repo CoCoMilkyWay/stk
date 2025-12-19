@@ -5,6 +5,7 @@
 #include "codec/binary_encoder_L2.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
+#include "misc/profiler.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -117,6 +118,10 @@ void encoding_worker(SharedData &data,
                      std::atomic<bool> *cancel_flag,
                      unsigned int worker_id,
                      misc::ProgressHandle progress_handle) {
+  TraceNS("EncodingWorker", 5);
+  TraceValue(worker_id);
+  TraceThread(("encoding_worker_" + std::to_string(worker_id)).c_str());
+
   // Pin to core
   static thread_local bool affinity_set = false;
   if (!affinity_set && misc::Affinity::supported()) {
@@ -131,15 +136,15 @@ void encoding_worker(SharedData &data,
   Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] Started");
 
   while (!cancel_flag->load()) {
+    TraceN("AssetLoop");
+
     // Get next asset
     size_t asset_id;
-    {
-      std::lock_guard<std::mutex> lock(queue_mutex);
-      if (asset_id_queue.empty())
-        break;
-      asset_id = asset_id_queue.back();
-      asset_id_queue.pop_back();
-    }
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    if (asset_id_queue.empty())
+      break;
+    asset_id = asset_id_queue.back();
+    asset_id_queue.pop_back();
 
     AssetItem &asset = data.asset.items[asset_id];
     progress_handle.set_label(asset.asset_code + " (" + asset.asset_name + ")");
@@ -155,7 +160,9 @@ void encoding_worker(SharedData &data,
 
     // Process dates
     for (size_t i = 0; i < date_keys.size() && !cancel_flag->load(); ++i) {
+      TraceN("DateLoop");
       const std::string &date_str = date_keys[i];
+      TraceTextS(date_str.c_str());
       auto &date_info = asset.date_info[date_str];
 
       progress_handle.update(i + 1, date_keys.size(), date_str);
@@ -180,6 +187,8 @@ void encoding_worker(SharedData &data,
         Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] [FAILED] " + date_str + " " +
                                     asset.asset_code + "." + asset.exchange);
       }
+
+      TraceFrame;
     }
   }
 }

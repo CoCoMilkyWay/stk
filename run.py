@@ -1,15 +1,14 @@
 """Build & Run Pipeline (Windows)
-Calling chain: run.py -> py/{APP_NAME}.py -> CMake
 
 Usage:
     Set ONE mode flag to True, then: python run.py
 
 Modes:
-    - TSAN:    Race condition detection (5-15x slower)
-    - DEBUG:   Interactive debugging (very slow)
-    - PROFILE: CPU profiling (slow)
-    - ASSERT:  Assert checks enabled (optimized build with asserts)
-    - Default: Production build (-O3, fastest)
+    - TSAN:       Race condition detection (5-15x slower)
+    - DEBUG:      Interactive debugging (very slow)
+    - PROFILE:    CPU profiling with Tracy
+    - ASSERT:     Optimized build with assertions
+    - PRODUCTION: Maximum performance (-O3, fastest)
 """
 import os
 import subprocess
@@ -17,18 +16,19 @@ import sys
 import time
 
 # Import mode handlers
-from py import mode_profile, mode_tsan, mode_debug
+from py import mode_tsan, mode_debug, mode_profile, mode_assert, mode_production
 
 # ============================================================================
 # Configuration
 # ============================================================================
 APP_NAME = "main"
 
-# Build & Run modes (set ONE to True)
-ENABLE_TSAN = False
-ENABLE_DEBUG = False
-ENABLE_PROFILE = False
-ENABLE_ASSERT = True
+# Build & Run modes (set ONLY ONE to True)
+ENABLE_TSAN       = False
+ENABLE_DEBUG      = False
+ENABLE_PROFILE    = True
+ENABLE_ASSERT     = False
+ENABLE_PRODUCTION = False  # Auto-enabled if all others are False
 
 
 def _cleanup_processes():
@@ -64,28 +64,17 @@ def _run(binary_path, working_dir, enable_tsan, enable_debug, enable_profile, en
         print(f"ERROR: Binary not found: {binary_path}")
         sys.exit(1)
 
-    # Dispatch to mode handler
+    # Dispatch to mode handler (all modes are symmetric)
     if enable_tsan:
         mode_tsan.run(binary_path, working_dir)
     elif enable_debug:
         mode_debug.run(binary_path, working_dir)
     elif enable_profile:
         mode_profile.run(binary_path, working_dir)
+    elif enable_assert:
+        mode_assert.run(binary_path, working_dir)
     else:
-        # Production mode or Assert mode (show stderr on crash)
-        start_time = time.time()
-        result = subprocess.run([binary_path], cwd=working_dir)
-        elapsed_time = time.time() - start_time
-
-        if result.returncode != 0:
-            mode_name = "ASSERT" if enable_assert else "PRODUCTION"
-            print(
-                f"\n✗ Process crashed [{mode_name}] with exit code: {result.returncode}")
-            print("(stderr/assert messages should appear above)")
-            raise subprocess.CalledProcessError(result.returncode, binary_path)
-
-        mode_name = "ASSERT" if enable_assert else "PRODUCTION"
-        print(f"\n✓ Complete [{mode_name}]! ({elapsed_time:.2f}s)")
+        mode_production.run(binary_path, working_dir)
 
 
 def main():
