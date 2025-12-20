@@ -23,7 +23,6 @@
 #include <thread>
 #include <vector>
 
-
 namespace asio = boost::asio;
 
 namespace GUI::Features {
@@ -183,14 +182,14 @@ public:
           cache.days[d][a].day_idx = d;
         }
 
-      reader_.load_day_level(date, 1, tensor); // Reuse same buffer, reads actual T/F from header
+        reader_.load_day_level(date, 1, tensor); // Reuse same buffer, reads actual T/F from header
 
-      for (size_t a = 0; a < num_assets && a < tensor.A; ++a) {
-        auto &day = cache.days[d][a];
-        day.reserve(OrderFlowConst::L1_CAPACITY);
+        for (size_t a = 0; a < num_assets && a < tensor.A; ++a) {
+          auto &day = cache.days[d][a];
+          day.reserve(OrderFlowConst::L1_CAPACITY);
 
-        // Use actual T from file header (not constant)
-        for (size_t t = 0; t < tensor.T[1]; ++t) {
+          // Use actual T from file header (not constant)
+          for (size_t t = 0; t < tensor.T[1]; ++t) {
             float valid_flag = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_data_valid, a));
             if (valid_flag <= 0.5f)
               continue;
@@ -278,6 +277,11 @@ public:
     // Reserve full capacity for aggressive allocation
     day.reserve(OrderFlowConst::L0_CAPACITY);
 
+    // Opening price captured from first valid tick (reset per day)
+    float opening_price = 0.0f;
+    float price_min = 0.0f;
+    float price_max = 0.0f;
+
     // Sparse loading: only store valid ticks (depth_valid=true or data_valid=true)
     // Line plots and heatmap will use ImPlot step mode to handle sparsity
     // Use actual T from file header (not constant)
@@ -304,27 +308,44 @@ public:
         float mid_cents = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_mid_price, asset_idx));
         mid = mid_cents * 0.01f;
 
-        // Multi-width fields: manual offset calculation
-        for (size_t i = 0; i < N; ++i) {
-          size_t bp_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_price] + i;
-          size_t ap_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_price] + i;
-          size_t bv_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_volume] + i;
-          size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
-
-          float bp_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
-          float ap_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
-
-          bp[i] = bp_cents * 0.01f; // Convert cents to yuan
-          ap[i] = ap_cents * 0.01f; // Convert cents to yuan
-          bv[i] = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bv_offset) * depth_tensor.A + asset_idx]);
-          av[i] = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + av_offset) * depth_tensor.A + asset_idx]);
+        // Capture opening price from first valid tick
+        if (opening_price == 0.0f && mid > 0) [[unlikely]] {
+          opening_price = mid;
+          price_min = opening_price * 0.75f;
+          price_max = opening_price * 1.25f;
         }
 
-        // Filter sentinel data (prices already in yuan)
-        if (mid <= 0 ||
-            bp[0] < OrderFlowConst::PRICE_MIN_VALID || bp[0] > OrderFlowConst::PRICE_MAX_VALID ||
-            ap[0] < OrderFlowConst::PRICE_MIN_VALID || ap[0] > OrderFlowConst::PRICE_MAX_VALID) {
-          depth_valid = false; // Mark as invalid if sentinel detected
+        // Multi-width fields: manual offset calculation
+        // Filter sentinel values at each depth level (zero out if outside ±25% cage)
+        // If no opening price yet, mark entire tick invalid
+        if (opening_price == 0.0f) [[unlikely]] {
+          depth_valid = false;
+        } else [[likely]] {
+          mid = (mid < price_min || mid > price_max) ? std::numeric_limits<float>::quiet_NaN() : mid;
+
+          for (size_t i = 0; i < N; ++i) {
+            size_t bp_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_price] + i;
+            size_t ap_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_price] + i;
+            size_t bv_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_volume] + i;
+            size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
+
+            float bp_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
+            float ap_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
+
+            float bp_yuan = bp_cents * 0.01f;
+            float ap_yuan = ap_cents * 0.01f;
+
+            // Check if prices are outside cage (sentinel detection)
+            bool bp_outside = (bp_yuan < price_min || bp_yuan > price_max);
+            bool ap_outside = (ap_yuan < price_min || ap_yuan > price_max);
+
+            // Use NaN for sentinel values (filtered at source)
+            bp[i] = bp_outside ? std::numeric_limits<float>::quiet_NaN() : bp_yuan;
+            bv[i] = bp_outside ? 0.0f : static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bv_offset) * depth_tensor.A + asset_idx]);
+
+            ap[i] = ap_outside ? std::numeric_limits<float>::quiet_NaN() : ap_yuan;
+            av[i] = ap_outside ? 0.0f : static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + av_offset) * depth_tensor.A + asset_idx]);
+          }
         }
       }
 

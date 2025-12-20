@@ -147,10 +147,8 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
 
   // Helper lambda to render a single depth level
   // NOTE: volume is SIGNED (bid_volume > 0, ask_volume < 0), so amount preserves sign
+  // Sentinel values (NaN) are already filtered at data load time
   auto render_level = [&](float price, float volume, bool is_bid) {
-    if (price <= 0)
-      return; // Skip invalid levels
-
     float amount = volume_to_amount(volume, price); // Preserves sign: bid+, ask-
     float abs_amount = std::abs(amount);
     float ratio = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT); // 100W = full bar
