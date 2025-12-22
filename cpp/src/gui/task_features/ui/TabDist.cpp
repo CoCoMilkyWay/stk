@@ -973,16 +973,16 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     ImGui::PushTextWrapPos(350.0f);
     ImGui::TextUnformatted(
         "分位数一致性尤为重要:\n"
-        "不同资产的累积分布函数(CDF)应尽量靠近截面均值 μ(q),\n"
+        "不同资产的累积分布函数(CDF) F_i 应尽量靠近截面均值 F_μ,\n"
         "以保证因子组合阶段分位数的有效性与稳定性。\n\n"
-        "在 5%, 10%, 15%, 20%, ... 分位数级别分别计算离散偏移向量 Δ_i:\n\n"
-        "    Δ_i = [F_1(q_i) - μ(q_i), F_2(q_i) - μ(q_i), ..., F_N(q_i) - μ(q_i)] ∈ R^N\n\n"
-        "偏移值:保留符号的偏移能量\n\n"
-        "    S = sign(∑_{j=1}^N Δ_{i,j}) · ||Δ_i||_2  ∈ R\n\n"
-        "代表全局偏移程度,聚合多维信息至一维标量。\n\n"
-        "偏移色:对偏移向量 Δ 做层次聚类(Ward 法,带最优叶排序)\n\n"
+        "在 5%, 10%, 15%, 20%, ... 分位数级别分别计算离散偏移向量 Δ_i(q_i) = F_i(q_i) - F_μ(q_i):\n\n"
+        "    Δ_i = [Δ_{i,1}, Δ_{i,2}, ..., Δ_{i,N}] ∈ ℝ^N\n\n"
+        "偏移值: 保留符号的偏移能量\n\n"
+        "    S = sign(∑_{j=1}^N Δ_{i,j}) · ||Δ_i||_2 ∈ ℝ\n\n"
+        "代表全局偏移程度，聚合多维信息至一维标量。\n\n"
+        "偏移色: 对偏移向量 Δ 做层次聚类(Ward 法，带最优叶排序）\n\n"
         "    cluster_order = optimal_leaf_ordering(Ward(Δ))\n\n"
-        "将 N 维偏移映射为一维序列,反映局部结构相似性。");
+        "将 N 维偏移映射为一维序列，反映局部结构相似性。");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
