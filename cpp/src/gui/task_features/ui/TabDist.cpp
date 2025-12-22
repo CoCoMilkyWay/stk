@@ -215,7 +215,26 @@ static void RenderMomentBand(const char *label, float current_val,
   int zone_bound_lo = get_zone(bound_lo, normal_lo, normal_hi, warn_lo, warn_hi);
   int zone_bound_hi = get_zone(bound_hi, normal_lo, normal_hi, warn_lo, warn_hi);
 
-  ImGui::Text("%s: ", label);
+  // Label with bold font and underline
+  ImVec2 label_pos = ImGui::GetCursorScreenPos();
+
+  // Use bold font if available (Fonts[0] is typically bold)
+  ImFont *font = ImGui::GetIO().Fonts->Fonts.Size > 0 ? ImGui::GetIO().Fonts->Fonts[0] : ImGui::GetFont();
+  ImGui::PushFont(font);
+
+  char label_text[128];
+  snprintf(label_text, sizeof(label_text), "%s: ", label);
+  ImVec2 text_size = ImGui::CalcTextSize(label_text);
+
+  ImGui::Text("%s", label_text);
+
+  // Draw underline
+  ImDrawList *draw_label = ImGui::GetWindowDrawList();
+  draw_label->AddLine(ImVec2(label_pos.x, label_pos.y + text_size.y),
+                      ImVec2(label_pos.x + text_size.x, label_pos.y + text_size.y),
+                      ImGui::GetColorU32(ImGuiCol_Text), 1.0f);
+
+  ImGui::PopFont();
   ImGui::SameLine(0, 0);
   ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_cur));
   ImGui::Text("%.2f", current_val);
@@ -240,15 +259,14 @@ static void RenderMomentBand(const char *label, float current_val,
   ImVec2 pos = ImGui::GetCursorScreenPos();
   float width = ImGui::GetContentRegionAvail().x;
   float bar_height = 16.0f;
-  float label_height = 14.0f;
 
   float range = range_hi - range_lo;
   auto to_x = [&](float v) {
     return pos.x + std::clamp((v - range_lo) / range, 0.0f, 1.0f) * width;
   };
 
-  // Bar vertical bounds
-  float y_top = pos.y + label_height;
+  // Bar vertical bounds (labels directly on bar)
+  float y_top = pos.y;
   float y_bot = y_top + bar_height;
 
   // Draw color bands (all aligned y_top to y_bot)
@@ -285,25 +303,212 @@ static void RenderMomentBand(const char *label, float current_val,
                       ImVec2(cv_x, cy + 5), ImVec2(cv_x - 4, cy),
                       IM_COL32(0, 255, 255, 255));
 
-  // Boundary labels (on top of bar)
+  // Boundary labels - small font, directly on bar
+  // All labels drawn at same height, overlaid on the bar
+  ImFont *small_font = ImGui::GetFont();
+  float small_font_size = ImGui::GetFontSize() * 0.7f; // Small font size
+  float label_y = y_top + 2;                           // Slightly below top of bar
   char buf[16];
-  snprintf(buf, sizeof(buf), "%.1f", range_lo);
-  draw->AddText(ImVec2(to_x(range_lo), pos.y), IM_COL32(200, 200, 200, 255), buf);
-  snprintf(buf, sizeof(buf), "%.1f", warn_lo);
-  draw->AddText(ImVec2(to_x(warn_lo) - 15, pos.y), IM_COL32(200, 200, 200, 255), buf);
-  snprintf(buf, sizeof(buf), "%.1f", warn_hi);
-  draw->AddText(ImVec2(to_x(warn_hi) - 10, pos.y), IM_COL32(200, 200, 200, 255), buf);
-  snprintf(buf, sizeof(buf), "%.1f", range_hi);
-  draw->AddText(ImVec2(to_x(range_hi) - 25, pos.y), IM_COL32(200, 200, 200, 255), buf);
 
-  ImGui::Dummy(ImVec2(width, label_height + bar_height));
+  // warn_lo (align right edge to boundary)
+  snprintf(buf, sizeof(buf), "%.1f", warn_lo);
+  float text_width_warn_lo = small_font->CalcTextSizeA(small_font_size, FLT_MAX, 0.0f, buf).x;
+  draw->AddText(small_font, small_font_size, ImVec2(to_x(warn_lo) - text_width_warn_lo, label_y), IM_COL32(255, 255, 255, 255), buf);
+
+  // normal_lo (align right edge to boundary)
+  snprintf(buf, sizeof(buf), "%.1f", normal_lo);
+  float text_width_normal_lo = small_font->CalcTextSizeA(small_font_size, FLT_MAX, 0.0f, buf).x;
+  draw->AddText(small_font, small_font_size, ImVec2(to_x(normal_lo) - text_width_normal_lo, label_y), IM_COL32(255, 255, 255, 255), buf);
+
+  // normal_hi (align left edge to boundary)
+  snprintf(buf, sizeof(buf), "%.1f", normal_hi);
+  draw->AddText(small_font, small_font_size, ImVec2(to_x(normal_hi) + 1, label_y), IM_COL32(255, 255, 255, 255), buf);
+
+  // warn_hi (align left edge to boundary)
+  snprintf(buf, sizeof(buf), "%.1f", warn_hi);
+  draw->AddText(small_font, small_font_size, ImVec2(to_x(warn_hi) + 1, label_y), IM_COL32(255, 255, 255, 255), buf);
+
+  ImGui::Dummy(ImVec2(width, bar_height));
 }
 
 static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int focus_month_idx) {
-  ImGui::BeginChild("MomentsPanel", ImVec2(350, 0), true);
+  // Fixed height for 4 moment bands + header (~320px content)
+  float line_h = ImGui::GetTextLineHeightWithSpacing();
+  float band_h = line_h * 2.5f; // each band is about 2.5 lines
+  float panel_h = line_h * 3 + band_h * 4 + ImGui::GetStyle().WindowPadding.y * 2;
+  ImGui::BeginChild("MomentsPanel", ImVec2(350, panel_h), true);
   ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // Use default font with bold style
   ImGui::TextUnformatted("[阶矩展开]");
   ImGui::PopFont();
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+
+  // Tooltip on help marker
+  if (ImGui::IsItemHovered()) {
+    ImGui::BeginTooltip();
+
+    // Expansion objects table
+    if (ImGui::BeginTable("ExpansionTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+      ImGui::TableSetupColumn("展开对象");
+      ImGui::TableSetupColumn("展开变量");
+      ImGui::TableSetupColumn("展开形式");
+      ImGui::TableSetupColumn("名称 / 定理");
+      ImGui::TableSetupColumn("为什么重要");
+      ImGui::TableHeadersRow();
+
+      // Row 1: 函数期望
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("函数期望 (E[f(X)])");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("(X - E[X])");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("幂级数");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("Taylor + 矩展开");
+      ImGui::TableSetColumnIndex(4);
+      ImGui::Text("风险、PnL、凸性分析的基础");
+
+      // Row 2: 特征函数
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("特征函数 (φ(t)=E[e^{itX}])");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("(t)");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("幂级数");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("特征函数展开");
+      ImGui::TableSetColumnIndex(4);
+      ImGui::Text("所有矩的母体");
+
+      // Row 3: 对数特征函数
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("对数特征函数 (log φ(t))");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("(t)");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("幂级数");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("累积量展开");
+      ImGui::TableSetColumnIndex(4);
+      ImGui::Text("比矩稳定，叠加最干净");
+
+      // Row 4: 概率密度函数 (Hermite)
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("概率密度函数 (p(x))");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("Hermite 基");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("正交级数");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("Gram-Charlier A");
+      ImGui::TableSetColumnIndex(4);
+      ImGui::Text("最直接的\"分布级\"展开");
+
+      // Row 5: 概率密度函数 (Edgeworth)
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("概率密度函数 (p(x))");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("(n^{-1/2})");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("渐近级数");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("Edgeworth 展开");
+      ImGui::TableSetColumnIndex(4);
+      ImGui::Text("CLT 的高阶修正");
+
+      // Row 6: 小噪声随机变量
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("小噪声随机变量 (X+ε)");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("(ε)");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("幂级数");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("Delta Method");
+      ImGui::TableSetColumnIndex(4);
+      ImGui::Text("统计误差传播核心");
+
+      ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Moments definition table
+    if (ImGui::BeginTable("MomentsDefTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+      ImGui::TableSetupColumn("阶数");
+      ImGui::TableSetupColumn("普通矩 (m_n)");
+      ImGui::TableSetupColumn("中心矩 (μ_n)");
+      ImGui::TableSetupColumn("标准矩 (γ_n)");
+      ImGui::TableHeadersRow();
+
+      // Row: 定义
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("定义");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("E[X^n]");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("E[(X-E[X])^n]");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("E[(X-E[X])^n]/(E[(X-E[X])^2])^(n/2)");
+
+      // Row: 1阶
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("1");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("均值");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("0");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("0");
+
+      // Row: 2阶
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("2");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("\\");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("方差");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("1");
+
+      // Row: 3阶
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("3");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("\\");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("\\");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("偏度");
+
+      // Row: 4阶
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("4");
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("\\");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::Text("\\");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("峰度");
+
+      ImGui::EndTable();
+    }
+    ImGui::EndTooltip();
+  }
+
   ImGui::Separator();
 
   if (dist.compute.status != Dist::Compute::Status::Done) {
@@ -314,7 +519,7 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
 
   // Collect moment values based on selected dimension
   std::vector<float> means, vars, skews, kurts;
-  
+
   // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS
   if (selected_dimension == 0) {
     // MONTH dimension
@@ -369,26 +574,31 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
 
   // Compute mean (average) for each moment type
   auto compute_mean = [](const std::vector<float> &vals) -> float {
-    if (vals.empty()) return 0.0f;
+    if (vals.empty())
+      return 0.0f;
     float sum = 0.0f;
-    for (float v : vals) sum += v;
+    for (float v : vals)
+      sum += v;
     return sum / vals.size();
   };
 
   // Compute min/max
   auto compute_min = [](const std::vector<float> &vals) -> float {
-    if (vals.empty()) return 0.0f;
+    if (vals.empty())
+      return 0.0f;
     return *std::min_element(vals.begin(), vals.end());
   };
 
   auto compute_max = [](const std::vector<float> &vals) -> float {
-    if (vals.empty()) return 0.0f;
+    if (vals.empty())
+      return 0.0f;
     return *std::max_element(vals.begin(), vals.end());
   };
 
   // Compute MAD for each moment type
   auto compute_mad = [](const std::vector<float> &vals) -> float {
-    if (vals.empty()) return 0.0f;
+    if (vals.empty())
+      return 0.0f;
     // Compute median
     std::vector<float> sorted = vals;
     std::sort(sorted.begin(), sorted.end());
@@ -419,7 +629,7 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
     float mad_var = compute_mad(vars);
     float mad_skew = compute_mad(skews);
     float mad_kurt = compute_mad(kurts);
-    
+
     lower_mean = mean_mean - 2.5f * mad_mean;
     upper_mean = mean_mean + 2.5f * mad_mean;
     lower_var = mean_var - 2.5f * mad_var;
@@ -443,8 +653,8 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
   // Get current value to display
   // For MONTH: use slider month value; for others: use mean
   float display_mean, display_var, display_skew, display_kurt;
-  
-  if (selected_dimension == 0 && focus_month_idx >= 0 && 
+
+  if (selected_dimension == 0 && focus_month_idx >= 0 &&
       focus_month_idx < static_cast<int>(dist.cache.size()) &&
       dist.cache[focus_month_idx].valid) {
     // MONTH dimension: show slider month value
@@ -506,8 +716,8 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
   }
 
   if (ImPlot::BeginPlot(plot_id, ImVec2(-1, -1))) {
-    ImPlot::SetupAxes(nullptr, nullptr, 
-                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels, 
+    ImPlot::SetupAxes(nullptr, nullptr,
+                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels,
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
 
     int n_items = static_cast<int>(pdfs.size());
@@ -593,8 +803,8 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
   return hovered_idx;
 }
 
-static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_autofit, 
-                              int selected_dimension, int &clicked_dimension) {
+static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_autofit,
+                             int selected_dimension, int &clicked_dimension) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
   ImGui::BeginChild("PDFByMonth", ImVec2(0, 0), false);
   ImGui::PopStyleVar();
@@ -635,7 +845,7 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
 
   // Highlight border if selected
   if (selected_dimension == 0) {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
     ImVec2 p_min = ImGui::GetItemRectMin();
     ImVec2 p_max = ImGui::GetItemRectMax();
     draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
@@ -644,8 +854,8 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
   ImGui::EndChild();
 }
 
-static void RenderPDFByWeekday(const Dist &dist, bool need_autofit, 
-                                int selected_dimension, int &clicked_dimension) {
+static void RenderPDFByWeekday(const Dist &dist, bool need_autofit,
+                               int selected_dimension, int &clicked_dimension) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
   ImGui::BeginChild("PDFByWeekday", ImVec2(0, 0), false);
   ImGui::PopStyleVar();
@@ -687,7 +897,7 @@ static void RenderPDFByWeekday(const Dist &dist, bool need_autofit,
 
   // Highlight border if selected
   if (selected_dimension == 1) {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
     ImVec2 p_min = ImGui::GetItemRectMin();
     ImVec2 p_max = ImGui::GetItemRectMax();
     draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
@@ -696,8 +906,8 @@ static void RenderPDFByWeekday(const Dist &dist, bool need_autofit,
   ImGui::EndChild();
 }
 
-static void RenderPDFByHour(const Dist &dist, bool need_autofit, 
-                             int selected_dimension, int &clicked_dimension) {
+static void RenderPDFByHour(const Dist &dist, bool need_autofit,
+                            int selected_dimension, int &clicked_dimension) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
   ImGui::BeginChild("PDFByHour", ImVec2(0, 0), false);
   ImGui::PopStyleVar();
@@ -738,7 +948,7 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
 
   // Highlight border if selected
   if (selected_dimension == 2) {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
     ImVec2 p_min = ImGui::GetItemRectMin();
     ImVec2 p_max = ImGui::GetItemRectMax();
     draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
@@ -751,8 +961,9 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
 // Assets PDF Plot
 // ============================================================================
 
-static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInfo &asset_info,
-                             bool need_autofit, int selected_dimension, int &clicked_dimension) {
+static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
+                            int selected_dimension, int &clicked_dimension,
+                            int &hovered_asset_out) {
   ImGui::Text("PDF密度(资产截面)");
   ImGui::Separator();
 
@@ -771,56 +982,125 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   bool plot_clicked = false;
 
   if (ImPlot::BeginPlot("##AssetsPDF", ImVec2(-1, -1))) {
-    ImPlot::SetupAxes(nullptr, nullptr, 
-                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels, 
+    ImPlot::SetupAxes(nullptr, nullptr,
+                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels,
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
 
-    // Draw all PDFs
-    ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
+    ImPlotRect limits = ImPlot::GetPlotLimits();
+    double x_range = limits.X.Max - limits.X.Min;
+    double y_range = limits.Y.Max - limits.Y.Min;
+
+    // ========================================================================
+    // Phase 1: Hover detection (both PDF lines and stability dots)
+    // ========================================================================
+    if (ImPlot::IsPlotHovered()) {
+      ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+      double nmx = (mouse.x - limits.X.Min) / x_range;
+      double nmy = (mouse.y - limits.Y.Min) / y_range;
+
+      // Check stability dots first (top band priority)
+      if (dist.stability.valid && !dist.stability.x_norm.empty() && nmy > 0.93f) {
+        float best_dist = 0.03f;
+        for (size_t a = 0; a < n_assets; ++a) {
+          float dx = static_cast<float>(std::abs(nmx - dist.stability.x_norm[a]));
+          if (dx < best_dist) {
+            best_dist = dx;
+            hovered_asset = static_cast<int>(a);
+            min_dist_sq = 0.0;
+          }
+        }
+      }
+
+      // Check PDF lines (if not hovering stability)
+      if (hovered_asset < 0) {
+        for (size_t a = 0; a < n_assets; ++a) {
+          const auto &kll = dist.global_by_asset[a];
+          if (kll.count() < 10) continue;
+          const float *px, *py;
+          size_t pn;
+          kll.exportPDF(px, py, pn);
+          if (pn == 0) continue;
+
+          for (size_t j = 0; j + 1 < pn; ++j) {
+            double nx1 = (px[j] - limits.X.Min) / x_range;
+            double ny1 = (py[j] - limits.Y.Min) / y_range;
+            double nx2 = (px[j + 1] - limits.X.Min) / x_range;
+            double ny2 = (py[j + 1] - limits.Y.Min) / y_range;
+            double d_sq = point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2);
+            if (d_sq < min_dist_sq) {
+              min_dist_sq = d_sq;
+              hovered_asset = static_cast<int>(a);
+            }
+          }
+        }
+      }
+    }
+
+    // ========================================================================
+    // Phase 2: Draw all PDFs (highlight hovered)
+    // ========================================================================
     for (size_t a = 0; a < n_assets; ++a) {
       const auto &kll = dist.global_by_asset[a];
       if (kll.count() < 10) continue;
-
       const float *x, *y;
       size_t n;
       kll.exportPDF(x, y, n);
       if (n == 0) continue;
 
+      bool is_hovered = (static_cast<int>(a) == hovered_asset);
       float t = static_cast<float>(a) / static_cast<float>(n_assets);
       ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Hot);
-      ImPlot::SetNextLineStyle(color, 1.0f);
-      ImPlot::PlotLine("##pdf", x, y, static_cast<int>(n));
 
-      // Hover detection
-      if (ImPlot::IsPlotHovered()) {
-        ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-        ImPlotRect limits = ImPlot::GetPlotLimits();
-        double x_range = limits.X.Max - limits.X.Min;
-        double y_range = limits.Y.Max - limits.Y.Min;
+      if (is_hovered) {
+        // Highlighted: thick white outline + bright color
+        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
+        ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
+        ImPlot::PlotLine("##pdf_outline", x, y, static_cast<int>(n));
+        ImPlot::PopStyleVar();
 
-        for (size_t j = 0; j + 1 < n; ++j) {
-          double nx1 = (x[j] - limits.X.Min) / x_range;
-          double ny1 = (y[j] - limits.Y.Min) / y_range;
-          double nx2 = (x[j + 1] - limits.X.Min) / x_range;
-          double ny2 = (y[j + 1] - limits.Y.Min) / y_range;
-          double nmx = (mouse.x - limits.X.Min) / x_range;
-          double nmy = (mouse.y - limits.Y.Min) / y_range;
+        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
+        ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f); // cyan
+        ImPlot::PlotLine("##pdf_hl", x, y, static_cast<int>(n));
+        ImPlot::PopStyleVar();
+      } else {
+        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
+        ImPlot::SetNextLineStyle(color, 1.0f);
+        ImPlot::PlotLine("##pdf", x, y, static_cast<int>(n));
+        ImPlot::PopStyleVar();
+      }
+    }
 
-          double d_sq = point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2);
-          if (d_sq < min_dist_sq) {
-            min_dist_sq = d_sq;
-            hovered_asset = static_cast<int>(a);
-          }
+    // ========================================================================
+    // Phase 3: Draw stability scatter (highlight hovered)
+    // ========================================================================
+    if (dist.stability.valid && !dist.stability.x_norm.empty()) {
+      float y_top = static_cast<float>(limits.Y.Max - y_range * 0.02);
+      float x_min = static_cast<float>(limits.X.Min);
+      float x_max = static_cast<float>(limits.X.Max);
+
+      for (size_t a = 0; a < n_assets; ++a) {
+        float x_pos = x_min + dist.stability.x_norm[a] * (x_max - x_min);
+        bool is_hovered = (static_cast<int>(a) == hovered_asset);
+
+        if (is_hovered) {
+          // Highlighted: large white outline + cyan fill
+          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 10, ImVec4(1,1,1,1), 2, ImVec4(1,1,1,1));
+          ImPlot::PlotScatter("##stab_outline", &x_pos, &y_top, 1);
+          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 8, ImVec4(0,1,1,1), 0, ImVec4(0,1,1,1));
+          ImPlot::PlotScatter("##stab_hl", &x_pos, &y_top, 1);
+        } else {
+          ImVec4 color = ImPlot::SampleColormap(dist.stability.color_t[a], ImPlotColormap_Viridis);
+          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3, color, 0, color);
+          ImPlot::PlotScatter("##stability", &x_pos, &y_top, 1);
         }
       }
     }
-    ImPlot::PopStyleVar();
-    
+
     // Click detection
     if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(0)) {
       plot_clicked = true;
     }
-    
+
     ImPlot::EndPlot();
   }
 
@@ -831,88 +1111,122 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
 
   // Highlight border if selected
   if (selected_dimension == 3) {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
     ImVec2 p_min = ImGui::GetItemRectMin();
     ImVec2 p_max = ImGui::GetItemRectMax();
     draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
   }
 
-  // Tooltip
-  if (hovered_asset >= 0 && min_dist_sq < 0.001 &&
-      static_cast<size_t>(hovered_asset) < asset.items.size()) {
-    ImGui::BeginTooltip();
-    const auto &asset_item = asset.items[hovered_asset];
-    const auto &kll = dist.global_by_asset[hovered_asset];
-    
-    // Get real-time info from AssetInfo
-    std::string exchange_lower = asset_item.exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-    std::string stock_key = exchange_lower + "." + asset_item.asset_code;
-    const StockInfo *stock_info = asset_info.find_stock_info(stock_key);
-    
-    // Format: 华夏银行(000000.SH) - name from AssetInfo
-    if (stock_info && !stock_info->name.empty()) {
-      ImGui::Text("%s(%s.%s)", 
-                  stock_info->name.c_str(),
-                  asset_item.asset_code.c_str(),
-                  asset_item.exchange.c_str());
-    } else {
-      ImGui::Text("%s.%s", 
-                  asset_item.asset_code.c_str(),
-                  asset_item.exchange.c_str());
-    }
-    
-    // Format date: YYYYMMDD -> YYYY/MM/DD
-    auto format_date = [](const std::string &date) -> std::string {
-      if (date.size() == 8) {
-        return date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
-      }
-      return date;
-    };
-    
-    // Format: 1998/01/01 - today/ 2020/01/01(DL) (from AssetInfo dynamic data)
-    if (stock_info) {
-      std::string start_str = format_date(stock_info->ipoDate);
-      std::string end_str = stock_info->outDate.empty() ? "today" : format_date(stock_info->outDate);
-      if (!stock_info->outDate.empty()) {
-        end_str += "(DL)"; // Delisted
-      }
-      ImGui::Text("%s - %s", start_str.c_str(), end_str.c_str());
-    }
-    
-    // Market cap (from AssetInfo real-time data)
-    float market_cap = asset_info.calculate_market_cap(stock_key);
-    if (market_cap > 0.0f) {
-      ImGui::Text("市值: %.2f亿", market_cap);
-    }
-    
-    // Four valuation metrics (from AssetInfo real-time data) - format as +3.2f
-    if (stock_info) {
-      auto format_val = [](const std::string &s) -> std::string {
-        if (s.empty()) return "--";
-        try {
-          float v = std::stof(s);
-          char buf[16];
-          std::snprintf(buf, sizeof(buf), "%+6.2f", v);
-          return buf;
-        } catch (...) {
-          return "--";
-        }
-      };
-      ImGui::Text("PE(TTM): %s  PB(MRQ): %s  PS(TTM): %s  PCF(NCF): %s",
-                  format_val(stock_info->peTTM).c_str(),
-                  format_val(stock_info->pbMRQ).c_str(),
-                  format_val(stock_info->psTTM).c_str(),
-                  format_val(stock_info->pcfNcfTTM).c_str());
-    }
-    
-    // Statistics
-    ImGui::Text("n=%zu", kll.count());
-    ImGui::Text("Mean/均值=%.4f Var/方差=%.4f", kll.mean(), kll.var());
-    ImGui::Text("Skew/偏度=%.4f Kurt/峰度=%.4f", kll.skew(), kll.kurt());
-    
-    ImGui::EndTooltip();
+  // Output hovered asset for external display
+  hovered_asset_out = (min_dist_sq < 0.001) ? hovered_asset : -1;
+}
+
+// ============================================================================
+// Hovered Asset Info Panel (displayed in left column)
+// ============================================================================
+
+static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
+                                   const AssetInfo &asset_info, int hovered_asset) {
+  // Use remaining height in parent
+  float remaining_height = ImGui::GetContentRegionAvail().y;
+  ImGui::BeginChild("HoveredAssetPanel", ImVec2(350, remaining_height), true);
+
+  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+  ImGui::TextUnformatted("[资产详情]");
+  ImGui::PopFont();
+  ImGui::Separator();
+
+  if (hovered_asset < 0 || static_cast<size_t>(hovered_asset) >= asset.items.size() ||
+      static_cast<size_t>(hovered_asset) >= dist.global_by_asset.size()) {
+    ImGui::TextDisabled("(hover on PDF/dot)");
+    ImGui::EndChild();
+    return;
   }
+
+  const auto &asset_item = asset.items[hovered_asset];
+  const auto &kll = dist.global_by_asset[hovered_asset];
+
+  // Get real-time info from AssetInfo
+  std::string exchange_lower = asset_item.exchange;
+  std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
+  std::string stock_key = exchange_lower + "." + asset_item.asset_code;
+  const StockInfo *stock_info = asset_info.find_stock_info(stock_key);
+
+  // Asset name and code
+  if (stock_info && !stock_info->name.empty()) {
+    ImGui::Text("%s (%s.%s)", stock_info->name.c_str(),
+                asset_item.asset_code.c_str(), asset_item.exchange.c_str());
+  } else {
+    ImGui::Text("%s.%s", asset_item.asset_code.c_str(), asset_item.exchange.c_str());
+  }
+
+  // Date range + market cap on same line
+  auto format_date = [](const std::string &date) -> std::string {
+    if (date.size() == 8) return date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
+    return "--";
+  };
+  float market_cap = asset_info.calculate_market_cap(stock_key);
+  if (stock_info && !stock_info->ipoDate.empty()) {
+    std::string end_str = stock_info->outDate.empty() ? "now" : format_date(stock_info->outDate);
+    ImGui::Text("%s-%s  %.1f亿", format_date(stock_info->ipoDate).c_str(), end_str.c_str(),
+                market_cap > 0 ? market_cap : 0.0f);
+  } else {
+    ImGui::Text("市值: %.1f亿", market_cap > 0 ? market_cap : 0.0f);
+  }
+
+  ImGui::Separator();
+
+  // Two-column compact layout: Valuation | Statistics
+  auto fmt_val = [](const std::string &s) -> std::string {
+    if (s.empty()) return "--";
+    try {
+      char buf[12];
+      std::snprintf(buf, sizeof(buf), "%+.1f", std::stof(s));
+      return buf;
+    } catch (...) { return "--"; }
+  };
+
+  if (ImGui::BeginTable("StatsTable", 2, ImGuiTableFlags_SizingFixedFit)) {
+    ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, 160);
+    ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, 160);
+
+    // Row 1: n | PE
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Text("n = %zu", kll.count());
+    ImGui::TableSetColumnIndex(1);
+    ImGui::Text("PE = %s", stock_info ? fmt_val(stock_info->peTTM).c_str() : "--");
+
+    // Row 2: Mean | PB
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Text("Mean = %.4f", kll.mean());
+    ImGui::TableSetColumnIndex(1);
+    ImGui::Text("PB = %s", stock_info ? fmt_val(stock_info->pbMRQ).c_str() : "--");
+
+    // Row 3: Var | PS
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Text("Var = %.4f", kll.var());
+    ImGui::TableSetColumnIndex(1);
+    ImGui::Text("PS = %s", stock_info ? fmt_val(stock_info->psTTM).c_str() : "--");
+
+    // Row 4: Skew | PCF
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Text("Skew = %.3f", kll.skew());
+    ImGui::TableSetColumnIndex(1);
+    ImGui::Text("PCF = %s", stock_info ? fmt_val(stock_info->pcfNcfTTM).c_str() : "--");
+
+    // Row 5: Kurt
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Text("Kurt = %.3f", kll.kurt());
+
+    ImGui::EndTable();
+  }
+
+  ImGui::EndChild();
 }
 
 // ============================================================================
@@ -937,7 +1251,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   // Trigger autofit when compute just finished
   static auto last_status = dist.compute.status;
-  if (last_status != Dist::Compute::Status::Done && 
+  if (last_status != Dist::Compute::Status::Done &&
       dist.compute.status == Dist::Compute::Status::Done) {
     ui.need_autofit = true;
   }
@@ -955,27 +1269,29 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   RenderWindowControl(service, data, ui);
   ImGui::EndChild();
 
-  // Main content: Left (Moments) + Right (PDFs + Trajectory)
+  // Track hovered asset across frames
+  static int hovered_asset = -1;
+
+  // Main content: Left (Moments + Asset Info) + Right (PDFs)
   float content_height = ImGui::GetContentRegionAvail().y;
   ImGui::Columns(2, "MainCols", true);
   ImGui::SetColumnWidth(0, 350);
 
-  // Left column: Moments Panel
-  ImGui::BeginChild("MomentsSection", ImVec2(0, content_height), false);
-
-  // Pass selected dimension and focus month to moments panel
+  // Left column: Moments Panel (auto-height) + Hovered Asset Info (remaining)
+  ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
   RenderMomentsPanel(dist, ui.selected_dimension, ui.focus_month_idx);
+  RenderHoveredAssetInfo(dist, data.asset, data.asset_info, hovered_asset);
   ImGui::EndChild();
 
   ImGui::NextColumn();
 
-  // Right column: PDF panels + Trajectory
+  // Right column: PDF panels
   ImGui::BeginChild("RightSection", ImVec2(0, content_height), false);
 
   // Top: Three PDF panels in a row (tight layout)
   float pdf_height = content_height * 0.5f;
   ImGui::BeginChild("PDFRow", ImVec2(0, pdf_height), false);
-  
+
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
   ImGui::Columns(3, "PDFCols", false);
 
@@ -997,9 +1313,9 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   ImGui::PopStyleVar();
   ImGui::EndChild();
 
-  // Bottom: Assets PDF
+  // Bottom: Assets PDF (outputs hovered_asset)
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(dist, data.asset, data.asset_info, ui.need_autofit, ui.selected_dimension, clicked_dimension);
+  RenderAssetsPDF(dist, ui.need_autofit, ui.selected_dimension, clicked_dimension, hovered_asset);
   ImGui::EndChild();
 
   // Update selected dimension if any plot was clicked

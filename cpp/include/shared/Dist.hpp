@@ -464,6 +464,26 @@ struct Dist {
   std::vector<KLLWithMoments> global_by_hour;    // [24]
   std::vector<KLLWithMoments> global_by_weekday; // [7]
   std::vector<KLLWithMoments> global_by_asset;   // [n_assets]
+  KLLWithMoments global_total;                   // merged from all assets
+
+  // ==========================================================================
+  // Stability Visualization (cross-sectional distribution stability)
+  // ==========================================================================
+
+  struct StabilityViz {
+    // Per-point data indexed by asset_idx [n_assets]
+    std::vector<float> x_norm;    // normalized x position [0,1] from PCA
+    std::vector<float> color_t;   // color parameter [0,1] from Ward leaf position
+
+    bool valid = false;
+
+    void clear() {
+      x_norm.clear();
+      color_t.clear();
+      valid = false;
+    }
+  };
+  StabilityViz stability;
 
   // ==========================================================================
   // Methods - Build
@@ -506,6 +526,8 @@ struct Dist {
     global_by_hour.clear();
     global_by_weekday.clear();
     global_by_asset.clear();
+    global_total.clear();
+    stability.clear();
   }
 
   bool need_rebuild(int feat_idx, int lvl, const std::string &range) const {

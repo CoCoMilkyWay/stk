@@ -1,11 +1,13 @@
 #include "shared/Dist.hpp"
 #include "features/FeaturesDefine.hpp"
 #include "features/backend/FeatureReader.hpp"
+#include "math/cluster/Ward1D.hpp"
+#include "math/dim_reduct/PCA1D.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Feature.hpp"
 
-
+#include <array>
 #include <cassert>
 
 // ============================================================================
@@ -405,9 +407,9 @@ void Dist::finalize() {
   }
 
   // 2. Build global asset aggregations
+  const size_t n_assets = cache[0].n_assets;
   {
     global_by_asset.clear();
-    const size_t n_assets = cache[0].n_assets;
     global_by_asset.reserve(n_assets);
     for (size_t a = 0; a < n_assets; ++a) {
       global_by_asset.emplace_back(KLL_CAPACITY);
@@ -424,6 +426,74 @@ void Dist::finalize() {
     }
   }
 
-  // 3. Query with MONTH grouping (default)
+  // 3. Build global_total (merge weekday KLLs - only 7 to merge)
+  {
+    global_total.clear();
+    for (const auto &kll : global_by_weekday) {
+      if (kll.count() > 0) {
+        global_total.merge(kll);
+      }
+    }
+  }
+
+  // 4. Build stability visualization
+  {
+    stability.clear();
+    if (global_total.count() > kMinSamples && n_assets > 1) {
+      // Get 19 percentile x-values from global distribution
+      constexpr int N_PERCENTILES = 19;
+      std::array<float, N_PERCENTILES> ref_x;
+      for (int i = 0; i < N_PERCENTILES; ++i) {
+        ref_x[i] = static_cast<float>(global_total.quantile(0.05 * (i + 1)));
+      }
+
+      // Build 19×N offset matrix: offset[d][a] = CDF(ref_x[d]) - expected
+      std::vector<std::vector<float>> offsets(N_PERCENTILES);
+      for (int d = 0; d < N_PERCENTILES; ++d) {
+        offsets[d].resize(n_assets);
+      }
+
+      for (size_t a = 0; a < n_assets; ++a) {
+        for (int d = 0; d < N_PERCENTILES; ++d) {
+          float cdf_val = static_cast<float>(global_by_asset[a].queryCDF(ref_x[d]));
+          float expected = 0.05f * (d + 1);
+          offsets[d][a] = cdf_val - expected;
+        }
+      }
+
+      // 1-D PCA for x position
+      std::vector<float> pca_scores = pca1d(offsets);
+
+      // Normalize PCA scores to [0,1]
+      float pca_min = pca_scores[0], pca_max = pca_scores[0];
+      for (float s : pca_scores) {
+        if (s < pca_min) pca_min = s;
+        if (s > pca_max) pca_max = s;
+      }
+      float pca_range = pca_max - pca_min;
+      if (pca_range < 1e-6f) pca_range = 1.0f;
+
+      stability.x_norm.resize(n_assets);
+      for (size_t a = 0; a < n_assets; ++a) {
+        stability.x_norm[a] = (pca_scores[a] - pca_min) / pca_range;
+      }
+
+      // 1-D Ward clustering for color (optimal leaf order)
+      std::vector<int> leaf_order = ward_leaf_order(offsets);
+
+      // Convert leaf_order to color_t: position in leaf order -> [0,1]
+      // leaf_order[i] = asset index at position i
+      // We need: color_t[asset_idx] = position / (n-1)
+      stability.color_t.resize(n_assets);
+      for (size_t pos = 0; pos < n_assets; ++pos) {
+        int asset_idx = leaf_order[pos];
+        stability.color_t[asset_idx] = static_cast<float>(pos) / (n_assets - 1);
+      }
+
+      stability.valid = true;
+    }
+  }
+
+  // 5. Query with MONTH grouping (default)
   query(Input::GroupBy::MONTH);
 }
