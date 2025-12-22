@@ -393,7 +393,7 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
       ImGui::TableSetColumnIndex(3);
       ImGui::Text("累积量展开");
       ImGui::TableSetColumnIndex(4);
-      ImGui::Text("比矩稳定，叠加最干净");
+      ImGui::Text("比矩稳定,叠加最干净");
 
       // Row 4: 概率密度函数 (Hermite)
       ImGui::TableNextRow();
@@ -964,11 +964,34 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
 static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
                             int selected_dimension, int &clicked_dimension,
                             int &hovered_asset_out) {
-  ImGui::Text("PDF密度(资产截面)");
+  // Title with tooltip
+  ImGui::Text("资产截面(分布密度 + 分位数偏移)");
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered()) {
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(350.0f);
+    ImGui::TextUnformatted(
+        "分位数一致性尤为重要:\n"
+        "不同资产的累积分布函数(CDF)应尽量靠近截面均值 μ(q),\n"
+        "以保证因子组合阶段分位数的有效性与稳定性。\n\n"
+        "在 5%, 10%, 15%, 20%, ... 分位数级别分别计算离散偏移向量 Δ_i:\n\n"
+        "    Δ_i = [F_1(q_i) - μ(q_i), F_2(q_i) - μ(q_i), ..., F_N(q_i) - μ(q_i)] ∈ R^N\n\n"
+        "偏移值:保留符号的偏移能量\n\n"
+        "    S = sign(∑_{j=1}^N Δ_{i,j}) · ||Δ_i||_2  ∈ R\n\n"
+        "代表全局偏移程度,聚合多维信息至一维标量。\n\n"
+        "偏移色:对偏移向量 Δ 做层次聚类(Ward 法,带最优叶排序)\n\n"
+        "    cluster_order = optimal_leaf_ordering(Ward(Δ))\n\n"
+        "将 N 维偏移映射为一维序列,反映局部结构相似性。");
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+  }
   ImGui::Separator();
 
-  if (dist.compute.status != Dist::Compute::Status::Done || dist.global_by_asset.empty()) {
-    ImGui::Text("No data");
+  // Only show assets in stability (count >= 1000)
+  if (dist.compute.status != Dist::Compute::Status::Done || !dist.stability.valid ||
+      dist.stability.asset_idx.empty()) {
+    ImGui::Text("No data (need assets with n >= 1000)");
     return;
   }
 
@@ -976,8 +999,9 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     ImPlot::SetNextAxesToFit();
   }
 
-  size_t n_assets = dist.global_by_asset.size();
-  int hovered_asset = -1;
+  const auto &stab = dist.stability;
+  size_t n_valid = stab.asset_idx.size();
+  int hovered_idx = -1; // index into stability arrays
   double min_dist_sq = 1e9;
   bool plot_clicked = false;
 
@@ -999,27 +1023,27 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
       double nmy = (mouse.y - limits.Y.Min) / y_range;
 
       // Check stability dots first (top band priority)
-      if (dist.stability.valid && !dist.stability.x_norm.empty() && nmy > 0.93f) {
+      if (nmy > 0.93f) {
         float best_dist = 0.03f;
-        for (size_t a = 0; a < n_assets; ++a) {
-          float dx = static_cast<float>(std::abs(nmx - dist.stability.x_norm[a]));
+        for (size_t i = 0; i < n_valid; ++i) {
+          float dx = static_cast<float>(std::abs(nmx - stab.x_norm[i]));
           if (dx < best_dist) {
             best_dist = dx;
-            hovered_asset = static_cast<int>(a);
+            hovered_idx = static_cast<int>(i);
             min_dist_sq = 0.0;
           }
         }
       }
 
       // Check PDF lines (if not hovering stability)
-      if (hovered_asset < 0) {
-        for (size_t a = 0; a < n_assets; ++a) {
-          const auto &kll = dist.global_by_asset[a];
-          if (kll.count() < 10) continue;
+      if (hovered_idx < 0) {
+        for (size_t i = 0; i < n_valid; ++i) {
+          const auto &kll = dist.global_by_asset[stab.asset_idx[i]];
           const float *px, *py;
           size_t pn;
           kll.exportPDF(px, py, pn);
-          if (pn == 0) continue;
+          if (pn == 0)
+            continue;
 
           for (size_t j = 0; j + 1 < pn; ++j) {
             double nx1 = (px[j] - limits.X.Min) / x_range;
@@ -1029,7 +1053,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
             double d_sq = point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2);
             if (d_sq < min_dist_sq) {
               min_dist_sq = d_sq;
-              hovered_asset = static_cast<int>(a);
+              hovered_idx = static_cast<int>(i);
             }
           }
         }
@@ -1039,16 +1063,16 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     // ========================================================================
     // Phase 2: Draw all PDFs (highlight hovered)
     // ========================================================================
-    for (size_t a = 0; a < n_assets; ++a) {
-      const auto &kll = dist.global_by_asset[a];
-      if (kll.count() < 10) continue;
+    for (size_t i = 0; i < n_valid; ++i) {
+      const auto &kll = dist.global_by_asset[stab.asset_idx[i]];
       const float *x, *y;
       size_t n;
       kll.exportPDF(x, y, n);
-      if (n == 0) continue;
+      if (n == 0)
+        continue;
 
-      bool is_hovered = (static_cast<int>(a) == hovered_asset);
-      float t = static_cast<float>(a) / static_cast<float>(n_assets);
+      bool is_hovered = (static_cast<int>(i) == hovered_idx);
+      float t = static_cast<float>(i) / static_cast<float>(n_valid);
       ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Hot);
 
       if (is_hovered) {
@@ -1073,27 +1097,41 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     // ========================================================================
     // Phase 3: Draw stability scatter (highlight hovered)
     // ========================================================================
-    if (dist.stability.valid && !dist.stability.x_norm.empty()) {
+    {
       float y_top = static_cast<float>(limits.Y.Max - y_range * 0.02);
       float x_min = static_cast<float>(limits.X.Min);
       float x_max = static_cast<float>(limits.X.Max);
 
-      for (size_t a = 0; a < n_assets; ++a) {
-        float x_pos = x_min + dist.stability.x_norm[a] * (x_max - x_min);
-        bool is_hovered = (static_cast<int>(a) == hovered_asset);
+      // Draw asset dots
+      for (size_t i = 0; i < n_valid; ++i) {
+        float x_pos = x_min + stab.x_norm[i] * (x_max - x_min);
+        bool is_hovered = (static_cast<int>(i) == hovered_idx);
 
         if (is_hovered) {
           // Highlighted: large white outline + cyan fill
-          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 10, ImVec4(1,1,1,1), 2, ImVec4(1,1,1,1));
+          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 10, ImVec4(1, 1, 1, 1), 2, ImVec4(1, 1, 1, 1));
           ImPlot::PlotScatter("##stab_outline", &x_pos, &y_top, 1);
-          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 8, ImVec4(0,1,1,1), 0, ImVec4(0,1,1,1));
+          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 8, ImVec4(0, 1, 1, 1), 0, ImVec4(0, 1, 1, 1));
           ImPlot::PlotScatter("##stab_hl", &x_pos, &y_top, 1);
         } else {
-          ImVec4 color = ImPlot::SampleColormap(dist.stability.color_t[a], ImPlotColormap_Viridis);
+          ImVec4 color = ImPlot::SampleColormap(stab.color_t[i], ImPlotColormap_Viridis);
           ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3, color, 0, color);
           ImPlot::PlotScatter("##stability", &x_pos, &y_top, 1);
         }
       }
+
+      // Draw reference labels: min, 0, max (with text annotations)
+      float label_y = y_top + static_cast<float>(y_range * 0.01);
+      float x_center = (x_min + x_max) * 0.5f; // 0 is at center
+
+      // Format score values
+      char buf_min[16], buf_max[16];
+      std::snprintf(buf_min, sizeof(buf_min), "%.3f", stab.score_min);
+      std::snprintf(buf_max, sizeof(buf_max), "%.3f", stab.score_max);
+
+      ImPlot::PlotText(buf_min, x_min, label_y, ImVec2(0, 0));
+      ImPlot::PlotText("0", x_center, label_y, ImVec2(0.5f, 0));
+      ImPlot::PlotText(buf_max, x_max, label_y, ImVec2(1, 0));
     }
 
     // Click detection
@@ -1102,6 +1140,13 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     }
 
     ImPlot::EndPlot();
+  }
+
+  // Output: convert stability index to original asset index
+  if (hovered_idx >= 0 && min_dist_sq < 0.001) {
+    hovered_asset_out = static_cast<int>(stab.asset_idx[hovered_idx]);
+  } else {
+    hovered_asset_out = -1;
   }
 
   // Click detection
@@ -1116,9 +1161,6 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     ImVec2 p_max = ImGui::GetItemRectMax();
     draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
   }
-
-  // Output hovered asset for external display
-  hovered_asset_out = (min_dist_sq < 0.001) ? hovered_asset : -1;
 }
 
 // ============================================================================
@@ -1162,7 +1204,8 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
 
   // Date range + market cap on same line
   auto format_date = [](const std::string &date) -> std::string {
-    if (date.size() == 8) return date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
+    if (date.size() == 8)
+      return date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
     return "--";
   };
   float market_cap = asset_info.calculate_market_cap(stock_key);
@@ -1178,12 +1221,15 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
 
   // Two-column compact layout: Valuation | Statistics
   auto fmt_val = [](const std::string &s) -> std::string {
-    if (s.empty()) return "--";
+    if (s.empty())
+      return "--";
     try {
       char buf[12];
       std::snprintf(buf, sizeof(buf), "%+.1f", std::stof(s));
       return buf;
-    } catch (...) { return "--"; }
+    } catch (...) {
+      return "--";
+    }
   };
 
   if (ImGui::BeginTable("StatsTable", 2, ImGuiTableFlags_SizingFixedFit)) {
@@ -1193,35 +1239,35 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
     // Row 1: n | PE
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("n = %zu", kll.count());
+    ImGui::Text("样本数 = %zu", kll.count());
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PE = %s", stock_info ? fmt_val(stock_info->peTTM).c_str() : "--");
 
     // Row 2: Mean | PB
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("Mean = %.4f", kll.mean());
+    ImGui::Text("均值 = %.4f", kll.mean());
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PB = %s", stock_info ? fmt_val(stock_info->pbMRQ).c_str() : "--");
 
     // Row 3: Var | PS
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("Var = %.4f", kll.var());
+    ImGui::Text("方差 = %.4f", kll.var());
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PS = %s", stock_info ? fmt_val(stock_info->psTTM).c_str() : "--");
 
     // Row 4: Skew | PCF
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("Skew = %.3f", kll.skew());
+    ImGui::Text("偏度 = %.3f", kll.skew());
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PCF = %s", stock_info ? fmt_val(stock_info->pcfNcfTTM).c_str() : "--");
 
     // Row 5: Kurt
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("Kurt = %.3f", kll.kurt());
+    ImGui::Text("峰度 = %.3f", kll.kurt());
 
     ImGui::EndTable();
   }

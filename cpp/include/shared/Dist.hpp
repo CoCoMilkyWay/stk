@@ -471,15 +471,20 @@ struct Dist {
   // ==========================================================================
 
   struct StabilityViz {
-    // Per-point data indexed by asset_idx [n_assets]
-    std::vector<float> x_norm;    // normalized x position [0,1] from PCA
-    std::vector<float> color_t;   // color parameter [0,1] from Ward leaf position
+    // Only includes assets with count >= 1000
+    std::vector<size_t> asset_idx; // original asset indices [n_valid]
+    std::vector<float> x_norm;     // normalized x position [0,1] [n_valid]
+    std::vector<float> color_t;    // color parameter [0,1] [n_valid]
+    float score_min = 0.0f;        // min signed-square score (for label)
+    float score_max = 0.0f;        // max signed-square score (for label)
 
     bool valid = false;
 
     void clear() {
+      asset_idx.clear();
       x_norm.clear();
       color_t.clear();
+      score_min = score_max = 0.0f;
       valid = false;
     }
   };

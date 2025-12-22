@@ -48,7 +48,7 @@ constexpr uint32_t C_Lime       = 0x32CD32;
 #define TraceFree(ptr)            TracyFree(ptr)
 
 // ========================================================================
-// 一、Zone Marking（作用域标记 - 核心功能）
+// 一、Zone Marking(作用域标记 - 核心功能)
 // ========================================================================
 
 /**
@@ -56,9 +56,9 @@ constexpr uint32_t C_Lime       = 0x32CD32;
  *
  * 用法: 在函数/block 入口放一行 Trace;
  * 效果:
- *   - zone 名字 = 函数名（自动）
- *   - 生命周期 = 作用域（自动 RAII）
- *   - 层级 = 调用栈嵌套（自动）
+ *   - zone 名字 = 函数名(自动)
+ *   - 生命周期 = 作用域(自动 RAII)
+ *   - 层级 = 调用栈嵌套(自动)
  *
  * 示例:
  *   void my_function() {
@@ -66,13 +66,13 @@ constexpr uint32_t C_Lime       = 0x32CD32;
  *     // ...
  *   }
  *
- * 适用: 80% 情况，函数入口，稳定低开销
+ * 适用: 80% 情况,函数入口,稳定低开销
  */
 
 /**
  * TraceN(name) - 命名作用域 zone
  *
- * 区别: zone 名字由你指定（而不是函数名）
+ * 区别: zone 名字由你指定(而不是函数名)
  *
  * 示例:
  *   for (...) {
@@ -90,20 +90,20 @@ constexpr uint32_t C_Lime       = 0x32CD32;
  * ⚠️ 重要: depth 不是"自动往下打 N 层"！
  *
  * 真实含义:
- *   - 从当前位置往上采集 depth 层调用栈（使用 dbghelp）
+ *   - 从当前位置往上采集 depth 层调用栈(使用 dbghelp)
  *   - 每次进入 zone 时触发一次 StackWalk64
- *   - 开销: ~630ns/次（比普通 zone 慢 10 倍+）
+ *   - 开销: ~630ns/次(比普通 zone 慢 10 倍+)
  *
  * 示例:
  *   void hot_function() {
- *     TraceS(25);  // 采集 25 层调用栈，看谁调用了这个函数
+ *     TraceS(25);  // 采集 25 层调用栈,看谁调用了这个函数
  *     // ...
  *   }
  *
  * 适用:
  *   - 需要看"谁调用了这个函数"
  *   - 深度分析调用关系
- *   - ❌ 不适合高频调用（开销大）
+ *   - ❌ 不适合高频调用(开销大)
  */
 
 /**
@@ -116,30 +116,30 @@ constexpr uint32_t C_Lime       = 0x32CD32;
  *   // zone 名字 = "SequentialWorker"
  *   // 调用栈深度 = 25 层
  *
- * 适用: 顶层入口函数（如 worker 线程），需要完整调用栈分析
+ * 适用: 顶层入口函数(如 worker 线程),需要完整调用栈分析
  */
 
 // ========================================================================
-// 二、Zone Attributes（zone 属性 - 附加信息）
+// 二、Zone Attributes(zone 属性 - 附加信息)
 // ========================================================================
 // ⚠️ 必须写在 zone 作用域内部
 
 /**
  * TraceName / TraceNameS - 运行时改名
  *
- * 用法: 在 Trace; 之后调用，动态修改 zone 名字
+ * 用法: 在 Trace; 之后调用,动态修改 zone 名字
  *
  * 示例:
  *   Trace;
  *   TraceNameS(asset.name.c_str());  // 名字 = 运行时变量
  *
- * 注意: 比 TraceN 慢（需要 runtime copy）
+ * 注意: 比 TraceN 慢(需要 runtime copy)
  */
 
 /**
  * TraceText / TraceTextS - 附加说明文本
  *
- * 用法: 给 zone 添加额外信息（UI 右侧显示）
+ * 用法: 给 zone 添加额外信息(UI 右侧显示)
  *
  * 示例:
  *   TraceN("DateLoop");
@@ -151,7 +151,7 @@ constexpr uint32_t C_Lime       = 0x32CD32;
 /**
  * TraceValue(value) - 附加数值
  *
- * 用法: 给 zone 附一个 int64/double（Tracy 可画时间序列）
+ * 用法: 给 zone 附一个 int64/double(Tracy 可画时间序列)
  *
  * 示例:
  *   TraceN("ProcessBatch");
@@ -163,21 +163,21 @@ constexpr uint32_t C_Lime       = 0x32CD32;
 /**
  * TraceColor(color) - 改显示颜色
  *
- * 用法: 纯 UI，不影响性能统计
+ * 用法: 纯 UI,不影响性能统计
  *
  * 示例:
  *   Trace;
- *   TraceColor(0xFF0000);  // 红色（RGB）
+ *   TraceColor(0xFF0000);  // 红色(RGB)
  */
 
 // ========================================================================
-// 三、Frame & Thread（时间轴结构）
+// 三、Frame & Thread(时间轴结构)
 // ========================================================================
 
 /**
  * TraceFrame - 帧标记
  *
- * 用法: 标记一个逻辑"帧"（Tracy UI 按帧切分时间轴）
+ * 用法: 标记一个逻辑"帧"(Tracy UI 按帧切分时间轴)
  *
  * 示例:
  *   for (int day = 0; day < days; ++day) {
@@ -185,13 +185,13 @@ constexpr uint32_t C_Lime       = 0x32CD32;
  *     TraceFrame;  // 标记一帧结束
  *   }
  *
- * 适用: tick, bar, batch, epoch（非图形项目也非常有用）
+ * 适用: tick, bar, batch, epoch(非图形项目也非常有用)
  */
 
 /**
  * TraceFrameN(name) - 命名帧
  *
- * 用法: 多 frame 流（不同子系统独立帧）
+ * 用法: 多 frame 流(不同子系统独立帧)
  *
  * 示例:
  *   TraceFrameN("Strategy");
@@ -210,28 +210,28 @@ constexpr uint32_t C_Lime       = 0x32CD32;
  */
 
 // ========================================================================
-// 四、Messages（离散事件）
+// 四、Messages(离散事件)
 // ========================================================================
 
 /**
  * TraceMessage / TraceMessageS - 即时消息
  *
- * 用法: 记录离散事件（不形成层级）
+ * 用法: 记录离散事件(不形成层级)
  *
  * 示例:
  *   TraceMessageS("Order rejected");
  *
- * 适用: 比 printf/log 更好（时间轴可见）
+ * 适用: 比 printf/log 更好(时间轴可见)
  */
 
 // ========================================================================
-// 五、Memory（分配追踪）
+// 五、Memory(分配追踪)
 // ========================================================================
 
 /**
  * TraceAlloc / TraceFree - 内存分配追踪
  *
- * 用法: 显式标记内存操作（Tracy 画内存曲线）
+ * 用法: 显式标记内存操作(Tracy 画内存曲线)
  *
  * 示例:
  *   void* ptr = malloc(size);
@@ -240,7 +240,7 @@ constexpr uint32_t C_Lime       = 0x32CD32;
  *   TraceFree(ptr);
  *   free(ptr);
  *
- * 注意: 如果已 hook allocator，可以不用
+ * 注意: 如果已 hook allocator,可以不用
  */
 
 #else
@@ -286,8 +286,8 @@ constexpr uint32_t C_Lime       = 0x32CD32;
 // TraceMessage           | 离散事件              | 低    | —
 //
 // ⚠️ 重要提醒:
-// 1. 所有宏都是"手动打桩"，不会自动递归或展开
-// 2. TraceS/TraceNS 的 depth 是"调用栈采集深度"，不是"自动插桩深度"
-// 3. 99% 情况只需要 Trace / TraceN，少用 TraceS/TraceNS
+// 1. 所有宏都是"手动打桩",不会自动递归或展开
+// 2. TraceS/TraceNS 的 depth 是"调用栈采集深度",不是"自动插桩深度"
+// 3. 99% 情况只需要 Trace / TraceN,少用 TraceS/TraceNS
 //
 // ============================================================================

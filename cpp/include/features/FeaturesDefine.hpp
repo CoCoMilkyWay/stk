@@ -326,7 +326,7 @@ inline constexpr ClockTime index2minute(size_t index) {
 
 // Convert Level 2 hour index (0-3) to clock hour (按小时整数边界分配)
 // Level 2 one day has ~4 hour buckets, map each to its clock hour
-// 按照数据起始时间落在的时钟小时进行分配：
+// 按照数据起始时间落在的时钟小时进行分配:
 //   9:15-9:59 -> 9, 10:00-10:59 -> 10, 11:00-11:59 -> 11, 13:00-13:59 -> 13, 14:00-14:59 -> 14
 inline constexpr uint8_t index2hour(size_t hour_index) {
   // Simple mapping: Level 2 hour_index corresponds to actual trading hours

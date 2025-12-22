@@ -169,7 +169,7 @@ template <typename Real, unsigned N> constexpr std::array<Real, N> ft_daubechies
 } // namespace detail
 
 /*
- * Given ω∈ℝ, computes a numerical approximation to 𝓕[𝜙](ω),
+ * Given ω∈R, computes a numerical approximation to 𝓕[𝜙](ω),
  * where 𝜙 is the Daubechies scaling function.
  * Fast and accurate evaluation of these function seems to me to be a rather involved research project,
  * which I have not endeavored to complete.

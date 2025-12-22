@@ -16,30 +16,30 @@
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * 【核心问题】
- *   给定流式数据 x₁, x₂, ..., x_n，如何用 o(n) 空间回答分位数/CDF 查询？
+ *   给定流式数据 x₁, x₂, ..., x_n,如何用 o(n) 空间回答分位数/CDF 查询？
  *
  * 【解决方案】
- *   KLL Sketch (Karnin-Lang-Liberty, FOCS 2016) 使用分层随机压缩：
- *   - 原始 KLL：空间 O(k · log log n)，使用递减容量 capacity[ℓ] = ⌈k·(2/3)^ℓ⌉
- *   - 简化版本：空间 O(k · log(n/k))，所有层统一容量 k
- *   - 误差：对任意秩查询，|r̂ - r| ≤ ε·n，其中 ε = O(1/k)
- *   - 支持合并（mergeable），适用于分布式计算
+ *   KLL Sketch (Karnin-Lang-Liberty, FOCS 2016) 使用分层随机压缩:
+ *   - 原始 KLL:空间 O(k · log log n),使用递减容量 capacity[ℓ] = ⌈k·(2/3)^ℓ⌉
+ *   - 简化版本:空间 O(k · log(n/k)),所有层统一容量 k
+ *   - 误差:对任意秩查询,|r̂ - r| ≤ ε·n,其中 ε = O(1/k)
+ *   - 支持合并(mergeable),适用于分布式计算
  *
  * 【数据结构】
- *   多层 Level：level ℓ 的样本隐式权重为 w = 2^ℓ
- *   - Level 0：权重 1，直接存储新样本
- *   - Level ℓ：权重 2^ℓ，由 level ℓ-1 压缩晋升而来
+ *   多层 Level:level ℓ 的样本隐式权重为 w = 2^ℓ
+ *   - Level 0:权重 1,直接存储新样本
+ *   - Level ℓ:权重 2^ℓ,由 level ℓ-1 压缩晋升而来
  *
  * 【Compaction 操作】
- *   当某层超过容量时触发：
+ *   当某层超过容量时触发:
  *   1. 排序该层样本
- *   2. 随机选择偶数或奇数下标（概率各 1/2）
- *   3. 保留选中的一半，晋升到上一层
- *   数学性质：保持秩估计的无偏性 E[r̂] = r
+ *   2. 随机选择偶数或奇数下标(概率各 1/2)
+ *   3. 保留选中的一半,晋升到上一层
+ *   数学性质:保持秩估计的无偏性 E[r̂] = r
  *
  * 【重建接口】
- *   四大族（CDF / PDF / ICDF / QDF），使用 PCHIP 重建方法：
- *   PCHIP：单调三次 Hermite 插值（C¹平滑），保单调，快速
+ *   四大族(CDF / PDF / ICDF / QDF),使用 PCHIP 重建方法:
+ *   PCHIP:单调三次 Hermite 插值(C¹平滑),保单调,快速
  *
  * 【参考文献】
  *   [1] Karnin, Lang, Liberty. "Optimal Quantile Approximation in Streams"
@@ -53,11 +53,11 @@
 // 重建参数
 // ═══════════════════════════════════════════════════════════════════════════
 
-// CDF/ICDF高斯滤波参数：半径占总点数的百分比
+// CDF/ICDF高斯滤波参数:半径占总点数的百分比
 // - ratio = 0: 关闭滤波
-// - ratio = 0.01~0.03: 轻度平滑（1%~3%半径）
-// - ratio = 0.05~0.10: 中度平滑（5%~10%半径）
-// 滤波后的CDF/ICDF差分会传递到PDF/QDF，实现整体平滑
+// - ratio = 0.01~0.03: 轻度平滑(1%~3%半径)
+// - ratio = 0.05~0.10: 中度平滑(5%~10%半径)
+// 滤波后的CDF/ICDF差分会传递到PDF/QDF,实现整体平滑
 constexpr float CDF_BLUR_RADIUS_RATIO = 0.05f;
 
 class KLLcache {
@@ -66,15 +66,15 @@ public:
    * LinePtr — 零拷贝导出结果
    *
    * 【设计原则】
-   *   数据持久化在 KLLcache 的内部 Cache 中，指针生命期与 KLLcache 绑定。
-   *   避免每次导出都动态分配，提高性能。
+   *   数据持久化在 KLLcache 的内部 Cache 中,指针生命期与 KLLcache 绑定。
+   *   避免每次导出都动态分配,提高性能。
    *
    * 【注意事项】
    *   - 不要持有指针超过对象生命期
    */
   struct LinePtr {
-    const float *x; // x 坐标指针（CDF/PDF: value domain; ICDF/QDF: [0,1]）
-    const float *y; // y 值指针（CDF/ICDF: function values; PDF/QDF: density）
+    const float *x; // x 坐标指针(CDF/PDF: value domain; ICDF/QDF: [0,1])
+    const float *y; // y 值指针(CDF/ICDF: function values; PDF/QDF: density)
     size_t n;       // 数组长度
   };
 
@@ -85,39 +85,39 @@ public:
 
   /**
    * @brief 构造函数
-   * @param k  每层容量（越大精度越高，内存/时间开销越大）
-   * @param n_recon  重建点数（CDF/ICDF的采样点数，PDF/QDF为n_recon-1）
+   * @param k  每层容量(越大精度越高,内存/时间开销越大)
+   * @param n_recon  重建点数(CDF/ICDF的采样点数,PDF/QDF为n_recon-1)
    *
    * 【数学理论】
    *   基于 KLL Sketch (Karnin-Lang-Liberty, 2016) 的简化版本。
-   *   给定容量参数 k，sketch 通过分层随机压缩维持固定空间。
+   *   给定容量参数 k,sketch 通过分层随机压缩维持固定空间。
    *
    * 【简化设计】
-   *   原始 KLL：capacity[ℓ] = ⌈k · (2/3)^ℓ⌉  （递减）
-   *   简化版本：capacity[ℓ] = k              （统一）
+   *   原始 KLL:capacity[ℓ] = ⌈k · (2/3)^ℓ⌉  (递减)
+   *   简化版本:capacity[ℓ] = k              (统一)
    *
-   *   优势：
-   *   - 参数简单：只有两个参数 k（精度）和 n_recon（分辨率）
-   *   - 行为可预测：每层容量相同，重建点数固定
-   *   - 实用性强：对于中等规模数据（<10M），统一容量效果更好
+   *   优势:
+   *   - 参数简单:只有两个参数 k(精度)和 n_recon(分辨率)
+   *   - 行为可预测:每层容量相同,重建点数固定
+   *   - 实用性强:对于中等规模数据(<10M),统一容量效果更好
    *
    * 【公式定义】
-   *   - 每层容量：capacity[ℓ] = k
-   *   - 总层数上界：L = ⌈log₂(n/k)⌉
-   *   - 总存储项数：m = k · L = O(k · log(n/k))
+   *   - 每层容量:capacity[ℓ] = k
+   *   - 总层数上界:L = ⌈log₂(n/k)⌉
+   *   - 总存储项数:m = k · L = O(k · log(n/k))
    *
    * 【参数值域】
-   *   k ∈ [2, ∞)，推荐 k ≥ 100
-   *   典型值：k=256 (快速), k=512 (平衡), k=1024 (高精度)
+   *   k ∈ [2, ∞),推荐 k ≥ 100
+   *   典型值:k=256 (快速), k=512 (平衡), k=1024 (高精度)
    *
-   *   n_recon ∈ [2, ∞)，推荐 n_recon ≥ 100
-   *   典型值：n_recon=100 (快速), n_recon=300 (平衡), n_recon=1000 (高分辨率)
+   *   n_recon ∈ [2, ∞),推荐 n_recon ≥ 100
+   *   典型值:n_recon=100 (快速), n_recon=300 (平衡), n_recon=1000 (高分辨率)
    *
    * 【Motivation】
-   *   统一参数化使得：
-   *   1. API更简洁（不需要每次调用时传参数）
-   *   2. 缓存更高效（一次性计算所有重建结果）
-   *   3. 行为更可预测（固定的重建质量）
+   *   统一参数化使得:
+   *   1. API更简洁(不需要每次调用时传参数)
+   *   2. 缓存更高效(一次性计算所有重建结果)
+   *   3. 行为更可预测(固定的重建质量)
    */
   explicit KLLcache(size_t k = 512, size_t n_recon = 1024);
 
@@ -128,72 +128,72 @@ public:
   KLLcache &operator=(KLLcache &&) noexcept = default;
 
   /**
-   * @brief 清空所有状态，回到初始（empty）状态。
+   * @brief 清空所有状态,回到初始(empty)状态。
    *
-   * 【语义】重置 n_total=0，清空所有 level buffer，min/max 未定义。
+   * 【语义】重置 n_total=0,清空所有 level buffer,min/max 未定义。
    */
   void clear();
 
   /**
-   * @brief 检查是否为空（未插入任何数据）
+   * @brief 检查是否为空(未插入任何数据)
    * @return n_total == 0
    */
   [[nodiscard]] bool empty() const noexcept { return count_ == 0; }
 
   // ----------------
-  // 插入 / 合并（流式）
+  // 插入 / 合并(流式)
   // ----------------
 
   /**
    * addBatch
-   *  - 输入：样本向量 X = {x₁, x₂, ..., x_m}
+   *  - 输入:样本向量 X = {x₁, x₂, ..., x_m}
    *
    * 【数学理论】
-   *   由于 KLL 的 mergeable 性质，插入顺序不影响最终的误差界。
+   *   由于 KLL 的 mergeable 性质,插入顺序不影响最终的误差界。
    *
-   * 【复杂度】（简化版本：capacity[ℓ] = k）
-   *   - 时间：O(m + (m/k)·k log k) = O(m + m log k) 摊销
-   *   - 触发 compaction 次数：O(m/k)
-   *   - 每次 compaction 排序：O(k log k)
+   * 【复杂度】(简化版本:capacity[ℓ] = k)
+   *   - 时间:O(m + (m/k)·k log k) = O(m + m log k) 摊销
+   *   - 触发 compaction 次数:O(m/k)
+   *   - 每次 compaction 排序:O(k log k)
    *
    * 【Motivation】
-   *   批量接口允许实现层面优化（如延迟排序、批量晋升），
+   *   批量接口允许实现层面优化(如延迟排序、批量晋升),
    *   减少 compaction 的排序开销。
    */
   void addBatch(const std::vector<float> &X);
 
   /**
    * mergeWith
-   *  - 输入：另一个 KLLcache（只读）
-   *  - 前提：this.k == other.k
+   *  - 输入:另一个 KLLcache(只读)
+   *  - 前提:this.k == other.k
    *
    * 【数学理论】
-   *   KLL sketch 具有 mergeable 性质：
-   *   - 可交换：merge(A,B) ≈ merge(B,A)（误差界相同）
-   *   - 可结合：merge(merge(A,B),C) ≈ merge(A,merge(B,C))
+   *   KLL sketch 具有 mergeable 性质:
+   *   - 可交换:merge(A,B) ≈ merge(B,A)(误差界相同)
+   *   - 可结合:merge(merge(A,B),C) ≈ merge(A,merge(B,C))
    *
-   *   合并算法：
-   *   1. 对每层 ℓ：this.buffer[ℓ] ← this.buffer[ℓ] ∪ other.buffer[ℓ]
+   *   合并算法:
+   *   1. 对每层 ℓ:this.buffer[ℓ] ← this.buffer[ℓ] ∪ other.buffer[ℓ]
    *   2. 从 level 0 向上依次执行 compaction 直到所有层满足容量约束
    *
    * 【误差界】
-   *   设 this 来自 n₁ 个样本，other 来自 n₂ 个样本。
-   *   合并后对任意秩 r 的估计 r̂ 满足：
+   *   设 this 来自 n₁ 个样本,other 来自 n₂ 个样本。
+   *   合并后对任意秩 r 的估计 r̂ 满足:
    *       |r̂ - r| ≤ ε·(n₁ + n₂)
    *
    * 【Motivation】
-   *   mergeable 性质支持分布式计算：各节点独立构建 sketch，
-   *   最后合并得到全局分位数估计，通信开销仅 O(k)。
+   *   mergeable 性质支持分布式计算:各节点独立构建 sketch,
+   *   最后合并得到全局分位数估计,通信开销仅 O(k)。
    */
   void mergeWith(const KLLcache &other);
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 四大导出接口（CDF / PDF / ICDF / QDF）
+  // 四大导出接口(CDF / PDF / ICDF / QDF)
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
    * ═══════════════════════════════════════════════════════════════════════════
-   * 四大导出接口（4-Object System）
+   * 四大导出接口(4-Object System)
    * ═══════════════════════════════════════════════════════════════════════════
    *
    * 【对偶结构】
@@ -207,15 +207,15 @@ public:
    *
    * 【数据规模】
    *   - CDF/ICDF: n_recon 个点
-   *   - PDF/QDF:  n_recon-1 个点（区间中点）
+   *   - PDF/QDF:  n_recon-1 个点(区间中点)
    * ═══════════════════════════════════════════════════════════════════════════
    */
 
   /**
    * exportCDF — 导出累积分布函数 F(x)
    *
-   * 【数学定义】F(x) = P(X ≤ x)，单调非减，F(-∞)=0, F(+∞)=1
-   * 【算法】PCHIP 单调三次 Hermite 插值（C¹平滑）
+   * 【数学定义】F(x) = P(X ≤ x),单调非减,F(-∞)=0, F(+∞)=1
+   * 【算法】PCHIP 单调三次 Hermite 插值(C¹平滑)
    * 【输出】{x ∈ [min,max], F ∈ [0,1], n=n_recon}
    * 【前提】!empty()
    */
@@ -224,7 +224,7 @@ public:
   /**
    * exportPDF — 导出概率密度函数 f(x) = dF/dx
    *
-   * 【数学定义】f(x) ≥ 0，∫ f(x)dx = 1
+   * 【数学定义】f(x) ≥ 0,∫ f(x)dx = 1
    * 【算法】从 PCHIP 平滑的 CDF 差分得到
    * 【输出】{x ∈ [min,max], f ≥ 0, n=n_recon-1}
    * 【前提】!empty()
@@ -234,8 +234,8 @@ public:
   /**
    * exportICDF — 导出逆累积分布函数 Q(u) = F^{-1}(u)
    *
-   * 【数学定义】Q(u) = inf{x: F(x)≥u}，单调非减，Q(0)=min, Q(1)=max
-   * 【算法】PCHIP 单调三次 Hermite 插值（C¹平滑）
+   * 【数学定义】Q(u) = inf{x: F(x)≥u},单调非减,Q(0)=min, Q(1)=max
+   * 【算法】PCHIP 单调三次 Hermite 插值(C¹平滑)
    * 【输出】{u ∈ [0,1], Q ∈ [min,max], n=n_recon}
    * 【前提】!empty()
    */
@@ -244,7 +244,7 @@ public:
   /**
    * exportQDF — 导出分位密度函数 ρ(u) = dQ/du = 1/f(Q(u))
    *
-   * 【数学定义】ρ(u) ≥ 0，通过 ICDF 导数估计密度（对偶于 PDF）
+   * 【数学定义】ρ(u) ≥ 0,通过 ICDF 导数估计密度(对偶于 PDF)
    * 【算法】从 PCHIP 平滑的 ICDF 差分得到
    * 【输出】{u ∈ [0,1], ρ ≥ 0, n=n_recon-1}
    * 【前提】!empty()
@@ -252,23 +252,23 @@ public:
   [[nodiscard]] LinePtr exportQDF() const;
 
   // ----------------
-  // 内部状态导出（用于调试/测试）
+  // 内部状态导出(用于调试/测试)
   // ----------------
 
   /**
    * exportWeightedSamples
-   *  - 输出：(values, weights)，其中 weights[i] = 2^{level(i)}
-   *  - 前提：!empty()
+   *  - 输出:(values, weights),其中 weights[i] = 2^{level(i)}
+   *  - 前提:!empty()
    *
    * 【用途】
-   *   导出 KLL 内部的加权样本，用于自定义重建算法或调试。
+   *   导出 KLL 内部的加权样本,用于自定义重建算法或调试。
    */
   std::pair<std::vector<float>, std::vector<uint64_t>>
   exportWeightedSamples() const;
 
   /**
-   * dumpLevels — 调试：导出所有层的 buffer
-   *  - 输出：levels[ℓ] = 第 ℓ 层的样本数组
+   * dumpLevels — 调试:导出所有层的 buffer
+   *  - 输出:levels[ℓ] = 第 ℓ 层的样本数组
    */
   std::vector<std::vector<float>> dumpLevels() const;
 
@@ -277,35 +277,35 @@ public:
   // ----------------
 
   /**
-   * storedSize — 当前存储的样本总数（所有层的 buffer 大小之和）
+   * storedSize — 当前存储的样本总数(所有层的 buffer 大小之和)
    */
   [[nodiscard]] size_t storedSize() const noexcept;
 
   /**
-   * totalCount — 插入的总样本数（包括已被压缩的）
+   * totalCount — 插入的总样本数(包括已被压缩的)
    */
   [[nodiscard]] uint64_t totalCount() const noexcept;
 
   /**
    * range — 返回 (min, max)
-   *  - 前提：!empty()
+   *  - 前提:!empty()
    */
   [[nodiscard]] std::pair<float, float> range() const noexcept;
 
   /**
-   * getMemoryUsage — 返回 KLL sketch 的实际内存占用（bytes）
+   * getMemoryUsage — 返回 KLL sketch 的实际内存占用(bytes)
    *
    * 【计算内容】
    *   1. Level buffers: Σ_ℓ buffer[ℓ].capacity() * sizeof(float)
    *   2. Metadata: sizeof(Level) * levels_.size() + vector overhead
    *
    * 【简化说明】
-   *   - 每层容量统一为 k，总层数 L ≈ log₂(n/k)
+   *   - 每层容量统一为 k,总层数 L ≈ log₂(n/k)
    *   - 实际占用 ≈ k * L * sizeof(float) + O(1)
-   *   - 包括 vector 的 capacity，不只是 size
-   *   - 不包括 cache（懒加载，仅在重建时使用）
+   *   - 包括 vector 的 capacity,不只是 size
+   *   - 不包括 cache(懒加载,仅在重建时使用)
    *
-   * @return 总内存占用（bytes）
+   * @return 总内存占用(bytes)
    */
   [[nodiscard]] size_t getMemoryUsage() const noexcept;
 
@@ -321,7 +321,7 @@ public:
    * 【KLL 内存占用】
    *   见 getMemoryUsage()
    *
-   * @return 压缩率（倍数），例如 10.5 表示压缩了 10.5 倍
+   * @return 压缩率(倍数),例如 10.5 表示压缩了 10.5 倍
    */
   [[nodiscard]] float getCompressionRatio() const noexcept;
 
@@ -331,8 +331,8 @@ private:
   // ----------------
 
   struct Level {
-    std::vector<float> buffer; // 存储样本（隐式权重 2^ℓ）
-    size_t capacity;           // 容量上界（触发 compaction）
+    std::vector<float> buffer; // 存储样本(隐式权重 2^ℓ)
+    size_t capacity;           // 容量上界(触发 compaction)
   };
 
   struct WeightedPoint {
@@ -352,19 +352,19 @@ private:
     std::vector<WeightedPoint> sorted_pts; // 排序后的点集 {value, cum_prob, weight}
 
     // ────────────────────────────────────────────────────────────────────────
-    // Level 2: CDF/ICDF knots（原始稀疏）
+    // Level 2: CDF/ICDF knots(原始稀疏)
     // ────────────────────────────────────────────────────────────────────────
     std::vector<float> cdf_x, cdf_F;   // CDF knots: {x, F(x)}
     std::vector<float> icdf_u, icdf_Q; // ICDF knots: {u, Q(u)}
 
     // ────────────────────────────────────────────────────────────────────────
-    // Level 3: 重建结果（PCHIP 方法）
+    // Level 3: 重建结果(PCHIP 方法)
     // ────────────────────────────────────────────────────────────────────────
-    // PCHIP方法：单调三次 Hermite 插值（C¹平滑）
+    // PCHIP方法:单调三次 Hermite 插值(C¹平滑)
     std::vector<float> cdf_pchip_x, cdf_pchip_F;   // n 个点
-    std::vector<float> pdf_pchip_x, pdf_pchip_f;   // n-1 个点（区间中点）
+    std::vector<float> pdf_pchip_x, pdf_pchip_f;   // n-1 个点(区间中点)
     std::vector<float> icdf_pchip_u, icdf_pchip_Q; // n 个点
-    std::vector<float> qdf_pchip_u, qdf_pchip_rho; // n-1 个点（区间中点）
+    std::vector<float> qdf_pchip_u, qdf_pchip_rho; // n-1 个点(区间中点)
 
     void invalidate() noexcept {
       valid = false;
@@ -376,15 +376,15 @@ private:
   // ----------------
 
   size_t capacity_;           // 每层容量 k
-  size_t resolution_;         // 重建点数 n（CDF/ICDF: n个点；PDF/QDF: n-1个点）
+  size_t resolution_;         // 重建点数 n(CDF/ICDF: n个点；PDF/QDF: n-1个点)
   uint64_t count_;            // 插入的总样本数
   std::vector<Level> levels_; // 多层 buffer
   float min_, max_;           // 值域范围
-  std::mt19937_64 rng_;       // 随机数生成器（用于 compaction）
-  mutable Cache cache_;       // 缓存（懒加载）
+  std::mt19937_64 rng_;       // 随机数生成器(用于 compaction)
+  mutable Cache cache_;       // 缓存(懒加载)
 
   // ----------------
-  // 内部辅助函数：压缩管理
+  // 内部辅助函数:压缩管理
   // ----------------
 
   void growLevels(size_t target_idx);
@@ -392,7 +392,7 @@ private:
   void compact(size_t idx);
 
   // ----------------
-  // 内部辅助函数：缓存管理
+  // 内部辅助函数:缓存管理
   // ----------------
 
   void invalidateCache() noexcept { cache_.invalidate(); }
@@ -400,7 +400,7 @@ private:
   void buildCache() const;
 
   // ----------------
-  // 内部辅助函数：重建（按对称性排列）
+  // 内部辅助函数:重建(按对称性排列)
   // ----------------
 
   void buildCDF_PCHIP() const;
@@ -409,7 +409,7 @@ private:
   void buildPDF_PCHIP() const;
   void buildQDF_PCHIP() const;
 
-  // PDF/QDF 公共逻辑：从累积函数差分得到密度
+  // PDF/QDF 公共逻辑:从累积函数差分得到密度
   static void densityFromCumulative(const float *x, const float *y, size_t n,
                                     float *x_mid, float *density);
 
@@ -417,26 +417,26 @@ private:
   static void gaussianBlur1D(std::vector<float> &data, float sigma);
 
   // ----------------
-  // 内部辅助函数：算法工具
+  // 内部辅助函数:算法工具
   // ----------------
 
   /**
    * sortAndAccumulate — 从加权样本构造排序的 CDF 点列表
    *
    * 【输入】
-   *   values[i]：样本值
-   *   weights[i]：样本权重（2^ℓ）
+   *   values[i]:样本值
+   *   weights[i]:样本权重(2^ℓ)
    *
    * 【输出】
-   *   pts：按 value 排序的 WeightedPoint 列表，每个点包含：
-   *     - value：样本值
-   *     - cum_prob：累积概率（归一化后）
-   *     - weight：归一化权重（sum=1）
+   *   pts:按 value 排序的 WeightedPoint 列表,每个点包含:
+   *     - value:样本值
+   *     - cum_prob:累积概率(归一化后)
+   *     - weight:归一化权重(sum=1)
    *
    * 【算法】
-   *   1. 对 values 排序（使用 indices 存储排序索引）
-   *   2. 计算累积权重：W_j = Σ_{i≤j} weights[i]
-   *   3. 归一化：cum_prob = W_j / W_total
+   *   1. 对 values 排序(使用 indices 存储排序索引)
+   *   2. 计算累积权重:W_j = Σ_{i≤j} weights[i]
+   *   3. 归一化:cum_prob = W_j / W_total
    */
   static void sortAndAccumulate(const std::vector<float> &values,
                                 const std::vector<uint64_t> &weights,
@@ -447,20 +447,20 @@ private:
    * pchipSlopes — Fritsch-Carlson 单调三次 Hermite 斜率计算
    *
    * 【输入】
-   *   x, y: knot 点 (x_j, y_j)，要求 x 严格递增
+   *   x, y: knot 点 (x_j, y_j),要求 x 严格递增
    *
    * 【输出】
-   *   slopes: 每个 knot 的导数 d_j，满足 PCHIP 单调性约束
+   *   slopes: 每个 knot 的导数 d_j,满足 PCHIP 单调性约束
    *
    * 【算法】
-   *   1. 计算区间斜率：δ_j = (y_{j+1} - y_j) / (x_{j+1} - x_j)
-   *   2. 内部点：用加权调和平均计算 d_j（保证单调性）
-   *   3. 端点：用外推公式（满足 |d_0| ≤ 3|δ_0|）
-   *   4. 全局约束：对每个区间，强制 α²+β² ≤ 9（防止过冲）
+   *   1. 计算区间斜率:δ_j = (y_{j+1} - y_j) / (x_{j+1} - x_j)
+   *   2. 内部点:用加权调和平均计算 d_j(保证单调性)
+   *   3. 端点:用外推公式(满足 |d_0| ≤ 3|δ_0|)
+   *   4. 全局约束:对每个区间,强制 α²+β² ≤ 9(防止过冲)
    *
    * 【性质】
-   *   - 若 y 单调递增，则 PCHIP 插值 ŷ(x) 也单调递增
-   *   - C¹ 连续（但不是 C²）
+   *   - 若 y 单调递增,则 PCHIP 插值 ŷ(x) 也单调递增
+   *   - C¹ 连续(但不是 C²)
    *
    * 【参考】Fritsch & Carlson, 1980. "Monotone Piecewise Cubic Interpolation"
    */
@@ -471,7 +471,7 @@ private:
                           std::vector<float> &deltas);
 
   /**
-   * pchipEval — 批量 PCHIP 求值（向量化）
+   * pchipEval — 批量 PCHIP 求值(向量化)
    *
    * 【输入】
    *   queries: 查询点列表
@@ -482,12 +482,12 @@ private:
    *   derivs (可选): dy/dx(queries[j])
    *
    * 【算法】
-   *   对每个 x ∈ queries：
+   *   对每个 x ∈ queries:
    *   1. 二分查找区间 [x_i, x_{i+1}]
    *   2. 计算局部坐标 t = (x - x_i) / h
-   *   3. 用 Hermite basis 函数计算：
+   *   3. 用 Hermite basis 函数计算:
    *         ŷ(x) = H₀(t)·y_i + h·H₁(t)·d_i + H₂(t)·y_{i+1} + h·H₃(t)·d_{i+1}
-   *   4. 若需要导数：dy/dx = (dH₀·y_i + h·dH₁·d_i + ...) / h
+   *   4. 若需要导数:dy/dx = (dH₀·y_i + h·dH₁·d_i + ...) / h
    */
   static void pchipEval(const std::vector<float> &queries,
                         const std::vector<float> &knots_x,
@@ -526,10 +526,10 @@ inline void KLLcache::growLevels(size_t target_idx) {
   assert(target_idx < 32);
   while (levels_.size() <= target_idx) [[unlikely]] {
     Level lv;
-    // 简化设计：所有层容量统一为 k
+    // 简化设计:所有层容量统一为 k
     lv.capacity = capacity_;
-    // reserve 2k，容纳本层最多 k+1 个元素 + compact 晋升的 k/2
-    // 最坏情况：k + k/2 = 1.5k < 2k，无需 reallocation
+    // reserve 2k,容纳本层最多 k+1 个元素 + compact 晋升的 k/2
+    // 最坏情况:k + k/2 = 1.5k < 2k,无需 reallocation
     lv.buffer.reserve(capacity_ * 2);
     levels_.push_back(std::move(lv));
   }
@@ -545,22 +545,22 @@ inline void KLLcache::compactIfNeeded(size_t idx) {
  * compact — 压缩第 idx 层
  *
  * 【算法】
- *   1. 排序 buffer（使用 std::sort，O(n log n)）
- *   2. 随机选择偶数或奇数下标（rng() & 1）
+ *   1. 排序 buffer(使用 std::sort,O(n log n))
+ *   2. 随机选择偶数或奇数下标(rng() & 1)
  *   3. 选中的一半晋升到 idx+1 层
- *   4. 若有剩余元素（奇数个），保留在本层
+ *   4. 若有剩余元素(奇数个),保留在本层
  *   5. 递归检查 idx+1 层是否需要压缩
  */
 inline void KLLcache::compact(size_t idx) {
   auto &buf = levels_[idx].buffer;
   size_t L = buf.size();
 
-  // Step 1: 排序（std::sort 在现代编译器中已经是高度优化的 pdqsort）
+  // Step 1: 排序(std::sort 在现代编译器中已经是高度优化的 pdqsort)
   std::sort(buf.begin(), buf.end());
   growLevels(idx + 1);
 
-  // Step 2: 选择压缩区间（保证长度为偶数）
-  // 若 L 为奇数，则随机保留一个端点作为 leftover（避免系统性偏向一侧）
+  // Step 2: 选择压缩区间(保证长度为偶数)
+  // 若 L 为奇数,则随机保留一个端点作为 leftover(避免系统性偏向一侧)
   size_t start = 0;
   size_t end = L;
   bool has_leftover = ((L & 1U) != 0);
@@ -579,7 +579,7 @@ inline void KLLcache::compact(size_t idx) {
   assert((compact_len & 1U) == 0);
   size_t half_len = compact_len / 2;
 
-  // Step 3: 随机选择偶/奇下标（一次 coin flip），每对取一个晋升到 idx+1
+  // Step 3: 随机选择偶/奇下标(一次 coin flip),每对取一个晋升到 idx+1
   auto &next_buf = levels_[idx + 1].buffer;
   size_t old_size = next_buf.size();
   next_buf.resize(old_size + half_len);
@@ -604,7 +604,7 @@ inline void KLLcache::addBatch(const std::vector<float> &X) {
 
   invalidateCache();
 
-  // 批量计算 min/max（向量化友好）
+  // 批量计算 min/max(向量化友好)
   float batch_min = X[0];
   float batch_max = X[0];
   for (size_t i = 1; i < X.size(); ++i) {
@@ -627,21 +627,21 @@ inline void KLLcache::addBatch(const std::vector<float> &X) {
   assert(count_ <= ((std::numeric_limits<uint64_t>::max)() - X.size()));
   count_ += X.size();
 
-  // 批量插入到 level 0，保持 size ≤ k+1
-  // 每层已 reserve 2k，插入到 k+1 无 reallocation
-  // 大 batch 会分批处理：插满 k+1 → compact → 继续
+  // 批量插入到 level 0,保持 size ≤ k+1
+  // 每层已 reserve 2k,插入到 k+1 无 reallocation
+  // 大 batch 会分批处理:插满 k+1 → compact → 继续
   auto &buf = levels_[0].buffer;
   size_t idx = 0;
   while (idx < X.size()) {
-    // 计算可插入数量（插入到 k+1 触发 compact）
+    // 计算可插入数量(插入到 k+1 触发 compact)
     size_t remaining = capacity_ + 1 - buf.size();
     size_t to_insert = (std::min)(remaining, X.size() - idx);
 
-    // 批量插入（无 reallocation，因为 capacity = 2k > k+1）
+    // 批量插入(无 reallocation,因为 capacity = 2k > k+1)
     buf.insert(buf.end(), X.begin() + idx, X.begin() + idx + to_insert);
     idx += to_insert;
 
-    // 满了就 compact（减半）
+    // 满了就 compact(减半)
     if (buf.size() > capacity_) {
       compact(0);
     }
@@ -670,8 +670,8 @@ inline void KLLcache::mergeWith(const KLLcache &other) {
   assert(count_ <= ((std::numeric_limits<uint64_t>::max)() - other.count_));
   count_ += other.count_;
 
-  // 合并各层：每层已 reserve 2k，足够容纳合并
-  // 最坏情况：this_buf(k) + other_buf(k) = 2k，正好在容量内
+  // 合并各层:每层已 reserve 2k,足够容纳合并
+  // 最坏情况:this_buf(k) + other_buf(k) = 2k,正好在容量内
   for (size_t i = 0; i < other.levels_.size(); i++) {
     growLevels(i);
     const auto &other_buf = other.levels_[i].buffer;
@@ -682,7 +682,7 @@ inline void KLLcache::mergeWith(const KLLcache &other) {
     this_buf.insert(this_buf.end(), other_buf.begin(), other_buf.end());
   }
 
-  // 从 level 0 向上触发 compaction，直到所有层满足容量约束
+  // 从 level 0 向上触发 compaction,直到所有层满足容量约束
   for (size_t i = 0; i < levels_.size(); i++)
     compactIfNeeded(i);
 }
@@ -694,11 +694,11 @@ KLLcache::exportWeightedSamples() const {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Export 实现（4个对称接口）
+// Export 实现(4个对称接口)
 // ════════════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════════════
-// 四大导出接口实现（Export API）
+// 四大导出接口实现(Export API)
 // ════════════════════════════════════════════════════════════════════════════
 
 inline KLLcache::LinePtr KLLcache::exportCDF() const {
@@ -790,19 +790,19 @@ inline void KLLcache::sortAndAccumulate(const std::vector<float> &values,
 
   pts.reserve(n);
 
-  // Step 1: 对 values 排序（使用 indices 存储排序索引）
+  // Step 1: 对 values 排序(使用 indices 存储排序索引)
   indices.resize(n);
   std::iota(indices.begin(), indices.end(), size_t{0});
   std::sort(indices.begin(), indices.end(),
             [&](size_t a, size_t b) { return values[a] < values[b]; });
 
-  // Step 2: 计算总权重（使用 std::accumulate 可能被编译器向量化）
+  // Step 2: 计算总权重(使用 std::accumulate 可能被编译器向量化)
   uint64_t total_w =
       std::accumulate(weights.begin(), weights.end(), uint64_t{0});
   assert(total_w > 0);
   float inv_total = 1.0f / static_cast<float>(total_w);
 
-  // Step 3: 构造排序的 CDF 点列表（循环融合优化）
+  // Step 3: 构造排序的 CDF 点列表(循环融合优化)
   float cum = 0.0f;
   for (size_t i = 0; i < n; i++) {
     size_t j = indices[i];
@@ -818,8 +818,8 @@ inline void KLLcache::sortAndAccumulate(const std::vector<float> &values,
  * 【参考】Fritsch & Carlson, 1980. "Monotone Piecewise Cubic Interpolation"
  *
  * 【核心思想】
- *   对于单调数据（y 递增），构造单调三次插值的关键是斜率 d_i 的选择。
- *   PCHIP 使用加权调和平均 + 端点外推 + 全局约束（α²+β²≤9）保证单调性。
+ *   对于单调数据(y 递增),构造单调三次插值的关键是斜率 d_i 的选择。
+ *   PCHIP 使用加权调和平均 + 端点外推 + 全局约束(α²+β²≤9)保证单调性。
  */
 inline void KLLcache::pchipSlopes(const std::vector<float> &x,
                                   const std::vector<float> &y,
@@ -831,7 +831,7 @@ inline void KLLcache::pchipSlopes(const std::vector<float> &x,
 
   slopes.assign(n, 0.0f);
 
-  // 特殊情况：只有 2 个点，用线性斜率
+  // 特殊情况:只有 2 个点,用线性斜率
   if (n == 2) [[unlikely]] {
     float slope = (y[1] - y[0]) / (x[1] - x[0]);
     slopes[0] = slopes[1] = slope;
@@ -849,7 +849,7 @@ inline void KLLcache::pchipSlopes(const std::vector<float> &x,
   // Step 2: 内部点斜率 — 加权调和平均
   for (size_t i = 1; i < n - 1; i++) {
     if (deltas[i - 1] * deltas[i] <= 0) [[unlikely]] {
-      // 不同号或为零 → 极值点，斜率置零
+      // 不同号或为零 → 极值点,斜率置零
       slopes[i] = 0.0f;
     } else {
       // 加权调和平均
@@ -903,7 +903,7 @@ inline void KLLcache::pchipSlopes(const std::vector<float> &x,
     }
   }
 
-  // Step 4: 强制 α²+β² ≤ 9（防止过冲）
+  // Step 4: 强制 α²+β² ≤ 9(防止过冲)
   for (size_t i = 0; i < n - 1; i++) {
     if (deltas[i] == 0.0f) [[unlikely]] {
       slopes[i] = 0.0f;
@@ -922,22 +922,22 @@ inline void KLLcache::pchipSlopes(const std::vector<float> &x,
 }
 
 /**
- * pchipEval — 批量 PCHIP 求值（向量化）
+ * pchipEval — 批量 PCHIP 求值(向量化)
  *
  * 【算法】
- *   对每个 x ∈ queries：
+ *   对每个 x ∈ queries:
  *   1. 二分查找区间 [x_i, x_{i+1}] 使得 x_i ≤ x < x_{i+1}
- *   2. 计算局部坐标 t = (x - x_i) / h，其中 h = x_{i+1} - x_i
- *   3. 用 Hermite basis 函数计算：
+ *   2. 计算局部坐标 t = (x - x_i) / h,其中 h = x_{i+1} - x_i
+ *   3. 用 Hermite basis 函数计算:
  *         ŷ(x) = H₀(t)·y_i + h·H₁(t)·d_i + H₂(t)·y_{i+1} + h·H₃(t)·d_{i+1}
- *      其中：
+ *      其中:
  *         H₀(t) = 2t³ - 3t² + 1
  *         H₁(t) = t³ - 2t² + t
  *         H₂(t) = -2t³ + 3t²
  *         H₃(t) = t³ - t²
- *   4. 若需要导数：
+ *   4. 若需要导数:
  *         dy/dx = (dH₀·y_i + h·dH₁·d_i + dH₂·y_{i+1} + h·dH₃·d_{i+1}) / h
- *      其中：
+ *      其中:
  *         dH₀(t) = 6t² - 6t
  *         dH₁(t) = 3t² - 4t + 1
  *         dH₂(t) = -6t² + 6t
@@ -983,13 +983,13 @@ inline void KLLcache::pchipEval(const std::vector<float> &queries,
       continue;
     }
 
-    // 二分查找区间（利用缓存加速）
+    // 二分查找区间(利用缓存加速)
     size_t i = cached_interval;
-    // 快速路径：检查是否在缓存区间内
+    // 快速路径:检查是否在缓存区间内
     if (x >= xk_ptr[i] && x < xk_ptr[i + 1]) [[likely]] {
-      // 在缓存区间内，直接使用
+      // 在缓存区间内,直接使用
     } else [[unlikely]] {
-      // 不在缓存区间，重新二分查找
+      // 不在缓存区间,重新二分查找
       size_t lo = 0, hi = n - 2;
       while (lo < hi) {
         size_t mid = (lo + hi + 1) >> 1;
@@ -1030,7 +1030,7 @@ inline void KLLcache::pchipEval(const std::vector<float> &queries,
     float hdi = h * di, hdi1 = h * di1;
     values[j] = yi * H00 + hdi * H10 + yi1 * H01 + hdi1 * H11;
 
-    // 计算导数（可选）
+    // 计算导数(可选)
     if (derivs) {
       float t_6 = t * 6.0f;
       float dH00 = t2 * 6.0f - t_6;             // 6t² - 6t
@@ -1064,12 +1064,12 @@ inline void KLLcache::densityFromCumulative(const float *x, const float *y,
  * gaussianBlur1D — 1D高斯滤波平滑
  *
  * 【算法】
- *   使用高斯核 G(x) = exp(-x²/(2σ²)) 进行卷积，radius = ⌈3σ⌉
- *   边界处理：镜像对称
+ *   使用高斯核 G(x) = exp(-x²/(2σ²)) 进行卷积,radius = ⌈3σ⌉
+ *   边界处理:镜像对称
  *
  * 【参数】
- *   data: 输入/输出数组（原地修改）
- *   sigma: 高斯核标准差（控制平滑强度）
+ *   data: 输入/输出数组(原地修改)
+ *   sigma: 高斯核标准差(控制平滑强度)
  */
 inline void KLLcache::gaussianBlur1D(std::vector<float> &data, float sigma) {
   if (sigma <= 0.0f || data.size() < 2)
@@ -1080,7 +1080,7 @@ inline void KLLcache::gaussianBlur1D(std::vector<float> &data, float sigma) {
   std::vector<float> kernel(2 * radius + 1);
   std::vector<float> temp(data.size());
 
-  // 计算高斯核（中心对称，和为1）
+  // 计算高斯核(中心对称,和为1)
   float sum = 0.0f;
   float denom = 2.0f * sigma * sigma;
   for (int i = -radius; i <= radius; i++) {
@@ -1091,7 +1091,7 @@ inline void KLLcache::gaussianBlur1D(std::vector<float> &data, float sigma) {
   for (auto &v : kernel)
     v /= sum;
 
-  // 卷积，使用镜像边界处理
+  // 卷积,使用镜像边界处理
   for (int i = 0; i < len; i++) {
     float acc = 0.0f;
     for (int k = -radius; k <= radius; k++) {
@@ -1125,15 +1125,15 @@ inline void KLLcache::validateCache() const {
  *
  * 【三层结构】
  *   Level 1: 加权样本 (values, weights) + 排序点集 (sorted_pts)
- *   Level 2: CDF/ICDF knots（原始稀疏）
- *   Level 3: 重建结果（PCHIP 方法，四种函数）
+ *   Level 2: CDF/ICDF knots(原始稀疏)
+ *   Level 3: 重建结果(PCHIP 方法,四种函数)
  *
  * 【算法流程】
  *   1. 收集所有 levels 的样本 → (values, weights)
  *   2. 排序 + 累积 → sorted_pts {value, cum_prob, weight}
  *   3. 构造 CDF knots: 去重 x 轴 → (cdf_x, cdf_F)
  *   4. 构造 ICDF knots: 去重 u 轴 → (icdf_u, icdf_Q)
- *   5. 一次性重建所有4组数据：CDF/PDF/ICDF/QDF（PCHIP方法）
+ *   5. 一次性重建所有4组数据:CDF/PDF/ICDF/QDF(PCHIP方法)
  */
 inline void KLLcache::buildCache() const {
   // ══════════════════════════════════════════════════════════════════════════
@@ -1163,7 +1163,7 @@ inline void KLLcache::buildCache() const {
   sortAndAccumulate(cache_.values, cache_.weights, cache_.sorted_pts, indices);
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Level 2: 构造 CDF knots（去重 x 轴）
+  // Level 2: 构造 CDF knots(去重 x 轴)
   // ══════════════════════════════════════════════════════════════════════════
   size_t estimated_knots = cache_.sorted_pts.size() + 2;
   cache_.cdf_x.clear();
@@ -1171,7 +1171,7 @@ inline void KLLcache::buildCache() const {
   cache_.cdf_x.reserve(estimated_knots);
   cache_.cdf_F.reserve(estimated_knots);
 
-  // 中间点去重：相同 x → 保留最大 F（处理离散质量点）
+  // 中间点去重:相同 x → 保留最大 F(处理离散质量点)
   for (const auto &p : cache_.sorted_pts) {
     if (!cache_.cdf_x.empty() && p.value == cache_.cdf_x.back()) {
       cache_.cdf_F.back() = p.cum_prob;
@@ -1182,14 +1182,14 @@ inline void KLLcache::buildCache() const {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Level 2: 构造 ICDF knots（去重 u 轴）
+  // Level 2: 构造 ICDF knots(去重 u 轴)
   // ══════════════════════════════════════════════════════════════════════════
   cache_.icdf_u.clear();
   cache_.icdf_Q.clear();
   cache_.icdf_u.reserve(estimated_knots);
   cache_.icdf_Q.reserve(estimated_knots);
 
-  // 中间点去重：相同 u → 保留最大 Q（处理 CDF 平台）
+  // 中间点去重:相同 u → 保留最大 Q(处理 CDF 平台)
   float last_cum_prob = -1.0f;
   for (const auto &p : cache_.sorted_pts) {
     if (p.cum_prob == last_cum_prob) {
@@ -1202,7 +1202,7 @@ inline void KLLcache::buildCache() const {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Level 3: 重建所有4组数据（PCHIP方法）
+  // Level 3: 重建所有4组数据(PCHIP方法)
   // ══════════════════════════════════════════════════════════════════════════
   buildCDF_PCHIP();
   buildICDF_PCHIP();
@@ -1251,7 +1251,7 @@ inline void KLLcache::buildCDF_PCHIP() const {
     cache_.cdf_pchip_F[i] = std::clamp(cache_.cdf_pchip_F[i], 0.0f, 1.0f);
   }
 
-  // 高斯滤波平滑（自适应sigma）
+  // 高斯滤波平滑(自适应sigma)
   float adaptive_sigma = resolution_ * CDF_BLUR_RADIUS_RATIO / 3.0f; // radius ≈ 3*sigma
   gaussianBlur1D(cache_.cdf_pchip_F, adaptive_sigma);
 }
@@ -1313,7 +1313,7 @@ inline void KLLcache::buildICDF_PCHIP() const {
     cache_.icdf_pchip_Q[i] = std::clamp(cache_.icdf_pchip_Q[i], min_, max_);
   }
 
-  // 高斯滤波平滑（自适应sigma）
+  // 高斯滤波平滑（自适应sigma)
   float adaptive_sigma = resolution_ * CDF_BLUR_RADIUS_RATIO / 3.0f; // radius ≈ 3*sigma
   gaussianBlur1D(cache_.icdf_pchip_Q, adaptive_sigma);
 }

@@ -2,7 +2,6 @@
 #include "features/FeaturesDefine.hpp"
 #include "features/backend/FeatureReader.hpp"
 #include "math/cluster/Ward1D.hpp"
-#include "math/dim_reduct/PCA1D.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Feature.hpp"
@@ -436,10 +435,21 @@ void Dist::finalize() {
     }
   }
 
-  // 4. Build stability visualization
+  // 4. Build stability visualization (only assets with count >= 1000)
   {
     stability.clear();
-    if (global_total.count() > kMinSamples && n_assets > 1) {
+    constexpr size_t MIN_ASSET_SAMPLES = 1000;
+
+    // Collect valid asset indices
+    std::vector<size_t> valid_idx;
+    for (size_t a = 0; a < n_assets; ++a) {
+      if (global_by_asset[a].count() >= MIN_ASSET_SAMPLES) {
+        valid_idx.push_back(a);
+      }
+    }
+
+    const size_t n_valid = valid_idx.size();
+    if (global_total.count() > kMinSamples && n_valid > 1) {
       // Get 19 percentile x-values from global distribution
       constexpr int N_PERCENTILES = 19;
       std::array<float, N_PERCENTILES> ref_x;
@@ -447,47 +457,57 @@ void Dist::finalize() {
         ref_x[i] = static_cast<float>(global_total.quantile(0.05 * (i + 1)));
       }
 
-      // Build 19×N offset matrix: offset[d][a] = CDF(ref_x[d]) - expected
+      // Build 19×n_valid offset matrix
       std::vector<std::vector<float>> offsets(N_PERCENTILES);
       for (int d = 0; d < N_PERCENTILES; ++d) {
-        offsets[d].resize(n_assets);
+        offsets[d].resize(n_valid);
       }
 
-      for (size_t a = 0; a < n_assets; ++a) {
+      for (size_t i = 0; i < n_valid; ++i) {
+        size_t a = valid_idx[i];
         for (int d = 0; d < N_PERCENTILES; ++d) {
           float cdf_val = static_cast<float>(global_by_asset[a].queryCDF(ref_x[d]));
           float expected = 0.05f * (d + 1);
-          offsets[d][a] = cdf_val - expected;
+          offsets[d][i] = cdf_val - expected;
         }
       }
 
-      // 1-D PCA for x position
-      std::vector<float> pca_scores = pca1d(offsets);
-
-      // Normalize PCA scores to [0,1]
-      float pca_min = pca_scores[0], pca_max = pca_scores[0];
-      for (float s : pca_scores) {
-        if (s < pca_min) pca_min = s;
-        if (s > pca_max) pca_max = s;
-      }
-      float pca_range = pca_max - pca_min;
-      if (pca_range < 1e-6f) pca_range = 1.0f;
-
-      stability.x_norm.resize(n_assets);
-      for (size_t a = 0; a < n_assets; ++a) {
-        stability.x_norm[a] = (pca_scores[a] - pca_min) / pca_range;
+      // Signed square sum for x position
+      std::vector<float> scores(n_valid);
+      for (size_t i = 0; i < n_valid; ++i) {
+        float sum = 0.0f;
+        for (int d = 0; d < N_PERCENTILES; ++d) {
+          float off = offsets[d][i];
+          sum += (off >= 0 ? 1.0f : -1.0f) * off * off;
+        }
+        scores[i] = sum;
       }
 
-      // 1-D Ward clustering for color (optimal leaf order)
+      // Normalize to [0,1] symmetric around zero: [-M, M] -> [0, 1]
+      float s_min = scores[0], s_max = scores[0];
+      for (float s : scores) {
+        if (s < s_min) s_min = s;
+        if (s > s_max) s_max = s;
+      }
+      float M = std::max(std::abs(s_min), std::abs(s_max));
+      if (M < 1e-9f) M = 1.0f;
+
+      stability.asset_idx = valid_idx;
+      stability.score_min = s_min;
+      stability.score_max = s_max;
+      stability.x_norm.resize(n_valid);
+      for (size_t i = 0; i < n_valid; ++i) {
+        stability.x_norm[i] = (scores[i] + M) / (2.0f * M); // 0 maps to 0.5
+      }
+
+      // Ward clustering for color
       std::vector<int> leaf_order = ward_leaf_order(offsets);
 
-      // Convert leaf_order to color_t: position in leaf order -> [0,1]
-      // leaf_order[i] = asset index at position i
-      // We need: color_t[asset_idx] = position / (n-1)
-      stability.color_t.resize(n_assets);
-      for (size_t pos = 0; pos < n_assets; ++pos) {
-        int asset_idx = leaf_order[pos];
-        stability.color_t[asset_idx] = static_cast<float>(pos) / (n_assets - 1);
+      // leaf_order[pos] = index in valid array, map to color
+      stability.color_t.resize(n_valid);
+      for (size_t pos = 0; pos < n_valid; ++pos) {
+        int idx = leaf_order[pos];
+        stability.color_t[idx] = static_cast<float>(pos) / (n_valid - 1);
       }
 
       stability.valid = true;

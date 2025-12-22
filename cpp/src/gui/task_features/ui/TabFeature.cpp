@@ -308,16 +308,16 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
     const char *headers[] = {"Primary", "Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm"};
     const char *tooltips[] = {
-        "主特征：用于分析的主要特征",
-        "多选：选择多个特征进行对比",
-        "代码：特征的唯一标识符",
-        "宽度：特征的维度数量",
+        "主特征:用于分析的主要特征",
+        "多选:选择多个特征进行对比",
+        "代码:特征的唯一标识符",
+        "宽度:特征的维度数量",
         "有效粒度: ALL=全部, DATA=数据, DEPTH=深度(仅L0)",
-        "中文名称：特征的描述性名称",
+        "中文名称:特征的描述性名称",
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
-        "一级分类：特征的主要类别",
-        "二级分类：特征的子类别",
-        "标准化方法：特征的归一化处理方式",
+        "一级分类:特征的主要类别",
+        "二级分类:特征的子类别",
+        "标准化方法:特征的归一化处理方式",
     };
 
     for (int column = 0; column < 10; column++) {
