@@ -171,11 +171,21 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
       bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
     }
 
+    // Align text vertically with progress bar
+    float bar_height = 5.0f;
+    float text_height = ImGui::GetTextLineHeight();
+    float y_offset = (text_height - bar_height) * 0.5f;
+    
+    float cursor_y = ImGui::GetCursorPosY();
+    ImGui::SetCursorPosY(cursor_y + y_offset);
+    
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, 5.0f), ""); // Compact height
+    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, bar_height), "");
     ImGui::PopStyleColor();
+    
     ImGui::SameLine();
-    ImGui::Text("%6.2f元 %+7.2f万", price, amount_in_wan); // Fixed format: xxx.xx +-xxx.xx
+    ImGui::SetCursorPosY(cursor_y);
+    ImGui::Text("%6.2f元 %+7.2f万", price, amount_in_wan);
   };
 
   // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
@@ -270,13 +280,49 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
       ImPlot::PushPlotClipRect();
       ImDrawList *draw_list = ImPlot::GetPlotDrawList();
 
-      for (const auto &rect : of.l0.heatmap_colored.rects) {
+      // Detect hovered rect (O(N) but only when plot is hovered)
+      int hovered_idx = -1;
+      if (ImPlot::IsPlotHovered()) {
+        const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
+        for (size_t i = 0; i < of.l0.heatmap_colored.rects.size(); ++i) {
+          const auto &rect = of.l0.heatmap_colored.rects[i];
+          if (mouse_pos.x >= rect.x1 && mouse_pos.x <= rect.x2 &&
+              mouse_pos.y >= rect.y2 && mouse_pos.y <= rect.y1) {
+            hovered_idx = static_cast<int>(i);
+            break;
+          }
+        }
+      }
+
+      // Render all rects (highlight hovered one)
+      for (size_t i = 0; i < of.l0.heatmap_colored.rects.size(); ++i) {
+        const auto &rect = of.l0.heatmap_colored.rects[i];
         ImVec2 p_min = ImPlot::PlotToPixels(rect.x1, rect.y1);
         ImVec2 p_max = ImPlot::PlotToPixels(rect.x2, rect.y2);
-        draw_list->AddRectFilled(p_min, p_max, rect.color);
+        
+        if (static_cast<int>(i) == hovered_idx) {
+          // Highlight: increase alpha and add white border
+          uint8_t r = (rect.color >> 0) & 0xFF;
+          uint8_t g = (rect.color >> 8) & 0xFF;
+          uint8_t b = (rect.color >> 16) & 0xFF;
+          uint32_t highlight_color = IM_COL32(r, g, b, 255);
+          draw_list->AddRectFilled(p_min, p_max, highlight_color);
+          draw_list->AddRect(p_min, p_max, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+        } else {
+          draw_list->AddRectFilled(p_min, p_max, rect.color);
+        }
       }
 
       ImPlot::PopPlotClipRect();
+
+      // Display tooltip with amount info (O(1) lookup via metadata)
+      if (hovered_idx >= 0 && static_cast<size_t>(hovered_idx) < of.l0.heatmap_colored.metadata.size()) {
+        const auto &meta = of.l0.heatmap_colored.metadata[hovered_idx];
+        float amount_wan = amount_to_wan(static_cast<float>(meta.amount_rmb));
+        ImGui::SetTooltip("%.2f万元\n价格: %.2f\nTicks: %zu-%zu",
+                          amount_wan, meta.price,
+                          meta.tick_start, meta.tick_end);
+      }
     }
 
     // Draw best bid and ask lines with fill between

@@ -229,10 +229,12 @@ void OrderFlow::L0Cache::HeatmapMerged::clear() {
 
 void OrderFlow::L0Cache::HeatmapColored::reserve(size_t n) {
   rects.reserve(n);
+  metadata.reserve(n);
 }
 
 void OrderFlow::L0Cache::HeatmapColored::clear() {
   rects.clear();
+  metadata.clear();
   valid = false;
 }
 
@@ -598,13 +600,13 @@ void OrderFlow::L0Cache::build_heatmap_colored(float log_threshold) {
   if (!heatmap_merged.valid)
     return;
 
-  // Reserve space for colored rects (aggressive allocation)
+  // Reserve space for colored rects and metadata (aggressive allocation)
   constexpr size_t ESTIMATED_COLORED_RECTS =
       OrderFlowConst::ESTIMATED_PRICE_LEVELS * OrderFlowConst::ESTIMATED_RECTS_PER_LEVEL;
 
   heatmap_colored.reserve(ESTIMATED_COLORED_RECTS);
 
-  // Convert merged rects to colored rects
+  // Convert merged rects to colored rects with metadata
   for (const auto &level : heatmap_merged.levels) {
     for (const auto &merged_rect : level.rects) {
       uint32_t color = amount_to_color(merged_rect.amount_rmb, log_threshold);
@@ -617,7 +619,17 @@ void OrderFlow::L0Cache::build_heatmap_colored(float log_threshold) {
       double y1 = static_cast<double>(merged_rect.price_high);
       double y2 = static_cast<double>(merged_rect.price_low);
 
+      // Pick price based on side: bid (positive) uses high, ask (negative) uses low
+      float display_price = merged_rect.amount_rmb > 0 ? merged_rect.price_high : merged_rect.price_low;
+
       heatmap_colored.rects.push_back({x1, y1, x2, y2, color});
+      
+      HeatmapColored::Metadata meta;
+      meta.amount_rmb = merged_rect.amount_rmb;
+      meta.price = display_price;
+      meta.tick_start = merged_rect.tick_start;
+      meta.tick_end = merged_rect.tick_end;
+      heatmap_colored.metadata.push_back(meta);
     }
   }
 

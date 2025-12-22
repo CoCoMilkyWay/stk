@@ -5,13 +5,12 @@
 #include <vector>
 
 /**
- * Ward hierarchical clustering with optimal leaf ordering
+ * Ward-like hierarchical clustering with optimal leaf ordering (L1 metric)
  *
- * Ward criterion: merge clusters that minimize increase in total within-cluster variance
- *   Delta = (n_i * n_j) / (n_i + n_j) * ||c_i - c_j||^2
+ * Modified Ward criterion: merge clusters that minimize increase in L1 distance cost
+ *   Delta = (n_i * n_j) / (n_i + n_j) * ||c_i - c_j||_1
  *
- * Optimal leaf ordering: minimize sum of adjacent leaf distances while preserving
- * the hierarchical structure. Uses greedy optimization at each internal node.
+ * Optimal leaf ordering: minimize sum of adjacent leaf L1 distances.
  *
  * @param data  D×N matrix (data[d][n] = dimension d, sample n)
  * @return      N integers: optimal leaf order permutation for coloring
@@ -25,14 +24,13 @@ inline std::vector<int> ward_leaf_order(const std::vector<std::vector<float>> &d
   if (N == 1)
     return {0};
 
-  // Squared Euclidean distance between two points
-  auto point_dist_sq = [&](size_t i, size_t j) -> float {
-    float dist_sq = 0.0f;
+  // L1 distance between two points (Manhattan)
+  auto point_dist = [&](size_t i, size_t j) -> float {
+    float dist = 0.0f;
     for (size_t d = 0; d < D; ++d) {
-      float diff = data[d][i] - data[d][j];
-      dist_sq += diff * diff;
+      dist += std::abs(data[d][i] - data[d][j]);
     }
-    return dist_sq;
+    return dist;
   };
 
   // Cluster info
@@ -53,16 +51,16 @@ inline std::vector<int> ward_leaf_order(const std::vector<std::vector<float>> &d
     clusters[n].left = clusters[n].right = -1;
   }
 
-  // Ward distance between two clusters
+  // Ward-like distance between two clusters using L1
   auto ward_dist = [&](size_t i, size_t j) -> float {
-    float dist_sq = 0.0f;
+    float dist = 0.0f;
     for (size_t d = 0; d < D; ++d) {
-      float diff = clusters[i].centroid[d] - clusters[j].centroid[d];
-      dist_sq += diff * diff;
+      dist += std::abs(clusters[i].centroid[d] - clusters[j].centroid[d]);
     }
     float n_i = static_cast<float>(clusters[i].size);
     float n_j = static_cast<float>(clusters[j].size);
-    return (n_i * n_j) / (n_i + n_j) * dist_sq;
+    // Use Ward's weighting but with L1 distance
+    return (n_i * n_j) / (n_i + n_j) * dist;
   };
 
   // Active cluster indices
@@ -144,10 +142,10 @@ inline std::vector<int> ward_leaf_order(const std::vector<std::vector<float>> &d
     // 3. L_order_reversed + R_order: L.left adjacent to R.left
     // 4. L_order_reversed + R_order_reversed: L.left adjacent to R.right
 
-    float dist_LR_RL = point_dist_sq(info[L].right_leaf, info[R].left_leaf);
-    float dist_LR_RR = point_dist_sq(info[L].right_leaf, info[R].right_leaf);
-    float dist_LL_RL = point_dist_sq(info[L].left_leaf, info[R].left_leaf);
-    float dist_LL_RR = point_dist_sq(info[L].left_leaf, info[R].right_leaf);
+    float dist_LR_RL = point_dist(info[L].right_leaf, info[R].left_leaf);
+    float dist_LR_RR = point_dist(info[L].right_leaf, info[R].right_leaf);
+    float dist_LL_RL = point_dist(info[L].left_leaf, info[R].left_leaf);
+    float dist_LL_RR = point_dist(info[L].left_leaf, info[R].right_leaf);
 
     // Find minimum
     float min_dist = dist_LR_RL;

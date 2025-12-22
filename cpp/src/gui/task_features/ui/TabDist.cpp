@@ -258,7 +258,7 @@ static void RenderMomentBand(const char *label, float current_val,
   ImDrawList *draw = ImGui::GetWindowDrawList();
   ImVec2 pos = ImGui::GetCursorScreenPos();
   float width = ImGui::GetContentRegionAvail().x;
-  float bar_height = 16.0f;
+  float bar_height = 12.0f; // Compact bar height
 
   float range = range_hi - range_lo;
   auto to_x = [&](float v) {
@@ -292,22 +292,22 @@ static void RenderMomentBand(const char *label, float current_val,
                       IM_COL32(60, 160, 60, 200));
 
   // Bound range markers (slightly inset) - either MAD or min/max
-  draw->AddRect(ImVec2(to_x(bound_lo), y_top + 2),
-                ImVec2(to_x(bound_hi), y_bot - 2),
-                IM_COL32(255, 255, 255, 180), 0.0f, 0, 2.0f);
+  draw->AddRect(ImVec2(to_x(bound_lo), y_top + 1),
+                ImVec2(to_x(bound_hi), y_bot - 1),
+                IM_COL32(255, 255, 255, 180), 0.0f, 0, 1.5f);
 
   // Current value marker (cyan diamond, centered)
   float cv_x = to_x(current_val);
   float cy = (y_top + y_bot) * 0.5f;
-  draw->AddQuadFilled(ImVec2(cv_x, cy - 5), ImVec2(cv_x + 4, cy),
-                      ImVec2(cv_x, cy + 5), ImVec2(cv_x - 4, cy),
+  draw->AddQuadFilled(ImVec2(cv_x, cy - 4), ImVec2(cv_x + 3, cy),
+                      ImVec2(cv_x, cy + 4), ImVec2(cv_x - 3, cy),
                       IM_COL32(0, 255, 255, 255));
 
   // Boundary labels - small font, directly on bar
   // All labels drawn at same height, overlaid on the bar
   ImFont *small_font = ImGui::GetFont();
-  float small_font_size = ImGui::GetFontSize() * 0.7f; // Small font size
-  float label_y = y_top + 2;                           // Slightly below top of bar
+  float small_font_size = ImGui::GetFontSize() * 0.75f; // Compact font size
+  float label_y = y_top + (bar_height - small_font_size) * 0.5f; // Vertically centered
   char buf[16];
 
   // warn_lo (align right edge to boundary)
@@ -332,10 +332,11 @@ static void RenderMomentBand(const char *label, float current_val,
 }
 
 static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int focus_month_idx) {
-  // Fixed height for 4 moment bands + header (~320px content)
+  // Compact height: header + 4 moment bands (each = label line + 12px bar)
   float line_h = ImGui::GetTextLineHeightWithSpacing();
-  float band_h = line_h * 2.5f; // each band is about 2.5 lines
-  float panel_h = line_h * 3 + band_h * 4 + ImGui::GetStyle().WindowPadding.y * 2;
+  float bar_px = 12.0f;
+  float band_h = line_h + bar_px;
+  float panel_h = line_h * 2 + band_h * 4 + ImGui::GetStyle().WindowPadding.y * 2;
   ImGui::BeginChild("MomentsPanel", ImVec2(350, panel_h), true);
   ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // Use default font with bold style
   ImGui::TextUnformatted("[阶矩展开]");
@@ -671,19 +672,13 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
     display_kurt = mean_kurt;
   }
 
-  // Color bands with boundaries
+  // Color bands with boundaries (compact layout, no extra spacing)
   RenderMomentBand("Mean/均值(1阶普通矩)", display_mean, lower_mean, upper_mean, -1.0f, 1.0f, -0.1f,
                    0.1f, -0.3f, 0.3f);
-  ImGui::Spacing();
-
   RenderMomentBand("Var/方差(2阶中心矩)", display_var, lower_var, upper_var, 0.0f, 3.0f,
                    0.5f, 1.2f, 0.2f, 2.0f);
-  ImGui::Spacing();
-
   RenderMomentBand("Skew/偏度(3阶标准矩)", display_skew, lower_skew, upper_skew, -4.0f, 4.0f,
                    -0.5f, 0.5f, -1.5f, 1.5f);
-  ImGui::Spacing();
-
   RenderMomentBand("Kurt/峰度(4阶标准矩)", display_kurt, lower_kurt, upper_kurt, -3.0f, 15.0f,
                    0.0f, 3.0f, -1.0f, 6.0f);
 
@@ -973,26 +968,40 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     ImGui::PushTextWrapPos(350.0f);
     ImGui::TextUnformatted(
         "分位数一致性尤为重要:\n"
-        "不同资产的累积分布函数(CDF) F_i 应尽量靠近截面均值 F_μ,\n"
-        "以保证因子组合阶段分位数的有效性与稳定性。\n\n"
-        "在 5%, 10%, 15%, 20%, ... 分位数级别分别计算离散偏移向量 Δ_i(q_i) = F_i(q_i) - F_μ(q_i):\n\n"
-        "    Δ_i = [Δ_{i,1}, Δ_{i,2}, ..., Δ_{i,N}] ∈ ℝ^N\n\n"
-        "偏移值: 保留符号的偏移能量\n\n"
-        "    S = sign(∑_{j=1}^N Δ_{i,j}) · ||Δ_i||_2 ∈ ℝ\n\n"
-        "代表全局偏移程度，聚合多维信息至一维标量。\n\n"
-        "偏移色: 对偏移向量 Δ 做层次聚类(Ward 法，带最优叶排序）\n\n"
-        "    cluster_order = optimal_leaf_ordering(Ward(Δ))\n\n"
-        "将 N 维偏移映射为一维序列，反映局部结构相似性。");
+        "不同资产的分位数取值(ICDF)应该尽量靠近, 以保证因子组合阶段分位数的截面一致性\n\n"
+        "F_i: CDF; Q_i: 逆CDF; X_i: Feature i\n\n"
+        "偏移量(强调全局差异): 均值校准(最优中心化)的 Wasserstein-L2 偏移距离(积分)");
+    ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
+        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
+    ImGui::Text("\n偏移色(强调局部形状): 中位数校准(最优中心化)的 Wasserstein-L1 偏移向量(不积分), 取Ward with optimal leaf ordering聚类");
+    ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
+        "    W1(F_i, F_μ) = || (Q_i - Med[X_i]) - (Q_μ - Med[X_μ]) ||_1 = || ΔW1_i ||_1");
+    ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
+        "    cluster_order = optimal_leaf_ordering( Ward({ΔW1_i}, L1) )");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
   ImGui::Separator();
 
-  // Only show assets in stability (count >= 1000)
+  // Only show assets in stability (count >= 100)
   if (dist.compute.status != Dist::Compute::Status::Done || !dist.stability.valid ||
       dist.stability.asset_idx.empty()) {
-    ImGui::Text("No data (need assets with n >= 1000)");
+    ImGui::Text("No data (need assets with n >= 100)");
     return;
+  }
+
+  // Calculate global data range (across all valid assets) to fix the stability bar
+  // This prevents the "slow zoom out" issue by providing static anchors
+  float global_min_x = 0.0f;
+  float global_max_x = 0.0f;
+  if (dist.global_total.count() > 0) {
+    global_min_x = static_cast<float>(dist.global_total.quantile(0.0));
+    global_max_x = static_cast<float>(dist.global_total.quantile(1.0));
+  }
+  // Ensure some width
+  if (global_max_x <= global_min_x) {
+    global_min_x -= 1.0f;
+    global_max_x += 1.0f;
   }
 
   if (need_autofit) {
@@ -1014,6 +1023,9 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     double x_range = limits.X.Max - limits.X.Min;
     double y_range = limits.Y.Max - limits.Y.Min;
 
+    // Use global range for stability mapping
+    double stab_range_len = global_max_x - global_min_x;
+
     // ========================================================================
     // Phase 1: Hover detection (both PDF lines and stability dots)
     // ========================================================================
@@ -1022,13 +1034,26 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
       double nmx = (mouse.x - limits.X.Min) / x_range;
       double nmy = (mouse.y - limits.Y.Min) / y_range;
 
-      // Check stability dots first (top band priority)
-      if (nmy > 0.93f) {
-        float best_dist = 0.03f;
+      // Get mouse position in pixels for stability dot detection
+      ImVec2 mouse_pixels = ImGui::GetMousePos();
+      
+      // Get fixed plot pixel boundaries (scale invariant)
+      ImVec2 plot_pos = ImPlot::GetPlotPos();
+      ImVec2 plot_size = ImPlot::GetPlotSize();
+      float dot_y_screen = plot_pos.y + 15.0f; // Fixed: 15px from plot top edge
+
+      // Check stability dots first (top band priority) - use pixel coordinates
+      if (std::abs(mouse_pixels.y - dot_y_screen) < 20.0f) {
+        float best_dist_px = 15.0f; // 15 pixel threshold
         for (size_t i = 0; i < n_valid; ++i) {
-          float dx = static_cast<float>(std::abs(nmx - stab.x_norm[i]));
-          if (dx < best_dist) {
-            best_dist = dx;
+          // Map data x to screen x (scale invariant linear mapping)
+          double data_x = global_min_x + stab.x_norm[i] * stab_range_len;
+          float norm_x = (data_x - global_min_x) / stab_range_len; // [0, 1]
+          float dot_x_screen = plot_pos.x + norm_x * plot_size.x;
+          
+          float dx_px = std::abs(mouse_pixels.x - dot_x_screen);
+          if (dx_px < best_dist_px) {
+            best_dist_px = dx_px;
             hovered_idx = static_cast<int>(i);
             min_dist_sq = 0.0;
           }
@@ -1095,43 +1120,53 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     }
 
     // ========================================================================
-    // Phase 3: Draw stability scatter (highlight hovered)
+    // Phase 3: Draw stability scatter (overlay on top, scale invariant)
     // ========================================================================
     {
-      float y_top = static_cast<float>(limits.Y.Max - y_range * 0.02);
-      float x_min = static_cast<float>(limits.X.Min);
-      float x_max = static_cast<float>(limits.X.Max);
+      ImDrawList *draw = ImPlot::GetPlotDrawList();
+      
+      // Get fixed plot pixel boundaries (scale invariant)
+      ImVec2 plot_pos = ImPlot::GetPlotPos();
+      ImVec2 plot_size = ImPlot::GetPlotSize();
+      float y_screen = plot_pos.y + 15.0f; // Fixed: 15px from plot top edge
 
       // Draw asset dots
       for (size_t i = 0; i < n_valid; ++i) {
-        float x_pos = x_min + stab.x_norm[i] * (x_max - x_min);
+        // Map data x to screen x (scale invariant linear mapping)
+        float norm_x = stab.x_norm[i]; // Already normalized [0, 1]
+        float x_screen = plot_pos.x + norm_x * plot_size.x;
+        ImVec2 center(x_screen, y_screen);
+
         bool is_hovered = (static_cast<int>(i) == hovered_idx);
 
         if (is_hovered) {
           // Highlighted: large white outline + cyan fill
-          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 10, ImVec4(1, 1, 1, 1), 2, ImVec4(1, 1, 1, 1));
-          ImPlot::PlotScatter("##stab_outline", &x_pos, &y_top, 1);
-          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 8, ImVec4(0, 1, 1, 1), 0, ImVec4(0, 1, 1, 1));
-          ImPlot::PlotScatter("##stab_hl", &x_pos, &y_top, 1);
+          draw->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255));
+          draw->AddCircleFilled(center, 4.0f, IM_COL32(0, 255, 255, 255));
         } else {
-          ImVec4 color = ImPlot::SampleColormap(stab.color_t[i], ImPlotColormap_Viridis);
-          ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3, color, 0, color);
-          ImPlot::PlotScatter("##stability", &x_pos, &y_top, 1);
+          ImVec4 color_v4 = ImPlot::SampleColormap(stab.color_t[i], ImPlotColormap_Viridis);
+          ImU32 color = ImGui::ColorConvertFloat4ToU32(color_v4);
+          draw->AddCircleFilled(center, 2.5f, color);
         }
       }
 
-      // Draw reference labels: min, 0, max (with text annotations)
-      float label_y = y_top + static_cast<float>(y_range * 0.01);
-      float x_center = (x_min + x_max) * 0.5f; // 0 is at center
-
-      // Format score values
-      char buf_min[16], buf_max[16];
-      std::snprintf(buf_min, sizeof(buf_min), "%.3f", stab.score_min);
+      // Draw reference labels: 0 (min) and max
+      // Format score values (score_min is always 0 for W₂ distance)
+      char buf_max[16];
       std::snprintf(buf_max, sizeof(buf_max), "%.3f", stab.score_max);
 
-      ImPlot::PlotText(buf_min, x_min, label_y, ImVec2(0, 0));
-      ImPlot::PlotText("0", x_center, label_y, ImVec2(0.5f, 0));
-      ImPlot::PlotText(buf_max, x_max, label_y, ImVec2(1, 0));
+      // Label positions (scale invariant)
+      float x_screen_min = plot_pos.x;
+      float x_screen_max = plot_pos.x + plot_size.x;
+
+      // Use bold font if available
+      ImFont *font = ImGui::GetIO().Fonts->Fonts.Size > 0 ? ImGui::GetIO().Fonts->Fonts[0] : ImGui::GetFont();
+      float font_size = ImGui::GetFontSize();
+
+      draw->AddText(font, font_size, ImVec2(x_screen_min + 5, y_screen + 8), IM_COL32(255, 255, 255, 255), "0");
+
+      ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, buf_max);
+      draw->AddText(font, font_size, ImVec2(x_screen_max - text_size.x - 5, y_screen + 8), IM_COL32(255, 255, 255, 255), buf_max);
     }
 
     // Click detection
@@ -1268,6 +1303,21 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::Text("峰度 = %.3f", kll.kurt());
+
+    // Row 6: W2 Distance (if available)
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Text("W2 = %.4f", dist.stability.valid && hovered_asset >= 0
+                                 ? [&]() {
+                                     // Find stability index for this asset
+                                     for (size_t i = 0; i < dist.stability.asset_idx.size(); ++i) {
+                                       if (dist.stability.asset_idx[i] == static_cast<size_t>(hovered_asset)) {
+                                         return dist.stability.x_norm[i] * dist.stability.score_max;
+                                       }
+                                     }
+                                     return 0.0f;
+                                   }()
+                                 : 0.0f);
 
     ImGui::EndTable();
   }

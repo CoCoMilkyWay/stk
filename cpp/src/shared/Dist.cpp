@@ -307,43 +307,25 @@ void Dist::query(Input::GroupBy group_by) {
   }
 
   case Input::GroupBy::WEEKDAY: {
-    // Merge by weekday across all months, store in kll_storage
-    result.kll_storage.reserve(7);
-    for (size_t i = 0; i < 7; ++i) {
-      result.kll_storage.emplace_back(KLL_CAPACITY);
-    }
+    // Use pre-computed global_by_weekday
     const char *wd_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-    for (const auto &mc : cache) {
-      for (size_t wd = 0; wd < mc.by_weekday.size() && wd < 7; ++wd) {
-        result.kll_storage[wd].merge(mc.by_weekday[wd]);
-      }
-    }
-    for (size_t wd = 0; wd < 7; ++wd) {
-      if (result.kll_storage[wd].count() >= min_samples) {
+    for (size_t wd = 0; wd < global_by_weekday.size() && wd < 7; ++wd) {
+      if (global_by_weekday[wd].count() >= min_samples) {
         result.bins.emplace_back();
         result.bins.back().key = std::string("weekday_") + wd_names[wd];
-        result.bins.back().extract_from(result.kll_storage[wd]);
+        result.bins.back().extract_from(global_by_weekday[wd]);
       }
     }
     break;
   }
 
   case Input::GroupBy::HOUR: {
-    // Merge by hour across all months, store in kll_storage
-    result.kll_storage.reserve(24);
-    for (size_t i = 0; i < 24; ++i) {
-      result.kll_storage.emplace_back(KLL_CAPACITY);
-    }
-    for (const auto &mc : cache) {
-      for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
-        result.kll_storage[h].merge(mc.by_hour[h]);
-      }
-    }
-    for (size_t h = 0; h < 24; ++h) {
-      if (result.kll_storage[h].count() >= min_samples) {
+    // Use pre-computed global_by_hour
+    for (size_t h = 0; h < global_by_hour.size() && h < 24; ++h) {
+      if (global_by_hour[h].count() >= min_samples) {
         result.bins.emplace_back();
         result.bins.back().key = "hour_" + std::to_string(h);
-        result.bins.back().extract_from(result.kll_storage[h]);
+        result.bins.back().extract_from(global_by_hour[h]);
       }
     }
     break;
@@ -438,7 +420,7 @@ void Dist::finalize() {
   // 4. Build stability visualization (only assets with count >= 1000)
   {
     stability.clear();
-    constexpr size_t MIN_ASSET_SAMPLES = 1000;
+    constexpr size_t MIN_ASSET_SAMPLES = 100;
 
     // Collect valid asset indices
     std::vector<size_t> valid_idx;
@@ -450,14 +432,53 @@ void Dist::finalize() {
 
     const size_t n_valid = valid_idx.size();
     if (global_total.count() > kMinSamples && n_valid > 1) {
-      // Get 19 percentile x-values from global distribution
       constexpr int N_PERCENTILES = 19;
-      std::array<float, N_PERCENTILES> ref_x;
+      std::array<double, N_PERCENTILES> percentiles;
       for (int i = 0; i < N_PERCENTILES; ++i) {
-        ref_x[i] = static_cast<float>(global_total.quantile(0.05 * (i + 1)));
+        percentiles[i] = 0.05 * (i + 1); // 5%, 10%, ..., 95%
       }
 
-      // Build 19×n_valid offset matrix
+      // Global median for W₁ alignment
+      float global_median = static_cast<float>(global_total.quantile(0.5));
+
+      // ======================================================================
+      // X-axis: W₂ distance (ICDF + mean alignment)
+      // ======================================================================
+      std::vector<float> scores_w2(n_valid);
+      for (size_t i = 0; i < n_valid; ++i) {
+        size_t a = valid_idx[i];
+
+        // Mean alignment (optimal for W₂)
+        float mean_shift = static_cast<float>(
+          global_by_asset[a].mean() - global_total.mean()
+        );
+
+        // Compute W₂ distance on ICDF
+        float sum_sq = 0.0f;
+        for (int d = 0; d < N_PERCENTILES; ++d) {
+          float Q_i = static_cast<float>(global_by_asset[a].quantile(percentiles[d]));
+          float Q_g = static_cast<float>(global_total.quantile(percentiles[d]));
+          float diff = (Q_i - mean_shift) - Q_g;
+          sum_sq += diff * diff;
+        }
+        scores_w2[i] = std::sqrt(sum_sq / N_PERCENTILES);
+      }
+
+      // Normalize to [0,1] (distance is non-negative)
+      float M = *std::max_element(scores_w2.begin(), scores_w2.end());
+      if (M < 1e-9f) M = 1.0f;
+
+      stability.asset_idx = valid_idx;
+      stability.score_min = 0.0f; // W₂ distance is non-negative
+      stability.score_max = M;
+      stability.x_norm.resize(n_valid);
+      for (size_t i = 0; i < n_valid; ++i) {
+        stability.x_norm[i] = scores_w2[i] / M;
+      }
+
+      // ======================================================================
+      // Color: W₁ offset vector (ICDF + median alignment) for clustering
+      // ======================================================================
       std::vector<std::vector<float>> offsets(N_PERCENTILES);
       for (int d = 0; d < N_PERCENTILES; ++d) {
         offsets[d].resize(n_valid);
@@ -465,42 +486,20 @@ void Dist::finalize() {
 
       for (size_t i = 0; i < n_valid; ++i) {
         size_t a = valid_idx[i];
+
+        // Median alignment (robust for W₁)
+        float asset_median = static_cast<float>(global_by_asset[a].quantile(0.5));
+        float median_shift = asset_median - global_median;
+
+        // Compute W₁ offset components on ICDF
         for (int d = 0; d < N_PERCENTILES; ++d) {
-          float cdf_val = static_cast<float>(global_by_asset[a].queryCDF(ref_x[d]));
-          float expected = 0.05f * (d + 1);
-          offsets[d][i] = cdf_val - expected;
+          float Q_i = static_cast<float>(global_by_asset[a].quantile(percentiles[d]));
+          float Q_g = static_cast<float>(global_total.quantile(percentiles[d]));
+          offsets[d][i] = (Q_i - median_shift) - Q_g;
         }
       }
 
-      // Signed square sum for x position
-      std::vector<float> scores(n_valid);
-      for (size_t i = 0; i < n_valid; ++i) {
-        float sum = 0.0f;
-        for (int d = 0; d < N_PERCENTILES; ++d) {
-          float off = offsets[d][i];
-          sum += (off >= 0 ? 1.0f : -1.0f) * off * off;
-        }
-        scores[i] = sum;
-      }
-
-      // Normalize to [0,1] symmetric around zero: [-M, M] -> [0, 1]
-      float s_min = scores[0], s_max = scores[0];
-      for (float s : scores) {
-        if (s < s_min) s_min = s;
-        if (s > s_max) s_max = s;
-      }
-      float M = std::max(std::abs(s_min), std::abs(s_max));
-      if (M < 1e-9f) M = 1.0f;
-
-      stability.asset_idx = valid_idx;
-      stability.score_min = s_min;
-      stability.score_max = s_max;
-      stability.x_norm.resize(n_valid);
-      for (size_t i = 0; i < n_valid; ++i) {
-        stability.x_norm[i] = (scores[i] + M) / (2.0f * M); // 0 maps to 0.5
-      }
-
-      // Ward clustering for color
+      // Ward clustering (uses L1 distance internally)
       std::vector<int> leaf_order = ward_leaf_order(offsets);
 
       // leaf_order[pos] = index in valid array, map to color

@@ -262,7 +262,15 @@ struct OrderFlow {
         uint32_t color;
       };
 
+      // Nested: Metadata for tooltip (avoids re-searching merged cache)
+      struct Metadata {
+        int32_t amount_rmb;
+        float price; // bid: price_high, ask: price_low
+        size_t tick_start, tick_end;
+      };
+
       std::vector<Rect> rects;
+      std::vector<Metadata> metadata; // Same size as rects, 1:1 mapping
 
       float threshold = -1.0f; // Cached log_amount_threshold
       size_t version = 0;      // Bound to HeatmapMerged::version
