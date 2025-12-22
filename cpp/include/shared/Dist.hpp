@@ -4,7 +4,6 @@
 #include <array>
 #include <atomic>
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -32,95 +31,9 @@ struct Dist {
   // Foundation Types
   // ==========================================================================
 
-  // Welford online moments accumulator (mergeable)
-  struct MomentsAccum {
-    size_t n = 0;
-    double mean = 0.0;
-    double M2 = 0.0; // for variance
-    double M3 = 0.0; // for skewness
-    double M4 = 0.0; // for kurtosis
-
-    void add(double x) {
-      size_t n1 = n;
-      n++;
-      double delta = x - mean;
-      double delta_n = delta / n;
-      double delta_n2 = delta_n * delta_n;
-      double term1 = delta * delta_n * n1;
-
-      mean += delta_n;
-
-      // Update M4 before M3 before M2 (order matters)
-      M4 += term1 * delta_n2 * (n * n - 3 * n + 3) + 6 * delta_n2 * M2 -
-            4 * delta_n * M3;
-      M3 += term1 * delta_n * (n - 2) - 3 * delta_n * M2;
-      M2 += term1;
-    }
-
-    void merge(const MomentsAccum &o) {
-      if (o.n == 0)
-        return;
-      if (n == 0) {
-        *this = o;
-        return;
-      }
-
-      size_t n_ab = n + o.n;
-      double delta = o.mean - mean;
-      double delta2 = delta * delta;
-      double delta3 = delta2 * delta;
-      double delta4 = delta2 * delta2;
-
-      double n_a = static_cast<double>(n);
-      double n_b = static_cast<double>(o.n);
-      double n_ab_d = static_cast<double>(n_ab);
-
-      double new_mean = (n_a * mean + n_b * o.mean) / n_ab_d;
-
-      double new_M2 = M2 + o.M2 + delta2 * n_a * n_b / n_ab_d;
-
-      double new_M3 = M3 + o.M3 + delta3 * n_a * n_b * (n_a - n_b) / (n_ab_d * n_ab_d) +
-                      3.0 * delta * (n_a * o.M2 - n_b * M2) / n_ab_d;
-
-      double new_M4 =
-          M4 + o.M4 +
-          delta4 * n_a * n_b * (n_a * n_a - n_a * n_b + n_b * n_b) /
-              (n_ab_d * n_ab_d * n_ab_d) +
-          6.0 * delta2 * (n_a * n_a * o.M2 + n_b * n_b * M2) / (n_ab_d * n_ab_d) +
-          4.0 * delta * (n_a * o.M3 - n_b * M3) / n_ab_d;
-
-      n = n_ab;
-      mean = new_mean;
-      M2 = new_M2;
-      M3 = new_M3;
-      M4 = new_M4;
-    }
-
-    double var() const { return n > 1 ? M2 / n : 0.0; }
-
-    double skew() const {
-      if (n < 3 || M2 < 1e-14)
-        return 0.0;
-      double s = std::sqrt(M2 / n);
-      return (M3 / n) / (s * s * s);
-    }
-
-    double kurt() const {
-      if (n < 4 || M2 < 1e-14)
-        return 0.0;
-      return (n * M4) / (M2 * M2) - 3.0;
-    }
-
-    void clear() {
-      n = 0;
-      mean = M2 = M3 = M4 = 0.0;
-    }
-  };
-
-  // KLL + Moments bundle
+  // KLL with lazy moments (computed from weighted samples on demand)
   struct KLLWithMoments {
     KLLcache kll;
-    MomentsAccum mom;
 
     explicit KLLWithMoments(size_t k = KLL_CAPACITY, size_t n_recon = KLL_RESOLUTION) 
         : kll(k, n_recon) {}
@@ -133,29 +46,24 @@ struct Dist {
 
     void addBatch(const std::vector<float> &samples) {
       kll.addBatch(samples);
-      for (float x : samples) {
-        mom.add(x);
-      }
     }
 
     void merge(const KLLWithMoments &o) {
       kll.mergeWith(o.kll);
-      mom.merge(o.mom);
     }
 
     void clear() {
       kll.clear();
-      mom.clear();
     }
 
-    bool empty() const { return mom.n == 0; }
-    size_t count() const { return mom.n; }
+    bool empty() const { return kll.empty(); }
+    uint64_t count() const { return kll.totalCount(); }
 
-    // Accessors
-    double mean() const { return mom.mean; }
-    double var() const { return mom.var(); }
-    double skew() const { return mom.skew(); }
-    double kurt() const { return mom.kurt(); }
+    // Moments (lazy, O(stored_size) ≈ O(k * log(n/k)))
+    double mean() const { return kll.empty() ? 0.0 : kll.mean(); }
+    double var() const { return kll.empty() ? 0.0 : kll.var(); }
+    double skew() const { return kll.empty() ? 0.0 : kll.skew(); }
+    double kurt() const { return kll.empty() ? 0.0 : kll.kurt(); }
 
     // Quantile query: simple linear interpolation on ICDF grid
     double quantile(double q) const {
@@ -231,8 +139,6 @@ struct Dist {
       double t = (query - x[lo]) / (x[hi] - x[lo]);
       return y[lo] + t * (y[hi] - y[lo]);
     }
-
-  public:
   };
 
   // Data integrity counters

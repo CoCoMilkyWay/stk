@@ -828,7 +828,7 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
   int hovered = RenderPDFPlot("##PDFMonth", pdfs, focus_month_idx, need_autofit, [&](int idx) {
     const auto &kll = dist.cache[idx].total;
     ImGui::Text("%s", pdfs[idx].label.c_str());
-    ImGui::Text("n=%zu", kll.count());
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.count()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
@@ -880,7 +880,7 @@ static void RenderPDFByWeekday(const Dist &dist, bool need_autofit,
   int hovered = RenderPDFPlot("##PDFWeekday", pdfs, -1, need_autofit, [&](int idx) {
     const auto &kll = global_weekday[idx];
     ImGui::Text("%s", wd_names[idx]);
-    ImGui::Text("n=%zu", kll.count());
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.count()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
@@ -931,7 +931,7 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
   int hovered = RenderPDFPlot("##PDFHour", pdfs, -1, need_autofit, [&](int idx) {
     const auto &kll = global_hour[idx];
     ImGui::Text("Hour %d", idx);
-    ImGui::Text("n=%zu", kll.count());
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.count()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
@@ -1274,7 +1274,7 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
     // Row 1: n | PE
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("样本数 = %zu", kll.count());
+    ImGui::Text("样本数 = %llu", static_cast<unsigned long long>(kll.count()));
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PE = %s", stock_info ? fmt_val(stock_info->peTTM).c_str() : "--");
 

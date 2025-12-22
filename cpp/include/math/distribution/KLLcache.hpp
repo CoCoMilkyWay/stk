@@ -292,6 +292,16 @@ public:
    */
   [[nodiscard]] std::pair<float, float> range() const noexcept;
 
+  // ----------------
+  // Moments (lazy computed from weighted samples)
+  // ----------------
+  // O(stored_size) ≈ O(k * log(n/k)), 只在首次查询时计算
+
+  [[nodiscard]] double mean() const;
+  [[nodiscard]] double var() const;
+  [[nodiscard]] double skew() const;
+  [[nodiscard]] double kurt() const;
+
   /**
    * getMemoryUsage — 返回 KLL sketch 的实际内存占用(bytes)
    *
@@ -368,7 +378,17 @@ private:
 
     void invalidate() noexcept {
       valid = false;
+      moments_valid = false;
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Moments (lazy computed from weighted samples)
+    // ────────────────────────────────────────────────────────────────────────
+    bool moments_valid = false;
+    double mean = 0.0;
+    double var = 0.0;
+    double skew = 0.0;
+    double kurt = 0.0;
   };
 
   // ----------------
@@ -398,6 +418,8 @@ private:
   void invalidateCache() noexcept { cache_.invalidate(); }
   void validateCache() const;
   void buildCache() const;
+  void validateMoments() const;
+  void buildMoments() const;
 
   // ----------------
   // 内部辅助函数:重建(按对称性排列)
@@ -747,6 +769,96 @@ inline uint64_t KLLcache::totalCount() const noexcept { return count_; }
 inline std::pair<float, float> KLLcache::range() const noexcept {
   assert(!empty());
   return {min_, max_};
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Moments (lazy computed from weighted samples)
+// ════════════════════════════════════════════════════════════════════════════
+
+inline void KLLcache::validateMoments() const {
+  if (cache_.moments_valid) [[likely]]
+    return;
+  buildMoments();
+}
+
+inline void KLLcache::buildMoments() const {
+  // 收集加权样本（不需要完整的 cache rebuild）
+  size_t total_size = 0;
+  for (const auto &lv : levels_) {
+    total_size += lv.buffer.size();
+  }
+
+  if (total_size == 0) {
+    cache_.mean = cache_.var = cache_.skew = cache_.kurt = 0.0;
+    cache_.moments_valid = true;
+    return;
+  }
+
+  // 单遍扫描计算加权 moments（two-pass for numerical stability）
+  // Pass 1: 计算加权均值
+  double sum_w = 0.0;
+  double sum_wx = 0.0;
+  for (size_t i = 0; i < levels_.size(); ++i) {
+    double w = static_cast<double>(1ULL << i);
+    for (float v : levels_[i].buffer) {
+      sum_w += w;
+      sum_wx += w * v;
+    }
+  }
+  double mu = sum_wx / sum_w;
+
+  // Pass 2: 计算中心矩 M2, M3, M4
+  double M2 = 0.0, M3 = 0.0, M4 = 0.0;
+  for (size_t i = 0; i < levels_.size(); ++i) {
+    double w = static_cast<double>(1ULL << i);
+    for (float v : levels_[i].buffer) {
+      double d = v - mu;
+      double d2 = d * d;
+      M2 += w * d2;
+      M3 += w * d2 * d;
+      M4 += w * d2 * d2;
+    }
+  }
+
+  cache_.mean = mu;
+  cache_.var = M2 / sum_w;
+
+  double sigma2 = cache_.var;
+  if (sigma2 < 1e-14) {
+    cache_.skew = 0.0;
+    cache_.kurt = 0.0;
+  } else {
+    double sigma3 = sigma2 * std::sqrt(sigma2);
+    double sigma4 = sigma2 * sigma2;
+    cache_.skew = (M3 / sum_w) / sigma3;
+    cache_.kurt = (M4 / sum_w) / sigma4 - 3.0;
+  }
+
+  cache_.moments_valid = true;
+}
+
+inline double KLLcache::mean() const {
+  assert(!empty());
+  validateMoments();
+  return cache_.mean;
+}
+
+inline double KLLcache::var() const {
+  assert(!empty());
+  validateMoments();
+  return cache_.var;
+}
+
+inline double KLLcache::skew() const {
+  assert(!empty());
+  validateMoments();
+  return cache_.skew;
+}
+
+inline double KLLcache::kurt() const {
+  assert(!empty());
+  validateMoments();
+  return cache_.kurt;
 }
 
 inline size_t KLLcache::getMemoryUsage() const noexcept {
