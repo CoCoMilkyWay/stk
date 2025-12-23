@@ -8,6 +8,7 @@
 #include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
+#include "gui/task_features/ui/TabTimeSeries.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/affinity.hpp"
 #include "shared/SharedData.hpp"
@@ -32,10 +33,12 @@ struct TaskFeaturesState {
   Features::FeatureUIState feature_ui_state;
   Features::ComputeState compute_state;
   Features::DistUIState dist_ui_state;
+  Features::TimeSeriesUIState timeseries_ui_state;
 
   // Tab state
   bool orderflow_tab_was_active = false;
   bool dist_tab_was_active = false;
+  bool timeseries_tab_was_active = false;
 
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
@@ -207,6 +210,22 @@ TaskHandle CreateFeaturesTask() {
         // Tab just closed - stop coroutine (blocking)
         Features::StopTabDist(state->dist_service.get(), data);
         state->dist_tab_was_active = false;
+      }
+
+      // Tab 5: TimeSeries
+      bool timeseries_tab_open = ImGui::BeginTabItem("TimeSeries");
+      if (timeseries_tab_open) {
+        ImGui::Spacing();
+        Features::RenderTabTimeSeries(data, state->timeseries_ui_state);
+        ImGui::EndTabItem();
+      }
+
+      // Handle TimeSeries tab lifecycle
+      if (timeseries_tab_open && !state->timeseries_tab_was_active) {
+        state->timeseries_tab_was_active = true;
+      } else if (!timeseries_tab_open && state->timeseries_tab_was_active) {
+        Features::StopTabTimeSeries(data);
+        state->timeseries_tab_was_active = false;
       }
 
       ImGui::EndTabBar();

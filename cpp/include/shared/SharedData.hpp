@@ -6,6 +6,7 @@ struct AssetInfo;
 struct GuiState;
 struct Feature;
 struct Dist;
+struct TimeSeries;
 
 #include "./Asset.hpp"
 #include "./AssetInfo.hpp"
@@ -14,6 +15,7 @@ struct Dist;
 #include "./OrderFlow.hpp"
 #include "./Feature.hpp"
 #include "./Dist.hpp"
+#include "./TimeSeries.hpp"
 
 struct SharedData {
   Config config;
@@ -23,6 +25,7 @@ struct SharedData {
   OrderFlow orderflow;
   Feature feature;
   Dist dist;
+  TimeSeries timeseries;
   
   // Request full GUI reinitialization (triggered by config sync)
   bool request_reinit = false;
