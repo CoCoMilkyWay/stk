@@ -2,11 +2,11 @@
 // ============================================================================
 //
 // 时序分析流程 (SARIMA + GARCH 框架):
-//   目标: 如果存在稳定可预测的成分，剥离它，减少与其他特征的虚假相关性
+//   目标: 如果存在稳定可预测的成分,剥离它,减少与其他特征的虚假相关性
 //
 // UI布局:
 //   控制栏: Compute | Cancel | Status (step/5)
-//   左侧: 检验流程面板 (5个Step，可点击切换)
+//   左侧: 检验流程面板 (5个Step,可点击切换)
 //   右侧: 可视化面板 (根据选中Step切换图表)
 //
 // Step与图表对应:
@@ -48,4 +48,3 @@ void RenderTabTimeSeries(SharedData &data, TimeSeriesUIState &ui);
 void StopTabTimeSeries(SharedData &data);
 
 } // namespace GUI::Features
-

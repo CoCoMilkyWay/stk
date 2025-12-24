@@ -24,10 +24,10 @@ from py import mode_tsan, mode_debug, mode_profile, mode_assert, mode_production
 APP_NAME = "main"
 
 # Build & Run modes (set ONLY ONE to True)
-ENABLE_TSAN       = False
-ENABLE_DEBUG      = False
-ENABLE_PROFILE    = False
-ENABLE_ASSERT     = True
+ENABLE_TSAN = False
+ENABLE_DEBUG = False
+ENABLE_PROFILE = False
+ENABLE_ASSERT = True
 ENABLE_PRODUCTION = False  # Auto-enabled if all others are False
 
 
@@ -35,7 +35,8 @@ def _cleanup_processes():
     """Kill old processes."""
     process_names = [f"app_{APP_NAME}.exe"]
     for name in process_names:
-        subprocess.run(["taskkill", "/F", "/IM", name],capture_output=True, check=False)
+        subprocess.run(["taskkill", "/F", "/IM", name],
+                       capture_output=True, check=False)
     time.sleep(0.3)
 
 

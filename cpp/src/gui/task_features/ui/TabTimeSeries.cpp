@@ -2,13 +2,13 @@
 // ============================================================================
 //
 // 时序分析流程 (SARIMA + GARCH 框架):
-//   目标: 如果存在稳定可预测的成分，剥离它，减少与其他特征的虚假相关性
+//   目标: 如果存在稳定可预测的成分,剥离它,减少与其他特征的虚假相关性
 //
 // 分析步骤:
 //   Step 0: 平稳性检验 - ADF/KPSS 确认序列可建模
-//   Step 1: 频域分析   - 检测周期性成分，确认频谱宽度
+//   Step 1: 频域分析   - 检测周期性成分,确认频谱宽度
 //   Step 2: ARMA建模   - ACF/PACF 确定模型阶数
-//   Step 3: 残差分析   - 验证模型充分性，诊断残差性质
+//   Step 3: 残差分析   - 验证模型充分性,诊断残差性质
 //   Step 4: 时间衰减   - 评估截面结构的时间稳定性
 //
 // ============================================================================
@@ -62,6 +62,19 @@ static void RenderStatus(bool pass, bool warn = false) {
 static void RenderControlPanel(SharedData &data) {
   auto &ts = data.timeseries;
 
+  // Help button with tooltip
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered()) {
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(450.0f);
+    ImGui::TextUnformatted("在极低信噪比环境下, 对于输入特征, 尝试剥离稳定, 显著, 可预测(建模)的经典时序成分(SARIMA + GARCH), 降低特征之间的相关性和共线性, 提高后续因子质量");
+    ImGui::TextUnformatted("先剥离均值(SARIMA), 再剥离方差(GARCH)");
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+  }
+
+  ImGui::SameLine();
+
   // Compute button
   bool can_compute =
       !ts.compute.is_busy() && data.feature.selection.primary_feature_idx >= 0;
@@ -94,7 +107,7 @@ static void RenderStep0Tooltip() {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[平稳性检验]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 序列的统计特性(均值/方差)是否随时间变化？");
+  ImGui::TextUnformatted("核心问题: 序列的分布是否随时间变化？");
   ImGui::Spacing();
 
   ImGui::TextUnformatted("检验方法:");
@@ -102,25 +115,19 @@ static void RenderStep0Tooltip() {
   ImGui::TextUnformatted("│   H0: 存在单位根 (非平稳)");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
                      "│   判断: p < 0.05 → 拒绝H0 → 序列平稳 ✓");
-  ImGui::TextUnformatted("│   注意: ADF对趋势敏感，需先去趋势(detrend)");
+  ImGui::TextUnformatted("│   注意: ADF对趋势敏感,需先去趋势(detrend)");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("└─ KPSS (Kwiatkowski-Phillips-Schmidt-Shin) 平稳性检验");
   ImGui::TextUnformatted("    H0: 序列平稳");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
                      "    判断: p > 0.05 → 接受H0 → 序列平稳 ✓");
-  ImGui::TextUnformatted("    注意: KPSS对季节性敏感，需先去季节(deseason)");
+  ImGui::TextUnformatted("    注意: KPSS对季节性敏感,需先去季节(deseason)");
   ImGui::Spacing();
 
-  ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "最佳实践:");
-  ImGui::TextUnformatted("  - ADF ✓ + KPSS ✓ → 强平稳，可直接建模");
-  ImGui::TextUnformatted("  - ADF ✗ + KPSS ✗ → 差分或变换后重检");
-  ImGui::TextUnformatted("  - ADF ✓ + KPSS ✗ → 趋势平稳，需去趋势");
-  ImGui::TextUnformatted("  - ADF ✗ + KPSS ✓ → 差分平稳，需差分");
+  ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "输入平稳性=>梯度稳定性");
+  ImGui::TextUnformatted("对于梯度算法: 若输入过程是平稳(时间不变)且遍历(样本量够), 且损失函数相对于参数可微(损失函数选择合理, 梯度局部线性近似)且可积(输入不重尾, 梯度不爆炸), 则对任意参数, 梯度过程是平稳且遍历的随机过程 (Birkhoff ergodic theorem) (梯度噪声可能会延长时间平均梯度收敛到期望的时间)");
   ImGui::Spacing();
-
-  ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.5f, 1.0f), "预处理流程:");
-  ImGui::TextUnformatted("  原序列 → detrend(去趋势) → deseason(去季节) → 再检验");
-
+  ImGui::TextUnformatted("对于非梯度算法(树模型, 聚类, 非深度概率模型(先验或后验))和数据挖掘(启发,演化算法), 输入'可被平稳化'(模型内部能够平稳化输入)仍然是模型参数收敛的必要条件 (可被平稳化难以被证明, 但是: 输入已经平稳 => 可被平稳化) ");
   ImGui::PopTextWrapPos();
   ImGui::EndTooltip();
 }
@@ -136,37 +143,33 @@ static void RenderStep1Tooltip() {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[频域分析]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 信号的频率结构是否适合时序建模？");
+  ImGui::TextUnformatted("核心问题: 信号的频率结构是否影响模型表现, 是否能进行后面的分析？");
   ImGui::Spacing();
 
   ImGui::TextUnformatted("检验指标:");
-  ImGui::TextUnformatted("├─ 奈奎斯特频率检查");
+  ImGui::TextUnformatted("├─ Nyquist采样频率检查");
   ImGui::TextUnformatted("│   问题: 信号主频是否远低于采样频率的一半？");
   ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f),
-                     "│   风险: 低频成分 → 可能是假趋势(欠采样伪影)");
+                     "│   风险: 低频成分 → 可能是趋势误判, 影响模型表现");
   ImGui::TextUnformatted("│   处理: 考虑重采样或更长周期聚合");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("├─ 频谱宽度/连续性");
   ImGui::TextUnformatted("│   目标: 频谱较宽、相对连续、无明显尖峰");
-  ImGui::TextUnformatted("│   原理: 满足最大熵原则 → 信息分布均匀 → 可预测性低");
+  ImGui::TextUnformatted("│   原理: 满足最大熵原则 → 信息分布均匀 → 可预测性低(信息含量高)");
   ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f),
-                     "│   风险: 明显波峰 → 存在周期性成分 → 可能误判为season");
+                     "│   风险: 明显波峰 → 存在周期性成分 → 可能是季节误判, 影响模型表现");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("└─ Q因子 (Quality Factor)");
   ImGui::TextUnformatted("    公式: Q = f₀ / Δf  (峰值频率 / 峰宽)");
   ImGui::TextUnformatted("    判断:");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "      Q < 3  → 宽频谱，可开始ARMA建模 ✓");
-  ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f),
-                     "      Q ≥ 3  → 窄带信号，存在显著周期性 ⚠");
-  ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                     "      Q > 10 → 强周期信号，必须先剥离 ✗");
+                     "      Q < 3  → 宽频谱,可开始ARMA建模 ✓");
   ImGui::Spacing();
 
   ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "频谱形态解读:");
-  ImGui::TextUnformatted("  - 平坦频谱 → 白噪声特征，低可预测性");
-  ImGui::TextUnformatted("  - 1/f 衰减 → 长记忆过程，考虑ARFIMA");
-  ImGui::TextUnformatted("  - 尖峰 → 周期性成分，需识别并剥离");
+  ImGui::TextUnformatted("  - 平坦频谱 → 白噪声特征,低可预测性");
+  ImGui::TextUnformatted("  - 1/f 衰减 → 长记忆过程,考虑ARFIMA");
+  ImGui::TextUnformatted("  - 尖峰 → 周期性成分,需识别并剥离");
 
   ImGui::PopTextWrapPos();
   ImGui::EndTooltip();
@@ -194,7 +197,7 @@ static void RenderStep2Tooltip() {
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("└─ PACF (偏自相关函数) → 确定 AR(p) 阶数");
   ImGui::TextUnformatted("    观察: PACF 在滞后 p 处截断");
-  ImGui::TextUnformatted("    解释: 控制中间变量后，滞后 p 期与当前值的直接相关");
+  ImGui::TextUnformatted("    解释: 控制中间变量后,滞后 p 期与当前值的直接相关");
   ImGui::TextUnformatted("    示例: PACF 在 lag=1 截断 → AR(1) 候选");
   ImGui::Spacing();
 
@@ -202,14 +205,20 @@ static void RenderStep2Tooltip() {
   ImGui::TextUnformatted("  ACF 截断 + PACF 拖尾 → MA(q) 过程");
   ImGui::TextUnformatted("  ACF 拖尾 + PACF 截断 → AR(p) 过程");
   ImGui::TextUnformatted("  ACF 拖尾 + PACF 拖尾 → ARMA(p,q) 混合过程");
-  ImGui::TextUnformatted("  两者都在 lag=0 截断  → 白噪声，无需建模");
+  ImGui::TextUnformatted("  两者都在 lag=0 截断  → 白噪声,无需建模");
   ImGui::Spacing();
 
-  ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.5f, 1.0f), "关键 Insight:");
-  ImGui::TextUnformatted("  - 如果存在非常稳定的 ARMA 成分 → 考虑剥离");
-  ImGui::TextUnformatted("  - 剥离目的: 减少与其他特征的虚假相关性");
-  ImGui::TextUnformatted("  - 残差(剥离后)应接近白噪声");
-
+  ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.5f, 1.0f), "原理:");
+  ImGui::TextUnformatted(
+      "在:\n"
+      "   - 离散时间, \n"
+      "   - 因果(无未来信息), \n"
+      "   - 弱平稳(二阶(均值)平稳)、\n"
+      "   - 输入(创新项)i.i.d, \n"
+      "   - 且过程具有有理谱密度(有限个极点/零点/参数)的条件下, \n"
+      "   - 若时间重排仅通过LTI(滤波器效果)引入, \n"
+      "则此过程必然等价于一个ARMA(p, q) 过程\n"
+      "(AR: IIR卷积(频响极点) MA: FIR卷积(频响零点))");
   ImGui::PopTextWrapPos();
   ImGui::EndTooltip();
 }
@@ -234,14 +243,14 @@ static void RenderStep3Tooltip() {
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
                      "│   判断: p > 0.05 → 残差无显著自相关 ✓");
   ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f),
-                     "│   失败: 均值模型不完整，需增加 AR/MA 阶数");
+                     "│   失败: 均值模型不完整,需增加 AR/MA 阶数");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("├─ ARCH LM 检验 (条件异方差)");
   ImGui::TextUnformatted("│   H0: 残差无 ARCH 效应(波动聚集)");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
                      "│   判断: p > 0.05 → 无异方差 ✓");
   ImGui::TextUnformatted("│   失败 + 需要波动率建模 → 考虑 GARCH");
-  ImGui::TextUnformatted("│   失败 + 不需要 → 可忽略，但记录");
+  ImGui::TextUnformatted("│   失败 + 不需要 → 可忽略,但记录");
   ImGui::TextUnformatted("│   辅助: 观察残差平方的 ACF/PACF");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("├─ Jarque-Bera 检验 (正态性)");
@@ -250,7 +259,7 @@ static void RenderStep3Tooltip() {
                      "│   判断: p > 0.05 → 近似正态 ✓");
   ImGui::TextUnformatted("│   失败:");
   ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f),
-                     "│     轻微 (p > 0.01) → 警告，模型仍可用 ⚠");
+                     "│     轻微 (p > 0.01) → 警告,模型仍可用 ⚠");
   ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                      "│     严重 (p < 0.01) → 考虑 t分布/偏态分布 ✗");
   ImGui::TextUnformatted("│   辅助: Q-Q 图直观判断尾部行为");
@@ -305,7 +314,7 @@ static void RenderStep4Tooltip() {
   ImGui::TextUnformatted("│       应用: 因子组合权重的稳定性前提");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("└─ 截面排序时序一致性 (Scale Robustness)");
-  ImGui::TextUnformatted("    目标: 不同标准化方法下，资产排序是否一致");
+  ImGui::TextUnformatted("    目标: 不同标准化方法下,资产排序是否一致");
   ImGui::TextUnformatted("");
   ImGui::TextUnformatted("    测试: raw ↔ zscore ↔ minmax ↔ robust 标准化");
   ImGui::TextUnformatted("    指标: RankCorr(t) - 秩相关系数随时间的稳定性");
@@ -388,7 +397,8 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     ImGui::Text("Step 0: 平稳性检验");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) RenderStep0Tooltip();
+    if (ImGui::IsItemHovered())
+      RenderStep0Tooltip();
 
     if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
       ui.selected_step = 0;
@@ -421,7 +431,8 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     ImGui::Text("Step 1: 频域分析");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) RenderStep1Tooltip();
+    if (ImGui::IsItemHovered())
+      RenderStep1Tooltip();
 
     if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
       ui.selected_step = 1;
@@ -460,7 +471,8 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     ImGui::Text("Step 2: ARMA建模");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) RenderStep2Tooltip();
+    if (ImGui::IsItemHovered())
+      RenderStep2Tooltip();
 
     if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
       ui.selected_step = 2;
@@ -472,7 +484,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
       ImGui::Text("  PACF截断: p=%d %s", ts.step2_arma.pacf_cutoff_lag,
                   ts.step2_arma.pacf_is_cutoff ? "(截断)" : "(拖尾)");
       if (ts.step2_arma.is_white_noise) {
-        ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "  → 白噪声，无需建模");
+        ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "  → 白噪声,无需建模");
       } else {
         ImGui::Text("  → ARMA(%d,%d) 候选", ts.step2_arma.suggested_p,
                     ts.step2_arma.suggested_q);
@@ -496,7 +508,8 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     ImGui::Text("Step 3: 残差分析");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) RenderStep3Tooltip();
+    if (ImGui::IsItemHovered())
+      RenderStep3Tooltip();
 
     if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
       ui.selected_step = 3;
@@ -538,7 +551,8 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     ImGui::Text("Step 4: 时间衰减");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) RenderStep4Tooltip();
+    if (ImGui::IsItemHovered())
+      RenderStep4Tooltip();
 
     if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
       ui.selected_step = 4;
@@ -666,7 +680,8 @@ static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
     ImPlot::PlotInfLines("##cb_neg", &cb_neg, 1, ImPlotInfLinesFlags_Horizontal);
 
     std::vector<float> lags(n);
-    for (int i = 0; i < n; ++i) lags[i] = static_cast<float>(i);
+    for (int i = 0; i < n; ++i)
+      lags[i] = static_cast<float>(i);
     ImPlot::PlotBars("ACF", lags.data(), acf.data(), n, 0.4);
 
     ImPlot::EndPlot();
@@ -687,7 +702,8 @@ static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
     ImPlot::PlotInfLines("##cb_neg", &cb_neg, 1, ImPlotInfLinesFlags_Horizontal);
 
     std::vector<float> lags(n);
-    for (int i = 0; i < n; ++i) lags[i] = static_cast<float>(i);
+    for (int i = 0; i < n; ++i)
+      lags[i] = static_cast<float>(i);
     ImPlot::PlotBars("PACF", lags.data(), pacf.data(), n, 0.4);
 
     ImPlot::EndPlot();
@@ -866,4 +882,3 @@ void StopTabTimeSeries(SharedData &data) {
 }
 
 } // namespace GUI::Features
-
