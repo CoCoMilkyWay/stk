@@ -45,9 +45,14 @@ struct TaskFeaturesState {
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
 
-  // Auto-compute tracking
+  // Auto-compute tracking (Dist)
   int prev_primary_feature_idx = -1; // Track feature selection changes
   int prev_selected_level = 0;       // Track level changes
+
+  // Auto-compute tracking (TimeSeries)
+  int timeseries_prev_step = -1;           // Track step changes, -1 = first entry
+  int timeseries_prev_feature_idx = -1;    // Track feature changes for timeseries
+  int timeseries_prev_level = -1;          // Track level changes for timeseries
 
   // Terminal reference
   TaskTerminal *terminal = nullptr;
@@ -229,9 +234,51 @@ TaskHandle CreateFeaturesTask() {
       // Handle TimeSeries tab lifecycle
       if (timeseries_tab_open && !state->timeseries_tab_was_active) {
         state->timeseries_tab_was_active = true;
+        state->timeseries_prev_step = -1; // Reset to trigger first compute
       } else if (!timeseries_tab_open && state->timeseries_tab_was_active) {
         Features::StopTabTimeSeries(state->timeseries_service.get(), data);
         state->timeseries_tab_was_active = false;
+      }
+
+      // Auto-trigger TimeSeries compute on step/feature change
+      // Note: Must check is_running() to ensure coroutine is ready before RequestCompute
+      if (timeseries_tab_open && state->timeseries_service &&
+          state->timeseries_service->is_running()) {
+        auto &ts = data.timeseries;
+        auto &sel = data.feature.selection;
+        int current_step = state->timeseries_ui_state.selected_step;
+
+        // Check for feature/level change - clear all step data
+        bool feature_changed = (sel.primary_feature_idx != state->timeseries_prev_feature_idx);
+        bool level_changed = (sel.selected_level != state->timeseries_prev_level);
+        if (feature_changed || level_changed) {
+          ts.clear();  // Clear all step data
+          state->timeseries_prev_feature_idx = sel.primary_feature_idx;
+          state->timeseries_prev_level = sel.selected_level;
+        }
+
+        bool step_changed = (current_step != state->timeseries_prev_step);
+        bool has_valid_selection = (sel.primary_feature_idx >= 0);
+
+        // Incremental compute: only trigger for steps that are implemented and need data
+        // Currently only step 0 (stationarity) is implemented
+        bool step_needs_compute = false;
+        switch (current_step) {
+        case 0: step_needs_compute = !ts.step0_stationarity.valid; break;
+        // case 1: step_needs_compute = !ts.step1_frequency.valid; break;  // TODO
+        // case 2: step_needs_compute = !ts.step2_arma.valid; break;       // TODO
+        // case 3: step_needs_compute = !ts.step3_residual.valid; break;   // TODO
+        // case 4: step_needs_compute = !ts.step4_temporal_decay.valid; break; // TODO
+        default: break;
+        }
+
+        // Trigger compute if step changed OR feature changed (with invalid data)
+        if (step_changed || feature_changed || level_changed) {
+          state->timeseries_prev_step = current_step;
+          if (step_needs_compute && has_valid_selection && !ts.compute.is_busy()) {
+            state->timeseries_service->RequestCompute();
+          }
+        }
       }
 
       ImGui::EndTabBar();

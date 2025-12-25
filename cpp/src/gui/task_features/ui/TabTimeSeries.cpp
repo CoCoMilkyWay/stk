@@ -61,7 +61,7 @@ static void RenderStatus(bool pass, bool warn = false) {
 // Control Panel
 // ============================================================================
 
-static void RenderControlPanel(TimeSeriesService *service, SharedData &data) {
+static void RenderControlPanel([[maybe_unused]] TimeSeriesService *service, SharedData &data) {
   auto &ts = data.timeseries;
 
   // Help button with tooltip
@@ -77,25 +77,14 @@ static void RenderControlPanel(TimeSeriesService *service, SharedData &data) {
 
   ImGui::SameLine();
 
-  // Compute button
-  bool can_compute =
-      !ts.compute.is_busy() && data.feature.selection.primary_feature_idx >= 0;
-  ImGui::BeginDisabled(!can_compute);
-  if (ImGui::Button("Compute")) {
-    service->RequestCompute();
-  }
-  ImGui::EndDisabled();
-
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) {
-    ts.cancel();
-  }
-
-  ImGui::SameLine();
+  // Status display (auto-compute on step change)
   size_t done = ts.compute.done.load();
   size_t total = ts.compute.total.load();
-  ImGui::Text("Status: %s (%zu/%zu)", StatusText(ts.compute.status), done,
-              total);
+  if (ts.compute.is_busy()) {
+    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Computing... (%zu/%zu)", done, total);
+  } else {
+    ImGui::Text("Status: %s (%zu/%zu)", StatusText(ts.compute.status), done, total);
+  }
 }
 
 // ============================================================================
@@ -392,6 +381,7 @@ static bool RenderStepItem(int step_idx, const char *title, int selected_step,
 
 static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
   auto &ts = data.timeseries;
+  bool can_switch = !ts.compute.is_busy();
 
   // Step 0: 平稳性检验
   ImGui::BeginChild("Step0Child", ImVec2(0, 80), true);
@@ -402,7 +392,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     if (ImGui::IsItemHovered())
       RenderStep0Tooltip();
 
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && can_switch) {
       ui.selected_step = 0;
     }
 
@@ -436,7 +426,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     if (ImGui::IsItemHovered())
       RenderStep1Tooltip();
 
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && can_switch) {
       ui.selected_step = 1;
     }
 
@@ -476,7 +466,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     if (ImGui::IsItemHovered())
       RenderStep2Tooltip();
 
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && can_switch) {
       ui.selected_step = 2;
     }
 
@@ -513,7 +503,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     if (ImGui::IsItemHovered())
       RenderStep3Tooltip();
 
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && can_switch) {
       ui.selected_step = 3;
     }
 
@@ -556,7 +546,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     if (ImGui::IsItemHovered())
       RenderStep4Tooltip();
 
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && can_switch) {
       ui.selected_step = 4;
     }
 
@@ -615,13 +605,15 @@ static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
     return;
   }
 
-  // Summary statistics (before heatmap)
+  // Summary statistics (before heatmap) - always show to keep layout stable
   if (ts.step0_stationarity.valid) {
     ImGui::Text("Median ADF p=%.3f %s  |  Median KPSS p=%.3f %s",
                 ts.step0_stationarity.adf_pvalue,
                 ts.step0_stationarity.adf_pass ? "[PASS]" : "[FAIL]",
                 ts.step0_stationarity.kpss_pvalue,
                 ts.step0_stationarity.kpss_pass ? "[PASS]" : "[FAIL]");
+  } else {
+    ImGui::TextDisabled("Median ADF p=---   |  Median KPSS p=---");
   }
 
   ImGui::Text("热力图: 绿=通过, 红色=偏离阈值0.05以上");
