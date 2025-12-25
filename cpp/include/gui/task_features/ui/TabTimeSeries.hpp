@@ -42,9 +42,10 @@ struct TimeSeriesUIState {
 // ============================================================================
 
 // Render tab - displays time series analysis workflow
-void RenderTabTimeSeries(SharedData &data, TimeSeriesUIState &ui);
+void RenderTabTimeSeries(TimeSeriesService *service, SharedData &data,
+                         TimeSeriesUIState &ui);
 
 // Stop computation on tab close
-void StopTabTimeSeries(SharedData &data);
+void StopTabTimeSeries(TimeSeriesService *service, SharedData &data);
 
 } // namespace GUI::Features

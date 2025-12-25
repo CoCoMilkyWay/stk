@@ -112,6 +112,7 @@ set(SOURCES
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Feature.cpp
     ../../src/shared/Dist.cpp
+    ../../src/shared/TimeSeries.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/file_check.cpp
     ../../src/codec/json_config.cpp
@@ -141,6 +142,7 @@ set(SOURCES
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_features/services/ComputeService.cpp
     ../../src/gui/task_features/services/DistService.cpp
+    ../../src/gui/task_features/services/TimeSeriesService.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
@@ -200,6 +202,7 @@ set(HEADERS
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/Feature.hpp
     ../../include/shared/Dist.hpp
+    ../../include/shared/TimeSeries.hpp
     ../../include/shared/SharedData.hpp
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp

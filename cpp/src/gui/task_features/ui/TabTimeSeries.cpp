@@ -14,6 +14,8 @@
 // ============================================================================
 
 #include "gui/task_features/ui/TabTimeSeries.hpp"
+#include "gui/task_features/services/TimeSeriesService.hpp"
+#include "shared/Asset.hpp"
 #include "shared/SharedData.hpp"
 #include "shared/TimeSeries.hpp"
 
@@ -32,8 +34,8 @@ static const char *StatusText(TimeSeries::Compute::Status s) {
   switch (s) {
   case TimeSeries::Compute::Status::Idle:
     return "Idle";
-  case TimeSeries::Compute::Status::Running:
-    return "Running...";
+  case TimeSeries::Compute::Status::Building:
+    return "Building...";
   case TimeSeries::Compute::Status::Done:
     return "Done";
   case TimeSeries::Compute::Status::Error:
@@ -59,7 +61,7 @@ static void RenderStatus(bool pass, bool warn = false) {
 // Control Panel
 // ============================================================================
 
-static void RenderControlPanel(SharedData &data) {
+static void RenderControlPanel(TimeSeriesService *service, SharedData &data) {
   auto &ts = data.timeseries;
 
   // Help button with tooltip
@@ -80,7 +82,7 @@ static void RenderControlPanel(SharedData &data) {
       !ts.compute.is_busy() && data.feature.selection.primary_feature_idx >= 0;
   ImGui::BeginDisabled(!can_compute);
   if (ImGui::Button("Compute")) {
-    // TODO: service->RequestCompute();
+    service->RequestCompute();
   }
   ImGui::EndDisabled();
 
@@ -90,9 +92,9 @@ static void RenderControlPanel(SharedData &data) {
   }
 
   ImGui::SameLine();
-  size_t step = ts.compute.current_step.load();
-  size_t total = ts.compute.total_steps.load();
-  ImGui::Text("Status: %s (Step %zu/%zu)", StatusText(ts.compute.status), step,
+  size_t done = ts.compute.done.load();
+  size_t total = ts.compute.total.load();
+  ImGui::Text("Status: %s (%zu/%zu)", StatusText(ts.compute.status), done,
               total);
 }
 
@@ -579,37 +581,158 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
 // Right Panel: Visualization (Step-dependent)
 // ============================================================================
 
-static void RenderStep0Plot(const TimeSeries &ts, bool need_autofit) {
-  ImGui::Text("序列对比: 原始 / 去趋势 / 去季节");
-  ImGui::Separator();
+// Heatmap color based on deviation from 0.05 threshold
+// ADF: want p < 0.05, deviation = max(0, p - 0.05)
+// KPSS: want p > 0.05, deviation = max(0, 0.05 - p)
+// Map max deviation [0, 0.05] to green->yellow->red
+static ImU32 GetStationarityColor(const TimeSeries::StationarityCell &cell) {
+  if (!cell.valid)
+    return IM_COL32(60, 60, 60, 255);
 
-  if (!ts.step0_stationarity.valid || ts.step0_stationarity.raw_series.empty()) {
+  float adf_dev = std::max(0.0f, cell.adf_pvalue - 0.05f);
+  float kpss_dev = std::max(0.0f, 0.05f - cell.kpss_pvalue);
+  float t = std::min(1.0f, std::max(adf_dev, kpss_dev) / 0.05f);
+
+  uint8_t r = static_cast<uint8_t>(40 + t * 160);
+  uint8_t g = static_cast<uint8_t>(180 - t * 120);
+  return IM_COL32(r, g, 40, 255);
+}
+
+static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
+                            bool /*need_autofit*/) {
+  const auto &cache = ts.stationarity_cache;
+  if (cache.empty()) {
     ImGui::TextDisabled("No data - run compute first");
     return;
   }
 
-  if (need_autofit) {
-    ImPlot::SetNextAxesToFit();
+  // Dimensions
+  const size_t n_months = cache.size();
+  const size_t n_assets = cache[0].n_assets;
+
+  if (n_assets == 0 || n_months == 0) {
+    ImGui::TextDisabled("No data available");
+    return;
   }
 
-  if (ImPlot::BeginPlot("##StationarityPlot", ImVec2(-1, -1))) {
-    ImPlot::SetupAxes("Time", "Value");
+  // Summary statistics (before heatmap)
+  if (ts.step0_stationarity.valid) {
+    ImGui::Text("Median ADF p=%.3f %s  |  Median KPSS p=%.3f %s",
+                ts.step0_stationarity.adf_pvalue,
+                ts.step0_stationarity.adf_pass ? "[PASS]" : "[FAIL]",
+                ts.step0_stationarity.kpss_pvalue,
+                ts.step0_stationarity.kpss_pass ? "[PASS]" : "[FAIL]");
+  }
 
-    const auto &raw = ts.step0_stationarity.raw_series;
-    const auto &detrend = ts.step0_stationarity.detrend_series;
-    const auto &deseason = ts.step0_stationarity.deseason_series;
+  ImGui::Text("热力图: 绿=通过, 红色=偏离阈值0.05以上");
+  ImGui::Separator();
 
-    if (!raw.empty()) {
-      ImPlot::PlotLine("Raw", raw.data(), static_cast<int>(raw.size()));
+  // Calculate cell size
+  ImVec2 avail = ImGui::GetContentRegionAvail();
+  float cell_w = std::max(4.0f, (avail.x - 80.0f) / static_cast<float>(n_months));
+  float cell_h = std::max(2.0f, (avail.y - 40.0f) / static_cast<float>(n_assets));
+
+  // Clamp cell size for readability
+  cell_w = std::min(cell_w, 20.0f);
+  cell_h = std::min(cell_h, 8.0f);
+
+  ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+  ImVec2 canvas_size(cell_w * n_months + 60.0f, cell_h * n_assets + 30.0f);
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+
+  // Draw month labels on top
+  for (size_t m = 0; m < n_months; ++m) {
+    if (m % 3 == 0) {  // Label every 3rd month
+      const std::string &month = cache[m].month;
+      std::string label = month.substr(2, 2) + "/" + month.substr(4, 2);
+      float x = canvas_pos.x + 50.0f + m * cell_w;
+      draw_list->AddText(ImVec2(x, canvas_pos.y), IM_COL32(200, 200, 200, 255),
+                         label.c_str());
     }
-    if (!detrend.empty()) {
-      ImPlot::PlotLine("Detrend", detrend.data(), static_cast<int>(detrend.size()));
+  }
+
+  // Track hovered cell for tooltip
+  int hovered_month = -1;
+  int hovered_asset = -1;
+
+  // Draw heatmap cells
+  float start_y = canvas_pos.y + 20.0f;
+  for (size_t a = 0; a < n_assets; ++a) {
+    float y = start_y + a * cell_h;
+
+    for (size_t m = 0; m < n_months; ++m) {
+      float x = canvas_pos.x + 50.0f + m * cell_w;
+
+      const auto &cell = cache[m].by_asset[a];
+      ImU32 color = GetStationarityColor(cell);
+
+      ImVec2 p_min(x, y);
+      ImVec2 p_max(x + cell_w - 1.0f, y + cell_h - 1.0f);
+
+      draw_list->AddRectFilled(p_min, p_max, color);
+
+      // Check hover
+      ImVec2 mouse = ImGui::GetMousePos();
+      if (mouse.x >= p_min.x && mouse.x < p_max.x &&
+          mouse.y >= p_min.y && mouse.y < p_max.y) {
+        hovered_month = static_cast<int>(m);
+        hovered_asset = static_cast<int>(a);
+        // Highlight border
+        draw_list->AddRect(p_min, p_max, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+      }
     }
-    if (!deseason.empty()) {
-      ImPlot::PlotLine("Deseason", deseason.data(), static_cast<int>(deseason.size()));
+  }
+
+  // Reserve space for the canvas
+  ImGui::Dummy(canvas_size);
+
+  // Tooltip for hovered cell
+  if (hovered_month >= 0 && hovered_asset >= 0) {
+    const auto &cell = cache[hovered_month].by_asset[hovered_asset];
+    const std::string &month = cache[hovered_month].month;
+
+    ImGui::BeginTooltip();
+
+    // Asset name
+    if (static_cast<size_t>(hovered_asset) < asset.items.size()) {
+      const auto &item = asset.items[hovered_asset];
+      ImGui::Text("Asset: %s %s", item.asset_code.c_str(), item.asset_name.c_str());
+    } else {
+      ImGui::Text("Asset: #%d", hovered_asset);
     }
 
-    ImPlot::EndPlot();
+    // Month
+    ImGui::Text("Month: %s/%s", month.substr(0, 4).c_str(),
+                month.substr(4, 2).c_str());
+
+    ImGui::Separator();
+
+    if (cell.valid) {
+      // ADF result
+      if (cell.adf_pass) {
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "ADF: p=%.3f [PASS]",
+                           cell.adf_pvalue);
+      } else {
+        ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "ADF: p=%.3f [FAIL]",
+                           cell.adf_pvalue);
+      }
+
+      // KPSS result
+      if (cell.kpss_pass) {
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "KPSS: p=%.3f [PASS]",
+                           cell.kpss_pvalue);
+      } else {
+        ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "KPSS: p=%.3f [FAIL]",
+                           cell.kpss_pvalue);
+      }
+
+      ImGui::Text("Samples: %zu", cell.n_samples);
+    } else {
+      ImGui::TextDisabled("Invalid (insufficient samples)");
+    }
+
+    ImGui::EndTooltip();
   }
 }
 
@@ -822,7 +945,7 @@ static void RenderVisualizationPanel(SharedData &data, TimeSeriesUIState &ui) {
 
   switch (ui.selected_step) {
   case 0:
-    RenderStep0Plot(ts, ui.need_autofit);
+    RenderStep0Plot(ts, data.asset, ui.need_autofit);
     break;
   case 1:
     RenderStep1Plot(ts, ui.need_autofit);
@@ -846,12 +969,28 @@ static void RenderVisualizationPanel(SharedData &data, TimeSeriesUIState &ui) {
 // Main Render
 // ============================================================================
 
-void RenderTabTimeSeries(SharedData &data, TimeSeriesUIState &ui) {
+void RenderTabTimeSeries(TimeSeriesService *service, SharedData &data,
+                         TimeSeriesUIState &ui) {
+  // Auto-start coroutine
+  if (!service->is_running()) {
+    service->StartCompute(data.gui.Coro(), data);
+  }
+
+  auto &ts = data.timeseries;
+
+  // Trigger autofit when compute just finished
+  static auto last_status = ts.compute.status;
+  if (last_status != TimeSeries::Compute::Status::Done &&
+      ts.compute.status == TimeSeries::Compute::Status::Done) {
+    ui.need_autofit = true;
+  }
+  last_status = ts.compute.status;
+
   // Control panel
   float ctrl_height =
       ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y * 2;
   ImGui::BeginChild("ControlBar", ImVec2(0, ctrl_height), true);
-  RenderControlPanel(data);
+  RenderControlPanel(service, data);
   ImGui::EndChild();
 
   // Main content: Left (Steps) + Right (Visualization)
@@ -877,8 +1016,11 @@ void RenderTabTimeSeries(SharedData &data, TimeSeriesUIState &ui) {
   ui.need_autofit = false;
 }
 
-void StopTabTimeSeries(SharedData &data) {
+void StopTabTimeSeries(TimeSeriesService *service, SharedData &data) {
   data.timeseries.cancel();
+  if (service && service->is_running()) {
+    service->StopCompute(data.gui.Coro(), data);
+  }
 }
 
 } // namespace GUI::Features

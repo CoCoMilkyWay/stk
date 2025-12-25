@@ -4,6 +4,7 @@
 #include "gui/task_features/services/ComputeService.hpp"
 #include "gui/task_features/services/DataLoader.hpp"
 #include "gui/task_features/services/DistService.hpp"
+#include "gui/task_features/services/TimeSeriesService.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
 #include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
@@ -27,6 +28,7 @@ struct TaskFeaturesState {
   std::unique_ptr<Features::ComputeService> compute_service;
   std::unique_ptr<Features::DataLoader> data_loader;
   std::unique_ptr<Features::DistService> dist_service;
+  std::unique_ptr<Features::TimeSeriesService> timeseries_service;
 
   // UI State
   int selected_tab = 0;
@@ -105,6 +107,9 @@ TaskHandle CreateFeaturesTask() {
     }
     if (!state->dist_service) {
       state->dist_service = std::make_unique<Features::DistService>(data.config.feature_dir);
+    }
+    if (!state->timeseries_service) {
+      state->timeseries_service = std::make_unique<Features::TimeSeriesService>(data.config.feature_dir);
     }
 
     // Auto-trigger Dist compute on feature selection change
@@ -216,7 +221,8 @@ TaskHandle CreateFeaturesTask() {
       bool timeseries_tab_open = ImGui::BeginTabItem("TimeSeries");
       if (timeseries_tab_open) {
         ImGui::Spacing();
-        Features::RenderTabTimeSeries(data, state->timeseries_ui_state);
+        Features::RenderTabTimeSeries(state->timeseries_service.get(), data,
+                                      state->timeseries_ui_state);
         ImGui::EndTabItem();
       }
 
@@ -224,7 +230,7 @@ TaskHandle CreateFeaturesTask() {
       if (timeseries_tab_open && !state->timeseries_tab_was_active) {
         state->timeseries_tab_was_active = true;
       } else if (!timeseries_tab_open && state->timeseries_tab_was_active) {
-        Features::StopTabTimeSeries(data);
+        Features::StopTabTimeSeries(state->timeseries_service.get(), data);
         state->timeseries_tab_was_active = false;
       }
 
@@ -246,7 +252,8 @@ TaskHandle CreateFeaturesTask() {
     }
 
     state->data_loader.reset();
-    state->dist_service.reset(); // DistService destructor will handle cleanup
+    state->dist_service.reset();
+    state->timeseries_service.reset();
   };
 
   return handle;

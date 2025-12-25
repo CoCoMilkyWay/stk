@@ -2,8 +2,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
+
+// Forward declarations
+struct Feature;
+struct Asset;
 
 // ============================================================================
 // TimeSeries Analysis Data Structure
@@ -23,7 +28,46 @@
 
 struct TimeSeries {
 
-  // Step 0: 平稳性检验结果
+  // ==========================================================================
+  // Stationarity Cache (per-month per-asset results)
+  // ==========================================================================
+
+  // Per-asset per-month 检验结果
+  struct StationarityCell {
+    float adf_statistic = 0.0f;
+    float adf_pvalue = 0.0f;
+    bool adf_pass = false;   // p < 0.05
+
+    float kpss_statistic = 0.0f;
+    float kpss_pvalue = 0.0f;
+    bool kpss_pass = false;  // p > 0.05
+
+    size_t n_samples = 0;
+    bool valid = false;
+  };
+
+  // MonthlyCache (对仗 Dist::MonthlyCache)
+  struct MonthlyStationarity {
+    std::string month;  // "YYYYMM"
+    std::vector<StationarityCell> by_asset;  // [n_assets]
+    size_t n_assets = 0;
+    bool valid = false;
+
+    void clear() {
+      month.clear();
+      by_asset.clear();
+      n_assets = 0;
+      valid = false;
+    }
+
+    void init(size_t n_assets_val) {
+      n_assets = n_assets_val;
+      by_asset.clear();
+      by_asset.resize(n_assets);
+    }
+  };
+
+  // Step 0: 平稳性检验结果 (聚合统计，用于 UI summary)
   struct StationarityTest {
     float adf_pvalue = 0.0f;
     float adf_statistic = 0.0f;
@@ -131,12 +175,14 @@ struct TimeSeries {
     void clear() { *this = TemporalDecay{}; }
   };
 
-  // Compute Control
+  // ==========================================================================
+  // Compute Control (对仗 Dist::Compute)
+  // ==========================================================================
 
   struct Compute {
     enum class Status : uint8_t {
       Idle,
-      Running,
+      Building,  // 构建月度缓存
       Done,
       Error,
       Cancelled
@@ -145,43 +191,87 @@ struct TimeSeries {
     Status status = Status::Idle;
     std::string error;
 
-    std::atomic<size_t> current_step{0};
-    std::atomic<size_t> total_steps{5};
+    std::atomic<size_t> done{0};    // 已完成的月份数
+    std::atomic<size_t> total{0};   // 总月份数
     std::atomic<bool> cancel{false};
 
     float progress() const {
-      return 100.0f * current_step.load() / total_steps.load();
+      size_t t = total.load();
+      return t > 0 ? 100.0f * done.load() / t : 0.0f;
     }
 
     bool is_idle() const {
       return status == Status::Idle || status == Status::Done;
     }
 
-    bool is_busy() const { return status == Status::Running; }
+    bool is_busy() const { return status == Status::Building; }
 
     void reset() {
       status = Status::Idle;
       error.clear();
-      current_step = 0;
-      total_steps = 5;
+      done = 0;
+      total = 0;
       cancel = false;
     }
   };
 
-  // Main Data Members
+  // ==========================================================================
+  // Input Control (对仗 Dist::Input)
+  // ==========================================================================
 
+  struct Input {
+    int feature_idx = -1;
+    int level = -1;
+    std::string month_range;
+
+    bool has_changes(int feat_idx, int lvl, const std::string &range) const {
+      return feature_idx != feat_idx || level != lvl || month_range != range;
+    }
+
+    void update_cache(int feat_idx, int lvl, const std::string &range) {
+      feature_idx = feat_idx;
+      level = lvl;
+      month_range = range;
+    }
+  };
+
+  // ==========================================================================
+  // Main Data Members
+  // ==========================================================================
+
+  // Stationarity cache: [n_months][n_assets]
+  std::vector<MonthlyStationarity> stationarity_cache;
+
+  // Step results (聚合统计)
   StationarityTest step0_stationarity;
   FrequencyAnalysis step1_frequency;
   ARMAAnalysis step2_arma;
   ResidualAnalysis step3_residual;
   TemporalDecay step4_temporal_decay;
 
+  Input input;
   Compute compute;
 
-  int feature_idx = -1;
-  int level = -1;
+  // ==========================================================================
+  // Methods - Build Stationarity (对仗 Dist::build_month/build_all)
+  // ==========================================================================
 
-  // Methods
+  // Build single month stationarity (thread-safe, called from worker)
+  void build_stationarity_month(size_t cache_idx, const std::string &features_dir,
+                                const Feature &feature, const Asset &asset);
+
+  // Build all months (dispatch to thread pool)
+  void build_stationarity(const std::vector<std::string> &months,
+                          const std::string &features_dir,
+                          const Feature &feature, const Asset &asset,
+                          std::function<void(std::function<void()>)> submit);
+
+  // Finalize after build completes: compute aggregate statistics
+  void finalize_stationarity();
+
+  // ==========================================================================
+  // Methods - Control
+  // ==========================================================================
 
   void cancel() {
     compute.cancel = true;
@@ -189,18 +279,18 @@ struct TimeSeries {
   }
 
   void clear() {
+    stationarity_cache.clear();
     step0_stationarity.clear();
     step1_frequency.clear();
     step2_arma.clear();
     step3_residual.clear();
     step4_temporal_decay.clear();
+    input = Input{};
     compute.reset();
-    feature_idx = -1;
-    level = -1;
   }
 
-  bool need_rebuild(int feat_idx, int lvl) const {
-    return feature_idx != feat_idx || level != lvl;
+  bool need_rebuild(int feat_idx, int lvl, const std::string &range) const {
+    return input.has_changes(feat_idx, lvl, range);
   }
 };
 
