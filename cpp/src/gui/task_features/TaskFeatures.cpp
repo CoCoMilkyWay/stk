@@ -32,6 +32,8 @@ struct TaskFeaturesState {
 
   // UI State
   int selected_tab = 0;
+  int locked_tab = -1;
+  bool tabs_locked = false;
   Features::FeatureUIState feature_ui_state;
   Features::ComputeState compute_state;
   Features::DistUIState dist_ui_state;
@@ -172,27 +174,61 @@ TaskHandle CreateFeaturesTask() {
     ImGui::BeginChild("FeaturesTabs", ImVec2(0, 0), false);
 
     if (ImGui::BeginTabBar("FeaturesTabBar", ImGuiTabBarFlags_None)) {
+      const bool compute_busy =
+          (state->compute_service &&
+           state->compute_service->get_status() == Features::ComputeStatus::Running);
+      const bool dist_busy = data.dist.compute.is_busy();
+      const bool timeseries_busy = data.timeseries.compute.is_busy();
+      const bool any_busy = compute_busy || dist_busy || timeseries_busy;
+
+      if (any_busy) {
+        if (!state->tabs_locked) {
+          state->tabs_locked = true;
+          state->locked_tab = state->selected_tab;
+          if (state->locked_tab < 0)
+            state->locked_tab = 0;
+        }
+      } else {
+        state->tabs_locked = false;
+        state->locked_tab = -1;
+      }
+
       // Tab 1: Feature (NEW - first tab)
+      if (state->tabs_locked && state->locked_tab != 0)
+        ImGui::BeginDisabled(true);
       if (ImGui::BeginTabItem("Feature")) {
+        state->selected_tab = 0;
         ImGui::Spacing();
         Features::RenderTabFeature(data, state->feature_ui_state);
         ImGui::EndTabItem();
       }
+      if (state->tabs_locked && state->locked_tab != 0)
+        ImGui::EndDisabled();
 
       // Tab 2: Compute
+      if (state->tabs_locked && state->locked_tab != 1)
+        ImGui::BeginDisabled(true);
       if (ImGui::BeginTabItem("Compute")) {
+        state->selected_tab = 1;
         ImGui::Spacing();
         Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset, data.config);
         ImGui::EndTabItem();
       }
+      if (state->tabs_locked && state->locked_tab != 1)
+        ImGui::EndDisabled();
 
       // Tab 3: OrderFlow
+      if (state->tabs_locked && state->locked_tab != 2)
+        ImGui::BeginDisabled(true);
       bool orderflow_tab_open = ImGui::BeginTabItem("OrderFlow");
       if (orderflow_tab_open) {
+        state->selected_tab = 2;
         ImGui::Spacing();
         Features::RenderTabOrderFlow(state->data_loader.get(), data);
         ImGui::EndTabItem();
       }
+      if (state->tabs_locked && state->locked_tab != 2)
+        ImGui::EndDisabled();
 
       // Handle OrderFlow tab lifecycle (blocking start/stop)
       if (orderflow_tab_open && !state->orderflow_tab_was_active) {
@@ -205,12 +241,17 @@ TaskHandle CreateFeaturesTask() {
       }
 
       // Tab 4: Distribution
+      if (state->tabs_locked && state->locked_tab != 3)
+        ImGui::BeginDisabled(true);
       bool dist_tab_open = ImGui::BeginTabItem("Distribution");
       if (dist_tab_open) {
+        state->selected_tab = 3;
         ImGui::Spacing();
         Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
         ImGui::EndTabItem();
       }
+      if (state->tabs_locked && state->locked_tab != 3)
+        ImGui::EndDisabled();
 
       // Handle Distribution tab lifecycle (blocking start/stop)
       if (dist_tab_open && !state->dist_tab_was_active) {
@@ -223,13 +264,18 @@ TaskHandle CreateFeaturesTask() {
       }
 
       // Tab 5: TimeSeries
+      if (state->tabs_locked && state->locked_tab != 4)
+        ImGui::BeginDisabled(true);
       bool timeseries_tab_open = ImGui::BeginTabItem("TimeSeries");
       if (timeseries_tab_open) {
+        state->selected_tab = 4;
         ImGui::Spacing();
         Features::RenderTabTimeSeries(state->timeseries_service.get(), data,
                                       state->timeseries_ui_state);
         ImGui::EndTabItem();
       }
+      if (state->tabs_locked && state->locked_tab != 4)
+        ImGui::EndDisabled();
 
       // Handle TimeSeries tab lifecycle
       if (timeseries_tab_open && !state->timeseries_tab_was_active) {

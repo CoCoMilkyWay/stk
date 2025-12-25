@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <span>
 
 // ============================================================================
 // Build Single Month Stationarity
@@ -142,6 +143,8 @@ void TimeSeries::build_stationarity_month(size_t cache_idx,
   // Run ADF/KPSS tests for each asset
   {
     TraceN("RunTests");
+    math::stationary::ADFWorkspace adf_ws;
+    math::stationary::KPSSWorkspace kpss_ws;
     for (size_t a = 0; a < A; ++a) {
       auto &cell = mc.by_asset[a];
       const auto &series = asset_series[a];
@@ -154,8 +157,10 @@ void TimeSeries::build_stationarity_month(size_t cache_idx,
         continue;
       }
 
+      const std::span<const float> s(series.data(), series.size());
+
       // ADF test
-      auto adf_result = math::stationary::adf_test(series);
+      auto adf_result = math::stationary::adf_test(s, /*max_lag=*/12, adf_ws);
       if (adf_result.valid) {
         cell.adf_statistic = adf_result.statistic;
         cell.adf_pvalue = adf_result.pvalue;
@@ -163,7 +168,7 @@ void TimeSeries::build_stationarity_month(size_t cache_idx,
       }
 
       // KPSS test
-      auto kpss_result = math::stationary::kpss_test(series);
+      auto kpss_result = math::stationary::kpss_test(s, /*bandwidth=*/-1, kpss_ws);
       if (kpss_result.valid) {
         cell.kpss_statistic = kpss_result.statistic;
         cell.kpss_pvalue = kpss_result.pvalue;
