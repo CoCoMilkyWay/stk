@@ -4,7 +4,6 @@
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "gui/util/Color.hpp"
 #include "imgui.h"
-#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -41,23 +40,23 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
       }
     }
 
-    // Draw status from unified task_state
+    // Draw status from unified taskstate
     const char *status = nullptr;
     ImVec4 color;
     switch (i) {
     case 0: // Settings
-      status = data.task_state.settings.status_text();
-      color = data.task_state.settings.status_color();
+      status = data.taskstate.settings.status_text();
+      color = data.taskstate.settings.status_color();
       break;
     case 1: // SystemInfo - no status
       break;
     case 2: // Database
-      status = data.task_state.database.status_text();
-      color = data.task_state.database.status_color();
+      status = data.taskstate.database.status_text();
+      color = data.taskstate.database.status_color();
       break;
     case 3: // Features
-      status = data.task_state.features.status_text();
-      color = data.task_state.features.status_color();
+      status = data.taskstate.features.status_text();
+      color = data.taskstate.features.status_color();
       break;
     }
     if (status && status[0] != '\0') {
@@ -75,7 +74,7 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
   ImGui::End();
 
   // Calculate heights
-  float terminal_height = data.gui.terminal_visible ? (display_h * data.gui.terminal_height_ratio) : 0.0f;
+  float terminal_height = data.terminal.visible ? (display_h * data.terminal.height_ratio) : 0.0f;
   float panel_height = display_h - terminal_height;
 
   // Right top panel: Selected task content
@@ -85,16 +84,16 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
 
   if (selected_task >= 0 && selected_task < (int)tasks.size()) {
     // Main content area
-    const float button_bar_height = data.gui.terminal_visible ? 0.0f : 25.0f;
+    const float button_bar_height = data.terminal.visible ? 0.0f : 25.0f;
     ImGui::BeginChild("PanelContent", ImVec2(0, -button_bar_height), false);
     tasks[selected_task].DrawPanel(data);
     ImGui::EndChild();
 
     // Show "Show Terminal" button at bottom when terminal is hidden
-    if (!data.gui.terminal_visible) {
+    if (!data.terminal.visible) {
       ImGui::Separator();
       if (ImGui::Button("Show Terminal", ImVec2(150, 0))) {
-        data.gui.terminal_visible = true;
+        data.terminal.visible = true;
       }
     }
   }
@@ -102,25 +101,25 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
   ImGui::End();
 
   // Right bottom: Terminal (only when visible)
-  if (data.gui.terminal_visible) {
+  if (data.terminal.visible) {
     ImGui::SetNextWindowPos(ImVec2(200, panel_height));
     ImGui::SetNextWindowSize(ImVec2(display_w - 200, terminal_height));
     ImGui::Begin("Terminal", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
     // Control buttons
     if (ImGui::Button("Clear")) {
-      data.gui.terminal.Clear();
+      data.terminal.Clear();
     }
     ImGui::SameLine();
-    bool auto_scroll = data.gui.terminal.IsAutoScroll();
+    bool auto_scroll = data.terminal.IsAutoScroll();
     if (ImGui::Checkbox("Auto-scroll", &auto_scroll)) {
-      data.gui.terminal.SetAutoScroll(auto_scroll);
+      data.terminal.SetAutoScroll(auto_scroll);
     }
     ImGui::SameLine();
     ImGui::Dummy(ImVec2(20, 0));
     ImGui::SameLine();
     if (ImGui::Button("Hide")) {
-      data.gui.terminal_visible = false;
+      data.terminal.visible = false;
     }
 
     // Drag separator (static colors)
@@ -141,18 +140,18 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
     }
     if (is_active) {
       float delta = ImGui::GetIO().MouseDelta.y;
-      data.gui.terminal_height_ratio -= delta / display_h;
-      data.gui.terminal_height_ratio = std::max(0.1f, std::min(0.5f, data.gui.terminal_height_ratio));
+      data.terminal.height_ratio -= delta / display_h;
+      data.terminal.height_ratio = std::max(0.1f, std::min(0.5f, data.terminal.height_ratio));
     }
 
     // Terminal output
     ImGui::BeginChild("TerminalOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-    data.gui.terminal.ReadLines([](const std::vector<TaskTerminal::Line> &lines) {
+    data.terminal.ReadLines([](const std::vector<TaskTerminal::Line> &lines) {
       for (const auto &line : lines) {
         ImGui::TextColored(ImVec4(line.color.r, line.color.g, line.color.b, line.color.a), "%s", line.text.c_str());
       }
     });
-    if (data.gui.terminal.IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+    if (data.terminal.IsAutoScroll() && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
       ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();

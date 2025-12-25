@@ -65,7 +65,7 @@ std::vector<int> NetworkMonitor::GetTargetPings() const {
 // CoroNetwork Implementation
 // ============================================================================
 
-void CoroNetwork::Start(CoroManager &coro_mgr,
+void CoroNetwork::Start(CoroManager &coromgr,
                         const std::vector<PingTarget> &targets,
                         std::chrono::seconds interval) {
   targets_ = targets;
@@ -80,7 +80,7 @@ void CoroNetwork::Start(CoroManager &coro_mgr,
 
   // Spawn one long-running coroutine per target
   for (size_t i = 0; i < targets_.size(); ++i) {
-    auto handle = coro_mgr.Spawn(PingLoop(i));
+    auto handle = coromgr.Spawn(PingLoop(i));
     ping_handles_.push_back(std::move(handle));
   }
 }

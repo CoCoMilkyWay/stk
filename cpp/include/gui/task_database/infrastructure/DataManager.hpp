@@ -15,7 +15,7 @@
 
 // Forward declarations
 struct SharedData;
-class TaskTerminal;
+struct TaskTerminal;
 
 namespace GUI::Database {
 
@@ -27,7 +27,7 @@ using boost::asio::awaitable;
 
 class DataManager {
 private:
-  // Shared data reference (contains asset_info with stock data)
+  // Shared data reference (contains assetinfo with stock data)
   SharedData &data_;
   
   // Configuration
@@ -85,7 +85,7 @@ public:
     crawler_progress_callback_ = callback;
   }
 
-  // Data access (delegated to SharedData::asset_info)
+  // Data access (delegated to SharedData::assetinfo)
   const StockFactorMap &get_stock_factor() const;
   const StockInfoMap &get_stock_info() const;
   const StockDaysVec &get_stock_days() const;

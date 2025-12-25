@@ -9,7 +9,8 @@
 namespace asio = boost::asio;
 
 // RAII coroutine handle for automatic cancellation
-class CoroutineHandle {
+struct CoroutineHandle {
+private:
   std::shared_ptr<asio::cancellation_signal> cancel_signal_;
   
 public:
@@ -21,8 +22,8 @@ public:
 };
 
 // Coroutine manager - encapsulates all coroutine infrastructure
-// Owned by GuiState, hides implementation details
-class CoroManager {
+struct CoroManager {
+private:
   asio::io_context io_ctx_;
   
 public:

@@ -1,8 +1,8 @@
 #include "gui/task_icon_bar/TaskIconBar.hpp"
 #include "gui/Config.hpp"
 #include "gui/task_icon_bar/CoroNetwork.hpp"
+#include "gui/coro/CoroManager.hpp"
 #include "imgui.h"
-#include "shared/GuiState.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -401,7 +401,7 @@ static std::unique_ptr<CoroNetwork> g_coro_network;
 
 } // namespace
 
-void InitIconBar(GuiState &gui) {
+void InitIconBar(CoroManager &coromgr) {
   if (!g_icon_bar) {
     g_icon_bar = new IconBar();
   }
@@ -419,7 +419,7 @@ void InitIconBar(GuiState &gui) {
     NetworkMonitor::Instance().Initialize(targets.size());
 
     // Start network monitoring coroutine
-    g_coro_network->Start(gui.Coro(), targets, std::chrono::seconds(5));
+    g_coro_network->Start(coromgr, targets, std::chrono::seconds(5));
   }
 }
 

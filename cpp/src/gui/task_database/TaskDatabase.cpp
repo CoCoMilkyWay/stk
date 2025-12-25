@@ -11,7 +11,6 @@
 #include "gui/task_database/ui/TabOverview.hpp"
 #include "gui/task_database/ui/TabTable.hpp"
 #include "imgui.h"
-#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 #include <algorithm>
 #include <boost/asio/co_spawn.hpp>
@@ -69,7 +68,7 @@ public:
 
   void DrawPanel(SharedData &data) {
     if (!coro_mgr_) {
-      coro_mgr_ = &data.gui.Coro();
+      coro_mgr_ = &data.coromgr;
       database_dir_ = data.config.database_dir;
       data_ = &data;
       config_ = &data.config;
@@ -103,7 +102,7 @@ public:
 private:
   // Trigger unified refresh flow: scan L2 first, then update JSONs
   void TriggerRefreshFlow() {
-    auto &ts = data_->task_state.database;
+    auto &ts = data_->taskstate.database;
     if (ts.json_update_inflight || ts.l2_scan_inflight || !baostock_svc_ || !l2_svc_)
       return;
 
@@ -114,7 +113,7 @@ private:
     boost::asio::co_spawn(
         io,
         [this]() -> boost::asio::awaitable<void> {
-          auto &ts = data_->task_state.database;
+          auto &ts = data_->taskstate.database;
           struct FlagReset {
             bool &flag;
             ~FlagReset() { flag = false; }
@@ -184,9 +183,9 @@ private:
     auto &io = coro_mgr_->GetIoContext();
 
     // Create services (in dependency order)
-    baostock_svc_ = std::make_unique<BaostockService>(io, data, &data.gui.terminal);
-    scan_svc_ = std::make_unique<ScanService>(data, io, &data.gui.terminal);
-    encoding_svc_ = std::make_unique<EncodingService>(data, &data.gui.terminal);
+    baostock_svc_ = std::make_unique<BaostockService>(io, data, &data.terminal);
+    scan_svc_ = std::make_unique<ScanService>(data, io, &data.terminal);
+    encoding_svc_ = std::make_unique<EncodingService>(data, &data.terminal);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
     state_mgr_ = std::make_unique<StateManager>(data, baostock_svc_.get(), scan_svc_.get());
 
@@ -213,7 +212,7 @@ private:
   }
 
   void UpdateTaskState() {
-    auto &ts = data_->task_state.database;
+    auto &ts = data_->taskstate.database;
 
     if (!state_mgr_ || !scan_svc_) {
       ts.status = TaskState::Database::Status::Initializing;
@@ -321,7 +320,7 @@ private:
       bool overview_tab_is_open = ImGui::BeginTabItem("Overview");
       if (overview_tab_is_open && tabs.can_access_overview) {
         // Trigger refresh flow ONLY ONCE when first opening Overview tab
-        auto &ts = data_->task_state.database;
+        auto &ts = data_->taskstate.database;
         if (!refresh_flow_triggered_ && !overview_tab_was_open_ && baostock_svc_ && l2_svc_ && !ts.json_update_inflight) {
           TriggerRefreshFlow();
           refresh_flow_triggered_ = true;
@@ -406,7 +405,7 @@ private:
     const auto &stock_days_state = baostock_svc_->get_stock_days_state();
     const auto &crawler_state = baostock_svc_->get_crawler_state();
 
-    auto &ts = data_->task_state.database;
+    auto &ts = data_->taskstate.database;
     bool json_busy = ts.json_update_inflight ||
                      stock_factor_state.status == JsonFileStatus::Updating ||
                      stock_info_state.status == JsonFileStatus::Updating ||
@@ -436,7 +435,7 @@ private:
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->task_state.database;
+            auto &ts = data_->taskstate.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
@@ -464,7 +463,7 @@ private:
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->task_state.database;
+            auto &ts = data_->taskstate.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
@@ -483,7 +482,7 @@ private:
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->task_state.database;
+            auto &ts = data_->taskstate.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
@@ -502,7 +501,7 @@ private:
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->task_state.database;
+            auto &ts = data_->taskstate.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
@@ -554,7 +553,7 @@ private:
   void DrawTabTable() {
     RenderTabTable(
         l2_svc_->get_assets(),
-        data_->asset_info.get_stock_info(),
+        data_->assetinfo.get_stock_info(),
         table_state_);
   }
 
@@ -568,13 +567,13 @@ private:
         !data_->asset.items.empty() &&
         baostock_svc_->all_ready()) [[unlikely]] {
       data_->asset.compute_browser_statistics(
-          data_->asset_info.get_stock_info(),
-          data_->asset_info.get_stock_days());
+          data_->assetinfo.get_stock_info(),
+          data_->assetinfo.get_stock_days());
     }
 
     RenderTabBrowser(
-        data_->asset_info.get_stock_days(),
-        data_->asset_info.get_stock_factor(),
+        data_->assetinfo.get_stock_days(),
+        data_->assetinfo.get_stock_factor(),
         data_->asset,
         config_->start_date,
         config_->end_date,

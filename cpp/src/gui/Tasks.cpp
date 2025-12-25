@@ -53,7 +53,7 @@ void ReinitAllTasks(std::vector<TaskHandle> &tasks, int &selected_task, SharedDa
   };
 
   // Step 5: Reinitialize icon bar
-  TaskIconBar::InitIconBar(data.gui);
+  TaskIconBar::InitIconBar(data.coromgr);
 
   // Step 6: Recreate all tasks
   tasks = CreateAllTasks();

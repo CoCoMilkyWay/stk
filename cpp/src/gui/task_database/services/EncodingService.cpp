@@ -2,7 +2,6 @@
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/logging.hpp"
-#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/encoding_worker.hpp"
 
@@ -31,7 +30,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   start_time_ = std::chrono::steady_clock::now();
 
   // Enable High Performance Mode: GUI sleeps, all CPU for encoding
-  data_.gui.EnableHighPerformanceMode();
+  data_.EnableHighPerformanceMode();
   std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
             << std::endl;
 
@@ -102,7 +101,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     }
 
     // Disable High Performance Mode: GUI resumes
-    data_.gui.DisableHighPerformanceMode();
+    data_.DisableHighPerformanceMode();
     std::cout << "\n[High Performance Mode] Disabled - GUI thread resumed\n"
               << std::endl;
   });

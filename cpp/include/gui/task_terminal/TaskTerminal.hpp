@@ -5,9 +5,7 @@
 #include "gui/util/Color.hpp"
 
 // TaskTerminal - Scrolling log output (GUI window task)
-// Stored in GuiState, accessed by all tasks for logging
-class TaskTerminal {
-public:
+struct TaskTerminal {
   struct Line {
     std::string text;
     Color color;
@@ -15,6 +13,10 @@ public:
     Line(const std::string& t, const Color& c = Color::White()) 
       : text(t), color(c) {}
   };
+
+  // UI state for terminal panel
+  bool visible = true;
+  float height_ratio = 0.15f;
   
 private:
   std::vector<Line> lines_;

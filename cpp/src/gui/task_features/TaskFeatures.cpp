@@ -85,7 +85,7 @@ TaskHandle CreateFeaturesTask() {
   handle.DrawPanel = [state](SharedData &data) {
     // Lazy initialization
     if (!state->compute_service) {
-      state->terminal = &data.gui.terminal;
+      state->terminal = &data.terminal;
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
     if (!state->data_loader) {
@@ -99,8 +99,8 @@ TaskHandle CreateFeaturesTask() {
     }
 
     // Update features task state
-    auto &fs = data.task_state.features;
-    const bool db_ready = data.task_state.database.ready();
+    auto &fs = data.taskstate.features;
+    const bool db_ready = data.taskstate.database.ready();
     const bool has_selection = (data.feature.selection.primary_feature_idx >= 0);
     fs.has_selection = has_selection;
 

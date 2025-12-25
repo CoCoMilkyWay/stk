@@ -641,7 +641,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 
   // L0 coroutine lifecycle
   if (of.l1.loaded && !of.loader.coro_running) {
-    loader->StartL0Loader(data.gui.Coro(), of);
+    loader->StartL0Loader(data.coromgr, of);
     if (!ui.l1_anchor_date.empty()) {
       loader->RequestL0Load(of, ui.l1_anchor_date, asset_idx);
     }
@@ -719,7 +719,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 
 void StopTabOrderFlow(DataLoader *loader, SharedData &data) {
   if (loader && data.orderflow.loader.coro_running) {
-    loader->StopL0Loader(data.gui.Coro(), data.orderflow);
+    loader->StopL0Loader(data.coromgr, data.orderflow);
   }
 }
 

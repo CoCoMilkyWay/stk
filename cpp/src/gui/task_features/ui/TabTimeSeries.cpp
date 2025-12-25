@@ -965,7 +965,7 @@ void RenderTabTimeSeries(TimeSeriesService *service, SharedData &data,
                          TimeSeriesUIState &ui) {
   // Auto-start coroutine
   if (!service->is_running()) {
-    service->StartCompute(data.gui.Coro(), data);
+    service->StartCompute(data.coromgr, data);
   }
 
   auto &ts = data.timeseries;
@@ -1011,7 +1011,7 @@ void RenderTabTimeSeries(TimeSeriesService *service, SharedData &data,
 void StopTabTimeSeries(TimeSeriesService *service, SharedData &data) {
   data.timeseries.cancel();
   if (service && service->is_running()) {
-    service->StopCompute(data.gui.Coro(), data);
+    service->StopCompute(data.coromgr, data);
   }
 }
 

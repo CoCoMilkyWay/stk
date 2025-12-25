@@ -33,7 +33,7 @@ void ComputeService::start_compute(int num_workers) {
   start_time_ = std::chrono::steady_clock::now();
 
   // Enable High Performance Mode: GUI sleeps, all CPU for computation
-  data_.gui.EnableHighPerformanceMode();
+  data_.EnableHighPerformanceMode();
   std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
             << std::endl;
 
@@ -171,7 +171,7 @@ void ComputeService::start_compute(int num_workers) {
               << std::endl;
 
     // Disable High Performance Mode: GUI resumes
-    data_.gui.DisableHighPerformanceMode();
+    data_.DisableHighPerformanceMode();
     std::cout << "[High Performance Mode] Disabled - GUI thread resumed\n"
               << std::endl;
   });

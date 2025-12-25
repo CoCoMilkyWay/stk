@@ -21,7 +21,7 @@ void AssetLoader::load_from_config(SharedData &data) {
   }
   
   // Get stock_info from shared data
-  const auto &stock_info_map = data.asset_info.get_stock_info();
+  const auto &stock_info_map = data.assetinfo.get_stock_info();
   
   try {
     std::ifstream file(assets_path);

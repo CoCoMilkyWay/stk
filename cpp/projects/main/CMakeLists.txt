@@ -108,7 +108,6 @@ set(SOURCES
     ../../src/shared/Config.cpp
     ../../src/shared/Asset.cpp
     ../../src/shared/AssetInfo.cpp
-    ../../src/shared/GuiState.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Feature.cpp
     ../../src/shared/Dist.cpp
@@ -199,7 +198,6 @@ set(HEADERS
     ../../include/shared/Config.hpp
     ../../include/shared/Asset.hpp
     ../../include/shared/AssetInfo.hpp
-    ../../include/shared/GuiState.hpp
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/Feature.hpp
     ../../include/shared/Dist.hpp

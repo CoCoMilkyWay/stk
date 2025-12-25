@@ -2,7 +2,6 @@
 #include <vector>
 
 struct SharedData;
-struct GuiState;
 struct TaskHandle;
 
 namespace GUI {

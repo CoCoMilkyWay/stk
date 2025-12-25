@@ -1,10 +1,10 @@
 #pragma once
 
-struct GuiState;
+struct CoroManager;
 
 namespace GUI::TaskIconBar {
 
-void InitIconBar(GuiState &gui);
+void InitIconBar(CoroManager &coromgr);
 void DrawIconBar();
 void CleanupIconBar();
 

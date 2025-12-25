@@ -5,10 +5,9 @@
 #include <vector>
 
 struct SharedData;
-struct GuiState;
 
 // Simple task interface without inheritance - function-based
-// Note: Task status is now managed via SharedData::task_state (unified state management)
+// Note: Task status is now managed via SharedData::taskstate (unified state management)
 struct TaskHandle {
   std::string name;
   std::function<void()> OnExpand;

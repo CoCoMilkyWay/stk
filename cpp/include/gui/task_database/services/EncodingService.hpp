@@ -10,7 +10,7 @@
 
 // Forward declarations
 struct SharedData;
-class TaskTerminal;
+struct TaskTerminal;
 
 namespace GUI::Database {
 

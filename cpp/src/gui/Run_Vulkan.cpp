@@ -11,7 +11,6 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "implot.h"
-#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 
 #define GLFW_INCLUDE_NONE
@@ -26,8 +25,8 @@
 
 namespace GUI {
 
-// Global pointer to GUI state for error callback
-static GuiState *g_gui_state = nullptr;
+// Global pointer for error callback logging
+static TaskTerminal *g_terminal = nullptr;
 
 // Vulkan globals
 static VkAllocationCallbacks *g_Allocator = nullptr;
@@ -42,11 +41,11 @@ static int g_MinImageCount = 2;
 static bool g_SwapChainRebuild = false;
 
 // GLFW error callback
-void glfw_error_callback(int error, const char *description) {
+void glfw_error_callback_vulkan(int error, const char *description) {
   char buffer[512];
   snprintf(buffer, sizeof(buffer), "GLFW Error %d: %s", error, description);
-  if (g_gui_state) {
-    g_gui_state->terminal.AddLine(buffer);
+  if (g_terminal) {
+    g_terminal->AddLine(buffer);
   }
 }
 
@@ -56,8 +55,8 @@ static void check_vk_result(VkResult err) {
     return;
   char buffer[256];
   snprintf(buffer, sizeof(buffer), "[Vulkan] Error: VkResult = %d", err);
-  if (g_gui_state) {
-    g_gui_state->terminal.AddLine(buffer);
+  if (g_terminal) {
+    g_terminal->AddLine(buffer);
   }
   if (err < 0) {
     abort();
@@ -220,8 +219,8 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, VkSurfaceKHR surface
   VkBool32 res;
   vkGetPhysicalDeviceSurfaceSupportKHR(g_PhysicalDevice, g_QueueFamily, wd->Surface, &res);
   if (res != VK_TRUE) {
-    if (g_gui_state) {
-      g_gui_state->terminal.AddLine("Error: No WSI support on physical device");
+    if (g_terminal) {
+      g_terminal->AddLine("Error: No WSI support on physical device");
     }
     exit(-1);
   }
@@ -349,7 +348,7 @@ int RunGUI() {
   SharedData data;
 
   // Setup global state for logging
-  g_gui_state = &data.gui;
+  g_terminal = &data.terminal;
 
   // Setup config reinit callback
   data.config.reinit_callback = [&data]() {
@@ -366,21 +365,21 @@ int RunGUI() {
   }
 
   // Print startup banner
-  data.gui.terminal.AddLine("=== Launching GUI ===", Color::Green());
-  data.gui.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
-  data.gui.terminal.AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
-  data.gui.terminal.AddLine("GPU 渲染库 : Vulkan", Color::Green());
-  data.gui.terminal.AddLine("UI库(即时模式) : ImGui", Color::Green());
-  data.gui.terminal.AddLine("绘图库 : ImPlot", Color::Green());
+  data.terminal.AddLine("=== Launching GUI ===", Color::Green());
+  data.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
+  data.terminal.AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
+  data.terminal.AddLine("GPU 渲染库 : Vulkan", Color::Green());
+  data.terminal.AddLine("UI库(即时模式) : ImGui", Color::Green());
+  data.terminal.AddLine("绘图库 : ImPlot", Color::Green());
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (Vulkan backend, %.0f FPS)", TARGET_FPS);
-  data.gui.terminal.AddLine(init_msg, Color::Blue());
+  data.terminal.AddLine(init_msg, Color::Blue());
 
   // Initialize icon bar with network monitoring
-  TaskIconBar::InitIconBar(data.gui);
+  TaskIconBar::InitIconBar(data.coromgr);
 
   // Setup error callback
-  glfwSetErrorCallback(glfw_error_callback);
+  glfwSetErrorCallback(glfw_error_callback_vulkan);
 
   // Initialize GLFW
   if (!glfwInit()) {
@@ -392,7 +391,7 @@ int RunGUI() {
       fprintf(stderr, "ERROR: Failed to initialize GLFW (code %d)\n", err_code);
     }
     fprintf(stderr, "Hint: Check DISPLAY environment variable and X Server status\n");
-    data.gui.terminal.AddLine("Failed to initialize GLFW");
+    data.terminal.AddLine("Failed to initialize GLFW");
     return 1;
   }
 
@@ -408,7 +407,7 @@ int RunGUI() {
       fprintf(stderr, "ERROR: Failed to create GLFW window (code %d)\n", err_code);
     }
     fprintf(stderr, "Hint: Check X Server compatibility\n");
-    data.gui.terminal.AddLine("Failed to create GLFW window");
+    data.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
     return 1;
   }
@@ -416,7 +415,7 @@ int RunGUI() {
   if (!glfwVulkanSupported()) {
     fprintf(stderr, "ERROR: Vulkan not supported on this system\n");
     fprintf(stderr, "Hint: Check Vulkan drivers or use OpenGL backend instead\n");
-    data.gui.terminal.AddLine("GLFW: Vulkan Not Supported");
+    data.terminal.AddLine("GLFW: Vulkan Not Supported");
     glfwDestroyWindow(window);
     glfwTerminate();
     return 1;
@@ -472,7 +471,7 @@ int RunGUI() {
   char config_msg[256];
   snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)", 
            font_size, base_font_size, dpi_scale);
-  data.gui.terminal.AddLine(config_msg, Color::Blue());
+  data.terminal.AddLine(config_msg, Color::Blue());
 
   // Load font with RasterizerDensity
   ImFontConfig config;
@@ -502,7 +501,7 @@ int RunGUI() {
   init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
   ImGui_ImplVulkan_Init(&init_info);
 
-  data.gui.terminal.AddLine("Vulkan initialized successfully");
+  data.terminal.AddLine("Vulkan initialized successfully");
 
   // Main loop
   while (!glfwWindowShouldClose(window)) {
@@ -510,19 +509,19 @@ int RunGUI() {
 
     // Check for reinit request (triggered by config save)
     if (data.request_reinit) {
-      data.gui.terminal.AddLine("=== Reinitializing GUI (config changed) ===", Color::Yellow());
+      data.terminal.AddLine("=== Reinitializing GUI (config changed) ===", Color::Yellow());
 
       // Cleanup and recreate all tasks and state
       GUI::ReinitAllTasks(tasks, selected_task, data);
 
-      data.gui.terminal.AddLine("GUI reinitialized successfully", Color::Green());
+      data.terminal.AddLine("GUI reinitialized successfully", Color::Green());
     }
 
     // High Performance Mode: GUI sleeps 1 second, all CPU for compute tasks
-    if (data.gui.high_performance_mode) {
+    if (data.high_performance_mode) {
       std::this_thread::sleep_for(std::chrono::seconds(1)); // 1 FPS
       glfwPollEvents();
-      data.gui.Update(1.0f);
+      data.coromgr.Poll();
       continue; // Skip rendering entirely
     }
 
@@ -534,8 +533,8 @@ int RunGUI() {
       glfwPollEvents();
     }
 
-    // Update GUI state
-    data.gui.Update(static_cast<float>(FRAME_TIME));
+    // Poll coroutines
+    data.coromgr.Poll();
 
     // Resize swap chain?
     int fb_width, fb_height;
@@ -594,7 +593,7 @@ int RunGUI() {
 
   // Cleanup
   TaskIconBar::CleanupIconBar();
-  g_gui_state = nullptr;
+  g_terminal = nullptr;
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();

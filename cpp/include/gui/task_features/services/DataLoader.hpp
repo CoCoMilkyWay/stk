@@ -92,27 +92,27 @@ public:
   }
 
   // Start L0 loader coroutine (blocking until started)
-  void StartL0Loader(CoroManager &coro_mgr, OrderFlow &of) {
+  void StartL0Loader(CoroManager &coromgr, OrderFlow &of) {
     if (of.loader.coro_running)
       return;
 
     TraceN("L0_StartCoroutine");
 
     of.loader.coro_should_stop = false;
-    of.loader.coro = coro_mgr.Spawn(L0LoaderLoop(of));
+    of.loader.coro = coromgr.Spawn(L0LoaderLoop(of));
 
     // Blocking wait until coroutine starts
     {
       TraceN("L0_WaitStart");
       while (!of.loader.coro_running) {
-        coro_mgr.Poll();
+        coromgr.Poll();
         std::this_thread::sleep_for(std::chrono::microseconds(100));
       }
     }
   }
 
   // Stop L0 loader coroutine (blocking until stopped)
-  void StopL0Loader(CoroManager &coro_mgr, OrderFlow &of) {
+  void StopL0Loader(CoroManager &coromgr, OrderFlow &of) {
     if (!of.loader.coro_running)
       return;
 
@@ -124,7 +124,7 @@ public:
     {
       TraceN("L0_WaitStop");
       while (of.loader.coro_running) {
-        coro_mgr.Poll();
+        coromgr.Poll();
         std::this_thread::sleep_for(std::chrono::microseconds(100));
       }
     }

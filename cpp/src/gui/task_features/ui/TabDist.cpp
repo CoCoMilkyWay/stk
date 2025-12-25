@@ -1203,7 +1203,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
 // ============================================================================
 
 static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
-                                   const AssetInfo &asset_info, int hovered_asset) {
+                                   const AssetInfo &assetinfo, int hovered_asset) {
   // Use remaining height in parent
   float remaining_height = ImGui::GetContentRegionAvail().y;
   ImGui::BeginChild("HoveredAssetPanel", ImVec2(350, remaining_height), true);
@@ -1227,7 +1227,7 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
   std::string exchange_lower = asset_item.exchange;
   std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
   std::string stock_key = exchange_lower + "." + asset_item.asset_code;
-  const StockInfo *stock_info = asset_info.find_stock_info(stock_key);
+  const StockInfo *stock_info = assetinfo.find_stock_info(stock_key);
 
   // Asset name and code
   if (stock_info && !stock_info->name.empty()) {
@@ -1243,7 +1243,7 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
       return date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
     return "--";
   };
-  float market_cap = asset_info.calculate_market_cap(stock_key);
+  float market_cap = assetinfo.calculate_market_cap(stock_key);
   if (stock_info && !stock_info->ipoDate.empty()) {
     std::string end_str = stock_info->outDate.empty() ? "now" : format_date(stock_info->outDate);
     ImGui::Text("%s-%s  %.1f亿", format_date(stock_info->ipoDate).c_str(), end_str.c_str(),
@@ -1340,7 +1340,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   // Auto-start coroutine
   if (!service->is_running()) {
-    service->StartCompute(data.gui.Coro(), data);
+    service->StartCompute(data.coromgr, data);
   }
 
   auto &dist = data.dist;
@@ -1376,7 +1376,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Left column: Moments Panel (auto-height) + Hovered Asset Info (remaining)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
   RenderMomentsPanel(dist, ui.selected_dimension, ui.focus_month_idx);
-  RenderHoveredAssetInfo(dist, data.asset, data.asset_info, hovered_asset);
+  RenderHoveredAssetInfo(dist, data.asset, data.assetinfo, hovered_asset);
   ImGui::EndChild();
 
   ImGui::NextColumn();
@@ -1428,7 +1428,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 }
 
 void StopTabDist(DistService *service, SharedData &data) {
-  service->StopCompute(data.gui.Coro(), data);
+  service->StopCompute(data.coromgr, data);
 }
 
 } // namespace GUI::Features

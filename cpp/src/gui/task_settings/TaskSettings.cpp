@@ -2,7 +2,6 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
-#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 #include <chrono>
 #include <ctime>
@@ -174,19 +173,19 @@ private:
   }
 
   void EnsureConfigReady(SharedData &data) {
-    auto &ts = data.task_state.settings;
+    auto &ts = data.taskstate.settings;
     if (ts.initialized) {
       return;
     }
     data.config.log_callback = [&data](const std::string &msg) {
-      data.gui.terminal.AddLine(msg);
+      data.terminal.AddLine(msg);
     };
     data.config.Initialize();
     ts.initialized = true;
   }
 
   void MaintainAutoSync(SharedData &data) {
-    auto &ts = data.task_state.settings;
+    auto &ts = data.taskstate.settings;
     Config &cfg = data.config;
 
     if (!ts.initialized) {

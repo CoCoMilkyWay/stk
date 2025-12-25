@@ -11,7 +11,6 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
-#include "shared/GuiState.hpp"
 #include "shared/SharedData.hpp"
 #include <GLFW/glfw3.h>
 #include <chrono>
@@ -21,15 +20,15 @@
 
 namespace GUI {
 
-// Global pointer to GUI state for error callback
-static GuiState *g_gui_state = nullptr;
+// Global pointer for error callback logging
+static TaskTerminal *g_terminal = nullptr;
 
 // GLFW error callback
 void glfw_error_callback(int error, const char *description) {
   char buffer[512];
   snprintf(buffer, sizeof(buffer), "GLFW Error %d: %s", error, description);
-  if (g_gui_state) {
-    g_gui_state->terminal.AddLine(buffer);
+  if (g_terminal) {
+    g_terminal->AddLine(buffer);
   }
 }
 
@@ -38,7 +37,7 @@ int RunGUI() {
   SharedData data;
 
   // Setup global state for logging
-  g_gui_state = &data.gui;
+  g_terminal = &data.terminal;
 
   // Setup config reinit callback
   data.config.reinit_callback = [&data]() {
@@ -55,18 +54,18 @@ int RunGUI() {
   }
 
   // Print startup banner
-  data.gui.terminal.AddLine("=== Launching GUI ===", Color::Green());
-  data.gui.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
-  data.gui.terminal.AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
-  data.gui.terminal.AddLine("GPU 渲染库 : OpenGL", Color::Green());
-  data.gui.terminal.AddLine("UI库(即时模式) : ImGui", Color::Green());
-  data.gui.terminal.AddLine("绘图库 : ImPlot", Color::Green());
+  data.terminal.AddLine("=== Launching GUI ===", Color::Green());
+  data.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
+  data.terminal.AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
+  data.terminal.AddLine("GPU 渲染库 : OpenGL", Color::Green());
+  data.terminal.AddLine("UI库(即时模式) : ImGui", Color::Green());
+  data.terminal.AddLine("绘图库 : ImPlot", Color::Green());
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (OpenGL backend, %.0f FPS)", TARGET_FPS);
-  data.gui.terminal.AddLine(init_msg, Color::Blue());
+  data.terminal.AddLine(init_msg, Color::Blue());
 
   // Initialize icon bar with network monitoring
-  TaskIconBar::InitIconBar(data.gui);
+  TaskIconBar::InitIconBar(data.coromgr);
 
   // Setup error callback
   glfwSetErrorCallback(glfw_error_callback);
@@ -81,7 +80,7 @@ int RunGUI() {
       fprintf(stderr, "ERROR: Failed to initialize GLFW (code %d)\n", err_code);
     }
     fprintf(stderr, "Hint: Check DISPLAY environment variable and X Server status\n");
-    data.gui.terminal.AddLine("Failed to initialize GLFW");
+    data.terminal.AddLine("Failed to initialize GLFW");
     return 1;
   }
 
@@ -111,7 +110,7 @@ int RunGUI() {
       fprintf(stderr, "ERROR: Failed to create GLFW window (code %d)\n", err_code);
     }
     fprintf(stderr, "Hint: Check OpenGL drivers and X Server compatibility\n");
-    data.gui.terminal.AddLine("Failed to create GLFW window");
+    data.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
     return 1;
   }
@@ -152,7 +151,7 @@ int RunGUI() {
   char config_msg[256];
   snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)", 
            font_size, base_font_size, dpi_scale);
-  data.gui.terminal.AddLine(config_msg, Color::Blue());
+  data.terminal.AddLine(config_msg, Color::Blue());
 
   // Load font with RasterizerDensity
   ImFontConfig config;
@@ -174,19 +173,19 @@ int RunGUI() {
 
     // Check for reinit request (triggered by config save)
     if (data.request_reinit) {
-      data.gui.terminal.AddLine("=== Reinitializing GUI (config changed) ===", Color::Yellow());
+      data.terminal.AddLine("=== Reinitializing GUI (config changed) ===", Color::Yellow());
 
       // Cleanup and recreate all tasks and state
       GUI::ReinitAllTasks(tasks, selected_task, data);
 
-      data.gui.terminal.AddLine("GUI reinitialized successfully", Color::Green());
+      data.terminal.AddLine("GUI reinitialized successfully", Color::Green());
     }
 
     // High Performance Mode: GUI sleeps 1 second, all CPU for compute tasks
-    if (data.gui.high_performance_mode) {
+    if (data.high_performance_mode) {
       std::this_thread::sleep_for(std::chrono::seconds(1)); // 1 FPS
       glfwPollEvents();
-      data.gui.Update(1.0f);
+      data.coromgr.Poll();
       continue; // Skip rendering entirely
     }
 
@@ -198,8 +197,8 @@ int RunGUI() {
       glfwPollEvents();
     }
 
-    // Update GUI state
-    data.gui.Update(static_cast<float>(FRAME_TIME));
+    // Poll coroutines
+    data.coromgr.Poll();
 
     // Start frame
     ImGui_ImplOpenGL3_NewFrame();
@@ -234,7 +233,7 @@ int RunGUI() {
 
   // Cleanup
   TaskIconBar::CleanupIconBar();
-  g_gui_state = nullptr;
+  g_terminal = nullptr;
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();

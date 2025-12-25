@@ -61,7 +61,7 @@ public:
   CoroNetwork() = default;
   ~CoroNetwork() = default;
 
-  void Start(CoroManager &coro_mgr,
+  void Start(CoroManager &coromgr,
              const std::vector<PingTarget> &targets,
              std::chrono::seconds interval);
   void Stop();
