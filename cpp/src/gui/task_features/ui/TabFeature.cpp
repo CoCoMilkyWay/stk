@@ -213,12 +213,11 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   Feature &feature = data.feature;
   Feature::Selection &sel = feature.selection;
 
-  // Initialize default filters: TS and CS
-  static bool first_time = true;
-  if (first_time) {
+  // Initialize default filters: TS and CS (only if all filters are empty)
+  if (sel.filter_data_type.empty() && sel.filter_cat_l1.empty() && 
+      sel.filter_cat_l2.empty() && sel.filter_norm_method.empty()) {
     sel.filter_data_type.insert(FeatureDataType::TS);
     sel.filter_data_type.insert(FeatureDataType::CS);
-    first_time = false;
   }
 
   // ==========================================================================
