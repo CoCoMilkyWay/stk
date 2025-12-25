@@ -260,15 +260,14 @@ TaskHandle CreateFeaturesTask() {
         bool step_changed = (current_step != state->timeseries_prev_step);
         bool has_valid_selection = (sel.primary_feature_idx >= 0);
 
-        // Incremental compute: only trigger for steps that are implemented and need data
-        // Currently only step 0 (stationarity) is implemented
+        // Check if current step data is already valid (avoid redundant compute)
         bool step_needs_compute = false;
         switch (current_step) {
         case 0: step_needs_compute = !ts.step0_stationarity.valid; break;
-        // case 1: step_needs_compute = !ts.step1_frequency.valid; break;  // TODO
-        // case 2: step_needs_compute = !ts.step2_arma.valid; break;       // TODO
-        // case 3: step_needs_compute = !ts.step3_residual.valid; break;   // TODO
-        // case 4: step_needs_compute = !ts.step4_temporal_decay.valid; break; // TODO
+        case 1: step_needs_compute = !ts.step1_frequency.valid; break;
+        case 2: step_needs_compute = !ts.step2_arma.valid; break;
+        case 3: step_needs_compute = !ts.step3_residual.valid; break;
+        case 4: step_needs_compute = !ts.step4_temporal_decay.valid; break;
         default: break;
         }
 
