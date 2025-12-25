@@ -41,25 +41,27 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
       }
     }
 
-    // Draw status
-    const char *status = tasks[i].GetStatus();
+    // Draw status from unified task_state
+    const char *status = nullptr;
+    ImVec4 color;
+    switch (i) {
+    case 0: // Settings
+      status = data.task_state.settings.status_text();
+      color = data.task_state.settings.status_color();
+      break;
+    case 1: // SystemInfo - no status
+      break;
+    case 2: // Database
+      status = data.task_state.database.status_text();
+      color = data.task_state.database.status_color();
+      break;
+    case 3: // Features
+      status = data.task_state.features.status_text();
+      color = data.task_state.features.status_color();
+      break;
+    }
     if (status && status[0] != '\0') {
       ImGui::SameLine();
-
-      // Choose color based on status text
-      ImVec4 color;
-      if (strcmp(status, "live") == 0 || strcmp(status, "syncing") == 0) {
-        color = ImVec4(0.7f, 0.4f, 1.0f, 1.0f); // Purple
-      } else if (strcmp(status, "synced") == 0) {
-        color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
-      } else if (strcmp(status, "writing") == 0) {
-        color = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
-      } else if (strcmp(status, "initializing") == 0) {
-        color = ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // Gray
-      } else {
-        color = ImVec4(0.0f, 1.0f, 1.0f, 1.0f); // Cyan
-      }
-
       ImGui::TextColored(color, "[%s]", status);
     }
   }

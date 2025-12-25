@@ -7,6 +7,7 @@ struct GuiState;
 struct Feature;
 struct Dist;
 struct TimeSeries;
+struct TaskState;
 
 #include "./Asset.hpp"
 #include "./AssetInfo.hpp"
@@ -16,6 +17,7 @@ struct TimeSeries;
 #include "./Feature.hpp"
 #include "./Dist.hpp"
 #include "./TimeSeries.hpp"
+#include "./TaskState.hpp"
 
 struct SharedData {
   Config config;
@@ -26,6 +28,7 @@ struct SharedData {
   Feature feature;
   Dist dist;
   TimeSeries timeseries;
+  TaskState task_state;  // 统一的任务状态管理
   
   // Request full GUI reinitialization (triggered by config sync)
   bool request_reinit = false;

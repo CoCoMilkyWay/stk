@@ -113,6 +113,7 @@ set(SOURCES
     ../../src/shared/Feature.cpp
     ../../src/shared/Dist.cpp
     ../../src/shared/TimeSeries.cpp
+    ../../src/shared/TaskState.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/file_check.cpp
     ../../src/codec/json_config.cpp
@@ -203,6 +204,7 @@ set(HEADERS
     ../../include/shared/Feature.hpp
     ../../include/shared/Dist.hpp
     ../../include/shared/TimeSeries.hpp
+    ../../include/shared/TaskState.hpp
     ../../include/shared/SharedData.hpp
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp

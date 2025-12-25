@@ -264,10 +264,6 @@ public:
     return "SystemInfo";
   }
 
-  const char *GetStatus() const {
-    return is_expanded ? "live" : "";
-  }
-
   void OnExpand() {
     is_expanded = true;
   }
@@ -1575,7 +1571,6 @@ TaskHandle CreateSystemInfoTask() {
   handle.name = instance->GetName();
   handle.task_instance = instance.get();
   handle.storage = instance;
-  handle.GetStatus = [instance]() { return instance->GetStatus(); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
   handle.DrawPanel = [instance](SharedData &data) { instance->DrawPanel(data); };

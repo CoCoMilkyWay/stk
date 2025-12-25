@@ -2,9 +2,9 @@
 #include "gui/Tasks.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_database/services/BaostockService.hpp"
-#include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/L2DatabaseService.hpp"
+#include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/task_database/ui/TabBrowser.hpp"
 #include "gui/task_database/ui/TabEncode.hpp"
@@ -20,6 +20,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <memory>
 #include <thread>
+
 
 namespace GUI::Tasks {
 namespace {
@@ -41,8 +42,6 @@ private:
   BrowserState browser_state_;
   bool overview_tab_was_open_ = false;  // Track if Overview tab was open last frame
   bool refresh_flow_triggered_ = false; // Track if refresh flow has been triggered (only once per session)
-  bool json_update_inflight_ = false;   // Prevent concurrent JSON update flows
-  bool l2_scan_inflight_ = false;       // Prevent overlapping L2 scans
 
   // Lifecycle
   bool is_expanded_ = false;
@@ -58,28 +57,6 @@ public:
 
   const char *GetName() const {
     return "Database";
-  }
-
-  const char *GetStatus() const {
-    if (!state_mgr_ || !scan_svc_)
-      return "";
-
-    auto check_result = scan_svc_->get_last_check_result();
-    const auto &state = state_mgr_->get_state();
-
-    // Priority: Error > Incomplete > Ready
-    if (check_result.status == DatabaseStatus::Error ||
-        check_result.status == DatabaseStatus::NoData ||
-        check_result.status == DatabaseStatus::NeedArchive) {
-      return "error";
-    }
-    if (check_result.status != DatabaseStatus::Pass) {
-      return "incomplete";
-    }
-    if (!state.all_json_ready()) {
-      return "incomplete";
-    }
-    return "ready";
   }
 
   void OnExpand() {
@@ -126,23 +103,25 @@ public:
 private:
   // Trigger unified refresh flow: scan L2 first, then update JSONs
   void TriggerRefreshFlow() {
-    if (json_update_inflight_ || l2_scan_inflight_ || !baostock_svc_ || !l2_svc_)
+    auto &ts = data_->task_state.database;
+    if (ts.json_update_inflight || ts.l2_scan_inflight || !baostock_svc_ || !l2_svc_)
       return;
 
     auto &io = coro_mgr_->GetIoContext();
-    l2_scan_inflight_ = true;
-    json_update_inflight_ = true;
+    ts.l2_scan_inflight = true;
+    ts.json_update_inflight = true;
 
     boost::asio::co_spawn(
         io,
         [this]() -> boost::asio::awaitable<void> {
+          auto &ts = data_->task_state.database;
           struct FlagReset {
             bool &flag;
             ~FlagReset() { flag = false; }
           };
 
-          FlagReset scan_reset{l2_scan_inflight_};
-          FlagReset update_reset{json_update_inflight_};
+          FlagReset scan_reset{ts.l2_scan_inflight};
+          FlagReset update_reset{ts.json_update_inflight};
 
           // Assets are already loaded and scanned in StateManager::initialize()
           // Just refresh state to update UI
@@ -195,7 +174,8 @@ private:
           co_await baostock_svc_->update_all(l2_start_date);
           // refresh_state() is called inside update_all()
 
-          // Note: L2 summary will be calculated on next frame when JSONs are ready
+          // Update task state after refresh completes
+          UpdateTaskState();
         }(),
         boost::asio::detached);
   }
@@ -215,12 +195,49 @@ private:
       scan_svc_->trigger_scan();
     });
 
+    // Set scan completion callback to update task state
+    scan_svc_->set_on_complete([this]() {
+      UpdateTaskState();
+    });
+
     // Initialize: login workers + load existing JSON
     // Non-blocking, user sees progress in terminal
     boost::asio::co_spawn(
         io,
-        state_mgr_->initialize(),
+        [this]() -> boost::asio::awaitable<void> {
+          co_await state_mgr_->initialize();
+          // Update task state after initialization completes
+          UpdateTaskState();
+        }(),
         boost::asio::detached);
+  }
+
+  void UpdateTaskState() {
+    auto &ts = data_->task_state.database;
+
+    if (!state_mgr_ || !scan_svc_) {
+      ts.status = TaskState::Database::Status::Initializing;
+      return;
+    }
+
+    auto check_result = scan_svc_->get_last_check_result();
+    const auto &state = state_mgr_->get_state();
+
+    // Update flags
+    ts.binary_scanned = (check_result.status != DatabaseStatus::Unchecked);
+    ts.binary_pass = (check_result.status == DatabaseStatus::Pass);
+    ts.all_json_ready = state.all_json_ready();
+
+    // Update status
+    if (check_result.status == DatabaseStatus::Error ||
+        check_result.status == DatabaseStatus::NoData ||
+        check_result.status == DatabaseStatus::NeedArchive) {
+      ts.status = TaskState::Database::Status::Error;
+    } else if (check_result.status != DatabaseStatus::Pass || !state.all_json_ready()) {
+      ts.status = TaskState::Database::Status::Incomplete;
+    } else {
+      ts.status = TaskState::Database::Status::Ready;
+    }
   }
 
   void RenderUI() {
@@ -231,6 +248,7 @@ private:
 
     // Refresh state before rendering
     state_mgr_->refresh_state();
+    UpdateTaskState();
     const auto &state = state_mgr_->get_state();
 
     // Get database check result from scan service
@@ -303,7 +321,8 @@ private:
       bool overview_tab_is_open = ImGui::BeginTabItem("Overview");
       if (overview_tab_is_open && tabs.can_access_overview) {
         // Trigger refresh flow ONLY ONCE when first opening Overview tab
-        if (!refresh_flow_triggered_ && !overview_tab_was_open_ && baostock_svc_ && l2_svc_ && !json_update_inflight_) {
+        auto &ts = data_->task_state.database;
+        if (!refresh_flow_triggered_ && !overview_tab_was_open_ && baostock_svc_ && l2_svc_ && !ts.json_update_inflight) {
           TriggerRefreshFlow();
           refresh_flow_triggered_ = true;
         }
@@ -387,13 +406,14 @@ private:
     const auto &stock_days_state = baostock_svc_->get_stock_days_state();
     const auto &crawler_state = baostock_svc_->get_crawler_state();
 
-    bool json_busy = json_update_inflight_ ||
+    auto &ts = data_->task_state.database;
+    bool json_busy = ts.json_update_inflight ||
                      stock_factor_state.status == JsonFileStatus::Updating ||
                      stock_info_state.status == JsonFileStatus::Updating ||
                      stock_days_state.status == JsonFileStatus::Updating ||
                      crawler_state.status == CrawlerStatus::Running;
 
-    bool scan_busy = l2_scan_inflight_;
+    bool scan_busy = ts.l2_scan_inflight;
 
     bool check_integrity = false;
 
@@ -410,19 +430,20 @@ private:
         scan_busy);
 
     // Handle button events
-    if (update_all && !json_update_inflight_) {
-      json_update_inflight_ = true;
+    if (update_all && !ts.json_update_inflight) {
+      ts.json_update_inflight = true;
       // Don't invalidate cache yet - only invalidate if update actually changes data
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
+            auto &ts = data_->task_state.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
             };
 
             {
-              FlagReset update_reset{json_update_inflight_};
+              FlagReset update_reset{ts.json_update_inflight};
               // TODO: update_all should return whether data changed
               co_await baostock_svc_->update_all();
               // For now, don't invalidate if no network calls were made
@@ -433,56 +454,63 @@ private:
             // Assets are already scanned in StateManager::initialize()
             // No need to rescan, just refresh state
             state_mgr_->refresh_state();
+            UpdateTaskState();
           }(),
           boost::asio::detached);
     }
 
-    if (stock_factor_update && !json_update_inflight_) {
-      json_update_inflight_ = true;
+    if (stock_factor_update && !ts.json_update_inflight) {
+      ts.json_update_inflight = true;
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
+            auto &ts = data_->task_state.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
-            } reset{json_update_inflight_};
+            } reset{ts.json_update_inflight};
 
             co_await baostock_svc_->update_stock_factor();
             // Don't invalidate L2 cache - stock_factor doesn't affect L2 binaries
             state_mgr_->refresh_state();
+            UpdateTaskState();
           }(),
           boost::asio::detached);
     }
 
-    if (stock_info_update && !json_update_inflight_) {
-      json_update_inflight_ = true;
+    if (stock_info_update && !ts.json_update_inflight) {
+      ts.json_update_inflight = true;
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
+            auto &ts = data_->task_state.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
-            } reset{json_update_inflight_};
+            } reset{ts.json_update_inflight};
 
             co_await baostock_svc_->update_stock_info();
             // Don't invalidate L2 cache - stock_info doesn't affect L2 binaries
             state_mgr_->refresh_state();
+            UpdateTaskState();
           }(),
           boost::asio::detached);
     }
 
-    if (stock_days_update && !json_update_inflight_) {
-      json_update_inflight_ = true;
+    if (stock_days_update && !ts.json_update_inflight) {
+      ts.json_update_inflight = true;
       boost::asio::co_spawn(
           coro_mgr_->GetIoContext(),
           [this]() -> boost::asio::awaitable<void> {
+            auto &ts = data_->task_state.database;
             struct FlagReset {
               bool &flag;
               ~FlagReset() { flag = false; }
-            } reset{json_update_inflight_};
+            } reset{ts.json_update_inflight};
 
             co_await baostock_svc_->update_stock_days();
             state_mgr_->refresh_state();
+            UpdateTaskState();
           }(),
           boost::asio::detached);
     }
@@ -490,18 +518,21 @@ private:
     if (stock_factor_remove) {
       if (baostock_svc_->force_remove_stock_factor()) {
         state_mgr_->refresh_state();
+        UpdateTaskState();
       }
     }
 
     if (stock_info_remove) {
       if (baostock_svc_->force_remove_stock_info()) {
         state_mgr_->refresh_state();
+        UpdateTaskState();
       }
     }
 
     if (stock_days_remove) {
       if (baostock_svc_->force_remove_stock_days()) {
         state_mgr_->refresh_state();
+        UpdateTaskState();
       }
     }
 
@@ -509,12 +540,14 @@ private:
       baostock_svc_->check_all_integrity();
       // Don't invalidate L2 cache - integrity check doesn't change data
       state_mgr_->refresh_state();
+      UpdateTaskState();
     }
 
-    if (refresh_scan && !json_update_inflight_ && !l2_scan_inflight_) {
+    if (refresh_scan && !ts.json_update_inflight && !ts.l2_scan_inflight) {
       // Assets are already scanned in StateManager::initialize()
       // No need for async operation, just refresh state directly
       state_mgr_->refresh_state();
+      UpdateTaskState();
     }
   }
 
@@ -538,7 +571,7 @@ private:
           data_->asset_info.get_stock_info(),
           data_->asset_info.get_stock_days());
     }
- 
+
     RenderTabBrowser(
         data_->asset_info.get_stock_days(),
         data_->asset_info.get_stock_factor(),
@@ -566,7 +599,6 @@ TaskHandle CreateDatabaseTask() {
   handle.name = instance->GetName();
   handle.task_instance = instance.get();
   handle.storage = instance;
-  handle.GetStatus = [instance]() { return instance->GetStatus(); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
   handle.DrawPanel = [instance](SharedData &data) {

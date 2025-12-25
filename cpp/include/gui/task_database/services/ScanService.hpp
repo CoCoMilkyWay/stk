@@ -4,6 +4,7 @@
 #include <atomic>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
+#include <functional>
 #include <vector>
 #include <string>
 
@@ -128,6 +129,7 @@ private:
   std::atomic<bool> is_scanning_{false};
   ScanStatus status_ = ScanStatus::Idle;
   DatabaseCheckResult last_check_;
+  std::function<void()> on_complete_callback_;
 
 public:
   ScanService(SharedData &data, io_context &io, TaskTerminal *term = nullptr);
@@ -138,6 +140,9 @@ public:
 
   // Unified trigger entry (atomic protection, ignores concurrent requests)
   void trigger_scan();
+
+  // Set callback to be called when scan completes
+  void set_on_complete(std::function<void()> callback) { on_complete_callback_ = std::move(callback); }
 
   // ============================================================================
   // Query

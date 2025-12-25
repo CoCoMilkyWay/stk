@@ -19,9 +19,7 @@ static std::string GetCWD() {
 // Settings task - config management with auto-sync
 class SettingsTask {
 private:
-  bool is_expanded = false;
-  bool initial_sync_done = false;
-  bool is_writing = false;
+  bool is_expanded_ = false;
 
   // Date picker state
   struct DatePickerState {
@@ -176,28 +174,42 @@ private:
   }
 
   void EnsureConfigReady(SharedData &data) {
-    if (initial_sync_done) {
+    auto &ts = data.task_state.settings;
+    if (ts.initialized) {
       return;
     }
     data.config.log_callback = [&data](const std::string &msg) {
       data.gui.terminal.AddLine(msg);
     };
     data.config.Initialize();
-    initial_sync_done = true;
+    ts.initialized = true;
   }
 
-  void MaintainAutoSync(Config &cfg) {
-    if (!is_expanded) {
-      is_writing = false;
+  void MaintainAutoSync(SharedData &data) {
+    auto &ts = data.task_state.settings;
+    Config &cfg = data.config;
+
+    if (!ts.initialized) {
+      ts.status = TaskState::Settings::Status::Initializing;
+      return;
+    }
+
+    if (!is_expanded_) {
+      ts.status = TaskState::Settings::Status::Synced;
+      cfg.AutoSync();
       return;
     }
 
     if (cfg.dirty) {
       auto now = std::chrono::steady_clock::now();
       auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - cfg.last_modified);
-      is_writing = (elapsed.count() >= 150 && elapsed.count() < 250);
+      if (elapsed.count() >= 150 && elapsed.count() < 250) {
+        ts.status = TaskState::Settings::Status::Writing;
+      } else {
+        ts.status = TaskState::Settings::Status::Syncing;
+      }
     } else {
-      is_writing = false;
+      ts.status = TaskState::Settings::Status::Synced;
     }
 
     cfg.AutoSync();
@@ -538,15 +550,14 @@ private:
     return changed;
   }
 
-
   void DrawStatusFooter(const Config &cfg) const {
     ImGui::TextWrapped("File:");
     ImGui::TextDisabled("%s", cfg.filepath.c_str());
-    
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    
+
     ImGui::Text("Status:");
     if (cfg.dirty) {
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Pending\nsave...");
@@ -560,30 +571,17 @@ public:
     return "Settings";
   }
 
-  const char *GetStatus() const {
-    if (!initial_sync_done) {
-      return "initializing";
-    }
-    if (is_writing) {
-      return "writing";
-    }
-    if (is_expanded) {
-      return "syncing";
-    }
-    return "synced";
-  }
-
   void OnExpand() {
-    is_expanded = true;
+    is_expanded_ = true;
   }
 
   void OnCollapse() {
-    is_expanded = false;
+    is_expanded_ = false;
   }
 
   void DrawPanel(SharedData &data) {
     EnsureConfigReady(data);
-    MaintainAutoSync(data.config);
+    MaintainAutoSync(data);
 
     Config &cfg = data.config;
     bool changed = false;
@@ -618,7 +616,6 @@ TaskHandle CreateSettingsTask() {
   handle.name = instance->GetName();
   handle.task_instance = instance.get();
   handle.storage = instance;
-  handle.GetStatus = [instance]() { return instance->GetStatus(); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
   handle.DrawPanel = [instance](SharedData &data) { instance->DrawPanel(data); };

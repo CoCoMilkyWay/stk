@@ -35,6 +35,10 @@ void ScanService::trigger_scan() {
   boost::asio::co_spawn(io_, [this]() -> awaitable<void> {
     co_await coro_scan();
     is_scanning_.store(false); // Release lock after completion
+    // Notify completion
+    if (on_complete_callback_) {
+      on_complete_callback_();
+    }
   }(), boost::asio::detached);
 }
 

@@ -26,7 +26,6 @@ void CleanupAllTasks(std::vector<TaskHandle> &tasks) {
       handle.Destroy();
     }
 
-    handle.GetStatus = {};
     handle.OnExpand = {};
     handle.OnCollapse = {};
     handle.DrawPanel = {};
