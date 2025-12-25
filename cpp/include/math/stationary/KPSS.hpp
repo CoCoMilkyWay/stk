@@ -86,15 +86,27 @@ inline float bartlett_kernel(int j, int bandwidth) {
 }
 
 // Newey-West bandwidth selection (automatic)
+// 对于大样本 (n > 10k)，bandwidth 边际收益递减，限制上限避免 O(n*bandwidth) 爆炸
 inline int newey_west_bandwidth(size_t n) {
   // Common rule: floor(4 * (n/100)^(2/9))
   float ratio = static_cast<float>(n) / 100.0f;
-  return static_cast<int>(4.0f * std::pow(ratio, 2.0f / 9.0f));
+  int bw = static_cast<int>(4.0f * std::pow(ratio, 2.0f / 9.0f));
+  // 上限 12：对于 n > 10k，更大的 bandwidth 几乎不改变结论，但会显著拖慢
+  return std::min(bw, 12);
 }
 
 } // namespace detail
 
-// Main KPSS test function (level stationarity) - zero-alloc if workspace buffers are pre-sized.
+// ============================================================================
+// Fast KPSS for Large Samples
+// ============================================================================
+//
+// - Pass 1: O(n) 计算 mean, sum_S2, γ_0
+// - Pass 2: 对每个 lag j，用一次线性扫描计算 γ_j（可被 SIMD 向量化）
+// - bandwidth 上限 12（大样本边际收益递减）
+//
+// ============================================================================
+
 inline KPSSResult kpss_test(std::span<const float> y, int bandwidth, KPSSWorkspace& ws) {
   KPSSResult result;
   
@@ -107,57 +119,55 @@ inline KPSSResult kpss_test(std::span<const float> y, int bandwidth, KPSSWorkspa
   if (bandwidth < 0) {
     bandwidth = detail::newey_west_bandwidth(n);
   }
-  bandwidth = std::clamp(bandwidth, 0, static_cast<int>(n / 2));
+  bandwidth = std::clamp(bandwidth, 0, std::min(12, static_cast<int>(n / 2)));
   result.bandwidth = bandwidth;
-  
-  // Step 1: Compute residuals from regression y_t = α + ε_t (constant only): e_t = y_t - mean(y)
+
+  // ========== Pass 1: mean, partial sums S, sum_S2, γ_0 ==========
+  // All O(n), no inner loop
   double mean = 0.0;
-  for (size_t t = 0; t < n; ++t) {
-    mean += y[t];
-  }
+  for (size_t t = 0; t < n; ++t) mean += y[t];
   mean /= static_cast<double>(n);
-  
-  // Step 2+3: Streaming compute
-  // - partial sums S_t (to accumulate Σ S_t^2)
-  // - autocovariances sums Σ e_t * e_{t-j} for j=0..bandwidth, using a ring buffer
-  ws.ensure(bandwidth);
-  const size_t B = static_cast<size_t>(bandwidth) + 1;
-  std::fill(ws.gamma.begin(), ws.gamma.begin() + B, 0.0);
-  std::fill(ws.ring.begin(), ws.ring.begin() + B, 0.0f);
 
   double S = 0.0;
   double sum_S2 = 0.0;
+  double gamma0 = 0.0;
 
   for (size_t t = 0; t < n; ++t) {
-    const float e = static_cast<float>(y[t] - mean);
-    const size_t pos = (B == 0) ? 0 : (t % B);
-    ws.ring[pos] = e;
-
-    const int j_max = static_cast<int>(std::min<size_t>(static_cast<size_t>(bandwidth), t));
-    for (int j = 0; j <= j_max; ++j) {
-      const size_t p = (pos + B - static_cast<size_t>(j)) % B;
-      ws.gamma[static_cast<size_t>(j)] += e * ws.ring[p];
-    }
-
+    const double e = y[t] - mean;
     S += e;
     sum_S2 += S * S;
+    gamma0 += e * e;
   }
-  
-  // Long-run variance with Bartlett weights (γ_j normalized by 1/n)
+
+  // ========== Pass 2: γ_j for j=1..bandwidth ==========
+  // 每个 lag 独立计算，内循环简单可向量化
+  ws.ensure(bandwidth);
+  ws.gamma[0] = gamma0;
+
+  for (int lag = 1; lag <= bandwidth; ++lag) {
+    double gj = 0.0;
+    const size_t L = static_cast<size_t>(lag);
+    // γ_j = Σ_{t=lag}^{n-1} e[t] * e[t-lag]
+    for (size_t t = L; t < n; ++t) {
+      const double e_t = y[t] - mean;
+      const double e_lag = y[t - L] - mean;
+      gj += e_t * e_lag;
+    }
+    ws.gamma[static_cast<size_t>(lag)] = gj;
+  }
+
+  // ========== Long-run variance with Bartlett weights ==========
   const double inv_n = 1.0 / static_cast<double>(n);
   double s2 = ws.gamma[0] * inv_n;
   for (int j = 1; j <= bandwidth; ++j) {
-    float w = detail::bartlett_kernel(j, bandwidth);
+    const float w = detail::bartlett_kernel(j, bandwidth);
     s2 += 2.0 * w * (ws.gamma[static_cast<size_t>(j)] * inv_n);
   }
   
-  if (s2 <= 0.0) {
-    return result;
-  }
+  if (s2 <= 0.0) return result;
   
-  // Step 4: Compute KPSS statistic
-  // η = (1/n²) * Σ_{t=1}^{n} S_t² / σ²_∞
-  double n2 = static_cast<double>(n) * static_cast<double>(n);
+  // ========== KPSS statistic ==========
+  const double n2 = static_cast<double>(n) * static_cast<double>(n);
   result.statistic = static_cast<float>(sum_S2 / (n2 * s2));
   result.pvalue = detail::compute_pvalue_level(result.statistic);
   result.valid = true;
