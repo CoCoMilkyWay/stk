@@ -763,42 +763,194 @@ static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
   }
 }
 
-static void RenderStep1Plot(const TimeSeries &ts, bool need_autofit) {
-  ImGui::Text("频谱分析 (Power Spectrum)");
-  ImGui::Separator();
-
-  if (!ts.step1_frequency.valid || ts.step1_frequency.frequencies.empty()) {
+static void RenderStep1Plot(TimeSeries &ts, const Asset &asset, bool need_autofit) {
+  auto &psd = ts.psd_cache;
+  if (!psd.valid || psd.render_data.empty()) {
     ImGui::TextDisabled("No data - run compute first");
     return;
   }
 
-  if (need_autofit) {
-    ImPlot::SetNextAxesToFit();
+  const size_t valid_days = psd.valid_days();
+  if (valid_days == 0) {
+    ImGui::TextDisabled("No valid days");
+    return;
   }
 
-  if (ImPlot::BeginPlot("##SpectrumPlot", ImVec2(-1, -1))) {
-    ImPlot::SetupAxes("Frequency", "Power (log)", ImPlotAxisFlags_None,
-                      ImPlotAxisFlags_None);
+  constexpr size_t N_FREQS = TimeSeries::PSDHeatmap::N_FREQS;
 
-    const auto &freq = ts.step1_frequency.frequencies;
-    const auto &power = ts.step1_frequency.power_spectrum;
+  // 刻度标签指针
+  static std::vector<const char*> tick_ptrs;
+  tick_ptrs.resize(psd.tick_labels.size());
+  for (size_t i = 0; i < psd.tick_labels.size(); ++i) {
+    tick_ptrs[i] = psd.tick_labels[i].c_str();
+  }
 
-    if (!freq.empty() && !power.empty()) {
-      ImPlot::PlotLine("Spectrum", freq.data(), power.data(),
-                       static_cast<int>(freq.size()));
+  // Compact 布局
+  float avail_height = ImGui::GetContentRegionAvail().y;
+  bool show_lineplot = (psd.selected_day >= 0 &&
+                        static_cast<size_t>(psd.selected_day) < valid_days);
+  float heatmap_height = show_lineplot ? avail_height * 0.55f : avail_height;
+  float lineplot_height = avail_height - heatmap_height - 4.0f;
 
-      float nyq = ts.step1_frequency.nyquist_freq;
-      if (nyq > 0) {
-        ImPlot::PlotInfLines("Nyquist", &nyq, 1);
+  // ========== 图1: 热力图 ==========
+  // render_data: [freq_bin][day], 均匀显示频率 bin
+  // Y 轴: 频率 bin 索引 [0, N_FREQS)，刻度标注对应周期
+  ImPlot::PushColormap(ImPlotColormap_Viridis);
+
+  if (ImPlot::BeginPlot("##PSDHeatmap", ImVec2(-1, heatmap_height), ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxes("Date", "Period");
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0, static_cast<double>(valid_days), ImGuiCond_Once);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, static_cast<double>(N_FREQS), ImGuiCond_Once);
+
+    if (!psd.tick_positions.empty()) {
+      ImPlot::SetupAxisTicks(ImAxis_Y1, psd.tick_positions.data(),
+                             static_cast<int>(psd.tick_positions.size()),
+                             tick_ptrs.data());
+    }
+
+    // 热力图: 直接用频率 bin 索引
+    ImPlot::PlotHeatmap("##psd",
+                        psd.render_data.data(),
+                        static_cast<int>(N_FREQS),
+                        static_cast<int>(valid_days),
+                        psd.scale_min, psd.scale_max,
+                        nullptr,
+                        ImPlotPoint(0, 0),
+                        ImPlotPoint(static_cast<double>(valid_days), static_cast<double>(N_FREQS)));
+
+    // Tooltip & 点击选择
+    if (ImPlot::IsPlotHovered()) {
+      ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+      int day_i = static_cast<int>(mouse.x);
+      int freq_bin = static_cast<int>(mouse.y);
+
+      if (day_i >= 0 && static_cast<size_t>(day_i) < valid_days &&
+          freq_bin >= 0 && freq_bin < static_cast<int>(N_FREQS)) {
+
+        size_t day_idx = psd.valid_indices[day_i];
+        const std::string &date = psd.dates[day_idx];
+        float power_log = psd.render_data[freq_bin * valid_days + day_i];
+
+        // 计算对应周期
+        float freq = freq_bin * psd.freq_resolution;
+        float period = (freq > 0) ? 1.0f / freq : 0.0f;
+
+        ImGui::BeginTooltip();
+        ImGui::Text("%s/%s/%s", date.substr(0, 4).c_str(),
+                    date.substr(4, 2).c_str(), date.substr(6, 2).c_str());
+        ImGui::Text("Bin: %d (%.1fs)", freq_bin, period);
+        ImGui::Text("Power: %.2f", power_log);
+        ImGui::EndTooltip();
+      }
+
+      if (ImGui::IsMouseClicked(0)) {
+        int clicked = static_cast<int>(mouse.x);
+        if (clicked >= 0 && static_cast<size_t>(clicked) < valid_days) {
+          psd.selected_day = clicked;
+        }
       }
     }
 
-    char q_label[64];
-    snprintf(q_label, sizeof(q_label), "Q=%.2f", ts.step1_frequency.q_factor);
-    ImPlot::PlotText(q_label, ts.step1_frequency.peak_frequency,
-                     ts.step1_frequency.power_spectrum.empty()
-                         ? 0.0f
-                         : ts.step1_frequency.power_spectrum[0]);
+    // 选中日期竖线
+    if (show_lineplot) {
+      double x = psd.selected_day + 0.5;
+      ImPlot::SetNextLineStyle(ImVec4(1.0f, 1.0f, 1.0f, 0.8f), 2.0f);
+      ImPlot::PlotInfLines("##sel", &x, 1);
+    }
+
+    ImPlot::EndPlot();
+  }
+  ImPlot::PopColormap();
+
+  // ========== 图2: Per-asset 功率谱线图 ==========
+  if (!show_lineplot) return;
+
+  size_t day_idx = psd.valid_indices[psd.selected_day];
+  const std::string &date = psd.dates[day_idx];
+
+  // X 轴: 频率 bin 索引
+  static std::vector<float> bin_indices;
+  bin_indices.resize(N_FREQS);
+  for (size_t k = 0; k < N_FREQS; ++k) {
+    bin_indices[k] = static_cast<float>(k);
+  }
+
+  // 临时 buffer
+  static std::vector<float> psd_log;
+  psd_log.resize(N_FREQS);
+
+  char title[64];
+  snprintf(title, sizeof(title), "%s/%s/%s##Line",
+           date.substr(0, 4).c_str(), date.substr(4, 2).c_str(), date.substr(6, 2).c_str());
+
+  if (ImPlot::BeginPlot(title, ImVec2(-1, lineplot_height), ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxes("Period", "Power");
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0, static_cast<double>(N_FREQS), ImGuiCond_Once);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, psd.scale_min, psd.scale_max, ImGuiCond_Once);
+
+    if (!psd.tick_positions.empty()) {
+      ImPlot::SetupAxisTicks(ImAxis_X1, psd.tick_positions.data(),
+                             static_cast<int>(psd.tick_positions.size()),
+                             tick_ptrs.data());
+    }
+
+    // 每个 asset (浅色细线)
+    for (size_t a = 0; a < psd.n_assets; ++a) {
+      const float *src = psd.asset_day_psd(day_idx, a);
+      for (size_t k = 0; k < N_FREQS; ++k) {
+        float v = src[k];
+        psd_log[k] = (v > 1e-20f) ? std::log10(v) : -20.0f;
+      }
+      ImPlot::SetNextLineStyle(ImVec4(0.5f, 0.5f, 0.8f, 0.15f), 1.0f);
+      char lbl[16];
+      snprintf(lbl, sizeof(lbl), "##a%zu", a);
+      ImPlot::PlotLine(lbl, bin_indices.data(), psd_log.data(), static_cast<int>(N_FREQS));
+    }
+
+    // 总功率谱 (粗线)
+    const float *total = psd.day_psd(day_idx);
+    for (size_t k = 0; k < N_FREQS; ++k) {
+      float v = total[k];
+      psd_log[k] = (v > 1e-20f) ? std::log10(v) : -20.0f;
+    }
+    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 2.0f);
+    ImPlot::PlotLine("Total", bin_indices.data(), psd_log.data(), static_cast<int>(N_FREQS));
+
+    // Tooltip
+    if (ImPlot::IsPlotHovered()) {
+      ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+      int freq_bin = static_cast<int>(mouse.x + 0.5);
+      freq_bin = std::clamp(freq_bin, 0, static_cast<int>(N_FREQS) - 1);
+
+      float freq = freq_bin * psd.freq_resolution;
+      float period = (freq > 0) ? 1.0f / freq : 0.0f;
+      float total_log = (total[freq_bin] > 1e-20f) ? std::log10(total[freq_bin]) : -20.0f;
+
+      ImGui::BeginTooltip();
+      ImGui::Text("Bin: %d (%.1fs)", freq_bin, period);
+      ImGui::Text("Total: %.2f", total_log);
+
+      // Top 3 assets
+      std::vector<std::pair<float, size_t>> ranked;
+      ranked.reserve(psd.n_assets);
+      for (size_t a = 0; a < psd.n_assets; ++a) {
+        ranked.emplace_back(psd.asset_day_psd(day_idx, a)[freq_bin], a);
+      }
+      std::partial_sort(ranked.begin(),
+                        ranked.begin() + std::min<size_t>(3, ranked.size()),
+                        ranked.end(),
+                        [](auto &a, auto &b) { return a.first > b.first; });
+
+      ImGui::Separator();
+      for (size_t i = 0; i < std::min<size_t>(3, ranked.size()); ++i) {
+        size_t a = ranked[i].second;
+        float p = ranked[i].first;
+        float pl = (p > 1e-20f) ? std::log10(p) : -20.0f;
+        const char *code = (a < asset.items.size()) ? asset.items[a].asset_code.c_str() : "?";
+        ImGui::Text("%s: %.2f", code, pl);
+      }
+      ImGui::EndTooltip();
+    }
 
     ImPlot::EndPlot();
   }
@@ -968,14 +1120,14 @@ static void RenderStep4Plot(const TimeSeries &ts, bool need_autofit) {
 }
 
 static void RenderVisualizationPanel(SharedData &data, TimeSeriesUIState &ui) {
-  const auto &ts = data.timeseries;
+  auto &ts = data.timeseries;
 
   switch (ui.selected_step) {
   case 0:
     RenderStep0Plot(ts, data.asset, ui.need_autofit);
     break;
   case 1:
-    RenderStep1Plot(ts, ui.need_autofit);
+    RenderStep1Plot(ts, data.asset, ui.need_autofit);
     break;
   case 2:
     RenderStep2Plot(ts, ui.need_autofit);

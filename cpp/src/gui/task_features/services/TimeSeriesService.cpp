@@ -133,11 +133,11 @@ asio::awaitable<void> TimeSeriesService::ComputeLoop(SharedData &data) {
       }
 
       if (!months.empty()) {
-        // Dispatch build_stationarity to thread pool
         auto submit = [this](std::function<void()> task) {
           pool_->submit(std::move(task));
         };
 
+        // ========== Step 0: Stationarity ==========
         ts.build_stationarity(months, features_dir_, data.feature, data.asset,
                               submit);
 
@@ -153,9 +153,28 @@ asio::awaitable<void> TimeSeriesService::ComputeLoop(SharedData &data) {
         }
 
         if (ts.compute.status != TimeSeries::Compute::Status::Cancelled) {
-          // Finalize: compute aggregate statistics
           ts.finalize_stationarity();
-          ts.compute.status = TimeSeries::Compute::Status::Done;
+        }
+
+        // ========== Step 1: PSD ==========
+        if (ts.compute.status != TimeSeries::Compute::Status::Cancelled) {
+          ts.build_psd(months, features_dir_, data.feature, data.asset, submit);
+
+          // Wait for PSD completion
+          while (ts.compute.done.load() < ts.compute.total.load()) {
+            if (ts.compute.cancel.load()) {
+              ts.compute.status = TimeSeries::Compute::Status::Cancelled;
+              break;
+            }
+            co_await asio::steady_timer(co_await asio::this_coro::executor,
+                                        std::chrono::milliseconds(16))
+                .async_wait(asio::use_awaitable);
+          }
+
+          if (ts.compute.status != TimeSeries::Compute::Status::Cancelled) {
+            ts.finalize_psd();
+            ts.compute.status = TimeSeries::Compute::Status::Done;
+          }
         }
       } else {
         ts.compute.status = TimeSeries::Compute::Status::Done;
