@@ -37,6 +37,23 @@ static const char *StatusText(Dist::Compute::Status s) {
   return "?";
 }
 
+static ImVec4 StatusColor(Dist::Compute::Status s) {
+  switch (s) {
+  case Dist::Compute::Status::Idle:
+    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);      // 灰色
+  case Dist::Compute::Status::Building:
+  case Dist::Compute::Status::Querying:
+    return ImVec4(0.2f, 0.7f, 1.0f, 1.0f);      // 蓝色
+  case Dist::Compute::Status::Done:
+    return ImVec4(0.2f, 0.8f, 0.4f, 1.0f);      // 绿色
+  case Dist::Compute::Status::Error:
+    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f);      // 红色
+  case Dist::Compute::Status::Cancelled:
+    return ImVec4(0.9f, 0.6f, 0.2f, 1.0f);      // 橙色
+  }
+  return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
 // Calculate distance from point to line segment (normalized coords)
 static double point_to_segment_dist_sq(double px, double py, double x1, double y1,
                                        double x2, double y2) {
@@ -164,8 +181,11 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   ImGui::SameLine();
   size_t done = dist.compute.done.load();
   size_t total = dist.compute.total;
-  ImGui::Text("Status: %s (%zu/%zu)", StatusText(dist.compute.status), done,
-              total);
+  ImGui::Text("Status: ");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(StatusColor(dist.compute.status), "%s", StatusText(dist.compute.status));
+  ImGui::SameLine(0, 0);
+  ImGui::Text(" (%zu/%zu)", done, total);
 
   // Row 2: Month slider (always visible from config date range)
   auto months = generate_months(data.config.start_date, data.config.end_date);

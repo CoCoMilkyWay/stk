@@ -46,6 +46,21 @@ static const char *StatusText(TimeSeries::Compute::Status s) {
   return "?";
 }
 
+static ImVec4 StatusColor(TimeSeries::Compute::Status s) {
+  switch (s) {
+  case TimeSeries::Compute::Status::Idle:
+  case TimeSeries::Compute::Status::Cancelled:  // 内部状态，用户看不到
+    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);      // 灰色
+  case TimeSeries::Compute::Status::Building:
+    return ImVec4(1.0f, 0.7f, 0.3f, 1.0f);      // 橙黄色
+  case TimeSeries::Compute::Status::Done:
+    return ImVec4(0.4f, 0.9f, 0.5f, 1.0f);      // 亮绿色
+  case TimeSeries::Compute::Status::Error:
+    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f);      // 红色
+  }
+  return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
 // Pass/Fail/Warn indicator with color
 static void RenderStatus(bool pass, bool warn = false) {
   if (pass) {
@@ -80,11 +95,11 @@ static void RenderControlPanel([[maybe_unused]] TimeSeriesService *service, Shar
   // Status display (auto-compute on step change)
   size_t done = ts.compute.done.load();
   size_t total = ts.compute.total.load();
-  if (ts.compute.is_busy()) {
-    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Computing... (%zu/%zu)", done, total);
-  } else {
-    ImGui::Text("Status: %s (%zu/%zu)", StatusText(ts.compute.status), done, total);
-  }
+  ImGui::Text("Status: ");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(StatusColor(ts.compute.status), "%s", StatusText(ts.compute.status));
+  ImGui::SameLine(0, 0);
+  ImGui::Text(" (%zu/%zu)", done, total);
 }
 
 // ============================================================================
@@ -396,14 +411,29 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
       ui.selected_step = 0;
     }
 
-    if (ts.step0_stationarity.valid) {
-      ImGui::Text("  ADF:  p=%.3f", ts.step0_stationarity.adf_pvalue);
-      ImGui::SameLine();
-      RenderStatus(ts.step0_stationarity.adf_pass);
+    // 计算pass rate
+    const auto &cache = ts.stationarity_cache;
+    if (!cache.empty()) {
+      size_t adf_pass = 0, kpss_pass = 0, valid = 0;
+      for (const auto &mc : cache) {
+        for (const auto &cell : mc.by_asset) {
+          if (cell.valid) {
+            ++valid;
+            if (cell.adf_pass) ++adf_pass;
+            if (cell.kpss_pass) ++kpss_pass;
+          }
+        }
+      }
+      float adf_rate = valid > 0 ? 100.0f * adf_pass / valid : 0.0f;
+      float kpss_rate = valid > 0 ? 100.0f * kpss_pass / valid : 0.0f;
 
-      ImGui::Text("  KPSS: p=%.3f", ts.step0_stationarity.kpss_pvalue);
+      ImGui::Text("  ADF:  %.1f%%", adf_rate);
       ImGui::SameLine();
-      RenderStatus(ts.step0_stationarity.kpss_pass);
+      RenderStatus(adf_rate >= 95.0f);
+
+      ImGui::Text("  KPSS: %.1f%%", kpss_rate);
+      ImGui::SameLine();
+      RenderStatus(kpss_rate >= 95.0f);
     } else {
       ImGui::TextDisabled("  (no data)");
     }
@@ -571,17 +601,26 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
 // Right Panel: Visualization (Step-dependent)
 // ============================================================================
 
-// Heatmap color based on deviation from 0.05 threshold
 // ADF: want p < 0.05, deviation = max(0, p - 0.05)
-// KPSS: want p > 0.05, deviation = max(0, 0.05 - p)
-// Map max deviation [0, 0.05] to green->yellow->red
-static ImU32 GetStationarityColor(const TimeSeries::StationarityCell &cell) {
+static ImU32 GetADFColor(const TimeSeries::StationarityCell &cell) {
   if (!cell.valid)
     return IM_COL32(60, 60, 60, 255);
 
-  float adf_dev = std::max(0.0f, cell.adf_pvalue - 0.05f);
-  float kpss_dev = std::max(0.0f, 0.05f - cell.kpss_pvalue);
-  float t = std::min(1.0f, std::max(adf_dev, kpss_dev) / 0.05f);
+  float dev = std::max(0.0f, cell.adf_pvalue - 0.05f);
+  float t = std::min(1.0f, dev / 0.05f);
+
+  uint8_t r = static_cast<uint8_t>(40 + t * 160);
+  uint8_t g = static_cast<uint8_t>(180 - t * 120);
+  return IM_COL32(r, g, 40, 255);
+}
+
+// KPSS: want p > 0.05, deviation = max(0, 0.05 - p)
+static ImU32 GetKPSSColor(const TimeSeries::StationarityCell &cell) {
+  if (!cell.valid)
+    return IM_COL32(60, 60, 60, 255);
+
+  float dev = std::max(0.0f, 0.05f - cell.kpss_pvalue);
+  float t = std::min(1.0f, dev / 0.05f);
 
   uint8_t r = static_cast<uint8_t>(40 + t * 160);
   uint8_t g = static_cast<uint8_t>(180 - t * 120);
@@ -596,7 +635,6 @@ static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
     return;
   }
 
-  // Dimensions
   const size_t n_months = cache.size();
   const size_t n_assets = cache[0].n_assets;
 
@@ -605,120 +643,117 @@ static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
     return;
   }
 
-  // Summary statistics (before heatmap) - always show to keep layout stable
-  if (ts.step0_stationarity.valid) {
-    ImGui::Text("Median ADF p=%.3f %s  |  Median KPSS p=%.3f %s",
-                ts.step0_stationarity.adf_pvalue,
-                ts.step0_stationarity.adf_pass ? "[PASS]" : "[FAIL]",
-                ts.step0_stationarity.kpss_pvalue,
-                ts.step0_stationarity.kpss_pass ? "[PASS]" : "[FAIL]");
-  } else {
-    ImGui::TextDisabled("Median ADF p=---   |  Median KPSS p=---");
-  }
-
-  ImGui::Text("热力图: 绿=通过, 红色=偏离阈值0.05以上");
+  // 颜色说明
+  ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "绿");
+  ImGui::SameLine(0, 0);
+  ImGui::Text("=pass  ");
+  ImGui::SameLine();
+  ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "红");
+  ImGui::SameLine(0, 0);
+  ImGui::Text("=fail (ADF: p<0.05, KPSS: p>0.05)");
   ImGui::Separator();
 
-  // Calculate cell size
   ImVec2 avail = ImGui::GetContentRegionAvail();
-  float cell_w = std::max(4.0f, (avail.x - 80.0f) / static_cast<float>(n_months));
-  float cell_h = std::max(2.0f, (avail.y - 40.0f) / static_cast<float>(n_assets));
+  float half_width = (avail.x - 20.0f) * 0.5f;  // 中间留点间隔
+  float heatmap_width = half_width - 60.0f;     // 留给label的空间
 
-  // Clamp cell size for readability
+  float cell_w = std::max(4.0f, heatmap_width / static_cast<float>(n_months));
+  float cell_h = std::max(2.0f, (avail.y - 50.0f) / static_cast<float>(n_assets));
   cell_w = std::min(cell_w, 20.0f);
   cell_h = std::min(cell_h, 8.0f);
 
-  ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-  ImVec2 canvas_size(cell_w * n_months + 60.0f, cell_h * n_assets + 30.0f);
-
   ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  ImVec2 base_pos = ImGui::GetCursorScreenPos();
 
-  // Draw month labels on top
-  for (size_t m = 0; m < n_months; ++m) {
-    if (m % 3 == 0) {  // Label every 3rd month
-      const std::string &month = cache[m].month;
-      std::string label = month.substr(2, 2) + "/" + month.substr(4, 2);
-      float x = canvas_pos.x + 50.0f + m * cell_w;
-      draw_list->AddText(ImVec2(x, canvas_pos.y), IM_COL32(200, 200, 200, 255),
-                         label.c_str());
-    }
-  }
-
-  // Track hovered cell for tooltip
   int hovered_month = -1;
   int hovered_asset = -1;
+  int hovered_type = -1;  // 0=ADF, 1=KPSS
 
-  // Draw heatmap cells
-  float start_y = canvas_pos.y + 20.0f;
-  for (size_t a = 0; a < n_assets; ++a) {
-    float y = start_y + a * cell_h;
+  // Lambda: 绘制单个热力图
+  auto DrawHeatmap = [&](float offset_x, const char *title,
+                         ImU32 (*color_func)(const TimeSeries::StationarityCell &),
+                         int type_id) {
+    float title_x = base_pos.x + offset_x + 50.0f;
+    draw_list->AddText(ImVec2(title_x, base_pos.y), IM_COL32(200, 200, 200, 255), title);
 
+    // Month labels
     for (size_t m = 0; m < n_months; ++m) {
-      float x = canvas_pos.x + 50.0f + m * cell_w;
-
-      const auto &cell = cache[m].by_asset[a];
-      ImU32 color = GetStationarityColor(cell);
-
-      ImVec2 p_min(x, y);
-      ImVec2 p_max(x + cell_w - 1.0f, y + cell_h - 1.0f);
-
-      draw_list->AddRectFilled(p_min, p_max, color);
-
-      // Check hover
-      ImVec2 mouse = ImGui::GetMousePos();
-      if (mouse.x >= p_min.x && mouse.x < p_max.x &&
-          mouse.y >= p_min.y && mouse.y < p_max.y) {
-        hovered_month = static_cast<int>(m);
-        hovered_asset = static_cast<int>(a);
-        // Highlight border
-        draw_list->AddRect(p_min, p_max, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+      if (m % 6 == 0) {
+        const std::string &month = cache[m].month;
+        std::string label = month.substr(2, 2) + "/" + month.substr(4, 2);
+        float x = base_pos.x + offset_x + 50.0f + m * cell_w;
+        draw_list->AddText(ImVec2(x, base_pos.y + 15.0f), IM_COL32(150, 150, 150, 255),
+                           label.c_str());
       }
     }
-  }
 
-  // Reserve space for the canvas
+    float start_y = base_pos.y + 30.0f;
+    for (size_t a = 0; a < n_assets; ++a) {
+      float y = start_y + a * cell_h;
+      for (size_t m = 0; m < n_months; ++m) {
+        if (a >= cache[m].by_asset.size()) continue;
+        float x = base_pos.x + offset_x + 50.0f + m * cell_w;
+        const auto &cell = cache[m].by_asset[a];
+        ImU32 color = color_func(cell);
+
+        ImVec2 p_min(x, y);
+        ImVec2 p_max(x + cell_w - 1.0f, y + cell_h - 1.0f);
+        draw_list->AddRectFilled(p_min, p_max, color);
+
+        ImVec2 mouse = ImGui::GetMousePos();
+        if (mouse.x >= p_min.x && mouse.x < p_max.x &&
+            mouse.y >= p_min.y && mouse.y < p_max.y) {
+          hovered_month = static_cast<int>(m);
+          hovered_asset = static_cast<int>(a);
+          hovered_type = type_id;
+          draw_list->AddRect(p_min, p_max, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+        }
+      }
+    }
+  };
+
+  // 左侧: ADF热力图
+  DrawHeatmap(0.0f, "ADF (H0: non-stationary, p<0.05 pass)", GetADFColor, 0);
+  // 右侧: KPSS热力图
+  DrawHeatmap(half_width + 10.0f, "KPSS (H0: stationary, p>0.05 pass)", GetKPSSColor, 1);
+
+  ImVec2 canvas_size(avail.x, cell_h * n_assets + 40.0f);
   ImGui::Dummy(canvas_size);
 
-  // Tooltip for hovered cell
-  if (hovered_month >= 0 && hovered_asset >= 0) {
+  // Tooltip
+  if (hovered_month >= 0 && hovered_asset >= 0 &&
+      static_cast<size_t>(hovered_month) < cache.size() &&
+      static_cast<size_t>(hovered_asset) < cache[hovered_month].by_asset.size()) {
     const auto &cell = cache[hovered_month].by_asset[hovered_asset];
     const std::string &month = cache[hovered_month].month;
 
     ImGui::BeginTooltip();
 
-    // Asset name
     if (static_cast<size_t>(hovered_asset) < asset.items.size()) {
       const auto &item = asset.items[hovered_asset];
-      ImGui::Text("Asset: %s %s", item.asset_code.c_str(), item.asset_name.c_str());
+      ImGui::Text("%s %s", item.asset_code.c_str(), item.asset_name.c_str());
     } else {
-      ImGui::Text("Asset: #%d", hovered_asset);
+      ImGui::Text("Asset #%d", hovered_asset);
     }
-
-    // Month
-    ImGui::Text("Month: %s/%s", month.substr(0, 4).c_str(),
-                month.substr(4, 2).c_str());
-
+    ImGui::Text("%s/%s", month.substr(0, 4).c_str(), month.substr(4, 2).c_str());
     ImGui::Separator();
 
     if (cell.valid) {
-      // ADF result
-      if (cell.adf_pass) {
-        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "ADF: p=%.3f [PASS]",
-                           cell.adf_pvalue);
+      if (hovered_type == 0) {
+        // ADF tooltip
+        if (cell.adf_pass) {
+          ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "ADF p=%.3f [PASS]", cell.adf_pvalue);
+        } else {
+          ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "ADF p=%.3f [FAIL]", cell.adf_pvalue);
+        }
       } else {
-        ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "ADF: p=%.3f [FAIL]",
-                           cell.adf_pvalue);
+        // KPSS tooltip
+        if (cell.kpss_pass) {
+          ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "KPSS p=%.3f [PASS]", cell.kpss_pvalue);
+        } else {
+          ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "KPSS p=%.3f [FAIL]", cell.kpss_pvalue);
+        }
       }
-
-      // KPSS result
-      if (cell.kpss_pass) {
-        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "KPSS: p=%.3f [PASS]",
-                           cell.kpss_pvalue);
-      } else {
-        ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "KPSS: p=%.3f [FAIL]",
-                           cell.kpss_pvalue);
-      }
-
       ImGui::Text("Samples: %zu", cell.n_samples);
     } else {
       ImGui::TextDisabled("Invalid (insufficient samples)");
