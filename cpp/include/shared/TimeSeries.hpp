@@ -1,5 +1,6 @@
 #pragma once
 
+#include "features/backend/FeatureReader.hpp"
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -86,83 +87,78 @@ struct TimeSeries {
     void clear() { *this = StationarityTest{}; }
   };
 
-  // Step 1: PSD热力图缓存 (天 × 频率)
+  // ==========================================================================
+  // Step 1: PSD Heatmap (per-day per-asset)
+  // ==========================================================================
+  //
+  // 尺度bin定义 (共128个):
+  //   秒级:   2,3,...,59    → 58个 (idx 0~57)
+  //   分钟级: 1,2,...,59    → 59个 (idx 58~116)
+  //   小时级: 1,2,...,10    → 10个 (idx 117~126)
+  //   DC:                   → 1个  (idx 127)
+  //
   struct PSDHeatmap {
-    static constexpr size_t N_FREQS = 257;  // N_FFT/2+1, N_FFT=512
+    static constexpr size_t N_SCALE_BINS = 128;
 
-    std::vector<float> data;         // [n_days * N_FREQS] 连续存储 (跨资产平均)
-    std::vector<std::string> dates;  // [n_days]
+    // ===== 核心数据: per-asset per-day =====
+    std::vector<float> per_asset_data;  // [n_days * n_assets * N_SCALE_BINS]
+    std::vector<std::string> dates;     // [n_days]
     size_t n_days = 0;
-
-    // ===== Per-asset PSD [n_days * n_assets * N_FREQS] =====
-    std::vector<float> per_asset_data;
     size_t n_assets = 0;
 
-    // 频率参数
-    float sample_rate = 1.0f;        // Hz (由层级决定)
-    float freq_resolution = 0.0f;    // Hz/bin
-    float nyquist_freq = 0.0f;       // Hz
-
     // ===== 渲染用缓存 (finalize时计算) =====
-    std::vector<size_t> valid_indices;   // 有效天索引
-    std::vector<float> render_data;      // 转置+log后的数据 [N_FREQS * valid_days]
-    float scale_min = -1.0f;             // colormap min (固定-1)
-    float scale_max = 3.0f;              // colormap max (95% percentile)
+    int sampling_level = 0;               // 0=秒, 1=分钟, 2=小时
+    size_t first_valid_day = 0;           // 第一个FFT满的天索引 (用于默认X range)
+    size_t default_y_start = 0;           // 默认Y range起始 (L0=0, L1=58, L2=117)
 
-    // 轴刻度 (频率bin索引 + 周期标签)
-    std::vector<double> tick_positions;   // 频率 bin 索引位置
-    std::vector<std::string> tick_labels; // 对应的周期标签
+    std::vector<size_t> valid_indices;    // 有效天索引
+    std::vector<float> render_data;       // [N_SCALE_BINS * valid_days] log变换后
+    float scale_min = -1.0f;
+    float scale_max = 3.0f;
 
-    // ===== 选中日期 (用于图2) =====
+    // 轴刻度
+    std::vector<double> tick_positions;
+    std::vector<std::string> tick_labels;
+    std::vector<float> plot_x;  // [N_SCALE_BINS]
+
     int selected_day = -1;
-
     bool valid = false;
 
     void clear() { *this = PSDHeatmap{}; }
 
-    void init(size_t days, size_t assets, float sr) {
+    void init(size_t days, size_t assets, int level) {
       n_days = days;
       n_assets = assets;
-      sample_rate = sr;
-      freq_resolution = sr / 512.0f;
-      nyquist_freq = sr / 2.0f;
-      data.assign(n_days * N_FREQS, 0.0f);
-      per_asset_data.assign(n_days * n_assets * N_FREQS, 0.0f);
+      sampling_level = level;
+      // 默认Y range根据level
+      if (level == 0) {
+        default_y_start = 0;    // 秒级: 从2s开始
+      } else if (level == 1) {
+        default_y_start = 58;   // 分钟级: 从1min开始
+      } else {
+        default_y_start = 117;  // 小时级: 从1h开始
+      }
+      first_valid_day = 0;
+      per_asset_data.assign(n_days * n_assets * N_SCALE_BINS, 0.0f);
       dates.assign(n_days, std::string{});
       valid_indices.clear();
       render_data.clear();
       tick_positions.clear();
       tick_labels.clear();
+      plot_x.clear();
       selected_day = -1;
       valid = false;
     }
 
-    // 获取某天的总PSD [N_FREQS]
-    float *day_psd(size_t day_idx) {
-      assert(day_idx < n_days);
-      return data.data() + day_idx * N_FREQS;
-    }
-
-    const float *day_psd(size_t day_idx) const {
-      assert(day_idx < n_days);
-      return data.data() + day_idx * N_FREQS;
-    }
-
-    // 获取某天某资产的PSD [N_FREQS]
+    // 获取某天某资产的PSD [N_SCALE_BINS]
     float *asset_day_psd(size_t day_idx, size_t asset_idx) {
       assert(day_idx < n_days && asset_idx < n_assets);
-      return per_asset_data.data() + (day_idx * n_assets + asset_idx) * N_FREQS;
+      return per_asset_data.data() + (day_idx * n_assets + asset_idx) * N_SCALE_BINS;
     }
 
     const float *asset_day_psd(size_t day_idx, size_t asset_idx) const {
       assert(day_idx < n_days && asset_idx < n_assets);
-      return per_asset_data.data() + (day_idx * n_assets + asset_idx) * N_FREQS;
-    }
-
-    // 热力图访问
-    float get(size_t day_idx, size_t freq_idx) const {
-      assert(day_idx < n_days && freq_idx < N_FREQS);
-      return data[day_idx * N_FREQS + freq_idx];
+      return per_asset_data.data() + (day_idx * n_assets + asset_idx) * N_SCALE_BINS;
     }
 
     size_t valid_days() const { return valid_indices.size(); }
@@ -170,23 +166,34 @@ struct TimeSeries {
 
   // Step 1: 频域分析统计 (从热力图聚合)
   struct FrequencyAnalysis {
-    float q_factor = 0.0f;
-    float peak_frequency = 0.0f;
-    float peak_bandwidth = 0.0f;
-    bool q_factor_pass = false;
+    float low_freq_power_ratio = 0.0f;   // 秒级能量占比 (bin 0-57)
+    float mid_freq_power_ratio = 0.0f;   // 分钟级能量占比 (bin 58-116)
+    float high_freq_power_ratio = 0.0f;  // 小时级能量占比 (bin 117-127, 含DC)
 
-    float low_freq_power_ratio = 0.0f;
-    bool has_low_freq = false;
-
-    size_t n_significant_peaks = 0;
-    bool has_peaks = false;
-
-    // 平均功率谱 (所有天平均)
-    std::vector<float> avg_power_spectrum;  // [N_FREQS]
-    float nyquist_freq = 0.0f;
+    std::vector<float> avg_power_spectrum;  // [N_SCALE_BINS]
 
     bool valid = false;
     void clear() { *this = FrequencyAnalysis{}; }
+  };
+
+  // ==========================================================================
+  // 临时数据: Phase1读取的所有月数据
+  // ==========================================================================
+
+  struct DayRange {
+    size_t month_idx;     // 在 months 数组中的索引
+    size_t day_in_month;  // 月内天索引
+    size_t t_start;       // tensor内的样本起始
+    size_t t_end;         // tensor内的样本结束
+    std::string date;
+  };
+
+  struct AllMonthsData {
+    std::vector<FeatureReader::MonthTensor> months;
+    std::vector<DayRange> day_ranges;  // 连续时间的天序列
+
+    size_t total_days() const { return day_ranges.size(); }
+    void clear() { months.clear(); day_ranges.clear(); }
   };
 
   // Step 2: ARMA建模分析结果
@@ -265,7 +272,8 @@ struct TimeSeries {
   struct Compute {
     enum class Status : uint8_t {
       Idle,
-      Building,  // 构建月度缓存
+      Loading,   // Phase 1: 加载月数据
+      Building,  // Phase 2: 按asset计算
       Done,
       Error,
       Cancelled
@@ -274,8 +282,8 @@ struct TimeSeries {
     Status status = Status::Idle;
     std::string error;
 
-    std::atomic<size_t> done{0};    // 已完成的月份数
-    std::atomic<size_t> total{0};   // 总月份数
+    std::atomic<size_t> done{0};
+    std::atomic<size_t> total{0};
     std::atomic<bool> cancel{false};
 
     float progress() const {
@@ -287,7 +295,9 @@ struct TimeSeries {
       return status == Status::Idle || status == Status::Done;
     }
 
-    bool is_busy() const { return status == Status::Building; }
+    bool is_busy() const {
+      return status == Status::Loading || status == Status::Building;
+    }
 
     void reset() {
       status = Status::Idle;
@@ -325,7 +335,10 @@ struct TimeSeries {
   // Stationarity cache: [n_months][n_assets]
   std::vector<MonthlyStationarity> stationarity_cache;
 
-  // PSD cache: [total_days * N_FREQS] 热力图
+  // 临时数据 (Phase1读取, Phase2后释放)
+  AllMonthsData temp_months;
+
+  // PSD cache: per-asset per-day (持久)
   PSDHeatmap psd_cache;
 
   // Step results (聚合统计)
@@ -342,36 +355,28 @@ struct TimeSeries {
   // Methods - Build Stationarity (对仗 Dist::build_month/build_all)
   // ==========================================================================
 
-  // Build single month stationarity (thread-safe, called from worker)
   void build_stationarity_month(size_t cache_idx, const std::string &features_dir,
                                 const Feature &feature, const Asset &asset);
 
-  // Build all months (dispatch to thread pool)
   void build_stationarity(const std::vector<std::string> &months,
                           const std::string &features_dir,
                           const Feature &feature, const Asset &asset,
                           std::function<void(std::function<void()>)> submit);
 
-  // Finalize after build completes: compute aggregate statistics
   void finalize_stationarity();
 
   // ==========================================================================
-  // Methods - Build PSD (Step 1: 频域分析)
+  // Methods - Build PSD (自动两阶段并行)
   // ==========================================================================
 
-  // Build single month PSD (thread-safe, called from worker)
-  // psd_day_offset: 该月第一天在全局psd_cache中的索引
-  void build_psd_month(size_t psd_day_offset, const std::string &features_dir,
-                       const Feature &feature, const Asset &asset,
-                       const std::string &month);
-
-  // Build all months PSD (dispatch to thread pool)
+  // 启动 PSD 计算 (自动完成两阶段: 加载 → barrier → 计算)
+  // 调用者等待 compute.done == compute.total，然后调用 finalize_psd
   void build_psd(const std::vector<std::string> &months,
                  const std::string &features_dir,
                  const Feature &feature, const Asset &asset,
                  std::function<void(std::function<void()>)> submit);
 
-  // Finalize after PSD build: compute aggregate statistics
+  // Finalize: 生成渲染数据，释放临时数据
   void finalize_psd();
 
   // ==========================================================================
@@ -385,6 +390,7 @@ struct TimeSeries {
 
   void clear() {
     stationarity_cache.clear();
+    temp_months.clear();
     psd_cache.clear();
     step0_stationarity.clear();
     step1_frequency.clear();
@@ -399,4 +405,3 @@ struct TimeSeries {
     return input.has_changes(feat_idx, lvl, range);
   }
 };
-

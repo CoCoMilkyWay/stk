@@ -156,11 +156,11 @@ asio::awaitable<void> TimeSeriesService::ComputeLoop(SharedData &data) {
           ts.finalize_stationarity();
         }
 
-        // ========== Step 1: PSD ==========
+        // ========== Step 1: PSD (自动两阶段) ==========
         if (ts.compute.status != TimeSeries::Compute::Status::Cancelled) {
           ts.build_psd(months, features_dir_, data.feature, data.asset, submit);
 
-          // Wait for PSD completion
+          // Wait for completion (两阶段自动进行)
           while (ts.compute.done.load() < ts.compute.total.load()) {
             if (ts.compute.cancel.load()) {
               ts.compute.status = TimeSeries::Compute::Status::Cancelled;
