@@ -430,13 +430,8 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
         size_t F_selected = 1;
         if (!temp_months.months.empty()) {
           const auto &first = temp_months.months[0];
-          if (!first.data.empty() && first.A > 0) {
-            size_t total_samples = first.day_offsets.back();
-            if (total_samples > 0) {
-              F_selected = first.data.size() / (total_samples * first.A);
-              has_valid_flag = (F_selected > 1);
-            }
-          }
+          F_selected = first.feature_indices.size();
+          has_valid_flag = (F_selected > 1);
         }
 
         thread_local math::spectral::MultiResPSDWorkspace ws;

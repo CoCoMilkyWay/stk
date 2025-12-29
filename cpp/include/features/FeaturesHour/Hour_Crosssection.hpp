@@ -20,7 +20,7 @@ inline void compute_cs_hour(GlobalFeatureStore *store,
   const size_t A = input_fp32.size();
 
   // Build valid indices
-  const _Float16 *valid_flags = CS_READ_ALL(store, date, 2, t_hour, L2_FieldOffset::universe_size);
+  const _Float16 *valid_flags = CS_READ_ALL(store, date, 2, t_hour, L2_FieldOffset::_data_valid);
   valid_indices.clear();
   for (size_t a = 0; a < A; ++a) {
     if (static_cast<float>(valid_flags[a]) > 0.5f) {

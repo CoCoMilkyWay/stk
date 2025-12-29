@@ -434,8 +434,9 @@ public:
           for (size_t t = 0; t < T_per_day; ++t) {
             for (size_t f_local = 0; f_local < F_selected; ++f_local) {
               size_t f_global = feature_indices[f_local];
+              size_t f_offset = get_field_offset(level, f_global);
               std::memcpy(&out.data[(t_offset + t) * F_selected * A + f_local * A],
-                          &temp[t * F_total * A + f_global * A],
+                          &temp[t * F_total * A + f_offset * A],
                           A * sizeof(feature_storage_t));
             }
           }
