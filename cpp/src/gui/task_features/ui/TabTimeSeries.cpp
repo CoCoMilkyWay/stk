@@ -1258,7 +1258,10 @@ void RenderTabTimeSeries(TimeSeriesService *service, SharedData &data,
 }
 
 void StopTabTimeSeries(TimeSeriesService *service, SharedData &data) {
-  data.timeseries.cancel();
+  // 只在计算进行中时才取消，避免覆盖 Done 状态
+  if (data.timeseries.compute.is_busy()) {
+    data.timeseries.cancel();
+  }
   if (service && service->is_running()) {
     service->StopCompute(data.coromgr, data);
   }
