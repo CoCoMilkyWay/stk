@@ -3,6 +3,8 @@
 #include "math/spectral/MultiResPSD.hpp"
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/KPSS.hpp"
+#include "math/timeseries/AutoCorrelation.hpp"
+#include "math/timeseries/TemporalDecay.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Feature.hpp"
@@ -11,279 +13,18 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
-#include <memory>
 #include <span>
 #include <thread>
 
 // ============================================================================
-// Build Single Month Stationarity
+// Helper: 构建 day_ranges
 // ============================================================================
 
-void TimeSeries::build_stationarity_month(size_t cache_idx,
-                                          const std::string &features_dir,
-                                          const Feature &feature,
-                                          const Asset &asset) {
-  TraceN("BuildStationarityMonth");
+static void build_day_ranges(TimeSeries::SharedMonthData &shared) {
+  shared.day_ranges.clear();
 
-  assert(cache_idx < stationarity_cache.size());
-  auto &mc = stationarity_cache[cache_idx];
-
-  if (compute.cancel.load())
-    return;
-
-  const int level = feature.selection.selected_level;
-  const int primary_idx = feature.selection.primary_feature_idx;
-  assert(primary_idx >= 0);
-  assert(level >= 0 && level < 3);
-
-  const size_t n_assets = asset.items.size();
-  mc.init(n_assets);
-
-  // Get feature metadata for valid_type
-  const FeatureMetadata *meta_list = nullptr;
-  size_t meta_count = 0;
-  if (level == 0) {
-    meta_list = feature.metadata.features_l0.data();
-    meta_count = feature.metadata.features_l0.size();
-  } else if (level == 1) {
-    meta_list = feature.metadata.features_l1.data();
-    meta_count = feature.metadata.features_l1.size();
-  } else {
-    meta_list = feature.metadata.features_l2.data();
-    meta_count = feature.metadata.features_l2.size();
-  }
-
-  // Determine columns to load
-  std::vector<size_t> columns = {static_cast<size_t>(primary_idx)};
-
-  L2::ValidType valid_type = L2::ValidType::ALL;
-  if (primary_idx >= 0 && static_cast<size_t>(primary_idx) < meta_count) {
-    valid_type = meta_list[primary_idx].valid_type;
-  }
-
-  // Find valid flag index
-  if (valid_type != L2::ValidType::ALL) {
-    const char *flag_name =
-        (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
-    for (size_t i = 0; i < meta_count; ++i) {
-      if (std::strcmp(meta_list[i].code, flag_name) == 0) {
-        columns.push_back(i);
-        break;
-      }
-    }
-  }
-
-  // Batch load entire month
-  FeatureReader reader(features_dir);
-  std::string year = mc.month.substr(0, 4);
-  std::string month_str = mc.month.substr(4, 2);
-
-  FeatureReader::MonthTensor month_tensor;
-  {
-    TraceN("PreallocateTensor");
-    month_tensor.preallocate(n_assets, 31, columns.size(), level);
-  }
-
-  {
-    TraceN("LoadMonthData");
-    reader.load_month_columns(year, month_str, columns, month_tensor);
-  }
-
-  if (compute.cancel.load())
-    return;
-
-  const size_t A = month_tensor.A;
-  assert(A == n_assets);
-  const size_t F_selected = columns.size();
-  const bool has_valid_flag = (F_selected > 1);
-
-  // Pre-allocate sample buffers (per-asset time series)
-  size_t total_T = month_tensor.day_offsets.back();
-  std::vector<std::vector<float>> asset_series(A);
-  {
-    TraceN("PreallocateSeries");
-    for (auto &v : asset_series) {
-      v.reserve(total_T);
-    }
-  }
-
-  // Process entire month: collect time series per asset
-  {
-    TraceN("CollectSeries");
-    for (size_t day_idx = 0; day_idx < month_tensor.dates.size(); ++day_idx) {
-      if (compute.cancel.load())
-        return;
-
-      size_t t_start = month_tensor.day_offsets[day_idx];
-      size_t t_end = month_tensor.day_offsets[day_idx + 1];
-
-      for (size_t t = t_start; t < t_end; ++t) {
-        // Zero-copy pointers into month tensor
-        const feature_storage_t *values =
-            &month_tensor.data[t * F_selected * A];
-        const feature_storage_t *valid_flags =
-            has_valid_flag ? &month_tensor.data[t * F_selected * A + A]
-                           : nullptr;
-
-        for (size_t a = 0; a < A; ++a) {
-          float val = static_cast<float>(values[a]);
-
-          // Check valid flag
-          if (valid_flags && static_cast<float>(valid_flags[a]) <= 0.5f)
-            continue;
-
-          // Check NaN/Inf
-          if (val != val)
-            continue; // NaN
-          if (val > 1e38f || val < -1e38f)
-            continue; // Inf
-
-          asset_series[a].push_back(val);
-        }
-      }
-    }
-  }
-
-  // Run ADF/KPSS tests for each asset
-  {
-    TraceN("RunTests");
-    math::stationary::ADFWorkspace adf_ws;
-    math::stationary::KPSSWorkspace kpss_ws;
-    for (size_t a = 0; a < A; ++a) {
-      auto &cell = mc.by_asset[a];
-      const auto &series = asset_series[a];
-
-      cell.n_samples = series.size();
-
-      // Need minimum samples for meaningful test
-      if (series.size() < 30) {
-        cell.valid = false;
-        continue;
-      }
-
-      const std::span<const float> s(series.data(), series.size());
-
-      // ADF test
-      auto adf_result = math::stationary::adf_test(s, /*max_lag=*/12, adf_ws);
-      if (adf_result.valid) {
-        cell.adf_statistic = adf_result.statistic;
-        cell.adf_pvalue = adf_result.pvalue;
-        cell.adf_pass = (adf_result.pvalue < 0.05f);
-      }
-
-      // KPSS test
-      auto kpss_result = math::stationary::kpss_test(s, /*bandwidth=*/-1, kpss_ws);
-      if (kpss_result.valid) {
-        cell.kpss_statistic = kpss_result.statistic;
-        cell.kpss_pvalue = kpss_result.pvalue;
-        cell.kpss_pass = (kpss_result.pvalue > 0.05f);
-      }
-
-      cell.valid = adf_result.valid && kpss_result.valid;
-    }
-  }
-
-  mc.valid = true;
-}
-
-// ============================================================================
-// Build All Months (Parallel)
-// ============================================================================
-
-void TimeSeries::build_stationarity(
-    const std::vector<std::string> &months, const std::string &features_dir,
-    const Feature &feature, const Asset &asset,
-    std::function<void(std::function<void()>)> submit) {
-  compute.reset();
-  compute.status = Compute::Status::Building;
-  compute.total = months.size();
-
-  // Initialize cache
-  stationarity_cache.clear();
-  stationarity_cache.resize(months.size());
-  for (size_t i = 0; i < months.size(); ++i) {
-    stationarity_cache[i].month = months[i];
-  }
-
-  // Dispatch tasks
-  for (size_t i = 0; i < months.size(); ++i) {
-    submit([this, i, &features_dir, &feature, &asset]() {
-      build_stationarity_month(i, features_dir, feature, asset);
-      compute.done.fetch_add(1);
-    });
-  }
-}
-
-// ============================================================================
-// Finalize (after build completes)
-// ============================================================================
-
-void TimeSeries::finalize_stationarity() {
-  if (stationarity_cache.empty()) {
-    step0_stationarity.valid = false;
-    return;
-  }
-
-  // Collect all valid p-values for aggregate statistics
-  std::vector<float> all_adf_pvalues;
-  std::vector<float> all_kpss_pvalues;
-
-  size_t n_total = 0;
-  size_t n_adf_pass = 0;
-  size_t n_kpss_pass = 0;
-  size_t n_both_pass = 0;
-
-  for (const auto &mc : stationarity_cache) {
-    if (!mc.valid)
-      continue;
-
-    for (const auto &cell : mc.by_asset) {
-      if (!cell.valid)
-        continue;
-
-      n_total++;
-      all_adf_pvalues.push_back(cell.adf_pvalue);
-      all_kpss_pvalues.push_back(cell.kpss_pvalue);
-
-      if (cell.adf_pass)
-        n_adf_pass++;
-      if (cell.kpss_pass)
-        n_kpss_pass++;
-      if (cell.adf_pass && cell.kpss_pass)
-        n_both_pass++;
-    }
-  }
-
-  if (all_adf_pvalues.empty()) {
-    step0_stationarity.valid = false;
-    return;
-  }
-
-  // Compute median p-values
-  std::sort(all_adf_pvalues.begin(), all_adf_pvalues.end());
-  std::sort(all_kpss_pvalues.begin(), all_kpss_pvalues.end());
-
-  size_t mid = all_adf_pvalues.size() / 2;
-  step0_stationarity.adf_pvalue = all_adf_pvalues[mid];
-  step0_stationarity.kpss_pvalue = all_kpss_pvalues[mid];
-
-  // Pass if majority passes
-  step0_stationarity.adf_pass = (n_adf_pass > n_total / 2);
-  step0_stationarity.kpss_pass = (n_kpss_pass > n_total / 2);
-
-  step0_stationarity.valid = true;
-}
-
-// ============================================================================
-// Build PSD - 单次提交，自动两阶段
-// ============================================================================
-
-// 构建连续时间的 day_ranges
-static void build_day_ranges_internal(TimeSeries::AllMonthsData &temp_months) {
-  temp_months.day_ranges.clear();
-
-  for (size_t m = 0; m < temp_months.months.size(); ++m) {
-    const auto &tensor = temp_months.months[m];
+  for (size_t m = 0; m < shared.months.size(); ++m) {
+    const auto &tensor = shared.months[m];
     for (size_t d = 0; d < tensor.dates.size(); ++d) {
       TimeSeries::DayRange dr;
       dr.month_idx = m;
@@ -291,12 +32,358 @@ static void build_day_ranges_internal(TimeSeries::AllMonthsData &temp_months) {
       dr.t_start = tensor.day_offsets[d];
       dr.t_end = tensor.day_offsets[d + 1];
       dr.date = tensor.dates[d];
-      temp_months.day_ranges.push_back(dr);
+      shared.day_ranges.push_back(dr);
+    }
+  }
+
+  shared.n_days = shared.day_ranges.size();
+}
+
+// ============================================================================
+// Helper: 获取 feature 元数据和列索引
+// ============================================================================
+
+struct FeatureConfig {
+  std::vector<size_t> columns;
+  const FeatureMetadata *meta_list = nullptr;
+  size_t meta_count = 0;
+  bool has_valid_flag = false;
+};
+
+static FeatureConfig get_feature_config(const Feature &feature) {
+  FeatureConfig cfg;
+
+  const int level = feature.selection.selected_level;
+  const int primary_idx = feature.selection.primary_feature_idx;
+  assert(primary_idx >= 0);
+  assert(level >= 0 && level < 3);
+
+  if (level == 0) {
+    cfg.meta_list = feature.metadata.features_l0.data();
+    cfg.meta_count = feature.metadata.features_l0.size();
+  } else if (level == 1) {
+    cfg.meta_list = feature.metadata.features_l1.data();
+    cfg.meta_count = feature.metadata.features_l1.size();
+  } else {
+    cfg.meta_list = feature.metadata.features_l2.data();
+    cfg.meta_count = feature.metadata.features_l2.size();
+  }
+
+  cfg.columns = {static_cast<size_t>(primary_idx)};
+
+  L2::ValidType valid_type = L2::ValidType::ALL;
+  if (primary_idx >= 0 && static_cast<size_t>(primary_idx) < cfg.meta_count) {
+    valid_type = cfg.meta_list[primary_idx].valid_type;
+  }
+
+  if (valid_type != L2::ValidType::ALL) {
+    const char *flag_name =
+        (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
+    for (size_t i = 0; i < cfg.meta_count; ++i) {
+      if (std::strcmp(cfg.meta_list[i].code, flag_name) == 0) {
+        cfg.columns.push_back(i);
+        break;
+      }
+    }
+  }
+
+  cfg.has_valid_flag = (cfg.columns.size() > 1);
+  return cfg;
+}
+
+// ============================================================================
+// Helper: 收集单个 asset 的时间序列 (零拷贝访问共享数据)
+// ============================================================================
+
+static void collect_asset_series(const TimeSeries::SharedMonthData &shared,
+                                 size_t asset_idx,
+                                 std::vector<float> &out_series) {
+  out_series.clear();
+  out_series.reserve(shared.n_days * 14400);  // 预估每天最多14400样本
+
+  const size_t A = shared.n_assets;
+  const size_t F = shared.F_selected;
+  const bool has_valid = shared.has_valid_flag;
+
+  for (const auto &dr : shared.day_ranges) {
+    const auto &tensor = shared.months[dr.month_idx];
+
+    for (size_t t = dr.t_start; t < dr.t_end; ++t) {
+      const size_t base = t * F * A;
+      float val = static_cast<float>(tensor.data[base + asset_idx]);
+
+      if (has_valid) {
+        float flag = static_cast<float>(tensor.data[base + A + asset_idx]);
+        if (flag <= 0.5f) continue;
+      }
+
+      if (val != val || val > 1e38f || val < -1e38f) continue;
+
+      out_series.push_back(val);
     }
   }
 }
 
-void TimeSeries::build_psd(const std::vector<std::string> &months,
+// ============================================================================
+// Stage 0: 平稳性检验 (按月并行)
+// ============================================================================
+
+static void compute_stationarity_for_month(
+    TimeSeries &ts, size_t month_idx, const TimeSeries::SharedMonthData &shared) {
+  TraceN("ComputeStationarityMonth");
+
+  auto &mc = ts.stationarity_cache[month_idx];
+  mc.init(shared.n_assets);
+  mc.month = shared.months[month_idx].dates.empty()
+                 ? ""
+                 : shared.months[month_idx].dates[0].substr(0, 6);
+
+  const auto &tensor = shared.months[month_idx];
+  const size_t A = shared.n_assets;
+  const size_t F = shared.F_selected;
+  const bool has_valid = shared.has_valid_flag;
+
+  // 收集每个 asset 的时间序列
+  std::vector<std::vector<float>> asset_series(A);
+  size_t total_T = tensor.day_offsets.back();
+  for (auto &v : asset_series) v.reserve(total_T);
+
+  for (size_t day_idx = 0; day_idx < tensor.dates.size(); ++day_idx) {
+    size_t t_start = tensor.day_offsets[day_idx];
+    size_t t_end = tensor.day_offsets[day_idx + 1];
+
+    for (size_t t = t_start; t < t_end; ++t) {
+      const size_t base = t * F * A;
+
+      for (size_t a = 0; a < A; ++a) {
+        float val = static_cast<float>(tensor.data[base + a]);
+
+        if (has_valid) {
+          float flag = static_cast<float>(tensor.data[base + A + a]);
+          if (flag <= 0.5f) continue;
+        }
+
+        if (val != val || val > 1e38f || val < -1e38f) continue;
+
+        asset_series[a].push_back(val);
+      }
+    }
+  }
+
+  // ADF/KPSS 检验
+  math::stationary::ADFWorkspace adf_ws;
+  math::stationary::KPSSWorkspace kpss_ws;
+
+  for (size_t a = 0; a < A; ++a) {
+    auto &cell = mc.by_asset[a];
+    const auto &series = asset_series[a];
+    cell.n_samples = series.size();
+
+    if (series.size() < 30) {
+      cell.valid = false;
+      continue;
+    }
+
+    const std::span<const float> s(series.data(), series.size());
+
+    auto adf_result = math::stationary::adf_test(s, 12, adf_ws);
+    if (adf_result.valid) {
+      cell.adf_statistic = adf_result.statistic;
+      cell.adf_pvalue = adf_result.pvalue;
+      cell.adf_pass = (adf_result.pvalue < 0.05f);
+    }
+
+    auto kpss_result = math::stationary::kpss_test(s, -1, kpss_ws);
+    if (kpss_result.valid) {
+      cell.kpss_statistic = kpss_result.statistic;
+      cell.kpss_pvalue = kpss_result.pvalue;
+      cell.kpss_pass = (kpss_result.pvalue > 0.05f);
+    }
+
+    cell.valid = adf_result.valid && kpss_result.valid;
+  }
+
+  mc.valid = true;
+}
+
+// ============================================================================
+// Stage 1: PSD 计算 (按 asset 并行)
+// ============================================================================
+
+static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
+                                  const TimeSeries::SharedMonthData &shared) {
+  thread_local math::spectral::MultiResPSDWorkspace ws;
+  if (!ws.initialized) ws.init();
+
+  ws.reset();
+
+  const size_t A = shared.n_assets;
+  const size_t F = shared.F_selected;
+  const bool has_valid = shared.has_valid_flag;
+  const int level = shared.level;
+
+  std::array<float, TimeSeries::PSDHeatmap::N_SCALE_BINS> out_buf;
+
+  for (size_t day_idx = 0; day_idx < shared.n_days; ++day_idx) {
+    const auto &dr = shared.day_ranges[day_idx];
+    const auto &tensor = shared.months[dr.month_idx];
+
+    for (size_t t = dr.t_start; t < dr.t_end; ++t) {
+      const size_t base = t * F * A;
+      float val = static_cast<float>(tensor.data[base + asset_idx]);
+
+      if (has_valid) {
+        float flag = static_cast<float>(tensor.data[base + A + asset_idx]);
+        if (flag <= 0.5f) continue;
+      }
+
+      if (val != val || val > 1e38f || val < -1e38f) continue;
+
+      if (level == 0) {
+        ws.push_L0(val);
+      } else if (level == 1) {
+        ws.push_L1(val);
+      } else {
+        ws.push_L2(val);
+      }
+    }
+
+    ws.compute_day(out_buf);
+
+    float *dst = ts.psd_cache.asset_day_psd(day_idx, asset_idx);
+    std::memcpy(dst, out_buf.data(), sizeof(out_buf));
+  }
+}
+
+// ============================================================================
+// Stage 2: ARMA 分析 (按 asset 并行)
+// ============================================================================
+
+static void compute_arma_for_asset(TimeSeries &ts, size_t asset_idx,
+                                   const TimeSeries::SharedMonthData &shared) {
+  thread_local std::vector<float> series;
+  thread_local math::timeseries::ACFWorkspace ws;
+
+  collect_asset_series(shared, asset_idx, series);
+
+  auto &cell = ts.arma_cache[asset_idx];
+  cell.valid = false;
+
+  if (series.size() < 100) return;
+
+  constexpr int MAX_LAG = 40;
+  auto result = math::timeseries::compute_acf_pacf(
+      std::span<const float>(series.data(), series.size()), MAX_LAG, ws);
+
+  if (!result.valid) return;
+
+  cell.acf = std::move(result.acf);
+  cell.pacf = std::move(result.pacf);
+  cell.cutoff_lag_acf = result.cutoff_lag_acf;
+  cell.cutoff_lag_pacf = result.cutoff_lag_pacf;
+  cell.valid = true;
+}
+
+
+// ============================================================================
+// Stage 4: 时间衰减分析 (按天并行)
+// ============================================================================
+
+static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
+                                     const TimeSeries::SharedMonthData &shared) {
+  auto &cell = ts.temporal_cache[day_idx];
+  cell.valid = false;
+
+  const auto &dr = shared.day_ranges[day_idx];
+  const auto &tensor = shared.months[dr.month_idx];
+  const size_t A = shared.n_assets;
+  const size_t F = shared.F_selected;
+  const bool has_valid = shared.has_valid_flag;
+
+  // 收集当天所有 asset 的平均值
+  std::vector<float> day_values(A, 0.0f);
+  std::vector<size_t> counts(A, 0);
+
+  for (size_t t = dr.t_start; t < dr.t_end; ++t) {
+    const size_t base = t * F * A;
+
+    for (size_t a = 0; a < A; ++a) {
+      float val = static_cast<float>(tensor.data[base + a]);
+
+      if (has_valid) {
+        float flag = static_cast<float>(tensor.data[base + A + a]);
+        if (flag <= 0.5f) continue;
+      }
+
+      if (val != val || val > 1e38f || val < -1e38f) continue;
+
+      day_values[a] += val;
+      counts[a]++;
+    }
+  }
+
+  // 计算平均
+  size_t valid_count = 0;
+  for (size_t a = 0; a < A; ++a) {
+    if (counts[a] > 0) {
+      day_values[a] /= static_cast<float>(counts[a]);
+      valid_count++;
+    }
+  }
+
+  if (valid_count < 10) return;
+
+  const std::span<const float> dv(day_values.data(), day_values.size());
+
+  cell.gini = math::timeseries::compute_gini(dv);
+  cell.hhi = math::timeseries::compute_hhi(dv);
+
+  // Rank correlation vs 前一天
+  if (day_idx > 0) {
+    const auto &prev_dr = shared.day_ranges[day_idx - 1];
+    const auto &prev_tensor = shared.months[prev_dr.month_idx];
+
+    std::vector<float> prev_values(A, 0.0f);
+    std::vector<size_t> prev_counts(A, 0);
+
+    for (size_t t = prev_dr.t_start; t < prev_dr.t_end; ++t) {
+      const size_t base = t * F * A;
+
+      for (size_t a = 0; a < A; ++a) {
+        float val = static_cast<float>(prev_tensor.data[base + a]);
+
+        if (has_valid) {
+          float flag = static_cast<float>(prev_tensor.data[base + A + a]);
+          if (flag <= 0.5f) continue;
+        }
+
+        if (val != val || val > 1e38f || val < -1e38f) continue;
+
+        prev_values[a] += val;
+        prev_counts[a]++;
+      }
+    }
+
+    for (size_t a = 0; a < A; ++a) {
+      if (prev_counts[a] > 0) {
+        prev_values[a] /= static_cast<float>(prev_counts[a]);
+      }
+    }
+
+    cell.rank_corr = math::timeseries::spearman_rank_correlation(
+        dv, std::span<const float>(prev_values.data(), prev_values.size()));
+  } else {
+    cell.rank_corr = 1.0f;
+  }
+
+  cell.valid = true;
+}
+
+// ============================================================================
+// Unified Build Entry
+// ============================================================================
+
+void TimeSeries::build_all(const std::vector<std::string> &months,
                            const std::string &features_dir,
                            const Feature &feature, const Asset &asset,
                            std::function<void(std::function<void()>)> submit) {
@@ -310,180 +397,134 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
 
   // 初始化
   compute.reset();
+  barriers.reset();
   compute.status = Compute::Status::Loading;
-  compute.total = n_assets; // 最终进度以 assets 为单位
+  compute.total = n_assets;  // 进度以 assets 为单位
 
-  temp_months.clear();
-  temp_months.months.resize(n_months);
+  shared.clear();
+  shared.months.resize(n_months);
+  shared.n_months = n_months;
+  shared.n_assets = n_assets;
+  shared.level = feature.selection.selected_level;
 
-  // 决定 worker 数量 = n_months (每个 worker 负责一个月的加载 + 一批 assets 的计算)
+  // 获取 feature 配置
+  auto cfg = get_feature_config(feature);
+  shared.F_selected = cfg.columns.size();
+  shared.has_valid_flag = cfg.has_valid_flag;
+
+  // Worker 数量 = min(core_count, n_months)
   const size_t n_workers = n_months;
-  const int level = feature.selection.selected_level;
 
-  // 预计算每个 worker 负责的 asset 范围
-  std::vector<size_t> asset_starts(n_workers + 1);
-  for (size_t w = 0; w <= n_workers; ++w) {
-    asset_starts[w] = w * n_assets / n_workers;
+  // 预计算每个 worker 负责的范围
+  std::vector<WorkerAllocation> allocations(n_workers);
+  for (size_t w = 0; w < n_workers; ++w) {
+    allocations[w].worker_id = w;
+    allocations[w].month_idx = w;
+    allocations[w].asset_start = w * n_assets / n_workers;
+    allocations[w].asset_end = (w + 1) * n_assets / n_workers;
   }
 
-  // Barrier: 用于等待所有 worker 完成 Phase 1
-  auto phase1_ready = std::make_shared<std::atomic<size_t>>(0);
+  // 初始化输出缓存
+  stationarity_cache.clear();
+  stationarity_cache.resize(n_months);
+  for (size_t i = 0; i < n_months; ++i) {
+    stationarity_cache[i].month = months[i];
+  }
 
-  // 共享状态: day_ranges 构建完成标志
-  auto day_ranges_built = std::make_shared<std::atomic<bool>>(false);
-
-  // 预分配 psd_cache (只由 worker 0 初始化)
-  // 估算总天数
-  const size_t estimated_days = n_months * 31;
-
+  // 提交 worker 任务
   for (size_t w = 0; w < n_workers; ++w) {
+    const auto alloc = allocations[w];
     const std::string month = months[w];
-    const size_t a_start = asset_starts[w];
-    const size_t a_end = asset_starts[w + 1];
+    const auto columns = cfg.columns;
+    const int level = shared.level;
+    const std::string features_dir_copy = features_dir;  // 按值捕获
 
-    submit([this, w, n_workers, month, a_start, a_end, n_assets, estimated_days, level,
-            phase1_ready, day_ranges_built,
-            &features_dir, &feature, &asset]() {
+    submit([this, w, n_workers, month, alloc, columns, level,
+            features_dir_copy]() {
       // ========== Phase 1: 加载本 worker 负责的月数据 ==========
-      if (compute.cancel.load())
-        return;
+      if (compute.cancel.load()) return;
+
       {
         TraceN("LoadMonth");
-        const int primary_idx = feature.selection.primary_feature_idx;
-
-        const FeatureMetadata *meta_list = nullptr;
-        size_t meta_count = 0;
-        if (level == 0) {
-          meta_list = feature.metadata.features_l0.data();
-          meta_count = feature.metadata.features_l0.size();
-        } else if (level == 1) {
-          meta_list = feature.metadata.features_l1.data();
-          meta_count = feature.metadata.features_l1.size();
-        } else {
-          meta_list = feature.metadata.features_l2.data();
-          meta_count = feature.metadata.features_l2.size();
-        }
-
-        std::vector<size_t> columns = {static_cast<size_t>(primary_idx)};
-        L2::ValidType valid_type = L2::ValidType::ALL;
-        if (primary_idx >= 0 && static_cast<size_t>(primary_idx) < meta_count) {
-          valid_type = meta_list[primary_idx].valid_type;
-        }
-        if (valid_type != L2::ValidType::ALL) {
-          const char *flag_name =
-              (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
-          for (size_t i = 0; i < meta_count; ++i) {
-            if (std::strcmp(meta_list[i].code, flag_name) == 0) {
-              columns.push_back(i);
-              break;
-            }
-          }
-        }
-
-        FeatureReader reader(features_dir);
+        FeatureReader reader(features_dir_copy);
         std::string year = month.substr(0, 4);
         std::string month_str = month.substr(4, 2);
 
-        auto &tensor = temp_months.months[w];
-        tensor.preallocate(n_assets, 31, columns.size(), level);
+        auto &tensor = shared.months[w];
+        tensor.preallocate(shared.n_assets, 31, columns.size(), level);
         reader.load_month_columns(year, month_str, columns, tensor);
       }
 
-      // 标记 Phase 1 完成，等待所有 worker
-      size_t ready_count = phase1_ready->fetch_add(1) + 1;
+      // Phase 1 完成，等待所有 worker
+      barriers.phase1_ready.fetch_add(1);
 
-      // Barrier: spin-wait 直到所有 worker 都 ready
-      while (phase1_ready->load() < n_workers) {
-        if (compute.cancel.load())
-          return;
+      while (barriers.phase1_ready.load() < n_workers) {
+        if (compute.cancel.load()) return;
         std::this_thread::yield();
       }
 
-      // ========== Worker 0 负责构建 day_ranges 和初始化 psd_cache ==========
+      // ========== Worker 0: 构建共享结构 ==========
       if (w == 0) {
-        TraceN("BuildDayRanges");
-        build_day_ranges_internal(temp_months);
+        TraceN("BuildShared");
+        build_day_ranges(shared);
 
-        const size_t n_days = temp_months.total_days();
-        psd_cache.init(n_days, n_assets, level);
-
-        for (size_t d = 0; d < n_days; ++d) {
-          psd_cache.dates[d] = temp_months.day_ranges[d].date;
+        // 初始化所有输出缓存
+        psd_cache.init(shared.n_days, shared.n_assets, level);
+        for (size_t d = 0; d < shared.n_days; ++d) {
+          psd_cache.dates[d] = shared.day_ranges[d].date;
         }
+
+        arma_cache.clear();
+        arma_cache.resize(shared.n_assets);
+
+        temporal_cache.clear();
+        temporal_cache.resize(shared.n_days);
 
         compute.status = Compute::Status::Building;
-        day_ranges_built->store(true);
+        barriers.shared_built.store(true);
       }
 
-      // 等待 day_ranges 构建完成
-      while (!day_ranges_built->load()) {
-        if (compute.cancel.load())
-          return;
+      // 等待共享结构构建完成
+      while (!barriers.shared_built.load()) {
+        if (compute.cancel.load()) return;
         std::this_thread::yield();
       }
 
-      // ========== Phase 2: 计算本 worker 负责的 assets ==========
-      if (compute.cancel.load())
-        return;
-      {
-        TraceN("ComputeAssets");
-        const size_t n_days = temp_months.total_days();
+      // ========== Phase 2: 流水线计算 ==========
+      if (compute.cancel.load()) return;
 
-        // 检查是否有 valid flag 列
-        bool has_valid_flag = false;
-        size_t F_selected = 1;
-        if (!temp_months.months.empty()) {
-          const auto &first = temp_months.months[0];
-          F_selected = first.feature_indices.size();
-          has_valid_flag = (F_selected > 1);
+      // Stage 0: 平稳性 (按月)
+      {
+        TraceN("Stage0_Stationarity");
+        compute_stationarity_for_month(*this, alloc.month_idx, shared);
+      }
+
+      // Stage 1-3: 按 asset 并行
+      for (size_t a = alloc.asset_start; a < alloc.asset_end; ++a) {
+        if (compute.cancel.load()) return;
+
+        {
+          TraceN("Stage1_PSD");
+          compute_psd_for_asset(*this, a, shared);
         }
 
-        thread_local math::spectral::MultiResPSDWorkspace ws;
-        if (!ws.initialized)
-          ws.init();
+        {
+          TraceN("Stage2_ARMA");
+          compute_arma_for_asset(*this, a, shared);
+        }
 
-        std::array<float, PSDHeatmap::N_SCALE_BINS> out_buf;
+        compute.done.fetch_add(1);
+      }
 
-        for (size_t a = a_start; a < a_end; ++a) {
-          if (compute.cancel.load())
-            return;
+      // Stage 4: 按天并行 (分配给各 worker)
+      {
+        TraceN("Stage4_Temporal");
+        size_t day_start = alloc.worker_id * shared.n_days / n_workers;
+        size_t day_end = (alloc.worker_id + 1) * shared.n_days / n_workers;
 
-          ws.reset();
-
-          for (size_t day_idx = 0; day_idx < n_days; ++day_idx) {
-            const auto &dr = temp_months.day_ranges[day_idx];
-            const auto &tensor = temp_months.months[dr.month_idx];
-            const size_t A = tensor.A;
-
-            for (size_t t = dr.t_start; t < dr.t_end; ++t) {
-              const size_t src_base = t * F_selected * A;
-              float val = static_cast<float>(tensor.data[src_base + a]);
-
-              if (has_valid_flag) {
-                float valid_flag = static_cast<float>(tensor.data[src_base + A + a]);
-                if (valid_flag <= 0.5f)
-                  continue;
-              }
-
-              if (val != val || val > 1e38f || val < -1e38f)
-                continue;
-
-              if (level == 0) {
-                ws.push_L0(val);
-              } else if (level == 1) {
-                ws.push_L1(val);
-              } else {
-                ws.push_L2(val);
-              }
-            }
-
-            ws.compute_day(out_buf);
-
-            float *dst = psd_cache.asset_day_psd(day_idx, a);
-            std::memcpy(dst, out_buf.data(), sizeof(out_buf));
-          }
-
-          compute.done.fetch_add(1);
+        for (size_t d = day_start; d < day_end; ++d) {
+          if (compute.cancel.load()) return;
+          compute_temporal_for_day(*this, d, shared);
         }
       }
     });
@@ -491,219 +532,312 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
 }
 
 // ============================================================================
-// Finalize PSD (UI线程调用)
+// Finalize All
 // ============================================================================
 
-void TimeSeries::finalize_psd() {
-  // Phase 2 已经填充了 per_asset_data，现在做渲染数据准备
+void TimeSeries::finalize_all() {
+  // ========== Step 0: 聚合平稳性结果 ==========
+  {
+    std::vector<float> all_adf_pvalues;
+    std::vector<float> all_kpss_pvalues;
+    size_t n_total = 0, n_adf_pass = 0, n_kpss_pass = 0;
 
-  const size_t n_days = psd_cache.n_days;
-  const size_t n_assets = psd_cache.n_assets;
-
-  if (n_days == 0 || n_assets == 0) {
-    step1_frequency.valid = false;
-    psd_cache.valid = false;
-    temp_months.clear();
-    return;
-  }
-
-  constexpr size_t N_BINS = PSDHeatmap::N_SCALE_BINS;
-
-  // ========== 1. 收集有效天索引 ==========
-  psd_cache.valid_indices.clear();
-  for (size_t d = 0; d < n_days; ++d) {
-    if (!psd_cache.dates[d].empty()) {
-      psd_cache.valid_indices.push_back(d);
-    }
-  }
-
-  const size_t valid_days = psd_cache.valid_indices.size();
-  if (valid_days == 0) {
-    step1_frequency.valid = false;
-    psd_cache.valid = false;
-    temp_months.clear();
-    return;
-  }
-
-  // ========== 2. 找到第一个FFT有效的天 (超过一半assets有数据) ==========
-  psd_cache.first_valid_day = 0;
-  for (size_t i = 0; i < valid_days; ++i) {
-    const size_t d = psd_cache.valid_indices[i];
-    size_t valid_asset_count = 0;
-    for (size_t a = 0; a < n_assets; ++a) {
-      const float *src = psd_cache.asset_day_psd(d, a);
-      for (size_t k = psd_cache.default_y_start; k < N_BINS; ++k) {
-        if (src[k] > 0) {
-          ++valid_asset_count;
-          break;
-        }
+    for (const auto &mc : stationarity_cache) {
+      if (!mc.valid) continue;
+      for (const auto &cell : mc.by_asset) {
+        if (!cell.valid) continue;
+        n_total++;
+        all_adf_pvalues.push_back(cell.adf_pvalue);
+        all_kpss_pvalues.push_back(cell.kpss_pvalue);
+        if (cell.adf_pass) n_adf_pass++;
+        if (cell.kpss_pass) n_kpss_pass++;
       }
     }
-    if (valid_asset_count > n_assets * 0.8) {
-      psd_cache.first_valid_day = i;
-      break;
+
+    if (!all_adf_pvalues.empty()) {
+      std::sort(all_adf_pvalues.begin(), all_adf_pvalues.end());
+      std::sort(all_kpss_pvalues.begin(), all_kpss_pvalues.end());
+      size_t mid = all_adf_pvalues.size() / 2;
+      step0_stationarity.adf_pvalue = all_adf_pvalues[mid];
+      step0_stationarity.kpss_pvalue = all_kpss_pvalues[mid];
+      step0_stationarity.adf_pass = (n_adf_pass > n_total / 2);
+      step0_stationarity.kpss_pass = (n_kpss_pass > n_total / 2);
+      step0_stationarity.valid = true;
     }
   }
 
-  // ========== 3. 计算 plot_x ==========
-  psd_cache.plot_x.resize(N_BINS);
-  for (size_t k = 0; k < N_BINS; ++k) {
-    psd_cache.plot_x[k] = static_cast<float>(k);
-  }
+  // ========== Step 1: 聚合 PSD 结果 ==========
+  {
+    const size_t n_days = psd_cache.n_days;
+    const size_t n_assets = psd_cache.n_assets;
+    constexpr size_t N_BINS = PSDHeatmap::N_SCALE_BINS;
 
-  // ========== 4. 计算跨资产平均并转换为 render_data ==========
-  // render_data 布局: [N_BINS * valid_days]，row-major
-  // PlotHeatmap 把 row 0 画在顶部，所以需要反转行顺序：
-  //   row 0 存储 bin 127 (DC) -> 画在顶部
-  //   row 127 存储 bin 0 (高频) -> 画在底部
-  // 这样刻度 Y=k+0.5 就能正确对应 bin k 的数据
-  psd_cache.render_data.resize(N_BINS * valid_days);
-
-  // 临时buffer存储跨资产平均
-  std::vector<float> day_avg(N_BINS);
-
-  for (size_t i = 0; i < valid_days; ++i) {
-    const size_t d = psd_cache.valid_indices[i];
-
-    // 计算跨资产平均
-    std::fill(day_avg.begin(), day_avg.end(), 0.0f);
-    size_t valid_asset_count = 0;
-
-    for (size_t a = 0; a < n_assets; ++a) {
-      const float *src = psd_cache.asset_day_psd(d, a);
-
-      // 检查是否有数据
-      bool has_data = false;
-      for (size_t k = 0; k < N_BINS; ++k) {
-        if (src[k] > 0) {
-          has_data = true;
-          break;
+    if (n_days > 0 && n_assets > 0) {
+      // 收集有效天索引
+      psd_cache.valid_indices.clear();
+      for (size_t d = 0; d < n_days; ++d) {
+        if (!psd_cache.dates[d].empty()) {
+          psd_cache.valid_indices.push_back(d);
         }
       }
 
-      if (has_data) {
-        ++valid_asset_count;
+      const size_t valid_days = psd_cache.valid_indices.size();
+
+      if (valid_days > 0) {
+        // 找第一个有效天
+        psd_cache.first_valid_day = 0;
+        for (size_t i = 0; i < valid_days; ++i) {
+          const size_t d = psd_cache.valid_indices[i];
+          size_t valid_count = 0;
+          for (size_t a = 0; a < n_assets; ++a) {
+            const float *src = psd_cache.asset_day_psd(d, a);
+            for (size_t k = psd_cache.default_y_start; k < N_BINS; ++k) {
+              if (src[k] > 0) { ++valid_count; break; }
+            }
+          }
+          if (valid_count > n_assets * 0.8) {
+            psd_cache.first_valid_day = i;
+            break;
+          }
+        }
+
+        // 计算 plot_x
+        psd_cache.plot_x.resize(N_BINS);
         for (size_t k = 0; k < N_BINS; ++k) {
-          day_avg[k] += src[k];
+          psd_cache.plot_x[k] = static_cast<float>(k);
         }
-      }
-    }
 
-    if (valid_asset_count > 0) {
-      float inv = 1.0f / valid_asset_count;
-      for (size_t k = 0; k < N_BINS; ++k) {
-        day_avg[k] *= inv;
-      }
-    }
+        // 计算 render_data
+        psd_cache.render_data.resize(N_BINS * valid_days);
+        std::vector<float> day_avg(N_BINS);
 
-    // log变换并存入 render_data (反转行顺序)
-    for (size_t k = 0; k < N_BINS; ++k) {
-      float val = day_avg[k];
-      float log_val = (val > 1e-20f) ? std::log10(val) : -20.0f;
-      // bin k -> row (N_BINS - 1 - k)
-      size_t row = N_BINS - 1 - k;
-      psd_cache.render_data[row * valid_days + i] = log_val;
-    }
-  }
+        for (size_t i = 0; i < valid_days; ++i) {
+          const size_t d = psd_cache.valid_indices[i];
+          std::fill(day_avg.begin(), day_avg.end(), 0.0f);
+          size_t valid_asset_count = 0;
 
-  // ========== 5. 固定 scale_min/max ==========
-  psd_cache.scale_min = -1.0f;
-  psd_cache.scale_max = 3.0f;
+          for (size_t a = 0; a < n_assets; ++a) {
+            const float *src = psd_cache.asset_day_psd(d, a);
+            bool has_data = false;
+            for (size_t k = 0; k < N_BINS; ++k) {
+              if (src[k] > 0) { has_data = true; break; }
+            }
+            if (has_data) {
+              ++valid_asset_count;
+              for (size_t k = 0; k < N_BINS; ++k) day_avg[k] += src[k];
+            }
+          }
 
-  // ========== 6. 生成轴刻度 (位置是bin索引，不加0.5) ==========
-  psd_cache.tick_positions.clear();
-  psd_cache.tick_labels.clear();
+          if (valid_asset_count > 0) {
+            float inv = 1.0f / static_cast<float>(valid_asset_count);
+            for (size_t k = 0; k < N_BINS; ++k) day_avg[k] *= inv;
+          }
 
-  // 秒级: idx 0-57 → 2s-59s
-  for (size_t s = 10; s < 60; s += 10) {
-    size_t idx = s - 2;
-    psd_cache.tick_positions.push_back(static_cast<double>(idx));
-    psd_cache.tick_labels.push_back(std::to_string(s) + "s");
-  }
-
-  // 分钟级: idx 58-116 → 1min-59min
-  for (size_t m = 10; m < 60; m += 10) {
-    size_t idx = 58 + m - 1;
-    psd_cache.tick_positions.push_back(static_cast<double>(idx));
-    psd_cache.tick_labels.push_back(std::to_string(m) + "m");
-  }
-
-  // 小时级: idx 117-126 → 1h-10h
-  for (size_t h = 2; h <= 10; h += 2) {
-    size_t idx = 117 + h - 1;
-    psd_cache.tick_positions.push_back(static_cast<double>(idx));
-    psd_cache.tick_labels.push_back(std::to_string(h) + "h");
-  }
-
-  psd_cache.selected_day = static_cast<int>(psd_cache.first_valid_day);
-
-  // ========== 6. 计算平均功率谱 ==========
-  step1_frequency.avg_power_spectrum.resize(N_BINS);
-  std::vector<double> accum(N_BINS, 0.0);
-
-  for (size_t i = 0; i < valid_days; ++i) {
-    const size_t d = psd_cache.valid_indices[i];
-
-    // 重新计算跨资产平均 (或者复用 render_data 但需要还原 log)
-    std::fill(day_avg.begin(), day_avg.end(), 0.0f);
-    size_t valid_asset_count = 0;
-
-    for (size_t a = 0; a < n_assets; ++a) {
-      const float *src = psd_cache.asset_day_psd(d, a);
-      bool has_data = false;
-      for (size_t k = 0; k < N_BINS; ++k) {
-        if (src[k] > 0) {
-          has_data = true;
-          break;
+          for (size_t k = 0; k < N_BINS; ++k) {
+            float val = day_avg[k];
+            float log_val = (val > 1e-20f) ? std::log10(val) : -20.0f;
+            size_t row = N_BINS - 1 - k;
+            psd_cache.render_data[row * valid_days + i] = log_val;
+          }
         }
-      }
-      if (has_data) {
-        ++valid_asset_count;
+
+        psd_cache.scale_min = -1.0f;
+        psd_cache.scale_max = 3.0f;
+
+        // 轴刻度
+        psd_cache.tick_positions.clear();
+        psd_cache.tick_labels.clear();
+        for (size_t s = 10; s < 60; s += 10) {
+          psd_cache.tick_positions.push_back(static_cast<double>(s - 2));
+          psd_cache.tick_labels.push_back(std::to_string(s) + "s");
+        }
+        for (size_t m = 10; m < 60; m += 10) {
+          psd_cache.tick_positions.push_back(static_cast<double>(58 + m - 1));
+          psd_cache.tick_labels.push_back(std::to_string(m) + "m");
+        }
+        for (size_t h = 2; h <= 10; h += 2) {
+          psd_cache.tick_positions.push_back(static_cast<double>(117 + h - 1));
+          psd_cache.tick_labels.push_back(std::to_string(h) + "h");
+        }
+
+        psd_cache.selected_day = static_cast<int>(psd_cache.first_valid_day);
+
+        // 平均功率谱
+        step1_frequency.avg_power_spectrum.resize(N_BINS);
+        std::vector<double> accum(N_BINS, 0.0);
+
+        for (size_t i = 0; i < valid_days; ++i) {
+          const size_t d = psd_cache.valid_indices[i];
+          std::fill(day_avg.begin(), day_avg.end(), 0.0f);
+          size_t valid_asset_count = 0;
+
+          for (size_t a = 0; a < n_assets; ++a) {
+            const float *src = psd_cache.asset_day_psd(d, a);
+            bool has_data = false;
+            for (size_t k = 0; k < N_BINS; ++k) {
+              if (src[k] > 0) { has_data = true; break; }
+            }
+            if (has_data) {
+              ++valid_asset_count;
+              for (size_t k = 0; k < N_BINS; ++k) day_avg[k] += src[k];
+            }
+          }
+
+          if (valid_asset_count > 0) {
+            float inv = 1.0f / static_cast<float>(valid_asset_count);
+            for (size_t k = 0; k < N_BINS; ++k) accum[k] += day_avg[k] * inv;
+          }
+        }
+
         for (size_t k = 0; k < N_BINS; ++k) {
-          day_avg[k] += src[k];
+          step1_frequency.avg_power_spectrum[k] =
+              static_cast<float>(accum[k] / static_cast<double>(valid_days));
+        }
+
+        // 频段能量占比
+        double sec_power = 0, min_power = 0, hour_power = 0, total_power = 0;
+        for (size_t k = 0; k < N_BINS; ++k) {
+          float p = step1_frequency.avg_power_spectrum[k];
+          total_power += p;
+          if (k < 58) sec_power += p;
+          else if (k < 117) min_power += p;
+          else hour_power += p;
+        }
+
+        if (total_power > 0) {
+          step1_frequency.low_freq_power_ratio = static_cast<float>(sec_power / total_power);
+          step1_frequency.mid_freq_power_ratio = static_cast<float>(min_power / total_power);
+          step1_frequency.high_freq_power_ratio = static_cast<float>(hour_power / total_power);
+        }
+
+        psd_cache.valid = true;
+        step1_frequency.valid = true;
+      }
+    }
+  }
+
+  // ========== Step 2: 聚合 ARMA 结果 ==========
+  {
+    std::vector<float> all_acf, all_pacf;
+    int max_len = 0;
+
+    for (const auto &cell : arma_cache) {
+      if (!cell.valid) continue;
+      max_len = std::max(max_len, static_cast<int>(cell.acf.size()));
+    }
+
+    if (max_len > 0) {
+      all_acf.resize(static_cast<size_t>(max_len), 0.0f);
+      all_pacf.resize(static_cast<size_t>(max_len), 0.0f);
+      size_t count = 0;
+
+      for (const auto &cell : arma_cache) {
+        if (!cell.valid) continue;
+        count++;
+        for (size_t k = 0; k < cell.acf.size(); ++k) {
+          all_acf[k] += cell.acf[k];
+          all_pacf[k] += cell.pacf[k];
         }
       }
-    }
 
-    if (valid_asset_count > 0) {
-      float inv = 1.0f / valid_asset_count;
-      for (size_t k = 0; k < N_BINS; ++k) {
-        accum[k] += day_avg[k] * inv;
+      if (count > 0) {
+        float inv = 1.0f / static_cast<float>(count);
+        for (size_t k = 0; k < all_acf.size(); ++k) {
+          all_acf[k] *= inv;
+          all_pacf[k] *= inv;
+        }
+
+        step2_arma.acf_values = std::move(all_acf);
+        step2_arma.pacf_values = std::move(all_pacf);
+        step2_arma.max_lag = max_len - 1;
+
+        // 置信区间阈值
+        // 理论值 1.96/sqrt(n) 对大数据集太严格，设置实用最小阈值
+        // 0.05 = 5% 相关性，是金融数据中有意义的下限
+        constexpr float PRACTICAL_MIN_THRESHOLD = 0.05f;
+        size_t n_samples = shared.n_days > 0 ? shared.n_days * 14400 : 1;
+        float theoretical = 1.96f / std::sqrt(static_cast<float>(n_samples));
+        step2_arma.confidence_bound = std::max(theoretical, PRACTICAL_MIN_THRESHOLD);
+
+        // 检测截尾：使用相对衰减判断
+        // 当值衰减到 lag=1 值的 10% 以下，认为截尾（更符合实际）
+        const float acf1 = std::abs(step2_arma.acf_values[1]);
+        const float pacf1 = std::abs(step2_arma.pacf_values[1]);
+        const float acf_decay_threshold = std::max(acf1 * 0.1f, step2_arma.confidence_bound);
+        const float pacf_decay_threshold = std::max(pacf1 * 0.1f, step2_arma.confidence_bound);
+
+        // ACF 截尾点
+        step2_arma.acf_cutoff_lag = max_len;
+        for (int k = 2; k < max_len; ++k) {
+          if (std::abs(step2_arma.acf_values[static_cast<size_t>(k)]) < acf_decay_threshold) {
+            step2_arma.acf_cutoff_lag = k;
+            break;
+          }
+        }
+        step2_arma.acf_is_cutoff = (step2_arma.acf_cutoff_lag < max_len);
+
+        // PACF 截尾点
+        step2_arma.pacf_cutoff_lag = max_len;
+        for (int k = 2; k < max_len; ++k) {
+          if (std::abs(step2_arma.pacf_values[static_cast<size_t>(k)]) < pacf_decay_threshold) {
+            step2_arma.pacf_cutoff_lag = k;
+            break;
+          }
+        }
+        step2_arma.pacf_is_cutoff = (step2_arma.pacf_cutoff_lag < max_len);
+
+        // 模型阶数建议
+        step2_arma.suggested_q = step2_arma.acf_is_cutoff ? (step2_arma.acf_cutoff_lag - 1) : 0;
+        step2_arma.suggested_p = step2_arma.pacf_is_cutoff ? (step2_arma.pacf_cutoff_lag - 1) : 0;
+
+        // 白噪声检测：lag=1 的值就已经很小
+        step2_arma.is_white_noise = (acf1 < step2_arma.confidence_bound && 
+                                     pacf1 < step2_arma.confidence_bound);
+
+        step2_arma.valid = true;
       }
     }
   }
 
-  for (size_t k = 0; k < N_BINS; ++k) {
-    step1_frequency.avg_power_spectrum[k] =
-        static_cast<float>(accum[k] / valid_days);
-  }
+  // ========== Step 3: 残差分析 (TODO: 未实现) ==========
+  // step3_residual 保持无效状态
 
-  // ========== 7. 计算各频段能量占比 ==========
-  // bin 0-57: 秒级 (2s-59s)
-  // bin 58-116: 分钟级 (1min-59min)
-  // bin 117-127: 小时级 (1h-10h + DC)
-  double sec_power = 0, min_power = 0, hour_power = 0, total_power = 0;
-  for (size_t k = 0; k < N_BINS; ++k) {
-    float p = step1_frequency.avg_power_spectrum[k];
-    total_power += p;
-    if (k < 58) {
-      sec_power += p;
-    } else if (k < 117) {
-      min_power += p;
-    } else {
-      hour_power += p; // 包括 DC (bin 127)
+  // ========== Step 4: 聚合时间衰减结果 ==========
+  {
+    std::vector<float> gini_series, hhi_series, rank_series;
+
+    for (const auto &cell : temporal_cache) {
+      if (!cell.valid) continue;
+      gini_series.push_back(cell.gini);
+      hhi_series.push_back(cell.hhi);
+      rank_series.push_back(cell.rank_corr);
+    }
+
+    if (!gini_series.empty()) {
+      step4_temporal_decay.gini_series = std::move(gini_series);
+      step4_temporal_decay.hhi_series = std::move(hhi_series);
+      step4_temporal_decay.rank_corr_series = std::move(rank_series);
+
+      step4_temporal_decay.gini_stability = math::timeseries::compute_stability(
+          std::span<const float>(step4_temporal_decay.gini_series.data(),
+                                 step4_temporal_decay.gini_series.size()));
+      step4_temporal_decay.hhi_stability = math::timeseries::compute_stability(
+          std::span<const float>(step4_temporal_decay.hhi_series.data(),
+                                 step4_temporal_decay.hhi_series.size()));
+      step4_temporal_decay.rank_corr_stability = math::timeseries::compute_stability(
+          std::span<const float>(step4_temporal_decay.rank_corr_series.data(),
+                                 step4_temporal_decay.rank_corr_series.size()));
+
+      step4_temporal_decay.time_points.resize(step4_temporal_decay.gini_series.size());
+      for (size_t i = 0; i < step4_temporal_decay.time_points.size(); ++i) {
+        step4_temporal_decay.time_points[i] = static_cast<float>(i);
+      }
+
+      step4_temporal_decay.valid = true;
     }
   }
 
-  if (total_power > 0) {
-    step1_frequency.low_freq_power_ratio = static_cast<float>(sec_power / total_power);
-    step1_frequency.mid_freq_power_ratio = static_cast<float>(min_power / total_power);
-    step1_frequency.high_freq_power_ratio = static_cast<float>(hour_power / total_power);
-  }
-
-  psd_cache.valid = true;
-  step1_frequency.valid = true;
-
-  // ========== Phase 3: 释放临时数据 ==========
-  temp_months.clear();
+  // 释放共享数据
+  shared.clear();
+  compute.status = Compute::Status::Done;
 }

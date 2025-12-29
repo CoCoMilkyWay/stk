@@ -1008,6 +1008,50 @@ static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
     return;
   }
 
+  const auto &arma = ts.step2_arma;
+
+  // 模型建议信息
+  if (arma.is_white_noise) {
+    ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "结论: 白噪声过程，无需 ARMA 建模");
+  } else {
+    // ACF 分析
+    if (arma.acf_is_cutoff) {
+      ImGui::Text("ACF 在 lag=%d 截尾", arma.acf_cutoff_lag);
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "-> MA(%d)", arma.suggested_q);
+    } else {
+      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "ACF 拖尾");
+    }
+
+    ImGui::SameLine(200);
+
+    // PACF 分析
+    if (arma.pacf_is_cutoff) {
+      ImGui::Text("PACF 在 lag=%d 截尾", arma.pacf_cutoff_lag);
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "-> AR(%d)", arma.suggested_p);
+    } else {
+      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "PACF 拖尾");
+    }
+
+    // 综合建议
+    if (arma.suggested_p > 0 && arma.suggested_q > 0) {
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+                         "建议模型: ARMA(%d, %d)", arma.suggested_p, arma.suggested_q);
+    } else if (arma.suggested_p > 0) {
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+                         "建议模型: AR(%d)", arma.suggested_p);
+    } else if (arma.suggested_q > 0) {
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+                         "建议模型: MA(%d)", arma.suggested_q);
+    } else {
+      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f),
+                         "ACF/PACF 均拖尾 -> ARMA(p,q) 混合过程");
+    }
+  }
+
+  ImGui::Spacing();
+
   float height = (ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing()) * 0.5f;
 
   if (need_autofit) {
@@ -1055,72 +1099,24 @@ static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
   }
 }
 
-static void RenderStep3Plot(const TimeSeries &ts, bool need_autofit) {
+static void RenderStep3Plot(const TimeSeries & /*ts*/, bool /*need_autofit*/) {
   ImGui::Text("残差诊断 (Q-Q / 残差时序 / CUSUM)");
   ImGui::Separator();
 
-  if (!ts.step3_residual.valid || ts.step3_residual.residuals.empty()) {
-    ImGui::TextDisabled("No data - run compute first");
-    return;
-  }
+  // TODO: 残差分析尚未实现
+  // 需要先确定 ARMA 模型拟合方式，再计算残差
+  //
+  // 计划内容:
+  //   - Q-Q Plot: 残差正态性可视化
+  //   - 残差时序图: 检查残差随时间变化的模式
+  //   - CUSUM: 累积和检验，检测结构性变化
+  //   - Ljung-Box Q 检验: 残差自相关性
+  //   - ARCH-LM 检验: 条件异方差效应
+  //   - Jarque-Bera 检验: 正态性
 
-  float height = (ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * 2) / 3.0f;
-
-  if (need_autofit) {
-    ImPlot::SetNextAxesToFit();
-  }
-  if (ImPlot::BeginPlot("##QQPlot", ImVec2(-1, height))) {
-    ImPlot::SetupAxes("Theoretical Quantile", "Empirical Quantile");
-
-    const auto &theo = ts.step3_residual.qq_theoretical;
-    const auto &emp = ts.step3_residual.qq_empirical;
-
-    if (!theo.empty() && !emp.empty()) {
-      ImPlot::PlotScatter("Q-Q", theo.data(), emp.data(),
-                          static_cast<int>(theo.size()));
-      float diag[] = {theo.front(), theo.back()};
-      ImPlot::PlotLine("##ref", diag, diag, 2);
-    }
-
-    ImPlot::EndPlot();
-  }
-
-  if (need_autofit) {
-    ImPlot::SetNextAxesToFit();
-  }
-  if (ImPlot::BeginPlot("##ResidualPlot", ImVec2(-1, height))) {
-    ImPlot::SetupAxes("Time", "Residual");
-
-    const auto &resid = ts.step3_residual.residuals;
-    ImPlot::PlotLine("Residual", resid.data(), static_cast<int>(resid.size()));
-
-    ImPlot::EndPlot();
-  }
-
-  if (need_autofit) {
-    ImPlot::SetNextAxesToFit();
-  }
-  if (ImPlot::BeginPlot("##CUSUMPlot", ImVec2(-1, height))) {
-    ImPlot::SetupAxes("Time", "CUSUM");
-
-    const auto &cusum = ts.step3_residual.cusum_values;
-    const auto &upper = ts.step3_residual.cusum_upper;
-    const auto &lower = ts.step3_residual.cusum_lower;
-
-    if (!cusum.empty()) {
-      ImPlot::PlotLine("CUSUM", cusum.data(), static_cast<int>(cusum.size()));
-    }
-    if (!upper.empty()) {
-      ImPlot::SetNextLineStyle(ImVec4(1, 0.5f, 0.5f, 0.5f));
-      ImPlot::PlotLine("Upper", upper.data(), static_cast<int>(upper.size()));
-    }
-    if (!lower.empty()) {
-      ImPlot::SetNextLineStyle(ImVec4(1, 0.5f, 0.5f, 0.5f));
-      ImPlot::PlotLine("Lower", lower.data(), static_cast<int>(lower.size()));
-    }
-
-    ImPlot::EndPlot();
-  }
+  ImGui::Dummy(ImVec2(0, 20));
+  ImGui::TextDisabled("残差分析尚未实现");
+  ImGui::TextDisabled("需要先完成 ARMA 模型拟合");
 }
 
 static void RenderStep4Plot(const TimeSeries &ts, bool need_autofit) {
@@ -1133,18 +1129,41 @@ static void RenderStep4Plot(const TimeSeries &ts, bool need_autofit) {
     return;
   }
 
+  const auto &td = ts.step4_temporal_decay;
+
+  // 稳定性指标显示
+  auto StabilityColor = [](float stability) -> ImVec4 {
+    // stability 越高越好 (越接近 1 越稳定)
+    if (stability > 0.9f) return ImVec4(0.2f, 0.9f, 0.2f, 1.0f);  // 绿色
+    if (stability > 0.7f) return ImVec4(0.9f, 0.9f, 0.2f, 1.0f);  // 黄色
+    return ImVec4(0.9f, 0.4f, 0.2f, 1.0f);  // 橙红色
+  };
+
+  ImGui::Text("稳定性指标 (1-CV, 值越大越稳定):");
+  ImGui::SameLine();
+  ImGui::TextColored(StabilityColor(td.gini_stability),
+                     "Gini: %.3f", td.gini_stability);
+  ImGui::SameLine();
+  ImGui::TextColored(StabilityColor(td.hhi_stability),
+                     "HHI: %.3f", td.hhi_stability);
+  ImGui::SameLine();
+  ImGui::TextColored(StabilityColor(td.rank_corr_stability),
+                     "RankCorr: %.3f", td.rank_corr_stability);
+
+  ImGui::Spacing();
+
   if (need_autofit) {
     ImPlot::SetNextAxesToFit();
   }
 
   if (ImPlot::BeginPlot("##TemporalDecayPlot", ImVec2(-1, -1))) {
-    ImPlot::SetupAxes("Time", "Value");
+    ImPlot::SetupAxes("Day Index", "Value");
     ImPlot::SetupLegend(ImPlotLocation_NorthEast);
 
-    const auto &t = ts.step4_temporal_decay.time_points;
-    const auto &gini = ts.step4_temporal_decay.gini_series;
-    const auto &hhi = ts.step4_temporal_decay.hhi_series;
-    const auto &rank = ts.step4_temporal_decay.rank_corr_series;
+    const auto &t = td.time_points;
+    const auto &gini = td.gini_series;
+    const auto &hhi = td.hhi_series;
+    const auto &rank = td.rank_corr_series;
 
     int n = static_cast<int>(t.size());
 

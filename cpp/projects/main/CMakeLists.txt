@@ -25,9 +25,9 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Build Mode Options
 # ============================================================================
 
-option(PROFILE_MODE "Profile mode: -O0 -g, disable optimizations for profiling" OFF)
-option(DEBUG_MODE "Debug mode: -O0 -g3 -ggdb for GDB debugging" OFF)
-option(TSAN_MODE "ThreadSanitizer mode: -O1 -g for race detection" OFF)
+option(PROFILE_MODE "Profile mode: /Od /Zi, disable optimizations for profiling" OFF)
+option(DEBUG_MODE "Debug mode: /Od /Zi for debugging" OFF)
+option(TSAN_MODE "ThreadSanitizer mode: /O1 /Zi for race detection" OFF)
 option(ASSERT_MODE "Assert mode: -O3 with assert checks enabled" OFF)
 option(USE_VULKAN_BACKEND "Use Vulkan backend instead of OpenGL for GUI rendering" OFF)
 
@@ -51,7 +51,8 @@ if(TSAN_MODE)
 elseif(DEBUG_MODE)
     message(STATUS "Build mode: DEBUG (interactive debugging)")
     add_compile_definitions(DEBUG_MODE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -fno-omit-frame-pointer -fno-inline -fno-optimize-sibling-calls")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Ob0 -mllvm -inline-threshold=0")
 
 elseif(PROFILE_MODE)
     message(STATUS "Build mode: PROFILE (tracy manual callstack)")

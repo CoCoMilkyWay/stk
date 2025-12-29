@@ -177,7 +177,7 @@ struct TimeSeries {
   };
 
   // ==========================================================================
-  // 临时数据: Phase1读取的所有月数据
+  // 共享数据: Phase1读取的所有月数据 (所有worker只读访问)
   // ==========================================================================
 
   struct DayRange {
@@ -188,12 +188,56 @@ struct TimeSeries {
     std::string date;
   };
 
-  struct AllMonthsData {
-    std::vector<FeatureReader::MonthTensor> months;
-    std::vector<DayRange> day_ranges;  // 连续时间的天序列
+  struct SharedMonthData {
+    std::vector<FeatureReader::MonthTensor> months;  // [n_months]
+    std::vector<DayRange> day_ranges;                // 连续时间索引
+
+    size_t n_months = 0;
+    size_t n_assets = 0;
+    size_t n_days = 0;
+    int level = 0;
+    size_t F_selected = 0;
+    bool has_valid_flag = false;
 
     size_t total_days() const { return day_ranges.size(); }
-    void clear() { months.clear(); day_ranges.clear(); }
+
+    void clear() {
+      months.clear();
+      day_ranges.clear();
+      n_months = 0;
+      n_assets = 0;
+      n_days = 0;
+      level = 0;
+      F_selected = 0;
+      has_valid_flag = false;
+    }
+  };
+
+  // ==========================================================================
+  // Worker分配 (每个worker的职责)
+  // ==========================================================================
+
+  struct WorkerAllocation {
+    size_t worker_id = 0;
+    size_t month_idx = 0;              // 负责加载的月
+    size_t asset_start = 0;            // 负责的asset范围起始
+    size_t asset_end = 0;              // 负责的asset范围结束
+    size_t day_start = 0;              // 负责的天范围起始 (用于Stage 4)
+    size_t day_end = 0;                // 负责的天范围结束
+  };
+
+  // ==========================================================================
+  // 同步Barriers
+  // ==========================================================================
+
+  struct Barriers {
+    std::atomic<size_t> phase1_ready{0};   // Phase 1 加载完成计数
+    std::atomic<bool> shared_built{false}; // SharedMonthData 构建完成
+
+    void reset() {
+      phase1_ready = 0;
+      shared_built = false;
+    }
   };
 
   // Step 2: ARMA建模分析结果
@@ -332,14 +376,50 @@ struct TimeSeries {
   // Main Data Members
   // ==========================================================================
 
+  // 共享数据 (Phase1读取, 所有worker只读访问, finalize后释放)
+  SharedMonthData shared;
+
+  // 同步barriers
+  Barriers barriers;
+
   // Stationarity cache: [n_months][n_assets]
   std::vector<MonthlyStationarity> stationarity_cache;
 
-  // 临时数据 (Phase1读取, Phase2后释放)
-  AllMonthsData temp_months;
-
   // PSD cache: per-asset per-day (持久)
   PSDHeatmap psd_cache;
+
+  // Step 2: ARMA cache: per-asset
+  struct ARMACell {
+    std::vector<float> acf;   // [max_lag+1]
+    std::vector<float> pacf;  // [max_lag+1]
+    int cutoff_lag_acf = 0;
+    int cutoff_lag_pacf = 0;
+    bool valid = false;
+  };
+  std::vector<ARMACell> arma_cache;  // [n_assets]
+
+  // Step 3: Residual cache: per-asset
+  struct ResidualCell {
+    float ljung_box_stat = 0.0f;
+    float ljung_box_pval = 0.0f;
+    float arch_lm_stat = 0.0f;
+    float arch_lm_pval = 0.0f;
+    float jarque_bera_stat = 0.0f;
+    float jarque_bera_pval = 0.0f;
+    float skewness = 0.0f;
+    float kurtosis = 0.0f;
+    bool valid = false;
+  };
+  std::vector<ResidualCell> residual_cache;  // [n_assets]
+
+  // Step 4: Temporal Decay cache: per-day
+  struct TemporalCell {
+    float gini = 0.0f;
+    float hhi = 0.0f;
+    float rank_corr = 0.0f;  // vs previous day
+    bool valid = false;
+  };
+  std::vector<TemporalCell> temporal_cache;  // [n_days]
 
   // Step results (聚合统计)
   StationarityTest step0_stationarity;
@@ -352,32 +432,18 @@ struct TimeSeries {
   Compute compute;
 
   // ==========================================================================
-  // Methods - Build Stationarity (对仗 Dist::build_month/build_all)
+  // Methods - Unified Build (替代分离的 build_stationarity/build_psd)
   // ==========================================================================
 
-  void build_stationarity_month(size_t cache_idx, const std::string &features_dir,
-                                const Feature &feature, const Asset &asset);
-
-  void build_stationarity(const std::vector<std::string> &months,
-                          const std::string &features_dir,
-                          const Feature &feature, const Asset &asset,
-                          std::function<void(std::function<void()>)> submit);
-
-  void finalize_stationarity();
-
-  // ==========================================================================
-  // Methods - Build PSD (自动两阶段并行)
-  // ==========================================================================
-
-  // 启动 PSD 计算 (自动完成两阶段: 加载 → barrier → 计算)
-  // 调用者等待 compute.done == compute.total，然后调用 finalize_psd
-  void build_psd(const std::vector<std::string> &months,
+  // 统一入口: Phase 1 并行加载 + Phase 2 流水线计算所有stages
+  // 调用者等待 compute.done == compute.total，然后调用 finalize_all
+  void build_all(const std::vector<std::string> &months,
                  const std::string &features_dir,
                  const Feature &feature, const Asset &asset,
                  std::function<void(std::function<void()>)> submit);
 
-  // Finalize: 生成渲染数据，释放临时数据
-  void finalize_psd();
+  // Finalize: 聚合所有stage结果，释放共享数据
+  void finalize_all();
 
   // ==========================================================================
   // Methods - Control
@@ -389,9 +455,13 @@ struct TimeSeries {
   }
 
   void clear() {
+    shared.clear();
+    barriers.reset();
     stationarity_cache.clear();
-    temp_months.clear();
     psd_cache.clear();
+    arma_cache.clear();
+    residual_cache.clear();
+    temporal_cache.clear();
     step0_stationarity.clear();
     step1_frequency.clear();
     step2_arma.clear();

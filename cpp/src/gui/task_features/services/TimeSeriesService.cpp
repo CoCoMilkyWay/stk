@@ -137,9 +137,8 @@ asio::awaitable<void> TimeSeriesService::ComputeLoop(SharedData &data) {
           pool_->submit(std::move(task));
         };
 
-        // ========== Step 0: Stationarity ==========
-        ts.build_stationarity(months, features_dir_, data.feature, data.asset,
-                              submit);
+        // ========== Unified Build: All Stages ==========
+        ts.build_all(months, features_dir_, data.feature, data.asset, submit);
 
         // Wait for completion (poll)
         while (ts.compute.done.load() < ts.compute.total.load()) {
@@ -153,28 +152,8 @@ asio::awaitable<void> TimeSeriesService::ComputeLoop(SharedData &data) {
         }
 
         if (ts.compute.status != TimeSeries::Compute::Status::Cancelled) {
-          ts.finalize_stationarity();
-        }
-
-        // ========== Step 1: PSD (自动两阶段) ==========
-        if (ts.compute.status != TimeSeries::Compute::Status::Cancelled) {
-          ts.build_psd(months, features_dir_, data.feature, data.asset, submit);
-
-          // Wait for completion (两阶段自动进行)
-          while (ts.compute.done.load() < ts.compute.total.load()) {
-            if (ts.compute.cancel.load()) {
-              ts.compute.status = TimeSeries::Compute::Status::Cancelled;
-              break;
-            }
-            co_await asio::steady_timer(co_await asio::this_coro::executor,
-                                        std::chrono::milliseconds(16))
-                .async_wait(asio::use_awaitable);
-          }
-
-          if (ts.compute.status != TimeSeries::Compute::Status::Cancelled) {
-            ts.finalize_psd();
-            ts.compute.status = TimeSeries::Compute::Status::Done;
-          }
+          pool_->wait_all();
+          ts.finalize_all();
         }
       } else {
         ts.compute.status = TimeSeries::Compute::Status::Done;
