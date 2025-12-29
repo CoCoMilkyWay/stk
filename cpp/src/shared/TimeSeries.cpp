@@ -311,7 +311,7 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
   // 初始化
   compute.reset();
   compute.status = Compute::Status::Loading;
-  compute.total = n_assets;  // 最终进度以 assets 为单位
+  compute.total = n_assets; // 最终进度以 assets 为单位
 
   temp_months.clear();
   temp_months.months.resize(n_months);
@@ -345,7 +345,8 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
             phase1_ready, day_ranges_built,
             &features_dir, &feature, &asset]() {
       // ========== Phase 1: 加载本 worker 负责的月数据 ==========
-      if (compute.cancel.load()) return;
+      if (compute.cancel.load())
+        return;
       {
         TraceN("LoadMonth");
         const int primary_idx = feature.selection.primary_feature_idx;
@@ -393,7 +394,8 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
 
       // Barrier: spin-wait 直到所有 worker 都 ready
       while (phase1_ready->load() < n_workers) {
-        if (compute.cancel.load()) return;
+        if (compute.cancel.load())
+          return;
         std::this_thread::yield();
       }
 
@@ -415,12 +417,14 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
 
       // 等待 day_ranges 构建完成
       while (!day_ranges_built->load()) {
-        if (compute.cancel.load()) return;
+        if (compute.cancel.load())
+          return;
         std::this_thread::yield();
       }
 
       // ========== Phase 2: 计算本 worker 负责的 assets ==========
-      if (compute.cancel.load()) return;
+      if (compute.cancel.load())
+        return;
       {
         TraceN("ComputeAssets");
         const size_t n_days = temp_months.total_days();
@@ -435,12 +439,14 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
         }
 
         thread_local math::spectral::MultiResPSDWorkspace ws;
-        if (!ws.initialized) ws.init();
+        if (!ws.initialized)
+          ws.init();
 
         std::array<float, PSDHeatmap::N_SCALE_BINS> out_buf;
 
         for (size_t a = a_start; a < a_end; ++a) {
-          if (compute.cancel.load()) return;
+          if (compute.cancel.load())
+            return;
 
           ws.reset();
 
@@ -455,10 +461,12 @@ void TimeSeries::build_psd(const std::vector<std::string> &months,
 
               if (has_valid_flag) {
                 float valid_flag = static_cast<float>(tensor.data[src_base + A + a]);
-                if (valid_flag <= 0.5f) continue;
+                if (valid_flag <= 0.5f)
+                  continue;
               }
 
-              if (val != val || val > 1e38f || val < -1e38f) continue;
+              if (val != val || val > 1e38f || val < -1e38f)
+                continue;
 
               if (level == 0) {
                 ws.push_L0(val);
@@ -517,18 +525,21 @@ void TimeSeries::finalize_psd() {
     return;
   }
 
-  // ========== 2. 找到第一个FFT有效的天 (default_y_start范围内有数据) ==========
+  // ========== 2. 找到第一个FFT有效的天 (超过一半assets有数据) ==========
   psd_cache.first_valid_day = 0;
   for (size_t i = 0; i < valid_days; ++i) {
     const size_t d = psd_cache.valid_indices[i];
-    bool day_has_data = false;
-    for (size_t a = 0; a < n_assets && !day_has_data; ++a) {
+    size_t valid_asset_count = 0;
+    for (size_t a = 0; a < n_assets; ++a) {
       const float *src = psd_cache.asset_day_psd(d, a);
       for (size_t k = psd_cache.default_y_start; k < N_BINS; ++k) {
-        if (src[k] > 0) { day_has_data = true; break; }
+        if (src[k] > 0) {
+          ++valid_asset_count;
+          break;
+        }
       }
     }
-    if (day_has_data) {
+    if (valid_asset_count > n_assets * 0.8) {
       psd_cache.first_valid_day = i;
       break;
     }
@@ -547,8 +558,6 @@ void TimeSeries::finalize_psd() {
   //   row 127 存储 bin 0 (高频) -> 画在底部
   // 这样刻度 Y=k+0.5 就能正确对应 bin k 的数据
   psd_cache.render_data.resize(N_BINS * valid_days);
-  std::vector<float> all_values;
-  all_values.reserve(N_BINS * valid_days);
 
   // 临时buffer存储跨资产平均
   std::vector<float> day_avg(N_BINS);
@@ -566,7 +575,10 @@ void TimeSeries::finalize_psd() {
       // 检查是否有数据
       bool has_data = false;
       for (size_t k = 0; k < N_BINS; ++k) {
-        if (src[k] > 0) { has_data = true; break; }
+        if (src[k] > 0) {
+          has_data = true;
+          break;
+        }
       }
 
       if (has_data) {
@@ -591,14 +603,12 @@ void TimeSeries::finalize_psd() {
       // bin k -> row (N_BINS - 1 - k)
       size_t row = N_BINS - 1 - k;
       psd_cache.render_data[row * valid_days + i] = log_val;
-      all_values.push_back(log_val);
     }
   }
 
-  // ========== 5. 计算 scale_min/max ==========
-  std::sort(all_values.begin(), all_values.end());
-  psd_cache.scale_max = all_values[all_values.size() * 95 / 100];
+  // ========== 5. 固定 scale_min/max ==========
   psd_cache.scale_min = -1.0f;
+  psd_cache.scale_max = 3.0f;
 
   // ========== 6. 生成轴刻度 (位置是bin索引，不加0.5) ==========
   psd_cache.tick_positions.clear();
@@ -642,7 +652,10 @@ void TimeSeries::finalize_psd() {
       const float *src = psd_cache.asset_day_psd(d, a);
       bool has_data = false;
       for (size_t k = 0; k < N_BINS; ++k) {
-        if (src[k] > 0) { has_data = true; break; }
+        if (src[k] > 0) {
+          has_data = true;
+          break;
+        }
       }
       if (has_data) {
         ++valid_asset_count;
@@ -678,7 +691,7 @@ void TimeSeries::finalize_psd() {
     } else if (k < 117) {
       min_power += p;
     } else {
-      hour_power += p;  // 包括 DC (bin 127)
+      hour_power += p; // 包括 DC (bin 127)
     }
   }
 
