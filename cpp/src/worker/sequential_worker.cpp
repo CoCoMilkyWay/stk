@@ -105,7 +105,7 @@ void sequential_worker(int worker_id,
           // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
           size_t order_invalid_cnt = 0;
           {
-            TraceN("ProcessBatch");
+            TraceN("ProcessLobs");
             TraceValue(order_num);
             order_invalid_cnt = lobs[i]->process_batch(orders, order_num);
           }

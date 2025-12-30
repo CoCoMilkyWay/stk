@@ -1,4 +1,5 @@
 #include "codec/binary_decoder_L2.hpp"
+#include "misc/profiler.hpp"
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -357,11 +358,11 @@ const Snapshot *BinaryDecoder_L2::decode_snapshots_stream(const std::string &fil
 }
 
 const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath, size_t &order_num) {
-  // Extract count from filename to calculate required buffer size
+    // Extract count from filename to calculate required buffer size
   size_t estimated_count = extract_count_from_filename(filepath);
-  if (estimated_count == 0) [[unlikely]] {
-    std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
-    return nullptr;
+    if (estimated_count == 0) [[unlikely]] {
+      std::cerr << "L2 Decoder: Could not extract count from filename: " << filepath << std::endl;
+      return nullptr;
   }
 
   // Calculate buffer sizes
@@ -369,52 +370,58 @@ const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath,
   const size_t orders_size = estimated_count * sizeof(Order);
   const size_t decompressed_size = header_size + orders_size;
 
-  // Open file and read compression metadata
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to open file: " << filepath << std::endl;
-    return nullptr;
-  }
-
   size_t original_size, compressed_size;
-  file.read(reinterpret_cast<char *>(&original_size), sizeof(original_size));
-  file.read(reinterpret_cast<char *>(&compressed_size), sizeof(compressed_size));
+  {
+    TraceN("FileIO");
+    // Open file and read compression metadata
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) [[unlikely]] {
+      std::cerr << "L2 Decoder: Failed to open file: " << filepath << std::endl;
+      return nullptr;
+    }
 
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
-    return nullptr;
+    file.read(reinterpret_cast<char *>(&original_size), sizeof(original_size));
+    file.read(reinterpret_cast<char *>(&compressed_size), sizeof(compressed_size));
+
+    if (file.fail()) [[unlikely]] {
+      std::cerr << "L2 Decoder: Failed to read compression header: " << filepath << std::endl;
+      return nullptr;
+    }
+
+    // Verify size matches expectation
+    if (original_size != decompressed_size) [[unlikely]] {
+      std::cerr << "L2 Decoder: Size mismatch - expected " << decompressed_size
+                << " but header says " << original_size << std::endl;
+      return nullptr;
+    }
+
+    // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
+    if (stream_compressed_buffer_.size() < compressed_size) {
+      stream_compressed_buffer_.resize(compressed_size);
+    }
+    if (stream_decompression_buffer_.size() < decompressed_size) {
+      stream_decompression_buffer_.resize(decompressed_size);
+    }
+
+    // Read compressed data into reusable buffer
+    file.read(stream_compressed_buffer_.data(), compressed_size);
+    if (file.fail()) [[unlikely]] {
+      std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
+      return nullptr;
+    }
   }
 
-  // Verify size matches expectation
-  if (original_size != decompressed_size) [[unlikely]] {
-    std::cerr << "L2 Decoder: Size mismatch - expected " << decompressed_size
-              << " but header says " << original_size << std::endl;
-    return nullptr;
-  }
+  {
+    TraceN("ZstdDecompress");
+    // Streaming decompression: decompress directly to reusable buffer (zero-allocation hot path)
+    size_t decompressed_bytes = ZSTD_decompress(
+        stream_decompression_buffer_.data(), decompressed_size,
+        stream_compressed_buffer_.data(), compressed_size);
 
-  // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
-  if (stream_compressed_buffer_.size() < compressed_size) {
-    stream_compressed_buffer_.resize(compressed_size);
-  }
-  if (stream_decompression_buffer_.size() < decompressed_size) {
-    stream_decompression_buffer_.resize(decompressed_size);
-  }
-
-  // Read compressed data into reusable buffer
-  file.read(stream_compressed_buffer_.data(), compressed_size);
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
-    return nullptr;
-  }
-
-  // Streaming decompression: decompress directly to reusable buffer (zero-allocation hot path)
-  size_t decompressed_bytes = ZSTD_decompress(
-      stream_decompression_buffer_.data(), decompressed_size,
-      stream_compressed_buffer_.data(), compressed_size);
-
-  if (ZSTD_isError(decompressed_bytes)) [[unlikely]] {
-    std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_bytes) << std::endl;
-    return nullptr;
+    if (ZSTD_isError(decompressed_bytes)) [[unlikely]] {
+      std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_bytes) << std::endl;
+      return nullptr;
+    }
   }
 
   // Extract and verify count from decompressed header
