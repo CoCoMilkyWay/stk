@@ -98,6 +98,7 @@ static FeatureConfig get_feature_config(const Feature &feature) {
 static void collect_asset_series(const TimeSeries::SharedMonthData &shared,
                                  size_t asset_idx,
                                  std::vector<float> &out_series) {
+  Trace;
   out_series.clear();
   out_series.reserve(shared.n_days * 14400);  // 预估每天最多14400样本
 
@@ -212,6 +213,7 @@ static void compute_stationarity_for_month(
 
 static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
                                   const TimeSeries::SharedMonthData &shared) {
+  Trace;
   thread_local math::spectral::MultiResPSDWorkspace ws;
   if (!ws.initialized) ws.init();
 
@@ -261,6 +263,7 @@ static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
 
 static void compute_arma_for_asset(TimeSeries &ts, size_t asset_idx,
                                    const TimeSeries::SharedMonthData &shared) {
+  Trace;
   thread_local std::vector<float> series;
   thread_local math::timeseries::ACFWorkspace ws;
 
@@ -291,6 +294,7 @@ static void compute_arma_for_asset(TimeSeries &ts, size_t asset_idx,
 
 static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
                                      const TimeSeries::SharedMonthData &shared) {
+  Trace;
   auto &cell = ts.temporal_cache[day_idx];
   cell.valid = false;
 
@@ -536,8 +540,11 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
 // ============================================================================
 
 void TimeSeries::finalize_all() {
+  TraceN("FinalizeAll");
+  
   // ========== Step 0: 聚合平稳性结果 ==========
   {
+    TraceN("Step0_AggregateStationarity");
     std::vector<float> all_adf_pvalues;
     std::vector<float> all_kpss_pvalues;
     size_t n_total = 0, n_adf_pass = 0, n_kpss_pass = 0;
@@ -568,6 +575,7 @@ void TimeSeries::finalize_all() {
 
   // ========== Step 1: 聚合 PSD 结果 ==========
   {
+    TraceN("Step1_AggregatePSD");
     const size_t n_days = psd_cache.n_days;
     const size_t n_assets = psd_cache.n_assets;
     constexpr size_t N_BINS = PSDHeatmap::N_SCALE_BINS;
@@ -718,6 +726,7 @@ void TimeSeries::finalize_all() {
 
   // ========== Step 2: 聚合 ARMA 结果 ==========
   {
+    TraceN("Step2_AggregateARMA");
     std::vector<float> all_acf, all_pacf;
     int max_len = 0;
 
@@ -804,6 +813,7 @@ void TimeSeries::finalize_all() {
 
   // ========== Step 4: 聚合时间衰减结果 ==========
   {
+    TraceN("Step4_AggregateTemporal");
     std::vector<float> gini_series, hhi_series, rank_series;
 
     for (const auto &cell : temporal_cache) {
