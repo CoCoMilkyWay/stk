@@ -1,5 +1,6 @@
 #pragma once
 
+#include "misc/profiler.hpp"
 #include "features/DataDefine.hpp"
 #include "features/FeaturesHour/Hour_Sequential.hpp"
 #include "features/FeaturesMinute/Minute_Sequential.hpp"
@@ -69,21 +70,33 @@ public:
 
   // Main entry: compute all 3 levels with cascading resampling
   void compute_and_store() noexcept {
+    TraceN("TS");
+    TraceColor(C_Cyan);
+
     // LEVEL 0: Tick-level features (direct from LOB_feature_)
     update_tick_metadata();
-    tick_sequential_.compute_and_store();
+    {
+      TraceN("TS_Tick");
+      tick_sequential_.compute_and_store();
+    }
 
     // Trigger tick -> minute resampling
     if (tick2min_resampler_.update()) {
       // New minute bar generated
       update_minute_metadata();
-      minute_sequential_.compute_and_store();
+      {
+        TraceN("TS_Minute");
+        minute_sequential_.compute_and_store();
+      }
 
       // Trigger minute -> hour resampling
       if (min2hour_resampler_.update()) {
         // New hour bar generated
         update_hour_metadata();
-        hour_sequential_.compute_and_store();
+        {
+          TraceN("TS_Hour");
+          hour_sequential_.compute_and_store();
+        }
       }
     }
 

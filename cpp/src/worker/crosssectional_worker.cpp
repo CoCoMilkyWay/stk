@@ -1,13 +1,12 @@
 #include "worker/crosssectional_worker.hpp"
 #include "shared/SharedData.hpp"
 
-#include "features/FeaturesTick/Tick_Crosssection.hpp"
+#include "features/CoreCrosssection.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
 #include <cstdio>
-#include <vector>
 
 void crosssectional_worker(int worker_id,
                            SharedData &data,
@@ -22,13 +21,8 @@ void crosssectional_worker(int worker_id,
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to process");
 
-  // Preallocate reusable buffers (avoid per-timeslot allocation)
-  const size_t A = store.query_A();
-  std::vector<size_t> valid_indices;
-  std::vector<float> input_fp32(A);
-  std::vector<float> output_fp32(A);
-  std::vector<_Float16> output_fp16(A);
-  valid_indices.reserve(A);
+  // Initialize CoreCrosssection (manages buffers and 3-level computation)
+  CoreCrosssection core(store);
 
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
@@ -43,6 +37,8 @@ void crosssectional_worker(int worker_id,
              worker_id, date_idx + 1, total_dates, date_str.c_str());
     progress_handle.set_label(label_buf);
 
+    core.set_date(date_str);
+
     // Process each time slot (per-slot sync for live trading compatibility)
     for (size_t t = 0; t < capacity; ++t) {
       TraceN("TimeslotLoop");
@@ -54,11 +50,7 @@ void crosssectional_worker(int worker_id,
         store.cs_wait(date_str, t);
       }
 
-      // Compute CS features (reuse buffers to avoid allocation)
-      {
-        TraceN("ComputeCS");
-        compute_cs_tick(&store, date_str, t, valid_indices, input_fp32, output_fp32, output_fp16);
-      }
+      core.compute_and_store(t);
     }
 
     ++completed_dates;

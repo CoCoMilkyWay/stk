@@ -1,88 +1,81 @@
 #pragma once
 
+#include "features/FeaturesHour/Hour_Crosssection.hpp"
+#include "features/FeaturesMinute/Minute_Crosssection.hpp"
+#include "features/FeaturesTick/Tick_Crosssection.hpp"
+#include "features/backend/FeatureStore.hpp"
+#include "misc/profiler.hpp"
+
 // ============================================================================
-// CROSS-SECTIONAL UTILITY FUNCTIONS
+// CoreCrosssection: Hierarchical 3-level cross-sectional feature computation
+// Architecture: Tick -> (cascade) -> Minute -> (cascade) -> Hour
 // ============================================================================
-// Pure utility functions for cross-sectional feature computation
-// All level files (Tick/Minute/Hour_Crosssection.hpp) include this file
 
-#include <algorithm>
-#include <cmath>
-#include <vector>
-
-// Inverse normal CDF (simplified Beasley-Springer-Moro approximation)
-inline float inverse_normal_cdf(float p) {
-  constexpr float a0 = 2.50662823884f;
-  constexpr float a1 = -18.61500062529f;
-  constexpr float a2 = 41.39119773534f;
-  constexpr float a3 = -25.44106049637f;
-  constexpr float b1 = -8.47351093090f;
-  constexpr float b2 = 23.08336743743f;
-  constexpr float b3 = -21.06224101826f;
-  constexpr float b4 = 3.13082909833f;
-
-  if (p <= 0.0f)
-    return -6.0f;
-  if (p >= 1.0f)
-    return 6.0f;
-
-  float t = (p < 0.5f) ? p : (1.0f - p);
-  t = std::sqrt(-2.0f * std::log(t));
-  float num = a0 + t * (a1 + t * (a2 + t * a3));
-  float denom = 1.0f + t * (b1 + t * (b2 + t * (b3 + t * b4)));
-  float result = t - num / denom;
-  return (p < 0.5f) ? -result : result;
-}
-
-// Compute rank + inverse normal transform (only on valid assets, optimized)
-inline void compute_rank_inverse_normal_sparse(const float *input,
-                                               const std::vector<size_t> &valid_indices,
-                                               float *output) {
-  if (valid_indices.empty())
-    return;
-
-  const size_t N = valid_indices.size();
-  std::vector<std::pair<float, size_t>> sorted_vals;
-  sorted_vals.reserve(N);
-
-  // Build sort pairs
-  for (size_t idx : valid_indices) {
-    sorted_vals.emplace_back(input[idx], idx);
+class CoreCrosssection {
+public:
+  CoreCrosssection(GlobalFeatureStore &store)
+      : store_(store),
+        A_(store.query_A()),
+        valid_indices_(),
+        input_fp32_(A_),
+        output_fp32_(A_),
+        output_fp16_(A_),
+        tick_cs_(store, valid_indices_, input_fp32_, output_fp32_, output_fp16_),
+        minute_cs_(store, valid_indices_, input_fp32_, output_fp32_, output_fp16_),
+        hour_cs_(store, valid_indices_, input_fp32_, output_fp32_, output_fp16_) {
+    valid_indices_.reserve(A_);
   }
 
-  // Sort by value (use pdqsort-friendly pattern for small N)
-  std::sort(sorted_vals.begin(), sorted_vals.end());
-
-  // Compute ranks and inverse normal (vectorizable loop)
-  const float scale = 1.0f / (N + 1.0f);
-  for (size_t rank = 0; rank < N; ++rank) {
-    size_t asset_idx = sorted_vals[rank].second;
-    float percentile = (rank + 1.0f) * scale;  // Strength reduction
-    output[asset_idx] = inverse_normal_cdf(percentile);
-  }
-}
-
-// Compute cross-sectional z-score (only on valid assets)
-inline void compute_zscore_sparse(const float *input,
-                                  const std::vector<size_t> &valid_indices,
-                                  float *output) {
-  if (valid_indices.empty())
-    return;
-
-  const size_t N = valid_indices.size();
-  float sum = 0.0f, sum_sq = 0.0f;
-
-  for (size_t idx : valid_indices) {
-    float val = input[idx];
-    sum += val;
-    sum_sq += val * val;
+  void set_date(const std::string &date_str) {
+    date_str_ = date_str;
+    tick_cs_.set_date(date_str);
+    minute_cs_.set_date(date_str);
+    hour_cs_.set_date(date_str);
   }
 
-  float mean = sum / N;
-  float variance = (sum_sq / N) - (mean * mean);
-  float stddev = std::sqrt(std::max(variance, 1e-8f));
+  // Main entry: compute all 3 levels with cascading on time boundaries
+  void compute_and_store(size_t t) noexcept {
+    TraceN("CS");
+    TraceColor(C_Magenta);
 
-  for (size_t idx : valid_indices) {
-    output[idx] = (input[idx] - mean) / stddev;
+    // LEVEL 0: Tick-level features
+    {
+      TraceN("CS_Tick");
+      tick_cs_.compute_and_store(t);
+    }
+
+    // Cascade: If this tick crosses minute boundary, trigger minute computation
+    size_t t_minute = t / 60;
+    if (t % 60 == 0 && t > 0) {
+      {
+        TraceN("CS_Minute");
+        minute_cs_.compute_and_store(t_minute);
+      }
+
+      // Cascade: If this minute crosses hour boundary, trigger hour computation
+      size_t t_hour = t_minute / 60;
+      if (t_minute % 60 == 0) {
+        {
+          TraceN("CS_Hour");
+          hour_cs_.compute_and_store(t_hour);
+        }
+      }
+    }
   }
-}
+
+private:
+  GlobalFeatureStore &store_;
+  std::string date_str_;
+  size_t A_;
+
+  // Shared buffers (avoid per-timeslot allocation)
+  std::vector<size_t> valid_indices_;
+  std::vector<float> input_fp32_;
+  std::vector<float> output_fp32_;
+  std::vector<_Float16> output_fp16_;
+
+  // Crosssection feature processors
+  Tick_Crosssection tick_cs_;
+  Minute_Crosssection minute_cs_;
+  Hour_Crosssection hour_cs_;
+};
