@@ -43,6 +43,8 @@ const char *TaskState::Database::status_text() const {
   switch (status) {
   case Status::Initializing:
     return "initializing";
+  case Status::NotScanned:
+    return "not scanned";
   case Status::Incomplete:
     return "incomplete";
   case Status::Error:
@@ -62,6 +64,8 @@ ImVec4 TaskState::Database::status_color() const {
     return ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
   case Status::Error:
     return ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
+  case Status::NotScanned:
+    return ImVec4(1.0f, 0.6f, 0.2f, 1.0f); // Orange
   case Status::Initializing:
     return ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // Gray
   default:

@@ -26,8 +26,8 @@ struct TaskState {
   // Database Task
   // ==========================================================================
   struct Database {
-    enum class Status { None, Initializing, Incomplete, Error, Ready };
-    Status status = Status::None;
+    enum class Status { None, Initializing, NotScanned, Incomplete, Error, Ready };
+    Status status = Status::NotScanned;
 
     // 关键状态标志 (其他 Task 可读取)
     bool binary_scanned = false; // 二进制数据库已扫描
