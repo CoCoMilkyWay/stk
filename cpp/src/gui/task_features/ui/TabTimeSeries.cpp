@@ -118,20 +118,22 @@ static void RenderStep0Tooltip() {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[平稳性检验]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 序列的分布是否随时间变化？");
+  ImGui::TextUnformatted("核心问题: 序列的分布:");
+  ImGui::TextUnformatted("  1. 是否随时间变化(强平稳)?");
+  ImGui::TextUnformatted("  2. 是否有不变的一二阶矩, 和只依赖滞后的协方差(弱平稳: 随机变量线性时不变)?");
   ImGui::Spacing();
 
   ImGui::TextUnformatted("检验方法:");
   ImGui::TextUnformatted("├─ ADF (Augmented Dickey-Fuller) 单位根检验");
   ImGui::TextUnformatted("│   H0: 存在单位根 (非平稳)");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "│   判断: p < 0.05 → 拒绝H0 → 序列平稳 ✓");
+                     "│   判断: p < 0.05 → 拒绝H0 → 序列可以弱平稳 ✓");
   ImGui::TextUnformatted("│   注意: ADF对趋势敏感,需先去趋势(detrend)");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("└─ KPSS (Kwiatkowski-Phillips-Schmidt-Shin) 平稳性检验");
   ImGui::TextUnformatted("    H0: 序列平稳");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "    判断: p > 0.05 → 接受H0 → 序列平稳 ✓");
+                     "    判断: p > 0.05 → 接受H0 → 序列可以弱平稳 ✓");
   ImGui::TextUnformatted("    注意: KPSS对季节性敏感,需先去季节(deseason)");
   ImGui::Spacing();
 
@@ -154,12 +156,12 @@ static void RenderStep1Tooltip() {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[频域分析]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 信号的频率结构是否影响模型表现, 是否能进行后面的分析？");
+  ImGui::TextUnformatted("核心问题: 信号的频率结构是否影响模型表现, 是否能进行后面的分析?");
   ImGui::Spacing();
 
   ImGui::TextUnformatted("检验指标:");
-  ImGui::TextUnformatted("├─ Nyquist采样频率检查");
-  ImGui::TextUnformatted("│   问题: 信号主频是否远低于采样频率的一半？");
+  ImGui::TextUnformatted("├─ 主频频带(DC<->Nyquist采样频率)检查");
+  ImGui::TextUnformatted("│   问题: 信号主频是否在预期频带,不过低?");
   ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f),
                      "│   风险: 低频成分 → 可能是趋势误判, 影响模型表现");
   ImGui::TextUnformatted("│   处理: 考虑重采样或更长周期聚合");
@@ -179,7 +181,7 @@ static void RenderStep1Tooltip() {
 
   ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "频谱形态解读:");
   ImGui::TextUnformatted("  - 平坦频谱 → 白噪声特征,低可预测性");
-  ImGui::TextUnformatted("  - 1/f 衰减 → 长记忆过程,考虑ARFIMA");
+  ImGui::TextUnformatted("  - 1/f 衰减 → 粉噪声特征, 长记忆过程,考虑ARFIMA");
   ImGui::TextUnformatted("  - 尖峰 → 周期性成分,需识别并剥离");
 
   ImGui::PopTextWrapPos();
@@ -197,7 +199,7 @@ static void RenderStep2Tooltip() {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[ARMA建模分析]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 序列是否存在可建模的自相关结构？");
+  ImGui::TextUnformatted("核心问题: 序列是否存在可建模的自相关结构?");
   ImGui::Spacing();
 
   ImGui::TextUnformatted("分析工具:");
@@ -245,7 +247,7 @@ static void RenderStep3Tooltip() {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[残差分析]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 模型残差是否满足白噪声假设？");
+  ImGui::TextUnformatted("核心问题: 模型残差是否满足白噪声假设?");
   ImGui::Spacing();
 
   ImGui::TextUnformatted("检验项目:");
@@ -303,12 +305,12 @@ static void RenderStep4Tooltip() {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[时间衰减分析]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 特征的截面结构是否随时间保持稳定？");
+  ImGui::TextUnformatted("核心问题: 特征的截面结构是否随时间保持稳定?");
   ImGui::Spacing();
 
   ImGui::TextUnformatted("分析维度:");
   ImGui::TextUnformatted("├─ 截面异质时序一致性 (Heterogeneity Consistency)");
-  ImGui::TextUnformatted("│   目标: 资产间的分散程度是否稳定");
+  ImGui::TextUnformatted("│   目标: 资产分散程度是否稳定(CovMatrix协方差矩阵稳定性)");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("│   ├─ Gini(t): 基尼系数随时间的演化");
   ImGui::TextUnformatted("│   │   解释: 衡量截面分布的不平等程度");
@@ -325,10 +327,10 @@ static void RenderStep4Tooltip() {
   ImGui::TextUnformatted("│       应用: 因子组合权重的稳定性前提");
   ImGui::TextUnformatted("│");
   ImGui::TextUnformatted("└─ 截面排序时序一致性 (Scale Robustness)");
-  ImGui::TextUnformatted("    目标: 不同标准化方法下,资产排序是否一致");
+  ImGui::TextUnformatted("    目标: 资产排序是否稳定(RankCorr秩相关矩阵稳定性)");
   ImGui::TextUnformatted("");
   ImGui::TextUnformatted("    测试: raw ↔ zscore ↔ minmax ↔ robust 标准化");
-  ImGui::TextUnformatted("    指标: RankCorr(t) - 秩相关系数随时间的稳定性");
+  ImGui::TextUnformatted("    指标: RankCorr(t) - 秩相关矩阵随时间的稳定性");
   ImGui::TextUnformatted("");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
                      "    稳定: 不同标准化下排序高度一致 → 因子信号robust ✓");
