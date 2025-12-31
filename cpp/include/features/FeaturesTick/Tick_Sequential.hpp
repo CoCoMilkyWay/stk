@@ -55,9 +55,9 @@ private:
       // =============================================================
       depth_data_.compute();  // N档price/qty → 4N个CBuffer
       mid_price_.compute();   // 中间价
+      micro_price_.compute(); // 微观价格
       spread_.compute();      // 买卖价差 (依赖BidPrice_[0], AskPrice_[0])
       trade_price_.compute(); // 成交价
-      micro_price_.compute(); // 微观价格
 
       // =============================================================
       // 因子层: 从共享CBuffer读取, 无重复计算
@@ -144,7 +144,6 @@ private:
     return Spread_.back();
   }
 
-
   // ===========================================================================
   // 静态配置 (初始化时设置)
   // ===========================================================================
@@ -178,8 +177,8 @@ private:
   // --- 基础数据提取类
   DepthData<L2::LOB_DEPTH> depth_data_{tick_data_, BidPrice_, AskPrice_, BidQty_, AskQty_};
   MidPrice mid_price_{BidPrice_[0], AskPrice_[0], MidPrice_};
-  Spread spread_{BidPrice_[0], AskPrice_[0], Spread_};
   MicroPrice micro_price_{tick_data_, MicroPrice_};
+  Spread spread_{BidPrice_[0], AskPrice_[0], Spread_};
 
   // --- 因子 CBuffer (中信建投研报 2020.07, 2021.01) ---
   // 订单量类因子
@@ -205,10 +204,10 @@ private:
   VOI<10> voi10_{BidPrice_, AskPrice_, BidQty_, AskQty_, VOI10_Buffer_};
   OIR<5> oir5_{BidQty_, AskQty_, OIR5_Buffer_};
   OIR<10> oir10_{BidQty_, AskQty_, OIR10_Buffer_};
-  SOIR<5, false> soir5_{BidQty_, AskQty_, SOIR5_Buffer_};        // 加权
-  SOIR<5, true> soir5s_{BidQty_, AskQty_, SOIR5s_Buffer_};       // 单档
-  SOIR<10, true> soir10s_{BidQty_, AskQty_, SOIR10s_Buffer_};    // 单档
-  SOIR<30, true> soir30s_{BidQty_, AskQty_, SOIR30s_Buffer_};    // 单档深度
+  SOIR<5, false> soir5_{BidQty_, AskQty_, SOIR5_Buffer_};     // 加权
+  SOIR<5, true> soir5s_{BidQty_, AskQty_, SOIR5s_Buffer_};    // 单档
+  SOIR<10, true> soir10s_{BidQty_, AskQty_, SOIR10s_Buffer_}; // 单档
+  SOIR<30, true> soir30s_{BidQty_, AskQty_, SOIR30s_Buffer_}; // 单档深度
 
   // 价格类 (研报: MPC5_neut最佳, MPC5_skew与常用因子相关性最低)
   MPC<1> mpc1_{MidPrice_, MPC1_Buffer_};
