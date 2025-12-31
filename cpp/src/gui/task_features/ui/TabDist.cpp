@@ -40,16 +40,16 @@ static const char *StatusText(Dist::Compute::Status s) {
 static ImVec4 StatusColor(Dist::Compute::Status s) {
   switch (s) {
   case Dist::Compute::Status::Idle:
-    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);      // 灰色
+    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // 灰色
   case Dist::Compute::Status::Building:
   case Dist::Compute::Status::Querying:
-    return ImVec4(0.2f, 0.7f, 1.0f, 1.0f);      // 蓝色
+    return ImVec4(0.2f, 0.7f, 1.0f, 1.0f); // 蓝色
   case Dist::Compute::Status::Done:
-    return ImVec4(0.2f, 0.8f, 0.4f, 1.0f);      // 绿色
+    return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
   case Dist::Compute::Status::Error:
-    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f);      // 红色
+    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
   case Dist::Compute::Status::Cancelled:
-    return ImVec4(0.9f, 0.6f, 0.2f, 1.0f);      // 橙色
+    return ImVec4(0.9f, 0.6f, 0.2f, 1.0f); // 橙色
   }
   return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 }
@@ -91,12 +91,80 @@ static std::pair<float, float> compute_median_mad(const std::vector<float> &vals
 // Integrity Panel
 // ============================================================================
 
+// Color helpers for integrity display
+static ImVec4 GetMinMaxColor(float val) {
+  // Red if outside [-100, 100]
+  if (val > 100.0f || val < -100.0f) {
+    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
+  }
+  return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
+}
+
+static ImVec4 GetZeroPctColor(float pct) {
+  // 20%以上红色, 10%以上黄色
+  if (pct >= 10.0f) {
+    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
+  } else if (pct >= 5.0f) {
+    return ImVec4(1.0f, 0.9f, 0.3f, 1.0f); // 黄色
+  }
+  return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
+}
+
+static ImVec4 GetNanInfPctColor(float pct) {
+  // 1%以上红色, 非零黄色
+  if (pct >= 1.0f) {
+    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
+  } else if (pct > 0.0f) {
+    return ImVec4(1.0f, 0.9f, 0.3f, 1.0f); // 黄色
+  }
+  return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
+}
+
 static void RenderIntegrity(const Dist::Integrity &integrity) {
-  ImGui::Text("Zero: %zu (%.1f%%)  NaN: %zu (%.1f%%)  +Inf: %zu (%.1f%%)  "
-              "-Inf: %zu (%.1f%%)",
-              integrity.n_zero, integrity.zero_pct(), integrity.n_nan,
-              integrity.nan_pct(), integrity.n_pos_inf, integrity.inf_pct(),
-              integrity.n_neg_inf, integrity.inf_pct());
+  float zero_pct = integrity.zero_pct();
+  float nan_pct = integrity.nan_pct();
+  float inf_pct = integrity.inf_pct();
+
+  // Zero with color
+  ImGui::Text("Zero: %zu (", integrity.n_zero);
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(GetZeroPctColor(zero_pct), "%.1f%%", zero_pct);
+  ImGui::SameLine(0, 0);
+  ImGui::Text(")");
+  ImGui::SameLine();
+
+  // NaN with color
+  ImGui::Text("NaN: %zu (", integrity.n_nan);
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(GetNanInfPctColor(nan_pct), "%.1f%%", nan_pct);
+  ImGui::SameLine(0, 0);
+  ImGui::Text(")");
+  ImGui::SameLine();
+
+  // +Inf with color
+  ImGui::Text("+Inf: %zu (", integrity.n_pos_inf);
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(GetNanInfPctColor(inf_pct), "%.1f%%", inf_pct);
+  ImGui::SameLine(0, 0);
+  ImGui::Text(")");
+  ImGui::SameLine();
+
+  // -Inf with color (same inf_pct as +Inf)
+  ImGui::Text("-Inf: %zu (", integrity.n_neg_inf);
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(GetNanInfPctColor(inf_pct), "%.1f%%", inf_pct);
+  ImGui::SameLine(0, 0);
+  ImGui::Text(")");
+  ImGui::SameLine();
+
+  // Min/Max with color
+  ImGui::Text("Min: ");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(GetMinMaxColor(integrity.val_min), "%.2f", integrity.val_min);
+  ImGui::SameLine();
+  ImGui::Text("Max: ");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(GetMinMaxColor(integrity.val_max), "%.2f", integrity.val_max);
 }
 
 // ============================================================================
@@ -326,7 +394,7 @@ static void RenderMomentBand(const char *label, float current_val,
   // Boundary labels - small font, directly on bar
   // All labels drawn at same height, overlaid on the bar
   ImFont *small_font = ImGui::GetFont();
-  float small_font_size = ImGui::GetFontSize() * 0.75f; // Compact font size
+  float small_font_size = ImGui::GetFontSize() * 0.75f;          // Compact font size
   float label_y = y_top + (bar_height - small_font_size) * 0.5f; // Vertically centered
   char buf[16];
 
@@ -992,12 +1060,12 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
         "F_i: CDF; Q_i: 逆CDF; X_i: Feature i\n\n"
         "偏移量(强调全局差异): 均值校准(最优中心化)的 Wasserstein-L2 偏移距离(积分)");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
-        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
+                       "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
     ImGui::Text("\n偏移色(强调局部形状): 中位数校准(最优中心化)的 Wasserstein-L1 偏移向量(不积分), 取Ward with optimal leaf ordering聚类");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
-        "    W1(F_i, F_μ) = || (Q_i - Med[X_i]) - (Q_μ - Med[X_μ]) ||_1 = || ΔW1_i ||_1");
+                       "    W1(F_i, F_μ) = || (Q_i - Med[X_i]) - (Q_μ - Med[X_μ]) ||_1 = || ΔW1_i ||_1");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
-        "    cluster_order = optimal_leaf_ordering( Ward({ΔW1_i}, L1) )");
+                       "    cluster_order = optimal_leaf_ordering( Ward({ΔW1_i}, L1) )");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
@@ -1056,7 +1124,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
 
       // Get mouse position in pixels for stability dot detection
       ImVec2 mouse_pixels = ImGui::GetMousePos();
-      
+
       // Get fixed plot pixel boundaries (scale invariant)
       ImVec2 plot_pos = ImPlot::GetPlotPos();
       ImVec2 plot_size = ImPlot::GetPlotSize();
@@ -1070,7 +1138,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
           double data_x = global_min_x + stab.x_norm[i] * stab_range_len;
           float norm_x = (data_x - global_min_x) / stab_range_len; // [0, 1]
           float dot_x_screen = plot_pos.x + norm_x * plot_size.x;
-          
+
           float dx_px = std::abs(mouse_pixels.x - dot_x_screen);
           if (dx_px < best_dist_px) {
             best_dist_px = dx_px;
@@ -1144,7 +1212,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     // ========================================================================
     {
       ImDrawList *draw = ImPlot::GetPlotDrawList();
-      
+
       // Get fixed plot pixel boundaries (scale invariant)
       ImVec2 plot_pos = ImPlot::GetPlotPos();
       ImVec2 plot_size = ImPlot::GetPlotSize();

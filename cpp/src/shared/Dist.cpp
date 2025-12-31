@@ -194,6 +194,7 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
 
           // Accumulate valid samples
           mc.integrity.n_valid++;
+          mc.integrity.update_minmax(val);
           month_samples.push_back(val);
           asset_samples[a].push_back(val);
           hour_samples[hour].push_back(val);

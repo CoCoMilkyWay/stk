@@ -1,6 +1,7 @@
 #pragma once
 
 #include "math/distribution/KLLcache.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -149,6 +150,8 @@ struct Dist {
     size_t n_nan = 0;
     size_t n_pos_inf = 0;
     size_t n_neg_inf = 0;
+    float val_min = 0.0f;
+    float val_max = 0.0f;
 
     void add(const Integrity &o) {
       n_total += o.n_total;
@@ -157,6 +160,16 @@ struct Dist {
       n_nan += o.n_nan;
       n_pos_inf += o.n_pos_inf;
       n_neg_inf += o.n_neg_inf;
+      if (o.n_valid > 0) {
+        if (n_valid == o.n_valid) {
+          // First valid data
+          val_min = o.val_min;
+          val_max = o.val_max;
+        } else {
+          val_min = std::min(val_min, o.val_min);
+          val_max = std::max(val_max, o.val_max);
+        }
+      }
     }
 
     float valid_pct() const {
@@ -176,6 +189,15 @@ struct Dist {
     }
 
     void clear() { *this = Integrity{}; }
+
+    void update_minmax(float val) {
+      if (n_valid == 1) {
+        val_min = val_max = val;
+      } else {
+        if (val < val_min) val_min = val;
+        if (val > val_max) val_max = val;
+      }
+    }
   };
 
   // ==========================================================================
