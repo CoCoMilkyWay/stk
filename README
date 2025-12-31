@@ -4,7 +4,7 @@
 
 ```
 stk/
-├── run.py                 # 🚀 主入口 → py/main.py → build.sh
+├── run.py                 # 🚀 主入口 → py/main.py → build.sh (模式选择: TSAN/DEBUG/PROFILE/ASSERT/PRODUCTION)
 ├── config/config.json     # ⚙️ 全局配置
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 调用cpp/projects/main/build.sh
@@ -41,6 +41,10 @@ stk/
     │   │   ├── FeaturesMinute/                   # 🧮 分钟级特征
     │   │   ├── FeaturesHour/                     # 🧮 小时级特征
     │   │   └── backend/                          # 🧮 特征存储后端
+    │   │       ├── FeatureStore.hpp              # 🧮 存储引擎: 写入/并发控制
+    │   │       ├── FeatureStoreConfig.hpp        # 🧮 存储配置: Float16/布局
+    │   │       ├── FeatureReader.hpp             # 🧮 读取引擎: Zstd解压/列式加载
+    │   │       └── ZstdHelper.hpp                # 🧮 Zstd压缩工具
     │   ├── worker/                               # ⚡ 多线程工作流编排
     │   │   ├── shared_state.hpp                  # ⚡ Worker间共享状态
     │   │   ├── io_worker.hpp                     # ⚡ IO工作器: 文件读写
@@ -79,12 +83,14 @@ stk/
     │   │       ├── services/                     # 🖥️ 特征服务层
     │   │       │   ├── ComputeService.hpp        # 🖥️ 计算服务
     │   │       │   ├── DataLoader.hpp            # 🖥️ 数据加载器
-    │   │       │   └── DistService.hpp           # 🖥️ 分布式服务
+    │   │       │   ├── DistService.hpp           # 🖥️ 分布分析服务
+    │   │       │   └── TimeSeriesService.hpp     # 🖥️ 时序分析服务
     │   │       └── ui/                           # 🖥️ UI组件
     │   │           ├── TabFeature.hpp            # 🖥️ 特征标签页
     │   │           ├── TabCompute.hpp            # 🖥️ 计算标签页
     │   │           ├── TabOrderFlow.hpp          # 🖥️ 订单流标签页
-    │   │           └── TabDist.hpp               # 🖥️ 分布标签页
+    │   │           ├── TabDist.hpp               # 🖥️ 分布分析标签页
+    │   │           └── TabTimeSeries.hpp         # 🖥️ 时序分析标签页
     │   │   GUI布局:
     │   │   ┌───────────────────────────────────────────────────────────────────────────┐
     │   │   │ Tasks                                │ Panel:                             │
@@ -92,8 +98,8 @@ stk/
     │   │   │  > SystemInfo[""/live]               │                                    │
     │   │   │  > DataBase                          │                                    │
     │   │   │  > Features                          │                                    │
-    │   │   │  ...                                 ├────────────────────────────────────┤
-    │   │   │                                      │ Terminal:                          │
+    │   │   │  > Factors                           ├────────────────────────────────────┤
+    │   │   │  ...                                 │ Terminal:                          │
     │   │   │ Icon:                                │                                    │
     │   │   │  |Network|FPS│                       |                                    │
     │   │   └───────────────────────────────────────────────────────────────────────────┘
