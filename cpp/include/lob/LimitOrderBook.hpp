@@ -14,7 +14,7 @@
 #include "features/CoreSequential.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
-#include "math/sample/ResampleRunBar.hpp"
+// #include "math/sample/ResampleRunBar.hpp"
 
 #if DEBUG_ANOMALY_PRINT == 1
 #include <unordered_set>
@@ -267,7 +267,7 @@ private:
   mutable bool is_bid_;
 
   // Resampling components
-  ResampleRunBar resampler_;
+  // ResampleRunBar resampler_;
 
   // Feature update component (unified sequential core)
   CoreSequential core_sequential_;

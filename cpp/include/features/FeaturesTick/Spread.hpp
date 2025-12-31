@@ -1,20 +1,21 @@
 #pragma once
 
 // =============================================================================
-// MidPrice - 中间价
+// Spread - 买卖价差
 // =============================================================================
-// 从 BidPrice_[0], AskPrice_[0] CBuffer 读取 (已是元单位)
+// Spread = AskPrice1 - BidPrice1
+// 从已提取的 BidPrice_[0], AskPrice_[0] CBuffer 读取 (已是元单位)
 // 输出: 元 (RMB)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 
-class MidPrice {
+class Spread {
 public:
-  MidPrice(const CBuffer<float, L2::BLEN> &bid_price_0,
-           const CBuffer<float, L2::BLEN> &ask_price_0,
-           CBuffer<float, L2::BLEN> &buffer)
+  Spread(const CBuffer<float, L2::BLEN> &bid_price_0,
+         const CBuffer<float, L2::BLEN> &ask_price_0,
+         CBuffer<float, L2::BLEN> &buffer)
       : bid_price_0_(bid_price_0),
         ask_price_0_(ask_price_0),
         buffer_(buffer) {}
@@ -22,8 +23,8 @@ public:
   void compute() {
     float bid = bid_price_0_.back();
     float ask = ask_price_0_.back();
-    float mid = (bid + ask) * 0.5f;
-    buffer_.push_back(mid);
+    float spread = (bid > 0 && ask > 0) ? (ask - bid) : 0.0f;
+    buffer_.push_back(spread);
   }
 
   float back() const { return buffer_.back(); }
@@ -33,3 +34,4 @@ private:
   const CBuffer<float, L2::BLEN> &ask_price_0_;
   CBuffer<float, L2::BLEN> &buffer_;
 };
+

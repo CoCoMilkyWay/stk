@@ -52,9 +52,9 @@ public:
     if (valid_indices_.empty())
       return;
 
-    // CS feature 1: cs_spread_rank (optimized conversion)
+    // CS feature 1: cs_spread_rank - rank MPB (Mid-Price Basis) cross-sectionally
     {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::spread_momentum);
+      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::mpb);
       convert_fp16_to_fp32(input, input_fp32_.data(), A);
       std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
       compute_rank_inverse_normal_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
@@ -62,9 +62,9 @@ public:
       CS_WRITE_ALL(store_, date_str_, 0, t, L0_FieldOffset::cs_spread_rank, output_fp16_.data(), A);
     }
 
-    // CS feature 2: cs_tobi_rank
+    // CS feature 2: cs_tobi_rank - rank OIR5 (Order Imbalance Ratio) cross-sectionally
     {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::tobi_osc);
+      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::oir5);
       convert_fp16_to_fp32(input, input_fp32_.data(), A);
       std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
       compute_rank_inverse_normal_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
@@ -72,9 +72,9 @@ public:
       CS_WRITE_ALL(store_, date_str_, 0, t, L0_FieldOffset::cs_tobi_rank, output_fp16_.data(), A);
     }
 
-    // CS feature 3: cs_liquidity_ratio
+    // CS feature 3: cs_liquidity_ratio - z-score VOI5 (Volume Order Imbalance) cross-sectionally
     {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::signed_volume_imb);
+      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::voi5);
       convert_fp16_to_fp32(input, input_fp32_.data(), A);
       std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
       compute_zscore_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());

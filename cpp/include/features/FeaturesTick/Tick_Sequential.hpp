@@ -3,14 +3,20 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 #include "features/FeaturesTick/DeltaT.hpp"
+#include "features/FeaturesTick/DepthData.hpp"
+#include "features/FeaturesTick/MPB.hpp"
+#include "features/FeaturesTick/MPC.hpp"
+#include "features/FeaturesTick/MPCStat.hpp"
 #include "features/FeaturesTick/MicroPrice.hpp"
 #include "features/FeaturesTick/MidPrice.hpp"
+#include "features/FeaturesTick/OIR.hpp"
+#include "features/FeaturesTick/SOIR.hpp"
+#include "features/FeaturesTick/Spread.hpp"
+#include "features/FeaturesTick/TradePrice.hpp"
+#include "features/FeaturesTick/VOI.hpp"
 #include "features/backend/FeatureStore.hpp"
-#include <algorithm>
-#include <cmath>
-#include <deque>
+#include "features/backend/FeatureStoreConfig.hpp"
 // #include <iostream>
-#include <vector>
 
 // Tick-level sequential feature computation
 class Tick_Sequential {
@@ -44,18 +50,53 @@ private:
     delta_t_.compute();
 
     if (tick_data_.lob.depth_updated) {
-      mid_price_.compute();
-      micro_price_.compute();
+      // =============================================================
+      // 数据层: 基础数据提取 (每tick只算一次, 供下游因子复用)
+      // =============================================================
+      depth_data_.compute();  // N档price/qty → 4N个CBuffer
+      mid_price_.compute();   // 中间价
+      spread_.compute();      // 买卖价差 (依赖BidPrice_[0], AskPrice_[0])
+      trade_price_.compute(); // 成交价
+      micro_price_.compute(); // 微观价格
 
-      ts_features_buffer_[0] = compute_tick_ret_z();
-      ts_features_buffer_[1] = compute_tobi_osc();
-      ts_features_buffer_[2] = compute_micro_gap_norm();
-      ts_features_buffer_[3] = compute_spread_momentum();
-      ts_features_buffer_[4] = compute_signed_volume_imb();
+      // =============================================================
+      // 因子层: 从共享CBuffer读取, 无重复计算
+      // =============================================================
+      // 订单量类因子
+      voi5_.compute();    // VOI 5档
+      voi10_.compute();   // VOI 10档
+      oir5_.compute();    // OIR 5档比率
+      oir10_.compute();   // OIR 10档
+      soir5_.compute();   // SOIR 5档加权
+      soir5s_.compute();  // SOIR 第5档单独
+      soir10s_.compute(); // SOIR 第10档单独
+      soir30s_.compute(); // SOIR 第30档单独
+
+      // 价格类因子
+      mpb_.compute();  // 市价偏离度 (从MidPrice/TradePrice读)
+      mpc1_.compute(); // 中间价变化率 lag=1 (从MidPrice读)
+      mpc5_.compute(); // 中间价变化率 lag=5 + 日内max/skew
+
+      // 写入因子到输出缓冲区 (顺序与 LEVEL_0_FIELDS 定义一致)
+      // 订单量类因子 [0-7]
+      ts_features_buffer_[0] = VOI5_Buffer_.back();
+      ts_features_buffer_[1] = VOI10_Buffer_.back();
+      ts_features_buffer_[2] = OIR5_Buffer_.back();
+      ts_features_buffer_[3] = OIR10_Buffer_.back();
+      ts_features_buffer_[4] = SOIR5_Buffer_.back();
+      ts_features_buffer_[5] = SOIR5s_Buffer_.back();
+      ts_features_buffer_[6] = SOIR10s_Buffer_.back();
+      ts_features_buffer_[7] = SOIR30s_Buffer_.back();
+      // 价格类因子 [8-12]
+      ts_features_buffer_[8] = MPB_Buffer_.back();
+      ts_features_buffer_[9] = MPC1_Buffer_.back();
+      ts_features_buffer_[10] = MPC5_Buffer_.back();
+      ts_features_buffer_[11] = MPC5_Max_Buffer_.back();
+      ts_features_buffer_[12] = MPC5_Skew_Buffer_.back();
     };
 
-    // Write TS features: [tick_ret_z, cs_spread_rank)
-    TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, L0_FieldOffset::tick_ret_z, L0_FieldOffset::cs_spread_rank, ts_features_buffer_, worker_id_);
+    // Write TS features: [voi5, cs_spread_rank)
+    TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, L0_FieldOffset::voi5, L0_FieldOffset::cs_spread_rank, ts_features_buffer_, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
@@ -63,281 +104,127 @@ private:
   }
 
   // Write LOB depth snapshot (N levels bid/ask price/volume for GUI)
-  // Store volume (net_quantity) instead of amount to prevent overflow
+  // 从已提取的 CBuffer 读取，无重复访问 depth_buffer
+  // 输出单位: 价格=元, 数量=手
   void write_lob_depth(size_t t) {
     if (!tick_data_.lob.depth_updated)
       return;
 
     constexpr size_t N = L2::LOB_DEPTH;
-    const auto &depth = tick_data_.lob.depth_buffer;
+    constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手 (1手=100股)
 
-    // depth_buffer layout: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
-    // Output: bid[0]=bid1(best), ask[0]=ask1(best)
-    // Depth buffer is always complete (2*N elements), no bounds checks needed
-
-    constexpr float volume_scale = 0.01f; // 1 lot = 100 shares
-
-    // Direct pointer access, no branches
+    // 从 CBuffer 读取 (depth_data_.compute() 已在 compute_ts_tick 中调用)
+    // 价格已是元, 数量需转为手
     for (size_t i = 0; i < N; ++i) {
-      const Level *bid_level = depth[N + i];
-      const Level *ask_level = depth[N - 1 - i];
-
-      lob_depth_buffer_[i] = static_cast<float>(bid_level->price);
-      lob_depth_buffer_[N + i] = static_cast<float>(ask_level->price);
-      lob_depth_buffer_[2 * N + i] = bid_level->net_quantity * volume_scale;
-      lob_depth_buffer_[3 * N + i] = ask_level->net_quantity * volume_scale;
+      lob_depth_buffer_[i] = BidPrice_[i].back();
+      lob_depth_buffer_[N + i] = AskPrice_[i].back();
+      lob_depth_buffer_[2 * N + i] = BidQty_[i].back() * VOLUME_TO_LOT;
+      lob_depth_buffer_[3 * N + i] = AskQty_[i].back() * VOLUME_TO_LOT;
     }
 
-    // Mid_price: integer average for max fp16 precision
-    const Level *best_bid = depth[N];
-    const Level *best_ask = depth[N - 1];
-    lob_depth_buffer_[4 * N] = static_cast<float>((best_bid->price + best_ask->price) >> 1);
+    // Mid_price: 已是元单位
+    lob_depth_buffer_[4 * N] = MidPrice_.back();
     lob_depth_buffer_[4 * N + 1] = 1.0f;
 
     // Batch write: _bid_price to _depth_valid (inclusive, now using depth store)
     DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, DepthFieldOffset::_bid_price, DepthFieldOffset::_data_valid, lob_depth_buffer_, worker_id_);
   }
 
-  // Get mid price from depth buffer
-  // Use depth_updated flag instead of size check (size may be < 60 temporarily between order-driven erase and time-driven rebuild)
+  // Get mid price from CBuffer (元单位, 已在数据层转换)
   float get_mid_price() const {
-    if (!tick_data_.lob.depth_updated)
+    if (MidPrice_.size() == 0)
       return 0.0f;
-
-    const auto &depth = tick_data_.lob.depth_buffer;
-
-    Level *best_ask = depth[L2::LOB_DEPTH - 1]; // sell1
-    Level *best_bid = depth[L2::LOB_DEPTH];     // buy1
-
-    if (best_ask && best_bid && best_ask->price > 0 && best_bid->price > 0)
-      return (best_ask->price + best_bid->price) * 0.005; // 0.01/2
-
-    return 0.0f;
+    return MidPrice_.back();
   }
 
-  // Get spread from depth buffer
+  // Get spread from CBuffer (元单位, 已在数据层转换)
   float get_spread() const {
-    if (!tick_data_.lob.depth_updated)
+    if (Spread_.size() == 0)
       return 0.0f;
-
-    const auto &depth = tick_data_.lob.depth_buffer;
-
-    Level *best_ask = depth[L2::LOB_DEPTH - 1];
-    Level *best_bid = depth[L2::LOB_DEPTH];
-
-    if (best_ask && best_bid && best_ask->price > 0 && best_bid->price > 0)
-      return (best_ask->price - best_bid->price) * 0.01f;
-
-    return 0.0f;
+    return Spread_.back();
   }
 
-  // Get top-of-book imbalance (TOBI)
-  float get_tobi() const {
-    if (!tick_data_.lob.depth_updated)
-      return 0.0f;
 
-    const auto &depth = tick_data_.lob.depth_buffer;
-    if (depth.size() <= L2::LOB_DEPTH)
-      return 0.0f;
-
-    Level *best_ask = depth[L2::LOB_DEPTH - 1];
-    Level *best_bid = depth[L2::LOB_DEPTH];
-
-    if (!best_ask || !best_bid)
-      return 0.0f;
-
-    int32_t bid_qty = best_bid->net_quantity;
-    int32_t ask_qty = -best_ask->net_quantity; // ask is negative
-
-    if (bid_qty + ask_qty == 0)
-      return 0.0f;
-
-    return static_cast<float>(bid_qty - ask_qty) / (bid_qty + ask_qty);
-  }
-
-  // Feature 1: tick_ret_z - Rolling z-score normalized tick return (optimized incremental)
-  float compute_tick_ret_z() {
-    float mid = get_mid_price();
-
-    // Compute log return
-    if (last_mid_ <= 0) {
-      last_mid_ = mid;
-      return 0.0f;
-    }
-
-    float ret = std::log(mid / last_mid_);
-    last_mid_ = mid;
-
-    // Update window
-    ret_window_.push_back(ret);
-    if (ret_window_.size() > 50)
-      ret_window_.pop_front();
-
-    if (ret_window_.size() < 10)
-      return static_cast<float>(ret);
-
-    // Incremental mean/variance (Welford's algorithm)
-    size_t n = ret_window_.size();
-    float sum = 0, sq_sum = 0;
-    for (float r : ret_window_) {
-      sum += r;
-      sq_sum += r * r;
-    }
-
-    float mean = sum / n;
-    float variance = sq_sum / n - mean * mean;
-    float stddev = std::sqrt(std::max(variance, 1e-10f));
-
-    return static_cast<float>((ret - mean) / stddev);
-  }
-
-  // Feature 2: tobi_osc - Top-of-book imbalance oscillator
-  float compute_tobi_osc() const {
-    float tobi = get_tobi();
-
-    // Update window
-    tobi_window_.push_back(tobi);
-    if (tobi_window_.size() > 50)
-      tobi_window_.pop_front();
-
-    if (tobi_window_.size() < 10)
-      return tobi;
-
-    // Reuse scratch buffer (no heap allocation)
-    scratch_.assign(tobi_window_.begin(), tobi_window_.end());
-    size_t mid_idx = scratch_.size() / 2;
-
-    // O(N) median via nth_element instead of O(N log N) sort
-    std::nth_element(scratch_.begin(), scratch_.begin() + mid_idx, scratch_.end());
-    float median = scratch_[mid_idx];
-
-    // Compute abs deviations in-place, reuse same buffer
-    for (float &val : scratch_)
-      val = std::abs(val - median);
-
-    // O(N) MAD via nth_element
-    std::nth_element(scratch_.begin(), scratch_.begin() + mid_idx, scratch_.end());
-    float mad = scratch_[mid_idx];
-
-    if (mad < 1e-8f)
-      return 0.0f;
-
-    return std::clamp((tobi - median) / mad, -3.0f, 3.0f);
-  }
-
-  // Feature 3: micro_gap_norm - Micro price gap normalized (optimized incremental)
-  float compute_micro_gap_norm() {
-    float mid = get_mid_price();
-    float micro = tick_data_.lob.price; // last trade price
-
-    // Update window and incremental stats
-    if (mid_price_window_.size() >= 50) {
-      float old_val = mid_price_window_.front();
-      mid_sum_ -= old_val;
-      mid_sq_sum_ -= old_val * old_val;
-      mid_price_window_.pop_front();
-    }
-
-    mid_price_window_.push_back(mid);
-    mid_sum_ += mid;
-    mid_sq_sum_ += mid * mid;
-
-    if (mid_price_window_.size() < 10)
-      return 0.0f;
-
-    // Use cached rolling statistics (O(1) instead of O(N))
-    size_t n = mid_price_window_.size();
-    float mean = mid_sum_ / n;
-    float variance = mid_sq_sum_ / n - mean * mean;
-    float stddev = std::sqrt(std::max(variance, 1e-10f));
-
-    // tanh((micro-mid)/σ)
-    float gap = (micro - mid) / stddev;
-    return static_cast<float>(std::tanh(gap));
-  }
-
-  // Feature 4: spread_momentum - Short-term spread change (optimized single-pass EMA)
-  float compute_spread_momentum() {
-    float spread = get_spread();
-
-    // Update window
-    spread_window_.push_back(spread);
-    if (spread_window_.size() > 20)
-      spread_window_.pop_front();
-
-    if (spread_window_.size() < 2) {
-      ema_spread_ = spread;
-      return 0.0f;
-    }
-
-    // Incremental EMA update (O(1) instead of O(N))
-    constexpr float alpha = 0.095;
-    ema_spread_ = alpha * spread + (1 - alpha) * ema_spread_;
-
-    return static_cast<float>(spread - ema_spread_);
-  }
-
-  // Feature 5: signed_volume_imb - Signed volume imbalance
-  float compute_signed_volume_imb() const {
-
-    float sign = 0;
-    if (tick_data_.lob.order_type == L2::OrderType::TAKER) {
-      sign = tick_data_.lob.order_dir == L2::OrderDirection::BID ? 1.0 : -1.0; // buy=+1, sell=-1
-    }
-
-    float signed_vol = sign * tick_data_.lob.volume;
-    volume_imb_window_.push_back({signed_vol, static_cast<float>(tick_data_.lob.volume)});
-
-    if (volume_imb_window_.size() > 20)
-      volume_imb_window_.pop_front();
-
-    // Σ(signxsize) / Σ|size|
-    float sum_signed = 0, sum_abs = 0;
-    for (const auto &[sv, v] : volume_imb_window_) {
-      sum_signed += sv;
-      sum_abs += v;
-    }
-
-    if (sum_abs < 1e-8)
-      return 0.0f;
-
-    return static_cast<float>(sum_signed / sum_abs);
-  }
-
+  // ===========================================================================
+  // 静态配置 (初始化时设置)
+  // ===========================================================================
   const TickData &tick_data_;
   GlobalFeatureStore *store_ = nullptr;
   size_t asset_id_ = 0;
   size_t worker_id_ = 0;
   std::string date_str_;
 
-  // Rolling windows for TS features (optimized)
-  std::deque<float> ret_window_; // Store returns directly (not prices)
-  float last_mid_ = 0;           // Last mid price for incremental return
-  mutable std::deque<float> mid_price_window_;
-  mutable std::deque<float> tobi_window_;
-  float ema_spread_ = 0; // EMA state for spread momentum
-  mutable std::deque<float> spread_window_;
-  mutable std::deque<std::pair<float, float>> volume_imb_window_; // {signed_vol, vol}
-
-  // Cached rolling statistics (avoid recomputation)
-  float mid_sum_ = 0;
-  float mid_sq_sum_ = 0;
-
-  // Scratch buffer for median computation (avoids heap allocation per call)
-  mutable std::vector<float> scratch_;
-
-  // Reusable buffers for batch writes (high-frequency hot path)
-  float ts_features_buffer_[5];                   // tick_ret_z, tobi_osc, micro_gap_norm, spread_momentum, signed_volume_imb
-  float lob_depth_buffer_[4 * L2::LOB_DEPTH + 2]; // LOB depth + mid_price + depth_valid batch write
-
-  // CBuffer and instance for features
+  // ===========================================================================
+  // [EVERY TICK] 逐笔更新 - 每个订单都触发
+  // ===========================================================================
   CBuffer<float, L2::BLEN> DeltaTMaker_;
   CBuffer<float, L2::BLEN> DeltaTTaker_;
   CBuffer<float, L2::BLEN> DeltaTCancel_;
-  CBuffer<float, L2::BLEN> MidPrice_;
-  CBuffer<float, L2::BLEN> MicroPrice_;
-
   DeltaT delta_t_{tick_data_, DeltaTMaker_, DeltaTTaker_, DeltaTCancel_};
-  MidPrice mid_price_{tick_data_, MidPrice_};
+
+  // ===========================================================================
+  // [ON DEPTH] 盘口更新时 - depth_updated == true 时触发
+  // ===========================================================================
+
+  // --- 基础数据 CBuffer (单位: 价格=元, 数量=股) ---
+  CBuffer<float, L2::BLEN> BidPrice_[L2::LOB_DEPTH]; // 买1-N价 (元)
+  CBuffer<float, L2::BLEN> AskPrice_[L2::LOB_DEPTH]; // 卖1-N价 (元)
+  CBuffer<float, L2::BLEN> BidQty_[L2::LOB_DEPTH];   // 买1-N量 (股, 正值)
+  CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];   // 卖1-N量 (股, 负值)
+  CBuffer<float, L2::BLEN> MidPrice_;                // 中间价 (元)
+  CBuffer<float, L2::BLEN> Spread_;                  // 买卖价差 (元)
+  CBuffer<float, L2::BLEN> MicroPrice_;              // 微观价格
+
+  // --- 基础数据提取类
+  DepthData<L2::LOB_DEPTH> depth_data_{tick_data_, BidPrice_, AskPrice_, BidQty_, AskQty_};
+  MidPrice mid_price_{BidPrice_[0], AskPrice_[0], MidPrice_};
+  Spread spread_{BidPrice_[0], AskPrice_[0], Spread_};
   MicroPrice micro_price_{tick_data_, MicroPrice_};
+
+  // --- 因子 CBuffer (中信建投研报 2020.07, 2021.01) ---
+  // 订单量类因子
+  CBuffer<float, L2::BLEN> VOI5_Buffer_;    // VOI 5档加权
+  CBuffer<float, L2::BLEN> VOI10_Buffer_;   // VOI 10档加权 (exploit 30档)
+  CBuffer<float, L2::BLEN> OIR5_Buffer_;    // OIR 5档加权比率
+  CBuffer<float, L2::BLEN> OIR10_Buffer_;   // OIR 10档加权
+  CBuffer<float, L2::BLEN> SOIR5_Buffer_;   // SOIR 5档加权
+  CBuffer<float, L2::BLEN> SOIR5s_Buffer_;  // SOIR 第5档单独 (研报:单档效果更好)
+  CBuffer<float, L2::BLEN> SOIR10s_Buffer_; // SOIR 第10档单独
+  CBuffer<float, L2::BLEN> SOIR30s_Buffer_; // SOIR 第30档单独 (深度信息)
+
+  // 价格类因子
+  CBuffer<float, L2::BLEN> MPB_Buffer_;       // 市价偏离度
+  CBuffer<float, L2::BLEN> MPC1_Buffer_;      // 中间价变化率 lag=1
+  CBuffer<float, L2::BLEN> MPC5_Buffer_;      // 中间价变化率 lag=5
+  CBuffer<float, L2::BLEN> MPC5_Max_Buffer_;  // MPC5日内最大值 (IC -9.39%)
+  CBuffer<float, L2::BLEN> MPC5_Skew_Buffer_; // MPC5日内偏度 (夏普3.07)
+
+  // --- 因子计算类 ---
+  // 订单量类 (研报: OIR比VOI表现更好, 单档SOIR比加权更好)
+  VOI<5> voi5_{BidPrice_, AskPrice_, BidQty_, AskQty_, VOI5_Buffer_};
+  VOI<10> voi10_{BidPrice_, AskPrice_, BidQty_, AskQty_, VOI10_Buffer_};
+  OIR<5> oir5_{BidQty_, AskQty_, OIR5_Buffer_};
+  OIR<10> oir10_{BidQty_, AskQty_, OIR10_Buffer_};
+  SOIR<5, false> soir5_{BidQty_, AskQty_, SOIR5_Buffer_};        // 加权
+  SOIR<5, true> soir5s_{BidQty_, AskQty_, SOIR5s_Buffer_};       // 单档
+  SOIR<10, true> soir10s_{BidQty_, AskQty_, SOIR10s_Buffer_};    // 单档
+  SOIR<30, true> soir30s_{BidQty_, AskQty_, SOIR30s_Buffer_};    // 单档深度
+
+  // 价格类 (研报: MPC5_neut最佳, MPC5_skew与常用因子相关性最低)
+  MPC<1> mpc1_{MidPrice_, MPC1_Buffer_};
+  MPCWithStats<5> mpc5_{MidPrice_, MPC5_Buffer_, MPC5_Max_Buffer_, MPC5_Skew_Buffer_};
+
+  // ===========================================================================
+  // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
+  // ===========================================================================
+  CBuffer<float, L2::BLEN> TradePrice_; // 成交价 (元单位)
+  TradePrice trade_price_{tick_data_, TradePrice_};
+  MPB mpb_{MidPrice_, TradePrice_, MPB_Buffer_}; // 依赖 TradePrice
+
+  // ===========================================================================
+  // 输出缓冲区 (批量写入优化)
+  // ===========================================================================
+  // TS因子数量: 从 FeaturesDefine.hpp 自动推导 (L0中所有TS类型字段)
+  float ts_features_buffer_[L0_TS_WIDTH];
+  float lob_depth_buffer_[4 * L2::LOB_DEPTH + 2];
 };

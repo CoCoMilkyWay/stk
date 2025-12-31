@@ -153,6 +153,29 @@ constexpr size_t FIELDS_PER_LEVEL[LEVEL_COUNT] = {
     ALL_LEVELS(GENERATE_FIELDS_PER_LEVEL_ENTRY)};
 
 // ============================================================================
+// FIELD COUNT BY DATA TYPE (TS, CS, LB, META)
+// ============================================================================
+// 按 data_type 统计字段宽度 (用于确定输出buffer大小)
+
+// Helper: count width if data_type matches
+#define COUNT_WIDTH_IF_TS(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) \
+  + (FeatureDataType::dtype == FeatureDataType::TS ? (width) : 0)
+#define COUNT_WIDTH_IF_CS(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) \
+  + (FeatureDataType::dtype == FeatureDataType::CS ? (width) : 0)
+#define COUNT_WIDTH_IF_LB(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) \
+  + (FeatureDataType::dtype == FeatureDataType::LB ? (width) : 0)
+#define COUNT_WIDTH_IF_META(code, width, vtype, dtype, c1, c2, norm, en, cn, formula, desc) \
+  + (FeatureDataType::dtype == FeatureDataType::META ? (width) : 0)
+
+// 8. Type widths per level: L0_TS_WIDTH, L0_CS_WIDTH, ..., L2_META_WIDTH
+#define GENERATE_TYPE_WIDTHS(level_name, level_num, fields)                     \
+  constexpr size_t level_name##_TS_WIDTH = 0 fields(COUNT_WIDTH_IF_TS);         \
+  constexpr size_t level_name##_CS_WIDTH = 0 fields(COUNT_WIDTH_IF_CS);         \
+  constexpr size_t level_name##_LB_WIDTH = 0 fields(COUNT_WIDTH_IF_LB);         \
+  constexpr size_t level_name##_META_WIDTH = 0 fields(COUNT_WIDTH_IF_META);
+ALL_LEVELS(GENERATE_TYPE_WIDTHS)
+
+// ============================================================================
 // DEPTH METADATA (separate from levels)
 // ============================================================================
 

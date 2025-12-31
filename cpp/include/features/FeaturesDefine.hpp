@@ -13,16 +13,29 @@
 // Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description)
 
 #define LEVEL_0_FIELDS(X)                                                                                                                                                                                              \
-  X(tick_ret_z,         1,             DATA,  TS,   MOMENTUM,       NORMALIZED, ZSCORE,    "Tick Return Z-score",    "微小对数收益",   "(r-μ)/σ, W=50",               "滚动窗口标准化的tick级对数收益")    \
-  X(tobi_osc,           1,             DATA,  TS,   IMBALANCE,      OSCILLATOR, CLIP,      "TOBI Oscillator",        "订单失衡震荡",   "clip((tobi-μ)/MAD, ±3)",      "top-of-book买卖压力震荡器")        \
-  X(micro_gap_norm,     1,             DATA,  TS,   MICROSTRUCTURE, NORMALIZED, TANH,      "Micro Gap Normalized",   "微观价差标准化", "tanh((micro-mid)/σ)",         "micro与mid价格标准化偏离")         \
-  X(spread_momentum,    1,             DATA,  TS,   LIQUIDITY,      DEVIATION,  ZSCORE,    "Spread Momentum",        "价差动量",       "s - EMA(s)",                  "spread的短期变动")                 \
-  X(signed_volume_imb,  1,             DATA,  TS,   VOLUME,         OSCILLATOR, NONE,      "Signed Volume Imbalance","签名成交量失衡", "Σ(sign×size)/Σ|size|",        "近N ticks签名成交量不对称")         \
+  /* ======== 订单量类因子 (Order Flow Imbalance) ======== */                                                                                                                                                           \
+  X(voi5,               1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "VOI 5-Level",            "订单失衡5档",    "ΔV^B - ΔV^A, 5档加权",        "委托量增量差(价格变动规则)")         \
+  X(voi10,              1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "VOI 10-Level",           "订单失衡10档",   "ΔV^B - ΔV^A, 10档加权",       "深度订单失衡(exploit 30档)")        \
+  X(oir5,               1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "OIR 5-Level",            "失衡率5档",      "(V^B-V^A)/(V^B+V^A)",         "订单失衡率[-1,1]标准化")            \
+  X(oir10,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "OIR 10-Level",           "失衡率10档",     "(V^B-V^A)/(V^B+V^A), 10档",   "深度失衡率(研报:优于VOI)")           \
+  X(soir5,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR 5-Level Weighted",  "逐档失衡5档",    "Σw_i×SOIR_i/Σw_i",            "逐档订单失衡率加权")                \
+  X(soir5s,             1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR Level-5 Single",    "第5档失衡",      "SOIR_5单档",                  "研报:单档效果优于加权")             \
+  X(soir10s,            1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR Level-10 Single",   "第10档失衡",     "SOIR_10单档",                 "深层订单簿失衡")                    \
+  X(soir30s,            1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR Level-30 Single",   "第30档失衡",     "SOIR_30单档",                 "最深层订单簿信号")                  \
+  /* ======== 价格类因子 (Price-based) ======== */                                                                                                                                                                      \
+  X(mpb,                1,             DATA,  TS,   MICROSTRUCTURE, DEVIATION,  NONE,      "Mid-Price Basis",        "市价偏离度",     "TP - MP",                     "成交均价与中间价偏离(研报最佳)")     \
+  X(mpc1,               1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC Lag-1",              "中间价变化1",    "(M_t-M_{t-1})/M_{t-1}",       "中间价短期变化率")                  \
+  X(mpc5,               1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC Lag-5",              "中间价变化5",    "(M_t-M_{t-5})/M_{t-5}",       "中间价中期变化率")                  \
+  X(mpc5_max,           1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC5 Daily Max",         "MPC5日最大",     "max(MPC5_d)",                 "日内MPC5极值(IC -9.39%)")           \
+  X(mpc5_skew,          1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC5 Daily Skew",        "MPC5日偏度",     "skew(MPC5_d)",                "日内MPC5偏度(夏普3.07)")            \
+  /* ======== 截面因子 (Cross-sectional) ======== */                                                                                                                                                                    \
   X(cs_spread_rank,     1,             DATA,  CS,   LIQUIDITY,      RANK,       RANK_NORM, "CS Spread Rank",         "价差截面排名",   "Φ⁻¹(pctl(spread))",           "spread截面rank→inverse normal")    \
   X(cs_tobi_rank,       1,             DATA,  CS,   IMBALANCE,      RANK,       RANK_NORM, "CS TOBI Rank",           "失衡截面排名",   "Φ⁻¹(pctl(tobi))",             "tobi截面rank→inverse normal")      \
   X(cs_liquidity_ratio, 1,             DATA,  CS,   LIQUIDITY,      RATIO,      ZSCORE,    "CS Liquidity Ratio",     "流动性比率截面", "(top_size/median)/z",         "top-of-book size截面z-score")      \
+  /* ======== 标签 (Labels) ======== */                                                                                                                                                                                 \
   X(next_tick_ret,      1,             DATA,  LB,   LABEL,          FUTURE_RET, NONE,      "Next Tick Return",       "下tick收益",     "log(mid_{t+1}/mid_t)",        "下一tick对数收益")                 \
   X(next_5tick_ret,     1,             DATA,  LB,   LABEL,          FUTURE_RET, NONE,      "Next 5-Tick Return",     "未来5tick收益",  "log(mid_{t+5}/mid_t)",        "未来5tick累计对数收益")            \
+  /* ======== 元数据 (Metadata) ======== */                                                                                                                                                                             \
   X(universe_size,      1,             DATA,  SH,   META,           UNIVERSE,   NONE,      "Universe Size",          "全域规模",       "count(valid)",                "当前有效合约数量")                 \
   X(_link_to_L1,        1,             ALL,   META, META,           RAW,        NONE,      "Link to L1",             "L1时间索引",     "L1_time_index",               "L0→L1时间映射")                    \
   X(_link_to_L2,        1,             ALL,   META, META,           RAW,        NONE,      "Link to L2",             "L2时间索引",     "L2_time_index",               "L0→L2时间映射")                    \
