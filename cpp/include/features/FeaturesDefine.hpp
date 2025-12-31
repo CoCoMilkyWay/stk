@@ -8,7 +8,7 @@
 // clang-format off
 
 // ============================================================================
-// LEVEL 0: Tick-level Features (瞬时微结构信号, 短窗口: 5-200 ticks)
+// LEVEL 0: Tick-level Features (秒级)
 // ============================================================================
 // Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description)
 
@@ -43,7 +43,7 @@
   X(_data_valid,        1,             ALL,   META, META,           RAW,        NONE,      "Data Valid Flag",        "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")                \
 
 // ============================================================================
-// LEVEL 1: Minute-level Features (聚合分钟条, 窗口: 1/5/15/60 minutes)
+// LEVEL 1: Minute-level Features (分钟级)
 // ============================================================================
 
 #define LEVEL_1_FIELDS(X)                                                                                                                                                           \
@@ -67,7 +67,7 @@
   X(_data_valid,        1, ALL,  META, META,       RAW,        NONE,      "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")
 
 // ============================================================================
-// LEVEL 2: Hour-level Features (小时级, 窗口: 1h/3h/6h/24h)
+// LEVEL 2: Hour-level Features (小时级)
 // ============================================================================
 
 #define LEVEL_2_FIELDS(X)                                                                                                                                                          \
