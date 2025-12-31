@@ -304,9 +304,8 @@ public:
       std::array<float, N> bp{}, ap{}, bv{}, av{};
 
       if (depth_valid) {
-        // Read prices as integers (cents) and convert to yuan (from depth tensor)
-        float mid_cents = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_mid_price, asset_idx));
-        mid = mid_cents * 0.01f;
+        // Read prices (already in yuan, no conversion needed)
+        mid = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_mid_price, asset_idx));
 
         // Capture opening price from first valid tick
         if (opening_price == 0.0f && mid > 0) [[unlikely]] {
@@ -329,11 +328,9 @@ public:
             size_t bv_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_volume] + i;
             size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
 
-            float bp_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
-            float ap_cents = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
-
-            float bp_yuan = bp_cents * 0.01f;
-            float ap_yuan = ap_cents * 0.01f;
+            // Prices are already in yuan (no conversion needed)
+            float bp_yuan = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
+            float ap_yuan = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
 
             // Check if prices are outside cage (sentinel detection)
             bool bp_outside = (bp_yuan < price_min || bp_yuan > price_max);

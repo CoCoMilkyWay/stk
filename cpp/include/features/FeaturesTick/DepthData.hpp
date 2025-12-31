@@ -26,7 +26,7 @@
 template <size_t N_LEVELS = L2::LOB_DEPTH>
 class DepthData {
 public:
-  static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元单位 → 元
+  static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
 
   DepthData(const TickData &tick_data,
             CBuffer<float, L2::BLEN> (&bid_price)[N_LEVELS],
@@ -48,7 +48,7 @@ public:
       const Level *bid_level = depth[L2::LOB_DEPTH + i];
       const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i];
 
-      // 价格: 0.01元 → 元
+      // 价格: Level->price是分(0.01元)单位，需转为元
       bid_price_[i].push_back(static_cast<float>(bid_level->price) * PRICE_SCALE);
       ask_price_[i].push_back(static_cast<float>(ask_level->price) * PRICE_SCALE);
 

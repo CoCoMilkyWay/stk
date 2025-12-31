@@ -45,7 +45,7 @@ public:
       return;
     }
 
-    // 当前中间价 (0.01元单位)
+    // 当前中间价 (元单位)
     float cur_mid = mid_price_[sz - 1];
 
     // 平滑中间价 (当前 + 上一期的平均)
@@ -58,10 +58,10 @@ public:
     // 成交价 (元单位)
     float tp = trade_price_.back();
 
-    // 计算MPB (需要单位一致: 中间价从0.01元转为元)
+    // 计算MPB: TP - 平滑中间价 (单位已统一为元)
     float mpb = 0.0f;
     if (tp > 0.0f && smoothed_mid > 0.0f) {
-      mpb = tp - smoothed_mid * 0.01f;
+      mpb = tp - smoothed_mid;
     }
 
     buffer_.push_back(mpb);
