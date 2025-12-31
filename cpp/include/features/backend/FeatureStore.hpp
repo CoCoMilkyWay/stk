@@ -276,21 +276,33 @@ public:
 
   // ===== TS WORKER API (NEW ARCHITECTURE with two-level sync) =====
 
+  // Thread-local state for ts_update hot path (initialized by ts_worker_init)
+  struct alignas(64) TSWorkerTLS {
+    std::vector<bool> asset_written;  // [asset_id] → written flag
+    size_t worker_min;
+    bool initialized;
+    TSWorkerTLS() : worker_min(SIZE_MAX), initialized(false) {}
+  };
+  static inline thread_local TSWorkerTLS ts_tls_;
+
+  // MUST be called once at worker entry point (cold path)
+  // Resets thread-local state for this worker - handles thread reuse across compute runs
+  void ts_worker_init(int worker_id) const {
+    (void)worker_id;  // worker_id encoded in thread, just for API clarity
+    ts_tls_.asset_written.assign(num_assets_, false);
+    ts_tls_.worker_min = SIZE_MAX;
+    ts_tls_.initialized = true;
+  }
+
   // Update progress after writing to (asset_id, l0_time_index)
   // Called by TS_WRITE_* macros or LimitOrderBook internally
+  // HOT PATH - no checks, assumes ts_worker_init() was called
   void ts_update(const std::string &date, int worker_id, size_t asset_id, size_t l0_time_index) const {
     Slot &slot = ts_get_slot(date, worker_id);
-    // Note: ts_get_slot handles INIT→BUSY transition wait internally, no need to assert here
-
-    // Thread-local tracking: O(1) bitset instead of O(log N) unordered_set
-    static thread_local std::vector<std::vector<bool>> asset_written(num_ts_workers_);
-    if (asset_written[worker_id].empty()) [[unlikely]] {
-      asset_written[worker_id].resize(num_assets_, false);
-    }
 
     // Mark asset as written (O(1), cache-friendly)
-    if (!asset_written[worker_id][asset_id]) [[unlikely]] {
-      asset_written[worker_id][asset_id] = true;
+    if (!ts_tls_.asset_written[asset_id]) [[unlikely]] {
+      ts_tls_.asset_written[asset_id] = true;
       assigned_assets_[worker_id].insert(asset_id); // Global record for ts_done (cold path)
     }
 
@@ -299,13 +311,7 @@ public:
     slot.ts_write_pos[asset_id] = new_pos;
 
     // Update worker_min (only if this asset affects the min)
-    // Initialize to SIZE_MAX (no progress yet)
-    static thread_local std::vector<size_t> worker_local_min;
-    if (worker_local_min.empty()) [[unlikely]] {
-      worker_local_min.resize(num_ts_workers_, SIZE_MAX);
-    }
-
-    size_t old_min = worker_local_min[worker_id];
+    size_t old_min = ts_tls_.worker_min;
 
     // Optimization: skip update if current asset is not the bottleneck
     // If new_pos > worker_min, this asset is ahead, min unchanged, no publish needed
@@ -315,7 +321,7 @@ public:
       for (size_t a : assigned_assets_[worker_id]) {
         new_min = std::min(new_min, slot.ts_write_pos[a]);
       }
-      worker_local_min[worker_id] = new_min;
+      ts_tls_.worker_min = new_min;
       // Publish only when worker_min actually changed (TS→CS sync)
       slot.ts_worker_state[worker_id].store(Slot::pack_worker_state(new_min, false), std::memory_order_release);
     }
@@ -704,7 +710,7 @@ private:
     result = SetEndOfFile(hFile);
     assert(result);
 
-    LARGE_INTEGER zero = {0};
+    LARGE_INTEGER zero = {{0}};
     result = SetFilePointerEx(hFile, zero, NULL, FILE_BEGIN);
     assert(result);
 

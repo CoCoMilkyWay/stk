@@ -40,8 +40,9 @@ static std::string get_timestamp() {
 }
 
 void init(const std::string &temp_base_path) {
+  // Close existing logs first (handles repeated calls across compute runs)
   if (initialized) {
-    return;
+    close();
   }
 
   // Create log directory

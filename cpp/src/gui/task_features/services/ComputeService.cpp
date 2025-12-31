@@ -109,6 +109,9 @@ void ComputeService::start_compute(int num_workers) {
     // Clean up directories before compute
     namespace fs = std::filesystem;
 
+    // Close logger first (releases file handles from previous run)
+    Logger::close();
+
     // Delete and recreate log_dir
     fs::path log_path(data_.config.log_dir);
     if (fs::exists(log_path)) {

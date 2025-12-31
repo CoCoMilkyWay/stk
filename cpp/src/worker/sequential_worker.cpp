@@ -21,6 +21,9 @@ void sequential_worker(int worker_id,
   TraceValue(worker_id);
   TraceThread(("ts_worker_" + std::to_string(worker_id)).c_str());
 
+  // Initialize thread-local state (MUST be first - handles thread reuse across compute runs)
+  store.ts_worker_init(worker_id);
+
   // Initialize as idle (will be updated if assets are assigned)
   progress_handle.set_label("Idle");
   progress_handle.update(1, 1, "");
