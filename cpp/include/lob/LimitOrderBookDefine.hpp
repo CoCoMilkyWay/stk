@@ -388,23 +388,32 @@ struct Level;
 
 // 订单簿逐笔特征流(用于高频因子计算)
 struct LOB_Feature {
+  // =================================================================================================
+  // =========================================[高频逐笔更新]===========================================
+
+  // 当前订单(增删改成交)时间戳
   uint8_t hour = 0;        // 5bit
   uint8_t minute = 0;      // 6bit
   uint8_t second = 0;      // 6bit
   uint8_t millisecond = 0; // 7bit (in 10ms)
 
+  // 当前市场状态,订单类型和方向
   L2::MarketState market_state = L2::MarketState::CLOSED;
   L2::OrderType order_type = L2::OrderType::MAKER;
   L2::OrderDirection order_dir = L2::OrderDirection::BID;
 
+  // 当前订单的价格和数量
   float price = 0.0;   // 14bit - price in 1 RMB unit
   uint32_t volume = 0; // 22bit - in shares (expanded to support up to 4M shares)
 
+  // 全市场挂单量
   uint32_t all_bid_volume = 0; // 22bit - volume of all bid orders in shares
-  uint32_t all_ask_volume = 0; // 22bit - volume of all bid orders in shares
+  uint32_t all_ask_volume = 0; // 22bit - volume of all ask orders in shares
 
-  // N-level depth buffer (订单+时间双驱动):
-  // CBuffer: [0]:卖N, [N-1]:卖1, [N]:买1, ..., [2N-1]:买N, 价格单调下降
-  CBuffer<Level *, 2 * L2::LOB_DEPTH> depth_buffer;
-  bool depth_updated = false; // 低频条件过滤, 表示depth_buffer已更新, 可以进行相关特征计算
+  // =================================================================================================
+  // =========================================[低频定时更新]===========================================
+
+  // 时间驱动(低频): 新订单满足时间间隔(L2_MIN_TIME_INTERVAL_MS)时批量重建
+  CBuffer<Level *, 2 * L2::LOB_DEPTH> depth_buffer; // CBuffer: [0]:卖N, [N-1]:卖1, [N]:买1, ..., [2N-1]:买N, 价格单调下降
+  bool depth_updated = false;                       // 标志位, depth_buffer已更新时为true, 用来采样depth_buffer
 };
