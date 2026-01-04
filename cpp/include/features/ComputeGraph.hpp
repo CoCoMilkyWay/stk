@@ -16,11 +16,11 @@
 #include "features/FeaturesTick/VOI.hpp"
 #include <deque>
 
-// DAG: 静态有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) -> L2 (Hour))
+// DAG: 静态多级有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) -> L2 (Hour))
 class DAG {
 public:
   // ===========================================================================
-  // 共享数据结构（按计算层级排列）
+  // 事件/时间驱动: 底层数据结构 (按计算层级排列, 作为计算图的"时钟")
   // ===========================================================================
   TickData &tick_data;    // L0 输入（外部传入）
   MinuteData minute_data; // L1 输入（内部管理，由 resampler 填充）
@@ -39,7 +39,10 @@ public:
     DeltaT delta_t;
 
     // -------------------------------------------------------------------------
-    // [ON DEPTH] 盘口更新时 - depth_updated == true 时触发
+    // [ON DEPTH] 盘口更新时 - depth_updated == true 时触发:
+    // 1. depth更新间隔大于L2::L2_MIN_TIME_INTERVAL_MS
+    // 2. 当天的第一个depth更新由taker订单驱动(9:25:00早盘集合竞价成交订单释放, 最多持续十几秒)
+    // 3. 后续depth更新由增删改成交任意订单触发(9:30开始, 9:25-9:30期间为订单真空期)
     // -------------------------------------------------------------------------
 
     // --- 基础数据 CBuffer ---
