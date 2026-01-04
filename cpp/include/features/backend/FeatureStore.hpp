@@ -9,18 +9,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
+#include <io.h>
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <share.h>
 #include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
-#include <io.h>
-#include <fcntl.h>
-#include <share.h>
 #include <windows.h>
+
 #undef min
 #undef max
 
@@ -278,7 +279,7 @@ public:
 
   // Thread-local state for ts_update hot path (initialized by ts_worker_init)
   struct alignas(64) TSWorkerTLS {
-    std::vector<bool> asset_written;  // [asset_id] → written flag
+    std::vector<bool> asset_written; // [asset_id] → written flag
     size_t worker_min;
     bool initialized;
     TSWorkerTLS() : worker_min(SIZE_MAX), initialized(false) {}
@@ -288,7 +289,7 @@ public:
   // MUST be called once at worker entry point (cold path)
   // Resets thread-local state for this worker - handles thread reuse across compute runs
   void ts_worker_init(int worker_id) const {
-    (void)worker_id;  // worker_id encoded in thread, just for API clarity
+    (void)worker_id; // worker_id encoded in thread, just for API clarity
     ts_tls_.asset_written.assign(num_assets_, false);
     ts_tls_.worker_min = SIZE_MAX;
     ts_tls_.initialized = true;
@@ -682,7 +683,7 @@ private:
 
   // Write file with header + compressed data
   void write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
-                               const void *raw_data, size_t raw_size) {
+                              const void *raw_data, size_t raw_size) {
     const size_t header_size = 3 * sizeof(size_t);
     const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
     const size_t buffer_size = header_size + compressed_bound;
@@ -693,9 +694,9 @@ private:
     header[1] = F;
     header[2] = A;
 
-    size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size, 
-                                                             buffer.data() + header_size, 
-                                                             compressed_bound);
+    size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size,
+                                                            buffer.data() + header_size,
+                                                            compressed_bound);
     const size_t final_size = header_size + compressed_size;
 
     // Fast write with pre-allocation
@@ -736,7 +737,7 @@ private:
     auto t_start = std::chrono::high_resolution_clock::now();
     Logger::log("worker_" + std::to_string(io_worker_id_), "disk_write: START " + date_str);
 
-    std::string out_dir = output_dir_ + "/" + date_str.substr(0, 4) + "/" + 
+    std::string out_dir = output_dir_ + "/" + date_str.substr(0, 4) + "/" +
                           date_str.substr(4, 2) + "/" + date_str.substr(6, 2);
 
     auto t_before_mkdir = std::chrono::high_resolution_clock::now();
@@ -771,7 +772,7 @@ private:
     // Depth
     {
       const size_t total_bytes = T[0] * DEPTH_TOTAL_WIDTH * A * sizeof(feature_storage_t);
-      write_file_with_header(out_dir + "/depth.zst", T[0], DEPTH_TOTAL_WIDTH, A, 
+      write_file_with_header(out_dir + "/depth.zst", T[0], DEPTH_TOTAL_WIDTH, A,
                              slot->depth_data, total_bytes);
     }
 
@@ -781,8 +782,8 @@ private:
     auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
 
     Logger::log("worker_" + std::to_string(io_worker_id_),
-                "disk_write: END " + date_str + " [mkdir:" + std::to_string(mkdir_ms) + 
-                "ms write:" + std::to_string(write_ms) + "ms total:" + std::to_string(total_ms) + "ms]");
+                "disk_write: END " + date_str + " [mkdir:" + std::to_string(mkdir_ms) +
+                    "ms write:" + std::to_string(write_ms) + "ms total:" + std::to_string(total_ms) + "ms]");
   }
 
 public:
@@ -869,7 +870,7 @@ public:
     _slot.data[lvl][_idx] = (value);                                          \
   } while (0)
 
-// TS_WRITE_FEATURES: Write field range [f_start_enum, f_end_enum) for one asset
+// TS_WRITE_FEATURES: Write field range [f_start_enum, f_end_enum] for one asset (closed interval)
 // Pass enums directly, macro converts to offsets via L##lvl##_FIELD_OFFSETS
 #define TS_WRITE_FEATURES(store, date, lvl, t, a, f_start_enum, f_end_enum, src, worker_id) \
   do {                                                                                      \
@@ -883,8 +884,8 @@ public:
     assert((t) < _T && "time index out of bounds");                                         \
     assert((a) < _A && "asset index out of bounds");                                        \
     assert(_f_start <= _f_end && "invalid feature range");                                  \
-    assert(_f_end <= _F && "feature end out of bounds");                                    \
-    for (size_t _f = _f_start; _f < _f_end; ++_f) {                                         \
+    assert(_f_end < _F && "feature end out of bounds");                                     \
+    for (size_t _f = _f_start; _f <= _f_end; ++_f) {                                        \
       const size_t _idx = ((t) * _F + _f) * _A + (a);                                       \
       _slot.data[lvl][_idx] = (src)[_f - _f_start];                                         \
     }                                                                                       \
@@ -906,7 +907,7 @@ public:
     _slot.depth_data[_idx] = (value);                                       \
   } while (0)
 
-// DEPTH_WRITE_FEATURES: Write depth data (similar to TS_WRITE_FEATURES but for depth store)
+// DEPTH_WRITE_FEATURES: Write depth data [f_start_enum, f_end_enum] (closed interval)
 #define DEPTH_WRITE_FEATURES(store, date, t, a, f_start_enum, f_end_enum, src, worker_id) \
   do {                                                                                    \
     auto &_slot = (store)->ts_get_slot(date, worker_id);                                  \
@@ -919,8 +920,8 @@ public:
     assert((t) < _T && "time index out of bounds");                                       \
     assert((a) < _A && "asset index out of bounds");                                      \
     assert(_f_start <= _f_end && "invalid feature range");                                \
-    assert(_f_end <= _F && "feature end out of bounds");                                  \
-    for (size_t _f = _f_start; _f < _f_end; ++_f) {                                       \
+    assert(_f_end < _F && "feature end out of bounds");                                   \
+    for (size_t _f = _f_start; _f <= _f_end; ++_f) {                                      \
       const size_t _idx = ((t) * _F + _f) * _A + (a);                                     \
       _slot.depth_data[_idx] = (src)[_f - _f_start];                                      \
     }                                                                                     \

@@ -400,6 +400,11 @@ struct OrderFlow {
     // L0 load detection (for auto-zoom)
     bool prev_l0_loading = false;
 
+    // Feature overlay Y2 range cache (for next frame setup)
+    double feat_y2_min = 0.0;
+    double feat_y2_max = 1.0;
+    bool feat_y2_valid = false;
+
     bool detect_and_update_changes();
     void clear();
   };

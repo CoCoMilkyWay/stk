@@ -63,6 +63,7 @@ private:
       // 因子层: 从共享CBuffer读取, 无重复计算
       // =============================================================
       // 订单量类因子
+      voi1_.compute();    // VOI 1档
       voi5_.compute();    // VOI 5档
       voi10_.compute();   // VOI 10档
       oir5_.compute();    // OIR 5档比率
@@ -79,24 +80,24 @@ private:
 
       // 写入因子到输出缓冲区 (顺序与 LEVEL_0_FIELDS 定义一致)
       // 订单量类因子 [0-7]
-      ts_features_buffer_[0] = VOI5_Buffer_.back();
-      ts_features_buffer_[1] = VOI10_Buffer_.back();
-      ts_features_buffer_[2] = OIR5_Buffer_.back();
-      ts_features_buffer_[3] = OIR10_Buffer_.back();
-      ts_features_buffer_[4] = SOIR5_Buffer_.back();
-      ts_features_buffer_[5] = SOIR5s_Buffer_.back();
-      ts_features_buffer_[6] = SOIR10s_Buffer_.back();
-      ts_features_buffer_[7] = SOIR30s_Buffer_.back();
-      // 价格类因子 [8-12]
-      ts_features_buffer_[8] = MPB_Buffer_.back();
-      ts_features_buffer_[9] = MPC1_Buffer_.back();
-      ts_features_buffer_[10] = MPC5_Buffer_.back();
-      ts_features_buffer_[11] = MPC5_Max_Buffer_.back();
-      ts_features_buffer_[12] = MPC5_Skew_Buffer_.back();
+      ts_features_buffer_[0] = VOI1_Buffer_.back();
+      ts_features_buffer_[1] = VOI5_Buffer_.back();
+      ts_features_buffer_[2] = VOI10_Buffer_.back();
+      ts_features_buffer_[3] = OIR5_Buffer_.back();
+      ts_features_buffer_[4] = OIR10_Buffer_.back();
+      ts_features_buffer_[5] = SOIR5_Buffer_.back();
+      ts_features_buffer_[6] = SOIR5s_Buffer_.back();
+      ts_features_buffer_[7] = SOIR10s_Buffer_.back();
+      ts_features_buffer_[8] = SOIR30s_Buffer_.back();
+      ts_features_buffer_[9] = MPB_Buffer_.back();
+      ts_features_buffer_[10] = MPC1_Buffer_.back();
+      ts_features_buffer_[11] = MPC5_Buffer_.back();
+      ts_features_buffer_[12] = MPC5_Max_Buffer_.back();
+      ts_features_buffer_[13] = MPC5_Skew_Buffer_.back();
     };
 
-    // Write TS features: [voi5, cs_spread_rank)
-    TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, L0_FieldOffset::voi5, L0_FieldOffset::cs_spread_rank, ts_features_buffer_, worker_id_);
+    // Write TS features [voi1, mpc5_skew]
+    TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::mpc5_skew, ts_features_buffer_, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
@@ -126,8 +127,8 @@ private:
     lob_depth_buffer_[4 * N] = MidPrice_.back();
     lob_depth_buffer_[4 * N + 1] = 1.0f;
 
-    // Batch write: _bid_price to _depth_valid (inclusive, now using depth store)
-    DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, DepthFieldOffset::_bid_price, DepthFieldOffset::_data_valid, lob_depth_buffer_, worker_id_);
+    // Batch write [_bid_price, _depth_valid]
+    DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, 0, DepthFieldOffset::_depth_valid, lob_depth_buffer_, worker_id_);
   }
 
   // Get mid price from CBuffer (元单位, 已在数据层转换)
@@ -165,51 +166,47 @@ private:
   // [ON DEPTH] 盘口更新时 - depth_updated == true 时触发
   // ===========================================================================
 
-  // --- 基础数据 CBuffer (单位: 价格=元, 数量=股) ---
+  // --- 基础数据类 ---
   CBuffer<float, L2::BLEN> BidPrice_[L2::LOB_DEPTH]; // 买1-N价 (元)
   CBuffer<float, L2::BLEN> AskPrice_[L2::LOB_DEPTH]; // 卖1-N价 (元)
   CBuffer<float, L2::BLEN> BidQty_[L2::LOB_DEPTH];   // 买1-N量 (股, 正值)
   CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];   // 卖1-N量 (股, 负值)
+  CBuffer<float, L2::BLEN> BidAmt_[L2::LOB_DEPTH];   // 买1-N金额 (万元, 正值)
+  CBuffer<float, L2::BLEN> AskAmt_[L2::LOB_DEPTH];   // 卖1-N金额 (万元, 负值)
   CBuffer<float, L2::BLEN> MidPrice_;                // 中间价 (元)
-  CBuffer<float, L2::BLEN> Spread_;                  // 买卖价差 (元)
   CBuffer<float, L2::BLEN> MicroPrice_;              // 微观价格
+  CBuffer<float, L2::BLEN> Spread_;                  // 买卖价差 (元)
 
-  // --- 基础数据提取类
-  DepthData<L2::LOB_DEPTH> depth_data_{tick_data_, BidPrice_, AskPrice_, BidQty_, AskQty_};
+  DepthData<L2::LOB_DEPTH> depth_data_{tick_data_, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_};
   MidPrice mid_price_{BidPrice_[0], AskPrice_[0], MidPrice_};
   MicroPrice micro_price_{tick_data_, MicroPrice_};
   Spread spread_{BidPrice_[0], AskPrice_[0], Spread_};
 
-  // --- 因子 CBuffer (中信建投研报 2020.07, 2021.01) ---
-  // 订单量类因子
-  CBuffer<float, L2::BLEN> VOI5_Buffer_;    // VOI 5档加权
-  CBuffer<float, L2::BLEN> VOI10_Buffer_;   // VOI 10档加权 (exploit 30档)
-  CBuffer<float, L2::BLEN> OIR5_Buffer_;    // OIR 5档加权比率
-  CBuffer<float, L2::BLEN> OIR10_Buffer_;   // OIR 10档加权
-  CBuffer<float, L2::BLEN> SOIR5_Buffer_;   // SOIR 5档加权
-  CBuffer<float, L2::BLEN> SOIR5s_Buffer_;  // SOIR 第5档单独 (研报:单档效果更好)
-  CBuffer<float, L2::BLEN> SOIR10s_Buffer_; // SOIR 第10档单独
-  CBuffer<float, L2::BLEN> SOIR30s_Buffer_; // SOIR 第30档单独 (深度信息)
-
-  // 价格类因子
+  // --- 因子计算类 ---
+  CBuffer<float, L2::BLEN> VOI1_Buffer_;      // VOI 1档
+  CBuffer<float, L2::BLEN> VOI5_Buffer_;      // VOI 5档加权
+  CBuffer<float, L2::BLEN> VOI10_Buffer_;     // VOI 10档加权 (exploit 30档)
+  CBuffer<float, L2::BLEN> OIR5_Buffer_;      // OIR 5档加权比率
+  CBuffer<float, L2::BLEN> OIR10_Buffer_;     // OIR 10档加权
+  CBuffer<float, L2::BLEN> SOIR5_Buffer_;     // SOIR 5档加权
+  CBuffer<float, L2::BLEN> SOIR5s_Buffer_;    // SOIR 第5档单独 (研报:单档效果更好)
+  CBuffer<float, L2::BLEN> SOIR10s_Buffer_;   // SOIR 第10档单独
+  CBuffer<float, L2::BLEN> SOIR30s_Buffer_;   // SOIR 第30档单独 (深度信息)
   CBuffer<float, L2::BLEN> MPB_Buffer_;       // 市价偏离度
   CBuffer<float, L2::BLEN> MPC1_Buffer_;      // 中间价变化率 lag=1
   CBuffer<float, L2::BLEN> MPC5_Buffer_;      // 中间价变化率 lag=5
   CBuffer<float, L2::BLEN> MPC5_Max_Buffer_;  // MPC5日内最大值 (IC -9.39%)
   CBuffer<float, L2::BLEN> MPC5_Skew_Buffer_; // MPC5日内偏度 (夏普3.07)
 
-  // --- 因子计算类 ---
-  // 订单量类 (研报: OIR比VOI表现更好, 单档SOIR比加权更好)
-  VOI<5> voi5_{BidPrice_, AskPrice_, BidQty_, AskQty_, VOI5_Buffer_};
-  VOI<10> voi10_{BidPrice_, AskPrice_, BidQty_, AskQty_, VOI10_Buffer_};
-  OIR<5> oir5_{BidQty_, AskQty_, OIR5_Buffer_};
-  OIR<10> oir10_{BidQty_, AskQty_, OIR10_Buffer_};
-  SOIR<5, false> soir5_{BidQty_, AskQty_, SOIR5_Buffer_};     // 加权
-  SOIR<5, true> soir5s_{BidQty_, AskQty_, SOIR5s_Buffer_};    // 单档
-  SOIR<10, true> soir10s_{BidQty_, AskQty_, SOIR10s_Buffer_}; // 单档
-  SOIR<30, true> soir30s_{BidQty_, AskQty_, SOIR30s_Buffer_}; // 单档深度
-
-  // 价格类 (研报: MPC5_neut最佳, MPC5_skew与常用因子相关性最低)
+  VOI<1> voi1_{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI1_Buffer_};
+  VOI<5> voi5_{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI5_Buffer_};
+  VOI<10> voi10_{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI10_Buffer_};
+  OIR<5> oir5_{BidAmt_, AskAmt_, OIR5_Buffer_};
+  OIR<10> oir10_{BidAmt_, AskAmt_, OIR10_Buffer_};
+  SOIR<5, false> soir5_{BidAmt_, AskAmt_, SOIR5_Buffer_};     // 加权
+  SOIR<5, true> soir5s_{BidAmt_, AskAmt_, SOIR5s_Buffer_};    // 单档
+  SOIR<10, true> soir10s_{BidAmt_, AskAmt_, SOIR10s_Buffer_}; // 单档
+  SOIR<30, true> soir30s_{BidAmt_, AskAmt_, SOIR30s_Buffer_}; // 单档深度
   MPC<1> mpc1_{MidPrice_, MPC1_Buffer_};
   MPCWithStats<5> mpc5_{MidPrice_, MPC5_Buffer_, MPC5_Max_Buffer_, MPC5_Skew_Buffer_};
 

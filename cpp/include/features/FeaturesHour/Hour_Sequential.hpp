@@ -59,7 +59,8 @@ private:
     }
 
     // Write TS features: [hour_ret_12h_mom, cs_hour_return_beta)
-    TS_WRITE_FEATURES(store_, date_str_, 2, t, asset_id_, L2_FieldOffset::hour_ret_12h_mom, L2_FieldOffset::cs_hour_return_beta, features, worker_id_);
+    // Write TS features [hour_ret_12h_mom, hour_overnight_gap]
+    TS_WRITE_FEATURES(store_, date_str_, 2, t, asset_id_, 0, L2_FieldOffset::hour_overnight_gap, features, worker_id_);
 
     // Write data validity flag (event-driven sparsity marker)
     TS_WRITE_SINGLE(store_, date_str_, 2, t, L2_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);

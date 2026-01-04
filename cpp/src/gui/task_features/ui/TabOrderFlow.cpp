@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 namespace GUI::Features {
 
@@ -385,7 +386,7 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
 // L1 Plot Renderer
 // ============================================================================
 
-static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool force_reset) {
+static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature, size_t asset_idx, float height, bool force_reset) {
   if (!of.l1.loaded || asset_idx >= of.l1.plot_data.size()) {
     ImGui::TextDisabled("No L1 data available");
     return;
@@ -433,6 +434,25 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
       ui.l1_cached_num_days = of.l1.num_days;
     }
 
+    // ========================================================================
+    // Feature Cache Check (before any plotting to setup Y2 axis if needed)
+    // ========================================================================
+    const auto &fc = dist.feature_cache;
+    const auto &sel = feature.selection;
+    const bool cache_matches = fc.valid && !fc.days.empty() &&
+                               fc.level == sel.selected_level &&
+                               fc.feature_idx == sel.primary_feature_idx;
+
+    // Setup Y2 axis if we have valid feature cache
+    // First frame: use placeholder range, subsequent frames use cached range
+    const bool setup_y2 = cache_matches;
+    if (setup_y2) {
+      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
+      if (ui.feat_y2_valid) {
+        ImPlot::SetupAxisLimits(ImAxis_Y2, ui.feat_y2_min, ui.feat_y2_max, ImPlotCond_Always);
+      }
+    }
+
     if (!ui.l1_tick_positions.empty()) {
       ImPlot::SetupAxisTicks(ImAxis_X1, ui.l1_tick_positions.data(),
                              static_cast<int>(ui.l1_tick_positions.size()), ui.l1_tick_labels.data());
@@ -441,6 +461,112 @@ static void RenderL1Plot(OrderFlow &of, size_t asset_idx, float height, bool for
     if (!pd.x.empty()) {
       PlotCandlestick("OHLC", pd.x.data(), pd.open.data(), pd.high.data(),
                       pd.low.data(), pd.close.data(), static_cast<int>(pd.x.size()));
+
+      // ========================================================================
+      // Feature Plot Overlay (if feature_cache matches current selection)
+      // ========================================================================
+      if (cache_matches) {
+        // Get current visible X range
+        ImPlotRect limits = ImPlot::GetPlotLimits();
+        double view_x_min = limits.X.Min;
+        double view_x_max = limits.X.Max;
+
+        // Collect feature data points in visible range
+        std::vector<double> feat_x;
+        std::vector<double> feat_high, feat_low;
+        feat_x.reserve(256);
+        feat_high.reserve(256);
+        feat_low.reserve(256);
+
+        double feat_y_min = std::numeric_limits<double>::max();
+        double feat_y_max = std::numeric_limits<double>::lowest();
+
+        // Iterate through days that intersect with visible range
+        for (size_t d = 0; d < of.l1.dates.size(); ++d) {
+          double day_x_start = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
+          double day_x_end = day_x_start + OrderFlowConst::L1_CAPACITY;
+
+          // Skip days outside visible range
+          if (day_x_end < view_x_min || day_x_start > view_x_max)
+            continue;
+
+          // Find this date in feature cache
+          const std::string &date = of.l1.dates[d];
+          auto it = fc.date_to_idx.find(date);
+          if (it == fc.date_to_idx.end())
+            continue;
+
+          const auto &day_fc = fc.days[it->second];
+          // Check asset index is valid
+          if (asset_idx >= day_fc.asset_bars.size())
+            continue;
+
+          const auto &asset_bars = day_fc.asset_bars[asset_idx];
+          for (size_t m = 0; m < asset_bars.size(); ++m) {
+            const auto &bar = asset_bars[m];
+            if (!bar.valid)
+              continue;
+
+            double x = day_x_start + static_cast<double>(m);
+            if (x < view_x_min || x > view_x_max)
+              continue;
+
+            feat_x.push_back(x);
+            feat_high.push_back(static_cast<double>(bar.high));
+            feat_low.push_back(static_cast<double>(bar.low));
+
+            // Track min/max for dynamic Y2 range
+            if (bar.high > feat_y_max)
+              feat_y_max = bar.high;
+            if (bar.low < feat_y_min)
+              feat_y_min = bar.low;
+          }
+        }
+
+        // Draw feature plot if we have data
+        if (!feat_x.empty() && feat_y_max > feat_y_min) {
+          // Cache Y range for next frame's axis setup
+          ui.feat_y2_min = feat_y_min;
+          ui.feat_y2_max = feat_y_max;
+          ui.feat_y2_valid = true;
+
+          // Plot on Y2 axis (right side shows feature scale)
+          ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+
+          // Draw shaded area between high and low (subtle teal fill)
+          ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.2f, 0.6f, 0.7f, 0.2f));
+          ImPlot::PlotShaded("Feature", feat_x.data(), feat_low.data(),
+                             feat_high.data(), static_cast<int>(feat_x.size()));
+          ImPlot::PopStyleColor();
+
+          // Check if "Feature" legend item is hidden (sync visibility for all feature plots)
+          ImPlotItem* feature_item = ImPlot::GetCurrentPlot()->Items.GetItem("Feature");
+          bool hidden = feature_item ? !feature_item->Show : false;
+
+          // Draw high line (step plot, brighter teal)
+          ImPlot::HideNextItem(hidden, ImPlotCond_Always);
+          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.95f));
+          ImPlot::PlotStairs("##FeatureHigh", feat_x.data(), feat_high.data(),
+                             static_cast<int>(feat_x.size()));
+          ImPlot::PopStyleColor();
+
+          // Draw low line (step plot, darker teal)
+          ImPlot::HideNextItem(hidden, ImPlotCond_Always);
+          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.15f, 0.5f, 0.6f, 0.9f));
+          ImPlot::PlotStairs("##FeatureLow", feat_x.data(), feat_low.data(),
+                             static_cast<int>(feat_x.size()));
+          ImPlot::PopStyleColor();
+
+          // Switch back to Y1 for subsequent plots
+          ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+        } else {
+          // No valid feature data in view, invalidate cache
+          ui.feat_y2_valid = false;
+        }
+      } else {
+        // Cache not matching, invalidate
+        ui.feat_y2_valid = false;
+      }
 
       // Anchor: use snapped X (ui.l1_anchor_x is source of truth)
       double anchor_x = ui.l1_anchor_x;
@@ -712,7 +838,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   RenderStatusBar(of, asset_idx);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
-  RenderL1Plot(of, asset_idx, kline_height, params_changed);
+  RenderL1Plot(of, data.dist, data.feature, asset_idx, kline_height, params_changed);
 
   ImGui::EndChild(); // BottomSection
 }

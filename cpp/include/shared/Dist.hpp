@@ -5,8 +5,12 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -419,6 +423,115 @@ struct Dist {
   StabilityViz stability;
 
   // ==========================================================================
+  // Feature Cache (for OrderFlow plot overlay)
+  // ==========================================================================
+  // Stores resampled feature data at minute granularity (L1 index 0-254)
+  // All levels (L0/L1/L2) are converted to minute-level OHLC bars
+
+  struct FeatureCache {
+    // Single minute bar (OHLC aggregation)
+    struct MinuteBar {
+      float open = 0.0f;
+      float high = std::numeric_limits<float>::lowest();
+      float low = std::numeric_limits<float>::max();
+      float close = 0.0f;
+      bool valid = false;
+
+      void update(float val) {
+        if (std::isnan(val) || std::isinf(val))
+          return;
+        if (!valid) {
+          open = val;
+          high = val;
+          low = val;
+          valid = true;
+        }
+        if (val > high)
+          high = val;
+        if (val < low)
+          low = val;
+        close = val;
+      }
+
+      void clear() {
+        open = 0.0f;
+        high = std::numeric_limits<float>::lowest();
+        low = std::numeric_limits<float>::max();
+        close = 0.0f;
+        valid = false;
+      }
+    };
+
+    // Single day cache (per asset)
+    struct DayCache {
+      std::string date;                                    // "YYYYMMDD"
+      std::vector<std::vector<MinuteBar>> asset_bars;      // [asset_idx][minute_idx]
+
+      void init(size_t n_assets) {
+        asset_bars.resize(n_assets);
+        for (auto &bars : asset_bars) {
+          bars.resize(255);
+          for (auto &bar : bars)
+            bar.clear();
+        }
+      }
+
+      void clear() {
+        date.clear();
+        asset_bars.clear();
+      }
+    };
+
+    std::vector<DayCache> days;              // sorted by date (after finalize)
+    std::map<std::string, size_t> date_to_idx;
+    size_t n_assets = 0;                     // number of assets
+    int level = -1;
+    int feature_idx = -1;
+    bool valid = false;
+
+    // Mutex for thread-safe day insertion during parallel build
+    mutable std::mutex mutex;
+
+    void clear() {
+      std::lock_guard<std::mutex> lock(mutex);
+      days.clear();
+      date_to_idx.clear();
+      n_assets = 0;
+      level = -1;
+      feature_idx = -1;
+      valid = false;
+    }
+
+    // Thread-safe: add days from a month (called from build_month)
+    void add_days(std::vector<DayCache> &&month_days) {
+      std::lock_guard<std::mutex> lock(mutex);
+      for (auto &day : month_days) {
+        days.push_back(std::move(day));
+      }
+    }
+
+    // Build date index after all months are processed (called from finalize)
+    void build_index() {
+      // Sort by date
+      std::sort(days.begin(), days.end(),
+                [](const DayCache &a, const DayCache &b) { return a.date < b.date; });
+      // Build index
+      date_to_idx.clear();
+      for (size_t i = 0; i < days.size(); ++i) {
+        date_to_idx[days[i].date] = i;
+      }
+      valid = true;
+    }
+
+    // Check if cache matches current selection
+    bool matches(int lvl, int feat_idx) const {
+      return valid && level == lvl && feature_idx == feat_idx;
+    }
+  };
+
+  FeatureCache feature_cache;
+
+  // ==========================================================================
   // Methods - Build
   // ==========================================================================
 
@@ -461,6 +574,7 @@ struct Dist {
     global_by_asset.clear();
     global_total.clear();
     stability.clear();
+    feature_cache.clear();
   }
 
   bool need_rebuild(int feat_idx, int lvl, const std::string &range) const {

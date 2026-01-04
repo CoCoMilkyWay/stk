@@ -13,6 +13,9 @@
 //   VOI: 绝对增量差，受股票成交量规模影响
 //   OIR: 比率形式，[-1, 1]标准化，跨股票可比
 //
+// 注意:
+//   使用金额(万元)而非数量(股)，保证截面可比性
+//
 // 研报发现:
 //   - 高频正向相关 (分钟IC 12.92%)
 //   - 低频反转 (月频IC -3.70%)
@@ -33,10 +36,11 @@ class OIR {
                 "N_LEVELS must be 1-DEPTH_SIZE");
 
 public:
-  OIR(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
+  // 使用金额(万元)而非数量(股)，保证截面可比性
+  OIR(const CBuffer<float, L2::BLEN> (&bid_amt)[DEPTH_SIZE],
+      const CBuffer<float, L2::BLEN> (&ask_amt)[DEPTH_SIZE],
       CBuffer<float, L2::BLEN> &buffer)
-      : bid_qty_(bid_qty), ask_qty_(ask_qty), buffer_(buffer) {
+      : bid_amt_(bid_amt), ask_amt_(ask_amt), buffer_(buffer) {
     // 初始化权重: w_i = 1 - (i-1)/N_LEVELS
     weight_sum_ = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
@@ -46,22 +50,22 @@ public:
   }
 
   void compute() {
-    // 计算加权委托量
+    // 计算加权委托金额
     float weighted_bid = 0.0f;
     float weighted_ask = 0.0f;
 
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      float bid_q = bid_qty_[i].back();
-      float ask_q = -ask_qty_[i].back(); // 转为正数
-      weighted_bid += weights_[i] * bid_q;
-      weighted_ask += weights_[i] * ask_q;
+      float bid_a = bid_amt_[i].back();
+      float ask_a = -ask_amt_[i].back(); // 转为正数
+      weighted_bid += weights_[i] * bid_a;
+      weighted_ask += weights_[i] * ask_a;
     }
 
     // 归一化
     weighted_bid /= weight_sum_;
     weighted_ask /= weight_sum_;
 
-    // OIR = (V^B - V^A) / (V^B + V^A)
+    // OIR = (A^B - A^A) / (A^B + A^A)
     float sum = weighted_bid + weighted_ask;
     float oir = 0.0f;
     if (sum > 1e-6f) {
@@ -74,8 +78,8 @@ public:
   float back() const { return buffer_.back(); }
 
 private:
-  const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
+  const CBuffer<float, L2::BLEN> (&bid_amt_)[DEPTH_SIZE];
+  const CBuffer<float, L2::BLEN> (&ask_amt_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &buffer_;
 
   float weights_[N_LEVELS];

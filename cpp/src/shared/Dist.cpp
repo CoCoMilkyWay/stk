@@ -131,6 +131,14 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
       v.reserve((total_T * A) / 7);
   }
 
+  // Prepare per-day feature cache for this month (all assets)
+  std::vector<FeatureCache::DayCache> month_feature_days;
+  month_feature_days.resize(month_tensor.dates.size());
+  for (size_t d = 0; d < month_tensor.dates.size(); ++d) {
+    month_feature_days[d].date = month_tensor.dates[d];
+    month_feature_days[d].init(A);
+  }
+
   // Process entire month (zero-copy pointers into month_tensor.data)
   {
     TraceN("ProcessSamples");
@@ -146,20 +154,24 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
       size_t t_start = month_tensor.day_offsets[day_idx];
       size_t t_end = month_tensor.day_offsets[day_idx + 1];
 
+      auto &day_fc = month_feature_days[day_idx];
+
       for (size_t t = t_start; t < t_end; ++t) {
+        size_t local_t = t - t_start;
+
         // Convert time index to clock hour (按小时整数边界分配)
         uint8_t hour;
         if (level == 0) {
           // Level 0 (tick/second): use index2tick
-          ClockTime time = index2tick(t - t_start);
+          ClockTime time = index2tick(local_t);
           hour = time.hour;
         } else if (level == 1) {
           // Level 1 (minute): use index2minute
-          ClockTime time = index2minute(t - t_start);
+          ClockTime time = index2minute(local_t);
           hour = time.hour;
         } else {
           // Level 2 (hour): use index2hour (returns hour directly)
-          hour = index2hour(t - t_start);
+          hour = index2hour(local_t);
         }
 
         // Zero-copy pointers into month tensor
@@ -199,10 +211,38 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
           asset_samples[a].push_back(val);
           hour_samples[hour].push_back(val);
           weekday_samples[weekday].push_back(val);
+
+          // ================================================================
+          // Feature Cache: resample to minute-level OHLC (all assets)
+          // ================================================================
+          {
+            auto &asset_bars = day_fc.asset_bars[a];
+            if (level == 0) {
+              // L0 秒级 → 分钟级 OHLC (use FeaturesDefine.hpp)
+              size_t min_idx = tick2minute(local_t);
+              assert(min_idx < 255);
+              asset_bars[min_idx].update(val);
+            } else if (level == 1) {
+              // L1 分钟级 → 直接使用
+              assert(local_t < 255);
+              asset_bars[local_t].update(val);
+            } else {
+              // L2 小时级 → 展开到分钟范围 (use FeaturesDefine.hpp)
+              size_t min_start = hour2minute(local_t);
+              size_t min_end = hour2minute(local_t + 1);
+              for (size_t m = min_start; m < min_end; ++m) {
+                asset_bars[m].update(val);
+              }
+            }
+          }
         }
       }
+
     }
   }
+
+  // Add feature cache days (thread-safe)
+  feature_cache.add_days(std::move(month_feature_days));
 
   // Batch insert once per month (amortized allocation)
   {
@@ -265,6 +305,12 @@ void Dist::build_all(const std::vector<std::string> &months,
   for (size_t i = 0; i < months.size(); ++i) {
     cache[i].month = months[i];
   }
+
+  // Initialize feature cache (metadata only, days added in build_month)
+  feature_cache.clear();
+  feature_cache.level = feature.selection.selected_level;
+  feature_cache.feature_idx = feature.selection.primary_feature_idx;
+  feature_cache.n_assets = asset.items.size();
 
   // Dispatch tasks
   for (size_t i = 0; i < months.size(); ++i) {
@@ -514,6 +560,9 @@ void Dist::finalize() {
     }
   }
 
-  // 5. Query with MONTH grouping (default)
+  // 5. Build feature cache index
+  feature_cache.build_index();
+
+  // 6. Query with MONTH grouping (default)
   query(Input::GroupBy::MONTH);
 }

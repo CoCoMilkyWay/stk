@@ -26,6 +26,9 @@
 //   - N_LEVELS: 使用档位数 (1-30)
 //   - SINGLE_LEVEL: 单档模式 (true=只用第N_LEVELS档, false=1~N_LEVELS加权)
 //   - 衰减权重: w_i = 1 - (i-1)/N_LEVELS
+//
+// 注意:
+//   使用金额(万元)而非数量(股)，保证截面可比性
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -38,10 +41,11 @@ class SOIR {
                 "N_LEVELS must be 1-DEPTH_SIZE");
 
 public:
-  SOIR(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
-       const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
+  // 使用金额(万元)而非数量(股)，保证截面可比性
+  SOIR(const CBuffer<float, L2::BLEN> (&bid_amt)[DEPTH_SIZE],
+       const CBuffer<float, L2::BLEN> (&ask_amt)[DEPTH_SIZE],
        CBuffer<float, L2::BLEN> &buffer)
-      : bid_qty_(bid_qty), ask_qty_(ask_qty), buffer_(buffer) {
+      : bid_amt_(bid_amt), ask_amt_(ask_amt), buffer_(buffer) {
     if constexpr (!SINGLE_LEVEL) {
       // 加权模式: 初始化权重 w_i = 1 - (i-1)/N_LEVELS
       weight_sum_ = 0.0f;
@@ -56,26 +60,26 @@ public:
     if constexpr (SINGLE_LEVEL) {
       // 单档模式: 只计算第 N_LEVELS 档 (0-indexed: N_LEVELS-1)
       constexpr size_t level = N_LEVELS - 1;
-      float bid_q = bid_qty_[level].back();
-      float ask_q = -ask_qty_[level].back();
-      float sum_qty = bid_q + ask_q;
+      float bid_a = bid_amt_[level].back();
+      float ask_a = -ask_amt_[level].back();
+      float sum_amt = bid_a + ask_a;
 
       float soir = 0.0f;
-      if (sum_qty > 1e-6f) {
-        soir = (bid_q - ask_q) / sum_qty;
+      if (sum_amt > 1e-6f) {
+        soir = (bid_a - ask_a) / sum_amt;
       }
       buffer_.push_back(soir);
     } else {
       // 加权模式: 1~N_LEVELS档加权平均
       float soir = 0.0f;
       for (size_t i = 0; i < N_LEVELS; ++i) {
-        float bid_q = bid_qty_[i].back();
-        float ask_q = -ask_qty_[i].back();
-        float sum_qty = bid_q + ask_q;
+        float bid_a = bid_amt_[i].back();
+        float ask_a = -ask_amt_[i].back();
+        float sum_amt = bid_a + ask_a;
 
         float soir_i = 0.0f;
-        if (sum_qty > 1e-6f) {
-          soir_i = (bid_q - ask_q) / sum_qty;
+        if (sum_amt > 1e-6f) {
+          soir_i = (bid_a - ask_a) / sum_amt;
         }
         soir += weights_[i] * soir_i;
       }
@@ -87,8 +91,8 @@ public:
   float back() const { return buffer_.back(); }
 
 private:
-  const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
+  const CBuffer<float, L2::BLEN> (&bid_amt_)[DEPTH_SIZE];
+  const CBuffer<float, L2::BLEN> (&ask_amt_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &buffer_;
 
   // 仅加权模式使用

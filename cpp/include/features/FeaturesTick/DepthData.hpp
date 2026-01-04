@@ -14,6 +14,7 @@
 // 单位标准 (统一转换, 下游无需再处理):
 //   价格: 元 (RMB)
 //   数量: 股 (shares)
+//   金额: 万元 (10000 RMB)
 //
 // 使用方式:
 //   每tick先调用 compute()，因子从 CBuffer 读取数据
@@ -26,18 +27,23 @@
 template <size_t N_LEVELS = L2::LOB_DEPTH>
 class DepthData {
 public:
-  static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
+  static constexpr float PRICE_SCALE = 0.01f;  // Level->price 是0.01元(分)单位 → 转为元
+  static constexpr float AMT_SCALE = 1e-4f;    // 元 → 万元
 
   DepthData(const TickData &tick_data,
             CBuffer<float, L2::BLEN> (&bid_price)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&ask_price)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&bid_qty)[N_LEVELS],
-            CBuffer<float, L2::BLEN> (&ask_qty)[N_LEVELS])
+            CBuffer<float, L2::BLEN> (&ask_qty)[N_LEVELS],
+            CBuffer<float, L2::BLEN> (&bid_amt)[N_LEVELS],
+            CBuffer<float, L2::BLEN> (&ask_amt)[N_LEVELS])
       : tick_data_(tick_data),
         bid_price_(bid_price),
         ask_price_(ask_price),
         bid_qty_(bid_qty),
-        ask_qty_(ask_qty) {}
+        ask_qty_(ask_qty),
+        bid_amt_(bid_amt),
+        ask_amt_(ask_amt) {}
 
   void compute() {
     const auto &depth = tick_data_.lob.depth_buffer;
@@ -49,12 +55,20 @@ public:
       const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i];
 
       // 价格: Level->price是分(0.01元)单位，需转为元
-      bid_price_[i].push_back(static_cast<float>(bid_level->price) * PRICE_SCALE);
-      ask_price_[i].push_back(static_cast<float>(ask_level->price) * PRICE_SCALE);
+      float bid_price = static_cast<float>(bid_level->price) * PRICE_SCALE;
+      float ask_price = static_cast<float>(ask_level->price) * PRICE_SCALE;
+      bid_price_[i].push_back(bid_price);
+      ask_price_[i].push_back(ask_price);
 
       // 数量: 股, 卖方保持负值
-      bid_qty_[i].push_back(static_cast<float>(bid_level->net_quantity));
-      ask_qty_[i].push_back(static_cast<float>(ask_level->net_quantity));
+      float bid_qty = static_cast<float>(bid_level->net_quantity);
+      float ask_qty = static_cast<float>(ask_level->net_quantity);
+      bid_qty_[i].push_back(bid_qty);
+      ask_qty_[i].push_back(ask_qty);
+
+      // 金额: 万元 = price * qty / 10000, 卖方保持负值
+      bid_amt_[i].push_back(bid_price * bid_qty * AMT_SCALE);
+      ask_amt_[i].push_back(ask_price * ask_qty * AMT_SCALE);
     }
   }
 
@@ -66,4 +80,6 @@ private:
   CBuffer<float, L2::BLEN> (&ask_price_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&bid_qty_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&ask_qty_)[N_LEVELS];
+  CBuffer<float, L2::BLEN> (&bid_amt_)[N_LEVELS];
+  CBuffer<float, L2::BLEN> (&ask_amt_)[N_LEVELS];
 };

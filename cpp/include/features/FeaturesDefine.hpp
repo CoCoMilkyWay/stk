@@ -14,8 +14,9 @@
 
 #define LEVEL_0_FIELDS(X)                                                                                                                                                                                              \
   /* ======== 订单量类因子 (Order Flow Imbalance) ======== */                                                                                                                                                           \
-  X(voi5,               1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "VOI 5-Level",            "订单失衡5档",    "ΔV^B - ΔV^A, 5档加权",        "委托量增量差(价格变动规则)")         \
-  X(voi10,              1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "VOI 10-Level",           "订单失衡10档",   "ΔV^B - ΔV^A, 10档加权",       "深度订单失衡(exploit 30档)")        \
+  X(voi1,               1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "VOI 1-Level",            "订单失衡1档",    "ΔV^B - ΔV^A, 1档",            "订单失衡1档")                       \
+  X(voi5,               1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "VOI 5-Level",            "订单失衡5档",    "ΔV^B - ΔV^A, 5档加权",        "订单失衡5档")                       \
+  X(voi10,              1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "VOI 10-Level",           "订单失衡10档",   "ΔV^B - ΔV^A, 10档加权",       "订单失衡10档")                      \
   X(oir5,               1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "OIR 5-Level",            "失衡率5档",      "(V^B-V^A)/(V^B+V^A)",         "订单失衡率[-1,1]标准化")            \
   X(oir10,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "OIR 10-Level",           "失衡率10档",     "(V^B-V^A)/(V^B+V^A), 10档",   "深度失衡率(研报:优于VOI)")           \
   X(soir5,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR 5-Level Weighted",  "逐档失衡5档",    "Σw_i×SOIR_i/Σw_i",            "逐档订单失衡率加权")                \
@@ -351,6 +352,37 @@ inline constexpr uint8_t index2hour(size_t hour_index) {
   constexpr uint8_t hour_map[] = {9, 10, 11, 13, 14};
   return (hour_index < 5) ? hour_map[hour_index] : 14;
 }
+
+// ============================================================================
+// CROSS-LEVEL INDEX CONVERSION
+// ============================================================================
+
+// Convert L0 tick index (0-15299) to L1 minute index (0-254)
+// Morning: tick 0-8099 → minute 0-134
+// Afternoon: tick 8100-15299 → minute 135-254
+inline constexpr size_t tick2minute(size_t tick_idx) {
+  if (tick_idx < 8100) {
+    return tick_idx / 60;
+  } else {
+    return 135 + (tick_idx - 8100) / 60;
+  }
+}
+
+// Convert L2 hour index (0-4) to L1 minute start index
+// Hour 0 (9:xx):  → 0   (09:15-09:59)
+// Hour 1 (10:xx): → 45  (10:00-10:59)
+// Hour 2 (11:xx): → 105 (11:00-11:29)
+// Hour 3 (13:xx): → 135 (13:00-13:59)
+// Hour 4 (14:xx): → 195 (14:00-14:59)
+// Use hour2minute(idx+1) - hour2minute(idx) to get range length
+inline constexpr size_t hour2minute(size_t hour_idx) {
+  constexpr size_t minute_starts[] = {0, 45, 105, 135, 195, 255};
+  return (hour_idx < 5) ? minute_starts[hour_idx] : 255;
+}
+
+// ============================================================================
+// FORMAT UTILITIES
+// ============================================================================
 
 // Format time as string "HH:MM:SS" (for display)
 inline void format_time(char *buf, size_t buf_size, const ClockTime &t) {

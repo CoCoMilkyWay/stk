@@ -27,6 +27,9 @@
 // 参数:
 //   - n_levels: 使用档位数 (1-5)
 //   - 衰减权重: w_i = 1 - (i-1)/n_levels
+//
+// 注意:
+//   使用金额(万元)而非数量(股)，保证截面可比性
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -38,15 +41,16 @@ class VOI {
 
 public:
   // 从共享CBuffer读取盘口数据 (只使用前N_LEVELS档)
+  // 使用金额(万元)而非数量(股)，保证截面可比性
   VOI(const CBuffer<float, L2::BLEN> (&bid_price)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&ask_price)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
+      const CBuffer<float, L2::BLEN> (&bid_amt)[DEPTH_SIZE],
+      const CBuffer<float, L2::BLEN> (&ask_amt)[DEPTH_SIZE],
       CBuffer<float, L2::BLEN> &buffer)
       : bid_price_(bid_price),
         ask_price_(ask_price),
-        bid_qty_(bid_qty),
-        ask_qty_(ask_qty),
+        bid_amt_(bid_amt),
+        ask_amt_(ask_amt),
         buffer_(buffer) {
     // 初始化权重: w_i = 1 - (i-1)/N_LEVELS
     float weight_sum = 0.0f;
@@ -58,49 +62,48 @@ public:
     for (size_t i = 0; i < N_LEVELS; ++i) {
       weights_[i] /= weight_sum;
     }
+    // 初始化prev缓存
+    for (size_t i = 0; i < N_LEVELS; ++i) {
+      prev_bid_price_[i] = 0.0f;
+      prev_bid_amt_[i] = 0.0f;
+      prev_ask_price_[i] = 0.0f;
+      prev_ask_amt_[i] = 0.0f;
+    }
   }
 
   void compute() {
     float voi = 0.0f;
 
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      // 从CBuffer获取当前值和前值
-      size_t sz = bid_price_[i].size();
-      if (sz < 2) continue;  // 需要至少两个数据点
+      const float cur_bid_price = bid_price_[i].back();
+      const float cur_bid_amt = bid_amt_[i].back();
+      const float cur_ask_price = ask_price_[i].back();
+      const float cur_ask_amt = ask_amt_[i].back();
 
-      float cur_bid_price = bid_price_[i][sz - 1];
-      float prev_bid_price = bid_price_[i][sz - 2];
-      float cur_bid_qty = bid_qty_[i][sz - 1];
-      float prev_bid_qty = bid_qty_[i][sz - 2];
+      const float prev_bid_price = prev_bid_price_[i];
+      const float prev_bid_amt = prev_bid_amt_[i];
+      const float prev_ask_price = prev_ask_price_[i];
+      const float prev_ask_amt = prev_ask_amt_[i];
 
-      float cur_ask_price = ask_price_[i][sz - 1];
-      float prev_ask_price = ask_price_[i][sz - 2];
-      float cur_ask_qty = ask_qty_[i][sz - 1];
-      float prev_ask_qty = ask_qty_[i][sz - 2];
+      // Branchless: bid delta
+      // 价格下跌: 0, 价格不变: cur-prev, 价格上涨: cur
+      const float bid_not_down = cur_bid_price >= prev_bid_price;
+      const float bid_same = cur_bid_price == prev_bid_price;
+      const float delta_bid = bid_not_down * (cur_bid_amt - bid_same * prev_bid_amt);
 
-      // 计算买方增量 ΔV^B
-      float delta_bid = 0.0f;
-      if (cur_bid_price < prev_bid_price) {
-        delta_bid = 0.0f;  // 价格下跌，增量无效
-      } else if (cur_bid_price == prev_bid_price) {
-        delta_bid = cur_bid_qty - prev_bid_qty;
-      } else {
-        delta_bid = cur_bid_qty;  // 价格上涨，全量有效
-      }
-
-      // 计算卖方增量 ΔV^A (注意: ask_qty 在 DepthData 中保持原始负值)
-      float cur_ask_qty_abs = -cur_ask_qty;    // 转为正数
-      float prev_ask_qty_abs = -prev_ask_qty;
-      float delta_ask = 0.0f;
-      if (cur_ask_price < prev_ask_price) {
-        delta_ask = cur_ask_qty_abs;  // 价格下跌，全量有效
-      } else if (cur_ask_price == prev_ask_price) {
-        delta_ask = cur_ask_qty_abs - prev_ask_qty_abs;
-      } else {
-        delta_ask = 0.0f;  // 价格上涨，增量无效
-      }
+      // Branchless: ask delta (ask_amt是负值)
+      // 价格下跌: |cur|, 价格不变: |cur|-|prev|, 价格上涨: 0
+      const float ask_not_up = cur_ask_price <= prev_ask_price;
+      const float ask_same = cur_ask_price == prev_ask_price;
+      const float delta_ask = ask_not_up * (-cur_ask_amt + ask_same * prev_ask_amt);
 
       voi += weights_[i] * (delta_bid - delta_ask);
+
+      // 更新prev缓存
+      prev_bid_price_[i] = cur_bid_price;
+      prev_bid_amt_[i] = cur_bid_amt;
+      prev_ask_price_[i] = cur_ask_price;
+      prev_ask_amt_[i] = cur_ask_amt;
     }
 
     buffer_.push_back(voi);
@@ -111,10 +114,15 @@ public:
 private:
   const CBuffer<float, L2::BLEN> (&bid_price_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_price_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
+  const CBuffer<float, L2::BLEN> (&bid_amt_)[DEPTH_SIZE];
+  const CBuffer<float, L2::BLEN> (&ask_amt_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &buffer_;
 
-  // 权重
   float weights_[N_LEVELS];
+
+  // 缓存prev值，避免每次从CBuffer读两次
+  float prev_bid_price_[N_LEVELS];
+  float prev_bid_amt_[N_LEVELS];
+  float prev_ask_price_[N_LEVELS];
+  float prev_ask_amt_[N_LEVELS];
 };
