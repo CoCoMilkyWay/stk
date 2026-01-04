@@ -85,18 +85,38 @@ static const char *to_string_cn(NormMethod method) {
     return "无";
   case NormMethod::ZSCORE:
     return "Z标准化";
-  case NormMethod::RANK_NORM:
+  case NormMethod::ROBUST_ZSCORE:
+    return "稳健Z";
+  case NormMethod::IQR_ZSCORE:
+    return "IQR标准化";
+  case NormMethod::RANK:
+    return "排名";
+  case NormMethod::RANK_ZSCORE:
     return "排名标准化";
   case NormMethod::CLIP:
     return "截断";
-  case NormMethod::TANH:
-    return "双曲正切";
   case NormMethod::WINSOR:
     return "缩尾";
-  case NormMethod::LOG_NORM:
-    return "对数标准化";
-  case NormMethod::PCT_RANK:
-    return "百分位排名";
+  case NormMethod::LOG:
+    return "对数";
+  case NormMethod::POWER:
+    return "幂变换";
+  case NormMethod::ASINH:
+    return "反双曲正弦";
+  case NormMethod::TANH:
+    return "双曲正切";
+  case NormMethod::LOG_ZSCORE:
+    return "对数+Z";
+  case NormMethod::POWER_ZSCORE:
+    return "幂+Z";
+  case NormMethod::ASINH_ZSCORE:
+    return "asinh+Z";
+  case NormMethod::CLIP_ZSCORE:
+    return "Z+截断";
+  case NormMethod::WINSOR_ZSCORE:
+    return "缩尾+Z";
+  case NormMethod::CLIP_LOG_ZSCORE:
+    return "截断+对数+Z";
   }
   return "未知";
 }

@@ -12,78 +12,78 @@
 // ============================================================================
 // Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description)
 
-#define LEVEL_0_FIELDS(X)                                                                                                                                                                                              \
-  /* ======== 订单量类因子 (Order Flow Imbalance) ======== */                                                                                                                                                           \
-  X(voi1,               1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "Vol Order Imba 1-Level",       "订单失衡1档",    "ΔV^B - ΔV^A, 1档",            "对近端大单挂单(容易成交)非常敏感")\
-  X(voi30,              1,             DATA,  TS,   IMBALANCE,      RAW,        NONE,      "Vol Order Imba 30-Level",      "订单失衡30档",   "ΔV^B - ΔV^A, 30档加权",       "对近端大单挂单(容易成交)非常敏感, 带深度线性衰减加权")\
-  X(oir5,               1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "Order Imba Ratio 5-Level",     "失衡率5档",      "(V^B-V^A)/(V^B+V^A)",         "订单失衡率[-1,1]标准化")            \
-  X(oir10,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "Order Imba Ratio 10-Level",    "失衡率10档",     "(V^B-V^A)/(V^B+V^A), 10档",   "深度失衡率(研报:优于VOI)")           \
-  X(soir5,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR 5-Level Weighted",        "逐档失衡5档",    "Σw_i×SOIR_i/Σw_i",            "逐档订单失衡率加权")                \
-  X(soir5s,             1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR Level-5 Single",          "第5档失衡",      "SOIR_5单档",                  "研报:单档效果优于加权")             \
-  X(soir10s,            1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR Level-10 Single",         "第10档失衡",     "SOIR_10单档",                 "深层订单簿失衡")                    \
-  X(soir30s,            1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,      "SOIR Level-30 Single",         "第30档失衡",     "SOIR_30单档",                 "最深层订单簿信号")                  \
-  /* ======== 价格类因子 (Price-based) ======== */                                                                                                                                                                            \
-  X(mpb,                1,             DATA,  TS,   MICROSTRUCTURE, DEVIATION,  NONE,      "Mid-Price Basis",              "市价偏离度",     "TP - MP",                     "成交均价与中间价偏离(研报最佳)")     \
-  X(mpc1,               1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC Lag-1",                    "中间价变化1",    "(M_t-M_{t-1})/M_{t-1}",       "中间价短期变化率")                  \
-  X(mpc5,               1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC Lag-5",                    "中间价变化5",    "(M_t-M_{t-5})/M_{t-5}",       "中间价中期变化率")                  \
-  X(mpc5_max,           1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC5 Daily Max",               "MPC5日最大",     "max(MPC5_d)",                 "日内MPC5极值(IC -9.39%)")           \
-  X(mpc5_skew,          1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,      "MPC5 Daily Skew",              "MPC5日偏度",     "skew(MPC5_d)",                "日内MPC5偏度(夏普3.07)")            \
-  /* ======== 截面因子 (Cross-sectional) ======== */                                                                                                                                                                          \
-  X(cs_spread_rank,     1,             DATA,  CS,   LIQUIDITY,      RANK,       RANK_NORM, "CS Spread Rank",               "价差截面排名",   "Φ⁻¹(pctl(spread))",           "spread截面rank→inverse normal")    \
-  X(cs_tobi_rank,       1,             DATA,  CS,   IMBALANCE,      RANK,       RANK_NORM, "CS TOBI Rank",                 "失衡截面排名",   "Φ⁻¹(pctl(tobi))",             "tobi截面rank→inverse normal")      \
-  X(cs_liquidity_ratio, 1,             DATA,  CS,   LIQUIDITY,      RATIO,      ZSCORE,    "CS Liquidity Ratio",           "流动性比率截面", "(top_size/median)/z",         "top-of-book size截面z-score")      \
-  /* ======== 标签 (Labels) ======== */                                                                                                                                                                                       \
-  X(next_tick_ret,      1,             DATA,  LB,   LABEL,          FUTURE_RET, NONE,      "Next Tick Return",             "下tick收益",     "log(mid_{t+1}/mid_t)",        "下一tick对数收益")                 \
-  X(next_5tick_ret,     1,             DATA,  LB,   LABEL,          FUTURE_RET, NONE,      "Next 5-Tick Return",           "未来5tick收益",  "log(mid_{t+5}/mid_t)",        "未来5tick累计对数收益")            \
-  /* ======== 元数据 (Metadata) ======== */                                                                                                                                                                                   \
-  X(universe_size,      1,             DATA,  SH,   META,           UNIVERSE,   NONE,      "Universe Size",                "全域规模",       "count(valid)",                "当前有效合约数量")                 \
-  X(_link_to_L1,        1,             ALL,   META, META,           RAW,        NONE,      "Link to L1",                   "L1时间索引",     "L1_time_index",               "L0→L1时间映射")                    \
-  X(_link_to_L2,        1,             ALL,   META, META,           RAW,        NONE,      "Link to L2",                   "L2时间索引",     "L2_time_index",               "L0→L2时间映射")                    \
-  X(_depth_valid,       1,             ALL,   META, META,           RAW,        NONE,      "Depth Valid Flag",             "深度有效标志",   "1.0=valid, 0.0=invalid",      "LOB深度缓冲区完整性标记")           \
-  X(_data_valid,        1,             ALL,   META, META,           RAW,        NONE,      "Data Valid Flag",              "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")                \
+#define LEVEL_0_FIELDS(X)\
+  /* ======== 订单量类因子 (Order Flow Imbalance) ======== */\
+  X(voi1,               1,             DATA,  TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "Vol Order Imba 1-Level",       "订单失衡1档",    "ΔV^B - ΔV^A, 1档",            "对近端大单挂单(容易成交)非常敏感")\
+  X(voi30,              1,             DATA,  TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "Vol Order Imba 30-Level",      "订单失衡30档",   "ΔV^B - ΔV^A, 30档加权",       "对近端大单挂单(容易成交)非常敏感, 带深度线性衰减加权")\
+  X(oir5,               1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "Order Imba Ratio 5-Level",     "失衡率5档",      "(V^B-V^A)/(V^B+V^A)",         "订单失衡率[-1,1]标准化")\
+  X(oir10,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "Order Imba Ratio 10-Level",    "失衡率10档",     "(V^B-V^A)/(V^B+V^A), 10档",   "深度失衡率(研报:优于VOI)")\
+  X(soir5,              1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "SOIR 5-Level Weighted",        "逐档失衡5档",    "Σw_ixSOIR_i/Σw_i",            "逐档订单失衡率加权")\
+  X(soir5s,             1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "SOIR Level-5 Single",          "第5档失衡",      "SOIR_5单档",                  "研报:单档效果优于加权")\
+  X(soir10s,            1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "SOIR Level-10 Single",         "第10档失衡",     "SOIR_10单档",                 "深层订单簿失衡")\
+  X(soir30s,            1,             DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "SOIR Level-30 Single",         "第30档失衡",     "SOIR_30单档",                 "最深层订单簿信号")\
+  /* ======== 价格类因子 (Price-based) ======== */\
+  X(mpb,                1,             DATA,  TS,   MICROSTRUCTURE, DEVIATION,  NONE,        "Mid-Price Basis",              "市价偏离度",     "TP - MP",                     "成交均价与中间价偏离(研报最佳)")\
+  X(mpc1,               1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,        "MPC Lag-1",                    "中间价变化1",    "(M_t-M_{t-1})/M_{t-1}",       "中间价短期变化率")\
+  X(mpc5,               1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,        "MPC Lag-5",                    "中间价变化5",    "(M_t-M_{t-5})/M_{t-5}",       "中间价中期变化率")\
+  X(mpc5_max,           1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,        "MPC5 Daily Max",               "MPC5日最大",     "max(MPC5_d)",                 "日内MPC5极值(IC -9.39%)")\
+  X(mpc5_skew,          1,             DATA,  TS,   MOMENTUM,       RAW,        NONE,        "MPC5 Daily Skew",              "MPC5日偏度",     "skew(MPC5_d)",                "日内MPC5偏度(夏普3.07)")\
+  /* ======== 截面因子 (Cross-sectional) ======== */\
+  X(cs_spread_rank,     1,             DATA,  CS,   LIQUIDITY,      RANK,       RANK_ZSCORE, "CS Spread Rank",               "价差截面排名",   "Φ⁻¹(pctl(spread))",           "spread截面rank→inverse normal")\
+  X(cs_tobi_rank,       1,             DATA,  CS,   IMBALANCE,      RANK,       RANK_ZSCORE, "CS TOBI Rank",                 "失衡截面排名",   "Φ⁻¹(pctl(tobi))",             "tobi截面rank→inverse normal")\
+  X(cs_liquidity_ratio, 1,             DATA,  CS,   LIQUIDITY,      RATIO,      ZSCORE,      "CS Liquidity Ratio",           "流动性比率截面", "(top_size/median)/z",         "top-of-book size截面z-score")\
+  /* ======== 标签 (Labels) ======== */\
+  X(next_tick_ret,      1,             DATA,  LB,   LABEL,          FUTURE_RET, NONE,        "Next Tick Return",             "下tick收益",     "log(mid_{t+1}/mid_t)",        "下一tick对数收益")\
+  X(next_5tick_ret,     1,             DATA,  LB,   LABEL,          FUTURE_RET, NONE,        "Next 5-Tick Return",           "未来5tick收益",  "log(mid_{t+5}/mid_t)",        "未来5tick累计对数收益")\
+  /* ======== 元数据 (Metadata) ======== */\
+  X(universe_size,      1,             DATA,  SH,   META,           UNIVERSE,   NONE,        "Universe Size",                "全域规模",       "count(valid)",                "当前有效合约数量")\
+  X(_link_to_L1,        1,             ALL,   META, META,           RAW,        NONE,        "Link to L1",                   "L1时间索引",     "L1_time_index",               "L0→L1时间映射")\
+  X(_link_to_L2,        1,             ALL,   META, META,           RAW,        NONE,        "Link to L2",                   "L2时间索引",     "L2_time_index",               "L0→L2时间映射")\
+  X(_depth_valid,       1,             ALL,   META, META,           RAW,        NONE,        "Depth Valid Flag",             "深度有效标志",   "1.0=valid, 0.0=invalid",      "LOB深度缓冲区完整性标记")\
+  X(_data_valid,        1,             ALL,   META, META,           RAW,        NONE,        "Data Valid Flag",              "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")\
 
 // ============================================================================
 // LEVEL 1: Minute-level Features (分钟级)
 // ============================================================================
 
-#define LEVEL_1_FIELDS(X)                                                                                                                                                           \
-  X(min_ret_z,          1, DATA, TS,   MOMENTUM,   NORMALIZED, WINSOR,    "Minute Return Z-score",       "分钟收益",       "(r-μ)/σ, 60m rolling",        "分钟对数收益标准化")     \
-  X(rv_5m_norm,         1, DATA, TS,   VOLATILITY, NORMALIZED, LOG_NORM,  "Realized Vol 5m",             "5分钟波动率",    "log(σ_5m) rank-norm",         "5分钟波动率标准化")      \
-  X(vwap_gap_pct,       1, DATA, TS,   PRICE,      DEVIATION,  ZSCORE,    "VWAP Gap Percent",            "VWAP偏离",       "(close-vwap)/vwap z",         "价格相对VWAP偏离")       \
-  X(momentum_15m,       1, DATA, TS,   MOMENTUM,   OSCILLATOR, ZSCORE,    "Momentum 15m",                "15分钟动量",     "Σr/σ, 15m",                   "15分钟累计动量标准化")   \
-  X(range_squeeze,      1, DATA, TS,   VOLATILITY, RATIO,      CLIP,      "Range Squeeze",               "Range收窄",      "(H-L)/σ, clip±3",             "盘面窄幅程度")           \
-  X(cs_min_return_rank, 1, DATA, CS,   MOMENTUM,   RANK,       RANK_NORM, "CS Minute Return Rank",       "分钟收益截面",   "Φ⁻¹(pctl(ret))",              "分钟收益截面rank")       \
-  X(cs_min_volume_pct,  1, DATA, CS,   VOLUME,     RANK,       RANK_NORM, "CS Minute Volume Percentile", "分钟量能百分位", "pctl(log(vol)) rank",         "分钟volume截面排名")     \
-  X(cs_min_spread_z,    1, DATA, CS,   LIQUIDITY,  NORMALIZED, ZSCORE,    "CS Minute Spread Z-score",    "分钟价差截面",   "z(spread) cross-sect",        "分钟spread截面z-score")  \
-  X(next_1m_ret,        1, DATA, LB,   LABEL,      FUTURE_RET, NONE,      "Next 1-Minute Return",        "下1分钟收益",    "log(close_{t+1}/close_t)",    "下一分钟对数收益")       \
-  X(calmar_score,       1, DATA, LB,   LABEL,      SCORE,      NONE,      "Calmar Score",                "Calmar评分",     "ret/maxDD",                   "年化收益/最大回撤")      \
-  X(universe_size,      1, DATA, SH,   META,       UNIVERSE,   NONE,      "Universe Size",               "全域规模",       "count(valid)",                "当前有效合约数量")       \
-  X(market_return,      1, DATA, SH,   META,       BENCHMARK,  NONE,      "Market Return",               "市场收益",       "log(mkt_t/mkt_{t-1})",        "市场基准收益率")         \
-  X(_ohlc_open,         1, DATA, META, META,       RAW,        NONE,      "OHLC Open",                   "开盘价",         "open",                        "GUI:分钟开盘价(分)")     \
-  X(_ohlc_high,         1, DATA, META, META,       RAW,        NONE,      "OHLC High",                   "最高价",         "high",                        "GUI:分钟最高价(分)")     \
-  X(_ohlc_low,          1, DATA, META, META,       RAW,        NONE,      "OHLC Low",                    "最低价",         "low",                         "GUI:分钟最低价(分)")     \
-  X(_ohlc_close,        1, DATA, META, META,       RAW,        NONE,      "OHLC Close",                  "收盘价",         "close",                       "GUI:分钟收盘价(分)")     \
-  X(_ohlc_volume,       1, DATA, META, META,       RAW,        NONE,      "OHLC Volume",                 "成交量",         "vol",                         "GUI:分钟成交量")         \
-  X(_data_valid,        1, ALL,  META, META,       RAW,        NONE,      "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")
+#define LEVEL_1_FIELDS(X)\
+  X(min_ret_z,          1, DATA, TS,   MOMENTUM,   NORMALIZED, WINSOR,      "Minute Return Z-score",       "分钟收益",       "(r-μ)/σ, 60m rolling",        "分钟对数收益标准化")\
+  X(rv_5m_norm,         1, DATA, TS,   VOLATILITY, NORMALIZED, LOG_ZSCORE,  "Realized Vol 5m",             "5分钟波动率",    "log(σ_5m) rank-norm",         "5分钟波动率标准化")\
+  X(vwap_gap_pct,       1, DATA, TS,   PRICE,      DEVIATION,  ZSCORE,      "VWAP Gap Percent",            "VWAP偏离",       "(close-vwap)/vwap z",         "价格相对VWAP偏离")\
+  X(momentum_15m,       1, DATA, TS,   MOMENTUM,   OSCILLATOR, ZSCORE,      "Momentum 15m",                "15分钟动量",     "Σr/σ, 15m",                   "15分钟累计动量标准化")\
+  X(range_squeeze,      1, DATA, TS,   VOLATILITY, RATIO,      CLIP,        "Range Squeeze",               "Range收窄",      "(H-L)/σ, clip±3",             "盘面窄幅程度")\
+  X(cs_min_return_rank, 1, DATA, CS,   MOMENTUM,   RANK,       RANK_ZSCORE, "CS Minute Return Rank",       "分钟收益截面",   "Φ⁻¹(pctl(ret))",              "分钟收益截面rank")\
+  X(cs_min_volume_pct,  1, DATA, CS,   VOLUME,     RANK,       RANK_ZSCORE, "CS Minute Volume Percentile", "分钟量能百分位", "pctl(log(vol)) rank",         "分钟volume截面排名")\
+  X(cs_min_spread_z,    1, DATA, CS,   LIQUIDITY,  NORMALIZED, ZSCORE,      "CS Minute Spread Z-score",    "分钟价差截面",   "z(spread) cross-sect",        "分钟spread截面z-score")\
+  X(next_1m_ret,        1, DATA, LB,   LABEL,      FUTURE_RET, NONE,        "Next 1-Minute Return",        "下1分钟收益",    "log(close_{t+1}/close_t)",    "下一分钟对数收益")\
+  X(calmar_score,       1, DATA, LB,   LABEL,      SCORE,      NONE,        "Calmar Score",                "Calmar评分",     "ret/maxDD",                   "年化收益/最大回撤")\
+  X(universe_size,      1, DATA, SH,   META,       UNIVERSE,   NONE,        "Universe Size",               "全域规模",       "count(valid)",                "当前有效合约数量")\
+  X(market_return,      1, DATA, SH,   META,       BENCHMARK,  NONE,        "Market Return",               "市场收益",       "log(mkt_t/mkt_{t-1})",        "市场基准收益率")\
+  X(_ohlc_open,         1, DATA, META, META,       RAW,        NONE,        "OHLC Open",                   "开盘价",         "open",                        "GUI:分钟开盘价(分)")\
+  X(_ohlc_high,         1, DATA, META, META,       RAW,        NONE,        "OHLC High",                   "最高价",         "high",                        "GUI:分钟最高价(分)")\
+  X(_ohlc_low,          1, DATA, META, META,       RAW,        NONE,        "OHLC Low",                    "最低价",         "low",                         "GUI:分钟最低价(分)")\
+  X(_ohlc_close,        1, DATA, META, META,       RAW,        NONE,        "OHLC Close",                  "收盘价",         "close",                       "GUI:分钟收盘价(分)")\
+  X(_ohlc_volume,       1, DATA, META, META,       RAW,        NONE,        "OHLC Volume",                 "成交量",         "vol",                         "GUI:分钟成交量")\
+  X(_data_valid,        1, ALL,  META, META,       RAW,        NONE,        "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",      "事件驱动稀疏性标记")
 
 // ============================================================================
 // LEVEL 2: Hour-level Features (小时级)
 // ============================================================================
 
-#define LEVEL_2_FIELDS(X)                                                                                                                                                          \
-  X(hour_ret_12h_mom,    1, DATA, TS,   MOMENTUM,   NORMALIZED, ZSCORE,    "Hour Return 12h Momentum",    "12小时动量",     "Σr/z, 12h",                  "12小时动量标准化")      \
-  X(hour_volatility,     1, DATA, TS,   VOLATILITY, NORMALIZED, LOG_NORM,  "Hour Volatility 24h",         "24小时波动率",   "log(σ_24h) rank",            "24小时波动率标准化")    \
-  X(pivot_dev,           1, DATA, TS,   PRICE,      DEVIATION,  CLIP,      "Pivot Deviation",             "Pivot偏差",      "(close-pivot)/range",        "收盘相对pivot偏差")     \
-  X(dominant_persist,    1, DATA, TS,   IMBALANCE,  OSCILLATOR, ZSCORE,    "Dominant Persistence",        "主导持续性",     "EMA(side) norm",             "买卖主导延续性")        \
-  X(hour_overnight_gap,  1, DATA, TS,   PRICE,      DEVIATION,  WINSOR,    "Hour Overnight Gap",          "隔夜跳空",       "(open-prev_close)/σ",        "隔夜gap捕捉消息冲击")   \
-  X(cs_hour_return_beta, 1, DATA, CS,   MOMENTUM,   RANK,       RANK_NORM, "CS Hour Return Beta",         "小时收益残差",   "residual(r~mkt) rank",       "相对市场回归残差排名")  \
-  X(cs_hour_liq_adj_ret, 1, DATA, CS,   MOMENTUM,   RANK,       RANK_NORM, "CS Hour Liq Adj Return",      "流动性调整收益", "ret/√vol rank",              "流动性调整后收益排名")  \
-  X(cs_hour_range_rank,  1, DATA, CS,   VOLATILITY, RANK,       RANK_NORM, "CS Hour Range Rank",          "小时Range排名",  "Φ⁻¹(pctl(range))",           "价格区间截面排名")      \
-  X(next_1h_ret,         1, DATA, LB,   LABEL,      FUTURE_RET, NONE,      "Next 1-Hour Return",          "下1小时收益",    "log(close_{t+1h}/close_t)",  "下一小时对数收益")      \
-  X(sharpe_score,        1, DATA, LB,   LABEL,      SCORE,      NONE,      "Sharpe Score",                "Sharpe评分",     "(μ-rf)/σ",                   "超额收益/波动率")       \
-  X(universe_size,       1, DATA, SH,   META,       UNIVERSE,   NONE,      "Universe Size",               "全域规模",       "count(valid)",               "当前有效合约数量")      \
-  X(market_volatility,   1, DATA, SH,   META,       BENCHMARK,  NONE,      "Market Volatility",           "市场波动率",     "std(mkt_ret_24h)",           "市场24小时波动率")      \
-  X(_data_valid,         1, ALL,  META, META,       RAW,        NONE,      "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",     "事件驱动稀疏性标记")
+#define LEVEL_2_FIELDS(X)\
+  X(hour_ret_12h_mom,    1, DATA, TS,   MOMENTUM,   NORMALIZED, ZSCORE,      "Hour Return 12h Momentum",    "12小时动量",     "Σr/z, 12h",                  "12小时动量标准化")\
+  X(hour_volatility,     1, DATA, TS,   VOLATILITY, NORMALIZED, LOG_ZSCORE,  "Hour Volatility 24h",         "24小时波动率",   "log(σ_24h) rank",            "24小时波动率标准化")\
+  X(pivot_dev,           1, DATA, TS,   PRICE,      DEVIATION,  CLIP,        "Pivot Deviation",             "Pivot偏差",      "(close-pivot)/range",        "收盘相对pivot偏差")\
+  X(dominant_persist,    1, DATA, TS,   IMBALANCE,  OSCILLATOR, ZSCORE,      "Dominant Persistence",        "主导持续性",     "EMA(side) norm",             "买卖主导延续性")\
+  X(hour_overnight_gap,  1, DATA, TS,   PRICE,      DEVIATION,  WINSOR,      "Hour Overnight Gap",          "隔夜跳空",       "(open-prev_close)/σ",        "隔夜gap捕捉消息冲击")\
+  X(cs_hour_return_beta, 1, DATA, CS,   MOMENTUM,   RANK,       RANK_ZSCORE, "CS Hour Return Beta",         "小时收益残差",   "residual(r~mkt) rank",       "相对市场回归残差排名")\
+  X(cs_hour_liq_adj_ret, 1, DATA, CS,   MOMENTUM,   RANK,       RANK_ZSCORE, "CS Hour Liq Adj Return",      "流动性调整收益", "ret/√vol rank",              "流动性调整后收益排名")\
+  X(cs_hour_range_rank,  1, DATA, CS,   VOLATILITY, RANK,       RANK_ZSCORE, "CS Hour Range Rank",          "小时Range排名",  "Φ⁻¹(pctl(range))",           "价格区间截面排名")\
+  X(next_1h_ret,         1, DATA, LB,   LABEL,      FUTURE_RET, NONE,        "Next 1-Hour Return",          "下1小时收益",    "log(close_{t+1h}/close_t)",  "下一小时对数收益")\
+  X(sharpe_score,        1, DATA, LB,   LABEL,      SCORE,      NONE,        "Sharpe Score",                "Sharpe评分",     "(μ-rf)/σ",                   "超额收益/波动率")\
+  X(universe_size,       1, DATA, SH,   META,       UNIVERSE,   NONE,        "Universe Size",               "全域规模",       "count(valid)",               "当前有效合约数量")\
+  X(market_volatility,   1, DATA, SH,   META,       BENCHMARK,  NONE,        "Market Volatility",           "市场波动率",     "std(mkt_ret_24h)",           "市场24小时波动率")\
+  X(_data_valid,         1, ALL,  META, META,       RAW,        NONE,        "Data Valid Flag",             "数据有效标志",   "1.0=valid, 0.0=invalid",     "事件驱动稀疏性标记")
 
 // ============================================================================
 // DEPTH: LOB Snapshot Data (separate storage for orderflow visualization)
@@ -143,14 +143,37 @@ enum class FeatureCategoryL2 : uint8_t {
 
 // Normalization method
 enum class NormMethod : uint8_t {
-  NONE = 0,      // 无
-  ZSCORE = 1,    // z-score标准化
-  RANK_NORM = 2, // rank + inverse normal
-  CLIP = 3,      // clip到[-3,3]
-  TANH = 4,      // tanh激活
-  WINSOR = 5,    // winsorize
-  LOG_NORM = 6,  // log后标准化
-  PCT_RANK = 7   // percentile rank
+
+  // --- identity ---
+  NONE = 0, // x
+
+  // --- scale (linear) ---
+  ZSCORE = 1,        // (x - mean) / std
+  ROBUST_ZSCORE = 2, // (x - median) / MAD
+  IQR_ZSCORE = 3,    // (x - Q2) / (Q3 - Q1)
+
+  // --- order based ---
+  RANK = 4,        // rank / N
+  RANK_ZSCORE = 5, // rank → inverse normal
+
+  // --- bounding ---
+  CLIP = 6,   // clip(x, [-k, k])
+  WINSOR = 7, // winsorize by percentile
+
+  // --- nonlinear transform ---
+  LOG = 8,    // log/log1p
+  POWER = 9,  // x^α
+  ASINH = 10, // asinh(x)
+  TANH = 11,  // tanh(x)
+
+  // --- composite (common pipelines) ---
+  LOG_ZSCORE = 12,   // log/log1p → zscore
+  POWER_ZSCORE = 13, // power → zscore
+  ASINH_ZSCORE = 14, // asinh → zscore
+
+  CLIP_ZSCORE = 15,     // zscore → clip
+  WINSOR_ZSCORE = 16,   // winsor → zscore
+  CLIP_LOG_ZSCORE = 17, // clip → log → zscore
 };
 
 // ============================================================================
@@ -344,7 +367,7 @@ inline constexpr ClockTime index2minute(size_t index) {
 inline constexpr uint8_t index2hour(size_t hour_index) {
   // Simple mapping: Level 2 hour_index corresponds to actual trading hours
   // hour_index 0 -> 9:15 starts -> hour 9
-  // hour_index 1 -> ~10:xx starts -> hour 10  
+  // hour_index 1 -> ~10:xx starts -> hour 10
   // hour_index 2 -> ~11:xx starts -> hour 11
   // hour_index 3 -> 13:00 starts -> hour 13
   // hour_index 4+ -> 14:xx starts -> hour 14
@@ -469,18 +492,38 @@ inline constexpr const char *to_string(NormMethod method) {
     return "NONE";
   case NormMethod::ZSCORE:
     return "ZSCORE";
-  case NormMethod::RANK_NORM:
-    return "RANK_NORM";
+  case NormMethod::ROBUST_ZSCORE:
+    return "ROBUST_ZSCORE";
+  case NormMethod::IQR_ZSCORE:
+    return "IQR_ZSCORE";
+  case NormMethod::RANK:
+    return "RANK";
+  case NormMethod::RANK_ZSCORE:
+    return "RANK_ZSCORE";
   case NormMethod::CLIP:
     return "CLIP";
-  case NormMethod::TANH:
-    return "TANH";
   case NormMethod::WINSOR:
     return "WINSOR";
-  case NormMethod::LOG_NORM:
-    return "LOG_NORM";
-  case NormMethod::PCT_RANK:
-    return "PCT_RANK";
+  case NormMethod::LOG:
+    return "LOG";
+  case NormMethod::POWER:
+    return "POWER";
+  case NormMethod::ASINH:
+    return "ASINH";
+  case NormMethod::TANH:
+    return "TANH";
+  case NormMethod::LOG_ZSCORE:
+    return "LOG_ZSCORE";
+  case NormMethod::POWER_ZSCORE:
+    return "POWER_ZSCORE";
+  case NormMethod::ASINH_ZSCORE:
+    return "ASINH_ZSCORE";
+  case NormMethod::CLIP_ZSCORE:
+    return "CLIP_ZSCORE";
+  case NormMethod::WINSOR_ZSCORE:
+    return "WINSOR_ZSCORE";
+  case NormMethod::CLIP_LOG_ZSCORE:
+    return "CLIP_LOG_ZSCORE";
   }
   return "UNKNOWN";
 }

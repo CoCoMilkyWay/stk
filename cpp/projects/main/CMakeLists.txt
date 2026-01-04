@@ -183,6 +183,7 @@ set(HEADERS
     ../../include/features/backend/ZstdHelper.hpp
     ../../include/features/FeaturesHour/Hour_Sequential.hpp
     ../../include/features/FeaturesMinute/Minute_Sequential.hpp
+    ../../include/features/ComputeGraph.hpp
     ../../include/features/FeaturesTick/Tick_Sequential.hpp
     ../../include/features/FeaturesHour/Hour_Crosssection.hpp
     ../../include/features/FeaturesMinute/Minute_Crosssection.hpp

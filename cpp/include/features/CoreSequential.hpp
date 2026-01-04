@@ -1,16 +1,17 @@
 #pragma once
 
 #include "misc/profiler.hpp"
-#include "features/DataDefine.hpp"
-#include "features/FeaturesHour/Hour_Sequential.hpp"
-#include "features/FeaturesMinute/Minute_Sequential.hpp"
+#include "features/ComputeGraph.hpp"
 #include "features/FeaturesTick/Tick_Sequential.hpp"
+#include "features/FeaturesMinute/Minute_Sequential.hpp"
+#include "features/FeaturesHour/Hour_Sequential.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "math/sample/ResampleTick2Time.hpp"
 #include "math/sample/ResampleTime2Time.hpp"
 
 // Sequential Core: Hierarchical 3-level feature computation with resampling
 // Architecture: LOB -> Tick -> (resample) -> Minute -> (resample) -> Hour
+// 数据结构和算子在 DAG 中，各级 Sequential 负责 trigger
 class CoreSequential {
 public:
   CoreSequential(TickData &tick_data,
@@ -18,25 +19,21 @@ public:
                  size_t asset_id = 0,
                  size_t core_id = 0)
       : store_(store),
-
         asset_id_(asset_id),
         core_id_(core_id),
-
-        tick_data_(tick_data),
-
-        tick_sequential_(tick_data_, store_, asset_id_, core_id_),
-        minute_sequential_(minute_data_, store_, asset_id_, core_id_),
-        hour_sequential_(hour_data_, store_, asset_id_, core_id_),
-
-        tick2min_resampler_(tick_data_, minute_data_, 60),
-        min2hour_resampler_(minute_data_, hour_data_, 60) {
+        dag_(tick_data),
+        tick_sequential_(dag_, store_, asset_id_, core_id_),
+        minute_sequential_(dag_, store_, asset_id_, core_id_),
+        hour_sequential_(dag_, store_, asset_id_, core_id_),
+        tick2min_resampler_(dag_.tick_data, dag_.minute_data, 60),
+        min2hour_resampler_(dag_.minute_data, dag_.hour_data, 60) {
     // Initialize metadata
-    tick_data_.asset_id = static_cast<uint32_t>(asset_id_);
-    minute_data_.asset_id = static_cast<uint32_t>(asset_id_);
-    hour_data_.asset_id = static_cast<uint32_t>(asset_id_);
-    tick_data_.core_id = static_cast<uint32_t>(core_id);
-    minute_data_.core_id = static_cast<uint32_t>(core_id);
-    hour_data_.core_id = static_cast<uint32_t>(core_id);
+    dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
+    dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id_);
+    dag_.hour_data.asset_id = static_cast<uint32_t>(asset_id_);
+    dag_.tick_data.core_id = static_cast<uint32_t>(core_id);
+    dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
+    dag_.hour_data.core_id = static_cast<uint32_t>(core_id);
   }
 
   void set_date(const std::string &date_str) {
@@ -50,22 +47,22 @@ public:
   void reset() {
     tick2min_resampler_.reset();
     min2hour_resampler_.reset();
-    minute_data_.open.clear();
-    minute_data_.high.clear();
-    minute_data_.low.clear();
-    minute_data_.close.clear();
-    minute_data_.bid_volume.clear();
-    minute_data_.ask_volume.clear();
-    minute_data_.bid_amount.clear();
-    minute_data_.ask_amount.clear();
-    hour_data_.open.clear();
-    hour_data_.high.clear();
-    hour_data_.low.clear();
-    hour_data_.close.clear();
-    hour_data_.bid_volume.clear();
-    hour_data_.ask_volume.clear();
-    hour_data_.bid_amount.clear();
-    hour_data_.ask_amount.clear();
+    dag_.minute_data.open.clear();
+    dag_.minute_data.high.clear();
+    dag_.minute_data.low.clear();
+    dag_.minute_data.close.clear();
+    dag_.minute_data.bid_volume.clear();
+    dag_.minute_data.ask_volume.clear();
+    dag_.minute_data.bid_amount.clear();
+    dag_.minute_data.ask_amount.clear();
+    dag_.hour_data.open.clear();
+    dag_.hour_data.high.clear();
+    dag_.hour_data.low.clear();
+    dag_.hour_data.close.clear();
+    dag_.hour_data.bid_volume.clear();
+    dag_.hour_data.ask_volume.clear();
+    dag_.hour_data.bid_amount.clear();
+    dag_.hour_data.ask_amount.clear();
   }
 
   // Main entry: compute all 3 levels with cascading resampling
@@ -73,7 +70,7 @@ public:
     TraceN("TS");
     TraceColor(C_Cyan);
 
-    // LEVEL 0: Tick-level features (direct from LOB_feature_)
+    // LEVEL 0: Tick-level features
     update_tick_metadata();
     {
       TraceN("TS_Tick");
@@ -102,24 +99,24 @@ public:
 
     // Mark L0 progress after all levels (L0/L1/L2) computed
     if (!date_str_.empty()) {
-      store_.ts_update(date_str_, core_id_, asset_id_, tick_data_.l0_index);
+      store_.ts_update(date_str_, core_id_, asset_id_, dag_.tick_data.l0_index);
     }
   }
 
 private:
   // Update tick-level metadata
   void inline update_tick_metadata() noexcept {
-    tick_data_.l0_index = tick2index(tick_data_.lob.hour, tick_data_.lob.minute, tick_data_.lob.second);
+    dag_.tick_data.l0_index = tick2index(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second);
   }
 
   // Update minute-level metadata
   void inline update_minute_metadata() noexcept {
-    minute_data_.l1_index = tick_data_.l0_index / 60;
+    dag_.minute_data.l1_index = dag_.tick_data.l0_index / 60;
   }
 
   // Update hour-level metadata
   void inline update_hour_metadata() noexcept {
-    hour_data_.l2_index = minute_data_.l1_index / 60;
+    dag_.hour_data.l2_index = dag_.minute_data.l1_index / 60;
   }
 
   GlobalFeatureStore &store_;
@@ -127,12 +124,10 @@ private:
   size_t core_id_;
   std::string date_str_;
 
-  // Hierarchical data structures
-  TickData &tick_data_;
-  MinuteData minute_data_;
-  HourData hour_data_;
+  // DAG: 数据结构和算子
+  DAG dag_;
 
-  // Sequential feature processors
+  // Sequential feature processors (各级调度)
   Tick_Sequential tick_sequential_;
   Minute_Sequential minute_sequential_;
   Hour_Sequential hour_sequential_;

@@ -127,7 +127,7 @@ private:
   float limit_down_ = 0.0f;
   bool initialized_ = false;
 
-  // 引用外部CBuffer (由Tick_Sequential管理)
+  // 引用外部CBuffer (由DAG::L0管理)
   CBuffer<float, L2::BLEN> (&bid_price_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&ask_price_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&bid_qty_)[N_LEVELS];
