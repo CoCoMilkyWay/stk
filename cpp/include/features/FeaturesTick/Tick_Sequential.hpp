@@ -31,6 +31,9 @@ public:
         worker_id_(worker_id) {}
 
   void set_date(const std::string &date_str) {
+    if (TradePrice_.size() > 0) {
+      depth_data_.set_prev_close(TradePrice_.back()); // 跨天: 用前一天收盘价(最后成交价)设置涨跌停保护
+    }
     date_str_ = date_str;
   }
 
@@ -64,8 +67,7 @@ private:
       // =============================================================
       // 订单量类因子
       voi1_.compute();    // VOI 1档
-      voi5_.compute();    // VOI 5档
-      voi10_.compute();   // VOI 10档
+      voi30_.compute();   // VOI 30档
       oir5_.compute();    // OIR 5档比率
       oir10_.compute();   // OIR 10档
       soir5_.compute();   // SOIR 5档加权
@@ -81,19 +83,18 @@ private:
       // 写入因子到输出缓冲区 (顺序与 LEVEL_0_FIELDS 定义一致)
       // 订单量类因子 [0-7]
       ts_features_buffer_[0] = VOI1_Buffer_.back();
-      ts_features_buffer_[1] = VOI5_Buffer_.back();
-      ts_features_buffer_[2] = VOI10_Buffer_.back();
-      ts_features_buffer_[3] = OIR5_Buffer_.back();
-      ts_features_buffer_[4] = OIR10_Buffer_.back();
-      ts_features_buffer_[5] = SOIR5_Buffer_.back();
-      ts_features_buffer_[6] = SOIR5s_Buffer_.back();
-      ts_features_buffer_[7] = SOIR10s_Buffer_.back();
-      ts_features_buffer_[8] = SOIR30s_Buffer_.back();
-      ts_features_buffer_[9] = MPB_Buffer_.back();
-      ts_features_buffer_[10] = MPC1_Buffer_.back();
-      ts_features_buffer_[11] = MPC5_Buffer_.back();
-      ts_features_buffer_[12] = MPC5_Max_Buffer_.back();
-      ts_features_buffer_[13] = MPC5_Skew_Buffer_.back();
+      ts_features_buffer_[1] = VOI30_Buffer_.back();
+      ts_features_buffer_[2] = OIR5_Buffer_.back();
+      ts_features_buffer_[3] = OIR10_Buffer_.back();
+      ts_features_buffer_[4] = SOIR5_Buffer_.back();
+      ts_features_buffer_[5] = SOIR5s_Buffer_.back();
+      ts_features_buffer_[6] = SOIR10s_Buffer_.back();
+      ts_features_buffer_[7] = SOIR30s_Buffer_.back();
+      ts_features_buffer_[8] = MPB_Buffer_.back();
+      ts_features_buffer_[9] = MPC1_Buffer_.back();
+      ts_features_buffer_[10] = MPC5_Buffer_.back();
+      ts_features_buffer_[11] = MPC5_Max_Buffer_.back();
+      ts_features_buffer_[12] = MPC5_Skew_Buffer_.back();
     };
 
     // Write TS features [voi1, mpc5_skew]
@@ -184,8 +185,7 @@ private:
 
   // --- 因子计算类 ---
   CBuffer<float, L2::BLEN> VOI1_Buffer_;      // VOI 1档
-  CBuffer<float, L2::BLEN> VOI5_Buffer_;      // VOI 5档加权
-  CBuffer<float, L2::BLEN> VOI10_Buffer_;     // VOI 10档加权 (exploit 30档)
+  CBuffer<float, L2::BLEN> VOI30_Buffer_;     // VOI 30档加权 (线性衰减)
   CBuffer<float, L2::BLEN> OIR5_Buffer_;      // OIR 5档加权比率
   CBuffer<float, L2::BLEN> OIR10_Buffer_;     // OIR 10档加权
   CBuffer<float, L2::BLEN> SOIR5_Buffer_;     // SOIR 5档加权
@@ -199,8 +199,7 @@ private:
   CBuffer<float, L2::BLEN> MPC5_Skew_Buffer_; // MPC5日内偏度 (夏普3.07)
 
   VOI<1> voi1_{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI1_Buffer_};
-  VOI<5> voi5_{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI5_Buffer_};
-  VOI<10> voi10_{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI10_Buffer_};
+  VOI<30> voi30_{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI30_Buffer_};
   OIR<5> oir5_{BidAmt_, AskAmt_, OIR5_Buffer_};
   OIR<10> oir10_{BidAmt_, AskAmt_, OIR10_Buffer_};
   SOIR<5, false> soir5_{BidAmt_, AskAmt_, SOIR5_Buffer_};     // 加权

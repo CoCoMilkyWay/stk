@@ -30,6 +30,8 @@
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 
+#include <cmath>
+
 template <size_t N_LEVELS = 5, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class OIR {
   static_assert(N_LEVELS >= 1 && N_LEVELS <= DEPTH_SIZE,
@@ -41,36 +43,32 @@ public:
       const CBuffer<float, L2::BLEN> (&ask_amt)[DEPTH_SIZE],
       CBuffer<float, L2::BLEN> &buffer)
       : bid_amt_(bid_amt), ask_amt_(ask_amt), buffer_(buffer) {
-    // 初始化权重: w_i = 1 - (i-1)/N_LEVELS
-    weight_sum_ = 0.0f;
+    // 预计算归一化权重: w_i = (1 - i/N) / sum
+    float sum = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
       weights_[i] = 1.0f - static_cast<float>(i) / N_LEVELS;
-      weight_sum_ += weights_[i];
+      sum += weights_[i];
+    }
+    float inv_sum = 1.0f / sum;
+    for (size_t i = 0; i < N_LEVELS; ++i) {
+      weights_[i] *= inv_sum;
     }
   }
 
   void compute() {
-    // 计算加权委托金额
+    // 计算归一化加权委托金额
     float weighted_bid = 0.0f;
     float weighted_ask = 0.0f;
 
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      float bid_a = bid_amt_[i].back();
-      float ask_a = -ask_amt_[i].back(); // 转为正数
-      weighted_bid += weights_[i] * bid_a;
-      weighted_ask += weights_[i] * ask_a;
+      weighted_bid += weights_[i] * bid_amt_[i].back();
+      weighted_ask -= weights_[i] * ask_amt_[i].back(); // ask 原本负值，减等于加正
     }
 
-    // 归一化
-    weighted_bid /= weight_sum_;
-    weighted_ask /= weight_sum_;
-
-    // OIR = (A^B - A^A) / (A^B + A^A)
+    // OIR = (B - A) / (B + A), clamp to [-1, 1]
     float sum = weighted_bid + weighted_ask;
-    float oir = 0.0f;
-    if (sum > 1e-6f) {
-      oir = (weighted_bid - weighted_ask) / sum;
-    }
+    float oir = (sum > 1e-6f) ? (weighted_bid - weighted_ask) / sum : 0.0f;
+    oir = std::fmax(-1.0f, std::fmin(1.0f, oir));
 
     buffer_.push_back(oir);
   }
@@ -82,7 +80,5 @@ private:
   const CBuffer<float, L2::BLEN> (&ask_amt_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &buffer_;
 
-  float weights_[N_LEVELS];
-  float weight_sum_;
+  float weights_[N_LEVELS]; // 预归一化权重
 };
-

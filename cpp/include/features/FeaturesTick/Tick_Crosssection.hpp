@@ -74,7 +74,7 @@ public:
 
     // CS feature 3: cs_liquidity_ratio - z-score VOI5 (Volume Order Imbalance) cross-sectionally
     {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::voi5);
+      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::voi1);
       convert_fp16_to_fp32(input, input_fp32_.data(), A);
       std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
       compute_zscore_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
