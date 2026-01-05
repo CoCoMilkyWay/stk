@@ -79,7 +79,11 @@ std::string DataManager::get_today_date() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
   std::tm tm_now;
+#ifdef _WIN32
   localtime_s(&tm_now, &time_t_now);
+#else
+  localtime_r(&time_t_now, &tm_now);
+#endif
 
   std::ostringstream oss;
   oss << std::put_time(&tm_now, "%Y-%m-%d");
@@ -91,7 +95,11 @@ std::string DataManager::get_date_from_days_ago(int days) const {
   auto past = now - std::chrono::hours(24 * days);
   auto time_t_past = std::chrono::system_clock::to_time_t(past);
   std::tm tm_past;
+#ifdef _WIN32
   localtime_s(&tm_past, &time_t_past);
+#else
+  localtime_r(&time_t_past, &tm_past);
+#endif
 
   std::ostringstream oss;
   oss << std::put_time(&tm_past, "%Y-%m-%d");
@@ -107,7 +115,11 @@ std::string DataManager::increment_date(const std::string &date) const {
   time_point += std::chrono::hours(24);
   auto time_t_result = std::chrono::system_clock::to_time_t(time_point);
   std::tm tm_result;
+#ifdef _WIN32
   localtime_s(&tm_result, &time_t_result);
+#else
+  localtime_r(&time_t_result, &tm_result);
+#endif
 
   std::ostringstream oss;
   oss << std::put_time(&tm_result, "%Y-%m-%d");
@@ -135,7 +147,11 @@ bool DataManager::should_run_weekly_update() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
   std::tm tm_now;
+#ifdef _WIN32
   localtime_s(&tm_now, &time_t_now);
+#else
+  localtime_r(&time_t_now, &tm_now);
+#endif
 
   int weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
   if (weekday != data_.config.baostock_weekly_update_day) {
@@ -1485,7 +1501,11 @@ std::string DataManager::get_next_update_time_weekly() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
   std::tm tm_now;
+#ifdef _WIN32
   localtime_s(&tm_now, &time_t_now);
+#else
+  localtime_r(&time_t_now, &tm_now);
+#endif
 
   int current_weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
   int days_until_monday = (data_.config.baostock_weekly_update_day - current_weekday + 7) % 7;
@@ -1497,7 +1517,11 @@ std::string DataManager::get_next_update_time_weekly() const {
   auto next_update = now + std::chrono::hours(24 * days_until_monday);
   auto time_t_next = std::chrono::system_clock::to_time_t(next_update);
   std::tm tm_next;
+#ifdef _WIN32
   localtime_s(&tm_next, &time_t_next);
+#else
+  localtime_r(&time_t_next, &tm_next);
+#endif
 
   std::ostringstream oss;
   oss << std::put_time(&tm_next, "%Y-%m-%d");
@@ -1521,7 +1545,11 @@ float DataManager::get_update_progress_weekly() const {
 
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
   std::tm tm_now;
+#ifdef _WIN32
   localtime_s(&tm_now, &time_t_now);
+#else
+  localtime_r(&time_t_now, &tm_now);
+#endif
 
   int current_weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
   int days_since_monday = (current_weekday - data_.config.baostock_weekly_update_day + 7) % 7;
@@ -1533,7 +1561,11 @@ float DataManager::get_update_progress_daily() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
   std::tm tm_now;
+#ifdef _WIN32
   localtime_s(&tm_now, &time_t_now);
+#else
+  localtime_r(&time_t_now, &tm_now);
+#endif
 
   float hours_elapsed = tm_now.tm_hour + tm_now.tm_min / 60.0;
   return (hours_elapsed / 24.0) * 100.0;

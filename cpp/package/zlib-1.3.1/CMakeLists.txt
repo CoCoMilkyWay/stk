@@ -1,6 +1,11 @@
 ﻿cmake_minimum_required(VERSION 3.20)
 project(zlib C)
 
+# Enable POSIX definitions for Unix/Linux/macOS
+if(NOT WIN32)
+    add_compile_definitions(_POSIX_C_SOURCE=200112L)
+endif()
+
 # Source files
 set(ZLIB_SOURCES
     adler32.c
@@ -23,16 +28,28 @@ set(ZLIB_SOURCES
 # Build static library
 add_library(z STATIC ${ZLIB_SOURCES})
 
+# Add POSIX definitions for Unix/Linux/macOS
+if(NOT WIN32)
+    target_compile_definitions(z PRIVATE _POSIX_C_SOURCE=200112L _DEFAULT_SOURCE)
+endif()
+
 # Compiler flags (match parent project)
-target_compile_options(z PRIVATE
-    /nologo
-    /O2
-    -march=native
-    /fp:fast
-    -D_CRT_SECURE_NO_DEPRECATE
-    -D_CRT_NONSTDC_NO_DEPRECATE
-    -Wno-overriding-option
-)
+if(IS_WINDOWS)
+    target_compile_options(z PRIVATE
+        /nologo
+        /O2
+        /fp:fast
+        -D_CRT_SECURE_NO_DEPRECATE
+        -D_CRT_NONSTDC_NO_DEPRECATE
+        -Wno-overriding-option
+    )
+else()
+    target_compile_options(z PRIVATE
+        -O2
+        -march=native
+        -ffast-math
+    )
+endif()
 
 # Public include directory
 target_include_directories(z PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

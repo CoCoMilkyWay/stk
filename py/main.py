@@ -1,9 +1,10 @@
 """
-Build script for 'main' C++ project (Windows).
+Build script for 'main' C++ project (Windows/macOS/Linux).
 Directly invokes CMake to configure and build the project.
 """
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -16,30 +17,49 @@ def build_main_project():
         os.path.join(script_dir, "../cpp/projects/main"))
     build_dir = os.path.join(cpp_project_dir, "build")
 
+    system = platform.system()
     print("=" * 40)
-    print("  C++ Build Script (Windows)")
+    print(f"  C++ Build Script ({system})")
     print("=" * 40)
 
-    # # Clean build directory
-    # if os.path.exists(build_dir):
-    #     print("\nCleaning build directory...")
-    #     shutil.rmtree(build_dir)
-    #     print("✓ Build directory cleaned")
+    # Clean build directory
+    if os.path.exists(build_dir):
+        print("\nCleaning build directory...")
+        shutil.rmtree(build_dir)
+        print("✓ Build directory cleaned")
 
     env = os.environ.copy()
 
     # Build configuration
     build_type = "Release"
+    
+    # Platform-specific compiler setup
     cmake_args = [
         "cmake",
-        "-G", "Ninja",
         "-S", ".",
         "-B", "build",
-        "-DCMAKE_CXX_COMPILER=clang-cl",
-        "-DCMAKE_C_COMPILER=clang-cl",
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
     ]
+    
+    if system == "Windows":
+        cmake_args.extend([
+            "-G", "Ninja",
+            "-DCMAKE_CXX_COMPILER=clang-cl",
+            "-DCMAKE_C_COMPILER=clang-cl",
+        ])
+    elif system == "Darwin":  # macOS
+        cmake_args.extend([
+            "-G", "Ninja",
+            "-DCMAKE_CXX_COMPILER=clang++",
+            "-DCMAKE_C_COMPILER=clang",
+        ])
+    else:  # Linux
+        cmake_args.extend([
+            "-G", "Ninja",
+            "-DCMAKE_CXX_COMPILER=clang++",
+            "-DCMAKE_C_COMPILER=clang",
+        ])
 
     # ThreadSanitizer mode
     if env.get('TSAN_MODE') == 'ON':

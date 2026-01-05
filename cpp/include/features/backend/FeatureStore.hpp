@@ -3,6 +3,7 @@
 #include "FeatureStoreConfig.hpp"
 #include "ZstdHelper.hpp"
 #include "misc/logging.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -10,20 +11,24 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <filesystem>
+#ifdef _WIN32
 #include <io.h>
+#include <share.h>
+#endif
 #include <iostream>
 #include <map>
 #include <mutex>
-#include <share.h>
 #include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#ifdef _WIN32
 #include <windows.h>
-
 #undef min
 #undef max
+#endif
 
 // ============================================================================
 // FEATURE STORE CONFIGURATION
@@ -84,14 +89,22 @@ private:
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
         const size_t total_bytes = MAX_ROWS_PER_LEVEL[lvl] * FIELDS_PER_LEVEL[lvl] * num_assets * sizeof(feature_storage_t);
         const size_t aligned_bytes = ((total_bytes + 63) / 64) * 64;
+#ifdef _WIN32
         data[lvl] = static_cast<feature_storage_t *>(_aligned_malloc(aligned_bytes, 64));
+#else
+        data[lvl] = static_cast<feature_storage_t *>(aligned_alloc(64, aligned_bytes));
+#endif
         assert(data[lvl]);
       }
 
       // Allocate depth data (same T as L0)
       const size_t depth_total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
       const size_t depth_aligned_bytes = ((depth_total_bytes + 63) / 64) * 64;
+#ifdef _WIN32
       depth_data = static_cast<feature_storage_t *>(_aligned_malloc(depth_aligned_bytes, 64));
+#else
+      depth_data = static_cast<feature_storage_t *>(aligned_alloc(64, depth_aligned_bytes));
+#endif
       assert(depth_data);
 
       ts_write_pos = new size_t[num_assets]();
@@ -120,11 +133,21 @@ private:
 
     ~Slot() {
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        if (data[lvl])
+        if (data[lvl]) {
+#ifdef _WIN32
           _aligned_free(data[lvl]);
+#else
+          free(data[lvl]);
+#endif
+        }
       }
-      if (depth_data)
+      if (depth_data) {
+#ifdef _WIN32
         _aligned_free(depth_data);
+#else
+        free(depth_data);
+#endif
+      }
       delete[] ts_write_pos;
       delete[] ts_worker_state;
     }
@@ -420,7 +443,7 @@ public:
 
       // Exponential backoff
       std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
-      backoff_us = std::min(backoff_us * 2, 100ULL);
+      backoff_us = std::min<size_t>(backoff_us * 2, 100);
     }
   }
 
@@ -445,7 +468,7 @@ public:
         break;
 
       std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
-      backoff_us = std::min(backoff_us * 2, 100ULL);
+      backoff_us = std::min<size_t>(backoff_us * 2, 100);
     }
 
     // Atomic state transition BUSY -> DONE
@@ -488,8 +511,8 @@ public:
 
     // Copy date before writing (slot may be recycled)
     char date_copy[16];
-    errno_t err = strncpy_s(date_copy, sizeof(date_copy), slot.date, _TRUNCATE);
-    assert(err == 0);
+    strncpy(date_copy, slot.date, sizeof(date_copy) - 1);
+    date_copy[sizeof(date_copy) - 1] = '\0';
 
     // Synchronous write + immediate flush (blocks until disk write completes)
     disk_write(date_copy, &slot);
@@ -627,8 +650,8 @@ private:
       Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] skip reset (async)");
     }
 
-    errno_t err = strncpy_s(s.date, sizeof(s.date), date.c_str(), _TRUNCATE);
-    assert(err == 0);
+    strncpy(s.date, date.c_str(), sizeof(s.date) - 1);
+    s.date[sizeof(s.date) - 1] = '\0';
     s.needs_reset = true;
 
     s.state.store(TensorState::BUSY, std::memory_order_release);
@@ -699,36 +722,13 @@ private:
                                                             compressed_bound);
     const size_t final_size = header_size + compressed_size;
 
-    // Fast write with pre-allocation
-    HANDLE hFile = CreateFileA(filepath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-    assert(hFile != INVALID_HANDLE_VALUE);
+    // Use standard C++ file I/O for cross-platform compatibility
+    std::ofstream file(filepath, std::ios::binary);
+    assert(file.is_open());
 
-    LARGE_INTEGER file_size;
-    file_size.QuadPart = final_size;
-    BOOL result = SetFilePointerEx(hFile, file_size, NULL, FILE_BEGIN);
-    assert(result);
-    result = SetEndOfFile(hFile);
-    assert(result);
-
-    LARGE_INTEGER zero = {{0}};
-    result = SetFilePointerEx(hFile, zero, NULL, FILE_BEGIN);
-    assert(result);
-
-    const size_t WRITE_CHUNK = 4 * 1024 * 1024;
-    size_t remaining = final_size;
-    const char *current = reinterpret_cast<const char *>(buffer.data());
-
-    while (remaining > 0) {
-      DWORD to_write = (remaining > WRITE_CHUNK) ? static_cast<DWORD>(WRITE_CHUNK) : static_cast<DWORD>(remaining);
-      DWORD written;
-      result = WriteFile(hFile, current, to_write, &written, NULL);
-      assert(result && written == to_write);
-      current += written;
-      remaining -= written;
-    }
-
-    CloseHandle(hFile);
+    file.write(reinterpret_cast<const char*>(buffer.data()), final_size);
+    assert(file.good());
+    file.close();
   }
 
   void disk_write(const std::string &date_str, Slot *slot) {

@@ -7,8 +7,10 @@
 
 #pragma once
 
+#ifdef _WIN32
 #include <winsock2.h>
 #include <windows.h>
+#endif
 
 #include "package/nlohmann/json.hpp"
 #include <boost/asio.hpp>
@@ -406,7 +408,11 @@ public:
       auto now = std::chrono::system_clock::now();
       auto now_t = std::chrono::system_clock::to_time_t(now);
       std::tm now_tm;
+#ifdef _WIN32
       localtime_s(&now_tm, &now_t);
+#else
+      localtime_r(&now_t, &now_tm);
+#endif
       char timestamp[15];
       std::strftime(timestamp, sizeof(timestamp), "%Y%m%d%H%M%S", &now_tm);
 

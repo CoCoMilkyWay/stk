@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <regex>
+#include <sstream>
 
 namespace L2 {
 

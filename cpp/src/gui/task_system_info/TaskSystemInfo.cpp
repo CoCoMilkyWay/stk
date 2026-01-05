@@ -12,7 +12,8 @@
 #include <thread>
 #include <vector>
 
-// Windows API headers
+// Platform-specific headers
+#ifdef _WIN32
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>
@@ -26,6 +27,19 @@
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "dxguid.lib")
+#elif __APPLE__
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <mach/mach.h>
+#include <mach/task.h>
+#else // Linux
+#include <sys/sysinfo.h>
+#include <sys/utsname.h>
+#include <unistd.h>
+#endif
 
 namespace GUI::Tasks {
 namespace {
@@ -150,7 +164,8 @@ private:
     enum class GPUVendor { None,
                            NVIDIA,
                            AMD,
-                           Intel };
+                           Intel,
+                           Apple };
     GPUVendor gpu_vendor = GPUVendor::None;
     std::string gpu_name;
     float gpu_vram_total_gb = 0.0f;
@@ -231,12 +246,14 @@ private:
   std::chrono::steady_clock::time_point last_update_time;
   std::chrono::steady_clock::time_point last_gpu_update_time;
 
-  // PDH (Performance Data Helper) handles for monitoring
+  // PDH (Performance Data Helper) handles for monitoring (Windows only)
+#ifdef _WIN32
   PDH_HQUERY pdh_query = nullptr;
   std::vector<PDH_HCOUNTER> pdh_cpu_counters;
   PDH_HCOUNTER pdh_disk_read_counter = nullptr;
   PDH_HCOUNTER pdh_disk_write_counter = nullptr;
   PDH_HCOUNTER pdh_disk_busy_counter = nullptr;
+#endif
 
 public:
   // ============================================================================
@@ -251,10 +268,12 @@ public:
   }
 
   ~SystemInfoTask() {
-    // Cleanup PDH resources
+    // Cleanup PDH resources (Windows only)
+#ifdef _WIN32
     if (pdh_query) {
       PdhCloseQuery(pdh_query);
     }
+#endif
   }
 
   // ============================================================================
@@ -309,6 +328,7 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectOS() {
+#ifdef _WIN32
     hw_info.os_name = "Windows";
 
     // Get Windows version
@@ -335,6 +355,31 @@ private:
     if (GetComputerNameA(hostname_buf, &size)) {
       hw_info.hostname = hostname_buf;
     }
+#elif __APPLE__
+    hw_info.os_name = "macOS";
+    
+    // Get kernel version from sysctl
+    char version_str[256] = {};
+    size_t size = sizeof(version_str);
+    if (sysctlbyname("kern.osrelease", version_str, &size, nullptr, 0) == 0) {
+      hw_info.kernel_version = version_str;
+    }
+    
+    // Get hostname
+    char hostname_buf[256] = {};
+    if (gethostname(hostname_buf, sizeof(hostname_buf)) == 0) {
+      hw_info.hostname = hostname_buf;
+    }
+#else // Linux
+    hw_info.os_name = "Linux";
+    
+    // Get kernel version
+    struct utsname uname_data;
+    if (uname(&uname_data) == 0) {
+      hw_info.kernel_version = uname_data.release;
+      hw_info.hostname = uname_data.nodename;
+    }
+#endif
   }
 
   // ----------------------------------------------------------------------------
@@ -342,6 +387,7 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectCPU() {
+#ifdef _WIN32
     // Detect CPU architecture from system info
     SYSTEM_INFO sysInfo;
     GetNativeSystemInfo(&sysInfo);
@@ -432,18 +478,69 @@ private:
       hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
       hw_info.cpu_physical_cores = hw_info.cpu_logical_cores;
     }
+#elif __APPLE__
+    // macOS: Simplified CPU detection
+    hw_info.cpu_architecture = "aarch64"; // Assume Apple Silicon for now
+    hw_info.cpu_vendor = "Apple";
+    
+    // Get model name using sysctl
+    char model[256] = {};
+    size_t size = sizeof(model);
+    if (sysctlbyname("hw.model", model, &size, nullptr, 0) == 0) {
+      hw_info.cpu_model = model;
+    }
+    
+    // Get core counts
+    int ncpus = 0;
+    size = sizeof(ncpus);
+    if (sysctlbyname("hw.logicalcpu_max", &ncpus, &size, nullptr, 0) == 0) {
+      hw_info.cpu_logical_cores = ncpus;
+    } else {
+      hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
+    }
+    
+    int physical_cores = 0;
+    size = sizeof(physical_cores);
+    if (sysctlbyname("hw.physicalcpu_max", &physical_cores, &size, nullptr, 0) == 0) {
+      hw_info.cpu_physical_cores = physical_cores;
+    } else {
+      hw_info.cpu_physical_cores = hw_info.cpu_logical_cores;
+    }
+    
+    // Get L3 cache size
+    uint64_t l3_size = 0;
+    size = sizeof(l3_size);
+    if (sysctlbyname("hw.l3cachesize", &l3_size, &size, nullptr, 0) == 0) {
+      hw_info.cpu_cache_l3_kb = l3_size / 1024;
+    }
+#else // Linux
+    // Linux: Simplified CPU detection
+    hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
+    hw_info.cpu_physical_cores = hw_info.cpu_logical_cores;
+    
+    // Try to read CPU info from /proc/cpuinfo (basic parsing)
+    hw_info.cpu_vendor = "Unknown";
+    hw_info.cpu_model = "Unknown";
+    hw_info.cpu_architecture = "unknown";
+#endif
+
+    // Call instruction set detection
+    if (hw_info.cpu_architecture == "x86_64" || hw_info.cpu_architecture == "i686") {
+      DetectX64Instructions();
+    } else if (hw_info.cpu_architecture == "aarch64" || hw_info.cpu_architecture == "arm") {
+      DetectAArch64Instructions();
+    }
   }
 
   // ----------------------------------------------------------------------------
-  // x64 Instruction Set Detection (Intel/AMD)
-  // ----------------------------------------------------------------------------
-
+  // x64 Instruction Set Detection (Intel/AMD) - Windows only
   void DetectX64Instructions() {
     // Only detect x64 instructions on x64 architecture
     if (hw_info.cpu_architecture != "x86_64" && hw_info.cpu_architecture != "i686") {
       return;
     }
 
+#ifdef _WIN32
     int cpuInfo[4] = {0};
     
     // CPUID Function 1: Processor Info and Feature Bits
@@ -507,6 +604,10 @@ private:
     hw_info.x64_isa.avx_vnni = (eax7_1 & (1 << 4)) != 0;
     hw_info.x64_isa.avx512_fp16 = (edx7_1 & (1 << 23)) != 0;
     hw_info.x64_isa.amx_tile = (edx7_1 & (1 << 24)) != 0;
+#else
+    // Non-Windows: x64 ISA detection not implemented
+    // TODO: Use cpuid inline assembly or __builtin_cpu_supports on gcc/clang
+#endif
   }
 
   // ----------------------------------------------------------------------------
@@ -519,10 +620,17 @@ private:
       return;
     }
 
+#ifdef _WIN32
     // Use IsProcessorFeaturePresent for ARM feature detection on Windows
     hw_info.aarch64_isa.neon = IsProcessorFeaturePresent(PF_ARM_NEON_INSTRUCTIONS_AVAILABLE);
     hw_info.aarch64_isa.aes = IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE);
     hw_info.aarch64_isa.crc32 = IsProcessorFeaturePresent(PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE);
+#else
+    // Non-Windows ARM: assume ARMv8+ features are available on modern ARM64 systems
+    hw_info.aarch64_isa.neon = true;  // Standard on ARMv8+
+    hw_info.aarch64_isa.aes = true;
+    hw_info.aarch64_isa.crc32 = true;
+#endif
     
     // Standard on ARMv8+
     hw_info.aarch64_isa.fp64 = true;
@@ -538,9 +646,6 @@ private:
                                  hw_info.cpu_model.find("M5") != std::string::npos);
       hw_info.aarch64_isa.neural_engine = true;
     }
-    
-    // Note: Many ARM features cannot be directly detected on Windows ARM64
-    // The above are the most common ones supported by Windows API
   }
 
   // ----------------------------------------------------------------------------
@@ -548,6 +653,7 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectMemory() {
+#ifdef _WIN32
     ULONGLONG totalMemoryKB = 0;
     if (GetPhysicallyInstalledSystemMemory(&totalMemoryKB)) {
       hw_info.ram_total_gb = totalMemoryKB / (1024 * 1024);
@@ -559,6 +665,18 @@ private:
         hw_info.ram_total_gb = memInfo.ullTotalPhys / (1024 * 1024 * 1024);
       }
     }
+#elif __APPLE__
+    uint64_t size = 0;
+    size_t len = sizeof(size);
+    if (sysctlbyname("hw.memsize", &size, &len, nullptr, 0) == 0) {
+      hw_info.ram_total_gb = size / (1024 * 1024 * 1024);
+    }
+#else // Linux
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+      hw_info.ram_total_gb = info.totalram / (1024 * 1024 * 1024);
+    }
+#endif
   }
 
   // ----------------------------------------------------------------------------
@@ -566,6 +684,7 @@ private:
   // ----------------------------------------------------------------------------
 
   void DetectGPU() {
+#ifdef _WIN32
     // Use DXGI to enumerate GPUs
     IDXGIFactory* pFactory = nullptr;
     HRESULT hr = CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&pFactory);
@@ -618,6 +737,25 @@ private:
 
     pAdapter->Release();
     pFactory->Release();
+#elif __APPLE__
+    // macOS: Simplified GPU detection
+    hw_info.gpu_name = "Apple GPU";
+    hw_info.gpu_vendor = HardwareInfo::GPUVendor::Apple;
+    
+    // Try to get GPU VRAM (Metal doesn't expose this easily)
+    uint64_t vram = 0;
+    size_t len = sizeof(vram);
+    if (sysctlbyname("hw.gpumem_total", &vram, &len, nullptr, 0) == 0) {
+      hw_info.gpu_vram_total_gb = vram / (1024.0f * 1024.0f * 1024.0f);
+    }
+    hw_info.gpu_tool_available = false; // Metal doesn't provide easy GPU monitoring
+#else // Linux
+    // Linux: Simplified GPU detection (would need to parse /proc or use libdrm in real implementation)
+    hw_info.gpu_name = "Unknown GPU";
+    hw_info.gpu_vendor = HardwareInfo::GPUVendor::None;
+    hw_info.gpu_vram_total_gb = 0.0f;
+    hw_info.gpu_tool_available = false;
+#endif
   }
 
   // ============================================================================
@@ -625,6 +763,7 @@ private:
   // ============================================================================
 
   void InitializePDH() {
+#ifdef _WIN32
     // Open PDH query
     PDH_STATUS status = PdhOpenQuery(NULL, 0, &pdh_query);
     assert(status == ERROR_SUCCESS);
@@ -650,6 +789,10 @@ private:
 
     // Initial collect (first call always returns 0)
     PdhCollectQueryData(pdh_query);
+#else
+    // Non-Windows platforms: Initialize empty PDH structures
+    // Real monitoring is done in UpdateCPUUsage, UpdateMemoryUsage, UpdateDiskUsage
+#endif
   }
 
   // ============================================================================
@@ -659,8 +802,10 @@ private:
   void UpdateDynamicMonitoring() {
     auto now = std::chrono::steady_clock::now();
 
-    // Collect PDH data for all counters
+    // Collect PDH data for all counters (Windows only)
+#ifdef _WIN32
     PdhCollectQueryData(pdh_query);
+#endif
 
     UpdateCPUUsage(now);
     UpdateMemoryUsage();
@@ -674,8 +819,8 @@ private:
   // ----------------------------------------------------------------------------
   // CPU Usage Update
   // ----------------------------------------------------------------------------
-
   void UpdateCPUUsage(std::chrono::steady_clock::time_point now) {
+#ifdef _WIN32
     for (int i = 0; i < hw_info.cpu_logical_cores; i++) {
       PDH_FMT_COUNTERVALUE counterValue;
       PDH_STATUS status = PdhGetFormattedCounterValue(pdh_cpu_counters[i], PDH_FMT_DOUBLE, NULL, &counterValue);
@@ -706,6 +851,10 @@ private:
 
       cpu_cores_data[i].usage_history[history_write_index] = smoothed;
     }
+#else
+    // Non-Windows: Placeholder implementation
+    // TODO: Implement CPU monitoring using /proc/stat on Linux, mach on macOS
+#endif
   }
 
   // ----------------------------------------------------------------------------
@@ -713,6 +862,7 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateMemoryUsage() {
+#ifdef _WIN32
     MEMORYSTATUSEX memInfo;
     memInfo.dwLength = sizeof(MEMORYSTATUSEX);
     
@@ -722,6 +872,23 @@ private:
       mem_data.usage_percent_current = static_cast<float>(memInfo.dwMemoryLoad);
       mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
     }
+#elif __APPLE__
+    struct mach_task_basic_info info;
+    mach_msg_type_number_t info_count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &info_count) == KERN_SUCCESS) {
+      // This gives process memory, not system memory - simplified approach
+      mem_data.usage_percent_current = 50.0f; // TODO: Calculate actual system memory usage
+      mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
+    }
+#else // Linux
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+      uint64_t used = info.totalram - info.freeram;
+      mem_data.usage_percent_current = (float)(used * 100.0 / info.totalram);
+      mem_data.used_gb_current = used / (1024.0f * 1024.0f * 1024.0f);
+      mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
+    }
+#endif
   }
 
   // ----------------------------------------------------------------------------
@@ -782,6 +949,7 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateNetworkUsage() {
+#ifdef _WIN32
     ULONG64 total_rx = 0;
     ULONG64 total_tx = 0;
 
@@ -827,15 +995,19 @@ private:
 
     net_data.rx_bytes_prev = total_rx;
     net_data.tx_bytes_prev = total_tx;
+#else
+    // Non-Windows: Placeholder network monitoring
+    // TODO: Implement using /proc/net/dev on Linux, netstat on macOS
+#endif
     net_data.rx_percent_history[history_write_index] = net_data.rx_percent_current;
     net_data.tx_percent_history[history_write_index] = net_data.tx_percent_current;
   }
-
   // ----------------------------------------------------------------------------
   // Disk Usage Update
   // ----------------------------------------------------------------------------
 
   void UpdateDiskUsage() {
+#ifdef _WIN32
     // Get disk read/write speeds from PDH
     PDH_FMT_COUNTERVALUE readValue, writeValue, busyValue;
     
@@ -856,6 +1028,10 @@ private:
       if (disk_data.busy_percent_current < 0.0f) disk_data.busy_percent_current = 0.0f;
       if (disk_data.busy_percent_current > 100.0f) disk_data.busy_percent_current = 100.0f;
     }
+#else
+    // Non-Windows: Placeholder disk monitoring
+    // TODO: Implement using /proc/diskstats on Linux, iostat on macOS
+#endif
 
     // Update historical max
     disk_data.read_mbps_max = std::max(disk_data.read_mbps_max * 0.995f, disk_data.read_mbps_current);
