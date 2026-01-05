@@ -2,26 +2,26 @@
 
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
-#include "features/FeaturesTick/DeltaT.hpp"
-#include "features/FeaturesTick/DepthData.hpp"
-#include "features/FeaturesTick/MPB.hpp"
-#include "features/FeaturesTick/MPC.hpp"
-#include "features/FeaturesTick/MPCStat.hpp"
-#include "features/FeaturesTick/MicroPrice.hpp"
-#include "features/FeaturesTick/MidPrice.hpp"
-#include "features/FeaturesTick/OIR.hpp"
-#include "features/FeaturesTick/SOIR.hpp"
-#include "features/FeaturesTick/Spread.hpp"
-#include "features/FeaturesTick/TickIndex.hpp"
-#include "features/FeaturesTick/TradePrice.hpp"
-#include "features/FeaturesTick/VOI.hpp"
+#include "features/FeaturesTick/TS/DeltaT.hpp"
+#include "features/FeaturesTick/TS/DepthData.hpp"
+#include "features/FeaturesTick/TS/MPB.hpp"
+#include "features/FeaturesTick/TS/MPC.hpp"
+#include "features/FeaturesTick/TS/MPCStat.hpp"
+#include "features/FeaturesTick/TS/MicroPrice.hpp"
+#include "features/FeaturesTick/TS/MidPrice.hpp"
+#include "features/FeaturesTick/TS/OIR.hpp"
+#include "features/FeaturesTick/TS/SOIR.hpp"
+#include "features/FeaturesTick/TS/Spread.hpp"
+#include "features/FeaturesTick/TS/TickIndex.hpp"
+#include "features/FeaturesTick/TS/TradePrice.hpp"
+#include "features/FeaturesTick/TS/VOI.hpp"
 #include <deque>
 
-// DAG: 静态多级有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) -> L2 (Hour))
+// DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) -> L2 (Hour))
 class DAG {
 public:
   // ===========================================================================
-  // 事件/时间驱动: 底层数据结构 (按计算层级排列, 作为计算图的"时钟")
+  // 事件/时间驱动: 底层数据结构 (按计算层级排列, 作为计算图的"驱动时钟")
   // ===========================================================================
   TickData &tick_data;    // L0 输入（外部传入）
   MinuteData minute_data; // L1 输入（内部管理，由 resampler 填充）

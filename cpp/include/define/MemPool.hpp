@@ -54,9 +54,9 @@ namespace MemPool {
 // ═══════════════════════════════════════════════════════════════════════════
 
 namespace Config {
-static constexpr size_t CACHE_LINE_SIZE = 64;      // 缓存行大小
-static constexpr size_t DEFAULT_CAPACITY = 10000;  // 默认初始容量
-static constexpr size_t MIN_BUCKET_COUNT = 16;     // HashMap最小桶数
+static constexpr size_t CACHE_LINE_SIZE = 64;     // 缓存行大小
+static constexpr size_t DEFAULT_CAPACITY = 10000; // 默认初始容量
+static constexpr size_t MIN_BUCKET_COUNT = 16;    // HashMap最小桶数
 static constexpr float TARGET_LOAD_FACTOR = 0.50; // HashMap目标负载因子 (降低以减少冲突)
 
 // 自适应块大小:根据对象大小自动选择,目标 ~1MB/块
@@ -499,11 +499,11 @@ public:
   void print_stats(const char *name = "BitmapPool") const noexcept {
     size_t cap = capacity();
     float turnover = num_constructed_ > 0
-                          ? num_deallocated_ * 100.0 / num_constructed_
-                          : 0.0;
+                         ? num_deallocated_ * 100.0 / num_constructed_
+                         : 0.0;
     float reclaimed = num_constructed_ > 0
-                           ? (1.0 - static_cast<float>(num_alive_) / num_constructed_) * 100.0
-                           : 0.0;
+                          ? (1.0 - static_cast<float>(num_alive_) / num_constructed_) * 100.0
+                          : 0.0;
 
     std::cout << "\n[" << name << " Stats]\n"
               << "  Constructed:  " << num_constructed_ << "\n"
@@ -659,13 +659,13 @@ public:
   inline Value *find(const Key &key) {
     size_t bucket_idx = hasher_(key) & bucket_mask_;
     Node *node = buckets_[bucket_idx];
-    
+
     // Unroll first iteration (most common case: empty or single node)
     if (node == nullptr) [[unlikely]]
       return nullptr;
     if (node->key == key) [[likely]]
       return &node->value;
-    
+
     node = node->next;
     while (node) {
       if (node->key == key)
