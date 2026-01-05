@@ -287,6 +287,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     sel.filter_cat_l1.clear();
     sel.filter_cat_l2.clear();
     sel.filter_norm_method.clear();
+    ui_state.sort_column = -1; // Reset table sorting
   }
 
   ImGui::Separator();
@@ -307,7 +308,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   if (ImGui::BeginTable("FeatureTable", 10,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
-                            ImGuiTableFlags_Sortable,
+                            ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate,
                         ImVec2(0, 400))) {
 
     // Table headers - fixed fit (auto shrink to content)
@@ -347,14 +348,15 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       }
     }
 
-    // Handle sorting
+    // Handle sorting (tristate: ascending -> descending -> none)
     ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs();
     if (sort_specs && sort_specs->SpecsDirty) {
-      // Update persistent sort state
       if (sort_specs->SpecsCount > 0) {
         const ImGuiTableColumnSortSpecs &spec = sort_specs->Specs[0];
         ui_state.sort_column = spec.ColumnIndex;
         ui_state.sort_ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+      } else {
+        ui_state.sort_column = -1; // No sorting (third click)
       }
       sort_specs->SpecsDirty = false;
     }

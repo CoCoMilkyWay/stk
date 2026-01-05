@@ -1,19 +1,20 @@
 #pragma once
 
-#include "misc/profiler.hpp"
 #include "FeatureStoreConfig.hpp"
 #include "ZstdHelper.hpp"
+#include "misc/profiler.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstring>
-#include <fstream>
 #include <filesystem>
 #include <string>
 #include <vector>
+
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <fstream>
 #endif
-
 
 // ============================================================================
 // FEATURE READER - Hybrid Compressed Format
@@ -45,28 +46,46 @@ private:
                             size_t *A_actual = nullptr) const {
     Trace;
 
+#ifdef _WIN32
+    HANDLE hFile;
+    {
+      TraceN("OpenFile");
+      hFile = CreateFileA(filepath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+      assert(hFile != INVALID_HANDLE_VALUE && "File not found");
+    }
+#else
     // Use standard C++ file I/O for cross-platform compatibility
     std::ifstream file(filepath, std::ios::binary);
     assert(file.is_open() && "File not found");
-
+#endif
     constexpr size_t header_size = 3 * sizeof(size_t);
 
     size_t T, F, A_file;
     {
       TraceN("ReadHeader");
       size_t header[3];
-      file.read(reinterpret_cast<char*>(header), header_size);
+#ifdef _WIN32
+      DWORD bytes_read;
+      BOOL result = ReadFile(hFile, header, header_size, &bytes_read, NULL);
+      assert(result && bytes_read == header_size);
+#else
+      file.read(reinterpret_cast<char *>(header), header_size);
       assert(file.gcount() == static_cast<std::streamsize>(header_size));
-      
+#endif
+
       T = header[0];
       F = header[1];
       A_file = header[2];
-      
+
       // Return actual dimensions if requested
-      if (T_actual) *T_actual = T;
-      if (F_actual) *F_actual = F;
-      if (A_actual) *A_actual = A_file;
-      
+      if (T_actual)
+        *T_actual = T;
+      if (F_actual)
+        *F_actual = F;
+      if (A_actual)
+        *A_actual = A_file;
+
       // Validate dimensions don't exceed buffer capacity
       assert(T <= T_max && "T exceeds buffer capacity");
       assert(F <= F_max && "F exceeds buffer capacity");
@@ -76,21 +95,46 @@ private:
     size_t compressed_size;
     {
       TraceN("GetFileSize");
+#ifdef _WIN32
+      LARGE_INTEGER file_size;
+      BOOL result = GetFileSizeEx(hFile, &file_size);
+      assert(result);
+      compressed_size = static_cast<size_t>(file_size.QuadPart) - header_size;
+#else
       file.seekg(0, std::ios::end);
       compressed_size = static_cast<size_t>(file.tellg()) - header_size;
       file.seekg(header_size, std::ios::beg);
+#endif
     }
 
     std::vector<uint8_t> compressed;
     {
       TraceN("ReadCompressed");
       compressed.resize(compressed_size);
-      file.read(reinterpret_cast<char*>(compressed.data()), compressed_size);
+
+#ifdef _WIN32
+      size_t remaining = compressed_size;
+      char *current = reinterpret_cast<char *>(compressed.data());
+      constexpr size_t READ_CHUNK = 64 * 1024 * 1024;
+
+      while (remaining > 0) {
+        DWORD to_read = (remaining > READ_CHUNK) ? static_cast<DWORD>(READ_CHUNK) : static_cast<DWORD>(remaining);
+        DWORD bytes_read;
+        BOOL result = ReadFile(hFile, current, to_read, &bytes_read, NULL);
+        assert(result && bytes_read == to_read);
+        current += bytes_read;
+        remaining -= bytes_read;
+      }
+    }
+
+    CloseHandle(hFile);
+#else
+      file.read(reinterpret_cast<char *>(compressed.data()), compressed_size);
       assert(file.gcount() == static_cast<std::streamsize>(compressed_size));
     }
 
     file.close();
-
+#endif
     {
       TraceN("Decompress");
       const size_t decompressed_size = T * F * A * sizeof(feature_storage_t);
@@ -102,8 +146,8 @@ public:
   // Depth tensor for OrderFlow visualization
   struct DepthTensor {
     std::string date;
-    size_t T = 0;  // Actual rows (read from file header)
-    size_t F = 0;  // Actual feature width (read from file header)
+    size_t T = 0; // Actual rows (read from file header)
+    size_t F = 0; // Actual feature width (read from file header)
     size_t A = 0;
     std::vector<feature_storage_t> data;
 
@@ -140,21 +184,21 @@ public:
     size_t max_days = 0;
     size_t max_features = 0;
     std::vector<size_t> feature_indices;
-    
+
     // Temp buffers (reused across days)
-    std::vector<feature_storage_t> temp_column;  // L0: single column [T × 1 × A]
-    std::vector<feature_storage_t> temp_day;     // L1/L2: full day [T × F_total × A]
+    std::vector<feature_storage_t> temp_column; // L0: single column [T × 1 × A]
+    std::vector<feature_storage_t> temp_day;    // L1/L2: full day [T × F_total × A]
 
     void preallocate(size_t A_, size_t max_days_, size_t max_features_, size_t level_) {
       A = A_;
       level = level_;
       max_days = max_days_;
       max_features = max_features_;
-      
+
       const size_t T_per_day = MAX_ROWS_PER_LEVEL[level];
       data.resize(max_days * T_per_day * max_features * A);
       day_offsets.resize(max_days + 1);
-      
+
       if (level == 0) {
         temp_column.resize(T_per_day * 1 * A);
       } else {
@@ -178,11 +222,11 @@ public:
   // DayTensor structure (for OrderFlow GUI compatibility)
   struct DayTensor {
     std::string date;
-    size_t T[LEVEL_COUNT] = {0};  // Actual rows per level (read from file header)
-    size_t F[LEVEL_COUNT] = {0};  // Actual feature width per level (read from file header)
+    size_t T[LEVEL_COUNT] = {0}; // Actual rows per level (read from file header)
+    size_t F[LEVEL_COUNT] = {0}; // Actual feature width per level (read from file header)
     size_t A = 0;
     std::vector<feature_storage_t> data[LEVEL_COUNT];
-    std::vector<feature_storage_t> temp_column;  // L0 interleave buffer (reused)
+    std::vector<feature_storage_t> temp_column; // L0 interleave buffer (reused)
 
     template <size_t Level>
     inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
@@ -225,7 +269,7 @@ public:
       // Preallocate for max capacity, actual T/F set by load_day_level from header
       data[level].resize(MAX_ROWS_PER_LEVEL[level] * FIELDS_PER_LEVEL[level] * A);
       if (level == 0) {
-        temp_column.resize(MAX_ROWS_PER_LEVEL[0] * 1 * A);  // L0 needs interleave buffer
+        temp_column.resize(MAX_ROWS_PER_LEVEL[0] * 1 * A); // L0 needs interleave buffer
       }
     }
   };
@@ -257,36 +301,36 @@ public:
         for (size_t f = 0; f < F_max; ++f) {
           std::string col_path = day_dir + "/features_L0_f" + std::to_string(f) + ".zst";
           assert(std::filesystem::exists(col_path) && "L0 column file missing");
-          
+
           // Read column into temp buffer and get actual dimensions
           size_t T_col, F_col, A_col;
           read_compressed_data(col_path, T_max, 1, A, temp, &T_col, &F_col, &A_col);
-          
+
           if (f == 0) {
-            T_actual = T_col;  // First column sets T
+            T_actual = T_col; // First column sets T
           } else {
             assert(T_col == T_actual && "Column T mismatch");
           }
-          
+
           // Interleave into destination
           for (size_t t = 0; t < T_actual; ++t) {
             std::memcpy(&dest[(t * F_max + f) * A], &temp[t * A], A * sizeof(feature_storage_t));
           }
         }
       }
-      
+
       // Update dynamic dimensions
       out.T[level] = T_actual;
-      out.F[level] = F_max;  // F is total column count
+      out.F[level] = F_max; // F is total column count
     } else {
       // L1/L2: merged storage - read directly into data buffer
       std::string merged_path = day_dir + "/features_L" + std::to_string(level) + ".zst";
       assert(std::filesystem::exists(merged_path) && "Merged file missing");
-      
+
       size_t T_actual, F_actual, A_actual;
       read_compressed_data(merged_path, T_max, F_max, A, out.data[level].data(),
-                          &T_actual, &F_actual, &A_actual);
-      
+                           &T_actual, &F_actual, &A_actual);
+
       // Update dynamic dimensions
       out.T[level] = T_actual;
       out.F[level] = F_actual;
@@ -309,9 +353,9 @@ public:
 
     // Read data and get actual dimensions from header
     size_t T_actual, F_actual, A_actual;
-    read_compressed_data(path, MAX_ROWS_PER_LEVEL[0], DEPTH_TOTAL_WIDTH, out.A, 
-                        out.data.data(), &T_actual, &F_actual, &A_actual);
-    
+    read_compressed_data(path, MAX_ROWS_PER_LEVEL[0], DEPTH_TOTAL_WIDTH, out.A,
+                         out.data.data(), &T_actual, &F_actual, &A_actual);
+
     // Update dynamic dimensions (buffer already preallocated, no resize)
     out.T = T_actual;
     out.F = F_actual;
@@ -331,10 +375,10 @@ public:
 
     assert(out.A > 0 && "Must preallocate() before load_month_columns()");
     assert(feature_indices.size() <= out.max_features && "Feature count exceeds preallocated");
-    
+
     out.reset();
     out.feature_indices = feature_indices;
-    
+
     const size_t level = out.level;
     const size_t A = out.A;
     const size_t F_selected = feature_indices.size();
@@ -348,7 +392,7 @@ public:
     }
 
     const size_t num_days = out.dates.size();
-    
+
     // Build day_offsets: [0, T, 2T, ..., num_days*T]
     for (size_t i = 0; i <= num_days; ++i) {
       out.day_offsets[i] = i * T_per_day;
@@ -357,7 +401,7 @@ public:
     if (level == 0) {
       // L0: columnar storage - use temp_column buffer
       feature_storage_t *temp = out.temp_column.data();
-      
+
       for (size_t day_idx = 0; day_idx < num_days; ++day_idx) {
         TraceN("LoadDay");
         const auto &date = out.dates[day_idx];

@@ -22,11 +22,11 @@ def build_main_project():
     print(f"  C++ Build Script ({system})")
     print("=" * 40)
 
-    # Clean build directory
-    if os.path.exists(build_dir):
-        print("\nCleaning build directory...")
-        shutil.rmtree(build_dir)
-        print("✓ Build directory cleaned")
+    # # Clean build directory
+    # if os.path.exists(build_dir):
+    #     print("\nCleaning build directory...")
+    #     shutil.rmtree(build_dir)
+    #     print("✓ Build directory cleaned")
 
     env = os.environ.copy()
 

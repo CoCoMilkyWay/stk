@@ -3,9 +3,12 @@
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
 #include "shared/SharedData.hpp"
+#include <charconv>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <ranges>
+#include <string_view>
 
 namespace GUI::Tasks {
 namespace {
@@ -47,7 +50,11 @@ private:
     if (ImGui::Button(btn_id)) {
       // Parse date when opening popup
       if (strlen(date_buf) >= 10) {
-        sscanf(date_buf, "%d-%d-%d", &state.year, &state.month, &state.day);
+        auto parts = std::string_view(date_buf) | std::views::split('-');
+        auto it = parts.begin();
+        std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.year); ++it;
+        std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.month); ++it;
+        std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.day);
       }
       state.is_open = true;
       ImGui::OpenPopup(popup_id);

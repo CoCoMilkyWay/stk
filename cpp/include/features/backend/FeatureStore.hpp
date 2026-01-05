@@ -11,12 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
-#include <fstream>
 #include <filesystem>
-#ifdef _WIN32
-#include <io.h>
-#include <share.h>
-#endif
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -24,10 +19,15 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
 #ifdef _WIN32
+#include <io.h>
+#include <share.h>
 #include <windows.h>
 #undef min
 #undef max
+#else
+#include <fstream>
 #endif
 
 // ============================================================================
@@ -511,8 +511,7 @@ public:
 
     // Copy date before writing (slot may be recycled)
     char date_copy[16];
-    strncpy(date_copy, slot.date, sizeof(date_copy) - 1);
-    date_copy[sizeof(date_copy) - 1] = '\0';
+    snprintf(date_copy, sizeof(date_copy), "%s", slot.date);
 
     // Synchronous write + immediate flush (blocks until disk write completes)
     disk_write(date_copy, &slot);
@@ -650,8 +649,7 @@ private:
       Logger::log("worker_" + std::to_string(worker_id), "Pool[" + std::to_string(slot_idx) + "] skip reset (async)");
     }
 
-    strncpy(s.date, date.c_str(), sizeof(s.date) - 1);
-    s.date[sizeof(s.date) - 1] = '\0';
+    snprintf(s.date, sizeof(s.date), "%s", date.c_str());
     s.needs_reset = true;
 
     s.state.store(TensorState::BUSY, std::memory_order_release);
@@ -722,13 +720,46 @@ private:
                                                             compressed_bound);
     const size_t final_size = header_size + compressed_size;
 
+#ifdef _WIN32
+    // Fast write with pre-allocation
+    HANDLE hFile = CreateFileA(filepath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    assert(hFile != INVALID_HANDLE_VALUE);
+
+    LARGE_INTEGER file_size;
+    file_size.QuadPart = final_size;
+    BOOL result = SetFilePointerEx(hFile, file_size, NULL, FILE_BEGIN);
+    assert(result);
+    result = SetEndOfFile(hFile);
+    assert(result);
+
+    LARGE_INTEGER zero = {{0}};
+    result = SetFilePointerEx(hFile, zero, NULL, FILE_BEGIN);
+    assert(result);
+
+    const size_t WRITE_CHUNK = 4 * 1024 * 1024;
+    size_t remaining = final_size;
+    const char *current = reinterpret_cast<const char *>(buffer.data());
+
+    while (remaining > 0) {
+      DWORD to_write = (remaining > WRITE_CHUNK) ? static_cast<DWORD>(WRITE_CHUNK) : static_cast<DWORD>(remaining);
+      DWORD written;
+      result = WriteFile(hFile, current, to_write, &written, NULL);
+      assert(result && written == to_write);
+      current += written;
+      remaining -= written;
+    }
+
+    CloseHandle(hFile);
+#else
     // Use standard C++ file I/O for cross-platform compatibility
     std::ofstream file(filepath, std::ios::binary);
     assert(file.is_open());
 
-    file.write(reinterpret_cast<const char*>(buffer.data()), final_size);
+    file.write(reinterpret_cast<const char *>(buffer.data()), final_size);
     assert(file.good());
     file.close();
+#endif
   }
 
   void disk_write(const std::string &date_str, Slot *slot) {

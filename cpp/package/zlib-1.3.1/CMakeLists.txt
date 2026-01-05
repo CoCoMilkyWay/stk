@@ -38,6 +38,7 @@ if(IS_WINDOWS)
     target_compile_options(z PRIVATE
         /nologo
         /O2
+        -march=native
         /fp:fast
         -D_CRT_SECURE_NO_DEPRECATE
         -D_CRT_NONSTDC_NO_DEPRECATE

@@ -7,8 +7,10 @@ endif()
 
 # Suppress warnings
 if(MSVC)
+    # MSVC or clang-cl (MSVC-compatible frontend)
     add_compile_options(/W0)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # LLVM Clang / Apple Clang / GCC
     add_compile_options(-Wno-unused-function)
 endif()
 
