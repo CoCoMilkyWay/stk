@@ -1197,7 +1197,7 @@ private:
     }
 
     last_depth_update_tick_ = curr_tick_;
-    next_depth_update_tick_ = curr_tick_ + (L2::L2_MIN_TIME_INTERVAL_MS / 10);
+    next_depth_update_tick_ += (L2::L2_MIN_TIME_INTERVAL_MS / 10); // 不用新订单时间计算下一个阈值, 不然会造成为误差累计
 
     return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= L2::LOB_DEPTH;
   }

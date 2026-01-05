@@ -12,6 +12,7 @@
 #include "features/FeaturesTick/OIR.hpp"
 #include "features/FeaturesTick/SOIR.hpp"
 #include "features/FeaturesTick/Spread.hpp"
+#include "features/FeaturesTick/TickIndex.hpp"
 #include "features/FeaturesTick/TradePrice.hpp"
 #include "features/FeaturesTick/VOI.hpp"
 #include <deque>
@@ -35,10 +36,10 @@ public:
     // -------------------------------------------------------------------------
     // [EVERY TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
     // -------------------------------------------------------------------------
-    CBuffer<float, L2::BLEN> DeltaTMaker;
-    CBuffer<float, L2::BLEN> DeltaTTaker;
-    CBuffer<float, L2::BLEN> DeltaTCancel;
-    DeltaT delta_t{td, DeltaTMaker, DeltaTTaker, DeltaTCancel};
+    CBuffer<float, L2::BLEN> DeltaTMaker_;
+    CBuffer<float, L2::BLEN> DeltaTTaker_;
+    CBuffer<float, L2::BLEN> DeltaTCancel_;
+    DeltaT DeltaT{td, DeltaTMaker_, DeltaTTaker_, DeltaTCancel_};
 
     // -------------------------------------------------------------------------
     // [ON DEPTH] 盘口更新时 - depth_updated == true 时触发:
@@ -48,57 +49,57 @@ public:
     // -------------------------------------------------------------------------
 
     // --- 基础数据 CBuffer ---
-    CBuffer<float, L2::BLEN> BidPrice[L2::LOB_DEPTH]; // 买1-N价 (元)
-    CBuffer<float, L2::BLEN> AskPrice[L2::LOB_DEPTH]; // 卖1-N价 (元)
-    CBuffer<float, L2::BLEN> BidQty[L2::LOB_DEPTH];   // 买1-N量 (股, 正值)
-    CBuffer<float, L2::BLEN> AskQty[L2::LOB_DEPTH];   // 卖1-N量 (股, 负值)
-    CBuffer<float, L2::BLEN> BidAmt[L2::LOB_DEPTH];   // 买1-N金额 (万元, 正值)
-    CBuffer<float, L2::BLEN> AskAmt[L2::LOB_DEPTH];   // 卖1-N金额 (万元, 负值)
-    CBuffer<float, L2::BLEN> MidPrice;                // 中间价 (元)
-    CBuffer<float, L2::BLEN> MicroPrice;              // 微观价格
-    CBuffer<float, L2::BLEN> Spread;                  // 买卖价差 (元)
+    CBuffer<float, L2::BLEN> TickIndex_;               // 当前tick索引 (秒级), 用于时间滤波
+    CBuffer<float, L2::BLEN> BidPrice_[L2::LOB_DEPTH]; // 买1-N价 (元)
+    CBuffer<float, L2::BLEN> AskPrice_[L2::LOB_DEPTH]; // 卖1-N价 (元)
+    CBuffer<float, L2::BLEN> BidQty_[L2::LOB_DEPTH];   // 买1-N量 (股, 正值)
+    CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];   // 卖1-N量 (股, 负值)
+    CBuffer<float, L2::BLEN> BidAmt_[L2::LOB_DEPTH];   // 买1-N金额 (万元, 正值)
+    CBuffer<float, L2::BLEN> AskAmt_[L2::LOB_DEPTH];   // 卖1-N金额 (万元, 负值)
+    CBuffer<float, L2::BLEN> MidPrice_;                // 中间价 (元)
+    CBuffer<float, L2::BLEN> MicroPrice_;              // 微价格 (元)
+    CBuffer<float, L2::BLEN> Spread_;                  // 买卖价差 (元)
 
     // --- 基础数据算子 ---
-    DepthData<L2::LOB_DEPTH> depth_data{td, BidPrice, AskPrice, BidQty, AskQty, BidAmt, AskAmt};
-    class MidPrice mid_price{BidPrice[0], AskPrice[0], MidPrice};
-    class MicroPrice micro_price{td, MicroPrice};
-    class Spread spread{BidPrice[0], AskPrice[0], Spread};
+    TickIndex TickIndex{td, TickIndex_};
+    DepthData<L2::LOB_DEPTH> DepthData{td, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_};
+    MidPrice MidPrice{BidPrice_[0], AskPrice_[0], MidPrice_};
+    MicroPrice MicroPrice{td, MicroPrice_};
+    Spread Spread{BidPrice_[0], AskPrice_[0], Spread_};
 
     // --- 因子 CBuffer ---
-    CBuffer<float, L2::BLEN> VOI1;      // VOI 1档
-    CBuffer<float, L2::BLEN> VOI30;     // VOI 30档加权 (线性衰减)
-    CBuffer<float, L2::BLEN> OIR5;      // OIR 5档加权比率
-    CBuffer<float, L2::BLEN> OIR10;     // OIR 10档加权
-    CBuffer<float, L2::BLEN> SOIR5;     // SOIR 5档加权
-    CBuffer<float, L2::BLEN> SOIR5s;    // SOIR 第5档单独 (研报:单档效果更好)
-    CBuffer<float, L2::BLEN> SOIR10s;   // SOIR 第10档单独
-    CBuffer<float, L2::BLEN> SOIR30s;   // SOIR 第30档单独 (深度信息)
-    CBuffer<float, L2::BLEN> MPC1;      // 中间价变化率 lag=1
-    CBuffer<float, L2::BLEN> MPC5;      // 中间价变化率 lag=5
-    CBuffer<float, L2::BLEN> MPC5_Max;  // MPC5日内最大值 (IC -9.39%)
-    CBuffer<float, L2::BLEN> MPC5_Skew; // MPC5日内偏度 (夏普3.07)
+    CBuffer<float, L2::BLEN> VOI1_;      // VOI 1档
+    CBuffer<float, L2::BLEN> VOI30_;     // VOI 30档加权 (线性衰减)
+    CBuffer<float, L2::BLEN> OIR5_;      // OIR 5档加权比率
+    CBuffer<float, L2::BLEN> OIR10_;     // OIR 10档加权
+    CBuffer<float, L2::BLEN> SOIR5_;     // SOIR 5档加权
+    CBuffer<float, L2::BLEN> SOIR5s_;    // SOIR 第5档单独 (研报:单档效果更好)
+    CBuffer<float, L2::BLEN> SOIR10s_;   // SOIR 第10档单独
+    CBuffer<float, L2::BLEN> SOIR30s_;   // SOIR 第30档单独 (深度信息)
+    CBuffer<float, L2::BLEN> MPC1_;      // 中间价变化率 lag=1
+    CBuffer<float, L2::BLEN> MPC5_;      // 中间价变化率 lag=5
+    CBuffer<float, L2::BLEN> MPC5_Max_;  // MPC5日内最大值 (IC -9.39%)
+    CBuffer<float, L2::BLEN> MPC5_Skew_; // MPC5日内偏度 (夏普3.07)
 
     // --- 因子算子 ---
-    VOI<1> voi1{BidPrice, AskPrice, BidAmt, AskAmt, VOI1};
-    VOI<30> voi30{BidPrice, AskPrice, BidAmt, AskAmt, VOI30};
-    OIR<5> oir5{BidAmt, AskAmt, OIR5};
-    OIR<10> oir10{BidAmt, AskAmt, OIR10};
-    SOIR<5, false> soir5{BidAmt, AskAmt, SOIR5};
-    SOIR<5, true> soir5s{BidAmt, AskAmt, SOIR5s};
-    SOIR<10, true> soir10s{BidAmt, AskAmt, SOIR10s};
-    SOIR<30, true> soir30s{BidAmt, AskAmt, SOIR30s};
-    MPC<1> mpc1{MidPrice, MPC1};
-    MPCWithStats<5> mpc5{MidPrice, MPC5, MPC5_Max, MPC5_Skew};
+    VOI<1> VOI1{BidPrice_, AskPrice_, BidAmt_, AskAmt_, TickIndex_, VOI1_};
+    VOI<30> VOI30{BidPrice_, AskPrice_, BidAmt_, AskAmt_, TickIndex_, VOI30_};
+    OIR<5> OIR5{BidAmt_, AskAmt_, OIR5_};
+    OIR<10> OIR10{BidAmt_, AskAmt_, OIR10_};
+    SOIR<5, false> SOIR5{BidAmt_, AskAmt_, SOIR5_};
+    SOIR<5, true> SOIR5s{BidAmt_, AskAmt_, SOIR5s_};
+    SOIR<10, true> SOIR10s{BidAmt_, AskAmt_, SOIR10s_};
+    SOIR<30, true> SOIR30s{BidAmt_, AskAmt_, SOIR30s_};
+    MPC<1> MPC1{MidPrice_, MPC1_};
+    MPCWithStats<5> MPC5{MidPrice_, MPC5_, MPC5_Max_, MPC5_Skew_};
 
     // -------------------------------------------------------------------------
     // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
     // -------------------------------------------------------------------------
-    CBuffer<float, L2::BLEN> TradePrice; // 成交价 (元单位)
-    CBuffer<float, L2::BLEN> MPB;        // 市价偏离度
-    class TradePrice trade_price{td, TradePrice};
-    class MPB mpb {
-      MidPrice, TradePrice, MPB
-    };
+    CBuffer<float, L2::BLEN> TradePrice_; // 成交价 (元单位)
+    CBuffer<float, L2::BLEN> MPB_;        // 市价偏离度
+    TradePrice TradePrice{td, TradePrice_};
+    MPB MPB{MidPrice_, TradePrice_, MPB_};
 
     explicit L0(TickData &t) : td(t) {} // 构造函数 (只需初始化引用成员)
   };
@@ -148,9 +149,9 @@ public:
   // ===========================================================================
   void reset_for_new_day() {
     // 用前一天收盘价(最后成交价)设置depth的涨跌停保护
-    float prev_close = l0.TradePrice.size() > 0 ? l0.TradePrice.back() : 0.0f;
+    float prev_close = l0.TradePrice_.size() > 0 ? l0.TradePrice_.back() : 0.0f;
     if (prev_close > 0) {
-      l0.depth_data.set_prev_close(prev_close);
+      l0.DepthData.set_prev_close(prev_close);
     }
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }

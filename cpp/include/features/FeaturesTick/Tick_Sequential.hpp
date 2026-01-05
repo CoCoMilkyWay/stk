@@ -59,50 +59,51 @@ inline void Tick_Sequential::compute_and_store() {
 
 inline void Tick_Sequential::compute_ts_tick(size_t t) {
   // [EVERY TICK] 逐笔更新
-  dag_.l0.delta_t.compute();
+  dag_.l0.DeltaT.compute();
 
   if (dag_.tick_data.lob.depth_updated) {
     // =============================================================
     // 数据层: 基础数据提取 (每tick只算一次, 供下游因子复用)
     // =============================================================
-    dag_.l0.depth_data.compute();   // N档price/qty → 4N个CBuffer
-    dag_.l0.mid_price.compute();    // 中间价
-    dag_.l0.micro_price.compute();  // 微观价格
-    dag_.l0.spread.compute();       // 买卖价差
-    dag_.l0.trade_price.compute();  // 成交价
+    dag_.l0.TickIndex.compute();   // 秒级索引 (供时间滤波器使用)
+    dag_.l0.DepthData.compute();   // N档price/qty → 4N个CBuffer
+    dag_.l0.MidPrice.compute();    // 中间价
+    dag_.l0.MicroPrice.compute();  // 微观价格
+    dag_.l0.Spread.compute();       // 买卖价差
+    dag_.l0.TradePrice.compute();  // 成交价
 
     // =============================================================
     // 因子层: 从共享CBuffer读取, 无重复计算
     // =============================================================
     // 订单量类因子
-    dag_.l0.voi1.compute();     // VOI 1档
-    dag_.l0.voi30.compute();    // VOI 30档
-    dag_.l0.oir5.compute();     // OIR 5档比率
-    dag_.l0.oir10.compute();    // OIR 10档
-    dag_.l0.soir5.compute();    // SOIR 5档加权
-    dag_.l0.soir5s.compute();   // SOIR 第5档单独
-    dag_.l0.soir10s.compute();  // SOIR 第10档单独
-    dag_.l0.soir30s.compute();  // SOIR 第30档单独
+    dag_.l0.VOI1.compute();     // VOI 1档
+    dag_.l0.VOI30.compute();    // VOI 30档
+    dag_.l0.OIR5.compute();     // OIR 5档比率
+    dag_.l0.OIR10.compute();    // OIR 10档
+    dag_.l0.SOIR5.compute();    // SOIR 5档加权
+    dag_.l0.SOIR5s.compute();   // SOIR 第5档单独
+    dag_.l0.SOIR10s.compute();  // SOIR 第10档单独
+    dag_.l0.SOIR30s.compute();  // SOIR 第30档单独
 
     // 价格类因子
-    dag_.l0.mpb.compute();   // 市价偏离度
-    dag_.l0.mpc1.compute();  // 中间价变化率 lag=1
-    dag_.l0.mpc5.compute();  // 中间价变化率 lag=5 + 日内max/skew
+    dag_.l0.MPB.compute();   // 市价偏离度
+    dag_.l0.MPC1.compute();  // 中间价变化率 lag=1
+    dag_.l0.MPC5.compute();  // 中间价变化率 lag=5 + 日内max/skew
 
     // 写入因子到输出缓冲区 (顺序与 LEVEL_0_FIELDS 定义一致)
-    ts_features_buffer_[0] = dag_.l0.VOI1.back();
-    ts_features_buffer_[1] = dag_.l0.VOI30.back();
-    ts_features_buffer_[2] = dag_.l0.OIR5.back();
-    ts_features_buffer_[3] = dag_.l0.OIR10.back();
-    ts_features_buffer_[4] = dag_.l0.SOIR5.back();
-    ts_features_buffer_[5] = dag_.l0.SOIR5s.back();
-    ts_features_buffer_[6] = dag_.l0.SOIR10s.back();
-    ts_features_buffer_[7] = dag_.l0.SOIR30s.back();
-    ts_features_buffer_[8] = dag_.l0.MPB.back();
-    ts_features_buffer_[9] = dag_.l0.MPC1.back();
-    ts_features_buffer_[10] = dag_.l0.MPC5.back();
-    ts_features_buffer_[11] = dag_.l0.MPC5_Max.back();
-    ts_features_buffer_[12] = dag_.l0.MPC5_Skew.back();
+    ts_features_buffer_[0] = dag_.l0.VOI1_.back();
+    ts_features_buffer_[1] = dag_.l0.VOI30_.back();
+    ts_features_buffer_[2] = dag_.l0.OIR5_.back();
+    ts_features_buffer_[3] = dag_.l0.OIR10_.back();
+    ts_features_buffer_[4] = dag_.l0.SOIR5_.back();
+    ts_features_buffer_[5] = dag_.l0.SOIR5s_.back();
+    ts_features_buffer_[6] = dag_.l0.SOIR10s_.back();
+    ts_features_buffer_[7] = dag_.l0.SOIR30s_.back();
+    ts_features_buffer_[8] = dag_.l0.MPB_.back();
+    ts_features_buffer_[9] = dag_.l0.MPC1_.back();
+    ts_features_buffer_[10] = dag_.l0.MPC5_.back();
+    ts_features_buffer_[11] = dag_.l0.MPC5_Max_.back();
+    ts_features_buffer_[12] = dag_.l0.MPC5_Skew_.back();
   }
 
   // Write TS features [voi1, mpc5_skew]
@@ -121,13 +122,13 @@ inline void Tick_Sequential::write_lob_depth(size_t t) {
   constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手 (1手=100股)
 
   for (size_t i = 0; i < N; ++i) {
-    lob_depth_buffer_[i] = dag_.l0.BidPrice[i].back();
-    lob_depth_buffer_[N + i] = dag_.l0.AskPrice[i].back();
-    lob_depth_buffer_[2 * N + i] = dag_.l0.BidQty[i].back() * VOLUME_TO_LOT;
-    lob_depth_buffer_[3 * N + i] = dag_.l0.AskQty[i].back() * VOLUME_TO_LOT;
+    lob_depth_buffer_[i] = dag_.l0.BidPrice_[i].back();
+    lob_depth_buffer_[N + i] = dag_.l0.AskPrice_[i].back();
+    lob_depth_buffer_[2 * N + i] = dag_.l0.BidQty_[i].back() * VOLUME_TO_LOT;
+    lob_depth_buffer_[3 * N + i] = dag_.l0.AskQty_[i].back() * VOLUME_TO_LOT;
   }
 
-  lob_depth_buffer_[4 * N] = dag_.l0.MidPrice.back();
+  lob_depth_buffer_[4 * N] = dag_.l0.MidPrice_.back();
   lob_depth_buffer_[4 * N + 1] = 1.0f;
 
   DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, 0, DepthFieldOffset::_depth_valid, lob_depth_buffer_, worker_id_);
