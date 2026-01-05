@@ -32,11 +32,11 @@
 template <size_t N_LEVELS = L2::LOB_DEPTH>
 class DepthData {
 public:
-  static constexpr float PRICE_SCALE = 0.01f;  // Level->price 是0.01元(分)单位 → 转为元
-  static constexpr float AMT_SCALE = 1e-4f;    // 元 → 万元
-  static constexpr float LIMIT_PCT = 0.20f;    // 涨跌停幅度 ±20%
-  static constexpr float LIMIT_QTY = 1.0f;     // 超限档位数量: 1股
-  static constexpr float LIMIT_AMT = 0.01f;    // 超限档位金额: 0.01万元
+  static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
+  static constexpr float AMT_SCALE = 1e-4f;   // 元 → 万元
+  static constexpr float LIMIT_PCT = 0.20f;   // 涨跌停幅度 ±20%
+  static constexpr float LIMIT_QTY = 1.0f;    // 超限档位数量: 1股
+  static constexpr float LIMIT_AMT = 0.01f;   // 超限档位金额: 0.01万元
 
   DepthData(const TickData &tick_data,
             CBuffer<float, L2::BLEN> (&bid_price)[N_LEVELS],
@@ -102,7 +102,7 @@ public:
 
       if (ask_price > limit_up_) [[unlikely]] {
         ask_price = limit_up_;
-        ask_qty = -LIMIT_QTY;  // 卖方负值
+        ask_qty = -LIMIT_QTY; // 卖方负值
         ask_amt = -LIMIT_AMT;
       } else if (ask_price < limit_down_) [[unlikely]] {
         ask_price = limit_down_;

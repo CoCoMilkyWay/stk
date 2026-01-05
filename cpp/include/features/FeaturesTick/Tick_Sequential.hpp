@@ -45,11 +45,7 @@ private:
 #include "features/ComputeGraph.hpp"
 
 inline void Tick_Sequential::set_date(const std::string &date_str) {
-  // 跨天: 用前一天收盘价(最后成交价)设置涨跌停保护
-  float last_price = dag_.get_last_trade_price();
-  if (last_price > 0) {
-    dag_.set_prev_close(last_price);
-  }
+  dag_.reset_for_new_day();
   date_str_ = date_str;
 }
 
