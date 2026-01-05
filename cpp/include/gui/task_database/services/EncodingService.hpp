@@ -4,6 +4,7 @@
 #include "misc/file_check.hpp"
 #include "misc/progress_parallel.hpp"
 #include <atomic>
+#include <functional>
 #include <future>
 #include <memory>
 #include <vector>

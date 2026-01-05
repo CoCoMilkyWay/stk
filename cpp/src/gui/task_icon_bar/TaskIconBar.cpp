@@ -6,9 +6,17 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#ifdef _WIN32
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>
+#elif __APPLE__
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <mach/mach.h>
+#else // Linux
+#include <sys/sysinfo.h>
+#endif
 
 // ============================================================================
 // Configuration Parameters
@@ -66,8 +74,10 @@ private:
   std::array<float, IconBarConfig::CPU_HISTORY_SIZE> cpu_history = {};
   int cpu_history_idx = 0;
   float cpu_avg = 0.0f;
+#ifdef _WIN32
   PDH_HQUERY cpu_query = nullptr;
   PDH_HCOUNTER cpu_counter = nullptr;
+#endif
   std::chrono::steady_clock::time_point last_cpu_update;
 
   // Memory tracking with smoothing
@@ -93,16 +103,20 @@ public:
     for (auto &val : mem_history)
       val = 0.0f;
 
+#ifdef _WIN32
     // Initialize Windows PDH for CPU monitoring
     PdhOpenQueryW(nullptr, 0, &cpu_query);
     PdhAddCounterW(cpu_query, L"\\Processor(_Total)\\% Processor Time", 0, &cpu_counter);
     PdhCollectQueryData(cpu_query); // Initial sample
+#endif
   }
 
   ~IconBar() {
+#ifdef _WIN32
     if (cpu_query) {
       PdhCloseQuery(cpu_query);
     }
+#endif
   }
 
   void Draw() {
@@ -193,6 +207,7 @@ private:
   }
 
   float GetCPUUsage() {
+#ifdef _WIN32
     if (!cpu_query || !cpu_counter) return 0.0f;
     
     PDH_FMT_COUNTERVALUE counter_value;
@@ -200,15 +215,31 @@ private:
     if (PdhGetFormattedCounterValue(cpu_counter, PDH_FMT_DOUBLE, nullptr, &counter_value) == ERROR_SUCCESS) {
       return static_cast<float>(counter_value.doubleValue);
     }
+#endif
     return 0.0f;
   }
 
   float GetMemoryUsage() {
+#ifdef _WIN32
     MEMORYSTATUSEX mem_info;
     mem_info.dwLength = sizeof(mem_info);
     if (GlobalMemoryStatusEx(&mem_info)) {
       return static_cast<float>(mem_info.dwMemoryLoad);
     }
+#elif __APPLE__
+    // macOS memory usage - simplified approach
+    struct mach_task_basic_info info;
+    mach_msg_type_number_t info_count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &info_count) == KERN_SUCCESS) {
+      return 0.0f; // Simplified: return 0 for now on macOS
+    }
+#else // Linux
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+      uint64_t used = info.totalram - info.freeram;
+      return (float)(used * 100.0 / info.totalram);
+    }
+#endif
     return 0.0f;
   }
 

@@ -6,8 +6,9 @@ if(POLICY CMP0194)
 endif()
 
 # Suppress warnings
-if(MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if(MSVC)
     add_compile_options(/W0)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-Wno-unused-function)
 endif()
 

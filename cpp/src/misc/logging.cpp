@@ -31,7 +31,11 @@ static std::string get_timestamp() {
             1000;
 
   std::tm tm_buf;
+#ifdef _WIN32
   localtime_s(&tm_buf, &time_t);
+#else
+  localtime_r(&time_t, &tm_buf);
+#endif
   
   std::stringstream ss;
   ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");

@@ -2,11 +2,28 @@ cmake_minimum_required(VERSION 3.20)
 project(Main VERSION 1.0.0 LANGUAGES CXX C)
 
 # ============================================================================
+# Platform Detection
+# ============================================================================
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(IS_WINDOWS TRUE)
+    set(IS_MACOS FALSE)
+    set(IS_LINUX FALSE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(IS_WINDOWS FALSE)
+    set(IS_MACOS TRUE)
+    set(IS_LINUX FALSE)
+else()
+    set(IS_WINDOWS FALSE)
+    set(IS_MACOS FALSE)
+    set(IS_LINUX TRUE)
+endif()
+
+# ============================================================================
 # Project Configuration
 # ============================================================================
 
-# Force Clang compiler (clang-cl on Windows)
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+# Force Clang compiler (clang-cl on Windows, AppleClang on macOS)
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
     message(FATAL_ERROR "This project requires Clang compiler. Current compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
 
@@ -45,30 +62,51 @@ set(CMAKE_C_FLAGS_MINSIZEREL "")
 if(TSAN_MODE)
     message(STATUS "Build mode: TSAN (ThreadSanitizer - race detection)")
     add_compile_definitions(TSAN_MODE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O1 /Zi -fsanitize=thread -fno-omit-frame-pointer")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+    if(IS_WINDOWS)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O1 /Zi -fsanitize=thread -fno-omit-frame-pointer")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O1 -g -fsanitize=thread -fno-omit-frame-pointer")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+    endif()
 
 elseif(DEBUG_MODE)
     message(STATUS "Build mode: DEBUG (interactive debugging)")
     add_compile_definitions(DEBUG_MODE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native")
+    if(IS_WINDOWS)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Od /Zi -march=native")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -march=native")
+    endif()
 
 elseif(PROFILE_MODE)
     message(STATUS "Build mode: PROFILE (tracy instrumentation)")
     add_compile_definitions(PROFILE_MODE TRACY_ENABLE TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /Zi -march=native /fp:fast")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
+    if(IS_WINDOWS)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /Zi -march=native /fp:fast")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -g -march=native -ffast-math")
+    endif()
 
 elseif(ASSERT_MODE)
     message(STATUS "Build mode: ASSERT")
     add_compile_definitions(ASSERT_MODE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 -march=native /fp:fast")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
+    if(IS_WINDOWS)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /fp:fast")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -march=native -ffast-math")
+    endif()
 
 else()
     message(STATUS "Build mode: PRODUCTION")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 -DNDEBUG -march=native /fp:fast")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
+    if(IS_WINDOWS)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /fp:fast")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /OPT:REF /OPT:ICF")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -DNDEBUG -march=native -ffast-math")
+    endif()
 endif()
 
 # ============================================================================
@@ -76,7 +114,11 @@ endif()
 # ============================================================================
 
 add_compile_options(-fcolor-diagnostics -fansi-escape-codes -Wno-overriding-option)
-add_compile_definitions(_WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# Platform-specific defines
+if(IS_WINDOWS)
+    add_compile_definitions(_WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
+endif()
 
 # GUI backend selection
 if(USE_VULKAN_BACKEND)
@@ -97,6 +139,14 @@ include_directories(
     ../../package/zlib-1.3.1/
     ../../package/tracy/public/tracy
 )
+
+# Enable threading support before adding zstd subdirectory
+if(NOT IS_WINDOWS)
+    set(CMAKE_THREAD_LIBS_INIT "-lpthread" CACHE STRING "pthread library")
+    set(CMAKE_HAVE_THREADS_LIBRARY 1)
+    set(Threads_FOUND TRUE CACHE BOOL "Threads found" FORCE)
+endif()
+
 add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
 add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
 
@@ -236,7 +286,13 @@ set(HEADERS
 
 add_executable(app_main ${SOURCES} ${HEADERS})
 
-# Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise)
+# Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise, Unix: -fno-fast-math)
+if(IS_WINDOWS)
+    set(PRECISE_MATH_FLAG "/fp:precise")
+else()
+    set(PRECISE_MATH_FLAG "-fno-fast-math")
+endif()
+
 set_source_files_properties(
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
@@ -253,21 +309,27 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
-    PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
 )
 
 # Link core libraries
 target_link_libraries(app_main PRIVATE
     libzstd_static
     z
-    pdh
-    iphlpapi
-    setupapi
-    dxgi
-    advapi32
-    ws2_32
-    dbghelp
 )
+
+# Link Windows-specific libraries
+if(IS_WINDOWS)
+    target_link_libraries(app_main PRIVATE
+        pdh
+        iphlpapi
+        setupapi
+        dxgi
+        advapi32
+        ws2_32
+        dbghelp
+    )
+endif()
 
 # ============================================================================
 # GUI Dependencies and Libraries
@@ -277,10 +339,13 @@ message(STATUS "")
 message(STATUS "=== Checking GUI Dependencies ===")
 
 # Platform check
-if(NOT WIN32)
-    message(FATAL_ERROR "This project only supports Windows")
+if(IS_WINDOWS)
+    message(STATUS "Platform: Windows (using Win32 for windowing)")
+elseif(IS_MACOS)
+    message(STATUS "Platform: macOS (using Metal/Cocoa for windowing)")
+else()
+    message(STATUS "Platform: Linux (using X11 for windowing)")
 endif()
-message(STATUS "Platform: Windows (using Win32 for windowing)")
 
 # Check graphics API
 if(USE_VULKAN_BACKEND)
@@ -349,7 +414,11 @@ set(IMPLOT_SOURCE
 add_library(implot STATIC ${IMPLOT_SOURCE})
 target_include_directories(implot SYSTEM PUBLIC ${IMPLOT_SOURCE_DIR})
 target_link_libraries(implot PUBLIC imgui)
-target_compile_options(implot PRIVATE /fp:precise)
+if(IS_WINDOWS)
+    target_compile_options(implot PRIVATE /fp:precise)
+else()
+    target_compile_options(implot PRIVATE -fno-fast-math)
+endif()
 
 # Link GUI libraries to main executable
 target_link_libraries(app_main PRIVATE implot)
