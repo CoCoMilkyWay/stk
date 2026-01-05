@@ -335,8 +335,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "有效粒度: ALL=全部, DATA=数据, DEPTH=深度(仅L0)",
         "中文名称:特征的描述性名称",
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
-        "一级分类:特征的主要类别",
-        "二级分类:特征的子类别",
+        "一级分类:特征的类别",
+        "二级分类:特征的量纲",
         "标准化方法:特征的归一化处理方式",
     };
 
