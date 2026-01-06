@@ -6,13 +6,15 @@
 
 #include "imgui.h"
 #include "latex.h"
-#include "render.h"
-#include "platform/imgui/graphic_imgui.h"
 #include "package/utfcpp/utf8.hpp"
+#include "platform/imgui/graphic_imgui.h"
+#include "render.h"
+
 
 #include <algorithm>
-#include <unordered_map>
 #include <cassert>
+#include <unordered_map>
+
 
 namespace GUI::Features {
 
@@ -364,7 +366,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // Feature table - compact auto-fit style
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f)); // Tighter padding
 
-  if (ImGui::BeginTable("FeatureTable", 10,
+  if (ImGui::BeginTable("FeatureTable", 11,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate,
@@ -381,25 +383,27 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Norm", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[] = {"Primary", "Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm"};
+    const char *headers[] = {"Primary", "Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm", "PSD"};
     const char *tooltips[] = {
-        "主特征:用于分析的主要特征",
-        "多选:选择多个特征进行对比",
-        "代码:特征的唯一标识符",
-        "宽度:特征的维度数量",
+        "主特征: 用于分析的主要特征",
+        "多选: 选择多个特征进行对比",
+        "代码: 特征的唯一标识符",
+        "宽度: 特征的维度数量",
         "有效粒度: ALL=全部, DATA=数据, DEPTH=深度(仅L0)",
-        "中文名称:特征的描述性名称",
+        "中文名称: 特征的描述性名称",
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
-        "一级分类:特征的类别",
-        "二级分类:特征的量纲",
-        "标准化方法:特征的归一化处理方式",
+        "一级分类: 特征的类别",
+        "二级分类: 特征的量纲",
+        "标准化方法: 特征的归一化处理方式",
+        "谱功率密度: 秒/分钟/小时级能量在未时序/截面标准化的原始特征的频谱能量的占比",
     };
 
-    for (int column = 0; column < 10; column++) {
+    for (int column = 0; column < 11; column++) {
       ImGui::TableSetColumnIndex(column);
       ImGui::TableHeader(headers[column]);
       if (ImGui::IsItemHovered()) {
@@ -452,6 +456,9 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         case 9:
           cmp = (int)fa.norm_method - (int)fb.norm_method;
           break; // Norm
+        case 10:
+          cmp = strcmp(fa.psd, fb.psd);
+          break; // PSD
         }
 
         return ui_state.sort_ascending ? cmp < 0 : cmp > 0;
@@ -555,6 +562,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       // Column: Norm Method
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.norm_method));
+
+      // Column: PSD
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(f.psd);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("秒/分钟/小时");
+      }
     }
 
     ImGui::EndTable();

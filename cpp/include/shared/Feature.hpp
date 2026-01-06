@@ -16,9 +16,10 @@ struct FeatureMetadata {
   FeatureCategoryL1 cat_l1;  // MOMENTUM, IMBALANCE, etc.
   FeatureCategoryL2 cat_l2;  // NORMALIZED, OSCILLATOR, etc.
   NormMethod norm_method;    // ZSCORE, CLIP, etc.
+  const char *psd;           // "100/00/00" - Power Spectral Density
+  const char *formula;       // "(r-μ)/σ, W=50"
   const char *name_en;       // "Tick Return Z-score"
   const char *name_cn;       // "微小对数收益"
-  const char *formula;       // "(r-μ)/σ, W=50"
   const char *description;   // "滚动窗口标准化..."
   uint8_t level;             // 0=L0, 1=L1, 2=L2
 };
@@ -28,8 +29,8 @@ struct FeatureMetadata {
 // ============================================================================
 
 // Macro to expand LEVEL_X_FIELDS into FeatureMetadata array
-#define GENERATE_METADATA(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, name_en, name_cn, formula, description) \
-  {#code, width, L2::ValidType::valid_type, FeatureDataType::data_type, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, name_en, name_cn, formula, description, 255},
+#define GENERATE_METADATA(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, psd, formula, name_en, name_cn, description) \
+  {#code, width, L2::ValidType::valid_type, FeatureDataType::data_type, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, psd, formula, name_en, name_cn, description, 255},
 
 // Compile-time generated constexpr arrays
 namespace FeatureMetadataRegistry {

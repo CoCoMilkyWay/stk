@@ -300,6 +300,7 @@ set_source_files_properties(
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
+    ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_tools/TaskTools.cpp
