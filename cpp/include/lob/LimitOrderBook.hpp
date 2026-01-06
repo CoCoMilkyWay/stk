@@ -140,6 +140,7 @@ public:
     LOB_feature_.depth_buffer.clear();
     last_depth_update_tick_ = 0;
     next_depth_update_tick_ = 0;
+    was_in_matching_period_ = false;
     prev_tick_ = 0;
     curr_tick_ = 0;
     new_tick_ = false;
@@ -226,6 +227,9 @@ private:
   // Time-driven depth update control
   mutable uint32_t last_depth_update_tick_ = 0; // Last tick when depth was updated
   mutable uint32_t next_depth_update_tick_ = 0; // Next allowed tick for depth update
+
+  // Track matching period transition
+  bool was_in_matching_period_ = false;
 
   //------------------------------------------------------------------------------------
   // Auxiliary State (辅助状态)
@@ -781,6 +785,11 @@ private:
 
   // Core order processing implementation (shared by single/batch interfaces)
   HOT_INLINE bool process_impl(const L2::Order &order) {
+    // Skip dirty orders @09:26:00
+    if (order.price == 0 && order.volume == 0) [[unlikely]] {
+      return true;
+    }
+
     // Parse timestamp
     curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
     new_tick_ = curr_tick_ != prev_tick_;
@@ -809,11 +818,10 @@ private:
     LOB_feature_.volume = order.volume;
 
     // Detect transition from matching period to continuous trading
-    static bool was_in_matching_period = false; // only inited at 1st call of process(), persist across calls
-    if (was_in_matching_period && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
+    if (was_in_matching_period_ && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
       flush_call_auction_flags();
     }
-    was_in_matching_period = in_matching_period_;
+    was_in_matching_period_ = in_matching_period_;
 
     // ==================== depth update triggered =======================
 
