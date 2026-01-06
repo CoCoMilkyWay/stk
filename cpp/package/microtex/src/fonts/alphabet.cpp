@@ -3,12 +3,13 @@
 
 using namespace tex;
 
-const UnicodeBlock UnicodeBlock::BASIC_LATIN      (0x0020, 0x007f);
-const UnicodeBlock UnicodeBlock::LATIN1_SUPPLEMENT(0x0080, 0x00ff);
-const UnicodeBlock UnicodeBlock::CYRILLIC         (0x0400, 0x04ff);
-const UnicodeBlock UnicodeBlock::GREEK            (0x0370, 0x03ff);
-const UnicodeBlock UnicodeBlock::GREEK_EXTENDED   (0x1f00, 0x1fff);
-const UnicodeBlock UnicodeBlock::UNKNOWN          (0xffff, 0xffff);
+const UnicodeBlock UnicodeBlock::BASIC_LATIN           (0x0020, 0x007f);
+const UnicodeBlock UnicodeBlock::LATIN1_SUPPLEMENT     (0x0080, 0x00ff);
+const UnicodeBlock UnicodeBlock::CYRILLIC              (0x0400, 0x04ff);
+const UnicodeBlock UnicodeBlock::GREEK                 (0x0370, 0x03ff);
+const UnicodeBlock UnicodeBlock::GREEK_EXTENDED        (0x1f00, 0x1fff);
+const UnicodeBlock UnicodeBlock::CJK_UNIFIED_IDEOGRAPHS(0x4e00, 0x9fff);
+const UnicodeBlock UnicodeBlock::UNKNOWN               (0xffff, 0xffff);
 
 std::vector<const UnicodeBlock*> UnicodeBlock::_defined = {
     &BASIC_LATIN,
@@ -16,6 +17,7 @@ std::vector<const UnicodeBlock*> UnicodeBlock::_defined = {
     &CYRILLIC,
     &GREEK,
     &GREEK_EXTENDED,
+    &CJK_UNIFIED_IDEOGRAPHS,
 };
 
 bool UnicodeBlock::contains(wchar_t c) const {

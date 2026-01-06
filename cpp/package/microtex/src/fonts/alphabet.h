@@ -17,6 +17,7 @@ public:
   static const UnicodeBlock CYRILLIC;
   static const UnicodeBlock GREEK;
   static const UnicodeBlock GREEK_EXTENDED;
+  static const UnicodeBlock CJK_UNIFIED_IDEOGRAPHS;
   static const UnicodeBlock UNKNOWN;
 
   const wchar_t _start, _end;

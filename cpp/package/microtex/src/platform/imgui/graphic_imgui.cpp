@@ -211,7 +211,11 @@ void TextLayout_imgui::getBounds(Rect &bounds) {
 }
 
 void TextLayout_imgui::draw(Graphics2D &g2, float x, float y) {
+  // Use our own font, not the current g2 font (which might be a TeX font without CJK glyphs)
+  const Font *oldFont = g2.getFont();
+  g2.setFont(_font.get());
   g2.drawText(_text, x, y);
+  g2.setFont(oldFont);
 }
 
 // Static factory method required by MicroTeX
