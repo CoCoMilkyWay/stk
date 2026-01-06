@@ -21,9 +21,7 @@ struct LatexEditorState {
   ~LatexEditorState();
 };
 
-void InitLatexEditor(LatexEditorState& state);
 void DrawLatexEditor(LatexEditorState& state);
-void CleanupLatexEditor(LatexEditorState& state);
 
 } // namespace GUI::Tools
 

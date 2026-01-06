@@ -5,7 +5,6 @@
 #include "imgui.h"
 
 #include <cassert>
-#include <windows.h>
 
 namespace GUI::Tools {
 
@@ -14,20 +13,51 @@ LatexEditorState::~LatexEditorState() = default;
 
 static std::wstring utf8ToWide(const std::string& utf8) {
   if (utf8.empty()) return L"";
-  int size = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  assert(size > 0);
-  std::wstring result(size - 1, L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, result.data(), size);
+  std::wstring result;
+  result.reserve(utf8.size());
+  
+  size_t i = 0;
+  while (i < utf8.size()) {
+    unsigned char c = utf8[i];
+    wchar_t wc = 0;
+    
+    if (c < 0x80) {
+      wc = c;
+      i++;
+    } else if ((c & 0xE0) == 0xC0) {
+      assert(i + 1 < utf8.size());
+      wc = ((c & 0x1F) << 6) | (utf8[i + 1] & 0x3F);
+      i += 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      assert(i + 2 < utf8.size());
+      wc = ((c & 0x0F) << 12) | ((utf8[i + 1] & 0x3F) << 6) | (utf8[i + 2] & 0x3F);
+      i += 3;
+    } else if ((c & 0xF8) == 0xF0) {
+      assert(i + 3 < utf8.size());
+      uint32_t codepoint = ((c & 0x07) << 18) | ((utf8[i + 1] & 0x3F) << 12) 
+                         | ((utf8[i + 2] & 0x3F) << 6) | (utf8[i + 3] & 0x3F);
+      i += 4;
+      if (sizeof(wchar_t) == 2 && codepoint > 0xFFFF) {
+        codepoint -= 0x10000;
+        result.push_back(0xD800 + (codepoint >> 10));
+        result.push_back(0xDC00 + (codepoint & 0x3FF));
+        continue;
+      }
+      wc = codepoint;
+    } else {
+      assert(false);
+      i++;
+      continue;
+    }
+    
+    result.push_back(wc);
+  }
+  
   return result;
 }
 
-void InitLatexEditor(LatexEditorState& state) {
-  if (state.initialized) return;
-  tex::LaTeX::init("res");
-  state.initialized = true;
-}
-
 void DrawLatexEditor(LatexEditorState& state) {
+
   // Input area
   ImGui::Text("LaTeX Input:");
   if (ImGui::InputTextMultiline("##latex_input", state.input_buffer, sizeof(state.input_buffer),
@@ -85,14 +115,6 @@ void DrawLatexEditor(LatexEditorState& state) {
 
     // Advance cursor
     ImGui::Dummy(ImVec2((float)state.render->getWidth(), (float)state.render->getHeight()));
-  }
-}
-
-void CleanupLatexEditor(LatexEditorState& state) {
-  state.render.reset();
-  if (state.initialized) {
-    tex::LaTeX::release();
-    state.initialized = false;
   }
 }
 

@@ -302,6 +302,7 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
+    ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
     PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
 )

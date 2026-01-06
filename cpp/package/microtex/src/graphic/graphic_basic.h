@@ -19,6 +19,35 @@ static const color yellow = 0xffffff00;
 static const color cyan = 0xff00ffff;
 static const color magenta = 0xffff00ff;
 
+// Undefine potential conflicts from platform headers (e.g. Windows GDI)
+#ifdef TRANSPARENT
+#undef TRANSPARENT
+#endif
+#ifdef BLACK
+#undef BLACK
+#endif
+#ifdef WHITE
+#undef WHITE
+#endif
+#ifdef RED
+#undef RED
+#endif
+#ifdef GREEN
+#undef GREEN
+#endif
+#ifdef BLUE
+#undef BLUE
+#endif
+#ifdef YELLOW
+#undef YELLOW
+#endif
+#ifdef CYAN
+#undef CYAN
+#endif
+#ifdef MAGENTA
+#undef MAGENTA
+#endif
+
 #define TRANSPARENT (transparent)
 #define BLACK (black)
 #define WHITE (white)

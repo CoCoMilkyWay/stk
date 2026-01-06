@@ -3,12 +3,14 @@
 #include "gui/task_tools/ui/TabLatex.hpp"
 #include "shared/SharedData.hpp"
 #include "imgui.h"
+#include "latex.h"
 
 namespace GUI::Tasks {
 
 struct TaskToolsState {
   int selected_tab = 0;
-  Tools::LatexEditorState latex_state;
+  std::unique_ptr<Tools::LatexEditorState> latex_state;
+  bool latex_engine_initialized = false;
 };
 
 TaskHandle CreateToolsTask() {
@@ -19,11 +21,19 @@ TaskHandle CreateToolsTask() {
   handle.storage = state;
 
   handle.OnExpand = [state]() {
-    Tools::InitLatexEditor(state->latex_state);
+    // LaTeX引擎全局初始化一次
+    if (!state->latex_engine_initialized) {
+      tex::LaTeX::init("res");
+      state->latex_engine_initialized = true;
+    }
+    // 创建新的editor state
+    state->latex_state = std::make_unique<Tools::LatexEditorState>();
+    state->latex_state->initialized = true;
   };
 
   handle.OnCollapse = [state]() {
-    Tools::CleanupLatexEditor(state->latex_state);
+    // 只删除editor state，不释放LaTeX引擎
+    state->latex_state.reset();
   };
 
   handle.DrawPanel = [state](SharedData& data) {
@@ -31,7 +41,9 @@ TaskHandle CreateToolsTask() {
 
     if (ImGui::BeginTabBar("ToolsTabs")) {
       if (ImGui::BeginTabItem("LaTeX")) {
-        Tools::DrawLatexEditor(state->latex_state);
+        if (state->latex_state) {
+          Tools::DrawLatexEditor(*state->latex_state);
+        }
         ImGui::EndTabItem();
       }
       ImGui::EndTabBar();
@@ -41,7 +53,12 @@ TaskHandle CreateToolsTask() {
   };
 
   handle.Destroy = [state]() {
-    Tools::CleanupLatexEditor(state->latex_state);
+    state->latex_state.reset();
+    // 程序结束时释放LaTeX引擎
+    if (state->latex_engine_initialized) {
+      tex::LaTeX::release();
+      state->latex_engine_initialized = false;
+    }
   };
 
   return handle;

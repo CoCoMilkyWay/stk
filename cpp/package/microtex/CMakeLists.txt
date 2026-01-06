@@ -24,8 +24,8 @@ target_include_directories(microtex PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(microtex PUBLIC tinyxml2)
-target_link_libraries(microtex PUBLIC imgui)
+target_link_libraries(microtex PRIVATE tinyxml2)
+target_link_libraries(microtex PRIVATE imgui)
 
 # ImGui backend flag
 target_compile_definitions(microtex PUBLIC BUILD_IMGUI)
