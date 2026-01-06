@@ -4,18 +4,20 @@
 #include "gui/task_icon_bar/TaskIconBar.hpp"
 #include "gui/task_settings/TaskSettings.hpp"
 #include "gui/task_system_info/TaskSystemInfo.hpp"
+#include "gui/task_tools/TaskTools.hpp"
 #include "shared/SharedData.hpp"
 
 namespace GUI {
 
 std::vector<TaskHandle> CreateAllTasks() {
   std::vector<TaskHandle> tasks;
-  tasks.reserve(4);
+  tasks.reserve(5);
 
   tasks.push_back(Tasks::CreateSettingsTask());
   tasks.push_back(Tasks::CreateSystemInfoTask());
   tasks.push_back(Tasks::CreateDatabaseTask());
   tasks.push_back(Tasks::CreateFeaturesTask());
+  tasks.push_back(Tasks::CreateToolsTask());
 
   return tasks;
 }
