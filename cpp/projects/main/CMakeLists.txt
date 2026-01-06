@@ -137,18 +137,9 @@ include_directories(
     ../../include
     ../../package/zstd-1.5.7/lib/
     ../../package/zlib-1.3.1/
+    ../../package/microtex/src
     ../../package/tracy/public/tracy
 )
-
-# Enable threading support before adding zstd subdirectory
-if(NOT IS_WINDOWS)
-    set(CMAKE_THREAD_LIBS_INIT "-lpthread" CACHE STRING "pthread library")
-    set(CMAKE_HAVE_THREADS_LIBRARY 1)
-    set(Threads_FOUND TRUE CACHE BOOL "Threads found" FORCE)
-endif()
-
-add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
-add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
 
 # ============================================================================
 # Source Files
@@ -201,6 +192,8 @@ set(SOURCES
     ../../src/gui/task_features/TaskFeatures.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
+    ../../src/gui/task_tools/TaskTools.cpp
+    ../../src/gui/task_tools/ui/TabLatex.cpp
     ../../src/main.cpp
     ../../package/tracy/public/TracyClient.cpp
 )
@@ -309,27 +302,9 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
+    ../../src/gui/task_tools/ui/TabLatex.cpp
     PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
 )
-
-# Link core libraries
-target_link_libraries(app_main PRIVATE
-    libzstd_static
-    z
-)
-
-# Link Windows-specific libraries
-if(IS_WINDOWS)
-    target_link_libraries(app_main PRIVATE
-        pdh
-        iphlpapi
-        setupapi
-        dxgi
-        advapi32
-        ws2_32
-        dbghelp
-    )
-endif()
 
 # ============================================================================
 # GUI Dependencies and Libraries
@@ -366,58 +341,46 @@ message(STATUS "✓ Windows SDK available (Win32 API)")
 message(STATUS "All GUI dependencies satisfied")
 message(STATUS "")
 
-# GLFW library
+# Threading support for zstd
+if(NOT IS_WINDOWS)
+    set(CMAKE_THREAD_LIBS_INIT "-lpthread" CACHE STRING "pthread library")
+    set(CMAKE_HAVE_THREADS_LIBRARY 1)
+    set(Threads_FOUND TRUE CACHE BOOL "Threads found" FORCE)
+endif()
+
+# Add third-party libraries
+add_subdirectory(../../package/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
+add_subdirectory(../../package/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
+add_subdirectory(../../package/tinyxml2 ${CMAKE_BINARY_DIR}/tinyxml2)
+add_subdirectory(../../package/microtex ${CMAKE_BINARY_DIR}/microtex)
+
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(../../package/glfw ${CMAKE_BINARY_DIR}/glfw)
+add_subdirectory(../../package/imgui ${CMAKE_BINARY_DIR}/imgui)
+add_subdirectory(../../package/implot ${CMAKE_BINARY_DIR}/implot)
 
-# ImGui library
-set(IMGUI_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/imgui)
-set(IMGUI_SOURCE
-    ${IMGUI_SOURCE_DIR}/imgui.cpp
-    ${IMGUI_SOURCE_DIR}/imgui_demo.cpp
-    ${IMGUI_SOURCE_DIR}/imgui_draw.cpp
-    ${IMGUI_SOURCE_DIR}/imgui_tables.cpp
-    ${IMGUI_SOURCE_DIR}/imgui_widgets.cpp
-    ${IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+# Link all libraries
+target_link_libraries(app_main PRIVATE
+    libzstd_static
+    z
+    implot
+    microtex
 )
 
-# Add backend-specific ImGui implementation
-if(USE_VULKAN_BACKEND)
-    list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
-else()
-    list(APPEND IMGUI_SOURCE ${IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+if(IS_WINDOWS)
+    target_link_libraries(app_main PRIVATE
+        pdh
+        iphlpapi
+        setupapi
+        dxgi
+        advapi32
+        ws2_32
+        dbghelp
+    )
 endif()
-
-add_library(imgui STATIC ${IMGUI_SOURCE})
-target_include_directories(imgui SYSTEM PUBLIC
-    ${IMGUI_SOURCE_DIR}
-    ${IMGUI_SOURCE_DIR}/backends
-)
-
-# Link graphics libraries to ImGui
-if(USE_VULKAN_BACKEND)
-    target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
-else()
-    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
-endif()
-
-# ImPlot library
-set(IMPLOT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/implot)
-set(IMPLOT_SOURCE
-    ${IMPLOT_SOURCE_DIR}/implot.cpp
-    ${IMPLOT_SOURCE_DIR}/implot_demo.cpp
-    ${IMPLOT_SOURCE_DIR}/implot_items.cpp
-)
-add_library(implot STATIC ${IMPLOT_SOURCE})
-target_include_directories(implot SYSTEM PUBLIC ${IMPLOT_SOURCE_DIR})
-target_link_libraries(implot PUBLIC imgui)
-target_compile_options(implot PRIVATE ${PRECISE_MATH_FLAG})
-
-# Link GUI libraries to main executable
-target_link_libraries(app_main PRIVATE implot)
 
 # ============================================================================
 # Install and Post-Build
@@ -439,6 +402,14 @@ add_custom_command(TARGET app_main POST_BUILD
     ${CMAKE_SOURCE_DIR}/../../fonts
     ${CMAKE_BINARY_DIR}/fonts
     COMMENT "Copying fonts to build directory"
+)
+
+# Copy MicroTeX resources
+add_custom_command(TARGET app_main POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${MICROTEX_RES_DIR}
+    ${CMAKE_BINARY_DIR}/res
+    COMMENT "Copying MicroTeX resources"
 )
 
 # Print configuration summary
