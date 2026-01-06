@@ -71,12 +71,8 @@ void DrawLatexEditor(LatexEditorState& state) {
   if (ImGui::SliderFloat("Text Size", &state.text_size, 10.0f, 50.0f)) {
     state.need_reparse = true;
   }
-  if (ImGui::SliderInt("Width", &state.width, 200, 1920)) {
-    state.need_reparse = true;
-  }
 
-  // Manual render button
-  if (ImGui::Button("Render") || state.need_reparse) {
+  if (state.need_reparse) {
     state.need_reparse = false;
     state.error_msg.clear();
 
@@ -85,7 +81,7 @@ void DrawLatexEditor(LatexEditorState& state) {
 
     // Parse LaTeX
     std::wstring wlatex = utf8ToWide(state.input_buffer);
-    auto* render = tex::LaTeX::parse(wlatex, state.width, state.text_size, 5.0f, tex::yellow);
+    auto* render = tex::LaTeX::parse(wlatex, 0, state.text_size, 5.0f, tex::yellow);
     if (render) {
       state.render.reset(render);
     } else {
