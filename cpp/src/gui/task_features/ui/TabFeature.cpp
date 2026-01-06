@@ -43,9 +43,6 @@ static tex::TeXRender *getOrCreateFormulaRender(const char *formula) {
     s_latex_initialized = true;
   }
 
-  // Rebuild font atlas if needed
-  tex::Font_imgui::rebuildFontAtlasIfNeeded();
-
   // Parse LaTeX formula
   std::wstring wlatex = utf8ToWide(formula);
   constexpr float kFormulaTextSize = 32.0f;
@@ -58,6 +55,9 @@ static tex::TeXRender *getOrCreateFormulaRender(const char *formula) {
 // Render LaTeX formula at current cursor position
 static void renderLatexFormula(tex::TeXRender *render) {
   assert(render);
+
+  // Font atlas may have been invalidated by new glyphs during parse
+  tex::Font_imgui::rebuildFontAtlasIfNeeded();
 
   ImDrawList *draw_list = ImGui::GetWindowDrawList();
   ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
