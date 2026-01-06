@@ -25,15 +25,15 @@ TaskHandle CreateToolsTask() {
     if (!state->latex_engine_initialized) {
       tex::LaTeX::init("res");
       state->latex_engine_initialized = true;
+      // 引擎初始化后再创建editor state
+      state->latex_state = std::make_unique<Tools::LatexEditorState>();
+      state->latex_state->initialized = true;
     }
-    // 创建新的editor state
-    state->latex_state = std::make_unique<Tools::LatexEditorState>();
-    state->latex_state->initialized = true;
+    // 之后切换回来时什么都不做，保留所有状态
   };
 
   handle.OnCollapse = [state]() {
-    // 只删除editor state，不释放LaTeX引擎
-    state->latex_state.reset();
+    // 什么都不做，保留所有状态
   };
 
   handle.DrawPanel = [state](SharedData& data) {
