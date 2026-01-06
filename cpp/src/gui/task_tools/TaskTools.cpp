@@ -22,6 +22,10 @@ TaskHandle CreateToolsTask() {
     Tools::InitLatexEditor(state->latex_state);
   };
 
+  handle.OnCollapse = [state]() {
+    Tools::CleanupLatexEditor(state->latex_state);
+  };
+
   handle.DrawPanel = [state](SharedData& data) {
     ImGui::BeginChild("ToolsPanel");
 
