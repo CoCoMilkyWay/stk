@@ -1,12 +1,71 @@
 // Tab Feature Implementation
 #include "gui/task_features/ui/TabFeature.hpp"
+#include "graphic/graphic_basic.h"
 #include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
+#include "latex.h"
+#include "render.h"
+#include "platform/imgui/graphic_imgui.h"
+#include "package/utfcpp/utf8.hpp"
+
 #include <algorithm>
+#include <unordered_map>
+#include <cassert>
 
 namespace GUI::Features {
+
+// ============================================================================
+// LaTeX Formula Rendering Cache
+// ============================================================================
+
+static std::wstring utf8ToWide(std::string_view s) {
+  auto u16 = utf8::utf8to16(s);
+  return {u16.begin(), u16.end()};
+}
+
+// Cache for parsed LaTeX formulas (keyed by formula string pointer for efficiency)
+static std::unordered_map<const char *, tex::TeXRender *> s_formula_cache;
+
+static tex::TeXRender *getOrCreateFormulaRender(const char *formula) {
+  auto it = s_formula_cache.find(formula);
+  if (it != s_formula_cache.end()) {
+    return it->second;
+  }
+
+  // Ensure LaTeX engine is initialized
+  static bool s_latex_initialized = false;
+  if (!s_latex_initialized) {
+    tex::LaTeX::init("res");
+    s_latex_initialized = true;
+  }
+
+  // Rebuild font atlas if needed
+  tex::Font_imgui::rebuildFontAtlasIfNeeded();
+
+  // Parse LaTeX formula
+  std::wstring wlatex = utf8ToWide(formula);
+  constexpr float kFormulaTextSize = 32.0f;
+  tex::TeXRender *render = tex::LaTeX::parse(wlatex, 0, kFormulaTextSize, 5.0f, tex::green);
+
+  s_formula_cache[formula] = render; // May be nullptr if parse failed
+  return render;
+}
+
+// Render LaTeX formula at current cursor position
+static void renderLatexFormula(tex::TeXRender *render) {
+  assert(render);
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
+
+  tex::Graphics2D_imgui g2(draw_list);
+  g2.translate(cursor_pos.x, cursor_pos.y);
+  render->draw(g2, 0, 0);
+
+  ImGui::Dummy(ImVec2((float)render->getWidth(), (float)render->getHeight()));
+}
 
 // ============================================================================
 // Helper Functions
@@ -456,7 +515,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         ImGui::SetTooltip("%s", to_string_cn(f.valid_type));
       }
 
-      // Column: Name CN (with tooltip)
+      // Column: Name CN (with tooltip showing LaTeX formula)
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(f.name_cn);
       if (ImGui::IsItemHovered()) {
@@ -465,7 +524,15 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", f.name_en);
         ImGui::Separator();
         ImGui::Text("Formula:");
-        ImGui::TextWrapped("%s", f.formula);
+
+        // Render LaTeX formula
+        tex::TeXRender *render = getOrCreateFormulaRender(f.formula);
+        if (render) {
+          renderLatexFormula(render);
+        } else {
+          ImGui::TextWrapped("%s", f.formula); // Fallback to plain text
+        }
+
         ImGui::Spacing();
         ImGui::Text("Description:");
         ImGui::TextWrapped("%s", f.description);
