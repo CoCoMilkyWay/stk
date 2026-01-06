@@ -57,6 +57,8 @@ static std::wstring utf8ToWide(const std::string& utf8) {
 }
 
 void DrawLatexEditor(LatexEditorState& state) {
+  // Rebuild font atlas if new fonts were added
+  tex::Font_imgui::rebuildFontAtlasIfNeeded();
 
   // Input area
   ImGui::Text("LaTeX Input:");
@@ -83,7 +85,7 @@ void DrawLatexEditor(LatexEditorState& state) {
 
     // Parse LaTeX
     std::wstring wlatex = utf8ToWide(state.input_buffer);
-    auto* render = tex::LaTeX::parse(wlatex, state.width, state.text_size, 5.0f, tex::black);
+    auto* render = tex::LaTeX::parse(wlatex, state.width, state.text_size, 5.0f, tex::yellow);
     if (render) {
       state.render.reset(render);
     } else {

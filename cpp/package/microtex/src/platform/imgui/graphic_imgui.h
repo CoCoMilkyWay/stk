@@ -6,7 +6,10 @@
 #include "graphic/graphic.h"
 #include "imgui.h"
 
+#include <map>
 #include <stack>
+#include <string>
+#include <vector>
 
 namespace tex {
 
@@ -17,7 +20,20 @@ class Font_imgui : public Font {
 private:
   float _size;
   int _style;
+  std::string _fontPath;
   ImFont *_imfont;
+
+  // Static font cache: path -> ImFont*
+  static std::map<std::string, ImFont*> _fontCache;
+  // Pending fonts to be added to atlas
+  struct PendingFont {
+    std::string path;
+    float size;
+  };
+  static std::vector<PendingFont> _pendingFonts;
+  static bool _needRebuildAtlas;
+
+  void loadFont(const std::string &file);
 
 public:
   Font_imgui(const std::string &file, float size);
@@ -25,11 +41,17 @@ public:
 
   float getSize() const override { return _size; }
   int getStyle() const { return _style; }
-  ImFont *getImFont() const { return _imfont; }
+  ImFont *getImFont() const;
+  const std::string &getFontPath() const { return _fontPath; }
 
   sptr<Font> deriveFont(int style) const override;
   bool operator==(const Font &f) const override;
   bool operator!=(const Font &f) const override;
+
+  // Rebuild font atlas if new fonts were added
+  static void rebuildFontAtlasIfNeeded();
+  // Check if atlas rebuild is needed
+  static bool needsRebuild() { return _needRebuildAtlas; }
 
   virtual ~Font_imgui() = default;
 };
