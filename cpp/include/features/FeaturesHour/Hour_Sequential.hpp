@@ -2,6 +2,7 @@
 
 #include "features/backend/FeatureStore.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 
@@ -43,6 +44,9 @@ private:
   size_t asset_id_ = 0;
   size_t worker_id_ = 0;
   std::string date_str_;
+
+  // 输出缓冲区
+  std::array<float, L2_TS_WIDTH> ts_features_buffer_;
 };
 
 // 实现需要完整的 DAG 定义，放在头文件末尾
@@ -52,6 +56,9 @@ inline void Hour_Sequential::compute_and_store() {
   // Check if we have data
   if (dag_.hour_data.close.empty()) [[unlikely]]
     return;
+
+  // Compute hour index (时间索引)
+  dag_.l2.HourIndex.compute();
 
   // Read latest bar from CBuffers
   const float close = dag_.hour_data.close.back();
@@ -66,21 +73,21 @@ inline void Hour_Sequential::compute_and_store() {
 }
 
 inline void Hour_Sequential::compute_ts_hour(bool is_valid, size_t t) {
-  // Allocate feature array (only TS features)
-  float features[5];
-
+  // 写入特征到输出缓冲区 (顺序与 LEVEL_2_FIELDS 定义一致)
   if (!is_valid) {
-    std::memset(features, 0, sizeof(features));
+    std::memset(ts_features_buffer_.data(), 0, sizeof(ts_features_buffer_));
   } else {
-    features[0] = compute_hour_ret_12h_mom();
-    features[1] = compute_hour_volatility();
-    features[2] = compute_pivot_dev();
-    features[3] = compute_dominant_persist();
-    features[4] = compute_hour_overnight_gap();
+    ts_features_buffer_ = {
+        dag_.l2.Hour_.back(), // hour
+        compute_hour_ret_12h_mom(),
+        compute_hour_volatility(),
+        compute_pivot_dev(),
+        compute_dominant_persist(),
+        compute_hour_overnight_gap()};
   }
 
-  // Write TS features [hour_ret_12h_mom, hour_overnight_gap]
-  TS_WRITE_FEATURES(store_, date_str_, 2, t, asset_id_, 0, L2_FieldOffset::hour_overnight_gap, features, worker_id_);
+  // Write TS features [hour, hour_overnight_gap]
+  TS_WRITE_FEATURES(store_, date_str_, 2, t, asset_id_, 0, L2_FieldOffset::hour_overnight_gap, ts_features_buffer_.data(), worker_id_);
 
   // Write data validity flag (event-driven sparsity marker)
   TS_WRITE_SINGLE(store_, date_str_, 2, t, L2_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);

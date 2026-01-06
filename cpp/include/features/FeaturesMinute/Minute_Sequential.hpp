@@ -2,6 +2,7 @@
 
 #include "features/backend/FeatureStore.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 
@@ -46,6 +47,9 @@ private:
   size_t asset_id_ = 0;
   size_t worker_id_ = 0;
   std::string date_str_;
+
+  // 输出缓冲区
+  std::array<float, L1_TS_WIDTH> ts_features_buffer_;
 };
 
 // 实现需要完整的 DAG 定义，放在头文件末尾
@@ -55,6 +59,9 @@ inline void Minute_Sequential::compute_and_store() {
   // Check if we have data
   if (dag_.minute_data.close.empty()) [[unlikely]]
     return;
+
+  // Compute minute index (时间索引)
+  dag_.l1.MinuteIndex.compute();
 
   // Read latest bar from CBuffers
   const float close = dag_.minute_data.close.back();
@@ -69,21 +76,21 @@ inline void Minute_Sequential::compute_and_store() {
 }
 
 inline void Minute_Sequential::compute_ts_minute(bool is_valid, size_t t) {
-  // Allocate feature array (only TS features)
-  float features[5];
-
+  // 写入特征到输出缓冲区 (顺序与 LEVEL_1_FIELDS 定义一致)
   if (!is_valid) {
-    std::memset(features, 0, sizeof(features));
+    std::memset(ts_features_buffer_.data(), 0, sizeof(ts_features_buffer_));
   } else {
-    features[0] = compute_min_ret_z();
-    features[1] = compute_rv_5m_norm();
-    features[2] = compute_vwap_gap_pct();
-    features[3] = compute_momentum_15m();
-    features[4] = compute_range_squeeze();
+    ts_features_buffer_ = {
+        dag_.l1.Min_.back(), // min
+        compute_min_ret_z(),
+        compute_rv_5m_norm(),
+        compute_vwap_gap_pct(),
+        compute_momentum_15m(),
+        compute_range_squeeze()};
   }
 
-  // Write TS features [min_ret_z, range_squeeze]
-  TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, 0, L1_FieldOffset::range_squeeze, features, worker_id_);
+  // Write TS features [min, range_squeeze]
+  TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, 0, L1_FieldOffset::range_squeeze, ts_features_buffer_.data(), worker_id_);
 
   // Write data validity flag (event-driven sparsity marker)
   TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::_data_valid, asset_id_, is_valid ? 1.0f : 0.0f, worker_id_);

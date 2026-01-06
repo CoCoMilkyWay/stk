@@ -2,6 +2,8 @@
 
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
+#include "features/FeaturesHour/TS/HourIndex.hpp"
+#include "features/FeaturesMinute/TS/MinuteIndex.hpp"
 #include "features/FeaturesTick/TS/DeltaT.hpp"
 #include "features/FeaturesTick/TS/DepthData.hpp"
 #include "features/FeaturesTick/TS/MPB.hpp"
@@ -49,7 +51,8 @@ public:
     // -------------------------------------------------------------------------
 
     // --- 基础数据 CBuffer ---
-    CBuffer<float, L2::BLEN> TickIndex_;               // 当前tick索引 (秒级), 用于时间滤波
+    CBuffer<float, L2::BLEN> Sec_;                     // 秒数 [0-59] (特征)
+    CBuffer<float, L2::BLEN> TickIndex_;               // 原始tick索引 (供其他算子使用)
     CBuffer<float, L2::BLEN> BidPrice_[L2::LOB_DEPTH]; // 买1-N价 (元)
     CBuffer<float, L2::BLEN> AskPrice_[L2::LOB_DEPTH]; // 卖1-N价 (元)
     CBuffer<float, L2::BLEN> BidQty_[L2::LOB_DEPTH];   // 买1-N量 (股, 正值)
@@ -61,7 +64,7 @@ public:
     CBuffer<float, L2::BLEN> Spread_;                  // 买卖价差 (元)
 
     // --- 基础数据算子 ---
-    TickIndex TickIndex{td, TickIndex_};
+    TickIndex TickIndex{td, Sec_, TickIndex_};
     DepthData<L2::LOB_DEPTH> DepthData{td, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_};
     MidPrice MidPrice{BidPrice_[0], AskPrice_[0], MidPrice_};
     MicroPrice MicroPrice{td, MicroPrice_};
@@ -111,6 +114,13 @@ public:
   struct L1 {
     MinuteData &md;
 
+    // --- 基础数据 CBuffer ---
+    CBuffer<float, ::L2::BLEN> Min_;         // 分钟数 [0-59] (特征)
+    CBuffer<float, ::L2::BLEN> MinuteIndex_; // 原始minute索引 (供其他算子使用)
+
+    // --- 基础数据算子 ---
+    MinuteIndex MinuteIndex{md, Min_, MinuteIndex_};
+
     // Rolling windows for TS features
     std::deque<float> minute_return_window;
     std::deque<float> rv_window;
@@ -128,6 +138,13 @@ public:
   // ===========================================================================
   struct L2 {
     HourData &hd;
+
+    // --- 基础数据 CBuffer ---
+    CBuffer<float, ::L2::BLEN> Hour_;      // 小时数 [0-23] (特征)
+    CBuffer<float, ::L2::BLEN> HourIndex_; // 原始hour索引 (供其他算子使用)
+
+    // --- 基础数据算子 ---
+    HourIndex HourIndex{hd, Hour_, HourIndex_};
 
     // Rolling windows for TS features
     std::deque<float> hour_return_window;
