@@ -14,7 +14,7 @@
 
 #define LEVEL_0_FIELDS(X)\
   /* ======== 时序特征 (Time-Series) ======== */\
-  X(sec,                1, DATA,  TS,   MICROSTRUCTURE, RAW,        NONE,        "100/00/00", R"(f(t_{L0_{depth}})=\sin(2\pi \cdot \mathrm{sec}/60))",                    "Time Sec Phase",               "时间-秒相位",    "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好)")\
+  X(sec,                1, DATA,  TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "100/00/00", R"(f(i_{L0_{depth}})=\sin(2\pi \cdot i_{L0}/60))",                          "Time Sec Phase",               "时间-秒相位",    "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好)")\
   X(voi1,               1, DATA,  TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "100/00/00", R"(\Delta V^B_1 - \Delta V^A_1)",                                           "Vol Order Imba 1-Level",       "订单失衡1档",    "对近端大单挂单(容易成交)非常敏感")\
   X(voi30,              1, DATA,  TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "100/00/00", R"(\sum_{i=1}^{30} w_i (\Delta V^B_i - \Delta V^A_i))",                     "Vol Order Imba 30-Level",      "订单失衡30档",   "对近端大单挂单(容易成交)非常敏感, 带深度线性衰减加权")\
   X(oir5,               1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\frac{V^B - V^A}{V^B + V^A})",                                           "Order Imba Ratio 5-Level",     "失衡率5档",      "订单失衡率[-1,1]标准化")\
@@ -47,7 +47,7 @@
 // ============================================================================
 
 #define LEVEL_1_FIELDS(X)\
-  X(min,                1, DATA, TS,   MICROSTRUCTURE, RAW,        NONE,        "00/100/00", R"(f(t_{L1})=\sin(2\pi \cdot \mathrm{min}/60))",          "Time Min Phase",              "时间-分钟相位",  "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好")\
+  X(min,                1, DATA, TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "00/100/00", R"(f(i_{L1})=\sin(2\pi \cdot i_{L1}/60))",                "Time Min Phase",              "时间-分钟相位",  "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好")\
   X(min_ret_z,          1, DATA, TS,   MOMENTUM,       NORMALIZED, WINSOR,      "00/100/00", R"(\frac{r - \mu}{\sigma})",                              "Minute Return Z-score",       "分钟收益",       "分钟对数收益标准化")\
   X(rv_5m_norm,         1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/100/00", R"(\log(\sigma_{5m}))",                                   "Realized Vol 5m",             "5分钟波动率",    "5分钟波动率标准化")\
   X(vwap_gap_pct,       1, DATA, TS,   PRICE,          DEVIATION,  ZSCORE,      "00/100/00", R"(\frac{c - \mathrm{vwap}}{\mathrm{vwap}})",             "VWAP Gap Percent",            "VWAP偏离",       "价格相对VWAP偏离")\
@@ -72,7 +72,7 @@
 // ============================================================================
 
 #define LEVEL_2_FIELDS(X)\
-  X(hour,                1, DATA, TS,   MICROSTRUCTURE, RAW,        NONE,        "00/00/100", R"(f(t_{L2})=\sin(2\pi \cdot \mathrm{hour}/4))",          "Time Hour Phase",             "时间-小时相位",  "用于和同级别特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好")\
+  X(hour,                1, DATA, TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "00/00/100", R"(f(i_{L2})=\sin(2\pi \cdot i_{L2}/4))",                 "Time Hour Phase",             "时间-小时相位",  "用于和同级别特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好")\
   X(hour_ret_12h_mom,    1, DATA, TS,   MOMENTUM,       NORMALIZED, ZSCORE,      "00/00/100", R"(\frac{\sum_{12h} r}{z})",                              "Hour Return 12h Momentum",    "12小时动量",     "12小时动量标准化")\
   X(hour_volatility,     1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/00/100", R"(\log(\sigma_{24h}))",                                  "Hour Volatility 24h",         "24小时波动率",   "24小时波动率标准化")\
   X(pivot_dev,           1, DATA, TS,   PRICE,          DEVIATION,  CLIP,        "00/00/100", R"(\frac{c - \mathrm{pivot}}{\mathrm{range}})",           "Pivot Deviation",             "Pivot偏差",      "收盘相对pivot偏差")\
@@ -93,13 +93,13 @@
 // Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, formula, name_en, name_cn, description)
 
 #define DEPTH_FIELDS(X)\
-  X(_bid_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(P^B_{0:N})",                    "Bid Prices",        "买盘价格", "GUI:N档买盘价格(分)")\
-  X(_ask_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(P^A_{0:N})",                    "Ask Prices",        "卖盘价格", "GUI:N档卖盘价格(分)")\
-  X(_bid_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(V^B_{0:N})",                    "Bid Volumes",       "买盘量",   "GUI:N档买盘量(手,100股)")\
-  X(_ask_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(V^A_{0:N})",                    "Ask Volumes",       "卖盘量",   "GUI:N档卖盘量(手,100股)")\
-  X(_mid_price,    1,             DEPTH, META, META, RAW, NONE, "00/00/00", R"(\frac{P^B_1 + P^A_1}{2})",      "Mid Price",         "中间价",   "GUI:实时中间价(分)")\
-  X(_depth_valid,  1,             ALL,   META, META, RAW, NONE, "00/00/00", R"(\mathbf{1}_{\mathrm{valid}})",  "Depth Valid Flag",  "深度有效", "LOB深度缓冲区完整性标记")\
-  X(_data_valid,   1,             ALL,   META, META, RAW, NONE, "00/00/00", R"(\mathbf{1}_{\mathrm{valid}})",  "Data Valid Flag",   "数据有效", "事件驱动稀疏性标记")
+  X(_bid_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(P^B_{0:N})",                           "Bid Prices",        "买盘价格", "GUI:N档买盘价格(分)")\
+  X(_ask_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(P^A_{0:N})",                           "Ask Prices",        "卖盘价格", "GUI:N档卖盘价格(分)")\
+  X(_bid_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(V^B_{0:N})",                           "Bid Volumes",       "买盘量",   "GUI:N档买盘量(手,100股)")\
+  X(_ask_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(V^A_{0:N})",                           "Ask Volumes",       "卖盘量",   "GUI:N档卖盘量(手,100股)")\
+  X(_mid_price,    1,             DEPTH, META, META, RAW, NONE, "00/00/00", R"(\frac{P^B_1 + P^A_1}{2})",             "Mid Price",         "中间价",   "GUI:实时中间价(分)")\
+  X(_depth_valid,  1,             ALL,   META, META, RAW, NONE, "00/00/00", R"(\mathbf{1}_{\mathrm{valid}_{depth}})", "Depth Valid Flag",  "深度有效", "LOB深度缓冲区完整性标记")\
+  X(_data_valid,   1,             ALL,   META, META, RAW, NONE, "00/00/00", R"(\mathbf{1}_{\mathrm{valid}_{data}})",  "Data Valid Flag",   "数据有效", "事件驱动稀疏性标记")
 
 // clang-format on
 
@@ -168,14 +168,17 @@ enum class NormMethod : uint8_t {
   ASINH = 10, // asinh(x)
   TANH = 11,  // tanh(x)
 
-  // --- composite (common pipelines) ---
-  LOG_ZSCORE = 12,   // log/log1p → zscore
-  POWER_ZSCORE = 13, // power → zscore
-  ASINH_ZSCORE = 14, // asinh → zscore
+  // --- encoding / embedding ---
+  SINCOS = 12, // x → (sin, cos)
 
-  CLIP_ZSCORE = 15,     // zscore → clip
-  WINSOR_ZSCORE = 16,   // winsor → zscore
-  CLIP_LOG_ZSCORE = 17, // clip → log → zscore
+  // --- composite (common pipelines) ---
+  LOG_ZSCORE = 20,   // log/log1p → zscore
+  POWER_ZSCORE = 21, // power → zscore
+  ASINH_ZSCORE = 22, // asinh → zscore
+
+  CLIP_ZSCORE = 23,     // zscore → clip
+  WINSOR_ZSCORE = 24,   // winsor → zscore
+  CLIP_LOG_ZSCORE = 25, // clip → log → zscore
 };
 
 // ============================================================================
@@ -247,13 +250,13 @@ constexpr LevelTimeConfig LEVEL_CONFIGS[3] = {
 //   MORNING_SECONDS = 8100   (上午总秒数, 也是下午 L0 起点)
 //   MORNING_MINUTES = 135    (上午总分钟数, 也是下午 L1 起点)
 
-constexpr uint16_t MORNING_START_MIN   = L2::MORNING_CALL_AUCTION_START_HOUR * 60 + L2::MORNING_CALL_AUCTION_START_MINUTE;                   // 555 (09:15)
-constexpr uint16_t MORNING_END_MIN     = L2::CONTINUOUS_TRADING_MORNING_END_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;             // 690 (11:30)
-constexpr uint16_t AFTERNOON_START_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE;     // 780 (13:00)
-constexpr uint16_t AFTERNOON_END_MIN   = L2::CONTINUOUS_TRADING_AFTERNOON_END_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;         // 900 (15:00)
+constexpr uint16_t MORNING_START_MIN = L2::MORNING_CALL_AUCTION_START_HOUR * 60 + L2::MORNING_CALL_AUCTION_START_MINUTE;                   // 555 (09:15)
+constexpr uint16_t MORNING_END_MIN = L2::CONTINUOUS_TRADING_MORNING_END_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;             // 690 (11:30)
+constexpr uint16_t AFTERNOON_START_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE; // 780 (13:00)
+constexpr uint16_t AFTERNOON_END_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_END_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;       // 900 (15:00)
 
-constexpr size_t MORNING_SECONDS = 8100;  // 135 min × 60 = 上午交易秒数
-constexpr size_t MORNING_MINUTES = 135;   // 上午交易分钟数
+constexpr size_t MORNING_SECONDS = 8100; // 135 min × 60 = 上午交易秒数
+constexpr size_t MORNING_MINUTES = 135;  // 上午交易分钟数
 
 // ============================================================================
 // INTERNAL: Compile-time LUT for Clock → L0
@@ -267,15 +270,15 @@ namespace detail {
 // 返回 -1 表示盘前, 返回 15299 表示盘后
 constexpr int16_t minute_offset(uint8_t hour, uint8_t minute) {
   const uint16_t m = hour * 60 + minute;
-  if (m >= MORNING_START_MIN && m < MORNING_END_MIN)        // 09:15-11:29
+  if (m >= MORNING_START_MIN && m < MORNING_END_MIN) // 09:15-11:29
     return static_cast<int16_t>((m - MORNING_START_MIN) * 60);
-  if (m >= AFTERNOON_START_MIN && m < AFTERNOON_END_MIN)    // 13:00-14:59
+  if (m >= AFTERNOON_START_MIN && m < AFTERNOON_END_MIN) // 13:00-14:59
     return static_cast<int16_t>(MORNING_SECONDS + (m - AFTERNOON_START_MIN) * 60);
-  if (m >= MORNING_END_MIN && m < AFTERNOON_START_MIN)      // 11:30-12:59 午休
-    return static_cast<int16_t>(MORNING_SECONDS);           // → 映射到下午开盘
-  if (m < MORNING_START_MIN)                                // 00:00-09:14 盘前
+  if (m >= MORNING_END_MIN && m < AFTERNOON_START_MIN) // 11:30-12:59 午休
+    return static_cast<int16_t>(MORNING_SECONDS);      // → 映射到下午开盘
+  if (m < MORNING_START_MIN)                           // 00:00-09:14 盘前
     return -1;
-  return static_cast<int16_t>(TRADE_SECONDS_PER_DAY - 1);   // 15:00+ 盘后
+  return static_cast<int16_t>(TRADE_SECONDS_PER_DAY - 1); // 15:00+ 盘后
 }
 
 constexpr auto generate_minute_offset_table() {
@@ -509,6 +512,8 @@ inline constexpr const char *to_string(NormMethod method) {
     return "ASINH";
   case NormMethod::TANH:
     return "TANH";
+  case NormMethod::SINCOS:
+    return "SINCOS";
   case NormMethod::LOG_ZSCORE:
     return "LOG_ZSCORE";
   case NormMethod::POWER_ZSCORE:

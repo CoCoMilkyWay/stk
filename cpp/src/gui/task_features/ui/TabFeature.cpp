@@ -10,11 +10,9 @@
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
 
-
 #include <algorithm>
 #include <cassert>
 #include <unordered_map>
-
 
 namespace GUI::Features {
 
@@ -166,6 +164,8 @@ static const char *to_string_cn(NormMethod method) {
     return "反双曲正弦";
   case NormMethod::TANH:
     return "双曲正切";
+  case NormMethod::SINCOS:
+    return "正余弦编码";
   case NormMethod::LOG_ZSCORE:
     return "对数+Z";
   case NormMethod::POWER_ZSCORE:
