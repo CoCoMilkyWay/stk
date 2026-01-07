@@ -166,9 +166,10 @@ struct TimeSeries {
 
   // Step 1: 频域分析统计 (从热力图聚合)
   struct FrequencyAnalysis {
-    float low_freq_power_ratio = 0.0f;   // 秒级能量占比 (bin 0-57)
-    float mid_freq_power_ratio = 0.0f;   // 分钟级能量占比 (bin 58-116)
-    float high_freq_power_ratio = 0.0f;  // 小时级能量占比 (bin 117-127, 含DC)
+    float sec_power_ratio = 0.0f;   // 秒级能量占比 (bin 0-57, 周期2-59秒)
+    float min_power_ratio = 0.0f;   // 分钟级能量占比 (bin 58-116, 周期1-59分钟)
+    float hour_power_ratio = 0.0f;  // 小时级能量占比 (bin 117-126, 周期1-10小时)
+    float dc_power_ratio = 0.0f;    // DC能量占比 (bin 127)
 
     std::vector<float> avg_power_spectrum;  // [N_SCALE_BINS]
 

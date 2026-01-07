@@ -3,15 +3,19 @@
 // =============================================================================
 // TickIndex - Tick索引算子
 // =============================================================================
-// 从 TickData.l0_index 读取当前tick级索引，转换为实际时钟时间
-// 输出1: Sec (秒数 [0-59]) - 实际时钟秒数，作为特征
-// 输出2: TickIndex (原始索引 [0-15299]) - 交易时间索引，供其他算子使用
+// 时间特征使用正弦相位嵌入而非 modulo 标量:
+//   - modulo 在周期边界有跳变 (59→0), 产生无限高频分量, 污染频谱
+//   - sin 相位连续可导, 频谱干净, 梯度友好
+// 输出1: sec (相位 [-1,1]) - sin(2π * index / 60), 60秒一周期
+// 输出2: _tick_index (原始索引 [0-15299]) - 供其他算子使用
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
-#include "features/FeaturesDefine.hpp"
+#include "features/misc/misc.hpp"
+
+constexpr float SEC_PHASE_SCALE = 2.0f * PI / 60.0f;
 
 class TickIndex {
 public:
@@ -22,8 +26,8 @@ public:
 
   void compute() {
     float index = static_cast<float>(td_.l0_index);
-    sec_buffer_.push_back(static_cast<float>(index2tick(td_.l0_index).second)); // Sec [0-59]
-    index_buffer_.push_back(index);                                             // Index [0-15299]
+    sec_buffer_.push_back(std::sin(index * SEC_PHASE_SCALE));
+    index_buffer_.push_back(index);
   }
 
 private:

@@ -455,7 +455,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
   ImGui::EndChild();
 
   // Step 1: 频域分析
-  ImGui::BeginChild("Step1Child", ImVec2(0, 95), true);
+  ImGui::BeginChild("Step1Child", ImVec2(0, 120), true);
   {
     ImGui::Text("Step 1: 频域分析");
     ImGui::SameLine();
@@ -468,9 +468,10 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
     }
 
     if (ts.step1_frequency.valid) {
-      ImGui::Text("  秒级: %.1f%%", ts.step1_frequency.low_freq_power_ratio * 100);
-      ImGui::Text("  分钟级: %.1f%%", ts.step1_frequency.mid_freq_power_ratio * 100);
-      ImGui::Text("  小时级: %.1f%%", ts.step1_frequency.high_freq_power_ratio * 100);
+      ImGui::Text("  秒级: %.1f%%", ts.step1_frequency.sec_power_ratio * 100);
+      ImGui::Text("  分钟级: %.1f%%", ts.step1_frequency.min_power_ratio * 100);
+      ImGui::Text("  小时级: %.1f%%", ts.step1_frequency.hour_power_ratio * 100);
+      ImGui::Text("  DC: %.1f%%", ts.step1_frequency.dc_power_ratio * 100);
     } else {
       ImGui::TextDisabled("  (no data)");
     }
@@ -485,7 +486,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
   ImGui::EndChild();
 
   // Step 2: ARMA建模
-  ImGui::BeginChild("Step2Child", ImVec2(0, 80), true);
+  ImGui::BeginChild("Step2Child", ImVec2(0, 95), true);
   {
     ImGui::Text("Step 2: ARMA建模");
     ImGui::SameLine();
@@ -522,7 +523,7 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
   ImGui::EndChild();
 
   // Step 3: 残差分析
-  ImGui::BeginChild("Step3Child", ImVec2(0, 110), true);
+  ImGui::BeginChild("Step3Child", ImVec2(0, 85), true);
   {
     ImGui::Text("Step 3: 残差分析");
     ImGui::SameLine();

@@ -702,20 +702,22 @@ void TimeSeries::finalize_all() {
               static_cast<float>(accum[k] / static_cast<double>(valid_days));
         }
 
-        // 频段能量占比
-        double sec_power = 0, min_power = 0, hour_power = 0, total_power = 0;
+        // 频段能量占比 (在线性能量域计算，保证能量守恒)
+        double sec_power = 0, min_power = 0, hour_power = 0, dc_power = 0;
         for (size_t k = 0; k < N_BINS; ++k) {
           float p = step1_frequency.avg_power_spectrum[k];
-          total_power += p;
-          if (k < 58) sec_power += p;
-          else if (k < 117) min_power += p;
-          else hour_power += p;
+          if (k < 58) sec_power += p;           // bin 0-57: 秒级
+          else if (k < 117) min_power += p;     // bin 58-116: 分钟级
+          else if (k < 127) hour_power += p;    // bin 117-126: 小时级
+          else dc_power += p;                   // bin 127: DC
         }
+        double total_power = sec_power + min_power + hour_power + dc_power;
 
         if (total_power > 0) {
-          step1_frequency.low_freq_power_ratio = static_cast<float>(sec_power / total_power);
-          step1_frequency.mid_freq_power_ratio = static_cast<float>(min_power / total_power);
-          step1_frequency.high_freq_power_ratio = static_cast<float>(hour_power / total_power);
+          step1_frequency.sec_power_ratio = static_cast<float>(sec_power / total_power);
+          step1_frequency.min_power_ratio = static_cast<float>(min_power / total_power);
+          step1_frequency.hour_power_ratio = static_cast<float>(hour_power / total_power);
+          step1_frequency.dc_power_ratio = static_cast<float>(dc_power / total_power);
         }
 
         psd_cache.valid = true;

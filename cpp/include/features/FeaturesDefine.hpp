@@ -14,7 +14,7 @@
 
 #define LEVEL_0_FIELDS(X)\
   /* ======== 时序特征 (Time-Series) ======== */\
-  X(sec,                1, DATA,  TS,   MICROSTRUCTURE, RAW,        NONE,        "100/00/00", R"(f(t_{L0_{depth}})=t_{sec} \in [0,59])",                                  "Time Sec",                     "时间-秒",        "用于和同周期以上特征做因子组合(早上9点时段, 很多人喜欢在59秒挂单frontrun整数分钟的订单)")\
+  X(sec,                1, DATA,  TS,   MICROSTRUCTURE, RAW,        NONE,        "100/00/00", R"(f(t_{L0_{depth}})=\sin(2\pi \cdot \mathrm{idx}_{L0}/60))",               "Time Sec Phase",               "时间-秒相位",    "秒级时间相位嵌入, 60秒一周期")\
   X(voi1,               1, DATA,  TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "100/00/00", R"(\Delta V^B_1 - \Delta V^A_1)",                                           "Vol Order Imba 1-Level",       "订单失衡1档",    "对近端大单挂单(容易成交)非常敏感")\
   X(voi30,              1, DATA,  TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "100/00/00", R"(\sum_{i=1}^{30} w_i (\Delta V^B_i - \Delta V^A_i))",                     "Vol Order Imba 30-Level",      "订单失衡30档",   "对近端大单挂单(容易成交)非常敏感, 带深度线性衰减加权")\
   X(oir5,               1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\frac{V^B - V^A}{V^B + V^A})",                                           "Order Imba Ratio 5-Level",     "失衡率5档",      "订单失衡率[-1,1]标准化")\
@@ -47,7 +47,7 @@
 // ============================================================================
 
 #define LEVEL_1_FIELDS(X)\
-  X(min,                1, DATA, TS,   MICROSTRUCTURE, RAW,        NONE,        "00/100/00", R"(f(t_{L1})=t_{min} \in [0,59])",                        "Time Minute",                 "时间-分钟",      "用于和同周期以上特征做因子组合")\
+  X(min,                1, DATA, TS,   MICROSTRUCTURE, RAW,        NONE,        "00/100/00", R"(f(t_{L1})=\sin(2\pi \cdot \mathrm{idx}_{L1}/60))",     "Time Min Phase",              "时间-分钟相位",  "分钟级时间相位嵌入, 60分钟一周期")\
   X(min_ret_z,          1, DATA, TS,   MOMENTUM,       NORMALIZED, WINSOR,      "00/100/00", R"(\frac{r - \mu}{\sigma})",                              "Minute Return Z-score",       "分钟收益",       "分钟对数收益标准化")\
   X(rv_5m_norm,         1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/100/00", R"(\log(\sigma_{5m}))",                                   "Realized Vol 5m",             "5分钟波动率",    "5分钟波动率标准化")\
   X(vwap_gap_pct,       1, DATA, TS,   PRICE,          DEVIATION,  ZSCORE,      "00/100/00", R"(\frac{c - \mathrm{vwap}}{\mathrm{vwap}})",             "VWAP Gap Percent",            "VWAP偏离",       "价格相对VWAP偏离")\
@@ -72,7 +72,7 @@
 // ============================================================================
 
 #define LEVEL_2_FIELDS(X)\
-  X(hour,                1, DATA, TS,   MICROSTRUCTURE, RAW,        NONE,        "00/00/100", R"(f(t_{L2})=t_{hour} \in \{9,10,11,13,14\})",            "Time Hour",                   "时间-小时",      "用于和同级别特征做因子组合")\
+  X(hour,                1, DATA, TS,   MICROSTRUCTURE, RAW,        NONE,        "00/00/100", R"(f(t_{L2})=\sin(2\pi \cdot \mathrm{idx}_{L2}/4))",      "Time Hour Phase",             "时间-小时相位",  "小时级时间相位嵌入, 4小时一周期")\
   X(hour_ret_12h_mom,    1, DATA, TS,   MOMENTUM,       NORMALIZED, ZSCORE,      "00/00/100", R"(\frac{\sum_{12h} r}{z})",                              "Hour Return 12h Momentum",    "12小时动量",     "12小时动量标准化")\
   X(hour_volatility,     1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/00/100", R"(\log(\sigma_{24h}))",                                  "Hour Volatility 24h",         "24小时波动率",   "24小时波动率标准化")\
   X(pivot_dev,           1, DATA, TS,   PRICE,          DEVIATION,  CLIP,        "00/00/100", R"(\frac{c - \mathrm{pivot}}{\mathrm{range}})",           "Pivot Deviation",             "Pivot偏差",      "收盘相对pivot偏差")\
