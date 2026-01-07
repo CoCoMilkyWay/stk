@@ -6,6 +6,7 @@
 #include "features/FeaturesMinute/TS/MinuteIndex.hpp"
 #include "features/FeaturesTick/TS/DeltaT.hpp"
 #include "features/FeaturesTick/TS/DepthData.hpp"
+#include "features/FeaturesTick/TS/DepthIndex.hpp"
 #include "features/FeaturesTick/TS/MPB.hpp"
 #include "features/FeaturesTick/TS/MPC.hpp"
 #include "features/FeaturesTick/TS/MPCStat.hpp"
@@ -43,6 +44,10 @@ public:
     CBuffer<float, L2::BLEN> DeltaTCancel_;
     DeltaT DeltaT{td, DeltaTMaker_, DeltaTTaker_, DeltaTCancel_};
 
+    CBuffer<float, L2::BLEN> Sec_;       // 秒数 [0-59] (特征)
+    CBuffer<float, L2::BLEN> TickIndex_; // 原始tick索引 (供其他算子使用)
+    TickIndex TickIndex{td, Sec_, TickIndex_};
+
     // -------------------------------------------------------------------------
     // [ON DEPTH] 盘口更新时 - depth_updated == true 时触发:
     // 1. depth更新间隔大于L2::L2_MIN_TIME_INTERVAL_MS (一般是一秒)
@@ -55,8 +60,7 @@ public:
     // -------------------------------------------------------------------------
 
     // --- 基础数据 CBuffer ---
-    CBuffer<float, L2::BLEN> Sec_;                     // 秒数 [0-59] (特征)
-    CBuffer<float, L2::BLEN> TickIndex_;               // 原始tick索引 (供其他算子使用)
+    CBuffer<float, L2::BLEN> DepthIndex_;              // 原始depth索引
     CBuffer<float, L2::BLEN> BidPrice_[L2::LOB_DEPTH]; // 买1-N价 (元)
     CBuffer<float, L2::BLEN> AskPrice_[L2::LOB_DEPTH]; // 卖1-N价 (元)
     CBuffer<float, L2::BLEN> BidQty_[L2::LOB_DEPTH];   // 买1-N量 (股, 正值)
@@ -68,7 +72,7 @@ public:
     CBuffer<float, L2::BLEN> Spread_;                  // 买卖价差 (元)
 
     // --- 基础数据算子 ---
-    TickIndex TickIndex{td, Sec_, TickIndex_};
+    DepthIndex DepthIndex{td, DepthIndex_};
     DepthData<L2::LOB_DEPTH> DepthData{td, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_};
     MidPrice MidPrice{BidPrice_[0], AskPrice_[0], MidPrice_};
     MicroPrice MicroPrice{td, MicroPrice_};
@@ -89,8 +93,8 @@ public:
     CBuffer<float, L2::BLEN> MPC5_Skew_; // MPC5日内偏度 (夏普3.07)
 
     // --- 因子算子 ---
-    VOI<1> VOI1{BidPrice_, AskPrice_, BidAmt_, AskAmt_, TickIndex_, VOI1_};
-    VOI<30> VOI30{BidPrice_, AskPrice_, BidAmt_, AskAmt_, TickIndex_, VOI30_};
+    VOI<1> VOI1{BidPrice_, AskPrice_, BidAmt_, AskAmt_, DepthIndex_, VOI1_};
+    VOI<30> VOI30{BidPrice_, AskPrice_, BidAmt_, AskAmt_, DepthIndex_, VOI30_};
     OIR<5> OIR5{BidAmt_, AskAmt_, OIR5_};
     OIR<10> OIR10{BidAmt_, AskAmt_, OIR10_};
     SOIR<5, false> SOIR5{BidAmt_, AskAmt_, SOIR5_};

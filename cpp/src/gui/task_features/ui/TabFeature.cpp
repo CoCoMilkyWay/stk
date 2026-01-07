@@ -554,14 +554,23 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       // Column: Cat L1
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.cat_l1));
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", to_string_cn(f.cat_l1));
+      }
 
       // Column: Cat L2
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.cat_l2));
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", to_string_cn(f.cat_l2));
+      }
 
       // Column: Norm Method
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.norm_method));
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", to_string_cn(f.norm_method));
+      }
 
       // Column: PSD
       ImGui::TableNextColumn();
