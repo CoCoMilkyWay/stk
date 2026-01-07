@@ -65,7 +65,7 @@ public:
   // L0: Coroutine for async loading
   // ========================================================================
 
-  asio::awaitable<void> L0LoaderLoop(OrderFlow &of) {
+  asio::awaitable<void> L0LoaderLoop(OrderFlow &of, int &feature_idx_ref) {
     of.loader.coro_running = true;
 
     // Create depth buffer once for entire coroutine lifetime (~500MB)
@@ -73,11 +73,24 @@ public:
     FeatureReader::DepthTensor depth_buffer;
     depth_buffer.preallocate(of.l1.num_assets);
 
+    // Create L0 feature buffer (preallocated for L0 level)
+    FeatureReader::DayTensor l0_tensor;
+    l0_tensor.preallocate_level(of.l1.num_assets, 0);
+
     while (!of.loader.coro_should_stop) {
       // Check for L0 load request
       if (of.loader.l0_requested.exchange(false)) {
         load_l0(of.l0, of.loader.l0_date, of.loader.l0_asset, of.l1, depth_buffer);
         of.ui.l0_anchor_plot_idx = 0;
+        // Clear L0 feature cache when L0 data changes (force reload)
+        of.l0_feature.clear();
+      }
+
+      // Load L0 feature if needed (lazy, only when selection exists)
+      if (feature_idx_ref >= 0 && of.l0.loaded &&
+          !of.l0_feature.matches(of.loader.l0_date, of.loader.l0_asset, feature_idx_ref)) {
+        load_l0_feature(of.l0_feature, of.loader.l0_date, of.loader.l0_asset,
+                        feature_idx_ref, of.l0, l0_tensor);
       }
 
       // Yield to allow other tasks
@@ -88,18 +101,18 @@ public:
     }
 
     of.loader.coro_running = false;
-    // depth_buffer automatically destroyed when coroutine exits
+    // buffers automatically destroyed when coroutine exits
   }
 
   // Start L0 loader coroutine (blocking until started)
-  void StartL0Loader(CoroManager &coromgr, OrderFlow &of) {
+  void StartL0Loader(CoroManager &coromgr, OrderFlow &of, int &feature_idx_ref) {
     if (of.loader.coro_running)
       return;
 
     TraceN("L0_StartCoroutine");
 
     of.loader.coro_should_stop = false;
-    of.loader.coro = coromgr.Spawn(L0LoaderLoop(of));
+    of.loader.coro = coromgr.Spawn(L0LoaderLoop(of, feature_idx_ref));
 
     // Blocking wait until coroutine starts
     {
@@ -356,6 +369,68 @@ public:
     cache.build_heatmap_merged(); // Build Level 2 heatmap cache
     cache.loaded = true;
     return true;
+  }
+
+  // ========================================================================
+  // Load L0 feature data for single day/asset (for L0 plot overlay)
+  // ========================================================================
+  bool load_l0_feature(OrderFlow::L0FeatureCache &cache, const std::string &date, size_t asset_idx,
+                       int feature_idx, const OrderFlow::L0Cache &l0_cache,
+                       FeatureReader::DayTensor &day_tensor) {
+    if (cache.matches(date, asset_idx, feature_idx))
+      return true;
+
+    TraceN("L0_Feature_Load");
+
+    cache.clear();
+    cache.date = date;
+    cache.asset_idx = asset_idx;
+    cache.feature_idx = feature_idx;
+
+    // Load L0 features (uses preallocated buffer)
+    reader_.load_day_level(date, 0, day_tensor);
+
+    if (asset_idx >= day_tensor.A || day_tensor.T[0] == 0)
+      return false;
+
+    // Build plot data from L0 cache (use same X coordinates as depth data)
+    cache.plot.x.reserve(l0_cache.plot.x.size());
+    cache.plot.values.reserve(l0_cache.plot.x.size());
+
+    float y_min = std::numeric_limits<float>::max();
+    float y_max = std::numeric_limits<float>::lowest();
+
+    // Iterate through valid ticks in L0 cache
+    for (const auto &day : l0_cache.days) {
+      for (size_t i = 0; i < day.count_valid(); ++i) {
+        const auto &tick = day.ticks[i];
+        if (!tick.depth_valid)
+          continue;
+
+        size_t t = tick.tick_idx;
+        if (t >= day_tensor.T[0])
+          continue;
+
+        float val = static_cast<float>(day_tensor.get<0>(t, feature_idx, asset_idx));
+        if (std::isnan(val) || std::isinf(val))
+          continue;
+
+        double global_x = day.to_global_x(i);
+        cache.plot.x.push_back(global_x);
+        cache.plot.values.push_back(val);
+
+        if (val < y_min) y_min = val;
+        if (val > y_max) y_max = val;
+      }
+    }
+
+    if (!cache.plot.x.empty() && y_max > y_min) {
+      cache.plot.y_min = y_min;
+      cache.plot.y_max = y_max;
+      cache.plot.valid = true;
+    }
+
+    return cache.plot.valid;
   }
 
   // ========================================================================

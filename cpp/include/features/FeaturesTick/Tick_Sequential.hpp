@@ -68,6 +68,7 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
     // [ON DEPTH] 盘口更新
 
     // 数据层
+    dag_.l0.DepthIndex.compute();
     dag_.l0.DepthData.compute();
     dag_.l0.MidPrice.compute();
     dag_.l0.MicroPrice.compute();
@@ -101,9 +102,11 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
     ts_features_buffer_[L0_FieldOffset::mpc5] = dag_.l0.MPC5_.back();
     ts_features_buffer_[L0_FieldOffset::mpc5_max] = dag_.l0.MPC5_Max_.back();
     ts_features_buffer_[L0_FieldOffset::mpc5_skew] = dag_.l0.MPC5_Skew_.back();
+
+    TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
   }
 
-  // Write TS features [sec, mpc5_skew]
+  // Write TS features
   TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::mpc5_skew, ts_features_buffer_.data(), worker_id_);
 
   // Write data validity flag (event-driven sparsity marker)

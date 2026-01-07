@@ -211,7 +211,7 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
 // L0 Plot Renderer
 // ============================================================================
 
-static void RenderL0Plot(OrderFlow &of, bool force_reset) {
+static void RenderL0Plot(OrderFlow &of, const Feature &feature, bool force_reset) {
   if (!of.l0.loaded || of.l0.plot.x.empty()) {
     ImGui::TextDisabled(of.l0.loaded ? "No L0 data for this date" : "Waiting for L1 load...");
     return;
@@ -230,6 +230,20 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
     ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, cond);
     ImPlot::SetupAxisLimits(ImAxis_Y1, of.l0.plot.y_min_with_margin, of.l0.plot.y_max_with_margin, cond);
+
+    // ========================================================================
+    // Feature Plot Overlay: Setup Y2 axis if L0 feature cache valid
+    // ========================================================================
+    const auto &fc = of.l0_feature;
+    const auto &sel = feature.selection;
+    const bool has_l0_feature = sel.selected_level == 0 && sel.primary_feature_idx >= 0 &&
+                                fc.plot.valid && fc.feature_idx == sel.primary_feature_idx;
+    if (has_l0_feature) {
+      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
+      if (ui.l0_feat_y2_valid) {
+        ImPlot::SetupAxisLimits(ImAxis_Y2, ui.l0_feat_y2_min, ui.l0_feat_y2_max, ImPlotCond_Always);
+      }
+    }
 
     // Setup X-axis formatter: converts X coordinates (time index) to time strings
     // This ensures correct time display for ALL positions, not just tick marks
@@ -348,6 +362,41 @@ static void RenderL0Plot(OrderFlow &of, bool force_reset) {
     ImPlot::PlotStairs("Mid Price", of.l0.plot.x.data(), of.l0.plot.mid_price.data(),
                        static_cast<int>(of.l0.plot.x.size()));
     ImPlot::PopStyleColor();
+
+    // ========================================================================
+    // L0 Feature Plot Overlay (true L0 granularity, not downsampled)
+    // ========================================================================
+    if (has_l0_feature && !fc.plot.x.empty()) {
+      // Cache Y range for next frame's axis setup
+      ui.l0_feat_y2_min = static_cast<double>(fc.plot.y_min);
+      ui.l0_feat_y2_max = static_cast<double>(fc.plot.y_max);
+      ui.l0_feat_y2_valid = true;
+
+      // Convert float values to double for plotting
+      std::vector<double> feat_values(fc.plot.values.begin(), fc.plot.values.end());
+
+      // Plot on Y2 axis (right side shows feature scale)
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+
+      // Get feature name for legend
+      const char *feat_name = "L0 Feature";
+      if (sel.primary_feature_idx >= 0 &&
+          static_cast<size_t>(sel.primary_feature_idx) < feature.metadata.features_l0.size()) {
+        feat_name = feature.metadata.features_l0[sel.primary_feature_idx].name_cn;
+      }
+
+      // Draw feature line (step plot, teal color matching L1 overlay style)
+      ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.6f));
+      ImPlot::PlotStairs(feat_name, fc.plot.x.data(), feat_values.data(),
+                         static_cast<int>(fc.plot.x.size()));
+      ImPlot::PopStyleColor();
+
+      // Switch back to Y1 for subsequent plots
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    } else {
+      // No valid L0 feature data, invalidate Y2 cache
+      ui.l0_feat_y2_valid = false;
+    }
 
     // Anchor: get snapped X from plot_idx (single source of truth)
     double anchor_x = ui.l0_anchor_plot_idx < of.l0.plot.x.size()
@@ -534,7 +583,7 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
           ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
 
           // Draw shaded area between high and low (subtle teal fill)
-          ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.2f, 0.6f, 0.7f, 0.2f));
+          ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.2f, 0.6f, 0.7f, 0.15f));
           ImPlot::PlotShaded("Feature", feat_x.data(), feat_low.data(),
                              feat_high.data(), static_cast<int>(feat_x.size()));
           ImPlot::PopStyleColor();
@@ -545,14 +594,14 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
 
           // Draw high line (step plot, brighter teal)
           ImPlot::HideNextItem(hidden, ImPlotCond_Always);
-          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.95f));
+          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.6f));
           ImPlot::PlotStairs("##FeatureHigh", feat_x.data(), feat_high.data(),
                              static_cast<int>(feat_x.size()));
           ImPlot::PopStyleColor();
 
           // Draw low line (step plot, darker teal)
           ImPlot::HideNextItem(hidden, ImPlotCond_Always);
-          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.15f, 0.5f, 0.6f, 0.9f));
+          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.15f, 0.5f, 0.6f, 0.5f));
           ImPlot::PlotStairs("##FeatureLow", feat_x.data(), feat_low.data(),
                              static_cast<int>(feat_x.size()));
           ImPlot::PopStyleColor();
@@ -767,7 +816,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 
   // L0 coroutine lifecycle
   if (of.l1.loaded && !of.loader.coro_running) {
-    loader->StartL0Loader(data.coromgr, of);
+    loader->StartL0Loader(data.coromgr, of, data.feature.selection.primary_feature_idx);
     if (!ui.l1_anchor_date.empty()) {
       loader->RequestL0Load(of, ui.l1_anchor_date, asset_idx);
     }
@@ -805,7 +854,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
   ImGui::BeginChild("L0Chart", ImVec2(chart_width, -1), false);
 
-  RenderL0Plot(of, force_reset);
+  RenderL0Plot(of, data.feature, force_reset);
 
   ImGui::EndChild();
 

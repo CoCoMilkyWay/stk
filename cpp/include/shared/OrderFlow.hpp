@@ -368,6 +368,41 @@ struct OrderFlow {
   };
 
   // ==========================================================================
+  // L0 Feature Cache - Single day/asset feature data for L0 plot overlay
+  // ==========================================================================
+
+  struct L0FeatureCache {
+    // Plot data for single feature
+    struct PlotData {
+      std::vector<double> x;     // global X coordinates
+      std::vector<float> values; // feature values at each point
+      float y_min = 0.0f;
+      float y_max = 0.0f;
+      bool valid = false;
+    };
+
+    std::string date;
+    size_t asset_idx = SIZE_MAX;
+    int feature_idx = -1;      // L0 feature index
+    PlotData plot;
+
+    bool matches(const std::string &d, size_t a, int f) const {
+      return date == d && asset_idx == a && feature_idx == f;
+    }
+
+    void clear() {
+      date.clear();
+      asset_idx = SIZE_MAX;
+      feature_idx = -1;
+      plot.x.clear();
+      plot.values.clear();
+      plot.y_min = 0.0f;
+      plot.y_max = 0.0f;
+      plot.valid = false;
+    }
+  };
+
+  // ==========================================================================
   // UI State - User interaction and rendering parameters
   // ==========================================================================
 
@@ -400,10 +435,15 @@ struct OrderFlow {
     // L0 load detection (for auto-zoom)
     bool prev_l0_loading = false;
 
-    // Feature overlay Y2 range cache (for next frame setup)
+    // L1 Feature overlay Y2 range cache (for next frame setup)
     double feat_y2_min = 0.0;
     double feat_y2_max = 1.0;
     bool feat_y2_valid = false;
+
+    // L0 Feature overlay Y2 range cache (for next frame setup)
+    double l0_feat_y2_min = 0.0;
+    double l0_feat_y2_max = 1.0;
+    bool l0_feat_y2_valid = false;
 
     bool detect_and_update_changes();
     void clear();
@@ -436,6 +476,7 @@ struct OrderFlow {
 
   L1Cache l1;
   L0Cache l0;
+  L0FeatureCache l0_feature;
   UI ui;
   Loader loader;
 
