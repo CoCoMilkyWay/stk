@@ -231,189 +231,184 @@ constexpr LevelTimeConfig LEVEL_CONFIGS[3] = {
 };
 
 // ============================================================================
-// TRADING SESSION MAPPING - High Performance Non-linear Time Conversion
+// TRADING SESSION CONSTANTS
 // ============================================================================
-// Chinese stock market trading sessions (including call auctions):
-//   Morning:   09:15 - 11:30 (2 hours 15 minutes = 135 minutes)
-//   Lunch:     11:30 - 13:00 (non-trading)
-//   Afternoon: 13:00 - 15:00 (2 hours = 120 minutes)
-// Total trading time: 4 hours 15 minutes = 255 minutes = 15300 seconds
+// A股交易时段 (含集合竞价):
+//
+//   时段       时钟时间         分钟数    秒数      L0 范围        L1 范围     L2
+//   ─────────────────────────────────────────────────────────────────────────────
+//   上午       09:15 - 11:30    135 min   8100 s    [0, 8099]      [0, 134]    0,1,2
+//   午休       11:30 - 13:00    (非交易)
+//   下午       13:00 - 15:00    120 min   7200 s    [8100, 15299]  [135, 254]  3,4
+//   ─────────────────────────────────────────────────────────────────────────────
+//   合计                        255 min   15300 s
+//
+// 关键边界值:
+//   MORNING_SECONDS = 8100   (上午总秒数, 也是下午 L0 起点)
+//   MORNING_MINUTES = 135    (上午总分钟数, 也是下午 L1 起点)
 
-// Trading session boundaries (in minutes since midnight)
-constexpr uint16_t MORNING_START_MIN = L2::MORNING_CALL_AUCTION_START_HOUR * 60 + L2::MORNING_CALL_AUCTION_START_MINUTE;                   // 555 (09:15)
-constexpr uint16_t MORNING_END_MIN = L2::CONTINUOUS_TRADING_MORNING_END_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;             // 690 (11:30)
-constexpr uint16_t AFTERNOON_START_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE; // 780 (13:00)
-constexpr uint16_t AFTERNOON_END_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_END_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;       // 900 (15:00)
+constexpr uint16_t MORNING_START_MIN   = L2::MORNING_CALL_AUCTION_START_HOUR * 60 + L2::MORNING_CALL_AUCTION_START_MINUTE;                   // 555 (09:15)
+constexpr uint16_t MORNING_END_MIN     = L2::CONTINUOUS_TRADING_MORNING_END_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;             // 690 (11:30)
+constexpr uint16_t AFTERNOON_START_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE;     // 780 (13:00)
+constexpr uint16_t AFTERNOON_END_MIN   = L2::CONTINUOUS_TRADING_AFTERNOON_END_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;         // 900 (15:00)
 
-// Helper: Map clock time to trading seconds (comptime)
-// Returns: -1 for pre-market, 0-8099 for morning, 8100-15299 for afternoon, 15299 for post-market (clamped)
+constexpr size_t MORNING_SECONDS = 8100;  // 135 min × 60 = 上午交易秒数
+constexpr size_t MORNING_MINUTES = 135;   // 上午交易分钟数
+
+// ============================================================================
+// INTERNAL: Compile-time LUT for Clock → L0
+// ============================================================================
+// 预计算 1440 个 (hour, minute) → L0 base offset 的映射表
+// 运行时只需 O(1) 查表 + 加秒数
+
+namespace detail {
+
+// 返回该 (hour, minute) 对应的 L0 base (不含秒)
+// 返回 -1 表示盘前, 返回 15299 表示盘后
 constexpr int16_t minute_offset(uint8_t hour, uint8_t minute) {
-  const uint16_t total_minutes = hour * 60 + minute;
-
-  // Morning session: 09:15-11:30 → 0-8099 seconds (135 minutes)
-  if (total_minutes >= MORNING_START_MIN && total_minutes < MORNING_END_MIN) {
-    return static_cast<int16_t>((total_minutes - MORNING_START_MIN) * 60);
-  }
-
-  // Afternoon session: 13:00-15:00 → 8100-15299 seconds (120 minutes)
-  if (total_minutes >= AFTERNOON_START_MIN && total_minutes < AFTERNOON_END_MIN) {
-    return static_cast<int16_t>(8100 + (total_minutes - AFTERNOON_START_MIN) * 60);
-  }
-
-  // Lunch break: map to afternoon session start
-  if (total_minutes >= MORNING_END_MIN && total_minutes < AFTERNOON_START_MIN) {
-    return 8100;
-  }
-
-  // Pre-market
-  if (total_minutes < MORNING_START_MIN) {
+  const uint16_t m = hour * 60 + minute;
+  if (m >= MORNING_START_MIN && m < MORNING_END_MIN)        // 09:15-11:29
+    return static_cast<int16_t>((m - MORNING_START_MIN) * 60);
+  if (m >= AFTERNOON_START_MIN && m < AFTERNOON_END_MIN)    // 13:00-14:59
+    return static_cast<int16_t>(MORNING_SECONDS + (m - AFTERNOON_START_MIN) * 60);
+  if (m >= MORNING_END_MIN && m < AFTERNOON_START_MIN)      // 11:30-12:59 午休
+    return static_cast<int16_t>(MORNING_SECONDS);           // → 映射到下午开盘
+  if (m < MORNING_START_MIN)                                // 00:00-09:14 盘前
     return -1;
-  }
-
-  // Post-market: clamp to last valid index (15299, not 15300)
-  return 15299;
+  return static_cast<int16_t>(TRADE_SECONDS_PER_DAY - 1);   // 15:00+ 盘后
 }
 
-// Constexpr function to generate lookup table at compile time
 constexpr auto generate_minute_offset_table() {
   std::array<int16_t, 24 * 60> table{};
-  for (size_t i = 0; i < 24 * 60; ++i) {
-    const uint8_t hour = i / 60;
-    const uint8_t minute = i % 60;
-    table[i] = minute_offset(hour, minute);
-  }
+  for (size_t i = 0; i < 24 * 60; ++i)
+    table[i] = minute_offset(static_cast<uint8_t>(i / 60), static_cast<uint8_t>(i % 60));
   return table;
 }
 
-// Compile-time generated lookup table (1440 entries x 2 bytes = 2.88 KB)
-static constexpr auto MINUTE_OFFSET_LUT = generate_minute_offset_table();
+} // namespace detail
+
+// 编译期生成的查表 (1440 entries × 2 bytes = 2.88 KB)
+static constexpr auto MINUTE_OFFSET_LUT = detail::generate_minute_offset_table();
 
 // ============================================================================
-// TIME CONVERSION - O(1) Branchless Lookup
+// CLOCK TIME STRUCTURE
 // ============================================================================
 
-// Convert time to trading seconds (0-15299)
-// High-performance branchless implementation using compile-time LUT
-inline constexpr size_t tick2index(uint8_t hour, uint8_t minute, uint8_t second) {
-  const size_t hm_idx = hour * 60 + minute;
-  const int16_t base = MINUTE_OFFSET_LUT[hm_idx];
-  // Branchless clamp: negative → 0, positive → value
-  const size_t clamped_base = base & ~(base >> 15); // Sign bit mask: if negative, result is 0
-  const size_t result = clamped_base + second;
-  // Clamp to max valid index (post-market times can exceed 15299 when second > 0)
-  return result < TRADE_SECONDS_PER_DAY ? result : TRADE_SECONDS_PER_DAY - 1;
-}
-
-// ============================================================================
-// INVERSE TIME CONVERSION - Index to Clock Time
-// ============================================================================
-
-// Time structure for inverse mapping
 struct ClockTime {
   uint8_t hour = 0;
   uint8_t minute = 0;
   uint8_t second = 0;
 };
 
-// Convert trading seconds index (0-15299) back to clock time
-// Morning: 0-8099 → 09:15:00 - 11:29:59
-// Afternoon: 8100-15299 → 13:00:00 - 14:59:59
-inline constexpr ClockTime index2tick(size_t index) {
+// ============================================================================
+// TIME INDEX CONVERSION
+// ============================================================================
+// 命名规则: X2Y 表示 X → Y
+//
+// 三级索引体系:
+//   L0 (tick)   : 0-15299  秒级索引
+//   L1 (minute) : 0-254    分钟级索引
+//   L2 (hour)   : 0-4      小时级索引
+//
+// L1 分钟边界 (相对于 L0):
+//   上午: L1=0 → L0=[0,59], L1=1 → L0=[60,119], ..., L1=134 → L0=[8040,8099]
+//   下午: L1=135 → L0=[8100,8159], ..., L1=254 → L0=[15240,15299]
+//
+// L2 小时边界 (相对于 L1):
+//   L2=0 (09:xx) : L1=[0, 44]    45 min (09:15-09:59)
+//   L2=1 (10:xx) : L1=[45, 104]  60 min (10:00-10:59)
+//   L2=2 (11:xx) : L1=[105, 134] 30 min (11:00-11:29)
+//   L2=3 (13:xx) : L1=[135, 194] 60 min (13:00-13:59)
+//   L2=4 (14:xx) : L1=[195, 254] 60 min (14:00-14:59)
+
+// -------------------------------- 降采样 --------------------------------
+// Clock → L0 → L1 → L2
+
+// Clock → L0: 09:15:00→0, 11:29:59→8099, 13:00:00→8100, 14:59:59→15299
+inline constexpr size_t Clock_to_L0(uint8_t hour, uint8_t minute, uint8_t second) {
+  const int16_t base = MINUTE_OFFSET_LUT[hour * 60 + minute];
+  // Branchless: base<0 (盘前) 时右移 15 位得全 1, 取反 AND 后清零
+  const size_t clamped = base & ~(base >> 15);
+  const size_t result = clamped + second;
+  return (result < TRADE_SECONDS_PER_DAY) ? result : (TRADE_SECONDS_PER_DAY - 1);
+}
+
+// L0 → L1: 0→0, 59→0, 60→1, 8099→134, 8100→135, 15299→254
+inline constexpr size_t L0_to_L1(size_t l0_idx) {
+  return (l0_idx < MORNING_SECONDS)
+             ? (l0_idx / 60)
+             : (MORNING_MINUTES + (l0_idx - MORNING_SECONDS) / 60);
+}
+
+// L1 → L2: 0-44→0, 45-104→1, 105-134→2, 135-194→3, 195-254→4
+inline constexpr size_t L1_to_L2(size_t l1_idx) {
+  return (l1_idx < 105) ? ((l1_idx < 45) ? 0 : 1)
+                        : ((l1_idx < 195) ? ((l1_idx < 135) ? 2 : 3) : 4);
+}
+
+// -------------------------------- 升采样 --------------------------------
+// L2 → L1 → L0 → Clock
+
+// L2 → L1: 0→0, 1→45, 2→105, 3→135, 4→195 (返回该小时的起始分钟索引)
+inline constexpr size_t L2_to_L1(size_t l2_idx) {
+  constexpr size_t starts[] = {0, 45, 105, 135, 195, 255};
+  return (l2_idx < 5) ? starts[l2_idx] : 255;
+}
+
+// L1 → L0: 0→0, 134→8040, 135→8100, 254→15240 (返回该分钟的起始秒索引)
+inline constexpr size_t L1_to_L0(size_t l1_idx) {
+  return (l1_idx < MORNING_MINUTES)
+             ? (l1_idx * 60)
+             : (MORNING_SECONDS + (l1_idx - MORNING_MINUTES) * 60);
+}
+
+// L0 → Clock: 0→09:15:00, 8099→11:29:59, 8100→13:00:00, 15299→14:59:59
+inline constexpr ClockTime L0_to_Clock(size_t l0_idx) {
   ClockTime t;
-
-  if (index < 8100) {
-    // Morning session: 09:15 + index seconds
-    size_t total_seconds = MORNING_START_MIN * 60 + index;
-    t.hour = static_cast<uint8_t>(total_seconds / 3600);
-    t.minute = static_cast<uint8_t>((total_seconds % 3600) / 60);
-    t.second = static_cast<uint8_t>(total_seconds % 60);
+  if (l0_idx < MORNING_SECONDS) {
+    size_t total = MORNING_START_MIN * 60 + l0_idx;
+    t.hour = static_cast<uint8_t>(total / 3600);
+    t.minute = static_cast<uint8_t>((total % 3600) / 60);
+    t.second = static_cast<uint8_t>(total % 60);
   } else {
-    // Afternoon session: 13:00 + (index - 8100) seconds
-    size_t afternoon_seconds = index - 8100;
-    size_t total_seconds = AFTERNOON_START_MIN * 60 + afternoon_seconds;
-    t.hour = static_cast<uint8_t>(total_seconds / 3600);
-    t.minute = static_cast<uint8_t>((total_seconds % 3600) / 60);
-    t.second = static_cast<uint8_t>(total_seconds % 60);
+    size_t total = AFTERNOON_START_MIN * 60 + (l0_idx - MORNING_SECONDS);
+    t.hour = static_cast<uint8_t>(total / 3600);
+    t.minute = static_cast<uint8_t>((total % 3600) / 60);
+    t.second = static_cast<uint8_t>(total % 60);
   }
-
   return t;
 }
 
-// Convert trading minute index (0-254) back to clock time
-// Morning: 0-134 → 09:15 - 11:29
-// Afternoon: 135-254 → 13:00 - 14:59
-inline constexpr ClockTime index2minute(size_t index) {
+// L1 → Clock: 0→09:15, 134→11:29, 135→13:00, 254→14:59
+inline constexpr ClockTime L1_to_Clock(size_t l1_idx) {
   ClockTime t;
   t.second = 0;
-
-  if (index < 135) {
-    // Morning session: 09:15 + index minutes
-    size_t total_minutes = MORNING_START_MIN + index;
-    t.hour = static_cast<uint8_t>(total_minutes / 60);
-    t.minute = static_cast<uint8_t>(total_minutes % 60);
+  if (l1_idx < MORNING_MINUTES) {
+    size_t total = MORNING_START_MIN + l1_idx;
+    t.hour = static_cast<uint8_t>(total / 60);
+    t.minute = static_cast<uint8_t>(total % 60);
   } else {
-    // Afternoon session: 13:00 + (index - 135) minutes
-    size_t afternoon_minutes = index - 135;
-    size_t total_minutes = AFTERNOON_START_MIN + afternoon_minutes;
-    t.hour = static_cast<uint8_t>(total_minutes / 60);
-    t.minute = static_cast<uint8_t>(total_minutes % 60);
+    size_t total = AFTERNOON_START_MIN + (l1_idx - MORNING_MINUTES);
+    t.hour = static_cast<uint8_t>(total / 60);
+    t.minute = static_cast<uint8_t>(total % 60);
   }
-
   return t;
 }
 
-// Convert Level 2 hour index (0-3) to clock hour (按小时整数边界分配)
-// Level 2 one day has ~4 hour buckets, map each to its clock hour
-// 按照数据起始时间落在的时钟小时进行分配:
-//   9:15-9:59 -> 9, 10:00-10:59 -> 10, 11:00-11:59 -> 11, 13:00-13:59 -> 13, 14:00-14:59 -> 14
-inline constexpr uint8_t index2hour(size_t hour_index) {
-  // Simple mapping: Level 2 hour_index corresponds to actual trading hours
-  // hour_index 0 -> 9:15 starts -> hour 9
-  // hour_index 1 -> ~10:xx starts -> hour 10
-  // hour_index 2 -> ~11:xx starts -> hour 11
-  // hour_index 3 -> 13:00 starts -> hour 13
-  // hour_index 4+ -> 14:xx starts -> hour 14
+// L2 → Clock hour: 0→9, 1→10, 2→11, 3→13, 4→14
+inline constexpr uint8_t L2_to_Clock(size_t l2_idx) {
   constexpr uint8_t hour_map[] = {9, 10, 11, 13, 14};
-  return (hour_index < 5) ? hour_map[hour_index] : 14;
-}
-
-// ============================================================================
-// CROSS-LEVEL INDEX CONVERSION
-// ============================================================================
-
-// Convert L0 tick index (0-15299) to L1 minute index (0-254)
-// Morning: tick 0-8099 → minute 0-134
-// Afternoon: tick 8100-15299 → minute 135-254
-inline constexpr size_t tick2minute(size_t tick_idx) {
-  if (tick_idx < 8100) {
-    return tick_idx / 60;
-  } else {
-    return 135 + (tick_idx - 8100) / 60;
-  }
-}
-
-// Convert L2 hour index (0-4) to L1 minute start index
-// Hour 0 (9:xx):  → 0   (09:15-09:59)
-// Hour 1 (10:xx): → 45  (10:00-10:59)
-// Hour 2 (11:xx): → 105 (11:00-11:29)
-// Hour 3 (13:xx): → 135 (13:00-13:59)
-// Hour 4 (14:xx): → 195 (14:00-14:59)
-// Use hour2minute(idx+1) - hour2minute(idx) to get range length
-inline constexpr size_t hour2minute(size_t hour_idx) {
-  constexpr size_t minute_starts[] = {0, 45, 105, 135, 195, 255};
-  return (hour_idx < 5) ? minute_starts[hour_idx] : 255;
+  return (l2_idx < 5) ? hour_map[l2_idx] : 14;
 }
 
 // ============================================================================
 // FORMAT UTILITIES
 // ============================================================================
 
-// Format time as string "HH:MM:SS" (for display)
 inline void format_time(char *buf, size_t buf_size, const ClockTime &t) {
   std::snprintf(buf, buf_size, "%02d:%02d:%02d", t.hour, t.minute, t.second);
 }
 
-// Format time as string "HH:MM" (for display)
 inline void format_time_hm(char *buf, size_t buf_size, const ClockTime &t) {
   std::snprintf(buf, buf_size, "%02d:%02d", t.hour, t.minute);
 }

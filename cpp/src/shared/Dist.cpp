@@ -162,16 +162,16 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
         // Convert time index to clock hour (按小时整数边界分配)
         uint8_t hour;
         if (level == 0) {
-          // Level 0 (tick/second): use index2tick
-          ClockTime time = index2tick(local_t);
+          // Level 0 (tick/second): use L0_to_Clock
+          ClockTime time = L0_to_Clock(local_t);
           hour = time.hour;
         } else if (level == 1) {
-          // Level 1 (minute): use index2minute
-          ClockTime time = index2minute(local_t);
+          // Level 1 (minute): use L1_to_Clock
+          ClockTime time = L1_to_Clock(local_t);
           hour = time.hour;
         } else {
-          // Level 2 (hour): use index2hour (returns hour directly)
-          hour = index2hour(local_t);
+          // Level 2 (hour): use L2_to_Clock (returns hour directly)
+          hour = L2_to_Clock(local_t);
         }
 
         // Zero-copy pointers into month tensor
@@ -218,8 +218,8 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
           {
             auto &asset_bars = day_fc.asset_bars[a];
             if (level == 0) {
-              // L0 秒级 → 分钟级 OHLC (use FeaturesDefine.hpp)
-              size_t min_idx = tick2minute(local_t);
+              // L0 秒级 → 分钟级 OHLC
+              size_t min_idx = L0_to_L1(local_t);
               assert(min_idx < 255);
               asset_bars[min_idx].update(val);
             } else if (level == 1) {
@@ -227,9 +227,9 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
               assert(local_t < 255);
               asset_bars[local_t].update(val);
             } else {
-              // L2 小时级 → 展开到分钟范围 (use FeaturesDefine.hpp)
-              size_t min_start = hour2minute(local_t);
-              size_t min_end = hour2minute(local_t + 1);
+              // L2 小时级 → 展开到分钟范围
+              size_t min_start = L2_to_L1(local_t);
+              size_t min_end = L2_to_L1(local_t + 1);
               for (size_t m = min_start; m < min_end; ++m) {
                 asset_bars[m].update(val);
               }

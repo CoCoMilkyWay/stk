@@ -36,6 +36,8 @@ inline constexpr size_t DEBUG_PRINT_DATES_COUNT = sizeof(DEBUG_PRINT_DATES) / si
 // MAIN CLASS
 //========================================================================================
 
+static_assert(L2::L2_MIN_TIME_INTERVAL_MS < 60000, "interval >= 60s, need minute carry");
+
 class LimitOrderBook {
 
 public:
@@ -1205,7 +1207,29 @@ private:
     }
 
     last_depth_update_tick_ = curr_tick_;
-    next_depth_update_tick_ += (L2::L2_MIN_TIME_INTERVAL_MS / 10); // 不用新订单时间计算下一个阈值, 不然会造成为误差累计
+
+    // packed tick add: 跳过所有空slot, 避免稀疏数据导致连续触发
+    constexpr uint32_t INTERVAL_10MS = (L2::L2_MIN_TIME_INTERVAL_MS / 10) % 100;
+    constexpr uint32_t INTERVAL_S = (L2::L2_MIN_TIME_INTERVAL_MS / 10) / 100;
+    do {
+      uint32_t ms = next_depth_update_tick_ & 0xFF;
+      uint32_t s = (next_depth_update_tick_ >> 8) & 0xFF;
+      if constexpr (INTERVAL_10MS > 0) {
+        ms += INTERVAL_10MS;
+        if (ms >= 100) {
+          ms -= 100;
+          s++;
+        }
+      }
+      if constexpr (INTERVAL_S > 0) {
+        s += INTERVAL_S;
+        if (s >= 60) {
+          s -= 60;
+          next_depth_update_tick_ += (1 << 16);
+        }
+      }
+      next_depth_update_tick_ = (next_depth_update_tick_ & 0xFFFF0000) | (s << 8) | ms;
+    } while (next_depth_update_tick_ <= curr_tick_);
 
     return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= L2::LOB_DEPTH;
   }

@@ -13,7 +13,7 @@
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
-#include "features/FeaturesDefine.hpp"
+// #include "features/FeaturesDefine.hpp"
 #include "features/misc/misc.hpp"
 
 constexpr float MIN_PHASE_SCALE = 2.0f * PI / 60.0f;
@@ -26,7 +26,8 @@ public:
       : md_(md), min_buffer_(min_buffer), index_buffer_(index_buffer) {}
 
   void compute() {
-    float clock_min = static_cast<float>(index2minute(md_.l1_index).minute);
+    // float clock_min = static_cast<float>(L1_to_Clock(md_.l1_index).minute);
+    float clock_min = static_cast<float>(md_.l1_index);
     min_buffer_.push_back(std::sin(clock_min * MIN_PHASE_SCALE));
     index_buffer_.push_back(static_cast<float>(md_.l1_index));
   }

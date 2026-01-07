@@ -17,7 +17,7 @@ TimeAxisLUT::TimeAxisLUT() {
   for (size_t offset = 0; offset < OrderFlowConst::L0_CAPACITY; offset += OrderFlowConst::L0_TICK_INTERVAL) {
     l0_tick_offsets.push_back(offset);
     
-    ClockTime ct = index2tick(offset);
+    ClockTime ct = L0_to_Clock(offset);
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
     l0_tick_labels.push_back(buf);
@@ -302,7 +302,7 @@ OrderFlow::L0Cache::DepthSnapshot OrderFlow::L0Cache::query_depth(size_t plot_id
   result.day_idx = day.day_idx;
 
   // Convert tick index to time
-  ClockTime ct = index2tick(result.tick_idx);
+  ClockTime ct = L0_to_Clock(result.tick_idx);
   result.time.hour = ct.hour;
   result.time.minute = ct.minute;
   result.time.second = ct.second;

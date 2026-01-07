@@ -13,7 +13,7 @@
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
-#include "features/FeaturesDefine.hpp"
+// #include "features/FeaturesDefine.hpp"
 #include "features/misc/misc.hpp"
 
 constexpr float HOUR_PHASE_SCALE = 2.0f * PI / 24.0f;
@@ -26,7 +26,8 @@ public:
       : hd_(hd), hour_buffer_(hour_buffer), index_buffer_(index_buffer) {}
 
   void compute() {
-    float clock_hour = static_cast<float>(index2hour(hd_.l2_index));
+    // float clock_hour = static_cast<float>(L2_to_Clock(hd_.l2_index));
+    float clock_hour = static_cast<float>(hd_.l2_index);
     hour_buffer_.push_back(std::sin(clock_hour * HOUR_PHASE_SCALE));
     index_buffer_.push_back(static_cast<float>(hd_.l2_index));
   }

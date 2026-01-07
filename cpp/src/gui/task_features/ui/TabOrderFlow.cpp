@@ -32,7 +32,7 @@ namespace {
 // ============================================================================
 
 // Custom formatter converts X coordinate → time index → actual time
-// Example: X=900 → tick_idx=900 → index2tick(900) → 09:30
+// Example: X=900 → tick_idx=900 → L0_to_Clock(900) → 09:30
 static int L0TimeFormatter(double value, char *buff, int size, void * /*user_data*/) {
   // Extract time index from global_x
   // global_x = day_idx * L0_CAPACITY + tick_idx, where tick_idx is time index
@@ -40,7 +40,7 @@ static int L0TimeFormatter(double value, char *buff, int size, void * /*user_dat
   const size_t tick_idx = global_x % OrderFlowConst::L0_CAPACITY;
 
   // Convert time index (0-15299) to ClockTime
-  ClockTime ct = index2tick(tick_idx);
+  ClockTime ct = L0_to_Clock(tick_idx);
 
   // Format as HH:MM (matching TimeAxisLUT labels)
   return std::snprintf(buff, size, "%02d:%02d", ct.hour, ct.minute);

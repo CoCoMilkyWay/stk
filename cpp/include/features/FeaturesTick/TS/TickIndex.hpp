@@ -13,7 +13,7 @@
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
-#include "features/FeaturesDefine.hpp"
+// #include "features/FeaturesDefine.hpp"
 #include "features/misc/misc.hpp"
 
 constexpr float SEC_PHASE_SCALE = 2.0f * PI / 60.0f;
@@ -26,7 +26,8 @@ public:
       : td_(td), sec_buffer_(sec_buffer), index_buffer_(index_buffer) {}
 
   void compute() {
-    float clock_sec = static_cast<float>(index2tick(td_.l0_index).second);
+    // float clock_sec = static_cast<float>(L0_to_Clock(td_.l0_index).second);
+    float clock_sec = static_cast<float>(td_.l0_index);
     sec_buffer_.push_back(std::sin(clock_sec * SEC_PHASE_SCALE));
     index_buffer_.push_back(static_cast<float>(td_.l0_index));
   }

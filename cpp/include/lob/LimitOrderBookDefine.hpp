@@ -29,7 +29,7 @@
 #define DEBUG_ORDER_PRINT 0         // Print every order processing
 #define DEBUG_ORDER_FLAGS_CREATE 0  // Print when order with special flags is created
 #define DEBUG_ORDER_FLAGS_RESOLVE 0 // Print when order with special flags is resolved/migrated
-#define DEBUG_BOOK_PRINT 0          // Print order book snapshot when effective TOB updated
+#define DEBUG_BOOK_PRINT 1          // Print order book snapshot when effective TOB updated
 #define DEBUG_BOOK_AS_AMOUNT 1      // 0: 股, 1: 1万元
 #define DEBUG_ANOMALY_PRINT 1       // Print max unmatched order with creation timestamp
 
