@@ -219,14 +219,11 @@ void RenderFilterBar(
     ImGui::EndCombo();
   }
 
-  // Count shown
+  // Count & panel toggle
   ImGui::SameLine();
-  ImGui::Text("  Showing: %zu / %zu", visible_count, total_count);
-
-  // Panel toggle
+  ImGui::Text("Showing:%zu/%zu", visible_count, total_count);
   ImGui::SameLine();
-  ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 150.0f);
-  if (ImGui::Button(state.show_cross_section_panel ? "Hide Panel" : "Show Panel")) {
+  if (ImGui::SmallButton(state.show_cross_section_panel ? "Hide" : "Show")) {
     state.show_cross_section_panel = !state.show_cross_section_panel;
   }
 }

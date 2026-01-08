@@ -7,6 +7,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <thread>
@@ -211,8 +212,8 @@ private:
   struct NetworkDynamicData {
     std::array<float, HISTORY_SAMPLES> rx_percent_history = {};
     std::array<float, HISTORY_SAMPLES> tx_percent_history = {};
-    long rx_bytes_prev = 0;
-    long tx_bytes_prev = 0;
+    uint64_t rx_bytes_prev = 0;
+    uint64_t tx_bytes_prev = 0;
     float rx_mbps_current = 0.0f;
     float tx_mbps_current = 0.0f;
     float rx_percent_current = 0.0f;
@@ -977,12 +978,8 @@ private:
 
     // Calculate speed (bytes per 100ms -> Mbps)
     if (net_data.rx_bytes_prev > 0) {
-      long long rx_diff = total_rx - net_data.rx_bytes_prev;
-      long long tx_diff = total_tx - net_data.tx_bytes_prev;
-
-      // Handle counter wrap-around
-      if (rx_diff < 0) rx_diff = 0;
-      if (tx_diff < 0) tx_diff = 0;
+      uint64_t rx_diff = (total_rx >= net_data.rx_bytes_prev) ? (total_rx - net_data.rx_bytes_prev) : 0;
+      uint64_t tx_diff = (total_tx >= net_data.tx_bytes_prev) ? (total_tx - net_data.tx_bytes_prev) : 0;
 
       net_data.rx_mbps_current = (rx_diff * 10.0f * 8.0f) / (1024.0f * 1024.0f);
       net_data.tx_mbps_current = (tx_diff * 10.0f * 8.0f) / (1024.0f * 1024.0f);
