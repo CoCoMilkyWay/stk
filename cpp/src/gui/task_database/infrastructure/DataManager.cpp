@@ -6,10 +6,11 @@
 #include "gui/task_database/infrastructure/BaostockPool.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "gui/util/Color.hpp"
-#include "shared/SharedData.hpp"
+#include "misc/cross_platform.hpp"
 #include "package/nlohmann/json.hpp"
-#include <boost/asio/steady_timer.hpp>
+#include "shared/SharedData.hpp"
 #include <algorithm>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+
 
 using json = nlohmann::json;
 
@@ -59,15 +61,15 @@ void DataManager::Log(const std::string &message, bool is_error) {
 // Data Access (delegated to SharedData::assetinfo)
 // ============================================================================
 
-const StockFactorMap& DataManager::get_stock_factor() const {
+const StockFactorMap &DataManager::get_stock_factor() const {
   return data_.assetinfo.get_stock_factor();
 }
 
-const StockInfoMap& DataManager::get_stock_info() const {
+const StockInfoMap &DataManager::get_stock_info() const {
   return data_.assetinfo.get_stock_info();
 }
 
-const StockDaysVec& DataManager::get_stock_days() const {
+const StockDaysVec &DataManager::get_stock_days() const {
   return data_.assetinfo.get_stock_days();
 }
 
@@ -78,12 +80,7 @@ const StockDaysVec& DataManager::get_stock_days() const {
 std::string DataManager::get_today_date() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   std::ostringstream oss;
   oss << std::put_time(&tm_now, "%Y-%m-%d");
@@ -94,12 +91,7 @@ std::string DataManager::get_date_from_days_ago(int days) const {
   auto now = std::chrono::system_clock::now();
   auto past = now - std::chrono::hours(24 * days);
   auto time_t_past = std::chrono::system_clock::to_time_t(past);
-  std::tm tm_past;
-#ifdef _WIN32
-  localtime_s(&tm_past, &time_t_past);
-#else
-  localtime_r(&time_t_past, &tm_past);
-#endif
+  std::tm tm_past = safe_localtime(&time_t_past);
 
   std::ostringstream oss;
   oss << std::put_time(&tm_past, "%Y-%m-%d");
@@ -114,12 +106,7 @@ std::string DataManager::increment_date(const std::string &date) const {
   auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
   time_point += std::chrono::hours(24);
   auto time_t_result = std::chrono::system_clock::to_time_t(time_point);
-  std::tm tm_result;
-#ifdef _WIN32
-  localtime_s(&tm_result, &time_t_result);
-#else
-  localtime_r(&time_t_result, &tm_result);
-#endif
+  std::tm tm_result = safe_localtime(&time_t_result);
 
   std::ostringstream oss;
   oss << std::put_time(&tm_result, "%Y-%m-%d");
@@ -146,12 +133,7 @@ std::string DataManager::get_last_trading_day() const {
 bool DataManager::should_run_weekly_update() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   int weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
   if (weekday != data_.config.baostock_weekly_update_day) {
@@ -188,7 +170,7 @@ void DataManager::deduplicate_and_sort_days() {
   auto it = std::unique(data_.assetinfo.mutable_stock_days().rbegin(), data_.assetinfo.mutable_stock_days().rend(),
                         [](const auto &a, const auto &b) { return a[0] == b[0]; });
   data_.assetinfo.mutable_stock_days().erase(data_.assetinfo.mutable_stock_days().begin(), it.base());
-  
+
   // Rebuild trading days cache after modification
   data_.assetinfo.rebuild_cache();
 }
@@ -266,7 +248,7 @@ awaitable<bool> DataManager::initialize() {
     auto client = std::make_shared<BaostockClient>(io_context_);
     pool_->clients_.push_back(client);
   }
-  
+
   session_status_ = BaostockSessionStatus::Idle;
   session_query_count_ = 0;
   Log("[DataManager] Pool created (login deferred to first use)");
@@ -456,26 +438,26 @@ awaitable<void> DataManager::set_stock_codes(const std::vector<std::string> &cod
 
 awaitable<void> DataManager::load_stock_factor() {
   data_.assetinfo.load_stock_factor_from_json(data_.config.config_dir, data_.config);
-  Log(std::format("Loaded stock_factor.json: {} stocks", 
+  Log(std::format("Loaded stock_factor.json: {} stocks",
                   data_.assetinfo.get_stock_factor().size()));
   co_return;
 }
 
 awaitable<void> DataManager::load_stock_info() {
   data_.assetinfo.load_stock_info_from_json(data_.config.config_dir, data_.config);
-  Log(std::format("Loaded stock_info.json: {} stocks", 
+  Log(std::format("Loaded stock_info.json: {} stocks",
                   data_.assetinfo.get_stock_info().size()));
-  
+
   // Sync AssetItem fields from updated AssetInfo
   data_.asset.sync_from_asset_info(data_.assetinfo.get_stock_info());
   Log("Synced AssetItem fields from AssetInfo");
-  
+
   co_return;
 }
 
 awaitable<void> DataManager::load_stock_days() {
   data_.assetinfo.load_stock_days_from_json(data_.config.config_dir, data_.config);
-  Log(std::format("Loaded stock_days.json: {} days", 
+  Log(std::format("Loaded stock_days.json: {} days",
                   data_.assetinfo.get_stock_days().size()));
   co_return;
 }
@@ -489,11 +471,11 @@ awaitable<void> DataManager::save_stock_factor() {
 awaitable<void> DataManager::save_stock_info() {
   data_.assetinfo.save_stock_info_to_json(data_.config.config_dir, data_.config);
   Log("Saved stock_info.json");
-  
+
   // Sync AssetItem fields from updated AssetInfo
   data_.asset.sync_from_asset_info(data_.assetinfo.get_stock_info());
   Log("Synced AssetItem fields from AssetInfo");
-  
+
   co_return;
 }
 
@@ -742,7 +724,7 @@ awaitable<void> DataManager::update_stock_factor(bool skip_login, bool skip_logo
 
             ++active_workers_;
             report_progress();
-            
+
             auto result = co_await task_opt->executor(*client);
 
             if (result.success()) {
@@ -950,7 +932,7 @@ awaitable<void> DataManager::update_stock_info_weekly(bool skip_days, bool skip_
 
             ++active_workers_;
             report_progress();
-            
+
             auto result = co_await task_opt->executor(*client);
 
             if (result.success()) {
@@ -1147,7 +1129,7 @@ awaitable<void> DataManager::update_stock_info_daily(bool skip_days, bool skip_l
 
             ++active_workers_;
             report_progress();
-            
+
             auto result = co_await task_opt->executor(*client);
 
             if (result.success()) {
@@ -1500,12 +1482,7 @@ IntegrityResult DataManager::check_all_integrity(const std::string &l2_database_
 std::string DataManager::get_next_update_time_weekly() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   int current_weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
   int days_until_monday = (data_.config.baostock_weekly_update_day - current_weekday + 7) % 7;
@@ -1516,12 +1493,7 @@ std::string DataManager::get_next_update_time_weekly() const {
 
   auto next_update = now + std::chrono::hours(24 * days_until_monday);
   auto time_t_next = std::chrono::system_clock::to_time_t(next_update);
-  std::tm tm_next;
-#ifdef _WIN32
-  localtime_s(&tm_next, &time_t_next);
-#else
-  localtime_r(&time_t_next, &tm_next);
-#endif
+  std::tm tm_next = safe_localtime(&time_t_next);
 
   std::ostringstream oss;
   oss << std::put_time(&tm_next, "%Y-%m-%d");
@@ -1542,14 +1514,8 @@ std::string DataManager::get_next_update_time_daily() const {
 
 float DataManager::get_update_progress_weekly() const {
   auto now = std::chrono::system_clock::now();
-
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   int current_weekday = (tm_now.tm_wday == 0) ? 7 : tm_now.tm_wday;
   int days_since_monday = (current_weekday - data_.config.baostock_weekly_update_day + 7) % 7;
@@ -1560,12 +1526,7 @@ float DataManager::get_update_progress_weekly() const {
 float DataManager::get_update_progress_daily() const {
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   float hours_elapsed = tm_now.tm_hour + tm_now.tm_min / 60.0;
   return (hours_elapsed / 24.0) * 100.0;

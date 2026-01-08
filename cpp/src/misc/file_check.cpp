@@ -1,4 +1,5 @@
 #include "misc/file_check.hpp"
+#include "misc/cross_platform.hpp"
 
 #include <cctype>
 #include <cstdlib>
@@ -45,11 +46,7 @@ bool is_valid_number_string(const std::string &str, size_t expected_len) {
 
 std::pair<bool, std::string> check_single_archive_structure(const std::string &archive_path) {
   std::string cmd = "unrar lb \"" + archive_path + "\" 2>/dev/null | head -1";
-#ifdef _WIN32
-  FILE *pipe = _popen(cmd.c_str(), "r");
-#else
-  FILE *pipe = popen(cmd.c_str(), "r");
-#endif
+  FILE *pipe = safe_popen(cmd.c_str(), "r");
   if (!pipe) {
     return {false, "cannot read archive"};
   }
@@ -62,11 +59,7 @@ std::pair<bool, std::string> check_single_archive_structure(const std::string &a
       first_entry.pop_back();
     }
   }
-#ifdef _WIN32
-  _pclose(pipe);
-#else
-  pclose(pipe);
-#endif
+  safe_pclose(pipe);
 
   if (first_entry.empty()) {
     return {false, "empty archive"};

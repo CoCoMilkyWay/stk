@@ -1,4 +1,5 @@
 #include "misc/logging.hpp"
+#include "misc/cross_platform.hpp"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -30,13 +31,8 @@ static std::string get_timestamp() {
                 now.time_since_epoch()) %
             1000;
 
-  std::tm tm_buf;
-#ifdef _WIN32
-  localtime_s(&tm_buf, &time_t);
-#else
-  localtime_r(&time_t, &tm_buf);
-#endif
-  
+  std::tm tm_buf = safe_localtime(&time_t);
+
   std::stringstream ss;
   ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
   ss << '.' << std::setfill('0') << std::setw(3) << ms.count();

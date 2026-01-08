@@ -1,5 +1,6 @@
 // Baostock Service Implementation
 #include "gui/task_database/services/BaostockService.hpp"
+#include "misc/cross_platform.hpp"
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -363,12 +364,7 @@ void BaostockService::update_stock_factor_state() {
   // Update timestamp
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   std::ostringstream oss;
   oss << std::put_time(&tm_now, "%Y-%m-%d %H:%M:%S");
@@ -398,12 +394,7 @@ void BaostockService::update_stock_info_state() {
   // Update timestamp
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   std::ostringstream oss;
   oss << std::put_time(&tm_now, "%Y-%m-%d %H:%M:%S");
@@ -443,12 +434,7 @@ void BaostockService::update_stock_days_state() {
   // Update timestamp
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_now;
-#ifdef _WIN32
-  localtime_s(&tm_now, &time_t_now);
-#else
-  localtime_r(&time_t_now, &tm_now);
-#endif
+  std::tm tm_now = safe_localtime(&time_t_now);
 
   std::ostringstream oss;
   oss << std::put_time(&tm_now, "%Y-%m-%d %H:%M:%S");

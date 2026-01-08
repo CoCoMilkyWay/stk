@@ -2,6 +2,7 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
+#include "misc/cross_platform.hpp"
 #include "shared/SharedData.hpp"
 #include <charconv>
 #include <chrono>
@@ -52,8 +53,10 @@ private:
       if (strlen(date_buf) >= 10) {
         auto parts = std::string_view(date_buf) | std::views::split('-');
         auto it = parts.begin();
-        std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.year); ++it;
-        std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.month); ++it;
+        std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.year);
+        ++it;
+        std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.month);
+        ++it;
         std::from_chars((*it).data(), (*it).data() + std::ranges::distance(*it), state.day);
       }
       state.is_open = true;
@@ -155,12 +158,7 @@ private:
       ImGui::Separator();
       if (ImGui::Button("今天", ImVec2(80, 0))) {
         auto now = std::time(nullptr);
-        std::tm tm_now;
-#ifdef _WIN32
-        localtime_s(&tm_now, &now);
-#else
-        localtime_r(&now, &tm_now);
-#endif
+        std::tm tm_now = safe_localtime(&now);
         state.year = tm_now.tm_year + 1900;
         state.month = tm_now.tm_mon + 1;
         state.day = tm_now.tm_mday;
