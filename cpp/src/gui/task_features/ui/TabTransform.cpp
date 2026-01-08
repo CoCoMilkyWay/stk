@@ -165,9 +165,9 @@ static void RenderStationarityTooltip() {
     ImGui::TableSetColumnIndex(1);
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "不稳定");
     ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "❌");
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N");
     ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "✅");
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
 
     // Row: 过度平稳风险
     ImGui::TableNextRow();
@@ -207,11 +207,11 @@ static void RenderStationarityTooltip() {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextUnformatted("可逆性");
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "❌");
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N");
     ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "✅");
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
     ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "✅");
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
 
     // Row: ACF 典型形态
     ImGui::TableNextRow();
@@ -240,11 +240,11 @@ static void RenderStationarityTooltip() {
     ImGui::TableSetColumnIndex(0);
     ImGui::TextUnformatted("是否严格 I(0)");
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "❌");
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N");
     ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "✅");
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
     ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "近似 ✅");
+    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "~Y");
 
     ImGui::EndTable();
   }
