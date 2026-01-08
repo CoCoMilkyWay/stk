@@ -153,6 +153,7 @@ set(SOURCES
     ../../src/shared/Feature.cpp
     ../../src/shared/Dist.cpp
     ../../src/shared/TimeSeries.cpp
+    ../../src/shared/Transform.cpp
     ../../src/shared/TaskState.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/file_check.cpp
@@ -184,6 +185,7 @@ set(SOURCES
     ../../src/gui/task_features/services/ComputeService.cpp
     ../../src/gui/task_features/services/DistService.cpp
     ../../src/gui/task_features/services/TimeSeriesService.cpp
+    ../../src/gui/task_features/services/TransformService.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
     ../../src/gui/task_features/ui/TabTransform.cpp
@@ -247,6 +249,7 @@ set(HEADERS
     ../../include/shared/Feature.hpp
     ../../include/shared/Dist.hpp
     ../../include/shared/TimeSeries.hpp
+    ../../include/shared/Transform.hpp
     ../../include/shared/TaskState.hpp
     ../../include/shared/SharedData.hpp
     ../../include/gui/Config.hpp

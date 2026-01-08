@@ -8,6 +8,7 @@
 #include "./OrderFlow.hpp"
 #include "./TaskState.hpp"
 #include "./TimeSeries.hpp"
+#include "./Transform.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 
@@ -21,6 +22,7 @@ struct SharedData {
   OrderFlow orderflow;
   Dist dist;
   TimeSeries timeseries;
+  Transform transform;
 
   CoroManager coromgr;
   TaskTerminal terminal;

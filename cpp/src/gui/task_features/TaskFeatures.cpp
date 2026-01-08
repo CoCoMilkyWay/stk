@@ -5,6 +5,7 @@
 #include "gui/task_features/services/DataLoader.hpp"
 #include "gui/task_features/services/DistService.hpp"
 #include "gui/task_features/services/TimeSeriesService.hpp"
+#include "gui/task_features/services/TransformService.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
 #include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
@@ -43,6 +44,7 @@ struct TaskFeaturesState {
   std::unique_ptr<Features::DataLoader> data_loader;
   std::unique_ptr<Features::DistService> dist_service;
   std::unique_ptr<Features::TimeSeriesService> timeseries_service;
+  std::unique_ptr<Features::TransformService> transform_service;
 
   // UI State
   int selected_tab = 0;
@@ -58,6 +60,7 @@ struct TaskFeaturesState {
   bool orderflow_tab_was_active = false;
   bool dist_tab_was_active = false;
   bool timeseries_tab_was_active = false;
+  bool transform_tab_was_active = false;
 
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
@@ -112,6 +115,9 @@ TaskHandle CreateFeaturesTask() {
     }
     if (!state->timeseries_service) {
       state->timeseries_service = std::make_unique<Features::TimeSeriesService>(data.config.feature_dir);
+    }
+    if (!state->transform_service) {
+      state->transform_service = std::make_unique<Features::TransformService>(data.config.feature_dir);
     }
 
     // Update features task state
@@ -214,12 +220,12 @@ TaskHandle CreateFeaturesTask() {
       // Order must match TabIdx enum: Feature, Compute, Transform, Distribution, TimeSeries, OrderFlow
       auto is_locked = [&](int tab) { return state->tabs_locked && state->locked_tab != tab; };
       const bool disable[TAB_COUNT] = {
-          is_locked(TAB_FEATURE),                                   // Feature: always accessible
-          !db_ready || is_locked(TAB_COMPUTE),                      // Compute: needs db
-          is_locked(TAB_TRANSFORM),                                 // Transform: always accessible
+          is_locked(TAB_FEATURE),                                     // Feature: always accessible
+          !db_ready || is_locked(TAB_COMPUTE),                        // Compute: needs db
+          is_locked(TAB_TRANSFORM),                                   // Transform: always accessible
           !db_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs db + selection
           !db_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs db + selection
-          !db_ready || is_locked(TAB_ORDERFLOW),                    // OrderFlow: needs db
+          !db_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs db
       };
 
       // Tab: Feature
@@ -249,14 +255,23 @@ TaskHandle CreateFeaturesTask() {
       // Tab: Transform
       if (disable[TAB_TRANSFORM])
         ImGui::BeginDisabled();
-      if (ImGui::BeginTabItem("Transform")) {
+      bool transform_tab_open = ImGui::BeginTabItem("Transform");
+      if (transform_tab_open) {
         state->selected_tab = TAB_TRANSFORM;
         ImGui::Spacing();
-        Features::RenderTabTransform(state->transform_ui_state);
+        Features::RenderTabTransform(state->transform_service.get(), data, state->transform_ui_state);
         ImGui::EndTabItem();
       }
       if (disable[TAB_TRANSFORM])
         ImGui::EndDisabled();
+
+      // Transform lifecycle
+      if (transform_tab_open && !state->transform_tab_was_active) {
+        state->transform_tab_was_active = true;
+      } else if (!transform_tab_open && state->transform_tab_was_active) {
+        Features::StopTabTransform(state->transform_service.get(), data);
+        state->transform_tab_was_active = false;
+      }
 
       // Tab: Distribution
       if (disable[TAB_DISTRIBUTION])
@@ -388,6 +403,7 @@ TaskHandle CreateFeaturesTask() {
     state->data_loader.reset();
     state->dist_service.reset();
     state->timeseries_service.reset();
+    state->transform_service.reset();
   };
 
   return handle;
