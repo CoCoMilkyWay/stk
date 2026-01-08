@@ -186,9 +186,10 @@ set(SOURCES
     ../../src/gui/task_features/services/TimeSeriesService.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
-    ../../src/gui/task_features/ui/TabOrderFlow.cpp
+    ../../src/gui/task_features/ui/TabTransform.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/ui/TabTimeSeries.cpp
+    ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/TaskFeatures.cpp
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
@@ -301,8 +302,10 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
-    ../../src/gui/task_features/ui/TabOrderFlow.cpp
+    ../../src/gui/task_features/ui/TabTransform.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
+    ../../src/gui/task_features/ui/TabTimeSeries.cpp
+    ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
     PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"

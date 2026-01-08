@@ -10,6 +10,7 @@
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabTimeSeries.hpp"
+#include "gui/task_features/ui/TabTransform.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/affinity.hpp"
 #include "shared/SharedData.hpp"
@@ -17,6 +18,20 @@
 #include "imgui.h"
 
 namespace GUI::Tasks {
+
+// ============================================================================
+// Tab Index Enum
+// ============================================================================
+
+enum TabIdx {
+  TAB_FEATURE = 0,
+  TAB_COMPUTE,
+  TAB_TRANSFORM,
+  TAB_DISTRIBUTION,
+  TAB_TIMESERIES,
+  TAB_ORDERFLOW,
+  TAB_COUNT
+};
 
 // ============================================================================
 // Task Features State
@@ -35,6 +50,7 @@ struct TaskFeaturesState {
   bool tabs_locked = false;
   Features::FeatureUIState feature_ui_state;
   Features::ComputeState compute_state;
+  Features::TransformUIState transform_ui_state;
   Features::DistUIState dist_ui_state;
   Features::TimeSeriesUIState timeseries_ui_state;
 
@@ -187,7 +203,7 @@ TaskHandle CreateFeaturesTask() {
           state->tabs_locked = true;
           state->locked_tab = state->selected_tab;
           if (state->locked_tab < 0)
-            state->locked_tab = 0;
+            state->locked_tab = TAB_FEATURE;
         }
       } else {
         state->tabs_locked = false;
@@ -195,70 +211,64 @@ TaskHandle CreateFeaturesTask() {
       }
 
       // Pre-compute all tab disable states (whitelist mechanism)
-      const bool disable[5] = {
-          state->tabs_locked && state->locked_tab != 0,                                  // Feature: always accessible
-          !db_ready || (state->tabs_locked && state->locked_tab != 1),                   // Compute: needs db
-          !db_ready || (state->tabs_locked && state->locked_tab != 2),                   // OrderFlow: needs db
-          !db_ready || !has_selection || (state->tabs_locked && state->locked_tab != 3), // Distribution: needs db + selection
-          !db_ready || !has_selection || (state->tabs_locked && state->locked_tab != 4), // TimeSeries: needs db + selection
+      // Order must match TabIdx enum: Feature, Compute, Transform, Distribution, TimeSeries, OrderFlow
+      auto is_locked = [&](int tab) { return state->tabs_locked && state->locked_tab != tab; };
+      const bool disable[TAB_COUNT] = {
+          is_locked(TAB_FEATURE),                                   // Feature: always accessible
+          !db_ready || is_locked(TAB_COMPUTE),                      // Compute: needs db
+          is_locked(TAB_TRANSFORM),                                 // Transform: always accessible
+          !db_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs db + selection
+          !db_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs db + selection
+          !db_ready || is_locked(TAB_ORDERFLOW),                    // OrderFlow: needs db
       };
 
-      // Tab 0: Feature
-      if (disable[0])
+      // Tab: Feature
+      if (disable[TAB_FEATURE])
         ImGui::BeginDisabled();
       if (ImGui::BeginTabItem("Feature")) {
-        state->selected_tab = 0;
+        state->selected_tab = TAB_FEATURE;
         ImGui::Spacing();
         Features::RenderTabFeature(data, state->feature_ui_state);
         ImGui::EndTabItem();
       }
-      if (disable[0])
+      if (disable[TAB_FEATURE])
         ImGui::EndDisabled();
 
-      // Tab 1: Compute
-      if (disable[1])
+      // Tab: Compute
+      if (disable[TAB_COMPUTE])
         ImGui::BeginDisabled();
       if (ImGui::BeginTabItem("Compute")) {
-        state->selected_tab = 1;
+        state->selected_tab = TAB_COMPUTE;
         ImGui::Spacing();
         Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset, data.config);
         ImGui::EndTabItem();
       }
-      if (disable[1])
+      if (disable[TAB_COMPUTE])
         ImGui::EndDisabled();
 
-      // Tab 2: OrderFlow
-      if (disable[2])
+      // Tab: Transform
+      if (disable[TAB_TRANSFORM])
         ImGui::BeginDisabled();
-      bool orderflow_tab_open = ImGui::BeginTabItem("OrderFlow");
-      if (orderflow_tab_open) {
-        state->selected_tab = 2;
+      if (ImGui::BeginTabItem("Transform")) {
+        state->selected_tab = TAB_TRANSFORM;
         ImGui::Spacing();
-        Features::RenderTabOrderFlow(state->data_loader.get(), data);
+        Features::RenderTabTransform(state->transform_ui_state);
         ImGui::EndTabItem();
       }
-      if (disable[2])
+      if (disable[TAB_TRANSFORM])
         ImGui::EndDisabled();
 
-      // OrderFlow lifecycle
-      if (orderflow_tab_open && !state->orderflow_tab_was_active) {
-        state->orderflow_tab_was_active = true;
-      } else if (!orderflow_tab_open && state->orderflow_tab_was_active) {
-        Features::StopTabOrderFlow(state->data_loader.get(), data);
-        state->orderflow_tab_was_active = false;
-      }
-
-      // Tab 3: Distribution
-      if (disable[3])
+      // Tab: Distribution
+      if (disable[TAB_DISTRIBUTION])
         ImGui::BeginDisabled();
       bool dist_tab_open = ImGui::BeginTabItem("Distribution");
       if (dist_tab_open) {
-        state->selected_tab = 3;
+        state->selected_tab = TAB_DISTRIBUTION;
         ImGui::Spacing();
         Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
         ImGui::EndTabItem();
       }
-      if (disable[3])
+      if (disable[TAB_DISTRIBUTION])
         ImGui::EndDisabled();
 
       // Distribution lifecycle
@@ -269,18 +279,18 @@ TaskHandle CreateFeaturesTask() {
         state->dist_tab_was_active = false;
       }
 
-      // Tab 4: TimeSeries
-      if (disable[4])
+      // Tab: TimeSeries
+      if (disable[TAB_TIMESERIES])
         ImGui::BeginDisabled();
       bool timeseries_tab_open = ImGui::BeginTabItem("TimeSeries");
       if (timeseries_tab_open) {
-        state->selected_tab = 4;
+        state->selected_tab = TAB_TIMESERIES;
         ImGui::Spacing();
         Features::RenderTabTimeSeries(state->timeseries_service.get(), data,
                                       state->timeseries_ui_state);
         ImGui::EndTabItem();
       }
-      if (disable[4])
+      if (disable[TAB_TIMESERIES])
         ImGui::EndDisabled();
 
       // TimeSeries lifecycle
@@ -290,6 +300,27 @@ TaskHandle CreateFeaturesTask() {
       } else if (!timeseries_tab_open && state->timeseries_tab_was_active) {
         Features::StopTabTimeSeries(state->timeseries_service.get(), data);
         state->timeseries_tab_was_active = false;
+      }
+
+      // Tab: OrderFlow
+      if (disable[TAB_ORDERFLOW])
+        ImGui::BeginDisabled();
+      bool orderflow_tab_open = ImGui::BeginTabItem("OrderFlow");
+      if (orderflow_tab_open) {
+        state->selected_tab = TAB_ORDERFLOW;
+        ImGui::Spacing();
+        Features::RenderTabOrderFlow(state->data_loader.get(), data);
+        ImGui::EndTabItem();
+      }
+      if (disable[TAB_ORDERFLOW])
+        ImGui::EndDisabled();
+
+      // OrderFlow lifecycle
+      if (orderflow_tab_open && !state->orderflow_tab_was_active) {
+        state->orderflow_tab_was_active = true;
+      } else if (!orderflow_tab_open && state->orderflow_tab_was_active) {
+        Features::StopTabOrderFlow(state->data_loader.get(), data);
+        state->orderflow_tab_was_active = false;
       }
 
       // Auto-trigger TimeSeries compute
