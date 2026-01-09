@@ -24,76 +24,115 @@
 
 namespace math::stationary {
 
-// 单次差分
-inline void diff_once(std::span<const float> in, std::span<float> out) {
-  const size_t n = in.size();
-  assert(out.size() >= n);
-  
-  if (n == 0) return;
-  
-  out[0] = 0.0f; // 第一个点无差分
-  for (size_t i = 1; i < n; ++i) {
+// 一阶差分 (循环展开, 4x unroll)
+inline void int_diff_1(const float *__restrict in, float *__restrict out, size_t n) {
+  assert(n > 0);
+
+  out[0] = 0.0f;
+
+  size_t i = 1;
+  const size_t n4 = ((n - 1) / 4) * 4 + 1;
+
+  // 主循环: 4x展开
+  for (; i < n4; i += 4) [[likely]] {
+    out[i] = in[i] - in[i - 1];
+    out[i + 1] = in[i + 1] - in[i];
+    out[i + 2] = in[i + 2] - in[i + 1];
+    out[i + 3] = in[i + 3] - in[i + 2];
+  }
+
+  // 尾部处理
+  for (; i < n; ++i) [[unlikely]] {
     out[i] = in[i] - in[i - 1];
   }
 }
 
-// 整数阶差分
-inline void int_diff(std::span<const float> in, std::span<float> out, int order) {
-  assert(in.size() == out.size());
+// 二阶差分 (循环展开, 4x unroll)
+inline void int_diff_2(const float *__restrict in, float *__restrict out, size_t n) {
+  assert(n > 0);
+
+  out[0] = 0.0f;
+  if (n > 1) [[likely]]
+    out[1] = 0.0f;
+
+  if (n <= 2) [[unlikely]]
+    return;
+
+  size_t i = 2;
+  const size_t n4 = ((n - 2) / 4) * 4 + 2;
+
+  // 主循环: 4x展开
+  for (; i < n4; i += 4) [[likely]] {
+    out[i] = in[i] - 2.0f * in[i - 1] + in[i - 2];
+    out[i + 1] = in[i + 1] - 2.0f * in[i] + in[i - 1];
+    out[i + 2] = in[i + 2] - 2.0f * in[i + 1] + in[i];
+    out[i + 3] = in[i + 3] - 2.0f * in[i + 2] + in[i + 1];
+  }
+
+  // 尾部处理
+  for (; i < n; ++i) [[unlikely]] {
+    out[i] = in[i] - 2.0f * in[i - 1] + in[i - 2];
+  }
+}
+
+// 三阶差分 (循环展开, 4x unroll)
+inline void int_diff_3(const float *__restrict in, float *__restrict out, size_t n) {
+  assert(n > 0);
+
+  out[0] = 0.0f;
+  if (n > 1) [[likely]]
+    out[1] = 0.0f;
+  if (n > 2) [[likely]]
+    out[2] = 0.0f;
+
+  if (n <= 3) [[unlikely]]
+    return;
+
+  size_t i = 3;
+  const size_t n4 = ((n - 3) / 4) * 4 + 3;
+
+  // 主循环: 4x展开
+  for (; i < n4; i += 4) [[likely]] {
+    out[i] = in[i] - 3.0f * in[i - 1] + 3.0f * in[i - 2] - in[i - 3];
+    out[i + 1] = in[i + 1] - 3.0f * in[i] + 3.0f * in[i - 1] - in[i - 2];
+    out[i + 2] = in[i + 2] - 3.0f * in[i + 1] + 3.0f * in[i] - in[i - 1];
+    out[i + 3] = in[i + 3] - 3.0f * in[i + 2] + 3.0f * in[i + 1] - in[i];
+  }
+
+  // 尾部处理
+  for (; i < n; ++i) [[unlikely]] {
+    out[i] = in[i] - 3.0f * in[i - 1] + 3.0f * in[i - 2] - in[i - 3];
+  }
+}
+
+// 整数阶差分 (分派到专用函数)
+inline void int_diff(const float *__restrict in, float *__restrict out, size_t n, int order) {
   assert(order >= 0 && order <= 3);
 
-  const size_t n = in.size();
-  if (n == 0) return;
-
-  if (order == 0) {
-    // 无差分
-    for (size_t i = 0; i < n; ++i) {
-      out[i] = in[i];
-    }
+  if (n == 0) [[unlikely]]
     return;
-  }
-
-  // 差分系数 (二项式展开)
-  // d=1: [1, -1]
-  // d=2: [1, -2, 1]
-  // d=3: [1, -3, 3, -1]
-  static constexpr float COEF_1[] = {1.0f, -1.0f};
-  static constexpr float COEF_2[] = {1.0f, -2.0f, 1.0f};
-  static constexpr float COEF_3[] = {1.0f, -3.0f, 3.0f, -1.0f};
-
-  const float *coef = nullptr;
-  size_t coef_len = 0;
 
   switch (order) {
+  case 0:
+    for (size_t i = 0; i < n; ++i)
+      out[i] = in[i];
+    break;
   case 1:
-    coef = COEF_1;
-    coef_len = 2;
+    int_diff_1(in, out, n);
     break;
   case 2:
-    coef = COEF_2;
-    coef_len = 3;
+    int_diff_2(in, out, n);
     break;
   case 3:
-    coef = COEF_3;
-    coef_len = 4;
+    int_diff_3(in, out, n);
     break;
-  default:
-    return;
   }
+}
 
-  // 应用差分
-  for (size_t i = 0; i < n; ++i) {
-    if (i < coef_len - 1) {
-      // 边界: 部分差分或置零
-      out[i] = 0.0f;
-    } else {
-      float sum = 0.0f;
-      for (size_t j = 0; j < coef_len; ++j) {
-        sum += coef[j] * in[i - j];
-      }
-      out[i] = sum;
-    }
-  }
+// span版本
+inline void int_diff(std::span<const float> in, std::span<float> out, int order) {
+  assert(in.size() == out.size());
+  int_diff(in.data(), out.data(), in.size(), order);
 }
 
 } // namespace math::stationary

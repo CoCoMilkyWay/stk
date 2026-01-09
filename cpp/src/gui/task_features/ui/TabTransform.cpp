@@ -393,13 +393,6 @@ static void Render_StatusInfo(SharedData &data) {
   auto &tf = data.transform;
   int level = data.feature.selection.selected_level;
 
-  // Status (左边，长度可变)
-  ImGui::TextColored(StatusColor(tf.compute.status), "%s", StatusText(tf.compute.status));
-  if (tf.compute.is_busy()) {
-    ImGui::SameLine(0, 0);
-    ImGui::Text(" %.0f%%", tf.compute.progress());
-  }
-
   // Level
   static const char *level_names[] = {"L0", "L1", "L2"};
   if (level >= 0 && level < 3) {
@@ -420,6 +413,14 @@ static void Render_StatusInfo(SharedData &data) {
     }
   } else {
     ImGui::TextDisabled("无特征");
+  }
+  ImGui::SameLine(0, 15);
+
+  // Status (左边，长度可变)
+  ImGui::TextColored(StatusColor(tf.compute.status), "%s", StatusText(tf.compute.status));
+  if (tf.compute.is_busy()) {
+    ImGui::SameLine(0, 0);
+    ImGui::Text(" %.0f%%", tf.compute.progress());
   }
 }
 
@@ -474,7 +475,7 @@ static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
   ImGui::SameLine(0, 10);
   ImGui::BeginDisabled(is_all || n_assets == 0);
   {
-    ImGui::SetNextItemWidth(250);
+    ImGui::SetNextItemWidth(300);
     int sel = tf.display.selected_asset;
     if (sel < 0)
       sel = 0;
@@ -493,8 +494,8 @@ static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
 
   // Time slider (显示 YY/MM/DD)
   ImGui::SameLine(0, 20);
+  ImGui::SetNextItemWidth(300);
   if (!tf.blocks.empty()) {
-    ImGui::SetNextItemWidth(150);
     int block_idx = tf.selected_block;
 
     // 格式化为 YY/MM/DD
@@ -518,6 +519,12 @@ static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
         service->RequestCompute();
       }
     }
+  } else {
+    // 保持占位
+    ImGui::BeginDisabled();
+    int dummy = 0;
+    ImGui::SliderInt("##TimeSlider", &dummy, 0, 0, "---");
+    ImGui::EndDisabled();
   }
 
   return changed;
@@ -538,7 +545,7 @@ static bool RenderStationaryConfig(Transform::Params &config) {
   }
 
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(120);
+  ImGui::SetNextItemWidth(150);
   static const char *st_items[] = {"无", "MA去趋势", "整数差分", "分数差分"};
   int method = static_cast<int>(config.stationary_method);
   if (ImGui::Combo("##st_method", &method, st_items, IM_ARRAYSIZE(st_items))) {
@@ -550,26 +557,26 @@ static bool RenderStationaryConfig(Transform::Params &config) {
   switch (config.stationary_method) {
   case Transform::StationaryMethod::MA_DETREND:
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(300);
     if (ImGui::SliderInt("窗口##ma", &config.ma_window, 10, 500)) {
       changed = true;
     }
     break;
   case Transform::StationaryMethod::INT_DIFF:
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(200);
     if (ImGui::SliderInt("阶数##diff", &config.diff_order, 1, 3)) {
       changed = true;
     }
     break;
   case Transform::StationaryMethod::FRAC_DIFF:
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(200);
     if (ImGui::SliderFloat("d##frac", &config.frac_d, 0.0f, 1.0f, "%.2f")) {
       changed = true;
     }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(300);
     if (ImGui::SliderInt("窗口##frac", &config.frac_window, 10, 500)) {
       changed = true;
     }
@@ -590,7 +597,7 @@ static bool RenderNormConfig(Transform::Params &config) {
 
   ImGui::Text("归一化");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(100);
+  ImGui::SetNextItemWidth(150);
 
   // Combo需要连续索引，建立映射
   static const struct {
@@ -649,7 +656,7 @@ static bool RenderNormConfig(Transform::Params &config) {
 
   if (needs_clip) {
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(250);
     if (ImGui::SliderFloat("k##clip", &config.clip_k, 1.0f, 10.0f, "%.1f")) {
       changed = true;
     }
@@ -657,7 +664,7 @@ static bool RenderNormConfig(Transform::Params &config) {
 
   if (needs_winsor) {
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(250);
     if (ImGui::SliderFloat("pct##win", &config.winsor_pct, 0.01f, 0.25f, "%.2f")) {
       changed = true;
     }
@@ -665,7 +672,7 @@ static bool RenderNormConfig(Transform::Params &config) {
 
   if (needs_power) {
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(250);
     if (ImGui::SliderFloat("α##pow", &config.power_alpha, 0.1f, 2.0f, "%.2f")) {
       changed = true;
     }
@@ -760,12 +767,10 @@ static void RenderStationarityHeatmap(const Transform &tf, const Asset &asset) {
 // ============================================================================
 
 static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
-  if (tf.results.empty())
-    return;
-
   const size_t n_assets = tf.results.size();
   const int sel = tf.display.selected_asset; // -1 = ALL
   const bool show_all = (sel < 0);
+  const bool has_data = !tf.results.empty();
 
   // 动态计算高度: 剩余高度的45%给特征图, 45%给底部图, 10%留白
   float avail_h = ImGui::GetContentRegionAvail().y;
@@ -775,7 +780,7 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   ImGui::Text("原始特征");
 
-  if (need_autofit)
+  if (need_autofit && has_data)
     ImPlot::SetNextAxesToFit();
 
   if (ImPlot::BeginPlot("##Raw", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
@@ -802,7 +807,7 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
   ImGui::BeginChild("ProcPlot", ImVec2(0, height), true);
   ImGui::Text("处理后特征");
 
-  if (need_autofit)
+  if (need_autofit && has_data)
     ImPlot::SetNextAxesToFit();
 
   if (ImPlot::BeginPlot("##Proc", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
@@ -836,15 +841,15 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level)
   const int sel = tf.display.selected_asset; // -1 = ALL
   const bool show_all = (sel < 0);
 
-  // 左: 每个 asset 的 PDF 叠加 (直接从 KLLcache 读取)
-  ImGui::BeginChild("PDFPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
-  ImGui::Text("资产分布 (n=%zu)", tf.results.size());
-
   size_t n_valid = 0;
   for (const auto &r : tf.results) {
     if (r.valid)
       ++n_valid;
   }
+
+  // 左: 每个 asset 的 PDF 叠加 (直接从 KLLcache 读取)
+  ImGui::BeginChild("PDFPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
+  ImGui::Text("资产分布 (n=%zu)", tf.results.size());
 
   if (need_autofit && n_valid > 0)
     ImPlot::SetNextAxesToFit();
@@ -1019,11 +1024,13 @@ void RenderTabTransform(TransformService *service, SharedData &data,
     }
   }
 
-  // 第一行: 状态 + 级别 + 特征 + 平稳化 + 归一化
+  // 第一行: 状态 + 级别 + 特征
   Render_StatusInfo(data);
-  ImGui::SameLine(0, 20);
+
+  // 第二行: 平稳化
   bool st_changed = RenderStationaryConfig(tf.params);
-  ImGui::SameLine(0, 20);
+
+  // 第三行: 归一化
   bool norm_changed = RenderNormConfig(tf.params);
 
   // 第二行: ADF/KPSS热力图

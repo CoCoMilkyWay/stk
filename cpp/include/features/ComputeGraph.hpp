@@ -93,8 +93,8 @@ public:
     CBuffer<float, L2::BLEN> MPC5_Skew_; // MPC5日内偏度 (夏普3.07)
 
     // --- 因子算子 ---
-    VOI<1> VOI1{BidPrice_, AskPrice_, BidAmt_, AskAmt_, DepthIndex_, VOI1_};
-    VOI<30> VOI30{BidPrice_, AskPrice_, BidAmt_, AskAmt_, DepthIndex_, VOI30_};
+    VOI<1> VOI1{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI1_};
+    VOI<30> VOI30{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI30_};
     OIR<5> OIR5{BidAmt_, AskAmt_, OIR5_};
     OIR<10> OIR10{BidAmt_, AskAmt_, OIR10_};
     SOIR<5, false> SOIR5{BidAmt_, AskAmt_, SOIR5_};
