@@ -444,61 +444,52 @@ static void RenderControlPanel(TransformService *service, SharedData &data,
 static bool RenderStationaryConfig(Transform::Config &config) {
   bool changed = false;
 
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "平稳化配置");
+  ImGui::Text("平稳化");
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered()) {
     RenderStationarityTooltip();
   }
-  ImGui::Separator();
 
-  // 方法选择
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(120);
+  static const char *st_items[] = {"无", "MA去趋势", "整数差分", "分数差分"};
   int method = static_cast<int>(config.stationary_method);
-  if (ImGui::RadioButton("无##st", &method, 0)) {
-    config.stationary_method = Transform::StationaryMethod::NONE;
+  if (ImGui::Combo("##st_method", &method, st_items, IM_ARRAYSIZE(st_items))) {
+    config.stationary_method = static_cast<Transform::StationaryMethod>(method);
     changed = true;
   }
-  if (ImGui::RadioButton("MA去趋势##st", &method, 1)) {
-    config.stationary_method = Transform::StationaryMethod::MA_DETREND;
-    changed = true;
-  }
-  if (config.stationary_method == Transform::StationaryMethod::MA_DETREND) {
-    ImGui::Indent();
-    ImGui::SetNextItemWidth(150);
+
+  // 按需显示参数
+  switch (config.stationary_method) {
+  case Transform::StationaryMethod::MA_DETREND:
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
     if (ImGui::SliderInt("窗口##ma", &config.ma_window, 10, 500)) {
       changed = true;
     }
-    ImGui::Unindent();
-  }
-
-  if (ImGui::RadioButton("整数差分##st", &method, 2)) {
-    config.stationary_method = Transform::StationaryMethod::INT_DIFF;
-    changed = true;
-  }
-  if (config.stationary_method == Transform::StationaryMethod::INT_DIFF) {
-    ImGui::Indent();
-    ImGui::SetNextItemWidth(150);
+    break;
+  case Transform::StationaryMethod::INT_DIFF:
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80);
     if (ImGui::SliderInt("阶数##diff", &config.diff_order, 1, 3)) {
       changed = true;
     }
-    ImGui::Unindent();
-  }
-
-  if (ImGui::RadioButton("分数差分##st", &method, 3)) {
-    config.stationary_method = Transform::StationaryMethod::FRAC_DIFF;
-    changed = true;
-  }
-  if (config.stationary_method == Transform::StationaryMethod::FRAC_DIFF) {
-    ImGui::Indent();
-    ImGui::SetNextItemWidth(150);
+    break;
+  case Transform::StationaryMethod::FRAC_DIFF:
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80);
     if (ImGui::SliderFloat("d##frac", &config.frac_d, 0.0f, 1.0f, "%.2f")) {
       changed = true;
     }
-    ImGui::SetNextItemWidth(150);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
     if (ImGui::SliderInt("窗口##frac", &config.frac_window, 10, 500)) {
       changed = true;
     }
-    ImGui::Unindent();
+    break;
+  default:
+    break;
   }
 
   return changed;
@@ -511,95 +502,53 @@ static bool RenderStationaryConfig(Transform::Config &config) {
 static bool RenderNormConfig(Transform::Config &config) {
   bool changed = false;
 
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "归一化配置");
-  ImGui::Separator();
+  ImGui::Text("归一化");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(100);
 
-  // 方法选择 (分组显示)
-  int method = static_cast<int>(config.norm_method);
+  // Combo需要连续索引，建立映射
+  static const struct { NormMethod method; const char *name; } norm_items[] = {
+    {NormMethod::NONE, "NONE"},
+    {NormMethod::ZSCORE, "ZSCORE"},
+    {NormMethod::ROBUST_ZSCORE, "ROBUST"},
+    {NormMethod::IQR_ZSCORE, "IQR"},
+    {NormMethod::RANK, "RANK"},
+    {NormMethod::RANK_ZSCORE, "RANK_Z"},
+    {NormMethod::CLIP, "CLIP"},
+    {NormMethod::WINSOR, "WINSOR"},
+    {NormMethod::LOG, "LOG"},
+    {NormMethod::POWER, "POWER"},
+    {NormMethod::ASINH, "ASINH"},
+    {NormMethod::TANH, "TANH"},
+    {NormMethod::LOG_ZSCORE, "LOG_Z"},
+    {NormMethod::CLIP_ZSCORE, "CLP_Z"},
+    {NormMethod::WINSOR_ZSCORE, "WIN_Z"},
+    {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z"},
+  };
+  constexpr int n_items = IM_ARRAYSIZE(norm_items);
 
-  // 第一行: 基本
-  if (ImGui::RadioButton("NONE", method == 0)) {
-    config.norm_method = NormMethod::NONE;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("ZSCORE", method == 1)) {
-    config.norm_method = NormMethod::ZSCORE;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("ROBUST", method == 2)) {
-    config.norm_method = NormMethod::ROBUST_ZSCORE;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("IQR", method == 3)) {
-    config.norm_method = NormMethod::IQR_ZSCORE;
-    changed = true;
-  }
-
-  // 第二行: 排序
-  if (ImGui::RadioButton("RANK", method == 4)) {
-    config.norm_method = NormMethod::RANK;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("RANK_Z", method == 5)) {
-    config.norm_method = NormMethod::RANK_ZSCORE;
-    changed = true;
+  // 查找当前索引
+  int cur_idx = 0;
+  for (int i = 0; i < n_items; ++i) {
+    if (norm_items[i].method == config.norm_method) {
+      cur_idx = i;
+      break;
+    }
   }
 
-  // 第三行: 边界
-  if (ImGui::RadioButton("CLIP", method == 6)) {
-    config.norm_method = NormMethod::CLIP;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("WINSOR", method == 7)) {
-    config.norm_method = NormMethod::WINSOR;
-    changed = true;
-  }
-
-  // 第四行: 非线性
-  if (ImGui::RadioButton("LOG", method == 8)) {
-    config.norm_method = NormMethod::LOG;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("POWER", method == 9)) {
-    config.norm_method = NormMethod::POWER;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("ASINH", method == 10)) {
-    config.norm_method = NormMethod::ASINH;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("TANH", method == 11)) {
-    config.norm_method = NormMethod::TANH;
-    changed = true;
+  if (ImGui::BeginCombo("##norm_method", norm_items[cur_idx].name)) {
+    for (int i = 0; i < n_items; ++i) {
+      bool selected = (i == cur_idx);
+      if (ImGui::Selectable(norm_items[i].name, selected)) {
+        config.norm_method = norm_items[i].method;
+        changed = true;
+      }
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
   }
 
-  // 第五行: 复合
-  if (ImGui::RadioButton("LOG_Z", method == 20)) {
-    config.norm_method = NormMethod::LOG_ZSCORE;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("CLP_Z", method == 23)) {
-    config.norm_method = NormMethod::CLIP_ZSCORE;
-    changed = true;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("WIN_Z", method == 24)) {
-    config.norm_method = NormMethod::WINSOR_ZSCORE;
-    changed = true;
-  }
-
-  ImGui::Spacing();
-
-  // 参数
+  // 按需显示参数
   bool needs_clip = config.norm_method == NormMethod::CLIP ||
                     config.norm_method == NormMethod::CLIP_ZSCORE ||
                     config.norm_method == NormMethod::CLIP_LOG_ZSCORE;
@@ -609,25 +558,25 @@ static bool RenderNormConfig(Transform::Config &config) {
                      config.norm_method == NormMethod::POWER_ZSCORE;
 
   if (needs_clip) {
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::SliderFloat("k (clip)##norm", &config.clip_k, 1.0f, 10.0f,
-                           "%.1f")) {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::SliderFloat("k##clip", &config.clip_k, 1.0f, 10.0f, "%.1f")) {
       changed = true;
     }
   }
 
   if (needs_winsor) {
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::SliderFloat("pct (winsor)##norm", &config.winsor_pct, 0.01f,
-                           0.25f, "%.2f")) {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::SliderFloat("pct##win", &config.winsor_pct, 0.01f, 0.25f, "%.2f")) {
       changed = true;
     }
   }
 
   if (needs_power) {
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::SliderFloat("alpha (power)##norm", &config.power_alpha, 0.1f,
-                           2.0f, "%.2f")) {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::SliderFloat("α##pow", &config.power_alpha, 0.1f, 2.0f, "%.2f")) {
       changed = true;
     }
   }
@@ -874,22 +823,12 @@ void RenderTabTransform(TransformService *service, SharedData &data,
   RenderControlPanel(service, data, ui);
   ImGui::EndChild();
 
-  // 配置区: 左=平稳化, 右=归一化
-  float config_height = 180;
-  ImGui::BeginChild("ConfigRow", ImVec2(0, config_height), false);
-
-  float half_width = ImGui::GetContentRegionAvail().x * 0.5f - 5;
-
-  ImGui::BeginChild("StationaryPanel", ImVec2(half_width, 0), true);
+  // 配置区: 平稳化 + 归一化 (单行)
+  float config_height = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y * 2;
+  ImGui::BeginChild("ConfigRow", ImVec2(0, config_height), true);
   bool st_changed = RenderStationaryConfig(tf.config);
-  ImGui::EndChild();
-
-  ImGui::SameLine();
-
-  ImGui::BeginChild("NormPanel", ImVec2(0, 0), true);
+  ImGui::SameLine(0, 40);
   bool norm_changed = RenderNormConfig(tf.config);
-  ImGui::EndChild();
-
   ImGui::EndChild();
 
   // 参数变化时触发计算

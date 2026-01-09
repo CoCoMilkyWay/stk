@@ -228,16 +228,16 @@ void TransformService::process_asset(SharedData &data, size_t asset_idx) {
     break;
   }
 
-  // 应用归一化
-  math::normalize::NormParams params;
-  params.clip_k = tf.config.clip_k;
-  params.winsor_pct = tf.config.winsor_pct;
-  params.power_alpha = tf.config.power_alpha;
+  // 应用归一化 (TS方向: expanding统计量)
+  math::normalize::Params params;
+  params.clip.k = tf.config.clip_k;
+  params.winsor.pct = tf.config.winsor_pct;
+  params.power.alpha = tf.config.power_alpha;
 
-  math::normalize::normalize({result.stationary.data(), n},
-                             {result.normalized.data(), n},
-                             tf.config.norm_method,
-                             params);
+  math::normalize::apply_ts({result.stationary.data(), n},
+                            {result.normalized.data(), n},
+                            tf.config.norm_method,
+                            params);
 
   // ADF检验 (on stationary series)
   math::stationary::ADFWorkspace adf_ws;
