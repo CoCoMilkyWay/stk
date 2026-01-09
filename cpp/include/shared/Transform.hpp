@@ -1,8 +1,10 @@
 #pragma once
 
 #include "features/FeaturesDefine.hpp"
+#include "math/distribution/KLLcache.hpp"
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,16 +13,14 @@
 // Transform Analysis Data Structure
 // ============================================================================
 //
-// 平稳化 + 归一化实时分析
-// 设计目标: 参数即时可调，计算极快，实时响应
+// 设计原则:
+//   1. 固定大小数据用 std::array - 零分配
+//   2. KLLcache 持久复用 - exportPDF 返回内部指针，零 copy
+//   3. 变长数据预分配后只 clear 不 resize
+//   4. UI 线程只读取，不创建任何复杂数据结构
 //
 // 数据流:
-//   原始特征 → 平稳化 → 归一化 → 展示 (ADF/KPSS/K线/PDF/FFT)
-//
-// 计算粒度:
-//   L0 (秒级): 按天计算
-//   L1 (分钟级): 按月计算
-//   L2 (小时级): 按整个回测区间计算
+//   FeatureReader → DataCache → 平稳化 → 归一化 → AssetResult → UI
 //
 // ============================================================================
 
@@ -31,125 +31,153 @@ struct Transform {
   // ==========================================================================
 
   enum class StationaryMethod : uint8_t {
-    NONE = 0,      // 不做平稳化
-    MA_DETREND,    // 移动平均去趋势: x_t - MA_W(x_t)
-    INT_DIFF,      // 整数阶差分: (1-L)^d x_t, d ∈ Z+
-    FRAC_DIFF      // 分数阶差分: (1-L)^d x_t, d ∈ R (FFD)
+    NONE = 0,
+    MA_DETREND, // x_t - MA_W(x_t)
+    INT_DIFF,   // (1-L)^d x_t, d ∈ Z+
+    FRAC_DIFF   // (1-L)^d x_t, d ∈ R
   };
 
   // ==========================================================================
-  // 配置参数
+  // 计算参数 (平稳化 + 归一化)
   // ==========================================================================
 
-  struct Config {
-    // 平稳化配置
+  struct Params {
+    // 平稳化
     StationaryMethod stationary_method = StationaryMethod::NONE;
-    int ma_window = 60;           // MA去趋势窗口 [10, 1000]
-    int diff_order = 1;           // 整数差分阶数 [1, 3]
-    float frac_d = 0.5f;          // 分数差分阶 [0.0, 1.0]
-    int frac_window = 100;        // FFD窗口大小 [10, 500]
+    int ma_window = 60;
+    int diff_order = 1;
+    float frac_d = 0.5f;
+    int frac_window = 100;
 
-    // 归一化配置
+    // 归一化
     NormMethod norm_method = NormMethod::NONE;
-    float clip_k = 3.0f;          // CLIP/WINSOR k值 [1.0, 10.0]
-    float winsor_pct = 0.05f;     // WINSOR百分位 [0.01, 0.25]
-    float power_alpha = 0.5f;     // POWER指数 [0.1, 2.0]
+    float clip_k = 3.0f;
+    float winsor_pct = 0.05f;
+    float power_alpha = 0.5f;
 
-    // 比较: 是否有变化
-    bool operator==(const Config &o) const {
+    bool operator==(const Params &o) const {
       return stationary_method == o.stationary_method &&
-             ma_window == o.ma_window &&
-             diff_order == o.diff_order &&
+             ma_window == o.ma_window && diff_order == o.diff_order &&
              std::abs(frac_d - o.frac_d) < 1e-6f &&
-             frac_window == o.frac_window &&
-             norm_method == o.norm_method &&
+             frac_window == o.frac_window && norm_method == o.norm_method &&
              std::abs(clip_k - o.clip_k) < 1e-6f &&
              std::abs(winsor_pct - o.winsor_pct) < 1e-6f &&
              std::abs(power_alpha - o.power_alpha) < 1e-6f;
     }
-    bool operator!=(const Config &o) const { return !(*this == o); }
+    bool operator!=(const Params &o) const { return !(*this == o); }
   };
 
   // ==========================================================================
-  // 单资产计算结果
+  // 数据块定义 (L0=天, L1=月, L2=全区间)
   // ==========================================================================
 
-  struct AssetResult {
-    std::vector<float> raw;           // 原始特征序列
-    std::vector<float> stationary;    // 平稳化后
-    std::vector<float> normalized;    // 归一化后
-
-    // ADF检验结果 (平稳化后)
-    float adf_stat = 0.0f;
-    float adf_pval = 1.0f;
-    bool adf_pass = false;            // p < 0.05
-
-    // KPSS检验结果 (平稳化后)
-    float kpss_stat = 0.0f;
-    float kpss_pval = 0.0f;
-    bool kpss_pass = false;           // p > 0.05
-
-    // FFT功率谱 (归一化后)
-    std::vector<float> fft_freq;      // 频率轴
-    std::vector<float> fft_power;     // 功率
-
+  struct Block {
+    std::string date;    // "20240115" or "202401" or "全区间"
+    std::string display; // "24/01/15" or "24/01" or "全区间"
     size_t n_samples = 0;
-    bool valid = false;
+  };
 
-    void clear() { *this = AssetResult{}; }
+  // ==========================================================================
+  // 原始数据缓存 (加载后缓存，避免重复读取)
+  // ==========================================================================
 
-    void reserve(size_t n) {
-      raw.reserve(n);
-      stationary.reserve(n);
-      normalized.reserve(n);
+  struct DataCache {
+    std::vector<std::vector<float>> raw; // [asset_idx][time]
+    size_t n_assets = 0;
+    size_t n_samples = 0;
+
+    // 缓存键 (用于判断是否需要重新加载)
+    int level = -1;
+    int feature_idx = -1;
+    int block_idx = -1;
+
+    bool valid() const { return n_assets > 0 && n_samples > 0; }
+
+    bool matches(int lvl, int feat, int blk) const {
+      return valid() && level == lvl && feature_idx == feat && block_idx == blk;
+    }
+
+    void set_key(int lvl, int feat, int blk) {
+      level = lvl;
+      feature_idx = feat;
+      block_idx = blk;
+    }
+
+    void clear() {
+      raw.clear();
+      n_assets = 0;
+      n_samples = 0;
+      level = -1;
+      feature_idx = -1;
+      block_idx = -1;
     }
   };
 
   // ==========================================================================
-  // 横截面PDF (单时间片)
+  // 单资产计算结果 (持久复用)
   // ==========================================================================
 
-  struct CrossSectionSlice {
-    size_t time_idx = 0;              // 时间索引
-    std::vector<float> values;        // 各资产的值 [n_assets]
-    
-    // PDF统计
-    float mean = 0.0f;
-    float std = 0.0f;
-    float skew = 0.0f;
-    float kurt = 0.0f;
-    float min = 0.0f;
-    float max = 0.0f;
+  struct AssetResult {
+    // 时序数据 (预分配 n_samples，后续复用)
+    std::vector<float> stationary;
+    std::vector<float> normalized;
 
-    // 直方图
-    static constexpr size_t N_BINS = 50;
-    std::vector<float> hist_x;        // bin中心 [N_BINS]
-    std::vector<float> hist_y;        // 频率 [N_BINS]
+    // ADF/KPSS (标量)
+    float adf_stat = 0.0f;
+    float adf_pval = 1.0f;
+    bool adf_pass = false;
+
+    float kpss_stat = 0.0f;
+    float kpss_pval = 0.0f;
+    bool kpss_pass = false;
+
+    // FFT (动态大小，使用整个time window)
+    std::vector<float> fft_freq;
+    std::vector<float> fft_power;
+
+    // PDF (KLLcache 持久复用，exportPDF 返回内部指针)
+    KLLcache pdf{256, 128};
 
     bool valid = false;
-    void clear() { *this = CrossSectionSlice{}; }
+
+    // 重置 (不分配，只清零)
+    void reset() {
+      std::fill(stationary.begin(), stationary.end(), 0.0f);
+      std::fill(normalized.begin(), normalized.end(), 0.0f);
+      adf_stat = 0.0f;
+      adf_pval = 1.0f;
+      adf_pass = false;
+      kpss_stat = 0.0f;
+      kpss_pval = 0.0f;
+      kpss_pass = false;
+      std::fill(fft_freq.begin(), fft_freq.end(), 0.0f);
+      std::fill(fft_power.begin(), fft_power.end(), 0.0f);
+      pdf.clear();
+      valid = false;
+    }
+
+    // 预分配时序数据和FFT
+    void reserve(size_t n_samples) {
+      stationary.resize(n_samples, 0.0f);
+      normalized.resize(n_samples, 0.0f);
+      // FFT大小: 向下取整到最接近的2的幂
+      size_t fft_n = 1;
+      while (fft_n * 2 <= n_samples) fft_n *= 2;
+      size_t fft_size = fft_n / 2 + 1;
+      fft_freq.resize(fft_size, 0.0f);
+      fft_power.resize(fft_size, 0.0f);
+    }
   };
 
   // ==========================================================================
-  // 数据块定义 (计算单元)
-  // ==========================================================================
-
-  struct DataBlock {
-    std::string label;                // "2024-01-15" 或 "2024-01" 或 "全区间"
-    size_t start_idx = 0;             // 在全局时间序列中的起始索引
-    size_t length = 0;                // 样本数
-    bool valid = false;
-  };
-
-  // ==========================================================================
-  // 计算状态
+  // 计算状态机
   // ==========================================================================
 
   struct Compute {
     enum class Status : uint8_t {
       Idle,
-      Loading,    // 加载数据
-      Computing,  // 计算中
+      Loading,   // 加载数据中
+      Computing, // 计算中
       Done,
       Error,
       Cancelled
@@ -160,7 +188,7 @@ struct Transform {
 
     std::atomic<size_t> done{0};
     std::atomic<size_t> total{0};
-    std::atomic<bool> cancel{false};
+    std::atomic<uint64_t> generation{0};  // 计算版本号，用于中断检测
 
     float progress() const {
       size_t t = total.load();
@@ -181,30 +209,22 @@ struct Transform {
       error.clear();
       done = 0;
       total = 0;
-      cancel = false;
+      // generation 不重置，保持递增
     }
   };
 
   // ==========================================================================
-  // 输入缓存 (检测参数变化)
+  // UI 显示状态 (不触发计算)
   // ==========================================================================
 
-  struct Input {
-    int feature_idx = -1;
-    int level = -1;
-    int block_idx = -1;               // 当前选中的数据块
-    Config config;
+  struct Display {
+    int selected_asset = -1;  // -1 = ALL, >=0 = specific asset
 
-    bool has_changes(int feat, int lvl, int blk, const Config &cfg) const {
-      return feature_idx != feat || level != lvl || 
-             block_idx != blk || config != cfg;
-    }
+    bool is_all() const { return selected_asset < 0; }
 
-    void update(int feat, int lvl, int blk, const Config &cfg) {
-      feature_idx = feat;
-      level = lvl;
-      block_idx = blk;
-      config = cfg;
+    void clamp(size_t n_assets) {
+      if (n_assets > 0 && selected_asset >= (int)n_assets)
+        selected_asset = (int)n_assets - 1;
     }
   };
 
@@ -212,57 +232,71 @@ struct Transform {
   // 主数据成员
   // ==========================================================================
 
-  // 配置
-  Config config;
-  Input input;
-  Compute compute;
+  // 输入参数 (UI 控制)
+  Params params;
 
-  // 数据块列表 (根据level生成)
-  std::vector<DataBlock> blocks;
+  // 数据块列表
+  std::vector<Block> blocks;
   int selected_block = 0;
 
-  // 计算结果
-  std::vector<AssetResult> results;   // [n_assets]
-  size_t n_assets = 0;
+  // 原始数据缓存
+  DataCache cache;
 
-  // 当前时间片的横截面
-  CrossSectionSlice cross_section;
-  int time_slider = 0;                // 时间拖动条位置
+  // 计算结果 (n_assets 个，预分配后复用)
+  std::vector<AssetResult> results;
 
-  // 聚合FFT (跨资产平均)
+  // 聚合 FFT (动态大小)
   std::vector<float> avg_fft_freq;
   std::vector<float> avg_fft_power;
+
+  // 显示状态
+  Display display;
+
+  // 计算状态
+  Compute compute;
+
+  // ==========================================================================
+  // 输入变化检测
+  // ==========================================================================
+
+  bool need_reload(int level, int feature_idx) const {
+    return !cache.matches(level, feature_idx, selected_block);
+  }
+
+  bool need_recompute(const Params &new_params) const {
+    return params != new_params;
+  }
 
   // ==========================================================================
   // 方法
   // ==========================================================================
 
   void cancel() {
-    compute.cancel = true;
+    // 通过递增generation来中断当前计算
+    ++compute.generation;
     compute.status = Compute::Status::Cancelled;
   }
 
   void clear() {
-    config = Config{};
-    input = Input{};
-    compute.reset();
+    params = Params{};
     blocks.clear();
     selected_block = 0;
+    cache.clear();
     results.clear();
-    n_assets = 0;
-    cross_section.clear();
-    time_slider = 0;
     avg_fft_freq.clear();
     avg_fft_power.clear();
+    display = Display{};
+    compute.reset();
   }
 
-  bool need_rebuild(int feat, int lvl, int blk, const Config &cfg) const {
-    return input.has_changes(feat, lvl, blk, cfg);
-  }
-
-  // 根据level生成数据块
+  // 根据 level 生成数据块
   void generate_blocks(int level, const std::vector<std::string> &dates);
 
-  // 更新横截面 (给定时间索引)
-  void update_cross_section(size_t time_idx);
+  // 预分配 results (知道 n_assets 和 n_samples 后调用)
+  void preallocate(size_t n_assets, size_t n_samples) {
+    results.resize(n_assets);
+    for (auto &r : results) {
+      r.reserve(n_samples);
+    }
+  }
 };

@@ -15,8 +15,17 @@
 #include <cstdio>
 #include <unordered_map>
 
-
 namespace GUI::Features {
+
+// ============================================================================
+// Color Gradient for Asset Differentiation (使用ImPlot内置colormap)
+// ============================================================================
+
+static ImVec4 GetAssetColor(size_t idx, size_t total) {
+  if (total <= 1) return ImPlot::GetColormapColor(0);
+  float t = static_cast<float>(idx) / static_cast<float>(total - 1);
+  return ImPlot::SampleColormap(t, ImPlotColormap_Spectral);
+}
 
 // ============================================================================
 // LaTeX Formula Rendering (shared with TabFeature)
@@ -376,72 +385,137 @@ static ImU32 GetKPSSColor(float pval) {
 }
 
 // ============================================================================
-// Control Panel
+// Row 1: Status + Level + Feature + Stationary + Normalization
 // ============================================================================
 
-static void RenderControlPanel(TransformService *service, SharedData &data,
-                               TransformUIState &ui) {
+static void Render_StatusInfo(SharedData &data) {
   auto &tf = data.transform;
-
-  // Status
-  ImGui::Text("Status: ");
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(StatusColor(tf.compute.status), "%s",
-                     StatusText(tf.compute.status));
-
-  if (tf.compute.is_busy()) {
-    ImGui::SameLine();
-    ImGui::Text("(%.0f%%)", tf.compute.progress());
-  }
-
-  ImGui::SameLine(150);
-
-  // Level显示
   int level = data.feature.selection.selected_level;
-  const char *level_names[] = {"L0 (秒)", "L1 (分钟)", "L2 (小时)"};
+
+  // Level (固定宽度开始)
+  static const char *level_names[] = {"L0", "L1", "L2"};
   if (level >= 0 && level < 3) {
-    ImGui::Text("级别: %s", level_names[level]);
+    ImGui::Text("%s", level_names[level]);
   } else {
-    ImGui::TextDisabled("级别: -");
+    ImGui::TextDisabled("--");
   }
 
-  ImGui::SameLine(300);
-
-  // 计算按钮
-  bool can_compute = !tf.compute.is_busy() &&
-                     data.feature.selection.primary_feature_idx >= 0;
-  ImGui::BeginDisabled(!can_compute);
-  if (ImGui::Button("Compute")) {
-    service->RequestCompute();
-  }
-  ImGui::EndDisabled();
-
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) {
-    tf.cancel();
+  // 主特征名称
+  ImGui::SameLine(0, 15);
+  int feat_idx = data.feature.selection.primary_feature_idx;
+  if (feat_idx >= 0) {
+    const auto &meta = level == 0   ? data.feature.metadata.features_l0
+                       : level == 1 ? data.feature.metadata.features_l1
+                                    : data.feature.metadata.features_l2;
+    if (feat_idx < (int)meta.size()) {
+      ImGui::Text("%s", meta[feat_idx].code);
+    }
+  } else {
+    ImGui::TextDisabled("无特征");
   }
 
-  // 时间拖动条
-  if (!tf.results.empty() && tf.results[0].valid) {
-    size_t max_t = tf.results[0].raw.size();
-    if (max_t > 0) {
-      ImGui::SameLine(500);
-      ImGui::SetNextItemWidth(200);
-      int t = tf.time_slider;
-      if (ImGui::SliderInt("##TimeSlider", &t, 0, static_cast<int>(max_t - 1),
-                           "t=%d")) {
-        tf.time_slider = t;
-        tf.update_cross_section(static_cast<size_t>(t));
+  // Status (右对齐，固定宽度)
+  ImGui::SameLine(0, 15);
+  float status_width = 100.0f;
+  float avail_x = ImGui::GetContentRegionAvail().x;
+  // 留出后续控件空间 (平稳化+归一化约500px)
+  float offset = std::max(0.0f, avail_x - status_width - 520.0f);
+  if (offset > 0) {
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+  }
+  ImGui::TextColored(StatusColor(tf.compute.status), "%s", StatusText(tf.compute.status));
+  if (tf.compute.is_busy()) {
+    ImGui::SameLine(0, 0);
+    ImGui::Text(" %.0f%%", tf.compute.progress());
+  }
+}
+
+// ============================================================================
+// Row 3: Asset Selector + Time Window Slider
+// ============================================================================
+
+// 格式化时间窗口标签
+static const char *FormatBlockDate(const Transform::Block &block) {
+  return block.display.c_str();
+}
+
+static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
+  auto &tf = data.transform;
+  bool changed = false;
+
+  // Asset选择下拉 (支持ALL模式)
+  if (!data.asset.items.empty()) {
+    ImGui::SetNextItemWidth(200);
+    const auto &items = data.asset.items;
+    int sel = tf.display.selected_asset;  // -1 = ALL
+
+    const char *current_label;
+    char label_buf[128];
+    if (sel < 0) {
+      current_label = "ALL";
+    } else {
+      size_t idx = static_cast<size_t>(sel);
+      if (idx >= items.size()) idx = 0;
+      snprintf(label_buf, sizeof(label_buf), "%s.%s.%s",
+               items[idx].asset_code.c_str(),
+               items[idx].exchange.c_str(),
+               items[idx].asset_name.c_str());
+      current_label = label_buf;
+    }
+
+    if (ImGui::BeginCombo("##AssetSelect", current_label)) {
+      // ALL选项
+      bool is_all_selected = (sel < 0);
+      if (ImGui::Selectable("ALL", is_all_selected)) {
+        if (tf.display.selected_asset != -1) changed = true;
+        tf.display.selected_asset = -1;
+      }
+      if (is_all_selected)
+        ImGui::SetItemDefaultFocus();
+
+      // 各个asset
+      for (size_t i = 0; i < items.size(); ++i) {
+        char label[128];
+        snprintf(label, sizeof(label), "%s.%s.%s",
+                 items[i].asset_code.c_str(),
+                 items[i].exchange.c_str(),
+                 items[i].asset_name.c_str());
+        bool is_selected = (sel == (int)i);
+        if (ImGui::Selectable(label, is_selected)) {
+          if (tf.display.selected_asset != (int)i) changed = true;
+          tf.display.selected_asset = static_cast<int>(i);
+        }
+        if (is_selected)
+          ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+  }
+
+  // 时间窗口滑块
+  ImGui::SameLine(0, 20);
+  if (!tf.blocks.empty()) {
+    ImGui::SetNextItemWidth(200);
+    int block_idx = tf.selected_block;
+    const char *fmt = FormatBlockDate(tf.blocks[block_idx]);
+    if (ImGui::SliderInt("##BlockSlider", &block_idx, 0,
+                         static_cast<int>(tf.blocks.size() - 1), fmt)) {
+      if (tf.selected_block != block_idx) {
+        tf.selected_block = block_idx;
+        changed = true;
+        service->RequestCompute();
       }
     }
   }
+
+  return changed;
 }
 
 // ============================================================================
 // Stationarity Config Panel (Left)
 // ============================================================================
 
-static bool RenderStationaryConfig(Transform::Config &config) {
+static bool RenderStationaryConfig(Transform::Params &config) {
   bool changed = false;
 
   ImGui::Text("平稳化");
@@ -499,7 +573,7 @@ static bool RenderStationaryConfig(Transform::Config &config) {
 // Normalization Config Panel (Right)
 // ============================================================================
 
-static bool RenderNormConfig(Transform::Config &config) {
+static bool RenderNormConfig(Transform::Params &config) {
   bool changed = false;
 
   ImGui::Text("归一化");
@@ -507,23 +581,26 @@ static bool RenderNormConfig(Transform::Config &config) {
   ImGui::SetNextItemWidth(100);
 
   // Combo需要连续索引，建立映射
-  static const struct { NormMethod method; const char *name; } norm_items[] = {
-    {NormMethod::NONE, "NONE"},
-    {NormMethod::ZSCORE, "ZSCORE"},
-    {NormMethod::ROBUST_ZSCORE, "ROBUST"},
-    {NormMethod::IQR_ZSCORE, "IQR"},
-    {NormMethod::RANK, "RANK"},
-    {NormMethod::RANK_ZSCORE, "RANK_Z"},
-    {NormMethod::CLIP, "CLIP"},
-    {NormMethod::WINSOR, "WINSOR"},
-    {NormMethod::LOG, "LOG"},
-    {NormMethod::POWER, "POWER"},
-    {NormMethod::ASINH, "ASINH"},
-    {NormMethod::TANH, "TANH"},
-    {NormMethod::LOG_ZSCORE, "LOG_Z"},
-    {NormMethod::CLIP_ZSCORE, "CLP_Z"},
-    {NormMethod::WINSOR_ZSCORE, "WIN_Z"},
-    {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z"},
+  static const struct {
+    NormMethod method;
+    const char *name;
+  } norm_items[] = {
+      {NormMethod::NONE, "NONE"},
+      {NormMethod::ZSCORE, "ZSCORE"},
+      {NormMethod::ROBUST_ZSCORE, "ROBUST"},
+      {NormMethod::IQR_ZSCORE, "IQR"},
+      {NormMethod::RANK, "RANK"},
+      {NormMethod::RANK_ZSCORE, "RANK_Z"},
+      {NormMethod::CLIP, "CLIP"},
+      {NormMethod::WINSOR, "WINSOR"},
+      {NormMethod::LOG, "LOG"},
+      {NormMethod::POWER, "POWER"},
+      {NormMethod::ASINH, "ASINH"},
+      {NormMethod::TANH, "TANH"},
+      {NormMethod::LOG_ZSCORE, "LOG_Z"},
+      {NormMethod::CLIP_ZSCORE, "CLP_Z"},
+      {NormMethod::WINSOR_ZSCORE, "WIN_Z"},
+      {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z"},
   };
   constexpr int n_items = IM_ARRAYSIZE(norm_items);
 
@@ -543,7 +620,8 @@ static bool RenderNormConfig(Transform::Config &config) {
         config.norm_method = norm_items[i].method;
         changed = true;
       }
-      if (selected) ImGui::SetItemDefaultFocus();
+      if (selected)
+        ImGui::SetItemDefaultFocus();
     }
     ImGui::EndCombo();
   }
@@ -585,77 +663,76 @@ static bool RenderNormConfig(Transform::Config &config) {
 }
 
 // ============================================================================
-// ADF/KPSS Heatmap
+// ADF/KPSS Heatmap (单行紧凑版)
 // ============================================================================
 
 static void RenderStationarityHeatmap(const Transform &tf, const Asset &asset) {
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "平稳性检验");
-  ImGui::SameLine();
-  ImGui::TextDisabled("(ADF: p<0.05=绿, KPSS: p>0.05=绿)");
-  ImGui::Separator();
-
-  if (tf.results.empty() || !tf.results[0].valid) {
-    ImGui::TextDisabled("无数据");
+  // 直接画，不显示"无数据" - 计算线程会很快更新
+  if (tf.results.empty()) {
+    ImGui::Dummy(ImVec2(0, 18.0f));  // 保持行高稳定
     return;
   }
 
   const size_t n = tf.results.size();
   ImVec2 avail = ImGui::GetContentRegionAvail();
-  float cell_w = std::min(20.0f, avail.x / (2 * n + 2));
-  float cell_h = 20.0f;
+
+  // 计算单元格大小，确保 ADF + KPSS 能放在一行
+  float label_w = 40.0f;
+  float gap = 10.0f;
+  float usable = avail.x - label_w * 2 - gap * 3;
+  float cell_w = std::min(12.0f, usable / (2 * n));
+  float cell_h = 14.0f;
 
   ImDrawList *draw = ImGui::GetWindowDrawList();
   ImVec2 pos = ImGui::GetCursorScreenPos();
+  float y = pos.y + 2;
 
-  // 标题
-  draw->AddText(ImVec2(pos.x + 50, pos.y), IM_COL32(200, 200, 200, 255), "ADF");
-  draw->AddText(ImVec2(pos.x + 50 + n * cell_w + 20, pos.y),
-                IM_COL32(200, 200, 200, 255), "KPSS");
-
-  float y = pos.y + 20;
-
-  // 热力图条
+  // ADF 标签 + 热力条
+  draw->AddText(ImVec2(pos.x, y), IM_COL32(180, 180, 180, 255), "ADF");
+  float x_adf_start = pos.x + label_w;
   for (size_t i = 0; i < n; ++i) {
-    const auto &r = tf.results[i];
-    if (!r.valid)
+    if (!tf.results[i].valid)
       continue;
+    float x = x_adf_start + i * cell_w;
+    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + cell_w - 1, y + cell_h),
+                        GetADFColor(tf.results[i].adf_pval));
+  }
 
-    float x_adf = pos.x + 50 + i * cell_w;
-    float x_kpss = pos.x + 50 + n * cell_w + 20 + i * cell_w;
-
-    draw->AddRectFilled(ImVec2(x_adf, y), ImVec2(x_adf + cell_w - 1, y + cell_h),
-                        GetADFColor(r.adf_pval));
-    draw->AddRectFilled(ImVec2(x_kpss, y),
-                        ImVec2(x_kpss + cell_w - 1, y + cell_h),
-                        GetKPSSColor(r.kpss_pval));
+  // KPSS 标签 + 热力条
+  float x_kpss_label = x_adf_start + n * cell_w + gap;
+  draw->AddText(ImVec2(x_kpss_label, y), IM_COL32(180, 180, 180, 255), "KPSS");
+  float x_kpss_start = x_kpss_label + label_w;
+  for (size_t i = 0; i < n; ++i) {
+    if (!tf.results[i].valid)
+      continue;
+    float x = x_kpss_start + i * cell_w;
+    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + cell_w - 1, y + cell_h),
+                        GetKPSSColor(tf.results[i].kpss_pval));
   }
 
   // Tooltip
   ImVec2 mouse = ImGui::GetMousePos();
   if (mouse.y >= y && mouse.y < y + cell_h) {
     for (size_t i = 0; i < n; ++i) {
-      float x_adf = pos.x + 50 + i * cell_w;
-      float x_kpss = pos.x + 50 + n * cell_w + 20 + i * cell_w;
+      if (!tf.results[i].valid)
+        continue;
+      float xa = x_adf_start + i * cell_w;
+      float xk = x_kpss_start + i * cell_w;
+      bool in_adf = mouse.x >= xa && mouse.x < xa + cell_w;
+      bool in_kpss = mouse.x >= xk && mouse.x < xk + cell_w;
 
-      bool in_adf = mouse.x >= x_adf && mouse.x < x_adf + cell_w;
-      bool in_kpss = mouse.x >= x_kpss && mouse.x < x_kpss + cell_w;
-
-      if ((in_adf || in_kpss) && tf.results[i].valid) {
+      if (in_adf || in_kpss) {
         const auto &r = tf.results[i];
         ImGui::BeginTooltip();
         if (i < asset.items.size()) {
-          ImGui::Text("%s %s", asset.items[i].asset_code.c_str(),
-                      asset.items[i].asset_name.c_str());
-        } else {
-          ImGui::Text("Asset #%zu", i);
+          ImGui::Text("%s", asset.items[i].asset_code.c_str());
         }
-        ImGui::Separator();
         if (in_adf) {
-          ImGui::Text("ADF: stat=%.3f, p=%.3f %s", r.adf_stat, r.adf_pval,
-                      r.adf_pass ? "[PASS]" : "[FAIL]");
+          ImGui::Text("ADF: %.3f (p=%.3f) %s", r.adf_stat, r.adf_pval,
+                      r.adf_pass ? "PASS" : "FAIL");
         } else {
-          ImGui::Text("KPSS: stat=%.3f, p=%.3f %s", r.kpss_stat, r.kpss_pval,
-                      r.kpss_pass ? "[PASS]" : "[FAIL]");
+          ImGui::Text("KPSS: %.3f (p=%.3f) %s", r.kpss_stat, r.kpss_pval,
+                      r.kpss_pass ? "PASS" : "FAIL");
         }
         ImGui::EndTooltip();
         break;
@@ -663,7 +740,7 @@ static void RenderStationarityHeatmap(const Transform &tf, const Asset &asset) {
     }
   }
 
-  ImGui::Dummy(ImVec2(avail.x, cell_h + 25));
+  ImGui::Dummy(ImVec2(avail.x, cell_h + 4));
 }
 
 // ============================================================================
@@ -674,20 +751,15 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
   if (tf.results.empty())
     return;
 
-  // 找第一个有效的资产
-  const Transform::AssetResult *first_valid = nullptr;
-  for (const auto &r : tf.results) {
-    if (r.valid) {
-      first_valid = &r;
-      break;
-    }
-  }
-  if (!first_valid)
-    return;
+  const size_t n_assets = tf.results.size();
+  const int sel = tf.display.selected_asset;  // -1 = ALL
+  const bool show_all = (sel < 0);
 
-  float height = 150;
+  // 动态计算高度: 剩余高度的45%给特征图, 45%给底部图, 10%留白
+  float avail_h = ImGui::GetContentRegionAvail().y;
+  float height = std::max(100.0f, avail_h * 0.45f);
 
-  // 左: 原始特征
+  // 左: 原始特征 (从 cache 获取)
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   ImGui::Text("原始特征");
 
@@ -698,11 +770,13 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel,
                       ImPlotAxisFlags_NoLabel);
 
-    for (const auto &r : tf.results) {
-      if (!r.valid || r.raw.empty())
-        continue;
-      ImPlot::SetNextLineStyle(IMPLOT_AUTO_COL, 0.5f);
-      ImPlot::PlotLine("##r", r.raw.data(), static_cast<int>(r.raw.size()));
+    for (size_t i = 0; i < tf.cache.raw.size(); ++i) {
+      if (!show_all && (int)i != sel) continue;
+      const auto &raw = tf.cache.raw[i];
+      if (raw.empty()) continue;
+      ImVec4 col = GetAssetColor(i, n_assets);
+      ImPlot::SetNextLineStyle(col, 0.8f);
+      ImPlot::PlotLine("##r", raw.data(), static_cast<int>(raw.size()));
     }
     ImPlot::EndPlot();
   }
@@ -721,10 +795,12 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel,
                       ImPlotAxisFlags_NoLabel);
 
-    for (const auto &r : tf.results) {
-      if (!r.valid || r.normalized.empty())
-        continue;
-      ImPlot::SetNextLineStyle(IMPLOT_AUTO_COL, 0.5f);
+    for (size_t i = 0; i < tf.results.size(); ++i) {
+      if (!show_all && (int)i != sel) continue;
+      const auto &r = tf.results[i];
+      if (!r.valid || r.normalized.empty()) continue;
+      ImVec4 col = GetAssetColor(i, n_assets);
+      ImPlot::SetNextLineStyle(col, 0.8f);
       ImPlot::PlotLine("##n", r.normalized.data(),
                        static_cast<int>(r.normalized.size()));
     }
@@ -734,17 +810,27 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
 }
 
 // ============================================================================
-// Cross-section PDF & FFT
+// Asset PDF & FFT (直接从 AssetResult 读取，零分配)
 // ============================================================================
 
-static void RenderBottomPlots(const Transform &tf, bool need_autofit) {
-  float height = 180;
+static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level) {
+  float height = std::max(120.0f, ImGui::GetContentRegionAvail().y - 5.0f);
 
-  // 左: 横截面PDF
+  const size_t n_assets = tf.results.size();
+  const int sel = tf.display.selected_asset;  // -1 = ALL
+  const bool show_all = (sel < 0);
+
+  // 左: 每个 asset 的 PDF 叠加 (直接从 KLLcache 读取)
   ImGui::BeginChild("PDFPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
-  ImGui::Text("横截面分布 (t=%d)", tf.time_slider);
+  ImGui::Text("资产分布 (n=%zu)", tf.results.size());
 
-  if (tf.cross_section.valid && !tf.cross_section.hist_x.empty()) {
+  size_t n_valid = 0;
+  for (const auto &r : tf.results) {
+    if (r.valid)
+      ++n_valid;
+  }
+
+  if (n_valid > 0) {
     if (need_autofit)
       ImPlot::SetNextAxesToFit();
 
@@ -752,9 +838,18 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit) {
       ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel,
                         ImPlotAxisFlags_NoLabel);
 
-      ImPlot::PlotBars("##hist", tf.cross_section.hist_x.data(),
-                       tf.cross_section.hist_y.data(),
-                       static_cast<int>(tf.cross_section.hist_x.size()), 0.8);
+      // 直接从 AssetResult.pdf 读取 (exportPDF 返回内部指针，零 copy)
+      for (size_t i = 0; i < tf.results.size(); ++i) {
+        if (!show_all && (int)i != sel) continue;
+        const auto &r = tf.results[i];
+        if (!r.valid) continue;
+        auto pdf = r.pdf.exportPDF();
+        if (pdf.n > 0) {
+          ImVec4 col = GetAssetColor(i, n_assets);
+          ImPlot::SetNextLineStyle(col, 0.8f);
+          ImPlot::PlotLine("##pdf", pdf.x, pdf.y, static_cast<int>(pdf.n));
+        }
+      }
 
       ImPlot::EndPlot();
     }
@@ -765,11 +860,11 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit) {
 
   ImGui::SameLine();
 
-  // 右: FFT功率谱
+  // 右: 每个 asset 的 FFT 功率谱叠加 (背景根据周期区分秒/分钟/小时)
   ImGui::BeginChild("FFTPlot", ImVec2(0, height), true);
-  ImGui::Text("FFT功率谱 (平均)");
+  ImGui::Text("FFT功率谱");
 
-  if (!tf.avg_fft_freq.empty()) {
+  if (n_valid > 0) {
     if (need_autofit)
       ImPlot::SetNextAxesToFit();
 
@@ -777,8 +872,72 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit) {
       ImPlot::SetupAxes("Frequency", "Power", ImPlotAxisFlags_NoLabel,
                         ImPlotAxisFlags_NoLabel);
 
-      ImPlot::PlotLine("##fft", tf.avg_fft_freq.data(), tf.avg_fft_power.data(),
-                       static_cast<int>(tf.avg_fft_freq.size()));
+      // 绘制背景色带 (根据周期区分)
+      const float dt[] = {1.0f, 60.0f, 3600.0f};
+      float sample_dt = dt[std::clamp(level, 0, 2)];
+
+      ImPlotRect limits = ImPlot::GetPlotLimits();
+      ImPlot::PushPlotClipRect();
+      ImDrawList *draw = ImPlot::GetPlotDrawList();
+
+      ImU32 col_sec = IM_COL32(50, 100, 150, 60);
+      ImU32 col_min = IM_COL32(100, 130, 50, 60);
+      ImU32 col_hour = IM_COL32(150, 80, 50, 60);
+
+      float freq_sec_lo = sample_dt / 60.0f;
+      float freq_sec_hi = sample_dt / 2.0f;
+      float freq_min_lo = sample_dt / 3600.0f;
+      float freq_min_hi = freq_sec_lo;
+      float freq_hour_hi = freq_min_lo;
+
+      float y_top = static_cast<float>(limits.Y.Max);
+      float y_bot = static_cast<float>(limits.Y.Min);
+
+      // 秒级背景
+      if (freq_sec_lo < 0.5f && freq_sec_lo < limits.X.Max) {
+        float x0 = std::max(static_cast<float>(limits.X.Min), freq_sec_lo);
+        float x1 = std::min(static_cast<float>(limits.X.Max), std::min(freq_sec_hi, 0.5f));
+        if (x0 < x1) {
+          ImVec2 p0 = ImPlot::PlotToPixels(x0, y_top);
+          ImVec2 p1 = ImPlot::PlotToPixels(x1, y_bot);
+          draw->AddRectFilled(p0, p1, col_sec);
+        }
+      }
+
+      // 分钟级背景
+      if (freq_min_lo < freq_min_hi && freq_min_lo < limits.X.Max) {
+        float x0 = std::max(static_cast<float>(limits.X.Min), freq_min_lo);
+        float x1 = std::min(static_cast<float>(limits.X.Max), freq_min_hi);
+        if (x0 < x1) {
+          ImVec2 p0 = ImPlot::PlotToPixels(x0, y_top);
+          ImVec2 p1 = ImPlot::PlotToPixels(x1, y_bot);
+          draw->AddRectFilled(p0, p1, col_min);
+        }
+      }
+
+      // 小时级背景
+      if (freq_hour_hi > 0.0f && limits.X.Min < freq_hour_hi) {
+        float x0 = std::max(static_cast<float>(limits.X.Min), 0.001f);
+        float x1 = std::min(static_cast<float>(limits.X.Max), freq_hour_hi);
+        if (x0 < x1) {
+          ImVec2 p0 = ImPlot::PlotToPixels(x0, y_top);
+          ImVec2 p1 = ImPlot::PlotToPixels(x1, y_bot);
+          draw->AddRectFilled(p0, p1, col_hour);
+        }
+      }
+
+      ImPlot::PopPlotClipRect();
+
+      // 绘制每个 asset 的 FFT (直接从动态数组读取)
+      for (size_t i = 0; i < tf.results.size(); ++i) {
+        if (!show_all && (int)i != sel) continue;
+        const auto &r = tf.results[i];
+        if (!r.valid || r.fft_freq.empty()) continue;
+        ImVec4 col = GetAssetColor(i, n_assets);
+        ImPlot::SetNextLineStyle(col, 0.8f);
+        ImPlot::PlotLine("##fft", r.fft_freq.data(), r.fft_power.data(),
+                         static_cast<int>(r.fft_freq.size()));
+      }
 
       ImPlot::EndPlot();
     }
@@ -808,46 +967,74 @@ void RenderTabTransform(TransformService *service, SharedData &data,
 
   auto &tf = data.transform;
 
-  // Trigger autofit when compute finishes
-  static auto last_status = tf.compute.status;
-  if (last_status != Transform::Compute::Status::Done &&
-      tf.compute.status == Transform::Compute::Status::Done) {
-    ui.need_autofit = true;
+  // 首次进入Tab且有有效特征选择时，自动触发计算
+  static bool first_enter = true;
+  if (first_enter && data.feature.selection.primary_feature_idx >= 0) {
+    first_enter = false;
+    service->RequestCompute();
+    // 重置 autofit 跟踪，使得计算完成后会触发 autofit
+    ui.last_autofit_generation = 0;
+    ui.last_autofit_asset = -2;
   }
-  last_status = tf.compute.status;
 
-  // 控制栏
-  float ctrl_height = ImGui::GetFrameHeightWithSpacing() +
-                      ImGui::GetStyle().WindowPadding.y * 2;
-  ImGui::BeginChild("ControlBar", ImVec2(0, ctrl_height), true);
-  RenderControlPanel(service, data, ui);
-  ImGui::EndChild();
+  // Autozoom 逻辑: 只在预期 assets 更新完成后触发
+  // ALL mode: 当计算完成 (status == Done) 且 generation 变化时触发
+  // 单 asset mode: 当选中的 asset 的 result.valid 变化时触发
+  {
+    int cur_asset = tf.display.selected_asset;
+    size_t cur_gen = tf.compute.generation.load();
+    bool should_autofit = false;
 
-  // 配置区: 平稳化 + 归一化 (单行)
-  float config_height = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y * 2;
-  ImGui::BeginChild("ConfigRow", ImVec2(0, config_height), true);
-  bool st_changed = RenderStationaryConfig(tf.config);
-  ImGui::SameLine(0, 40);
-  bool norm_changed = RenderNormConfig(tf.config);
-  ImGui::EndChild();
+    if (cur_asset < 0) {
+      // ALL mode: 只在计算完成时触发
+      if (tf.compute.status == Transform::Compute::Status::Done &&
+          (ui.last_autofit_asset != -1 || ui.last_autofit_generation != cur_gen)) {
+        should_autofit = true;
+      }
+    } else {
+      // 单 asset mode: 当选中的 asset 有效数据时触发
+      if (cur_asset >= 0 && cur_asset < (int)tf.results.size() &&
+          tf.results[cur_asset].valid &&
+          (ui.last_autofit_asset != cur_asset || ui.last_autofit_generation != cur_gen)) {
+        should_autofit = true;
+      }
+    }
 
-  // 参数变化时触发计算
+    if (should_autofit) {
+      ui.need_autofit = true;
+      ui.last_autofit_asset = cur_asset;
+      ui.last_autofit_generation = cur_gen;
+    }
+  }
+
+  // 第一行: 状态 + 级别 + 特征 + 平稳化 + 归一化
+  Render_StatusInfo(data);
+  ImGui::SameLine(0, 20);
+  bool st_changed = RenderStationaryConfig(tf.params);
+  ImGui::SameLine(0, 20);
+  bool norm_changed = RenderNormConfig(tf.params);
+
+  // 第二行: ADF/KPSS热力图
+  RenderStationarityHeatmap(tf, data.asset);
+
+  // 第三行: Asset选择 + 时间窗口滑块
+  bool sel_changed = Render_AssetAndWindow(service, data);
+
+  // 参数变化触发重计算 (autozoom 由上面的逻辑自动处理)
   if (st_changed || norm_changed) {
     ui.params_changed = true;
     service->RequestCompute();
+    // 重置 autofit 跟踪，使得新计算完成后会触发 autofit
+    ui.last_autofit_generation = 0;
   }
-
-  // 热力图
-  float heatmap_height = 60;
-  ImGui::BeginChild("HeatmapPanel", ImVec2(0, heatmap_height), true);
-  RenderStationarityHeatmap(tf, data.asset);
-  ImGui::EndChild();
+  (void)sel_changed;  // asset选择变化不再直接触发autozoom
 
   // 特征对比图
   RenderFeaturePlots(tf, ui.need_autofit);
 
   // 底部: PDF + FFT
-  RenderBottomPlots(tf, ui.need_autofit);
+  int level = data.feature.selection.selected_level;
+  RenderBottomPlots(tf, ui.need_autofit, level);
 
   // 清除autofit
   ui.need_autofit = false;

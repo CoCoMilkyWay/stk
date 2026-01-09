@@ -583,28 +583,6 @@ inline float compute_mad(std::span<const float> x, float median, std::vector<flo
   return (m < 1e-10f) ? 1.0f : m;
 }
 
-// 兼容旧接口
-struct Stats {
-  float mean = 0.0f, std = 1.0f;
-  float median = 0.0f, mad = 1.0f, iqr = 1.0f;
-};
-
-inline Stats stats(std::span<const float> x) {
-  Stats s;
-  const size_t n = x.size();
-  if (n == 0)
-    return s;
-  auto ms = mean_std(x);
-  s.mean = ms.mean;
-  s.std = ms.std;
-  std::vector<float> buf;
-  auto mi = median_iqr(x, buf);
-  s.median = mi.median;
-  s.iqr = mi.iqr;
-  s.mad = compute_mad(x, s.median, buf);
-  return s;
-}
-
 // --- 方法 ---
 
 inline void zscore(std::span<const float> x, std::span<float> out) {

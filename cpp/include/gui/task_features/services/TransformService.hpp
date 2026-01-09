@@ -1,19 +1,20 @@
 // TransformService - Transform Analysis Service
 //
-// Threading Model (对仗 DistService/TimeSeriesService):
-//   - Main thread: GUI rendering, polls status
-//   - Coroutine: Manages computation lifecycle, yields to allow polling
-//   - Thread pool: Parallel processing per-asset
+// 设计目标:
+//   1. 每个worker负责固定的asset集合 (预分配)
+//   2. 高频拖动参数时能及时中断重算
+//   3. 每个asset独立valid，算完一个画一个
 //
-// Data Flow:
-//   1. UI参数变化 → RequestCompute()
-//   2. Coroutine检测request → 分发任务到线程池
-//   3. 每个worker处理一批asset: 平稳化 → 归一化 → ADF/KPSS/FFT
-//   4. 聚合结果，更新横截面PDF
-//   5. UI轮询状态，实时渲染
+// 计算流程:
+//   1. UI 参数变化 → RequestCompute() → generation++
+//   2. Worker 检测到 generation 变化
+//   3. 中断当前计算，invalidate 所有 asset
+//   4. 重新计算负责的 asset，完成一个 valid 一个
+//   5. UI 实时渲染已 valid 的 asset
 //
 #pragma once
 
+#include "features/backend/FeatureReader.hpp"
 #include "gui/coro/CoroManager.hpp"
 
 #include <boost/asio/awaitable.hpp>
@@ -22,7 +23,6 @@
 
 #include <atomic>
 #include <condition_variable>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -35,35 +35,47 @@ struct SharedData;
 namespace GUI::Features {
 
 // ============================================================================
-// Thread Pool (复用 DistService 模式)
+// Transform Worker (每个worker负责固定的asset集合)
 // ============================================================================
 
-class TransformThreadPool {
+class TransformWorkerPool {
 public:
-  explicit TransformThreadPool(size_t num_threads);
-  ~TransformThreadPool();
+  explicit TransformWorkerPool(size_t num_workers);
+  ~TransformWorkerPool();
 
-  template <typename Func>
-  void submit(Func &&task) {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      tasks_.emplace_back(std::forward<Func>(task));
-    }
-    cv_.notify_one();
-  }
+  // 触发新一轮计算 (++generation, 唤醒所有worker)
+  void trigger();
 
-  void wait_all();
-  size_t size() const { return threads_.size(); }
+  // 当前generation
+  uint64_t generation() const { return generation_.load(); }
+
+  // 设置共享数据和回调
+  void bind(SharedData *data,
+            void (*compute_fn)(SharedData &, size_t, uint64_t),
+            void (*on_all_done)(SharedData &));
+
+  size_t num_workers() const { return workers_.size(); }
 
 private:
-  void worker();
+  void worker_loop(size_t worker_id);
 
-  std::vector<std::thread> threads_;
-  std::vector<std::function<void()>> tasks_;
+  std::vector<std::thread> workers_;
+  std::atomic<uint64_t> generation_{0};
+  std::atomic<bool> stop_{false};
+
+  // 同步
   std::mutex mutex_;
   std::condition_variable cv_;
-  std::atomic<bool> stop_{false};
-  std::atomic<size_t> active_{0};
+  uint64_t last_triggered_{0};
+
+  // 回调
+  SharedData *data_{nullptr};
+  void (*compute_fn_)(SharedData &, size_t, uint64_t) = nullptr;
+  void (*on_all_done_)(SharedData &) = nullptr;
+
+  // 完成计数
+  std::atomic<size_t> done_count_{0};
+  size_t expected_count_{0};
 };
 
 // ============================================================================
@@ -82,23 +94,35 @@ public:
   void StartCompute(CoroManager &coro, SharedData &data);
   void StopCompute(CoroManager &coro, SharedData &data);
 
-  // UI requests (non-blocking)
+  // UI requests (non-blocking) - 触发重算
   void RequestCompute();
 
   // Status
   bool is_running() const { return coro_running_.load(); }
 
 private:
-  // 内部计算方法
-  void do_compute(SharedData &data);
-  void process_asset(SharedData &data, size_t asset_idx);
+  // 内部方法
+  void load_data(SharedData &data, int level, int feature_idx, int block_idx);
+  void invalidate_all(SharedData &data);
+
+  // 静态回调 (传给worker pool)
+  static void compute_asset_static(SharedData &data, size_t asset_idx,
+                                   uint64_t gen);
+  static void on_all_done_static(SharedData &data);
+
+  // 实例方法
+  void compute_asset(SharedData &data, size_t asset_idx, uint64_t gen);
   void finalize(SharedData &data);
 
   // Features directory
   std::string features_dir_;
 
-  // Thread pool (CPU count)
-  std::unique_ptr<TransformThreadPool> pool_;
+  // Feature reader
+  FeatureReader reader_;
+  FeatureReader::DayTensor day_tensor_;
+
+  // Worker pool
+  std::unique_ptr<TransformWorkerPool> pool_;
 
   // Coroutine state
   std::unique_ptr<CoroutineHandle> coro_;
@@ -107,6 +131,7 @@ private:
 
   // Request flags
   std::atomic<bool> compute_requested_{false};
+  std::atomic<bool> reload_requested_{false};
 };
 
 } // namespace GUI::Features

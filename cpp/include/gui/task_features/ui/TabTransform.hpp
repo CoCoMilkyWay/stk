@@ -32,6 +32,10 @@ struct TransformUIState {
   bool config_expanded = true;
   bool heatmap_expanded = true;
   bool plots_expanded = true;
+
+  // Autozoom 控制: 记录上次触发时的状态
+  int last_autofit_asset = -2;           // -2 = 未初始化, -1 = ALL, >=0 = 单asset
+  size_t last_autofit_generation = 0;    // 上次 autofit 时的 generation
 };
 
 // ============================================================================
