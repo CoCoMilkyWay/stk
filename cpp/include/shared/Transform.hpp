@@ -81,10 +81,35 @@ struct Transform {
   // 原始数据缓存 (加载后缓存，避免重复读取)
   // ==========================================================================
 
+  // 单资产稀疏数据 (value + index)
+  struct SparseData {
+    std::vector<float> value; // 有效值
+    std::vector<size_t> index; // 有效值的原始索引
+
+    size_t size() const { return value.size(); }
+    bool empty() const { return value.empty(); }
+
+    void clear() {
+      value.clear();
+      index.clear();
+    }
+
+    void reserve(size_t n) {
+      value.reserve(n);
+      index.reserve(n);
+    }
+
+    void push(float v, size_t i) {
+      value.push_back(v);
+      index.push_back(i);
+    }
+  };
+
   struct DataCache {
-    std::vector<std::vector<float>> raw; // [asset_idx][time]
+    std::vector<std::vector<float>> raw;    // [asset_idx][time] (dense, for compatibility)
+    std::vector<SparseData> sparse;         // [asset_idx] 稀疏数据 (value + index)
     size_t n_assets = 0;
-    size_t n_samples = 0;
+    size_t n_samples = 0;                   // 原始时间长度
 
     // 缓存键 (用于判断是否需要重新加载)
     int level = -1;
@@ -105,6 +130,7 @@ struct Transform {
 
     void clear() {
       raw.clear();
+      sparse.clear();
       n_assets = 0;
       n_samples = 0;
       level = -1;

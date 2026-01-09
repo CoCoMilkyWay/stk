@@ -427,75 +427,91 @@ static void Render_StatusInfo(SharedData &data) {
 // Row 3: Asset Selector + Time Window Slider
 // ============================================================================
 
-// 格式化时间窗口标签
-static const char *FormatBlockDate(const Transform::Block &block) {
-  return block.display.c_str();
+// 格式化 asset slider 标签: index.exchange.name(sample_count)
+static const char *FormatAssetLabel(const Asset &asset, const Transform &tf, int sel, char *buf, size_t buf_size) {
+  if (sel < 0 || sel >= (int)asset.items.size()) {
+    snprintf(buf, buf_size, "---");
+    return buf;
+  }
+
+  const auto &item = asset.items[sel];
+  size_t sample_count = 0;
+  if (sel < (int)tf.cache.sparse.size()) {
+    sample_count = tf.cache.sparse[sel].size();
+  }
+
+  snprintf(buf, buf_size, "%d.%s.%s(%zu)",
+           sel,
+           item.exchange.c_str(),
+           item.asset_name.c_str(),
+           sample_count);
+  return buf;
 }
 
 static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
   auto &tf = data.transform;
   bool changed = false;
+  const auto &items = data.asset.items;
+  const int n_assets = static_cast<int>(items.size());
 
-  // Asset选择下拉 (支持ALL模式)
-  if (!data.asset.items.empty()) {
-    ImGui::SetNextItemWidth(200);
-    const auto &items = data.asset.items;
-    int sel = tf.display.selected_asset; // -1 = ALL
-
-    const char *current_label;
-    char label_buf[128];
-    if (sel < 0) {
-      current_label = "ALL";
+  // All checkbox
+  bool is_all = (tf.display.selected_asset < 0);
+  if (ImGui::Checkbox("All", &is_all)) {
+    if (is_all) {
+      if (tf.display.selected_asset != -1)
+        changed = true;
+      tf.display.selected_asset = -1;
     } else {
-      size_t idx = static_cast<size_t>(sel);
-      if (idx >= items.size())
-        idx = 0;
-      snprintf(label_buf, sizeof(label_buf), "%s.%s.%s",
-               items[idx].asset_code.c_str(),
-               items[idx].exchange.c_str(),
-               items[idx].asset_name.c_str());
-      current_label = label_buf;
-    }
-
-    if (ImGui::BeginCombo("##AssetSelect", current_label)) {
-      // ALL选项
-      bool is_all_selected = (sel < 0);
-      if (ImGui::Selectable("ALL", is_all_selected)) {
-        if (tf.display.selected_asset != -1)
-          changed = true;
-        tf.display.selected_asset = -1;
+      // 取消 All，选择第一个 asset
+      if (tf.display.selected_asset < 0 && n_assets > 0) {
+        tf.display.selected_asset = 0;
+        changed = true;
       }
-      if (is_all_selected)
-        ImGui::SetItemDefaultFocus();
-
-      // 各个asset
-      for (size_t i = 0; i < items.size(); ++i) {
-        char label[128];
-        snprintf(label, sizeof(label), "%s.%s.%s",
-                 items[i].asset_code.c_str(),
-                 items[i].exchange.c_str(),
-                 items[i].asset_name.c_str());
-        bool is_selected = (sel == (int)i);
-        if (ImGui::Selectable(label, is_selected)) {
-          if (tf.display.selected_asset != (int)i)
-            changed = true;
-          tf.display.selected_asset = static_cast<int>(i);
-        }
-        if (is_selected)
-          ImGui::SetItemDefaultFocus();
-      }
-      ImGui::EndCombo();
     }
   }
 
-  // 时间窗口滑块
+  // Asset slider (禁用状态: All 模式或无 asset)
+  ImGui::SameLine(0, 10);
+  ImGui::BeginDisabled(is_all || n_assets == 0);
+  {
+    ImGui::SetNextItemWidth(250);
+    int sel = tf.display.selected_asset;
+    if (sel < 0)
+      sel = 0;
+
+    char label_buf[128];
+    FormatAssetLabel(data.asset, tf, sel, label_buf, sizeof(label_buf));
+
+    if (ImGui::SliderInt("##AssetSlider", &sel, 0, std::max(0, n_assets - 1), label_buf)) {
+      if (tf.display.selected_asset != sel) {
+        tf.display.selected_asset = sel;
+        changed = true;
+      }
+    }
+  }
+  ImGui::EndDisabled();
+
+  // Time slider (显示 YY/MM/DD)
   ImGui::SameLine(0, 20);
   if (!tf.blocks.empty()) {
-    ImGui::SetNextItemWidth(200);
+    ImGui::SetNextItemWidth(150);
     int block_idx = tf.selected_block;
-    const char *fmt = FormatBlockDate(tf.blocks[block_idx]);
-    if (ImGui::SliderInt("##BlockSlider", &block_idx, 0,
-                         static_cast<int>(tf.blocks.size() - 1), fmt)) {
+
+    // 格式化为 YY/MM/DD
+    char time_label[32];
+    const auto &block = tf.blocks[block_idx];
+    if (block.date.size() >= 8) {
+      // YYYYMMDD -> YY/MM/DD
+      snprintf(time_label, sizeof(time_label), "%s/%s/%s",
+               block.date.substr(2, 2).c_str(),
+               block.date.substr(4, 2).c_str(),
+               block.date.substr(6, 2).c_str());
+    } else {
+      snprintf(time_label, sizeof(time_label), "%s", block.display.c_str());
+    }
+
+    if (ImGui::SliderInt("##TimeSlider", &block_idx, 0,
+                         static_cast<int>(tf.blocks.size() - 1), time_label)) {
       if (tf.selected_block != block_idx) {
         tf.selected_block = block_idx;
         changed = true;

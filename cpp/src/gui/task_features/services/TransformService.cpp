@@ -9,6 +9,7 @@
 #include "math/stationary/KPSS.hpp"
 #include "math/stationary/MADetrend.hpp"
 #include "misc/profiler.hpp"
+#include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -312,25 +313,61 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx,
   if (T == 0)
     return;
 
-  // 获取特征的 field offset
+  // 获取特征的 field offset 和 valid_type
   size_t f_offset = 0;
+  size_t valid_offset = 0;
+  L2::ValidType valid_type = L2::ValidType::ALL;
+
+  const auto &meta = level == 0   ? data.feature.metadata.features_l0
+                     : level == 1 ? data.feature.metadata.features_l1
+                                  : data.feature.metadata.features_l2;
+  if (feature_idx >= 0 && feature_idx < (int)meta.size()) {
+    valid_type = meta[feature_idx].valid_type;
+  }
+
   if (level == 0) {
     f_offset = L0_FIELD_OFFSETS[feature_idx];
+    // 根据 valid_type 选择对应的 valid flag offset
+    if (valid_type == L2::ValidType::DEPTH) {
+      valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid];
+    } else {
+      valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_data_valid];
+    }
   } else if (level == 1) {
     f_offset = L1_FIELD_OFFSETS[feature_idx];
+    valid_offset = L1_FIELD_OFFSETS[L1_FieldOffset::_data_valid];
   } else {
     f_offset = L2_FIELD_OFFSETS[feature_idx];
+    valid_offset = L2_FIELD_OFFSETS[L2_FieldOffset::_data_valid];
   }
 
   // 提取数据到缓存 (feature_storage_t -> float 转换)
   cache.raw.resize(n_assets);
+  cache.sparse.resize(n_assets);
+
   const feature_storage_t *base = day_tensor_.data[level].data();
   size_t F = day_tensor_.F[level];
+
   for (size_t a = 0; a < n_assets; ++a) {
     cache.raw[a].resize(T);
+    cache.sparse[a].clear();
+    cache.sparse[a].reserve(T); // 最大预分配
+
     for (size_t t = 0; t < T; ++t) {
       size_t idx = (t * F + f_offset) * n_assets + a;
-      cache.raw[a][t] = static_cast<float>(base[idx]);
+      float val = static_cast<float>(base[idx]);
+      cache.raw[a][t] = val;
+
+      // 检查 valid flag (ALL 类型不过滤)
+      if (valid_type == L2::ValidType::ALL) {
+        cache.sparse[a].push(val, t);
+      } else {
+        size_t valid_idx = (t * F + valid_offset) * n_assets + a;
+        float valid_flag = static_cast<float>(base[valid_idx]);
+        if (valid_flag > 0.5f) {
+          cache.sparse[a].push(val, t);
+        }
+      }
     }
   }
 
