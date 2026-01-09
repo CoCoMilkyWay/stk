@@ -136,7 +136,7 @@ struct Transform {
     std::vector<float> fft_power;
 
     // PDF (KLLcache 持久复用，exportPDF 返回内部指针)
-    KLLcache pdf{256, 128};
+    KLLcache KLL{512, 1024};
 
     bool valid = false;
 
@@ -152,7 +152,7 @@ struct Transform {
       kpss_pass = false;
       std::fill(fft_freq.begin(), fft_freq.end(), 0.0f);
       std::fill(fft_power.begin(), fft_power.end(), 0.0f);
-      pdf.clear();
+      KLL.clear();
       valid = false;
     }
 
@@ -162,7 +162,8 @@ struct Transform {
       normalized.resize(n_samples, 0.0f);
       // FFT大小: 向下取整到最接近的2的幂
       size_t fft_n = 1;
-      while (fft_n * 2 <= n_samples) fft_n *= 2;
+      while (fft_n * 2 <= n_samples)
+        fft_n *= 2;
       size_t fft_size = fft_n / 2 + 1;
       fft_freq.resize(fft_size, 0.0f);
       fft_power.resize(fft_size, 0.0f);
@@ -188,7 +189,7 @@ struct Transform {
 
     std::atomic<size_t> done{0};
     std::atomic<size_t> total{0};
-    std::atomic<uint64_t> generation{0};  // 计算版本号，用于中断检测
+    std::atomic<uint64_t> generation{0}; // 计算版本号，用于中断检测
 
     float progress() const {
       size_t t = total.load();
@@ -218,7 +219,7 @@ struct Transform {
   // ==========================================================================
 
   struct Display {
-    int selected_asset = -1;  // -1 = ALL, >=0 = specific asset
+    int selected_asset = -1; // -1 = ALL, >=0 = specific asset
 
     bool is_all() const { return selected_asset < 0; }
 

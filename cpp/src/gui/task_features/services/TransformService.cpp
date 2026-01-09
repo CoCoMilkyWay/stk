@@ -46,7 +46,8 @@ inline constexpr auto FFT_TABLE = make_fft_table(std::make_index_sequence<9>{});
 // log2(n/64) 用于索引
 inline size_t fft_table_idx(size_t n) {
   size_t idx = 0;
-  while ((64u << idx) < n) ++idx;
+  while ((64u << idx) < n)
+    ++idx;
   return idx;
 }
 
@@ -370,7 +371,8 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx,
   }
 
   // 中断检测
-  if (tf.compute.generation != gen) return;
+  if (tf.compute.generation != gen)
+    return;
 
   // 1. 平稳化
   switch (tf.params.stationary_method) {
@@ -392,7 +394,8 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx,
   }
 
   // 中断检测
-  if (tf.compute.generation != gen) return;
+  if (tf.compute.generation != gen)
+    return;
 
   // 2. 归一化
   math::normalize::Params norm_params;
@@ -405,7 +408,8 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx,
                             tf.params.norm_method, norm_params);
 
   // 中断检测
-  if (tf.compute.generation != gen) return;
+  if (tf.compute.generation != gen)
+    return;
 
   // 3. ADF 检验
   math::stationary::ADFWorkspace adf_ws;
@@ -416,7 +420,8 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx,
   result.adf_pass = adf_result.pvalue < 0.05f;
 
   // 中断检测
-  if (tf.compute.generation != gen) return;
+  if (tf.compute.generation != gen)
+    return;
 
   // 4. KPSS 检验
   math::stationary::KPSSWorkspace kpss_ws;
@@ -427,11 +432,13 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx,
   result.kpss_pass = kpss_result.pvalue > 0.05f;
 
   // 中断检测
-  if (tf.compute.generation != gen) return;
+  if (tf.compute.generation != gen)
+    return;
 
   // 5. FFT 功率谱 (动态大小，向下取整到2的幂，64~16384)
   size_t fft_n = 1;
-  while (fft_n * 2 <= n) fft_n *= 2;
+  while (fft_n * 2 <= n)
+    fft_n *= 2;
   fft_n = std::clamp(fft_n, size_t{64}, size_t{16384});
 
   size_t fft_size = fft_n / 2 + 1;
@@ -442,18 +449,19 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx,
 
   // O(1) 函数指针表查询
   detail::FFT_TABLE[detail::fft_table_idx(fft_n)](result.normalized.data(),
-                                                   result.fft_power.data());
+                                                  result.fft_power.data());
 
   for (size_t i = 0; i < fft_size; ++i) {
     result.fft_freq[i] = static_cast<float>(i) / static_cast<float>(fft_n);
   }
 
   // 中断检测
-  if (tf.compute.generation != gen) return;
+  if (tf.compute.generation != gen)
+    return;
 
   // 6. PDF (KLLcache 持久复用)
-  result.pdf.clear();
-  result.pdf.addBatch(result.normalized);
+  result.KLL.clear();
+  result.KLL.addBatch(result.normalized);
 
   // 完成: 设置valid，增加done计数
   result.valid = true;
