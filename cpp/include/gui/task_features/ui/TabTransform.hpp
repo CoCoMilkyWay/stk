@@ -53,6 +53,9 @@ struct TransformUIState {
     char time_str[32] = {};          // 时间字符串
     bool valid = false;              // 缓存是否有效
   } anchor_cache;
+
+  // 渲染缓存: 记录上次有效的 generation，避免数据更新时的空白
+  size_t last_rendered_generation = 0;  // 上次成功渲染的 generation
 };
 
 // ============================================================================

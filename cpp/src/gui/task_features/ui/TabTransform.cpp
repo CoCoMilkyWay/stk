@@ -800,6 +800,32 @@ static void FormatAnchorTime(char *buf, size_t buf_size, size_t idx, int level) 
 }
 
 // ============================================================================
+// Render Decision Helper: 判断是否应该渲染某个 asset 的数据
+// ============================================================================
+
+// 判断是否应该渲染 asset 结果（避免计算过程中的空白）
+static bool ShouldRenderAssetResult(const Transform::AssetResult &r, size_t cur_gen,
+                                    size_t last_rendered_gen,
+                                    Transform::Compute::Status status,
+                                    bool has_data) {
+  if (r.valid) {
+    return true; // 新数据已准备好
+  }
+  if (!has_data) {
+    return false; // 没有数据可显示
+  }
+  // 新计算进行中，继续显示旧数据避免空白
+  if (cur_gen > last_rendered_gen && status == Transform::Compute::Status::Computing) {
+    return true;
+  }
+  // 旧数据，继续显示
+  if (cur_gen == last_rendered_gen) {
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
 // Feature Plots (Raw vs Processed)
 // ============================================================================
 
@@ -878,12 +904,13 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
     for (size_t i = 0; i < tf.cache.raw.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
-      // 使用 results[i].valid 过滤
-      if (i >= tf.results.size() || !tf.results[i].valid)
-        continue;
       const auto &raw = tf.cache.raw[i];
       if (raw.empty())
         continue;
+      // 判断是否应该渲染（避免计算过程中的空白）
+      if (i >= tf.results.size() || !ShouldRenderAssetResult(tf.results[i], cur_gen, ui.last_rendered_generation, tf.compute.status, !raw.empty())) {
+        continue;
+      }
       ImVec4 col = GetAssetColor(i, n_assets);
       ImPlot::SetNextLineStyle(col, 0.8f);
       ImPlot::PlotLine("##r", raw.data(), static_cast<int>(raw.size()));
@@ -931,8 +958,12 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
       if (!show_all && (int)i != sel)
         continue;
       const auto &r = tf.results[i];
-      if (!r.valid || r.normalized.empty())
+      if (r.normalized.empty())
         continue;
+      // 判断是否应该渲染（避免计算过程中的空白）
+      if (!ShouldRenderAssetResult(r, cur_gen, ui.last_rendered_generation, tf.compute.status, !r.normalized.empty())) {
+        continue;
+      }
       ImVec4 col = GetAssetColor(i, n_assets);
       ImPlot::SetNextLineStyle(col, 0.8f);
       ImPlot::PlotLine("##n", r.normalized.data(),
@@ -967,7 +998,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
 // Asset PDF & FFT (直接从 AssetResult 读取，零分配)
 // ============================================================================
 
-static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level) {
+static void RenderBottomPlots(const Transform &tf, TransformUIState &ui, bool need_autofit, int level) {
   TraceN("UI:BottomPlots");
   float height = std::max(120.0f, ImGui::GetContentRegionAvail().y - 5.0f);
 
@@ -993,13 +1024,16 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level)
                       ImPlotAxisFlags_NoLabel);
 
     // 直接从 AssetResult.KLL 读取 (exportPDF 返回内部指针，零 copy)
+    const size_t cur_gen = tf.compute.generation.load();
     for (size_t i = 0; i < tf.results.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
       const auto &r = tf.results[i];
-      if (!r.valid)
-        continue;
+      // 判断是否应该渲染（避免计算过程中的空白）
       auto KLL = r.KLL.exportPDF();
+      if (!ShouldRenderAssetResult(r, cur_gen, ui.last_rendered_generation, tf.compute.status, KLL.n > 0)) {
+        continue;
+      }
       if (KLL.n > 0) {
         ImVec4 col = GetAssetColor(i, n_assets);
         ImPlot::SetNextLineStyle(col, 0.8f);
@@ -1081,12 +1115,17 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level)
     ImPlot::PopPlotClipRect();
 
     // 绘制每个 asset 的 FFT (直接从动态数组读取)
+    const size_t cur_gen_fft = tf.compute.generation.load();
     for (size_t i = 0; i < tf.results.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
       const auto &r = tf.results[i];
-      if (!r.valid || r.fft_freq.empty())
+      if (r.fft_freq.empty())
         continue;
+      // 判断是否应该渲染（避免计算过程中的空白）
+      if (!ShouldRenderAssetResult(r, cur_gen_fft, ui.last_rendered_generation, tf.compute.status, !r.fft_freq.empty())) {
+        continue;
+      }
       ImVec4 col = GetAssetColor(i, n_assets);
       ImPlot::SetNextLineStyle(col, 0.8f);
       ImPlot::PlotLine("##fft", r.fft_freq.data(), r.fft_power.data(),
@@ -1183,6 +1222,16 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   }
   (void)sel_changed; // asset选择变化不再直接触发autozoom
 
+  // 更新渲染缓存: 只有当计算完成时才更新，避免计算过程中的空白
+  {
+    size_t cur_gen = tf.compute.generation.load();
+    if (tf.compute.status == Transform::Compute::Status::Done) {
+      if (cur_gen != ui.last_rendered_generation) {
+        ui.last_rendered_generation = cur_gen;
+      }
+    }
+  }
+
   // 获取当前 level
   int level = data.feature.selection.selected_level;
 
@@ -1190,7 +1239,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   RenderFeaturePlots(tf, ui, ui.need_autofit, level);
 
   // 底部: PDF + FFT
-  RenderBottomPlots(tf, ui.need_autofit, level);
+  RenderBottomPlots(tf, ui, ui.need_autofit, level);
 
   // 清除autofit
   ui.need_autofit = false;
