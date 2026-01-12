@@ -157,9 +157,8 @@ struct Transform {
     float kpss_pval = 0.0f;
     bool kpss_pass = false;
 
-    // FFT (动态大小，使用整个time window)
-    std::vector<float> fft_freq;
-    std::vector<float> fft_power;
+    // PSD (128 bins 非标周期轴，由 Transform::psd.asset_psd 存储)
+    // AssetResult 不再存储 FFT 数据
 
     // PDF (KLLcache 持久复用，exportPDF 返回内部指针)
     KLLcache KLL{512, 1024};
@@ -176,23 +175,14 @@ struct Transform {
       kpss_stat = 0.0f;
       kpss_pval = 0.0f;
       kpss_pass = false;
-      std::fill(fft_freq.begin(), fft_freq.end(), 0.0f);
-      std::fill(fft_power.begin(), fft_power.end(), 0.0f);
       KLL.clear();
       valid = false;
     }
 
-    // 预分配时序数据和FFT
+    // 预分配时序数据
     void reserve(size_t n_samples) {
       stationary.resize(n_samples, 0.0f);
       normalized.resize(n_samples, 0.0f);
-      // FFT大小: 向下取整到最接近的2的幂
-      size_t fft_n = 1;
-      while (fft_n * 2 <= n_samples)
-        fft_n *= 2;
-      size_t fft_size = fft_n / 2 + 1;
-      fft_freq.resize(fft_size, 0.0f);
-      fft_power.resize(fft_size, 0.0f);
     }
   };
 
@@ -272,9 +262,73 @@ struct Transform {
   // 计算结果 (n_assets 个，预分配后复用)
   std::vector<AssetResult> results;
 
-  // 聚合 FFT (动态大小)
-  std::vector<float> avg_fft_freq;
-  std::vector<float> avg_fft_power;
+  // ==========================================================================
+  // PSD 缓存 (非标周期轴，128 bins)
+  // ==========================================================================
+
+  static constexpr size_t N_PSD_BINS = 128;
+
+  struct PSDCache {
+    // 每个 asset 的 PSD (128 bins)
+    std::vector<std::array<float, 128>> asset_psd;
+
+    // 聚合 PSD (能量均线)
+    std::array<float, 128> avg_psd{};
+    std::array<float, 128> avg_psd_db{};  // 取 log10 后
+
+    // 绘图用 x 轴
+    std::array<float, 128> plot_x{};
+
+    // 刻度
+    std::vector<double> tick_positions;
+    std::vector<std::string> tick_labels;
+
+    // 频段能量比例 (用于标注)
+    float ratio_sec = 0.0f;   // 秒级 (bins 0-57)
+    float ratio_min = 0.0f;   // 分钟级 (bins 58-116)
+    float ratio_hour = 0.0f;  // 小时级 (bins 117-126)
+    float ratio_dc = 0.0f;    // DC (bin 127)
+
+    bool valid = false;
+
+    void init_axis() {
+      for (size_t k = 0; k < 128; ++k) {
+        plot_x[k] = static_cast<float>(k);
+      }
+      // 刻度: 10s, 20s, ..., 50s, 10m, 20m, ..., 50m, 2h, 4h, ..., 10h
+      tick_positions.clear();
+      tick_labels.clear();
+      for (size_t s = 10; s < 60; s += 10) {
+        tick_positions.push_back(static_cast<double>(s - 2));
+        tick_labels.push_back(std::to_string(s) + "s");
+      }
+      for (size_t m = 10; m < 60; m += 10) {
+        tick_positions.push_back(static_cast<double>(58 + m - 1));
+        tick_labels.push_back(std::to_string(m) + "m");
+      }
+      for (size_t h = 2; h <= 10; h += 2) {
+        tick_positions.push_back(static_cast<double>(117 + h - 1));
+        tick_labels.push_back(std::to_string(h) + "h");
+      }
+    }
+
+    void clear() {
+      asset_psd.clear();
+      avg_psd.fill(0.0f);
+      avg_psd_db.fill(0.0f);
+      ratio_sec = ratio_min = ratio_hour = ratio_dc = 0.0f;
+      valid = false;
+    }
+
+    void resize(size_t n_assets) {
+      asset_psd.resize(n_assets);
+      for (auto &p : asset_psd) {
+        p.fill(0.0f);
+      }
+    }
+  };
+
+  PSDCache psd;
 
   // 显示状态
   Display display;
@@ -310,8 +364,7 @@ struct Transform {
     selected_block = 0;
     cache.clear();
     results.clear();
-    avg_fft_freq.clear();
-    avg_fft_power.clear();
+    psd.clear();
     display = Display{};
     compute.reset();
   }

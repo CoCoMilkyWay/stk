@@ -18,42 +18,8 @@
 #include <cassert>
 #include <chrono>
 #include <thread>
-#include <utility>
 
 namespace GUI::Features {
-
-// ============================================================================
-// FFT Dispatch (编译时生成所有模板实例，运行时O(1)查表)
-// ============================================================================
-
-namespace detail {
-
-template <size_t N>
-void fft_compute(const float *in, float *power) {
-  math::spectral::FFTWorkspaceT<N> ws;
-  math::spectral::fft_real_to_power<N>(in, power, ws);
-}
-
-using FFTFunc = void (*)(const float *, float *);
-
-template <size_t... Ns>
-constexpr auto make_fft_table(std::index_sequence<Ns...>) {
-  // 生成 64, 128, 256, ..., 16384 的函数指针表
-  return std::array<FFTFunc, sizeof...(Ns)>{fft_compute<(64 << Ns)>...};
-}
-
-// 函数指针表: [0]=64, [1]=128, ..., [8]=16384
-inline constexpr auto FFT_TABLE = make_fft_table(std::make_index_sequence<9>{});
-
-// log2(n/64) 用于索引
-inline size_t fft_table_idx(size_t n) {
-  size_t idx = 0;
-  while ((64u << idx) < n)
-    ++idx;
-  return idx;
-}
-
-} // namespace detail
 
 // ============================================================================
 // TransformWorkerPool Implementation
@@ -270,11 +236,17 @@ void TransformService::invalidate_all(SharedData &data) {
     tf.preallocate(n_assets, n_samples);
   }
 
+  // 预分配 PSD 缓存
+  if (tf.psd.asset_psd.size() != n_assets) {
+    tf.psd.resize(n_assets);
+  }
+
   // 增加generation，标记所有asset为invalid
   ++tf.compute.generation;
   for (auto &r : tf.results) {
     r.valid = false;
   }
+  tf.psd.valid = false;
 
   tf.compute.total = n_assets;
   tf.compute.done = 0;
@@ -481,25 +453,53 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
   if (tf.compute.generation != gen)
     return;
 
-  // 5. FFT 功率谱 (动态大小，向下取整到2的幂，64~16384)
+  // 5. PSD (128 bins 非标周期轴)
   {
-    TraceN("Algo_FFT");
-    size_t fft_n = 1;
-    while (fft_n * 2 <= n)
-      fft_n *= 2;
-    fft_n = std::clamp(fft_n, size_t{64}, size_t{16384});
+    TraceN("Algo_PSD");
+    if (asset_idx < tf.psd.asset_psd.size()) {
+      auto &psd_out = tf.psd.asset_psd[asset_idx];
+      psd_out.fill(0.0f);
 
-    size_t fft_size = fft_n / 2 + 1;
-    if (result.fft_freq.size() != fft_size) {
-      result.fft_freq.resize(fft_size);
-      result.fft_power.resize(fft_size);
-    }
+      thread_local math::spectral::MultiResPSDWorkspace<> ws;
+      if (!ws.initialized) ws.init();
+      ws.reset();
 
-    // O(1) 函数指针表查询
-    detail::FFT_TABLE[detail::fft_table_idx(fft_n)](result.normalized.data(), result.fft_power.data());
+      int level = tf.cache.level;
 
-    for (size_t i = 0; i < fft_size; ++i) {
-      result.fft_freq[i] = static_cast<float>(i) / static_cast<float>(fft_n);
+      // 收集 valid 数据用于循环填充
+      thread_local std::vector<float> valid_data;
+      valid_data.clear();
+      valid_data.reserve(n);
+
+      float last_valid = 0.0f;
+      for (size_t t = 0; t < n; ++t) {
+        float val = result.normalized[t];
+        if (std::isfinite(val)) {
+          last_valid = val;
+        }
+        valid_data.push_back(last_valid);
+      }
+
+      // 确定目标 FFT 大小
+      size_t target_size = (level == 0) ? 16384 : (level == 1) ? 8192 : 128;
+
+      // 循环填充直到达到 FFT 大小
+      size_t filled = 0;
+      while (filled < target_size) {
+        size_t idx = filled % valid_data.size();
+        float val = valid_data[idx];
+        if (level == 0) {
+          ws.push_L0(val);
+        } else if (level == 1) {
+          ws.push_L1(val);
+        } else {
+          ws.push_L2(val);
+        }
+        ++filled;
+      }
+
+      // 计算 PSD 到 128 bins
+      ws.compute_day(std::span<float>(psd_out.data(), psd_out.size()));
     }
   }
 
@@ -521,41 +521,74 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
 
 void TransformService::on_all_done_static(SharedData &data) {
   auto &tf = data.transform;
+  auto &psd = tf.psd;
 
-  // 找到第一个有效结果来确定FFT大小
-  size_t fft_size = 0;
-  for (const auto &r : tf.results) {
-    if (r.valid && !r.fft_freq.empty()) {
-      fft_size = r.fft_freq.size();
-      break;
+  // 初始化轴刻度（只需一次）
+  if (psd.tick_positions.empty()) {
+    psd.init_axis();
+  }
+
+  // 计算平均 PSD
+  psd.avg_psd.fill(0.0f);
+  size_t valid_count = 0;
+
+  for (size_t i = 0; i < tf.results.size(); ++i) {
+    if (!tf.results[i].valid)
+      continue;
+    if (i >= psd.asset_psd.size())
+      continue;
+
+    const auto &src = psd.asset_psd[i];
+    for (size_t k = 0; k < 128; ++k) {
+      psd.avg_psd[k] += src[k];
+    }
+    ++valid_count;
+  }
+
+  if (valid_count > 0) {
+    float inv = 1.0f / static_cast<float>(valid_count);
+    for (size_t k = 0; k < 128; ++k) {
+      psd.avg_psd[k] *= inv;
     }
   }
 
-  if (fft_size > 0) {
-    // 调整聚合FFT大小
-    tf.avg_fft_freq.resize(fft_size);
-    tf.avg_fft_power.assign(fft_size, 0.0f);
+  // 转换为 dB (log10)
+  for (size_t k = 0; k < 128; ++k) {
+    float v = psd.avg_psd[k];
+    psd.avg_psd_db[k] = (v > 1e-20f) ? std::log10(v) : -20.0f;
+  }
 
-    size_t valid_count = 0;
-    for (const auto &r : tf.results) {
-      if (r.valid && r.fft_power.size() == fft_size) {
-        if (valid_count == 0) {
-          tf.avg_fft_freq = r.fft_freq;
-        }
-        for (size_t i = 0; i < fft_size; ++i) {
-          tf.avg_fft_power[i] += r.fft_power[i];
-        }
-        ++valid_count;
-      }
-    }
+  // 计算频段能量比例
+  float total_energy = 0.0f;
+  float sec_energy = 0.0f;   // bins 0-57
+  float min_energy = 0.0f;   // bins 58-116
+  float hour_energy = 0.0f;  // bins 117-126
+  float dc_energy = 0.0f;    // bin 127
 
-    if (valid_count > 0) {
-      float inv = 1.0f / valid_count;
-      for (auto &p : tf.avg_fft_power) {
-        p *= inv;
-      }
+  for (size_t k = 0; k < 128; ++k) {
+    float e = psd.avg_psd[k];
+    total_energy += e;
+    if (k < 58) {
+      sec_energy += e;
+    } else if (k < 117) {
+      min_energy += e;
+    } else if (k < 127) {
+      hour_energy += e;
+    } else {
+      dc_energy += e;
     }
   }
+
+  if (total_energy > 1e-20f) {
+    psd.ratio_sec = sec_energy / total_energy;
+    psd.ratio_min = min_energy / total_energy;
+    psd.ratio_hour = hour_energy / total_energy;
+    psd.ratio_dc = dc_energy / total_energy;
+  } else {
+    psd.ratio_sec = psd.ratio_min = psd.ratio_hour = psd.ratio_dc = 0.0f;
+  }
+
+  psd.valid = true;
 
   // Clamp display indices
   tf.display.clamp(tf.cache.n_assets);

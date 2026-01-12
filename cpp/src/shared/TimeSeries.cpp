@@ -214,7 +214,7 @@ static void compute_stationarity_for_month(
 static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
                                   const TimeSeries::SharedMonthData &shared) {
   Trace;
-  thread_local math::spectral::MultiResPSDWorkspace ws;
+  thread_local math::spectral::MultiResPSDWorkspace<> ws;
   if (!ws.initialized) ws.init();
 
   ws.reset();

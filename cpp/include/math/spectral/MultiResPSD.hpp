@@ -181,75 +181,245 @@ void fft_real_to_power(const float *input, float *power, FFTWorkspaceT<N> &ws) {
 }
 
 // ============================================================================
-// Bin Mapping (FFT bin → Scale bin)
+// Bin Mapping (FFT bin → Scale bins, 支持一对多映射)
 // ============================================================================
 
-struct BinMap {
+struct BinMapEntry {
   uint8_t scale_idx;
   float weight;
 };
 
-// L0: 1秒采样, FFT=16384, df = 1/16384 Hz
-inline void build_mapping_L0(std::array<BinMap, FFT_SIZE_L0 / 2 + 1> &mapping) {
-  for (size_t j = 0; j <= FFT_SIZE_L0 / 2; ++j) {
-    float f = static_cast<float>(j) / FFT_SIZE_L0;  // Hz
-    float T = (f > 1e-6f) ? 1.0f / f : 1e6f;        // 周期(秒)
+struct MultiTargetBinMap {
+  static constexpr size_t MAX_TARGETS = 12;
+  std::array<BinMapEntry, MAX_TARGETS> targets{};
+  uint8_t n_targets = 0;
 
-    if (T >= 1.5f && T < 59.5f) {
-      // 秒级: 2-59秒 → idx 0-57
-      size_t idx = static_cast<size_t>(std::round(T)) - 2;
-      idx = std::min(idx, size_t{57});
-      mapping[j] = {static_cast<uint8_t>(idx), 1.0f};
-    } else if (T >= 30.0f && T < 3570.0f) {
-      // 分钟级: 1-59分钟 → idx 58-116
-      size_t min_val = static_cast<size_t>(std::round(T / 60.0f));
-      min_val = std::clamp(min_val, size_t{1}, size_t{59});
-      size_t idx = 58 + min_val - 1;
-      mapping[j] = {static_cast<uint8_t>(idx), 1.0f};
-    } else {
-      mapping[j] = {127, 1.0f};  // DC
+  void add(uint8_t idx, float w) {
+    assert(n_targets < MAX_TARGETS);
+    targets[n_targets++] = {idx, w};
+  }
+};
+
+// ============================================================================
+// 非标 bin 的 FFT index 边界 (精确浮点数，在 FFT index 空间计算)
+// ============================================================================
+
+// 将非标 bin 的周期范围转换为 FFT index 范围
+// 返回 [j_lo, j_hi]：低频边界对应长周期，高频边界对应短周期
+// 
+// 公式: FFT_index = frequency * FFT_SIZE = FFT_SIZE / period
+//
+// 对于周期 T (单位同采样率)，周期范围 [T-0.5, T+0.5]
+//   频率范围: [1/(T+0.5), 1/(T-0.5)]
+//   FFT index 范围: [N/(T+0.5), N/(T-0.5)]
+
+struct FFTIndexRange {
+  float j_lo;  // 低频边界 (对应长周期，较小的 FFT index)
+  float j_hi;  // 高频边界 (对应短周期，较大的 FFT index)
+};
+
+// L0: 1秒采样，非标 bin 周期转换到秒
+template <size_t N>
+inline FFTIndexRange get_bin_fft_range_L0(size_t bin_idx) {
+  if (bin_idx < N_SEC_BINS) {
+    // 秒级 bin k: 周期 T = k+2 秒，范围 [k+1.5, k+2.5] 秒
+    float T = static_cast<float>(bin_idx + 2);
+    float T_lo = T - 0.5f;  // 短周期边界
+    float T_hi = T + 0.5f;  // 长周期边界
+    return {static_cast<float>(N) / T_hi, static_cast<float>(N) / T_lo};
+  } else if (bin_idx < N_SEC_BINS + N_MIN_BINS) {
+    // 分钟级 bin k: 周期 T = (k-57) 分钟 = (k-57)*60 秒
+    float T_min = static_cast<float>(bin_idx - N_SEC_BINS + 1);
+    float T_lo_sec = (T_min - 0.5f) * 60.0f;
+    float T_hi_sec = (T_min + 0.5f) * 60.0f;
+    return {static_cast<float>(N) / T_hi_sec, static_cast<float>(N) / T_lo_sec};
+  } else if (bin_idx < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS) {
+    // 小时级 bin k: 周期 T = (k-116) 小时 = (k-116)*3600 秒
+    float T_hour = static_cast<float>(bin_idx - N_SEC_BINS - N_MIN_BINS + 1);
+    float T_lo_sec = (T_hour - 0.5f) * 3600.0f;
+    float T_hi_sec = (T_hour + 0.5f) * 3600.0f;
+    return {static_cast<float>(N) / T_hi_sec, static_cast<float>(N) / T_lo_sec};
+  }
+  return {0.0f, 0.0f};  // DC
+}
+
+// L1: 1分钟采样，非标 bin 周期转换到分钟
+template <size_t N>
+inline FFTIndexRange get_bin_fft_range_L1(size_t bin_idx) {
+  if (bin_idx < N_SEC_BINS + N_MIN_BINS) {
+    // 分钟级 bin k: 周期 T = (k-57) 分钟
+    float T_min = static_cast<float>(bin_idx - N_SEC_BINS + 1);
+    float T_lo = T_min - 0.5f;
+    float T_hi = T_min + 0.5f;
+    return {static_cast<float>(N) / T_hi, static_cast<float>(N) / T_lo};
+  } else if (bin_idx < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS) {
+    // 小时级 bin k: 周期 T = (k-116) 小时 = (k-116)*60 分钟
+    float T_hour = static_cast<float>(bin_idx - N_SEC_BINS - N_MIN_BINS + 1);
+    float T_lo_min = (T_hour - 0.5f) * 60.0f;
+    float T_hi_min = (T_hour + 0.5f) * 60.0f;
+    return {static_cast<float>(N) / T_hi_min, static_cast<float>(N) / T_lo_min};
+  }
+  return {0.0f, 0.0f};  // DC
+}
+
+// L2: 1小时采样，非标 bin 周期转换到小时
+template <size_t N>
+inline FFTIndexRange get_bin_fft_range_L2(size_t bin_idx) {
+  if (bin_idx >= N_SEC_BINS + N_MIN_BINS && bin_idx < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS) {
+    // 小时级 bin k: 周期 T = (k-116) 小时
+    float T_hour = static_cast<float>(bin_idx - N_SEC_BINS - N_MIN_BINS + 1);
+    float T_lo = T_hour - 0.5f;
+    float T_hi = T_hour + 0.5f;
+    return {static_cast<float>(N) / T_hi, static_cast<float>(N) / T_lo};
+  }
+  return {0.0f, 0.0f};  // DC
+}
+
+// 计算两个区间的重叠长度 (在 FFT index 空间)
+inline float overlap_length(float a_lo, float a_hi, float b_lo, float b_hi) {
+  float lo = std::max(a_lo, b_lo);
+  float hi = std::min(a_hi, b_hi);
+  return std::max(0.0f, hi - lo);
+}
+
+// L0: 1秒采样
+// 覆盖秒级(2-59s)、分钟级(1-59min)、小时级(1-4h，受限于 FFT 长度)
+template <size_t N>
+inline void build_mapping_L0(std::array<MultiTargetBinMap, N / 2 + 1> &mapping) {
+  for (size_t j = 0; j <= N / 2; ++j) {
+    mapping[j] = {};
+
+    // FFT 频点 j 的 index 范围 [j-0.5, j+0.5]
+    float fft_j_lo = (j == 0) ? 0.0f : (j - 0.5f);
+    float fft_j_hi = j + 0.5f;
+
+    // j=0 是 DC，直接归入 DC bin
+    if (j == 0) {
+      mapping[j].add(127, 1.0f);
+      continue;
+    }
+
+    float total_weight = 0.0f;
+
+    // 秒级 bins (idx 0-57)
+    for (size_t k = 0; k < N_SEC_BINS; ++k) {
+      auto range = get_bin_fft_range_L0<N>(k);
+      float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
+      if (overlap > 0) {
+        float w = overlap;  // FFT 宽度总是 1
+        mapping[j].add(static_cast<uint8_t>(k), w);
+        total_weight += w;
+      }
+    }
+
+    // 分钟级 bins (idx 58-116)
+    for (size_t k = N_SEC_BINS; k < N_SEC_BINS + N_MIN_BINS; ++k) {
+      auto range = get_bin_fft_range_L0<N>(k);
+      float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
+      if (overlap > 0) {
+        float w = overlap;
+        mapping[j].add(static_cast<uint8_t>(k), w);
+        total_weight += w;
+      }
+    }
+
+    // 小时级 bins (idx 117-126)
+    for (size_t k = N_SEC_BINS + N_MIN_BINS; k < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS; ++k) {
+      auto range = get_bin_fft_range_L0<N>(k);
+      // 跳过超出 FFT 范围的 bins (j_lo < 1 表示周期超过 FFT 长度)
+      if (range.j_lo < 0.5f) continue;
+      float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
+      if (overlap > 0) {
+        float w = overlap;
+        mapping[j].add(static_cast<uint8_t>(k), w);
+        total_weight += w;
+      }
+    }
+
+    // 未分配的能量归入 DC
+    if (total_weight < 0.999f) {
+      mapping[j].add(127, 1.0f - total_weight);
     }
   }
 }
 
-// L1: 1分钟采样, FFT=8192, df = 1/8192 cycles/min
-inline void build_mapping_L1(std::array<BinMap, FFT_SIZE_L1 / 2 + 1> &mapping) {
-  for (size_t j = 0; j <= FFT_SIZE_L1 / 2; ++j) {
-    float f = static_cast<float>(j) / FFT_SIZE_L1;  // cycles/min
-    float T = (f > 1e-6f) ? 1.0f / f : 1e6f;        // 周期(分钟)
+// L1: 1分钟采样
+// 覆盖分钟级(1-59min)和小时级(1-10h)
+template <size_t N>
+inline void build_mapping_L1(std::array<MultiTargetBinMap, N / 2 + 1> &mapping) {
+  for (size_t j = 0; j <= N / 2; ++j) {
+    mapping[j] = {};
 
-    if (T >= 0.5f && T < 59.5f) {
-      // 分钟级: 1-59分钟 → idx 58-116
-      size_t min_val = static_cast<size_t>(std::round(T));
-      min_val = std::clamp(min_val, size_t{1}, size_t{59});
-      size_t idx = 58 + min_val - 1;
-      mapping[j] = {static_cast<uint8_t>(idx), 1.0f};
-    } else if (T >= 30.0f && T < 630.0f) {
-      // 小时级: 1-10小时 = 60-600分钟 → idx 117-126
-      size_t hour_val = static_cast<size_t>(std::round(T / 60.0f));
-      hour_val = std::clamp(hour_val, size_t{1}, size_t{10});
-      size_t idx = 117 + hour_val - 1;
-      mapping[j] = {static_cast<uint8_t>(idx), 1.0f};
-    } else {
-      mapping[j] = {127, 1.0f};  // DC
+    float fft_j_lo = (j == 0) ? 0.0f : (j - 0.5f);
+    float fft_j_hi = j + 0.5f;
+
+    if (j == 0) {
+      mapping[j].add(127, 1.0f);
+      continue;
+    }
+
+    float total_weight = 0.0f;
+
+    // 分钟级 bins (idx 58-116)
+    for (size_t k = N_SEC_BINS; k < N_SEC_BINS + N_MIN_BINS; ++k) {
+      auto range = get_bin_fft_range_L1<N>(k);
+      float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
+      if (overlap > 0) {
+        float w = overlap;
+        mapping[j].add(static_cast<uint8_t>(k), w);
+        total_weight += w;
+      }
+    }
+
+    // 小时级 bins (idx 117-126)
+    for (size_t k = N_SEC_BINS + N_MIN_BINS; k < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS; ++k) {
+      auto range = get_bin_fft_range_L1<N>(k);
+      if (range.j_lo < 0.5f) continue;
+      float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
+      if (overlap > 0) {
+        float w = overlap;
+        mapping[j].add(static_cast<uint8_t>(k), w);
+        total_weight += w;
+      }
+    }
+
+    if (total_weight < 0.999f) {
+      mapping[j].add(127, 1.0f - total_weight);
     }
   }
 }
 
-// L2: 1小时采样, FFT=128, df = 1/128 cycles/hour
-inline void build_mapping_L2(std::array<BinMap, FFT_SIZE_L2 / 2 + 1> &mapping) {
-  for (size_t j = 0; j <= FFT_SIZE_L2 / 2; ++j) {
-    float f = static_cast<float>(j) / FFT_SIZE_L2;  // cycles/hour
-    float T = (f > 1e-6f) ? 1.0f / f : 1e6f;        // 周期(小时)
+// L2: 1小时采样
+// 覆盖小时级(1-10h)
+template <size_t N>
+inline void build_mapping_L2(std::array<MultiTargetBinMap, N / 2 + 1> &mapping) {
+  for (size_t j = 0; j <= N / 2; ++j) {
+    mapping[j] = {};
 
-    if (T >= 0.5f && T < 10.5f) {
-      // 小时级: 1-10小时 → idx 117-126
-      size_t hour_val = static_cast<size_t>(std::round(T));
-      hour_val = std::clamp(hour_val, size_t{1}, size_t{10});
-      size_t idx = 117 + hour_val - 1;
-      mapping[j] = {static_cast<uint8_t>(idx), 1.0f};
-    } else {
-      mapping[j] = {127, 1.0f};  // DC
+    float fft_j_lo = (j == 0) ? 0.0f : (j - 0.5f);
+    float fft_j_hi = j + 0.5f;
+
+    if (j == 0) {
+      mapping[j].add(127, 1.0f);
+      continue;
+    }
+
+    float total_weight = 0.0f;
+
+    // 小时级 bins (idx 117-126)
+    for (size_t k = N_SEC_BINS + N_MIN_BINS; k < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS; ++k) {
+      auto range = get_bin_fft_range_L2<N>(k);
+      if (range.j_lo < 0.5f) continue;
+      float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
+      if (overlap > 0) {
+        float w = overlap;
+        mapping[j].add(static_cast<uint8_t>(k), w);
+        total_weight += w;
+      }
+    }
+
+    if (total_weight < 0.999f) {
+      mapping[j].add(127, 1.0f - total_weight);
     }
   }
 }
@@ -294,26 +464,27 @@ struct LevelState {
 };
 
 // ============================================================================
-// Multi-Resolution PSD Workspace
+// Multi-Resolution PSD Workspace (Template)
 // ============================================================================
 
+template <size_t N0 = FFT_SIZE_L0, size_t N1 = FFT_SIZE_L1, size_t N2 = FFT_SIZE_L2>
 struct MultiResPSDWorkspace {
   // 三级状态
-  LevelState<FFT_SIZE_L0> L0;
-  LevelState<FFT_SIZE_L1> L1;
-  LevelState<FFT_SIZE_L2> L2;
+  LevelState<N0> L0;
+  LevelState<N1> L1;
+  LevelState<N2> L2;
 
-  // 预计算映射表
-  std::array<BinMap, FFT_SIZE_L0 / 2 + 1> map_L0;
-  std::array<BinMap, FFT_SIZE_L1 / 2 + 1> map_L1;
-  std::array<BinMap, FFT_SIZE_L2 / 2 + 1> map_L2;
+  // 预计算映射表 (支持一对多映射)
+  std::array<MultiTargetBinMap, N0 / 2 + 1> map_L0;
+  std::array<MultiTargetBinMap, N1 / 2 + 1> map_L1;
+  std::array<MultiTargetBinMap, N2 / 2 + 1> map_L2;
 
   bool initialized = false;
 
   void init() {
-    build_mapping_L0(map_L0);
-    build_mapping_L1(map_L1);
-    build_mapping_L2(map_L2);
+    build_mapping_L0<N0>(map_L0);
+    build_mapping_L1<N1>(map_L1);
+    build_mapping_L2<N2>(map_L2);
     L0.reset();
     L1.reset();
     L2.reset();
@@ -345,7 +516,7 @@ struct MultiResPSDWorkspace {
 private:
   template <size_t N>
   void compute_level(LevelState<N> &st,
-                     const std::array<BinMap, N / 2 + 1> &mapping,
+                     const std::array<MultiTargetBinMap, N / 2 + 1> &mapping,
                      std::span<float> out) {
     if (!st.compute()) return;
 
@@ -354,7 +525,12 @@ private:
     for (size_t j = 0; j < mapping.size(); ++j) {
       const auto &m = mapping[j];
       float power = st.power[j] / window_power;
-      out[m.scale_idx] += power * m.weight * m.weight;
+
+      // 按权重分配能量到多个目标 bins
+      for (uint8_t t = 0; t < m.n_targets; ++t) {
+        const auto &entry = m.targets[t];
+        out[entry.scale_idx] += power * entry.weight;
+      }
     }
   }
 };
