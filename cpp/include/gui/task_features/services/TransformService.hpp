@@ -110,10 +110,6 @@ private:
                                    uint64_t gen);
   static void on_all_done_static(SharedData &data);
 
-  // 实例方法
-  void compute_asset(SharedData &data, size_t asset_idx, uint64_t gen);
-  void finalize(SharedData &data);
-
   // Features directory
   std::string features_dir_;
 

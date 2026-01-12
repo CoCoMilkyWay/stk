@@ -11,6 +11,9 @@
 //
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
 struct SharedData;
 
 namespace GUI::Features {
@@ -36,6 +39,20 @@ struct TransformUIState {
   // Autozoom 控制: 记录上次触发时的状态
   int last_autofit_asset = -2;           // -2 = 未初始化, -1 = ALL, >=0 = 单asset
   size_t last_autofit_generation = 0;    // 上次 autofit 时的 generation
+
+  // 光标位置 (样本索引，两个 plot 共享)
+  double anchor_x = 0.0;
+
+  // 光标缓存 (避免每帧重复计算)
+  struct AnchorCache {
+    size_t idx = SIZE_MAX;           // 缓存时的索引
+    size_t generation = 0;           // 缓存时的 generation
+    int selected_asset = -2;         // 缓存时的选中 asset
+    double raw_y = 0.0;              // 原始特征 y 值
+    double norm_y = 0.0;             // 归一化特征 y 值
+    char time_str[32] = {};          // 时间字符串
+    bool valid = false;              // 缓存是否有效
+  } anchor_cache;
 };
 
 // ============================================================================

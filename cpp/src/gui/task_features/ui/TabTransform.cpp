@@ -1,5 +1,6 @@
 // Tab Transform Implementation
 #include "gui/task_features/ui/TabTransform.hpp"
+#include "features/FeaturesDefine.hpp"
 #include "graphic/graphic_basic.h"
 #include "gui/task_features/services/TransformService.hpp"
 #include "imgui.h"
@@ -763,18 +764,98 @@ static void RenderStationarityHeatmap(const Transform &tf, const Asset &asset) {
 }
 
 // ============================================================================
+// Time Formatting for Anchor
+// ============================================================================
+
+// 格式化索引为时间字符串
+// L0: 单日，idx → HH:MM:SS
+// L1: 多日，idx → D{day} HH:MM
+// L2: 多日，idx → D{day} {hour}H
+static void FormatAnchorTime(char *buf, size_t buf_size, size_t idx, int level) {
+  if (level == 0) {
+    // L0: 单日，直接用 L0_to_Clock
+    ClockTime ct = L0_to_Clock(idx);
+    std::snprintf(buf, buf_size, "%02d:%02d:%02d", ct.hour, ct.minute, ct.second);
+  } else if (level == 1) {
+    // L1: 多日，每天 240 分钟
+    constexpr size_t MINS_PER_DAY = 240;
+    size_t day_idx = idx / MINS_PER_DAY;
+    size_t min_idx = idx % MINS_PER_DAY;
+    ClockTime ct = L1_to_Clock(min_idx);
+    std::snprintf(buf, buf_size, "D%zu %02d:%02d", day_idx, ct.hour, ct.minute);
+  } else {
+    // L2: 多日，每天 4-5 小时
+    constexpr size_t HOURS_PER_DAY = 4;
+    size_t day_idx = idx / HOURS_PER_DAY;
+    size_t hour_idx = idx % HOURS_PER_DAY;
+    uint8_t hour = L2_to_Clock(hour_idx);
+    std::snprintf(buf, buf_size, "D%zu %02dH", day_idx, hour);
+  }
+}
+
+// ============================================================================
 // Feature Plots (Raw vs Processed)
 // ============================================================================
 
-static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
+static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool need_autofit, int level) {
   const size_t n_assets = tf.results.size();
   const int sel = tf.display.selected_asset; // -1 = ALL
   const bool show_all = (sel < 0);
   const bool has_data = !tf.results.empty();
+  const size_t n_samples = tf.cache.n_samples;
+  const size_t cur_gen = tf.compute.generation.load();
 
   // 动态计算高度: 剩余高度的45%给特征图, 45%给底部图, 10%留白
   float avail_h = ImGui::GetContentRegionAvail().y;
   float height = std::max(100.0f, avail_h * 0.45f);
+
+  // Clamp anchor_x
+  if (n_samples > 0 && ui.anchor_x >= static_cast<double>(n_samples)) {
+    ui.anchor_x = static_cast<double>(n_samples - 1);
+  }
+
+  // 更新 anchor 缓存 (只在变化时重新计算)
+  size_t anchor_idx = static_cast<size_t>(ui.anchor_x);
+  auto &cache = ui.anchor_cache;
+  if (anchor_idx < n_samples &&
+      (cache.idx != anchor_idx || cache.generation != cur_gen || cache.selected_asset != sel)) {
+    cache.idx = anchor_idx;
+    cache.generation = cur_gen;
+    cache.selected_asset = sel;
+    cache.raw_y = 0.0;
+    cache.norm_y = 0.0;
+    cache.valid = false;
+
+    // 查找 raw_y
+    for (size_t i = 0; i < tf.cache.raw.size(); ++i) {
+      if (!show_all && (int)i != sel)
+        continue;
+      if (i >= tf.results.size() || !tf.results[i].valid)
+        continue;
+      const auto &raw = tf.cache.raw[i];
+      if (anchor_idx < raw.size() && std::isfinite(raw[anchor_idx])) {
+        cache.raw_y = raw[anchor_idx];
+        break;
+      }
+    }
+
+    // 查找 norm_y
+    for (size_t i = 0; i < tf.results.size(); ++i) {
+      if (!show_all && (int)i != sel)
+        continue;
+      const auto &r = tf.results[i];
+      if (!r.valid || anchor_idx >= r.normalized.size())
+        continue;
+      if (std::isfinite(r.normalized[anchor_idx])) {
+        cache.norm_y = r.normalized[anchor_idx];
+        break;
+      }
+    }
+
+    // 格式化时间字符串
+    FormatAnchorTime(cache.time_str, sizeof(cache.time_str), anchor_idx, level);
+    cache.valid = true;
+  }
 
   // 左: 原始特征 (从 cache 获取)
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
@@ -790,6 +871,9 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
     for (size_t i = 0; i < tf.cache.raw.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
+      // 使用 results[i].valid 过滤
+      if (i >= tf.results.size() || !tf.results[i].valid)
+        continue;
       const auto &raw = tf.cache.raw[i];
       if (raw.empty())
         continue;
@@ -797,6 +881,28 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
       ImPlot::SetNextLineStyle(col, 0.8f);
       ImPlot::PlotLine("##r", raw.data(), static_cast<int>(raw.size()));
     }
+
+    // 光标 (DragLineX)
+    if (n_samples > 0) {
+      bool drag_changed = ImPlot::DragLineX(0, &ui.anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
+      bool drag_active = ImGui::IsItemActive();
+
+      // Snap on release
+      if (drag_changed && !drag_active) {
+        ui.anchor_x = std::clamp(std::round(ui.anchor_x), 0.0, static_cast<double>(n_samples - 1));
+      }
+
+      // Double-click to set anchor
+      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
+        ui.anchor_x = std::clamp(std::round(ImPlot::GetPlotMousePos().x), 0.0, static_cast<double>(n_samples - 1));
+      }
+
+      // Annotation: 使用缓存
+      if (cache.valid) {
+        ImPlot::Annotation(ui.anchor_x, cache.raw_y, ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", cache.time_str);
+      }
+    }
+
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
@@ -825,6 +931,26 @@ static void RenderFeaturePlots(const Transform &tf, bool need_autofit) {
       ImPlot::PlotLine("##n", r.normalized.data(),
                        static_cast<int>(r.normalized.size()));
     }
+
+    // 光标 (同步)
+    if (n_samples > 0) {
+      bool drag_changed = ImPlot::DragLineX(1, &ui.anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
+      bool drag_active = ImGui::IsItemActive();
+
+      if (drag_changed && !drag_active) {
+        ui.anchor_x = std::clamp(std::round(ui.anchor_x), 0.0, static_cast<double>(n_samples - 1));
+      }
+
+      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
+        ui.anchor_x = std::clamp(std::round(ImPlot::GetPlotMousePos().x), 0.0, static_cast<double>(n_samples - 1));
+      }
+
+      // Annotation: 使用缓存
+      if (cache.valid) {
+        ImPlot::Annotation(ui.anchor_x, cache.norm_y, ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", cache.time_str);
+      }
+    }
+
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
@@ -968,8 +1094,7 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level)
 // Main Render
 // ============================================================================
 
-void RenderTabTransform(TransformService *service, SharedData &data,
-                        TransformUIState &ui) {
+void RenderTabTransform(TransformService *service, SharedData &data, TransformUIState &ui) {
   // 配置ImPlot输入映射 (框选缩放)
   static bool input_configured = false;
   if (!input_configured) {
@@ -1048,11 +1173,13 @@ void RenderTabTransform(TransformService *service, SharedData &data,
   }
   (void)sel_changed; // asset选择变化不再直接触发autozoom
 
+  // 获取当前 level
+  int level = data.feature.selection.selected_level;
+
   // 特征对比图
-  RenderFeaturePlots(tf, ui.need_autofit);
+  RenderFeaturePlots(tf, ui, ui.need_autofit, level);
 
   // 底部: PDF + FFT
-  int level = data.feature.selection.selected_level;
   RenderBottomPlots(tf, ui.need_autofit, level);
 
   // 清除autofit
