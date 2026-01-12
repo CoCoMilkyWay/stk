@@ -6,6 +6,7 @@
 #include "imgui.h"
 #include "implot.h"
 #include "latex.h"
+#include "misc/profiler.hpp"
 #include "package/utfcpp/utf8.hpp"
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
@@ -391,6 +392,7 @@ static ImU32 GetKPSSColor(float pval) {
 // ============================================================================
 
 static void Render_StatusInfo(SharedData &data) {
+  TraceN("UI:StatusInfo");
   auto &tf = data.transform;
   int level = data.feature.selection.selected_level;
 
@@ -451,6 +453,7 @@ static const char *FormatAssetLabel(const Asset &asset, const Transform &tf, int
 }
 
 static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
+  TraceN("UI:AssetAndWindow");
   auto &tf = data.transform;
   bool changed = false;
   const auto &items = data.asset.items;
@@ -536,6 +539,7 @@ static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
 // ============================================================================
 
 static bool RenderStationaryConfig(Transform::Params &config) {
+  TraceN("UI:StationaryConfig");
   bool changed = false;
 
   ImGui::Text("平稳化");
@@ -594,6 +598,7 @@ static bool RenderStationaryConfig(Transform::Params &config) {
 // ============================================================================
 
 static bool RenderNormConfig(Transform::Params &config) {
+  TraceN("UI:NormConfig");
   bool changed = false;
 
   ImGui::Text("归一化");
@@ -687,6 +692,7 @@ static bool RenderNormConfig(Transform::Params &config) {
 // ============================================================================
 
 static void RenderStationarityHeatmap(const Transform &tf, const Asset &asset) {
+  TraceN("UI:StationarityHeatmap");
   // 直接画，不显示"无数据" - 计算线程会很快更新
   if (tf.results.empty()) {
     ImGui::Dummy(ImVec2(0, 18.0f)); // 保持行高稳定
@@ -798,6 +804,7 @@ static void FormatAnchorTime(char *buf, size_t buf_size, size_t idx, int level) 
 // ============================================================================
 
 static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool need_autofit, int level) {
+  TraceN("UI:FeaturePlots");
   const size_t n_assets = tf.results.size();
   const int sel = tf.display.selected_asset; // -1 = ALL
   const bool show_all = (sel < 0);
@@ -961,6 +968,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
 // ============================================================================
 
 static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level) {
+  TraceN("UI:BottomPlots");
   float height = std::max(120.0f, ImGui::GetContentRegionAvail().y - 5.0f);
 
   const size_t n_assets = tf.results.size();
@@ -1095,6 +1103,7 @@ static void RenderBottomPlots(const Transform &tf, bool need_autofit, int level)
 // ============================================================================
 
 void RenderTabTransform(TransformService *service, SharedData &data, TransformUIState &ui) {
+  TraceN("UI:RenderTabTransform");
   // 配置ImPlot输入映射 (框选缩放)
   static bool input_configured = false;
   if (!input_configured) {
@@ -1123,6 +1132,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // ALL mode: 当计算完成 (status == Done) 且 generation 变化时触发
   // 单 asset mode: 当选中的 asset 的 result.valid 变化时触发
   {
+    TraceN("UI:AutozoomCheck");
     int cur_asset = tf.display.selected_asset;
     size_t cur_gen = tf.compute.generation.load();
     bool should_autofit = false;

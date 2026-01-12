@@ -8,6 +8,7 @@
 #include "math/stationary/IntDiff.hpp"
 #include "math/stationary/KPSS.hpp"
 #include "math/stationary/MADetrend.hpp"
+#include "misc/affinity.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
@@ -60,8 +61,11 @@ inline size_t fft_table_idx(size_t n) {
 
 TransformWorkerPool::TransformWorkerPool(size_t num_workers) {
   workers_.reserve(num_workers);
+  unsigned int n_cores = misc::Affinity::core_count();
   for (size_t i = 0; i < num_workers; ++i) {
     workers_.emplace_back(&TransformWorkerPool::worker_loop, this, i);
+    unsigned int core_id = static_cast<unsigned int>(i) % n_cores;
+    misc::Affinity::pin_thread(workers_.back().native_handle(), core_id);
   }
 }
 
