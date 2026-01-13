@@ -1,6 +1,7 @@
 #pragma once
 
 #include "features/FeaturesDefine.hpp"
+#include "math/Operator.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -23,58 +24,67 @@
 namespace math::normalize {
 
 // ============================================================================
-// 参数
+// 算子参数定义 (紧凑静态表)
 // ============================================================================
 
-struct ClipParams {
-  float k = 3.0f;
+namespace meta {
+inline constexpr ParamMeta clip[]   = {{"k", 3.0f, 1.0f, 10.0f}};
+inline constexpr ParamMeta winsor[] = {{"pct", 0.05f, 0.01f, 0.25f}};
+inline constexpr ParamMeta power[]  = {{"α", 0.5f, 0.1f, 2.0f}};
+inline constexpr ParamMeta log[]    = {{"base", 0.0f, 0.0f, 10.0f}};
+inline constexpr ParamMeta scale[]  = {{"scale", 1.0f, 0.1f, 10.0f}};  // asinh, tanh
+inline constexpr ParamMeta period[] = {{"period", 1.0f, 0.1f, 100.0f}};
+inline constexpr ParamMeta robust[] = {{"mad", 1.4826f, 1.0f, 3.0f}};
+inline constexpr ParamMeta iqr[]    = {{"q_lo", 0.25f, 0.0f, 0.5f}, {"q_hi", 0.75f, 0.5f, 1.0f}};
+} // namespace meta
+
+// ============================================================================
+// 方法表 (一次定义完整: enum, UI名, 参数)
+// ============================================================================
+
+struct MethodDef {
+  NormMethod method;
+  const char *name;
+  const ParamMeta *meta;
+  size_t param_count;
 };
 
-struct WinsorParams {
-  float pct = 0.05f;
+inline constexpr MethodDef g_methods[] = {
+    {NormMethod::NONE,            "无",      nullptr,      0},
+    {NormMethod::ZSCORE,          "ZSCORE",  nullptr,      0},
+    {NormMethod::ROBUST_ZSCORE,   "ROBUST",  meta::robust, 1},
+    {NormMethod::IQR_ZSCORE,      "IQR",     meta::iqr,    2},
+    {NormMethod::RANK,            "RANK",    nullptr,      0},
+    {NormMethod::RANK_ZSCORE,     "RANK_Z",  nullptr,      0},
+    {NormMethod::CLIP,            "CLIP",    meta::clip,   1},
+    {NormMethod::WINSOR,          "WINSOR",  meta::winsor, 1},
+    {NormMethod::LOG,             "LOG",     meta::log,    1},
+    {NormMethod::POWER,           "POWER",   meta::power,  1},
+    {NormMethod::ASINH,           "ASINH",   meta::scale,  1},
+    {NormMethod::TANH,            "TANH",    meta::scale,  1},
+    {NormMethod::SINCOS,          "SINCOS",  meta::period, 1},
+    {NormMethod::LOG_ZSCORE,      "LOG_Z",   meta::log,    1},
+    {NormMethod::POWER_ZSCORE,    "POW_Z",   meta::power,  1},
+    {NormMethod::ASINH_ZSCORE,    "ASH_Z",   meta::scale,  1},
+    {NormMethod::CLIP_ZSCORE,     "CLP_Z",   meta::clip,   1},
+    {NormMethod::WINSOR_ZSCORE,   "WIN_Z",   meta::winsor, 1},
+    {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z",   meta::clip,   1},
 };
+inline constexpr size_t g_method_count = sizeof(g_methods) / sizeof(g_methods[0]);
 
-struct PowerParams {
-  float alpha = 0.5f;
-};
+// 查找方法定义
+inline const MethodDef &GetMethod(NormMethod m) {
+  for (auto &d : g_methods)
+    if (d.method == m)
+      return d;
+  return g_methods[0];
+}
 
-struct LogParams {
-  float base = 0.0f; // 0=ln, 2=log2, 10=log10
-};
-
-struct AsinhParams {
-  float scale = 1.0f;
-};
-
-struct TanhParams {
-  float scale = 1.0f;
-};
-
-struct SinParams {
-  float period = 1.0f;
-};
-
-struct RobustParams {
-  float mad_scale = 1.4826f; // MAD -> std 转换常数 (正态假设)
-};
-
-struct IQRParams {
-  float q_lo = 0.25f;
-  float q_hi = 0.75f;
-};
-
-struct Params {
-  ClipParams clip;
-  WinsorParams winsor;
-  PowerParams power;
-  LogParams log;
-  AsinhParams asinh;
-  TanhParams tanh;
-  SinParams sin;
-  RobustParams robust;
-  IQRParams iqr;
-  size_t min_samples = 2; // 仅 TS 方向使用
-};
+// 初始化 Operator 为指定方法
+inline void InitOperator(Operator &op, NormMethod m) {
+  auto &d = GetMethod(m);
+  op.init(OperatorDef{d.name, d.meta, d.param_count});
+}
 
 // ============================================================================
 // 辅助
@@ -240,8 +250,8 @@ public:
 // Point-wise 变换 (无方向，直接对元素操作)
 // ============================================================================
 
-inline void pw_log(std::span<const float> in, std::span<float> out, const LogParams &p) {
-  float inv = (p.base > 1.0f) ? (1.0f / std::log(p.base)) : 1.0f;
+inline void pw_log(std::span<const float> in, std::span<float> out, float base = 0.0f) {
+  float inv = (base > 1.0f) ? (1.0f / std::log(base)) : 1.0f;
   for (size_t i = 0; i < in.size(); ++i) {
     float a = std::abs(in[i]);
     float s = (in[i] >= 0) ? 1.0f : -1.0f;
@@ -448,8 +458,8 @@ inline void clip_zscore(std::span<const float> x, std::span<float> out, float k,
 }
 
 inline void log_zscore(std::span<const float> x, std::span<float> out,
-                       const LogParams &lp, size_t min_n) {
-  float inv = (lp.base > 1.0f) ? (1.0f / std::log(lp.base)) : 1.0f;
+                       float base, size_t min_n) {
+  float inv = (base > 1.0f) ? (1.0f / std::log(base)) : 1.0f;
   EMeanStd e;
   for (size_t i = 0; i < x.size(); ++i) {
     float a = std::abs(x[i]);
@@ -495,8 +505,8 @@ inline void winsor_zscore(std::span<const float> x, std::span<float> out,
 }
 
 inline void clip_log_zscore(std::span<const float> x, std::span<float> out,
-                            float k, const LogParams &lp, size_t min_n) {
-  float inv = (lp.base > 1.0f) ? (1.0f / std::log(lp.base)) : 1.0f;
+                            float k, float base, size_t min_n) {
+  float inv = (base > 1.0f) ? (1.0f / std::log(base)) : 1.0f;
   EMeanStd ec, ef;
   for (size_t i = 0; i < x.size(); ++i) {
     ec.add(x[i]);
@@ -673,8 +683,8 @@ inline void clip_zscore(std::span<const float> x, std::span<float> out, float k)
     out[i] = std::clamp(out[i], -k, k);
 }
 
-inline void log_zscore(std::span<const float> x, std::span<float> out, const LogParams &lp) {
-  pw_log(x, out, lp);
+inline void log_zscore(std::span<const float> x, std::span<float> out, float base = 0.0f) {
+  pw_log(x, out, base);
   auto s = mean_std(out);
   float inv = 1.0f / s.std;
   for (size_t i = 0; i < out.size(); ++i)
@@ -706,9 +716,9 @@ inline void winsor_zscore(std::span<const float> x, std::span<float> out, float 
 }
 
 inline void clip_log_zscore(std::span<const float> x, std::span<float> out,
-                            float k, const LogParams &lp) {
+                            float k, float base = 0.0f) {
   clip(x, out, k);
-  pw_log(out, out, lp);
+  pw_log(out, out, base);
   auto s = mean_std(out);
   float inv = 1.0f / s.std;
   for (size_t i = 0; i < out.size(); ++i)
@@ -722,11 +732,12 @@ inline void clip_log_zscore(std::span<const float> x, std::span<float> out,
 // ============================================================================
 
 // TS方向: 对单个 asset 时间序列
-inline void apply_ts(std::span<const float> x, std::span<float> out, NormMethod m, const Params &p) {
+// p[0], p[1] 按 MethodDef 顺序访问参数
+inline void apply_ts(std::span<const float> x, std::span<float> out,
+                     NormMethod m, const Operator &p, size_t min_n = 2) {
   assert(x.size() == out.size());
   if (x.empty())
     return;
-  const size_t min_n = p.min_samples;
 
   switch (m) {
   case NormMethod::NONE:
@@ -736,10 +747,10 @@ inline void apply_ts(std::span<const float> x, std::span<float> out, NormMethod 
     ts::zscore(x, out, min_n);
     break;
   case NormMethod::ROBUST_ZSCORE:
-    ts::robust_zscore(x, out, min_n, p.robust.mad_scale);
+    ts::robust_zscore(x, out, min_n, p[0]);
     break;
   case NormMethod::IQR_ZSCORE:
-    ts::iqr_zscore(x, out, min_n, p.iqr.q_lo, p.iqr.q_hi);
+    ts::iqr_zscore(x, out, min_n, p[0], p[1]);
     break;
   case NormMethod::RANK:
     ts::rank(x, out, min_n);
@@ -748,43 +759,43 @@ inline void apply_ts(std::span<const float> x, std::span<float> out, NormMethod 
     ts::rank_zscore(x, out, min_n);
     break;
   case NormMethod::CLIP:
-    ts::clip(x, out, p.clip.k, min_n);
+    ts::clip(x, out, p[0], min_n);
     break;
   case NormMethod::WINSOR:
-    ts::winsor(x, out, p.winsor.pct, min_n);
+    ts::winsor(x, out, p[0], min_n);
     break;
   case NormMethod::LOG:
-    pw_log(x, out, p.log);
+    pw_log(x, out, p[0]);
     break;
   case NormMethod::POWER:
-    pw_power(x, out, p.power.alpha);
+    pw_power(x, out, p[0]);
     break;
   case NormMethod::ASINH:
-    pw_asinh(x, out, p.asinh.scale);
+    pw_asinh(x, out, p[0]);
     break;
   case NormMethod::TANH:
-    pw_tanh(x, out, p.tanh.scale);
+    pw_tanh(x, out, p[0]);
     break;
   case NormMethod::SINCOS:
-    pw_sin(x, out, p.sin.period);
+    pw_sin(x, out, p[0]);
     break;
   case NormMethod::LOG_ZSCORE:
-    ts::log_zscore(x, out, p.log, min_n);
+    ts::log_zscore(x, out, p[0], min_n);
     break;
   case NormMethod::POWER_ZSCORE:
-    ts::power_zscore(x, out, p.power.alpha, min_n);
+    ts::power_zscore(x, out, p[0], min_n);
     break;
   case NormMethod::ASINH_ZSCORE:
-    ts::asinh_zscore(x, out, p.asinh.scale, min_n);
+    ts::asinh_zscore(x, out, p[0], min_n);
     break;
   case NormMethod::CLIP_ZSCORE:
-    ts::clip_zscore(x, out, p.clip.k, min_n);
+    ts::clip_zscore(x, out, p[0], min_n);
     break;
   case NormMethod::WINSOR_ZSCORE:
-    ts::winsor_zscore(x, out, p.winsor.pct, min_n);
+    ts::winsor_zscore(x, out, p[0], min_n);
     break;
   case NormMethod::CLIP_LOG_ZSCORE:
-    ts::clip_log_zscore(x, out, p.clip.k, p.log, min_n);
+    ts::clip_log_zscore(x, out, p[0], 0.0f, min_n);  // base 固定为 0 (ln)
     break;
   default:
     std::copy(x.begin(), x.end(), out.begin());
@@ -793,7 +804,8 @@ inline void apply_ts(std::span<const float> x, std::span<float> out, NormMethod 
 }
 
 // CS方向: 对某时刻所有 asset
-inline void apply_cs(std::span<const float> x, std::span<float> out, NormMethod m, const Params &p) {
+inline void apply_cs(std::span<const float> x, std::span<float> out,
+                     NormMethod m, const Operator &p) {
   assert(x.size() == out.size());
   if (x.empty())
     return;
@@ -806,10 +818,10 @@ inline void apply_cs(std::span<const float> x, std::span<float> out, NormMethod 
     cs::zscore(x, out);
     break;
   case NormMethod::ROBUST_ZSCORE:
-    cs::robust_zscore(x, out, p.robust.mad_scale);
+    cs::robust_zscore(x, out, p[0]);
     break;
   case NormMethod::IQR_ZSCORE:
-    cs::iqr_zscore(x, out, p.iqr.q_lo, p.iqr.q_hi);
+    cs::iqr_zscore(x, out, p[0], p[1]);
     break;
   case NormMethod::RANK:
     cs::rank(x, out);
@@ -818,43 +830,43 @@ inline void apply_cs(std::span<const float> x, std::span<float> out, NormMethod 
     cs::rank_zscore(x, out);
     break;
   case NormMethod::CLIP:
-    cs::clip(x, out, p.clip.k);
+    cs::clip(x, out, p[0]);
     break;
   case NormMethod::WINSOR:
-    cs::winsor(x, out, p.winsor.pct);
+    cs::winsor(x, out, p[0]);
     break;
   case NormMethod::LOG:
-    pw_log(x, out, p.log);
+    pw_log(x, out, p[0]);
     break;
   case NormMethod::POWER:
-    pw_power(x, out, p.power.alpha);
+    pw_power(x, out, p[0]);
     break;
   case NormMethod::ASINH:
-    pw_asinh(x, out, p.asinh.scale);
+    pw_asinh(x, out, p[0]);
     break;
   case NormMethod::TANH:
-    pw_tanh(x, out, p.tanh.scale);
+    pw_tanh(x, out, p[0]);
     break;
   case NormMethod::SINCOS:
-    pw_sin(x, out, p.sin.period);
+    pw_sin(x, out, p[0]);
     break;
   case NormMethod::LOG_ZSCORE:
-    cs::log_zscore(x, out, p.log);
+    cs::log_zscore(x, out, p[0]);
     break;
   case NormMethod::POWER_ZSCORE:
-    cs::power_zscore(x, out, p.power.alpha);
+    cs::power_zscore(x, out, p[0]);
     break;
   case NormMethod::ASINH_ZSCORE:
-    cs::asinh_zscore(x, out, p.asinh.scale);
+    cs::asinh_zscore(x, out, p[0]);
     break;
   case NormMethod::CLIP_ZSCORE:
-    cs::clip_zscore(x, out, p.clip.k);
+    cs::clip_zscore(x, out, p[0]);
     break;
   case NormMethod::WINSOR_ZSCORE:
-    cs::winsor_zscore(x, out, p.winsor.pct);
+    cs::winsor_zscore(x, out, p[0]);
     break;
   case NormMethod::CLIP_LOG_ZSCORE:
-    cs::clip_log_zscore(x, out, p.clip.k, p.log);
+    cs::clip_log_zscore(x, out, p[0], 0.0f);
     break;
   default:
     std::copy(x.begin(), x.end(), out.begin());

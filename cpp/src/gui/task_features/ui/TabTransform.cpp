@@ -527,6 +527,22 @@ static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
 // Stationarity Config Panel (Left)
 // ============================================================================
 
+// 通用参数 slider 渲染 (完全自动化)
+static bool RenderOperatorParams(math::Operator &op, const char *suffix) {
+  bool changed = false;
+  for (size_t i = 0; i < op.param_count; ++i) {
+    auto &m = op.meta[i];
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    char label[32];
+    snprintf(label, sizeof(label), "%s##%s%zu", m.name, suffix, i);
+    if (ImGui::SliderFloat(label, &op[i], m.min_val, m.max_val, "%.2f")) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 static bool RenderStationaryConfig(Transform::Params &config) {
   TraceN("UI:StationaryConfig");
   bool changed = false;
@@ -540,44 +556,26 @@ static bool RenderStationaryConfig(Transform::Params &config) {
 
   ImGui::SameLine();
   ImGui::SetNextItemWidth(150);
-  static const char *st_items[] = {"无", "MA去趋势", "整数差分", "分数差分"};
-  int method = static_cast<int>(config.stationary_method);
-  if (ImGui::Combo("##st_method", &method, st_items, IM_ARRAYSIZE(st_items))) {
-    config.stationary_method = static_cast<Transform::StationaryMethod>(method);
-    changed = true;
+
+  // 使用 Transform::g_stationary 表
+  auto &cur = Transform::GetStationaryDef(config.stationary_method);
+  if (ImGui::BeginCombo("##st_method", cur.name)) {
+    for (size_t i = 0; i < Transform::g_stationary_count; ++i) {
+      auto &e = Transform::g_stationary[i];
+      if (ImGui::Selectable(e.def->name, config.stationary_method == e.method)) {
+        if (config.stationary_method != e.method) {
+          config.stationary_method = e.method;
+          config.reset_stationary();
+          changed = true;
+        }
+      }
+    }
+    ImGui::EndCombo();
   }
 
-  // 按需显示参数
-  switch (config.stationary_method) {
-  case Transform::StationaryMethod::MA_DETREND:
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(300);
-    if (ImGui::SliderInt("窗口##ma", &config.ma_window, 10, 500)) {
-      changed = true;
-    }
-    break;
-  case Transform::StationaryMethod::INT_DIFF:
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(200);
-    if (ImGui::SliderInt("阶数##diff", &config.diff_order, 1, 3)) {
-      changed = true;
-    }
-    break;
-  case Transform::StationaryMethod::FRAC_DIFF:
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(200);
-    if (ImGui::SliderFloat("d##frac", &config.frac_d, 0.0f, 1.0f, "%.2f")) {
-      changed = true;
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(300);
-    if (ImGui::SliderInt("窗口##frac", &config.frac_window, 10, 500)) {
-      changed = true;
-    }
-    break;
-  default:
-    break;
-  }
+  // 自动渲染参数
+  if (RenderOperatorParams(config.stationary, "st"))
+    changed = true;
 
   return changed;
 }
@@ -586,38 +584,9 @@ static bool RenderStationaryConfig(Transform::Params &config) {
 // Normalization Config (TS/CS 对仗)
 // ============================================================================
 
-// Combo 选项映射
-static const struct {
-  NormMethod method;
-  const char *name;
-} g_norm_items[] = {
-    {NormMethod::NONE, "NONE"},
-    {NormMethod::ZSCORE, "ZSCORE"},
-    {NormMethod::ROBUST_ZSCORE, "ROBUST"},
-    {NormMethod::IQR_ZSCORE, "IQR"},
-    {NormMethod::RANK, "RANK"},
-    {NormMethod::RANK_ZSCORE, "RANK_Z"},
-    {NormMethod::CLIP, "CLIP"},
-    {NormMethod::WINSOR, "WINSOR"},
-    {NormMethod::LOG, "LOG"},
-    {NormMethod::POWER, "POWER"},
-    {NormMethod::ASINH, "ASINH"},
-    {NormMethod::TANH, "TANH"},
-    {NormMethod::LOG_ZSCORE, "LOG_Z"},
-    {NormMethod::CLIP_ZSCORE, "CLP_Z"},
-    {NormMethod::WINSOR_ZSCORE, "WIN_Z"},
-    {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z"},
-};
-static constexpr int g_n_norm_items = IM_ARRAYSIZE(g_norm_items);
+// 使用 math::normalize::g_methods 表，无需手动定义
 
-static int FindNormIndex(NormMethod m) {
-  for (int i = 0; i < g_n_norm_items; ++i) {
-    if (g_norm_items[i].method == m)
-      return i;
-  }
-  return 0;
-}
-
+// 统一渲染参数 slider
 static bool RenderTSNormConfig(Transform::Params &config) {
   TraceN("UI:TSNormConfig");
   bool changed = false;
@@ -626,19 +595,24 @@ static bool RenderTSNormConfig(Transform::Params &config) {
   ImGui::SameLine();
   ImGui::SetNextItemWidth(120);
 
-  int cur_idx = FindNormIndex(config.ts_norm);
-  if (ImGui::BeginCombo("##ts_norm", g_norm_items[cur_idx].name)) {
-    for (int i = 0; i < g_n_norm_items; ++i) {
-      bool selected = (i == cur_idx);
-      if (ImGui::Selectable(g_norm_items[i].name, selected)) {
-        config.ts_norm = g_norm_items[i].method;
-        changed = true;
+  auto &cur = math::normalize::GetMethod(config.ts_norm);
+  if (ImGui::BeginCombo("##ts_norm", cur.name)) {
+    for (size_t i = 0; i < math::normalize::g_method_count; ++i) {
+      auto &d = math::normalize::g_methods[i];
+      if (ImGui::Selectable(d.name, config.ts_norm == d.method)) {
+        if (config.ts_norm != d.method) {
+          config.ts_norm = d.method;
+          config.reset_ts();
+          changed = true;
+        }
       }
-      if (selected)
-        ImGui::SetItemDefaultFocus();
     }
     ImGui::EndCombo();
   }
+
+  // 自动渲染参数
+  if (RenderOperatorParams(config.ts, "ts"))
+    changed = true;
 
   return changed;
 }
@@ -651,80 +625,24 @@ static bool RenderCSNormConfig(Transform::Params &config) {
   ImGui::SameLine();
   ImGui::SetNextItemWidth(120);
 
-  int cur_idx = FindNormIndex(config.cs_norm);
-  if (ImGui::BeginCombo("##cs_norm", g_norm_items[cur_idx].name)) {
-    for (int i = 0; i < g_n_norm_items; ++i) {
-      bool selected = (i == cur_idx);
-      if (ImGui::Selectable(g_norm_items[i].name, selected)) {
-        config.cs_norm = g_norm_items[i].method;
-        changed = true;
+  auto &cur = math::normalize::GetMethod(config.cs_norm);
+  if (ImGui::BeginCombo("##cs_norm", cur.name)) {
+    for (size_t i = 0; i < math::normalize::g_method_count; ++i) {
+      auto &d = math::normalize::g_methods[i];
+      if (ImGui::Selectable(d.name, config.cs_norm == d.method)) {
+        if (config.cs_norm != d.method) {
+          config.cs_norm = d.method;
+          config.reset_cs();
+          changed = true;
+        }
       }
-      if (selected)
-        ImGui::SetItemDefaultFocus();
     }
     ImGui::EndCombo();
   }
 
-  return changed;
-}
-
-static bool RenderNormParams(Transform::Params &config) {
-  bool changed = false;
-
-  // 检查 TS 或 CS 是否需要参数
-  auto needs_param = [](NormMethod m) {
-    return m == NormMethod::CLIP || m == NormMethod::CLIP_ZSCORE ||
-           m == NormMethod::CLIP_LOG_ZSCORE || m == NormMethod::WINSOR ||
-           m == NormMethod::WINSOR_ZSCORE || m == NormMethod::POWER ||
-           m == NormMethod::POWER_ZSCORE;
-  };
-
-  if (!needs_param(config.ts_norm) && !needs_param(config.cs_norm))
-    return false;
-
-  ImGui::SameLine();
-
-  bool needs_clip = config.ts_norm == NormMethod::CLIP ||
-                    config.ts_norm == NormMethod::CLIP_ZSCORE ||
-                    config.ts_norm == NormMethod::CLIP_LOG_ZSCORE ||
-                    config.cs_norm == NormMethod::CLIP ||
-                    config.cs_norm == NormMethod::CLIP_ZSCORE ||
-                    config.cs_norm == NormMethod::CLIP_LOG_ZSCORE;
-
-  bool needs_winsor = config.ts_norm == NormMethod::WINSOR ||
-                      config.ts_norm == NormMethod::WINSOR_ZSCORE ||
-                      config.cs_norm == NormMethod::WINSOR ||
-                      config.cs_norm == NormMethod::WINSOR_ZSCORE;
-
-  bool needs_power = config.ts_norm == NormMethod::POWER ||
-                     config.ts_norm == NormMethod::POWER_ZSCORE ||
-                     config.cs_norm == NormMethod::POWER ||
-                     config.cs_norm == NormMethod::POWER_ZSCORE;
-
-  if (needs_clip) {
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::SliderFloat("k##clip", &config.clip_k, 1.0f, 10.0f, "%.1f")) {
-      changed = true;
-    }
-    if (needs_winsor || needs_power)
-      ImGui::SameLine();
-  }
-
-  if (needs_winsor) {
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::SliderFloat("pct##win", &config.winsor_pct, 0.01f, 0.25f, "%.2f")) {
-      changed = true;
-    }
-    if (needs_power)
-      ImGui::SameLine();
-  }
-
-  if (needs_power) {
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::SliderFloat("α##pow", &config.power_alpha, 0.1f, 2.0f, "%.2f")) {
-      changed = true;
-    }
-  }
+  // 自动渲染参数
+  if (RenderOperatorParams(config.cs, "cs"))
+    changed = true;
 
   return changed;
 }
@@ -1374,11 +1292,10 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // 第二行: 平稳化
   bool st_changed = RenderStationaryConfig(tf.params);
 
-  // 第三行: 归一化 (TS/CS 对仗)
+  // 第三行: 归一化 (TS/CS 各自独立参数)
   bool ts_changed = RenderTSNormConfig(tf.params);
   bool cs_changed = RenderCSNormConfig(tf.params);
-  bool param_changed = RenderNormParams(tf.params);
-  bool norm_changed = ts_changed || cs_changed || param_changed;
+  bool norm_changed = ts_changed || cs_changed;
 
   // 第二行: ADF/KPSS热力图
   RenderStationarityHeatmap(tf, data.asset);

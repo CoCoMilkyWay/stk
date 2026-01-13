@@ -1,5 +1,6 @@
 #pragma once
 
+#include "math/Operator.hpp"
 #include <cassert>
 #include <span>
 
@@ -23,6 +24,16 @@
 // ============================================================================
 
 namespace math::stationary {
+
+struct IntDiff {
+  static constexpr ParamMeta meta[] = {{"阶数", 1, 1, 3}};
+  static constexpr OperatorDef def = {"整数差分", meta, 1};
+
+  template <typename GetOrder>
+  static void compute(std::span<const float> in, std::span<float> out, GetOrder get_order) {
+    int_diff(in, out, static_cast<int>(get_order()));
+  }
+};
 
 // 一阶差分 (循环展开, 4x unroll)
 inline void int_diff_1(const float *__restrict in, float *__restrict out, size_t n) {

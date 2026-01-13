@@ -2,6 +2,10 @@
 
 #include "features/FeaturesDefine.hpp"
 #include "math/distribution/KLLcache.hpp"
+#include "math/normalize/Normalize.hpp"
+#include "math/stationary/FracDiff.hpp"
+#include "math/stationary/IntDiff.hpp"
+#include "math/stationary/MADetrend.hpp"
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -41,32 +45,63 @@ struct Transform {
   // 计算参数 (平稳化 + 归一化)
   // ==========================================================================
 
+  // 平稳化方法表 (引用各算子的 def)
+  struct StationaryEntry {
+    StationaryMethod method;
+    const math::OperatorDef *def;
+  };
+
+  static inline constexpr math::OperatorDef g_stationary_none = {"无", nullptr, 0};
+  static inline constexpr StationaryEntry g_stationary[] = {
+      {StationaryMethod::NONE, &g_stationary_none},
+      {StationaryMethod::MA_DETREND, &math::stationary::MADetrend::def},
+      {StationaryMethod::INT_DIFF, &math::stationary::IntDiff::def},
+      {StationaryMethod::FRAC_DIFF, &math::stationary::FracDiff::def},
+  };
+  static inline constexpr size_t g_stationary_count = sizeof(g_stationary) / sizeof(g_stationary[0]);
+
+  static const math::OperatorDef &GetStationaryDef(StationaryMethod m) {
+    for (auto &e : g_stationary)
+      if (e.method == m)
+        return *e.def;
+    return g_stationary_none;
+  }
+
   struct Params {
     // 平稳化
     StationaryMethod stationary_method = StationaryMethod::NONE;
-    int ma_window = 60;
-    int diff_order = 1;
-    float frac_d = 0.05f;
-    int frac_window = 100;
+    math::Operator stationary;
 
-    // 归一化 (TS/CS 对仗)
+    // TS归一化
     NormMethod ts_norm = NormMethod::NONE;
-    NormMethod cs_norm = NormMethod::NONE;
+    math::Operator ts;
 
-    // 公共参数
-    float clip_k = 3.0f;
-    float winsor_pct = 0.05f;
-    float power_alpha = 0.5f;
+    // CS归一化
+    NormMethod cs_norm = NormMethod::NONE;
+    math::Operator cs;
+
+    // 切换方法时重置参数
+    void reset_stationary() { stationary.init(GetStationaryDef(stationary_method)); }
+    void reset_ts() { math::normalize::InitOperator(ts, ts_norm); }
+    void reset_cs() { math::normalize::InitOperator(cs, cs_norm); }
 
     bool operator==(const Params &o) const {
-      return stationary_method == o.stationary_method &&
-             ma_window == o.ma_window && diff_order == o.diff_order &&
-             std::abs(frac_d - o.frac_d) < 1e-6f &&
-             frac_window == o.frac_window &&
-             ts_norm == o.ts_norm && cs_norm == o.cs_norm &&
-             std::abs(clip_k - o.clip_k) < 1e-6f &&
-             std::abs(winsor_pct - o.winsor_pct) < 1e-6f &&
-             std::abs(power_alpha - o.power_alpha) < 1e-6f;
+      if (stationary_method != o.stationary_method)
+        return false;
+      for (size_t i = 0; i < 4; ++i)
+        if (std::abs(stationary[i] - o.stationary[i]) >= 1e-6f)
+          return false;
+      if (ts_norm != o.ts_norm)
+        return false;
+      for (size_t i = 0; i < 4; ++i)
+        if (std::abs(ts[i] - o.ts[i]) >= 1e-6f)
+          return false;
+      if (cs_norm != o.cs_norm)
+        return false;
+      for (size_t i = 0; i < 4; ++i)
+        if (std::abs(cs[i] - o.cs[i]) >= 1e-6f)
+          return false;
+      return true;
     }
     bool operator!=(const Params &o) const { return !(*this == o); }
   };

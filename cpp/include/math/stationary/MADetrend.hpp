@@ -1,5 +1,6 @@
 #pragma once
 
+#include "math/Operator.hpp"
 #include <cassert>
 #include <span>
 
@@ -19,6 +20,16 @@
 // ============================================================================
 
 namespace math::stationary {
+
+struct MADetrend {
+  static constexpr ParamMeta meta[] = {{"窗口", 60, 10, 500}};
+  static constexpr OperatorDef def = {"MA去趋势", meta, 1};
+
+  template <typename GetWindow>
+  static void compute(std::span<const float> in, std::span<float> out, GetWindow get_window) {
+    ma_detrend(in, out, static_cast<int>(get_window()));
+  }
+};
 
 // O(n) 实现: 滑动窗口求和
 inline void ma_detrend(std::span<const float> in, std::span<float> out, int window) {

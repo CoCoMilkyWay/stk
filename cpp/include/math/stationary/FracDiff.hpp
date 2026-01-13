@@ -1,5 +1,6 @@
 #pragma once
 
+#include "math/Operator.hpp"
 #include <cassert>
 #include <cmath>
 #include <span>
@@ -25,6 +26,19 @@
 // ============================================================================
 
 namespace math::stationary {
+
+struct FracDiff {
+  static constexpr ParamMeta meta[] = {
+      {"d", 0.05f, 0.0f, 1.0f},
+      {"窗口", 100, 10, 500},
+  };
+  static constexpr OperatorDef def = {"分数差分", meta, 2};
+
+  template <typename GetD, typename GetWindow>
+  static void compute(std::span<const float> in, std::span<float> out, GetD get_d, GetWindow get_window) {
+    frac_diff(in, out, get_d(), static_cast<int>(get_window()));
+  }
+};
 
 // 权重缓存 (预计算一次, 多次使用)
 // 使用阈值截断的FFD, window为上限

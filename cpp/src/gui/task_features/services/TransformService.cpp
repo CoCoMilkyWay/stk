@@ -417,18 +417,19 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
 
     {
       TraceN("Stationary");
+      auto &p = tf.params.stationary;
       switch (tf.params.stationary_method) {
       case Transform::StationaryMethod::NONE:
         std::copy(raw.begin(), raw.end(), result.stationary.begin());
         break;
       case Transform::StationaryMethod::MA_DETREND:
-        math::stationary::ma_detrend({raw.data(), n}, {result.stationary.data(), n}, tf.params.ma_window);
+        math::stationary::ma_detrend({raw.data(), n}, {result.stationary.data(), n}, static_cast<int>(p[0]));
         break;
       case Transform::StationaryMethod::INT_DIFF:
-        math::stationary::int_diff({raw.data(), n}, {result.stationary.data(), n}, tf.params.diff_order);
+        math::stationary::int_diff({raw.data(), n}, {result.stationary.data(), n}, static_cast<int>(p[0]));
         break;
       case Transform::StationaryMethod::FRAC_DIFF:
-        math::stationary::frac_diff({raw.data(), n}, {result.stationary.data(), n}, tf.params.frac_d, tf.params.frac_window);
+        math::stationary::frac_diff({raw.data(), n}, {result.stationary.data(), n}, p[0], static_cast<int>(p[1]));
         break;
       }
     }
@@ -438,12 +439,8 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
 
     {
       TraceN("TS_Norm");
-      math::normalize::Params norm_params;
-      norm_params.clip.k = tf.params.clip_k;
-      norm_params.winsor.pct = tf.params.winsor_pct;
-      norm_params.power.alpha = tf.params.power_alpha;
-
-      math::normalize::apply_ts({result.stationary.data(), n}, {result.ts_normed.data(), n}, tf.params.ts_norm, norm_params);
+      math::normalize::apply_ts({result.stationary.data(), n}, {result.ts_normed.data(), n},
+                                tf.params.ts_norm, tf.params.ts);
     }
     return;
   }
@@ -452,11 +449,6 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
 
   {
     TraceN("CS_Norm");
-    math::normalize::Params norm_params;
-    norm_params.clip.k = tf.params.clip_k;
-    norm_params.winsor.pct = tf.params.winsor_pct;
-    norm_params.power.alpha = tf.params.power_alpha;
-
     if (tf.params.cs_norm == NormMethod::NONE) {
       std::copy(result.ts_normed.begin(), result.ts_normed.end(), result.cs_normed.begin());
     } else {
@@ -474,7 +466,8 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
           cs_input[a] = tf.results[a].ts_normed[t];
         }
 
-        math::normalize::apply_cs({cs_input.data(), n_assets}, {cs_output.data(), n_assets}, tf.params.cs_norm, norm_params);
+        math::normalize::apply_cs({cs_input.data(), n_assets}, {cs_output.data(), n_assets},
+                                  tf.params.cs_norm, tf.params.cs);
 
         result.cs_normed[t] = cs_output[asset_idx];
       }
