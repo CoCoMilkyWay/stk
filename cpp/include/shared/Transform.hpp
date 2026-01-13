@@ -20,7 +20,7 @@
 //   4. UI 线程只读取，不创建任何复杂数据结构
 //
 // 数据流:
-//   FeatureReader → DataCache → 平稳化 → 归一化 → AssetResult → UI
+//   raw → stationary → ts_normed → cs_normed
 //
 // ============================================================================
 
@@ -46,11 +46,14 @@ struct Transform {
     StationaryMethod stationary_method = StationaryMethod::NONE;
     int ma_window = 60;
     int diff_order = 1;
-    float frac_d = 0.5f;
+    float frac_d = 0.05f;
     int frac_window = 100;
 
-    // 归一化
-    NormMethod norm_method = NormMethod::NONE;
+    // 归一化 (TS/CS 对仗)
+    NormMethod ts_norm = NormMethod::NONE;
+    NormMethod cs_norm = NormMethod::NONE;
+
+    // 公共参数
     float clip_k = 3.0f;
     float winsor_pct = 0.05f;
     float power_alpha = 0.5f;
@@ -59,7 +62,8 @@ struct Transform {
       return stationary_method == o.stationary_method &&
              ma_window == o.ma_window && diff_order == o.diff_order &&
              std::abs(frac_d - o.frac_d) < 1e-6f &&
-             frac_window == o.frac_window && norm_method == o.norm_method &&
+             frac_window == o.frac_window &&
+             ts_norm == o.ts_norm && cs_norm == o.cs_norm &&
              std::abs(clip_k - o.clip_k) < 1e-6f &&
              std::abs(winsor_pct - o.winsor_pct) < 1e-6f &&
              std::abs(power_alpha - o.power_alpha) < 1e-6f;
@@ -145,8 +149,9 @@ struct Transform {
 
   struct AssetResult {
     // 时序数据 (预分配 n_samples，后续复用)
-    std::vector<float> stationary;
-    std::vector<float> normalized;
+    std::vector<float> stationary;  // 平稳化后
+    std::vector<float> ts_normed;   // 时序归一化后
+    std::vector<float> cs_normed;   // 截面归一化后 (最终)
 
     // ADF/KPSS (标量)
     float adf_stat = 0.0f;
@@ -157,9 +162,6 @@ struct Transform {
     float kpss_pval = 0.0f;
     bool kpss_pass = false;
 
-    // PSD (128 bins 非标周期轴，由 Transform::psd.asset_psd 存储)
-    // AssetResult 不再存储 FFT 数据
-
     // PDF (KLLcache 持久复用，exportPDF 返回内部指针)
     KLLcache KLL{512, 1024};
 
@@ -168,7 +170,8 @@ struct Transform {
     // 重置 (不分配，只清零)
     void reset() {
       std::fill(stationary.begin(), stationary.end(), 0.0f);
-      std::fill(normalized.begin(), normalized.end(), 0.0f);
+      std::fill(ts_normed.begin(), ts_normed.end(), 0.0f);
+      std::fill(cs_normed.begin(), cs_normed.end(), 0.0f);
       adf_stat = 0.0f;
       adf_pval = 1.0f;
       adf_pass = false;
@@ -182,7 +185,8 @@ struct Transform {
     // 预分配时序数据
     void reserve(size_t n_samples) {
       stationary.resize(n_samples, 0.0f);
-      normalized.resize(n_samples, 0.0f);
+      ts_normed.resize(n_samples, 0.0f);
+      cs_normed.resize(n_samples, 0.0f);
     }
   };
 
@@ -205,11 +209,20 @@ struct Transform {
 
     std::atomic<size_t> done{0};
     std::atomic<size_t> total{0};
-    std::atomic<uint64_t> generation{0}; // 计算版本号，用于中断检测
+
+    // 单一 generation：每次触发计算递增
+    std::atomic<uint64_t> generation{0};
+
+    // Phase 同步 (TS → CS)
+    std::atomic<size_t> ts_done{0};
+    size_t n_workers{0};
 
     float progress() const {
       size_t t = total.load();
-      return t > 0 ? 100.0f * done.load() / t : 0.0f;
+      if (t == 0) return 0.0f;
+      size_t d = done.load();
+      float p = 100.0f * d / t;
+      return p > 100.0f ? 100.0f : p;
     }
 
     bool is_idle() const {
@@ -226,7 +239,7 @@ struct Transform {
       error.clear();
       done = 0;
       total = 0;
-      // generation 不重置，保持递增
+      ts_done = 0;
     }
   };
 
@@ -353,7 +366,7 @@ struct Transform {
   // ==========================================================================
 
   void cancel() {
-    // 通过递增generation来中断当前计算
+    // 通过递增 generation 来触发中断
     ++compute.generation;
     compute.status = Compute::Status::Cancelled;
   }

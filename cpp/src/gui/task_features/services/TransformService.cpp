@@ -48,20 +48,17 @@ TransformWorkerPool::~TransformWorkerPool() {
 }
 
 void TransformWorkerPool::bind(SharedData *data,
-                               void (*compute_fn)(SharedData &, size_t, uint64_t),
+                               void (*compute_fn)(SharedData &, size_t, uint64_t, bool),
                                void (*on_all_done)(SharedData &)) {
   data_ = data;
   compute_fn_ = compute_fn;
   on_all_done_ = on_all_done;
 }
 
-void TransformWorkerPool::trigger() {
+void TransformWorkerPool::trigger(uint64_t gen) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    ++generation_;
-    last_triggered_ = generation_;
-    done_count_ = 0;
-    expected_count_ = data_ ? data_->transform.cache.n_assets : 0;
+    triggered_gen_ = gen;
   }
   cv_.notify_all();
 }
@@ -71,17 +68,17 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
   uint64_t last_gen = 0;
 
   while (true) {
-    uint64_t cur_gen;
+    uint64_t my_gen;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       cv_.wait(lock, [&] {
-        return stop_ || generation_ > last_gen;
+        return stop_ || triggered_gen_ > last_gen;
       });
       if (stop_)
         return;
-      cur_gen = generation_;
+      my_gen = triggered_gen_;
     }
-    last_gen = cur_gen;
+    last_gen = my_gen;
 
     if (!data_ || !compute_fn_)
       continue;
@@ -93,22 +90,52 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
     if (n_assets == 0)
       continue;
 
+    // 检查是否被新 generation 取代
+    auto is_stale = [&]() {
+      return tf.compute.generation.load() != my_gen;
+    };
+
     // 每个worker负责 [start, end) 范围的asset
     size_t per_worker = (n_assets + n_workers - 1) / n_workers;
     size_t start = worker_id * per_worker;
     size_t end = std::min(start + per_worker, n_assets);
 
+    // ========== TS Phase ==========
     for (size_t a = start; a < end; ++a) {
-      // 检查是否有新的generation (被中断)
-      if (generation_ > cur_gen)
+      if (is_stale())
         break;
-
-      compute_fn_(*data_, a, cur_gen);
+      compute_fn_(*data_, a, my_gen, false);
     }
 
+    // ========== Barrier ==========
+    // 无论是否 stale，都增加计数，保证 barrier 能完成
+    ++tf.compute.ts_done;
+
+    // 等待所有 worker 到达，但检查 generation 变化
+    while (tf.compute.ts_done.load() < n_workers) {
+      if (is_stale())
+        break;
+      std::this_thread::yield();
+    }
+
+    // 如果 generation 变化了，跳过 CS，开始下一轮
+    if (is_stale())
+      continue;
+
+    // ========== CS Phase ==========
+    for (size_t a = start; a < end; ++a) {
+      if (is_stale())
+        break;
+      compute_fn_(*data_, a, my_gen, true);
+    }
+
+    // 如果 generation 变化了，跳过 on_all_done
+    if (is_stale())
+      continue;
+
     // 完成计数
-    size_t done = ++done_count_;
-    if (done == n_workers && on_all_done_ && generation_ == cur_gen) {
+    size_t done = ++tf.compute.done;
+    if (done == n_workers && on_all_done_) {
       on_all_done_(*data_);
     }
   }
@@ -142,7 +169,6 @@ void TransformService::StartCompute(CoroManager &coro, SharedData &data) {
   if (coro_running_)
     return;
 
-  // 绑定worker pool回调
   pool_->bind(&data, compute_asset_static, on_all_done_static);
 
   coro_stop_ = false;
@@ -169,7 +195,6 @@ asio::awaitable<void> TransformService::ComputeLoop(SharedData &data) {
   auto &tf = data.transform;
 
   while (!coro_stop_) {
-    // 等待计算请求
     if (!compute_requested_) {
       co_await asio::steady_timer(co_await asio::this_coro::executor,
                                   std::chrono::milliseconds(16))
@@ -212,10 +237,10 @@ asio::awaitable<void> TransformService::ComputeLoop(SharedData &data) {
     if (!tf.cache.valid())
       continue;
 
-    // Invalidate所有asset，触发worker计算
+    // 触发新一轮计算
     invalidate_all(data);
     tf.compute.status = Transform::Compute::Status::Computing;
-    pool_->trigger();
+    pool_->trigger(tf.compute.generation.load());
   }
 
   coro_running_ = false;
@@ -241,15 +266,14 @@ void TransformService::invalidate_all(SharedData &data) {
     tf.psd.resize(n_assets);
   }
 
-  // 增加generation，标记所有asset为invalid
+  // 递增 generation，触发新一轮
   ++tf.compute.generation;
-  for (auto &r : tf.results) {
-    r.valid = false;
-  }
-  tf.psd.valid = false;
 
-  tf.compute.total = n_assets;
+  // 重置同步计数
+  tf.compute.ts_done = 0;
   tf.compute.done = 0;
+  tf.compute.n_workers = pool_->num_workers();
+  tf.compute.total = n_assets;
 }
 
 // ============================================================================
@@ -260,7 +284,6 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
   auto &tf = data.transform;
   auto &cache = tf.cache;
 
-  // 如果缓存有效且匹配，跳过加载
   if (cache.matches(level, feature_idx, block_idx))
     return;
 
@@ -272,12 +295,10 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
 
   const auto &block = tf.blocks[block_idx];
 
-  // 预分配 tensor
   {
     TraceN("IO_Allocate");
     day_tensor_.preallocate_level(n_assets, level);
   };
-  // 加载数据
   {
     TraceN("IO_Load");
     reader_.load_day_level(block.date, level, day_tensor_);
@@ -289,7 +310,6 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
     if (T == 0)
       return;
 
-    // 获取特征的 field offset 和 valid_type
     size_t f_offset = 0;
     size_t valid_offset = 0;
     L2::ValidType valid_type = L2::ValidType::ALL;
@@ -303,7 +323,6 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
 
     if (level == 0) {
       f_offset = L0_FIELD_OFFSETS[feature_idx];
-      // 根据 valid_type 选择对应的 valid flag offset
       if (valid_type == L2::ValidType::DEPTH) {
         valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid];
       } else {
@@ -317,7 +336,6 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
       valid_offset = L2_FIELD_OFFSETS[L2_FieldOffset::_data_valid];
     }
 
-    // 提取数据到缓存 (feature_storage_t -> float 转换)
     cache.raw.resize(n_assets);
     cache.sparse.resize(n_assets);
 
@@ -327,14 +345,13 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
     for (size_t a = 0; a < n_assets; ++a) {
       cache.raw[a].resize(T);
       cache.sparse[a].clear();
-      cache.sparse[a].reserve(T); // 最大预分配
+      cache.sparse[a].reserve(T);
 
       for (size_t t = 0; t < T; ++t) {
         size_t idx = (t * F + f_offset) * n_assets + a;
         float val = static_cast<float>(base[idx]);
         cache.raw[a][t] = val;
 
-        // 检查 valid flag (ALL 类型不过滤)
         if (valid_type == L2::ValidType::ALL) {
           cache.sparse[a].push(val, t);
         } else {
@@ -351,139 +368,162 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
     cache.n_samples = T;
     cache.set_key(level, feature_idx, block_idx);
 
-    // 更新 block 的样本数
     tf.blocks[block_idx].n_samples = T;
   }
 }
 
 // ============================================================================
-// Static Callbacks for Worker Pool
+// Static Callback for Worker Pool
 // ============================================================================
 
-void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, uint64_t gen) {
+void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, uint64_t gen, bool after_barrier) {
   auto &tf = data.transform;
 
-  // 中断检测: 如果generation已变化，放弃计算
-  if (tf.compute.generation != gen)
+  auto is_stale = [&]() {
+    return tf.compute.generation.load() != gen;
+  };
+
+  if (is_stale())
     return;
 
-  auto &result = tf.results[asset_idx];
-
-  // 获取原始数据
   if (asset_idx >= tf.cache.raw.size())
     return;
 
-  const auto &raw = tf.cache.raw[asset_idx];
-  const size_t n = raw.size();
+  auto &result = tf.results[asset_idx];
+  const size_t n = tf.cache.n_samples;
   if (n == 0)
     return;
 
-  // 确保 stationary/normalized 大小匹配
-  if (result.stationary.size() != n) {
-    result.reserve(n);
-  }
+  // ========== Before barrier: stationary → ts_normed ==========
+  if (!after_barrier) {
+    const auto &raw = tf.cache.raw[asset_idx];
 
-  // 中断检测
-  if (tf.compute.generation != gen)
-    return;
-
-  // 1. 平稳化
-  {
-    TraceN("Algo_Stationary");
-    switch (tf.params.stationary_method) {
-    case Transform::StationaryMethod::NONE:
-      std::copy(raw.begin(), raw.end(), result.stationary.begin());
-      break;
-    case Transform::StationaryMethod::MA_DETREND:
-      math::stationary::ma_detrend({raw.data(), n}, {result.stationary.data(), n}, tf.params.ma_window);
-      break;
-    case Transform::StationaryMethod::INT_DIFF:
-      math::stationary::int_diff({raw.data(), n}, {result.stationary.data(), n}, tf.params.diff_order);
-      break;
-    case Transform::StationaryMethod::FRAC_DIFF:
-      math::stationary::frac_diff({raw.data(), n}, {result.stationary.data(), n}, tf.params.frac_d, tf.params.frac_window);
-      break;
+    if (result.stationary.size() != n) {
+      result.reserve(n);
     }
+
+    {
+      TraceN("Stationary");
+      switch (tf.params.stationary_method) {
+      case Transform::StationaryMethod::NONE:
+        std::copy(raw.begin(), raw.end(), result.stationary.begin());
+        break;
+      case Transform::StationaryMethod::MA_DETREND:
+        math::stationary::ma_detrend({raw.data(), n}, {result.stationary.data(), n}, tf.params.ma_window);
+        break;
+      case Transform::StationaryMethod::INT_DIFF:
+        math::stationary::int_diff({raw.data(), n}, {result.stationary.data(), n}, tf.params.diff_order);
+        break;
+      case Transform::StationaryMethod::FRAC_DIFF:
+        math::stationary::frac_diff({raw.data(), n}, {result.stationary.data(), n}, tf.params.frac_d, tf.params.frac_window);
+        break;
+      }
+    }
+
+    if (is_stale())
+      return;
+
+    {
+      TraceN("TS_Norm");
+      math::normalize::Params norm_params;
+      norm_params.clip.k = tf.params.clip_k;
+      norm_params.winsor.pct = tf.params.winsor_pct;
+      norm_params.power.alpha = tf.params.power_alpha;
+
+      math::normalize::apply_ts({result.stationary.data(), n}, {result.ts_normed.data(), n}, tf.params.ts_norm, norm_params);
+    }
+    return;
   }
 
-  // 中断检测
-  if (tf.compute.generation != gen)
-    return;
+  // ========== After barrier: ts_normed[all] → cs_normed + 指标 ==========
 
-  // 2. 归一化
   {
-    TraceN("Algo_Normalize");
+    TraceN("CS_Norm");
     math::normalize::Params norm_params;
     norm_params.clip.k = tf.params.clip_k;
     norm_params.winsor.pct = tf.params.winsor_pct;
     norm_params.power.alpha = tf.params.power_alpha;
 
-    math::normalize::apply_ts({result.stationary.data(), n}, {result.normalized.data(), n}, tf.params.norm_method, norm_params);
+    if (tf.params.cs_norm == NormMethod::NONE) {
+      std::copy(result.ts_normed.begin(), result.ts_normed.end(), result.cs_normed.begin());
+    } else {
+      thread_local std::vector<float> cs_input;
+      thread_local std::vector<float> cs_output;
+      const size_t n_assets = tf.cache.n_assets;
+      cs_input.resize(n_assets);
+      cs_output.resize(n_assets);
+
+      for (size_t t = 0; t < n; ++t) {
+        if (is_stale())
+          return;
+
+        for (size_t a = 0; a < n_assets; ++a) {
+          cs_input[a] = tf.results[a].ts_normed[t];
+        }
+
+        math::normalize::apply_cs({cs_input.data(), n_assets}, {cs_output.data(), n_assets}, tf.params.cs_norm, norm_params);
+
+        result.cs_normed[t] = cs_output[asset_idx];
+      }
+    }
   }
 
-  // 中断检测
-  if (tf.compute.generation != gen)
+  if (is_stale())
     return;
 
-  // 3. ADF 检验
   {
-    TraceN("Algo_ADF");
+    TraceN("ADF");
     math::stationary::ADFWorkspace adf_ws;
-    auto adf_result = math::stationary::adf_test({result.stationary.data(), n}, 4, adf_ws);
+    auto adf_result = math::stationary::adf_test({result.cs_normed.data(), n}, 4, adf_ws);
     result.adf_stat = adf_result.statistic;
     result.adf_pval = adf_result.pvalue;
     result.adf_pass = adf_result.pvalue < 0.05f;
   }
 
-  // 中断检测
-  if (tf.compute.generation != gen)
+  if (is_stale())
     return;
 
-  // 4. KPSS 检验
   {
-    TraceN("Algo_KPSS");
+    TraceN("KPSS");
     math::stationary::KPSSWorkspace kpss_ws;
-    auto kpss_result = math::stationary::kpss_test({result.stationary.data(), n}, -1, kpss_ws);
+    auto kpss_result = math::stationary::kpss_test({result.cs_normed.data(), n}, -1, kpss_ws);
     result.kpss_stat = kpss_result.statistic;
     result.kpss_pval = kpss_result.pvalue;
     result.kpss_pass = kpss_result.pvalue > 0.05f;
   }
 
-  // 中断检测
-  if (tf.compute.generation != gen)
+  if (is_stale())
     return;
 
-  // 5. PSD (128 bins 非标周期轴)
   {
-    TraceN("Algo_PSD");
+    TraceN("PSD");
     if (asset_idx < tf.psd.asset_psd.size()) {
       auto &psd_out = tf.psd.asset_psd[asset_idx];
       psd_out.fill(0.0f);
 
       thread_local math::spectral::MultiResPSDWorkspace<> ws;
-      if (!ws.initialized) ws.init();
+      if (!ws.initialized)
+        ws.init();
       ws.reset();
 
       int level = tf.cache.level;
 
-      // 收集 valid 数据用于循环填充
       thread_local std::vector<float> valid_data;
       valid_data.clear();
       valid_data.reserve(n);
 
       float last_valid = 0.0f;
       for (size_t t = 0; t < n; ++t) {
-        float val = result.normalized[t];
+        float val = result.cs_normed[t];
         if (std::isfinite(val)) {
           last_valid = val;
         }
         valid_data.push_back(last_valid);
       }
 
-      // 确定目标 FFT 大小
-      size_t target_size = (level == 0) ? 16384 : (level == 1) ? 8192 : 128;
+      size_t target_size = (level == 0) ? 16384 : (level == 1) ? 8192
+                                                               : 128;
 
-      // 循环填充直到达到 FFT 大小
       size_t filled = 0;
       while (filled < target_size) {
         size_t idx = filled % valid_data.size();
@@ -498,37 +538,30 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
         ++filled;
       }
 
-      // 计算 PSD 到 128 bins
       ws.compute_day(std::span<float>(psd_out.data(), psd_out.size()));
     }
   }
 
-  // 中断检测
-  if (tf.compute.generation != gen)
+  if (is_stale())
     return;
 
-  // 6. PDF (KLLcache 持久复用)
   {
-    TraceN("Algo_KLL");
+    TraceN("KLL");
     result.KLL.clear();
-    result.KLL.addBatch(result.normalized);
+    result.KLL.addBatch(result.cs_normed);
   }
 
-  // 完成: 设置valid，增加done计数
   result.valid = true;
-  ++tf.compute.done;
 }
 
 void TransformService::on_all_done_static(SharedData &data) {
   auto &tf = data.transform;
   auto &psd = tf.psd;
 
-  // 初始化轴刻度（只需一次）
   if (psd.tick_positions.empty()) {
     psd.init_axis();
   }
 
-  // 计算平均 PSD
   psd.avg_psd.fill(0.0f);
   size_t valid_count = 0;
 
@@ -552,18 +585,16 @@ void TransformService::on_all_done_static(SharedData &data) {
     }
   }
 
-  // 转换为 dB (log10)
   for (size_t k = 0; k < 128; ++k) {
     float v = psd.avg_psd[k];
     psd.avg_psd_db[k] = (v > 1e-20f) ? std::log10(v) : -20.0f;
   }
 
-  // 计算频段能量比例
   float total_energy = 0.0f;
-  float sec_energy = 0.0f;   // bins 0-57
-  float min_energy = 0.0f;   // bins 58-116
-  float hour_energy = 0.0f;  // bins 117-126
-  float dc_energy = 0.0f;    // bin 127
+  float sec_energy = 0.0f;
+  float min_energy = 0.0f;
+  float hour_energy = 0.0f;
+  float dc_energy = 0.0f;
 
   for (size_t k = 0; k < 128; ++k) {
     float e = psd.avg_psd[k];
@@ -589,10 +620,7 @@ void TransformService::on_all_done_static(SharedData &data) {
   }
 
   psd.valid = true;
-
-  // Clamp display indices
   tf.display.clamp(tf.cache.n_assets);
-
   tf.compute.status = Transform::Compute::Status::Done;
 }
 

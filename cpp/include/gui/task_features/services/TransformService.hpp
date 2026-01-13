@@ -1,16 +1,9 @@
 // TransformService - Transform Analysis Service
 //
-// 设计目标:
-//   1. 每个worker负责固定的asset集合 (预分配)
-//   2. 高频拖动参数时能及时中断重算
-//   3. 每个asset独立valid，算完一个画一个
-//
-// 计算流程:
-//   1. UI 参数变化 → RequestCompute() → generation++
-//   2. Worker 检测到 generation 变化
-//   3. 中断当前计算，invalidate 所有 asset
-//   4. 重新计算负责的 asset，完成一个 valid 一个
-//   5. UI 实时渲染已 valid 的 asset
+// 计算流程 (两阶段):
+//   phase_ts: raw → stationary → ts_normed (每个 worker 独立)
+//   barrier:  等待所有 worker 完成 ts 阶段
+//   phase_cs: ts_normed[all] → cs_normed + 指标 (每个 worker 读共享)
 //
 #pragma once
 
@@ -43,15 +36,11 @@ public:
   explicit TransformWorkerPool(size_t num_workers);
   ~TransformWorkerPool();
 
-  // 触发新一轮计算 (++generation, 唤醒所有worker)
-  void trigger();
+  // 触发新一轮计算
+  void trigger(uint64_t gen);
 
-  // 当前generation
-  uint64_t generation() const { return generation_.load(); }
-
-  // 设置共享数据和回调
   void bind(SharedData *data,
-            void (*compute_fn)(SharedData &, size_t, uint64_t),
+            void (*compute_fn)(SharedData &, size_t, uint64_t, bool),
             void (*on_all_done)(SharedData &));
 
   size_t num_workers() const { return workers_.size(); }
@@ -60,22 +49,15 @@ private:
   void worker_loop(size_t worker_id);
 
   std::vector<std::thread> workers_;
-  std::atomic<uint64_t> generation_{0};
   std::atomic<bool> stop_{false};
 
-  // 同步
   std::mutex mutex_;
   std::condition_variable cv_;
-  uint64_t last_triggered_{0};
+  uint64_t triggered_gen_{0};
 
-  // 回调
   SharedData *data_{nullptr};
-  void (*compute_fn_)(SharedData &, size_t, uint64_t) = nullptr;
+  void (*compute_fn_)(SharedData &, size_t, uint64_t, bool) = nullptr;
   void (*on_all_done_)(SharedData &) = nullptr;
-
-  // 完成计数
-  std::atomic<size_t> done_count_{0};
-  size_t expected_count_{0};
 };
 
 // ============================================================================
@@ -105,9 +87,8 @@ private:
   void load_data(SharedData &data, int level, int feature_idx, int block_idx);
   void invalidate_all(SharedData &data);
 
-  // 静态回调 (传给worker pool)
-  static void compute_asset_static(SharedData &data, size_t asset_idx,
-                                   uint64_t gen);
+  // 静态回调 (after_barrier: false=TS阶段, true=CS阶段)
+  static void compute_asset_static(SharedData &data, size_t asset_idx, uint64_t gen, bool after_barrier);
   static void on_all_done_static(SharedData &data);
 
   // Features directory
@@ -125,9 +106,8 @@ private:
   std::atomic<bool> coro_running_{false};
   std::atomic<bool> coro_stop_{false};
 
-  // Request flags
+  // Request flag
   std::atomic<bool> compute_requested_{false};
-  std::atomic<bool> reload_requested_{false};
 };
 
 } // namespace GUI::Features

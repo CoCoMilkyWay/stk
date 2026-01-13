@@ -594,55 +594,55 @@ static bool RenderStationaryConfig(Transform::Params &config) {
 }
 
 // ============================================================================
-// Normalization Config Panel (Right)
+// Normalization Config (TS/CS 对仗)
 // ============================================================================
 
-static bool RenderNormConfig(Transform::Params &config) {
-  TraceN("UI:NormConfig");
+// Combo 选项映射
+static const struct {
+  NormMethod method;
+  const char *name;
+} g_norm_items[] = {
+    {NormMethod::NONE, "NONE"},
+    {NormMethod::ZSCORE, "ZSCORE"},
+    {NormMethod::ROBUST_ZSCORE, "ROBUST"},
+    {NormMethod::IQR_ZSCORE, "IQR"},
+    {NormMethod::RANK, "RANK"},
+    {NormMethod::RANK_ZSCORE, "RANK_Z"},
+    {NormMethod::CLIP, "CLIP"},
+    {NormMethod::WINSOR, "WINSOR"},
+    {NormMethod::LOG, "LOG"},
+    {NormMethod::POWER, "POWER"},
+    {NormMethod::ASINH, "ASINH"},
+    {NormMethod::TANH, "TANH"},
+    {NormMethod::LOG_ZSCORE, "LOG_Z"},
+    {NormMethod::CLIP_ZSCORE, "CLP_Z"},
+    {NormMethod::WINSOR_ZSCORE, "WIN_Z"},
+    {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z"},
+};
+static constexpr int g_n_norm_items = IM_ARRAYSIZE(g_norm_items);
+
+static int FindNormIndex(NormMethod m) {
+  for (int i = 0; i < g_n_norm_items; ++i) {
+    if (g_norm_items[i].method == m)
+      return i;
+  }
+  return 0;
+}
+
+static bool RenderTSNormConfig(Transform::Params &config) {
+  TraceN("UI:TSNormConfig");
   bool changed = false;
 
-  ImGui::Text("归一化");
+  ImGui::Text("TS归一化");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(150);
+  ImGui::SetNextItemWidth(120);
 
-  // Combo需要连续索引，建立映射
-  static const struct {
-    NormMethod method;
-    const char *name;
-  } norm_items[] = {
-      {NormMethod::NONE, "NONE"},
-      {NormMethod::ZSCORE, "ZSCORE"},
-      {NormMethod::ROBUST_ZSCORE, "ROBUST"},
-      {NormMethod::IQR_ZSCORE, "IQR"},
-      {NormMethod::RANK, "RANK"},
-      {NormMethod::RANK_ZSCORE, "RANK_Z"},
-      {NormMethod::CLIP, "CLIP"},
-      {NormMethod::WINSOR, "WINSOR"},
-      {NormMethod::LOG, "LOG"},
-      {NormMethod::POWER, "POWER"},
-      {NormMethod::ASINH, "ASINH"},
-      {NormMethod::TANH, "TANH"},
-      {NormMethod::LOG_ZSCORE, "LOG_Z"},
-      {NormMethod::CLIP_ZSCORE, "CLP_Z"},
-      {NormMethod::WINSOR_ZSCORE, "WIN_Z"},
-      {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z"},
-  };
-  constexpr int n_items = IM_ARRAYSIZE(norm_items);
-
-  // 查找当前索引
-  int cur_idx = 0;
-  for (int i = 0; i < n_items; ++i) {
-    if (norm_items[i].method == config.norm_method) {
-      cur_idx = i;
-      break;
-    }
-  }
-
-  if (ImGui::BeginCombo("##norm_method", norm_items[cur_idx].name)) {
-    for (int i = 0; i < n_items; ++i) {
+  int cur_idx = FindNormIndex(config.ts_norm);
+  if (ImGui::BeginCombo("##ts_norm", g_norm_items[cur_idx].name)) {
+    for (int i = 0; i < g_n_norm_items; ++i) {
       bool selected = (i == cur_idx);
-      if (ImGui::Selectable(norm_items[i].name, selected)) {
-        config.norm_method = norm_items[i].method;
+      if (ImGui::Selectable(g_norm_items[i].name, selected)) {
+        config.ts_norm = g_norm_items[i].method;
         changed = true;
       }
       if (selected)
@@ -651,34 +651,87 @@ static bool RenderNormConfig(Transform::Params &config) {
     ImGui::EndCombo();
   }
 
-  // 按需显示参数
-  bool needs_clip = config.norm_method == NormMethod::CLIP ||
-                    config.norm_method == NormMethod::CLIP_ZSCORE ||
-                    config.norm_method == NormMethod::CLIP_LOG_ZSCORE;
-  bool needs_winsor = config.norm_method == NormMethod::WINSOR ||
-                      config.norm_method == NormMethod::WINSOR_ZSCORE;
-  bool needs_power = config.norm_method == NormMethod::POWER ||
-                     config.norm_method == NormMethod::POWER_ZSCORE;
+  return changed;
+}
+
+static bool RenderCSNormConfig(Transform::Params &config) {
+  TraceN("UI:CSNormConfig");
+  bool changed = false;
+
+  ImGui::Text("CS归一化");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(120);
+
+  int cur_idx = FindNormIndex(config.cs_norm);
+  if (ImGui::BeginCombo("##cs_norm", g_norm_items[cur_idx].name)) {
+    for (int i = 0; i < g_n_norm_items; ++i) {
+      bool selected = (i == cur_idx);
+      if (ImGui::Selectable(g_norm_items[i].name, selected)) {
+        config.cs_norm = g_norm_items[i].method;
+        changed = true;
+      }
+      if (selected)
+        ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+
+  return changed;
+}
+
+static bool RenderNormParams(Transform::Params &config) {
+  bool changed = false;
+
+  // 检查 TS 或 CS 是否需要参数
+  auto needs_param = [](NormMethod m) {
+    return m == NormMethod::CLIP || m == NormMethod::CLIP_ZSCORE ||
+           m == NormMethod::CLIP_LOG_ZSCORE || m == NormMethod::WINSOR ||
+           m == NormMethod::WINSOR_ZSCORE || m == NormMethod::POWER ||
+           m == NormMethod::POWER_ZSCORE;
+  };
+
+  if (!needs_param(config.ts_norm) && !needs_param(config.cs_norm))
+    return false;
+
+  ImGui::SameLine();
+
+  bool needs_clip = config.ts_norm == NormMethod::CLIP ||
+                    config.ts_norm == NormMethod::CLIP_ZSCORE ||
+                    config.ts_norm == NormMethod::CLIP_LOG_ZSCORE ||
+                    config.cs_norm == NormMethod::CLIP ||
+                    config.cs_norm == NormMethod::CLIP_ZSCORE ||
+                    config.cs_norm == NormMethod::CLIP_LOG_ZSCORE;
+
+  bool needs_winsor = config.ts_norm == NormMethod::WINSOR ||
+                      config.ts_norm == NormMethod::WINSOR_ZSCORE ||
+                      config.cs_norm == NormMethod::WINSOR ||
+                      config.cs_norm == NormMethod::WINSOR_ZSCORE;
+
+  bool needs_power = config.ts_norm == NormMethod::POWER ||
+                     config.ts_norm == NormMethod::POWER_ZSCORE ||
+                     config.cs_norm == NormMethod::POWER ||
+                     config.cs_norm == NormMethod::POWER_ZSCORE;
 
   if (needs_clip) {
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(250);
+    ImGui::SetNextItemWidth(150);
     if (ImGui::SliderFloat("k##clip", &config.clip_k, 1.0f, 10.0f, "%.1f")) {
       changed = true;
     }
+    if (needs_winsor || needs_power)
+      ImGui::SameLine();
   }
 
   if (needs_winsor) {
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(250);
+    ImGui::SetNextItemWidth(150);
     if (ImGui::SliderFloat("pct##win", &config.winsor_pct, 0.01f, 0.25f, "%.2f")) {
       changed = true;
     }
+    if (needs_power)
+      ImGui::SameLine();
   }
 
   if (needs_power) {
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(250);
+    ImGui::SetNextItemWidth(150);
     if (ImGui::SliderFloat("α##pow", &config.power_alpha, 0.1f, 2.0f, "%.2f")) {
       changed = true;
     }
@@ -803,26 +856,10 @@ static void FormatAnchorTime(char *buf, size_t buf_size, size_t idx, int level) 
 // Render Decision Helper: 判断是否应该渲染某个 asset 的数据
 // ============================================================================
 
-// 判断是否应该渲染 asset 结果（避免计算过程中的空白）
-static bool ShouldRenderAssetResult(const Transform::AssetResult &r, size_t cur_gen,
-                                    size_t last_rendered_gen,
-                                    Transform::Compute::Status status,
-                                    bool has_data) {
-  if (r.valid) {
-    return true; // 新数据已准备好
-  }
-  if (!has_data) {
-    return false; // 没有数据可显示
-  }
-  // 新计算进行中，继续显示旧数据避免空白
-  if (cur_gen > last_rendered_gen && status == Transform::Compute::Status::Computing) {
-    return true;
-  }
-  // 旧数据，继续显示
-  if (cur_gen == last_rendered_gen) {
-    return true;
-  }
-  return false;
+// 判断是否应该渲染 asset 结果
+// 简单逻辑：有数据且 valid 就渲染
+static bool ShouldRenderAssetResult(const Transform::AssetResult &r, bool has_data) {
+  return r.valid && has_data;
 }
 
 // ============================================================================
@@ -860,7 +897,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
   const bool show_all = (sel < 0);
   const bool has_data = !tf.results.empty();
   const size_t n_samples = tf.cache.n_samples;
-  const size_t cur_gen = tf.compute.generation.load();
+  const uint64_t cur_gen = tf.compute.generation.load();
 
   // 动态计算高度: 剩余高度的45%给特征图, 45%给底部图, 10%留白
   float avail_h = ImGui::GetContentRegionAvail().y;
@@ -901,10 +938,10 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
       if (!show_all && (int)i != sel)
         continue;
       const auto &r = tf.results[i];
-      if (!r.valid || anchor_idx >= r.normalized.size())
+      if (!r.valid || anchor_idx >= r.cs_normed.size())
         continue;
-      if (std::isfinite(r.normalized[anchor_idx])) {
-        cache.norm_y = r.normalized[anchor_idx];
+      if (std::isfinite(r.cs_normed[anchor_idx])) {
+        cache.norm_y = r.cs_normed[anchor_idx];
         break;
       }
     }
@@ -931,7 +968,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
 
       // 遍历每个 asset 的 sparse data
       for (size_t i = 0; i < tf.cache.sparse.size(); ++i) {
-        if (i >= tf.results.size() || !ShouldRenderAssetResult(tf.results[i], cur_gen, ui.last_rendered_generation, tf.compute.status, !tf.cache.sparse[i].empty())) {
+        if (i >= tf.results.size() || !ShouldRenderAssetResult(tf.results[i], !tf.cache.sparse[i].empty())) {
           continue;
         }
         const auto &sp = tf.cache.sparse[i];
@@ -967,7 +1004,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
         const auto &raw = tf.cache.raw[i];
         if (raw.empty())
           continue;
-        if (i >= tf.results.size() || !ShouldRenderAssetResult(tf.results[i], cur_gen, ui.last_rendered_generation, tf.compute.status, !raw.empty())) {
+        if (i >= tf.results.size() || !ShouldRenderAssetResult(tf.results[i], !raw.empty())) {
           continue;
         }
         ImVec4 col = GetAssetColor(i, n_assets);
@@ -1021,10 +1058,10 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
       // 遍历每个 asset 的 normalized data
       for (size_t i = 0; i < tf.results.size(); ++i) {
         const auto &r = tf.results[i];
-        if (!ShouldRenderAssetResult(r, cur_gen, ui.last_rendered_generation, tf.compute.status, !r.normalized.empty())) {
+        if (!ShouldRenderAssetResult(r, !r.cs_normed.empty())) {
           continue;
         }
-        const auto &vec = r.normalized;
+        const auto &vec = r.cs_normed;
         for (size_t idx = 0; idx < std::min(n_samples, vec.size()); ++idx) {
           UpdateMinMax(min_vals, max_vals, idx, vec[idx]);
         }
@@ -1055,14 +1092,14 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
         if ((int)i != sel)
           continue;
         const auto &r = tf.results[i];
-        if (r.normalized.empty())
+        if (r.cs_normed.empty())
           continue;
-        if (!ShouldRenderAssetResult(r, cur_gen, ui.last_rendered_generation, tf.compute.status, !r.normalized.empty())) {
+        if (!ShouldRenderAssetResult(r, !r.cs_normed.empty())) {
           continue;
         }
         ImVec4 col = GetAssetColor(i, n_assets);
         ImPlot::SetNextLineStyle(col, 0.8f);
-        ImPlot::PlotLine("##n", r.normalized.data(), static_cast<int>(r.normalized.size()));
+        ImPlot::PlotLine("##n", r.cs_normed.data(), static_cast<int>(r.cs_normed.size()));
       }
     }
 
@@ -1119,13 +1156,12 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
 
     // 直接从 AssetResult.KLL 读取 (exportPDF 返回内部指针，零 copy)
-    const size_t cur_gen = tf.compute.generation.load();
     for (size_t i = 0; i < tf.results.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
       const auto &r = tf.results[i];
       // 判断是否应该渲染（避免计算过程中的空白）
-      if (r.KLL.empty() || !ShouldRenderAssetResult(r, cur_gen, ui.last_rendered_generation, tf.compute.status, !r.KLL.empty())) {
+      if (r.KLL.empty() || !ShouldRenderAssetResult(r, !r.KLL.empty())) {
         continue;
       }
       auto KLL = r.KLL.exportPDF();
@@ -1291,23 +1327,11 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
 
   auto &tf = data.transform;
 
-  // 首次进入Tab且有有效特征选择时，自动触发计算
-  static bool first_enter = true;
-  if (first_enter && data.feature.selection.primary_feature_idx >= 0) {
-    first_enter = false;
-    service->RequestCompute();
-    // 重置 autofit 跟踪，使得计算完成后会触发 autofit
-    ui.last_autofit_generation = 0;
-    ui.last_autofit_asset = -2;
-  }
-
-  // Autozoom 逻辑: 只在预期 assets 更新完成后触发
-  // ALL mode: 当计算完成 (status == Done) 且 generation 变化时触发
-  // 单 asset mode: 当选中的 asset 的 result.valid 变化时触发
+  // Autozoom 逻辑: 计算完成后触发
   {
     TraceN("UI:AutozoomCheck");
     int cur_asset = tf.display.selected_asset;
-    size_t cur_gen = tf.compute.generation.load();
+    uint64_t cur_gen = tf.compute.generation.load();
     bool should_autofit = false;
 
     if (cur_asset < 0) {
@@ -1338,8 +1362,11 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // 第二行: 平稳化
   bool st_changed = RenderStationaryConfig(tf.params);
 
-  // 第三行: 归一化
-  bool norm_changed = RenderNormConfig(tf.params);
+  // 第三行: 归一化 (TS/CS 对仗)
+  bool ts_changed = RenderTSNormConfig(tf.params);
+  bool cs_changed = RenderCSNormConfig(tf.params);
+  bool param_changed = RenderNormParams(tf.params);
+  bool norm_changed = ts_changed || cs_changed || param_changed;
 
   // 第二行: ADF/KPSS热力图
   RenderStationarityHeatmap(tf, data.asset);
@@ -1356,13 +1383,12 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   }
   (void)sel_changed; // asset选择变化不再直接触发autozoom
 
-  // 更新渲染缓存: 只有当计算完成时才更新，避免计算过程中的空白
+  // 更新渲染缓存
   {
-    size_t cur_gen = tf.compute.generation.load();
-    if (tf.compute.status == Transform::Compute::Status::Done) {
-      if (cur_gen != ui.last_rendered_generation) {
-        ui.last_rendered_generation = cur_gen;
-      }
+    uint64_t cur_gen = tf.compute.generation.load();
+    if (tf.compute.status == Transform::Compute::Status::Done &&
+        cur_gen != ui.last_rendered_generation) {
+      ui.last_rendered_generation = cur_gen;
     }
   }
 

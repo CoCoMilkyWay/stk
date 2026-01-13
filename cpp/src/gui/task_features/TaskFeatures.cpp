@@ -74,6 +74,10 @@ struct TaskFeaturesState {
   int timeseries_prev_feature_idx = -1; // Track feature changes for timeseries
   int timeseries_prev_level = -1;       // Track level changes for timeseries
 
+  // Auto-compute tracking (Transform)
+  int transform_prev_feature_idx = -1;  // Track feature changes for transform
+  int transform_prev_level = -1;        // Track level changes for transform
+
   // Terminal reference
   TaskTerminal *terminal = nullptr;
 };
@@ -222,7 +226,7 @@ TaskHandle CreateFeaturesTask() {
       const bool disable[TAB_COUNT] = {
           is_locked(TAB_FEATURE),                                     // Feature: always accessible
           !db_ready || is_locked(TAB_COMPUTE),                        // Compute: needs db
-          is_locked(TAB_TRANSFORM),                                   // Transform: always accessible
+          !db_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs db + selection
           !db_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs db + selection
           !db_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs db + selection
           !db_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs db
@@ -268,9 +272,31 @@ TaskHandle CreateFeaturesTask() {
       // Transform lifecycle
       if (transform_tab_open && !state->transform_tab_was_active) {
         state->transform_tab_was_active = true;
+        state->transform_prev_feature_idx = -1; // Reset tracking on tab enter
+        state->transform_prev_level = -1;
       } else if (!transform_tab_open && state->transform_tab_was_active) {
         Features::StopTabTransform(state->transform_service.get(), data);
         state->transform_tab_was_active = false;
+      }
+
+      // Auto-trigger Transform compute on feature/level change
+      if (transform_tab_open && state->transform_service &&
+          state->transform_service->is_running()) {
+        auto &sel = data.feature.selection;
+        bool feature_changed = (sel.primary_feature_idx != state->transform_prev_feature_idx);
+        bool level_changed = (sel.selected_level != state->transform_prev_level);
+
+        if (feature_changed || level_changed) {
+          // Cancel old computation if running
+          if (data.transform.compute.is_busy()) {
+            data.transform.cancel();
+          }
+          // Trigger new computation
+          state->transform_service->RequestCompute();
+          // Update tracking
+          state->transform_prev_feature_idx = sel.primary_feature_idx;
+          state->transform_prev_level = sel.selected_level;
+        }
       }
 
       // Tab: Distribution
