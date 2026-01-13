@@ -502,21 +502,10 @@ static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
   if (!tf.blocks.empty()) {
     int block_idx = tf.selected_block;
 
-    // 格式化为 YY/MM/DD
-    char time_label[32];
     const auto &block = tf.blocks[block_idx];
-    if (block.date.size() >= 8) {
-      // YYYYMMDD -> YY/MM/DD
-      snprintf(time_label, sizeof(time_label), "%s/%s/%s",
-               block.date.substr(2, 2).c_str(),
-               block.date.substr(4, 2).c_str(),
-               block.date.substr(6, 2).c_str());
-    } else {
-      snprintf(time_label, sizeof(time_label), "%s", block.display.c_str());
-    }
 
     if (ImGui::SliderInt("##TimeSlider", &block_idx, 0,
-                         static_cast<int>(tf.blocks.size() - 1), time_label)) {
+                         static_cast<int>(tf.blocks.size() - 1), block.label.c_str())) {
       if (tf.selected_block != block_idx) {
         tf.selected_block = block_idx;
         changed = true;

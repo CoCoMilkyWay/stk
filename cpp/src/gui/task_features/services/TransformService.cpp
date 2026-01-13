@@ -231,7 +231,7 @@ asio::awaitable<void> TransformService::ComputeLoop(SharedData &data) {
 
     if (need_load) {
       tf.compute.status = Transform::Compute::Status::Loading;
-      load_data(data, level, feat_idx, tf.selected_block);
+      load_block(data, level, feat_idx, tf.selected_block);
     }
 
     if (!tf.cache.valid())
@@ -277,10 +277,10 @@ void TransformService::invalidate_all(SharedData &data) {
 }
 
 // ============================================================================
-// Data Loading
+// Block Loading (统一 L0/L1/L2)
 // ============================================================================
 
-void TransformService::load_data(SharedData &data, int level, int feature_idx, int block_idx) {
+void TransformService::load_block(SharedData &data, int level, int feature_idx, int block_idx) {
   auto &tf = data.transform;
   auto &cache = tf.cache;
 
@@ -289,87 +289,99 @@ void TransformService::load_data(SharedData &data, int level, int feature_idx, i
 
   cache.clear();
 
-  const size_t n_assets = data.asset.items.size();
-  if (n_assets == 0 || block_idx >= (int)tf.blocks.size())
+  const size_t A = data.asset.items.size();
+  if (A == 0 || block_idx >= (int)tf.blocks.size())
     return;
 
   const auto &block = tf.blocks[block_idx];
+  if (block.dates.empty())
+    return;
+
+  // 获取 feature offset (对仗: 三个 level 相同逻辑)
+  size_t f_offset = 0;
+  size_t valid_offset = 0;
+  L2::ValidType valid_type = L2::ValidType::ALL;
+
+  const auto &meta = level == 0   ? data.feature.metadata.features_l0
+                     : level == 1 ? data.feature.metadata.features_l1
+                                  : data.feature.metadata.features_l2;
+  if (feature_idx >= 0 && feature_idx < (int)meta.size()) {
+    valid_type = meta[feature_idx].valid_type;
+  }
+
+  if (level == 0) {
+    f_offset = L0_FIELD_OFFSETS[feature_idx];
+    if (valid_type == L2::ValidType::DEPTH) {
+      valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid];
+    } else {
+      valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_data_valid];
+    }
+  } else if (level == 1) {
+    f_offset = L1_FIELD_OFFSETS[feature_idx];
+    valid_offset = L1_FIELD_OFFSETS[L1_FieldOffset::_data_valid];
+  } else {
+    f_offset = L2_FIELD_OFFSETS[feature_idx];
+    valid_offset = L2_FIELD_OFFSETS[L2_FieldOffset::_data_valid];
+  }
+
+  cache.raw.resize(A);
+  cache.sparse.resize(A);
+
+  size_t t_base = 0; // 累计时间偏移
 
   {
     TraceN("IO_Allocate");
-    day_tensor_.preallocate_level(n_assets, level);
-  };
-  {
-    TraceN("IO_Load");
-    reader_.load_day_level(block.date, level, day_tensor_);
+    day_tensor_.preallocate_level(A, level);
   }
 
-  {
-    TraceN("IO_Finalize");
-    size_t T = day_tensor_.T[level];
-    if (T == 0)
-      return;
-
-    size_t f_offset = 0;
-    size_t valid_offset = 0;
-    L2::ValidType valid_type = L2::ValidType::ALL;
-
-    const auto &meta = level == 0   ? data.feature.metadata.features_l0
-                       : level == 1 ? data.feature.metadata.features_l1
-                                    : data.feature.metadata.features_l2;
-    if (feature_idx >= 0 && feature_idx < (int)meta.size()) {
-      valid_type = meta[feature_idx].valid_type;
+  // 统一流程：遍历 block.dates，逐天加载并拼接
+  for (const auto &date : block.dates) {
+    {
+      TraceN("IO_Load");
+      reader_.load_day_level(date, level, day_tensor_);
     }
 
-    if (level == 0) {
-      f_offset = L0_FIELD_OFFSETS[feature_idx];
-      if (valid_type == L2::ValidType::DEPTH) {
-        valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid];
-      } else {
-        valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_data_valid];
-      }
-    } else if (level == 1) {
-      f_offset = L1_FIELD_OFFSETS[feature_idx];
-      valid_offset = L1_FIELD_OFFSETS[L1_FieldOffset::_data_valid];
-    } else {
-      f_offset = L2_FIELD_OFFSETS[feature_idx];
-      valid_offset = L2_FIELD_OFFSETS[L2_FieldOffset::_data_valid];
-    }
+    const size_t T_day = day_tensor_.T[level];
+    if (T_day == 0)
+      continue;
 
-    cache.raw.resize(n_assets);
-    cache.sparse.resize(n_assets);
-
+    const size_t F = day_tensor_.F[level];
     const feature_storage_t *base = day_tensor_.data[level].data();
-    size_t F = day_tensor_.F[level];
 
-    for (size_t a = 0; a < n_assets; ++a) {
-      cache.raw[a].resize(T);
-      cache.sparse[a].clear();
-      cache.sparse[a].reserve(T);
+    // 扩展 cache 容量
+    for (size_t a = 0; a < A; ++a) {
+      cache.raw[a].resize(t_base + T_day);
+    }
 
-      for (size_t t = 0; t < T; ++t) {
-        size_t idx = (t * F + f_offset) * n_assets + a;
-        float val = static_cast<float>(base[idx]);
-        cache.raw[a][t] = val;
+    // 提取单特征，拼接到 cache
+    {
+      TraceN("IO_Extract");
+      for (size_t a = 0; a < A; ++a) {
+        for (size_t t = 0; t < T_day; ++t) {
+          size_t idx = (t * F + f_offset) * A + a;
+          float val = static_cast<float>(base[idx]);
+          cache.raw[a][t_base + t] = val;
 
-        if (valid_type == L2::ValidType::ALL) {
-          cache.sparse[a].push(val, t);
-        } else {
-          size_t valid_idx = (t * F + valid_offset) * n_assets + a;
-          float valid_flag = static_cast<float>(base[valid_idx]);
-          if (valid_flag > 0.5f) {
-            cache.sparse[a].push(val, t);
+          if (valid_type == L2::ValidType::ALL) {
+            cache.sparse[a].push(val, t_base + t);
+          } else {
+            size_t valid_idx = (t * F + valid_offset) * A + a;
+            float valid_flag = static_cast<float>(base[valid_idx]);
+            if (valid_flag > 0.5f) {
+              cache.sparse[a].push(val, t_base + t);
+            }
           }
         }
       }
     }
 
-    cache.n_assets = n_assets;
-    cache.n_samples = T;
-    cache.set_key(level, feature_idx, block_idx);
-
-    tf.blocks[block_idx].n_samples = T;
+    t_base += T_day;
   }
+
+  cache.n_assets = A;
+  cache.n_samples = t_base;
+  cache.set_key(level, feature_idx, block_idx);
+  tf.blocks[block_idx].n_samples = t_base;
 }
 
 // ============================================================================

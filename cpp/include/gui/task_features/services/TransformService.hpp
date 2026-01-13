@@ -84,7 +84,7 @@ public:
 
 private:
   // 内部方法
-  void load_data(SharedData &data, int level, int feature_idx, int block_idx);
+  void load_block(SharedData &data, int level, int feature_idx, int block_idx);
   void invalidate_all(SharedData &data);
 
   // 静态回调 (after_barrier: false=TS阶段, true=CS阶段)

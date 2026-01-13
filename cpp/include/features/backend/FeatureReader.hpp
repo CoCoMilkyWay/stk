@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
-#include <iostream>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -279,7 +278,7 @@ public:
   // Reads actual T/F from file headers, buffer already preallocated
   void load_day_level(const std::string &date, size_t level, DayTensor &out) const {
     Trace;
-    assert(date.size() == 8 || (std::cerr << "size=" << date.size() << " date=" << date << " level=" << level << "\n", false));
+    assert(date.size() == 8 && "");
     assert(level < LEVEL_COUNT);
     assert(out.A > 0 && "Must preallocate() before load_day_level()");
     out.date = date;
