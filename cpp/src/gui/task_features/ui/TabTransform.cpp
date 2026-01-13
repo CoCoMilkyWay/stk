@@ -1149,27 +1149,50 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
   ImGui::BeginChild("PDFPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   ImGui::Text("资产分布 (n=%zu)", tf.results.size());
 
-  if (need_autofit && n_valid > 0)
-    ImPlot::SetNextAxesToFit();
-
   if (ImPlot::BeginPlot("##PDF", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
-    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
-
-    // 直接从 AssetResult.KLL 读取 (exportPDF 返回内部指针，零 copy)
+    // 先收集所有要渲染的数据，同时计算 range
+    struct PDFData {
+      size_t idx;
+      KLLcache::LinePtr pdf;
+    };
+    static std::vector<PDFData> to_render;
+    to_render.clear();
+    
+    float x_extent = 0.0f;
     for (size_t i = 0; i < tf.results.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
       const auto &r = tf.results[i];
-      // 判断是否应该渲染（避免计算过程中的空白）
-      if (r.KLL.empty() || !ShouldRenderAssetResult(r, !r.KLL.empty())) {
+      if (r.KLL.empty() || !ShouldRenderAssetResult(r, !r.KLL.empty()))
         continue;
+      auto pdf = r.KLL.exportPDF();
+      if (pdf.n > 0) {
+        to_render.push_back({i, pdf});
+        // 从 ICDF 获取百分位计算 range
+        if (need_autofit) {
+          auto icdf = r.KLL.exportICDF();
+          if (icdf.n > 1) {
+            size_t i05 = static_cast<size_t>(0.05f * (icdf.n - 1));
+            size_t i95 = static_cast<size_t>(0.95f * (icdf.n - 1));
+            x_extent = std::max(x_extent, std::max(std::abs(icdf.y[i05]), std::abs(icdf.y[i95])));
+          }
+        }
       }
-      auto KLL = r.KLL.exportPDF();
-      if (KLL.n > 0) {
-        ImVec4 col = GetAssetColor(i, n_assets);
-        ImPlot::SetNextLineStyle(col, 0.8f);
-        ImPlot::PlotLine("##KLL", KLL.x, KLL.y, static_cast<int>(KLL.n));
-      }
+    }
+
+    // 设置轴: 使用收集好的 range
+    ImPlotAxisFlags y_flags = ImPlotAxisFlags_NoLabel | (need_autofit ? ImPlotAxisFlags_AutoFit : 0);
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, y_flags);
+    if (need_autofit && x_extent > 0.0f) {
+      float margin = x_extent * 0.05f;
+      ImPlot::SetupAxisLimits(ImAxis_X1, -(x_extent + margin), x_extent + margin, ImGuiCond_Always);
+    }
+
+    // 渲染收集好的数据
+    for (const auto &d : to_render) {
+      ImVec4 col = GetAssetColor(d.idx, n_assets);
+      ImPlot::SetNextLineStyle(col, 0.8f);
+      ImPlot::PlotLine("##KLL", d.pdf.x, d.pdf.y, static_cast<int>(d.pdf.n));
     }
 
     ImPlot::EndPlot();
@@ -1186,27 +1209,27 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
   ImGui::Text("PSD");
   if (psd.valid) {
     ImGui::SameLine();
-    
+
     // 固定长度bar
     constexpr float BAR_W = 200.0f;
     constexpr float BAR_H = 14.0f;
-    
+
     ImVec2 bar_pos = ImGui::GetCursorScreenPos();
     ImDrawList *draw = ImGui::GetWindowDrawList();
-    
+
     // 四色: 秒(蓝) 分(绿) 时(橙) DC(灰)
     ImU32 col_sec = IM_COL32(80, 140, 200, 255);
     ImU32 col_min = IM_COL32(120, 180, 80, 255);
     ImU32 col_hour = IM_COL32(220, 140, 60, 255);
     ImU32 col_dc = IM_COL32(140, 140, 140, 255);
-    
+
     float x = bar_pos.x;
     float y = bar_pos.y;
     float w_sec = BAR_W * psd.ratio_sec;
     float w_min = BAR_W * psd.ratio_min;
     float w_hour = BAR_W * psd.ratio_hour;
     float w_dc = BAR_W * psd.ratio_dc;
-    
+
     draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_sec, y + BAR_H), col_sec);
     x += w_sec;
     draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_min, y + BAR_H), col_min);
@@ -1214,7 +1237,7 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
     draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_hour, y + BAR_H), col_hour);
     x += w_hour;
     draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_dc, y + BAR_H), col_dc);
-    
+
     // 占位 + tooltip
     ImGui::Dummy(ImVec2(BAR_W, BAR_H));
     if (ImGui::IsItemHovered()) {

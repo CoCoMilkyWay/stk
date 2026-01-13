@@ -39,7 +39,6 @@ struct PowerParams {
 };
 
 struct LogParams {
-  float eps = 1e-8f;
   float base = 0.0f; // 0=ln, 2=log2, 10=log10
 };
 
@@ -244,8 +243,9 @@ public:
 inline void pw_log(std::span<const float> in, std::span<float> out, const LogParams &p) {
   float inv = (p.base > 1.0f) ? (1.0f / std::log(p.base)) : 1.0f;
   for (size_t i = 0; i < in.size(); ++i) {
-    float v = std::log(std::abs(in[i]) + p.eps) * inv;
-    out[i] = (in[i] >= 0) ? v : -v;
+    float a = std::abs(in[i]);
+    float s = (in[i] >= 0) ? 1.0f : -1.0f;
+    out[i] = s * std::log1p(a) * inv;
   }
 }
 
@@ -452,9 +452,9 @@ inline void log_zscore(std::span<const float> x, std::span<float> out,
   float inv = (lp.base > 1.0f) ? (1.0f / std::log(lp.base)) : 1.0f;
   EMeanStd e;
   for (size_t i = 0; i < x.size(); ++i) {
-    float v = std::log(std::abs(x[i]) + lp.eps) * inv;
-    if (x[i] < 0)
-      v = -v;
+    float a = std::abs(x[i]);
+    float s = (x[i] >= 0) ? 1.0f : -1.0f;
+    float v = s * std::log1p(a) * inv;
     e.add(v);
     out[i] = (e.n < min_n) ? 0.0f : (v - e.get_mean()) / e.get_std();
   }
@@ -504,9 +504,9 @@ inline void clip_log_zscore(std::span<const float> x, std::span<float> out,
     if (ec.n >= min_n) {
       v = std::clamp(v, ec.get_mean() - k * ec.get_std(), ec.get_mean() + k * ec.get_std());
     }
-    float lv = std::log(std::abs(v) + lp.eps) * inv;
-    if (v < 0)
-      lv = -lv;
+    float a = std::abs(v);
+    float s = (v >= 0) ? 1.0f : -1.0f;
+    float lv = s * std::log1p(a) * inv;
     ef.add(lv);
     out[i] = (ef.n < min_n) ? 0.0f : (lv - ef.get_mean()) / ef.get_std();
   }
