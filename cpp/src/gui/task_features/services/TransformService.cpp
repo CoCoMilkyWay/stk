@@ -208,8 +208,8 @@ asio::awaitable<void> TransformService::ComputeLoop(SharedData &data) {
     if (feat_idx < 0 || level < 0)
       continue;
 
-    // 生成 blocks (如果需要)
-    if (tf.blocks.empty()) {
+    // 生成 blocks (level 变化或为空时重新生成)
+    if (tf.blocks.empty() || tf.blocks_level != level) {
       std::vector<std::string> dates;
       for (const auto &d : data.asset.binary.dates) {
         std::string d_str = d;
@@ -221,6 +221,7 @@ asio::awaitable<void> TransformService::ComputeLoop(SharedData &data) {
           dates.push_back(d_str);
       }
       tf.generate_blocks(level, dates);
+      tf.blocks_level = level;
     }
 
     if (tf.blocks.empty())

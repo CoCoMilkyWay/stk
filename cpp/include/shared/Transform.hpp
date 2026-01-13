@@ -267,6 +267,7 @@ struct Transform {
 
   // 数据块列表
   std::vector<Block> blocks;
+  int blocks_level = -1;   // blocks 对应的 level (level 变化时需重新生成)
   int selected_block = 0;
 
   // 原始数据缓存
@@ -374,6 +375,7 @@ struct Transform {
   void clear() {
     params = Params{};
     blocks.clear();
+    blocks_level = -1;
     selected_block = 0;
     cache.clear();
     results.clear();
