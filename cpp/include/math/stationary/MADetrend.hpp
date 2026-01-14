@@ -22,7 +22,7 @@
 namespace math::stationary {
 
 struct MADetrend {
-  static constexpr ParamMeta meta[] = {{"窗口", 60, 10, 500}};
+  static constexpr ParamMeta meta[] = {{"窗口", 10, 10, 500}};
   static constexpr OperatorDef def = {"MA去趋势", meta, 1};
 
   template <typename GetWindow>

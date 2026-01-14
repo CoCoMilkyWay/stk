@@ -30,7 +30,7 @@ namespace math::stationary {
 struct FracDiff {
   static constexpr ParamMeta meta[] = {
       {"d", 0.05f, 0.0f, 1.0f},
-      {"窗口", 100, 10, 500},
+      {"窗口", 10, 10, 500},
   };
   static constexpr OperatorDef def = {"分数差分", meta, 2};
 

@@ -2,6 +2,8 @@
 
 #include "gui/task_features/services/TransformService.hpp"
 #include "math/normalize/Normalize.hpp"
+#include "math/spectral/FIRBandpass.hpp"
+#include "math/spectral/IIRBandpass.hpp"
 #include "math/spectral/MultiResPSD.hpp"
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/FracDiff.hpp"
@@ -20,6 +22,34 @@
 #include <thread>
 
 namespace GUI::Features {
+
+// ============================================================================
+// Bandpass Frequency Conversion
+// ============================================================================
+
+// 非标 bin index (0-127) → 周期(秒)
+static float bin_to_period_seconds(float bin_idx) {
+  if (bin_idx < 58.0f) {
+    return bin_idx + 2.0f; // 秒级: bin 0→2s, bin 57→59s
+  } else if (bin_idx < 117.0f) {
+    return (bin_idx - 58.0f + 1.0f) * 60.0f; // 分钟级: bin 58→1min, bin 116→59min
+  } else if (bin_idx < 127.0f) {
+    return (bin_idx - 117.0f + 1.0f) * 3600.0f; // 小时级: bin 117→1h, bin 126→10h
+  } else {
+    return 1e9f; // DC
+  }
+}
+
+// 非标 bin index → 归一化频率 (0-1, 1=Nyquist)
+static float bin_to_normalized_freq(float bin_idx, int level) {
+  float period_sec = bin_to_period_seconds(bin_idx);
+  // 采样率: L0=1Hz, L1=1/60Hz, L2=1/3600Hz
+  float sample_rate = (level == 0) ? 1.0f : (level == 1) ? (1.0f / 60.0f)
+                                                         : (1.0f / 3600.0f);
+  float freq = 1.0f / period_sec;
+  float nyquist = sample_rate / 2.0f;
+  return std::clamp(freq / nyquist, 0.001f, 0.999f);
+}
 
 // ============================================================================
 // TransformWorkerPool Implementation
@@ -66,13 +96,13 @@ void TransformWorkerPool::trigger(uint64_t gen) {
 void TransformWorkerPool::pause() {
   assert(data_);
   auto &paused = data_->transform.compute.paused;
-  
+
   // 1. 设置暂停标志（worker 会在 is_stale() 检查点退出）
   paused.store(true);
-  
+
   // 2. 唤醒所有可能在等待的 worker（让它们检查 paused 并回到等待）
   cv_.notify_all();
-  
+
   // 3. 等待所有 worker 进入等待状态
   const size_t n = workers_.size();
   while (n_waiting_.load() < n) {
@@ -83,10 +113,10 @@ void TransformWorkerPool::pause() {
 void TransformWorkerPool::resume() {
   assert(data_);
   auto &paused = data_->transform.compute.paused;
-  
+
   // 1. 清除暂停标志
   paused.store(false);
-  
+
   // 2. 唤醒所有 worker
   cv_.notify_all();
 }
@@ -99,13 +129,13 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
     uint64_t my_gen;
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      ++n_waiting_;  // 进入等待前增加计数
+      ++n_waiting_; // 进入等待前增加计数
       cv_.wait(lock, [&] {
         // 等待条件：stop 或 (有新 generation 且未暂停)
         bool paused = data_ && data_->transform.compute.paused.load();
         return stop_ || (triggered_gen_ > last_gen && !paused);
       });
-      --n_waiting_;  // 被唤醒后减少计数
+      --n_waiting_; // 被唤醒后减少计数
       if (stop_)
         return;
       my_gen = triggered_gen_;
@@ -162,7 +192,7 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
         // Worker 0: 计算所有 assets 的 CS norm
         const size_t n_assets = tf.cache.n_assets;
         const size_t n_samples = tf.cache.n_samples;
-        
+
         if (n_samples > 0 && n_assets > 0) {
           if (tf.params.cs_norm == NormMethod::NONE) {
             // NONE: 直接复制 ts_normed 到 cs_normed
@@ -171,7 +201,7 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
                 break;
               if (a < tf.results.size() && tf.results[a].ts_normed.size() == n_samples) {
                 std::copy(tf.results[a].ts_normed.begin(), tf.results[a].ts_normed.end(),
-                         tf.results[a].cs_normed.begin());
+                          tf.results[a].cs_normed.begin());
               }
             }
           } else {
@@ -340,7 +370,7 @@ asio::awaitable<void> TransformService::ComputeLoop(SharedData &data) {
 
       tf.compute.status = Transform::Compute::Status::Loading;
       load_block(data, level, feat_idx, tf.selected_block);
-      
+
       // 恢复 worker（它们会等待下一次 trigger）
       pool_->resume();
     }
@@ -381,10 +411,10 @@ void TransformService::invalidate_all(SharedData &data) {
   tf.compute.ts_done = 0;
   tf.compute.cs_done = 0;
   tf.compute.done = 0;
-  
+
   // 递增 generation，触发新一轮
   ++tf.compute.generation;
-  
+
   tf.compute.n_workers = pool_->num_workers();
   tf.compute.total = n_assets;
 }
@@ -557,12 +587,47 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
     return;
   }
 
-  // ========== After barrier: cs_normed 已由 worker 0 计算完成，这里只处理后续指标 ==========
+  // ========== After barrier: cs_normed 已由 worker 0 计算完成，这里处理带通和后续指标 ==========
+
+  // 获取最终输出数据的引用
+  const float *final_data = result.cs_normed.data();
+
+  // 带通滤波 (可选)
+  if (tf.params.bandpass_type != Transform::BandpassType::NONE) {
+    TraceN("Bandpass");
+
+    int level = tf.cache.level;
+    // bin index 越小 → 周期越短 → 频率越高
+    // lo_bin (左光标，小bin) → 短周期 → 高频 → f_hi
+    // hi_bin (右光标，大bin) → 长周期 → 低频 → f_lo
+    float f_lo = bin_to_normalized_freq(tf.params.bandpass_hi_bin, level);
+    float f_hi = bin_to_normalized_freq(tf.params.bandpass_lo_bin, level);
+
+    // 确保 f_lo < f_hi (UI 层已保证)
+    if (f_lo > f_hi)
+      std::swap(f_lo, f_hi);
+    assert(f_lo < f_hi);
+
+    if (tf.params.bandpass_type == Transform::BandpassType::FIR) {
+      auto window = static_cast<math::spectral::FIRWindow>(tf.params.bandpass_subtype);
+      math::spectral::fir_bandpass({result.cs_normed.data(), n}, {result.bandpass.data(), n},
+                                   f_lo, f_hi, tf.params.bandpass_order, window);
+    } else if (tf.params.bandpass_type == Transform::BandpassType::IIR) {
+      auto type = static_cast<math::spectral::IIRType>(tf.params.bandpass_subtype);
+      math::spectral::iir_bandpass({result.cs_normed.data(), n}, {result.bandpass.data(), n},
+                                   f_lo, f_hi, tf.params.bandpass_order, type);
+    }
+
+    final_data = result.bandpass.data();
+  }
+
+  if (is_stale())
+    return;
 
   {
     TraceN("ADF");
     math::stationary::ADFWorkspace adf_ws;
-    auto adf_result = math::stationary::adf_test({result.cs_normed.data(), n}, 4, adf_ws);
+    auto adf_result = math::stationary::adf_test({final_data, n}, 4, adf_ws);
     result.adf_stat = adf_result.statistic;
     result.adf_pval = adf_result.pvalue;
     result.adf_pass = adf_result.pvalue < 0.05f;
@@ -574,7 +639,7 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
   {
     TraceN("KPSS");
     math::stationary::KPSSWorkspace kpss_ws;
-    auto kpss_result = math::stationary::kpss_test({result.cs_normed.data(), n}, -1, kpss_ws);
+    auto kpss_result = math::stationary::kpss_test({final_data, n}, -1, kpss_ws);
     result.kpss_stat = kpss_result.statistic;
     result.kpss_pval = kpss_result.pvalue;
     result.kpss_pass = kpss_result.pvalue > 0.05f;
@@ -602,7 +667,7 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
 
       float last_valid = 0.0f;
       for (size_t t = 0; t < n; ++t) {
-        float val = result.cs_normed[t];
+        float val = final_data[t];
         if (std::isfinite(val)) {
           last_valid = val;
         }
@@ -636,7 +701,10 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
   {
     TraceN("KLL");
     result.KLL.clear();
-    result.KLL.addBatch(result.cs_normed);
+    // 使用 final_data 构建临时 vector
+    thread_local std::vector<float> kll_input;
+    kll_input.assign(final_data, final_data + n);
+    result.KLL.addBatch(kll_input);
   }
 
   result.valid = true;

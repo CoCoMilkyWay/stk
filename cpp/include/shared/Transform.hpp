@@ -3,6 +3,8 @@
 #include "features/FeaturesDefine.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/normalize/Normalize.hpp"
+#include "math/spectral/FIRBandpass.hpp"
+#include "math/spectral/IIRBandpass.hpp"
 #include "math/stationary/FracDiff.hpp"
 #include "math/stationary/IntDiff.hpp"
 #include "math/stationary/MADetrend.hpp"
@@ -24,7 +26,7 @@
 //   4. UI 线程只读取，不创建任何复杂数据结构
 //
 // 数据流:
-//   raw → stationary → ts_normed → cs_normed
+//   raw → stationary → ts_normed → cs_normed → bandpass
 //
 // ============================================================================
 
@@ -39,6 +41,16 @@ struct Transform {
     MA_DETREND, // x_t - MA_W(x_t)
     INT_DIFF,   // (1-L)^d x_t, d ∈ Z+
     FRAC_DIFF   // (1-L)^d x_t, d ∈ R
+  };
+
+  // ==========================================================================
+  // 带通滤波类型
+  // ==========================================================================
+
+  enum class BandpassType : uint8_t {
+    NONE = 0,
+    FIR,  // FIR带通 (窗函数法)
+    IIR   // IIR带通 (双线性变换)
   };
 
   // ==========================================================================
@@ -80,10 +92,21 @@ struct Transform {
     NormMethod cs_norm = NormMethod::NONE;
     math::Operator cs;
 
+    // 带通滤波
+    BandpassType bandpass_type = BandpassType::NONE;
+    int bandpass_subtype = 0;  // FIR: 窗类型(0-2), IIR: 滤波器类型(0-2)
+    int bandpass_order = 64;   // FIR: 8-512, IIR: 1-8
+    float bandpass_lo_bin = 20.0f;   // 低频cutoff (非标bin index, 0-127)
+    float bandpass_hi_bin = 80.0f;   // 高频cutoff (非标bin index, 0-127)
+
     // 切换方法时重置参数
     void reset_stationary() { stationary.init(GetStationaryDef(stationary_method)); }
     void reset_ts() { math::normalize::InitOperator(ts, ts_norm); }
     void reset_cs() { math::normalize::InitOperator(cs, cs_norm); }
+    void reset_bandpass() {
+      bandpass_subtype = 0;
+      bandpass_order = (bandpass_type == BandpassType::FIR) ? 64 : 2;
+    }
 
     bool operator==(const Params &o) const {
       if (stationary_method != o.stationary_method)
@@ -101,6 +124,16 @@ struct Transform {
       for (size_t i = 0; i < 4; ++i)
         if (std::abs(cs[i] - o.cs[i]) >= 1e-6f)
           return false;
+      if (bandpass_type != o.bandpass_type)
+        return false;
+      if (bandpass_subtype != o.bandpass_subtype)
+        return false;
+      if (bandpass_order != o.bandpass_order)
+        return false;
+      if (std::abs(bandpass_lo_bin - o.bandpass_lo_bin) >= 0.5f)
+        return false;
+      if (std::abs(bandpass_hi_bin - o.bandpass_hi_bin) >= 0.5f)
+        return false;
       return true;
     }
     bool operator!=(const Params &o) const { return !(*this == o); }
@@ -186,7 +219,8 @@ struct Transform {
     // 时序数据 (预分配 n_samples，后续复用)
     std::vector<float> stationary;  // 平稳化后
     std::vector<float> ts_normed;   // 时序归一化后
-    std::vector<float> cs_normed;   // 截面归一化后 (最终)
+    std::vector<float> cs_normed;   // 截面归一化后
+    std::vector<float> bandpass;    // 带通滤波后 (最终)
 
     // ADF/KPSS (标量)
     float adf_stat = 0.0f;
@@ -207,6 +241,7 @@ struct Transform {
       std::fill(stationary.begin(), stationary.end(), 0.0f);
       std::fill(ts_normed.begin(), ts_normed.end(), 0.0f);
       std::fill(cs_normed.begin(), cs_normed.end(), 0.0f);
+      std::fill(bandpass.begin(), bandpass.end(), 0.0f);
       adf_stat = 0.0f;
       adf_pval = 1.0f;
       adf_pass = false;
@@ -222,6 +257,7 @@ struct Transform {
       stationary.resize(n_samples, 0.0f);
       ts_normed.resize(n_samples, 0.0f);
       cs_normed.resize(n_samples, 0.0f);
+      bandpass.resize(n_samples, 0.0f);
     }
   };
 

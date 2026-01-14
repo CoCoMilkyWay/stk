@@ -56,6 +56,10 @@ struct TransformUIState {
 
   // 渲染缓存: 记录上次有效的 generation
   uint64_t last_rendered_generation = 0;
+
+  // 带通光标 (非标 bin 索引, 0-127, PSD plot 上拖动)
+  double bandpass_lo = 20.0;
+  double bandpass_hi = 80.0;
 };
 
 // ============================================================================

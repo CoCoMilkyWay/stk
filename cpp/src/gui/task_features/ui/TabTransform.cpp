@@ -650,6 +650,157 @@ static bool RenderCSNormConfig(Transform::Params &config) {
 }
 
 // ============================================================================
+// Bandpass Config
+// ============================================================================
+
+static const char *BandpassTypeName(Transform::BandpassType t) {
+  switch (t) {
+  case Transform::BandpassType::NONE: return "无";
+  case Transform::BandpassType::FIR: return "FIR";
+  case Transform::BandpassType::IIR: return "IIR";
+  }
+  return "?";
+}
+
+static const char *FIRWindowName(int w) {
+  switch (w) {
+  case 0: return "Hann";
+  case 1: return "Hamming";
+  case 2: return "Blackman";
+  }
+  return "?";
+}
+
+static const char *IIRTypeName(int t) {
+  switch (t) {
+  case 0: return "Butterworth";
+  case 1: return "Chebyshev I";
+  case 2: return "Chebyshev II";
+  }
+  return "?";
+}
+
+// 非标 bin index → 周期(秒)
+static float BinToPeriod(float bin_idx) {
+  if (bin_idx < 58.0f) {
+    return bin_idx + 2.0f;
+  } else if (bin_idx < 117.0f) {
+    return (bin_idx - 58.0f + 1.0f) * 60.0f;
+  } else if (bin_idx < 127.0f) {
+    return (bin_idx - 117.0f + 1.0f) * 3600.0f;
+  } else {
+    return 1e9f;
+  }
+}
+
+// bin → 归一化频率 (与 TransformService 一致)
+static float BinToFreq(float bin_idx, int level) {
+  float period = BinToPeriod(bin_idx);
+  float sample_rate = (level == 0) ? 1.0f : (level == 1) ? (1.0f / 60.0f) : (1.0f / 3600.0f);
+  float nyquist = sample_rate / 2.0f;
+  return std::clamp((1.0f / period) / nyquist, 0.001f, 0.999f);
+}
+
+// 检查两个 bin 转换后的频率是否满足 f_lo < f_hi
+static bool FreqValid(double lo_bin, double hi_bin, int level) {
+  float f_lo = BinToFreq(static_cast<float>(hi_bin), level);
+  float f_hi = BinToFreq(static_cast<float>(lo_bin), level);
+  return f_lo < f_hi;
+}
+
+// 非标bin index → 周期描述 (使用双 buffer 避免连续调用覆盖)
+static const char *BinToLabel(float bin_idx, int buf_idx = 0) {
+  static char buf[2][32];
+  size_t idx = static_cast<size_t>(bin_idx);
+  char *b = buf[buf_idx & 1];
+  if (idx < 58) {
+    std::snprintf(b, 32, "%zus", idx + 2);
+  } else if (idx < 117) {
+    std::snprintf(b, 32, "%zum", idx - 58 + 1);
+  } else if (idx < 127) {
+    std::snprintf(b, 32, "%zuh", idx - 117 + 1);
+  } else {
+    std::snprintf(b, 32, "DC");
+  }
+  return b;
+}
+
+static bool RenderBandpassConfig(Transform::Params &config, TransformUIState &ui) {
+  TraceN("UI:BandpassConfig");
+  bool changed = false;
+
+  ImGui::Text("带通");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(80);
+
+  // 类型选择
+  if (ImGui::BeginCombo("##bp_type", BandpassTypeName(config.bandpass_type))) {
+    for (int i = 0; i < 3; ++i) {
+      auto t = static_cast<Transform::BandpassType>(i);
+      if (ImGui::Selectable(BandpassTypeName(t), config.bandpass_type == t)) {
+        if (config.bandpass_type != t) {
+          config.bandpass_type = t;
+          config.reset_bandpass();
+          changed = true;
+        }
+      }
+    }
+    ImGui::EndCombo();
+  }
+
+  // 子类型 (FIR: 窗类型, IIR: 滤波器类型)
+  if (config.bandpass_type != Transform::BandpassType::NONE) {
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+
+    if (config.bandpass_type == Transform::BandpassType::FIR) {
+      if (ImGui::BeginCombo("##bp_subtype", FIRWindowName(config.bandpass_subtype))) {
+        for (int i = 0; i < 3; ++i) {
+          if (ImGui::Selectable(FIRWindowName(i), config.bandpass_subtype == i)) {
+            if (config.bandpass_subtype != i) {
+              config.bandpass_subtype = i;
+              changed = true;
+            }
+          }
+        }
+        ImGui::EndCombo();
+      }
+    } else {
+      if (ImGui::BeginCombo("##bp_subtype", IIRTypeName(config.bandpass_subtype))) {
+        for (int i = 0; i < 3; ++i) {
+          if (ImGui::Selectable(IIRTypeName(i), config.bandpass_subtype == i)) {
+            if (config.bandpass_subtype != i) {
+              config.bandpass_subtype = i;
+              changed = true;
+            }
+          }
+        }
+        ImGui::EndCombo();
+      }
+    }
+
+    // 阶数
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80);
+    int order_min = (config.bandpass_type == Transform::BandpassType::FIR) ? 8 : 1;
+    int order_max = (config.bandpass_type == Transform::BandpassType::FIR) ? 512 : 8;
+    if (ImGui::SliderInt("阶数##bp", &config.bandpass_order, order_min, order_max)) {
+      changed = true;
+    }
+
+    // 频带显示 (只读, 实际值从光标同步)
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%s - %s]", BinToLabel(ui.bandpass_lo, 0), BinToLabel(ui.bandpass_hi, 1));
+  } else {
+    // 未启用带通时也显示光标范围
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%s - %s]", BinToLabel(ui.bandpass_lo, 0), BinToLabel(ui.bandpass_hi, 1));
+  }
+
+  return changed;
+}
+
+// ============================================================================
 // ADF/KPSS Heatmap (单行紧凑版)
 // ============================================================================
 
@@ -945,9 +1096,14 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
 
   ImGui::SameLine();
 
-  // 右: 处理后特征
+  // 右: 处理后特征 (带通启用时显示带通后的数据)
   ImGui::BeginChild("ProcPlot", ImVec2(0, height), true);
-  ImGui::Text("处理后特征");
+  bool use_bandpass = (tf.params.bandpass_type != Transform::BandpassType::NONE);
+  if (use_bandpass) {
+    ImGui::Text("处理后特征 (带通)");
+  } else {
+    ImGui::Text("处理后特征");
+  }
 
   if (need_autofit && has_data)
     ImPlot::SetNextAxesToFit();
@@ -960,13 +1116,13 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
       static std::vector<float> min_vals, max_vals;
       InitMinMaxArrays(min_vals, max_vals, n_samples);
 
-      // 遍历每个 asset 的 normalized data
+      // 遍历每个 asset 的数据 (带通启用时用 bandpass，否则用 cs_normed)
       for (size_t i = 0; i < tf.results.size(); ++i) {
         const auto &r = tf.results[i];
-        if (!ShouldRenderAssetResult(r, !r.cs_normed.empty())) {
+        const auto &vec = use_bandpass ? r.bandpass : r.cs_normed;
+        if (!ShouldRenderAssetResult(r, !vec.empty())) {
           continue;
         }
-        const auto &vec = r.cs_normed;
         for (size_t idx = 0; idx < std::min(n_samples, vec.size()); ++idx) {
           UpdateMinMax(min_vals, max_vals, idx, vec[idx]);
         }
@@ -984,7 +1140,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
       }
 
       if (n_samples > 0) {
-        ImVec4 col = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // 黄色，更明显
+        ImVec4 col = use_bandpass ? ImVec4(0.3f, 0.9f, 0.5f, 1.0f) : ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
         ImPlot::PushStyleColor(ImPlotCol_Fill, col);
         ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.6f);
         ImPlot::PlotShaded("##norm_range", x_data.data(), y_min.data(), y_max.data(), static_cast<int>(n_samples));
@@ -997,14 +1153,15 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
         if ((int)i != sel)
           continue;
         const auto &r = tf.results[i];
-        if (r.cs_normed.empty())
+        const auto &vec = use_bandpass ? r.bandpass : r.cs_normed;
+        if (vec.empty())
           continue;
-        if (!ShouldRenderAssetResult(r, !r.cs_normed.empty())) {
+        if (!ShouldRenderAssetResult(r, !vec.empty())) {
           continue;
         }
-        ImVec4 col = GetAssetColor(i, n_assets);
+        ImVec4 col = use_bandpass ? ImVec4(0.3f, 0.9f, 0.5f, 1.0f) : GetAssetColor(i, n_assets);
         ImPlot::SetNextLineStyle(col, 0.8f);
-        ImPlot::PlotLine("##n", r.cs_normed.data(), static_cast<int>(r.cs_normed.size()));
+        ImPlot::PlotLine("##n", vec.data(), static_cast<int>(vec.size()));
       }
     }
 
@@ -1250,6 +1407,70 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
       }
     }
 
+    // 带通光标 (始终显示)
+    // 绘制选中区域半透明填充
+    ImPlot::PushPlotClipRect();
+    ImDrawList *draw_bp = ImPlot::GetPlotDrawList();
+    {
+      ImVec2 p0 = ImPlot::PlotToPixels(ui.bandpass_lo, limits.Y.Max);
+      ImVec2 p1 = ImPlot::PlotToPixels(ui.bandpass_hi, limits.Y.Min);
+      // 启用带通时绿色，否则灰色
+      ImU32 fill_col = (tf.params.bandpass_type != Transform::BandpassType::NONE)
+                           ? IM_COL32(100, 200, 100, 60)
+                           : IM_COL32(150, 150, 150, 40);
+      draw_bp->AddRectFilled(p0, p1, fill_col);
+    }
+    ImPlot::PopPlotClipRect();
+
+    // 保存旧值用于回退
+    constexpr double MIN_GAP = 5.0;
+    double old_lo = ui.bandpass_lo;
+    double old_hi = ui.bandpass_hi;
+
+    // 低频光标 (绿色)
+    ImPlot::DragLineX(100, &ui.bandpass_lo, ImVec4(0.3f, 0.9f, 0.3f, 1.0f), 2.0f);
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+      ImPlot::Annotation(ui.bandpass_lo, limits.Y.Max, ImVec4(0.3f, 0.9f, 0.3f, 1.0f),
+                         ImVec2(5, -10), false, "Lo: %s", BinToLabel(static_cast<float>(ui.bandpass_lo), 0));
+    }
+    // lo 约束：clamp，先保证 MIN_GAP，再确保 FreqValid
+    ui.bandpass_lo = std::clamp(ui.bandpass_lo, 0.0, 127.0 - MIN_GAP);
+    // 推 hi 保持 MIN_GAP
+    if (ui.bandpass_hi - ui.bandpass_lo < MIN_GAP) {
+      ui.bandpass_hi = ui.bandpass_lo + MIN_GAP;
+    }
+    // 继续推 hi 直到 FreqValid
+    while (ui.bandpass_hi <= 127.0 && !FreqValid(ui.bandpass_lo, ui.bandpass_hi, level)) {
+      ui.bandpass_hi += 1.0;
+    }
+    // hi 超边界则回退 lo
+    if (ui.bandpass_hi > 127.0) {
+      ui.bandpass_hi = 127.0;
+      ui.bandpass_lo = old_lo;
+    }
+
+    // 高频光标 (红色)
+    ImPlot::DragLineX(101, &ui.bandpass_hi, ImVec4(0.9f, 0.3f, 0.3f, 1.0f), 2.0f);
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+      ImPlot::Annotation(ui.bandpass_hi, limits.Y.Max, ImVec4(0.9f, 0.3f, 0.3f, 1.0f),
+                         ImVec2(5, -10), false, "Hi: %s", BinToLabel(static_cast<float>(ui.bandpass_hi), 0));
+    }
+    // hi 约束：clamp，先保证 MIN_GAP，再确保 FreqValid
+    ui.bandpass_hi = std::clamp(ui.bandpass_hi, MIN_GAP, 127.0);
+    // 推 lo 保持 MIN_GAP
+    if (ui.bandpass_hi - ui.bandpass_lo < MIN_GAP) {
+      ui.bandpass_lo = ui.bandpass_hi - MIN_GAP;
+    }
+    // 继续推 lo 直到 FreqValid
+    while (ui.bandpass_lo >= 0.0 && !FreqValid(ui.bandpass_lo, ui.bandpass_hi, level)) {
+      ui.bandpass_lo -= 1.0;
+    }
+    // lo 低于边界则回退 hi
+    if (ui.bandpass_lo < 0.0) {
+      ui.bandpass_lo = 0.0;
+      ui.bandpass_hi = old_hi;
+    }
+
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
@@ -1315,14 +1536,17 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   bool cs_changed = RenderCSNormConfig(tf.params);
   bool norm_changed = ts_changed || cs_changed;
 
-  // 第二行: ADF/KPSS热力图
+  // 第四行: 带通滤波
+  bool bp_changed = RenderBandpassConfig(tf.params, ui);
+
+  // ADF/KPSS热力图
   RenderStationarityHeatmap(tf, data.asset);
 
   // 第三行: Asset选择 + 时间窗口滑块
   bool sel_changed = Render_AssetAndWindow(service, data, ui);
 
   // 参数变化触发重计算 (autozoom 由上面的逻辑自动处理)
-  if (st_changed || norm_changed) {
+  if (st_changed || norm_changed || bp_changed) {
     ui.params_changed = true;
     service->RequestCompute();
     // 重置 autofit 跟踪，使得新计算完成后会触发 autofit
@@ -1351,6 +1575,18 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
 
   // 底部: PDF + PSD
   RenderBottomPlots(tf, data, ui, ui.need_autofit, level, plot_height);
+
+  // 同步光标值到 params (用于计算)
+  if (tf.params.bandpass_type != Transform::BandpassType::NONE) {
+    float lo = static_cast<float>(ui.bandpass_lo);
+    float hi = static_cast<float>(ui.bandpass_hi);
+    if (std::abs(tf.params.bandpass_lo_bin - lo) >= 0.5f ||
+        std::abs(tf.params.bandpass_hi_bin - hi) >= 0.5f) {
+      tf.params.bandpass_lo_bin = lo;
+      tf.params.bandpass_hi_bin = hi;
+      service->RequestCompute();
+    }
+  }
 
   // 清除autofit
   ui.need_autofit = false;
