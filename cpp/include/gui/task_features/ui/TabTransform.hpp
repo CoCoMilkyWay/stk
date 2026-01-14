@@ -60,6 +60,20 @@ struct TransformUIState {
   // 带通光标 (非标 bin 索引, 0-127, PSD plot 上拖动)
   double bandpass_lo = 20.0;
   double bandpass_hi = 80.0;
+
+  // 特征图 axis limits 同步 (plot1 和 plot2 共享 x 轴)
+  struct FeaturePlotLimits {
+    // 上次读取到的每个 plot 的 limits [0]=Raw, [1]=Proc
+    double last_x_min[2] = {0.0, 0.0};
+    double last_x_max[2] = {1.0, 1.0};
+    
+    // 需要同步的目标 limits (从另一个 plot 更新而来)
+    double sync_x_min = 0.0;
+    double sync_x_max = 1.0;
+    
+    // 哪个 plot 需要同步: -1=无, 0=Raw, 1=Proc
+    int sync_target = -1;
+  } feature_limits;
 };
 
 // ============================================================================

@@ -1257,8 +1257,18 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   ImGui::Text("原始特征");
 
-  if (need_autofit && has_data)
+  // Plot 0 (Raw): 应用同步或 autofit
+  if (need_autofit && has_data) {
     ImPlot::SetNextAxesToFit();
+    ui.feature_limits.sync_target = -1; // autofit 后清除同步标记
+  } else if (ui.feature_limits.sync_target == 0) {
+    // 从 plot1 同步过来
+    ImPlot::SetNextAxisLimits(ImAxis_X1, ui.feature_limits.sync_x_min, ui.feature_limits.sync_x_max, ImGuiCond_Always);
+    // 立即更新 last_x，避免 EndPlot 时触发反向同步
+    ui.feature_limits.last_x_min[0] = ui.feature_limits.sync_x_min;
+    ui.feature_limits.last_x_max[0] = ui.feature_limits.sync_x_max;
+    ui.feature_limits.sync_target = -1; // 应用后清除
+  }
 
   if (ImPlot::BeginPlot("##Raw", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
@@ -1336,6 +1346,21 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
       }
     }
 
+    // 读取当前 limits，检测是否变化 (用户 zoom 或 autofit)
+    ImPlotRect limits = ImPlot::GetPlotLimits();
+    constexpr double EPSILON = 1e-9;
+    bool x_changed = (std::abs(limits.X.Min - ui.feature_limits.last_x_min[0]) > EPSILON ||
+                      std::abs(limits.X.Max - ui.feature_limits.last_x_max[0]) > EPSILON);
+    
+    if (x_changed) {
+      // Plot0 变化了，同步到 Plot1
+      ui.feature_limits.last_x_min[0] = limits.X.Min;
+      ui.feature_limits.last_x_max[0] = limits.X.Max;
+      ui.feature_limits.sync_x_min = limits.X.Min;
+      ui.feature_limits.sync_x_max = limits.X.Max;
+      ui.feature_limits.sync_target = 1; // 下一帧同步到 Proc plot
+    }
+
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
@@ -1351,8 +1376,18 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
     ImGui::Text("处理后特征");
   }
 
-  if (need_autofit && has_data)
+  // Plot 1 (Proc): 应用同步或 autofit
+  if (need_autofit && has_data) {
     ImPlot::SetNextAxesToFit();
+    ui.feature_limits.sync_target = -1; // autofit 后清除同步标记
+  } else if (ui.feature_limits.sync_target == 1) {
+    // 从 plot0 同步过来
+    ImPlot::SetNextAxisLimits(ImAxis_X1, ui.feature_limits.sync_x_min, ui.feature_limits.sync_x_max, ImGuiCond_Always);
+    // 立即更新 last_x，避免 EndPlot 时触发反向同步
+    ui.feature_limits.last_x_min[1] = ui.feature_limits.sync_x_min;
+    ui.feature_limits.last_x_max[1] = ui.feature_limits.sync_x_max;
+    ui.feature_limits.sync_target = -1; // 应用后清除
+  }
 
   if (ImPlot::BeginPlot("##Proc", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
@@ -1428,6 +1463,21 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
       if (cache.valid) {
         ImPlot::Annotation(ui.anchor_x, cache.norm_y, ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", cache.time_str);
       }
+    }
+
+    // 读取当前 limits，检测是否变化
+    ImPlotRect limits = ImPlot::GetPlotLimits();
+    constexpr double EPSILON = 1e-9;
+    bool x_changed = (std::abs(limits.X.Min - ui.feature_limits.last_x_min[1]) > EPSILON ||
+                      std::abs(limits.X.Max - ui.feature_limits.last_x_max[1]) > EPSILON);
+    
+    if (x_changed) {
+      // Plot1 变化了，同步到 Plot0
+      ui.feature_limits.last_x_min[1] = limits.X.Min;
+      ui.feature_limits.last_x_max[1] = limits.X.Max;
+      ui.feature_limits.sync_x_min = limits.X.Min;
+      ui.feature_limits.sync_x_max = limits.X.Max;
+      ui.feature_limits.sync_target = 0; // 下一帧同步到 Raw plot
     }
 
     ImPlot::EndPlot();
@@ -1831,6 +1881,8 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
       tf.params.bandpass_lo_bin = lo;
       tf.params.bandpass_hi_bin = hi;
       service->RequestCompute();
+      // 频谱参数变化也触发 autofit
+      ui.last_autofit_generation = 0;
     }
   }
 
