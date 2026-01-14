@@ -593,7 +593,7 @@ static bool RenderTSNormConfig(Transform::Params &config) {
   TraceN("UI:TSNormConfig");
   bool changed = false;
 
-  ImGui::Text("TS归一化");
+  ImGui::Text("时序归一化");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(120);
 
@@ -623,7 +623,7 @@ static bool RenderCSNormConfig(Transform::Params &config) {
   TraceN("UI:CSNormConfig");
   bool changed = false;
 
-  ImGui::Text("CS归一化");
+  ImGui::Text("截面归一化");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(120);
 
@@ -680,6 +680,247 @@ static const char *IIRTypeName(int t) {
   return "?";
 }
 
+// ============================================================================
+// Bandpass Filter Comparison Table (Tooltip)
+// ============================================================================
+
+static void RenderBandpassTooltip() {
+  ImGui::BeginTooltip();
+  ImGui::PushTextWrapPos(900.0f);
+
+  ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.4f, 1.0f), "FIR vs IIR 带通滤波器对比");
+  ImGui::Spacing();
+
+  // 主对比表格
+  if (ImGui::BeginTable("BandpassTable", 3,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+    ImGui::TableSetupColumn("对比维度", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+    ImGui::TableSetupColumn("FIR", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("IIR", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    // 相位响应
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("相位响应");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "严格线性相位");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "非线性相位");
+
+    // 群时延
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("群时延");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "常数 (无相位失真)");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "随频率变化 (有失真)");
+
+    // 过渡带宽度
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("过渡带宽度");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "较宽 (同阶数)");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较窄 (同阶数)");
+
+    // 阻带衰减效率
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("阻带衰减效率");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "提升慢, 需更高阶数");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "提升快, 低阶即可");
+
+    // 阶数需求
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("阶数需求");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "高");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "低");
+
+    // 实时计算量
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("实时计算量");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "大 (乘加多)");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "小");
+
+    // 数值稳定性
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("数值稳定性");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "绝对稳定");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "高阶时可能不稳定");
+
+    // 频响设计灵活性
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("设计灵活性");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "非常灵活");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "受结构限制");
+
+    // 截止频率精度
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("截止频率精度");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "相对较低");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较高");
+
+    // 通带纹波
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("通带纹波");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted("可控 (等波纹设计)");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextUnformatted("一般较小");
+
+    // 阻带纹波
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("阻带纹波");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted("可控");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextUnformatted("可能存在");
+
+    // 典型外观
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("典型频响外观");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "平直 + 规则波纹");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "陡峭 + 模拟滤波器形状");
+
+    ImGui::EndTable();
+  }
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+
+  // 两个子表格并排
+  float sub_table_width = 420.0f;
+
+  // 左边：FIR窗函数对比
+  ImGui::BeginGroup();
+  ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "FIR 窗函数类型");
+  if (ImGui::BeginTable("FIRWindowTable", 4,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg,
+                        ImVec2(sub_table_width, 0))) {
+    ImGui::TableSetupColumn("窗函数", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+    ImGui::TableSetupColumn("主瓣宽度", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("旁瓣衰减", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("特点", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    // Hann
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("Hann");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted("中等");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextUnformatted("-31dB");
+    ImGui::TableSetColumnIndex(3);
+    ImGui::TextUnformatted("平滑过渡");
+
+    // Hamming
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("Hamming");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted("中等");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextUnformatted("-42dB");
+    ImGui::TableSetColumnIndex(3);
+    ImGui::TextUnformatted("旁瓣更低");
+
+    // Blackman
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("Blackman");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted("较宽");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextUnformatted("-58dB");
+    ImGui::TableSetColumnIndex(3);
+    ImGui::TextUnformatted("最佳旁瓣抑制");
+
+    ImGui::EndTable();
+  }
+  ImGui::EndGroup();
+
+  ImGui::SameLine(0, 20.0f);
+
+  // 右边：IIR滤波器类型对比
+  ImGui::BeginGroup();
+  ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "IIR 滤波器类型");
+  if (ImGui::BeginTable("IIRTypeTable", 4,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg,
+                        ImVec2(sub_table_width, 0))) {
+    ImGui::TableSetupColumn("类型", ImGuiTableColumnFlags_WidthFixed, 85.0f);
+    ImGui::TableSetupColumn("通带", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("过渡带", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("特点", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    // Butterworth
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("Butterworth");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "最大平坦");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextUnformatted("最宽");
+    ImGui::TableSetColumnIndex(3);
+    ImGui::TextUnformatted("无纹波");
+
+    // Chebyshev I
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("Chebyshev I");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "有纹波");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较窄");
+    ImGui::TableSetColumnIndex(3);
+    ImGui::TextUnformatted("通带纹波换陡峭");
+
+    // Chebyshev II
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("Chebyshev II");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "平坦");
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较窄");
+    ImGui::TableSetColumnIndex(3);
+    ImGui::TextUnformatted("阻带纹波换陡峭");
+
+    ImGui::EndTable();
+  }
+  ImGui::EndGroup();
+
+  ImGui::PopTextWrapPos();
+  ImGui::EndTooltip();
+}
+
 // 非标 bin index → 周期(秒)
 static float BinToPeriod(float bin_idx) {
   if (bin_idx < 58.0f) {
@@ -730,6 +971,11 @@ static bool RenderBandpassConfig(Transform::Params &config, TransformUIState &ui
   bool changed = false;
 
   ImGui::Text("带通");
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered()) {
+    RenderBandpassTooltip();
+  }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(80);
 
