@@ -452,7 +452,7 @@ static const char *FormatAssetLabel(const Asset &asset, const Transform &tf, int
   return buf;
 }
 
-static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
+static bool Render_AssetAndWindow(TransformService *service, SharedData &data, TransformUIState &ui) {
   TraceN("UI:AssetAndWindow");
   auto &tf = data.transform;
   bool changed = false;
@@ -510,6 +510,8 @@ static bool Render_AssetAndWindow(TransformService *service, SharedData &data) {
         tf.selected_block = block_idx;
         changed = true;
         service->RequestCompute();
+        // 重置 autofit 跟踪，使得新计算完成后会触发 autofit
+        ui.last_autofit_generation = 0;
       }
     }
   } else {
@@ -797,7 +799,7 @@ static void InitMinMaxArrays(std::vector<float> &min_vals, std::vector<float> &m
   std::fill(max_vals.begin(), max_vals.end(), 0.0f);
 }
 
-static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool need_autofit, int level) {
+static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool need_autofit, int level, float height) {
   TraceN("UI:FeaturePlots");
   const size_t n_assets = tf.results.size();
   const int sel = tf.display.selected_asset; // -1 = ALL
@@ -805,10 +807,6 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
   const bool has_data = !tf.results.empty();
   const size_t n_samples = tf.cache.n_samples;
   const uint64_t cur_gen = tf.compute.generation.load();
-
-  // 动态计算高度: 剩余高度的45%给特征图, 45%给底部图, 10%留白
-  float avail_h = ImGui::GetContentRegionAvail().y;
-  float height = std::max(100.0f, avail_h * 0.45f);
 
   // Clamp anchor_x
   if (n_samples > 0 && ui.anchor_x >= static_cast<double>(n_samples)) {
@@ -1038,9 +1036,8 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
 // Asset PDF & FFT (直接从 AssetResult 读取，零分配)
 // ============================================================================
 
-static void RenderBottomPlots(const Transform &tf, const SharedData &data, TransformUIState &ui, bool need_autofit, int level) {
+static void RenderBottomPlots(const Transform &tf, const SharedData &data, TransformUIState &ui, bool need_autofit, int level, float height) {
   TraceN("UI:BottomPlots");
-  float height = std::max(120.0f, ImGui::GetContentRegionAvail().y - 5.0f);
 
   const size_t n_assets = tf.results.size();
   const int sel = tf.display.selected_asset; // -1 = ALL
@@ -1057,7 +1054,7 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
   ImGui::Text("资产分布 (n=%zu)", tf.results.size());
 
   if (ImPlot::BeginPlot("##PDF", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
-    // 先收集所有要渲染的数据，同时计算 range
+    // 先收集所有要渲染的数据
     struct PDFData {
       size_t idx;
       KLLcache::LinePtr pdf;
@@ -1065,7 +1062,6 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
     static std::vector<PDFData> to_render;
     to_render.clear();
     
-    float x_extent = 0.0f;
     for (size_t i = 0; i < tf.results.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
@@ -1075,14 +1071,36 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
       auto pdf = r.KLL.exportPDF();
       if (pdf.n > 0) {
         to_render.push_back({i, pdf});
-        // 从 ICDF 获取百分位计算 range
-        if (need_autofit) {
-          auto icdf = r.KLL.exportICDF();
-          if (icdf.n > 1) {
-            size_t i05 = static_cast<size_t>(0.05f * (icdf.n - 1));
-            size_t i95 = static_cast<size_t>(0.95f * (icdf.n - 1));
-            x_extent = std::max(x_extent, std::max(std::abs(icdf.y[i05]), std::abs(icdf.y[i95])));
-          }
+      }
+    }
+    
+    // 只在 need_autofit 时计算一次整体 range (merge 所有 KLL 后计算)
+    float x_extent = 0.0f;
+    if (need_autofit && !to_render.empty()) {
+      // Merge 所有 asset 的 KLL 到一个临时 KLL
+      static KLLcache merged_kll(512, 1024);
+      merged_kll.clear();
+      
+      for (const auto &d : to_render) {
+        const auto &r = tf.results[d.idx];
+        if (!r.KLL.empty()) {
+          merged_kll.mergeWith(r.KLL);
+        }
+      }
+      
+      if (!merged_kll.empty()) {
+        // 直接从 ICDF 获取 2.5% 和 97.5% 分位数 (tail cut)
+        auto icdf = merged_kll.exportICDF();
+        if (icdf.n >= 2) {
+          // ICDF: u ∈ [0,1] 均匀分布，直接计算索引
+          size_t i025 = static_cast<size_t>(0.025f * (icdf.n - 1));
+          size_t i975 = static_cast<size_t>(0.975f * (icdf.n - 1));
+          
+          float x_low = icdf.y[i025];
+          float x_high = icdf.y[i975];
+          
+          // 取绝对值最大值，用于对称居中
+          x_extent = std::max(std::abs(x_low), std::abs(x_high));
         }
       }
     }
@@ -1301,7 +1319,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   RenderStationarityHeatmap(tf, data.asset);
 
   // 第三行: Asset选择 + 时间窗口滑块
-  bool sel_changed = Render_AssetAndWindow(service, data);
+  bool sel_changed = Render_AssetAndWindow(service, data, ui);
 
   // 参数变化触发重计算 (autozoom 由上面的逻辑自动处理)
   if (st_changed || norm_changed) {
@@ -1324,11 +1342,15 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // 获取当前 level
   int level = data.feature.selection.selected_level;
 
+  // 计算剩余可用空间，平均分配给两行plot（每行各占50%高度）
+  float avail_h = ImGui::GetContentRegionAvail().y;
+  float plot_height = std::max(100.0f, avail_h * 0.5f); // 每行plot占剩余空间的50%
+
   // 特征对比图
-  RenderFeaturePlots(tf, ui, ui.need_autofit, level);
+  RenderFeaturePlots(tf, ui, ui.need_autofit, level, plot_height);
 
   // 底部: PDF + PSD
-  RenderBottomPlots(tf, data, ui, ui.need_autofit, level);
+  RenderBottomPlots(tf, data, ui, ui.need_autofit, level, plot_height);
 
   // 清除autofit
   ui.need_autofit = false;

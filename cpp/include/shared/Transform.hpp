@@ -248,8 +248,12 @@ struct Transform {
     // 单一 generation：每次触发计算递增
     std::atomic<uint64_t> generation{0};
 
+    // 暂停标志（在修改共享数据时设置，让 worker 快速退出）
+    std::atomic<bool> paused{false};
+
     // Phase 同步 (TS → CS)
     std::atomic<size_t> ts_done{0};
+    std::atomic<size_t> cs_done{0};  // CS norm 计算完成标志 (0=未完成, 1=完成)
     size_t n_workers{0};
 
     float progress() const {
@@ -274,7 +278,9 @@ struct Transform {
       error.clear();
       done = 0;
       total = 0;
+      paused = false;
       ts_done = 0;
+      cs_done = 0;
     }
   };
 

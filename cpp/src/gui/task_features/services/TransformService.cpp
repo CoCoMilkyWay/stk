@@ -63,6 +63,34 @@ void TransformWorkerPool::trigger(uint64_t gen) {
   cv_.notify_all();
 }
 
+void TransformWorkerPool::pause() {
+  assert(data_);
+  auto &paused = data_->transform.compute.paused;
+  
+  // 1. 设置暂停标志（worker 会在 is_stale() 检查点退出）
+  paused.store(true);
+  
+  // 2. 唤醒所有可能在等待的 worker（让它们检查 paused 并回到等待）
+  cv_.notify_all();
+  
+  // 3. 等待所有 worker 进入等待状态
+  const size_t n = workers_.size();
+  while (n_waiting_.load() < n) {
+    std::this_thread::yield();
+  }
+}
+
+void TransformWorkerPool::resume() {
+  assert(data_);
+  auto &paused = data_->transform.compute.paused;
+  
+  // 1. 清除暂停标志
+  paused.store(false);
+  
+  // 2. 唤醒所有 worker
+  cv_.notify_all();
+}
+
 void TransformWorkerPool::worker_loop(size_t worker_id) {
   TraceThread(("TransformWorker_" + std::to_string(worker_id)).c_str());
   uint64_t last_gen = 0;
@@ -71,9 +99,13 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
     uint64_t my_gen;
     {
       std::unique_lock<std::mutex> lock(mutex_);
+      ++n_waiting_;  // 进入等待前增加计数
       cv_.wait(lock, [&] {
-        return stop_ || triggered_gen_ > last_gen;
+        // 等待条件：stop 或 (有新 generation 且未暂停)
+        bool paused = data_ && data_->transform.compute.paused.load();
+        return stop_ || (triggered_gen_ > last_gen && !paused);
       });
+      --n_waiting_;  // 被唤醒后减少计数
       if (stop_)
         return;
       my_gen = triggered_gen_;
@@ -90,9 +122,9 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
     if (n_assets == 0)
       continue;
 
-    // 检查是否被新 generation 取代
+    // 检查是否需要退出当前轮（generation 变化或被暂停）
     auto is_stale = [&]() {
-      return tf.compute.generation.load() != my_gen;
+      return tf.compute.generation.load() != my_gen || tf.compute.paused.load();
     };
 
     // 每个worker负责 [start, end) 范围的asset
@@ -123,6 +155,78 @@ void TransformWorkerPool::worker_loop(size_t worker_id) {
       continue;
 
     // ========== CS Phase ==========
+    // 只有 worker 0 计算所有时间点的 CS norm，其他 worker 等待
+    if (worker_id == 0) {
+      {
+        TraceN("CS_Norm");
+        // Worker 0: 计算所有 assets 的 CS norm
+        const size_t n_assets = tf.cache.n_assets;
+        const size_t n_samples = tf.cache.n_samples;
+        
+        if (n_samples > 0 && n_assets > 0) {
+          if (tf.params.cs_norm == NormMethod::NONE) {
+            // NONE: 直接复制 ts_normed 到 cs_normed
+            for (size_t a = 0; a < n_assets; ++a) {
+              if (is_stale())
+                break;
+              if (a < tf.results.size() && tf.results[a].ts_normed.size() == n_samples) {
+                std::copy(tf.results[a].ts_normed.begin(), tf.results[a].ts_normed.end(),
+                         tf.results[a].cs_normed.begin());
+              }
+            }
+          } else {
+            // 需要 CS 归一化
+            thread_local std::vector<float> cs_input;
+            thread_local std::vector<float> cs_output;
+            cs_input.resize(n_assets);
+            cs_output.resize(n_assets);
+
+            for (size_t t = 0; t < n_samples; ++t) {
+              if (is_stale())
+                break;
+
+              // 收集所有 assets 在时刻 t 的 ts_normed 值
+              for (size_t a = 0; a < n_assets; ++a) {
+                if (a < tf.results.size() && t < tf.results[a].ts_normed.size()) {
+                  cs_input[a] = tf.results[a].ts_normed[t];
+                } else {
+                  cs_input[a] = 0.0f;
+                }
+              }
+
+              // 计算 CS norm
+              math::normalize::apply_cs({cs_input.data(), n_assets}, {cs_output.data(), n_assets},
+                                        tf.params.cs_norm, tf.params.cs);
+
+              // 写入所有 assets 的 cs_normed[t]
+              for (size_t a = 0; a < n_assets; ++a) {
+                if (a < tf.results.size() && t < tf.results[a].cs_normed.size()) {
+                  tf.results[a].cs_normed[t] = cs_output[a];
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Worker 0 完成 CS norm 计算，设置标志（只有在未 stale 时才设置）
+      if (!is_stale()) {
+        tf.compute.cs_done.store(1);
+      }
+    } else {
+      // 其他 worker: 等待 worker 0 完成 CS norm 计算
+      while (tf.compute.cs_done.load() == 0) {
+        if (is_stale())
+          break;
+        std::this_thread::yield();
+      }
+    }
+
+    // 如果 generation 变化了，跳过后续步骤
+    if (is_stale())
+      continue;
+
+    // 所有 worker 继续处理自己负责的 assets 的后续步骤（ADF、KPSS、PSD、KLL）
     for (size_t a = start; a < end; ++a) {
       if (is_stale())
         break;
@@ -231,8 +335,14 @@ asio::awaitable<void> TransformService::ComputeLoop(SharedData &data) {
     bool need_load = tf.need_reload(level, feat_idx);
 
     if (need_load) {
+      // 在修改 cache 前，确保所有 worker 都停止访问数据
+      pool_->pause();
+
       tf.compute.status = Transform::Compute::Status::Loading;
       load_block(data, level, feat_idx, tf.selected_block);
+      
+      // 恢复 worker（它们会等待下一次 trigger）
+      pool_->resume();
     }
 
     if (!tf.cache.valid())
@@ -267,12 +377,14 @@ void TransformService::invalidate_all(SharedData &data) {
     tf.psd.resize(n_assets);
   }
 
+  // 先重置同步计数，再递增 generation，避免旧 generation 的 worker 设置标志后影响新 generation
+  tf.compute.ts_done = 0;
+  tf.compute.cs_done = 0;
+  tf.compute.done = 0;
+  
   // 递增 generation，触发新一轮
   ++tf.compute.generation;
-
-  // 重置同步计数
-  tf.compute.ts_done = 0;
-  tf.compute.done = 0;
+  
   tf.compute.n_workers = pool_->num_workers();
   tf.compute.total = n_assets;
 }
@@ -393,7 +505,7 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
   auto &tf = data.transform;
 
   auto is_stale = [&]() {
-    return tf.compute.generation.load() != gen;
+    return tf.compute.generation.load() != gen || tf.compute.paused.load();
   };
 
   if (is_stale())
@@ -445,37 +557,7 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
     return;
   }
 
-  // ========== After barrier: ts_normed[all] → cs_normed + 指标 ==========
-
-  {
-    TraceN("CS_Norm");
-    if (tf.params.cs_norm == NormMethod::NONE) {
-      std::copy(result.ts_normed.begin(), result.ts_normed.end(), result.cs_normed.begin());
-    } else {
-      thread_local std::vector<float> cs_input;
-      thread_local std::vector<float> cs_output;
-      const size_t n_assets = tf.cache.n_assets;
-      cs_input.resize(n_assets);
-      cs_output.resize(n_assets);
-
-      for (size_t t = 0; t < n; ++t) {
-        if (is_stale())
-          return;
-
-        for (size_t a = 0; a < n_assets; ++a) {
-          cs_input[a] = tf.results[a].ts_normed[t];
-        }
-
-        math::normalize::apply_cs({cs_input.data(), n_assets}, {cs_output.data(), n_assets},
-                                  tf.params.cs_norm, tf.params.cs);
-
-        result.cs_normed[t] = cs_output[asset_idx];
-      }
-    }
-  }
-
-  if (is_stale())
-    return;
+  // ========== After barrier: cs_normed 已由 worker 0 计算完成，这里只处理后续指标 ==========
 
   {
     TraceN("ADF");
