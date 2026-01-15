@@ -23,7 +23,6 @@
 //   L0: features_L0_f{idx}.zst - [Header: T,1,A][Zstd compressed column]
 //       (columnar for selective loading in Dist analysis)
 //   L1: features_L1.zst - [Header: T,F_L1,A][Zstd compressed merged data]
-//   L2: features_L2.zst - [Header: T,F_L2,A][Zstd compressed merged data]
 //       (merged for fewer files and faster writes)
 //   Depth: depth.zst - [Header: T,F_depth,A][Zstd compressed data]
 //
@@ -187,7 +186,7 @@ public:
 
     // Temp buffers (reused across days)
     std::vector<feature_storage_t> temp_column; // L0: single column [T × 1 × A]
-    std::vector<feature_storage_t> temp_day;    // L1/L2: full day [T × F_total × A]
+    std::vector<feature_storage_t> temp_day;    // L1: full day [T × F_total × A]
 
     void preallocate(size_t A_, size_t max_days_, size_t max_features_, size_t level_) {
       A = A_;
@@ -237,8 +236,6 @@ public:
         f_offset = L0_FIELD_OFFSETS[f_enum];
       } else if constexpr (Level == 1) {
         f_offset = L1_FIELD_OFFSETS[f_enum];
-      } else {
-        f_offset = L2_FIELD_OFFSETS[f_enum];
       }
       assert(f_offset < F[Level]);
       return data[Level][(t * F[Level] + f_offset) * A + a];
@@ -253,8 +250,6 @@ public:
         f_offset = L0_FIELD_OFFSETS[f_enum];
       } else if constexpr (Level == 1) {
         f_offset = L1_FIELD_OFFSETS[f_enum];
-      } else {
-        f_offset = L2_FIELD_OFFSETS[f_enum];
       }
       assert(f_offset < F[Level]);
       return data[Level].data() + (t * F[Level] + f_offset) * A;

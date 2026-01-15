@@ -54,7 +54,7 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
   const int level = feature.selection.selected_level;
   const int primary_idx = feature.selection.primary_feature_idx;
   assert(primary_idx >= 0);
-  assert(level >= 0 && level < 3);
+  assert(level >= 0 && level < 2);
 
   const size_t n_assets = asset.items.size();
   mc.init(n_assets);
@@ -65,12 +65,9 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
   if (level == 0) {
     meta_list = feature.metadata.features_l0.data();
     meta_count = feature.metadata.features_l0.size();
-  } else if (level == 1) {
+  } else {
     meta_list = feature.metadata.features_l1.data();
     meta_count = feature.metadata.features_l1.size();
-  } else {
-    meta_list = feature.metadata.features_l2.data();
-    meta_count = feature.metadata.features_l2.size();
   }
 
   // Determine columns to load
@@ -165,13 +162,10 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
           // Level 0 (tick/second): use L0_to_Clock
           ClockTime time = L0_to_Clock(local_t);
           hour = time.hour;
-        } else if (level == 1) {
+        } else {
           // Level 1 (minute): use L1_to_Clock
           ClockTime time = L1_to_Clock(local_t);
           hour = time.hour;
-        } else {
-          // Level 2 (hour): use L2_to_Clock (returns hour directly)
-          hour = L2_to_Clock(local_t);
         }
 
         // Zero-copy pointers into month tensor
@@ -222,17 +216,10 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
               size_t min_idx = L0_to_L1(local_t);
               assert(min_idx < 255);
               asset_bars[min_idx].update(val);
-            } else if (level == 1) {
+            } else {
               // L1 分钟级 → 直接使用
               assert(local_t < 255);
               asset_bars[local_t].update(val);
-            } else {
-              // L2 小时级 → 展开到分钟范围
-              size_t min_start = L2_to_L1(local_t);
-              size_t min_end = L2_to_L1(local_t + 1);
-              for (size_t m = min_start; m < min_end; ++m) {
-                asset_bars[m].update(val);
-              }
             }
           }
         }

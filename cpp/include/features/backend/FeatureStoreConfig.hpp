@@ -41,16 +41,10 @@ ALL_LEVELS(GENERATE_LEVEL_INDEX)
 constexpr size_t MAX_ROWS_PER_LEVEL[LEVEL_COUNT] = {
     LEVEL_CONFIGS[0].max_capacity(),
     LEVEL_CONFIGS[1].max_capacity(),
-    LEVEL_CONFIGS[2].max_capacity(),
 };
 
 // ============================================================================
 // FIELD METADATA - PART 1: Auxiliary Macros (Per-Level)
-// ============================================================================
-// HOW TO ADD NEW LEVEL (e.g., L3):
-// 1. FeaturesDefine.hpp: Add LEVEL_3_FIELDS + update ALL_LEVELS
-// 2. Below: Copy-paste L2 macros, rename L2→L3 (3 macros total)
-// 3. Done! All arrays/enums auto-generated
 // ============================================================================
 
 // Field format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, formula, name_en, name_cn, description)
@@ -61,20 +55,16 @@ constexpr size_t MAX_ROWS_PER_LEVEL[LEVEL_COUNT] = {
 // Width extractors (per-level)
 #define GENERATE_FIELD_WIDTH_L0(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) width,
 #define GENERATE_FIELD_WIDTH_L1(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) width,
-#define GENERATE_FIELD_WIDTH_L2(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) width,
 
 // Index extractors (per-level)
 #define GENERATE_FIELD_INDEX_L0(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) code,
 #define GENERATE_FIELD_INDEX_L1(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) code,
-#define GENERATE_FIELD_INDEX_L2(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) code,
 
 // Type metadata extractors (per-level)
 #define GENERATE_FIELD_TYPE_META_L0(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
   {L0_FieldOffset::code, FeatureDataType::dtype},
 #define GENERATE_FIELD_TYPE_META_L1(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
   {L1_FieldOffset::code, FeatureDataType::dtype},
-#define GENERATE_FIELD_TYPE_META_L2(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
-  {L2_FieldOffset::code, FeatureDataType::dtype},
 
 // ============================================================================
 // FIELD METADATA - PART 2: Compile-Time Utilities
@@ -104,28 +94,28 @@ constexpr auto generate_offsets(const size_t (&widths)[N]) {
 // FIELD METADATA - PART 3: Generated Constants/Arrays (Generic)
 // ============================================================================
 
-// 1. Field counts: L0_FIELD_COUNT, L1_FIELD_COUNT, L2_FIELD_COUNT, ...
+// 1. Field counts: L0_FIELD_COUNT, L1_FIELD_COUNT, ...
 #define GENERATE_FIELD_COUNT(level_name, level_num, fields) \
   constexpr size_t level_name##_FIELD_COUNT = 0 fields(COUNT_FIELD);
 ALL_LEVELS(GENERATE_FIELD_COUNT)
 
-// 2. Field widths: L0_FIELD_WIDTHS[], L1_FIELD_WIDTHS[], L2_FIELD_WIDTHS[], ...
+// 2. Field widths: L0_FIELD_WIDTHS[], L1_FIELD_WIDTHS[], ...
 #define GENERATE_FIELD_WIDTHS(level_name, level_num, fields) \
   inline constexpr size_t level_name##_FIELD_WIDTHS[] = {    \
       fields(GENERATE_FIELD_WIDTH_##level_name)};
 ALL_LEVELS(GENERATE_FIELD_WIDTHS)
 
-// 3. Field offsets: L0_FIELD_OFFSETS[], L1_FIELD_OFFSETS[], L2_FIELD_OFFSETS[], ...
+// 3. Field offsets: L0_FIELD_OFFSETS[], L1_FIELD_OFFSETS[], ...
 #define GENERATE_FIELD_OFFSETS(level_name, level_num, fields) \
   inline constexpr auto level_name##_FIELD_OFFSETS = generate_offsets(level_name##_FIELD_WIDTHS);
 ALL_LEVELS(GENERATE_FIELD_OFFSETS)
 
-// 4. Total widths: L0_TOTAL_WIDTH, L1_TOTAL_WIDTH, L2_TOTAL_WIDTH, ...
+// 4. Total widths: L0_TOTAL_WIDTH, L1_TOTAL_WIDTH, ...
 #define GENERATE_TOTAL_WIDTH(level_name, level_num, fields) \
   constexpr size_t level_name##_TOTAL_WIDTH = array_sum(level_name##_FIELD_WIDTHS, level_name##_FIELD_COUNT);
 ALL_LEVELS(GENERATE_TOTAL_WIDTH)
 
-// 5. Field index enums: L0_FieldOffset::*, L1_FieldOffset::*, L2_FieldOffset::*, ...
+// 5. Field index enums: L0_FieldOffset::*, L1_FieldOffset::*, ...
 //    (Use L*_FIELD_OFFSETS[idx] to get actual offset in flat array)
 //    (Use L*_FIELD_WIDTHS[idx] to get field width)
 #define GENERATE_FIELD_INDEX_ENUM(level_name, level_num, fields) \
@@ -136,7 +126,7 @@ ALL_LEVELS(GENERATE_TOTAL_WIDTH)
   }
 ALL_LEVELS(GENERATE_FIELD_INDEX_ENUM)
 
-// 6. Field type metadata: L0_FIELD_TYPES[], L1_FIELD_TYPES[], L2_FIELD_TYPES[], ...
+// 6. Field type metadata: L0_FIELD_TYPES[], L1_FIELD_TYPES[], ...
 struct FieldTypeMeta {
   size_t offset; // field index, not actual offset (use L*_FIELD_OFFSETS[offset])
   FeatureDataType type;

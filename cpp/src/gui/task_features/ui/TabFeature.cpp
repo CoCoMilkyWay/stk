@@ -201,8 +201,6 @@ static const std::vector<FeatureMetadata> &get_current_level_features(const Feat
     return feature.metadata.features_l0;
   case 1:
     return feature.metadata.features_l1;
-  case 2:
-    return feature.metadata.features_l2;
   default:
     return feature.metadata.features_l0;
   }
@@ -313,8 +311,6 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::RadioButton("L0", &sel.selected_level, 0);
   ImGui::SameLine();
   ImGui::RadioButton("L1", &sel.selected_level, 1);
-  ImGui::SameLine();
-  ImGui::RadioButton("L2", &sel.selected_level, 2);
 
   level_changed = (sel.selected_level != prev_level);
 

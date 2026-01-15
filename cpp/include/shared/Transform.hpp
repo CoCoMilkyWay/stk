@@ -3,8 +3,6 @@
 #include "features/FeaturesDefine.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/normalize/Normalize.hpp"
-#include "math/spectral/FIRBandpass.hpp"
-#include "math/spectral/IIRBandpass.hpp"
 #include "math/stationary/FracDiff.hpp"
 #include "math/stationary/IntDiff.hpp"
 #include "math/stationary/MADetrend.hpp"
@@ -140,12 +138,12 @@ struct Transform {
   };
 
   // ==========================================================================
-  // 数据块定义 (L0=天, L1=月, L2=全区间)
+  // 数据块定义 (L0=天, L1=月)
   // ==========================================================================
 
   struct Block {
-    std::string label;                    // "24/01/15" / "24/01" / "全区间"
-    std::vector<std::string> dates;       // 日期列表 (L0:1天, L1:~20天, L2:全部)
+    std::string label;                    // "24/01/15" / "24/01"
+    std::vector<std::string> dates;       // 日期列表 (L0:1天, L1:~20天)
     size_t n_samples = 0;                 // 总样本数 (加载后填充)
   };
 

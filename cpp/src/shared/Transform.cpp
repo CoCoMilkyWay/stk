@@ -55,13 +55,6 @@ void Transform::generate_blocks(int level,
       }
       blocks.back().dates.push_back(date);
     }
-  } else {
-    // L2: 整个区间作为一个块 (包含所有天)
-    Block block;
-    block.label = "全区间";
-    block.dates = dates;
-    block.n_samples = 0;
-    blocks.push_back(block);
   }
 
   selected_block = 0;

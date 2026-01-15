@@ -21,16 +21,11 @@ void Feature::Metadata::init_from_compile_time() {
   features_l1.assign(FeatureMetadataRegistry::FEATURES_L1,
                      FeatureMetadataRegistry::FEATURES_L1 + FeatureMetadataRegistry::COUNT_L1);
 
-  features_l2.assign(FeatureMetadataRegistry::FEATURES_L2,
-                     FeatureMetadataRegistry::FEATURES_L2 + FeatureMetadataRegistry::COUNT_L2);
-
   // Mark level for each feature
   for (auto &f : features_l0)
     f.level = 0;
   for (auto &f : features_l1)
     f.level = 1;
-  for (auto &f : features_l2)
-    f.level = 2;
 }
 
 // ============================================================================

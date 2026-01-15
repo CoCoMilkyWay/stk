@@ -21,7 +21,7 @@ struct FeatureMetadata {
   const char *name_en;       // "Tick Return Z-score"
   const char *name_cn;       // "微小对数收益"
   const char *description;   // "滚动窗口标准化..."
-  uint8_t level;             // 0=L0, 1=L1, 2=L2
+  uint8_t level;             // 0=L0, 1=L1
 };
 
 // ============================================================================
@@ -36,11 +36,9 @@ struct FeatureMetadata {
 namespace FeatureMetadataRegistry {
 constexpr FeatureMetadata FEATURES_L0[] = {LEVEL_0_FIELDS(GENERATE_METADATA)};
 constexpr FeatureMetadata FEATURES_L1[] = {LEVEL_1_FIELDS(GENERATE_METADATA)};
-constexpr FeatureMetadata FEATURES_L2[] = {LEVEL_2_FIELDS(GENERATE_METADATA)};
 
 constexpr size_t COUNT_L0 = sizeof(FEATURES_L0) / sizeof(FeatureMetadata);
 constexpr size_t COUNT_L1 = sizeof(FEATURES_L1) / sizeof(FeatureMetadata);
-constexpr size_t COUNT_L2 = sizeof(FEATURES_L2) / sizeof(FeatureMetadata);
 } // namespace FeatureMetadataRegistry
 
 #undef GENERATE_METADATA
@@ -57,7 +55,6 @@ struct Feature {
   struct Metadata {
     std::vector<FeatureMetadata> features_l0;
     std::vector<FeatureMetadata> features_l1;
-    std::vector<FeatureMetadata> features_l2;
 
     void init_from_compile_time(); // Copy from constexpr arrays
   };
@@ -68,7 +65,7 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    int selected_level = 0; // 0=L0, 1=L1, 2=L2
+    int selected_level = 0; // 0=L0, 1=L1
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;

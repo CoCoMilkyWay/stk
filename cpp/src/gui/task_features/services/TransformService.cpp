@@ -43,9 +43,8 @@ static float bin_to_period_seconds(float bin_idx) {
 // 非标 bin index → 归一化频率 (0-1, 1=Nyquist)
 static float bin_to_normalized_freq(float bin_idx, int level) {
   float period_sec = bin_to_period_seconds(bin_idx);
-  // 采样率: L0=1Hz, L1=1/60Hz, L2=1/3600Hz
-  float sample_rate = (level == 0) ? 1.0f : (level == 1) ? (1.0f / 60.0f)
-                                                         : (1.0f / 3600.0f);
+  // 采样率: L0=1Hz, L1=1/60Hz
+  float sample_rate = (level == 0) ? 1.0f : (1.0f / 60.0f);
   float freq = 1.0f / period_sec;
   float nyquist = sample_rate / 2.0f;
   return std::clamp(freq / nyquist, 0.001f, 0.999f);
@@ -420,7 +419,7 @@ void TransformService::invalidate_all(SharedData &data) {
 }
 
 // ============================================================================
-// Block Loading (统一 L0/L1/L2)
+// Block Loading (统一 L0/L1)
 // ============================================================================
 
 void TransformService::load_block(SharedData &data, int level, int feature_idx, int block_idx) {
@@ -445,9 +444,8 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
   size_t valid_offset = 0;
   L2::ValidType valid_type = L2::ValidType::ALL;
 
-  const auto &meta = level == 0   ? data.feature.metadata.features_l0
-                     : level == 1 ? data.feature.metadata.features_l1
-                                  : data.feature.metadata.features_l2;
+  const auto &meta = level == 0 ? data.feature.metadata.features_l0
+                                : data.feature.metadata.features_l1;
   if (feature_idx >= 0 && feature_idx < (int)meta.size()) {
     valid_type = meta[feature_idx].valid_type;
   }
@@ -459,12 +457,9 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
     } else {
       valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_data_valid];
     }
-  } else if (level == 1) {
+  } else {
     f_offset = L1_FIELD_OFFSETS[feature_idx];
     valid_offset = L1_FIELD_OFFSETS[L1_FieldOffset::_data_valid];
-  } else {
-    f_offset = L2_FIELD_OFFSETS[feature_idx];
-    valid_offset = L2_FIELD_OFFSETS[L2_FieldOffset::_data_valid];
   }
 
   cache.raw.resize(A);
@@ -674,8 +669,7 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
         valid_data.push_back(last_valid);
       }
 
-      size_t target_size = (level == 0) ? 16384 : (level == 1) ? 8192
-                                                               : 128;
+      size_t target_size = (level == 0) ? 16384 : 8192;
 
       size_t filled = 0;
       while (filled < target_size) {

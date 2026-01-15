@@ -4,13 +4,11 @@
 #include "features/ComputeGraph.hpp"
 #include "features/FeaturesTick/Tick_Sequential.hpp"
 #include "features/FeaturesMinute/Minute_Sequential.hpp"
-#include "features/FeaturesHour/Hour_Sequential.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "math/sample/ResamplerTick2Min.hpp"
-#include "math/sample/ResamplerMin2Hour.hpp"
 
-// Sequential Core: Hierarchical 3-level feature computation with resampling
-// Architecture: LOB -> Tick -> (resample) -> Minute -> (resample) -> Hour
+// Sequential Core: Hierarchical 2-level feature computation with resampling
+// Architecture: LOB -> Tick -> (resample) -> Minute
 class CoreSequential {
 public:
   CoreSequential(TickData &tick_data,
@@ -23,27 +21,21 @@ public:
         dag_(tick_data),
         tick_sequential_(dag_, store_, asset_id_, core_id_),
         minute_sequential_(dag_, store_, asset_id_, core_id_),
-        hour_sequential_(dag_, store_, asset_id_, core_id_),
-        tick2min_(dag_.tick_data, dag_.minute_data),
-        min2hour_(dag_.minute_data, dag_.hour_data) {
+        tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id_);
-    dag_.hour_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.tick_data.core_id = static_cast<uint32_t>(core_id);
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
-    dag_.hour_data.core_id = static_cast<uint32_t>(core_id);
   }
 
   void set_date(const std::string &date_str) {
     date_str_ = date_str;
     tick_sequential_.set_date(date_str);
     minute_sequential_.set_date(date_str);
-    hour_sequential_.set_date(date_str);
   }
 
   void reset() {
     tick2min_.reset();
-    min2hour_.reset();
     dag_.minute_data.open.clear();
     dag_.minute_data.high.clear();
     dag_.minute_data.low.clear();
@@ -52,14 +44,6 @@ public:
     dag_.minute_data.ask_volume.clear();
     dag_.minute_data.bid_amount.clear();
     dag_.minute_data.ask_amount.clear();
-    dag_.hour_data.open.clear();
-    dag_.hour_data.high.clear();
-    dag_.hour_data.low.clear();
-    dag_.hour_data.close.clear();
-    dag_.hour_data.bid_volume.clear();
-    dag_.hour_data.ask_volume.clear();
-    dag_.hour_data.bid_amount.clear();
-    dag_.hour_data.ask_amount.clear();
   }
 
   void compute_and_store() noexcept {
@@ -78,12 +62,6 @@ public:
     if (tick2min_.update()) {
       TraceN("TS_Minute");
       minute_sequential_.compute_and_store();
-
-      // Minute -> Hour
-      if (min2hour_.update()) {
-        TraceN("TS_Hour");
-        hour_sequential_.compute_and_store();
-      }
     }
 
     if (!date_str_.empty()) {
@@ -101,8 +79,6 @@ private:
 
   Tick_Sequential tick_sequential_;
   Minute_Sequential minute_sequential_;
-  Hour_Sequential hour_sequential_;
 
   ResamplerTick2Min tick2min_;
-  ResamplerMin2Hour min2hour_;
 };

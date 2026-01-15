@@ -2,7 +2,6 @@
 
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
-#include "features/FeaturesHour/TS/HourIndex.hpp"
 #include "features/FeaturesMinute/TS/MinuteIndex.hpp"
 #include "features/FeaturesTick/TS/DeltaT.hpp"
 #include "features/FeaturesTick/TS/DepthData.hpp"
@@ -20,7 +19,7 @@
 #include "features/FeaturesTick/TS/VOI.hpp"
 #include <deque>
 
-// DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) -> L2 (Hour))
+// DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
 public:
   // ===========================================================================
@@ -28,7 +27,6 @@ public:
   // ===========================================================================
   TickData &tick_data;    // L0 输入（外部传入）
   MinuteData minute_data; // L1 输入（内部管理，由 resampler 填充）
-  HourData hour_data;     // L2 输入（内部管理，由 resampler 填充）
 
   // ===========================================================================
   // L0: Tick 级别 - CBuffer + 算子
@@ -142,32 +140,9 @@ public:
   L1 l1;
 
   // ===========================================================================
-  // L2: Hour 级别 - 暂保持 deque（后续迁移到 CBuffer + 算子）
-  // ===========================================================================
-  struct L2 {
-    HourData &hd;
-
-    // --- 基础数据 CBuffer ---
-    CBuffer<float, ::L2::BLEN> Hour_;      // 小时数 [0-23] (特征)
-    CBuffer<float, ::L2::BLEN> HourIndex_; // 原始hour索引 (供其他算子使用)
-
-    // --- 基础数据算子 ---
-    HourIndex HourIndex{hd, Hour_, HourIndex_};
-
-    // Rolling windows for TS features
-    std::deque<float> hour_return_window;
-    std::deque<float> hour_vol_window;
-    std::deque<float> pivot_window;
-    std::deque<float> dominant_window;
-
-    explicit L2(HourData &h) : hd(h) {}
-  };
-  L2 l2;
-
-  // ===========================================================================
   // 构造函数
   // ===========================================================================
-  explicit DAG(TickData &td) : tick_data(td), l0(td), l1(minute_data), l2(hour_data) {} // 创建时传入TickData
+  explicit DAG(TickData &td) : tick_data(td), l0(td), l1(minute_data) {} // 创建时传入TickData
 
   // ===========================================================================
   // 跨天重置 (统一维护)

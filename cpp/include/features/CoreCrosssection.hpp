@@ -1,14 +1,13 @@
 #pragma once
 
-#include "features/FeaturesHour/Hour_Crosssection.hpp"
 #include "features/FeaturesMinute/Minute_Crosssection.hpp"
 #include "features/FeaturesTick/Tick_Crosssection.hpp"
 #include "features/backend/FeatureStore.hpp"
 #include "misc/profiler.hpp"
 
 // ============================================================================
-// CoreCrosssection: Hierarchical 3-level cross-sectional feature computation
-// Architecture: Tick -> (cascade) -> Minute -> (cascade) -> Hour
+// CoreCrosssection: Hierarchical 2-level cross-sectional feature computation
+// Architecture: Tick -> (cascade) -> Minute
 // ============================================================================
 
 class CoreCrosssection {
@@ -21,8 +20,7 @@ public:
         output_fp32_(A_),
         output_fp16_(A_),
         tick_cs_(store, valid_indices_, input_fp32_, output_fp32_, output_fp16_),
-        minute_cs_(store, valid_indices_, input_fp32_, output_fp32_, output_fp16_),
-        hour_cs_(store, valid_indices_, input_fp32_, output_fp32_, output_fp16_) {
+        minute_cs_(store, valid_indices_, input_fp32_, output_fp32_, output_fp16_) {
     valid_indices_.reserve(A_);
   }
 
@@ -30,10 +28,9 @@ public:
     date_str_ = date_str;
     tick_cs_.set_date(date_str);
     minute_cs_.set_date(date_str);
-    hour_cs_.set_date(date_str);
   }
 
-  // Main entry: compute all 3 levels with cascading on time boundaries
+  // Main entry: compute all 2 levels with cascading on time boundaries
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
     TraceColor(C_Magenta);
@@ -47,19 +44,8 @@ public:
     // Cascade: If this tick crosses minute boundary, trigger minute computation
     size_t t_minute = t / 60;
     if (t % 60 == 0 && t > 0) {
-      {
-        TraceN("CS_Minute");
-        minute_cs_.compute_and_store(t_minute);
-      }
-
-      // Cascade: If this minute crosses hour boundary, trigger hour computation
-      size_t t_hour = t_minute / 60;
-      if (t_minute % 60 == 0) {
-        {
-          TraceN("CS_Hour");
-          hour_cs_.compute_and_store(t_hour);
-        }
-      }
+      TraceN("CS_Minute");
+      minute_cs_.compute_and_store(t_minute);
     }
   }
 
@@ -77,5 +63,4 @@ private:
   // Crosssection feature processors
   Tick_Crosssection tick_cs_;
   Minute_Crosssection minute_cs_;
-  Hour_Crosssection hour_cs_;
 };

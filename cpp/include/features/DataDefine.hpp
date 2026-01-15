@@ -8,7 +8,7 @@
 // HIERARCHICAL DATA DEFINITIONS
 //========================================================================================
 // Defines shared data structures across feature computation hierarchy:
-// Tick (LOB_Feature) -> Minute (MinuteData) -> Hour (HourData)
+// Tick (LOB_Feature) -> Minute (MinuteData)
 //
 // Design: Each level stores time-series data in CBuffers
 // - No duplication: CBuffer serves as both storage and current value access
@@ -51,24 +51,3 @@ struct MinuteData {
   CBuffer<float, 240> ask_amount;
 };
 
-//----------------------------------------------------------------------------------------
-// HOUR LEVEL (L2): Resampled from minute data
-//----------------------------------------------------------------------------------------
-struct HourData {
-  // Metadata
-  uint32_t asset_id{0}; // static: asset identifier
-  uint32_t core_id{0};  // static: core identifier
-  uint32_t l2_index{0}; // current hour index (trading hour index 0-3)
-
-  // Time-series: OHLC (4 hours in a trading day)
-  CBuffer<float, 4> open;
-  CBuffer<float, 4> high;
-  CBuffer<float, 4> low;
-  CBuffer<float, 4> close;
-
-  // Time-series: Volume and amount by side
-  CBuffer<uint32_t, 4> bid_volume;
-  CBuffer<uint32_t, 4> ask_volume;
-  CBuffer<float, 4> bid_amount;
-  CBuffer<float, 4> ask_amount;
-};

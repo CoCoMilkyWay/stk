@@ -56,7 +56,6 @@
   /* ======== 元数据 (Metadata) ======== */\
   X(universe_size,      1, DATA,  SH,   META,           UNIVERSE,   NONE,        "100/00/00", R"(\#(\mathrm{valid}))",                                                    "Universe Size",                "全域规模",       "当前有效合约数量")\
   X(_link_to_L1,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", R"(\mathrm{idx}_{L1})",                                                     "Link to L1",                   "L1时间索引",     "L0→L1时间映射")\
-  X(_link_to_L2,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", R"(\mathrm{idx}_{L2})",                                                     "Link to L2",                   "L2时间索引",     "L0→L2时间映射")\
   X(_depth_valid,       1, ALL,   META, META,           RAW,        NONE,        "100/00/00", R"(\mathbf{1}_{\mathrm{valid}})",                                           "Depth Valid Flag",             "深度有效标志",   "LOB深度缓冲区完整性标记")\
   X(_data_valid,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", R"(\mathbf{1}_{\mathrm{valid}})",                                           "Data Valid Flag",              "数据有效标志",   "事件驱动稀疏性标记")\
 
@@ -84,26 +83,6 @@
   X(_ohlc_close,        1, DATA, META, META,           RAW,        NONE,        "00/100/00", R"(C)",                                                   "OHLC Close",                  "收盘价",         "GUI:分钟收盘价(分)")\
   X(_ohlc_volume,       1, DATA, META, META,           RAW,        NONE,        "00/100/00", R"(V)",                                                   "OHLC Volume",                 "成交量",         "GUI:分钟成交量")\
   X(_data_valid,        1, ALL,  META, META,           RAW,        NONE,        "00/100/00", R"(\mathbf{1}_{\mathrm{valid}})",                         "Data Valid Flag",             "数据有效标志",   "事件驱动稀疏性标记")
-
-// ============================================================================
-// LEVEL 2: Hour-level Features (小时级)
-// ============================================================================
-
-#define LEVEL_2_FIELDS(X)\
-  X(hour,                1, DATA, TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "00/00/100", R"(\sin(\frac{2\pi t}{4}))",                              "Time Hour Phase",             "时间-小时相位",  "用于和同级别特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好")\
-  X(hour_ret_12h_mom,    1, DATA, TS,   MOMENTUM,       NORMALIZED, ZSCORE,      "00/00/100", R"(\frac{\sum_{12h} r}{z})",                              "Hour Return 12h Momentum",    "12小时动量",     "12小时动量标准化")\
-  X(hour_volatility,     1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/00/100", R"(\log(\sigma_{24h}))",                                  "Hour Volatility 24h",         "24小时波动率",   "24小时波动率标准化")\
-  X(pivot_dev,           1, DATA, TS,   PRICE,          DEVIATION,  CLIP,        "00/00/100", R"(\frac{c - \mathrm{pivot}}{\mathrm{range}})",           "Pivot Deviation",             "Pivot偏差",      "收盘相对pivot偏差")\
-  X(dominant_persist,    1, DATA, TS,   IMBALANCE,      OSCILLATOR, ZSCORE,      "00/00/100", R"(\mathrm{EMA}(\mathrm{side}))",                         "Dominant Persistence",        "主导持续性",     "买卖主导延续性")\
-  X(hour_overnight_gap,  1, DATA, TS,   PRICE,          DEVIATION,  WINSOR,      "00/00/100", R"(\frac{o - c_{-1}}{\sigma})",                           "Hour Overnight Gap",          "隔夜跳空",       "隔夜gap捕捉消息冲击")\
-  X(cs_hour_return_beta, 1, DATA, CS,   MOMENTUM,       RANK,       RANK_ZSCORE, "00/00/100", R"(\epsilon_{r \sim \mathrm{mkt}})",                      "CS Hour Return Beta",         "小时收益残差",   "相对市场回归残差排名")\
-  X(cs_hour_liq_adj_ret, 1, DATA, CS,   MOMENTUM,       RANK,       RANK_ZSCORE, "00/00/100", R"(\frac{r}{\sqrt{\mathrm{vol}}})",                       "CS Hour Liq Adj Return",      "流动性调整收益", "流动性调整后收益排名")\
-  X(cs_hour_range_rank,  1, DATA, CS,   VOLATILITY,     RANK,       RANK_ZSCORE, "00/00/100", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{range})))",            "CS Hour Range Rank",          "小时Range排名",  "价格区间截面排名")\
-  X(next_1h_ret,         1, DATA, LB,   LABEL,          FUTURE_RET, NONE,        "00/00/100", R"(\log\frac{c_{t+1h}}{c_t})",                            "Next 1-Hour Return",          "下1小时收益",    "下一小时对数收益")\
-  X(sharpe_score,        1, DATA, LB,   LABEL,          SCORE,      NONE,        "00/00/100", R"(\frac{\mu - r_f}{\sigma})",                            "Sharpe Score",                "Sharpe评分",     "超额收益/波动率")\
-  X(universe_size,       1, DATA, SH,   META,           UNIVERSE,   NONE,        "00/00/100", R"(\#(\mathrm{valid}))",                                  "Universe Size",               "全域规模",       "当前有效合约数量")\
-  X(market_volatility,   1, DATA, SH,   META,           BENCHMARK,  NONE,        "00/00/100", R"(\mathrm{std}(r_{\mathrm{mkt},24h}))",                  "Market Volatility",           "市场波动率",     "市场24小时波动率")\
-  X(_data_valid,         1, ALL,  META, META,           RAW,        NONE,        "00/00/100", R"(\mathbf{1}_{\mathrm{valid}})",                         "Data Valid Flag",             "数据有效标志",   "事件驱动稀疏性标记")
 
 // ============================================================================
 // DEPTH: LOB Snapshot Data (separate storage for orderflow visualization)
@@ -206,8 +185,7 @@ enum class NormMethod : uint8_t {
 
 #define ALL_LEVELS(X)      \
   X(L0, 0, LEVEL_0_FIELDS) \
-  X(L1, 1, LEVEL_1_FIELDS) \
-  X(L2, 2, LEVEL_2_FIELDS)
+  X(L1, 1, LEVEL_1_FIELDS)
 
 // ============================================================================
 // TIME GRANULARITY CONFIGURATION
@@ -245,10 +223,9 @@ struct LevelTimeConfig {
 };
 
 // Predefined level configurations
-constexpr LevelTimeConfig LEVEL_CONFIGS[3] = {
+constexpr LevelTimeConfig LEVEL_CONFIGS[2] = {
     {TimeUnit::SECOND, 1}, // L0: 1s
-    {TimeUnit::MINUTE, 1}, // L1: 1min
-    {TimeUnit::HOUR, 1}    // L2: 1hour
+    {TimeUnit::MINUTE, 1}  // L1: 1min
 };
 
 // ============================================================================
@@ -256,12 +233,12 @@ constexpr LevelTimeConfig LEVEL_CONFIGS[3] = {
 // ============================================================================
 // A股交易时段 (含集合竞价):
 //
-//   时段       时钟时间         分钟数    秒数      L0 范围        L1 范围     L2
-//   ─────────────────────────────────────────────────────────────────────────────
-//   上午       09:15 - 11:30    135 min   8100 s    [0, 8099]      [0, 134]    0,1,2
+//   时段       时钟时间         分钟数    秒数      L0 范围        L1 范围
+//   ──────────────────────────────────────────────────────────────────────
+//   上午       09:15 - 11:30    135 min   8100 s    [0, 8099]      [0, 134]
 //   午休       11:30 - 13:00    (非交易)
-//   下午       13:00 - 15:00    120 min   7200 s    [8100, 15299]  [135, 254]  3,4
-//   ─────────────────────────────────────────────────────────────────────────────
+//   下午       13:00 - 15:00    120 min   7200 s    [8100, 15299]  [135, 254]
+//   ──────────────────────────────────────────────────────────────────────
 //   合计                        255 min   15300 s
 //
 // 关键边界值:
@@ -326,24 +303,16 @@ struct ClockTime {
 // ============================================================================
 // 命名规则: X2Y 表示 X → Y
 //
-// 三级索引体系:
+// 两级索引体系:
 //   L0 (tick)   : 0-15299  秒级索引
 //   L1 (minute) : 0-254    分钟级索引
-//   L2 (hour)   : 0-4      小时级索引
 //
 // L1 分钟边界 (相对于 L0):
 //   上午: L1=0 → L0=[0,59], L1=1 → L0=[60,119], ..., L1=134 → L0=[8040,8099]
 //   下午: L1=135 → L0=[8100,8159], ..., L1=254 → L0=[15240,15299]
-//
-// L2 小时边界 (相对于 L1):
-//   L2=0 (09:xx) : L1=[0, 44]    45 min (09:15-09:59)
-//   L2=1 (10:xx) : L1=[45, 104]  60 min (10:00-10:59)
-//   L2=2 (11:xx) : L1=[105, 134] 30 min (11:00-11:29)
-//   L2=3 (13:xx) : L1=[135, 194] 60 min (13:00-13:59)
-//   L2=4 (14:xx) : L1=[195, 254] 60 min (14:00-14:59)
 
 // -------------------------------- 降采样 --------------------------------
-// Clock → L0 → L1 → L2
+// Clock → L0 → L1
 
 // Clock → L0: 09:15:00→0, 11:29:59→8099, 13:00:00→8100, 14:59:59→15299
 inline constexpr size_t Clock_to_L0(uint8_t hour, uint8_t minute, uint8_t second) {
@@ -361,20 +330,8 @@ inline constexpr size_t L0_to_L1(size_t l0_idx) {
              : (MORNING_MINUTES + (l0_idx - MORNING_SECONDS) / 60);
 }
 
-// L1 → L2: 0-44→0, 45-104→1, 105-134→2, 135-194→3, 195-254→4
-inline constexpr size_t L1_to_L2(size_t l1_idx) {
-  return (l1_idx < 105) ? ((l1_idx < 45) ? 0 : 1)
-                        : ((l1_idx < 195) ? ((l1_idx < 135) ? 2 : 3) : 4);
-}
-
 // -------------------------------- 升采样 --------------------------------
-// L2 → L1 → L0 → Clock
-
-// L2 → L1: 0→0, 1→45, 2→105, 3→135, 4→195 (返回该小时的起始分钟索引)
-inline constexpr size_t L2_to_L1(size_t l2_idx) {
-  constexpr size_t starts[] = {0, 45, 105, 135, 195, 255};
-  return (l2_idx < 5) ? starts[l2_idx] : 255;
-}
+// L1 → L0 → Clock
 
 // L1 → L0: 0→0, 134→8040, 135→8100, 254→15240 (返回该分钟的起始秒索引)
 inline constexpr size_t L1_to_L0(size_t l1_idx) {
@@ -414,12 +371,6 @@ inline constexpr ClockTime L1_to_Clock(size_t l1_idx) {
     t.minute = static_cast<uint8_t>(total % 60);
   }
   return t;
-}
-
-// L2 → Clock hour: 0→9, 1→10, 2→11, 3→13, 4→14
-inline constexpr uint8_t L2_to_Clock(size_t l2_idx) {
-  constexpr uint8_t hour_map[] = {9, 10, 11, 13, 14};
-  return (l2_idx < 5) ? hour_map[l2_idx] : 14;
 }
 
 // ============================================================================

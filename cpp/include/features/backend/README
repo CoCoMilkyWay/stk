@@ -3,7 +3,7 @@
 // GlobalFeatureStore 架构设计
 // ============================================================================
 //
-// 按照日期, 切分Tensor: {[T, F, A]_level0(second), [T, F, A]_level1(minute), [T, F, A]_level2(hour)}_dayN
+// 按照日期, 切分Tensor: {[T, F, A]_level0(second), [T, F, A]_level1(minute)_dayN
 //
 // 设计最大容量 (理论上限):
 //   T (Time):    max = 100,000  (L0: 100K time indices per day, 可配置为 tick/millisecond/second)
@@ -20,7 +20,7 @@
 //   F_CS: 截面特征 (跨 assets 横截面计算)
 //   F_LB: 标签 (预测目标)
 //   F_SH: 共享中间值 (TS/CS 共用)
-//   F_META: 元数据 (backend 内部, 如 _link_to_L1/_link_to_L2)
+//   F_META: 元数据 (backend 内部, 如 _link_to_L1)
 //
 // 访问模式分析 (优化目标: 最小化总内存访问时间)
 //
@@ -679,9 +679,9 @@
 //
 // ============================================================================
 //
-// 【时间映射】L0 ↔ L1/L2
-//   - L0 包含 _link_to_L1, _link_to_L2 两个 META feature
-//   - 存储为 _Float16,值为 L1/L2 时间索引
+// 【时间映射】L0 ↔ L1
+//   - L0 包含 _link_to_L1 META feature
+//   - 存储为 _Float16,值为 L1 时间索引
 //   - 支持非均匀映射 (多个 L0 tick 指向同一 L1 minute)
 //
 // 【导出格式】输出目录: output/features/YYYY/MM/DD/

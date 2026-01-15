@@ -397,8 +397,8 @@ static void Render_StatusInfo(SharedData &data) {
   int level = data.feature.selection.selected_level;
 
   // Level
-  static const char *level_names[] = {"L0", "L1", "L2"};
-  if (level >= 0 && level < 3) {
+  static const char *level_names[] = {"L0", "L1"};
+  if (level >= 0 && level < 2) {
     ImGui::Text("%s", level_names[level]);
   } else {
     ImGui::TextDisabled("--");
@@ -408,9 +408,8 @@ static void Render_StatusInfo(SharedData &data) {
   ImGui::SameLine(0, 15);
   int feat_idx = data.feature.selection.primary_feature_idx;
   if (feat_idx >= 0) {
-    const auto &meta = level == 0   ? data.feature.metadata.features_l0
-                       : level == 1 ? data.feature.metadata.features_l1
-                                    : data.feature.metadata.features_l2;
+    const auto &meta = level == 0 ? data.feature.metadata.features_l0
+                                  : data.feature.metadata.features_l1;
     if (feat_idx < (int)meta.size()) {
       ImGui::Text("%s", meta[feat_idx].code);
     }
@@ -927,8 +926,6 @@ static float BinToPeriod(float bin_idx) {
     return bin_idx + 2.0f;
   } else if (bin_idx < 117.0f) {
     return (bin_idx - 58.0f + 1.0f) * 60.0f;
-  } else if (bin_idx < 127.0f) {
-    return (bin_idx - 117.0f + 1.0f) * 3600.0f;
   } else {
     return 1e9f;
   }
@@ -937,7 +934,7 @@ static float BinToPeriod(float bin_idx) {
 // bin → 归一化频率 (与 TransformService 一致)
 static float BinToFreq(float bin_idx, int level) {
   float period = BinToPeriod(bin_idx);
-  float sample_rate = (level == 0) ? 1.0f : (level == 1) ? (1.0f / 60.0f) : (1.0f / 3600.0f);
+  float sample_rate = (level == 0) ? 1.0f : (1.0f / 60.0f);
   float nyquist = sample_rate / 2.0f;
   return std::clamp((1.0f / period) / nyquist, 0.001f, 0.999f);
 }
@@ -1135,26 +1132,18 @@ static void RenderStationarityHeatmap(const Transform &tf, const Asset &asset) {
 // 格式化索引为时间字符串
 // L0: 单日，idx → HH:MM:SS
 // L1: 多日，idx → D{day} HH:MM
-// L2: 多日，idx → D{day} {hour}H
 static void FormatAnchorTime(char *buf, size_t buf_size, size_t idx, int level) {
   if (level == 0) {
     // L0: 单日，直接用 L0_to_Clock
     ClockTime ct = L0_to_Clock(idx);
     std::snprintf(buf, buf_size, "%02d:%02d:%02d", ct.hour, ct.minute, ct.second);
-  } else if (level == 1) {
+  } else {
     // L1: 多日，每天 240 分钟
     constexpr size_t MINS_PER_DAY = 240;
     size_t day_idx = idx / MINS_PER_DAY;
     size_t min_idx = idx % MINS_PER_DAY;
     ClockTime ct = L1_to_Clock(min_idx);
     std::snprintf(buf, buf_size, "D%zu %02d:%02d", day_idx, ct.hour, ct.minute);
-  } else {
-    // L2: 多日，每天 4-5 小时
-    constexpr size_t HOURS_PER_DAY = 4;
-    size_t day_idx = idx / HOURS_PER_DAY;
-    size_t hour_idx = idx % HOURS_PER_DAY;
-    uint8_t hour = L2_to_Clock(hour_idx);
-    std::snprintf(buf, buf_size, "D%zu %02dH", day_idx, hour);
   }
 }
 

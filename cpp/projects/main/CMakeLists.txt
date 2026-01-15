@@ -228,11 +228,9 @@ set(HEADERS
     ../../include/features/backend/FeatureStoreConfig.hpp
     ../../include/features/backend/FeatureStore.hpp
     ../../include/features/backend/ZstdHelper.hpp
-    ../../include/features/FeaturesHour/Hour_Sequential.hpp
     ../../include/features/FeaturesMinute/Minute_Sequential.hpp
     ../../include/features/ComputeGraph.hpp
     ../../include/features/FeaturesTick/Tick_Sequential.hpp
-    ../../include/features/FeaturesHour/Hour_Crosssection.hpp
     ../../include/features/FeaturesMinute/Minute_Crosssection.hpp
     ../../include/features/FeaturesTick/Tick_Crosssection.hpp
     ../../include/features/CoreSequential.hpp

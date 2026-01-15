@@ -775,8 +775,8 @@ private:
     std::filesystem::create_directories(out_dir);
     auto t_after_mkdir = std::chrono::high_resolution_clock::now();
 
-    const size_t T[3] = {MAX_ROWS_PER_LEVEL[0], MAX_ROWS_PER_LEVEL[1], MAX_ROWS_PER_LEVEL[2]};
-    const size_t F[3] = {FIELDS_PER_LEVEL[0], FIELDS_PER_LEVEL[1], FIELDS_PER_LEVEL[2]};
+    const size_t T[2] = {MAX_ROWS_PER_LEVEL[0], MAX_ROWS_PER_LEVEL[1]};
+    const size_t F[2] = {FIELDS_PER_LEVEL[0], FIELDS_PER_LEVEL[1]};
     const size_t A = num_assets_;
 
     // L0: columnar (extract each feature column)
@@ -793,8 +793,8 @@ private:
                              T[0], 1, A, column.data(), col_elements * sizeof(feature_storage_t));
     }
 
-    // L1, L2: write entire level
-    for (size_t lvl = 1; lvl < 3; ++lvl) {
+    // L1: write entire level
+    for (size_t lvl = 1; lvl < 2; ++lvl) {
       const size_t total_bytes = T[lvl] * F[lvl] * A * sizeof(feature_storage_t);
       write_file_with_header(out_dir + "/features_L" + std::to_string(lvl) + ".zst",
                              T[lvl], F[lvl], A, slot->data[lvl], total_bytes);

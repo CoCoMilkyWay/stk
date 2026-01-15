@@ -56,17 +56,14 @@ static FeatureConfig get_feature_config(const Feature &feature) {
   const int level = feature.selection.selected_level;
   const int primary_idx = feature.selection.primary_feature_idx;
   assert(primary_idx >= 0);
-  assert(level >= 0 && level < 3);
+  assert(level >= 0 && level < 2);
 
   if (level == 0) {
     cfg.meta_list = feature.metadata.features_l0.data();
     cfg.meta_count = feature.metadata.features_l0.size();
-  } else if (level == 1) {
+  } else {
     cfg.meta_list = feature.metadata.features_l1.data();
     cfg.meta_count = feature.metadata.features_l1.size();
-  } else {
-    cfg.meta_list = feature.metadata.features_l2.data();
-    cfg.meta_count = feature.metadata.features_l2.size();
   }
 
   cfg.columns = {static_cast<size_t>(primary_idx)};
