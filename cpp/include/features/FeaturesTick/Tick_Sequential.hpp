@@ -59,55 +59,119 @@ inline void Tick_Sequential::compute_and_store() {
 }
 
 inline void Tick_Sequential::compute_ts_tick(size_t t) {
-  // [EVERY TICK] 逐笔更新
+  // =========================================================================
+  // [EVERY TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
+  // =========================================================================
   dag_.l0.DeltaT.compute();
   dag_.l0.TickIndex.compute();
   ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
 
-  if (dag_.tick_data.lob.depth_updated) {
-    // [ON DEPTH] 盘口更新
+  // =========================================================================
+  // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
+  // =========================================================================
+  if (dag_.tick_data.lob.order_type == L2::OrderType::TAKER) {
+    dag_.l0.TradePrice.compute();
+  }
 
-    // 数据层
+  // =========================================================================
+  // [ON DEPTH] 盘口更新时触发
+  // =========================================================================
+  if (dag_.tick_data.lob.depth_updated) {
+    // --- 数据层 ---
     dag_.l0.DepthIndex.compute();
     dag_.l0.DepthData.compute();
     dag_.l0.MidPrice.compute();
     dag_.l0.MicroPrice.compute();
     dag_.l0.Spread.compute();
-    dag_.l0.TradePrice.compute();
 
-    // 因子层
-    dag_.l0.VOI1.compute();
-    dag_.l0.VOI30.compute();
-    dag_.l0.OIR5.compute();
-    dag_.l0.OIR10.compute();
-    dag_.l0.SOIR5.compute();
-    dag_.l0.SOIR5s.compute();
-    dag_.l0.SOIR10s.compute();
-    dag_.l0.SOIR30s.compute();
-    dag_.l0.MPB.compute();
-    dag_.l0.MPC1.compute();
-    dag_.l0.MPC5.compute();
+    // --- CI: Cumulative Imbalance ---
+    dag_.l0.ci_1.compute();
+    dag_.l0.ci_5.compute();
+    dag_.l0.ci_10.compute();
+    dag_.l0.ci_30.compute();
+    dag_.l0.ci_all.compute();
 
-    // 写入缓冲区 (用 L0_FieldOffset 索引, 顺序任意)
-    ts_features_buffer_[L0_FieldOffset::voi1] = dag_.l0.VOI1_.back();
-    ts_features_buffer_[L0_FieldOffset::voi30] = dag_.l0.VOI30_.back();
-    ts_features_buffer_[L0_FieldOffset::oir5] = dag_.l0.OIR5_.back();
-    ts_features_buffer_[L0_FieldOffset::oir10] = dag_.l0.OIR10_.back();
-    ts_features_buffer_[L0_FieldOffset::soir5] = dag_.l0.SOIR5_.back();
-    ts_features_buffer_[L0_FieldOffset::soir5s] = dag_.l0.SOIR5s_.back();
-    ts_features_buffer_[L0_FieldOffset::soir10s] = dag_.l0.SOIR10s_.back();
-    ts_features_buffer_[L0_FieldOffset::soir30s] = dag_.l0.SOIR30s_.back();
-    ts_features_buffer_[L0_FieldOffset::mpb] = dag_.l0.MPB_.back();
-    ts_features_buffer_[L0_FieldOffset::mpc1] = dag_.l0.MPC1_.back();
-    ts_features_buffer_[L0_FieldOffset::mpc5] = dag_.l0.MPC5_.back();
-    ts_features_buffer_[L0_FieldOffset::mpc5_max] = dag_.l0.MPC5_Max_.back();
-    ts_features_buffer_[L0_FieldOffset::mpc5_skew] = dag_.l0.MPC5_Skew_.back();
+    // --- CWI: Convexity-Weighted Imbalance ---
+    dag_.l0.cwi_1.compute();
+    dag_.l0.cwi_2.compute();
+
+    // --- DDI: Distance-Discounted Imbalance ---
+    dag_.l0.ddi_1.compute();
+    dag_.l0.ddi_2.compute();
+
+    // --- TLR: Top Level Ratio ---
+    dag_.l0.tbr_5.compute();
+    dag_.l0.tar_5.compute();
+
+    // --- PARA: Parabola Fit (Layer 1: 买卖两侧) ---
+    dag_.l0.b_para_c0.compute();
+    dag_.l0.b_para_c1.compute();
+    dag_.l0.b_para_c2.compute();
+    dag_.l0.a_para_c0.compute();
+    dag_.l0.a_para_c1.compute();
+    dag_.l0.a_para_c2.compute();
+    // --- PARA: Parabola Fit (Layer 2: 失衡) ---
+    dag_.l0.imba_para_c0.compute();
+    dag_.l0.imba_para_c1.compute();
+    dag_.l0.imba_para_c2.compute();
+
+    // --- GRAD: Gradient (Layer 1) ---
+    dag_.l0.b_5_c1.compute();
+    dag_.l0.a_5_c1.compute();
+    // --- GRAD: Gradient (Layer 2: 失衡) ---
+    dag_.l0.imba_5_c1.compute();
+
+    // --- ENTROPY: Shannon Entropy (Layer 1) ---
+    dag_.l0.b_5_entropy.compute();
+    dag_.l0.a_5_entropy.compute();
+    dag_.l0.b_30_entropy.compute();
+    dag_.l0.a_30_entropy.compute();
+    // --- ENTROPY: Shannon Entropy (Layer 2: 失衡) ---
+    dag_.l0.imba_5_entropy.compute();
+    dag_.l0.imba_30_entropy.compute();
+
+    // --- OFI: Order Flow Imbalance ---
+    dag_.l0.ofi_1.compute();
+    dag_.l0.ofi_5.compute();
+
+    // --- 写入缓冲区 (用 L0_FieldOffset 索引) ---
+    ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.ci_1_.back();
+    ts_features_buffer_[L0_FieldOffset::ci_5] = dag_.l0.ci_5_.back();
+    ts_features_buffer_[L0_FieldOffset::ci_10] = dag_.l0.ci_10_.back();
+    ts_features_buffer_[L0_FieldOffset::ci_30] = dag_.l0.ci_30_.back();
+    ts_features_buffer_[L0_FieldOffset::ci_all] = dag_.l0.ci_all_.back();
+    ts_features_buffer_[L0_FieldOffset::cwi_1] = dag_.l0.cwi_1_.back();
+    ts_features_buffer_[L0_FieldOffset::cwi_2] = dag_.l0.cwi_2_.back();
+    ts_features_buffer_[L0_FieldOffset::ddi_1] = dag_.l0.ddi_1_.back();
+    ts_features_buffer_[L0_FieldOffset::ddi_2] = dag_.l0.ddi_2_.back();
+    ts_features_buffer_[L0_FieldOffset::tbr_5] = dag_.l0.tbr_5_.back();
+    ts_features_buffer_[L0_FieldOffset::tar_5] = dag_.l0.tar_5_.back();
+    ts_features_buffer_[L0_FieldOffset::b_para_c0] = dag_.l0.b_para_c0_.back();
+    ts_features_buffer_[L0_FieldOffset::b_para_c1] = dag_.l0.b_para_c1_.back();
+    ts_features_buffer_[L0_FieldOffset::b_para_c2] = dag_.l0.b_para_c2_.back();
+    ts_features_buffer_[L0_FieldOffset::a_para_c0] = dag_.l0.a_para_c0_.back();
+    ts_features_buffer_[L0_FieldOffset::a_para_c1] = dag_.l0.a_para_c1_.back();
+    ts_features_buffer_[L0_FieldOffset::a_para_c2] = dag_.l0.a_para_c2_.back();
+    ts_features_buffer_[L0_FieldOffset::imba_para_c0] = dag_.l0.imba_para_c0_.back();
+    ts_features_buffer_[L0_FieldOffset::imba_para_c1] = dag_.l0.imba_para_c1_.back();
+    ts_features_buffer_[L0_FieldOffset::imba_para_c2] = dag_.l0.imba_para_c2_.back();
+    ts_features_buffer_[L0_FieldOffset::b_5_c1] = dag_.l0.b_5_c1_.back();
+    ts_features_buffer_[L0_FieldOffset::a_5_c1] = dag_.l0.a_5_c1_.back();
+    ts_features_buffer_[L0_FieldOffset::imba_5_c1] = dag_.l0.imba_5_c1_.back();
+    ts_features_buffer_[L0_FieldOffset::b_5_entropy] = dag_.l0.b_5_entropy_.back();
+    ts_features_buffer_[L0_FieldOffset::a_5_entropy] = dag_.l0.a_5_entropy_.back();
+    ts_features_buffer_[L0_FieldOffset::imba_5_entropy] = dag_.l0.imba_5_entropy_.back();
+    ts_features_buffer_[L0_FieldOffset::b_30_entropy] = dag_.l0.b_30_entropy_.back();
+    ts_features_buffer_[L0_FieldOffset::a_30_entropy] = dag_.l0.a_30_entropy_.back();
+    ts_features_buffer_[L0_FieldOffset::imba_30_entropy] = dag_.l0.imba_30_entropy_.back();
+    ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.ofi_1_.back();
+    ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.ofi_5_.back();
 
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
   }
 
   // Write TS features
-  TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::mpc5_skew, ts_features_buffer_.data(), worker_id_);
+  TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::imba_30_entropy, ts_features_buffer_.data(), worker_id_);
 
   // Write data validity flag (event-driven sparsity marker)
   TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);

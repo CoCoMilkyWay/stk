@@ -29,7 +29,9 @@ struct FeatureMetadata {
 // ============================================================================
 
 // Macro to expand LEVEL_X_FIELDS into FeatureMetadata array
-#define GENERATE_METADATA(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, psd, formula, name_en, name_cn, description) \
+// Note: Parameter order matches FeaturesDefine.hpp: ...psd, name_en, name_cn, description, formula
+//       But struct field order is: ...psd, formula, name_en, name_cn, description
+#define GENERATE_METADATA(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, psd, name_en, name_cn, description, formula) \
   {#code, width, L2::ValidType::valid_type, FeatureDataType::data_type, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, psd, formula, name_en, name_cn, description, 255},
 
 // Compile-time generated constexpr arrays

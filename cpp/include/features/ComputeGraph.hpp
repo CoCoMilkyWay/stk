@@ -3,20 +3,24 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 #include "features/FeaturesMinute/TS/MinuteIndex.hpp"
-#include "features/FeaturesTick/TS/DeltaT.hpp"
-#include "features/FeaturesTick/TS/DepthData.hpp"
-#include "features/FeaturesTick/TS/DepthIndex.hpp"
-#include "features/FeaturesTick/TS/MPB.hpp"
-#include "features/FeaturesTick/TS/MPC.hpp"
-#include "features/FeaturesTick/TS/MPCStat.hpp"
-#include "features/FeaturesTick/TS/MicroPrice.hpp"
-#include "features/FeaturesTick/TS/MidPrice.hpp"
-#include "features/FeaturesTick/TS/OIR.hpp"
-#include "features/FeaturesTick/TS/SOIR.hpp"
-#include "features/FeaturesTick/TS/Spread.hpp"
-#include "features/FeaturesTick/TS/TickIndex.hpp"
-#include "features/FeaturesTick/TS/TradePrice.hpp"
-#include "features/FeaturesTick/TS/VOI.hpp"
+// base
+#include "features/FeaturesTick/TS/base/DeltaT.hpp"
+#include "features/FeaturesTick/TS/base/DepthData.hpp"
+#include "features/FeaturesTick/TS/base/DepthIndex.hpp"
+#include "features/FeaturesTick/TS/base/MicroPrice.hpp"
+#include "features/FeaturesTick/TS/base/MidPrice.hpp"
+#include "features/FeaturesTick/TS/base/Spread.hpp"
+#include "features/FeaturesTick/TS/base/TickIndex.hpp"
+#include "features/FeaturesTick/TS/base/TradePrice.hpp"
+// features
+#include "features/FeaturesTick/TS/CI.hpp"
+#include "features/FeaturesTick/TS/CWI.hpp"
+#include "features/FeaturesTick/TS/DDI.hpp"
+#include "features/FeaturesTick/TS/ENTROPY.hpp"
+#include "features/FeaturesTick/TS/GRAD.hpp"
+#include "features/FeaturesTick/TS/OFI.hpp"
+#include "features/FeaturesTick/TS/PARA.hpp"
+#include "features/FeaturesTick/TS/TLR.hpp"
 #include <deque>
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
@@ -42,7 +46,7 @@ public:
     CBuffer<float, L2::BLEN> DeltaTCancel_;
     DeltaT DeltaT{td, DeltaTMaker_, DeltaTTaker_, DeltaTCancel_};
 
-    CBuffer<float, L2::BLEN> Sec_;       // 秒数 [0-59] (特征)
+    CBuffer<float, L2::BLEN> Sec_;       // 秒相位 [-1,1] (特征: sec)
     CBuffer<float, L2::BLEN> TickIndex_; // 原始tick索引 (供其他算子使用)
     TickIndex TickIndex{td, Sec_, TickIndex_};
 
@@ -76,39 +80,112 @@ public:
     MicroPrice MicroPrice{td, MicroPrice_};
     Spread Spread{BidPrice_[0], AskPrice_[0], Spread_};
 
-    // --- 因子 CBuffer ---
-    CBuffer<float, L2::BLEN> VOI1_;      // VOI 1档
-    CBuffer<float, L2::BLEN> VOI30_;     // VOI 30档加权 (线性衰减)
-    CBuffer<float, L2::BLEN> OIR5_;      // OIR 5档加权比率
-    CBuffer<float, L2::BLEN> OIR10_;     // OIR 10档加权
-    CBuffer<float, L2::BLEN> SOIR5_;     // SOIR 5档加权
-    CBuffer<float, L2::BLEN> SOIR5s_;    // SOIR 第5档单独 (研报:单档效果更好)
-    CBuffer<float, L2::BLEN> SOIR10s_;   // SOIR 第10档单独
-    CBuffer<float, L2::BLEN> SOIR30s_;   // SOIR 第30档单独 (深度信息)
-    CBuffer<float, L2::BLEN> MPC1_;      // 中间价变化率 lag=1
-    CBuffer<float, L2::BLEN> MPC5_;      // 中间价变化率 lag=5
-    CBuffer<float, L2::BLEN> MPC5_Max_;  // MPC5日内最大值 (IC -9.39%)
-    CBuffer<float, L2::BLEN> MPC5_Skew_; // MPC5日内偏度 (夏普3.07)
+    // -------------------------------------------------------------------------
+    // 特征 CBuffer (按 FeaturesDefine.hpp LEVEL_0_FIELDS 定义)
+    // -------------------------------------------------------------------------
 
-    // --- 因子算子 ---
-    VOI<1> VOI1{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI1_};
-    VOI<30> VOI30{BidPrice_, AskPrice_, BidAmt_, AskAmt_, VOI30_};
-    OIR<5> OIR5{BidAmt_, AskAmt_, OIR5_};
-    OIR<10> OIR10{BidAmt_, AskAmt_, OIR10_};
-    SOIR<5, false> SOIR5{BidAmt_, AskAmt_, SOIR5_};
-    SOIR<5, true> SOIR5s{BidAmt_, AskAmt_, SOIR5s_};
-    SOIR<10, true> SOIR10s{BidAmt_, AskAmt_, SOIR10s_};
-    SOIR<30, true> SOIR30s{BidAmt_, AskAmt_, SOIR30s_};
-    MPC<1> MPC1{MidPrice_, MPC1_};
-    MPCWithStats<5> MPC5{MidPrice_, MPC5_, MPC5_Max_, MPC5_Skew_};
+    // --- CI: Cumulative Imbalance ---
+    CBuffer<float, L2::BLEN> ci_1_;
+    CBuffer<float, L2::BLEN> ci_5_;
+    CBuffer<float, L2::BLEN> ci_10_;
+    CBuffer<float, L2::BLEN> ci_30_;
+    CBuffer<float, L2::BLEN> ci_all_;
+
+    // --- CWI: Convexity-Weighted Imbalance ---
+    CBuffer<float, L2::BLEN> cwi_1_; // γ=1
+    CBuffer<float, L2::BLEN> cwi_2_; // γ=2
+
+    // --- DDI: Distance-Discounted Imbalance ---
+    CBuffer<float, L2::BLEN> ddi_1_; // λ=0.01
+    CBuffer<float, L2::BLEN> ddi_2_; // λ=0.02
+
+    // --- TLR: Top Level Ratio ---
+    CBuffer<float, L2::BLEN> tbr_5_; // 买侧top5占比
+    CBuffer<float, L2::BLEN> tar_5_; // 卖侧top5占比
+
+    // --- PARA: Parabola Fit ---
+    CBuffer<float, L2::BLEN> b_para_c0_;
+    CBuffer<float, L2::BLEN> b_para_c1_;
+    CBuffer<float, L2::BLEN> b_para_c2_;
+    CBuffer<float, L2::BLEN> a_para_c0_;
+    CBuffer<float, L2::BLEN> a_para_c1_;
+    CBuffer<float, L2::BLEN> a_para_c2_;
+    CBuffer<float, L2::BLEN> imba_para_c0_;
+    CBuffer<float, L2::BLEN> imba_para_c1_;
+    CBuffer<float, L2::BLEN> imba_para_c2_;
+
+    // --- GRAD: Gradient ---
+    CBuffer<float, L2::BLEN> b_5_c1_;
+    CBuffer<float, L2::BLEN> a_5_c1_;
+    CBuffer<float, L2::BLEN> imba_5_c1_;
+
+    // --- ENTROPY: Shannon Entropy ---
+    CBuffer<float, L2::BLEN> b_5_entropy_;
+    CBuffer<float, L2::BLEN> a_5_entropy_;
+    CBuffer<float, L2::BLEN> imba_5_entropy_;
+    CBuffer<float, L2::BLEN> b_30_entropy_;
+    CBuffer<float, L2::BLEN> a_30_entropy_;
+    CBuffer<float, L2::BLEN> imba_30_entropy_;
+
+    // --- OFI: Order Flow Imbalance ---
+    CBuffer<float, L2::BLEN> ofi_1_;
+    CBuffer<float, L2::BLEN> ofi_5_;
 
     // -------------------------------------------------------------------------
     // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
     // -------------------------------------------------------------------------
     CBuffer<float, L2::BLEN> TradePrice_; // 成交价 (元单位)
-    CBuffer<float, L2::BLEN> MPB_;        // 市价偏离度
     TradePrice TradePrice{td, TradePrice_};
-    MPB MPB{MidPrice_, TradePrice_, MPB_};
+
+    // CI
+    CI<1> ci_1{BidQty_, AskQty_, ci_1_};
+    CI<5> ci_5{BidQty_, AskQty_, ci_5_};
+    CI<10> ci_10{BidQty_, AskQty_, ci_10_};
+    CI<30> ci_30{BidQty_, AskQty_, ci_30_};
+    CI<L2::LOB_DEPTH> ci_all{BidQty_, AskQty_, ci_all_};
+
+    // CWI
+    CWI<10> cwi_1{BidQty_, AskQty_, cwi_1_}; // γ=1.0
+    CWI<20> cwi_2{BidQty_, AskQty_, cwi_2_}; // γ=2.0
+
+    // DDI
+    DDI<1> ddi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, ddi_1_}; // λ=0.01
+    DDI<2> ddi_2{BidQty_, AskQty_, BidPrice_, AskPrice_, ddi_2_}; // λ=0.02
+
+    // TLR
+    TLR<5, true> tbr_5{BidQty_, AskQty_, tbr_5_};
+    TLR<5, false> tar_5{BidQty_, AskQty_, tar_5_};
+
+    // PARA (Layer 1: 买卖两侧抛物线拟合)
+    PARA<true, 0> b_para_c0{BidQty_, AskQty_, b_para_c0_};
+    PARA<true, 1> b_para_c1{BidQty_, AskQty_, b_para_c1_};
+    PARA<true, 2> b_para_c2{BidQty_, AskQty_, b_para_c2_};
+    PARA<false, 0> a_para_c0{BidQty_, AskQty_, a_para_c0_};
+    PARA<false, 1> a_para_c1{BidQty_, AskQty_, a_para_c1_};
+    PARA<false, 2> a_para_c2{BidQty_, AskQty_, a_para_c2_};
+    // PARA (Layer 2: 失衡，依赖Layer 1)
+    PARA_IMBA<0> imba_para_c0{b_para_c0_, a_para_c0_, imba_para_c0_};
+    PARA_IMBA<1> imba_para_c1{b_para_c1_, a_para_c1_, imba_para_c1_};
+    PARA_IMBA<2> imba_para_c2{b_para_c2_, a_para_c2_, imba_para_c2_};
+
+    // GRAD (Layer 1)
+    GRAD<5, true> b_5_c1{BidQty_, AskQty_, b_5_c1_};
+    GRAD<5, false> a_5_c1{BidQty_, AskQty_, a_5_c1_};
+    // GRAD (Layer 2)
+    GRAD_IMBA imba_5_c1{b_5_c1_, a_5_c1_, imba_5_c1_};
+
+    // ENTROPY (Layer 1)
+    ENTROPY<5, true> b_5_entropy{BidQty_, AskQty_, b_5_entropy_};
+    ENTROPY<5, false> a_5_entropy{BidQty_, AskQty_, a_5_entropy_};
+    ENTROPY<30, true> b_30_entropy{BidQty_, AskQty_, b_30_entropy_};
+    ENTROPY<30, false> a_30_entropy{BidQty_, AskQty_, a_30_entropy_};
+    // ENTROPY (Layer 2)
+    ENTROPY_IMBA imba_5_entropy{b_5_entropy_, a_5_entropy_, imba_5_entropy_};
+    ENTROPY_IMBA imba_30_entropy{b_30_entropy_, a_30_entropy_, imba_30_entropy_};
+
+    // OFI
+    OFI<1> ofi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_1_};
+    OFI<5> ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_5_};
 
     explicit L0(TickData &t) : td(t) {} // 构造函数 (只需初始化引用成员)
   };

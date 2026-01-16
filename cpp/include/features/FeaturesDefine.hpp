@@ -28,75 +28,124 @@
 // ============================================================================
 // LEVEL 0: Tick-level Features (秒级)
 // ============================================================================
-// Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, formula, name_en, name_cn, description)
+// Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, name_en, name_cn, description, formula)
+
+// 后处理算子:
+//| 方法                                     | 核心特点           | 适用场景          |
+//| -------------------------------------- | -------------- | ------------- |
+//| **tsfresh**                            | 广泛统计 + 自动筛选    | 小/中数据集，解释性要求高 |
+//| **catch22**                            | 22 个轻量统计特征     | 快速、基线、轻量      |
+//| **Kats (by Meta)**                     | 多工具集成 + 时间序列分析 | 预测 + 分析       |
+//| **tsai / sktime**                      | 深度学习 + 传统方法统一  | 预测性能最优场景      |
+//| **InceptionTime / T-CN / Transformer** | 自动深度表示学习       | 超大数据 & 模式复杂   |
+//
 
 #define LEVEL_0_FIELDS(X)\
-  /* ======== 时序特征 (Time-Series) ======== */\
-  X(sec,                1, DATA,  TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "100/00/00", R"(\sin(\frac{2\pi t}{60}))",                                               "Time Sec Phase",               "时间-秒相位",    "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好)")\
-  X(voi1,               1, DEPTH, TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "100/00/00", R"(\Delta V^B_1 - \Delta V^A_1)",                                           "Vol Order Imba 1-Level",       "订单失衡1档",    "对近端大单挂单(容易成交)非常敏感")\
-  X(voi30,              1, DEPTH, TS,   IMBALANCE,      RAW,        LOG_ZSCORE,  "100/00/00", R"(\sum_{i=1}^{30} w_i (\Delta V^B_i - \Delta V^A_i))",                     "Vol Order Imba 30-Level",      "订单失衡30档",   "对近端大单挂单(容易成交)非常敏感, 带深度线性衰减加权")\
-  X(oir5,               1, DEPTH, TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\frac{V^B - V^A}{V^B + V^A})",                                           "Order Imba Ratio 5-Level",     "失衡率5档",      "订单失衡率[-1,1]标准化")\
-  X(oir10,              1, DEPTH, TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\frac{\sum_{i=1}^{10}(V^B_i - V^A_i)}{\sum_{i=1}^{10}(V^B_i + V^A_i)})", "Order Imba Ratio 10-Level",    "失衡率10档",     "深度失衡率(研报:优于VOI)")\
-  X(soir5,              1, DEPTH, TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\frac{\sum w_i \cdot \mathrm{SOIR}_i}{\sum w_i})",                       "SOIR 5-Level Weighted",        "逐档失衡5档",    "逐档订单失衡率加权")\
-  X(soir5s,             1, DEPTH, TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_5)",                                                       "SOIR Level-5 Single",          "第5档失衡",      "研报:单档效果优于加权")\
-  X(soir10s,            1, DEPTH, TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_{10})",                                                    "SOIR Level-10 Single",         "第10档失衡",     "深层订单簿失衡")\
-  X(soir30s,            1, DEPTH, TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_{30})",                                                    "SOIR Level-30 Single",         "第30档失衡",     "最深层订单簿信号")\
-  X(mpb,                1, DEPTH, TS,   MICROSTRUCTURE, DEVIATION,  NONE,        "100/00/00", R"(P_{\mathrm{trade}} - P_{\mathrm{mid}})",                                 "Mid-Price Basis",              "市价偏离度",     "成交均价与中间价偏离(研报最佳)")\
-  X(mpc1,               1, DEPTH, TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\frac{M_t - M_{t-1}}{M_{t-1}})",                                         "MPC Lag-1",                    "中间价变化1",    "中间价短期变化率")\
-  X(mpc5,               1, DEPTH, TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\frac{M_t - M_{t-5}}{M_{t-5}})",                                         "MPC Lag-5",                    "中间价变化5",    "中间价中期变化率")\
-  X(mpc5_max,           1, DEPTH, TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\max_d(\mathrm{MPC5}_d))",                                               "MPC5 Daily Max",               "MPC5日最大",     "日内MPC5极值(IC -9.39%)")\
-  X(mpc5_skew,          1, DEPTH, TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\mathrm{skew}(\mathrm{MPC5}_d))",                                        "MPC5 Daily Skew",              "MPC5日偏度",     "日内MPC5偏度(夏普3.07)")\
+  /* SD - Structural Depth Features (深度结构特征) */\
+  X(ci_1,              1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Cumu Imba 1-Level",               "顶部1档失衡",          "顶部1档订单失衡率",                                    R"(\frac{V_{1,t}^{B} - V_{1,t}^{A}}{V_{1,t}^{B} + V_{1,t}^{A}})")\
+  X(ci_5,              1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Cumu Imba 5-Level",               "累计5档失衡",          "累计5档订单失衡率",                                    R"(\frac{\sum_{i=1}^{5}(V_{i,t}^{B} - V_{i,t}^{A})}{\sum_{i=1}^{5}(V_{i,t}^{B} + V_{i,t}^{A})})")\
+  X(ci_10,             1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Cumu Imba 10-Level",              "累计10档失衡",         "累计10档订单失衡率",                                   R"(\frac{\sum_{i=1}^{10}(V_{i,t}^{B} - V_{i,t}^{A})}{\sum_{i=1}^{10}(V_{i,t}^{B} + V_{i,t}^{A})})")\
+  X(ci_30,             1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Cumu Imba 30-Level",              "累计30档失衡",         "累计30档订单失衡率",                                   R"(\frac{\sum_{i=1}^{30}(V_{i,t}^{B} - V_{i,t}^{A})}{\sum_{i=1}^{30}(V_{i,t}^{B} + V_{i,t}^{A})})")\
+  X(ci_all,            1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Cumu Imba All-Level",             "累计全档失衡",         "累计所有档订单失衡率(由逐笔得出, 或者交易所直接提供)",    R"(\frac{\sum_{i=1}^{\infty}(V_{i,t}^{B} - V_{i,t}^{A})}{\sum_{i=1}^{\infty}(V_{i,t}^{B} + V_{i,t}^{A})})")\
+  X(cwi_1,             1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Convexity-weighted Imb γ=1",      "凸加权失衡γ=1",        "考虑全量, 但是近端更高权重(按档位)",                    R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{B} - \sum_{i=1}^{N} w_i V_{i,t}^{A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{B} + V_{i,t}^{A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 1)")\
+  X(cwi_2,             1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Convexity-weighted Imb γ=2",      "凸加权失衡γ=2",        "考虑全量, 但是近端更高权重(按档位)",                    R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{B} - \sum_{i=1}^{N} w_i V_{i,t}^{A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{B} + V_{i,t}^{A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 2)")\
+  X(ddi_1,             1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Distance-discounted Imb λ=0.01",  "距离折扣失衡λ=0.01",   "考虑全量, 但是近端更高权重(按距离)",                    R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta p_{i,t}} (V_{i,t}^{\text{bid}} - V_{i,t}^{\text{ask}})}{\sum_{i=1}^{N} e^{-\lambda \Delta p_{i,t}} (V_{i,t}^{\text{bid}} + V_{i,t}^{\text{ask}})}, \quad \Delta p_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.01)")\
+  X(ddi_2,             1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Distance-discounted Imb λ=0.02",  "距离折扣失衡λ=0.02",   "考虑全量, 但是近端更高权重(按距离)",                    R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta p_{i,t}} (V_{i,t}^{\text{bid}} - V_{i,t}^{\text{ask}})}{\sum_{i=1}^{N} e^{-\lambda \Delta p_{i,t}} (V_{i,t}^{\text{bid}} + V_{i,t}^{\text{ask}})}, \quad \Delta p_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.02)")\
+  X(tbr_5,             1, DATA,  TS,   LIQUIDITY,  RATIO,      NONE,        "100/00/00", "Top 5-level Bid Ratio",           "前5档买单占比",        "买单侧是否容易被击穿",                                 R"(\frac{\sum_{i=1}^{N} V_{i,t}^{B}}{\sum_{i=1}^{\infty} V_{i,t}^{B}}, \quad N = 5)")\
+  X(tar_5,             1, DATA,  TS,   LIQUIDITY,  RATIO,      NONE,        "100/00/00", "Top 5-level Ask Ratio",           "前5档卖单占比",        "卖单侧是否容易被击穿",                                 R"(\frac{\sum_{i=1}^{N} V_{i,t}^{A}}{\sum_{i=1}^{\infty} V_{i,t}^{A}}, \quad N = 5)")\
+  X(b_para_c0,         1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Bid Depth Parabola c0",           "买侧抛物线截距",       "买侧近端流动性",                                      R"(c_{0,t}^{B}, \quad \text{where } V_{i,t}^{B} \sim c_{0,t}^{B} + c_{1,t}^{B} i + c_{2,t}^{B} i^2)")\
+  X(b_para_c1,         1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Bid Depth Parabola c1",           "买侧抛物线斜率",       "买方风偏(近端还是远端挂单)",                           R"(c_{1,t}^{B}, \quad \text{where } V_{i,t}^{B} \sim c_{0,t}^{B} + c_{1,t}^{B} i + c_{2,t}^{B} i^2)")\
+  X(b_para_c2,         1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Bid Depth Parabola c2",           "买侧抛物线曲率",       "<0:近端有订单块, 容易反转或突破; >0:做市类挂单",        R"(c_{2,t}^{B}, \quad \text{where } V_{i,t}^{B} \sim c_{0,t}^{B} + c_{1,t}^{B} i + c_{2,t}^{B} i^2)")\
+  X(a_para_c0,         1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Ask Depth Parabola c0",           "卖侧抛物线截距",       "卖侧近端流动性",                                      R"(c_{0,t}^{A}, \quad \text{where } V_{i,t}^{A} \sim c_{0,t}^{A} + c_{1,t}^{A} i + c_{2,t}^{A} i^2)")\
+  X(a_para_c1,         1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Ask Depth Parabola c1",           "卖侧抛物线斜率",       "卖方风偏(近端还是远端挂单)",                           R"(c_{1,t}^{A}, \quad \text{where } V_{i,t}^{A} \sim c_{0,t}^{A} + c_{1,t}^{A} i + c_{2,t}^{A} i^2)")\
+  X(a_para_c2,         1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Ask Depth Parabola c2",           "卖侧抛物线曲率",       "<0:近端有订单块, 容易反转或突破; >0:做市类挂单",        R"(c_{2,t}^{A}, \quad \text{where } V_{i,t}^{A} \sim c_{0,t}^{A} + c_{1,t}^{A} i + c_{2,t}^{A} i^2)")\
+  X(imba_para_c0,      1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Bid Depth Parabola c0",           "买卖抛物线截距失衡",    "对比买卖近端流动性",                                  R"(\frac{c_{0,t}^{B} - c_{0,t}^{A}}{c_{0,t}^{B} + c_{0,t}^{A}}, \quad V_{i,t}^{\{B,A\}} \sim c_{0,t}^{\{B,A\}} + c_{1,t}^{\{B,A\}} i + c_{2,t}^{\{B,A\}} i^2)")\
+  X(imba_para_c1,      1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Bid Depth Parabola c1",           "买卖抛物线斜率失衡",    "对比买卖风偏",                                        R"(\frac{c_{1,t}^{B} - c_{1,t}^{A}}{c_{1,t}^{B} + c_{1,t}^{A}}, \quad V_{i,t}^{\{B,A\}} \sim c_{0,t}^{\{B,A\}} + c_{1,t}^{\{B,A\}} i + c_{2,t}^{\{B,A\}} i^2)")\
+  X(imba_para_c2,      1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Bid Depth Parabola c2",           "买卖抛物线曲率失衡",    "对比买卖订单块距离",                                  R"(\frac{c_{2,t}^{B} - c_{2,t}^{A}}{c_{2,t}^{B} + c_{2,t}^{A}}, \quad V_{i,t}^{\{B,A\}} \sim c_{0,t}^{\{B,A\}} + c_{1,t}^{\{B,A\}} i + c_{2,t}^{\{B,A\}} i^2)")\
+  X(b_5_c1,            1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Top 5-level Bid Grad",            "买侧五档梯度",          "买侧梯度(近端斜率)",                                 R"(\frac{1}{N-1}\sum_{i=1}^{N-1}(V_{i+1,t}^{B} - V_{i,t}^{B}), \quad N = 5)")\
+  X(a_5_c1,            1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Top 5-level Ask Grad",            "卖侧五档梯度",          "卖侧梯度(近端斜率)",                                 R"(\frac{1}{N-1}\sum_{i=1}^{N-1}(V_{i+1,t}^{A} - V_{i,t}^{A}), \quad N = 5)")\
+  X(imba_5_c1,         1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Top 5-level Grad Ratio",          "买卖五档梯度失衡",       "买卖五档梯度(近端斜率)失衡",                         R"(\frac{\sum_{i=1}^{N-1}(V_{i+1,t}^{B} - V_{i,t}^{B}) - \sum_{i=1}^{N-1}(V_{i+1,t}^{A} - V_{i,t}^{A})}{\sum_{i=1}^{N-1}(V_{i+1,t}^{B} - V_{i,t}^{B}) + \sum_{i=1}^{N-1}(V_{i+1,t}^{A} - V_{i,t}^{A})}, \quad N = 5)")\
+  X(b_5_entropy,       1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Top 5-level Bid ShannonEntropy",   "买侧五档香农熵",        "0:极端集中; ln(N):极端均匀",                        R"(-\sum_{i=1}^{N} \pi_{i,t}^{B} \log(\pi_{i,t}^{B}), \quad \pi_{i,t}^{B} = \frac{V_{i,t}^{B}}{\sum_{j=1}^{N} V_{j,t}^{B}}, \quad N = 5)")\
+  X(a_5_entropy,       1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Top 5-level Ask ShannonEntropy",   "卖侧五档香农熵",        "0:极端集中; ln(N):极端均匀",                        R"(-\sum_{i=1}^{N} \pi_{i,t}^{A} \log(\pi_{i,t}^{A}), \quad \pi_{i,t}^{A} = \frac{V_{i,t}^{A}}{\sum_{j=1}^{N} V_{j,t}^{A}}, \quad N = 5)")\
+  X(imba_5_entropy,    1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Top 5-level Entropy Imba",         "五档香农熵失衡",        "五档香农熵失衡",                                    R"(\frac{H_{t}^{B} - H_{t}^{A}}{H_{t}^{B} + H_{t}^{A}}, \quad H_{t}^{\{B,A\}} = -\sum_{i=1}^{N} \pi_{i,t}^{\{B,A\}} \log(\pi_{i,t}^{\{B,A\}}), \pi_{i,t}^{\{B,A\}} = \frac{V_{i,t}^{\{B,A\}}}{\sum_{j=1}^{N} V_{j,t}^{\{B,A\}}}, N = 5)")\
+  X(b_30_entropy,      1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Top 30-level Bid ShannonEntropy",  "买侧三十档香农熵",      "0:极端集中; ln(N):极端均匀",                        R"(-\sum_{i=1}^{N} \pi_{i,t}^{B} \log(\pi_{i,t}^{B}), \quad \pi_{i,t}^{B} = \frac{V_{i,t}^{B}}{\sum_{j=1}^{N} V_{j,t}^{B}}, \quad N = 30)")\
+  X(a_30_entropy,      1, DATA,  TS,   SHAPE,      RAW,        NONE,        "100/00/00", "Top 30-level Ask ShannonEntropy",  "卖侧三十档香农熵",      "0:极端集中; ln(N):极端均匀",                        R"(-\sum_{i=1}^{N} \pi_{i,t}^{A} \log(\pi_{i,t}^{A}), \quad \pi_{i,t}^{A} = \frac{V_{i,t}^{A}}{\sum_{j=1}^{N} V_{j,t}^{A}}, \quad N = 30)")\
+  X(imba_30_entropy,   1, DATA,  TS,   IMBALANCE,  RATIO,      NONE,        "100/00/00", "Top 5-level Entropy Imba",         "五档香农熵失衡",        "五档香农熵失衡",                                    R"(\frac{H_{t}^{B} - H_{t}^{A}}{H_{t}^{B} + H_{t}^{A}}, \quad H_{t}^{\{B,A\}} = -\sum_{i=1}^{N} \pi_{i,t}^{\{B,A\}} \log(\pi_{i,t}^{\{B,A\}}), \pi_{i,t}^{\{B,A\}} = \frac{V_{i,t}^{\{B,A\}}}{\sum_{j=1}^{N} V_{j,t}^{\{B,A\}}}, N = 30)")\
+  /* DF - Dynamic Order Flow Features (订单流动态特征) */\
+  X(ofi_1,             1, DATA,  TS,   ORDER_FLOW, RAW,        NONE,        "100/00/00", "Order Flow Imba 1-Level",          "订单流失衡1档",         "对近端大单挂单变动非常敏感",                         R"(\Delta V_{1,t}^B - \Delta V_{1,t}^A, \quad \Delta V_{1,t}^B = \begin{cases}0, & p_{1,t}^B < p_{1,t-1}^B \\ V_{1,t}^B - V_{1,t-1}^B, & p_{1,t}^B = p_{1,t-1}^B \\ V_{1,t}^B, & p_{1,t}^B > p_{1,t-1}^B \end{cases}, \quad \Delta V_{1,t}^A = \begin{cases}V_{1,t}^A, & p_{1,t}^A < p_{1,t-1}^A \\ V_{1,t}^A - V_{1,t-1}^A, & p_{1,t}^A = p_{1,t-1}^A \\ 0, & p_{1,t}^A > p_{1,t-1}^A \end{cases})")\
+  X(ofi_5,             1, DATA,  TS,   ORDER_FLOW, RAW,        NONE,        "100/00/00", "Order Flow Imba 5-Level",          "订单流失衡5档加权",      "监控5档挂单变化",                                  R"(\Delta V_t^{WB} - \Delta V_t^{WA}, \quad V_t^{WB} = \frac{\sum_{i=1}^N w_i V_{i,t}^B}{\sum_{i=1}^N w_i}, \quad V_t^{WA} = \frac{\sum_{i=1}^N w_i V_{i,t}^A}{\sum_{i=1}^N w_i}, \quad w_i = 1 - \frac{i-1}{N}, \quad N = 5)")\
+  /* BH - Behavioral & Strategic Features (行为与策略特征) */\
+  /* CD - Clustering & Dependency Features (事件聚集与依赖特征) */\
+  /* RS - Resiliency & Replenishment Features (韧性与恢复特征) */\
+  /* IC - Impact & Liquidity Cost Features (价格冲击与流动性成本特征) */\
+  /* AN - Anomaly & Structural Outlier Features (异常与结构失衡特征) */\
+  /* OT - others (其他特征) */\
+  X(sec,                1, DATA,  TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "100/00/00", "Time Sec Phase",               "时间-秒相位",    "用于和同级别以上特征做因子组合",                      R"(\sin(\frac{2\pi t}{60}))")\
   /* ======== 截面特征 (Cross-sectional) ======== */\
-  X(cs_spread_rank,     1, DATA,  CS,   LIQUIDITY,      RANK,       RANK_ZSCORE, "100/00/00", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))",                             "CS Spread Rank",               "价差截面排名",   "spread截面rank→inverse normal")\
-  X(cs_tobi_rank,       1, DATA,  CS,   IMBALANCE,      RANK,       RANK_ZSCORE, "100/00/00", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{tobi})))",                               "CS TOBI Rank",                 "失衡截面排名",   "tobi截面rank→inverse normal")\
-  X(cs_liquidity_ratio, 1, DATA,  CS,   LIQUIDITY,      RATIO,      ZSCORE,      "100/00/00", R"(\frac{\mathrm{top\_size}/\mathrm{median}}{z})",                          "CS Liquidity Ratio",           "流动性比率截面", "top-of-book size截面z-score")\
+  X(cs_spread_rank,     1, DATA,  CS,   LIQUIDITY,      RANK,       RANK_ZSCORE, "100/00/00", "CS Spread Rank",               "价差截面排名",   "spread截面rank→inverse normal",                       R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))")\
+  X(cs_tobi_rank,       1, DATA,  CS,   IMBALANCE,      RANK,       RANK_ZSCORE, "100/00/00", "CS TOBI Rank",                 "失衡截面排名",   "tobi截面rank→inverse normal",                         R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{tobi})))")\
+  X(cs_liquidity_ratio, 1, DATA,  CS,   LIQUIDITY,      RATIO,      ZSCORE,      "100/00/00", "CS Liquidity Ratio",           "流动性比率截面", "top-of-book size截面z-score",                         R"(\frac{\mathrm{top\_size}/\mathrm{median}}{z})")\
   /* ======== 标签 (Labels) ======== */\
-  X(next_tick_ret,      1, DATA,  LB,   LABEL,          FUTURE_RET, NONE,        "100/00/00", R"(\log\frac{\mathrm{mid}_{t+1}}{\mathrm{mid}_t})",                         "Next Tick Return",             "下tick收益",     "下一tick对数收益")\
-  X(next_5tick_ret,     1, DATA,  LB,   LABEL,          FUTURE_RET, NONE,        "100/00/00", R"(\log\frac{\mathrm{mid}_{t+5}}{\mathrm{mid}_t})",                         "Next 5-Tick Return",           "未来5tick收益",  "未来5tick累计对数收益")\
+  X(next_tick_ret,      1, DATA,  LB,   LABEL,          FUTURE_RET, NONE,        "100/00/00", "Next Tick Return",             "下tick收益",     "下一tick对数收益",                                    R"(\log\frac{\mathrm{mid}_{t+1}}{\mathrm{mid}_t})")\
+  X(next_5tick_ret,     1, DATA,  LB,   LABEL,          FUTURE_RET, NONE,        "100/00/00", "Next 5-Tick Return",           "未来5tick收益",  "未来5tick累计对数收益",                               R"(\log\frac{\mathrm{mid}_{t+5}}{\mathrm{mid}_t})")\
   /* ======== 元数据 (Metadata) ======== */\
-  X(universe_size,      1, DATA,  SH,   META,           UNIVERSE,   NONE,        "100/00/00", R"(\#(\mathrm{valid}))",                                                    "Universe Size",                "全域规模",       "当前有效合约数量")\
-  X(_link_to_L1,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", R"(\mathrm{idx}_{L1})",                                                     "Link to L1",                   "L1时间索引",     "L0→L1时间映射")\
-  X(_depth_valid,       1, ALL,   META, META,           RAW,        NONE,        "100/00/00", R"(\mathbf{1}_{\mathrm{valid}})",                                           "Depth Valid Flag",             "深度有效标志",   "LOB深度缓冲区完整性标记")\
-  X(_data_valid,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", R"(\mathbf{1}_{\mathrm{valid}})",                                           "Data Valid Flag",              "数据有效标志",   "事件驱动稀疏性标记")\
+  X(universe_size,      1, DATA,  SH,   META,           UNIVERSE,   NONE,        "100/00/00", "Universe Size",                "全域规模",       "当前有效合约数量",                                    R"(\#(\mathrm{valid}))")\
+  X(_link_to_L1,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", "Link to L1",                   "L1时间索引",     "L0→L1时间映射",                                       R"(\mathrm{idx}_{L1})")\
+  X(_depth_valid,       1, ALL,   META, META,           RAW,        NONE,        "100/00/00", "Depth Valid Flag",             "深度有效标志",   "LOB深度缓冲区完整性标记",                             R"(\mathbf{1}_{\mathrm{valid}})")\
+  X(_data_valid,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", "Data Valid Flag",              "数据有效标志",   "事件驱动稀疏性标记",                                  R"(\mathbf{1}_{\mathrm{valid}})")\
+
+
+// 
+// /* ======== 时序特征 (Time-Series) ======== */\
+// X(soir5,              1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\frac{\sum w_i \cdot \mathrm{SOIR}_i}{\sum w_i})",                       "SOIR 5-Level Weighted",        "逐档失衡5档",    "逐档订单失衡率加权")\
+// X(soir5s,             1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_5)",                                                       "SOIR Level-5 Single",          "第5档失衡",      "研报:单档效果优于加权")\
+// X(soir10s,            1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_{10})",                                                    "SOIR Level-10 Single",         "第10档失衡",     "深层订单簿失衡")\
+// X(soir30s,            1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_{30})",                                                    "SOIR Level-30 Single",         "第30档失衡",     "最深层订单簿信号")\
+// X(mpb,                1, DATA,  TS,   MICROSTRUCTURE, DEVIATION,  NONE,        "100/00/00", R"(P_{\mathrm{trade}} - P_{\mathrm{mid}})",                                 "Mid-Price Basis",              "市价偏离度",     "成交均价与中间价偏离(研报最佳)")\
+// X(mpc1,               1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\frac{M_t - M_{t-1}}{M_{t-1}})",                                         "MPC Lag-1",                    "中间价变化1",    "中间价短期变化率")\
+// X(mpc5,               1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\frac{M_t - M_{t-5}}{M_{t-5}})",                                         "MPC Lag-5",                    "中间价变化5",    "中间价中期变化率")\
+// X(mpc5_max,           1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\max_d(\mathrm{MPC5}_d))",                                               "MPC5 Daily Max",               "MPC5日最大",     "日内MPC5极值(IC -9.39%)")\
+// X(mpc5_skew,          1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\mathrm{skew}(\mathrm{MPC5}_d))",                                        "MPC5 Daily Skew",              "MPC5日偏度",     "日内MPC5偏度(夏普3.07)")\
+// X(ci_1,              1, DATA,  TS,   ORDERFLOW,  RATIO,      NONE,        "100/00/00", "Hidden-liquidity–adjusted imbalance ", "潜在流动性失衡",          "预测后续时刻的失衡(按照refill/cancel rate)",                                    R"(\frac{V_{1,t}^{B} - V_{1,t}^{A}}{V_{1,t}^{B} + V_{1,t}^{A}})")\
 
 // ============================================================================
 // LEVEL 1: Minute-level Features (分钟级)
 // ============================================================================
 
 #define LEVEL_1_FIELDS(X)\
-  X(min,                1, DATA, TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "00/100/00", R"(\sin(\frac{2\pi t}{60}))",                             "Time Min Phase",              "时间-分钟相位",  "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好")\
-  X(min_ret_z,          1, DATA, TS,   MOMENTUM,       NORMALIZED, WINSOR,      "00/100/00", R"(\frac{r - \mu}{\sigma})",                              "Minute Return Z-score",       "分钟收益",       "分钟对数收益标准化")\
-  X(rv_5m_norm,         1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/100/00", R"(\log(\sigma_{5m}))",                                   "Realized Vol 5m",             "5分钟波动率",    "5分钟波动率标准化")\
-  X(vwap_gap_pct,       1, DATA, TS,   PRICE,          DEVIATION,  ZSCORE,      "00/100/00", R"(\frac{c - \mathrm{vwap}}{\mathrm{vwap}})",             "VWAP Gap Percent",            "VWAP偏离",       "价格相对VWAP偏离")\
-  X(momentum_15m,       1, DATA, TS,   MOMENTUM,       OSCILLATOR, ZSCORE,      "00/100/00", R"(\frac{\sum r}{\sigma})",                               "Momentum 15m",                "15分钟动量",     "15分钟累计动量标准化")\
-  X(range_squeeze,      1, DATA, TS,   VOLATILITY,     RATIO,      CLIP,        "00/100/00", R"(\frac{H - L}{\sigma})",                                "Range Squeeze",               "Range收窄",      "盘面窄幅程度")\
-  X(cs_min_return_rank, 1, DATA, CS,   MOMENTUM,       RANK,       RANK_ZSCORE, "00/100/00", R"(\Phi^{-1}(\mathrm{pctl}(r)))",                         "CS Minute Return Rank",       "分钟收益截面",   "分钟收益截面rank")\
-  X(cs_min_volume_pct,  1, DATA, CS,   VOLUME,         RANK,       RANK_ZSCORE, "00/100/00", R"(\mathrm{pctl}(\log(\mathrm{vol})))",                   "CS Minute Volume Percentile", "分钟量能百分位", "分钟volume截面排名")\
-  X(cs_min_spread_z,    1, DATA, CS,   LIQUIDITY,      NORMALIZED, ZSCORE,      "00/100/00", R"(z(\mathrm{spread})_{\mathrm{cs}})",                    "CS Minute Spread Z-score",    "分钟价差截面",   "分钟spread截面z-score")\
-  X(next_1m_ret,        1, DATA, LB,   LABEL,          FUTURE_RET, NONE,        "00/100/00", R"(\log\frac{c_{t+1}}{c_t})",                             "Next 1-Minute Return",        "下1分钟收益",    "下一分钟对数收益")\
-  X(calmar_score,       1, DATA, LB,   LABEL,          SCORE,      NONE,        "00/100/00", R"(\frac{\mathrm{ret}}{\mathrm{maxDD}})",                 "Calmar Score",                "Calmar评分",     "年化收益/最大回撤")\
-  X(universe_size,      1, DATA, SH,   META,           UNIVERSE,   NONE,        "00/100/00", R"(\#(\mathrm{valid}))",                                  "Universe Size",               "全域规模",       "当前有效合约数量")\
-  X(market_return,      1, DATA, SH,   META,           BENCHMARK,  NONE,        "00/100/00", R"(\log\frac{\mathrm{mkt}_t}{\mathrm{mkt}_{t-1}})",       "Market Return",               "市场收益",       "市场基准收益率")\
-  X(_ohlc_open,         1, DATA, META, META,           RAW,        NONE,        "00/100/00", R"(O)",                                                   "OHLC Open",                   "开盘价",         "GUI:分钟开盘价(分)")\
-  X(_ohlc_high,         1, DATA, META, META,           RAW,        NONE,        "00/100/00", R"(H)",                                                   "OHLC High",                   "最高价",         "GUI:分钟最高价(分)")\
-  X(_ohlc_low,          1, DATA, META, META,           RAW,        NONE,        "00/100/00", R"(L)",                                                   "OHLC Low",                    "最低价",         "GUI:分钟最低价(分)")\
-  X(_ohlc_close,        1, DATA, META, META,           RAW,        NONE,        "00/100/00", R"(C)",                                                   "OHLC Close",                  "收盘价",         "GUI:分钟收盘价(分)")\
-  X(_ohlc_volume,       1, DATA, META, META,           RAW,        NONE,        "00/100/00", R"(V)",                                                   "OHLC Volume",                 "成交量",         "GUI:分钟成交量")\
-  X(_data_valid,        1, ALL,  META, META,           RAW,        NONE,        "00/100/00", R"(\mathbf{1}_{\mathrm{valid}})",                         "Data Valid Flag",             "数据有效标志",   "事件驱动稀疏性标记")
+  X(min,                1, DATA, TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "00/100/00", "Time Min Phase",              "时间-分钟相位",  "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好", R"(\sin(\frac{2\pi t}{60}))")\
+  X(min_ret_z,          1, DATA, TS,   MOMENTUM,       NORMALIZED, WINSOR,      "00/100/00", "Minute Return Z-score",       "分钟收益",       "分钟对数收益标准化",                                                         R"(\frac{r - \mu}{\sigma})")\
+  X(rv_5m_norm,         1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/100/00", "Realized Vol 5m",             "5分钟波动率",    "5分钟波动率标准化",                                                           R"(\log(\sigma_{5m}))")\
+  X(vwap_gap_pct,       1, DATA, TS,   MICROSTRUCTURE, DEVIATION,  ZSCORE,      "00/100/00", "VWAP Gap Percent",            "VWAP偏离",       "价格相对VWAP偏离",                                                            R"(\frac{c - \mathrm{vwap}}{\mathrm{vwap}})")\
+  X(momentum_15m,       1, DATA, TS,   MOMENTUM,       OSCILLATOR, ZSCORE,      "00/100/00", "Momentum 15m",                "15分钟动量",     "15分钟累计动量标准化",                                                        R"(\frac{\sum r}{\sigma})")\
+  X(range_squeeze,      1, DATA, TS,   VOLATILITY,     RATIO,      CLIP,        "00/100/00", "Range Squeeze",               "Range收窄",      "盘面窄幅程度",                                                                R"(\frac{H - L}{\sigma})")\
+  X(cs_min_return_rank, 1, DATA, CS,   MOMENTUM,       RANK,       RANK_ZSCORE, "00/100/00", "CS Minute Return Rank",       "分钟收益截面",   "分钟收益截面rank",                                                            R"(\Phi^{-1}(\mathrm{pctl}(r)))")\
+  X(cs_min_volume_pct,  1, DATA, CS,   LIQUIDITY,      RANK,       RANK_ZSCORE, "00/100/00", "CS Minute Volume Percentile", "分钟量能百分位", "分钟volume截面排名",                                                          R"(\mathrm{pctl}(\log(\mathrm{vol})))")\
+  X(cs_min_spread_z,    1, DATA, CS,   LIQUIDITY,      NORMALIZED, ZSCORE,      "00/100/00", "CS Minute Spread Z-score",    "分钟价差截面",   "分钟spread截面z-score",                                                       R"(z(\mathrm{spread})_{\mathrm{cs}})")\
+  X(next_1m_ret,        1, DATA, LB,   LABEL,          FUTURE_RET, NONE,        "00/100/00", "Next 1-Minute Return",        "下1分钟收益",    "下一分钟对数收益",                                                            R"(\log\frac{c_{t+1}}{c_t})")\
+  X(calmar_score,       1, DATA, LB,   LABEL,          SCORE,      NONE,        "00/100/00", "Calmar Score",                "Calmar评分",     "年化收益/最大回撤",                                                           R"(\frac{\mathrm{ret}}{\mathrm{maxDD}})")\
+  X(universe_size,      1, DATA, SH,   META,           UNIVERSE,   NONE,        "00/100/00", "Universe Size",               "全域规模",       "当前有效合约数量",                                                            R"(\#(\mathrm{valid}))")\
+  X(market_return,      1, DATA, SH,   META,           BENCHMARK,  NONE,        "00/100/00", "Market Return",               "市场收益",       "市场基准收益率",                                                              R"(\log\frac{\mathrm{mkt}_t}{\mathrm{mkt}_{t-1}})")\
+  X(_ohlc_open,         1, DATA, META, META,           RAW,        NONE,        "00/100/00", "OHLC Open",                   "开盘价",         "GUI:分钟开盘价(分)",                                                          R"(O)")\
+  X(_ohlc_high,         1, DATA, META, META,           RAW,        NONE,        "00/100/00", "OHLC High",                   "最高价",         "GUI:分钟最高价(分)",                                                          R"(H)")\
+  X(_ohlc_low,          1, DATA, META, META,           RAW,        NONE,        "00/100/00", "OHLC Low",                    "最低价",         "GUI:分钟最低价(分)",                                                          R"(L)")\
+  X(_ohlc_close,        1, DATA, META, META,           RAW,        NONE,        "00/100/00", "OHLC Close",                  "收盘价",         "GUI:分钟收盘价(分)",                                                          R"(C)")\
+  X(_ohlc_volume,       1, DATA, META, META,           RAW,        NONE,        "00/100/00", "OHLC Volume",                 "成交量",         "GUI:分钟成交量",                                                              R"(V)")\
+  X(_data_valid,        1, ALL,  META, META,           RAW,        NONE,        "00/100/00", "Data Valid Flag",             "数据有效标志",   "事件驱动稀疏性标记",                                                          R"(\mathbf{1}_{\mathrm{valid}})")
 
 // ============================================================================
 // DEPTH: LOB Snapshot Data (separate storage for orderflow visualization)
 // ============================================================================
-// Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, formula, name_en, name_cn, description)
+// Format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, name_en, name_cn, description, formula)
 
 #define DEPTH_FIELDS(X)\
-  X(_bid_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(P^B_{0:N})",                           "Bid Prices",        "买盘价格", "GUI:N档买盘价格(分)")\
-  X(_ask_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(P^A_{0:N})",                           "Ask Prices",        "卖盘价格", "GUI:N档卖盘价格(分)")\
-  X(_bid_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(V^B_{0:N})",                           "Bid Volumes",       "买盘量",   "GUI:N档买盘量(手,100股)")\
-  X(_ask_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", R"(V^A_{0:N})",                           "Ask Volumes",       "卖盘量",   "GUI:N档卖盘量(手,100股)")\
-  X(_mid_price,    1,             DEPTH, META, META, RAW, NONE, "00/00/00", R"(\frac{P^B_1 + P^A_1}{2})",             "Mid Price",         "中间价",   "GUI:实时中间价(分)")\
-  X(_depth_valid,  1,             ALL,   META, META, RAW, NONE, "00/00/00", R"(\mathbf{1}_{\mathrm{valid}_{depth}})", "Depth Valid Flag",  "深度有效", "LOB深度缓冲区完整性标记")\
-  X(_data_valid,   1,             ALL,   META, META, RAW, NONE, "00/00/00", R"(\mathbf{1}_{\mathrm{valid}_{data}})",  "Data Valid Flag",   "数据有效", "事件驱动稀疏性标记")
+  X(_bid_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", "Bid Prices",        "买盘价格", "GUI:N档买盘价格(分)",       R"(P^B_{0:N})")\
+  X(_ask_price,    L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", "Ask Prices",        "卖盘价格", "GUI:N档卖盘价格(分)",       R"(P^A_{0:N})")\
+  X(_bid_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", "Bid Volumes",       "买盘量",   "GUI:N档买盘量(手,100股)",   R"(V^B_{0:N})")\
+  X(_ask_volume,   L2::LOB_DEPTH, DEPTH, META, META, RAW, NONE, "00/00/00", "Ask Volumes",       "卖盘量",   "GUI:N档卖盘量(手,100股)",   R"(V^A_{0:N})")\
+  X(_mid_price,    1,             DEPTH, META, META, RAW, NONE, "00/00/00", "Mid Price",         "中间价",   "GUI:实时中间价(分)",        R"(\frac{P^B_1 + P^A_1}{2})")\
+  X(_depth_valid,  1,             ALL,   META, META, RAW, NONE, "00/00/00", "Depth Valid Flag",  "深度有效", "LOB深度缓冲区完整性标记",   R"(\mathbf{1}_{\mathrm{valid}_{depth}})")\
+  X(_data_valid,   1,             ALL,   META, META, RAW, NONE, "00/00/00", "Data Valid Flag",   "数据有效", "事件驱动稀疏性标记",        R"(\mathbf{1}_{\mathrm{valid}_{data}})")
 
 // clang-format on
 
@@ -115,15 +164,17 @@ enum class FeatureDataType : uint8_t {
 
 // Primary category
 enum class FeatureCategoryL1 : uint8_t {
-  PRICE = 0,          // 价格
-  VOLUME = 1,         // 量能
-  VOLATILITY = 2,     // 波动率
-  MOMENTUM = 3,       // 动量
-  LIQUIDITY = 4,      // 流动性
-  IMBALANCE = 5,      // 失衡
-  MICROSTRUCTURE = 6, // 微结构
-  LABEL = 7,          // 标签/目标
-  META = 8            // 元数据/共享变量
+  IMBALANCE = 0,      // 失衡
+  SHAPE = 1,          // 形状
+  ORDER_FLOW = 2,     // 订单流
+  BEHAVIORAL = 3,     // 行为
+  RESILIENCE = 4,     // 韧性
+  LIQUIDITY = 5,      // 流动性
+  VOLATILITY = 6,     // 波动率
+  MOMENTUM = 7,       // 动量
+  MICROSTRUCTURE = 8, // 微结构
+  LABEL = 9,          // 标签/目标
+  META = 10           // 元数据/共享变量
 };
 
 // Secondary category
@@ -407,18 +458,22 @@ inline constexpr const char *to_string(FeatureDataType type) {
 
 inline constexpr const char *to_string(FeatureCategoryL1 cat) {
   switch (cat) {
-  case FeatureCategoryL1::PRICE:
-    return "PRICE";
-  case FeatureCategoryL1::VOLUME:
-    return "VOLUME";
+  case FeatureCategoryL1::IMBALANCE:
+    return "IMBALANCE";
+  case FeatureCategoryL1::SHAPE:
+    return "SHAPE";
+  case FeatureCategoryL1::ORDER_FLOW:
+    return "ORDER_FLOW";
+  case FeatureCategoryL1::BEHAVIORAL:
+    return "BEHAVIORAL";
+  case FeatureCategoryL1::RESILIENCE:
+    return "RESILIENCE";
+  case FeatureCategoryL1::LIQUIDITY:
+    return "LIQUIDITY";
   case FeatureCategoryL1::VOLATILITY:
     return "VOLATILITY";
   case FeatureCategoryL1::MOMENTUM:
     return "MOMENTUM";
-  case FeatureCategoryL1::LIQUIDITY:
-    return "LIQUIDITY";
-  case FeatureCategoryL1::IMBALANCE:
-    return "IMBALANCE";
   case FeatureCategoryL1::MICROSTRUCTURE:
     return "MICROSTRUCTURE";
   case FeatureCategoryL1::LABEL:
