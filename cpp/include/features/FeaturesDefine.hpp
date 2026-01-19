@@ -75,13 +75,14 @@
   /* DF - Dynamic Order Flow Features (订单流动态特征) */\
   X(ofi_1,             1, DATA,  TS,   ORDER_FLOW, RAW,        NONE,        "100/00/00", "Order Flow Imba 1-Level",          "订单流失衡1档",         "对近端大单挂单变动非常敏感",                         R"(\Delta V_{1,t}^B - \Delta V_{1,t}^A, \quad \Delta V_{1,t}^B = \begin{cases}0, & p_{1,t}^B < p_{1,t-1}^B \\ V_{1,t}^B - V_{1,t-1}^B, & p_{1,t}^B = p_{1,t-1}^B \\ V_{1,t}^B, & p_{1,t}^B > p_{1,t-1}^B \end{cases}, \quad \Delta V_{1,t}^A = \begin{cases}V_{1,t}^A, & p_{1,t}^A < p_{1,t-1}^A \\ V_{1,t}^A - V_{1,t-1}^A, & p_{1,t}^A = p_{1,t-1}^A \\ 0, & p_{1,t}^A > p_{1,t-1}^A \end{cases})")\
   X(ofi_5,             1, DATA,  TS,   ORDER_FLOW, RAW,        NONE,        "100/00/00", "Order Flow Imba 5-Level",          "订单流失衡5档加权",      "监控5档挂单变化",                                  R"(\Delta V_t^{WB} - \Delta V_t^{WA}, \quad V_t^{WB} = \frac{\sum_{i=1}^N w_i V_{i,t}^B}{\sum_{i=1}^N w_i}, \quad V_t^{WA} = \frac{\sum_{i=1}^N w_i V_{i,t}^A}{\sum_{i=1}^N w_i}, \quad w_i = 1 - \frac{i-1}{N}, \quad N = 5)")\
+  /* X(ci_1,              1, DATA,  TS,   ORDERFLOW,  RATIO,      NONE,        "100/00/00", "Hidden-liquidity–adjusted imbalance ", "潜在流动性失衡",          "预测后续时刻的失衡(按照refill/cancel rate)",                                    R"(\frac{V_{1,t}^{B} - V_{1,t}^{A}}{V_{1,t}^{B} + V_{1,t}^{A}})") */\
   /* BH - Behavioral & Strategic Features (行为与策略特征) */\
   /* CD - Clustering & Dependency Features (事件聚集与依赖特征) */\
   /* RS - Resiliency & Replenishment Features (韧性与恢复特征) */\
   /* IC - Impact & Liquidity Cost Features (价格冲击与流动性成本特征) */\
   /* AN - Anomaly & Structural Outlier Features (异常与结构失衡特征) */\
   /* OT - others (其他特征) */\
-  X(sec,                1, DATA,  TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "100/00/00", "Time Sec Phase",               "时间-秒相位",    "用于和同级别以上特征做因子组合",                      R"(\sin(\frac{2\pi t}{60}))")\
+  X(sec,                1, DATA,  TS,   BASIC,          OSCILLATOR, SINCOS,      "100/00/00", "Time Sec Phase",               "时间-秒相位",    "用于和同级别以上特征做因子组合",                      R"(\sin(\frac{2\pi t}{60}))")\
   /* ======== 截面特征 (Cross-sectional) ======== */\
   X(cs_spread_rank,     1, DATA,  CS,   LIQUIDITY,      RANK,       RANK_ZSCORE, "100/00/00", "CS Spread Rank",               "价差截面排名",   "spread截面rank→inverse normal",                       R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))")\
   X(cs_tobi_rank,       1, DATA,  CS,   IMBALANCE,      RANK,       RANK_ZSCORE, "100/00/00", "CS TOBI Rank",                 "失衡截面排名",   "tobi截面rank→inverse normal",                         R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{tobi})))")\
@@ -95,32 +96,18 @@
   X(_depth_valid,       1, ALL,   META, META,           RAW,        NONE,        "100/00/00", "Depth Valid Flag",             "深度有效标志",   "LOB深度缓冲区完整性标记",                             R"(\mathbf{1}_{\mathrm{valid}})")\
   X(_data_valid,        1, ALL,   META, META,           RAW,        NONE,        "100/00/00", "Data Valid Flag",              "数据有效标志",   "事件驱动稀疏性标记",                                  R"(\mathbf{1}_{\mathrm{valid}})")\
 
-
-// 
-// /* ======== 时序特征 (Time-Series) ======== */\
-// X(soir5,              1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\frac{\sum w_i \cdot \mathrm{SOIR}_i}{\sum w_i})",                       "SOIR 5-Level Weighted",        "逐档失衡5档",    "逐档订单失衡率加权")\
-// X(soir5s,             1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_5)",                                                       "SOIR Level-5 Single",          "第5档失衡",      "研报:单档效果优于加权")\
-// X(soir10s,            1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_{10})",                                                    "SOIR Level-10 Single",         "第10档失衡",     "深层订单簿失衡")\
-// X(soir30s,            1, DATA,  TS,   IMBALANCE,      RATIO,      NONE,        "100/00/00", R"(\mathrm{SOIR}_{30})",                                                    "SOIR Level-30 Single",         "第30档失衡",     "最深层订单簿信号")\
-// X(mpb,                1, DATA,  TS,   MICROSTRUCTURE, DEVIATION,  NONE,        "100/00/00", R"(P_{\mathrm{trade}} - P_{\mathrm{mid}})",                                 "Mid-Price Basis",              "市价偏离度",     "成交均价与中间价偏离(研报最佳)")\
-// X(mpc1,               1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\frac{M_t - M_{t-1}}{M_{t-1}})",                                         "MPC Lag-1",                    "中间价变化1",    "中间价短期变化率")\
-// X(mpc5,               1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\frac{M_t - M_{t-5}}{M_{t-5}})",                                         "MPC Lag-5",                    "中间价变化5",    "中间价中期变化率")\
-// X(mpc5_max,           1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\max_d(\mathrm{MPC5}_d))",                                               "MPC5 Daily Max",               "MPC5日最大",     "日内MPC5极值(IC -9.39%)")\
-// X(mpc5_skew,          1, DATA,  TS,   MOMENTUM,       RAW,        NONE,        "100/00/00", R"(\mathrm{skew}(\mathrm{MPC5}_d))",                                        "MPC5 Daily Skew",              "MPC5日偏度",     "日内MPC5偏度(夏普3.07)")\
-// X(ci_1,              1, DATA,  TS,   ORDERFLOW,  RATIO,      NONE,        "100/00/00", "Hidden-liquidity–adjusted imbalance ", "潜在流动性失衡",          "预测后续时刻的失衡(按照refill/cancel rate)",                                    R"(\frac{V_{1,t}^{B} - V_{1,t}^{A}}{V_{1,t}^{B} + V_{1,t}^{A}})")\
-
 // ============================================================================
 // LEVEL 1: Minute-level Features (分钟级)
 // ============================================================================
 
 #define LEVEL_1_FIELDS(X)\
-  X(min,                1, DATA, TS,   MICROSTRUCTURE, OSCILLATOR, SINCOS,      "00/100/00", "Time Min Phase",              "时间-分钟相位",  "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好", R"(\sin(\frac{2\pi t}{60}))")\
-  X(min_ret_z,          1, DATA, TS,   MOMENTUM,       NORMALIZED, WINSOR,      "00/100/00", "Minute Return Z-score",       "分钟收益",       "分钟对数收益标准化",                                                         R"(\frac{r - \mu}{\sigma})")\
+  X(min,                1, DATA, TS,   BASIC,          OSCILLATOR, SINCOS,      "00/100/00", "Time Min Phase",              "时间-分钟相位",  "用于和同级别以上特征做因子组合(特征值和pdf连续可导, 频谱能量分布集中, 梯度友好", R"(\sin(\frac{2\pi t}{60}))")\
+  X(min_ret_z,          1, DATA, TS,   BASIC,          NORMALIZED, WINSOR,      "00/100/00", "Minute Return Z-score",       "分钟收益",       "分钟对数收益标准化",                                                         R"(\frac{r - \mu}{\sigma})")\
   X(rv_5m_norm,         1, DATA, TS,   VOLATILITY,     NORMALIZED, LOG_ZSCORE,  "00/100/00", "Realized Vol 5m",             "5分钟波动率",    "5分钟波动率标准化",                                                           R"(\log(\sigma_{5m}))")\
-  X(vwap_gap_pct,       1, DATA, TS,   MICROSTRUCTURE, DEVIATION,  ZSCORE,      "00/100/00", "VWAP Gap Percent",            "VWAP偏离",       "价格相对VWAP偏离",                                                            R"(\frac{c - \mathrm{vwap}}{\mathrm{vwap}})")\
-  X(momentum_15m,       1, DATA, TS,   MOMENTUM,       OSCILLATOR, ZSCORE,      "00/100/00", "Momentum 15m",                "15分钟动量",     "15分钟累计动量标准化",                                                        R"(\frac{\sum r}{\sigma})")\
+  X(vwap_gap_pct,       1, DATA, TS,   VOLATILITY,     DEVIATION,  ZSCORE,      "00/100/00", "VWAP Gap Percent",            "VWAP偏离",       "价格相对VWAP偏离",                                                            R"(\frac{c - \mathrm{vwap}}{\mathrm{vwap}})")\
+  X(momentum_15m,       1, DATA, TS,   BASIC,          OSCILLATOR, ZSCORE,      "00/100/00", "Momentum 15m",                "15分钟动量",     "15分钟累计动量标准化",                                                        R"(\frac{\sum r}{\sigma})")\
   X(range_squeeze,      1, DATA, TS,   VOLATILITY,     RATIO,      CLIP,        "00/100/00", "Range Squeeze",               "Range收窄",      "盘面窄幅程度",                                                                R"(\frac{H - L}{\sigma})")\
-  X(cs_min_return_rank, 1, DATA, CS,   MOMENTUM,       RANK,       RANK_ZSCORE, "00/100/00", "CS Minute Return Rank",       "分钟收益截面",   "分钟收益截面rank",                                                            R"(\Phi^{-1}(\mathrm{pctl}(r)))")\
+  X(cs_min_return_rank, 1, DATA, CS,   BASIC,          RANK,       RANK_ZSCORE, "00/100/00", "CS Minute Return Rank",       "分钟收益截面",   "分钟收益截面rank",                                                            R"(\Phi^{-1}(\mathrm{pctl}(r)))")\
   X(cs_min_volume_pct,  1, DATA, CS,   LIQUIDITY,      RANK,       RANK_ZSCORE, "00/100/00", "CS Minute Volume Percentile", "分钟量能百分位", "分钟volume截面排名",                                                          R"(\mathrm{pctl}(\log(\mathrm{vol})))")\
   X(cs_min_spread_z,    1, DATA, CS,   LIQUIDITY,      NORMALIZED, ZSCORE,      "00/100/00", "CS Minute Spread Z-score",    "分钟价差截面",   "分钟spread截面z-score",                                                       R"(z(\mathrm{spread})_{\mathrm{cs}})")\
   X(next_1m_ret,        1, DATA, LB,   LABEL,          FUTURE_RET, NONE,        "00/100/00", "Next 1-Minute Return",        "下1分钟收益",    "下一分钟对数收益",                                                            R"(\log\frac{c_{t+1}}{c_t})")\
@@ -172,10 +159,9 @@ enum class FeatureCategoryL1 : uint8_t {
   RESILIENCE = 4,     // 韧性
   LIQUIDITY = 5,      // 流动性
   VOLATILITY = 6,     // 波动率
-  MOMENTUM = 7,       // 动量
-  MICROSTRUCTURE = 8, // 微结构
-  LABEL = 9,          // 标签/目标
-  META = 10           // 元数据/共享变量
+  BASIC = 7,          // 基础
+  LABEL = 8,          // 标签/目标
+  META = 9            // 元数据/共享变量
 };
 
 // Secondary category
@@ -438,131 +424,79 @@ inline void format_time_hm(char *buf, size_t buf_size, const ClockTime &t) {
 }
 
 // ============================================================================
-// ENUM TO STRING MAPPINGS - For metadata query and serialization
+// ENUM TO STRING
 // ============================================================================
 
-inline constexpr const char *to_string(FeatureDataType type) {
-  switch (type) {
-  case FeatureDataType::TS:
-    return "TS";
-  case FeatureDataType::CS:
-    return "CS";
-  case FeatureDataType::LB:
-    return "LB";
-  case FeatureDataType::SH:
-    return "SH";
-  case FeatureDataType::META:
-    return "META";
-  }
-  return "UNKNOWN";
+struct EnumStr { const char *en; const char *cn; };
+
+inline constexpr EnumStr to_string(FeatureDataType t) {
+  switch (t) {
+  case FeatureDataType::TS:   return {"TS",   "时序"};
+  case FeatureDataType::CS:   return {"CS",   "截面"};
+  case FeatureDataType::LB:   return {"LB",   "标签"};
+  case FeatureDataType::SH:   return {"SH",   "共享"};
+  case FeatureDataType::META: return {"META", "元数据"};
+  } return {"?", "未知"};
 }
 
-inline constexpr const char *to_string(FeatureCategoryL1 cat) {
-  switch (cat) {
-  case FeatureCategoryL1::IMBALANCE:
-    return "IMBALANCE";
-  case FeatureCategoryL1::SHAPE:
-    return "SHAPE";
-  case FeatureCategoryL1::ORDER_FLOW:
-    return "ORDER_FLOW";
-  case FeatureCategoryL1::BEHAVIORAL:
-    return "BEHAVIORAL";
-  case FeatureCategoryL1::RESILIENCE:
-    return "RESILIENCE";
-  case FeatureCategoryL1::LIQUIDITY:
-    return "LIQUIDITY";
-  case FeatureCategoryL1::VOLATILITY:
-    return "VOLATILITY";
-  case FeatureCategoryL1::MOMENTUM:
-    return "MOMENTUM";
-  case FeatureCategoryL1::MICROSTRUCTURE:
-    return "MICROSTRUCTURE";
-  case FeatureCategoryL1::LABEL:
-    return "LABEL";
-  case FeatureCategoryL1::META:
-    return "META";
-  }
-  return "UNKNOWN";
+inline constexpr EnumStr to_string(FeatureCategoryL1 t) {
+  switch (t) {
+  case FeatureCategoryL1::IMBALANCE:  return {"IMBALANCE",  "失衡"};
+  case FeatureCategoryL1::SHAPE:      return {"SHAPE",      "形状"};
+  case FeatureCategoryL1::ORDER_FLOW: return {"ORDER_FLOW", "订单流"};
+  case FeatureCategoryL1::BEHAVIORAL: return {"BEHAVIORAL", "行为"};
+  case FeatureCategoryL1::RESILIENCE: return {"RESILIENCE", "韧性"};
+  case FeatureCategoryL1::LIQUIDITY:  return {"LIQUIDITY",  "流动性"};
+  case FeatureCategoryL1::VOLATILITY: return {"VOLATILITY", "波动率"};
+  case FeatureCategoryL1::BASIC:      return {"BASIC",      "基础"};
+  case FeatureCategoryL1::LABEL:      return {"LABEL",      "标签"};
+  case FeatureCategoryL1::META:       return {"META",       "元数据"};
+  } return {"?", "未知"};
 }
 
-inline constexpr const char *to_string(FeatureCategoryL2 cat) {
-  switch (cat) {
-  case FeatureCategoryL2::RAW:
-    return "RAW";
-  case FeatureCategoryL2::NORMALIZED:
-    return "NORMALIZED";
-  case FeatureCategoryL2::OSCILLATOR:
-    return "OSCILLATOR";
-  case FeatureCategoryL2::DEVIATION:
-    return "DEVIATION";
-  case FeatureCategoryL2::RATIO:
-    return "RATIO";
-  case FeatureCategoryL2::RANK:
-    return "RANK";
-  case FeatureCategoryL2::FUTURE_RET:
-    return "FUTURE_RET";
-  case FeatureCategoryL2::SCORE:
-    return "SCORE";
-  case FeatureCategoryL2::UNIVERSE:
-    return "UNIVERSE";
-  case FeatureCategoryL2::BENCHMARK:
-    return "BENCHMARK";
-  }
-  return "UNKNOWN";
+inline constexpr EnumStr to_string(FeatureCategoryL2 t) {
+  switch (t) {
+  case FeatureCategoryL2::RAW:        return {"RAW",        "原始"};
+  case FeatureCategoryL2::NORMALIZED: return {"NORMALIZED", "标准化"};
+  case FeatureCategoryL2::OSCILLATOR: return {"OSCILLATOR", "震荡器"};
+  case FeatureCategoryL2::DEVIATION:  return {"DEVIATION",  "偏离"};
+  case FeatureCategoryL2::RATIO:      return {"RATIO",      "比率"};
+  case FeatureCategoryL2::RANK:       return {"RANK",       "排名"};
+  case FeatureCategoryL2::FUTURE_RET: return {"FUTURE_RET", "未来收益"};
+  case FeatureCategoryL2::SCORE:      return {"SCORE",      "评分"};
+  case FeatureCategoryL2::UNIVERSE:   return {"UNIVERSE",   "全域统计"};
+  case FeatureCategoryL2::BENCHMARK:  return {"BENCHMARK",  "基准"};
+  } return {"?", "未知"};
 }
 
-inline constexpr const char *to_string(NormMethod method) {
-  switch (method) {
-  case NormMethod::NONE:
-    return "NONE";
-  case NormMethod::ZSCORE:
-    return "ZSCORE";
-  case NormMethod::ROBUST_ZSCORE:
-    return "ROBUST_ZSCORE";
-  case NormMethod::IQR_ZSCORE:
-    return "IQR_ZSCORE";
-  case NormMethod::RANK:
-    return "RANK";
-  case NormMethod::RANK_ZSCORE:
-    return "RANK_ZSCORE";
-  case NormMethod::CLIP:
-    return "CLIP";
-  case NormMethod::WINSOR:
-    return "WINSOR";
-  case NormMethod::LOG:
-    return "LOG";
-  case NormMethod::POWER:
-    return "POWER";
-  case NormMethod::ASINH:
-    return "ASINH";
-  case NormMethod::TANH:
-    return "TANH";
-  case NormMethod::SINCOS:
-    return "SINCOS";
-  case NormMethod::LOG_ZSCORE:
-    return "LOG_ZSCORE";
-  case NormMethod::POWER_ZSCORE:
-    return "POWER_ZSCORE";
-  case NormMethod::ASINH_ZSCORE:
-    return "ASINH_ZSCORE";
-  case NormMethod::CLIP_ZSCORE:
-    return "CLIP_ZSCORE";
-  case NormMethod::WINSOR_ZSCORE:
-    return "WINSOR_ZSCORE";
-  case NormMethod::CLIP_LOG_ZSCORE:
-    return "CLIP_LOG_ZSCORE";
-  }
-  return "UNKNOWN";
+inline constexpr EnumStr to_string(NormMethod t) {
+  switch (t) {
+  case NormMethod::NONE:           return {"NONE",           "无"};
+  case NormMethod::ZSCORE:         return {"ZSCORE",         "Z标准化"};
+  case NormMethod::ROBUST_ZSCORE:  return {"ROBUST_ZSCORE",  "稳健Z"};
+  case NormMethod::IQR_ZSCORE:     return {"IQR_ZSCORE",     "IQR标准化"};
+  case NormMethod::RANK:           return {"RANK",           "排名"};
+  case NormMethod::RANK_ZSCORE:    return {"RANK_ZSCORE",    "排名标准化"};
+  case NormMethod::CLIP:           return {"CLIP",           "截断"};
+  case NormMethod::WINSOR:         return {"WINSOR",         "缩尾"};
+  case NormMethod::LOG:            return {"LOG",            "对数"};
+  case NormMethod::POWER:          return {"POWER",          "幂变换"};
+  case NormMethod::ASINH:          return {"ASINH",          "反双曲正弦"};
+  case NormMethod::TANH:           return {"TANH",           "双曲正切"};
+  case NormMethod::SINCOS:         return {"SINCOS",         "正余弦编码"};
+  case NormMethod::LOG_ZSCORE:     return {"LOG_ZSCORE",     "对数+Z"};
+  case NormMethod::POWER_ZSCORE:   return {"POWER_ZSCORE",   "幂+Z"};
+  case NormMethod::ASINH_ZSCORE:   return {"ASINH_ZSCORE",   "asinh+Z"};
+  case NormMethod::CLIP_ZSCORE:    return {"CLIP_ZSCORE",    "Z+截断"};
+  case NormMethod::WINSOR_ZSCORE:  return {"WINSOR_ZSCORE",  "缩尾+Z"};
+  case NormMethod::CLIP_LOG_ZSCORE:return {"CLIP_LOG_ZSCORE","截断+对数+Z"};
+  } return {"?", "未知"};
 }
 
-inline constexpr const char *to_string(L2::ValidType type) {
-  switch (type) {
-  case L2::ValidType::ALL:
-    return "ALL";
-  case L2::ValidType::DATA:
-    return "DATA";
-  case L2::ValidType::DEPTH:
-    return "DEPTH";
-  }
-  return "UNKNOWN";
+inline constexpr EnumStr to_string(L2::ValidType t) {
+  switch (t) {
+  case L2::ValidType::ALL:   return {"ALL",   "全部"};
+  case L2::ValidType::DATA:  return {"DATA",  "数据"};
+  case L2::ValidType::DEPTH: return {"DEPTH", "深度"};
+  } return {"?", "未知"};
 }

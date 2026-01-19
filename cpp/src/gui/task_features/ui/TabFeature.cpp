@@ -71,133 +71,6 @@ static void renderLatexFormula(tex::TeXRender *render) {
 // Helper Functions
 // ============================================================================
 
-// Chinese name mappings
-static const char *to_string_cn(FeatureDataType type) {
-  switch (type) {
-  case FeatureDataType::TS:
-    return "时序";
-  case FeatureDataType::CS:
-    return "截面";
-  case FeatureDataType::LB:
-    return "标签";
-  case FeatureDataType::SH:
-    return "共享";
-  case FeatureDataType::META:
-    return "元数据";
-  }
-  return "未知";
-}
-
-static const char *to_string_cn(FeatureCategoryL1 cat) {
-  switch (cat) {
-  case FeatureCategoryL1::IMBALANCE:
-    return "失衡";
-  case FeatureCategoryL1::SHAPE:
-    return "形状";
-  case FeatureCategoryL1::ORDER_FLOW:
-    return "订单流";
-  case FeatureCategoryL1::BEHAVIORAL:
-    return "行为";
-  case FeatureCategoryL1::RESILIENCE:
-    return "韧性";
-  case FeatureCategoryL1::LIQUIDITY:
-    return "流动性";
-  case FeatureCategoryL1::VOLATILITY:
-    return "波动率";
-  case FeatureCategoryL1::MOMENTUM:
-    return "动量";
-  case FeatureCategoryL1::MICROSTRUCTURE:
-    return "微结构";
-  case FeatureCategoryL1::LABEL:
-    return "标签";
-  case FeatureCategoryL1::META:
-    return "元数据";
-  }
-  return "未知";
-}
-
-static const char *to_string_cn(FeatureCategoryL2 cat) {
-  switch (cat) {
-  case FeatureCategoryL2::RAW:
-    return "原始";
-  case FeatureCategoryL2::NORMALIZED:
-    return "标准化";
-  case FeatureCategoryL2::OSCILLATOR:
-    return "震荡器";
-  case FeatureCategoryL2::DEVIATION:
-    return "偏离";
-  case FeatureCategoryL2::RATIO:
-    return "比率";
-  case FeatureCategoryL2::RANK:
-    return "排名";
-  case FeatureCategoryL2::FUTURE_RET:
-    return "未来收益";
-  case FeatureCategoryL2::SCORE:
-    return "评分";
-  case FeatureCategoryL2::UNIVERSE:
-    return "全域统计";
-  case FeatureCategoryL2::BENCHMARK:
-    return "基准";
-  }
-  return "未知";
-}
-
-static const char *to_string_cn(NormMethod method) {
-  switch (method) {
-  case NormMethod::NONE:
-    return "无";
-  case NormMethod::ZSCORE:
-    return "Z标准化";
-  case NormMethod::ROBUST_ZSCORE:
-    return "稳健Z";
-  case NormMethod::IQR_ZSCORE:
-    return "IQR标准化";
-  case NormMethod::RANK:
-    return "排名";
-  case NormMethod::RANK_ZSCORE:
-    return "排名标准化";
-  case NormMethod::CLIP:
-    return "截断";
-  case NormMethod::WINSOR:
-    return "缩尾";
-  case NormMethod::LOG:
-    return "对数";
-  case NormMethod::POWER:
-    return "幂变换";
-  case NormMethod::ASINH:
-    return "反双曲正弦";
-  case NormMethod::TANH:
-    return "双曲正切";
-  case NormMethod::SINCOS:
-    return "正余弦编码";
-  case NormMethod::LOG_ZSCORE:
-    return "对数+Z";
-  case NormMethod::POWER_ZSCORE:
-    return "幂+Z";
-  case NormMethod::ASINH_ZSCORE:
-    return "asinh+Z";
-  case NormMethod::CLIP_ZSCORE:
-    return "Z+截断";
-  case NormMethod::WINSOR_ZSCORE:
-    return "缩尾+Z";
-  case NormMethod::CLIP_LOG_ZSCORE:
-    return "截断+对数+Z";
-  }
-  return "未知";
-}
-
-static const char *to_string_cn(L2::ValidType type) {
-  switch (type) {
-  case L2::ValidType::ALL:
-    return "全部";
-  case L2::ValidType::DATA:
-    return "数据";
-  case L2::ValidType::DEPTH:
-    return "深度";
-  }
-  return "未知";
-}
-
 // Get current level features based on selection
 static const std::vector<FeatureMetadata> &get_current_level_features(const Feature &feature) {
   switch (feature.selection.selected_level) {
@@ -243,13 +116,11 @@ static std::vector<int> get_filtered_indices(const Feature::Selection &sel, cons
 // ============================================================================
 
 // Render multi-select dropdown for filters
-template <typename EnumType, typename ToStringFunc, typename ToStringCnFunc>
-static void render_filter_dropdown(const char *label, bool &show_dropdown, std::set<EnumType> &selected_values,
-                                   ToStringFunc to_string_func, ToStringCnFunc to_string_cn_func, int num_values) {
+template <typename EnumType>
+static void render_filter_dropdown(const char *label, bool &show_dropdown, std::set<EnumType> &selected_values, int num_values) {
   ImGui::Text("%s:", label);
   ImGui::SameLine();
 
-  // Display selected count or "All"
   char button_label[128];
   if (selected_values.empty()) {
     snprintf(button_label, sizeof(button_label), "All###%s", label);
@@ -261,29 +132,21 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
     show_dropdown = !show_dropdown;
   }
 
-  // Show popup for multi-select
   if (show_dropdown) {
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
     ImGui::Begin(label, &show_dropdown, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
 
     for (int i = 0; i < num_values; ++i) {
       EnumType value = static_cast<EnumType>(i);
-      const char *name_en = to_string_func(value);
-      const char *name_cn = to_string_cn_func(value);
-      char display_name[128];
-      snprintf(display_name, sizeof(display_name), "%s (%s)", name_en, name_cn);
-
+      auto s = to_string(value);
+      char display[128];
+      snprintf(display, sizeof(display), "%s (%s)", s.en, s.cn);
       bool is_selected = selected_values.find(value) != selected_values.end();
-
-      if (ImGui::Checkbox(display_name, &is_selected)) {
-        if (is_selected) {
-          selected_values.insert(value);
-        } else {
-          selected_values.erase(value);
-        }
+      if (ImGui::Checkbox(display, &is_selected)) {
+        if (is_selected) selected_values.insert(value);
+        else selected_values.erase(value);
       }
     }
-
     ImGui::End();
   }
 }
@@ -333,13 +196,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
 
   // All filters in one line
-  render_filter_dropdown("DataType", ui_state.show_filter_data_type, sel.filter_data_type, [](FeatureDataType t) { return to_string(t); }, [](FeatureDataType t) { return to_string_cn(t); }, 5);
+  render_filter_dropdown("DataType", ui_state.show_filter_data_type, sel.filter_data_type, 5);
   ImGui::SameLine();
-  render_filter_dropdown("Cat L1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, [](FeatureCategoryL1 t) { return to_string(t); }, [](FeatureCategoryL1 t) { return to_string_cn(t); }, 9);
+  render_filter_dropdown("Cat L1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, 10);
   ImGui::SameLine();
-  render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, [](FeatureCategoryL2 t) { return to_string(t); }, [](FeatureCategoryL2 t) { return to_string_cn(t); }, 10);
+  render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, 10);
   ImGui::SameLine();
-  render_filter_dropdown("Norm", ui_state.show_filter_norm_method, sel.filter_norm_method, [](NormMethod t) { return to_string(t); }, [](NormMethod t) { return to_string_cn(t); }, 8);
+  render_filter_dropdown("Norm", ui_state.show_filter_norm_method, sel.filter_norm_method, 8);
   ImGui::SameLine();
 
   // Reset filters button
@@ -517,10 +380,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
       // Column: ValidType
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.valid_type));
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", to_string_cn(f.valid_type));
-      }
+      ImGui::TextUnformatted(to_string(f.valid_type).en);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.valid_type).cn);
 
       // Column: Name CN (with tooltip showing LaTeX formula)
       ImGui::TableNextColumn();
@@ -549,28 +410,22 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
       // Column: DataType
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.data_type));
+      ImGui::TextUnformatted(to_string(f.data_type).en);
 
       // Column: Cat L1
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.cat_l1));
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", to_string_cn(f.cat_l1));
-      }
+      ImGui::TextUnformatted(to_string(f.cat_l1).en);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.cat_l1).cn);
 
       // Column: Cat L2
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.cat_l2));
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", to_string_cn(f.cat_l2));
-      }
+      ImGui::TextUnformatted(to_string(f.cat_l2).en);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.cat_l2).cn);
 
       // Column: Norm Method
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.norm_method));
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", to_string_cn(f.norm_method));
-      }
+      ImGui::TextUnformatted(to_string(f.norm_method).en);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.norm_method).cn);
 
       // Column: PSD
       ImGui::TableNextColumn();
