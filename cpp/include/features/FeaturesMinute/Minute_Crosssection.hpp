@@ -40,40 +40,26 @@ public:
     if (valid_indices_.empty())
       return;
 
-    // CS feature 1: cs_min_return_rank
+    // CS feature: cs_spread_rank
+    // 从 L0 读取当前分钟结束时刻的 spread (使用 L1_to_L0 映射到秒级索引)
     {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 1, t_minute, L1_FieldOffset::min_ret_z);
-      for (size_t a = 0; a < A; ++a)
-        input_fp32_[a] = input[a];
+      const size_t t_second = L1_to_L0(t_minute); // 分钟起始秒
+      const _Float16 *spread_data = CS_READ_ALL(store_, date_str_, 0, t_second, L0_FieldOffset::spread);
+      
+      // 读取到 fp32 buffer
+      for (size_t a = 0; a < A; ++a) {
+        input_fp32_[a] = static_cast<float>(spread_data[a]);
+      }
+      
+      // 计算截面排名 (rank inverse normal)
       std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
       compute_rank_inverse_normal_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
-      for (size_t a = 0; a < A; ++a)
-        output_fp16_[a] = output_fp32_[a];
-      CS_WRITE_ALL(store_, date_str_, 1, t_minute, L1_FieldOffset::cs_min_return_rank, output_fp16_.data(), A);
-    }
-
-    // CS feature 2: cs_min_volume_pct
-    {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 1, t_minute, L1_FieldOffset::momentum_15m);
-      for (size_t a = 0; a < A; ++a)
-        input_fp32_[a] = input[a];
-      std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
-      compute_rank_inverse_normal_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
-      for (size_t a = 0; a < A; ++a)
-        output_fp16_[a] = output_fp32_[a];
-      CS_WRITE_ALL(store_, date_str_, 1, t_minute, L1_FieldOffset::cs_min_volume_pct, output_fp16_.data(), A);
-    }
-
-    // CS feature 3: cs_min_spread_z
-    {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 1, t_minute, L1_FieldOffset::rv_5m_norm);
-      for (size_t a = 0; a < A; ++a)
-        input_fp32_[a] = input[a];
-      std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
-      compute_zscore_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
-      for (size_t a = 0; a < A; ++a)
-        output_fp16_[a] = output_fp32_[a];
-      CS_WRITE_ALL(store_, date_str_, 1, t_minute, L1_FieldOffset::cs_min_spread_z, output_fp16_.data(), A);
+      
+      // 转换为 fp16 并写入
+      for (size_t a = 0; a < A; ++a) {
+        output_fp16_[a] = static_cast<_Float16>(output_fp32_[a]);
+      }
+      CS_WRITE_ALL(store_, date_str_, 1, t_minute, L1_FieldOffset::cs_spread_rank, output_fp16_.data(), A);
     }
   }
 

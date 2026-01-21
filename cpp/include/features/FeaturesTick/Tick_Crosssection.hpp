@@ -52,34 +52,14 @@ public:
     if (valid_indices_.empty())
       return;
 
-    // CS feature 1: cs_spread_rank - rank CI1 (Cumulative Imbalance 1-Level) cross-sectionally
+    // CS feature: cs_spread_rank - rank spread cross-sectionally
     {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::ci_1);
+      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::spread);
       convert_fp16_to_fp32(input, input_fp32_.data(), A);
       std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
       compute_rank_inverse_normal_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
       convert_fp32_to_fp16(output_fp32_.data(), output_fp16_.data(), A);
       CS_WRITE_ALL(store_, date_str_, 0, t, L0_FieldOffset::cs_spread_rank, output_fp16_.data(), A);
-    }
-
-    // CS feature 2: cs_tobi_rank - rank CI5 (Cumulative Imbalance 5-Level) cross-sectionally
-    {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::ci_5);
-      convert_fp16_to_fp32(input, input_fp32_.data(), A);
-      std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
-      compute_rank_inverse_normal_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
-      convert_fp32_to_fp16(output_fp32_.data(), output_fp16_.data(), A);
-      CS_WRITE_ALL(store_, date_str_, 0, t, L0_FieldOffset::cs_tobi_rank, output_fp16_.data(), A);
-    }
-
-    // CS feature 3: cs_liquidity_ratio - z-score OFI1 (Order Flow Imbalance) cross-sectionally
-    {
-      const _Float16 *input = CS_READ_ALL(store_, date_str_, 0, t, L0_FieldOffset::ofi_1);
-      convert_fp16_to_fp32(input, input_fp32_.data(), A);
-      std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
-      compute_zscore_sparse(input_fp32_.data(), valid_indices_, output_fp32_.data());
-      convert_fp32_to_fp16(output_fp32_.data(), output_fp16_.data(), A);
-      CS_WRITE_ALL(store_, date_str_, 0, t, L0_FieldOffset::cs_liquidity_ratio, output_fp16_.data(), A);
     }
   }
 

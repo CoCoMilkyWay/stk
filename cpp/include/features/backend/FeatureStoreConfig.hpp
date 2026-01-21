@@ -47,23 +47,23 @@ constexpr size_t MAX_ROWS_PER_LEVEL[LEVEL_COUNT] = {
 // FIELD METADATA - PART 1: Auxiliary Macros (Per-Level)
 // ============================================================================
 
-// Field format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, formula, name_en, name_cn, description)
+// Field format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, name_en, name_cn, description, formula)
 
 // Count auxiliary (level-agnostic)
-#define COUNT_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) +1
+#define COUNT_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) +1
 
 // Width extractors (per-level)
-#define GENERATE_FIELD_WIDTH_L0(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) width,
-#define GENERATE_FIELD_WIDTH_L1(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) width,
+#define GENERATE_FIELD_WIDTH_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) width,
+#define GENERATE_FIELD_WIDTH_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) width,
 
 // Index extractors (per-level)
-#define GENERATE_FIELD_INDEX_L0(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) code,
-#define GENERATE_FIELD_INDEX_L1(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) code,
+#define GENERATE_FIELD_INDEX_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) code,
+#define GENERATE_FIELD_INDEX_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) code,
 
 // Type metadata extractors (per-level)
-#define GENERATE_FIELD_TYPE_META_L0(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
+#define GENERATE_FIELD_TYPE_META_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
   {L0_FieldOffset::code, FeatureDataType::dtype},
-#define GENERATE_FIELD_TYPE_META_L1(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
+#define GENERATE_FIELD_TYPE_META_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
   {L1_FieldOffset::code, FeatureDataType::dtype},
 
 // ============================================================================
@@ -148,13 +148,13 @@ constexpr size_t FIELDS_PER_LEVEL[LEVEL_COUNT] = {
 // 按 data_type 统计字段宽度 (用于确定输出buffer大小)
 
 // Helper: count width if data_type matches
-#define COUNT_WIDTH_IF_TS(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
+#define COUNT_WIDTH_IF_TS(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
   + (FeatureDataType::dtype == FeatureDataType::TS ? (width) : 0)
-#define COUNT_WIDTH_IF_CS(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
+#define COUNT_WIDTH_IF_CS(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
   + (FeatureDataType::dtype == FeatureDataType::CS ? (width) : 0)
-#define COUNT_WIDTH_IF_LB(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
+#define COUNT_WIDTH_IF_LB(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
   + (FeatureDataType::dtype == FeatureDataType::LB ? (width) : 0)
-#define COUNT_WIDTH_IF_META(code, width, vtype, dtype, c1, c2, norm, psd, formula, en, cn, desc) \
+#define COUNT_WIDTH_IF_META(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
   + (FeatureDataType::dtype == FeatureDataType::META ? (width) : 0)
 
 // 8. Type widths per level: L0_TS_WIDTH, L0_CS_WIDTH, ..., L2_META_WIDTH

@@ -21,6 +21,17 @@
 #include "features/FeaturesTick/TS/OFI.hpp"
 #include "features/FeaturesTick/TS/PARA.hpp"
 #include "features/FeaturesTick/TS/TLR.hpp"
+#include "features/FeaturesTick/TS/COST.hpp"
+#include "features/FeaturesTick/TS/PEAK.hpp"
+#include "features/FeaturesTick/TS/FLOW_RATE.hpp"
+#include "features/FeaturesTick/TS/RESIL.hpp"
+#include "features/FeaturesTick/TS/CTR.hpp"
+#include "features/FeaturesTick/TS/BEHAV.hpp"
+#include "features/FeaturesTick/TS/OA.hpp"
+#include "features/FeaturesTick/TS/HLA.hpp"
+#include "features/FeaturesTick/TS/TOXIC.hpp"
+#include "features/FeaturesTick/TS/LABEL.hpp"
+#include "features/FeaturesTick/TS/REPRE.hpp"
 #include <deque>
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
@@ -131,6 +142,86 @@ public:
     CBuffer<float, L2::BLEN> ofi_1_;
     CBuffer<float, L2::BLEN> ofi_5_;
 
+    // --- COST: Impact Cost ---
+    CBuffer<float, L2::BLEN> cost_buy_1_;
+    CBuffer<float, L2::BLEN> cost_buy_5_;
+    CBuffer<float, L2::BLEN> cost_buy_10_;
+    CBuffer<float, L2::BLEN> cost_sell_1_;
+    CBuffer<float, L2::BLEN> cost_sell_5_;
+    CBuffer<float, L2::BLEN> cost_sell_10_;
+
+    // --- PEAK: Peak Location & Concentration ---
+    CBuffer<float, L2::BLEN> peak_loc_bid_;
+    CBuffer<float, L2::BLEN> peak_loc_ask_;
+    CBuffer<float, L2::BLEN> peak_ratio_bid_;
+    CBuffer<float, L2::BLEN> peak_ratio_ask_;
+
+    // --- FLOW_RATE: Order Flow Rate ---
+    CBuffer<float, L2::BLEN> arr_bid_;
+    CBuffer<float, L2::BLEN> arr_ask_;
+    CBuffer<float, L2::BLEN> can_bid_;
+    CBuffer<float, L2::BLEN> can_ask_;
+    CBuffer<float, L2::BLEN> trd_buy_;
+    CBuffer<float, L2::BLEN> trd_sell_;
+    CBuffer<float, L2::BLEN> net_ord_;
+    CBuffer<float, L2::BLEN> foi_;
+    CBuffer<float, L2::BLEN> toxic_cr_;
+
+    // --- RESIL: Resiliency ---
+    CBuffer<float, L2::BLEN> ratio_bid_;
+    CBuffer<float, L2::BLEN> ratio_ask_;
+    CBuffer<float, L2::BLEN> imba_;  // imba_resil
+    CBuffer<float, L2::BLEN> dev_bid_;
+    CBuffer<float, L2::BLEN> dev_ask_;
+    CBuffer<float, L2::BLEN> mr_bid_;
+    CBuffer<float, L2::BLEN> mr_ask_;
+    CBuffer<float, L2::BLEN> recovery_bid_;
+    CBuffer<float, L2::BLEN> recovery_ask_;
+
+    // --- CTR: Cumulative Trade Ratio ---
+    CBuffer<float, L2::BLEN> cc_r_;
+    CBuffer<float, L2::BLEN> ctr_xl_;
+    CBuffer<float, L2::BLEN> ctr_l_;
+    CBuffer<float, L2::BLEN> ctr_m_;
+    CBuffer<float, L2::BLEN> ctr_s_;
+    CBuffer<float, L2::BLEN> cnbi_;
+    CBuffer<float, L2::BLEN> cnbi_xl_;
+    CBuffer<float, L2::BLEN> cnbi_l_;
+    CBuffer<float, L2::BLEN> cnbi_m_;
+    CBuffer<float, L2::BLEN> cnbi_s_;
+    CBuffer<float, L2::BLEN> cnbi_am_;
+    CBuffer<float, L2::BLEN> cnbi_pm_;
+
+    // --- BEHAV: Behavioral Features ---
+    CBuffer<float, L2::BLEN> agg_buy_;
+    CBuffer<float, L2::BLEN> agg_sell_;
+    CBuffer<float, L2::BLEN> agg_dif_;
+    CBuffer<float, L2::BLEN> cpr_;
+    CBuffer<float, L2::BLEN> agg_trd_;
+    CBuffer<float, L2::BLEN> ord_size_;
+
+    // --- OA: Opening Auction ---
+    CBuffer<float, L2::BLEN> oa_bcr_;
+    CBuffer<float, L2::BLEN> oa_acr_;
+    CBuffer<float, L2::BLEN> oa_btr_;
+    CBuffer<float, L2::BLEN> oa_atr_;
+
+    // --- HLA: Hidden Liquidity Adjusted ---
+    CBuffer<float, L2::BLEN> hla_imba_;
+
+    // --- TOXIC: Toxic Features ---
+    CBuffer<float, L2::BLEN> ptc_rt_;
+    CBuffer<float, L2::BLEN> fleet_rt_;
+    CBuffer<float, L2::BLEN> spoof_int_;
+    CBuffer<float, L2::BLEN> stale_ratio_bid_;
+    CBuffer<float, L2::BLEN> stale_ratio_ask_;
+
+    // --- LABEL: Label Features ---
+    CBuffer<float, L2::BLEN> next_tick_ret_;
+
+    // --- REPRE: Depth Representation (DUMMY) ---
+    CBuffer<float, L2::BLEN> depth_repre_;
+
     // -------------------------------------------------------------------------
     // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
     // -------------------------------------------------------------------------
@@ -187,6 +278,51 @@ public:
     OFI<1> ofi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_1_};
     OFI<5> ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_5_};
 
+    // COST
+    COST<1, true> cost_buy_1{AskPrice_, AskQty_, MidPrice_, cost_buy_1_};
+    COST<5, true> cost_buy_5{AskPrice_, AskQty_, MidPrice_, cost_buy_5_};
+    COST<10, true> cost_buy_10{AskPrice_, AskQty_, MidPrice_, cost_buy_10_};
+    COST<1, false> cost_sell_1{BidPrice_, BidQty_, MidPrice_, cost_sell_1_};
+    COST<5, false> cost_sell_5{BidPrice_, BidQty_, MidPrice_, cost_sell_5_};
+    COST<10, false> cost_sell_10{BidPrice_, BidQty_, MidPrice_, cost_sell_10_};
+
+    // PEAK
+    PEAK<true, true> peak_loc_bid{BidQty_, peak_loc_bid_};
+    PEAK<false, true> peak_loc_ask{AskQty_, peak_loc_ask_};
+    PEAK<true, false> peak_ratio_bid{BidQty_, peak_ratio_bid_};
+    PEAK<false, false> peak_ratio_ask{AskQty_, peak_ratio_ask_};
+
+    // FLOW_RATE
+    FlowAccumulator flow_acc{td, arr_bid_, arr_ask_, can_bid_, can_ask_, trd_buy_, trd_sell_, net_ord_, foi_};
+    ToxicCancelRatio toxic_cr{toxic_cr_};
+
+    // RESIL
+    ResiliencyAccumulator resil_acc{td, BidQty_, AskQty_,
+        ratio_bid_, ratio_ask_, imba_, dev_bid_, dev_ask_,
+        mr_bid_, mr_ask_, recovery_bid_, recovery_ask_};
+
+    // CTR
+    CumulativeTradeRatio ctr_acc{td, cc_r_, ctr_xl_, ctr_l_, ctr_m_, ctr_s_,
+        cnbi_, cnbi_xl_, cnbi_l_, cnbi_m_, cnbi_s_, cnbi_am_, cnbi_pm_};
+
+    // BEHAV
+    BehavioralFeatures behav_acc{td, agg_buy_, agg_sell_, agg_dif_, cpr_, agg_trd_, ord_size_};
+
+    // OA
+    OpeningAuction oa_acc{td, oa_bcr_, oa_acr_, oa_btr_, oa_atr_};
+
+    // HLA
+    HiddenLiquidityAdjusted hla_acc{td, BidQty_, AskQty_, hla_imba_};
+
+    // TOXIC
+    ToxicFeatures toxic_acc{td, BidQty_, AskQty_, ptc_rt_, fleet_rt_, spoof_int_, stale_ratio_bid_, stale_ratio_ask_};
+
+    // LABEL
+    NextTickReturn next_tick_ret{MidPrice_, next_tick_ret_};
+
+    // REPRE (DUMMY)
+    DepthRepresentation depth_repre{depth_repre_};
+
     explicit L0(TickData &t) : td(t) {} // 构造函数 (只需初始化引用成员)
   };
   L0 l0;
@@ -206,11 +342,6 @@ public:
 
     // Rolling windows for TS features
     std::deque<float> minute_return_window;
-    std::deque<float> rv_window;
-    std::deque<float> vwap_window;
-    std::deque<float> momentum_window;
-    std::deque<float> momentum_returns;
-    std::deque<std::pair<float, float>> range_window; // {range, close}
 
     explicit L1(MinuteData &m) : md(m) {}
   };
