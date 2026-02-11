@@ -14,10 +14,10 @@
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 
-class NextTickReturn {
+class Label {
 public:
-  NextTickReturn(const CBuffer<float, L2::BLEN> &mid_price,
-                 CBuffer<float, L2::BLEN> &next_tick_ret)
+  Label(const CBuffer<float, L2::BLEN> &mid_price,
+        CBuffer<float, L2::BLEN> &next_tick_ret)
       : mid_price_(mid_price), next_tick_ret_(next_tick_ret) {}
 
   inline void compute() {

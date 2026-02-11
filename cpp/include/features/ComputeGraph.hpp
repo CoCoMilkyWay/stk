@@ -4,34 +4,34 @@
 #include "features/DataDefine.hpp"
 #include "features/FeaturesMinute/TS/MinuteIndex.hpp"
 // base
-#include "features/FeaturesTick/TS/base/DeltaT.hpp"
-#include "features/FeaturesTick/TS/base/DepthData.hpp"
-#include "features/FeaturesTick/TS/base/DepthIndex.hpp"
-#include "features/FeaturesTick/TS/base/MicroPrice.hpp"
-#include "features/FeaturesTick/TS/base/MidPrice.hpp"
-#include "features/FeaturesTick/TS/base/Spread.hpp"
-#include "features/FeaturesTick/TS/base/TickIndex.hpp"
-#include "features/FeaturesTick/TS/base/TradePrice.hpp"
+#include "features/FeaturesTick/TS/DeltaT.hpp"
+#include "features/FeaturesTick/TS/DepthData.hpp"
+#include "features/FeaturesTick/TS/DepthIndex.hpp"
+#include "features/FeaturesTick/TS/MicroPrice.hpp"
+#include "features/FeaturesTick/TS/MidPrice.hpp"
+#include "features/FeaturesTick/TS/Spread.hpp"
+#include "features/FeaturesTick/TS/TickIndex.hpp"
+#include "features/FeaturesTick/TS/TradePrice.hpp"
 // features
-#include "features/FeaturesTick/TS/BEHAV.hpp"
+#include "features/FeaturesTick/TS/Behav.hpp"
 #include "features/FeaturesTick/TS/CI.hpp"
-#include "features/FeaturesTick/TS/COST.hpp"
+#include "features/FeaturesTick/TS/Cost.hpp"
 #include "features/FeaturesTick/TS/CTR.hpp"
 #include "features/FeaturesTick/TS/CWI.hpp"
 #include "features/FeaturesTick/TS/DDI.hpp"
-#include "features/FeaturesTick/TS/ENTROPY.hpp"
-#include "features/FeaturesTick/TS/FLOW_RATE.hpp"
-#include "features/FeaturesTick/TS/GRAD.hpp"
+#include "features/FeaturesTick/TS/Entropy.hpp"
+#include "features/FeaturesTick/TS/FlowRate.hpp"
+#include "features/FeaturesTick/TS/Grad.hpp"
 #include "features/FeaturesTick/TS/HLA.hpp"
-#include "features/FeaturesTick/TS/LABEL.hpp"
+#include "features/FeaturesTick/TS/Label.hpp"
 #include "features/FeaturesTick/TS/OA.hpp"
 #include "features/FeaturesTick/TS/OFI.hpp"
 #include "features/FeaturesTick/TS/PARA.hpp"
-#include "features/FeaturesTick/TS/PEAK.hpp"
-#include "features/FeaturesTick/TS/REPRE.hpp"
-#include "features/FeaturesTick/TS/RESIL.hpp"
+#include "features/FeaturesTick/TS/Peak.hpp"
+#include "features/FeaturesTick/TS/DepthRepresentation.hpp"
+#include "features/FeaturesTick/TS/Resiliency.hpp"
 #include "features/FeaturesTick/TS/TLR.hpp"
-#include "features/FeaturesTick/TS/TOXIC.hpp"
+#include "features/FeaturesTick/TS/Toxic.hpp"
 #include <deque>
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
@@ -161,29 +161,29 @@ public:
     PARA_IMBA<1> imba_para_c1{b_para_c1_, a_para_c1_, imba_para_c1_};
     PARA_IMBA<2> imba_para_c2{b_para_c2_, a_para_c2_, imba_para_c2_};
 
-    // --- GRAD (Layer 1) ---
+    // --- Grad (Layer 1) ---
     CBuffer<float, L2::BLEN> b_5_c1_;
     CBuffer<float, L2::BLEN> a_5_c1_;
-    GRAD<5, true> b_5_c1{BidQty_, AskQty_, b_5_c1_};
-    GRAD<5, false> a_5_c1{BidQty_, AskQty_, a_5_c1_};
-    // --- GRAD (Layer 2) ---
+    Grad<5, true> b_5_c1{BidQty_, AskQty_, b_5_c1_};
+    Grad<5, false> a_5_c1{BidQty_, AskQty_, a_5_c1_};
+    // --- Grad (Layer 2) ---
     CBuffer<float, L2::BLEN> imba_5_c1_;
-    GRAD_IMBA imba_5_c1{b_5_c1_, a_5_c1_, imba_5_c1_};
+    GradImba imba_5_c1{b_5_c1_, a_5_c1_, imba_5_c1_};
 
-    // --- ENTROPY (Layer 1) ---
+    // --- Entropy (Layer 1) ---
     CBuffer<float, L2::BLEN> b_5_entropy_;
     CBuffer<float, L2::BLEN> a_5_entropy_;
     CBuffer<float, L2::BLEN> b_30_entropy_;
     CBuffer<float, L2::BLEN> a_30_entropy_;
-    ENTROPY<5, true> b_5_entropy{BidQty_, AskQty_, b_5_entropy_};
-    ENTROPY<5, false> a_5_entropy{BidQty_, AskQty_, a_5_entropy_};
-    ENTROPY<30, true> b_30_entropy{BidQty_, AskQty_, b_30_entropy_};
-    ENTROPY<30, false> a_30_entropy{BidQty_, AskQty_, a_30_entropy_};
-    // --- ENTROPY (Layer 2) ---
+    Entropy<5, true> b_5_entropy{BidQty_, AskQty_, b_5_entropy_};
+    Entropy<5, false> a_5_entropy{BidQty_, AskQty_, a_5_entropy_};
+    Entropy<30, true> b_30_entropy{BidQty_, AskQty_, b_30_entropy_};
+    Entropy<30, false> a_30_entropy{BidQty_, AskQty_, a_30_entropy_};
+    // --- Entropy (Layer 2) ---
     CBuffer<float, L2::BLEN> imba_5_entropy_;
     CBuffer<float, L2::BLEN> imba_30_entropy_;
-    ENTROPY_IMBA imba_5_entropy{b_5_entropy_, a_5_entropy_, imba_5_entropy_};
-    ENTROPY_IMBA imba_30_entropy{b_30_entropy_, a_30_entropy_, imba_30_entropy_};
+    EntropyImba imba_5_entropy{b_5_entropy_, a_5_entropy_, imba_5_entropy_};
+    EntropyImba imba_30_entropy{b_30_entropy_, a_30_entropy_, imba_30_entropy_};
 
     // --- OFI ---
     CBuffer<float, L2::BLEN> ofi_1_;
@@ -191,35 +191,35 @@ public:
     OFI<1> ofi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_1_};
     OFI<5> ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_5_};
 
-    // --- COST ---
+    // --- Cost ---
     CBuffer<float, L2::BLEN> cost_buy_1_;
     CBuffer<float, L2::BLEN> cost_buy_5_;
     CBuffer<float, L2::BLEN> cost_buy_10_;
     CBuffer<float, L2::BLEN> cost_sell_1_;
     CBuffer<float, L2::BLEN> cost_sell_5_;
     CBuffer<float, L2::BLEN> cost_sell_10_;
-    COST<1, true> cost_buy_1{AskPrice_, AskQty_, MidPrice_, cost_buy_1_};
-    COST<5, true> cost_buy_5{AskPrice_, AskQty_, MidPrice_, cost_buy_5_};
-    COST<10, true> cost_buy_10{AskPrice_, AskQty_, MidPrice_, cost_buy_10_};
-    COST<1, false> cost_sell_1{BidPrice_, BidQty_, MidPrice_, cost_sell_1_};
-    COST<5, false> cost_sell_5{BidPrice_, BidQty_, MidPrice_, cost_sell_5_};
-    COST<10, false> cost_sell_10{BidPrice_, BidQty_, MidPrice_, cost_sell_10_};
+    Cost<1, true> cost_buy_1{AskPrice_, AskQty_, MidPrice_, cost_buy_1_};
+    Cost<5, true> cost_buy_5{AskPrice_, AskQty_, MidPrice_, cost_buy_5_};
+    Cost<10, true> cost_buy_10{AskPrice_, AskQty_, MidPrice_, cost_buy_10_};
+    Cost<1, false> cost_sell_1{BidPrice_, BidQty_, MidPrice_, cost_sell_1_};
+    Cost<5, false> cost_sell_5{BidPrice_, BidQty_, MidPrice_, cost_sell_5_};
+    Cost<10, false> cost_sell_10{BidPrice_, BidQty_, MidPrice_, cost_sell_10_};
 
-    // --- PEAK ---
+    // --- Peak ---
     CBuffer<float, L2::BLEN> peak_loc_bid_;
     CBuffer<float, L2::BLEN> peak_loc_ask_;
     CBuffer<float, L2::BLEN> peak_ratio_bid_;
     CBuffer<float, L2::BLEN> peak_ratio_ask_;
-    PEAK<true, true> peak_loc_bid{BidQty_, peak_loc_bid_};
-    PEAK<false, true> peak_loc_ask{AskQty_, peak_loc_ask_};
-    PEAK<true, false> peak_ratio_bid{BidQty_, peak_ratio_bid_};
-    PEAK<false, false> peak_ratio_ask{AskQty_, peak_ratio_ask_};
+    Peak<true, true> peak_loc_bid{BidQty_, peak_loc_bid_};
+    Peak<false, true> peak_loc_ask{AskQty_, peak_loc_ask_};
+    Peak<true, false> peak_ratio_bid{BidQty_, peak_ratio_bid_};
+    Peak<false, false> peak_ratio_ask{AskQty_, peak_ratio_ask_};
 
-    // --- LABEL ---
+    // --- Label ---
     CBuffer<float, L2::BLEN> next_tick_ret_;
-    NextTickReturn next_tick_ret{MidPrice_, next_tick_ret_};
+    Label next_tick_ret{MidPrice_, next_tick_ret_};
 
-    // --- REPRE (DUMMY) ---
+    // --- DepthRepresentation (DUMMY) ---
     CBuffer<float, L2::BLEN> depth_repre_;
     DepthRepresentation depth_repre{depth_repre_};
 

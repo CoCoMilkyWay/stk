@@ -12,10 +12,10 @@
 //   IS_BID   - true=买侧, false=卖侧
 //
 // DAG中使用:
-//   ENTROPY<5, true>   b_5_entropy{bid_qty_, ask_qty_, b_5_entropy_};
-//   ENTROPY<5, false>  a_5_entropy{bid_qty_, ask_qty_, a_5_entropy_};
-//   ENTROPY<30, true>  b_30_entropy{bid_qty_, ask_qty_, b_30_entropy_};
-//   ENTROPY<30, false> a_30_entropy{bid_qty_, ask_qty_, a_30_entropy_};
+//   Entropy<5, true>   b_5_entropy{bid_qty_, ask_qty_, b_5_entropy_};
+//   Entropy<5, false>  a_5_entropy{bid_qty_, ask_qty_, a_5_entropy_};
+//   Entropy<30, true>  b_30_entropy{bid_qty_, ask_qty_, b_30_entropy_};
+//   Entropy<30, false> a_30_entropy{bid_qty_, ask_qty_, a_30_entropy_};
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -23,11 +23,11 @@
 #include <cmath>
 
 template <size_t N_LEVELS, bool IS_BID, size_t DEPTH_SIZE = L2::LOB_DEPTH>
-class ENTROPY {
+class Entropy {
   static_assert(N_LEVELS >= 2 && N_LEVELS <= DEPTH_SIZE, "N_LEVELS out of range");
 
 public:
-  ENTROPY(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
+  Entropy(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
           const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
           CBuffer<float, L2::BLEN> &out)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {}
@@ -76,16 +76,16 @@ private:
 };
 
 // =============================================================================
-// ENTROPY_IMBA - 熵失衡
+// EntropyImba - 熵失衡
 // =============================================================================
 // imba = (H_bid - H_ask) / (H_bid + H_ask)
 // =============================================================================
 
-class ENTROPY_IMBA {
+class EntropyImba {
 public:
-  ENTROPY_IMBA(const CBuffer<float, L2::BLEN> &bid_entropy,
-               const CBuffer<float, L2::BLEN> &ask_entropy,
-               CBuffer<float, L2::BLEN> &out)
+  EntropyImba(const CBuffer<float, L2::BLEN> &bid_entropy,
+              const CBuffer<float, L2::BLEN> &ask_entropy,
+              CBuffer<float, L2::BLEN> &out)
       : bid_entropy_(bid_entropy), ask_entropy_(ask_entropy), out_(out) {}
 
   inline void compute() {

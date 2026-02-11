@@ -19,9 +19,9 @@
 #include "define/CBuffer.hpp"
 
 template <bool IS_BID, bool IS_LOC, size_t N_LEVELS = L2::LOB_DEPTH>
-class PEAK {
+class Peak {
 public:
-  PEAK(const CBuffer<float, L2::BLEN> (&qty)[N_LEVELS],
+  Peak(const CBuffer<float, L2::BLEN> (&qty)[N_LEVELS],
        CBuffer<float, L2::BLEN> &out)
       : qty_(qty), out_(out) {}
 

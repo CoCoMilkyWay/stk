@@ -11,19 +11,19 @@
 //   IS_BID   - true=买侧(b_grad), false=卖侧(a_grad)
 //
 // DAG中使用:
-//   GRAD<5, true>  b_5_c1{bid_qty_, ask_qty_, b_5_c1_};
-//   GRAD<5, false> a_5_c1{bid_qty_, ask_qty_, a_5_c1_};
+//   Grad<5, true>  b_5_c1{bid_qty_, ask_qty_, b_5_c1_};
+//   Grad<5, false> a_5_c1{bid_qty_, ask_qty_, a_5_c1_};
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 
 template <size_t N_LEVELS, bool IS_BID, size_t DEPTH_SIZE = L2::LOB_DEPTH>
-class GRAD {
+class Grad {
   static_assert(N_LEVELS >= 2 && N_LEVELS <= DEPTH_SIZE, "N_LEVELS must be >= 2");
 
 public:
-  GRAD(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
+  Grad(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
        const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
        CBuffer<float, L2::BLEN> &out)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {}
@@ -63,16 +63,16 @@ private:
 };
 
 // =============================================================================
-// GRAD_IMBA - 梯度失衡
+// GradImba - 梯度失衡
 // =============================================================================
 // imba = (b_grad - a_grad) / (|b_grad| + |a_grad|)
 // =============================================================================
 
-class GRAD_IMBA {
+class GradImba {
 public:
-  GRAD_IMBA(const CBuffer<float, L2::BLEN> &bid_grad,
-            const CBuffer<float, L2::BLEN> &ask_grad,
-            CBuffer<float, L2::BLEN> &out)
+  GradImba(const CBuffer<float, L2::BLEN> &bid_grad,
+           const CBuffer<float, L2::BLEN> &ask_grad,
+           CBuffer<float, L2::BLEN> &out)
       : bid_grad_(bid_grad), ask_grad_(ask_grad), out_(out) {}
 
   inline void compute() {

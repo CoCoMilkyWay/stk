@@ -19,11 +19,11 @@
 #include "define/CBuffer.hpp"
 
 template <size_t N_LEVELS, bool IS_BUY, size_t DEPTH_SIZE = L2::LOB_DEPTH>
-class COST {
+class Cost {
   static_assert(N_LEVELS >= 1 && N_LEVELS <= DEPTH_SIZE, "N_LEVELS out of range");
 
 public:
-  COST(const CBuffer<float, L2::BLEN> (&price)[DEPTH_SIZE],
+  Cost(const CBuffer<float, L2::BLEN> (&price)[DEPTH_SIZE],
        const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE],
        const CBuffer<float, L2::BLEN> &mid_price,
        CBuffer<float, L2::BLEN> &out)
