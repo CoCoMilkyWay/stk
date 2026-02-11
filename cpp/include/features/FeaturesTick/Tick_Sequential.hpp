@@ -25,12 +25,6 @@ public:
   void compute_and_store();
 
 private:
-  // Level 0: Tick-level TS features computation
-  void compute_ts_tick(size_t t);
-
-  // Write LOB depth snapshot (N levels bid/ask price/volume for GUI)
-  void write_lob_depth(size_t t);
-
   DAG &dag_;
   GlobalFeatureStore *store_ = nullptr;
   size_t asset_id_ = 0;
@@ -51,17 +45,11 @@ inline void Tick_Sequential::set_date(const std::string &date_str) {
 }
 
 inline void Tick_Sequential::compute_and_store() {
-  // Compute and write tick-level TS features
-  compute_ts_tick(dag_.tick_data.l0_index);
-
-  // Write LOB depth snapshot for GUI (META features)
-  write_lob_depth(dag_.tick_data.l0_index);
-}
-
-inline void Tick_Sequential::compute_ts_tick(size_t t) {
   // 每个算子的compute()和其输入buffer在同一个采样域(trigger)
   // 每个算子的flush()和其输出buffer在同一个采样域(trigger)
   // 具体绑定关系请看DAG向量图
+
+  const size_t t = dag_.tick_data.l0_index;
 
   bool Trigger0 = true;                                                  // [EVERY TICK] 逐笔更新
   bool Trigger1 = dag_.tick_data.lob.order_type == L2::OrderType::TAKER; // [ON TAKER] 成交时更新
@@ -319,6 +307,22 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
     ts_features_buffer_[L0_FieldOffset::next_tick_ret] = dag_.l0.next_tick_ret_.back();
 
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
+
+    // --- Write LOB depth snapshot for GUI ---
+    constexpr size_t N = L2::LOB_DEPTH;
+    constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手 (1手=100股)
+
+    for (size_t i = 0; i < N; ++i) {
+      lob_depth_buffer_[i] = dag_.l0.BidPrice_[i].back();
+      lob_depth_buffer_[N + i] = dag_.l0.AskPrice_[i].back();
+      lob_depth_buffer_[2 * N + i] = dag_.l0.BidQty_[i].back() * VOLUME_TO_LOT;
+      lob_depth_buffer_[3 * N + i] = dag_.l0.AskQty_[i].back() * VOLUME_TO_LOT;
+    }
+
+    lob_depth_buffer_[4 * N] = dag_.l0.MidPrice_.back();
+    lob_depth_buffer_[4 * N + 1] = 1.0f;
+
+    DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, 0, DepthFieldOffset::_depth_valid, lob_depth_buffer_.data(), worker_id_);
   }
 
   // Write TS features
@@ -327,24 +331,4 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
   // Write data validity flag
   TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
   DEPTH_WRITE_SINGLE(store_, date_str_, t, DepthFieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
-}
-
-inline void Tick_Sequential::write_lob_depth(size_t t) {
-  if (!dag_.tick_data.lob.depth_updated)
-    return;
-
-  constexpr size_t N = L2::LOB_DEPTH;
-  constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手 (1手=100股)
-
-  for (size_t i = 0; i < N; ++i) {
-    lob_depth_buffer_[i] = dag_.l0.BidPrice_[i].back();
-    lob_depth_buffer_[N + i] = dag_.l0.AskPrice_[i].back();
-    lob_depth_buffer_[2 * N + i] = dag_.l0.BidQty_[i].back() * VOLUME_TO_LOT;
-    lob_depth_buffer_[3 * N + i] = dag_.l0.AskQty_[i].back() * VOLUME_TO_LOT;
-  }
-
-  lob_depth_buffer_[4 * N] = dag_.l0.MidPrice_.back();
-  lob_depth_buffer_[4 * N + 1] = 1.0f;
-
-  DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, 0, DepthFieldOffset::_depth_valid, lob_depth_buffer_.data(), worker_id_);
 }

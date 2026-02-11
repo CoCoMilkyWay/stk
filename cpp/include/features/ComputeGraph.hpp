@@ -34,7 +34,6 @@
 #include "features/FeaturesTick/TS/TOXIC.hpp"
 #include <deque>
 
-
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
 public:
