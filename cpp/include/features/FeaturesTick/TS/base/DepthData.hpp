@@ -22,7 +22,7 @@
 //
 // 使用方式:
 //   每tick先调用 compute()，因子从 CBuffer 读取数据
-//   跨天时调用 set_prev_close() 设置前收盘价
+//   跨天时调用 reset() 重置状态 (内部从 TradePrice_ 读取前收盘价)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -38,6 +38,7 @@ public:
   static constexpr float LIMIT_AMT = 0.01f;   // 超限档位金额: 0.01万元
 
   DepthData(const TickData &tick_data,
+            CBuffer<float, L2::BLEN> &trade_price,
             CBuffer<float, L2::BLEN> (&bid_price)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&ask_price)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&bid_qty)[N_LEVELS],
@@ -46,6 +47,7 @@ public:
             CBuffer<float, L2::BLEN> (&ask_amt)[N_LEVELS],
             const std::string &asset_code)
       : tick_data_(tick_data),
+        trade_price_(trade_price),
         bid_price_(bid_price),
         ask_price_(ask_price),
         bid_qty_(bid_qty),
@@ -54,11 +56,15 @@ public:
         ask_amt_(ask_amt),
         limit_pct_(L2::infer_pct_limit(asset_code)) {}
 
-  // 设置前收盘价 (跨天时调用)
-  void set_prev_close(float prev_close) {
-    limit_up_ = prev_close * (1.0f + limit_pct_);
-    limit_down_ = prev_close * (1.0f - limit_pct_);
-    initialized_ = true;
+  // 跨天重置 (清理状态, 减少计算量)
+  void reset() {
+    // 用前一天收盘价(最后成交价)设置depth的涨跌停保护
+    float prev_close = trade_price_.size() > 0 ? trade_price_.back() : 0.0f;
+    if (prev_close > 0.0f) {
+      limit_up_ = prev_close * (1.0f + limit_pct_);
+      limit_down_ = prev_close * (1.0f - limit_pct_);
+      initialized_ = true;
+    }
   }
 
   inline void compute() {
@@ -69,7 +75,10 @@ public:
       const Level *bid1 = depth[L2::LOB_DEPTH];
       const Level *ask1 = depth[L2::LOB_DEPTH - 1];
       float mid = (bid1->price + ask1->price) * 0.5f * PRICE_SCALE;
-      set_prev_close(mid); // 用mid价设置涨跌停边界
+      // 用mid价设置涨跌停边界
+      limit_up_ = mid * (1.0f + limit_pct_);
+      limit_down_ = mid * (1.0f - limit_pct_);
+      initialized_ = true;
     }
 
     // 遍历N档盘口数据，逐档提取并转换
@@ -79,33 +88,37 @@ public:
       const Level *bid_level = depth[L2::LOB_DEPTH + i];     // 买i+1档
       const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i]; // 卖i+1档
 
-      // 单位转换：价格(分→元), 数量(股), 金额(元→万元)
+      // 单位转换：价格(分→元), 数量(股, 卖方保持负值), 金额(万元)
       float bid_price = static_cast<float>(bid_level->price) * PRICE_SCALE; // 分→元
       float ask_price = static_cast<float>(ask_level->price) * PRICE_SCALE;
-      float bid_qty = static_cast<float>(bid_level->net_quantity);   // 股
-      float ask_qty = static_cast<float>(ask_level->net_quantity);   // 负值表示卖方
-      float bid_amt = bid_price * bid_qty * AMT_SCALE;               // 万元
-      float ask_amt = ask_price * ask_qty * AMT_SCALE;
+      float bid_qty = static_cast<float>(bid_level->net_quantity); // 股
+      float ask_qty = static_cast<float>(ask_level->net_quantity); // 股(负值)
+
+      float bid_amt, ask_amt;
 
       // 涨跌停保护：超限的档位设为边界价，数量和金额设为最小值
       if (bid_price > limit_up_) [[unlikely]] {
         bid_price = limit_up_;
-        bid_qty = LIMIT_QTY;   // 1股
-        bid_amt = LIMIT_AMT;   // 0.01万元
+        bid_qty = LIMIT_QTY; // 1股
+        bid_amt = LIMIT_AMT; // 0.01万元
       } else if (bid_price < limit_down_) [[unlikely]] {
         bid_price = limit_down_;
         bid_qty = LIMIT_QTY;
         bid_amt = LIMIT_AMT;
+      } else {
+        bid_amt = bid_price * bid_qty * AMT_SCALE; // 万元
       }
 
       if (ask_price > limit_up_) [[unlikely]] {
         ask_price = limit_up_;
-        ask_qty = -LIMIT_QTY;  // 卖方保持负值
+        ask_qty = -LIMIT_QTY; // 卖方保持负值
         ask_amt = -LIMIT_AMT;
       } else if (ask_price < limit_down_) [[unlikely]] {
         ask_price = limit_down_;
         ask_qty = -LIMIT_QTY;
         ask_amt = -LIMIT_AMT;
+      } else {
+        ask_amt = ask_price * ask_qty * AMT_SCALE; // 万元(负值)
       }
 
       // 暂存到临时数组，flush时再批量写入CBuffer
@@ -141,6 +154,7 @@ private:
   bool initialized_ = false;
 
   // 引用外部CBuffer (由DAG::L0管理)
+  CBuffer<float, L2::BLEN> &trade_price_;
   CBuffer<float, L2::BLEN> (&bid_price_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&ask_price_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&bid_qty_)[N_LEVELS];

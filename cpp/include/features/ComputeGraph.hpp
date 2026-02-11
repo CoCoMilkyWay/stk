@@ -96,7 +96,7 @@ public:
     CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];   // 卖1-N量 (股, 负值)
     CBuffer<float, L2::BLEN> BidAmt_[L2::LOB_DEPTH];   // 买1-N金额 (万元, 正值)
     CBuffer<float, L2::BLEN> AskAmt_[L2::LOB_DEPTH];   // 卖1-N金额 (万元, 负值)
-    DepthData<L2::LOB_DEPTH> DepthData{td, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_, asset_code_};
+    DepthData<L2::LOB_DEPTH> DepthData{td, TradePrice_, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_, asset_code_};
 
     // --- MidPrice ---
     CBuffer<float, L2::BLEN> MidPrice_;
@@ -332,12 +332,8 @@ public:
   // ===========================================================================
   // 跨天重置 (统一维护)
   // ===========================================================================
-  void reset_for_new_day() {
-    // 用前一天收盘价(最后成交价)设置depth的涨跌停保护
-    float prev_close = l0.TradePrice_.size() > 0 ? l0.TradePrice_.back() : 0.0f;
-    if (prev_close > 0) {
-      l0.DepthData.set_prev_close(prev_close);
-    }
+  void reset_day_start() {
+    l0.DepthData.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };
