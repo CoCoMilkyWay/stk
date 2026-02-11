@@ -68,163 +68,164 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
   bool Trigger2 = dag_.tick_data.lob.depth_updated;                      // [ON DEPTH] 盘口更新时触发
 
   if (Trigger0) {
-    dag_.l0.DeltaT.compute();
-    dag_.l0.DeltaT.flush();
-    dag_.l0.TickIndex.compute();
-    dag_.l0.TickIndex.flush();
-    ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
+    dag_.l0.DeltaT.compute();    // input: td
+    dag_.l0.DeltaT.flush();      // output: DeltaTMaker_, DeltaTTaker_, DeltaTCancel_
+    dag_.l0.TickIndex.compute(); // input: td
+    dag_.l0.TickIndex.flush();   // output: Sec_, TickIndex_
 
     // 订单流累计特征 compute (flush在Trigger2)
-    dag_.l0.flow_rate.compute();
-    dag_.l0.toxic_cr.compute();
-    dag_.l0.resil.compute();
-    dag_.l0.ctr.compute();
-    dag_.l0.behav.compute();
-    dag_.l0.oa.compute();
-    dag_.l0.hla.compute();
-    dag_.l0.toxic.compute();
+    dag_.l0.flow_rate.compute(); // input: td
+    dag_.l0.toxic_cr.compute();  // input: td
+    dag_.l0.resil.compute();     // input: td, BidQty_, AskQty_
+    dag_.l0.ctr.compute();       // input: td
+    dag_.l0.behav.compute();     // input: td
+    dag_.l0.oa.compute();        // input: td
+    dag_.l0.hla.compute();       // input: td, BidQty_, AskQty_
+    dag_.l0.toxic.compute();     // input: td, BidQty_, AskQty_
+
+    ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
   }
 
   if (Trigger1) {
-    dag_.l0.TradePrice.compute();
-    dag_.l0.TradePrice.flush();
+    dag_.l0.TradePrice.compute(); // input: td
+    dag_.l0.TradePrice.flush();   // output: TradePrice_
   }
 
   if (Trigger2) {
     // --- 基础数据层 ---
-    dag_.l0.DepthIndex.compute();
-    dag_.l0.DepthIndex.flush();
-    dag_.l0.DepthData.compute();
-    dag_.l0.DepthData.flush();
-    dag_.l0.MidPrice.compute();
-    dag_.l0.MidPrice.flush();
-    dag_.l0.MicroPrice.compute();
-    dag_.l0.MicroPrice.flush();
-    dag_.l0.Spread.compute();
-    dag_.l0.Spread.flush();
+    dag_.l0.DepthIndex.compute(); // input: td
+    dag_.l0.DepthIndex.flush();   // output: DepthIndex_
+    dag_.l0.DepthData.compute();  // input: td
+    dag_.l0.DepthData.flush();    // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
+    dag_.l0.MidPrice.compute();   // input: BidPrice_[0], AskPrice_[0]
+    dag_.l0.MidPrice.flush();     // output: MidPrice_
+    dag_.l0.MicroPrice.compute(); // input: td
+    dag_.l0.MicroPrice.flush();   // output: MicroPrice_
+    dag_.l0.Spread.compute();     // input: BidPrice_[0], AskPrice_[0]
+    dag_.l0.Spread.flush();       // output: Spread_
 
     // --- CI ---
-    dag_.l0.ci_1.compute();
-    dag_.l0.ci_1.flush();
-    dag_.l0.ci_5.compute();
-    dag_.l0.ci_5.flush();
-    dag_.l0.ci_10.compute();
-    dag_.l0.ci_10.flush();
-    dag_.l0.ci_30.compute();
-    dag_.l0.ci_30.flush();
-    dag_.l0.ci_all.compute();
-    dag_.l0.ci_all.flush();
+    dag_.l0.ci_1.compute();   // input: BidQty_, AskQty_
+    dag_.l0.ci_1.flush();     // output: ci_1_
+    dag_.l0.ci_5.compute();   // input: BidQty_, AskQty_
+    dag_.l0.ci_5.flush();     // output: ci_5_
+    dag_.l0.ci_10.compute();  // input: BidQty_, AskQty_
+    dag_.l0.ci_10.flush();    // output: ci_10_
+    dag_.l0.ci_30.compute();  // input: BidQty_, AskQty_
+    dag_.l0.ci_30.flush();    // output: ci_30_
+    dag_.l0.ci_all.compute(); // input: BidQty_, AskQty_
+    dag_.l0.ci_all.flush();   // output: ci_all_
 
     // --- CWI ---
-    dag_.l0.cwi_1.compute();
-    dag_.l0.cwi_1.flush();
-    dag_.l0.cwi_2.compute();
-    dag_.l0.cwi_2.flush();
+    dag_.l0.cwi_1.compute(); // input: BidQty_, AskQty_
+    dag_.l0.cwi_1.flush();   // output: cwi_1_
+    dag_.l0.cwi_2.compute(); // input: BidQty_, AskQty_
+    dag_.l0.cwi_2.flush();   // output: cwi_2_
 
     // --- DDI ---
-    dag_.l0.ddi_1.compute();
-    dag_.l0.ddi_1.flush();
-    dag_.l0.ddi_2.compute();
-    dag_.l0.ddi_2.flush();
+    dag_.l0.ddi_1.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
+    dag_.l0.ddi_1.flush();   // output: ddi_1_
+    dag_.l0.ddi_2.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
+    dag_.l0.ddi_2.flush();   // output: ddi_2_
 
     // --- TLR ---
-    dag_.l0.tbr_5.compute();
-    dag_.l0.tbr_5.flush();
-    dag_.l0.tar_5.compute();
-    dag_.l0.tar_5.flush();
+    dag_.l0.tbr_5.compute(); // input: BidQty_, AskQty_
+    dag_.l0.tbr_5.flush();   // output: tbr_5_
+    dag_.l0.tar_5.compute(); // input: BidQty_, AskQty_
+    dag_.l0.tar_5.flush();   // output: tar_5_
 
     // --- PARA (Layer 1) ---
-    dag_.l0.b_para_c0.compute();
-    dag_.l0.b_para_c0.flush();
-    dag_.l0.b_para_c1.compute();
-    dag_.l0.b_para_c1.flush();
-    dag_.l0.b_para_c2.compute();
-    dag_.l0.b_para_c2.flush();
-    dag_.l0.a_para_c0.compute();
-    dag_.l0.a_para_c0.flush();
-    dag_.l0.a_para_c1.compute();
-    dag_.l0.a_para_c1.flush();
-    dag_.l0.a_para_c2.compute();
-    dag_.l0.a_para_c2.flush();
+    dag_.l0.b_para_c0.compute(); // input: BidQty_, AskQty_
+    dag_.l0.b_para_c0.flush();   // output: b_para_c0_
+    dag_.l0.b_para_c1.compute(); // input: BidQty_, AskQty_
+    dag_.l0.b_para_c1.flush();   // output: b_para_c1_
+    dag_.l0.b_para_c2.compute(); // input: BidQty_, AskQty_
+    dag_.l0.b_para_c2.flush();   // output: b_para_c2_
+    dag_.l0.a_para_c0.compute(); // input: BidQty_, AskQty_
+    dag_.l0.a_para_c0.flush();   // output: a_para_c0_
+    dag_.l0.a_para_c1.compute(); // input: BidQty_, AskQty_
+    dag_.l0.a_para_c1.flush();   // output: a_para_c1_
+    dag_.l0.a_para_c2.compute(); // input: BidQty_, AskQty_
+    dag_.l0.a_para_c2.flush();   // output: a_para_c2_
     // --- PARA (Layer 2: 失衡, 依赖Layer 1 flush后的CBuffer) ---
-    dag_.l0.imba_para_c0.compute();
-    dag_.l0.imba_para_c0.flush();
-    dag_.l0.imba_para_c1.compute();
-    dag_.l0.imba_para_c1.flush();
-    dag_.l0.imba_para_c2.compute();
-    dag_.l0.imba_para_c2.flush();
+    dag_.l0.imba_para_c0.compute(); // input: b_para_c0_, a_para_c0_
+    dag_.l0.imba_para_c0.flush();   // output: imba_para_c0_
+    dag_.l0.imba_para_c1.compute(); // input: b_para_c1_, a_para_c1_
+    dag_.l0.imba_para_c1.flush();   // output: imba_para_c1_
+    dag_.l0.imba_para_c2.compute(); // input: b_para_c2_, a_para_c2_
+    dag_.l0.imba_para_c2.flush();   // output: imba_para_c2_
 
     // --- GRAD (Layer 1) ---
-    dag_.l0.b_5_c1.compute();
-    dag_.l0.b_5_c1.flush();
-    dag_.l0.a_5_c1.compute();
-    dag_.l0.a_5_c1.flush();
+    dag_.l0.b_5_c1.compute(); // input: BidQty_, AskQty_
+    dag_.l0.b_5_c1.flush();   // output: b_5_c1_
+    dag_.l0.a_5_c1.compute(); // input: BidQty_, AskQty_
+    dag_.l0.a_5_c1.flush();   // output: a_5_c1_
     // --- GRAD (Layer 2) ---
-    dag_.l0.imba_5_c1.compute();
-    dag_.l0.imba_5_c1.flush();
+    dag_.l0.imba_5_c1.compute(); // input: b_5_c1_, a_5_c1_
+    dag_.l0.imba_5_c1.flush();   // output: imba_5_c1_
 
     // --- ENTROPY (Layer 1) ---
-    dag_.l0.b_5_entropy.compute();
-    dag_.l0.b_5_entropy.flush();
-    dag_.l0.a_5_entropy.compute();
-    dag_.l0.a_5_entropy.flush();
-    dag_.l0.b_30_entropy.compute();
-    dag_.l0.b_30_entropy.flush();
-    dag_.l0.a_30_entropy.compute();
-    dag_.l0.a_30_entropy.flush();
+    dag_.l0.b_5_entropy.compute();  // input: BidQty_, AskQty_
+    dag_.l0.b_5_entropy.flush();    // output: b_5_entropy_
+    dag_.l0.a_5_entropy.compute();  // input: BidQty_, AskQty_
+    dag_.l0.a_5_entropy.flush();    // output: a_5_entropy_
+    dag_.l0.b_30_entropy.compute(); // input: BidQty_, AskQty_
+    dag_.l0.b_30_entropy.flush();   // output: b_30_entropy_
+    dag_.l0.a_30_entropy.compute(); // input: BidQty_, AskQty_
+    dag_.l0.a_30_entropy.flush();   // output: a_30_entropy_
     // --- ENTROPY (Layer 2) ---
-    dag_.l0.imba_5_entropy.compute();
-    dag_.l0.imba_5_entropy.flush();
-    dag_.l0.imba_30_entropy.compute();
-    dag_.l0.imba_30_entropy.flush();
+    dag_.l0.imba_5_entropy.compute();  // input: b_5_entropy_, a_5_entropy_
+    dag_.l0.imba_5_entropy.flush();    // output: imba_5_entropy_
+    dag_.l0.imba_30_entropy.compute(); // input: b_30_entropy_, a_30_entropy_
+    dag_.l0.imba_30_entropy.flush();   // output: imba_30_entropy_
 
     // --- OFI ---
-    dag_.l0.ofi_1.compute();
-    dag_.l0.ofi_1.flush();
-    dag_.l0.ofi_5.compute();
-    dag_.l0.ofi_5.flush();
+    dag_.l0.ofi_1.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
+    dag_.l0.ofi_1.flush();   // output: ofi_1_
+    dag_.l0.ofi_5.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
+    dag_.l0.ofi_5.flush();   // output: ofi_5_
 
     // --- COST ---
-    dag_.l0.cost_buy_1.compute();
-    dag_.l0.cost_buy_1.flush();
-    dag_.l0.cost_buy_5.compute();
-    dag_.l0.cost_buy_5.flush();
-    dag_.l0.cost_buy_10.compute();
-    dag_.l0.cost_buy_10.flush();
-    dag_.l0.cost_sell_1.compute();
-    dag_.l0.cost_sell_1.flush();
-    dag_.l0.cost_sell_5.compute();
-    dag_.l0.cost_sell_5.flush();
-    dag_.l0.cost_sell_10.compute();
-    dag_.l0.cost_sell_10.flush();
+    dag_.l0.cost_buy_1.compute();   // input: AskPrice_, AskQty_, MidPrice_
+    dag_.l0.cost_buy_1.flush();     // output: cost_buy_1_
+    dag_.l0.cost_buy_5.compute();   // input: AskPrice_, AskQty_, MidPrice_
+    dag_.l0.cost_buy_5.flush();     // output: cost_buy_5_
+    dag_.l0.cost_buy_10.compute();  // input: AskPrice_, AskQty_, MidPrice_
+    dag_.l0.cost_buy_10.flush();    // output: cost_buy_10_
+    dag_.l0.cost_sell_1.compute();  // input: BidPrice_, BidQty_, MidPrice_
+    dag_.l0.cost_sell_1.flush();    // output: cost_sell_1_
+    dag_.l0.cost_sell_5.compute();  // input: BidPrice_, BidQty_, MidPrice_
+    dag_.l0.cost_sell_5.flush();    // output: cost_sell_5_
+    dag_.l0.cost_sell_10.compute(); // input: BidPrice_, BidQty_, MidPrice_
+    dag_.l0.cost_sell_10.flush();   // output: cost_sell_10_
 
     // --- PEAK ---
-    dag_.l0.peak_loc_bid.compute();
-    dag_.l0.peak_loc_bid.flush();
-    dag_.l0.peak_loc_ask.compute();
-    dag_.l0.peak_loc_ask.flush();
-    dag_.l0.peak_ratio_bid.compute();
-    dag_.l0.peak_ratio_bid.flush();
-    dag_.l0.peak_ratio_ask.compute();
-    dag_.l0.peak_ratio_ask.flush();
+    dag_.l0.peak_loc_bid.compute();   // input: BidQty_
+    dag_.l0.peak_loc_bid.flush();     // output: peak_loc_bid_
+    dag_.l0.peak_loc_ask.compute();   // input: AskQty_
+    dag_.l0.peak_loc_ask.flush();     // output: peak_loc_ask_
+    dag_.l0.peak_ratio_bid.compute(); // input: BidQty_
+    dag_.l0.peak_ratio_bid.flush();   // output: peak_ratio_bid_
+    dag_.l0.peak_ratio_ask.compute(); // input: AskQty_
+    dag_.l0.peak_ratio_ask.flush();   // output: peak_ratio_ask_
 
     // --- 订单流累计特征 flush (compute在Trigger0, 读取深度后输出) ---
-    dag_.l0.flow_rate.flush();
-    dag_.l0.toxic_cr.flush();
-    dag_.l0.resil.flush();
-    dag_.l0.ctr.flush();
-    dag_.l0.behav.flush();
-    dag_.l0.oa.flush();
-    dag_.l0.hla.flush();
-    dag_.l0.toxic.flush();
+    dag_.l0.flow_rate.flush(); // output: arr_bid_, arr_ask_, can_bid_, can_ask_, trd_buy_, trd_sell_, net_ord_, foi_
+    dag_.l0.toxic_cr.flush();  // output: toxic_cr_
+    dag_.l0.resil.flush();     // output: ratio_bid_, ratio_ask_, imba_, dev_bid_, dev_ask_, mr_bid_, mr_ask_, recovery_bid_, recovery_ask_
+    dag_.l0.ctr.flush();       // output: cc_r_, ctr_xl_, ctr_l_, ctr_m_, ctr_s_, cnbi_, cnbi_xl_, cnbi_l_, cnbi_m_, cnbi_s_, cnbi_am_, cnbi_pm_
+    dag_.l0.behav.flush();     // output: agg_buy_, agg_sell_, agg_dif_, cpr_, agg_trd_, ord_size_
+    dag_.l0.oa.flush();        // output: oa_bcr_, oa_acr_, oa_btr_, oa_atr_
+    dag_.l0.hla.flush();       // output: hla_imba_
+    dag_.l0.toxic.flush();     // output: ptc_rt_, fleet_rt_, spoof_int_, stale_ratio_bid_, stale_ratio_ask_
 
     // --- LABEL ---
-    dag_.l0.next_tick_ret.compute();
-    dag_.l0.next_tick_ret.flush();
+    dag_.l0.next_tick_ret.compute(); // input: MidPrice_
+    dag_.l0.next_tick_ret.flush();   // output: next_tick_ret_
 
     // --- REPRE ---
-    dag_.l0.depth_repre.compute();
-    dag_.l0.depth_repre.flush();
+    dag_.l0.depth_repre.compute(); // input: (none)
+    dag_.l0.depth_repre.flush();   // output: depth_repre_
 
     // --- 写入缓冲区 (用 L0_FieldOffset 索引) ---
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.ci_1_.back();
