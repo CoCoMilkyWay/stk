@@ -3,35 +3,37 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 #include "features/FeaturesMinute/TS/MinuteIndex.hpp"
-// base
+#include "features/FeaturesTick/TS/Behav.hpp"
+#include "features/FeaturesTick/TS/CI.hpp"
+#include "features/FeaturesTick/TS/CTR.hpp"
+#include "features/FeaturesTick/TS/CWI.hpp"
+#include "features/FeaturesTick/TS/Cost.hpp"
+#include "features/FeaturesTick/TS/DDI.hpp"
 #include "features/FeaturesTick/TS/DeltaT.hpp"
 #include "features/FeaturesTick/TS/DepthData.hpp"
 #include "features/FeaturesTick/TS/DepthIndex.hpp"
-#include "features/FeaturesTick/TS/MicroPrice.hpp"
-#include "features/FeaturesTick/TS/MidPrice.hpp"
-#include "features/FeaturesTick/TS/Spread.hpp"
-#include "features/FeaturesTick/TS/TickIndex.hpp"
-#include "features/FeaturesTick/TS/TradePrice.hpp"
-// features
-#include "features/FeaturesTick/TS/Behav.hpp"
-#include "features/FeaturesTick/TS/CI.hpp"
-#include "features/FeaturesTick/TS/Cost.hpp"
-#include "features/FeaturesTick/TS/CTR.hpp"
-#include "features/FeaturesTick/TS/CWI.hpp"
-#include "features/FeaturesTick/TS/DDI.hpp"
+#include "features/FeaturesTick/TS/DepthRepresentation.hpp"
 #include "features/FeaturesTick/TS/Entropy.hpp"
+#include "features/FeaturesTick/TS/EntropyImba.hpp"
 #include "features/FeaturesTick/TS/FlowRate.hpp"
 #include "features/FeaturesTick/TS/Grad.hpp"
+#include "features/FeaturesTick/TS/GradImba.hpp"
 #include "features/FeaturesTick/TS/HLA.hpp"
 #include "features/FeaturesTick/TS/Label.hpp"
+#include "features/FeaturesTick/TS/MicroPrice.hpp"
+#include "features/FeaturesTick/TS/MidPrice.hpp"
 #include "features/FeaturesTick/TS/OA.hpp"
 #include "features/FeaturesTick/TS/OFI.hpp"
-#include "features/FeaturesTick/TS/PARA.hpp"
+#include "features/FeaturesTick/TS/Para.hpp"
+#include "features/FeaturesTick/TS/ParaImba.hpp"
 #include "features/FeaturesTick/TS/Peak.hpp"
-#include "features/FeaturesTick/TS/DepthRepresentation.hpp"
 #include "features/FeaturesTick/TS/Resiliency.hpp"
+#include "features/FeaturesTick/TS/Spread.hpp"
 #include "features/FeaturesTick/TS/TLR.hpp"
+#include "features/FeaturesTick/TS/TickIndex.hpp"
 #include "features/FeaturesTick/TS/Toxic.hpp"
+#include "features/FeaturesTick/TS/ToxicCr.hpp"
+#include "features/FeaturesTick/TS/TradePrice.hpp"
 #include <deque>
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
@@ -140,26 +142,26 @@ public:
     TLR<5, true> tbr_5{BidQty_, AskQty_, tbr_5_};
     TLR<5, false> tar_5{BidQty_, AskQty_, tar_5_};
 
-    // --- PARA (Layer 1) ---
+    // --- Para (Layer 1) ---
     CBuffer<float, L2::BLEN> b_para_c0_;
     CBuffer<float, L2::BLEN> b_para_c1_;
     CBuffer<float, L2::BLEN> b_para_c2_;
     CBuffer<float, L2::BLEN> a_para_c0_;
     CBuffer<float, L2::BLEN> a_para_c1_;
     CBuffer<float, L2::BLEN> a_para_c2_;
-    PARA<true, 0> b_para_c0{BidQty_, AskQty_, b_para_c0_};
-    PARA<true, 1> b_para_c1{BidQty_, AskQty_, b_para_c1_};
-    PARA<true, 2> b_para_c2{BidQty_, AskQty_, b_para_c2_};
-    PARA<false, 0> a_para_c0{BidQty_, AskQty_, a_para_c0_};
-    PARA<false, 1> a_para_c1{BidQty_, AskQty_, a_para_c1_};
-    PARA<false, 2> a_para_c2{BidQty_, AskQty_, a_para_c2_};
-    // --- PARA (Layer 2: 失衡，依赖Layer 1) ---
+    Para<true, 0> b_para_c0{BidQty_, AskQty_, b_para_c0_};
+    Para<true, 1> b_para_c1{BidQty_, AskQty_, b_para_c1_};
+    Para<true, 2> b_para_c2{BidQty_, AskQty_, b_para_c2_};
+    Para<false, 0> a_para_c0{BidQty_, AskQty_, a_para_c0_};
+    Para<false, 1> a_para_c1{BidQty_, AskQty_, a_para_c1_};
+    Para<false, 2> a_para_c2{BidQty_, AskQty_, a_para_c2_};
+    // --- Para (Layer 2: 失衡，依赖Layer 1) ---
     CBuffer<float, L2::BLEN> imba_para_c0_;
     CBuffer<float, L2::BLEN> imba_para_c1_;
     CBuffer<float, L2::BLEN> imba_para_c2_;
-    PARA_IMBA<0> imba_para_c0{b_para_c0_, a_para_c0_, imba_para_c0_};
-    PARA_IMBA<1> imba_para_c1{b_para_c1_, a_para_c1_, imba_para_c1_};
-    PARA_IMBA<2> imba_para_c2{b_para_c2_, a_para_c2_, imba_para_c2_};
+    ParaImba<0> imba_para_c0{b_para_c0_, a_para_c0_, imba_para_c0_};
+    ParaImba<1> imba_para_c1{b_para_c1_, a_para_c1_, imba_para_c1_};
+    ParaImba<2> imba_para_c2{b_para_c2_, a_para_c2_, imba_para_c2_};
 
     // --- Grad (Layer 1) ---
     CBuffer<float, L2::BLEN> b_5_c1_;
@@ -238,9 +240,9 @@ public:
     CBuffer<float, L2::BLEN> foi_;
     FlowRate flow_rate{td, arr_bid_, arr_ask_, can_bid_, can_ask_, trd_buy_, trd_sell_, net_ord_, foi_};
 
-    // --- ToxicCR ---
+    // --- ToxicCr ---
     CBuffer<float, L2::BLEN> toxic_cr_;
-    ToxicCR toxic_cr{td, toxic_cr_};
+    ToxicCr toxic_cr{td, toxic_cr_};
 
     // --- RESIL ---
     CBuffer<float, L2::BLEN> ratio_bid_;

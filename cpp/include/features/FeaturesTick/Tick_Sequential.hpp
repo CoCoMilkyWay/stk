@@ -80,8 +80,8 @@ inline void Tick_Sequential::compute_and_store() {
   }
 
   if (Trigger2) {
-    dag_.l0.DepthData.compute();  // input: td, TradePrice_
-    dag_.l0.DepthData.flush();    // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
+    dag_.l0.DepthData.compute(); // input: td, TradePrice_
+    dag_.l0.DepthData.flush();   // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
 
     // --- 基础数据层 ---
     dag_.l0.DepthIndex.compute(); // input: td
@@ -123,7 +123,7 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.tar_5.compute(); // input: BidQty_, AskQty_
     dag_.l0.tar_5.flush();   // output: tar_5_
 
-    // --- PARA (Layer 1) ---
+    // --- Para (Layer 1) ---
     dag_.l0.b_para_c0.compute(); // input: BidQty_, AskQty_
     dag_.l0.b_para_c0.flush();   // output: b_para_c0_
     dag_.l0.b_para_c1.compute(); // input: BidQty_, AskQty_
@@ -136,7 +136,7 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.a_para_c1.flush();   // output: a_para_c1_
     dag_.l0.a_para_c2.compute(); // input: BidQty_, AskQty_
     dag_.l0.a_para_c2.flush();   // output: a_para_c2_
-    // --- PARA (Layer 2: 失衡, 依赖Layer 1 flush后的CBuffer) ---
+    // --- Para (Layer 2: 失衡, 依赖Layer 1 flush后的CBuffer) ---
     dag_.l0.imba_para_c0.compute(); // input: b_para_c0_, a_para_c0_
     dag_.l0.imba_para_c0.flush();   // output: imba_para_c0_
     dag_.l0.imba_para_c1.compute(); // input: b_para_c1_, a_para_c1_

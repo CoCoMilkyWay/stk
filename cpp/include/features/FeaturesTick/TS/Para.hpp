@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// PARA (Parabola Fit) - 抛物线拟合
+// Para (Parabola Fit) - 抛物线拟合
 // =============================================================================
 // 对depth做二次拟合: V_i ~ c0 + c1*i + c2*i^2
 //   c0 - 截距 (近端流动性)
@@ -13,10 +13,10 @@
 //   COEF   - 0=c0, 1=c1, 2=c2
 //
 // DAG中使用:
-//   PARA<true, 0>  b_para_c0{bid_qty_, ask_qty_, b_para_c0_};
-//   PARA<true, 1>  b_para_c1{bid_qty_, ask_qty_, b_para_c1_};
-//   PARA<true, 2>  b_para_c2{bid_qty_, ask_qty_, b_para_c2_};
-//   PARA<false, 0> a_para_c0{bid_qty_, ask_qty_, a_para_c0_};
+//   Para<true, 0>  b_para_c0{bid_qty_, ask_qty_, b_para_c0_};
+//   Para<true, 1>  b_para_c1{bid_qty_, ask_qty_, b_para_c1_};
+//   Para<true, 2>  b_para_c2{bid_qty_, ask_qty_, b_para_c2_};
+//   Para<false, 0> a_para_c0{bid_qty_, ask_qty_, a_para_c0_};
 //   ...
 //
 // 使用30档数据拟合，最小二乘法: (X'X)^-1 * X'y
@@ -27,12 +27,12 @@
 #include "define/CBuffer.hpp"
 
 template <bool IS_BID, int COEF, size_t DEPTH_SIZE = L2::LOB_DEPTH>
-class PARA {
+class Para {
   static_assert(COEF >= 0 && COEF <= 2, "COEF must be 0, 1, or 2");
   static_assert(DEPTH_SIZE >= 3, "Need at least 3 levels for parabola fit");
 
 public:
-  PARA(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
+  Para(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
        const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
        CBuffer<float, L2::BLEN> &out)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {
@@ -105,44 +105,5 @@ private:
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
   float inv_row_[3]; // (X'X)^-1 的第COEF行
-  float value_ = 0.0f;
-};
-
-// =============================================================================
-// PARA_IMBA - 抛物线参数失衡
-// =============================================================================
-// imba = (b_coef - a_coef) / (|b_coef| + |a_coef|)
-//
-// DAG中使用:
-//   PARA_IMBA<0> imba_para_c0{b_para_c0_, a_para_c0_, imba_para_c0_};
-// =============================================================================
-
-template <int COEF>
-class PARA_IMBA {
-public:
-  PARA_IMBA(const CBuffer<float, L2::BLEN> &bid_coef,
-            const CBuffer<float, L2::BLEN> &ask_coef,
-            CBuffer<float, L2::BLEN> &out)
-      : bid_coef_(bid_coef), ask_coef_(ask_coef), out_(out) {}
-
-  inline void compute() {
-    // 从买卖两侧的抛物线系数CBuffer读取最新值
-    float b = bid_coef_.back();  // 买侧的c0/c1/c2系数
-    float a = ask_coef_.back();  // 卖侧的c0/c1/c2系数
-    // 计算系数失衡：(买侧-卖侧) / (|买侧|+|卖侧|)
-    // 值域[-1,1]，正值表示买侧该特征更强
-    float denom = std::abs(b) + std::abs(a);
-    value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
-  }
-
-  inline void flush() {
-    // 将compute中计算的系数失衡写入输出CBuffer
-    out_.push_back(value_);
-  }
-
-private:
-  const CBuffer<float, L2::BLEN> &bid_coef_;
-  const CBuffer<float, L2::BLEN> &ask_coef_;
-  CBuffer<float, L2::BLEN> &out_;
   float value_ = 0.0f;
 };
