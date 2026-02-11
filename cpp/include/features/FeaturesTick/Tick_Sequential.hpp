@@ -59,13 +59,14 @@ inline void Tick_Sequential::compute_and_store() {
 }
 
 inline void Tick_Sequential::compute_ts_tick(size_t t) {
-  bool Trigger0 = true;                                                  // [EVERY TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
-  bool Trigger1 = dag_.tick_data.lob.order_type == L2::OrderType::TAKER; // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
+  // 每个算子的compute()和其输入buffer在同一个采样域(trigger)
+  // 每个算子的flush()和其输出buffer在同一个采样域(trigger)
+  // 具体绑定关系请看DAG向量图
+
+  bool Trigger0 = true;                                                  // [EVERY TICK] 逐笔更新
+  bool Trigger1 = dag_.tick_data.lob.order_type == L2::OrderType::TAKER; // [ON TAKER] 成交时更新
   bool Trigger2 = dag_.tick_data.lob.depth_updated;                      // [ON DEPTH] 盘口更新时触发
 
-  // =========================================================================
-  // Trigger0: 每笔订单 - compute + flush (立即输出型)
-  // =========================================================================
   if (Trigger0) {
     dag_.l0.DeltaT.compute();
     dag_.l0.DeltaT.flush();
@@ -84,17 +85,11 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
     dag_.l0.toxic.compute();
   }
 
-  // =========================================================================
-  // Trigger1: 成交时 - compute + flush (立即输出型)
-  // =========================================================================
   if (Trigger1) {
     dag_.l0.TradePrice.compute();
     dag_.l0.TradePrice.flush();
   }
 
-  // =========================================================================
-  // Trigger2: 盘口更新 - 深度特征 compute+flush + 订单累计特征 flush
-  // =========================================================================
   if (Trigger2) {
     // --- 基础数据层 ---
     dag_.l0.DepthIndex.compute();
