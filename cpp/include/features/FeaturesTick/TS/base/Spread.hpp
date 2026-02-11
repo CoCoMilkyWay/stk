@@ -20,13 +20,13 @@ public:
         ask_price_0_(ask_price_0),
         buffer_(buffer) {}
 
-  void compute() {
+  inline void compute() {
     float bid = bid_price_0_.back();
     float ask = ask_price_0_.back();
     spread_value_ = (bid > 0 && ask > 0) ? (ask - bid) : 0.0f;
   }
 
-  void flush() { buffer_.push_back(spread_value_); }
+  inline void flush() { buffer_.push_back(spread_value_); }
 
   float back() const { return buffer_.back(); }
 

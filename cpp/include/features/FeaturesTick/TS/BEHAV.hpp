@@ -35,7 +35,7 @@ public:
         agg_buy_(agg_buy), agg_sell_(agg_sell), agg_dif_(agg_dif),
         cpr_(cpr), agg_trd_(agg_trd), ord_size_(ord_size) {}
 
-  void compute() {
+  inline void compute() {
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
 
@@ -78,7 +78,7 @@ public:
   }
 
   // 每秒输出 (ON_DEPTH 时调用)
-  void flush() {
+  inline void flush() {
     // agg_buy/sell = avg(agg)
     float avg_agg_buy = cnt_agg_buy_ > 0 ? sum_agg_buy_ / cnt_agg_buy_ : 0.0f;
     float avg_agg_sell = cnt_agg_sell_ > 0 ? sum_agg_sell_ / cnt_agg_sell_ : 0.0f;

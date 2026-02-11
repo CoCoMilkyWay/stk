@@ -25,7 +25,7 @@ public:
       CBuffer<float, L2::BLEN> &hla_imba)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty), hla_imba_(hla_imba) {}
 
-  void compute() {
+  inline void compute() {
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
@@ -45,7 +45,7 @@ public:
   }
 
   // 每秒输出 (ON_DEPTH 时调用)
-  void flush() {
+  inline void flush() {
     // 计算当前买一卖一量
     float v_bid = bid_qty_[0].back();
     float v_ask = -ask_qty_[0].back(); // ask是负值

@@ -18,12 +18,12 @@ public:
   DepthRepresentation(CBuffer<float, L2::BLEN> &depth_repre)
       : depth_repre_(depth_repre) {}
 
-  void compute() {
+  inline void compute() {
     // DUMMY: placeholder
     value_ = 0.0f;
   }
 
-  void flush() { depth_repre_.push_back(value_); }
+  inline void flush() { depth_repre_.push_back(value_); }
 
 private:
   CBuffer<float, L2::BLEN> &depth_repre_;

@@ -50,7 +50,7 @@ public:
         cnbi_(cnbi), cnbi_xl_(cnbi_xl), cnbi_l_(cnbi_l), cnbi_m_(cnbi_m), cnbi_s_(cnbi_s),
         cnbi_am_(cnbi_am), cnbi_pm_(cnbi_pm) {}
 
-  void compute() {
+  inline void compute() {
     if (td_.lob.order_type != L2::OrderType::TAKER) return;
 
     const float amt = static_cast<float>(td_.lob.volume) * td_.lob.price / 10000.0f; // 万元
@@ -98,7 +98,7 @@ public:
   }
 
   // 每秒输出 (ON_DEPTH 时调用)
-  void flush() {
+  inline void flush() {
     // cc_r = CA / total
     cc_r_.push_back(cum_total_ > 1e-6f ? cum_ca_ / cum_total_ : 0.0f);
 

@@ -25,13 +25,13 @@ public:
             CBuffer<float, L2::BLEN> &index_buffer)
       : td_(td), sec_buffer_(sec_buffer), index_buffer_(index_buffer) {}
 
-  void compute() {
+  inline void compute() {
     float clock_sec = static_cast<float>(td_.l0_index);
     sec_value_ = std::sin(clock_sec * SEC_PHASE_SCALE);
     index_value_ = static_cast<float>(td_.l0_index);
   }
 
-  void flush() {
+  inline void flush() {
     sec_buffer_.push_back(sec_value_);
     index_buffer_.push_back(index_value_);
   }

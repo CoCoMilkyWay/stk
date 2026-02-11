@@ -29,7 +29,7 @@ public:
        CBuffer<float, L2::BLEN> &out)
       : price_(price), qty_(qty), mid_price_(mid_price), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float sum_pv = 0.0f; // price * volume
     float sum_v = 0.0f;  // volume
 
@@ -61,7 +61,7 @@ public:
     value_ = cost;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&price_)[DEPTH_SIZE];

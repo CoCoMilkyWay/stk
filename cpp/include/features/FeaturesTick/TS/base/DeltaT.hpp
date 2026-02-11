@@ -15,7 +15,7 @@ public:
         taker_buffer_(taker_buffer),
         cancel_buffer_(cancel_buffer) {}
 
-  void compute() {
+  inline void compute() {
     uint32_t current_time_ms = tick_data_.lob.hour * 3600000 +
                                tick_data_.lob.minute * 60000 +
                                tick_data_.lob.second * 1000 +
@@ -49,7 +49,7 @@ public:
     }
   }
 
-  void flush() {
+  inline void flush() {
     if (has_maker_delta_) {
       maker_buffer_.push_back(delta_maker_ms_);
       has_maker_delta_ = false;

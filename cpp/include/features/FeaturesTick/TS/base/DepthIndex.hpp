@@ -16,8 +16,8 @@ public:
   DepthIndex(const TickData &td, CBuffer<float, L2::BLEN> &index_buffer)
       : td_(td), index_buffer_(index_buffer) {}
 
-  void compute() { index_value_ = static_cast<float>(td_.l0_index); }
-  void flush() { index_buffer_.push_back(index_value_); }
+  inline void compute() { index_value_ = static_cast<float>(td_.l0_index); }
+  inline void flush() { index_buffer_.push_back(index_value_); }
 
 private:
   const TickData &td_;

@@ -36,7 +36,7 @@ public:
         trd_buy_(trd_buy), trd_sell_(trd_sell),
         net_ord_(net_ord), foi_(foi) {}
 
-  void compute() {
+  inline void compute() {
     const auto &lob = td_.lob;
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
 
@@ -53,7 +53,7 @@ public:
     }
   }
 
-  void flush() {
+  inline void flush() {
     float dt = 1.0f;
 
     arr_bid_.push_back(static_cast<float>(cnt_arr_bid_) / dt);
@@ -112,13 +112,13 @@ public:
   ToxicCR(TickData &td, CBuffer<float, L2::BLEN> &out)
       : td_(td), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     if (td_.lob.order_type == L2::OrderType::CANCEL) {
       cancel_buffer_[write_idx_] += 1.0f;
     }
   }
 
-  void flush() {
+  inline void flush() {
     float short_sum = 0.0f;
     float long_sum = 0.0f;
 

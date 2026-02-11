@@ -13,26 +13,27 @@
 #include "features/FeaturesTick/TS/base/TickIndex.hpp"
 #include "features/FeaturesTick/TS/base/TradePrice.hpp"
 // features
+#include "features/FeaturesTick/TS/BEHAV.hpp"
 #include "features/FeaturesTick/TS/CI.hpp"
+#include "features/FeaturesTick/TS/COST.hpp"
+#include "features/FeaturesTick/TS/CTR.hpp"
 #include "features/FeaturesTick/TS/CWI.hpp"
 #include "features/FeaturesTick/TS/DDI.hpp"
 #include "features/FeaturesTick/TS/ENTROPY.hpp"
+#include "features/FeaturesTick/TS/FLOW_RATE.hpp"
 #include "features/FeaturesTick/TS/GRAD.hpp"
+#include "features/FeaturesTick/TS/HLA.hpp"
+#include "features/FeaturesTick/TS/LABEL.hpp"
+#include "features/FeaturesTick/TS/OA.hpp"
 #include "features/FeaturesTick/TS/OFI.hpp"
 #include "features/FeaturesTick/TS/PARA.hpp"
-#include "features/FeaturesTick/TS/TLR.hpp"
-#include "features/FeaturesTick/TS/COST.hpp"
 #include "features/FeaturesTick/TS/PEAK.hpp"
-#include "features/FeaturesTick/TS/FLOW_RATE.hpp"
-#include "features/FeaturesTick/TS/RESIL.hpp"
-#include "features/FeaturesTick/TS/CTR.hpp"
-#include "features/FeaturesTick/TS/BEHAV.hpp"
-#include "features/FeaturesTick/TS/OA.hpp"
-#include "features/FeaturesTick/TS/HLA.hpp"
-#include "features/FeaturesTick/TS/TOXIC.hpp"
-#include "features/FeaturesTick/TS/LABEL.hpp"
 #include "features/FeaturesTick/TS/REPRE.hpp"
+#include "features/FeaturesTick/TS/RESIL.hpp"
+#include "features/FeaturesTick/TS/TLR.hpp"
+#include "features/FeaturesTick/TS/TOXIC.hpp"
 #include <deque>
+
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
@@ -251,8 +252,8 @@ public:
     CBuffer<float, L2::BLEN> recovery_bid_;
     CBuffer<float, L2::BLEN> recovery_ask_;
     Resiliency resil{td, BidQty_, AskQty_,
-        ratio_bid_, ratio_ask_, imba_, dev_bid_, dev_ask_,
-        mr_bid_, mr_ask_, recovery_bid_, recovery_ask_};
+                     ratio_bid_, ratio_ask_, imba_, dev_bid_, dev_ask_,
+                     mr_bid_, mr_ask_, recovery_bid_, recovery_ask_};
 
     // --- CTR ---
     CBuffer<float, L2::BLEN> cc_r_;
@@ -268,7 +269,7 @@ public:
     CBuffer<float, L2::BLEN> cnbi_am_;
     CBuffer<float, L2::BLEN> cnbi_pm_;
     CTR ctr{td, cc_r_, ctr_xl_, ctr_l_, ctr_m_, ctr_s_,
-        cnbi_, cnbi_xl_, cnbi_l_, cnbi_m_, cnbi_s_, cnbi_am_, cnbi_pm_};
+            cnbi_, cnbi_xl_, cnbi_l_, cnbi_m_, cnbi_s_, cnbi_am_, cnbi_pm_};
 
     // --- BEHAV ---
     CBuffer<float, L2::BLEN> agg_buy_;

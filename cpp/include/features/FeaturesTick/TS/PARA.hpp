@@ -70,7 +70,7 @@ public:
     }
   }
 
-  void compute() {
+  inline void compute() {
     // 计算 X'y = [Σv, Σi*v, Σi²*v]
     float xy0 = 0.0f, xy1 = 0.0f, xy2 = 0.0f;
 
@@ -92,7 +92,7 @@ public:
     value_ = inv_row_[0] * xy0 + inv_row_[1] * xy1 + inv_row_[2] * xy2;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
@@ -119,14 +119,14 @@ public:
             CBuffer<float, L2::BLEN> &out)
       : bid_coef_(bid_coef), ask_coef_(ask_coef), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float b = bid_coef_.back();
     float a = ask_coef_.back();
     float denom = std::abs(b) + std::abs(a);
     value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_coef_;

@@ -60,7 +60,7 @@ public:
     initialized_ = true;
   }
 
-  void compute() {
+  inline void compute() {
     const auto &depth = tick_data_.lob.depth_buffer;
 
     // 首次调用时用 mid price 初始化涨跌停价
@@ -111,7 +111,7 @@ public:
     }
   }
 
-  void flush() {
+  inline void flush() {
     for (size_t i = 0; i < N_LEVELS; ++i) {
       bid_price_[i].push_back(tmp_bid_price_[i]);
       ask_price_[i].push_back(tmp_ask_price_[i]);

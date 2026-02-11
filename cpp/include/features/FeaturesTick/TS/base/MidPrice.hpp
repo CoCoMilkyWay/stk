@@ -19,13 +19,13 @@ public:
         ask_price_0_(ask_price_0),
         buffer_(buffer) {}
 
-  void compute() {
+  inline void compute() {
     float bid = bid_price_0_.back();
     float ask = ask_price_0_.back();
     mid_value_ = (bid + ask) * 0.5f;
   }
 
-  void flush() { buffer_.push_back(mid_value_); }
+  inline void flush() { buffer_.push_back(mid_value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_price_0_;

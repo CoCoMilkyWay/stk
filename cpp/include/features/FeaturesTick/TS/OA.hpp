@@ -31,7 +31,7 @@ public:
         oa_bcr_(oa_bcr), oa_acr_(oa_acr),
         oa_btr_(oa_btr), oa_atr_(oa_atr) {}
 
-  void compute() {
+  inline void compute() {
     // 只在集合竞价时段累计 (09:15-09:25)
     if (td_.l0_index >= OA_END_L0) return;
 
@@ -56,7 +56,7 @@ public:
   }
 
   // 每秒输出 (ON_DEPTH 时调用)
-  void flush() {
+  inline void flush() {
     // 计算各项比率
     float bcr = vol_maker_bid_ > 1e-6f ? vol_cancel_bid_ / vol_maker_bid_ : 0.0f;
     float acr = vol_maker_ask_ > 1e-6f ? vol_cancel_ask_ / vol_maker_ask_ : 0.0f;

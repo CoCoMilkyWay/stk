@@ -41,7 +41,7 @@ public:
         mr_bid_(mr_bid), mr_ask_(mr_ask),
         recovery_bid_(recovery_bid), recovery_ask_(recovery_ask) {}
 
-  void compute() {
+  inline void compute() {
     const auto &lob = td_.lob;
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
     const float vol = static_cast<float>(lob.volume);
@@ -63,7 +63,7 @@ public:
   }
 
   // 每秒输出 (ON_DEPTH 时调用)
-  void flush() {
+  inline void flush() {
     // 计算当前深度
     float depth_bid = 0.0f, depth_ask = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH; ++i) {

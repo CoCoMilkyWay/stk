@@ -28,7 +28,7 @@ public:
        CBuffer<float, L2::BLEN> &out)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float sum_diff = 0.0f;
 
     for (size_t i = 0; i < N_LEVELS - 1; ++i) {
@@ -46,7 +46,7 @@ public:
     value_ = sum_diff / static_cast<float>(N_LEVELS - 1);
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
@@ -68,14 +68,14 @@ public:
             CBuffer<float, L2::BLEN> &out)
       : bid_grad_(bid_grad), ask_grad_(ask_grad), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float b = bid_grad_.back();
     float a = ask_grad_.back();
     float denom = std::abs(b) + std::abs(a);
     value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_grad_;

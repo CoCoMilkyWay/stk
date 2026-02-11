@@ -35,7 +35,7 @@ public:
         ask_price_(ask_price),
         out_(out) {}
 
-  void compute() {
+  inline void compute() {
     // 获取中间价 (买1卖1均价)
     float mid = (bid_price_[0].back() + ask_price_[0].back()) * 0.5f;
 
@@ -61,7 +61,7 @@ public:
     value_ = denom > 1e-6f ? numer / denom : 0.0f;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

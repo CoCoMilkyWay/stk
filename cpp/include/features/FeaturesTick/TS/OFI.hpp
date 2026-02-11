@@ -52,7 +52,7 @@ public:
     }
   }
 
-  void compute() {
+  inline void compute() {
     float ofi = 0.0f;
 
     for (size_t i = 0; i < N_LEVELS; ++i) {
@@ -98,7 +98,7 @@ public:
     value_ = ofi;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

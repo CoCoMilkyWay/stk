@@ -16,13 +16,13 @@ public:
   TradePrice(const TickData &tick_data, CBuffer<float, L2::BLEN> &buffer)
       : tick_data_(tick_data), buffer_(buffer) {}
 
-  void compute() {
+  inline void compute() {
     if (tick_data_.lob.order_type == L2::OrderType::TAKER) {
       last_trade_price_ = tick_data_.lob.price;
     }
   }
 
-  void flush() {
+  inline void flush() {
     buffer_.push_back(last_trade_price_);
   }
 

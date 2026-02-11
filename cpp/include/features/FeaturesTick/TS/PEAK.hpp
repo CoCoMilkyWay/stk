@@ -25,7 +25,7 @@ public:
        CBuffer<float, L2::BLEN> &out)
       : qty_(qty), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float max_v = 0.0f;
     float sum_v = 0.0f;
     size_t max_idx = 0;
@@ -55,7 +55,7 @@ public:
     value_ = result;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&qty_)[N_LEVELS];

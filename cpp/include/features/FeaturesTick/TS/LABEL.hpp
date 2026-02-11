@@ -20,7 +20,7 @@ public:
                  CBuffer<float, L2::BLEN> &next_tick_ret)
       : mid_price_(mid_price), next_tick_ret_(next_tick_ret) {}
 
-  void compute() {
+  inline void compute() {
     float current_mid = mid_price_.back();
 
     float ret = 0.0f;
@@ -33,7 +33,7 @@ public:
     prev_mid_ = current_mid;
   }
 
-  void flush() { next_tick_ret_.push_back(value_); }
+  inline void flush() { next_tick_ret_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &mid_price_;

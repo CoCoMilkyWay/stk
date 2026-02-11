@@ -32,7 +32,7 @@ public:
           CBuffer<float, L2::BLEN> &out)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float v[N_LEVELS];
     float total = 0.0f;
 
@@ -61,7 +61,7 @@ public:
     value_ = entropy;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
@@ -83,14 +83,14 @@ public:
                CBuffer<float, L2::BLEN> &out)
       : bid_entropy_(bid_entropy), ask_entropy_(ask_entropy), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float b = bid_entropy_.back();
     float a = ask_entropy_.back();
     float denom = b + a;
     value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_entropy_;

@@ -35,7 +35,7 @@ public:
     }
   }
 
-  void compute() {
+  inline void compute() {
     float numer = 0.0f;
     float denom = 0.0f;
 
@@ -51,7 +51,7 @@ public:
     value_ = denom > 1e-6f ? numer / denom : 0.0f;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

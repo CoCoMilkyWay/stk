@@ -34,7 +34,7 @@ public:
         ptc_rt_(ptc_rt), fleet_rt_(fleet_rt), spoof_int_(spoof_int),
         stale_ratio_bid_(stale_ratio_bid), stale_ratio_ask_(stale_ratio_ask) {}
 
-  void compute() {
+  inline void compute() {
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
     const bool is_large = vol >= LARGE_ORDER_THRESHOLD;
@@ -60,7 +60,7 @@ public:
   }
 
   // 每秒输出 (ON_DEPTH 时调用)
-  void flush() {
+  inline void flush() {
     // ptc_rt = 成交前有撤单的比例
     ptc_rt_.push_back(cnt_taker_ > 0 ? static_cast<float>(cnt_ptc_) / cnt_taker_ : 0.0f);
 

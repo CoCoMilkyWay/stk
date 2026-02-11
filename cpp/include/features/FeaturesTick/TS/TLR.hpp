@@ -29,7 +29,7 @@ public:
       CBuffer<float, L2::BLEN> &out)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {}
 
-  void compute() {
+  inline void compute() {
     float top_sum = 0.0f;
     float total_sum = 0.0f;
 
@@ -50,7 +50,7 @@ public:
     value_ = total_sum > 1e-6f ? top_sum / total_sum : 0.0f;
   }
 
-  void flush() { out_.push_back(value_); }
+  inline void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
