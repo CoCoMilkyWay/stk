@@ -80,11 +80,12 @@ inline void Tick_Sequential::compute_and_store() {
   }
 
   if (Trigger2) {
+    dag_.l0.DepthData.compute();  // input: td
+    dag_.l0.DepthData.flush();    // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
+
     // --- 基础数据层 ---
     dag_.l0.DepthIndex.compute(); // input: td
     dag_.l0.DepthIndex.flush();   // output: DepthIndex_
-    dag_.l0.DepthData.compute();  // input: td
-    dag_.l0.DepthData.flush();    // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
     dag_.l0.MidPrice.compute();   // input: BidPrice_[0], AskPrice_[0]
     dag_.l0.MidPrice.flush();     // output: MidPrice_
     dag_.l0.MicroPrice.compute(); // input: td

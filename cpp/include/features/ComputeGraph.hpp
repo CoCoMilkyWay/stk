@@ -61,7 +61,7 @@ public:
 
     // --- TickIndex ---
     CBuffer<float, L2::BLEN> Sec_;       // 秒相位 [-1,1] (特征: sec)
-    CBuffer<float, L2::BLEN> TickIndex_; // 原始tick索引 (供其他算子使用)
+    CBuffer<float, L2::BLEN> TickIndex_; // 原始tick索引(秒:0-59)
     TickIndex TickIndex{td, Sec_, TickIndex_};
 
     // -------------------------------------------------------------------------
