@@ -18,7 +18,7 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出)
+// compute: 每笔订单时累计, flush: 按秒输出
 class FlowRate {
 public:
   FlowRate(TickData &td,
@@ -37,41 +37,50 @@ public:
         net_ord_(net_ord), foi_(foi) {}
 
   inline void compute() {
+    // 从tick_data读取订单信息
     const auto &lob = td_.lob;
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
 
+    // 根据订单类型和方向，累计各类订单数量
     switch (lob.order_type) {
-    case L2::OrderType::MAKER:
+    case L2::OrderType::MAKER:  // 挂单
       if (is_bid) ++cnt_arr_bid_; else ++cnt_arr_ask_;
       break;
-    case L2::OrderType::TAKER:
+    case L2::OrderType::TAKER:  // 成交
       if (is_bid) ++cnt_trd_buy_; else ++cnt_trd_sell_;
       break;
-    case L2::OrderType::CANCEL:
+    case L2::OrderType::CANCEL: // 撤单
       if (is_bid) ++cnt_can_bid_; else ++cnt_can_ask_;
       break;
     }
   }
 
   inline void flush() {
-    float dt = 1.0f;
+    // 将累计的订单数量输出为流率（单位时间）
+    float dt = 1.0f;  // 时间窗口（暂定1秒）
 
-    arr_bid_.push_back(static_cast<float>(cnt_arr_bid_) / dt);
-    arr_ask_.push_back(static_cast<float>(cnt_arr_ask_) / dt);
-    can_bid_.push_back(static_cast<float>(cnt_can_bid_) / dt);
-    can_ask_.push_back(static_cast<float>(cnt_can_ask_) / dt);
-    trd_buy_.push_back(static_cast<float>(cnt_trd_buy_) / dt);
-    trd_sell_.push_back(static_cast<float>(cnt_trd_sell_) / dt);
+    // 计算各类订单流率：订单数量 / 时间窗口
+    arr_bid_.push_back(static_cast<float>(cnt_arr_bid_) / dt);   // 买单到达率
+    arr_ask_.push_back(static_cast<float>(cnt_arr_ask_) / dt);   // 卖单到达率
+    can_bid_.push_back(static_cast<float>(cnt_can_bid_) / dt);   // 买单撤单率
+    can_ask_.push_back(static_cast<float>(cnt_can_ask_) / dt);   // 卖单撤单率
+    trd_buy_.push_back(static_cast<float>(cnt_trd_buy_) / dt);   // 主动买成交率
+    trd_sell_.push_back(static_cast<float>(cnt_trd_sell_) / dt); // 主动卖成交率
 
+    // 计算净订单流：(买挂单-买撤单) - (卖挂单-卖撤单)
+    // 正值表示买方净挂单多，负值表示卖方净挂单多
     int net_bid = cnt_arr_bid_ - cnt_can_bid_;
     int net_ask = cnt_arr_ask_ - cnt_can_ask_;
     net_ord_.push_back(static_cast<float>(net_bid - net_ask));
 
+    // 计算订单流失衡FOI：(买方流-卖方流) / (|买方流|+|卖方流|)
+    // 流 = 成交 - 撤单，反映实际有效的订单活动
     int delta_bid = cnt_trd_buy_ - cnt_can_bid_;
     int delta_ask = cnt_trd_sell_ - cnt_can_ask_;
     int sum = std::abs(delta_bid) + std::abs(delta_ask);
     foi_.push_back(sum > 0 ? static_cast<float>(delta_bid - delta_ask) / static_cast<float>(sum) : 0.0f);
 
+    // 重置计数器，准备下一个窗口
     cnt_arr_bid_ = cnt_arr_ask_ = 0;
     cnt_can_bid_ = cnt_can_ask_ = 0;
     cnt_trd_buy_ = cnt_trd_sell_ = 0;
@@ -103,7 +112,7 @@ private:
 // 使用滚动窗口实现
 // =============================================================================
 
-// compute@Trigger0 (每笔订单, 内部判断CANCEL), flush@Trigger2
+// compute: 每笔订单时累计 (内部判断CANCEL), flush: 按秒输出
 class ToxicCR {
   static constexpr size_t SHORT_WINDOW = 5;   // 5秒
   static constexpr size_t LONG_WINDOW = 60;   // 60秒
@@ -113,29 +122,34 @@ public:
       : td_(td), out_(out) {}
 
   inline void compute() {
+    // 每笔订单时，如果是撤单则累计到当前秒的缓冲区
     if (td_.lob.order_type == L2::OrderType::CANCEL) {
       cancel_buffer_[write_idx_] += 1.0f;
     }
   }
 
   inline void flush() {
-    float short_sum = 0.0f;
-    float long_sum = 0.0f;
+    float short_sum = 0.0f;  // 短窗口（5秒）撤单数
+    float long_sum = 0.0f;   // 长窗口（60秒）撤单数
 
+    // 遍历滚动窗口缓冲区，计算短长窗口撤单数
     for (size_t i = 0; i < LONG_WINDOW; ++i) {
       size_t idx = (write_idx_ + LONG_WINDOW - i) % LONG_WINDOW;
       float v = cancel_buffer_[idx];
-      long_sum += v;
+      long_sum += v;         // 累加到长窗口
       if (i < SHORT_WINDOW) {
-        short_sum += v;
+        short_sum += v;      // 前5秒累加到短窗口
       }
     }
 
+    // 计算毒订单流撤单率：短窗口撤单 / 长窗口撤单
+    // 值越大表示最近5秒撤单占比越高，可能存在高频撤单行为
     float ratio = (long_sum > 1e-6f) ? (short_sum / long_sum) : 0.0f;
     out_.push_back(ratio);
 
+    // 移动写指针到下一个时间窗口
     write_idx_ = (write_idx_ + 1) % LONG_WINDOW;
-    cancel_buffer_[write_idx_] = 0.0f;
+    cancel_buffer_[write_idx_] = 0.0f;  // 清空新窗口位置
   }
 
 private:

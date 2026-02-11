@@ -33,16 +33,22 @@ public:
     float sum_bid = 0.0f;
     float sum_ask = 0.0f;
 
+    // 累加前N档买卖数量（从各档的CBuffer读取最新值）
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      sum_bid += bid_qty_[i].back();
-      sum_ask += -ask_qty_[i].back();
+      sum_bid += bid_qty_[i].back();      // 买方数量（正值）
+      sum_ask += -ask_qty_[i].back();     // 卖方数量（取反，变正值）
     }
 
+    // 计算累计失衡率：(买量-卖量)/(买量+卖量)
+    // 值域[-1,1]，正值表示买方占优，负值表示卖方占优
     float denom = sum_bid + sum_ask;
     value_ = denom > 1e-6f ? (sum_bid - sum_ask) / denom : 0.0f;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的CI值写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

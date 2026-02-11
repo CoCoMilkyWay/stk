@@ -19,11 +19,17 @@ public:
       : depth_repre_(depth_repre) {}
 
   inline void compute() {
-    // DUMMY: placeholder
+    // DUMMY实现：当前仅返回占位符0
+    // 未来实现：将多档深度数据输入预训练的表征学习backbone
+    // 提取高维深度特征的低维表征（如自编码器、对比学习等）
     value_ = 0.0f;
   }
 
-  inline void flush() { depth_repre_.push_back(value_); }
+  inline void flush() {
+    // 将compute中的表征值写入CBuffer
+    // 当前为占位符，后续接入实际模型后会输出有意义的表征
+    depth_repre_.push_back(value_);
+  }
 
 private:
   CBuffer<float, L2::BLEN> &depth_repre_;

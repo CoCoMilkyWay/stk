@@ -36,32 +36,38 @@ public:
         out_(out) {}
 
   inline void compute() {
-    // 获取中间价 (买1卖1均价)
+    // 计算中间价（买一卖一均价）作为距离基准
     float mid = (bid_price_[0].back() + ask_price_[0].back()) * 0.5f;
 
-    float numer = 0.0f;
-    float denom = 0.0f;
+    float numer = 0.0f;  // 加权失衡和
+    float denom = 0.0f;  // 加权总量
 
+    // 遍历所有档位，计算距离折扣失衡
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
-      float b = bid_qty_[i].back();
-      float a = -ask_qty_[i].back();
-      float bp = bid_price_[i].back();
-      float ap = ask_price_[i].back();
+      float b = bid_qty_[i].back();       // 买i+1档数量
+      float a = -ask_qty_[i].back();      // 卖i+1档数量（取反）
+      float bp = bid_price_[i].back();    // 买i+1档价格
+      float ap = ask_price_[i].back();    // 卖i+1档价格
 
-      // 距离: 从各档价格到中间价
-      float dist_b = mid - bp;
-      float dist_a = ap - mid;
+      // 计算各档到中间价的距离
+      float dist_b = mid - bp;            // 买档距离（中间价-买价）
+      float dist_a = ap - mid;            // 卖档距离（卖价-中间价）
       float dist = (dist_b + dist_a) * 0.5f; // 平均距离
 
+      // 计算距离衰减权重：w = e^(-λ*dist)，距离越远权重越小
       float w = std::exp(-LAMBDA * dist);
-      numer += w * (b - a);
-      denom += w * (b + a);
+      numer += w * (b - a);  // 加权失衡
+      denom += w * (b + a);  // 加权总量
     }
 
+    // 计算距离折扣失衡率，值域[-1,1]
     value_ = denom > 1e-6f ? numer / denom : 0.0f;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的DDI值写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

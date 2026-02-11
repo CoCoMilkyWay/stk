@@ -63,29 +63,34 @@ public:
   inline void compute() {
     const auto &depth = tick_data_.lob.depth_buffer;
 
-    // 首次调用时用 mid price 初始化涨跌停价
+    // 首次调用时用 mid price 初始化涨跌停价（第一天没有前收盘价时的fallback）
     if (!initialized_) [[unlikely]] {
       const Level *bid1 = depth[L2::LOB_DEPTH];
       const Level *ask1 = depth[L2::LOB_DEPTH - 1];
       float mid = (bid1->price + ask1->price) * 0.5f * PRICE_SCALE;
-      set_prev_close(mid);
+      set_prev_close(mid); // 用mid价设置±20%涨跌停边界
     }
 
+    // 遍历N档盘口数据，逐档提取并转换
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      const Level *bid_level = depth[L2::LOB_DEPTH + i];
-      const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i];
+      // 从depth_buffer读取原始Level数据
+      // 布局：[0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
+      const Level *bid_level = depth[L2::LOB_DEPTH + i];     // 买i+1档
+      const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i]; // 卖i+1档
 
-      float bid_price = static_cast<float>(bid_level->price) * PRICE_SCALE;
+      // 单位转换：价格(分→元), 数量(股), 金额(元→万元)
+      float bid_price = static_cast<float>(bid_level->price) * PRICE_SCALE; // 分→元
       float ask_price = static_cast<float>(ask_level->price) * PRICE_SCALE;
-      float bid_qty = static_cast<float>(bid_level->net_quantity);
-      float ask_qty = static_cast<float>(ask_level->net_quantity);
-      float bid_amt = bid_price * bid_qty * AMT_SCALE;
+      float bid_qty = static_cast<float>(bid_level->net_quantity);   // 股
+      float ask_qty = static_cast<float>(ask_level->net_quantity);   // 负值表示卖方
+      float bid_amt = bid_price * bid_qty * AMT_SCALE;               // 万元
       float ask_amt = ask_price * ask_qty * AMT_SCALE;
 
+      // 涨跌停保护：超限的档位设为边界价，数量和金额设为最小值
       if (bid_price > limit_up_) [[unlikely]] {
         bid_price = limit_up_;
-        bid_qty = LIMIT_QTY;
-        bid_amt = LIMIT_AMT;
+        bid_qty = LIMIT_QTY;   // 1股
+        bid_amt = LIMIT_AMT;   // 0.01万元
       } else if (bid_price < limit_down_) [[unlikely]] {
         bid_price = limit_down_;
         bid_qty = LIMIT_QTY;
@@ -94,7 +99,7 @@ public:
 
       if (ask_price > limit_up_) [[unlikely]] {
         ask_price = limit_up_;
-        ask_qty = -LIMIT_QTY;
+        ask_qty = -LIMIT_QTY;  // 卖方保持负值
         ask_amt = -LIMIT_AMT;
       } else if (ask_price < limit_down_) [[unlikely]] {
         ask_price = limit_down_;
@@ -102,6 +107,7 @@ public:
         ask_amt = -LIMIT_AMT;
       }
 
+      // 暂存到临时数组，flush时再批量写入CBuffer
       tmp_bid_price_[i] = bid_price;
       tmp_ask_price_[i] = ask_price;
       tmp_bid_qty_[i] = bid_qty;
@@ -112,13 +118,15 @@ public:
   }
 
   inline void flush() {
+    // 将compute中计算的N档数据批量写入6组CBuffer数组
+    // 每组有N_LEVELS个CBuffer，分别对应N档盘口
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      bid_price_[i].push_back(tmp_bid_price_[i]);
-      ask_price_[i].push_back(tmp_ask_price_[i]);
-      bid_qty_[i].push_back(tmp_bid_qty_[i]);
-      ask_qty_[i].push_back(tmp_ask_qty_[i]);
-      bid_amt_[i].push_back(tmp_bid_amt_[i]);
-      ask_amt_[i].push_back(tmp_ask_amt_[i]);
+      bid_price_[i].push_back(tmp_bid_price_[i]); // 买i+1档价格
+      ask_price_[i].push_back(tmp_ask_price_[i]); // 卖i+1档价格
+      bid_qty_[i].push_back(tmp_bid_qty_[i]);     // 买i+1档数量
+      ask_qty_[i].push_back(tmp_ask_qty_[i]);     // 卖i+1档数量
+      bid_amt_[i].push_back(tmp_bid_amt_[i]);     // 买i+1档金额
+      ask_amt_[i].push_back(tmp_ask_amt_[i]);     // 卖i+1档金额
     }
   }
 

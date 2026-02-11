@@ -55,40 +55,51 @@ public:
   inline void compute() {
     float ofi = 0.0f;
 
+    // 遍历前N档，计算订单流失衡
     for (size_t i = 0; i < N_LEVELS; ++i) {
+      // 从各档CBuffer读取当前价格和数量
       float cur_bid_price = bid_price_[i].back();
       float cur_bid_qty = bid_qty_[i].back();
       float cur_ask_price = ask_price_[i].back();
-      float cur_ask_qty = -ask_qty_[i].back(); // 转为正值
+      float cur_ask_qty = -ask_qty_[i].back();  // 卖方数量转为正值
 
+      // 读取上一次的价格和数量（状态变量）
       float prev_bp = prev_bid_price_[i];
       float prev_bq = prev_bid_qty_[i];
       float prev_ap = prev_ask_price_[i];
       float prev_aq = prev_ask_qty_[i];
 
-      // Bid delta: price↓→0, price=→cur-prev, price↑→cur
+      // 买方订单流增量：根据价格变化判断订单流方向
+      // price↓ → 0 (价格下跌，原订单被消耗)
+      // price= → cur-prev (价格不变，净增量)
+      // price↑ → cur (价格上涨，新挂单)
       float delta_bid;
       if (cur_bid_price < prev_bp) {
-        delta_bid = 0.0f;
+        delta_bid = 0.0f;  // 价格下跌，清零
       } else if (cur_bid_price == prev_bp) {
-        delta_bid = cur_bid_qty - prev_bq;
+        delta_bid = cur_bid_qty - prev_bq;  // 价格不变，计算增量
       } else {
-        delta_bid = cur_bid_qty;
+        delta_bid = cur_bid_qty;  // 价格上涨，全部算新增
       }
 
-      // Ask delta: price↓→cur, price=→cur-prev, price↑→0
+      // 卖方订单流增量：逻辑相反
+      // price↓ → cur (价格下跌，新挂单)
+      // price= → cur-prev (价格不变，净增量)
+      // price↑ → 0 (价格上涨，原订单被消耗)
       float delta_ask;
       if (cur_ask_price < prev_ap) {
-        delta_ask = cur_ask_qty;
+        delta_ask = cur_ask_qty;  // 价格下跌，全部算新增
       } else if (cur_ask_price == prev_ap) {
-        delta_ask = cur_ask_qty - prev_aq;
+        delta_ask = cur_ask_qty - prev_aq;  // 价格不变，计算增量
       } else {
-        delta_ask = 0.0f;
+        delta_ask = 0.0f;  // 价格上涨，清零
       }
 
+      // 加权累加订单流失衡：买方增量 - 卖方增量
+      // 正值表示买方主动挂单强，负值表示卖方主动挂单强
       ofi += weights_[i] * (delta_bid - delta_ask);
 
-      // 更新prev
+      // 更新状态：保存当前值作为下一次的prev
       prev_bid_price_[i] = cur_bid_price;
       prev_bid_qty_[i] = cur_bid_qty;
       prev_ask_price_[i] = cur_ask_price;
@@ -98,7 +109,10 @@ public:
     value_ = ofi;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的OFI值写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

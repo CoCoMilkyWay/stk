@@ -17,12 +17,16 @@ public:
       : tick_data_(tick_data), buffer_(buffer) {}
 
   inline void compute() {
+    // 只在TAKER（成交）时更新成交价
+    // 非TAKER时保持上一次的成交价不变
     if (tick_data_.lob.order_type == L2::OrderType::TAKER) {
-      last_trade_price_ = tick_data_.lob.price;
+      last_trade_price_ = tick_data_.lob.price; // 从tick_data读取最新成交价
     }
   }
 
   inline void flush() {
+    // 将当前维护的成交价写入CBuffer
+    // TAKER时是新成交价，非TAKER时是前值
     buffer_.push_back(last_trade_price_);
   }
 

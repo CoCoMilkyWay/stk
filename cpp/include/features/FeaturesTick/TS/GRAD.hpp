@@ -31,22 +31,29 @@ public:
   inline void compute() {
     float sum_diff = 0.0f;
 
+    // 计算前N档的一阶差分：ΔV_i = V_{i+1} - V_i
     for (size_t i = 0; i < N_LEVELS - 1; ++i) {
       float v_i, v_ip1;
+      // 根据IS_BID选择买侧或卖侧数据
       if constexpr (IS_BID) {
-        v_i = bid_qty_[i].back();
-        v_ip1 = bid_qty_[i + 1].back();
+        v_i = bid_qty_[i].back();      // 第i+1档数量
+        v_ip1 = bid_qty_[i + 1].back(); // 第i+2档数量
       } else {
-        v_i = -ask_qty_[i].back();
+        v_i = -ask_qty_[i].back();     // 卖方取反
         v_ip1 = -ask_qty_[i + 1].back();
       }
-      sum_diff += v_ip1 - v_i;
+      sum_diff += v_ip1 - v_i;  // 累加差分
     }
 
+    // 计算平均梯度：总差分 / (N-1)
+    // 正值表示越远离盘口数量越多（做市类挂单），负值表示集中在盘口（冲击类订单）
     value_ = sum_diff / static_cast<float>(N_LEVELS - 1);
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的梯度值写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
@@ -69,13 +76,19 @@ public:
       : bid_grad_(bid_grad), ask_grad_(ask_grad), out_(out) {}
 
   inline void compute() {
-    float b = bid_grad_.back();
-    float a = ask_grad_.back();
+    // 从买卖两侧的梯度CBuffer读取最新值
+    float b = bid_grad_.back();  // 买侧梯度
+    float a = ask_grad_.back();  // 卖侧梯度
+    // 计算梯度失衡：(买侧-卖侧) / (|买侧|+|卖侧|)
+    // 值域[-1,1]
     float denom = std::abs(b) + std::abs(a);
     value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的梯度失衡写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_grad_;

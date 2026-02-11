@@ -71,28 +71,34 @@ public:
   }
 
   inline void compute() {
-    // 计算 X'y = [Σv, Σi*v, Σi²*v]
+    // 最小二乘法拟合抛物线：V_i ~ c0 + c1*i + c2*i^2
+    // 计算 X'y = [Σv, Σi*v, Σi²*v]，即观测值的加权和
     float xy0 = 0.0f, xy1 = 0.0f, xy2 = 0.0f;
 
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
       float v;
+      // 根据IS_BID选择买侧或卖侧数据
       if constexpr (IS_BID) {
-        v = bid_qty_[i].back();
+        v = bid_qty_[i].back();      // 买i+1档数量
       } else {
-        v = -ask_qty_[i].back();
+        v = -ask_qty_[i].back();     // 卖i+1档数量（取反）
       }
 
       float fi = static_cast<float>(i);
-      xy0 += v;
-      xy1 += fi * v;
-      xy2 += fi * fi * v;
+      xy0 += v;           // Σv (总量)
+      xy1 += fi * v;      // Σi*v (一阶矩)
+      xy2 += fi * fi * v; // Σi²*v (二阶矩)
     }
 
-    // c[COEF] = inv_row * [xy0, xy1, xy2]'
+    // 用预计算的逆矩阵行提取目标系数: c[COEF] = inv_row * [xy0, xy1, xy2]'
+    // c0: 截距（近端流动性），c1: 斜率（倾斜方向），c2: 曲率（凸凹性）
     value_ = inv_row_[0] * xy0 + inv_row_[1] * xy1 + inv_row_[2] * xy2;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的抛物线系数写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
@@ -120,13 +126,19 @@ public:
       : bid_coef_(bid_coef), ask_coef_(ask_coef), out_(out) {}
 
   inline void compute() {
-    float b = bid_coef_.back();
-    float a = ask_coef_.back();
+    // 从买卖两侧的抛物线系数CBuffer读取最新值
+    float b = bid_coef_.back();  // 买侧的c0/c1/c2系数
+    float a = ask_coef_.back();  // 卖侧的c0/c1/c2系数
+    // 计算系数失衡：(买侧-卖侧) / (|买侧|+|卖侧|)
+    // 值域[-1,1]，正值表示买侧该特征更强
     float denom = std::abs(b) + std::abs(a);
     value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的系数失衡写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_coef_;

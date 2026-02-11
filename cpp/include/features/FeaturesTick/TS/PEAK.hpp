@@ -26,17 +26,18 @@ public:
       : qty_(qty), out_(out) {}
 
   inline void compute() {
-    float max_v = 0.0f;
-    float sum_v = 0.0f;
-    size_t max_idx = 0;
+    float max_v = 0.0f;  // 最大数量
+    float sum_v = 0.0f;  // 总数量
+    size_t max_idx = 0;  // 最大值所在档位
 
+    // 遍历所有档位，找到峰值位置和总量
     for (size_t i = 0; i < N_LEVELS; ++i) {
       float v = qty_[i].back();
       if constexpr (!IS_BID) {
-        v = -v; // ask qty 是负值
+        v = -v; // ask qty 是负值，取绝对值
       }
-      sum_v += v;
-      if (v > max_v) {
+      sum_v += v;       // 累加总量
+      if (v > max_v) {  // 更新最大值和位置
         max_v = v;
         max_idx = i;
       }
@@ -44,10 +45,12 @@ public:
 
     float result = 0.0f;
     if constexpr (IS_LOC) {
-      // 返回 1-indexed 档位
+      // 输出峰值位置：1-indexed档位（1表示第一档）
+      // 值越大表示峰值离盘口越远
       result = static_cast<float>(max_idx + 1);
     } else {
-      // 返回集中度 = max / mean
+      // 输出峰值集中度：max / mean
+      // 值越大表示订单越集中在单一档位，>=1
       float mean_v = sum_v / static_cast<float>(N_LEVELS);
       result = (mean_v > 1e-6f) ? (max_v / mean_v) : 1.0f;
     }
@@ -55,7 +58,10 @@ public:
     value_ = result;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的峰值特征写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&qty_)[N_LEVELS];

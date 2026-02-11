@@ -16,7 +16,7 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出, 读取深度)
+// compute: 每笔订单时累计, flush: 按秒输出（读取深度）
 class HLA {
 public:
   HLA(TickData &td,
@@ -26,16 +26,18 @@ public:
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty), hla_imba_(hla_imba) {}
 
   inline void compute() {
+    // 每笔订单时，统计挂单和撤单量（用于计算refill rate）
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
 
+    // 只关注挂单和撤单，不关注成交
     switch (lob.order_type) {
-    case L2::OrderType::MAKER:
+    case L2::OrderType::MAKER:  // 挂单（补充流动性）
       if (is_bid) vol_maker_bid_ += vol;
       else vol_maker_ask_ += vol;
       break;
-    case L2::OrderType::CANCEL:
+    case L2::OrderType::CANCEL: // 撤单（移除流动性）
       if (is_bid) vol_cancel_bid_ += vol;
       else vol_cancel_ask_ += vol;
       break;
@@ -44,27 +46,30 @@ public:
     }
   }
 
-  // 每秒输出 (ON_DEPTH 时调用)
+  // 每秒输出
   inline void flush() {
-    // 计算当前买一卖一量
-    float v_bid = bid_qty_[0].back();
-    float v_ask = -ask_qty_[0].back(); // ask是负值
+    // 1. 从BidQty和AskQty CBuffer读取当前买一卖一量
+    float v_bid = bid_qty_[0].back();      // 买一数量
+    float v_ask = -ask_qty_[0].back();     // 卖一数量（取反）
 
-    // 计算 refill rate: ρ = (maker - cancel) / (maker + cancel)
+    // 2. 计算refill rate（流动性补充率）：ρ = (挂单-撤单) / (挂单+撤单)
+    // 正值表示净补充流动性，负值表示净移除流动性
     float sum_bid = vol_maker_bid_ + vol_cancel_bid_;
     float sum_ask = vol_maker_ask_ + vol_cancel_ask_;
     float rho_bid = sum_bid > 1e-6f ? (vol_maker_bid_ - vol_cancel_bid_) / sum_bid : 0.0f;
     float rho_ask = sum_ask > 1e-6f ? (vol_maker_ask_ - vol_cancel_ask_) / sum_ask : 0.0f;
 
-    // 调整后的流动性
+    // 3. 计算调整后的潜在流动性：Ṽ = V * (1 + ρ)
+    // 预测后续时刻的流动性（考虑refill趋势）
     float v_tilde_bid = v_bid * (1.0f + rho_bid);
     float v_tilde_ask = v_ask * (1.0f + rho_ask);
 
-    // hla_imba
+    // 4. 计算潜在流动性调整失衡：(Ṽ_bid - Ṽ_ask) / (Ṽ_bid + Ṽ_ask)
+    // 捕捉隐藏流动性带来的失衡预测
     float sum = v_tilde_bid + v_tilde_ask;
     hla_imba_.push_back(sum > 1e-6f ? (v_tilde_bid - v_tilde_ask) / sum : 0.0f);
 
-    // 重置累计器
+    // 重置秒内累计器
     vol_maker_bid_ = vol_maker_ask_ = 0.0f;
     vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
   }

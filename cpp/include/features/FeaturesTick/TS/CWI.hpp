@@ -36,22 +36,28 @@ public:
   }
 
   inline void compute() {
-    float numer = 0.0f;
-    float denom = 0.0f;
+    float numer = 0.0f;  // 加权失衡和
+    float denom = 0.0f;  // 加权总量
 
+    // 遍历所有档位，计算凸加权失衡
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
-      float b = bid_qty_[i].back();
-      float a = -ask_qty_[i].back();
-      float w = weights_[i];
+      float b = bid_qty_[i].back();      // 买i+1档数量
+      float a = -ask_qty_[i].back();     // 卖i+1档数量（取反）
+      float w = weights_[i];             // 第i+1档的权重：1/(i+1)^γ
 
-      numer += w * (b - a);
-      denom += w * (b + a);
+      // 按权重累加失衡和总量
+      numer += w * (b - a);  // 加权失衡 = w * (买量-卖量)
+      denom += w * (b + a);  // 加权总量 = w * (买量+卖量)
     }
 
+    // 计算凸加权失衡率，值域[-1,1]
     value_ = denom > 1e-6f ? numer / denom : 0.0f;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的CWI值写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

@@ -26,14 +26,18 @@ public:
       : td_(td), sec_buffer_(sec_buffer), index_buffer_(index_buffer) {}
 
   inline void compute() {
+    // 从tick_data读取当前tick索引（一天内的序号）
     float clock_sec = static_cast<float>(td_.l0_index);
+    // 计算正弦相位编码：60秒一个周期，值域[-1,1]，梯度友好
     sec_value_ = std::sin(clock_sec * SEC_PHASE_SCALE);
+    // 保存原始索引值
     index_value_ = static_cast<float>(td_.l0_index);
   }
 
   inline void flush() {
-    sec_buffer_.push_back(sec_value_);
-    index_buffer_.push_back(index_value_);
+    // 将compute中计算的两个值分别写入对应的CBuffer
+    sec_buffer_.push_back(sec_value_);     // 写入正弦相位编码的时间特征
+    index_buffer_.push_back(index_value_); // 写入原始tick索引
   }
 
 private:

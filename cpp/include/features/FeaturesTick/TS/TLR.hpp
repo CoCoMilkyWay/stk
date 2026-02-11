@@ -30,27 +30,34 @@ public:
       : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {}
 
   inline void compute() {
-    float top_sum = 0.0f;
-    float total_sum = 0.0f;
+    float top_sum = 0.0f;    // 前N档总量
+    float total_sum = 0.0f;  // 全部档位总量
 
+    // 遍历所有档位，累计前N档和全部档位的数量
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
       float v;
+      // 根据IS_BID标志选择买侧或卖侧数据
       if constexpr (IS_BID) {
-        v = bid_qty_[i].back();
+        v = bid_qty_[i].back();      // 买方数量
       } else {
-        v = -ask_qty_[i].back(); // ask是负值
+        v = -ask_qty_[i].back();     // 卖方数量（取反）
       }
 
-      total_sum += v;
+      total_sum += v;          // 累加全部档位
       if (i < N_LEVELS) {
-        top_sum += v;
+        top_sum += v;          // 累加前N档
       }
     }
 
+    // 计算顶部档位占比：前N档 / 全部档位
+    // 值越大说明订单集中在前N档，容易被击穿
     value_ = total_sum > 1e-6f ? top_sum / total_sum : 0.0f;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的TLR值写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

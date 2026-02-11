@@ -21,12 +21,17 @@ public:
         buffer_(buffer) {}
 
   inline void compute() {
-    float bid = bid_price_0_.back();
-    float ask = ask_price_0_.back();
+    // 从BidPrice_[0]和AskPrice_[0] CBuffer读取买一卖一价格（已转换为元）
+    float bid = bid_price_0_.back(); // 买一价
+    float ask = ask_price_0_.back(); // 卖一价
+    // 计算买卖价差：卖一 - 买一，需检查价格有效性
     spread_value_ = (bid > 0 && ask > 0) ? (ask - bid) : 0.0f;
   }
 
-  inline void flush() { buffer_.push_back(spread_value_); }
+  inline void flush() {
+    // 将compute中计算的价差写入CBuffer
+    buffer_.push_back(spread_value_);
+  }
 
   float back() const { return buffer_.back(); }
 

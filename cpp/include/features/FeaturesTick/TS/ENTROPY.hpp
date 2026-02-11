@@ -36,32 +36,37 @@ public:
     float v[N_LEVELS];
     float total = 0.0f;
 
-    // 收集数据
+    // 从各档CBuffer收集数据
     for (size_t i = 0; i < N_LEVELS; ++i) {
       if constexpr (IS_BID) {
-        v[i] = bid_qty_[i].back();
+        v[i] = bid_qty_[i].back();   // 买i+1档数量
       } else {
-        v[i] = -ask_qty_[i].back();
+        v[i] = -ask_qty_[i].back();  // 卖i+1档数量（取反）
       }
-      v[i] = std::max(v[i], 0.0f); // 确保非负
-      total += v[i];
+      v[i] = std::max(v[i], 0.0f);   // 确保非负
+      total += v[i];                  // 累计总量
     }
 
-    // 计算熵
+    // 计算香农熵：H = -Σ π_i * log(π_i)
+    // π_i = v[i] / total 为各档占比
     float entropy = 0.0f;
     if (total > 1e-6f) {
       for (size_t i = 0; i < N_LEVELS; ++i) {
-        float p = v[i] / total;
+        float p = v[i] / total;      // 计算概率分布
         if (p > 1e-9f) {
-          entropy -= p * std::log(p);
+          entropy -= p * std::log(p); // 累加香农熵
         }
       }
     }
+    // 熵越大表示分布越均匀，熵越小表示订单集中在少数档位
 
     value_ = entropy;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的熵值写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
@@ -84,13 +89,19 @@ public:
       : bid_entropy_(bid_entropy), ask_entropy_(ask_entropy), out_(out) {}
 
   inline void compute() {
-    float b = bid_entropy_.back();
-    float a = ask_entropy_.back();
+    // 从买卖两侧的熵CBuffer读取最新值
+    float b = bid_entropy_.back();  // 买侧熵
+    float a = ask_entropy_.back();  // 卖侧熵
+    // 计算熵失衡：(买侧-卖侧) / (买侧+卖侧)
+    // 值域[-1,1]，正值表示买侧分布更均匀（做市意愿强）
     float denom = b + a;
     value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
 
-  inline void flush() { out_.push_back(value_); }
+  inline void flush() {
+    // 将compute中计算的熵失衡写入输出CBuffer
+    out_.push_back(value_);
+  }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_entropy_;
