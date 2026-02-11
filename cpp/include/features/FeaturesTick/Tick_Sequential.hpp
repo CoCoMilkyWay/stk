@@ -80,7 +80,7 @@ inline void Tick_Sequential::compute_and_store() {
   }
 
   if (Trigger2) {
-    dag_.l0.DepthData.compute();  // input: td
+    dag_.l0.DepthData.compute();  // input: td, TradePrice_
     dag_.l0.DepthData.flush();    // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
 
     // --- 基础数据层 ---
