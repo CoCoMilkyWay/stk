@@ -16,7 +16,7 @@ public:
         cancel_buffer_(cancel_buffer) {}
 
   inline void compute() {
-    // 从tick_data读取当前时间，转换为毫秒
+    // 从tick_data读取当前时间，转换为毫秒（millisecond单位为10毫秒）
     uint32_t current_time_ms = tick_data_.lob.hour * 3600000 +
                                tick_data_.lob.minute * 60000 +
                                tick_data_.lob.second * 1000 +
@@ -24,31 +24,27 @@ public:
 
     // 根据订单类型，分别计算与上一次同类型订单的时间差
     switch (tick_data_.lob.order_type) {
-    case L2::OrderType::MAKER: {
-      // 如果不是第一个maker订单，计算时间差
-      if (last_maker_time_ms_ > 0) {
+    case L2::OrderType::MAKER:
+      if (last_maker_time_ms_ > 0) [[likely]] {
         delta_maker_ms_ = static_cast<float>(current_time_ms - last_maker_time_ms_);
         has_maker_delta_ = true; // 标记有新的delta需要flush
       }
       last_maker_time_ms_ = current_time_ms; // 更新last时间
       break;
-    }
-    case L2::OrderType::TAKER: {
-      if (last_taker_time_ms_ > 0) {
+    case L2::OrderType::TAKER:
+      if (last_taker_time_ms_ > 0) [[likely]] {
         delta_taker_ms_ = static_cast<float>(current_time_ms - last_taker_time_ms_);
         has_taker_delta_ = true;
       }
       last_taker_time_ms_ = current_time_ms;
       break;
-    }
-    case L2::OrderType::CANCEL: {
-      if (last_cancel_time_ms_ > 0) {
+    case L2::OrderType::CANCEL:
+      if (last_cancel_time_ms_ > 0) [[likely]] {
         delta_cancel_ms_ = static_cast<float>(current_time_ms - last_cancel_time_ms_);
         has_cancel_delta_ = true;
       }
       last_cancel_time_ms_ = current_time_ms;
       break;
-    }
     }
   }
 
@@ -67,6 +63,13 @@ public:
       cancel_buffer_.push_back(delta_cancel_ms_); // 写入cancel时间间隔
       has_cancel_delta_ = false;
     }
+  }
+
+  // 跨天时调用，重置所有last时间
+  inline void reset() {
+    last_maker_time_ms_ = 0;
+    last_taker_time_ms_ = 0;
+    last_cancel_time_ms_ = 0;
   }
 
 private:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -266,6 +267,34 @@ inline ExchangeType infer_exchange_type(const std::string &asset_code) {
     return ExchangeType::NEEQ;
 
   return ExchangeType::UNKNOWN;
+}
+
+// Infer price limit percentage from asset code (for depth data protection)
+// Usage: float pct = L2::infer_pct_limit("600000"); // 10% for main board
+// Note: ST/*ST stocks have 5% limit but require name/status info, not handled here
+inline float infer_pct_limit(const std::string &code) {
+  assert(!code.empty() && "asset_code must not be empty");
+  assert(code.size() >= 6 && "asset_code must be at least 6 digits");
+
+  const std::string prefix_3 = code.substr(0, 3);
+  const std::string prefix_2 = code.substr(0, 2);
+
+  // 北交所 87/88/92: 30%
+  if (prefix_2 == "87" || prefix_2 == "88" || prefix_2 == "92")
+    return 0.30f;
+
+  // 科创板 688/689: 20%
+  if (prefix_3 == "688" || prefix_3 == "689")
+    return 0.20f;
+
+  // 创业板 300/301/302/309: 20%
+  if (prefix_3 == "300" || prefix_3 == "301" ||
+      prefix_3 == "302" || prefix_3 == "309")
+    return 0.20f;
+
+  // 其他 (主板/中小板/B股等): 10%
+  // 注意: ST/*ST股票为5%, 但需要额外的状态信息判断, 此处未处理
+  return 0.10f;
 }
 
 } // namespace L2

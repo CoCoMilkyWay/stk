@@ -3,11 +3,12 @@
 // =============================================================================
 // TickIndex - Tick索引算子
 // =============================================================================
-// 时间特征使用实际时钟时间 + 正弦相位嵌入:
-//   - 用实际秒数而非 index, 每天同一时刻值相同, 分布能对应实际时间
+// 时间特征使用分钟内秒位置的正弦相位嵌入:
+//   - sec: 分钟内的秒位置 sin(2π * (index % 60) / 60), 值域[-1,1]
 //   - sin 相位连续可导, 频谱干净, 梯度友好
-// 输出1: sec (相位 [-1,1]) - sin(2π * clock_second / 60), 60秒一周期
+// 输出1: sec (相位 [-1,1]) - 60秒一周期
 // 输出2: _tick_index (原始索引 [0-15299]) - 供其他算子使用
+// 使用查找表避免重复计算sin, 提升性能
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -15,8 +16,20 @@
 #include "features/DataDefine.hpp"
 // #include "features/FeaturesDefine.hpp"
 #include "features/misc/misc.hpp"
+#include <array>
 
-constexpr float SEC_PHASE_SCALE = 2.0f * PI / 60.0f;
+// 预计算60秒周期的sin查找表（运行时初始化）
+inline const std::array<float, 60>& get_sec_phase_lut() {
+  static const auto lut = []() {
+    std::array<float, 60> result{};
+    constexpr float scale = 2.0f * PI / 60.0f;
+    for (int i = 0; i < 60; ++i) {
+      result[i] = std::sin(static_cast<float>(i) * scale);
+    }
+    return result;
+  }();
+  return lut;
+}
 
 class TickIndex {
 public:
@@ -26,12 +39,12 @@ public:
       : td_(td), sec_buffer_(sec_buffer), index_buffer_(index_buffer) {}
 
   inline void compute() {
-    // 从tick_data读取当前tick索引（一天内的序号）
-    float clock_sec = static_cast<float>(td_.l0_index);
-    // 计算正弦相位编码：60秒一个周期，值域[-1,1]，梯度友好
-    sec_value_ = std::sin(clock_sec * SEC_PHASE_SCALE);
+    // 从tick_data读取当前tick索引
+    uint32_t idx = td_.l0_index;
+    // 查表获取正弦相位编码：分钟内秒位置，值域[-1,1]，梯度友好
+    sec_value_ = get_sec_phase_lut()[idx % 60];
     // 保存原始索引值
-    index_value_ = static_cast<float>(td_.l0_index);
+    index_value_ = static_cast<float>(idx);
   }
 
   inline void flush() {

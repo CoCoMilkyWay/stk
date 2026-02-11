@@ -40,14 +40,16 @@ public:
   // ===========================================================================
   // 事件/时间驱动: 底层数据结构 (按计算层级排列, 作为计算图的"驱动时钟")
   // ===========================================================================
-  TickData &tick_data;    // L0 输入（外部传入）
-  MinuteData minute_data; // L1 输入（内部管理，由 resampler 填充）
+  TickData &tick_data;     // L0 输入（外部传入）
+  MinuteData minute_data;  // L1 输入（内部管理，由 resampler 填充）
+  std::string asset_code_; // 股票代码（用于涨跌幅判断）
 
   // ===========================================================================
   // L0: Tick 级别 - CBuffer + 算子
   // ===========================================================================
   struct L0 {
-    TickData &td; // 唯一需要构造函数初始化的引用
+    TickData &td;                   // 唯一需要构造函数初始化的引用
+    const std::string &asset_code_; // 股票代码 (用于判断涨跌幅限制)
 
     // -------------------------------------------------------------------------
     // [EVERY TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
@@ -94,7 +96,7 @@ public:
     CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];   // 卖1-N量 (股, 负值)
     CBuffer<float, L2::BLEN> BidAmt_[L2::LOB_DEPTH];   // 买1-N金额 (万元, 正值)
     CBuffer<float, L2::BLEN> AskAmt_[L2::LOB_DEPTH];   // 卖1-N金额 (万元, 负值)
-    DepthData<L2::LOB_DEPTH> DepthData{td, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_};
+    DepthData<L2::LOB_DEPTH> DepthData{td, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_, asset_code_};
 
     // --- MidPrice ---
     CBuffer<float, L2::BLEN> MidPrice_;
@@ -298,7 +300,7 @@ public:
     CBuffer<float, L2::BLEN> stale_ratio_ask_;
     Toxic toxic{td, BidQty_, AskQty_, ptc_rt_, fleet_rt_, spoof_int_, stale_ratio_bid_, stale_ratio_ask_};
 
-    explicit L0(TickData &t) : td(t) {} // 构造函数 (只需初始化引用成员)
+    explicit L0(TickData &t, const std::string &code) : td(t), asset_code_(code) {} // 构造函数 (初始化引用成员)
   };
   L0 l0;
 
@@ -325,7 +327,7 @@ public:
   // ===========================================================================
   // 构造函数
   // ===========================================================================
-  explicit DAG(TickData &td) : tick_data(td), l0(td), l1(minute_data) {} // 创建时传入TickData
+  explicit DAG(TickData &td, const std::string &code) : tick_data(td), asset_code_(code), l0(td, asset_code_), l1(minute_data) {}
 
   // ===========================================================================
   // 跨天重置 (统一维护)

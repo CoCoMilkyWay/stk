@@ -19,10 +19,10 @@ public:
         asset_id_(asset_id),
         worker_id_(worker_id) {}
 
-  void set_date(const std::string &date_str);
+  inline void set_date(const std::string &date_str);
 
   // Main computation entry (called by CoreSequential)
-  void compute_and_store();
+  inline void compute_and_store();
 
 private:
   DAG &dag_;

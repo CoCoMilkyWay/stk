@@ -13,12 +13,14 @@ class CoreSequential {
 public:
   CoreSequential(TickData &tick_data,
                  GlobalFeatureStore &store,
+                 const std::string &asset_code,
                  size_t asset_id = 0,
                  size_t core_id = 0)
       : store_(store),
         asset_id_(asset_id),
         core_id_(core_id),
-        dag_(tick_data),
+        asset_code_(asset_code),
+        dag_(tick_data, asset_code),
         tick_sequential_(dag_, store_, asset_id_, core_id_),
         minute_sequential_(dag_, store_, asset_id_, core_id_),
         tick2min_(dag_.tick_data, dag_.minute_data) {
@@ -51,8 +53,7 @@ public:
     TraceColor(C_Cyan);
 
     // LEVEL 0: Tick
-    dag_.tick_data.l0_index = static_cast<uint32_t>(
-        Clock_to_L0(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second));
+    dag_.tick_data.l0_index = static_cast<uint32_t>(Clock_to_L0(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second));
     {
       TraceN("TS_Tick");
       tick_sequential_.compute_and_store();
@@ -73,6 +74,7 @@ private:
   GlobalFeatureStore &store_;
   size_t asset_id_;
   size_t core_id_;
+  std::string asset_code_;
   std::string date_str_;
 
   DAG dag_;

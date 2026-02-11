@@ -16,7 +16,7 @@
 //   数量: 股 (shares)
 //   金额: 万元 (10000 RMB)
 //
-// 涨跌停保护 (±20%):
+// 涨跌停保护 (根据股票代码自动判断: 主板10%, 科创/创业板20%, 北交所30%):
 //   超出涨跌停价的档位强制设为涨跌停价, qty=1股, amt=0.01万元
 //   第一天用首个mid price作为基准
 //
@@ -34,7 +34,6 @@ class DepthData {
 public:
   static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
   static constexpr float AMT_SCALE = 1e-4f;   // 元 → 万元
-  static constexpr float LIMIT_PCT = 0.20f;   // 涨跌停幅度 ±20%
   static constexpr float LIMIT_QTY = 1.0f;    // 超限档位数量: 1股
   static constexpr float LIMIT_AMT = 0.01f;   // 超限档位金额: 0.01万元
 
@@ -44,19 +43,21 @@ public:
             CBuffer<float, L2::BLEN> (&bid_qty)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&ask_qty)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&bid_amt)[N_LEVELS],
-            CBuffer<float, L2::BLEN> (&ask_amt)[N_LEVELS])
+            CBuffer<float, L2::BLEN> (&ask_amt)[N_LEVELS],
+            const std::string &asset_code)
       : tick_data_(tick_data),
         bid_price_(bid_price),
         ask_price_(ask_price),
         bid_qty_(bid_qty),
         ask_qty_(ask_qty),
         bid_amt_(bid_amt),
-        ask_amt_(ask_amt) {}
+        ask_amt_(ask_amt),
+        limit_pct_(L2::infer_pct_limit(asset_code)) {}
 
   // 设置前收盘价 (跨天时调用)
   void set_prev_close(float prev_close) {
-    limit_up_ = prev_close * (1.0f + LIMIT_PCT);
-    limit_down_ = prev_close * (1.0f - LIMIT_PCT);
+    limit_up_ = prev_close * (1.0f + limit_pct_);
+    limit_down_ = prev_close * (1.0f - limit_pct_);
     initialized_ = true;
   }
 
@@ -68,7 +69,7 @@ public:
       const Level *bid1 = depth[L2::LOB_DEPTH];
       const Level *ask1 = depth[L2::LOB_DEPTH - 1];
       float mid = (bid1->price + ask1->price) * 0.5f * PRICE_SCALE;
-      set_prev_close(mid); // 用mid价设置±20%涨跌停边界
+      set_prev_close(mid); // 用mid价设置涨跌停边界
     }
 
     // 遍历N档盘口数据，逐档提取并转换
@@ -133,7 +134,8 @@ public:
 private:
   const TickData &tick_data_;
 
-  // 涨跌停价 (基于前收盘价 ±20%)
+  // 涨跌停价 (基于前收盘价和对应的涨跌幅限制)
+  const float limit_pct_;
   float limit_up_ = 0.0f;
   float limit_down_ = 0.0f;
   bool initialized_ = false;
