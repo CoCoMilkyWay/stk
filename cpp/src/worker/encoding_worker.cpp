@@ -140,11 +140,13 @@ void encoding_worker(SharedData &data,
 
     // Get next asset
     size_t asset_id;
-    std::lock_guard<std::mutex> lock(queue_mutex);
-    if (asset_id_queue.empty())
-      break;
-    asset_id = asset_id_queue.back();
-    asset_id_queue.pop_back();
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex);
+      if (asset_id_queue.empty())
+        break;
+      asset_id = asset_id_queue.back();
+      asset_id_queue.pop_back();
+    }
 
     AssetItem &asset = data.asset.items[asset_id];
     progress_handle.set_label(asset.asset_code + " (" + asset.asset_name + ")");

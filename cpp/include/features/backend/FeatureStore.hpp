@@ -243,7 +243,12 @@ public:
     std::cout << "Allocating physical pages...\n";
     auto start = std::chrono::steady_clock::now();
 
-    for (size_t i = 0; i < pool_size_; ++i) {
+    // Parallel allocation using multiple threads
+    const size_t num_threads = std::min<size_t>(pool_size_, std::thread::hardware_concurrency());
+    std::vector<std::thread> threads;
+    std::atomic<size_t> progress_counter{0};
+
+    auto allocate_slot = [&](size_t i) {
       pool_[i].allocate(num_assets_, num_ts_workers_);
 
       // Touch all pages to force physical allocation
@@ -271,9 +276,22 @@ public:
       pool_[i].reset(num_assets_, num_ts_workers_);
       pool_[i].needs_reset = false;
 
-      if ((i + 1) % 5 == 0 || i + 1 == pool_size_) {
-        std::cout << "  " << (i + 1) << "/" << pool_size_ << " slots\r" << std::flush;
+      size_t completed = ++progress_counter;
+      if (completed % 1 == 0 || completed == pool_size_) {
+        std::cout << "  " << completed << "/" << pool_size_ << " slots\r" << std::flush;
       }
+    };
+
+    for (size_t tid = 0; tid < num_threads; ++tid) {
+      threads.emplace_back([&, tid]() {
+        for (size_t i = tid; i < pool_size_; i += num_threads) {
+          allocate_slot(i);
+        }
+      });
+    }
+
+    for (auto &t : threads) {
+      t.join();
     }
 
     // Initialize free_list (all slots available, reverse order for stack-like LIFO)
