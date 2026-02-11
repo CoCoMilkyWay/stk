@@ -438,8 +438,6 @@ struct Dist {
       bool valid = false;
 
       void update(float val) {
-        if (std::isnan(val) || std::isinf(val))
-          return;
         if (!valid) {
           open = val;
           high = val;

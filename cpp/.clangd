@@ -1,3 +1,4 @@
 CompileFlags:
-  Add: 
-    - '-std:c++latest'
+  Add:
+    - -std=c++23
+    

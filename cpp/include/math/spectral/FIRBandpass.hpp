@@ -181,8 +181,8 @@ private:
     auto H = detail::fir_response(coeffs.data(), coeffs.size(), f_norm);
     float gain = std::abs(H);
     
-    // 防止除零或异常值
-    if (gain < 1e-10f || !std::isfinite(gain)) {
+    // 防止除零
+    if (gain < 1e-10f) {
       gain = 1.0f;
     }
     

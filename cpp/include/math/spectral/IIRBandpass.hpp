@@ -263,7 +263,7 @@ private:
     }
     
     float gain = std::abs(H);
-    if (gain < 1e-10f || !std::isfinite(gain)) {
+    if (gain < 1e-10f) {
       gain = 1.0f;  // 防止除零
     }
     

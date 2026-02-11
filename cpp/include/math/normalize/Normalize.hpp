@@ -265,7 +265,7 @@ inline void pw_power(std::span<const float> in, std::span<float> out, float alph
     float s = (in[i] >= 0) ? 1.0f : -1.0f;
     // 防止 pow(0, <=0) 产生 inf/nan
     float v = (a < 1e-12f && alpha <= 0.0f) ? 0.0f : std::pow(a, alpha);
-    out[i] = std::isfinite(v) ? s * v : 0.0f;
+    out[i] = s * v;
   }
 }
 

@@ -21,16 +21,6 @@
 
 namespace math::stationary {
 
-struct MADetrend {
-  static constexpr ParamMeta meta[] = {{"窗口", 10, 10, 500}};
-  static constexpr OperatorDef def = {"MA去趋势", meta, 1};
-
-  template <typename GetWindow>
-  static void compute(std::span<const float> in, std::span<float> out, GetWindow get_window) {
-    ma_detrend(in, out, static_cast<int>(get_window()));
-  }
-};
-
 // O(n) 实现: 滑动窗口求和
 inline void ma_detrend(std::span<const float> in, std::span<float> out, int window) {
   assert(in.size() == out.size());
@@ -89,5 +79,16 @@ inline void ma_detrend_centered(std::span<const float> in, std::span<float> out,
     out[i] = in[i] - ma;
   }
 }
+
+// Operator 结构体定义
+struct MADetrend {
+  static constexpr ParamMeta meta[] = {{"窗口", 10, 10, 500}};
+  static constexpr OperatorDef def = {"MA去趋势", meta, 1};
+
+  template <typename GetWindow>
+  static void compute(std::span<const float> in, std::span<float> out, GetWindow get_window) {
+    ma_detrend(in, out, static_cast<int>(get_window()));
+  }
+};
 
 } // namespace math::stationary

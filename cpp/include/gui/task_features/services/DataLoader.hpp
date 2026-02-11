@@ -412,8 +412,6 @@ public:
           continue;
 
         float val = static_cast<float>(day_tensor.get<0>(t, feature_idx, asset_idx));
-        if (std::isnan(val) || std::isinf(val))
-          continue;
 
         double global_x = day.to_global_x(i);
         cache.plot.x.push_back(global_x);

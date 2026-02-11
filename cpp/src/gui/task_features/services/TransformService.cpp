@@ -660,13 +660,9 @@ void TransformService::compute_asset_static(SharedData &data, size_t asset_idx, 
       valid_data.clear();
       valid_data.reserve(n);
 
-      float last_valid = 0.0f;
       for (size_t t = 0; t < n; ++t) {
         float val = final_data[t];
-        if (std::isfinite(val)) {
-          last_valid = val;
-        }
-        valid_data.push_back(last_valid);
+        valid_data.push_back(val);
       }
 
       size_t target_size = (level == 0) ? 16384 : 8192;

@@ -294,6 +294,7 @@ set_source_files_properties(
     ../../src/shared/Config.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Dist.cpp
+    ../../src/shared/Transform.cpp
     ../../src/gui/task_database/infrastructure/DataManager.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/BaostockService.cpp

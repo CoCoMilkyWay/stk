@@ -33,9 +33,14 @@ target_compile_definitions(microtex PUBLIC BUILD_IMGUI)
 # Disable Windows CRT secure warnings
 target_compile_definitions(microtex PUBLIC _CRT_SECURE_NO_WARNINGS)
 
-# microtex needs infinity support, override /fp:fast with /fp:precise
+# microtex needs infinity support, override fast-math
+if(MSVC OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND WIN32))
+    target_compile_options(microtex PRIVATE /fp:precise)
+else()
+    target_compile_options(microtex PRIVATE -fno-fast-math)
+endif()
+
 target_compile_options(microtex PRIVATE
-    /fp:precise
     -Wno-tautological-constant-out-of-range-compare
     -Wno-switch
     -Wno-unused-result
