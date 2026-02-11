@@ -16,16 +16,16 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-class HiddenLiquidityAdjusted {
+// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出, 读取深度)
+class HLA {
 public:
-  HiddenLiquidityAdjusted(TickData &td,
-                          const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
-                          const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
-                          CBuffer<float, L2::BLEN> &hla_imba)
+  HLA(TickData &td,
+      const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
+      const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
+      CBuffer<float, L2::BLEN> &hla_imba)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty), hla_imba_(hla_imba) {}
 
-  // 每笔订单调用
-  void accumulate() {
+  void compute() {
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);

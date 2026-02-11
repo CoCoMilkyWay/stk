@@ -17,10 +17,12 @@ public:
       : tick_data_(tick_data), buffer_(buffer) {}
 
   void compute() {
-    // 只在TAKER时更新成交价，否则保持前值
     if (tick_data_.lob.order_type == L2::OrderType::TAKER) {
       last_trade_price_ = tick_data_.lob.price;
     }
+  }
+
+  void flush() {
     buffer_.push_back(last_trade_price_);
   }
 

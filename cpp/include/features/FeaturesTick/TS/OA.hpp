@@ -17,22 +17,21 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-class OpeningAuction {
-  // 集合竞价时段: 09:15:00 - 09:24:59 (L0 index: 0-599)
+// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出)
+class OA {
   static constexpr size_t OA_END_L0 = 600; // 10分钟 * 60秒
 
 public:
-  OpeningAuction(TickData &td,
-                 CBuffer<float, L2::BLEN> &oa_bcr,
-                 CBuffer<float, L2::BLEN> &oa_acr,
-                 CBuffer<float, L2::BLEN> &oa_btr,
-                 CBuffer<float, L2::BLEN> &oa_atr)
+  OA(TickData &td,
+     CBuffer<float, L2::BLEN> &oa_bcr,
+     CBuffer<float, L2::BLEN> &oa_acr,
+     CBuffer<float, L2::BLEN> &oa_btr,
+     CBuffer<float, L2::BLEN> &oa_atr)
       : td_(td),
         oa_bcr_(oa_bcr), oa_acr_(oa_acr),
         oa_btr_(oa_btr), oa_atr_(oa_atr) {}
 
-  // 每笔订单调用
-  void accumulate() {
+  void compute() {
     // 只在集合竞价时段累计 (09:15-09:25)
     if (td_.l0_index >= OA_END_L0) return;
 

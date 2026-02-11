@@ -47,11 +47,14 @@ public:
       }
     }
 
-    out_.push_back(total_sum > 1e-6f ? top_sum / total_sum : 0.0f);
+    value_ = total_sum > 1e-6f ? top_sum / total_sum : 0.0f;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
+  float value_ = 0.0f;
 };

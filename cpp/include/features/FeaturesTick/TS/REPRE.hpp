@@ -18,13 +18,14 @@ public:
   DepthRepresentation(CBuffer<float, L2::BLEN> &depth_repre)
       : depth_repre_(depth_repre) {}
 
-  // 每秒输出 (ON_DEPTH 时调用)
   void compute() {
-    // DUMMY: 返回0作为placeholder
-    // TODO: 接入预训练的 encoder backbone
-    depth_repre_.push_back(0.0f);
+    // DUMMY: placeholder
+    value_ = 0.0f;
   }
+
+  void flush() { depth_repre_.push_back(value_); }
 
 private:
   CBuffer<float, L2::BLEN> &depth_repre_;
+  float value_ = 0.0f;
 };

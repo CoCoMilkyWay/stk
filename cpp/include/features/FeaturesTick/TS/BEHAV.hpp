@@ -19,23 +19,23 @@
 #include "features/DataDefine.hpp"
 #include <cmath>
 
-class BehavioralFeatures {
+// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出)
+class Behav {
   static constexpr size_t AGG_WINDOW = 20; // 侵略性趋势窗口
 
 public:
-  BehavioralFeatures(TickData &td,
-                     CBuffer<float, L2::BLEN> &agg_buy,
-                     CBuffer<float, L2::BLEN> &agg_sell,
-                     CBuffer<float, L2::BLEN> &agg_dif,
-                     CBuffer<float, L2::BLEN> &cpr,
-                     CBuffer<float, L2::BLEN> &agg_trd,
-                     CBuffer<float, L2::BLEN> &ord_size)
+  Behav(TickData &td,
+        CBuffer<float, L2::BLEN> &agg_buy,
+        CBuffer<float, L2::BLEN> &agg_sell,
+        CBuffer<float, L2::BLEN> &agg_dif,
+        CBuffer<float, L2::BLEN> &cpr,
+        CBuffer<float, L2::BLEN> &agg_trd,
+        CBuffer<float, L2::BLEN> &ord_size)
       : td_(td),
         agg_buy_(agg_buy), agg_sell_(agg_sell), agg_dif_(agg_dif),
         cpr_(cpr), agg_trd_(agg_trd), ord_size_(ord_size) {}
 
-  // 每笔订单调用
-  void accumulate() {
+  void compute() {
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
 

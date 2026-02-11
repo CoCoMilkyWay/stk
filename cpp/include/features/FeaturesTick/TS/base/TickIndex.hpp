@@ -26,14 +26,21 @@ public:
       : td_(td), sec_buffer_(sec_buffer), index_buffer_(index_buffer) {}
 
   void compute() {
-    // float clock_sec = static_cast<float>(L0_to_Clock(td_.l0_index).second);
     float clock_sec = static_cast<float>(td_.l0_index);
-    sec_buffer_.push_back(std::sin(clock_sec * SEC_PHASE_SCALE));
-    index_buffer_.push_back(static_cast<float>(td_.l0_index));
+    sec_value_ = std::sin(clock_sec * SEC_PHASE_SCALE);
+    index_value_ = static_cast<float>(td_.l0_index);
+  }
+
+  void flush() {
+    sec_buffer_.push_back(sec_value_);
+    index_buffer_.push_back(index_value_);
   }
 
 private:
   const TickData &td_;
   CBuffer<float, L2::BLEN> &sec_buffer_;
   CBuffer<float, L2::BLEN> &index_buffer_;
+
+  float sec_value_ = 0.0f;
+  float index_value_ = 0.0f;
 };

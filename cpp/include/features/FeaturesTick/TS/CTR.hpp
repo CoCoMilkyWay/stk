@@ -25,34 +25,32 @@
 #include "features/DataDefine.hpp"
 #include "features/FeaturesDefine.hpp"
 
-class CumulativeTradeRatio {
-  // 大单分类阈值 (万元)
+// compute@Trigger0 (每笔订单, 内部过滤非TAKER), flush@Trigger2
+class CTR {
   static constexpr float THRESHOLD_XL = 100.0f; // 特大单 >= 100万
   static constexpr float THRESHOLD_L = 20.0f;   // 大单 20-100万
   static constexpr float THRESHOLD_M = 4.0f;    // 中单 4-20万
-  // 小单 < 4万
 
 public:
-  CumulativeTradeRatio(TickData &td,
-                       CBuffer<float, L2::BLEN> &cc_r,
-                       CBuffer<float, L2::BLEN> &ctr_xl,
-                       CBuffer<float, L2::BLEN> &ctr_l,
-                       CBuffer<float, L2::BLEN> &ctr_m,
-                       CBuffer<float, L2::BLEN> &ctr_s,
-                       CBuffer<float, L2::BLEN> &cnbi,
-                       CBuffer<float, L2::BLEN> &cnbi_xl,
-                       CBuffer<float, L2::BLEN> &cnbi_l,
-                       CBuffer<float, L2::BLEN> &cnbi_m,
-                       CBuffer<float, L2::BLEN> &cnbi_s,
-                       CBuffer<float, L2::BLEN> &cnbi_am,
-                       CBuffer<float, L2::BLEN> &cnbi_pm)
+  CTR(TickData &td,
+      CBuffer<float, L2::BLEN> &cc_r,
+      CBuffer<float, L2::BLEN> &ctr_xl,
+      CBuffer<float, L2::BLEN> &ctr_l,
+      CBuffer<float, L2::BLEN> &ctr_m,
+      CBuffer<float, L2::BLEN> &ctr_s,
+      CBuffer<float, L2::BLEN> &cnbi,
+      CBuffer<float, L2::BLEN> &cnbi_xl,
+      CBuffer<float, L2::BLEN> &cnbi_l,
+      CBuffer<float, L2::BLEN> &cnbi_m,
+      CBuffer<float, L2::BLEN> &cnbi_s,
+      CBuffer<float, L2::BLEN> &cnbi_am,
+      CBuffer<float, L2::BLEN> &cnbi_pm)
       : td_(td),
         cc_r_(cc_r), ctr_xl_(ctr_xl), ctr_l_(ctr_l), ctr_m_(ctr_m), ctr_s_(ctr_s),
         cnbi_(cnbi), cnbi_xl_(cnbi_xl), cnbi_l_(cnbi_l), cnbi_m_(cnbi_m), cnbi_s_(cnbi_s),
         cnbi_am_(cnbi_am), cnbi_pm_(cnbi_pm) {}
 
-  // 每笔成交调用
-  void accumulate() {
+  void compute() {
     if (td_.lob.order_type != L2::OrderType::TAKER) return;
 
     const float amt = static_cast<float>(td_.lob.volume) * td_.lob.price / 10000.0f; // 万元

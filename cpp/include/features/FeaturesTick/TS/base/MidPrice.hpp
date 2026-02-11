@@ -22,14 +22,14 @@ public:
   void compute() {
     float bid = bid_price_0_.back();
     float ask = ask_price_0_.back();
-    float mid = (bid + ask) * 0.5f;
-    buffer_.push_back(mid);
+    mid_value_ = (bid + ask) * 0.5f;
   }
 
-  float back() const { return buffer_.back(); }
+  void flush() { buffer_.push_back(mid_value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_price_0_;
   const CBuffer<float, L2::BLEN> &ask_price_0_;
   CBuffer<float, L2::BLEN> &buffer_;
+  float mid_value_ = 0.0f;
 };

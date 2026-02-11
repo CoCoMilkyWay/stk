@@ -17,24 +17,24 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-class ToxicFeatures {
+// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出, 读取深度)
+class Toxic {
   static constexpr float LARGE_ORDER_THRESHOLD = 10000.0f; // 大单阈值 (股)
 
 public:
-  ToxicFeatures(TickData &td,
-                const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
-                const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
-                CBuffer<float, L2::BLEN> &ptc_rt,
-                CBuffer<float, L2::BLEN> &fleet_rt,
-                CBuffer<float, L2::BLEN> &spoof_int,
-                CBuffer<float, L2::BLEN> &stale_ratio_bid,
-                CBuffer<float, L2::BLEN> &stale_ratio_ask)
+  Toxic(TickData &td,
+        const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
+        const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
+        CBuffer<float, L2::BLEN> &ptc_rt,
+        CBuffer<float, L2::BLEN> &fleet_rt,
+        CBuffer<float, L2::BLEN> &spoof_int,
+        CBuffer<float, L2::BLEN> &stale_ratio_bid,
+        CBuffer<float, L2::BLEN> &stale_ratio_ask)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty),
         ptc_rt_(ptc_rt), fleet_rt_(fleet_rt), spoof_int_(spoof_int),
         stale_ratio_bid_(stale_ratio_bid), stale_ratio_ask_(stale_ratio_ask) {}
 
-  // 每笔订单调用
-  void accumulate() {
+  void compute() {
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
     const bool is_large = vol >= LARGE_ORDER_THRESHOLD;

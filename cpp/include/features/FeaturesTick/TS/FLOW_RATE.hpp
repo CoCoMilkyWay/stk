@@ -18,26 +18,25 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-// 订单流累计器 (每个tick更新, 每秒输出)
-class FlowAccumulator {
+// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出)
+class FlowRate {
 public:
-  FlowAccumulator(TickData &td,
-                  CBuffer<float, L2::BLEN> &arr_bid,
-                  CBuffer<float, L2::BLEN> &arr_ask,
-                  CBuffer<float, L2::BLEN> &can_bid,
-                  CBuffer<float, L2::BLEN> &can_ask,
-                  CBuffer<float, L2::BLEN> &trd_buy,
-                  CBuffer<float, L2::BLEN> &trd_sell,
-                  CBuffer<float, L2::BLEN> &net_ord,
-                  CBuffer<float, L2::BLEN> &foi)
+  FlowRate(TickData &td,
+           CBuffer<float, L2::BLEN> &arr_bid,
+           CBuffer<float, L2::BLEN> &arr_ask,
+           CBuffer<float, L2::BLEN> &can_bid,
+           CBuffer<float, L2::BLEN> &can_ask,
+           CBuffer<float, L2::BLEN> &trd_buy,
+           CBuffer<float, L2::BLEN> &trd_sell,
+           CBuffer<float, L2::BLEN> &net_ord,
+           CBuffer<float, L2::BLEN> &foi)
       : td_(td),
         arr_bid_(arr_bid), arr_ask_(arr_ask),
         can_bid_(can_bid), can_ask_(can_ask),
         trd_buy_(trd_buy), trd_sell_(trd_sell),
         net_ord_(net_ord), foi_(foi) {}
 
-  // 每笔订单调用
-  void accumulate() {
+  void compute() {
     const auto &lob = td_.lob;
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
 
@@ -54,12 +53,9 @@ public:
     }
   }
 
-  // 每秒输出 (ON_DEPTH 时调用)
   void flush() {
-    // 计算 dt (秒), 至少1秒
     float dt = 1.0f;
 
-    // 输出各项率
     arr_bid_.push_back(static_cast<float>(cnt_arr_bid_) / dt);
     arr_ask_.push_back(static_cast<float>(cnt_arr_ask_) / dt);
     can_bid_.push_back(static_cast<float>(cnt_can_bid_) / dt);
@@ -67,19 +63,15 @@ public:
     trd_buy_.push_back(static_cast<float>(cnt_trd_buy_) / dt);
     trd_sell_.push_back(static_cast<float>(cnt_trd_sell_) / dt);
 
-    // net_ord = (arr_bid - can_bid) - (arr_ask - can_ask)
     int net_bid = cnt_arr_bid_ - cnt_can_bid_;
     int net_ask = cnt_arr_ask_ - cnt_can_ask_;
     net_ord_.push_back(static_cast<float>(net_bid - net_ask));
 
-    // foi = (delta_bid - delta_ask) / (delta_bid + delta_ask)
-    // delta = trd - can (成交 - 撤单)
     int delta_bid = cnt_trd_buy_ - cnt_can_bid_;
     int delta_ask = cnt_trd_sell_ - cnt_can_ask_;
     int sum = std::abs(delta_bid) + std::abs(delta_ask);
     foi_.push_back(sum > 0 ? static_cast<float>(delta_bid - delta_ask) / static_cast<float>(sum) : 0.0f);
 
-    // 重置计数器
     cnt_arr_bid_ = cnt_arr_ask_ = 0;
     cnt_can_bid_ = cnt_can_ask_ = 0;
     cnt_trd_buy_ = cnt_trd_sell_ = 0;
@@ -88,7 +80,6 @@ public:
 private:
   TickData &td_;
 
-  // 输出 CBuffer
   CBuffer<float, L2::BLEN> &arr_bid_;
   CBuffer<float, L2::BLEN> &arr_ask_;
   CBuffer<float, L2::BLEN> &can_bid_;
@@ -98,7 +89,6 @@ private:
   CBuffer<float, L2::BLEN> &net_ord_;
   CBuffer<float, L2::BLEN> &foi_;
 
-  // 秒内累计计数
   int cnt_arr_bid_ = 0, cnt_arr_ask_ = 0;
   int cnt_can_bid_ = 0, cnt_can_ask_ = 0;
   int cnt_trd_buy_ = 0, cnt_trd_sell_ = 0;
@@ -113,22 +103,22 @@ private:
 // 使用滚动窗口实现
 // =============================================================================
 
-class ToxicCancelRatio {
+// compute@Trigger0 (每笔订单, 内部判断CANCEL), flush@Trigger2
+class ToxicCR {
   static constexpr size_t SHORT_WINDOW = 5;   // 5秒
   static constexpr size_t LONG_WINDOW = 60;   // 60秒
 
 public:
-  ToxicCancelRatio(CBuffer<float, L2::BLEN> &out)
-      : out_(out) {}
+  ToxicCR(TickData &td, CBuffer<float, L2::BLEN> &out)
+      : td_(td), out_(out) {}
 
-  // 每笔撤单调用
-  void accumulate(float cancel_volume) {
-    cancel_buffer_[write_idx_] += cancel_volume;
+  void compute() {
+    if (td_.lob.order_type == L2::OrderType::CANCEL) {
+      cancel_buffer_[write_idx_] += 1.0f;
+    }
   }
 
-  // 每秒输出 (ON_DEPTH 时调用)
   void flush() {
-    // 计算短窗口和长窗口的撤单量
     float short_sum = 0.0f;
     float long_sum = 0.0f;
 
@@ -144,12 +134,12 @@ public:
     float ratio = (long_sum > 1e-6f) ? (short_sum / long_sum) : 0.0f;
     out_.push_back(ratio);
 
-    // 移动到下一秒
     write_idx_ = (write_idx_ + 1) % LONG_WINDOW;
-    cancel_buffer_[write_idx_] = 0.0f; // 清空新位置
+    cancel_buffer_[write_idx_] = 0.0f;
   }
 
 private:
+  TickData &td_;
   CBuffer<float, L2::BLEN> &out_;
   float cancel_buffer_[LONG_WINDOW] = {};
   size_t write_idx_ = 0;

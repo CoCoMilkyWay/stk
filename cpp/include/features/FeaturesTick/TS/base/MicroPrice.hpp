@@ -19,11 +19,13 @@ public:
     float bid_qty = static_cast<float>(best_bid->net_quantity);
     float ask_qty = static_cast<float>(-best_ask->net_quantity); // ask is negative
 
-    float micro_price = (ask_price * bid_qty + bid_price * ask_qty) / (ask_qty + bid_qty);
-    buffer_.push_back(micro_price);
+    micro_value_ = (ask_price * bid_qty + bid_price * ask_qty) / (ask_qty + bid_qty);
   }
+
+  void flush() { buffer_.push_back(micro_value_); }
 
 private:
   const TickData &tick_data_;
   CBuffer<float, L2::BLEN> &buffer_;
+  float micro_value_ = 0.0f;
 };

@@ -41,19 +41,22 @@ public:
 
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
       float b = bid_qty_[i].back();
-      float a = -ask_qty_[i].back(); // ask_qty是负值
+      float a = -ask_qty_[i].back();
       float w = weights_[i];
 
       numer += w * (b - a);
       denom += w * (b + a);
     }
 
-    out_.push_back(denom > 1e-6f ? numer / denom : 0.0f);
+    value_ = denom > 1e-6f ? numer / denom : 0.0f;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
   float weights_[DEPTH_SIZE];
+  float value_ = 0.0f;
 };

@@ -72,24 +72,16 @@ public:
     }
 
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      // depth布局: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
-      // bid_i = depth[N + i], ask_i = depth[N - 1 - i]
       const Level *bid_level = depth[L2::LOB_DEPTH + i];
       const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i];
 
-      // 价格: Level->price是分(0.01元)单位，需转为元
       float bid_price = static_cast<float>(bid_level->price) * PRICE_SCALE;
       float ask_price = static_cast<float>(ask_level->price) * PRICE_SCALE;
-
-      // 数量: 股, 卖方保持负值
       float bid_qty = static_cast<float>(bid_level->net_quantity);
       float ask_qty = static_cast<float>(ask_level->net_quantity);
-
-      // 金额: 万元 = price * qty / 10000
       float bid_amt = bid_price * bid_qty * AMT_SCALE;
       float ask_amt = ask_price * ask_qty * AMT_SCALE;
 
-      // 涨跌停保护: 超限档位强制设为涨跌停价
       if (bid_price > limit_up_) [[unlikely]] {
         bid_price = limit_up_;
         bid_qty = LIMIT_QTY;
@@ -102,7 +94,7 @@ public:
 
       if (ask_price > limit_up_) [[unlikely]] {
         ask_price = limit_up_;
-        ask_qty = -LIMIT_QTY; // 卖方负值
+        ask_qty = -LIMIT_QTY;
         ask_amt = -LIMIT_AMT;
       } else if (ask_price < limit_down_) [[unlikely]] {
         ask_price = limit_down_;
@@ -110,12 +102,23 @@ public:
         ask_amt = -LIMIT_AMT;
       }
 
-      bid_price_[i].push_back(bid_price);
-      ask_price_[i].push_back(ask_price);
-      bid_qty_[i].push_back(bid_qty);
-      ask_qty_[i].push_back(ask_qty);
-      bid_amt_[i].push_back(bid_amt);
-      ask_amt_[i].push_back(ask_amt);
+      tmp_bid_price_[i] = bid_price;
+      tmp_ask_price_[i] = ask_price;
+      tmp_bid_qty_[i] = bid_qty;
+      tmp_ask_qty_[i] = ask_qty;
+      tmp_bid_amt_[i] = bid_amt;
+      tmp_ask_amt_[i] = ask_amt;
+    }
+  }
+
+  void flush() {
+    for (size_t i = 0; i < N_LEVELS; ++i) {
+      bid_price_[i].push_back(tmp_bid_price_[i]);
+      ask_price_[i].push_back(tmp_ask_price_[i]);
+      bid_qty_[i].push_back(tmp_bid_qty_[i]);
+      ask_qty_[i].push_back(tmp_ask_qty_[i]);
+      bid_amt_[i].push_back(tmp_bid_amt_[i]);
+      ask_amt_[i].push_back(tmp_ask_amt_[i]);
     }
   }
 
@@ -134,4 +137,12 @@ private:
   CBuffer<float, L2::BLEN> (&ask_qty_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&bid_amt_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&ask_amt_)[N_LEVELS];
+
+  // 临时计算结果
+  float tmp_bid_price_[N_LEVELS] = {};
+  float tmp_ask_price_[N_LEVELS] = {};
+  float tmp_bid_qty_[N_LEVELS] = {};
+  float tmp_ask_qty_[N_LEVELS] = {};
+  float tmp_bid_amt_[N_LEVELS] = {};
+  float tmp_ask_amt_[N_LEVELS] = {};
 };

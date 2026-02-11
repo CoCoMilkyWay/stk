@@ -35,15 +35,18 @@ public:
 
     for (size_t i = 0; i < N_LEVELS; ++i) {
       sum_bid += bid_qty_[i].back();
-      sum_ask += -ask_qty_[i].back(); // ask_qty是负值
+      sum_ask += -ask_qty_[i].back();
     }
 
     float denom = sum_bid + sum_ask;
-    out_.push_back(denom > 1e-6f ? (sum_bid - sum_ask) / denom : 0.0f);
+    value_ = denom > 1e-6f ? (sum_bid - sum_ask) / denom : 0.0f;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
+  float value_ = 0.0f;
 };

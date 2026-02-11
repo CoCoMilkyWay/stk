@@ -95,8 +95,10 @@ public:
       prev_ask_qty_[i] = cur_ask_qty;
     }
 
-    out_.push_back(ofi);
+    value_ = ofi;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
@@ -110,4 +112,5 @@ private:
   float prev_bid_qty_[N_LEVELS];
   float prev_ask_price_[N_LEVELS];
   float prev_ask_qty_[N_LEVELS];
+  float value_ = 0.0f;
 };

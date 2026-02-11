@@ -293,29 +293,29 @@ public:
     PEAK<false, false> peak_ratio_ask{AskQty_, peak_ratio_ask_};
 
     // FLOW_RATE
-    FlowAccumulator flow_acc{td, arr_bid_, arr_ask_, can_bid_, can_ask_, trd_buy_, trd_sell_, net_ord_, foi_};
-    ToxicCancelRatio toxic_cr{toxic_cr_};
+    FlowRate flow_rate{td, arr_bid_, arr_ask_, can_bid_, can_ask_, trd_buy_, trd_sell_, net_ord_, foi_};
+    ToxicCR toxic_cr{td, toxic_cr_};
 
     // RESIL
-    ResiliencyAccumulator resil_acc{td, BidQty_, AskQty_,
+    Resiliency resil{td, BidQty_, AskQty_,
         ratio_bid_, ratio_ask_, imba_, dev_bid_, dev_ask_,
         mr_bid_, mr_ask_, recovery_bid_, recovery_ask_};
 
     // CTR
-    CumulativeTradeRatio ctr_acc{td, cc_r_, ctr_xl_, ctr_l_, ctr_m_, ctr_s_,
+    CTR ctr{td, cc_r_, ctr_xl_, ctr_l_, ctr_m_, ctr_s_,
         cnbi_, cnbi_xl_, cnbi_l_, cnbi_m_, cnbi_s_, cnbi_am_, cnbi_pm_};
 
     // BEHAV
-    BehavioralFeatures behav_acc{td, agg_buy_, agg_sell_, agg_dif_, cpr_, agg_trd_, ord_size_};
+    Behav behav{td, agg_buy_, agg_sell_, agg_dif_, cpr_, agg_trd_, ord_size_};
 
     // OA
-    OpeningAuction oa_acc{td, oa_bcr_, oa_acr_, oa_btr_, oa_atr_};
+    OA oa{td, oa_bcr_, oa_acr_, oa_btr_, oa_atr_};
 
     // HLA
-    HiddenLiquidityAdjusted hla_acc{td, BidQty_, AskQty_, hla_imba_};
+    HLA hla{td, BidQty_, AskQty_, hla_imba_};
 
     // TOXIC
-    ToxicFeatures toxic_acc{td, BidQty_, AskQty_, ptc_rt_, fleet_rt_, spoof_int_, stale_ratio_bid_, stale_ratio_ask_};
+    Toxic toxic{td, BidQty_, AskQty_, ptc_rt_, fleet_rt_, spoof_int_, stale_ratio_bid_, stale_ratio_ask_};
 
     // LABEL
     NextTickReturn next_tick_ret{MidPrice_, next_tick_ret_};

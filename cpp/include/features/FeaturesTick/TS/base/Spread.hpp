@@ -23,9 +23,10 @@ public:
   void compute() {
     float bid = bid_price_0_.back();
     float ask = ask_price_0_.back();
-    float spread = (bid > 0 && ask > 0) ? (ask - bid) : 0.0f;
-    buffer_.push_back(spread);
+    spread_value_ = (bid > 0 && ask > 0) ? (ask - bid) : 0.0f;
   }
+
+  void flush() { buffer_.push_back(spread_value_); }
 
   float back() const { return buffer_.back(); }
 
@@ -33,5 +34,6 @@ private:
   const CBuffer<float, L2::BLEN> &bid_price_0_;
   const CBuffer<float, L2::BLEN> &ask_price_0_;
   CBuffer<float, L2::BLEN> &buffer_;
+  float spread_value_ = 0.0f;
 };
 

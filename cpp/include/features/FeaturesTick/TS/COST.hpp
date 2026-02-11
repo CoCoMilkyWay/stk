@@ -58,12 +58,15 @@ public:
       }
     }
 
-    out_.push_back(cost);
+    value_ = cost;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&price_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> &mid_price_;
   CBuffer<float, L2::BLEN> &out_;
+  float value_ = 0.0f;
 };

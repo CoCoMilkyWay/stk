@@ -18,30 +18,30 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-class ResiliencyAccumulator {
+// compute@Trigger0 (每笔订单累计), flush@Trigger2 (盘口更新时输出, 读取深度)
+class Resiliency {
   static constexpr size_t DEPTH_WINDOW = 60; // 60秒移动平均窗口
 
 public:
-  ResiliencyAccumulator(TickData &td,
-                        const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
-                        const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
-                        CBuffer<float, L2::BLEN> &ratio_bid,
-                        CBuffer<float, L2::BLEN> &ratio_ask,
-                        CBuffer<float, L2::BLEN> &imba,
-                        CBuffer<float, L2::BLEN> &dev_bid,
-                        CBuffer<float, L2::BLEN> &dev_ask,
-                        CBuffer<float, L2::BLEN> &mr_bid,
-                        CBuffer<float, L2::BLEN> &mr_ask,
-                        CBuffer<float, L2::BLEN> &recovery_bid,
-                        CBuffer<float, L2::BLEN> &recovery_ask)
+  Resiliency(TickData &td,
+             const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
+             const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
+             CBuffer<float, L2::BLEN> &ratio_bid,
+             CBuffer<float, L2::BLEN> &ratio_ask,
+             CBuffer<float, L2::BLEN> &imba,
+             CBuffer<float, L2::BLEN> &dev_bid,
+             CBuffer<float, L2::BLEN> &dev_ask,
+             CBuffer<float, L2::BLEN> &mr_bid,
+             CBuffer<float, L2::BLEN> &mr_ask,
+             CBuffer<float, L2::BLEN> &recovery_bid,
+             CBuffer<float, L2::BLEN> &recovery_ask)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty),
         ratio_bid_(ratio_bid), ratio_ask_(ratio_ask), imba_(imba),
         dev_bid_(dev_bid), dev_ask_(dev_ask),
         mr_bid_(mr_bid), mr_ask_(mr_ask),
         recovery_bid_(recovery_bid), recovery_ask_(recovery_ask) {}
 
-  // 每笔订单调用 - 累计订单流量
-  void accumulate() {
+  void compute() {
     const auto &lob = td_.lob;
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
     const float vol = static_cast<float>(lob.volume);

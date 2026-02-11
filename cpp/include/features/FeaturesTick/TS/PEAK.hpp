@@ -52,10 +52,13 @@ public:
       result = (mean_v > 1e-6f) ? (max_v / mean_v) : 1.0f;
     }
 
-    out_.push_back(result);
+    value_ = result;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&qty_)[N_LEVELS];
   CBuffer<float, L2::BLEN> &out_;
+  float value_ = 0.0f;
 };

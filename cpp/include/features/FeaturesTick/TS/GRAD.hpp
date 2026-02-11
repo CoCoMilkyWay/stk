@@ -43,13 +43,16 @@ public:
       sum_diff += v_ip1 - v_i;
     }
 
-    out_.push_back(sum_diff / static_cast<float>(N_LEVELS - 1));
+    value_ = sum_diff / static_cast<float>(N_LEVELS - 1);
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
+  float value_ = 0.0f;
 };
 
 // =============================================================================
@@ -69,11 +72,14 @@ public:
     float b = bid_grad_.back();
     float a = ask_grad_.back();
     float denom = std::abs(b) + std::abs(a);
-    out_.push_back(denom > 1e-6f ? (b - a) / denom : 0.0f);
+    value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_grad_;
   const CBuffer<float, L2::BLEN> &ask_grad_;
   CBuffer<float, L2::BLEN> &out_;
+  float value_ = 0.0f;
 };

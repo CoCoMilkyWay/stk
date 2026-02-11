@@ -59,146 +59,177 @@ inline void Tick_Sequential::compute_and_store() {
 }
 
 inline void Tick_Sequential::compute_ts_tick(size_t t) {
-  // =========================================================================
-  // [EVERY TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
-  // =========================================================================
-  dag_.l0.DeltaT.compute();
-  dag_.l0.TickIndex.compute();
-  ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
+  bool Trigger0 = true;                                                  // [EVERY TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
+  bool Trigger1 = dag_.tick_data.lob.order_type == L2::OrderType::TAKER; // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
+  bool Trigger2 = dag_.tick_data.lob.depth_updated;                      // [ON DEPTH] 盘口更新时触发
 
-  // --- FLOW_RATE: 累计订单流统计 ---
-  dag_.l0.flow_acc.accumulate();
-  if (dag_.tick_data.lob.order_type == L2::OrderType::CANCEL) {
-    dag_.l0.toxic_cr.accumulate(1.0f); // 撤单计数
+  // =========================================================================
+  // Trigger0: 每笔订单 - compute + flush (立即输出型)
+  // =========================================================================
+  if (Trigger0) {
+    dag_.l0.DeltaT.compute();
+    dag_.l0.DeltaT.flush();
+    dag_.l0.TickIndex.compute();
+    dag_.l0.TickIndex.flush();
+    ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
+
+    // 订单流累计特征 compute (flush在Trigger2)
+    dag_.l0.flow_rate.compute();
+    dag_.l0.toxic_cr.compute();
+    dag_.l0.resil.compute();
+    dag_.l0.ctr.compute();
+    dag_.l0.behav.compute();
+    dag_.l0.oa.compute();
+    dag_.l0.hla.compute();
+    dag_.l0.toxic.compute();
   }
 
-  // --- RESIL: 累计韧性统计 ---
-  dag_.l0.resil_acc.accumulate();
-
-  // --- CTR: 累计成交比率统计 ---
-  dag_.l0.ctr_acc.accumulate();
-
-  // --- BEHAV: 行为特征统计 ---
-  dag_.l0.behav_acc.accumulate();
-
-  // --- OA: 集合竞价统计 ---
-  dag_.l0.oa_acc.accumulate();
-
-  // --- HLA: 潜在流动性统计 ---
-  dag_.l0.hla_acc.accumulate();
-
-  // --- TOXIC: 毒性特征统计 ---
-  dag_.l0.toxic_acc.accumulate();
-
   // =========================================================================
-  // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
+  // Trigger1: 成交时 - compute + flush (立即输出型)
   // =========================================================================
-  if (dag_.tick_data.lob.order_type == L2::OrderType::TAKER) {
+  if (Trigger1) {
     dag_.l0.TradePrice.compute();
+    dag_.l0.TradePrice.flush();
   }
 
   // =========================================================================
-  // [ON DEPTH] 盘口更新时触发
+  // Trigger2: 盘口更新 - 深度特征 compute+flush + 订单累计特征 flush
   // =========================================================================
-  if (dag_.tick_data.lob.depth_updated) {
-    // --- 数据层 ---
+  if (Trigger2) {
+    // --- 基础数据层 ---
     dag_.l0.DepthIndex.compute();
+    dag_.l0.DepthIndex.flush();
     dag_.l0.DepthData.compute();
+    dag_.l0.DepthData.flush();
     dag_.l0.MidPrice.compute();
+    dag_.l0.MidPrice.flush();
     dag_.l0.MicroPrice.compute();
+    dag_.l0.MicroPrice.flush();
     dag_.l0.Spread.compute();
+    dag_.l0.Spread.flush();
 
-    // --- CI: Cumulative Imbalance ---
+    // --- CI ---
     dag_.l0.ci_1.compute();
+    dag_.l0.ci_1.flush();
     dag_.l0.ci_5.compute();
+    dag_.l0.ci_5.flush();
     dag_.l0.ci_10.compute();
+    dag_.l0.ci_10.flush();
     dag_.l0.ci_30.compute();
+    dag_.l0.ci_30.flush();
     dag_.l0.ci_all.compute();
+    dag_.l0.ci_all.flush();
 
-    // --- CWI: Convexity-Weighted Imbalance ---
+    // --- CWI ---
     dag_.l0.cwi_1.compute();
+    dag_.l0.cwi_1.flush();
     dag_.l0.cwi_2.compute();
+    dag_.l0.cwi_2.flush();
 
-    // --- DDI: Distance-Discounted Imbalance ---
+    // --- DDI ---
     dag_.l0.ddi_1.compute();
+    dag_.l0.ddi_1.flush();
     dag_.l0.ddi_2.compute();
+    dag_.l0.ddi_2.flush();
 
-    // --- TLR: Top Level Ratio ---
+    // --- TLR ---
     dag_.l0.tbr_5.compute();
+    dag_.l0.tbr_5.flush();
     dag_.l0.tar_5.compute();
+    dag_.l0.tar_5.flush();
 
-    // --- PARA: Parabola Fit (Layer 1: 买卖两侧) ---
+    // --- PARA (Layer 1) ---
     dag_.l0.b_para_c0.compute();
+    dag_.l0.b_para_c0.flush();
     dag_.l0.b_para_c1.compute();
+    dag_.l0.b_para_c1.flush();
     dag_.l0.b_para_c2.compute();
+    dag_.l0.b_para_c2.flush();
     dag_.l0.a_para_c0.compute();
+    dag_.l0.a_para_c0.flush();
     dag_.l0.a_para_c1.compute();
+    dag_.l0.a_para_c1.flush();
     dag_.l0.a_para_c2.compute();
-    // --- PARA: Parabola Fit (Layer 2: 失衡) ---
+    dag_.l0.a_para_c2.flush();
+    // --- PARA (Layer 2: 失衡, 依赖Layer 1 flush后的CBuffer) ---
     dag_.l0.imba_para_c0.compute();
+    dag_.l0.imba_para_c0.flush();
     dag_.l0.imba_para_c1.compute();
+    dag_.l0.imba_para_c1.flush();
     dag_.l0.imba_para_c2.compute();
+    dag_.l0.imba_para_c2.flush();
 
-    // --- GRAD: Gradient (Layer 1) ---
+    // --- GRAD (Layer 1) ---
     dag_.l0.b_5_c1.compute();
+    dag_.l0.b_5_c1.flush();
     dag_.l0.a_5_c1.compute();
-    // --- GRAD: Gradient (Layer 2: 失衡) ---
+    dag_.l0.a_5_c1.flush();
+    // --- GRAD (Layer 2) ---
     dag_.l0.imba_5_c1.compute();
+    dag_.l0.imba_5_c1.flush();
 
-    // --- ENTROPY: Shannon Entropy (Layer 1) ---
+    // --- ENTROPY (Layer 1) ---
     dag_.l0.b_5_entropy.compute();
+    dag_.l0.b_5_entropy.flush();
     dag_.l0.a_5_entropy.compute();
+    dag_.l0.a_5_entropy.flush();
     dag_.l0.b_30_entropy.compute();
+    dag_.l0.b_30_entropy.flush();
     dag_.l0.a_30_entropy.compute();
-    // --- ENTROPY: Shannon Entropy (Layer 2: 失衡) ---
+    dag_.l0.a_30_entropy.flush();
+    // --- ENTROPY (Layer 2) ---
     dag_.l0.imba_5_entropy.compute();
+    dag_.l0.imba_5_entropy.flush();
     dag_.l0.imba_30_entropy.compute();
+    dag_.l0.imba_30_entropy.flush();
 
-    // --- OFI: Order Flow Imbalance ---
+    // --- OFI ---
     dag_.l0.ofi_1.compute();
+    dag_.l0.ofi_1.flush();
     dag_.l0.ofi_5.compute();
+    dag_.l0.ofi_5.flush();
 
-    // --- COST: Impact Cost ---
+    // --- COST ---
     dag_.l0.cost_buy_1.compute();
+    dag_.l0.cost_buy_1.flush();
     dag_.l0.cost_buy_5.compute();
+    dag_.l0.cost_buy_5.flush();
     dag_.l0.cost_buy_10.compute();
+    dag_.l0.cost_buy_10.flush();
     dag_.l0.cost_sell_1.compute();
+    dag_.l0.cost_sell_1.flush();
     dag_.l0.cost_sell_5.compute();
+    dag_.l0.cost_sell_5.flush();
     dag_.l0.cost_sell_10.compute();
+    dag_.l0.cost_sell_10.flush();
 
-    // --- PEAK: Peak Location & Concentration ---
+    // --- PEAK ---
     dag_.l0.peak_loc_bid.compute();
+    dag_.l0.peak_loc_bid.flush();
     dag_.l0.peak_loc_ask.compute();
+    dag_.l0.peak_loc_ask.flush();
     dag_.l0.peak_ratio_bid.compute();
+    dag_.l0.peak_ratio_bid.flush();
     dag_.l0.peak_ratio_ask.compute();
+    dag_.l0.peak_ratio_ask.flush();
 
-    // --- FLOW_RATE: 输出订单流统计 (每秒flush) ---
-    dag_.l0.flow_acc.flush();
+    // --- 订单流累计特征 flush (compute在Trigger0, 读取深度后输出) ---
+    dag_.l0.flow_rate.flush();
     dag_.l0.toxic_cr.flush();
+    dag_.l0.resil.flush();
+    dag_.l0.ctr.flush();
+    dag_.l0.behav.flush();
+    dag_.l0.oa.flush();
+    dag_.l0.hla.flush();
+    dag_.l0.toxic.flush();
 
-    // --- RESIL: 输出韧性统计 (每秒flush) ---
-    dag_.l0.resil_acc.flush();
-
-    // --- CTR: 输出累计成交比率 (每秒flush) ---
-    dag_.l0.ctr_acc.flush();
-
-    // --- BEHAV: 输出行为特征 (每秒flush) ---
-    dag_.l0.behav_acc.flush();
-
-    // --- OA: 输出集合竞价特征 (每秒flush) ---
-    dag_.l0.oa_acc.flush();
-
-    // --- HLA: 输出潜在流动性特征 (每秒flush) ---
-    dag_.l0.hla_acc.flush();
-
-    // --- TOXIC: 输出毒性特征 (每秒flush) ---
-    dag_.l0.toxic_acc.flush();
-
-    // --- LABEL: 输出标签 ---
+    // --- LABEL ---
     dag_.l0.next_tick_ret.compute();
+    dag_.l0.next_tick_ret.flush();
 
-    // --- REPRE: 输出深度表征 (DUMMY) ---
+    // --- REPRE ---
     dag_.l0.depth_repre.compute();
+    dag_.l0.depth_repre.flush();
 
     // --- 写入缓冲区 (用 L0_FieldOffset 索引) ---
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.ci_1_.back();
@@ -294,10 +325,10 @@ inline void Tick_Sequential::compute_ts_tick(size_t t) {
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
   }
 
-  // Write TS features (全部特征一次性写入, 范围到最后一个已实现的特征)
+  // Write TS features
   TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::next_tick_ret, ts_features_buffer_.data(), worker_id_);
 
-  // Write data validity flag (event-driven sparsity marker)
+  // Write data validity flag
   TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
   DEPTH_WRITE_SINGLE(store_, date_str_, t, DepthFieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
 }

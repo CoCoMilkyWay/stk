@@ -89,15 +89,17 @@ public:
     }
 
     // c[COEF] = inv_row * [xy0, xy1, xy2]'
-    float coef = inv_row_[0] * xy0 + inv_row_[1] * xy1 + inv_row_[2] * xy2;
-    out_.push_back(coef);
+    value_ = inv_row_[0] * xy0 + inv_row_[1] * xy1 + inv_row_[2] * xy2;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
   float inv_row_[3]; // (X'X)^-1 的第COEF行
+  float value_ = 0.0f;
 };
 
 // =============================================================================
@@ -121,11 +123,14 @@ public:
     float b = bid_coef_.back();
     float a = ask_coef_.back();
     float denom = std::abs(b) + std::abs(a);
-    out_.push_back(denom > 1e-6f ? (b - a) / denom : 0.0f);
+    value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
+
+  void flush() { out_.push_back(value_); }
 
 private:
   const CBuffer<float, L2::BLEN> &bid_coef_;
   const CBuffer<float, L2::BLEN> &ask_coef_;
   CBuffer<float, L2::BLEN> &out_;
+  float value_ = 0.0f;
 };
