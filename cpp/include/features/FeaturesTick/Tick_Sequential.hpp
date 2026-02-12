@@ -53,11 +53,26 @@ inline void Tick_Sequential::compute_and_store() {
   const auto &lob = dag_.tick_data.lob;
   const auto order_type = lob.order_type;
 
-  const bool Trigger_onTick = true;                                                     // [ON TICK]   逐笔更新
   const bool Trigger_onTaker [[maybe_unused]] = (order_type == L2::OrderType::TAKER);   // [ON TAKER]  成交时更新
   const bool Trigger_onMaker [[maybe_unused]] = (order_type == L2::OrderType::MAKER);   // [ON MAKER]  挂单时更新
   const bool Trigger_onCancel [[maybe_unused]] = (order_type == L2::OrderType::CANCEL); // [ON CANCEL] 撤单时更新
+  const bool Trigger_onTick = true;                                                     // [ON TICK]   逐笔更新
   const bool Trigger_onDepth = lob.depth_updated;                                       // [ON DEPTH]  盘口更新时触发
+
+  if (Trigger_onTaker) {
+    dag_.l0.Taker.compute(); // input: td
+    dag_.l0.Taker.flush();   // output: Taker_price_, Taker_timestamp_, Taker_tickindex_, Taker_volume_, Taker_dir_
+  }
+
+  if (Trigger_onMaker) {
+    dag_.l0.Maker.compute(); // input: td
+    dag_.l0.Maker.flush();   // output: Maker_price_, Maker_timestamp_, Maker_tickindex_, Maker_volume_, Maker_dir_
+  }
+
+  if (Trigger_onCancel) {
+    dag_.l0.Cancel.compute(); // input: td
+    dag_.l0.Cancel.flush();   // output: Cancel_price_, Cancel_timestamp_, Cancel_tickindex_, Cancel_volume_, Cancel_dir_
+  }
 
   if (Trigger_onTick) {
     dag_.l0.TickIndex.compute(); // input: td
@@ -74,21 +89,6 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Toxic.compute();      // input: td, BidQty_, AskQty_
 
     ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
-  }
-
-  if (Trigger_onTaker) {
-    dag_.l0.Taker.compute(); // input: td
-    dag_.l0.Taker.flush();   // output: Taker_price_, Taker_timestamp_, Taker_tickindex_, Taker_volume_
-  }
-
-  if (Trigger_onMaker) {
-    dag_.l0.Maker.compute(); // input: td
-    dag_.l0.Maker.flush();   // output: Maker_price_, Maker_timestamp_, Maker_tickindex_, Maker_volume_
-  }
-
-  if (Trigger_onCancel) {
-    dag_.l0.Cancel.compute(); // input: td
-    dag_.l0.Cancel.flush();   // output: Cancel_price_, Cancel_timestamp_, Cancel_tickindex_, Cancel_volume_
   }
 
   if (Trigger_onDepth) {
@@ -211,7 +211,7 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Peak_ratio_ask.compute(); // input: AskQty_
     dag_.l0.Peak_ratio_ask.flush();   // output: Peak_ratio_ask_
 
-    // --- 订单流累计特征 flush (compute在onTick, 读取深度后输出) ---
+    // --- 订单流累计特征 ---
     dag_.l0.FlowRate.flush();   // output: FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_, FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_
     dag_.l0.ToxicCr.flush();    // output: ToxicCr_
     dag_.l0.Resiliency.flush(); // output: Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_, Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_

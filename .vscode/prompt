@@ -1,6 +1,7 @@
 1. 实现有不合理的地方吗(没有得到真正有用的特征)? 同时参考FeaturesDefine.hpp公式定义
-尽量复用相同trigger采样域的Cbuffer, 避免重复计算
-注意深度信息里的qty/amt可能带负号, 代表卖单
+检查ComputeGraph.hpp, 尽量复用相同trigger采样域的Cbuffer, 避免重复计算
+注意depth_buffer里的quantity可能带负号, 代表卖单
+TickData.LOB_Feature里的volume为正(uint32_t), 需要看L2::OrderDirection order_dir确定方向
 2. 有优化空间吗, 需要高性能, 会run上亿次
 注意, 为了统一和通用, compute和flush需要保持分离
 3. 数据会跨天, 可以保留reset接口(减少计算量), 系统保证跨天时调用, 然后再compute和flush特征(如果需要, 没需要就不要声明)

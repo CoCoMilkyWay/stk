@@ -24,7 +24,7 @@
 #include "features/FeaturesTick/TS/MidPrice.hpp"
 #include "features/FeaturesTick/TS/OA.hpp"
 #include "features/FeaturesTick/TS/OFI.hpp"
-#include "features/FeaturesTick/TS/OrderFlow.hpp"
+#include "features/FeaturesTick/TS/OrderInfo.hpp"
 #include "features/FeaturesTick/TS/Para.hpp"
 #include "features/FeaturesTick/TS/ParaImba.hpp"
 #include "features/FeaturesTick/TS/Peak.hpp"
@@ -35,7 +35,6 @@
 #include "features/FeaturesTick/TS/Toxic.hpp"
 #include "features/FeaturesTick/TS/ToxicCr.hpp"
 #include <deque>
-
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
@@ -52,49 +51,52 @@ public:
   // ===========================================================================
   struct L0 {
     const std::string &asset_code_; // 股票代码 (用于判断涨跌幅限制)
-
-    // -------------------------------------------------------------------------
-    // [ON TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
-    // -------------------------------------------------------------------------
-    TickData &td; // 唯一需要构造函数初始化的引用
-
-    // --- TickIndex ---
-    CBuffer<float, L2::BLEN> Sec_;
-    CBuffer<float, L2::BLEN> TickIndex_;
-    TickIndex TickIndex{td, Sec_, TickIndex_};
+    TickData &td;                   // 逐笔数据
 
     // -------------------------------------------------------------------------
     // [ON TAKER] 成交更新 - order_type == TAKER 时触发
     // -------------------------------------------------------------------------
 
-    // --- OrderFlow (Taker) ---
+    // --- OrderInfo (Taker) ---
     CBuffer<float, L2::BLEN> Taker_price_;
     CBuffer<float, L2::BLEN> Taker_timestamp_;
     CBuffer<float, L2::BLEN> Taker_tickindex_;
     CBuffer<float, L2::BLEN> Taker_volume_;
-    OrderFlow Taker{td, Taker_price_, Taker_timestamp_, Taker_tickindex_, Taker_volume_};
+    CBuffer<float, L2::BLEN> Taker_dir_;
+    OrderInfo Taker{td, Taker_price_, Taker_timestamp_, Taker_tickindex_, Taker_volume_, Taker_dir_};
 
     // -------------------------------------------------------------------------
     // [ON MAKER] 挂单更新 - order_type == MAKER 时触发
     // -------------------------------------------------------------------------
 
-    // --- OrderFlow (Maker) ---
+    // --- OrderInfo (Maker) ---
     CBuffer<float, L2::BLEN> Maker_price_;
     CBuffer<float, L2::BLEN> Maker_timestamp_;
     CBuffer<float, L2::BLEN> Maker_tickindex_;
     CBuffer<float, L2::BLEN> Maker_volume_;
-    OrderFlow Maker{td, Maker_price_, Maker_timestamp_, Maker_tickindex_, Maker_volume_};
+    CBuffer<float, L2::BLEN> Maker_dir_;
+    OrderInfo Maker{td, Maker_price_, Maker_timestamp_, Maker_tickindex_, Maker_volume_, Maker_dir_};
 
     // -------------------------------------------------------------------------
     // [ON CANCEL] 撤单更新 - order_type == CANCEL 时触发
     // -------------------------------------------------------------------------
 
-    // --- OrderFlow (Cancel) ---
+    // --- OrderInfo (Cancel) ---
     CBuffer<float, L2::BLEN> Cancel_price_;
     CBuffer<float, L2::BLEN> Cancel_timestamp_;
     CBuffer<float, L2::BLEN> Cancel_tickindex_;
     CBuffer<float, L2::BLEN> Cancel_volume_;
-    OrderFlow Cancel{td, Cancel_price_, Cancel_timestamp_, Cancel_tickindex_, Cancel_volume_};
+    CBuffer<float, L2::BLEN> Cancel_dir_;
+    OrderInfo Cancel{td, Cancel_price_, Cancel_timestamp_, Cancel_tickindex_, Cancel_volume_, Cancel_dir_};
+
+    // -------------------------------------------------------------------------
+    // [ON TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
+    // -------------------------------------------------------------------------
+
+    // --- TickIndex ---
+    CBuffer<float, L2::BLEN> Sec_;
+    CBuffer<float, L2::BLEN> TickIndex_;
+    TickIndex TickIndex{td, Sec_, TickIndex_};
 
     // -------------------------------------------------------------------------
     // [ON DEPTH] 盘口更新 - depth_updated == true 时触发:
@@ -249,7 +251,8 @@ public:
     CBuffer<float, L2::BLEN> FlowRate_trd_sell_;
     CBuffer<float, L2::BLEN> FlowRate_net_ord_;
     CBuffer<float, L2::BLEN> FlowRate_foi_;
-    FlowRate FlowRate{td, FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_, FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_};
+    FlowRate FlowRate{td, FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_,
+                      FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_};
 
     // --- ToxicCr ---
     CBuffer<float, L2::BLEN> ToxicCr_;
@@ -360,6 +363,8 @@ public:
     l0.DepthData.reset();
     l0.Ofi_1.reset();
     l0.Ofi_5.reset();
+    l0.FlowRate.reset();
+    l0.ToxicCr.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };
