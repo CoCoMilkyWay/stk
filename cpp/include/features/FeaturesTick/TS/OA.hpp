@@ -33,7 +33,8 @@ public:
 
   inline void compute() {
     // 每笔订单时，只统计集合竞价时段（09:15-09:25，前10分钟）的订单
-    if (td_.l0_index >= OA_END_L0) return;  // 超过10分钟后不再累计
+    if (td_.l0_index >= OA_END_L0)
+      return; // 超过10分钟后不再累计
 
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
@@ -41,17 +42,23 @@ public:
 
     // 按订单类型和方向累计集合竞价期间的交易量
     switch (lob.order_type) {
-    case L2::OrderType::MAKER:  // 挂单
-      if (is_bid) vol_maker_bid_ += vol;
-      else vol_maker_ask_ += vol;
+    case L2::OrderType::MAKER: // 挂单
+      if (is_bid)
+        vol_maker_bid_ += vol;
+      else
+        vol_maker_ask_ += vol;
       break;
-    case L2::OrderType::TAKER:  // 成交
-      if (is_bid) vol_taker_bid_ += vol;
-      else vol_taker_ask_ += vol;
+    case L2::OrderType::TAKER: // 成交
+      if (is_bid)
+        vol_taker_bid_ += vol;
+      else
+        vol_taker_ask_ += vol;
       break;
     case L2::OrderType::CANCEL: // 撤单
-      if (is_bid) vol_cancel_bid_ += vol;
-      else vol_cancel_ask_ += vol;
+      if (is_bid)
+        vol_cancel_bid_ += vol;
+      else
+        vol_cancel_ask_ += vol;
       break;
     }
   }
@@ -60,11 +67,11 @@ public:
   inline void flush() {
     // 计算集合竞价期间的各项比率（09:25后保持固定值）
     // bcr/acr：撤单率 = 撤单量 / 挂单量，反映试探性挂单
-    float bcr = vol_maker_bid_ > 1e-6f ? vol_cancel_bid_ / vol_maker_bid_ : 0.0f;  // 买方撤单率
-    float acr = vol_maker_ask_ > 1e-6f ? vol_cancel_ask_ / vol_maker_ask_ : 0.0f;  // 卖方撤单率
+    float bcr = vol_maker_bid_ > 1e-6f ? vol_cancel_bid_ / vol_maker_bid_ : 0.0f; // 买方撤单率
+    float acr = vol_maker_ask_ > 1e-6f ? vol_cancel_ask_ / vol_maker_ask_ : 0.0f; // 卖方撤单率
     // btr/atr：成交率 = 成交量 / 挂单量，反映真实交易意愿
-    float btr = vol_maker_bid_ > 1e-6f ? vol_taker_bid_ / vol_maker_bid_ : 0.0f;   // 买方成交率
-    float atr = vol_maker_ask_ > 1e-6f ? vol_taker_ask_ / vol_maker_ask_ : 0.0f;   // 卖方成交率
+    float btr = vol_maker_bid_ > 1e-6f ? vol_taker_bid_ / vol_maker_bid_ : 0.0f; // 买方成交率
+    float atr = vol_maker_ask_ > 1e-6f ? vol_taker_ask_ / vol_maker_ask_ : 0.0f; // 卖方成交率
 
     // 输出比率值（集合竞价期间累计，连续竞价期间保持不变）
     oa_bcr_.push_back(bcr);

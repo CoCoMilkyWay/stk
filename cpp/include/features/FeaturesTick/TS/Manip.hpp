@@ -1,9 +1,9 @@
 #pragma once
 
 // =============================================================================
-// TOXIC - 高级行为特征 (简化版)
+// MANIP (Manipulation) - 市场操纵行为特征
 // =============================================================================
-// 计算高频交易相关的毒性指标 (简化实现, 不追踪订单ID)
+// 计算高频交易相关的操纵行为指标 (简化实现, 不追踪订单ID)
 //   ptc_rt = 成交前近期撤单占比 (用窗口统计近似)
 //   fleet_rt = 短存活订单占比 (用撤单率近似)
 //   spoof_int = 近端大额快速撤单强度 (用大额撤单率近似)
@@ -18,11 +18,11 @@
 #include "features/DataDefine.hpp"
 
 // compute: 每笔订单时累计, flush: 按秒输出（读取深度）
-class Toxic {
+class Manip {
   static constexpr float LARGE_ORDER_THRESHOLD = 10000.0f; // 大单阈值 (股)
 
 public:
-  Toxic(TickData &td,
+  Manip(TickData &td,
         const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
         const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
         CBuffer<float, L2::BLEN> &ptc_rt,
@@ -35,7 +35,7 @@ public:
         stale_ratio_bid_(stale_ratio_bid), stale_ratio_ask_(stale_ratio_ask) {}
 
   inline void compute() {
-    // 每笔订单时，统计高频交易相关的毒性行为指标
+    // 每笔订单时，统计高频交易相关的操纵行为指标
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
     const bool is_large = vol >= LARGE_ORDER_THRESHOLD;  // 判断是否大单（>=10000股）

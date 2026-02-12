@@ -32,7 +32,7 @@
 #include "features/FeaturesTick/TS/Spread.hpp"
 #include "features/FeaturesTick/TS/TLR.hpp"
 #include "features/FeaturesTick/TS/TickIndex.hpp"
-#include "features/FeaturesTick/TS/Toxic.hpp"
+#include "features/FeaturesTick/TS/Manip.hpp"
 #include "features/FeaturesTick/TS/ToxicCr.hpp"
 #include <deque>
 
@@ -308,13 +308,13 @@ public:
     CBuffer<float, L2::BLEN> Hla_imba_;
     HLA Hla{td, BidQty_, AskQty_, Hla_imba_};
 
-    // --- Toxic ---
-    CBuffer<float, L2::BLEN> Toxic_ptc_rt_;
-    CBuffer<float, L2::BLEN> Toxic_fleet_rt_;
-    CBuffer<float, L2::BLEN> Toxic_spoof_int_;
-    CBuffer<float, L2::BLEN> Toxic_stale_ratio_bid_;
-    CBuffer<float, L2::BLEN> Toxic_stale_ratio_ask_;
-    Toxic Toxic{td, BidQty_, AskQty_, Toxic_ptc_rt_, Toxic_fleet_rt_, Toxic_spoof_int_, Toxic_stale_ratio_bid_, Toxic_stale_ratio_ask_};
+    // --- Manip ---
+    CBuffer<float, L2::BLEN> Manip_ptc_rt_;
+    CBuffer<float, L2::BLEN> Manip_fleet_rt_;
+    CBuffer<float, L2::BLEN> Manip_spoof_int_;
+    CBuffer<float, L2::BLEN> Manip_stale_ratio_bid_;
+    CBuffer<float, L2::BLEN> Manip_stale_ratio_ask_;
+    Manip Manip{td, BidQty_, AskQty_, Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_};
 
     // --- Label ---
     CBuffer<float, L2::BLEN> Label_next_tick_ret_;
@@ -365,6 +365,10 @@ public:
     l0.Ofi_5.reset();
     l0.FlowRate.reset();
     l0.ToxicCr.reset();
+    l0.Resiliency.reset();
+    l0.Ctr.reset();
+    l0.Behav.reset();
+    l0.Oa.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };

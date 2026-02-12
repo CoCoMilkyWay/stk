@@ -16,7 +16,7 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-// compute: 每笔订单时累计, flush: 按秒输出（读取深度）
+// compute: 每笔订单时累计, flush: 深度更新时输出（读取深度）
 class HLA {
 public:
   HLA(TickData &td,
@@ -33,26 +33,31 @@ public:
 
     // 只关注挂单和撤单，不关注成交
     switch (lob.order_type) {
-    case L2::OrderType::MAKER:  // 挂单（补充流动性）
-      if (is_bid) vol_maker_bid_ += vol;
-      else vol_maker_ask_ += vol;
+    case L2::OrderType::MAKER: // 挂单（补充流动性）
+      if (is_bid)
+        vol_maker_bid_ += vol;
+      else
+        vol_maker_ask_ += vol;
       break;
     case L2::OrderType::CANCEL: // 撤单（移除流动性）
-      if (is_bid) vol_cancel_bid_ += vol;
-      else vol_cancel_ask_ += vol;
+      if (is_bid)
+        vol_cancel_bid_ += vol;
+      else
+        vol_cancel_ask_ += vol;
       break;
     default:
       break;
     }
   }
 
-  // 每秒输出
+  // 深度更新时输出
   inline void flush() {
     // 1. 从BidQty和AskQty CBuffer读取当前买一卖一量
-    float v_bid = bid_qty_[0].back();      // 买一数量
-    float v_ask = -ask_qty_[0].back();     // 卖一数量（取反）
+    float v_bid = bid_qty_[0].back();  // 买一数量
+    float v_ask = -ask_qty_[0].back(); // 卖一数量（取反）
 
     // 2. 计算refill rate（流动性补充率）：ρ = (挂单-撤单) / (挂单+撤单)
+    // 使用上次深度更新到本次深度更新间隔内的订单流统计
     // 正值表示净补充流动性，负值表示净移除流动性
     float sum_bid = vol_maker_bid_ + vol_cancel_bid_;
     float sum_ask = vol_maker_ask_ + vol_cancel_ask_;
@@ -69,7 +74,7 @@ public:
     float sum = v_tilde_bid + v_tilde_ask;
     hla_imba_.push_back(sum > 1e-6f ? (v_tilde_bid - v_tilde_ask) / sum : 0.0f);
 
-    // 重置秒内累计器
+    // 重置深度更新间隔内的累计器
     vol_maker_bid_ = vol_maker_ask_ = 0.0f;
     vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
   }
@@ -80,7 +85,7 @@ private:
   const CBuffer<float, L2::BLEN> (&ask_qty_)[L2::LOB_DEPTH];
   CBuffer<float, L2::BLEN> &hla_imba_;
 
-  // 秒内累计
+  // 深度更新间隔内的累计（上次深度更新到本次深度更新）
   float vol_maker_bid_ = 0.0f, vol_maker_ask_ = 0.0f;
   float vol_cancel_bid_ = 0.0f, vol_cancel_ask_ = 0.0f;
 };

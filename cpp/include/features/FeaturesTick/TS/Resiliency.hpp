@@ -49,17 +49,23 @@ public:
 
     // 分别统计买卖两侧的挂单、成交、撤单量
     switch (lob.order_type) {
-    case L2::OrderType::MAKER:  // 挂单量
-      if (is_bid) vol_maker_bid_ += vol;
-      else vol_maker_ask_ += vol;
+    case L2::OrderType::MAKER: // 挂单量
+      if (is_bid)
+        vol_maker_bid_ += vol;
+      else
+        vol_maker_ask_ += vol;
       break;
-    case L2::OrderType::TAKER:  // 成交量
-      if (is_bid) vol_taker_bid_ += vol;
-      else vol_taker_ask_ += vol;
+    case L2::OrderType::TAKER: // 成交量
+      if (is_bid)
+        vol_taker_bid_ += vol;
+      else
+        vol_taker_ask_ += vol;
       break;
     case L2::OrderType::CANCEL: // 撤单量
-      if (is_bid) vol_cancel_bid_ += vol;
-      else vol_cancel_ask_ += vol;
+      if (is_bid)
+        vol_cancel_bid_ += vol;
+      else
+        vol_cancel_ask_ += vol;
       break;
     }
   }
@@ -69,25 +75,26 @@ public:
     // 1. 从BidQty和AskQty CBuffer计算当前总深度
     float depth_bid = 0.0f, depth_ask = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH; ++i) {
-      depth_bid += bid_qty_[i].back();      // 买方总量
-      depth_ask += -ask_qty_[i].back();     // 卖方总量（取反）
+      depth_bid += bid_qty_[i].back();  // 买方总量
+      depth_ask += -ask_qty_[i].back(); // 卖方总量（取反）
     }
 
     // 2. 更新深度移动平均（60秒滚动窗口）
-    depth_sum_bid_ += depth_bid - depth_buf_bid_[buf_idx_];  // 移除旧值，加入新值
+    depth_sum_bid_ += depth_bid - depth_buf_bid_[buf_idx_]; // 移除旧值，加入新值
     depth_sum_ask_ += depth_ask - depth_buf_ask_[buf_idx_];
-    depth_buf_bid_[buf_idx_] = depth_bid;  // 保存当前值
+    depth_buf_bid_[buf_idx_] = depth_bid; // 保存当前值
     depth_buf_ask_[buf_idx_] = depth_ask;
-    buf_idx_ = (buf_idx_ + 1) % DEPTH_WINDOW;  // 循环移动指针
-    if (buf_count_ < DEPTH_WINDOW) ++buf_count_;  // 计数直到填满窗口
+    buf_idx_ = (buf_idx_ + 1) % DEPTH_WINDOW; // 循环移动指针
+    if (buf_count_ < DEPTH_WINDOW)
+      ++buf_count_; // 计数直到填满窗口
 
     float mean_bid = buf_count_ > 0 ? depth_sum_bid_ / buf_count_ : depth_bid;
     float mean_ask = buf_count_ > 0 ? depth_sum_ask_ / buf_count_ : depth_ask;
 
     // 3. 计算韧性比：挂单量 / (成交量 + 撤单量)
     // >1 表示深度增长快于消耗，市场韧性强
-    float consume_bid = vol_taker_bid_ + vol_cancel_bid_;  // 买方消耗量
-    float consume_ask = vol_taker_ask_ + vol_cancel_ask_;  // 卖方消耗量
+    float consume_bid = vol_taker_bid_ + vol_cancel_bid_; // 买方消耗量
+    float consume_ask = vol_taker_ask_ + vol_cancel_ask_; // 卖方消耗量
     float r_bid = consume_bid > 1e-6f ? vol_maker_bid_ / consume_bid : 1.0f;
     float r_ask = consume_ask > 1e-6f ? vol_maker_ask_ / consume_ask : 1.0f;
     ratio_bid_.push_back(r_bid);
@@ -124,6 +131,27 @@ public:
     vol_maker_bid_ = vol_maker_ask_ = 0.0f;
     vol_taker_bid_ = vol_taker_ask_ = 0.0f;
     vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
+  }
+
+  inline void reset() {
+    // 重置秒内累计器
+    vol_maker_bid_ = vol_maker_ask_ = 0.0f;
+    vol_taker_bid_ = vol_taker_ask_ = 0.0f;
+    vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
+
+    // 清空深度移动平均缓冲区
+    for (size_t i = 0; i < DEPTH_WINDOW; ++i) {
+      depth_buf_bid_[i] = 0.0f;
+      depth_buf_ask_[i] = 0.0f;
+    }
+    depth_sum_bid_ = 0.0f;
+    depth_sum_ask_ = 0.0f;
+    buf_idx_ = 0;
+    buf_count_ = 0;
+
+    // 重置偏离度
+    prev_d_bid_ = 0.0f;
+    prev_d_ask_ = 0.0f;
   }
 
 private:

@@ -21,7 +21,8 @@
 
 // compute: 每笔订单时累计, flush: 按秒输出
 class Behav {
-  static constexpr size_t AGG_WINDOW = 20; // 侵略性趋势窗口
+  static constexpr size_t AGG_WINDOW = 20;    // 侵略性趋势窗口
+  static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
 
 public:
   Behav(TickData &td,
@@ -41,14 +42,17 @@ public:
     const float vol = static_cast<float>(lob.volume);
 
     switch (lob.order_type) {
-    case L2::OrderType::MAKER: {  // 挂单
+    case L2::OrderType::MAKER: { // 挂单
       // 计算订单侵略性：log(P_order / P_best)
       // 侵略性衡量挂单价格偏离最优价格的程度
       // P_best: 对于买单是当前买一价, 对于卖单是当前卖一价
-      const float order_price = lob.price;
+      // depth_buffer 布局: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
+      const Level *bid1 = lob.depth_buffer[L2::LOB_DEPTH];     // 买一
+      const Level *ask1 = lob.depth_buffer[L2::LOB_DEPTH - 1]; // 卖一
+
+      const float order_price = lob.price * PRICE_SCALE;
       const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
-      // TODO: best_price应从depth_buffer获取，这里简化处理
-      const float best_price = order_price;
+      const float best_price = is_bid ? (bid1->price * PRICE_SCALE) : (ask1->price * PRICE_SCALE);
 
       if (best_price > 1e-6f && order_price > 1e-6f) {
         float agg = 0.0f;
@@ -69,29 +73,43 @@ public:
         }
       }
 
-      vol_maker_ += vol;  // 累计挂单量
-      cnt_maker_++;       // 累计挂单笔数
+      vol_maker_ += vol; // 累计挂单量
+      cnt_maker_++;      // 累计挂单笔数
       break;
     }
-    case L2::OrderType::CANCEL:  // 撤单
-      vol_cancel_ += vol;  // 累计撤单量
+    case L2::OrderType::CANCEL: // 撤单
+      vol_cancel_ += vol;       // 累计撤单量
       break;
     default:
       break;
     }
   }
 
+  // 跨天重置
+  void reset() {
+    sum_agg_buy_ = sum_agg_sell_ = 0.0f;
+    cnt_agg_buy_ = cnt_agg_sell_ = 0;
+    vol_maker_ = vol_cancel_ = 0.0f;
+    cnt_maker_ = 0;
+    for (size_t i = 0; i < AGG_WINDOW; ++i) {
+      agg_window_[i] = 0.0f;
+    }
+    agg_idx_ = 0;
+    agg_cnt_ = 0;
+  }
+
   // 每秒输出
   inline void flush() {
     // 1. 计算平均侵略性：sum(agg) / count(agg)
-    float avg_agg_buy = cnt_agg_buy_ > 0 ? sum_agg_buy_ / cnt_agg_buy_ : 0.0f;
-    float avg_agg_sell = cnt_agg_sell_ > 0 ? sum_agg_sell_ / cnt_agg_sell_ : 0.0f;
-    agg_buy_.push_back(avg_agg_buy);    // 买单平均侵略性
-    agg_sell_.push_back(avg_agg_sell);  // 卖单平均侵略性
+    const float avg_agg_buy = cnt_agg_buy_ > 0 ? sum_agg_buy_ / cnt_agg_buy_ : 0.0f;
+    const float avg_agg_sell = cnt_agg_sell_ > 0 ? sum_agg_sell_ / cnt_agg_sell_ : 0.0f;
+    agg_buy_.push_back(avg_agg_buy);   // 买单平均侵略性
+    agg_sell_.push_back(avg_agg_sell); // 卖单平均侵略性
 
-    // 2. 侵略性差：买侧 - 卖侧
+    // 2. 侵略性差：买侧 - 卖侧（复用，避免重复计算）
     // 正值表示买方更激进，负值表示卖方更激进
-    agg_dif_.push_back(avg_agg_buy - avg_agg_sell);
+    const float agg_dif = avg_agg_buy - avg_agg_sell;
+    agg_dif_.push_back(agg_dif);
 
     // 3. 撤挂比CPR：撤单量 / 挂单量
     // 值越大表示撤单频繁，可能存在虚假挂单或试探行为
@@ -102,30 +120,34 @@ public:
 
     // 5. 侵略性趋势：计算agg_dif的线性回归斜率
     // 更新滑动窗口（保存最近AGG_WINDOW个agg_dif值）
-    agg_window_[agg_idx_] = avg_agg_buy - avg_agg_sell;
+    agg_window_[agg_idx_] = agg_dif;
     agg_idx_ = (agg_idx_ + 1) % AGG_WINDOW;
-    if (agg_cnt_ < AGG_WINDOW) ++agg_cnt_;
+    if (agg_cnt_ < AGG_WINDOW)
+      ++agg_cnt_;
 
     // 用最小二乘法计算线性回归斜率：y = ax + b 中的 a
     // 斜率正值表示侵略性上升趋势，负值表示下降趋势
     if (agg_cnt_ >= 2) {
-      float sum_x = 0.0f, sum_y = 0.0f, sum_xy = 0.0f, sum_xx = 0.0f;
+      // 优化：sum_x 和 sum_xx 可以用公式直接计算（x = 0, 1, 2, ..., n-1）
+      const float n = static_cast<float>(agg_cnt_);
+      const float sum_x = n * (n - 1.0f) * 0.5f;                      // Σi = n(n-1)/2
+      const float sum_xx = n * (n - 1.0f) * (2.0f * n - 1.0f) / 6.0f; // Σi² = n(n-1)(2n-1)/6
+
+      float sum_y = 0.0f, sum_xy = 0.0f;
       for (size_t i = 0; i < agg_cnt_; ++i) {
-        size_t idx = (agg_idx_ + AGG_WINDOW - agg_cnt_ + i) % AGG_WINDOW;
-        float x = static_cast<float>(i);  // 时间轴
-        float y = agg_window_[idx];       // agg_dif值
-        sum_x += x;
+        const size_t idx = (agg_idx_ + AGG_WINDOW - agg_cnt_ + i) % AGG_WINDOW;
+        const float x = static_cast<float>(i); // 时间轴
+        const float y = agg_window_[idx];      // agg_dif值
         sum_y += y;
         sum_xy += x * y;
-        sum_xx += x * x;
       }
-      float n = static_cast<float>(agg_cnt_);
-      float denom = n * sum_xx - sum_x * sum_x;
+
+      const float denom = n * sum_xx - sum_x * sum_x;
       // 斜率公式：(n*Σxy - Σx*Σy) / (n*Σx² - (Σx)²)
-      float slope = denom > 1e-6f ? (n * sum_xy - sum_x * sum_y) / denom : 0.0f;
+      const float slope = denom > 1e-6f ? (n * sum_xy - sum_x * sum_y) / denom : 0.0f;
       agg_trd_.push_back(slope);
     } else {
-      agg_trd_.push_back(0.0f);  // 数据不足，输出0
+      agg_trd_.push_back(0.0f); // 数据不足，输出0
     }
 
     // 重置秒内累计器，准备下一个窗口

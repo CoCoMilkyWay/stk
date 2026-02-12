@@ -86,7 +86,7 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Behav.compute();      // input: td
     dag_.l0.Oa.compute();         // input: td
     dag_.l0.Hla.compute();        // input: td, BidQty_, AskQty_
-    dag_.l0.Toxic.compute();      // input: td, BidQty_, AskQty_
+    dag_.l0.Manip.compute();      // input: td, BidQty_, AskQty_
 
     ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
   }
@@ -219,7 +219,7 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Behav.flush();      // output: Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_
     dag_.l0.Oa.flush();         // output: Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_
     dag_.l0.Hla.flush();        // output: Hla_imba_
-    dag_.l0.Toxic.flush();      // output: Toxic_ptc_rt_, Toxic_fleet_rt_, Toxic_spoof_int_, Toxic_stale_ratio_bid_, Toxic_stale_ratio_ask_
+    dag_.l0.Manip.flush();      // output: Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_
 
     // --- LABEL ---
     dag_.l0.Label_next_tick_ret.compute(); // input: MidPrice_
@@ -312,11 +312,11 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::oa_btr] = dag_.l0.Oa_btr_.back();
     ts_features_buffer_[L0_FieldOffset::oa_atr] = dag_.l0.Oa_atr_.back();
     ts_features_buffer_[L0_FieldOffset::hla_imba] = dag_.l0.Hla_imba_.back();
-    ts_features_buffer_[L0_FieldOffset::ptc_rt] = dag_.l0.Toxic_ptc_rt_.back();
-    ts_features_buffer_[L0_FieldOffset::fleet_rt] = dag_.l0.Toxic_fleet_rt_.back();
-    ts_features_buffer_[L0_FieldOffset::spoof_int] = dag_.l0.Toxic_spoof_int_.back();
-    ts_features_buffer_[L0_FieldOffset::stale_ratio_bid] = dag_.l0.Toxic_stale_ratio_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::stale_ratio_ask] = dag_.l0.Toxic_stale_ratio_ask_.back();
+    ts_features_buffer_[L0_FieldOffset::ptc_rt] = dag_.l0.Manip_ptc_rt_.back();
+    ts_features_buffer_[L0_FieldOffset::fleet_rt] = dag_.l0.Manip_fleet_rt_.back();
+    ts_features_buffer_[L0_FieldOffset::spoof_int] = dag_.l0.Manip_spoof_int_.back();
+    ts_features_buffer_[L0_FieldOffset::stale_ratio_bid] = dag_.l0.Manip_stale_ratio_bid_.back();
+    ts_features_buffer_[L0_FieldOffset::stale_ratio_ask] = dag_.l0.Manip_stale_ratio_ask_.back();
     ts_features_buffer_[L0_FieldOffset::depth_repre] = dag_.l0.DepthRepresentation_.back();
     ts_features_buffer_[L0_FieldOffset::next_tick_ret] = dag_.l0.Label_next_tick_ret_.back();
 
