@@ -3,7 +3,9 @@
 // =============================================================================
 // ParaImba - 抛物线参数失衡
 // =============================================================================
-// imba = (b_coef - a_coef) / (|b_coef| + |a_coef|)
+// imba = (|b_coef| - |a_coef|) / (|b_coef| + |a_coef|)
+//
+// 对比买卖两侧抛物线系数的绝对值大小
 //
 // DAG中使用:
 //   ParaImba<0> imba_para_c0{b_para_c0_, a_para_c0_, imba_para_c0_};
@@ -25,10 +27,15 @@ public:
     // 从买卖两侧的抛物线系数CBuffer读取最新值
     float b = bid_coef_.back();  // 买侧的c0/c1/c2系数
     float a = ask_coef_.back();  // 卖侧的c0/c1/c2系数
-    // 计算系数失衡：(买侧-卖侧) / (|买侧|+|卖侧|)
-    // 值域[-1,1]，正值表示买侧该特征更强
-    float denom = std::abs(b) + std::abs(a);
-    value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
+    
+    // 计算绝对值
+    float abs_b = std::abs(b);
+    float abs_a = std::abs(a);
+    
+    // 计算系数失衡：(|买侧|-|卖侧|) / (|买侧|+|卖侧|)
+    // 值域[-1,1]，正值表示买侧该系数绝对值更大
+    float denom = abs_b + abs_a;
+    value_ = denom > 1e-6f ? (abs_b - abs_a) / denom : 0.0f;
   }
 
   inline void flush() {

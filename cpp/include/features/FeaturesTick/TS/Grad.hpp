@@ -36,13 +36,13 @@ public:
       float v_i, v_ip1;
       // 根据IS_BID选择买侧或卖侧数据
       if constexpr (IS_BID) {
-        v_i = bid_qty_[i].back();      // 第i+1档数量
+        v_i = bid_qty_[i].back();       // 第i+1档数量
         v_ip1 = bid_qty_[i + 1].back(); // 第i+2档数量
       } else {
-        v_i = -ask_qty_[i].back();     // 卖方取反
+        v_i = -ask_qty_[i].back(); // 卖方取反
         v_ip1 = -ask_qty_[i + 1].back();
       }
-      sum_diff += v_ip1 - v_i;  // 累加差分
+      sum_diff += v_ip1 - v_i; // 累加差分
     }
 
     // 计算平均梯度：总差分 / (N-1)

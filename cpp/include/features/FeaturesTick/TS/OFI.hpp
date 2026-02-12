@@ -114,6 +114,16 @@ public:
     out_.push_back(value_);
   }
 
+  inline void reset() {
+    // 跨天时清空状态：重置prev缓存为初始值
+    for (size_t i = 0; i < N_LEVELS; ++i) {
+      prev_bid_price_[i] = 0.0f;
+      prev_bid_qty_[i] = 0.0f;
+      prev_ask_price_[i] = 0.0f;
+      prev_ask_qty_[i] = 0.0f;
+    }
+  }
+
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];

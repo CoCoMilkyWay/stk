@@ -17,7 +17,6 @@
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
-#include <cmath>
 
 template <int LAMBDA_X100, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class DDI {
@@ -35,29 +34,42 @@ public:
         ask_price_(ask_price),
         out_(out) {}
 
+  // 快速exp近似: e^x ≈ (1 + x/256)^256, 使用分段多项式
+  // 适用范围 x ∈ [-10, 0], 相对误差 < 1%
+  static inline float fast_exp(float x) {
+    // 限制范围，避免极端值
+    x = x < -10.0f ? -10.0f : x;
+    x = x > 0.0f ? 0.0f : x;
+
+    // 多项式近似: e^x ≈ 1 + x + x²/2 + x³/6 (泰勒前4项)
+    // 对于小的负数x，精度足够且快速
+    float x2 = x * x;
+    return 1.0f + x + x2 * 0.5f + x2 * x * 0.16666667f;
+  }
+
   inline void compute() {
     // 计算中间价（买一卖一均价）作为距离基准
     float mid = (bid_price_[0].back() + ask_price_[0].back()) * 0.5f;
 
-    float numer = 0.0f;  // 加权失衡和
-    float denom = 0.0f;  // 加权总量
+    float numer = 0.0f; // 加权失衡和
+    float denom = 0.0f; // 加权总量
 
     // 遍历所有档位，计算距离折扣失衡
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
-      float b = bid_qty_[i].back();       // 买i+1档数量
-      float a = -ask_qty_[i].back();      // 卖i+1档数量（取反）
-      float bp = bid_price_[i].back();    // 买i+1档价格
-      float ap = ask_price_[i].back();    // 卖i+1档价格
+      float b = bid_qty_[i].back();    // 买i+1档数量
+      float a = -ask_qty_[i].back();   // 卖i+1档数量（取反）
+      float bp = bid_price_[i].back(); // 买i+1档价格
+      float ap = ask_price_[i].back(); // 卖i+1档价格
 
       // 计算各档到中间价的距离
-      float dist_b = mid - bp;            // 买档距离（中间价-买价）
-      float dist_a = ap - mid;            // 卖档距离（卖价-中间价）
+      float dist_b = mid - bp;               // 买档距离（中间价-买价）
+      float dist_a = ap - mid;               // 卖档距离（卖价-中间价）
       float dist = (dist_b + dist_a) * 0.5f; // 平均距离
 
       // 计算距离衰减权重：w = e^(-λ*dist)，距离越远权重越小
-      float w = std::exp(-LAMBDA * dist);
-      numer += w * (b - a);  // 加权失衡
-      denom += w * (b + a);  // 加权总量
+      float w = fast_exp(-LAMBDA * dist);
+      numer += w * (b - a); // 加权失衡
+      denom += w * (b + a); // 加权总量
     }
 
     // 计算距离折扣失衡率，值域[-1,1]

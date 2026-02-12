@@ -35,16 +35,16 @@ public:
 
     // 遍历前N档，计算VWAP（成交量加权平均价）
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      float p = price_[i].back();  // 档位价格
-      float v = qty_[i].back();    // 档位数量
+      float p = price_[i].back(); // 档位价格
+      float v = qty_[i].back();   // 档位数量
       if constexpr (!IS_BUY) {
         // bid qty 是正值，直接使用
       } else {
         // ask qty 是负值，取绝对值
         v = -v;
       }
-      sum_pv += p * v;  // 累加价格*数量
-      sum_v += v;       // 累加数量
+      sum_pv += p * v; // 累加价格*数量
+      sum_v += v;      // 累加数量
     }
 
     // 从MidPrice CBuffer读取中间价
@@ -56,10 +56,10 @@ public:
       float vwap = sum_pv / sum_v;
       if constexpr (IS_BUY) {
         // 买方冲击成本：吃掉N档ask的VWAP比mid高多少（比例）
-        cost = vwap / mid - 1.0f;  // 正值表示成本高于mid
+        cost = vwap / mid - 1.0f; // 正值表示成本高于mid
       } else {
         // 卖方冲击成本：吃掉N档bid的VWAP比mid低多少（比例）
-        cost = 1.0f - vwap / mid;  // 正值表示收益低于mid
+        cost = 1.0f - vwap / mid; // 正值表示收益低于mid
       }
     }
 

@@ -22,7 +22,7 @@
 //
 // 使用方式:
 //   每tick先调用 compute()，因子从 CBuffer 读取数据
-//   跨天时调用 reset() 重置状态 (内部从 TradePrice_ 读取前收盘价)
+//   跨天时调用 reset() 重置状态 (内部从 Taker_price_ 读取前收盘价)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -38,7 +38,7 @@ public:
   static constexpr float LIMIT_AMT = 0.01f;   // 超限档位金额: 0.01万元
 
   DepthData(const TickData &tick_data,
-            CBuffer<float, L2::BLEN> &trade_price,
+            CBuffer<float, L2::BLEN> &taker_price,
             CBuffer<float, L2::BLEN> (&bid_price)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&ask_price)[N_LEVELS],
             CBuffer<float, L2::BLEN> (&bid_qty)[N_LEVELS],
@@ -47,7 +47,7 @@ public:
             CBuffer<float, L2::BLEN> (&ask_amt)[N_LEVELS],
             const std::string &asset_code)
       : tick_data_(tick_data),
-        trade_price_(trade_price),
+        taker_price_(taker_price),
         bid_price_(bid_price),
         ask_price_(ask_price),
         bid_qty_(bid_qty),
@@ -59,7 +59,7 @@ public:
   // 跨天重置 (清理状态, 减少计算量)
   void reset() {
     // 用前一天收盘价(最后成交价)设置depth的涨跌停保护
-    float prev_close = trade_price_.size() > 0 ? trade_price_.back() : 0.0f;
+    float prev_close = taker_price_.size() > 0 ? taker_price_.back() : 0.0f;
     if (prev_close > 0.0f) {
       limit_up_ = prev_close * (1.0f + limit_pct_);
       limit_down_ = prev_close * (1.0f - limit_pct_);
@@ -154,7 +154,7 @@ private:
   bool initialized_ = false;
 
   // 引用外部CBuffer (由DAG::L0管理)
-  CBuffer<float, L2::BLEN> &trade_price_;
+  CBuffer<float, L2::BLEN> &taker_price_;
   CBuffer<float, L2::BLEN> (&bid_price_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&ask_price_)[N_LEVELS];
   CBuffer<float, L2::BLEN> (&bid_qty_)[N_LEVELS];

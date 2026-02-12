@@ -40,7 +40,7 @@ private:
 #include "features/ComputeGraph.hpp"
 
 inline void Tick_Sequential::set_date(const std::string &date_str) {
-  dag_.reset_day_start();
+  dag_.reset_at_day_start();
   date_str_ = date_str;
 }
 
@@ -60,8 +60,6 @@ inline void Tick_Sequential::compute_and_store() {
   const bool Trigger_onDepth = lob.depth_updated;                                       // [ON DEPTH]  盘口更新时触发
 
   if (Trigger_onTick) {
-    dag_.l0.DeltaT.compute();    // input: td
-    dag_.l0.DeltaT.flush();      // output: DeltaTMaker_, DeltaTTaker_, DeltaTCancel_
     dag_.l0.TickIndex.compute(); // input: td
     dag_.l0.TickIndex.flush();   // output: Sec_, TickIndex_
 
@@ -79,21 +77,25 @@ inline void Tick_Sequential::compute_and_store() {
   }
 
   if (Trigger_onTaker) {
-    dag_.l0.TradePrice.compute(); // input: td
-    dag_.l0.TradePrice.flush();   // output: TradePrice_
+    dag_.l0.Taker.compute(); // input: td
+    dag_.l0.Taker.flush();   // output: Taker_price_, Taker_timestamp_, Taker_tickindex_, Taker_volume_
   }
 
   if (Trigger_onMaker) {
+    dag_.l0.Maker.compute(); // input: td
+    dag_.l0.Maker.flush();   // output: Maker_price_, Maker_timestamp_, Maker_tickindex_, Maker_volume_
   }
 
   if (Trigger_onCancel) {
+    dag_.l0.Cancel.compute(); // input: td
+    dag_.l0.Cancel.flush();   // output: Cancel_price_, Cancel_timestamp_, Cancel_tickindex_, Cancel_volume_
   }
 
   if (Trigger_onDepth) {
     // 深度
     dag_.l0.DepthIndex.compute(); // input: td
     dag_.l0.DepthIndex.flush();   // output: DepthIndex_
-    dag_.l0.DepthData.compute();  // input: td, TradePrice_
+    dag_.l0.DepthData.compute();  // input: td, Taker_price_
     dag_.l0.DepthData.flush();    // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
 
     // 基础
@@ -129,9 +131,9 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Ddi_2.flush();   // output: Ddi_2_
 
     // --- TLR ---
-    dag_.l0.Tbr_5.compute(); // input: BidQty_, AskQty_
+    dag_.l0.Tbr_5.compute(); // input: BidQty_[0:4], td.lob.all_bid_volume
     dag_.l0.Tbr_5.flush();   // output: Tbr_5_
-    dag_.l0.Tar_5.compute(); // input: BidQty_, AskQty_
+    dag_.l0.Tar_5.compute(); // input: AskQty_[0:4], td.lob.all_ask_volume
     dag_.l0.Tar_5.flush();   // output: Tar_5_
 
     // --- Para (Layer 1) ---

@@ -3,9 +3,9 @@
 // =============================================================================
 // PEAK (Peak Location & Concentration) - 峰值位置与集中度
 // =============================================================================
-// 计算深度分布的峰值特征
-//   peak_loc_bid/ask   = argmax(V[1:N])         (最大量所在档位, 1-indexed)
-//   peak_ratio_bid/ask = max(V) / mean(V)       (峰值集中度, >=1)
+// 计算深度分布的峰值特征（只考虑前5档）
+//   peak_loc_bid/ask   = argmax(V[1:5])         (最大量所在档位, 1-indexed)
+//   peak_ratio_bid/ask = max(V[1:5]) / mean(V[1:5])   (峰值集中度, >=1)
 //
 // 模板参数:
 //   IS_BID - true=买侧, false=卖侧
@@ -18,10 +18,12 @@
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 
-template <bool IS_BID, bool IS_LOC, size_t N_LEVELS = L2::LOB_DEPTH>
+template <bool IS_BID, bool IS_LOC, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class Peak {
+  static constexpr size_t N_LEVELS = 5; // 只考虑前5档
+
 public:
-  Peak(const CBuffer<float, L2::BLEN> (&qty)[N_LEVELS],
+  Peak(const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE],
        CBuffer<float, L2::BLEN> &out)
       : qty_(qty), out_(out) {}
 
@@ -30,14 +32,14 @@ public:
     float sum_v = 0.0f;  // 总数量
     size_t max_idx = 0;  // 最大值所在档位
 
-    // 遍历所有档位，找到峰值位置和总量
+    // 遍历前5档，找到峰值位置和总量
     for (size_t i = 0; i < N_LEVELS; ++i) {
       float v = qty_[i].back();
       if constexpr (!IS_BID) {
         v = -v; // ask qty 是负值，取绝对值
       }
-      sum_v += v;       // 累加总量
-      if (v > max_v) {  // 更新最大值和位置
+      sum_v += v;      // 累加总量
+      if (v > max_v) { // 更新最大值和位置
         max_v = v;
         max_idx = i;
       }
@@ -64,7 +66,7 @@ public:
   }
 
 private:
-  const CBuffer<float, L2::BLEN> (&qty_)[N_LEVELS];
+  const CBuffer<float, L2::BLEN> (&qty_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
   float value_ = 0.0f;
 };

@@ -3,7 +3,9 @@
 // =============================================================================
 // GradImba - 梯度失衡
 // =============================================================================
-// imba = (b_grad - a_grad) / (|b_grad| + |a_grad|)
+// imba = (|b_grad| - |a_grad|) / (|b_grad| + |a_grad|)
+//
+// 对比买卖两侧梯度的绝对值大小
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -19,12 +21,17 @@ public:
 
   inline void compute() {
     // 从买卖两侧的梯度CBuffer读取最新值
-    float b = bid_grad_.back();  // 买侧梯度
-    float a = ask_grad_.back();  // 卖侧梯度
-    // 计算梯度失衡：(买侧-卖侧) / (|买侧|+|卖侧|)
-    // 值域[-1,1]
-    float denom = std::abs(b) + std::abs(a);
-    value_ = denom > 1e-6f ? (b - a) / denom : 0.0f;
+    float b = bid_grad_.back(); // 买侧梯度
+    float a = ask_grad_.back(); // 卖侧梯度
+
+    // 计算绝对值
+    float abs_b = std::abs(b);
+    float abs_a = std::abs(a);
+
+    // 计算梯度失衡：(|买侧|-|卖侧|) / (|买侧|+|卖侧|)
+    // 值域[-1,1]，正值表示买侧梯度绝对值更大
+    float denom = abs_b + abs_a;
+    value_ = denom > 1e-6f ? (abs_b - abs_a) / denom : 0.0f;
   }
 
   inline void flush() {

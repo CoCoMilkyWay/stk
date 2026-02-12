@@ -39,12 +39,12 @@ public:
     // 从各档CBuffer收集数据
     for (size_t i = 0; i < N_LEVELS; ++i) {
       if constexpr (IS_BID) {
-        v[i] = bid_qty_[i].back();   // 买i+1档数量
+        v[i] = bid_qty_[i].back(); // 买i+1档数量
       } else {
-        v[i] = -ask_qty_[i].back();  // 卖i+1档数量（取反）
+        v[i] = -ask_qty_[i].back(); // 卖i+1档数量（取反）
       }
-      v[i] = std::max(v[i], 0.0f);   // 确保非负
-      total += v[i];                  // 累计总量
+      v[i] = std::max(v[i], 0.0f); // 确保非负
+      total += v[i];               // 累计总量
     }
 
     // 计算香农熵：H = -Σ π_i * log(π_i)
@@ -52,7 +52,7 @@ public:
     float entropy = 0.0f;
     if (total > 1e-6f) {
       for (size_t i = 0; i < N_LEVELS; ++i) {
-        float p = v[i] / total;      // 计算概率分布
+        float p = v[i] / total; // 计算概率分布
         if (p > 1e-9f) {
           entropy -= p * std::log(p); // 累加香农熵
         }

@@ -10,7 +10,6 @@
 #include "features/FeaturesTick/TS/CWI.hpp"
 #include "features/FeaturesTick/TS/Cost.hpp"
 #include "features/FeaturesTick/TS/DDI.hpp"
-#include "features/FeaturesTick/TS/DeltaT.hpp"
 #include "features/FeaturesTick/TS/DepthData.hpp"
 #include "features/FeaturesTick/TS/DepthIndex.hpp"
 #include "features/FeaturesTick/TS/DepthRepresentation.hpp"
@@ -25,6 +24,7 @@
 #include "features/FeaturesTick/TS/MidPrice.hpp"
 #include "features/FeaturesTick/TS/OA.hpp"
 #include "features/FeaturesTick/TS/OFI.hpp"
+#include "features/FeaturesTick/TS/OrderFlow.hpp"
 #include "features/FeaturesTick/TS/Para.hpp"
 #include "features/FeaturesTick/TS/ParaImba.hpp"
 #include "features/FeaturesTick/TS/Peak.hpp"
@@ -34,8 +34,8 @@
 #include "features/FeaturesTick/TS/TickIndex.hpp"
 #include "features/FeaturesTick/TS/Toxic.hpp"
 #include "features/FeaturesTick/TS/ToxicCr.hpp"
-#include "features/FeaturesTick/TS/TradePrice.hpp"
 #include <deque>
+
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
@@ -58,12 +58,6 @@ public:
     // -------------------------------------------------------------------------
     TickData &td; // 唯一需要构造函数初始化的引用
 
-    // --- DeltaT ---
-    CBuffer<float, L2::BLEN> DeltaTMaker_;
-    CBuffer<float, L2::BLEN> DeltaTTaker_;
-    CBuffer<float, L2::BLEN> DeltaTCancel_;
-    DeltaT DeltaT{td, DeltaTMaker_, DeltaTTaker_, DeltaTCancel_};
-
     // --- TickIndex ---
     CBuffer<float, L2::BLEN> Sec_;
     CBuffer<float, L2::BLEN> TickIndex_;
@@ -73,17 +67,34 @@ public:
     // [ON TAKER] 成交更新 - order_type == TAKER 时触发
     // -------------------------------------------------------------------------
 
-    // --- TradePrice ---
-    CBuffer<float, L2::BLEN> TradePrice_;
-    TradePrice TradePrice{td, TradePrice_};
+    // --- OrderFlow (Taker) ---
+    CBuffer<float, L2::BLEN> Taker_price_;
+    CBuffer<float, L2::BLEN> Taker_timestamp_;
+    CBuffer<float, L2::BLEN> Taker_tickindex_;
+    CBuffer<float, L2::BLEN> Taker_volume_;
+    OrderFlow Taker{td, Taker_price_, Taker_timestamp_, Taker_tickindex_, Taker_volume_};
 
     // -------------------------------------------------------------------------
     // [ON MAKER] 挂单更新 - order_type == MAKER 时触发
     // -------------------------------------------------------------------------
 
+    // --- OrderFlow (Maker) ---
+    CBuffer<float, L2::BLEN> Maker_price_;
+    CBuffer<float, L2::BLEN> Maker_timestamp_;
+    CBuffer<float, L2::BLEN> Maker_tickindex_;
+    CBuffer<float, L2::BLEN> Maker_volume_;
+    OrderFlow Maker{td, Maker_price_, Maker_timestamp_, Maker_tickindex_, Maker_volume_};
+
     // -------------------------------------------------------------------------
     // [ON CANCEL] 撤单更新 - order_type == CANCEL 时触发
     // -------------------------------------------------------------------------
+
+    // --- OrderFlow (Cancel) ---
+    CBuffer<float, L2::BLEN> Cancel_price_;
+    CBuffer<float, L2::BLEN> Cancel_timestamp_;
+    CBuffer<float, L2::BLEN> Cancel_tickindex_;
+    CBuffer<float, L2::BLEN> Cancel_volume_;
+    OrderFlow Cancel{td, Cancel_price_, Cancel_timestamp_, Cancel_tickindex_, Cancel_volume_};
 
     // -------------------------------------------------------------------------
     // [ON DEPTH] 盘口更新 - depth_updated == true 时触发:
@@ -107,7 +118,7 @@ public:
     CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];
     CBuffer<float, L2::BLEN> BidAmt_[L2::LOB_DEPTH];
     CBuffer<float, L2::BLEN> AskAmt_[L2::LOB_DEPTH];
-    DepthData<L2::LOB_DEPTH> DepthData{td, TradePrice_, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_, asset_code_};
+    DepthData<L2::LOB_DEPTH> DepthData{td, Taker_price_, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_, asset_code_};
 
     // --- MidPrice ---
     CBuffer<float, L2::BLEN> MidPrice_;
@@ -148,8 +159,8 @@ public:
     // --- TLR ---
     CBuffer<float, L2::BLEN> Tbr_5_;
     CBuffer<float, L2::BLEN> Tar_5_;
-    TLR<5, true> Tbr_5{BidQty_, AskQty_, Tbr_5_};
-    TLR<5, false> Tar_5{BidQty_, AskQty_, Tar_5_};
+    TLR<5, true> Tbr_5{BidQty_, AskQty_, td, Tbr_5_};
+    TLR<5, false> Tar_5{BidQty_, AskQty_, td, Tar_5_};
 
     // --- Para ---
     CBuffer<float, L2::BLEN> Para_b_c0_;
@@ -342,8 +353,13 @@ public:
   // ===========================================================================
   // 跨天重置 (统一维护)
   // ===========================================================================
-  void reset_day_start() {
+  void reset_at_day_start() {
+    l0.Taker.reset();
+    l0.Maker.reset();
+    l0.Cancel.reset();
     l0.DepthData.reset();
+    l0.Ofi_1.reset();
+    l0.Ofi_5.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };
