@@ -52,6 +52,11 @@ public:
 
       const float order_price = lob.price * PRICE_SCALE;
       const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
+
+      // 检查指针有效性
+      if (!bid1 || !ask1)
+        break;
+
       const float best_price = is_bid ? (bid1->price * PRICE_SCALE) : (ask1->price * PRICE_SCALE);
 
       if (best_price > 1e-6f && order_price > 1e-6f) {

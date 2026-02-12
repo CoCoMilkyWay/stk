@@ -79,6 +79,12 @@ public:
     vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
   }
 
+  // 跨天重置
+  inline void reset() {
+    vol_maker_bid_ = vol_maker_ask_ = 0.0f;
+    vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
+  }
+
 private:
   TickData &td_;
   const CBuffer<float, L2::BLEN> (&bid_qty_)[L2::LOB_DEPTH];

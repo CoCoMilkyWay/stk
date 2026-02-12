@@ -38,23 +38,24 @@ public:
     // 每笔订单时，统计高频交易相关的操纵行为指标
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
-    const bool is_large = vol >= LARGE_ORDER_THRESHOLD;  // 判断是否大单（>=10000股）
+    const bool is_large = vol >= LARGE_ORDER_THRESHOLD; // 判断是否大单（>=10000股）
 
     switch (lob.order_type) {
-    case L2::OrderType::MAKER:  // 挂单
+    case L2::OrderType::MAKER: // 挂单
       vol_maker_ += vol;
       break;
-    case L2::OrderType::TAKER:  // 成交
+    case L2::OrderType::TAKER: // 成交
       cnt_taker_++;
       // 检测"成交前撤单"行为：如果最近有撤单发生，则本次成交可能受到撤单影响
-      if (cnt_recent_cancel_ > 0) cnt_ptc_++;
+      if (cnt_recent_cancel_ > 0)
+        cnt_ptc_++;
       break;
     case L2::OrderType::CANCEL: // 撤单
       vol_cancel_ += vol;
-      cnt_recent_cancel_++;     // 记录最近撤单次数（用于PTC检测）
+      cnt_recent_cancel_++; // 记录最近撤单次数（用于PTC检测）
       // 检测"欺骗挂单"行为：大额订单快速撤单
       if (is_large) {
-        vol_spoof_ += vol;      // 累计大额撤单量
+        vol_spoof_ += vol; // 累计大额撤单量
       }
       break;
     }
@@ -79,22 +80,30 @@ public:
     float depth_bid = 0.0f, depth_ask = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH; ++i) {
       depth_bid += bid_qty_[i].back();
-      depth_ask += -ask_qty_[i].back();
+      depth_ask += -ask_qty_[i].back(); // ask_qty_为负值，取反得到正数
     }
 
     // 计算深度变化率，深度越稳定说明老单越多（stale orders）
-    float delta_bid = std::abs(depth_bid - prev_depth_bid_);  // 深度变化量
-    float delta_ask = std::abs(depth_ask - prev_depth_ask_);
+    float delta_bid = fabsf(depth_bid - prev_depth_bid_); // 深度变化量
+    float delta_ask = fabsf(depth_ask - prev_depth_ask_);
     // 老单占比 = 1 - 变化率，值越大说明订单簿更新慢，老单多
-    stale_ratio_bid_.push_back(depth_bid > 1e-6f ? 1.0f - std::min(1.0f, delta_bid / depth_bid) : 0.0f);
-    stale_ratio_ask_.push_back(depth_ask > 1e-6f ? 1.0f - std::min(1.0f, delta_ask / depth_ask) : 0.0f);
+    stale_ratio_bid_.push_back(depth_bid > 1e-6f ? 1.0f - fminf(1.0f, delta_bid / depth_bid) : 0.0f);
+    stale_ratio_ask_.push_back(depth_ask > 1e-6f ? 1.0f - fminf(1.0f, delta_ask / depth_ask) : 0.0f);
 
-    prev_depth_bid_ = depth_bid;  // 保存当前深度作为下次的prev
+    prev_depth_bid_ = depth_bid; // 保存当前深度作为下次的prev
     prev_depth_ask_ = depth_ask;
 
     // 重置秒内累计器
     vol_maker_ = vol_cancel_ = vol_spoof_ = 0.0f;
+    cnt_taker_ = cnt_ptc_ = 0;
+    cnt_recent_cancel_ = 0; // 每秒重置，避免影响下一秒的所有成交
+  }
+
+  // 跨天重置
+  inline void reset() {
+    vol_maker_ = vol_cancel_ = vol_spoof_ = 0.0f;
     cnt_taker_ = cnt_ptc_ = cnt_recent_cancel_ = 0;
+    prev_depth_bid_ = prev_depth_ask_ = 0.0f;
   }
 
 private:

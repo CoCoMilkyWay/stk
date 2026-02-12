@@ -20,6 +20,7 @@
 #include "features/FeaturesTick/TS/GradImba.hpp"
 #include "features/FeaturesTick/TS/HLA.hpp"
 #include "features/FeaturesTick/TS/Label.hpp"
+#include "features/FeaturesTick/TS/Manip.hpp"
 #include "features/FeaturesTick/TS/MicroPrice.hpp"
 #include "features/FeaturesTick/TS/MidPrice.hpp"
 #include "features/FeaturesTick/TS/OA.hpp"
@@ -32,9 +33,9 @@
 #include "features/FeaturesTick/TS/Spread.hpp"
 #include "features/FeaturesTick/TS/TLR.hpp"
 #include "features/FeaturesTick/TS/TickIndex.hpp"
-#include "features/FeaturesTick/TS/Manip.hpp"
 #include "features/FeaturesTick/TS/ToxicCr.hpp"
 #include <deque>
+
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
@@ -369,6 +370,8 @@ public:
     l0.Ctr.reset();
     l0.Behav.reset();
     l0.Oa.reset();
+    l0.Hla.reset();
+    l0.Manip.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };

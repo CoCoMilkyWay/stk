@@ -221,15 +221,18 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Hla.flush();        // output: Hla_imba_
     dag_.l0.Manip.flush();      // output: Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_
 
-    // --- LABEL ---
-    dag_.l0.Label_next_tick_ret.compute(); // input: MidPrice_
-    dag_.l0.Label_next_tick_ret.flush();   // output: Label_next_tick_ret_
-
     // --- REPRE ---
     dag_.l0.DepthRepresentation.compute(); // input: (none)
     dag_.l0.DepthRepresentation.flush();   // output: DepthRepresentation_
 
-    // --- 写入缓冲区 (用 L0_FieldOffset 索引) ---
+    // --- LABEL ---
+    dag_.l0.Label_next_tick_ret.compute(); // input: MidPrice_
+    dag_.l0.Label_next_tick_ret.flush();   // output: Label_next_tick_ret_
+
+    // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
+    ts_features_buffer_[L0_FieldOffset::mid_price] = dag_.l0.MidPrice_.back();
+    ts_features_buffer_[L0_FieldOffset::micro_price] = dag_.l0.MicroPrice_.back();
+    ts_features_buffer_[L0_FieldOffset::spread] = dag_.l0.Spread_.back();
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
     ts_features_buffer_[L0_FieldOffset::ci_5] = dag_.l0.Ci_5_.back();
     ts_features_buffer_[L0_FieldOffset::ci_10] = dag_.l0.Ci_10_.back();
@@ -259,18 +262,9 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::b_30_entropy] = dag_.l0.Entropy_b_30_.back();
     ts_features_buffer_[L0_FieldOffset::a_30_entropy] = dag_.l0.Entropy_a_30_.back();
     ts_features_buffer_[L0_FieldOffset::imba_30_entropy] = dag_.l0.EntropyImba_30_.back();
+    ts_features_buffer_[L0_FieldOffset::depth_repre] = dag_.l0.DepthRepresentation_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.Ofi_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.Ofi_5_.back();
-    ts_features_buffer_[L0_FieldOffset::cost_buy_1] = dag_.l0.Cost_buy_1_.back();
-    ts_features_buffer_[L0_FieldOffset::cost_buy_5] = dag_.l0.Cost_buy_5_.back();
-    ts_features_buffer_[L0_FieldOffset::cost_buy_10] = dag_.l0.Cost_buy_10_.back();
-    ts_features_buffer_[L0_FieldOffset::cost_sell_1] = dag_.l0.Cost_sell_1_.back();
-    ts_features_buffer_[L0_FieldOffset::cost_sell_5] = dag_.l0.Cost_sell_5_.back();
-    ts_features_buffer_[L0_FieldOffset::cost_sell_10] = dag_.l0.Cost_sell_10_.back();
-    ts_features_buffer_[L0_FieldOffset::peak_loc_bid] = dag_.l0.Peak_loc_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::peak_loc_ask] = dag_.l0.Peak_loc_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::peak_ratio_bid] = dag_.l0.Peak_ratio_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::peak_ratio_ask] = dag_.l0.Peak_ratio_ask_.back();
     ts_features_buffer_[L0_FieldOffset::toxic_cr] = dag_.l0.ToxicCr_.back();
     ts_features_buffer_[L0_FieldOffset::arr_bid] = dag_.l0.FlowRate_arr_bid_.back();
     ts_features_buffer_[L0_FieldOffset::arr_ask] = dag_.l0.FlowRate_arr_ask_.back();
@@ -280,15 +274,6 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::trd_sell] = dag_.l0.FlowRate_trd_sell_.back();
     ts_features_buffer_[L0_FieldOffset::net_ord] = dag_.l0.FlowRate_net_ord_.back();
     ts_features_buffer_[L0_FieldOffset::foi] = dag_.l0.FlowRate_foi_.back();
-    ts_features_buffer_[L0_FieldOffset::ratio_bid] = dag_.l0.Resil_ratio_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::ratio_ask] = dag_.l0.Resil_ratio_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::imba] = dag_.l0.Resil_imba_.back();
-    ts_features_buffer_[L0_FieldOffset::dev_bid] = dag_.l0.Resil_dev_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::dev_ask] = dag_.l0.Resil_dev_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::mr_bid] = dag_.l0.Resil_mr_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::mr_ask] = dag_.l0.Resil_mr_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::recovery_bid] = dag_.l0.Resil_recovery_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::recovery_ask] = dag_.l0.Resil_recovery_ask_.back();
     ts_features_buffer_[L0_FieldOffset::cc_r] = dag_.l0.Ctr_cc_r_.back();
     ts_features_buffer_[L0_FieldOffset::ctr_xl] = dag_.l0.Ctr_xl_.back();
     ts_features_buffer_[L0_FieldOffset::ctr_l] = dag_.l0.Ctr_l_.back();
@@ -301,23 +286,41 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::cnbi_s] = dag_.l0.Ctr_cnbi_s_.back();
     ts_features_buffer_[L0_FieldOffset::cnbi_am] = dag_.l0.Ctr_cnbi_am_.back();
     ts_features_buffer_[L0_FieldOffset::cnbi_pm] = dag_.l0.Ctr_cnbi_pm_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_buy] = dag_.l0.Behav_agg_buy_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_sell] = dag_.l0.Behav_agg_sell_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_dif] = dag_.l0.Behav_agg_dif_.back();
-    ts_features_buffer_[L0_FieldOffset::cpr] = dag_.l0.Behav_cpr_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_trd] = dag_.l0.Behav_agg_trd_.back();
-    ts_features_buffer_[L0_FieldOffset::ord_size] = dag_.l0.Behav_ord_size_.back();
     ts_features_buffer_[L0_FieldOffset::oa_bcr] = dag_.l0.Oa_bcr_.back();
     ts_features_buffer_[L0_FieldOffset::oa_acr] = dag_.l0.Oa_acr_.back();
     ts_features_buffer_[L0_FieldOffset::oa_btr] = dag_.l0.Oa_btr_.back();
     ts_features_buffer_[L0_FieldOffset::oa_atr] = dag_.l0.Oa_atr_.back();
     ts_features_buffer_[L0_FieldOffset::hla_imba] = dag_.l0.Hla_imba_.back();
+    ts_features_buffer_[L0_FieldOffset::agg_buy] = dag_.l0.Behav_agg_buy_.back();
+    ts_features_buffer_[L0_FieldOffset::agg_sell] = dag_.l0.Behav_agg_sell_.back();
+    ts_features_buffer_[L0_FieldOffset::agg_dif] = dag_.l0.Behav_agg_dif_.back();
+    ts_features_buffer_[L0_FieldOffset::cpr] = dag_.l0.Behav_cpr_.back();
     ts_features_buffer_[L0_FieldOffset::ptc_rt] = dag_.l0.Manip_ptc_rt_.back();
     ts_features_buffer_[L0_FieldOffset::fleet_rt] = dag_.l0.Manip_fleet_rt_.back();
     ts_features_buffer_[L0_FieldOffset::spoof_int] = dag_.l0.Manip_spoof_int_.back();
+    ts_features_buffer_[L0_FieldOffset::agg_trd] = dag_.l0.Behav_agg_trd_.back();
+    ts_features_buffer_[L0_FieldOffset::ord_size] = dag_.l0.Behav_ord_size_.back();
+    ts_features_buffer_[L0_FieldOffset::ratio_bid] = dag_.l0.Resil_ratio_bid_.back();
+    ts_features_buffer_[L0_FieldOffset::ratio_ask] = dag_.l0.Resil_ratio_ask_.back();
+    ts_features_buffer_[L0_FieldOffset::imba] = dag_.l0.Resil_imba_.back();
+    ts_features_buffer_[L0_FieldOffset::dev_bid] = dag_.l0.Resil_dev_bid_.back();
+    ts_features_buffer_[L0_FieldOffset::dev_ask] = dag_.l0.Resil_dev_ask_.back();
+    ts_features_buffer_[L0_FieldOffset::mr_bid] = dag_.l0.Resil_mr_bid_.back();
+    ts_features_buffer_[L0_FieldOffset::mr_ask] = dag_.l0.Resil_mr_ask_.back();
+    ts_features_buffer_[L0_FieldOffset::recovery_bid] = dag_.l0.Resil_recovery_bid_.back();
+    ts_features_buffer_[L0_FieldOffset::recovery_ask] = dag_.l0.Resil_recovery_ask_.back();
+    ts_features_buffer_[L0_FieldOffset::cost_buy_1] = dag_.l0.Cost_buy_1_.back();
+    ts_features_buffer_[L0_FieldOffset::cost_buy_5] = dag_.l0.Cost_buy_5_.back();
+    ts_features_buffer_[L0_FieldOffset::cost_buy_10] = dag_.l0.Cost_buy_10_.back();
+    ts_features_buffer_[L0_FieldOffset::cost_sell_1] = dag_.l0.Cost_sell_1_.back();
+    ts_features_buffer_[L0_FieldOffset::cost_sell_5] = dag_.l0.Cost_sell_5_.back();
+    ts_features_buffer_[L0_FieldOffset::cost_sell_10] = dag_.l0.Cost_sell_10_.back();
+    ts_features_buffer_[L0_FieldOffset::peak_loc_bid] = dag_.l0.Peak_loc_bid_.back();
+    ts_features_buffer_[L0_FieldOffset::peak_loc_ask] = dag_.l0.Peak_loc_ask_.back();
+    ts_features_buffer_[L0_FieldOffset::peak_ratio_bid] = dag_.l0.Peak_ratio_bid_.back();
+    ts_features_buffer_[L0_FieldOffset::peak_ratio_ask] = dag_.l0.Peak_ratio_ask_.back();
     ts_features_buffer_[L0_FieldOffset::stale_ratio_bid] = dag_.l0.Manip_stale_ratio_bid_.back();
     ts_features_buffer_[L0_FieldOffset::stale_ratio_ask] = dag_.l0.Manip_stale_ratio_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::depth_repre] = dag_.l0.DepthRepresentation_.back();
     ts_features_buffer_[L0_FieldOffset::next_tick_ret] = dag_.l0.Label_next_tick_ret_.back();
 
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
