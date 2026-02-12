@@ -106,201 +106,201 @@ public:
 
     // --- MicroPrice ---
     CBuffer<float, L2::BLEN> MicroPrice_;
-    MicroPrice MicroPrice{td, MicroPrice_};
+    MicroPrice MicroPrice{BidPrice_[0], AskPrice_[0], BidQty_[0], AskQty_[0], MicroPrice_};
 
     // --- Spread ---
     CBuffer<float, L2::BLEN> Spread_;
     Spread Spread{BidPrice_[0], AskPrice_[0], Spread_};
 
     // --- CI ---
-    CBuffer<float, L2::BLEN> ci_1_;
-    CBuffer<float, L2::BLEN> ci_5_;
-    CBuffer<float, L2::BLEN> ci_10_;
-    CBuffer<float, L2::BLEN> ci_30_;
-    CBuffer<float, L2::BLEN> ci_all_;
-    CI<1> ci_1{BidQty_, AskQty_, ci_1_};
-    CI<5> ci_5{BidQty_, AskQty_, ci_5_};
-    CI<10> ci_10{BidQty_, AskQty_, ci_10_};
-    CI<30> ci_30{BidQty_, AskQty_, ci_30_};
-    CI<L2::LOB_DEPTH> ci_all{BidQty_, AskQty_, ci_all_};
+    CBuffer<float, L2::BLEN> Ci_1_;
+    CBuffer<float, L2::BLEN> Ci_5_;
+    CBuffer<float, L2::BLEN> Ci_10_;
+    CBuffer<float, L2::BLEN> Ci_30_;
+    CBuffer<float, L2::BLEN> Ci_all_;
+    CI<1> Ci_1{BidQty_, AskQty_, Ci_1_};
+    CI<5> Ci_5{BidQty_, AskQty_, Ci_5_};
+    CI<10> Ci_10{BidQty_, AskQty_, Ci_10_};
+    CI<30> Ci_30{BidQty_, AskQty_, Ci_30_};
+    CI<L2::LOB_DEPTH> Ci_all{BidQty_, AskQty_, Ci_all_};
 
     // --- CWI ---
-    CBuffer<float, L2::BLEN> cwi_1_;
-    CBuffer<float, L2::BLEN> cwi_2_;
-    CWI<10> cwi_1{BidQty_, AskQty_, cwi_1_};
-    CWI<20> cwi_2{BidQty_, AskQty_, cwi_2_};
+    CBuffer<float, L2::BLEN> Cwi_1_;
+    CBuffer<float, L2::BLEN> Cwi_2_;
+    CWI<10> Cwi_1{BidQty_, AskQty_, Cwi_1_};
+    CWI<20> Cwi_2{BidQty_, AskQty_, Cwi_2_};
 
     // --- DDI ---
-    CBuffer<float, L2::BLEN> ddi_1_;
-    CBuffer<float, L2::BLEN> ddi_2_;
-    DDI<1> ddi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, ddi_1_};
-    DDI<2> ddi_2{BidQty_, AskQty_, BidPrice_, AskPrice_, ddi_2_};
+    CBuffer<float, L2::BLEN> Ddi_1_;
+    CBuffer<float, L2::BLEN> Ddi_2_;
+    DDI<1> Ddi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_1_};
+    DDI<2> Ddi_2{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_2_};
 
     // --- TLR ---
-    CBuffer<float, L2::BLEN> tbr_5_;
-    CBuffer<float, L2::BLEN> tar_5_;
-    TLR<5, true> tbr_5{BidQty_, AskQty_, tbr_5_};
-    TLR<5, false> tar_5{BidQty_, AskQty_, tar_5_};
+    CBuffer<float, L2::BLEN> Tbr_5_;
+    CBuffer<float, L2::BLEN> Tar_5_;
+    TLR<5, true> Tbr_5{BidQty_, AskQty_, Tbr_5_};
+    TLR<5, false> Tar_5{BidQty_, AskQty_, Tar_5_};
 
     // --- Para (Layer 1) ---
-    CBuffer<float, L2::BLEN> b_para_c0_;
-    CBuffer<float, L2::BLEN> b_para_c1_;
-    CBuffer<float, L2::BLEN> b_para_c2_;
-    CBuffer<float, L2::BLEN> a_para_c0_;
-    CBuffer<float, L2::BLEN> a_para_c1_;
-    CBuffer<float, L2::BLEN> a_para_c2_;
-    Para<true, 0> b_para_c0{BidQty_, AskQty_, b_para_c0_};
-    Para<true, 1> b_para_c1{BidQty_, AskQty_, b_para_c1_};
-    Para<true, 2> b_para_c2{BidQty_, AskQty_, b_para_c2_};
-    Para<false, 0> a_para_c0{BidQty_, AskQty_, a_para_c0_};
-    Para<false, 1> a_para_c1{BidQty_, AskQty_, a_para_c1_};
-    Para<false, 2> a_para_c2{BidQty_, AskQty_, a_para_c2_};
+    CBuffer<float, L2::BLEN> Para_b_c0_;
+    CBuffer<float, L2::BLEN> Para_b_c1_;
+    CBuffer<float, L2::BLEN> Para_b_c2_;
+    CBuffer<float, L2::BLEN> Para_a_c0_;
+    CBuffer<float, L2::BLEN> Para_a_c1_;
+    CBuffer<float, L2::BLEN> Para_a_c2_;
+    Para<true, 0> Para_b_c0{BidQty_, AskQty_, Para_b_c0_};
+    Para<true, 1> Para_b_c1{BidQty_, AskQty_, Para_b_c1_};
+    Para<true, 2> Para_b_c2{BidQty_, AskQty_, Para_b_c2_};
+    Para<false, 0> Para_a_c0{BidQty_, AskQty_, Para_a_c0_};
+    Para<false, 1> Para_a_c1{BidQty_, AskQty_, Para_a_c1_};
+    Para<false, 2> Para_a_c2{BidQty_, AskQty_, Para_a_c2_};
     // --- Para (Layer 2: 失衡，依赖Layer 1) ---
-    CBuffer<float, L2::BLEN> imba_para_c0_;
-    CBuffer<float, L2::BLEN> imba_para_c1_;
-    CBuffer<float, L2::BLEN> imba_para_c2_;
-    ParaImba<0> imba_para_c0{b_para_c0_, a_para_c0_, imba_para_c0_};
-    ParaImba<1> imba_para_c1{b_para_c1_, a_para_c1_, imba_para_c1_};
-    ParaImba<2> imba_para_c2{b_para_c2_, a_para_c2_, imba_para_c2_};
+    CBuffer<float, L2::BLEN> ParaImba_c0_;
+    CBuffer<float, L2::BLEN> ParaImba_c1_;
+    CBuffer<float, L2::BLEN> ParaImba_c2_;
+    ParaImba<0> ParaImba_c0{Para_b_c0_, Para_a_c0_, ParaImba_c0_};
+    ParaImba<1> ParaImba_c1{Para_b_c1_, Para_a_c1_, ParaImba_c1_};
+    ParaImba<2> ParaImba_c2{Para_b_c2_, Para_a_c2_, ParaImba_c2_};
 
     // --- Grad (Layer 1) ---
-    CBuffer<float, L2::BLEN> b_5_c1_;
-    CBuffer<float, L2::BLEN> a_5_c1_;
-    Grad<5, true> b_5_c1{BidQty_, AskQty_, b_5_c1_};
-    Grad<5, false> a_5_c1{BidQty_, AskQty_, a_5_c1_};
+    CBuffer<float, L2::BLEN> Grad_b_5_c1_;
+    CBuffer<float, L2::BLEN> Grad_a_5_c1_;
+    Grad<5, true> Grad_b_5_c1{BidQty_, AskQty_, Grad_b_5_c1_};
+    Grad<5, false> Grad_a_5_c1{BidQty_, AskQty_, Grad_a_5_c1_};
     // --- Grad (Layer 2) ---
-    CBuffer<float, L2::BLEN> imba_5_c1_;
-    GradImba imba_5_c1{b_5_c1_, a_5_c1_, imba_5_c1_};
+    CBuffer<float, L2::BLEN> GradImba_5_c1_;
+    GradImba GradImba_5_c1{Grad_b_5_c1_, Grad_a_5_c1_, GradImba_5_c1_};
 
     // --- Entropy (Layer 1) ---
-    CBuffer<float, L2::BLEN> b_5_entropy_;
-    CBuffer<float, L2::BLEN> a_5_entropy_;
-    CBuffer<float, L2::BLEN> b_30_entropy_;
-    CBuffer<float, L2::BLEN> a_30_entropy_;
-    Entropy<5, true> b_5_entropy{BidQty_, AskQty_, b_5_entropy_};
-    Entropy<5, false> a_5_entropy{BidQty_, AskQty_, a_5_entropy_};
-    Entropy<30, true> b_30_entropy{BidQty_, AskQty_, b_30_entropy_};
-    Entropy<30, false> a_30_entropy{BidQty_, AskQty_, a_30_entropy_};
+    CBuffer<float, L2::BLEN> Entropy_b_5_;
+    CBuffer<float, L2::BLEN> Entropy_a_5_;
+    CBuffer<float, L2::BLEN> Entropy_b_30_;
+    CBuffer<float, L2::BLEN> Entropy_a_30_;
+    Entropy<5, true> Entropy_b_5{BidQty_, AskQty_, Entropy_b_5_};
+    Entropy<5, false> Entropy_a_5{BidQty_, AskQty_, Entropy_a_5_};
+    Entropy<30, true> Entropy_b_30{BidQty_, AskQty_, Entropy_b_30_};
+    Entropy<30, false> Entropy_a_30{BidQty_, AskQty_, Entropy_a_30_};
     // --- Entropy (Layer 2) ---
-    CBuffer<float, L2::BLEN> imba_5_entropy_;
-    CBuffer<float, L2::BLEN> imba_30_entropy_;
-    EntropyImba imba_5_entropy{b_5_entropy_, a_5_entropy_, imba_5_entropy_};
-    EntropyImba imba_30_entropy{b_30_entropy_, a_30_entropy_, imba_30_entropy_};
+    CBuffer<float, L2::BLEN> EntropyImba_5_;
+    CBuffer<float, L2::BLEN> EntropyImba_30_;
+    EntropyImba EntropyImba_5{Entropy_b_5_, Entropy_a_5_, EntropyImba_5_};
+    EntropyImba EntropyImba_30{Entropy_b_30_, Entropy_a_30_, EntropyImba_30_};
 
     // --- OFI ---
-    CBuffer<float, L2::BLEN> ofi_1_;
-    CBuffer<float, L2::BLEN> ofi_5_;
-    OFI<1> ofi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_1_};
-    OFI<5> ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, ofi_5_};
+    CBuffer<float, L2::BLEN> Ofi_1_;
+    CBuffer<float, L2::BLEN> Ofi_5_;
+    OFI<1> Ofi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, Ofi_1_};
+    OFI<5> Ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, Ofi_5_};
 
     // --- Cost ---
-    CBuffer<float, L2::BLEN> cost_buy_1_;
-    CBuffer<float, L2::BLEN> cost_buy_5_;
-    CBuffer<float, L2::BLEN> cost_buy_10_;
-    CBuffer<float, L2::BLEN> cost_sell_1_;
-    CBuffer<float, L2::BLEN> cost_sell_5_;
-    CBuffer<float, L2::BLEN> cost_sell_10_;
-    Cost<1, true> cost_buy_1{AskPrice_, AskQty_, MidPrice_, cost_buy_1_};
-    Cost<5, true> cost_buy_5{AskPrice_, AskQty_, MidPrice_, cost_buy_5_};
-    Cost<10, true> cost_buy_10{AskPrice_, AskQty_, MidPrice_, cost_buy_10_};
-    Cost<1, false> cost_sell_1{BidPrice_, BidQty_, MidPrice_, cost_sell_1_};
-    Cost<5, false> cost_sell_5{BidPrice_, BidQty_, MidPrice_, cost_sell_5_};
-    Cost<10, false> cost_sell_10{BidPrice_, BidQty_, MidPrice_, cost_sell_10_};
+    CBuffer<float, L2::BLEN> Cost_buy_1_;
+    CBuffer<float, L2::BLEN> Cost_buy_5_;
+    CBuffer<float, L2::BLEN> Cost_buy_10_;
+    CBuffer<float, L2::BLEN> Cost_sell_1_;
+    CBuffer<float, L2::BLEN> Cost_sell_5_;
+    CBuffer<float, L2::BLEN> Cost_sell_10_;
+    Cost<1, true> Cost_buy_1{AskPrice_, AskQty_, MidPrice_, Cost_buy_1_};
+    Cost<5, true> Cost_buy_5{AskPrice_, AskQty_, MidPrice_, Cost_buy_5_};
+    Cost<10, true> Cost_buy_10{AskPrice_, AskQty_, MidPrice_, Cost_buy_10_};
+    Cost<1, false> Cost_sell_1{BidPrice_, BidQty_, MidPrice_, Cost_sell_1_};
+    Cost<5, false> Cost_sell_5{BidPrice_, BidQty_, MidPrice_, Cost_sell_5_};
+    Cost<10, false> Cost_sell_10{BidPrice_, BidQty_, MidPrice_, Cost_sell_10_};
 
     // --- Peak ---
-    CBuffer<float, L2::BLEN> peak_loc_bid_;
-    CBuffer<float, L2::BLEN> peak_loc_ask_;
-    CBuffer<float, L2::BLEN> peak_ratio_bid_;
-    CBuffer<float, L2::BLEN> peak_ratio_ask_;
-    Peak<true, true> peak_loc_bid{BidQty_, peak_loc_bid_};
-    Peak<false, true> peak_loc_ask{AskQty_, peak_loc_ask_};
-    Peak<true, false> peak_ratio_bid{BidQty_, peak_ratio_bid_};
-    Peak<false, false> peak_ratio_ask{AskQty_, peak_ratio_ask_};
+    CBuffer<float, L2::BLEN> Peak_loc_bid_;
+    CBuffer<float, L2::BLEN> Peak_loc_ask_;
+    CBuffer<float, L2::BLEN> Peak_ratio_bid_;
+    CBuffer<float, L2::BLEN> Peak_ratio_ask_;
+    Peak<true, true> Peak_loc_bid{BidQty_, Peak_loc_bid_};
+    Peak<false, true> Peak_loc_ask{AskQty_, Peak_loc_ask_};
+    Peak<true, false> Peak_ratio_bid{BidQty_, Peak_ratio_bid_};
+    Peak<false, false> Peak_ratio_ask{AskQty_, Peak_ratio_ask_};
 
     // --- Label ---
-    CBuffer<float, L2::BLEN> next_tick_ret_;
-    Label next_tick_ret{MidPrice_, next_tick_ret_};
+    CBuffer<float, L2::BLEN> Label_next_tick_ret_;
+    Label Label_next_tick_ret{MidPrice_, Label_next_tick_ret_};
 
     // --- DepthRepresentation (DUMMY) ---
-    CBuffer<float, L2::BLEN> depth_repre_;
-    DepthRepresentation depth_repre{depth_repre_};
+    CBuffer<float, L2::BLEN> DepthRepresentation_;
+    DepthRepresentation DepthRepresentation{DepthRepresentation_};
 
     // -------------------------------------------------------------------------
     // [跨触发域] compute=ON TICK, flush=ON DEPTH
     // -------------------------------------------------------------------------
 
     // --- FLOW_RATE ---
-    CBuffer<float, L2::BLEN> arr_bid_;
-    CBuffer<float, L2::BLEN> arr_ask_;
-    CBuffer<float, L2::BLEN> can_bid_;
-    CBuffer<float, L2::BLEN> can_ask_;
-    CBuffer<float, L2::BLEN> trd_buy_;
-    CBuffer<float, L2::BLEN> trd_sell_;
-    CBuffer<float, L2::BLEN> net_ord_;
-    CBuffer<float, L2::BLEN> foi_;
-    FlowRate flow_rate{td, arr_bid_, arr_ask_, can_bid_, can_ask_, trd_buy_, trd_sell_, net_ord_, foi_};
+    CBuffer<float, L2::BLEN> FlowRate_arr_bid_;
+    CBuffer<float, L2::BLEN> FlowRate_arr_ask_;
+    CBuffer<float, L2::BLEN> FlowRate_can_bid_;
+    CBuffer<float, L2::BLEN> FlowRate_can_ask_;
+    CBuffer<float, L2::BLEN> FlowRate_trd_buy_;
+    CBuffer<float, L2::BLEN> FlowRate_trd_sell_;
+    CBuffer<float, L2::BLEN> FlowRate_net_ord_;
+    CBuffer<float, L2::BLEN> FlowRate_foi_;
+    FlowRate FlowRate{td, FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_, FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_};
 
     // --- ToxicCr ---
-    CBuffer<float, L2::BLEN> toxic_cr_;
-    ToxicCr toxic_cr{td, toxic_cr_};
+    CBuffer<float, L2::BLEN> ToxicCr_;
+    ToxicCr ToxicCr{td, ToxicCr_};
 
     // --- RESIL ---
-    CBuffer<float, L2::BLEN> ratio_bid_;
-    CBuffer<float, L2::BLEN> ratio_ask_;
-    CBuffer<float, L2::BLEN> imba_;
-    CBuffer<float, L2::BLEN> dev_bid_;
-    CBuffer<float, L2::BLEN> dev_ask_;
-    CBuffer<float, L2::BLEN> mr_bid_;
-    CBuffer<float, L2::BLEN> mr_ask_;
-    CBuffer<float, L2::BLEN> recovery_bid_;
-    CBuffer<float, L2::BLEN> recovery_ask_;
-    Resiliency resil{td, BidQty_, AskQty_,
-                     ratio_bid_, ratio_ask_, imba_, dev_bid_, dev_ask_,
-                     mr_bid_, mr_ask_, recovery_bid_, recovery_ask_};
+    CBuffer<float, L2::BLEN> Resil_ratio_bid_;
+    CBuffer<float, L2::BLEN> Resil_ratio_ask_;
+    CBuffer<float, L2::BLEN> Resil_imba_;
+    CBuffer<float, L2::BLEN> Resil_dev_bid_;
+    CBuffer<float, L2::BLEN> Resil_dev_ask_;
+    CBuffer<float, L2::BLEN> Resil_mr_bid_;
+    CBuffer<float, L2::BLEN> Resil_mr_ask_;
+    CBuffer<float, L2::BLEN> Resil_recovery_bid_;
+    CBuffer<float, L2::BLEN> Resil_recovery_ask_;
+    Resiliency Resiliency{td, BidQty_, AskQty_,
+                          Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_,
+                          Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_};
 
     // --- CTR ---
-    CBuffer<float, L2::BLEN> cc_r_;
-    CBuffer<float, L2::BLEN> ctr_xl_;
-    CBuffer<float, L2::BLEN> ctr_l_;
-    CBuffer<float, L2::BLEN> ctr_m_;
-    CBuffer<float, L2::BLEN> ctr_s_;
-    CBuffer<float, L2::BLEN> cnbi_;
-    CBuffer<float, L2::BLEN> cnbi_xl_;
-    CBuffer<float, L2::BLEN> cnbi_l_;
-    CBuffer<float, L2::BLEN> cnbi_m_;
-    CBuffer<float, L2::BLEN> cnbi_s_;
-    CBuffer<float, L2::BLEN> cnbi_am_;
-    CBuffer<float, L2::BLEN> cnbi_pm_;
-    CTR ctr{td, cc_r_, ctr_xl_, ctr_l_, ctr_m_, ctr_s_,
-            cnbi_, cnbi_xl_, cnbi_l_, cnbi_m_, cnbi_s_, cnbi_am_, cnbi_pm_};
+    CBuffer<float, L2::BLEN> Ctr_cc_r_;
+    CBuffer<float, L2::BLEN> Ctr_xl_;
+    CBuffer<float, L2::BLEN> Ctr_l_;
+    CBuffer<float, L2::BLEN> Ctr_m_;
+    CBuffer<float, L2::BLEN> Ctr_s_;
+    CBuffer<float, L2::BLEN> Ctr_cnbi_;
+    CBuffer<float, L2::BLEN> Ctr_cnbi_xl_;
+    CBuffer<float, L2::BLEN> Ctr_cnbi_l_;
+    CBuffer<float, L2::BLEN> Ctr_cnbi_m_;
+    CBuffer<float, L2::BLEN> Ctr_cnbi_s_;
+    CBuffer<float, L2::BLEN> Ctr_cnbi_am_;
+    CBuffer<float, L2::BLEN> Ctr_cnbi_pm_;
+    CTR Ctr{td, Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_,
+            Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_};
 
     // --- BEHAV ---
-    CBuffer<float, L2::BLEN> agg_buy_;
-    CBuffer<float, L2::BLEN> agg_sell_;
-    CBuffer<float, L2::BLEN> agg_dif_;
-    CBuffer<float, L2::BLEN> cpr_;
-    CBuffer<float, L2::BLEN> agg_trd_;
-    CBuffer<float, L2::BLEN> ord_size_;
-    Behav behav{td, agg_buy_, agg_sell_, agg_dif_, cpr_, agg_trd_, ord_size_};
+    CBuffer<float, L2::BLEN> Behav_agg_buy_;
+    CBuffer<float, L2::BLEN> Behav_agg_sell_;
+    CBuffer<float, L2::BLEN> Behav_agg_dif_;
+    CBuffer<float, L2::BLEN> Behav_cpr_;
+    CBuffer<float, L2::BLEN> Behav_agg_trd_;
+    CBuffer<float, L2::BLEN> Behav_ord_size_;
+    Behav Behav{td, Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_};
 
     // --- OA ---
-    CBuffer<float, L2::BLEN> oa_bcr_;
-    CBuffer<float, L2::BLEN> oa_acr_;
-    CBuffer<float, L2::BLEN> oa_btr_;
-    CBuffer<float, L2::BLEN> oa_atr_;
-    OA oa{td, oa_bcr_, oa_acr_, oa_btr_, oa_atr_};
+    CBuffer<float, L2::BLEN> Oa_bcr_;
+    CBuffer<float, L2::BLEN> Oa_acr_;
+    CBuffer<float, L2::BLEN> Oa_btr_;
+    CBuffer<float, L2::BLEN> Oa_atr_;
+    OA Oa{td, Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_};
 
     // --- HLA ---
-    CBuffer<float, L2::BLEN> hla_imba_;
-    HLA hla{td, BidQty_, AskQty_, hla_imba_};
+    CBuffer<float, L2::BLEN> Hla_imba_;
+    HLA Hla{td, BidQty_, AskQty_, Hla_imba_};
 
     // --- TOXIC ---
-    CBuffer<float, L2::BLEN> ptc_rt_;
-    CBuffer<float, L2::BLEN> fleet_rt_;
-    CBuffer<float, L2::BLEN> spoof_int_;
-    CBuffer<float, L2::BLEN> stale_ratio_bid_;
-    CBuffer<float, L2::BLEN> stale_ratio_ask_;
-    Toxic toxic{td, BidQty_, AskQty_, ptc_rt_, fleet_rt_, spoof_int_, stale_ratio_bid_, stale_ratio_ask_};
+    CBuffer<float, L2::BLEN> Toxic_ptc_rt_;
+    CBuffer<float, L2::BLEN> Toxic_fleet_rt_;
+    CBuffer<float, L2::BLEN> Toxic_spoof_int_;
+    CBuffer<float, L2::BLEN> Toxic_stale_ratio_bid_;
+    CBuffer<float, L2::BLEN> Toxic_stale_ratio_ask_;
+    Toxic Toxic{td, BidQty_, AskQty_, Toxic_ptc_rt_, Toxic_fleet_rt_, Toxic_spoof_int_, Toxic_stale_ratio_bid_, Toxic_stale_ratio_ask_};
 
     explicit L0(TickData &t, const std::string &code) : td(t), asset_code_(code) {} // 构造函数 (初始化引用成员)
   };

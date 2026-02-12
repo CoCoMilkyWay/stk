@@ -1,29 +1,38 @@
 #pragma once
 
+// =============================================================================
+// MicroPrice - 微观价格 (量加权中间价)
+// =============================================================================
+// 从 BidPrice_[0], AskPrice_[0], BidQty_[0], AskQty_[0] CBuffer 读取 (已是标准单位)
+// 输出: 元 (RMB)
+// =============================================================================
+
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
-#include "features/DataDefine.hpp"
 
 class MicroPrice {
 public:
-  MicroPrice(const TickData &tick_data, CBuffer<float, L2::BLEN> &buffer)
-      : tick_data_(tick_data), buffer_(buffer) {}
+  MicroPrice(const CBuffer<float, L2::BLEN> &bid_price_0,
+             const CBuffer<float, L2::BLEN> &ask_price_0,
+             const CBuffer<float, L2::BLEN> &bid_qty_0,
+             const CBuffer<float, L2::BLEN> &ask_qty_0,
+             CBuffer<float, L2::BLEN> &buffer)
+      : bid_price_0_(bid_price_0),
+        ask_price_0_(ask_price_0),
+        bid_qty_0_(bid_qty_0),
+        ask_qty_0_(ask_qty_0),
+        buffer_(buffer) {}
 
   inline void compute() {
-    // 从depth_buffer读取买一卖一档位数据
-    const auto &depth = tick_data_.lob.depth_buffer;
-    Level *best_bid = depth[L2::LOB_DEPTH];     // 买一档
-    Level *best_ask = depth[L2::LOB_DEPTH - 1]; // 卖一档
+    // 从 CBuffer 读取买一卖一价格和数量 (已转换为标准单位)
+    float bid_price = bid_price_0_.back(); // 买一价 (元)
+    float ask_price = ask_price_0_.back(); // 卖一价 (元)
+    float bid_qty = bid_qty_0_.back();     // 买一量 (股)
+    float ask_qty = -ask_qty_0_.back();    // 卖一量 (股, ask_qty原本为负值)
 
-    // 提取价格和数量
-    float bid_price = static_cast<float>(best_bid->price);
-    float ask_price = static_cast<float>(best_ask->price);
-    float bid_qty = static_cast<float>(best_bid->net_quantity);
-    float ask_qty = static_cast<float>(-best_ask->net_quantity); // ask是负值，取反
-
-    // 计算微观价格：按数量加权的价格
+    // 计算微观价格：量加权中间价
     // micro_price = (ask_price * bid_qty + bid_price * ask_qty) / (bid_qty + ask_qty)
-    micro_value_ = (ask_price * bid_qty + bid_price * ask_qty) / (ask_qty + bid_qty);
+    micro_value_ = (ask_price * bid_qty + bid_price * ask_qty) / (bid_qty + ask_qty);
   }
 
   inline void flush() {
@@ -32,7 +41,10 @@ public:
   }
 
 private:
-  const TickData &tick_data_;
+  const CBuffer<float, L2::BLEN> &bid_price_0_;
+  const CBuffer<float, L2::BLEN> &ask_price_0_;
+  const CBuffer<float, L2::BLEN> &bid_qty_0_;
+  const CBuffer<float, L2::BLEN> &ask_qty_0_;
   CBuffer<float, L2::BLEN> &buffer_;
   float micro_value_ = 0.0f;
 };
