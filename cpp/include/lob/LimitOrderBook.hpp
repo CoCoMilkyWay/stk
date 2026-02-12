@@ -1232,7 +1232,7 @@ private:
       next_depth_update_tick_ = (next_depth_update_tick_ & 0xFFFF0000) | (s << 8) | ms;
     } while (next_depth_update_tick_ <= curr_tick_);
 
-    return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= L2::LOB_DEPTH;
+    return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= 2 * L2::LOB_DEPTH;
   }
 
   //======================================================================================

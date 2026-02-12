@@ -47,15 +47,17 @@ public:
       // 侵略性衡量挂单价格偏离最优价格的程度
       // P_best: 对于买单是当前买一价, 对于卖单是当前卖一价
       // depth_buffer 布局: [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N)
+
+      // 检查 depth_buffer 是否有足够元素 (早期数据可能不足, 跳过)
+      if (lob.depth_buffer.size() < L2::LOB_DEPTH + 1) [[unlikely]] {
+        break; // 数据不足, 跳过本次计算
+      }
+
       const Level *bid1 = lob.depth_buffer[L2::LOB_DEPTH];     // 买一
       const Level *ask1 = lob.depth_buffer[L2::LOB_DEPTH - 1]; // 卖一
 
       const float order_price = lob.price * PRICE_SCALE;
       const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
-
-      // 检查指针有效性
-      if (!bid1 || !ask1)
-        break;
 
       const float best_price = is_bid ? (bid1->price * PRICE_SCALE) : (ask1->price * PRICE_SCALE);
 
