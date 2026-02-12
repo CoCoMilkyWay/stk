@@ -64,20 +64,28 @@ public:
     DeltaT DeltaT{td, DeltaTMaker_, DeltaTTaker_, DeltaTCancel_};
 
     // --- TickIndex ---
-    CBuffer<float, L2::BLEN> Sec_;       // 秒相位 [-1,1] (特征: sec)
-    CBuffer<float, L2::BLEN> TickIndex_; // 原始tick索引(秒:0-59)
+    CBuffer<float, L2::BLEN> Sec_;
+    CBuffer<float, L2::BLEN> TickIndex_;
     TickIndex TickIndex{td, Sec_, TickIndex_};
 
     // -------------------------------------------------------------------------
-    // [ON TAKER] 成交时更新 - order_type == TAKER 时触发
+    // [ON TAKER] 成交更新 - order_type == TAKER 时触发
     // -------------------------------------------------------------------------
 
     // --- TradePrice ---
-    CBuffer<float, L2::BLEN> TradePrice_; // 成交价 (元单位)
+    CBuffer<float, L2::BLEN> TradePrice_;
     TradePrice TradePrice{td, TradePrice_};
 
     // -------------------------------------------------------------------------
-    // [ON DEPTH] 盘口更新时 - depth_updated == true 时触发:
+    // [ON MAKER] 挂单更新 - order_type == MAKER 时触发
+    // -------------------------------------------------------------------------
+
+    // -------------------------------------------------------------------------
+    // [ON CANCEL] 撤单更新 - order_type == CANCEL 时触发
+    // -------------------------------------------------------------------------
+
+    // -------------------------------------------------------------------------
+    // [ON DEPTH] 盘口更新 - depth_updated == true 时触发:
     // 1. depth更新间隔大于L2::L2_MIN_TIME_INTERVAL_MS (一般是一秒)
     // 2. tob_price_已经被前面的taker单更新
     // 3. 深度挂单已满(depth_buffer.size() >= L2::LOB_DEPTH) (集合竞价数据之前会插入极端价位的多档sentinel, 所以自动满足)
@@ -92,12 +100,12 @@ public:
     DepthIndex DepthIndex{td, DepthIndex_};
 
     // --- DepthData ---
-    CBuffer<float, L2::BLEN> BidPrice_[L2::LOB_DEPTH]; // 买1-N价 (元)
-    CBuffer<float, L2::BLEN> AskPrice_[L2::LOB_DEPTH]; // 卖1-N价 (元)
-    CBuffer<float, L2::BLEN> BidQty_[L2::LOB_DEPTH];   // 买1-N量 (股, 正值)
-    CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];   // 卖1-N量 (股, 负值)
-    CBuffer<float, L2::BLEN> BidAmt_[L2::LOB_DEPTH];   // 买1-N金额 (万元, 正值)
-    CBuffer<float, L2::BLEN> AskAmt_[L2::LOB_DEPTH];   // 卖1-N金额 (万元, 负值)
+    CBuffer<float, L2::BLEN> BidPrice_[L2::LOB_DEPTH];
+    CBuffer<float, L2::BLEN> AskPrice_[L2::LOB_DEPTH];
+    CBuffer<float, L2::BLEN> BidQty_[L2::LOB_DEPTH];
+    CBuffer<float, L2::BLEN> AskQty_[L2::LOB_DEPTH];
+    CBuffer<float, L2::BLEN> BidAmt_[L2::LOB_DEPTH];
+    CBuffer<float, L2::BLEN> AskAmt_[L2::LOB_DEPTH];
     DepthData<L2::LOB_DEPTH> DepthData{td, TradePrice_, BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_, asset_code_};
 
     // --- MidPrice ---
@@ -142,7 +150,7 @@ public:
     TLR<5, true> Tbr_5{BidQty_, AskQty_, Tbr_5_};
     TLR<5, false> Tar_5{BidQty_, AskQty_, Tar_5_};
 
-    // --- Para (Layer 1) ---
+    // --- Para ---
     CBuffer<float, L2::BLEN> Para_b_c0_;
     CBuffer<float, L2::BLEN> Para_b_c1_;
     CBuffer<float, L2::BLEN> Para_b_c2_;
@@ -155,7 +163,8 @@ public:
     Para<false, 0> Para_a_c0{BidQty_, AskQty_, Para_a_c0_};
     Para<false, 1> Para_a_c1{BidQty_, AskQty_, Para_a_c1_};
     Para<false, 2> Para_a_c2{BidQty_, AskQty_, Para_a_c2_};
-    // --- Para (Layer 2: 失衡，依赖Layer 1) ---
+
+    // --- ParaImba ---
     CBuffer<float, L2::BLEN> ParaImba_c0_;
     CBuffer<float, L2::BLEN> ParaImba_c1_;
     CBuffer<float, L2::BLEN> ParaImba_c2_;
@@ -163,16 +172,17 @@ public:
     ParaImba<1> ParaImba_c1{Para_b_c1_, Para_a_c1_, ParaImba_c1_};
     ParaImba<2> ParaImba_c2{Para_b_c2_, Para_a_c2_, ParaImba_c2_};
 
-    // --- Grad (Layer 1) ---
+    // --- Grad ---
     CBuffer<float, L2::BLEN> Grad_b_5_c1_;
     CBuffer<float, L2::BLEN> Grad_a_5_c1_;
     Grad<5, true> Grad_b_5_c1{BidQty_, AskQty_, Grad_b_5_c1_};
     Grad<5, false> Grad_a_5_c1{BidQty_, AskQty_, Grad_a_5_c1_};
-    // --- Grad (Layer 2) ---
+
+    // --- GradImba ---
     CBuffer<float, L2::BLEN> GradImba_5_c1_;
     GradImba GradImba_5_c1{Grad_b_5_c1_, Grad_a_5_c1_, GradImba_5_c1_};
 
-    // --- Entropy (Layer 1) ---
+    // --- Entropy ---
     CBuffer<float, L2::BLEN> Entropy_b_5_;
     CBuffer<float, L2::BLEN> Entropy_a_5_;
     CBuffer<float, L2::BLEN> Entropy_b_30_;
@@ -181,7 +191,8 @@ public:
     Entropy<5, false> Entropy_a_5{BidQty_, AskQty_, Entropy_a_5_};
     Entropy<30, true> Entropy_b_30{BidQty_, AskQty_, Entropy_b_30_};
     Entropy<30, false> Entropy_a_30{BidQty_, AskQty_, Entropy_a_30_};
-    // --- Entropy (Layer 2) ---
+
+    // --- EntropyImba ---
     CBuffer<float, L2::BLEN> EntropyImba_5_;
     CBuffer<float, L2::BLEN> EntropyImba_30_;
     EntropyImba EntropyImba_5{Entropy_b_5_, Entropy_a_5_, EntropyImba_5_};
@@ -217,19 +228,7 @@ public:
     Peak<true, false> Peak_ratio_bid{BidQty_, Peak_ratio_bid_};
     Peak<false, false> Peak_ratio_ask{AskQty_, Peak_ratio_ask_};
 
-    // --- Label ---
-    CBuffer<float, L2::BLEN> Label_next_tick_ret_;
-    Label Label_next_tick_ret{MidPrice_, Label_next_tick_ret_};
-
-    // --- DepthRepresentation (DUMMY) ---
-    CBuffer<float, L2::BLEN> DepthRepresentation_;
-    DepthRepresentation DepthRepresentation{DepthRepresentation_};
-
-    // -------------------------------------------------------------------------
-    // [跨触发域] compute=ON TICK, flush=ON DEPTH
-    // -------------------------------------------------------------------------
-
-    // --- FLOW_RATE ---
+    // --- FlowRate ---
     CBuffer<float, L2::BLEN> FlowRate_arr_bid_;
     CBuffer<float, L2::BLEN> FlowRate_arr_ask_;
     CBuffer<float, L2::BLEN> FlowRate_can_bid_;
@@ -244,7 +243,7 @@ public:
     CBuffer<float, L2::BLEN> ToxicCr_;
     ToxicCr ToxicCr{td, ToxicCr_};
 
-    // --- RESIL ---
+    // --- Resiliency ---
     CBuffer<float, L2::BLEN> Resil_ratio_bid_;
     CBuffer<float, L2::BLEN> Resil_ratio_ask_;
     CBuffer<float, L2::BLEN> Resil_imba_;
@@ -274,7 +273,7 @@ public:
     CTR Ctr{td, Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_,
             Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_};
 
-    // --- BEHAV ---
+    // --- Behav ---
     CBuffer<float, L2::BLEN> Behav_agg_buy_;
     CBuffer<float, L2::BLEN> Behav_agg_sell_;
     CBuffer<float, L2::BLEN> Behav_agg_dif_;
@@ -294,7 +293,7 @@ public:
     CBuffer<float, L2::BLEN> Hla_imba_;
     HLA Hla{td, BidQty_, AskQty_, Hla_imba_};
 
-    // --- TOXIC ---
+    // --- Toxic ---
     CBuffer<float, L2::BLEN> Toxic_ptc_rt_;
     CBuffer<float, L2::BLEN> Toxic_fleet_rt_;
     CBuffer<float, L2::BLEN> Toxic_spoof_int_;
@@ -302,7 +301,15 @@ public:
     CBuffer<float, L2::BLEN> Toxic_stale_ratio_ask_;
     Toxic Toxic{td, BidQty_, AskQty_, Toxic_ptc_rt_, Toxic_fleet_rt_, Toxic_spoof_int_, Toxic_stale_ratio_bid_, Toxic_stale_ratio_ask_};
 
-    explicit L0(TickData &t, const std::string &code) : td(t), asset_code_(code) {} // 构造函数 (初始化引用成员)
+    // --- Label ---
+    CBuffer<float, L2::BLEN> Label_next_tick_ret_;
+    Label Label_next_tick_ret{MidPrice_, Label_next_tick_ret_};
+
+    // --- DepthRepresentation ---
+    CBuffer<float, L2::BLEN> DepthRepresentation_;
+    DepthRepresentation DepthRepresentation{DepthRepresentation_};
+
+    explicit L0(TickData &t, const std::string &code) : td(t), asset_code_(code) {}
   };
   L0 l0;
 

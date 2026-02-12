@@ -2,4 +2,3 @@ CompileFlags:
   Add:
     - -std=c++23
     - /std:c++latest
-    
