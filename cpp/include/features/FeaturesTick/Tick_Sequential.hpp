@@ -45,23 +45,27 @@ inline void Tick_Sequential::set_date(const std::string &date_str) {
 }
 
 inline void Tick_Sequential::compute_and_store() {
-  // 每个算子的compute()和其输入buffer在同一个采样域(trigger)
-  // 每个算子的flush()和其输出buffer在同一个采样域(trigger)
+  // 每个算子的compute()和其输入buffer在同一个采样域(Trigger)
+  // 每个算子的flush()和其输出buffer在同一个采样域(Trigger)
   // 具体绑定关系请看DAG向量图
 
   const size_t t = dag_.tick_data.l0_index;
+  const auto &lob = dag_.tick_data.lob;
+  const auto order_type = lob.order_type;
 
-  bool Trigger0 = true;                                                  // [EVERY TICK] 逐笔更新
-  bool Trigger1 = dag_.tick_data.lob.order_type == L2::OrderType::TAKER; // [ON TAKER] 成交时更新
-  bool Trigger2 = dag_.tick_data.lob.depth_updated;                      // [ON DEPTH] 盘口更新时触发
+  const bool Trigger_onTick = true;                                                     // [ON TICK]   逐笔更新
+  const bool Trigger_onTaker [[maybe_unused]] = (order_type == L2::OrderType::TAKER);   // [ON TAKER]  成交时更新
+  const bool Trigger_onMaker [[maybe_unused]] = (order_type == L2::OrderType::MAKER);   // [ON MAKER]  挂单时更新
+  const bool Trigger_onCancel [[maybe_unused]] = (order_type == L2::OrderType::CANCEL); // [ON CANCEL] 撤单时更新
+  const bool Trigger_onDepth = lob.depth_updated;                                       // [ON DEPTH]  盘口更新时触发
 
-  if (Trigger0) {
+  if (Trigger_onTick) {
     dag_.l0.DeltaT.compute();    // input: td
     dag_.l0.DeltaT.flush();      // output: DeltaTMaker_, DeltaTTaker_, DeltaTCancel_
     dag_.l0.TickIndex.compute(); // input: td
     dag_.l0.TickIndex.flush();   // output: Sec_, TickIndex_
 
-    // 订单流累计特征 compute (flush在Trigger2)
+    // 订单流累计特征 compute (flush在onDepth)
     dag_.l0.flow_rate.compute(); // input: td
     dag_.l0.toxic_cr.compute();  // input: td
     dag_.l0.resil.compute();     // input: td, BidQty_, AskQty_
@@ -74,18 +78,19 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
   }
 
-  if (Trigger1) {
+  if (Trigger_onTaker) {
     dag_.l0.TradePrice.compute(); // input: td
     dag_.l0.TradePrice.flush();   // output: TradePrice_
   }
 
-  if (Trigger2) {
-    dag_.l0.DepthData.compute(); // input: td, TradePrice_
-    dag_.l0.DepthData.flush();   // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
-
-    // --- 基础数据层 ---
+  if (Trigger_onDepth) {
+    // 深度
     dag_.l0.DepthIndex.compute(); // input: td
     dag_.l0.DepthIndex.flush();   // output: DepthIndex_
+    dag_.l0.DepthData.compute();  // input: td, TradePrice_
+    dag_.l0.DepthData.flush();    // output: BidPrice_, AskPrice_, BidQty_, AskQty_, BidAmt_, AskAmt_
+
+    // 基础
     dag_.l0.MidPrice.compute();   // input: BidPrice_[0], AskPrice_[0]
     dag_.l0.MidPrice.flush();     // output: MidPrice_
     dag_.l0.MicroPrice.compute(); // input: td
@@ -198,7 +203,7 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.peak_ratio_ask.compute(); // input: AskQty_
     dag_.l0.peak_ratio_ask.flush();   // output: peak_ratio_ask_
 
-    // --- 订单流累计特征 flush (compute在Trigger0, 读取深度后输出) ---
+    // --- 订单流累计特征 flush (compute在onTick, 读取深度后输出) ---
     dag_.l0.flow_rate.flush(); // output: arr_bid_, arr_ask_, can_bid_, can_ask_, trd_buy_, trd_sell_, net_ord_, foi_
     dag_.l0.toxic_cr.flush();  // output: toxic_cr_
     dag_.l0.resil.flush();     // output: ratio_bid_, ratio_ask_, imba_, dev_bid_, dev_ask_, mr_bid_, mr_ask_, recovery_bid_, recovery_ask_
