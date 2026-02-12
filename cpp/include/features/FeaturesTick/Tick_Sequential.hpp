@@ -83,6 +83,12 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.TradePrice.flush();   // output: TradePrice_
   }
 
+  if (Trigger_onMaker) {
+  }
+
+  if (Trigger_onCancel) {
+  }
+
   if (Trigger_onDepth) {
     // 深度
     dag_.l0.DepthIndex.compute(); // input: td
