@@ -10,10 +10,10 @@
 //   N_LEVELS - 累计档位数 (1, 5, 10, 30, ...)
 //
 // DAG中使用:
-//   CI<1>  ci_1{bid_qty_, ask_qty_, ci_1_};
-//   CI<5>  ci_5{bid_qty_, ask_qty_, ci_5_};
-//   CI<10> ci_10{bid_qty_, ask_qty_, ci_10_};
-//   CI<30> ci_30{bid_qty_, ask_qty_, ci_30_};
+//   CI<1>  Ci_1{BidQty_, AskQty_, Ci_1_};
+//   CI<5>  Ci_5{BidQty_, AskQty_, Ci_5_};
+//   CI<10> Ci_10{BidQty_, AskQty_, Ci_10_};
+//   CI<30> Ci_30{BidQty_, AskQty_, Ci_30_};
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

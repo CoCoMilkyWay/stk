@@ -113,7 +113,7 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Ci_10.flush();    // output: Ci_10_
     dag_.l0.Ci_30.compute();  // input: BidQty_, AskQty_
     dag_.l0.Ci_30.flush();    // output: Ci_30_
-    dag_.l0.Ci_all.compute(); // input: BidQty_, AskQty_
+    dag_.l0.Ci_all.compute(); // input: td.lob.all_bid_volume, td.lob.all_ask_volume (全市场挂单量)
     dag_.l0.Ci_all.flush();   // output: Ci_all_
 
     // --- CWI ---

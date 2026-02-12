@@ -5,6 +5,7 @@
 #include "features/FeaturesMinute/TS/MinuteIndex.hpp"
 #include "features/FeaturesTick/TS/Behav.hpp"
 #include "features/FeaturesTick/TS/CI.hpp"
+#include "features/FeaturesTick/TS/CI_all.hpp"
 #include "features/FeaturesTick/TS/CTR.hpp"
 #include "features/FeaturesTick/TS/CWI.hpp"
 #include "features/FeaturesTick/TS/Cost.hpp"
@@ -50,12 +51,12 @@ public:
   // L0: Tick 级别 - CBuffer + 算子
   // ===========================================================================
   struct L0 {
-    TickData &td;                   // 唯一需要构造函数初始化的引用
     const std::string &asset_code_; // 股票代码 (用于判断涨跌幅限制)
 
     // -------------------------------------------------------------------------
     // [ON TICK] 逐笔更新 - 每个订单(增/删/改/成交)都触发
     // -------------------------------------------------------------------------
+    TickData &td; // 唯一需要构造函数初始化的引用
 
     // --- DeltaT ---
     CBuffer<float, L2::BLEN> DeltaTMaker_;
@@ -130,7 +131,7 @@ public:
     CI<5> Ci_5{BidQty_, AskQty_, Ci_5_};
     CI<10> Ci_10{BidQty_, AskQty_, Ci_10_};
     CI<30> Ci_30{BidQty_, AskQty_, Ci_30_};
-    CI<L2::LOB_DEPTH> Ci_all{BidQty_, AskQty_, Ci_all_};
+    CI_all Ci_all{td, Ci_all_}; // 使用交易所提供的全市场挂单量
 
     // --- CWI ---
     CBuffer<float, L2::BLEN> Cwi_1_;
