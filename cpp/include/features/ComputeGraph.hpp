@@ -43,6 +43,7 @@
 #include "features/Operator/TS/Meta/DepthIndex.hpp"
 // Label
 #include "features/Operator/TS/Label/Label.hpp"
+#include "features/Operator/TS/Label/LabelReturn.hpp"
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
@@ -155,6 +156,10 @@ public:
     // --- Label ---
     CBuffer<float, L2::BLEN> Label_next_tick_ret_;
     Label Label_next_tick_ret{MidPrice_, Label_next_tick_ret_};
+
+    // --- LabelReturn (吃单收益标签，单算子计算全部组合) ---
+    // 输出顺序: [5min×5w long, 5min×5w short, 5min×20w long, 5min×20w short, 10min×5w long, ...]
+    LabelReturnOp LabelReturn{BidPrice_, AskPrice_, BidQty_, AskQty_};
 
     explicit L0(TickData &t, const std::string &code) : td(t), asset_code_(code) {}
   };
@@ -365,6 +370,8 @@ public:
     l0.DepthData.reset();
     l0.Ofi_1.reset();
     l0.Ofi_5.reset();
+    // LabelReturn
+    l0.LabelReturn.reset();
     // L1 算子
     l1.Ctr.reset();
     l1.Oa.reset();

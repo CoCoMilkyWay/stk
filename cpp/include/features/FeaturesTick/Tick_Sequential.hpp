@@ -120,6 +120,27 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Label_next_tick_ret.compute(); // input: MidPrice_
     dag_.l0.Label_next_tick_ret.flush();   // output: Label_next_tick_ret_
 
+    // --- LabelReturn compute + flush (按hold_minutes分组批量写入) ---
+    dag_.l0.LabelReturn.compute(t);
+    // 组0: 5min, 组1: 10min, 组2: 30min; 每组4个连续字段
+    constexpr size_t LABEL_GROUP_START[] = {
+        L0_FieldOffset::lb_long_5m_5w,  // 5min组起始
+        L0_FieldOffset::lb_long_10m_5w, // 10min组起始
+        L0_FieldOffset::lb_long_30m_5w  // 30min组起始
+    };
+    constexpr size_t LABEL_GROUP_END[] = {
+        L0_FieldOffset::lb_short_5m_20w,  // 5min组结束
+        L0_FieldOffset::lb_short_10m_20w, // 10min组结束
+        L0_FieldOffset::lb_short_30m_20w  // 30min组结束
+    };
+    for (size_t h = 0; h < LabelReturnOp::hold_count(); ++h) {
+      if (dag_.l0.LabelReturn.group_valid(h)) {
+        TS_WRITE_FEATURES(store_, date_str_, 0, dag_.l0.LabelReturn.group_l0(h), asset_id_,
+                          LABEL_GROUP_START[h], LABEL_GROUP_END[h],
+                          dag_.l0.LabelReturn.group_values(h), worker_id_);
+      }
+    }
+
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L0_FieldOffset::spread] = dag_.l0.Spread_.back();
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
