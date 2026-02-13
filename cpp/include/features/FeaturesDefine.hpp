@@ -79,7 +79,6 @@
   /* ======== 截面特征 (Cross-sectional) ======== */\
   X(cs_spread_rank,     1, ALL,   CS,   LIQUIDITY,  RANK,       RANK_ZSCORE, "100/00/00", "CS Spread Rank",                   "价差截面排名",          "spread截面rank→inverse normal",                        R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))")\
   /* ======== 标签 (Labels) ======== */\
-  X(next_tick_ret,      1, DATA,  LB,   LABEL,      FUTURE_RET, NONE,        "100/00/00", "Next Tick Return",                 "下tick收益",            "下一tick对数收益",                                     R"(\log\frac{\mathrm{mid}_{t+1}}{\mathrm{mid}_t})")\
   /* 吃单收益标签 (按hold_minutes分组，便于批量写入) */\
   X(lb_long_5m_5w,      1, DATA,  LB,   LABEL,      FUTURE_RET, NONE,        "100/00/00", "Long 5min 5w Return",              "做多5分钟收益(5万)",    "吃单做多5分钟收益(5万元,含冲击+税佣)",                 R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=5\mathrm{w}, T=5\mathrm{min})")\
   X(lb_long_5m_20w,     1, DATA,  LB,   LABEL,      FUTURE_RET, NONE,        "100/00/00", "Long 5min 20w Return",             "做多5分钟收益(20万)",   "吃单做多5分钟收益(20万元,含冲击+税佣)",                R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=20\mathrm{w}, T=5\mathrm{min})")\

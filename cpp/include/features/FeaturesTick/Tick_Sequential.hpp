@@ -116,10 +116,6 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Ofi_5.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
     dag_.l0.Ofi_5.flush();   // output: Ofi_5_
 
-    // --- LABEL ---
-    dag_.l0.Label_next_tick_ret.compute(); // input: MidPrice_
-    dag_.l0.Label_next_tick_ret.flush();   // output: Label_next_tick_ret_
-
     // --- LabelReturn compute + flush (按hold_minutes分组批量写入) ---
     dag_.l0.LabelReturn.compute(t);
     // 组0: 5min, 组1: 10min, 组2: 30min; 每组4个连续字段
@@ -146,7 +142,6 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.Ofi_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.Ofi_5_.back();
-    ts_features_buffer_[L0_FieldOffset::next_tick_ret] = dag_.l0.Label_next_tick_ret_.back();
 
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
 
@@ -168,7 +163,7 @@ inline void Tick_Sequential::compute_and_store() {
   }
 
   // Write TS features
-  TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::next_tick_ret, ts_features_buffer_.data(), worker_id_);
+  TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::cs_spread_rank, ts_features_buffer_.data(), worker_id_);
 
   // Write data validity flag
   TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
