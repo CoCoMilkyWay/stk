@@ -8,3 +8,32 @@ TickData.LOB_Feature里的volume为正(uint32_t), 需要看L2::OrderDirection or
 如果声明了reset, 那么要保证在DAG的reset_at_day_start里直接调用即可, 不应加额外逻辑
 4. 保留注释
 5. 如果改了Cbuffer关系(DAG), 需要同步改ComputeGraph.hpp和Tick_Sequential.hpp的注释
+
+
+降频算子迁移流程（L0 Tick → L1 Minute）：
+1. FeaturesDefine.hpp — 移动特征定义
+从 LEVEL_0_FIELDS 删除对应 X(...) 行
+添加到 LEVEL_1_FIELDS（放在 cs_spread_rank 之前，即 TS 区末尾）
+改三处：
+valid_type: DEPTH → DATA
+PSD: "100/00/00" → "00/100/00"
+description: 末尾加 (降频)
+2. ComputeGraph.hpp — 移动 CBuffer + 算子声明
+从 DAG::L0 struct 删除 CBuffer 和算子实例
+添加到 DAG::L1 struct（构造函数之前）
+输入引用加 l0. 前缀：BidQty_ → l0.BidQty_
+CBuffer 模板用 ::L2::BLEN（L1 struct 内需要 :: 前缀避免歧义）
+若算子有 Layer 依赖（如 ParaImba 依赖 Para 输出），两层一起搬，内部引用不变
+3. Tick_Sequential.hpp — 删除 L0 调度
+删除 Trigger_onDepth 块内对应的 compute() / flush() 调用
+删除 ts_features_buffer_[L0_FieldOffset::xxx] = ... 写入行
+TS_WRITE_FEATURES 范围不用改（用的是 enum 名，自动重编号）
+4. Minute_Sequential.hpp — 添加 L1 调度
+在 Trigger_onMinute 块内添加 compute() / flush()，注意 Layer 顺序（先 L1 再 L2）
+添加 ts_features_buffer_[L1_FieldOffset::xxx] = dag_.l1.Xxx_.back() 写入行
+TS_WRITE_FEATURES 末端从 tar_5 扩展到新的最后一个 TS 特征（如 depth_repre）
+注意事项：
+算子 class 头文件按照FeaturesDefine类型分类
+若算子有 reset()，需要检查 DAG::reset_at_day_start() 是否需要同步调整
+宏系统自动处理 offset/width/enum 重编号，不需要手动改 FeatureStoreConfig.hpp已经列完了，没有中断。
+上面就是完整的降频迁移四步流程。完整内容已经全部输出，没有遗漏。四步流程加注意事项就是全部内容。

@@ -110,51 +110,6 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Ci_1.compute(); // input: BidQty_, AskQty_
     dag_.l0.Ci_1.flush();   // output: Ci_1_
 
-    // --- Para (Layer 1) ---
-    dag_.l0.Para_b_c0.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Para_b_c0.flush();   // output: Para_b_c0_
-    dag_.l0.Para_b_c1.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Para_b_c1.flush();   // output: Para_b_c1_
-    dag_.l0.Para_b_c2.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Para_b_c2.flush();   // output: Para_b_c2_
-    dag_.l0.Para_a_c0.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Para_a_c0.flush();   // output: Para_a_c0_
-    dag_.l0.Para_a_c1.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Para_a_c1.flush();   // output: Para_a_c1_
-    dag_.l0.Para_a_c2.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Para_a_c2.flush();   // output: Para_a_c2_
-    // --- Para (Layer 2: 失衡, 依赖Layer 1 flush后的CBuffer) ---
-    dag_.l0.ParaImba_c0.compute(); // input: Para_b_c0_, Para_a_c0_
-    dag_.l0.ParaImba_c0.flush();   // output: ParaImba_c0_
-    dag_.l0.ParaImba_c1.compute(); // input: Para_b_c1_, Para_a_c1_
-    dag_.l0.ParaImba_c1.flush();   // output: ParaImba_c1_
-    dag_.l0.ParaImba_c2.compute(); // input: Para_b_c2_, Para_a_c2_
-    dag_.l0.ParaImba_c2.flush();   // output: ParaImba_c2_
-
-    // --- GRAD (Layer 1) ---
-    dag_.l0.Grad_b_5_c1.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Grad_b_5_c1.flush();   // output: Grad_b_5_c1_
-    dag_.l0.Grad_a_5_c1.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Grad_a_5_c1.flush();   // output: Grad_a_5_c1_
-    // --- GRAD (Layer 2) ---
-    dag_.l0.GradImba_5_c1.compute(); // input: Grad_b_5_c1_, Grad_a_5_c1_
-    dag_.l0.GradImba_5_c1.flush();   // output: GradImba_5_c1_
-
-    // --- ENTROPY (Layer 1) ---
-    dag_.l0.Entropy_b_5.compute();  // input: BidQty_, AskQty_
-    dag_.l0.Entropy_b_5.flush();    // output: Entropy_b_5_
-    dag_.l0.Entropy_a_5.compute();  // input: BidQty_, AskQty_
-    dag_.l0.Entropy_a_5.flush();    // output: Entropy_a_5_
-    dag_.l0.Entropy_b_30.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Entropy_b_30.flush();   // output: Entropy_b_30_
-    dag_.l0.Entropy_a_30.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Entropy_a_30.flush();   // output: Entropy_a_30_
-    // --- ENTROPY (Layer 2) ---
-    dag_.l0.EntropyImba_5.compute();  // input: Entropy_b_5_, Entropy_a_5_
-    dag_.l0.EntropyImba_5.flush();    // output: EntropyImba_5_
-    dag_.l0.EntropyImba_30.compute(); // input: Entropy_b_30_, Entropy_a_30_
-    dag_.l0.EntropyImba_30.flush();   // output: EntropyImba_30_
-
     // --- OFI ---
     dag_.l0.Ofi_1.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
     dag_.l0.Ofi_1.flush();   // output: Ofi_1_
@@ -195,10 +150,6 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Hla.flush();        // output: Hla_imba_
     dag_.l0.Manip.flush();      // output: Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_
 
-    // --- REPRE ---
-    dag_.l0.DepthRepresentation.compute(); // input: (none)
-    dag_.l0.DepthRepresentation.flush();   // output: DepthRepresentation_
-
     // --- LABEL ---
     dag_.l0.Label_next_tick_ret.compute(); // input: MidPrice_
     dag_.l0.Label_next_tick_ret.flush();   // output: Label_next_tick_ret_
@@ -206,25 +157,6 @@ inline void Tick_Sequential::compute_and_store() {
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L0_FieldOffset::spread] = dag_.l0.Spread_.back();
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
-    ts_features_buffer_[L0_FieldOffset::b_para_c0] = dag_.l0.Para_b_c0_.back();
-    ts_features_buffer_[L0_FieldOffset::b_para_c1] = dag_.l0.Para_b_c1_.back();
-    ts_features_buffer_[L0_FieldOffset::b_para_c2] = dag_.l0.Para_b_c2_.back();
-    ts_features_buffer_[L0_FieldOffset::a_para_c0] = dag_.l0.Para_a_c0_.back();
-    ts_features_buffer_[L0_FieldOffset::a_para_c1] = dag_.l0.Para_a_c1_.back();
-    ts_features_buffer_[L0_FieldOffset::a_para_c2] = dag_.l0.Para_a_c2_.back();
-    ts_features_buffer_[L0_FieldOffset::imba_para_c0] = dag_.l0.ParaImba_c0_.back();
-    ts_features_buffer_[L0_FieldOffset::imba_para_c1] = dag_.l0.ParaImba_c1_.back();
-    ts_features_buffer_[L0_FieldOffset::imba_para_c2] = dag_.l0.ParaImba_c2_.back();
-    ts_features_buffer_[L0_FieldOffset::b_5_c1] = dag_.l0.Grad_b_5_c1_.back();
-    ts_features_buffer_[L0_FieldOffset::a_5_c1] = dag_.l0.Grad_a_5_c1_.back();
-    ts_features_buffer_[L0_FieldOffset::imba_5_c1] = dag_.l0.GradImba_5_c1_.back();
-    ts_features_buffer_[L0_FieldOffset::b_5_entropy] = dag_.l0.Entropy_b_5_.back();
-    ts_features_buffer_[L0_FieldOffset::a_5_entropy] = dag_.l0.Entropy_a_5_.back();
-    ts_features_buffer_[L0_FieldOffset::imba_5_entropy] = dag_.l0.EntropyImba_5_.back();
-    ts_features_buffer_[L0_FieldOffset::b_30_entropy] = dag_.l0.Entropy_b_30_.back();
-    ts_features_buffer_[L0_FieldOffset::a_30_entropy] = dag_.l0.Entropy_a_30_.back();
-    ts_features_buffer_[L0_FieldOffset::imba_30_entropy] = dag_.l0.EntropyImba_30_.back();
-    ts_features_buffer_[L0_FieldOffset::depth_repre] = dag_.l0.DepthRepresentation_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.Ofi_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.Ofi_5_.back();
     ts_features_buffer_[L0_FieldOffset::toxic_cr] = dag_.l0.ToxicCr_.back();

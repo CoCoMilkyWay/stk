@@ -2,38 +2,47 @@
 
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
-#include "features/FeaturesMinute/TS/CI_all.hpp"
-#include "features/FeaturesMinute/TS/CWI.hpp"
-#include "features/FeaturesMinute/TS/DDI.hpp"
-#include "features/FeaturesMinute/TS/MinuteIndex.hpp"
-#include "features/FeaturesMinute/TS/TLR.hpp"
-#include "features/FeaturesTick/TS/Behav.hpp"
-#include "features/FeaturesTick/TS/CI.hpp"
-#include "features/FeaturesTick/TS/CTR.hpp"
-#include "features/FeaturesTick/TS/Cost.hpp"
-#include "features/FeaturesTick/TS/DepthData.hpp"
-#include "features/FeaturesTick/TS/DepthIndex.hpp"
-#include "features/FeaturesTick/TS/DepthRepresentation.hpp"
-#include "features/FeaturesTick/TS/Entropy.hpp"
-#include "features/FeaturesTick/TS/EntropyImba.hpp"
-#include "features/FeaturesTick/TS/FlowRate.hpp"
-#include "features/FeaturesTick/TS/Grad.hpp"
-#include "features/FeaturesTick/TS/GradImba.hpp"
-#include "features/FeaturesTick/TS/HLA.hpp"
-#include "features/FeaturesTick/TS/Label.hpp"
-#include "features/FeaturesTick/TS/Manip.hpp"
-#include "features/FeaturesTick/TS/MicroPrice.hpp"
-#include "features/FeaturesTick/TS/MidPrice.hpp"
-#include "features/FeaturesTick/TS/OA.hpp"
-#include "features/FeaturesTick/TS/OFI.hpp"
-#include "features/FeaturesTick/TS/OrderInfo.hpp"
-#include "features/FeaturesTick/TS/Para.hpp"
-#include "features/FeaturesTick/TS/ParaImba.hpp"
-#include "features/FeaturesTick/TS/Peak.hpp"
-#include "features/FeaturesTick/TS/Resiliency.hpp"
-#include "features/FeaturesTick/TS/Spread.hpp"
-#include "features/FeaturesTick/TS/TickIndex.hpp"
-#include "features/FeaturesTick/TS/ToxicCr.hpp"
+// Basic
+#include "features/Operator/TS/Basic/MicroPrice.hpp"
+#include "features/Operator/TS/Basic/MidPrice.hpp"
+#include "features/Operator/TS/Basic/MinuteIndex.hpp"
+#include "features/Operator/TS/Basic/Spread.hpp"
+#include "features/Operator/TS/Basic/TickIndex.hpp"
+// Imbalance
+#include "features/Operator/TS/Imbalance/CI.hpp"
+#include "features/Operator/TS/Imbalance/CI_all.hpp"
+#include "features/Operator/TS/Imbalance/CWI.hpp"
+#include "features/Operator/TS/Imbalance/DDI.hpp"
+#include "features/Operator/TS/Imbalance/EntropyImba.hpp"
+#include "features/Operator/TS/Imbalance/GradImba.hpp"
+#include "features/Operator/TS/Imbalance/ParaImba.hpp"
+// OrderFlow
+#include "features/Operator/TS/OrderFlow/CTR.hpp"
+#include "features/Operator/TS/OrderFlow/FlowRate.hpp"
+#include "features/Operator/TS/OrderFlow/HLA.hpp"
+#include "features/Operator/TS/OrderFlow/OA.hpp"
+#include "features/Operator/TS/OrderFlow/OFI.hpp"
+#include "features/Operator/TS/OrderFlow/OrderInfo.hpp"
+#include "features/Operator/TS/OrderFlow/ToxicCr.hpp"
+// Behavioral
+#include "features/Operator/TS/Behavioral/Behav.hpp"
+#include "features/Operator/TS/Behavioral/Manip.hpp"
+// Resilience
+#include "features/Operator/TS/Resilience/Resiliency.hpp"
+// Liquidity
+#include "features/Operator/TS/Liquidity/Cost.hpp"
+#include "features/Operator/TS/Liquidity/TLR.hpp"
+// Shape
+#include "features/Operator/TS/Shape/DepthRepresentation.hpp"
+#include "features/Operator/TS/Shape/Entropy.hpp"
+#include "features/Operator/TS/Shape/Grad.hpp"
+#include "features/Operator/TS/Shape/Para.hpp"
+#include "features/Operator/TS/Shape/Peak.hpp"
+// Meta
+#include "features/Operator/TS/Meta/DepthData.hpp"
+#include "features/Operator/TS/Meta/DepthIndex.hpp"
+// Label
+#include "features/Operator/TS/Label/Label.hpp"
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
@@ -136,54 +145,6 @@ public:
     // --- CI ---
     CBuffer<float, L2::BLEN> Ci_1_;
     CI<1> Ci_1{BidQty_, AskQty_, Ci_1_};
-
-    // --- Para ---
-    CBuffer<float, L2::BLEN> Para_b_c0_;
-    CBuffer<float, L2::BLEN> Para_b_c1_;
-    CBuffer<float, L2::BLEN> Para_b_c2_;
-    CBuffer<float, L2::BLEN> Para_a_c0_;
-    CBuffer<float, L2::BLEN> Para_a_c1_;
-    CBuffer<float, L2::BLEN> Para_a_c2_;
-    Para<true, 0> Para_b_c0{BidQty_, AskQty_, Para_b_c0_};
-    Para<true, 1> Para_b_c1{BidQty_, AskQty_, Para_b_c1_};
-    Para<true, 2> Para_b_c2{BidQty_, AskQty_, Para_b_c2_};
-    Para<false, 0> Para_a_c0{BidQty_, AskQty_, Para_a_c0_};
-    Para<false, 1> Para_a_c1{BidQty_, AskQty_, Para_a_c1_};
-    Para<false, 2> Para_a_c2{BidQty_, AskQty_, Para_a_c2_};
-
-    // --- ParaImba ---
-    CBuffer<float, L2::BLEN> ParaImba_c0_;
-    CBuffer<float, L2::BLEN> ParaImba_c1_;
-    CBuffer<float, L2::BLEN> ParaImba_c2_;
-    ParaImba<0> ParaImba_c0{Para_b_c0_, Para_a_c0_, ParaImba_c0_};
-    ParaImba<1> ParaImba_c1{Para_b_c1_, Para_a_c1_, ParaImba_c1_};
-    ParaImba<2> ParaImba_c2{Para_b_c2_, Para_a_c2_, ParaImba_c2_};
-
-    // --- Grad ---
-    CBuffer<float, L2::BLEN> Grad_b_5_c1_;
-    CBuffer<float, L2::BLEN> Grad_a_5_c1_;
-    Grad<5, true> Grad_b_5_c1{BidQty_, AskQty_, Grad_b_5_c1_};
-    Grad<5, false> Grad_a_5_c1{BidQty_, AskQty_, Grad_a_5_c1_};
-
-    // --- GradImba ---
-    CBuffer<float, L2::BLEN> GradImba_5_c1_;
-    GradImba GradImba_5_c1{Grad_b_5_c1_, Grad_a_5_c1_, GradImba_5_c1_};
-
-    // --- Entropy ---
-    CBuffer<float, L2::BLEN> Entropy_b_5_;
-    CBuffer<float, L2::BLEN> Entropy_a_5_;
-    CBuffer<float, L2::BLEN> Entropy_b_30_;
-    CBuffer<float, L2::BLEN> Entropy_a_30_;
-    Entropy<5, true> Entropy_b_5{BidQty_, AskQty_, Entropy_b_5_};
-    Entropy<5, false> Entropy_a_5{BidQty_, AskQty_, Entropy_a_5_};
-    Entropy<30, true> Entropy_b_30{BidQty_, AskQty_, Entropy_b_30_};
-    Entropy<30, false> Entropy_a_30{BidQty_, AskQty_, Entropy_a_30_};
-
-    // --- EntropyImba ---
-    CBuffer<float, L2::BLEN> EntropyImba_5_;
-    CBuffer<float, L2::BLEN> EntropyImba_30_;
-    EntropyImba EntropyImba_5{Entropy_b_5_, Entropy_a_5_, EntropyImba_5_};
-    EntropyImba EntropyImba_30{Entropy_b_30_, Entropy_a_30_, EntropyImba_30_};
 
     // --- OFI ---
     CBuffer<float, L2::BLEN> Ofi_1_;
@@ -293,10 +254,6 @@ public:
     CBuffer<float, L2::BLEN> Label_next_tick_ret_;
     Label Label_next_tick_ret{MidPrice_, Label_next_tick_ret_};
 
-    // --- DepthRepresentation ---
-    CBuffer<float, L2::BLEN> DepthRepresentation_;
-    DepthRepresentation DepthRepresentation{DepthRepresentation_};
-
     explicit L0(TickData &t, const std::string &code) : td(t), asset_code_(code) {}
   };
   L0 l0;
@@ -336,6 +293,58 @@ public:
     CBuffer<float, ::L2::BLEN> Tar_5_;
     TLR<5, true> Tbr_5{l0.BidQty_, l0.AskQty_, l0.td, Tbr_5_};
     TLR<5, false> Tar_5{l0.BidQty_, l0.AskQty_, l0.td, Tar_5_};
+
+    // --- Para (降频) ---
+    CBuffer<float, ::L2::BLEN> Para_b_c0_;
+    CBuffer<float, ::L2::BLEN> Para_b_c1_;
+    CBuffer<float, ::L2::BLEN> Para_b_c2_;
+    CBuffer<float, ::L2::BLEN> Para_a_c0_;
+    CBuffer<float, ::L2::BLEN> Para_a_c1_;
+    CBuffer<float, ::L2::BLEN> Para_a_c2_;
+    Para<true, 0> Para_b_c0{l0.BidQty_, l0.AskQty_, Para_b_c0_};
+    Para<true, 1> Para_b_c1{l0.BidQty_, l0.AskQty_, Para_b_c1_};
+    Para<true, 2> Para_b_c2{l0.BidQty_, l0.AskQty_, Para_b_c2_};
+    Para<false, 0> Para_a_c0{l0.BidQty_, l0.AskQty_, Para_a_c0_};
+    Para<false, 1> Para_a_c1{l0.BidQty_, l0.AskQty_, Para_a_c1_};
+    Para<false, 2> Para_a_c2{l0.BidQty_, l0.AskQty_, Para_a_c2_};
+
+    // --- ParaImba (降频) ---
+    CBuffer<float, ::L2::BLEN> ParaImba_c0_;
+    CBuffer<float, ::L2::BLEN> ParaImba_c1_;
+    CBuffer<float, ::L2::BLEN> ParaImba_c2_;
+    ParaImba<0> ParaImba_c0{Para_b_c0_, Para_a_c0_, ParaImba_c0_};
+    ParaImba<1> ParaImba_c1{Para_b_c1_, Para_a_c1_, ParaImba_c1_};
+    ParaImba<2> ParaImba_c2{Para_b_c2_, Para_a_c2_, ParaImba_c2_};
+
+    // --- Grad (降频) ---
+    CBuffer<float, ::L2::BLEN> Grad_b_5_c1_;
+    CBuffer<float, ::L2::BLEN> Grad_a_5_c1_;
+    Grad<5, true> Grad_b_5_c1{l0.BidQty_, l0.AskQty_, Grad_b_5_c1_};
+    Grad<5, false> Grad_a_5_c1{l0.BidQty_, l0.AskQty_, Grad_a_5_c1_};
+
+    // --- GradImba (降频) ---
+    CBuffer<float, ::L2::BLEN> GradImba_5_c1_;
+    GradImba GradImba_5_c1{Grad_b_5_c1_, Grad_a_5_c1_, GradImba_5_c1_};
+
+    // --- Entropy (降频) ---
+    CBuffer<float, ::L2::BLEN> Entropy_b_5_;
+    CBuffer<float, ::L2::BLEN> Entropy_a_5_;
+    CBuffer<float, ::L2::BLEN> Entropy_b_30_;
+    CBuffer<float, ::L2::BLEN> Entropy_a_30_;
+    Entropy<5, true> Entropy_b_5{l0.BidQty_, l0.AskQty_, Entropy_b_5_};
+    Entropy<5, false> Entropy_a_5{l0.BidQty_, l0.AskQty_, Entropy_a_5_};
+    Entropy<30, true> Entropy_b_30{l0.BidQty_, l0.AskQty_, Entropy_b_30_};
+    Entropy<30, false> Entropy_a_30{l0.BidQty_, l0.AskQty_, Entropy_a_30_};
+
+    // --- EntropyImba (降频) ---
+    CBuffer<float, ::L2::BLEN> EntropyImba_5_;
+    CBuffer<float, ::L2::BLEN> EntropyImba_30_;
+    EntropyImba EntropyImba_5{Entropy_b_5_, Entropy_a_5_, EntropyImba_5_};
+    EntropyImba EntropyImba_30{Entropy_b_30_, Entropy_a_30_, EntropyImba_30_};
+
+    // --- DepthRepresentation (降频) ---
+    CBuffer<float, ::L2::BLEN> DepthRepresentation_;
+    DepthRepresentation DepthRepresentation{DepthRepresentation_};
 
     explicit L1(MinuteData &m, L0 &l0) : md(m), l0(l0) {}
   };

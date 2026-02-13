@@ -90,6 +90,55 @@ inline void Minute_Sequential::compute_and_store() {
     dag_.l1.Tar_5.compute(); // input: l0.AskQty_, l0.td
     dag_.l1.Tar_5.flush();   // output: Tar_5_
 
+    // --- Para (降频, Layer 1) ---
+    dag_.l1.Para_b_c0.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Para_b_c0.flush();   // output: Para_b_c0_
+    dag_.l1.Para_b_c1.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Para_b_c1.flush();   // output: Para_b_c1_
+    dag_.l1.Para_b_c2.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Para_b_c2.flush();   // output: Para_b_c2_
+    dag_.l1.Para_a_c0.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Para_a_c0.flush();   // output: Para_a_c0_
+    dag_.l1.Para_a_c1.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Para_a_c1.flush();   // output: Para_a_c1_
+    dag_.l1.Para_a_c2.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Para_a_c2.flush();   // output: Para_a_c2_
+    // --- ParaImba (降频, Layer 2: 依赖 Layer 1 flush 后的 CBuffer) ---
+    dag_.l1.ParaImba_c0.compute(); // input: Para_b_c0_, Para_a_c0_
+    dag_.l1.ParaImba_c0.flush();   // output: ParaImba_c0_
+    dag_.l1.ParaImba_c1.compute(); // input: Para_b_c1_, Para_a_c1_
+    dag_.l1.ParaImba_c1.flush();   // output: ParaImba_c1_
+    dag_.l1.ParaImba_c2.compute(); // input: Para_b_c2_, Para_a_c2_
+    dag_.l1.ParaImba_c2.flush();   // output: ParaImba_c2_
+
+    // --- Grad (降频, Layer 1) ---
+    dag_.l1.Grad_b_5_c1.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Grad_b_5_c1.flush();   // output: Grad_b_5_c1_
+    dag_.l1.Grad_a_5_c1.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Grad_a_5_c1.flush();   // output: Grad_a_5_c1_
+    // --- GradImba (降频, Layer 2) ---
+    dag_.l1.GradImba_5_c1.compute(); // input: Grad_b_5_c1_, Grad_a_5_c1_
+    dag_.l1.GradImba_5_c1.flush();   // output: GradImba_5_c1_
+
+    // --- Entropy (降频, Layer 1) ---
+    dag_.l1.Entropy_b_5.compute();  // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Entropy_b_5.flush();    // output: Entropy_b_5_
+    dag_.l1.Entropy_a_5.compute();  // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Entropy_a_5.flush();    // output: Entropy_a_5_
+    dag_.l1.Entropy_b_30.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Entropy_b_30.flush();   // output: Entropy_b_30_
+    dag_.l1.Entropy_a_30.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Entropy_a_30.flush();   // output: Entropy_a_30_
+    // --- EntropyImba (降频, Layer 2) ---
+    dag_.l1.EntropyImba_5.compute();  // input: Entropy_b_5_, Entropy_a_5_
+    dag_.l1.EntropyImba_5.flush();    // output: EntropyImba_5_
+    dag_.l1.EntropyImba_30.compute(); // input: Entropy_b_30_, Entropy_a_30_
+    dag_.l1.EntropyImba_30.flush();   // output: EntropyImba_30_
+
+    // --- DepthRepresentation (降频) ---
+    dag_.l1.DepthRepresentation.compute(); // input: (none)
+    dag_.l1.DepthRepresentation.flush();   // output: DepthRepresentation_
+
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L1_FieldOffset::min] = dag_.l1.Min_.back();
     ts_features_buffer_[L1_FieldOffset::ci_5] = dag_.l1.Ci_5_.back();
@@ -102,9 +151,28 @@ inline void Minute_Sequential::compute_and_store() {
     ts_features_buffer_[L1_FieldOffset::ddi_2] = dag_.l1.Ddi_2_.back();
     ts_features_buffer_[L1_FieldOffset::tbr_5] = dag_.l1.Tbr_5_.back();
     ts_features_buffer_[L1_FieldOffset::tar_5] = dag_.l1.Tar_5_.back();
+    ts_features_buffer_[L1_FieldOffset::b_para_c0] = dag_.l1.Para_b_c0_.back();
+    ts_features_buffer_[L1_FieldOffset::b_para_c1] = dag_.l1.Para_b_c1_.back();
+    ts_features_buffer_[L1_FieldOffset::b_para_c2] = dag_.l1.Para_b_c2_.back();
+    ts_features_buffer_[L1_FieldOffset::a_para_c0] = dag_.l1.Para_a_c0_.back();
+    ts_features_buffer_[L1_FieldOffset::a_para_c1] = dag_.l1.Para_a_c1_.back();
+    ts_features_buffer_[L1_FieldOffset::a_para_c2] = dag_.l1.Para_a_c2_.back();
+    ts_features_buffer_[L1_FieldOffset::imba_para_c0] = dag_.l1.ParaImba_c0_.back();
+    ts_features_buffer_[L1_FieldOffset::imba_para_c1] = dag_.l1.ParaImba_c1_.back();
+    ts_features_buffer_[L1_FieldOffset::imba_para_c2] = dag_.l1.ParaImba_c2_.back();
+    ts_features_buffer_[L1_FieldOffset::b_5_c1] = dag_.l1.Grad_b_5_c1_.back();
+    ts_features_buffer_[L1_FieldOffset::a_5_c1] = dag_.l1.Grad_a_5_c1_.back();
+    ts_features_buffer_[L1_FieldOffset::imba_5_c1] = dag_.l1.GradImba_5_c1_.back();
+    ts_features_buffer_[L1_FieldOffset::b_5_entropy] = dag_.l1.Entropy_b_5_.back();
+    ts_features_buffer_[L1_FieldOffset::a_5_entropy] = dag_.l1.Entropy_a_5_.back();
+    ts_features_buffer_[L1_FieldOffset::imba_5_entropy] = dag_.l1.EntropyImba_5_.back();
+    ts_features_buffer_[L1_FieldOffset::b_30_entropy] = dag_.l1.Entropy_b_30_.back();
+    ts_features_buffer_[L1_FieldOffset::a_30_entropy] = dag_.l1.Entropy_a_30_.back();
+    ts_features_buffer_[L1_FieldOffset::imba_30_entropy] = dag_.l1.EntropyImba_30_.back();
+    ts_features_buffer_[L1_FieldOffset::depth_repre] = dag_.l1.DepthRepresentation_.back();
 
     // Write TS features
-    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::tar_5, ts_features_buffer_.data(), worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::depth_repre, ts_features_buffer_.data(), worker_id_);
   }
 
   // Write data validity flag
