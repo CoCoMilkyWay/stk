@@ -205,7 +205,7 @@ inline void Minute_Sequential::compute_and_store() {
     ts_features_buffer_[L1_FieldOffset::hla_imba] = dag_.l1.Hla_imba_.back();
 
     // Write TS features
-    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::foi, ts_features_buffer_.data(), worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::hla_imba, ts_features_buffer_.data(), worker_id_);
   }
 
   // Write data validity flag

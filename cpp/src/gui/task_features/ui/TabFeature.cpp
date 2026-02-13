@@ -71,6 +71,34 @@ static void renderLatexFormula(tex::TeXRender *render) {
 // Helper Functions
 // ============================================================================
 
+// Get background color for feature category
+static ImU32 get_category_color(FeatureCategoryL1 cat) {
+  constexpr float alpha = 0.15f; // 背景透明度
+  switch (cat) {
+  case FeatureCategoryL1::IMBALANCE:
+    return ImGui::GetColorU32(ImVec4(1.0f, 0.4f, 0.4f, alpha)); // 红色 - 失衡
+  case FeatureCategoryL1::SHAPE:
+    return ImGui::GetColorU32(ImVec4(0.4f, 0.8f, 1.0f, alpha)); // 浅蓝 - 形状
+  case FeatureCategoryL1::ORDER_FLOW:
+    return ImGui::GetColorU32(ImVec4(1.0f, 0.7f, 0.3f, alpha)); // 橙色 - 订单流
+  case FeatureCategoryL1::BEHAVIORAL:
+    return ImGui::GetColorU32(ImVec4(0.8f, 0.4f, 1.0f, alpha)); // 紫色 - 行为
+  case FeatureCategoryL1::RESILIENCE:
+    return ImGui::GetColorU32(ImVec4(0.4f, 1.0f, 0.6f, alpha)); // 绿色 - 韧性
+  case FeatureCategoryL1::LIQUIDITY:
+    return ImGui::GetColorU32(ImVec4(0.2f, 0.8f, 0.7f, alpha)); // 青绿 - 流动性
+  case FeatureCategoryL1::VOLATILITY:
+    return ImGui::GetColorU32(ImVec4(1.0f, 0.5f, 0.7f, alpha)); // 粉色 - 波动率
+  case FeatureCategoryL1::BASIC:
+    return ImGui::GetColorU32(ImVec4(0.7f, 0.7f, 0.7f, alpha)); // 灰色 - 基础
+  case FeatureCategoryL1::LABEL:
+    return ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 0.4f, alpha)); // 黄色 - 标签
+  case FeatureCategoryL1::META:
+    return ImGui::GetColorU32(ImVec4(0.5f, 0.5f, 0.5f, alpha)); // 深灰 - 元数据
+  }
+  return ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.0f)); // 透明
+}
+
 // Get current level features based on selection
 static const std::vector<FeatureMetadata> &get_current_level_features(const Feature &feature) {
   switch (feature.selection.selected_level) {
@@ -339,9 +367,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
       ImGui::TableNextRow();
 
-      // Highlight selected rows
+      // Category background color
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, get_category_color(f.cat_l1));
+      
+      // Highlight selected rows (overlay on top of category color)
       if (is_selected) {
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(0.2f, 0.4f, 0.6f, 0.3f)));
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImVec4(0.2f, 0.4f, 0.6f, 0.3f)));
       }
 
       // Column: Primary (RadioButton)
