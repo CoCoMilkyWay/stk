@@ -36,7 +36,6 @@
 #include "features/FeaturesTick/TS/ToxicCr.hpp"
 #include <deque>
 
-
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
 public:
@@ -137,33 +136,7 @@ public:
 
     // --- CI ---
     CBuffer<float, L2::BLEN> Ci_1_;
-    CBuffer<float, L2::BLEN> Ci_5_;
-    CBuffer<float, L2::BLEN> Ci_10_;
-    CBuffer<float, L2::BLEN> Ci_30_;
-    CBuffer<float, L2::BLEN> Ci_all_;
-    CI<1> Ci_1{BidQty_, AskQty_, Ci_1_};
-    CI<5> Ci_5{BidQty_, AskQty_, Ci_5_};
-    CI<10> Ci_10{BidQty_, AskQty_, Ci_10_};
-    CI<30> Ci_30{BidQty_, AskQty_, Ci_30_};
-    CI_all Ci_all{td, Ci_all_}; // 使用交易所提供的全市场挂单量
-
-    // --- CWI ---
-    CBuffer<float, L2::BLEN> Cwi_1_;
-    CBuffer<float, L2::BLEN> Cwi_2_;
-    CWI<10> Cwi_1{BidQty_, AskQty_, Cwi_1_};
-    CWI<20> Cwi_2{BidQty_, AskQty_, Cwi_2_};
-
-    // --- DDI ---
-    CBuffer<float, L2::BLEN> Ddi_1_;
-    CBuffer<float, L2::BLEN> Ddi_2_;
-    DDI<1> Ddi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_1_};
-    DDI<2> Ddi_2{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_2_};
-
-    // --- TLR ---
-    CBuffer<float, L2::BLEN> Tbr_5_;
-    CBuffer<float, L2::BLEN> Tar_5_;
-    TLR<5, true> Tbr_5{BidQty_, AskQty_, td, Tbr_5_};
-    TLR<5, false> Tar_5{BidQty_, AskQty_, td, Tar_5_};
+    CI<1, 0> Ci_1{BidQty_, AskQty_, Ci_1_};
 
     // --- Para ---
     CBuffer<float, L2::BLEN> Para_b_c0_;
@@ -334,25 +307,48 @@ public:
   // ===========================================================================
   struct L1 {
     MinuteData &md;
+    L0 &l0;
 
     // --- 基础数据 CBuffer ---
-    CBuffer<float, ::L2::BLEN> Min_;         // 分钟数 [0-59] (特征)
-    CBuffer<float, ::L2::BLEN> MinuteIndex_; // 原始minute索引 (供其他算子使用)
-
-    // --- 基础数据算子 ---
+    CBuffer<float, ::L2::BLEN> Min_;
+    CBuffer<float, ::L2::BLEN> MinuteIndex_;
     MinuteIndex MinuteIndex{md, Min_, MinuteIndex_};
+
+    CBuffer<float, ::L2::BLEN> Ci_5_;
+    CBuffer<float, ::L2::BLEN> Ci_10_;
+    CBuffer<float, ::L2::BLEN> Ci_30_;
+    CBuffer<float, ::L2::BLEN> Ci_all_;
+    CI<5, 5> Ci_5{l0.BidQty_, l0.AskQty_, Ci_5_};
+    CI<10, 5> Ci_10{l0.BidQty_, l0.AskQty_, Ci_10_};
+    CI<30, 5> Ci_30{l0.BidQty_, l0.AskQty_, Ci_30_};
+    CI_all<5> Ci_all{l0.td, Ci_all_};
+
+    CBuffer<float, ::L2::BLEN> Cwi_1_;
+    CBuffer<float, ::L2::BLEN> Cwi_2_;
+    CWI<10, 5> Cwi_1{l0.BidQty_, l0.AskQty_, Cwi_1_};
+    CWI<20, 5> Cwi_2{l0.BidQty_, l0.AskQty_, Cwi_2_};
+
+    CBuffer<float, ::L2::BLEN> Ddi_1_;
+    CBuffer<float, ::L2::BLEN> Ddi_2_;
+    DDI<1, 5> Ddi_1{l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_, Ddi_1_};
+    DDI<2, 5> Ddi_2{l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_, Ddi_2_};
+
+    CBuffer<float, ::L2::BLEN> Tbr_5_;
+    CBuffer<float, ::L2::BLEN> Tar_5_;
+    TLR<5, true, 5> Tbr_5{l0.BidQty_, l0.AskQty_, l0.td, Tbr_5_};
+    TLR<5, false, 5> Tar_5{l0.BidQty_, l0.AskQty_, l0.td, Tar_5_};
 
     // Rolling windows for TS features
     std::deque<float> minute_return_window;
 
-    explicit L1(MinuteData &m) : md(m) {}
+    explicit L1(MinuteData &m, L0 &l0) : md(m), l0(l0) {}
   };
   L1 l1;
 
   // ===========================================================================
   // 构造函数
   // ===========================================================================
-  explicit DAG(TickData &td, const std::string &code) : tick_data(td), asset_code_(code), l0(td, asset_code_), l1(minute_data) {}
+  explicit DAG(TickData &td, const std::string &code) : tick_data(td), asset_code_(code), l0(tick_data, asset_code_), l1(minute_data, l0) {}
 
   // ===========================================================================
   // 跨天重置 (统一维护)

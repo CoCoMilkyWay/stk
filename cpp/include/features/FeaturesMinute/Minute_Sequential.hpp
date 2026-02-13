@@ -75,7 +75,6 @@ inline void Minute_Sequential::compute_and_store() {
 }
 
 inline void Minute_Sequential::compute_ts_minute(bool is_valid, size_t t) {
-  // 写入特征到输出缓冲区 (顺序与 LEVEL_1_FIELDS 定义一致)
   float min_ret = 0.0f;
   float next_1m_ret = 0.0f;
 
@@ -84,11 +83,32 @@ inline void Minute_Sequential::compute_ts_minute(bool is_valid, size_t t) {
     next_1m_ret = compute_next_1m_ret();
   }
 
+  dag_.l1.Ci_5.flush();   // output: Ci_5_
+  dag_.l1.Ci_10.flush();  // output: Ci_10_
+  dag_.l1.Ci_30.flush();  // output: Ci_30_
+  dag_.l1.Ci_all.flush(); // output: Ci_all_
+  dag_.l1.Cwi_1.flush();  // output: Cwi_1_
+  dag_.l1.Cwi_2.flush();  // output: Cwi_2_
+  dag_.l1.Ddi_1.flush();  // output: Ddi_1_
+  dag_.l1.Ddi_2.flush();  // output: Ddi_2_
+  dag_.l1.Tbr_5.flush();  // output: Tbr_5_
+  dag_.l1.Tar_5.flush();  // output: Tar_5_
+
   ts_features_buffer_[L1_FieldOffset::min] = is_valid ? dag_.l1.Min_.back() : 0.0f;
   ts_features_buffer_[L1_FieldOffset::min_ret] = min_ret;
+  ts_features_buffer_[L1_FieldOffset::ci_5] = dag_.l1.Ci_5_.back();
+  ts_features_buffer_[L1_FieldOffset::ci_10] = dag_.l1.Ci_10_.back();
+  ts_features_buffer_[L1_FieldOffset::ci_30] = dag_.l1.Ci_30_.back();
+  ts_features_buffer_[L1_FieldOffset::ci_all] = dag_.l1.Ci_all_.back();
+  ts_features_buffer_[L1_FieldOffset::cwi_1] = dag_.l1.Cwi_1_.back();
+  ts_features_buffer_[L1_FieldOffset::cwi_2] = dag_.l1.Cwi_2_.back();
+  ts_features_buffer_[L1_FieldOffset::ddi_1] = dag_.l1.Ddi_1_.back();
+  ts_features_buffer_[L1_FieldOffset::ddi_2] = dag_.l1.Ddi_2_.back();
+  ts_features_buffer_[L1_FieldOffset::tbr_5] = dag_.l1.Tbr_5_.back();
+  ts_features_buffer_[L1_FieldOffset::tar_5] = dag_.l1.Tar_5_.back();
 
-  // Write TS features [min, min_ret]
-  TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::min_ret, ts_features_buffer_.data(), worker_id_);
+  // Write TS features [min, min_ret, ci_5, ci_10, ci_30, ci_all, cwi_1, cwi_2, ddi_1, ddi_2, tbr_5, tar_5]
+  TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::tar_5, ts_features_buffer_.data(), worker_id_);
 
   // Write label: next_1m_ret (滞后1分钟输出)
   TS_WRITE_SINGLE(store_, date_str_, 1, t, L1_FieldOffset::next_1m_ret, asset_id_, next_1m_ret, worker_id_);

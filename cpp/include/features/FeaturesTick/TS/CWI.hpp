@@ -9,17 +9,20 @@
 //
 // 模板参数:
 //   GAMMA_X10 - γ值的10倍 (10=γ1.0, 20=γ2.0)，避免浮点模板参数
+//   BUFFER_DEPTH - 内部缓存深度，用于降频 (0=不缓存直接输出, 5=缓存5个样本平均后输出)
 //
 // DAG中使用:
-//   CWI<10> cwi_1{bid_qty_, ask_qty_, cwi_1_};  // γ=1.0
-//   CWI<20> cwi_2{bid_qty_, ask_qty_, cwi_2_};  // γ=2.0
+//   CWI<10, 0> cwi_1{bid_qty_, ask_qty_, cwi_1_};  // γ=1.0, 秒级直接输出
+//   CWI<20, 0> cwi_2{bid_qty_, ask_qty_, cwi_2_};  // γ=2.0, 秒级直接输出
+//   CWI<10, 5> cwi_1{bid_qty_, ask_qty_, cwi_1_};  // γ=1.0, 降频到分钟级
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
+#include <array>
 #include <cmath>
 
-template <int GAMMA_X10, size_t DEPTH_SIZE = L2::LOB_DEPTH>
+template <int GAMMA_X10, size_t BUFFER_DEPTH = 0, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class CWI {
 public:
   static constexpr float GAMMA = static_cast<float>(GAMMA_X10) / 10.0f;
@@ -52,11 +55,34 @@ public:
 
     // 计算凸加权失衡率，值域[-1,1]
     value_ = denom > 1e-6f ? numer / denom : 0.0f;
+
+    // 如果有内部缓存，存入缓存
+    if constexpr (BUFFER_DEPTH > 0) {
+      buffer_[buffer_idx_] = value_;
+      buffer_idx_ = (buffer_idx_ + 1) % BUFFER_DEPTH;
+      if (buffer_size_ < BUFFER_DEPTH) {
+        buffer_size_++;
+      }
+    }
   }
 
   inline void flush() {
-    // 将compute中计算的CWI值写入输出CBuffer
-    out_.push_back(value_);
+    if constexpr (BUFFER_DEPTH == 0) {
+      // 无缓存：直接输出
+      out_.push_back(value_);
+    } else {
+      // 有缓存：取最近 N 个样本平均
+      float sum = 0.0f;
+      for (size_t i = 0; i < buffer_size_; ++i) {
+        sum += buffer_[i];
+      }
+      float avg = buffer_size_ > 0 ? sum / static_cast<float>(buffer_size_) : 0.0f;
+      out_.push_back(avg);
+      
+      // 清空缓存，准备下一轮
+      buffer_size_ = 0;
+      buffer_idx_ = 0;
+    }
   }
 
 private:
@@ -65,4 +91,9 @@ private:
   CBuffer<float, L2::BLEN> &out_;
   float weights_[DEPTH_SIZE];
   float value_ = 0.0f;
+
+  // 内部缓存（仅当 BUFFER_DEPTH > 0 时使用）
+  std::array<float, (BUFFER_DEPTH > 0 ? BUFFER_DEPTH : 1)> buffer_{};
+  size_t buffer_idx_ = 0;
+  size_t buffer_size_ = 0;
 };

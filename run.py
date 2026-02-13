@@ -96,7 +96,8 @@ def main():
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
     exe_ext = ".exe" if platform.system() == "Windows" else ""
     binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}{exe_ext}")
-    _run(binary_path, build_dir, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT)
+    _run(binary_path, build_dir, ENABLE_TSAN,
+         ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT)
 
 
 if __name__ == "__main__":

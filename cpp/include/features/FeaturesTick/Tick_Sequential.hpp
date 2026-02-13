@@ -109,32 +109,22 @@ inline void Tick_Sequential::compute_and_store() {
     // --- CI ---
     dag_.l0.Ci_1.compute();   // input: BidQty_, AskQty_
     dag_.l0.Ci_1.flush();     // output: Ci_1_
-    dag_.l0.Ci_5.compute();   // input: BidQty_, AskQty_
-    dag_.l0.Ci_5.flush();     // output: Ci_5_
-    dag_.l0.Ci_10.compute();  // input: BidQty_, AskQty_
-    dag_.l0.Ci_10.flush();    // output: Ci_10_
-    dag_.l0.Ci_30.compute();  // input: BidQty_, AskQty_
-    dag_.l0.Ci_30.flush();    // output: Ci_30_
-    dag_.l0.Ci_all.compute(); // input: td.lob.all_bid_volume, td.lob.all_ask_volume (全市场挂单量)
-    dag_.l0.Ci_all.flush();   // output: Ci_all_
+    dag_.l1.Ci_5.compute();   // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Ci_10.compute();  // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Ci_30.compute();  // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Ci_all.compute(); // input: l0.td.lob.all_bid_volume, l0.td.lob.all_ask_volume
 
     // --- CWI ---
-    dag_.l0.Cwi_1.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Cwi_1.flush();   // output: Cwi_1_
-    dag_.l0.Cwi_2.compute(); // input: BidQty_, AskQty_
-    dag_.l0.Cwi_2.flush();   // output: Cwi_2_
+    dag_.l1.Cwi_1.compute(); // input: l0.BidQty_, l0.AskQty_
+    dag_.l1.Cwi_2.compute(); // input: l0.BidQty_, l0.AskQty_
 
     // --- DDI ---
-    dag_.l0.Ddi_1.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
-    dag_.l0.Ddi_1.flush();   // output: Ddi_1_
-    dag_.l0.Ddi_2.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
-    dag_.l0.Ddi_2.flush();   // output: Ddi_2_
+    dag_.l1.Ddi_1.compute(); // input: l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_
+    dag_.l1.Ddi_2.compute(); // input: l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_
 
     // --- TLR ---
-    dag_.l0.Tbr_5.compute(); // input: BidQty_[0:4], td.lob.all_bid_volume
-    dag_.l0.Tbr_5.flush();   // output: Tbr_5_
-    dag_.l0.Tar_5.compute(); // input: AskQty_[0:4], td.lob.all_ask_volume
-    dag_.l0.Tar_5.flush();   // output: Tar_5_
+    dag_.l1.Tbr_5.compute(); // input: l0.BidQty_[0:4], l0.td.lob.all_bid_volume
+    dag_.l1.Tar_5.compute(); // input: l0.BidQty_[0:4], l0.td.lob.all_ask_volume
 
     // --- Para (Layer 1) ---
     dag_.l0.Para_b_c0.compute(); // input: BidQty_, AskQty_
@@ -230,20 +220,8 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Label_next_tick_ret.flush();   // output: Label_next_tick_ret_
 
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
-    ts_features_buffer_[L0_FieldOffset::mid_price] = dag_.l0.MidPrice_.back();
-    ts_features_buffer_[L0_FieldOffset::micro_price] = dag_.l0.MicroPrice_.back();
     ts_features_buffer_[L0_FieldOffset::spread] = dag_.l0.Spread_.back();
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
-    ts_features_buffer_[L0_FieldOffset::ci_5] = dag_.l0.Ci_5_.back();
-    ts_features_buffer_[L0_FieldOffset::ci_10] = dag_.l0.Ci_10_.back();
-    ts_features_buffer_[L0_FieldOffset::ci_30] = dag_.l0.Ci_30_.back();
-    ts_features_buffer_[L0_FieldOffset::ci_all] = dag_.l0.Ci_all_.back();
-    ts_features_buffer_[L0_FieldOffset::cwi_1] = dag_.l0.Cwi_1_.back();
-    ts_features_buffer_[L0_FieldOffset::cwi_2] = dag_.l0.Cwi_2_.back();
-    ts_features_buffer_[L0_FieldOffset::ddi_1] = dag_.l0.Ddi_1_.back();
-    ts_features_buffer_[L0_FieldOffset::ddi_2] = dag_.l0.Ddi_2_.back();
-    ts_features_buffer_[L0_FieldOffset::tbr_5] = dag_.l0.Tbr_5_.back();
-    ts_features_buffer_[L0_FieldOffset::tar_5] = dag_.l0.Tar_5_.back();
     ts_features_buffer_[L0_FieldOffset::b_para_c0] = dag_.l0.Para_b_c0_.back();
     ts_features_buffer_[L0_FieldOffset::b_para_c1] = dag_.l0.Para_b_c1_.back();
     ts_features_buffer_[L0_FieldOffset::b_para_c2] = dag_.l0.Para_b_c2_.back();
