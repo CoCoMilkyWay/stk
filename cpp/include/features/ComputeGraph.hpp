@@ -152,30 +152,6 @@ public:
     OFI<1> Ofi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, Ofi_1_};
     OFI<5> Ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, Ofi_5_};
 
-    // --- Cost ---
-    CBuffer<float, L2::BLEN> Cost_buy_1_;
-    CBuffer<float, L2::BLEN> Cost_buy_5_;
-    CBuffer<float, L2::BLEN> Cost_buy_10_;
-    CBuffer<float, L2::BLEN> Cost_sell_1_;
-    CBuffer<float, L2::BLEN> Cost_sell_5_;
-    CBuffer<float, L2::BLEN> Cost_sell_10_;
-    Cost<1, true> Cost_buy_1{AskPrice_, AskQty_, MidPrice_, Cost_buy_1_};
-    Cost<5, true> Cost_buy_5{AskPrice_, AskQty_, MidPrice_, Cost_buy_5_};
-    Cost<10, true> Cost_buy_10{AskPrice_, AskQty_, MidPrice_, Cost_buy_10_};
-    Cost<1, false> Cost_sell_1{BidPrice_, BidQty_, MidPrice_, Cost_sell_1_};
-    Cost<5, false> Cost_sell_5{BidPrice_, BidQty_, MidPrice_, Cost_sell_5_};
-    Cost<10, false> Cost_sell_10{BidPrice_, BidQty_, MidPrice_, Cost_sell_10_};
-
-    // --- Peak ---
-    CBuffer<float, L2::BLEN> Peak_loc_bid_;
-    CBuffer<float, L2::BLEN> Peak_loc_ask_;
-    CBuffer<float, L2::BLEN> Peak_ratio_bid_;
-    CBuffer<float, L2::BLEN> Peak_ratio_ask_;
-    Peak<true, true> Peak_loc_bid{BidQty_, Peak_loc_bid_};
-    Peak<false, true> Peak_loc_ask{AskQty_, Peak_loc_ask_};
-    Peak<true, false> Peak_ratio_bid{BidQty_, Peak_ratio_bid_};
-    Peak<false, false> Peak_ratio_ask{AskQty_, Peak_ratio_ask_};
-
     // --- Label ---
     CBuffer<float, L2::BLEN> Label_next_tick_ret_;
     Label Label_next_tick_ret{MidPrice_, Label_next_tick_ret_};
@@ -345,6 +321,30 @@ public:
     Resiliency Resiliency{l0.td, l0.BidQty_, l0.AskQty_,
                           Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_,
                           Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_};
+
+    // --- Cost (降频) ---
+    CBuffer<float, ::L2::BLEN> Cost_buy_1_;
+    CBuffer<float, ::L2::BLEN> Cost_buy_5_;
+    CBuffer<float, ::L2::BLEN> Cost_buy_10_;
+    CBuffer<float, ::L2::BLEN> Cost_sell_1_;
+    CBuffer<float, ::L2::BLEN> Cost_sell_5_;
+    CBuffer<float, ::L2::BLEN> Cost_sell_10_;
+    Cost<1, true> Cost_buy_1{l0.AskPrice_, l0.AskQty_, l0.MidPrice_, Cost_buy_1_};
+    Cost<5, true> Cost_buy_5{l0.AskPrice_, l0.AskQty_, l0.MidPrice_, Cost_buy_5_};
+    Cost<10, true> Cost_buy_10{l0.AskPrice_, l0.AskQty_, l0.MidPrice_, Cost_buy_10_};
+    Cost<1, false> Cost_sell_1{l0.BidPrice_, l0.BidQty_, l0.MidPrice_, Cost_sell_1_};
+    Cost<5, false> Cost_sell_5{l0.BidPrice_, l0.BidQty_, l0.MidPrice_, Cost_sell_5_};
+    Cost<10, false> Cost_sell_10{l0.BidPrice_, l0.BidQty_, l0.MidPrice_, Cost_sell_10_};
+
+    // --- Peak (降频) ---
+    CBuffer<float, ::L2::BLEN> Peak_loc_bid_;
+    CBuffer<float, ::L2::BLEN> Peak_loc_ask_;
+    CBuffer<float, ::L2::BLEN> Peak_ratio_bid_;
+    CBuffer<float, ::L2::BLEN> Peak_ratio_ask_;
+    Peak<true, true> Peak_loc_bid{l0.BidQty_, Peak_loc_bid_};
+    Peak<false, true> Peak_loc_ask{l0.AskQty_, Peak_loc_ask_};
+    Peak<true, false> Peak_ratio_bid{l0.BidQty_, Peak_ratio_bid_};
+    Peak<false, false> Peak_ratio_ask{l0.AskQty_, Peak_ratio_ask_};
 
     explicit L1(MinuteData &m, L0 &l0) : md(m), l0(l0) {}
   };

@@ -149,6 +149,30 @@ inline void Minute_Sequential::compute_and_store() {
     dag_.l1.Manip.flush();      // output: Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_
     dag_.l1.Resiliency.flush(); // output: Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_, Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_
 
+    // --- Cost (降频) ---
+    dag_.l1.Cost_buy_1.compute();   // input: l0.AskPrice_, l0.AskQty_, l0.MidPrice_
+    dag_.l1.Cost_buy_1.flush();     // output: Cost_buy_1_
+    dag_.l1.Cost_buy_5.compute();   // input: l0.AskPrice_, l0.AskQty_, l0.MidPrice_
+    dag_.l1.Cost_buy_5.flush();     // output: Cost_buy_5_
+    dag_.l1.Cost_buy_10.compute();  // input: l0.AskPrice_, l0.AskQty_, l0.MidPrice_
+    dag_.l1.Cost_buy_10.flush();    // output: Cost_buy_10_
+    dag_.l1.Cost_sell_1.compute();  // input: l0.BidPrice_, l0.BidQty_, l0.MidPrice_
+    dag_.l1.Cost_sell_1.flush();    // output: Cost_sell_1_
+    dag_.l1.Cost_sell_5.compute();  // input: l0.BidPrice_, l0.BidQty_, l0.MidPrice_
+    dag_.l1.Cost_sell_5.flush();    // output: Cost_sell_5_
+    dag_.l1.Cost_sell_10.compute(); // input: l0.BidPrice_, l0.BidQty_, l0.MidPrice_
+    dag_.l1.Cost_sell_10.flush();   // output: Cost_sell_10_
+
+    // --- Peak (降频) ---
+    dag_.l1.Peak_loc_bid.compute();   // input: l0.BidQty_
+    dag_.l1.Peak_loc_bid.flush();     // output: Peak_loc_bid_
+    dag_.l1.Peak_loc_ask.compute();   // input: l0.AskQty_
+    dag_.l1.Peak_loc_ask.flush();     // output: Peak_loc_ask_
+    dag_.l1.Peak_ratio_bid.compute(); // input: l0.BidQty_
+    dag_.l1.Peak_ratio_bid.flush();   // output: Peak_ratio_bid_
+    dag_.l1.Peak_ratio_ask.compute(); // input: l0.AskQty_
+    dag_.l1.Peak_ratio_ask.flush();   // output: Peak_ratio_ask_
+
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L1_FieldOffset::min] = dag_.l1.Min_.back();
     ts_features_buffer_[L1_FieldOffset::ci_5] = dag_.l1.Ci_5_.back();
@@ -228,9 +252,21 @@ inline void Minute_Sequential::compute_and_store() {
     ts_features_buffer_[L1_FieldOffset::mr_ask] = dag_.l1.Resil_mr_ask_.back();
     ts_features_buffer_[L1_FieldOffset::recovery_bid] = dag_.l1.Resil_recovery_bid_.back();
     ts_features_buffer_[L1_FieldOffset::recovery_ask] = dag_.l1.Resil_recovery_ask_.back();
+    // --- Cost (降频) ---
+    ts_features_buffer_[L1_FieldOffset::cost_buy_1] = dag_.l1.Cost_buy_1_.back();
+    ts_features_buffer_[L1_FieldOffset::cost_buy_5] = dag_.l1.Cost_buy_5_.back();
+    ts_features_buffer_[L1_FieldOffset::cost_buy_10] = dag_.l1.Cost_buy_10_.back();
+    ts_features_buffer_[L1_FieldOffset::cost_sell_1] = dag_.l1.Cost_sell_1_.back();
+    ts_features_buffer_[L1_FieldOffset::cost_sell_5] = dag_.l1.Cost_sell_5_.back();
+    ts_features_buffer_[L1_FieldOffset::cost_sell_10] = dag_.l1.Cost_sell_10_.back();
+    // --- Peak (降频) ---
+    ts_features_buffer_[L1_FieldOffset::peak_loc_bid] = dag_.l1.Peak_loc_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::peak_loc_ask] = dag_.l1.Peak_loc_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::peak_ratio_bid] = dag_.l1.Peak_ratio_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::peak_ratio_ask] = dag_.l1.Peak_ratio_ask_.back();
 
     // Write TS features
-    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::recovery_ask, ts_features_buffer_.data(), worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::peak_ratio_ask, ts_features_buffer_.data(), worker_id_);
   }
 
   // Write data validity flag
