@@ -65,7 +65,7 @@ public:
   // L0: Coroutine for async loading
   // ========================================================================
 
-  asio::awaitable<void> L0LoaderLoop(OrderFlow &of, int &feature_idx_ref) {
+  asio::awaitable<void> L0LoaderLoop(OrderFlow &of, int &selected_level_ref, int &feature_idx_ref) {
     of.loader.coro_running = true;
 
     // Create depth buffer once for entire coroutine lifetime (~500MB)
@@ -86,8 +86,8 @@ public:
         of.l0_feature.clear();
       }
 
-      // Load L0 feature if needed (lazy, only when selection exists)
-      if (feature_idx_ref >= 0 && of.l0.loaded &&
+      // Load L0 feature if needed (lazy, only when L0 level selected)
+      if (selected_level_ref == 0 && feature_idx_ref >= 0 && of.l0.loaded &&
           !of.l0_feature.matches(of.loader.l0_date, of.loader.l0_asset, feature_idx_ref)) {
         load_l0_feature(of.l0_feature, of.loader.l0_date, of.loader.l0_asset,
                         feature_idx_ref, of.l0, l0_tensor);
@@ -105,14 +105,14 @@ public:
   }
 
   // Start L0 loader coroutine (blocking until started)
-  void StartL0Loader(CoroManager &coromgr, OrderFlow &of, int &feature_idx_ref) {
+  void StartL0Loader(CoroManager &coromgr, OrderFlow &of, int &selected_level_ref, int &feature_idx_ref) {
     if (of.loader.coro_running)
       return;
 
     TraceN("L0_StartCoroutine");
 
     of.loader.coro_should_stop = false;
-    of.loader.coro = coromgr.Spawn(L0LoaderLoop(of, feature_idx_ref));
+    of.loader.coro = coromgr.Spawn(L0LoaderLoop(of, selected_level_ref, feature_idx_ref));
 
     // Blocking wait until coroutine starts
     {
@@ -417,8 +417,10 @@ public:
         cache.plot.x.push_back(global_x);
         cache.plot.values.push_back(val);
 
-        if (val < y_min) y_min = val;
-        if (val > y_max) y_max = val;
+        if (val < y_min)
+          y_min = val;
+        if (val > y_max)
+          y_max = val;
       }
     }
 

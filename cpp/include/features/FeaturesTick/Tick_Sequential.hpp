@@ -78,16 +78,15 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.TickIndex.compute(); // input: td
     dag_.l0.TickIndex.flush();   // output: Sec_, TickIndex_
 
-    // 订单流累计特征 compute (flush在onDepth)
-    dag_.l0.Resiliency.compute(); // input: td, BidQty_, AskQty_
-    dag_.l0.Behav.compute();      // input: td
-    dag_.l0.Manip.compute();      // input: td, BidQty_, AskQty_
     // 降频算子 compute (flush在onMinute)
     dag_.l1.Ctr.compute();        // input: l0.td
     dag_.l1.Oa.compute();         // input: l0.td
     dag_.l1.Hla.compute();        // input: l0.td, l0.BidQty_, l0.AskQty_
     dag_.l1.ToxicCr.compute();    // input: l0.td
     dag_.l1.FlowRate.compute();   // input: l0.td
+    dag_.l1.Behav.compute();      // input: l0.td
+    dag_.l1.Manip.compute();      // input: l0.td, l0.BidQty_, l0.AskQty_
+    dag_.l1.Resiliency.compute(); // input: l0.td, l0.BidQty_, l0.AskQty_
 
     ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
   }
@@ -141,11 +140,6 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Peak_ratio_ask.compute(); // input: AskQty_
     dag_.l0.Peak_ratio_ask.flush();   // output: Peak_ratio_ask_
 
-    // --- 订单流累计特征 ---
-    dag_.l0.Resiliency.flush(); // output: Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_, Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_
-    dag_.l0.Behav.flush();      // output: Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_
-    dag_.l0.Manip.flush();      // output: Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_
-
     // --- LABEL ---
     dag_.l0.Label_next_tick_ret.compute(); // input: MidPrice_
     dag_.l0.Label_next_tick_ret.flush();   // output: Label_next_tick_ret_
@@ -155,24 +149,6 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.Ofi_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.Ofi_5_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_buy] = dag_.l0.Behav_agg_buy_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_sell] = dag_.l0.Behav_agg_sell_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_dif] = dag_.l0.Behav_agg_dif_.back();
-    ts_features_buffer_[L0_FieldOffset::cpr] = dag_.l0.Behav_cpr_.back();
-    ts_features_buffer_[L0_FieldOffset::ptc_rt] = dag_.l0.Manip_ptc_rt_.back();
-    ts_features_buffer_[L0_FieldOffset::fleet_rt] = dag_.l0.Manip_fleet_rt_.back();
-    ts_features_buffer_[L0_FieldOffset::spoof_int] = dag_.l0.Manip_spoof_int_.back();
-    ts_features_buffer_[L0_FieldOffset::agg_trd] = dag_.l0.Behav_agg_trd_.back();
-    ts_features_buffer_[L0_FieldOffset::ord_size] = dag_.l0.Behav_ord_size_.back();
-    ts_features_buffer_[L0_FieldOffset::ratio_bid] = dag_.l0.Resil_ratio_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::ratio_ask] = dag_.l0.Resil_ratio_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::imba] = dag_.l0.Resil_imba_.back();
-    ts_features_buffer_[L0_FieldOffset::dev_bid] = dag_.l0.Resil_dev_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::dev_ask] = dag_.l0.Resil_dev_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::mr_bid] = dag_.l0.Resil_mr_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::mr_ask] = dag_.l0.Resil_mr_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::recovery_bid] = dag_.l0.Resil_recovery_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::recovery_ask] = dag_.l0.Resil_recovery_ask_.back();
     ts_features_buffer_[L0_FieldOffset::cost_buy_1] = dag_.l0.Cost_buy_1_.back();
     ts_features_buffer_[L0_FieldOffset::cost_buy_5] = dag_.l0.Cost_buy_5_.back();
     ts_features_buffer_[L0_FieldOffset::cost_buy_10] = dag_.l0.Cost_buy_10_.back();
@@ -183,8 +159,6 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::peak_loc_ask] = dag_.l0.Peak_loc_ask_.back();
     ts_features_buffer_[L0_FieldOffset::peak_ratio_bid] = dag_.l0.Peak_ratio_bid_.back();
     ts_features_buffer_[L0_FieldOffset::peak_ratio_ask] = dag_.l0.Peak_ratio_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::stale_ratio_bid] = dag_.l0.Manip_stale_ratio_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::stale_ratio_ask] = dag_.l0.Manip_stale_ratio_ask_.back();
     ts_features_buffer_[L0_FieldOffset::next_tick_ret] = dag_.l0.Label_next_tick_ret_.back();
 
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);

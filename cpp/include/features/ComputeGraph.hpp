@@ -176,37 +176,6 @@ public:
     Peak<true, false> Peak_ratio_bid{BidQty_, Peak_ratio_bid_};
     Peak<false, false> Peak_ratio_ask{AskQty_, Peak_ratio_ask_};
 
-    // --- Resiliency ---
-    CBuffer<float, L2::BLEN> Resil_ratio_bid_;
-    CBuffer<float, L2::BLEN> Resil_ratio_ask_;
-    CBuffer<float, L2::BLEN> Resil_imba_;
-    CBuffer<float, L2::BLEN> Resil_dev_bid_;
-    CBuffer<float, L2::BLEN> Resil_dev_ask_;
-    CBuffer<float, L2::BLEN> Resil_mr_bid_;
-    CBuffer<float, L2::BLEN> Resil_mr_ask_;
-    CBuffer<float, L2::BLEN> Resil_recovery_bid_;
-    CBuffer<float, L2::BLEN> Resil_recovery_ask_;
-    Resiliency Resiliency{td, BidQty_, AskQty_,
-                          Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_,
-                          Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_};
-
-    // --- Behav ---
-    CBuffer<float, L2::BLEN> Behav_agg_buy_;
-    CBuffer<float, L2::BLEN> Behav_agg_sell_;
-    CBuffer<float, L2::BLEN> Behav_agg_dif_;
-    CBuffer<float, L2::BLEN> Behav_cpr_;
-    CBuffer<float, L2::BLEN> Behav_agg_trd_;
-    CBuffer<float, L2::BLEN> Behav_ord_size_;
-    Behav Behav{td, Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_};
-
-    // --- Manip ---
-    CBuffer<float, L2::BLEN> Manip_ptc_rt_;
-    CBuffer<float, L2::BLEN> Manip_fleet_rt_;
-    CBuffer<float, L2::BLEN> Manip_spoof_int_;
-    CBuffer<float, L2::BLEN> Manip_stale_ratio_bid_;
-    CBuffer<float, L2::BLEN> Manip_stale_ratio_ask_;
-    Manip Manip{td, BidQty_, AskQty_, Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_};
-
     // --- Label ---
     CBuffer<float, L2::BLEN> Label_next_tick_ret_;
     Label Label_next_tick_ret{MidPrice_, Label_next_tick_ret_};
@@ -346,6 +315,37 @@ public:
     FlowRate FlowRate{l0.td, FlowRate_mk_bid_, FlowRate_mk_ask_, FlowRate_cn_bid_, FlowRate_cn_ask_,
                       FlowRate_tk_bid_, FlowRate_tk_ask_, FlowRate_net_ord_, FlowRate_foi_};
 
+    // --- Behav (降频) ---
+    CBuffer<float, ::L2::BLEN> Behav_agg_buy_;
+    CBuffer<float, ::L2::BLEN> Behav_agg_sell_;
+    CBuffer<float, ::L2::BLEN> Behav_agg_dif_;
+    CBuffer<float, ::L2::BLEN> Behav_cpr_;
+    CBuffer<float, ::L2::BLEN> Behav_agg_trd_;
+    CBuffer<float, ::L2::BLEN> Behav_ord_size_;
+    Behav Behav{l0.td, Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_};
+
+    // --- Manip (降频) ---
+    CBuffer<float, ::L2::BLEN> Manip_ptc_rt_;
+    CBuffer<float, ::L2::BLEN> Manip_fleet_rt_;
+    CBuffer<float, ::L2::BLEN> Manip_spoof_int_;
+    CBuffer<float, ::L2::BLEN> Manip_stale_ratio_bid_;
+    CBuffer<float, ::L2::BLEN> Manip_stale_ratio_ask_;
+    Manip Manip{l0.td, l0.BidQty_, l0.AskQty_, Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_};
+
+    // --- Resiliency (降频) ---
+    CBuffer<float, ::L2::BLEN> Resil_ratio_bid_;
+    CBuffer<float, ::L2::BLEN> Resil_ratio_ask_;
+    CBuffer<float, ::L2::BLEN> Resil_imba_;
+    CBuffer<float, ::L2::BLEN> Resil_dev_bid_;
+    CBuffer<float, ::L2::BLEN> Resil_dev_ask_;
+    CBuffer<float, ::L2::BLEN> Resil_mr_bid_;
+    CBuffer<float, ::L2::BLEN> Resil_mr_ask_;
+    CBuffer<float, ::L2::BLEN> Resil_recovery_bid_;
+    CBuffer<float, ::L2::BLEN> Resil_recovery_ask_;
+    Resiliency Resiliency{l0.td, l0.BidQty_, l0.AskQty_,
+                          Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_,
+                          Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_};
+
     explicit L1(MinuteData &m, L0 &l0) : md(m), l0(l0) {}
   };
   L1 l1;
@@ -365,15 +365,15 @@ public:
     l0.DepthData.reset();
     l0.Ofi_1.reset();
     l0.Ofi_5.reset();
-    l0.Resiliency.reset();
-    l0.Behav.reset();
-    l0.Manip.reset();
     // L1 算子
     l1.Ctr.reset();
     l1.Oa.reset();
     l1.Hla.reset();
     l1.ToxicCr.reset();
     l1.FlowRate.reset();
+    l1.Behav.reset();
+    l1.Manip.reset();
+    l1.Resiliency.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };

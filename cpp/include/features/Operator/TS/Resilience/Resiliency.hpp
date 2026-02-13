@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// RESIL (Resiliency) - 韧性与恢复特征
+// RESIL (Resiliency) - 韧性与恢复特征 (降频版)
 // =============================================================================
 // 计算市场深度的韧性和恢复能力
 //   ratio_bid/ask = |O^M| / (|O^T| + |O^C|)  (韧性比, >1表示深度增长)
@@ -10,15 +10,14 @@
 //   mr_bid/ask = d_t - d_{t-1}               (均值回归速度)
 //   recovery_bid/ask = max(0, Δd) * 1_{d<0}  (恢复信号)
 //
-// 输入频率: PER_ORDER + ON_DEPTH
-// 输出频率: per sec
+// compute: 每笔订单时累计, 内部按秒推进 (基于 l0_index)
+// flush:   每分钟输出当前值
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-// compute: 每笔订单时累计, flush: 按秒输出（读取深度）
 class Resiliency {
   static constexpr size_t DEPTH_WINDOW = 60; // 60秒移动平均窗口
 
@@ -42,6 +41,14 @@ public:
         recovery_bid_(recovery_bid), recovery_ask_(recovery_ask) {}
 
   inline void compute() {
+    const uint32_t cur_sec = td_.l0_index;
+
+    // 按秒推进：当秒变化时，聚合上一秒的数据
+    while (last_sec_ < cur_sec) {
+      flush_second_();
+      ++last_sec_;
+    }
+
     // 每笔订单时，根据订单类型和方向累计交易量
     const auto &lob = td_.lob;
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
@@ -70,8 +77,53 @@ public:
     }
   }
 
-  // 每秒输出
+  // 每分钟输出
   inline void flush() {
+    ratio_bid_.push_back(out_ratio_bid_);
+    ratio_ask_.push_back(out_ratio_ask_);
+    imba_.push_back(out_imba_);
+    dev_bid_.push_back(out_dev_bid_);
+    dev_ask_.push_back(out_dev_ask_);
+    mr_bid_.push_back(out_mr_bid_);
+    mr_ask_.push_back(out_mr_ask_);
+    recovery_bid_.push_back(out_recovery_bid_);
+    recovery_ask_.push_back(out_recovery_ask_);
+  }
+
+  inline void reset() {
+    // 重置秒内累计器
+    vol_maker_bid_ = vol_maker_ask_ = 0.0f;
+    vol_taker_bid_ = vol_taker_ask_ = 0.0f;
+    vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
+
+    // 清空深度移动平均缓冲区
+    for (size_t i = 0; i < DEPTH_WINDOW; ++i) {
+      depth_buf_bid_[i] = 0.0f;
+      depth_buf_ask_[i] = 0.0f;
+    }
+    depth_sum_bid_ = 0.0f;
+    depth_sum_ask_ = 0.0f;
+    buf_idx_ = 0;
+    buf_count_ = 0;
+
+    // 重置偏离度
+    prev_d_bid_ = 0.0f;
+    prev_d_ask_ = 0.0f;
+
+    // 重置秒推进状态
+    last_sec_ = 0;
+
+    // 重置输出缓存
+    out_ratio_bid_ = out_ratio_ask_ = 1.0f;
+    out_imba_ = 0.0f;
+    out_dev_bid_ = out_dev_ask_ = 0.0f;
+    out_mr_bid_ = out_mr_ask_ = 0.0f;
+    out_recovery_bid_ = out_recovery_ask_ = 0.0f;
+  }
+
+private:
+  // 秒级聚合（内部调用）
+  inline void flush_second_() {
     // 1. 从BidQty和AskQty CBuffer计算当前总深度
     float depth_bid = 0.0f, depth_ask = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH; ++i) {
@@ -95,66 +147,39 @@ public:
     // >1 表示深度增长快于消耗，市场韧性强
     float consume_bid = vol_taker_bid_ + vol_cancel_bid_; // 买方消耗量
     float consume_ask = vol_taker_ask_ + vol_cancel_ask_; // 卖方消耗量
-    float r_bid = consume_bid > 1e-6f ? vol_maker_bid_ / consume_bid : 1.0f;
-    float r_ask = consume_ask > 1e-6f ? vol_maker_ask_ / consume_ask : 1.0f;
-    ratio_bid_.push_back(r_bid);
-    ratio_ask_.push_back(r_ask);
+    out_ratio_bid_ = consume_bid > 1e-6f ? vol_maker_bid_ / consume_bid : out_ratio_bid_;
+    out_ratio_ask_ = consume_ask > 1e-6f ? vol_maker_ask_ / consume_ask : out_ratio_ask_;
 
     // 4. 计算韧性失衡：(买侧韧性 - 卖侧韧性) / (买侧 + 卖侧)
-    float sum_r = r_bid + r_ask;
-    imba_.push_back(sum_r > 1e-6f ? (r_bid - r_ask) / sum_r : 0.0f);
+    float sum_r = out_ratio_bid_ + out_ratio_ask_;
+    out_imba_ = sum_r > 1e-6f ? (out_ratio_bid_ - out_ratio_ask_) / sum_r : 0.0f;
 
-    // 5. 计算深度偏离度：(当前深度 - 均值) / 均值
-    // 正值表示深度高于平均，负值表示低于平均
+    // 5. 深度偏离度：(当前深度 - 均值) / 均值
+    // 负值表示当前深度低于历史均值（被冲击）
     float d_bid = mean_bid > 1e-6f ? (depth_bid - mean_bid) / mean_bid : 0.0f;
     float d_ask = mean_ask > 1e-6f ? (depth_ask - mean_ask) / mean_ask : 0.0f;
-    dev_bid_.push_back(d_bid);
-    dev_ask_.push_back(d_ask);
+    out_dev_bid_ = d_bid;
+    out_dev_ask_ = d_ask;
 
-    // 6. 计算均值回归速度：Δd = d_t - d_{t-1}
-    // 正值表示偏离度增大（远离均值），负值表示偏离度减小（回归均值）
-    float delta_d_bid = d_bid - prev_d_bid_;
-    float delta_d_ask = d_ask - prev_d_ask_;
-    mr_bid_.push_back(delta_d_bid);
-    mr_ask_.push_back(delta_d_ask);
+    // 6. 均值回归速度：偏离度变化率
+    // 正值表示正在恢复（向均值靠近）
+    out_mr_bid_ = d_bid - prev_d_bid_;
+    out_mr_ask_ = d_ask - prev_d_ask_;
 
-    // 7. 计算恢复信号：当深度低于均值时（d<0），检测是否正在恢复（Δd>0）
-    // 只在深度不足时输出正恢复速度，其他时候为0
-    recovery_bid_.push_back(d_bid < 0 ? std::max(0.0f, delta_d_bid) : 0.0f);
-    recovery_ask_.push_back(d_ask < 0 ? std::max(0.0f, delta_d_ask) : 0.0f);
+    // 7. 恢复信号：冲击状态下的正向恢复强度
+    // 只有当前处于冲击状态（d<0）且正在恢复（mr>0）时才有信号
+    out_recovery_bid_ = d_bid < 0 ? std::max(0.0f, out_mr_bid_) : 0.0f;
+    out_recovery_ask_ = d_ask < 0 ? std::max(0.0f, out_mr_ask_) : 0.0f;
 
-    // 保存当前偏离度，供下次计算均值回归用
     prev_d_bid_ = d_bid;
     prev_d_ask_ = d_ask;
 
-    // 重置秒内累计器，准备下一个窗口
-    vol_maker_bid_ = vol_maker_ask_ = 0.0f;
-    vol_taker_bid_ = vol_taker_ask_ = 0.0f;
-    vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
-  }
-
-  inline void reset() {
     // 重置秒内累计器
     vol_maker_bid_ = vol_maker_ask_ = 0.0f;
     vol_taker_bid_ = vol_taker_ask_ = 0.0f;
     vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
-
-    // 清空深度移动平均缓冲区
-    for (size_t i = 0; i < DEPTH_WINDOW; ++i) {
-      depth_buf_bid_[i] = 0.0f;
-      depth_buf_ask_[i] = 0.0f;
-    }
-    depth_sum_bid_ = 0.0f;
-    depth_sum_ask_ = 0.0f;
-    buf_idx_ = 0;
-    buf_count_ = 0;
-
-    // 重置偏离度
-    prev_d_bid_ = 0.0f;
-    prev_d_ask_ = 0.0f;
   }
 
-private:
   TickData &td_;
   const CBuffer<float, L2::BLEN> (&bid_qty_)[L2::LOB_DEPTH];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[L2::LOB_DEPTH];
@@ -178,4 +203,14 @@ private:
 
   // 前一时刻偏离度
   float prev_d_bid_ = 0.0f, prev_d_ask_ = 0.0f;
+
+  // 秒推进状态
+  uint32_t last_sec_ = 0;
+
+  // 输出缓存（分钟末输出）
+  float out_ratio_bid_ = 1.0f, out_ratio_ask_ = 1.0f;
+  float out_imba_ = 0.0f;
+  float out_dev_bid_ = 0.0f, out_dev_ask_ = 0.0f;
+  float out_mr_bid_ = 0.0f, out_mr_ask_ = 0.0f;
+  float out_recovery_bid_ = 0.0f, out_recovery_ask_ = 0.0f;
 };

@@ -15,6 +15,9 @@
 
 
 降频算子迁移流程（L0 Tick → L1 Minute）：
+0. 根据算子含义和实现，仔细考虑compute到底放在那个触发领合适：
+l1.on_tick, l0.on_depth, l1.on_minute
+输出肯定是l1.on_minute
 1. FeaturesDefine.hpp — 移动特征定义
 从 LEVEL_0_FIELDS 删除对应 X(...) 行
 添加到 LEVEL_1_FIELDS（放在 cs_spread_rank 之前，即 TS 区末尾）
@@ -41,3 +44,4 @@ TS_WRITE_FEATURES 末端从 tar_5 扩展到新的最后一个 TS 特征（如 de
 若算子有 reset()，需要检查 DAG::reset_at_day_start() 是否需要同步调整
 宏系统自动处理 offset/width/enum 重编号，不需要手动改 FeatureStoreConfig.hpp已经列完了，没有中断。
 上面就是完整的降频迁移四步流程。完整内容已经全部输出，没有遗漏。四步流程加注意事项就是全部内容。
+5. 注意算子内部注释要保持详细

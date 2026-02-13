@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// BEHAV (Behavioral) - 行为特征
+// BEHAV (Behavioral) - 行为特征 (降频版)
 // =============================================================================
 // 计算订单行为特征
 //   agg_buy/sell = avg(log(P_order / P_best))   (买/卖单侵略性)
@@ -10,8 +10,8 @@
 //   agg_trd = linear_slope(agg)                 (侵略性趋势)
 //   ord_size = avg(|O^M|)                       (平均单笔规模)
 //
-// 输入频率: PER_ORDER
-// 输出频率: per sec
+// compute: 每笔订单时累计, 内部按秒推进 (基于 l0_index)
+// flush:   每分钟输出当前值
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -19,9 +19,8 @@
 #include "features/DataDefine.hpp"
 #include <cmath>
 
-// compute: 每笔订单时累计, flush: 按秒输出
 class Behav {
-  static constexpr size_t AGG_WINDOW = 20;    // 侵略性趋势窗口
+  static constexpr size_t AGG_WINDOW = 20;    // 侵略性趋势窗口 (秒)
   static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
 
 public:
@@ -37,6 +36,14 @@ public:
         cpr_(cpr), agg_trd_(agg_trd), ord_size_(ord_size) {}
 
   inline void compute() {
+    const uint32_t cur_sec = td_.l0_index;
+
+    // 按秒推进：当秒变化时，聚合上一秒的数据
+    while (last_sec_ < cur_sec) {
+      flush_second_();
+      ++last_sec_;
+    }
+
     // 每笔订单时，计算订单行为特征
     const auto &lob = td_.lob;
     const float vol = static_cast<float>(lob.volume);
@@ -103,31 +110,43 @@ public:
     }
     agg_idx_ = 0;
     agg_cnt_ = 0;
+    last_sec_ = 0;
+    // 重置输出缓存
+    out_agg_buy_ = out_agg_sell_ = out_agg_dif_ = 0.0f;
+    out_cpr_ = out_agg_trd_ = out_ord_size_ = 0.0f;
   }
 
-  // 每秒输出
+  // 每分钟输出
   inline void flush() {
-    // 1. 计算平均侵略性：sum(agg) / count(agg)
-    const float avg_agg_buy = cnt_agg_buy_ > 0 ? sum_agg_buy_ / cnt_agg_buy_ : 0.0f;
-    const float avg_agg_sell = cnt_agg_sell_ > 0 ? sum_agg_sell_ / cnt_agg_sell_ : 0.0f;
-    agg_buy_.push_back(avg_agg_buy);   // 买单平均侵略性
-    agg_sell_.push_back(avg_agg_sell); // 卖单平均侵略性
+    agg_buy_.push_back(out_agg_buy_);
+    agg_sell_.push_back(out_agg_sell_);
+    agg_dif_.push_back(out_agg_dif_);
+    cpr_.push_back(out_cpr_);
+    agg_trd_.push_back(out_agg_trd_);
+    ord_size_.push_back(out_ord_size_);
+  }
 
-    // 2. 侵略性差：买侧 - 卖侧（复用，避免重复计算）
+private:
+  // 秒级聚合（内部调用）
+  inline void flush_second_() {
+    // 1. 计算平均侵略性：sum(agg) / count(agg)
+    out_agg_buy_ = cnt_agg_buy_ > 0 ? sum_agg_buy_ / cnt_agg_buy_ : out_agg_buy_;
+    out_agg_sell_ = cnt_agg_sell_ > 0 ? sum_agg_sell_ / cnt_agg_sell_ : out_agg_sell_;
+
+    // 2. 侵略性差：买侧 - 卖侧
     // 正值表示买方更激进，负值表示卖方更激进
-    const float agg_dif = avg_agg_buy - avg_agg_sell;
-    agg_dif_.push_back(agg_dif);
+    out_agg_dif_ = out_agg_buy_ - out_agg_sell_;
 
     // 3. 撤挂比CPR：撤单量 / 挂单量
     // 值越大表示撤单频繁，可能存在虚假挂单或试探行为
-    cpr_.push_back(vol_maker_ > 1e-6f ? vol_cancel_ / vol_maker_ : 0.0f);
+    out_cpr_ = vol_maker_ > 1e-6f ? vol_cancel_ / vol_maker_ : out_cpr_;
 
     // 4. 平均订单规模：总挂单量 / 挂单笔数
-    ord_size_.push_back(cnt_maker_ > 0 ? vol_maker_ / cnt_maker_ : 0.0f);
+    out_ord_size_ = cnt_maker_ > 0 ? vol_maker_ / cnt_maker_ : out_ord_size_;
 
     // 5. 侵略性趋势：计算agg_dif的线性回归斜率
     // 更新滑动窗口（保存最近AGG_WINDOW个agg_dif值）
-    agg_window_[agg_idx_] = agg_dif;
+    agg_window_[agg_idx_] = out_agg_dif_;
     agg_idx_ = (agg_idx_ + 1) % AGG_WINDOW;
     if (agg_cnt_ < AGG_WINDOW)
       ++agg_cnt_;
@@ -151,10 +170,7 @@ public:
 
       const float denom = n * sum_xx - sum_x * sum_x;
       // 斜率公式：(n*Σxy - Σx*Σy) / (n*Σx² - (Σx)²)
-      const float slope = denom > 1e-6f ? (n * sum_xy - sum_x * sum_y) / denom : 0.0f;
-      agg_trd_.push_back(slope);
-    } else {
-      agg_trd_.push_back(0.0f); // 数据不足，输出0
+      out_agg_trd_ = denom > 1e-6f ? (n * sum_xy - sum_x * sum_y) / denom : 0.0f;
     }
 
     // 重置秒内累计器，准备下一个窗口
@@ -164,7 +180,6 @@ public:
     cnt_maker_ = 0;
   }
 
-private:
   TickData &td_;
 
   // 输出 CBuffer
@@ -180,4 +195,11 @@ private:
   // 侵略性趋势滑动窗口
   float agg_window_[AGG_WINDOW] = {};
   size_t agg_idx_ = 0, agg_cnt_ = 0;
+
+  // 秒推进状态
+  uint32_t last_sec_ = 0;
+
+  // 输出缓存（分钟末输出）
+  float out_agg_buy_ = 0.0f, out_agg_sell_ = 0.0f, out_agg_dif_ = 0.0f;
+  float out_cpr_ = 0.0f, out_agg_trd_ = 0.0f, out_ord_size_ = 0.0f;
 };

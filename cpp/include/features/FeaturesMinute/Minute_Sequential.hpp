@@ -140,11 +140,14 @@ inline void Minute_Sequential::compute_and_store() {
     dag_.l1.DepthRepresentation.flush();   // output: DepthRepresentation_
 
     // --- 降频算子 flush ---
-    dag_.l1.Ctr.flush();      // output: Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_, Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_
-    dag_.l1.Oa.flush();       // output: Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_
-    dag_.l1.Hla.flush();      // output: Hla_imba_
-    dag_.l1.ToxicCr.flush();  // output: ToxicCr_
-    dag_.l1.FlowRate.flush(); // output: FlowRate_mk_bid_, FlowRate_mk_ask_, FlowRate_cn_bid_, FlowRate_cn_ask_, FlowRate_tk_bid_, FlowRate_tk_ask_, FlowRate_net_ord_, FlowRate_foi_
+    dag_.l1.Ctr.flush();        // output: Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_, Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_
+    dag_.l1.Oa.flush();         // output: Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_
+    dag_.l1.Hla.flush();        // output: Hla_imba_
+    dag_.l1.ToxicCr.flush();    // output: ToxicCr_
+    dag_.l1.FlowRate.flush();   // output: FlowRate_mk_bid_, FlowRate_mk_ask_, FlowRate_cn_bid_, FlowRate_cn_ask_, FlowRate_tk_bid_, FlowRate_tk_ask_, FlowRate_net_ord_, FlowRate_foi_
+    dag_.l1.Behav.flush();      // output: Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_
+    dag_.l1.Manip.flush();      // output: Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_
+    dag_.l1.Resiliency.flush(); // output: Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_, Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_
 
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L1_FieldOffset::min] = dag_.l1.Min_.back();
@@ -203,9 +206,31 @@ inline void Minute_Sequential::compute_and_store() {
     ts_features_buffer_[L1_FieldOffset::oa_btr] = dag_.l1.Oa_btr_.back();
     ts_features_buffer_[L1_FieldOffset::oa_atr] = dag_.l1.Oa_atr_.back();
     ts_features_buffer_[L1_FieldOffset::hla_imba] = dag_.l1.Hla_imba_.back();
+    // --- Behavioral (降频) ---
+    ts_features_buffer_[L1_FieldOffset::agg_buy] = dag_.l1.Behav_agg_buy_.back();
+    ts_features_buffer_[L1_FieldOffset::agg_sell] = dag_.l1.Behav_agg_sell_.back();
+    ts_features_buffer_[L1_FieldOffset::agg_dif] = dag_.l1.Behav_agg_dif_.back();
+    ts_features_buffer_[L1_FieldOffset::cpr] = dag_.l1.Behav_cpr_.back();
+    ts_features_buffer_[L1_FieldOffset::ptc_rt] = dag_.l1.Manip_ptc_rt_.back();
+    ts_features_buffer_[L1_FieldOffset::fleet_rt] = dag_.l1.Manip_fleet_rt_.back();
+    ts_features_buffer_[L1_FieldOffset::spoof_int] = dag_.l1.Manip_spoof_int_.back();
+    ts_features_buffer_[L1_FieldOffset::agg_trd] = dag_.l1.Behav_agg_trd_.back();
+    ts_features_buffer_[L1_FieldOffset::ord_size] = dag_.l1.Behav_ord_size_.back();
+    ts_features_buffer_[L1_FieldOffset::stale_ratio_bid] = dag_.l1.Manip_stale_ratio_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::stale_ratio_ask] = dag_.l1.Manip_stale_ratio_ask_.back();
+    // --- Resiliency (降频) ---
+    ts_features_buffer_[L1_FieldOffset::ratio_bid] = dag_.l1.Resil_ratio_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::ratio_ask] = dag_.l1.Resil_ratio_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::resil_imba] = dag_.l1.Resil_imba_.back();
+    ts_features_buffer_[L1_FieldOffset::dev_bid] = dag_.l1.Resil_dev_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::dev_ask] = dag_.l1.Resil_dev_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::mr_bid] = dag_.l1.Resil_mr_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::mr_ask] = dag_.l1.Resil_mr_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::recovery_bid] = dag_.l1.Resil_recovery_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::recovery_ask] = dag_.l1.Resil_recovery_ask_.back();
 
     // Write TS features
-    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::hla_imba, ts_features_buffer_.data(), worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::recovery_ask, ts_features_buffer_.data(), worker_id_);
   }
 
   // Write data validity flag

@@ -816,7 +816,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
 
   // L0 coroutine lifecycle
   if (of.l1.loaded && !of.loader.coro_running) {
-    loader->StartL0Loader(data.coromgr, of, data.feature.selection.primary_feature_idx);
+    loader->StartL0Loader(data.coromgr, of, data.feature.selection.selected_level, data.feature.selection.primary_feature_idx);
     if (!ui.l1_anchor_date.empty()) {
       loader->RequestL0Load(of, ui.l1_anchor_date, asset_idx);
     }
