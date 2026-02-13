@@ -2,14 +2,15 @@
 
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
+#include "features/FeaturesMinute/TS/CI_all.hpp"
+#include "features/FeaturesMinute/TS/CWI.hpp"
+#include "features/FeaturesMinute/TS/DDI.hpp"
 #include "features/FeaturesMinute/TS/MinuteIndex.hpp"
+#include "features/FeaturesMinute/TS/TLR.hpp"
 #include "features/FeaturesTick/TS/Behav.hpp"
 #include "features/FeaturesTick/TS/CI.hpp"
-#include "features/FeaturesTick/TS/CI_all.hpp"
 #include "features/FeaturesTick/TS/CTR.hpp"
-#include "features/FeaturesTick/TS/CWI.hpp"
 #include "features/FeaturesTick/TS/Cost.hpp"
-#include "features/FeaturesTick/TS/DDI.hpp"
 #include "features/FeaturesTick/TS/DepthData.hpp"
 #include "features/FeaturesTick/TS/DepthIndex.hpp"
 #include "features/FeaturesTick/TS/DepthRepresentation.hpp"
@@ -31,7 +32,6 @@
 #include "features/FeaturesTick/TS/Peak.hpp"
 #include "features/FeaturesTick/TS/Resiliency.hpp"
 #include "features/FeaturesTick/TS/Spread.hpp"
-#include "features/FeaturesTick/TS/TLR.hpp"
 #include "features/FeaturesTick/TS/TickIndex.hpp"
 #include "features/FeaturesTick/TS/ToxicCr.hpp"
 #include <deque>
@@ -136,7 +136,7 @@ public:
 
     // --- CI ---
     CBuffer<float, L2::BLEN> Ci_1_;
-    CI<1, 0> Ci_1{BidQty_, AskQty_, Ci_1_};
+    CI<1> Ci_1{BidQty_, AskQty_, Ci_1_};
 
     // --- Para ---
     CBuffer<float, L2::BLEN> Para_b_c0_;
@@ -318,25 +318,25 @@ public:
     CBuffer<float, ::L2::BLEN> Ci_10_;
     CBuffer<float, ::L2::BLEN> Ci_30_;
     CBuffer<float, ::L2::BLEN> Ci_all_;
-    CI<5, 5> Ci_5{l0.BidQty_, l0.AskQty_, Ci_5_};
-    CI<10, 5> Ci_10{l0.BidQty_, l0.AskQty_, Ci_10_};
-    CI<30, 5> Ci_30{l0.BidQty_, l0.AskQty_, Ci_30_};
-    CI_all<5> Ci_all{l0.td, Ci_all_};
+    CI<5> Ci_5{l0.BidQty_, l0.AskQty_, Ci_5_};
+    CI<10> Ci_10{l0.BidQty_, l0.AskQty_, Ci_10_};
+    CI<30> Ci_30{l0.BidQty_, l0.AskQty_, Ci_30_};
+    CI_all Ci_all{l0.td, Ci_all_};
 
     CBuffer<float, ::L2::BLEN> Cwi_1_;
     CBuffer<float, ::L2::BLEN> Cwi_2_;
-    CWI<10, 5> Cwi_1{l0.BidQty_, l0.AskQty_, Cwi_1_};
-    CWI<20, 5> Cwi_2{l0.BidQty_, l0.AskQty_, Cwi_2_};
+    CWI<10> Cwi_1{l0.BidQty_, l0.AskQty_, Cwi_1_};
+    CWI<20> Cwi_2{l0.BidQty_, l0.AskQty_, Cwi_2_};
 
     CBuffer<float, ::L2::BLEN> Ddi_1_;
     CBuffer<float, ::L2::BLEN> Ddi_2_;
-    DDI<1, 5> Ddi_1{l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_, Ddi_1_};
-    DDI<2, 5> Ddi_2{l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_, Ddi_2_};
+    DDI<1> Ddi_1{l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_, Ddi_1_};
+    DDI<2> Ddi_2{l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_, Ddi_2_};
 
     CBuffer<float, ::L2::BLEN> Tbr_5_;
     CBuffer<float, ::L2::BLEN> Tar_5_;
-    TLR<5, true, 5> Tbr_5{l0.BidQty_, l0.AskQty_, l0.td, Tbr_5_};
-    TLR<5, false, 5> Tar_5{l0.BidQty_, l0.AskQty_, l0.td, Tar_5_};
+    TLR<5, true> Tbr_5{l0.BidQty_, l0.AskQty_, l0.td, Tbr_5_};
+    TLR<5, false> Tar_5{l0.BidQty_, l0.AskQty_, l0.td, Tar_5_};
 
     // Rolling windows for TS features
     std::deque<float> minute_return_window;

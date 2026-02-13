@@ -107,24 +107,8 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Spread.flush();       // output: Spread_
 
     // --- CI ---
-    dag_.l0.Ci_1.compute();   // input: BidQty_, AskQty_
-    dag_.l0.Ci_1.flush();     // output: Ci_1_
-    dag_.l1.Ci_5.compute();   // input: l0.BidQty_, l0.AskQty_
-    dag_.l1.Ci_10.compute();  // input: l0.BidQty_, l0.AskQty_
-    dag_.l1.Ci_30.compute();  // input: l0.BidQty_, l0.AskQty_
-    dag_.l1.Ci_all.compute(); // input: l0.td.lob.all_bid_volume, l0.td.lob.all_ask_volume
-
-    // --- CWI ---
-    dag_.l1.Cwi_1.compute(); // input: l0.BidQty_, l0.AskQty_
-    dag_.l1.Cwi_2.compute(); // input: l0.BidQty_, l0.AskQty_
-
-    // --- DDI ---
-    dag_.l1.Ddi_1.compute(); // input: l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_
-    dag_.l1.Ddi_2.compute(); // input: l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_
-
-    // --- TLR ---
-    dag_.l1.Tbr_5.compute(); // input: l0.BidQty_[0:4], l0.td.lob.all_bid_volume
-    dag_.l1.Tar_5.compute(); // input: l0.BidQty_[0:4], l0.td.lob.all_ask_volume
+    dag_.l0.Ci_1.compute(); // input: BidQty_, AskQty_
+    dag_.l0.Ci_1.flush();   // output: Ci_1_
 
     // --- Para (Layer 1) ---
     dag_.l0.Para_b_c0.compute(); // input: BidQty_, AskQty_

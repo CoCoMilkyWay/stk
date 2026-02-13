@@ -83,16 +83,26 @@ inline void Minute_Sequential::compute_ts_minute(bool is_valid, size_t t) {
     next_1m_ret = compute_next_1m_ret();
   }
 
-  dag_.l1.Ci_5.flush();   // output: Ci_5_
-  dag_.l1.Ci_10.flush();  // output: Ci_10_
-  dag_.l1.Ci_30.flush();  // output: Ci_30_
-  dag_.l1.Ci_all.flush(); // output: Ci_all_
-  dag_.l1.Cwi_1.flush();  // output: Cwi_1_
-  dag_.l1.Cwi_2.flush();  // output: Cwi_2_
-  dag_.l1.Ddi_1.flush();  // output: Ddi_1_
-  dag_.l1.Ddi_2.flush();  // output: Ddi_2_
-  dag_.l1.Tbr_5.flush();  // output: Tbr_5_
-  dag_.l1.Tar_5.flush();  // output: Tar_5_
+  dag_.l1.Ci_5.compute();   // input: l0.BidQty_, l0.AskQty_
+  dag_.l1.Ci_5.flush();     // output: Ci_5_
+  dag_.l1.Ci_10.compute();  // input: l0.BidQty_, l0.AskQty_
+  dag_.l1.Ci_10.flush();    // output: Ci_10_
+  dag_.l1.Ci_30.compute();  // input: l0.BidQty_, l0.AskQty_
+  dag_.l1.Ci_30.flush();    // output: Ci_30_
+  dag_.l1.Ci_all.compute(); // input: l0.td
+  dag_.l1.Ci_all.flush();   // output: Ci_all_
+  dag_.l1.Cwi_1.compute();  // input: l0.BidQty_, l0.AskQty_
+  dag_.l1.Cwi_1.flush();    // output: Cwi_1_
+  dag_.l1.Cwi_2.compute();  // input: l0.BidQty_, l0.AskQty_
+  dag_.l1.Cwi_2.flush();    // output: Cwi_2_
+  dag_.l1.Ddi_1.compute();  // input: l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_
+  dag_.l1.Ddi_1.flush();    // output: Ddi_1_
+  dag_.l1.Ddi_2.compute();  // input: l0.BidQty_, l0.AskQty_, l0.BidPrice_, l0.AskPrice_
+  dag_.l1.Ddi_2.flush();    // output: Ddi_2_
+  dag_.l1.Tbr_5.compute();  // input: l0.BidQty_, l0.td
+  dag_.l1.Tbr_5.flush();    // output: Tbr_5_
+  dag_.l1.Tar_5.compute();  // input: l0.AskQty_, l0.td
+  dag_.l1.Tar_5.flush();    // output: Tar_5_
 
   ts_features_buffer_[L1_FieldOffset::min] = is_valid ? dag_.l1.Min_.back() : 0.0f;
   ts_features_buffer_[L1_FieldOffset::min_ret] = min_ret;

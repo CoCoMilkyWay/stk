@@ -9,19 +9,16 @@
 //
 // 模板参数:
 //   LAMBDA_X100 - λ值的100倍 (1=λ0.01, 2=λ0.02)
-//   BUFFER_DEPTH - 内部缓存深度，用于降频 (0=不缓存直接输出, 5=缓存5个样本平均后输出)
 //
-// DAG中使用:
-//   DDI<1, 0> ddi_1{bid_qty_, ask_qty_, bid_price_, ask_price_, ddi_1_};  // λ=0.01, 秒级直接输出
-//   DDI<2, 0> ddi_2{bid_qty_, ask_qty_, bid_price_, ask_price_, ddi_2_};  // λ=0.02, 秒级直接输出
-//   DDI<1, 5> ddi_1{bid_qty_, ask_qty_, bid_price_, ask_price_, ddi_1_};  // λ=0.01, 降频到分钟级
+// 使用示例:
+//   DDI<1> Ddi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_1_};  // λ=0.01
+//   DDI<2> Ddi_2{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_2_};  // λ=0.02
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
-#include <array>
 
-template <int LAMBDA_X100, size_t BUFFER_DEPTH = 0, size_t DEPTH_SIZE = L2::LOB_DEPTH>
+template <int LAMBDA_X100, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class DDI {
 public:
   static constexpr float LAMBDA = static_cast<float>(LAMBDA_X100) / 100.0f;
@@ -37,15 +34,11 @@ public:
         ask_price_(ask_price),
         out_(out) {}
 
-  // 快速exp近似: e^x ≈ (1 + x/256)^256, 使用分段多项式
+  // 快速exp近似: e^x ≈ 1 + x + x²/2 + x³/6 (泰勒前4项)
   // 适用范围 x ∈ [-10, 0], 相对误差 < 1%
   static inline float fast_exp(float x) {
-    // 限制范围，避免极端值
-    x = x < -10.0f ? -10.0f : x;
+    x = x < -10.0f ? -10.0f : x; // 限制范围，避免极端值
     x = x > 0.0f ? 0.0f : x;
-
-    // 多项式近似: e^x ≈ 1 + x + x²/2 + x³/6 (泰勒前4项)
-    // 对于小的负数x，精度足够且快速
     float x2 = x * x;
     return 1.0f + x + x2 * 0.5f + x2 * x * 0.16666667f;
   }
@@ -77,34 +70,10 @@ public:
 
     // 计算距离折扣失衡率，值域[-1,1]
     value_ = denom > 1e-6f ? numer / denom : 0.0f;
-
-    // 如果有内部缓存，存入缓存
-    if constexpr (BUFFER_DEPTH > 0) {
-      buffer_[buffer_idx_] = value_;
-      buffer_idx_ = (buffer_idx_ + 1) % BUFFER_DEPTH;
-      if (buffer_size_ < BUFFER_DEPTH) {
-        buffer_size_++;
-      }
-    }
   }
 
   inline void flush() {
-    if constexpr (BUFFER_DEPTH == 0) {
-      // 无缓存：直接输出
-      out_.push_back(value_);
-    } else {
-      // 有缓存：取最近 N 个样本平均
-      float sum = 0.0f;
-      for (size_t i = 0; i < buffer_size_; ++i) {
-        sum += buffer_[i];
-      }
-      float avg = buffer_size_ > 0 ? sum / static_cast<float>(buffer_size_) : 0.0f;
-      out_.push_back(avg);
-      
-      // 清空缓存，准备下一轮
-      buffer_size_ = 0;
-      buffer_idx_ = 0;
-    }
+    out_.push_back(value_);
   }
 
 private:
@@ -114,9 +83,4 @@ private:
   const CBuffer<float, L2::BLEN> (&ask_price_)[DEPTH_SIZE];
   CBuffer<float, L2::BLEN> &out_;
   float value_ = 0.0f;
-
-  // 内部缓存（仅当 BUFFER_DEPTH > 0 时使用）
-  std::array<float, (BUFFER_DEPTH > 0 ? BUFFER_DEPTH : 1)> buffer_{};
-  size_t buffer_idx_ = 0;
-  size_t buffer_size_ = 0;
 };
