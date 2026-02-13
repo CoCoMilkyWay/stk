@@ -10,8 +10,8 @@
 //   net_ord = (|O^{M,B}| - |O^{C,B}|) - (|O^{M,A}| - |O^{C,A}|)  (净订单流)
 //   foi = (ΔV^B - ΔV^A) / (|ΔV^B| + |ΔV^A|)  (订单流失衡)
 //
-// 输入频率: PER_ORDER (每笔订单)
-// 输出频率: per sec (由外部按秒读取)
+// compute: 每笔订单时按类型和方向累计量 (Tick_Sequential onTick)
+// flush:   每分钟输出订单流统计 (Minute_Sequential onMinute)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -19,8 +19,6 @@
 #include "features/DataDefine.hpp"
 #include <cmath>
 
-// compute: 每笔订单时按类型和方向累计量
-// flush: 按秒输出订单流率
 class FlowRate {
 public:
   FlowRate(TickData &td,
@@ -57,7 +55,7 @@ public:
   }
 
   inline void flush() {
-    // 输出订单流率（订单量/秒）
+    // 输出分钟内累计量
     arr_bid_.push_back(cnt_arr_bid_);
     arr_ask_.push_back(cnt_arr_ask_);
     can_bid_.push_back(cnt_can_bid_);
@@ -65,17 +63,17 @@ public:
     trd_buy_.push_back(cnt_trd_buy_);
     trd_sell_.push_back(cnt_trd_sell_);
 
-    // 计算净订单流：(买挂单量-买撤单量) - (卖挂单量-卖撤单量)
+    // 净订单流：(买挂单量-买撤单量) - (卖挂单量-卖撤单量)
     float net_bid = cnt_arr_bid_ - cnt_can_bid_;
     float net_ask = cnt_arr_ask_ - cnt_can_ask_;
     float net_ord_val = net_bid - net_ask;
     net_ord_.push_back(net_ord_val);
 
-    // 计算订单流失衡FOI：(ΔV^B - ΔV^A) / (|ΔV^B| + |ΔV^A|)
+    // 订单流失衡FOI：(ΔV^B - ΔV^A) / (|ΔV^B| + |ΔV^A|)
     float sum = std::abs(net_bid) + std::abs(net_ask);
     foi_.push_back(sum > 1e-6f ? net_ord_val / sum : 0.0f);
 
-    // 重置秒内累计量
+    // 重置分钟内累计量
     cnt_arr_bid_ = cnt_arr_ask_ = 0.0f;
     cnt_can_bid_ = cnt_can_ask_ = 0.0f;
     cnt_trd_buy_ = cnt_trd_sell_ = 0.0f;
@@ -100,7 +98,7 @@ private:
   CBuffer<float, L2::BLEN> &net_ord_;
   CBuffer<float, L2::BLEN> &foi_;
 
-  // 秒内累计量
+  // 分钟内累计量
   float cnt_arr_bid_ = 0.0f, cnt_arr_ask_ = 0.0f;
   float cnt_can_bid_ = 0.0f, cnt_can_ask_ = 0.0f;
   float cnt_trd_buy_ = 0.0f, cnt_trd_sell_ = 0.0f;
