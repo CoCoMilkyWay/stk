@@ -159,15 +159,6 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.Ofi_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.Ofi_5_.back();
-    ts_features_buffer_[L0_FieldOffset::toxic_cr] = dag_.l0.ToxicCr_.back();
-    ts_features_buffer_[L0_FieldOffset::arr_bid] = dag_.l0.FlowRate_arr_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::arr_ask] = dag_.l0.FlowRate_arr_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::can_bid] = dag_.l0.FlowRate_can_bid_.back();
-    ts_features_buffer_[L0_FieldOffset::can_ask] = dag_.l0.FlowRate_can_ask_.back();
-    ts_features_buffer_[L0_FieldOffset::trd_buy] = dag_.l0.FlowRate_trd_buy_.back();
-    ts_features_buffer_[L0_FieldOffset::trd_sell] = dag_.l0.FlowRate_trd_sell_.back();
-    ts_features_buffer_[L0_FieldOffset::net_ord] = dag_.l0.FlowRate_net_ord_.back();
-    ts_features_buffer_[L0_FieldOffset::foi] = dag_.l0.FlowRate_foi_.back();
     ts_features_buffer_[L0_FieldOffset::cc_r] = dag_.l0.Ctr_cc_r_.back();
     ts_features_buffer_[L0_FieldOffset::ctr_xl] = dag_.l0.Ctr_xl_.back();
     ts_features_buffer_[L0_FieldOffset::ctr_l] = dag_.l0.Ctr_l_.back();

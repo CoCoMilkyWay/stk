@@ -170,9 +170,18 @@ inline void Minute_Sequential::compute_and_store() {
     ts_features_buffer_[L1_FieldOffset::a_30_entropy] = dag_.l1.Entropy_a_30_.back();
     ts_features_buffer_[L1_FieldOffset::imba_30_entropy] = dag_.l1.EntropyImba_30_.back();
     ts_features_buffer_[L1_FieldOffset::depth_repre] = dag_.l1.DepthRepresentation_.back();
+    ts_features_buffer_[L1_FieldOffset::toxic_cr] = dag_.l0.ToxicCr_.back();
+    ts_features_buffer_[L1_FieldOffset::arr_bid] = dag_.l0.FlowRate_arr_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::arr_ask] = dag_.l0.FlowRate_arr_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::can_bid] = dag_.l0.FlowRate_can_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::can_ask] = dag_.l0.FlowRate_can_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::trd_buy] = dag_.l0.FlowRate_trd_buy_.back();
+    ts_features_buffer_[L1_FieldOffset::trd_sell] = dag_.l0.FlowRate_trd_sell_.back();
+    ts_features_buffer_[L1_FieldOffset::net_ord] = dag_.l0.FlowRate_net_ord_.back();
+    ts_features_buffer_[L1_FieldOffset::foi] = dag_.l0.FlowRate_foi_.back();
 
     // Write TS features
-    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::depth_repre, ts_features_buffer_.data(), worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::foi, ts_features_buffer_.data(), worker_id_);
   }
 
   // Write data validity flag
