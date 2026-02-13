@@ -141,8 +141,6 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Peak_ratio_ask.flush();   // output: Peak_ratio_ask_
 
     // --- 订单流累计特征 ---
-    dag_.l0.FlowRate.flush();   // output: FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_, FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_
-    dag_.l0.ToxicCr.flush();    // output: ToxicCr_
     dag_.l0.Resiliency.flush(); // output: Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_, Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_
     dag_.l0.Ctr.flush();        // output: Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_, Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_
     dag_.l0.Behav.flush();      // output: Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_

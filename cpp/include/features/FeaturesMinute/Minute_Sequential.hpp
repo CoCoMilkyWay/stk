@@ -139,6 +139,10 @@ inline void Minute_Sequential::compute_and_store() {
     dag_.l1.DepthRepresentation.compute(); // input: (none)
     dag_.l1.DepthRepresentation.flush();   // output: DepthRepresentation_
 
+    // --- 订单流累计特征 ---
+    dag_.l0.FlowRate.flush();   // output: FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_, FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_
+    dag_.l0.ToxicCr.flush();    // output: ToxicCr_
+
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L1_FieldOffset::min] = dag_.l1.Min_.back();
     ts_features_buffer_[L1_FieldOffset::ci_5] = dag_.l1.Ci_5_.back();
