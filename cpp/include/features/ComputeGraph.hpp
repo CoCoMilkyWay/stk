@@ -34,7 +34,6 @@
 #include "features/FeaturesTick/TS/Spread.hpp"
 #include "features/FeaturesTick/TS/TickIndex.hpp"
 #include "features/FeaturesTick/TS/ToxicCr.hpp"
-#include <deque>
 
 // DAG: (静态多级)有向无环计算图 (Directed Acyclic Graph) ( L0 (Tick) -> L1 (Minute) )
 class DAG {
@@ -337,9 +336,6 @@ public:
     CBuffer<float, ::L2::BLEN> Tar_5_;
     TLR<5, true> Tbr_5{l0.BidQty_, l0.AskQty_, l0.td, Tbr_5_};
     TLR<5, false> Tar_5{l0.BidQty_, l0.AskQty_, l0.td, Tar_5_};
-
-    // Rolling windows for TS features
-    std::deque<float> minute_return_window;
 
     explicit L1(MinuteData &m, L0 &l0) : md(m), l0(l0) {}
   };

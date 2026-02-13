@@ -170,7 +170,6 @@
 
 #define LEVEL_1_FIELDS(X)\
   X(min,                1, DATA,  TS,   BASIC,     OSCILLATOR, SINCOS,       "00/100/00", "Time Min Phase",                   "时间-分钟相位",         "用于因子组合",                                         R"(\sin(\frac{2\pi t}{60}))")\
-  X(min_ret,            1, DATA,  TS,   BASIC,     RAW,        NONE,         "00/100/00", "Minute Return",                    "分钟收益",              "分钟收益",                                             R"(r)")\
   X(ci_5,               1, DATA,  TS,   IMBALANCE, RATIO,      NONE,         "00/100/00", "Cumu Imba 5-Level",                "累计5档失衡",           "累计5档订单失衡率(降频)",                              R"(\frac{\sum_{i=1}^{5}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{5}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})")\
   X(ci_10,              1, DATA,  TS,   IMBALANCE, RATIO,      NONE,         "00/100/00", "Cumu Imba 10-Level",               "累计10档失衡",          "累计10档订单失衡率(降频)",                             R"(\frac{\sum_{i=1}^{10}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{10}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})")\
   X(ci_30,              1, DATA,  TS,   IMBALANCE, RATIO,      NONE,         "00/100/00", "Cumu Imba 30-Level",               "累计30档失衡",          "累计30档订单失衡率(降频)",                             R"(\frac{\sum_{i=1}^{30}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{30}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})")\
@@ -182,7 +181,6 @@
   X(tbr_5,              1, DATA,  TS,   LIQUIDITY, RATIO,      NONE,         "00/100/00", "Top 5-level Bid Ratio",            "前5档买单占比",         "买单侧是否容易被击穿(降频)",                           R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,B}}{\sum_{i=1}^{\infty} V_{i,t}^{M,B}}, \quad N = 5)")\
   X(tar_5,              1, DATA,  TS,   LIQUIDITY, RATIO,      NONE,         "00/100/00", "Top 5-level Ask Ratio",            "前5档卖单占比",         "卖单侧是否容易被击穿(降频)",                           R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,A}}{\sum_{i=1}^{\infty} V_{i,t}^{M,A}}, \quad N = 5)")\
   X(cs_spread_rank,     1, DATA,  CS,   LIQUIDITY, RANK,       RANK_ZSCORE,  "00/100/00", "CS Spread Rank",                   "价差截面排名",          "spread截面rank→inverse normal",                        R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))")\
-  X(next_1m_ret,        1, DATA,  LB,   LABEL,     FUTURE_RET, NONE,         "00/100/00", "Next 1-Minute Return",             "下1分钟收益",           "下一分钟对数收益",                                     R"(\log\frac{c_{t+1}}{c_t})")\
   X(_ohlc_open,         1, DATA,  META, META,      RAW,        NONE,         "00/100/00", "OHLC Open",                        "开盘价",                "GUI:分钟开盘价(分)",                                   R"(O)")\
   X(_ohlc_high,         1, DATA,  META, META,      RAW,        NONE,         "00/100/00", "OHLC High",                        "最高价",                "GUI:分钟最高价(分)",                                   R"(H)")\
   X(_ohlc_low,          1, DATA,  META, META,      RAW,        NONE,         "00/100/00", "OHLC Low",                         "最低价",                "GUI:分钟最低价(分)",                                   R"(L)")\
