@@ -53,8 +53,10 @@ public:
   // 深度更新时输出
   inline void flush() {
     // 1. 从BidQty和AskQty CBuffer读取当前买一卖一量
-    float v_bid = bid_qty_[0].back();  // 买一数量
-    float v_ask = -ask_qty_[0].back(); // 卖一数量（取反）
+    // 符号约定: ask_qty_ 在 DepthData 中存储为负值（卖方用负数表示）
+    // 因此这里取反得到正数，使 v_bid 和 v_ask 都为正
+    float v_bid = bid_qty_[0].back();  // 买一数量 (正数)
+    float v_ask = -ask_qty_[0].back(); // 卖一数量 (负→正)
 
     // 2. 计算refill rate（流动性补充率）：ρ = (挂单-撤单) / (挂单+撤单)
     // 使用上次深度更新到本次深度更新间隔内的订单流统计

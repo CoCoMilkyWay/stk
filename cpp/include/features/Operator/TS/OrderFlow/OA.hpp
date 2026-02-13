@@ -17,7 +17,7 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-// compute: 每笔订单时累计, flush: 按秒输出
+// compute: 每笔订单时累计, flush: 每分钟输出
 class OA {
   static constexpr size_t OA_END_L0 = 600; // 10分钟 * 60秒
 
@@ -37,41 +37,42 @@ public:
       return; // 超过10分钟后不再累计
 
     const auto &lob = td_.lob;
-    const float vol = static_cast<float>(lob.volume);
+    // 使用金额（万元）而非量，与定义一致
+    const float amt = static_cast<float>(lob.volume) * lob.price / 10000.0f;
     const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
 
-    // 按订单类型和方向累计集合竞价期间的交易量
+    // 按订单类型和方向累计集合竞价期间的成交额
     switch (lob.order_type) {
     case L2::OrderType::MAKER: // 挂单
       if (is_bid)
-        vol_maker_bid_ += vol;
+        amt_maker_bid_ += amt;
       else
-        vol_maker_ask_ += vol;
+        amt_maker_ask_ += amt;
       break;
     case L2::OrderType::TAKER: // 成交
       if (is_bid)
-        vol_taker_bid_ += vol;
+        amt_taker_bid_ += amt;
       else
-        vol_taker_ask_ += vol;
+        amt_taker_ask_ += amt;
       break;
     case L2::OrderType::CANCEL: // 撤单
       if (is_bid)
-        vol_cancel_bid_ += vol;
+        amt_cancel_bid_ += amt;
       else
-        vol_cancel_ask_ += vol;
+        amt_cancel_ask_ += amt;
       break;
     }
   }
 
-  // 每秒输出
+  // 每分钟输出
   inline void flush() {
     // 计算集合竞价期间的各项比率（09:25后保持固定值）
-    // bcr/acr：撤单率 = 撤单量 / 挂单量，反映试探性挂单
-    float bcr = vol_maker_bid_ > 1e-6f ? vol_cancel_bid_ / vol_maker_bid_ : 0.0f; // 买方撤单率
-    float acr = vol_maker_ask_ > 1e-6f ? vol_cancel_ask_ / vol_maker_ask_ : 0.0f; // 卖方撤单率
-    // btr/atr：成交率 = 成交量 / 挂单量，反映真实交易意愿
-    float btr = vol_maker_bid_ > 1e-6f ? vol_taker_bid_ / vol_maker_bid_ : 0.0f; // 买方成交率
-    float atr = vol_maker_ask_ > 1e-6f ? vol_taker_ask_ / vol_maker_ask_ : 0.0f; // 卖方成交率
+    // bcr/acr：撤单率 = 撤单额 / 挂单额，反映试探性挂单
+    float bcr = amt_maker_bid_ > 1e-6f ? amt_cancel_bid_ / amt_maker_bid_ : 0.0f; // 买方撤单率
+    float acr = amt_maker_ask_ > 1e-6f ? amt_cancel_ask_ / amt_maker_ask_ : 0.0f; // 卖方撤单率
+    // btr/atr：成交率 = 成交额 / 挂单额，反映真实交易意愿
+    float btr = amt_maker_bid_ > 1e-6f ? amt_taker_bid_ / amt_maker_bid_ : 0.0f; // 买方成交率
+    float atr = amt_maker_ask_ > 1e-6f ? amt_taker_ask_ / amt_maker_ask_ : 0.0f; // 卖方成交率
 
     // 输出比率值（集合竞价期间累计，连续竞价期间保持不变）
     oa_bcr_.push_back(bcr);
@@ -82,9 +83,9 @@ public:
 
   // 跨天重置
   void reset() {
-    vol_maker_bid_ = vol_maker_ask_ = 0.0f;
-    vol_taker_bid_ = vol_taker_ask_ = 0.0f;
-    vol_cancel_bid_ = vol_cancel_ask_ = 0.0f;
+    amt_maker_bid_ = amt_maker_ask_ = 0.0f;
+    amt_taker_bid_ = amt_taker_ask_ = 0.0f;
+    amt_cancel_bid_ = amt_cancel_ask_ = 0.0f;
   }
 
 private:
@@ -93,8 +94,8 @@ private:
   // 输出 CBuffer
   CBuffer<float, L2::BLEN> &oa_bcr_, &oa_acr_, &oa_btr_, &oa_atr_;
 
-  // 累计统计 (整个集合竞价期间)
-  float vol_maker_bid_ = 0.0f, vol_maker_ask_ = 0.0f;
-  float vol_taker_bid_ = 0.0f, vol_taker_ask_ = 0.0f;
-  float vol_cancel_bid_ = 0.0f, vol_cancel_ask_ = 0.0f;
+  // 累计统计 (整个集合竞价期间, 万元)
+  float amt_maker_bid_ = 0.0f, amt_maker_ask_ = 0.0f;
+  float amt_taker_bid_ = 0.0f, amt_taker_ask_ = 0.0f;
+  float amt_cancel_bid_ = 0.0f, amt_cancel_ask_ = 0.0f;
 };

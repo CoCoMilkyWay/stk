@@ -176,22 +176,6 @@ public:
     Peak<true, false> Peak_ratio_bid{BidQty_, Peak_ratio_bid_};
     Peak<false, false> Peak_ratio_ask{AskQty_, Peak_ratio_ask_};
 
-    // --- FlowRate ---
-    CBuffer<float, L2::BLEN> FlowRate_arr_bid_;
-    CBuffer<float, L2::BLEN> FlowRate_arr_ask_;
-    CBuffer<float, L2::BLEN> FlowRate_can_bid_;
-    CBuffer<float, L2::BLEN> FlowRate_can_ask_;
-    CBuffer<float, L2::BLEN> FlowRate_trd_buy_;
-    CBuffer<float, L2::BLEN> FlowRate_trd_sell_;
-    CBuffer<float, L2::BLEN> FlowRate_net_ord_;
-    CBuffer<float, L2::BLEN> FlowRate_foi_;
-    FlowRate FlowRate{td, FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_,
-                      FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_};
-
-    // --- ToxicCr ---
-    CBuffer<float, L2::BLEN> ToxicCr_;
-    ToxicCr ToxicCr{td, ToxicCr_};
-
     // --- Resiliency ---
     CBuffer<float, L2::BLEN> Resil_ratio_bid_;
     CBuffer<float, L2::BLEN> Resil_ratio_ask_;
@@ -206,22 +190,6 @@ public:
                           Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_,
                           Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_};
 
-    // --- CTR ---
-    CBuffer<float, L2::BLEN> Ctr_cc_r_;
-    CBuffer<float, L2::BLEN> Ctr_xl_;
-    CBuffer<float, L2::BLEN> Ctr_l_;
-    CBuffer<float, L2::BLEN> Ctr_m_;
-    CBuffer<float, L2::BLEN> Ctr_s_;
-    CBuffer<float, L2::BLEN> Ctr_cnbi_;
-    CBuffer<float, L2::BLEN> Ctr_cnbi_xl_;
-    CBuffer<float, L2::BLEN> Ctr_cnbi_l_;
-    CBuffer<float, L2::BLEN> Ctr_cnbi_m_;
-    CBuffer<float, L2::BLEN> Ctr_cnbi_s_;
-    CBuffer<float, L2::BLEN> Ctr_cnbi_am_;
-    CBuffer<float, L2::BLEN> Ctr_cnbi_pm_;
-    CTR Ctr{td, Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_,
-            Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_};
-
     // --- Behav ---
     CBuffer<float, L2::BLEN> Behav_agg_buy_;
     CBuffer<float, L2::BLEN> Behav_agg_sell_;
@@ -230,17 +198,6 @@ public:
     CBuffer<float, L2::BLEN> Behav_agg_trd_;
     CBuffer<float, L2::BLEN> Behav_ord_size_;
     Behav Behav{td, Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_};
-
-    // --- OA ---
-    CBuffer<float, L2::BLEN> Oa_bcr_;
-    CBuffer<float, L2::BLEN> Oa_acr_;
-    CBuffer<float, L2::BLEN> Oa_btr_;
-    CBuffer<float, L2::BLEN> Oa_atr_;
-    OA Oa{td, Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_};
-
-    // --- HLA ---
-    CBuffer<float, L2::BLEN> Hla_imba_;
-    HLA Hla{td, BidQty_, AskQty_, Hla_imba_};
 
     // --- Manip ---
     CBuffer<float, L2::BLEN> Manip_ptc_rt_;
@@ -346,6 +303,49 @@ public:
     CBuffer<float, ::L2::BLEN> DepthRepresentation_;
     DepthRepresentation DepthRepresentation{DepthRepresentation_};
 
+    // --- CTR (降频) ---
+    CBuffer<float, ::L2::BLEN> Ctr_cc_r_;
+    CBuffer<float, ::L2::BLEN> Ctr_xl_;
+    CBuffer<float, ::L2::BLEN> Ctr_l_;
+    CBuffer<float, ::L2::BLEN> Ctr_m_;
+    CBuffer<float, ::L2::BLEN> Ctr_s_;
+    CBuffer<float, ::L2::BLEN> Ctr_cnbi_;
+    CBuffer<float, ::L2::BLEN> Ctr_cnbi_xl_;
+    CBuffer<float, ::L2::BLEN> Ctr_cnbi_l_;
+    CBuffer<float, ::L2::BLEN> Ctr_cnbi_m_;
+    CBuffer<float, ::L2::BLEN> Ctr_cnbi_s_;
+    CBuffer<float, ::L2::BLEN> Ctr_cnbi_am_;
+    CBuffer<float, ::L2::BLEN> Ctr_cnbi_pm_;
+    CTR Ctr{l0.td, Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_,
+            Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_};
+
+    // --- OA (降频) ---
+    CBuffer<float, ::L2::BLEN> Oa_bcr_;
+    CBuffer<float, ::L2::BLEN> Oa_acr_;
+    CBuffer<float, ::L2::BLEN> Oa_btr_;
+    CBuffer<float, ::L2::BLEN> Oa_atr_;
+    OA Oa{l0.td, Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_};
+
+    // --- HLA (降频) ---
+    CBuffer<float, ::L2::BLEN> Hla_imba_;
+    HLA Hla{l0.td, l0.BidQty_, l0.AskQty_, Hla_imba_};
+
+    // --- ToxicCr (降频) ---
+    CBuffer<float, ::L2::BLEN> ToxicCr_;
+    ToxicCr ToxicCr{l0.td, ToxicCr_};
+
+    // --- FlowRate (降频) ---
+    CBuffer<float, ::L2::BLEN> FlowRate_mk_bid_;
+    CBuffer<float, ::L2::BLEN> FlowRate_mk_ask_;
+    CBuffer<float, ::L2::BLEN> FlowRate_cn_bid_;
+    CBuffer<float, ::L2::BLEN> FlowRate_cn_ask_;
+    CBuffer<float, ::L2::BLEN> FlowRate_tk_bid_;
+    CBuffer<float, ::L2::BLEN> FlowRate_tk_ask_;
+    CBuffer<float, ::L2::BLEN> FlowRate_net_ord_;
+    CBuffer<float, ::L2::BLEN> FlowRate_foi_;
+    FlowRate FlowRate{l0.td, FlowRate_mk_bid_, FlowRate_mk_ask_, FlowRate_cn_bid_, FlowRate_cn_ask_,
+                      FlowRate_tk_bid_, FlowRate_tk_ask_, FlowRate_net_ord_, FlowRate_foi_};
+
     explicit L1(MinuteData &m, L0 &l0) : md(m), l0(l0) {}
   };
   L1 l1;
@@ -365,14 +365,15 @@ public:
     l0.DepthData.reset();
     l0.Ofi_1.reset();
     l0.Ofi_5.reset();
-    l0.FlowRate.reset();
-    l0.ToxicCr.reset();
     l0.Resiliency.reset();
-    l0.Ctr.reset();
     l0.Behav.reset();
-    l0.Oa.reset();
-    l0.Hla.reset();
     l0.Manip.reset();
+    // L1 算子
+    l1.Ctr.reset();
+    l1.Oa.reset();
+    l1.Hla.reset();
+    l1.ToxicCr.reset();
+    l1.FlowRate.reset();
     // TODO: 后续新增算子的跨天重置逻辑统一加在这里
   }
 };

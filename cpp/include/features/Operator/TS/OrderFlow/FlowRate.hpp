@@ -1,17 +1,17 @@
 #pragma once
 
 // =============================================================================
-// FLOW_RATE - 订单流率特征
+// FLOW_RATE - 订单流率特征 (分钟级)
 // =============================================================================
-// 计算单位时间内的订单流统计 (取量 |O|, 非取笔数 #O)
-//   arr_bid/ask = |O^{M,B/A}| / Δt   (买/卖单到达量率)
-//   can_bid/ask = |O^{C,B/A}| / Δt   (买/卖单撤单量率)
-//   trd_buy/sell = |O^{T,B/A}| / Δt  (主动买/卖成交量率)
-//   net_ord = (|O^{M,B}| - |O^{C,B}|) - (|O^{M,A}| - |O^{C,A}|)  (净订单流)
-//   foi = (ΔV^B - ΔV^A) / (|ΔV^B| + |ΔV^A|)  (订单流失衡)
+// 计算每分钟的订单流金额率 (单位: 万元/分钟)
+//   mk_bid/ask  = Σamt^{M,B/A} / 1min  (买/卖方挂单率)
+//   cn_bid/ask  = Σamt^{C,B/A} / 1min  (买/卖方撤单率)
+//   tk_bid/ask  = Σamt^{T,B/A} / 1min  (买/卖方吃单率)
+//   net_ord     = (mk_bid - cn_bid) - (mk_ask - cn_ask)  (净订单流)
+//   foi         = (ΔV^B - ΔV^A) / (|ΔV^B| + |ΔV^A|)      (订单流失衡)
 //
-// compute: 每笔订单时按类型和方向累计量 (Tick_Sequential onTick)
-// flush:   每分钟输出订单流统计 (Minute_Sequential onMinute)
+// compute: 每笔订单时按类型和方向累计金额 (Tick_Sequential onTick)
+// flush:   每分钟输出订单流率 (Minute_Sequential onMinute)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -22,50 +22,50 @@
 class FlowRate {
 public:
   FlowRate(TickData &td,
-           CBuffer<float, L2::BLEN> &arr_bid,
-           CBuffer<float, L2::BLEN> &arr_ask,
-           CBuffer<float, L2::BLEN> &can_bid,
-           CBuffer<float, L2::BLEN> &can_ask,
-           CBuffer<float, L2::BLEN> &trd_buy,
-           CBuffer<float, L2::BLEN> &trd_sell,
+           CBuffer<float, L2::BLEN> &mk_bid,
+           CBuffer<float, L2::BLEN> &mk_ask,
+           CBuffer<float, L2::BLEN> &cn_bid,
+           CBuffer<float, L2::BLEN> &cn_ask,
+           CBuffer<float, L2::BLEN> &tk_bid,
+           CBuffer<float, L2::BLEN> &tk_ask,
            CBuffer<float, L2::BLEN> &net_ord,
            CBuffer<float, L2::BLEN> &foi)
       : td_(td),
-        arr_bid_(arr_bid), arr_ask_(arr_ask),
-        can_bid_(can_bid), can_ask_(can_ask),
-        trd_buy_(trd_buy), trd_sell_(trd_sell),
+        mk_bid_(mk_bid), mk_ask_(mk_ask),
+        cn_bid_(cn_bid), cn_ask_(cn_ask),
+        tk_bid_(tk_bid), tk_ask_(tk_ask),
         net_ord_(net_ord), foi_(foi) {}
 
-  // 每笔订单时，按类型和方向累计量
+  // 每笔订单时，按类型和方向累计金额（万元）
   inline void compute() {
     const bool is_bid = (td_.lob.order_dir == L2::OrderDirection::BID);
-    const float vol = static_cast<float>(td_.lob.volume);
+    const float amt = static_cast<float>(td_.lob.volume) * td_.lob.price / 10000.0f; // 万元
 
     switch (td_.lob.order_type) {
-    case L2::OrderType::MAKER:
-      if (is_bid) cnt_arr_bid_ += vol; else cnt_arr_ask_ += vol;
+    case L2::OrderType::MAKER: // 挂单
+      if (is_bid) amt_mk_bid_ += amt; else amt_mk_ask_ += amt;
       break;
-    case L2::OrderType::TAKER:
-      if (is_bid) cnt_trd_buy_ += vol; else cnt_trd_sell_ += vol;
+    case L2::OrderType::TAKER: // 吃单（主动成交）
+      if (is_bid) amt_tk_bid_ += amt; else amt_tk_ask_ += amt;
       break;
-    case L2::OrderType::CANCEL:
-      if (is_bid) cnt_can_bid_ += vol; else cnt_can_ask_ += vol;
+    case L2::OrderType::CANCEL: // 撤单
+      if (is_bid) amt_cn_bid_ += amt; else amt_cn_ask_ += amt;
       break;
     }
   }
 
   inline void flush() {
-    // 输出分钟内累计量
-    arr_bid_.push_back(cnt_arr_bid_);
-    arr_ask_.push_back(cnt_arr_ask_);
-    can_bid_.push_back(cnt_can_bid_);
-    can_ask_.push_back(cnt_can_ask_);
-    trd_buy_.push_back(cnt_trd_buy_);
-    trd_sell_.push_back(cnt_trd_sell_);
+    // 输出每分钟订单流金额（万元/分钟，Δt=1分钟，无需除以时间）
+    mk_bid_.push_back(amt_mk_bid_); // 买方挂单
+    mk_ask_.push_back(amt_mk_ask_); // 卖方挂单
+    cn_bid_.push_back(amt_cn_bid_); // 买方撤单
+    cn_ask_.push_back(amt_cn_ask_); // 卖方撤单
+    tk_bid_.push_back(amt_tk_bid_); // 买方吃单
+    tk_ask_.push_back(amt_tk_ask_); // 卖方吃单
 
-    // 净订单流：(买挂单量-买撤单量) - (卖挂单量-卖撤单量)
-    float net_bid = cnt_arr_bid_ - cnt_can_bid_;
-    float net_ask = cnt_arr_ask_ - cnt_can_ask_;
+    // 净订单流：(买挂单-买撤单) - (卖挂单-卖撤单)
+    float net_bid = amt_mk_bid_ - amt_cn_bid_;
+    float net_ask = amt_mk_ask_ - amt_cn_ask_;
     float net_ord_val = net_bid - net_ask;
     net_ord_.push_back(net_ord_val);
 
@@ -73,33 +73,33 @@ public:
     float sum = std::abs(net_bid) + std::abs(net_ask);
     foi_.push_back(sum > 1e-6f ? net_ord_val / sum : 0.0f);
 
-    // 重置分钟内累计量
-    cnt_arr_bid_ = cnt_arr_ask_ = 0.0f;
-    cnt_can_bid_ = cnt_can_ask_ = 0.0f;
-    cnt_trd_buy_ = cnt_trd_sell_ = 0.0f;
+    // 重置分钟内累计
+    amt_mk_bid_ = amt_mk_ask_ = 0.0f;
+    amt_cn_bid_ = amt_cn_ask_ = 0.0f;
+    amt_tk_bid_ = amt_tk_ask_ = 0.0f;
   }
 
   inline void reset() {
-    cnt_arr_bid_ = cnt_arr_ask_ = 0.0f;
-    cnt_can_bid_ = cnt_can_ask_ = 0.0f;
-    cnt_trd_buy_ = cnt_trd_sell_ = 0.0f;
+    amt_mk_bid_ = amt_mk_ask_ = 0.0f;
+    amt_cn_bid_ = amt_cn_ask_ = 0.0f;
+    amt_tk_bid_ = amt_tk_ask_ = 0.0f;
   }
 
 private:
   TickData &td_;
 
-  // 输出
-  CBuffer<float, L2::BLEN> &arr_bid_;
-  CBuffer<float, L2::BLEN> &arr_ask_;
-  CBuffer<float, L2::BLEN> &can_bid_;
-  CBuffer<float, L2::BLEN> &can_ask_;
-  CBuffer<float, L2::BLEN> &trd_buy_;
-  CBuffer<float, L2::BLEN> &trd_sell_;
+  // 输出 CBuffer (对仗命名: mk=挂单, cn=撤单, tk=吃单)
+  CBuffer<float, L2::BLEN> &mk_bid_; // 买方挂单
+  CBuffer<float, L2::BLEN> &mk_ask_; // 卖方挂单
+  CBuffer<float, L2::BLEN> &cn_bid_; // 买方撤单
+  CBuffer<float, L2::BLEN> &cn_ask_; // 卖方撤单
+  CBuffer<float, L2::BLEN> &tk_bid_; // 买方吃单
+  CBuffer<float, L2::BLEN> &tk_ask_; // 卖方吃单
   CBuffer<float, L2::BLEN> &net_ord_;
   CBuffer<float, L2::BLEN> &foi_;
 
-  // 分钟内累计量
-  float cnt_arr_bid_ = 0.0f, cnt_arr_ask_ = 0.0f;
-  float cnt_can_bid_ = 0.0f, cnt_can_ask_ = 0.0f;
-  float cnt_trd_buy_ = 0.0f, cnt_trd_sell_ = 0.0f;
+  // 分钟内累计金额（万元）
+  float amt_mk_bid_ = 0.0f, amt_mk_ask_ = 0.0f;
+  float amt_cn_bid_ = 0.0f, amt_cn_ask_ = 0.0f;
+  float amt_tk_bid_ = 0.0f, amt_tk_ask_ = 0.0f;
 };

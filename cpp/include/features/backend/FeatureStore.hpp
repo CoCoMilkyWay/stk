@@ -26,9 +26,30 @@
 #include <windows.h>
 #undef min
 #undef max
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
 #else
 #include <fstream>
+#include <unistd.h>
 #endif
+
+// 跨平台获取系统总物理内存 (字节)
+inline size_t get_system_memory_bytes() {
+#ifdef _WIN32
+  MEMORYSTATUSEX status;
+  status.dwLength = sizeof(status);
+  GlobalMemoryStatusEx(&status);
+  return status.ullTotalPhys;
+#elif defined(__APPLE__)
+  int mib[2] = {CTL_HW, HW_MEMSIZE};
+  int64_t size;
+  size_t len = sizeof(size);
+  sysctl(mib, 2, &size, &len, nullptr, 0);
+  return static_cast<size_t>(size);
+#else
+  return static_cast<size_t>(sysconf(_SC_PHYS_PAGES)) * static_cast<size_t>(sysconf(_SC_PAGE_SIZE));
+#endif
+}
 
 // ============================================================================
 // FEATURE STORE CONFIGURATION
@@ -156,7 +177,7 @@ private:
   // Config
   const size_t num_assets_;
   const size_t num_ts_workers_;
-  const size_t pool_size_;
+  size_t pool_size_;
   std::string output_dir_;
   const int cs_worker_id_;
   const int io_worker_id_;
@@ -212,6 +233,17 @@ public:
     // Add depth data size
     const size_t depth_bytes = MAX_ROWS_PER_LEVEL[0] * num_assets * DEPTH_TOTAL_WIDTH * sizeof(feature_storage_t);
     bytes_per_day += depth_bytes;
+
+    // 限制 pool_size 不超过 60% 系统内存
+    const size_t system_mem = get_system_memory_bytes();
+    const size_t max_pool_bytes = static_cast<size_t>(system_mem * 0.6);
+    const size_t max_pool_slots = max_pool_bytes / bytes_per_day;
+    if (pool_size_ > max_pool_slots) {
+      printf("\n[FeatureStore] Pool size limited: %zu -> %zu (60%% of %.1f GB DDR)\n",
+             pool_size_, max_pool_slots, system_mem / (1024.0 * 1024.0 * 1024.0));
+      pool_size_ = max_pool_slots;
+    }
+    assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");
 
     std::cout << "\n=== Feature Store Tensor Pool ===\n";
 

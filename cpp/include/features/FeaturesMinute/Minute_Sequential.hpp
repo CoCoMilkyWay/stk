@@ -139,9 +139,12 @@ inline void Minute_Sequential::compute_and_store() {
     dag_.l1.DepthRepresentation.compute(); // input: (none)
     dag_.l1.DepthRepresentation.flush();   // output: DepthRepresentation_
 
-    // --- 订单流累计特征 ---
-    dag_.l0.FlowRate.flush();   // output: FlowRate_arr_bid_, FlowRate_arr_ask_, FlowRate_can_bid_, FlowRate_can_ask_, FlowRate_trd_buy_, FlowRate_trd_sell_, FlowRate_net_ord_, FlowRate_foi_
-    dag_.l0.ToxicCr.flush();    // output: ToxicCr_
+    // --- 降频算子 flush ---
+    dag_.l1.Ctr.flush();      // output: Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_, Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_
+    dag_.l1.Oa.flush();       // output: Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_
+    dag_.l1.Hla.flush();      // output: Hla_imba_
+    dag_.l1.ToxicCr.flush();  // output: ToxicCr_
+    dag_.l1.FlowRate.flush(); // output: FlowRate_mk_bid_, FlowRate_mk_ask_, FlowRate_cn_bid_, FlowRate_cn_ask_, FlowRate_tk_bid_, FlowRate_tk_ask_, FlowRate_net_ord_, FlowRate_foi_
 
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L1_FieldOffset::min] = dag_.l1.Min_.back();
@@ -174,15 +177,32 @@ inline void Minute_Sequential::compute_and_store() {
     ts_features_buffer_[L1_FieldOffset::a_30_entropy] = dag_.l1.Entropy_a_30_.back();
     ts_features_buffer_[L1_FieldOffset::imba_30_entropy] = dag_.l1.EntropyImba_30_.back();
     ts_features_buffer_[L1_FieldOffset::depth_repre] = dag_.l1.DepthRepresentation_.back();
-    ts_features_buffer_[L1_FieldOffset::toxic_cr] = dag_.l0.ToxicCr_.back();
-    ts_features_buffer_[L1_FieldOffset::arr_bid] = dag_.l0.FlowRate_arr_bid_.back();
-    ts_features_buffer_[L1_FieldOffset::arr_ask] = dag_.l0.FlowRate_arr_ask_.back();
-    ts_features_buffer_[L1_FieldOffset::can_bid] = dag_.l0.FlowRate_can_bid_.back();
-    ts_features_buffer_[L1_FieldOffset::can_ask] = dag_.l0.FlowRate_can_ask_.back();
-    ts_features_buffer_[L1_FieldOffset::trd_buy] = dag_.l0.FlowRate_trd_buy_.back();
-    ts_features_buffer_[L1_FieldOffset::trd_sell] = dag_.l0.FlowRate_trd_sell_.back();
-    ts_features_buffer_[L1_FieldOffset::net_ord] = dag_.l0.FlowRate_net_ord_.back();
-    ts_features_buffer_[L1_FieldOffset::foi] = dag_.l0.FlowRate_foi_.back();
+    ts_features_buffer_[L1_FieldOffset::toxic_cr] = dag_.l1.ToxicCr_.back();
+    ts_features_buffer_[L1_FieldOffset::mk_bid] = dag_.l1.FlowRate_mk_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::mk_ask] = dag_.l1.FlowRate_mk_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::cn_bid] = dag_.l1.FlowRate_cn_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::cn_ask] = dag_.l1.FlowRate_cn_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::tk_bid] = dag_.l1.FlowRate_tk_bid_.back();
+    ts_features_buffer_[L1_FieldOffset::tk_ask] = dag_.l1.FlowRate_tk_ask_.back();
+    ts_features_buffer_[L1_FieldOffset::net_ord] = dag_.l1.FlowRate_net_ord_.back();
+    ts_features_buffer_[L1_FieldOffset::foi] = dag_.l1.FlowRate_foi_.back();
+    ts_features_buffer_[L1_FieldOffset::cc_r] = dag_.l1.Ctr_cc_r_.back();
+    ts_features_buffer_[L1_FieldOffset::ctr_xl] = dag_.l1.Ctr_xl_.back();
+    ts_features_buffer_[L1_FieldOffset::ctr_l] = dag_.l1.Ctr_l_.back();
+    ts_features_buffer_[L1_FieldOffset::ctr_m] = dag_.l1.Ctr_m_.back();
+    ts_features_buffer_[L1_FieldOffset::ctr_s] = dag_.l1.Ctr_s_.back();
+    ts_features_buffer_[L1_FieldOffset::cnbi] = dag_.l1.Ctr_cnbi_.back();
+    ts_features_buffer_[L1_FieldOffset::cnbi_xl] = dag_.l1.Ctr_cnbi_xl_.back();
+    ts_features_buffer_[L1_FieldOffset::cnbi_l] = dag_.l1.Ctr_cnbi_l_.back();
+    ts_features_buffer_[L1_FieldOffset::cnbi_m] = dag_.l1.Ctr_cnbi_m_.back();
+    ts_features_buffer_[L1_FieldOffset::cnbi_s] = dag_.l1.Ctr_cnbi_s_.back();
+    ts_features_buffer_[L1_FieldOffset::cnbi_am] = dag_.l1.Ctr_cnbi_am_.back();
+    ts_features_buffer_[L1_FieldOffset::cnbi_pm] = dag_.l1.Ctr_cnbi_pm_.back();
+    ts_features_buffer_[L1_FieldOffset::oa_bcr] = dag_.l1.Oa_bcr_.back();
+    ts_features_buffer_[L1_FieldOffset::oa_acr] = dag_.l1.Oa_acr_.back();
+    ts_features_buffer_[L1_FieldOffset::oa_btr] = dag_.l1.Oa_btr_.back();
+    ts_features_buffer_[L1_FieldOffset::oa_atr] = dag_.l1.Oa_atr_.back();
+    ts_features_buffer_[L1_FieldOffset::hla_imba] = dag_.l1.Hla_imba_.back();
 
     // Write TS features
     TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::foi, ts_features_buffer_.data(), worker_id_);

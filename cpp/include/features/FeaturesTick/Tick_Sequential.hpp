@@ -79,14 +79,15 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.TickIndex.flush();   // output: Sec_, TickIndex_
 
     // 订单流累计特征 compute (flush在onDepth)
-    dag_.l0.FlowRate.compute();   // input: td
-    dag_.l0.ToxicCr.compute();    // input: td
     dag_.l0.Resiliency.compute(); // input: td, BidQty_, AskQty_
-    dag_.l0.Ctr.compute();        // input: td
     dag_.l0.Behav.compute();      // input: td
-    dag_.l0.Oa.compute();         // input: td
-    dag_.l0.Hla.compute();        // input: td, BidQty_, AskQty_
     dag_.l0.Manip.compute();      // input: td, BidQty_, AskQty_
+    // 降频算子 compute (flush在onMinute)
+    dag_.l1.Ctr.compute();        // input: l0.td
+    dag_.l1.Oa.compute();         // input: l0.td
+    dag_.l1.Hla.compute();        // input: l0.td, l0.BidQty_, l0.AskQty_
+    dag_.l1.ToxicCr.compute();    // input: l0.td
+    dag_.l1.FlowRate.compute();   // input: l0.td
 
     ts_features_buffer_[L0_FieldOffset::sec] = dag_.l0.Sec_.back();
   }
@@ -142,10 +143,7 @@ inline void Tick_Sequential::compute_and_store() {
 
     // --- 订单流累计特征 ---
     dag_.l0.Resiliency.flush(); // output: Resil_ratio_bid_, Resil_ratio_ask_, Resil_imba_, Resil_dev_bid_, Resil_dev_ask_, Resil_mr_bid_, Resil_mr_ask_, Resil_recovery_bid_, Resil_recovery_ask_
-    dag_.l0.Ctr.flush();        // output: Ctr_cc_r_, Ctr_xl_, Ctr_l_, Ctr_m_, Ctr_s_, Ctr_cnbi_, Ctr_cnbi_xl_, Ctr_cnbi_l_, Ctr_cnbi_m_, Ctr_cnbi_s_, Ctr_cnbi_am_, Ctr_cnbi_pm_
     dag_.l0.Behav.flush();      // output: Behav_agg_buy_, Behav_agg_sell_, Behav_agg_dif_, Behav_cpr_, Behav_agg_trd_, Behav_ord_size_
-    dag_.l0.Oa.flush();         // output: Oa_bcr_, Oa_acr_, Oa_btr_, Oa_atr_
-    dag_.l0.Hla.flush();        // output: Hla_imba_
     dag_.l0.Manip.flush();      // output: Manip_ptc_rt_, Manip_fleet_rt_, Manip_spoof_int_, Manip_stale_ratio_bid_, Manip_stale_ratio_ask_
 
     // --- LABEL ---
@@ -157,23 +155,6 @@ inline void Tick_Sequential::compute_and_store() {
     ts_features_buffer_[L0_FieldOffset::ci_1] = dag_.l0.Ci_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_1] = dag_.l0.Ofi_1_.back();
     ts_features_buffer_[L0_FieldOffset::ofi_5] = dag_.l0.Ofi_5_.back();
-    ts_features_buffer_[L0_FieldOffset::cc_r] = dag_.l0.Ctr_cc_r_.back();
-    ts_features_buffer_[L0_FieldOffset::ctr_xl] = dag_.l0.Ctr_xl_.back();
-    ts_features_buffer_[L0_FieldOffset::ctr_l] = dag_.l0.Ctr_l_.back();
-    ts_features_buffer_[L0_FieldOffset::ctr_m] = dag_.l0.Ctr_m_.back();
-    ts_features_buffer_[L0_FieldOffset::ctr_s] = dag_.l0.Ctr_s_.back();
-    ts_features_buffer_[L0_FieldOffset::cnbi] = dag_.l0.Ctr_cnbi_.back();
-    ts_features_buffer_[L0_FieldOffset::cnbi_xl] = dag_.l0.Ctr_cnbi_xl_.back();
-    ts_features_buffer_[L0_FieldOffset::cnbi_l] = dag_.l0.Ctr_cnbi_l_.back();
-    ts_features_buffer_[L0_FieldOffset::cnbi_m] = dag_.l0.Ctr_cnbi_m_.back();
-    ts_features_buffer_[L0_FieldOffset::cnbi_s] = dag_.l0.Ctr_cnbi_s_.back();
-    ts_features_buffer_[L0_FieldOffset::cnbi_am] = dag_.l0.Ctr_cnbi_am_.back();
-    ts_features_buffer_[L0_FieldOffset::cnbi_pm] = dag_.l0.Ctr_cnbi_pm_.back();
-    ts_features_buffer_[L0_FieldOffset::oa_bcr] = dag_.l0.Oa_bcr_.back();
-    ts_features_buffer_[L0_FieldOffset::oa_acr] = dag_.l0.Oa_acr_.back();
-    ts_features_buffer_[L0_FieldOffset::oa_btr] = dag_.l0.Oa_btr_.back();
-    ts_features_buffer_[L0_FieldOffset::oa_atr] = dag_.l0.Oa_atr_.back();
-    ts_features_buffer_[L0_FieldOffset::hla_imba] = dag_.l0.Hla_imba_.back();
     ts_features_buffer_[L0_FieldOffset::agg_buy] = dag_.l0.Behav_agg_buy_.back();
     ts_features_buffer_[L0_FieldOffset::agg_sell] = dag_.l0.Behav_agg_sell_.back();
     ts_features_buffer_[L0_FieldOffset::agg_dif] = dag_.l0.Behav_agg_dif_.back();

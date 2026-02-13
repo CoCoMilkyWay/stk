@@ -1,5 +1,17 @@
-注意depth_buffer里的quantity可能带负号, 代表卖单
-TickData.LOB_Feature里的volume为正(uint32_t), 需要看L2::OrderDirection order_dir确定方向
+===== 符号约定 (重要!) =====
+
+【深度数据 depth_buffer / CBuffer】
+- bid_qty_[i]: 买盘第i+1档数量，存储为 **正数**
+- ask_qty_[i]: 卖盘第i+1档数量，存储为 **负数** (卖方用负值表示)
+- bid_amt_[i], ask_amt_[i]: 同上规则 (卖方金额为负)
+- 使用时注意: 计算失衡等需要两边都为正时，ask 侧要取反
+  例: float v_ask = -ask_qty_[0].back();  // 负→正
+
+【订单流 TickData.LOB_Feature】
+- volume: **正数** (uint32_t)，不带方向
+- 方向由 order_dir 决定: L2::OrderDirection::BID / ASK
+- price: 分 (0.01元单位)，转换为元需 * 0.01
+- 金额计算: amt = volume * price / 10000.0f  // 万元
 
 
 降频算子迁移流程（L0 Tick → L1 Minute）：
