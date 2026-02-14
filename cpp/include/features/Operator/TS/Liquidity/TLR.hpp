@@ -4,20 +4,29 @@
 // TLR (Top Level Ratio) - 顶部档位占比
 // =============================================================================
 // 前N档占总量的比例，衡量是否容易被击穿
-//   TBR_N = Σ V_bid[1:N] / 全市场买单量
-//   TAR_N = Σ V_ask[1:N] / 全市场卖单量
 //
-// 数据来源:
-//   前N档: 从 bid_qty_/ask_qty_ 数组累加
-//   全市场量: TickData.lob.all_bid_volume / all_ask_volume (交易所提供)
+// 【公式定义】
+//   TBR_N = Σ V_{i}^{M,B} / V_{all}^{M,B}, i=1..N  (买侧)
+//   TAR_N = Σ V_{i}^{M,A} / V_{all}^{M,A}, i=1..N  (卖侧)
 //
-// 模板参数:
+// 【触发域】
+//   compute: onMinute
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: bid_qty[0:N-1] (onDepth), ask_qty[0:N-1] (onDepth), TickData.lob.all_bid_volume (onDepth), all_ask_volume (onDepth)
+//   输出: tbr_N (onMinute) / tar_N (onMinute)
+//
+// 【模板参数】
 //   N_LEVELS - 顶部档位数
 //   IS_BID   - true=买侧(TBR), false=卖侧(TAR)
 //
-// 使用示例:
-//   TLR<5, true>  Tbr_5{BidQty_, AskQty_, td, Tbr_5_};
-//   TLR<5, false> Tar_5{BidQty_, AskQty_, td, Tar_5_};
+// 【使用示例】
+//   TLR<5, true>  tbr_5{BidQty_, AskQty_, td, Tbr_5_};
+//   TLR<5, false> tar_5{BidQty_, AskQty_, td, Tar_5_};
+//
+// 【备注】
+//   - 值越大说明订单集中在前N档，容易被击穿
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

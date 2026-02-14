@@ -4,15 +4,25 @@
 // CWI (Convexity-Weighted Imbalance) - 凸加权失衡
 // =============================================================================
 // 按档位 i^(-γ) 加权的多档失衡
+//
+// 【公式定义】
 //   w_i = 1 / (i + ε)^γ
-//   CWI = Σ w_i*(V_bid - V_ask) / Σ w_i*(V_bid + V_ask)
+//   CWI = Σ w_i·(V_{i,t}^{M,B} - V_{i,t}^{M,A}) / Σ w_i·(V_{i,t}^{M,B} + V_{i,t}^{M,A})
 //
-// 模板参数:
-//   GAMMA_X10 - γ值的10倍 (10=γ1.0, 20=γ2.0)，避免浮点模板参数
+// 【触发域】
+//   compute: onDepth
+//   flush:   onDepth
 //
-// 使用示例:
-//   CWI<10> Cwi_1{BidQty_, AskQty_, Cwi_1_};  // γ=1.0
-//   CWI<20> Cwi_2{BidQty_, AskQty_, Cwi_2_};  // γ=2.0
+// 【输入输出】
+//   输入: bid_qty[0:29] (onDepth), ask_qty[0:29] (onDepth)
+//   输出: cwi_γ (onDepth)
+//
+// 【模板参数】
+//   GAMMA_X10 - γ值的10倍 (10=γ1.0, 20=γ2.0), 避免浮点模板参数
+//
+// 【使用示例】
+//   CWI<10> cwi_1{BidQty_, AskQty_, Cwi_1_};  // γ=1.0
+//   CWI<20> cwi_2{BidQty_, AskQty_, Cwi_2_};  // γ=2.0
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

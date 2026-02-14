@@ -4,16 +4,30 @@
 // OFI (Order Flow Imbalance) - 订单流失衡
 // =============================================================================
 // 委托量增量变化的差异，捕捉订单流动态
-//   ΔV_bid: price↓→0, price=→V-Vprev, price↑→V
-//   ΔV_ask: price↓→V, price=→V-Vprev, price↑→0
-//   OFI = ΔV_bid - ΔV_ask
 //
-// 模板参数:
+// 【公式定义】
+//   ΔV^B: price↓→0, price=→V-V_prev, price↑→V
+//   ΔV^A: price↓→V, price=→V-V_prev, price↑→0
+//   OFI_N = Σ w_i·(ΔV_{i}^B - ΔV_{i}^A), i=1..N
+//
+// 【触发域】
+//   compute: onDepth
+//   flush:   onDepth
+//
+// 【输入输出】
+//   输入: bid_qty[0:N-1] (onDepth), ask_qty[0:N-1] (onDepth), bid_price[0:N-1] (onDepth), ask_price[0:N-1] (onDepth)
+//   输出: ofi_N (onDepth)
+//
+// 【模板参数】
 //   N_LEVELS - 档位数 (1 或 5)
 //
-// DAG中使用:
+// 【使用示例】
 //   OFI<1> ofi_1{bid_qty_, ask_qty_, bid_price_, ask_price_, ofi_1_};
 //   OFI<5> ofi_5{bid_qty_, ask_qty_, bid_price_, ask_price_, ofi_5_};
+//
+// 【备注】
+//   - 权重: w_i = 1 - (i-1)/N, 近端权重更高
+//   - 需要reset()清空跨天状态
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

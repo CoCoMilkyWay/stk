@@ -4,14 +4,24 @@
 // RESIL (Resiliency) - 韧性与恢复特征 (降频版)
 // =============================================================================
 // 计算市场深度的韧性和恢复能力
+//
+// 【公式定义】
 //   ratio_bid/ask = |O^M| / (|O^T| + |O^C|)  (韧性比, >1表示深度增长)
 //   imba_resil = (R^B - R^A) / (R^B + R^A)   (韧性失衡)
 //   dev_bid/ask = (D_t - D̄_W) / D̄_W          (深度偏离度)
 //   mr_bid/ask = d_t - d_{t-1}               (均值回归速度)
-//   recovery_bid/ask = max(0, Δd) * 1_{d<0}  (恢复信号)
+//   recovery_bid/ask = max(0, Δd) · 1_{d<0}  (恢复信号)
 //
-// compute: 每笔订单时累计, 内部按秒推进 (基于 l0_index)
-// flush:   每分钟输出当前值
+// 【触发域】
+//   compute: onTaker / onMaker / onCancel (内部按秒推进)
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: TickData.lob.{order_type, order_dir, volume, l0_index} (onTaker/onMaker/onCancel), bid_qty[0:29] (onDepth), ask_qty[0:29] (onDepth)
+//   输出: ratio_bid, ratio_ask, imba, dev_bid, dev_ask, mr_bid, mr_ask, recovery_bid, recovery_ask (onMinute)
+//
+// 【备注】
+//   - 使用60秒移动平均窗口
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

@@ -4,15 +4,26 @@
 // PEAK (Peak Location & Concentration) - 峰值位置与集中度
 // =============================================================================
 // 计算深度分布的峰值特征（只考虑前5档）
-//   peak_loc_bid/ask   = argmax(V[1:5])         (最大量所在档位, 1-indexed)
-//   peak_ratio_bid/ask = max(V[1:5]) / mean(V[1:5])   (峰值集中度, >=1)
 //
-// 模板参数:
+// 【公式定义】
+//   peak_loc   = argmax(V[1:5])               (最大量所在档位, 1-indexed)
+//   peak_ratio = max(V[1:5]) / mean(V[1:5])  (峰值集中度, >=1)
+//
+// 【触发域】
+//   compute: onMinute
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: {bid/ask}_qty[0:4] (onDepth)
+//   输出: peak_{loc/ratio}_{bid/ask} (onMinute)
+//
+// 【模板参数】
 //   IS_BID - true=买侧, false=卖侧
 //   IS_LOC - true=输出位置, false=输出集中度
 //
-// 输入频率: ON_DEPTH (盘口更新时)
-// 输出频率: per sec (由外部按秒读取)
+// 【备注】
+//   - peak_loc: 值越大表示峰值离盘口越远
+//   - peak_ratio: 值越大表示订单越集中在单一档位
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

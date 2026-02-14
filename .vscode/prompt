@@ -41,7 +41,7 @@ TS_WRITE_FEATURES 范围不用改（用的是 enum 名，自动重编号）
 TS_WRITE_FEATURES 末端从 tar_5 扩展到新的最后一个 TS 特征（如 depth_repre）
 注意事项：
 算子 class 头文件按照FeaturesDefine类型分类
-若算子有 reset()，需要检查 DAG::reset_at_day_start() 是否需要同步调整
+若算子有 reset()，需要检查 DAG::at_day_start() 是否需要同步调整
 宏系统自动处理 offset/width/enum 重编号，不需要手动改 FeatureStoreConfig.hpp已经列完了，没有中断。
 上面就是完整的降频迁移四步流程。完整内容已经全部输出，没有遗漏。四步流程加注意事项就是全部内容。
 5. 注意算子内部注释要保持详细

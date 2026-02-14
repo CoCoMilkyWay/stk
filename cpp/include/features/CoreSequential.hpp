@@ -1,11 +1,12 @@
 #pragma once
 
-#include "misc/profiler.hpp"
-#include "features/ComputeGraph.hpp"
-#include "features/FeaturesTick/Tick_Sequential.hpp"
-#include "features/FeaturesMinute/Minute_Sequential.hpp"
 #include "features/Backend/FeatureStore.hpp"
+#include "features/ComputeGraph.hpp"
+#include "features/FeaturesMinute/Minute_Sequential.hpp"
+#include "features/FeaturesTick/Tick_Sequential.hpp"
 #include "math/sample/ResamplerTick2Min.hpp"
+#include "misc/profiler.hpp"
+
 
 // Sequential Core: Hierarchical 2-level feature computation with resampling
 // Architecture: LOB -> Tick -> (resample) -> Minute
@@ -30,10 +31,14 @@ public:
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
 
-  void set_date(const std::string &date_str) {
+  void begin_day(const std::string &date_str) {
     date_str_ = date_str;
     tick_sequential_.set_date(date_str);
     minute_sequential_.set_date(date_str);
+  }
+
+  void end_day() {
+    dag_.at_day_end();
   }
 
   void reset() {

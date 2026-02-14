@@ -4,13 +4,20 @@
 // OA (Opening Auction) - 集合竞价特征
 // =============================================================================
 // 计算早盘集合竞价期间 (09:15-09:25) 的订单统计
-//   oa_bcr = Σ|O^C,B| / Σ|O^M,B|  (买方撤单率)
-//   oa_acr = Σ|O^C,A| / Σ|O^M,A|  (卖方撤单率)
-//   oa_btr = Σ|O^T,B| / Σ|O^M,B|  (买方成交率)
-//   oa_atr = Σ|O^T,A| / Σ|O^M,A|  (卖方成交率)
 //
-// 输入频率: PER_ORDER (仅在09:15-09:25期间累计)
-// 输出频率: per sec (09:25后输出固定值)
+// 【公式定义】
+//   oa_bcr = Σ|O^{C,B}| / Σ|O^{M,B}|  (买方撤单率)
+//   oa_acr = Σ|O^{C,A}| / Σ|O^{M,A}|  (卖方撤单率)
+//   oa_btr = Σ|O^{T,B}| / Σ|O^{M,B}|  (买方成交率)
+//   oa_atr = Σ|O^{T,A}| / Σ|O^{M,A}|  (卖方成交率)
+//
+// 【触发域】
+//   compute: onTaker / onMaker / onCancel (仅在09:15-09:25期间累计)
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: TickData.lob.{order_type, order_dir, volume, price, l0_index} (onTaker/onMaker/onCancel)
+//   输出: oa_bcr, oa_acr, oa_btr, oa_atr (onMinute, 09:25后保持固定值)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

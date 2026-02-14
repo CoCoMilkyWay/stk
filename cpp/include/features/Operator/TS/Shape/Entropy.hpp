@@ -3,15 +3,26 @@
 // =============================================================================
 // ENTROPY - 深度分布香农熵
 // =============================================================================
-// H = -Σ π_i * log(π_i), where π_i = V_i / Σ V
-// 0: 极端集中 (单档占全部)
-// ln(N): 极端均匀 (各档相等)
+// 计算深度分布的均匀性
 //
-// 模板参数:
+// 【公式定义】
+//   H = -Σ π_i · log(π_i), where π_i = V_i / Σ V
+//   0: 极端集中 (单档占全部)
+//   ln(N): 极端均匀 (各档相等)
+//
+// 【触发域】
+//   compute: onMinute
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: bid_qty[0:N-1] (onDepth), ask_qty[0:N-1] (onDepth)
+//   输出: {b/a}_N_entropy (onMinute)
+//
+// 【模板参数】
 //   N_LEVELS - 档位数 (5 或 30)
 //   IS_BID   - true=买侧, false=卖侧
 //
-// DAG中使用:
+// 【使用示例】
 //   Entropy<5, true>   b_5_entropy{bid_qty_, ask_qty_, b_5_entropy_};
 //   Entropy<5, false>  a_5_entropy{bid_qty_, ask_qty_, a_5_entropy_};
 //   Entropy<30, true>  b_30_entropy{bid_qty_, ask_qty_, b_30_entropy_};

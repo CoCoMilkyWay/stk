@@ -4,16 +4,26 @@
 // CI (Cumulative Imbalance) - 累计失衡
 // =============================================================================
 // 计算前N档的累计买卖失衡率
-//   CI_N = (Σ V_bid[1:N] - Σ V_ask[1:N]) / (Σ V_bid[1:N] + Σ V_ask[1:N])
 //
-// 模板参数:
+// 【公式定义】
+//   CI_N = (Σ V_{i,t}^{M,B} - Σ V_{i,t}^{M,A}) / (Σ V_{i,t}^{M,B} + Σ V_{i,t}^{M,A}), i=1..N
+//
+// 【触发域】
+//   compute: onDepth
+//   flush:   onDepth
+//
+// 【输入输出】
+//   输入: bid_qty[0:N-1] (onDepth), ask_qty[0:N-1] (onDepth)
+//   输出: ci_N (onDepth)
+//
+// 【模板参数】
 //   N_LEVELS - 累计档位数 (1, 5, 10, 30, ...)
 //
-// 使用示例:
-//   CI<1>  Ci_1{BidQty_, AskQty_, Ci_1_};
-//   CI<5>  Ci_5{BidQty_, AskQty_, Ci_5_};
-//   CI<10> Ci_10{BidQty_, AskQty_, Ci_10_};
-//   CI<30> Ci_30{BidQty_, AskQty_, Ci_30_};
+// 【使用示例】
+//   CI<1>  ci_1{BidQty_, AskQty_, Ci_1_};
+//   CI<5>  ci_5{BidQty_, AskQty_, Ci_5_};
+//   CI<10> ci_10{BidQty_, AskQty_, Ci_10_};
+//   CI<30> ci_30{BidQty_, AskQty_, Ci_30_};
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

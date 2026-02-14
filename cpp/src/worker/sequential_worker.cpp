@@ -93,7 +93,7 @@ void sequential_worker(int worker_id,
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
       auto it = asset.date_info.find(date_str);
-      lobs[i]->set_current_date(date_str);
+      lobs[i]->begin_day(date_str);
       // Hot path: has data and binaries
       if (it != asset.date_info.end() && it->second.has_binaries() && !it->second.orders_file.empty()) [[likely]] {
 
@@ -127,6 +127,7 @@ void sequential_worker(int worker_id,
                             " tob_refresh=" + std::to_string(lobs[i]->get_tob_refresh_count()));
           }
 
+          lobs[i]->end_day();
           lobs[i]->clear();
           date_orders += order_num;
           date_assets_processed++;

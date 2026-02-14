@@ -4,14 +4,24 @@
 // BEHAV (Behavioral) - 行为特征 (降频版)
 // =============================================================================
 // 计算订单行为特征
+//
+// 【公式定义】
 //   agg_buy/sell = avg(log(P_order / P_best))   (买/卖单侵略性)
 //   agg_dif = agg_buy - agg_sell                (侵略性差)
 //   cpr = |O^C| / |O^M|                         (撤挂比)
 //   agg_trd = linear_slope(agg)                 (侵略性趋势)
 //   ord_size = avg(|O^M|)                       (平均单笔规模)
 //
-// compute: 每笔订单时累计, 内部按秒推进 (基于 l0_index)
-// flush:   每分钟输出当前值
+// 【触发域】
+//   compute: onMaker / onCancel (内部按秒推进)
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: TickData.lob.{order_type, order_dir, volume, price, depth_buffer, l0_index} (onMaker/onCancel)
+//   输出: agg_buy, agg_sell, agg_dif, cpr, agg_trd, ord_size (onMinute)
+//
+// 【备注】
+//   - 使用20秒滑动窗口计算侵略性趋势
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

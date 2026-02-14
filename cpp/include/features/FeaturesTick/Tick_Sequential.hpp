@@ -1,7 +1,6 @@
 #pragma once
 
 #include "features/Backend/FeatureStore.hpp"
-#include "features/Backend/FeatureStoreConfig.hpp"
 #include <array>
 
 class DAG; // Forward declaration
@@ -40,7 +39,7 @@ private:
 #include "features/ComputeGraph.hpp"
 
 inline void Tick_Sequential::set_date(const std::string &date_str) {
-  dag_.reset_at_day_start();
+  dag_.at_day_start();
   date_str_ = date_str;
 }
 

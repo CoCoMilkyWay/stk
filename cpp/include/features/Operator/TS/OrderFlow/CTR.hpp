@@ -4,22 +4,26 @@
 // CTR (Cumulative Trade Ratio) - 累计成交比率
 // =============================================================================
 // 计算从开盘到当前时刻的累计成交统计
-//   cc_r = |O^T,CA| / |O^T|                          (连续竞价成交占比)
-//   ctr_xl/l/m/s = Σ|O^T,c| / Σ|O^T|                 (按大小单分类的累计成交占比)
-//   cnbi = (Σ|O^T,B| - Σ|O^T,A|) / (Σ|O^T,B| + Σ|O^T,A|)  (累计净买入比率)
-//   cnbi_xl/l/m/s = N^c / Σ|N^c|                      (按大小单的净买入贡献)
+//
+// 【公式定义】
+//   cc_r = |O^{T,CA}| / |O^T|                             (连续竞价成交占比)
+//   ctr_xl/l/m/s = Σ|O^{T,c}| / Σ|O^T|                   (按大小单分类的累计成交占比)
+//   cnbi = (Σ|O^{T,B}| - Σ|O^{T,A}|) / (Σ|O^{T,B}| + Σ|O^{T,A}|)  (累计净买入比率)
+//   cnbi_xl/l/m/s = N^c / Σ|N^c|                          (按大小单的净买入贡献)
 //   cnbi_am/pm = 早盘/尾盘净买入比率
 //
-// 大单分类 (动态分位数, 基于KLL Sketch滚动历史):
-//   S  (小单):   < P50
-//   M  (中单):   P50 - P80
-//   L  (大单):   P80 - P95
-//   XL (特大单): >= P95
-//   每日开盘前用前1~4周(每周5天)KLL分别查询分位数取均值
-//   预热阶段无历史数据时使用固定默认值
+// 【触发域】
+//   compute: onTaker
+//   flush:   onDepth (按秒输出)
 //
-// 输入频率: PER_TAKER (每笔成交)
-// 输出频率: per sec
+// 【输入输出】
+//   输入: TickData.lob.{order_dir, volume, price, market_state} (onTaker)
+//   输出: cc_r, ctr_xl, ctr_l, ctr_m, ctr_s, cnbi, cnbi_xl, cnbi_l, cnbi_m, cnbi_s, cnbi_am, cnbi_pm (onDepth)
+//
+// 【备注】
+//   - 大单分类动态分位数: S(<P50), M(P50-P80), L(P80-P95), XL(>=P95)
+//   - 使用KLL Sketch滚动4周历史计算阈值
+//   - 需要reset()更新跨天阈值
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

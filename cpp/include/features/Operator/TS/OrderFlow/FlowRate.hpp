@@ -4,14 +4,21 @@
 // FLOW_RATE - 订单流率特征 (分钟级)
 // =============================================================================
 // 计算每分钟的订单流金额率 (单位: 万元/分钟)
+//
+// 【公式定义】
 //   mk_bid/ask  = Σamt^{M,B/A} / 1min  (买/卖方挂单率)
 //   cn_bid/ask  = Σamt^{C,B/A} / 1min  (买/卖方撤单率)
 //   tk_bid/ask  = Σamt^{T,B/A} / 1min  (买/卖方吃单率)
 //   net_ord     = (mk_bid - cn_bid) - (mk_ask - cn_ask)  (净订单流)
 //   foi         = (ΔV^B - ΔV^A) / (|ΔV^B| + |ΔV^A|)      (订单流失衡)
 //
-// compute: 每笔订单时按类型和方向累计金额 (Tick_Sequential onTick)
-// flush:   每分钟输出订单流率 (Minute_Sequential onMinute)
+// 【触发域】
+//   compute: onTaker / onMaker / onCancel
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: TickData.lob.{order_type, order_dir, volume, price} (onTaker/onMaker/onCancel)
+//   输出: mk_bid, mk_ask, cn_bid, cn_ask, tk_bid, tk_ask, net_ord, foi (onMinute)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

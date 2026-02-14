@@ -11,9 +11,10 @@
 // #include "codec/L2_DataType.hpp"
 #include "define/FastBitmap.hpp"
 #include "define/MemPool.hpp"
-#include "features/CoreSequential.hpp"
 #include "features/Backend/FeatureStore.hpp"
+#include "features/CoreSequential.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
+
 // #include "math/sample/ResampleRunBar.hpp"
 
 #if DEBUG_ANOMALY_PRINT == 1
@@ -59,9 +60,8 @@ public:
     init_sentinel_levels();
   }
 
-  // Set current date for feature computation
-  void set_current_date(const std::string &date_str) {
-    core_sequential_.set_date(date_str);
+  void begin_day(const std::string &date_str) {
+    core_sequential_.begin_day(date_str);
 
 #if DEBUG_BOOK_PRINT
     should_log_this_day_ = false;
@@ -88,6 +88,10 @@ public:
       }
     }
 #endif
+  }
+
+  void end_day() {
+    core_sequential_.end_day();
   }
 
   // Get TOB invalid count

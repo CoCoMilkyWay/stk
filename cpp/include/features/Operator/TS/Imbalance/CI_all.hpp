@@ -4,14 +4,20 @@
 // CI_all (Cumulative Imbalance - All Levels) - 全档累计失衡
 // =============================================================================
 // 使用交易所提供的全市场挂单量计算失衡率（包括30档之外的所有挂单）
-//   CI_all = (全市场买量 - 全市场卖量) / (全市场买量 + 全市场卖量)
 //
-// 数据来源:
-//   TickData.lob.all_bid_volume - 交易所提供的全市场买单总量
-//   TickData.lob.all_ask_volume - 交易所提供的全市场卖单总量
+// 【公式定义】
+//   CI_all = (V_{all}^{M,B} - V_{all}^{M,A}) / (V_{all}^{M,B} + V_{all}^{M,A})
 //
-// 使用示例:
-//   CI_all Ci_all{td, Ci_all_};
+// 【触发域】
+//   compute: onDepth
+//   flush:   onDepth
+//
+// 【输入输出】
+//   输入: TickData.lob.all_bid_volume (onDepth), all_ask_volume (onDepth)
+//   输出: ci_all (onDepth)
+//
+// 【备注】
+//   - 数据来源: 交易所提供的全市场挂单量
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

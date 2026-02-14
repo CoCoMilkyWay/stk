@@ -4,23 +4,33 @@
 // Para (Parabola Fit) - 抛物线拟合
 // =============================================================================
 // 对depth做二次拟合: V_i ~ c0 + c1*i + c2*i^2
+//
+// 【公式定义】
+//   V_i ~ c0 + c1·i + c2·i²
 //   c0 - 截距 (近端流动性)
 //   c1 - 斜率 (风偏方向)
 //   c2 - 曲率 (<0:近端订单块; >0:做市类挂单)
 //
-// 模板参数:
+// 【触发域】
+//   compute: onMinute
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: bid_qty[0:29] (onDepth), ask_qty[0:29] (onDepth)
+//   输出: {b/a}_para_cN (onMinute)
+//
+// 【模板参数】
 //   IS_BID - true=买侧(b_para), false=卖侧(a_para)
 //   COEF   - 0=c0, 1=c1, 2=c2
 //
-// DAG中使用:
+// 【使用示例】
 //   Para<true, 0>  b_para_c0{bid_qty_, ask_qty_, b_para_c0_};
 //   Para<true, 1>  b_para_c1{bid_qty_, ask_qty_, b_para_c1_};
 //   Para<true, 2>  b_para_c2{bid_qty_, ask_qty_, b_para_c2_};
 //   Para<false, 0> a_para_c0{bid_qty_, ask_qty_, a_para_c0_};
-//   ...
 //
-// 使用30档数据拟合，最小二乘法: (X'X)^-1 * X'y
-// X = [1, i, i^2] for i=0..29
+// 【备注】
+//   - 使用30档数据拟合，最小二乘法: (X'X)^-1 * X'y
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

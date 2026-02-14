@@ -4,15 +4,29 @@
 // DDI (Distance-Discounted Imbalance) - 距离折扣失衡
 // =============================================================================
 // 按价格距离 e^(-λΔp) 折扣的多档失衡
-//   Δp_i = (ask_price_i - bid_price_i) / 2 相对中间价的距离
-//   DDI = Σ e^(-λΔp)*(V_bid - V_ask) / Σ e^(-λΔp)*(V_bid + V_ask)
 //
-// 模板参数:
+// 【公式定义】
+//   Δp_i = 档位i到中间价的距离
+//   w_i = e^(-λ·Δp_i)
+//   DDI = Σ w_i·(V_{i,t}^{M,B} - V_{i,t}^{M,A}) / Σ w_i·(V_{i,t}^{M,B} + V_{i,t}^{M,A})
+//
+// 【触发域】
+//   compute: onDepth
+//   flush:   onDepth
+//
+// 【输入输出】
+//   输入: bid_qty[0:29] (onDepth), ask_qty[0:29] (onDepth), bid_price[0:29] (onDepth), ask_price[0:29] (onDepth)
+//   输出: ddi_λ (onDepth)
+//
+// 【模板参数】
 //   LAMBDA_X100 - λ值的100倍 (1=λ0.01, 2=λ0.02)
 //
-// 使用示例:
-//   DDI<1> Ddi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_1_};  // λ=0.01
-//   DDI<2> Ddi_2{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_2_};  // λ=0.02
+// 【使用示例】
+//   DDI<1> ddi_1{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_1_};  // λ=0.01
+//   DDI<2> ddi_2{BidQty_, AskQty_, BidPrice_, AskPrice_, Ddi_2_};  // λ=0.02
+//
+// 【备注】
+//   - 使用快速exp近似 (泰勒前4项), 相对误差 < 1%
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

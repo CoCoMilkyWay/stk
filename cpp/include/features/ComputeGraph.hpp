@@ -356,18 +356,16 @@ public:
   explicit DAG(TickData &td, const std::string &code) : tick_data(td), asset_code_(code), l0(tick_data, asset_code_), l1(minute_data, l0) {}
 
   // ===========================================================================
-  // 跨天重置 (统一维护)
+  // 盘前重置
   // ===========================================================================
-  void reset_at_day_start() {
+  void at_day_start() {
     l0.Taker.reset();
     l0.Maker.reset();
     l0.Cancel.reset();
     l0.DepthData.reset();
     l0.Ofi_1.reset();
     l0.Ofi_5.reset();
-    // LabelReturn
     l0.LabelReturn.reset();
-    // L1 算子
     l1.Ctr.reset();
     l1.Oa.reset();
     l1.Hla.reset();
@@ -376,6 +374,12 @@ public:
     l1.Behav.reset();
     l1.Manip.reset();
     l1.Resiliency.reset();
-    // TODO: 后续新增算子的跨天重置逻辑统一加在这里
+  }
+
+  // ===========================================================================
+  // 盘尾计算 (主要给标签类特征用)
+  // ===========================================================================
+  void at_day_end() {
+    // 例如: l0.LabelReturn 可能需要在此做最后的计算
   }
 };

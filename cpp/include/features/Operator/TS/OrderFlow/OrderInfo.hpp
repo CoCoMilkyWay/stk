@@ -4,7 +4,17 @@
 // OrderInfo - 订单记录层
 // =============================================================================
 // 记录订单信息，支持 TAKER/MAKER/CANCEL 三种类型
-// 输出: price (元), timestamp (毫秒), tickindex, volume (股), dir (1=BID, -1=ASK)
+//
+// 【公式定义】
+//   price, timestamp (ms), tickindex, volume (股), dir (1=BID, -1=ASK)
+//
+// 【触发域】
+//   compute: onTaker / onMaker / onCancel
+//   flush:   onTaker / onMaker / onCancel
+//
+// 【输入输出】
+//   输入: TickData.lob.{price, hour, minute, second, millisecond, l0_index, volume, order_dir} (onTaker/onMaker/onCancel)
+//   输出: price, timestamp, tickindex, volume, dir (onTaker/onMaker/onCancel)
 // =============================================================================
 
 #include "features/DataDefine.hpp"

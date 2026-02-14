@@ -4,10 +4,21 @@
 // REPRE (Depth Representation) - 多档深度表征空间 (DUMMY)
 // =============================================================================
 // 多档深度的自监督表征学习
-// 当前实现: 返回0作为placeholder, 后续需要接入预训练backbone
 //
-// 输入频率: ON_DEPTH
-// 输出频率: per sec
+// 【公式定义】
+//   depth_repre = f_θ(X), X = {V_{i}^{B}, V_{i}^{A}}_{i=1}^{N}
+//
+// 【触发域】
+//   compute: onMinute
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: 多档深度数据 (onDepth)
+//   输出: depth_repre (onMinute)
+//
+// 【备注】
+//   - 当前实现: 返回0作为placeholder
+//   - 后续需要接入预训练backbone (自编码器、对比学习等)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

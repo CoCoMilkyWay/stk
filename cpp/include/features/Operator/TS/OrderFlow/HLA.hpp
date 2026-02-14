@@ -4,19 +4,25 @@
 // HLA (Hidden Liquidity Adjusted) - 潜在流动性调整失衡
 // =============================================================================
 // 预测后续时刻的失衡 (根据 refill/cancel rate)
-//   hla_imba = (Ṽ^B - Ṽ^A) / (Ṽ^B + Ṽ^A)
-//   Ṽ^s = V^s * (1 + ρ^s)
-//   ρ^s = (|O^M,s| - |O^C,s|) / (|O^M,s| + |O^C,s|)  (refill rate)
 //
-// 输入频率: PER_ORDER + ON_DEPTH
-// 输出频率: per sec
+// 【公式定义】
+//   hla_imba = (Ṽ^B - Ṽ^A) / (Ṽ^B + Ṽ^A)
+//   Ṽ^s = V^s · (1 + ρ^s)
+//   ρ^s = (|O^{M,s}| - |O^{C,s}|) / (|O^{M,s}| + |O^{C,s}|)  (refill rate)
+//
+// 【触发域】
+//   compute: onMaker / onCancel
+//   flush:   onDepth
+//
+// 【输入输出】
+//   输入: TickData.lob.{order_type, order_dir, volume} (onMaker/onCancel), bid_qty[0] (onDepth), ask_qty[0] (onDepth)
+//   输出: hla_imba (onDepth)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
-// compute: 每笔订单时累计, flush: 深度更新时输出（读取深度）
 class HLA {
 public:
   HLA(TickData &td,

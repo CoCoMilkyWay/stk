@@ -61,6 +61,7 @@ inline void Minute_Sequential::compute_and_store() {
 
   if (Trigger_onMinute) {
     dag_.l1.MinuteIndex.compute(); // input: minute_data
+    dag_.l1.MinuteIndex.flush();   // output: MinuteIndex_
 
     // --- CI ---
     dag_.l1.Ci_5.compute();   // input: l0.BidQty_, l0.AskQty_

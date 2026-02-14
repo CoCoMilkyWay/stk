@@ -4,13 +4,20 @@
 // MANIP (Manipulation) - 市场操纵行为特征 (降频版)
 // =============================================================================
 // 计算高频交易相关的操纵行为指标 (简化实现, 不追踪订单ID)
+//
+// 【公式定义】
 //   ptc_rt = 成交前近期撤单占比 (用窗口统计近似)
 //   fleet_rt = 短存活订单占比 (用撤单率近似)
 //   spoof_int = 近端大额快速撤单强度 (用大额撤单率近似)
 //   stale_ratio_bid/ask = 老单占比 (用深度稳定性近似)
 //
-// compute: 每笔订单时累计, 内部按秒推进 (基于 l0_index)
-// flush:   每分钟输出当前值
+// 【触发域】
+//   compute: onTaker / onMaker / onCancel (内部按秒推进)
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: TickData.lob.{order_type, volume, l0_index} (onTaker/onMaker/onCancel), bid_qty[0:29] (onDepth), ask_qty[0:29] (onDepth)
+//   输出: ptc_rt, fleet_rt, spoof_int, stale_ratio_bid, stale_ratio_ask (onMinute)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"

@@ -4,15 +4,22 @@
 // COST (Impact Cost) - 冲击成本
 // =============================================================================
 // 计算吃掉N档的加权平均执行价与中间价的偏离
+//
+// 【公式定义】
 //   cost_buy_N  = VWAP(ask[1:N]) / mid_price - 1  (买方冲击成本, 正值)
 //   cost_sell_N = 1 - VWAP(bid[1:N]) / mid_price  (卖方冲击成本, 正值)
 //
-// 模板参数:
+// 【触发域】
+//   compute: onMinute
+//   flush:   onMinute
+//
+// 【输入输出】
+//   输入: {bid/ask}_price[0:N-1] (onDepth), {bid/ask}_qty[0:N-1] (onDepth), mid_price (onDepth)
+//   输出: cost_{buy/sell}_N (onMinute)
+//
+// 【模板参数】
 //   N_LEVELS - 档位数 (1, 5, 10)
 //   IS_BUY   - true=买方冲击(吃ask), false=卖方冲击(吃bid)
-//
-// 输入频率: ON_DEPTH (盘口更新时)
-// 输出频率: per sec (由外部按秒读取)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
