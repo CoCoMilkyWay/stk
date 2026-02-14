@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../misc/misc.hpp"
-#include "features/backend/FeatureStore.hpp"
+#include "../Misc/Misc.hpp"
+#include "features/Backend/FeatureStore.hpp"
 #include <algorithm>
 #include <vector>
 

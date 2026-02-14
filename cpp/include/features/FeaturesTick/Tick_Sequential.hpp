@@ -1,7 +1,7 @@
 #pragma once
 
-#include "features/backend/FeatureStore.hpp"
-#include "features/backend/FeatureStoreConfig.hpp"
+#include "features/Backend/FeatureStore.hpp"
+#include "features/Backend/FeatureStoreConfig.hpp"
 #include <array>
 
 class DAG; // Forward declaration

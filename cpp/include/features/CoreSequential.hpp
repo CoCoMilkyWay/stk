@@ -4,7 +4,7 @@
 #include "features/ComputeGraph.hpp"
 #include "features/FeaturesTick/Tick_Sequential.hpp"
 #include "features/FeaturesMinute/Minute_Sequential.hpp"
-#include "features/backend/FeatureStore.hpp"
+#include "features/Backend/FeatureStore.hpp"
 #include "math/sample/ResamplerTick2Min.hpp"
 
 // Sequential Core: Hierarchical 2-level feature computation with resampling

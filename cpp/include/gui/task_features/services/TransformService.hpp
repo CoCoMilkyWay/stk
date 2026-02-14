@@ -7,7 +7,7 @@
 //
 #pragma once
 
-#include "features/backend/FeatureReader.hpp"
+#include "features/Backend/FeatureReader.hpp"
 #include "gui/coro/CoroManager.hpp"
 
 #include <boost/asio/awaitable.hpp>

@@ -15,7 +15,7 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 // #include "features/FeaturesDefine.hpp"
-#include "features/misc/misc.hpp"
+#include "features/Misc/Misc.hpp"
 #include <array>
 
 // 预计算60秒周期的sin查找表（运行时初始化）

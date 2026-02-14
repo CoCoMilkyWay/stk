@@ -39,7 +39,7 @@ stk/
     │   │   ├── CoreSequential.hpp                # 🧮 序列特征核心: 时间序列处理
     │   │   ├── FeaturesTick/                     # 🧮 Tick级特征 (逐笔粒度)
     │   │   ├── FeaturesMinute/                   # 🧮 分钟级特征
-    │   │   └── backend/                          # 🧮 特征存储后端
+    │   │   └── Backend/                          # 🧮 特征存储后端
     │   │       ├── FeatureStore.hpp              # 🧮 存储引擎: 写入/并发控制
     │   │       ├── FeatureStoreConfig.hpp        # 🧮 存储配置: Float16/布局
     │   │       ├── FeatureReader.hpp             # 🧮 读取引擎: Zstd解压/列式加载

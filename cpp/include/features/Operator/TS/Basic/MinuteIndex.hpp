@@ -14,7 +14,7 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 // #include "features/FeaturesDefine.hpp"
-#include "features/misc/misc.hpp"
+#include "features/Misc/Misc.hpp"
 
 constexpr float MIN_PHASE_SCALE = 2.0f * PI / 60.0f;
 

@@ -6,7 +6,7 @@
 //   - X-axis: uniform time display (HH:MM for L1, HH:MM:SS for L0)
 #pragma once
 
-#include "features/backend/FeatureStoreConfig.hpp"
+#include "features/Backend/FeatureStoreConfig.hpp"
 #include "gui/coro/CoroManager.hpp"
 
 #include <array>

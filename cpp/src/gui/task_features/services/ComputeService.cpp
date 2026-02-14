@@ -1,6 +1,6 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
-#include "features/backend/FeatureStore.hpp"
+#include "features/Backend/FeatureStore.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "shared/SharedData.hpp"
