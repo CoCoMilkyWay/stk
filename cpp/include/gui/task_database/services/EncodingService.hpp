@@ -65,7 +65,9 @@ private:
 
   FileCheck::FileCheckResult file_check_result_; // Cache file check result
 
-  std::future<void> encoding_thread_; // Background encoding thread
+  std::future<void> encoding_thread_;   // Background encoding thread
+  std::future<void> file_check_thread_; // Background file check thread
+  std::atomic<bool> file_check_running_{false};
 
   std::function<void()> scan_callback_; // Callback to trigger scan after encoding
 
@@ -111,7 +113,11 @@ public:
 
   // File check (archive validation)
   void run_file_check(const std::string &archive_base_dir);
+  bool is_file_check_running() const { return file_check_running_.load(); }
   const FileCheck::FileCheckResult &get_file_check_result() const { return file_check_result_; }
+
+private:
+  void run_file_check_async(const std::string &archive_base_dir);
 };
 
 } // namespace GUI::Database

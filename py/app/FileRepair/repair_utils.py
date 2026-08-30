@@ -64,19 +64,22 @@ def process_with_pool(
     """
     success_count = 0
     failed_items = []
+    total = len(items)
+    completed = 0
     
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = {executor.submit(process_func, item, idx): item 
                    for idx, item in enumerate(items)}
         
         for future in as_completed(futures):
+            completed += 1
             name, success, message = future.result()
             if success:
                 success_count += 1
-                print(f"✓ {name}")
+                print(f"[{completed}/{total}] ✓ {name}")
             else:
                 failed_items.append((name, message))
-                print(f"✗ {name}: {message}")
+                print(f"[{completed}/{total}] ✗ {name}: {message}")
     
     return success_count, failed_items
 

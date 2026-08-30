@@ -1,6 +1,7 @@
 #include "misc/file_check.hpp"
 #include "misc/cross_platform.hpp"
 
+#include <cassert>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -21,6 +22,7 @@ struct ArchiveErrors {
   std::vector<std::string> naming_errors;
   std::vector<std::string> format_errors;
   std::vector<std::string> structure_errors;
+  std::vector<std::string> integrity_errors;
   std::vector<std::string> zip_files;
 };
 
@@ -44,37 +46,69 @@ bool is_valid_number_string(const std::string &str, size_t expected_len) {
   return true;
 }
 
-std::pair<bool, std::string> check_single_archive_structure(const std::string &archive_path) {
-  std::string cmd = "unrar lb \"" + archive_path + "\" 2>/dev/null | head -1";
+struct ArchiveProbe {
+  bool structure_ok = false;
+  std::string structure_err;
+  bool integrity_ok = false;
+  std::string integrity_err;
+};
+
+ArchiveProbe probe_single_archive(const std::string &archive_path) {
+  ArchiveProbe probe;
+
+  // Run `unrar lb` capturing both stdout (file list) and stderr (diagnostics).
+  // `unrar lb` reads only the archive index, not compressed data, so this is cheap.
+  // Truncation / corrupt headers are reported on stderr with a non-zero exit code.
+  std::string cmd = "unrar lb \"" + archive_path + "\" 2>&1";
   FILE *pipe = safe_popen(cmd.c_str(), "r");
-  if (!pipe) {
-    return {false, "cannot read archive"};
+  assert(pipe && "popen for unrar lb failed");
+
+  std::string combined;
+  char buffer[4096];
+  while (fgets(buffer, sizeof(buffer), pipe)) {
+    combined += buffer;
+  }
+  int exit_code = safe_pclose(pipe);
+
+  // Integrity: non-zero exit or known corruption markers in the output.
+  if (exit_code != 0 ||
+      combined.find("Unexpected end of archive") != std::string::npos ||
+      combined.find("Corrupt header") != std::string::npos) {
+    probe.integrity_ok = false;
+    probe.integrity_err = "corrupt or truncated (unrar exit " + std::to_string(exit_code) + ")";
+  } else {
+    probe.integrity_ok = true;
   }
 
-  char buffer[512];
-  std::string first_entry;
-  if (fgets(buffer, sizeof(buffer), pipe)) {
-    first_entry = buffer;
-    if (!first_entry.empty() && first_entry.back() == '\n') {
-      first_entry.pop_back();
+  // Structure: first line matching YYYYMMDD/asset_code/*.csv.
+  // Scan rather than take line 1, because stderr diagnostics may precede the
+  // file list when stdout/stderr are merged.
+  size_t pos = 0;
+  while (pos < combined.size()) {
+    size_t nl = combined.find('\n', pos);
+    std::string line = (nl == std::string::npos)
+                           ? combined.substr(pos)
+                           : combined.substr(pos, nl - pos);
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+
+    pos = (nl == std::string::npos) ? combined.size() : nl + 1;
+
+    if (line.length() >= 9 && line[8] == '/' &&
+        std::isdigit(line[0]) && std::isdigit(line[1]) &&
+        std::isdigit(line[2]) && std::isdigit(line[3]) &&
+        std::isdigit(line[4]) && std::isdigit(line[5]) &&
+        std::isdigit(line[6]) && std::isdigit(line[7])) {
+      probe.structure_ok = true;
+      break;
     }
   }
-  safe_pclose(pipe);
 
-  if (first_entry.empty()) {
-    return {false, "empty archive"};
+  if (!probe.structure_ok) {
+    probe.structure_err = "invalid structure (no YYYYMMDD/ entry)";
   }
 
-  // Expected: YYYYMMDD/asset_code/*.csv (e.g., 20240925/000001.SZ/行情.csv)
-  if (first_entry.length() >= 9 && first_entry[8] == '/' &&
-      std::isdigit(first_entry[0]) && std::isdigit(first_entry[1]) &&
-      std::isdigit(first_entry[2]) && std::isdigit(first_entry[3]) &&
-      std::isdigit(first_entry[4]) && std::isdigit(first_entry[5]) &&
-      std::isdigit(first_entry[6]) && std::isdigit(first_entry[7])) {
-    return {true, ""};
-  }
-
-  return {false, "invalid structure: " + first_entry};
+  return probe;
 }
 
 // ============================================================================
@@ -181,9 +215,13 @@ bool detect_solid_rar(const std::string &archive_path) {
 // UNIFIED ARCHIVE VALIDATION
 // ============================================================================
 
-ArchiveCheckResult validate_archive_structure(const std::string &archive_base_dir) {
+ArchiveCheckResult validate_archive_structure(const std::string &archive_base_dir,
+                                              const ProgressCallback &progress) {
   ArchiveCheckResult result;
   result.is_valid = true;
+
+  // Archives that pass naming + format checks and need an unrar lb probe.
+  std::vector<std::string> to_probe;
 
   // Single pass through directory structure
   // Expected structure: archive_base/YYYY/YYYYMM/YYYYMMDD.rar
@@ -261,35 +299,55 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
           continue;
         }
 
-        // All naming checks passed, now check format and structure
-        bool is_valid_archive = true;
+        // All naming checks passed, now check format. Probe (unrar lb) is
+        // expensive, so only queue files that pass format checks for probing.
+        bool format_ok = true;
 
         // Check format: 7z disguised as rar
         if (detect_7z_format(filepath)) {
           result.errors.format_errors.push_back(filepath + " (7z disguised as .rar)");
-          is_valid_archive = false;
+          format_ok = false;
         }
 
         // Check format: solid RAR
         if (detect_solid_rar(filepath)) {
           result.errors.format_errors.push_back(filepath + " (solid RAR)");
-          is_valid_archive = false;
+          format_ok = false;
         }
 
-        // Check internal structure
-        auto structure_result = check_single_archive_structure(filepath);
-        if (!structure_result.first) {
-          result.errors.structure_errors.push_back(filepath + " - " + structure_result.second);
-          is_valid_archive = false;
-        }
-
-        if (is_valid_archive) {
-          result.valid_archives.push_back(filepath);
-        } else {
+        if (!format_ok) {
           result.is_valid = false;
+          continue; // skip unrar probe for non-RAR / solid archives
         }
+
+        to_probe.push_back(filepath);
       }
     }
+  }
+
+  // Probe archives sequentially. The archive store is a single-actuator
+  // spinning disk (measured: ST4000NM0053, 7200 RPM); concurrent unrar lb
+  // calls each do O(entries) scattered seeks, and running several at once
+  // thrashes the disk's single head -- measured 359x slowdown (303ms alone
+  // vs 108s+ under 8-way concurrency) for the same archive. Sequential is
+  // the only way to keep per-archive latency bounded on this storage.
+  const size_t total = to_probe.size();
+  for (size_t i = 0; i < total; ++i) {
+    ArchiveProbe probe = probe_single_archive(to_probe[i]);
+    if (!probe.integrity_ok) {
+      result.errors.integrity_errors.push_back(to_probe[i] + " - " + probe.integrity_err);
+      result.is_valid = false;
+    }
+    if (!probe.structure_ok) {
+      result.errors.structure_errors.push_back(to_probe[i] + " - " + probe.structure_err);
+      result.is_valid = false;
+    }
+    if (probe.integrity_ok && probe.structure_ok) {
+      result.valid_archives.push_back(to_probe[i]);
+    }
+
+    if (progress)
+      progress(i + 1, total, to_probe[i]);
   }
 
   return result;
@@ -301,7 +359,8 @@ ArchiveCheckResult validate_archive_structure(const std::string &archive_base_di
 // PUBLIC API
 // ============================================================================
 
-FileCheckResult check_src_archives(const std::string &archive_base_dir) {
+FileCheckResult check_src_archives(const std::string &archive_base_dir,
+                                   ProgressCallback progress) {
   FileCheckResult result;
 
   // Check if path exists
@@ -324,22 +383,24 @@ FileCheckResult check_src_archives(const std::string &archive_base_dir) {
   }
 
   // Unified validation: naming, format, and structure checks in single pass
-  ArchiveCheckResult arch_result = validate_archive_structure(archive_base_dir);
+  ArchiveCheckResult arch_result = validate_archive_structure(archive_base_dir, progress);
 
   // Fill in statistics
   result.valid_archives = arch_result.valid_archives.size();
   result.naming_errors = arch_result.errors.naming_errors.size();
   result.format_errors = arch_result.errors.format_errors.size();
   result.structure_errors = arch_result.errors.structure_errors.size();
+  result.integrity_errors = arch_result.errors.integrity_errors.size();
   result.zip_files = arch_result.errors.zip_files.size();
   result.total_archives = result.valid_archives + result.naming_errors +
                           result.format_errors + result.structure_errors +
-                          result.zip_files;
+                          result.integrity_errors + result.zip_files;
 
   // Copy all error file paths
   result.naming_error_files = arch_result.errors.naming_errors;
   result.format_error_files = arch_result.errors.format_errors;
   result.structure_error_files = arch_result.errors.structure_errors;
+  result.integrity_error_files = arch_result.errors.integrity_errors;
   result.zip_error_files = arch_result.errors.zip_files;
 
   // Collect error messages (first few of each type)
@@ -351,6 +412,9 @@ FileCheckResult check_src_archives(const std::string &archive_base_dir) {
   }
   for (size_t i = 0; i < std::min(size_t(3), arch_result.errors.structure_errors.size()); ++i) {
     result.error_messages.push_back("Structure: " + arch_result.errors.structure_errors[i]);
+  }
+  for (size_t i = 0; i < std::min(size_t(3), arch_result.errors.integrity_errors.size()); ++i) {
+    result.error_messages.push_back("Integrity: " + arch_result.errors.integrity_errors[i]);
   }
   for (size_t i = 0; i < std::min(size_t(3), arch_result.errors.zip_files.size()); ++i) {
     result.error_messages.push_back("ZIP file: " + arch_result.errors.zip_files[i]);
@@ -383,7 +447,7 @@ bool check_src_archives_print(const std::string &archive_base_dir) {
   }
 
   // Unified validation: naming, format, and structure checks in single pass
-  ArchiveCheckResult result = validate_archive_structure(archive_base_dir);
+  ArchiveCheckResult result = validate_archive_structure(archive_base_dir, nullptr);
 
   // Report naming errors
   if (!result.errors.naming_errors.empty()) {
@@ -429,6 +493,18 @@ bool check_src_archives_print(const std::string &archive_base_dir) {
     ok = false;
   } else {
     // std::cout << "✓ Internal hierarchy     : all correct (YYYYMMDD/asset_code/*.csv)\n";
+  }
+
+  // Report integrity errors (truncated / corrupt headers)
+  if (!result.errors.integrity_errors.empty()) {
+    // std::cout << "✗ Archive integrity      : " << result.errors.integrity_errors.size() << " corrupt/truncated archive(s) found\n";
+    // for (const auto &error : result.errors.integrity_errors) {
+    //   std::cout << "  " << error << "\n";
+    // }
+    // std::cout << "\n";
+    // std::cout << "  Fix: re-download or re-create the archive\n";
+    // std::cout << "\n";
+    ok = false;
   }
 
   // Report zip files separately

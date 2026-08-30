@@ -150,6 +150,19 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
   if (!terminal_)
     return;
 
+  if (file_check_running_.load()) {
+    terminal_->AddLine("[File Check] Already running, please wait...", Color::Yellow());
+    return;
+  }
+
+  file_check_running_.store(true);
+  file_check_thread_ = std::async(std::launch::async, [this, archive_base_dir]() {
+    run_file_check_async(archive_base_dir);
+    file_check_running_.store(false);
+  });
+}
+
+void EncodingService::run_file_check_async(const std::string &archive_base_dir) {
   terminal_->AddLine("========================================");
   terminal_->AddLine("[File Check] Starting Archive Validation");
   terminal_->AddLine("========================================");
@@ -158,12 +171,25 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
 
   // Step 1: Check directory exists
   terminal_->AddLine("[File Check] Step 1: Checking archive directory...");
-  file_check_result_ = FileCheck::check_src_archives(archive_base_dir);
 
-  if (!file_check_result_.archive_dir_exists) {
+  // Each probe (unrar lb) does O(entries) scattered read+lseek pairs across
+  // the whole archive to walk its header chain (measured via strace: ~6500
+  // read+lseek pairs for a 3270-entry / 3.9GB archive). The archive store is
+  // a single-actuator spinning disk, so probes run sequentially -- running
+  // several concurrently thrashes the disk head (measured 359x slowdown).
+  auto progress = [this](size_t done, size_t total, const std::string &path) {
+    terminal_->AddLine("[File Check]   (" + std::to_string(done) + "/" +
+                       std::to_string(total) + ") " + path);
+  };
+
+  FileCheck::FileCheckResult local_result =
+      FileCheck::check_src_archives(archive_base_dir, progress);
+
+  if (!local_result.archive_dir_exists) {
     terminal_->AddLine("[File Check] ✗ Archive directory does not exist", Color::Yellow());
     terminal_->AddLine("[File Check] Will use built binaries instead");
     terminal_->AddLine("========================================");
+    file_check_result_ = local_result;
     return;
   }
 
@@ -172,10 +198,11 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
 
   // Step 2: Check required commands
   terminal_->AddLine("[File Check] Step 2: Checking required commands (unrar, 7z, rar, gdb)...");
-  if (!file_check_result_.commands_available) {
+  if (!local_result.commands_available) {
     terminal_->AddLine("[File Check] ✗ Some required commands are missing", Color::Red());
     terminal_->AddLine("[File Check] Please install: unrar, 7z, rar, gdb");
     terminal_->AddLine("========================================");
+    file_check_result_ = local_result;
     return;
   }
   terminal_->AddLine("[File Check] ✓ All required commands available", Color::Green());
@@ -183,7 +210,7 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
 
   // Step 3: Scan archives
   terminal_->AddLine("[File Check] Step 3: Scanning archive files...");
-  terminal_->AddLine("[File Check] Total archives found: " + std::to_string(file_check_result_.total_archives), Color::Green());
+  terminal_->AddLine("[File Check] Total archives found: " + std::to_string(local_result.total_archives), Color::Green());
   terminal_->AddLine("");
 
   // Step 4-7: Validate naming, format, structure, ZIP files
@@ -204,34 +231,42 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
   };
 
   print_errors("Step 4", "Checking archive naming (YYYY/YYYYMM/YYYYMMDD.rar)",
-               file_check_result_.naming_errors, file_check_result_.naming_error_files);
+               local_result.naming_errors, local_result.naming_error_files);
 
   print_errors("Step 5", "Checking archive format (RAR non-solid)",
-               file_check_result_.format_errors, file_check_result_.format_error_files,
+               local_result.format_errors, local_result.format_error_files,
                "Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py");
 
   print_errors("Step 6", "Checking internal structure (YYYYMMDD/asset_code/*.csv)",
-               file_check_result_.structure_errors, file_check_result_.structure_error_files,
+               local_result.structure_errors, local_result.structure_error_files,
                "Run py/app/FileRepair/fix_archive_structure.py");
 
+  print_errors("Step 6b", "Checking archive integrity (truncated / corrupt headers)",
+               local_result.integrity_errors, local_result.integrity_error_files,
+               "Re-download or re-create the archive");
+
   print_errors("Step 7", "Checking for ZIP files (should be RAR)",
-               file_check_result_.zip_files, file_check_result_.zip_error_files,
+               local_result.zip_files, local_result.zip_error_files,
                "Run py/app/FileRepair/fix_zip_to_rar.py");
 
   // Summary
   terminal_->AddLine("========================================");
-  if (file_check_result_.passed) {
+  if (local_result.passed) {
     terminal_->AddLine("[File Check] ✓ ALL CHECKS PASSED", Color::Green());
-    terminal_->AddLine("[File Check] Valid archives: " + std::to_string(file_check_result_.valid_archives));
+    terminal_->AddLine("[File Check] Valid archives: " + std::to_string(local_result.valid_archives));
   } else {
     terminal_->AddLine("[File Check] ✗ SOME CHECKS FAILED", Color::Red());
-    terminal_->AddLine("[File Check] Valid: " + std::to_string(file_check_result_.valid_archives) +
-                       " / Total: " + std::to_string(file_check_result_.total_archives));
+    terminal_->AddLine("[File Check] Valid: " + std::to_string(local_result.valid_archives) +
+                       " / Total: " + std::to_string(local_result.total_archives));
     terminal_->AddLine("[File Check] Total errors: " + std::to_string(
-                                                           file_check_result_.naming_errors + file_check_result_.format_errors +
-                                                           file_check_result_.structure_errors + file_check_result_.zip_files));
+                                                           local_result.naming_errors + local_result.format_errors +
+                                                           local_result.structure_errors + local_result.integrity_errors +
+                                                           local_result.zip_files));
   }
   terminal_->AddLine("========================================");
+
+  // Publish result once, atomically, at the end.
+  file_check_result_ = local_result;
 }
 
 } // namespace GUI::Database

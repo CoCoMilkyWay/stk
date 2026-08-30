@@ -28,6 +28,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
   const auto progress = encoding_service->get_progress();
   const auto check_result = scan_service->get_last_check_result();
   const auto file_check_result = encoding_service->get_file_check_result();
+  const bool file_check_running = encoding_service->is_file_check_running();
 
   // ========================================================================
   // File Check (Archive Validation)
@@ -39,7 +40,10 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     ImGui::Text("Status:");
     ImGui::SameLine(150);
 
-    if (!file_check_result.was_run()) {
+    if (file_check_running) {
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Checking...");
+      ImGui::TextDisabled("Running in background, see Terminal for progress");
+    } else if (!file_check_result.was_run()) {
       ImGui::TextDisabled("Not checked yet");
     } else if (!file_check_result.archive_dir_exists) {
       ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Archive dir not found");
@@ -62,6 +66,9 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       if (file_check_result.structure_errors > 0) {
         ImGui::BulletText("Structure errors: %zu", file_check_result.structure_errors);
       }
+      if (file_check_result.integrity_errors > 0) {
+        ImGui::BulletText("Integrity errors: %zu (truncated/corrupt)", file_check_result.integrity_errors);
+      }
       if (file_check_result.zip_files > 0) {
         ImGui::BulletText("ZIP files: %zu (need conversion)", file_check_result.zip_files);
       }
@@ -70,11 +77,13 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Run File Check", ImVec2(150, 0))) {
+    ImGui::BeginDisabled(file_check_running);
+    if (ImGui::Button(file_check_running ? "Checking..." : "Run File Check", ImVec2(150, 0))) {
       encoding_service->run_file_check(asset.archive.path);
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled("Check archive format and structure");
+    ImGui::TextDisabled("Check archive format, structure and integrity");
 
     ImGui::Unindent();
   }
