@@ -20,8 +20,7 @@
 
 namespace L2 {
 
-inline constexpr size_t DEFAULT_ENCODER_SNAPSHOT_SIZE = 5000; // 3秒全量快照 4*3600/3=4800
-inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000;  // 逐笔合并(增删改成交)
+inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交)
 
 // Data Struct
 inline constexpr int BLEN = 100;            // default length for Cbuffers (feature computation)

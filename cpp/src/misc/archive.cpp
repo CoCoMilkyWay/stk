@@ -9,33 +9,126 @@
 
 namespace misc {
 
-std::unordered_set<std::string> list_archive_assets(const std::string &archive_path,
-                                                    const std::string &archive_tool) {
-  std::unordered_set<std::string> assets;
+namespace {
+
+// 去掉行尾 \r\n 与两端空白
+std::string trim(const char *begin, const char *end) {
+  while (begin < end && (*begin == ' ' || *begin == '\t'))
+    ++begin;
+  while (end > begin && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t'))
+    --end;
+  return std::string(begin, static_cast<std::size_t>(end - begin));
+}
+
+// "   Name: xxx" → 若前缀匹配 key, 返回值部分, 否则空 optional 语义 (empty + found=false)
+bool field(const char *line, const char *key, std::string &out) {
+  const char *p = line;
+  while (*p == ' ' || *p == '\t')
+    ++p;
+  const std::size_t klen = std::strlen(key);
+  if (std::strncmp(p, key, klen) != 0)
+    return false;
+  p += klen;
+  out = trim(p, p + std::strlen(p));
+  return true;
+}
+
+} // namespace
+
+std::vector<ArchiveEntry> list_archive(const std::string &archive_path,
+                                       const std::string &archive_tool) {
+  std::vector<ArchiveEntry> entries;
   if (!std::filesystem::exists(archive_path))
-    return assets;
+    return entries;
 
-  const std::string cmd = archive_tool + " lb \"" + archive_path + "\"";
+  // vt = technical list: Name / Type / Size 各占一行, 对含空格的文件名也安全
+  // (普通 `l` 是定宽列, 文件名在末列, 有空格就没法可靠切分).
+  const std::string cmd = archive_tool + " vt \"" + archive_path + "\"";
   FILE *pipe = safe_popen(cmd.c_str(), "r");
-  assert(pipe && "list_archive_assets: popen 失败");
+  assert(pipe && "list_archive: popen 失败");
 
-  char line[4096];
+  char line[8192];
+  std::string pending_name;
+  std::size_t pending_size = 0;
+  bool pending_is_file = false;
+  bool pending_has_size = false;
+
+  auto flush = [&]() {
+    if (pending_name.empty() || !pending_is_file || !pending_has_size)
+      return;
+    entries.push_back({pending_name, pending_size, entries.size()});
+  };
+
+  std::string value;
   while (fgets(line, sizeof(line), pipe)) {
-    // "20260803/000001.SZ/行情.csv" → "000001.SZ"
-    const char *first = std::strchr(line, '/');
-    if (!first)
-      continue;
-    const char *second = std::strchr(first + 1, '/');
-    if (!second)
-      continue;
-    assets.emplace(first + 1, static_cast<std::size_t>(second - first - 1));
+    if (field(line, "Name:", value)) {
+      flush();
+      pending_name = value;
+      pending_size = 0;
+      pending_is_file = false;
+      pending_has_size = false;
+    } else if (field(line, "Type:", value)) {
+      pending_is_file = (value == "File");
+    } else if (field(line, "Size:", value)) {
+      pending_size = std::strtoull(value.c_str(), nullptr, 10);
+      pending_has_size = true;
+    }
   }
+  flush();
 
   const int exit_code = safe_pclose(pipe);
-  static_cast<void>(exit_code); // NDEBUG 构建下 assert 消失, 但 pclose 必须留
-  assert(exit_code == 0 && "list_archive_assets: 归档损坏或 unrar 报错");
+  static_cast<void>(exit_code); // NDEBUG 下 assert 消失, 但 pclose 必须留
+  assert(exit_code == 0 && "list_archive: 归档损坏或 unrar 报错");
 
-  return assets;
+  return entries;
+}
+
+void stream_archive_files(const std::string &archive_path,
+                          const std::string &archive_tool,
+                          const std::vector<std::string> &paths,
+                          const std::vector<std::size_t> &sizes,
+                          const FileSink &on_file) {
+  assert(paths.size() == sizes.size() && "stream_archive_files: paths/sizes 长度不等");
+  if (paths.empty())
+    return;
+
+  // -inul 抑制所有提示, stdout 只剩文件内容
+  std::string cmd = archive_tool + " p -inul \"" + archive_path + "\"";
+  std::size_t max_size = 0;
+  for (std::size_t i = 0; i < paths.size(); ++i) {
+    cmd += " \"" + paths[i] + "\"";
+    if (sizes[i] > max_size)
+      max_size = sizes[i];
+  }
+
+  FILE *pipe = safe_popen(cmd.c_str(), "r");
+  assert(pipe && "stream_archive_files: popen 失败");
+
+  // 单个缓冲复用: 回调就地把字节解析成结构体, 不需要同时持有多个文件
+  std::vector<char> buffer(max_size);
+
+  for (std::size_t i = 0; i < paths.size(); ++i) {
+    std::size_t got = 0;
+    while (got < sizes[i]) {
+      const std::size_t n = std::fread(buffer.data() + got, 1, sizes[i] - got, pipe);
+      if (n == 0)
+        break;
+      got += n;
+    }
+    assert(got == sizes[i] &&
+           "stream_archive_files: 流长度与 unrar l 报的尺寸不符 (归档序排错? 包损坏?)");
+    on_file(i, buffer.data(), got);
+  }
+
+  // 流应当恰好读完 — 多出字节说明切分错位
+  char extra;
+  const std::size_t tail = std::fread(&extra, 1, 1, pipe);
+  static_cast<void>(tail);
+  assert(tail == 0 && "stream_archive_files: 流有多余字节 (尺寸表与实际不符)");
+
+  const int exit_code = safe_pclose(pipe);
+  static_cast<void>(exit_code);
+  assert(exit_code == 0 && "stream_archive_files: unrar 非零退出");
 }
 
 } // namespace misc

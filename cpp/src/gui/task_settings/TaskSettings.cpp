@@ -307,12 +307,12 @@ private:
                       cfg.archive_dir_buf,
                       sizeof(cfg.archive_dir_buf),
                       cfg.archive_dir);
-        draw_path_row("Database Dir",
-                      "L2二进制数据库目录: YYYY/MM/DD/ASSET_CODE.SH|SZ/ASSET_CODE.SH|SZ_orders|snapshots_数量.bin",
-                      "##database_dir",
-                      cfg.database_dir_buf,
-                      sizeof(cfg.database_dir_buf),
-                      cfg.database_dir);
+        draw_path_row("Orders Dir",
+                      "L2逐笔二进制目录: YYYY/MM/DD/ASSET_CODE.SH|SZ.bin (委托+成交合并, 快照不落盘)",
+                      "##orders_dir",
+                      cfg.orders_dir_buf,
+                      sizeof(cfg.orders_dir_buf),
+                      cfg.orders_dir);
         draw_path_row("Feature Dir",
                       "特征张量库目录: YYYY/MM/DD/",
                       "##feature_dir",

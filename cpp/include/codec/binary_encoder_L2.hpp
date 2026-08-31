@@ -24,29 +24,7 @@ inline constexpr int ZSTD_COMPRESSION_LEVEL = 6;
 // Intermediate CSV Structures
 // ============================================================================
 
-// Snapshot data (行情)
-struct CSVSnapshot {
-  std::string stock_code;
-  std::string exchange_code;
-  uint32_t date;
-  uint32_t time;
-  uint32_t price;       // in 0.01 RMB units
-  uint32_t volume;      // in shares
-  uint64_t turnover;    // in fen
-  uint32_t trade_count; // incremental count
-
-  // 10-level orderbook
-  uint32_t bid_prices[10];  // in 0.01 RMB units
-  uint32_t bid_volumes[10]; // in shares
-  uint32_t ask_prices[10];  // in 0.01 RMB units
-  uint32_t ask_volumes[10]; // in shares
-
-  // Aggregated orderbook info
-  uint32_t weighted_avg_bid_price; // VWAP in 0.001 RMB units
-  uint32_t weighted_avg_ask_price; // VWAP in 0.001 RMB units
-  uint32_t total_bid_volume;       // in shares
-  uint32_t total_ask_volume;       // in shares
-};
+// 行情.csv (盘口快照) 没有对应结构 — 快照不再编码, 见 encode_orders_from_csv.
 
 // Order data (逐笔委托)
 struct CSVOrder {
@@ -117,19 +95,15 @@ constexpr T clamp_to_bound(uint64_t value, T bound_val) {
 
 constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
 
-// Snapshot field upper bounds extracted from schema
+// Order field upper bounds extracted from schema.
+//
+// Snapshot_Schema 是全字段位宽表, 逐笔字段的位宽也从这里取. 盘口专属的上界
+// (trade_count / turnover / 十档量 / vwap 之类) 随 csv_to_snapshot 一起删了.
 constexpr uint32_t HOUR_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
 constexpr uint32_t MINUTE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
 constexpr uint32_t SECOND_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
-constexpr uint32_t TRADE_COUNT_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "trade_count"));
 constexpr uint32_t VOLUME_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
-constexpr uint64_t TURNOVER_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "turnover"));
 constexpr uint32_t PRICE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
-constexpr uint32_t ORDERBOOK_VOLUME_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_volumes[10]"));
-constexpr uint32_t VWAP_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_vwap"));
-constexpr uint32_t TOTAL_VOLUME_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "all_bid_volume"));
-
-// Order field upper bounds extracted from schema
 constexpr uint32_t MILLISECOND_BOUND = 127; // 7 bits for millisecond in 10ms units (not in schema)
 constexpr uint32_t ORDER_TYPE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
 constexpr uint32_t ORDER_DIR_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
@@ -141,9 +115,9 @@ constexpr uint64_t ORDER_ID_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot
 
 class BinaryEncoder_L2 {
 public:
-  // Constructor with optional capacity hints
-  BinaryEncoder_L2(size_t estimated_snapshots = 5000, size_t estimated_orders = 1000000);
-  
+  // Constructor with optional capacity hint
+  explicit BinaryEncoder_L2(size_t estimated_orders = 1000000);
+
   // Destructor: clean up ZSTD context
   ~BinaryEncoder_L2();
 
@@ -151,17 +125,16 @@ public:
   // CSV Parsing API
   // ------------------------------------------------------------
 
-  // Parse CSV file into intermediate structures
-  bool parse_snapshot_csv(const std::string &filepath, std::vector<CSVSnapshot> &snapshots);
-  bool parse_order_csv(const std::string &filepath, std::vector<CSVOrder> &orders);
-  bool parse_trade_csv(const std::string &filepath, std::vector<CSVTrade> &trades);
+  // 内存里的整块 CSV → 中间结构. CSV 由 unrar p 管道直接送进内存, 不落盘
+  // (见 misc/archive.hpp 里对落盘往返代价的说明).
+  bool parse_order_csv(const char *data, size_t len, std::vector<CSVOrder> &orders);
+  bool parse_trade_csv(const char *data, size_t len, std::vector<CSVTrade> &trades);
 
   // ------------------------------------------------------------
   // Data Conversion API
   // ------------------------------------------------------------
 
   // Convert CSV structures to binary structures
-  static Snapshot csv_to_snapshot(const CSVSnapshot &csv);
   static Order csv_to_order(const CSVOrder &csv);
   static Order csv_to_trade(const CSVTrade &csv);
 
@@ -170,21 +143,28 @@ public:
   // ------------------------------------------------------------
 
   // Encode and compress binary structures to file
-  bool encode_snapshots(const std::vector<Snapshot> &snapshots, 
-                       const std::string &filepath);
-  bool encode_orders(const std::vector<Order> &orders, 
-                    const std::string &filepath);
+  bool encode_orders(const std::vector<Order> &orders,
+                     const std::string &filepath);
 
   // ------------------------------------------------------------
-  // High-Level Interface
+  // High-Level Interface (流式: begin → feed... → finish)
   // ------------------------------------------------------------
+  //
+  // 一个资产的两个 CSV (逐笔委托 + 逐笔成交) 由 unrar p 管道先后送达, 且共用
+  // 一块复用缓冲 —— 后一个到达时前一个的原始字节已被覆盖. 所以接口是流式的:
+  // 每块到达就地解析成中间结构, 两块都喂完再合并排序落盘.
+  //
+  // 快照 (行情.csv) 不再编码: 其产物全项目无人读取 —— 特征计算只吃 orders,
+  // 靠 LimitOrderBook 重建盘口. 省掉的是单日 46.2 GB 里的 10.13 GB 解析量,
+  // 外加整条快照 delta 编码 + zstd + 写文件的开销.
 
-  // Process entire stock data: parse → convert → encode
-  bool process_stock_data(const std::string &stock_dir,
-                         const std::string &output_dir,
-                         const std::string &stock_code,
-                         std::vector<Snapshot> *out_snapshots = nullptr,
-                         std::vector<Order> *out_orders = nullptr);
+  void begin_asset();
+  bool feed_order_csv(const char *data, size_t len);
+  bool feed_trade_csv(const char *data, size_t len);
+
+  // 合并 → 按时间/优先级排序 → 压缩落盘.
+  // tag 仅用于日志定位 (形如 "20260803 600519.SH").
+  bool finish_asset(const std::string &output_file, const std::string &tag);
 
   // Get compression statistics
   const CompressionStats &get_compression_stats() const { return compression_stats; }
@@ -196,9 +176,7 @@ public:
   static std::vector<std::string_view> split_csv_line_view(std::string_view line);
   static uint32_t parse_time_to_ms(uint32_t time_int);
   static inline uint32_t parse_price_to_fen(std::string_view str);
-  static inline uint32_t parse_vwap_price(std::string_view str);
   static inline uint32_t parse_volume(std::string_view str);
-  static inline uint64_t parse_turnover_to_fen(std::string_view str);
 
 private:
   // ------------------------------------------------------------
@@ -209,15 +187,14 @@ private:
   static size_t calculate_compression_bound(size_t data_size);
 
   // ------------------------------------------------------------
-  // Delta Encoding Buffers (reusable, avoid reallocation)
+  // Reusable Buffers (avoid reallocation)
   // ------------------------------------------------------------
 
-  // Snapshot buffers
-  mutable std::vector<uint8_t> temp_snap_hours, temp_snap_minutes, temp_snap_seconds;
-  mutable std::vector<uint16_t> temp_snap_closes;
-  mutable std::vector<uint16_t> temp_snap_bid_prices[10], temp_snap_ask_prices[10];
-  mutable std::vector<uint16_t> temp_snap_bid_vwaps, temp_snap_ask_vwaps;
-  mutable std::vector<uint32_t> temp_snap_bid_volumes, temp_snap_ask_volumes;
+  // 解析/合并中间结果. 一个 worker 顺序处理成千上万个 (资产, 日期),
+  // 这几个 vector 只 clear 不释放, 容量涨到峰值后就不再 malloc.
+  std::vector<CSVOrder> csv_orders_;
+  std::vector<CSVTrade> csv_trades_;
+  std::vector<Order> orders_;
 
   // Order buffers
   mutable std::vector<uint8_t> temp_order_hours, temp_order_minutes, temp_order_seconds, temp_order_millis;
@@ -226,9 +203,9 @@ private:
 
   // Compression statistics
   mutable CompressionStats compression_stats;
-  
+
   // ZSTD compression context (reused across calls)
-  ZSTD_CCtx* zstd_ctx_;
+  ZSTD_CCtx *zstd_ctx_;
 };
 
 } // namespace L2

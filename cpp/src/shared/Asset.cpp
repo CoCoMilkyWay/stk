@@ -43,13 +43,6 @@ size_t AssetItem::get_encoded_count() const {
   return count;
 }
 
-size_t AssetItem::get_snapshots_encoded_count() const {
-  size_t count = 0;
-  for (const auto &[_, di] : date_info)
-    count += di.snapshots_encoded;
-  return count;
-}
-
 size_t AssetItem::get_orders_encoded_count() const {
   size_t count = 0;
   for (const auto &[_, di] : date_info)
@@ -72,13 +65,6 @@ size_t AssetItem::get_total_order_count() const {
   size_t total = 0;
   for (const auto &[_, di] : date_info)
     total += di.order_count;
-  return total;
-}
-
-size_t AssetItem::get_total_snapshot_count() const {
-  size_t total = 0;
-  for (const auto &[_, di] : date_info)
-    total += di.snapshot_count;
   return total;
 }
 
@@ -107,7 +93,7 @@ std::string AssetItem::get_display_name() const {
 
 boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     boost::asio::io_context &io,
-    const std::string &database_dir,
+    const std::string &orders_dir,
     const std::string &binary_extension,
     std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
 
@@ -118,8 +104,8 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   date_stats.clear();
 
   binary.scanned = true;
-  binary.path = database_dir;
-  binary.exists = fs::exists(database_dir) && fs::is_directory(database_dir);
+  binary.path = orders_dir;
+  binary.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
 
   if (!binary.exists) {
     binary.dates.clear();
@@ -128,9 +114,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     binary.total_assets = 0;
     binary.encoded_assets = 0;
     binary.complete_assets = 0;
-    binary.total_snapshots = 0;
     binary.total_orders = 0;
-    binary.snapshots_size_gb = 0.0;
     binary.orders_size_gb = 0.0;
     all_dates.clear();
     co_return;
@@ -145,7 +129,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
 
   // Collect all month paths
   std::vector<MonthPath> month_paths;
-  for (const auto &year_entry : fs::directory_iterator(database_dir)) {
+  for (const auto &year_entry : fs::directory_iterator(orders_dir)) {
     if (!year_entry.is_directory())
       continue;
     std::string year_str = year_entry.path().filename().string();
@@ -167,26 +151,23 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   struct ScanResult {
     std::mutex mutex;
     std::set<std::string> all_dates;
-    std::set<std::string> snap_dates;
     std::set<std::string> order_dates;
     std::map<std::string, size_t> date_coverage;
-    size_t total_snapshots = 0;
     size_t total_orders = 0;
-    float total_snapshots_size = 0.0;
     float total_orders_size = 0.0;
     std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> asset_date_info;
   };
   auto result = std::make_shared<ScanResult>();
 
-  // Lambda for scanning a single month (runs in thread pool)
+  // Lambda for scanning a single month (runs in thread pool).
+  //
+  // 目录是扁平的: orders/YYYY/MM/DD/<CODE>.<EX>.bin, 一天一层 readdir 就够,
+  // 不再是"一天下面几千个每资产目录、每个目录再 readdir 一次".
   auto scan_month = [&asset_map, &binary_extension, result](const MonthPath &month_path) {
     std::set<std::string> local_dates;
-    std::set<std::string> local_snap_dates;
     std::set<std::string> local_order_dates;
     std::map<std::string, size_t> local_date_coverage;
-    size_t local_total_snapshots = 0;
     size_t local_total_orders = 0;
-    float local_snapshots_size = 0.0;
     float local_orders_size = 0.0;
     std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> local_date_info;
 
@@ -197,59 +178,35 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
       std::string date_str = month_path.year_str + month_path.month_str + day_str;
       local_dates.insert(date_str);
 
-      for (const auto &asset_entry : fs::directory_iterator(day_entry.path())) {
-        if (!asset_entry.is_directory())
+      for (const auto &file_entry : fs::directory_iterator(day_entry.path())) {
+        const std::string filename = file_entry.path().filename().string();
+        if (!filename.ends_with(binary_extension))
           continue;
-        std::string asset_folder = asset_entry.path().filename().string();
 
-        auto it = asset_map.find(asset_folder);
+        // "000023.SZ.bin" → "000023.SZ"
+        const std::string asset_full =
+            filename.substr(0, filename.size() - binary_extension.size());
+
+        auto it = asset_map.find(asset_full);
         if (it == asset_map.end())
           continue;
 
-        size_t asset_idx = it->second;
         DateInfo di;
-        di.database_dir = asset_entry.path().string();
-
-        std::string snap_prefix = asset_folder + "_snapshots_";
-        std::string order_prefix = asset_folder + "_orders_";
-
-        for (const auto &file_entry : fs::directory_iterator(asset_entry.path())) {
-          std::string filename = file_entry.path().filename().string();
-
-          if (filename.find(snap_prefix) == 0 && filename.ends_with(binary_extension)) {
-            di.snapshots_file = file_entry.path().string();
-            di.snapshot_count = L2::BinaryDecoder_L2::extract_count_from_filename(di.snapshots_file);
-            di.snapshots_encoded = 1;
-            try {
-              di.snapshots_file_size = fs::file_size(file_entry.path());
-            } catch (...) {
-              di.snapshots_file_size = 0;
-            }
-            local_total_snapshots += di.snapshot_count;
-            local_snapshots_size += static_cast<float>(di.snapshots_file_size);
-            local_snap_dates.insert(date_str);
-
-          } else if (filename.find(order_prefix) == 0 && filename.ends_with(binary_extension)) {
-            di.orders_file = file_entry.path().string();
-            di.order_count = L2::BinaryDecoder_L2::extract_count_from_filename(di.orders_file);
-            di.orders_encoded = 1;
-            try {
-              di.orders_file_size = fs::file_size(file_entry.path());
-            } catch (...) {
-              di.orders_file_size = 0;
-            }
-            local_total_orders += di.order_count;
-            local_orders_size += static_cast<float>(di.orders_file_size);
-            local_order_dates.insert(date_str);
-          }
+        di.orders_file = file_entry.path().string();
+        di.orders_encoded = 1;
+        // 条数来自文件头 (8 字节), 文件名里不再冗余存放
+        di.order_count = L2::BinaryDecoder_L2::read_order_count(di.orders_file);
+        try {
+          di.orders_file_size = fs::file_size(file_entry.path());
+        } catch (...) {
+          di.orders_file_size = 0;
         }
 
-        if (di.snapshots_encoded || di.orders_encoded) {
-          local_date_info[asset_idx][date_str] = di;
-          if (di.is_fully_encoded()) {
-            local_date_coverage[date_str]++;
-          }
-        }
+        local_total_orders += di.order_count;
+        local_orders_size += static_cast<float>(di.orders_file_size);
+        local_order_dates.insert(date_str);
+        local_date_coverage[date_str]++;
+        local_date_info[it->second][date_str] = di;
       }
     }
 
@@ -257,14 +214,11 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     {
       std::lock_guard<std::mutex> lock(result->mutex);
       result->all_dates.insert(local_dates.begin(), local_dates.end());
-      result->snap_dates.insert(local_snap_dates.begin(), local_snap_dates.end());
       result->order_dates.insert(local_order_dates.begin(), local_order_dates.end());
       for (const auto &[date, count] : local_date_coverage) {
         result->date_coverage[date] += count;
       }
-      result->total_snapshots += local_total_snapshots;
       result->total_orders += local_total_orders;
-      result->total_snapshots_size += local_snapshots_size;
       result->total_orders_size += local_orders_size;
 
       for (const auto &[asset_idx, date_map] : local_date_info) {
@@ -308,11 +262,8 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   // Merge results into Asset
   all_dates.assign(result->all_dates.begin(), result->all_dates.end());
   binary.total_assets = items.size();
-  binary.total_snapshots = result->total_snapshots;
   binary.total_orders = result->total_orders;
-  binary.snapshots_size_gb = result->total_snapshots_size / (1024.0 * 1024.0 * 1024.0);
   binary.orders_size_gb = result->total_orders_size / (1024.0 * 1024.0 * 1024.0);
-  binary.database_snap_days = result->snap_dates.size();
   binary.database_order_days = result->order_dates.size();
 
   binary.dates.clear();
@@ -569,34 +520,21 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
   }
 
   // Step 5: Calculate backtest range statistics (single pass)
-  binary.backtest_snapshots = 0;
   binary.backtest_orders = 0;
-  float backtest_snapshots_size = 0.0;
   float backtest_orders_size = 0.0;
-
-  std::set<std::string> snap_dates_in_backtest;
   std::set<std::string> order_dates_in_backtest;
 
   // Single pass through all assets and dates
   for (const auto &item : items) {
     for (const auto &[date, info] : item.date_info) {
-      if (date >= start && date <= end) {
-        if (info.snapshots_encoded) {
-          binary.backtest_snapshots += info.snapshot_count;
-          backtest_snapshots_size += static_cast<float>(info.snapshots_file_size);
-          snap_dates_in_backtest.insert(date);
-        }
-        if (info.orders_encoded) {
-          binary.backtest_orders += info.order_count;
-          backtest_orders_size += static_cast<float>(info.orders_file_size);
-          order_dates_in_backtest.insert(date);
-        }
+      if (date >= start && date <= end && info.orders_encoded) {
+        binary.backtest_orders += info.order_count;
+        backtest_orders_size += static_cast<float>(info.orders_file_size);
+        order_dates_in_backtest.insert(date);
       }
     }
   }
 
-  binary.backtest_snapshots_size_gb = backtest_snapshots_size / (1024.0 * 1024.0 * 1024.0);
   binary.backtest_orders_size_gb = backtest_orders_size / (1024.0 * 1024.0 * 1024.0);
-  binary.backtest_snap_days = snap_dates_in_backtest.size();
   binary.backtest_order_days = order_dates_in_backtest.size();
 }

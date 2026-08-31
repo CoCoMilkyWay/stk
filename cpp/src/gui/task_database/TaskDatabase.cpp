@@ -43,7 +43,6 @@ private:
   bool is_expanded_ = false;
   bool initialized_ = false;
   CoroManager *coro_mgr_ = nullptr;
-  std::string database_dir_;
   SharedData *data_ = nullptr; // Pointer to shared data
   Config *config_ = nullptr;   // Pointer to config for accessing backtest dates
   std::string config_dir_ = "../../config";
@@ -66,7 +65,6 @@ public:
   void DrawPanel(SharedData &data) {
     if (!coro_mgr_) {
       coro_mgr_ = &data.coromgr;
-      database_dir_ = data.config.database_dir;
       data_ = &data;
       config_ = &data.config;
     }

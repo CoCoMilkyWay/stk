@@ -80,8 +80,8 @@ awaitable<void> ScanService::coro_scan() {
   status_ = ScanStatus::CheckingFileSystem;
   co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
-  bool binary_exists = fs::exists(data_.config.database_dir) &&
-                       !fs::is_empty(data_.config.database_dir);
+  bool binary_exists = fs::exists(data_.config.orders_dir) &&
+                       !fs::is_empty(data_.config.orders_dir);
   bool archive_exists = fs::exists(data_.config.archive_dir) &&
                         !fs::is_empty(data_.config.archive_dir);
 
@@ -103,7 +103,7 @@ awaitable<void> ScanService::coro_scan() {
     co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
     auto scan_pool = std::make_shared<ScanThreadPool>(std::thread::hardware_concurrency());
-    co_await data_.asset.coro_scan_binary_database(io_, data_.config.database_dir,
+    co_await data_.asset.coro_scan_binary_database(io_, data_.config.orders_dir,
                                                    data_.config.binary_extension, scan_pool);
   }
 

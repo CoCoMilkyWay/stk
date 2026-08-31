@@ -54,7 +54,7 @@ void sequential_worker(int worker_id,
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
       lobs.push_back(std::make_unique<LimitOrderBook>(L2::DEFAULT_ENCODER_ORDER_SIZE, store, asset.asset_code, asset.exchange_type, asset.asset_id, worker_id));
-      decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_SNAPSHOT_SIZE, L2::DEFAULT_ENCODER_ORDER_SIZE));
+      decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_ORDER_SIZE));
     }
   }
 

@@ -266,6 +266,7 @@ set(HEADERS
     ../../include/misc/affinity.hpp
     ../../include/misc/logging.hpp
     ../../include/misc/file_check.hpp
+    ../../include/misc/archive.hpp
     ../../include/misc/profiler.hpp
     ../../include/define/CBuffer.hpp
     ../../include/codec/json_config.hpp

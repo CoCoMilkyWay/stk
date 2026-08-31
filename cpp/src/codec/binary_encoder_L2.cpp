@@ -2,10 +2,8 @@
 #include "misc/logging.hpp"
 #include <algorithm>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <locale>
 #include <memory>
 
 // Data format reference: config/sample/L2/README
@@ -15,19 +13,6 @@ namespace L2 {
 // ============================================================================
 // Section 1: Utility Functions (Low-level helpers)
 // ============================================================================
-
-// Open CSV file with GBK encoding support
-static std::ifstream open_csv_with_gbk(const std::string &filepath) {
-  std::ifstream file(filepath);
-  if (file.is_open()) {
-    try {
-      file.imbue(std::locale("zh_CN.GBK"));
-    } catch (const std::exception &) {
-      // Fallback to default locale if GBK unavailable
-    }
-  }
-  return file;
-}
 
 // Fast integer parsing (avoids std::stoul/stoull overhead)
 static inline uint32_t fast_parse_u32(std::string_view s) {
@@ -189,55 +174,47 @@ inline uint32_t BinaryEncoder_L2::parse_price_to_fen(std::string_view str) {
   return static_cast<uint32_t>(parse_numeric_field(str, 100));
 }
 
-// Parse VWAP fields (CSV value in 0.0001 RMB → 0.001 RMB units)
-inline uint32_t BinaryEncoder_L2::parse_vwap_price(std::string_view str) {
-  return static_cast<uint32_t>(parse_numeric_field(str, 10));
-}
-
 // Parse volume fields (shares → shares, no conversion)
 inline uint32_t BinaryEncoder_L2::parse_volume(std::string_view str) {
   return static_cast<uint32_t>(parse_numeric_field(str, 1));
 }
 
-// Parse turnover fields (keep as-is, integer fen)
-inline uint64_t BinaryEncoder_L2::parse_turnover_to_fen(std::string_view str) {
-  return parse_numeric_field(str, 1);
-}
-
-// Helper: Detect CSV line delimiter (find first line ending)
-static char detect_csv_delimiter(const std::string &filepath) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open())
-    return '\n';
-
-  char ch;
-  while (file.get(ch)) {
-    if (ch == '\r')
-      return '\r';
-    if (ch == '\n')
-      return '\n';
-  }
-  return '\n';
-}
-
-// Helper: Parse CSV with detected delimiter
+// Helper: 逐行回调解析内存里的整块 CSV.
+//
+// encode 的 CSV 来自 unrar p 管道, 不落盘 (见 misc/archive.hpp), 所以这里只有
+// 内存版, 没有文件版. 跳过表头行, 跳过空行.
+//
+// 编码: 原 CSV 是 GBK, 但中文只出现在被跳过的表头里 — 所有被解析的字段
+// (代码/日期/时间/价量) 都是 ASCII, 按字节切分即可, 无需转码.
+//
+// 传给 parse_func 的是 string_view, 零拷贝: 行内容直接指向输入缓冲.
 template <typename ParseFunc>
-static bool parse_csv_with_delimiter(const std::string &filepath, char delimiter, ParseFunc parse_func) {
-  auto file = open_csv_with_gbk(filepath);
-  if (!file.is_open())
+static bool parse_csv_buffer(const char *data, size_t len, ParseFunc parse_func) {
+  if (data == nullptr || len == 0)
     return false;
 
-  std::string line;
-  if (!std::getline(file, line, delimiter))
+  const char *const end = data + len;
+  const char *pos = data;
+
+  auto next_line = [&](std::string_view &out) -> bool {
+    if (pos >= end)
+      return false;
+    const char *nl = static_cast<const char *>(std::memchr(pos, '\n', static_cast<size_t>(end - pos)));
+    const char *line_end = (nl == nullptr) ? end : nl;
+    const char *trimmed = line_end;
+    while (trimmed > pos && (trimmed[-1] == '\r' || trimmed[-1] == '\n'))
+      --trimmed;
+    out = std::string_view(pos, static_cast<size_t>(trimmed - pos));
+    pos = (nl == nullptr) ? end : nl + 1;
+    return true;
+  };
+
+  std::string_view line;
+  if (!next_line(line)) // 表头
     return false;
-  // Remove trailing \n or \r if present (handle mixed line endings)
-  while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-    line.pop_back();
 
   size_t line_count = 0;
-  while (std::getline(file, line, delimiter)) {
-    while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-      line.pop_back();
+  while (next_line(line)) {
     if (line.empty())
       continue;
     parse_func(line);
@@ -247,207 +224,91 @@ static bool parse_csv_with_delimiter(const std::string &filepath, char delimiter
   return line_count > 0;
 }
 
-// Parse snapshot CSV file
-bool BinaryEncoder_L2::parse_snapshot_csv(const std::string &filepath,
-                                          std::vector<CSVSnapshot> &snapshots) {
-  uint32_t prev_trade_count = 0;
-  size_t line_number = 1;
+// 逐笔委托单行 → CSVOrder
+static void parse_order_line(std::string_view line, std::vector<CSVOrder> &orders) {
+  auto fields = BinaryEncoder_L2::split_csv_line_view(line);
+  if (fields.size() < 10)
+    return;
 
-  auto parse_line = [&](const std::string &line) {
-    ++line_number;
-    auto fields = split_csv_line_view(line);
-    if (fields.size() < 65)
-      return;
+  CSVOrder order = {};
+  order.stock_code = fields[0];
+  order.exchange_code = fields[1];
+  order.date = fast_parse_u32(fields[2]);
+  order.time = fast_parse_u32(fields[3]);
+  order.order_id = fast_parse_u64(fields[4]);
+  order.exchange_order_id = fast_parse_u64(fields[5]);
 
-    try {
-      CSVSnapshot snap = {};
-      snap.stock_code = fields[0];
-      snap.exchange_code = fields[1];
-      snap.date = fast_parse_u32(fields[2]);
-      snap.time = fast_parse_u32(fields[3]);
-      snap.price = parse_price_to_fen(fields[4]);
-      snap.volume = parse_volume(fields[5]);
-      snap.turnover = parse_turnover_to_fen(fields[6]);
+  bool is_szse = is_shenzhen_market(order.stock_code);
 
-      // Convert cumulative trade count to incremental
-      // Handle edge case: trade count may reset or have data quality issues
-      uint32_t curr_trade_count = fast_parse_u32(fields[7]);
-      if (curr_trade_count >= prev_trade_count) {
-        snap.trade_count = curr_trade_count - prev_trade_count;
-      } else {
-        Logger::log("encoding", "Trade count decreased at line " + std::to_string(line_number) + ": " + filepath);
-        snap.trade_count = 0;
-      }
-      prev_trade_count = curr_trade_count;
-
-      // Parse 10-level orderbook
-      for (int i = 0; i < 10; ++i) {
-        snap.ask_prices[i] = parse_price_to_fen(fields[17 + i]);
-        snap.ask_volumes[i] = parse_volume(fields[27 + i]);
-        snap.bid_prices[i] = parse_price_to_fen(fields[37 + i]);
-        snap.bid_volumes[i] = parse_volume(fields[47 + i]);
-      }
-
-      snap.weighted_avg_ask_price = parse_vwap_price(fields[57]);
-      snap.weighted_avg_bid_price = parse_vwap_price(fields[58]);
-      snap.total_ask_volume = parse_volume(fields[59]);
-      snap.total_bid_volume = parse_volume(fields[60]);
-
-      snapshots.push_back(snap);
-    } catch (const std::exception &e) {
-      Logger::log("encoding", "Error parsing snapshot: " + std::string(e.what()));
-      return;
-    }
-  };
-
-  // Auto-detect delimiter and parse
-  char delimiter = detect_csv_delimiter(filepath);
-  if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log("encoding", "Cannot parse snapshot CSV: " + filepath);
-    return false;
+  // Parse order type and side (format differs by exchange)
+  if (!fields[6].empty() && fields[6][0] != ' ' && fields[6][0] != '\0') {
+    order.order_type = fields[6][0];
+  } else {
+    order.order_type = is_szse ? '0' : 'A'; // Default: normal(SZSE) or add(SSE)
   }
 
-  return true;
+  if (!fields[7].empty() && fields[7][0] != ' ' && fields[7][0] != '\0') {
+    order.order_side = fields[7][0];
+  } else {
+    order.order_side = ' '; // Empty for cancellation
+  }
+
+  order.price = BinaryEncoder_L2::parse_price_to_fen(fields[8]);
+  order.volume = BinaryEncoder_L2::parse_volume(fields[9]);
+
+  orders.push_back(order);
 }
 
-// Parse order CSV file
-bool BinaryEncoder_L2::parse_order_csv(const std::string &filepath,
+// 逐笔成交单行 → CSVTrade
+static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trades) {
+  auto fields = BinaryEncoder_L2::split_csv_line_view(line);
+  if (fields.size() < 12)
+    return;
+
+  CSVTrade trade = {};
+  trade.stock_code = fields[0];
+  trade.exchange_code = fields[1];
+  trade.date = fast_parse_u32(fields[2]);
+  trade.time = fast_parse_u32(fields[3]);
+  trade.trade_id = fast_parse_u64(fields[4]);
+
+  bool is_szse = is_shenzhen_market(trade.stock_code);
+
+  // Parse trade code and BS flag (format differs by exchange)
+  if (is_szse) {
+    trade.trade_code = !fields[5].empty() ? fields[5][0] : '0';
+    trade.bs_flag = !fields[7].empty() ? fields[7][0] : ' ';
+  } else {
+    trade.trade_code = '0'; // SSE doesn't use trade_code
+    trade.bs_flag = !fields[7].empty() ? fields[7][0] : ' ';
+  }
+  trade.dummy_code = ' '; // Unused
+
+  trade.price = BinaryEncoder_L2::parse_price_to_fen(fields[8]);
+  trade.volume = BinaryEncoder_L2::parse_volume(fields[9]);
+  trade.ask_order_id = fast_parse_u64(fields[10]);
+  trade.bid_order_id = fast_parse_u64(fields[11]);
+
+  trades.push_back(trade);
+}
+
+bool BinaryEncoder_L2::parse_order_csv(const char *data, size_t len,
                                        std::vector<CSVOrder> &orders) {
-  auto parse_line = [&](const std::string &line) {
-    auto fields = split_csv_line_view(line);
-    if (fields.size() < 10)
-      return;
-
-    try {
-      CSVOrder order = {};
-      order.stock_code = fields[0];
-      order.exchange_code = fields[1];
-      order.date = fast_parse_u32(fields[2]);
-      order.time = fast_parse_u32(fields[3]);
-      order.order_id = fast_parse_u64(fields[4]);
-      order.exchange_order_id = fast_parse_u64(fields[5]);
-
-      bool is_szse = is_shenzhen_market(order.stock_code);
-
-      // Parse order type and side (format differs by exchange)
-      if (!fields[6].empty() && fields[6][0] != ' ' && fields[6][0] != '\0') {
-        order.order_type = fields[6][0];
-      } else {
-        order.order_type = is_szse ? '0' : 'A'; // Default: normal(SZSE) or add(SSE)
-      }
-
-      if (!fields[7].empty() && fields[7][0] != ' ' && fields[7][0] != '\0') {
-        order.order_side = fields[7][0];
-      } else {
-        order.order_side = ' '; // Empty for cancellation
-      }
-
-      order.price = parse_price_to_fen(fields[8]);
-      order.volume = parse_volume(fields[9]);
-
-      orders.push_back(order);
-    } catch (const std::exception &e) {
-      Logger::log("encoding", "Error parsing order: " + std::string(e.what()));
-      return;
-    }
-  };
-
-  // Auto-detect delimiter and parse
-  char delimiter = detect_csv_delimiter(filepath);
-  if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log("encoding", "Cannot parse order CSV: " + filepath);
-    return false;
-  }
-
-  return true;
+  return parse_csv_buffer(data, len, [&orders](std::string_view line) {
+    parse_order_line(line, orders);
+  });
 }
 
-// Parse trade CSV file
-bool BinaryEncoder_L2::parse_trade_csv(const std::string &filepath,
+bool BinaryEncoder_L2::parse_trade_csv(const char *data, size_t len,
                                        std::vector<CSVTrade> &trades) {
-  auto parse_line = [&](const std::string &line) {
-    auto fields = split_csv_line_view(line);
-    if (fields.size() < 12)
-      return;
-
-    try {
-      CSVTrade trade = {};
-      trade.stock_code = fields[0];
-      trade.exchange_code = fields[1];
-      trade.date = fast_parse_u32(fields[2]);
-      trade.time = fast_parse_u32(fields[3]);
-      trade.trade_id = fast_parse_u64(fields[4]);
-
-      bool is_szse = is_shenzhen_market(trade.stock_code);
-
-      // Parse trade code and BS flag (format differs by exchange)
-      if (is_szse) {
-        trade.trade_code = !fields[5].empty() ? fields[5][0] : '0';
-        trade.bs_flag = !fields[7].empty() ? fields[7][0] : ' ';
-      } else {
-        trade.trade_code = '0'; // SSE doesn't use trade_code
-        trade.bs_flag = !fields[7].empty() ? fields[7][0] : ' ';
-      }
-      trade.dummy_code = ' '; // Unused
-
-      trade.price = parse_price_to_fen(fields[8]);
-      trade.volume = parse_volume(fields[9]);
-      trade.ask_order_id = fast_parse_u64(fields[10]);
-      trade.bid_order_id = fast_parse_u64(fields[11]);
-
-      trades.push_back(trade);
-    } catch (const std::exception &e) {
-      Logger::log("encoding", "Error parsing trade: " + std::string(e.what()));
-      return;
-    }
-  };
-
-  // Auto-detect delimiter and parse
-  char delimiter = detect_csv_delimiter(filepath);
-  if (!parse_csv_with_delimiter(filepath, delimiter, parse_line)) {
-    Logger::log("encoding", "Cannot parse trade CSV: " + filepath);
-    return false;
-  }
-
-  return true;
+  return parse_csv_buffer(data, len, [&trades](std::string_view line) {
+    parse_trade_line(line, trades);
+  });
 }
 
 // ============================================================================
 // Section 3: Data Conversion (CSV structures → Binary structures)
 // ============================================================================
-
-Snapshot BinaryEncoder_L2::csv_to_snapshot(const CSVSnapshot &csv) {
-  Snapshot snap = {};
-
-  // Time fields
-  uint32_t time_ms = parse_time_to_ms(csv.time);
-  snap.hour = clamp_to_bound(extract_hour(time_ms), HOUR_BOUND);
-  snap.minute = clamp_to_bound(extract_minute(time_ms), MINUTE_BOUND);
-  snap.second = clamp_to_bound(extract_second(time_ms), SECOND_BOUND);
-
-  // Trade info
-  snap.trade_count = clamp_to_bound(csv.trade_count, TRADE_COUNT_BOUND);
-  snap.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
-  snap.turnover = clamp_to_bound(csv.turnover, TURNOVER_BOUND);
-  snap.close = clamp_to_bound(csv.price, PRICE_BOUND);
-  snap.direction = false; // Default
-
-  // 10-level orderbook
-  for (int i = 0; i < 10; ++i) {
-    snap.bid_price_ticks[i] = clamp_to_bound(csv.bid_prices[i], PRICE_BOUND);
-    snap.bid_volumes[i] = clamp_to_bound(csv.bid_volumes[i], ORDERBOOK_VOLUME_BOUND);
-    snap.ask_price_ticks[i] = clamp_to_bound(csv.ask_prices[i], PRICE_BOUND);
-    snap.ask_volumes[i] = clamp_to_bound(csv.ask_volumes[i], ORDERBOOK_VOLUME_BOUND);
-  }
-
-  // Aggregated bid/ask info
-  snap.all_bid_vwap = clamp_to_bound(csv.weighted_avg_bid_price, VWAP_BOUND);
-  snap.all_ask_vwap = clamp_to_bound(csv.weighted_avg_ask_price, VWAP_BOUND);
-  snap.all_bid_volume = clamp_to_bound(csv.total_bid_volume, TOTAL_VOLUME_BOUND);
-  snap.all_ask_volume = clamp_to_bound(csv.total_ask_volume, TOTAL_VOLUME_BOUND);
-
-  return snap;
-}
 
 Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv) {
   Order order = {};
@@ -515,21 +376,11 @@ Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv) {
 // ============================================================================
 
 // Constructor: preallocate buffers and initialize ZSTD context
-BinaryEncoder_L2::BinaryEncoder_L2(size_t est_snapshots, size_t est_orders) {
-  // Snapshot buffers
-  temp_snap_hours.reserve(est_snapshots);
-  temp_snap_minutes.reserve(est_snapshots);
-  temp_snap_seconds.reserve(est_snapshots);
-  temp_snap_closes.reserve(est_snapshots);
-  temp_snap_bid_vwaps.reserve(est_snapshots);
-  temp_snap_ask_vwaps.reserve(est_snapshots);
-  temp_snap_bid_volumes.reserve(est_snapshots);
-  temp_snap_ask_volumes.reserve(est_snapshots);
-
-  for (auto &vec : temp_snap_bid_prices)
-    vec.reserve(est_snapshots);
-  for (auto &vec : temp_snap_ask_prices)
-    vec.reserve(est_snapshots);
+BinaryEncoder_L2::BinaryEncoder_L2(size_t est_orders) {
+  // 解析/合并中间结果 (每个 worker 复用一份, 见 hpp)
+  csv_orders_.reserve(est_orders);
+  csv_trades_.reserve(est_orders);
+  orders_.reserve(est_orders * 2);
 
   // Order buffers
   temp_order_hours.reserve(est_orders);
@@ -551,27 +402,6 @@ BinaryEncoder_L2::~BinaryEncoder_L2() {
   if (zstd_ctx_) {
     ZSTD_freeCCtx(zstd_ctx_);
   }
-}
-
-bool BinaryEncoder_L2::encode_snapshots(const std::vector<Snapshot> &snapshots,
-                                        const std::string &filepath) {
-  if (snapshots.empty()) {
-    Logger::log("encoding", "No snapshots to encode: " + filepath);
-    return true;
-  }
-
-  const size_t count = snapshots.size();
-
-  // Prepare buffer: header + data
-  const size_t header_size = sizeof(count);
-  const size_t data_size = snapshots.size() * sizeof(Snapshot);
-  const size_t total_size = header_size + data_size;
-
-  auto buffer = std::make_unique<char[]>(total_size);
-  std::memcpy(buffer.get(), &count, header_size);
-  std::memcpy(buffer.get() + header_size, snapshots.data(), data_size);
-
-  return compress_and_write_data(filepath, buffer.get(), total_size);
 }
 
 bool BinaryEncoder_L2::encode_orders(const std::vector<Order> &orders,
@@ -645,70 +475,34 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
 // Section 5: High-Level Interface (Orchestration)
 // ============================================================================
 
-bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
-                                          const std::string &output_dir,
-                                          const std::string &stock_code,
-                                          std::vector<Snapshot> *out_snapshots,
-                                          std::vector<Order> *out_orders) {
-  std::filesystem::create_directories(output_dir);
+// 复用成员缓冲: 一个 worker 顺序处理成千上万个 (资产, 日期), 每次重新分配这几个
+// vector 就是几千万次 malloc. clear() 保留容量.
+void BinaryEncoder_L2::begin_asset() {
+  csv_orders_.clear();
+  csv_trades_.clear();
+  orders_.clear();
+}
 
-  // Parse CSV files
-  std::vector<CSVSnapshot> csv_snaps;
-  std::vector<CSVOrder> csv_orders;
-  std::vector<CSVTrade> csv_trades;
+bool BinaryEncoder_L2::feed_order_csv(const char *data, size_t len) {
+  if (len == 0)
+    return true;
+  return parse_order_csv(data, len, csv_orders_);
+}
 
-  const std::string snap_file = stock_dir + "/行情.csv";
-  const std::string order_file = stock_dir + "/逐笔委托.csv";
-  const std::string trade_file = stock_dir + "/逐笔成交.csv";
+bool BinaryEncoder_L2::feed_trade_csv(const char *data, size_t len) {
+  if (len == 0)
+    return true;
+  return parse_trade_csv(data, len, csv_trades_);
+}
 
-  if (std::filesystem::exists(snap_file)) {
-    if (!parse_snapshot_csv(snap_file, csv_snaps))
-      return false;
-  }
-
-  if (std::filesystem::exists(order_file)) {
-    if (!parse_order_csv(order_file, csv_orders))
-      return false;
-  }
-
-  if (std::filesystem::exists(trade_file)) {
-    if (!parse_trade_csv(trade_file, csv_trades))
-      return false;
-  }
-
-  // Convert and encode snapshots
-  if (!csv_snaps.empty()) {
-    std::vector<Snapshot> snapshots;
-    snapshots.reserve(csv_snaps.size());
-    for (const auto &csv : csv_snaps) {
-      snapshots.push_back(csv_to_snapshot(csv));
-    }
-
-    // Validate snapshot count
-    constexpr size_t MIN_EXPECTED_COUNT = 10;
-    if (snapshots.size() < MIN_EXPECTED_COUNT) {
-      Logger::log("encoding", "Abnormal snapshot count: " + stock_code + " " + stock_dir +
-                                  " has only " + std::to_string(snapshots.size()) + " snapshots");
-      // std::exit(1);
-      return false;
-    }
-
-    if (out_snapshots)
-      *out_snapshots = snapshots;
-
-    const std::string output_file = output_dir + "/" + stock_code +
-                                    "_snapshots_" + std::to_string(snapshots.size()) + ".bin";
-    if (!encode_snapshots(snapshots, output_file))
-      return false;
-  }
-
+bool BinaryEncoder_L2::finish_asset(const std::string &output_file, const std::string &tag) {
   // Convert and encode orders + trades
-  std::vector<Order> all_orders;
-  all_orders.reserve(csv_orders.size() + csv_trades.size());
+  std::vector<Order> &all_orders = orders_;
+  all_orders.reserve(csv_orders_.size() + csv_trades_.size());
 
-  for (const auto &csv : csv_orders)
+  for (const auto &csv : csv_orders_)
     all_orders.push_back(csv_to_order(csv));
-  for (const auto &csv : csv_trades)
+  for (const auto &csv : csv_trades_)
     all_orders.push_back(csv_to_trade(csv));
 
   // Sort by time, then by priority (maker → taker → cancel)
@@ -733,34 +527,16 @@ bool BinaryEncoder_L2::process_stock_data(const std::string &stock_dir,
     return priority(a.order_type) < priority(b.order_type);
   });
 
-  if (!all_orders.empty()) {
-    // Validate order count
-    constexpr size_t MIN_EXPECTED_COUNT = 500;
-    if (all_orders.size() < MIN_EXPECTED_COUNT) {
-      Logger::log("encoding", "Abnormal order count: " + stock_code + " " + stock_dir +
-                                  " has only " + std::to_string(all_orders.size()) + " orders");
-      // std::exit(1);
-      return false;
-    }
-
-    if (out_orders)
-      *out_orders = all_orders;
-
-    const std::string output_file = output_dir + "/" + stock_code +
-                                    "_orders_" + std::to_string(all_orders.size()) + ".bin";
-    if (!encode_orders(all_orders, output_file))
-      return false;
+  // 条数下限. 原来这里还有一道"快照少于 10 条就判失败"的过滤 (停牌/无深度的
+  // 标的), 快照已不再编码, 该过滤由这一道承担.
+  constexpr size_t MIN_EXPECTED_COUNT = 500;
+  if (all_orders.size() < MIN_EXPECTED_COUNT) {
+    Logger::log("encoding", "Abnormal order count: " + tag + " has only " +
+                                std::to_string(all_orders.size()) + " orders");
+    return false;
   }
 
-  // Release temporary memory after each day
-  csv_snaps.clear();
-  csv_snaps.shrink_to_fit();
-  csv_orders.clear();
-  csv_orders.shrink_to_fit();
-  csv_trades.clear();
-  csv_trades.shrink_to_fit();
-
-  return true;
+  return encode_orders(all_orders, output_file);
 }
 
 } // namespace L2

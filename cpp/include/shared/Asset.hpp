@@ -23,31 +23,23 @@ struct AssetInfo;
 // PER-DATE STATUS
 // ============================================================================
 
+// 一个 (资产, 日期). 只有 orders 一种产物 —— 快照不再编码 (全项目无人读取,
+// 特征计算只吃 orders 并靠 LimitOrderBook 重建盘口).
 struct DateInfo {
-  // Paths
-  std::string database_dir;   // e.g. "database/2024/01/15/SH688001"
-  std::string snapshots_file; // Full path to *_snapshots_*.bin
-  std::string orders_file;    // Full path to *_orders_*.bin
+  std::string orders_file; // orders/YYYY/MM/DD/<CODE>.<EX>.bin
 
-  // Counts
-  size_t snapshot_count = 0; // Extracted from filename
-  size_t order_count = 0;    // Extracted from filename
+  size_t order_count = 0;      // 由文件头 original_size 推出
+  size_t orders_file_size = 0; // 扫描时缓存, 免得反复 stat
 
-  // File sizes (bytes, cached during scan to avoid repeated I/O)
-  size_t snapshots_file_size = 0;
-  size_t orders_file_size = 0;
-
-  // Status flags (fine-grained)
-  uint8_t snapshots_encoded = 0; // 0=no snapshots binary, 1=has snapshots
-  uint8_t orders_encoded = 0;    // 0=no orders binary, 1=has orders
-  uint8_t analyzed = 0;          // 0=not analyzed, 1=analyzed
+  uint8_t orders_encoded = 0; // 0=无二进制, 1=已编码
+  uint8_t analyzed = 0;       // 0=未分析, 1=已分析
 
   bool has_binaries() const {
-    return !snapshots_file.empty() || !orders_file.empty();
+    return !orders_file.empty();
   }
 
   bool is_fully_encoded() const {
-    return snapshots_encoded && orders_encoded;
+    return orders_encoded != 0;
   }
 };
 
@@ -79,13 +71,11 @@ struct AssetItem {
 
   // STATISTICS
   size_t get_total_trading_days() const;
-  size_t get_encoded_count() const; // Fully encoded (both snapshots and orders)
-  size_t get_snapshots_encoded_count() const;
+  size_t get_encoded_count() const;
   size_t get_orders_encoded_count() const;
   size_t get_missing_count() const;
   size_t get_analyzed_count() const;
   size_t get_total_order_count() const;
-  size_t get_total_snapshot_count() const;
   std::vector<std::string> get_missing_dates() const;
   std::string get_display_name() const;
 };
@@ -105,10 +95,8 @@ struct Asset {
   // Per-Date Statistics (for Browser, computed once after loading stock_info)
   // ========================================
   struct DateStats {
-    size_t total_assets = 0;          // Total assets listed on this date (considering delist)
-    size_t assets_with_snapshots = 0; // Assets with snapshot data
-    size_t assets_with_orders = 0;    // Assets with order data
-    size_t assets_with_both = 0;      // Assets with both snapshot and order data
+    size_t total_assets = 0;       // Total assets listed on this date (considering delist)
+    size_t assets_with_orders = 0; // Assets with order data
   };
   std::unordered_map<std::string, DateStats> date_stats; // date -> stats (computed once)
 
@@ -131,24 +119,16 @@ struct Asset {
     size_t complete_assets = 0; // Assets fully encoded
 
     // Whole database statistics
-    size_t total_snapshots = 0;
     size_t total_orders = 0;
-    float snapshots_size_gb = 0.0;
     float orders_size_gb = 0.0;
 
     // Whole database days (trading days with at least one asset having data)
-    size_t database_snap_days = 0;  // Days with at least one snapshot in database
-    size_t database_order_days = 0; // Days with at least one order in database
+    size_t database_order_days = 0;
 
     // Backtest range statistics (only within backtest period)
-    size_t backtest_snapshots = 0;
     size_t backtest_orders = 0;
-    float backtest_snapshots_size_gb = 0.0;
     float backtest_orders_size_gb = 0.0;
-
-    // Backtest range days (trading days with at least one asset having data)
-    size_t backtest_snap_days = 0;  // Days with at least one snapshot in backtest
-    size_t backtest_order_days = 0; // Days with at least one order in backtest
+    size_t backtest_order_days = 0;
   } binary;
 
   // ========================================
@@ -197,7 +177,7 @@ struct Asset {
   // Scan operations (asynchronous coroutine-based)
   boost::asio::awaitable<void> coro_scan_binary_database(
       boost::asio::io_context &io,
-      const std::string &database_dir,
+      const std::string &orders_dir,
       const std::string &binary_extension,
       std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
 
@@ -312,16 +292,8 @@ struct Asset {
 
         // Check if we have L2 data for this asset on this date
         auto date_it = asset.date_info.find(date_dense);
-        if (date_it != asset.date_info.end()) {
-          if (date_it->second.snapshots_encoded) {
-            stats.assets_with_snapshots++;
-          }
-          if (date_it->second.orders_encoded) {
-            stats.assets_with_orders++;
-          }
-          if (date_it->second.is_fully_encoded()) {
-            stats.assets_with_both++;
-          }
+        if (date_it != asset.date_info.end() && date_it->second.orders_encoded) {
+          stats.assets_with_orders++;
         }
       }
     }
@@ -333,15 +305,26 @@ struct Asset {
 // ============================================================================
 
 namespace Utils {
-// database/2023/01/03/000023.SZ/000023.SZ_orders_26536.bin
-// database/2023/01/03/000023.SZ/000023.SZ_snapshots_2848.bin
+// orders/2023/01/03/000023.SZ.bin
+//
+// 一个 (资产, 日期) 就一个文件, 所以没有"每资产目录"这一层. 文件名里也不带
+// 条数 —— 条数由文件头的 original_size 精确推出 (见 BinaryDecoder_L2), 写在
+// 名字里纯属冗余, 还会让"这天编过了吗"退化成通配符匹配而不是一次 exists.
 
 inline std::string generate_archive_path(const std::string &base_dir, const std::string &date_str, const std::string &extension) {
   return base_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(0, 6) + "/" + date_str + extension;
 }
 
-inline std::string generate_temp_asset_dir(const std::string &database_dir, const std::string &date_str, const std::string &asset_code, const std::string &exchange) {
-  return database_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(4, 2) + "/" + date_str.substr(6, 2) + "/" + asset_code + "." + exchange;
+// orders/YYYY/MM/DD
+inline std::string generate_date_dir(const std::string &orders_dir, const std::string &date_str) {
+  return orders_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(4, 2) + "/" + date_str.substr(6, 2);
+}
+
+// orders/YYYY/MM/DD/<CODE>.<EX>.bin
+inline std::string generate_orders_path(const std::string &orders_dir, const std::string &date_str,
+                                        const std::string &asset_code, const std::string &exchange,
+                                        const std::string &binary_extension) {
+  return generate_date_dir(orders_dir, date_str) + "/" + asset_code + "." + exchange + binary_extension;
 }
 
 inline std::set<std::string> collect_dates_from_archives(const std::string &l2_archive_base, const std::string &archive_extension) {
@@ -377,7 +360,7 @@ inline std::set<std::string> collect_dates_from_binaries(const std::string &temp
   if (!std::filesystem::exists(temp_dir_base))
     return dates;
 
-  // Binary structure: database_dir/YYYY/MM/DD/asset_code/
+  // Binary structure: orders_dir/YYYY/MM/DD/<CODE>.<EX>.bin
   for (const auto &year_entry : std::filesystem::directory_iterator(temp_dir_base)) {
     if (!year_entry.is_directory())
       continue;

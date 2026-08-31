@@ -112,9 +112,7 @@ std::map<std::string, DailyStats> BuildDailyStats(
     auto it = stats_map.find(date_dense);
     if (it != stats_map.end()) {
       it->second.total_assets = date_stat.total_assets;
-      it->second.assets_with_snapshots = date_stat.assets_with_snapshots;
       it->second.assets_with_orders = date_stat.assets_with_orders;
-      it->second.assets_with_both = date_stat.assets_with_both;
     }
   }
 
@@ -319,9 +317,7 @@ void RenderMonthGrid(
     // For trading days with assets and completeness enabled: show green/yellow/red
     // If total_assets == 0, it means this date is outside database range, keep default gray
     if (state.layers.show_completeness && stats && stats->is_trading_day && stats->total_assets > 0) {
-      float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all()
-                           : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots()
-                                                                             : stats->completeness_orders();
+      const float completeness = stats->completeness_orders();
 
       border_color = (completeness >= 0.9999f) ? color_border_green
                      : (completeness >= 0.95f) ? color_border_yellow
@@ -337,12 +333,8 @@ void RenderMonthGrid(
 
     if (stats) {
       // Check from lowest to highest priority (last match wins)
-      if (state.layers.show_l2_data) {
-        bool has_data = (state.view_mode == BrowserViewMode::All)         ? (stats->assets_with_both > 0)
-                        : (state.view_mode == BrowserViewMode::Snapshots) ? (stats->assets_with_snapshots > 0)
-                                                                          : (stats->assets_with_orders > 0);
-        if (has_data)
-          fill_color = color_blue;
+      if (state.layers.show_l2_data && stats->assets_with_orders > 0) {
+        fill_color = color_blue;
       }
 
       if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
@@ -375,9 +367,7 @@ void RenderMonthGrid(
         static const char *dow_names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         const char *dow_name = (dow >= 0 && dow <= 6) ? dow_names[dow] : "?";
 
-        float completeness = (state.view_mode == BrowserViewMode::All)         ? stats->completeness_all() * 100.0f
-                             : (state.view_mode == BrowserViewMode::Snapshots) ? stats->completeness_snapshots() * 100.0f
-                                                                               : stats->completeness_orders() * 100.0f;
+        const float completeness = stats->completeness_orders() * 100.0f;
 
         ImGui::BeginTooltip();
         ImGui::Text("Date: %s (%s)%s", state.hover_date.c_str(), dow_name,
@@ -387,20 +377,9 @@ void RenderMonthGrid(
         ImGui::Separator();
         ImGui::Text("L2 Data Coverage:");
         ImGui::Text("  Total Stocks: %zu", stats->total_assets);
-        ImGui::Text("  With Snapshots: %zu (%.1f%%)", stats->assets_with_snapshots,
-                    stats->total_assets > 0 ? stats->completeness_snapshots() * 100.0f : 0.0f);
-        ImGui::Text("  With Orders: %zu (%.1f%%)", stats->assets_with_orders,
-                    stats->total_assets > 0 ? stats->completeness_orders() * 100.0f : 0.0f);
-        ImGui::Text("  With Both: %zu (%.1f%%)", stats->assets_with_both,
-                    stats->total_assets > 0 ? stats->completeness_all() * 100.0f : 0.0f);
+        ImGui::Text("  With Orders: %zu (%.1f%%)", stats->assets_with_orders, completeness);
         ImGui::Separator();
         ImGui::Text("Dividend/Split Events: %zu stocks", stats->dividend_split_count);
-        ImGui::Separator();
-
-        const char *view_name = (state.view_mode == BrowserViewMode::All)         ? "All"
-                                : (state.view_mode == BrowserViewMode::Snapshots) ? "Snapshots"
-                                                                                  : "Orders";
-        ImGui::Text("Data Completeness: %.1f%% [View: %s]", completeness, view_name);
         ImGui::EndTooltip();
       } else {
         ImGui::SetTooltip("%s (No data)", state.hover_date.c_str());
@@ -472,23 +451,6 @@ void RenderTabBrowser(
         stock_days, stock_factors, asset_data, backtest_start, backtest_end);
   }
 
-  // View Mode Selector and Refresh Button
-  ImGui::Text("View Mode:");
-  ImGui::SameLine();
-  if (ImGui::RadioButton("All", browser_state.view_mode == BrowserViewMode::All)) {
-    browser_state.view_mode = BrowserViewMode::All;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("Snapshots", browser_state.view_mode == BrowserViewMode::Snapshots)) {
-    browser_state.view_mode = BrowserViewMode::Snapshots;
-  }
-  ImGui::SameLine();
-  if (ImGui::RadioButton("Orders", browser_state.view_mode == BrowserViewMode::Orders)) {
-    browser_state.view_mode = BrowserViewMode::Orders;
-  }
-  ImGui::SameLine();
-  ImGui::Spacing();
-  ImGui::SameLine();
   if (ImGui::Button("Refresh Data")) {
     browser_state.daily_stats_cache.clear();
     browser_state.daily_stats_cache = BuildDailyStats(
@@ -556,13 +518,7 @@ void RenderTabBrowser(
     }
     if (stats.is_in_backtest_range && stats.is_trading_day) {
       backtest_days++;
-      if (browser_state.view_mode == BrowserViewMode::All) {
-        avg_completeness += stats.completeness_all();
-      } else if (browser_state.view_mode == BrowserViewMode::Snapshots) {
-        avg_completeness += stats.completeness_snapshots();
-      } else {
-        avg_completeness += stats.completeness_orders();
-      }
+      avg_completeness += stats.completeness_orders();
     }
     total_dividend_events += stats.dividend_split_count;
   }

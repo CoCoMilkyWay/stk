@@ -7,15 +7,24 @@
 #include "shared/SharedData.hpp"
 #include "worker/encoding_worker.hpp"
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <cassert>
+#include <filesystem>
 #include <iostream>
-#include <mutex>
+#include <unordered_map>
 
 namespace GUI::Database {
+
+// 一批多少个资产 — 权衡两件事:
+//   摊薄 unrar 固定开销 (进程启动 + 三万条目包头扫描): 批越大越省, 实测 20 个
+//   资产一次调用比 20 次单独调用快 3.3x, 200 个模式一次调用也正常;
+//   负载均衡: 批是 worker 的调度粒度, 批太大会在收尾时让部分 worker 空转.
+// 内存不参与权衡 — 批内一次只持有一个文件的字节 (见 stream_archive_files).
+static constexpr size_t kAssetsPerBatch = 64;
 
 EncodingService::EncodingService(SharedData &data, TaskTerminal *term)
     : data_(data), terminal_(term) {
@@ -44,74 +53,164 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
               << " | Dates: " << data_.asset.all_dates.size() << "\n"
               << std::endl;
 
-    // date_info = 每日 archive 实际清单 ∩ A 轴.
-    // 全市场下不能再拿 ipo/退市区间去盲试: 那会对当天包里没有的资产各发一次
-    // unrar (每次重走 30k 条目头链). 先 lb 列举 (单包 ~120ms) 拿到当天真实
-    // universe, 再按轴过滤掉 ETF/基金 (轴只含股票).
-    const AssetAxis &axis = asset_axis();
-    assert(data_.asset.items.size() == axis.size() &&
-           "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
-
-    size_t pairs = 0;
-    for (const auto &date_str : data_.asset.all_dates) {
-      const std::string archive_path = Utils::generate_archive_path(
-          data_.config.archive_dir, date_str, data_.config.archive_extension);
-      const auto present = misc::list_archive_assets(archive_path, data_.config.archive_tool);
-
-      for (const auto &code_ex : present) {
-        const size_t asset_id = axis.find(code_ex);
-        if (asset_id == axis.size())
-          continue; // 非股票 (ETF/基金) 或轴外代码, 不进 A 轴
-
-        AssetItem &asset = data_.asset.items[asset_id];
-        ++pairs;
-
-        // Create DateInfo if not exists (may already exist from binary scan)
-        if (asset.date_info.find(date_str) == asset.date_info.end()) {
-          DateInfo &di = asset.date_info[date_str];
-          di.database_dir = Utils::generate_temp_asset_dir(data_.config.database_dir, date_str,
-                                                           asset.asset_code, asset.exchange);
-          di.snapshots_encoded = 0;
-          di.orders_encoded = 0;
-        }
-      }
-    }
-
-    // Build asset queue (all assets, skip logic handled per-date in worker).
-    // 汇总行的分母 = 真有日期要处理的资产数 (轴里但 archive 没有的不算, 否则
-    // 那些资产瞬间"完成", 进度条一开始就虚高).
-    std::vector<size_t> asset_queue;
-    asset_queue.reserve(data_.asset.items.size());
-    size_t assets_with_work = 0;
-    for (size_t i = 0; i < data_.asset.items.size(); ++i) {
-      asset_queue.push_back(i);
-      if (!data_.asset.items[i].date_info.empty())
-        ++assets_with_work;
-    }
-
-    std::cout << "Archive universe: " << assets_with_work << " assets / "
-              << pairs << " (asset, date) pairs\n"
-              << std::endl;
-
-    std::cout << "Encoding: 二进制数据库创建中...\n"
-              << std::endl;
-
     // Initialize logger for all encoding workers (shared log file)
     Logger::init(data_.config.log_dir);
     Logger::reg("encoding");
 
-    // Launch worker threads
-    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100,
-                                                         assets_with_work, "assets");
-    std::mutex queue_mutex;
+    // ------------------------------------------------------------------
+    // 阶段一: 列举 — 每日包里"实际有哪些资产、每个文件多大"
+    // ------------------------------------------------------------------
+    //
+    // 全市场下不能拿 ipo/退市区间去盲试: 那会对当天包里没有的资产各发一次
+    // unrar (每次重走三万条目的包头). 先列举 (单包 ~0.4s) 拿到当天真实
+    // universe, 再按 A 轴过滤掉 ETF/基金 (轴只含股票).
+    //
+    // 尺寸在这一步就要拿到 —— 阶段二靠它在 unrar p 的输出流上切分文件边界.
+    const AssetAxis &axis = asset_axis();
+    assert(data_.asset.items.size() == axis.size() &&
+           "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
+
+    std::vector<EncodeBatch> batches;
+    size_t pairs = 0;
+    size_t skipped = 0;
+    std::unordered_map<size_t, std::string> last_date_of_asset;
+
+    for (const auto &date_str : data_.asset.all_dates) {
+      if (cancel_flag_.load())
+        break;
+
+      const std::string archive_path = Utils::generate_archive_path(
+          data_.config.archive_dir, date_str, data_.config.archive_extension);
+      const auto entries = misc::list_archive(archive_path, data_.config.archive_tool);
+      if (entries.empty())
+        continue;
+
+      // 同一资产的委托/成交条目在包里是分开的两条, 先按资产归并
+      struct Pending {
+        size_t order_index = 0, trade_index = 0;
+        size_t order_size = 0, trade_size = 0;
+      };
+      std::unordered_map<size_t, Pending> by_asset;
+
+      for (const auto &entry : entries) {
+        // "20260803/000001.SZ/逐笔委托.csv" → code_ex, filename
+        const size_t first = entry.path.find('/');
+        if (first == std::string::npos)
+          continue;
+        const size_t second = entry.path.find('/', first + 1);
+        if (second == std::string::npos)
+          continue;
+
+        const std::string code_ex = entry.path.substr(first + 1, second - first - 1);
+        const std::string filename = entry.path.substr(second + 1);
+
+        const bool is_order = (filename == data_.config.csv_market_order);
+        const bool is_trade = (filename == data_.config.csv_market_trade);
+        if (!is_order && !is_trade)
+          continue; // 行情.csv (快照) 不再编码
+
+        const size_t asset_id = axis.find(code_ex);
+        if (asset_id == axis.size())
+          continue; // 非股票 (ETF/基金) 或轴外代码
+
+        Pending &p = by_asset[asset_id];
+        if (is_order) {
+          p.order_index = entry.index;
+          p.order_size = entry.size;
+        } else {
+          p.trade_index = entry.index;
+          p.trade_size = entry.size;
+        }
+      }
+
+      // 断点续跑: 目标文件已存在就跳过. 文件名不带条数, 所以这是一次
+      // exists 而不是通配符匹配.
+      std::vector<EncodeTask> tasks;
+      tasks.reserve(by_asset.size());
+      for (const auto &[asset_id, p] : by_asset) {
+        if (p.order_size == 0)
+          continue; // 没有委托文件, 无从重建盘口
+
+        const AssetItem &asset = data_.asset.items[asset_id];
+        if (skip_existing_ &&
+            std::filesystem::exists(Utils::generate_orders_path(
+                data_.config.orders_dir, date_str, asset.asset_code, asset.exchange,
+                data_.config.binary_extension))) {
+          ++skipped;
+          continue;
+        }
+
+        tasks.push_back({asset_id, p.order_index, p.trade_index, p.order_size, p.trade_size,
+                         /*last_for_asset=*/false});
+        last_date_of_asset[asset_id] = date_str;
+        ++pairs;
+      }
+      if (tasks.empty())
+        continue;
+
+      // 按归档序排, 再切成批 (见 encoding_worker.hpp: 一批一次 unrar p)
+      std::sort(tasks.begin(), tasks.end(),
+                [](const EncodeTask &a, const EncodeTask &b) { return a.order_index < b.order_index; });
+
+      for (size_t i = 0; i < tasks.size(); i += kAssetsPerBatch) {
+        EncodeBatch batch;
+        batch.date = date_str;
+        batch.archive_path = archive_path;
+        batch.tasks.assign(tasks.begin() + static_cast<long>(i),
+                           tasks.begin() + static_cast<long>(std::min(i + kAssetsPerBatch, tasks.size())));
+        batches.push_back(std::move(batch));
+      }
+    }
+
+    // 标记每个资产的末日任务 — 进度条上的资产计数靠它推进
+    size_t assets_with_work = last_date_of_asset.size();
+    for (auto &batch : batches)
+      for (auto &task : batch.tasks)
+        if (last_date_of_asset[task.asset_id] == batch.date)
+          task.last_for_asset = true;
+
+    std::cout << "Archive universe: " << assets_with_work << " assets / " << pairs
+              << " (asset, date) pairs to encode"
+              << (skipped > 0 ? " (" + std::to_string(skipped) + " already encoded, skipped)" : "")
+              << "\n"
+              << "Batches: " << batches.size() << " (<=" << kAssetsPerBatch << " assets each)\n"
+              << std::endl;
+
+    if (pairs == 0) {
+      status_ = EncodingStatus::Completed;
+      std::cout << "Nothing to encode." << std::endl;
+      if (scan_callback_)
+        scan_callback_();
+      data_.DisableHighPerformanceMode();
+      return;
+    }
+
+    std::cout << "Encoding: 逐笔二进制生成中...\n"
+              << std::endl;
+
+    // ------------------------------------------------------------------
+    // 阶段二: 编码 — worker 消费批
+    // ------------------------------------------------------------------
+    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100, pairs, "pairs");
+    progress_->set_summary_secondary(assets_with_work, "assets");
+
+    BatchQueue queue(static_cast<size_t>(num_workers_) * 4);
     workers_.clear();
     workers_.reserve(num_workers_);
 
     for (int i = 0; i < num_workers_; ++i) {
-      workers_.push_back(std::async(std::launch::async, [this, i, &asset_queue, &queue_mutex]() {
-        encoding_worker(data_, asset_queue, queue_mutex, &cancel_flag_, i, progress_->get_handle(i));
+      workers_.push_back(std::async(std::launch::async, [this, i, &queue]() {
+        encoding_worker(data_, queue, &cancel_flag_, i, progress_->get_handle(i));
       }));
     }
+
+    for (auto &batch : batches) {
+      if (cancel_flag_.load())
+        break;
+      if (!queue.push(std::move(batch)))
+        break;
+    }
+    queue.close();
 
     // Wait for completion
     for (auto &worker : workers_)
@@ -122,25 +221,13 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     // Finalize
     status_ = cancel_flag_.load() ? EncodingStatus::Cancelled : EncodingStatus::Completed;
 
-    // 实际落盘的 (资产, 日期) 数 — binary.dates 是上次扫描的快照, 编码期间不更新
-    size_t encoded_pairs = 0;
-    size_t encoded_assets = 0;
-    for (const auto &item : data_.asset.items) {
-      size_t n = 0;
-      for (const auto &[date, di] : item.date_info)
-        n += (di.orders_encoded ? 1 : 0);
-      encoded_pairs += n;
-      encoded_assets += (n > 0 ? 1 : 0);
-    }
-
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                              std::chrono::steady_clock::now() - start_time_)
                              .count();
 
     std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
-              << "Encoded: " << encoded_assets << "/" << assets_with_work << " assets, "
-              << encoded_pairs << "/" << pairs << " (asset, date) pairs"
-              << " in " << elapsed << "s" << std::endl;
+              << "Encoded: " << pairs << " (asset, date) pairs across " << assets_with_work
+              << " assets in " << elapsed << "s" << std::endl;
 
     // Trigger scan callback after encoding completion
     if (scan_callback_) {

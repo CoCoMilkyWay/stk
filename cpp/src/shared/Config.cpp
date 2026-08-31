@@ -39,7 +39,7 @@ void Config::SyncStringBuffers() {
   snprintf(start_date_buf, sizeof(start_date_buf), "%s", start_date.c_str());
   snprintf(end_date_buf, sizeof(end_date_buf), "%s", end_date.c_str());
   snprintf(archive_dir_buf, sizeof(archive_dir_buf), "%s", archive_dir.c_str());
-  snprintf(database_dir_buf, sizeof(database_dir_buf), "%s", database_dir.c_str());
+  snprintf(orders_dir_buf, sizeof(orders_dir_buf), "%s", orders_dir.c_str());
   snprintf(feature_dir_buf, sizeof(feature_dir_buf), "%s", feature_dir.c_str());
   snprintf(factor_dir_buf, sizeof(factor_dir_buf), "%s", factor_dir.c_str());
   snprintf(log_dir_buf, sizeof(log_dir_buf), "%s", log_dir.c_str());
@@ -96,7 +96,7 @@ bool Config::LoadFromFile() {
   start_date = j.value("start_date", start_date);
   end_date = j.value("end_date", end_date);
   archive_dir = j.value("archive_dir", archive_dir);
-  database_dir = j.value("database_dir", database_dir);
+  orders_dir = j.value("orders_dir", orders_dir);
   feature_dir = j.value("feature_dir", feature_dir);
   factor_dir = j.value("factor_dir", factor_dir);
   log_dir = j.value("log_dir", log_dir);
@@ -119,7 +119,7 @@ bool Config::SaveToFile() {
   j["start_date"] = start_date;
   j["end_date"] = end_date;
   j["archive_dir"] = archive_dir;
-  j["database_dir"] = database_dir;
+  j["orders_dir"] = orders_dir;
   j["feature_dir"] = feature_dir;
   j["factor_dir"] = factor_dir;
   j["log_dir"] = log_dir;

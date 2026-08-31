@@ -53,6 +53,9 @@ public:
   // 全局汇总计数 +n (跨 worker 共享, 用于"已完成 N / 共 M"那一行)
   void bump_summary(size_t n = 1) const;
 
+  // 汇总行上的第二个计数 (如主计数是 pair, 第二个是 asset)
+  void bump_summary_secondary(size_t n = 1) const;
+
   // Check if handle is valid
   bool valid() const { return progress_ != nullptr && worker_id_ >= 0; }
 
@@ -117,6 +120,13 @@ public:
     return ProgressHandle(this, worker_id);
   }
 
+  // 汇总行上再挂一个计数 (主计数走 pair 这类细粒度单位以便 ETA 平滑,
+  // 第二个走 asset 这类粗粒度单位). 须在开跑前设置.
+  void set_summary_secondary(size_t total, const std::string &unit) {
+    summary_total2_ = total;
+    summary_unit2_ = unit;
+  }
+
   // Stop refresh thread and finalize display
   void stop() {
     if (running_.exchange(false, std::memory_order_release)) {
@@ -162,6 +172,10 @@ private:
     summary_done_.fetch_add(n, std::memory_order_relaxed);
   }
 
+  void bump_summary_secondary_internal(size_t n) {
+    summary_done2_.fetch_add(n, std::memory_order_relaxed);
+  }
+
   // 汇总行占一行, 排在 worker 条上方
   bool has_summary() const { return summary_total_ > 0; }
   int total_lines() const { return num_workers_ + (has_summary() ? 1 : 0); }
@@ -192,6 +206,12 @@ private:
            << done << "/" << summary_total_;
     if (!summary_unit_.empty())
       buffer << " " << summary_unit_;
+
+    if (summary_total2_ > 0) {
+      buffer << " | " << summary_done2_.load(std::memory_order_relaxed) << "/" << summary_total2_;
+      if (!summary_unit2_.empty())
+        buffer << " " << summary_unit2_;
+    }
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                              std::chrono::steady_clock::now() - start_time_)
@@ -278,6 +298,9 @@ private:
   std::atomic<size_t> summary_done_{0};
   size_t summary_total_;
   std::string summary_unit_;
+  std::atomic<size_t> summary_done2_{0};
+  size_t summary_total2_ = 0;
+  std::string summary_unit2_;
   std::chrono::steady_clock::time_point start_time_;
 
   std::atomic<bool> running_;
@@ -301,6 +324,12 @@ inline void ProgressHandle::set_label(const std::string &label) const {
 inline void ProgressHandle::bump_summary(size_t n) const {
   if (progress_) {
     progress_->bump_summary_internal(n);
+  }
+}
+
+inline void ProgressHandle::bump_summary_secondary(size_t n) const {
+  if (progress_) {
+    progress_->bump_summary_secondary_internal(n);
   }
 }
 

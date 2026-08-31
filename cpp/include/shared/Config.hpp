@@ -12,7 +12,7 @@ struct Config {
 
   // Paths
   std::string archive_dir = "/mnt/dev/sde/A_stock/L2";
-  std::string database_dir = "../../../../output/database";
+  std::string orders_dir = "../../../../output/orders";
   std::string feature_dir = "../../../../output/features";
   std::string factor_dir = "../../../../output/factors";
   std::string log_dir = "../../../../output/log";
@@ -36,7 +36,7 @@ struct Config {
   char start_date_buf[64] = "";
   char end_date_buf[64] = "";
   char archive_dir_buf[512] = "";
-  char database_dir_buf[512] = "";
+  char orders_dir_buf[512] = "";
   char feature_dir_buf[512] = "";
   char factor_dir_buf[512] = "";
   char log_dir_buf[512] = "";
