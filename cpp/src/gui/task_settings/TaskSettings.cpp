@@ -394,112 +394,11 @@ private:
 
   bool DrawDatabaseSection(Config &cfg) {
     bool changed = false;
-    if (ImGui::CollapsingHeader("数据库配置 (Baostock)", ImGuiTreeNodeFlags_DefaultOpen)) {
-      if (ImGui::BeginTable("database_table", 2, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
-        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-
-        // Assets file
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("目标标的文件名");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("assets.json - Target assets list configuration file");
-        }
-        ImGui::TableNextColumn();
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##assets_file", cfg.assets_file_buf, sizeof(cfg.assets_file_buf))) {
-          cfg.assets_file = cfg.assets_file_buf;
-          changed = true;
-        }
-        ImGui::PopItemWidth();
-
-        // Stock factor file
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("复权因子文件名");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("stock_factor.json - 存储复权因子数据");
-        }
-        ImGui::TableNextColumn();
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##baostock_stock_factor_file", cfg.baostock_stock_factor_file_buf, sizeof(cfg.baostock_stock_factor_file_buf))) {
-          cfg.baostock_stock_factor_file = cfg.baostock_stock_factor_file_buf;
-          changed = true;
-        }
-        ImGui::PopItemWidth();
-
-        // Stock info file
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("股票信息文件名");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("stock_info.json - 存储股票基本信息");
-        }
-        ImGui::TableNextColumn();
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##baostock_stock_info_file", cfg.baostock_stock_info_file_buf, sizeof(cfg.baostock_stock_info_file_buf))) {
-          cfg.baostock_stock_info_file = cfg.baostock_stock_info_file_buf;
-          changed = true;
-        }
-        ImGui::PopItemWidth();
-
-        // Stock days file
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("交易日文件名");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("stock_days.json - 存储交易日历数据");
-        }
-        ImGui::TableNextColumn();
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##baostock_stock_days_file", cfg.baostock_stock_days_file_buf, sizeof(cfg.baostock_stock_days_file_buf))) {
-          cfg.baostock_stock_days_file = cfg.baostock_stock_days_file_buf;
-          changed = true;
-        }
-        ImGui::PopItemWidth();
-
-        // Max workers
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("并发爬虫数");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("ASIO异步并发网络爬虫协程数 (1-100)");
-        }
-        ImGui::TableNextColumn();
-        ImGui::PushItemWidth(-1);
-        if (ImGui::SliderInt("##baostock_max_workers", &cfg.baostock_max_workers_buf, 1, 100)) {
-          cfg.baostock_max_workers = cfg.baostock_max_workers_buf;
-          changed = true;
-        }
-        ImGui::PopItemWidth();
-
-        // Weekly update day
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("每周更新日");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("每周自动更新的日期 (1=周一, 7=周日)");
-        }
-        ImGui::TableNextColumn();
-        ImGui::PushItemWidth(-1);
-        const char *weekday_names[] = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
-        int weekday_index = cfg.baostock_weekly_update_day_buf - 1;
-        if (ImGui::Combo("##baostock_weekly_update_day", &weekday_index, weekday_names, 7)) {
-          cfg.baostock_weekly_update_day_buf = weekday_index + 1;
-          cfg.baostock_weekly_update_day = cfg.baostock_weekly_update_day_buf;
-          changed = true;
-        }
-        ImGui::PopItemWidth();
-
-        ImGui::EndTable();
-      }
+    if (ImGui::CollapsingHeader("数据库配置", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::TextDisabled("universe 无需配置: encode / features 两级 cache 均为全市场日频,"
+                          " A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json)");
+      ImGui::TextDisabled("基本面数据 (BigQuant + Tushare): 常量见 shared/Config.hpp namespace config,"
+                          " 落地 output/fundamental/");
     }
     return changed;
   }

@@ -1,117 +1,79 @@
 // Asset Loader Implementation
 #include "gui/task_database/services/AssetLoader.hpp"
+#include "shared/AssetAxis.hpp"
 #include "shared/SharedData.hpp"
-#include "package/nlohmann/json.hpp"
 
 #include <algorithm>
-#include <filesystem>
-#include <fstream>
+#include <cassert>
 
 namespace GUI::Database {
 
-using json = nlohmann::json;
-
-void AssetLoader::load_from_config(SharedData &data) {
+void AssetLoader::load(SharedData &data) {
   data.asset.items.clear();
-  
-  std::filesystem::path assets_path = std::filesystem::path(data.config.config_dir) / data.config.assets_file;
-  
-  if (!std::filesystem::exists(assets_path)) {
-    return;
-  }
-  
-  // Get stock_info from shared data
+
   const auto &stock_info_map = data.assetinfo.get_stock_info();
-  
-  try {
-    std::ifstream file(assets_path);
-    json j;
-    file >> j;
-    
-    if (!j.contains("assets") || !j["assets"].is_array()) {
-      return;
+  AssetAxis &axis = asset_axis(); // 首次访问即 load + 自校验
+
+  // 基本面股票全量 → intern. stock_info 是 std::map, 首次建轴时顺序即
+  // (exchange, code) 字典序; 之后新上市按发现顺序追加尾部.
+  for (const auto &[key, info] : stock_info_map) {
+    std::string code, exchange;
+    split_stock_key(key, code, exchange);
+    axis.intern(code + "." + exchange);
+  }
+  axis.save();
+
+  // items 与轴下标密集对齐: items[i].asset_id == i.
+  // 轴里可能有本次基本面查不到的老代码 (注册表 append-only, 从不删) — 那些
+  // 保留占位, 名称留空、区间给全开, encode 时 archive 里没有自然跳过.
+  const std::size_t n = axis.size();
+  data.asset.items.reserve(n);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::string &code_ex = axis.code(i);
+    const std::size_t dot = code_ex.find('.');
+    assert(dot != std::string::npos && "AssetAxis 资产码缺少 .EX 后缀");
+    const std::string code = code_ex.substr(0, dot);
+    const std::string exchange = code_ex.substr(dot + 1);
+
+    std::string exchange_lower = exchange;
+    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
+
+    std::string asset_name;
+    std::string start_date = "19900101";
+    std::string end_date = "20991231";
+
+    auto it = stock_info_map.find(exchange_lower + "." + code);
+    if (it != stock_info_map.end()) {
+      const auto &info = it->second;
+      asset_name = info.name;
+
+      std::string ipo_date = info.ipoDate;
+      if (!ipo_date.empty()) {
+        ipo_date.erase(std::remove(ipo_date.begin(), ipo_date.end(), '-'), ipo_date.end());
+        start_date = ipo_date;
+      }
+
+      std::string out_date = info.outDate;
+      if (!out_date.empty()) {
+        out_date.erase(std::remove(out_date.begin(), out_date.end(), '-'), out_date.end());
+        end_date = out_date;
+      }
     }
-    
-    const auto &assets_array = j["assets"];
-    data.asset.items.reserve(assets_array.size());
-    
-    for (size_t i = 0; i < assets_array.size(); ++i) {
-      if (!assets_array[i].is_string()) {
-        continue;
-      }
-      
-      std::string code = assets_array[i].get<std::string>();
-      if (code.empty() || code == "000000") {
-        continue;
-      }
-      
-      std::string exchange = infer_exchange(code);
-      
-      // Build key for stock_info lookup: "exchange.code" (lowercase exchange)
-      std::string exchange_lower = exchange;
-      std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-      std::string stock_key = exchange_lower + "." + code;
-      
-      std::string asset_name = "";
-      std::string start_date = "19900101";
-      std::string end_date = "20991231";
-      
-      // Load from stock_info if available
-      auto info_it = stock_info_map.find(stock_key);
-      if (info_it != stock_info_map.end()) {
-        const auto &info = info_it->second;
-        asset_name = info.name;
-        
-        std::string ipo_date = info.ipoDate;
-        if (!ipo_date.empty()) {
-          ipo_date.erase(std::remove(ipo_date.begin(), ipo_date.end(), '-'), ipo_date.end());
-          start_date = ipo_date;
-        }
-        
-        std::string out_date = info.outDate;
-        if (!out_date.empty()) {
-          out_date.erase(std::remove(out_date.begin(), out_date.end(), '-'), out_date.end());
-          end_date = out_date;
-        }
-      }
-      
-      AssetItem asset(i, code, asset_name, exchange, start_date, end_date);
-      data.asset.items.push_back(std::move(asset));
-    }
-    
-  } catch (const std::exception &e) {
-    // Failed to load, leave assets empty
+
+    data.asset.items.emplace_back(i, code, asset_name, exchange, start_date, end_date);
   }
 }
 
-std::string AssetLoader::infer_exchange(const std::string &code) {
-  if (code.empty()) {
-    return "SZ";
-  }
-  
-  char first = code[0];
-  
-  // SZ: 0xxxxx (main board), 3xxxxx (ChiNext)
-  if (first == '0' || first == '3') {
-    return "SZ";
-  }
-  
-  // SH: 6xxxxx (main board)
-  if (first == '6') {
-    return "SH";
-  }
-  
-  // B-shares: 900xxx (SH), 200xxx (SZ)
-  if (first == '9') {
-    return "SH";
-  }
-  if (first == '2' && code.length() == 6) {
-    return "SZ";
-  }
-  
-  // Default to SZ
-  return "SZ";
+void AssetLoader::split_stock_key(const std::string &key, std::string &code, std::string &exchange) {
+  const std::size_t dot = key.find('.');
+  assert(dot != std::string::npos && "基本面 stock_info key 缺少 . 分隔 (期望 sz.000001)");
+
+  exchange = key.substr(0, dot);
+  std::transform(exchange.begin(), exchange.end(), exchange.begin(), ::toupper);
+  code = key.substr(dot + 1);
+
+  assert(!code.empty() && "基本面 stock_info key 代码段为空");
 }
 
 } // namespace GUI::Database
-

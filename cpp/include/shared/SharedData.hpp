@@ -12,7 +12,6 @@
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 
-
 struct SharedData {
   Config config;
   TaskState taskstate;

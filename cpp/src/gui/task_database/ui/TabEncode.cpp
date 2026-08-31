@@ -104,7 +104,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       ImGui::TextDisabled("Database check in progress...");
     } else if (check_result.status == DatabaseStatus::Unchecked) {
       ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Not checked");
-      ImGui::TextDisabled("Click 'Check Database' to verify coverage");
+      ImGui::TextDisabled("Coverage check runs automatically after fundamental sync");
     } else if (check_result.status == DatabaseStatus::Error) {
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "ERROR");
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", check_result.error_message.c_str());

@@ -3,7 +3,7 @@
 #pragma once
 
 #include "gui/task_database/services/AssetLoader.hpp"
-#include "gui/task_database/services/BaostockService.hpp"
+#include "gui/task_database/services/FundamentalService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include <boost/asio/awaitable.hpp>
 
@@ -19,11 +19,11 @@ using boost::asio::awaitable;
 // ============================================================================
 
 struct TabAccessState {
-  // Tab unlock progression (top-down)
-  bool can_access_encode = true;    // Always accessible
-  bool can_access_overview = false; // Unlocked when database check passes
-  bool can_access_table = false;    // Unlocked when all JSON ready
-  bool can_access_browser = false;  // Unlocked when all JSON ready
+  // Tab unlock progression (基本面 → L2 → 消费端)
+  bool can_access_overview = true;  // 基本面面板, 流水线第一步, 永远可进
+  bool can_access_encode = false;   // 基本面 Ready 后解锁 (覆盖检查依赖日历)
+  bool can_access_table = false;    // 基本面 Ready 且 L2 覆盖 Pass
+  bool can_access_browser = false;  // 基本面 Ready 且 L2 覆盖 Pass
 };
 
 // ============================================================================
@@ -34,16 +34,12 @@ struct AggregatedState {
   // Tab access control
   TabAccessState tabs;
 
-  // JSON file statuses
-  JsonFileStatus stock_factor_status = JsonFileStatus::Idle;
-  JsonFileStatus stock_info_status = JsonFileStatus::Idle;
-  JsonFileStatus stock_days_status = JsonFileStatus::Idle;
+  // Fundamental data status (BigQuant + Tushare → AssetInfo)
+  FundamentalStatus fundamental_status = FundamentalStatus::Idle;
 
-  // Helper: all JSON files ready
+  // Helper: fundamental data ready (AssetInfo built from parquet)
   bool all_json_ready() const {
-    return stock_factor_status == JsonFileStatus::Ready &&
-           stock_info_status == JsonFileStatus::Ready &&
-           stock_days_status == JsonFileStatus::Ready;
+    return fundamental_status == FundamentalStatus::Ready;
   }
 };
 
@@ -54,13 +50,13 @@ struct AggregatedState {
 class StateManager {
 private:
   SharedData &data_;
-  BaostockService *baostock_svc_;
+  FundamentalService *fundamental_svc_;
   ScanService *scan_svc_;
   AggregatedState state_;
 
 public:
-  StateManager(SharedData &data, BaostockService *bs, ScanService *scan)
-      : data_(data), baostock_svc_(bs), scan_svc_(scan) {}
+  StateManager(SharedData &data, FundamentalService *fs, ScanService *scan)
+      : data_(data), fundamental_svc_(fs), scan_svc_(scan) {}
 
   // ============================================================================
   // Lifecycle

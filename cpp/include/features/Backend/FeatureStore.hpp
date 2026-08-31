@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -175,6 +176,7 @@ private:
   };
 
   // Config
+  const std::uint64_t axis_hash_; // A 轴前缀指纹, 落进每个特征文件头
   const size_t num_assets_;
   const size_t num_ts_workers_;
   size_t pool_size_;
@@ -209,10 +211,13 @@ private:
   mutable std::vector<std::unordered_set<size_t>> assigned_assets_; // [worker_id] → {asset_ids}
 
 public:
+  // axis_hash: AssetAxis::hash_at(num_assets), 写进每个特征文件头锁定列序
   GlobalFeatureStore(size_t num_assets, size_t num_ts_workers,
+                     std::uint64_t axis_hash,
                      const std::string &output_dir = "",
                      int cs_worker_id = -1, int io_worker_id = -1)
-      : num_assets_(num_assets), num_ts_workers_(num_ts_workers),
+      : axis_hash_(axis_hash),
+        num_assets_(num_assets), num_ts_workers_(num_ts_workers),
         pool_size_(num_ts_workers * POOL_SIZE_FACTOR),
         cs_worker_id_(cs_worker_id >= 0 ? cs_worker_id : static_cast<int>(num_ts_workers)),
         io_worker_id_(io_worker_id >= 0 ? io_worker_id : static_cast<int>(num_ts_workers) + 1) {
@@ -753,9 +758,14 @@ private:
   }
 
   // Write file with header + compressed data
+  //
+  // header[3] = A 轴前缀指纹 (AssetAxis::hash_at(A)): 列 → 资产的映射不存在
+  // 文件里, 全靠 A 轴顺序. 存下指纹后, 读文件时 O(1) 就能确认"该文件的列序与
+  // 当前注册表前 A 条一致"; 轴 append-only, 所以追加新资产不会动历史文件的
+  // 指纹. 热路径 (解压/索引) 不受影响.
   void write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
                               const void *raw_data, size_t raw_size) {
-    const size_t header_size = 3 * sizeof(size_t);
+    const size_t header_size = 4 * sizeof(size_t);
     const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
     const size_t buffer_size = header_size + compressed_bound;
 
@@ -764,6 +774,7 @@ private:
     header[0] = T;
     header[1] = F;
     header[2] = A;
+    header[3] = static_cast<size_t>(axis_hash_);
 
     size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size,
                                                             buffer.data() + header_size,

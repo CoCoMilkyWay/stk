@@ -1,8 +1,9 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/coro/CoroManager.hpp"
-#include "gui/task_database/services/BaostockService.hpp"
+#include "gui/task_database/services/AssetLoader.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
+#include "gui/task_database/services/FundamentalService.hpp"
 #include "gui/task_database/services/L2DatabaseService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
@@ -12,14 +13,12 @@
 #include "gui/task_database/ui/TabTable.hpp"
 #include "imgui.h"
 #include "shared/SharedData.hpp"
-#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <memory>
 #include <thread>
-
 
 namespace GUI::Tasks {
 namespace {
@@ -29,7 +28,7 @@ using namespace GUI::Database;
 class DatabaseTask {
 private:
   // Service layer
-  std::unique_ptr<BaostockService> baostock_svc_;
+  std::unique_ptr<FundamentalService> fundamental_svc_;
   std::unique_ptr<ScanService> scan_svc_;
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<L2DatabaseService> l2_svc_;
@@ -39,8 +38,6 @@ private:
   EncodeState encode_state_;
   TableState table_state_;
   BrowserState browser_state_;
-  bool overview_tab_was_open_ = false;  // Track if Overview tab was open last frame
-  bool refresh_flow_triggered_ = false; // Track if refresh flow has been triggered (only once per session)
 
   // Lifecycle
   bool is_expanded_ = false;
@@ -100,14 +97,14 @@ public:
   }
 
 private:
-  // Trigger unified refresh flow: scan L2 first, then update JSONs
+  // Trigger unified refresh flow: sync fundamental parquet + rebuild AssetInfo
+  // A 轴/日历来自 parquet 数据源; 成功后补扫 L2 (日历可能延长, 覆盖判定要重算)
   void TriggerRefreshFlow() {
     auto &ts = data_->taskstate.database;
-    if (ts.json_update_inflight || ts.l2_scan_inflight || !baostock_svc_ || !l2_svc_)
+    if (ts.json_update_inflight || !fundamental_svc_)
       return;
 
     auto &io = coro_mgr_->GetIoContext();
-    ts.l2_scan_inflight = true;
     ts.json_update_inflight = true;
 
     boost::asio::co_spawn(
@@ -117,63 +114,15 @@ private:
           struct FlagReset {
             bool &flag;
             ~FlagReset() { flag = false; }
-          };
+          } update_reset{ts.json_update_inflight};
 
-          FlagReset scan_reset{ts.l2_scan_inflight};
-          FlagReset update_reset{ts.json_update_inflight};
-
-          // Assets are already loaded and scanned in StateManager::initialize()
-          // Just refresh state to update UI
+          co_await fundamental_svc_->update_all();
+          if (fundamental_svc_->is_ready()) {
+            // 新上市的股票在这里追加到 A 轴尾部, 再重建 items
+            AssetLoader::load(*data_);
+            scan_svc_->trigger_scan();
+          }
           state_mgr_->refresh_state();
-
-          // Step 2: Extract stock codes from shared data (already loaded from assets.json)
-          const auto &assets = l2_svc_->get_assets();
-          const auto &all_dates = l2_svc_->get_all_dates();
-          std::vector<std::string> stock_codes;
-          stock_codes.reserve(assets.size());
-
-          for (const auto &asset : assets) {
-            // Convert AssetInfo to Baostock format: sh.600000, sz.000001
-            std::string exchange_lower = asset.exchange;
-            std::transform(exchange_lower.begin(), exchange_lower.end(),
-                           exchange_lower.begin(), ::tolower);
-            stock_codes.push_back(exchange_lower + "." + asset.asset_code);
-          }
-
-          // Get L2 database start date and convert format: YYYYMMDD -> YYYY-MM-DD
-          std::string l2_start_date;
-          std::string l2_end_date;
-          if (!all_dates.empty()) {
-            std::string start_yyyymmdd = all_dates.front();
-            std::string end_yyyymmdd = all_dates.back();
-
-            if (start_yyyymmdd.length() == 8) {
-              l2_start_date = start_yyyymmdd.substr(0, 4) + "-" + start_yyyymmdd.substr(4, 2) + "-" + start_yyyymmdd.substr(6, 2);
-            }
-            if (end_yyyymmdd.length() == 8) {
-              l2_end_date = end_yyyymmdd.substr(0, 4) + "-" + end_yyyymmdd.substr(4, 2) + "-" + end_yyyymmdd.substr(6, 2);
-            }
-
-            // Store L2 database date range in DataManager
-            if (!start_yyyymmdd.empty() && !end_yyyymmdd.empty()) {
-              baostock_svc_->get_data_manager()->set_l2_database_date_range(start_yyyymmdd, end_yyyymmdd);
-              // Note: Will be saved together with stock_codes below
-            }
-          }
-
-          // Step 3: Update DataManager with L2-derived stock codes (this will save config)
-          if (!stock_codes.empty()) {
-            co_await baostock_svc_->get_data_manager()->set_stock_codes(stock_codes);
-          } else {
-            // If no stock codes, still need to save L2 date range
-            co_await baostock_svc_->get_data_manager()->save_config(config_->config_dir + "/" + config_->baostock_data_manager_file);
-          }
-
-          // Step 4: Update all JSON files based on L2 assets (use L2 start date from config)
-          co_await baostock_svc_->update_all(l2_start_date);
-          // refresh_state() is called inside update_all()
-
-          // Update task state after refresh completes
           UpdateTaskState();
         }(),
         boost::asio::detached);
@@ -183,11 +132,11 @@ private:
     auto &io = coro_mgr_->GetIoContext();
 
     // Create services (in dependency order)
-    baostock_svc_ = std::make_unique<BaostockService>(io, data, &data.terminal);
+    fundamental_svc_ = std::make_unique<FundamentalService>(io, data);
     scan_svc_ = std::make_unique<ScanService>(data, io, &data.terminal);
     encoding_svc_ = std::make_unique<EncodingService>(data, &data.terminal);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
-    state_mgr_ = std::make_unique<StateManager>(data, baostock_svc_.get(), scan_svc_.get());
+    state_mgr_ = std::make_unique<StateManager>(data, fundamental_svc_.get(), scan_svc_.get());
 
     // Set encoding completion callback to trigger scan
     encoding_svc_->set_scan_callback([this]() {
@@ -199,7 +148,7 @@ private:
       UpdateTaskState();
     });
 
-    // Initialize: login workers + load existing JSON
+    // Initialize: 本地 parquet → AssetInfo
     // Non-blocking, user sees progress in terminal
     boost::asio::co_spawn(
         io,
@@ -253,24 +202,45 @@ private:
     // Get database check result from scan service
     auto check_result = scan_svc_->get_last_check_result();
 
-    // Status indicator at top
-    ImGui::Text("Database Status: ");
+    // Status indicator at top (流水线顺序: 基本面 → L2)
+    const auto &fstate = fundamental_svc_->get_state();
+    ImGui::Text("Fundamental: ");
+    ImGui::SameLine();
+    switch (fstate.status) {
+    case FundamentalStatus::Ready:
+      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "[Ready]");
+      break;
+    case FundamentalStatus::Updating:
+    case FundamentalStatus::Building:
+      ImGui::TextColored(ImVec4(1.0f, 0.95f, 0.3f, 1.0f), "[%s]",
+                         GetFundamentalStatusName(fstate.status));
+      break;
+    case FundamentalStatus::Error:
+      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.0f, 1.0f), "[Error]");
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", fstate.message.c_str());
+      break;
+    case FundamentalStatus::Idle:
+      ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[Idle]");
+      break;
+    }
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Text("L2 Database: ");
     ImGui::SameLine();
 
-    // Primary status: database coverage check
+    // L2 database coverage check (required_dates = 基本面交易日历)
     switch (check_result.status) {
     case DatabaseStatus::Unchecked:
       ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[Not checked]");
       ImGui::SameLine();
-      ImGui::TextDisabled("(Click 'Check Database' in Encode tab)");
+      ImGui::TextDisabled("(scans after fundamental sync)");
       break;
 
     case DatabaseStatus::Pass:
       ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "[Pass]");
-      if (!state.all_json_ready()) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.95f, 0.3f, 1.0f), "(JSON Incomplete)");
-      }
       break;
 
     case DatabaseStatus::Incomplete:
@@ -304,40 +274,31 @@ private:
 
     ImGui::Separator();
 
-    // TabBar structure
+    // TabBar structure (流水线顺序: Overview 基本面 → Encode L2 → Table/Browser)
     if (ImGui::BeginTabBar("DatabaseTabs", ImGuiTabBarFlags_None)) {
-      // Encode tab - always accessible (first step: create binary database)
-      if (ImGui::BeginTabItem("Encode")) {
-        DrawTabEncode();
-        ImGui::EndTabItem();
-      }
-
       // Get tab access control (managed centrally)
       const auto &tabs = state.tabs;
 
-      // Overview tab - unlocked when database check passes
-      ImGui::BeginDisabled(!tabs.can_access_overview);
-      bool overview_tab_is_open = ImGui::BeginTabItem("Overview");
-      if (overview_tab_is_open && tabs.can_access_overview) {
-        // Trigger refresh flow ONLY ONCE when first opening Overview tab
-        auto &ts = data_->taskstate.database;
-        if (!refresh_flow_triggered_ && !overview_tab_was_open_ && baostock_svc_ && l2_svc_ && !ts.json_update_inflight) {
-          TriggerRefreshFlow();
-          refresh_flow_triggered_ = true;
-        }
+      // Overview tab (基本面面板) - 流水线第一步, 永远可进
+      if (ImGui::BeginTabItem("Overview")) {
         DrawTabOverview();
         ImGui::EndTabItem();
-      } else if (overview_tab_is_open) {
+      }
+
+      // Encode tab - 基本面 Ready 后解锁 (覆盖检查依赖交易日历)
+      ImGui::BeginDisabled(!tabs.can_access_encode);
+      if (ImGui::BeginTabItem("Encode")) {
+        if (tabs.can_access_encode)
+          DrawTabEncode();
         ImGui::EndTabItem();
       }
       ImGui::EndDisabled();
 
-      if (!tabs.can_access_overview && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Complete encoding in Encode tab first");
+      if (!tabs.can_access_encode && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Sync fundamental data in Overview tab first");
       }
-      overview_tab_was_open_ = overview_tab_is_open;
 
-      // Table tab - unlocked when all JSON files ready
+      // Table tab - 基本面 Ready 且 L2 覆盖 Pass
       ImGui::BeginDisabled(!tabs.can_access_table);
       if (ImGui::BeginTabItem("Table")) {
         if (tabs.can_access_table)
@@ -347,10 +308,10 @@ private:
       ImGui::EndDisabled();
 
       if (!tabs.can_access_table && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Update all JSON files in Overview tab first");
+        ImGui::SetTooltip("Requires fundamental data ready and L2 coverage pass (Encode tab)");
       }
 
-      // Browser tab - unlocked when all JSON files ready
+      // Browser tab - 基本面 Ready 且 L2 覆盖 Pass
       ImGui::BeginDisabled(!tabs.can_access_browser);
       if (ImGui::BeginTabItem("Browser")) {
         if (tabs.can_access_browser)
@@ -360,7 +321,7 @@ private:
       ImGui::EndDisabled();
 
       if (!tabs.can_access_browser && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Update all JSON files in Overview tab first");
+        ImGui::SetTooltip("Requires fundamental data ready and L2 coverage pass (Encode tab)");
       }
 
       ImGui::EndTabBar();
@@ -369,177 +330,27 @@ private:
 
   void DrawTabOverview() {
     // Safety: check if services are initialized
-    if (!baostock_svc_ || !l2_svc_) {
+    if (!fundamental_svc_ || !l2_svc_) {
       ImGui::TextDisabled("Services initializing...");
       return;
     }
 
-    bool stock_factor_update = false;
-    bool stock_factor_remove = false;
-    bool stock_factor_view = false;
-    bool stock_info_update = false;
-    bool stock_info_remove = false;
-    bool stock_info_view = false;
-    bool stock_days_update = false;
-    bool stock_days_remove = false;
-    bool stock_days_view = false;
-    bool update_all = false;
+    bool update_clicked = false;
     bool refresh_scan = false;
 
-    // Get L2 summary (internally cached, will only compute once when JSONs are ready)
-    std::string backtest_start = config_ ? config_->start_date : "";
-    std::string backtest_end = config_ ? config_->end_date : "";
-    // Trading days data available in baostock service if needed
-    // const auto &trading_days = baostock_svc_->get_stock_days_data();
-
-    // Convert start_date and end_date from "YYYY-MM-DD" to "YYYYMMDD"
-    if (!backtest_start.empty()) {
-      backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
-    }
-    if (!backtest_end.empty()) {
-      backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
-    }
-
-    const auto &stock_factor_state = baostock_svc_->get_stock_factor_state();
-    const auto &stock_info_state = baostock_svc_->get_stock_info_state();
-    const auto &stock_days_state = baostock_svc_->get_stock_days_state();
-    const auto &crawler_state = baostock_svc_->get_crawler_state();
-
     auto &ts = data_->taskstate.database;
-    bool json_busy = ts.json_update_inflight ||
-                     stock_factor_state.status == JsonFileStatus::Updating ||
-                     stock_info_state.status == JsonFileStatus::Updating ||
-                     stock_days_state.status == JsonFileStatus::Updating ||
-                     crawler_state.status == CrawlerStatus::Running;
-
+    bool busy = ts.json_update_inflight || fundamental_svc_->is_busy();
     bool scan_busy = ts.l2_scan_inflight;
 
-    bool check_integrity = false;
-
     RenderTabOverview(
-        stock_factor_state,
-        stock_info_state,
-        stock_days_state,
-        crawler_state,
-        &stock_factor_update, &stock_factor_remove, &stock_factor_view,
-        &stock_info_update, &stock_info_remove, &stock_info_view,
-        &stock_days_update, &stock_days_remove, &stock_days_view,
-        &update_all, &check_integrity, &refresh_scan,
-        json_busy,
+        fundamental_svc_->get_state(),
+        &update_clicked, &refresh_scan,
+        busy,
         scan_busy);
 
     // Handle button events
-    if (update_all && !ts.json_update_inflight) {
-      ts.json_update_inflight = true;
-      // Don't invalidate cache yet - only invalidate if update actually changes data
-      boost::asio::co_spawn(
-          coro_mgr_->GetIoContext(),
-          [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->taskstate.database;
-            struct FlagReset {
-              bool &flag;
-              ~FlagReset() { flag = false; }
-            };
-
-            {
-              FlagReset update_reset{ts.json_update_inflight};
-              // TODO: update_all should return whether data changed
-              co_await baostock_svc_->update_all();
-              // For now, don't invalidate if no network calls were made
-              // The cache is only invalid if actual data changed
-              state_mgr_->refresh_state();
-            }
-
-            // Assets are already scanned in StateManager::initialize()
-            // No need to rescan, just refresh state
-            state_mgr_->refresh_state();
-            UpdateTaskState();
-          }(),
-          boost::asio::detached);
-    }
-
-    if (stock_factor_update && !ts.json_update_inflight) {
-      ts.json_update_inflight = true;
-      boost::asio::co_spawn(
-          coro_mgr_->GetIoContext(),
-          [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->taskstate.database;
-            struct FlagReset {
-              bool &flag;
-              ~FlagReset() { flag = false; }
-            } reset{ts.json_update_inflight};
-
-            co_await baostock_svc_->update_stock_factor();
-            // Don't invalidate L2 cache - stock_factor doesn't affect L2 binaries
-            state_mgr_->refresh_state();
-            UpdateTaskState();
-          }(),
-          boost::asio::detached);
-    }
-
-    if (stock_info_update && !ts.json_update_inflight) {
-      ts.json_update_inflight = true;
-      boost::asio::co_spawn(
-          coro_mgr_->GetIoContext(),
-          [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->taskstate.database;
-            struct FlagReset {
-              bool &flag;
-              ~FlagReset() { flag = false; }
-            } reset{ts.json_update_inflight};
-
-            co_await baostock_svc_->update_stock_info();
-            // Don't invalidate L2 cache - stock_info doesn't affect L2 binaries
-            state_mgr_->refresh_state();
-            UpdateTaskState();
-          }(),
-          boost::asio::detached);
-    }
-
-    if (stock_days_update && !ts.json_update_inflight) {
-      ts.json_update_inflight = true;
-      boost::asio::co_spawn(
-          coro_mgr_->GetIoContext(),
-          [this]() -> boost::asio::awaitable<void> {
-            auto &ts = data_->taskstate.database;
-            struct FlagReset {
-              bool &flag;
-              ~FlagReset() { flag = false; }
-            } reset{ts.json_update_inflight};
-
-            co_await baostock_svc_->update_stock_days();
-            state_mgr_->refresh_state();
-            UpdateTaskState();
-          }(),
-          boost::asio::detached);
-    }
-
-    if (stock_factor_remove) {
-      if (baostock_svc_->force_remove_stock_factor()) {
-        state_mgr_->refresh_state();
-        UpdateTaskState();
-      }
-    }
-
-    if (stock_info_remove) {
-      if (baostock_svc_->force_remove_stock_info()) {
-        state_mgr_->refresh_state();
-        UpdateTaskState();
-      }
-    }
-
-    if (stock_days_remove) {
-      if (baostock_svc_->force_remove_stock_days()) {
-        state_mgr_->refresh_state();
-        UpdateTaskState();
-      }
-    }
-
-    if (check_integrity) {
-      baostock_svc_->check_all_integrity();
-      // Don't invalidate L2 cache - integrity check doesn't change data
-      state_mgr_->refresh_state();
-      UpdateTaskState();
+    if (update_clicked && !busy) {
+      TriggerRefreshFlow();
     }
 
     if (refresh_scan && !ts.json_update_inflight && !ts.l2_scan_inflight) {
@@ -560,12 +371,12 @@ private:
   void DrawTabBrowser() {
     // Lazy compute browser statistics on first access
     // Requirements: (1) Binary database scanned (has date_info)
-    //               (2) Baostock data ready (stock_info, stock_days)
+    //               (2) Fundamental data ready (stock_info, stock_days)
     //               (3) Not yet computed (date_stats empty)
     if (data_->asset.date_stats.empty() &&
         data_->asset.binary.scanned &&
         !data_->asset.items.empty() &&
-        baostock_svc_->all_ready()) [[unlikely]] {
+        fundamental_svc_->is_ready()) [[unlikely]] {
       data_->asset.compute_browser_statistics(
           data_->assetinfo.get_stock_info(),
           data_->assetinfo.get_stock_days());

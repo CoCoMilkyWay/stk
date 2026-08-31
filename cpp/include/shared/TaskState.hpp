@@ -32,7 +32,7 @@ struct TaskState {
     // 关键状态标志 (其他 Task 可读取)
     bool binary_scanned = false; // 二进制数据库已扫描
     bool binary_pass = false;    // 覆盖检查通过
-    bool all_json_ready = false; // 所有 JSON 文件就绪
+    bool all_json_ready = false; // AssetInfo 已从 parquet 构建
 
     // 便捷方法
     bool ready() const { return binary_pass && all_json_ready; }

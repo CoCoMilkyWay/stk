@@ -1,6 +1,11 @@
 // State Manager Implementation
 #include "gui/task_database/services/StateManager.hpp"
-#include "shared/SharedData.hpp" // NOLINT: Required for AssetLoader::load_from_config(data_)
+// #include "shared/SharedData.hpp" // NOLINT: Required for AssetLoader::load(data_)
+
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <chrono>
 
 namespace GUI::Database {
 
@@ -9,34 +14,25 @@ namespace GUI::Database {
 // ============================================================================
 
 awaitable<void> StateManager::initialize() {
-  // Step 1: Load asset list from assets.json (single source of truth, path from config)
-  AssetLoader::load_from_config(data_);
-
-  // Yield immediately after asset loading to let GUI render
+  // Yield immediately to let GUI render before the (possibly networked) sync
   co_await boost::asio::steady_timer(co_await boost::asio::this_coro::executor, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
-  // Step 2: Build stock codes list from assets (format: exchange.code, lowercase exchange)
-  std::vector<std::string> stock_codes;
-  for (const auto &item : data_.asset.items) {
-    std::string exchange_lower = item.exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-    stock_codes.push_back(exchange_lower + "." + item.asset_code);
-  }
+  // Step 1: 基本面前置 — 启动即水位增量同步 (pending 全 fresh 时零网络直接构建).
+  // 交易日历是 L2 覆盖检查的 ground truth, 股票全量是 A 轴的来源, 都必须先就绪.
+  co_await fundamental_svc_->update_all();
 
-  // Step 3: Set stock codes to DataManager
-  if (!stock_codes.empty()) {
-    co_await baostock_svc_->get_data_manager()->set_stock_codes(stock_codes);
-  }
+  // Step 2: 股票全量 → A 轴注册表 → Asset::items (全市场, 无人工名单).
+  if (fundamental_svc_->is_ready())
+    AssetLoader::load(data_);
 
-  // Step 4: Trigger database scan
-  scan_svc_->trigger_scan();
+  // Step 3: 日历就绪后才扫 L2 (覆盖判定以日历为准).
+  // 基本面 Error (本地 parquet 缺失且同步失败) 时不扫 — Encode 保持锁定,
+  // 用户在 Overview 点 Update 成功后由 TriggerRefreshFlow 补扫.
+  if (fundamental_svc_->is_ready())
+    scan_svc_->trigger_scan();
 
-  // Step 7: Initialize JSON files (fast, no network)
-  // Workers will login lazily when first API call is made
-  co_await baostock_svc_->load_all_json();
-
-  // Step 8: Browser statistics computed lazily on first Browser tab access
-  // (after database scan completes and baostock data is ready)
+  // Browser statistics computed lazily on first Browser tab access
+  // (after database scan completes and fundamental data is ready)
 
   refresh_state();
 }
@@ -46,31 +42,27 @@ awaitable<void> StateManager::initialize() {
 // ============================================================================
 
 void StateManager::refresh_state() {
-  // Refresh all services
-  baostock_svc_->refresh_state();
-
-  // Update JSON file statuses
-  state_.stock_factor_status = baostock_svc_->get_stock_factor_state().status;
-  state_.stock_info_status = baostock_svc_->get_stock_info_state().status;
-  state_.stock_days_status = baostock_svc_->get_stock_days_state().status;
+  // Fundamental data status (BigQuant + Tushare → AssetInfo)
+  state_.fundamental_status = fundamental_svc_->get_state().status;
 
   // Get database check result from scan service
   auto check_result = scan_svc_->get_last_check_result();
 
   // ============================================================================
-  // Tab Access Control (Top-down unlock progression)
+  // Tab Access Control (基本面 → L2 → 消费端)
   // ============================================================================
 
-  // Encode: always accessible
-  state_.tabs.can_access_encode = true;
+  // Overview (基本面面板): 流水线第一步, 永远可进
+  state_.tabs.can_access_overview = true;
 
-  // Overview: unlocked when database check passes (binary完整覆盖backtest period)
-  state_.tabs.can_access_overview = check_result.can_unlock_overview();
+  // Encode: 基本面 Ready 后解锁 (L2 覆盖检查以交易日历为 ground truth)
+  bool ready = state_.all_json_ready();
+  state_.tabs.can_access_encode = ready;
 
-  // Table/Browser: unlocked when Overview accessible AND all JSON files ready
-  bool json_ready = state_.all_json_ready();
-  state_.tabs.can_access_table = state_.tabs.can_access_overview && json_ready;
-  state_.tabs.can_access_browser = state_.tabs.can_access_overview && json_ready;
+  // Table/Browser: 基本面 Ready 且 L2 覆盖检查通过
+  bool pass = check_result.is_pass();
+  state_.tabs.can_access_table = ready && pass;
+  state_.tabs.can_access_browser = ready && pass;
 }
 
 } // namespace GUI::Database

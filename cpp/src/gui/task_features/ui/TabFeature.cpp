@@ -6,7 +6,7 @@
 
 #include "imgui.h"
 #include "latex.h"
-#include "package/utfcpp/utf8.hpp"
+#include "utfcpp/utf8.hpp"
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
 

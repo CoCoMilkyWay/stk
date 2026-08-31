@@ -3,6 +3,7 @@
 #include "features/Backend/FeatureStore.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
+#include "shared/AssetAxis.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/crosssectional_worker.hpp"
 #include "worker/io_worker.hpp"
@@ -103,7 +104,8 @@ void ComputeService::start_compute(int num_workers) {
 
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(
-        num_assets, num_ts_workers, data_.config.feature_dir,
+        num_assets, num_ts_workers, asset_axis().hash_at(num_assets),
+        data_.config.feature_dir,
         static_cast<int>(cs_worker_core), static_cast<int>(io_worker_core));
 
     // Clean up directories before compute

@@ -7,7 +7,7 @@
 #include "implot.h"
 #include "latex.h"
 #include "misc/profiler.hpp"
-#include "package/utfcpp/utf8.hpp"
+#include "utfcpp/utf8.hpp"
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
 #include "shared/Asset.hpp"

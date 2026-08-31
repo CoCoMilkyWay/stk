@@ -136,11 +136,35 @@ endif()
 
 include_directories(
     ../../include
+    ../../package
     ../../package/zstd-1.5.7/lib/
     ../../package/zlib-1.3.1/
     ../../package/microtex/src
     ../../package/tracy/public/tracy
 )
+
+# ============================================================================
+# Vendored Arrow C++ Flight + Parquet (基本面数据 sync: api/bigquant + api/tushare)
+#   headers + 预编译 .so 由 vendor_from_pyarrow.sh 从 pyarrow manylinux wheel 提取
+# ============================================================================
+set(ARROW_VENDOR ${CMAKE_CURRENT_SOURCE_DIR}/../../package/arrow)
+set(ARROW_INCLUDE ${ARROW_VENDOR}/include)
+set(ARROW_LIB ${ARROW_VENDOR}/lib)
+
+if(NOT EXISTS ${ARROW_INCLUDE}/arrow/flight/client.h)
+    message(FATAL_ERROR
+        "Vendored Arrow headers missing: ${ARROW_INCLUDE}/arrow/flight/client.h\n"
+        "Run: ${ARROW_VENDOR}/vendor_from_pyarrow.sh")
+endif()
+if(NOT EXISTS ${ARROW_LIB}/libarrow_flight.so)
+    message(FATAL_ERROR
+        "Vendored Arrow shared libs missing: ${ARROW_LIB}/libarrow_flight.so\n"
+        "Run: ${ARROW_VENDOR}/vendor_from_pyarrow.sh")
+endif()
+
+# Arrow 头文件用 std::aligned_storage, 在 C++23 下被 deprecated.
+# 用 SYSTEM include 抑制第三方头里的 -Wdeprecated-declarations 等警告.
+include_directories(SYSTEM ${ARROW_INCLUDE})
 
 # ============================================================================
 # Source Files
@@ -149,6 +173,7 @@ include_directories(
 set(SOURCES
     ../../src/shared/Config.cpp
     ../../src/shared/Asset.cpp
+    ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Feature.cpp
@@ -157,7 +182,20 @@ set(SOURCES
     ../../src/shared/Transform.cpp
     ../../src/shared/TaskState.cpp
     ../../src/misc/logging.cpp
+    ../../src/misc/archive.cpp
     ../../src/misc/file_check.cpp
+    ../../src/misc/date.cpp
+    ../../src/misc/fs.cpp
+    ../../src/misc/parquet.cpp
+    ../../src/misc/schedule.cpp
+    ../../src/api/bigquant/dai.cpp
+    ../../src/api/bigquant/spec.cpp
+    ../../src/api/bigquant/pipeline.cpp
+    ../../src/api/tushare/http.cpp
+    ../../src/api/tushare/spec.cpp
+    ../../src/api/tushare/parse.cpp
+    ../../src/api/tushare/pipeline.cpp
+    ../../package/yyjson/yyjson.c
     ../../src/codec/json_config.cpp
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
@@ -172,11 +210,10 @@ set(SOURCES
     ../../src/gui/task_icon_bar/CoroNetwork.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/StateManager.cpp
-    ../../src/gui/task_database/services/BaostockService.cpp
+    ../../src/gui/task_database/services/FundamentalService.cpp
     ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/EncodingService.cpp
-    ../../src/gui/task_database/infrastructure/DataManager.cpp
     ../../src/gui/task_database/ui/TabOverview.cpp
     ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_database/ui/TabBrowser.cpp
@@ -210,6 +247,18 @@ else()
 endif()
 
 set(HEADERS
+    ../../include/api/bigquant/dai.hpp
+    ../../include/api/bigquant/spec.hpp
+    ../../include/api/bigquant/pipeline.hpp
+    ../../include/api/tushare/http.hpp
+    ../../include/api/tushare/spec.hpp
+    ../../include/api/tushare/parse.hpp
+    ../../include/api/tushare/pipeline.hpp
+    ../../include/misc/date.hpp
+    ../../include/misc/fs.hpp
+    ../../include/misc/parquet.hpp
+    ../../include/misc/schedule.hpp
+    ../../package/yyjson/yyjson.h
     ../../include/misc/timer.hpp
     ../../include/misc/print.hpp
     ../../include/misc/progress_single.hpp
@@ -258,15 +307,11 @@ set(HEADERS
     ../../include/gui/task_icon_bar/TaskIconBar.hpp
     ../../include/gui/task_icon_bar/CoroNetwork.hpp
     ../../include/gui/task_database/models/SharedTypes.hpp
-    ../../include/gui/task_database/models/BaostockData.hpp
     ../../include/gui/task_database/services/ClassifierService.hpp
-    ../../include/gui/task_database/services/BaostockService.hpp
+    ../../include/gui/task_database/services/FundamentalService.hpp
     ../../include/gui/task_database/services/ScanService.hpp
     ../../include/gui/task_database/services/L2DatabaseService.hpp
     ../../include/gui/task_database/services/StateManager.hpp
-    ../../include/gui/task_database/infrastructure/BaostockClient.hpp
-    ../../include/gui/task_database/infrastructure/BaostockPool.hpp
-    ../../include/gui/task_database/infrastructure/DataManager.hpp
     ../../include/gui/task_database/ui/TabOverview.hpp
     ../../include/gui/task_database/ui/TabTable.hpp
     ../../include/gui/task_database/ui/TabBrowser.hpp
@@ -289,15 +334,28 @@ else()
     set(PRECISE_MATH_FLAG "-fno-fast-math")
 endif()
 
+# api / parquet 路径用 NaN 标记缺失值, 与 -ffast-math
+# (-ffinite-math-only) 冲突会出错, 必须 precise math.
 set_source_files_properties(
+    ../../src/misc/date.cpp
+    ../../src/misc/fs.cpp
+    ../../src/misc/parquet.cpp
+    ../../src/misc/schedule.cpp
+    ../../src/api/bigquant/dai.cpp
+    ../../src/api/bigquant/spec.cpp
+    ../../src/api/bigquant/pipeline.cpp
+    ../../src/api/tushare/http.cpp
+    ../../src/api/tushare/spec.cpp
+    ../../src/api/tushare/parse.cpp
+    ../../src/api/tushare/pipeline.cpp
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
+    ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Dist.cpp
     ../../src/shared/Transform.cpp
-    ../../src/gui/task_database/infrastructure/DataManager.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
-    ../../src/gui/task_database/services/BaostockService.cpp
+    ../../src/gui/task_database/services/FundamentalService.cpp
     ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/StateManager.cpp
@@ -376,6 +434,20 @@ target_link_libraries(app_main PRIVATE
     z
     implot
     microtex
+)
+
+# vendored Arrow C++ Flight + Parquet (Flight 走明文 gRPC, 无 TLS 依赖)
+target_link_libraries(app_main PRIVATE
+    ${ARROW_LIB}/libarrow_flight.so
+    ${ARROW_LIB}/libparquet.so
+    ${ARROW_LIB}/libarrow.so
+    dl
+)
+
+# 运行时让 ld.so 找到 vendored libarrow*.so
+set_target_properties(app_main PROPERTIES
+    BUILD_RPATH "${ARROW_LIB}"
+    INSTALL_RPATH "${ARROW_LIB}"
 )
 
 if(IS_WINDOWS)

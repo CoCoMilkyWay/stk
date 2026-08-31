@@ -5,8 +5,8 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <functional>
-#include <vector>
 #include <string>
+#include <vector>
 
 // Forward declarations
 struct SharedData;
@@ -23,7 +23,7 @@ using boost::asio::io_context;
 
 enum class ScanStatus {
   Idle,
-  
+
   // Scan phases (fine-grained)
   InitializingCheck,  // Starting scan coroutine
   CheckingFileSystem, // Checking if directories exist
@@ -31,7 +31,7 @@ enum class ScanStatus {
   ScanningArchive,    // Scanning archive database
   ComputingCoverage,  // Computing backtest coverage
   AnalyzingStatus,    // Determining database status
-  
+
   // Final states
   Completed,
   Error
@@ -87,8 +87,8 @@ struct DatabaseCheckResult {
   std::vector<std::string> missing_can_encode; // Missing but has archive
   std::vector<std::string> missing_no_archive; // Missing without archive
 
-  // Helper
-  bool can_unlock_overview() const {
+  // Helper: L2 覆盖检查通过 (binary 覆盖回测区间内全部交易日)
+  bool is_pass() const {
     return status == DatabaseStatus::Pass;
   }
 
@@ -150,14 +150,14 @@ public:
 
   ScanStatus get_status() const { return status_; }
   bool is_scanning() const { return is_scanning_.load(); }
-  bool is_idle() const { 
-    return status_ == ScanStatus::Idle || 
+  bool is_idle() const {
+    return status_ == ScanStatus::Idle ||
            status_ == ScanStatus::Completed ||
            status_ == ScanStatus::Error;
   }
 
-  const DatabaseCheckResult& get_last_check_result() const { return last_check_; }
-  const char* get_status_string() const;
+  const DatabaseCheckResult &get_last_check_result() const { return last_check_; }
+  const char *get_status_string() const;
 
 private:
   // Complete scan flow (coroutine)
@@ -165,4 +165,3 @@ private:
 };
 
 } // namespace GUI::Database
-

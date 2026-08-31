@@ -3,8 +3,10 @@
 #include "FeatureStoreConfig.hpp"
 #include "ZstdHelper.hpp"
 #include "misc/profiler.hpp"
+#include "shared/AssetAxis.hpp"
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -19,12 +21,15 @@
 // ============================================================================
 // FEATURE READER - Hybrid Compressed Format
 // ============================================================================
-// Storage format:
-//   L0: features_L0_f{idx}.zst - [Header: T,1,A][Zstd compressed column]
+// Storage format (header = 4 × size_t: T, F, A, axis_hash):
+//   L0: features_L0_f{idx}.zst - [Header: T,1,A,h][Zstd compressed column]
 //       (columnar for selective loading in Dist analysis)
-//   L1: features_L1.zst - [Header: T,F_L1,A][Zstd compressed merged data]
+//   L1: features_L1.zst - [Header: T,F_L1,A,h][Zstd compressed merged data]
 //       (merged for fewer files and faster writes)
-//   Depth: depth.zst - [Header: T,F_depth,A][Zstd compressed data]
+//   Depth: depth.zst - [Header: T,F_depth,A,h][Zstd compressed data]
+//
+// axis_hash = AssetAxis::hash_at(A): 列 → 资产的映射不在文件里, 靠 A 轴顺序.
+//   存指纹后读文件时 O(1) 就能确认列序没漂移 (见 shared/AssetAxis.hpp).
 //
 // APIs:
 //   1. load_day_level() - for GUI visualization (all features, single day)
@@ -58,12 +63,12 @@ private:
     std::ifstream file(filepath, std::ios::binary);
     assert(file.is_open() && "File not found");
 #endif
-    constexpr size_t header_size = 3 * sizeof(size_t);
+    constexpr size_t header_size = 4 * sizeof(size_t);
 
     size_t T, F, A_file;
     {
       TraceN("ReadHeader");
-      size_t header[3];
+      size_t header[4];
 #ifdef _WIN32
       DWORD bytes_read;
       BOOL result = ReadFile(hFile, header, header_size, &bytes_read, NULL);
@@ -89,6 +94,12 @@ private:
       assert(T <= T_max && "T exceeds buffer capacity");
       assert(F <= F_max && "F exceeds buffer capacity");
       assert(A_file == A && "A mismatch");
+
+      // A 轴列序锁定: 文件头存的是写入时 AssetAxis::hash_at(A) — 轴 append-only,
+      // 该值只依赖前 A 条, 所以历史文件的指纹永久有效. 一次 O(1) 比对即可确认
+      // "列 → 资产的映射没有漂移", 轴被重排/截断或文件被换掉都会立刻炸.
+      assert(static_cast<std::uint64_t>(header[3]) == asset_axis().hash_at(A_file) &&
+             "A 轴指纹不符: 特征文件与当前 asset_axis.json 列序不一致 (需重算特征)");
     }
 
     size_t compressed_size;

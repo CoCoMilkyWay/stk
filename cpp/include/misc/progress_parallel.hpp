@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -49,6 +50,9 @@ public:
   // Set label (e.g., asset code)
   void set_label(const std::string &label) const;
 
+  // 全局汇总计数 +n (跨 worker 共享, 用于"已完成 N / 共 M"那一行)
+  void bump_summary(size_t n = 1) const;
+
   // Check if handle is valid
   bool valid() const { return progress_ != nullptr && worker_id_ >= 0; }
 
@@ -78,15 +82,22 @@ private:
   };
 
 public:
-  explicit ParallelProgress(int num_workers, int refresh_interval_ms = 100)
+  // summary_total > 0 时在 worker 条上方多渲染一行全局汇总 (已完成/总数 + ETA),
+  // 由各 worker 调 ProgressHandle::bump_summary 推进.
+  explicit ParallelProgress(int num_workers, int refresh_interval_ms = 100,
+                            size_t summary_total = 0,
+                            const std::string &summary_unit = "")
       : num_workers_(num_workers),
         refresh_interval_ms_(refresh_interval_ms),
         slots_(num_workers),
+        summary_total_(summary_total),
+        summary_unit_(summary_unit),
+        start_time_(std::chrono::steady_clock::now()),
         running_(true),
         initialized_(false) {
 
-    // Print initial empty progress bars
-    for (int i = 0; i < num_workers_; ++i) {
+    // Print initial empty progress bars (+1 line for the summary if enabled)
+    for (int i = 0; i < total_lines(); ++i) {
       std::cout << std::string(bar_width_ + 60, ' ') << "\n";
     }
     std::cout << std::flush;
@@ -115,7 +126,8 @@ public:
 
       if (initialized_) {
         refresh_all_lines(true);
-        std::cout << "\n" << std::flush;
+        std::cout << "\n"
+                  << std::flush;
       }
     }
   }
@@ -146,6 +158,58 @@ private:
     slot.label[len] = '\0';
   }
 
+  void bump_summary_internal(size_t n) {
+    summary_done_.fetch_add(n, std::memory_order_relaxed);
+  }
+
+  // 汇总行占一行, 排在 worker 条上方
+  bool has_summary() const { return summary_total_ > 0; }
+  int total_lines() const { return num_workers_ + (has_summary() ? 1 : 0); }
+
+  // "12m34s"
+  static std::string fmt_duration(long long seconds) {
+    std::ostringstream os;
+    if (seconds >= 3600)
+      os << seconds / 3600 << "h" << std::setw(2) << std::setfill('0') << (seconds % 3600) / 60 << "m";
+    else
+      os << seconds / 60 << "m" << std::setw(2) << std::setfill('0') << seconds % 60 << "s";
+    return os.str();
+  }
+
+  void render_summary(std::ostringstream &buffer) {
+    const size_t done = summary_done_.load(std::memory_order_relaxed);
+    const int lines_up = total_lines();
+
+    buffer << "\033[" << lines_up << "A\r";
+
+    const float progress = static_cast<float>(done) / static_cast<float>(summary_total_);
+    const int filled = static_cast<int>(bar_width_ * progress);
+
+    buffer << "[";
+    for (int j = 0; j < bar_width_; ++j)
+      buffer << (j < filled ? '#' : (j == filled && done < summary_total_ ? '>' : ' '));
+    buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% "
+           << done << "/" << summary_total_;
+    if (!summary_unit_.empty())
+      buffer << " " << summary_unit_;
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::steady_clock::now() - start_time_)
+                             .count();
+    buffer << " | " << fmt_duration(elapsed);
+    if (done > 0 && done < summary_total_) {
+      const long long eta = static_cast<long long>(
+          elapsed * (static_cast<double>(summary_total_ - done) / static_cast<double>(done)));
+      buffer << " elapsed, ETA " << fmt_duration(eta);
+      buffer << " (" << std::fixed << std::setprecision(1)
+             << (elapsed > 0 ? static_cast<double>(done) / static_cast<double>(elapsed) : 0.0)
+             << "/s)";
+    }
+
+    buffer << "\033[K";
+    buffer << "\033[" << lines_up << "B";
+  }
+
   void refresh_loop() {
     while (running_.load(std::memory_order_acquire)) {
       refresh_all_lines(false);
@@ -156,11 +220,16 @@ private:
   void refresh_all_lines(bool force) {
     std::ostringstream buffer;
 
+    // 汇总行每次刷新都重画 (ETA/elapsed 一直在走, 不看 dirty)
+    if (has_summary())
+      render_summary(buffer);
+
     for (int i = 0; i < num_workers_; ++i) {
       WorkerSlot &slot = slots_[i];
 
       bool is_dirty = slot.dirty.exchange(false, std::memory_order_acquire);
-      if (!is_dirty && !force) continue;
+      if (!is_dirty && !force)
+        continue;
 
       size_t current = slot.current.load(std::memory_order_relaxed);
       size_t total = slot.total.load(std::memory_order_relaxed);
@@ -204,6 +273,13 @@ private:
   int refresh_interval_ms_;
 
   std::vector<WorkerSlot> slots_;
+
+  // 全局汇总 (可选)
+  std::atomic<size_t> summary_done_{0};
+  size_t summary_total_;
+  std::string summary_unit_;
+  std::chrono::steady_clock::time_point start_time_;
+
   std::atomic<bool> running_;
   bool initialized_;
   std::thread refresh_thread_;
@@ -219,6 +295,12 @@ inline void ProgressHandle::update(size_t current, size_t total, const std::stri
 inline void ProgressHandle::set_label(const std::string &label) const {
   if (progress_ && worker_id_ >= 0) {
     progress_->set_label_internal(worker_id_, label);
+  }
+}
+
+inline void ProgressHandle::bump_summary(size_t n) const {
+  if (progress_) {
+    progress_->bump_summary_internal(n);
   }
 }
 

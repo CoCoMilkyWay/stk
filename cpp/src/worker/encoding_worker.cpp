@@ -10,29 +10,9 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
-#include <memory>
 #include <mutex>
 #include <random>
 #include <string>
-#include <unordered_map>
-
-// ============================================================================
-// RAR LOCK MANAGER
-// ============================================================================
-
-class RarLockManager {
-  inline static std::mutex map_mutex;
-  inline static std::unordered_map<std::string, std::unique_ptr<std::mutex>> locks;
-
-public:
-  static std::mutex *get_or_create_lock(const std::string &archive_path) {
-    std::lock_guard<std::mutex> lock(map_mutex);
-    if (locks.find(archive_path) == locks.end()) {
-      locks[archive_path] = std::make_unique<std::mutex>();
-    }
-    return locks[archive_path].get();
-  }
-};
 
 // ============================================================================
 // ENCODING HELPER
@@ -50,12 +30,9 @@ static bool extract_and_encode(const std::string &archive_path,
                                DateInfo &date_info) {
   namespace fs = std::filesystem;
 
-  // Lock archive for extraction
-  std::lock_guard<std::mutex> lock(*RarLockManager::get_or_create_lock(archive_path));
-
   // Extract to temp dir
   const std::string asset_full = asset_code + "." + asset_exchange; // e.g. "603269.SH"
-  const std::string temp_dir = database_dir + "/tmp_" + asset_code;
+  const std::string temp_dir = database_dir + "/tmp_" + asset_full;
   fs::create_directories(temp_dir);
 
   const std::string archive_name = fs::path(archive_path).stem().string();
@@ -151,7 +128,7 @@ void encoding_worker(SharedData &data,
     AssetItem &asset = data.asset.items[asset_id];
     progress_handle.set_label(asset.asset_code + " (" + asset.asset_name + ")");
 
-    // Shuffle dates to spread RAR contention
+    // 打散日期顺序, 让同一时刻的 worker 尽量落在不同的包上 (顺序读更友好)
     std::vector<std::string> date_keys;
     date_keys.reserve(asset.date_info.size());
     for (const auto &[date_str, _] : asset.date_info) {
@@ -159,6 +136,9 @@ void encoding_worker(SharedData &data,
     }
     std::random_device rd;
     std::shuffle(date_keys.begin(), date_keys.end(), std::mt19937{rd()});
+
+    if (date_keys.empty())
+      continue; // 轴里有但该区间 archive 里没有的资产, 不计入汇总总数
 
     // Process dates
     for (size_t i = 0; i < date_keys.size() && !cancel_flag->load(); ++i) {
@@ -192,5 +172,7 @@ void encoding_worker(SharedData &data,
 
       TraceFrame;
     }
+
+    progress_handle.bump_summary(); // 该资产的全部日期处理完
   }
 }

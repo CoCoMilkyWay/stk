@@ -32,15 +32,6 @@ struct Config {
   // Config file path
   std::string filepath = "../../../../config/config.json";
 
-  // Database (Baostock) Configuration
-  std::string assets_file = "assets.json";
-  std::string baostock_data_manager_file = "data_manager.json";
-  std::string baostock_stock_factor_file = "stock_factor.json";
-  std::string baostock_stock_info_file = "stock_info.json";
-  std::string baostock_stock_days_file = "stock_days.json";
-  int baostock_max_workers = 10;
-  int baostock_weekly_update_day = 1; // Monday
-
   // String buffers for GUI (max 512 chars for path)
   char start_date_buf[64] = "";
   char end_date_buf[64] = "";
@@ -57,12 +48,6 @@ struct Config {
   char archive_tool_buf[64] = "";
   char archive_extract_cmd_buf[32] = "";
   char binary_extension_buf[32] = "";
-  char assets_file_buf[128] = "";
-  char baostock_stock_factor_file_buf[128] = "";
-  char baostock_stock_info_file_buf[128] = "";
-  char baostock_stock_days_file_buf[128] = "";
-  int baostock_max_workers_buf = 4;
-  int baostock_weekly_update_day_buf = 1;
 
   // Auto-sync state
   bool dirty = false;
@@ -71,7 +56,7 @@ struct Config {
 
   // Log callback
   std::function<void(const std::string &)> log_callback;
-  
+
   // Reinit callback (triggered after config save)
   std::function<void()> reinit_callback;
 
@@ -94,3 +79,41 @@ private:
   // Save config to JSON file
   bool SaveToFile();
 };
+
+// ============================================================================
+// 基本面数据 sync 常量 (api/bigquant + api/tushare; 编译期, 不进 config.json —
+//   凭据/端点/流水线参数在 api 层深处 (ctor 默认参/重试循环) 以 constexpr 消费)
+// ============================================================================
+namespace config {
+
+// ---- 数据源凭据 (与官方 CLI / 控制台 token 同源) ----
+//   BigQuant DAI: AK = Flight Basic Token 用户名; SK = 密码, 永不回传
+//   Tushare pro token; *_vip 接口需 5000+ 积分
+inline constexpr const char *BIGQUANT_AK = "6dS0GYgxocXL";
+inline constexpr const char *BIGQUANT_SK = "bKDM141Hz2etbj3QTLf9GA6aGmEZRu68MJuvaJBJyPgq22E3fNNDRehFCbgComTQ";
+inline constexpr const char *TUSHARE_TOKEN = "6b5ea435a4626b1eeedefb2115bcf9e84fc64a0d212d21cf2be03d54";
+
+// ---- 数据源端点 (host / port / 超时 / 重试) ----
+//   BigQuant 数据面: Flight 17010 — 明文 gRPC + Arrow IPC RecordBatch, 零拷贝
+//   Tushare:         HTTP   80    — 明文 JSON POST, 三张事件表
+//   超时 = 单次连接+读写整体时长; 重试 = RETRY_MAX 次额外重试, 线性间隔
+inline constexpr const char *BIGQUANT_FLIGHT_URI = "grpc+tcp://bigquant.com:17010";
+inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
+
+inline constexpr const char *TUSHARE_HTTP_HOST = "api.tushare.pro";
+inline constexpr const char *TUSHARE_HTTP_PORT = "80";  // 走 80, 省掉 SSL 依赖
+inline constexpr int TUSHARE_HTTP_TIMEOUT_SECONDS = 60; // range 接口序列化耗时可达 20s
+inline constexpr int TUSHARE_HTTP_RETRY_MAX = 4;        // 共 5 次尝试
+inline constexpr int TUSHARE_HTTP_RETRY_INTERVAL_SECONDS = 30;
+
+// ---- 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet, 调度 misc::plan_months) ----
+//   PIPELINE_START_DATE: 数据同步起点 (A 股财报电子化从 2015 起逐渐完整).
+//     与 Config::start_date (回测/分析窗口) 语义不同, 不合并 — 基本面历史
+//     要为后续特征表全周期服务, 不随回测窗口收窄.
+//   LOOKBACK_DAYS: 月末仍在该窗口内的月视为开放月 (兜服务端回填修订)
+//   DEDUP_WINDOW_SECONDS: parquet mtime 距今 < 该值则本表跳过 (连跑零网络)
+inline constexpr const char *PIPELINE_START_DATE = "20150101";
+inline constexpr int PIPELINE_LOOKBACK_DAYS = 7;
+inline constexpr int PIPELINE_DEDUP_WINDOW_SECONDS = 60 * 60;
+
+} // namespace config

@@ -1,30 +1,14 @@
-// Tab Overview - JSON File Maintenance and Crawler Status
-// Header for overview tab rendering
-
+// Tab Overview - 基本面数据源 (BigQuant + Tushare) 状态与同步入口
 #pragma once
 
-#include "gui/task_database/models/BaostockData.hpp"
-#include "shared/Asset.hpp"
+#include "gui/task_database/services/FundamentalService.hpp"
 
 namespace GUI::Database {
 
-// Render the overview tab showing JSON file status and crawler progress
+// 渲染 Overview: 基本面数据状态卡 + Update / Refresh 按钮
 void RenderTabOverview(
-    const JsonFileState &stock_factor_state,
-    const JsonFileState &stock_info_state,
-    const JsonFileState &stock_days_state,
-    const CrawlerState &crawler_state,
-    bool *stock_factor_update,
-    bool *stock_factor_remove,
-    bool *stock_factor_view,
-    bool *stock_info_update,
-    bool *stock_info_remove,
-    bool *stock_info_view,
-    bool *stock_days_update,
-    bool *stock_days_remove,
-    bool *stock_days_view,
-    bool *update_all_clicked,
-    bool *check_integrity_clicked,
+    const FundamentalState &state,
+    bool *update_clicked,
     bool *refresh_scan_clicked,
     bool disable_update_controls,
     bool disable_scan_controls);

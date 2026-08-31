@@ -1,12 +1,14 @@
 #include "shared/Asset.hpp"
 #include "codec/binary_decoder_L2.hpp"
 #include "gui/task_database/infrastructure/ScanThreadPool.hpp"
+#include "shared/AssetInfo.hpp"
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 
+#include <cassert>
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -381,10 +383,7 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
     archive.max_date.clear();
     archive.total_files = 0;
     archive.total_size_gb = 0.0;
-    if (all_dates.empty()) {
-      all_dates.clear();
-    }
-    co_return;
+    co_return; // all_dates 保留 binary 扫出的日期
   }
 
   // Year path structure
@@ -494,15 +493,14 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
     archive.max_date.clear();
   }
 
-  if (all_dates.empty()) {
-    all_dates.assign(archive.dates.begin(), archive.dates.end());
-    for (auto &item : items) {
-      for (const auto &date_str : all_dates) {
-        if (date_str >= item.start_date && date_str <= item.end_date) {
-          // Date info will be created during encoding
-        }
-      }
-    }
+  // all_dates = binary ∪ archive.
+  // 不能只在 binary 为空时才取 archive: 那样 binary 一旦有日期, all_dates 就
+  // 永远等于"已编码的日子", encode 遍历时全部命中 skip, 新到的 archive 日子
+  // 再也进不来 (增量编码静默失效).
+  {
+    std::set<std::string> merged(all_dates.begin(), all_dates.end());
+    merged.insert(archive.dates.begin(), archive.dates.end());
+    all_dates.assign(merged.begin(), merged.end());
   }
 
   co_return;
@@ -512,7 +510,8 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
 // Backtest Coverage Analysis
 // ============================================================================
 
-void Asset::compute_backtest_coverage(const std::string &start, const std::string &end) {
+void Asset::compute_backtest_coverage(const std::string &start, const std::string &end,
+                                      const AssetInfo &assetinfo) {
   // Clear previous results
   backtest.start = start;
   backtest.end = end;
@@ -523,25 +522,19 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
   backtest.need_download.clear();
   backtest.coverage_percent = 0.0;
 
-  // Step 1: Determine ground truth (required dates in backtest period)
-  // Priority: Archive > Binary
-  if (archive.scanned && archive.exists && !archive.dates.empty()) {
-    // Use archive as ground truth
-    for (const auto &date : archive.dates) {
-      if (date >= start && date <= end) {
-        backtest.required_dates.insert(date);
-      }
+  // Step 1: Ground truth = 基本面交易日历 (权威, archive 自身缺日也能发现)
+  // stock_days 行格式 ["YYYY-MM-DD", "0"/"1"], 此处转 compact "YYYYMMDD" 与
+  // binary/archive dates 对齐; 调用方保证基本面 Ready (ScanService assert)
+  const auto &stock_days = assetinfo.get_stock_days();
+  assert(!stock_days.empty() && "基本面交易日历未就绪");
+  for (const auto &day : stock_days) {
+    if (day.size() < 2 || day[1] != "1")
+      continue; // 非交易日
+    const std::string &dashed = day[0];
+    std::string date = dashed.substr(0, 4) + dashed.substr(5, 2) + dashed.substr(8, 2);
+    if (date >= start && date <= end) {
+      backtest.required_dates.insert(std::move(date));
     }
-  } else if (binary.scanned && binary.exists && !binary.dates.empty()) {
-    // Fallback: use binary as ground truth (not ideal, but better than nothing)
-    for (const auto &date : binary.dates) {
-      if (date >= start && date <= end) {
-        backtest.required_dates.insert(date);
-      }
-    }
-  } else {
-    // No data available, cannot determine required dates
-    return;
   }
 
   // Step 2: Compute binary coverage
