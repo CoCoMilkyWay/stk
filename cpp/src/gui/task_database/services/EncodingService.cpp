@@ -1,9 +1,9 @@
 // Encoding Service Implementation
 #include "gui/task_database/services/EncodingService.hpp"
+#include "codec/binary_decoder_L2.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
-#include "misc/archive.hpp"
+#include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
-#include "shared/AssetAxis.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/encoding_worker.hpp"
 
@@ -15,23 +15,15 @@
 #include <cassert>
 #include <filesystem>
 #include <iostream>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 
 namespace GUI::Database {
-
-// 一批多少个资产 — 权衡两件事:
-//   摊薄 unrar 固定开销 (进程启动 + 三万条目包头扫描): 批越大越省, 实测 20 个
-//   资产一次调用比 20 次单独调用快 3.3x, 200 个模式一次调用也正常;
-//   负载均衡: 批是 worker 的调度粒度, 批太大会在收尾时让部分 worker 空转.
-// 内存不参与权衡 — 批内一次只持有一个文件的字节 (见 stream_archive_files).
-static constexpr size_t kAssetsPerBatch = 64;
 
 EncodingService::EncodingService(SharedData &data, TaskTerminal *term)
     : data_(data), terminal_(term) {
   // Scan operations now in Asset class
 }
+
+EncodingService::~EncodingService() = default;
 
 void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   if (status_ == EncodingStatus::Running)
@@ -48,6 +40,15 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
             << std::endl;
 
+  // 大内存假设 (不为小机器妥协): 页缓存要稳稳装下流水深度内的几个归档
+  // (单日 ~3 GB 压缩) 外加各 worker 的解码工作集.
+  assert(physical_ram_bytes() >= (size_t(16) << 30) &&
+         "encoding 预读依赖页缓存, 需要 ≥16GB 物理内存");
+
+  // 容量即流水深度: ~85 批/天, 256 ≈ 领先 2-3 天 (页缓存里最多同时热着
+  // 这么多天的归档). 批是纯元数据, 队列本身不占什么内存.
+  queue_ = std::make_unique<BatchQueue>(256);
+
   // Launch encoding in background thread
   encoding_thread_ = std::async(std::launch::async, [this]() {
     std::cout << "\n=== Encoding Started ===\n"
@@ -59,162 +60,44 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     Logger::init(data_.config.log_dir);
     Logger::reg("encoding");
 
-    // ------------------------------------------------------------------
-    // 阶段一: 列举 — 每日包里"实际有哪些资产、每个文件多大"
-    // ------------------------------------------------------------------
-    //
-    // 全市场下不能拿 ipo/退市区间去盲试: 那会对当天包里没有的资产各发一次
-    // unrar (每次重走三万条目的包头). 先列举 (单包 ~0.4s) 拿到当天真实
-    // universe, 再按 A 轴过滤掉 ETF/基金 (轴只含股票).
-    //
-    // 尺寸在这一步就要拿到 —— 阶段二靠它在 unrar p 的输出流上切分文件边界.
-    const AssetAxis &axis = asset_axis();
-    assert(data_.asset.items.size() == axis.size() &&
-           "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
-
-    std::vector<EncodeBatch> batches;
-    std::vector<std::pair<std::string, size_t>> stages; // (日期, 当日待编码资产数) — 进度汇总行
-    size_t pairs = 0;
-    size_t skipped = 0;
-    std::unordered_set<size_t> assets_with_work;
-
-    for (const auto &date_str : data_.asset.all_dates) {
-      if (cancel_flag_.load())
-        break;
-
-      const std::string archive_path = Utils::generate_archive_path(
-          data_.config.archive_dir, date_str, data_.config.archive_extension);
-      const auto entries = misc::list_archive(archive_path, data_.config.archive_tool);
-      if (entries.empty())
-        continue;
-
-      // 同一资产的委托/成交条目在包里是分开的两条, 先按资产归并
-      struct Pending {
-        size_t order_index = 0, trade_index = 0;
-        size_t order_size = 0, trade_size = 0;
-      };
-      std::unordered_map<size_t, Pending> by_asset;
-
-      for (const auto &entry : entries) {
-        // "20260803/000001.SZ/逐笔委托.csv" → code_ex, filename
-        const size_t first = entry.path.find('/');
-        if (first == std::string::npos)
-          continue;
-        const size_t second = entry.path.find('/', first + 1);
-        if (second == std::string::npos)
-          continue;
-
-        const std::string code_ex = entry.path.substr(first + 1, second - first - 1);
-        const std::string filename = entry.path.substr(second + 1);
-
-        const bool is_order = (filename == data_.config.csv_market_order);
-        const bool is_trade = (filename == data_.config.csv_market_trade);
-        if (!is_order && !is_trade)
-          continue; // 行情.csv (快照) 不再编码
-
-        const size_t asset_id = axis.find(code_ex);
-        if (asset_id == axis.size())
-          continue; // 非股票 (ETF/基金) 或轴外代码
-
-        Pending &p = by_asset[asset_id];
-        if (is_order) {
-          p.order_index = entry.index;
-          p.order_size = entry.size;
-        } else {
-          p.trade_index = entry.index;
-          p.trade_size = entry.size;
-        }
-      }
-
-      // 断点续跑: 目标文件已存在就跳过. 文件名不带条数, 所以这是一次
-      // exists 而不是通配符匹配.
-      std::vector<EncodeTask> tasks;
-      tasks.reserve(by_asset.size());
-      for (const auto &[asset_id, p] : by_asset) {
-        if (p.order_size == 0)
-          continue; // 没有委托文件, 无从重建盘口
-
-        const AssetItem &asset = data_.asset.items[asset_id];
-        if (skip_existing_ &&
-            std::filesystem::exists(Utils::generate_orders_path(
-                data_.config.orders_dir, date_str, asset.asset_code, asset.exchange,
-                data_.config.binary_extension))) {
-          ++skipped;
-          continue;
-        }
-
-        tasks.push_back({asset_id, p.order_index, p.trade_index, p.order_size, p.trade_size});
-        assets_with_work.insert(asset_id);
-        ++pairs;
-      }
-      if (tasks.empty())
-        continue;
-
-      stages.emplace_back(date_str, tasks.size());
-
-      // 按归档序排, 再切成批 (见 encoding_worker.hpp: 一批一次 unrar p)
-      std::sort(tasks.begin(), tasks.end(),
-                [](const EncodeTask &a, const EncodeTask &b) { return a.order_index < b.order_index; });
-
-      for (size_t i = 0; i < tasks.size(); i += kAssetsPerBatch) {
-        EncodeBatch batch;
-        batch.date = date_str;
-        batch.archive_path = archive_path;
-        batch.tasks.assign(tasks.begin() + static_cast<long>(i),
-                           tasks.begin() + static_cast<long>(std::min(i + kAssetsPerBatch, tasks.size())));
-        batches.push_back(std::move(batch));
-      }
-    }
-
-    std::cout << "Archive universe: " << assets_with_work.size() << " assets / " << pairs
-              << " (asset, date) pairs to encode"
-              << (skipped > 0 ? " (" + std::to_string(skipped) + " already encoded, skipped)" : "")
-              << "\n"
-              << "Batches: " << batches.size() << " (<=" << kAssetsPerBatch << " assets each)\n"
-              << std::endl;
-
-    if (pairs == 0) {
-      status_ = EncodingStatus::Completed;
-      std::cout << "Nothing to encode." << std::endl;
-      if (scan_callback_)
-        scan_callback_();
-      data_.DisableHighPerformanceMode();
-      return;
-    }
-
-    std::cout << "Encoding: 逐笔二进制生成中...\n"
+    std::cout << "Encoding: 逐笔二进制生成中 (按天流水: 列举 → 预读 → 并行解码)...\n"
               << std::endl;
 
     // ------------------------------------------------------------------
-    // 阶段二: 编码 — worker 消费批
+    // 流水线: producer 按天 [列举 → 顺序预读页缓存 → 推元数据批],
+    // worker 每批自己 unrar (全部命中页缓存) + 解码. 解压在 worker 侧
+    // 并行 — 单条 unrar 流喂不满几十个核 (见 encoding_worker.hpp).
     // ------------------------------------------------------------------
-    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100, stages, "dates", "assets");
+    // 汇总行以天为单位, 总量 = 全部日期数 (开跑即精确);
+    // 附注显示最老在编天的资产进度, 由 producer/worker 维护.
+    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100, "days");
+    progress_->set_summary_total(data_.asset.all_dates.size(), true);
 
-    BatchQueue queue(static_cast<size_t>(num_workers_) * 4);
+    EncodeStats stats;
+
     workers_.clear();
     workers_.reserve(num_workers_);
-
     for (int i = 0; i < num_workers_; ++i) {
-      workers_.push_back(std::async(std::launch::async, [this, i, &queue]() {
-        encoding_worker(data_, queue, &cancel_flag_, i, progress_->get_handle(i));
+      workers_.push_back(std::async(std::launch::async, [this, i, &stats]() {
+        encoding_worker(data_, *queue_, &cancel_flag_, stats, i, progress_->get_handle(i));
       }));
     }
 
-    for (auto &batch : batches) {
-      if (cancel_flag_.load())
-        break;
-      if (!queue.push(std::move(batch)))
-        break;
-    }
-    queue.close();
+    auto producer = std::async(std::launch::async, [this, &stats]() {
+      encoding_producer(data_, *queue_, &cancel_flag_, skip_existing_, stats, progress_.get());
+    });
 
-    // Wait for completion
+    producer.wait();
+    queue_->close();
+
     for (auto &worker : workers_)
       worker.wait();
     progress_->stop();
     workers_.clear();
 
     // Finalize
+    const size_t pairs = stats.pairs_listed.load();
+    const size_t skipped = stats.pairs_skipped.load();
     status_ = cancel_flag_.load() ? EncodingStatus::Cancelled : EncodingStatus::Completed;
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
@@ -222,8 +105,10 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
                              .count();
 
     std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
-              << "Encoded: " << pairs << " (asset, date) pairs across " << assets_with_work.size()
-              << " assets in " << elapsed << "s" << std::endl;
+              << "Encoded: " << pairs << " (asset, date) pairs across "
+              << stats.assets_with_work.size() << " assets in " << elapsed << "s"
+              << (skipped > 0 ? " (" + std::to_string(skipped) + " already encoded, skipped)" : "")
+              << std::endl;
 
     // Trigger scan callback after encoding completion
     if (scan_callback_) {
@@ -243,6 +128,8 @@ void EncodingService::stop_encoding() {
   }
 
   cancel_flag_.store(true);
+  if (queue_)
+    queue_->close(); // 唤醒被背压堵住的 producer 与等批的 worker
   std::cout << "[Encoding] Cancelling..." << std::endl;
 
   // Wait for encoding thread to finish (which will also wait for workers)
@@ -274,6 +161,93 @@ EncodingProgress EncodingService::get_progress() const {
   }
 
   return prog;
+}
+
+void EncodingService::run_binary_verify(int num_workers) {
+  if (!terminal_)
+    return;
+
+  if (verify_running_.exchange(true)) {
+    terminal_->AddLine("[Verify] Already running, please wait...", Color::Yellow());
+    return;
+  }
+
+  verify_thread_ = std::async(std::launch::async, [this, num_workers]() {
+    namespace fs = std::filesystem;
+    const std::string orders_dir = data_.config.orders_dir;
+
+    terminal_->AddLine("========================================");
+    terminal_->AddLine("[Verify] Binary DB integrity check: " + orders_dir);
+    terminal_->AddLine("[Verify] 强制校验 头部自洽 + 文件长度 + zstd 帧 xxh64, 损坏即删除");
+
+    // 以日目录为并行粒度 (orders/YYYY/MM/DD/<CODE>.<EX>.bin)
+    std::vector<std::string> day_dirs;
+    if (fs::exists(orders_dir)) {
+      for (const auto &year : fs::directory_iterator(orders_dir)) {
+        if (!year.is_directory())
+          continue;
+        for (const auto &month : fs::directory_iterator(year.path())) {
+          if (!month.is_directory())
+            continue;
+          for (const auto &day : fs::directory_iterator(month.path())) {
+            if (day.is_directory())
+              day_dirs.push_back(day.path().string());
+          }
+        }
+      }
+    }
+
+    if (day_dirs.empty()) {
+      terminal_->AddLine("[Verify] No binary database found", Color::Yellow());
+      terminal_->AddLine("========================================");
+      verify_running_.store(false);
+      return;
+    }
+
+    std::atomic<size_t> next{0};
+    std::atomic<size_t> checked{0};
+    std::atomic<size_t> corrupt{0};
+
+    auto verify_worker = [&]() {
+      L2::BinaryDecoder_L2 decoder; // 复用缓冲, 每线程一份
+      size_t i;
+      while ((i = next.fetch_add(1)) < day_dirs.size()) {
+        for (const auto &entry : fs::directory_iterator(day_dirs[i])) {
+          const std::string path = entry.path().string();
+          if (!path.ends_with(data_.config.binary_extension))
+            continue; // .skip 墓碑与 .tmp 垃圾不校验
+          checked.fetch_add(1);
+          if (decoder.verify_orders_file(path))
+            continue;
+          std::error_code ec;
+          fs::remove(path, ec);
+          corrupt.fetch_add(1);
+          terminal_->AddLine("[Verify] ✗ corrupt, removed: " + path, Color::Red());
+        }
+      }
+    };
+
+    std::vector<std::future<void>> vworkers;
+    const int n = std::max(1, num_workers);
+    vworkers.reserve(n);
+    for (int i = 0; i < n; ++i)
+      vworkers.push_back(std::async(std::launch::async, verify_worker));
+    for (auto &w : vworkers)
+      w.wait();
+
+    terminal_->AddLine("[Verify] Checked " + std::to_string(checked.load()) + " files across " +
+                       std::to_string(day_dirs.size()) + " days");
+    if (corrupt.load() > 0) {
+      terminal_->AddLine("[Verify] ✗ Removed " + std::to_string(corrupt.load()) +
+                             " corrupt/legacy file(s) — run incremental encoding to repair",
+                         Color::Red());
+    } else {
+      terminal_->AddLine("[Verify] ✓ All files intact", Color::Green());
+    }
+    terminal_->AddLine("========================================");
+
+    verify_running_.store(false);
+  });
 }
 
 void EncodingService::run_file_check(const std::string &archive_base_dir) {

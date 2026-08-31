@@ -2,6 +2,7 @@
 #include "misc/logging.hpp"
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -395,6 +396,9 @@ BinaryEncoder_L2::BinaryEncoder_L2(size_t est_orders) {
   zstd_ctx_ = ZSTD_createCCtx();
   assert(zstd_ctx_ && "Failed to create ZSTD context");
   ZSTD_CCtx_setParameter(zstd_ctx_, ZSTD_c_compressionLevel, ZSTD_COMPRESSION_LEVEL);
+  // 帧内容校验 (xxh64): 压缩时顺手算 (成本可忽略), 离线 Verify 靠它查
+  // 位腐烂; 热读路径显式跳过 (见 decoder), 不花解压之外的钱.
+  ZSTD_CCtx_setParameter(zstd_ctx_, ZSTD_c_checksumFlag, 1);
 }
 
 // Destructor: clean up ZSTD context
@@ -432,11 +436,10 @@ size_t BinaryEncoder_L2::calculate_compression_bound(size_t data_size) {
 
 bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
                                                const void *data, size_t data_size) {
-  std::ofstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    Logger::log("encoding", "Cannot open file for writing: " + filepath);
-    return false;
-  }
+  // 原子落盘: 写 tmp, 全部成功后 rename 到最终路径. rename 是原子的 —
+  // 最终路径上的文件不可能是半截, "存在即完整"由此成立 (进程被杀/崩溃只会
+  // 留下 tmp 垃圾, 由下次增量编码覆盖).
+  const std::string tmp_path = filepath + ".tmp";
 
   // Compress using reusable context
   const size_t bound = calculate_compression_bound(data_size);
@@ -449,17 +452,36 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
     return false;
   }
 
-  // Write header + compressed data
-  file.write(reinterpret_cast<const char *>(&data_size), sizeof(data_size));
-  file.write(reinterpret_cast<const char *>(&compressed_size), sizeof(compressed_size));
-  if (file.fail()) [[unlikely]] {
-    Logger::log("encoding", "Failed to write header: " + filepath);
-    return false;
+  {
+    std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) [[unlikely]] {
+      Logger::log("encoding", "Cannot open file for writing: " + tmp_path);
+      return false;
+    }
+
+    L2FileHeader header{};
+    header.magic = L2FileHeader::kL2Magic;
+    header.version = L2FileHeader::kL2FormatVersion;
+    header.raw_size = data_size;
+    header.compressed_size = compressed_size;
+
+    file.write(reinterpret_cast<const char *>(&header), sizeof(header));
+    file.write(compressed.get(), compressed_size);
+    file.close(); // close 才把缓冲刷给 OS, fail 位在此之后才完整
+
+    if (file.fail()) [[unlikely]] {
+      Logger::log("encoding", "Failed to write data: " + tmp_path);
+      std::error_code ec;
+      std::filesystem::remove(tmp_path, ec);
+      return false;
+    }
   }
 
-  file.write(compressed.get(), compressed_size);
-  if (file.fail()) [[unlikely]] {
-    Logger::log("encoding", "Failed to write data: " + filepath);
+  std::error_code ec;
+  std::filesystem::rename(tmp_path, filepath, ec);
+  if (ec) [[unlikely]] {
+    Logger::log("encoding", "Failed to rename into place: " + filepath + " (" + ec.message() + ")");
+    std::filesystem::remove(tmp_path, ec);
     return false;
   }
 
@@ -495,7 +517,7 @@ bool BinaryEncoder_L2::feed_trade_csv(const char *data, size_t len) {
   return parse_trade_csv(data, len, csv_trades_);
 }
 
-bool BinaryEncoder_L2::finish_asset(const std::string &output_file, const std::string &tag) {
+EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, const std::string &tag) {
   // Convert and encode orders + trades
   std::vector<Order> &all_orders = orders_;
   all_orders.reserve(csv_orders_.size() + csv_trades_.size());
@@ -529,14 +551,17 @@ bool BinaryEncoder_L2::finish_asset(const std::string &output_file, const std::s
 
   // 条数下限. 原来这里还有一道"快照少于 10 条就判失败"的过滤 (停牌/无深度的
   // 标的), 快照已不再编码, 该过滤由这一道承担.
+  //
+  // 与环境错误区分开: 这是"源数据本身不够"的确定性结论, 调用方应写墓碑,
+  // 增量重跑时不再对它反复解码.
   constexpr size_t MIN_EXPECTED_COUNT = 500;
   if (all_orders.size() < MIN_EXPECTED_COUNT) {
     Logger::log("encoding", "Abnormal order count: " + tag + " has only " +
                                 std::to_string(all_orders.size()) + " orders");
-    return false;
+    return EncodeResult::TooFewOrders;
   }
 
-  return encode_orders(all_orders, output_file);
+  return encode_orders(all_orders, output_file) ? EncodeResult::Ok : EncodeResult::Error;
 }
 
 } // namespace L2

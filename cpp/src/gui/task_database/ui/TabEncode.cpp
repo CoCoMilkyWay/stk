@@ -85,6 +85,16 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     ImGui::SameLine();
     ImGui::TextDisabled("Check archive format, structure and integrity");
 
+    // Binary DB 完整性校验 (修复回路: Verify 删坏 → 增量编码补齐)
+    const bool verify_running = encoding_service->is_binary_verify_running();
+    ImGui::BeginDisabled(verify_running || is_running);
+    if (ImGui::Button(verify_running ? "Verifying..." : "Verify Binary DB", ImVec2(150, 0))) {
+      encoding_service->run_binary_verify(state.num_workers);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("全库强制校验并删除损坏文件, 之后增量编码自动补齐");
+
     ImGui::Unindent();
   }
 
@@ -170,30 +180,18 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       ImGui::SameLine();
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Encoding in progress...");
     } else {
-      // Check if file check was run and passed
+      // File Check 不再硬性挡住入口 — 未通过时在确认弹窗里要求"风险自负"勾选
       bool file_check_ok = file_check_result.was_run() &&
                            (file_check_result.passed || !file_check_result.archive_dir_exists);
 
-      if (!file_check_ok) {
-        ImGui::BeginDisabled();
-      }
-
       if (ImGui::Button("Start Encoding", ImVec2(150, 0))) {
+        state.skip_file_check_ack = false; // 每次打开弹窗都要重新勾
         state.show_confirm_dialog = true;
-      }
-
-      if (!file_check_ok) {
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-          ImGui::BeginTooltip();
-          ImGui::Text("请先运行 File Check 并确保通过");
-          ImGui::EndTooltip();
-        }
       }
 
       ImGui::SameLine();
       if (!file_check_result.was_run()) {
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[!] File Check Required");
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[!] File Check Not Run");
       } else if (!file_check_result.archive_dir_exists) {
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[✓] No Archive");
       } else if (!file_check_ok) {
@@ -257,7 +255,8 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     bool file_check_ok = file_check_result.was_run() &&
                          (file_check_result.passed || !file_check_result.archive_dir_exists);
 
-    bool can_encode = asset.archive.exists && archive_in_range && file_check_ok;
+    bool can_encode = asset.archive.exists && archive_in_range &&
+                      (file_check_ok || state.skip_file_check_ack);
 
     ImGui::Text("Prerequisites:");
     ImGui::Spacing();
@@ -297,12 +296,19 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "No");
     }
 
+    if (!file_check_ok) {
+      ImGui::Spacing();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.3f, 0.3f, 1.0f));
+      ImGui::TextWrapped(file_check_result.was_run()
+                             ? "File Check 未通过: 损坏/solid/结构错误的包会让编码中途 assert 崩溃或静默产出垃圾数据。"
+                             : "File Check 未运行: 无法确认归档格式与完整性, 编码可能中途失败。");
+      ImGui::PopStyleColor();
+      ImGui::Checkbox("跳过 File Check, 风险自负##skip_fc", &state.skip_file_check_ack);
+    }
+
     if (!can_encode) {
       ImGui::Spacing();
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Cannot encode: Prerequisites not met!");
-      if (!file_check_ok && file_check_result.was_run()) {
-        ImGui::TextWrapped("关注 File Check 结果,修复archive格式问题后重试");
-      }
     }
 
     ImGui::Spacing();

@@ -12,6 +12,7 @@
 // Forward declarations
 struct SharedData;
 struct TaskTerminal;
+class BatchQueue;
 
 namespace GUI::Database {
 
@@ -61,6 +62,7 @@ private:
 
   int num_workers_ = 0;
   bool skip_existing_ = true;
+  std::unique_ptr<BatchQueue> queue_; // 跨 stop_encoding 可见, 取消时要 close 唤醒生产者
   std::chrono::steady_clock::time_point start_time_;
 
   FileCheck::FileCheckResult file_check_result_; // Cache file check result
@@ -73,6 +75,7 @@ private:
 
 public:
   EncodingService(SharedData &data, TaskTerminal *term);
+  ~EncodingService(); // 定义在 cpp — BatchQueue 对头文件是不完整类型
 
   // Lifecycle (changed to non-coroutine, uses background threads)
   void start_encoding(int num_workers, bool skip_existing);
@@ -116,8 +119,17 @@ public:
   bool is_file_check_running() const { return file_check_running_.load(); }
   const FileCheck::FileCheckResult &get_file_check_result() const { return file_check_result_; }
 
+  // Binary DB 离线完整性校验 — 修复回路的"查删"半边: 全库强制校验 (头部 +
+  // zstd 帧 xxh64), 损坏文件当场删除, 之后跑一次增量编码即自动补齐.
+  // v1 旧格式同样判坏删除 — 格式迁移 = Verify 一次 + 增量编码一次.
+  void run_binary_verify(int num_workers);
+  bool is_binary_verify_running() const { return verify_running_.load(); }
+
 private:
   void run_file_check_async(const std::string &archive_base_dir);
+
+  std::future<void> verify_thread_;
+  std::atomic<bool> verify_running_{false};
 };
 
 } // namespace GUI::Database

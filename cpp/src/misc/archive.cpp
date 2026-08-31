@@ -3,9 +3,11 @@
 #include "misc/cross_platform.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 namespace misc {
 
@@ -87,27 +89,55 @@ void stream_archive_files(const std::string &archive_path,
                           const std::string &archive_tool,
                           const std::vector<std::string> &paths,
                           const std::vector<std::size_t> &sizes,
-                          const FileSink &on_file) {
+                          const FileSink &on_file,
+                          const std::atomic<bool> *cancel) {
   assert(paths.size() == sizes.size() && "stream_archive_files: paths/sizes 长度不等");
   if (paths.empty())
     return;
 
-  // -inul 抑制所有提示, stdout 只剩文件内容
-  std::string cmd = archive_tool + " p -inul \"" + archive_path + "\"";
-  std::size_t max_size = 0;
-  for (std::size_t i = 0; i < paths.size(); ++i) {
-    cmd += " \"" + paths[i] + "\"";
-    if (sizes[i] > max_size)
-      max_size = sizes[i];
+  // 名单走 unrar 的 @listfile — 整天的文件名单可达数百 KB, 远超 execve
+  // 单参数上限 (Linux MAX_ARG_STRLEN 128KB), 拼在命令行上 popen 会直接失败.
+  static std::atomic<std::uint64_t> list_seq{0};
+  const std::string list_path =
+      (std::filesystem::temp_directory_path() /
+       ("stk_unrar_" + std::to_string(safe_getpid()) + "_" +
+        std::to_string(list_seq.fetch_add(1)) + ".lst"))
+          .string();
+  {
+    std::ofstream list(list_path, std::ios::binary | std::ios::trunc);
+    assert(list.is_open() && "stream_archive_files: 名单临时文件打不开");
+    for (const auto &p : paths)
+      list << p << '\n';
+    list.close();
+    assert(!list.fail() && "stream_archive_files: 名单临时文件写入失败");
   }
+
+  // -inul 抑制所有提示, stdout 只剩文件内容
+  const std::string cmd =
+      archive_tool + " p -inul \"" + archive_path + "\" \"@" + list_path + "\"";
+
+  std::size_t max_size = 0;
+  for (const std::size_t size : sizes)
+    if (size > max_size)
+      max_size = size;
 
   FILE *pipe = safe_popen(cmd.c_str(), "r");
   assert(pipe && "stream_archive_files: popen 失败");
+
+  auto cleanup_list = [&list_path]() {
+    std::error_code ec;
+    std::filesystem::remove(list_path, ec);
+  };
 
   // 单个缓冲复用: 回调就地把字节解析成结构体, 不需要同时持有多个文件
   std::vector<char> buffer(max_size);
 
   for (std::size_t i = 0; i < paths.size(); ++i) {
+    if (cancel && cancel->load()) {
+      safe_pclose(pipe);
+      cleanup_list();
+      return;
+    }
     std::size_t got = 0;
     while (got < sizes[i]) {
       const std::size_t n = std::fread(buffer.data() + got, 1, sizes[i] - got, pipe);
@@ -127,6 +157,7 @@ void stream_archive_files(const std::string &archive_path,
   assert(tail == 0 && "stream_archive_files: 流有多余字节 (尺寸表与实际不符)");
 
   const int exit_code = safe_pclose(pipe);
+  cleanup_list();
   static_cast<void>(exit_code);
   assert(exit_code == 0 && "stream_archive_files: unrar 非零退出");
 }

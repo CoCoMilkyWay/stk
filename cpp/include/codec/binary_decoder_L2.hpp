@@ -60,6 +60,10 @@ class BinaryDecoder_L2 {
 public:
   // Constructor with optional capacity hints for better memory allocation
   explicit BinaryDecoder_L2(size_t estimated_orders = 500000);
+  ~BinaryDecoder_L2();
+
+  BinaryDecoder_L2(const BinaryDecoder_L2 &) = delete;
+  BinaryDecoder_L2 &operator=(const BinaryDecoder_L2 &) = delete;
 
   // Decoder functions (zero-copy streaming design)
   // Internal buffer is reused across decode calls for maximum efficiency
@@ -84,13 +88,18 @@ public:
 
   // 从文件头读条数, 不开解压.
   //
-  // 文件布局: [size_t original_size][size_t compressed_size][zstd blob], 而
-  // blob 解开后是 [size_t count][Order × count] —— 所以 original_size 已经
-  // 精确决定了条数, 只需读头 8 个字节. 文件名里因此不带条数 (见
-  // Utils::generate_orders_path).
+  // 文件布局见 L2_DataType.hpp 的 L2FileHeader — raw_size 精确决定条数,
+  // 只需读 32 字节头. 文件名里因此不带条数 (见 Utils::generate_orders_path).
   //
-  // 返回 0 表示文件不存在或头部损坏.
+  // 返回 0 表示文件不存在或头部损坏 (含旧格式).
   static size_t read_order_count(const std::string &filepath);
+
+  // 离线完整性校验 (修复回路的"查"半边): 头部自洽 + 文件长度精确匹配 +
+  // 强制校验 zstd 帧内容 xxh64 + 解压后 count 对账. 任何一道不过 = 损坏
+  // (含 v1 旧格式). 复用实例缓冲, 适合批量扫描.
+  //
+  // 热读路径 (decode_orders_stream) 不做 xxh64 — 只有这里做.
+  bool verify_orders_file(const std::string &filepath);
 
 private:
   // Reusable vector tables for delta decoding (orders)
@@ -101,6 +110,10 @@ private:
   // Streaming decompression buffer (reused across all decode calls for zero-allocation)
   mutable std::vector<char> stream_decompression_buffer_;
   mutable std::vector<char> stream_compressed_buffer_;
+
+  // 复用的解压上下文, 配置为跳过帧内容校验 — 热路径零额外成本
+  // (顺带省掉 ZSTD_decompress 每次调用内部建/销 DCtx 的开销)
+  ZSTD_DCtx *dctx_ = nullptr;
 
   static const char *order_type_to_string(uint8_t order_type);
   static const char *order_dir_to_string(uint8_t order_dir);

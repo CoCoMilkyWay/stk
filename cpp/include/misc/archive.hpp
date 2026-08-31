@@ -21,6 +21,7 @@
 //      的归档序排好, 否则切分会全部错位.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -47,10 +48,13 @@ std::vector<ArchiveEntry> list_archive(const std::string &archive_path,
 // (解析成结构体), 不要保存指针.
 using FileSink = std::function<void(std::size_t, const char *, std::size_t)>;
 
+// cancel 非空且置位时中途放弃: 直接关管道 (unrar 收 SIGPIPE), 不再回调,
+// 也不做完整性断言 — 取消路径上流本来就是不完整的.
 void stream_archive_files(const std::string &archive_path,
                           const std::string &archive_tool,
                           const std::vector<std::string> &paths,
                           const std::vector<std::size_t> &sizes,
-                          const FileSink &on_file);
+                          const FileSink &on_file,
+                          const std::atomic<bool> *cancel = nullptr);
 
 } // namespace misc

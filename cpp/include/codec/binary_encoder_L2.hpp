@@ -20,6 +20,13 @@ namespace L2 {
 // Level 6: balanced for storage efficiency + acceptable encoding speed
 inline constexpr int ZSTD_COMPRESSION_LEVEL = 6;
 
+// finish_asset 的三态结果 — 增量编码要区分:
+//   TooFewOrders: 源数据本身不够 (停牌/无深度), 确定性结论 → 写墓碑, 别再重试
+//   Error:        环境错误 (磁盘满/压缩失败), 下次增量重跑时重试
+enum class EncodeResult : uint8_t { Ok,
+                                    TooFewOrders,
+                                    Error };
+
 // ============================================================================
 // Intermediate CSV Structures
 // ============================================================================
@@ -162,9 +169,9 @@ public:
   bool feed_order_csv(const char *data, size_t len);
   bool feed_trade_csv(const char *data, size_t len);
 
-  // 合并 → 按时间/优先级排序 → 压缩落盘.
+  // 合并 → 按时间/优先级排序 → 压缩落盘 (tmp + rename 原子).
   // tag 仅用于日志定位 (形如 "20260803 600519.SH").
-  bool finish_asset(const std::string &output_file, const std::string &tag);
+  EncodeResult finish_asset(const std::string &output_file, const std::string &tag);
 
   // Get compression statistics
   const CompressionStats &get_compression_stats() const { return compression_stats; }

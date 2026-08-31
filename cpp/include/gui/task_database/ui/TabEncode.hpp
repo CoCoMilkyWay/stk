@@ -26,7 +26,8 @@ struct EncodeState {
   // Encoding dialog states
   bool show_confirm_dialog = false;
   bool show_progress_fullscreen = false;
-  
+  bool skip_file_check_ack = false; // 未通过 File Check 时的"风险自负"确认
+
   // Trigger for starting encoding (set by UI, consumed by TaskDatabase)
   bool trigger_start = false;
 };

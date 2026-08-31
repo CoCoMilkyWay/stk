@@ -7,10 +7,10 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
-#include <utility>
 #include <vector>
 
 namespace misc {
@@ -55,6 +55,9 @@ public:
   // 全局汇总计数 +n (跨 worker 共享, 推进汇总行)
   void bump_summary(size_t n = 1) const;
 
+  // 汇总行附加说明 (如 "20230103: 2311/4800 assets")
+  void set_summary_note(const std::string &note) const;
+
   // Check if handle is valid
   bool valid() const { return progress_ != nullptr && worker_id_ >= 0; }
 
@@ -84,32 +87,19 @@ private:
   };
 
 public:
-  // stages 非空时在 worker 条上方多渲染一行全局汇总, 由各 worker 调
-  // ProgressHandle::bump_summary 推进.
-  //
-  // stages 是按消费顺序排好的 (阶段名, 阶段内单元数), 如 (日期, 当日资产数).
-  // 汇总行只有一个原子累计数, 阶段位置与阶段内进度由它反推 —— 计数细到单元
-  // 一级 ETA 才平滑, 而显示落在阶段一级才是人看得懂的量.
+  // summary_unit 非空时在 worker 条上方多渲染一行全局汇总:
+  //   各 worker 调 bump_summary 推进计数, 生产端调 set_summary_total 设置
+  //   总量 (总量未知时可以给估算值, 边跑边收敛, exact=true 后停止标记 '~'),
+  //   set_summary_note 附加一段说明 (如 "27/781 days listed").
   explicit ParallelProgress(int num_workers, int refresh_interval_ms = 100,
-                            const std::vector<std::pair<std::string, size_t>> &stages = {},
-                            const std::string &stage_unit = "",
-                            const std::string &unit = "")
+                            const std::string &summary_unit = "")
       : num_workers_(num_workers),
         refresh_interval_ms_(refresh_interval_ms),
         slots_(num_workers),
-        stage_unit_(stage_unit),
-        unit_(unit),
+        summary_unit_(summary_unit),
         start_time_(std::chrono::steady_clock::now()),
         running_(true),
         initialized_(false) {
-
-    stage_names_.reserve(stages.size());
-    stage_end_.reserve(stages.size());
-    for (const auto &[name, units] : stages) {
-      total_units_ += units;
-      stage_names_.push_back(name);
-      stage_end_.push_back(total_units_);
-    }
 
     // Print initial empty progress bars (+1 line for the summary if enabled)
     for (int i = 0; i < total_lines(); ++i) {
@@ -131,6 +121,21 @@ public:
   ProgressHandle get_handle(int worker_id) {
     return ProgressHandle(this, worker_id);
   }
+
+  // 汇总行总量 — 生产端边列举边更新估算, 全部列举完后 exact=true
+  void set_summary_total(size_t total, bool exact) {
+    summary_total_.store(total, std::memory_order_relaxed);
+    summary_exact_.store(exact, std::memory_order_relaxed);
+  }
+
+  // 汇总行附加说明 (显示在计数之后)
+  void set_summary_note(const std::string &note) {
+    std::lock_guard<std::mutex> lock(note_mutex_);
+    summary_note_ = note;
+  }
+
+  // 汇总计数 +n — 与 ProgressHandle::bump_summary 等价, 给非 worker 线程用
+  void bump_summary(size_t n = 1) { bump_summary_internal(n); }
 
   // Stop refresh thread and finalize display
   void stop() {
@@ -178,7 +183,7 @@ private:
   }
 
   // 汇总行占一行, 排在 worker 条上方
-  bool has_summary() const { return total_units_ > 0; }
+  bool has_summary() const { return !summary_unit_.empty(); }
   int total_lines() const { return num_workers_ + (has_summary() ? 1 : 0); }
 
   // "12m34s"
@@ -191,41 +196,83 @@ private:
     return os.str();
   }
 
+  // 终端显示宽度: CJK/全角占 2 列, 其余按 1 列
+  static size_t display_width(const char *s) {
+    size_t w = 0;
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(s);
+    while (*p) {
+      unsigned cp = *p;
+      int n = 1;
+      if (cp >= 0xF0)
+        n = 4, cp &= 0x07;
+      else if (cp >= 0xE0)
+        n = 3, cp &= 0x0F;
+      else if (cp >= 0xC0)
+        n = 2, cp &= 0x1F;
+      for (int k = 1; k < n && p[k]; ++k)
+        cp = (cp << 6) | (p[k] & 0x3F);
+      p += n;
+      w += (cp >= 0x1100 &&
+            ((cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
+             (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
+             (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+             cp <= 0x115F))
+               ? 2
+               : 1;
+    }
+    return w;
+  }
+
+  // 补空格到固定显示宽度; 超宽则按字符截断 — 各行同列必须严格对齐
+  static std::string pad_display(const char *s, size_t cols) {
+    std::string out(s);
+    size_t w = display_width(out.c_str());
+    while (w > cols && !out.empty()) {
+      // 去掉最后一个完整 UTF-8 字符
+      size_t cut = out.size() - 1;
+      while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80)
+        --cut;
+      out.resize(cut);
+      w = display_width(out.c_str());
+    }
+    out.append(cols - w, ' ');
+    return out;
+  }
+
   void render_summary(std::ostringstream &buffer) {
     const size_t done = summary_done_.load(std::memory_order_relaxed);
+    const size_t total = summary_total_.load(std::memory_order_relaxed);
+    const bool exact = summary_exact_.load(std::memory_order_relaxed);
     const int lines_up = total_lines();
 
     buffer << "\033[" << lines_up << "A\r";
 
-    const float progress = static_cast<float>(done) / static_cast<float>(total_units_);
+    const float progress = total > 0
+                               ? std::min(1.0f, static_cast<float>(done) / static_cast<float>(total))
+                               : 0.0f;
     const int filled = static_cast<int>(bar_width_ * progress);
 
     buffer << "[";
     for (int j = 0; j < bar_width_; ++j)
-      buffer << (j < filled ? '#' : (j == filled && done < total_units_ ? '>' : ' '));
-    buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "%";
+      buffer << (j < filled ? '#' : (j == filled && done < total ? '>' : ' '));
+    buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% ";
 
-    // 阶段按顺序消费, 累计数单调 → 二分即可定位当前阶段
-    size_t s = static_cast<size_t>(
-        std::upper_bound(stage_end_.begin(), stage_end_.end(), done) - stage_end_.begin());
-    if (s == stage_end_.size())
-      --s; // 全部完成
-    const size_t stage_begin = (s == 0) ? 0 : stage_end_[s - 1];
+    buffer << done << "/" << (exact ? "" : "~") << total;
+    buffer << " " << summary_unit_;
 
-    buffer << " " << stage_names_[s] << " (" << (s + 1) << "/" << stage_end_.size();
-    if (!stage_unit_.empty())
-      buffer << " " << stage_unit_;
-    buffer << ") | " << (done - stage_begin) << "/" << (stage_end_[s] - stage_begin);
-    if (!unit_.empty())
-      buffer << " " << unit_;
+    {
+      std::lock_guard<std::mutex> lock(note_mutex_);
+      if (!summary_note_.empty())
+        buffer << " | " << summary_note_;
+    }
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                              std::chrono::steady_clock::now() - start_time_)
                              .count();
     buffer << " | " << fmt_duration(elapsed);
-    if (done > 0 && done < total_units_) {
+    if (done > 0 && done < total) {
       const long long eta = static_cast<long long>(
-          elapsed * (static_cast<double>(total_units_ - done) / static_cast<double>(done)));
+          elapsed * (static_cast<double>(total - done) / static_cast<double>(done)));
       buffer << " elapsed, ETA " << fmt_duration(eta);
       buffer << " (" << std::fixed << std::setprecision(1)
              << (elapsed > 0 ? static_cast<double>(done) / static_cast<double>(elapsed) : 0.0)
@@ -277,12 +324,13 @@ private:
         else
           buffer << " ";
       }
-      buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% "
-             << "(" << current << "/" << total << ")";
 
-      if (slot.label[0] != '\0') {
-        buffer << " " << slot.label;
-      }
+      // 所有字段定宽 — 多行并排滚动时列必须严格对齐:
+      //   百分比 3, 计数各 3, 标签按显示宽度补齐 (中文占 2 列)
+      buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% "
+             << "(" << std::setw(3) << current << "/" << std::setw(3) << total << ") "
+             << pad_display(slot.label, label_cols_);
+
       if (slot.message[0] != '\0') {
         buffer << " - " << slot.message;
       }
@@ -296,17 +344,18 @@ private:
 
   int num_workers_;
   int bar_width_ = 40;
+  int label_cols_ = 24; // 标签列显示宽度 (代码 6 + 空格 + 中文名 ≤8 字)
   int refresh_interval_ms_;
 
   std::vector<WorkerSlot> slots_;
 
-  // 全局汇总 (可选): 一个累计数 + 阶段划分 (stage_end_ 是各阶段的累计终点)
+  // 全局汇总 (可选): 累计数 + 总量 (可为估算) + 附加说明
   std::atomic<size_t> summary_done_{0};
-  std::vector<std::string> stage_names_;
-  std::vector<size_t> stage_end_;
-  size_t total_units_ = 0;
-  std::string stage_unit_;
-  std::string unit_;
+  std::atomic<size_t> summary_total_{0};
+  std::atomic<bool> summary_exact_{false};
+  std::string summary_unit_;
+  std::mutex note_mutex_;
+  std::string summary_note_;
   std::chrono::steady_clock::time_point start_time_;
 
   std::atomic<bool> running_;
@@ -330,6 +379,12 @@ inline void ProgressHandle::set_label(const std::string &label) const {
 inline void ProgressHandle::bump_summary(size_t n) const {
   if (progress_) {
     progress_->bump_summary_internal(n);
+  }
+}
+
+inline void ProgressHandle::set_summary_note(const std::string &note) const {
+  if (progress_) {
+    progress_->set_summary_note(note);
   }
 }
 

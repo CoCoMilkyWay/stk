@@ -148,6 +148,42 @@ struct Order {
   // ask_order_id:             |0            |sell_maker_id |0             |sell_cancel_id |0     |0     |sell_maker_id |sell_taker_id
 };
 
+// ============================================================================
+// L2 二进制文件格式 (v2) — 数据完整性的统一方案: "存在即完整"
+// ============================================================================
+//
+// 三道防线, 热读路径零成本:
+//   1. 原子落盘 (tmp + rename): 最终路径上的文件不可能是半截 — 进程被杀/
+//      崩溃只会留下 .tmp 垃圾, 由下次增量编码覆盖消化.
+//   2. 定宽自描述头 (本结构): magic/version 挡住"不是 L2 文件/旧格式",
+//      尺寸字段自洽性挡住截断 — 读侧只花几次整数比较.
+//   3. zstd 帧内容校验 (xxh64, 压缩时写入): 热路径显式跳过 (不花解压之外
+//      的一分钱), 离线 Verify 强制校验 → 位腐烂/历史遗留损坏被查出并删除,
+//      下次增量编码自动补齐. 修复回路 = Verify(删坏) + 增量(补齐).
+//
+// 布局: [L2FileHeader 32B][zstd 帧], 帧解开后是 [u64 count][Order × count].
+struct L2FileHeader {
+  static constexpr uint32_t kL2Magic = 0x004F324C; // 'L','2','O','\0' 小端
+  static constexpr uint32_t kL2FormatVersion = 1;
+
+  uint32_t magic;           // kL2Magic
+  uint32_t version;         // kL2FormatVersion
+  uint64_t raw_size;        // 解压后字节数 = 8 + count * sizeof(Order)
+  uint64_t compressed_size; // zstd 帧字节数; 文件总长 = 32 + compressed_size
+  uint64_t reserved;        // 置 0; 凑定宽 32B, 留给未来 (flags/校验和等)
+
+  // 头部自洽 (不含内容校验): magic/version 对, 且尺寸恰好装得下整数条 Order
+  bool sane() const {
+    return magic == kL2Magic && version == kL2FormatVersion &&
+           raw_size >= sizeof(uint64_t) &&
+           (raw_size - sizeof(uint64_t)) % sizeof(Order) == 0 &&
+           compressed_size > 0;
+  }
+
+  uint64_t order_count() const { return (raw_size - sizeof(uint64_t)) / sizeof(Order); }
+};
+static_assert(sizeof(L2FileHeader) == 32, "L2FileHeader 必须定宽 32 字节");
+
 struct ColumnMeta {
   std::string_view column_name; // 列名
   uint8_t bit_width;            // 实际存储 bit 宽度
