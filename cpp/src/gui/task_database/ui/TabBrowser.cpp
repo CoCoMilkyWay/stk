@@ -3,6 +3,7 @@
 
 #include "gui/task_database/ui/TabBrowser.hpp"
 #include "imgui.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -69,6 +70,7 @@ int GetDayOfWeek(const std::string &date_dense) {
 std::map<std::string, DailyStats> BuildDailyStats(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end) {
@@ -135,11 +137,15 @@ std::map<std::string, DailyStats> BuildDailyStats(
       float factor_prev = std::stod(data[i - 1][1]);
 
       // Check if there's a significant factor change (dividend/split)
-      float ratio = std::abs(factor_curr / factor_prev - 1.0);
-      if (ratio > 0.0001) { // Threshold for detecting events
+      float ratio = factor_curr / factor_prev;
+      if (std::abs(ratio - 1.0) > 0.0001) { // Threshold for detecting events
         auto it = stats_map.find(date_dense);
         if (it != stats_map.end()) {
-          it->second.dividend_split_count++;
+          auto info_it = stock_info.find(code);
+          it->second.dividend_events.push_back(
+              {code,
+               info_it != stock_info.end() ? info_it->second.name : std::string(),
+               ratio});
         }
       }
     }
@@ -345,7 +351,7 @@ void RenderMonthGrid(
         fill_color = color_purple;
       }
 
-      if (state.layers.show_dividend_split && stats->dividend_split_count > 0) {
+      if (state.layers.show_dividend_split && !stats->dividend_events.empty()) {
         fill_color = color_yellow;
       }
     }
@@ -375,11 +381,23 @@ void RenderMonthGrid(
         ImGui::Separator();
         ImGui::Text("Backtest Range: %s", stats->is_in_backtest_range ? "YES" : "NO");
         ImGui::Separator();
-        ImGui::Text("L2 Data Coverage:");
+        ImGui::Text("L2 Data Coverage: (BJ / 当日停牌 不计入分母)");
         ImGui::Text("  Total Stocks: %zu", stats->total_assets);
         ImGui::Text("  With Orders: %zu (%.1f%%)", stats->assets_with_orders, completeness);
         ImGui::Separator();
-        ImGui::Text("Dividend/Split Events: %zu stocks", stats->dividend_split_count);
+        ImGui::Text("Dividend/Split Events: %zu stocks", stats->dividend_events.size());
+        // 明细: 代码 + 简称 + 复权因子比值 (>1 = 除权除息, 因子被上调)
+        constexpr size_t kMaxListed = 30;
+        const size_t listed = std::min(stats->dividend_events.size(), kMaxListed);
+        for (size_t k = 0; k < listed; ++k) {
+          const DividendEvent &ev = stats->dividend_events[k];
+          ImGui::Text("  %s  %s  x%.6f", ev.code.c_str(),
+                      ev.name.empty() ? "-" : ev.name.c_str(), ev.ratio);
+        }
+        if (stats->dividend_events.size() > listed) {
+          ImGui::TextDisabled("  ... +%zu more",
+                              stats->dividend_events.size() - listed);
+        }
         ImGui::EndTooltip();
       } else {
         ImGui::SetTooltip("%s (No data)", state.hover_date.c_str());
@@ -430,6 +448,7 @@ void RenderYearRow(
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end,
@@ -448,13 +467,13 @@ void RenderTabBrowser(
   // Build or reuse daily statistics cache
   if (browser_state.daily_stats_cache.empty()) {
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, asset_data, backtest_start, backtest_end);
+        stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
   }
 
   if (ImGui::Button("Refresh Data")) {
     browser_state.daily_stats_cache.clear();
     browser_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, asset_data, backtest_start, backtest_end);
+        stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
   }
 
   // Layer Toggle Buttons
@@ -520,7 +539,7 @@ void RenderTabBrowser(
       backtest_days++;
       avg_completeness += stats.completeness_orders();
     }
-    total_dividend_events += stats.dividend_split_count;
+    total_dividend_events += static_cast<int>(stats.dividend_events.size());
   }
 
   if (backtest_days > 0) {

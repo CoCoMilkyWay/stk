@@ -16,7 +16,7 @@ enum class BoardType {
   SZ_Main, // 深市主板: 000/001/002/003/004
   STAR,    // 科创板: 688/689
   ChiNext, // 创业板: 300/301/302/309
-  BSE      // 北交所: 87/88/92
+  BSE      // 北交所: 43/83/87/88/92
 };
 
 inline const char *GetBoardName(BoardType type) {
@@ -64,9 +64,11 @@ inline BoardType GetBoardType(const std::string &code) {
   }
 
   // Beijing Stock Exchange
+  // 43/83 = 新三板平移的存量代码段 (未换号直接上北交所)
   if (code.length() >= 2) {
     std::string prefix2 = code.substr(0, 2);
-    if (prefix2 == "87" || prefix2 == "88" || prefix2 == "92") {
+    if (prefix2 == "43" || prefix2 == "83" || prefix2 == "87" ||
+        prefix2 == "88" || prefix2 == "92") {
       return BoardType::BSE;
     }
   }

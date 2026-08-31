@@ -17,6 +17,7 @@ namespace GUI::Database {
 // Color constants
 constexpr ImVec4 COLOR_SH = ImVec4(0.0f, 0.4f, 0.8f, 1.0f);
 constexpr ImVec4 COLOR_SZ = ImVec4(0.0f, 0.6f, 0.5f, 1.0f);
+constexpr ImVec4 COLOR_BJ = ImVec4(0.8f, 0.5f, 0.1f, 1.0f);
 constexpr ImVec4 COLOR_GREEN = ImVec4(0.3f, 0.95f, 0.4f, 1.0f);
 constexpr ImVec4 COLOR_YELLOW = ImVec4(1.0f, 0.95f, 0.3f, 1.0f);
 constexpr ImVec4 COLOR_RED = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
@@ -70,6 +71,30 @@ float CalculateMarketCap(const StockInfo &info) {
 }
 
 // ============================================================================
+// Helper: ST level from StockInfo (isST = cn_stock_status.st_status 原值)
+// ============================================================================
+
+// 0 = 正常 (含无基本面), 1 = ST, 2 = *ST (退市风险警示)
+int GetStLevel(const StockInfo *info) {
+  if (!info)
+    return 0;
+  if (info->isST == "2")
+    return 2;
+  if (info->isST == "1")
+    return 1;
+  return 0;
+}
+
+const char *GetStLabel(int level) {
+  return level == 2 ? "*ST" : (level == 1 ? "ST" : "-");
+}
+
+// 行业展示名: 优先申万一级名, 缺名回落到代码
+const std::string &GetIndustryDisplay(const StockInfo &info) {
+  return info.ind_name.empty() ? info.ind_code : info.ind_name;
+}
+
+// ============================================================================
 // Helper: Check if asset should be shown based on filters
 // ============================================================================
 
@@ -99,9 +124,9 @@ bool ShouldShowAsset(
     return false;
   }
 
-  // Filter: ST only
+  // Filter: ST only (ST 与 *ST 都算)
   if (state.filter_st_only) {
-    if (!info || info->isST != "1") {
+    if (GetStLevel(info) == 0) {
       return false;
     }
   }
@@ -198,15 +223,23 @@ void RenderFilterBar(
     industries.clear();
     industries.emplace_back("", "All Industries");
     for (const auto &[code, name] : ind_map) {
-      industries.emplace_back(code, code + " - " + name);
+      industries.emplace_back(code, name.empty() ? code : name + " (" + code + ")");
     }
     industries_cached = true;
   }
 
+  // 预览文本用行业名, 不用裸代码
+  const char *ind_preview = "All";
+  for (const auto &[code, display] : industries) {
+    if (code == state.industry_filter) {
+      ind_preview = state.industry_filter.empty() ? "All" : display.c_str();
+      break;
+    }
+  }
+
   ImGui::SameLine();
   ImGui::SetNextItemWidth(150.0f);
-  if (ImGui::BeginCombo("Industry##IndFilter",
-                        state.industry_filter.empty() ? "All" : state.industry_filter.c_str())) {
+  if (ImGui::BeginCombo("Industry##IndFilter", ind_preview)) {
     for (const auto &[code, display] : industries) {
       bool is_selected = (state.industry_filter == code);
       if (ImGui::Selectable(display.c_str(), is_selected)) {
@@ -274,19 +307,19 @@ void RenderDataTable(
   const char *header_tooltips[] = {
       "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
 
-      "股票名称 (Name)\n公司在交易所的简称",
+      "股票名称 (Name)\n公司在交易所的简称 (逐日 PIT)\n来源: cn_stock_instruments 最新交易日\n\n退市股回落到 cn_stock_basic_info 的最后简称",
 
-      "交易所 (Exchange)\nSH = 上海证券交易所 (Shanghai Stock Exchange)\nSZ = 深圳证券交易所 (Shenzhen Stock Exchange)",
+      "交易所 (Exchange)\nSH = 上海证券交易所 (Shanghai Stock Exchange)\nSZ = 深圳证券交易所 (Shenzhen Stock Exchange)\nBJ = 北京证券交易所 (Beijing Stock Exchange)",
 
-      "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (87/88/92)",
+      "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (43/83/87/88/92)",
 
-      "ST股 (Special Treatment)\nisST: 是否为特别处理股票\n1 = 是ST股, 0 = 否\n\n说明:连续两年亏损的股票会被标记为ST\n投资风险较高,涨跌幅限制为±5%",
+      "ST股 (Special Treatment)\n来源: cn_stock_status.st_status (逐日)\n\nST  = 特别处理 (连续两年亏损等), 涨跌幅限制 ±5%\n*ST = 退市风险警示 (风险更高一档)\n-   = 正常\n\n与 Name 列同源同日 (简称前缀 ↔ 本列取值 严格一致)",
 
       "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\noutDate字段记录退市日期",
 
       "上市天数 (Listed Days)\n从IPO日期到现在的天数\n= 当前日期 - ipoDate\n可用于判断新股或老股",
 
-      "行业 (Industry)\n所属行业分类代码 (ind_code)\n由交易所或数据提供商分类",
+      "行业 (Industry)\n申万一级行业名称 (industry_level1_name)\n来源: cn_stock_industry_component 最新月度快照\n\nhover 单元格可看行业代码 (ind_code)",
 
       "滚动市盈率 (PE TTM)\npeTTM = Trailing Twelve Months P/E Ratio\n= 股票收盘价 / 每股盈余TTM\n= (收盘价 x 总股本) / 归属母公司股东净利润TTM\n\nTTM = 过去12个月滚动数据\n反映公司盈利能力,数值越低估值越便宜",
 
@@ -401,13 +434,10 @@ void RenderDataTable(
                                break; // Exchange
                              case 3:
                                result = (int)GetBoardType(a.asset->asset_code) < (int)GetBoardType(b.asset->asset_code);
-                               break;  // Board
-                             case 4: { // ST
-                               bool a_st = a.info && a.info->isST == "1";
-                               bool b_st = b.info && b.info->isST == "1";
-                               result = a_st < b_st;
+                               break; // Board
+                             case 4:  // ST: 正常 < ST < *ST
+                               result = GetStLevel(a.info) < GetStLevel(b.info);
                                break;
-                             }
                              case 5: { // DL (Delisted)
                                bool a_dl = a.info && a.info->outDate != "" && a.info->outDate != "0";
                                bool b_dl = b.info && b.info->outDate != "" && b.info->outDate != "0";
@@ -420,9 +450,9 @@ void RenderDataTable(
                                result = a_days < b_days;
                                break;
                              }
-                             case 7: { // Industry
-                               std::string a_ind = a.info ? a.info->ind_code : "";
-                               std::string b_ind = b.info ? b.info->ind_code : "";
+                             case 7: { // Industry (按展示名排, 与列内容一致)
+                               std::string a_ind = a.info ? GetIndustryDisplay(*a.info) : "";
+                               std::string b_ind = b.info ? GetIndustryDisplay(*b.info) : "";
                                result = a_ind < b_ind;
                                break;
                              }
@@ -562,7 +592,9 @@ void RenderDataTable(
     if (hovered_col == 2) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    ImGui::TextColored(asset.exchange == "SH" ? COLOR_SH : COLOR_SZ,
+    ImGui::TextColored(asset.exchange == "SH"   ? COLOR_SH
+                       : asset.exchange == "SZ" ? COLOR_SZ
+                                                : COLOR_BJ,
                        "%s", asset.exchange.c_str());
     handle_column_click(2);
 
@@ -580,8 +612,9 @@ void RenderDataTable(
     if (hovered_col == 4) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    if (info && info->isST == "1") {
-      ImGui::TextColored(COLOR_RED, "ST");
+    int st_level = GetStLevel(info);
+    if (st_level > 0) {
+      ImGui::TextColored(COLOR_RED, "%s", GetStLabel(st_level));
     } else {
       ImGui::Text("-");
     }
@@ -620,10 +653,10 @@ void RenderDataTable(
     if (hovered_col == 7) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    if (info && !info->ind_code.empty()) {
-      ImGui::Text("%s", info->ind_code.c_str());
-      if (ImGui::IsItemHovered() && !info->ind_name.empty()) {
-        ImGui::SetTooltip("%s", info->ind_name.c_str());
+    if (info && !GetIndustryDisplay(*info).empty()) {
+      ImGui::Text("%s", GetIndustryDisplay(*info).c_str());
+      if (ImGui::IsItemHovered() && !info->ind_code.empty()) {
+        ImGui::SetTooltip("%s", info->ind_code.c_str());
       }
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
@@ -1165,14 +1198,18 @@ static void RenderCategoricalAnalysis(
     case 3: // Board
       category = GetBoardName(GetBoardType(asset.asset_code));
       break;
-    case 4: // ST
-      category = (info && info->isST == "1") ? "ST" : "Normal";
+    case 4: { // ST
+      int level = GetStLevel(info);
+      category = level == 2 ? "*ST" : (level == 1 ? "ST" : "Normal");
       break;
+    }
     case 5: // DL
       category = (info && !info->outDate.empty()) ? "Delisted" : "Active";
       break;
     case 7: // Industry
-      category = info ? info->ind_code : "Unknown";
+      category = (info && !GetIndustryDisplay(*info).empty())
+                     ? GetIndustryDisplay(*info)
+                     : "Unknown";
       break;
     default:
       break;

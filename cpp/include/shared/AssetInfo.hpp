@@ -14,7 +14,7 @@
 
 struct StockInfo {
   // 静态字段 (cn_stock_basic_info + cn_stock_industry_component)
-  std::string name;
+  std::string name; // 逐日 PIT 简称 (cn_stock_instruments), 退市股回落 basic_info
   std::string ipoDate;
   std::string outDate;
   std::string ind_code;
@@ -26,7 +26,7 @@ struct StockInfo {
   std::string amount;
   std::string turn;
   std::string tradestatus;
-  std::string isST;
+  std::string isST; // cn_stock_status.st_status 原值: "0"=正常 "1"=ST "2"=*ST
   // peTTM/pbMRQ/psTTM/pcfNcfTTM: 特征表阶段用财务表 + 实时价格计算
   std::string peTTM;
   std::string pbMRQ;
@@ -51,6 +51,11 @@ using StockInfoMap = std::map<std::string, StockInfo>;
 // StockDays: [[date, is_trading_day], ...]
 using StockDaysVec = std::vector<std::vector<std::string>>;
 
+// Suspended: dense "YYYYMMDD" -> 该日全天停牌的股票 key ("sz.000001") 集合.
+// 只存停牌的 (date, code) 对 (2015 至今约 28 万条), 未停牌日不建条目.
+using SuspendedMap =
+    std::map<std::string, std::unordered_set<std::string>>;
+
 // ============================================================================
 // AssetInfo - Stock metadata and trading calendar
 // ============================================================================
@@ -62,6 +67,7 @@ struct AssetInfo {
   StockInfoMap stock_info_;
   StockFactorMap stock_factor_;
   StockDaysVec stock_days_;
+  SuspendedMap suspended_;
 
   // ========================================
   // Quick lookup cache (for performance)
@@ -74,6 +80,7 @@ struct AssetInfo {
   const StockInfoMap &get_stock_info() const { return stock_info_; }
   const StockFactorMap &get_stock_factor() const { return stock_factor_; }
   const StockDaysVec &get_stock_days() const { return stock_days_; }
+  const SuspendedMap &get_suspended() const { return suspended_; }
 
   // ========================================
   // Query methods
@@ -100,6 +107,7 @@ struct AssetInfo {
   StockInfoMap &mutable_stock_info() { return stock_info_; }
   StockFactorMap &mutable_stock_factor() { return stock_factor_; }
   StockDaysVec &mutable_stock_days() { return stock_days_; }
+  SuspendedMap &mutable_suspended() { return suspended_; }
 
   // Rebuild trading days cache after modifying stock_days_
   void rebuild_cache();

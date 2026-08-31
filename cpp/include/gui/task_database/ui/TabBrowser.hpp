@@ -7,8 +7,16 @@
 #include "shared/AssetInfo.hpp"
 #include <map>
 #include <string>
+#include <vector>
 
 namespace GUI::Database {
+
+// 单只标的的一次除权除息 (复权因子变点)
+struct DividendEvent {
+  std::string code;  // "sz.000001"
+  std::string name;  // 简称, 基本面查不到时为空
+  float ratio = 0.0; // factor_curr / factor_prev
+};
 
 // Daily statistics aggregated for a single date.
 //
@@ -24,8 +32,8 @@ struct DailyStats {
   size_t total_assets = 0; // Total stocks listed on this date
   size_t assets_with_orders = 0;
 
-  // Dividend/split events
-  size_t dividend_split_count = 0; // Number of stocks with events on this date
+  // Dividend/split events (按代码升序; 数量即 .size())
+  std::vector<DividendEvent> dividend_events;
 
   // Completeness metric (0.0 - 1.0)
   float completeness_orders() const {
@@ -35,11 +43,11 @@ struct DailyStats {
 
 // Layer visibility toggle state
 struct LayerVisibility {
-  bool show_dividend_split = true; // Layer 1: Yellow
-  bool show_holiday = true;        // Layer 2: Purple
-  bool show_backtest_range = true; // Layer 3: Green
-  bool show_l2_data = true;        // Layer 4: Blue
-  bool show_completeness = true;   // Border: Green/Yellow/Red
+  bool show_dividend_split = false; // Layer 1: Yellow (默认关: 会盖住其他层)
+  bool show_holiday = true;         // Layer 2: Purple
+  bool show_backtest_range = true;  // Layer 3: Green
+  bool show_l2_data = true;         // Layer 4: Blue
+  bool show_completeness = true;    // Border: Green/Yellow/Red
 };
 
 // Browser state
@@ -56,6 +64,7 @@ struct BrowserState {
 void RenderTabBrowser(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
+    const StockInfoMap &stock_info,
     const Asset &asset_data,
     const std::string &backtest_start,
     const std::string &backtest_end,

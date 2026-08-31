@@ -231,8 +231,14 @@ struct Asset {
 
   // Compute per-date browser statistics (requires stock_info for delist dates)
   // Should be called once after loading stock_info and stock_days
-  template <typename StockInfoMap, typename StockDaysVec>
-  void compute_browser_statistics(const StockInfoMap &stock_info, const StockDaysVec &stock_days) {
+  //
+  // 分母 = 当日"本该有逐笔"的标的: 已上市未退市, 且排除
+  //   - 北交所 (L2 archive 从不覆盖 .BJ)
+  //   - 当日全天停牌 (suspended, 无逐笔可编码)
+  // 这两项不剔掉的话全市场完整性会被压到 ~94%, 掩盖真实缺口.
+  template <typename StockInfoMap, typename StockDaysVec, typename SuspendedMap>
+  void compute_browser_statistics(const StockInfoMap &stock_info, const StockDaysVec &stock_days,
+                                  const SuspendedMap &suspended) {
     date_stats.clear();
 
     // Helper function to convert YYYY-MM-DD to YYYYMMDD
@@ -261,11 +267,21 @@ struct Asset {
 
       DateStats &stats = date_stats[date_dense];
 
+      // 当日停牌名单 (无条目 = 该日无人停牌)
+      auto susp_it = suspended.find(date_dense);
+      const auto *susp_today = (susp_it != suspended.end()) ? &susp_it->second : nullptr;
+
       for (const auto &asset : items) {
+        if (asset.exchange == "BJ")
+          continue;
+
         // Build full stock code (e.g., "sh.600128") - convert to lowercase
         std::string exchange_lower = asset.exchange;
         std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
         std::string full_code = exchange_lower + "." + asset.asset_code;
+
+        if (susp_today && susp_today->count(full_code))
+          continue;
 
         // Get listing and delisting dates from stock_info
         std::string list_date_dense;

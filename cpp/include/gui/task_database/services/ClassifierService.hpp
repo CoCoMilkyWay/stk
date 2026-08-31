@@ -43,10 +43,12 @@ public:
       return BoardType::ChiNext;
     }
 
-    // Beijing Stock Exchange: 87/88/92
+    // Beijing Stock Exchange: 43/83/87/88/92
+    // 43/83 = 新三板平移的存量代码段 (未换号直接上北交所)
     if (code.length() >= 2) {
       std::string prefix2 = code.substr(0, 2);
-      if (prefix2 == "87" || prefix2 == "88" || prefix2 == "92") {
+      if (prefix2 == "43" || prefix2 == "83" || prefix2 == "87" ||
+          prefix2 == "88" || prefix2 == "92") {
         return BoardType::BSE;
       }
     }
@@ -58,16 +60,16 @@ public:
   // ST Status Check
   // ============================================================================
 
-  // Check if a stock is ST from StockInfo
+  // Check if a stock is ST from StockInfo (isST: "1"=ST, "2"=*ST)
   static bool is_st(const StockInfo &info) {
-    return info.isST == "1";
+    return info.isST == "1" || info.isST == "2";
   }
 
   // Check if a stock is ST from map lookup
   static bool is_st(const std::string &full_code,
                     const StockInfoMap &stock_info_map) {
     auto it = stock_info_map.find(full_code);
-    return (it != stock_info_map.end()) && (it->second.isST == "1");
+    return (it != stock_info_map.end()) && is_st(it->second);
   }
 
   // ============================================================================

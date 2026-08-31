@@ -2,7 +2,8 @@
 // 抓取: api/bigquant + api/tushare (月度 parquet, 水位增量, 调度见 misc/schedule.hpp)
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days}
 //   stock_days   ← all_trading_days (market_code='CN', 截到 today)
-//   stock_info   ← cn_stock_basic_info (_meta) + cn_stock_industry_component (最新快照)
+//   stock_info   ← cn_stock_basic_info (_meta) + cn_stock_instruments (PIT 简称)
+//                  + cn_stock_industry_component (最新快照)
 //                  + cn_stock_real_bar1d (每股最新行) + cn_stock_status (每股最新行)
 //   stock_factor ← cn_stock_real_bar1d.adjust_factor 变点序列 (分红/拆分事件日)
 //   peTTM/pbMRQ/psTTM/pcfNcfTTM 由特征表阶段用财务表自算, 此处不填.
@@ -10,12 +11,12 @@
 
 #include "api/bigquant/pipeline.hpp"
 #include "api/bigquant/spec.hpp"
-#include "shared/Config.hpp"
 #include "api/tushare/pipeline.hpp"
 #include "api/tushare/spec.hpp"
 #include "misc/date.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
+#include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -156,6 +157,35 @@ bool build_asset_info(Job &job) {
     }
   }
 
+  // ---- 名称 ← cn_stock_instruments 最新月内最新快照 (逐日 PIT 简称) ----
+  // basic_info.name 是过期快照 (ST 摘牌/更名后不回填), 与 status.st_status
+  // 当日口径对不上; instruments 的逐日 name 与 st_status 严格一致 (ST/*ST
+  // 前缀 ↔ 1/2). 退市股不在 instruments 里, 保留 basic_info 的最后简称.
+  job.set_message("构建股票简称 (cn_stock_instruments)");
+  {
+    auto in_files = pq::list_month_files("cn_stock_instruments");
+    for (auto it = in_files.rbegin(); it != in_files.rend(); ++it) {
+      pq::TableView v(pq::read_table(it->second));
+      if (v.rows() == 0)
+        continue; // 0 行月 → 往前找
+      pq::Col date = v.col("date");
+      pq::Col ins = v.col("instrument");
+      pq::Col name = v.col("name");
+      std::int32_t max_d = 0;
+      for (std::int64_t i = 0, n = v.rows(); i < n; ++i)
+        max_d = std::max(max_d, date.yyyymmdd(i));
+      for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
+        if (date.yyyymmdd(i) != max_d)
+          continue;
+        auto found = stock_info.find(to_asset_code(ins.str(i)));
+        if (found == stock_info.end())
+          continue;
+        found->second.name = std::string(name.str(i));
+      }
+      break;
+    }
+  }
+
   // ---- 行业 ← cn_stock_industry_component 最新月内最新快照 (申万一级) ----
   job.set_message("构建行业归属 (cn_stock_industry_component)");
   auto ic_files = pq::list_month_files("cn_stock_industry_component");
@@ -261,12 +291,17 @@ bool build_asset_info(Job &job) {
     stock_factor.emplace(key, std::move(sfd));
   }
 
-  // ---- 状态 ← cn_stock_status 每股最新行 (isST / tradestatus) ----
+  // ---- 状态 ← cn_stock_status ----
+  //   每股最新行 → st_status / tradestatus;
+  //   suspended≠0 的 (date, code) 全量 → suspended_ (逐日停牌名单).
+  //   Browser 完整性把停牌股从当日分母里剔掉 — 全天停牌本就无逐笔可编码.
   {
     auto st_files = pq::list_month_files("cn_stock_status");
     std::size_t total = st_files.size(), idx = 0;
     std::map<std::string, std::pair<std::int32_t, std::pair<int, int>>>
         latest; // bs_code → (date, (st_status, suspended))
+    auto &suspended = job.assetinfo.mutable_suspended();
+    suspended.clear();
     for (auto &[ym, path] : st_files) {
       ++idx;
       job.set_message("扫描股票状态 " + ym + " (" + std::to_string(idx) + "/" +
@@ -281,16 +316,23 @@ bool build_asset_info(Job &job) {
       for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
         std::string key = to_asset_code(ins.str(i));
         std::int32_t d = date.yyyymmdd(i);
+        int suspended_flag = sp.i32(i, 0);
         auto &cur = latest[key];
         if (d > cur.first)
-          cur = {d, {st.i32(i, 0), sp.i32(i, 0)}};
+          cur = {d, {st.i32(i, 0), suspended_flag}};
+        if (suspended_flag != 0 && d > 0) {
+          char dense[9];
+          std::snprintf(dense, sizeof(dense), "%08d", d);
+          suspended[std::string(dense, 8)].insert(std::move(key));
+        }
       }
     }
     for (auto &[key, val] : latest) {
       auto found = stock_info.find(key);
       if (found == stock_info.end())
         continue;
-      found->second.isST = val.second.first != 0 ? "1" : "0";
+      // st_status 原值直传: 0=正常, 1=ST, 2=*ST (退市风险警示)
+      found->second.isST = std::to_string(val.second.first);
       found->second.tradestatus = val.second.second != 0 ? "0" : "1";
     }
   }

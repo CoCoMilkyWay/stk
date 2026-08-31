@@ -377,12 +377,14 @@ private:
         fundamental_svc_->is_ready()) [[unlikely]] {
       data_->asset.compute_browser_statistics(
           data_->assetinfo.get_stock_info(),
-          data_->assetinfo.get_stock_days());
+          data_->assetinfo.get_stock_days(),
+          data_->assetinfo.get_suspended());
     }
 
     RenderTabBrowser(
         data_->assetinfo.get_stock_days(),
         data_->assetinfo.get_stock_factor(),
+        data_->assetinfo.get_stock_info(),
         data_->asset,
         config_->start_date,
         config_->end_date,
