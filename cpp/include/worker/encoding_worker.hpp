@@ -37,11 +37,6 @@ struct EncodeTask {
   size_t trade_index; // 逐笔成交在归档内的序号
   size_t order_size;  // 解压后字节数
   size_t trade_size;  // 0 表示该资产当日没有成交文件
-
-  // 该资产最后一个待编码日期 —— 编完它就意味着这个资产整体完成, 用来推进
-  // 进度条上的资产计数. 批按日期升序入队且 FIFO 消费, 所以一个资产的末日
-  // 任务必然最后被取走, 这个计数是准的.
-  bool last_for_asset;
 };
 
 // 一批共享同一个归档的任务

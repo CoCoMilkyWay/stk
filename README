@@ -1,14 +1,15 @@
 ```
-入口: run.py ──► py/main.py ──► cpp/projects/main/build.sh ──► CMake ──► app_main (C++可执行文件)
+入口: run.py ──► py/main.py ──► CMake ──► app_main (C++可执行文件)
 ```
 
 ```
 stk/
-├── run.py                 # 🚀 主入口 → py/main.py → build.sh (模式选择: TSAN/DEBUG/PROFILE/ASSERT/PRODUCTION)
+├── run.py                 # 🚀 主入口 → py/main.py (模式选择: TSAN/DEBUG/PROFILE/ASSERT/PRODUCTION)
 ├── config/config.json     # ⚙️ 全局配置
 ├── py/                    # 🐍 Python工具链
-│   ├── main.py            # 🐍 构建脚本: 调用cpp/projects/main/build.sh
-│   └── app/               # 🐍 DataProvider_API / FileRepair / Util
+│   ├── main.py            # 🐍 构建脚本: 直接调用 CMake
+│   ├── mode_*.py          # 🐍 模式开关: tsan/debug/profile/assert/production
+│   └── app/               # 🐍 FileRepair / pdf2txt / procdump
 └─── cpp/
     ├── include/
     │   ├── shared/                               # 📦 跨模块数据层
@@ -16,6 +17,7 @@ stk/
     │   │   ├── Config.hpp                        # 📦 配置数据结构
     │   │   ├── TaskState.hpp                     # 📦 任务状态
     │   │   ├── Asset.hpp / AssetInfo.hpp         # 📦 资产定义与元数据
+    │   │   ├── AssetAxis.hpp                     # 📦 A轴(资产轴)对齐
     │   │   ├── Feature.hpp                       # 📦 特征数据结构
     │   │   ├── OrderFlow.hpp                     # 📦 订单流数据
     │   │   ├── Dist.hpp                          # 📦 分布分析
@@ -37,17 +39,20 @@ stk/
     │   ├── features/                             # 🧮 特征工程 (多时间尺度)
     │   │   ├── FeaturesDefine.hpp                # 🧮 特征定义: ID/元数据
     │   │   ├── DataDefine.hpp                    # 🧮 数据定义: 基础数据类型
+    │   │   ├── ProcessDefine.hpp                 # 🧮 处理流程定义
+    │   │   ├── ComputeGraph.hpp                  # 🧮 计算图
     │   │   ├── CoreCrosssection.hpp              # 🧮 截面特征核心: 横截面处理
     │   │   ├── CoreSequential.hpp                # 🧮 序列特征核心: 时间序列处理
     │   │   ├── FeaturesTick/                     # 🧮 Tick级特征 (逐笔粒度)
     │   │   ├── FeaturesMinute/                   # 🧮 分钟级特征
+    │   │   ├── Operator/TS/                      # 🧮 时序算子 (Basic/Shape/Imbalance/OrderFlow/...)
+    │   │   ├── Misc/                             # 🧮 杂项特征工具
     │   │   └── Backend/                          # 🧮 特征存储后端
     │   │       ├── FeatureStore.hpp              # 🧮 存储引擎: 写入/并发控制
     │   │       ├── FeatureStoreConfig.hpp        # 🧮 存储配置: Float16/布局
     │   │       ├── FeatureReader.hpp             # 🧮 读取引擎: Zstd解压/列式加载
     │   │       └── ZstdHelper.hpp                # 🧮 Zstd压缩工具
     │   ├── worker/                               # ⚡ 多线程工作流编排
-    │   │   ├── shared_state.hpp                  # ⚡ Worker间共享状态
     │   │   ├── io_worker.hpp                     # ⚡ IO工作器: 文件读写
     │   │   ├── encoding_worker.hpp               # ⚡ 编码工作器
     │   │   ├── sequential_worker.hpp             # ⚡ 序列特征工作器
@@ -60,8 +65,7 @@ stk/
     │   │   ├── Tasks.hpp                         # 🖥️ 任务注册表
     │   │   ├── util/Color.hpp                    # 🖥️
     │   │   ├── coro/                             # 🖥️ 协程基础设施
-    │   │   │   ├── CoroManager.hpp               # 🖥️ 协程管理器: 调度/生命周期
-    │   │   │   └── CoroUtils.hpp                 # 🖥️ 协程工具
+    │   │   │   └── CoroManager.hpp               # 🖥️ 协程管理器: 调度/生命周期
     │   │   ├── task_terminal/                    # 🖥️ GUI任务模块
     │   │   │   └── TaskTerminal.hpp              # 🖥️ 终端: 命令输出/日志显示
     │   │   ├── task_settings/                    # 🖥️
@@ -76,10 +80,10 @@ stk/
     │   │   │   └── ui/TabLatex.hpp               # 🖥️ LaTeX 渲染标签页
     │   │   ├── task_database/                    # 🖥️ 数据库管理
     │   │   │   ├── TaskDatabase.hpp              # 🖥️ 数据库任务主界面
-    │   │   │   ├── models/                       # 🖥️ 数据模型
-    │   │   │   ├── services/                     # 🖥️ 业务服务层
-    │   │   │   ├── infrastructure/               # 🖥️ 基础设施层
-    │   │   │   └── ui/                           # 🖥️ UI组件
+    │   │   │   ├── models/SharedTypes.hpp        # 🖥️ 数据模型
+    │   │   │   ├── services/                     # 🖥️ 业务服务层 (Asset/Encoding/Fundamental/L2Database/Scan/Classifier/StateManager)
+    │   │   │   ├── infrastructure/ScanThreadPool.hpp # 🖥️ 扫描线程池
+    │   │   │   └── ui/                           # 🖥️ UI (TabBrowser/TabOverview/TabTable/TabEncode/CrossSectionAnalysis)
     │   │   └── task_features/                    # 🖥️ 特征计算管理
     │   │       ├── TaskFeatures.hpp              # 🖥️ 特征任务主界面
     │   │       ├── services/                     # 🖥️ 特征服务层
@@ -107,33 +111,35 @@ stk/
     │   │   │ Icon:                                │                                    │
     │   │   │  |Network|FPS│                       |                                    │
     │   │   └───────────────────────────────────────────────────────────────────────────┘
-    │   ├── math/                                 # 📐 autoencoder / normalize / sample / spectral / stationary / timeseries
+    │   ├── math/                                 # 📐 autoencoder / cluster / distribution / model / normalize / sample / spectral / stationary / timeseries
+    │   ├── api/                                  # 🌐 数据源 API
+    │   │   ├── bigquant/                         # 🌐 BigQuant (dai/pipeline/spec)
+    │   │   └── tushare/                          # 🌐 Tushare (http/parse/pipeline/spec)
     │   ├── mining/                               # ⛏️ 数据挖掘(特征->因子) 设计文档
     │   ├── misc/                                 # 🔧 logging / timer / progress / affinity
     │   ├── package/nlohmann/                     # 📚 JSON库
     │   └── boost/                                # 📚 asio / beast / optional
     ├── src/                                      # 💾 源文件实现 (多数对应include/)
     │   ├── main.cpp                              # 💾 程序入口
+    │   ├── api/ codec/ shared/ misc/ worker/     # 💾 对应模块实现
     │   ├── gui/Run_OpenGL.cpp                    # 💾 OpenGL后端入口
-    │   ├── gui/Run_Vulkan.cpp                    # 💾 Vulkan后端入口
+    │   └── gui/Run_Vulkan.cpp                    # 💾 Vulkan后端入口
     ├── projects/main/                            # 🏗️ 构建系统
-    │   ├── build.sh                              # 🏗️ 构建脚本: 调用CMake
     │   ├── CMakeLists.txt                        # 🏗️ CMake配置 (C++23, Clang)
     │   └── build/bin/app_main                    # 🎯 最终可执行文件
-    └── output/                                   # 📁 运行时输出 (archive_dir 在外部盘)
-        ├── database/                             # L2 二进制库
-        │   └── YYYY/MM/DD/<CODE>.<EX>/
-        │       ├── <CODE>.<EX>_snapshots_<N>.bin # 行情快照, N=条数
-        │       └── <CODE>.<EX>_orders_<N>.bin    # 逐笔委托+成交合并排序, N=条数
+    └── output/                                   # 📁 运行时输出
+        ├── orders/                               # L2 编码 .bin (逐笔委托+成交合并)
+        │   └── YYYY/MM/DD/<CODE>.<EX>.bin        # 单资产单日一个 .bin
         ├── features/                             # 特征张量库 (Float16 + Zstd, 按交易日全市场列式)
         │   └── YYYY/MM/DD/
         │       ├── features_L0_f<f>.zst          # L0 逐特征列 [T×A]
         │       ├── features_L1.zst               # L1 整层 [T×F×A]
         │       └── depth.zst                     # 盘口深度 [T×DEPTH×A]
+        ├── fundamental/                          # 财务基本面 (parquet, 按月)
+        │   └── YYYY-MM/*.parquet
         ├── factors/                              # 因子库 (预留)
         │   └── YYYY/MM/DD/
-        ├── log/                                  # 运行日志
-        └── fix/                                  # FileRepair 修复后的压缩包
+        └── log/                                  # 运行日志
 ```
 
 # ================================================

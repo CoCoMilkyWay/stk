@@ -178,8 +178,6 @@ void encoding_worker(SharedData &data,
       ++done_in_batch;
       progress_handle.update(done_in_batch, batch.tasks.size(), batch.date);
       progress_handle.bump_summary();
-      if (task.last_for_asset)
-        progress_handle.bump_summary_secondary();
       fed_any = false;
     };
 

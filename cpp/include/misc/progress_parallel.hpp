@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -9,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace misc {
@@ -50,11 +52,8 @@ public:
   // Set label (e.g., asset code)
   void set_label(const std::string &label) const;
 
-  // 全局汇总计数 +n (跨 worker 共享, 用于"已完成 N / 共 M"那一行)
+  // 全局汇总计数 +n (跨 worker 共享, 推进汇总行)
   void bump_summary(size_t n = 1) const;
-
-  // 汇总行上的第二个计数 (如主计数是 pair, 第二个是 asset)
-  void bump_summary_secondary(size_t n = 1) const;
 
   // Check if handle is valid
   bool valid() const { return progress_ != nullptr && worker_id_ >= 0; }
@@ -85,19 +84,32 @@ private:
   };
 
 public:
-  // summary_total > 0 时在 worker 条上方多渲染一行全局汇总 (已完成/总数 + ETA),
-  // 由各 worker 调 ProgressHandle::bump_summary 推进.
+  // stages 非空时在 worker 条上方多渲染一行全局汇总, 由各 worker 调
+  // ProgressHandle::bump_summary 推进.
+  //
+  // stages 是按消费顺序排好的 (阶段名, 阶段内单元数), 如 (日期, 当日资产数).
+  // 汇总行只有一个原子累计数, 阶段位置与阶段内进度由它反推 —— 计数细到单元
+  // 一级 ETA 才平滑, 而显示落在阶段一级才是人看得懂的量.
   explicit ParallelProgress(int num_workers, int refresh_interval_ms = 100,
-                            size_t summary_total = 0,
-                            const std::string &summary_unit = "")
+                            const std::vector<std::pair<std::string, size_t>> &stages = {},
+                            const std::string &stage_unit = "",
+                            const std::string &unit = "")
       : num_workers_(num_workers),
         refresh_interval_ms_(refresh_interval_ms),
         slots_(num_workers),
-        summary_total_(summary_total),
-        summary_unit_(summary_unit),
+        stage_unit_(stage_unit),
+        unit_(unit),
         start_time_(std::chrono::steady_clock::now()),
         running_(true),
         initialized_(false) {
+
+    stage_names_.reserve(stages.size());
+    stage_end_.reserve(stages.size());
+    for (const auto &[name, units] : stages) {
+      total_units_ += units;
+      stage_names_.push_back(name);
+      stage_end_.push_back(total_units_);
+    }
 
     // Print initial empty progress bars (+1 line for the summary if enabled)
     for (int i = 0; i < total_lines(); ++i) {
@@ -118,13 +130,6 @@ public:
   // Get handle for specific worker slot (no acquisition, just direct binding)
   ProgressHandle get_handle(int worker_id) {
     return ProgressHandle(this, worker_id);
-  }
-
-  // 汇总行上再挂一个计数 (主计数走 pair 这类细粒度单位以便 ETA 平滑,
-  // 第二个走 asset 这类粗粒度单位). 须在开跑前设置.
-  void set_summary_secondary(size_t total, const std::string &unit) {
-    summary_total2_ = total;
-    summary_unit2_ = unit;
   }
 
   // Stop refresh thread and finalize display
@@ -172,12 +177,8 @@ private:
     summary_done_.fetch_add(n, std::memory_order_relaxed);
   }
 
-  void bump_summary_secondary_internal(size_t n) {
-    summary_done2_.fetch_add(n, std::memory_order_relaxed);
-  }
-
   // 汇总行占一行, 排在 worker 条上方
-  bool has_summary() const { return summary_total_ > 0; }
+  bool has_summary() const { return total_units_ > 0; }
   int total_lines() const { return num_workers_ + (has_summary() ? 1 : 0); }
 
   // "12m34s"
@@ -196,30 +197,35 @@ private:
 
     buffer << "\033[" << lines_up << "A\r";
 
-    const float progress = static_cast<float>(done) / static_cast<float>(summary_total_);
+    const float progress = static_cast<float>(done) / static_cast<float>(total_units_);
     const int filled = static_cast<int>(bar_width_ * progress);
 
     buffer << "[";
     for (int j = 0; j < bar_width_; ++j)
-      buffer << (j < filled ? '#' : (j == filled && done < summary_total_ ? '>' : ' '));
-    buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% "
-           << done << "/" << summary_total_;
-    if (!summary_unit_.empty())
-      buffer << " " << summary_unit_;
+      buffer << (j < filled ? '#' : (j == filled && done < total_units_ ? '>' : ' '));
+    buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "%";
 
-    if (summary_total2_ > 0) {
-      buffer << " | " << summary_done2_.load(std::memory_order_relaxed) << "/" << summary_total2_;
-      if (!summary_unit2_.empty())
-        buffer << " " << summary_unit2_;
-    }
+    // 阶段按顺序消费, 累计数单调 → 二分即可定位当前阶段
+    size_t s = static_cast<size_t>(
+        std::upper_bound(stage_end_.begin(), stage_end_.end(), done) - stage_end_.begin());
+    if (s == stage_end_.size())
+      --s; // 全部完成
+    const size_t stage_begin = (s == 0) ? 0 : stage_end_[s - 1];
+
+    buffer << " " << stage_names_[s] << " (" << (s + 1) << "/" << stage_end_.size();
+    if (!stage_unit_.empty())
+      buffer << " " << stage_unit_;
+    buffer << ") | " << (done - stage_begin) << "/" << (stage_end_[s] - stage_begin);
+    if (!unit_.empty())
+      buffer << " " << unit_;
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                              std::chrono::steady_clock::now() - start_time_)
                              .count();
     buffer << " | " << fmt_duration(elapsed);
-    if (done > 0 && done < summary_total_) {
+    if (done > 0 && done < total_units_) {
       const long long eta = static_cast<long long>(
-          elapsed * (static_cast<double>(summary_total_ - done) / static_cast<double>(done)));
+          elapsed * (static_cast<double>(total_units_ - done) / static_cast<double>(done)));
       buffer << " elapsed, ETA " << fmt_duration(eta);
       buffer << " (" << std::fixed << std::setprecision(1)
              << (elapsed > 0 ? static_cast<double>(done) / static_cast<double>(elapsed) : 0.0)
@@ -294,13 +300,13 @@ private:
 
   std::vector<WorkerSlot> slots_;
 
-  // 全局汇总 (可选)
+  // 全局汇总 (可选): 一个累计数 + 阶段划分 (stage_end_ 是各阶段的累计终点)
   std::atomic<size_t> summary_done_{0};
-  size_t summary_total_;
-  std::string summary_unit_;
-  std::atomic<size_t> summary_done2_{0};
-  size_t summary_total2_ = 0;
-  std::string summary_unit2_;
+  std::vector<std::string> stage_names_;
+  std::vector<size_t> stage_end_;
+  size_t total_units_ = 0;
+  std::string stage_unit_;
+  std::string unit_;
   std::chrono::steady_clock::time_point start_time_;
 
   std::atomic<bool> running_;
@@ -324,12 +330,6 @@ inline void ProgressHandle::set_label(const std::string &label) const {
 inline void ProgressHandle::bump_summary(size_t n) const {
   if (progress_) {
     progress_->bump_summary_internal(n);
-  }
-}
-
-inline void ProgressHandle::bump_summary_secondary(size_t n) const {
-  if (progress_) {
-    progress_->bump_summary_secondary_internal(n);
   }
 }
 

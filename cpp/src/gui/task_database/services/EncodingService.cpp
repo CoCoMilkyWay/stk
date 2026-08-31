@@ -16,6 +16,8 @@
 #include <filesystem>
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace GUI::Database {
 
@@ -71,9 +73,10 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
            "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
 
     std::vector<EncodeBatch> batches;
+    std::vector<std::pair<std::string, size_t>> stages; // (日期, 当日待编码资产数) — 进度汇总行
     size_t pairs = 0;
     size_t skipped = 0;
-    std::unordered_map<size_t, std::string> last_date_of_asset;
+    std::unordered_set<size_t> assets_with_work;
 
     for (const auto &date_str : data_.asset.all_dates) {
       if (cancel_flag_.load())
@@ -140,13 +143,14 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
           continue;
         }
 
-        tasks.push_back({asset_id, p.order_index, p.trade_index, p.order_size, p.trade_size,
-                         /*last_for_asset=*/false});
-        last_date_of_asset[asset_id] = date_str;
+        tasks.push_back({asset_id, p.order_index, p.trade_index, p.order_size, p.trade_size});
+        assets_with_work.insert(asset_id);
         ++pairs;
       }
       if (tasks.empty())
         continue;
+
+      stages.emplace_back(date_str, tasks.size());
 
       // 按归档序排, 再切成批 (见 encoding_worker.hpp: 一批一次 unrar p)
       std::sort(tasks.begin(), tasks.end(),
@@ -162,14 +166,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
       }
     }
 
-    // 标记每个资产的末日任务 — 进度条上的资产计数靠它推进
-    size_t assets_with_work = last_date_of_asset.size();
-    for (auto &batch : batches)
-      for (auto &task : batch.tasks)
-        if (last_date_of_asset[task.asset_id] == batch.date)
-          task.last_for_asset = true;
-
-    std::cout << "Archive universe: " << assets_with_work << " assets / " << pairs
+    std::cout << "Archive universe: " << assets_with_work.size() << " assets / " << pairs
               << " (asset, date) pairs to encode"
               << (skipped > 0 ? " (" + std::to_string(skipped) + " already encoded, skipped)" : "")
               << "\n"
@@ -191,8 +188,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     // ------------------------------------------------------------------
     // 阶段二: 编码 — worker 消费批
     // ------------------------------------------------------------------
-    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100, pairs, "pairs");
-    progress_->set_summary_secondary(assets_with_work, "assets");
+    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100, stages, "dates", "assets");
 
     BatchQueue queue(static_cast<size_t>(num_workers_) * 4);
     workers_.clear();
@@ -226,7 +222,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
                              .count();
 
     std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
-              << "Encoded: " << pairs << " (asset, date) pairs across " << assets_with_work
+              << "Encoded: " << pairs << " (asset, date) pairs across " << assets_with_work.size()
               << " assets in " << elapsed << "s" << std::endl;
 
     // Trigger scan callback after encoding completion
