@@ -471,7 +471,7 @@ bool check_src_archives_print(const std::string &archive_base_dir) {
     //   std::cout << "  " << error << "\n";
     // }
     // std::cout << "\n";
-    // std::cout << "  Fix: Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py\n";
+    // std::cout << "  Fix: Run py/app/FileRepair/fix_to_rar.py or fix_solid_to_nonsolid.py\n";
     // std::cout << "\n";
     ok = false;
   } else {
@@ -514,7 +514,7 @@ bool check_src_archives_print(const std::string &archive_base_dir) {
     //   std::cout << "  " << zip_file << "\n";
     // }
     // std::cout << "\n";
-    // std::cout << "  Fix .zip files: Run py/app/FileRepair/fix_zip_to_rar.py\n";
+    // std::cout << "  Fix .zip files: Run py/app/FileRepair/fix_to_rar.py\n";
     // std::cout << "\n";
     ok = false;
   }

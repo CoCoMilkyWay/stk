@@ -235,7 +235,7 @@ void EncodingService::run_file_check_async(const std::string &archive_base_dir) 
 
   print_errors("Step 5", "Checking archive format (RAR non-solid)",
                local_result.format_errors, local_result.format_error_files,
-               "Run py/app/FileRepair/fix_7z_to_rar.py or fix_solid_to_nonsolid.py");
+               "Run py/app/FileRepair/fix_to_rar.py or fix_solid_to_nonsolid.py");
 
   print_errors("Step 6", "Checking internal structure (YYYYMMDD/asset_code/*.csv)",
                local_result.structure_errors, local_result.structure_error_files,
@@ -247,7 +247,7 @@ void EncodingService::run_file_check_async(const std::string &archive_base_dir) 
 
   print_errors("Step 7", "Checking for ZIP files (should be RAR)",
                local_result.zip_files, local_result.zip_error_files,
-               "Run py/app/FileRepair/fix_zip_to_rar.py");
+               "Run py/app/FileRepair/fix_to_rar.py");
 
   // Summary
   terminal_->AddLine("========================================");
