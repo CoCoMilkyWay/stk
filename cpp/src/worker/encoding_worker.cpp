@@ -289,6 +289,7 @@ void encoding_worker(SharedData &data,
   std::vector<std::string> paths;
   std::vector<size_t> sizes;
   std::vector<StreamSlot> slots;
+  std::vector<size_t> stragglers; // 两块在归档序上不相邻的任务 (批内下标)
 
   EncodeBatch batch;
   while (!cancel_flag->load() && queue.pop(batch)) {
@@ -318,6 +319,32 @@ void encoding_worker(SharedData &data,
       std::sort(plan.begin(), plan.end(),
                 [](const auto &a, const auto &b) { return a.first < b.first; });
 
+      // 主流的流式切分假定"同一资产的两块在归档序上相邻" — 包按 date/ASSET/
+      // 目录逐个写入时天然成立, 但修补过的归档会把补的文件追加到包尾
+      // (实测 20230714 的 600265.SH: 委托在条目 ~8995, 成交在 ~20049).
+      // 不相邻的任务从主计划剔除, 批尾单独小流处理 (见下方 stragglers 循环).
+      stragglers.clear();
+      {
+        constexpr size_t kNone = static_cast<size_t>(-1);
+        std::vector<std::pair<size_t, size_t>> pos(batch.tasks.size(), {kNone, kNone});
+        for (size_t i = 0; i < plan.size(); ++i) {
+          auto &p = pos[plan[i].second.task_idx];
+          (p.first == kNone ? p.first : p.second) = i;
+        }
+        std::vector<char> non_adjacent(batch.tasks.size(), 0);
+        for (size_t t = 0; t < batch.tasks.size(); ++t) {
+          if (pos[t].second != kNone && pos[t].second != pos[t].first + 1) {
+            non_adjacent[t] = 1;
+            stragglers.push_back(t);
+          }
+        }
+        if (!stragglers.empty())
+          plan.erase(std::remove_if(
+                         plan.begin(), plan.end(),
+                         [&](const auto &e) { return non_adjacent[e.second.task_idx]; }),
+                     plan.end());
+      }
+
       paths.reserve(plan.size());
       sizes.reserve(plan.size());
       slots.reserve(plan.size());
@@ -332,14 +359,14 @@ void encoding_worker(SharedData &data,
       }
 
 #ifndef NDEBUG
-      // 下面的流式消费假定"同一资产的两块在归档序上相邻" —— 包是按
-      // date/ASSET/ 目录逐个写进去的, 所以本来就相邻. 万一某天的包不是这样,
-      // 一个资产会被 begin/finish 两次, 第二次把第一次的产物覆盖成半截数据,
-      // 而且完全无声. 与其信任, 不如在这里当场炸.
+      // 剔除 stragglers 之后, 相邻性在主计划里是按构造保证的 (剔除只会
+      // 拉近剩余元素, 不会往中间插新东西). 万一还破 — 一个资产会被
+      // begin/finish 两次, 第二次把第一次的产物覆盖成半截数据, 完全无声,
+      // 与其信任不如当场炸.
       std::vector<bool> closed(batch.tasks.size(), false);
       for (size_t i = 0; i < slots.size(); ++i) {
         const size_t t = slots[i].task_idx;
-        assert(!closed[t] && "encoding_worker: 同一资产的 CSV 在归档里不相邻, 批内切分会错位");
+        assert(!closed[t] && "encoding_worker: 主计划里仍有不相邻的资产, 切分会错位");
         if (i + 1 < slots.size() && slots[i + 1].task_idx != t)
           closed[t] = true;
       }
@@ -405,7 +432,7 @@ void encoding_worker(SharedData &data,
       fed_any = false;
     };
 
-    {
+    if (!paths.empty()) {
       TraceN("StreamBatch");
       misc::stream_archive_files(
           batch.archive_path, data.config.archive_tool, paths, sizes,
@@ -437,7 +464,46 @@ void encoding_worker(SharedData &data,
     if (cancel_flag->load())
       break;
 
-    flush_task(current_task); // 批内最后一个资产
+    flush_task(current_task); // 主流的最后一个资产
+
+    // 不相邻任务的兜底: 每个任务单独一次两文件小流. 只开这一个资产,
+    // 两块到达先后无所谓 (finish_asset 统一合并排序); 多付一次 unrar
+    // 固定开销, 但这种任务一天最多个位数, 无关紧要.
+    for (const size_t t : stragglers) {
+      if (cancel_flag->load())
+        break;
+      const EncodeTask &task = batch.tasks[t];
+      const AssetItem &asset = data.asset.items[task.asset_id];
+      const std::string base = batch.date + "/" + asset.asset_code + "." + asset.exchange + "/";
+
+      // 两个文件仍要按归档序请求 (unrar p 按归档序输出)
+      const bool trade_first = task.trade_index < task.order_index;
+      std::vector<std::string> two_paths{base + data.config.csv_market_order,
+                                         base + data.config.csv_market_trade};
+      std::vector<size_t> two_sizes{task.order_size, task.trade_size};
+      if (trade_first) {
+        std::swap(two_paths[0], two_paths[1]);
+        std::swap(two_sizes[0], two_sizes[1]);
+      }
+
+      encoder.begin_asset();
+      progress_handle.set_label(asset.asset_code + " " + asset.asset_name);
+      fed_any = true;
+      misc::stream_archive_files(
+          batch.archive_path, data.config.archive_tool, two_paths, two_sizes,
+          [&](size_t i, const char *csv, size_t len) {
+            if ((i == 0) == trade_first)
+              encoder.feed_trade_csv(csv, len);
+            else
+              encoder.feed_order_csv(csv, len);
+          },
+          cancel_flag);
+      if (cancel_flag->load())
+        break;
+      flush_task(t);
+    }
+    if (cancel_flag->load())
+      break;
 
     TraceFrame;
   }

@@ -549,15 +549,14 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
     return priority(a.order_type) < priority(b.order_type);
   });
 
-  // 条数下限. 原来这里还有一道"快照少于 10 条就判失败"的过滤 (停牌/无深度的
-  // 标的), 快照已不再编码, 该过滤由这一道承担.
+  // 只拦"全空" (停牌日的纯表头文件) — 空 .bin 会让下游把停牌日当有数据,
+  // 缺席 (墓碑) 才是正确语义. 低流动性但真实交易的标的 (如 ST 股单日几百笔)
+  // 是真实市场数据, 照常编码, 要不要用是特征/因子层的策略决定, 不在存储层砍.
   //
-  // 与环境错误区分开: 这是"源数据本身不够"的确定性结论, 调用方应写墓碑,
+  // 与环境错误区分开: 这是"源数据本身为空"的确定性结论, 调用方应写墓碑,
   // 增量重跑时不再对它反复解码.
-  constexpr size_t MIN_EXPECTED_COUNT = 500;
-  if (all_orders.size() < MIN_EXPECTED_COUNT) {
-    Logger::log("encoding", "Abnormal order count: " + tag + " has only " +
-                                std::to_string(all_orders.size()) + " orders");
+  if (all_orders.empty()) {
+    Logger::log("encoding", "Empty order data: " + tag + " (suspended)");
     return EncodeResult::TooFewOrders;
   }
 

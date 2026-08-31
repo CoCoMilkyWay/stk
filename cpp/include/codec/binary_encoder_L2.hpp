@@ -21,7 +21,8 @@ namespace L2 {
 inline constexpr int ZSTD_COMPRESSION_LEVEL = 6;
 
 // finish_asset 的三态结果 — 增量编码要区分:
-//   TooFewOrders: 源数据本身不够 (停牌/无深度), 确定性结论 → 写墓碑, 别再重试
+//   TooFewOrders: 源数据为空 (停牌日的纯表头文件), 确定性结论 → 写墓碑,
+//                 别再重试; 低流动性但非空的照常编码, 不在存储层做策略过滤
 //   Error:        环境错误 (磁盘满/压缩失败), 下次增量重跑时重试
 enum class EncodeResult : uint8_t { Ok,
                                     TooFewOrders,
