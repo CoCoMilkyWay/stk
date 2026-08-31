@@ -24,28 +24,61 @@ constexpr ImVec4 COLOR_RED = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
 constexpr ImVec4 COLOR_GRAY = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
 
 // ============================================================================
-// Helper: Calculate days since IPO
+// Helper: 在市时长 (ipoDate → outDate 或今天), 分解成 年/月/日
 // ============================================================================
 
-int CalculateDaysSinceIPO(const std::string &ipo_date) {
-  if (ipo_date.empty() || ipo_date.length() != 10)
-    return 0;
+struct ListedSpan {
+  int years = 0;
+  int months = 0;
+  int days = 0;
+  int total_days = 0;
+  bool valid = false;
+};
 
-  // Parse YYYY-MM-DD
-  int year = std::stoi(ipo_date.substr(0, 4));
-  int month = std::stoi(ipo_date.substr(5, 2));
-  int day = std::stoi(ipo_date.substr(8, 2));
+ListedSpan CalculateListedSpan(const StockInfo &info) {
+  ListedSpan span;
+  if (info.ipoDate.length() != 10)
+    return span;
 
-  std::tm tm_ipo = {};
-  tm_ipo.tm_year = year - 1900;
-  tm_ipo.tm_mon = month - 1;
-  tm_ipo.tm_mday = day;
+  using namespace std::chrono;
 
-  auto ipo_time = std::chrono::system_clock::from_time_t(std::mktime(&tm_ipo));
-  auto now = std::chrono::system_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::hours>(now - ipo_time);
+  auto parse = [](const std::string &s) {
+    return year_month_day{year{std::stoi(s.substr(0, 4))},
+                          month{static_cast<unsigned>(std::stoi(s.substr(5, 2)))},
+                          day{static_cast<unsigned>(std::stoi(s.substr(8, 2)))}};
+  };
 
-  return static_cast<int>(duration.count() / 24);
+  const year_month_day ipo = parse(info.ipoDate);
+  // 退市股的在市时长截到退市日, 不跟着今天一起涨
+  const year_month_day end = info.outDate.length() == 10
+                                 ? parse(info.outDate)
+                                 : year_month_day{floor<days>(system_clock::now())};
+  if (!ipo.ok() || !end.ok() || sys_days(end) < sys_days(ipo))
+    return span;
+
+  span.total_days = static_cast<int>((sys_days(end) - sys_days(ipo)).count());
+
+  int y = static_cast<int>(end.year()) - static_cast<int>(ipo.year());
+  int m = static_cast<int>(static_cast<unsigned>(end.month())) -
+          static_cast<int>(static_cast<unsigned>(ipo.month()));
+  int d = static_cast<int>(static_cast<unsigned>(end.day())) -
+          static_cast<int>(static_cast<unsigned>(ipo.day()));
+  if (d < 0) {
+    --m;
+    // 借上一个月的天数 (相对 end)
+    const year_month prev = year_month{end.year(), end.month()} - months{1};
+    d += static_cast<int>(static_cast<unsigned>((prev / last).day()));
+  }
+  if (m < 0) {
+    --y;
+    m += 12;
+  }
+
+  span.years = y;
+  span.months = m;
+  span.days = d;
+  span.valid = true;
+  return span;
 }
 
 // ============================================================================
@@ -317,7 +350,7 @@ void RenderDataTable(
 
       "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\noutDate字段记录退市日期",
 
-      "上市天数 (Listed Days)\n从IPO日期到现在的天数\n= 当前日期 - ipoDate\n可用于判断新股或老股",
+      "在市时间 (Listed Duration)\n紧凑格式 年/月/日 — 如 11/02/06 = 11年2个月6天\n\n区间: ipoDate → outDate (退市股截到退市日) 或今天\nhover 单元格可看起止日期与在市总天数\n排序与横截面分析口径为在市总天数",
 
       "行业 (Industry)\n申万一级行业名称 (industry_level1_name)\n来源: cn_stock_industry_component 最新月度快照\n\nhover 单元格可看行业代码 (ind_code)",
 
@@ -444,9 +477,9 @@ void RenderDataTable(
                                result = a_dl < b_dl;
                                break;
                              }
-                             case 6: { // Listed days
-                               int a_days = (a.info && !a.info->ipoDate.empty()) ? CalculateDaysSinceIPO(a.info->ipoDate) : 0;
-                               int b_days = (b.info && !b.info->ipoDate.empty()) ? CalculateDaysSinceIPO(b.info->ipoDate) : 0;
+                             case 6: { // Listed: 在市总天数
+                               int a_days = a.info ? CalculateListedSpan(*a.info).total_days : 0;
+                               int b_days = b.info ? CalculateListedSpan(*b.info).total_days : 0;
                                result = a_days < b_days;
                                break;
                              }
@@ -640,9 +673,15 @@ void RenderDataTable(
     if (hovered_col == 6) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    if (info && !info->ipoDate.empty()) {
-      int days = CalculateDaysSinceIPO(info->ipoDate);
-      ImGui::Text("%d", days);
+    ListedSpan span = info ? CalculateListedSpan(*info) : ListedSpan{};
+    if (span.valid) {
+      ImGui::Text("%02d/%02d/%02d", span.years, span.months, span.days);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("上市 %s → %s\n在市 %d 年 %d 月 %d 天 (共 %d 天)",
+                          info->ipoDate.c_str(),
+                          info->outDate.empty() ? "至今" : info->outDate.c_str(),
+                          span.years, span.months, span.days, span.total_days);
+      }
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
@@ -867,7 +906,7 @@ void RenderCrossSectionPanel(
 
   // Column names for display
   const char *col_names[] = {
-      "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days", "Industry",
+      "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days (在市总天数)", "Industry",
       "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "Market Cap", "Trading Days",
       "Total Orders", "Order %", "Missing Order Days"};
 
@@ -925,10 +964,11 @@ static void RenderNumericAnalysis(
     bool is_valid = false;
 
     switch (col_idx) {
-    case 6: // Listed Days
-      if (info && !info->ipoDate.empty()) {
-        value = CalculateDaysSinceIPO(info->ipoDate);
-        is_valid = (value > 0);
+    case 6: // Listed (在市总天数)
+      if (info) {
+        ListedSpan span = CalculateListedSpan(*info);
+        value = span.total_days;
+        is_valid = span.valid;
       }
       break;
     case 8: // PE
