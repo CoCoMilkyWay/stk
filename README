@@ -14,11 +14,13 @@ stk/
     │   ├── shared/                               # 📦 跨模块数据层
     │   │   ├── SharedData.hpp                    # 📦 顶层数据容器 (全局状态)
     │   │   ├── Config.hpp                        # 📦 配置数据结构
-    │   │   ├── GuiState.hpp                      # 📦 GUI状态句柄 (持有指针)
-    │   │   ├── Asset.hpp                         # 📦 资产定义
+    │   │   ├── TaskState.hpp                     # 📦 任务状态
+    │   │   ├── Asset.hpp / AssetInfo.hpp         # 📦 资产定义与元数据
     │   │   ├── Feature.hpp                       # 📦 特征数据结构
     │   │   ├── OrderFlow.hpp                     # 📦 订单流数据
-    │   │   └── Dist.hpp                          # 📦 分布式数据结构
+    │   │   ├── Dist.hpp                          # 📦 分布分析
+    │   │   ├── TimeSeries.hpp                    # 📦 时序分析
+    │   │   └── Transform.hpp                     # 📦 特征变换
     │   ├── define/                               # 🔷 底层数据结构
     │   │   ├── CBuffer.hpp                       # 🔷 循环缓冲区
     │   │   ├── FastBitmap.hpp                    # 🔷 快速位图
@@ -69,8 +71,9 @@ stk/
     │   │   ├── task_icon_bar/                    # 🖥️
     │   │   │   ├── TaskIconBar.hpp               # 🖥️ 图标栏: 网络状态/FPS
     │   │   │   └── CoroNetwork.hpp               # 🖥️ 网络子协程: 异步请求
-    │   │   ├── task_crawler/                     # 🖥️
-    │   │   │   └── CoroCrawler.hpp               # 🖥️ 爬虫: 数据抓取协程
+    │   │   ├── task_tools/                       # 🖥️
+    │   │   │   ├── TaskTools.hpp                 # 🖥️ 工具任务主界面
+    │   │   │   └── ui/TabLatex.hpp               # 🖥️ LaTeX 渲染标签页
     │   │   ├── task_database/                    # 🖥️ 数据库管理
     │   │   │   ├── TaskDatabase.hpp              # 🖥️ 数据库任务主界面
     │   │   │   ├── models/                       # 🖥️ 数据模型
@@ -83,13 +86,15 @@ stk/
     │   │       │   ├── ComputeService.hpp        # 🖥️ 计算服务
     │   │       │   ├── DataLoader.hpp            # 🖥️ 数据加载器
     │   │       │   ├── DistService.hpp           # 🖥️ 分布分析服务
-    │   │       │   └── TimeSeriesService.hpp     # 🖥️ 时序分析服务
+    │   │       │   ├── TimeSeriesService.hpp     # 🖥️ 时序分析服务
+    │   │       │   └── TransformService.hpp      # 🖥️ 特征变换服务
     │   │       └── ui/                           # 🖥️ UI组件
     │   │           ├── TabFeature.hpp            # 🖥️ 特征标签页
     │   │           ├── TabCompute.hpp            # 🖥️ 计算标签页
     │   │           ├── TabOrderFlow.hpp          # 🖥️ 订单流标签页
     │   │           ├── TabDist.hpp               # 🖥️ 分布分析标签页
-    │   │           └── TabTimeSeries.hpp         # 🖥️ 时序分析标签页
+    │   │           ├── TabTimeSeries.hpp         # 🖥️ 时序分析标签页
+    │   │           └── TabTransform.hpp          # 🖥️ 变换标签页
     │   │   GUI布局:
     │   │   ┌───────────────────────────────────────────────────────────────────────────┐
     │   │   │ Tasks                                │ Panel:                             │
@@ -97,25 +102,38 @@ stk/
     │   │   │  > SystemInfo[""/live]               │                                    │
     │   │   │  > DataBase                          │                                    │
     │   │   │  > Features                          │                                    │
-    │   │   │  > Factors                           ├────────────────────────────────────┤
+    │   │   │  > Tools                             ├────────────────────────────────────┤
     │   │   │  ...                                 │ Terminal:                          │
     │   │   │ Icon:                                │                                    │
     │   │   │  |Network|FPS│                       |                                    │
     │   │   └───────────────────────────────────────────────────────────────────────────┘
-    │   ├── math/                                 # 📐 autoencoder / normalize / sample / model
-    │   ├── mining/                               # ⛏️ 数据挖掘(特征->因子)
+    │   ├── math/                                 # 📐 autoencoder / normalize / sample / spectral / stationary / timeseries
+    │   ├── mining/                               # ⛏️ 数据挖掘(特征->因子) 设计文档
     │   ├── misc/                                 # 🔧 logging / timer / progress / affinity
-    │   ├── utils/                                # 🔧 工具函数
     │   ├── package/nlohmann/                     # 📚 JSON库
     │   └── boost/                                # 📚 asio / beast / optional
     ├── src/                                      # 💾 源文件实现 (多数对应include/)
     │   ├── main.cpp                              # 💾 程序入口
     │   ├── gui/Run_OpenGL.cpp                    # 💾 OpenGL后端入口
     │   ├── gui/Run_Vulkan.cpp                    # 💾 Vulkan后端入口
-    └── projects/main/                            # 🏗️ 构建系统
-        ├── build.sh                              # 🏗️ 构建脚本: 调用CMake
-        ├── CMakeLists.txt                        # 🏗️ CMake配置 (C++23, Clang)
-        └── build/bin/app_main                    # 🎯 最终可执行文件
+    ├── projects/main/                            # 🏗️ 构建系统
+    │   ├── build.sh                              # 🏗️ 构建脚本: 调用CMake
+    │   ├── CMakeLists.txt                        # 🏗️ CMake配置 (C++23, Clang)
+    │   └── build/bin/app_main                    # 🎯 最终可执行文件
+    └── output/                                   # 📁 运行时输出 (archive_dir 在外部盘)
+        ├── database/                             # L2 二进制库
+        │   └── YYYY/MM/DD/<CODE>.<EX>/
+        │       ├── <CODE>.<EX>_snapshots_<N>.bin # 行情快照, N=条数
+        │       └── <CODE>.<EX>_orders_<N>.bin    # 逐笔委托+成交合并排序, N=条数
+        ├── features/                             # 特征张量库 (Float16 + Zstd, 按交易日全市场列式)
+        │   └── YYYY/MM/DD/
+        │       ├── features_L0_f<f>.zst          # L0 逐特征列 [T×A]
+        │       ├── features_L1.zst               # L1 整层 [T×F×A]
+        │       └── depth.zst                     # 盘口深度 [T×DEPTH×A]
+        ├── factors/                              # 因子库 (预留)
+        │   └── YYYY/MM/DD/
+        ├── log/                                  # 运行日志
+        └── fix/                                  # FileRepair 修复后的压缩包
 ```
 
 # ================================================
