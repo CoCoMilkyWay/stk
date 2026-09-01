@@ -143,9 +143,12 @@ struct Snapshot {
 // 平凡成员, 取值零开销; 只有价格与类型/方向共用最后 4 字节的位域 —— 29+2+1
 // 正好填满一个 uint32, 既不浪费也不让结构变大, 读价格只多一次 AND.
 //
-// 注意 price 存的是绝对价 (分). LOB 的档位数组按 price 直接索引, 装不下这么宽
-// 的价格, 它改为按 (price - price_base) 索引, 基准存在 L2FileHeader 里 —— 见
-// LimitOrderBookDefine.hpp 的 PRICE_RANGE_SIZE.
+// price 29bit 覆盖到 536 万元. A 股最高价在千元量级, 位宽窄于 18bit 就会把高价
+// 股的价格钳平; volume 给满 32bit, 交易所单笔申报上限是 100 万股. 这两个字段的
+// 富余都是位域凑数凑出来的, 不占额外空间.
+//
+// price 是绝对价 (分), 但已折进 LOB 的档位窗口: 窗口外的报价在落盘时就停靠到
+// 边缘, 见 BinaryEncoder_L2::park_price 与 kPriceIndexRange.
 struct Order {
   uint32_t volume;       // 股
   uint32_t bid_order_id; // 32bit
@@ -167,25 +170,19 @@ struct Order {
 // 给位域另起了存储单元, 落盘格式就悄悄变了.
 static_assert(sizeof(Order) == 20, "Order 必须定宽 20 字节");
 
-// LOB 档位数组的窗口宽度 (分).
+// LOB 档位数组的窗口宽度 (分), 即 655.35 元.
 //
-// 逐笔价格是绝对价, 但 LimitOrderBook 拿它当档位数组的下标直接索引, 数组开成
-// 绝对价的全域就爆了: 每个资产一个 LOB 且全部常驻, 5900 个实例 × 65536 档已经
-// 是 3.0 GB, 开到装得下茅台 (262144 档) 就是 11.8 GB. 所以窗口只覆盖单只票一天
-// 的价格跨度 —— 涨跌停把它限死在前收盘的 ±20% 以内 (茅台 1524 元那天的跨度也
-// 只有约 3 万分), 65536 留了一倍以上余量.
+// LimitOrderBook 拿价格当档位数组的下标直接索引, 数组不能开成绝对价的全域: 每
+// 个资产一个 LOB 且全部常驻, 五千多个实例按 65536 档算已是 3 GB 量级, 按千元级
+// 价格的全域开就是十几 GB. 所以窗口只覆盖单只标的一天的价格跨度, 按
+// (price - price_base) 索引.
 //
-// 索引 0 保留给市价单/无价格档 (LOB 的 Level[0]), 因此 price_base 必须严格小于
-// 当天的最低非零价; 低价股 (最高价 < 65536 分 = 655.35 元) 的 base 恒为 0, 索引
-// 退化成原来的绝对价直接索引, 与改动前逐位一致.
+// 655.35 元的宽度对单日成交带绰绰有余 —— 涨跌停把它限制在前收盘的 ±20% 以内.
+// 下标 0 保留给市价单/无价格档 (LOB 的 Level[0]), 所以窗口的有效范围是
+// [base+1, base+kPriceIndexRange-1]; base 为 0 时下标就等于绝对价.
 inline constexpr uint32_t kPriceIndexRange = 65536;
 
-// 窗口上下两端各留出的空白 (分).
-//
-// LOB 在窗口两端预置了哨兵档 (init_sentinel_levels: 低端 1..LOB_DEPTH 记 +1,
-// 高端对称记 -1), 用来保证求 best_bid/best_ask 时一定能停下来. 平移之后的下标
-// 要是落进哨兵区就会把假档位当成真盘口, 所以 price_base 必须让最低价至少落在
-// 留白之外. 4096 分远大于 LOB_DEPTH, 同时对齐到 2 的幂让 base 一眼可读.
+// price_base 的对齐粒度 (分). 只为让基准取整可读, 不参与任何判据.
 inline constexpr uint32_t kPriceIndexGuard = 4096;
 
 // ============================================================================
@@ -204,9 +201,9 @@ inline constexpr uint32_t kPriceIndexGuard = 4096;
 // 布局: [L2FileHeader 32B][zstd 帧], 帧解开后是 [u64 count][Order × count].
 struct L2FileHeader {
   static constexpr uint32_t kL2Magic = 0x004F324C; // 'L','2','O','\0' 小端
-  // v2: Order 由 14bit 价格重排为 29bit 位域 (20B 不变但布局变了). 旧文件会在
-  // sane() 上被挡下并当作缺失, 由增量编码自动重写 —— 不存在误读旧布局的可能.
-  static constexpr uint32_t kL2FormatVersion = 1;
+  // Order 的布局一改就必须递增: 版本对不上的文件在 sane() 处被当成缺失, 由增量
+  // 编码重写, 于是不存在按旧布局误读的可能.
+  static constexpr uint32_t kL2FormatVersion = 2;
 
   uint32_t magic;           // kL2Magic
   uint32_t version;         // kL2FormatVersion

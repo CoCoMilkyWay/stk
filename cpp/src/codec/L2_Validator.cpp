@@ -110,8 +110,8 @@ void Validator::run(const std::vector<CSVOrder> &orders,
       price_max = std::max(price_max, order.price);
     }
 
-    if (order.price > PRICE_BOUND || order.volume > VOLUME_BOUND ||
-        order.exchange_order_id > ORDER_ID_BOUND || clock_invalid(order.time))
+    if (order.volume > VOLUME_BOUND || order.exchange_order_id > ORDER_ID_BOUND ||
+        clock_invalid(order.time))
       ++out.field_overflow;
 
     // price=0 且 volume>0 是市价单/本方最优单, 正常记录, 不在此列
@@ -169,9 +169,8 @@ void Validator::run(const std::vector<CSVOrder> &orders,
       price_max = std::max(price_max, trade.price);
     }
 
-    if (trade.price > PRICE_BOUND || trade.volume > VOLUME_BOUND ||
-        trade.bid_order_id > ORDER_ID_BOUND || trade.ask_order_id > ORDER_ID_BOUND ||
-        clock_invalid(trade.time))
+    if (trade.volume > VOLUME_BOUND || trade.bid_order_id > ORDER_ID_BOUND ||
+        trade.ask_order_id > ORDER_ID_BOUND || clock_invalid(trade.time))
       ++out.field_overflow;
 
     // 撤单成交只填单侧 id, 所以要求"至少一侧非零"而非"两侧都非零"
@@ -243,20 +242,33 @@ void Validator::run(const std::vector<CSVOrder> &orders,
 
   // ---- LOB 档位窗口 ----
   //
-  // 低价股 (最高价 < 655.35 元) 的 base 取 0, 档位下标就是绝对价本身, 与扩位
-  // 之前逐位一致; 只有高价股才平移. 平移后最低价落在 [guard, 2*guard) 上, 既
-  // 避开下标 0 (LOB 的市价单档) 也避开低端哨兵区; 上端同样留一段 guard.
+  // 窗口锚在成交带中心而不是委托价的下界: 委托流里混有离盘口极远、不可能成交
+  // 的报价, 拿它们定基准会把真正的盘口挤出窗口. 成交带受涨跌停约束, 才是这只
+  // 标的当天有意义的价格区间; 把它摆在窗口正中, 两侧各留半个窗口.
+  //
+  // 中心落在半窗以内时 base 取 0, 档位下标就等于绝对价, 低价标的因此不受平移
+  // 影响.
   if (price_max != 0) {
     out.price_min = price_min;
     out.price_max = price_max;
-    // 判据是"最高价会不会顶进上端留白", 而不是"会不会超出窗口" —— 655 元附近
-    // 的票不平移虽然装得下, 下标却正落在高端哨兵区里.
-    const bool shift =
-        price_max >= kPriceIndexRange - kPriceIndexGuard && price_min > kPriceIndexGuard;
+
+    uint32_t center = 0;
+    if (high != 0)
+      center = low / 2 + high / 2;
+    else if (market.valid && market.last_price != 0)
+      center = market.last_price; // 没有成交, 退而用快照末价
+    else
+      center = price_min; // 连快照也没有, 只能拿委托下界顶上
+
+    constexpr uint32_t kHalf = kPriceIndexRange / 2;
     out.price_base =
-        shift ? ((price_min - kPriceIndexGuard) & ~(kPriceIndexGuard - 1)) : 0u;
-    if (price_max - out.price_base >= kPriceIndexRange - kPriceIndexGuard)
-      out.flags |= Check::PriceSpanTooWide;
+        (center > kHalf) ? ((center - kHalf) & ~(kPriceIndexGuard - 1)) : 0u;
+
+    // 成交带本身必须装进窗口. 窗口外的报价停靠到边缘是无损的 (它们不可能成交,
+    // 只承载"无穷远"这一个信息), 但成交价被停靠就是真实盘口被扭曲了. 涨跌停
+    // 决定了这不会发生, 唯一的例外是无涨跌幅限制的新股 —— 那种日子宁可拦下.
+    if (high != 0 && (low <= out.price_base || high >= out.price_base + kPriceIndexRange))
+      out.flags |= Check::TradeBandUnfit;
   }
 
   // ---- 逐笔流自洽性判据 ----
@@ -323,9 +335,10 @@ std::string ValidationReport::describe() const {
     append("field_overflow", static_cast<int64_t>(field_overflow));
   if (flags & Check::LobUnusable)
     append("lob_unusable", static_cast<int64_t>(lob_unusable));
-  if (flags & Check::PriceSpanTooWide) {
+  if (flags & Check::TradeBandUnfit) {
     append("price_min", price_min);
     append("price_max", price_max);
+    append("price_base", price_base);
   }
   if (flags & Check::DupMakerId)
     append("dup_maker", static_cast<int64_t>(dup_maker));

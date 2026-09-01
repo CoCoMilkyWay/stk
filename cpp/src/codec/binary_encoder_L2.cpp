@@ -177,8 +177,13 @@ uint32_t BinaryEncoder_L2::parse_time_to_ms(uint32_t time_int) {
 }
 
 // Parse price fields (CSV value in 0.0001 RMB → 0.01 RMB units)
+//
+// 先在 64 位里钳到 PRICE_BOUND 再窄化: 委托里存在"不限价"哨兵, 数值可达亿元
+// 量级, 直接窄化成 uint32 会回绕成一个既非真值也非哨兵的数. 钳住至少保住了
+// "要多高有多高"的语义, 而这类价格随后都会被 park_price 折到窗口边缘.
 inline uint32_t BinaryEncoder_L2::parse_price_to_fen(std::string_view str) {
-  return static_cast<uint32_t>(parse_numeric_field(str, 100));
+  const uint64_t fen = parse_numeric_field(str, 100);
+  return static_cast<uint32_t>(fen > PRICE_BOUND ? PRICE_BOUND : fen);
 }
 
 // Parse volume fields (shares → shares, no conversion)
@@ -368,6 +373,12 @@ bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSum
 
   // 从尾部往前逐行回扫. 停牌日的 行情.csv 只有表头, 回扫到表头就停 —— 表头
   // 的"自然日"列不含数字, fast_parse_u32 给 0, 以此与数据行区分.
+  //
+  // 但"最后一行"不等于"收盘行"
+  //
+  // 找不到任何非零行时退回末行 (have_fallback): 那是真的一天没成交, 让它跟
+  // Σ逐笔成交量=0 对上, 而不是误报成 MarketAbsent.
+  bool have_fallback = false;
   const char *line_end = data + len;
   while (line_end > data) {
     while (line_end > data && (line_end[-1] == '\n' || line_end[-1] == '\r'))
@@ -382,28 +393,33 @@ bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSum
     const std::string_view line(line_begin, static_cast<size_t>(line_end - line_begin));
     const auto fields = split_csv_line_view(line);
     if (fields.size() >= kMarketFieldCount && fast_parse_u32(fields[kMarketDate]) != 0) {
-      summary.valid = true;
-      summary.last_price = parse_price_to_fen(fields[kMarketLastPrice]);
-      summary.high = parse_price_to_fen(fields[kMarketHigh]);
-      summary.low = parse_price_to_fen(fields[kMarketLow]);
-      summary.cum_volume = parse_numeric_field(fields[kMarketCumVolume], 1);
-      summary.cum_turnover = parse_numeric_field(fields[kMarketCumTurnover], 1);
-      summary.ask_total = parse_numeric_field(fields[kMarketAskTotal], 1);
-      summary.bid_total = parse_numeric_field(fields[kMarketBidTotal], 1);
-      return true;
+      const auto cum_volume = parse_numeric_field(fields[kMarketCumVolume], 1);
+      if (cum_volume != 0 || !have_fallback) {
+        summary.valid = true;
+        summary.last_price = parse_price_to_fen(fields[kMarketLastPrice]);
+        summary.high = parse_price_to_fen(fields[kMarketHigh]);
+        summary.low = parse_price_to_fen(fields[kMarketLow]);
+        summary.cum_volume = cum_volume;
+        summary.cum_turnover = parse_numeric_field(fields[kMarketCumTurnover], 1);
+        summary.ask_total = parse_numeric_field(fields[kMarketAskTotal], 1);
+        summary.bid_total = parse_numeric_field(fields[kMarketBidTotal], 1);
+        if (cum_volume != 0)
+          return true;
+        have_fallback = true; // 记下末行, 继续往前找真正的收盘行
+      }
     }
 
     line_end = line_begin;
   }
 
-  return false;
+  return summary.valid;
 }
 
 // ============================================================================
 // Section 3: Data Conversion (CSV structures → Binary structures)
 // ============================================================================
 
-Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv) {
+Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv, uint32_t price_base) {
   Order order = {};
 
   // Time fields
@@ -417,7 +433,7 @@ Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv) {
   bool is_szse = is_shenzhen_market(csv.stock_code);
   order.order_type = determine_order_type(csv.order_type, '0', false, is_szse);
   order.order_dir = determine_order_direction(csv.order_side);
-  order.price = clamp_to_bound(csv.price, PRICE_BOUND);
+  order.price = park_price(csv.price, price_base);
   order.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
 
   // Order IDs (only one side is set based on direction)
@@ -432,7 +448,7 @@ Order BinaryEncoder_L2::csv_to_order(const CSVOrder &csv) {
   return order;
 }
 
-Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv) {
+Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv, uint32_t price_base) {
   Order order = {};
 
   // Time fields
@@ -454,7 +470,7 @@ Order BinaryEncoder_L2::csv_to_trade(const CSVTrade &csv) {
     order.order_dir = determine_order_direction(csv.bs_flag);
   }
 
-  order.price = clamp_to_bound(csv.price, PRICE_BOUND);
+  order.price = park_price(csv.price, price_base);
   order.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
 
   // Trade has both order IDs
@@ -660,9 +676,9 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
   all_orders.reserve(csv_orders_.size() + csv_trades_.size());
 
   for (const auto &csv : csv_orders_)
-    all_orders.push_back(csv_to_order(csv));
+    all_orders.push_back(csv_to_order(csv, report_.price_base));
   for (const auto &csv : csv_trades_)
-    all_orders.push_back(csv_to_trade(csv));
+    all_orders.push_back(csv_to_trade(csv, report_.price_base));
 
   // Sort by time, then by priority (maker → taker → cancel)
   std::sort(all_orders.begin(), all_orders.end(), [](const Order &a, const Order &b) {

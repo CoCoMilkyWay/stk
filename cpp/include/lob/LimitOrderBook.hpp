@@ -302,10 +302,16 @@ private:
   // 绝对价 (分) → 档位数组下标.
   //
   // 下标 0 是 LOB 留给市价单/无价格档的特殊档位, 所以 price==0 原样透传, 不能
-  // 去减基准. 低价股 price_base_ 恒为 0, 整个折算退化成恒等 —— 也就是说绝大多数
-  // 标的走的仍是改动前那条路径, 一条多余指令都没有.
+  // 去减基准. 低价股 price_base_ 恒为 0, 折算退化成恒等 —— 绝大多数标的走的仍
+  // 是改动前那条路径.
+  //
   HOT_INLINE Price price_to_index(uint32_t price) const {
-    return static_cast<Price>(price != 0 ? price - price_base_ : 0);
+    if (price == 0) [[unlikely]]
+      return 0;
+    if (price <= price_base_) [[unlikely]]
+      return 1;
+    const uint32_t index = price - price_base_;
+    return static_cast<Price>(index < PRICE_RANGE_SIZE ? index : PRICE_RANGE_SIZE - 1);
   }
 
   HOT_INLINE Level *level_get_or_create(Price price) {

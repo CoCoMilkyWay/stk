@@ -115,11 +115,9 @@ constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[
 
 // Order 各字段的上界.
 //
-// 这里直接写死 Order 位域的宽度, 不再走 Snapshot_Schema 的名字查表: 那张表里
-// 盘口列和逐笔列同名不同宽, 而 find_column_index 返回的是第一个匹配 —— 于是
-// PRICE_BOUND 查到的其实是盘口的 "close"(14bit), VOLUME_BOUND 查到的也是盘口
-// 那一列. 逐笔价格因此被钳在 163.83 元, 高价股整只票的价格被 clamp_to_bound
-// 悄悄抹平且不留任何痕迹. 位宽的真相只应该有一处, 就是 Order 的定义本身.
+// 直接写死成 Order 位域的宽度, 不走 Snapshot_Schema 的名字查表 —— 那张表里盘口
+// 列和逐笔列同名不同宽, 查表拿到的会是盘口那一列的位宽. 位宽的真相只应该有一
+// 处, 就是 Order 的定义本身.
 constexpr uint32_t HOUR_BOUND = 31;              // 5bit
 constexpr uint32_t MINUTE_BOUND = 63;            // 6bit
 constexpr uint32_t SECOND_BOUND = 63;            // 6bit
@@ -160,8 +158,26 @@ public:
   // ------------------------------------------------------------
 
   // Convert CSV structures to binary structures
-  static Order csv_to_order(const CSVOrder &csv);
-  static Order csv_to_trade(const CSVTrade &csv);
+  // price_base 是 LOB 档位窗口的下沿, 落盘的价格都折进该窗口 (见 park_price).
+  static Order csv_to_order(const CSVOrder &csv, uint32_t price_base);
+  static Order csv_to_trade(const CSVTrade &csv, uint32_t price_base);
+
+  // 把价格折进 LOB 档位窗口 [base+1, base+kPriceIndexRange-1], 窗口外一律停靠
+  // 到相应边缘; price 为 0 表示无价格 (市价单), 原样透传.
+  //
+  // 窗口宽 655.35 元, 而单只标的一天的成交带受涨跌停约束远窄于此, 所以被停靠的
+  // 只有那些离盘口极远、根本不可能成交的报价. 对它们而言"具体是 9999 元还是
+  // 999999 元"没有信息量, 只有"在买/卖方向上无穷远"这一件事是真的, 而这正是
+  // 边缘档位表达的含义. 统一在落盘时折算, 使 .bin 与簿内档位一一对应, 挂单与
+  // 它后续的撤单也必然落到同一个价格上.
+  static uint32_t park_price(uint32_t price, uint32_t price_base) {
+    if (price == 0)
+      return 0;
+    if (price <= price_base)
+      return price_base + 1;
+    const uint32_t top = price_base + kPriceIndexRange - 1;
+    return price < top ? price : top;
+  }
 
   // ------------------------------------------------------------
   // Binary Encoding API
