@@ -20,12 +20,17 @@ namespace L2 {
 // Level 6: balanced for storage efficiency + acceptable encoding speed
 inline constexpr int ZSTD_COMPRESSION_LEVEL = 6;
 
-// finish_asset 的三态结果 — 增量编码要区分:
-//   TooFewOrders: 源数据为空 (停牌日的纯表头文件), 确定性结论 → 写墓碑,
-//                 别再重试; 低流动性但非空的照常编码, 不在存储层做策略过滤
-//   Error:        环境错误 (磁盘满/压缩失败), 下次增量重跑时重试
+// finish_asset 的结果 — 增量编码要区分四种结局:
+//   TooFewOrders:  源数据为空 (停牌日的纯表头文件), 确定性结论 → 写墓碑,
+//                  别再重试; 低流动性但非空的照常编码, 不在存储层做策略过滤
+//   CorruptSource: 源 CSV 有坏行 (字段错位/代码非法), 多半是归档成员 CRC
+//                  损坏. 不产出任何东西也不写墓碑 —— 跳过并留日志, 等人把
+//                  源文件修好, 下次增量自动重来. 绝不能 abort: 这是几小时
+//                  的批处理, 一个坏标的不该让整轮白跑.
+//   Error:         环境错误 (磁盘满/压缩失败), 下次增量重跑时重试
 enum class EncodeResult : uint8_t { Ok,
                                     TooFewOrders,
+                                    CorruptSource,
                                     Error };
 
 // ============================================================================
@@ -203,6 +208,10 @@ private:
   std::vector<CSVOrder> csv_orders_;
   std::vector<CSVTrade> csv_trades_;
   std::vector<Order> orders_;
+
+  // 当前资产累计的坏行数 (字段数不足 / 代码字段不是 .SZ|.SH). 非零即判定
+  // 源损坏, finish_asset 报 CorruptSource 并带上行数, 方便定位到具体标的.
+  size_t bad_line_count_ = 0;
 
   // Order buffers
   mutable std::vector<uint8_t> temp_order_hours, temp_order_minutes, temp_order_seconds, temp_order_millis;

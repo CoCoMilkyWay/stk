@@ -37,11 +37,11 @@ bool field(const char *line, const char *key, std::string &out) {
 
 } // namespace
 
-std::vector<ArchiveEntry> list_archive(const std::string &archive_path,
-                                       const std::string &archive_tool) {
-  std::vector<ArchiveEntry> entries;
+bool list_archive(const std::string &archive_path, const std::string &archive_tool,
+                  std::vector<ArchiveEntry> &entries) {
+  entries.clear();
   if (!std::filesystem::exists(archive_path))
-    return entries;
+    return true;
 
   // vt = technical list: Name / Type / Size 各占一行, 对含空格的文件名也安全
   // (普通 `l` 是定宽列, 文件名在末列, 有空格就没法可靠切分).
@@ -78,14 +78,16 @@ std::vector<ArchiveEntry> list_archive(const std::string &archive_path,
   }
   flush();
 
-  const int exit_code = safe_pclose(pipe);
-  static_cast<void>(exit_code); // NDEBUG 下 assert 消失, 但 pclose 必须留
-  assert(exit_code == 0 && "list_archive: 归档损坏或 unrar 报错");
+  // 非零退出 = 包损坏 (头链断裂/截断). 半份条目表不可信, 整个丢掉.
+  if (safe_pclose(pipe) != 0) {
+    entries.clear();
+    return false;
+  }
 
-  return entries;
+  return true;
 }
 
-void stream_archive_files(const std::string &archive_path,
+bool stream_archive_files(const std::string &archive_path,
                           const std::string &archive_tool,
                           const std::vector<std::string> &paths,
                           const std::vector<std::size_t> &sizes,
@@ -93,7 +95,7 @@ void stream_archive_files(const std::string &archive_path,
                           const std::atomic<bool> *cancel) {
   assert(paths.size() == sizes.size() && "stream_archive_files: paths/sizes 长度不等");
   if (paths.empty())
-    return;
+    return true;
 
   // 名单走 unrar 的 @listfile — 整天的文件名单可达数百 KB, 远超 execve
   // 单参数上限 (Linux MAX_ARG_STRLEN 128KB), 拼在命令行上 popen 会直接失败.
@@ -136,7 +138,7 @@ void stream_archive_files(const std::string &archive_path,
     if (cancel && cancel->load()) {
       safe_pclose(pipe);
       cleanup_list();
-      return;
+      return true;
     }
     std::size_t got = 0;
     while (got < sizes[i]) {
@@ -145,21 +147,24 @@ void stream_archive_files(const std::string &archive_path,
         break;
       got += n;
     }
-    assert(got == sizes[i] &&
-           "stream_archive_files: 流长度与 unrar l 报的尺寸不符 (归档序排错? 包损坏?)");
+    // 短读 = 包在这里断了. 后面所有文件的边界都跟着错位, 不能再往下切,
+    // 这一块也不交给回调 (半截 CSV 解出来的是垃圾).
+    if (got != sizes[i]) {
+      safe_pclose(pipe);
+      cleanup_list();
+      return false;
+    }
     on_file(i, buffer.data(), got);
   }
 
-  // 流应当恰好读完 — 多出字节说明切分错位
+  // 流应当恰好读完 — 多出字节说明尺寸表与实际不符
   char extra;
-  const std::size_t tail = std::fread(&extra, 1, 1, pipe);
-  static_cast<void>(tail);
-  assert(tail == 0 && "stream_archive_files: 流有多余字节 (尺寸表与实际不符)");
+  const bool has_extra = std::fread(&extra, 1, 1, pipe) != 0;
 
-  const int exit_code = safe_pclose(pipe);
+  // unrar 非零退出多为成员 CRC 失败: 字节数可能正好, 内容却是坏的
+  const bool clean_exit = safe_pclose(pipe) == 0;
   cleanup_list();
-  static_cast<void>(exit_code);
-  assert(exit_code == 0 && "stream_archive_files: unrar 非零退出");
+  return clean_exit && !has_extra;
 }
 
 } // namespace misc

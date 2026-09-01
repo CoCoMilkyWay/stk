@@ -87,6 +87,45 @@ std::string AssetItem::get_display_name() const {
 // Asset Implementation
 // ============================================================================
 
+void Asset::compute_asset_statistics() {
+  asset_stats.assign(items.size(), AssetStats{});
+  const bool has_backtest = !backtest.start.empty() && !backtest.end.empty();
+
+  for (size_t i = 0; i < items.size(); ++i) {
+    const AssetItem &item = items[i];
+    AssetStats &stats = asset_stats[i];
+    stats.total_days = item.date_info.size();
+
+    size_t archive_available = 0, archive_available_bt = 0;
+    size_t order_encoded = 0, order_encoded_bt = 0;
+
+    for (const auto &[date, info] : item.date_info) {
+      const bool in_backtest =
+          has_backtest && date >= backtest.start && date <= backtest.end;
+      if (in_backtest)
+        stats.backtest_days++;
+
+      if (archive.dates.count(date)) {
+        archive_available++;
+        if (in_backtest)
+          archive_available_bt++;
+      }
+      if (info.orders_encoded) {
+        order_encoded++;
+        if (in_backtest)
+          order_encoded_bt++;
+      }
+    }
+
+    stats.archive_missing_db = stats.total_days - archive_available;
+    stats.archive_missing_bt = stats.backtest_days - archive_available_bt;
+    stats.order_missing_db = stats.total_days - order_encoded;
+    stats.order_missing_bt = stats.backtest_days - order_encoded_bt;
+  }
+
+  asset_stats_generation++;
+}
+
 // ============================================================================
 // Binary Database Scan (Coroutine Version)
 // ============================================================================
@@ -102,6 +141,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
 
   // Clear browser statistics cache - will be recomputed on next Browser tab access
   date_stats.clear();
+  asset_stats.clear(); // 同理: Encode 页首次渲染时重算
 
   binary.scanned = true;
   binary.path = orders_dir;
@@ -323,6 +363,7 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
 
   // Clear browser statistics cache - will be recomputed on next Browser tab access
   date_stats.clear();
+  asset_stats.clear(); // 同理: Encode 页首次渲染时重算
 
   archive.scanned = true;
   archive.path = archive_dir;

@@ -89,23 +89,29 @@ static inline uint8_t extract_millisecond_10ms(uint32_t time_ms) {
   return static_cast<uint8_t>((time_ms % 1000) / 10);
 }
 
-// Market detection
-static inline bool is_shenzhen_market(const std::string &stock_code) {
+// Market detection: 1 = 深, 0 = 沪, -1 = 代码字段非法.
+//
+// -1 只可能来自损坏的源数据 —— 实测 20250813 的归档里 000701.SZ 逐笔成交
+// 第 6471 行是 "000701.S00,1000,1..." (unrar 对该成员报 CRC 失败, 解出来的
+// 字节整体错位粘连). 解析边界按这个三态判断把坏行挑出来计数, 内部转换路径
+// (csv_to_order/csv_to_trade) 只会见到已验证过的行, 所以那里仍然 assert.
+static inline int market_of(const std::string &stock_code) {
   if (stock_code.size() >= 3) {
     const char *suffix = stock_code.data() + stock_code.size() - 3;
-    // Check for .SZ or .sz
-    if (suffix[0] == '.' && (suffix[1] == 'S' || suffix[1] == 's') &&
-        (suffix[2] == 'Z' || suffix[2] == 'z')) {
-      return true;
-    }
-    // Check for .SH or .sh
-    if (suffix[0] == '.' && (suffix[1] == 'S' || suffix[1] == 's') &&
-        (suffix[2] == 'H' || suffix[2] == 'h')) {
-      return false;
+    if (suffix[0] == '.' && (suffix[1] == 'S' || suffix[1] == 's')) {
+      if (suffix[2] == 'Z' || suffix[2] == 'z')
+        return 1;
+      if (suffix[2] == 'H' || suffix[2] == 'h')
+        return 0;
     }
   }
-  assert(false && "Invalid stock code format (must end with .SZ or .SH)");
-  return false;
+  return -1;
+}
+
+static inline bool is_shenzhen_market(const std::string &stock_code) {
+  const int market = market_of(stock_code);
+  assert(market >= 0 && "Invalid stock code format (must end with .SZ or .SH)");
+  return market == 1;
 }
 
 // Order type determination based on exchange rules
@@ -225,11 +231,14 @@ static bool parse_csv_buffer(const char *data, size_t len, ParseFunc parse_func)
   return line_count > 0;
 }
 
-// 逐笔委托单行 → CSVOrder
-static void parse_order_line(std::string_view line, std::vector<CSVOrder> &orders) {
+// 逐笔委托单行 → CSVOrder. 坏行只计数不解析 (见 market_of).
+static void parse_order_line(std::string_view line, std::vector<CSVOrder> &orders,
+                             size_t &bad_lines) {
   auto fields = BinaryEncoder_L2::split_csv_line_view(line);
-  if (fields.size() < 10)
+  if (fields.size() < 10) {
+    ++bad_lines;
     return;
+  }
 
   CSVOrder order = {};
   order.stock_code = fields[0];
@@ -239,7 +248,12 @@ static void parse_order_line(std::string_view line, std::vector<CSVOrder> &order
   order.order_id = fast_parse_u64(fields[4]);
   order.exchange_order_id = fast_parse_u64(fields[5]);
 
-  bool is_szse = is_shenzhen_market(order.stock_code);
+  const int market = market_of(order.stock_code);
+  if (market < 0) {
+    ++bad_lines;
+    return;
+  }
+  const bool is_szse = market == 1;
 
   // Parse order type and side (format differs by exchange)
   if (!fields[6].empty() && fields[6][0] != ' ' && fields[6][0] != '\0') {
@@ -260,11 +274,14 @@ static void parse_order_line(std::string_view line, std::vector<CSVOrder> &order
   orders.push_back(order);
 }
 
-// 逐笔成交单行 → CSVTrade
-static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trades) {
+// 逐笔成交单行 → CSVTrade. 坏行只计数不解析 (见 market_of).
+static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trades,
+                             size_t &bad_lines) {
   auto fields = BinaryEncoder_L2::split_csv_line_view(line);
-  if (fields.size() < 12)
+  if (fields.size() < 12) {
+    ++bad_lines;
     return;
+  }
 
   CSVTrade trade = {};
   trade.stock_code = fields[0];
@@ -273,7 +290,12 @@ static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trade
   trade.time = fast_parse_u32(fields[3]);
   trade.trade_id = fast_parse_u64(fields[4]);
 
-  bool is_szse = is_shenzhen_market(trade.stock_code);
+  const int market = market_of(trade.stock_code);
+  if (market < 0) {
+    ++bad_lines;
+    return;
+  }
+  const bool is_szse = market == 1;
 
   // Parse trade code and BS flag (format differs by exchange)
   if (is_szse) {
@@ -295,15 +317,15 @@ static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trade
 
 bool BinaryEncoder_L2::parse_order_csv(const char *data, size_t len,
                                        std::vector<CSVOrder> &orders) {
-  return parse_csv_buffer(data, len, [&orders](std::string_view line) {
-    parse_order_line(line, orders);
+  return parse_csv_buffer(data, len, [&orders, this](std::string_view line) {
+    parse_order_line(line, orders, bad_line_count_);
   });
 }
 
 bool BinaryEncoder_L2::parse_trade_csv(const char *data, size_t len,
                                        std::vector<CSVTrade> &trades) {
-  return parse_csv_buffer(data, len, [&trades](std::string_view line) {
-    parse_trade_line(line, trades);
+  return parse_csv_buffer(data, len, [&trades, this](std::string_view line) {
+    parse_trade_line(line, trades, bad_line_count_);
   });
 }
 
@@ -503,6 +525,7 @@ void BinaryEncoder_L2::begin_asset() {
   csv_orders_.clear();
   csv_trades_.clear();
   orders_.clear();
+  bad_line_count_ = 0;
 }
 
 bool BinaryEncoder_L2::feed_order_csv(const char *data, size_t len) {
@@ -518,6 +541,16 @@ bool BinaryEncoder_L2::feed_trade_csv(const char *data, size_t len) {
 }
 
 EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, const std::string &tag) {
+  // 源损坏优先于一切: 有坏行就整个 (资产, 日期) 作废, 不产出半真半假的
+  // 产物 —— 部分数据会静默污染下游特征. 日志带上标的与坏行数, 人工修好源
+  // 文件后, 下次增量因为既无 .bin 也无墓碑而自动重来.
+  if (bad_line_count_ > 0) {
+    Logger::log("encoding", "[CORRUPT SOURCE] " + tag + " has " +
+                                std::to_string(bad_line_count_) +
+                                " malformed CSV lines — skipped, source needs repair");
+    return EncodeResult::CorruptSource;
+  }
+
   // Convert and encode orders + trades
   std::vector<Order> &all_orders = orders_;
   all_orders.reserve(csv_orders_.size() + csv_trades_.size());

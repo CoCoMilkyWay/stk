@@ -52,8 +52,8 @@ public:
   // Set label (e.g., asset code)
   void set_label(const std::string &label) const;
 
-  // 全局汇总计数 +n (跨 worker 共享, 推进汇总行)
-  void bump_summary(size_t n = 1) const;
+  // 全局汇总计数 +n (跨 worker 共享, 推进汇总行). worked 见 ParallelProgress
+  void bump_summary(size_t n = 1, bool worked = true) const;
 
   // 汇总行附加说明 (如 "20230103: 2311/4800 assets")
   void set_summary_note(const std::string &note) const;
@@ -134,8 +134,12 @@ public:
     summary_note_ = note;
   }
 
-  // 汇总计数 +n — 与 ProgressHandle::bump_summary 等价, 给非 worker 线程用
-  void bump_summary(size_t n = 1) { bump_summary_internal(n); }
+  // 汇总计数 +n — 与 ProgressHandle::bump_summary 等价, 给非 worker 线程用.
+  //
+  // worked=false 表示这一单位是"秒回"的 (如增量编码里整天命中完成标记):
+  // 计进度但不参与 ETA. 跳过与真干活的单位成本差三四个数量级, 混在一起算
+  // 平均速率, ETA 会荒谬地乐观 (实测 82% 时报 53s, 实际还有半小时).
+  void bump_summary(size_t n = 1, bool worked = true) { bump_summary_internal(n, worked); }
 
   // Stop refresh thread and finalize display
   void stop() {
@@ -178,8 +182,21 @@ private:
     slot.label[len] = '\0';
   }
 
-  void bump_summary_internal(size_t n) {
+  void bump_summary_internal(size_t n, bool worked) {
     summary_done_.fetch_add(n, std::memory_order_relaxed);
+    if (!worked)
+      return;
+    // 第一个真干活单位的完成时刻 = 计时起点 (它之前的跳过阶段与速率无关).
+    // 单位成本取之后的平均到达间隔, 所以要 worked ≥ 2 才有得算.
+    long long unset = -1;
+    first_worked_ms_.compare_exchange_strong(unset, elapsed_ms(), std::memory_order_relaxed);
+    summary_worked_.fetch_add(n, std::memory_order_relaxed);
+  }
+
+  long long elapsed_ms() const {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start_time_)
+        .count();
   }
 
   // 汇总行占一行, 排在 worker 条上方
@@ -266,17 +283,25 @@ private:
         buffer << " | " << summary_note_;
     }
 
-    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                             std::chrono::steady_clock::now() - start_time_)
-                             .count();
-    buffer << " | " << fmt_duration(elapsed);
-    if (done > 0 && done < total) {
-      const long long eta = static_cast<long long>(
-          elapsed * (static_cast<double>(total - done) / static_cast<double>(done)));
-      buffer << " elapsed, ETA " << fmt_duration(eta);
-      buffer << " (" << std::fixed << std::setprecision(1)
-             << (elapsed > 0 ? static_cast<double>(done) / static_cast<double>(elapsed) : 0.0)
-             << "/s)";
+    const long long now_ms = elapsed_ms();
+    buffer << " | " << fmt_duration(now_ms / 1000);
+
+    // ETA 只用"真干活"的单位标定成本, 并假设剩下的单位都要真干活.
+    //
+    // 这个悲观假设是刻意的: 增量编码里没编过的天几乎总是聚在末尾, 按已完成
+    // 的跳过/真编混合比例外推, 等于拿 3ms/天 去摊剩下 20s/天 的活, 只会给出
+    // 一个越走越离谱的乐观数. 宁可先报高再往下收敛.
+    const size_t worked = summary_worked_.load(std::memory_order_relaxed);
+    const long long first_ms = first_worked_ms_.load(std::memory_order_relaxed);
+    const double per_unit_s =
+        (worked >= 2 && first_ms >= 0) ? (now_ms - first_ms) / 1000.0 / (worked - 1) : 0.0;
+    if (per_unit_s > 0.0 && done < total) {
+      buffer << " elapsed, ETA " << fmt_duration(static_cast<long long>(per_unit_s * (total - done)));
+      buffer << " (" << std::fixed << std::setprecision(1);
+      if (per_unit_s < 1.0)
+        buffer << 1.0 / per_unit_s << "/s)";
+      else
+        buffer << per_unit_s << "s each)";
     }
 
     buffer << "\033[K";
@@ -353,6 +378,9 @@ private:
   std::atomic<size_t> summary_done_{0};
   std::atomic<size_t> summary_total_{0};
   std::atomic<bool> summary_exact_{false};
+  // ETA 标定用: 真干活的单位数, 与第一个此类单位的完成时刻 (ms, 未发生为 -1)
+  std::atomic<size_t> summary_worked_{0};
+  std::atomic<long long> first_worked_ms_{-1};
   std::string summary_unit_;
   std::mutex note_mutex_;
   std::string summary_note_;
@@ -376,9 +404,9 @@ inline void ProgressHandle::set_label(const std::string &label) const {
   }
 }
 
-inline void ProgressHandle::bump_summary(size_t n) const {
+inline void ProgressHandle::bump_summary(size_t n, bool worked) const {
   if (progress_) {
-    progress_->bump_summary_internal(n);
+    progress_->bump_summary_internal(n, worked);
   }
 }
 

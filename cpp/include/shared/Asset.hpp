@@ -101,6 +101,27 @@ struct Asset {
   std::unordered_map<std::string, DateStats> date_stats; // date -> stats (computed once)
 
   // ========================================
+  // Per-Asset Statistics (for Encode 页表格, computed once after scan)
+  // ========================================
+  // 全库编完之后 date_info 是满的 (资产数 × 交易日数, 五百万量级), 在 GUI
+  // 里逐帧重算这些计数会把帧时间拖到几百毫秒. 与 date_stats 同样的惰性缓存:
+  // 扫描时清空, 首次渲染时算一次.
+  struct AssetStats {
+    size_t backtest_days = 0;      // date_info 中落在回测区间的天数
+    size_t total_days = 0;         // date_info 天数
+    size_t archive_missing_bt = 0; // 回测区间内有记录但归档源缺失
+    size_t archive_missing_db = 0; // 全库范围内有记录但归档源缺失
+    size_t order_missing_bt = 0;   // 回测区间内有记录但 orders 未编码
+    size_t order_missing_db = 0;   // 全库范围内有记录但 orders 未编码
+  };
+  std::vector<AssetStats> asset_stats; // 按 asset_id 索引; 空 = 待重算
+  uint64_t asset_stats_generation = 0; // 每次重算 +1, 驱动 GUI 表格视图失效
+
+  // 填充 asset_stats (见其声明处). 依赖 items[].date_info / archive.dates /
+  // backtest 区间 — 三者变了都要先 clear 再调.
+  void compute_asset_statistics();
+
+  // ========================================
   // Binary Database Metadata
   // ========================================
   struct {

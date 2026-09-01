@@ -98,6 +98,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     // Finalize
     const size_t pairs = stats.pairs_listed.load();
     const size_t skipped = stats.pairs_skipped.load();
+    const size_t days_skipped = stats.days_skipped.load();
     status_ = cancel_flag_.load() ? EncodingStatus::Cancelled : EncodingStatus::Completed;
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
@@ -107,8 +108,20 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
               << "Encoded: " << pairs << " (asset, date) pairs across "
               << stats.assets_with_work.size() << " assets in " << elapsed << "s"
-              << (skipped > 0 ? " (" + std::to_string(skipped) + " already encoded, skipped)" : "")
+              << (skipped > 0 ? " (" + std::to_string(skipped) + " pairs already encoded, skipped)" : "")
+              << (days_skipped > 0 ? " (" + std::to_string(days_skipped) + " days skipped via completion marker)" : "")
               << std::endl;
+
+    // 源损坏的都被跳过留在了日志里 (从不 abort): 醒目提示一下, 修完源文件
+    // 直接重跑增量即可 —— 这些 (资产, 日期) 既没有产物也没有完成标记.
+    const size_t pairs_corrupt = stats.pairs_corrupt.load();
+    const size_t days_corrupt = stats.days_corrupt.load();
+    if (pairs_corrupt > 0 || days_corrupt > 0) {
+      std::cout << "CORRUPT SOURCE: " << pairs_corrupt << " (asset, date) pairs + " << days_corrupt
+                << " whole days skipped — grep '[CORRUPT' in " << data_.config.log_dir
+                << "/encoding.log, repair, then re-run incremental\n"
+                << std::endl;
+    }
 
     // Trigger scan callback after encoding completion
     if (scan_callback_) {
@@ -221,6 +234,9 @@ void EncodingService::run_binary_verify(int num_workers) {
             continue;
           std::error_code ec;
           fs::remove(path, ec);
+          // 整天完成标记必须一起删: 留着它, 增量重跑会整天跳过, 刚删掉的
+          // 文件永远补不回来 (修复回路 = Verify 删坏 + 增量补齐)
+          fs::remove(day_dirs[i] + "/" + kEncodeDayDoneName, ec);
           corrupt.fetch_add(1);
           terminal_->AddLine("[Verify] ✗ corrupt, removed: " + path, Color::Red());
         }

@@ -40,6 +40,17 @@ struct SharedData;
 // 扫描端按 .bin 后缀过滤, 天然忽略它.
 inline constexpr const char *kEncodeTombstoneExt = ".skip";
 
+// 整天完成标记的文件名 (orders/YYYY/MM/DD/ 下的空文件).
+//
+// 存在且不老于当天归档 ⇒ 这一天的全部 (资产, 日期) 都已产出 .bin 或 .skip.
+// 增量重跑靠它整天跳过, 省掉一次 unrar l (机械盘上 0.2~2.5s) 与当天几千次
+// 产物 stat —— 没有它, "确认无事可做"本身就要几秒一天.
+// 扫描端按 .bin 后缀过滤, 天然忽略它.
+//
+// 注意: 离线 Verify 删除损坏文件时必须同时删掉当天的标记, 否则"删坏 + 增量
+// 补齐"的修复回路会被这个标记挡住 (见 EncodingService::run_binary_verify).
+inline constexpr const char *kEncodeDayDoneName = ".day_complete";
+
 // 一个 (资产, 日期) 的待编码任务.
 //
 // 只存下标与尺寸, 不存路径字符串: 包内路径由 (批的日期, 资产代码) 现场拼出来.
@@ -86,15 +97,24 @@ private:
 // 列举/编码的全局计数 — 汇总进度与收尾统计用
 struct EncodeStats {
   std::atomic<size_t> pairs_listed{0};  // 待编码 (asset, date) 对
-  std::atomic<size_t> pairs_skipped{0}; // 产物新鲜, 跳过
+  std::atomic<size_t> pairs_skipped{0}; // 产物新鲜, 逐个跳过
+  std::atomic<size_t> days_skipped{0};  // 整天完成标记命中, 连列举都免了
+  std::atomic<size_t> pairs_corrupt{0}; // 源 CSV 损坏, 跳过待人工修复
+  std::atomic<size_t> days_corrupt{0};  // 包头损坏, 整天列举不出来
   std::mutex assets_mutex;
   std::unordered_set<size_t> assets_with_work;
 
-  // 天粒度进度账本: date → (已完成, 应编) 资产数.
+  // 天粒度进度账本: date → 该天的完成情况.
   // producer 列举完一天就注册, worker 每落盘一对就推进; 一天清零即从账本
-  // 移除并把汇总行 (单位: days) +1. 汇总附注始终显示最老在编天的资产进度.
+  // 移除、把汇总行 (单位: days) +1, 并落下整天完成标记 (见
+  // kEncodeDayDoneName). 汇总附注始终显示最老在编天的资产进度.
+  struct DayProgress {
+    size_t done = 0;
+    size_t total = 0;
+    size_t errors = 0; // 环境错误 (没留下产物) 的对数; 非零则不落完成标记
+  };
   std::mutex days_mutex;
-  std::map<std::string, std::pair<size_t, size_t>> days_inflight;
+  std::map<std::string, DayProgress> days_inflight;
 };
 
 // producer: 逐天 [列举 → 增量过滤 → 切批 → 顺序预读 .rar 进页缓存 → 推批].
