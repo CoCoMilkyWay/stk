@@ -657,8 +657,10 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
 
   // 准入校验 — 判据与经验依据见 L2_Validator.hpp.
   //
-  // 用中间结构而非转换后的 Order: 中间结构是源数据原样, 转换会 clamp 到位宽
-  // 上界, 拿被截断的值去和快照对拍等于自己骗自己.
+  // 用中间结构而非转换后的 Order: 中间结构是源数据原样, 而转换会把价格折进档位
+  // 窗口、把其余字段钳到位宽上界, 拿加工过的值去和快照对拍等于自己骗自己.
+  //
+  // 也必须先于转换: 档位窗口的基准由校验算出, 转换要拿它折价.
   validator_.run(csv_orders_, csv_trades_, market_, report_);
 
   if (report_.blocked()) {
