@@ -148,11 +148,13 @@ struct Asset {
     // 秒, 成本全在读头), 而启动 / Overview 刷新 / 编码完成都会触发扫描.
     // 目录内容没动过的天直接沿用上次结果.
     //
-    // 增删文件都会改目录 mtime, 所以手动删 .bin 能被发现; 唯一漏网的是重编
-    // 覆盖同名文件 (目录条目没增删), 那种由 scan_dirty_dates 兜住.
+    // 新增/删除/重命名覆盖都会改目录 mtime (实测三种都变, 覆盖同名也变 ——
+    // rename 按 POSIX 要更新目标目录的 mtime, 何况编码的 .tmp 就落在同目录,
+    // 那个条目的增删本身已经改了 mtime), 所以手动删 .bin 也能被发现.
     std::unordered_map<std::string, int64_t> day_mtimes;
 
-    // 编码动过的天 —— 无条件重扫, 不看 mtime. 编码服务在收工时填.
+    // 编码动过的天 —— 无条件重扫. mtime 那层已经够用, 这里是把"谁改了库"
+    // 变成编码路径的显式契约, 不让正确性依赖文件系统 mtime 的细节语义.
     std::set<std::string> dirty_dates;
 
     // Statistics (computed from items)

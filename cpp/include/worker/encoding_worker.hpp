@@ -118,8 +118,7 @@ struct EncodeStats {
   std::map<std::string, DayProgress> days_inflight;
 
   // 本轮真正动过的天 (producer 列举出活儿就记, 整天跳过的不记).
-  // 收工后交给扫描做定向重扫: 重编会覆盖同名 .bin, 目录条目没增删,
-  // 光看目录 mtime 发现不了.
+  // 收工后交给增量扫描做定向重扫, 见 Asset::binary.dirty_dates.
   std::set<std::string> days_touched;
 };
 

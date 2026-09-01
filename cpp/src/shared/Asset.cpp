@@ -61,7 +61,11 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     binary.encoded_assets = 0;
     binary.total_orders = 0;
     binary.orders_size_gb = 0.0;
+    binary.day_mtimes.clear(); // 库没了, 增量基线也作废
+    binary.dirty_dates.clear();
     all_dates.clear();
+    for (auto &item : items)
+      item.date_info.clear();
     co_return;
   }
 

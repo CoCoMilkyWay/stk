@@ -120,8 +120,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
                 << std::endl;
     }
 
-    // 本轮动过的天必须重扫: 重编覆盖同名 .bin 不会改目录 mtime, 增量扫描
-    // 光看 mtime 会沿用旧的条数/体积 (修好损坏源再重编就属于这种).
+    // 把本轮动过的天交给增量扫描 (见 Asset::binary.dirty_dates)
     {
       std::lock_guard<std::mutex> lock(stats.days_mutex);
       data_.asset.binary.dirty_dates.insert(stats.days_touched.begin(),
