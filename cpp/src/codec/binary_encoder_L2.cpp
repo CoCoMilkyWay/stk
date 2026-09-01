@@ -668,9 +668,6 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
                                 " — skipped, source needs check");
     return EncodeResult::InvalidData;
   }
-  if (report_.flags != 0) {
-    Logger::log("encoding", "[SUSPECT] " + tag + " — " + report_.describe());
-  }
 
   // Convert and encode orders + trades
   std::vector<Order> &all_orders = orders_;

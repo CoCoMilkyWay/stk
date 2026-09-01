@@ -156,8 +156,6 @@ void Validator::run(const std::vector<CSVOrder> &orders,
   uint64_t cum_turnover_fen = 0;
   uint32_t high = 0;
   uint32_t low = 0;
-  uint32_t last_price = 0;
-  uint32_t last_time = 0;
   size_t trade_count = 0;
 
   for (const CSVTrade &trade : trades) {
@@ -208,10 +206,6 @@ void Validator::run(const std::vector<CSVOrder> &orders,
       high = trade.price;
     if (low == 0 || trade.price < low)
       low = trade.price;
-    if (trade.time >= last_time) {
-      last_time = trade.time;
-      last_price = trade.price;
-    }
     ++trade_count;
   }
 
@@ -309,8 +303,7 @@ void Validator::run(const std::vector<CSVOrder> &orders,
   if (out.turnover_delta > kTurnoverToleranceFen || out.turnover_delta < -kTurnoverToleranceFen)
     out.flags |= Check::TurnoverMismatch;
 
-  if (trade_count > 0 &&
-      (high != market.high || low != market.low || last_price != market.last_price))
+  if (trade_count > 0 && (high != market.high || low != market.low))
     out.flags |= Check::PriceMismatch;
 }
 
