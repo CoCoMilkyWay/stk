@@ -8,6 +8,7 @@
 #include "features/Operator/TS/Basic/MinuteIndex.hpp"
 #include "features/Operator/TS/Basic/Spread.hpp"
 #include "features/Operator/TS/Basic/TickIndex.hpp"
+#include "features/Operator/TS/Basic/Valuation.hpp"
 // Imbalance
 #include "features/Operator/TS/Imbalance/CI.hpp"
 #include "features/Operator/TS/Imbalance/CI_all.hpp"
@@ -50,9 +51,12 @@ public:
   // ===========================================================================
   // 事件/时间驱动: 底层数据结构 (按计算层级排列, 作为计算图的"驱动时钟")
   // ===========================================================================
-  TickData &tick_data;     // L0 输入（外部传入）
-  MinuteData minute_data;  // L1 输入（内部管理，由 resampler 填充）
-  std::string asset_code_; // 股票代码（用于涨跌幅判断）
+  TickData &tick_data;             // L0 输入（外部传入）
+  MinuteData minute_data;          // L1 输入（内部管理，由 resampler 填充）
+  std::string asset_code_;         // 股票代码（用于涨跌幅判断）
+  const float *fund_row_{nullptr}; // 当日基本面输入行 (fund::kCount, begin_day 设置)
+
+  void set_day_fundamental(const float *row) { fund_row_ = row; }
 
   // ===========================================================================
   // L0: Tick 级别 - CBuffer + 算子
@@ -153,8 +157,12 @@ public:
     OFI<5> Ofi_5{BidQty_, AskQty_, BidPrice_, AskPrice_, Ofi_5_};
 
     // --- LabelReturn (吃单收益标签，单算子计算全部组合) ---
-    // 输出顺序: [5min×5w long, 5min×5w short, 5min×20w long, 5min×20w short, 10min×5w long, ...]
+    // 组内顺序: [long_5w, long_20w, short_5w, short_20w] × {5m,10m,30m}
+    // 分钟锚定路径落 L1 12 列 (见 Tick_Sequential)
     LabelReturnOp LabelReturn{BidPrice_, AskPrice_, BidQty_, AskQty_};
+
+    // --- LabelReturn1m (L0 秒级: 1 分钟 × 5 万, 只落 long) ---
+    LabelReturn1mOp LabelReturn1m{BidPrice_, AskPrice_, BidQty_, AskQty_};
 
     explicit L0(TickData &t, const std::string &code) : td(t), asset_code_(code) {}
   };
@@ -166,6 +174,7 @@ public:
   struct L1 {
     MinuteData &md;
     L0 &l0;
+    const float *const &fund_row; // 当日基本面输入行 (DAG::fund_row_)
 
     // --- 基础数据 CBuffer ---
     CBuffer<float, ::L2::BLEN> Min_;
@@ -346,14 +355,29 @@ public:
     Peak<true, false> Peak_ratio_bid{l0.BidQty_, Peak_ratio_bid_};
     Peak<false, false> Peak_ratio_ask{l0.AskQty_, Peak_ratio_ask_};
 
-    explicit L1(MinuteData &m, L0 &l0) : md(m), l0(l0) {}
+    // --- Valuation (实时估值: 分钟价 × 当日基本面行) ---
+    CBuffer<float, ::L2::BLEN> Val_mcap_;
+    CBuffer<float, ::L2::BLEN> Val_fmcap_;
+    CBuffer<float, ::L2::BLEN> Val_pe_;
+    CBuffer<float, ::L2::BLEN> Val_pb_;
+    CBuffer<float, ::L2::BLEN> Val_ps_;
+    CBuffer<float, ::L2::BLEN> Val_pcf_;
+    CBuffer<float, ::L2::BLEN> Val_limit_up_;
+    CBuffer<float, ::L2::BLEN> Val_limit_dn_;
+    CBuffer<float, ::L2::BLEN> Val_low_p_;
+    CBuffer<float, ::L2::BLEN> Val_low_mc_;
+    Valuation Val{md, fund_row, Val_mcap_, Val_fmcap_, Val_pe_, Val_pb_, Val_ps_, Val_pcf_,
+                  Val_limit_up_, Val_limit_dn_, Val_low_p_, Val_low_mc_};
+
+    explicit L1(MinuteData &m, L0 &l0, const float *const &fund)
+        : md(m), l0(l0), fund_row(fund) {}
   };
   L1 l1;
 
   // ===========================================================================
   // 构造函数
   // ===========================================================================
-  explicit DAG(TickData &td, const std::string &code) : tick_data(td), asset_code_(code), l0(tick_data, asset_code_), l1(minute_data, l0) {}
+  explicit DAG(TickData &td, const std::string &code) : tick_data(td), asset_code_(code), l0(tick_data, asset_code_), l1(minute_data, l0, fund_row_) {}
 
   // ===========================================================================
   // 盘前重置
@@ -366,6 +390,7 @@ public:
     l0.Ofi_1.reset();
     l0.Ofi_5.reset();
     l0.LabelReturn.reset();
+    l0.LabelReturn1m.reset();
     l1.Ctr.reset();
     l1.Oa.reset();
     l1.Hla.reset();

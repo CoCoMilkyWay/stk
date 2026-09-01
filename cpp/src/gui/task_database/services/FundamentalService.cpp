@@ -6,7 +6,8 @@
 //                  + cn_stock_industry_component (最新快照)
 //                  + cn_stock_real_bar1d (每股最新行) + cn_stock_status (每股最新行)
 //   stock_factor ← cn_stock_real_bar1d.adjust_factor 变点序列 (分红/拆分事件日)
-//   peTTM/pbMRQ/psTTM/pcfNcfTTM 由特征表阶段用财务表自算, 此处不填.
+//   peTTM/pbMRQ/psTTM/pcfNcfTTM ← close × total_shares / 财务分母 (最新可见快照,
+//                  口径与 L1 特征表一致; 分钟实时版在特征表阶段算)
 #include "gui/task_database/services/FundamentalService.hpp"
 
 #include "api/bigquant/pipeline.hpp"
@@ -29,6 +30,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <set>
 #include <thread>
@@ -218,6 +220,7 @@ bool build_asset_info(Job &job) {
   struct BarLatest {
     std::int32_t date = 0;
     double volume = 0, amount = 0, turn = 0;
+    double close = 0; // 不复权真价 (估值快照分子)
   };
   std::map<std::string, BarLatest> bar_latest; // bs_code →
   std::map<std::string, std::vector<std::pair<std::int32_t, float>>> factors;
@@ -237,6 +240,7 @@ bool build_asset_info(Job &job) {
       pq::Col vol = v.col("volume");
       pq::Col amt = v.col("amount");
       pq::Col turn = v.col("turn");
+      pq::Col close = v.col("close");
       for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
         std::string key = to_asset_code(ins.str(i));
         std::int32_t d = date.yyyymmdd(i);
@@ -246,6 +250,7 @@ bool build_asset_info(Job &job) {
           b.volume = static_cast<double>(vol.f32(i));
           b.amount = static_cast<double>(amt.f32(i));
           b.turn = static_cast<double>(turn.f32(i));
+          b.close = static_cast<double>(close.f32(i));
         }
         float f = af.f32(i);
         if (std::isfinite(f))
@@ -267,6 +272,135 @@ bool build_asset_info(Job &job) {
     info.amount = buf;
     std::snprintf(buf, sizeof(buf), "%.6f", b.turn);
     info.turn = buf;
+  }
+
+  // ---- 估值快照 (PE/PB/PS/PCF) ← 最新 close × total_shares / 财务分母 ----
+  //   口径与 L1 特征表一致 (qmt 移植): PE=mcap/归母净利TTM, PB=mcap/归母权益MRQ,
+  //   PS=mcap/营业总收入TTM(≤0脏值→空), PCF=mcap/经营现金流TTM; 亏损/负权益/烧钱
+  //   保留负值. 无效 → 留空串 (Table 显示 "-").
+  {
+    struct ValLatest {
+      std::int32_t shares_d = 0;
+      double total_shares = 0;
+      std::int32_t ttm_d = 0;
+      double np = std::numeric_limits<double>::quiet_NaN();
+      double rev = std::numeric_limits<double>::quiet_NaN();
+      double cf = std::numeric_limits<double>::quiet_NaN();
+      std::int32_t bal_rd = 0, bal_d = 0; // MRQ: max(report_date), 同 rd 取最新可见
+      double equity = std::numeric_limits<double>::quiet_NaN();
+    };
+    std::map<std::string, ValLatest> val;
+
+    // 股本: cn_stock_shares 每股最新行
+    {
+      auto files = pq::list_month_files("cn_stock_shares");
+      std::size_t total = files.size(), idx = 0;
+      for (auto &[ym, path] : files) {
+        ++idx;
+        job.set_message("扫描股本 " + ym + " (" + std::to_string(idx) + "/" +
+                        std::to_string(total) + ")");
+        pq::TableView v(pq::read_table(path));
+        if (v.rows() == 0)
+          continue;
+        pq::Col date = v.col("date");
+        pq::Col ins = v.col("instrument");
+        pq::Col ts = v.col("total_shares");
+        for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
+          ValLatest &vv = val[to_asset_code(ins.str(i))];
+          std::int32_t d = date.yyyymmdd(i);
+          if (d > vv.shares_d) {
+            vv.shares_d = d;
+            vv.total_shares = static_cast<double>(ts.f32(i));
+          }
+        }
+      }
+    }
+
+    // TTM 财务: cn_stock_financial_ttm_shift, shift==0 每股最新行
+    {
+      auto files = pq::list_month_files("cn_stock_financial_ttm_shift");
+      std::size_t total = files.size(), idx = 0;
+      for (auto &[ym, path] : files) {
+        ++idx;
+        job.set_message("扫描财务TTM " + ym + " (" + std::to_string(idx) + "/" +
+                        std::to_string(total) + ")");
+        pq::TableView v(pq::read_table(path));
+        if (v.rows() == 0)
+          continue;
+        pq::Col date = v.col("date");
+        pq::Col ins = v.col("instrument");
+        pq::Col shift = v.col("shift");
+        pq::Col np = v.col("net_profit_to_parent_shareholders_ttm");
+        pq::Col rev = v.col("total_operating_revenue_ttm");
+        pq::Col cf = v.col("net_cffoa_ttm");
+        for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
+          if (shift.i32(i, -1) != 0)
+            continue;
+          ValLatest &vv = val[to_asset_code(ins.str(i))];
+          std::int32_t d = date.yyyymmdd(i);
+          if (d > vv.ttm_d) {
+            vv.ttm_d = d;
+            vv.np = static_cast<double>(np.f32(i));
+            vv.rev = static_cast<double>(rev.f32(i));
+            vv.cf = static_cast<double>(cf.f32(i));
+          }
+        }
+      }
+    }
+
+    // 权益 MRQ: cn_stock_financial_balance_general_pit, max(report_date) 的最新可见行
+    {
+      auto files = pq::list_month_files("cn_stock_financial_balance_general_pit");
+      std::size_t total = files.size(), idx = 0;
+      for (auto &[ym, path] : files) {
+        ++idx;
+        job.set_message("扫描资产负债 " + ym + " (" + std::to_string(idx) + "/" +
+                        std::to_string(total) + ")");
+        pq::TableView v(pq::read_table(path));
+        if (v.rows() == 0)
+          continue;
+        pq::Col date = v.col("date");
+        pq::Col ins = v.col("instrument");
+        pq::Col rd = v.col("report_date");
+        pq::Col eq = v.col("total_equity_to_parent_shareholders");
+        for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
+          ValLatest &vv = val[to_asset_code(ins.str(i))];
+          std::int32_t r = rd.yyyymmdd(i);
+          std::int32_t d = date.yyyymmdd(i);
+          if (r > vv.bal_rd || (r == vv.bal_rd && d > vv.bal_d)) {
+            vv.bal_rd = r;
+            vv.bal_d = d;
+            vv.equity = static_cast<double>(eq.f32(i));
+          }
+        }
+      }
+    }
+
+    job.set_message("计算估值快照 (PE/PB/PS/PCF)");
+    for (auto &[key, vv] : val) {
+      auto found = stock_info.find(key);
+      if (found == stock_info.end())
+        continue;
+      auto bar = bar_latest.find(key);
+      if (bar == bar_latest.end())
+        continue;
+      const double close = bar->second.close;
+      if (!std::isfinite(close) || close <= 0.0 || vv.total_shares <= 0.0)
+        continue;
+      const double mcap = close * vv.total_shares;
+      StockInfo &info = found->second;
+      char buf[32];
+      auto set_ratio = [&](std::string &dst, double den, bool positive_only) {
+        if (!std::isfinite(den) || den == 0.0 || (positive_only && den <= 0.0))
+          return; // 留空 → Table 显示 "-"
+        std::snprintf(buf, sizeof(buf), "%.4f", mcap / den);
+        dst = buf;
+      };
+      set_ratio(info.peTTM, vv.np, false);
+      set_ratio(info.pbMRQ, vv.equity, false);
+      set_ratio(info.psTTM, vv.rev, true); // 负营收 = 源脏值
+      set_ratio(info.pcfNcfTTM, vv.cf, false);
+    }
   }
 
   job.set_message("压缩复权因子变点序列");

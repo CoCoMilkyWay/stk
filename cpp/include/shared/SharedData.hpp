@@ -9,6 +9,7 @@
 #include "./TaskState.hpp"
 #include "./TimeSeries.hpp"
 #include "./Transform.hpp"
+#include "features/Fundamental/FundamentalDaily.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 
@@ -17,6 +18,7 @@ struct SharedData {
   TaskState taskstate;
   Asset asset;
   AssetInfo assetinfo;
+  FundamentalDaily fundamental_daily;
   Feature feature;
   OrderFlow orderflow;
   Dist dist;

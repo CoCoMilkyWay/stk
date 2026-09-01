@@ -7,7 +7,6 @@
 #include "math/sample/ResamplerTick2Min.hpp"
 #include "misc/profiler.hpp"
 
-
 // Sequential Core: Hierarchical 2-level feature computation with resampling
 // Architecture: LOB -> Tick -> (resample) -> Minute
 class CoreSequential {
@@ -31,10 +30,11 @@ public:
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
 
-  void begin_day(const std::string &date_str) {
+  void begin_day(const std::string &date_str, const float *fund_row) {
     date_str_ = date_str;
     tick_sequential_.set_date(date_str);
     minute_sequential_.set_date(date_str);
+    dag_.set_day_fundamental(fund_row);
   }
 
   void end_day() {

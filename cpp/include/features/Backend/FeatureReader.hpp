@@ -180,7 +180,7 @@ public:
     void preallocate(size_t A_) {
       A = A_;
       // Preallocate for max capacity, actual T/F set by load_depth from header
-      data.resize(MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * A);
+      data.resize(DEPTH_ROWS * DEPTH_TOTAL_WIDTH * A);
     }
   };
 
@@ -359,7 +359,7 @@ public:
 
     // Read data and get actual dimensions from header
     size_t T_actual, F_actual, A_actual;
-    read_compressed_data(path, MAX_ROWS_PER_LEVEL[0], DEPTH_TOTAL_WIDTH, out.A,
+    read_compressed_data(path, DEPTH_ROWS, DEPTH_TOTAL_WIDTH, out.A,
                          out.data.data(), &T_actual, &F_actual, &A_actual);
 
     // Update dynamic dimensions (buffer already preallocated, no resize)

@@ -274,7 +274,7 @@ public:
       reader_.load_depth(date, depth_tensor);
     }
 
-    assert(MAX_ROWS_PER_LEVEL[0] == OrderFlowConst::L0_CAPACITY && "Depth tensor must be dense with time index semantics");
+    assert(depth_tensor.T <= DEPTH_ROWS && "Depth tensor rows exceed minute capacity");
 
     if (asset_idx >= depth_tensor.A) {
       cache.loaded = true;
@@ -287,23 +287,24 @@ public:
 
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
 
-    // Reserve full capacity for aggressive allocation
-    day.reserve(OrderFlowConst::L0_CAPACITY);
+    // Reserve full capacity for aggressive allocation (分钟频)
+    day.reserve(DEPTH_ROWS);
 
     // Opening price captured from first valid tick (reset per day)
     float opening_price = 0.0f;
     float price_min = 0.0f;
     float price_max = 0.0f;
 
-    // Sparse loading: only store valid ticks (depth_valid=true or data_valid=true)
-    // Line plots and heatmap will use ImPlot step mode to handle sparsity
-    // Use actual T from file header (not constant)
-    for (size_t t = 0; t < depth_tensor.T; ++t) {
-      assert(t < OrderFlowConst::L0_CAPACITY && "depth tensor row exceeds L0_CAPACITY");
+    // Sparse loading: only store valid rows (depth_valid=true or data_valid=true)
+    // Depth 张量为分钟频 (行 m = 分钟末盘口快照); GUI 保持秒级 X 轴:
+    // 映射到该分钟最后一秒, step 渲染自然铺满整分钟
+    for (size_t m = 0; m < depth_tensor.T; ++m) {
+      const size_t t = L1_to_L0(m) + 59; // 分钟末秒
+      assert(t < OrderFlowConst::L0_CAPACITY && "depth minute row exceeds L0_CAPACITY");
 
       // Read validity flags (from depth tensor)
-      float depth_valid_val = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_depth_valid, asset_idx));
-      float data_valid_val = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_data_valid, asset_idx));
+      float depth_valid_val = static_cast<float>(depth_tensor.get(m, DepthFieldOffset::_depth_valid, asset_idx));
+      float data_valid_val = static_cast<float>(depth_tensor.get(m, DepthFieldOffset::_data_valid, asset_idx));
 
       bool depth_valid = (depth_valid_val > 0.5f);
       bool data_valid = (data_valid_val > 0.5f);
@@ -318,7 +319,7 @@ public:
 
       if (depth_valid) {
         // Read prices (already in yuan, no conversion needed)
-        mid = static_cast<float>(depth_tensor.get(t, DepthFieldOffset::_mid_price, asset_idx));
+        mid = static_cast<float>(depth_tensor.get(m, DepthFieldOffset::_mid_price, asset_idx));
 
         // Capture opening price from first valid tick
         if (opening_price == 0.0f && mid > 0) [[unlikely]] {
@@ -342,8 +343,8 @@ public:
             size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
 
             // Prices are already in yuan (no conversion needed)
-            float bp_yuan = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
-            float ap_yuan = static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
+            float bp_yuan = static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
+            float ap_yuan = static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
 
             // Check if prices are outside cage (sentinel detection)
             bool bp_outside = (bp_yuan < price_min || bp_yuan > price_max);
@@ -351,16 +352,16 @@ public:
 
             // Use NaN for sentinel values (filtered at source)
             bp[i] = bp_outside ? std::numeric_limits<float>::quiet_NaN() : bp_yuan;
-            bv[i] = bp_outside ? 0.0f : static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + bv_offset) * depth_tensor.A + asset_idx]);
+            bv[i] = bp_outside ? 0.0f : static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + bv_offset) * depth_tensor.A + asset_idx]);
 
             ap[i] = ap_outside ? std::numeric_limits<float>::quiet_NaN() : ap_yuan;
-            av[i] = ap_outside ? 0.0f : static_cast<float>(depth_tensor.data[(t * DEPTH_TOTAL_WIDTH + av_offset) * depth_tensor.A + asset_idx]);
+            av[i] = ap_outside ? 0.0f : static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + av_offset) * depth_tensor.A + asset_idx]);
           }
         }
       }
 
       // Push sparse tick with validity flags
-      // CRITICAL: t is time index (0-15299), directly used as tick_idx
+      // CRITICAL: t 是秒级时间索引 (分钟末秒), 直接用作 tick_idx
       day.push(t, depth_valid, data_valid, mid, bp, ap, bv, av);
     }
 
@@ -410,6 +411,14 @@ public:
         size_t t = tick.tick_idx;
         if (t >= day_tensor.T[0])
           continue;
+
+        // tick_idx 是分钟末秒 (depth 分钟频); L0 特征逐笔稀疏, 该秒不一定有写入
+        // → 在本分钟内向前回溯到最近一个 _data_valid 秒
+        {
+          size_t lo = (t >= 59) ? t - 59 : 0;
+          while (t > lo && static_cast<float>(day_tensor.get<0>(t, L0_FieldOffset::_data_valid, asset_idx)) <= 0.5f)
+            --t;
+        }
 
         float val = static_cast<float>(day_tensor.get<0>(t, feature_idx, asset_idx));
 

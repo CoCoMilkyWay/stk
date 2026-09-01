@@ -8,6 +8,7 @@
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -93,7 +94,9 @@ void sequential_worker(int worker_id,
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
       auto it = asset.date_info.find(date_str);
-      lobs[i]->begin_day(date_str);
+      const float *fund_row = data.fundamental_daily.find(date_str, asset_id);
+      assert(fund_row != nullptr && "FundamentalDaily 未覆盖回测日");
+      lobs[i]->begin_day(date_str, fund_row);
       // Hot path: has data and binaries
       if (it != asset.date_info.end() && it->second.has_binaries() && !it->second.orders_file.empty()) [[likely]] {
 

@@ -60,8 +60,8 @@ public:
     init_sentinel_levels();
   }
 
-  void begin_day(const std::string &date_str) {
-    core_sequential_.begin_day(date_str);
+  void begin_day(const std::string &date_str, const float *fund_row) {
+    core_sequential_.begin_day(date_str, fund_row);
 
 #if DEBUG_BOOK_PRINT
     should_log_this_day_ = false;

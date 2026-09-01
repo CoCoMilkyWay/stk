@@ -115,25 +115,32 @@ inline void Tick_Sequential::compute_and_store() {
     dag_.l0.Ofi_5.compute(); // input: BidQty_, AskQty_, BidPrice_, AskPrice_
     dag_.l0.Ofi_5.flush();   // output: Ofi_5_
 
-    // --- LabelReturn compute + flush (按hold_minutes分组批量写入) ---
-    dag_.l0.LabelReturn.compute(t);
+    // --- LabelReturn: 分钟锚定惰性回填 → L1 12 列 ---
     // 组0: 5min, 组1: 10min, 组2: 30min; 每组4个连续字段
-    constexpr size_t LABEL_GROUP_START[] = {
-        L0_FieldOffset::lb_long_5m_5w,  // 5min组起始
-        L0_FieldOffset::lb_long_10m_5w, // 10min组起始
-        L0_FieldOffset::lb_long_30m_5w  // 30min组起始
-    };
-    constexpr size_t LABEL_GROUP_END[] = {
-        L0_FieldOffset::lb_short_5m_20w,  // 5min组结束
-        L0_FieldOffset::lb_short_10m_20w, // 10min组结束
-        L0_FieldOffset::lb_short_30m_20w  // 30min组结束
-    };
-    for (size_t h = 0; h < LabelReturnOp::hold_count(); ++h) {
-      if (dag_.l0.LabelReturn.group_valid(h)) {
-        TS_WRITE_FEATURES(store_, date_str_, 0, dag_.l0.LabelReturn.group_l0(h), asset_id_,
-                          LABEL_GROUP_START[h], LABEL_GROUP_END[h],
-                          dag_.l0.LabelReturn.group_values(h), worker_id_);
-      }
+    {
+      constexpr size_t LABEL_GROUP_START[] = {
+          L1_FieldOffset::lb_long_5m_5w,  // 5min组起始
+          L1_FieldOffset::lb_long_10m_5w, // 10min组起始
+          L1_FieldOffset::lb_long_30m_5w  // 30min组起始
+      };
+      constexpr size_t LABEL_GROUP_END[] = {
+          L1_FieldOffset::lb_short_5m_20w,  // 5min组结束
+          L1_FieldOffset::lb_short_10m_20w, // 10min组结束
+          L1_FieldOffset::lb_short_30m_20w  // 30min组结束
+      };
+      dag_.l0.LabelReturn.compute_minute_anchored(
+          t, [&](size_t h, size_t label_l1, const float *values) {
+            TS_WRITE_FEATURES(store_, date_str_, 1, label_l1, asset_id_,
+                              LABEL_GROUP_START[h], LABEL_GROUP_END[h], values,
+                              worker_id_);
+          });
+    }
+
+    // --- LabelReturn1m: L0 秒级回填 (1min×5w, 只落 long) ---
+    dag_.l0.LabelReturn1m.compute(t);
+    if (dag_.l0.LabelReturn1m.group_valid(0)) {
+      TS_WRITE_SINGLE(store_, date_str_, 0, dag_.l0.LabelReturn1m.group_l0(0), L0_FieldOffset::lb_long_1m_5w,
+                      asset_id_, dag_.l0.LabelReturn1m.group_values(0)[0], worker_id_);
     }
 
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
@@ -144,7 +151,7 @@ inline void Tick_Sequential::compute_and_store() {
 
     TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_depth_valid, asset_id_, 1.0f, worker_id_);
 
-    // --- Write LOB depth snapshot for GUI ---
+    // --- Write LOB depth snapshot for GUI (分钟频: 同分钟覆盖, 终值=分钟末盘口) ---
     constexpr size_t N = L2::LOB_DEPTH;
     constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手 (1手=100股)
 
@@ -158,13 +165,13 @@ inline void Tick_Sequential::compute_and_store() {
     lob_depth_buffer_[4 * N] = dag_.l0.MidPrice_.back();
     lob_depth_buffer_[4 * N + 1] = 1.0f;
 
-    DEPTH_WRITE_FEATURES(store_, date_str_, t, asset_id_, 0, DepthFieldOffset::_depth_valid, lob_depth_buffer_.data(), worker_id_);
+    DEPTH_WRITE_FEATURES(store_, date_str_, L0_to_L1(t), asset_id_, 0, DepthFieldOffset::_depth_valid, lob_depth_buffer_.data(), worker_id_);
   }
 
-  // Write TS features
-  TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::cs_spread_rank, ts_features_buffer_.data(), worker_id_);
+  // Write TS features (只到最后一个 TS 字段; cs_spread_rank 由 CS worker 写)
+  TS_WRITE_FEATURES(store_, date_str_, 0, t, asset_id_, 0, L0_FieldOffset::ofi_5, ts_features_buffer_.data(), worker_id_);
 
   // Write data validity flag
   TS_WRITE_SINGLE(store_, date_str_, 0, t, L0_FieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
-  DEPTH_WRITE_SINGLE(store_, date_str_, t, DepthFieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
+  DEPTH_WRITE_SINGLE(store_, date_str_, L0_to_L1(t), DepthFieldOffset::_data_valid, asset_id_, 1.0f, worker_id_);
 }

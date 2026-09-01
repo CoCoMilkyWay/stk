@@ -29,6 +29,7 @@
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
+#include "features/FeaturesDefine.hpp" // L1_to_L0 (分钟锚定路径)
 #include <array>
 
 // 交易费用
@@ -73,7 +74,9 @@ public:
     return m;
   }();
   static constexpr size_t MAX_DELAY = DELAY_SECONDS + MAX_HOLD * 60;
-  static constexpr size_t BUFFER_SIZE = MAX_DELAY + 64;
+  // +128: 覆盖 get_snapshot 的 60s 回溯 (分钟锚定路径 entry 最早可回看
+  // t - MAX_DELAY - 60 附近) 再留余量
+  static constexpr size_t BUFFER_SIZE = MAX_DELAY + 128;
 
   LabelReturn(const CBuffer<float, L2::BLEN> (&bid_price)[L2::LOB_DEPTH],
               const CBuffer<float, L2::BLEN> (&ask_price)[L2::LOB_DEPTH],
@@ -138,6 +141,43 @@ public:
   }
 
   // -------------------------------------------------------------------------
+  // compute_minute_anchored: 分钟锚定惰性回填 (L1 标签)
+  //   锚点 = 分钟 m 起始秒 (L1_to_L0), entry = 锚点+DELAY, exit = entry+hold.
+  //   每次 onDepth 推进: exit 已过线的分钟逐个补算 (深度稀疏也不漏分钟,
+  //   快照缺口沿用 get_snapshot 的 60s 回溯; 找不到则该分钟无标签).
+  //   writer(h, label_l1, values[GROUP_SIZE]) 负责落盘.
+  // -------------------------------------------------------------------------
+  template <class Writer>
+  inline void compute_minute_anchored(size_t t, Writer &&writer) {
+    save_snapshot(t);
+
+    for (size_t h = 0; h < HOLD_COUNT; ++h) {
+      const size_t hold_sec = HOLD_MINUTES[h] * 60;
+      for (;;) {
+        const size_t label_l0 = L1_to_L0(next_label_l1_[h]);
+        const size_t entry_l0 = label_l0 + DELAY_SECONDS;
+        const size_t exit_l0 = entry_l0 + hold_sec;
+        if (exit_l0 > t)
+          break;
+        const auto *entry = get_snapshot(entry_l0);
+        const auto *exit = get_snapshot(exit_l0);
+        if (entry && exit) {
+          float values[GROUP_SIZE];
+          bool any = false;
+          for (size_t a = 0; a < AMT_COUNT; ++a) {
+            values[a] = calc_return(entry, exit, a, true);
+            values[AMT_COUNT + a] = calc_return(entry, exit, a, false);
+            any = any || values[a] != 0.0f || values[AMT_COUNT + a] != 0.0f;
+          }
+          if (any)
+            writer(h, next_label_l1_[h], static_cast<const float *>(values));
+        }
+        ++next_label_l1_[h];
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // flush接口 - 供Tick_Sequential按组批量写入
   // -------------------------------------------------------------------------
   static constexpr size_t hold_count() { return HOLD_COUNT; }
@@ -150,6 +190,8 @@ public:
   inline void reset() {
     for (auto &snap : buffer_)
       snap.valid = false;
+    for (size_t h = 0; h < HOLD_COUNT; ++h)
+      next_label_l1_[h] = 0;
   }
 
 private:
@@ -275,6 +317,7 @@ private:
   size_t out_l0_[HOLD_COUNT] = {};           // 各组的label_l0
   bool out_valid_[LABEL_COUNT] = {};         // 各label是否有效
   bool out_group_valid_[HOLD_COUNT] = {};    // 各组是否有效
+  size_t next_label_l1_[HOLD_COUNT] = {};    // 分钟锚定路径: 各组下一个待写 L1 行
 };
 
 // =============================================================================
@@ -284,4 +327,10 @@ inline constexpr size_t LABEL_HOLD_MINUTES[] = {5, 10, 30}; // 持仓分钟数
 inline constexpr size_t LABEL_AMOUNT_WAN[] = {5, 20};       // 下单金额(万元)
 inline constexpr size_t LABEL_DELAY_SECONDS = 3;            // 下单延迟(秒)
 
+// L1 分钟标签 (12 列, compute_minute_anchored 路径)
 using LabelReturnOp = LabelReturn<LABEL_DELAY_SECONDS, 3, LABEL_HOLD_MINUTES, 2, LABEL_AMOUNT_WAN>;
+
+// L0 秒级标签: 1 分钟 × 5 万 (compute 秒级回填路径; short 一并算出但只落 long)
+inline constexpr size_t LABEL_1M_HOLD_MINUTES[] = {1};
+inline constexpr size_t LABEL_1M_AMOUNT_WAN[] = {5};
+using LabelReturn1mOp = LabelReturn<LABEL_DELAY_SECONDS, 1, LABEL_1M_HOLD_MINUTES, 1, LABEL_1M_AMOUNT_WAN>;

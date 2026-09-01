@@ -2,6 +2,7 @@
 
 #include "features/Backend/FeatureStore.hpp"
 #include "features/Backend/FeatureStoreConfig.hpp"
+#include "features/Fundamental/FundamentalDaily.hpp"
 #include <array>
 #include <cstdint>
 
@@ -174,6 +175,10 @@ inline void Minute_Sequential::compute_and_store() {
     dag_.l1.Peak_ratio_ask.compute(); // input: l0.AskQty_
     dag_.l1.Peak_ratio_ask.flush();   // output: Peak_ratio_ask_
 
+    // --- Valuation ---
+    dag_.l1.Val.compute(); // input: minute_data.close, fund_row (onDay)
+    dag_.l1.Val.flush();   // output: Val_mcap_ ... Val_low_mc_
+
     // --- 写入缓冲区 (按 FeaturesDefine.hpp 中的定义顺序) ---
     ts_features_buffer_[L1_FieldOffset::min] = dag_.l1.Min_.back();
     ts_features_buffer_[L1_FieldOffset::ci_5] = dag_.l1.Ci_5_.back();
@@ -266,8 +271,39 @@ inline void Minute_Sequential::compute_and_store() {
     ts_features_buffer_[L1_FieldOffset::peak_ratio_bid] = dag_.l1.Peak_ratio_bid_.back();
     ts_features_buffer_[L1_FieldOffset::peak_ratio_ask] = dag_.l1.Peak_ratio_ask_.back();
 
+    // --- Valuation ---
+    ts_features_buffer_[L1_FieldOffset::mcap] = dag_.l1.Val_mcap_.back();
+    ts_features_buffer_[L1_FieldOffset::fmcap] = dag_.l1.Val_fmcap_.back();
+    ts_features_buffer_[L1_FieldOffset::pe] = dag_.l1.Val_pe_.back();
+    ts_features_buffer_[L1_FieldOffset::pb] = dag_.l1.Val_pb_.back();
+    ts_features_buffer_[L1_FieldOffset::ps] = dag_.l1.Val_ps_.back();
+    ts_features_buffer_[L1_FieldOffset::pcf] = dag_.l1.Val_pcf_.back();
+    ts_features_buffer_[L1_FieldOffset::limit_up] = dag_.l1.Val_limit_up_.back();
+    ts_features_buffer_[L1_FieldOffset::limit_dn] = dag_.l1.Val_limit_dn_.back();
+    ts_features_buffer_[L1_FieldOffset::low_p] = dag_.l1.Val_low_p_.back();
+    ts_features_buffer_[L1_FieldOffset::low_mc] = dag_.l1.Val_low_mc_.back();
+    // --- 日频常量列 (当日基本面输入行, 缺失 = NaN) ---
+    const float *fund = dag_.fund_row_;
+    ts_features_buffer_[L1_FieldOffset::industry_l1] = fund[fund::industry_l1];
+    ts_features_buffer_[L1_FieldOffset::list_age] = fund[fund::list_age];
+    ts_features_buffer_[L1_FieldOffset::delist_age] = fund[fund::delist_age];
+    ts_features_buffer_[L1_FieldOffset::is_margin] = fund[fund::is_margin];
+    ts_features_buffer_[L1_FieldOffset::susp] = fund[fund::susp];
+    ts_features_buffer_[L1_FieldOffset::roe_raw] = fund[fund::roe_raw];
+    ts_features_buffer_[L1_FieldOffset::roa_raw] = fund[fund::roa_raw];
+    ts_features_buffer_[L1_FieldOffset::dy_raw] = fund[fund::dy_raw];
+    ts_features_buffer_[L1_FieldOffset::cffoa_raw] = fund[fund::cffoa_raw];
+    ts_features_buffer_[L1_FieldOffset::mr_bal] = fund[fund::mr_bal];
+    ts_features_buffer_[L1_FieldOffset::ms_bal] = fund[fund::ms_bal];
+    ts_features_buffer_[L1_FieldOffset::profit_st] = fund[fund::profit_st];
+    ts_features_buffer_[L1_FieldOffset::revenue_st] = fund[fund::revenue_st];
+    ts_features_buffer_[L1_FieldOffset::dividend_st] = fund[fund::dividend_st];
+    ts_features_buffer_[L1_FieldOffset::trading_st] = fund[fund::trading_st];
+    ts_features_buffer_[L1_FieldOffset::risk_warn] = fund[fund::risk_warn];
+    ts_features_buffer_[L1_FieldOffset::new_list] = fund[fund::new_list];
+
     // Write TS features
-    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::peak_ratio_ask, ts_features_buffer_.data(), worker_id_);
+    TS_WRITE_FEATURES(store_, date_str_, 1, t, asset_id_, L1_FieldOffset::min, L1_FieldOffset::new_list, ts_features_buffer_.data(), worker_id_);
   }
 
   // Write data validity flag

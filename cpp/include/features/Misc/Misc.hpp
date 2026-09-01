@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <vector>
 
 constexpr float PI = 3.14159265358979323846f;
@@ -34,6 +36,14 @@ inline float inverse_normal_cdf(float p) {
   return (p < 0.5f) ? -result : result;
 }
 
+// fast-math 安全的有限性判断: 指数位全 1 = inf/NaN.
+// 整数域位测试, 不受 -ffinite-math-only 影响 (isnan/isfinite 会被优化掉).
+inline bool finite_bits(float x) {
+  std::uint32_t b;
+  std::memcpy(&b, &x, sizeof(b));
+  return (b & 0x7f800000u) != 0x7f800000u;
+}
+
 // Compute rank + inverse normal transform (only on valid assets, optimized)
 inline void compute_rank_inverse_normal_sparse(const float *input,
                                                const std::vector<size_t> &valid_indices,
@@ -41,14 +51,18 @@ inline void compute_rank_inverse_normal_sparse(const float *input,
   if (valid_indices.empty())
     return;
 
-  const size_t N = valid_indices.size();
   std::vector<std::pair<float, size_t>> sorted_vals;
-  sorted_vals.reserve(N);
+  sorted_vals.reserve(valid_indices.size());
 
-  // Build sort pairs
+  // Build sort pairs (跳过 inf/NaN: 基本面列缺失 = NaN; NaN 进 std::sort 是 UB)
   for (size_t idx : valid_indices) {
-    sorted_vals.emplace_back(input[idx], idx);
+    if (finite_bits(input[idx]))
+      sorted_vals.emplace_back(input[idx], idx);
   }
+
+  const size_t N = sorted_vals.size();
+  if (N == 0)
+    return;
 
   // Sort by value (use pdqsort-friendly pattern for small N)
   std::sort(sorted_vals.begin(), sorted_vals.end());
@@ -57,7 +71,7 @@ inline void compute_rank_inverse_normal_sparse(const float *input,
   const float scale = 1.0f / (N + 1.0f);
   for (size_t rank = 0; rank < N; ++rank) {
     size_t asset_idx = sorted_vals[rank].second;
-    float percentile = (rank + 1.0f) * scale;  // Strength reduction
+    float percentile = (rank + 1.0f) * scale; // Strength reduction
     output[asset_idx] = inverse_normal_cdf(percentile);
   }
 }
@@ -86,4 +100,3 @@ inline void compute_zscore_sparse(const float *input,
     output[idx] = (input[idx] - mean) / stddev;
   }
 }
-

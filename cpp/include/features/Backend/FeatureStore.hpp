@@ -119,8 +119,8 @@ private:
         assert(data[lvl]);
       }
 
-      // Allocate depth data (same T as L0)
-      const size_t depth_total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
+      // Allocate depth data (分钟频, T = DEPTH_ROWS = L1)
+      const size_t depth_total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
       const size_t depth_aligned_bytes = ((depth_total_bytes + 63) / 64) * 64;
 #ifdef _WIN32
       depth_data = static_cast<feature_storage_t *>(_aligned_malloc(depth_aligned_bytes, 64));
@@ -140,7 +140,7 @@ private:
       }
 
       // Reset depth data
-      const size_t depth_total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
+      const size_t depth_total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
       std::memset(depth_data, 0, depth_total_bytes);
 
       for (size_t i = 0; i < num_assets; ++i) {
@@ -236,7 +236,7 @@ public:
       bytes_per_day += MAX_ROWS_PER_LEVEL[lvl] * num_assets * FIELDS_PER_LEVEL[lvl] * sizeof(feature_storage_t);
     }
     // Add depth data size
-    const size_t depth_bytes = MAX_ROWS_PER_LEVEL[0] * num_assets * DEPTH_TOTAL_WIDTH * sizeof(feature_storage_t);
+    const size_t depth_bytes = DEPTH_ROWS * num_assets * DEPTH_TOTAL_WIDTH * sizeof(feature_storage_t);
     bytes_per_day += depth_bytes;
 
     // 限制 pool_size 不超过 60% 系统内存
@@ -256,7 +256,7 @@ public:
     std::cout << "Dimension Details:\n";
     // Add depth info
     {
-      const size_t T = MAX_ROWS_PER_LEVEL[0];
+      const size_t T = DEPTH_ROWS;
       const size_t A = num_assets;
       const size_t F = DEPTH_TOTAL_WIDTH;
       printf("  Depth  [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", T, F, A, depth_bytes / (1024.0 * 1024.0));
@@ -300,7 +300,7 @@ public:
 
       // Touch depth data pages
       {
-        const size_t total_bytes = MAX_ROWS_PER_LEVEL[0] * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
+        const size_t total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
         const size_t page_size = 4096;
         for (size_t offset = 0; offset < total_bytes; offset += page_size) {
           reinterpret_cast<volatile char *>(pool_[i].depth_data)[offset] = 0;
@@ -861,10 +861,10 @@ private:
                              T[lvl], F[lvl], A, slot->data[lvl], total_bytes);
     }
 
-    // Depth
+    // Depth (分钟频)
     {
-      const size_t total_bytes = T[0] * DEPTH_TOTAL_WIDTH * A * sizeof(feature_storage_t);
-      write_file_with_header(out_dir + "/depth.zst", T[0], DEPTH_TOTAL_WIDTH, A,
+      const size_t total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * A * sizeof(feature_storage_t);
+      write_file_with_header(out_dir + "/depth.zst", DEPTH_ROWS, DEPTH_TOTAL_WIDTH, A,
                              slot->depth_data, total_bytes);
     }
 
@@ -990,7 +990,7 @@ public:
     assert(_slot.depth_data && "depth_data is null");                       \
     const size_t _F = DEPTH_TOTAL_WIDTH;                                    \
     const size_t _A = (store)->query_A();                                   \
-    [[maybe_unused]] const size_t _T = (store)->query_T(0);                 \
+    [[maybe_unused]] const size_t _T = DEPTH_ROWS;                          \
     const size_t _f = DEPTH_FIELD_OFFSETS[field_enum];                      \
     assert((t) < _T && "time index out of bounds");                         \
     assert(_f < _F && "feature index out of bounds");                       \
@@ -1006,7 +1006,7 @@ public:
     assert(_slot.depth_data && "depth_data is null");                                     \
     const size_t _F = DEPTH_TOTAL_WIDTH;                                                  \
     const size_t _A = (store)->query_A();                                                 \
-    [[maybe_unused]] const size_t _T = (store)->query_T(0);                               \
+    [[maybe_unused]] const size_t _T = DEPTH_ROWS;                                        \
     const size_t _f_start = DEPTH_FIELD_OFFSETS[f_start_enum];                            \
     const size_t _f_end = DEPTH_FIELD_OFFSETS[f_end_enum];                                \
     assert((t) < _T && "time index out of bounds");                                       \

@@ -203,6 +203,8 @@ set(SOURCES
     ../../src/worker/sequential_worker.cpp
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/io_worker.cpp
+    ../../src/features/FundamentalDaily.cpp
+    ../../src/features/CSMethods.cpp
     ../../src/gui/Gui.cpp
     ../../src/gui/Tasks.cpp
     ../../src/gui/coro/CoroManager.cpp
@@ -349,6 +351,8 @@ set_source_files_properties(
     ../../src/api/tushare/spec.cpp
     ../../src/api/tushare/parse.cpp
     ../../src/api/tushare/pipeline.cpp
+    ../../src/features/FundamentalDaily.cpp
+    ../../src/features/CSMethods.cpp
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
     ../../src/shared/AssetAxis.cpp
