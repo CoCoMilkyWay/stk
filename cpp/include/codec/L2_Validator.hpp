@@ -105,15 +105,16 @@ enum Check : uint32_t {
   // 它抓的是 ID 类判据抓不到的东西: 整段委托缺失且没有成交引用过它们.
   BookMismatch = 1u << 7,
   // 源数据字段超出 Order 的位宽, 落盘时会被 clamp_to_bound 静默截断.
-  // 从 csv_to_order/csv_to_trade 挪进来的 —— 那里截断无声无息, 事后无从分辨.
-  // 实测这不是假想风险: 2025-01-02 全市场 5110 个资产里 36 个 (0.70%) 的价格
-  // 顶到 14bit 上界 (163.83 元), 且几乎都是全天 100% 的记录 —— 高价股 (茅台、
-  // 宁德、比亚迪、大批科创板) 落盘后整只票的价格信息荡然无存.
+  // 放在这里而不是放在 csv_to_order/csv_to_trade 里: 那两处只能默默截断, 事后
+  // 无从分辨一个值究竟是原样还是被削过. 价格不在此列 —— 它有 park_price 兜着,
+  // 折进窗口是有意为之而非丢失.
   FieldOverflow = 1u << 8,
   // LimitOrderBook 无法处理的记录: 数量为 0 (抵扣不动簿) 或定位 id 为 0
-  // (找不到要抵扣的挂单). 判据照搬 LimitOrderBook.hpp:896 已验证过的那两条.
-  // 挪到编码期是为了让 sequential_worker 那个 order_invalid_cnt>100 → exit(1)
-  // 永远不会触发: 编码期跳掉一个资产, 好过特征计算跑到一半整个进程退出.
+  // (找不到要抵扣的挂单). 判据与 LimitOrderBook 内部那两条一致.
+  //
+  // 在编码期就拦下, 是为了让 sequential_worker 里 order_invalid_cnt 超阈值就
+  // exit(1) 那条路永远走不到: 编码期跳掉一个资产, 好过特征计算跑到一半整个
+  // 进程退出.
   LobUnusable = 1u << 9,
   // 当日成交带装不进 LOB 档位窗口 (kPriceIndexRange).
   //

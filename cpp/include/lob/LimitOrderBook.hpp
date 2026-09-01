@@ -298,13 +298,13 @@ private:
   // LEVEL MANAGEMENT (价格档位基础操作)
   //======================================================================================
 
-  // Get or create: Atomically get existing level or create new one (single array access)
   // 绝对价 (分) → 档位数组下标.
   //
-  // 下标 0 是 LOB 留给市价单/无价格档的特殊档位, 所以 price==0 原样透传, 不能
-  // 去减基准. 低价股 price_base_ 恒为 0, 折算退化成恒等 —— 绝大多数标的走的仍
-  // 是改动前那条路径.
+  // 下标 0 是留给市价单/无价格档的特殊档位, 所以 price==0 原样透传, 不减基准;
+  // price_base_ 为 0 时折算退化成恒等.
   //
+  // 上下夹紧只是越界护栏: 落盘时 park_price 已把价格折进窗口, 正常情况下这两个
+  // 分支走不到. 留着是因为一旦走到就是档位数组越界.
   HOT_INLINE Price price_to_index(uint32_t price) const {
     if (price == 0) [[unlikely]]
       return 0;
@@ -818,10 +818,9 @@ private:
 
   // Core order processing implementation (shared by single/batch interfaces)
   HOT_INLINE bool process_impl(const L2::Order &order_abs) {
-    // .bin 里存的是绝对价 (分, 29bit), 而档位数组只开了 kPriceIndexRange 档并按
-    // 下标直接寻址. 在入口一次性折算, 函数体内此后所有价格比较与寻址都留在下标
-    // 空间 —— 与扩位之前逐位一致, 不必逐个改下面几十处下标点 (漏一处就只在高价
-    // 股上出错, 低价股 base=0 恒等, 极难暴露).
+    // .bin 里存的是绝对价 (分), 而档位数组只开了 kPriceIndexRange 档并按下标直接
+    // 寻址. 在入口一次性折算, 函数体内此后所有价格比较与寻址都留在下标空间; 只有
+    // 对外暴露的 LOB_feature_.price 用回绝对价.
     L2::Order order = order_abs;
     order.price = price_to_index(order_abs.price);
 

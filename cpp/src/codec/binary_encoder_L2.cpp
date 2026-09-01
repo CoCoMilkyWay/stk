@@ -91,10 +91,9 @@ static inline uint8_t extract_millisecond_10ms(uint32_t time_ms) {
 
 // Market detection: 1 = 深, 0 = 沪, -1 = 代码字段非法.
 //
-// -1 只可能来自损坏的源数据 —— 实测 20250813 的归档里 000701.SZ 逐笔成交
-// 第 6471 行是 "000701.S00,1000,1..." (unrar 对该成员报 CRC 失败, 解出来的
-// 字节整体错位粘连). 解析边界按这个三态判断把坏行挑出来计数, 内部转换路径
-// (csv_to_order/csv_to_trade) 只会见到已验证过的行, 所以那里仍然 assert.
+// -1 只可能来自损坏的源数据: unrar 对成员报 CRC 失败时仍会吐出字节, 解出来的
+// 行会整体错位粘连, 代码字段因此不成形. 解析边界按这个三态把坏行挑出来计数,
+// 内部转换路径 (csv_to_order/csv_to_trade) 只会见到已验证过的行, 那里仍 assert.
 static inline int market_of(const std::string &stock_code) {
   if (stock_code.size() >= 3) {
     const char *suffix = stock_code.data() + stock_code.size() - 3;
@@ -208,12 +207,10 @@ static bool parse_csv_buffer(const char *data, size_t len, ParseFunc parse_func)
   const char *const end = data + len;
   const char *pos = data;
 
-  // 行结束符先探一次, 再拿它 memchr 扫全文 —— 归档里 CRLF 和裸 CR 两种都有,
-  // 只认 '\n' 会把裸 CR 的文件整个读成一行: 表头被当成唯一一行跳掉, 余下几万
-  // 条记录粘成一坨, split_csv_line_view 取走头 10~12 个字段, 于是"成功"解析出
-  // 恰好一条记录, 既不报坏行也不报空文件. 实测 20240812 的 000548.SZ 逐笔成交
-  // (LF=1, CR=7853) 与 20250102 的 000001.SZ 逐笔委托 (LF=1, CR=144126) 都是
-  // 裸 CR, 后者整个深市当天因此只落下 82 字节的产物.
+  // 行结束符先探一次, 再拿它 memchr 扫全文 —— 归档里 CRLF 和裸 CR 两种都有.
+  // 只认 '\n' 会把裸 CR 的文件整个读成一行: 表头被当成唯一一行跳掉, 余下所有
+  // 记录粘成一坨, split_csv_line_view 取走开头十来个字段, 于是"成功"解析出恰好
+  // 一条记录 —— 既不报坏行也不报空文件, 产物静默地只剩一条.
   const char *const first_lf =
       static_cast<const char *>(std::memchr(data, '\n', len));
   const char *const first_cr =
@@ -374,9 +371,11 @@ bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSum
   // 从尾部往前逐行回扫. 停牌日的 行情.csv 只有表头, 回扫到表头就停 —— 表头
   // 的"自然日"列不含数字, fast_parse_u32 给 0, 以此与数据行区分.
   //
-  // 但"最后一行"不等于"收盘行"
+  // 但"最后一行"不等于"收盘行": 部分板块收盘后还会再推若干行占位快照, 其当日
+  // 累计量与成交额都是 0. 取到这种行, 当日累计量就成了 0, 逐笔累加与它的差恰好
+  // 等于全天成交量. 所以要一直回扫到累计量非零的那一行.
   //
-  // 找不到任何非零行时退回末行 (have_fallback): 那是真的一天没成交, 让它跟
+  // 全程没有非零行时退回末行 (have_fallback): 那是真的一天没有成交, 让它与
   // Σ逐笔成交量=0 对上, 而不是误报成 MarketAbsent.
   bool have_fallback = false;
   const char *line_end = data + len;
