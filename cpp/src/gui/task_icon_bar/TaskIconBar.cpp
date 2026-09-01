@@ -3,15 +3,10 @@
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_icon_bar/CoroNetwork.hpp"
 #include "imgui.h"
-#include "misc/cross_platform.hpp"
+#include "misc/system_metrics.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
-#ifdef _WIN32
-#include <pdh.h>
-#include <pdhmsg.h>
-#include <windows.h>
-#endif
 
 // ============================================================================
 // Configuration Parameters
@@ -22,9 +17,7 @@ constexpr int UPDATE_INTERVAL_MS = 500; // CPU, Memory update interval
 
 // Smoothing
 constexpr int SMOOTHING_WINDOW_MS = 2000; // 2-second smoothing window (2s / 500ms = 4 samples)
-constexpr int FPS_HISTORY_SIZE = SMOOTHING_WINDOW_MS / UPDATE_INTERVAL_MS;
-constexpr int CPU_HISTORY_SIZE = SMOOTHING_WINDOW_MS / UPDATE_INTERVAL_MS;
-constexpr int MEM_HISTORY_SIZE = SMOOTHING_WINDOW_MS / UPDATE_INTERVAL_MS;
+constexpr int HISTORY_SIZE = SMOOTHING_WINDOW_MS / UPDATE_INTERVAL_MS;
 
 // Network ping targets
 constexpr const char *PING_TARGET_GOOGLE = "1.1.1.1"; // Cloudflare DNS
@@ -55,64 +48,44 @@ constexpr int NET_YELLOW = 100;
 namespace GUI::TaskIconBar {
 namespace {
 
+namespace sysmon = misc::sysmon;
+
+// 2 秒滑动平均。采样间隔固定, 所以定长环形缓冲就是精确的时间窗, 且不用分配。
+class Smoothed {
+public:
+  explicit Smoothed(float initial) : average(initial) { samples.fill(initial); }
+
+  void push(float value) {
+    samples[index] = value;
+    index = (index + 1) % IconBarConfig::HISTORY_SIZE;
+    float sum = 0.0f;
+    for (float sample : samples)
+      sum += sample;
+    average = sum / IconBarConfig::HISTORY_SIZE;
+  }
+
+  float average;
+
+private:
+  std::array<float, IconBarConfig::HISTORY_SIZE> samples = {};
+  int index = 0;
+};
+
 // Icon bar for compact status display
 class IconBar {
 private:
-  // FPS tracking with smoothing
-  std::array<float, IconBarConfig::FPS_HISTORY_SIZE> fps_history = {};
-  int fps_history_idx = 0;
-  float fps_avg = 0.0f;
-  std::chrono::steady_clock::time_point last_fps_update;
+  // CPU / 内存来自共享采集层 (misc/system_metrics), FPS 由本地帧计数得到
+  Smoothed fps{60.0f};
+  Smoothed cpu{0.0f};
+  Smoothed mem{0.0f};
+  std::chrono::steady_clock::time_point last_update;
   int frame_count = 0;
-
-  // CPU tracking with smoothing
-  std::array<float, IconBarConfig::CPU_HISTORY_SIZE> cpu_history = {};
-  int cpu_history_idx = 0;
-  float cpu_avg = 0.0f;
-#ifdef _WIN32
-  PDH_HQUERY cpu_query = nullptr;
-  PDH_HCOUNTER cpu_counter = nullptr;
-#endif
-  std::chrono::steady_clock::time_point last_cpu_update;
-
-  // Memory tracking with smoothing
-  std::array<float, IconBarConfig::MEM_HISTORY_SIZE> mem_history = {};
-  int mem_history_idx = 0;
-  float mem_avg = 0.0f;
-  std::chrono::steady_clock::time_point last_mem_update;
 
   // Network status (read from global coroutine-managed state)
   using NetworkStatus = NetworkMonitor::Status;
 
 public:
-  IconBar() {
-    last_fps_update = std::chrono::steady_clock::now();
-    last_cpu_update = std::chrono::steady_clock::now();
-    last_mem_update = std::chrono::steady_clock::now();
-
-    // Initialize history arrays with reasonable defaults
-    for (auto &val : fps_history)
-      val = 60.0f;
-    for (auto &val : cpu_history)
-      val = 0.0f;
-    for (auto &val : mem_history)
-      val = 0.0f;
-
-#ifdef _WIN32
-    // Initialize Windows PDH for CPU monitoring
-    PdhOpenQueryW(nullptr, 0, &cpu_query);
-    PdhAddCounterW(cpu_query, L"\\Processor(_Total)\\% Processor Time", 0, &cpu_counter);
-    PdhCollectQueryData(cpu_query); // Initial sample
-#endif
-  }
-
-  ~IconBar() {
-#ifdef _WIN32
-    if (cpu_query) {
-      PdhCloseQuery(cpu_query);
-    }
-#endif
-  }
+  IconBar() : last_update(std::chrono::steady_clock::now()) {}
 
   void Draw() {
     UpdateMetrics();
@@ -148,131 +121,70 @@ public:
 
 private:
   void UpdateMetrics() {
-    auto now = std::chrono::steady_clock::now();
+    ++frame_count;
 
-    // Update FPS (smooth with moving average)
-    frame_count++;
-    auto fps_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_fps_update);
-    if (fps_elapsed.count() >= IconBarConfig::UPDATE_INTERVAL_MS) {
-      float current_fps = frame_count * 1000.0f / fps_elapsed.count();
-      fps_history[fps_history_idx] = current_fps;
-      fps_history_idx = (fps_history_idx + 1) % IconBarConfig::FPS_HISTORY_SIZE;
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update);
+    if (elapsed.count() < IconBarConfig::UPDATE_INTERVAL_MS)
+      return;
 
-      // Calculate moving average
-      float sum = 0.0f;
-      for (const auto &val : fps_history)
-        sum += val;
-      fps_avg = sum / IconBarConfig::FPS_HISTORY_SIZE;
+    // 与 SystemInfo 面板共用同一次采样; 面板开着时它已经按 100ms 刷过了, 这里直接读结果
+    sysmon::Monitor &monitor = sysmon::Monitor::instance();
+    monitor.poll(sysmon::Scope::Basic, std::chrono::milliseconds(IconBarConfig::UPDATE_INTERVAL_MS));
+    const sysmon::Sample &sample = monitor.sample();
 
-      frame_count = 0;
-      last_fps_update = now;
-    }
+    fps.push(static_cast<float>(frame_count) * 1000.0f / static_cast<float>(elapsed.count()));
+    cpu.push(sample.cpu_total_percent);
+    mem.push(sample.mem_used_percent);
 
-    // Update CPU (smooth with moving average)
-    auto cpu_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_cpu_update);
-    if (cpu_elapsed.count() >= IconBarConfig::UPDATE_INTERVAL_MS) {
-      float current_cpu = GetCPUUsage();
-      cpu_history[cpu_history_idx] = current_cpu;
-      cpu_history_idx = (cpu_history_idx + 1) % IconBarConfig::CPU_HISTORY_SIZE;
-
-      // Calculate moving average
-      float sum = 0.0f;
-      for (const auto &val : cpu_history)
-        sum += val;
-      cpu_avg = sum / IconBarConfig::CPU_HISTORY_SIZE;
-
-      last_cpu_update = now;
-    }
-
-    // Update Memory (smooth with moving average)
-    auto mem_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_mem_update);
-    if (mem_elapsed.count() >= IconBarConfig::UPDATE_INTERVAL_MS) {
-      float current_mem = GetMemoryUsage();
-      mem_history[mem_history_idx] = current_mem;
-      mem_history_idx = (mem_history_idx + 1) % IconBarConfig::MEM_HISTORY_SIZE;
-
-      // Calculate moving average
-      float sum = 0.0f;
-      for (const auto &val : mem_history)
-        sum += val;
-      mem_avg = sum / IconBarConfig::MEM_HISTORY_SIZE;
-
-      last_mem_update = now;
-    }
+    frame_count = 0;
+    last_update = now;
   }
 
-  float GetCPUUsage() {
-#ifdef _WIN32
-    if (!cpu_query || !cpu_counter)
-      return 0.0f;
+  static constexpr ImVec4 GREEN = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+  static constexpr ImVec4 YELLOW = ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
+  static constexpr ImVec4 RED = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
 
-    PDH_FMT_COUNTERVALUE counter_value;
-    PdhCollectQueryData(cpu_query);
-    if (PdhGetFormattedCounterValue(cpu_counter, PDH_FMT_DOUBLE, nullptr, &counter_value) == ERROR_SUCCESS) {
-      return static_cast<float>(counter_value.doubleValue);
+  // "越低越好"型指标 (CPU / 内存占用) 的统一画法。
+  // 明细行走回调而不是现成的字符串: 不悬停时一个字节都不用格式化。
+  template <typename DetailFn>
+  static void DrawUsageIcon(const char *prefix, const char *title, float value,
+                            float green_below, float yellow_below, DetailFn &&detail) {
+    const ImVec4 color = value < green_below ? GREEN : (value < yellow_below ? YELLOW : RED);
+
+    ImGui::Text("%s", prefix);
+    ImGui::SameLine(0, 0);
+    ImGui::TextColored(color, "%2.0f", std::min(value, 99.0f));
+
+    if (ImGui::IsItemHovered()) {
+      ImGui::BeginTooltip();
+      ImGui::Text("%s: %.1f%% (2s avg)", title, value);
+      detail();
+      ImGui::Separator();
+      ImGui::TextColored(GREEN, "Green:  < %.0f%%", green_below);
+      ImGui::TextColored(YELLOW, "Yellow: %.0f-%.0f%%", green_below, yellow_below);
+      ImGui::TextColored(RED, "Red:    > %.0f%%", yellow_below);
+      ImGui::EndTooltip();
     }
-#endif
-    return 0.0f;
-  }
-
-  float GetMemoryUsage() {
-    return memory_usage().used_percent();
   }
 
   void DrawCPUIcon() {
-    using namespace IconBarConfig::Thresholds;
-
-    ImVec4 color;
-    float cpu_clamped = std::min(cpu_avg, 99.0f);
-    if (cpu_avg < CPU_GREEN) {
-      color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
-    } else if (cpu_avg < CPU_YELLOW) {
-      color = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
-    } else {
-      color = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
-    }
-
-    ImGui::Text("C:");
-    ImGui::SameLine(0, 0);
-    ImGui::TextColored(color, "%2.0f", cpu_clamped);
-
-    if (ImGui::IsItemHovered()) {
-      ImGui::BeginTooltip();
-      ImGui::Text("CPU Usage: %.1f%% (2s avg)", cpu_avg);
-      ImGui::Separator();
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Green:  < %.0f%%", CPU_GREEN);
-      ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Yellow: %.0f-%.0f%%", CPU_GREEN, CPU_YELLOW);
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Red:    > %.0f%%", CPU_YELLOW);
-      ImGui::EndTooltip();
-    }
+    DrawUsageIcon("C:", "CPU Usage", cpu.average,
+                  IconBarConfig::Thresholds::CPU_GREEN, IconBarConfig::Thresholds::CPU_YELLOW, []() {
+                    const sysmon::StaticInfo &info = sysmon::Monitor::instance().info();
+                    ImGui::TextDisabled("%d logical / %d physical", info.logical_cores, info.physical_cores);
+                    ImGui::TextDisabled("%s", info.cpu_model.c_str());
+                  });
   }
 
   void DrawMemoryIcon() {
-    using namespace IconBarConfig::Thresholds;
-
-    ImVec4 color;
-    float mem_clamped = std::min(mem_avg, 99.0f);
-    if (mem_avg < MEM_GREEN) {
-      color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
-    } else if (mem_avg < MEM_YELLOW) {
-      color = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
-    } else {
-      color = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
-    }
-
-    ImGui::Text("M:");
-    ImGui::SameLine(0, 0);
-    ImGui::TextColored(color, "%2.0f", mem_clamped);
-
-    if (ImGui::IsItemHovered()) {
-      ImGui::BeginTooltip();
-      ImGui::Text("Memory Usage: %.1f%% (2s avg)", mem_avg);
-      ImGui::Separator();
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Green:  < %.0f%%", MEM_GREEN);
-      ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Yellow: %.0f-%.0f%%", MEM_GREEN, MEM_YELLOW);
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Red:    > %.0f%%", MEM_YELLOW);
-      ImGui::EndTooltip();
-    }
+    DrawUsageIcon("M:", "Memory Usage", mem.average,
+                  IconBarConfig::Thresholds::MEM_GREEN, IconBarConfig::Thresholds::MEM_YELLOW, []() {
+                    const sysmon::Monitor &monitor = sysmon::Monitor::instance();
+                    constexpr double GB = 1024.0 * 1024.0 * 1024.0;
+                    ImGui::TextDisabled("%.1f / %.0f GB", monitor.sample().mem_used_bytes / GB,
+                                        monitor.info().ram_total_bytes / GB);
+                  });
   }
 
   void DrawNetworkIcon() {
@@ -351,28 +263,20 @@ private:
   void DrawFPSIcon() {
     using namespace IconBarConfig::Thresholds;
 
-    // Color based on smoothed FPS
-    ImVec4 color;
-    float fps_clamped = std::min(fps_avg, 99.0f);
-    if (fps_avg >= FPS_GREEN) {
-      color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
-    } else if (fps_avg >= FPS_YELLOW) {
-      color = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
-    } else {
-      color = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
-    }
+    // FPS 与占用率相反: 越高越好, 所以阈值方向反过来
+    const ImVec4 color = fps.average >= FPS_GREEN ? GREEN : (fps.average >= FPS_YELLOW ? YELLOW : RED);
 
     ImGui::Text("F:");
     ImGui::SameLine(0, 0);
-    ImGui::TextColored(color, "%2.0f", fps_clamped);
+    ImGui::TextColored(color, "%2.0f", std::min(fps.average, 99.0f));
 
     if (ImGui::IsItemHovered()) {
       ImGui::BeginTooltip();
-      ImGui::Text("FPS: %.1f (2s avg)", fps_avg);
+      ImGui::Text("FPS: %.1f (2s avg)", fps.average);
       ImGui::Separator();
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Green:  >= %.0f", FPS_GREEN);
-      ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Yellow: %.0f-%.0f", FPS_YELLOW, FPS_GREEN);
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Red:    < %.0f", FPS_YELLOW);
+      ImGui::TextColored(GREEN, "Green:  >= %.0f", FPS_GREEN);
+      ImGui::TextColored(YELLOW, "Yellow: %.0f-%.0f", FPS_YELLOW, FPS_GREEN);
+      ImGui::TextColored(RED, "Red:    < %.0f", FPS_YELLOW);
       ImGui::Separator();
       ImGui::TextDisabled("Configuration:");
       ImGui::Text("TARGET_FPS:   %.1f", TARGET_FPS);

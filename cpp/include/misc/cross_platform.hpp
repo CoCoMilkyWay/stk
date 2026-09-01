@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 
 #include <fcntl.h>
@@ -12,6 +13,7 @@
 #include <io.h>
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <mach/mach.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
 #else
@@ -127,27 +129,45 @@ inline MemoryUsage memory_usage() {
   return {static_cast<std::size_t>(status.ullTotalPhys - status.ullAvailPhys),
           static_cast<std::size_t>(status.ullTotalPhys)};
 #elif defined(__APPLE__)
-  // TODO: mach host_statistics64 未实现 — 保持原 GUI 里的占位行为 (0%)
-  return {0, physical_ram_bytes()};
+  // Linux 的 MemAvailable 在这里的对应物: 空闲 + 非活跃 + 可清除 + 文件页,
+  // 都是内核在有压力时能立刻收回的部分.
+  vm_statistics64_data_t vm{};
+  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  const kern_return_t kr =
+      host_statistics64(mach_host_self(), HOST_VM_INFO64,
+                        reinterpret_cast<host_info64_t>(&vm), &count);
+  assert(kr == KERN_SUCCESS && "host_statistics64 失败");
+  (void)kr;
+  const std::size_t page = static_cast<std::size_t>(vm_kernel_page_size);
+  const std::size_t total = physical_ram_bytes();
+  const std::size_t available =
+      (static_cast<std::size_t>(vm.free_count) + vm.inactive_count +
+       vm.purgeable_count + vm.external_page_count) *
+      page;
+  assert(available <= total);
+  return {total - available, total};
 #else
-  FILE *meminfo = std::fopen("/proc/meminfo", "r");
-  assert(meminfo && "/proc/meminfo 打不开");
+  // MemTotal / MemFree / MemAvailable 固定是 /proc/meminfo 的前三行, 512B 足够.
+  // 走 read_file_head 而不是 fopen: stdio 每次打开都要 malloc 一个 4KB 缓冲区,
+  // 而这个函数在 GUI 里是每秒都要调的.
+  char buf[512];
+  const std::size_t got = read_file_head("/proc/meminfo", buf, sizeof(buf) - 1);
+  assert(got > 0 && "/proc/meminfo 读不到");
+  buf[got] = '\0';
 
-  std::size_t total_kb = 0;
-  std::size_t available_kb = 0;
-  char line[256];
-  while ((total_kb == 0 || available_kb == 0) && std::fgets(line, sizeof(line), meminfo)) {
+  const auto field_kb = [&buf](const char *key) -> std::size_t {
+    const char *p = std::strstr(buf, key);
+    assert(p && "/proc/meminfo 缺字段 (MemAvailable 需要 Linux 3.14+)");
     unsigned long long value = 0;
-    if (std::sscanf(line, "MemTotal: %llu kB", &value) == 1)
-      total_kb = static_cast<std::size_t>(value);
-    else if (std::sscanf(line, "MemAvailable: %llu kB", &value) == 1)
-      available_kb = static_cast<std::size_t>(value);
-  }
-  std::fclose(meminfo);
+    const int matched = std::sscanf(p + std::strlen(key), " %llu", &value);
+    assert(matched == 1);
+    (void)matched;
+    return static_cast<std::size_t>(value);
+  };
 
-  assert(total_kb > 0 && "/proc/meminfo 缺 MemTotal");
-  assert(available_kb > 0 && "/proc/meminfo 缺 MemAvailable (需要 Linux 3.14+)");
-  assert(available_kb <= total_kb);
+  const std::size_t total_kb = field_kb("MemTotal:");
+  const std::size_t available_kb = field_kb("MemAvailable:");
+  assert(total_kb > 0 && available_kb <= total_kb);
   return {(total_kb - available_kb) * 1024, total_kb * 1024};
 #endif
 }

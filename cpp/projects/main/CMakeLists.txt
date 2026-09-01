@@ -188,6 +188,7 @@ set(SOURCES
     ../../src/misc/fs.cpp
     ../../src/misc/parquet.cpp
     ../../src/misc/schedule.cpp
+    ../../src/misc/system_metrics.cpp
     ../../src/api/bigquant/dai.cpp
     ../../src/api/bigquant/spec.cpp
     ../../src/api/bigquant/pipeline.cpp
@@ -260,6 +261,8 @@ set(HEADERS
     ../../include/misc/fs.hpp
     ../../include/misc/parquet.hpp
     ../../include/misc/schedule.hpp
+    ../../include/misc/system_metrics.hpp
+    ../../include/misc/cross_platform.hpp
     ../../package/yyjson/yyjson.h
     ../../include/misc/timer.hpp
     ../../include/misc/print.hpp
