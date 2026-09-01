@@ -184,7 +184,9 @@ void encoding_producer(SharedData &data,
       if (!is_order && !is_trade)
         continue; // 行情.csv (快照) 不再编码
 
-      const size_t asset_id = axis.find(code_ex);
+      // 代码变更前的日子, 归档里是老代码, 轴上只有新代码 — 换回来才认得出
+      // (见 config::CODE_CHANGES). 无变更记录时 current_code 原样返回.
+      const size_t asset_id = axis.find(config::current_code(code_ex, date_str));
       if (asset_id == axis.size())
         continue; // 非股票 (ETF/基金) 或轴外代码
 
@@ -384,7 +386,9 @@ void encoding_worker(SharedData &data,
       slots.reserve(plan.size());
       for (const auto &[archive_index, slot] : plan) {
         const AssetItem &asset = data.asset.items[batch.tasks[slot.task_idx].asset_id];
-        const std::string asset_full = asset.asset_code + "." + asset.exchange;
+        // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
+        const std::string asset_full =
+            config::archive_code(asset.asset_code + "." + asset.exchange, batch.date);
         paths.push_back(batch.date + "/" + asset_full + "/" +
                         (slot.is_trade ? data.config.csv_market_trade : data.config.csv_market_order));
         sizes.push_back(slot.is_trade ? batch.tasks[slot.task_idx].trade_size
@@ -547,7 +551,9 @@ void encoding_worker(SharedData &data,
         break;
       const EncodeTask &task = batch.tasks[t];
       const AssetItem &asset = data.asset.items[task.asset_id];
-      const std::string base = batch.date + "/" + asset.asset_code + "." + asset.exchange + "/";
+      const std::string base =
+          batch.date + "/" +
+          config::archive_code(asset.asset_code + "." + asset.exchange, batch.date) + "/";
 
       // 两个文件仍要按归档序请求 (unrar p 按归档序输出)
       const bool trade_first = task.trade_index < task.order_index;

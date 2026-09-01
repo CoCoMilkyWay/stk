@@ -86,6 +86,36 @@ private:
 // ============================================================================
 namespace config {
 
+// ---- 代码变更 (同一家公司换了证券代码) ----
+// A 股换代码极罕见 —— 重大资产重组通常也不换 —— 全库实测只有中航电测一例 (300114.SZ → 302132.SZ)
+struct CodeChange {
+  const char *code;   // 现行代码 (资产轴上的那个)
+  const char *former; // 变更前代码 (归档目录名)
+  const char *until;  // YYYYMMDD, 新代码生效日; 早于这天的归档里叫 former
+};
+
+inline constexpr CodeChange CODE_CHANGES[] = {
+    {"302132.SZ", "300114.SZ", "20250217"}, // 中航电测 → 中航成飞
+};
+
+// 现行代码 → 归档里的目录名. 无变更记录时原样返回.
+inline std::string archive_code(const std::string &code, const std::string &date) {
+  for (const auto &c : CODE_CHANGES) {
+    if (code == c.code && date < c.until)
+      return c.former;
+  }
+  return code;
+}
+
+// archive_code 的逆向: 归档里读到的目录名 → 现行代码.
+inline std::string current_code(const std::string &archived, const std::string &date) {
+  for (const auto &c : CODE_CHANGES) {
+    if (archived == c.former && date < c.until)
+      return c.code;
+  }
+  return archived;
+}
+
 // ---- 数据源凭据 (与官方 CLI / 控制台 token 同源) ----
 //   BigQuant DAI: AK = Flight Basic Token 用户名; SK = 密码, 永不回传
 //   Tushare pro token; *_vip 接口需 5000+ 积分
