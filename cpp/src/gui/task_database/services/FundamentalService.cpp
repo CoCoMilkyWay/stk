@@ -6,8 +6,9 @@
 //                  + cn_stock_industry_component (最新快照)
 //                  + cn_stock_real_bar1d (每股最新行) + cn_stock_status (每股最新行)
 //   stock_factor ← cn_stock_real_bar1d.adjust_factor 变点序列 (分红/拆分事件日)
-//   peTTM/pbMRQ/psTTM/pcfNcfTTM ← close × total_shares / 财务分母 (最新可见快照,
-//                  口径与 L1 特征表一致; 分钟实时版在特征表阶段算)
+//   mcap/peTTM/pbMRQ/psTTM/pcfNcfTTM/dy{1,3,5}y ← close × total_shares / 财务分母
+//                  (最新可见快照, 口径与 L1 特征表一致; 分钟实时版在特征表阶段算)
+//                  dy{1,3,5}y 另取 cn_stock_dividend 近 1/3/5 年公告, 年化
 #include "gui/task_database/services/FundamentalService.hpp"
 
 #include "api/bigquant/pipeline.hpp"
@@ -330,10 +331,13 @@ bool build_asset_info(Job &job) {
     info.turn = buf;
   }
 
-  // ---- 估值快照 (PE/PB/PS/PCF) ← 最新 close × total_shares / 财务分母 ----
-  //   口径与 L1 特征表一致 (qmt 移植): PE=mcap/归母净利TTM, PB=mcap/归母权益MRQ,
-  //   PS=mcap/营业总收入TTM(≤0脏值→空), PCF=mcap/经营现金流TTM; 亏损/负权益/烧钱
-  //   保留负值. 无效 → 留空串 (Table 显示 "-").
+  // ---- 估值快照 (MCAP/PE/PB/PS/PCF/DY) ← 最新 close × total_shares / 各分母 ----
+  //   口径与 L1 特征表一致 (qmt 移植): 分子统一为总市值 mcap = close × total_shares
+  //   (不复权真价); PE=mcap/归母净利TTM, PB=mcap/归母权益MRQ, PS=mcap/营业总收入TTM
+  //   (≤0脏值→空), PCF=mcap/经营现金流净额TTM; 亏损/负权益/烧钱保留负值.
+  //   DY1/3/5 = 近 1/3/5 年税前分红总额年化后 / mcap; 静态快照的股本恒为最新
+  //   快照, 故等价于 Σ每股分红/年数/close (L1 dy_raw 用公告日当时股本, 窗口内
+  //   有增发时会有微差). 无效 → 留空串 (Table 显示 "-").
   {
     struct ValLatest {
       std::int32_t shares_d = 0;
@@ -344,7 +348,12 @@ bool build_asset_info(Job &job) {
       double cf = std::numeric_limits<double>::quiet_NaN();
       std::int32_t bal_rd = 0, bal_d = 0; // MRQ: max(report_date), 同 rd 取最新可见
       double equity = std::numeric_limits<double>::quiet_NaN();
+      double dps[3] = {0, 0, 0}; // 近 1/3/5 年税前每股分红求和 (无分红 = 0, 非缺失)
     };
+    // 三档股息率的窗口长度 [日历日] 与年化除数 [年]
+    constexpr int kDyWindows = 3;
+    constexpr int kDyDays[kDyWindows] = {365, 1095, 1825};
+    constexpr double kDyYears[kDyWindows] = {1.0, 3.0, 5.0};
     std::vector<ValLatest> val; // id →
 
     // 股本: cn_stock_shares 每股最新行
@@ -436,7 +445,44 @@ bool build_asset_info(Job &job) {
       }
     }
 
-    job.set_message("计算估值快照 (PE/PB/PS/PCF)");
+    // 分红: cn_stock_dividend, publish_date ∈ (today-N日, today] 的税前每股分红
+    // 求和, 三档窗口各自累加. 锚定公告日 (非除权日) — 与 L1 dy_raw 同口径.
+    {
+      std::int32_t div_lo[kDyWindows];
+      for (int w = 0; w < kDyWindows; ++w)
+        div_lo[w] = misc::to_yyyymmdd_int(misc::add_days(today, -kDyDays[w]));
+      const std::int32_t div_hi = misc::to_yyyymmdd_int(today);
+      auto files = pq::list_month_files("cn_stock_dividend");
+      std::size_t total = files.size(), idx = 0;
+      for (auto &[ym, path] : files) {
+        ++idx;
+        job.set_message("扫描分红 " + ym + " (" + std::to_string(idx) + "/" +
+                        std::to_string(total) + ")");
+        pq::TableView v(pq::read_table(
+            path, {"instrument", "publish_date", "cash_before_tax"}));
+        if (v.rows() == 0)
+          continue;
+        pq::Col ins = v.col("instrument");
+        pq::Col pd = v.col("publish_date");
+        pq::Col cash = v.col("cash_before_tax");
+        FileCodes code(intern);
+        for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
+          std::int32_t d = pd.yyyymmdd(i);
+          if (d <= div_lo[kDyWindows - 1] || d > div_hi)
+            continue; // 最长窗口都不覆盖 → 三档都用不上
+          float c = cash.f32(i);
+          if (!std::isfinite(c) || c <= 0.0f)
+            continue;
+          ValLatest &vv = slot(val, code(ins.str(i)));
+          for (int w = 0; w < kDyWindows; ++w)
+            if (d > div_lo[w])
+              vv.dps[w] += static_cast<double>(c);
+        }
+      }
+    }
+
+    job.set_message("计算估值快照 (MCAP/PE/PB/PS/PCF/DY)");
+    const auto today_days = misc::parse_yyyymmdd(today);
     for (std::uint32_t id = 0; id < val.size(); ++id) {
       const ValLatest &vv = val[id];
       auto found = stock_info.find(intern.code(id));
@@ -450,6 +496,8 @@ bool build_asset_info(Job &job) {
       const double mcap = close * vv.total_shares;
       StockInfo &info = found->second;
       char buf[32];
+      std::snprintf(buf, sizeof(buf), "%.4f", mcap / 1e8); // [亿元]
+      info.mcap = buf;
       auto set_ratio = [&](std::string &dst, double den, bool positive_only) {
         if (!std::isfinite(den) || den == 0.0 || (positive_only && den <= 0.0))
           return; // 留空 → Table 显示 "-"
@@ -460,6 +508,27 @@ bool build_asset_info(Job &job) {
       set_ratio(info.pbMRQ, vv.equity, false);
       set_ratio(info.psTTM, vv.rev, true); // 负营收 = 源脏值
       set_ratio(info.pcfNcfTTM, vv.cf, false);
+
+      // 年化股息率: Σ每股分红 / 年数 / close (等价于 Σ(分红×股本)/年数/mcap).
+      // 年数取 min(窗长, 上市年数) — 否则次新股会被窗长系统性摊薄.
+      // ipoDate 缺失 ⇒ 视为已满窗 (退回固定除数).
+      double listed_years = std::numeric_limits<double>::infinity();
+      if (info.ipoDate.size() == 10) {
+        const std::string ipo = info.ipoDate.substr(0, 4) +
+                                info.ipoDate.substr(5, 2) +
+                                info.ipoDate.substr(8, 2);
+        listed_years = (today_days - misc::parse_yyyymmdd(ipo)).count() / 365.0;
+      }
+      std::string *dy[kDyWindows] = {&info.dy1y, &info.dy3y, &info.dy5y};
+      for (int w = 0; w < kDyWindows; ++w) {
+        const double years = std::min(kDyYears[w], listed_years);
+        if (years < 0.25)
+          continue; // 上市不足一季度, 年化无意义 → 留空
+        // 无分红是"确知的 0", 不是缺失 → 显式落 0.0000 而非留空
+        std::snprintf(buf, sizeof(buf), "%.4f",
+                      vv.dps[w] / years / close * 100.0); // [%]
+        *dy[w] = buf;
+      }
     }
   }
 

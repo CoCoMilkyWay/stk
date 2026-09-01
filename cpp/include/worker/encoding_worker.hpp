@@ -47,8 +47,8 @@ inline constexpr const char *kEncodeTombstoneExt = ".skip";
 // 产物 stat —— 没有它, "确认无事可做"本身就要几秒一天.
 // 扫描端按 .bin 后缀过滤, 天然忽略它.
 //
-// 注意: 离线 Verify 删除损坏文件时必须同时删掉当天的标记, 否则"删坏 + 增量
-// 补齐"的修复回路会被这个标记挡住 (见 EncodingService::run_binary_verify).
+// 注意: 手工删除损坏的 .bin 时必须同时删掉当天的这个标记, 否则增量重跑会
+// 整天跳过, 刚删掉的文件永远补不回来.
 inline constexpr const char *kEncodeDayDoneName = ".day_complete";
 
 // 一个 (资产, 日期) 的待编码任务.

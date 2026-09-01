@@ -164,16 +164,6 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     ImGui::SameLine();
     ImGui::TextDisabled("Check archive format, structure and integrity");
 
-    // Binary DB 完整性校验 (修复回路: Verify 删坏 → 增量编码补齐)
-    const bool verify_running = encoding_service->is_binary_verify_running();
-    ImGui::BeginDisabled(verify_running || is_running);
-    if (ImGui::Button(verify_running ? "Verifying..." : "Verify Binary DB", ImVec2(150, 0))) {
-      encoding_service->run_binary_verify(state.num_workers);
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::TextDisabled("全库强制校验并删除损坏文件, 之后增量编码自动补齐");
-
     ImGui::Unindent();
   }
 

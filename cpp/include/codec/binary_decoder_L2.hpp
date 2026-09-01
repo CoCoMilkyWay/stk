@@ -94,13 +94,6 @@ public:
   // 返回 0 表示文件不存在或头部损坏 (含旧格式).
   static size_t read_order_count(const std::string &filepath);
 
-  // 离线完整性校验 (修复回路的"查"半边): 头部自洽 + 文件长度精确匹配 +
-  // 强制校验 zstd 帧内容 xxh64 + 解压后 count 对账. 任何一道不过 = 损坏
-  // (含 v1 旧格式). 复用实例缓冲, 适合批量扫描.
-  //
-  // 热读路径 (decode_orders_stream) 不做 xxh64 — 只有这里做.
-  bool verify_orders_file(const std::string &filepath);
-
 private:
   // Reusable vector tables for delta decoding (orders)
   mutable std::vector<uint8_t> temp_order_hours, temp_order_minutes, temp_order_seconds, temp_order_milliseconds;

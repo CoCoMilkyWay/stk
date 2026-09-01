@@ -5,7 +5,6 @@
 #include "codec/binary_decoder_L2.hpp"
 #include "misc/profiler.hpp"
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -26,8 +25,9 @@ BinaryDecoder_L2::BinaryDecoder_L2(size_t estimated_orders) {
   temp_ask_order_ids.reserve(estimated_orders);
 
   dctx_ = ZSTD_createDCtx();
-  // 热路径跳过帧内容校验: 数据完整性由"原子落盘 + 离线 Verify"保证,
-  // 每次解码再算 xxh64 是白花的 (特征/因子计算会高频跑成千上万遍).
+  // 跳过帧内容校验: 落盘是原子的 (tmp+rename), 头部自洽 + count 对账已能
+  // 挡住结构性损坏; 每次解码再算 xxh64 是白花的 (特征/因子计算会高频跑
+  // 成千上万遍).
   ZSTD_DCtx_setParameter(dctx_, ZSTD_d_forceIgnoreChecksum, ZSTD_d_ignoreChecksum);
 }
 
@@ -223,43 +223,6 @@ const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath,
   // Return pointer to Order array (skip header) - ZERO COPY
   order_num = count;
   return reinterpret_cast<const Order *>(stream_decompression_buffer_.data() + count_size);
-}
-
-// 离线完整性校验 — 修复回路的"查"半边 (删坏文件由调用方做)
-bool BinaryDecoder_L2::verify_orders_file(const std::string &filepath) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open())
-    return false;
-
-  L2FileHeader header;
-  if (!read_l2_header(file, header))
-    return false; // 含 v1 旧格式 — magic 不对, 判损坏, 删了重编
-
-  // 文件长度必须精确等于 头 + 压缩帧 (截断/尾部垃圾都在这里现形)
-  std::error_code ec;
-  const auto file_size = std::filesystem::file_size(filepath, ec);
-  if (ec || file_size != sizeof(L2FileHeader) + header.compressed_size)
-    return false;
-
-  if (stream_compressed_buffer_.size() < header.compressed_size)
-    stream_compressed_buffer_.resize(header.compressed_size);
-  if (stream_decompression_buffer_.size() < header.raw_size)
-    stream_decompression_buffer_.resize(header.raw_size);
-
-  file.read(stream_compressed_buffer_.data(), static_cast<std::streamsize>(header.compressed_size));
-  if (file.fail())
-    return false;
-
-  // 一次性 API 默认强制校验帧内容 xxh64 — 与热路径的关键区别
-  const size_t decompressed_bytes = ZSTD_decompress(
-      stream_decompression_buffer_.data(), header.raw_size,
-      stream_compressed_buffer_.data(), header.compressed_size);
-  if (ZSTD_isError(decompressed_bytes) || decompressed_bytes != header.raw_size)
-    return false;
-
-  uint64_t count;
-  std::memcpy(&count, stream_decompression_buffer_.data(), sizeof(count));
-  return count == header.order_count();
 }
 
 // Zstandard decompression helper function (pure standard decompression)

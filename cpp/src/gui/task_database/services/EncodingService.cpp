@@ -1,19 +1,16 @@
 // Encoding Service Implementation
 #include "gui/task_database/services/EncodingService.hpp"
-#include "codec/binary_decoder_L2.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/encoding_worker.hpp"
 
-#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <cassert>
-#include <filesystem>
 #include <iostream>
 
 namespace GUI::Database {
@@ -174,96 +171,6 @@ EncodingProgress EncodingService::get_progress() const {
   }
 
   return prog;
-}
-
-void EncodingService::run_binary_verify(int num_workers) {
-  if (!terminal_)
-    return;
-
-  if (verify_running_.exchange(true)) {
-    terminal_->AddLine("[Verify] Already running, please wait...", Color::Yellow());
-    return;
-  }
-
-  verify_thread_ = std::async(std::launch::async, [this, num_workers]() {
-    namespace fs = std::filesystem;
-    const std::string orders_dir = data_.config.orders_dir;
-
-    terminal_->AddLine("========================================");
-    terminal_->AddLine("[Verify] Binary DB integrity check: " + orders_dir);
-    terminal_->AddLine("[Verify] 强制校验 头部自洽 + 文件长度 + zstd 帧 xxh64, 损坏即删除");
-
-    // 以日目录为并行粒度 (orders/YYYY/MM/DD/<CODE>.<EX>.bin)
-    std::vector<std::string> day_dirs;
-    if (fs::exists(orders_dir)) {
-      for (const auto &year : fs::directory_iterator(orders_dir)) {
-        if (!year.is_directory())
-          continue;
-        for (const auto &month : fs::directory_iterator(year.path())) {
-          if (!month.is_directory())
-            continue;
-          for (const auto &day : fs::directory_iterator(month.path())) {
-            if (day.is_directory())
-              day_dirs.push_back(day.path().string());
-          }
-        }
-      }
-    }
-
-    if (day_dirs.empty()) {
-      terminal_->AddLine("[Verify] No binary database found", Color::Yellow());
-      terminal_->AddLine("========================================");
-      verify_running_.store(false);
-      return;
-    }
-
-    std::atomic<size_t> next{0};
-    std::atomic<size_t> checked{0};
-    std::atomic<size_t> corrupt{0};
-
-    auto verify_worker = [&]() {
-      L2::BinaryDecoder_L2 decoder; // 复用缓冲, 每线程一份
-      size_t i;
-      while ((i = next.fetch_add(1)) < day_dirs.size()) {
-        for (const auto &entry : fs::directory_iterator(day_dirs[i])) {
-          const std::string path = entry.path().string();
-          if (!path.ends_with(data_.config.binary_extension))
-            continue; // .skip 墓碑与 .tmp 垃圾不校验
-          checked.fetch_add(1);
-          if (decoder.verify_orders_file(path))
-            continue;
-          std::error_code ec;
-          fs::remove(path, ec);
-          // 整天完成标记必须一起删: 留着它, 增量重跑会整天跳过, 刚删掉的
-          // 文件永远补不回来 (修复回路 = Verify 删坏 + 增量补齐)
-          fs::remove(day_dirs[i] + "/" + kEncodeDayDoneName, ec);
-          corrupt.fetch_add(1);
-          terminal_->AddLine("[Verify] ✗ corrupt, removed: " + path, Color::Red());
-        }
-      }
-    };
-
-    std::vector<std::future<void>> vworkers;
-    const int n = std::max(1, num_workers);
-    vworkers.reserve(n);
-    for (int i = 0; i < n; ++i)
-      vworkers.push_back(std::async(std::launch::async, verify_worker));
-    for (auto &w : vworkers)
-      w.wait();
-
-    terminal_->AddLine("[Verify] Checked " + std::to_string(checked.load()) + " files across " +
-                       std::to_string(day_dirs.size()) + " days");
-    if (corrupt.load() > 0) {
-      terminal_->AddLine("[Verify] ✗ Removed " + std::to_string(corrupt.load()) +
-                             " corrupt/legacy file(s) — run incremental encoding to repair",
-                         Color::Red());
-    } else {
-      terminal_->AddLine("[Verify] ✓ All files intact", Color::Green());
-    }
-    terminal_->AddLine("========================================");
-
-    verify_running_.store(false);
-  });
 }
 
 void EncodingService::run_file_check(const std::string &archive_base_dir) {

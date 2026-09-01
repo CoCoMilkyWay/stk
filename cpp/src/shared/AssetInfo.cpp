@@ -7,7 +7,7 @@
 // Query Methods
 // ============================================================================
 
-const StockInfo* AssetInfo::find_stock_info(const std::string& code) const {
+const StockInfo *AssetInfo::find_stock_info(const std::string &code) const {
   auto it = stock_info_.find(code);
   if (it != stock_info_.end()) {
     return &it->second;
@@ -15,28 +15,15 @@ const StockInfo* AssetInfo::find_stock_info(const std::string& code) const {
   return nullptr;
 }
 
-float AssetInfo::calculate_market_cap(const std::string& code) const {
-  const StockInfo* info = find_stock_info(code);
-  if (!info || info->amount.empty() || info->turn.empty()) {
+float AssetInfo::calculate_market_cap(const std::string &code) const {
+  const StockInfo *info = find_stock_info(code);
+  if (!info || info->mcap.empty()) {
     return 0.0f;
   }
-  
-  try {
-    float amount = std::stof(info->amount);
-    float turn = std::stof(info->turn);
-    
-    if (turn <= 0.0f) {
-      return 0.0f;
-    }
-    
-    // Market cap (billion yuan) = amount * 100 / turn / 1e8
-    return amount * 100.0f / turn / 1e8f;
-  } catch (...) {
-    return 0.0f;
-  }
+  return std::stof(info->mcap);
 }
 
-bool AssetInfo::is_trading_day(const std::string& date) const {
+bool AssetInfo::is_trading_day(const std::string &date) const {
   // Support both YYYYMMDD and YYYY-MM-DD formats
   if (date.size() == 10 && date[4] == '-') {
     // YYYY-MM-DD format
@@ -51,7 +38,7 @@ bool AssetInfo::is_trading_day(const std::string& date) const {
 
 void AssetInfo::rebuild_cache() {
   trading_days_set_.clear();
-  for (const auto& day : stock_days_) {
+  for (const auto &day : stock_days_) {
     if (day.size() >= 2 && day[1] == "1") {
       trading_days_set_.insert(day[0]); // date in YYYY-MM-DD format
     }

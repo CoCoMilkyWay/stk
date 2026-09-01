@@ -27,11 +27,17 @@ struct StockInfo {
   std::string turn;
   std::string tradestatus;
   std::string isST; // cn_stock_status.st_status 原值: "0"=正常 "1"=ST "2"=*ST
-  // peTTM/pbMRQ/psTTM/pcfNcfTTM: 特征表阶段用财务表 + 实时价格计算
+  // 估值快照 — 分子统一为总市值 mcap = close × total_shares (不复权真价).
+  // mcap 单位 [亿元]; dy* 为年化股息率 [%]; 其余为倍数.
+  // 无效 → 空串 (Table 显示 "-").
+  std::string mcap;
   std::string peTTM;
   std::string pbMRQ;
   std::string psTTM;
   std::string pcfNcfTTM;
+  std::string dy1y; // 近 1/3/5 年分红总额年化 / mcap; 上市不足窗长的按实际年数年化
+  std::string dy3y;
+  std::string dy5y;
 };
 
 // ============================================================================
@@ -90,9 +96,8 @@ struct AssetInfo {
   // Returns nullptr if not found
   const StockInfo *find_stock_info(const std::string &code) const;
 
-  // Calculate market cap in billions (亿元)
-  // Formula: amount * 100 / turn / 1e8
-  // Returns 0.0 if data insufficient
+  // 总市值 [亿元] — 直接取 StockInfo::mcap (FundamentalService 已算好).
+  // 缺失 → 0.0
   float calculate_market_cap(const std::string &code) const;
 
   // Check if a date is a trading day

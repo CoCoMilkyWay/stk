@@ -82,25 +82,13 @@ ListedSpan CalculateListedSpan(const StockInfo &info) {
 }
 
 // ============================================================================
-// Helper: Calculate market cap (billion yuan)
+// Helper: 总市值 [亿元] — FundamentalService 已按 close × total_shares 算好
 // ============================================================================
 
 float CalculateMarketCap(const StockInfo &info) {
-  // Market cap (billion) = amount (yuan) x 100 / turn (%) / 1e8
-  if (info.amount.empty() || info.turn.empty())
+  if (info.mcap.empty())
     return 0.0;
-
-  try {
-    float amount = std::stod(info.amount);
-    float turn = std::stod(info.turn);
-
-    if (turn <= 0)
-      return 0.0;
-
-    return amount * 100.0 / turn / 1e8;
-  } catch (...) {
-    return 0.0;
-  }
+  return std::stod(info.mcap);
 }
 
 // ============================================================================
@@ -308,11 +296,11 @@ void RenderDataTable(
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
                           ImGuiTableFlags_SizingFixedFit;
 
-  if (!ImGui::BeginTable("AssetsTable", 17, flags)) {
+  if (!ImGui::BeginTable("AssetsTable", 20, flags)) {
     return;
   }
 
-  // Setup columns (17 columns) - use auto width (default)
+  // Setup columns (20 columns) - use auto width (default)
   ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortAscending);
   ImGui::TableSetupColumn("Name");
   ImGui::TableSetupColumn("Exch");
@@ -325,6 +313,9 @@ void RenderDataTable(
   ImGui::TableSetupColumn("PB");
   ImGui::TableSetupColumn("PS");
   ImGui::TableSetupColumn("PCF");
+  ImGui::TableSetupColumn("DY1");
+  ImGui::TableSetupColumn("DY3");
+  ImGui::TableSetupColumn("DY5");
   ImGui::TableSetupColumn("Cap");
   ImGui::TableSetupColumn("Days");
   ImGui::TableSetupColumn("Orders");
@@ -336,7 +327,8 @@ void RenderDataTable(
   // Custom headers with tooltips
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   const char *header_labels[] = {"Code", "Name", "Exch", "Board", "ST", "DL", "Listed", "Ind",
-                                 "PE", "PB", "PS", "PCF", "Cap", "Days", "Orders", "Order%", "Miss_O"};
+                                 "PE", "PB", "PS", "PCF", "DY1", "DY3", "DY5", "Cap", "Days",
+                                 "Orders", "Order%", "Miss_O"};
   const char *header_tooltips[] = {
       "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
 
@@ -356,13 +348,19 @@ void RenderDataTable(
 
       "滚动市盈率 (PE TTM)\npeTTM = Trailing Twelve Months P/E Ratio\n= 股票收盘价 / 每股盈余TTM\n= (收盘价 x 总股本) / 归属母公司股东净利润TTM\n\nTTM = 过去12个月滚动数据\n反映公司盈利能力,数值越低估值越便宜",
 
-      "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 股票收盘价 / 每股净资产\n= 总市值 / (归属母公司股东权益 - 其他权益工具)\n\nMRQ = 最近季度数据\n反映账面价值,通常>1,<1可能破净",
+      "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 总市值 / 归属母公司股东权益MRQ\n= (收盘价 x 总股本) / total_equity_to_parent_shareholders\n\nMRQ = 最新报告期 (max report_date 的最新可见行)\n反映账面价值,通常>1,<1可能破净",
 
       "滚动市销率 (PS TTM)\npsTTM = Price-to-Sales Ratio (TTM)\n= 股票收盘价 / 每股销售额\n= (收盘价 x 总股本) / 营业总收入TTM\n\n反映每单位营收对应的市值\n适用于尚未盈利但有营收的公司",
 
-      "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 股票收盘价 / 每股现金流TTM\n= (收盘价 x 总股本) / 现金及现金等价物净增加额TTM\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵",
+      "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 总市值 / 经营活动现金流量净额TTM\n= (收盘价 x 总股本) / net_cffoa_ttm\n\n注意分母是经营现金流, 不是现金及现金等价物净增加额\n烧钱(经营现金流为负) 保留负值, 不置空\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵",
 
-      "总市值 (Market Cap)\n计算公式:市值(亿元) = 成交额 x 100 / 换手率 / 1亿\n= amount x 100 / turn / 1e8\n\n说明:\n- amount = 成交额(元)\n- turn = 换手率(%)\n- 通过成交额和换手率反推流通市值\n- 换手率 = 成交量/流通股数x100%\n- 流通市值 = 成交额/换手率x100",
+      "股息率 近1年 (Dividend Yield, 年化)\n= 近365日税前分红总额 / 总市值 x 100%\n\n说明:\n- 单位: %\n- 窗口以分红公告日 (publish_date) 锚定, 非除权日\n- 口径与 L1 特征 dy_raw 一致\n- 0.00 = 窗口内确实没有分红公告 (非缺失)",
+
+      "股息率 近3年 (年化平均)\n= 近3年(1095日)税前分红总额 / 年数 / 总市值 x 100%\n\n说明:\n- 已年化, 可与 DY1 / DY5 直接横向比较\n- 上市不足3年的按实际上市年数年化, 不被系统性摊薄\n- 上市不足一个季度 → 留空 (年化无意义)\n- DY3 明显低于 DY1 = 近年才开始分红",
+
+      "股息率 近5年 (年化平均)\n= 近5年(1825日)税前分红总额 / 年数 / 总市值 x 100%\n\n说明:\n- 已年化, 可与 DY1 / DY3 直接横向比较\n- 上市不足5年的按实际上市年数年化\n- DY1 ≈ DY3 ≈ DY5 = 长期稳定分红",
+
+      "总市值 (Market Cap)\n= 收盘价 x 总股本 / 1亿\n= close x total_shares (不复权真价)\n\n说明:\n- 单位: 亿元\n- 与 PE/PB/PS/PCF/DY 的分子同源\n- 数据来自 cn_stock_real_bar1d.close + cn_stock_shares.total_shares",
 
       "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info.size()\n可用于判断数据完整性",
 
@@ -372,7 +370,7 @@ void RenderDataTable(
 
       "逐笔缺失天数 (Missing Order Days)\n在交易日范围内缺失逐笔数据的天数\n= 数据库总交易日数 - 有 .bin 的天数\n\n说明:\n- 数值越大说明数据缺失越严重\n- 需要补充编码或检查archive源文件"};
 
-  for (int col = 0; col < 17; col++) {
+  for (int col = 0; col < 20; col++) {
     ImGui::TableSetColumnIndex(col);
     ImGui::PushID(col);
     ImGui::TableHeader(header_labels[col]);
@@ -533,25 +531,37 @@ void RenderDataTable(
                                result = (a_tier != b_tier) ? (a_tier < b_tier) : (a_val < b_val);
                                break;
                              }
-                             case 12: { // Market Cap
+                             case 12:   // DY1
+                             case 13:   // DY3
+                             case 14: { // DY5
+                               // 无分红 = 0 排在最低; 缺基本面 / 上市不足一季 = -1 更低
+                               std::string StockInfo::*field =
+                                   col == 12 ? &StockInfo::dy1y
+                                             : (col == 13 ? &StockInfo::dy3y : &StockInfo::dy5y);
+                               float a_val = a.info ? safe_stod(a.info->*field, -1.0f) : -1.0f;
+                               float b_val = b.info ? safe_stod(b.info->*field, -1.0f) : -1.0f;
+                               result = a_val < b_val;
+                               break;
+                             }
+                             case 15: { // Market Cap
                                float a_cap = a.info ? CalculateMarketCap(*a.info) : 0;
                                float b_cap = b.info ? CalculateMarketCap(*b.info) : 0;
                                result = a_cap < b_cap;
                                break;
                              }
-                             case 13:
+                             case 16:
                                result = a.asset->get_total_trading_days() < b.asset->get_total_trading_days();
                                break; // Days
-                             case 14:
+                             case 17:
                                result = a.asset->get_total_order_count() < b.asset->get_total_order_count();
                                break;   // Orders
-                             case 15: { // Order%
+                             case 18: { // Order%
                                float a_pct = a.asset->get_total_trading_days() > 0 ? (float)a.asset->get_orders_encoded_count() / a.asset->get_total_trading_days() : 0;
                                float b_pct = b.asset->get_total_trading_days() > 0 ? (float)b.asset->get_orders_encoded_count() / b.asset->get_total_trading_days() : 0;
                                result = a_pct < b_pct;
                                break;
                              }
-                             case 16: { // Miss_O
+                             case 19: { // Miss_O
                                size_t a_miss = a.asset->get_total_trading_days() - a.asset->get_orders_encoded_count();
                                size_t b_miss = b.asset->get_total_trading_days() - b.asset->get_orders_encoded_count();
                                result = a_miss < b_miss;
@@ -786,9 +796,28 @@ void RenderDataTable(
     }
     handle_column_click(11);
 
-    // Col 12: Market Cap (billion yuan)
-    ImGui::TableSetColumnIndex(12);
-    if (hovered_col == 12) {
+    // Col 12/13/14: DY 1y/3y/5y (%), 三列同构 — 高股息(≥3%)标绿, 零分红压灰
+    auto render_dy = [&](int col, const std::string *val) {
+      ImGui::TableSetColumnIndex(col);
+      if (hovered_col == col) {
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
+      }
+      if (val && !val->empty()) {
+        float dy = std::stod(*val);
+        ImGui::TextColored(dy >= 3.0f ? COLOR_GREEN : (dy > 0.0f ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : COLOR_GRAY),
+                           "%.2f", dy);
+      } else {
+        ImGui::TextColored(COLOR_GRAY, "-");
+      }
+      handle_column_click(col);
+    };
+    render_dy(12, info ? &info->dy1y : nullptr);
+    render_dy(13, info ? &info->dy3y : nullptr);
+    render_dy(14, info ? &info->dy5y : nullptr);
+
+    // Col 15: Market Cap (亿元)
+    ImGui::TableSetColumnIndex(15);
+    if (hovered_col == 15) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     if (info) {
@@ -801,20 +830,20 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(12);
+    handle_column_click(15);
 
-    // Col 13: Trading Days
-    ImGui::TableSetColumnIndex(13);
-    if (hovered_col == 13) {
+    // Col 16: Trading Days
+    ImGui::TableSetColumnIndex(16);
+    if (hovered_col == 16) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t total_days = asset.get_total_trading_days();
     ImGui::Text("%zu", total_days);
-    handle_column_click(13);
+    handle_column_click(16);
 
-    // Col 14: Total Orders
-    ImGui::TableSetColumnIndex(14);
-    if (hovered_col == 14) {
+    // Col 17: Total Orders
+    ImGui::TableSetColumnIndex(17);
+    if (hovered_col == 17) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t total_orders = asset.get_total_order_count();
@@ -825,27 +854,27 @@ void RenderDataTable(
     } else {
       ImGui::Text("%zu", total_orders);
     }
-    handle_column_click(14);
+    handle_column_click(17);
 
-    // Col 15: Orders Encoded %
-    ImGui::TableSetColumnIndex(15);
-    if (hovered_col == 15) {
+    // Col 18: Orders Encoded %
+    ImGui::TableSetColumnIndex(18);
+    if (hovered_col == 18) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t ord_encoded = asset.get_orders_encoded_count();
     float ord_pct = total_days > 0 ? (float)ord_encoded / total_days * 100.0 : 0.0;
     ImVec4 ord_color = ord_pct >= 95.0 ? COLOR_GREEN : (ord_pct >= 90.0 ? COLOR_YELLOW : COLOR_RED);
     ImGui::TextColored(ord_color, "%.1f%%", ord_pct);
-    handle_column_click(15);
+    handle_column_click(18);
 
-    // Col 16: Missing Order Days
-    ImGui::TableSetColumnIndex(16);
-    if (hovered_col == 16) {
+    // Col 19: Missing Order Days
+    ImGui::TableSetColumnIndex(19);
+    if (hovered_col == 19) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
     size_t ord_missing = total_days - ord_encoded;
     ImGui::TextColored(ord_missing > 0 ? COLOR_YELLOW : COLOR_GREEN, "%zu", ord_missing);
-    handle_column_click(16);
+    handle_column_click(19);
 
     ImGui::PopID();
     row_idx++;
@@ -881,9 +910,9 @@ static ColumnDataType GetColumnDataType(int col_idx) {
   if (col_idx == 3 || col_idx == 4 || col_idx == 5 || col_idx == 7) {
     return ColumnDataType::Categorical;
   }
-  // Numeric: Listed Days(6), PE(8), PB(9), PS(10), PCF(11), Market Cap(12),
-  //          Trading Days(13), Total Orders(14), Order%(15), Miss_O(16)
-  if (col_idx >= 6 && col_idx <= 16) {
+  // Numeric: Listed Days(6), PE(8), PB(9), PS(10), PCF(11), DY1/3/5(12,13,14),
+  //          Market Cap(15), Trading Days(16), Total Orders(17), Order%(18), Miss_O(19)
+  if (col_idx >= 6 && col_idx <= 19) {
     return ColumnDataType::Numeric;
   }
   // Others (Code, Name, Exchange) not analyzable
@@ -907,11 +936,12 @@ void RenderCrossSectionPanel(
   // Column names for display
   const char *col_names[] = {
       "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days (在市总天数)", "Industry",
-      "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "Market Cap", "Trading Days",
+      "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "DY 近1年 (年化 %)", "DY 近3年 (年化 %)",
+      "DY 近5年 (年化 %)", "Market Cap (亿元)", "Trading Days",
       "Total Orders", "Order %", "Missing Order Days"};
 
   int col_idx = table_state.selected_column_idx;
-  if (col_idx >= 17) {
+  if (col_idx >= 20) {
     ImGui::Text("Invalid column index");
     return;
   }
@@ -1007,25 +1037,38 @@ static void RenderNumericAnalysis(
         }
       }
       break;
-    case 12: // Market Cap
+    case 12:   // DY1
+    case 13:   // DY3
+    case 14: { // DY5
+      const std::string *dy =
+          !info ? nullptr
+                : (col_idx == 12 ? &info->dy1y
+                                 : (col_idx == 13 ? &info->dy3y : &info->dy5y));
+      if (dy && !dy->empty()) {
+        value = std::stod(*dy);
+        is_valid = true;
+      }
+      break;
+    }
+    case 15: // Market Cap
       if (info) {
         value = CalculateMarketCap(*info);
         is_valid = (value > 0);
       }
       break;
-    case 13: // Trading Days
+    case 16: // Trading Days
       value = asset.get_total_trading_days();
       is_valid = true;
       break;
-    case 14: // Total Orders
+    case 17: // Total Orders
       value = asset.get_total_order_count();
       is_valid = true;
       break;
-    case 15: // Order %
+    case 18: // Order %
       value = asset.get_total_trading_days() > 0 ? (float)asset.get_orders_encoded_count() / asset.get_total_trading_days() * 100.0 : 0.0;
       is_valid = true;
       break;
-    case 16: // Miss_O
+    case 19: // Miss_O
       value = asset.get_total_trading_days() - asset.get_orders_encoded_count();
       is_valid = true;
       break;
