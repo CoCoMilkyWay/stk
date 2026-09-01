@@ -33,7 +33,9 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -50,6 +52,52 @@ std::string to_asset_code(std::string_view instrument) {
   std::string ex(instrument.substr(dot + 1));
   std::transform(ex.begin(), ex.end(), ex.begin(), ::tolower);
   return ex + "." + std::string(instrument.substr(0, dot));
+}
+
+// instrument → 密集 id. 全月扫描的三张大表各 1186 万行, 逐行做
+// to_asset_code (两次堆分配) 再查 std::map 是整个构建的主要开销 (实测单表
+// 2.1s, 换成下面这套 0.3s). 这里把它压成: 每个月文件里每个不同的
+// instrument 只转一次码, 其余行走 vector 下标.
+class CodeIntern {
+public:
+  std::uint32_t id(std::string_view instrument) {
+    auto [it, inserted] =
+        ids_.try_emplace(to_asset_code(instrument),
+                         static_cast<std::uint32_t>(codes_.size()));
+    if (inserted)
+      codes_.push_back(it->first);
+    return it->second;
+  }
+  const std::string &code(std::uint32_t id) const { return codes_[id]; }
+
+private:
+  std::unordered_map<std::string, std::uint32_t> ids_;
+  std::vector<std::string> codes_;
+};
+
+// 单个月文件内的 instrument → id 缓存. string_view 指向 arrow buffer,
+// 只在持有该文件 TableView 的作用域内有效.
+class FileCodes {
+public:
+  explicit FileCodes(CodeIntern &intern) : intern_(intern) {}
+  std::uint32_t operator()(std::string_view instrument) {
+    auto it = cache_.find(instrument);
+    if (it != cache_.end())
+      return it->second;
+    return cache_.emplace(instrument, intern_.id(instrument)).first->second;
+  }
+
+private:
+  CodeIntern &intern_;
+  std::unordered_map<std::string_view, std::uint32_t> cache_;
+};
+
+// id 索引的累加器按需扩容 (id 在扫描过程中递增分配)
+template <typename T>
+T &slot(std::vector<T> &v, std::uint32_t id) {
+  if (id >= v.size())
+    v.resize(id + 1);
+  return v[id];
 }
 
 // 20150101 → "2015-01-01"; 0 (缺失) → 空串
@@ -106,7 +154,7 @@ bool build_asset_info(Job &job) {
 
   std::set<std::string> trading; // dense "YYYYMMDD"
   for (auto &[ym, path] : td_files) {
-    pq::TableView v(pq::read_table(path));
+    pq::TableView v(pq::read_table(path, {"date", "market_code"}));
     if (v.rows() == 0)
       continue;
     pq::Col date = v.col("date");
@@ -142,7 +190,7 @@ bool build_asset_info(Job &job) {
   auto &stock_info = job.assetinfo.mutable_stock_info();
   stock_info.clear();
   {
-    pq::TableView bi(pq::read_table(bi_path));
+    pq::TableView bi(pq::read_table(bi_path, {"instrument", "name", "list_date", "delist_date"}));
     assert(bi.rows() > 0);
     pq::Col ins = bi.col("instrument");
     pq::Col name = bi.col("name");
@@ -167,7 +215,7 @@ bool build_asset_info(Job &job) {
   {
     auto in_files = pq::list_month_files("cn_stock_instruments");
     for (auto it = in_files.rbegin(); it != in_files.rend(); ++it) {
-      pq::TableView v(pq::read_table(it->second));
+      pq::TableView v(pq::read_table(it->second, {"date", "instrument", "name"}));
       if (v.rows() == 0)
         continue; // 0 行月 → 往前找
       pq::Col date = v.col("date");
@@ -192,7 +240,7 @@ bool build_asset_info(Job &job) {
   job.set_message("构建行业归属 (cn_stock_industry_component)");
   auto ic_files = pq::list_month_files("cn_stock_industry_component");
   for (auto it = ic_files.rbegin(); it != ic_files.rend(); ++it) {
-    pq::TableView v(pq::read_table(it->second));
+    pq::TableView v(pq::read_table(it->second, {"date", "instrument", "industry_level1_code", "industry_level1_name"}));
     if (v.rows() == 0)
       continue; // 0 行月 (拉过为空) → 往前找
     pq::Col date = v.col("date");
@@ -214,16 +262,19 @@ bool build_asset_info(Job &job) {
     break;
   }
 
+  CodeIntern intern; // 以下几张表的全月扫描共用一套 id
+
   // ---- 日频行情 + 复权因子 ← cn_stock_real_bar1d 全月扫描 ----
   //   每股最新行 → update_date/volume/amount/turn;
   //   adjust_factor 全序列 → 排序 → 变点压缩 (分红/拆分事件日, TabBrowser 用)
   struct BarLatest {
+    bool present = false; // 该 id 在 real_bar1d 里出现过 (对应原 map 的键存在性)
     std::int32_t date = 0;
     double volume = 0, amount = 0, turn = 0;
     double close = 0; // 不复权真价 (估值快照分子)
   };
-  std::map<std::string, BarLatest> bar_latest; // bs_code →
-  std::map<std::string, std::vector<std::pair<std::int32_t, float>>> factors;
+  std::vector<BarLatest> bar_latest; // id →
+  std::vector<std::vector<std::pair<std::int32_t, float>>> factors;
   {
     auto rb_files = pq::list_month_files("cn_stock_real_bar1d");
     std::size_t total = rb_files.size(), idx = 0;
@@ -231,7 +282,7 @@ bool build_asset_info(Job &job) {
       ++idx;
       job.set_message("扫描日频行情 " + ym + " (" + std::to_string(idx) + "/" +
                       std::to_string(total) + ")");
-      pq::TableView v(pq::read_table(path));
+      pq::TableView v(pq::read_table(path, {"date", "instrument", "adjust_factor", "volume", "amount", "turn", "close"}));
       if (v.rows() == 0)
         continue;
       pq::Col date = v.col("date");
@@ -241,10 +292,12 @@ bool build_asset_info(Job &job) {
       pq::Col amt = v.col("amount");
       pq::Col turn = v.col("turn");
       pq::Col close = v.col("close");
+      FileCodes code(intern);
       for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
-        std::string key = to_asset_code(ins.str(i));
+        std::uint32_t id = code(ins.str(i));
         std::int32_t d = date.yyyymmdd(i);
-        BarLatest &b = bar_latest[key];
+        BarLatest &b = slot(bar_latest, id);
+        b.present = true;
         if (d > b.date) {
           b.date = d;
           b.volume = static_cast<double>(vol.f32(i));
@@ -254,13 +307,16 @@ bool build_asset_info(Job &job) {
         }
         float f = af.f32(i);
         if (std::isfinite(f))
-          factors[key].emplace_back(d, f);
+          slot(factors, id).emplace_back(d, f);
       }
     }
   }
 
-  for (auto &[key, b] : bar_latest) {
-    auto found = stock_info.find(key);
+  for (std::uint32_t id = 0; id < bar_latest.size(); ++id) {
+    const BarLatest &b = bar_latest[id];
+    if (!b.present)
+      continue;
+    auto found = stock_info.find(intern.code(id));
     if (found == stock_info.end())
       continue;
     StockInfo &info = found->second;
@@ -289,7 +345,7 @@ bool build_asset_info(Job &job) {
       std::int32_t bal_rd = 0, bal_d = 0; // MRQ: max(report_date), 同 rd 取最新可见
       double equity = std::numeric_limits<double>::quiet_NaN();
     };
-    std::map<std::string, ValLatest> val;
+    std::vector<ValLatest> val; // id →
 
     // 股本: cn_stock_shares 每股最新行
     {
@@ -299,14 +355,16 @@ bool build_asset_info(Job &job) {
         ++idx;
         job.set_message("扫描股本 " + ym + " (" + std::to_string(idx) + "/" +
                         std::to_string(total) + ")");
-        pq::TableView v(pq::read_table(path));
+        pq::TableView v(
+            pq::read_table(path, {"date", "instrument", "total_shares"}));
         if (v.rows() == 0)
           continue;
         pq::Col date = v.col("date");
         pq::Col ins = v.col("instrument");
         pq::Col ts = v.col("total_shares");
+        FileCodes code(intern);
         for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
-          ValLatest &vv = val[to_asset_code(ins.str(i))];
+          ValLatest &vv = slot(val, code(ins.str(i)));
           std::int32_t d = date.yyyymmdd(i);
           if (d > vv.shares_d) {
             vv.shares_d = d;
@@ -324,7 +382,7 @@ bool build_asset_info(Job &job) {
         ++idx;
         job.set_message("扫描财务TTM " + ym + " (" + std::to_string(idx) + "/" +
                         std::to_string(total) + ")");
-        pq::TableView v(pq::read_table(path));
+        pq::TableView v(pq::read_table(path, {"date", "instrument", "shift", "net_profit_to_parent_shareholders_ttm", "total_operating_revenue_ttm", "net_cffoa_ttm"}));
         if (v.rows() == 0)
           continue;
         pq::Col date = v.col("date");
@@ -333,10 +391,11 @@ bool build_asset_info(Job &job) {
         pq::Col np = v.col("net_profit_to_parent_shareholders_ttm");
         pq::Col rev = v.col("total_operating_revenue_ttm");
         pq::Col cf = v.col("net_cffoa_ttm");
+        FileCodes code(intern);
         for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
           if (shift.i32(i, -1) != 0)
             continue;
-          ValLatest &vv = val[to_asset_code(ins.str(i))];
+          ValLatest &vv = slot(val, code(ins.str(i)));
           std::int32_t d = date.yyyymmdd(i);
           if (d > vv.ttm_d) {
             vv.ttm_d = d;
@@ -356,15 +415,16 @@ bool build_asset_info(Job &job) {
         ++idx;
         job.set_message("扫描资产负债 " + ym + " (" + std::to_string(idx) + "/" +
                         std::to_string(total) + ")");
-        pq::TableView v(pq::read_table(path));
+        pq::TableView v(pq::read_table(path, {"date", "instrument", "report_date", "total_equity_to_parent_shareholders"}));
         if (v.rows() == 0)
           continue;
         pq::Col date = v.col("date");
         pq::Col ins = v.col("instrument");
         pq::Col rd = v.col("report_date");
         pq::Col eq = v.col("total_equity_to_parent_shareholders");
+        FileCodes code(intern);
         for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
-          ValLatest &vv = val[to_asset_code(ins.str(i))];
+          ValLatest &vv = slot(val, code(ins.str(i)));
           std::int32_t r = rd.yyyymmdd(i);
           std::int32_t d = date.yyyymmdd(i);
           if (r > vv.bal_rd || (r == vv.bal_rd && d > vv.bal_d)) {
@@ -377,14 +437,14 @@ bool build_asset_info(Job &job) {
     }
 
     job.set_message("计算估值快照 (PE/PB/PS/PCF)");
-    for (auto &[key, vv] : val) {
-      auto found = stock_info.find(key);
+    for (std::uint32_t id = 0; id < val.size(); ++id) {
+      const ValLatest &vv = val[id];
+      auto found = stock_info.find(intern.code(id));
       if (found == stock_info.end())
         continue;
-      auto bar = bar_latest.find(key);
-      if (bar == bar_latest.end())
+      if (id >= bar_latest.size() || !bar_latest[id].present)
         continue;
-      const double close = bar->second.close;
+      const double close = bar_latest[id].close;
       if (!std::isfinite(close) || close <= 0.0 || vv.total_shares <= 0.0)
         continue;
       const double mcap = close * vv.total_shares;
@@ -409,7 +469,10 @@ bool build_asset_info(Job &job) {
   const std::string factor_update = today.substr(0, 4) + "-" +
                                     today.substr(4, 2) + "-" +
                                     today.substr(6, 2);
-  for (auto &[key, seq] : factors) {
+  for (std::uint32_t id = 0; id < factors.size(); ++id) {
+    auto &seq = factors[id];
+    if (seq.empty())
+      continue; // 该 id 无有限 adjust_factor (对应原 map 无此键)
     std::sort(seq.begin(), seq.end());
     StockFactorData sfd;
     sfd.last_update = factor_update;
@@ -422,7 +485,7 @@ bool build_asset_info(Job &job) {
       sfd.data.push_back({dash_date(d), buf});
       prev = f;
     }
-    stock_factor.emplace(key, std::move(sfd));
+    stock_factor.emplace(intern.code(id), std::move(sfd));
   }
 
   // ---- 状态 ← cn_stock_status ----
@@ -432,42 +495,51 @@ bool build_asset_info(Job &job) {
   {
     auto st_files = pq::list_month_files("cn_stock_status");
     std::size_t total = st_files.size(), idx = 0;
-    std::map<std::string, std::pair<std::int32_t, std::pair<int, int>>>
-        latest; // bs_code → (date, (st_status, suspended))
+    struct StatusLatest {
+      bool present = false; // 该 id 在 cn_stock_status 里出现过
+      std::int32_t date = 0;
+      int st = 0, suspended = 0;
+    };
+    std::vector<StatusLatest> latest; // id →
     auto &suspended = job.assetinfo.mutable_suspended();
     suspended.clear();
     for (auto &[ym, path] : st_files) {
       ++idx;
       job.set_message("扫描股票状态 " + ym + " (" + std::to_string(idx) + "/" +
                       std::to_string(total) + ")");
-      pq::TableView v(pq::read_table(path));
+      pq::TableView v(pq::read_table(path, {"date", "instrument", "st_status", "suspended"}));
       if (v.rows() == 0)
         continue;
       pq::Col date = v.col("date");
       pq::Col ins = v.col("instrument");
       pq::Col st = v.col("st_status");
       pq::Col sp = v.col("suspended");
+      FileCodes code(intern);
       for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
-        std::string key = to_asset_code(ins.str(i));
+        std::uint32_t id = code(ins.str(i));
         std::int32_t d = date.yyyymmdd(i);
         int suspended_flag = sp.i32(i, 0);
-        auto &cur = latest[key];
-        if (d > cur.first)
-          cur = {d, {st.i32(i, 0), suspended_flag}};
+        StatusLatest &cur = slot(latest, id);
+        cur.present = true;
+        if (d > cur.date)
+          cur = {true, d, st.i32(i, 0), suspended_flag};
         if (suspended_flag != 0 && d > 0) {
           char dense[9];
           std::snprintf(dense, sizeof(dense), "%08d", d);
-          suspended[std::string(dense, 8)].insert(std::move(key));
+          suspended[std::string(dense, 8)].insert(intern.code(id));
         }
       }
     }
-    for (auto &[key, val] : latest) {
-      auto found = stock_info.find(key);
+    for (std::uint32_t id = 0; id < latest.size(); ++id) {
+      const StatusLatest &val = latest[id];
+      if (!val.present)
+        continue;
+      auto found = stock_info.find(intern.code(id));
       if (found == stock_info.end())
         continue;
       // st_status 原值直传: 0=正常, 1=ST, 2=*ST (退市风险警示)
-      found->second.isST = std::to_string(val.second.first);
-      found->second.tradestatus = val.second.second != 0 ? "0" : "1";
+      found->second.isST = std::to_string(val.st);
+      found->second.tradestatus = val.suspended != 0 ? "0" : "1";
     }
   }
 

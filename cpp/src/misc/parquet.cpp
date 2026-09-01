@@ -9,7 +9,9 @@
 #include <arrow/util/compression.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
+#include <parquet/metadata.h>
 #include <parquet/properties.h>
+#include <parquet/schema.h>
 
 #include <algorithm>
 #include <cassert>
@@ -60,7 +62,8 @@ list_month_files(std::string_view name) {
 // ----------------------------------------------------------------------------
 // 读写
 // ----------------------------------------------------------------------------
-std::shared_ptr<arrow::Table> read_table(const fs::path &path) {
+std::shared_ptr<arrow::Table> read_table(const fs::path &path,
+                                         const std::vector<std::string> &columns) {
   auto file_res = arrow::io::ReadableFile::Open(path.string());
   assert(file_res.ok() && "pq::read_table: 文件无法打开");
   auto reader_res = parquet::arrow::OpenFile(file_res.ValueOrDie(),
@@ -68,7 +71,23 @@ std::shared_ptr<arrow::Table> read_table(const fs::path &path) {
   assert(reader_res.ok() && "pq::read_table: 构造 reader 失败");
   std::unique_ptr<parquet::arrow::FileReader> reader =
       std::move(reader_res).ValueOrDie();
-  auto t_res = reader->ReadTable();
+
+  arrow::Result<std::shared_ptr<arrow::Table>> t_res;
+  if (columns.empty()) {
+    t_res = reader->ReadTable();
+  } else {
+    // 扁平 schema: 列名即叶子路径, ColumnIndex 直接可用
+    const parquet::SchemaDescriptor *schema =
+        reader->parquet_reader()->metadata()->schema();
+    std::vector<int> indices;
+    indices.reserve(columns.size());
+    for (const std::string &name : columns) {
+      int i = schema->ColumnIndex(name);
+      assert(i >= 0 && "pq::read_table: 请求的列不存在");
+      indices.push_back(i);
+    }
+    t_res = reader->ReadTable(indices);
+  }
   assert(t_res.ok() && "pq::read_table: ReadTable 失败");
   return std::move(t_res).ValueOrDie();
 }

@@ -20,7 +20,15 @@
 
 namespace L2 {
 
-inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交)
+inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交), encoder/decoder 缓冲上限
+
+// LimitOrderBook 内部容量 (order_lookup_/order_memory_pool_ 初始预留).
+// 与 DEFAULT_ENCODER_ORDER_SIZE 分开: 后者是单资产单日逐笔数的安全上限
+// (给 encoder/decoder 缓冲用), 但 LOB 是 5892 只资产各自常驻整个进程生命周期
+// (每天只 clear() 计数, 不释放容量) —— 按 200000 预留 × 5892 会把 108GB 的
+// 虚拟预留逐步坐实成 RSS. 多数股票单日逐笔数远小于此; BumpPool 超容量会
+// 自动 expand_storage() 扩容 (不截断数据), 调小只影响"预留多少", 不影响正确性.
+inline constexpr size_t LOB_ORDER_CAPACITY = 30000;
 
 // Data Struct
 inline constexpr int BLEN = 100;            // default length for Cbuffers (feature computation)

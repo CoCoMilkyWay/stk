@@ -52,6 +52,23 @@ inline size_t get_system_memory_bytes() {
 #endif
 }
 
+// 当前实际可分配内存 (字节). 总物理内存会高估: HugePages 预留 / 其他进程 /
+// page cache 之外的占用对普通 new[] 都不可用. Linux 用 MemAvailable
+// (内核对"可分配而不触发 OOM/换页"的估计), 其他平台退化为总内存.
+inline size_t get_available_memory_bytes() {
+#if !defined(_WIN32) && !defined(__APPLE__)
+  std::ifstream f("/proc/meminfo");
+  std::string key;
+  size_t kb;
+  std::string unit;
+  while (f >> key >> kb >> unit) {
+    if (key == "MemAvailable:")
+      return kb * 1024;
+  }
+#endif
+  return get_system_memory_bytes();
+}
+
 // ============================================================================
 // FEATURE STORE CONFIGURATION
 // ============================================================================
@@ -239,13 +256,19 @@ public:
     const size_t depth_bytes = DEPTH_ROWS * num_assets * DEPTH_TOTAL_WIDTH * sizeof(feature_storage_t);
     bytes_per_day += depth_bytes;
 
-    // 限制 pool_size 不超过 60% 系统内存
-    const size_t system_mem = get_system_memory_bytes();
-    const size_t max_pool_bytes = static_cast<size_t>(system_mem * 0.6);
+    // 限制 pool_size 不超过 40% 当前可用内存 (总内存会高估: HugePages 预留 /
+    // 其他进程占用对普通分配不可用, 按总内存分池会被 OOM killer SIGKILL).
+    // 留 60% 余量给: 每资产常驻的 LOB 容量 (见 L2::LOB_ORDER_CAPACITY,
+    // 随真实逐笔数据写入逐步坐实成 RSS, 整个进程生命周期不释放) + 其他进程.
+    constexpr double kPoolMemFraction = 0.4;
+    const size_t avail_mem = get_available_memory_bytes();
+    const size_t max_pool_bytes = static_cast<size_t>(avail_mem * kPoolMemFraction);
     const size_t max_pool_slots = max_pool_bytes / bytes_per_day;
     if (pool_size_ > max_pool_slots) {
-      printf("\n[FeatureStore] Pool size limited: %zu -> %zu (60%% of %.1f GB DDR)\n",
-             pool_size_, max_pool_slots, system_mem / (1024.0 * 1024.0 * 1024.0));
+      printf("\n[FeatureStore] Pool size limited: %zu -> %zu (%.0f%% of %.1f GB available, %.1f GB DDR)\n",
+             pool_size_, max_pool_slots, kPoolMemFraction * 100.0,
+             avail_mem / (1024.0 * 1024.0 * 1024.0),
+             get_system_memory_bytes() / (1024.0 * 1024.0 * 1024.0));
       pool_size_ = max_pool_slots;
     }
     assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");

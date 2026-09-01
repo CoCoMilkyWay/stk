@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -17,6 +18,8 @@
 //   data/_meta/<name>.parquet     Static / Snapshot 单文件 (整刷覆盖)
 //
 // 读: read_table → arrow::Table (CombineChunks 后单 chunk, 行级随机访问).
+//     columns 非空 = 只解这几列. 宽表全列解是纯浪费 —— financial_ttm_shift
+//     185 列 2.1 GB 只有 6 列被用到, 全列 6.3s / 裁剪后 0.5s.
 // 写: write_table_atomic → zstd + tmp+rename (单文件原子, 中断不留半成品).
 //
 // TableView / Col: 类型化列访问 (pit build / axis / overlay / parse 共用).
@@ -36,7 +39,9 @@ std::filesystem::path meta_path(std::string_view name);
 std::vector<std::pair<std::string, std::filesystem::path>>
 list_month_files(std::string_view name);
 
-std::shared_ptr<arrow::Table> read_table(const std::filesystem::path &path);
+// columns 空 = 全列; 非空 = 只读这些列 (列名缺失 → assert).
+std::shared_ptr<arrow::Table>
+read_table(const std::filesystem::path &path, const std::vector<std::string> &columns = {});
 
 void write_table_atomic(const std::filesystem::path &path,
                         const std::shared_ptr<arrow::Table> &t);

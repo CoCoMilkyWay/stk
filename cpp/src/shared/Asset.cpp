@@ -160,15 +160,18 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     co_return;
   }
 
-  // Month path structure
-  struct MonthPath {
+  // Day path structure
+  struct DayPath {
     std::string path;
-    std::string year_str;
-    std::string month_str;
+    std::string date_str; // YYYYMMDD
   };
 
-  // Collect all month paths
-  std::vector<MonthPath> month_paths;
+  // Collect all day paths.
+  //
+  // 并行粒度是"天"而不是"月": 每个 .bin 的读头在冷页缓存下都是一次随机 IO,
+  // 按月切的话新库只有一两个月目录 = 实际单线程 (实测 9.4 万文件 8.0s);
+  // 按天切能把 NVMe 的队列深度喂满 (同样 9.4 万文件 0.6s).
+  std::vector<DayPath> day_paths;
   for (const auto &year_entry : fs::directory_iterator(orders_dir)) {
     if (!year_entry.is_directory())
       continue;
@@ -176,8 +179,14 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     for (const auto &month_entry : fs::directory_iterator(year_entry.path())) {
       if (!month_entry.is_directory())
         continue;
-      month_paths.push_back({month_entry.path().string(), year_str,
-                             month_entry.path().filename().string()});
+      std::string month_str = month_entry.path().filename().string();
+      for (const auto &day_entry : fs::directory_iterator(month_entry.path())) {
+        if (!day_entry.is_directory())
+          continue;
+        day_paths.push_back({day_entry.path().string(),
+                             year_str + month_str +
+                                 day_entry.path().filename().string()});
+      }
     }
   }
 
@@ -199,81 +208,68 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   };
   auto result = std::make_shared<ScanResult>();
 
-  // Lambda for scanning a single month (runs in thread pool).
+  // Lambda for scanning a single day (runs in thread pool).
   //
   // 目录是扁平的: orders/YYYY/MM/DD/<CODE>.<EX>.bin, 一天一层 readdir 就够,
   // 不再是"一天下面几千个每资产目录、每个目录再 readdir 一次".
-  auto scan_month = [&asset_map, &binary_extension, result](const MonthPath &month_path) {
-    std::set<std::string> local_dates;
-    std::set<std::string> local_order_dates;
-    std::map<std::string, size_t> local_date_coverage;
+  auto scan_day = [&asset_map, &binary_extension, result](const DayPath &day_path) {
+    size_t local_coverage = 0;
     size_t local_total_orders = 0;
     float local_orders_size = 0.0;
-    std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> local_date_info;
+    std::unordered_map<size_t, DateInfo> local_date_info;
 
-    for (const auto &day_entry : fs::directory_iterator(month_path.path)) {
-      if (!day_entry.is_directory())
+    for (const auto &file_entry : fs::directory_iterator(day_path.path)) {
+      const std::string filename = file_entry.path().filename().string();
+      if (!filename.ends_with(binary_extension))
         continue;
-      std::string day_str = day_entry.path().filename().string();
-      std::string date_str = month_path.year_str + month_path.month_str + day_str;
-      local_dates.insert(date_str);
 
-      for (const auto &file_entry : fs::directory_iterator(day_entry.path())) {
-        const std::string filename = file_entry.path().filename().string();
-        if (!filename.ends_with(binary_extension))
-          continue;
+      // "000023.SZ.bin" → "000023.SZ"
+      const std::string asset_full =
+          filename.substr(0, filename.size() - binary_extension.size());
 
-        // "000023.SZ.bin" → "000023.SZ"
-        const std::string asset_full =
-            filename.substr(0, filename.size() - binary_extension.size());
+      auto it = asset_map.find(asset_full);
+      if (it == asset_map.end())
+        continue;
 
-        auto it = asset_map.find(asset_full);
-        if (it == asset_map.end())
-          continue;
-
-        DateInfo di;
-        di.orders_file = file_entry.path().string();
-        di.orders_encoded = 1;
-        // 条数来自文件头 (8 字节), 文件名里不再冗余存放
-        di.order_count = L2::BinaryDecoder_L2::read_order_count(di.orders_file);
-        try {
-          di.orders_file_size = fs::file_size(file_entry.path());
-        } catch (...) {
-          di.orders_file_size = 0;
-        }
-
-        local_total_orders += di.order_count;
-        local_orders_size += static_cast<float>(di.orders_file_size);
-        local_order_dates.insert(date_str);
-        local_date_coverage[date_str]++;
-        local_date_info[it->second][date_str] = di;
+      DateInfo di;
+      di.orders_file = file_entry.path().string();
+      di.orders_encoded = 1;
+      // 条数来自文件头 (8 字节), 文件名里不再冗余存放
+      di.order_count = L2::BinaryDecoder_L2::read_order_count(di.orders_file);
+      try {
+        di.orders_file_size = fs::file_size(file_entry.path());
+      } catch (...) {
+        di.orders_file_size = 0;
       }
+
+      local_total_orders += di.order_count;
+      local_orders_size += static_cast<float>(di.orders_file_size);
+      local_coverage++;
+      local_date_info[it->second] = std::move(di);
     }
 
     // Merge into shared result
     {
       std::lock_guard<std::mutex> lock(result->mutex);
-      result->all_dates.insert(local_dates.begin(), local_dates.end());
-      result->order_dates.insert(local_order_dates.begin(), local_order_dates.end());
-      for (const auto &[date, count] : local_date_coverage) {
-        result->date_coverage[date] += count;
-      }
+      result->all_dates.insert(day_path.date_str);
       result->total_orders += local_total_orders;
       result->total_orders_size += local_orders_size;
+      if (local_coverage > 0) {
+        result->order_dates.insert(day_path.date_str);
+        result->date_coverage[day_path.date_str] += local_coverage;
+      }
 
-      for (const auto &[asset_idx, date_map] : local_date_info) {
-        for (const auto &[date, info] : date_map) {
-          result->asset_date_info[asset_idx][date] = info;
-        }
+      for (auto &[asset_idx, info] : local_date_info) {
+        result->asset_date_info[asset_idx][day_path.date_str] = std::move(info);
       }
     }
   };
 
-  // Submit all month scan tasks to thread pool
+  // Submit all day scan tasks to thread pool
   std::vector<std::future<void>> futures;
-  futures.reserve(month_paths.size());
-  for (const auto &month_path : month_paths) {
-    futures.push_back(thread_pool->submit([scan_month, month_path]() { scan_month(month_path); }));
+  futures.reserve(day_paths.size());
+  for (const auto &day_path : day_paths) {
+    futures.push_back(thread_pool->submit([scan_day, day_path]() { scan_day(day_path); }));
   }
 
   // Wait for all tasks, yielding to GUI periodically
@@ -378,18 +374,22 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
     co_return; // all_dates 保留 binary 扫出的日期
   }
 
-  // Year path structure
-  struct YearPath {
+  // Month path structure
+  struct MonthPath {
     std::string path;
-    std::string year_str;
   };
 
-  // Collect all year paths
-  std::vector<YearPath> year_paths;
+  // Collect all month paths (archive_dir/YYYY/YYYYMM/).
+  // 与 binary 扫描同理: 按年切只有十来个任务, 按月切才喂得满线程池.
+  std::vector<MonthPath> month_paths;
   for (const auto &year_entry : fs::directory_iterator(archive_dir)) {
     if (!year_entry.is_directory())
       continue;
-    year_paths.push_back({year_entry.path().string(), year_entry.path().filename().string()});
+    for (const auto &month_entry : fs::directory_iterator(year_entry.path())) {
+      if (!month_entry.is_directory())
+        continue;
+      month_paths.push_back({month_entry.path().string()});
+    }
   }
 
   // Shared result accumulator
@@ -401,31 +401,26 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
   };
   auto result = std::make_shared<ScanResult>();
 
-  // Lambda for scanning a single year (runs in thread pool)
-  auto scan_year = [&archive_extension, result](const YearPath &year_path) {
+  // Lambda for scanning a single month (runs in thread pool)
+  auto scan_month = [&archive_extension, result](const MonthPath &month_path) {
     std::set<std::string> local_dates;
     size_t local_files = 0;
     float local_size = 0.0;
 
     try {
-      for (const auto &month_entry : fs::directory_iterator(year_path.path)) {
-        if (!month_entry.is_directory())
+      for (const auto &file_entry : fs::directory_iterator(month_path.path)) {
+        if (!file_entry.is_regular_file())
           continue;
 
-        for (const auto &file_entry : fs::directory_iterator(month_entry.path())) {
-          if (!file_entry.is_regular_file())
-            continue;
-
-          const std::string ext = file_entry.path().extension().string();
-          if (ext == archive_extension) {
-            const std::string filename = file_entry.path().stem().string();
-            if (filename.size() == 8 && std::all_of(filename.begin(), filename.end(), ::isdigit)) {
-              local_dates.insert(filename);
-              local_files++;
-              try {
-                local_size += static_cast<float>(fs::file_size(file_entry.path()));
-              } catch (...) {
-              }
+        const std::string ext = file_entry.path().extension().string();
+        if (ext == archive_extension) {
+          const std::string filename = file_entry.path().stem().string();
+          if (filename.size() == 8 && std::all_of(filename.begin(), filename.end(), ::isdigit)) {
+            local_dates.insert(filename);
+            local_files++;
+            try {
+              local_size += static_cast<float>(fs::file_size(file_entry.path()));
+            } catch (...) {
             }
           }
         }
@@ -442,11 +437,11 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
     }
   };
 
-  // Submit all year scan tasks to thread pool
+  // Submit all month scan tasks to thread pool
   std::vector<std::future<void>> futures;
-  futures.reserve(year_paths.size());
-  for (const auto &year_path : year_paths) {
-    futures.push_back(thread_pool->submit([scan_year, year_path]() { scan_year(year_path); }));
+  futures.reserve(month_paths.size());
+  for (const auto &month_path : month_paths) {
+    futures.push_back(thread_pool->submit([scan_month, month_path]() { scan_month(month_path); }));
   }
 
   // Wait for all tasks, yielding to GUI periodically
