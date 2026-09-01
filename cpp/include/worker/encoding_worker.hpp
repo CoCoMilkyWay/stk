@@ -8,6 +8,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -115,6 +116,11 @@ struct EncodeStats {
   };
   std::mutex days_mutex;
   std::map<std::string, DayProgress> days_inflight;
+
+  // 本轮真正动过的天 (producer 列举出活儿就记, 整天跳过的不记).
+  // 收工后交给扫描做定向重扫: 重编会覆盖同名 .bin, 目录条目没增删,
+  // 光看目录 mtime 发现不了.
+  std::set<std::string> days_touched;
 };
 
 // producer: 逐天 [列举 → 增量过滤 → 切批 → 顺序预读 .rar 进页缓存 → 推批].

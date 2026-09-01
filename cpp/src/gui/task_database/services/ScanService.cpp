@@ -205,6 +205,16 @@ awaitable<void> ScanService::coro_scan() {
 }
 
 const char *ScanService::get_status_string() const {
+  // 两个扫描阶段带进度. 缓冲区是成员而非局部, 因为返回的是裸指针.
+  auto with_progress = [this](const char *what) -> const char * {
+    const size_t done = data_.asset.scan_days_done.load(std::memory_order_relaxed);
+    const size_t total = data_.asset.scan_days_total.load(std::memory_order_relaxed);
+    if (total == 0)
+      return what;
+    snprintf(this->status_buf_, sizeof(this->status_buf_), "%s (%zu/%zu)", what, done, total);
+    return this->status_buf_;
+  };
+
   switch (status_) {
   case ScanStatus::Idle:
     return "Idle";
@@ -213,9 +223,9 @@ const char *ScanService::get_status_string() const {
   case ScanStatus::CheckingFileSystem:
     return "Checking filesystem...";
   case ScanStatus::ScanningBinary:
-    return "Scanning binary database...";
+    return with_progress("Scanning binary database");
   case ScanStatus::ScanningArchive:
-    return "Scanning archive database...";
+    return with_progress("Scanning archive database");
   case ScanStatus::ComputingCoverage:
     return "Computing coverage...";
   case ScanStatus::AnalyzingStatus:

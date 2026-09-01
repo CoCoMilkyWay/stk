@@ -157,6 +157,9 @@ public:
   const char *get_status_string() const;
 
 private:
+  // get_status_string 返回裸指针, 带进度的那两个阶段需要一块常驻缓冲
+  mutable char status_buf_[64] = {};
+
   // Complete scan flow (coroutine)
   awaitable<void> coro_scan();
 };

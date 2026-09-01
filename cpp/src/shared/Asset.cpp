@@ -12,7 +12,6 @@
 #include <chrono>
 #include <filesystem>
 #include <future>
-#include <map>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -78,6 +77,9 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   // 按月切的话新库只有一两个月目录 = 实际单线程 (实测 9.4 万文件 8.0s);
   // 按天切能把 NVMe 的队列深度喂满 (同样 9.4 万文件 0.6s).
   std::vector<DayPath> day_paths;
+  std::set<std::string> current_dates;             // 这次 readdir 到的全部天
+  std::unordered_map<std::string, int64_t> mtimes; // date -> 本次 mtime
+
   for (const auto &year_entry : fs::directory_iterator(orders_dir)) {
     if (!year_entry.is_directory())
       continue;
@@ -89,12 +91,48 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
       for (const auto &day_entry : fs::directory_iterator(month_entry.path())) {
         if (!day_entry.is_directory())
           continue;
-        day_paths.push_back({day_entry.path().string(),
-                             year_str + month_str +
-                                 day_entry.path().filename().string()});
+        const std::string date_str =
+            year_str + month_str + day_entry.path().filename().string();
+        current_dates.insert(date_str);
+
+        // 取不到 mtime 就当它变了 (重扫), 不去猜
+        std::error_code ec;
+        const auto wt = fs::last_write_time(day_entry.path(), ec);
+        mtimes[date_str] = ec ? 0 : wt.time_since_epoch().count();
+
+        day_paths.push_back({day_entry.path().string(), date_str});
       }
     }
   }
+
+  // 只重扫"目录动过的"和"编码动过的"; 其余沿用上次的 date_info
+  std::vector<DayPath> days_to_scan;
+  std::set<std::string> dates_to_purge;
+  for (const auto &dp : day_paths) {
+    auto prev = binary.day_mtimes.find(dp.date_str);
+    const bool unchanged = prev != binary.day_mtimes.end() &&
+                           prev->second != 0 &&
+                           prev->second == mtimes[dp.date_str] &&
+                           binary.dirty_dates.count(dp.date_str) == 0;
+    if (unchanged)
+      continue;
+    days_to_scan.push_back(dp);
+    dates_to_purge.insert(dp.date_str);
+  }
+
+  // 整个日目录被删掉的, 旧条目也要清 —— 否则它会一直冒充"这天有数据"
+  for (const auto &[date, mtime] : binary.day_mtimes) {
+    if (!current_dates.count(date))
+      dates_to_purge.insert(date);
+  }
+
+  for (auto &item : items) {
+    for (const auto &date : dates_to_purge)
+      item.date_info.erase(date);
+  }
+
+  binary.day_mtimes = std::move(mtimes);
+  binary.dirty_dates.clear();
 
   // Build asset lookup map
   std::unordered_map<std::string, size_t> asset_map;
@@ -102,14 +140,11 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     asset_map[items[i].asset_code + "." + items[i].exchange] = i;
   }
 
-  // Shared result accumulator
+  // Shared result accumulator.
+  // 只装本次重扫的天; 聚合量 (总条数/体积/每天覆盖数) 最后从完整的 date_info
+  // 统一重算, 否则沿用下来的那些天会被漏掉.
   struct ScanResult {
     std::mutex mutex;
-    std::set<std::string> all_dates;
-    std::set<std::string> order_dates;
-    std::map<std::string, size_t> date_coverage;
-    size_t total_orders = 0;
-    float total_orders_size = 0.0;
     std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> asset_date_info;
   };
   auto result = std::make_shared<ScanResult>();
@@ -118,10 +153,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   //
   // 目录是扁平的: orders/YYYY/MM/DD/<CODE>.<EX>.bin, 一天一层 readdir 就够,
   // 不再是"一天下面几千个每资产目录、每个目录再 readdir 一次".
-  auto scan_day = [&asset_map, &binary_extension, result](const DayPath &day_path) {
-    size_t local_coverage = 0;
-    size_t local_total_orders = 0;
-    float local_orders_size = 0.0;
+  auto scan_day = [&asset_map, &binary_extension, result, this](const DayPath &day_path) {
     std::unordered_map<size_t, DateInfo> local_date_info;
 
     for (const auto &file_entry : fs::directory_iterator(day_path.path)) {
@@ -148,34 +180,27 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
 
       di.order_count = order_count;
       di.orders_file_size = file_size;
-      local_total_orders += order_count;
-      local_orders_size += static_cast<float>(file_size);
-
-      local_coverage++;
       local_date_info[it->second] = std::move(di);
     }
 
     // Merge into shared result
     {
       std::lock_guard<std::mutex> lock(result->mutex);
-      result->all_dates.insert(day_path.date_str);
-      result->total_orders += local_total_orders;
-      result->total_orders_size += local_orders_size;
-      if (local_coverage > 0) {
-        result->order_dates.insert(day_path.date_str);
-        result->date_coverage[day_path.date_str] += local_coverage;
-      }
-
       for (auto &[asset_idx, info] : local_date_info) {
         result->asset_date_info[asset_idx][day_path.date_str] = std::move(info);
       }
     }
+
+    scan_days_done.fetch_add(1, std::memory_order_relaxed);
   };
 
   // Submit all day scan tasks to thread pool
+  scan_days_done.store(0, std::memory_order_relaxed);
+  scan_days_total.store(days_to_scan.size(), std::memory_order_relaxed);
+
   std::vector<std::future<void>> futures;
-  futures.reserve(day_paths.size());
-  for (const auto &day_path : day_paths) {
+  futures.reserve(days_to_scan.size());
+  for (const auto &day_path : days_to_scan) {
     futures.push_back(thread_pool->submit([scan_day, day_path]() { scan_day(day_path); }));
   }
 
@@ -202,28 +227,28 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     }
   }
 
-  // Merge results into Asset
-  all_dates.assign(result->all_dates.begin(), result->all_dates.end());
-  binary.total_orders = result->total_orders;
-  binary.orders_size_gb = result->total_orders_size / (1024.0 * 1024.0 * 1024.0);
-
-  binary.dates.clear();
-  for (const auto &[date, count] : result->date_coverage) {
-    if (count > 0) {
-      binary.dates.insert(date);
-    }
-  }
-
-  // 先清空再灌: 之前是直接覆盖赋值, 用户手动删掉 .bin 之后重扫, 旧条目会
-  // 一直留在 date_info 里冒充"这天有数据".
-  for (auto &item : items) {
-    item.date_info.clear();
-  }
+  // 灌入本次重扫的天 (要重扫的那些天的旧条目已在上面清掉了)
   for (const auto &[asset_idx, date_map] : result->asset_date_info) {
     for (const auto &[date, info] : date_map) {
       items[asset_idx].date_info[date] = info;
     }
   }
+
+  all_dates.assign(current_dates.begin(), current_dates.end());
+
+  // 聚合量从完整的 date_info 重算 —— 增量扫描下 result 里只有本次重扫的天,
+  // 沿用下来的那些天必须一起算进来.
+  binary.total_orders = 0;
+  binary.dates.clear();
+  float total_orders_size = 0.0;
+  for (const auto &item : items) {
+    for (const auto &[date, info] : item.date_info) {
+      binary.total_orders += info.order_count;
+      total_orders_size += static_cast<float>(info.orders_file_size);
+      binary.dates.insert(date);
+    }
+  }
+  binary.orders_size_gb = total_orders_size / (1024.0 * 1024.0 * 1024.0);
 
   // 取自 binary.dates 而不是 all_dates: 后者含空日目录 (readdir 到了但里面
   // 没有一个能对上 asset_map 的文件), 会把区间往外撑.
@@ -303,7 +328,7 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
   auto result = std::make_shared<ScanResult>();
 
   // Lambda for scanning a single month (runs in thread pool)
-  auto scan_month = [&archive_extension, result](const MonthPath &month_path) {
+  auto scan_month = [&archive_extension, result, this](const MonthPath &month_path) {
     std::set<std::string> local_dates;
     size_t local_files = 0;
     float local_size = 0.0;
@@ -336,9 +361,14 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
       result->total_files += local_files;
       result->total_size += local_size;
     }
+
+    scan_days_done.fetch_add(1, std::memory_order_relaxed);
   };
 
   // Submit all month scan tasks to thread pool
+  scan_days_done.store(0, std::memory_order_relaxed);
+  scan_days_total.store(month_paths.size(), std::memory_order_relaxed);
+
   std::vector<std::future<void>> futures;
   futures.reserve(month_paths.size());
   for (const auto &month_path : month_paths) {

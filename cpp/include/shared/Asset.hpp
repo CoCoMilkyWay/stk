@@ -4,6 +4,7 @@
 #include "codec/L2_DataType.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -124,6 +125,10 @@ struct Asset {
   std::vector<AssetStats> asset_stats; // 按 asset_id 索引; 空 = 待重算
   uint64_t asset_stats_generation = 0; // 每次重算 +1, 驱动 GUI 表格视图失效
 
+  // 扫描进度 (GUI 轮询). 粒度是"天" —— 一天一个线程池任务, 4500 个文件.
+  std::atomic<size_t> scan_days_done{0};
+  std::atomic<size_t> scan_days_total{0};
+
   // ========================================
   // Binary Database Metadata
   // ========================================
@@ -136,6 +141,19 @@ struct Asset {
     std::string min_date;        // YYYYMMDD
     std::string max_date;        // YYYYMMDD
     std::set<std::string> dates; // All fully encoded dates
+
+    // 增量扫描: 上次扫完时每个日目录的 mtime.
+    //
+    // 全量一趟是 451 万次 open+pread+close, 约 3 秒 (readdir 本身只要 0.03
+    // 秒, 成本全在读头), 而启动 / Overview 刷新 / 编码完成都会触发扫描.
+    // 目录内容没动过的天直接沿用上次结果.
+    //
+    // 增删文件都会改目录 mtime, 所以手动删 .bin 能被发现; 唯一漏网的是重编
+    // 覆盖同名文件 (目录条目没增删), 那种由 scan_dirty_dates 兜住.
+    std::unordered_map<std::string, int64_t> day_mtimes;
+
+    // 编码动过的天 —— 无条件重扫, 不看 mtime. 编码服务在收工时填.
+    std::set<std::string> dirty_dates;
 
     // Statistics (computed from items)
     size_t encoded_assets = 0; // Assets with any encoded data
@@ -340,7 +358,10 @@ struct Asset {
           continue;
         if (!k.list_date.empty() && date_dense < k.list_date)
           continue;
-        if (!k.delist_date.empty() && date_dense > k.delist_date)
+        // 退市日当天已经不交易了 (最后交易日是它之前那个交易日), 用 > 的话
+        // 每只退市股都会平白多出一天缺口 —— 实测 145 只退市股各缺 1 天, 缺
+        // 的正是各自的 delist_date.
+        if (!k.delist_date.empty() && date_dense >= k.delist_date)
           continue;
 
         auto date_it = items[i].date_info.find(date_dense);

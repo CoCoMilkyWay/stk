@@ -250,6 +250,7 @@ void encoding_producer(SharedData &data,
       std::lock_guard<std::mutex> lock(stats.days_mutex);
       const bool oldest = stats.days_inflight.empty();
       stats.days_inflight.emplace(date_str, EncodeStats::DayProgress{0, tasks.size(), 0});
+      stats.days_touched.insert(date_str);
       if (oldest && progress)
         progress->set_summary_note(date_str + ": 0/" + std::to_string(tasks.size()) +
                                    " assets");
