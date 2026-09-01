@@ -86,13 +86,14 @@ public:
   // Convert time components back to readable format
   static std::string time_to_string(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond_10ms = 0);
 
-  // 从文件头读条数, 不开解压.
+  // 从文件头读条数与文件大小, 不开解压.
   //
   // 文件布局见 L2_DataType.hpp 的 L2FileHeader — raw_size 精确决定条数,
-  // 只需读 32 字节头. 文件名里因此不带条数 (见 Utils::generate_orders_path).
+  // 而文件总长恒等于 32 + compressed_size, 所以读了头就同时拿到了大小,
+  // 不必再 stat 一次 (全库扫描时那是五百万次多余的路径解析).
   //
-  // 返回 0 表示文件不存在或头部损坏 (含旧格式).
-  static size_t read_order_count(const std::string &filepath);
+  // 返回 false 表示文件不存在或头部损坏 (含旧格式).
+  static bool read_file_stats(const std::string &filepath, size_t &order_count, size_t &file_size);
 
 private:
   // Reusable vector tables for delta decoding (orders)

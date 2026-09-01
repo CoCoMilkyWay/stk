@@ -16,24 +16,34 @@ int cmp_size(size_t a, size_t b) {
   return (a > b) - (a < b);
 }
 
-// 重建表格视图 (过滤 + 排序). order_tab 决定第 3/4 列与过滤看的是 orders
-// 缺口还是 archive 缺口 —— 两个页签除此之外完全同构.
-void rebuild_table_view(AssetTableView &view, const Asset &asset, bool order_tab,
-                        bool missing_only, ImGuiTableSortSpecs *sort_specs) {
+// Archives / Orders 两个页签走同一段渲染, 差别只在取哪一组计数.
+struct MissingDim {
+  size_t Asset::AssetStats::*count;
+  std::vector<std::string> Asset::AssetStats::*sample;
+};
+constexpr MissingDim kArchiveDim{&Asset::AssetStats::archive_missing, &Asset::AssetStats::archive_missing_sample};
+constexpr MissingDim kOrderDim{&Asset::AssetStats::orders_missing, &Asset::AssetStats::orders_missing_sample};
+
+// 重建表格视图: 只留该维度确有缺失的资产, 再排序.
+void rebuild_table_view(AssetTableView &view, const Asset &asset, const MissingDim &dim,
+                        ImGuiTableSortSpecs *sort_specs) {
   view.rows.clear();
-  view.rows.reserve(asset.asset_stats.size());
   for (size_t id = 0; id < asset.asset_stats.size(); ++id) {
-    const Asset::AssetStats &s = asset.asset_stats[id];
-    const size_t missing_db = order_tab ? s.order_missing_db : s.archive_missing_db;
-    if (missing_only && missing_db == 0)
-      continue;
-    view.rows.push_back(id);
+    if (asset.asset_stats[id].*(dim.count) > 0)
+      view.rows.push_back(id);
   }
+
+  // 默认按缺失天数降序 —— 缺得最多的排最前, 那才是要先处理的
+  auto by_missing_desc = [&](size_t a, size_t b) {
+    const size_t ma = asset.asset_stats[a].*(dim.count);
+    const size_t mb = asset.asset_stats[b].*(dim.count);
+    if (ma != mb)
+      return ma > mb;
+    return asset.items[a].asset_code < asset.items[b].asset_code;
+  };
 
   if (sort_specs && sort_specs->SpecsCount > 0) {
     std::sort(view.rows.begin(), view.rows.end(), [&](size_t a, size_t b) {
-      const Asset::AssetStats &sa = asset.asset_stats[a];
-      const Asset::AssetStats &sb = asset.asset_stats[b];
       for (int n = 0; n < sort_specs->SpecsCount; n++) {
         const ImGuiTableColumnSortSpecs &spec = sort_specs->Specs[n];
         int delta = 0;
@@ -48,18 +58,7 @@ void rebuild_table_view(AssetTableView &view, const Asset &asset, bool order_tab
           break;
         }
         case 1:
-          delta = cmp_size(sa.backtest_days, sb.backtest_days);
-          break;
-        case 2:
-          delta = cmp_size(sa.total_days, sb.total_days);
-          break;
-        case 3:
-          delta = order_tab ? cmp_size(sa.order_missing_bt, sb.order_missing_bt)
-                            : cmp_size(sa.archive_missing_bt, sb.archive_missing_bt);
-          break;
-        case 4:
-          delta = order_tab ? cmp_size(sa.order_missing_db, sb.order_missing_db)
-                            : cmp_size(sa.archive_missing_db, sb.archive_missing_db);
+          delta = cmp_size(asset.asset_stats[a].*(dim.count), asset.asset_stats[b].*(dim.count));
           break;
         }
         if (delta != 0)
@@ -67,22 +66,114 @@ void rebuild_table_view(AssetTableView &view, const Asset &asset, bool order_tab
       }
       return false;
     });
+  } else {
+    std::sort(view.rows.begin(), view.rows.end(), by_missing_desc);
   }
 
   view.built = true;
   view.generation = asset.asset_stats_generation;
-  view.missing_only = missing_only;
 }
 
 // 视图过期就重建. 排序规则变化由 ImGui 的 SpecsDirty 告知.
-void sync_table_view(AssetTableView &view, const Asset &asset, bool order_tab, bool missing_only) {
+void sync_table_view(AssetTableView &view, const Asset &asset, const MissingDim &dim) {
   ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs();
   const bool specs_dirty = sort_specs && sort_specs->SpecsDirty;
-  if (!view.built || view.generation != asset.asset_stats_generation ||
-      view.missing_only != missing_only || specs_dirty) {
-    rebuild_table_view(view, asset, order_tab, missing_only, sort_specs);
+  if (!view.built || view.generation != asset.asset_stats_generation || specs_dirty) {
+    rebuild_table_view(view, asset, dim, sort_specs);
     if (sort_specs)
       sort_specs->SpecsDirty = false;
+  }
+}
+
+// 两个页签共用的缺失表. what = "archive" / "orders", 只用于文案.
+void render_missing_table(const char *table_id, const Asset &asset, AssetTableView &view,
+                          const MissingDim &dim, const char *what) {
+  size_t assets_affected = 0;
+  size_t asset_days_missing = 0;
+  for (const auto &st : asset.asset_stats) {
+    const size_t n = st.*(dim.count);
+    if (n > 0) {
+      assets_affected++;
+      asset_days_missing += n;
+    }
+  }
+
+  ImGui::Text("Missing:");
+  ImGui::SameLine();
+  if (assets_affected == 0) {
+    ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "none — every listed asset has %s for all its trading days", what);
+    return;
+  }
+  ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu assets, %zu asset-days",
+                     assets_affected, asset_days_missing);
+  ImGui::TextDisabled("Trading days the asset was listed and not suspended, but has no %s", what);
+
+  ImGui::Spacing();
+
+  if (ImGui::BeginTable(table_id, 3,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                            ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingFixedFit,
+                        ImVec2(0, 400))) {
+    ImGui::TableSetupColumn("Asset", ImGuiTableColumnFlags_DefaultSort);
+    ImGui::TableSetupColumn("Missing", ImGuiTableColumnFlags_DefaultSort);
+    ImGui::TableSetupColumn("Dates", ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupScrollFreeze(0, 1);
+
+    ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+    for (int column = 0; column < 3; column++) {
+      ImGui::TableSetColumnIndex(column);
+      const char *label = "";
+      const char *tooltip = "";
+      switch (column) {
+      case 0:
+        label = "Asset";
+        tooltip = "资产代码\n格式: 代码.交易所 (如 600000.SH)";
+        break;
+      case 1:
+        label = "Missing";
+        tooltip = "回测区间内缺失的交易日数\n分母是该资产已上市未退市且未停牌的交易日";
+        break;
+      case 2:
+        label = "Dates";
+        tooltip = "缺失日期 (只列前若干个)";
+        break;
+      }
+      ImGui::TableHeader(label);
+      if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(tooltip);
+        ImGui::EndTooltip();
+      }
+    }
+
+    sync_table_view(view, asset, dim);
+
+    for (const size_t id : view.rows) {
+      const AssetItem &item = asset.items[id];
+      const Asset::AssetStats &stats = asset.asset_stats[id];
+      const size_t missing = stats.*(dim.count);
+      const std::vector<std::string> &sample = stats.*(dim.sample);
+
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("%s.%s", item.asset_code.c_str(), item.exchange.c_str());
+
+      ImGui::TableNextColumn();
+      ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu / %zu", missing, stats.expected_days);
+
+      ImGui::TableNextColumn();
+      std::string dates;
+      for (const auto &d : sample) {
+        if (!dates.empty())
+          dates += "  ";
+        dates += d;
+      }
+      if (missing > sample.size())
+        dates += "  +" + std::to_string(missing - sample.size()) + " more";
+      ImGui::TextUnformatted(dates.c_str());
+    }
+
+    ImGui::EndTable();
   }
 }
 
@@ -105,8 +196,10 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
   const bool is_running = encoding_service->is_running();
   const auto status = encoding_service->get_status();
   const auto progress = encoding_service->get_progress();
-  const auto check_result = scan_service->get_last_check_result();
-  const auto file_check_result = encoding_service->get_file_check_result();
+  // 这两个返回的是引用, 别按值接 —— 里面的缺失日期/错误文件列表是几千条
+  // std::string, 逐帧整份复制就是逐帧几千次分配
+  const auto &check_result = scan_service->get_last_check_result();
+  const auto &file_check_result = encoding_service->get_file_check_result();
   const bool file_check_running = encoding_service->is_file_check_running();
 
   // ========================================================================
@@ -181,38 +274,63 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     if (scan_service->is_scanning()) {
       ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "%s", scan_service->get_status_string());
       ImGui::TextDisabled("Database check in progress...");
-    } else if (check_result.status == DatabaseStatus::Unchecked) {
-      ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Not checked");
-      ImGui::TextDisabled("Coverage check runs automatically after fundamental sync");
-    } else if (check_result.status == DatabaseStatus::Error) {
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "ERROR");
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", check_result.error_message.c_str());
-    } else if (check_result.status == DatabaseStatus::Pass) {
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Pass");
-      ImGui::TextDisabled("All required dates for backtest period are encoded");
-    } else if (check_result.status == DatabaseStatus::Incomplete) {
-      ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Incomplete");
-      ImGui::Text("Missing %zu / %zu dates (%.1f%% complete)",
-                  check_result.missing_dates.size(),
-                  check_result.required_dates,
-                  check_result.required_dates > 0 ? 100.0 * check_result.binary_coverage / check_result.required_dates : 0.0);
-
-      // Show missing dates if requested
-      if (state.show_missing_details && !check_result.missing_dates.empty()) {
-        ImGui::Spacing();
-        ImGui::TextDisabled("Missing dates:");
-        ImGui::BeginChild("MissingDates", ImVec2(0, 100), true);
-        for (const auto &date : check_result.missing_dates) {
-          ImGui::BulletText("%s", date.c_str());
-        }
-        ImGui::EndChild();
-      }
-
-      if (!check_result.missing_dates.empty()) {
-        ImGui::Checkbox("Show missing dates", &state.show_missing_details);
-      }
     } else {
-      ImGui::TextDisabled("Not checked yet");
+      // 每个 DatabaseStatus 都要有分支 —— 漏掉的会掉进 default 显示成
+      // "没检查", 而它其实刚检查完.
+      switch (check_result.status) {
+      case DatabaseStatus::Unchecked:
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Not checked");
+        ImGui::TextDisabled("Coverage check runs automatically after fundamental sync");
+        break;
+      case DatabaseStatus::Error:
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "ERROR");
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", check_result.error_message.c_str());
+        break;
+      case DatabaseStatus::Pass:
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Pass");
+        ImGui::TextDisabled("All required dates for backtest period are encoded");
+        break;
+      case DatabaseStatus::Incomplete:
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Incomplete");
+        ImGui::TextDisabled("Missing dates all have archives — run encoding to fill them");
+        break;
+      case DatabaseStatus::NotEncoded:
+        ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "NotEncoded");
+        ImGui::TextDisabled("Archives cover the backtest period, nothing encoded yet");
+        break;
+      case DatabaseStatus::NeedArchive:
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "NeedArchive");
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%s", check_result.error_message.c_str());
+        ImGui::TextDisabled("Those days must be downloaded before they can be encoded");
+        break;
+      case DatabaseStatus::NoData:
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "NoData");
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", check_result.error_message.c_str());
+        break;
+      }
+
+      // 覆盖进度与缺口明细对所有"检查跑完且有缺口"的状态都适用
+      if (!check_result.missing_dates.empty() && check_result.required_dates > 0) {
+        ImGui::Spacing();
+        ImGui::Text("Covered %zu / %zu trading days (%.1f%%)",
+                    check_result.binary_coverage,
+                    check_result.required_dates,
+                    100.0 * check_result.binary_coverage / check_result.required_dates);
+        ImGui::BulletText("Can encode from archive: %zu", check_result.missing_can_encode.size());
+        ImGui::BulletText("Need download (no archive): %zu", check_result.missing_no_archive.size());
+
+        ImGui::Checkbox("Show missing dates", &state.show_missing_details);
+        if (state.show_missing_details) {
+          ImGui::BeginChild("MissingDates", ImVec2(0, 140), true);
+          for (const auto &date : check_result.missing_no_archive) {
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%s  (no archive)", date.c_str());
+          }
+          for (const auto &date : check_result.missing_can_encode) {
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s  (can encode)", date.c_str());
+          }
+          ImGui::EndChild();
+        }
+      }
     }
 
     ImGui::Unindent();
@@ -489,8 +607,11 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       ImGui::Spacing();
 
       // Statistics
-      ImGui::SetCursorPosX(center_x - 150);
-      ImGui::Text("Total Orders: %zu", progress.total_orders);
+      // 条数只有跑过明细扫描才有值 (见 Asset::DateInfo), 没有就不占一行
+      if (progress.total_orders > 0) {
+        ImGui::SetCursorPosX(center_x - 150);
+        ImGui::Text("Total Orders: %zu", progress.total_orders);
+      }
 
       ImGui::SetCursorPosX(center_x - 150);
       ImGui::Text("Elapsed Time: %.1f s", progress.elapsed_seconds);
@@ -526,70 +647,42 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     if (ImGui::CollapsingHeader("Asset Summary", ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
 
-      // 每资产统计只在扫描后算一次 — 全库编完后 date_info 是满的 (资产数 ×
-      // 交易日数, 五百万量级), 逐帧重算会把帧时间拖到几百毫秒.
-      if (asset.asset_stats.empty() && !asset.items.empty())
-        asset.compute_asset_statistics();
-
-      ImGui::Checkbox("Show only missing assets", &state.show_missing_assets);
+      // 统计由扫描末尾一次算好 (见 ScanService Phase 5)
+      const bool stats_ready = asset.asset_stats.size() == asset.items.size() && !asset.items.empty();
 
       ImGui::Spacing();
 
-      // Tab bar for Archive and Binary
-      if (ImGui::BeginTabBar("AssetSummaryTabs", ImGuiTabBarFlags_None)) {
+      if (!stats_ready) {
+        ImGui::TextDisabled("Waiting for database scan...");
+      } else if (ImGui::BeginTabBar("AssetSummaryTabs", ImGuiTabBarFlags_None)) {
+
+        // 分母都是回测区间内的交易日 (日历为准), 不是各自库扫出来的天数 ——
+        // 后者做分母的话, 缺的那些天连同分母一起消失, 永远是 100%.
+        const size_t required_days = asset.backtest.required_dates.size();
 
         // ========================================================================
-        // Archive Tab
+        // Archives Tab
         // ========================================================================
-        if (ImGui::BeginTabItem("Archive")) {
+        if (ImGui::BeginTabItem("Archives")) {
           ImGui::Spacing();
 
-          // Calculate archive days in backtest range
           size_t archive_days_in_backtest = 0;
-          if (asset.archive.exists && !asset.backtest.start.empty() && !asset.backtest.end.empty()) {
-            for (const auto &date : asset.archive.dates) {
-              if (date >= asset.backtest.start && date <= asset.backtest.end) {
-                archive_days_in_backtest++;
-              }
-            }
-          }
-          size_t total_archive_days = asset.archive.dates.size();
-
-          // In Range check - backtest range is within archive database range
-          bool archive_in_range = false;
-          if (!asset.backtest.start.empty() && !asset.backtest.end.empty() &&
-              !asset.archive.min_date.empty() && !asset.archive.max_date.empty()) {
-            archive_in_range = (asset.archive.min_date <= asset.backtest.start &&
-                                asset.backtest.end <= asset.archive.max_date);
+          for (const auto &date : asset.backtest.required_dates) {
+            if (asset.archive.dates.count(date))
+              archive_days_in_backtest++;
           }
 
-          // Database Path
           ImGui::Text("Database Path:");
           ImGui::SameLine();
           ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.archive.path.c_str());
 
-          // In Range (first line)
-          ImGui::Text("In Range:");
-          ImGui::SameLine();
-          if (archive_in_range) {
-            ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "Yes");
-          } else {
-            ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "No");
-          }
-
-          // Backtest Range (Target)
           ImGui::Text("Backtest Range (Target):");
           ImGui::SameLine();
-          if (!asset.backtest.start.empty() && !asset.backtest.end.empty()) {
-            if (archive_in_range && total_archive_days > 0) {
-              float pct = 100.0 * archive_days_in_backtest / total_archive_days;
-              ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu days, %.1f%%)",
-                                 asset.backtest.start.c_str(), asset.backtest.end.c_str(),
-                                 archive_days_in_backtest, total_archive_days, pct);
-            } else {
-              ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (has to be in range to show days)",
-                                 asset.backtest.start.c_str(), asset.backtest.end.c_str());
-            }
+          if (required_days > 0) {
+            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu trading days, %.1f%%)",
+                               asset.backtest.start.c_str(), asset.backtest.end.c_str(),
+                               archive_days_in_backtest, required_days,
+                               100.0 * archive_days_in_backtest / required_days);
           } else {
             ImGui::TextDisabled("Not configured");
           }
@@ -599,153 +692,17 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
           ImGui::Spacing();
 
           if (asset.archive.exists) {
-            // Archive Range (Scanned) - only show files count
-            ImGui::Text("Archive Range (Scanned):");
+            ImGui::Text("Range (Scanned):");
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu files)",
+            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu files, %.2f GB)",
                                asset.archive.min_date.c_str(), asset.archive.max_date.c_str(),
-                               asset.archive.total_files);
-
-            // Archive Size
-            ImGui::Text("Archive Size:");
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "%.2f GB", asset.archive.total_size_gb);
+                               asset.archive.total_files, asset.archive.total_size_gb);
 
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
 
-            // Asset table
-            if (ImGui::BeginTable("archive_asset_table", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingFixedFit, ImVec2(0, 400))) {
-              ImGui::TableSetupColumn("Asset", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Days (BT)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Days (DB)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Arch Miss (BT)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Arch Miss (DB)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupScrollFreeze(0, 1);
-
-              // Custom headers with tooltips
-              ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-              for (int column = 0; column < 5; column++) {
-                ImGui::TableSetColumnIndex(column);
-                const char *label = "";
-                const char *tooltip = "";
-
-                switch (column) {
-                case 0:
-                  label = "Asset";
-                  tooltip = "资产代码\n格式: 代码.交易所 (如 600000.SH)";
-                  break;
-                case 1:
-                  label = "Days (BT)";
-                  tooltip = "回测区间交易日数\n该资产在binary数据库中,位于回测日期范围内的交易日总数";
-                  break;
-                case 2:
-                  label = "Days (DB)";
-                  tooltip = "数据库交易日数\n该资产在binary数据库中的总交易日数";
-                  break;
-                case 3:
-                  label = "Arch Miss (BT)";
-                  tooltip = "Archive回测区间缺失\n在回测日期范围内,binary有记录但archive源文件缺失的天数\n= 回测区间天数 - archive中可用天数";
-                  break;
-                case 4:
-                  label = "Arch Miss (DB)";
-                  tooltip = "Archive数据库区间缺失\n在整个数据库范围内,binary有记录但archive源文件缺失的天数\n= 数据库总天数 - archive中可用天数";
-                  break;
-                }
-
-                ImGui::TableHeader(label);
-                if (ImGui::IsItemHovered()) {
-                  ImGui::BeginTooltip();
-                  ImGui::TextUnformatted(tooltip);
-                  ImGui::EndTooltip();
-                }
-              }
-
-              // 行统计取自 Asset::asset_stats, 顺序取自缓存视图 — 两者都只
-              // 在扫描/过滤/排序变化时重算 (见 AssetTableView)
-              sync_table_view(state.archive_view, asset, false, state.show_missing_assets);
-
-              for (const size_t id : state.archive_view.rows) {
-                const AssetItem &item = asset.items[id];
-                const Asset::AssetStats &stats = asset.asset_stats[id];
-
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("%s.%s", item.asset_code.c_str(), item.exchange.c_str());
-
-                ImGui::TableNextColumn();
-                ImGui::Text("%zu", stats.backtest_days);
-
-                ImGui::TableNextColumn();
-                ImGui::Text("%zu", stats.total_days);
-
-                ImGui::TableNextColumn();
-                if (stats.archive_missing_bt > 0) {
-                  ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu", stats.archive_missing_bt);
-
-                  if (ImGui::IsItemHovered()) {
-                    ImGui::BeginTooltip();
-                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
-                    ImGui::TextDisabled("Missing dates in backtest range:");
-                    ImGui::Separator();
-                    std::vector<std::string> missing_dates_vec;
-                    for (const auto &[date, info] : item.date_info) {
-                      bool in_backtest = !asset.backtest.start.empty() && !asset.backtest.end.empty() &&
-                                         date >= asset.backtest.start && date <= asset.backtest.end;
-                      if (in_backtest && !asset.archive.dates.count(date)) {
-                        missing_dates_vec.push_back(date);
-                      }
-                    }
-                    std::sort(missing_dates_vec.begin(), missing_dates_vec.end());
-                    std::string missing_dates;
-                    for (const auto &date : missing_dates_vec) {
-                      if (!missing_dates.empty())
-                        missing_dates += ", ";
-                      missing_dates += date;
-                    }
-                    ImGui::TextWrapped("%s", missing_dates.c_str());
-                    ImGui::PopTextWrapPos();
-                    ImGui::EndTooltip();
-                  }
-                } else {
-                  ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "0");
-                }
-
-                ImGui::TableNextColumn();
-                if (stats.archive_missing_db > 0) {
-                  ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu", stats.archive_missing_db);
-
-                  if (ImGui::IsItemHovered()) {
-                    ImGui::BeginTooltip();
-                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
-                    ImGui::TextDisabled("Missing dates in database:");
-                    ImGui::Separator();
-                    std::vector<std::string> missing_dates_vec;
-                    for (const auto &[date, info] : item.date_info) {
-                      if (!asset.archive.dates.count(date)) {
-                        missing_dates_vec.push_back(date);
-                      }
-                    }
-                    std::sort(missing_dates_vec.begin(), missing_dates_vec.end());
-                    std::string missing_dates;
-                    for (const auto &date : missing_dates_vec) {
-                      if (!missing_dates.empty())
-                        missing_dates += ", ";
-                      missing_dates += date;
-                    }
-                    ImGui::TextWrapped("%s", missing_dates.c_str());
-                    ImGui::PopTextWrapPos();
-                    ImGui::EndTooltip();
-                  }
-                } else {
-                  ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "0");
-                }
-              }
-
-              ImGui::EndTable();
-            }
-
+            render_missing_table("archive_missing_table", asset, state.archive_view, kArchiveDim, "archive");
           } else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No archive database found");
           }
@@ -754,50 +711,24 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
         }
 
         // ========================================================================
-        // Binary Order Tab
+        // Orders Tab
         // ========================================================================
-        if (ImGui::BeginTabItem("Binary Order")) {
+        if (ImGui::BeginTabItem("Orders")) {
           ImGui::Spacing();
 
-          // Use precomputed statistics
-          size_t order_days_in_backtest = asset.binary.backtest_order_days;
-          size_t total_days_in_database = asset.binary.database_order_days;
+          const size_t order_days_in_backtest = asset.binary.backtest_order_days;
 
-          // In Range check - backtest range is within binary database range
-          bool order_in_range = false;
-          if (!asset.backtest.start.empty() && !asset.backtest.end.empty() &&
-              !asset.binary.min_date.empty() && !asset.binary.max_date.empty()) {
-            order_in_range = (asset.binary.min_date <= asset.backtest.start &&
-                              asset.backtest.end <= asset.binary.max_date);
-          }
-
-          // Database Path
           ImGui::Text("Database Path:");
           ImGui::SameLine();
           ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.binary.path.c_str());
 
-          // In Range (first line)
-          ImGui::Text("In Range:");
-          ImGui::SameLine();
-          if (order_in_range) {
-            ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "Yes");
-          } else {
-            ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "No");
-          }
-
-          // Backtest Range (Target)
           ImGui::Text("Backtest Range (Target):");
           ImGui::SameLine();
-          if (!asset.backtest.start.empty() && !asset.backtest.end.empty()) {
-            if (order_in_range && total_days_in_database > 0) {
-              float pct = 100.0 * order_days_in_backtest / total_days_in_database;
-              ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu days, %.1f%%)",
-                                 asset.backtest.start.c_str(), asset.backtest.end.c_str(),
-                                 order_days_in_backtest, total_days_in_database, pct);
-            } else {
-              ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (has to be in range to show days)",
-                                 asset.backtest.start.c_str(), asset.backtest.end.c_str());
-            }
+          if (required_days > 0) {
+            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu trading days, %.1f%%)",
+                               asset.backtest.start.c_str(), asset.backtest.end.c_str(),
+                               order_days_in_backtest, required_days,
+                               100.0 * order_days_in_backtest / required_days);
           } else {
             ImGui::TextDisabled("Not configured");
           }
@@ -807,160 +738,17 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
           ImGui::Spacing();
 
           if (asset.binary.exists) {
-            // Binary Range (Scanned) - only show assets count
-            ImGui::Text("Binary Range (Scanned):");
+            ImGui::Text("Range (Scanned):");
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu assets)",
+            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu assets, %.2f GB)",
                                asset.binary.min_date.c_str(), asset.binary.max_date.c_str(),
-                               asset.binary.encoded_assets);
-
-            // Orders Encoded (backtest / whole database)
-            ImGui::Text("Orders Encoded:");
-            ImGui::SameLine();
-            float order_pct = asset.binary.total_orders > 0 ? 100.0 * asset.binary.backtest_orders / asset.binary.total_orders : 0.0;
-            ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.1fM / %.1fM (%.1f%%)",
-                               asset.binary.backtest_orders / 1000000.0, asset.binary.total_orders / 1000000.0, order_pct);
-
-            ImGui::Text("Orders Size:");
-            ImGui::SameLine();
-            float order_size_pct = asset.binary.orders_size_gb > 0 ? 100.0 * asset.binary.backtest_orders_size_gb / asset.binary.orders_size_gb : 0.0;
-            ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.95f, 1.0f), "%.2fGB / %.2fGB (%.1f%%)",
-                               asset.binary.backtest_orders_size_gb, asset.binary.orders_size_gb, order_size_pct);
+                               asset.binary.encoded_assets, asset.binary.orders_size_gb);
 
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
 
-            // Asset table
-            if (ImGui::BeginTable("order_asset_table", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingFixedFit, ImVec2(0, 400))) {
-              ImGui::TableSetupColumn("Asset", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Days (BT)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Days (DB)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Order Miss (BT)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupColumn("Order Miss (DB)", ImGuiTableColumnFlags_DefaultSort);
-              ImGui::TableSetupScrollFreeze(0, 1);
-
-              // Custom headers with tooltips
-              ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-              for (int column = 0; column < 5; column++) {
-                ImGui::TableSetColumnIndex(column);
-                const char *label = "";
-                const char *tooltip = "";
-
-                switch (column) {
-                case 0:
-                  label = "Asset";
-                  tooltip = "资产代码\n格式: 代码.交易所 (如 600000.SH)";
-                  break;
-                case 1:
-                  label = "Days (BT)";
-                  tooltip = "回测区间交易日数\n该资产在binary数据库中,位于回测日期范围内的交易日总数";
-                  break;
-                case 2:
-                  label = "Days (DB)";
-                  tooltip = "数据库交易日数\n该资产在binary数据库中的总交易日数";
-                  break;
-                case 3:
-                  label = "Order Miss (BT)";
-                  tooltip = "订单回测区间缺失\n在回测日期范围内,有目录记录但orders文件缺失的天数\n= 回测区间天数 - 有orders文件的天数";
-                  break;
-                case 4:
-                  label = "Order Miss (DB)";
-                  tooltip = "订单数据库区间缺失\n在整个数据库范围内,有目录记录但orders文件缺失的天数\n= 数据库总天数 - 有orders文件的天数";
-                  break;
-                }
-
-                ImGui::TableHeader(label);
-                if (ImGui::IsItemHovered()) {
-                  ImGui::BeginTooltip();
-                  ImGui::TextUnformatted(tooltip);
-                  ImGui::EndTooltip();
-                }
-              }
-
-              // 同 Archive 页签: 统计与顺序都走缓存 (见 AssetTableView)
-              sync_table_view(state.order_view, asset, true, state.show_missing_assets);
-
-              for (const size_t id : state.order_view.rows) {
-                const AssetItem &item = asset.items[id];
-                const Asset::AssetStats &stats = asset.asset_stats[id];
-
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("%s.%s", item.asset_code.c_str(), item.exchange.c_str());
-
-                ImGui::TableNextColumn();
-                ImGui::Text("%zu", stats.backtest_days);
-
-                ImGui::TableNextColumn();
-                ImGui::Text("%zu", stats.total_days);
-
-                ImGui::TableNextColumn();
-                if (stats.order_missing_bt > 0) {
-                  ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu", stats.order_missing_bt);
-
-                  if (ImGui::IsItemHovered()) {
-                    ImGui::BeginTooltip();
-                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
-                    ImGui::TextDisabled("Missing dates in backtest range:");
-                    ImGui::Separator();
-                    std::vector<std::string> missing_dates_vec;
-                    for (const auto &[date, info] : item.date_info) {
-                      bool in_backtest = !asset.backtest.start.empty() && !asset.backtest.end.empty() &&
-                                         date >= asset.backtest.start && date <= asset.backtest.end;
-                      if (in_backtest && !info.orders_encoded) {
-                        missing_dates_vec.push_back(date);
-                      }
-                    }
-                    std::sort(missing_dates_vec.begin(), missing_dates_vec.end());
-                    std::string missing_dates;
-                    for (const auto &date : missing_dates_vec) {
-                      if (!missing_dates.empty())
-                        missing_dates += ", ";
-                      missing_dates += date;
-                    }
-                    ImGui::TextWrapped("%s", missing_dates.c_str());
-                    ImGui::PopTextWrapPos();
-                    ImGui::EndTooltip();
-                  }
-                } else {
-                  ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "0");
-                }
-
-                ImGui::TableNextColumn();
-                if (stats.order_missing_db > 0) {
-                  ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu", stats.order_missing_db);
-
-                  if (ImGui::IsItemHovered()) {
-                    ImGui::BeginTooltip();
-                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
-                    ImGui::TextDisabled("Missing dates in database:");
-                    ImGui::Separator();
-                    std::vector<std::string> missing_dates_vec;
-                    for (const auto &[date, info] : item.date_info) {
-                      if (!info.orders_encoded) {
-                        missing_dates_vec.push_back(date);
-                      }
-                    }
-                    std::sort(missing_dates_vec.begin(), missing_dates_vec.end());
-                    std::string missing_dates;
-                    for (const auto &date : missing_dates_vec) {
-                      if (!missing_dates.empty())
-                        missing_dates += ", ";
-                      missing_dates += date;
-                    }
-                    ImGui::TextWrapped("%s", missing_dates.c_str());
-                    ImGui::PopTextWrapPos();
-                    ImGui::EndTooltip();
-                  }
-                } else {
-                  ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "0");
-                }
-              }
-
-              ImGui::EndTable();
-            }
-
+            render_missing_table("order_missing_table", asset, state.order_view, kOrderDim, "orders");
           } else {
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No binary database found");
           }

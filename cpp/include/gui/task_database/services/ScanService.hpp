@@ -55,7 +55,6 @@ struct BinaryDatabaseInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
-  size_t coverage_in_backtest = 0;
   std::vector<std::string> available_dates;
 };
 
@@ -63,7 +62,6 @@ struct ArchiveDatabaseInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
-  size_t coverage_in_backtest = 0;
   std::vector<std::string> available_dates;
 };
 
@@ -78,9 +76,8 @@ struct DatabaseCheckResult {
   ArchiveDatabaseInfo archive;
 
   // Coverage analysis
-  size_t required_dates = 0;   // Required trading days in backtest period
-  size_t binary_coverage = 0;  // Binary covered dates
-  size_t archive_coverage = 0; // Archive available dates
+  size_t required_dates = 0;  // Required trading days in backtest period
+  size_t binary_coverage = 0; // Binary covered dates
 
   // Missing details
   std::vector<std::string> missing_dates;      // All missing dates

@@ -3,6 +3,7 @@
 #define ZSTD_STATIC_LINKING_ONLY
 
 #include "codec/binary_decoder_L2.hpp"
+#include "misc/cross_platform.hpp"
 #include "misc/profiler.hpp"
 #include <cstring>
 #include <fstream>
@@ -42,16 +43,16 @@ static bool read_l2_header(std::ifstream &file, L2FileHeader &header) {
   return !file.fail() && header.sane();
 }
 
-size_t BinaryDecoder_L2::read_order_count(const std::string &filepath) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open())
-    return 0;
-
+bool BinaryDecoder_L2::read_file_stats(const std::string &filepath, size_t &order_count, size_t &file_size) {
   L2FileHeader header;
-  if (!read_l2_header(file, header))
-    return 0;
+  if (read_file_head(filepath.c_str(), &header, sizeof(header)) != sizeof(header))
+    return false;
+  if (!header.sane())
+    return false;
 
-  return header.order_count();
+  order_count = header.order_count();
+  file_size = sizeof(header) + header.compressed_size;
+  return true;
 }
 
 std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond_10ms) {

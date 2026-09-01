@@ -158,10 +158,10 @@ EncodingProgress EncodingService::get_progress() const {
   prog.encoded_dates = data_.asset.binary.dates.size();
   prog.completed_assets = 0;
 
-  // Calculate total orders
-  for (const auto &item : data_.asset.items) {
-    prog.total_orders += item.get_total_order_count();
-  }
+  // 扫描时已累加好 (见 coro_scan_binary_database). 这里每帧都会被 Encode 页
+  // 调一次, 逐帧遍历 items[].date_info (资产数 × 交易日数, 五百万量级) 会把
+  // 帧时间拖到几百毫秒 —— 与 Asset::asset_stats 同一个坑.
+  prog.total_orders = data_.asset.binary.total_orders;
 
   if (status_ == EncodingStatus::Running) {
     prog.elapsed_seconds = std::chrono::duration<float>(

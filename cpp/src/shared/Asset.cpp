@@ -30,101 +30,9 @@ AssetItem::AssetItem(size_t id, std::string code, std::string name, std::string 
       start_date(std::move(start)),
       end_date(std::move(end)) {}
 
-size_t AssetItem::get_total_trading_days() const {
-  return date_info.size();
-}
-
-size_t AssetItem::get_encoded_count() const {
-  size_t count = 0;
-  for (const auto &[_, di] : date_info) {
-    if (di.is_fully_encoded())
-      count++;
-  }
-  return count;
-}
-
-size_t AssetItem::get_orders_encoded_count() const {
-  size_t count = 0;
-  for (const auto &[_, di] : date_info)
-    count += di.orders_encoded;
-  return count;
-}
-
-size_t AssetItem::get_missing_count() const {
-  return get_total_trading_days() - get_encoded_count();
-}
-
-size_t AssetItem::get_analyzed_count() const {
-  size_t count = 0;
-  for (const auto &[_, di] : date_info)
-    count += di.analyzed;
-  return count;
-}
-
-size_t AssetItem::get_total_order_count() const {
-  size_t total = 0;
-  for (const auto &[_, di] : date_info)
-    total += di.order_count;
-  return total;
-}
-
-std::vector<std::string> AssetItem::get_missing_dates() const {
-  std::vector<std::string> missing;
-  for (const auto &[date_str, di] : date_info) {
-    if (!di.is_fully_encoded()) {
-      missing.push_back(date_str);
-    }
-  }
-  std::sort(missing.begin(), missing.end());
-  return missing;
-}
-
-std::string AssetItem::get_display_name() const {
-  return asset_code + " " + asset_name;
-}
-
 // ============================================================================
 // Asset Implementation
 // ============================================================================
-
-void Asset::compute_asset_statistics() {
-  asset_stats.assign(items.size(), AssetStats{});
-  const bool has_backtest = !backtest.start.empty() && !backtest.end.empty();
-
-  for (size_t i = 0; i < items.size(); ++i) {
-    const AssetItem &item = items[i];
-    AssetStats &stats = asset_stats[i];
-    stats.total_days = item.date_info.size();
-
-    size_t archive_available = 0, archive_available_bt = 0;
-    size_t order_encoded = 0, order_encoded_bt = 0;
-
-    for (const auto &[date, info] : item.date_info) {
-      const bool in_backtest =
-          has_backtest && date >= backtest.start && date <= backtest.end;
-      if (in_backtest)
-        stats.backtest_days++;
-
-      if (archive.dates.count(date)) {
-        archive_available++;
-        if (in_backtest)
-          archive_available_bt++;
-      }
-      if (info.orders_encoded) {
-        order_encoded++;
-        if (in_backtest)
-          order_encoded_bt++;
-      }
-    }
-
-    stats.archive_missing_db = stats.total_days - archive_available;
-    stats.archive_missing_bt = stats.backtest_days - archive_available_bt;
-    stats.order_missing_db = stats.total_days - order_encoded;
-    stats.order_missing_bt = stats.backtest_days - order_encoded_bt;
-  }
-
-  asset_stats_generation++;
-}
 
 // ============================================================================
 // Binary Database Scan (Coroutine Version)
@@ -151,9 +59,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     binary.dates.clear();
     binary.min_date.clear();
     binary.max_date.clear();
-    binary.total_assets = 0;
     binary.encoded_assets = 0;
-    binary.complete_assets = 0;
     binary.total_orders = 0;
     binary.orders_size_gb = 0.0;
     all_dates.clear();
@@ -232,18 +138,19 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
         continue;
 
       DateInfo di;
-      di.orders_file = file_entry.path().string();
       di.orders_encoded = 1;
-      // 条数来自文件头 (8 字节), 文件名里不再冗余存放
-      di.order_count = L2::BinaryDecoder_L2::read_order_count(di.orders_file);
-      try {
-        di.orders_file_size = fs::file_size(file_entry.path());
-      } catch (...) {
-        di.orders_file_size = 0;
-      }
 
-      local_total_orders += di.order_count;
-      local_orders_size += static_cast<float>(di.orders_file_size);
+      // 一次读头同时拿到条数和体积 (文件总长 = 32 + compressed_size), 不再
+      // 额外 stat. 头损坏的文件当作没有数据 —— 它本来也解不出来.
+      size_t order_count = 0, file_size = 0;
+      if (!L2::BinaryDecoder_L2::read_file_stats(file_entry.path().string(), order_count, file_size))
+        continue;
+
+      di.order_count = order_count;
+      di.orders_file_size = file_size;
+      local_total_orders += order_count;
+      local_orders_size += static_cast<float>(file_size);
+
       local_coverage++;
       local_date_info[it->second] = std::move(di);
     }
@@ -297,10 +204,8 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
 
   // Merge results into Asset
   all_dates.assign(result->all_dates.begin(), result->all_dates.end());
-  binary.total_assets = items.size();
   binary.total_orders = result->total_orders;
   binary.orders_size_gb = result->total_orders_size / (1024.0 * 1024.0 * 1024.0);
-  binary.database_order_days = result->order_dates.size();
 
   binary.dates.clear();
   for (const auto &[date, count] : result->date_coverage) {
@@ -309,35 +214,31 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     }
   }
 
+  // 先清空再灌: 之前是直接覆盖赋值, 用户手动删掉 .bin 之后重扫, 旧条目会
+  // 一直留在 date_info 里冒充"这天有数据".
+  for (auto &item : items) {
+    item.date_info.clear();
+  }
   for (const auto &[asset_idx, date_map] : result->asset_date_info) {
     for (const auto &[date, info] : date_map) {
       items[asset_idx].date_info[date] = info;
     }
   }
 
-  if (!all_dates.empty()) {
-    binary.min_date = all_dates.front();
-    binary.max_date = all_dates.back();
+  // 取自 binary.dates 而不是 all_dates: 后者含空日目录 (readdir 到了但里面
+  // 没有一个能对上 asset_map 的文件), 会把区间往外撑.
+  if (!binary.dates.empty()) {
+    binary.min_date = *binary.dates.begin();
+    binary.max_date = *binary.dates.rbegin();
   } else {
     binary.min_date.clear();
     binary.max_date.clear();
   }
 
   binary.encoded_assets = 0;
-  binary.complete_assets = 0;
   for (const auto &item : items) {
     if (!item.date_info.empty()) {
       binary.encoded_assets++;
-      bool is_complete = true;
-      for (const auto &[date, info] : item.date_info) {
-        if (!info.is_fully_encoded()) {
-          is_complete = false;
-          break;
-        }
-      }
-      if (is_complete) {
-        binary.complete_assets++;
-      }
     }
   }
 
@@ -507,7 +408,6 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
   backtest.missing_dates.clear();
   backtest.can_encode.clear();
   backtest.need_download.clear();
-  backtest.coverage_percent = 0.0;
 
   // Step 1: Ground truth = 基本面交易日历 (权威, archive 自身缺日也能发现)
   // stock_days 行格式 ["YYYY-MM-DD", "0"/"1"], 此处转 compact "YYYYMMDD" 与
@@ -547,26 +447,24 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
     backtest.need_download = backtest.missing_dates;
   }
 
-  // Step 4: Compute coverage percentage
-  if (!backtest.required_dates.empty()) {
-    backtest.coverage_percent = 100.0 * static_cast<float>(backtest.covered_dates.size()) /
-                                static_cast<float>(backtest.required_dates.size());
-  } else {
-    backtest.coverage_percent = 0.0;
-  }
-
-  // Step 5: Calculate backtest range statistics (single pass)
+  // Step 4: Calculate backtest range statistics
+  //
+  // 有数据的天数直接从 binary.dates 取交集 —— 原先为此遍历全部 items 的
+  // date_info (五百万条) 只为数出几百个日期.
   binary.backtest_orders = 0;
   float backtest_orders_size = 0.0;
   std::set<std::string> order_dates_in_backtest;
 
-  // Single pass through all assets and dates
+  for (const auto &date : binary.dates) {
+    if (date >= start && date <= end)
+      order_dates_in_backtest.insert(date);
+  }
+
   for (const auto &item : items) {
     for (const auto &[date, info] : item.date_info) {
       if (date >= start && date <= end && info.orders_encoded) {
         binary.backtest_orders += info.order_count;
         backtest_orders_size += static_cast<float>(info.orders_file_size);
-        order_dates_in_backtest.insert(date);
       }
     }
   }

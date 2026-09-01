@@ -2,6 +2,7 @@
 #include "gui/Tasks.hpp"
 #include "imgui.h"
 #include "implot.h"
+#include "misc/cross_platform.hpp"
 #include "shared/SharedData.hpp"
 #include <algorithm>
 #include <array>
@@ -15,27 +16,30 @@
 
 // Platform-specific headers
 #ifdef _WIN32
+// windows.h 必须在其余 Win32 头之前 (pdh / iphlpapi / dxgi 都依赖它的类型),
+// 所以单独成块 —— clang-format 只在块内排序, 不会把它挪到后面去
 #include <windows.h>
+
+#include <dxgi.h>
+#include <intrin.h>
+#include <iphlpapi.h>
 #include <pdh.h>
 #include <pdhmsg.h>
-#include <iphlpapi.h>
+#include <setupapi.h>
 #include <sysinfoapi.h>
 #include <versionhelpers.h>
-#include <intrin.h>
-#include <setupapi.h>
-#include <dxgi.h>
 
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "dxguid.lib")
 #elif __APPLE__
-#include <sys/types.h>
-#include <sys/sysctl.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <unistd.h>
 #include <mach/mach.h>
 #include <mach/task.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/sysctl.h>
+#include <sys/types.h>
+#include <unistd.h>
 #else // Linux
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
@@ -335,16 +339,16 @@ private:
     // Get Windows version
     OSVERSIONINFOEXW osvi = {};
     osvi.dwOSVersionInfoSize = sizeof(osvi);
-    
+
     // Use RtlGetVersion for accurate version (GetVersionEx is deprecated)
-    typedef LONG(WINAPI *RtlGetVersionFunc)(OSVERSIONINFOEXW*);
+    typedef LONG(WINAPI * RtlGetVersionFunc)(OSVERSIONINFOEXW *);
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     if (ntdll) {
       auto RtlGetVersion = (RtlGetVersionFunc)GetProcAddress(ntdll, "RtlGetVersion");
       if (RtlGetVersion) {
         RtlGetVersion(&osvi);
         char version_buf[64];
-        snprintf(version_buf, sizeof(version_buf), "%lu.%lu.%lu", 
+        snprintf(version_buf, sizeof(version_buf), "%lu.%lu.%lu",
                  osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber);
         hw_info.kernel_version = version_buf;
       }
@@ -358,14 +362,14 @@ private:
     }
 #elif __APPLE__
     hw_info.os_name = "macOS";
-    
+
     // Get kernel version from sysctl
     char version_str[256] = {};
     size_t size = sizeof(version_str);
     if (sysctlbyname("kern.osrelease", version_str, &size, nullptr, 0) == 0) {
       hw_info.kernel_version = version_str;
     }
-    
+
     // Get hostname
     char hostname_buf[256] = {};
     if (gethostname(hostname_buf, sizeof(hostname_buf)) == 0) {
@@ -373,7 +377,7 @@ private:
     }
 #else // Linux
     hw_info.os_name = "Linux";
-    
+
     // Get kernel version
     struct utsname uname_data;
     if (uname(&uname_data) == 0) {
@@ -392,33 +396,33 @@ private:
     // Detect CPU architecture from system info
     SYSTEM_INFO sysInfo;
     GetNativeSystemInfo(&sysInfo);
-    
+
     switch (sysInfo.wProcessorArchitecture) {
-      case PROCESSOR_ARCHITECTURE_AMD64:
-        hw_info.cpu_architecture = "x86_64";
-        break;
-      case PROCESSOR_ARCHITECTURE_ARM64:
-        hw_info.cpu_architecture = "aarch64";
-        break;
-      case PROCESSOR_ARCHITECTURE_INTEL:
-        hw_info.cpu_architecture = "i686";
-        break;
-      case PROCESSOR_ARCHITECTURE_ARM:
-        hw_info.cpu_architecture = "arm";
-        break;
-      default:
-        hw_info.cpu_architecture = "unknown";
+    case PROCESSOR_ARCHITECTURE_AMD64:
+      hw_info.cpu_architecture = "x86_64";
+      break;
+    case PROCESSOR_ARCHITECTURE_ARM64:
+      hw_info.cpu_architecture = "aarch64";
+      break;
+    case PROCESSOR_ARCHITECTURE_INTEL:
+      hw_info.cpu_architecture = "i686";
+      break;
+    case PROCESSOR_ARCHITECTURE_ARM:
+      hw_info.cpu_architecture = "arm";
+      break;
+    default:
+      hw_info.cpu_architecture = "unknown";
     }
 
     // Get CPU vendor and model name using CPUID
     int cpuInfo[4] = {0};
     __cpuid(cpuInfo, 0);
-    
+
     // Extract vendor string (12 chars from EBX, EDX, ECX)
     char vendor[13] = {0};
-    *reinterpret_cast<int*>(vendor) = cpuInfo[1];  // EBX
-    *reinterpret_cast<int*>(vendor + 4) = cpuInfo[3];  // EDX
-    *reinterpret_cast<int*>(vendor + 8) = cpuInfo[2];  // ECX
+    *reinterpret_cast<int *>(vendor) = cpuInfo[1];     // EBX
+    *reinterpret_cast<int *>(vendor + 4) = cpuInfo[3]; // EDX
+    *reinterpret_cast<int *>(vendor + 8) = cpuInfo[2]; // ECX
     hw_info.cpu_vendor = vendor;
 
     // Get CPU model name (requires CPUID with EAX=0x80000002-0x80000004)
@@ -438,18 +442,18 @@ private:
     // Get logical and physical core counts using GetLogicalProcessorInformationEx
     DWORD bufferSize = 0;
     GetLogicalProcessorInformationEx(RelationAll, nullptr, &bufferSize);
-    
+
     std::vector<char> buffer(bufferSize);
-    auto info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
-    
+    auto info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buffer.data());
+
     if (GetLogicalProcessorInformationEx(RelationAll, info, &bufferSize)) {
       hw_info.cpu_logical_cores = 0;
       hw_info.cpu_physical_cores = 0;
-      
+
       DWORD offset = 0;
       while (offset < bufferSize) {
-        auto current = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
-        
+        auto current = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buffer.data() + offset);
+
         if (current->Relationship == RelationProcessorCore) {
           hw_info.cpu_physical_cores++;
           // Count logical processors in this core
@@ -460,7 +464,7 @@ private:
         } else if (current->Relationship == RelationCache) {
           auto cache = &current->Cache;
           long size_kb = cache->CacheSize / 1024;
-          
+
           if (cache->Level == 1 && hw_info.cpu_cache_l1_kb == 0) {
             hw_info.cpu_cache_l1_kb = size_kb;
           } else if (cache->Level == 2 && size_kb > hw_info.cpu_cache_l2_kb) {
@@ -469,11 +473,11 @@ private:
             hw_info.cpu_cache_l3_kb = size_kb;
           }
         }
-        
+
         offset += current->Size;
       }
     }
-    
+
     // Fallback if GetLogicalProcessorInformationEx fails
     if (hw_info.cpu_logical_cores == 0) {
       hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
@@ -483,14 +487,14 @@ private:
     // macOS: Simplified CPU detection
     hw_info.cpu_architecture = "aarch64"; // Assume Apple Silicon for now
     hw_info.cpu_vendor = "Apple";
-    
+
     // Get model name using sysctl
     char model[256] = {};
     size_t size = sizeof(model);
     if (sysctlbyname("hw.model", model, &size, nullptr, 0) == 0) {
       hw_info.cpu_model = model;
     }
-    
+
     // Get core counts
     int ncpus = 0;
     size = sizeof(ncpus);
@@ -499,7 +503,7 @@ private:
     } else {
       hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
     }
-    
+
     int physical_cores = 0;
     size = sizeof(physical_cores);
     if (sysctlbyname("hw.physicalcpu_max", &physical_cores, &size, nullptr, 0) == 0) {
@@ -507,7 +511,7 @@ private:
     } else {
       hw_info.cpu_physical_cores = hw_info.cpu_logical_cores;
     }
-    
+
     // Get L3 cache size
     uint64_t l3_size = 0;
     size = sizeof(l3_size);
@@ -518,7 +522,7 @@ private:
     // Linux: Simplified CPU detection
     hw_info.cpu_logical_cores = std::thread::hardware_concurrency();
     hw_info.cpu_physical_cores = hw_info.cpu_logical_cores;
-    
+
     // Try to read CPU info from /proc/cpuinfo (basic parsing)
     hw_info.cpu_vendor = "Unknown";
     hw_info.cpu_model = "Unknown";
@@ -543,35 +547,35 @@ private:
 
 #ifdef _WIN32
     int cpuInfo[4] = {0};
-    
+
     // CPUID Function 1: Processor Info and Feature Bits
     __cpuidex(cpuInfo, 1, 0);
     int ecx1 = cpuInfo[2];
     int edx1 = cpuInfo[3];
-    
+
     // SSE series (EDX bits)
     hw_info.x64_isa.sse = (edx1 & (1 << 25)) != 0;
     hw_info.x64_isa.sse2 = (edx1 & (1 << 26)) != 0;
-    
+
     // SSE3+ (ECX bits)
     hw_info.x64_isa.sse3 = (ecx1 & (1 << 0)) != 0;
     hw_info.x64_isa.ssse3 = (ecx1 & (1 << 9)) != 0;
     hw_info.x64_isa.sse4_1 = (ecx1 & (1 << 19)) != 0;
     hw_info.x64_isa.sse4_2 = (ecx1 & (1 << 20)) != 0;
-    
+
     // SIMD main
     hw_info.x64_isa.avx = (ecx1 & (1 << 28)) != 0;
     hw_info.x64_isa.fma = (ecx1 & (1 << 12)) != 0;
     hw_info.x64_isa.f16c = (ecx1 & (1 << 29)) != 0;
     hw_info.x64_isa.aes = (ecx1 & (1 << 25)) != 0;
     hw_info.x64_isa.rdrand = (ecx1 & (1 << 30)) != 0;
-    
+
     // CPUID Function 7: Extended Features
     __cpuidex(cpuInfo, 7, 0);
     int ebx7 = cpuInfo[1];
     int ecx7 = cpuInfo[2];
     int edx7 = cpuInfo[3];
-    
+
     // AVX2 and AVX512 base
     hw_info.x64_isa.avx2 = (ebx7 & (1 << 5)) != 0;
     hw_info.x64_isa.avx512f = (ebx7 & (1 << 16)) != 0;
@@ -580,28 +584,28 @@ private:
     hw_info.x64_isa.avx512cd = (ebx7 & (1 << 28)) != 0;
     hw_info.x64_isa.avx512bw = (ebx7 & (1 << 30)) != 0;
     hw_info.x64_isa.avx512vl = (ebx7 & (1 << 31)) != 0;
-    
+
     // AI/ML and crypto
     hw_info.x64_isa.avx512_vnni = (ecx7 & (1 << 11)) != 0;
     hw_info.x64_isa.gfni = (ecx7 & (1 << 8)) != 0;
-    
+
     // Memory/Cache operations
     hw_info.x64_isa.clflushopt = (ebx7 & (1 << 23)) != 0;
     hw_info.x64_isa.clwb = (ebx7 & (1 << 24)) != 0;
     hw_info.x64_isa.sha = (ebx7 & (1 << 29)) != 0;
     hw_info.x64_isa.prefetchw = (ecx7 & (1 << 0)) != 0;
-    
+
     // Advanced features
     hw_info.x64_isa.avx512_bf16 = (ecx7 & (1 << 5)) != 0;
     hw_info.x64_isa.movdir64b = (ecx7 & (1 << 28)) != 0;
     hw_info.x64_isa.rdseed = (ebx7 & (1 << 18)) != 0;
     hw_info.x64_isa.rtm = (ebx7 & (1 << 11)) != 0;
-    
+
     // CPUID Function 7 Sub-leaf 1: More extended features
     __cpuidex(cpuInfo, 7, 1);
     int eax7_1 = cpuInfo[0];
     int edx7_1 = cpuInfo[3];
-    
+
     hw_info.x64_isa.avx_vnni = (eax7_1 & (1 << 4)) != 0;
     hw_info.x64_isa.avx512_fp16 = (edx7_1 & (1 << 23)) != 0;
     hw_info.x64_isa.amx_tile = (edx7_1 & (1 << 24)) != 0;
@@ -628,19 +632,19 @@ private:
     hw_info.aarch64_isa.crc32 = IsProcessorFeaturePresent(PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE);
 #else
     // Non-Windows ARM: assume ARMv8+ features are available on modern ARM64 systems
-    hw_info.aarch64_isa.neon = true;  // Standard on ARMv8+
+    hw_info.aarch64_isa.neon = true; // Standard on ARMv8+
     hw_info.aarch64_isa.aes = true;
     hw_info.aarch64_isa.crc32 = true;
 #endif
-    
+
     // Standard on ARMv8+
     hw_info.aarch64_isa.fp64 = true;
     hw_info.aarch64_isa.prefetch = true;
     hw_info.aarch64_isa.dc_zva = true;
-    
+
     // Detect Apple Silicon
     bool is_apple = (hw_info.cpu_model.find("Apple") != std::string::npos);
-    
+
     // Apple-specific features
     if (is_apple) {
       hw_info.aarch64_isa.amx = (hw_info.cpu_model.find("M4") != std::string::npos ||
@@ -687,18 +691,18 @@ private:
   void DetectGPU() {
 #ifdef _WIN32
     // Use DXGI to enumerate GPUs
-    IDXGIFactory* pFactory = nullptr;
-    HRESULT hr = CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&pFactory);
-    
+    IDXGIFactory *pFactory = nullptr;
+    HRESULT hr = CreateDXGIFactory(__uuidof(IDXGIFactory), (void **)&pFactory);
+
     if (FAILED(hr) || !pFactory) {
       hw_info.gpu_vendor = HardwareInfo::GPUVendor::None;
       hw_info.gpu_name = "No GPU detected";
       return;
     }
 
-    IDXGIAdapter* pAdapter = nullptr;
+    IDXGIAdapter *pAdapter = nullptr;
     UINT adapterIndex = 0;
-    
+
     // Get first adapter (primary GPU)
     if (pFactory->EnumAdapters(adapterIndex, &pAdapter) == DXGI_ERROR_NOT_FOUND) {
       pFactory->Release();
@@ -717,17 +721,17 @@ private:
 
     // Determine vendor from VendorId
     switch (desc.VendorId) {
-      case 0x10DE:
-        hw_info.gpu_vendor = HardwareInfo::GPUVendor::NVIDIA;
-        break;
-      case 0x1002:
-        hw_info.gpu_vendor = HardwareInfo::GPUVendor::AMD;
-        break;
-      case 0x8086:
-        hw_info.gpu_vendor = HardwareInfo::GPUVendor::Intel;
-        break;
-      default:
-        hw_info.gpu_vendor = HardwareInfo::GPUVendor::None;
+    case 0x10DE:
+      hw_info.gpu_vendor = HardwareInfo::GPUVendor::NVIDIA;
+      break;
+    case 0x1002:
+      hw_info.gpu_vendor = HardwareInfo::GPUVendor::AMD;
+      break;
+    case 0x8086:
+      hw_info.gpu_vendor = HardwareInfo::GPUVendor::Intel;
+      break;
+    default:
+      hw_info.gpu_vendor = HardwareInfo::GPUVendor::None;
     }
 
     // Get VRAM size (in bytes, convert to GB)
@@ -742,7 +746,7 @@ private:
     // macOS: Simplified GPU detection
     hw_info.gpu_name = "Apple GPU";
     hw_info.gpu_vendor = HardwareInfo::GPUVendor::Apple;
-    
+
     // Try to get GPU VRAM (Metal doesn't expose this easily)
     uint64_t vram = 0;
     size_t len = sizeof(vram);
@@ -781,10 +785,10 @@ private:
     // Add disk counters
     status = PdhAddCounterW(pdh_query, L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec", 0, &pdh_disk_read_counter);
     assert(status == ERROR_SUCCESS);
-    
+
     status = PdhAddCounterW(pdh_query, L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec", 0, &pdh_disk_write_counter);
     assert(status == ERROR_SUCCESS);
-    
+
     status = PdhAddCounterW(pdh_query, L"\\PhysicalDisk(_Total)\\% Disk Time", 0, &pdh_disk_busy_counter);
     assert(status == ERROR_SUCCESS);
 
@@ -825,13 +829,15 @@ private:
     for (int i = 0; i < hw_info.cpu_logical_cores; i++) {
       PDH_FMT_COUNTERVALUE counterValue;
       PDH_STATUS status = PdhGetFormattedCounterValue(pdh_cpu_counters[i], PDH_FMT_DOUBLE, NULL, &counterValue);
-      
+
       float usage = 0.0f;
       if (status == ERROR_SUCCESS) {
         usage = static_cast<float>(counterValue.doubleValue);
         // Clamp to valid range
-        if (usage < 0.0f) usage = 0.0f;
-        if (usage > 100.0f) usage = 100.0f;
+        if (usage < 0.0f)
+          usage = 0.0f;
+        if (usage > 100.0f)
+          usage = 100.0f;
       }
 
       // Smooth over time window
@@ -863,33 +869,10 @@ private:
   // ----------------------------------------------------------------------------
 
   void UpdateMemoryUsage() {
-#ifdef _WIN32
-    MEMORYSTATUSEX memInfo;
-    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
-    
-    if (GlobalMemoryStatusEx(&memInfo)) {
-      ULONGLONG used_ram = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
-      mem_data.used_gb_current = used_ram / (1024.0f * 1024.0f * 1024.0f);
-      mem_data.usage_percent_current = static_cast<float>(memInfo.dwMemoryLoad);
-      mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
-    }
-#elif __APPLE__
-    struct mach_task_basic_info info;
-    mach_msg_type_number_t info_count = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &info_count) == KERN_SUCCESS) {
-      // This gives process memory, not system memory - simplified approach
-      mem_data.usage_percent_current = 50.0f; // TODO: Calculate actual system memory usage
-      mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
-    }
-#else // Linux
-    struct sysinfo info;
-    if (sysinfo(&info) == 0) {
-      uint64_t used = info.totalram - info.freeram;
-      mem_data.usage_percent_current = (float)(used * 100.0 / info.totalram);
-      mem_data.used_gb_current = used / (1024.0f * 1024.0f * 1024.0f);
-      mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
-    }
-#endif
+    const MemoryUsage mem = memory_usage();
+    mem_data.used_gb_current = mem.used_bytes / (1024.0f * 1024.0f * 1024.0f);
+    mem_data.usage_percent_current = mem.used_percent();
+    mem_data.usage_percent_history[history_write_index] = mem_data.usage_percent_current;
   }
 
   // ----------------------------------------------------------------------------
@@ -954,18 +937,18 @@ private:
     ULONG64 total_rx = 0;
     ULONG64 total_tx = 0;
 
-    MIB_IF_TABLE2* pIfTable = nullptr;
+    MIB_IF_TABLE2 *pIfTable = nullptr;
     DWORD dwRetVal = GetIfTable2(&pIfTable);
-    
+
     if (dwRetVal == NO_ERROR && pIfTable) {
       for (ULONG i = 0; i < pIfTable->NumEntries; i++) {
-        MIB_IF_ROW2* pIfRow = &pIfTable->Table[i];
-        
+        MIB_IF_ROW2 *pIfRow = &pIfTable->Table[i];
+
         // Skip loopback
         if (pIfRow->Type == IF_TYPE_SOFTWARE_LOOPBACK) {
           continue;
         }
-        
+
         // Only count physical network interfaces
         if (pIfRow->Type == IF_TYPE_ETHERNET_CSMACD ||
             pIfRow->Type == IF_TYPE_IEEE80211) {
@@ -1007,23 +990,25 @@ private:
 #ifdef _WIN32
     // Get disk read/write speeds from PDH
     PDH_FMT_COUNTERVALUE readValue, writeValue, busyValue;
-    
+
     PDH_STATUS status = PdhGetFormattedCounterValue(pdh_disk_read_counter, PDH_FMT_DOUBLE, NULL, &readValue);
     if (status == ERROR_SUCCESS) {
       disk_data.read_mbps_current = static_cast<float>(readValue.doubleValue / (1024.0 * 1024.0));
     }
-    
+
     status = PdhGetFormattedCounterValue(pdh_disk_write_counter, PDH_FMT_DOUBLE, NULL, &writeValue);
     if (status == ERROR_SUCCESS) {
       disk_data.write_mbps_current = static_cast<float>(writeValue.doubleValue / (1024.0 * 1024.0));
     }
-    
+
     status = PdhGetFormattedCounterValue(pdh_disk_busy_counter, PDH_FMT_DOUBLE, NULL, &busyValue);
     if (status == ERROR_SUCCESS) {
       disk_data.busy_percent_current = static_cast<float>(busyValue.doubleValue);
       // Clamp to valid range
-      if (disk_data.busy_percent_current < 0.0f) disk_data.busy_percent_current = 0.0f;
-      if (disk_data.busy_percent_current > 100.0f) disk_data.busy_percent_current = 100.0f;
+      if (disk_data.busy_percent_current < 0.0f)
+        disk_data.busy_percent_current = 0.0f;
+      if (disk_data.busy_percent_current > 100.0f)
+        disk_data.busy_percent_current = 100.0f;
     }
 #else
     // Non-Windows: Placeholder disk monitoring

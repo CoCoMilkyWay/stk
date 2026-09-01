@@ -69,20 +69,24 @@ void ComputeService::start_compute(int num_workers) {
     const size_t num_assets = data_.asset.items.size();
     const size_t total_dates = backtest_dates.size();
 
-    // Load balancing: sort assets by order count (in backtest period only)
-    std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, order_count)
+    // Load balancing: 按回测区间内的逐笔条数给资产排序.
+    //
+    // 条数是扫描时随文件头一并读好的 (见 Asset::coro_scan_binary_database),
+    // 这里直接累加, 不必再碰文件系统.
+    std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, weight)
     asset_workloads.reserve(data_.asset.items.size());
 
     for (size_t i = 0; i < data_.asset.items.size(); ++i) {
-      // Calculate order count only for backtest dates
-      size_t backtest_order_count = 0;
+      const AssetItem &item = data_.asset.items[i];
+
+      size_t weight = 0;
       for (const auto &date : backtest_dates) {
-        auto it = data_.asset.items[i].date_info.find(date);
-        if (it != data_.asset.items[i].date_info.end()) {
-          backtest_order_count += it->second.order_count;
-        }
+        auto it = item.date_info.find(date);
+        if (it != item.date_info.end())
+          weight += it->second.order_count;
       }
-      asset_workloads.push_back({i, backtest_order_count});
+
+      asset_workloads.push_back({i, weight});
     }
 
     std::sort(asset_workloads.begin(), asset_workloads.end(),
@@ -91,10 +95,10 @@ void ComputeService::start_compute(int num_workers) {
     // Greedy assignment: each asset goes to TS worker with minimum current load
     std::vector<size_t> worker_loads(num_ts_workers, 0);
 
-    for (const auto &[asset_id, order_count] : asset_workloads) {
+    for (const auto &[asset_id, weight] : asset_workloads) {
       size_t min_worker = std::min_element(worker_loads.begin(), worker_loads.end()) - worker_loads.begin();
       data_.asset.items[asset_id].assigned_worker_id = min_worker;
-      worker_loads[min_worker] += order_count;
+      worker_loads[min_worker] += weight;
     }
 
     // Phase 2 前置: 日频 PIT 基本面预计算 (估值分母/因子/filter), worker 只读

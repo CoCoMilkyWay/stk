@@ -31,17 +31,9 @@ void sequential_worker(int worker_id,
 
   // Find assets assigned to this worker
   std::vector<size_t> my_asset_ids;
-  size_t total_orders = 0;
   for (size_t i = 0; i < data.asset.items.size(); ++i) {
     if (data.asset.items[i].assigned_worker_id == worker_id) {
       my_asset_ids.push_back(i);
-      // Count orders only in current date range (backtest period)
-      for (const auto &date : data.asset.all_dates) {
-        auto it = data.asset.items[i].date_info.find(date);
-        if (it != data.asset.items[i].date_info.end()) {
-          total_orders += it->second.order_count;
-        }
-      }
     }
   }
 
@@ -60,8 +52,7 @@ void sequential_worker(int worker_id,
   }
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
-                                                         std::to_string(data.asset.all_dates.size()) + " dates, " +
-                                                         std::to_string(total_orders) + " total orders");
+                                                         std::to_string(data.asset.all_dates.size()) + " dates");
 
   // Progress label
   char label_buf[128];
@@ -98,13 +89,19 @@ void sequential_worker(int worker_id,
       assert(fund_row != nullptr && "FundamentalDaily 未覆盖回测日");
       lobs[i]->begin_day(date_str, fund_row);
       // Hot path: has data and binaries
-      if (it != asset.date_info.end() && it->second.has_binaries() && !it->second.orders_file.empty()) [[likely]] {
+      if (it != asset.date_info.end() && it->second.has_binaries()) [[likely]] {
+
+        // 路径由 (date, code, exchange) 现算 — DateInfo 不再为五百万条记录
+        // 各存一份字符串
+        const std::string orders_file = Utils::generate_orders_path(
+            data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
+            data.config.binary_extension);
 
         size_t order_num = 0;
         const L2::Order *orders = nullptr;
         {
           TraceN("DecodeOrders");
-          orders = decoders[i]->decode_orders_stream(it->second.orders_file, order_num);
+          orders = decoders[i]->decode_orders_stream(orders_file, order_num);
         }
 
         if (orders != nullptr) [[likely]] {
@@ -136,7 +133,7 @@ void sequential_worker(int worker_id,
           date_assets_processed++;
           cumulative_orders += order_num;
         } else {
-          Logger::log("worker_" + std::to_string(worker_id), "WARNING: " + date_str + " failed to decode " + it->second.orders_file);
+          Logger::log("worker_" + std::to_string(worker_id), "WARNING: " + date_str + " failed to decode " + orders_file);
         }
       }
     }
@@ -157,7 +154,7 @@ void sequential_worker(int worker_id,
     float speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
 
     char msg_buf[128];
-    snprintf(msg_buf, sizeof(msg_buf), "%s [%.1fM/s (%.1fM)]", date_str.c_str(), speed_M_per_sec, total_orders / 1e6);
+    snprintf(msg_buf, sizeof(msg_buf), "%s [%.1fM/s (%.1fM)]", date_str.c_str(), speed_M_per_sec, cumulative_orders / 1e6);
     progress_handle.update(date_idx + 1, data.asset.all_dates.size(), msg_buf);
 
     TraceFrame; // Mark frame boundary for timeline

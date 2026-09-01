@@ -361,7 +361,7 @@ private:
 
   void DrawTabTable() {
     RenderTabTable(
-        l2_svc_->get_assets(),
+        data_->asset,
         data_->assetinfo.get_stock_info(),
         table_state_);
   }
@@ -375,7 +375,7 @@ private:
         data_->asset.binary.scanned &&
         !data_->asset.items.empty() &&
         fundamental_svc_->is_ready()) [[unlikely]] {
-      data_->asset.compute_browser_statistics(
+      data_->asset.compute_coverage_statistics(
           data_->assetinfo.get_stock_info(),
           data_->assetinfo.get_stock_days(),
           data_->assetinfo.get_suspended());

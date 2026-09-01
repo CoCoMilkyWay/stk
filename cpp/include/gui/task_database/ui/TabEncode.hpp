@@ -20,25 +20,23 @@ namespace GUI::Database {
 // Encode Tab State
 // ============================================================================
 
-// 资产表格的一个视图 = 过滤 + 排序后的 asset_id 列表.
+// 缺失资产表格的一个视图 = 过滤 + 排序后的 asset_id 列表.
 //
 // 行统计本身缓存在 Asset::asset_stats (扫描后算一次); 这里再缓存一层顺序,
-// 因为几千行的排序 (含字符串比较) 逐帧重做同样是白烧. 只在统计代数 / 过滤
-// 开关 / 排序规则变化时重建.
+// 因为几千行的排序 (含字符串比较) 逐帧重做同样是白烧. 只在统计代数 / 排序
+// 规则变化时重建.
 struct AssetTableView {
-  std::vector<size_t> rows;  // asset_id
-  uint64_t generation = 0;   // 对应的 Asset::asset_stats_generation
-  bool missing_only = false; // 对应的过滤开关
+  std::vector<size_t> rows; // asset_id, 只含该维度确有缺失的
+  uint64_t generation = 0;  // 对应的 Asset::asset_stats_generation
   bool built = false;
 };
 
 struct EncodeState {
   int num_workers = 0; // 0 means auto-detect (use max cores)
   bool skip_existing = true;
-  bool show_missing_assets = true;
   bool show_missing_details = false;
 
-  // 两个页签各自的表格视图 (Archive / Binary Order)
+  // 两个页签各一份缺失表视图, 结构与列完全对仗
   AssetTableView archive_view;
   AssetTableView order_view;
 
