@@ -403,8 +403,12 @@ struct LOB_Feature {
   L2::OrderDirection order_dir = L2::OrderDirection::BID;
 
   // 当前订单的价格和数量
-  float price = 0.0;   // 14bit - price in 1 RMB unit
-  uint32_t volume = 0; // 22bit - in shares (expanded to support up to 4M shares)
+  float price = 0.0;   // 元, 绝对价 (已还原, 消费方直接用)
+  uint32_t volume = 0; // 股
+
+  // depth_buffer 里 Level::price 是档位下标而非绝对价, 还原成分要加上这个基准.
+  // 低价股恒为 0. 来源是 .bin 的文件头, 见 L2_DataType.hpp 的 kPriceIndexRange.
+  uint32_t price_base = 0;
 
   // 全市场挂单量
   uint32_t all_bid_volume = 0; // 22bit - volume of all bid orders in shares

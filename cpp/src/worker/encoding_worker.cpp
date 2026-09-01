@@ -160,10 +160,10 @@ void encoding_producer(SharedData &data,
       continue;
     }
 
-    // 同一资产的委托/成交条目在包里是分开的两条, 先按资产归并
+    // 同一资产的委托/成交/行情条目在包里是分开的三条, 先按资产归并
     struct Pending {
-      size_t order_index = 0, trade_index = 0;
-      size_t order_size = 0, trade_size = 0;
+      size_t order_index = 0, trade_index = 0, market_index = 0;
+      size_t order_size = 0, trade_size = 0, market_size = 0;
     };
     std::unordered_map<size_t, Pending> by_asset;
 
@@ -181,8 +181,10 @@ void encoding_producer(SharedData &data,
 
       const bool is_order = (filename == data.config.csv_market_order);
       const bool is_trade = (filename == data.config.csv_market_trade);
-      if (!is_order && !is_trade)
-        continue; // 行情.csv (快照) 不再编码
+      // 行情.csv 不编码落盘, 但要读进来做准入校验 (见 L2_Validator.hpp)
+      const bool is_market = (filename == data.config.csv_market_data);
+      if (!is_order && !is_trade && !is_market)
+        continue; // 委托队列.csv 等历史遗留文件
 
       // 代码变更前的日子, 归档里是老代码, 轴上只有新代码 — 换回来才认得出
       // (见 config::CODE_CHANGES). 无变更记录时 current_code 原样返回.
@@ -194,9 +196,12 @@ void encoding_producer(SharedData &data,
       if (is_order) {
         p.order_index = entry.index;
         p.order_size = entry.size;
-      } else {
+      } else if (is_trade) {
         p.trade_index = entry.index;
         p.trade_size = entry.size;
+      } else {
+        p.market_index = entry.index;
+        p.market_size = entry.size;
       }
     }
 
@@ -218,7 +223,8 @@ void encoding_producer(SharedData &data,
         stats.pairs_skipped.fetch_add(1);
         continue;
       }
-      tasks.push_back({asset_id, p.order_index, p.trade_index, p.order_size, p.trade_size});
+      tasks.push_back({asset_id, p.order_index, p.trade_index, p.market_index,
+                       p.order_size, p.trade_size, p.market_size});
     }
 
     // 收尾统计计数
@@ -292,10 +298,56 @@ void encoding_producer(SharedData &data,
 namespace {
 
 // 批内一个待读文件在流上的位置
+enum class SlotKind : uint8_t { Order,
+                                Trade,
+                                Market };
+
 struct StreamSlot {
   size_t task_idx;
-  bool is_trade;
+  SlotKind kind;
 };
+
+const std::string &slot_filename(const Config &config, SlotKind kind) {
+  switch (kind) {
+  case SlotKind::Order:
+    return config.csv_market_order;
+  case SlotKind::Trade:
+    return config.csv_market_trade;
+  case SlotKind::Market:
+    return config.csv_market_data;
+  }
+  assert(false && "slot_filename: 未覆盖的 SlotKind");
+  return config.csv_market_order;
+}
+
+size_t slot_size(const EncodeTask &task, SlotKind kind) {
+  switch (kind) {
+  case SlotKind::Order:
+    return task.order_size;
+  case SlotKind::Trade:
+    return task.trade_size;
+  case SlotKind::Market:
+    return task.market_size;
+  }
+  assert(false && "slot_size: 未覆盖的 SlotKind");
+  return 0;
+}
+
+// 一块字节到达时喂给 encoder 的对应入口
+void feed_slot(L2::BinaryEncoder_L2 &encoder, SlotKind kind, const char *csv, size_t len) {
+  switch (kind) {
+  case SlotKind::Order:
+    encoder.feed_order_csv(csv, len);
+    return;
+  case SlotKind::Trade:
+    encoder.feed_trade_csv(csv, len);
+    return;
+  case SlotKind::Market:
+    encoder.feed_market_csv(csv, len);
+    return;
+  }
+  assert(false && "feed_slot: 未覆盖的 SlotKind");
+}
 
 } // namespace
 
@@ -345,31 +397,43 @@ void encoding_worker(SharedData &data,
 
     {
       std::vector<std::pair<size_t, StreamSlot>> plan; // (归档序, slot)
-      plan.reserve(batch.tasks.size() * 2);
+      plan.reserve(batch.tasks.size() * 3);
       for (size_t t = 0; t < batch.tasks.size(); ++t) {
         const EncodeTask &task = batch.tasks[t];
-        plan.emplace_back(task.order_index, StreamSlot{t, false});
+        plan.emplace_back(task.order_index, StreamSlot{t, SlotKind::Order});
         if (task.trade_size > 0)
-          plan.emplace_back(task.trade_index, StreamSlot{t, true});
+          plan.emplace_back(task.trade_index, StreamSlot{t, SlotKind::Trade});
+        if (task.market_size > 0)
+          plan.emplace_back(task.market_index, StreamSlot{t, SlotKind::Market});
       }
       std::sort(plan.begin(), plan.end(),
                 [](const auto &a, const auto &b) { return a.first < b.first; });
 
-      // 主流的流式切分假定"同一资产的两块在归档序上相邻" — 包按 date/ASSET/
+      // 主流的流式切分假定"同一资产的几块在归档序上连成一段" — 包按 date/ASSET/
       // 目录逐个写入时天然成立, 但修补过的归档会把补的文件追加到包尾
       // (实测 20230714 的 600265.SH: 委托在条目 ~8995, 成交在 ~20049).
       // 不相邻的任务从主计划剔除, 批尾单独小流处理 (见下方 stragglers 循环).
+      //
+      // 判据是"首尾跨度等于块数": 一个资产有 1~3 块 (委托必有, 成交/行情可缺),
+      // 连成一段当且仅当 last - first + 1 == count.
       stragglers.clear();
       {
         constexpr size_t kNone = static_cast<size_t>(-1);
-        std::vector<std::pair<size_t, size_t>> pos(batch.tasks.size(), {kNone, kNone});
+        std::vector<size_t> first_pos(batch.tasks.size(), kNone);
+        std::vector<size_t> last_pos(batch.tasks.size(), kNone);
+        std::vector<size_t> slot_count(batch.tasks.size(), 0);
         for (size_t i = 0; i < plan.size(); ++i) {
-          auto &p = pos[plan[i].second.task_idx];
-          (p.first == kNone ? p.first : p.second) = i;
+          const size_t t = plan[i].second.task_idx;
+          if (first_pos[t] == kNone)
+            first_pos[t] = i;
+          last_pos[t] = i;
+          ++slot_count[t];
         }
         std::vector<char> non_adjacent(batch.tasks.size(), 0);
         for (size_t t = 0; t < batch.tasks.size(); ++t) {
-          if (pos[t].second != kNone && pos[t].second != pos[t].first + 1) {
+          if (first_pos[t] == kNone)
+            continue;
+          if (last_pos[t] - first_pos[t] + 1 != slot_count[t]) {
             non_adjacent[t] = 1;
             stragglers.push_back(t);
           }
@@ -389,10 +453,8 @@ void encoding_worker(SharedData &data,
         // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
         const std::string asset_full =
             config::archive_code(asset.asset_code + "." + asset.exchange, batch.date);
-        paths.push_back(batch.date + "/" + asset_full + "/" +
-                        (slot.is_trade ? data.config.csv_market_trade : data.config.csv_market_order));
-        sizes.push_back(slot.is_trade ? batch.tasks[slot.task_idx].trade_size
-                                      : batch.tasks[slot.task_idx].order_size);
+        paths.push_back(batch.date + "/" + asset_full + "/" + slot_filename(data.config, slot.kind));
+        sizes.push_back(slot_size(batch.tasks[slot.task_idx], slot.kind));
         slots.push_back(slot);
       }
 
@@ -487,6 +549,13 @@ void encoding_worker(SharedData &data,
         day_error = true;
         stats.pairs_corrupt.fetch_add(1);
         break;
+      case L2::EncodeResult::InvalidData:
+        // 准入校验未过 (逐笔流不自洽或与快照对不上). 处置与 CorruptSource
+        // 相同 —— 什么都不写, 详情已由 finish_asset 记入日志, 等人核查数据.
+        // day_error 让这天不落完成标记, 增量重跑时自动重来.
+        day_error = true;
+        stats.pairs_invalid.fetch_add(1);
+        break;
       case L2::EncodeResult::Error:
         // 环境错误 (磁盘满/压缩失败): 不留任何产物, 下次增量重试
         day_error = true;
@@ -518,10 +587,7 @@ void encoding_worker(SharedData &data,
               fed_any = true;
             }
 
-            if (slot.is_trade)
-              encoder.feed_trade_csv(csv, len);
-            else
-              encoder.feed_order_csv(csv, len);
+            feed_slot(encoder, slot.kind, csv, len);
           },
           cancel_flag);
     }
@@ -543,9 +609,9 @@ void encoding_worker(SharedData &data,
 
     flush_task(current_task); // 主流的最后一个资产
 
-    // 不相邻任务的兜底: 每个任务单独一次两文件小流. 只开这一个资产,
-    // 两块到达先后无所谓 (finish_asset 统一合并排序); 多付一次 unrar
-    // 固定开销, 但这种任务一天最多个位数, 无关紧要.
+    // 不相邻任务的兜底: 每个任务单独开一次小流, 只含这一个资产的几块. 到达
+    // 先后无所谓 (finish_asset 统一合并排序); 多付一次 unrar 固定开销, 但这种
+    // 任务一天最多个位数, 无关紧要.
     for (const size_t t : stragglers) {
       if (cancel_flag->load())
         break;
@@ -555,26 +621,31 @@ void encoding_worker(SharedData &data,
           batch.date + "/" +
           config::archive_code(asset.asset_code + "." + asset.exchange, batch.date) + "/";
 
-      // 两个文件仍要按归档序请求 (unrar p 按归档序输出)
-      const bool trade_first = task.trade_index < task.order_index;
-      std::vector<std::string> two_paths{base + data.config.csv_market_order,
-                                         base + data.config.csv_market_trade};
-      std::vector<size_t> two_sizes{task.order_size, task.trade_size};
-      if (trade_first) {
-        std::swap(two_paths[0], two_paths[1]);
-        std::swap(two_sizes[0], two_sizes[1]);
+      // 这几块仍要按归档序请求 (unrar p 按归档序输出)
+      std::vector<std::pair<size_t, SlotKind>> own{{task.order_index, SlotKind::Order}};
+      if (task.trade_size > 0)
+        own.emplace_back(task.trade_index, SlotKind::Trade);
+      if (task.market_size > 0)
+        own.emplace_back(task.market_index, SlotKind::Market);
+      std::sort(own.begin(), own.end(),
+                [](const auto &a, const auto &b) { return a.first < b.first; });
+
+      std::vector<std::string> own_paths;
+      std::vector<size_t> own_sizes;
+      own_paths.reserve(own.size());
+      own_sizes.reserve(own.size());
+      for (const auto &[archive_index, kind] : own) {
+        own_paths.push_back(base + slot_filename(data.config, kind));
+        own_sizes.push_back(slot_size(task, kind));
       }
 
       encoder.begin_asset();
       progress_handle.set_label(asset.asset_code + " " + asset.asset_name);
       fed_any = true;
       const bool ok = misc::stream_archive_files(
-          batch.archive_path, data.config.archive_tool, two_paths, two_sizes,
+          batch.archive_path, data.config.archive_tool, own_paths, own_sizes,
           [&](size_t i, const char *csv, size_t len) {
-            if ((i == 0) == trade_first)
-              encoder.feed_trade_csv(csv, len);
-            else
-              encoder.feed_order_csv(csv, len);
+            feed_slot(encoder, own[i].second, csv, len);
           },
           cancel_flag);
       if (cancel_flag->load())

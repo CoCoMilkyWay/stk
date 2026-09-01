@@ -76,7 +76,9 @@ public:
       const float order_price = lob.price * PRICE_SCALE;
       const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
 
-      const float best_price = is_bid ? (bid1->price * PRICE_SCALE) : (ask1->price * PRICE_SCALE);
+      // Level::price 是档位下标, 加上基准才是绝对价 (分). 低价股基准为 0.
+      const float base = static_cast<float>(lob.price_base);
+      const float best_price = (base + (is_bid ? bid1->price : ask1->price)) * PRICE_SCALE;
 
       if (best_price > 1e-6f && order_price > 1e-6f) {
         float agg = 0.0f;

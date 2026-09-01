@@ -57,10 +57,12 @@ inline constexpr const char *kEncodeDayDoneName = ".day_complete";
 // 只存下标与尺寸, 不存路径字符串: 包内路径由 (批的日期, 资产代码) 现场拼出来.
 struct EncodeTask {
   size_t asset_id;
-  size_t order_index; // 逐笔委托在归档内的序号 (排序键)
-  size_t trade_index; // 逐笔成交在归档内的序号
-  size_t order_size;  // 解压后字节数
-  size_t trade_size;  // 0 表示该资产当日没有成交文件
+  size_t order_index;  // 逐笔委托在归档内的序号 (排序键)
+  size_t trade_index;  // 逐笔成交在归档内的序号
+  size_t market_index; // 行情 (三秒快照) 在归档内的序号
+  size_t order_size;   // 解压后字节数
+  size_t trade_size;   // 0 表示该资产当日没有成交文件
+  size_t market_size;  // 0 表示该资产当日没有行情文件 (准入校验将判 MarketAbsent)
 };
 
 // 一批共享同一个归档的任务 (纯元数据, 很小) — worker 的调度粒度,
@@ -101,6 +103,7 @@ struct EncodeStats {
   std::atomic<size_t> pairs_skipped{0}; // 产物新鲜, 逐个跳过
   std::atomic<size_t> days_skipped{0};  // 整天完成标记命中, 连列举都免了
   std::atomic<size_t> pairs_corrupt{0}; // 源 CSV 损坏, 跳过待人工修复
+  std::atomic<size_t> pairs_invalid{0}; // 准入校验未过, 跳过待人工核查数据
   std::atomic<size_t> days_corrupt{0};  // 包头损坏, 整天列举不出来
   std::mutex assets_mutex;
   std::unordered_set<size_t> assets_with_work;

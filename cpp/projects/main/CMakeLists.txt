@@ -200,6 +200,7 @@ set(SOURCES
     ../../src/codec/json_config.cpp
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
+    ../../src/codec/L2_Validator.cpp
     ../../src/worker/encoding_worker.cpp
     ../../src/worker/sequential_worker.cpp
     ../../src/worker/crosssectional_worker.cpp
@@ -278,6 +279,7 @@ set(HEADERS
     ../../include/codec/binary_decoder_L2.hpp
     ../../include/codec/binary_encoder_L2.hpp
     ../../include/codec/L2_DataType.hpp
+    ../../include/codec/L2_Validator.hpp
     ../../include/features/FeaturesDefine.hpp
     ../../include/features/Backend/FeatureReader.hpp
     ../../include/features/Backend/FeatureStoreConfig.hpp

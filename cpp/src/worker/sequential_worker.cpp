@@ -105,6 +105,10 @@ void sequential_worker(int worker_id,
         }
 
         if (orders != nullptr) [[likely]] {
+          // 档位索引基准来自这一天的文件头, 必须先于第一条订单设进去 —— 绝对价
+          // 要减去它才是档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
+          lobs[i]->set_price_base(decoders[i]->last_price_base());
+
           // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
           size_t order_invalid_cnt = 0;
           {

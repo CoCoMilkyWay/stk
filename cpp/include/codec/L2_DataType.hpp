@@ -138,23 +138,55 @@ struct Snapshot {
 };
 
 // 逐笔合并(增删改成交)
+//
+// 定长 20 字节. 字段按"热路径直接寻址"排: volume、两个 id、四个时间字段都是
+// 平凡成员, 取值零开销; 只有价格与类型/方向共用最后 4 字节的位域 —— 29+2+1
+// 正好填满一个 uint32, 既不浪费也不让结构变大, 读价格只多一次 AND.
+//
+// 注意 price 存的是绝对价 (分). LOB 的档位数组按 price 直接索引, 装不下这么宽
+// 的价格, 它改为按 (price - price_base) 索引, 基准存在 L2FileHeader 里 —— 见
+// LimitOrderBookDefine.hpp 的 PRICE_RANGE_SIZE.
 struct Order {
+  uint32_t volume;       // 股
+  uint32_t bid_order_id; // 32bit
+  uint32_t ask_order_id; // 32bit
+
   uint8_t hour;        // 5bit
   uint8_t minute;      // 6bit
   uint8_t second;      // 6bit
   uint8_t millisecond; // 7bit (in 10ms)
 
-  OrderType order_type;     // 2bit - 0:maker(order) 1:cancel 2:change 3:taker(trade)
-  OrderDirection order_dir; // 1bit - 0:bid 1:ask
-  uint16_t price;           // 14bit - price in 0.01 RMB units
-  uint32_t volume;          // 22bit - in shares (expanded to support up to 4M shares)
-
-  uint32_t bid_order_id; // 32bit
-  uint32_t ask_order_id; // 32bit
+  uint32_t price : 29;          // 绝对价, 0.01 RMB 单位 (分), 上限 536 万元
+  OrderType order_type : 2;     // 0:maker(order) 1:cancel 3:taker(trade)
+  OrderDirection order_dir : 1; // 0:bid 1:ask
   // (order_type, order_dir)== |(0,0)        |(0,1)         |(1,0)         |(1,1)          |(2,0) |(2,1) |(3,0)         |(3,1)
   // bid_order_id:             |buy_maker_id |0             |buy_cancel_id |0              |0     |0     |buy_taker_id  |buy_maker_id
   // ask_order_id:             |0            |sell_maker_id |0             |sell_cancel_id |0     |0     |sell_maker_id |sell_taker_id
 };
+// 位域必须与前面三个 uint32 和四个 uint8 严丝合缝地凑满 20 字节 —— 一旦编译器
+// 给位域另起了存储单元, 落盘格式就悄悄变了.
+static_assert(sizeof(Order) == 20, "Order 必须定宽 20 字节");
+
+// LOB 档位数组的窗口宽度 (分).
+//
+// 逐笔价格是绝对价, 但 LimitOrderBook 拿它当档位数组的下标直接索引, 数组开成
+// 绝对价的全域就爆了: 每个资产一个 LOB 且全部常驻, 5900 个实例 × 65536 档已经
+// 是 3.0 GB, 开到装得下茅台 (262144 档) 就是 11.8 GB. 所以窗口只覆盖单只票一天
+// 的价格跨度 —— 涨跌停把它限死在前收盘的 ±20% 以内 (茅台 1524 元那天的跨度也
+// 只有约 3 万分), 65536 留了一倍以上余量.
+//
+// 索引 0 保留给市价单/无价格档 (LOB 的 Level[0]), 因此 price_base 必须严格小于
+// 当天的最低非零价; 低价股 (最高价 < 65536 分 = 655.35 元) 的 base 恒为 0, 索引
+// 退化成原来的绝对价直接索引, 与改动前逐位一致.
+inline constexpr uint32_t kPriceIndexRange = 65536;
+
+// 窗口上下两端各留出的空白 (分).
+//
+// LOB 在窗口两端预置了哨兵档 (init_sentinel_levels: 低端 1..LOB_DEPTH 记 +1,
+// 高端对称记 -1), 用来保证求 best_bid/best_ask 时一定能停下来. 平移之后的下标
+// 要是落进哨兵区就会把假档位当成真盘口, 所以 price_base 必须让最低价至少落在
+// 留白之外. 4096 分远大于 LOB_DEPTH, 同时对齐到 2 的幂让 base 一眼可读.
+inline constexpr uint32_t kPriceIndexGuard = 4096;
 
 // ============================================================================
 // L2 二进制文件格式 (v2) — 数据完整性的统一方案: "存在即完整"
@@ -172,13 +204,19 @@ struct Order {
 // 布局: [L2FileHeader 32B][zstd 帧], 帧解开后是 [u64 count][Order × count].
 struct L2FileHeader {
   static constexpr uint32_t kL2Magic = 0x004F324C; // 'L','2','O','\0' 小端
+  // v2: Order 由 14bit 价格重排为 29bit 位域 (20B 不变但布局变了). 旧文件会在
+  // sane() 上被挡下并当作缺失, 由增量编码自动重写 —— 不存在误读旧布局的可能.
   static constexpr uint32_t kL2FormatVersion = 1;
 
   uint32_t magic;           // kL2Magic
   uint32_t version;         // kL2FormatVersion
   uint64_t raw_size;        // 解压后字节数 = 8 + count * sizeof(Order)
   uint64_t compressed_size; // zstd 帧字节数; 文件总长 = 32 + compressed_size
-  uint64_t reserved;        // 置 0; 凑定宽 32B, 留给未来 (flags/校验和等)
+  // 本文件内全部非零价格的下界 (分), 向下对齐. LOB 用它把绝对价折进 65536 档的
+  // 直接索引数组: index = price - price_base. 低价股恒为 0 (即退化成原来的直接
+  // 索引), 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
+  uint32_t price_base;
+  uint32_t reserved; // 置 0; 凑定宽 32B
 
   // 头部自洽 (不含内容校验): magic/version 对, 且尺寸恰好装得下整数条 Order
   bool sane() const {
@@ -221,8 +259,8 @@ constexpr ColumnMeta Snapshot_Schema[] = {
     {"millisecond",       7   },// "取值范围 0-127,7bit 足够"},
     {"order_type",        2   },// "仅增删改成交四种值"},
     {"order_dir",         1   },// "仅bid ask 两种值"},
-    {"price",             14  },// "价格(0.01 RMB units)"},
-    {"volume",            22  },// "成交量(股), expanded to 22bit to support up to 4M shares"},
+    {"price",             29  },// "逐笔价格(0.01 RMB units), 绝对价, 上限 536 万元"},
+    {"volume",            32  },// "逐笔量(股), 满宽"},
     {"bid_order_id",      32  },// "订单id"},
     {"ask_order_id",      32  },// "订单id"},
   };

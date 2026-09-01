@@ -74,6 +74,10 @@ public:
   // Note: Caller must process orders before next decode call (buffer is reused)
   const Order *decode_orders_stream(const std::string &filepath, size_t &order_num);
 
+  // 上一次 decode_orders_stream 读到的档位索引基准 (分). 调用方在把这批 orders
+  // 喂给 LimitOrderBook 之前必须先用它 reset —— 绝对价要减去它才是档位下标.
+  uint32_t last_price_base() const { return last_price_base_; }
+
   // Zstandard decompression helper functions (pure standard decompression)
   static bool read_and_decompress_data(const std::string &filepath, void *data, size_t expected_size, size_t &actual_size);
 
@@ -104,6 +108,8 @@ private:
   // Streaming decompression buffer (reused across all decode calls for zero-allocation)
   mutable std::vector<char> stream_decompression_buffer_;
   mutable std::vector<char> stream_compressed_buffer_;
+
+  uint32_t last_price_base_ = 0;
 
   // 复用的解压上下文, 配置为跳过帧内容校验 — 热路径零额外成本
   // (顺带省掉 ZSTD_decompress 每次调用内部建/销 DCtx 的开销)

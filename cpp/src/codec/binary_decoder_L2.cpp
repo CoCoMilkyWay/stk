@@ -69,7 +69,7 @@ std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8
 }
 
 // 只给下面的 print_* 用 —— 展示用的单位换算, 不属于解码热路径.
-static float price_to_rmb(uint16_t price_ticks) {
+static float price_to_rmb(uint32_t price_ticks) {
   return static_cast<float>(price_ticks) * 0.01; // 0.01 RMB units → RMB
 }
 
@@ -178,6 +178,8 @@ const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath,
                 << filepath << std::endl;
       return nullptr;
     }
+
+    last_price_base_ = header.price_base;
 
     // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
     if (stream_compressed_buffer_.size() < header.compressed_size) {

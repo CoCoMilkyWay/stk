@@ -203,10 +203,27 @@ static bool parse_csv_buffer(const char *data, size_t len, ParseFunc parse_func)
   const char *const end = data + len;
   const char *pos = data;
 
+  // 行结束符先探一次, 再拿它 memchr 扫全文 —— 归档里 CRLF 和裸 CR 两种都有,
+  // 只认 '\n' 会把裸 CR 的文件整个读成一行: 表头被当成唯一一行跳掉, 余下几万
+  // 条记录粘成一坨, split_csv_line_view 取走头 10~12 个字段, 于是"成功"解析出
+  // 恰好一条记录, 既不报坏行也不报空文件. 实测 20240812 的 000548.SZ 逐笔成交
+  // (LF=1, CR=7853) 与 20250102 的 000001.SZ 逐笔委托 (LF=1, CR=144126) 都是
+  // 裸 CR, 后者整个深市当天因此只落下 82 字节的产物.
+  const char *const first_lf =
+      static_cast<const char *>(std::memchr(data, '\n', len));
+  const char *const first_cr =
+      static_cast<const char *>(std::memchr(data, '\r', len));
+  const char delim =
+      (first_cr != nullptr && (first_lf == nullptr || first_cr < first_lf)) ? '\r' : '\n';
+
   auto next_line = [&](std::string_view &out) -> bool {
+    // 跳过上一行残留的另一半分隔符 (CRLF 的 '\n') 以及空行
+    while (pos < end && (*pos == '\r' || *pos == '\n'))
+      ++pos;
     if (pos >= end)
       return false;
-    const char *nl = static_cast<const char *>(std::memchr(pos, '\n', static_cast<size_t>(end - pos)));
+    const char *nl =
+        static_cast<const char *>(std::memchr(pos, delim, static_cast<size_t>(end - pos)));
     const char *line_end = (nl == nullptr) ? end : nl;
     const char *trimmed = line_end;
     while (trimmed > pos && (trimmed[-1] == '\r' || trimmed[-1] == '\n'))
@@ -222,8 +239,6 @@ static bool parse_csv_buffer(const char *data, size_t len, ParseFunc parse_func)
 
   size_t line_count = 0;
   while (next_line(line)) {
-    if (line.empty())
-      continue;
     parse_func(line);
     line_count++;
   }
@@ -245,6 +260,8 @@ static void parse_order_line(std::string_view line, std::vector<CSVOrder> &order
   order.exchange_code = fields[1];
   order.date = fast_parse_u32(fields[2]);
   order.time = fast_parse_u32(fields[3]);
+  if (order.time >= kAuctionCloseTime)
+    return; // 盘后固定价格交易, 见 kAuctionCloseTime
   order.order_id = fast_parse_u64(fields[4]);
   order.exchange_order_id = fast_parse_u64(fields[5]);
 
@@ -288,6 +305,8 @@ static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trade
   trade.exchange_code = fields[1];
   trade.date = fast_parse_u32(fields[2]);
   trade.time = fast_parse_u32(fields[3]);
+  if (trade.time >= kAuctionCloseTime)
+    return; // 盘后固定价格交易, 见 kAuctionCloseTime
   trade.trade_id = fast_parse_u64(fields[4]);
 
   const int market = market_of(trade.stock_code);
@@ -327,6 +346,57 @@ bool BinaryEncoder_L2::parse_trade_csv(const char *data, size_t len,
   return parse_csv_buffer(data, len, [&trades, this](std::string_view line) {
     parse_trade_line(line, trades, bad_line_count_);
   });
+}
+
+// 行情.csv 的字段布局 (表头见 config/sample/L2/README). 只取校验用得上的.
+namespace {
+constexpr size_t kMarketFieldCount = 61; // 到"叫买总量"为止的最小字段数
+constexpr size_t kMarketDate = 2;
+constexpr size_t kMarketLastPrice = 4;
+constexpr size_t kMarketCumVolume = 11;
+constexpr size_t kMarketCumTurnover = 12;
+constexpr size_t kMarketHigh = 13;
+constexpr size_t kMarketLow = 14;
+constexpr size_t kMarketAskTotal = 59;
+constexpr size_t kMarketBidTotal = 60;
+} // namespace
+
+bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSummary &summary) {
+  summary = MarketSummary{};
+  if (data == nullptr || len == 0)
+    return false;
+
+  // 从尾部往前逐行回扫. 停牌日的 行情.csv 只有表头, 回扫到表头就停 —— 表头
+  // 的"自然日"列不含数字, fast_parse_u32 给 0, 以此与数据行区分.
+  const char *line_end = data + len;
+  while (line_end > data) {
+    while (line_end > data && (line_end[-1] == '\n' || line_end[-1] == '\r'))
+      --line_end;
+    if (line_end == data)
+      break;
+
+    const char *line_begin = line_end;
+    while (line_begin > data && line_begin[-1] != '\n' && line_begin[-1] != '\r')
+      --line_begin;
+
+    const std::string_view line(line_begin, static_cast<size_t>(line_end - line_begin));
+    const auto fields = split_csv_line_view(line);
+    if (fields.size() >= kMarketFieldCount && fast_parse_u32(fields[kMarketDate]) != 0) {
+      summary.valid = true;
+      summary.last_price = parse_price_to_fen(fields[kMarketLastPrice]);
+      summary.high = parse_price_to_fen(fields[kMarketHigh]);
+      summary.low = parse_price_to_fen(fields[kMarketLow]);
+      summary.cum_volume = parse_numeric_field(fields[kMarketCumVolume], 1);
+      summary.cum_turnover = parse_numeric_field(fields[kMarketCumTurnover], 1);
+      summary.ask_total = parse_numeric_field(fields[kMarketAskTotal], 1);
+      summary.bid_total = parse_numeric_field(fields[kMarketBidTotal], 1);
+      return true;
+    }
+
+    line_end = line_begin;
+  }
+
+  return false;
 }
 
 // ============================================================================
@@ -430,8 +500,7 @@ BinaryEncoder_L2::~BinaryEncoder_L2() {
   }
 }
 
-bool BinaryEncoder_L2::encode_orders(const std::vector<Order> &orders,
-                                     const std::string &filepath) {
+bool BinaryEncoder_L2::encode_orders(const std::vector<Order> &orders, const std::string &filepath, uint32_t price_base) {
   if (orders.empty()) {
     Logger::log("encoding", "No orders to encode: " + filepath);
     return false;
@@ -448,7 +517,7 @@ bool BinaryEncoder_L2::encode_orders(const std::vector<Order> &orders,
   std::memcpy(buffer.get(), &count, header_size);
   std::memcpy(buffer.get() + header_size, orders.data(), data_size);
 
-  return compress_and_write_data(filepath, buffer.get(), total_size);
+  return compress_and_write_data(filepath, buffer.get(), total_size, price_base);
 }
 
 // Compression helper
@@ -456,8 +525,7 @@ size_t BinaryEncoder_L2::calculate_compression_bound(size_t data_size) {
   return ZSTD_compressBound(data_size);
 }
 
-bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
-                                               const void *data, size_t data_size) {
+bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath, const void *data, size_t data_size, uint32_t price_base) {
   // 原子落盘: 写 tmp, 全部成功后 rename 到最终路径. rename 是原子的 —
   // 最终路径上的文件不可能是半截, "存在即完整"由此成立 (进程被杀/崩溃只会
   // 留下 tmp 垃圾, 由下次增量编码覆盖).
@@ -486,6 +554,7 @@ bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath,
     header.version = L2FileHeader::kL2FormatVersion;
     header.raw_size = data_size;
     header.compressed_size = compressed_size;
+    header.price_base = price_base;
 
     file.write(reinterpret_cast<const char *>(&header), sizeof(header));
     file.write(compressed.get(), compressed_size);
@@ -526,6 +595,8 @@ void BinaryEncoder_L2::begin_asset() {
   csv_trades_.clear();
   orders_.clear();
   bad_line_count_ = 0;
+  market_ = MarketSummary{};
+  report_ = ValidationReport{};
 }
 
 bool BinaryEncoder_L2::feed_order_csv(const char *data, size_t len) {
@@ -540,6 +611,12 @@ bool BinaryEncoder_L2::feed_trade_csv(const char *data, size_t len) {
   return parse_trade_csv(data, len, csv_trades_);
 }
 
+bool BinaryEncoder_L2::feed_market_csv(const char *data, size_t len) {
+  if (len == 0)
+    return true;
+  return parse_market_tail(data, len, market_);
+}
+
 EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, const std::string &tag) {
   // 源损坏优先于一切: 有坏行就整个 (资产, 日期) 作废, 不产出半真半假的
   // 产物 —— 部分数据会静默污染下游特征. 日志带上标的与坏行数, 人工修好源
@@ -549,6 +626,33 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
                                 std::to_string(bad_line_count_) +
                                 " malformed CSV lines — skipped, source needs repair");
     return EncodeResult::CorruptSource;
+  }
+
+  // 只拦"全空" (停牌日的纯表头文件) — 空 .bin 会让下游把停牌日当有数据,
+  // 缺席 (墓碑) 才是正确语义. 低流动性但真实交易的标的 (如 ST 股单日几百笔)
+  // 是真实市场数据, 照常编码, 要不要用是特征/因子层的策略决定, 不在存储层砍.
+  //
+  // 与环境错误区分开: 这是"源数据本身为空"的确定性结论, 调用方应写墓碑,
+  // 增量重跑时不再对它反复解码. 必须先于校验判定 —— 停牌日的 行情.csv 同样
+  // 只有表头, 走进校验只会被 MarketAbsent 误判成待人工处理的数据问题.
+  if (csv_orders_.empty() && csv_trades_.empty()) {
+    Logger::log("encoding", "Empty order data: " + tag + " (suspended)");
+    return EncodeResult::TooFewOrders;
+  }
+
+  // 准入校验 — 判据与经验依据见 L2_Validator.hpp.
+  //
+  // 用中间结构而非转换后的 Order: 中间结构是源数据原样, 转换会 clamp 到位宽
+  // 上界, 拿被截断的值去和快照对拍等于自己骗自己.
+  validator_.run(csv_orders_, csv_trades_, market_, report_);
+
+  if (report_.blocked()) {
+    Logger::log("encoding", "[INVALID DATA] " + tag + " — " + report_.describe() +
+                                " — skipped, source needs check");
+    return EncodeResult::InvalidData;
+  }
+  if (report_.flags != 0) {
+    Logger::log("encoding", "[SUSPECT] " + tag + " — " + report_.describe());
   }
 
   // Convert and encode orders + trades
@@ -582,18 +686,7 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
     return priority(a.order_type) < priority(b.order_type);
   });
 
-  // 只拦"全空" (停牌日的纯表头文件) — 空 .bin 会让下游把停牌日当有数据,
-  // 缺席 (墓碑) 才是正确语义. 低流动性但真实交易的标的 (如 ST 股单日几百笔)
-  // 是真实市场数据, 照常编码, 要不要用是特征/因子层的策略决定, 不在存储层砍.
-  //
-  // 与环境错误区分开: 这是"源数据本身为空"的确定性结论, 调用方应写墓碑,
-  // 增量重跑时不再对它反复解码.
-  if (all_orders.empty()) {
-    Logger::log("encoding", "Empty order data: " + tag + " (suspended)");
-    return EncodeResult::TooFewOrders;
-  }
-
-  return encode_orders(all_orders, output_file) ? EncodeResult::Ok : EncodeResult::Error;
+  return encode_orders(all_orders, output_file, report_.price_base) ? EncodeResult::Ok : EncodeResult::Error;
 }
 
 } // namespace L2

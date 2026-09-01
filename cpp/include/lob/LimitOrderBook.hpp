@@ -129,6 +129,13 @@ public:
   // PUBLIC API: Utilities
   //======================================================================================
 
+  // 设置当日档位索引基准 (分), 取自 .bin 文件头. 必须在 clear() 之后、喂第一条
+  // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的档位下标会指向别的价格.
+  HOT_NOINLINE void set_price_base(uint32_t price_base) {
+    price_base_ = price_base;
+    LOB_feature_.price_base = price_base;
+  }
+
   // Complete reset
   HOT_NOINLINE void clear() {
     price_levels_.fill(nullptr); // Reset direct array (all nullptr)
@@ -158,6 +165,7 @@ public:
     delta_qty_ = 0;
     target_id_ = 0;
     actual_price_ = 0;
+    price_base_ = 0; // 由 set_price_base() 按当日文件头重新给定
 #if DEBUG_ANOMALY_PRINT
     debug_.printed_anomalies.clear();
 #endif
@@ -200,6 +208,9 @@ private:
   //------------------------------------------------------------------------------------
   std::deque<Level> level_storage_;                      // All price levels (deque guarantees stable pointers)
   std::array<Level *, PRICE_RANGE_SIZE> price_levels_{}; // Direct array: Price -> Level* mapping for O(1) lookup (512 KB), initialized to all nullptr
+
+  // 当日档位索引基准 (分). 数组按 (绝对价 - 基准) 寻址, 见 price_to_index().
+  uint32_t price_base_ = 0;
 
   //------------------------------------------------------------------------------------
   // Layer 2: Order Tracking Infrastructure (订单追踪层)
@@ -288,6 +299,15 @@ private:
   //======================================================================================
 
   // Get or create: Atomically get existing level or create new one (single array access)
+  // 绝对价 (分) → 档位数组下标.
+  //
+  // 下标 0 是 LOB 留给市价单/无价格档的特殊档位, 所以 price==0 原样透传, 不能
+  // 去减基准. 低价股 price_base_ 恒为 0, 整个折算退化成恒等 —— 也就是说绝大多数
+  // 标的走的仍是改动前那条路径, 一条多余指令都没有.
+  HOT_INLINE Price price_to_index(uint32_t price) const {
+    return static_cast<Price>(price != 0 ? price - price_base_ : 0);
+  }
+
   HOT_INLINE Level *level_get_or_create(Price price) {
     Level *level = price_levels_[price];
     if (level == nullptr) [[unlikely]] {
@@ -791,7 +811,14 @@ private:
   //======================================================================================
 
   // Core order processing implementation (shared by single/batch interfaces)
-  HOT_INLINE bool process_impl(const L2::Order &order) {
+  HOT_INLINE bool process_impl(const L2::Order &order_abs) {
+    // .bin 里存的是绝对价 (分, 29bit), 而档位数组只开了 kPriceIndexRange 档并按
+    // 下标直接寻址. 在入口一次性折算, 函数体内此后所有价格比较与寻址都留在下标
+    // 空间 —— 与扩位之前逐位一致, 不必逐个改下面几十处下标点 (漏一处就只在高价
+    // 股上出错, 低价股 base=0 恒等, 极难暴露).
+    L2::Order order = order_abs;
+    order.price = price_to_index(order_abs.price);
+
     // Skip dirty orders @09:26:00
     if (order.price == 0 && order.volume == 0) [[unlikely]] {
       return true;
@@ -821,7 +848,7 @@ private:
     // Update feature order metadata (every order)
     LOB_feature_.order_type = order.order_type;
     LOB_feature_.order_dir = order.order_dir;
-    LOB_feature_.price = order.price * 0.01;
+    LOB_feature_.price = order_abs.price * 0.01; // 对外一律给绝对价
     LOB_feature_.volume = order.volume;
 
     // Detect transition from matching period to continuous trading

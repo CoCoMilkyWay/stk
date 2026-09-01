@@ -67,12 +67,14 @@ public:
 
   inline void compute() {
     const auto &depth = tick_data_.lob.depth_buffer;
+    // Level::price 是档位下标, 加上基准才是绝对价 (分). 低价股基准为 0.
+    const float base = static_cast<float>(tick_data_.lob.price_base);
 
     // 首次调用时用 mid price 初始化涨跌停价（第一天没有前收盘价时的fallback）
     if (!initialized_) [[unlikely]] {
       const Level *bid1 = depth[L2::LOB_DEPTH];
       const Level *ask1 = depth[L2::LOB_DEPTH - 1];
-      float mid = (bid1->price + ask1->price) * 0.5f * PRICE_SCALE;
+      float mid = (base + (bid1->price + ask1->price) * 0.5f) * PRICE_SCALE;
       // 用mid价设置涨跌停边界
       limit_up_ = mid * (1.0f + limit_pct_);
       limit_down_ = mid * (1.0f - limit_pct_);
@@ -87,8 +89,8 @@ public:
       const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i]; // 卖i+1档
 
       // 单位转换：价格(分→元), 数量(股, 卖方保持负值), 金额(万元)
-      float bid_price = static_cast<float>(bid_level->price) * PRICE_SCALE; // 分→元
-      float ask_price = static_cast<float>(ask_level->price) * PRICE_SCALE;
+      float bid_price = (base + static_cast<float>(bid_level->price)) * PRICE_SCALE; // 分→元
+      float ask_price = (base + static_cast<float>(ask_level->price)) * PRICE_SCALE;
       float bid_qty = static_cast<float>(bid_level->net_quantity); // 股
       float ask_qty = static_cast<float>(ask_level->net_quantity); // 股(负值)
 

@@ -120,6 +120,15 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
                 << std::endl;
     }
 
+    // 准入校验未过的同理: 逐笔流本身缺片 (见 codec/L2_Validator.hpp), 数据源
+    // 侧的问题, 编码器无从修复. 核查/换源之后重跑增量即可.
+    const size_t pairs_invalid = stats.pairs_invalid.load();
+    if (pairs_invalid > 0) {
+      std::cout << "INVALID DATA: " << pairs_invalid << " (asset, date) pairs failed validation — grep '[INVALID' in "
+                << data_.config.log_dir << "/encoding.log, check source, then re-run incremental\n"
+                << std::endl;
+    }
+
     // 把本轮动过的天交给增量扫描 (见 Asset::binary.dirty_dates)
     {
       std::lock_guard<std::mutex> lock(stats.days_mutex);

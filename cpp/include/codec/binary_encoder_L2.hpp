@@ -1,6 +1,7 @@
 #pragma once
 
 #include "L2_DataType.hpp"
+#include "L2_Validator.hpp"
 #include <cassert>
 #include <cstdint>
 #include <string>
@@ -27,10 +28,14 @@ inline constexpr int ZSTD_COMPRESSION_LEVEL = 6;
 //                  损坏. 不产出任何东西也不写墓碑 —— 跳过并留日志, 等人把
 //                  源文件修好, 下次增量自动重来. 绝不能 abort: 这是几小时
 //                  的批处理, 一个坏标的不该让整轮白跑.
+//   InvalidData:   行能解析, 但逐笔流本身不自洽或与快照对不上 (见
+//                  L2_Validator.hpp). 处置与 CorruptSource 完全相同 —— 缺片
+//                  的逐笔编成 .bin 会让 LOB 沉默地重建出错误盘口, 不如不落.
 //   Error:         环境错误 (磁盘满/压缩失败), 下次增量重跑时重试
 enum class EncodeResult : uint8_t { Ok,
                                     TooFewOrders,
                                     CorruptSource,
+                                    InvalidData,
                                     Error };
 
 // ============================================================================
@@ -108,19 +113,22 @@ constexpr T clamp_to_bound(uint64_t value, T bound_val) {
 
 constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
 
-// Order field upper bounds extracted from schema.
+// Order 各字段的上界.
 //
-// Snapshot_Schema 是全字段位宽表, 逐笔字段的位宽也从这里取. 盘口专属的上界
-// (trade_count / turnover / 十档量 / vwap 之类) 随 csv_to_snapshot 一起删了.
-constexpr uint32_t HOUR_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "hour"));
-constexpr uint32_t MINUTE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "minute"));
-constexpr uint32_t SECOND_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "second"));
-constexpr uint32_t VOLUME_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "volume"));
-constexpr uint32_t PRICE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "close"));
-constexpr uint32_t MILLISECOND_BOUND = 127; // 7 bits for millisecond in 10ms units (not in schema)
-constexpr uint32_t ORDER_TYPE_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_type"));
-constexpr uint32_t ORDER_DIR_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "order_dir"));
-constexpr uint64_t ORDER_ID_BOUND = bitwidth_to_max(get_column_bitwidth(Snapshot_Schema, SCHEMA_SIZE, "bid_order_id"));
+// 这里直接写死 Order 位域的宽度, 不再走 Snapshot_Schema 的名字查表: 那张表里
+// 盘口列和逐笔列同名不同宽, 而 find_column_index 返回的是第一个匹配 —— 于是
+// PRICE_BOUND 查到的其实是盘口的 "close"(14bit), VOLUME_BOUND 查到的也是盘口
+// 那一列. 逐笔价格因此被钳在 163.83 元, 高价股整只票的价格被 clamp_to_bound
+// 悄悄抹平且不留任何痕迹. 位宽的真相只应该有一处, 就是 Order 的定义本身.
+constexpr uint32_t HOUR_BOUND = 31;              // 5bit
+constexpr uint32_t MINUTE_BOUND = 63;            // 6bit
+constexpr uint32_t SECOND_BOUND = 63;            // 6bit
+constexpr uint32_t MILLISECOND_BOUND = 127;      // 7bit (10ms 单位)
+constexpr uint32_t ORDER_TYPE_BOUND = 3;         // 2bit
+constexpr uint32_t ORDER_DIR_BOUND = 1;          // 1bit
+constexpr uint32_t PRICE_BOUND = (1u << 29) - 1; // 29bit, 上限 536 万元
+constexpr uint32_t VOLUME_BOUND = UINT32_MAX;    // 满宽
+constexpr uint64_t ORDER_ID_BOUND = UINT32_MAX;  // 32bit
 
 // ============================================================================
 // Binary Encoder Class
@@ -143,6 +151,10 @@ public:
   bool parse_order_csv(const char *data, size_t len, std::vector<CSVOrder> &orders);
   bool parse_trade_csv(const char *data, size_t len, std::vector<CSVTrade> &trades);
 
+  // 行情.csv → 末行摘要. 只从尾部回扫到第一条可解析的数据行, 不碰前面的
+  // 四千多行 —— 累计字段在末行已是当日终值, 中间行对校验没有额外信息.
+  static bool parse_market_tail(const char *data, size_t len, MarketSummary &summary);
+
   // ------------------------------------------------------------
   // Data Conversion API
   // ------------------------------------------------------------
@@ -155,9 +167,9 @@ public:
   // Binary Encoding API
   // ------------------------------------------------------------
 
-  // Encode and compress binary structures to file
-  bool encode_orders(const std::vector<Order> &orders,
-                     const std::string &filepath);
+  // Encode and compress binary structures to file.
+  // price_base 随头落盘, 解码后交给 LOB 还原档位下标 (见 L2_DataType.hpp).
+  bool encode_orders(const std::vector<Order> &orders, const std::string &filepath, uint32_t price_base);
 
   // ------------------------------------------------------------
   // High-Level Interface (流式: begin → feed... → finish)
@@ -167,13 +179,16 @@ public:
   // 一块复用缓冲 —— 后一个到达时前一个的原始字节已被覆盖. 所以接口是流式的:
   // 每块到达就地解析成中间结构, 两块都喂完再合并排序落盘.
   //
-  // 快照 (行情.csv) 不再编码: 其产物全项目无人读取 —— 特征计算只吃 orders,
-  // 靠 LimitOrderBook 重建盘口. 省掉的是单日 46.2 GB 里的 10.13 GB 解析量,
-  // 外加整条快照 delta 编码 + zstd + 写文件的开销.
+  // 快照 (行情.csv) 不编码落盘: 其产物全项目无人读取 —— 特征计算只吃 orders,
+  // 靠 LimitOrderBook 重建盘口. 但它必须被读进来: 末行是交易所给的当日结算
+  // 口径, 是逐笔流唯一的外部真值, 编码后归档就不再打开了 (见 L2_Validator.hpp).
+  // 代价只有多解压那一份字节 —— 页缓存已由 producer 的整包预读填好, 且解析
+  // 只碰末行, 不做 delta 编码/压缩/落盘.
 
   void begin_asset();
   bool feed_order_csv(const char *data, size_t len);
   bool feed_trade_csv(const char *data, size_t len);
+  bool feed_market_csv(const char *data, size_t len);
 
   // 合并 → 按时间/优先级排序 → 压缩落盘 (tmp + rename 原子).
   // tag 仅用于日志定位 (形如 "20260803 600519.SH").
@@ -196,7 +211,7 @@ private:
   // Compression Helpers
   // ------------------------------------------------------------
 
-  bool compress_and_write_data(const std::string &filepath, const void *data, size_t data_size);
+  bool compress_and_write_data(const std::string &filepath, const void *data, size_t data_size, uint32_t price_base);
   static size_t calculate_compression_bound(size_t data_size);
 
   // ------------------------------------------------------------
@@ -212,6 +227,11 @@ private:
   // 当前资产累计的坏行数 (字段数不足 / 代码字段不是 .SZ|.SH). 非零即判定
   // 源损坏, finish_asset 报 CorruptSource 并带上行数, 方便定位到具体标的.
   size_t bad_line_count_ = 0;
+
+  // 准入校验 (见 L2_Validator.hpp). validator_ 内部的哈希表跨资产复用.
+  MarketSummary market_;
+  Validator validator_;
+  ValidationReport report_;
 
   // Order buffers
   mutable std::vector<uint8_t> temp_order_hours, temp_order_minutes, temp_order_seconds, temp_order_millis;
