@@ -7,6 +7,7 @@
 #include "shared/Asset.hpp"
 #include "shared/AssetInfo.hpp"
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -55,11 +56,13 @@ struct TableView {
   size_t stock_info_count = 0; // 对应的 stock_info.size() (基本面首次载入)
   int sort_column = -1;        // 对应的排序列
   bool sort_ascending = true;  // 对应的排序方向
-  bool filter_st_only = false;
-  bool filter_listed_only = false;
-  BoardType board_filter = BoardType::All;
+
+  // 多选过滤集合, 空集合 = 不过滤 (全选). 取值口径见 TableState 同名字段.
+  std::set<int> st_filter;
+  std::set<int> listed_filter;
+  std::set<BoardType> board_filter;
   std::string search_query;
-  std::string industry_filter;
+  std::set<std::string> industry_filter;
 };
 
 // Table state
@@ -69,11 +72,17 @@ struct TableState {
   // 这里曾有 filter_missing_only / filter_no_missing 两个"缺口"过滤器, 但
   // 缺口是按天而不是按资产的概念 (见 AssetItem 的说明), 它们筛的那个量恒为
   // 0 —— 一个永远筛空, 一个永远等于不筛.
-  bool filter_st_only = false;
-  bool filter_listed_only = false; // Only show listed stocks (outDate is empty)
-  BoardType board_filter = BoardType::All;
+  //
+  // 下面四个都是多选下拉, 空集合 = 不过滤 (全选):
+  //   st_filter:      0=正常 1=ST 2=*ST (GetStLevel 口径)
+  //   listed_filter:  0=在市 1=退市 (outDate 是否为空)
+  //   board_filter:   BoardType (Unknown ~ BSE, 不含 All 哨兵)
+  //   industry_filter: 申万一级行业代码 (ind_code)
+  std::set<int> st_filter;
+  std::set<int> listed_filter;
+  std::set<BoardType> board_filter;
   std::string search_query;
-  std::string industry_filter; // Filter by industry code (e.g. "C26")
+  std::set<std::string> industry_filter;
 
   // Selection and sorting
   int selected_asset_idx = -1;

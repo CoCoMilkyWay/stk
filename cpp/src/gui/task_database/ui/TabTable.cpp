@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -142,31 +143,32 @@ bool ShouldShowAsset(
     const StockInfo *info,
     const TableState &state) {
 
-  // Filter: ST only (ST 与 *ST 都算)
-  if (state.filter_st_only) {
-    if (GetStLevel(info) == 0) {
+  // Filter: ST level (0=正常 1=ST 2=*ST), 多选, 空集合 = 不过滤
+  if (!state.st_filter.empty()) {
+    if (!state.st_filter.count(GetStLevel(info))) {
       return false;
     }
   }
 
-  // Filter: listed only (outDate is empty)
-  if (state.filter_listed_only) {
-    if (!info || !info->outDate.empty()) {
+  // Filter: listed/delisted (0=在市 1=退市, 未知基本面按"不确定"排除), 多选
+  if (!state.listed_filter.empty()) {
+    const int listed_state = !info ? -1 : (info->outDate.empty() ? 0 : 1);
+    if (listed_state < 0 || !state.listed_filter.count(listed_state)) {
       return false;
     }
   }
 
-  // Filter: board
-  if (state.board_filter != BoardType::All) {
+  // Filter: board, 多选, 空集合 = 不过滤
+  if (!state.board_filter.empty()) {
     BoardType asset_board = GetBoardType(asset.asset_code);
-    if (asset_board != state.board_filter) {
+    if (!state.board_filter.count(asset_board)) {
       return false;
     }
   }
 
-  // Filter: industry
+  // Filter: industry, 多选, 空集合 = 不过滤
   if (!state.industry_filter.empty()) {
-    if (!info || info->ind_code != state.industry_filter) {
+    if (!info || !state.industry_filter.count(info->ind_code)) {
       return false;
     }
   }
@@ -356,8 +358,8 @@ bool ViewIsStale(const TableView &view, const Asset &asset,
          view.stock_info_count != stock_info.size() ||
          view.sort_column != state.sort_column ||
          view.sort_ascending != state.sort_ascending ||
-         view.filter_st_only != state.filter_st_only ||
-         view.filter_listed_only != state.filter_listed_only ||
+         view.st_filter != state.st_filter ||
+         view.listed_filter != state.listed_filter ||
          view.board_filter != state.board_filter ||
          view.search_query != state.search_query ||
          view.industry_filter != state.industry_filter;
@@ -475,8 +477,8 @@ void RebuildView(TableView &view, const Asset &asset,
   view.stock_info_count = stock_info.size();
   view.sort_column = state.sort_column;
   view.sort_ascending = state.sort_ascending;
-  view.filter_st_only = state.filter_st_only;
-  view.filter_listed_only = state.filter_listed_only;
+  view.st_filter = state.st_filter;
+  view.listed_filter = state.listed_filter;
   view.board_filter = state.board_filter;
   view.search_query = state.search_query;
   view.industry_filter = state.industry_filter;
@@ -486,6 +488,54 @@ void RebuildView(TableView &view, const Asset &asset,
 void SyncView(TableState &state, const Asset &asset, const StockInfoMap &stock_info) {
   if (ViewIsStale(state.view, asset, stock_info, state))
     RebuildView(state.view, asset, stock_info, state);
+}
+
+// ============================================================================
+// Helper: 通用多选下拉框
+// ============================================================================
+// items: (取值, 显示名) 列表; selected 为空集合表示"全选/不过滤" (与
+// ShouldShowAsset 的判据一致, 而不是"什么都不选").
+// 预览文本: 全不选 = "All"; 少量选中 = 逐项列出; 选多了折成 "N selected".
+template <typename T>
+void RenderMultiSelectCombo(
+    const char *label,
+    float width,
+    const std::vector<std::pair<T, std::string>> &items,
+    std::set<T> &selected) {
+
+  std::string preview;
+  if (selected.empty()) {
+    preview = "All";
+  } else {
+    for (const auto &[value, text] : items) {
+      if (selected.count(value)) {
+        if (!preview.empty())
+          preview += ", ";
+        preview += text;
+      }
+    }
+    if (preview.size() > 24) {
+      preview = std::to_string(selected.size()) + " selected";
+    }
+  }
+
+  ImGui::SetNextItemWidth(width);
+  if (ImGui::BeginCombo(label, preview.c_str())) {
+    for (const auto &[value, text] : items) {
+      bool is_selected = selected.count(value) != 0;
+      if (ImGui::Checkbox(text.c_str(), &is_selected)) {
+        if (is_selected)
+          selected.insert(value);
+        else
+          selected.erase(value);
+      }
+    }
+    ImGui::Separator();
+    if (ImGui::SmallButton("All")) {
+      selected.clear();
+    }
+    ImGui::EndCombo();
+  }
 }
 
 // ============================================================================
@@ -507,22 +557,30 @@ void RenderFilterBar(
     state.search_query = search_buf;
   }
 
+  // ST filter: 正常/ST/*ST 多选下拉 (GetStLevel 口径)
+  static const std::vector<std::pair<int, std::string>> st_items = {
+      {0, "正常"}, {1, "ST"}, {2, "*ST"}};
   ImGui::SameLine();
-  ImGui::Checkbox("ST", &state.filter_st_only);
+  RenderMultiSelectCombo("ST##StFilter", 90.0f, st_items, state.st_filter);
 
+  // Listed filter: 在市/退市 多选下拉 (outDate 是否为空)
+  static const std::vector<std::pair<int, std::string>> listed_items = {
+      {0, "在市"}, {1, "退市"}};
   ImGui::SameLine();
-  ImGui::Checkbox("Listed", &state.filter_listed_only);
+  RenderMultiSelectCombo("Listed##ListedFilter", 100.0f, listed_items, state.listed_filter);
 
-  // Board filter dropdown
+  // Board filter: 多选下拉 (不含 All 哨兵, 空集合即等价于全选)
+  static const std::vector<std::pair<BoardType, std::string>> board_items = {
+      {BoardType::Unknown, "Unknown"},
+      {BoardType::SH_Main, "沪主板"},
+      {BoardType::SZ_Main, "深主板"},
+      {BoardType::STAR, "科创板"},
+      {BoardType::ChiNext, "创业板"},
+      {BoardType::BSE, "北交所"}};
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(100.0f);
-  const char *board_names[] = {"All", "Unknown", "沪主板", "深主板", "科创板", "创业板", "北交所"};
-  int current_board = static_cast<int>(state.board_filter);
-  if (ImGui::Combo("Board##BoardFilter", &current_board, board_names, 7)) {
-    state.board_filter = static_cast<BoardType>(current_board);
-  }
+  RenderMultiSelectCombo("Board##BoardFilter", 120.0f, board_items, state.board_filter);
 
-  // Industry filter - collect all unique industries
+  // Industry filter - collect all unique industries (多选下拉)
   // 基本面可能在本页首次渲染之后才载入完, 所以缓存要跟着 stock_info 规模失效,
   // 否则行业下拉框会永久停在空列表
   static std::vector<std::pair<std::string, std::string>> industries; // code, name
@@ -537,36 +595,14 @@ void RenderFilterBar(
       }
     }
     industries.clear();
-    industries.emplace_back("", "All Industries");
     for (const auto &[code, name] : ind_map) {
-      industries.emplace_back(code, name.empty() ? code : name + " (" + code + ")");
+      industries.emplace_back(code, name.empty() ? code : name);
     }
     industries_cached_count = stock_info.size();
   }
 
-  // 预览文本用行业名, 不用裸代码
-  const char *ind_preview = "All";
-  for (const auto &[code, display] : industries) {
-    if (code == state.industry_filter) {
-      ind_preview = state.industry_filter.empty() ? "All" : display.c_str();
-      break;
-    }
-  }
-
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(150.0f);
-  if (ImGui::BeginCombo("Industry##IndFilter", ind_preview)) {
-    for (const auto &[code, display] : industries) {
-      bool is_selected = (state.industry_filter == code);
-      if (ImGui::Selectable(display.c_str(), is_selected)) {
-        state.industry_filter = code;
-      }
-      if (is_selected) {
-        ImGui::SetItemDefaultFocus();
-      }
-    }
-    ImGui::EndCombo();
-  }
+  RenderMultiSelectCombo("Industry##IndFilter", 150.0f, industries, state.industry_filter);
 
   // Count & panel toggle
   ImGui::SameLine();

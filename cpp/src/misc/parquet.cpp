@@ -63,11 +63,30 @@ list_month_files(std::string_view name) {
 // 读写
 // ----------------------------------------------------------------------------
 std::shared_ptr<arrow::Table> read_table(const fs::path &path,
-                                         const std::vector<std::string> &columns) {
-  auto file_res = arrow::io::ReadableFile::Open(path.string());
-  assert(file_res.ok() && "pq::read_table: 文件无法打开");
-  auto reader_res = parquet::arrow::OpenFile(file_res.ValueOrDie(),
-                                             arrow::default_memory_pool());
+                                         const std::vector<std::string> &columns,
+                                         const std::vector<std::string> &dict_columns) {
+  // mmap 而非 pread: 热 page cache 下省掉一次内核 → 用户态拷贝 (实测 -14%).
+  // 写者走 tmp+rename, 旧 inode 不被改写 ⇒ 映射期间不会 SIGBUS.
+  parquet::arrow::FileReaderBuilder builder;
+  arrow::Status opened = builder.OpenFile(path.string(), /*memory_map=*/true);
+  assert(opened.ok() && "pq::read_table: 文件无法打开");
+
+  // 扁平 schema: 列名即叶子路径, ColumnIndex 直接可用. dict 下标必须在 Build()
+  // 之前定, 而 Build() 会把 raw_reader 移走 —— 自己持一份 metadata 保生命周期.
+  const std::shared_ptr<parquet::FileMetaData> md =
+      builder.raw_reader()->metadata();
+  const parquet::SchemaDescriptor *schema = md->schema();
+
+  parquet::ArrowReaderProperties props;
+  for (const std::string &name : dict_columns) {
+    int i = schema->ColumnIndex(name);
+    assert(i >= 0 && "pq::read_table: dict_columns 里的列不存在");
+    props.set_read_dictionary(i, true);
+  }
+  builder.properties(props);
+  builder.memory_pool(arrow::default_memory_pool());
+
+  auto reader_res = builder.Build();
   assert(reader_res.ok() && "pq::read_table: 构造 reader 失败");
   std::unique_ptr<parquet::arrow::FileReader> reader =
       std::move(reader_res).ValueOrDie();
@@ -76,9 +95,6 @@ std::shared_ptr<arrow::Table> read_table(const fs::path &path,
   if (columns.empty()) {
     t_res = reader->ReadTable();
   } else {
-    // 扁平 schema: 列名即叶子路径, ColumnIndex 直接可用
-    const parquet::SchemaDescriptor *schema =
-        reader->parquet_reader()->metadata()->schema();
     std::vector<int> indices;
     indices.reserve(columns.size());
     for (const std::string &name : columns) {
@@ -189,6 +205,41 @@ std::int32_t Col::yyyymmdd(std::int64_t i) const {
   }
 }
 
+void Col::yyyymmdd_all(std::vector<std::int32_t> &out) const {
+  const std::int64_t n = arr_ ? arr_->length() : 0;
+  out.resize(static_cast<std::size_t>(n));
+  if (n == 0)
+    return;
+
+  if (type_ == arrow::Type::TIMESTAMP) {
+    const std::int64_t *v =
+        static_cast<const arrow::TimestampArray &>(*arr_).raw_values();
+    const bool nullable = arr_->null_count() != 0;
+    std::int64_t prev_ns = 0;
+    std::int32_t prev_ymd = 0;
+    bool have = false;
+    for (std::int64_t i = 0; i < n; ++i) {
+      if (nullable && arr_->IsNull(i)) {
+        out[static_cast<std::size_t>(i)] = 0;
+        continue;
+      }
+      const std::int64_t ns = v[i];
+      if (!have || ns != prev_ns) {
+        prev_ns = ns;
+        prev_ymd = ns_to_yyyymmdd(ns);
+        have = true;
+      }
+      out[static_cast<std::size_t>(i)] = prev_ymd;
+    }
+    return;
+  }
+  // string 列: sv_to_yyyymmdd 本就只是 8 位定长解析, 无需短路
+  assert((type_ == arrow::Type::STRING || type_ == arrow::Type::LARGE_STRING) &&
+         "Col::yyyymmdd_all: 列类型须为 timestamp / string");
+  for (std::int64_t i = 0; i < n; ++i)
+    out[static_cast<std::size_t>(i)] = yyyymmdd(i);
+}
+
 float Col::f32(std::int64_t i) const {
   if (arr_->IsNull(i))
     return std::numeric_limits<float>::quiet_NaN();
@@ -263,6 +314,29 @@ std::string_view Col::str(std::int64_t i) const {
 }
 
 // ----------------------------------------------------------------------------
+// DictCol
+// ----------------------------------------------------------------------------
+DictCol::DictCol(const std::shared_ptr<arrow::Array> &a) : arr_(a) {
+  assert(a && a->type_id() == arrow::Type::DICTIONARY &&
+         "DictCol: 该列须列在 read_table 的 dict_columns 里");
+  assert(a->null_count() == 0 && "DictCol: 字典列不接受 null");
+  const auto &d = static_cast<const arrow::DictionaryArray &>(*a);
+  assert(d.indices()->type_id() == arrow::Type::INT32 &&
+         "DictCol: 字典下标须为 int32");
+  // raw_values() 已含 ArrayData::offset
+  idx_ = static_cast<const arrow::Int32Array &>(*d.indices()).raw_values();
+  dict_ = d.dictionary();
+  assert(dict_->type_id() == arrow::Type::STRING && "DictCol: 字典值须为 string");
+  values_ = static_cast<const arrow::StringArray *>(dict_.get());
+  dict_size_ = static_cast<std::int32_t>(values_->length());
+}
+
+std::string_view DictCol::dict_value(std::int32_t k) const {
+  auto v = values_->GetView(k);
+  return std::string_view(v.data(), v.size());
+}
+
+// ----------------------------------------------------------------------------
 // TableView
 // ----------------------------------------------------------------------------
 TableView::TableView(std::shared_ptr<arrow::Table> t) {
@@ -287,6 +361,17 @@ Col TableView::col(std::string_view name) const {
   if (c->num_chunks() == 0)
     return Col(); // 0 行: 任何行访问都是越界, 不会发生
   return Col(c->chunk(0));
+}
+
+DictCol TableView::dict_col(std::string_view name) const {
+  auto c = t_->GetColumnByName(std::string(name));
+  assert(c && "TableView::dict_col: 列不存在");
+  assert(c->num_chunks() <= 1 && "TableView: CombineChunks 后应单 chunk");
+  if (c->num_chunks() == 0) {
+    assert(t_->num_rows() == 0);
+    return DictCol(); // 0 行
+  }
+  return DictCol(c->chunk(0));
 }
 
 } // namespace misc::pq
