@@ -4,7 +4,7 @@
 //   stock_days   ← all_trading_days (market_code='CN', 截到 today)
 //   stock_info   ← cn_stock_basic_info (_meta) + cn_stock_instruments (PIT 简称)
 //                  + cn_stock_industry_component (最新快照)
-//                  + cn_stock_real_bar1d (每股最新行) + cn_stock_status (每股最新行)
+//                  + cn_stock_real_bar1d (最新行 + 最新有效报价行) + cn_stock_status
 //   stock_factor ← cn_stock_real_bar1d.adjust_factor 变点序列 (分红/拆分事件日)
 //   mcap/peTTM/pbMRQ/psTTM/pcfNcfTTM/dy{1,3,5}y ← close × total_shares / 财务分母
 //                  (最新可见快照, 口径与 L1 特征表一致; 分钟实时版在特征表阶段算)
@@ -238,16 +238,31 @@ constexpr int kDyDays[kDyWindows] = {365, 1095, 1825};
 constexpr double kDyYears[kDyWindows] = {1.0, 3.0, 5.0};
 
 // ---------------------------------------------------------------------------
-// 各表的分片累加器. "未出现" 一律用显式标志 / 日期 0 表示, 不拿 NaN 当哨兵 ——
-// PROFILE/ASSERT/PRODUCTION 三档都带 -ffast-math (projects/main/CMakeLists.txt),
-// 其 -ffinite-math-only 会把 isfinite 折叠成 true, NaN 判定不可依赖.
+// 各表的分片累加器.
+//
+// 两条贯穿全表的约定:
+//  1) "未出现" 用显式日期 (0 = 从无) 表示, 不拿 NaN 当哨兵. 缺失判据集中在扫描处
+//     (Col::null 直读 bitmap), 归约和估值段只看日期是否为 0. 本文件在 CMake 的
+//     PRECISE_MATH 列表里 (-fno-fast-math), isfinite 本可用, 但缺失语义不依赖它
+//     —— 少一层浮点约定, 将来移出列表也不会静默出错.
+//  2) 快照按字段各自取 "最后一个有效值", 而不是整行取 max(date). 源里最新那行常
+//     常是半空的 —— 停牌日 close/amount 为 null, 停止披露的公司最后几期财报字段
+//     为空 —— 整行取会把该股的估值成片打掉, 而更早的期次里是有值的.
 // ---------------------------------------------------------------------------
 
-// cn_stock_real_bar1d: 每股最新行 + 复权因子变点
+// cn_stock_real_bar1d: 每股最新行 + 最新有效报价行 + 复权因子变点
+//
+// date / qdate 必须分开: 停牌日源里也落行, 但 close 与 amount 是 null. 退市前的
+// 长停和长期停牌股尾部连着几十行全是这样, 拿最新行当报价快照就把估值整块打掉
+// (实测 167 只受影响: 160 退市 + 7 在市). 惯例是停牌股按停牌前收盘价计市值, 故
+// date 只当数据水位, 价量四项一律取自最后一个有真实成交价的行 (同日, 不跨日混搭).
+// qdate == 0 ⇒ 全区间无成交 ⇒ 市值算不出 ⇒ 该股所有估值列一并留空 (吸收合并 /
+// 转板退市的老代码就是这样, 8 只; 这种"要么全有要么全无"是刻意的一致性).
 struct BarLatest {
   bool present = false;
-  std::int32_t date = 0;
-  float volume = 0, amount = 0, turn = 0, close = 0;
+  std::int32_t date = 0;                             // 最新行, 含停牌日 → update_date
+  std::int32_t qdate = 0;                            // 最新有效报价行; 0 ⇒ 全区间无成交
+  float volume = 0, amount = 0, turn = 0, close = 0; // 均取自 qdate 那行
 };
 
 struct FactorPoint {
@@ -296,9 +311,10 @@ struct SharesLocal {
   std::vector<std::uint32_t> dict;
 };
 
-// cn_stock_financial_ttm_shift: shift==0 的每股最新行
+// cn_stock_financial_ttm_shift: shift==0, 三个分母各自的最后一个有效期次
+// 有效判据就地对齐估值段的门 (np/cf != 0, rev > 0), 故下游只需看 *_d 是否为 0.
 struct TtmLatest {
-  std::int32_t date = 0; // 0 = 未出现
+  std::int32_t np_d = 0, rev_d = 0, cf_d = 0; // 各自的 date; 0 = 从无有效值
   float np = 0, rev = 0, cf = 0;
 };
 
@@ -309,9 +325,9 @@ struct TtmLocal {
   std::vector<std::uint32_t> dict;
 };
 
-// cn_stock_financial_balance_general_pit: max(report_date) 的最新可见行
+// cn_stock_financial_balance_general_pit: eq 有效的行里 (report_date, date) 最大者
 struct BalLatest {
-  bool present = false;
+  bool present = false; // eq 非 null 且 != 0
   std::int32_t rd = 0, date = 0;
   float eq = 0;
 };
@@ -416,7 +432,7 @@ bool build_asset_info(Job &job) {
   std::vector<IndRow> inds;
 
   // ---- 日频行情 + 复权因子 ← cn_stock_real_bar1d ----
-  //   每股最新行 → update_date/volume/amount/turn/close;
+  //   最新行 → update_date; 最新有效报价行 → volume/amount/turn/close;
   //   adjust_factor → 文件内变点压缩 (分红/拆分事件日, TabBrowser 用)
   auto scan_bar = [&uni](const std::filesystem::path &path, BarLocal &L) {
     pq::TableView v(pq::read_table(path,
@@ -470,15 +486,22 @@ bool build_asset_info(Job &job) {
       }
       BarLatest &b = L.latest[id];
       b.present = true;
-      if (d > b.date) {
+      if (d > b.date)
         b.date = d;
-        b.volume = vol.f32(i);
-        b.amount = amt.f32(i);
-        b.turn = turn.f32(i);
-        b.close = close.f32(i);
+      // amount 在有效成交行上仍有极少数 null (67/1158万), 落 0 而不是让 NaN 流到
+      // snprintf 打出 "nan".
+      if (d > b.qdate && !close.null(i)) {
+        const float c = close.f32(i);
+        if (c > 0.0f) {
+          b.qdate = d;
+          b.close = c;
+          b.volume = vol.null(i) ? 0.0f : vol.f32(i);
+          b.amount = amt.null(i) ? 0.0f : amt.f32(i);
+          b.turn = turn.null(i) ? 0.0f : turn.f32(i);
+        }
       }
       const float f = af.f32(i);
-      if (std::isfinite(f)) {
+      if (!af.null(i) && f > 0.0f) {
         const std::size_t c = static_cast<std::size_t>(id) * K + rank;
         L.grid[c] = f;
         L.filled[c] = 1;
@@ -552,7 +575,7 @@ bool build_asset_info(Job &job) {
       const std::int32_t d = L.dates[static_cast<std::size_t>(i)];
       if (d > c.date) {
         c.date = d;
-        c.total = ts.f32(i);
+        c.total = ts.null(i) ? 0.0f : ts.f32(i);
       }
     }
   };
@@ -581,11 +604,30 @@ bool build_asset_info(Job &job) {
         continue;
       TtmLatest &c = L.latest[L.dict[static_cast<std::size_t>(idx[i])]];
       const std::int32_t d = L.dates[static_cast<std::size_t>(i)];
-      if (d > c.date) {
-        c.date = d;
-        c.np = np.f32(i);
-        c.rev = rev.f32(i);
-        c.cf = cf.f32(i);
+      // 三个分母各自推进: 源里这三列 null 各约 10 万行, 且停止披露的公司最后几期
+      // 是空的. 整行取 max(date) 会让 PE/PS/PCF 成片留空 (窗口内退市股 pe 缺 15、
+      // ps 31、pcf 26); 各自回退到最后一个有效期次后, 三项一起收敛到 8 只 —— 那
+      // 8 只是市值本身算不出的, 属于"整只全空"的一致情形.
+      if (d > c.np_d && !np.null(i)) {
+        const float v = np.f32(i);
+        if (v != 0.0f) {
+          c.np_d = d;
+          c.np = v;
+        }
+      }
+      if (d > c.rev_d && !rev.null(i)) {
+        const float v = rev.f32(i);
+        if (v > 0.0f) { // 负营收 = 源脏值
+          c.rev_d = d;
+          c.rev = v;
+        }
+      }
+      if (d > c.cf_d && !cf.null(i)) {
+        const float v = cf.f32(i);
+        if (v != 0.0f) {
+          c.cf_d = d;
+          c.cf = v;
+        }
       }
     }
   };
@@ -607,11 +649,18 @@ bool build_asset_info(Job &job) {
     pq::Col eq = v.col("total_equity_to_parent_shareholders");
     const std::int32_t *idx = ins.indices();
     for (std::int64_t i = 0; i < n; ++i) {
+      // 先筛有效再定位: 无效行不参与 (report_date, date) 竞争, 否则停止披露公司
+      // 最新那份空权益会盖掉上一期的真实值 —— 同 TTM 三列的处理.
+      if (eq.null(i))
+        continue;
+      const float v = eq.f32(i);
+      if (v == 0.0f)
+        continue;
       BalLatest &c = L.latest[L.dict[static_cast<std::size_t>(idx[i])]];
       const std::int32_t r = L.rdates[static_cast<std::size_t>(i)];
       const std::int32_t d = L.dates[static_cast<std::size_t>(i)];
       if (!c.present || r > c.rd || (r == c.rd && d > c.date))
-        c = {true, r, d, eq.f32(i)};
+        c = {true, r, d, v};
     }
   };
 
@@ -633,8 +682,10 @@ bool build_asset_info(Job &job) {
       const std::int32_t d = L.dates[static_cast<std::size_t>(i)];
       if (d <= div_lo_min || d > div_hi)
         continue; // 最长窗口都不覆盖 → 三档都用不上
+      // 源里 625 行 cash_before_tax 是 null, 漏一个进求和就把该股 dy1y/3y/5y 全
+      // 打成 "nan" —— 判空统一走 bitmap (见文件上方约定 1).
       const float c = cash.f32(i);
-      if (!std::isfinite(c) || c <= 0.0f)
+      if (cash.null(i) || c <= 0.0f)
         continue;
       L.rows.push_back({L.dict[static_cast<std::size_t>(idx[i])], d, c});
     }
@@ -770,12 +821,25 @@ bool build_asset_info(Job &job) {
   }
 
   // ---- 日频行情: 每股最新行 (分片间按 date 取最大者) ----
+  // date 与 qdate 各自独立取最大 —— 最新行和最新有效报价行可能落在不同分片
+  // (长停股尾部整月全是停牌行), 整体替换会把靠后分片的空报价盖上去.
   std::vector<BarLatest> bar(nid);
   for (const BarLocal &L : bar_locals)
     for (std::uint32_t id = 0; id < nid; ++id) {
       const BarLatest &b = L.latest[id];
-      if (b.present && (!bar[id].present || b.date > bar[id].date))
-        bar[id] = b;
+      if (!b.present)
+        continue;
+      BarLatest &dst = bar[id];
+      dst.present = true;
+      if (b.date > dst.date)
+        dst.date = b.date;
+      if (b.qdate > dst.qdate) {
+        dst.qdate = b.qdate;
+        dst.close = b.close;
+        dst.volume = b.volume;
+        dst.amount = b.amount;
+        dst.turn = b.turn;
+      }
     }
 
   for (std::uint32_t id = 0; id < nid; ++id) {
@@ -785,6 +849,8 @@ bool build_asset_info(Job &job) {
     StockInfo &info = uni.info(id);
     char buf[32];
     info.update_date = dash_date(b.date);
+    if (b.qdate == 0)
+      continue; // 全区间无成交 (5 只早年退市股) → 价量留空, 只留数据水位
     std::snprintf(buf, sizeof(buf), "%.0f", static_cast<double>(b.volume));
     info.volume = buf;
     std::snprintf(buf, sizeof(buf), "%.4f", static_cast<double>(b.amount));
@@ -800,19 +866,39 @@ bool build_asset_info(Job &job) {
   //   DY1/3/5 = 近 1/3/5 年税前分红总额年化后 / mcap; 静态快照的股本恒为最新
   //   快照, 故等价于 Σ每股分红/年数/close (L1 dy_raw 用公告日当时股本, 窗口内
   //   有增发时会有微差). 无效 → 留空串 (Table 显示 "-").
+  //
+  //   缺失语义 (与 L1 一致: 只标记, 不横截面填充 —— 展示层不放非该股真实值):
+  //     · mcap 算不出 (无有效成交价 / 无股本) → 该股估值列整片留空, 不留半成品;
+  //     · 各分母独立回退到最后一个有效期次, 所以停止披露只影响到期次而非有无;
+  //     · 仍为空的只剩两类结构性缺口 —— 2015-01 前退市 (整体在 PIPELINE_START_DATE
+  //       之外, 源里无任何行) 和上市未满一个报告期的新股 (尚未披露 TTM/权益).
   {
-    // 股本 / TTM: 分片间按 date 取最大者
+    // 股本: 分片间按 date 取最大者
     std::vector<SharesLatest> shares(nid);
     for (const SharesLocal &L : shares_locals)
       for (std::uint32_t id = 0; id < nid; ++id)
         if (L.latest[id].date > shares[id].date)
           shares[id] = L.latest[id];
 
+    // TTM: 三个分母各自按自己的 date 取最大 (它们的最后有效期次可能落在不同分片)
     std::vector<TtmLatest> ttm(nid);
     for (const TtmLocal &L : ttm_locals)
-      for (std::uint32_t id = 0; id < nid; ++id)
-        if (L.latest[id].date > ttm[id].date)
-          ttm[id] = L.latest[id];
+      for (std::uint32_t id = 0; id < nid; ++id) {
+        const TtmLatest &s = L.latest[id];
+        TtmLatest &dst = ttm[id];
+        if (s.np_d > dst.np_d) {
+          dst.np_d = s.np_d;
+          dst.np = s.np;
+        }
+        if (s.rev_d > dst.rev_d) {
+          dst.rev_d = s.rev_d;
+          dst.rev = s.rev;
+        }
+        if (s.cf_d > dst.cf_d) {
+          dst.cf_d = s.cf_d;
+          dst.cf = s.cf;
+        }
+      }
 
     // 权益 MRQ: 按 (report_date, date) 取最大者
     std::vector<BalLatest> bal(nid);
@@ -838,29 +924,30 @@ bool build_asset_info(Job &job) {
 
     const auto today_days = misc::parse_yyyymmdd(today);
     for (std::uint32_t id = 0; id < nid; ++id) {
-      if (!bar[id].present || shares[id].total <= 0.0f)
+      // qdate != 0 已保证 close 是非 null 正数 (见 BarLatest); 市值算不出的股票
+      // 整只跳过, 估值列全空 —— 不留"一半有一半没有"的半成品.
+      if (bar[id].qdate == 0 || shares[id].total <= 0.0f)
         continue;
       const double close = static_cast<double>(bar[id].close);
-      if (!std::isfinite(close) || close <= 0.0)
-        continue;
       const double mcap = close * static_cast<double>(shares[id].total);
       StockInfo &info = uni.info(id);
       char buf[32];
       std::snprintf(buf, sizeof(buf), "%.4f", mcap / 1e8); // [亿元]
       info.mcap = buf;
-      auto set_ratio = [&](std::string &dst, double den, bool positive_only) {
-        if (!std::isfinite(den) || den == 0.0 || (positive_only && den <= 0.0))
-          return; // 留空 → Table 显示 "-"
+      // 分母有效性已在扫描处定完 (非 null 且过了 !=0 / >0 的门), 这里只除.
+      // 亏损/负权益/烧钱保留负值 —— 那是真实信息, 不是缺失.
+      auto set_ratio = [&](std::string &dst, double den) {
         std::snprintf(buf, sizeof(buf), "%.4f", mcap / den);
         dst = buf;
       };
-      if (ttm[id].date != 0) {
-        set_ratio(info.peTTM, static_cast<double>(ttm[id].np), false);
-        set_ratio(info.psTTM, static_cast<double>(ttm[id].rev), true); // 负营收 = 源脏值
-        set_ratio(info.pcfNcfTTM, static_cast<double>(ttm[id].cf), false);
-      }
+      if (ttm[id].np_d != 0)
+        set_ratio(info.peTTM, static_cast<double>(ttm[id].np));
+      if (ttm[id].rev_d != 0)
+        set_ratio(info.psTTM, static_cast<double>(ttm[id].rev));
+      if (ttm[id].cf_d != 0)
+        set_ratio(info.pcfNcfTTM, static_cast<double>(ttm[id].cf));
       if (bal[id].present)
-        set_ratio(info.pbMRQ, static_cast<double>(bal[id].eq), false);
+        set_ratio(info.pbMRQ, static_cast<double>(bal[id].eq));
 
       // 年化股息率: Σ每股分红 / 年数 / close (等价于 Σ(分红×股本)/年数/mcap).
       // 年数取 min(窗长, 上市年数) — 否则次新股会被窗长系统性摊薄.
