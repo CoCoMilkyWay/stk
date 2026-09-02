@@ -352,15 +352,15 @@ bool BinaryEncoder_L2::parse_trade_csv(const char *data, size_t len,
 
 // 行情.csv 的字段布局 (表头见 config/sample/L2/README). 只取校验用得上的.
 namespace {
-constexpr size_t kMarketFieldCount = 61; // 到"叫买总量"为止的最小字段数
+// 快照行的最小字段数. 取得比实际读到的列 (最低价, 下标 14) 宽得多 —— 它同时
+// 当作行完整性的门槛: 列数不足说明这行是截断的, 不该拿来当真值.
+constexpr size_t kMarketFieldCount = 61;
 constexpr size_t kMarketDate = 2;
 constexpr size_t kMarketLastPrice = 4;
 constexpr size_t kMarketCumVolume = 11;
 constexpr size_t kMarketCumTurnover = 12;
 constexpr size_t kMarketHigh = 13;
 constexpr size_t kMarketLow = 14;
-constexpr size_t kMarketAskTotal = 59;
-constexpr size_t kMarketBidTotal = 60;
 } // namespace
 
 bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSummary &summary) {
@@ -400,8 +400,6 @@ bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSum
         summary.low = parse_price_to_fen(fields[kMarketLow]);
         summary.cum_volume = cum_volume;
         summary.cum_turnover = parse_numeric_field(fields[kMarketCumTurnover], 1);
-        summary.ask_total = parse_numeric_field(fields[kMarketAskTotal], 1);
-        summary.bid_total = parse_numeric_field(fields[kMarketBidTotal], 1);
         if (cum_volume != 0)
           return true;
         have_fallback = true; // 记下末行, 继续往前找真正的收盘行

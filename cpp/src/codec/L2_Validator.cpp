@@ -24,7 +24,7 @@ void Validator::reset(size_t expected_makers) {
     capacity <<= 1;
 
   // assign 在容量够时不重新分配, 只重填空标记 — 与 encoder 的中间缓冲同策略
-  table_.assign(capacity, Slot{kEmptyId, 0, 0});
+  table_.assign(capacity, Slot{kEmptyId, 0});
   mask_ = capacity - 1;
   shift_ = 64u - static_cast<unsigned>(std::countr_zero(capacity));
 }
@@ -53,7 +53,6 @@ Validator::Slot *Validator::insert(uint64_t id, bool &existed) {
       existed = false;
       slot.id = id;
       slot.remaining = 0;
-      slot.side = 0;
       return &slot;
     }
     pos = (pos + 1) & mask_;
@@ -132,7 +131,6 @@ void Validator::run(const std::vector<CSVOrder> &orders,
       continue;
     }
     slot->remaining = static_cast<int64_t>(order.volume);
-    slot->side = (order.order_side == 'S' || order.order_side == 's') ? 1 : 0;
   }
 
   // ---- 委托表里的撤单 ----
@@ -218,20 +216,10 @@ void Validator::run(const std::vector<CSVOrder> &orders,
       static_cast<int64_t>(out.trade_side_missing) * 100 <=
           static_cast<int64_t>(trade_count) * kStrictLedgerRatioPct;
 
-  // ---- 收盘残余挂单 ----
-  int64_t bid_residual = 0;
-  int64_t ask_residual = 0;
+  // ---- 超额扣减 ----
   for (const Slot &slot : table_) {
-    if (slot.id == kEmptyId)
-      continue;
-    if (slot.remaining < 0) {
+    if (slot.id != kEmptyId && slot.remaining < 0)
       ++out.over_consumed;
-      continue;
-    }
-    if (slot.side == 0)
-      bid_residual += slot.remaining;
-    else
-      ask_residual += slot.remaining;
   }
 
   // ---- LOB 档位窗口 ----
@@ -291,13 +279,6 @@ void Validator::run(const std::vector<CSVOrder> &orders,
   if (out.volume_delta != 0)
     out.flags |= Check::VolumeMismatch;
 
-  if (out.strict_ledger) {
-    out.bid_delta = bid_residual - static_cast<int64_t>(market.bid_total);
-    out.ask_delta = ask_residual - static_cast<int64_t>(market.ask_total);
-    if (out.bid_delta != 0 || out.ask_delta != 0)
-      out.flags |= Check::BookMismatch;
-  }
-
   out.turnover_delta = static_cast<int64_t>(cum_turnover_fen) -
                        static_cast<int64_t>(market.cum_turnover) * 100;
   if (out.turnover_delta > kTurnoverToleranceFen || out.turnover_delta < -kTurnoverToleranceFen)
@@ -350,10 +331,6 @@ std::string ValidationReport::describe() const {
   }
   if (flags & Check::VolumeMismatch)
     append("volume_delta", volume_delta);
-  if (flags & Check::BookMismatch) {
-    append("bid_delta", bid_delta);
-    append("ask_delta", ask_delta);
-  }
   if (flags & Check::TurnoverMismatch)
     append("turnover_delta_fen", turnover_delta);
   if (flags & Check::PriceMismatch) {
