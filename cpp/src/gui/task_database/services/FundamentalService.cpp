@@ -55,6 +55,33 @@ std::string to_asset_code(std::string_view instrument) {
   return ex + "." + std::string(instrument.substr(0, dot));
 }
 
+// 简称里的全角 ASCII 拉回半角. 源里 cn_stock_instruments 的 A 股简称尾巴用
+// 的是全角 Ａ (U+FF21) —— 深振业Ａ / 京东方Ａ / 张裕Ａ 一类, 共二十余只; 而
+// cn_stock_basic_info 同一批股票写的是半角 A. 界面字体 (MapleMono-NF-CN) 的
+// 全角块只覆盖标点, 全角字母一律落到豆腐块, 所以统一取半角: 既能显示, 也让
+// 搜索框敲 "深振业A" 命中, 顺带抹平两张表的口径差.
+std::string halfwidth_ascii(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (std::size_t i = 0; i < text.size();) {
+    // 全角 ASCII (U+FF01..U+FF5E) 的 UTF-8 一律是 EF BC/BD xx
+    const unsigned char c0 = static_cast<unsigned char>(text[i]);
+    if (c0 == 0xEF && i + 2 < text.size()) {
+      const unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+      const unsigned char c2 = static_cast<unsigned char>(text[i + 2]);
+      const unsigned int cp = 0xF000u | ((c1 & 0x3Fu) << 6) | (c2 & 0x3Fu);
+      if (cp >= 0xFF01u && cp <= 0xFF5Eu) {
+        out.push_back(static_cast<char>(cp - 0xFF01u + '!'));
+        i += 3;
+        continue;
+      }
+    }
+    out.push_back(text[i]);
+    ++i;
+  }
+  return out;
+}
+
 // instrument → 密集 id. 全月扫描的三张大表各 1186 万行, 逐行做
 // to_asset_code (两次堆分配) 再查 std::map 是整个构建的主要开销 (实测单表
 // 2.1s, 换成下面这套 0.3s). 这里把它压成: 每个月文件里每个不同的
@@ -202,7 +229,7 @@ bool build_asset_info(Job &job) {
       if (s.empty())
         continue;
       StockInfo &info = stock_info[to_asset_code(s)];
-      info.name = std::string(name.str(i));
+      info.name = halfwidth_ascii(name.str(i));
       info.ipoDate = dash_date(ld.yyyymmdd(i));
       info.outDate = dash_date(dd.yyyymmdd(i));
     }
@@ -231,7 +258,7 @@ bool build_asset_info(Job &job) {
         auto found = stock_info.find(to_asset_code(ins.str(i)));
         if (found == stock_info.end())
           continue;
-        found->second.name = std::string(name.str(i));
+        found->second.name = halfwidth_ascii(name.str(i));
       }
       break;
     }
