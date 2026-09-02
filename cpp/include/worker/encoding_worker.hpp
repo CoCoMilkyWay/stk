@@ -1,6 +1,7 @@
 #pragma once
 
 #include "misc/progress_parallel.hpp"
+#include "shared/EncodeDayRecord.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -41,16 +42,14 @@ struct SharedData;
 // 扫描端按 .bin 后缀过滤, 天然忽略它.
 inline constexpr const char *kEncodeTombstoneExt = ".skip";
 
-// 整天完成标记的文件名 (orders/YYYY/MM/DD/ 下的空文件).
+// 整天账目文件是 orders/YYYY/MM/DD/.day_complete, 定义见
+// shared/EncodeDayRecord.hpp. 它里面的 complete 项不老于当天归档 ⇒ 这一天的
+// 全部 (资产, 日期) 都已产出 .bin 或 .skip. 增量重跑靠它整天跳过, 省掉一次
+// unrar l (机械盘上 0.2~2.5s) 与当天几千次产物 stat —— 没有它, "确认无事可做"
+// 本身就要几秒一天. 扫描端按 .bin 后缀过滤, 天然忽略它.
 //
-// 存在且不老于当天归档 ⇒ 这一天的全部 (资产, 日期) 都已产出 .bin 或 .skip.
-// 增量重跑靠它整天跳过, 省掉一次 unrar l (机械盘上 0.2~2.5s) 与当天几千次
-// 产物 stat —— 没有它, "确认无事可做"本身就要几秒一天.
-// 扫描端按 .bin 后缀过滤, 天然忽略它.
-//
-// 注意: 手工删除损坏的 .bin 时必须同时删掉当天的这个标记, 否则增量重跑会
+// 注意: 手工删除损坏的 .bin 时必须同时删掉当天的这个文件, 否则增量重跑会
 // 整天跳过, 刚删掉的文件永远补不回来.
-inline constexpr const char *kEncodeDayDoneName = ".day_complete";
 
 // 一个 (资产, 日期) 的待编码任务.
 //
@@ -110,12 +109,16 @@ struct EncodeStats {
 
   // 天粒度进度账本: date → 该天的完成情况.
   // producer 列举完一天就注册, worker 每落盘一对就推进; 一天清零即从账本
-  // 移除、把汇总行 (单位: days) +1, 并落下整天完成标记 (见
-  // kEncodeDayDoneName). 汇总附注始终显示最老在编天的资产进度.
+  // 移除、把汇总行 (单位: days) +1, 并把 rec 落成整天账目文件 (见
+  // shared/EncodeDayRecord.hpp). 汇总附注始终显示最老在编天的资产进度.
   struct DayProgress {
     size_t done = 0;
     size_t total = 0;
-    size_t errors = 0; // 环境错误 (没留下产物) 的对数; 非零则不落完成标记
+    size_t errors = 0; // 没留下产物的对数; 非零则 rec.complete = false
+
+    // 本天的处置分类账. producer 先填上分母与"产物已新鲜"的那部分,
+    // worker 每销一个账就往对应的桶里加一笔.
+    EncodeDayRecord rec;
   };
   std::mutex days_mutex;
   std::map<std::string, DayProgress> days_inflight;

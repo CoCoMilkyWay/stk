@@ -48,6 +48,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
 
   // Clear browser statistics cache - will be recomputed on next Browser tab access
   date_stats.clear();
+  date_gaps.clear();
   asset_stats.clear(); // 同理: Encode 页首次渲染时重算
 
   binary.scanned = true;
@@ -64,6 +65,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     binary.day_mtimes.clear(); // 库没了, 增量基线也作废
     binary.dirty_dates.clear();
     all_dates.clear();
+    day_records.clear();
     for (auto &item : items)
       item.date_info.clear();
     co_return;
@@ -134,6 +136,8 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     for (const auto &date : dates_to_purge)
       item.date_info.erase(date);
   }
+  for (const auto &date : dates_to_purge)
+    day_records.erase(date);
 
   binary.day_mtimes = std::move(mtimes);
   binary.dirty_dates.clear();
@@ -150,6 +154,7 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   struct ScanResult {
     std::mutex mutex;
     std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> asset_date_info;
+    std::unordered_map<std::string, EncodeDayRecord> day_records;
   };
   auto result = std::make_shared<ScanResult>();
 
@@ -187,12 +192,18 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
       local_date_info[it->second] = std::move(di);
     }
 
+    // 编码器留下的当天账目 (缺口的原因只有它知道). 没有就是这天从没编过.
+    EncodeDayRecord local_record;
+    const bool has_record = read_encode_day_record(day_path.path, local_record);
+
     // Merge into shared result
     {
       std::lock_guard<std::mutex> lock(result->mutex);
       for (auto &[asset_idx, info] : local_date_info) {
         result->asset_date_info[asset_idx][day_path.date_str] = std::move(info);
       }
+      if (has_record)
+        result->day_records[day_path.date_str] = local_record;
     }
 
     scan_days_done.fetch_add(1, std::memory_order_relaxed);
@@ -237,6 +248,8 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
       items[asset_idx].date_info[date] = info;
     }
   }
+  for (const auto &[date, record] : result->day_records)
+    day_records[date] = record;
 
   all_dates.assign(current_dates.begin(), current_dates.end());
 
@@ -289,6 +302,7 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
 
   // Clear browser statistics cache - will be recomputed on next Browser tab access
   date_stats.clear();
+  date_gaps.clear();
   asset_stats.clear(); // 同理: Encode 页首次渲染时重算
 
   archive.scanned = true;

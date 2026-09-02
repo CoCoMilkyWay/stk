@@ -174,6 +174,7 @@ set(SOURCES
     ../../src/shared/Config.cpp
     ../../src/shared/Asset.cpp
     ../../src/shared/AssetAxis.cpp
+    ../../src/shared/EncodeDayRecord.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Feature.cpp

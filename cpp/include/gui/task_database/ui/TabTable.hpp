@@ -12,6 +12,21 @@
 
 namespace GUI::Database {
 
+// 参与截面着色的列 (列号与 RenderDataTable 的 19 列一致):
+// Listed / PE / PB / PS / PCF / DY1 / DY3 / DY5 / Cap
+//
+// 口径统一成"好 = 绿": 在市够久, 估值够低, 分红够多, 市值够大.
+inline constexpr int kColoredColumns[] = {6, 8, 9, 10, 11, 12, 13, 14, 15};
+inline constexpr int kColoredColumnCount = 9;
+
+// 列号 → cs_colors 槽位; 不着色的列返回 -1
+inline int ColoredColumnSlot(int col) {
+  for (int i = 0; i < kColoredColumnCount; ++i)
+    if (kColoredColumns[i] == col)
+      return i;
+  return -1;
+}
+
 // 表格视图 = 过滤 + 排序后的 asset_id 列表 (同 TabEncode 的 AssetTableView).
 //
 // 逐帧重建的代价: 每资产一次 stock_info 查找 (std::map, 还要先拼 "sh.600000"),
@@ -24,6 +39,13 @@ namespace GUI::Database {
 // (指针会失效), 所以显示时每帧按 asset_id 重新查活数据.
 struct TableView {
   std::vector<size_t> rows; // asset_id, 已过滤已排序
+
+  // 截面渐进色 (红→黄→绿), 每个着色列一份, 与 rows 同序同长.
+  // 0 = 该行在该列没有可比的值 (显示 "-", 退回默认色).
+  //
+  // 分位是"过滤后 pool 内"的名次, 所以只能跟 rows 一起在 RebuildView 里算:
+  // 逐帧给几千行做 9 列排序和 rows 本身一样是帧时间杀手.
+  std::vector<uint32_t> cs_colors[kColoredColumnCount];
 
   bool built = false;
 

@@ -22,8 +22,6 @@ namespace GUI::Database {
 constexpr ImVec4 COLOR_SH = ImVec4(0.0f, 0.4f, 0.8f, 1.0f);
 constexpr ImVec4 COLOR_SZ = ImVec4(0.0f, 0.6f, 0.5f, 1.0f);
 constexpr ImVec4 COLOR_BJ = ImVec4(0.8f, 0.5f, 0.1f, 1.0f);
-constexpr ImVec4 COLOR_GREEN = ImVec4(0.3f, 0.95f, 0.4f, 1.0f);
-constexpr ImVec4 COLOR_YELLOW = ImVec4(1.0f, 0.95f, 0.3f, 1.0f);
 constexpr ImVec4 COLOR_RED = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
 constexpr ImVec4 COLOR_GRAY = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
 
@@ -191,6 +189,18 @@ bool ShouldShowAsset(
 // 视图缓存: 过滤 + 排序
 // ============================================================================
 
+// 估值列 (PE/PB/PS/PCF) 的统一序: 便宜 → 贵 → 亏得少 → 亏得多
+//   0.1 → 10000 → -10000 → -0.1
+// 负值的绝对值越大 = 亏损相对市值越小, 所以负数区间照样升序; 0 (无意义) 垫底.
+// 排序与截面着色共用这一个口径.
+bool ValuationLess(float va, float vb) {
+  const int ta = (va > 0) ? 0 : (va < 0) ? 1
+                                         : 2;
+  const int tb = (vb > 0) ? 0 : (vb < 0) ? 1
+                                         : 2;
+  return (ta != tb) ? (ta < tb) : (va < vb);
+}
+
 // 基本面字段是 parquet 里的字符串, 可能是空/NaN/超范围 — 转不出来就归到
 // 排序的最低档 (default_val), 不是错误处理
 float SafeStod(const std::string &s, float default_val = -1e9) {
@@ -209,6 +219,132 @@ float SafeStod(const std::string &s, float default_val = -1e9) {
     return default_val;
   } catch (...) {
     return default_val;
+  }
+}
+
+// ============================================================================
+// 截面着色: 过滤后 pool 内的名次分位 → 红 → 黄 → 绿
+// ============================================================================
+
+// 该列该行的截面取值; 返回 false = 没有可比的值 (空/NaN/无基本面), 不着色
+bool GetCrossSectionValue(int col, const StockInfo *info, float &out) {
+  if (!info)
+    return false;
+
+  // 与 SafeStod 同样的判据, 只是把"转不出来"报成 false 而不是垫底值 ——
+  // 缺值的行不参与截面, 不能挤占最差那一档
+  auto parse_finite = [&out](const std::string &s) {
+    if (s.empty())
+      return false;
+    try {
+      const float v = std::stof(s);
+      if (!std::isfinite(v))
+        return false;
+      out = v;
+      return true;
+    } catch (...) {
+      return false;
+    }
+  };
+
+  switch (col) {
+  case 6: { // Listed: 在市总天数
+    const ListedSpan span = CalculateListedSpan(*info);
+    out = static_cast<float>(span.total_days);
+    return span.valid;
+  }
+  case 8:
+    return parse_finite(info->peTTM);
+  case 9:
+    return parse_finite(info->pbMRQ);
+  case 10:
+    return parse_finite(info->psTTM);
+  case 11:
+    return parse_finite(info->pcfNcfTTM);
+  case 12:
+    return parse_finite(info->dy1y);
+  case 13:
+    return parse_finite(info->dy3y);
+  case 14:
+    return parse_finite(info->dy5y);
+  case 15: // Cap: 0 = 缺收盘价或股本, 不是"市值为零"
+    out = CalculateMarketCap(*info);
+    return out > 0;
+  default:
+    return false;
+  }
+}
+
+// 估值列越低越好, 其余 (Listed/DY/Cap) 越高越好
+bool IsValuationColumn(int col) { return col >= 8 && col <= 11; }
+
+// 分位 → 颜色. p = 1 最好 (绿), p = 0 最差 (红), 中间过黄.
+// 直接过渡红→绿会在中段压成暗棕, 所以走黄这个中继.
+ImVec4 RampColorVec4(float p) {
+  constexpr ImVec4 kWorst = ImVec4(0.95f, 0.35f, 0.30f, 1.0f);
+  constexpr ImVec4 kMid = ImVec4(0.95f, 0.90f, 0.35f, 1.0f);
+  constexpr ImVec4 kBest = ImVec4(0.40f, 0.95f, 0.45f, 1.0f);
+
+  p = std::clamp(p, 0.0f, 1.0f);
+  const ImVec4 &a = (p < 0.5f) ? kWorst : kMid;
+  const ImVec4 &b = (p < 0.5f) ? kMid : kBest;
+  const float t = (p < 0.5f) ? p * 2.0f : (p - 0.5f) * 2.0f;
+  return ImVec4(a.x + (b.x - a.x) * t,
+                a.y + (b.y - a.y) * t,
+                a.z + (b.z - a.z) * t,
+                1.0f);
+}
+
+// 0 是 cs_colors 里"无有效值"的哨兵, 所以这里必须给足 alpha (不能返回 0)
+ImU32 RampColor(float p) { return ImGui::GetColorU32(RampColorVec4(p)); }
+
+// 用名次分位而不是数值归一化: 估值和市值都是重尾分布, 按 (v-min)/(max-min)
+// 染色的话几个极端值就把其余几千个标的全压成同一个颜色.
+void RebuildCrossSectionColors(TableView &view,
+                               const std::vector<const StockInfo *> &infos) {
+  const size_t n = view.rows.size();
+
+  std::vector<std::pair<float, size_t>> keys; // 取值, 在 rows 里的位置
+  for (int slot = 0; slot < kColoredColumnCount; ++slot) {
+    const int col = kColoredColumns[slot];
+    std::vector<uint32_t> &colors = view.cs_colors[slot];
+    colors.assign(n, 0);
+
+    keys.clear();
+    keys.reserve(n);
+    for (size_t pos = 0; pos < n; ++pos) {
+      float value = 0.0f;
+      if (GetCrossSectionValue(col, infos[view.rows[pos]], value))
+        keys.emplace_back(value, pos);
+    }
+    if (keys.empty())
+      continue;
+
+    // 排完序 keys[0] 最好
+    const bool valuation = IsValuationColumn(col);
+    std::sort(keys.begin(), keys.end(),
+              [valuation](const std::pair<float, size_t> &a,
+                          const std::pair<float, size_t> &b) {
+                return valuation ? ValuationLess(a.first, b.first)
+                                 : a.first > b.first;
+              });
+
+    // 并列同值取平均名次 —— 否则 DY 里成片的 0.00 会被摊成一整条渐变,
+    // 看着像有高低之分
+    const size_t m = keys.size();
+    for (size_t i = 0; i < m;) {
+      size_t j = i + 1;
+      while (j < m && keys[j].first == keys[i].first)
+        ++j;
+
+      const float rank = 0.5f * static_cast<float>(i + j - 1);
+      const float p = (m > 1) ? 1.0f - rank / static_cast<float>(m - 1) : 0.5f;
+      const ImU32 color = RampColor(p);
+      for (size_t k = i; k < j; ++k)
+        colors[keys[k].second] = color;
+
+      i = j;
+    }
   }
 }
 
@@ -257,15 +393,6 @@ void RebuildView(TableView &view, const Asset &asset,
       const Asset::AssetStats &sa = asset.asset_stats[ia];
       const Asset::AssetStats &sb = asset.asset_stats[ib];
 
-      // 估值列: 正数 (便宜→贵) → 负数 (高风险) → 无效
-      auto valuation_less = [](float va, float vb) {
-        const int ta = (va > 0) ? 0 : (va < 0) ? 1
-                                               : 2;
-        const int tb = (vb > 0) ? 0 : (vb < 0) ? 1
-                                               : 2;
-        return (ta != tb) ? (ta < tb) : (va < vb);
-      };
-
       switch (col) {
       case 0: // Code
         return aa.asset_code < ab.asset_code;
@@ -297,17 +424,17 @@ void RebuildView(TableView &view, const Asset &asset,
         return a_ind < b_ind;
       }
       case 8: // PE
-        return valuation_less(na ? SafeStod(na->peTTM) : -1e9,
-                              nb ? SafeStod(nb->peTTM) : -1e9);
+        return ValuationLess(na ? SafeStod(na->peTTM) : -1e9,
+                             nb ? SafeStod(nb->peTTM) : -1e9);
       case 9: // PB
-        return valuation_less(na ? SafeStod(na->pbMRQ) : -1e9,
-                              nb ? SafeStod(nb->pbMRQ) : -1e9);
+        return ValuationLess(na ? SafeStod(na->pbMRQ) : -1e9,
+                             nb ? SafeStod(nb->pbMRQ) : -1e9);
       case 10: // PS
-        return valuation_less(na ? SafeStod(na->psTTM) : -1e9,
-                              nb ? SafeStod(nb->psTTM) : -1e9);
+        return ValuationLess(na ? SafeStod(na->psTTM) : -1e9,
+                             nb ? SafeStod(nb->psTTM) : -1e9);
       case 11: // PCF
-        return valuation_less(na ? SafeStod(na->pcfNcfTTM) : -1e9,
-                              nb ? SafeStod(nb->pcfNcfTTM) : -1e9);
+        return ValuationLess(na ? SafeStod(na->pcfNcfTTM) : -1e9,
+                             nb ? SafeStod(nb->pcfNcfTTM) : -1e9);
       case 12:   // DY1
       case 13:   // DY3
       case 14: { // DY5
@@ -339,6 +466,8 @@ void RebuildView(TableView &view, const Asset &asset,
                        return state.sort_ascending ? less(ia, ib) : less(ib, ia);
                      });
   }
+
+  RebuildCrossSectionColors(view, infos);
 
   view.built = true;
   view.generation = asset.asset_stats_generation;
@@ -442,6 +571,27 @@ void RenderFilterBar(
   // Count & panel toggle
   ImGui::SameLine();
   ImGui::Text("Showing:%zu/%zu", visible_count, total_count);
+
+  ImGui::SameLine();
+  ImGui::BeginGroup();
+  ImGui::TextColored(RampColorVec4(1.0f), "■");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(RampColorVec4(0.5f), "■");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(RampColorVec4(0.0f), "■");
+  ImGui::EndGroup();
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "截面色 (Listed / PE / PB / PS / PCF / DY1 / DY3 / DY5 / Cap)\n"
+        "绿 = 好, 红 = 差; 取的是当前 filter 后 pool 内的名次分位\n"
+        "  Listed: 在市越久越绿\n"
+        "  PE/PB/PS/PCF: 越低越绿 (亏损的负值排在最差一端)\n"
+        "  DY1/DY3/DY5: 分红越多越绿\n"
+        "  Cap: 市值越大越绿\n\n"
+        "用名次分位而非数值归一化: 估值/市值是重尾分布,\n"
+        "按 min-max 染色会被几个极端值压成一片同色");
+  }
+
   ImGui::SameLine();
   if (ImGui::SmallButton(state.show_cross_section_panel ? "Hide" : "Show")) {
     state.show_cross_section_panel = !state.show_cross_section_panel;
@@ -573,6 +723,19 @@ void RenderDataTable(
   // Get hovered column for highlight
   int hovered_col = ImGui::TableGetHoveredColumn();
 
+  // 截面色: cs_colors 与 view.rows 同序, 直接按行位置取 (见 TableView).
+  // 返回 true = 已 PushStyleColor, 调用方渲完要 Pop.
+  auto push_cs_color = [&table_state](int col, int row) {
+    const int slot = ColoredColumnSlot(col);
+    assert(slot >= 0);
+    const std::vector<uint32_t> &colors = table_state.view.cs_colors[slot];
+    assert(colors.size() == table_state.view.rows.size());
+    if (colors[row] == 0)
+      return false;
+    ImGui::PushStyleColor(ImGuiCol_Text, colors[row]);
+    return true;
+  };
+
   // Render rows
   int row_idx = 0;
   for (const size_t id : table_state.view.rows) {
@@ -665,7 +828,10 @@ void RenderDataTable(
     }
     ListedSpan span = info ? CalculateListedSpan(*info) : ListedSpan{};
     if (span.valid) {
+      const bool cs = push_cs_color(6, row_idx);
       ImGui::Text("%02d/%02d/%02d", span.years, span.months, span.days);
+      if (cs)
+        ImGui::PopStyleColor();
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("上市 %s → %s\n在市 %d 年 %d 月 %d 天 (共 %d 天)",
                           info->ipoDate.c_str(),
@@ -701,7 +867,10 @@ void RenderDataTable(
       try {
         float pe = std::stod(info->peTTM);
         if (std::isfinite(pe)) {
+          const bool cs = push_cs_color(8, row_idx);
           ImGui::Text("%.1f", pe);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -722,7 +891,10 @@ void RenderDataTable(
       try {
         float pb = std::stod(info->pbMRQ);
         if (std::isfinite(pb)) {
+          const bool cs = push_cs_color(9, row_idx);
           ImGui::Text("%.2f", pb);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -743,7 +915,10 @@ void RenderDataTable(
       try {
         float ps = std::stod(info->psTTM);
         if (std::isfinite(ps)) {
+          const bool cs = push_cs_color(10, row_idx);
           ImGui::Text("%.2f", ps);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -764,7 +939,10 @@ void RenderDataTable(
       try {
         float pcf = std::stod(info->pcfNcfTTM);
         if (std::isfinite(pcf)) {
+          const bool cs = push_cs_color(11, row_idx);
           ImGui::Text("%.1f", pcf);
+          if (cs)
+            ImGui::PopStyleColor();
         } else {
           ImGui::TextColored(COLOR_GRAY, "-");
         }
@@ -776,7 +954,7 @@ void RenderDataTable(
     }
     handle_column_click(11);
 
-    // Col 12/13/14: DY 1y/3y/5y (%), 三列同构 — 高股息(≥3%)标绿, 零分红压灰
+    // Col 12/13/14: DY 1y/3y/5y (%), 三列同构 — 颜色走截面分位 (分红越多越绿)
     auto render_dy = [&](int col, const std::string *val) {
       ImGui::TableSetColumnIndex(col);
       if (hovered_col == col) {
@@ -784,8 +962,10 @@ void RenderDataTable(
       }
       if (val && !val->empty()) {
         float dy = std::stod(*val);
-        ImGui::TextColored(dy >= 3.0f ? COLOR_GREEN : (dy > 0.0f ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : COLOR_GRAY),
-                           "%.2f", dy);
+        const bool cs = push_cs_color(col, row_idx);
+        ImGui::Text("%.2f", dy);
+        if (cs)
+          ImGui::PopStyleColor();
       } else {
         ImGui::TextColored(COLOR_GRAY, "-");
       }
@@ -803,7 +983,10 @@ void RenderDataTable(
     if (info) {
       float cap = CalculateMarketCap(*info);
       if (cap > 0) {
+        const bool cs = push_cs_color(15, row_idx);
         ImGui::Text("%.1f", cap);
+        if (cs)
+          ImGui::PopStyleColor();
       } else {
         ImGui::TextColored(COLOR_GRAY, "-");
       }

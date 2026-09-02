@@ -210,6 +210,10 @@ public:
   // tag 仅用于日志定位 (形如 "20260803 600519.SH").
   EncodeResult finish_asset(const std::string &output_file, const std::string &tag);
 
+  // 上一次 finish_asset 的准入校验结果 — 返回 InvalidData 时,
+  // 调用方靠 flags 把这一对记进当天的账目 (见 shared/EncodeDayRecord.hpp)
+  const ValidationReport &get_validation_report() const { return report_; }
+
   // Get compression statistics
   const CompressionStats &get_compression_stats() const { return compression_stats; }
 

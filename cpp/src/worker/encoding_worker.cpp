@@ -69,13 +69,6 @@ constexpr size_t kAssetsPerBatch = 64;
 // 把整个文件顺序读一遍丢弃 — 内容进 OS 页缓存, 之后 worker 的多路 unrar
 // 全部命中内存, HDD 只见到这一条顺序流. 不自己持有字节: 页缓存由内核管理,
 // 永远不会 OOM.
-// 落"整天完成"标记 (空文件, mtime = now): 当天全部 (资产, 日期) 都已产出
-// .bin 或 .skip. 下次增量对这一天只花一次 stat, 见 kEncodeDayDoneName.
-void touch_day_done(const std::string &day_dir) {
-  std::ofstream marker(day_dir + "/" + kEncodeDayDoneName, std::ios::trunc);
-  assert(marker.is_open() && "整天完成标记写不出去");
-}
-
 void warm_file_cache(const std::string &path, const std::atomic<bool> *cancel,
                      std::vector<char> &scratch) {
   TraceN("WarmFileCache");
@@ -112,7 +105,7 @@ void encoding_producer(SharedData &data,
     const std::string archive_path = Utils::generate_archive_path(
         data.config.archive_dir, date_str, data.config.archive_extension);
 
-    // 增量新鲜度规则: 产物 (.bin / .skip 墓碑 / 整天完成标记) 存在且不老于
+    // 增量新鲜度规则: 产物 (.bin / .skip 墓碑 / 整天账目) 存在且不老于
     // 归档 → 跳过.
     //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读内容;
     //   - 归档被重下/修复过 → mtime 变新 → 产物判过期, 重编覆盖.
@@ -128,15 +121,21 @@ void encoding_producer(SharedData &data,
       return !ec && t >= archive_mtime;
     };
 
-    // 整天完成标记的快路径 — 必须在列举之前: 下面那次 unrar l 要在机械盘上
-    // 走完整条包头链 (实测 0.2~2.5s), 加上当天几千次产物 stat, 光"确认无事
-    // 可做"就是几秒一天. 标记只在整天全部产出齐备时落下, 成立即可整天跳过.
+    // 整天账目的快路径 — 必须在列举之前: 下面那次 unrar l 要在机械盘上走完
+    // 整条包头链 (实测 0.2~2.5s), 加上当天几千次产物 stat, 光"确认无事可做"
+    // 就是几秒一天.
+    //
+    // 出错的天同样会留下账目 (供界面按日拆解原因), 所以判据是 complete 项而
+    // 不是文件在不在 —— 只有整天齐备才能跳过.
     const std::string day_dir = Utils::generate_date_dir(data.config.orders_dir, date_str);
-    if (skip_existing && fresh(day_dir + "/" + kEncodeDayDoneName)) {
-      stats.days_skipped.fetch_add(1);
-      if (progress)
-        progress->bump_summary(1, false); // 秒回的一天, 不参与 ETA 速率
-      continue;
+    if (skip_existing && fresh(day_dir + "/" + kEncodeDayRecordName)) {
+      EncodeDayRecord prev;
+      if (read_encode_day_record(day_dir, prev) && prev.complete) {
+        stats.days_skipped.fetch_add(1);
+        if (progress)
+          progress->bump_summary(1, false); // 秒回的一天, 不参与 ETA 速率
+        continue;
+      }
     }
 
     // ------------------------------------------------------------------
@@ -205,23 +204,36 @@ void encoding_producer(SharedData &data,
       }
     }
 
-    // 断点续跑: 产物新鲜就跳过 (见上方 fresh 规则)
+    // 断点续跑: 产物新鲜就跳过 (见上方 fresh 规则).
+    //
+    // 顺带填当天账目: 分母是这里认下的资产数, 已新鲜的按产物种类归到
+    // ok / skipped —— 增量跑只重编缺产物的那些, 光靠 worker 的销账凑不齐
+    // 全天的分类.
+    EncodeDayRecord day_rec;
     std::vector<EncodeTask> tasks;
     tasks.reserve(by_asset.size());
     for (const auto &[asset_id, p] : by_asset) {
       if (p.order_size == 0)
         continue; // 没有委托文件, 无从重建盘口
 
+      ++day_rec.assets_total;
+
       const AssetItem &asset = data.asset.items[asset_id];
-      if (skip_existing &&
-          (fresh(Utils::generate_orders_path(
-               data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
-               data.config.binary_extension)) ||
-           fresh(Utils::generate_orders_path(
-               data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
-               kEncodeTombstoneExt)))) {
-        stats.pairs_skipped.fetch_add(1);
-        continue;
+      if (skip_existing) {
+        const bool has_bin = fresh(Utils::generate_orders_path(
+            data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
+            data.config.binary_extension));
+        const bool has_skip = !has_bin && fresh(Utils::generate_orders_path(
+                                              data.config.orders_dir, date_str, asset.asset_code,
+                                              asset.exchange, kEncodeTombstoneExt));
+        if (has_bin || has_skip) {
+          stats.pairs_skipped.fetch_add(1);
+          if (has_bin)
+            ++day_rec.assets_ok;
+          else
+            ++day_rec.assets_skipped;
+          continue;
+        }
       }
       tasks.push_back({asset_id, p.order_index, p.trade_index, p.market_index,
                        p.order_size, p.trade_size, p.market_size});
@@ -236,11 +248,16 @@ void encoding_producer(SharedData &data,
     stats.pairs_listed.fetch_add(tasks.size());
 
     if (tasks.empty()) {
-      // 整天跳过 (产物全部新鲜/包里没活) 也是完成了一天 — 补上完成标记,
-      // 下次连列举都省了. 目录不存在说明这天从来没有产物 (退化情况), 不留
-      // 标记, 免得凭空造出空日目录 (扫描会把它当成"有这天").
-      if (std::filesystem::exists(day_dir))
-        touch_day_done(day_dir);
+      // 整天跳过 (产物全部新鲜/包里没活) 也是完成了一天 — 补上账目, 下次连
+      // 列举都省了. 目录不存在说明这天从来没有产物 (退化情况), 不留文件,
+      // 免得凭空造出空日目录 (扫描会把它当成"有这天").
+      //
+      // 走到这里说明每个资产都留下了产物, 一个错误都没剩 —— 出错的对不会
+      // 留下 .bin 也不会留下墓碑, 必然被上面重新列成任务.
+      if (std::filesystem::exists(day_dir)) {
+        day_rec.complete = true;
+        write_encode_day_record(day_dir, day_rec);
+      }
       if (progress)
         progress->bump_summary(1, false); // 只列举没真编, 不参与 ETA 速率
       continue;
@@ -257,7 +274,8 @@ void encoding_producer(SharedData &data,
     {
       std::lock_guard<std::mutex> lock(stats.days_mutex);
       const bool oldest = stats.days_inflight.empty();
-      stats.days_inflight.emplace(date_str, EncodeStats::DayProgress{0, tasks.size(), 0});
+      stats.days_inflight.emplace(date_str,
+                                  EncodeStats::DayProgress{0, tasks.size(), 0, day_rec});
       stats.days_touched.insert(date_str);
       if (oldest && progress)
         progress->set_summary_note(date_str + ": 0/" + std::to_string(tasks.size()) +
@@ -484,24 +502,55 @@ void encoding_worker(SharedData &data,
     // 的天在附注里永远排不到前面.
     std::vector<char> retired(batch.tasks.size(), 0);
 
-    // 天粒度账本: 本天 +1, 清零则整天完成 (汇总 days +1).
-    // day_error = 这一对没能留下正确产物 (环境错误 / 源损坏) ⇒ 当天不落完成
-    // 标记, 下次增量必须重新列举补齐.
-    auto retire_task = [&](size_t task_idx, bool day_error) {
+    // 天粒度账本: 本天 +1, 清零则整天收工 (汇总 days +1) 并落下账目文件.
+    //
+    // outcome 决定这一对进哪个桶; Ok / TooFewOrders 之外都算错 —— 没留下正确
+    // 产物 ⇒ rec.complete = false, 下次增量必须重新列举补齐.
+    // check_flags 只在 InvalidData 时有意义 (L2::Check 的位).
+    auto retire_task = [&](size_t task_idx, L2::EncodeResult outcome, uint32_t check_flags) {
       assert(!retired[task_idx] && "retire_task: 同一任务销账两次");
       retired[task_idx] = 1;
       ++done_in_batch;
       progress_handle.update(done_in_batch, batch.tasks.size(), batch.date);
 
-      bool day_complete = false;
+      bool day_done = false;
+      EncodeDayRecord finished_rec;
       {
         std::lock_guard<std::mutex> lock(stats.days_mutex);
         auto it = stats.days_inflight.find(batch.date);
         assert(it != stats.days_inflight.end() && "retire_task: 本天未在账本注册");
+
+        EncodeDayRecord &rec = it->second.rec;
+        switch (outcome) {
+        case L2::EncodeResult::Ok:
+          ++rec.assets_ok;
+          break;
+        case L2::EncodeResult::TooFewOrders:
+          ++rec.assets_skipped;
+          break;
+        case L2::EncodeResult::CorruptSource:
+          ++rec.assets_corrupt;
+          break;
+        case L2::EncodeResult::InvalidData:
+          ++rec.assets_invalid;
+          for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
+            if (check_flags & (1u << bit))
+              ++rec.checks[bit];
+          break;
+        case L2::EncodeResult::Error:
+          ++rec.assets_failed;
+          break;
+        }
+
+        const bool day_error = outcome != L2::EncodeResult::Ok &&
+                               outcome != L2::EncodeResult::TooFewOrders;
         if (day_error)
           ++it->second.errors;
+
         if (++it->second.done == it->second.total) {
-          day_complete = it->second.errors == 0;
+          rec.complete = it->second.errors == 0;
+          finished_rec = rec;
+          day_done = true;
           stats.days_inflight.erase(it);
           progress_handle.bump_summary();
         }
@@ -512,8 +561,11 @@ void encoding_worker(SharedData &data,
                                            std::to_string(counts.total) + " assets");
         }
       }
-      if (day_complete)
-        touch_day_done(Utils::generate_date_dir(data.config.orders_dir, batch.date));
+      // 出错的天照样落账目 —— complete=0 让增量重来, 但界面在重跑之前就能
+      // 说清楚那天错在哪.
+      if (day_done)
+        write_encode_day_record(Utils::generate_date_dir(data.config.orders_dir, batch.date),
+                                finished_rec);
     };
 
     auto flush_task = [&](size_t task_idx) {
@@ -530,8 +582,9 @@ void encoding_worker(SharedData &data,
           kEncodeTombstoneExt);
 
       std::error_code ec;
-      bool day_error = false;
-      switch (encoder.finish_asset(out_path, batch.date + " " + asset_full)) {
+      uint32_t check_flags = 0;
+      const L2::EncodeResult outcome = encoder.finish_asset(out_path, batch.date + " " + asset_full);
+      switch (outcome) {
       case L2::EncodeResult::Ok:
         // 源修复后重新可编 → 清掉陈旧墓碑
         std::filesystem::remove(skip_path, ec);
@@ -546,25 +599,23 @@ void encoding_worker(SharedData &data,
         // 源 CSV 坏行 (归档成员位腐烂). 什么都不写 — 不落 .bin (半真半假会
         // 静默污染下游), 也不落墓碑 (那是"确实无数据"的语义). 已有的旧产物
         // 保持原样, 由离线 Verify 定夺. 修好源文件后增量自动重来.
-        day_error = true;
         stats.pairs_corrupt.fetch_add(1);
         break;
       case L2::EncodeResult::InvalidData:
         // 准入校验未过 (逐笔流不自洽或与快照对不上). 处置与 CorruptSource
         // 相同 —— 什么都不写, 详情已由 finish_asset 记入日志, 等人核查数据.
-        // day_error 让这天不落完成标记, 增量重跑时自动重来.
-        day_error = true;
+        // 命中的判据同时进当天账目, 供 Encode 页按日拆解原因.
+        check_flags = encoder.get_validation_report().flags;
         stats.pairs_invalid.fetch_add(1);
         break;
       case L2::EncodeResult::Error:
         // 环境错误 (磁盘满/压缩失败): 不留任何产物, 下次增量重试
-        day_error = true;
         Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] [FAILED] " +
                                     batch.date + " " + asset_full);
         break;
       }
       fed_any = false;
-      retire_task(task_idx, day_error);
+      retire_task(task_idx, outcome, check_flags);
     };
 
     bool stream_ok = true;
@@ -657,10 +708,11 @@ void encoding_worker(SharedData &data,
     if (cancel_flag->load())
       break;
 
-    // 没能落盘的任务在这里销账 (源损坏路径). 正常批走不到这个循环体.
+    // 没能落盘的任务在这里销账 (归档流断的路径 — 手上的字节不完整, 整批
+    // 剩下的都编不出来). 正常批走不到这个循环体.
     for (size_t t = 0; t < batch.tasks.size(); ++t)
       if (!retired[t])
-        retire_task(t, /*day_error=*/true);
+        retire_task(t, L2::EncodeResult::CorruptSource, 0);
 
     TraceFrame;
   }

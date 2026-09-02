@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Forward declarations
@@ -31,6 +32,35 @@ struct AssetTableView {
   bool built = false;
 };
 
+// 按日期的缺口分析表的一个视图 (Encode 页的 By Date 页签).
+//
+// 与 AssetTableView 同构, 只是行是日期而不是资产. 列不是固定的: 判据有十几
+// 条, 一次扫描下来通常只命中三四条, 全列出来会让表宽得没法看 —— 所以只给
+// "这批日期里真出现过"的原因出列 (见 columns), 列集合与行一起缓存.
+struct DateTableView {
+  std::vector<std::string> rows; // 日期, 已过滤已排序
+
+  // 出列的判据位 (L2::Check 的移位量). 固定的处置分类列不在此列.
+  std::vector<size_t> check_columns;
+
+  // 固定分类列出不出, 同样看这批日期里有没有发生过
+  bool has_skipped = false;
+  bool has_corrupt = false;
+  bool has_invalid = false;
+  bool has_failed = false;
+  bool has_no_archive = false;
+  bool has_unaccounted = false;
+
+  // 排序规则存在视图里而不是每帧问表: 列集合要在 BeginTable 之前就定下来
+  // (列数是构造参数), 而排序规则只能在表内部问到 —— 所以表内读到变化只是
+  // 把 built 打掉, 下一帧重建.
+  int sort_column = 1;         // 默认按 Miss
+  bool sort_ascending = false; // 缺得最多的排最前
+
+  uint64_t generation = 0; // 对应的 Asset::asset_stats_generation
+  bool built = false;
+};
+
 struct EncodeState {
   int num_workers = 0; // 0 means auto-detect (use max cores)
   bool skip_existing = true;
@@ -39,6 +69,10 @@ struct EncodeState {
   // 两个页签各一份缺失表视图, 结构与列完全对仗
   AssetTableView archive_view;
   AssetTableView order_view;
+
+  // By Date 页签: 同样一档 archive 一档 orders
+  DateTableView archive_date_view;
+  DateTableView order_date_view;
 
   // Encoding dialog states
   bool show_confirm_dialog = false;

@@ -135,6 +135,25 @@ enum Check : uint32_t {
   PriceMismatch = 1u << 12,
 };
 
+// 判据位的元信息 — 下标即 Check 的移位量.
+//
+// 整天记录文件 (见 shared/EncodeDayRecord.hpp) 按位存命中标的数, Encode 页
+// 的按日分析表按位出列, 两边都要给这些位起名字. 名字集中在这一张表里, 加一
+// 条判据只改这一处. bit 7 是枚举里的空洞, 三个字段都是 nullptr.
+//
+// key 与 describe() 的键名一致, 日志和界面说的是同一件事. 两个例外是
+// VolumeMismatch / TurnoverMismatch —— describe() 那里打的是偏差量而不是
+// 命中数, 键名相应叫 volume_delta / turnover_delta_fen.
+struct CheckMeta {
+  const char *abbr; // 表格列头 (窄)
+  const char *key;  // 记录文件里的键名, 同 describe() 的键名
+  const char *desc; // hover 说明
+};
+
+inline constexpr size_t kCheckBitCount = 13;
+
+const CheckMeta &check_meta(size_t bit);
+
 // 竞价交易的收盘时刻 (HHMMSSmmm). 这个时刻之后的逐笔记录属于盘后固定价格
 // 交易, 解析阶段就丢弃, 不进 .bin 也不进校验.
 //

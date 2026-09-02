@@ -2,9 +2,11 @@
 
 #include "boost/asio/awaitable.hpp"
 #include "codec/L2_DataType.hpp"
+#include "shared/EncodeDayRecord.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -89,6 +91,24 @@ struct Asset {
     size_t assets_with_orders = 0; // Assets with order data
   };
   std::unordered_map<std::string, DateStats> date_stats; // date -> stats (computed once)
+
+  // ========================================
+  // Per-Date Gaps (Encode 页的 By Date 分析表)
+  // ========================================
+  // 与 asset_stats 同一次遍历产出, 只是把同一批缺口按日期而不是按资产归堆:
+  // 一天缺一大片通常是那天的源出了事 (归档没下到 / 逐笔流缺片), 按资产看
+  // 反而会摊成几百行各缺一天, 看不出来.
+  struct DateGap {
+    size_t expected = 0;        // 当天本该有逐笔的标的数
+    size_t orders_missing = 0;  // 其中没有 .bin 的
+    size_t archive_missing = 0; // 其中归档也没有的 (归档按天存, 要么全缺要么不缺)
+  };
+  std::map<std::string, DateGap> date_gaps; // date -> 缺口; 只含回测区间内的天
+
+  // 每天的编码账目, 由扫描从 orders/YYYY/MM/DD/.day_complete 读入 (见
+  // shared/EncodeDayRecord.hpp). 缺口的"原因"只有编码器知道, 而 date_gaps
+  // 只知道"缺了几个" —— 两者在 By Date 表里按日期对齐.
+  std::unordered_map<std::string, EncodeDayRecord> day_records;
 
   // ========================================
   // Per-Asset Statistics (Encode 缺失表 / Table 的 Days·Orders·Orders%)
@@ -279,6 +299,7 @@ struct Asset {
   void compute_coverage_statistics(const StockInfoMap &stock_info, const StockDaysVec &stock_days,
                                    const SuspendedMap &suspended) {
     date_stats.clear();
+    date_gaps.clear();
     asset_stats.assign(items.size(), AssetStats{});
     ++asset_stats_generation;
 
@@ -351,6 +372,8 @@ struct Asset {
 
       const bool archive_has_day = archive.dates.count(date_dense) > 0;
       DateStats *ds = in_db_range ? &date_stats[date_dense] : nullptr;
+      // 一天一个条目, 哪怕零缺口 —— By Date 表要能说"这天检查过, 没事"
+      DateGap *dg = in_backtest ? &date_gaps[date_dense] : nullptr;
 
       for (size_t i = 0; i < items.size(); ++i) {
         const AssetKey &k = keys[i];
@@ -378,13 +401,16 @@ struct Asset {
         if (in_backtest) {
           AssetStats &st = asset_stats[i];
           st.expected_days++;
+          dg->expected++;
           if (!has_orders) {
             st.orders_missing++;
+            dg->orders_missing++;
             if (st.orders_missing_sample.size() < kMissingSample)
               st.orders_missing_sample.push_back(date_dense);
           }
           if (!archive_has_day) {
             st.archive_missing++;
+            dg->archive_missing++;
             if (st.archive_missing_sample.size() < kMissingSample)
               st.archive_missing_sample.push_back(date_dense);
           }

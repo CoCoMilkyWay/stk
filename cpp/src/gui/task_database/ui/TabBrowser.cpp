@@ -267,7 +267,6 @@ void RenderMonthGrid(
   // Pre-convert colors to U32 (avoid repeated conversions)
   const ImU32 color_bg_weekday = ImGui::GetColorU32(COLOR_GRAY);
   const ImU32 color_bg_weekend = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
-  const ImU32 color_yellow = ImGui::GetColorU32(COLOR_YELLOW);
   const ImU32 color_purple = ImGui::GetColorU32(COLOR_PURPLE);
   const ImU32 color_green = ImGui::GetColorU32(COLOR_GREEN);
   const ImU32 color_blue = ImGui::GetColorU32(COLOR_BLUE);
@@ -334,7 +333,7 @@ void RenderMonthGrid(
     draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), border_color);
 
     // Step 3: Determine fill color based on priority (highest visible layer wins)
-    // Priority: Yellow > Purple > Green > Blue > Background
+    // Priority: Purple > Green > Blue > Background (除权除息是叠加层, 见 Step 5)
     ImU32 fill_color = bg_color;
 
     if (stats) {
@@ -350,19 +349,25 @@ void RenderMonthGrid(
       if (state.layers.show_holiday && stats->is_holiday) {
         fill_color = color_purple;
       }
-
-      if (state.layers.show_dividend_split && !stats->dividend_events.empty()) {
-        fill_color = color_yellow;
-      }
     }
 
     // Step 4: Draw inner fill (inset by BORDER_THICKNESS from all sides)
-    draw_list->AddRectFilled(
-        ImVec2(x0 + BORDER_THICKNESS, y0 + BORDER_THICKNESS),
-        ImVec2(x1 - BORDER_THICKNESS, y1 - BORDER_THICKNESS),
-        fill_color);
+    const ImVec2 inner_min(x0 + BORDER_THICKNESS, y0 + BORDER_THICKNESS);
+    const ImVec2 inner_max(x1 - BORDER_THICKNESS, y1 - BORDER_THICKNESS);
+    draw_list->AddRectFilled(inner_min, inner_max, fill_color);
 
-    // Step 5: Hover detection and tooltip
+    // Step 5: 除权除息叠一层黄, alpha 按当日事件数给 (见 kDividendSaturationCount).
+    // 不是替换 fill 而是叠加 —— 否则这一层一开就把节假日/回测区间/L2 全盖掉.
+    if (state.layers.show_dividend_split && stats && !stats->dividend_events.empty()) {
+      const float t = std::min(
+          static_cast<float>(stats->dividend_events.size()) / kDividendSaturationCount, 1.0f);
+      const float alpha = kDividendAlphaFloor + (1.0f - kDividendAlphaFloor) * t;
+      draw_list->AddRectFilled(
+          inner_min, inner_max,
+          ImGui::GetColorU32(ImVec4(COLOR_YELLOW.x, COLOR_YELLOW.y, COLOR_YELLOW.z, alpha)));
+    }
+
+    // Step 6: Hover detection and tooltip
     const ImVec2 cell_max(x1, y1);
     if (ImGui::IsMouseHoveringRect(cell_pos, cell_max)) {
       state.hover_date = DateToDashed(date_key);
@@ -563,7 +568,7 @@ void RenderTabBrowser(
   ImGui::SameLine();
   ImGui::TextColored(COLOR_YELLOW, "■");
   ImGui::SameLine(0, 2);
-  ImGui::Text("除权除息");
+  ImGui::Text("除权除息(≥%d只满黄)", static_cast<int>(kDividendSaturationCount));
   ImGui::SameLine(0, 10);
   ImGui::TextColored(COLOR_PURPLE, "■");
   ImGui::SameLine(0, 2);
