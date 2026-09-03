@@ -4,6 +4,7 @@
 #include "gui/task_database/ui/TabBrowser.hpp"
 #include "imgui.h"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -61,6 +62,24 @@ int GetDayOfWeek(const std::string &date_dense) {
   time_in.tm_mday = day;
   std::mktime(&time_in);
   return time_in.tm_wday;
+}
+
+bool IsLeapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+int DaysInMonth(int year, int month) {
+  assert(month >= 1 && month <= 12);
+
+  static constexpr int days_by_month[] = {
+      31, 28, 31, 30, 31, 30,
+      31, 31, 30, 31, 30, 31};
+
+  if (month == 2 && IsLeapYear(year)) {
+    return 29;
+  }
+
+  return days_by_month[month - 1];
 }
 
 // ============================================================================
@@ -279,17 +298,17 @@ void RenderMonthGrid(
   // Track maximum row for height calculation
   int max_row = 0;
 
-  // Day grid (up to 31 days, arranged in rows of 7, aligned by day of week)
-  for (int day = 1; day <= 31; ++day) {
+  const int days_in_month = DaysInMonth(year, month);
+
+  // Day grid (only valid days in month, arranged in rows of 7, aligned by day of week)
+  for (int day = 1; day <= days_in_month; ++day) {
     // Build date string YYYYMMDD (only once)
     char date_dense[16];
     snprintf(date_dense, sizeof(date_dense), "%04d%02d%02d", year, month, day);
     std::string date_key(date_dense);
 
-    // Check if date is valid
     int dow = GetDayOfWeek(date_key);
-    if (dow < 0)
-      break; // Invalid date
+    assert(dow >= 0);
 
     // Calculate grid position
     int total_offset = first_col + day - 1;

@@ -83,6 +83,17 @@ static inline bool clock_invalid(uint32_t time_int) {
   return hour > 23 || min > 59 || sec > 59;
 }
 
+static inline bool turnover_delta_is_uint32_wrap(int64_t delta_fen) {
+  const int64_t abs_delta = delta_fen < 0 ? -delta_fen : delta_fen;
+  constexpr int64_t wrap_fen = static_cast<int64_t>(kMarketTurnoverWrapYuan) * 100;
+  assert(wrap_fen > kTurnoverToleranceFen && "uint32 成交额回绕周期必须大于容差");
+  if (abs_delta <= kTurnoverToleranceFen)
+    return true;
+
+  const int64_t rem = abs_delta % wrap_fen;
+  return rem <= kTurnoverToleranceFen || wrap_fen - rem <= kTurnoverToleranceFen;
+}
+
 void Validator::run(const std::vector<CSVOrder> &orders,
                     const std::vector<CSVTrade> &trades,
                     const MarketSummary &market,
@@ -281,7 +292,7 @@ void Validator::run(const std::vector<CSVOrder> &orders,
 
   out.turnover_delta = static_cast<int64_t>(cum_turnover_fen) -
                        static_cast<int64_t>(market.cum_turnover) * 100;
-  if (out.turnover_delta > kTurnoverToleranceFen || out.turnover_delta < -kTurnoverToleranceFen)
+  if (!market.turnover_capped && !turnover_delta_is_uint32_wrap(out.turnover_delta))
     out.flags |= Check::TurnoverMismatch;
 
   if (trade_count > 0 && (high != market.high || low != market.low))

@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -55,30 +54,16 @@ void BatchQueue::close() {
 }
 
 // ============================================================================
-// ENCODING PRODUCER — 列举 + 顺序预读页缓存 + 推元数据批
+// ENCODING PRODUCER — 列举 + 推元数据批
 // ============================================================================
 
 namespace {
 
-// 一批多少个资产 — 权衡两件事:
+// 一批最多多少个资产 — 权衡两件事:
 //   摊薄 unrar 固定开销 (进程启动 + 三万条目包头扫描): 批越大越省, 实测 20 个
 //   资产一次调用比 20 次单独调用快 3.3x;
 //   负载均衡: 批是 worker 的调度粒度, 批太大会在收尾时让部分 worker 空转.
 constexpr size_t kAssetsPerBatch = 64;
-
-// 把整个文件顺序读一遍丢弃 — 内容进 OS 页缓存, 之后 worker 的多路 unrar
-// 全部命中内存, HDD 只见到这一条顺序流. 不自己持有字节: 页缓存由内核管理,
-// 永远不会 OOM.
-void warm_file_cache(const std::string &path, const std::atomic<bool> *cancel,
-                     std::vector<char> &scratch) {
-  TraceN("WarmFileCache");
-  std::FILE *f = std::fopen(path.c_str(), "rb");
-  assert(f && "warm_file_cache: 归档打不开 (列举刚成功过?)");
-  while (!cancel->load() &&
-         std::fread(scratch.data(), 1, scratch.size(), f) == scratch.size()) {
-  }
-  std::fclose(f);
-}
 
 } // namespace
 
@@ -87,6 +72,7 @@ void encoding_producer(SharedData &data,
                        std::atomic<bool> *cancel_flag,
                        bool skip_existing,
                        EncodeStats &stats,
+                       size_t worker_count,
                        misc::ParallelProgress *progress) {
   TraceNS("EncodingProducer", 5);
 
@@ -96,6 +82,7 @@ void encoding_producer(SharedData &data,
   // 空轴下每一天都会退化成"零分母" (包里认不出任何资产), 编出来的只有一堆
   // 空账目 — 与其跑完再排查, 不如开跑前就断在这里
   assert(!axis.empty() && "A 轴为空 (基本面未就绪?), 编码无从进行");
+  assert(worker_count > 0 && "encoding_producer: worker_count 必须为正");
 
   // 编码范围 = 回测区间 (config.start_date / end_date), 与特征计算一致.
   // all_dates 是 binary ∪ archive 的全集, 不收窄会去编回测区间外的天
@@ -118,7 +105,6 @@ void encoding_producer(SharedData &data,
     progress->set_summary_total(dates.size(), true);
 
   const size_t total_days = dates.size();
-  std::vector<char> scratch(8 << 20); // 预读用的丢弃缓冲, 跨天复用
 
   for (size_t idx = 0; idx < total_days && !cancel_flag->load(); ++idx) {
     const std::string &date_str = dates[idx];
@@ -314,7 +300,7 @@ void encoding_producer(SharedData &data,
               [](const EncodeTask &a, const EncodeTask &b) { return a.order_index < b.order_index; });
 
     // 注册天粒度账本 — 必须在推批之前 (worker 落盘时要查账).
-    // 若这是当前最老的在编天, 顺手把附注立起来 (否则第一天列举+预读的
+    // 若这是当前最老的在编天, 顺手把附注立起来 (否则第一天列举/预读的
     // 几十秒里汇总行是空的).
     {
       std::lock_guard<std::mutex> lock(stats.days_mutex);
@@ -330,16 +316,15 @@ void encoding_producer(SharedData &data,
     // 目标目录建一次即可 (一天一个目录), 必须在推批之前
     std::filesystem::create_directories(day_dir);
 
-    // 预读必须在推批之前 — 批一旦可见, worker 的 unrar 就会去碰这个文件,
-    // 冷文件会退化成几十路并发寻道.
-    warm_file_cache(archive_path, cancel_flag, scratch);
+    const size_t even_batch_size = (tasks.size() + worker_count - 1) / worker_count;
+    const size_t batch_size = std::min(kAssetsPerBatch, even_batch_size);
+    assert(batch_size > 0 && "encoding_producer: batch_size 必须为正");
 
-    for (size_t i = 0; i < tasks.size() && !cancel_flag->load(); i += kAssetsPerBatch) {
+    for (size_t i = 0; i < tasks.size() && !cancel_flag->load(); i += batch_size) {
       EncodeBatch batch;
       batch.date = date_str;
       batch.archive_path = archive_path;
-      batch.tasks.assign(tasks.begin() + static_cast<long>(i),
-                         tasks.begin() + static_cast<long>(std::min(i + kAssetsPerBatch, tasks.size())));
+      batch.tasks.assign(tasks.begin() + static_cast<long>(i), tasks.begin() + static_cast<long>(std::min(i + batch_size, tasks.size())));
       if (!queue.push(std::move(batch)))
         return; // 队列已关 = 取消
     }
@@ -349,7 +334,7 @@ void encoding_producer(SharedData &data,
 }
 
 // ============================================================================
-// ENCODING WORKER — 每批自己 unrar (命中页缓存) + 解码 + 原子写 .bin
+// ENCODING WORKER — 每批自己 unrar + 解码 + 原子写 .bin
 // ============================================================================
 //
 // worker 只写文件, 不回填 data.asset.items 的 date_info.

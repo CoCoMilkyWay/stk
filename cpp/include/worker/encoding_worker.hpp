@@ -18,20 +18,15 @@
 struct SharedData;
 
 // ============================================================================
-// PHASE 1: ENCODING PIPELINE (单 producer 预热页缓存 → N worker 并行解压解码)
+// PHASE 1: ENCODING PIPELINE (单 producer 列举 → N worker 并行解压解码)
 // ============================================================================
 //
-// 两个硬约束决定了架构:
-//   - 解压必须并行: 单条 unrar 流单核只有几十 (资产, 日期)/s, 喂不满几十个
-//     解码核 — 所以每个 worker 对自己的批各开一次 unrar (实测能跑满全部核心).
-//   - HDD 只能吃顺序读: 几十路 unrar 并发直读盘会把顺序读打碎成寻道.
+// 解压必须并行: 单条 unrar 流单核只有几十 (资产, 日期)/s, 喂不满几十个解码核
+// — 所以每个 worker 对自己的批各开一次 unrar (实测能跑满全部核心). 归档目录
+// 落在 NVMe 上, 多路并发随机读没有寻道代价 (实测 O_DIRECT 下 64 路并发随机读
+// 吞吐与单流顺序读同级, 甚至更高), 不需要为并发直读盘做额外的预读/串行化.
 //
-// 解法: producer 按天把整个 .rar 顺序读一遍丢进 OS 页缓存, 然后才把该天的
-// 元数据批推给 worker — worker 的多路 unrar 全部命中内存, 盘上只有 producer
-// 一条顺序流. 页缓存由内核管理, 不需要自己的内存记账 (机器必须是大内存,
-// EncodingService 直接 assert, 不为小机器妥协).
-//
-// 天与天自然流水: worker 解 day N 时, producer 在列举/预读 day N+1.
+// 天与天自然流水: worker 解 day N 时, producer 在列举 day N+1.
 //
 // 批内内存不随批大小增长: 一次只持有一个文件的字节 (见 misc/archive.hpp 的
 // stream_archive_files), 到达即解析成中间结构.
@@ -72,8 +67,8 @@ struct EncodeBatch {
   std::vector<EncodeTask> tasks;
 };
 
-// 有界批队列 — producer (列举+预读) 与 worker (解压+解码) 之间的交接.
-// 容量即流水深度: 大致对应"预读领先几天", 见 EncodingService 的容量常量.
+// 有界批队列 — producer (列举) 与 worker (解压+解码) 之间的交接.
+// 容量即流水深度: 大致对应 producer 领先几天, 见 EncodingService 的容量常量.
 class BatchQueue {
 public:
   explicit BatchQueue(size_t capacity) : capacity_(capacity) {}
@@ -128,7 +123,7 @@ struct EncodeStats {
   std::set<std::string> days_touched;
 };
 
-// producer: 逐天 [列举 → 增量过滤 → 切批 → 顺序预读 .rar 进页缓存 → 推批].
+// producer: 逐天 [列举 → 增量过滤 → 切批 → 推批].
 // progress 可空; 汇总行以天为单位 (总量 = 全部日期数, 开跑即精确),
 // 整天跳过 (产物全部新鲜) 的天由 producer 直接推进.
 void encoding_producer(SharedData &data,
@@ -136,6 +131,7 @@ void encoding_producer(SharedData &data,
                        std::atomic<bool> *cancel_flag,
                        bool skip_existing,
                        EncodeStats &stats,
+                       size_t worker_count,
                        misc::ParallelProgress *progress);
 
 void encoding_worker(SharedData &data,

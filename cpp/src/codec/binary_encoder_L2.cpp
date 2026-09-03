@@ -400,6 +400,7 @@ bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSum
         summary.low = parse_price_to_fen(fields[kMarketLow]);
         summary.cum_volume = cum_volume;
         summary.cum_turnover = parse_numeric_field(fields[kMarketCumTurnover], 1);
+        summary.turnover_capped = summary.cum_turnover == kMarketTurnoverCapYuan;
         if (cum_volume != 0)
           return true;
         have_fallback = true; // 记下末行, 继续往前找真正的收盘行

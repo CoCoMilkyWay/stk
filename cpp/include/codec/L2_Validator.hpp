@@ -48,9 +48,9 @@
 // 成本
 // ----------------------------------------------------------------------------
 //
-// 编码流水线的瓶颈是 producer 那条顺序读 (整包 3.47 GB 进页缓存, 机械盘
-// ~29 s/天), worker 侧只用掉其中 5~10 s. 本校验只做一遍哈希扫描 (每笔订单
-// 一次哈希操作) 加一行 CSV 解析, 摊到每天不到 0.2 s, 完全藏在那条 I/O 后面.
+// 编码流水线的瓶颈是 worker 侧的 unrar 解压 + 解码. 本校验只做一遍哈希扫描
+// (每笔订单一次哈希操作) 加一行 CSV 解析, 摊到每天不到 0.2 s, 完全藏在
+// 那条解压/解码之后.
 // 表按当日实际委托数开, 只 clear 不释放, 与 encoder 的中间缓冲同一策略.
 
 namespace L2 {
@@ -65,12 +65,13 @@ struct CSVTrade;
 // 末行是 15:00 的收盘快照, 累计字段已是当日终值. 价格统一换算到分 (0.01 元),
 // 与 CSVTrade::price 同单位; 成交量/挂单量单位为股.
 struct MarketSummary {
-  bool valid = false;        // 末行解析成功 (行情.csv 存在且有数据行)
-  uint32_t last_price = 0;   // 分 — 收盘价 (未必等于最后一笔成交价, 见 PriceMismatch)
-  uint32_t high = 0;         // 分 — 最高价
-  uint32_t low = 0;          // 分 — 最低价
-  uint64_t cum_volume = 0;   // 股 — 当日累计成交量
-  uint64_t cum_turnover = 0; // 元 — 当日成交额
+  bool valid = false;           // 末行解析成功 (行情.csv 存在且有数据行)
+  uint32_t last_price = 0;      // 分 — 收盘价 (未必等于最后一笔成交价, 见 PriceMismatch)
+  uint32_t high = 0;            // 分 — 最高价
+  uint32_t low = 0;             // 分 — 最低价
+  uint64_t cum_volume = 0;      // 股 — 当日累计成交量
+  uint64_t cum_turnover = 0;    // 元 — 当日成交额
+  bool turnover_capped = false; // 源行情成交额被 int32 上限削顶
   // 快照还有"叫买/叫卖总量"两列, 这里不取: 那不是整本簿, 而是以最新价为中心
   // 约 ±10% 的带内汇总, 带外的挂单一概不计. 拿它跟逐笔推出的收盘残余簿对拍,
   // 比的是两个口径, 而交易所汇总的确切边界 (参考价与取整) 无法从数据反推 ——
@@ -167,6 +168,13 @@ inline constexpr uint32_t kAuctionCloseTime = 150100000;
 // 计, 取整残差的上界就是半元 (50 分), 容差取 100 分留一倍余量. 报价不按整分
 // 的品种不适用这个界.
 inline constexpr int64_t kTurnoverToleranceFen = 100;
+
+// 部分 2023 行情 CSV 的"当日成交额"来自 int32 字段, 高成交额标的会封顶到
+// 2147483647. 这个值不是可对拍真值, 只跳过 TurnoverMismatch, 其它校验照常跑.
+inline constexpr uint64_t kMarketTurnoverCapYuan = 2147483647ull;
+
+// 部分批次的"当日成交额"按 uint32 回绕, 行情值等于真实成交额 mod 2^32.
+inline constexpr uint64_t kMarketTurnoverWrapYuan = 4294967296ull;
 
 // 判定"委托流完整"的单侧缺失率上限 (百分比). 实测是 0% 与 52%+ 的两极分布,
 // 取 1% 两边各有 50 倍余量. 低于此值视为委托流完整, 启用账目闭合类严判据.

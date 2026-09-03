@@ -37,13 +37,12 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
             << std::endl;
 
-  // 大内存假设 (不为小机器妥协): 页缓存要稳稳装下流水深度内的几个归档
-  // (单日 ~3 GB 压缩) 外加各 worker 的解码工作集.
+  // 大内存假设 (不为小机器妥协): 各 worker 并发解压+解码的工作集要装得下.
   assert(physical_ram_bytes() >= (size_t(16) << 30) &&
-         "encoding 预读依赖页缓存, 需要 ≥16GB 物理内存");
+         "encoding 需要 ≥16GB 物理内存");
 
-  // 容量即流水深度: ~85 批/天, 256 ≈ 领先 2-3 天 (页缓存里最多同时热着
-  // 这么多天的归档). 批是纯元数据, 队列本身不占什么内存.
+  // 容量即流水深度: ~85 批/天, 256 ≈ 领先 2-3 天. 批是纯元数据, 队列本身
+  // 不占什么内存.
   queue_ = std::make_unique<BatchQueue>(256);
 
   // Launch encoding in background thread
@@ -57,13 +56,13 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     Logger::init(data_.config.log_dir);
     Logger::reg("encoding");
 
-    std::cout << "Encoding: 逐笔二进制生成中 (按天流水: 列举 → 预读 → 并行解码)...\n"
+    std::cout << "Encoding: 逐笔二进制生成中 (按天流水: 列举 → 并行解码)...\n"
               << std::endl;
 
     // ------------------------------------------------------------------
-    // 流水线: producer 按天 [列举 → 顺序预读页缓存 → 推元数据批],
-    // worker 每批自己 unrar (全部命中页缓存) + 解码. 解压在 worker 侧
-    // 并行 — 单条 unrar 流喂不满几十个核 (见 encoding_worker.hpp).
+    // 流水线: producer 按天 [列举 → 推元数据批], worker 每批自己 unrar +
+    // 解码. 解压在 worker 侧并行 — 单条 unrar 流喂不满几十个核, 归档在
+    // NVMe 上多路并发直读也没有寻道代价 (见 encoding_worker.hpp).
     // ------------------------------------------------------------------
     // 汇总行以天为单位, 总量 = 全部日期数 (开跑即精确);
     // 附注显示最老在编天的资产进度, 由 producer/worker 维护.
@@ -81,7 +80,8 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     }
 
     auto producer = std::async(std::launch::async, [this, &stats]() {
-      encoding_producer(data_, *queue_, &cancel_flag_, skip_existing_, stats, progress_.get());
+      encoding_producer(data_, *queue_, &cancel_flag_, skip_existing_, stats,
+                        static_cast<size_t>(num_workers_), progress_.get());
     });
 
     producer.wait();

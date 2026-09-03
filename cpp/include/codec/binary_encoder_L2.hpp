@@ -198,8 +198,8 @@ public:
   // 快照 (行情.csv) 不编码落盘: 其产物全项目无人读取 —— 特征计算只吃 orders,
   // 靠 LimitOrderBook 重建盘口. 但它必须被读进来: 末行是交易所给的当日结算
   // 口径, 是逐笔流唯一的外部真值, 编码后归档就不再打开了 (见 L2_Validator.hpp).
-  // 代价只有多解压那一份字节 —— 页缓存已由 producer 的整包预读填好, 且解析
-  // 只碰末行, 不做 delta 编码/压缩/落盘.
+  // 代价只有多解压那一份字节 (归档在 NVMe 上, 多路并发直读无寻道代价),
+  // 且解析只碰末行, 不做 delta 编码/压缩/落盘.
 
   void begin_asset();
   bool feed_order_csv(const char *data, size_t len);
