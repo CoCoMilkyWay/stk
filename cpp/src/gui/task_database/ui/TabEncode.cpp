@@ -749,12 +749,8 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     ImGui::Spacing();
 
     // Check prerequisites
-    bool archive_in_range = false;
-    if (!asset.backtest.start.empty() && !asset.backtest.end.empty() &&
-        !asset.archive.min_date.empty() && !asset.archive.max_date.empty()) {
-      archive_in_range = (asset.archive.min_date <= asset.backtest.start &&
-                          asset.backtest.end <= asset.archive.max_date);
-    }
+    const bool archive_in_range = !asset.backtest.required_dates.empty() &&
+                                  asset.backtest.need_download.empty();
 
     bool file_check_ok = file_check_result.was_run() &&
                          (file_check_result.passed || !file_check_result.archive_dir_exists);

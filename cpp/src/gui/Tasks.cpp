@@ -48,6 +48,14 @@ void CleanupAllTasks(std::vector<TaskHandle> &tasks) {
 }
 
 void ReinitAllTasks(std::vector<TaskHandle> &tasks, int &selected_task, SharedData &data) {
+  // Config range 变化只需要重算 coverage, 不该丢掉底层 L2 扫描缓存.
+  // 如果 orders/archive 路径变了, StateManager::initialize 会发现 path 不匹配并重扫.
+  auto preserved_items = std::move(data.asset.items);
+  auto preserved_all_dates = std::move(data.asset.all_dates);
+  auto preserved_day_records = std::move(data.asset.day_records);
+  auto preserved_binary = std::move(data.asset.binary);
+  auto preserved_archive = std::move(data.asset.archive);
+
   // Step 1: Cleanup existing tasks
   CleanupAllTasks(tasks);
 
@@ -62,6 +70,11 @@ void ReinitAllTasks(std::vector<TaskHandle> &tasks, int &selected_task, SharedDa
   data.config.reinit_callback = [&data]() {
     data.request_reinit = true;
   };
+  data.asset.items = std::move(preserved_items);
+  data.asset.all_dates = std::move(preserved_all_dates);
+  data.asset.day_records = std::move(preserved_day_records);
+  data.asset.binary = std::move(preserved_binary);
+  data.asset.archive = std::move(preserved_archive);
 
   // Step 5: Reinitialize icon bar
   TaskIconBar::InitIconBar(data.coromgr);

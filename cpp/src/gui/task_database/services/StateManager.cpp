@@ -1,5 +1,6 @@
 // State Manager Implementation
 #include "gui/task_database/services/StateManager.hpp"
+#include "shared/SharedData.hpp"
 
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -13,10 +14,18 @@ namespace GUI::Database {
 // ============================================================================
 
 awaitable<void> StateManager::initialize() {
-  co_await sync_and_scan();
+  co_await sync_and_scan(ScanMode::RecomputeCoverage);
 }
 
-awaitable<void> StateManager::sync_and_scan() {
+awaitable<void> StateManager::sync_and_scan(ScanMode mode) {
+  const bool cache_matches_config =
+      data_.asset.binary.scanned &&
+      data_.asset.archive.scanned &&
+      data_.asset.binary.path == data_.config.orders_dir &&
+      data_.asset.archive.path == data_.config.archive_dir;
+  if (mode == ScanMode::RecomputeCoverage && !cache_matches_config)
+    mode = ScanMode::RescanStorage;
+
   // Yield immediately to let GUI render before the (possibly networked) sync
   co_await boost::asio::steady_timer(co_await boost::asio::this_coro::executor, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
@@ -31,7 +40,7 @@ awaitable<void> StateManager::sync_and_scan() {
   // Step 3: 日历就绪后才扫 L2 (覆盖判定以日历为准).
   // 基本面 Error (本地 parquet 缺失且同步失败) 时不扫 — Encode 保持锁定.
   if (fundamental_svc_->is_ready())
-    scan_svc_->trigger_scan();
+    scan_svc_->trigger_scan(mode);
 
   refresh_state();
 }

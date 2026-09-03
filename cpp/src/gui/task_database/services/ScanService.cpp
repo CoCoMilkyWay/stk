@@ -25,16 +25,21 @@ unsigned scan_threads() {
 ScanService::ScanService(SharedData &data, io_context &io, TaskTerminal *term)
     : data_(data), io_(io), terminal_(term) {}
 
-void ScanService::trigger_scan() {
+void ScanService::trigger_scan(ScanMode mode) {
   // Atomic check: if already scanning, ignore request
   bool expected = false;
   if (!is_scanning_.compare_exchange_strong(expected, true)) {
     return; // Ignore concurrent requests
   }
 
-  // Reset scanned flags to force rescan
-  data_.asset.binary.scanned = false;
-  data_.asset.archive.scanned = false;
+  if (mode == ScanMode::RescanStorage) {
+    // Reset scanned flags to force rescan
+    data_.asset.binary.scanned = false;
+    data_.asset.archive.scanned = false;
+  }
+  data_.asset.date_stats.clear();
+  data_.asset.date_gaps.clear();
+  data_.asset.asset_stats.clear();
 
   // Clear old result, update status
   last_check_ = DatabaseCheckResult{};
@@ -44,8 +49,8 @@ void ScanService::trigger_scan() {
   data_.taskstate.database.l2_scan_inflight = true;
 
   // Launch coroutine
-  boost::asio::co_spawn(io_, [this]() -> awaitable<void> {
-    co_await coro_scan();
+  boost::asio::co_spawn(io_, [this, mode]() -> awaitable<void> {
+    co_await coro_scan(mode);
     data_.taskstate.database.l2_scan_inflight = false;
     is_scanning_.store(false); // Release lock after completion
     // Notify completion
@@ -54,7 +59,7 @@ void ScanService::trigger_scan() {
     } }(), boost::asio::detached);
 }
 
-awaitable<void> ScanService::coro_scan() {
+awaitable<void> ScanService::coro_scan(ScanMode mode) {
   namespace fs = std::filesystem;
 
   DatabaseCheckResult result;
@@ -105,11 +110,16 @@ awaitable<void> ScanService::coro_scan() {
     co_return;
   }
 
+  if (mode == ScanMode::RecomputeCoverage) {
+    assert((data_.asset.binary.scanned || data_.asset.archive.scanned) &&
+           "coverage-only scan 前必须已有底层 binary/archive 扫描缓存");
+  }
+
   // ========================================
   // Phase 3: Scan binary database - update status, yield, then scan
   // ========================================
 
-  if (!data_.asset.binary.scanned) {
+  if (mode == ScanMode::RescanStorage) {
     status_ = ScanStatus::ScanningBinary;
     co_await Coro::Yield(io_);
 
@@ -125,7 +135,7 @@ awaitable<void> ScanService::coro_scan() {
   // Phase 4: Scan archive database - update status, yield, then scan
   // ========================================
 
-  if (!data_.asset.archive.scanned) {
+  if (mode == ScanMode::RescanStorage) {
     status_ = ScanStatus::ScanningArchive;
     co_await Coro::Yield(io_);
 
@@ -162,16 +172,21 @@ awaitable<void> ScanService::coro_scan() {
   // Populate result from Asset data
   result.binary.exists = data_.asset.binary.exists;
   result.binary.path = data_.asset.binary.path;
-  result.binary.total_dates = data_.asset.binary.dates.size();
-  result.binary.available_dates.assign(data_.asset.binary.dates.begin(), data_.asset.binary.dates.end());
 
   result.archive.exists = data_.asset.archive.exists;
   result.archive.path = data_.asset.archive.path;
-  result.archive.total_dates = data_.asset.archive.dates.size();
-  result.archive.available_dates.assign(data_.asset.archive.dates.begin(), data_.asset.archive.dates.end());
 
   result.required_dates = data_.asset.backtest.required_dates.size();
   result.binary_coverage = data_.asset.backtest.covered_dates.size();
+  for (const auto &date : data_.asset.backtest.required_dates) {
+    if (data_.asset.binary.dates.count(date))
+      result.binary.available_dates.push_back(date);
+    if (data_.asset.archive.dates.count(date))
+      result.archive.available_dates.push_back(date);
+  }
+  result.binary.total_dates = result.binary.available_dates.size();
+  result.archive.total_dates = result.archive.available_dates.size();
+
   result.missing_dates.assign(data_.asset.backtest.missing_dates.begin(),
                               data_.asset.backtest.missing_dates.end());
   result.missing_can_encode.assign(data_.asset.backtest.can_encode.begin(),

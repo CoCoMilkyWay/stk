@@ -37,6 +37,11 @@ enum class ScanStatus {
   Error
 };
 
+enum class ScanMode {
+  RecomputeCoverage, // 只用已有 binary/archive 扫描缓存重算 backtest coverage
+  RescanStorage      // 底层 binary/archive 可能变了, 重新逐日扫盘
+};
+
 // ============================================================================
 // Database Check Types
 // ============================================================================
@@ -136,7 +141,7 @@ public:
   // ============================================================================
 
   // Unified trigger entry (atomic protection, ignores concurrent requests)
-  void trigger_scan();
+  void trigger_scan(ScanMode mode);
 
   // Set callback to be called when scan completes
   void set_on_complete(std::function<void()> callback) { on_complete_callback_ = std::move(callback); }
@@ -161,7 +166,7 @@ private:
   mutable char status_buf_[64] = {};
 
   // Complete scan flow (coroutine)
-  awaitable<void> coro_scan();
+  awaitable<void> coro_scan(ScanMode mode);
 };
 
 } // namespace GUI::Database

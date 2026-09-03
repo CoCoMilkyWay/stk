@@ -20,15 +20,15 @@ using boost::asio::awaitable;
 
 struct TabAccessState {
   // Tab unlock progression (基本面 → L2 → 消费端)
-  bool can_access_overview = true;  // 基本面面板, 流水线第一步, 永远可进
-  bool can_access_encode = false;   // 基本面 Ready 后解锁 (覆盖检查依赖日历)
+  bool can_access_overview = true; // 基本面面板, 流水线第一步, 永远可进
+  bool can_access_encode = false;  // 基本面 Ready 后解锁 (覆盖检查依赖日历)
 
   // Table 主要展示 Overview 的日频基本面, Browser 本身就是在展示 L2 数据
   // 完整性 (缺口正是它要呈现的东西) —— 两者都不需要 L2 覆盖 100% Pass,
   // 但仍要等 Encode 页跑过一遍覆盖扫描 (数据才建好). 100% Pass 只是
   // Features→Compute 的硬要求.
-  bool can_access_table = false;    // 基本面 Ready 且已扫描过一遍
-  bool can_access_browser = false;  // 基本面 Ready 且已扫描过一遍
+  bool can_access_table = false;   // 基本面 Ready 且已扫描过一遍
+  bool can_access_browser = false; // 基本面 Ready 且已扫描过一遍
 };
 
 // ============================================================================
@@ -72,7 +72,7 @@ public:
 
   // 唯一刷新链: 基本面同步 -> AssetInfo/Asset items 重建 -> L2 覆盖扫描触发.
   // GUI 启动、config 重建、Overview Update 都走这里, 不各写一份流程.
-  awaitable<void> sync_and_scan();
+  awaitable<void> sync_and_scan(ScanMode mode);
 
   // ============================================================================
   // State Management

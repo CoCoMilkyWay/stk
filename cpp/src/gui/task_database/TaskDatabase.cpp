@@ -116,7 +116,7 @@ private:
             ~FlagReset() { flag = false; }
           } update_reset{ts.json_update_inflight};
 
-          co_await state_mgr_->sync_and_scan();
+          co_await state_mgr_->sync_and_scan(ScanMode::RecomputeCoverage);
           UpdateTaskState();
         }(),
         boost::asio::detached);
@@ -134,7 +134,7 @@ private:
 
     // Set encoding completion callback to trigger scan
     encoding_svc_->set_scan_callback([this]() {
-      scan_svc_->trigger_scan();
+      scan_svc_->trigger_scan(ScanMode::RescanStorage);
     });
 
     // Set scan completion callback to update task state

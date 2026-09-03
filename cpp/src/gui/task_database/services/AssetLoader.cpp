@@ -5,10 +5,17 @@
 
 #include <algorithm>
 #include <cassert>
+#include <unordered_map>
+#include <vector>
 
 namespace GUI::Database {
 
 void AssetLoader::load(SharedData &data) {
+  std::vector<std::unordered_map<std::string, DateInfo>> old_date_info;
+  old_date_info.reserve(data.asset.items.size());
+  for (auto &item : data.asset.items)
+    old_date_info.push_back(std::move(item.date_info));
+
   data.asset.items.clear();
 
   const auto &stock_info_map = data.assetinfo.get_stock_info();
@@ -61,7 +68,10 @@ void AssetLoader::load(SharedData &data) {
       }
     }
 
-    data.asset.items.emplace_back(i, code, asset_name, exchange, start_date, end_date);
+    AssetItem item(i, code, asset_name, exchange, start_date, end_date);
+    if (i < old_date_info.size())
+      item.date_info = std::move(old_date_info[i]);
+    data.asset.items.push_back(std::move(item));
   }
 }
 
