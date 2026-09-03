@@ -55,7 +55,9 @@ public:
   // 全局汇总计数 +n (跨 worker 共享, 推进汇总行). worked 见 ParallelProgress
   void bump_summary(size_t n = 1, bool worked = true) const;
 
-  // 汇总行附加说明 (如 "20230103: 2311/4800 assets")
+  // 汇总行附加说明 (如 "20230103: 2311/4800 assets").
+  // 每个 worker 各自节流到最多 refresh_interval_ms_ 写一次, 避免细粒度任务
+  // 反复抢 note_mutex_ (见 ParallelProgress::set_summary_note_from_worker).
   void set_summary_note(const std::string &note) const;
 
   // Check if handle is valid
@@ -82,6 +84,9 @@ private:
     std::atomic<size_t> current{0};
     std::atomic<size_t> total{0};
     std::atomic<bool> dirty{false};
+    // 本 worker 上次真正写汇总附注的时刻 (ms), -1 = 从未写过.
+    // 节流用, 见 set_summary_note_from_worker.
+    std::atomic<long long> last_note_ms{-1};
     char label[64] = {0};
     char message[96] = {0};
   };
@@ -128,8 +133,24 @@ public:
     summary_exact_.store(exact, std::memory_order_relaxed);
   }
 
-  // 汇总行附加说明 (显示在计数之后)
+  // 汇总行附加说明 (显示在计数之后). 供生产端 (非 worker, 调用频率低,
+  // 一天一次量级) 直接调用, 不节流.
   void set_summary_note(const std::string &note) {
+    std::lock_guard<std::mutex> lock(note_mutex_);
+    summary_note_ = note;
+  }
+
+  // 供 worker 端 (ProgressHandle) 调用的节流版本 —— 每个 worker 各自最多
+  // refresh_interval_ms_ 写一次: 附注只是刷新线程每 100ms 读一次的展示状态,
+  // 逐资产粒度的细任务却会让 72 个 worker 反复抢同一把 note_mutex_,
+  // 节流后大多数调用在拿锁之前就返回.
+  void set_summary_note_from_worker(int worker_id, const std::string &note) {
+    WorkerSlot &slot = slots_[worker_id];
+    const long long now = elapsed_ms();
+    const long long last = slot.last_note_ms.load(std::memory_order_relaxed);
+    if (last >= 0 && now - last < refresh_interval_ms_)
+      return;
+    slot.last_note_ms.store(now, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(note_mutex_);
     summary_note_ = note;
   }
@@ -411,8 +432,8 @@ inline void ProgressHandle::bump_summary(size_t n, bool worked) const {
 }
 
 inline void ProgressHandle::set_summary_note(const std::string &note) const {
-  if (progress_) {
-    progress_->set_summary_note(note);
+  if (progress_ && worker_id_ >= 0) {
+    progress_->set_summary_note_from_worker(worker_id_, note);
   }
 }
 
