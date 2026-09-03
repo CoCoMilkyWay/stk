@@ -335,28 +335,18 @@ private:
     }
 
     bool update_clicked = false;
-    bool refresh_scan = false;
 
     auto &ts = data_->taskstate.database;
     bool busy = ts.json_update_inflight || fundamental_svc_->is_busy();
-    bool scan_busy = ts.l2_scan_inflight;
 
     RenderTabOverview(
         fundamental_svc_->get_state(),
-        &update_clicked, &refresh_scan,
-        busy,
-        scan_busy);
+        &update_clicked,
+        busy);
 
     // Handle button events
     if (update_clicked && !busy) {
       TriggerRefreshFlow();
-    }
-
-    if (refresh_scan && !ts.json_update_inflight && !ts.l2_scan_inflight) {
-      // Assets are already scanned in StateManager::initialize()
-      // No need for async operation, just refresh state directly
-      state_mgr_->refresh_state();
-      UpdateTaskState();
     }
   }
 

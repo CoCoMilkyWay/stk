@@ -25,7 +25,8 @@ stk/
 │   │   │   ├── OrderFlow.hpp                            # 📦 订单流数据
 │   │   │   ├── Dist.hpp                                 # 📦 分布分析
 │   │   │   ├── TimeSeries.hpp                           # 📦 时序分析
-│   │   │   └── Transform.hpp                            # 📦 特征变换
+│   │   │   ├── Transform.hpp                            # 📦 特征变换
+│   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码账目 (.day_complete): 齐备/资产数/错误原因
 │   │   ├── define/                                      # 🔷 底层数据结构
 │   │   │   ├── CBuffer.hpp                              # 🔷 循环缓冲区
 │   │   │   ├── FastBitmap.hpp                           # 🔷 快速位图
@@ -38,6 +39,7 @@ stk/
 │   │   │   ├── L2_Gateway_DataType.hpp                  # 🔄 L2网关数据类型
 │   │   │   ├── binary_decoder_L2.hpp                    # 🔄 二进制解码: .bin -> L2对象
 │   │   │   ├── binary_encoder_L2.hpp                    # 🔄 二进制编码: L2对象 -> .bin
+│   │   │   ├── L2_Validator.hpp                         # 🔄 逐笔数据准入校验 (编码期判完整性, 防缺片污染盘口)
 │   │   │   └── json_config.hpp                          # 🔄 JSON配置解析
 │   │   ├── features/                                    # 🧮 特征工程 (多时间尺度)
 │   │   │   ├── FeaturesDefine.hpp                       # 🧮 特征定义: ID/元数据
@@ -50,7 +52,7 @@ stk/
 │   │   │   ├── FeaturesMinute/                          # 🧮 分钟级特征
 │   │   │   ├── Fundamental/FundamentalDaily.hpp         # 🧮 财务基本面日频特征
 │   │   │   ├── Operator/TS/                             # 🧮 时序算子 (Basic/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
-│   │   │   ├── Misc/                                    # 🧮 杂项特征工具 (CSMethods)
+│   │   │   ├── Misc/                                    # 🧮 杂项特征工具 (CSMethods 截面方法 / Misc 截面数学函数)
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: 写入/并发控制
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 存储配置: Float16/布局
@@ -116,11 +118,21 @@ stk/
 │   │   │   │  |Network|FPS│                       |                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── math/                                        # 📐 autoencoder / cluster / distribution / model / normalize / sample / spectral / stationary / timeseries
+│   │   │   └── Operator.hpp                             # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   ├── api/                                         # 🌐 数据源 API
 │   │   │   ├── bigquant/                                # 🌐 BigQuant (dai/pipeline/spec)
 │   │   │   └── tushare/                                 # 🌐 Tushare (http/parse/pipeline/spec)
 │   │   ├── mining/                                      # ⛏️ 数据挖掘(特征->因子) 设计文档
-│   │   ├── misc/                                        # 🔧 logging / timer / progress / affinity / archive / parquet / fs / profiler / VariableMonitor
+│   │   ├── misc/                                        # 🔧 通用工具库
+│   │   │   ├── logging.hpp / print.hpp                  # 🔧 日志 / STL容器格式化打印
+│   │   │   ├── timer.hpp / profiler.hpp                 # 🔧 计时器 / 性能剖析
+│   │   │   ├── progress_single/parallel.hpp             # 🔧 单行/多线程进度条
+│   │   │   ├── affinity.hpp / schedule.hpp              # 🔧 CPU亲和性 / 月度调度器 (bigquant+tushare共用)
+│   │   │   ├── archive.hpp / parquet.hpp                # 🔧 归档操作 / Parquet读写
+│   │   │   ├── fs.hpp / file_check.hpp                  # 🔧 文件系统 / 归档完整性校验
+│   │   │   ├── date.hpp / cross_platform.hpp            # 🔧 YYYYMMDD日历运算 / Win-Linux-Mac兼容层
+│   │   │   ├── system_metrics.hpp                       # 🔧 系统监控采集 (CPU/内存/磁盘, GUI共用)
+│   │   │   └── VariableMonitor.hpp                      # 🔧 变量值监控
 │   │   └── boost/                                       # 📚 asio / beast / optional (随包, 头文件库)
 │   ├── src/                                             # 💾 源文件实现 (多数对应include/, boost/math为header-only无实现)
 │   │   ├── main.cpp                                     # 💾 程序入口

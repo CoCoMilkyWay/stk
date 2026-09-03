@@ -24,6 +24,7 @@
 #include "api/tushare/spec.hpp"
 #include "gui/task_database/infrastructure/ScanThreadPool.hpp"
 #include "misc/date.hpp"
+#include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
 #include "shared/Config.hpp"
@@ -115,6 +116,71 @@ std::string now_str() {
                 tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
                 tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
   return std::string(buf);
+}
+
+// output/fundamental/ 单遍扫描 → 逐表落盘状态 (Overview 逐表列出用).
+//   月度分片: 每个 YYYY-MM 目录只 readdir 一次, 顺手把当月所有表的文件归到各自
+//   表名下 —— 比"每张表各扫一遍全库"少 30 倍 directory_iterator.
+//   _meta 单文件表 (Static/Snapshot): months 恒 0, last_month 留空.
+std::vector<TableFileStat> collect_table_stats() {
+  namespace fs = std::filesystem;
+  const fs::path root = misc::git_root() / "output" / "fundamental";
+  assert(fs::exists(root) && "output/fundamental 缺失");
+
+  struct Acc {
+    TableFileStat st;
+    fs::file_time_type newest{};
+    bool has = false;
+  };
+  std::map<std::string, Acc> acc;
+
+  auto absorb = [&acc](const fs::directory_entry &f, std::string_view ym) {
+    if (f.path().extension() != ".parquet")
+      return;
+    std::string name = f.path().stem().string();
+    Acc &a = acc[name];
+    a.st.name = std::move(name);
+    a.st.bytes += f.file_size();
+    if (!ym.empty()) {
+      ++a.st.months;
+      if (ym > a.st.last_month)
+        a.st.last_month = ym;
+    }
+    const fs::file_time_type mt = f.last_write_time();
+    if (!a.has || mt > a.newest) {
+      a.newest = mt;
+      a.has = true;
+    }
+  };
+
+  for (const fs::directory_entry &d : fs::directory_iterator(root)) {
+    if (!d.is_directory())
+      continue;
+    const std::string dir = d.path().filename().string();
+    const bool meta = (dir == "_meta");
+    // 数据集只有 "_meta" 和 "YYYY-MM" 两种目录; 其余 (pool 等) 不是本流水线产物
+    if (!meta && !(dir.size() == 7 && dir[4] == '-'))
+      continue;
+    for (const fs::directory_entry &f : fs::directory_iterator(d.path()))
+      absorb(f, meta ? std::string_view{} : std::string_view(dir));
+  }
+
+  std::vector<TableFileStat> out;
+  out.reserve(acc.size());
+  for (auto &[name, a] : acc) {
+    if (a.has) {
+      const std::time_t t = std::chrono::system_clock::to_time_t(
+          std::chrono::clock_cast<std::chrono::system_clock>(a.newest));
+      std::tm tm_buf{};
+      localtime_r(&t, &tm_buf);
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", tm_buf.tm_mon + 1,
+                    tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min);
+      a.st.mtime = buf;
+    }
+    out.push_back(std::move(a.st));
+  }
+  return out;
 }
 
 // 工作线程 → 协程的进度/结果通道 (shared_ptr 持有, detached 线程安全退出)
@@ -1075,6 +1141,13 @@ bool build_asset_info(Job &job) {
 
 } // namespace
 
+const TableFileStat *FundamentalState::find_table(const std::string &name) const {
+  for (const TableFileStat &t : tables)
+    if (t.name == name)
+      return &t;
+  return nullptr;
+}
+
 awaitable<void> FundamentalService::update_all() {
   co_await run(/*with_network=*/true);
 }
@@ -1109,6 +1182,8 @@ awaitable<void> FundamentalService::run(bool with_network) {
       }
     }
     job->ok = build_asset_info(*job);
+    // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也扫 — 正是要看清哪张表缺)
+    job->st.tables = collect_table_stats();
     job->done = true;
   }).detach();
 
@@ -1140,6 +1215,7 @@ awaitable<void> FundamentalService::run(bool with_network) {
     state_.message.clear();
     state_.last_update = now_str();
   } else {
+    state_.tables = std::move(job->st.tables);
     state_.status = FundamentalStatus::Error;
     state_.message = "本地 parquet 缺失 — 点击 Update 联网同步";
   }

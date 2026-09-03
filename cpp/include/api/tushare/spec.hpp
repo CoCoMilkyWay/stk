@@ -30,6 +30,7 @@ struct InterfaceSpec {
   std::vector<std::string> day_params;
   std::vector<std::string> drop_fields;
   std::vector<std::string> num_fields;
+  std::string desc; // 表内容一句话 (GUI Database→Overview 逐表列出), 与 bigquant::TableSpec::desc 对仗
 };
 
 extern const std::vector<InterfaceSpec> SPECS;

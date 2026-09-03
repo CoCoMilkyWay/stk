@@ -8,7 +8,9 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 struct SharedData;
 
@@ -40,6 +42,17 @@ inline const char *GetFundamentalStatusName(FundamentalStatus s) {
   return "Unknown";
 }
 
+// 单表本地落盘状态 — 工作线程扫一遍 output/fundamental/ 得到, 渲染帧只读不做 IO.
+// 静态元描述 (增量键 / 抓法 / 就绪时点 / 中文说明) 不在这里重复: Overview 直接
+// 遍历 bigquant::SPECS + tushare::SPECS, 按 name 关联本结构.
+struct TableFileStat {
+  std::string name;       // = parquet 文件名 = spec.name
+  std::size_t months = 0; // 已落月度分片数; _meta 单文件表恒 0
+  std::string last_month; // 最新分片 "YYYY-MM"; _meta 单文件表为空
+  std::uint64_t bytes = 0;
+  std::string mtime; // 最后落盘时刻 "MM-DD HH:MM"; 一个文件都没有则为空
+};
+
 struct FundamentalState {
   FundamentalStatus status = FundamentalStatus::Idle;
   std::string message;     // 当前阶段说明 (工作线程实时更新)
@@ -51,6 +64,12 @@ struct FundamentalState {
   std::size_t trading_days_count = 0; // 交易日历天数
   std::string date_range_start;       // D 轴范围 "YYYY-MM-DD"
   std::string date_range_end;
+
+  // 逐表落盘状态 (Error 时也填 — 正是要看清哪张表缺)
+  std::vector<TableFileStat> tables;
+
+  // tables 里 name == 的那条; 缺失返回 nullptr
+  const TableFileStat *find_table(const std::string &name) const;
 };
 
 // ============================================================================

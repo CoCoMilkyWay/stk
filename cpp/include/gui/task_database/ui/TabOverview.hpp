@@ -5,12 +5,10 @@
 
 namespace GUI::Database {
 
-// 渲染 Overview: 基本面数据状态卡 + Update / Refresh 按钮
+// 渲染 Overview: 基本面数据状态卡 + Update 按钮
 void RenderTabOverview(
     const FundamentalState &state,
     bool *update_clicked,
-    bool *refresh_scan_clicked,
-    bool disable_update_controls,
-    bool disable_scan_controls);
+    bool disable_update_controls);
 
 } // namespace GUI::Database

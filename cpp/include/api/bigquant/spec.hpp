@@ -42,10 +42,12 @@ struct TableSpec {
   std::string visible_date; // 因果安全可见日列名; Static 为空 ""
   FetchKind kind;
   FetchFreq freq;
-  int avail_hour; // day X 数据于 X 日该小时后完整 (misc::plan_months 水位增量用):
-                  //   0 = 排程提前入库, 随时可拉 (all_trading_days / holidays)
-                  //   9/10 = 真盘前 (static_data / margin)
-                  //   20 = 盘后批 (api.md 17:00~20:00 统一记 20)
+  int avail_hour;   // day X 数据于 X 日该小时后完整 (misc::plan_months 水位增量用):
+                    //   0 = 排程提前入库, 随时可拉 (all_trading_days / holidays)
+                    //   9/10 = 真盘前 (static_data / margin)
+                    //   20 = 盘后批 (api.md 17:00~20:00 统一记 20)
+  std::string desc; // 表内容一句话 (GUI Database→Overview 逐表列出; 与 spec 同处
+                    // 一地免得漏配. 列数取自实际 parquet schema)
 };
 
 // api.md 中"需要支持"的全部表 (26 张), 顺序与 api.md 自上而下一致.
