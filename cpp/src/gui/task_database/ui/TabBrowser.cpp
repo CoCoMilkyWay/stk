@@ -394,10 +394,28 @@ void RenderMonthGrid(
         // 明细: 代码 + 简称 + 复权因子比值 (>1 = 除权除息, 因子被上调)
         constexpr size_t kMaxListed = 30;
         const size_t listed = std::min(stats->dividend_events.size(), kMaxListed);
-        for (size_t k = 0; k < listed; ++k) {
-          const DividendEvent &ev = stats->dividend_events[k];
-          ImGui::Text("  %s  %s  x%.6f", ev.code.c_str(),
-                      ev.name.empty() ? "-" : ev.name.c_str(), ev.ratio);
+        if (listed > 0) {
+          // 固定列宽, 避免中文简称 3/4 字宽度不同导致错位
+          ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 1.0f));
+          if (ImGui::BeginTable(
+                  "##dividend_events", 3,
+                  ImGuiTableFlags_PadOuterX | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("code", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("ratio", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            for (size_t k = 0; k < listed; ++k) {
+              const DividendEvent &ev = stats->dividend_events[k];
+              ImGui::TableNextRow();
+              ImGui::TableSetColumnIndex(0);
+              ImGui::TextUnformatted(ev.code.c_str());
+              ImGui::TableSetColumnIndex(1);
+              ImGui::TextUnformatted(ev.name.empty() ? "-" : ev.name.c_str());
+              ImGui::TableSetColumnIndex(2);
+              ImGui::Text("x%.6f", ev.ratio);
+            }
+            ImGui::EndTable();
+          }
+          ImGui::PopStyleVar();
         }
         if (stats->dividend_events.size() > listed) {
           ImGui::TextDisabled("  ... +%zu more",

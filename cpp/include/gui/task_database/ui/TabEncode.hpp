@@ -79,6 +79,11 @@ struct EncodeState {
   bool show_progress_fullscreen = false;
   bool skip_file_check_ack = false; // 未通过 File Check 时的"风险自负"确认
 
+  // Encode 支持增量: 归档不存在/不覆盖回测区间时也能先编已有的部分, 慢慢补.
+  // 这两个"风险自负"确认解锁对应的硬性前置条件.
+  bool skip_archive_exists_ack = false;
+  bool skip_archive_range_ack = false;
+
   // Trigger for starting encoding (set by UI, consumed by TaskDatabase)
   bool trigger_start = false;
 };

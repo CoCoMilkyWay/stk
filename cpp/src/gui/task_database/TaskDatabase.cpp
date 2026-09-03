@@ -296,7 +296,7 @@ private:
         ImGui::SetTooltip("Sync fundamental data in Overview tab first");
       }
 
-      // Table tab - 基本面 Ready 且 L2 覆盖 Pass
+      // Table tab - 基本面 Ready 且已扫描过一遍 (不要求 L2 覆盖 Pass)
       ImGui::BeginDisabled(!tabs.can_access_table);
       if (ImGui::BeginTabItem("Table")) {
         if (tabs.can_access_table)
@@ -306,10 +306,10 @@ private:
       ImGui::EndDisabled();
 
       if (!tabs.can_access_table && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Requires fundamental data ready and L2 coverage pass (Encode tab)");
+        ImGui::SetTooltip("Requires fundamental data ready and at least one coverage scan (Encode tab)");
       }
 
-      // Browser tab - 基本面 Ready 且 L2 覆盖 Pass
+      // Browser tab - 基本面 Ready 且已扫描过一遍 (不要求 L2 覆盖 Pass, Browser 本身就是来看覆盖缺口的)
       ImGui::BeginDisabled(!tabs.can_access_browser);
       if (ImGui::BeginTabItem("Browser")) {
         if (tabs.can_access_browser)
@@ -319,7 +319,7 @@ private:
       ImGui::EndDisabled();
 
       if (!tabs.can_access_browser && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Requires fundamental data ready and L2 coverage pass (Encode tab)");
+        ImGui::SetTooltip("Requires fundamental data ready and at least one coverage scan (Encode tab)");
       }
 
       ImGui::EndTabBar();

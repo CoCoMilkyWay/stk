@@ -93,6 +93,9 @@ void encoding_producer(SharedData &data,
   const AssetAxis &axis = asset_axis();
   assert(data.asset.items.size() == axis.size() &&
          "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
+  // 空轴下每一天都会退化成"零分母" (包里认不出任何资产), 编出来的只有一堆
+  // 空账目 — 与其跑完再排查, 不如开跑前就断在这里
+  assert(!axis.empty() && "A 轴为空 (基本面未就绪?), 编码无从进行");
 
   const size_t total_days = data.asset.all_dates.size();
   std::vector<char> scratch(8 << 20); // 预读用的丢弃缓冲, 跨天复用
@@ -148,12 +151,24 @@ void encoding_producer(SharedData &data,
     // 尺寸在这一步就要拿到 —— worker 靠它在 unrar p 的输出流上切分边界.
     // ------------------------------------------------------------------
     std::vector<misc::ArchiveEntry> entries;
-    if (!misc::list_archive(archive_path, data.config.archive_tool, entries)) {
+    const misc::ArchiveListStatus list_status =
+        misc::list_archive(archive_path, data.config.archive_tool, entries);
+
+    if (list_status == misc::ArchiveListStatus::Corrupt) {
       // 包头链断了, 这天连有哪些资产都问不出来 — 留日志跳过, 不落完成标记,
       // 人工修好源文件后靠增量自动补齐 (绝不 abort, 见 archive.hpp)
       Logger::log("encoding", "[CORRUPT ARCHIVE] " + archive_path +
                                   " — cannot list, day skipped, source needs repair");
       stats.days_corrupt.fetch_add(1);
+      if (progress)
+        progress->bump_summary(1, false);
+      continue;
+    }
+
+    // 没有源: 这天既无从编码, 也无从判断齐备 — 直接走, 绝不落完成标记.
+    // 盘上很可能还留着上一轮的半成品 (归档事后被移走/还没下回来), 一旦标成
+    // complete, 增量的快路径就再也不会回来补这一天.
+    if (list_status == misc::ArchiveListStatus::Missing) {
       if (progress)
         progress->bump_summary(1, false);
       continue;
@@ -254,7 +269,17 @@ void encoding_producer(SharedData &data,
       //
       // 走到这里说明每个资产都留下了产物, 一个错误都没剩 —— 出错的对不会
       // 留下 .bin 也不会留下墓碑, 必然被上面重新列成任务.
-      if (std::filesystem::exists(day_dir)) {
+      //
+      // 但零分母不算"齐备": assets_total == 0 意味着包里一个 A 轴资产都没
+      // 认出来 (包内结构不符 / 轴与归档口径错位), 那是"什么都没看见"而不是
+      // "什么都齐了". 真齐备的天分母是几千. 标了 complete 增量就再也不来,
+      // 半成品会被永久冻在盘上 — 所以这种天留日志跳过, 不落标记.
+      if (day_rec.assets_total == 0) {
+        Logger::log("encoding", "[NO ASSETS] " + archive_path + " — " +
+                                    std::to_string(entries.size()) +
+                                    " entries listed but none on the asset axis, day skipped, "
+                                    "no completion marker written");
+      } else if (std::filesystem::exists(day_dir)) {
         day_rec.complete = true;
         write_encode_day_record(day_dir, day_rec);
       }

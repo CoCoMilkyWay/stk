@@ -37,11 +37,11 @@ bool field(const char *line, const char *key, std::string &out) {
 
 } // namespace
 
-bool list_archive(const std::string &archive_path, const std::string &archive_tool,
-                  std::vector<ArchiveEntry> &entries) {
+ArchiveListStatus list_archive(const std::string &archive_path, const std::string &archive_tool,
+                               std::vector<ArchiveEntry> &entries) {
   entries.clear();
   if (!std::filesystem::exists(archive_path))
-    return true;
+    return ArchiveListStatus::Missing;
 
   // vt = technical list: Name / Type / Size 各占一行, 对含空格的文件名也安全
   // (普通 `l` 是定宽列, 文件名在末列, 有空格就没法可靠切分).
@@ -81,10 +81,10 @@ bool list_archive(const std::string &archive_path, const std::string &archive_to
   // 非零退出 = 包损坏 (头链断裂/截断). 半份条目表不可信, 整个丢掉.
   if (safe_pclose(pipe) != 0) {
     entries.clear();
-    return false;
+    return ArchiveListStatus::Corrupt;
   }
 
-  return true;
+  return ArchiveListStatus::Ok;
 }
 
 bool stream_archive_files(const std::string &archive_path,

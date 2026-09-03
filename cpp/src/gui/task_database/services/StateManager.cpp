@@ -46,7 +46,7 @@ void StateManager::refresh_state() {
   state_.fundamental_status = fundamental_svc_->get_state().status;
 
   // Get database check result from scan service
-  auto check_result = scan_svc_->get_last_check_result();
+  const auto &check_result = scan_svc_->get_last_check_result();
 
   // ============================================================================
   // Tab Access Control (基本面 → L2 → 消费端)
@@ -59,10 +59,13 @@ void StateManager::refresh_state() {
   bool ready = state_.all_json_ready();
   state_.tabs.can_access_encode = ready;
 
-  // Table/Browser: 基本面 Ready 且 L2 覆盖检查通过
-  bool pass = check_result.is_pass();
-  state_.tabs.can_access_table = ready && pass;
-  state_.tabs.can_access_browser = ready && pass;
+  // Table/Browser: 基本面 Ready 且 L2 覆盖检查至少跑过一遍 (Encode 页扫描
+  // 完成) —— 不要求覆盖 100% Pass, Table 看的是基本面, Browser 本身就是
+  // 来看覆盖缺口的. 100% Pass 只卡 Features→Compute (见 TaskFeatures.cpp
+  // 的 database.ready()). 扫描前 Asset::items 等数据还没建好, 依然要灰着.
+  bool scanned = check_result.status != DatabaseStatus::Unchecked;
+  state_.tabs.can_access_table = ready && scanned;
+  state_.tabs.can_access_browser = ready && scanned;
 }
 
 } // namespace GUI::Database

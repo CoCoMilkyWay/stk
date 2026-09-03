@@ -35,16 +35,22 @@ struct ArchiveEntry {
   std::size_t index; // 归档内序号 == unrar p 的输出顺序
 };
 
+// 列举结果. Missing 与 Corrupt 必须分开, 且都不能和 "Ok + 空表" 混为一谈:
+// 调用方靠"列举出多少资产"反推"这一天是否齐备", 而 Missing 下条目表恒为空,
+// 混在一起就会把"没源可读"读成"没活可干" (见 encoding_producer 的完成标记).
+enum class ArchiveListStatus {
+  Ok,      // unrar 正常退出, entries 是这个包的真实内容
+  Missing, // 包不在盘上 — 不是错误, 这一天单纯没有源
+  Corrupt  // unrar 非零退出 (头链断裂/截断), entries 置空
+};
+
 // `<tool> l <archive>` → 全部条目, 按归档顺序 (index 递增), 写进 entries.
-//
-// 返回 false = 包损坏 (unrar 非零退出), entries 置空. 包不存在返回 true +
-// 空 entries (这一天本来就没有数据, 不是错误).
 //
 // 源数据损坏是数据摄入的正常结局之一, 不 assert: 编码是几小时的批处理,
 // 一个坏包不该让整轮白跑. 调用方留日志并跳过这一天, 修好源文件后靠增量
 // 自动补齐. 编程错误 (popen 失败) 仍然当场 assert.
-bool list_archive(const std::string &archive_path, const std::string &archive_tool,
-                  std::vector<ArchiveEntry> &entries);
+ArchiveListStatus list_archive(const std::string &archive_path, const std::string &archive_tool,
+                               std::vector<ArchiveEntry> &entries);
 
 // 一次 `<tool> p -inul` 读取 paths 指定的文件, 按 sizes 在流上切分.
 //

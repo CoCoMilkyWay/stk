@@ -21,6 +21,28 @@ int cmp_size(size_t a, size_t b) {
   return (a > b) - (a < b);
 }
 
+const ImVec4 kPrereqOk(0.3f, 0.95f, 0.4f, 1.0f);
+const ImVec4 kPrereqBad(0.95f, 0.3f, 0.3f, 1.0f);
+
+// Confirm 弹窗里三条前置条件共用的一行: 标签 + 状态 + (不满足时) 同行一个
+// "风险自负"勾选. 勾上就地转绿 —— can_encode 立刻跟着放行, 不需要额外提示.
+// ack == nullptr 表示这条没有旁路 (如 File Check 的 N/A 档).
+void render_prereq_row(const char *name, bool ok, const char *status_label, bool *ack, const char *ack_id) {
+  const bool bypassed = !ok && ack && *ack;
+
+  // Checkbox 比纯文字行高一截 (frame padding) —— 对齐到 frame padding 才能
+  // 让 bullet/文字与它同一基线, 不然这一行看起来比别的行多出一截间距.
+  ImGui::AlignTextToFramePadding();
+  ImGui::BulletText("%s", name);
+  ImGui::SameLine(220);
+  ImGui::TextColored((ok || bypassed) ? kPrereqOk : kPrereqBad, "%s", status_label);
+
+  if (!ok && ack) {
+    ImGui::SameLine();
+    ImGui::Checkbox(ack_id, ack);
+  }
+}
+
 // Archives / Orders 两个页签走同一段渲染, 差别只在取哪一组计数.
 struct MissingDim {
   size_t Asset::AssetStats::*count;
@@ -664,7 +686,10 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
                            (file_check_result.passed || !file_check_result.archive_dir_exists);
 
       if (ImGui::Button("Start Encoding", ImVec2(150, 0))) {
-        state.skip_file_check_ack = false; // 每次打开弹窗都要重新勾
+        // 每次打开弹窗都要重新勾 —— 风险自负不跨会话累积
+        state.skip_file_check_ack = false;
+        state.skip_archive_exists_ack = false;
+        state.skip_archive_range_ack = false;
         state.show_confirm_dialog = true;
       }
 
@@ -734,56 +759,34 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     bool file_check_ok = file_check_result.was_run() &&
                          (file_check_result.passed || !file_check_result.archive_dir_exists);
 
-    bool can_encode = asset.archive.exists && archive_in_range &&
+    // Encode 按天增量, 归档不存在/不覆盖全区间时也能先编已有的部分 —— 三条
+    // 硬性前置条件都留一个"风险自负"的旁路, 不再是全有全无.
+    bool can_encode = (asset.archive.exists || state.skip_archive_exists_ack) &&
+                      (archive_in_range || state.skip_archive_range_ack) &&
                       (file_check_ok || state.skip_file_check_ack);
 
     ImGui::Text("Prerequisites:");
     ImGui::Spacing();
 
-    ImGui::BulletText("File Check:");
-    ImGui::SameLine();
     if (!file_check_result.was_run()) {
-      ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "Not Run");
-      ImGui::SameLine();
-      ImGui::TextDisabled("(请先运行 File Check)");
+      render_prereq_row("File Check:", false, "Not Run",
+                        &state.skip_file_check_ack, "风险自负##skip_fc");
     } else if (!file_check_result.archive_dir_exists) {
-      ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "N/A (no archive)");
+      render_prereq_row("File Check:", true, "N/A (no archive)", nullptr, nullptr);
     } else if (file_check_result.passed) {
-      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "Passed");
+      render_prereq_row("File Check:", true, "Passed", nullptr, nullptr);
     } else {
-      ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "Failed");
-      ImGui::SameLine();
-      ImGui::TextDisabled("(%zu errors)", file_check_result.naming_errors +
-                                              file_check_result.format_errors +
-                                              file_check_result.structure_errors +
-                                              file_check_result.zip_files);
+      const size_t errors = file_check_result.naming_errors + file_check_result.format_errors +
+                            file_check_result.structure_errors + file_check_result.zip_files;
+      render_prereq_row("File Check:", false, ("Failed (" + std::to_string(errors) + " errors)").c_str(),
+                        &state.skip_file_check_ack, "风险自负##skip_fc");
     }
 
-    ImGui::BulletText("Archive Path Exists:");
-    ImGui::SameLine();
-    if (asset.archive.exists) {
-      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "Yes");
-    } else {
-      ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "No");
-    }
+    render_prereq_row("Archive Path Exists:", asset.archive.exists, asset.archive.exists ? "Yes" : "No",
+                      &state.skip_archive_exists_ack, "风险自负##skip_archive_exists");
 
-    ImGui::BulletText("Archive In Range:");
-    ImGui::SameLine();
-    if (archive_in_range) {
-      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "Yes");
-    } else {
-      ImGui::TextColored(ImVec4(0.95f, 0.3f, 0.3f, 1.0f), "No");
-    }
-
-    if (!file_check_ok) {
-      ImGui::Spacing();
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.3f, 0.3f, 1.0f));
-      ImGui::TextWrapped(file_check_result.was_run()
-                             ? "File Check 未通过: 损坏/solid/结构错误的包会让编码中途 assert 崩溃或静默产出垃圾数据。"
-                             : "File Check 未运行: 无法确认归档格式与完整性, 编码可能中途失败。");
-      ImGui::PopStyleColor();
-      ImGui::Checkbox("跳过 File Check, 风险自负##skip_fc", &state.skip_file_check_ack);
-    }
+    render_prereq_row("Archive In Range:", archive_in_range, archive_in_range ? "Yes" : "No",
+                      &state.skip_archive_range_ack, "风险自负##skip_archive_range");
 
     if (!can_encode) {
       ImGui::Spacing();
@@ -1054,14 +1057,16 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
         if (ImGui::BeginTabItem("By Date")) {
           ImGui::Spacing();
 
-          ImGui::SeparatorText("Archives");
-          render_date_table("archive_date_table", asset, state.archive_date_view,
-                            DateDim::Archive, "archives");
+          if (ImGui::CollapsingHeader("Orders")) {
+            render_date_table("order_date_table", asset, state.order_date_view,
+                              DateDim::Orders, "orders");
+          }
 
           ImGui::Spacing();
-          ImGui::SeparatorText("Orders");
-          render_date_table("order_date_table", asset, state.order_date_view,
-                            DateDim::Orders, "orders");
+          if (ImGui::CollapsingHeader("Archives")) {
+            render_date_table("archive_date_table", asset, state.archive_date_view,
+                              DateDim::Archive, "archives");
+          }
 
           ImGui::EndTabItem();
         }
