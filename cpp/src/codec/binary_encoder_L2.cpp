@@ -361,6 +361,10 @@ constexpr size_t kMarketCumVolume = 11;
 constexpr size_t kMarketCumTurnover = 12;
 constexpr size_t kMarketHigh = 13;
 constexpr size_t kMarketLow = 14;
+
+// kMarketTurnoverBrokenYuan 的文本形式, 只算一次 —— parse_numeric_field 不认
+// 负号, 判定"卡死哨兵值"只能在换算前拿原始字段文本直接比对.
+const std::string kTurnoverBrokenText = std::to_string(kMarketTurnoverBrokenYuan);
 } // namespace
 
 bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSummary &summary) {
@@ -399,6 +403,9 @@ bool BinaryEncoder_L2::parse_market_tail(const char *data, size_t len, MarketSum
         summary.high = parse_price_to_fen(fields[kMarketHigh]);
         summary.low = parse_price_to_fen(fields[kMarketLow]);
         summary.cum_volume = cum_volume;
+        // parse_numeric_field 只认数字, 不认负号 —— 卡死哨兵值 (-2147483648) 会被
+        // 它读成 0, 所以要在换算前拿原始字段文本单独判一次.
+        summary.turnover_broken = fields[kMarketCumTurnover] == kTurnoverBrokenText;
         summary.cum_turnover = parse_numeric_field(fields[kMarketCumTurnover], 1);
         summary.turnover_capped = summary.cum_turnover == kMarketTurnoverCapYuan;
         if (cum_volume != 0)

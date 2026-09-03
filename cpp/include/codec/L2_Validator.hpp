@@ -71,7 +71,8 @@ struct MarketSummary {
   uint32_t low = 0;             // 分 — 最低价
   uint64_t cum_volume = 0;      // 股 — 当日累计成交量
   uint64_t cum_turnover = 0;    // 元 — 当日成交额
-  bool turnover_capped = false; // 源行情成交额被 int32 上限削顶
+  bool turnover_capped = false; // 源行情成交额被 int32 上限封顶 (kMarketTurnoverCapYuan)
+  bool turnover_broken = false; // 源行情成交额溢出后卡死在 int32 下限 (kMarketTurnoverBrokenYuan)
   // 快照还有"叫买/叫卖总量"两列, 这里不取: 那不是整本簿, 而是以最新价为中心
   // 约 ±10% 的带内汇总, 带外的挂单一概不计. 拿它跟逐笔推出的收盘残余簿对拍,
   // 比的是两个口径, 而交易所汇总的确切边界 (参考价与取整) 无法从数据反推 ——
@@ -101,8 +102,8 @@ enum Check : uint32_t {
   OverConsumed = 1u << 4,
   // 行情.csv 缺失或末行解析不出来 —— 没有对照真值, 下面所有对拍类判据无从判断.
   MarketAbsent = 1u << 5,
-  // Σ逐笔成交量 ≠ 快照当日累计成交量. 纯整数比较, 实测 6/6 精确到股.
-  // 这条是成交流完整性的判决书, 逐笔成交文件整体缺失也由它兜住.
+  // Σ逐笔成交量 ≠ 快照当日累计成交量 (允许 uint32 回绕造成的整数倍偏差, 见
+  // kUint32WrapCount). 这条是成交流完整性的判决书, 逐笔成交文件整体缺失也由它兜住.
   VolumeMismatch = 1u << 6,
   // 源数据字段超出 Order 的位宽, 落盘时会被 clamp_to_bound 静默截断.
   // 放在这里而不是放在 csv_to_order/csv_to_trade 里: 那两处只能默默截断, 事后
@@ -125,7 +126,9 @@ enum Check : uint32_t {
   // 涨跌停把单日成交带限制得远窄于窗口, 因此这条只可能在无涨跌幅限制的新股上
   // 命中. 日志给出 price_min/price_max 供判断.
   TradeBandUnfit = 1u << 10,
-  // Σ(成交价×成交量) 与快照当日成交额之差超出取整残差 (见 kTurnoverToleranceFen).
+  // Σ(成交价×成交量) 与快照当日成交额之差超出取整残差 (见 kTurnoverToleranceFen),
+  // 且不属于已知的 int32 溢出形态 (封顶/卡死/回绕, 见 MarketSummary::turnover_capped
+  // / turnover_broken 与 kUint32WrapCount).
   TurnoverMismatch = 1u << 11,
   // 最高/最低价与快照不符.
   //
@@ -170,11 +173,19 @@ inline constexpr uint32_t kAuctionCloseTime = 150100000;
 inline constexpr int64_t kTurnoverToleranceFen = 100;
 
 // 部分 2023 行情 CSV 的"当日成交额"来自 int32 字段, 高成交额标的会封顶到
-// 2147483647. 这个值不是可对拍真值, 只跳过 TurnoverMismatch, 其它校验照常跑.
+// 2147483647 (INT32_MAX). 这个值不是可对拍真值, 只跳过 TurnoverMismatch, 其它
+// 校验照常跑.
 inline constexpr uint64_t kMarketTurnoverCapYuan = 2147483647ull;
 
-// 部分批次的"当日成交额"按 uint32 回绕, 行情值等于真实成交额 mod 2^32.
-inline constexpr uint64_t kMarketTurnoverWrapYuan = 4294967296ull;
+// 另一批次的"当日成交额"越过 int32 上限后不是封顶, 而是溢出卡死在
+// -2147483648 (INT32_MIN), 此后整天都读到这个哨兵值. 同样不是可对拍真值,
+// 只跳过 TurnoverMismatch, 其它校验照常跑.
+inline constexpr int64_t kMarketTurnoverBrokenYuan = -2147483648ll;
+
+// 成交额 (元) / 成交量 (股) 两个累计字段在部分批次里都会按 uint32 回绕 ——
+// 行情值等于真实值 mod 2^32. 这里存的是纯回绕周期数, 换算到各自单位由调用处
+// 乘算 (成交额还要再乘 100 转成分).
+inline constexpr uint64_t kUint32WrapCount = 4294967296ull;
 
 // 判定"委托流完整"的单侧缺失率上限 (百分比). 实测是 0% 与 52%+ 的两极分布,
 // 取 1% 两边各有 50 倍余量. 低于此值视为委托流完整, 启用账目闭合类严判据.

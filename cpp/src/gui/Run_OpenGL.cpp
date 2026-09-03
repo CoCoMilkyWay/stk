@@ -44,8 +44,8 @@ int RunGUI() {
     data.request_reinit = true;
   };
 
-  // Create GUI tasks
-  auto tasks = GUI::CreateAllTasks();
+  // Create GUI tasks (Init 在其中按顺序立即触发, 后台检查无需等待手动打开页面)
+  auto tasks = GUI::CreateAllTasks(data);
 
   // Track selected task
   int selected_task = 0;
@@ -149,7 +149,7 @@ int RunGUI() {
 
   // Log font configuration
   char config_msg[256];
-  snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)", 
+  snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)",
            font_size, base_font_size, dpi_scale);
   data.terminal.AddLine(config_msg, Color::Blue());
 

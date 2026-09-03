@@ -112,7 +112,7 @@ void encoding_producer(SharedData &data,
     TraceTextS(date_str.c_str());
 
     const std::string archive_path = Utils::generate_archive_path(
-        data.config.archive_dir, date_str, data.config.archive_extension);
+        data.config.archive_dir, date_str, config::ARCHIVE_EXTENSION);
 
     // 增量新鲜度规则: 产物 (.bin / .skip 墓碑 / 整天账目) 存在且不老于
     // 归档 → 跳过.
@@ -158,7 +158,7 @@ void encoding_producer(SharedData &data,
     // ------------------------------------------------------------------
     std::vector<misc::ArchiveEntry> entries;
     const misc::ArchiveListStatus list_status =
-        misc::list_archive(archive_path, data.config.archive_tool, entries);
+        misc::list_archive(archive_path, config::ARCHIVE_TOOL, entries);
 
     if (list_status == misc::ArchiveListStatus::Corrupt) {
       // 包头链断了, 这天连有哪些资产都问不出来 — 留日志跳过, 不落完成标记,
@@ -243,7 +243,7 @@ void encoding_producer(SharedData &data,
       if (skip_existing) {
         const bool has_bin = fresh(Utils::generate_orders_path(
             data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
-            data.config.binary_extension));
+            config::BINARY_EXTENSION));
         const bool has_skip = !has_bin && fresh(Utils::generate_orders_path(
                                               data.config.orders_dir, date_str, asset.asset_code,
                                               asset.exchange, kEncodeTombstoneExt));
@@ -606,7 +606,7 @@ void encoding_worker(SharedData &data,
       const std::string asset_full = asset.asset_code + "." + asset.exchange;
       const std::string out_path = Utils::generate_orders_path(
           data.config.orders_dir, batch.date, asset.asset_code, asset.exchange,
-          data.config.binary_extension);
+          config::BINARY_EXTENSION);
       const std::string skip_path = Utils::generate_orders_path(
           data.config.orders_dir, batch.date, asset.asset_code, asset.exchange,
           kEncodeTombstoneExt);
@@ -652,7 +652,7 @@ void encoding_worker(SharedData &data,
     if (!paths.empty()) {
       TraceN("StreamBatch");
       stream_ok = misc::stream_archive_files(
-          batch.archive_path, data.config.archive_tool, paths, sizes,
+          batch.archive_path, config::ARCHIVE_TOOL, paths, sizes,
           [&](size_t i, const char *csv, size_t len) {
             const StreamSlot &slot = slots[i];
 
@@ -724,7 +724,7 @@ void encoding_worker(SharedData &data,
       progress_handle.set_label(asset.asset_code + " " + asset.asset_name);
       fed_any = true;
       const bool ok = misc::stream_archive_files(
-          batch.archive_path, data.config.archive_tool, own_paths, own_sizes,
+          batch.archive_path, config::ARCHIVE_TOOL, own_paths, own_sizes,
           [&](size_t i, const char *csv, size_t len) {
             feed_slot(encoder, own[i].second, csv, len);
           },

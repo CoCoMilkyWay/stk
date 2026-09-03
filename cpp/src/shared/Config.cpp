@@ -47,10 +47,6 @@ void Config::SyncStringBuffers() {
   snprintf(csv_market_data_buf, sizeof(csv_market_data_buf), "%s", csv_market_data.c_str());
   snprintf(csv_tick_trade_buf, sizeof(csv_tick_trade_buf), "%s", csv_market_trade.c_str());
   snprintf(csv_tick_order_buf, sizeof(csv_tick_order_buf), "%s", csv_market_order.c_str());
-  snprintf(archive_extension_buf, sizeof(archive_extension_buf), "%s", archive_extension.c_str());
-  snprintf(archive_tool_buf, sizeof(archive_tool_buf), "%s", archive_tool.c_str());
-  snprintf(archive_extract_cmd_buf, sizeof(archive_extract_cmd_buf), "%s", archive_extract_cmd.c_str());
-  snprintf(binary_extension_buf, sizeof(binary_extension_buf), "%s", binary_extension.c_str());
 }
 
 void Config::AutoSync() {
@@ -104,10 +100,6 @@ bool Config::LoadFromFile() {
   csv_market_data = j.value("csv_market_data", csv_market_data);
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
   csv_market_order = j.value("csv_market_order", csv_market_order);
-  archive_extension = j.value("archive_extension", archive_extension);
-  archive_tool = j.value("archive_tool", archive_tool);
-  archive_extract_cmd = j.value("archive_extract_cmd", archive_extract_cmd);
-  binary_extension = j.value("binary_extension", binary_extension);
 
   return true;
 }
@@ -127,10 +119,6 @@ bool Config::SaveToFile() {
   j["csv_market_data"] = csv_market_data;
   j["csv_market_trade"] = csv_market_trade;
   j["csv_market_order"] = csv_market_order;
-  j["archive_extension"] = archive_extension;
-  j["archive_tool"] = archive_tool;
-  j["archive_extract_cmd"] = archive_extract_cmd;
-  j["binary_extension"] = binary_extension;
 
   std::ofstream file(filepath);
   if (!file.is_open()) {

@@ -23,12 +23,6 @@ struct Config {
   std::string csv_market_trade = "逐笔成交.csv";
   std::string csv_market_order = "逐笔委托.csv";
 
-  // L2 Binary Database Decompression/Encoding
-  std::string archive_extension = ".rar";
-  std::string archive_tool = "unrar";
-  std::string archive_extract_cmd = "x";
-  std::string binary_extension = ".bin";
-
   // Config file path
   std::string filepath = "../../../../config/config.json";
 
@@ -44,10 +38,6 @@ struct Config {
   char csv_market_data_buf[128] = "";
   char csv_tick_trade_buf[128] = "";
   char csv_tick_order_buf[128] = "";
-  char archive_extension_buf[32] = "";
-  char archive_tool_buf[64] = "";
-  char archive_extract_cmd_buf[32] = "";
-  char binary_extension_buf[32] = "";
 
   // Auto-sync state
   bool dirty = false;
@@ -81,10 +71,18 @@ private:
 };
 
 // ============================================================================
-// 基本面数据 sync 常量 (api/bigquant + api/tushare; 编译期, 不进 config.json —
-//   凭据/端点/流水线参数在 api 层深处 (ctor 默认参/重试循环) 以 constexpr 消费)
+// 编译期常量 (不进 config.json — 从未在运行时被改过, GUI 暴露成"可配置项"
+//   反而误导; 基本面 sync 凭据/端点/流水线参数在 api 层深处以 constexpr 消费)
 // ============================================================================
 namespace config {
+
+// ---- L2 归档/二进制数据库 (与 unrar 语法绑定, 非真正可插拔) ----
+//   misc/archive.cpp 的列表/流式解压命令行硬编码 unrar 语法 ("vt" 技术列表 /
+//   "p -inul" 抽取到 stdout) —— 换成 7z/unzip 会拼出错误命令, ARCHIVE_TOOL
+//   本质是常量而非运行时可切换的选项.
+inline constexpr const char *ARCHIVE_EXTENSION = ".rar"; // 归档压缩包扩展名
+inline constexpr const char *ARCHIVE_TOOL = "unrar";     // 解压工具 (语法已绑死, 见上)
+inline constexpr const char *BINARY_EXTENSION = ".bin";  // L2 二进制产物扩展名
 
 // ---- 代码变更 (同一家公司换了证券代码) ----
 // A 股换代码极罕见 —— 重大资产重组通常也不换 —— 全库实测只有中航电测一例 (300114.SZ → 302132.SZ)

@@ -9,7 +9,7 @@
 
 namespace GUI {
 
-std::vector<TaskHandle> CreateAllTasks() {
+std::vector<TaskHandle> CreateAllTasks(SharedData &data) {
   std::vector<TaskHandle> tasks;
   tasks.reserve(5);
 
@@ -18,6 +18,14 @@ std::vector<TaskHandle> CreateAllTasks() {
   tasks.push_back(Tasks::CreateDatabaseTask());
   tasks.push_back(Tasks::CreateFeaturesTask());
   tasks.push_back(Tasks::CreateToolsTask());
+
+  // 按 push 顺序立即 Init 一遍 (与"选中才 DrawPanel"解耦, 后台检查提前起):
+  // Settings 先把 config.json 落到内存, Database 才能在第一帧前拿到真实
+  // backtest range 去跑覆盖检查 —— 顺序即依赖, 不需要额外判断.
+  for (auto &handle : tasks) {
+    if (handle.Init)
+      handle.Init(data);
+  }
 
   return tasks;
 }
@@ -28,6 +36,7 @@ void CleanupAllTasks(std::vector<TaskHandle> &tasks) {
       handle.Destroy();
     }
 
+    handle.Init = {};
     handle.OnExpand = {};
     handle.OnCollapse = {};
     handle.DrawPanel = {};
@@ -57,8 +66,8 @@ void ReinitAllTasks(std::vector<TaskHandle> &tasks, int &selected_task, SharedDa
   // Step 5: Reinitialize icon bar
   TaskIconBar::InitIconBar(data.coromgr);
 
-  // Step 6: Recreate all tasks
-  tasks = CreateAllTasks();
+  // Step 6: Recreate all tasks (Init 在其中按顺序立即触发)
+  tasks = CreateAllTasks(data);
 
   // Step 7: Expand first task
   selected_task = 0;

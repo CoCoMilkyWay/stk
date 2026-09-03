@@ -95,7 +95,7 @@ void sequential_worker(int worker_id,
         // 各存一份字符串
         const std::string orders_file = Utils::generate_orders_path(
             data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
-            data.config.binary_extension);
+            config::BINARY_EXTENSION);
 
         size_t order_num = 0;
         const L2::Order *orders = nullptr;

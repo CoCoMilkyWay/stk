@@ -83,15 +83,28 @@ static inline bool clock_invalid(uint32_t time_int) {
   return hour > 23 || min > 59 || sec > 59;
 }
 
-static inline bool turnover_delta_is_uint32_wrap(int64_t delta_fen) {
-  const int64_t abs_delta = delta_fen < 0 ? -delta_fen : delta_fen;
-  constexpr int64_t wrap_fen = static_cast<int64_t>(kMarketTurnoverWrapYuan) * 100;
-  assert(wrap_fen > kTurnoverToleranceFen && "uint32 成交额回绕周期必须大于容差");
-  if (abs_delta <= kTurnoverToleranceFen)
+// delta 是否落在 uint32 回绕周期的整数倍附近 (容差 tolerance 以内). 成交额/
+// 成交量两个字段共用这一条, 差别只在 wrap_unit 与 tolerance 的换算.
+static inline bool delta_is_uint32_wrap_multiple(int64_t delta, int64_t wrap_unit,
+                                                 int64_t tolerance) {
+  assert(wrap_unit > tolerance && "uint32 回绕周期必须大于容差");
+  const int64_t abs_delta = delta < 0 ? -delta : delta;
+  if (abs_delta <= tolerance)
     return true;
 
-  const int64_t rem = abs_delta % wrap_fen;
-  return rem <= kTurnoverToleranceFen || wrap_fen - rem <= kTurnoverToleranceFen;
+  const int64_t rem = abs_delta % wrap_unit;
+  return rem <= tolerance || wrap_unit - rem <= tolerance;
+}
+
+static inline bool turnover_delta_is_uint32_wrap(int64_t delta_fen) {
+  constexpr int64_t wrap_fen = static_cast<int64_t>(kUint32WrapCount) * 100;
+  return delta_is_uint32_wrap_multiple(delta_fen, wrap_fen, kTurnoverToleranceFen);
+}
+
+// 成交量是纯整数股, 不像成交额那样有取整残差, 容差取 0 —— 只放行回绕本身.
+static inline bool volume_delta_is_uint32_wrap(int64_t delta_shares) {
+  constexpr int64_t wrap_shares = static_cast<int64_t>(kUint32WrapCount);
+  return delta_is_uint32_wrap_multiple(delta_shares, wrap_shares, 0);
 }
 
 void Validator::run(const std::vector<CSVOrder> &orders,
@@ -287,12 +300,13 @@ void Validator::run(const std::vector<CSVOrder> &orders,
   }
 
   out.volume_delta = static_cast<int64_t>(cum_volume) - static_cast<int64_t>(market.cum_volume);
-  if (out.volume_delta != 0)
+  if (!volume_delta_is_uint32_wrap(out.volume_delta))
     out.flags |= Check::VolumeMismatch;
 
   out.turnover_delta = static_cast<int64_t>(cum_turnover_fen) -
                        static_cast<int64_t>(market.cum_turnover) * 100;
-  if (!market.turnover_capped && !turnover_delta_is_uint32_wrap(out.turnover_delta))
+  const bool turnover_unreliable = market.turnover_capped || market.turnover_broken;
+  if (!turnover_unreliable && !turnover_delta_is_uint32_wrap(out.turnover_delta))
     out.flags |= Check::TurnoverMismatch;
 
   if (trade_count > 0 && (high != market.high || low != market.low))
@@ -310,12 +324,12 @@ static constexpr CheckMeta kCheckMeta[kCheckBitCount] = {
     {"side", "trade_side_missing", "成交任一侧 id 查不到\n只在委托流完整时判 (单侧缺失率 ≤ 1%)"},
     {"over", "over_consumed", "某挂单被扣减的量超过它挂出的量\n只在委托流完整时判"},
     {"mkt", "market_absent", "行情.csv 缺失或末行解析不出来\n没有对照真值, 对拍类判据无从判断"},
-    {"vol", "volume_mismatch", "Σ逐笔成交量 ≠ 快照当日累计成交量\n成交流完整性的判决书"},
+    {"vol", "volume_mismatch", "Σ逐笔成交量 ≠ 快照当日累计成交量 (已放行 uint32 回绕)\n成交流完整性的判决书"},
     {nullptr, nullptr, nullptr}, // bit 7: Check 里没有这一位
     {"ovf", "field_overflow", "源数据字段超出 Order 位宽, 落盘会被静默截断"},
     {"lob", "lob_unusable", "LimitOrderBook 处理不了的记录\n数量为 0, 或定位 id 为 0"},
     {"band", "trade_band_unfit", "当日成交带装不进 LOB 档位窗口\n只可能在无涨跌幅限制的新股上命中"},
-    {"turn", "turnover_mismatch", "Σ(成交价×成交量) 与快照当日成交额之差超出取整残差"},
+    {"turn", "turnover_mismatch", "Σ(成交价×成交量) 与快照当日成交额之差超出取整残差\n已放行 int32 封顶/卡死与 uint32 回绕"},
     {"price", "price_mismatch", "最高/最低价与快照不符"},
 };
 

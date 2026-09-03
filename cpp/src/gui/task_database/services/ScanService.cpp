@@ -117,7 +117,7 @@ awaitable<void> ScanService::coro_scan() {
     // 几个之后争用反而吃掉收益.
     auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
     co_await data_.asset.coro_scan_binary_database(io_, data_.config.orders_dir,
-                                                   data_.config.binary_extension, scan_pool);
+                                                   config::BINARY_EXTENSION, scan_pool);
   }
 
   // ========================================
@@ -130,7 +130,7 @@ awaitable<void> ScanService::coro_scan() {
 
     auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
     co_await data_.asset.coro_scan_archive_database(io_, data_.config.archive_dir,
-                                                    data_.config.archive_extension, scan_pool);
+                                                    config::ARCHIVE_EXTENSION, scan_pool);
   }
 
   // ========================================

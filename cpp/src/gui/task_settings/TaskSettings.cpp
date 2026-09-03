@@ -392,67 +392,67 @@ private:
     return changed;
   }
 
+  // 只读一行: 与 draw_xxx_row 同构 (Label/Tooltip/Value 三段), 只是 Value 用
+  // TextDisabled 而不是 InputText —— 这些是编译期常量 (namespace config, 不
+  // 进 config.json), 标灰即表明"能看不能改".
+  static void draw_readonly_row(const char *label, const char *tooltip, const std::string &value) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("%s", label);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("%s", tooltip);
+    }
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("%s", value.c_str());
+  }
+
   bool DrawDatabaseSection(Config &cfg) {
     bool changed = false;
     if (ImGui::CollapsingHeader("数据库配置", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::TextDisabled("universe 无需配置: encode / features 两级 cache 均为全市场日频,"
-                          " A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json)");
-      ImGui::TextDisabled("基本面数据 (BigQuant + Tushare): 常量见 shared/Config.hpp namespace config,"
-                          " 落地 output/fundamental/");
-    }
-    return changed;
-  }
+      ImGui::TextWrapped("universe 无需配置: encode / features 两级 cache 均为全市场日频,"
+                         " A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json)");
+      ImGui::Spacing();
 
-  bool DrawBinarySection(Config &cfg) {
-    bool changed = false;
-    if (ImGui::CollapsingHeader("L2二进制数据库 解压/编码", ImGuiTreeNodeFlags_DefaultOpen)) {
-      if (ImGui::BeginTable("binary_table", 2, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
-        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+      auto readonly_table = [](const char *table_id, auto draw_rows) {
+        if (ImGui::BeginTable(table_id, 2, ImGuiTableFlags_SizingFixedFit)) {
+          ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
+          ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+          draw_rows();
+          ImGui::EndTable();
+        }
+      };
 
-        auto draw_binary_row = [&](const char *label, const char *tooltip, const char *input_id, char *buffer, size_t size, std::string &target) {
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::AlignTextToFramePadding();
-          ImGui::Text("%s", label);
-          if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", tooltip);
-          }
-          ImGui::TableNextColumn();
-          ImGui::SetNextItemWidth(-1);
-          if (ImGui::InputText(input_id, buffer, size)) {
-            target = buffer;
-            changed = true;
-          }
-        };
+      // 数据源凭据 (与官方 CLI / 控制台 token 同源, 永不回传)
+      ImGui::SeparatorText("数据源凭据");
+      readonly_table("db_credential_table", [] {
+        draw_readonly_row("BigQuant AK", "Flight Basic Token 用户名", config::BIGQUANT_AK);
+        draw_readonly_row("BigQuant SK", "Flight Basic Token 密码 (永不回传)", config::BIGQUANT_SK);
+        draw_readonly_row("Tushare Token", "Tushare pro token (*_vip 接口需 5000+ 积分)", config::TUSHARE_TOKEN);
+      });
 
-        draw_binary_row("Archive Extension",
-                        "压缩文件扩展名 (.rar/.7z/.zip)",
-                        "##archive_ext",
-                        cfg.archive_extension_buf,
-                        sizeof(cfg.archive_extension_buf),
-                        cfg.archive_extension);
-        draw_binary_row("Archive Tool",
-                        "压缩文件解压工具 (unrar/7z/unzip: 支持高效单文件解压(非固实))",
-                        "##archive_tool",
-                        cfg.archive_tool_buf,
-                        sizeof(cfg.archive_tool_buf),
-                        cfg.archive_tool);
-        draw_binary_row("Archive Extract Cmd",
-                        "压缩文件解压选项 (x for unrar, x for 7z)",
-                        "##archive_cmd",
-                        cfg.archive_extract_cmd_buf,
-                        sizeof(cfg.archive_extract_cmd_buf),
-                        cfg.archive_extract_cmd);
-        draw_binary_row("Binary Extension",
-                        "L2 二进制文件扩展名",
-                        "##binary_ext",
-                        cfg.binary_extension_buf,
-                        sizeof(cfg.binary_extension_buf),
-                        cfg.binary_extension);
+      // 数据源端点 (host / port / 超时 / 重试)
+      ImGui::SeparatorText("数据源端点");
+      readonly_table("db_endpoint_table", [] {
+        draw_readonly_row("BigQuant Flight URI", "数据面: 明文 gRPC + Arrow IPC RecordBatch, 零拷贝", config::BIGQUANT_FLIGHT_URI);
+        draw_readonly_row("gRPC Max Metadata", "SDK 默认 8KB 会被 JWT 撑爆 [bytes]", std::to_string(config::BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE));
+        draw_readonly_row("Tushare Host", "明文 JSON POST, 三张事件表", config::TUSHARE_HTTP_HOST);
+        draw_readonly_row("Tushare Port", "走 80, 省掉 SSL 依赖", config::TUSHARE_HTTP_PORT);
+        draw_readonly_row("Tushare Timeout", "单次连接+读写整体时长 [s]", std::to_string(config::TUSHARE_HTTP_TIMEOUT_SECONDS));
+        draw_readonly_row("Tushare Retry Max", "额外重试次数 (共 N+1 次尝试)", std::to_string(config::TUSHARE_HTTP_RETRY_MAX));
+        draw_readonly_row("Tushare Retry Interval", "重试间隔 [s], 线性递增", std::to_string(config::TUSHARE_HTTP_RETRY_INTERVAL_SECONDS));
+      });
 
-        ImGui::EndTable();
-      }
+      // 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet)
+      ImGui::SeparatorText("抓取流水线");
+      readonly_table("db_pipeline_table", [] {
+        draw_readonly_row("Pipeline Start", "数据同步起点, 与回测窗口语义不同, 不随其收窄", config::PIPELINE_START_DATE);
+        draw_readonly_row("Lookback Days", "月末仍在窗口内视为开放月 (兜服务端回填修订)", std::to_string(config::PIPELINE_LOOKBACK_DAYS));
+        draw_readonly_row("Dedup Window", "parquet mtime 距今 < 该值则本表跳过 [s]", std::to_string(config::PIPELINE_DEDUP_WINDOW_SECONDS));
+      });
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("以上均为编译期常量 (shared/Config.hpp namespace config), 不进 config.json");
     }
     return changed;
   }
@@ -478,6 +478,12 @@ public:
     return "Settings";
   }
 
+  // 与 DrawPanel/选中态解耦: 创建后立即落盘配置到内存, 让 Database 等任务的
+  // Init 能在第一帧前拿到真实 backtest range (顺序见 Tasks.cpp::CreateAllTasks).
+  void Init(SharedData &data) {
+    EnsureConfigReady(data);
+  }
+
   void OnExpand() {
     is_expanded_ = true;
   }
@@ -498,7 +504,6 @@ public:
     changed |= DrawPeriodSection(cfg);
     changed |= DrawPathSection(cfg);
     changed |= DrawCsvSection(cfg);
-    changed |= DrawBinarySection(cfg);
     changed |= DrawDatabaseSection(cfg);
 
     if (changed) {
@@ -523,6 +528,7 @@ TaskHandle CreateSettingsTask() {
   handle.name = instance->GetName();
   handle.task_instance = instance.get();
   handle.storage = instance;
+  handle.Init = [instance](SharedData &data) { instance->Init(data); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
   handle.DrawPanel = [instance](SharedData &data) { instance->DrawPanel(data); };

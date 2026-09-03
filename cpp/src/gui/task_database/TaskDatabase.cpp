@@ -54,6 +54,19 @@ public:
     return "Database";
   }
 
+  // 与 DrawPanel/选中态解耦: 创建后立即起后台检查 (基本面 sync → L2 scan),
+  // 不需要用户手动点开 Database 页面. Init 只调一次 (initialized_ 兜底),
+  // 顺序依赖见 Tasks.cpp::CreateAllTasks (Settings 先落盘配置到内存).
+  void Init(SharedData &data) {
+    if (initialized_)
+      return;
+    coro_mgr_ = &data.coromgr;
+    data_ = &data;
+    config_ = &data.config;
+    InitializeServices(data);
+    initialized_ = true;
+  }
+
   void OnExpand() {
     is_expanded_ = true;
   }
@@ -63,19 +76,7 @@ public:
   }
 
   void DrawPanel(SharedData &data) {
-    if (!coro_mgr_) {
-      coro_mgr_ = &data.coromgr;
-      data_ = &data;
-      config_ = &data.config;
-    }
-
-    // Initialize services on first draw (non-blocking)
-    if (!initialized_) {
-      InitializeServices(data);
-      initialized_ = true;
-    }
-
-    // Always render UI - show initialization progress if not ready
+    // Services 已在 Init() 里提前起好, 中途打开本页只管渲染当前进度.
     RenderUI();
 
     // Handle encoding trigger from UI
@@ -409,6 +410,7 @@ TaskHandle CreateDatabaseTask() {
   handle.name = instance->GetName();
   handle.task_instance = instance.get();
   handle.storage = instance;
+  handle.Init = [instance](SharedData &data) { instance->Init(data); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
   handle.DrawPanel = [instance](SharedData &data) {
