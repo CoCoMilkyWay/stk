@@ -1,15 +1,13 @@
 // Scan Service Implementation
 #include "gui/task_database/services/ScanService.hpp"
+#include "gui/coro/CoroManager.hpp"
 #include "gui/task_database/infrastructure/ScanThreadPool.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cassert>
-#include <chrono>
 #include <filesystem>
 
 namespace GUI::Database {
@@ -41,10 +39,14 @@ void ScanService::trigger_scan() {
   // Clear old result, update status
   last_check_ = DatabaseCheckResult{};
   status_ = ScanStatus::InitializingCheck;
+  // 对外的"扫描进行中": Overview 页靠它压住重复触发的按钮. 与 is_scanning_
+  // 同起同落 —— 后者是本服务的锁, 前者是 UI 看得见的那一份.
+  data_.taskstate.database.l2_scan_inflight = true;
 
   // Launch coroutine
   boost::asio::co_spawn(io_, [this]() -> awaitable<void> {
     co_await coro_scan();
+    data_.taskstate.database.l2_scan_inflight = false;
     is_scanning_.store(false); // Release lock after completion
     // Notify completion
     if (on_complete_callback_) {
@@ -53,7 +55,6 @@ void ScanService::trigger_scan() {
 }
 
 awaitable<void> ScanService::coro_scan() {
-  using namespace std::chrono;
   namespace fs = std::filesystem;
 
   DatabaseCheckResult result;
@@ -61,7 +62,7 @@ awaitable<void> ScanService::coro_scan() {
   // ========================================
   // Phase 0: Initialization - yield immediately, let GUI render
   // ========================================
-  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+  co_await Coro::Yield(io_);
 
   // ========================================
   // Phase 1: Validate config (before any FS operations)
@@ -88,7 +89,7 @@ awaitable<void> ScanService::coro_scan() {
   // ========================================
 
   status_ = ScanStatus::CheckingFileSystem;
-  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+  co_await Coro::Yield(io_);
 
   bool binary_exists = fs::exists(data_.config.orders_dir) &&
                        !fs::is_empty(data_.config.orders_dir);
@@ -110,7 +111,7 @@ awaitable<void> ScanService::coro_scan() {
 
   if (!data_.asset.binary.scanned) {
     status_ = ScanStatus::ScanningBinary;
-    co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+    co_await Coro::Yield(io_);
 
     // 线程数不跟核数走: 读头的成本压在内核的路径解析上, 加线程并不摊薄.
     // 451 万文件实测 8/24/72 线程分别是 4.50 / 3.27 / 4.09 秒 —— 超过二十
@@ -126,7 +127,7 @@ awaitable<void> ScanService::coro_scan() {
 
   if (!data_.asset.archive.scanned) {
     status_ = ScanStatus::ScanningArchive;
-    co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+    co_await Coro::Yield(io_);
 
     auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
     co_await data_.asset.coro_scan_archive_database(io_, data_.config.archive_dir,
@@ -138,27 +139,25 @@ awaitable<void> ScanService::coro_scan() {
   // ========================================
 
   status_ = ScanStatus::ComputingCoverage;
-  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+  co_await Coro::Yield(io_);
 
   // required_dates 的 ground truth = 基本面交易日历 (调用方保证基本面 Ready:
   // StateManager::initialize / TriggerRefreshFlow 只在 Ready 后触发扫描)
   assert(!data_.assetinfo.get_stock_days().empty() && "基本面日历未就绪, 不应触发扫描");
-  data_.asset.compute_backtest_coverage(backtest_start, backtest_end, data_.assetinfo);
+  co_await data_.asset.coro_compute_backtest_coverage(io_, backtest_start, backtest_end,
+                                                      data_.assetinfo);
 
   // Encode 的缺失表、Table 的 Orders%、Browser 的完整性是同一份统计, 在这里
   // 一次算完. 放在扫描里而不是各页首帧惰性算: 那是 885 天 × 5800 资产的双重
   // 遍历, 摊在渲染帧上会直接卡住一次交互.
-  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
-  data_.asset.compute_coverage_statistics(data_.assetinfo.get_stock_info(),
-                                          data_.assetinfo.get_stock_days(),
-                                          data_.assetinfo.get_suspended());
+  co_await data_.asset.coro_compute_coverage_statistics(io_, data_.assetinfo);
 
   // ========================================
   // Phase 6: Analyze and determine status - update status, yield, then analyze
   // ========================================
 
   status_ = ScanStatus::AnalyzingStatus;
-  co_await boost::asio::steady_timer(io_, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
+  co_await Coro::Yield(io_);
 
   // Populate result from Asset data
   result.binary.exists = data_.asset.binary.exists;

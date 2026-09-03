@@ -246,11 +246,16 @@ struct Asset {
       const std::string &archive_extension,
       std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
 
-  // Coverage analysis (lightweight, call after config changes)
+  // Coverage analysis (call after scan / config changes)
   // Also computes backtest range statistics using cached data
   // required_dates 的 ground truth = 基本面交易日历 (assetinfo.stock_days)
-  void compute_backtest_coverage(const std::string &start, const std::string &end,
-                                 const AssetInfo &assetinfo);
+  //
+  // 协程而不是普通函数: 末段要遍历全库 date_info (资产数 × 交易日, 五百万条),
+  // 单线程不间断跑会卡住一帧 —— 按资产分批, 每批让步 (见 Coro::Yield).
+  boost::asio::awaitable<void> coro_compute_backtest_coverage(
+      boost::asio::io_context &io,
+      const std::string &start, const std::string &end,
+      const AssetInfo &assetinfo);
 
   // Sync AssetItem fields from AssetInfo (call after AssetInfo updates)
   template <typename StockInfoMap>
@@ -288,136 +293,20 @@ struct Asset {
     }
   }
 
-  // Compute per-date browser statistics (requires stock_info for delist dates)
-  // Should be called once after loading stock_info and stock_days
+  // Compute per-date browser statistics (Browser 完整性 / Table 的 Orders% /
+  // Encode 的缺失表, 同一份统计一次算完)
   //
   // 分母 = 当日"本该有逐笔"的标的: 已上市未退市, 且排除
   //   - 北交所 (L2 archive 从不覆盖 .BJ)
   //   - 当日全天停牌 (suspended, 无逐笔可编码)
   // 这两项不剔掉的话全市场完整性会被压到 ~94%, 掩盖真实缺口.
-  template <typename StockInfoMap, typename StockDaysVec, typename SuspendedMap>
-  void compute_coverage_statistics(const StockInfoMap &stock_info, const StockDaysVec &stock_days,
-                                   const SuspendedMap &suspended) {
-    date_stats.clear();
-    date_gaps.clear();
-    asset_stats.assign(items.size(), AssetStats{});
-    ++asset_stats_generation;
-
-    auto date_to_dense = [](const std::string &date_dashed) -> std::string {
-      if (date_dashed.size() == 10 && date_dashed[4] == '-' && date_dashed[7] == '-') {
-        return date_dashed.substr(0, 4) + date_dashed.substr(5, 2) + date_dashed.substr(8, 2);
-      }
-      return "";
-    };
-
-    // 全库口径的两列 (Table 的 Days / Orders) 只跟 date_info 有关, 单独扫一遍
-    for (size_t i = 0; i < items.size(); ++i) {
-      AssetStats &st = asset_stats[i];
-      st.total_days = items[i].date_info.size();
-      for (const auto &[date, info] : items[i].date_info)
-        st.total_orders += info.order_count;
-    }
-
-    // 每资产的常量先摊平: 交易所小写全码 / 上市 / 退市. 这些原先是在
-    // 日期×资产的内循环里现算的, 五百万次 string 拼接 + map 查找.
-    struct AssetKey {
-      std::string full_code; // "sh.600128"
-      std::string list_date; // YYYYMMDD, 空 = 不限
-      std::string delist_date;
-      bool excluded = false; // 北交所: L2 archive 从不覆盖
-    };
-    std::vector<AssetKey> keys(items.size());
-    for (size_t i = 0; i < items.size(); ++i) {
-      AssetKey &k = keys[i];
-      if (items[i].exchange == "BJ") {
-        k.excluded = true;
-        continue;
-      }
-      std::string exchange_lower = items[i].exchange;
-      std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-      k.full_code = exchange_lower + "." + items[i].asset_code;
-
-      auto info_it = stock_info.find(k.full_code);
-      if (info_it != stock_info.end()) {
-        if (!info_it->second.ipoDate.empty())
-          k.list_date = date_to_dense(info_it->second.ipoDate);
-        if (!info_it->second.outDate.empty())
-          k.delist_date = date_to_dense(info_it->second.outDate);
-      }
-    }
-
-    const bool has_db_range = !binary.min_date.empty() && !binary.max_date.empty();
-    const bool has_bt_range = !backtest.start.empty() && !backtest.end.empty();
-
-    for (const auto &day_info : stock_days) {
-      if (day_info.size() < 2)
-        continue;
-
-      const std::string date_dense = date_to_dense(day_info[0]);
-      if (date_dense.empty())
-        continue;
-
-      // per-date 统计沿用全库范围; per-asset 缺口只看回测区间 —— 区间外没编
-      // 码不算缺, 那不是要跑的行情.
-      const bool in_db_range =
-          !has_db_range || (date_dense >= binary.min_date && date_dense <= binary.max_date);
-      const bool in_backtest = has_bt_range && day_info[1] == "1" &&
-                               date_dense >= backtest.start && date_dense <= backtest.end;
-      if (!in_db_range && !in_backtest)
-        continue;
-
-      // 当日停牌名单 (无条目 = 该日无人停牌)
-      auto susp_it = suspended.find(date_dense);
-      const auto *susp_today = (susp_it != suspended.end()) ? &susp_it->second : nullptr;
-
-      const bool archive_has_day = archive.dates.count(date_dense) > 0;
-      DateStats *ds = in_db_range ? &date_stats[date_dense] : nullptr;
-      // 一天一个条目, 哪怕零缺口 —— By Date 表要能说"这天检查过, 没事"
-      DateGap *dg = in_backtest ? &date_gaps[date_dense] : nullptr;
-
-      for (size_t i = 0; i < items.size(); ++i) {
-        const AssetKey &k = keys[i];
-        if (k.excluded)
-          continue;
-        if (susp_today && susp_today->count(k.full_code))
-          continue;
-        if (!k.list_date.empty() && date_dense < k.list_date)
-          continue;
-        // 退市日当天已经不交易了 (最后交易日是它之前那个交易日), 用 > 的话
-        // 每只退市股都会平白多出一天缺口 —— 实测 145 只退市股各缺 1 天, 缺
-        // 的正是各自的 delist_date.
-        if (!k.delist_date.empty() && date_dense >= k.delist_date)
-          continue;
-
-        auto date_it = items[i].date_info.find(date_dense);
-        const bool has_orders = date_it != items[i].date_info.end() && date_it->second.orders_encoded;
-
-        if (ds) {
-          ds->total_assets++;
-          if (has_orders)
-            ds->assets_with_orders++;
-        }
-
-        if (in_backtest) {
-          AssetStats &st = asset_stats[i];
-          st.expected_days++;
-          dg->expected++;
-          if (!has_orders) {
-            st.orders_missing++;
-            dg->orders_missing++;
-            if (st.orders_missing_sample.size() < kMissingSample)
-              st.orders_missing_sample.push_back(date_dense);
-          }
-          if (!archive_has_day) {
-            st.archive_missing++;
-            dg->archive_missing++;
-            if (st.archive_missing_sample.size() < kMissingSample)
-              st.archive_missing_sample.push_back(date_dense);
-          }
-        }
-      }
-    }
-  }
+  //
+  // 协程而不是普通函数: 交易日 × 资产的双重遍历 (885 × 5800 量级), 按交易日
+  // 分批让步 (见 Coro::Yield). 结果先算在局部, 算完一次性换进来 —— 中途打开
+  // 页面看到的是"上一版或没有", 不会是半成品.
+  boost::asio::awaitable<void> coro_compute_coverage_statistics(
+      boost::asio::io_context &io,
+      const AssetInfo &assetinfo);
 };
 
 // ============================================================================

@@ -87,7 +87,7 @@ stk/
 │   │   │   │   ├── models/SharedTypes.hpp               # 🖥️ 数据模型
 │   │   │   │   ├── services/                            # 🖥️ 业务服务层 (Asset/Encoding/Fundamental/L2Database/Scan/Classifier/StateManager)
 │   │   │   │   ├── infrastructure/ScanThreadPool.hpp    # 🖥️ 扫描线程池
-│   │   │   │   └── ui/                                  # 🖥️ UI (TabBrowser/TabOverview/TabTable/TabEncode/CrossSectionAnalysis)
+│   │   │   │   └── ui/                                  # 🖥️ UI (TabOverview 基本面同步 ↓ /TabBrowser/TabTable/TabEncode/CrossSectionAnalysis)
 │   │   │   └── task_features/                           # 🖥️ 特征计算管理
 │   │   │       ├── TaskFeatures.hpp                     # 🖥️ 特征任务主界面
 │   │   │       ├── services/                            # 🖥️ 特征服务层
@@ -147,10 +147,11 @@ stk/
     │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A]
     │       ├── features_L1.zst                          # L1 整层 [T×F×A]
     │       └── depth.zst                                # 盘口深度 [T×DEPTH×A]
-    ├── fundamental/                                     # 财务基本面
-    │   ├── YYYY-MM/*.parquet                            # 按月归档的财务报表
-    │   ├── _meta/                                       # 股票基础信息元数据 (parquet)
-    │   └── pool/                                        # 股本/分红/行业/停复牌等数据池 (.bin)
+    ├── fundamental/                                     # 日频基本面 (表清单见上方 DataBase → Overview)
+    │   ├── YYYY-MM/<表>.parquet                         # 月度分片 (2015-01 起, 每表一文件; 0 行月也落文件 = "拉过")
+    │   ├── _meta/<表>.parquet                           # Static/Snapshot 单文件整刷 (cn_stock_basic_info / cn_stock_static_data)
+    │   ├── asset_axis.json                              # A 轴 (资产轴) 码表, 只增不删
+    │   └── pool/*.bin                                   # ⚠ 旧版 PIT 事件池缓存, 现行代码已不再读写
     ├── factors/                                         # 因子库 (预留)
     │   └── YYYY/MM/DD/
     └── log/                                             # 运行日志

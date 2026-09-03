@@ -368,20 +368,9 @@ private:
   }
 
   void DrawTabBrowser() {
-    // Lazy compute browser statistics on first access
-    // Requirements: (1) Binary database scanned (has date_info)
-    //               (2) Fundamental data ready (stock_info, stock_days)
-    //               (3) Not yet computed (date_stats empty)
-    if (data_->asset.date_stats.empty() &&
-        data_->asset.binary.scanned &&
-        !data_->asset.items.empty() &&
-        fundamental_svc_->is_ready()) [[unlikely]] {
-      data_->asset.compute_coverage_statistics(
-          data_->assetinfo.get_stock_info(),
-          data_->assetinfo.get_stock_days(),
-          data_->assetinfo.get_suspended());
-    }
-
+    // date_stats 由扫描的 Phase 5 统一产出 (ScanService::coro_scan), 这里不再
+    // 惰性补算: 渲染帧里现算是双重遍历, 而且会跟扫描抢着写同一份统计.
+    // 扫描没跑完时 date_stats 是空的, 表格照常渲染, 数字等扫描落地.
     RenderTabBrowser(
         data_->assetinfo.get_stock_days(),
         data_->assetinfo.get_stock_factor(),

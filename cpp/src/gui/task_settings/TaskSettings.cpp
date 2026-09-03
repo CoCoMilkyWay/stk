@@ -438,9 +438,6 @@ private:
         draw_readonly_row("gRPC Max Metadata", "SDK 默认 8KB 会被 JWT 撑爆 [bytes]", std::to_string(config::BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE));
         draw_readonly_row("Tushare Host", "明文 JSON POST, 三张事件表", config::TUSHARE_HTTP_HOST);
         draw_readonly_row("Tushare Port", "走 80, 省掉 SSL 依赖", config::TUSHARE_HTTP_PORT);
-        draw_readonly_row("Tushare Timeout", "单次连接+读写整体时长 [s]", std::to_string(config::TUSHARE_HTTP_TIMEOUT_SECONDS));
-        draw_readonly_row("Tushare Retry Max", "额外重试次数 (共 N+1 次尝试)", std::to_string(config::TUSHARE_HTTP_RETRY_MAX));
-        draw_readonly_row("Tushare Retry Interval", "重试间隔 [s], 线性递增", std::to_string(config::TUSHARE_HTTP_RETRY_INTERVAL_SECONDS));
       });
 
       // 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet)
