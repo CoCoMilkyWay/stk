@@ -1,6 +1,5 @@
 // State Manager Implementation
 #include "gui/task_database/services/StateManager.hpp"
-// #include "shared/SharedData.hpp" // NOLINT: Required for AssetLoader::load(data_)
 
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -14,6 +13,10 @@ namespace GUI::Database {
 // ============================================================================
 
 awaitable<void> StateManager::initialize() {
+  co_await sync_and_scan();
+}
+
+awaitable<void> StateManager::sync_and_scan() {
   // Yield immediately to let GUI render before the (possibly networked) sync
   co_await boost::asio::steady_timer(co_await boost::asio::this_coro::executor, std::chrono::milliseconds(1)).async_wait(boost::asio::use_awaitable);
 
@@ -26,13 +29,9 @@ awaitable<void> StateManager::initialize() {
     AssetLoader::load(data_);
 
   // Step 3: 日历就绪后才扫 L2 (覆盖判定以日历为准).
-  // 基本面 Error (本地 parquet 缺失且同步失败) 时不扫 — Encode 保持锁定,
-  // 用户在 Overview 点 Update 成功后由 TriggerRefreshFlow 补扫.
+  // 基本面 Error (本地 parquet 缺失且同步失败) 时不扫 — Encode 保持锁定.
   if (fundamental_svc_->is_ready())
     scan_svc_->trigger_scan();
-
-  // Browser statistics computed lazily on first Browser tab access
-  // (after database scan completes and fundamental data is ready)
 
   refresh_state();
 }

@@ -70,6 +70,10 @@ public:
   // Initialize: check all files and load data
   awaitable<void> initialize();
 
+  // 唯一刷新链: 基本面同步 -> AssetInfo/Asset items 重建 -> L2 覆盖扫描触发.
+  // GUI 启动、config 重建、Overview Update 都走这里, 不各写一份流程.
+  awaitable<void> sync_and_scan();
+
   // ============================================================================
   // State Management
   // ============================================================================

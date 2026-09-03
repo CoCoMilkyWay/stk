@@ -39,8 +39,8 @@ void ScanService::trigger_scan() {
   // Clear old result, update status
   last_check_ = DatabaseCheckResult{};
   status_ = ScanStatus::InitializingCheck;
-  // 对外的"扫描进行中": Overview 页靠它压住重复触发的按钮. 与 is_scanning_
-  // 同起同落 —— 后者是本服务的锁, 前者是 UI 看得见的那一份.
+  // 对外的"扫描进行中": UI 靠它压住重复触发. 与 is_scanning_ 同起同落 ——
+  // 后者是本服务的锁, 前者是界面/任务状态看得见的那一份.
   data_.taskstate.database.l2_scan_inflight = true;
 
   // Launch coroutine

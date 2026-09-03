@@ -1,7 +1,6 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/coro/CoroManager.hpp"
-#include "gui/task_database/services/AssetLoader.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
 #include "gui/task_database/services/L2DatabaseService.hpp"
@@ -42,6 +41,7 @@ private:
   // Lifecycle
   bool is_expanded_ = false;
   bool initialized_ = false;
+  bool focus_overview_next_frame_ = true;
   CoroManager *coro_mgr_ = nullptr;
   SharedData *data_ = nullptr; // Pointer to shared data
   Config *config_ = nullptr;   // Pointer to config for accessing backtest dates
@@ -69,6 +69,7 @@ public:
 
   void OnExpand() {
     is_expanded_ = true;
+    focus_overview_next_frame_ = true;
   }
 
   void OnCollapse() {
@@ -100,7 +101,7 @@ private:
   // A 轴/日历来自 parquet 数据源; 成功后补扫 L2 (日历可能延长, 覆盖判定要重算)
   void TriggerRefreshFlow() {
     auto &ts = data_->taskstate.database;
-    if (ts.json_update_inflight || !fundamental_svc_)
+    if (ts.json_update_inflight || ts.l2_scan_inflight || !state_mgr_)
       return;
 
     auto &io = coro_mgr_->GetIoContext();
@@ -115,13 +116,7 @@ private:
             ~FlagReset() { flag = false; }
           } update_reset{ts.json_update_inflight};
 
-          co_await fundamental_svc_->update_all();
-          if (fundamental_svc_->is_ready()) {
-            // 新上市的股票在这里追加到 A 轴尾部, 再重建 items
-            AssetLoader::load(*data_);
-            scan_svc_->trigger_scan();
-          }
-          state_mgr_->refresh_state();
+          co_await state_mgr_->sync_and_scan();
           UpdateTaskState();
         }(),
         boost::asio::detached);
@@ -144,6 +139,7 @@ private:
 
     // Set scan completion callback to update task state
     scan_svc_->set_on_complete([this]() {
+      state_mgr_->refresh_state();
       UpdateTaskState();
     });
 
@@ -279,7 +275,10 @@ private:
       const auto &tabs = state.tabs;
 
       // Overview tab (基本面面板) - 流水线第一步, 永远可进
-      if (ImGui::BeginTabItem("Overview")) {
+      const ImGuiTabItemFlags overview_flags =
+          focus_overview_next_frame_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      if (ImGui::BeginTabItem("Overview", nullptr, overview_flags)) {
+        focus_overview_next_frame_ = false;
         DrawTabOverview();
         ImGui::EndTabItem();
       }
@@ -337,7 +336,8 @@ private:
     bool update_clicked = false;
 
     auto &ts = data_->taskstate.database;
-    bool busy = ts.json_update_inflight || fundamental_svc_->is_busy();
+    bool busy = ts.json_update_inflight || ts.l2_scan_inflight ||
+                fundamental_svc_->is_busy() || scan_svc_->is_scanning();
 
     RenderTabOverview(
         fundamental_svc_->get_state(),

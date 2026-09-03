@@ -100,7 +100,8 @@ void encoding_producer(SharedData &data,
     if (d >= bt_start && d <= bt_end)
       dates.push_back(d);
 
-  // EncodingService 先按全集设了 summary_total, 这里收窄到回测区间内的天数.
+  // 与 GUI 口径保持一致: producer 只处理回测区间内的日期, 这里把进度条收窄
+  // 到实际会经过的天数.
   if (progress && dates.size() != data.asset.all_dates.size())
     progress->set_summary_total(dates.size(), true);
 

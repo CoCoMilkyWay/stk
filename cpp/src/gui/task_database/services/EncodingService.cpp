@@ -47,9 +47,12 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
 
   // Launch encoding in background thread
   encoding_thread_ = std::async(std::launch::async, [this]() {
+    const size_t target_dates = data_.asset.backtest.required_dates.size();
+    assert(target_dates > 0 && "编码前必须先完成回测区间覆盖扫描");
+
     std::cout << "\n=== Encoding Started ===\n"
               << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
-              << " | Dates: " << data_.asset.all_dates.size() << "\n"
+              << " | Backtest dates: " << target_dates << "\n"
               << std::endl;
 
     // Initialize logger for all encoding workers (shared log file)
@@ -64,10 +67,10 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     // 解码. 解压在 worker 侧并行 — 单条 unrar 流喂不满几十个核, 归档在
     // NVMe 上多路并发直读也没有寻道代价 (见 encoding_worker.hpp).
     // ------------------------------------------------------------------
-    // 汇总行以天为单位, 总量 = 全部日期数 (开跑即精确);
+    // 汇总行以天为单位, 总量 = 回测区间交易日;
     // 附注显示最老在编天的资产进度, 由 producer/worker 维护.
     progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100, "days");
-    progress_->set_summary_total(data_.asset.all_dates.size(), true);
+    progress_->set_summary_total(target_dates, true);
 
     EncodeStats stats;
 
@@ -170,14 +173,13 @@ void EncodingService::stop_encoding() {
 EncodingProgress EncodingService::get_progress() const {
   EncodingProgress prog;
   prog.total_assets = data_.asset.items.size();
-  prog.total_dates = data_.asset.all_dates.size();
-  prog.encoded_dates = data_.asset.binary.dates.size();
+  prog.total_dates = data_.asset.backtest.required_dates.size();
+  prog.encoded_dates = data_.asset.backtest.covered_dates.size();
   prog.completed_assets = 0;
 
-  // 扫描时已累加好 (见 coro_scan_binary_database). 这里每帧都会被 Encode 页
-  // 调一次, 逐帧遍历 items[].date_info (资产数 × 交易日数, 五百万量级) 会把
-  // 帧时间拖到几百毫秒 —— 与 Asset::asset_stats 同一个坑.
-  prog.total_orders = data_.asset.binary.total_orders;
+  // 扫描时已按回测区间累加好. 这里每帧都会被 Encode 页调一次, 逐帧遍历
+  // items[].date_info (资产数 × 交易日数, 五百万量级) 会把帧时间拖到几百毫秒.
+  prog.total_orders = data_.asset.binary.backtest_orders;
 
   if (status_ == EncodingStatus::Running) {
     prog.elapsed_seconds = std::chrono::duration<float>(
