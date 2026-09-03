@@ -97,11 +97,31 @@ void encoding_producer(SharedData &data,
   // 空账目 — 与其跑完再排查, 不如开跑前就断在这里
   assert(!axis.empty() && "A 轴为空 (基本面未就绪?), 编码无从进行");
 
-  const size_t total_days = data.asset.all_dates.size();
+  // 编码范围 = 回测区间 (config.start_date / end_date), 与特征计算一致.
+  // all_dates 是 binary ∪ archive 的全集, 不收窄会去编回测区间外的天
+  // (见 ComputeService 对 all_dates 的同类过滤). config 日期是 "YYYY-MM-DD",
+  // all_dates 是 "YYYYMMDD", 去掉 '-' 后按字典序比较.
+  auto yyyymmdd = [](std::string s) {
+    s.erase(std::remove(s.begin(), s.end(), '-'), s.end());
+    return s;
+  };
+  const std::string bt_start = yyyymmdd(data.config.start_date);
+  const std::string bt_end = yyyymmdd(data.config.end_date);
+  std::vector<std::string> dates;
+  dates.reserve(data.asset.all_dates.size());
+  for (const auto &d : data.asset.all_dates)
+    if (d >= bt_start && d <= bt_end)
+      dates.push_back(d);
+
+  // EncodingService 先按全集设了 summary_total, 这里收窄到回测区间内的天数.
+  if (progress && dates.size() != data.asset.all_dates.size())
+    progress->set_summary_total(dates.size(), true);
+
+  const size_t total_days = dates.size();
   std::vector<char> scratch(8 << 20); // 预读用的丢弃缓冲, 跨天复用
 
   for (size_t idx = 0; idx < total_days && !cancel_flag->load(); ++idx) {
-    const std::string &date_str = data.asset.all_dates[idx];
+    const std::string &date_str = dates[idx];
     TraceN("ProducerDay");
     TraceTextS(date_str.c_str());
 
