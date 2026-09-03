@@ -80,7 +80,9 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
   // Right top panel: Selected task content
   ImGui::SetNextWindowPos(ImVec2(200, 0));
   ImGui::SetNextWindowSize(ImVec2(display_w - 200, panel_height));
-  ImGui::Begin("Panel", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+  char panel_title[64];
+  snprintf(panel_title, sizeof(panel_title), "Panel (%dx%d)###Panel", display_w, display_h);
+  ImGui::Begin(panel_title, nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
   if (selected_task >= 0 && selected_task < (int)tasks.size()) {
     // Main content area
@@ -126,7 +128,7 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
     static const ImVec4 splitter_col = ImVec4(0.3f, 0.3f, 0.3f, 0.5f);
     static const ImVec4 splitter_hover = ImVec4(0.4f, 0.4f, 0.4f, 0.7f);
     static const ImVec4 splitter_active = ImVec4(0.5f, 0.5f, 0.5f, 0.9f);
-    
+
     ImGui::PushStyleColor(ImGuiCol_Button, splitter_col);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, splitter_hover);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, splitter_active);
@@ -134,7 +136,7 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
     const bool is_hovered = ImGui::IsItemHovered();
     const bool is_active = ImGui::IsItemActive();
     ImGui::PopStyleColor(3);
-    
+
     if (is_hovered) {
       ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
     }
