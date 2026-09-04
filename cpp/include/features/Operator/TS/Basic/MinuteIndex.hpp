@@ -32,10 +32,12 @@ constexpr float MIN_PHASE_SCALE = 2.0f * PI / 60.0f;
 // 触发域: ON_MINUTE (分钟级, 每分钟触发一次)
 class MinuteIndex {
 public:
-  MinuteIndex(const MinuteData &md,
-              CBuffer<float, ::L2::BLEN> &min_buffer,
-              CBuffer<float, ::L2::BLEN> &index_buffer)
-      : md_(md), min_buffer_(min_buffer), index_buffer_(index_buffer) {}
+  enum Out : size_t { min,
+                      minute_index,
+                      kCount };
+
+  MinuteIndex(const MinuteData &md, CBuffer<float, ::L2::BLEN> (&out)[kCount])
+      : md_(md), min_buffer_(out[min]), index_buffer_(out[minute_index]) {}
 
   // 触发域: ON_MINUTE
   void compute() {
@@ -52,6 +54,8 @@ public:
     min_buffer_.push_back(min_value_);     // 写入正弦相位编码的时间特征
     index_buffer_.push_back(index_value_); // 写入原始分钟索引
   }
+
+  void reset() {}
 
 private:
   const MinuteData &md_;

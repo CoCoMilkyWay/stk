@@ -1,8 +1,10 @@
 #pragma once
 
 #include "../FeaturesDefine.hpp"
+#include "../Misc/CSMethods.hpp"
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 // ============================================================================
 // FEATURE STORE CONFIGURATION - AUTO-GENERATED
@@ -47,23 +49,23 @@ constexpr size_t MAX_ROWS_PER_LEVEL[LEVEL_COUNT] = {
 // FIELD METADATA - PART 1: Auxiliary Macros (Per-Level)
 // ============================================================================
 
-// Field format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, name_en, name_cn, description, formula)
+// Field format: X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, PSD, name_en, name_cn, description, formula, SRC)
 
 // Count auxiliary (level-agnostic)
-#define COUNT_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) +1
+#define COUNT_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) +1
 
 // Width extractors (per-level)
-#define GENERATE_FIELD_WIDTH_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) width,
-#define GENERATE_FIELD_WIDTH_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) width,
+#define GENERATE_FIELD_WIDTH_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) width,
+#define GENERATE_FIELD_WIDTH_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) width,
 
 // Index extractors (per-level)
-#define GENERATE_FIELD_INDEX_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) code,
-#define GENERATE_FIELD_INDEX_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) code,
+#define GENERATE_FIELD_INDEX_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) code,
+#define GENERATE_FIELD_INDEX_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) code,
 
 // Type metadata extractors (per-level)
-#define GENERATE_FIELD_TYPE_META_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
+#define GENERATE_FIELD_TYPE_META_L0(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
   {L0_FieldOffset::code, FeatureDataType::dtype},
-#define GENERATE_FIELD_TYPE_META_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
+#define GENERATE_FIELD_TYPE_META_L1(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
   {L1_FieldOffset::code, FeatureDataType::dtype},
 
 // ============================================================================
@@ -148,22 +150,106 @@ constexpr size_t FIELDS_PER_LEVEL[LEVEL_COUNT] = {
 // 按 data_type 统计字段宽度 (用于确定输出buffer大小)
 
 // Helper: count width if data_type matches
-#define COUNT_WIDTH_IF_TS(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
-  + (FeatureDataType::dtype == FeatureDataType::TS ? (width) : 0)
-#define COUNT_WIDTH_IF_CS(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
-  + (FeatureDataType::dtype == FeatureDataType::CS ? (width) : 0)
-#define COUNT_WIDTH_IF_LB(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
-  + (FeatureDataType::dtype == FeatureDataType::LB ? (width) : 0)
-#define COUNT_WIDTH_IF_META(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula) \
-  + (FeatureDataType::dtype == FeatureDataType::META ? (width) : 0)
+#define COUNT_WIDTH_IF_TS(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  +(FeatureDataType::dtype == FeatureDataType::TS ? (width) : 0)
+#define COUNT_WIDTH_IF_CS(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  +(FeatureDataType::dtype == FeatureDataType::CS ? (width) : 0)
+#define COUNT_WIDTH_IF_LB(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  +(FeatureDataType::dtype == FeatureDataType::LB ? (width) : 0)
+#define COUNT_WIDTH_IF_META(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  +(FeatureDataType::dtype == FeatureDataType::META ? (width) : 0)
 
 // 8. Type widths per level: L0_TS_WIDTH, L0_CS_WIDTH, ..., L2_META_WIDTH
-#define GENERATE_TYPE_WIDTHS(level_name, level_num, fields)                     \
-  constexpr size_t level_name##_TS_WIDTH = 0 fields(COUNT_WIDTH_IF_TS);         \
-  constexpr size_t level_name##_CS_WIDTH = 0 fields(COUNT_WIDTH_IF_CS);         \
-  constexpr size_t level_name##_LB_WIDTH = 0 fields(COUNT_WIDTH_IF_LB);         \
+#define GENERATE_TYPE_WIDTHS(level_name, level_num, fields)             \
+  constexpr size_t level_name##_TS_WIDTH = 0 fields(COUNT_WIDTH_IF_TS); \
+  constexpr size_t level_name##_CS_WIDTH = 0 fields(COUNT_WIDTH_IF_CS); \
+  constexpr size_t level_name##_LB_WIDTH = 0 fields(COUNT_WIDTH_IF_LB); \
   constexpr size_t level_name##_META_WIDTH = 0 fields(COUNT_WIDTH_IF_META);
 ALL_LEVELS(GENERATE_TYPE_WIDTHS)
+
+// ============================================================================
+// SRC ↔ data_type 一致性 (OP/FUND→TS, CS→CS, LABEL→LB, META→META)
+// ============================================================================
+#define SRC_KIND_OP(...) FeatureDataType::TS
+#define SRC_KIND_FUND(...) FeatureDataType::TS
+#define SRC_KIND_CS(...) FeatureDataType::CS
+#define SRC_KIND_LABEL FeatureDataType::LB
+#define SRC_KIND_META FeatureDataType::META
+#define CHECK_SRC_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  static_assert(SRC_KIND_##src == FeatureDataType::dtype, "SRC/data_type mismatch: " #code);      \
+  static_assert(SRC_KIND_##src != FeatureDataType::TS || (width) == 1, "OP/FUND field must be width 1: " #code);
+#define GENERATE_CHECK_SRC(level_name, level_num, fields) fields(CHECK_SRC_FIELD)
+ALL_LEVELS(GENERATE_CHECK_SRC)
+DEPTH_FIELDS(CHECK_SRC_FIELD)
+
+// ============================================================================
+// CROSS-SECTIONAL TABLES (由字段表 CS(src_lvl, src, tf, m) 列生成): L0_CS_DEFS[], L1_CS_DEFS[]
+// ============================================================================
+// 每行 = 源列 + 元素变换 + 截面方法 → 目标列; *_Crosssection 按表 gather → cs::apply → scatter.
+// 数组末尾带一个哨兵 (dst == SIZE_MAX), 允许某层没有 CS 字段; 用 L*_CS_COUNT 迭代.
+
+struct CSFeatureDef {
+  std::uint8_t src_lvl; // 源列所在层 (0 = L0 取分钟起始秒, 1 = L1)
+  cs::Transform tf;     // 元素变换
+  cs::Method method;    // 截面方法
+  std::size_t src;      // 源列 (field index, 用 L*_FIELD_OFFSETS[src] 取 offset)
+  std::size_t dst;      // 目标列 (本层 field index)
+};
+
+#define CS_ENTRY_CS(src_lvl, src, tf, m) src_lvl, cs::Transform::tf, cs::Method::m, L##src_lvl##_FieldOffset::src
+#define CS_ROW_CS(code, src) {CS_ENTRY_##src, _FO::code},
+#define CS_ROW_TS(code, src)
+#define CS_ROW_LB(code, src)
+#define CS_ROW_SH(code, src)
+#define CS_ROW_META(code, src)
+#define CS_ROW_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) CS_ROW_##dtype(code, src)
+
+#define GENERATE_CS_TABLE(level_name, level_num, fields)                                    \
+  namespace level_name##_cs_detail {                                                        \
+    namespace _FO = level_name##_FieldOffset;                                               \
+    inline constexpr CSFeatureDef DEFS[] = {fields(CS_ROW_FIELD){0, {}, {}, 0, SIZE_MAX}};  \
+  }                                                                                         \
+  inline constexpr const CSFeatureDef *level_name##_CS_DEFS = level_name##_cs_detail::DEFS; \
+  constexpr size_t level_name##_CS_COUNT = sizeof(level_name##_cs_detail::DEFS) / sizeof(CSFeatureDef) - 1;
+ALL_LEVELS(GENERATE_CS_TABLE)
+
+// ============================================================================
+// FIELD TABLE FINGERPRINT (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
+// ============================================================================
+// FNV-1a 64 over "code:width:dtype;" 逐字段拼接 (顺序敏感)
+
+constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
+  for (; *s; ++s)
+    h = (h ^ static_cast<uint8_t>(*s)) * 0x100000001b3ULL;
+  return h;
+}
+constexpr uint64_t fnv1a_u64(uint64_t h, uint64_t v) {
+  for (int i = 0; i < 8; ++i)
+    h = (h ^ ((v >> (8 * i)) & 0xff)) * 0x100000001b3ULL;
+  return h;
+}
+
+#define FINGERPRINT_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  h = fnv1a_u64(fnv1a_u64(fnv1a_str(h, #code), (width)), static_cast<uint64_t>(FeatureDataType::dtype));
+
+#define GENERATE_FINGERPRINT(level_name, level_num, fields) \
+  constexpr uint64_t level_name##_FINGERPRINT = [] {        \
+    uint64_t h = 0xcbf29ce484222325ULL;                     \
+    fields(FINGERPRINT_FIELD) return h;                     \
+  }();
+ALL_LEVELS(GENERATE_FINGERPRINT)
+
+#define GENERATE_FINGERPRINT_ENTRY(level_name, level_num, fields) level_name##_FINGERPRINT,
+constexpr uint64_t LEVEL_FINGERPRINTS[LEVEL_COUNT] = {ALL_LEVELS(GENERATE_FINGERPRINT_ENTRY)};
+
+constexpr uint64_t DEPTH_FINGERPRINT = [] {
+  uint64_t h = 0xcbf29ce484222325ULL;
+  DEPTH_FIELDS(FINGERPRINT_FIELD)
+  return h;
+}();
+
+// 特征文件头: size_t × {T, F, A, axis_hash, table_fingerprint}
+constexpr size_t FEATURE_FILE_HEADER_WORDS = 5;
 
 // ============================================================================
 // DEPTH METADATA (separate from levels)
@@ -173,7 +259,7 @@ ALL_LEVELS(GENERATE_TYPE_WIDTHS)
 constexpr size_t DEPTH_FIELD_COUNT = 0 DEPTH_FIELDS(COUNT_FIELD);
 
 // Depth field widths
-inline constexpr size_t DEPTH_FIELD_WIDTHS[] = { DEPTH_FIELDS(GENERATE_FIELD_WIDTH_L0) };
+inline constexpr size_t DEPTH_FIELD_WIDTHS[] = {DEPTH_FIELDS(GENERATE_FIELD_WIDTH_L0)};
 
 // Depth field offsets
 inline constexpr auto DEPTH_FIELD_OFFSETS = generate_offsets(DEPTH_FIELD_WIDTHS);
@@ -183,9 +269,9 @@ constexpr size_t DEPTH_TOTAL_WIDTH = array_sum(DEPTH_FIELD_WIDTHS, DEPTH_FIELD_C
 
 // Depth field enum
 namespace DepthFieldOffset {
-  enum : size_t {
-    DEPTH_FIELDS(GENERATE_FIELD_INDEX_L0)
-  };
+enum : size_t {
+  DEPTH_FIELDS(GENERATE_FIELD_INDEX_L0)
+};
 }
 
 // Depth 张量 T 维: 分钟频 (与 L1 同 T)。分钟内多次盘口更新覆盖同一行,

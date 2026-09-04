@@ -786,9 +786,12 @@ private:
   // 文件里, 全靠 A 轴顺序. 存下指纹后, 读文件时 O(1) 就能确认"该文件的列序与
   // 当前注册表前 A 条一致"; 轴 append-only, 所以追加新资产不会动历史文件的
   // 指纹. 热路径 (解压/索引) 不受影响.
+  //
+  // header[4] = 字段表指纹 (FeatureStoreConfig L*_FINGERPRINT / DEPTH_FINGERPRINT): 字段表
+  // 增删改列即变, 读旧文件断言失败而不是静默错位.
   void write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
-                              const void *raw_data, size_t raw_size) {
-    const size_t header_size = 4 * sizeof(size_t);
+                              uint64_t table_fp, const void *raw_data, size_t raw_size) {
+    const size_t header_size = FEATURE_FILE_HEADER_WORDS * sizeof(size_t);
     const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
     const size_t buffer_size = header_size + compressed_bound;
 
@@ -798,6 +801,7 @@ private:
     header[1] = F;
     header[2] = A;
     header[3] = static_cast<size_t>(axis_hash_);
+    header[4] = static_cast<size_t>(table_fp);
 
     size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size,
                                                             buffer.data() + header_size,
@@ -874,21 +878,21 @@ private:
       }
 
       write_file_with_header(out_dir + "/features_L0_f" + std::to_string(f) + ".zst",
-                             T[0], 1, A, column.data(), col_elements * sizeof(feature_storage_t));
+                             T[0], 1, A, LEVEL_FINGERPRINTS[0], column.data(), col_elements * sizeof(feature_storage_t));
     }
 
     // L1: write entire level
     for (size_t lvl = 1; lvl < 2; ++lvl) {
       const size_t total_bytes = T[lvl] * F[lvl] * A * sizeof(feature_storage_t);
       write_file_with_header(out_dir + "/features_L" + std::to_string(lvl) + ".zst",
-                             T[lvl], F[lvl], A, slot->data[lvl], total_bytes);
+                             T[lvl], F[lvl], A, LEVEL_FINGERPRINTS[lvl], slot->data[lvl], total_bytes);
     }
 
     // Depth (分钟频)
     {
       const size_t total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * A * sizeof(feature_storage_t);
       write_file_with_header(out_dir + "/depth.zst", DEPTH_ROWS, DEPTH_TOTAL_WIDTH, A,
-                             slot->depth_data, total_bytes);
+                             DEPTH_FINGERPRINT, slot->depth_data, total_bytes);
     }
 
     auto t_end = std::chrono::high_resolution_clock::now();
@@ -1004,6 +1008,39 @@ public:
       const size_t _idx = ((t) * _F + _f) * _A + (a);                                       \
       _slot.data[lvl][_idx] = (src)[_f - _f_start];                                         \
     }                                                                                       \
+  } while (0)
+
+// TS_WRITE_ROW: 按 FeaturesDefine.hpp 字段表 SRC 列写一行 (t, a) 的全部 OP/FUND 列 (width 必须为 1)
+//   OP(node[, port]) → dag.node.last(port)      FUND(f) → dag.fund_row_[fund::f]
+//   CS / LABEL / META 列不在此写 (分别由 CS worker / 标签回填 / 基建手工写)
+// lvl 必须是字面量 0/1 (展开 LEVEL_##lvl##_FIELDS)
+#define TS_SRC_OP_PICK(_1, _2, NAME, ...) NAME
+#define TS_SRC_OP_1(node) _dag.node.last()
+#define TS_SRC_OP_2(node, port) _dag.node.last(_dag.node.port)
+#define TS_SRC_OP(...) TS_SRC_OP_PICK(__VA_ARGS__, TS_SRC_OP_2, TS_SRC_OP_1, )(__VA_ARGS__)
+#define TS_SRC_FUND(field) (assert(_dag.fund_row_ && "fund_row_ not set"), _dag.fund_row_[fund::field])
+
+#define TS_WRITE_ROW_TS(code, src) _row[_offs[_FO::code] * _A] = TS_SRC_##src;
+#define TS_WRITE_ROW_CS(code, src)
+#define TS_WRITE_ROW_LB(code, src)
+#define TS_WRITE_ROW_SH(code, src)
+#define TS_WRITE_ROW_META(code, src)
+#define TS_WRITE_ROW_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  TS_WRITE_ROW_##dtype(code, src)
+
+#define TS_WRITE_ROW(store, date, lvl, t, a, dag, worker_id)                 \
+  do {                                                                       \
+    auto &_slot = (store)->ts_get_slot(date, worker_id);                     \
+    assert(_slot.data[lvl] && "data[lvl] is null");                          \
+    const size_t _F = (store)->query_F(lvl);                                 \
+    const size_t _A = (store)->query_A();                                    \
+    assert((t) < (store)->query_T(lvl) && "time index out of bounds");       \
+    assert((a) < _A && "asset index out of bounds");                         \
+    feature_storage_t *const _row = _slot.data[lvl] + ((t) * _F) * _A + (a); \
+    constexpr const auto &_offs = L##lvl##_FIELD_OFFSETS;                    \
+    namespace _FO = L##lvl##_FieldOffset;                                    \
+    [[maybe_unused]] auto &_dag = (dag);                                     \
+    LEVEL_##lvl##_FIELDS(TS_WRITE_ROW_FIELD)                                 \
   } while (0)
 
 // DEPTH_WRITE_SINGLE: Write single depth field (similar to TS_WRITE_SINGLE but for depth store)

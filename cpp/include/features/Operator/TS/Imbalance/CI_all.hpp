@@ -26,7 +26,10 @@
 
 class CI_all {
 public:
-  CI_all(TickData &td, CBuffer<float, L2::BLEN> &out) : td_(td), out_(out) {}
+  enum Out : size_t { value,
+                      kCount };
+
+  CI_all(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount]) : td_(td), out_(out[value]) {}
 
   inline void compute() {
     float sum_bid = static_cast<float>(td_.lob.all_bid_volume); // 全市场买单量
@@ -41,6 +44,8 @@ public:
   inline void flush() {
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   TickData &td_;

@@ -42,10 +42,13 @@ class Para {
   static_assert(DEPTH_SIZE >= 3, "Need at least 3 levels for parabola fit");
 
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   Para(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
        const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
-       CBuffer<float, L2::BLEN> &out)
-      : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {
+       CBuffer<float, L2::BLEN> (&out)[kCount])
+      : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out[value]) {
     // 预计算 (X'X)^-1 矩阵元素
     // X'X = [n,    Σi,   Σi²  ]
     //       [Σi,   Σi²,  Σi³  ]
@@ -89,9 +92,9 @@ public:
       float v;
       // 根据IS_BID选择买侧或卖侧数据
       if constexpr (IS_BID) {
-        v = bid_qty_[i].back();      // 买i+1档数量
+        v = bid_qty_[i].back(); // 买i+1档数量
       } else {
-        v = -ask_qty_[i].back();     // 卖i+1档数量（取反）
+        v = -ask_qty_[i].back(); // 卖i+1档数量（取反）
       }
 
       float fi = static_cast<float>(i);
@@ -109,6 +112,8 @@ public:
     // 将compute中计算的抛物线系数写入输出CBuffer
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

@@ -26,8 +26,11 @@
 
 class DepthIndex {
 public:
-  DepthIndex(const TickData &td, CBuffer<float, L2::BLEN> &index_buffer)
-      : td_(td), index_buffer_(index_buffer) {}
+  enum Out : size_t { value,
+                      kCount };
+
+  DepthIndex(const TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
+      : td_(td), index_buffer_(out[value]) {}
 
   inline void compute() {
     // 从tick_data读取当前tick索引，记录depth更新时对应的原始tick位置
@@ -37,6 +40,8 @@ public:
     // 将depth索引写入CBuffer，供其他depth级别算子使用
     index_buffer_.push_back(index_value_);
   }
+
+  inline void reset() {}
 
 private:
   const TickData &td_;

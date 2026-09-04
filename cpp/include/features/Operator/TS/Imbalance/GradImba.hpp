@@ -23,10 +23,13 @@
 
 class GradImba {
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   GradImba(const CBuffer<float, L2::BLEN> &bid_grad,
            const CBuffer<float, L2::BLEN> &ask_grad,
-           CBuffer<float, L2::BLEN> &out)
-      : bid_grad_(bid_grad), ask_grad_(ask_grad), out_(out) {}
+           CBuffer<float, L2::BLEN> (&out)[kCount])
+      : bid_grad_(bid_grad), ask_grad_(ask_grad), out_(out[value]) {}
 
   inline void compute() {
     // 从买卖两侧的梯度CBuffer读取最新值
@@ -47,6 +50,8 @@ public:
     // 将compute中计算的梯度失衡写入输出CBuffer
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> &bid_grad_;

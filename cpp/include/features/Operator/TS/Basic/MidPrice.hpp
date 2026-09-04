@@ -22,12 +22,15 @@
 
 class MidPrice {
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   MidPrice(const CBuffer<float, L2::BLEN> &bid_price_0,
            const CBuffer<float, L2::BLEN> &ask_price_0,
-           CBuffer<float, L2::BLEN> &buffer)
+           CBuffer<float, L2::BLEN> (&out)[kCount])
       : bid_price_0_(bid_price_0),
         ask_price_0_(ask_price_0),
-        buffer_(buffer) {}
+        buffer_(out[value]) {}
 
   inline void compute() {
     // 从BidPrice_[0]和AskPrice_[0] CBuffer读取买一卖一价格（已转换为元）
@@ -41,6 +44,8 @@ public:
     // 将compute中计算的中间价写入CBuffer
     buffer_.push_back(mid_value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> &bid_price_0_;

@@ -21,13 +21,15 @@
 
 class OrderInfo {
 public:
-  OrderInfo(const TickData &td,
-            CBuffer<float, L2::BLEN> &price,
-            CBuffer<float, L2::BLEN> &timestamp,
-            CBuffer<float, L2::BLEN> &tickindex,
-            CBuffer<float, L2::BLEN> &volume,
-            CBuffer<float, L2::BLEN> &dir)
-      : td_(td), price_(price), timestamp_(timestamp), tickindex_(tickindex), volume_(volume), dir_(dir) {}
+  enum Out : size_t { price,
+                      timestamp,
+                      tickindex,
+                      volume,
+                      dir,
+                      kCount };
+
+  OrderInfo(const TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
+      : td_(td), price_(out[price]), timestamp_(out[timestamp]), tickindex_(out[tickindex]), volume_(out[volume]), dir_(out[dir]) {}
 
   inline void compute() {
     // 读取价格

@@ -35,10 +35,13 @@ public:
   static constexpr float GAMMA = static_cast<float>(GAMMA_X10) / 10.0f;
   static constexpr float EPSILON = 1e-6f;
 
+  enum Out : size_t { value,
+                      kCount };
+
   CWI(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
-      CBuffer<float, L2::BLEN> &out)
-      : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {
+      CBuffer<float, L2::BLEN> (&out)[kCount])
+      : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out[value]) {
     // 预计算权重
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
       weights_[i] = 1.0f / std::pow(static_cast<float>(i + 1) + EPSILON, GAMMA);
@@ -66,6 +69,8 @@ public:
   inline void flush() {
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

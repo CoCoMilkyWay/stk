@@ -30,11 +30,14 @@ class Cost {
   static_assert(N_LEVELS >= 1 && N_LEVELS <= DEPTH_SIZE, "N_LEVELS out of range");
 
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   Cost(const CBuffer<float, L2::BLEN> (&price)[DEPTH_SIZE],
        const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE],
        const CBuffer<float, L2::BLEN> &mid_price,
-       CBuffer<float, L2::BLEN> &out)
-      : price_(price), qty_(qty), mid_price_(mid_price), out_(out) {}
+       CBuffer<float, L2::BLEN> (&out)[kCount])
+      : price_(price), qty_(qty), mid_price_(mid_price), out_(out[value]) {}
 
   inline void compute() {
     float sum_pv = 0.0f; // 价格*数量的累计（计算VWAP用）
@@ -77,6 +80,8 @@ public:
     // 将compute中计算的冲击成本写入输出CBuffer
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&price_)[DEPTH_SIZE];

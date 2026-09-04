@@ -34,10 +34,13 @@ class CI {
   static_assert(N_LEVELS >= 1 && N_LEVELS <= DEPTH_SIZE, "N_LEVELS out of range");
 
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   CI(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
      const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
-     CBuffer<float, L2::BLEN> &out)
-      : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out) {}
+     CBuffer<float, L2::BLEN> (&out)[kCount])
+      : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out[value]) {}
 
   inline void compute() {
     float sum_bid = 0.0f;
@@ -58,6 +61,8 @@ public:
   inline void flush() {
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

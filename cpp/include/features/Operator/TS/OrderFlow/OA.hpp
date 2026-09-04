@@ -29,14 +29,16 @@ class OA {
   static constexpr size_t OA_END_L0 = 600; // 10分钟 * 60秒
 
 public:
-  OA(TickData &td,
-     CBuffer<float, L2::BLEN> &oa_bcr,
-     CBuffer<float, L2::BLEN> &oa_acr,
-     CBuffer<float, L2::BLEN> &oa_btr,
-     CBuffer<float, L2::BLEN> &oa_atr)
+  enum Out : size_t { bcr,
+                      acr,
+                      btr,
+                      atr,
+                      kCount };
+
+  OA(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
       : td_(td),
-        oa_bcr_(oa_bcr), oa_acr_(oa_acr),
-        oa_btr_(oa_btr), oa_atr_(oa_atr) {}
+        oa_bcr_(out[bcr]), oa_acr_(out[acr]),
+        oa_btr_(out[btr]), oa_atr_(out[atr]) {}
 
   inline void compute() {
     // 每笔订单时，只统计集合竞价时段（09:15-09:25，前10分钟）的订单

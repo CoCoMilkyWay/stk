@@ -25,11 +25,14 @@
 
 class HLA {
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   HLA(TickData &td,
       const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
       const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
-      CBuffer<float, L2::BLEN> &hla_imba)
-      : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty), hla_imba_(hla_imba) {}
+      CBuffer<float, L2::BLEN> (&out)[kCount])
+      : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty), hla_imba_(out[value]) {}
 
   inline void compute() {
     // 每笔订单时，统计挂单和撤单量（用于计算refill rate）

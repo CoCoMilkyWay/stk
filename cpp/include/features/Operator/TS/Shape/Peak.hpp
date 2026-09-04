@@ -34,14 +34,17 @@ class Peak {
   static constexpr size_t N_LEVELS = 5; // 只考虑前5档
 
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   Peak(const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE],
-       CBuffer<float, L2::BLEN> &out)
-      : qty_(qty), out_(out) {}
+       CBuffer<float, L2::BLEN> (&out)[kCount])
+      : qty_(qty), out_(out[value]) {}
 
   inline void compute() {
-    float max_v = 0.0f;  // 最大数量
-    float sum_v = 0.0f;  // 总数量
-    size_t max_idx = 0;  // 最大值所在档位
+    float max_v = 0.0f; // 最大数量
+    float sum_v = 0.0f; // 总数量
+    size_t max_idx = 0; // 最大值所在档位
 
     // 遍历前5档，找到峰值位置和总量
     for (size_t i = 0; i < N_LEVELS; ++i) {
@@ -75,6 +78,8 @@ public:
     // 将compute中计算的峰值特征写入输出CBuffer
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&qty_)[DEPTH_SIZE];

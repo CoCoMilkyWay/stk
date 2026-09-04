@@ -47,23 +47,25 @@ class CTR {
   static constexpr float DEFAULT_M = 4.0f;    // 中单 4-20万
 
 public:
-  CTR(TickData &td,
-      CBuffer<float, L2::BLEN> &cc_r,
-      CBuffer<float, L2::BLEN> &ctr_xl,
-      CBuffer<float, L2::BLEN> &ctr_l,
-      CBuffer<float, L2::BLEN> &ctr_m,
-      CBuffer<float, L2::BLEN> &ctr_s,
-      CBuffer<float, L2::BLEN> &cnbi,
-      CBuffer<float, L2::BLEN> &cnbi_xl,
-      CBuffer<float, L2::BLEN> &cnbi_l,
-      CBuffer<float, L2::BLEN> &cnbi_m,
-      CBuffer<float, L2::BLEN> &cnbi_s,
-      CBuffer<float, L2::BLEN> &cnbi_am,
-      CBuffer<float, L2::BLEN> &cnbi_pm)
+  enum Out : size_t { cc_r,
+                      ctr_xl,
+                      ctr_l,
+                      ctr_m,
+                      ctr_s,
+                      cnbi,
+                      cnbi_xl,
+                      cnbi_l,
+                      cnbi_m,
+                      cnbi_s,
+                      cnbi_am,
+                      cnbi_pm,
+                      kCount };
+
+  CTR(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
       : td_(td),
-        cc_r_(cc_r), ctr_xl_(ctr_xl), ctr_l_(ctr_l), ctr_m_(ctr_m), ctr_s_(ctr_s),
-        cnbi_(cnbi), cnbi_xl_(cnbi_xl), cnbi_l_(cnbi_l), cnbi_m_(cnbi_m), cnbi_s_(cnbi_s),
-        cnbi_am_(cnbi_am), cnbi_pm_(cnbi_pm),
+        cc_r_(out[cc_r]), ctr_xl_(out[ctr_xl]), ctr_l_(out[ctr_l]), ctr_m_(out[ctr_m]), ctr_s_(out[ctr_s]),
+        cnbi_(out[cnbi]), cnbi_xl_(out[cnbi_xl]), cnbi_l_(out[cnbi_l]), cnbi_m_(out[cnbi_m]), cnbi_s_(out[cnbi_s]),
+        cnbi_am_(out[cnbi_am]), cnbi_pm_(out[cnbi_pm]),
         current_kll_(KLL_K, KLL_RECON) {
     for (auto &w : weekly_kll_)
       w = KLLcache(KLL_K, KLL_RECON);

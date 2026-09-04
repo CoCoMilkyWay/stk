@@ -29,17 +29,20 @@ class Manip {
   static constexpr float LARGE_ORDER_THRESHOLD = 10000.0f; // 大单阈值 (股)
 
 public:
+  enum Out : size_t { ptc_rt,
+                      fleet_rt,
+                      spoof_int,
+                      stale_ratio_bid,
+                      stale_ratio_ask,
+                      kCount };
+
   Manip(TickData &td,
         const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
         const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
-        CBuffer<float, L2::BLEN> &ptc_rt,
-        CBuffer<float, L2::BLEN> &fleet_rt,
-        CBuffer<float, L2::BLEN> &spoof_int,
-        CBuffer<float, L2::BLEN> &stale_ratio_bid,
-        CBuffer<float, L2::BLEN> &stale_ratio_ask)
+        CBuffer<float, L2::BLEN> (&out)[kCount])
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty),
-        ptc_rt_(ptc_rt), fleet_rt_(fleet_rt), spoof_int_(spoof_int),
-        stale_ratio_bid_(stale_ratio_bid), stale_ratio_ask_(stale_ratio_ask) {}
+        ptc_rt_(out[ptc_rt]), fleet_rt_(out[fleet_rt]), spoof_int_(out[spoof_int]),
+        stale_ratio_bid_(out[stale_ratio_bid]), stale_ratio_ask_(out[stale_ratio_ask]) {}
 
   inline void compute() {
     const uint32_t cur_sec = td_.l0_index;

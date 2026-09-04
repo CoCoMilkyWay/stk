@@ -22,12 +22,15 @@
 
 class Spread {
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   Spread(const CBuffer<float, L2::BLEN> &bid_price_0,
          const CBuffer<float, L2::BLEN> &ask_price_0,
-         CBuffer<float, L2::BLEN> &buffer)
+         CBuffer<float, L2::BLEN> (&out)[kCount])
       : bid_price_0_(bid_price_0),
         ask_price_0_(ask_price_0),
-        buffer_(buffer) {}
+        buffer_(out[value]) {}
 
   inline void compute() {
     // 从BidPrice_[0]和AskPrice_[0] CBuffer读取买一卖一价格（已转换为元）
@@ -42,7 +45,7 @@ public:
     buffer_.push_back(spread_value_);
   }
 
-  float back() const { return buffer_.back(); }
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> &bid_price_0_;
@@ -50,4 +53,3 @@ private:
   CBuffer<float, L2::BLEN> &buffer_;
   float spread_value_ = 0.0f;
 };
-

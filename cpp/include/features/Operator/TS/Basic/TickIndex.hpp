@@ -30,7 +30,7 @@
 #include <array>
 
 // 预计算60秒周期的sin查找表（运行时初始化）
-inline const std::array<float, 60>& get_sec_phase_lut() {
+inline const std::array<float, 60> &get_sec_phase_lut() {
   static const auto lut = []() {
     std::array<float, 60> result{};
     constexpr float scale = 2.0f * PI / 60.0f;
@@ -44,10 +44,12 @@ inline const std::array<float, 60>& get_sec_phase_lut() {
 
 class TickIndex {
 public:
-  TickIndex(const TickData &td,
-            CBuffer<float, L2::BLEN> &sec_buffer,
-            CBuffer<float, L2::BLEN> &index_buffer)
-      : td_(td), sec_buffer_(sec_buffer), index_buffer_(index_buffer) {}
+  enum Out : size_t { sec,
+                      tick_index,
+                      kCount };
+
+  TickIndex(const TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
+      : td_(td), sec_buffer_(out[sec]), index_buffer_(out[tick_index]) {}
 
   inline void compute() {
     // 从tick_data读取当前tick索引
@@ -63,6 +65,8 @@ public:
     sec_buffer_.push_back(sec_value_);     // 写入正弦相位编码的时间特征
     index_buffer_.push_back(index_value_); // 写入原始tick索引
   }
+
+  inline void reset() {}
 
 private:
   const TickData &td_;

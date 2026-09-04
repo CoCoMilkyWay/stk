@@ -37,16 +37,19 @@ class DDI {
 public:
   static constexpr float LAMBDA = static_cast<float>(LAMBDA_X100) / 100.0f;
 
+  enum Out : size_t { value,
+                      kCount };
+
   DDI(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&bid_price)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&ask_price)[DEPTH_SIZE],
-      CBuffer<float, L2::BLEN> &out)
+      CBuffer<float, L2::BLEN> (&out)[kCount])
       : bid_qty_(bid_qty),
         ask_qty_(ask_qty),
         bid_price_(bid_price),
         ask_price_(ask_price),
-        out_(out) {}
+        out_(out[value]) {}
 
   // 快速exp近似: e^x ≈ 1 + x + x²/2 + x³/6 (泰勒前4项)
   // 适用范围 x ∈ [-10, 0], 相对误差 < 1%
@@ -89,6 +92,8 @@ public:
   inline void flush() {
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];

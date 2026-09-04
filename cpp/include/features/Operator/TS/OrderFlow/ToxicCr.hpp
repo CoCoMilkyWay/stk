@@ -25,12 +25,15 @@
 #include "features/DataDefine.hpp"
 
 class ToxicCr {
-  static constexpr size_t SHORT_WINDOW = 5;  // 5秒
-  static constexpr size_t LONG_WINDOW = 60;  // 60秒
+  static constexpr size_t SHORT_WINDOW = 5; // 5秒
+  static constexpr size_t LONG_WINDOW = 60; // 60秒
 
 public:
-  ToxicCr(TickData &td, CBuffer<float, L2::BLEN> &out)
-      : td_(td), out_(out) {}
+  enum Out : size_t { value,
+                      kCount };
+
+  ToxicCr(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
+      : td_(td), out_(out[value]) {}
 
   inline void compute() {
     const uint32_t cur_sec = td_.l0_index;

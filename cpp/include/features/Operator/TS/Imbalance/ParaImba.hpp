@@ -30,20 +30,23 @@
 template <int COEF>
 class ParaImba {
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   ParaImba(const CBuffer<float, L2::BLEN> &bid_coef,
            const CBuffer<float, L2::BLEN> &ask_coef,
-           CBuffer<float, L2::BLEN> &out)
-      : bid_coef_(bid_coef), ask_coef_(ask_coef), out_(out) {}
+           CBuffer<float, L2::BLEN> (&out)[kCount])
+      : bid_coef_(bid_coef), ask_coef_(ask_coef), out_(out[value]) {}
 
   inline void compute() {
     // 从买卖两侧的抛物线系数CBuffer读取最新值
-    float b = bid_coef_.back();  // 买侧的c0/c1/c2系数
-    float a = ask_coef_.back();  // 卖侧的c0/c1/c2系数
-    
+    float b = bid_coef_.back(); // 买侧的c0/c1/c2系数
+    float a = ask_coef_.back(); // 卖侧的c0/c1/c2系数
+
     // 计算绝对值
     float abs_b = std::abs(b);
     float abs_a = std::abs(a);
-    
+
     // 计算系数失衡：(|买侧|-|卖侧|) / (|买侧|+|卖侧|)
     // 值域[-1,1]，正值表示买侧该系数绝对值更大
     float denom = abs_b + abs_a;
@@ -54,6 +57,8 @@ public:
     // 将compute中计算的系数失衡写入输出CBuffer
     out_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> &bid_coef_;

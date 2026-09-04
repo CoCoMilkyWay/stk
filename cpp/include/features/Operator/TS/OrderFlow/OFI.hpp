@@ -38,16 +38,19 @@ class OFI {
   static_assert(N_LEVELS >= 1 && N_LEVELS <= DEPTH_SIZE, "N_LEVELS out of range");
 
 public:
+  enum Out : size_t { value,
+                      kCount };
+
   OFI(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&bid_price)[DEPTH_SIZE],
       const CBuffer<float, L2::BLEN> (&ask_price)[DEPTH_SIZE],
-      CBuffer<float, L2::BLEN> &out)
+      CBuffer<float, L2::BLEN> (&out)[kCount])
       : bid_qty_(bid_qty),
         ask_qty_(ask_qty),
         bid_price_(bid_price),
         ask_price_(ask_price),
-        out_(out) {
+        out_(out[value]) {
     // 初始化prev缓存
     for (size_t i = 0; i < N_LEVELS; ++i) {
       prev_bid_price_[i] = 0.0f;
@@ -75,7 +78,7 @@ public:
       float cur_bid_price = bid_price_[i].back();
       float cur_bid_qty = bid_qty_[i].back();
       float cur_ask_price = ask_price_[i].back();
-      float cur_ask_qty = -ask_qty_[i].back();  // 卖方数量转为正值
+      float cur_ask_qty = -ask_qty_[i].back(); // 卖方数量转为正值
 
       // 读取上一次的价格和数量（状态变量）
       float prev_bp = prev_bid_price_[i];
@@ -89,11 +92,11 @@ public:
       // price↑ → cur (价格上涨，新挂单)
       float delta_bid;
       if (cur_bid_price < prev_bp) {
-        delta_bid = 0.0f;  // 价格下跌，清零
+        delta_bid = 0.0f; // 价格下跌，清零
       } else if (cur_bid_price == prev_bp) {
-        delta_bid = cur_bid_qty - prev_bq;  // 价格不变，计算增量
+        delta_bid = cur_bid_qty - prev_bq; // 价格不变，计算增量
       } else {
-        delta_bid = cur_bid_qty;  // 价格上涨，全部算新增
+        delta_bid = cur_bid_qty; // 价格上涨，全部算新增
       }
 
       // 卖方订单流增量：逻辑相反
@@ -102,11 +105,11 @@ public:
       // price↑ → 0 (价格上涨，原订单被消耗)
       float delta_ask;
       if (cur_ask_price < prev_ap) {
-        delta_ask = cur_ask_qty;  // 价格下跌，全部算新增
+        delta_ask = cur_ask_qty; // 价格下跌，全部算新增
       } else if (cur_ask_price == prev_ap) {
-        delta_ask = cur_ask_qty - prev_aq;  // 价格不变，计算增量
+        delta_ask = cur_ask_qty - prev_aq; // 价格不变，计算增量
       } else {
-        delta_ask = 0.0f;  // 价格上涨，清零
+        delta_ask = 0.0f; // 价格上涨，清零
       }
 
       // 加权累加订单流失衡：买方增量 - 卖方增量

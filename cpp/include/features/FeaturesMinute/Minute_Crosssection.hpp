@@ -9,41 +9,14 @@
 // ============================================================================
 // LEVEL 1: Minute-level Cross-sectional Features
 // ============================================================================
-// 配置表驱动: 每行 = 源列 + 元素变换 + 截面方法 → 目标列. 方法 per-特征可选:
+// 表驱动: 行 = FeaturesDefine.hpp 字段表里 data_type=CS 的字段 (SRC = CS(src_lvl, src, tf, m)),
+// 由 FeatureStoreConfig 展开成 L1_CS_DEFS[]. 方法 per-特征可选:
 //   NormRank    rank → inverse normal (cs_spread_rank 口径)
 //   WinsorRank  winsor_mad → z → pct_rank             (= qmt factor_pipeline)
 //   NeutralRank winsor_q → 行业+log市值中性化 → z → pct_rank (= qmt neutral_pipeline)
 // kernel 在 CSMethods.cpp (precise TU, 逐步复刻 qmt). 热循环统一:
 //   gather(valid 子集 dense) → cs::apply → scatter (无效资产输出 0).
 // ============================================================================
-
-struct CSFeatureDef {
-  bool src_l0;       // 源列所在层: true = L0 (取分钟起始秒), false = L1
-  cs::Transform tf;  // 元素变换 (估值比率 → 收益率口径用 Reciprocal)
-  cs::Method method; // 截面方法
-  std::uint16_t src; // 源列 (L0_FieldOffset / L1_FieldOffset)
-  std::uint16_t dst; // L1 目标列
-};
-
-inline constexpr CSFeatureDef L1_CS_DEFS[] = {
-    // ---- 普通方法 ----
-    {true, cs::Transform::None, cs::Method::NormRank, L0_FieldOffset::spread, L1_FieldOffset::cs_spread_rank},
-    // ---- qmt 中性化因子 (neutral_pipeline) ----
-    {false, cs::Transform::Reciprocal, cs::Method::NeutralRank, L1_FieldOffset::pe, L1_FieldOffset::ep_ttm12},
-    {false, cs::Transform::Reciprocal, cs::Method::NeutralRank, L1_FieldOffset::pb, L1_FieldOffset::bp_ttm3},
-    {false, cs::Transform::Reciprocal, cs::Method::NeutralRank, L1_FieldOffset::ps, L1_FieldOffset::sp_ttm12},
-    {false, cs::Transform::Reciprocal, cs::Method::NeutralRank, L1_FieldOffset::pcf, L1_FieldOffset::cp_ttm12},
-    {false, cs::Transform::None, cs::Method::NeutralRank, L1_FieldOffset::dy_raw, L1_FieldOffset::dy_ttm12},
-    {false, cs::Transform::None, cs::Method::NeutralRank, L1_FieldOffset::roe_raw, L1_FieldOffset::roe_ttm12},
-    {false, cs::Transform::None, cs::Method::NeutralRank, L1_FieldOffset::roa_raw, L1_FieldOffset::roa_ttm12},
-    // ---- qmt 因子流水 (factor_pipeline; cffoa 在 qmt 即此流水, 非中性化) ----
-    {false, cs::Transform::None, cs::Method::WinsorRank, L1_FieldOffset::cffoa_raw, L1_FieldOffset::cffoa_ttm12},
-    {false, cs::Transform::None, cs::Method::WinsorRank, L1_FieldOffset::mcap, L1_FieldOffset::mcap_cs},
-    {false, cs::Transform::None, cs::Method::WinsorRank, L1_FieldOffset::fmcap, L1_FieldOffset::fmcap_cs},
-    {false, cs::Transform::None, cs::Method::WinsorRank, L1_FieldOffset::_ohlc_close, L1_FieldOffset::close_cs},
-    {false, cs::Transform::None, cs::Method::WinsorRank, L1_FieldOffset::mr_bal, L1_FieldOffset::mr_bal_cs},
-    {false, cs::Transform::None, cs::Method::WinsorRank, L1_FieldOffset::ms_bal, L1_FieldOffset::ms_bal_cs},
-};
 
 class Minute_Crosssection {
 public:
@@ -87,9 +60,10 @@ public:
     cs::prepare_logmc(logmc_dense_.data(), n);
     gather_dense_(t_minute, L1_FieldOffset::industry_l1, industry_dense_.data(), n);
 
-    for (const CSFeatureDef &d : L1_CS_DEFS) {
+    for (size_t k = 0; k < L1_CS_COUNT; ++k) {
+      const CSFeatureDef &d = L1_CS_DEFS[k];
       // gather 源列 valid 子集 → dense fp32 (input_fp32_ 前 n 个)
-      const _Float16 *src = d.src_l0
+      const _Float16 *src = d.src_lvl == 0
                                 ? CS_READ_ALL(store_, date_str_, 0, t_second, d.src)
                                 : CS_READ_ALL(store_, date_str_, 1, t_minute, d.src);
       float *y = input_fp32_.data();

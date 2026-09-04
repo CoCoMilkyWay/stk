@@ -26,8 +26,11 @@
 
 class DepthRepresentation {
 public:
-  DepthRepresentation(CBuffer<float, L2::BLEN> &depth_repre)
-      : depth_repre_(depth_repre) {}
+  enum Out : size_t { value,
+                      kCount };
+
+  explicit DepthRepresentation(CBuffer<float, L2::BLEN> (&out)[kCount])
+      : depth_repre_(out[value]) {}
 
   inline void compute() {
     // DUMMY实现：当前仅返回占位符0
@@ -41,6 +44,8 @@ public:
     // 当前为占位符，后续接入实际模型后会输出有意义的表征
     depth_repre_.push_back(value_);
   }
+
+  inline void reset() {}
 
 private:
   CBuffer<float, L2::BLEN> &depth_repre_;

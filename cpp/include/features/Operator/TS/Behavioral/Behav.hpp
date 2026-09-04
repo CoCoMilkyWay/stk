@@ -34,16 +34,18 @@ class Behav {
   static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
 
 public:
-  Behav(TickData &td,
-        CBuffer<float, L2::BLEN> &agg_buy,
-        CBuffer<float, L2::BLEN> &agg_sell,
-        CBuffer<float, L2::BLEN> &agg_dif,
-        CBuffer<float, L2::BLEN> &cpr,
-        CBuffer<float, L2::BLEN> &agg_trd,
-        CBuffer<float, L2::BLEN> &ord_size)
+  enum Out : size_t { agg_buy,
+                      agg_sell,
+                      agg_dif,
+                      cpr,
+                      agg_trd,
+                      ord_size,
+                      kCount };
+
+  Behav(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
       : td_(td),
-        agg_buy_(agg_buy), agg_sell_(agg_sell), agg_dif_(agg_dif),
-        cpr_(cpr), agg_trd_(agg_trd), ord_size_(ord_size) {}
+        agg_buy_(out[agg_buy]), agg_sell_(out[agg_sell]), agg_dif_(out[agg_dif]),
+        cpr_(out[cpr]), agg_trd_(out[agg_trd]), ord_size_(out[ord_size]) {}
 
   inline void compute() {
     const uint32_t cur_sec = td_.l0_index;

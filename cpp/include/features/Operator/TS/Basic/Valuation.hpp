@@ -38,22 +38,25 @@
 // 触发域: ON_MINUTE (分钟级, 每分钟触发一次)
 class Valuation {
 public:
+  enum Out : size_t { mcap,
+                      fmcap,
+                      pe,
+                      pb,
+                      ps,
+                      pcf,
+                      limit_up,
+                      limit_dn,
+                      low_p,
+                      low_mc,
+                      kCount };
+
   Valuation(const MinuteData &md, const float *const &fund_row,
-            CBuffer<float, ::L2::BLEN> &mcap_buf,
-            CBuffer<float, ::L2::BLEN> &fmcap_buf,
-            CBuffer<float, ::L2::BLEN> &pe_buf,
-            CBuffer<float, ::L2::BLEN> &pb_buf,
-            CBuffer<float, ::L2::BLEN> &ps_buf,
-            CBuffer<float, ::L2::BLEN> &pcf_buf,
-            CBuffer<float, ::L2::BLEN> &limit_up_buf,
-            CBuffer<float, ::L2::BLEN> &limit_dn_buf,
-            CBuffer<float, ::L2::BLEN> &low_p_buf,
-            CBuffer<float, ::L2::BLEN> &low_mc_buf)
+            CBuffer<float, ::L2::BLEN> (&out)[kCount])
       : md_(md), fund_row_(fund_row),
-        mcap_buf_(mcap_buf), fmcap_buf_(fmcap_buf),
-        pe_buf_(pe_buf), pb_buf_(pb_buf), ps_buf_(ps_buf), pcf_buf_(pcf_buf),
-        limit_up_buf_(limit_up_buf), limit_dn_buf_(limit_dn_buf),
-        low_p_buf_(low_p_buf), low_mc_buf_(low_mc_buf) {}
+        mcap_buf_(out[mcap]), fmcap_buf_(out[fmcap]),
+        pe_buf_(out[pe]), pb_buf_(out[pb]), ps_buf_(out[ps]), pcf_buf_(out[pcf]),
+        limit_up_buf_(out[limit_up]), limit_dn_buf_(out[limit_dn]),
+        low_p_buf_(out[low_p]), low_mc_buf_(out[low_mc]) {}
 
   // 触发域: ON_MINUTE
   void compute() {
@@ -87,6 +90,8 @@ public:
     low_p_buf_.push_back(low_p_);
     low_mc_buf_.push_back(low_mc_);
   }
+
+  void reset() {}
 
 private:
   // Float16 饱和: 存不下的极值 → NaN (NaN 输入同样落到 NaN 分支)

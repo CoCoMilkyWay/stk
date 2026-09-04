@@ -28,20 +28,22 @@
 
 class FlowRate {
 public:
-  FlowRate(TickData &td,
-           CBuffer<float, L2::BLEN> &mk_bid,
-           CBuffer<float, L2::BLEN> &mk_ask,
-           CBuffer<float, L2::BLEN> &cn_bid,
-           CBuffer<float, L2::BLEN> &cn_ask,
-           CBuffer<float, L2::BLEN> &tk_bid,
-           CBuffer<float, L2::BLEN> &tk_ask,
-           CBuffer<float, L2::BLEN> &net_ord,
-           CBuffer<float, L2::BLEN> &foi)
+  enum Out : size_t { mk_bid,
+                      mk_ask,
+                      cn_bid,
+                      cn_ask,
+                      tk_bid,
+                      tk_ask,
+                      net_ord,
+                      foi,
+                      kCount };
+
+  FlowRate(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
       : td_(td),
-        mk_bid_(mk_bid), mk_ask_(mk_ask),
-        cn_bid_(cn_bid), cn_ask_(cn_ask),
-        tk_bid_(tk_bid), tk_ask_(tk_ask),
-        net_ord_(net_ord), foi_(foi) {}
+        mk_bid_(out[mk_bid]), mk_ask_(out[mk_ask]),
+        cn_bid_(out[cn_bid]), cn_ask_(out[cn_ask]),
+        tk_bid_(out[tk_bid]), tk_ask_(out[tk_ask]),
+        net_ord_(out[net_ord]), foi_(out[foi]) {}
 
   // 每笔订单时，按类型和方向累计金额（万元）
   inline void compute() {
@@ -50,13 +52,22 @@ public:
 
     switch (td_.lob.order_type) {
     case L2::OrderType::MAKER: // 挂单
-      if (is_bid) amt_mk_bid_ += amt; else amt_mk_ask_ += amt;
+      if (is_bid)
+        amt_mk_bid_ += amt;
+      else
+        amt_mk_ask_ += amt;
       break;
     case L2::OrderType::TAKER: // 吃单（主动成交）
-      if (is_bid) amt_tk_bid_ += amt; else amt_tk_ask_ += amt;
+      if (is_bid)
+        amt_tk_bid_ += amt;
+      else
+        amt_tk_ask_ += amt;
       break;
     case L2::OrderType::CANCEL: // 撤单
-      if (is_bid) amt_cn_bid_ += amt; else amt_cn_ask_ += amt;
+      if (is_bid)
+        amt_cn_bid_ += amt;
+      else
+        amt_cn_ask_ += amt;
       break;
     }
   }

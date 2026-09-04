@@ -35,24 +35,23 @@ public:
   static constexpr float LIMIT_QTY = 1.0f;    // 超限档位数量: 1股
   static constexpr float LIMIT_AMT = 0.01f;   // 超限档位金额: 0.01万元
 
+  // 源层节点: 无标量输出口 (kCount = 0), 自持 6 组 N 档 CBuffer, 下游按 DepthData.bid_qty 等直接引用
+  enum Out : size_t { kCount = 0 };
+
   DepthData(const TickData &tick_data,
-            CBuffer<float, L2::BLEN> &taker_price,
-            CBuffer<float, L2::BLEN> (&bid_price)[N_LEVELS],
-            CBuffer<float, L2::BLEN> (&ask_price)[N_LEVELS],
-            CBuffer<float, L2::BLEN> (&bid_qty)[N_LEVELS],
-            CBuffer<float, L2::BLEN> (&ask_qty)[N_LEVELS],
-            CBuffer<float, L2::BLEN> (&bid_amt)[N_LEVELS],
-            CBuffer<float, L2::BLEN> (&ask_amt)[N_LEVELS],
+            const CBuffer<float, L2::BLEN> &taker_price,
             const std::string &asset_code)
       : tick_data_(tick_data),
-        taker_price_(taker_price),
-        bid_price_(bid_price),
-        ask_price_(ask_price),
-        bid_qty_(bid_qty),
-        ask_qty_(ask_qty),
-        bid_amt_(bid_amt),
-        ask_amt_(ask_amt),
-        limit_pct_(L2::infer_pct_limit(asset_code)) {}
+        limit_pct_(L2::infer_pct_limit(asset_code)),
+        taker_price_(taker_price) {}
+
+  // 输出: 买/卖 i+1 档 价格(元) / 数量(股, 卖方负值) / 金额(万元, 卖方负值)
+  CBuffer<float, L2::BLEN> bid_price[N_LEVELS];
+  CBuffer<float, L2::BLEN> ask_price[N_LEVELS];
+  CBuffer<float, L2::BLEN> bid_qty[N_LEVELS];
+  CBuffer<float, L2::BLEN> ask_qty[N_LEVELS];
+  CBuffer<float, L2::BLEN> bid_amt[N_LEVELS];
+  CBuffer<float, L2::BLEN> ask_amt[N_LEVELS];
 
   // 跨天重置 (清理状态, 减少计算量)
   void reset() {
@@ -135,12 +134,12 @@ public:
     // 将compute中计算的N档数据批量写入6组CBuffer数组
     // 每组有N_LEVELS个CBuffer，分别对应N档盘口
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      bid_price_[i].push_back(tmp_bid_price_[i]); // 买i+1档价格
-      ask_price_[i].push_back(tmp_ask_price_[i]); // 卖i+1档价格
-      bid_qty_[i].push_back(tmp_bid_qty_[i]);     // 买i+1档数量
-      ask_qty_[i].push_back(tmp_ask_qty_[i]);     // 卖i+1档数量
-      bid_amt_[i].push_back(tmp_bid_amt_[i]);     // 买i+1档金额
-      ask_amt_[i].push_back(tmp_ask_amt_[i]);     // 卖i+1档金额
+      bid_price[i].push_back(tmp_bid_price_[i]); // 买i+1档价格
+      ask_price[i].push_back(tmp_ask_price_[i]); // 卖i+1档价格
+      bid_qty[i].push_back(tmp_bid_qty_[i]);     // 买i+1档数量
+      ask_qty[i].push_back(tmp_ask_qty_[i]);     // 卖i+1档数量
+      bid_amt[i].push_back(tmp_bid_amt_[i]);     // 买i+1档金额
+      ask_amt[i].push_back(tmp_ask_amt_[i]);     // 卖i+1档金额
     }
   }
 
@@ -153,14 +152,8 @@ private:
   float limit_down_ = 0.0f;
   bool initialized_ = false;
 
-  // 引用外部CBuffer (由DAG::L0管理)
-  CBuffer<float, L2::BLEN> &taker_price_;
-  CBuffer<float, L2::BLEN> (&bid_price_)[N_LEVELS];
-  CBuffer<float, L2::BLEN> (&ask_price_)[N_LEVELS];
-  CBuffer<float, L2::BLEN> (&bid_qty_)[N_LEVELS];
-  CBuffer<float, L2::BLEN> (&ask_qty_)[N_LEVELS];
-  CBuffer<float, L2::BLEN> (&bid_amt_)[N_LEVELS];
-  CBuffer<float, L2::BLEN> (&ask_amt_)[N_LEVELS];
+  // 输入: 最新成交价 (前收盘价来源)
+  const CBuffer<float, L2::BLEN> &taker_price_;
 
   // 临时计算结果
   float tmp_bid_price_[N_LEVELS] = {};

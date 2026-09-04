@@ -21,7 +21,7 @@
 // ============================================================================
 // FEATURE READER - Hybrid Compressed Format
 // ============================================================================
-// Storage format (header = 4 × size_t: T, F, A, axis_hash):
+// Storage format (header = 5 × size_t: T, F, A, axis_hash, table_fingerprint):
 //   L0: features_L0_f{idx}.zst - [Header: T,1,A,h][Zstd compressed column]
 //       (columnar for selective loading in Dist analysis)
 //   L1: features_L1.zst - [Header: T,F_L1,A,h][Zstd compressed merged data]
@@ -30,6 +30,8 @@
 //
 // axis_hash = AssetAxis::hash_at(A): 列 → 资产的映射不在文件里, 靠 A 轴顺序.
 //   存指纹后读文件时 O(1) 就能确认列序没漂移 (见 shared/AssetAxis.hpp).
+// table_fingerprint = 写入时字段表指纹 (FeatureStoreConfig L*_FINGERPRINT / DEPTH_FINGERPRINT):
+//   字段表改了旧文件立刻断言失败, 不会静默错位.
 //
 // APIs:
 //   1. load_day_level() - for GUI visualization (all features, single day)
@@ -43,7 +45,7 @@ private:
   // T_max, F_max, A: max capacity (for buffer size validation)
   // T_actual, F_actual, A_actual: optional output for actual dimensions from header
   void read_compressed_data(const std::string &filepath,
-                            size_t T_max, size_t F_max, size_t A,
+                            size_t T_max, size_t F_max, size_t A, uint64_t table_fp,
                             feature_storage_t *buffer_ptr,
                             size_t *T_actual = nullptr,
                             size_t *F_actual = nullptr,
@@ -63,12 +65,12 @@ private:
     std::ifstream file(filepath, std::ios::binary);
     assert(file.is_open() && "File not found");
 #endif
-    constexpr size_t header_size = 4 * sizeof(size_t);
+    constexpr size_t header_size = FEATURE_FILE_HEADER_WORDS * sizeof(size_t);
 
     size_t T, F, A_file;
     {
       TraceN("ReadHeader");
-      size_t header[4];
+      size_t header[FEATURE_FILE_HEADER_WORDS];
 #ifdef _WIN32
       DWORD bytes_read;
       BOOL result = ReadFile(hFile, header, header_size, &bytes_read, NULL);
@@ -100,6 +102,8 @@ private:
       // "列 → 资产的映射没有漂移", 轴被重排/截断或文件被换掉都会立刻炸.
       assert(static_cast<std::uint64_t>(header[3]) == asset_axis().hash_at(A_file) &&
              "A 轴指纹不符: 特征文件与当前 asset_axis.json 列序不一致 (需重算特征)");
+      assert(static_cast<std::uint64_t>(header[4]) == table_fp &&
+             "字段表指纹不符: 特征文件是旧字段表写的 (需重算特征)");
     }
 
     size_t compressed_size;
@@ -310,7 +314,7 @@ public:
 
           // Read column into temp buffer and get actual dimensions
           size_t T_col, F_col, A_col;
-          read_compressed_data(col_path, T_max, 1, A, temp, &T_col, &F_col, &A_col);
+          read_compressed_data(col_path, T_max, 1, A, LEVEL_FINGERPRINTS[0], temp, &T_col, &F_col, &A_col);
 
           if (f == 0) {
             T_actual = T_col; // First column sets T
@@ -334,7 +338,7 @@ public:
       assert(std::filesystem::exists(merged_path) && "Merged file missing");
 
       size_t T_actual, F_actual, A_actual;
-      read_compressed_data(merged_path, T_max, F_max, A, out.data[level].data(),
+      read_compressed_data(merged_path, T_max, F_max, A, LEVEL_FINGERPRINTS[level], out.data[level].data(),
                            &T_actual, &F_actual, &A_actual);
 
       // Update dynamic dimensions
@@ -359,7 +363,7 @@ public:
 
     // Read data and get actual dimensions from header
     size_t T_actual, F_actual, A_actual;
-    read_compressed_data(path, DEPTH_ROWS, DEPTH_TOTAL_WIDTH, out.A,
+    read_compressed_data(path, DEPTH_ROWS, DEPTH_TOTAL_WIDTH, out.A, DEPTH_FINGERPRINT,
                          out.data.data(), &T_actual, &F_actual, &A_actual);
 
     // Update dynamic dimensions (buffer already preallocated, no resize)
@@ -427,7 +431,7 @@ public:
             // Read into temp buffer
             {
               TraceN("ReadColumn");
-              read_compressed_data(col_path, T_per_day, 1, A, temp);
+              read_compressed_data(col_path, T_per_day, 1, A, LEVEL_FINGERPRINTS[0], temp);
             }
 
             // Copy to destination
@@ -462,7 +466,7 @@ public:
         // Read into temp buffer
         {
           TraceN("ReadMerged");
-          read_compressed_data(merged_file, T_per_day, F_total, A, temp);
+          read_compressed_data(merged_file, T_per_day, F_total, A, LEVEL_FINGERPRINTS[level], temp);
         }
 
         // Extract selected features

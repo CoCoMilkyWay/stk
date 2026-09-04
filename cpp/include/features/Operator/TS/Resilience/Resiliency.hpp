@@ -32,23 +32,26 @@ class Resiliency {
   static constexpr size_t DEPTH_WINDOW = 60; // 60秒移动平均窗口
 
 public:
+  enum Out : size_t { ratio_bid,
+                      ratio_ask,
+                      imba,
+                      dev_bid,
+                      dev_ask,
+                      mr_bid,
+                      mr_ask,
+                      recovery_bid,
+                      recovery_ask,
+                      kCount };
+
   Resiliency(TickData &td,
              const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
              const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH],
-             CBuffer<float, L2::BLEN> &ratio_bid,
-             CBuffer<float, L2::BLEN> &ratio_ask,
-             CBuffer<float, L2::BLEN> &imba,
-             CBuffer<float, L2::BLEN> &dev_bid,
-             CBuffer<float, L2::BLEN> &dev_ask,
-             CBuffer<float, L2::BLEN> &mr_bid,
-             CBuffer<float, L2::BLEN> &mr_ask,
-             CBuffer<float, L2::BLEN> &recovery_bid,
-             CBuffer<float, L2::BLEN> &recovery_ask)
+             CBuffer<float, L2::BLEN> (&out)[kCount])
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty),
-        ratio_bid_(ratio_bid), ratio_ask_(ratio_ask), imba_(imba),
-        dev_bid_(dev_bid), dev_ask_(dev_ask),
-        mr_bid_(mr_bid), mr_ask_(mr_ask),
-        recovery_bid_(recovery_bid), recovery_ask_(recovery_ask) {}
+        ratio_bid_(out[ratio_bid]), ratio_ask_(out[ratio_ask]), imba_(out[imba]),
+        dev_bid_(out[dev_bid]), dev_ask_(out[dev_ask]),
+        mr_bid_(out[mr_bid]), mr_ask_(out[mr_ask]),
+        recovery_bid_(out[recovery_bid]), recovery_ask_(out[recovery_ask]) {}
 
   inline void compute() {
     const uint32_t cur_sec = td_.l0_index;
