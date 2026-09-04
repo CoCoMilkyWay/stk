@@ -16,11 +16,8 @@
 #define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-#include <chrono>
 #include <cstdio>
-#include <fstream>
 #include <thread>
-#include <vector>
 #include <vulkan/vulkan.h>
 
 namespace GUI {

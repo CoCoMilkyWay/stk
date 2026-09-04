@@ -17,7 +17,6 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
-#include <vector>
 
 namespace model::math::autoencoder {
 // NOTE: input data should be already normalized to [0,1] range

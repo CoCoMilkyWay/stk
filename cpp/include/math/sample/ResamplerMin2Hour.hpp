@@ -1,9 +1,42 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "features/DataDefine.hpp"
-#include "features/TimeIndex.hpp"
+
+//========================================================================================
+// HOUR LEVEL (L2): 由 MinuteData 重采样而来
+//========================================================================================
+struct HourData {
+  uint32_t asset_id{0};
+  uint32_t core_id{0};
+  uint32_t l2_index{0}; // dynamic: current hour index (trading hour 0-4)
+
+  std::vector<float> open;
+  std::vector<float> high;
+  std::vector<float> low;
+  std::vector<float> close;
+  std::vector<uint32_t> bid_volume;
+  std::vector<uint32_t> ask_volume;
+  std::vector<float> bid_amount;
+  std::vector<float> ask_amount;
+};
+
+// L1 (分钟 0-254) → L2 (交易小时 0-4):
+//   0:[09:15,10:00) 1:[10:00,11:00) 2:[11:00,11:30) 3:[13:00,14:00) 4:[14:00,15:00)
+inline constexpr size_t L1_to_L2(size_t l1) {
+  if (l1 < 45)
+    return 0;
+  if (l1 < 105)
+    return 1;
+  if (l1 < 135)
+    return 2;
+  if (l1 < 195)
+    return 3;
+  return 4;
+}
 
 //========================================================================================
 // RESAMPLER: MINUTE -> HOUR

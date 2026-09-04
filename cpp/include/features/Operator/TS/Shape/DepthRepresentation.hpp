@@ -6,7 +6,7 @@
 //   depth_repre = f_θ(X), X = {V_i^B, V_i^A}_{i=1}^N   后续接入预训练 backbone
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include <cstddef>
 
 class DepthRepresentation {
 public:
