@@ -29,8 +29,9 @@
 //   字段表改了旧文件立刻断言失败, 不会静默错位.
 //
 // APIs (缓冲全部挂在张量结构里复用, 与写端 io_buf_/io_column_ 对仗, 稳态零分配):
-//   1. load_day(date, DayTensor)   - GUI: 单日整层 (L0/L1/DEPTH 同一套; 整层文件直读零中转)
-//   2. load_month_columns()        - Dist/TimeSeries: 整月, 选列
+//   1. load_day(date, DayTensor)          - GUI: 单日整层 (L0/L1/DEPTH 同一套; 整层文件直读零中转)
+//   2. load_day_columns(date, cols, out)  - GUI overlay / Transform: 单日, 选列 (L0 逐列文件只碰 n 个)
+//   3. load_month_columns()               - Dist/TimeSeries: 整月, 选列
 // ============================================================================
 
 class FeatureRead {
@@ -219,6 +220,46 @@ public:
     assert(out.A > 0 && "Must preallocate() before load_day()");
     out.date = date;
     load_fields(date, out.level, nullptr, LEVELS[out.level].field_count, out.data.data(), out.A, out.scratch);
+  }
+
+  // ========================================================================
+  // Single Day Selected Columns (GUI 单列 overlay / Transform 单列拼接)
+  // ========================================================================
+
+  // 单日选列张量 [T][n][A]: load_day 的选列版, 布局与 MonthTensor 的单日切片同构.
+  // 列宽必须为 1 (与 load_month_columns 同约束); L0 逐列文件下只读 n 个列文件,
+  // 整层文件 (L1/DEPTH) 读一次抽 n 列 —— dst 内存都只有 [T][n][A].
+  struct DayColumns {
+    std::string date;
+    size_t level = 0;
+    size_t A = 0;
+    size_t max_features = 0;
+    std::vector<size_t> fields;          // [n] 字段下标
+    std::vector<feature_storage_t> data; // [T × n × A]
+    Scratch scratch;
+
+    inline feature_storage_t get(size_t t, size_t i, size_t a) const {
+      assert(t < LEVELS[level].rows && i < fields.size() && a < A);
+      return data[(t * fields.size() + i) * A + a];
+    }
+
+    void preallocate(size_t A_, size_t level_, size_t max_features_) {
+      A = A_;
+      level = level_;
+      max_features = max_features_;
+      data.resize(LEVELS[level].rows * max_features * A);
+    }
+  };
+
+  // Load single day, selected width-1 fields
+  void load_day_columns(const std::string &date, const std::vector<size_t> &feature_indices, DayColumns &out) const {
+    Trace;
+    assert(date.size() == 8);
+    assert(out.A > 0 && "Must preallocate() before load_day_columns()");
+    assert(!feature_indices.empty() && feature_indices.size() <= out.max_features);
+    out.date = date;
+    out.fields = feature_indices;
+    load_fields(date, out.level, out.fields.data(), out.fields.size(), out.data.data(), out.A, out.scratch);
   }
 
   // ========================================================================

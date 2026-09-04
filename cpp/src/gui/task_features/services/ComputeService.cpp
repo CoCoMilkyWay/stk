@@ -117,6 +117,11 @@ void ComputeService::start_compute(int num_workers) {
     std::vector<std::string> original_dates = std::move(data_.asset.all_dates);
     data_.asset.all_dates = backtest_dates;
 
+    // 回测全量重算: 显式清特征库 (清库是调用方的决定, 不是 store 构造的副作用)
+    if (std::filesystem::exists(data_.config.feature_dir)) {
+      std::filesystem::remove_all(data_.config.feature_dir);
+    }
+
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(
         num_assets, num_ts_workers, asset_axis().hash_at(num_assets),

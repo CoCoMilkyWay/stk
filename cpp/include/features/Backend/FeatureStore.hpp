@@ -168,9 +168,8 @@ public:
 
     if (!output_dir.empty()) {
       output_dir_ = output_dir;
-      if (std::filesystem::exists(output_dir_)) {
-        std::filesystem::remove_all(output_dir_);
-      }
+      // 只建目录, 不清库: 清库/重算是调用方的显式决定 (回测全量重算见
+      // ComputeService), 构造副作用会让实盘复用 store 时误删历史特征.
       std::filesystem::create_directories(output_dir_);
     }
 
@@ -364,20 +363,27 @@ private:
                               uint64_t table_fp, const void *raw_data, size_t raw_size) {
     const size_t header[FEATURE_FILE_HEADER_WORDS] = {T, F, A, static_cast<size_t>(axis_hash_), static_cast<size_t>(table_fp)};
 
-    std::ofstream file(filepath, std::ios::binary);
-    assert(file.is_open());
-    file.write(reinterpret_cast<const char *>(header), sizeof(header));
+    // 原子发布: 写 .tmp 再同目录 rename (POSIX 原子) —— 半写文件不可能以正式名
+    // 存在. disk_write 按层序落盘, 最后一层的整层文件因此兼任本日 commit 标记
+    // (FeatureRead::has_date 的判据): 它在则全日齐备, 中断只留 .tmp 残片.
+    const std::string tmp_path = filepath + ".tmp";
+    {
+      std::ofstream file(tmp_path, std::ios::binary);
+      assert(file.is_open());
+      file.write(reinterpret_cast<const char *>(header), sizeof(header));
 
-    if constexpr (ZstdHelper::COMPRESSION_LEVEL == 0) {
-      // 无压缩: 张量直写, 不过中转缓冲
-      file.write(reinterpret_cast<const char *>(raw_data), raw_size);
-    } else {
-      const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
-      io_buf_.resize(compressed_bound); // 复用容量, 稳态零分配
-      const size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size, io_buf_.data(), compressed_bound);
-      file.write(reinterpret_cast<const char *>(io_buf_.data()), compressed_size);
+      if constexpr (ZstdHelper::COMPRESSION_LEVEL == 0) {
+        // 无压缩: 张量直写, 不过中转缓冲
+        file.write(reinterpret_cast<const char *>(raw_data), raw_size);
+      } else {
+        const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
+        io_buf_.resize(compressed_bound); // 复用容量, 稳态零分配
+        const size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size, io_buf_.data(), compressed_bound);
+        file.write(reinterpret_cast<const char *>(io_buf_.data()), compressed_size);
+      }
+      assert(file.good());
     }
-    assert(file.good());
+    std::filesystem::rename(tmp_path, filepath);
   }
 
   void disk_write(const std::string &date_str, Slot *slot) {

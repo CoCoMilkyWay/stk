@@ -101,7 +101,7 @@ private:
 
   // Feature reader
   FeatureRead reader_;
-  FeatureRead::DayTensor day_tensor_;
+  FeatureRead::DayColumns day_columns_; // 单日选列缓冲: 特征列 [+ 有效标志列]
 
   // Worker pool
   std::unique_ptr<TransformWorkerPool> pool_;

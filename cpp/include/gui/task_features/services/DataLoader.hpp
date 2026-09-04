@@ -73,9 +73,9 @@ public:
     FeatureRead::DayTensor depth_buffer;
     depth_buffer.preallocate(of.l1.num_assets, 2);
 
-    // Create L0 feature buffer (preallocated for L0 level)
-    FeatureRead::DayTensor l0_tensor;
-    l0_tensor.preallocate(of.l1.num_assets, 0);
+    // L0 特征选列缓冲 [T][2][A]: 特征列 + _data_valid (整层 DayTensor 会把全部 L0 列文件读一遍)
+    FeatureRead::DayColumns l0_cols;
+    l0_cols.preallocate(of.l1.num_assets, 0, 2);
 
     while (!of.loader.coro_should_stop) {
       // Check for L0 load request
@@ -90,7 +90,7 @@ public:
       if (selected_level_ref == 0 && feature_idx_ref >= 0 && of.l0.loaded &&
           !of.l0_feature.matches(of.loader.l0_date, of.loader.l0_asset, feature_idx_ref)) {
         load_l0_feature(of.l0_feature, of.loader.l0_date, of.loader.l0_asset,
-                        feature_idx_ref, of.l0, l0_tensor);
+                        feature_idx_ref, of.l0, l0_cols);
       }
 
       // Yield to allow other tasks
@@ -364,7 +364,7 @@ public:
   // ========================================================================
   bool load_l0_feature(OrderFlow::L0FeatureCache &cache, const std::string &date, size_t asset_idx,
                        int feature_idx, const OrderFlow::L0Cache &l0_cache,
-                       FeatureRead::DayTensor &day_tensor) {
+                       FeatureRead::DayColumns &l0_cols) {
     if (cache.matches(date, asset_idx, feature_idx))
       return true;
 
@@ -375,10 +375,12 @@ public:
     cache.asset_idx = asset_idx;
     cache.feature_idx = feature_idx;
 
-    // Load L0 features (uses preallocated buffer)
-    reader_.load_day(date, day_tensor);
+    // 选列加载: 特征列 + _data_valid (L0 逐列文件, 只读 2 个列文件, 免整层)
+    const std::vector<size_t> columns = {static_cast<size_t>(feature_idx),
+                                         static_cast<size_t>(L0_Field::_data_valid)};
+    reader_.load_day_columns(date, columns, l0_cols);
 
-    if (asset_idx >= day_tensor.A)
+    if (asset_idx >= l0_cols.A)
       return false;
 
     // Build plot data from L0 cache (use same X coordinates as depth data)
@@ -402,11 +404,11 @@ public:
         // → 在本分钟内向前回溯到最近一个 _data_valid 秒
         {
           size_t lo = (t >= 59) ? t - 59 : 0;
-          while (t > lo && static_cast<float>(day_tensor.get<0>(t, L0_Field::_data_valid, asset_idx)) <= 0.5f)
+          while (t > lo && static_cast<float>(l0_cols.get(t, 1, asset_idx)) <= 0.5f)
             --t;
         }
 
-        float val = static_cast<float>(day_tensor.get<0>(t, feature_idx, asset_idx));
+        float val = static_cast<float>(l0_cols.get(t, 0, asset_idx));
 
         double global_x = day.to_global_x(i);
         cache.plot.x.push_back(global_x);

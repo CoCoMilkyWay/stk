@@ -440,23 +440,23 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
   if (block.dates.empty())
     return;
 
-  // feature offset + 有效标志列 offset (按该列 valid_type 选 _depth_valid / _data_valid)
+  // 选列: 特征列 [+ 有效标志列] (按该列 valid_type 选 _depth_valid / _data_valid)
   assert(level >= 0 && level < (int)LEVEL_COUNT);
   const auto &meta = data.feature.metadata.features[level];
   assert(feature_idx >= 0 && feature_idx < (int)meta.size());
   const L2::ValidType valid_type = meta[feature_idx].valid_type;
 
   const auto &L = LEVELS[level];
-  const size_t f_offset = L.offsets[feature_idx];
-  size_t valid_offset = 0;
+  std::vector<size_t> columns = {static_cast<size_t>(feature_idx)};
   if (valid_type != L2::ValidType::ALL) {
     const char *flag = valid_type == L2::ValidType::DEPTH ? "_depth_valid" : "_data_valid";
     size_t i = 0;
     while (i < L.field_count && std::strcmp(L.fields[i].code, flag) != 0)
       ++i;
     assert(i < L.field_count && "valid flag column missing in this level");
-    valid_offset = L.offsets[i];
+    columns.push_back(i);
   }
+  const bool has_valid = columns.size() == 2;
 
   cache.raw.resize(A);
   cache.sparse.resize(A);
@@ -465,20 +465,18 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
 
   {
     TraceN("IO_Allocate");
-    day_tensor_.preallocate(A, level);
+    day_columns_.preallocate(A, level, columns.size());
   }
 
-  // 统一流程：遍历 block.dates，逐天加载并拼接
+  // 统一流程：遍历 block.dates，逐天选列加载并拼接 (L0 逐列文件只读 1-2 个文件/天)
   for (const auto &date : block.dates) {
     {
       TraceN("IO_Load");
-      reader_.load_day(date, day_tensor_);
+      reader_.load_day_columns(date, columns, day_columns_);
     }
 
     // 末行是哨兵, 不是时间: 混进 raw 会在 detrend / diff 里造出假跳变
     const size_t T_day = level_valid_rows(static_cast<size_t>(level));
-    const size_t F = L.width;
-    const feature_storage_t *base = day_tensor_.data.data();
 
     // 扩展 cache 容量
     for (size_t a = 0; a < A; ++a) {
@@ -490,18 +488,11 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
       TraceN("IO_Extract");
       for (size_t a = 0; a < A; ++a) {
         for (size_t t = 0; t < T_day; ++t) {
-          size_t idx = (t * F + f_offset) * A + a;
-          float val = static_cast<float>(base[idx]);
+          float val = static_cast<float>(day_columns_.get(t, 0, a));
           cache.raw[a][t_base + t] = val;
 
-          if (valid_type == L2::ValidType::ALL) {
+          if (!has_valid || static_cast<float>(day_columns_.get(t, 1, a)) > 0.5f) {
             cache.sparse[a].push(val, t_base + t);
-          } else {
-            size_t valid_idx = (t * F + valid_offset) * A + a;
-            float valid_flag = static_cast<float>(base[valid_idx]);
-            if (valid_flag > 0.5f) {
-              cache.sparse[a].push(val, t_base + t);
-            }
           }
         }
       }
