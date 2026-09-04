@@ -76,15 +76,17 @@ void ComputeService::start_compute(int num_workers) {
     std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, weight)
     asset_workloads.reserve(data_.asset.items.size());
 
+    // 回测日期 → 日期轴下标, 只查一次 (内层 资产 × 日期 是百万量级)
+    std::vector<size_t> backtest_didx(backtest_dates.size());
+    for (size_t d = 0; d < backtest_dates.size(); ++d)
+      backtest_didx[d] = data_.asset.date_idx(backtest_dates[d]);
+
     for (size_t i = 0; i < data_.asset.items.size(); ++i) {
       const AssetItem &item = data_.asset.items[i];
 
       size_t weight = 0;
-      for (const auto &date : backtest_dates) {
-        auto it = item.date_info.find(date);
-        if (it != item.date_info.end())
-          weight += it->second.order_count;
-      }
+      for (const size_t didx : backtest_didx)
+        weight += item.date_at(didx).order_count;
 
       asset_workloads.push_back({i, weight});
     }

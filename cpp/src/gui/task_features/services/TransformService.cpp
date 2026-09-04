@@ -475,7 +475,8 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
       reader_.load_day_level(date, level, day_tensor_);
     }
 
-    const size_t T_day = day_tensor_.T[level];
+    // 末行是哨兵, 不是时间: 混进 raw 会在 detrend / diff 里造出假跳变
+    const size_t T_day = std::min(day_tensor_.T[level], level_valid_rows(static_cast<size_t>(level)));
     if (T_day == 0)
       continue;
 

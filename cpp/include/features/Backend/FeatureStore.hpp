@@ -31,6 +31,7 @@
 #include <sys/sysctl.h>
 #else
 #include <fstream>
+#include <sys/mman.h> // madvise(MADV_HUGEPAGE): 张量池上透明大页
 #include <unistd.h>
 #endif
 
@@ -73,7 +74,9 @@ inline size_t get_available_memory_bytes() {
 // FEATURE STORE CONFIGURATION
 // ============================================================================
 #define STORE_UNIFIED_DAILY_TENSOR false
-#define POOL_SIZE_FACTOR 2
+
+// 池 slot 数 = 在飞日期上限: TS 当前日 + CS 尾随 + IO flush 中的 1-2 日 + 少量 worker 间 skew 余量.
+inline constexpr size_t kPoolSlots = 4;
 
 // ============================================================================
 // FEATURE STORE - Simple, robust, no race conditions
@@ -122,12 +125,23 @@ private:
     bool needs_reset{false};
 
     void allocate(size_t num_assets, size_t num_ts_workers) {
+      // 张量按 2MB 对齐并 madvise(MADV_HUGEPAGE): 透明大页是普通匿名内存,
+      // 进程退出/崩溃由内核自动回收, 不需要 nr_hugepages 静态预留 (那种预留
+      // 会从 MemAvailable 里整块扣掉, 谁都用不了). 需要系统
+      // /sys/kernel/mm/transparent_hugepage/enabled = madvise 或 always.
+      // 收益: TS 写行是列间 stride (F 列 × A×2B ≈ 11.8KB), 4K 页下每 tick
+      // 踩 F 个不同页, dTLB 压力大; 2M 页覆盖整列邻域, miss 显著减少.
+      constexpr size_t kHugePage = 2ull * 1024 * 1024;
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        const size_t aligned_bytes = ((level_bytes(lvl, num_assets) + 63) / 64) * 64;
+        // aligned_alloc 要求 size 是 alignment 的整数倍; 每层最多多占 <2MB
+        const size_t aligned_bytes = ((level_bytes(lvl, num_assets) + kHugePage - 1) / kHugePage) * kHugePage;
 #ifdef _WIN32
         data[lvl] = static_cast<feature_storage_t *>(_aligned_malloc(aligned_bytes, 64));
 #else
-        data[lvl] = static_cast<feature_storage_t *>(aligned_alloc(64, aligned_bytes));
+        data[lvl] = static_cast<feature_storage_t *>(aligned_alloc(kHugePage, aligned_bytes));
+#if defined(__linux__)
+        madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
+#endif
 #endif
         assert(data[lvl]);
       }
@@ -213,7 +227,7 @@ public:
                      int cs_worker_id = -1, int io_worker_id = -1)
       : axis_hash_(axis_hash),
         num_assets_(num_assets), num_ts_workers_(num_ts_workers),
-        pool_size_(num_ts_workers * POOL_SIZE_FACTOR),
+        pool_size_(kPoolSlots),
         cs_worker_id_(cs_worker_id >= 0 ? cs_worker_id : static_cast<int>(num_ts_workers)),
         io_worker_id_(io_worker_id >= 0 ? io_worker_id : static_cast<int>(num_ts_workers) + 1) {
 

@@ -155,7 +155,7 @@
 //
 //   全局变量:
 //     Slot* pool;                                // 预分配 slot 数组
-//     size_t pool_size = num_ts_workers * POOL_SIZE_FACTOR;  // Pool 大小 (POOL_SIZE_FACTOR=2)
+//     size_t pool_size = kPoolSlots;             // Pool 大小 (固定上限, 见 FeatureStore.hpp)
 //     std::vector<int> free_list;                // 简单 freelist (protected by pool_mutex_)
 //     std::map<string, size_t> date_to_slot_;    // date → slot_idx 映射 (需要 mutex 保护)
 //     std::mutex pool_mutex_;                    // 保护 date_to_slot_ 和 free_list_
@@ -195,8 +195,9 @@
 //   实际配置示例 (当前测试规模):
 //     - A=107, F0=15, T0=14401 → ~47 MB/slot, Pool 30 = 1.4 GB
 //
-//   Pool Size 建议: pool_size = num_ts_workers * POOL_SIZE_FACTOR
-//                   典型配置: 10 TS workers, POOL_SIZE_FACTOR=2 → pool = 20 slots
+//   Pool Size: 固定 kPoolSlots (= 在飞日期上限: TS 当前日 + CS 尾随 + IO flush
+//              中的 1-2 日). 早年的 num_ts_workers × 2 在"每 worker 管一批资产、
+//              全体按日推进"的架构下无意义, 全市场时只会吃满内存.
 //
 //   辅助函数声明:
 //     void write_to_disk(const string &date, Slot *s);  // 异步写盘
@@ -204,7 +205,7 @@
 //
 //   初始化 (构造函数):
 //     GlobalFeatureStore(num_assets, num_ts_workers, output_dir, cs_worker_id, io_worker_id) {
-//       pool_size_ = num_ts_workers * POOL_SIZE_FACTOR;
+//       pool_size_ = kPoolSlots;
 //       pool_ = new Slot[pool_size_];
 //       
 //       // 1. 分配和初始化每个 slot

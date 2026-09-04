@@ -5,13 +5,14 @@
 
 #include <algorithm>
 #include <cassert>
-#include <unordered_map>
 #include <vector>
 
 namespace GUI::Database {
 
 void AssetLoader::load(SharedData &data) {
-  std::vector<std::unordered_map<std::string, DateInfo>> old_date_info;
+  // date_info 按资产下标原样保留 (轴 append-only, items[i].asset_id == i 不变);
+  // 日期轴在 Asset 上, 不随 items 重建
+  std::vector<std::vector<DateInfo>> old_date_info;
   old_date_info.reserve(data.asset.items.size());
   for (auto &item : data.asset.items)
     old_date_info.push_back(std::move(item.date_info));

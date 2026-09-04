@@ -92,15 +92,17 @@ void sequential_worker(int worker_id,
     size_t date_orders = 0;
     size_t date_assets_processed = 0;
 
+    // 日期 → 日期轴下标, 一天查一次; 资产内循环 O(1) 定址
+    const size_t didx = data.asset.date_idx(date_str);
+
     // Process each asset at this date
     for (size_t i = 0; i < my_asset_ids.size(); ++i) {
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
-      auto it = asset.date_info.find(date_str);
       lob.bind(cores[i].get(), asset_id, asset.exchange_type); // 工作区换绑本资产 (簿此刻是干净的)
       lob.begin_day(date_str);                                 // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
       // Hot path: has data and binaries
-      if (it != asset.date_info.end() && it->second.has_binaries()) [[likely]] {
+      if (asset.date_at(didx).has_binaries()) [[likely]] {
 
         // 路径由 (date, code, exchange) 现算 — DateInfo 不再为五百万条记录
         // 各存一份字符串

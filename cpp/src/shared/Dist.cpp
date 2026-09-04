@@ -142,7 +142,8 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
       uint8_t weekday = calc_weekday(year_val, month_val, day);
 
       size_t t_start = month_tensor.day_offsets[day_idx];
-      size_t t_end = month_tensor.day_offsets[day_idx + 1];
+      // day_offsets 步长 = 落盘行数 (含末尾哨兵); 哨兵行会虚增 n_total 并落进假的 15:00 桶
+      size_t t_end = t_start + level_valid_rows(static_cast<size_t>(level));
 
       auto &day_fc = month_feature_days[day_idx];
 

@@ -30,7 +30,8 @@ static void build_day_ranges(TimeSeries::SharedMonthData &shared) {
       dr.month_idx = m;
       dr.day_in_month = d;
       dr.t_start = tensor.day_offsets[d];
-      dr.t_end = tensor.day_offsets[d + 1];
+      // day_offsets 步长 = 落盘行数 (含末尾哨兵); 时间轴只到有效行
+      dr.t_end = dr.t_start + level_valid_rows(static_cast<size_t>(shared.level));
       dr.date = tensor.dates[d];
       shared.day_ranges.push_back(dr);
     }
@@ -146,7 +147,8 @@ static void compute_stationarity_for_month(
 
   for (size_t day_idx = 0; day_idx < tensor.dates.size(); ++day_idx) {
     size_t t_start = tensor.day_offsets[day_idx];
-    size_t t_end = tensor.day_offsets[day_idx + 1];
+    // 同上: 哨兵行不进平稳性检验序列
+    size_t t_end = t_start + level_valid_rows(static_cast<size_t>(shared.level));
 
     for (size_t t = t_start; t < t_end; ++t) {
       const size_t base = t * F * A;

@@ -201,8 +201,8 @@ public:
           auto &day = cache.days[d][a];
           day.reserve(OrderFlowConst::L1_CAPACITY);
 
-          // Use actual T from file header (not constant)
-          for (size_t t = 0; t < tensor.T[1]; ++t) {
+          // Use actual T from file header (not constant); 末行是哨兵, 不消费
+          for (size_t t = 0; t < tensor.T[1] && t < level_valid_rows(1); ++t) {
             float valid_flag = static_cast<float>(tensor.get<1>(t, L1_Field::_data_valid, a));
             if (valid_flag <= 0.5f)
               continue;
@@ -293,7 +293,8 @@ public:
     // Sparse loading: only store valid rows (depth_valid=true or data_valid=true)
     // Depth 张量为分钟频 (行 m = 分钟末盘口快照); GUI 保持秒级 X 轴:
     // 映射到该分钟最后一秒, step 渲染自然铺满整分钟
-    for (size_t m = 0; m < depth_T; ++m) {
+    // 末行是哨兵, 不是时间: 必须在坐标映射前排除 (L1_to_L0(255)+59 会冲出 L0_CAPACITY)
+    for (size_t m = 0; m < depth_T && m < level_valid_rows(2); ++m) {
       const size_t t = L1_to_L0(m) + 59; // 分钟末秒
       assert(t < OrderFlowConst::L0_CAPACITY && "depth minute row exceeds L0_CAPACITY");
 
