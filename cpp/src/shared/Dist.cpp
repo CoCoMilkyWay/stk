@@ -3,6 +3,8 @@
 #include "misc/profiler.hpp"
 
 #include <cstring>
+#include <numeric>
+#include <random>
 #include <tuple>
 
 // ============================================================================
@@ -59,6 +61,11 @@ void Dist::reset_for_build(Params p, const std::vector<std::string> &month_keys,
       slot.clear();
   }
 
+  // 随机资产序: 已发布集合恒为全市场无偏抽样 (固定种子, 可复现)
+  order.resize(n_assets);
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::shuffle(order.begin(), order.end(), std::mt19937{0x5eed});
+
   if (by_hour.size() != 24) {
     by_hour.clear();
     by_hour.resize(24);
@@ -76,7 +83,6 @@ void Dist::reset_for_build(Params p, const std::vector<std::string> &month_keys,
 
   total.clear();
   integrity.clear();
-  stability.clear();
 
   days_loaded.store(0, std::memory_order_relaxed);
   days_total.store(0, std::memory_order_relaxed);
@@ -159,12 +165,13 @@ bool Dist::build(FeatureRead &reader, FeatureRead::MonthTensor &block,
   }
 
   // ==========================================================================
-  // Phase 流: 资产优先, 逐资产 收集全时段(无锁) → 发布(短锁) → 水位+1
+  // Phase 流: 随机序资产优先, 逐资产 收集全时段(无锁) → 发布(短锁) → 进度+1
   // ==========================================================================
   scratch_month_.resize(n_months);
   std::vector<Integrity> inte_month(n_months);
 
-  for (size_t a = 0; a < A; ++a) {
+  for (size_t k = 0; k < A; ++k) {
+    const size_t a = order[k];
     if (cancel.load(std::memory_order_relaxed))
       return false;
 
@@ -245,167 +252,9 @@ bool Dist::build(FeatureRead &reader, FeatureRead::MonthTensor &block,
         }
       }
     }
-    assets_done.store(a + 1, std::memory_order_release);
+    assets_done.store(k + 1, std::memory_order_release);
   }
 
-  return true;
-}
-
-// ============================================================================
-// Stability (全部资产完成后一次: W2 偏移 + 主成分投影排序)
-// ============================================================================
-
-bool Dist::build_stability(const std::atomic<bool> &cancel) {
-  TraceN("DistStability");
-
-  const size_t n_assets = assets.size();
-  constexpr int N_PERCENTILES = 19;
-  std::array<double, N_PERCENTILES> percentiles;
-  for (int i = 0; i < N_PERCENTILES; ++i) {
-    percentiles[i] = 0.05 * (i + 1); // 5%, 10%, ..., 95%
-  }
-
-  // ==========================================================================
-  // 抽取 (分块持锁: quantile 会写 KLL 懒缓存, 与 UI 读互斥; 分块避免冻 UI)
-  // ==========================================================================
-  std::array<float, N_PERCENTILES> q_global;
-  float global_mean = 0.0f, global_median = 0.0f;
-  uint64_t global_count = 0;
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    global_count = total.count();
-    global_mean = static_cast<float>(total.mean());
-    global_median = static_cast<float>(total.quantile(0.5));
-    for (int d = 0; d < N_PERCENTILES; ++d)
-      q_global[d] = static_cast<float>(total.quantile(percentiles[d]));
-  }
-
-  std::vector<size_t> valid_idx;
-  std::vector<std::array<float, N_PERCENTILES>> q_asset; // [n_valid]
-  std::vector<float> mean_asset, median_asset;
-
-  constexpr size_t CHUNK = 256;
-  for (size_t a0 = 0; a0 < n_assets; a0 += CHUNK) {
-    if (cancel.load(std::memory_order_relaxed))
-      return false;
-    std::lock_guard<std::mutex> lock(mutex);
-    const size_t a1 = std::min(a0 + CHUNK, n_assets);
-    for (size_t a = a0; a < a1; ++a) {
-      const auto &kll = assets[a].kll;
-      if (kll.count() < kMinAssetSamples)
-        continue;
-      valid_idx.push_back(a);
-      mean_asset.push_back(static_cast<float>(kll.mean()));
-      median_asset.push_back(static_cast<float>(kll.quantile(0.5)));
-      auto &qs = q_asset.emplace_back();
-      for (int d = 0; d < N_PERCENTILES; ++d)
-        qs[d] = static_cast<float>(kll.quantile(percentiles[d]));
-    }
-  }
-
-  const size_t n_valid = valid_idx.size();
-  if (global_count <= kMinSamples || n_valid <= 1)
-    return true;
-
-  // ==========================================================================
-  // 计算 (纯本地数据, 无锁)
-  // ==========================================================================
-
-  // X 轴: W2 距离 (ICDF + 均值对齐)
-  std::vector<float> scores_w2(n_valid);
-  for (size_t i = 0; i < n_valid; ++i) {
-    const float mean_shift = mean_asset[i] - global_mean;
-    float sum_sq = 0.0f;
-    for (int d = 0; d < N_PERCENTILES; ++d) {
-      const float diff = (q_asset[i][d] - mean_shift) - q_global[d];
-      sum_sq += diff * diff;
-    }
-    scores_w2[i] = std::sqrt(sum_sq / N_PERCENTILES);
-  }
-
-  float M = *std::max_element(scores_w2.begin(), scores_w2.end());
-  if (M < 1e-9f)
-    M = 1.0f;
-
-  // 偏移色: W1 偏移向量 (ICDF + 中位数对齐) → 主成分投影排序
-  // (Ward 聚类是 O(n³), 5000+ 资产不可行; 主模投影 O(n·D²) 毫秒级, 同样"形状相近颜色相近")
-  std::vector<std::array<float, N_PERCENTILES>> offsets(n_valid);
-  std::array<double, N_PERCENTILES> mean_off{};
-  for (size_t i = 0; i < n_valid; ++i) {
-    const float median_shift = median_asset[i] - global_median;
-    for (int d = 0; d < N_PERCENTILES; ++d) {
-      offsets[i][d] = (q_asset[i][d] - median_shift) - q_global[d];
-      mean_off[d] += offsets[i][d];
-    }
-  }
-  for (int d = 0; d < N_PERCENTILES; ++d)
-    mean_off[d] /= static_cast<double>(n_valid);
-
-  // 协方差 (D×D) → 幂迭代主特征向量
-  std::array<std::array<double, N_PERCENTILES>, N_PERCENTILES> cov{};
-  for (size_t i = 0; i < n_valid; ++i) {
-    for (int d1 = 0; d1 < N_PERCENTILES; ++d1) {
-      const double x1 = offsets[i][d1] - mean_off[d1];
-      for (int d2 = d1; d2 < N_PERCENTILES; ++d2) {
-        cov[d1][d2] += x1 * (offsets[i][d2] - mean_off[d2]);
-      }
-    }
-  }
-  for (int d1 = 0; d1 < N_PERCENTILES; ++d1)
-    for (int d2 = 0; d2 < d1; ++d2)
-      cov[d1][d2] = cov[d2][d1];
-
-  std::array<double, N_PERCENTILES> v;
-  v.fill(1.0);
-  for (int iter = 0; iter < 50; ++iter) {
-    std::array<double, N_PERCENTILES> w{};
-    for (int d1 = 0; d1 < N_PERCENTILES; ++d1)
-      for (int d2 = 0; d2 < N_PERCENTILES; ++d2)
-        w[d1] += cov[d1][d2] * v[d2];
-    double norm = 0.0;
-    for (int d = 0; d < N_PERCENTILES; ++d)
-      norm += w[d] * w[d];
-    norm = std::sqrt(norm);
-    if (norm < 1e-30)
-      break;
-    for (int d = 0; d < N_PERCENTILES; ++d)
-      v[d] = w[d] / norm;
-  }
-
-  // 投影 → 排序 → 色标
-  std::vector<float> proj(n_valid);
-  for (size_t i = 0; i < n_valid; ++i) {
-    double p = 0.0;
-    for (int d = 0; d < N_PERCENTILES; ++d)
-      p += v[d] * (offsets[i][d] - mean_off[d]);
-    proj[i] = static_cast<float>(p);
-  }
-  std::vector<size_t> order(n_valid);
-  for (size_t i = 0; i < n_valid; ++i)
-    order[i] = i;
-  std::sort(order.begin(), order.end(),
-            [&](size_t a, size_t b) { return proj[a] < proj[b]; });
-
-  // ==========================================================================
-  // 发布
-  // ==========================================================================
-  StabilityViz viz;
-  viz.asset_idx = std::move(valid_idx);
-  viz.score_min = 0.0f; // W2 距离非负
-  viz.score_max = M;
-  viz.x_norm.resize(n_valid);
-  for (size_t i = 0; i < n_valid; ++i)
-    viz.x_norm[i] = scores_w2[i] / M;
-  viz.color_t.resize(n_valid);
-  for (size_t pos = 0; pos < n_valid; ++pos) {
-    viz.color_t[order[pos]] = static_cast<float>(pos) / (n_valid - 1);
-  }
-  viz.valid = true;
-
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    stability = std::move(viz);
-  }
   return true;
 }
 
@@ -416,13 +265,13 @@ bool Dist::build_stability(const std::atomic<bool> &cancel) {
 void Dist::clear() {
   std::lock_guard<std::mutex> lock(mutex);
   params = Params{};
+  order.clear();
   months.clear();
   assets.clear();
   by_hour.clear();
   by_weekday.clear();
   total.clear();
   integrity.clear();
-  stability.clear();
   days_loaded.store(0, std::memory_order_relaxed);
   days_total.store(0, std::memory_order_relaxed);
   assets_done.store(0, std::memory_order_relaxed);

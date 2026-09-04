@@ -10,8 +10,10 @@
 #include "implot.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <map>
 
 namespace GUI::Features {
 
@@ -78,6 +80,74 @@ static std::pair<float, float> compute_median_mad(const std::vector<float> &vals
   std::sort(abs_devs.begin(), abs_devs.end());
   float mad = abs_devs[abs_devs.size() / 2];
   return {median, mad};
+}
+
+// ============================================================================
+// W2 偏移 (每帧派生, 全程流式): 均值校准的 Wasserstein-L2 偏移距离,
+// 相对"当前"全局分位 —— 随构建推进逐帧收敛, 无需收尾阶段.
+// ============================================================================
+
+constexpr int kW2Deciles = 19; // 5%, 10%, ..., 95%
+
+struct W2GlobalRef {
+  std::array<float, kW2Deciles> q;
+  float mean = 0.0f;
+  bool valid = false;
+};
+
+static W2GlobalRef ComputeW2GlobalRef(const Dist &dist) {
+  W2GlobalRef ref;
+  if (dist.total.count() < kMinSamples)
+    return ref;
+  for (int d = 0; d < kW2Deciles; ++d)
+    ref.q[d] = static_cast<float>(dist.total.quantile(0.05 * (d + 1)));
+  ref.mean = static_cast<float>(dist.total.mean());
+  ref.valid = true;
+  return ref;
+}
+
+static float ComputeW2(const Dist::KLLWithMoments &kll, const W2GlobalRef &ref) {
+  const float shift = static_cast<float>(kll.mean()) - ref.mean;
+  float sum_sq = 0.0f;
+  for (int d = 0; d < kW2Deciles; ++d) {
+    const float qi = static_cast<float>(kll.quantile(0.05 * (d + 1)));
+    const float diff = (qi - shift) - ref.q[d];
+    sum_sq += diff * diff;
+  }
+  return std::sqrt(sum_sq / kW2Deciles);
+}
+
+// ============================================================================
+// 行业色: 一个行业一个颜色 (资产表静态, 缓存一次; 基本面未就绪时下帧重试)
+// ============================================================================
+
+static void EnsureIndustryCache(DistUIState &ui, const Asset &asset, const AssetInfo &assetinfo) {
+  if (ui.industry_idx.size() == asset.items.size() && !ui.industry_names.empty())
+    return;
+  ui.industry_idx.assign(asset.items.size(), -1);
+  ui.industry_names.clear();
+  std::map<std::string, int> name_to_idx;
+  for (size_t a = 0; a < asset.items.size(); ++a) {
+    const auto &item = asset.items[a];
+    std::string ex = item.exchange;
+    std::transform(ex.begin(), ex.end(), ex.begin(), ::tolower);
+    const StockInfo *si = assetinfo.find_stock_info(ex + "." + item.asset_code);
+    if (!si || si->ind_name.empty())
+      continue;
+    auto [it, inserted] = name_to_idx.try_emplace(si->ind_name, static_cast<int>(ui.industry_names.size()));
+    if (inserted)
+      ui.industry_names.push_back(si->ind_name);
+    ui.industry_idx[a] = it->second;
+  }
+}
+
+static ImVec4 IndustryColor(const DistUIState &ui, size_t asset_idx) {
+  const int idx = asset_idx < ui.industry_idx.size() ? ui.industry_idx[asset_idx] : -1;
+  if (idx < 0)
+    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // 未知行业: 灰
+  const int n = static_cast<int>(ui.industry_names.size());
+  const float t = n > 1 ? static_cast<float>(idx) / static_cast<float>(n - 1) : 0.5f;
+  return ImPlot::SampleColormap(t, ImPlotColormap_Jet);
 }
 
 // ============================================================================
@@ -635,9 +705,8 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
       }
     }
   } else if (selected_dimension == 3) {
-    // ASSETS dimension (只看已发布前缀, 槽发布即终态)
-    const size_t done = dist.assets_done.load(std::memory_order_acquire);
-    for (size_t a = 0; a < done && a < dist.assets.size(); ++a) {
+    // ASSETS dimension (随机序流式发布, 槽发布即终态: 扫全部槽按 count 过滤即已发布集合)
+    for (size_t a = 0; a < dist.assets.size(); ++a) {
       const auto &kll = dist.assets[a].kll;
       if (kll.count() >= kMinSamples) {
         means.push_back(static_cast<float>(kll.mean()));
@@ -1033,9 +1102,8 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
 // Assets PDF Plot
 // ============================================================================
 
-static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
-                            int selected_dimension, int &clicked_dimension,
-                            int &hovered_asset_out) {
+static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInfo &assetinfo,
+                            DistUIState &ui, int &clicked_dimension, int &hovered_asset_out) {
   // Title with tooltip
   ImGui::Text("资产截面(分布密度 + 分位数偏移)");
   ImGui::SameLine();
@@ -1047,35 +1115,25 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
         "分位数一致性尤为重要:\n"
         "不同资产的分位数取值(ICDF)应该尽量靠近, 以保证因子组合阶段分位数的截面一致性\n\n"
         "F_i: CDF; Q_i: 逆CDF; X_i: Feature i\n\n"
-        "偏移量(强调全局差异): 均值校准(最优中心化)的 Wasserstein-L2 偏移距离(积分)");
+        "偏移散点(强调全局差异): 均值校准(最优中心化)的 Wasserstein-L2 偏移距离(积分),\n"
+        "相对当前全局分位每帧派生, 随构建流式收敛");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
                        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
-    ImGui::Text("\n偏移色(强调局部形状): 中位数校准(最优中心化)的 Wasserstein-L1 偏移向量(不积分), 取Ward with optimal leaf ordering聚类");
-    ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
-                       "    W1(F_i, F_μ) = || (Q_i - Med[X_i]) - (Q_μ - Med[X_μ]) ||_1 = || ΔW1_i ||_1");
-    ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
-                       "    cluster_order = optimal_leaf_ordering( Ward({ΔW1_i}, L1) )");
+    ImGui::Text("\n颜色 = 行业 (一个行业一个颜色); 资产按随机序流式发布, 已画集合即全市场无偏抽样");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
   ImGui::Separator();
 
-  // 流式: 已发布前缀里 count 够的资产就画 (前几百个资产完成时就能看图);
-  // stability (W2 坐标 + Ward 色) 在全部完成后叠加, 沿用其资产序.
-  const auto &stab = dist.stability;
-  const bool has_stab = stab.valid && !stab.asset_idx.empty();
+  // 流式: 随机序发布 + 槽发布即终态 → 扫全部槽按 count 过滤即已发布集合 (无偏抽样)
+  EnsureIndustryCache(ui, asset, assetinfo);
 
-  std::vector<size_t> stream_idx;
-  if (!has_stab) {
-    const size_t done = std::min(dist.assets_done.load(std::memory_order_acquire),
-                                 dist.assets.size());
-    stream_idx.reserve(done);
-    for (size_t a = 0; a < done; ++a) {
-      if (dist.assets[a].kll.count() >= kMinAssetSamples)
-        stream_idx.push_back(a);
-    }
+  std::vector<size_t> asset_indices;
+  asset_indices.reserve(dist.assets.size());
+  for (size_t a = 0; a < dist.assets.size(); ++a) {
+    if (dist.assets[a].kll.count() >= kMinAssetSamples)
+      asset_indices.push_back(a);
   }
-  const std::vector<size_t> &asset_indices = has_stab ? stab.asset_idx : stream_idx;
   const size_t n_valid = asset_indices.size();
 
   if (n_valid == 0) {
@@ -1083,21 +1141,23 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     return;
   }
 
-  // Calculate global data range (across all valid assets) to fix the stability bar
-  // This prevents the "slow zoom out" issue by providing static anchors
-  float global_min_x = 0.0f;
-  float global_max_x = 0.0f;
-  if (dist.total.count() > 0) {
-    global_min_x = static_cast<float>(dist.total.quantile(0.0));
-    global_max_x = static_cast<float>(dist.total.quantile(1.0));
-  }
-  // Ensure some width
-  if (global_max_x <= global_min_x) {
-    global_min_x -= 1.0f;
-    global_max_x += 1.0f;
+  // W2 偏移散点: 每帧对当前全局分位派生 (流式, 无收尾阶段)
+  const W2GlobalRef w2_ref = ComputeW2GlobalRef(dist);
+  std::vector<float> x_norm;
+  float w2_max = 0.0f;
+  const bool has_dots = w2_ref.valid;
+  if (has_dots) {
+    x_norm.resize(n_valid);
+    for (size_t i = 0; i < n_valid; ++i) {
+      x_norm[i] = ComputeW2(dist.assets[asset_indices[i]].kll, w2_ref);
+      w2_max = std::max(w2_max, x_norm[i]);
+    }
+    const float inv = w2_max > 1e-9f ? 1.0f / w2_max : 1.0f;
+    for (float &v : x_norm)
+      v *= inv;
   }
 
-  if (need_autofit) {
+  if (ui.need_autofit) {
     ImPlot::SetNextAxesToFit();
   }
 
@@ -1114,18 +1174,15 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     double x_range = limits.X.Max - limits.X.Min;
     double y_range = limits.Y.Max - limits.Y.Min;
 
-    // Use global range for stability mapping
-    double stab_range_len = global_max_x - global_min_x;
-
     // ========================================================================
-    // Phase 1: Hover detection (both PDF lines and stability dots)
+    // Phase 1: Hover detection (both PDF lines and W2 dots)
     // ========================================================================
     if (ImPlot::IsPlotHovered()) {
       ImPlotPoint mouse = ImPlot::GetPlotMousePos();
       double nmx = (mouse.x - limits.X.Min) / x_range;
       double nmy = (mouse.y - limits.Y.Min) / y_range;
 
-      // Get mouse position in pixels for stability dot detection
+      // Get mouse position in pixels for dot detection
       ImVec2 mouse_pixels = ImGui::GetMousePos();
 
       // Get fixed plot pixel boundaries (scale invariant)
@@ -1133,14 +1190,11 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
       ImVec2 plot_size = ImPlot::GetPlotSize();
       float dot_y_screen = plot_pos.y + 15.0f; // Fixed: 15px from plot top edge
 
-      // Check stability dots first (top band priority) - use pixel coordinates
-      if (has_stab && std::abs(mouse_pixels.y - dot_y_screen) < 20.0f) {
+      // Check W2 dots first (top band priority) - use pixel coordinates
+      if (has_dots && std::abs(mouse_pixels.y - dot_y_screen) < 20.0f) {
         float best_dist_px = 15.0f; // 15 pixel threshold
         for (size_t i = 0; i < n_valid; ++i) {
-          // Map data x to screen x (scale invariant linear mapping)
-          double data_x = global_min_x + stab.x_norm[i] * stab_range_len;
-          float norm_x = (data_x - global_min_x) / stab_range_len; // [0, 1]
-          float dot_x_screen = plot_pos.x + norm_x * plot_size.x;
+          float dot_x_screen = plot_pos.x + x_norm[i] * plot_size.x;
 
           float dx_px = std::abs(mouse_pixels.x - dot_x_screen);
           if (dx_px < best_dist_px) {
@@ -1151,7 +1205,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
         }
       }
 
-      // Check PDF lines (if not hovering stability)
+      // Check PDF lines (if not hovering dots)
       if (hovered_idx < 0) {
         for (size_t i = 0; i < n_valid; ++i) {
           const auto &kll = dist.assets[asset_indices[i]].kll;
@@ -1188,8 +1242,8 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
         continue;
 
       bool is_hovered = (static_cast<int>(i) == hovered_idx);
-      float t = static_cast<float>(i) / static_cast<float>(n_valid);
-      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Hot);
+      ImVec4 color = IndustryColor(ui, asset_indices[i]);
+      color.w = 0.75f; // 线多, 半透明降噪
 
       if (is_hovered) {
         // Highlighted: thick white outline + bright color
@@ -1211,10 +1265,10 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     }
 
     // ========================================================================
-    // Phase 3: Draw stability scatter (overlay on top, scale invariant)
-    // 仅在 stability 完成后叠加 (流式阶段只有 PDF 线)
+    // Phase 3: Draw W2 offset scatter (overlay on top, scale invariant)
+    // 流式: 已发布资产的散点每帧重派生, 随全局分位收敛; 颜色 = 行业
     // ========================================================================
-    if (has_stab) {
+    if (has_dots) {
       ImDrawList *draw = ImPlot::GetPlotDrawList();
 
       // Get fixed plot pixel boundaries (scale invariant)
@@ -1224,9 +1278,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
 
       // Draw asset dots
       for (size_t i = 0; i < n_valid; ++i) {
-        // Map data x to screen x (scale invariant linear mapping)
-        float norm_x = stab.x_norm[i]; // Already normalized [0, 1]
-        float x_screen = plot_pos.x + norm_x * plot_size.x;
+        float x_screen = plot_pos.x + x_norm[i] * plot_size.x;
         ImVec2 center(x_screen, y_screen);
 
         bool is_hovered = (static_cast<int>(i) == hovered_idx);
@@ -1236,16 +1288,14 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
           draw->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255));
           draw->AddCircleFilled(center, 4.0f, IM_COL32(0, 255, 255, 255));
         } else {
-          ImVec4 color_v4 = ImPlot::SampleColormap(stab.color_t[i], ImPlotColormap_Viridis);
-          ImU32 color = ImGui::ColorConvertFloat4ToU32(color_v4);
+          ImU32 color = ImGui::ColorConvertFloat4ToU32(IndustryColor(ui, asset_indices[i]));
           draw->AddCircleFilled(center, 2.5f, color);
         }
       }
 
-      // Draw reference labels: 0 (min) and max
-      // Format score values (score_min is always 0 for W₂ distance)
+      // Draw reference labels: 0 (min) and max (流式最大值)
       char buf_max[16];
-      std::snprintf(buf_max, sizeof(buf_max), "%.3f", stab.score_max);
+      std::snprintf(buf_max, sizeof(buf_max), "%.3f", w2_max);
 
       // Label positions (scale invariant)
       float x_screen_min = plot_pos.x;
@@ -1282,7 +1332,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
   }
 
   // Highlight border if selected
-  if (selected_dimension == 3) {
+  if (ui.selected_dimension == 3) {
     ImDrawList *draw = ImGui::GetWindowDrawList();
     ImVec2 p_min = ImGui::GetItemRectMin();
     ImVec2 p_max = ImGui::GetItemRectMax();
@@ -1391,25 +1441,23 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PCF = %s", stock_info ? fmt_val(stock_info->pcfNcfTTM).c_str() : "--");
 
-    // Row 5: Kurt
+    // Row 5: Kurt | 行业
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::Text("峰度 = %.3f", kll.kurt());
+    ImGui::TableSetColumnIndex(1);
+    ImGui::Text("行业 = %s",
+                stock_info && !stock_info->ind_name.empty() ? stock_info->ind_name.c_str() : "--");
 
-    // Row 6: W2 Distance (if available)
+    // Row 6: W2 偏移 (相对当前全局分位, 流式派生)
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("W2 = %.4f", dist.stability.valid && hovered_asset >= 0
-                                 ? [&]() {
-                                     // Find stability index for this asset
-                                     for (size_t i = 0; i < dist.stability.asset_idx.size(); ++i) {
-                                       if (dist.stability.asset_idx[i] == static_cast<size_t>(hovered_asset)) {
-                                         return dist.stability.x_norm[i] * dist.stability.score_max;
-                                       }
-                                     }
-                                     return 0.0f;
-                                   }()
-                                 : 0.0f);
+    const W2GlobalRef w2_ref = ComputeW2GlobalRef(dist);
+    if (w2_ref.valid) {
+      ImGui::Text("W2 = %.4f", ComputeW2(kll, w2_ref));
+    } else {
+      ImGui::TextUnformatted("W2 = --");
+    }
 
     ImGui::EndTable();
   }
@@ -1513,7 +1561,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   // Bottom: Assets PDF (outputs hovered_asset)
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(dist, ui.need_autofit, ui.selected_dimension, clicked_dimension, hovered_asset);
+  RenderAssetsPDF(dist, data.asset, data.assetinfo, ui, clicked_dimension, hovered_asset);
   ImGui::EndChild();
 
   // Update selected dimension if any plot was clicked

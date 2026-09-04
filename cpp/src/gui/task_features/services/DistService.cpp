@@ -142,7 +142,7 @@ void DistService::worker_loop() {
 
     dist.reset_for_build(std::move(req.params), req.months, n_assets);
 
-    if (dist.build(reader, block, cancel_) && dist.build_stability(cancel_)) {
+    if (dist.build(reader, block, cancel_)) {
       dist.status.store(Dist::Status::Done, std::memory_order_release);
     } else {
       dist.status.store(Dist::Status::Cancelled, std::memory_order_release);

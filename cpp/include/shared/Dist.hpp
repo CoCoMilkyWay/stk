@@ -24,13 +24,14 @@
 //   worker (单线程, DistService):
 //     Phase IO:  日期枚举 → 自适应日抽样 (块 ≤ kMaxBlockBytes; 区间小则 stride=1 全量;
 //                stride 与交易周互质避免星期偏置) → 逐日载入常驻块, days_loaded++
-//     Phase 流:  for a in 0..A:                  ← 资产优先, 每资产走完全时段
-//                  无锁收集样本 → 加锁发布:
+//     Phase 流:  for a in shuffle(0..A):         ← 随机资产序: 已发布集合恒为全市场无偏抽样
+//                  无锁收集全时段样本 → 加锁发布:
 //                    assets[a] (发布即终态) / months[*] / by_hour / by_weekday / total
-//                  assets_done = a+1             ← UI 下一帧就画到 [0, assets_done)
-//     Stability: W2 偏移 + W1 主成分投影排序, 全部完成后一次 (分块持锁, 不冻 UI)
+//                  ++assets_done
 //
 //   UI (每帧): 持 mutex 渲染全部视图; 进度 (status/days_loaded/assets_done) 原子免锁.
+//     已发布资产 = 槽 count > 0 (发布即终态, 无需知道顺序); 偏移散点 (W2 相对当前全局
+//     分位) 与行业色均为每帧派生 —— 无收尾阶段, 一切视图全程流式.
 //   生命周期: 改参数 → 新请求即取消在跑重算; 切走 Tab → 立刻中断 + clear() 释放;
 //             切回 Tab → 自动重算 (构建只需秒级, 不留常驻).
 // ============================================================================
@@ -260,29 +261,6 @@ struct Dist {
   };
 
   // ==========================================================================
-  // Stability Visualization (cross-sectional distribution stability)
-  // ==========================================================================
-
-  struct StabilityViz {
-    // Only includes assets with count >= kMinAssetSamples
-    std::vector<size_t> asset_idx; // original asset indices [n_valid]
-    std::vector<float> x_norm;     // normalized x position [0,1] [n_valid]
-    std::vector<float> color_t;    // color parameter [0,1] [n_valid]
-    float score_min = 0.0f;        // min signed-square score (for label)
-    float score_max = 0.0f;        // max signed-square score (for label)
-
-    bool valid = false;
-
-    void clear() {
-      asset_idx.clear();
-      x_norm.clear();
-      color_t.clear();
-      score_min = score_max = 0.0f;
-      valid = false;
-    }
-  };
-
-  // ==========================================================================
   // State
   // ==========================================================================
 
@@ -301,13 +279,13 @@ struct Dist {
   mutable std::mutex mutex;
 
   Params params;                          // 本次构建参数
+  std::vector<size_t> order;              // [A] 随机资产序 (reset 时洗牌, worker 按此流)
   std::vector<MonthAgg> months;           // [n_months]
   std::vector<AssetSlot> assets;          // [A] 全区间累积
   std::vector<KLLWithMoments> by_hour;    // [24] 全区间
   std::vector<KLLWithMoments> by_weekday; // [7]  全区间
   KLLWithMoments total;                   // 全区间
   Integrity integrity;                    // 全区间
-  StabilityViz stability;
 
   // ==========================================================================
   // Methods (worker 线程调用, 内部按需加锁)
@@ -316,13 +294,10 @@ struct Dist {
   // 重置全部状态并进入 Building (sketch 容量复用, 稳态零分配)
   void reset_for_build(Params p, const std::vector<std::string> &month_keys, size_t n_assets);
 
-  // 全区间构建: Phase IO (逐日入块) + Phase 资产流 (逐资产发布); 被取消返回 false
+  // 全区间构建: Phase IO (逐日入块) + Phase 资产流 (随机序逐资产发布); 被取消返回 false
   // block 为 worker 私有的复用缓冲 (preallocate 在内部按抽样天数做)
   bool build(FeatureRead &reader, FeatureRead::MonthTensor &block,
              const std::atomic<bool> &cancel);
-
-  // 全部资产完成后: W2 偏移 + 主成分投影排序 (分块持锁, 不冻 UI); 被取消返回 false
-  bool build_stability(const std::atomic<bool> &cancel);
 
   void clear();
 

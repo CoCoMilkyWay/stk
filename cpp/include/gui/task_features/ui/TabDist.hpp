@@ -11,6 +11,9 @@
 //   - Computation via DistService 单 worker 线程 (资产维度流式发布)
 #pragma once
 
+#include <string>
+#include <vector>
+
 struct SharedData;
 
 namespace GUI::Features {
@@ -30,6 +33,10 @@ struct DistUIState {
 
   // Autofit trigger (set when compute completes)
   bool need_autofit = false;
+
+  // 行业色缓存 (资产表静态, 构建一次): 一个行业一个颜色
+  std::vector<int> industry_idx;           // [A], -1 = 未知
+  std::vector<std::string> industry_names; // [n_industries]
 };
 
 // ============================================================================
