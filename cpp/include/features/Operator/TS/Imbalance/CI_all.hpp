@@ -29,7 +29,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Ci_all(N) N(Ci_all, (CI_all), (tick_data), onMinute, onMinute)
+#define NODE_Ci_all(N) N(Ci_all, (CI_all), (tick_data), onMinute)
 
 #define FIELDS_L1_Ci_all(X) \
-  X(ci_all, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Cumu Imba All-Level", "累计全档失衡", "累计所有档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_all))
+  X(ci_all, IMBALANCE, RATIO, NONE, "Cumu Imba All-Level", "累计全档失衡", "累计所有档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_all))

@@ -9,7 +9,6 @@
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
 template <size_t N_LEVELS = L2::LOB_DEPTH>
@@ -24,18 +23,18 @@ public:
   enum Out : size_t { kCount = 0 };
 
   DepthData(const TickData &tick_data,
-            const CBuffer<float, L2::BLEN> &taker_price,
+            const Series &taker_price,
             const std::string &asset_code)
       : tick_data_(tick_data),
         limit_pct_(L2::infer_pct_limit(asset_code)),
         taker_price_(taker_price) {}
 
-  CBuffer<float, L2::BLEN> bid_price[N_LEVELS];
-  CBuffer<float, L2::BLEN> ask_price[N_LEVELS];
-  CBuffer<float, L2::BLEN> bid_qty[N_LEVELS];
-  CBuffer<float, L2::BLEN> ask_qty[N_LEVELS];
-  CBuffer<float, L2::BLEN> bid_amt[N_LEVELS];
-  CBuffer<float, L2::BLEN> ask_amt[N_LEVELS];
+  Series bid_price[N_LEVELS];
+  Series ask_price[N_LEVELS];
+  Series bid_qty[N_LEVELS];
+  Series ask_qty[N_LEVELS];
+  Series bid_amt[N_LEVELS];
+  Series ask_amt[N_LEVELS];
 
   // 跨天: 用前一天最后成交价设置涨跌停边界
   void reset() {
@@ -104,8 +103,8 @@ private:
   float limit_up_ = 0.0f;
   float limit_down_ = 0.0f;
   bool initialized_ = false;
-  const CBuffer<float, L2::BLEN> &taker_price_; // 前收盘价来源
+  const Series &taker_price_; // 前收盘价来源
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_DepthData(N) N(DepthData, (DepthData<L2::LOB_DEPTH>), (tick_data, Taker.out(Taker.price), asset_code_), onDepth, onDepth)
+#define NODE_DepthData(N) N(DepthData, (DepthData<L2::LOB_DEPTH>), (tick_data, Taker.out(Taker.price), asset_code_), onDepth)

@@ -43,7 +43,7 @@ void apply(Method m, Transform tf, float *y, std::size_t n,
 #define FIELDS_L0_CrossSection(X) \
   X(cs_spread_rank, LIQUIDITY, RANK, RANK_ZSCORE, "CS Spread Rank", "价差截面排名", "spread截面rank→inverse normal", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))", CS(0, spread, None, NormRank))
 
-#define FIELDS_L1_CrossSection(X)                                                                                                                                                                                                          \
+#define FIELDS_L1_CrossSection(X)                                                                                                                                                                                    \
   X(cs_spread_rank, LIQUIDITY, RANK, RANK_ZSCORE, "CS Spread Rank", "价差截面排名", "spread截面rank→inverse normal", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))", CS(0, spread, None, NormRank))                  \
   X(ep_ttm12, BASIC, RANK, NONE, "Neutral EP", "中性EP", "pct_rank(z(neutralize(winsor_q(1/pe))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pe}))))", CS(1, pe, Reciprocal, NeutralRank))                          \
   X(bp_ttm3, BASIC, RANK, NONE, "Neutral BP", "中性BP", "pct_rank(z(neutralize(winsor_q(1/pb))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pb}))))", CS(1, pb, Reciprocal, NeutralRank))                           \

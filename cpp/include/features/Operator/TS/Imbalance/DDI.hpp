@@ -9,7 +9,7 @@
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
+#include "features/DataDefine.hpp"
 
 template <int LAMBDA_X100, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class DDI {
@@ -20,10 +20,10 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  DDI(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&bid_price)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&ask_price)[DEPTH_SIZE])
+  DDI(const DepthSeries &bid_qty,
+      const DepthSeries &ask_qty,
+      const DepthSeries &bid_price,
+      const DepthSeries &ask_price)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), bid_price_(bid_price), ask_price_(ask_price) {}
 
   // e^x ≈ 1 + x + x²/2 + x³/6, x ∈ [-10, 0]
@@ -50,19 +50,19 @@ public:
   }
 
 private:
-  const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&bid_price_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&ask_price_)[DEPTH_SIZE];
+  const DepthSeries &bid_qty_;
+  const DepthSeries &ask_qty_;
+  const DepthSeries &bid_price_;
+  const DepthSeries &ask_price_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Ddi_1(N) N(Ddi_1, (DDI<1>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onMinute, onMinute)
+#define NODE_Ddi_1(N) N(Ddi_1, (DDI<1>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onMinute)
 
 #define FIELDS_L1_Ddi_1(X) \
-  X(ddi_1, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Distance-discounted Imb λ=0.01", "距离折扣失衡λ=0.01", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.01)", OP(Ddi_1))
+  X(ddi_1, IMBALANCE, RATIO, NONE, "Distance-discounted Imb λ=0.01", "距离折扣失衡λ=0.01", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.01)", OP(Ddi_1))
 
-#define NODE_Ddi_2(N) N(Ddi_2, (DDI<2>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onMinute, onMinute)
+#define NODE_Ddi_2(N) N(Ddi_2, (DDI<2>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onMinute)
 
 #define FIELDS_L1_Ddi_2(X) \
-  X(ddi_2, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Distance-discounted Imb λ=0.02", "距离折扣失衡λ=0.02", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.02)", OP(Ddi_2))
+  X(ddi_2, IMBALANCE, RATIO, NONE, "Distance-discounted Imb λ=0.02", "距离折扣失衡λ=0.02", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.02)", OP(Ddi_2))

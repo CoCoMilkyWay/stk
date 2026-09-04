@@ -106,7 +106,7 @@ public:
   // ===========================================================================
   template <Trigger trig>
   [[gnu::always_inline]] inline void run() {
-#define DAG_RUN_NODE(name, type, args, ...)          \
+#define DAG_RUN_NODE(name, type, args, ...)        \
   if constexpr (NODE_COMPUTE(__VA_ARGS__) == trig) \
     name.compute();                                \
   if constexpr (NODE_FLUSH(__VA_ARGS__) == trig)   \

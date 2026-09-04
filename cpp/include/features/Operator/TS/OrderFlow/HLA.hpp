@@ -8,7 +8,6 @@
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
 class HLA {
@@ -18,8 +17,8 @@ public:
   float y[kCount] = {};
 
   HLA(TickData &td,
-      const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
-      const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH])
+      const DepthSeries &bid_qty,
+      const DepthSeries &ask_qty)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
   // 每笔订单: 累计挂单/撤单量 (成交不计)
@@ -65,8 +64,8 @@ public:
 
 private:
   TickData &td_;
-  const CBuffer<float, L2::BLEN> (&bid_qty_)[L2::LOB_DEPTH];
-  const CBuffer<float, L2::BLEN> (&ask_qty_)[L2::LOB_DEPTH];
+  const DepthSeries &bid_qty_;
+  const DepthSeries &ask_qty_;
 
   float vol_maker_bid_ = 0.0f, vol_maker_ask_ = 0.0f;
   float vol_cancel_bid_ = 0.0f, vol_cancel_ask_ = 0.0f;
@@ -76,4 +75,4 @@ private:
 #define NODE_Hla(N) N(Hla, (HLA), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
 #define FIELDS_L1_Hla(X) \
-  X(hla_imba, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Hidden-liquidity-adjusted Imba", "潜在流动性失衡", "预测后续时刻的失衡(按照refill/cancel rate)(降频)", R"(\frac{\tilde{V}_{1,t}^{M,B} - \tilde{V}_{1,t}^{M,A}}{\tilde{V}_{1,t}^{M,B} + \tilde{V}_{1,t}^{M,A}}, \quad \tilde{V}_{1,t}^{M,s} = V_{1,t}^{M,s}(1+\rho_t^{s}), \quad \rho_t^{s} = \frac{|O_t^{M,s}| - |O_t^{C,s}|}{|O_t^{M,s}| + |O_t^{C,s}|}, \quad s \in \{B,A\})", OP(Hla))
+  X(hla_imba, ORDER_FLOW, RATIO, NONE, "Hidden-liquidity-adjusted Imba", "潜在流动性失衡", "预测后续时刻的失衡(按照refill/cancel rate)(降频)", R"(\frac{\tilde{V}_{1,t}^{M,B} - \tilde{V}_{1,t}^{M,A}}{\tilde{V}_{1,t}^{M,B} + \tilde{V}_{1,t}^{M,A}}, \quad \tilde{V}_{1,t}^{M,s} = V_{1,t}^{M,s}(1+\rho_t^{s}), \quad \rho_t^{s} = \frac{|O_t^{M,s}| - |O_t^{C,s}|}{|O_t^{M,s}| + |O_t^{C,s}|}, \quad s \in \{B,A\})", OP(Hla))

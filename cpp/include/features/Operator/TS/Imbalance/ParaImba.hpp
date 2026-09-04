@@ -6,8 +6,7 @@
 //   imba_para_ck = (|c_k^B| - |c_k^A|) / (|c_k^B| + |c_k^A|),  k ∈ {0,1,2}
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
+#include "features/DataDefine.hpp"
 #include <cmath>
 
 class ParaImba {
@@ -18,8 +17,8 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  ParaImba(const CBuffer<float, L2::BLEN> (&bid_coef)[kCount],
-           const CBuffer<float, L2::BLEN> (&ask_coef)[kCount])
+  ParaImba(const Series (&bid_coef)[kCount],
+           const Series (&ask_coef)[kCount])
       : bid_coef_(bid_coef), ask_coef_(ask_coef) {}
 
   inline void compute() {
@@ -32,14 +31,14 @@ public:
   }
 
 private:
-  const CBuffer<float, L2::BLEN> (&bid_coef_)[kCount];
-  const CBuffer<float, L2::BLEN> (&ask_coef_)[kCount];
+  const Series (&bid_coef_)[kCount];
+  const Series (&ask_coef_)[kCount];
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_ParaImba(N) N(ParaImba, (ParaImba), (Para_b.outs(), Para_a.outs()), onMinute, onMinute)
+#define NODE_ParaImba(N) N(ParaImba, (ParaImba), (Para_b.outs(), Para_a.outs()), onMinute)
 
-#define FIELDS_L1_ParaImba(X)                                                                                                                                                                                                                   \
-  X(imba_para_c0, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Depth Parabola c0 Imba", "买卖抛物线截距失衡", "对比买卖近端流动性(降频)", R"(\frac{|c_{0,t}^{M,B}| - |c_{0,t}^{M,A}|}{|c_{0,t}^{M,B}| + |c_{0,t}^{M,A}|})", OP(ParaImba, c0)) \
-  X(imba_para_c1, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Depth Parabola c1 Imba", "买卖抛物线斜率失衡", "对比买卖风偏(降频)", R"(\frac{|c_{1,t}^{M,B}| - |c_{1,t}^{M,A}|}{|c_{1,t}^{M,B}| + |c_{1,t}^{M,A}|})", OP(ParaImba, c1))       \
-  X(imba_para_c2, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Depth Parabola c2 Imba", "买卖抛物线曲率失衡", "对比买卖订单块距离(降频)", R"(\frac{|c_{2,t}^{M,B}| - |c_{2,t}^{M,A}|}{|c_{2,t}^{M,B}| + |c_{2,t}^{M,A}|})", OP(ParaImba, c2))
+#define FIELDS_L1_ParaImba(X)                                                                                                                                                                                             \
+  X(imba_para_c0, IMBALANCE, RATIO, NONE, "Depth Parabola c0 Imba", "买卖抛物线截距失衡", "对比买卖近端流动性(降频)", R"(\frac{|c_{0,t}^{M,B}| - |c_{0,t}^{M,A}|}{|c_{0,t}^{M,B}| + |c_{0,t}^{M,A}|})", OP(ParaImba, c0)) \
+  X(imba_para_c1, IMBALANCE, RATIO, NONE, "Depth Parabola c1 Imba", "买卖抛物线斜率失衡", "对比买卖风偏(降频)", R"(\frac{|c_{1,t}^{M,B}| - |c_{1,t}^{M,A}|}{|c_{1,t}^{M,B}| + |c_{1,t}^{M,A}|})", OP(ParaImba, c1))       \
+  X(imba_para_c2, IMBALANCE, RATIO, NONE, "Depth Parabola c2 Imba", "买卖抛物线曲率失衡", "对比买卖订单块距离(降频)", R"(\frac{|c_{2,t}^{M,B}| - |c_{2,t}^{M,A}|}{|c_{2,t}^{M,B}| + |c_{2,t}^{M,A}|})", OP(ParaImba, c2))

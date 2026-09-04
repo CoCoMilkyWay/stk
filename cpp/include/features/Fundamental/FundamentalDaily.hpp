@@ -91,7 +91,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define FIELDS_L1_Fundamental(X)                                                                                                                                                                                     \
+#define FIELDS_L1_Fundamental(X)                                                                                                                                                               \
   X(industry_l1, BASIC, RAW, NONE, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", FUND(industry_l1))                                                      \
   X(list_age, BASIC, RAW, NONE, "List Age", "上市龄", "上市日历日数(未上市→NaN)", R"(D - D_{list})", FUND(list_age))                                                                           \
   X(delist_age, BASIC, RAW, NONE, "Delist Age", "退市龄", "退市日历日数(未退市→NaN)", R"(D - D_{delist})", FUND(delist_age))                                                                   \

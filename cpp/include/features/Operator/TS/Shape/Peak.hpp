@@ -9,7 +9,7 @@
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
+#include "features/DataDefine.hpp"
 
 template <bool IS_BID, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class Peak {
@@ -21,7 +21,7 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit Peak(const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE]) : qty_(qty) {}
+  explicit Peak(const DepthSeries &qty) : qty_(qty) {}
 
   inline void compute() {
     float max_v = 0.0f, sum_v = 0.0f;
@@ -40,18 +40,18 @@ public:
   }
 
 private:
-  const CBuffer<float, L2::BLEN> (&qty_)[DEPTH_SIZE];
+  const DepthSeries &qty_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Peak_ask(N) N(Peak_ask, (Peak<false>), (DepthData.ask_qty), onMinute, onMinute)
+#define NODE_Peak_ask(N) N(Peak_ask, (Peak<false>), (DepthData.ask_qty), onMinute)
 
-#define FIELDS_L1_Peak_ask(X)                                                                                                                                                                     \
-  X(peak_loc_ask, 1, DATA, SHAPE, RAW, NONE, "00/100/00", "Ask Peak Location", "卖侧峰位置", "卖侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,A})", OP(Peak_ask, loc)) \
-  X(peak_ratio_ask, 1, DATA, SHAPE, RATIO, NONE, "00/100/00", "Ask Peak Concentration", "卖侧峰集中度", "卖侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,A}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,A}})", OP(Peak_ask, ratio))
+#define FIELDS_L1_Peak_ask(X)                                                                                                                                               \
+  X(peak_loc_ask, SHAPE, RAW, NONE, "Ask Peak Location", "卖侧峰位置", "卖侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,A})", OP(Peak_ask, loc)) \
+  X(peak_ratio_ask, SHAPE, RATIO, NONE, "Ask Peak Concentration", "卖侧峰集中度", "卖侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,A}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,A}})", OP(Peak_ask, ratio))
 
-#define NODE_Peak_bid(N) N(Peak_bid, (Peak<true>), (DepthData.bid_qty), onMinute, onMinute)
+#define NODE_Peak_bid(N) N(Peak_bid, (Peak<true>), (DepthData.bid_qty), onMinute)
 
-#define FIELDS_L1_Peak_bid(X)                                                                                                                                                                     \
-  X(peak_loc_bid, 1, DATA, SHAPE, RAW, NONE, "00/100/00", "Bid Peak Location", "买侧峰位置", "买侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,B})", OP(Peak_bid, loc)) \
-  X(peak_ratio_bid, 1, DATA, SHAPE, RATIO, NONE, "00/100/00", "Bid Peak Concentration", "买侧峰集中度", "买侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,B}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Peak_bid, ratio))
+#define FIELDS_L1_Peak_bid(X)                                                                                                                                               \
+  X(peak_loc_bid, SHAPE, RAW, NONE, "Bid Peak Location", "买侧峰位置", "买侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,B})", OP(Peak_bid, loc)) \
+  X(peak_ratio_bid, SHAPE, RATIO, NONE, "Bid Peak Concentration", "买侧峰集中度", "买侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,B}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Peak_bid, ratio))

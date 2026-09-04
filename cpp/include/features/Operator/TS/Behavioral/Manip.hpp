@@ -10,7 +10,6 @@
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 #include <cmath>
 
@@ -27,8 +26,8 @@ public:
   float y[kCount] = {}; // 秒结算写入, 分钟末由 Node 推出
 
   Manip(TickData &td,
-        const CBuffer<float, L2::BLEN> (&bid_qty)[L2::LOB_DEPTH],
-        const CBuffer<float, L2::BLEN> (&ask_qty)[L2::LOB_DEPTH])
+        const DepthSeries &bid_qty,
+        const DepthSeries &ask_qty)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
   inline void compute() {
@@ -102,8 +101,8 @@ private:
   }
 
   TickData &td_;
-  const CBuffer<float, L2::BLEN> (&bid_qty_)[L2::LOB_DEPTH];
-  const CBuffer<float, L2::BLEN> (&ask_qty_)[L2::LOB_DEPTH];
+  const DepthSeries &bid_qty_;
+  const DepthSeries &ask_qty_;
 
   // 秒内累计
   float vol_maker_ = 0.0f, vol_cancel_ = 0.0f, vol_spoof_ = 0.0f;
@@ -119,9 +118,9 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Manip(N) N(Manip, (Manip), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
-#define FIELDS_L1_Manip(X)                                                                                                                                                                                                                                                                                                                                                                                                              \
-  X(ptc_rt, 1, DATA, BEHAVIORAL, RATIO, NONE, "00/100/00", "Pre-Trade Cancel Ratio", "成交前撤单比", "成交前T_pre内同向近价撤单占比(降频)", R"(\frac{\sum_{j\in O_W^{T}}\sum_{\tau=\tau_j-T_{\mathrm{pre}}}^{\tau_j}|O_{\tau}^{C,s_j}|}{\sum_{j\in O_W^{T}}|O_j|}, \quad O_W^{T}=\{j: \tau_j\in W, \mathrm{is\_trade}_j\})", OP(Manip, ptc_rt))                                                                                         \
-  X(fleet_rt, 1, DATA, BEHAVIORAL, RATIO, NONE, "00/100/00", "Fleeting Order Ratio", "闪单占比", "存活时间<Δ的订单量占比(降频)", R"(\frac{\sum_{i\in O_W^{M,\mathrm{fleet}}}|O_i|}{\sum_{i\in O_W^{M}}|O_i|}, \quad O_W^{M,\mathrm{fleet}}=\{i\in O_W^{M}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<\Delta\})", OP(Manip, fleet_rt))                                                                                                \
-  X(spoof_int, 1, DATA, BEHAVIORAL, RATIO, NONE, "00/100/00", "Spoofing Intensity", "欺骗强度", "近端大额快速撤单占总撤单比例(降频)", R"(\frac{\sum_{i\in O_W^{C,\mathrm{spoof}}}|O_i|}{\sum_{i\in O_W^{C}}|O_i|}, \quad O_W^{C,\mathrm{spoof}}=\{i\in O_W^{C}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<T_{\mathrm{fast}}, |P_i-P_{1,\tau_i}^{M}|\leq k\cdot\mathrm{tick}, |O_i|\geq q_{\mathrm{large}}\})", OP(Manip, spoof_int)) \
-  X(stale_ratio_bid, 1, DATA, BEHAVIORAL, RATIO, NONE, "00/100/00", "Bid Stale Order Ratio", "买侧老单占比", "存活超T秒大单量占比(降频)", R"(\frac{\sum_{i \in O_t^{M,B,\mathrm{stale}}} |O_i|}{\sum_{i \in O_t^{M,B}} |O_i|}, \quad O^{M,s,\mathrm{stale}}=\{i: t-\tau_i^{\mathrm{post}}>T, |O_i|>q_{\mathrm{large}}\})", OP(Manip, stale_ratio_bid))                                                                                  \
-  X(stale_ratio_ask, 1, DATA, BEHAVIORAL, RATIO, NONE, "00/100/00", "Ask Stale Order Ratio", "卖侧老单占比", "存活超T秒大单量占比(降频)", R"(\frac{\sum_{i \in O_t^{M,A,\mathrm{stale}}} |O_i|}{\sum_{i \in O_t^{M,A}} |O_i|}, \quad O^{M,s,\mathrm{stale}}=\{i: t-\tau_i^{\mathrm{post}}>T, |O_i|>q_{\mathrm{large}}\})", OP(Manip, stale_ratio_ask))
+#define FIELDS_L1_Manip(X)                                                                                                                                                                                                                                                                                                                                                                                        \
+  X(ptc_rt, BEHAVIORAL, RATIO, NONE, "Pre-Trade Cancel Ratio", "成交前撤单比", "成交前T_pre内同向近价撤单占比(降频)", R"(\frac{\sum_{j\in O_W^{T}}\sum_{\tau=\tau_j-T_{\mathrm{pre}}}^{\tau_j}|O_{\tau}^{C,s_j}|}{\sum_{j\in O_W^{T}}|O_j|}, \quad O_W^{T}=\{j: \tau_j\in W, \mathrm{is\_trade}_j\})", OP(Manip, ptc_rt))                                                                                         \
+  X(fleet_rt, BEHAVIORAL, RATIO, NONE, "Fleeting Order Ratio", "闪单占比", "存活时间<Δ的订单量占比(降频)", R"(\frac{\sum_{i\in O_W^{M,\mathrm{fleet}}}|O_i|}{\sum_{i\in O_W^{M}}|O_i|}, \quad O_W^{M,\mathrm{fleet}}=\{i\in O_W^{M}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<\Delta\})", OP(Manip, fleet_rt))                                                                                                \
+  X(spoof_int, BEHAVIORAL, RATIO, NONE, "Spoofing Intensity", "欺骗强度", "近端大额快速撤单占总撤单比例(降频)", R"(\frac{\sum_{i\in O_W^{C,\mathrm{spoof}}}|O_i|}{\sum_{i\in O_W^{C}}|O_i|}, \quad O_W^{C,\mathrm{spoof}}=\{i\in O_W^{C}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<T_{\mathrm{fast}}, |P_i-P_{1,\tau_i}^{M}|\leq k\cdot\mathrm{tick}, |O_i|\geq q_{\mathrm{large}}\})", OP(Manip, spoof_int)) \
+  X(stale_ratio_bid, BEHAVIORAL, RATIO, NONE, "Bid Stale Order Ratio", "买侧老单占比", "存活超T秒大单量占比(降频)", R"(\frac{\sum_{i \in O_t^{M,B,\mathrm{stale}}} |O_i|}{\sum_{i \in O_t^{M,B}} |O_i|}, \quad O^{M,s,\mathrm{stale}}=\{i: t-\tau_i^{\mathrm{post}}>T, |O_i|>q_{\mathrm{large}}\})", OP(Manip, stale_ratio_bid))                                                                                  \
+  X(stale_ratio_ask, BEHAVIORAL, RATIO, NONE, "Ask Stale Order Ratio", "卖侧老单占比", "存活超T秒大单量占比(降频)", R"(\frac{\sum_{i \in O_t^{M,A,\mathrm{stale}}} |O_i|}{\sum_{i \in O_t^{M,A}} |O_i|}, \quad O^{M,s,\mathrm{stale}}=\{i: t-\tau_i^{\mathrm{post}}>T, |O_i|>q_{\mathrm{large}}\})", OP(Manip, stale_ratio_ask))

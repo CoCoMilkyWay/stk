@@ -3,7 +3,6 @@
 #include "features/FeaturesDefine.hpp"
 #include "features/Misc/CSMethods.hpp"
 #include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: NODES(N) / L0_FIELDS(X) / L1_FIELDS(X) / DEPTH_FIELDS(X)
-#include "features/TimeIndex.hpp"      // L0_ROWS / L1_ROWS (ALL_LEVELS 行数)
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -92,12 +91,12 @@ constexpr bool kind_contiguous(const FieldInfo (&f)[N], FeatureDataType k) {
   return true;
 }
 
-#define GENERATE_LEVEL_FIELDS(name, num, fields, rows, psd, columnar)                             \
-  inline constexpr FieldInfo name##_FIELD_INFO[] = {fields(FIELD_INFO_ONE)};                      \
-  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);                             \
-  inline constexpr auto name##_FIELD_OFFSETS = field_offsets(name##_FIELD_INFO);                  \
-  constexpr size_t name##_TOTAL_WIDTH = total_width(name##_FIELD_INFO);                           \
-  namespace name##_Field {                                                                        \
+#define GENERATE_LEVEL_FIELDS(name, num, fields, rows, psd, columnar)                                \
+  inline constexpr FieldInfo name##_FIELD_INFO[] = {fields(FIELD_INFO_ONE)};                         \
+  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);                                \
+  inline constexpr auto name##_FIELD_OFFSETS = field_offsets(name##_FIELD_INFO);                     \
+  constexpr size_t name##_TOTAL_WIDTH = total_width(name##_FIELD_INFO);                              \
+  namespace name##_Field {                                                                           \
     enum : size_t { fields(FIELD_CODE_ONE) }; /* 列下标 (非偏移); 偏移用 <LVL>_FIELD_OFFSETS[idx] */ \
   }
 ALL_LEVELS(GENERATE_LEVEL_FIELDS)
@@ -115,9 +114,9 @@ ALL_LEVELS(GENERATE_LEVEL_FIELDS)
 #define CHECK_FIELD_ONE(code, c1, c2, norm, en, cn, desc, formula, src) \
   static_assert(SRC_LEVEL_##src == kLevel, "field level != source level: " #code);
 #define GENERATE_CHECK_LEVEL(name, num, fields, rows, psd, columnar) \
-  namespace name##_level_check {                                    \
-    constexpr int kLevel = num;                                     \
-    fields(CHECK_FIELD_ONE)                                         \
+  namespace name##_level_check {                                     \
+    constexpr int kLevel = num;                                      \
+    fields(CHECK_FIELD_ONE)                                          \
   }
 ALL_LEVELS(GENERATE_CHECK_LEVEL)
 
@@ -142,12 +141,12 @@ struct CSFeatureDef {
 #define CS_ROW_META(code, w)
 #define CS_ROW_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(CS_ROW, code, src)
 
-#define GENERATE_CS_TABLE(name, num, fields, rows, psd, columnar)                 \
-  namespace name##_cs_detail {                                                    \
-    namespace FO = name##_Field;                                                  \
+#define GENERATE_CS_TABLE(name, num, fields, rows, psd, columnar)                        \
+  namespace name##_cs_detail {                                                           \
+    namespace FO = name##_Field;                                                         \
     inline constexpr CSFeatureDef DEFS[] = {fields(CS_ROW_ONE){0, {}, {}, 0, SIZE_MAX}}; \
-  }                                                                               \
-  inline constexpr const CSFeatureDef *name##_CS_DEFS = name##_cs_detail::DEFS;   \
+  }                                                                                      \
+  inline constexpr const CSFeatureDef *name##_CS_DEFS = name##_cs_detail::DEFS;          \
   constexpr size_t name##_CS_COUNT = std::size(name##_cs_detail::DEFS) - 1;
 ALL_LEVELS(GENERATE_CS_TABLE)
 
@@ -180,22 +179,22 @@ ALL_LEVELS(GENERATE_FINGERPRINT)
 // 层表: LEVELS[lvl] — 运行时按层下标索引的一切
 // ============================================================================
 struct LevelInfo {
-  const char *name;          // "L0" / "L1" / "DEPTH": 文件名 features_<name>[_f<i>].zst
-  size_t rows;               // T
-  size_t width;              // F_total
-  size_t field_count;        // 列数 (≤ width)
-  const FieldInfo *fields;   // [field_count]
-  const size_t *offsets;     // [field_count] 列下标 → 行内偏移
-  uint64_t fingerprint;      // 字段表指纹
-  const char *psd;           // 该层特征的推荐频谱 (GUI 元数据)
-  bool columnar;             // true: 每列一个文件 (按列选读); false: 整层一个文件
+  const char *level_name;  // "L0" / "L1" / "DEPTH": 文件名 features_<name>[_f<i>].zst
+  size_t rows;             // T
+  size_t width;            // F_total
+  size_t field_count;      // 列数 (≤ width)
+  const FieldInfo *fields; // [field_count]
+  const size_t *offsets;   // [field_count] 列下标 → 行内偏移
+  uint64_t fingerprint;    // 字段表指纹
+  const char *psd;         // 该层特征的推荐频谱 (GUI 元数据)
+  bool columnar;           // true: 每列一个文件 (按列选读); false: 整层一个文件
 };
 #define LEVEL_INFO_ONE(name, num, fields, rows, psd, columnar) \
   {#name, rows, name##_TOTAL_WIDTH, name##_FIELD_COUNT, name##_FIELD_INFO, name##_FIELD_OFFSETS.data(), name##_FINGERPRINT, psd, columnar},
 inline constexpr LevelInfo LEVELS[] = {ALL_LEVELS(LEVEL_INFO_ONE)};
 constexpr size_t LEVEL_COUNT = std::size(LEVELS);
 #define CHECK_LEVEL_INDEX(name, num, fields, rows, psd, columnar) \
-  static_assert(std::string_view(LEVELS[num].name) == #name, "ALL_LEVELS index must equal position");
+  static_assert(std::string_view(LEVELS[num].level_name) == #name, "ALL_LEVELS index must equal position");
 ALL_LEVELS(CHECK_LEVEL_INDEX)
 static_assert(LEVELS[2].rows == LEVELS[1].rows, "DEPTH shares the L1 minute axis");
 
@@ -206,8 +205,8 @@ inline std::string feature_day_dir(const std::string &base, const std::string &d
   return base + "/" + date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
 }
 inline std::string feature_file(const std::string &day_dir, size_t lvl) {
-  return day_dir + "/features_" + LEVELS[lvl].name + ".zst";
+  return day_dir + "/features_" + LEVELS[lvl].level_name + ".zst";
 }
 inline std::string feature_column_file(const std::string &day_dir, size_t lvl, size_t col) {
-  return day_dir + "/features_" + LEVELS[lvl].name + "_f" + std::to_string(col) + ".zst";
+  return day_dir + "/features_" + LEVELS[lvl].level_name + "_f" + std::to_string(col) + ".zst";
 }

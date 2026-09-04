@@ -9,7 +9,7 @@
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
+#include "features/DataDefine.hpp"
 
 template <size_t N_LEVELS, bool IS_BUY, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class Cost {
@@ -20,9 +20,9 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  Cost(const CBuffer<float, L2::BLEN> (&price)[DEPTH_SIZE],
-       const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE],
-       const CBuffer<float, L2::BLEN> &mid_price)
+  Cost(const DepthSeries &price,
+       const DepthSeries &qty,
+       const Series mid_price)
       : price_(price), qty_(qty), mid_price_(mid_price) {}
 
   inline void compute() {
@@ -47,38 +47,38 @@ public:
   }
 
 private:
-  const CBuffer<float, L2::BLEN> (&price_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> &mid_price_;
+  const DepthSeries &price_;
+  const DepthSeries &qty_;
+  const Series mid_price_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Cost_buy_1(N) N(Cost_buy_1, (Cost<1, true>), (DepthData.ask_price, DepthData.ask_qty, MidPrice.out()), onMinute, onMinute)
+#define NODE_Cost_buy_1(N) N(Cost_buy_1, (Cost<1, true>), (DepthData.ask_price, DepthData.ask_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_buy_1(X) \
-  X(cost_buy_1, 1, DATA, LIQUIDITY, RAW, NONE, "00/100/00", "Buy Impact Cost 1-Level", "买方冲击成本1档", "吃1档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{1} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{1} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_1))
+  X(cost_buy_1, LIQUIDITY, RAW, NONE, "Buy Impact Cost 1-Level", "买方冲击成本1档", "吃1档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{1} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{1} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_1))
 
-#define NODE_Cost_buy_10(N) N(Cost_buy_10, (Cost<10, true>), (DepthData.ask_price, DepthData.ask_qty, MidPrice.out()), onMinute, onMinute)
+#define NODE_Cost_buy_10(N) N(Cost_buy_10, (Cost<10, true>), (DepthData.ask_price, DepthData.ask_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_buy_10(X) \
-  X(cost_buy_10, 1, DATA, LIQUIDITY, RAW, NONE, "00/100/00", "Buy Impact Cost 10-Level", "买方冲击成本10档", "吃10档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{10} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_10))
+  X(cost_buy_10, LIQUIDITY, RAW, NONE, "Buy Impact Cost 10-Level", "买方冲击成本10档", "吃10档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{10} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_10))
 
-#define NODE_Cost_buy_5(N) N(Cost_buy_5, (Cost<5, true>), (DepthData.ask_price, DepthData.ask_qty, MidPrice.out()), onMinute, onMinute)
+#define NODE_Cost_buy_5(N) N(Cost_buy_5, (Cost<5, true>), (DepthData.ask_price, DepthData.ask_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_buy_5(X) \
-  X(cost_buy_5, 1, DATA, LIQUIDITY, RAW, NONE, "00/100/00", "Buy Impact Cost 5-Level", "买方冲击成本5档", "吃5档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{5} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_5))
+  X(cost_buy_5, LIQUIDITY, RAW, NONE, "Buy Impact Cost 5-Level", "买方冲击成本5档", "吃5档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{5} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_5))
 
-#define NODE_Cost_sell_1(N) N(Cost_sell_1, (Cost<1, false>), (DepthData.bid_price, DepthData.bid_qty, MidPrice.out()), onMinute, onMinute)
+#define NODE_Cost_sell_1(N) N(Cost_sell_1, (Cost<1, false>), (DepthData.bid_price, DepthData.bid_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_sell_1(X) \
-  X(cost_sell_1, 1, DATA, LIQUIDITY, RAW, NONE, "00/100/00", "Sell Impact Cost 1-Level", "卖方冲击成本1档", "吃1档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{1} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{1} V_{i,t}^{M,B}})", OP(Cost_sell_1))
+  X(cost_sell_1, LIQUIDITY, RAW, NONE, "Sell Impact Cost 1-Level", "卖方冲击成本1档", "吃1档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{1} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{1} V_{i,t}^{M,B}})", OP(Cost_sell_1))
 
-#define NODE_Cost_sell_10(N) N(Cost_sell_10, (Cost<10, false>), (DepthData.bid_price, DepthData.bid_qty, MidPrice.out()), onMinute, onMinute)
+#define NODE_Cost_sell_10(N) N(Cost_sell_10, (Cost<10, false>), (DepthData.bid_price, DepthData.bid_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_sell_10(X) \
-  X(cost_sell_10, 1, DATA, LIQUIDITY, RAW, NONE, "00/100/00", "Sell Impact Cost 10-Level", "卖方冲击成本10档", "吃10档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{10} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,B}})", OP(Cost_sell_10))
+  X(cost_sell_10, LIQUIDITY, RAW, NONE, "Sell Impact Cost 10-Level", "卖方冲击成本10档", "吃10档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{10} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,B}})", OP(Cost_sell_10))
 
-#define NODE_Cost_sell_5(N) N(Cost_sell_5, (Cost<5, false>), (DepthData.bid_price, DepthData.bid_qty, MidPrice.out()), onMinute, onMinute)
+#define NODE_Cost_sell_5(N) N(Cost_sell_5, (Cost<5, false>), (DepthData.bid_price, DepthData.bid_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_sell_5(X) \
-  X(cost_sell_5, 1, DATA, LIQUIDITY, RAW, NONE, "00/100/00", "Sell Impact Cost 5-Level", "卖方冲击成本5档", "吃5档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{5} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Cost_sell_5))
+  X(cost_sell_5, LIQUIDITY, RAW, NONE, "Sell Impact Cost 5-Level", "卖方冲击成本5档", "吃5档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{5} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Cost_sell_5))

@@ -93,8 +93,8 @@ private:
   struct Slot {
     // State machine and lifecycle
     std::atomic<TensorState> state{TensorState::FREE};
-    std::atomic<uint32_t> epoch{0}; // Generation number for cache invalidation
-    char date[16] = {0};            // Fixed-size date string "YYYYMMDD"
+    std::atomic<uint32_t> epoch{0};                   // Generation number for cache invalidation
+    char date[16] = {0};                              // Fixed-size date string "YYYYMMDD"
     feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]
 
     // Two-level synchronization (key optimization: O(W) scan instead of O(A))
@@ -253,7 +253,7 @@ public:
     std::cout << "Dimension Details:\n";
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
       const auto &L = LEVELS[lvl];
-      printf("  %-6s [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", L.name, L.rows, L.width, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
+      printf("  %-6s [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", L.level_name, L.rows, L.width, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
     }
 
     printf("\nPer-day tensor: %.2f MB | Pool size: %zu slots | Total: %.2f GB\n",

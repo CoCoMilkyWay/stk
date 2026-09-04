@@ -9,7 +9,7 @@
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
+#include "features/DataDefine.hpp"
 
 template <size_t N_LEVELS, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class OFI {
@@ -20,10 +20,10 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  OFI(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&bid_price)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&ask_price)[DEPTH_SIZE])
+  OFI(const DepthSeries &bid_qty,
+      const DepthSeries &ask_qty,
+      const DepthSeries &bid_price,
+      const DepthSeries &ask_price)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), bid_price_(bid_price), ask_price_(ask_price) {
     float w_sum = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
@@ -62,10 +62,10 @@ public:
   }
 
 private:
-  const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&bid_price_)[DEPTH_SIZE];
-  const CBuffer<float, L2::BLEN> (&ask_price_)[DEPTH_SIZE];
+  const DepthSeries &bid_qty_;
+  const DepthSeries &ask_qty_;
+  const DepthSeries &bid_price_;
+  const DepthSeries &ask_price_;
 
   float weights_[N_LEVELS];
   float prev_bp_[N_LEVELS] = {}, prev_bq_[N_LEVELS] = {};
@@ -73,12 +73,12 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Ofi_1(N) N(Ofi_1, (OFI<1>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onDepth, onDepth)
+#define NODE_Ofi_1(N) N(Ofi_1, (OFI<1>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onDepth)
 
 #define FIELDS_L0_Ofi_1(X) \
-  X(ofi_1, 1, DEPTH, ORDER_FLOW, RAW, NONE, "100/00/00", "Order Flow Imba 1-Level", "订单流失衡1档", "对近端大单挂单变动非常敏感", R"(\Delta V_{1,t}^{M,B} - \Delta V_{1,t}^{M,A}, \quad \Delta V_{1,t}^{M,B} = \begin{cases}0, & P_{1,t}^{M,B} < P_{1,t-1}^{M,B} \\ V_{1,t}^{M,B} - V_{1,t-1}^{M,B}, & P_{1,t}^{M,B} = P_{1,t-1}^{M,B} \\ V_{1,t}^{M,B}, & P_{1,t}^{M,B} > P_{1,t-1}^{M,B} \end{cases}, \quad \Delta V_{1,t}^{M,A} = \begin{cases}V_{1,t}^{M,A}, & P_{1,t}^{M,A} < P_{1,t-1}^{M,A} \\ V_{1,t}^{M,A} - V_{1,t-1}^{M,A}, & P_{1,t}^{M,A} = P_{1,t-1}^{M,A} \\ 0, & P_{1,t}^{M,A} > P_{1,t-1}^{M,A} \end{cases})", OP(Ofi_1))
+  X(ofi_1, ORDER_FLOW, RAW, NONE, "Order Flow Imba 1-Level", "订单流失衡1档", "对近端大单挂单变动非常敏感", R"(\Delta V_{1,t}^{M,B} - \Delta V_{1,t}^{M,A}, \quad \Delta V_{1,t}^{M,B} = \begin{cases}0, & P_{1,t}^{M,B} < P_{1,t-1}^{M,B} \\ V_{1,t}^{M,B} - V_{1,t-1}^{M,B}, & P_{1,t}^{M,B} = P_{1,t-1}^{M,B} \\ V_{1,t}^{M,B}, & P_{1,t}^{M,B} > P_{1,t-1}^{M,B} \end{cases}, \quad \Delta V_{1,t}^{M,A} = \begin{cases}V_{1,t}^{M,A}, & P_{1,t}^{M,A} < P_{1,t-1}^{M,A} \\ V_{1,t}^{M,A} - V_{1,t-1}^{M,A}, & P_{1,t}^{M,A} = P_{1,t-1}^{M,A} \\ 0, & P_{1,t}^{M,A} > P_{1,t-1}^{M,A} \end{cases})", OP(Ofi_1))
 
-#define NODE_Ofi_5(N) N(Ofi_5, (OFI<5>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onDepth, onDepth)
+#define NODE_Ofi_5(N) N(Ofi_5, (OFI<5>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onDepth)
 
 #define FIELDS_L0_Ofi_5(X) \
-  X(ofi_5, 1, DEPTH, ORDER_FLOW, RAW, NONE, "100/00/00", "Order Flow Imba 5-Level", "订单流失衡5档加权", "监控5档挂单变化", R"(\Delta V_t^{W,M,B} - \Delta V_t^{W,M,A}, \quad V_t^{W,M,s} = \frac{\sum_{i=1}^N w_i V_{i,t}^{M,s}}{\sum_{i=1}^N w_i}, \quad w_i = 1 - \frac{i-1}{N}, \quad N = 5, \quad s \in \{B,A\})", OP(Ofi_5))
+  X(ofi_5, ORDER_FLOW, RAW, NONE, "Order Flow Imba 5-Level", "订单流失衡5档加权", "监控5档挂单变化", R"(\Delta V_t^{W,M,B} - \Delta V_t^{W,M,A}, \quad V_t^{W,M,s} = \frac{\sum_{i=1}^N w_i V_{i,t}^{M,s}}{\sum_{i=1}^N w_i}, \quad w_i = 1 - \frac{i-1}{N}, \quad N = 5, \quad s \in \{B,A\})", OP(Ofi_5))

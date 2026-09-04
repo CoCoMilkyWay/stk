@@ -21,4 +21,4 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_DepthIndex(N) N(DepthIndex, (DepthIndex), (tick_data), onDepth, onDepth)
+#define NODE_DepthIndex(N) N(DepthIndex, (DepthIndex), (tick_data), onDepth)
