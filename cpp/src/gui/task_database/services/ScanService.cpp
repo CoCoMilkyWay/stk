@@ -48,15 +48,22 @@ void ScanService::trigger_scan(ScanMode mode) {
   // 后者是本服务的锁, 前者是界面/任务状态看得见的那一份.
   data_.taskstate.database.l2_scan_inflight = true;
 
-  // Launch coroutine
-  boost::asio::co_spawn(io_, [this, mode]() -> awaitable<void> {
-    co_await coro_scan(mode);
-    data_.taskstate.database.l2_scan_inflight = false;
-    is_scanning_.store(false); // Release lock after completion
-    // Notify completion
-    if (on_complete_callback_) {
-      on_complete_callback_();
-    } }(), boost::asio::detached);
+  // Launch coroutine.
+  // 交给 co_spawn 的是 lambda 本身而不是它的调用结果: asio 的 awaitable 是
+  // 惰性的 (initial_suspend = suspend_always), 就地调用会让协程体在闭包临时
+  // 对象析构之后才首次执行 —— 捕获的 this/mode 读的是已经弹掉的栈.
+  boost::asio::co_spawn(
+      io_,
+      [this, mode]() -> awaitable<void> {
+        co_await coro_scan(mode);
+        data_.taskstate.database.l2_scan_inflight = false;
+        is_scanning_.store(false); // Release lock after completion
+        // Notify completion
+        if (on_complete_callback_) {
+          on_complete_callback_();
+        }
+      },
+      boost::asio::detached);
 }
 
 awaitable<void> ScanService::coro_scan(ScanMode mode) {

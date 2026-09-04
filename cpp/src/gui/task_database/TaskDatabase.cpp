@@ -118,7 +118,7 @@ private:
 
           co_await state_mgr_->sync_and_scan(ScanMode::RecomputeCoverage);
           UpdateTaskState();
-        }(),
+        },
         boost::asio::detached);
   }
 
@@ -151,7 +151,7 @@ private:
           co_await state_mgr_->initialize();
           // Update task state after initialization completes
           UpdateTaskState();
-        }(),
+        },
         boost::asio::detached);
   }
 
