@@ -191,7 +191,7 @@ struct TimeSeries {
 
   struct SharedMonthData {
     std::vector<FeatureRead::MonthTensor> months; // [n_months]
-    std::vector<DayRange> day_ranges;               // 连续时间索引
+    std::vector<DayRange> day_ranges;             // 连续时间索引
 
     size_t n_months = 0;
     size_t n_assets = 0;
