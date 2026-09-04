@@ -105,9 +105,8 @@ struct Asset {
   };
   std::map<std::string, DateGap> date_gaps; // date -> 缺口; 只含回测区间内的天
 
-  // 每天的编码账目, 由扫描从 orders/YYYY/MM/DD/.day_complete 读入 (见
-  // shared/EncodeDayRecord.hpp). 缺口的"原因"只有编码器知道, 而 date_gaps
-  // 只知道"缺了几个" —— 两者在 By Date 表里按日期对齐.
+  // 每天的编码账目, 由扫描从 orders/YYYY/MM/DD/.stat 读入 (见shared/EncodeDayRecord.hpp).
+  // 缺口的"原因"只有编码器知道, 而 date_gaps只知道"缺了几个" —— 两者在 By Date 表里按日期对齐.
   std::unordered_map<std::string, EncodeDayRecord> day_records;
 
   // ========================================
@@ -145,7 +144,9 @@ struct Asset {
   std::vector<AssetStats> asset_stats; // 按 asset_id 索引; 空 = 待重算
   uint64_t asset_stats_generation = 0; // 每次重算 +1, 驱动 GUI 表格视图失效
 
-  // 扫描进度 (GUI 轮询). 粒度是"天" —— 一天一个线程池任务, 4500 个文件.
+  // 扫描进度 (GUI 轮询), 各阶段轮流用. 单位随阶段变: binary 扫描是天
+  // (一天一个线程池任务), archive 扫描是月, coverage 是交易日.
+  // 阶段开头自己置总量; 置 0 表示"这一段不值得报进度", 界面显示裸标签.
   std::atomic<size_t> scan_days_done{0};
   std::atomic<size_t> scan_days_total{0};
 
@@ -164,9 +165,14 @@ struct Asset {
 
     // 增量扫描: 上次扫完时每个日目录的 mtime.
     //
-    // 全量一趟是 451 万次 open+pread+close, 约 3 秒 (readdir 本身只要 0.03
-    // 秒, 成本全在读头), 而启动 / Overview 刷新 / 编码完成都会触发扫描.
-    // 目录内容没动过的天直接沿用上次结果.
+    // 一天的开销现在是"一次 readdir + 一次读 .stat" (当天统计, 见
+    // shared/EncodeDayRecord.hpp); 只有明细缺失或与名单对不上的天才退回逐个
+    // 读头 —— 那条路全库是 451 万次 open+pread+close 约 3 秒, 老库第一趟扫描
+    // 还得走一次, 之后被回填的明细顶掉.
+    //
+    // 这份 mtime 基线是再上面一层: 目录内容没动过的天连 readdir 都省掉.
+    // 它只活在内存里, 所以进程重启后的首次扫描仍要过一遍全部日目录 —— 挡住
+    // 那趟全量读头的是盘上的明细, 不是这里.
     //
     // 新增/删除/重命名覆盖都会改目录 mtime (实测三种都变, 覆盖同名也变 ——
     // rename 按 POSIX 要更新目标目录的 mtime, 何况编码的 .tmp 就落在同目录,

@@ -2,6 +2,7 @@
 #include "codec/binary_decoder_L2.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_database/infrastructure/ScanThreadPool.hpp"
+#include "misc/logging.hpp"
 #include "shared/AssetInfo.hpp"
 
 #include <boost/asio/awaitable.hpp>
@@ -14,6 +15,8 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -200,8 +203,9 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   // 目录是扁平的: orders/YYYY/MM/DD/<CODE>.<EX>.bin, 一天一层 readdir 就够,
   // 不再是"一天下面几千个每资产目录、每个目录再 readdir 一次".
   auto scan_day = [&asset_map, &binary_extension, result, this](const DayPath &day_path) {
-    std::unordered_map<size_t, DateInfo> local_date_info;
-
+    // readdir 一趟拿到当天的 .bin 名单. 它同时是下面那张明细表的采信依据 ——
+    // 名单对不上就不用表里的数.
+    std::vector<std::pair<size_t, std::string>> bins; // (资产下标, 完整路径)
     for (const auto &file_entry : fs::directory_iterator(day_path.path)) {
       const std::string filename = file_entry.path().filename().string();
       if (!filename.ends_with(binary_extension))
@@ -215,23 +219,100 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
       if (it == asset_map.end())
         continue;
 
-      DateInfo di;
-      di.orders_encoded = 1;
-
-      // 一次读头同时拿到条数和体积 (文件总长 = 32 + compressed_size), 不再
-      // 额外 stat. 头损坏的文件当作没有数据 —— 它本来也解不出来.
-      size_t order_count = 0, file_size = 0;
-      if (!L2::BinaryDecoder_L2::read_file_stats(file_entry.path().string(), order_count, file_size))
-        continue;
-
-      di.order_count = order_count;
-      di.orders_file_size = file_size;
-      local_date_info[it->second] = std::move(di);
+      bins.emplace_back(it->second, file_entry.path().string());
     }
 
-    // 编码器留下的当天账目 (缺口的原因只有它知道). 没有就是这天从没编过.
+    // 当天的统计文件 —— 账目 (缺口的原因只有编码器知道) 与逐资产明细都在里面.
+    // 读不到就是这天既没编过、也没被扫描回填过.
     EncodeDayRecord local_record;
-    const bool has_record = read_encode_day_record(day_path.path, local_record);
+    const bool has_stat = read_encode_day_stat(day_path.path, local_record);
+
+    std::unordered_map<size_t, DateInfo> local_date_info;
+
+    // 快路径: 明细里已经有条数和体积 (见 EncodeDayRecord.hpp), 一个 .bin 都
+    // 不用打开. 采信的前提是它记的 .bin 与 readdir 的名单是同一批 —— 个数
+    // 相等还不够, 一增一删就会个数相同而内容错位.
+    //
+    // 墓碑条目不参与比对: 它记的正是"这个资产当天没有 .bin".
+    size_t index_bins = 0;
+    for (const auto &entry : local_record.assets)
+      if (!entry.is_tombstone())
+        ++index_bins;
+
+    bool index_usable = has_stat && index_bins == bins.size();
+    if (index_usable) {
+      for (const auto &entry : local_record.assets) {
+        if (entry.is_tombstone())
+          continue;
+        DateInfo di;
+        di.orders_encoded = 1;
+        di.order_count = entry.order_count;
+        di.orders_file_size = entry.orders_file_size;
+        local_date_info[entry.asset_id] = di;
+      }
+      for (const auto &[asset_idx, path] : bins) {
+        if (local_date_info.count(asset_idx) == 0) {
+          index_usable = false;
+          local_date_info.clear();
+          break;
+        }
+      }
+    }
+
+    // 慢路径: 逐个读 32 字节文件头 —— 全库四百多万次随机 open 就出在这里.
+    // 读完把明细写回去, 于是没有明细的老库一轮扫描即自愈.
+    //
+    // 头损坏的文件当作没有数据 (它本来也解不出来), 但那样明细就配不上名单,
+    // 这天以后每次都会走到这条慢路径 —— 正是想要的: 坏文件不该被缓存成"已知".
+    if (!index_usable) {
+      // 账目部分原样保留 (accounted / complete / 分类账 都只有编码器填得起),
+      // 只换掉明细 —— 否则一次扫描就会把编码器的齐备标记抹掉, 增量从此每轮
+      // 都要把全库重新列举一遍.
+      std::vector<EncodeDayIndexEntry> rebuilt;
+      rebuilt.reserve(bins.size());
+
+      for (const auto &[asset_idx, path] : bins) {
+        // 一次读头同时拿到条数和体积 (文件总长 = 32 + compressed_size), 不再
+        // 额外 stat.
+        size_t order_count = 0, file_size = 0;
+        if (!L2::BinaryDecoder_L2::read_file_stats(path, order_count, file_size))
+          continue;
+
+        DateInfo di;
+        di.orders_encoded = 1;
+        di.order_count = order_count;
+        di.orders_file_size = file_size;
+        local_date_info[asset_idx] = di;
+
+        rebuilt.push_back(make_day_index_entry(asset_idx, order_count, file_size));
+      }
+
+      // 墓碑是编码器的结论, 扫描无从重建 (要归档才知道"源数据只有表头"),
+      // 原样搬过去 —— 丢了它们, 下一轮增量会把那些资产白解一遍.
+      for (const auto &entry : local_record.assets)
+        if (entry.is_tombstone())
+          rebuilt.push_back(entry);
+
+      // 走到这里而且账目是编码器填过的 ⇒ 它声明齐备之后产物被动过 (最常见是
+      // 手工删掉了损坏的 .bin). 齐备标记必须跟着作废: 只把明细改成与盘上一致
+      // 而留着 complete=1, 等于亲手把缺口抹平 —— 增量的整天快路径从此永远
+      // 跳过这天, 删掉的再也补不回来.
+      //
+      // 账目的其余计数留着: 那些仍是上一轮的事实, 界面照旧能按日拆解原因.
+      if (local_record.accounted && local_record.complete) {
+        local_record.complete = false;
+        Logger::log("encoding", "[STALE STAT] " + day_path.path +
+                                    " — .bin 与明细不符, 齐备标记作废, 待增量重编");
+      }
+
+      local_record.assets = std::move(rebuilt);
+      write_encode_day_stat(day_path.path, local_record);
+    }
+
+    // 明细不进 day_records: 全库 885 天 × 5200 条是五十多兆, 而且与刚灌好的
+    // date_info 是同一份数据 (见 EncodeDayRecord::assets).
+    local_record.assets.clear();
+    local_record.assets.shrink_to_fit();
 
     // Merge into shared result
     {
@@ -239,8 +320,10 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
       for (auto &[asset_idx, info] : local_date_info) {
         result->asset_date_info[asset_idx][day_path.date_str] = std::move(info);
       }
-      if (has_record)
-        result->day_records[day_path.date_str] = local_record;
+      // 只有账目填过的天才进去 —— 扫描自己回填出来的 .stat 只有明细, 界面
+      // 不该把它显示成"编过但不齐备".
+      if (local_record.accounted)
+        result->day_records[day_path.date_str] = std::move(local_record);
     }
 
     scan_days_done.fetch_add(1, std::memory_order_relaxed);
@@ -448,6 +531,12 @@ boost::asio::awaitable<void> Asset::coro_compute_backtest_coverage(
     boost::asio::io_context &io,
     const std::string &start, const std::string &end,
     const AssetInfo &assetinfo) {
+  // 进度计数换阶段: 底下几个 Step 都是内存里的集合运算, 快到不值得报进度,
+  // 归零后界面显示不带 (x/y) 的裸标签. 真正要等的是紧随其后的
+  // coro_compute_coverage_statistics, 它自己会把总量立起来.
+  scan_days_done.store(0, std::memory_order_relaxed);
+  scan_days_total.store(0, std::memory_order_relaxed);
+
   // Clear previous results
   backtest.start = start;
   backtest.end = end;
@@ -592,10 +681,16 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   const bool has_db_range = !binary.min_date.empty() && !binary.max_date.empty();
   const bool has_bt_range = !backtest.start.empty() && !backtest.end.empty();
 
+  // 这个双重循环 (交易日 × 全部资产) 是整个 coverage 阶段唯一要等的部分,
+  // 进度就报它. 上面那几趟 items 遍历相比之下可以忽略.
+  scan_days_done.store(0, std::memory_order_relaxed);
+  scan_days_total.store(stock_days.size(), std::memory_order_relaxed);
+
   size_t days_done = 0;
   for (const auto &day_info : stock_days) {
     if (++days_done % kCoverageChunk == 0)
       co_await Coro::Yield(io);
+    scan_days_done.store(days_done, std::memory_order_relaxed);
 
     if (day_info.size() < 2)
       continue;

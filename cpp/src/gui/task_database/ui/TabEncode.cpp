@@ -240,7 +240,7 @@ void render_missing_table(const char *table_id, const Asset &asset, AssetTableVi
 // 按日期看就一目了然, 再把原因拆开就知道该去修归档还是去查源数据.
 
 // archive 只有"整天没有归档"这一种原因; orders 的原因要从编码器留在
-// orders/YYYY/MM/DD/.day_complete 里的当天账目取. 一个开关, 两张表共用代码.
+// orders/YYYY/MM/DD/.stat 里的当天账目取. 一个开关, 两张表共用代码.
 enum class DateDim { Archive,
                      Orders };
 
@@ -315,7 +315,7 @@ std::vector<DateColumnSpec> build_date_columns(const DateTableView &view) {
       &DateRow::no_archive);
   add(view.has_unaccounted, "todo", "有归档、编码器也没报错, 只是还没编到\n跑一遍增量即可补齐",
       &DateRow::todo);
-  add(view.has_skipped, "skip", "落了 .skip 墓碑\n源数据不足以编码 (停牌 / 文件只有表头), 不是错误",
+  add(view.has_skipped, "skip", "记了墓碑 (.stat 明细里条数/体积为 0 的条目)\n源数据不足以编码 (停牌 / 文件只有表头), 不是错误",
       &DateRow::skipped);
   add(view.has_corrupt, "corrupt", "源 CSV 坏行, 或归档流中途断掉\n数据源侧的问题, 得修包",
       &DateRow::corrupt);

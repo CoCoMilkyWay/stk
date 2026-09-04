@@ -1,107 +1,127 @@
 #include "shared/EncodeDayRecord.hpp"
 
+#include <algorithm>
 #include <cassert>
-#include <charconv>
+#include <cstring>
 #include <fstream>
-#include <string_view>
-#include <unordered_map>
+#include <ios>
 
 namespace {
 
-// 固定字段的键名. 判据位的键名取自 L2::check_meta, 不在这里重复.
-constexpr const char *kKeyComplete = "complete";
-constexpr const char *kKeyTotal = "total";
-constexpr const char *kKeyOk = "ok";
-constexpr const char *kKeySkipped = "skip";
-constexpr const char *kKeyCorrupt = "corrupt";
-constexpr const char *kKeyInvalid = "invalid";
-constexpr const char *kKeyFailed = "failed";
+// 盘上布局: [StatHeader][EncodeDayIndexEntry × entry_count]
+//
+// 全 uint32 排列, 没有填充洞, 于是结构体可以整块读写. 判据位的列数
+// (kCheckBitCount) 一改就是格式变更 —— 长度自洽性检查会让旧文件读不出来,
+// 那天重新列举一遍即可, 所以不需要单独递增 version.
+struct StatHeader {
+  static constexpr uint32_t kMagic = 0x54415453; // 'S','T','A','T' 小端
+  static constexpr uint32_t kVersion = 1;
 
-size_t parse_count(std::string_view text) {
-  size_t value = 0;
-  const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-  assert(ec == std::errc{} && ptr == text.data() + text.size() &&
-         "整天记录: 值不是十进制整数");
-  return value;
-}
+  uint32_t magic;
+  uint32_t version;
+  uint32_t entry_count;
+  uint8_t accounted;
+  uint8_t complete;
+  uint16_t reserved; // 置 0
+  uint32_t assets_total;
+  uint32_t assets_ok;
+  uint32_t assets_skipped;
+  uint32_t assets_corrupt;
+  uint32_t assets_invalid;
+  uint32_t assets_failed;
+  uint32_t checks[L2::kCheckBitCount];
+};
+static_assert(sizeof(StatHeader) == 16 + 6 * 4 + 4 * L2::kCheckBitCount,
+              "整天统计的头必须定宽无填充");
 
 } // namespace
 
-void write_encode_day_record(const std::string &day_dir, const EncodeDayRecord &rec) {
-  std::ofstream out(day_dir + "/" + kEncodeDayRecordName, std::ios::trunc);
-  assert(out.is_open() && "整天记录写不出去");
+void write_encode_day_stat(const std::string &day_dir, EncodeDayRecord rec) {
+  std::sort(rec.assets.begin(), rec.assets.end(),
+            [](const EncodeDayIndexEntry &a, const EncodeDayIndexEntry &b) {
+              return a.asset_id < b.asset_id;
+            });
 
-  // 固定字段一律写出 (哪怕是 0) —— 读端靠它们区分"这天编过且干净"和"旧的空标记".
-  out << kKeyComplete << '=' << (rec.complete ? 1 : 0) << '\n'
-      << kKeyTotal << '=' << rec.assets_total << '\n'
-      << kKeyOk << '=' << rec.assets_ok << '\n'
-      << kKeySkipped << '=' << rec.assets_skipped << '\n'
-      << kKeyCorrupt << '=' << rec.assets_corrupt << '\n'
-      << kKeyInvalid << '=' << rec.assets_invalid << '\n'
-      << kKeyFailed << '=' << rec.assets_failed << '\n';
+  for (size_t i = 1; i < rec.assets.size(); ++i) {
+    assert(rec.assets[i - 1].asset_id != rec.assets[i].asset_id &&
+           "整天统计: 同一资产两条明细 (销账重复?)");
+  }
 
-  // 判据位只写命中过的 —— 界面的原因列就按"文件里出现过"来出, 没发生过的
-  // 判据不占一列.
-  for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit) {
-    if (rec.checks[bit] == 0)
-      continue;
-    const L2::CheckMeta &meta = L2::check_meta(bit);
-    assert(meta.key && "整天记录: 空洞位不该有命中数");
-    out << meta.key << '=' << rec.checks[bit] << '\n';
+  StatHeader head{};
+  head.magic = StatHeader::kMagic;
+  head.version = StatHeader::kVersion;
+  head.entry_count = static_cast<uint32_t>(rec.assets.size());
+  head.accounted = rec.accounted ? 1 : 0;
+  head.complete = rec.complete ? 1 : 0;
+  head.assets_total = static_cast<uint32_t>(rec.assets_total);
+  head.assets_ok = static_cast<uint32_t>(rec.assets_ok);
+  head.assets_skipped = static_cast<uint32_t>(rec.assets_skipped);
+  head.assets_corrupt = static_cast<uint32_t>(rec.assets_corrupt);
+  head.assets_invalid = static_cast<uint32_t>(rec.assets_invalid);
+  head.assets_failed = static_cast<uint32_t>(rec.assets_failed);
+  for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
+    head.checks[bit] = static_cast<uint32_t>(rec.checks[bit]);
+
+  // 原地 trunc 而不是 tmp + rename: rename 会改日目录的 mtime, 而增量扫描正是
+  // 拿目录 mtime 当基线 —— 每写一次就让当天判"动过", 那条快路径再也稳不下来.
+  // 写到一半的风险由读端的长度自洽检查 + 与 readdir 名单的比对兜住.
+  std::ofstream out(day_dir + "/" + kEncodeStatName, std::ios::binary | std::ios::trunc);
+  assert(out.is_open() && "整天统计写不出去");
+
+  out.write(reinterpret_cast<const char *>(&head), sizeof(head));
+  if (!rec.assets.empty()) {
+    out.write(reinterpret_cast<const char *>(rec.assets.data()),
+              static_cast<std::streamsize>(rec.assets.size() * sizeof(EncodeDayIndexEntry)));
   }
 
   out.flush();
-  assert(out.good() && "整天记录写到一半失败");
+  assert(out.good() && "整天统计写到一半失败");
 }
 
-bool read_encode_day_record(const std::string &day_dir, EncodeDayRecord &out) {
-  std::ifstream in(day_dir + "/" + kEncodeDayRecordName);
+bool read_encode_day_stat(const std::string &day_dir, EncodeDayRecord &out) {
+  out = EncodeDayRecord{};
+
+  std::ifstream in(day_dir + "/" + kEncodeStatName, std::ios::binary | std::ios::ate);
   if (!in.is_open())
     return false;
 
-  // 键名 → 落到 record 的哪个字段. 判据位一并进表, 于是解析不需要分支.
-  static const std::unordered_map<std::string_view, size_t EncodeDayRecord::*> kFields{
-      {kKeyTotal, &EncodeDayRecord::assets_total},
-      {kKeyOk, &EncodeDayRecord::assets_ok},
-      {kKeySkipped, &EncodeDayRecord::assets_skipped},
-      {kKeyCorrupt, &EncodeDayRecord::assets_corrupt},
-      {kKeyInvalid, &EncodeDayRecord::assets_invalid},
-      {kKeyFailed, &EncodeDayRecord::assets_failed},
-  };
+  const std::streamoff bytes = in.tellg();
+  if (bytes < static_cast<std::streamoff>(sizeof(StatHeader)))
+    return false;
 
-  static const std::unordered_map<std::string_view, size_t> kCheckBits = [] {
-    std::unordered_map<std::string_view, size_t> map;
-    for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit) {
-      const L2::CheckMeta &meta = L2::check_meta(bit);
-      if (meta.key)
-        map.emplace(meta.key, bit);
+  in.seekg(0);
+  StatHeader head{};
+  in.read(reinterpret_cast<char *>(&head), sizeof(head));
+  if (!in.good() || head.magic != StatHeader::kMagic || head.version != StatHeader::kVersion)
+    return false;
+
+  // 长度必须恰好装下声明的条数 —— 少了是写到一半被打断, 多了是格式对不上
+  const std::streamoff expected =
+      static_cast<std::streamoff>(sizeof(StatHeader)) +
+      static_cast<std::streamoff>(head.entry_count) *
+          static_cast<std::streamoff>(sizeof(EncodeDayIndexEntry));
+  if (bytes != expected)
+    return false;
+
+  out.accounted = head.accounted != 0;
+  out.complete = head.complete != 0;
+  out.assets_total = head.assets_total;
+  out.assets_ok = head.assets_ok;
+  out.assets_skipped = head.assets_skipped;
+  out.assets_corrupt = head.assets_corrupt;
+  out.assets_invalid = head.assets_invalid;
+  out.assets_failed = head.assets_failed;
+  for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
+    out.checks[bit] = head.checks[bit];
+
+  if (head.entry_count > 0) {
+    out.assets.resize(head.entry_count);
+    in.read(reinterpret_cast<char *>(out.assets.data()),
+            static_cast<std::streamsize>(head.entry_count * sizeof(EncodeDayIndexEntry)));
+    if (!in.good()) {
+      out = EncodeDayRecord{};
+      return false;
     }
-    return map;
-  }();
-
-  out = EncodeDayRecord{};
-
-  std::string line;
-  while (std::getline(in, line)) {
-    if (line.empty())
-      continue;
-    const size_t eq = line.find('=');
-    assert(eq != std::string::npos && "整天记录: 行里没有 '='");
-
-    const std::string_view key(line.data(), eq);
-    const std::string_view value(line.data() + eq + 1, line.size() - eq - 1);
-
-    if (key == kKeyComplete) {
-      out.complete = parse_count(value) != 0;
-      continue;
-    }
-    if (auto it = kFields.find(key); it != kFields.end()) {
-      out.*(it->second) = parse_count(value);
-      continue;
-    }
-    auto bit = kCheckBits.find(key);
-    assert(bit != kCheckBits.end() && "整天记录: 不认识的键名");
-    out.checks[bit->second] = parse_count(value);
   }
 
   return true;

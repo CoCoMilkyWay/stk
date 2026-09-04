@@ -9,21 +9,8 @@
 
 namespace L2 {
 
-// Helper to find column index by name in schema
-constexpr size_t find_column_index(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
-  for (size_t i = 0; i < schema_size; ++i) {
-    if (schema[i].column_name == column_name) {
-      return i;
-    }
-  }
-  return schema_size; // Return invalid index if not found
-}
-
-// Get bitwidth for a column from schema
-constexpr uint8_t get_column_bitwidth(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
-  size_t index = find_column_index(schema, schema_size, column_name);
-  return (index < schema_size) ? schema[index].bit_width : 0;
-}
+// find_column_index / get_column_bitwidth / SCHEMA_SIZE 在 L2_DataType.hpp,
+// 与 Snapshot_Schema 同处一地 (encoder 那侧也用同一份)
 
 // Calculate decimal digits needed for given bit width
 constexpr int calc_digits_from_bitwidth(uint8_t bit_width) {
@@ -39,8 +26,6 @@ constexpr int calc_digits_from_bitwidth(uint8_t bit_width) {
 
   return digits;
 }
-
-constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
 
 // Order field display widths extracted from schema.
 //

@@ -263,6 +263,25 @@ constexpr ColumnMeta Snapshot_Schema[] = {
   };
 // clang-format on
 
+// 按列名查位宽 — 编解码两侧都要用. 放在表自己身边而不是各自的头里: 从前
+// encoder / decoder 的头各存了一份一模一样的定义, 于是任何 TU 只要同时
+// include 这两个头就是重定义错误 (编码流水线要读回自己刚写的 .bin 时撞上).
+constexpr size_t find_column_index(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
+  for (size_t i = 0; i < schema_size; ++i) {
+    if (schema[i].column_name == column_name) {
+      return i;
+    }
+  }
+  return schema_size; // Return invalid index if not found
+}
+
+constexpr uint8_t get_column_bitwidth(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
+  size_t index = find_column_index(schema, schema_size, column_name);
+  return (index < schema_size) ? schema[index].bit_width : 0;
+}
+
+constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
+
 //========================================================================================
 // MARKET CLASSIFICATION AND EXCHANGE TYPES
 //========================================================================================

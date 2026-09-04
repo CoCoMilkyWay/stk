@@ -31,20 +31,17 @@ struct SharedData;
 // 批内内存不随批大小增长: 一次只持有一个文件的字节 (见 misc/archive.hpp 的
 // stream_archive_files), 到达即解析成中间结构.
 
-// 墓碑扩展名: "该 (资产, 日期) 的源数据不足以编码 (停牌/无深度)" 的持久否定
-// 缓存 — 没有它, 增量重跑会对这些对反复开归档解码再失败一遍.
-// 空文件, 与 .bin 同目录; 新鲜度规则与 .bin 相同 (归档更新则失效重试).
-// 扫描端按 .bin 后缀过滤, 天然忽略它.
-inline constexpr const char *kEncodeTombstoneExt = ".skip";
-
-// 整天账目文件是 orders/YYYY/MM/DD/.day_complete, 定义见
-// shared/EncodeDayRecord.hpp. 它里面的 complete 项不老于当天归档 ⇒ 这一天的
-// 全部 (资产, 日期) 都已产出 .bin 或 .skip. 增量重跑靠它整天跳过, 省掉一次
-// unrar l (机械盘上 0.2~2.5s) 与当天几千次产物 stat —— 没有它, "确认无事可做"
-// 本身就要几秒一天. 扫描端按 .bin 后缀过滤, 天然忽略它.
+// 一天的元数据全在 orders/YYYY/MM/DD/.stat 里 (齐备标记 + 处置分类 + 每个
+// 资产的条数/体积 + 墓碑), 定义见 shared/EncodeDayRecord.hpp.
 //
-// 注意: 手工删除损坏的 .bin 时必须同时删掉当天的这个文件, 否则增量重跑会
-// 整天跳过, 刚删掉的文件永远补不回来.
+// 它的 complete 项不老于当天归档 ⇒ 这一天的全部 (资产, 日期) 都有了结局.
+// 增量重跑靠它整天跳过, 省掉一次 unrar l (机械盘上 0.2~2.5s) 与当天几千次
+// 产物 stat —— 没有它, "确认无事可做"本身就要几秒一天.
+// 扫描端按 .bin 后缀过滤, 天然忽略它.
+//
+// 手工删掉损坏的 .bin 不需要连带删 .stat: 快路径在信 complete 之前会拿一次
+// readdir 跟明细核对 (见 day_products_match), 扫描那侧发现不符也会把齐备标记
+// 作废 —— 两边都能自己发现盘上少了东西, 那天于是回到重编队列.
 
 // 一个 (资产, 日期) 的待编码任务.
 //
@@ -114,6 +111,12 @@ struct EncodeStats {
     // 本天的处置分类账. producer 先填上分母与"产物已新鲜"的那部分,
     // worker 每销一个账就往对应的桶里加一笔.
     EncodeDayRecord rec;
+
+    // 本天逐资产的计量与墓碑 (见 shared/EncodeDayRecord.hpp). 与 rec 同步
+    // 积累: producer 先放进"产物已新鲜"的那些 (增量跑里那是绝大多数, 少了它们
+    // 明细就配不上当天 readdir 的名单), worker 每落一个结局追加一条.
+    // 收工时搬进 rec.assets 一起落盘.
+    std::vector<EncodeDayIndexEntry> index;
   };
   std::mutex days_mutex;
   std::map<std::string, DayProgress> days_inflight;

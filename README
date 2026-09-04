@@ -26,7 +26,7 @@ stk/
 │   │   │   ├── Dist.hpp                                 # 📦 分布分析
 │   │   │   ├── TimeSeries.hpp                           # 📦 时序分析
 │   │   │   ├── Transform.hpp                            # 📦 特征变换
-│   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码账目 (.day_complete): 齐备/资产数/错误原因
+│   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
 │   │   ├── define/                                      # 🔷 底层数据结构
 │   │   │   ├── CBuffer.hpp                              # 🔷 循环缓冲区
 │   │   │   ├── FastBitmap.hpp                           # 🔷 快速位图
@@ -151,7 +151,7 @@ stk/
 │       └── build/bin/app_main                           # 🎯 最终可执行文件
 └── output/                                              # 📁 运行时输出 (与cpp/同级)
     ├── orders/                                          # L2 编码 .bin (逐笔委托+成交合并)
-    │   └── YYYY/MM/DD/<CODE>.<EX>.bin                   # 单资产单日一个 .bin
+    │   └── YYYY/MM/DD/<CODE>.<EX>.bin                   # 单资产单日一个 .bin; 同目录 .stat = 当天唯一的元数据 (账目+逐资产计量+墓碑)
     ├── features/                                        # 特征张量库 (Float16 + Zstd, 按交易日全市场列式)
     │   └── YYYY/MM/DD/
     │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A]

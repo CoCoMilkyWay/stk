@@ -130,9 +130,10 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
     status_ = ScanStatus::ScanningBinary;
     co_await Coro::Yield(io_);
 
-    // 线程数不跟核数走: 读头的成本压在内核的路径解析上, 加线程并不摊薄.
-    // 451 万文件实测 8/24/72 线程分别是 4.50 / 3.27 / 4.09 秒 —— 超过二十
-    // 几个之后争用反而吃掉收益.
+    // 线程数是按逐个读头那条路 (明细缺失/对不上的天, 见 EncodeDayRecord.hpp)
+    // 定的: 成本压在内核的路径解析上, 加线程并不摊薄. 451 万文件实测
+    // 8/24/72 线程分别是 4.50 / 3.27 / 4.09 秒 —— 超过二十几个之后争用反而
+    // 吃掉收益.
     auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
     co_await data_.asset.coro_scan_binary_database(io_, data_.config.orders_dir,
                                                    config::BINARY_EXTENSION, scan_pool);
@@ -226,7 +227,9 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
 }
 
 const char *ScanService::get_status_string() const {
-  // 两个扫描阶段带进度. 缓冲区是成员而非局部, 因为返回的是裸指针.
+  // 带进度的阶段共用 asset 里那对原子计数 (单位随阶段变: 扫描是天/月,
+  // coverage 是交易日). 总量为 0 就退回裸标签 —— 阶段自己声明要不要报进度.
+  // 缓冲区是成员而非局部, 因为返回的是裸指针.
   auto with_progress = [this](const char *what) -> const char * {
     const size_t done = data_.asset.scan_days_done.load(std::memory_order_relaxed);
     const size_t total = data_.asset.scan_days_total.load(std::memory_order_relaxed);
@@ -248,7 +251,7 @@ const char *ScanService::get_status_string() const {
   case ScanStatus::ScanningArchive:
     return with_progress("Scanning archive database");
   case ScanStatus::ComputingCoverage:
-    return "Computing coverage...";
+    return with_progress("Computing coverage");
   case ScanStatus::AnalyzingStatus:
     return "Analyzing status...";
   case ScanStatus::Completed:
