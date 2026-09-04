@@ -14,8 +14,8 @@ namespace GUI::Database {
 // ============================================================================
 
 enum class ColumnDataType {
-  Numeric,      // 有序数据: PE, PB, 市值, 交易日数等
-  Categorical   // 分类数据: 板块, 行业, ST, DL等
+  Numeric,    // 有序数据: PE, PB, 市值, 交易日数等
+  Categorical // 分类数据: 板块, 行业, ST, DL等
 };
 
 // ============================================================================
@@ -92,4 +92,3 @@ std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
     const std::vector<std::string> &categories);
 
 } // namespace GUI::Database
-

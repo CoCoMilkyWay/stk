@@ -6,9 +6,9 @@
 
 #include "imgui.h"
 #include "latex.h"
-#include "utfcpp/utf8.hpp"
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
+#include "utfcpp/utf8.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -171,8 +171,10 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
       snprintf(display, sizeof(display), "%s (%s)", s.en, s.cn);
       bool is_selected = selected_values.find(value) != selected_values.end();
       if (ImGui::Checkbox(display, &is_selected)) {
-        if (is_selected) selected_values.insert(value);
-        else selected_values.erase(value);
+        if (is_selected)
+          selected_values.insert(value);
+        else
+          selected_values.erase(value);
       }
     }
     ImGui::End();
@@ -369,7 +371,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
       // Category background color
       ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, get_category_color(f.cat_l1));
-      
+
       // Highlight selected rows (overlay on top of category color)
       if (is_selected) {
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImVec4(0.2f, 0.4f, 0.6f, 0.3f)));
@@ -412,7 +414,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       // Column: ValidType
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.valid_type).en);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.valid_type).cn);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", to_string(f.valid_type).cn);
 
       // Column: Name CN (with tooltip showing LaTeX formula)
       ImGui::TableNextColumn();
@@ -446,17 +449,20 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       // Column: Cat L1
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.cat_l1).en);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.cat_l1).cn);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", to_string(f.cat_l1).cn);
 
       // Column: Cat L2
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.cat_l2).en);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.cat_l2).cn);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", to_string(f.cat_l2).cn);
 
       // Column: Norm Method
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.norm_method).en);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", to_string(f.norm_method).cn);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", to_string(f.norm_method).cn);
 
       // Column: PSD
       ImGui::TableNextColumn();

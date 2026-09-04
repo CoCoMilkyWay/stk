@@ -90,3 +90,24 @@ private:
   CBuffer<float, L2::BLEN> &out_;
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Entropy_a_30(N) N(Entropy_a_30, (Entropy<30, false>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Entropy_a_30(X) \
+  X(a_30_entropy, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Top 30-level Ask ShannonEntropy", "卖侧三十档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,A} \log(\pi_{i,t}^{M,A}), \quad \pi_{i,t}^{M,A} = \frac{V_{i,t}^{M,A}}{\sum_{j=1}^{N} V_{j,t}^{M,A}}, \quad N = 30)", OP(Entropy_a_30))
+
+#define NODE_Entropy_a_5(N) N(Entropy_a_5, (Entropy<5, false>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Entropy_a_5(X) \
+  X(a_5_entropy, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Top 5-level Ask ShannonEntropy", "卖侧五档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,A} \log(\pi_{i,t}^{M,A}), \quad \pi_{i,t}^{M,A} = \frac{V_{i,t}^{M,A}}{\sum_{j=1}^{N} V_{j,t}^{M,A}}, \quad N = 5)", OP(Entropy_a_5))
+
+#define NODE_Entropy_b_30(N) N(Entropy_b_30, (Entropy<30, true>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Entropy_b_30(X) \
+  X(b_30_entropy, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Top 30-level Bid ShannonEntropy", "买侧三十档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,B} \log(\pi_{i,t}^{M,B}), \quad \pi_{i,t}^{M,B} = \frac{V_{i,t}^{M,B}}{\sum_{j=1}^{N} V_{j,t}^{M,B}}, \quad N = 30)", OP(Entropy_b_30))
+
+#define NODE_Entropy_b_5(N) N(Entropy_b_5, (Entropy<5, true>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Entropy_b_5(X) \
+  X(b_5_entropy, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Top 5-level Bid ShannonEntropy", "买侧五档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,B} \log(\pi_{i,t}^{M,B}), \quad \pi_{i,t}^{M,B} = \frac{V_{i,t}^{M,B}}{\sum_{j=1}^{N} V_{j,t}^{M,B}}, \quad N = 5)", OP(Entropy_b_5))

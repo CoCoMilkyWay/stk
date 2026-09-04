@@ -2,7 +2,6 @@
 
 #include "features/Backend/FeatureStore.hpp"
 #include "features/Backend/FeatureStoreConfig.hpp"
-#include "features/Fundamental/FundamentalDaily.hpp"
 #include <cstdint>
 
 class DAG; // Forward declaration

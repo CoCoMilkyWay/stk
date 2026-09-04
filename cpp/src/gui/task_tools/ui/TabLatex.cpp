@@ -1,8 +1,8 @@
 #include "gui/task_tools/ui/TabLatex.hpp"
-#include "latex.h"
-#include "render.h"
-#include "platform/imgui/graphic_imgui.h"
 #include "imgui.h"
+#include "latex.h"
+#include "platform/imgui/graphic_imgui.h"
+#include "render.h"
 #include "utfcpp/utf8.hpp"
 
 namespace GUI::Tools {
@@ -15,14 +15,14 @@ static std::wstring utf8ToWide(std::string_view s) {
   return {u16.begin(), u16.end()};
 }
 
-void DrawLatexEditor(LatexEditorState& state) {
+void DrawLatexEditor(LatexEditorState &state) {
   // Rebuild font atlas if new fonts were added
   tex::Font_imgui::rebuildFontAtlasIfNeeded();
 
   // Input area
   ImGui::Text("LaTeX Input:");
   if (ImGui::InputTextMultiline("##latex_input", state.input_buffer, sizeof(state.input_buffer),
-                                 ImVec2(-1, 100))) {
+                                ImVec2(-1, 100))) {
     state.need_reparse = true;
   }
 
@@ -40,7 +40,7 @@ void DrawLatexEditor(LatexEditorState& state) {
 
     // Parse LaTeX
     std::wstring wlatex = utf8ToWide(state.input_buffer);
-    auto* render = tex::LaTeX::parse(wlatex, 0, state.text_size, 5.0f, tex::yellow);
+    auto *render = tex::LaTeX::parse(wlatex, 0, state.text_size, 5.0f, tex::yellow);
     if (render) {
       state.render.reset(render);
     } else {
@@ -58,7 +58,7 @@ void DrawLatexEditor(LatexEditorState& state) {
   ImGui::Text("Preview:");
 
   if (state.render) {
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImDrawList *draw_list = ImGui::GetWindowDrawList();
     ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
 
     // Create ImGui graphics context
@@ -76,4 +76,3 @@ void DrawLatexEditor(LatexEditorState& state) {
 }
 
 } // namespace GUI::Tools
-

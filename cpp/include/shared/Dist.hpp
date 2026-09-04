@@ -40,7 +40,7 @@ struct Dist {
   struct KLLWithMoments {
     KLLcache kll;
 
-    explicit KLLWithMoments(size_t k = KLL_CAPACITY, size_t n_recon = KLL_RESOLUTION) 
+    explicit KLLWithMoments(size_t k = KLL_CAPACITY, size_t n_recon = KLL_RESOLUTION)
         : kll(k, n_recon) {}
 
     // Move only (KLLcache is move-only)
@@ -72,14 +72,16 @@ struct Dist {
 
     // Quantile query: simple linear interpolation on ICDF grid
     double quantile(double q) const {
-      if (kll.empty()) return 0.0;
+      if (kll.empty())
+        return 0.0;
       auto icdf = kll.exportICDF();
       return interpolate(q, icdf.x, icdf.y, icdf.n);
     }
 
     // CDF query: simple linear interpolation on CDF grid
     double queryCDF(double x) const {
-      if (kll.empty()) return 0.0;
+      if (kll.empty())
+        return 0.0;
       auto cdf = kll.exportCDF();
       return interpolate(x, cdf.x, cdf.y, cdf.n);
     }
@@ -128,19 +130,25 @@ struct Dist {
 
   private:
     // Simple linear interpolation on precomputed grid
-    static double interpolate(double query, const float* x, const float* y, size_t n) {
-      if (n == 0) return 0.0;
-      if (n == 1) return y[0];
-      if (query <= x[0]) return y[0];
-      if (query >= x[n-1]) return y[n-1];
-      
+    static double interpolate(double query, const float *x, const float *y, size_t n) {
+      if (n == 0)
+        return 0.0;
+      if (n == 1)
+        return y[0];
+      if (query <= x[0])
+        return y[0];
+      if (query >= x[n - 1])
+        return y[n - 1];
+
       size_t lo = 0, hi = n - 1;
       while (hi - lo > 1) {
         size_t mid = (lo + hi) / 2;
-        if (x[mid] <= query) lo = mid;
-        else hi = mid;
+        if (x[mid] <= query)
+          lo = mid;
+        else
+          hi = mid;
       }
-      
+
       double t = (query - x[lo]) / (x[hi] - x[lo]);
       return y[lo] + t * (y[hi] - y[lo]);
     }
@@ -198,8 +206,10 @@ struct Dist {
       if (n_valid == 1) {
         val_min = val_max = val;
       } else {
-        if (val < val_min) val_min = val;
-        if (val > val_max) val_max = val;
+        if (val < val_min)
+          val_min = val;
+        if (val > val_max)
+          val_max = val;
       }
     }
   };
@@ -251,7 +261,6 @@ struct Dist {
       }
       total = KLLWithMoments(kll_k);
     }
-
   };
 
   // ==========================================================================
@@ -313,7 +322,6 @@ struct Dist {
     }
   };
 
-
   // ==========================================================================
   // Compute Control
   // ==========================================================================
@@ -362,7 +370,10 @@ struct Dist {
   // ==========================================================================
 
   struct Input {
-    enum class GroupBy : uint8_t { MONTH, WEEKDAY, HOUR, ASSETS };
+    enum class GroupBy : uint8_t { MONTH,
+                                   WEEKDAY,
+                                   HOUR,
+                                   ASSETS };
 
     GroupBy group_by = GroupBy::MONTH;
     int focus_month_idx = -1; // for trajectory highlight
@@ -462,8 +473,8 @@ struct Dist {
 
     // Single day cache (per asset)
     struct DayCache {
-      std::string date;                                    // "YYYYMMDD"
-      std::vector<std::vector<MinuteBar>> asset_bars;      // [asset_idx][minute_idx]
+      std::string date;                               // "YYYYMMDD"
+      std::vector<std::vector<MinuteBar>> asset_bars; // [asset_idx][minute_idx]
 
       void init(size_t n_assets) {
         asset_bars.resize(n_assets);
@@ -480,9 +491,9 @@ struct Dist {
       }
     };
 
-    std::vector<DayCache> days;              // sorted by date (after finalize)
+    std::vector<DayCache> days; // sorted by date (after finalize)
     std::map<std::string, size_t> date_to_idx;
-    size_t n_assets = 0;                     // number of assets
+    size_t n_assets = 0; // number of assets
     int level = -1;
     int feature_idx = -1;
     bool valid = false;

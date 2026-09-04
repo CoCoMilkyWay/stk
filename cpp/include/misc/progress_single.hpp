@@ -29,7 +29,7 @@ inline void print_progress(size_t current, size_t total, const std::string &mess
   if (!message.empty()) {
     output << " " << message;
   }
-  
+
   std::cout << output.str() << std::flush;
   if (current == total) {
     std::cout << "\n";
@@ -37,4 +37,3 @@ inline void print_progress(size_t current, size_t total, const std::string &mess
 }
 
 } // namespace misc
-

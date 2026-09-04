@@ -20,7 +20,8 @@ public:
 
   // 返回 true 表示新 hour bar 生成
   bool update() noexcept {
-    if (input_.open.empty()) [[unlikely]] return false;
+    if (input_.open.empty()) [[unlikely]]
+      return false;
 
     const size_t l2_index = L1_to_L2(input_.l1_index);
     bool emitted = false;

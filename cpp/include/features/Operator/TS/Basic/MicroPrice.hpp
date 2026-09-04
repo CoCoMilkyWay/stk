@@ -63,3 +63,6 @@ private:
   CBuffer<float, L2::BLEN> &buffer_;
   float micro_value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_MicroPrice(N) N(MicroPrice, (MicroPrice), (DepthData.bid_price[0], DepthData.ask_price[0], DepthData.bid_qty[0], DepthData.ask_qty[0]), onDepth, onDepth)

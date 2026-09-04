@@ -150,9 +150,18 @@ inline std::vector<int> ward_leaf_order(const std::vector<std::vector<float>> &d
     // Find minimum
     float min_dist = dist_LR_RL;
     int best_config = 0;
-    if (dist_LR_RR < min_dist) { min_dist = dist_LR_RR; best_config = 1; }
-    if (dist_LL_RL < min_dist) { min_dist = dist_LL_RL; best_config = 2; }
-    if (dist_LL_RR < min_dist) { min_dist = dist_LL_RR; best_config = 3; }
+    if (dist_LR_RR < min_dist) {
+      min_dist = dist_LR_RR;
+      best_config = 1;
+    }
+    if (dist_LL_RL < min_dist) {
+      min_dist = dist_LL_RL;
+      best_config = 2;
+    }
+    if (dist_LL_RR < min_dist) {
+      min_dist = dist_LL_RR;
+      best_config = 3;
+    }
 
     // Build order based on best config
     auto &L_order = info[L].order;

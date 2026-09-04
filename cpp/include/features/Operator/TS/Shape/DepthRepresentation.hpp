@@ -51,3 +51,9 @@ private:
   CBuffer<float, L2::BLEN> &depth_repre_;
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_DepthRepresentation(N) N(DepthRepresentation, (DepthRepresentation), (), onMinute, onMinute)
+
+#define FIELDS_L1_DepthRepresentation(X) \
+  X(depth_repre, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Depth Representation", "多档深度表征空间", "多档深度表征学习(降频)", R"(\text{depth\_repre}_t = f_{\theta}(X_t), \quad X_t = \{V_{i,t}^{M,B}, V_{i,t}^{M,A}\}_{i=1}^{N})", OP(DepthRepresentation))

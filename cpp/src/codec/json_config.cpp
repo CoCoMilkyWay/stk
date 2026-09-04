@@ -89,10 +89,9 @@ std::chrono::year_month_day ParseDateStringFull(const std::string &date_str) {
   unsigned int day = std::stoi(date_str.substr(8, 2));
 
   return std::chrono::year_month_day{
-    std::chrono::year{static_cast<int>(year)}, 
-    std::chrono::month{static_cast<unsigned>(month)},
-    std::chrono::day{static_cast<unsigned>(day)}
-  };
+      std::chrono::year{static_cast<int>(year)},
+      std::chrono::month{static_cast<unsigned>(month)},
+      std::chrono::day{static_cast<unsigned>(day)}};
 }
 
 std::vector<std::chrono::year_month> GetMonthRange(

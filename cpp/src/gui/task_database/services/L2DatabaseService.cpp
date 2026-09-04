@@ -6,7 +6,7 @@ namespace GUI::Database {
 // ============================================================================
 // L2 Database Service
 // ============================================================================
-// 
+//
 // Note: Asset scanning is done once in StateManager::initialize()
 // No per-asset refresh needed, as encoding updates data structures directly
 

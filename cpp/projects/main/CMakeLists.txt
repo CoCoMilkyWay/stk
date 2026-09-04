@@ -331,6 +331,145 @@ set(HEADERS
 )
 
 # ============================================================================
+# features/NodesGenerated.hpp (生成到 build 目录) — 计算图节点表 + 落盘字段表.
+#   节点实例和落盘列直接写在算子文件里 (include/features/{Operator,Fundamental,Misc}/**/*.hpp):
+#     #define NODE_<Name>(N)         N(<Name>, (OpType), (ctor inputs), compute_trigger, flush_trigger)
+#     #define FIELDS_<LVL>_<Owner>(X) X(code, ...)   LVL ∈ {L0, L1, DEPTH}; Owner = 节点名, 或非算子列的任意名字
+#   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / DepthData.bid_qty ...), 不需要任何 include.
+#   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 生成
+#     NODES(N) / NODE_PREV_<Name> (声明链, 让顺序错误变成编译错误) /
+#     LEVEL_{0,1}_FIELDS(X) / DEPTH_FIELDS(X) 和 #include 清单.
+#   CMAKE_CONFIGURE_DEPENDS 盯住每个文件内容: 改动后下次 build 自动重新 configure.
+# ============================================================================
+set(DAG_SCAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../include/features)
+file(GLOB_RECURSE DAG_SCAN_FILES CONFIGURE_DEPENDS
+    ${DAG_SCAN_ROOT}/Operator/*.hpp
+    ${DAG_SCAN_ROOT}/Fundamental/*.hpp
+    ${DAG_SCAN_ROOT}/Misc/*.hpp
+)
+list(SORT DAG_SCAN_FILES)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DAG_SCAN_FILES})
+
+set(DAG_NODES "")        # 全部节点名 (发现序)
+set(DAG_FIELD_OWNERS "") # 有任一 FIELDS_ 宏的名字 (节点或非算子列)
+set(DAG_GEN_INCLUDES "")
+foreach(scan_file ${DAG_SCAN_FILES})
+    file(RELATIVE_PATH scan_rel ${CMAKE_CURRENT_SOURCE_DIR}/../../include ${scan_file})
+    file(READ ${scan_file} scan_src)
+    string(REGEX REPLACE "\\\\\n" " " scan_src "${scan_src}") # 续行拼成一行
+    string(REGEX MATCHALL "#define NODE_[A-Za-z0-9_]+\\(" node_defs "${scan_src}")
+    string(REGEX MATCHALL "#define FIELDS_(L0|L1|DEPTH)_[A-Za-z0-9_]+\\(" field_defs "${scan_src}")
+    if(NOT node_defs AND NOT field_defs)
+        continue()
+    endif()
+    string(APPEND DAG_GEN_INCLUDES "#include \"${scan_rel}\"\n")
+    foreach(node_def ${node_defs})
+        string(REGEX REPLACE "#define NODE_([A-Za-z0-9_]+)\\(" "\\1" node_name "${node_def}")
+        if(node_name IN_LIST DAG_NODES)
+            message(FATAL_ERROR "NODE_${node_name} 重复定义 (${scan_rel})")
+        endif()
+        list(APPEND DAG_NODES ${node_name})
+        set(DAG_FILE_${node_name} ${scan_rel})
+        # 依赖 = 该行里所有 "<Ident>." (先全收, 排序时只认节点名)
+        string(REGEX MATCH "#define NODE_${node_name}\\([^\n]*" node_line "${scan_src}")
+        string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*\\." node_refs "${node_line}")
+        set(DAG_DEPS_${node_name} "")
+        foreach(ref ${node_refs})
+            string(REGEX REPLACE "\\.$" "" ref "${ref}")
+            list(APPEND DAG_DEPS_${node_name} ${ref})
+        endforeach()
+    endforeach()
+    foreach(field_def ${field_defs})
+        string(REGEX REPLACE "#define FIELDS_(L0|L1|DEPTH)_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
+        list(GET lvl_owner 0 lvl)
+        list(GET lvl_owner 1 owner)
+        if(DAG_HAS_${lvl}_${owner})
+            message(FATAL_ERROR "FIELDS_${lvl}_${owner} 重复定义 (${scan_rel})")
+        endif()
+        set(DAG_HAS_${lvl}_${owner} TRUE)
+        if(NOT owner IN_LIST DAG_FIELD_OWNERS)
+            list(APPEND DAG_FIELD_OWNERS ${owner})
+        endif()
+    endforeach()
+endforeach()
+
+# 分层拓扑排序: 每轮取出全部依赖已就位的节点 (按发现序), 无进展即成环.
+set(DAG_ORDER "")
+set(dag_remaining ${DAG_NODES})
+while(dag_remaining)
+    set(dag_progress FALSE)
+    foreach(node_name ${dag_remaining})
+        set(ready TRUE)
+        foreach(dep ${DAG_DEPS_${node_name}})
+            if(dep IN_LIST DAG_NODES AND NOT dep IN_LIST DAG_ORDER)
+                set(ready FALSE)
+                break()
+            endif()
+        endforeach()
+        if(ready)
+            list(APPEND DAG_ORDER ${node_name})
+            list(REMOVE_ITEM dag_remaining ${node_name})
+            set(dag_progress TRUE)
+        endif()
+    endforeach()
+    if(NOT dag_progress)
+        message(FATAL_ERROR "节点依赖成环: ${dag_remaining}")
+    endif()
+endwhile()
+
+set(DAG_GEN_NODES "#define NODES(N)")
+set(DAG_GEN_PREV "")
+set(dag_prev DAG_Root)
+foreach(node_name ${DAG_ORDER})
+    string(APPEND DAG_GEN_NODES " \\\n  NODE_${node_name}(N)")
+    string(APPEND DAG_GEN_PREV "#define NODE_PREV_${node_name} ${dag_prev}\n")
+    set(dag_prev DAG_${node_name})
+endforeach()
+string(APPEND DAG_GEN_PREV "#define DAG_LAST ${dag_prev}\n")
+# 字段: 先按节点拓扑序, 再非算子列 (按发现序)
+set(dag_field_order ${DAG_ORDER})
+foreach(owner ${DAG_FIELD_OWNERS})
+    if(NOT owner IN_LIST DAG_NODES)
+        list(APPEND dag_field_order ${owner})
+    endif()
+endforeach()
+set(DAG_GEN_FIELDS "")
+foreach(lvl L0 L1 DEPTH)
+    if(lvl STREQUAL "L0")
+        set(macro_name LEVEL_0_FIELDS)
+    elseif(lvl STREQUAL "L1")
+        set(macro_name LEVEL_1_FIELDS)
+    else()
+        set(macro_name DEPTH_FIELDS)
+    endif()
+    string(APPEND DAG_GEN_FIELDS "#define ${macro_name}(X)")
+    foreach(owner ${dag_field_order})
+        if(DAG_HAS_${lvl}_${owner})
+            string(APPEND DAG_GEN_FIELDS " \\\n  FIELDS_${lvl}_${owner}(X)")
+        endif()
+    endforeach()
+    string(APPEND DAG_GEN_FIELDS "\n\n")
+endforeach()
+list(LENGTH DAG_ORDER DAG_N)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/features/NodesGenerated.hpp
+"#pragma once
+
+// AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
+// 由 include/features/{Operator,Fundamental,Misc}/**/*.hpp 里的 NODE_/FIELDS_ 宏扫描生成
+// (${DAG_N} 个节点, 按输入引用分层拓扑排序). 改动后下次 build 自动重新 configure.
+
+${DAG_GEN_INCLUDES}
+// 节点表 (拓扑序 = DAG 声明序 = 同一触发域内执行序)
+${DAG_GEN_NODES}
+
+// 声明链: DAG_<name> : NODE_PREV_<name>, 节点只看得到排在自己前面的节点, 顺序错误即编译错误
+${DAG_GEN_PREV}
+// 落盘字段表 (按层; 行序 = 列序)
+${DAG_GEN_FIELDS}")
+
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/generated)
+
+# ============================================================================
 # Executable Configuration
 # ============================================================================
 

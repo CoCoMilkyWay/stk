@@ -47,8 +47,8 @@ struct Transform {
 
   enum class BandpassType : uint8_t {
     NONE = 0,
-    FIR,  // FIR带通 (窗函数法)
-    IIR   // IIR带通 (双线性变换)
+    FIR, // FIR带通 (窗函数法)
+    IIR  // IIR带通 (双线性变换)
   };
 
   // ==========================================================================
@@ -92,10 +92,10 @@ struct Transform {
 
     // 带通滤波
     BandpassType bandpass_type = BandpassType::NONE;
-    int bandpass_subtype = 0;  // FIR: 窗类型(0-2), IIR: 滤波器类型(0-2)
-    int bandpass_order = 64;   // FIR: 8-512, IIR: 1-8
-    float bandpass_lo_bin = 20.0f;   // 低频cutoff (非标bin index, 0-127)
-    float bandpass_hi_bin = 80.0f;   // 高频cutoff (非标bin index, 0-127)
+    int bandpass_subtype = 0;      // FIR: 窗类型(0-2), IIR: 滤波器类型(0-2)
+    int bandpass_order = 64;       // FIR: 8-512, IIR: 1-8
+    float bandpass_lo_bin = 20.0f; // 低频cutoff (非标bin index, 0-127)
+    float bandpass_hi_bin = 80.0f; // 高频cutoff (非标bin index, 0-127)
 
     // 切换方法时重置参数
     void reset_stationary() { stationary.init(GetStationaryDef(stationary_method)); }
@@ -142,9 +142,9 @@ struct Transform {
   // ==========================================================================
 
   struct Block {
-    std::string label;                    // "24/01/15" / "24/01"
-    std::vector<std::string> dates;       // 日期列表 (L0:1天, L1:~20天)
-    size_t n_samples = 0;                 // 总样本数 (加载后填充)
+    std::string label;              // "24/01/15" / "24/01"
+    std::vector<std::string> dates; // 日期列表 (L0:1天, L1:~20天)
+    size_t n_samples = 0;           // 总样本数 (加载后填充)
   };
 
   // ==========================================================================
@@ -153,7 +153,7 @@ struct Transform {
 
   // 单资产稀疏数据 (value + index)
   struct SparseData {
-    std::vector<float> value; // 有效值
+    std::vector<float> value;  // 有效值
     std::vector<size_t> index; // 有效值的原始索引
 
     size_t size() const { return value.size(); }
@@ -176,10 +176,10 @@ struct Transform {
   };
 
   struct DataCache {
-    std::vector<std::vector<float>> raw;    // [asset_idx][time] (dense, for compatibility)
-    std::vector<SparseData> sparse;         // [asset_idx] 稀疏数据 (value + index)
+    std::vector<std::vector<float>> raw; // [asset_idx][time] (dense, for compatibility)
+    std::vector<SparseData> sparse;      // [asset_idx] 稀疏数据 (value + index)
     size_t n_assets = 0;
-    size_t n_samples = 0;                   // 原始时间长度
+    size_t n_samples = 0; // 原始时间长度
 
     // 缓存键 (用于判断是否需要重新加载)
     int level = -1;
@@ -215,10 +215,10 @@ struct Transform {
 
   struct AssetResult {
     // 时序数据 (预分配 n_samples，后续复用)
-    std::vector<float> stationary;  // 平稳化后
-    std::vector<float> ts_normed;   // 时序归一化后
-    std::vector<float> cs_normed;   // 截面归一化后
-    std::vector<float> bandpass;    // 带通滤波后 (最终)
+    std::vector<float> stationary; // 平稳化后
+    std::vector<float> ts_normed;  // 时序归一化后
+    std::vector<float> cs_normed;  // 截面归一化后
+    std::vector<float> bandpass;   // 带通滤波后 (最终)
 
     // ADF/KPSS (标量)
     float adf_stat = 0.0f;
@@ -287,12 +287,13 @@ struct Transform {
 
     // Phase 同步 (TS → CS)
     std::atomic<size_t> ts_done{0};
-    std::atomic<size_t> cs_done{0};  // CS norm 计算完成标志 (0=未完成, 1=完成)
+    std::atomic<size_t> cs_done{0}; // CS norm 计算完成标志 (0=未完成, 1=完成)
     size_t n_workers{0};
 
     float progress() const {
       size_t t = total.load();
-      if (t == 0) return 0.0f;
+      if (t == 0)
+        return 0.0f;
       size_t d = done.load();
       float p = 100.0f * d / t;
       return p > 100.0f ? 100.0f : p;
@@ -342,7 +343,7 @@ struct Transform {
 
   // 数据块列表
   std::vector<Block> blocks;
-  int blocks_level = -1;   // blocks 对应的 level (level 变化时需重新生成)
+  int blocks_level = -1; // blocks 对应的 level (level 变化时需重新生成)
   int selected_block = 0;
 
   // 原始数据缓存
@@ -363,7 +364,7 @@ struct Transform {
 
     // 聚合 PSD (能量均线)
     std::array<float, 128> avg_psd{};
-    std::array<float, 128> avg_psd_db{};  // 取 log10 后
+    std::array<float, 128> avg_psd_db{}; // 取 log10 后
 
     // 绘图用 x 轴
     std::array<float, 128> plot_x{};
@@ -373,10 +374,10 @@ struct Transform {
     std::vector<std::string> tick_labels;
 
     // 频段能量比例 (用于标注)
-    float ratio_sec = 0.0f;   // 秒级 (bins 0-57)
-    float ratio_min = 0.0f;   // 分钟级 (bins 58-116)
-    float ratio_hour = 0.0f;  // 小时级 (bins 117-126)
-    float ratio_dc = 0.0f;    // DC (bin 127)
+    float ratio_sec = 0.0f;  // 秒级 (bins 0-57)
+    float ratio_min = 0.0f;  // 分钟级 (bins 58-116)
+    float ratio_hour = 0.0f; // 小时级 (bins 117-126)
+    float ratio_dc = 0.0f;   // DC (bin 127)
 
     bool valid = false;
 

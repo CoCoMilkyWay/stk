@@ -176,14 +176,14 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
     float bar_height = 5.0f;
     float text_height = ImGui::GetTextLineHeight();
     float y_offset = (text_height - bar_height) * 0.5f;
-    
+
     float cursor_y = ImGui::GetCursorPosY();
     ImGui::SetCursorPosY(cursor_y + y_offset);
-    
+
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
     ImGui::ProgressBar(ratio, ImVec2(bar_max_width, bar_height), "");
     ImGui::PopStyleColor();
-    
+
     ImGui::SameLine();
     ImGui::SetCursorPosY(cursor_y);
     ImGui::Text("%6.2f元 %+7.2f万", price, amount_in_wan);
@@ -314,7 +314,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, bool force_reset
         const auto &rect = of.l0.heatmap_colored.rects[i];
         ImVec2 p_min = ImPlot::PlotToPixels(rect.x1, rect.y1);
         ImVec2 p_max = ImPlot::PlotToPixels(rect.x2, rect.y2);
-        
+
         if (static_cast<int>(i) == hovered_idx) {
           // Highlight: increase alpha and add white border
           uint8_t r = (rect.color >> 0) & 0xFF;
@@ -469,7 +469,7 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
       // Add tick positions only at label intervals (to avoid overcrowding grid lines)
       for (size_t d = 0; d < of.l1.num_days; d += label_interval) {
         ui.l1_tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
-        
+
         char buf[16];
         FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
         ui.l1_tick_label_storage.push_back(buf);
@@ -589,7 +589,7 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
           ImPlot::PopStyleColor();
 
           // Check if "Feature" legend item is hidden (sync visibility for all feature plots)
-          ImPlotItem* feature_item = ImPlot::GetCurrentPlot()->Items.GetItem("Feature");
+          ImPlotItem *feature_item = ImPlot::GetCurrentPlot()->Items.GetItem("Feature");
           bool hidden = feature_item ? !feature_item->Show : false;
 
           // Draw high line (step plot, brighter teal)

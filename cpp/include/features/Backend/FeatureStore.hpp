@@ -1010,7 +1010,7 @@ public:
     }                                                                                       \
   } while (0)
 
-// TS_WRITE_ROW: 按 FeaturesDefine.hpp 字段表 SRC 列写一行 (t, a) 的全部 OP/FUND 列 (width 必须为 1)
+// TS_WRITE_ROW: 按字段表 (各算子文件 FIELDS_*, CMake 汇总) SRC 列写一行 (t, a) 的全部 OP/FUND 列 (width 必须为 1)
 //   OP(node[, port]) → dag.node.last(port)      FUND(f) → dag.fund_row_[fund::f]
 //   CS / LABEL / META 列不在此写 (分别由 CS worker / 标签回填 / 基建手工写)
 // lvl 必须是字面量 0/1 (展开 LEVEL_##lvl##_FIELDS)

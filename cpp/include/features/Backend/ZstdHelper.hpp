@@ -1,11 +1,11 @@
 #pragma once
 
+#include "../../../package/zstd-1.5.7/lib/zstd.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <vector>
-#include "../../../package/zstd-1.5.7/lib/zstd.h"
 
 // ============================================================================
 // ZSTD COMPRESSION HELPER
@@ -58,7 +58,7 @@ public:
   // Get upper bound for compressed size
   static size_t compress_bound(size_t size) {
     if constexpr (COMPRESSION_LEVEL == 0) {
-      return size;  // No compression, size stays the same
+      return size; // No compression, size stays the same
     } else {
       return ZSTD_compressBound(size);
     }
@@ -108,7 +108,7 @@ public:
   // Get decompressed size from frame header
   static size_t get_decompressed_size(const void *src, size_t src_size) {
     if constexpr (COMPRESSION_LEVEL == 0) {
-      return src_size;  // No compression, size is unchanged
+      return src_size; // No compression, size is unchanged
     } else {
       unsigned long long size = ZSTD_getFrameContentSize(src, src_size);
       assert(size != ZSTD_CONTENTSIZE_UNKNOWN);
@@ -129,4 +129,3 @@ public:
     return ZSTD_getErrorName(code);
   }
 };
-

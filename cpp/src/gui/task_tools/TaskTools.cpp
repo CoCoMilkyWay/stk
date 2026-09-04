@@ -1,9 +1,9 @@
 #include "gui/task_tools/TaskTools.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_tools/ui/TabLatex.hpp"
-#include "shared/SharedData.hpp"
 #include "imgui.h"
 #include "latex.h"
+#include "shared/SharedData.hpp"
 
 namespace GUI::Tasks {
 
@@ -36,7 +36,7 @@ TaskHandle CreateToolsTask() {
     // 什么都不做，保留所有状态
   };
 
-  handle.DrawPanel = [state](SharedData& data) {
+  handle.DrawPanel = [state](SharedData &data) {
     ImGui::BeginChild("ToolsPanel");
 
     if (ImGui::BeginTabBar("ToolsTabs")) {
@@ -65,4 +65,3 @@ TaskHandle CreateToolsTask() {
 }
 
 } // namespace GUI::Tasks
-

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cassert>
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <span>
 #include <vector>
@@ -23,10 +23,10 @@
 namespace math::stationary {
 
 struct ADFResult {
-  float statistic = 0.0f;  // t-statistic for γ
+  float statistic = 0.0f; // t-statistic for γ
   float pvalue = 0.0f;
-  int lag = 0;             // selected lag order
-  size_t n_obs = 0;        // effective observations
+  int lag = 0;      // selected lag order
+  size_t n_obs = 0; // effective observations
   bool valid = false;
 };
 
@@ -43,13 +43,15 @@ constexpr float ADF_CRITICAL_10PCT[] = {-2.63f, -2.60f, -2.58f, -2.57f, -2.57f, 
 constexpr size_t ADF_N_VALS[] = {25, 50, 100, 250, 500, 10000};
 constexpr size_t ADF_N_POINTS = 6;
 
-inline float interpolate_critical(const float* table, size_t n) {
-  if (n <= ADF_N_VALS[0]) return table[0];
-  if (n >= ADF_N_VALS[ADF_N_POINTS - 1]) return table[ADF_N_POINTS - 1];
-  
+inline float interpolate_critical(const float *table, size_t n) {
+  if (n <= ADF_N_VALS[0])
+    return table[0];
+  if (n >= ADF_N_VALS[ADF_N_POINTS - 1])
+    return table[ADF_N_POINTS - 1];
+
   for (size_t i = 0; i < ADF_N_POINTS - 1; ++i) {
     if (n <= ADF_N_VALS[i + 1]) {
-      float t = static_cast<float>(n - ADF_N_VALS[i]) / 
+      float t = static_cast<float>(n - ADF_N_VALS[i]) /
                 static_cast<float>(ADF_N_VALS[i + 1] - ADF_N_VALS[i]);
       return table[i] + t * (table[i + 1] - table[i]);
     }
@@ -62,8 +64,9 @@ inline float compute_pvalue(float t_stat, size_t n) {
   float c1 = interpolate_critical(ADF_CRITICAL_1PCT, n);
   float c5 = interpolate_critical(ADF_CRITICAL_5PCT, n);
   float c10 = interpolate_critical(ADF_CRITICAL_10PCT, n);
-  
-  if (t_stat <= c1) return 0.005f;   // < 1%
+
+  if (t_stat <= c1)
+    return 0.005f; // < 1%
   if (t_stat <= c5) {
     // Linear interpolation between 1% and 5%
     float t = (t_stat - c1) / (c5 - c1);
@@ -91,14 +94,16 @@ inline bool cholesky_decomp(std::span<const float> A, size_t k, std::span<float>
         sum -= L[i * k + p] * L[j * k + p];
       }
       if (i == j) {
-        if (sum <= 0.0f) return false;
+        if (sum <= 0.0f)
+          return false;
         L[i * k + j] = std::sqrt(sum);
       } else {
         L[i * k + j] = sum / L[j * k + j];
       }
     }
     // Zero upper triangle for this row (needed for in-place)
-    for (size_t j = i + 1; j < k; ++j) L[i * k + j] = 0.0f;
+    for (size_t j = i + 1; j < k; ++j)
+      L[i * k + j] = 0.0f;
   }
   return true;
 }
@@ -114,7 +119,8 @@ inline void cholesky_solve(std::span<const float> L, size_t k,
   // Forward: L * tmp = b
   for (size_t i = 0; i < k; ++i) {
     float sum = b[i];
-    for (size_t j = 0; j < i; ++j) sum -= L[i * k + j] * tmp[j];
+    for (size_t j = 0; j < i; ++j)
+      sum -= L[i * k + j] * tmp[j];
     tmp[i] = sum / L[i * k + i];
   }
 
@@ -122,7 +128,8 @@ inline void cholesky_solve(std::span<const float> L, size_t k,
   for (int ii = static_cast<int>(k) - 1; ii >= 0; --ii) {
     const size_t i = static_cast<size_t>(ii);
     float sum = tmp[i];
-    for (size_t j = i + 1; j < k; ++j) sum -= L[j * k + i] * x[j];
+    for (size_t j = i + 1; j < k; ++j)
+      sum -= L[j * k + i] * x[j];
     x[i] = sum / L[i * k + i];
   }
 }
@@ -133,11 +140,13 @@ inline float inv_xtx_diag(std::span<const float> L, size_t k, size_t idx,
   assert(L.size() >= k * k && idx < k && work.size() >= k);
   for (size_t i = 0; i < k; ++i) {
     float sum = (i == idx) ? 1.0f : 0.0f;
-    for (size_t j = 0; j < i; ++j) sum -= L[i * k + j] * work[j];
+    for (size_t j = 0; j < i; ++j)
+      sum -= L[i * k + j] * work[j];
     work[i] = sum / L[i * k + i];
   }
   float diag = 0.0f;
-  for (size_t i = idx; i < k; ++i) diag += work[i] * work[i];
+  for (size_t i = idx; i < k; ++i)
+    diag += work[i] * work[i];
   return diag;
 }
 
@@ -148,11 +157,16 @@ struct ADFWorkspace {
 
   void ensure(size_t k) {
     const size_t kk = k * k;
-    if (XtX.size() < kk) XtX.resize(kk);
-    if (L.size() < kk) L.resize(kk);
-    if (Xty.size() < k) Xty.resize(k);
-    if (beta.size() < k) beta.resize(k);
-    if (tmp.size() < k) tmp.resize(k);
+    if (XtX.size() < kk)
+      XtX.resize(kk);
+    if (L.size() < kk)
+      L.resize(kk);
+    if (Xty.size() < k)
+      Xty.resize(k);
+    if (beta.size() < k)
+      beta.resize(k);
+    if (tmp.size() < k)
+      tmp.resize(k);
   }
 };
 
@@ -178,10 +192,11 @@ struct ADFWorkspace {
 //
 // ============================================================================
 
-inline ADFResult adf_test(std::span<const float> y, int /*max_lag*/, ADFWorkspace& ws) {
+inline ADFResult adf_test(std::span<const float> y, int /*max_lag*/, ADFWorkspace &ws) {
   ADFResult result;
   const size_t n = y.size();
-  if (n < 20) return result;
+  if (n < 20)
+    return result;
 
   // ========== Stage 1: p=0 DF test (O(n), no matrix ops) ==========
   // Model: Δy_t = α + γ·y_{t-1} + ε_t
@@ -205,26 +220,29 @@ inline ADFResult adf_test(std::span<const float> y, int /*max_lag*/, ADFWorkspac
   // Solve 2×2 normal equations: [α, γ] = (X'X)^{-1} X'y
   // X'X = [n, Σy; Σy, Σyy], X'y = [Σdy, Σy·dy]
   const float det = sum_1 * sum_yy - sum_y * sum_y;
-  if (std::abs(det) < 1e-10f) return result;
+  if (std::abs(det) < 1e-10f)
+    return result;
 
   const float alpha = (sum_yy * sum_dy - sum_y * sum_y_dy) / det;
   const float gamma = (sum_1 * sum_y_dy - sum_y * sum_dy) / det;
 
   // SSE and sigma²
   const float sse = sum_dydy - alpha * sum_dy - gamma * sum_y_dy;
-  if (sse <= 0.0f) return result;
+  if (sse <= 0.0f)
+    return result;
   const float sigma2 = sse / static_cast<float>(n_eff - 2);
 
   // Var(γ) = σ² · (X'X)^{-1}_{22} = σ² · n / det
   const float var_gamma = sigma2 * sum_1 / det;
-  if (var_gamma <= 0.0f) return result;
+  if (var_gamma <= 0.0f)
+    return result;
   const float se_gamma = std::sqrt(var_gamma);
 
   const float t_stat = gamma / se_gamma;
 
   // Stage 1 decision thresholds (conservative)
-  constexpr float THRESHOLD_STATIONARY = -3.5f;    // t < this → clearly stationary
-  constexpr float THRESHOLD_UNIT_ROOT = -2.0f;     // t > this → clearly unit root
+  constexpr float THRESHOLD_STATIONARY = -3.5f; // t < this → clearly stationary
+  constexpr float THRESHOLD_UNIT_ROOT = -2.0f;  // t > this → clearly unit root
 
   if (t_stat < THRESHOLD_STATIONARY || t_stat > THRESHOLD_UNIT_ROOT) {
     // Fast path: 99%+ of cases
@@ -252,8 +270,10 @@ inline ADFResult adf_test(std::span<const float> y, int /*max_lag*/, ADFWorkspac
   }
 
   // Precompute Δy
-  if (ws.dy.size() < n - 1) ws.dy.resize(n - 1);
-  for (size_t i = 0; i + 1 < n; ++i) ws.dy[i] = y[i + 1] - y[i];
+  if (ws.dy.size() < n - 1)
+    ws.dy.resize(n - 1);
+  for (size_t i = 0; i + 1 < n; ++i)
+    ws.dy[i] = y[i + 1] - y[i];
 
   ws.ensure(k);
   std::fill(ws.XtX.begin(), ws.XtX.begin() + k * k, 0.0f);
@@ -287,10 +307,12 @@ inline ADFResult adf_test(std::span<const float> y, int /*max_lag*/, ADFWorkspac
 
   // Mirror upper triangle
   for (size_t i = 0; i < k; ++i)
-    for (size_t j = 0; j < i; ++j) ws.XtX[j * k + i] = ws.XtX[i * k + j];
+    for (size_t j = 0; j < i; ++j)
+      ws.XtX[j * k + i] = ws.XtX[i * k + j];
 
   // Copy to L for in-place Cholesky
-  for (size_t i = 0; i < k * k; ++i) ws.L[i] = ws.XtX[i];
+  for (size_t i = 0; i < k * k; ++i)
+    ws.L[i] = ws.XtX[i];
 
   if (!detail::cholesky_decomp({ws.L.data(), k * k}, k, {ws.L.data(), k * k})) {
     // Singular: return Stage 1 result
@@ -306,18 +328,22 @@ inline ADFResult adf_test(std::span<const float> y, int /*max_lag*/, ADFWorkspac
                          {ws.beta.data(), k}, {ws.tmp.data(), k});
 
   float beta_xty = 0.0f;
-  for (size_t i = 0; i < k; ++i) beta_xty += ws.beta[i] * ws.Xty[i];
+  for (size_t i = 0; i < k; ++i)
+    beta_xty += ws.beta[i] * ws.Xty[i];
   const float sse2 = std::max(0.0f, yty - beta_xty);
 
   const float dof = static_cast<float>(n_eff2 - k);
-  if (dof <= 0.0f) return result;
+  if (dof <= 0.0f)
+    return result;
   const float sigma2_2 = sse2 / dof;
-  if (!(sigma2_2 > 0.0f)) return result;
+  if (!(sigma2_2 > 0.0f))
+    return result;
 
   const float gamma2 = ws.beta[1];
   const float diag = detail::inv_xtx_diag({ws.L.data(), k * k}, k, 1, {ws.tmp.data(), k});
   const float se2 = std::sqrt(sigma2_2 * diag);
-  if (se2 <= 0.0f) return result;
+  if (se2 <= 0.0f)
+    return result;
 
   result.statistic = gamma2 / se2;
   result.pvalue = detail::compute_pvalue(result.statistic, n_eff2);
@@ -328,5 +354,3 @@ inline ADFResult adf_test(std::span<const float> y, int /*max_lag*/, ADFWorkspac
 }
 
 } // namespace math::stationary
-
-

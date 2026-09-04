@@ -3,13 +3,12 @@
 #include "../Misc/CSMethods.hpp"
 #include "features/Backend/FeatureStore.hpp"
 #include <algorithm>
-#include <cstdint>
 #include <vector>
 
 // ============================================================================
 // LEVEL 1: Minute-level Cross-sectional Features
 // ============================================================================
-// 表驱动: 行 = FeaturesDefine.hpp 字段表里 data_type=CS 的字段 (SRC = CS(src_lvl, src, tf, m)),
+// 表驱动: 行 = 字段表 (Misc/CSMethods.hpp FIELDS_L*_CrossSection) 里 data_type=CS 的字段 (SRC = CS(src_lvl, src, tf, m)),
 // 由 FeatureStoreConfig 展开成 L1_CS_DEFS[]. 方法 per-特征可选:
 //   NormRank    rank → inverse normal (cs_spread_rank 口径)
 //   WinsorRank  winsor_mad → z → pct_rank             (= qmt factor_pipeline)

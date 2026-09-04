@@ -80,3 +80,14 @@ private:
   CBuffer<float, L2::BLEN> &out_;
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Grad_a_5_c1(N) N(Grad_a_5_c1, (Grad<5, false>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Grad_a_5_c1(X) \
+  X(a_5_c1, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Top 5-level Ask Grad", "卖侧五档梯度", "卖侧梯度(近端斜率)(降频)", R"(\frac{1}{N-1}\sum_{i=1}^{N-1}(V_{i+1,t}^{M,A} - V_{i,t}^{M,A}), \quad N = 5)", OP(Grad_a_5_c1))
+
+#define NODE_Grad_b_5_c1(N) N(Grad_b_5_c1, (Grad<5, true>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Grad_b_5_c1(X) \
+  X(b_5_c1, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Top 5-level Bid Grad", "买侧五档梯度", "买侧梯度(近端斜率)(降频)", R"(\frac{1}{N-1}\sum_{i=1}^{N-1}(V_{i+1,t}^{M,B} - V_{i,t}^{M,B}), \quad N = 5)", OP(Grad_b_5_c1))

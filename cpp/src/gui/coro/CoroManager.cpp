@@ -4,8 +4,8 @@
 // CoroutineHandle Implementation
 // ============================================================================
 
-CoroutineHandle::CoroutineHandle() 
-  : cancel_signal_(std::make_shared<asio::cancellation_signal>()) {
+CoroutineHandle::CoroutineHandle()
+    : cancel_signal_(std::make_shared<asio::cancellation_signal>()) {
 }
 
 CoroutineHandle::~CoroutineHandle() {
@@ -33,7 +33,6 @@ void CoroManager::Poll() {
   io_ctx_.poll();
 }
 
-asio::io_context& CoroManager::GetIoContext() {
+asio::io_context &CoroManager::GetIoContext() {
   return io_ctx_;
 }
-

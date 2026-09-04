@@ -334,3 +334,21 @@ using LabelReturnOp = LabelReturn<LABEL_DELAY_SECONDS, 3, LABEL_HOLD_MINUTES, 2,
 inline constexpr size_t LABEL_1M_HOLD_MINUTES[] = {1};
 inline constexpr size_t LABEL_1M_AMOUNT_WAN[] = {5};
 using LabelReturn1mOp = LabelReturn<LABEL_DELAY_SECONDS, 1, LABEL_1M_HOLD_MINUTES, 1, LABEL_1M_AMOUNT_WAN>;
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define FIELDS_L0_Labels(X) \
+  X(lb_long_1m_5w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "100/00/00", "Long 1min 5w Return", "做多1分钟收益(5万)", "吃单做多1分钟收益(5万元,含冲击+税佣)", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=5\mathrm{w}, T=1\mathrm{min})", LABEL)
+
+#define FIELDS_L1_Labels(X)                                                                                                                                                                                                                                                        \
+  X(lb_long_5m_5w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Long 5min 5w Return", "做多5分钟收益(5万)", "吃单做多5分钟收益(5万元,含冲击+税佣)", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=5\mathrm{w}, T=5\mathrm{min})", LABEL)              \
+  X(lb_long_5m_20w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Long 5min 20w Return", "做多5分钟收益(20万)", "吃单做多5分钟收益(20万元,含冲击+税佣)", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=20\mathrm{w}, T=5\mathrm{min})", LABEL)         \
+  X(lb_short_5m_5w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Short 5min 5w Return", "做空5分钟收益(5万)", "吃单做空5分钟收益(5万元,含冲击+税佣)", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}}, \quad A=5\mathrm{w}, T=5\mathrm{min})", LABEL)           \
+  X(lb_short_5m_20w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Short 5min 20w Return", "做空5分钟收益(20万)", "吃单做空5分钟收益(20万元,含冲击+税佣)", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}}, \quad A=20\mathrm{w}, T=5\mathrm{min})", LABEL)      \
+  X(lb_long_10m_5w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Long 10min 5w Return", "做多10分钟收益(5万)", "吃单做多10分钟收益(5万元,含冲击+税佣)", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=5\mathrm{w}, T=10\mathrm{min})", LABEL)         \
+  X(lb_long_10m_20w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Long 10min 20w Return", "做多10分钟收益(20万)", "吃单做多10分钟收益(20万元,含冲击+税佣)", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=20\mathrm{w}, T=10\mathrm{min})", LABEL)    \
+  X(lb_short_10m_5w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Short 10min 5w Return", "做空10分钟收益(5万)", "吃单做空10分钟收益(5万元,含冲击+税佣)", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}}, \quad A=5\mathrm{w}, T=10\mathrm{min})", LABEL)      \
+  X(lb_short_10m_20w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Short 10min 20w Return", "做空10分钟收益(20万)", "吃单做空10分钟收益(20万元,含冲击+税佣)", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}}, \quad A=20\mathrm{w}, T=10\mathrm{min})", LABEL) \
+  X(lb_long_30m_5w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Long 30min 5w Return", "做多30分钟收益(5万)", "吃单做多30分钟收益(5万元,含冲击+税佣)", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=5\mathrm{w}, T=30\mathrm{min})", LABEL)         \
+  X(lb_long_30m_20w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Long 30min 20w Return", "做多30分钟收益(20万)", "吃单做多30分钟收益(20万元,含冲击+税佣)", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}}, \quad A=20\mathrm{w}, T=30\mathrm{min})", LABEL)    \
+  X(lb_short_30m_5w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Short 30min 5w Return", "做空30分钟收益(5万)", "吃单做空30分钟收益(5万元,含冲击+税佣)", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}}, \quad A=5\mathrm{w}, T=30\mathrm{min})", LABEL)      \
+  X(lb_short_30m_20w, 1, DATA, LB, LABEL, FUTURE_RET, NONE, "00/100/00", "Short 30min 20w Return", "做空30分钟收益(20万)", "吃单做空30分钟收益(20万元,含冲击+税佣)", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}}, \quad A=20\mathrm{w}, T=30\mathrm{min})", LABEL)

@@ -11,4 +11,3 @@ void io_worker(int worker_id,
                GlobalFeatureStore &store,
                misc::ProgressHandle progress_handle,
                size_t total_dates);
-

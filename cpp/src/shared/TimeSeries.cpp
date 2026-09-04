@@ -97,7 +97,7 @@ static void collect_asset_series(const TimeSeries::SharedMonthData &shared,
                                  std::vector<float> &out_series) {
   Trace;
   out_series.clear();
-  out_series.reserve(shared.n_days * 14400);  // 预估每天最多14400样本
+  out_series.reserve(shared.n_days * 14400); // 预估每天最多14400样本
 
   const size_t A = shared.n_assets;
   const size_t F = shared.F_selected;
@@ -112,10 +112,12 @@ static void collect_asset_series(const TimeSeries::SharedMonthData &shared,
 
       if (has_valid) {
         float flag = static_cast<float>(tensor.data[base + A + asset_idx]);
-        if (flag <= 0.5f) continue;
+        if (flag <= 0.5f)
+          continue;
       }
 
-      if (val != val || val > 1e38f || val < -1e38f) continue;
+      if (val != val || val > 1e38f || val < -1e38f)
+        continue;
 
       out_series.push_back(val);
     }
@@ -144,7 +146,8 @@ static void compute_stationarity_for_month(
   // 收集每个 asset 的时间序列
   std::vector<std::vector<float>> asset_series(A);
   size_t total_T = tensor.day_offsets.back();
-  for (auto &v : asset_series) v.reserve(total_T);
+  for (auto &v : asset_series)
+    v.reserve(total_T);
 
   for (size_t day_idx = 0; day_idx < tensor.dates.size(); ++day_idx) {
     size_t t_start = tensor.day_offsets[day_idx];
@@ -158,10 +161,12 @@ static void compute_stationarity_for_month(
 
         if (has_valid) {
           float flag = static_cast<float>(tensor.data[base + A + a]);
-          if (flag <= 0.5f) continue;
+          if (flag <= 0.5f)
+            continue;
         }
 
-        if (val != val || val > 1e38f || val < -1e38f) continue;
+        if (val != val || val > 1e38f || val < -1e38f)
+          continue;
 
         asset_series[a].push_back(val);
       }
@@ -212,7 +217,8 @@ static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
                                   const TimeSeries::SharedMonthData &shared) {
   Trace;
   thread_local math::spectral::MultiResPSDWorkspace<> ws;
-  if (!ws.initialized) ws.init();
+  if (!ws.initialized)
+    ws.init();
 
   ws.reset();
 
@@ -233,10 +239,12 @@ static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
 
       if (has_valid) {
         float flag = static_cast<float>(tensor.data[base + A + asset_idx]);
-        if (flag <= 0.5f) continue;
+        if (flag <= 0.5f)
+          continue;
       }
 
-      if (val != val || val > 1e38f || val < -1e38f) continue;
+      if (val != val || val > 1e38f || val < -1e38f)
+        continue;
 
       if (level == 0) {
         ws.push_L0(val);
@@ -269,13 +277,15 @@ static void compute_arma_for_asset(TimeSeries &ts, size_t asset_idx,
   auto &cell = ts.arma_cache[asset_idx];
   cell.valid = false;
 
-  if (series.size() < 100) return;
+  if (series.size() < 100)
+    return;
 
   constexpr int MAX_LAG = 40;
   auto result = math::timeseries::compute_acf_pacf(
       std::span<const float>(series.data(), series.size()), MAX_LAG, ws);
 
-  if (!result.valid) return;
+  if (!result.valid)
+    return;
 
   cell.acf = std::move(result.acf);
   cell.pacf = std::move(result.pacf);
@@ -283,7 +293,6 @@ static void compute_arma_for_asset(TimeSeries &ts, size_t asset_idx,
   cell.cutoff_lag_pacf = result.cutoff_lag_pacf;
   cell.valid = true;
 }
-
 
 // ============================================================================
 // Stage 4: 时间衰减分析 (按天并行)
@@ -313,10 +322,12 @@ static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
 
       if (has_valid) {
         float flag = static_cast<float>(tensor.data[base + A + a]);
-        if (flag <= 0.5f) continue;
+        if (flag <= 0.5f)
+          continue;
       }
 
-      if (val != val || val > 1e38f || val < -1e38f) continue;
+      if (val != val || val > 1e38f || val < -1e38f)
+        continue;
 
       day_values[a] += val;
       counts[a]++;
@@ -332,7 +343,8 @@ static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
     }
   }
 
-  if (valid_count < 10) return;
+  if (valid_count < 10)
+    return;
 
   const std::span<const float> dv(day_values.data(), day_values.size());
 
@@ -355,10 +367,12 @@ static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
 
         if (has_valid) {
           float flag = static_cast<float>(prev_tensor.data[base + A + a]);
-          if (flag <= 0.5f) continue;
+          if (flag <= 0.5f)
+            continue;
         }
 
-        if (val != val || val > 1e38f || val < -1e38f) continue;
+        if (val != val || val > 1e38f || val < -1e38f)
+          continue;
 
         prev_values[a] += val;
         prev_counts[a]++;
@@ -400,7 +414,7 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
   compute.reset();
   barriers.reset();
   compute.status = Compute::Status::Loading;
-  compute.total = n_assets;  // 进度以 assets 为单位
+  compute.total = n_assets; // 进度以 assets 为单位
 
   shared.clear();
   shared.months.resize(n_months);
@@ -438,12 +452,13 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
     const std::string month = months[w];
     const auto columns = cfg.columns;
     const int level = shared.level;
-    const std::string features_dir_copy = features_dir;  // 按值捕获
+    const std::string features_dir_copy = features_dir; // 按值捕获
 
     submit([this, w, n_workers, month, alloc, columns, level,
             features_dir_copy]() {
       // ========== Phase 1: 加载本 worker 负责的月数据 ==========
-      if (compute.cancel.load()) return;
+      if (compute.cancel.load())
+        return;
 
       {
         TraceN("LoadMonth");
@@ -460,7 +475,8 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
       barriers.phase1_ready.fetch_add(1);
 
       while (barriers.phase1_ready.load() < n_workers) {
-        if (compute.cancel.load()) return;
+        if (compute.cancel.load())
+          return;
         std::this_thread::yield();
       }
 
@@ -487,12 +503,14 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
 
       // 等待共享结构构建完成
       while (!barriers.shared_built.load()) {
-        if (compute.cancel.load()) return;
+        if (compute.cancel.load())
+          return;
         std::this_thread::yield();
       }
 
       // ========== Phase 2: 流水线计算 ==========
-      if (compute.cancel.load()) return;
+      if (compute.cancel.load())
+        return;
 
       // Stage 0: 平稳性 (按月)
       {
@@ -502,7 +520,8 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
 
       // Stage 1-3: 按 asset 并行
       for (size_t a = alloc.asset_start; a < alloc.asset_end; ++a) {
-        if (compute.cancel.load()) return;
+        if (compute.cancel.load())
+          return;
 
         {
           TraceN("Stage1_PSD");
@@ -524,7 +543,8 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
         size_t day_end = (alloc.worker_id + 1) * shared.n_days / n_workers;
 
         for (size_t d = day_start; d < day_end; ++d) {
-          if (compute.cancel.load()) return;
+          if (compute.cancel.load())
+            return;
           compute_temporal_for_day(*this, d, shared);
         }
       }
@@ -538,7 +558,7 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
 
 void TimeSeries::finalize_all() {
   TraceN("FinalizeAll");
-  
+
   // ========== Step 0: 聚合平稳性结果 ==========
   {
     TraceN("Step0_AggregateStationarity");
@@ -547,14 +567,18 @@ void TimeSeries::finalize_all() {
     size_t n_total = 0, n_adf_pass = 0, n_kpss_pass = 0;
 
     for (const auto &mc : stationarity_cache) {
-      if (!mc.valid) continue;
+      if (!mc.valid)
+        continue;
       for (const auto &cell : mc.by_asset) {
-        if (!cell.valid) continue;
+        if (!cell.valid)
+          continue;
         n_total++;
         all_adf_pvalues.push_back(cell.adf_pvalue);
         all_kpss_pvalues.push_back(cell.kpss_pvalue);
-        if (cell.adf_pass) n_adf_pass++;
-        if (cell.kpss_pass) n_kpss_pass++;
+        if (cell.adf_pass)
+          n_adf_pass++;
+        if (cell.kpss_pass)
+          n_kpss_pass++;
       }
     }
 
@@ -597,7 +621,10 @@ void TimeSeries::finalize_all() {
           for (size_t a = 0; a < n_assets; ++a) {
             const float *src = psd_cache.asset_day_psd(d, a);
             for (size_t k = psd_cache.default_y_start; k < N_BINS; ++k) {
-              if (src[k] > 0) { ++valid_count; break; }
+              if (src[k] > 0) {
+                ++valid_count;
+                break;
+              }
             }
           }
           if (valid_count > n_assets * 0.8) {
@@ -625,17 +652,22 @@ void TimeSeries::finalize_all() {
             const float *src = psd_cache.asset_day_psd(d, a);
             bool has_data = false;
             for (size_t k = 0; k < N_BINS; ++k) {
-              if (src[k] > 0) { has_data = true; break; }
+              if (src[k] > 0) {
+                has_data = true;
+                break;
+              }
             }
             if (has_data) {
               ++valid_asset_count;
-              for (size_t k = 0; k < N_BINS; ++k) day_avg[k] += src[k];
+              for (size_t k = 0; k < N_BINS; ++k)
+                day_avg[k] += src[k];
             }
           }
 
           if (valid_asset_count > 0) {
             float inv = 1.0f / static_cast<float>(valid_asset_count);
-            for (size_t k = 0; k < N_BINS; ++k) day_avg[k] *= inv;
+            for (size_t k = 0; k < N_BINS; ++k)
+              day_avg[k] *= inv;
           }
 
           for (size_t k = 0; k < N_BINS; ++k) {
@@ -680,17 +712,22 @@ void TimeSeries::finalize_all() {
             const float *src = psd_cache.asset_day_psd(d, a);
             bool has_data = false;
             for (size_t k = 0; k < N_BINS; ++k) {
-              if (src[k] > 0) { has_data = true; break; }
+              if (src[k] > 0) {
+                has_data = true;
+                break;
+              }
             }
             if (has_data) {
               ++valid_asset_count;
-              for (size_t k = 0; k < N_BINS; ++k) day_avg[k] += src[k];
+              for (size_t k = 0; k < N_BINS; ++k)
+                day_avg[k] += src[k];
             }
           }
 
           if (valid_asset_count > 0) {
             float inv = 1.0f / static_cast<float>(valid_asset_count);
-            for (size_t k = 0; k < N_BINS; ++k) accum[k] += day_avg[k] * inv;
+            for (size_t k = 0; k < N_BINS; ++k)
+              accum[k] += day_avg[k] * inv;
           }
         }
 
@@ -703,10 +740,14 @@ void TimeSeries::finalize_all() {
         double sec_power = 0, min_power = 0, hour_power = 0, dc_power = 0;
         for (size_t k = 0; k < N_BINS; ++k) {
           float p = step1_frequency.avg_power_spectrum[k];
-          if (k < 58) sec_power += p;           // bin 0-57: 秒级
-          else if (k < 117) min_power += p;     // bin 58-116: 分钟级
-          else if (k < 127) hour_power += p;    // bin 117-126: 小时级
-          else dc_power += p;                   // bin 127: DC
+          if (k < 58)
+            sec_power += p; // bin 0-57: 秒级
+          else if (k < 117)
+            min_power += p; // bin 58-116: 分钟级
+          else if (k < 127)
+            hour_power += p; // bin 117-126: 小时级
+          else
+            dc_power += p; // bin 127: DC
         }
         double total_power = sec_power + min_power + hour_power + dc_power;
 
@@ -730,7 +771,8 @@ void TimeSeries::finalize_all() {
     int max_len = 0;
 
     for (const auto &cell : arma_cache) {
-      if (!cell.valid) continue;
+      if (!cell.valid)
+        continue;
       max_len = std::max(max_len, static_cast<int>(cell.acf.size()));
     }
 
@@ -740,7 +782,8 @@ void TimeSeries::finalize_all() {
       size_t count = 0;
 
       for (const auto &cell : arma_cache) {
-        if (!cell.valid) continue;
+        if (!cell.valid)
+          continue;
         count++;
         for (size_t k = 0; k < cell.acf.size(); ++k) {
           all_acf[k] += cell.acf[k];
@@ -799,7 +842,7 @@ void TimeSeries::finalize_all() {
         step2_arma.suggested_p = step2_arma.pacf_is_cutoff ? (step2_arma.pacf_cutoff_lag - 1) : 0;
 
         // 白噪声检测：lag=1 的值就已经很小
-        step2_arma.is_white_noise = (acf1 < step2_arma.confidence_bound && 
+        step2_arma.is_white_noise = (acf1 < step2_arma.confidence_bound &&
                                      pacf1 < step2_arma.confidence_bound);
 
         step2_arma.valid = true;
@@ -816,7 +859,8 @@ void TimeSeries::finalize_all() {
     std::vector<float> gini_series, hhi_series, rank_series;
 
     for (const auto &cell : temporal_cache) {
-      if (!cell.valid) continue;
+      if (!cell.valid)
+        continue;
       gini_series.push_back(cell.gini);
       hhi_series.push_back(cell.hhi);
       rank_series.push_back(cell.rank_corr);

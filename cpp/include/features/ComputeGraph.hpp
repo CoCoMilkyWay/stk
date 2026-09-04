@@ -3,50 +3,11 @@
 #include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 #include "features/FeaturesDefine.hpp"
-#include <cassert>
-#include <utility>
-// Basic
-#include "features/Operator/TS/Basic/MicroPrice.hpp"
-#include "features/Operator/TS/Basic/MidPrice.hpp"
-#include "features/Operator/TS/Basic/MinuteIndex.hpp"
-#include "features/Operator/TS/Basic/Spread.hpp"
-#include "features/Operator/TS/Basic/TickIndex.hpp"
-#include "features/Operator/TS/Basic/Valuation.hpp"
-// Imbalance
-#include "features/Operator/TS/Imbalance/CI.hpp"
-#include "features/Operator/TS/Imbalance/CI_all.hpp"
-#include "features/Operator/TS/Imbalance/CWI.hpp"
-#include "features/Operator/TS/Imbalance/DDI.hpp"
-#include "features/Operator/TS/Imbalance/EntropyImba.hpp"
-#include "features/Operator/TS/Imbalance/GradImba.hpp"
-#include "features/Operator/TS/Imbalance/ParaImba.hpp"
-// OrderFlow
-#include "features/Operator/TS/OrderFlow/CTR.hpp"
-#include "features/Operator/TS/OrderFlow/FlowRate.hpp"
-#include "features/Operator/TS/OrderFlow/HLA.hpp"
-#include "features/Operator/TS/OrderFlow/OA.hpp"
-#include "features/Operator/TS/OrderFlow/OFI.hpp"
-#include "features/Operator/TS/OrderFlow/OrderInfo.hpp"
-#include "features/Operator/TS/OrderFlow/ToxicCr.hpp"
-// Behavioral
-#include "features/Operator/TS/Behavioral/Behav.hpp"
-#include "features/Operator/TS/Behavioral/Manip.hpp"
-// Resilience
-#include "features/Operator/TS/Resilience/Resiliency.hpp"
-// Liquidity
-#include "features/Operator/TS/Liquidity/Cost.hpp"
-#include "features/Operator/TS/Liquidity/TLR.hpp"
-// Shape
-#include "features/Operator/TS/Shape/DepthRepresentation.hpp"
-#include "features/Operator/TS/Shape/Entropy.hpp"
-#include "features/Operator/TS/Shape/Grad.hpp"
-#include "features/Operator/TS/Shape/Para.hpp"
-#include "features/Operator/TS/Shape/Peak.hpp"
-// Meta
-#include "features/Operator/TS/Meta/DepthData.hpp"
-#include "features/Operator/TS/Meta/DepthIndex.hpp"
-// Label
+#include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: 全部算子 #include + NODES(N) + NODE_PREV_* + 字段表
 #include "features/Operator/TS/Label/LabelReturn.hpp"
+#include <cassert>
+#include <string>
+#include <utility>
 
 // ============================================================================
 // Node: 算子实例 + 它的输出 CBuffer. 算子 (Op) 只拿引用, 缓冲由 Node 持有.
@@ -92,45 +53,53 @@ struct Node<Op, 0> : Op {
 #define DAG_UNPAREN(...) __VA_ARGS__
 #define DAG_BRACE(...) {__VA_ARGS__}
 
-// DAG: 有向无环计算图. 节点 = FeaturesDefine.hpp NODES 表逐行展开 (行序 = 声明序 = 执行序).
-class DAG {
-public:
-  // ===========================================================================
-  // 事件/时间驱动: 底层数据结构 (节点构造参数里可引用)
-  // ===========================================================================
+// ============================================================================
+// DAG 声明链. 节点按 NodesGenerated.hpp 的拓扑序, 每个节点一层:
+//   struct DAG_<name> : NODE_PREV_<name> { graph::Node<Op> name{inputs...}; };
+// 一层里只看得到更早的层, 所以节点输入引用了未排在前面的节点 (漏 #include 依赖) 是编译错误,
+// 构造序 (基类先) 和 run<>() 的执行序 (NODES 行序) 因此一定一致. 空基类无运行时开销.
+// ============================================================================
+struct DAG_Root {
   TickData &tick_data;             // L0 输入 (外部传入)
   MinuteData minute_data;          // L1 输入 (内部管理, 由 resampler 填充)
   std::string asset_code_;         // 股票代码 (用于涨跌幅判断)
   const float *fund_row_{nullptr}; // 当日基本面输入行 (fund::kCount, begin_day 设置)
+  DAG_Root(TickData &td, const std::string &code) : tick_data(td), asset_code_(code) {}
+};
 
+#define DAG_DECLARE_NODE(name, type, args, ct, ft)     \
+  struct DAG_##name : NODE_PREV_##name {               \
+    using NODE_PREV_##name::NODE_PREV_##name;          \
+    graph::Node<DAG_UNPAREN type> name DAG_BRACE args; \
+  };
+NODES(DAG_DECLARE_NODE)
+#undef DAG_DECLARE_NODE
+
+// DAG: 有向无环计算图 = 声明链末端 + 标签 + 调度.
+class DAG : public DAG_LAST {
+public:
   void set_day_fundamental(const float *row) { fund_row_ = row; }
 
   // ===========================================================================
-  // 节点 (由 NODES 表生成)
-  // ===========================================================================
-#define DAG_DECLARE_NODE(name, type, args, ct, ft) \
-  graph::Node<DAG_UNPAREN type> name DAG_BRACE args;
-  NODES(DAG_DECLARE_NODE)
-#undef DAG_DECLARE_NODE
-
-  // ===========================================================================
-  // 标签 (回填别的时间行, 不在 NODES 表; 写回在 Tick_Sequential)
+  // 标签 (回填别的时间行, 不在节点表; 写回在 Tick_Sequential)
   // ===========================================================================
   // 组内顺序: [long_5w, long_20w, short_5w, short_20w] × {5m,10m,30m}, 分钟锚定落 L1 12 列
   LabelReturnOp LabelReturn{DepthData.bid_price, DepthData.ask_price, DepthData.bid_qty, DepthData.ask_qty};
   // L0 秒级: 1 分钟 × 5 万, 只落 long
   LabelReturn1mOp LabelReturn1m{DepthData.bid_price, DepthData.ask_price, DepthData.bid_qty, DepthData.ask_qty};
 
-  explicit DAG(TickData &td, const std::string &code) : tick_data(td), asset_code_(code) {}
+  explicit DAG(TickData &td, const std::string &code) : DAG_LAST(td, code) {}
 
   // ===========================================================================
   // 触发域调度: 对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush()
   // ===========================================================================
   template <Trigger trig>
   [[gnu::always_inline]] inline void run() {
-#define DAG_RUN_NODE(name, type, args, ct, ft)   \
-  if constexpr (Trigger::ct == trig) name.compute(); \
-  if constexpr (Trigger::ft == trig) name.flush();
+#define DAG_RUN_NODE(name, type, args, ct, ft) \
+  if constexpr (Trigger::ct == trig)           \
+    name.compute();                            \
+  if constexpr (Trigger::ft == trig)           \
+    name.flush();
     NODES(DAG_RUN_NODE)
 #undef DAG_RUN_NODE
   }

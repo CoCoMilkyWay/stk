@@ -200,4 +200,3 @@ void TimeSeriesService::StopCompute(CoroManager &coro, SharedData & /*data*/) {
 void TimeSeriesService::RequestCompute() { compute_requested_ = true; }
 
 } // namespace GUI::Features
-

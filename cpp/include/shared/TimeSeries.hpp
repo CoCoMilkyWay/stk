@@ -38,11 +38,11 @@ struct TimeSeries {
   struct StationarityCell {
     float adf_statistic = 0.0f;
     float adf_pvalue = 0.0f;
-    bool adf_pass = false;   // p < 0.05
+    bool adf_pass = false; // p < 0.05
 
     float kpss_statistic = 0.0f;
     float kpss_pvalue = 0.0f;
-    bool kpss_pass = false;  // p > 0.05
+    bool kpss_pass = false; // p > 0.05
 
     size_t n_samples = 0;
     bool valid = false;
@@ -50,8 +50,8 @@ struct TimeSeries {
 
   // MonthlyCache (对仗 Dist::MonthlyCache)
   struct MonthlyStationarity {
-    std::string month;  // "YYYYMM"
-    std::vector<StationarityCell> by_asset;  // [n_assets]
+    std::string month;                      // "YYYYMM"
+    std::vector<StationarityCell> by_asset; // [n_assets]
     size_t n_assets = 0;
     bool valid = false;
 
@@ -101,25 +101,25 @@ struct TimeSeries {
     static constexpr size_t N_SCALE_BINS = 128;
 
     // ===== 核心数据: per-asset per-day =====
-    std::vector<float> per_asset_data;  // [n_days * n_assets * N_SCALE_BINS]
-    std::vector<std::string> dates;     // [n_days]
+    std::vector<float> per_asset_data; // [n_days * n_assets * N_SCALE_BINS]
+    std::vector<std::string> dates;    // [n_days]
     size_t n_days = 0;
     size_t n_assets = 0;
 
     // ===== 渲染用缓存 (finalize时计算) =====
-    int sampling_level = 0;               // 0=秒, 1=分钟, 2=小时
-    size_t first_valid_day = 0;           // 第一个FFT满的天索引 (用于默认X range)
-    size_t default_y_start = 0;           // 默认Y range起始 (L0=0, L1=58, L2=117)
+    int sampling_level = 0;     // 0=秒, 1=分钟, 2=小时
+    size_t first_valid_day = 0; // 第一个FFT满的天索引 (用于默认X range)
+    size_t default_y_start = 0; // 默认Y range起始 (L0=0, L1=58, L2=117)
 
-    std::vector<size_t> valid_indices;    // 有效天索引
-    std::vector<float> render_data;       // [N_SCALE_BINS * valid_days] log变换后
+    std::vector<size_t> valid_indices; // 有效天索引
+    std::vector<float> render_data;    // [N_SCALE_BINS * valid_days] log变换后
     float scale_min = -1.0f;
     float scale_max = 3.0f;
 
     // 轴刻度
     std::vector<double> tick_positions;
     std::vector<std::string> tick_labels;
-    std::vector<float> plot_x;  // [N_SCALE_BINS]
+    std::vector<float> plot_x; // [N_SCALE_BINS]
 
     int selected_day = -1;
     bool valid = false;
@@ -132,11 +132,11 @@ struct TimeSeries {
       sampling_level = level;
       // 默认Y range根据level
       if (level == 0) {
-        default_y_start = 0;    // 秒级: 从2s开始
+        default_y_start = 0; // 秒级: 从2s开始
       } else if (level == 1) {
-        default_y_start = 58;   // 分钟级: 从1min开始
+        default_y_start = 58; // 分钟级: 从1min开始
       } else {
-        default_y_start = 117;  // 小时级: 从1h开始
+        default_y_start = 117; // 小时级: 从1h开始
       }
       first_valid_day = 0;
       per_asset_data.assign(n_days * n_assets * N_SCALE_BINS, 0.0f);
@@ -166,12 +166,12 @@ struct TimeSeries {
 
   // Step 1: 频域分析统计 (从热力图聚合)
   struct FrequencyAnalysis {
-    float sec_power_ratio = 0.0f;   // 秒级能量占比 (bin 0-57, 周期2-59秒)
-    float min_power_ratio = 0.0f;   // 分钟级能量占比 (bin 58-116, 周期1-59分钟)
-    float hour_power_ratio = 0.0f;  // 小时级能量占比 (bin 117-126, 周期1-10小时)
-    float dc_power_ratio = 0.0f;    // DC能量占比 (bin 127)
+    float sec_power_ratio = 0.0f;  // 秒级能量占比 (bin 0-57, 周期2-59秒)
+    float min_power_ratio = 0.0f;  // 分钟级能量占比 (bin 58-116, 周期1-59分钟)
+    float hour_power_ratio = 0.0f; // 小时级能量占比 (bin 117-126, 周期1-10小时)
+    float dc_power_ratio = 0.0f;   // DC能量占比 (bin 127)
 
-    std::vector<float> avg_power_spectrum;  // [N_SCALE_BINS]
+    std::vector<float> avg_power_spectrum; // [N_SCALE_BINS]
 
     bool valid = false;
     void clear() { *this = FrequencyAnalysis{}; }
@@ -182,16 +182,16 @@ struct TimeSeries {
   // ==========================================================================
 
   struct DayRange {
-    size_t month_idx;     // 在 months 数组中的索引
-    size_t day_in_month;  // 月内天索引
-    size_t t_start;       // tensor内的样本起始
-    size_t t_end;         // tensor内的样本结束
+    size_t month_idx;    // 在 months 数组中的索引
+    size_t day_in_month; // 月内天索引
+    size_t t_start;      // tensor内的样本起始
+    size_t t_end;        // tensor内的样本结束
     std::string date;
   };
 
   struct SharedMonthData {
-    std::vector<FeatureReader::MonthTensor> months;  // [n_months]
-    std::vector<DayRange> day_ranges;                // 连续时间索引
+    std::vector<FeatureReader::MonthTensor> months; // [n_months]
+    std::vector<DayRange> day_ranges;               // 连续时间索引
 
     size_t n_months = 0;
     size_t n_assets = 0;
@@ -220,11 +220,11 @@ struct TimeSeries {
 
   struct WorkerAllocation {
     size_t worker_id = 0;
-    size_t month_idx = 0;              // 负责加载的月
-    size_t asset_start = 0;            // 负责的asset范围起始
-    size_t asset_end = 0;              // 负责的asset范围结束
-    size_t day_start = 0;              // 负责的天范围起始 (用于Stage 4)
-    size_t day_end = 0;                // 负责的天范围结束
+    size_t month_idx = 0;   // 负责加载的月
+    size_t asset_start = 0; // 负责的asset范围起始
+    size_t asset_end = 0;   // 负责的asset范围结束
+    size_t day_start = 0;   // 负责的天范围起始 (用于Stage 4)
+    size_t day_end = 0;     // 负责的天范围结束
   };
 
   // ==========================================================================
@@ -317,8 +317,8 @@ struct TimeSeries {
   struct Compute {
     enum class Status : uint8_t {
       Idle,
-      Loading,   // Phase 1: 加载月数据
-      Building,  // Phase 2: 按asset计算
+      Loading,  // Phase 1: 加载月数据
+      Building, // Phase 2: 按asset计算
       Done,
       Error,
       Cancelled
@@ -391,13 +391,13 @@ struct TimeSeries {
 
   // Step 2: ARMA cache: per-asset
   struct ARMACell {
-    std::vector<float> acf;   // [max_lag+1]
-    std::vector<float> pacf;  // [max_lag+1]
+    std::vector<float> acf;  // [max_lag+1]
+    std::vector<float> pacf; // [max_lag+1]
     int cutoff_lag_acf = 0;
     int cutoff_lag_pacf = 0;
     bool valid = false;
   };
-  std::vector<ARMACell> arma_cache;  // [n_assets]
+  std::vector<ARMACell> arma_cache; // [n_assets]
 
   // Step 3: Residual cache: per-asset
   struct ResidualCell {
@@ -411,16 +411,16 @@ struct TimeSeries {
     float kurtosis = 0.0f;
     bool valid = false;
   };
-  std::vector<ResidualCell> residual_cache;  // [n_assets]
+  std::vector<ResidualCell> residual_cache; // [n_assets]
 
   // Step 4: Temporal Decay cache: per-day
   struct TemporalCell {
     float gini = 0.0f;
     float hhi = 0.0f;
-    float rank_corr = 0.0f;  // vs previous day
+    float rank_corr = 0.0f; // vs previous day
     bool valid = false;
   };
-  std::vector<TemporalCell> temporal_cache;  // [n_days]
+  std::vector<TemporalCell> temporal_cache; // [n_days]
 
   // Step results (聚合统计)
   StationarityTest step0_stationarity;

@@ -16,7 +16,7 @@ TimeAxisLUT::TimeAxisLUT() {
   // These offsets MUST match the tick_idx stored in tensor data
   for (size_t offset = 0; offset < OrderFlowConst::L0_CAPACITY; offset += OrderFlowConst::L0_TICK_INTERVAL) {
     l0_tick_offsets.push_back(offset);
-    
+
     ClockTime ct = L0_to_Clock(offset);
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%02d:%02d", ct.hour, ct.minute);
@@ -24,7 +24,7 @@ TimeAxisLUT::TimeAxisLUT() {
   }
 }
 
-const TimeAxisLUT& TimeAxisLUT::instance() {
+const TimeAxisLUT &TimeAxisLUT::instance() {
   static TimeAxisLUT lut;
   return lut;
 }
@@ -102,7 +102,7 @@ double OrderFlow::L1Cache::snap_to_day_start(double global_x) const {
 
 void OrderFlow::L1Cache::build_plot_data(size_t asset_idx) {
   Trace;
-  
+
   if (asset_idx >= num_assets)
     return;
   if (plot_data.size() < num_assets)
@@ -168,10 +168,10 @@ void OrderFlow::L0Cache::Day::reserve(size_t n) {
 }
 
 void OrderFlow::L0Cache::Day::push(size_t idx, bool depth_valid, bool data_valid, float mid,
-                 const std::array<float, OrderFlowConst::LOB_DEPTH> &bp,
-                 const std::array<float, OrderFlowConst::LOB_DEPTH> &ap,
-                 const std::array<float, OrderFlowConst::LOB_DEPTH> &bv,
-                 const std::array<float, OrderFlowConst::LOB_DEPTH> &av) {
+                                   const std::array<float, OrderFlowConst::LOB_DEPTH> &bp,
+                                   const std::array<float, OrderFlowConst::LOB_DEPTH> &ap,
+                                   const std::array<float, OrderFlowConst::LOB_DEPTH> &bv,
+                                   const std::array<float, OrderFlowConst::LOB_DEPTH> &av) {
   ticks.push_back({idx, depth_valid, data_valid, mid, bp, ap, bv, av});
 }
 
@@ -266,7 +266,7 @@ size_t OrderFlow::L0Cache::snap_to_valid_plot_idx(double global_x) const {
       return mapped;
     }
   }
-  
+
   // Fallback: O(log n) binary search
   return plot_idx_from_x(global_x);
 }
@@ -364,7 +364,7 @@ void OrderFlow::L0Cache::build_plot() {
   plot.best_bid.reserve(total_estimated);
   plot.best_ask.reserve(total_estimated);
   plot.tick_indices.reserve(total_estimated);
-  
+
   // Pre-allocate tick_idx_map for all days (O(1) lookup)
   plot.tick_idx_map.resize(days.size() * OrderFlowConst::L0_CAPACITY, SIZE_MAX);
 
@@ -387,7 +387,7 @@ void OrderFlow::L0Cache::build_plot() {
       plot.best_bid.push_back(static_cast<double>(tick.bid_price[0]));
       plot.best_ask.push_back(static_cast<double>(tick.ask_price[0]));
       plot.tick_indices.push_back(i);
-      
+
       // Build reverse mapping: tick_idx → plot_idx
       size_t global_tick_idx = day_base + tick.tick_idx;
       if (global_tick_idx < plot.tick_idx_map.size()) {
@@ -400,7 +400,7 @@ void OrderFlow::L0Cache::build_plot() {
   if (!plot.mid_price.empty()) {
     plot.y_min = *std::min_element(plot.mid_price.begin(), plot.mid_price.end());
     plot.y_max = *std::max_element(plot.mid_price.begin(), plot.mid_price.end());
-    
+
     double y_range = plot.y_max - plot.y_min;
     double margin = std::max(y_range * OrderFlowConst::Y_MARGIN_RATIO, 0.1);
     plot.y_min_with_margin = plot.y_min - margin;
@@ -460,7 +460,7 @@ void OrderFlow::L0Cache::build_heatmap_merged() {
     // - Ask (amount < 0): high=price+tick, low=price → rect extends upward
     bool is_bid = (amount_rmb > 0);
     float price_high, price_low;
-    
+
     if (is_bid) {
       price_high = price;
       price_low = price - OrderFlowConst::TICK_SIZE;
@@ -495,8 +495,8 @@ void OrderFlow::L0Cache::build_heatmap_merged() {
       auto collect_level = [&](float price, float volume) {
         if (price <= 0)
           return;
-        
-        float amount_float = volume_to_amount(volume, price);  // Preserves sign: bid+, ask-
+
+        float amount_float = volume_to_amount(volume, price); // Preserves sign: bid+, ask-
         int32_t amount_rmb = round_amount_to_rmb(amount_float);
 
         if (amount_rmb != 0) {
@@ -582,14 +582,14 @@ static uint32_t amount_to_color(int32_t amount_rmb, float log_threshold) {
     uint8_t g = static_cast<uint8_t>(100 + intensity * 155);
     uint8_t b = static_cast<uint8_t>(intensity * 100);
     // Pack as ABGR (ImGui format)
-    return static_cast<uint32_t>(alpha) << 24 | static_cast<uint32_t>(b) << 16 | 
+    return static_cast<uint32_t>(alpha) << 24 | static_cast<uint32_t>(b) << 16 |
            static_cast<uint32_t>(g) << 8 | 0;
   } else {
     // Negative amount (ask side): red spectrum
     uint8_t r = static_cast<uint8_t>(150 + intensity * 105);
     uint8_t g = static_cast<uint8_t>(intensity * 50);
     // Pack as ABGR (ImGui format)
-    return static_cast<uint32_t>(alpha) << 24 | 0 << 16 | 
+    return static_cast<uint32_t>(alpha) << 24 | 0 << 16 |
            static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(r);
   }
 }
@@ -623,7 +623,7 @@ void OrderFlow::L0Cache::build_heatmap_colored(float log_threshold) {
       float display_price = merged_rect.amount_rmb > 0 ? merged_rect.price_high : merged_rect.price_low;
 
       heatmap_colored.rects.push_back({x1, y1, x2, y2, color});
-      
+
       HeatmapColored::Metadata meta;
       meta.amount_rmb = merged_rect.amount_rmb;
       meta.price = display_price;
@@ -698,4 +698,3 @@ void OrderFlow::clear() {
   ui.clear();
   loader.clear();
 }
-

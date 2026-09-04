@@ -2,50 +2,49 @@
 
 #ifdef PROFILE_MODE
 #include <Tracy.hpp>
-  
+
 // ===== Zone Marking =====
-#define Trace                 ZoneScoped
-#define TraceN(name)          ZoneScopedN(name)
-#define TraceS(depth)         ZoneScopedS(depth)
-#define TraceNS(name, depth)  ZoneScopedNS(name, depth)
+#define Trace ZoneScoped
+#define TraceN(name) ZoneScopedN(name)
+#define TraceS(depth) ZoneScopedS(depth)
+#define TraceNS(name, depth) ZoneScopedNS(name, depth)
 
 // ===== Zone Attributes =====
-#define TraceName(text, size)     ZoneName(text, size)
-#define TraceNameS(text)          ZoneName(text, strlen(text))
-#define TraceText(text, size)     ZoneText(text, size)
-#define TraceTextS(text)          ZoneText(text, strlen(text))
-#define TraceValue(value)         ZoneValue(value)
-#define TraceColor(color)         ZoneColor(color)
+#define TraceName(text, size) ZoneName(text, size)
+#define TraceNameS(text) ZoneName(text, strlen(text))
+#define TraceText(text, size) ZoneText(text, size)
+#define TraceTextS(text) ZoneText(text, strlen(text))
+#define TraceValue(value) ZoneValue(value)
+#define TraceColor(color) ZoneColor(color)
 
 // ===== Common Colors (0xRRGGBB) =====
-constexpr uint32_t C_Red        = 0xFF0000;
-constexpr uint32_t C_Green      = 0x00FF00;
-constexpr uint32_t C_Blue       = 0x0000FF;
-constexpr uint32_t C_Yellow     = 0xFFFF00;
-constexpr uint32_t C_Magenta    = 0xFF00FF;
-constexpr uint32_t C_Cyan       = 0x00FFFF;
-constexpr uint32_t C_Orange     = 0xFFA500;
-constexpr uint32_t C_Gray       = 0x808080;
-constexpr uint32_t C_White      = 0xFFFFFF;
-constexpr uint32_t C_LightBlue  = 0x87CEEB;
-constexpr uint32_t C_Purple     = 0x9370DB;
-constexpr uint32_t C_Pink       = 0xFFB6C1;
-constexpr uint32_t C_Brown      = 0xA52A2A;
-constexpr uint32_t C_Lime       = 0x32CD32;
-
+constexpr uint32_t C_Red = 0xFF0000;
+constexpr uint32_t C_Green = 0x00FF00;
+constexpr uint32_t C_Blue = 0x0000FF;
+constexpr uint32_t C_Yellow = 0xFFFF00;
+constexpr uint32_t C_Magenta = 0xFF00FF;
+constexpr uint32_t C_Cyan = 0x00FFFF;
+constexpr uint32_t C_Orange = 0xFFA500;
+constexpr uint32_t C_Gray = 0x808080;
+constexpr uint32_t C_White = 0xFFFFFF;
+constexpr uint32_t C_LightBlue = 0x87CEEB;
+constexpr uint32_t C_Purple = 0x9370DB;
+constexpr uint32_t C_Pink = 0xFFB6C1;
+constexpr uint32_t C_Brown = 0xA52A2A;
+constexpr uint32_t C_Lime = 0x32CD32;
 
 // ===== Frame & Thread =====
-#define TraceFrame                FrameMark
-#define TraceFrameN(name)         FrameMarkNamed(name)
-#define TraceThread(name)         tracy::SetThreadName(name)
+#define TraceFrame FrameMark
+#define TraceFrameN(name) FrameMarkNamed(name)
+#define TraceThread(name) tracy::SetThreadName(name)
 
 // ===== Messages =====
-#define TraceMessage(text, size)  TracyMessage(text, size)
-#define TraceMessageS(text)       TracyMessageS(text, strlen(text))
+#define TraceMessage(text, size) TracyMessage(text, size)
+#define TraceMessageS(text) TracyMessageS(text, strlen(text))
 
 // ===== Memory =====
-#define TraceAlloc(ptr, size)     TracyAlloc(ptr, size)
-#define TraceFree(ptr)            TracyFree(ptr)
+#define TraceAlloc(ptr, size) TracyAlloc(ptr, size)
+#define TraceFree(ptr) TracyFree(ptr)
 
 // ========================================================================
 // 一、Zone Marking(作用域标记 - 核心功能)

@@ -28,14 +28,14 @@ namespace math::normalize {
 // ============================================================================
 
 namespace meta {
-inline constexpr ParamMeta clip[]   = {{"k", 3.0f, 1.0f, 10.0f}};
+inline constexpr ParamMeta clip[] = {{"k", 3.0f, 1.0f, 10.0f}};
 inline constexpr ParamMeta winsor[] = {{"pct", 0.05f, 0.01f, 0.25f}};
-inline constexpr ParamMeta power[]  = {{"α", 0.5f, 0.1f, 2.0f}};
-inline constexpr ParamMeta log[]    = {{"base", 0.0f, 0.0f, 10.0f}};
-inline constexpr ParamMeta scale[]  = {{"scale", 1.0f, 0.1f, 10.0f}};  // asinh, tanh
+inline constexpr ParamMeta power[] = {{"α", 0.5f, 0.1f, 2.0f}};
+inline constexpr ParamMeta log[] = {{"base", 0.0f, 0.0f, 10.0f}};
+inline constexpr ParamMeta scale[] = {{"scale", 1.0f, 0.1f, 10.0f}}; // asinh, tanh
 inline constexpr ParamMeta period[] = {{"period", 1.0f, 0.1f, 100.0f}};
 inline constexpr ParamMeta robust[] = {{"mad", 1.4826f, 1.0f, 3.0f}};
-inline constexpr ParamMeta iqr[]    = {{"q_lo", 0.25f, 0.0f, 0.5f}, {"q_hi", 0.75f, 0.5f, 1.0f}};
+inline constexpr ParamMeta iqr[] = {{"q_lo", 0.25f, 0.0f, 0.5f}, {"q_hi", 0.75f, 0.5f, 1.0f}};
 } // namespace meta
 
 // ============================================================================
@@ -50,25 +50,25 @@ struct MethodDef {
 };
 
 inline constexpr MethodDef g_methods[] = {
-    {NormMethod::NONE,            "无",      nullptr,      0},
-    {NormMethod::ZSCORE,          "ZSCORE",  nullptr,      0},
-    {NormMethod::ROBUST_ZSCORE,   "ROBUST",  meta::robust, 1},
-    {NormMethod::IQR_ZSCORE,      "IQR",     meta::iqr,    2},
-    {NormMethod::RANK,            "RANK",    nullptr,      0},
-    {NormMethod::RANK_ZSCORE,     "RANK_Z",  nullptr,      0},
-    {NormMethod::CLIP,            "CLIP",    meta::clip,   1},
-    {NormMethod::WINSOR,          "WINSOR",  meta::winsor, 1},
-    {NormMethod::LOG,             "LOG",     meta::log,    1},
-    {NormMethod::POWER,           "POWER",   meta::power,  1},
-    {NormMethod::ASINH,           "ASINH",   meta::scale,  1},
-    {NormMethod::TANH,            "TANH",    meta::scale,  1},
-    {NormMethod::SINCOS,          "SINCOS",  meta::period, 1},
-    {NormMethod::LOG_ZSCORE,      "LOG_Z",   meta::log,    1},
-    {NormMethod::POWER_ZSCORE,    "POW_Z",   meta::power,  1},
-    {NormMethod::ASINH_ZSCORE,    "ASH_Z",   meta::scale,  1},
-    {NormMethod::CLIP_ZSCORE,     "CLP_Z",   meta::clip,   1},
-    {NormMethod::WINSOR_ZSCORE,   "WIN_Z",   meta::winsor, 1},
-    {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z",   meta::clip,   1},
+    {NormMethod::NONE, "无", nullptr, 0},
+    {NormMethod::ZSCORE, "ZSCORE", nullptr, 0},
+    {NormMethod::ROBUST_ZSCORE, "ROBUST", meta::robust, 1},
+    {NormMethod::IQR_ZSCORE, "IQR", meta::iqr, 2},
+    {NormMethod::RANK, "RANK", nullptr, 0},
+    {NormMethod::RANK_ZSCORE, "RANK_Z", nullptr, 0},
+    {NormMethod::CLIP, "CLIP", meta::clip, 1},
+    {NormMethod::WINSOR, "WINSOR", meta::winsor, 1},
+    {NormMethod::LOG, "LOG", meta::log, 1},
+    {NormMethod::POWER, "POWER", meta::power, 1},
+    {NormMethod::ASINH, "ASINH", meta::scale, 1},
+    {NormMethod::TANH, "TANH", meta::scale, 1},
+    {NormMethod::SINCOS, "SINCOS", meta::period, 1},
+    {NormMethod::LOG_ZSCORE, "LOG_Z", meta::log, 1},
+    {NormMethod::POWER_ZSCORE, "POW_Z", meta::power, 1},
+    {NormMethod::ASINH_ZSCORE, "ASH_Z", meta::scale, 1},
+    {NormMethod::CLIP_ZSCORE, "CLP_Z", meta::clip, 1},
+    {NormMethod::WINSOR_ZSCORE, "WIN_Z", meta::winsor, 1},
+    {NormMethod::CLIP_LOG_ZSCORE, "CLG_Z", meta::clip, 1},
 };
 inline constexpr size_t g_method_count = sizeof(g_methods) / sizeof(g_methods[0]);
 
@@ -795,7 +795,7 @@ inline void apply_ts(std::span<const float> x, std::span<float> out,
     ts::winsor_zscore(x, out, p[0], min_n);
     break;
   case NormMethod::CLIP_LOG_ZSCORE:
-    ts::clip_log_zscore(x, out, p[0], 0.0f, min_n);  // base 固定为 0 (ln)
+    ts::clip_log_zscore(x, out, p[0], 0.0f, min_n); // base 固定为 0 (ln)
     break;
   default:
     std::copy(x.begin(), x.end(), out.begin());

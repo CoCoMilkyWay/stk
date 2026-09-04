@@ -155,3 +155,14 @@ private:
   float prev_ask_qty_[N_LEVELS];
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Ofi_1(N) N(Ofi_1, (OFI<1>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onDepth, onDepth)
+
+#define FIELDS_L0_Ofi_1(X) \
+  X(ofi_1, 1, DEPTH, TS, ORDER_FLOW, RAW, NONE, "100/00/00", "Order Flow Imba 1-Level", "订单流失衡1档", "对近端大单挂单变动非常敏感", R"(\Delta V_{1,t}^{M,B} - \Delta V_{1,t}^{M,A}, \quad \Delta V_{1,t}^{M,B} = \begin{cases}0, & P_{1,t}^{M,B} < P_{1,t-1}^{M,B} \\ V_{1,t}^{M,B} - V_{1,t-1}^{M,B}, & P_{1,t}^{M,B} = P_{1,t-1}^{M,B} \\ V_{1,t}^{M,B}, & P_{1,t}^{M,B} > P_{1,t-1}^{M,B} \end{cases}, \quad \Delta V_{1,t}^{M,A} = \begin{cases}V_{1,t}^{M,A}, & P_{1,t}^{M,A} < P_{1,t-1}^{M,A} \\ V_{1,t}^{M,A} - V_{1,t-1}^{M,A}, & P_{1,t}^{M,A} = P_{1,t-1}^{M,A} \\ 0, & P_{1,t}^{M,A} > P_{1,t-1}^{M,A} \end{cases})", OP(Ofi_1))
+
+#define NODE_Ofi_5(N) N(Ofi_5, (OFI<5>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onDepth, onDepth)
+
+#define FIELDS_L0_Ofi_5(X) \
+  X(ofi_5, 1, DEPTH, TS, ORDER_FLOW, RAW, NONE, "100/00/00", "Order Flow Imba 5-Level", "订单流失衡5档加权", "监控5档挂单变化", R"(\Delta V_t^{W,M,B} - \Delta V_t^{W,M,A}, \quad V_t^{W,M,s} = \frac{\sum_{i=1}^N w_i V_{i,t}^{M,s}}{\sum_{i=1}^N w_i}, \quad w_i = 1 - \frac{i-1}{N}, \quad N = 5, \quad s \in \{B,A\})", OP(Ofi_5))

@@ -29,14 +29,14 @@ namespace math::spectral {
 // Constants
 // ============================================================================
 
-inline constexpr size_t N_SEC_BINS = 58;      // 2-59秒
-inline constexpr size_t N_MIN_BINS = 59;      // 1-59分钟
-inline constexpr size_t N_HOUR_BINS = 10;     // 1-10小时
-inline constexpr size_t N_SCALE_BINS = 128;   // 58+59+10+1(DC)
+inline constexpr size_t N_SEC_BINS = 58;    // 2-59秒
+inline constexpr size_t N_MIN_BINS = 59;    // 1-59分钟
+inline constexpr size_t N_HOUR_BINS = 10;   // 1-10小时
+inline constexpr size_t N_SCALE_BINS = 128; // 58+59+10+1(DC)
 
-inline constexpr size_t FFT_SIZE_L0 = 16384;  // 1秒采样 ~4.5h
-inline constexpr size_t FFT_SIZE_L1 = 8192;   // 1分钟采样 ~137h
-inline constexpr size_t FFT_SIZE_L2 = 128;    // 1小时采样 ~128h
+inline constexpr size_t FFT_SIZE_L0 = 16384; // 1秒采样 ~4.5h
+inline constexpr size_t FFT_SIZE_L1 = 8192;  // 1分钟采样 ~137h
+inline constexpr size_t FFT_SIZE_L2 = 128;   // 1小时采样 ~128h
 
 inline constexpr double PI = 3.14159265358979323846;
 
@@ -120,7 +120,7 @@ const HannWindow<N> &get_hann() {
   return window;
 }
 
-}  // namespace detail
+} // namespace detail
 
 // ============================================================================
 // FFT Workspace (模板化)
@@ -206,7 +206,7 @@ struct MultiTargetBinMap {
 
 // 将非标 bin 的周期范围转换为 FFT index 范围
 // 返回 [j_lo, j_hi]：低频边界对应长周期，高频边界对应短周期
-// 
+//
 // 公式: FFT_index = frequency * FFT_SIZE = FFT_SIZE / period
 //
 // 对于周期 T (单位同采样率)，周期范围 [T-0.5, T+0.5]
@@ -214,8 +214,8 @@ struct MultiTargetBinMap {
 //   FFT index 范围: [N/(T+0.5), N/(T-0.5)]
 
 struct FFTIndexRange {
-  float j_lo;  // 低频边界 (对应长周期，较小的 FFT index)
-  float j_hi;  // 高频边界 (对应短周期，较大的 FFT index)
+  float j_lo; // 低频边界 (对应长周期，较小的 FFT index)
+  float j_hi; // 高频边界 (对应短周期，较大的 FFT index)
 };
 
 // L0: 1秒采样，非标 bin 周期转换到秒
@@ -224,8 +224,8 @@ inline FFTIndexRange get_bin_fft_range_L0(size_t bin_idx) {
   if (bin_idx < N_SEC_BINS) {
     // 秒级 bin k: 周期 T = k+2 秒，范围 [k+1.5, k+2.5] 秒
     float T = static_cast<float>(bin_idx + 2);
-    float T_lo = T - 0.5f;  // 短周期边界
-    float T_hi = T + 0.5f;  // 长周期边界
+    float T_lo = T - 0.5f; // 短周期边界
+    float T_hi = T + 0.5f; // 长周期边界
     return {static_cast<float>(N) / T_hi, static_cast<float>(N) / T_lo};
   } else if (bin_idx < N_SEC_BINS + N_MIN_BINS) {
     // 分钟级 bin k: 周期 T = (k-57) 分钟 = (k-57)*60 秒
@@ -240,7 +240,7 @@ inline FFTIndexRange get_bin_fft_range_L0(size_t bin_idx) {
     float T_hi_sec = (T_hour + 0.5f) * 3600.0f;
     return {static_cast<float>(N) / T_hi_sec, static_cast<float>(N) / T_lo_sec};
   }
-  return {0.0f, 0.0f};  // DC
+  return {0.0f, 0.0f}; // DC
 }
 
 // L1: 1分钟采样，非标 bin 周期转换到分钟
@@ -259,7 +259,7 @@ inline FFTIndexRange get_bin_fft_range_L1(size_t bin_idx) {
     float T_hi_min = (T_hour + 0.5f) * 60.0f;
     return {static_cast<float>(N) / T_hi_min, static_cast<float>(N) / T_lo_min};
   }
-  return {0.0f, 0.0f};  // DC
+  return {0.0f, 0.0f}; // DC
 }
 
 // L2: 1小时采样，非标 bin 周期转换到小时
@@ -272,7 +272,7 @@ inline FFTIndexRange get_bin_fft_range_L2(size_t bin_idx) {
     float T_hi = T_hour + 0.5f;
     return {static_cast<float>(N) / T_hi, static_cast<float>(N) / T_lo};
   }
-  return {0.0f, 0.0f};  // DC
+  return {0.0f, 0.0f}; // DC
 }
 
 // 计算两个区间的重叠长度 (在 FFT index 空间)
@@ -306,7 +306,7 @@ inline void build_mapping_L0(std::array<MultiTargetBinMap, N / 2 + 1> &mapping) 
       auto range = get_bin_fft_range_L0<N>(k);
       float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
       if (overlap > 0) {
-        float w = overlap;  // FFT 宽度总是 1
+        float w = overlap; // FFT 宽度总是 1
         mapping[j].add(static_cast<uint8_t>(k), w);
         total_weight += w;
       }
@@ -327,7 +327,8 @@ inline void build_mapping_L0(std::array<MultiTargetBinMap, N / 2 + 1> &mapping) 
     for (size_t k = N_SEC_BINS + N_MIN_BINS; k < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS; ++k) {
       auto range = get_bin_fft_range_L0<N>(k);
       // 跳过超出 FFT 范围的 bins (j_lo < 1 表示周期超过 FFT 长度)
-      if (range.j_lo < 0.5f) continue;
+      if (range.j_lo < 0.5f)
+        continue;
       float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
       if (overlap > 0) {
         float w = overlap;
@@ -374,7 +375,8 @@ inline void build_mapping_L1(std::array<MultiTargetBinMap, N / 2 + 1> &mapping) 
     // 小时级 bins (idx 117-126)
     for (size_t k = N_SEC_BINS + N_MIN_BINS; k < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS; ++k) {
       auto range = get_bin_fft_range_L1<N>(k);
-      if (range.j_lo < 0.5f) continue;
+      if (range.j_lo < 0.5f)
+        continue;
       float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
       if (overlap > 0) {
         float w = overlap;
@@ -409,7 +411,8 @@ inline void build_mapping_L2(std::array<MultiTargetBinMap, N / 2 + 1> &mapping) 
     // 小时级 bins (idx 117-126)
     for (size_t k = N_SEC_BINS + N_MIN_BINS; k < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS; ++k) {
       auto range = get_bin_fft_range_L2<N>(k);
-      if (range.j_lo < 0.5f) continue;
+      if (range.j_lo < 0.5f)
+        continue;
       float overlap = overlap_length(fft_j_lo, fft_j_hi, range.j_lo, range.j_hi);
       if (overlap > 0) {
         float w = overlap;
@@ -443,7 +446,8 @@ struct LevelState {
   // 从当前buffer计算FFT功率谱，输出到power
   // 返回是否有足够数据
   bool compute() {
-    if (buffer.size() < N) return false;
+    if (buffer.size() < N)
+      return false;
 
     auto split = buffer.tail(N);
     const auto &hann = detail::get_hann<N>();
@@ -518,7 +522,8 @@ private:
   void compute_level(LevelState<N> &st,
                      const std::array<MultiTargetBinMap, N / 2 + 1> &mapping,
                      std::span<float> out) {
-    if (!st.compute()) return;
+    if (!st.compute())
+      return;
 
     const float window_power = detail::get_hann<N>().power;
 
@@ -555,14 +560,14 @@ inline const char *get_scale_label(size_t idx) {
 
 inline float get_scale_period_seconds(size_t idx) {
   if (idx < N_SEC_BINS) {
-    return static_cast<float>(idx + 2);  // 2-59秒
+    return static_cast<float>(idx + 2); // 2-59秒
   } else if (idx < N_SEC_BINS + N_MIN_BINS) {
-    return static_cast<float>((idx - N_SEC_BINS + 1) * 60);  // 1-59分钟
+    return static_cast<float>((idx - N_SEC_BINS + 1) * 60); // 1-59分钟
   } else if (idx < N_SEC_BINS + N_MIN_BINS + N_HOUR_BINS) {
-    return static_cast<float>((idx - N_SEC_BINS - N_MIN_BINS + 1) * 3600);  // 1-10小时
+    return static_cast<float>((idx - N_SEC_BINS - N_MIN_BINS + 1) * 3600); // 1-10小时
   } else {
-    return 1e9f;  // DC
+    return 1e9f; // DC
   }
 }
 
-}  // namespace math::spectral
+} // namespace math::spectral

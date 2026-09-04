@@ -2,9 +2,9 @@
 
 #include "api/bigquant/dai.hpp"
 #include "api/bigquant/spec.hpp"
-#include "shared/Config.hpp"
 #include "misc/parquet.hpp"
 #include "misc/schedule.hpp"
+#include "shared/Config.hpp"
 
 #include <arrow/table.h>
 

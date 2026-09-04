@@ -82,3 +82,10 @@ private:
   float volume_val_ = 0.0f;
   float dir_val_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Cancel(N) N(Cancel, (OrderInfo), (tick_data), onCancel, onCancel)
+
+#define NODE_Maker(N) N(Maker, (OrderInfo), (tick_data), onMaker, onMaker)
+
+#define NODE_Taker(N) N(Taker, (OrderInfo), (tick_data), onTaker, onTaker)

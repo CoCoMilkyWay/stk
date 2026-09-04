@@ -40,8 +40,8 @@ public:
   void trigger(uint64_t gen);
 
   // 暂停/恢复 worker（在修改共享数据前调用）
-  void pause();   // 暂停并等待所有 worker 进入空闲状态
-  void resume();  // 恢复 worker
+  void pause();  // 暂停并等待所有 worker 进入空闲状态
+  void resume(); // 恢复 worker
 
   void bind(SharedData *data,
             void (*compute_fn)(SharedData &, size_t, uint64_t, bool),
@@ -54,7 +54,7 @@ private:
 
   std::vector<std::thread> workers_;
   std::atomic<bool> stop_{false};
-  std::atomic<size_t> n_waiting_{0};  // 当前在等待状态的 worker 数量
+  std::atomic<size_t> n_waiting_{0}; // 当前在等待状态的 worker 数量
 
   std::mutex mutex_;
   std::condition_variable cv_;

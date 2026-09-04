@@ -45,9 +45,9 @@ private:
   //======================================================================================
   // CONFIGURATION
   //======================================================================================
-  const int target_bar_period_ = L2::RESAMPLE_TARGET_PERIOD;                                      // Target period (seconds)
+  const int target_bar_period_ = L2::RESAMPLE_TARGET_PERIOD;                                             // Target period (seconds)
   const int expected_samples_per_day_ = int(3600 * L2::RESAMPLE_TRADE_HRS_PER_DAY / target_bar_period_); // Expected bars per day
-  const int threshold_tolerance_ = static_cast<int>(expected_samples_per_day_ * 0.05);           // ±5% tolerance
+  const int threshold_tolerance_ = static_cast<int>(expected_samples_per_day_ * 0.05);                   // ±5% tolerance
 
   const float ema_alpha_ = 2.0f / (L2::RESAMPLE_EMA_DAYS_PERIOD + 1); // EMA smoothing factor
 
@@ -61,7 +61,7 @@ private:
   // STATE: Threshold Tracking
   //======================================================================================
   float threshold_ema_ = L2::RESAMPLE_INIT_VOLUME_THD; // EMA of daily thresholds (adaptive)
-  float threshold_daily_ = 0.0f;                        // Yesterday's optimal threshold
+  float threshold_daily_ = 0.0f;                       // Yesterday's optimal threshold
 
   //======================================================================================
   // STATE: Timing Control
@@ -137,9 +137,9 @@ private:
     // Update threshold using yesterday's data
     if (!daily_labels_.empty()) [[likely]] {
       threshold_daily_ = compute_optimal_threshold();
-      threshold_ema_ = (threshold_ema_ < 0.0f) 
-                         ? threshold_daily_ 
-                         : ema_alpha_ * threshold_daily_ + (1.0f - ema_alpha_) * threshold_ema_;
+      threshold_ema_ = (threshold_ema_ < 0.0f)
+                           ? threshold_daily_
+                           : ema_alpha_ * threshold_daily_ + (1.0f - ema_alpha_) * threshold_ema_;
     }
 
     // Clear daily statistics
@@ -165,7 +165,7 @@ private:
       const int sample_count = simulate_sample_count(threshold_mid);
 
       // Convergence check
-      if (std::abs(sample_count - expected_samples_per_day_) <= threshold_tolerance_ || 
+      if (std::abs(sample_count - expected_samples_per_day_) <= threshold_tolerance_ ||
           (threshold_max - threshold_min) < 100.0f) {
         return threshold_mid;
       }

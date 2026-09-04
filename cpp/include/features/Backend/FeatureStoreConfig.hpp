@@ -1,7 +1,9 @@
 #pragma once
 
+#include "../DataDefine.hpp"
 #include "../FeaturesDefine.hpp"
 #include "../Misc/CSMethods.hpp"
+#include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: NODES(N) / LEVEL_*_FIELDS(X) / DEPTH_FIELDS(X)
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -181,6 +183,33 @@ ALL_LEVELS(GENERATE_TYPE_WIDTHS)
 #define GENERATE_CHECK_SRC(level_name, level_num, fields) fields(CHECK_SRC_FIELD)
 ALL_LEVELS(GENERATE_CHECK_SRC)
 DEPTH_FIELDS(CHECK_SRC_FIELD)
+
+// ============================================================================
+// 字段层 ↔ 节点 flush 域一致性: OP 列所在层必须等于节点的落盘层 (onMinute→L1, 其余→L0);
+// FUND 只能在 L1; CS/LABEL/META 不查 (-1). 错层 = 写回读到别的层的节点, 编译期拦住.
+// ============================================================================
+namespace node_flush_level {
+#define NODE_FLUSH_LEVEL(name, type, args, ct, ft) constexpr int name = (Trigger::ft == Trigger::onMinute) ? 1 : 0;
+NODES(NODE_FLUSH_LEVEL)
+#undef NODE_FLUSH_LEVEL
+} // namespace node_flush_level
+#define SRC_LEVEL_OP(node, ...) node_flush_level::node
+#define SRC_LEVEL_FUND(...) 1
+#define SRC_LEVEL_CS(...) (-1)
+#define SRC_LEVEL_LABEL (-1)
+#define SRC_LEVEL_META (-1)
+#define CHECK_LEVEL_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
+  static_assert(SRC_LEVEL_##src < 0 || SRC_LEVEL_##src == kLevel, "field level != node flush level: " #code);
+#define GENERATE_CHECK_LEVEL(level_name, level_num, fields) \
+  namespace level_name##_level_check {                      \
+    constexpr int kLevel = level_num;                       \
+    fields(CHECK_LEVEL_FIELD)                               \
+  }
+ALL_LEVELS(GENERATE_CHECK_LEVEL)
+namespace depth_level_check {
+constexpr int kLevel = -2; // DEPTH 层不允许 OP/FUND 列
+DEPTH_FIELDS(CHECK_LEVEL_FIELD)
+} // namespace depth_level_check
 
 // ============================================================================
 // CROSS-SECTIONAL TABLES (由字段表 CS(src_lvl, src, tf, m) 列生成): L0_CS_DEFS[], L1_CS_DEFS[]

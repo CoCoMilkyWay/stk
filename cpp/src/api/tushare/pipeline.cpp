@@ -3,10 +3,10 @@
 #include "api/tushare/http.hpp"
 #include "api/tushare/parse.hpp"
 #include "api/tushare/spec.hpp"
-#include "shared/Config.hpp"
 #include "misc/date.hpp"
 #include "misc/parquet.hpp"
 #include "misc/schedule.hpp"
+#include "shared/Config.hpp"
 
 #include <iostream>
 #include <string_view>

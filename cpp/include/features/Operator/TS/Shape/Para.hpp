@@ -122,3 +122,34 @@ private:
   float inv_row_[3]; // (X'X)^-1 的第COEF行
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Para_a_c0(N) N(Para_a_c0, (Para<false, 0>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Para_a_c0(X) \
+  X(a_para_c0, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Ask Depth Parabola c0", "卖侧抛物线截距", "卖侧近端流动性(降频)", R"(c_{0,t}^{M,A}, \quad \text{where } V_{i,t}^{M,A} \sim c_{0,t}^{M,A} + c_{1,t}^{M,A} i + c_{2,t}^{M,A} i^2)", OP(Para_a_c0))
+
+#define NODE_Para_a_c1(N) N(Para_a_c1, (Para<false, 1>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Para_a_c1(X) \
+  X(a_para_c1, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Ask Depth Parabola c1", "卖侧抛物线斜率", "卖方风偏(近端还是远端挂单)(降频)", R"(c_{1,t}^{M,A}, \quad \text{where } V_{i,t}^{M,A} \sim c_{0,t}^{M,A} + c_{1,t}^{M,A} i + c_{2,t}^{M,A} i^2)", OP(Para_a_c1))
+
+#define NODE_Para_a_c2(N) N(Para_a_c2, (Para<false, 2>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Para_a_c2(X) \
+  X(a_para_c2, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Ask Depth Parabola c2", "卖侧抛物线曲率", "<0:近端有订单块(降频)", R"(c_{2,t}^{M,A}, \quad \text{where } V_{i,t}^{M,A} \sim c_{0,t}^{M,A} + c_{1,t}^{M,A} i + c_{2,t}^{M,A} i^2)", OP(Para_a_c2))
+
+#define NODE_Para_b_c0(N) N(Para_b_c0, (Para<true, 0>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Para_b_c0(X) \
+  X(b_para_c0, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Bid Depth Parabola c0", "买侧抛物线截距", "买侧近端流动性(降频)", R"(c_{0,t}^{M,B}, \quad \text{where } V_{i,t}^{M,B} \sim c_{0,t}^{M,B} + c_{1,t}^{M,B} i + c_{2,t}^{M,B} i^2)", OP(Para_b_c0))
+
+#define NODE_Para_b_c1(N) N(Para_b_c1, (Para<true, 1>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Para_b_c1(X) \
+  X(b_para_c1, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Bid Depth Parabola c1", "买侧抛物线斜率", "买方风偏(近端还是远端挂单)(降频)", R"(c_{1,t}^{M,B}, \quad \text{where } V_{i,t}^{M,B} \sim c_{0,t}^{M,B} + c_{1,t}^{M,B} i + c_{2,t}^{M,B} i^2)", OP(Para_b_c1))
+
+#define NODE_Para_b_c2(N) N(Para_b_c2, (Para<true, 2>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Para_b_c2(X) \
+  X(b_para_c2, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Bid Depth Parabola c2", "买侧抛物线曲率", "<0:近端有订单块(降频)", R"(c_{2,t}^{M,B}, \quad \text{where } V_{i,t}^{M,B} \sim c_{0,t}^{M,B} + c_{1,t}^{M,B} i + c_{2,t}^{M,B} i^2)", OP(Para_b_c2))

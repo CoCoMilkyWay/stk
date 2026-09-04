@@ -57,7 +57,8 @@ public:
   // Returns SIZE if not found
   size_t find_next(size_t idx) const {
     size_t start_bit = idx + 1;
-    if (start_bit >= SIZE) return SIZE;
+    if (start_bit >= SIZE)
+      return SIZE;
 
     size_t start_word = start_bit / 64;
     size_t bit_offset = start_bit % 64;
@@ -69,7 +70,8 @@ public:
     if (word != 0) {
       size_t bit_idx = __builtin_ctzll(word); // Find first set bit
       size_t result = start_word * 64 + bit_idx;
-      if (result < SIZE) return result;
+      if (result < SIZE)
+        return result;
     }
 
     // Scan remaining words
@@ -78,7 +80,8 @@ public:
       if (word != 0) {
         size_t bit_idx = __builtin_ctzll(word);
         size_t result = word_idx * 64 + bit_idx;
-        if (result < SIZE) return result;
+        if (result < SIZE)
+          return result;
       }
     }
 
@@ -88,7 +91,8 @@ public:
   // Find previous set bit before (not including) idx
   // Returns SIZE if not found
   size_t find_prev(size_t idx) const {
-    if (idx == 0) return SIZE;
+    if (idx == 0)
+      return SIZE;
 
     size_t start_bit = idx - 1;
     size_t start_word = start_bit / 64;
@@ -120,7 +124,8 @@ public:
   void for_each_set(Func &&callback) const {
     for (size_t word_idx = 0; word_idx < NUM_WORDS; ++word_idx) {
       uint64_t word = words_[word_idx];
-      if (word == 0) continue; // Skip empty words
+      if (word == 0)
+        continue; // Skip empty words
 
       // Scan bits in this word
       size_t base_idx = word_idx * 64;
@@ -138,4 +143,3 @@ public:
 private:
   std::vector<uint64_t> words_;
 };
-

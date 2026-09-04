@@ -25,10 +25,12 @@ std::chrono::sys_days parse_yyyymmdd_int(std::int32_t yyyymmdd) {
 }
 
 std::int32_t to_yyyymmdd_int(std::string_view s) {
-  if (s.size() != 8) return 0;
+  if (s.size() != 8)
+    return 0;
   std::int32_t v = 0;
   for (char c : s) {
-    if (c < '0' || c > '9') return 0;
+    if (c < '0' || c > '9')
+      return 0;
     v = v * 10 + (c - '0');
   }
   return v;

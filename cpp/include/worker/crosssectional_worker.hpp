@@ -14,4 +14,3 @@ void crosssectional_worker(int worker_id,
                            SharedData &data,
                            GlobalFeatureStore &store,
                            misc::ProgressHandle progress_handle);
-

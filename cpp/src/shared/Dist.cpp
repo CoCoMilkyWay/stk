@@ -1,6 +1,6 @@
 #include "shared/Dist.hpp"
-#include "features/FeaturesDefine.hpp"
 #include "features/Backend/FeatureReader.hpp"
+#include "features/FeaturesDefine.hpp"
 #include "math/cluster/Ward1D.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Asset.hpp"
@@ -224,7 +224,6 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
           }
         }
       }
-
     }
   }
 
@@ -484,8 +483,7 @@ void Dist::finalize() {
 
         // Mean alignment (optimal for W₂)
         float mean_shift = static_cast<float>(
-          global_by_asset[a].mean() - global_total.mean()
-        );
+            global_by_asset[a].mean() - global_total.mean());
 
         // Compute W₂ distance on ICDF
         float sum_sq = 0.0f;
@@ -500,7 +498,8 @@ void Dist::finalize() {
 
       // Normalize to [0,1] (distance is non-negative)
       float M = *std::max_element(scores_w2.begin(), scores_w2.end());
-      if (M < 1e-9f) M = 1.0f;
+      if (M < 1e-9f)
+        M = 1.0f;
 
       stability.asset_idx = valid_idx;
       stability.score_min = 0.0f; // W₂ distance is non-negative

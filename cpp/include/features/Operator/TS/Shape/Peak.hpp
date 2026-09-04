@@ -86,3 +86,24 @@ private:
   CBuffer<float, L2::BLEN> &out_;
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Peak_loc_ask(N) N(Peak_loc_ask, (Peak<false, true>), (DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Peak_loc_ask(X) \
+  X(peak_loc_ask, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Ask Peak Location", "卖侧峰位置", "卖侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,A})", OP(Peak_loc_ask))
+
+#define NODE_Peak_loc_bid(N) N(Peak_loc_bid, (Peak<true, true>), (DepthData.bid_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Peak_loc_bid(X) \
+  X(peak_loc_bid, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Bid Peak Location", "买侧峰位置", "买侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,B})", OP(Peak_loc_bid))
+
+#define NODE_Peak_ratio_ask(N) N(Peak_ratio_ask, (Peak<false, false>), (DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Peak_ratio_ask(X) \
+  X(peak_ratio_ask, 1, DATA, TS, SHAPE, RATIO, NONE, "00/100/00", "Ask Peak Concentration", "卖侧峰集中度", "卖侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,A}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,A}})", OP(Peak_ratio_ask))
+
+#define NODE_Peak_ratio_bid(N) N(Peak_ratio_bid, (Peak<true, false>), (DepthData.bid_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Peak_ratio_bid(X) \
+  X(peak_ratio_bid, 1, DATA, TS, SHAPE, RATIO, NONE, "00/100/00", "Bid Peak Concentration", "买侧峰集中度", "买侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,B}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Peak_ratio_bid))

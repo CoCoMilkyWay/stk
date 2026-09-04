@@ -163,3 +163,6 @@ private:
   float tmp_bid_amt_[N_LEVELS] = {};
   float tmp_ask_amt_[N_LEVELS] = {};
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_DepthData(N) N(DepthData, (DepthData<L2::LOB_DEPTH>), (tick_data, Taker.out(Taker.price), asset_code_), onDepth, onDepth)

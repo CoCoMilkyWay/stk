@@ -1,8 +1,8 @@
 #include "worker/crosssectional_worker.hpp"
 #include "shared/SharedData.hpp"
 
-#include "features/CoreCrosssection.hpp"
 #include "features/Backend/FeatureStore.hpp"
+#include "features/CoreCrosssection.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 

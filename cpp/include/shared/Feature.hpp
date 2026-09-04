@@ -1,6 +1,7 @@
 #pragma once
 
 #include "features/FeaturesDefine.hpp"
+#include "features/NodesGenerated.hpp" // CMake 生成: LEVEL_*_FIELDS(X)
 #include <set>
 #include <vector>
 
@@ -76,8 +77,8 @@ struct Feature {
     std::set<NormMethod> filter_norm_method;
 
     // Selected features
-    int primary_feature_idx = -1;      // Primary feature (single selection)
-    std::set<int> secondary_features;  // Other features (multi-selection)
+    int primary_feature_idx = -1;     // Primary feature (single selection)
+    std::set<int> secondary_features; // Other features (multi-selection)
 
     void clear();
   };

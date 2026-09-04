@@ -384,7 +384,7 @@ struct OrderFlow {
 
     std::string date;
     size_t asset_idx = SIZE_MAX;
-    int feature_idx = -1;      // L0 feature index
+    int feature_idx = -1; // L0 feature index
     PlotData plot;
 
     bool matches(const std::string &d, size_t a, int f) const {

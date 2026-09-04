@@ -121,3 +121,16 @@ private:
   float amt_cn_bid_ = 0.0f, amt_cn_ask_ = 0.0f;
   float amt_tk_bid_ = 0.0f, amt_tk_ask_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_FlowRate(N) N(FlowRate, (FlowRate), (tick_data), onTick, onMinute)
+
+#define FIELDS_L1_FlowRate(X)                                                                                                                                                                                                                                                               \
+  X(mk_bid, 1, DATA, TS, ORDER_FLOW, RAW, NONE, "00/100/00", "Bid Maker Rate", "买方挂单额", "每分钟买方挂单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,B}| \cdot P_\tau)", OP(FlowRate, mk_bid))                                                                              \
+  X(mk_ask, 1, DATA, TS, ORDER_FLOW, RAW, NONE, "00/100/00", "Ask Maker Rate", "卖方挂单额", "每分钟卖方挂单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,A}| \cdot P_\tau)", OP(FlowRate, mk_ask))                                                                              \
+  X(cn_bid, 1, DATA, TS, ORDER_FLOW, RAW, NONE, "00/100/00", "Bid Cancel Rate", "买方撤单额", "每分钟买方撤单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{C,B}| \cdot P_\tau)", OP(FlowRate, cn_bid))                                                                             \
+  X(cn_ask, 1, DATA, TS, ORDER_FLOW, RAW, NONE, "00/100/00", "Ask Cancel Rate", "卖方撤单额", "每分钟卖方撤单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{C,A}| \cdot P_\tau)", OP(FlowRate, cn_ask))                                                                             \
+  X(tk_bid, 1, DATA, TS, ORDER_FLOW, RAW, NONE, "00/100/00", "Bid Taker Rate", "买方吃单额", "每分钟买方吃单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{T,B}| \cdot P_\tau)", OP(FlowRate, tk_bid))                                                                              \
+  X(tk_ask, 1, DATA, TS, ORDER_FLOW, RAW, NONE, "00/100/00", "Ask Taker Rate", "卖方吃单额", "每分钟卖方吃单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{T,A}| \cdot P_\tau)", OP(FlowRate, tk_ask))                                                                              \
+  X(net_ord, 1, DATA, TS, ORDER_FLOW, RAW, NONE, "00/100/00", "Net Order Flow", "净订单流", "买卖订单流金额净差(万元/分钟)", R"((\mathrm{Amt}_{\Delta t}^{M,B} - \mathrm{Amt}_{\Delta t}^{C,B}) - (\mathrm{Amt}_{\Delta t}^{M,A} - \mathrm{Amt}_{\Delta t}^{C,A}))", OP(FlowRate, net_ord)) \
+  X(foi, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Flow Imbalance", "订单流失衡", "买卖订单流失衡(降频)", R"(\frac{\Delta A^{B} - \Delta A^{A}}{|\Delta A^{B}| + |\Delta A^{A}|}, \quad \Delta A^{s} = \mathrm{Amt}_{\Delta t}^{M,s} - \mathrm{Amt}_{\Delta t}^{C,s}, \quad s \in \{B,A\})", OP(FlowRate, foi))

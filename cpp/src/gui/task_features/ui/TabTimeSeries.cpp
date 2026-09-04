@@ -53,15 +53,15 @@ static ImVec4 StatusColor(TimeSeries::Compute::Status s) {
   switch (s) {
   case TimeSeries::Compute::Status::Idle:
   case TimeSeries::Compute::Status::Cancelled:
-    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);      // 灰色
+    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // 灰色
   case TimeSeries::Compute::Status::Loading:
-    return ImVec4(0.3f, 0.7f, 1.0f, 1.0f);      // 蓝色
+    return ImVec4(0.3f, 0.7f, 1.0f, 1.0f); // 蓝色
   case TimeSeries::Compute::Status::Building:
-    return ImVec4(1.0f, 0.7f, 0.3f, 1.0f);      // 橙黄色
+    return ImVec4(1.0f, 0.7f, 0.3f, 1.0f); // 橙黄色
   case TimeSeries::Compute::Status::Done:
-    return ImVec4(0.4f, 0.9f, 0.5f, 1.0f);      // 亮绿色
+    return ImVec4(0.4f, 0.9f, 0.5f, 1.0f); // 亮绿色
   case TimeSeries::Compute::Status::Error:
-    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f);      // 红色
+    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
   }
   return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 }
@@ -426,8 +426,10 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
         for (const auto &cell : mc.by_asset) {
           if (cell.valid) {
             ++valid;
-            if (cell.adf_pass) ++adf_pass;
-            if (cell.kpss_pass) ++kpss_pass;
+            if (cell.adf_pass)
+              ++adf_pass;
+            if (cell.kpss_pass)
+              ++kpss_pass;
           }
         }
       }
@@ -652,8 +654,8 @@ static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
   ImGui::Separator();
 
   ImVec2 avail = ImGui::GetContentRegionAvail();
-  float half_width = (avail.x - 20.0f) * 0.5f;  // 中间留点间隔
-  float heatmap_width = half_width - 60.0f;     // 留给label的空间
+  float half_width = (avail.x - 20.0f) * 0.5f; // 中间留点间隔
+  float heatmap_width = half_width - 60.0f;    // 留给label的空间
 
   float cell_w = std::max(4.0f, heatmap_width / static_cast<float>(n_months));
   float cell_h = std::max(2.0f, (avail.y - 50.0f) / static_cast<float>(n_assets));
@@ -665,7 +667,7 @@ static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
 
   int hovered_month = -1;
   int hovered_asset = -1;
-  int hovered_type = -1;  // 0=ADF, 1=KPSS
+  int hovered_type = -1; // 0=ADF, 1=KPSS
 
   // Lambda: 绘制单个热力图
   auto DrawHeatmap = [&](float offset_x, const char *title,
@@ -689,7 +691,8 @@ static void RenderStep0Plot(const TimeSeries &ts, const Asset &asset,
     for (size_t a = 0; a < n_assets; ++a) {
       float y = start_y + a * cell_h;
       for (size_t m = 0; m < n_months; ++m) {
-        if (a >= cache[m].by_asset.size()) continue;
+        if (a >= cache[m].by_asset.size())
+          continue;
         float x = base_pos.x + offset_x + 50.0f + m * cell_w;
         const auto &cell = cache[m].by_asset[a];
         ImU32 color = color_func(cell);
@@ -789,13 +792,13 @@ static void RenderStep1Plot(TimeSeries &ts, const Asset &asset, bool need_autofi
   }
 
   // 刻度标签指针 (低频在上，高频在下)
-  static std::vector<const char*> tick_ptrs;
+  static std::vector<const char *> tick_ptrs;
   static std::vector<double> heatmap_tick_pos;
   tick_ptrs.resize(psd.tick_labels.size());
   heatmap_tick_pos.resize(psd.tick_positions.size());
   for (size_t i = 0; i < psd.tick_labels.size(); ++i) {
     tick_ptrs[i] = psd.tick_labels[i].c_str();
-    heatmap_tick_pos[i] = psd.tick_positions[i] + 0.5;  // 格子中心
+    heatmap_tick_pos[i] = psd.tick_positions[i] + 0.5; // 格子中心
   }
 
   // Compact 布局: 固定两个图
@@ -813,7 +816,8 @@ static void RenderStep1Plot(TimeSeries &ts, const Asset &asset, bool need_autofi
   // 低频(DC)在上，高频(2s)在下
   // 默认范围: X从first_valid_day开始，Y从default_y_start到N_BINS
   static bool need_fit = true;
-  if (need_autofit) need_fit = true;
+  if (need_autofit)
+    need_fit = true;
 
   ImPlot::PushColormap(ImPlotColormap_Viridis);
 
@@ -823,12 +827,12 @@ static void RenderStep1Plot(TimeSeries &ts, const Asset &asset, bool need_autofi
     if (need_fit) {
       // 默认X从first_valid_day开始
       ImPlot::SetupAxisLimits(ImAxis_X1,
-          static_cast<double>(psd.first_valid_day),
-          static_cast<double>(valid_days), ImGuiCond_Always);
+                              static_cast<double>(psd.first_valid_day),
+                              static_cast<double>(valid_days), ImGuiCond_Always);
       // 默认Y从default_y_start到N_BINS (低频在上)
       ImPlot::SetupAxisLimits(ImAxis_Y1,
-          static_cast<double>(psd.default_y_start),
-          static_cast<double>(N_BINS), ImGuiCond_Always);
+                              static_cast<double>(psd.default_y_start),
+                              static_cast<double>(N_BINS), ImGuiCond_Always);
       need_fit = false;
     }
 
@@ -853,7 +857,7 @@ static void RenderStep1Plot(TimeSeries &ts, const Asset &asset, bool need_autofi
       int new_day = static_cast<int>(drag_x);
       new_day = std::clamp(new_day, 0, static_cast<int>(valid_days) - 1);
       psd.selected_day = new_day;
-      drag_x = new_day + 0.5;  // snap to center
+      drag_x = new_day + 0.5; // snap to center
     }
 
     // Tooltip
@@ -910,7 +914,10 @@ static void RenderStep1Plot(TimeSeries &ts, const Asset &asset, bool need_autofi
     const float *src = psd.asset_day_psd(day_idx, a);
     bool has_data = false;
     for (size_t k = 0; k < N_BINS; ++k) {
-      if (src[k] > 0) { has_data = true; break; }
+      if (src[k] > 0) {
+        has_data = true;
+        break;
+      }
     }
     if (has_data) {
       ++valid_asset_count;
@@ -1137,9 +1144,11 @@ static void RenderStep4Plot(const TimeSeries &ts, bool need_autofit) {
   // 稳定性指标显示
   auto StabilityColor = [](float stability) -> ImVec4 {
     // stability 越高越好 (越接近 1 越稳定)
-    if (stability > 0.9f) return ImVec4(0.2f, 0.9f, 0.2f, 1.0f);  // 绿色
-    if (stability > 0.7f) return ImVec4(0.9f, 0.9f, 0.2f, 1.0f);  // 黄色
-    return ImVec4(0.9f, 0.4f, 0.2f, 1.0f);  // 橙红色
+    if (stability > 0.9f)
+      return ImVec4(0.2f, 0.9f, 0.2f, 1.0f); // 绿色
+    if (stability > 0.7f)
+      return ImVec4(0.9f, 0.9f, 0.2f, 1.0f); // 黄色
+    return ImVec4(0.9f, 0.4f, 0.2f, 1.0f);   // 橙红色
   };
 
   ImGui::Text("稳定性指标 (1-CV, 值越大越稳定):");

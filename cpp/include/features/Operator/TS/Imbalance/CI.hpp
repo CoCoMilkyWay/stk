@@ -70,3 +70,24 @@ private:
   CBuffer<float, L2::BLEN> &out_;
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Ci_1(N) N(Ci_1, (CI<1>), (DepthData.bid_qty, DepthData.ask_qty), onDepth, onDepth)
+
+#define FIELDS_L0_Ci_1(X) \
+  X(ci_1, 1, DEPTH, TS, IMBALANCE, RATIO, NONE, "100/00/00", "Cumu Imba 1-Level", "顶部1档失衡", "顶部1档订单失衡率", R"(\frac{V_{1,t}^{M,B} - V_{1,t}^{M,A}}{V_{1,t}^{M,B} + V_{1,t}^{M,A}})", OP(Ci_1))
+
+#define NODE_Ci_10(N) N(Ci_10, (CI<10>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Ci_10(X) \
+  X(ci_10, 1, DATA, TS, IMBALANCE, RATIO, NONE, "00/100/00", "Cumu Imba 10-Level", "累计10档失衡", "累计10档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{10}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{10}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_10))
+
+#define NODE_Ci_30(N) N(Ci_30, (CI<30>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Ci_30(X) \
+  X(ci_30, 1, DATA, TS, IMBALANCE, RATIO, NONE, "00/100/00", "Cumu Imba 30-Level", "累计30档失衡", "累计30档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{30}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{30}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_30))
+
+#define NODE_Ci_5(N) N(Ci_5, (CI<5>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Ci_5(X) \
+  X(ci_5, 1, DATA, TS, IMBALANCE, RATIO, NONE, "00/100/00", "Cumu Imba 5-Level", "累计5档失衡", "累计5档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{5}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{5}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_5))

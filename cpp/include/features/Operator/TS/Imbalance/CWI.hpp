@@ -79,3 +79,14 @@ private:
   float weights_[DEPTH_SIZE];
   float value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Cwi_1(N) N(Cwi_1, (CWI<10>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Cwi_1(X) \
+  X(cwi_1, 1, DATA, TS, IMBALANCE, RATIO, NONE, "00/100/00", "Convexity-weighted Imb γ=1", "凸加权失衡γ=1", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 1)", OP(Cwi_1))
+
+#define NODE_Cwi_2(N) N(Cwi_2, (CWI<20>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
+
+#define FIELDS_L1_Cwi_2(X) \
+  X(cwi_2, 1, DATA, TS, IMBALANCE, RATIO, NONE, "00/100/00", "Convexity-weighted Imb γ=2", "凸加权失衡γ=2", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 2)", OP(Cwi_2))

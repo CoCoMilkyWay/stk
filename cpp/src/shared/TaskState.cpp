@@ -110,4 +110,3 @@ ImVec4 TaskState::Features::status_color() const {
     return ImVec4(0.0f, 1.0f, 1.0f, 1.0f); // Cyan
   }
 }
-

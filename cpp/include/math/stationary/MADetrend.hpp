@@ -27,7 +27,8 @@ inline void ma_detrend(std::span<const float> in, std::span<float> out, int wind
   assert(window > 0);
 
   const size_t n = in.size();
-  if (n == 0) return;
+  if (n == 0)
+    return;
 
   const size_t w = static_cast<size_t>(window);
   const float inv_w = 1.0f / static_cast<float>(window);
@@ -57,24 +58,25 @@ inline void ma_detrend_centered(std::span<const float> in, std::span<float> out,
   assert(window > 0);
 
   const size_t n = in.size();
-  if (n == 0) return;
+  if (n == 0)
+    return;
 
   const int half = window / 2;
 
   for (size_t i = 0; i < n; ++i) {
     float sum = 0.0f;
     int count = 0;
-    
+
     int start = static_cast<int>(i) - half;
     int end = static_cast<int>(i) + half;
-    
+
     for (int j = start; j <= end; ++j) {
       if (j >= 0 && j < static_cast<int>(n)) {
         sum += in[j];
         ++count;
       }
     }
-    
+
     float ma = (count > 0) ? sum / count : 0.0f;
     out[i] = in[i] - ma;
   }

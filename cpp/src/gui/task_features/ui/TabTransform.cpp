@@ -7,11 +7,11 @@
 #include "implot.h"
 #include "latex.h"
 #include "misc/profiler.hpp"
-#include "utfcpp/utf8.hpp"
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
 #include "shared/Asset.hpp"
 #include "shared/SharedData.hpp"
+#include "utfcpp/utf8.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -654,27 +654,36 @@ static bool RenderCSNormConfig(Transform::Params &config) {
 
 static const char *BandpassTypeName(Transform::BandpassType t) {
   switch (t) {
-  case Transform::BandpassType::NONE: return "无";
-  case Transform::BandpassType::FIR: return "FIR";
-  case Transform::BandpassType::IIR: return "IIR";
+  case Transform::BandpassType::NONE:
+    return "无";
+  case Transform::BandpassType::FIR:
+    return "FIR";
+  case Transform::BandpassType::IIR:
+    return "IIR";
   }
   return "?";
 }
 
 static const char *FIRWindowName(int w) {
   switch (w) {
-  case 0: return "Hann";
-  case 1: return "Hamming";
-  case 2: return "Blackman";
+  case 0:
+    return "Hann";
+  case 1:
+    return "Hamming";
+  case 2:
+    return "Blackman";
   }
   return "?";
 }
 
 static const char *IIRTypeName(int t) {
   switch (t) {
-  case 0: return "Butterworth";
-  case 1: return "Chebyshev I";
-  case 2: return "Chebyshev II";
+  case 0:
+    return "Butterworth";
+  case 1:
+    return "Chebyshev I";
+  case 2:
+    return "Chebyshev II";
   }
   return "?";
 }
@@ -1340,7 +1349,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
     constexpr double EPSILON = 1e-9;
     bool x_changed = (std::abs(limits.X.Min - ui.feature_limits.last_x_min[0]) > EPSILON ||
                       std::abs(limits.X.Max - ui.feature_limits.last_x_max[0]) > EPSILON);
-    
+
     if (x_changed) {
       // Plot0 变化了，同步到 Plot1
       ui.feature_limits.last_x_min[0] = limits.X.Min;
@@ -1459,7 +1468,7 @@ static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool n
     constexpr double EPSILON = 1e-9;
     bool x_changed = (std::abs(limits.X.Min - ui.feature_limits.last_x_min[1]) > EPSILON ||
                       std::abs(limits.X.Max - ui.feature_limits.last_x_max[1]) > EPSILON);
-    
+
     if (x_changed) {
       // Plot1 变化了，同步到 Plot0
       ui.feature_limits.last_x_min[1] = limits.X.Min;
@@ -1503,7 +1512,7 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
     };
     static std::vector<PDFData> to_render;
     to_render.clear();
-    
+
     for (size_t i = 0; i < tf.results.size(); ++i) {
       if (!show_all && (int)i != sel)
         continue;
@@ -1515,21 +1524,21 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
         to_render.push_back({i, pdf});
       }
     }
-    
+
     // 只在 need_autofit 时计算一次整体 range (merge 所有 KLL 后计算)
     float x_extent = 0.0f;
     if (need_autofit && !to_render.empty()) {
       // Merge 所有 asset 的 KLL 到一个临时 KLL
       static KLLcache merged_kll(512, 1024);
       merged_kll.clear();
-      
+
       for (const auto &d : to_render) {
         const auto &r = tf.results[d.idx];
         if (!r.KLL.empty()) {
           merged_kll.mergeWith(r.KLL);
         }
       }
-      
+
       if (!merged_kll.empty()) {
         // 直接从 ICDF 获取 2.5% 和 97.5% 分位数 (tail cut)
         auto icdf = merged_kll.exportICDF();
@@ -1537,10 +1546,10 @@ static void RenderBottomPlots(const Transform &tf, const SharedData &data, Trans
           // ICDF: u ∈ [0,1] 均匀分布，直接计算索引
           size_t i025 = static_cast<size_t>(0.025f * (icdf.n - 1));
           size_t i975 = static_cast<size_t>(0.975f * (icdf.n - 1));
-          
+
           float x_low = icdf.y[i025];
           float x_high = icdf.y[i975];
-          
+
           // 取绝对值最大值，用于对称居中
           x_extent = std::max(std::abs(x_low), std::abs(x_high));
         }

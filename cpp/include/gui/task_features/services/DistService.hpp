@@ -42,7 +42,8 @@ public:
   explicit SimpleThreadPool(size_t num_threads);
   ~SimpleThreadPool();
 
-  template <typename Func> void submit(Func &&task) {
+  template <typename Func>
+  void submit(Func &&task) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       tasks_.emplace_back(std::forward<Func>(task));

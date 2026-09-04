@@ -14,7 +14,11 @@ struct TaskState {
   // Settings Task
   // ==========================================================================
   struct Settings {
-    enum class Status { None, Initializing, Syncing, Writing, Synced };
+    enum class Status { None,
+                        Initializing,
+                        Syncing,
+                        Writing,
+                        Synced };
     Status status = Status::None;
     bool initialized = false;
 
@@ -26,7 +30,12 @@ struct TaskState {
   // Database Task
   // ==========================================================================
   struct Database {
-    enum class Status { None, Initializing, NotScanned, Incomplete, Error, Ready };
+    enum class Status { None,
+                        Initializing,
+                        NotScanned,
+                        Incomplete,
+                        Error,
+                        Ready };
     Status status = Status::NotScanned;
 
     // 关键状态标志 (其他 Task 可读取)
@@ -49,14 +58,18 @@ struct TaskState {
   // Features Task
   // ==========================================================================
   struct Features {
-    enum class Status { None, Waiting, Selecting, Computing, Ready, Error };
+    enum class Status { None,
+                        Waiting,
+                        Selecting,
+                        Computing,
+                        Ready,
+                        Error };
     Status status = Status::None;
 
     bool computing = false;
-    bool has_selection = false;  // 主 feature 已选好
+    bool has_selection = false; // 主 feature 已选好
 
     const char *status_text() const;
     ImVec4 status_color() const;
   } features;
 };
-

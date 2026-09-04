@@ -11,7 +11,6 @@ class GlobalFeatureStore;
 // ============================================================================
 
 void sequential_worker(int worker_id,
-                      SharedData &data,
-                      GlobalFeatureStore &store,
-                      misc::ProgressHandle progress_handle);
-
+                       SharedData &data,
+                       GlobalFeatureStore &store,
+                       misc::ProgressHandle progress_handle);

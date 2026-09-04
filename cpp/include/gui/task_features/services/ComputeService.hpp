@@ -44,7 +44,7 @@ private:
   std::chrono::steady_clock::time_point start_time_;
 
   std::future<void> compute_thread_; // Background compute thread
-  
+
   // Feature store (allocated during compute)
   std::unique_ptr<GlobalFeatureStore> feature_store_;
 

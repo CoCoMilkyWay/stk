@@ -53,3 +53,9 @@ private:
   CBuffer<float, L2::BLEN> &buffer_;
   float spread_value_ = 0.0f;
 };
+
+// ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
+#define NODE_Spread(N) N(Spread, (Spread), (DepthData.bid_price[0], DepthData.ask_price[0]), onDepth, onDepth)
+
+#define FIELDS_L0_Spread(X) \
+  X(spread, 1, DEPTH, TS, BASIC, RAW, NONE, "100/00/00", "Bid-Ask Spread", "买卖价差", "卖一减买一", R"(P_{1,t}^{M,A} - P_{1,t}^{M,B})", OP(Spread))

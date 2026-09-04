@@ -75,8 +75,8 @@ struct TaskFeaturesState {
   int timeseries_prev_level = -1;       // Track level changes for timeseries
 
   // Auto-compute tracking (Transform)
-  int transform_prev_feature_idx = -1;  // Track feature changes for transform
-  int transform_prev_level = -1;        // Track level changes for transform
+  int transform_prev_feature_idx = -1; // Track feature changes for transform
+  int transform_prev_level = -1;       // Track level changes for transform
 
   // Terminal reference
   TaskTerminal *terminal = nullptr;

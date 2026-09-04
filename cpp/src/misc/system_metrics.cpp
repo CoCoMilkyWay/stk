@@ -205,9 +205,9 @@ void detect_x64_flags(X64Flags &f) {
 
   const bool osxsave = bit(ecx1, 27);
   const std::uint64_t xcr = osxsave ? xcr0() : 0;
-  const bool ymm_ok = (xcr & 0x6) == 0x6;          // XMM + YMM
+  const bool ymm_ok = (xcr & 0x6) == 0x6;             // XMM + YMM
   const bool zmm_ok = ymm_ok && (xcr & 0xE0) == 0xE0; // + opmask/ZMM_hi/hi16_ZMM
-  const bool tile_ok = (xcr & 0x60000) == 0x60000; // XTILECFG + XTILEDATA
+  const bool tile_ok = (xcr & 0x60000) == 0x60000;    // XTILECFG + XTILEDATA
 
   f.avx = ymm_ok && bit(ecx1, 28);
   f.fma = ymm_ok && bit(ecx1, 12);
@@ -386,33 +386,19 @@ void detect_arm_flags(ArmFlags &f, const std::string &cpu_model) {
 
 std::vector<IsaRow> build_isa_rows(const X64Flags &x, const ArmFlags &a) {
   return {
-      {"Legacy:", "128-bit SIMD",
-       {{"SSE", x.sse}, {"SSE2", x.sse2}, {"SSE3", x.sse3}, {"SSSE3", x.ssse3}, {"SSE4.1", x.sse4_1}, {"SSE4.2", x.sse4_2}},
-       {{"NEON", a.neon}, {"FP16", a.fp16}, {"DotProd", a.dotprod}, {"FCMA", a.fcma}}},
+      {"Legacy:", "128-bit SIMD", {{"SSE", x.sse}, {"SSE2", x.sse2}, {"SSE3", x.sse3}, {"SSSE3", x.ssse3}, {"SSE4.1", x.sse4_1}, {"SSE4.2", x.sse4_2}}, {{"NEON", a.neon}, {"FP16", a.fp16}, {"DotProd", a.dotprod}, {"FCMA", a.fcma}}},
 
-      {"SIMD:", "256+bit wide vector",
-       {{"AVX", x.avx}, {"AVX2", x.avx2}, {"FMA", x.fma}, {"F16C", x.f16c}},
-       {{"SVE", a.sve}, {"SVE2", a.sve2}, {"SME", a.sme}, {"SME2", a.sme2}}},
+      {"SIMD:", "256+bit wide vector", {{"AVX", x.avx}, {"AVX2", x.avx2}, {"FMA", x.fma}, {"F16C", x.f16c}}, {{"SVE", a.sve}, {"SVE2", a.sve2}, {"SME", a.sme}, {"SME2", a.sme2}}},
 
-      {"AVX512:", "512-bit SIMD modules",
-       {{"F", x.avx512f}, {"CD", x.avx512cd}, {"VL", x.avx512vl}, {"BW", x.avx512bw}, {"DQ", x.avx512dq}},
-       {{"FP64", a.fp64}, {"LSE", a.lse}}},
+      {"AVX512:", "512-bit SIMD modules", {{"F", x.avx512f}, {"CD", x.avx512cd}, {"VL", x.avx512vl}, {"BW", x.avx512bw}, {"DQ", x.avx512dq}}, {{"FP64", a.fp64}, {"LSE", a.lse}}},
 
-      {"AI/ML:", "FP16/BF16/INT8 accel",
-       {{"FP16", x.avx512_fp16}, {"BF16", x.avx512_bf16}, {"VNNI", x.avx512_vnni}, {"AVX-VNNI", x.avx_vnni}, {"AMX", x.amx_tile}},
-       {{"BF16", a.bf16}, {"I8MM", a.i8mm}, {"AMX", a.amx, true}, {"NeuralEngine", a.neural_engine, true}}},
+      {"AI/ML:", "FP16/BF16/INT8 accel", {{"FP16", x.avx512_fp16}, {"BF16", x.avx512_bf16}, {"VNNI", x.avx512_vnni}, {"AVX-VNNI", x.avx_vnni}, {"AMX", x.amx_tile}}, {{"BF16", a.bf16}, {"I8MM", a.i8mm}, {"AMX", a.amx, true}, {"NeuralEngine", a.neural_engine, true}}},
 
-      {"Crypto:", "AES/SHA hardware accel",
-       {{"AES", x.aes}, {"SHA", x.sha}, {"GFNI", x.gfni}, {"IFMA", x.avx512_ifma}},
-       {{"AES", a.aes}, {"SHA1", a.sha1}, {"SHA2", a.sha2}, {"SHA3", a.sha3}, {"SHA512", a.sha512}, {"PMULL", a.pmull}, {"CRC32", a.crc32}}},
+      {"Crypto:", "AES/SHA hardware accel", {{"AES", x.aes}, {"SHA", x.sha}, {"GFNI", x.gfni}, {"IFMA", x.avx512_ifma}}, {{"AES", a.aes}, {"SHA1", a.sha1}, {"SHA2", a.sha2}, {"SHA3", a.sha3}, {"SHA512", a.sha512}, {"PMULL", a.pmull}, {"CRC32", a.crc32}}},
 
-      {"Memory:", "cache/prefetch ops",
-       {{"PREFETCHW", x.prefetchw}, {"CLFLUSHOPT", x.clflushopt}, {"CLWB", x.clwb}, {"MOVDIR64B", x.movdir64b}, {"RTM", x.rtm}},
-       {{"PREFETCH", a.prefetch}, {"DC_ZVA", a.dc_zva}}},
+      {"Memory:", "cache/prefetch ops", {{"PREFETCHW", x.prefetchw}, {"CLFLUSHOPT", x.clflushopt}, {"CLWB", x.clwb}, {"MOVDIR64B", x.movdir64b}, {"RTM", x.rtm}}, {{"PREFETCH", a.prefetch}, {"DC_ZVA", a.dc_zva}}},
 
-      {"System:", "RNG/security features",
-       {{"RDRAND", x.rdrand}, {"RDSEED", x.rdseed}},
-       {{"RNDR", a.rndr}, {"PAC", a.pac}, {"MTE", a.mte}}},
+      {"System:", "RNG/security features", {{"RDRAND", x.rdrand}, {"RDSEED", x.rdseed}}, {{"RNDR", a.rndr}, {"PAC", a.pac}, {"MTE", a.mte}}},
   };
 }
 
