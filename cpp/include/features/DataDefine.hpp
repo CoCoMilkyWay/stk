@@ -30,15 +30,22 @@ enum class Trigger : uint8_t {
 };
 
 //----------------------------------------------------------------------------------------
+// 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 档 = DepthSeries (DepthData 的 bid_qty 等)
+//----------------------------------------------------------------------------------------
+using Series = CBuffer<float, L2::BLEN>;
+using DepthSeries = Series[L2::LOB_DEPTH];
+
+//----------------------------------------------------------------------------------------
 // OPERATOR CONTRACT (算子统一接口)
 //----------------------------------------------------------------------------------------
 //   enum Out : size_t { <名>..., kCount };   // 输出口; 单输出用 { value, kCount }; 无输出 (源层) kCount = 0
 //   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域推入 CBuffer
-//   Op(<输入引用>...);                       // 只接输入, 不接输出
+//   Op(<输入引用>...);                       // 只接输入 (const Series & / const DepthSeries & / 数据结构引用), 不接输出
 //   void compute();                          // 采样型: 直接写 y
 //   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后推入)
 //   void reset();   (可选)                   // 有跨天状态才写
-// 输出缓冲由 ComputeGraph::Node 持有; 下游用 Up.out(口) 拿 CBuffer, 字段表用 OP(节点, 口) 引用.
+// 单侧算子 (只看一侧盘口) 只收那一侧的 DepthSeries, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
+// 输出缓冲由 ComputeGraph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 OP(节点, 口) 引用.
 // 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在算子文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
 //----------------------------------------------------------------------------------------
 
@@ -75,4 +82,15 @@ struct MinuteData {
   CBuffer<uint32_t, 240> ask_volume;
   CBuffer<float, 240> bid_amount;
   CBuffer<float, 240> ask_amount;
+
+  void clear() {
+    open.clear();
+    high.clear();
+    low.clear();
+    close.clear();
+    bid_volume.clear();
+    ask_volume.clear();
+    bid_amount.clear();
+    ask_amount.clear();
+  }
 };

@@ -101,14 +101,7 @@ static ImU32 get_category_color(FeatureCategoryL1 cat) {
 
 // Get current level features based on selection
 static const std::vector<FeatureMetadata> &get_current_level_features(const Feature &feature) {
-  switch (feature.selection.selected_level) {
-  case 0:
-    return feature.metadata.features_l0;
-  case 1:
-    return feature.metadata.features_l1;
-  default:
-    return feature.metadata.features_l0;
-  }
+  return feature.metadata.features[feature.selection.selected_level];
 }
 
 // Filter features based on current filter settings

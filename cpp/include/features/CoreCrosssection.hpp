@@ -44,7 +44,7 @@ private:
     const size_t t_other = LVL == 0 ? L0_to_L1(t) : L1_to_L0(t); // 跨层源列的时间索引 (L1 用分钟起始秒)
     constexpr const CSFeatureDef *DEFS = LVL == 0 ? L0_CS_DEFS : L1_CS_DEFS;
     constexpr size_t COUNT = LVL == 0 ? L0_CS_COUNT : L1_CS_COUNT;
-    constexpr size_t VALID = LVL == 0 ? size_t(L0_FieldOffset::_data_valid) : size_t(L1_FieldOffset::_data_valid);
+    constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::_data_valid) : size_t(L1_Field::_data_valid);
 
     const _Float16 *valid_flags = fstore::cs_read(store_, date_str_, LVL, t, VALID);
     valid_indices_.clear();
@@ -60,9 +60,9 @@ private:
     if constexpr (LVL == 1) {
       logmc_dense_.resize(A_);
       industry_dense_.resize(A_);
-      gather_(fstore::cs_read(store_, date_str_, 1, t, L1_FieldOffset::mcap), logmc_dense_.data(), n);
+      gather_(fstore::cs_read(store_, date_str_, 1, t, L1_Field::mcap), logmc_dense_.data(), n);
       cs::prepare_logmc(logmc_dense_.data(), n);
-      gather_(fstore::cs_read(store_, date_str_, 1, t, L1_FieldOffset::industry_l1), industry_dense_.data(), n);
+      gather_(fstore::cs_read(store_, date_str_, 1, t, L1_Field::industry_l1), industry_dense_.data(), n);
       logmc = logmc_dense_.data();
       industry = industry_dense_.data();
     }

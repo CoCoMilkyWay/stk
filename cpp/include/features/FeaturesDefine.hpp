@@ -1,27 +1,9 @@
 #pragma once
 
 #include "codec/L2_DataType.hpp"
+#include "features/DataDefine.hpp" // Trigger
 #include <array>
 #include <cstdint>
-
-// 核心理念: 在低信噪比、强竞争的二级市场，端到端的深度模型(数据先验)会先被淘汰, 特征工程因子挖掘(结构性先验)是生存条件，不是选择。
-
-// 在手工原始特征设计阶段:
-//  1. 高频特征可以有低频能量(原始特征级别只是数学定义所在的级别), 且不需要手动频域切分(后面会自动化处理)
-//  2. 选择合适的归一化, 过滤掉尽可能少的不平稳的最低频信号, 让时序平稳 (保留尽可能多的平稳的低频信息, 这部分是因子主体的主要构成)
-//  3. 保证特征序列概率分布在时间/截面上的稳定性(时间上不漂移(因子不衰减), 截面分布一致(可以截面中性化))
-// 在符号回归阶段:
-//  1. GPU会系统性地对所有手工特征做检测, 得到对应的平稳性, 分布, 频域, 自相关特性
-//  2. 用算子池逐个特征测试, 展开得到若干新特征, 然后再次统计新特征的特性, 然后过滤掉不合格的, 自动生成针对原始特征的算子池约束
-//  3. 计算展开后的特征池的相关性矩阵(时序相关性(自相关), 截面相关性(交叉相关))
-//  4. 根据上面的信息, 符号回归优化Loss(Label), 实现高效因子挖掘和稳健性测试
-//
-// 完整的因子由两部分构成:
-// 频率: 秒 -------------------------------- 分钟 ------------ 小时 ------------- 天
-//       <------------------------------------>|<--------------------------->| (更低频信号弃用(不平稳))
-//        进出场触发器(高频特征的简单组合)        因子主体(低频特征的复杂组合)
-//        非必须. 只是超额                        核心的核心, 盈利主体
-//        (为因子主体提供稳定超额, 流动性支持)    (决定因子强度, 周期, 平稳性(分层), 换手)
 
 // ============================================================================
 // FORMULA NOTATION CONVENTION (公式符号规范)
@@ -65,37 +47,40 @@
 // ============================================================================
 // 算子文件 = 数学 (class) + 文件末尾两种宏 (CMake 扫描汇总, C++ 里不直接展开):
 //
-//   #define NODE_<Name>(N)  N(<Name>, (OpType), (inputs...), compute_trigger, flush_trigger)
+//   #define NODE_<Name>(N)  N(<Name>, (OpType), (inputs...), trigger[, flush_trigger])
 //     Name     节点名 (DAG 成员名), 同一算子可有多个实例 (CI.hpp: Ci_1 / Ci_5 / Ci_10 / Ci_30)
 //     OpType   算子类型, 必须加括号 (模板参数里有逗号)
 //     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / asset_code_ / fund_row_ /
-//              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 源层数组 DepthData.bid_qty 等
-//     触发域   Trigger:: 下的名字. compute 在 compute_trigger 域调, flush 在 flush_trigger 域调;
-//              采样型算子两者相同, 降频型算子 compute=onTick/flush=onMinute
+//              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 源层数组 DepthData.bid_qty 等.
+//              必须字面写在这一行 (CMake 按 "Up." 抽依赖), 不要藏进 helper 宏
+//     触发域   Trigger:: 下的名字. 采样型只写一个 (compute 与 flush 同域);
+//              降频型写两个: compute=onTick, flush=onMinute
 //     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游算子
 //
-//   #define FIELDS_<LVL>_<Name>(X)  X(code, width, valid_type, cat_l1, cat_l2, norm_method,
-//                                     PSD, name_en, name_cn, description, formula, SRC) ...
+//   #define FIELDS_<LVL>_<Name>(X)  X(code, cat_l1, cat_l2, norm_method, name_en, name_cn, description, formula, SRC) ...
 //     LVL ∈ {L0, L1, DEPTH}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
-//     valid_type   ALL / DATA / DEPTH: 该列的有效性看哪个标志 (_data_valid / _depth_valid)
-//     SRC 这一列的值从哪来 (基建按它生成写回 / 截面配置 / 广播), 也决定数据类型 (TS/CS/LB/META):
-//       OP(Node) / OP(Node, port)  节点输出口 (Node::Out::value / Node::Out::port); 层必须 == 节点 flush 域
-//       FUND(field)                当日基本面行 fund::field 盘中广播 (仅 L1)
-//       CS(lvl, src, tf, m)        截面: 源层 lvl (0/1) 的字段 src → cs::Transform::tf → cs::Method::m
-//       META / LABEL               基建 / 标签回填 手工写
-//     非算子列的 <Name> 是任意名字, 放在写它的地方旁边: META → Operator/TS/Meta/Meta.hpp,
+//     同族实例 (Ci_1/5/10/30 …) 在文件内用 helper 宏生成行, #n 拼进名字/公式.
+//     SRC 这一列的值从哪来 (基建按它生成写回 / 截面配置 / 广播); 数据类型 / 列宽 / 有效性标志全部由它推出:
+//       OP(Node) / OP(Node, port)  节点输出口. TS; 宽 1; 层必须 == 节点 flush 域; 有效性: flush 域 onDepth → DEPTH, 其余 → DATA
+//       FUND(field)                当日基本面行 fund::field 盘中广播 (仅 L1). TS; 宽 1; DATA
+//       CS(lvl, src, tf, m)        截面: 源层 lvl (0/1) 的字段 src → cs::Transform::tf → cs::Method::m. CS; 宽 1; DATA
+//       LABEL                      标签回填 (CoreSequential 手工写). LB; 宽 1; DATA
+//       FLAG                       有效标志列 _data_valid / _depth_valid (CoreSequential 手工写). META; 宽 1; ALL
+//       META(width)                其他基建手写列 (盘口快照, 宽 width). META; DEPTH
+//     非算子列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG/META → Operator/TS/Meta/Meta.hpp,
 //     LABEL → Operator/TS/Label/LabelReturn.hpp, FUND → Fundamental/FundamentalDaily.hpp, CS → Misc/CSMethods.hpp.
+//     推荐频谱 (psd) 按层给 (ALL_LEVELS), 不逐列写.
 //
 // CMake (projects/main/CMakeLists.txt) 扫描 features/{Operator,Fundamental,Misc}/**/*.hpp, 按 inputs 引用
 // 分层拓扑排序, 生成 build/generated/features/NodesGenerated.hpp: 全部 #include + NODES(N) +
-// LEVEL_{0,1}_FIELDS(X) + DEPTH_FIELDS(X). 基建 (ComputeGraph / CoreSequential / CoreCrosssection /
+// L0_FIELDS(X) / L1_FIELDS(X) / DEPTH_FIELDS(X). 基建 (ComputeGraph / CoreSequential / CoreCrosssection /
 // FeatureStore / Feature.hpp GUI 元数据) 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
 //
 // 加特征 = 改 (或新建) 一个算子文件. 删特征 = 删几行 / 删文件. 其他地方不动.
 // 顺序保证: DAG 按拓扑序声明成一条链, 节点只看得到排在自己前面的节点 → 引用了排后面的节点 = 编译错误.
 // 各触发域一个 tick 内的执行顺序: onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute.
 // 字段表改动会改变落盘布局: 文件头带表指纹, 读旧文件即断言失败, 需重算.
-// 标签 (LabelReturn*) 回填别的时间行, 不走节点表, 在 ComputeGraph.hpp 手工声明.
+// 标签 (LabelReturn) 回填别的时间行, 不走节点表, 在 ComputeGraph.hpp 手工声明.
 
 // ============================================================================
 // 字段元数据枚举 (X-macro: 一处定义 → enum + to_string(en/cn) + 全值表)
@@ -205,29 +190,63 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
 }
 
 // ----------------------------------------------------------------------------
+// NODE_ 行触发域: N(name, type, args, trigger[, flush]) → 消费者用 NODE_COMPUTE(__VA_ARGS__) / NODE_FLUSH(__VA_ARGS__)
+// ----------------------------------------------------------------------------
+#define NODE_COMPUTE(ct, ...) Trigger::ct
+#define NODE_FLUSH(ct, ...) NODE_FLUSH_I(__VA_ARGS__ __VA_OPT__(, ) ct)
+#define NODE_FLUSH_I(ft, ...) Trigger::ft
+
+// flush 域 → 该节点落盘列的层 / 有效性标志 (OP 列由此推出, 不逐列写)
+constexpr int level_of(Trigger flush) { return flush == Trigger::onMinute ? 1 : 0; }
+constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDepth ? L2::ValidType::DEPTH : L2::ValidType::DATA; }
+
+// ----------------------------------------------------------------------------
 // SRC 列解析 (字段表消费者共用)
 //   SRC_KIND_##src             → FeatureDataType
+//   SRC_WIDTH_##src            → 列宽 (只有 META(w) 不是 1)
+//   SRC_VALID_##src            → L2::ValidType (OP 看节点 flush 域: 需要 node_flush::<node>, 见 FeatureStoreConfig)
 //   SRC_DISPATCH(P, code, src) → P_OP(code, node[, port]) / P_FUND(code, f) / P_CS(code, lvl, s, tf, m) /
-//                                P_LABEL(code) / P_META(code)   (消费者按来源各定义一组 P_*)
+//                                P_LABEL(code) / P_FLAG(code) / P_META(code, w)   (消费者按来源各定义一组 P_*)
 // ----------------------------------------------------------------------------
 #define SRC_KIND_OP(...) FeatureDataType::TS
 #define SRC_KIND_FUND(...) FeatureDataType::TS
 #define SRC_KIND_CS(...) FeatureDataType::CS
 #define SRC_KIND_LABEL FeatureDataType::LB
-#define SRC_KIND_META FeatureDataType::META
+#define SRC_KIND_FLAG FeatureDataType::META
+#define SRC_KIND_META(w) FeatureDataType::META
+
+#define SRC_WIDTH_OP(...) 1
+#define SRC_WIDTH_FUND(...) 1
+#define SRC_WIDTH_CS(...) 1
+#define SRC_WIDTH_LABEL 1
+#define SRC_WIDTH_FLAG 1
+#define SRC_WIDTH_META(w) (w)
+
+#define SRC_VALID_OP(node, ...) valid_of(node_flush::node)
+#define SRC_VALID_FUND(...) L2::ValidType::DATA
+#define SRC_VALID_CS(...) L2::ValidType::DATA
+#define SRC_VALID_LABEL L2::ValidType::DATA
+#define SRC_VALID_FLAG L2::ValidType::ALL
+#define SRC_VALID_META(w) L2::ValidType::DEPTH
 
 #define SRC_ARGS_OP(...) OP, __VA_ARGS__
 #define SRC_ARGS_FUND(f) FUND, f
 #define SRC_ARGS_CS(l, s, tf, m) CS, l, s, tf, m
 #define SRC_ARGS_LABEL LABEL
-#define SRC_ARGS_META META
+#define SRC_ARGS_FLAG FLAG
+#define SRC_ARGS_META(w) META, w
 #define SRC_DISPATCH(prefix, code, src) SRC_DISPATCH_I(prefix, code, SRC_ARGS_##src)
 #define SRC_DISPATCH_I(prefix, code, ...) SRC_DISPATCH_II(prefix, code, __VA_ARGS__)
 #define SRC_DISPATCH_II(prefix, code, kind, ...) prefix##_##kind(code __VA_OPT__(, ) __VA_ARGS__)
 
 // ----------------------------------------------------------------------------
-// 落盘层注册: X(level_name, level_index, fields_macro). DEPTH 层单独 (见 FeatureStoreConfig)
+// 落盘层注册: X(name, index, fields_macro, rows, psd, columnar)
+//   L0    秒频 (T = L0_ROWS), 逐列落盘 (Dist 按列选读)
+//   L1    分钟频, 整层一个文件
+//   DEPTH 分钟频盘口快照 (与 L1 同 T, 分钟内多次更新覆盖同一行), 整层一个文件; GUI OrderFlow 用
+//   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
 // ----------------------------------------------------------------------------
-#define ALL_LEVELS(X)      \
-  X(L0, 0, LEVEL_0_FIELDS) \
-  X(L1, 1, LEVEL_1_FIELDS)
+#define ALL_LEVELS(X)                              \
+  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", true)  \
+  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", false) \
+  X(DEPTH, 2, DEPTH_FIELDS, L1_ROWS, "00/100/00", false)

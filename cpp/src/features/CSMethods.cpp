@@ -16,8 +16,6 @@
 // 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
 #include "features/Misc/CSMethods.hpp"
 
-#include "features/Misc/Misc.hpp" // inverse_normal_cdf (NormRank 用)
-
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -32,6 +30,30 @@ namespace {
 constexpr int SW2021_L1_COUNT = 32; // 0=未知 (独立组), 1..31
 
 inline float nanf_() { return std::nanf(""); }
+
+// 逆正态 CDF (Beasley-Springer-Moro 简化近似), NormRank 用; p 越界钳到 ±6
+inline float inverse_normal_cdf(float p) {
+  constexpr float a0 = 2.50662823884f;
+  constexpr float a1 = -18.61500062529f;
+  constexpr float a2 = 41.39119773534f;
+  constexpr float a3 = -25.44106049637f;
+  constexpr float b1 = -8.47351093090f;
+  constexpr float b2 = 23.08336743743f;
+  constexpr float b3 = -21.06224101826f;
+  constexpr float b4 = 3.13082909833f;
+
+  if (p <= 0.0f)
+    return -6.0f;
+  if (p >= 1.0f)
+    return 6.0f;
+
+  float t = (p < 0.5f) ? p : (1.0f - p);
+  t = std::sqrt(-2.0f * std::log(t));
+  float num = a0 + t * (a1 + t * (a2 + t * a3));
+  float denom = 1.0f + t * (b1 + t * (b2 + t * (b3 + t * b4)));
+  float result = t - num / denom;
+  return (p < 0.5f) ? -result : result;
+}
 
 float median_in_place(std::vector<float> &tmp) {
   assert(!tmp.empty());
@@ -248,7 +270,7 @@ void mean_fill(float *y, std::size_t n) {
       y[i] = mean;
 }
 
-// 普通方法: rank → inverse normal (与 Misc.hpp sparse 版同口径), 缺失 → 0
+// 普通方法: rank → inverse normal, 缺失 → 0
 void rank_inverse_normal(float *y, std::size_t n) {
   thread_local std::vector<std::pair<float, std::size_t>> sv;
   sv.clear();

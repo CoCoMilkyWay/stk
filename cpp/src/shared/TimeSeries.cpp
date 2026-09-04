@@ -58,13 +58,8 @@ static FeatureConfig get_feature_config(const Feature &feature) {
   assert(primary_idx >= 0);
   assert(level >= 0 && level < 2);
 
-  if (level == 0) {
-    cfg.meta_list = feature.metadata.features_l0.data();
-    cfg.meta_count = feature.metadata.features_l0.size();
-  } else {
-    cfg.meta_list = feature.metadata.features_l1.data();
-    cfg.meta_count = feature.metadata.features_l1.size();
-  }
+  cfg.meta_list = feature.metadata.features[level].data();
+  cfg.meta_count = feature.metadata.features[level].size();
 
   cfg.columns = {static_cast<size_t>(primary_idx)};
 

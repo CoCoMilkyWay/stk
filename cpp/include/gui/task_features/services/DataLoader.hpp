@@ -70,8 +70,8 @@ public:
 
     // Create depth buffer once for entire coroutine lifetime (~500MB)
     // Reused across all L0 loads within this tab session
-    FeatureReader::DepthTensor depth_buffer;
-    depth_buffer.preallocate(of.l1.num_assets);
+    FeatureReader::DayTensor depth_buffer;
+    depth_buffer.preallocate_level(of.l1.num_assets, 2);
 
     // Create L0 feature buffer (preallocated for L0 level)
     FeatureReader::DayTensor l0_tensor;
@@ -203,21 +203,16 @@ public:
 
           // Use actual T from file header (not constant)
           for (size_t t = 0; t < tensor.T[1]; ++t) {
-            float valid_flag = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_data_valid, a));
+            float valid_flag = static_cast<float>(tensor.get<1>(t, L1_Field::_data_valid, a));
             if (valid_flag <= 0.5f)
               continue;
 
-            // Read prices as integer cents and convert to yuan
-            float o_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_open, a));
-            float h_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_high, a));
-            float l_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_low, a));
-            float c_cents = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_close, a));
-            float v = static_cast<float>(tensor.get<1>(t, L1_FieldOffset::_ohlc_volume, a));
-
-            float o = o_cents * 0.01f;
-            float h = h_cents * 0.01f;
-            float l = l_cents * 0.01f;
-            float c = c_cents * 0.01f;
+            // OHLC 已是元 (Ohlc 节点直写 MinuteData)
+            float o = static_cast<float>(tensor.get<1>(t, L1_Field::_ohlc_open, a));
+            float h = static_cast<float>(tensor.get<1>(t, L1_Field::_ohlc_high, a));
+            float l = static_cast<float>(tensor.get<1>(t, L1_Field::_ohlc_low, a));
+            float c = static_cast<float>(tensor.get<1>(t, L1_Field::_ohlc_close, a));
+            float v = static_cast<float>(tensor.get<1>(t, L1_Field::_ohlc_volume, a));
 
             day.push(t, o, h, l, c, v);
           }
@@ -254,7 +249,7 @@ public:
   // ========================================================================
   // Load L0 data for single day (sparse, pre-reserved)
   // ========================================================================
-  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, const OrderFlow::L1Cache &l1_cache, FeatureReader::DepthTensor &depth_tensor) {
+  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, const OrderFlow::L1Cache &l1_cache, FeatureReader::DayTensor &depth_tensor) {
     if (cache.matches(date, asset_idx))
       return true;
 
@@ -271,10 +266,10 @@ public:
     // Actual T/F dimensions read from file header
     {
       TraceN("L0_LoadDepth");
-      reader_.load_depth(date, depth_tensor);
+      reader_.load_day_level(date, 2, depth_tensor);
     }
-
-    assert(depth_tensor.T <= DEPTH_ROWS && "Depth tensor rows exceed minute capacity");
+    const size_t depth_T = depth_tensor.T[2];
+    assert(depth_T <= LEVELS[2].rows && "Depth tensor rows exceed minute capacity");
 
     if (asset_idx >= depth_tensor.A) {
       cache.loaded = true;
@@ -288,7 +283,7 @@ public:
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
 
     // Reserve full capacity for aggressive allocation (分钟频)
-    day.reserve(DEPTH_ROWS);
+    day.reserve(LEVELS[2].rows);
 
     // Opening price captured from first valid tick (reset per day)
     float opening_price = 0.0f;
@@ -298,13 +293,13 @@ public:
     // Sparse loading: only store valid rows (depth_valid=true or data_valid=true)
     // Depth 张量为分钟频 (行 m = 分钟末盘口快照); GUI 保持秒级 X 轴:
     // 映射到该分钟最后一秒, step 渲染自然铺满整分钟
-    for (size_t m = 0; m < depth_tensor.T; ++m) {
+    for (size_t m = 0; m < depth_T; ++m) {
       const size_t t = L1_to_L0(m) + 59; // 分钟末秒
       assert(t < OrderFlowConst::L0_CAPACITY && "depth minute row exceeds L0_CAPACITY");
 
       // Read validity flags (from depth tensor)
-      float depth_valid_val = static_cast<float>(depth_tensor.get(m, DepthFieldOffset::_depth_valid, asset_idx));
-      float data_valid_val = static_cast<float>(depth_tensor.get(m, DepthFieldOffset::_data_valid, asset_idx));
+      float depth_valid_val = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_depth_valid, asset_idx));
+      float data_valid_val = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_data_valid, asset_idx));
 
       bool depth_valid = (depth_valid_val > 0.5f);
       bool data_valid = (data_valid_val > 0.5f);
@@ -319,7 +314,7 @@ public:
 
       if (depth_valid) {
         // Read prices (already in yuan, no conversion needed)
-        mid = static_cast<float>(depth_tensor.get(m, DepthFieldOffset::_mid_price, asset_idx));
+        mid = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_mid_price, asset_idx));
 
         // Capture opening price from first valid tick
         if (opening_price == 0.0f && mid > 0) [[unlikely]] {
@@ -328,8 +323,7 @@ public:
           price_max = opening_price * 1.25f;
         }
 
-        // Multi-width fields: manual offset calculation
-        // Filter sentinel values at each depth level (zero out if outside ±25% cage)
+        // 宽字段按档 (sub) 取; 各档价格出 ±25% 笼子的视为哨兵值
         // If no opening price yet, mark entire tick invalid
         if (opening_price == 0.0f) [[unlikely]] {
           depth_valid = false;
@@ -337,14 +331,9 @@ public:
           mid = (mid < price_min || mid > price_max) ? std::numeric_limits<float>::quiet_NaN() : mid;
 
           for (size_t i = 0; i < N; ++i) {
-            size_t bp_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_price] + i;
-            size_t ap_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_price] + i;
-            size_t bv_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_bid_volume] + i;
-            size_t av_offset = DEPTH_FIELD_OFFSETS[DepthFieldOffset::_ask_volume] + i;
-
             // Prices are already in yuan (no conversion needed)
-            float bp_yuan = static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + bp_offset) * depth_tensor.A + asset_idx]);
-            float ap_yuan = static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + ap_offset) * depth_tensor.A + asset_idx]);
+            float bp_yuan = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_bid_price, asset_idx, i));
+            float ap_yuan = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_ask_price, asset_idx, i));
 
             // Check if prices are outside cage (sentinel detection)
             bool bp_outside = (bp_yuan < price_min || bp_yuan > price_max);
@@ -352,10 +341,10 @@ public:
 
             // Use NaN for sentinel values (filtered at source)
             bp[i] = bp_outside ? std::numeric_limits<float>::quiet_NaN() : bp_yuan;
-            bv[i] = bp_outside ? 0.0f : static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + bv_offset) * depth_tensor.A + asset_idx]);
+            bv[i] = bp_outside ? 0.0f : static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_bid_volume, asset_idx, i));
 
             ap[i] = ap_outside ? std::numeric_limits<float>::quiet_NaN() : ap_yuan;
-            av[i] = ap_outside ? 0.0f : static_cast<float>(depth_tensor.data[(m * DEPTH_TOTAL_WIDTH + av_offset) * depth_tensor.A + asset_idx]);
+            av[i] = ap_outside ? 0.0f : static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_ask_volume, asset_idx, i));
           }
         }
       }
@@ -416,7 +405,7 @@ public:
         // → 在本分钟内向前回溯到最近一个 _data_valid 秒
         {
           size_t lo = (t >= 59) ? t - 59 : 0;
-          while (t > lo && static_cast<float>(day_tensor.get<0>(t, L0_FieldOffset::_data_valid, asset_idx)) <= 0.5f)
+          while (t > lo && static_cast<float>(day_tensor.get<0>(t, L0_Field::_data_valid, asset_idx)) <= 0.5f)
             --t;
         }
 
@@ -473,10 +462,8 @@ public:
           if (day.size() != 2)
             continue;
 
-          std::string l1_path = day_entry.path().string() + "/features_L1.zst";
-          if (std::filesystem::exists(l1_path)) {
+          if (FeatureReader::has_date(features_dir_, year + month + day))
             dates.push_back(year + month + day);
-          }
         }
       }
     }

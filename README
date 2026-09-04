@@ -53,9 +53,9 @@ stk/
 │   │   │   ├── Operator/TS/                             # 🧮 时序算子 = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
 │   │   │   ├── Misc/                                    # 🧮 CSMethods 截面方法 (NormRank/WinsorRank/NeutralRank, 复刻 qmt) / Misc 截面数学函数
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
-│   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表展开: 各层字段数/宽度/偏移/枚举/截面表/指纹
-│   │   │       ├── FeatureReader.hpp                    # 🧮 读取引擎: Zstd解压/列式加载
+│   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数
+│   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/列式加载
 │   │   │       └── ZstdHelper.hpp                       # 🧮 Zstd压缩工具
 │   │   ├── worker/                                      # ⚡ 多线程工作流编排
 │   │   │   ├── io_worker.hpp                            # ⚡ IO工作器: 文件读写

@@ -21,22 +21,18 @@
 // ============================================================================
 // FEATURE READER - Hybrid Compressed Format
 // ============================================================================
-// Storage format (header = 5 × size_t: T, F, A, axis_hash, table_fingerprint):
-//   L0: features_L0_f{idx}.zst - [Header: T,1,A,h][Zstd compressed column]
-//       (columnar for selective loading in Dist analysis)
-//   L1: features_L1.zst - [Header: T,F_L1,A,h][Zstd compressed merged data]
-//       (merged for fewer files and faster writes)
-//   Depth: depth.zst - [Header: T,F_depth,A,h][Zstd compressed data]
+// Storage format (header = 5 × size_t: T, F, A, axis_hash, table_fingerprint), 每层按 LEVELS[lvl].columnar:
+//   逐列 (L0):        features_L0_f{idx}.zst   [Header: T,1,A,h][Zstd column]   (Dist 按列选读)
+//   整层 (L1/DEPTH):  features_<LVL>.zst       [Header: T,F,A,h][Zstd merged]
 //
 // axis_hash = AssetAxis::hash_at(A): 列 → 资产的映射不在文件里, 靠 A 轴顺序.
 //   存指纹后读文件时 O(1) 就能确认列序没漂移 (见 shared/AssetAxis.hpp).
-// table_fingerprint = 写入时字段表指纹 (FeatureStoreConfig L*_FINGERPRINT / DEPTH_FINGERPRINT):
+// table_fingerprint = 写入时字段表指纹 (LEVELS[lvl].fingerprint):
 //   字段表改了旧文件立刻断言失败, 不会静默错位.
 //
 // APIs:
-//   1. load_day_level() - for GUI visualization (all features, single day)
-//   2. load_depth() - for OrderFlow GUI visualization
-//   3. load_month_columns() - for Dist analysis (batch monthly loading, selective features)
+//   1. load_day_level(date, lvl, DayTensor)  - GUI: 单日整层 (L0/L1/DEPTH 同一套)
+//   2. load_month_columns()                  - Dist: 整月, 选列
 // ============================================================================
 
 class FeatureReader {
@@ -157,37 +153,6 @@ private:
   }
 
 public:
-  // Depth tensor for OrderFlow visualization
-  struct DepthTensor {
-    std::string date;
-    size_t T = 0; // Actual rows (read from file header)
-    size_t F = 0; // Actual feature width (read from file header)
-    size_t A = 0;
-    std::vector<feature_storage_t> data;
-
-    inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
-      assert(t < T && a < A);
-      size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
-      assert(f_offset < F);
-      return data[(t * F + f_offset) * A + a];
-    }
-
-    inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
-      assert(t < T);
-      size_t f_offset = DEPTH_FIELD_OFFSETS[f_enum];
-      assert(f_offset < F);
-      return data.data() + (t * F + f_offset) * A;
-    }
-
-    bool is_loaded() const { return A > 0; }
-
-    void preallocate(size_t A_) {
-      A = A_;
-      // Preallocate for max capacity, actual T/F set by load_depth from header
-      data.resize(DEPTH_ROWS * DEPTH_TOTAL_WIDTH * A);
-    }
-  };
-
   // Month tensor for Dist analysis (preallocated, zero-copy)
   struct MonthTensor {
     std::vector<std::string> dates;      // [N_days]
@@ -209,14 +174,14 @@ public:
       max_days = max_days_;
       max_features = max_features_;
 
-      const size_t T_per_day = MAX_ROWS_PER_LEVEL[level];
+      const size_t T_per_day = LEVELS[level].rows;
       data.resize(max_days * T_per_day * max_features * A);
       day_offsets.resize(max_days + 1);
 
-      if (level == 0) {
+      if (LEVELS[level].columnar) {
         temp_column.resize(T_per_day * 1 * A);
       } else {
-        temp_day.resize(T_per_day * FIELDS_PER_LEVEL[level] * A);
+        temp_day.resize(T_per_day * LEVELS[level].width * A);
       }
     }
 
@@ -230,42 +195,33 @@ public:
   explicit FeatureReader(const std::string &base_dir) : base_dir_(base_dir) {}
 
   // ========================================================================
-  // Single Day Loading (for OrderFlow GUI - loads all features)
+  // Single Day Loading (GUI: 单日整层, 任一层)
   // ========================================================================
 
-  // DayTensor structure (for OrderFlow GUI compatibility)
+  // 一天若干层的张量; 每层 [T][F][A], T/F 以文件头为准
   struct DayTensor {
     std::string date;
     size_t T[LEVEL_COUNT] = {0}; // Actual rows per level (read from file header)
     size_t F[LEVEL_COUNT] = {0}; // Actual feature width per level (read from file header)
     size_t A = 0;
     std::vector<feature_storage_t> data[LEVEL_COUNT];
-    std::vector<feature_storage_t> temp_column; // L0 interleave buffer (reused)
+    std::vector<feature_storage_t> temp_column; // 逐列层的交织缓冲 (复用)
 
+    // 宽字段 (DEPTH 的 N 档) 用 sub 取档内下标
     template <size_t Level>
-    inline feature_storage_t get(size_t t, size_t f_enum, size_t a) const {
+    inline feature_storage_t get(size_t t, size_t field, size_t a, size_t sub = 0) const {
       static_assert(Level < LEVEL_COUNT);
-      assert(t < T[Level] && a < A);
-      size_t f_offset;
-      if constexpr (Level == 0) {
-        f_offset = L0_FIELD_OFFSETS[f_enum];
-      } else if constexpr (Level == 1) {
-        f_offset = L1_FIELD_OFFSETS[f_enum];
-      }
+      assert(t < T[Level] && a < A && sub < LEVELS[Level].fields[field].width);
+      const size_t f_offset = LEVELS[Level].offsets[field] + sub;
       assert(f_offset < F[Level]);
       return data[Level][(t * F[Level] + f_offset) * A + a];
     }
 
     template <size_t Level>
-    inline const feature_storage_t *get_all_assets(size_t t, size_t f_enum) const {
+    inline const feature_storage_t *get_all_assets(size_t t, size_t field, size_t sub = 0) const {
       static_assert(Level < LEVEL_COUNT);
-      assert(t < T[Level]);
-      size_t f_offset;
-      if constexpr (Level == 0) {
-        f_offset = L0_FIELD_OFFSETS[f_enum];
-      } else if constexpr (Level == 1) {
-        f_offset = L1_FIELD_OFFSETS[f_enum];
-      }
+      assert(t < T[Level] && sub < LEVELS[Level].fields[field].width);
+      const size_t f_offset = LEVELS[Level].offsets[field] + sub;
       assert(f_offset < F[Level]);
       return data[Level].data() + (t * F[Level] + f_offset) * A;
     }
@@ -277,10 +233,9 @@ public:
     void preallocate_level(size_t A_, size_t level) {
       A = A_;
       // Preallocate for max capacity, actual T/F set by load_day_level from header
-      data[level].resize(MAX_ROWS_PER_LEVEL[level] * FIELDS_PER_LEVEL[level] * A);
-      if (level == 0) {
-        temp_column.resize(MAX_ROWS_PER_LEVEL[0] * 1 * A); // L0 needs interleave buffer
-      }
+      data[level].resize(LEVELS[level].rows * LEVELS[level].width * A);
+      if (LEVELS[level].columnar)
+        temp_column.resize(LEVELS[level].rows * 1 * A);
     }
   };
 
@@ -293,28 +248,24 @@ public:
     assert(out.A > 0 && "Must preallocate() before load_day_level()");
     out.date = date;
 
-    std::string day_dir = base_dir_ + "/" + date.substr(0, 4) + "/" +
-                          date.substr(4, 2) + "/" + date.substr(6, 2);
-
-    const size_t T_max = MAX_ROWS_PER_LEVEL[level];
-    const size_t F_max = FIELDS_PER_LEVEL[level];
+    const std::string day_dir = feature_day_dir(base_dir_, date);
+    const auto &L = LEVELS[level];
     const size_t A = out.A;
 
-    if (level == 0) {
-      // L0: columnar storage - read each column and interleave
+    if (L.columnar) {
+      // 逐列: 每列读到 temp 再交织进 [T][F][A]
       feature_storage_t *dest = out.data[level].data();
       feature_storage_t *temp = out.temp_column.data();
 
       size_t T_actual = 0;
       {
-        TraceN("ReadL0Columns");
-        for (size_t f = 0; f < F_max; ++f) {
-          std::string col_path = day_dir + "/features_L0_f" + std::to_string(f) + ".zst";
-          assert(std::filesystem::exists(col_path) && "L0 column file missing");
+        TraceN("ReadColumns");
+        for (size_t f = 0; f < L.width; ++f) {
+          const std::string col_path = feature_column_file(day_dir, level, f);
+          assert(std::filesystem::exists(col_path) && "column file missing");
 
-          // Read column into temp buffer and get actual dimensions
           size_t T_col, F_col, A_col;
-          read_compressed_data(col_path, T_max, 1, A, LEVEL_FINGERPRINTS[0], temp, &T_col, &F_col, &A_col);
+          read_compressed_data(col_path, L.rows, 1, A, L.fingerprint, temp, &T_col, &F_col, &A_col);
 
           if (f == 0) {
             T_actual = T_col; // First column sets T
@@ -322,54 +273,25 @@ public:
             assert(T_col == T_actual && "Column T mismatch");
           }
 
-          // Interleave into destination
           for (size_t t = 0; t < T_actual; ++t) {
-            std::memcpy(&dest[(t * F_max + f) * A], &temp[t * A], A * sizeof(feature_storage_t));
+            std::memcpy(&dest[(t * L.width + f) * A], &temp[t * A], A * sizeof(feature_storage_t));
           }
         }
       }
 
-      // Update dynamic dimensions
       out.T[level] = T_actual;
-      out.F[level] = F_max; // F is total column count
+      out.F[level] = L.width;
     } else {
-      // L1/L2: merged storage - read directly into data buffer
-      std::string merged_path = day_dir + "/features_L" + std::to_string(level) + ".zst";
+      const std::string merged_path = feature_file(day_dir, level);
       assert(std::filesystem::exists(merged_path) && "Merged file missing");
 
       size_t T_actual, F_actual, A_actual;
-      read_compressed_data(merged_path, T_max, F_max, A, LEVEL_FINGERPRINTS[level], out.data[level].data(),
+      read_compressed_data(merged_path, L.rows, L.width, A, L.fingerprint, out.data[level].data(),
                            &T_actual, &F_actual, &A_actual);
 
-      // Update dynamic dimensions
       out.T[level] = T_actual;
       out.F[level] = F_actual;
     }
-  }
-
-  // ========================================================================
-  // Depth Loading (for OrderFlow GUI)
-  // ========================================================================
-
-  void load_depth(const std::string &date, DepthTensor &out) const {
-    Trace;
-    assert(date.size() == 8);
-    assert(out.A > 0 && "Must preallocate() before load_depth()");
-    out.date = date;
-
-    std::string path = base_dir_ + "/" + date.substr(0, 4) + "/" +
-                       date.substr(4, 2) + "/" + date.substr(6, 2) + "/depth.zst";
-    assert(std::filesystem::exists(path) && "Depth file missing");
-
-    // Read data and get actual dimensions from header
-    size_t T_actual, F_actual, A_actual;
-    read_compressed_data(path, DEPTH_ROWS, DEPTH_TOTAL_WIDTH, out.A, DEPTH_FINGERPRINT,
-                         out.data.data(), &T_actual, &F_actual, &A_actual);
-
-    // Update dynamic dimensions (buffer already preallocated, no resize)
-    out.T = T_actual;
-    out.F = F_actual;
-    assert(out.A == A_actual && "Asset count mismatch");
   }
 
   // ========================================================================
@@ -390,9 +312,10 @@ public:
     out.feature_indices = feature_indices;
 
     const size_t level = out.level;
+    const auto &L = LEVELS[level];
     const size_t A = out.A;
     const size_t F_selected = feature_indices.size();
-    const size_t T_per_day = MAX_ROWS_PER_LEVEL[level];
+    const size_t T_per_day = L.rows;
 
     {
       TraceN("ListDates");
@@ -408,8 +331,8 @@ public:
       out.day_offsets[i] = i * T_per_day;
     }
 
-    if (level == 0) {
-      // L0: columnar storage - use temp_column buffer
+    if (L.columnar) {
+      // 逐列层: 只读选中的列文件
       feature_storage_t *temp = out.temp_column.data();
 
       for (size_t day_idx = 0; day_idx < num_days; ++day_idx) {
@@ -417,21 +340,20 @@ public:
         const auto &date = out.dates[day_idx];
         TraceTextS(date.c_str());
 
-        std::string day_dir = base_dir_ + "/" + date.substr(0, 4) + "/" +
-                              date.substr(4, 2) + "/" + date.substr(6, 2);
+        const std::string day_dir = feature_day_dir(base_dir_, date);
         const size_t t_offset = day_idx * T_per_day;
 
         {
-          TraceN("ReadL0Columns");
+          TraceN("ReadColumns");
           for (size_t f_local = 0; f_local < F_selected; ++f_local) {
             size_t f_global = feature_indices[f_local];
-            std::string col_path = day_dir + "/features_L0_f" + std::to_string(f_global) + ".zst";
-            assert(std::filesystem::exists(col_path) && "L0 column file missing");
+            const std::string col_path = feature_column_file(day_dir, level, f_global);
+            assert(std::filesystem::exists(col_path) && "column file missing");
 
             // Read into temp buffer
             {
               TraceN("ReadColumn");
-              read_compressed_data(col_path, T_per_day, 1, A, LEVEL_FINGERPRINTS[0], temp);
+              read_compressed_data(col_path, T_per_day, 1, A, L.fingerprint, temp);
             }
 
             // Copy to destination
@@ -447,8 +369,8 @@ public:
         }
       }
     } else {
-      // L1/L2: merged storage - use temp_day buffer
-      const size_t F_total = FIELDS_PER_LEVEL[level];
+      // 整层文件: 读整天再抽选中的列
+      const size_t F_total = L.width;
       feature_storage_t *temp = out.temp_day.data();
 
       for (size_t day_idx = 0; day_idx < num_days; ++day_idx) {
@@ -456,9 +378,7 @@ public:
         const auto &date = out.dates[day_idx];
         TraceTextS(date.c_str());
 
-        std::string merged_file = base_dir_ + "/" + date.substr(0, 4) + "/" +
-                                  date.substr(4, 2) + "/" + date.substr(6, 2) +
-                                  "/features_L" + std::to_string(level) + ".zst";
+        const std::string merged_file = feature_file(feature_day_dir(base_dir_, date), level);
         assert(std::filesystem::exists(merged_file) && "Merged file missing");
 
         const size_t t_offset = day_idx * T_per_day;
@@ -466,7 +386,7 @@ public:
         // Read into temp buffer
         {
           TraceN("ReadMerged");
-          read_compressed_data(merged_file, T_per_day, F_total, A, LEVEL_FINGERPRINTS[level], temp);
+          read_compressed_data(merged_file, T_per_day, F_total, A, L.fingerprint, temp);
         }
 
         // Extract selected features
@@ -475,7 +395,7 @@ public:
           for (size_t t = 0; t < T_per_day; ++t) {
             for (size_t f_local = 0; f_local < F_selected; ++f_local) {
               size_t f_global = feature_indices[f_local];
-              size_t f_offset = get_field_offset(level, f_global);
+              size_t f_offset = L.offsets[f_global];
               std::memcpy(&out.data[(t_offset + t) * F_selected * A + f_local * A],
                           &temp[t * F_total * A + f_offset * A],
                           A * sizeof(feature_storage_t));
@@ -490,13 +410,12 @@ public:
   // Utility Functions
   // ========================================================================
 
-  bool has_date(const std::string &date) const {
+  // 该日是否有特征文件 (以最后一层的整层文件为准: IO worker 按层序落盘, 它在则全在)
+  static bool has_date(const std::string &base_dir, const std::string &date) {
     assert(date.size() == 8);
-    std::string path = base_dir_ + "/" + date.substr(0, 4) + "/" +
-                       date.substr(4, 2) + "/" + date.substr(6, 2) +
-                       "/features_L0_f0.zst";
-    return std::filesystem::exists(path);
+    return std::filesystem::exists(feature_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1));
   }
+  bool has_date(const std::string &date) const { return has_date(base_dir_, date); }
 
   std::vector<std::string> list_dates(const std::string &year, const std::string &month) const {
     std::vector<std::string> dates;

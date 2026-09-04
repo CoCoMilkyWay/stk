@@ -15,17 +15,9 @@ Feature::Feature() {
 
 void Feature::Metadata::init_from_compile_time() {
   // Copy from constexpr arrays to runtime vectors (for filtering/sorting)
-  features_l0.assign(FeatureMetadataRegistry::FEATURES_L0,
-                     FeatureMetadataRegistry::FEATURES_L0 + FeatureMetadataRegistry::COUNT_L0);
-
-  features_l1.assign(FeatureMetadataRegistry::FEATURES_L1,
-                     FeatureMetadataRegistry::FEATURES_L1 + FeatureMetadataRegistry::COUNT_L1);
-
-  // Mark level for each feature
-  for (auto &f : features_l0)
-    f.level = 0;
-  for (auto &f : features_l1)
-    f.level = 1;
+  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+    features[lvl].assign(FeatureMetadataRegistry::FEATURES[lvl],
+                         FeatureMetadataRegistry::FEATURES[lvl] + FeatureMetadataRegistry::COUNTS[lvl]);
 }
 
 // ============================================================================

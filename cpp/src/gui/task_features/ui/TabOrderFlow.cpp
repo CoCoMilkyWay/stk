@@ -381,8 +381,8 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, bool force_reset
       // Get feature name for legend
       const char *feat_name = "L0 Feature";
       if (sel.primary_feature_idx >= 0 &&
-          static_cast<size_t>(sel.primary_feature_idx) < feature.metadata.features_l0.size()) {
-        feat_name = feature.metadata.features_l0[sel.primary_feature_idx].name_cn;
+          static_cast<size_t>(sel.primary_feature_idx) < feature.metadata.features[0].size()) {
+        feat_name = feature.metadata.features[0][sel.primary_feature_idx].name_cn;
       }
 
       // Draw feature line (step plot, teal color matching L1 overlay style)

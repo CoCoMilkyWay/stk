@@ -19,6 +19,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <thread>
 
 namespace GUI::Features {
@@ -439,27 +440,22 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
   if (block.dates.empty())
     return;
 
-  // 获取 feature offset (对仗: 三个 level 相同逻辑)
-  size_t f_offset = 0;
+  // feature offset + 有效标志列 offset (按该列 valid_type 选 _depth_valid / _data_valid)
+  assert(level >= 0 && level < (int)LEVEL_COUNT);
+  const auto &meta = data.feature.metadata.features[level];
+  assert(feature_idx >= 0 && feature_idx < (int)meta.size());
+  const L2::ValidType valid_type = meta[feature_idx].valid_type;
+
+  const auto &L = LEVELS[level];
+  const size_t f_offset = L.offsets[feature_idx];
   size_t valid_offset = 0;
-  L2::ValidType valid_type = L2::ValidType::ALL;
-
-  const auto &meta = level == 0 ? data.feature.metadata.features_l0
-                                : data.feature.metadata.features_l1;
-  if (feature_idx >= 0 && feature_idx < (int)meta.size()) {
-    valid_type = meta[feature_idx].valid_type;
-  }
-
-  if (level == 0) {
-    f_offset = L0_FIELD_OFFSETS[feature_idx];
-    if (valid_type == L2::ValidType::DEPTH) {
-      valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_depth_valid];
-    } else {
-      valid_offset = L0_FIELD_OFFSETS[L0_FieldOffset::_data_valid];
-    }
-  } else {
-    f_offset = L1_FIELD_OFFSETS[feature_idx];
-    valid_offset = L1_FIELD_OFFSETS[L1_FieldOffset::_data_valid];
+  if (valid_type != L2::ValidType::ALL) {
+    const char *flag = valid_type == L2::ValidType::DEPTH ? "_depth_valid" : "_data_valid";
+    size_t i = 0;
+    while (i < L.field_count && std::strcmp(L.fields[i].code, flag) != 0)
+      ++i;
+    assert(i < L.field_count && "valid flag column missing in this level");
+    valid_offset = L.offsets[i];
   }
 
   cache.raw.resize(A);

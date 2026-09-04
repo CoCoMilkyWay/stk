@@ -95,10 +95,7 @@ private:
     std::atomic<TensorState> state{TensorState::FREE};
     std::atomic<uint32_t> epoch{0}; // Generation number for cache invalidation
     char date[16] = {0};            // Fixed-size date string "YYYYMMDD"
-    feature_storage_t *data[LEVEL_COUNT] = {nullptr};
-
-    // Depth data [T][F_depth][A] (separate storage for orderflow)
-    feature_storage_t *depth_data = nullptr;
+    feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]
 
     // Two-level synchronization (key optimization: O(W) scan instead of O(A))
     size_t *ts_write_pos = nullptr;                   // [A] per-asset write position (TS-local, no sync)
@@ -126,8 +123,7 @@ private:
 
     void allocate(size_t num_assets, size_t num_ts_workers) {
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        const size_t total_bytes = MAX_ROWS_PER_LEVEL[lvl] * FIELDS_PER_LEVEL[lvl] * num_assets * sizeof(feature_storage_t);
-        const size_t aligned_bytes = ((total_bytes + 63) / 64) * 64;
+        const size_t aligned_bytes = ((level_bytes(lvl, num_assets) + 63) / 64) * 64;
 #ifdef _WIN32
         data[lvl] = static_cast<feature_storage_t *>(_aligned_malloc(aligned_bytes, 64));
 #else
@@ -136,29 +132,13 @@ private:
         assert(data[lvl]);
       }
 
-      // Allocate depth data (分钟频, T = DEPTH_ROWS = L1)
-      const size_t depth_total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
-      const size_t depth_aligned_bytes = ((depth_total_bytes + 63) / 64) * 64;
-#ifdef _WIN32
-      depth_data = static_cast<feature_storage_t *>(_aligned_malloc(depth_aligned_bytes, 64));
-#else
-      depth_data = static_cast<feature_storage_t *>(aligned_alloc(64, depth_aligned_bytes));
-#endif
-      assert(depth_data);
-
       ts_write_pos = new size_t[num_assets]();
       ts_worker_state = new std::atomic<uint64_t>[num_ts_workers]();
     }
 
     void reset(size_t num_assets, size_t num_ts_workers) {
-      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        const size_t total_bytes = MAX_ROWS_PER_LEVEL[lvl] * FIELDS_PER_LEVEL[lvl] * num_assets * sizeof(feature_storage_t);
-        std::memset(data[lvl], 0, total_bytes);
-      }
-
-      // Reset depth data
-      const size_t depth_total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
-      std::memset(depth_data, 0, depth_total_bytes);
+      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+        std::memset(data[lvl], 0, level_bytes(lvl, num_assets));
 
       for (size_t i = 0; i < num_assets; ++i) {
         ts_write_pos[i] = 0;
@@ -180,17 +160,15 @@ private:
 #endif
         }
       }
-      if (depth_data) {
-#ifdef _WIN32
-        _aligned_free(depth_data);
-#else
-        free(depth_data);
-#endif
-      }
       delete[] ts_write_pos;
       delete[] ts_worker_state;
     }
   };
+
+  // 某层一天张量字节数 [T][F][A]
+  static constexpr size_t level_bytes(size_t lvl, size_t num_assets) {
+    return LEVELS[lvl].rows * LEVELS[lvl].width * num_assets * sizeof(feature_storage_t);
+  }
 
   // Config
   const std::uint64_t axis_hash_; // A 轴前缀指纹, 落进每个特征文件头
@@ -249,12 +227,8 @@ public:
 
     // Calculate sizes
     size_t bytes_per_day = 0;
-    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-      bytes_per_day += MAX_ROWS_PER_LEVEL[lvl] * num_assets * FIELDS_PER_LEVEL[lvl] * sizeof(feature_storage_t);
-    }
-    // Add depth data size
-    const size_t depth_bytes = DEPTH_ROWS * num_assets * DEPTH_TOTAL_WIDTH * sizeof(feature_storage_t);
-    bytes_per_day += depth_bytes;
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+      bytes_per_day += level_bytes(lvl, num_assets);
 
     // 限制 pool_size 不超过 40% 当前可用内存 (总内存会高估: HugePages 预留 /
     // 其他进程占用对普通分配不可用, 按总内存分池会被 OOM killer SIGKILL).
@@ -277,22 +251,12 @@ public:
 
     // Detailed dimension breakdown
     std::cout << "Dimension Details:\n";
-    // Add depth info
-    {
-      const size_t T = DEPTH_ROWS;
-      const size_t A = num_assets;
-      const size_t F = DEPTH_TOTAL_WIDTH;
-      printf("  Depth  [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", T, F, A, depth_bytes / (1024.0 * 1024.0));
-    }
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-      const size_t T = MAX_ROWS_PER_LEVEL[lvl];
-      const size_t A = num_assets;
-      const size_t F = FIELDS_PER_LEVEL[lvl];
-      const size_t bytes = T * A * F * sizeof(feature_storage_t);
-      printf("  L%-5zu [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", lvl, T, F, A, bytes / (1024.0 * 1024.0));
+      const auto &L = LEVELS[lvl];
+      printf("  %-6s [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", L.name, L.rows, L.width, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
     }
 
-    printf("\nPer-day tensor: %.2f MB (features + depth) | Pool size: %zu slots | Total: %.2f GB\n",
+    printf("\nPer-day tensor: %.2f MB | Pool size: %zu slots | Total: %.2f GB\n",
            bytes_per_day / (1024.0 * 1024.0),
            pool_size_,
            (bytes_per_day * pool_size_) / (1024.0 * 1024.0 * 1024.0));
@@ -313,22 +277,12 @@ public:
 
       // Touch all pages to force physical allocation
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        const size_t total_bytes = MAX_ROWS_PER_LEVEL[lvl] * FIELDS_PER_LEVEL[lvl] * num_assets * sizeof(feature_storage_t);
+        const size_t total_bytes = level_bytes(lvl, num_assets);
         const size_t page_size = 4096;
         for (size_t offset = 0; offset < total_bytes; offset += page_size) {
           reinterpret_cast<volatile char *>(pool_[i].data[lvl])[offset] = 0;
         }
         reinterpret_cast<volatile char *>(pool_[i].data[lvl])[total_bytes - 1] = 0;
-      }
-
-      // Touch depth data pages
-      {
-        const size_t total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * num_assets * sizeof(feature_storage_t);
-        const size_t page_size = 4096;
-        for (size_t offset = 0; offset < total_bytes; offset += page_size) {
-          reinterpret_cast<volatile char *>(pool_[i].depth_data)[offset] = 0;
-        }
-        reinterpret_cast<volatile char *>(pool_[i].depth_data)[total_bytes - 1] = 0;
       }
 
       // Initialize state and reset slot
@@ -397,7 +351,7 @@ public:
   }
 
   // Update progress after writing to (asset_id, l0_time_index)
-  // Called by fstore::ts_write* / depth_write*
+  // Called by CoreSequential after each tick (progress = L0 row index)
   // HOT PATH - no checks, assumes ts_worker_init() was called
   void ts_update(const std::string &date, int worker_id, size_t asset_id, size_t l0_time_index) const {
     Slot &slot = ts_get_slot(date, worker_id);
@@ -433,7 +387,7 @@ public:
   // Mark worker done for this date (API name from architecture doc)
   void ts_done(const std::string &date, int worker_id) const {
     Slot &slot = ts_get_slot(date, worker_id);
-    const size_t final_progress = MAX_ROWS_PER_LEVEL[0];
+    const size_t final_progress = LEVELS[0].rows;
 
     // Update TS-local metadata (not read by CS, no sync needed)
     for (size_t a : assigned_assets_[worker_id]) {
@@ -515,7 +469,7 @@ public:
 
       // If all TS workers done, no more progress expected
       if (all_done) {
-        slot->cs_read_pos = MAX_ROWS_PER_LEVEL[0]; // Force all ready, CS-local
+        slot->cs_read_pos = LEVELS[0].rows; // Force all ready, CS-local
         return;
       }
 
@@ -616,9 +570,9 @@ public:
   }
 
   // ===== QUERY API =====
-  size_t query_F(size_t level_idx) const { return FIELDS_PER_LEVEL[level_idx]; }
+  size_t query_F(size_t level_idx) const { return LEVELS[level_idx].width; }
   size_t query_A() const { return num_assets_; }
-  size_t query_T(size_t level_idx) const { return MAX_ROWS_PER_LEVEL[level_idx]; }
+  size_t query_T(size_t level_idx) const { return LEVELS[level_idx].rows; }
   int query_cs_worker_id() const { return cs_worker_id_; }
   int query_io_worker_id() const { return io_worker_id_; }
 
@@ -787,7 +741,7 @@ private:
   // 当前注册表前 A 条一致"; 轴 append-only, 所以追加新资产不会动历史文件的
   // 指纹. 热路径 (解压/索引) 不受影响.
   //
-  // header[4] = 字段表指纹 (FeatureStoreConfig L*_FINGERPRINT / DEPTH_FINGERPRINT): 字段表
+  // header[4] = 字段表指纹 (LEVELS[lvl].fingerprint): 字段表
   // 增删改列即变, 读旧文件断言失败而不是静默错位.
   void write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
                               uint64_t table_fp, const void *raw_data, size_t raw_size) {
@@ -856,43 +810,26 @@ private:
     auto t_start = std::chrono::high_resolution_clock::now();
     Logger::log("worker_" + std::to_string(io_worker_id_), "disk_write: START " + date_str);
 
-    std::string out_dir = output_dir_ + "/" + date_str.substr(0, 4) + "/" +
-                          date_str.substr(4, 2) + "/" + date_str.substr(6, 2);
+    const std::string out_dir = feature_day_dir(output_dir_, date_str);
 
     auto t_before_mkdir = std::chrono::high_resolution_clock::now();
     std::filesystem::create_directories(out_dir);
     auto t_after_mkdir = std::chrono::high_resolution_clock::now();
 
-    const size_t T[2] = {MAX_ROWS_PER_LEVEL[0], MAX_ROWS_PER_LEVEL[1]};
-    const size_t F[2] = {FIELDS_PER_LEVEL[0], FIELDS_PER_LEVEL[1]};
     const size_t A = num_assets_;
-
-    // L0: columnar (extract each feature column)
-    for (size_t f = 0; f < F[0]; ++f) {
-      const size_t col_elements = T[0] * A;
-      std::vector<feature_storage_t> column(col_elements);
-
-      const feature_storage_t *src = slot->data[0];
-      for (size_t t = 0; t < T[0]; ++t) {
-        std::memcpy(&column[t * A], &src[(t * F[0] + f) * A], A * sizeof(feature_storage_t));
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      const auto &L = LEVELS[lvl];
+      if (L.columnar) {
+        // 逐列: 抽出每列 [T][A] 单独落盘 (Dist 按列选读)
+        std::vector<feature_storage_t> column(L.rows * A);
+        for (size_t f = 0; f < L.width; ++f) {
+          for (size_t t = 0; t < L.rows; ++t)
+            std::memcpy(&column[t * A], &slot->data[lvl][(t * L.width + f) * A], A * sizeof(feature_storage_t));
+          write_file_with_header(feature_column_file(out_dir, lvl, f), L.rows, 1, A, L.fingerprint, column.data(), column.size() * sizeof(feature_storage_t));
+        }
+      } else {
+        write_file_with_header(feature_file(out_dir, lvl), L.rows, L.width, A, L.fingerprint, slot->data[lvl], level_bytes(lvl, A));
       }
-
-      write_file_with_header(out_dir + "/features_L0_f" + std::to_string(f) + ".zst",
-                             T[0], 1, A, LEVEL_FINGERPRINTS[0], column.data(), col_elements * sizeof(feature_storage_t));
-    }
-
-    // L1: write entire level
-    for (size_t lvl = 1; lvl < 2; ++lvl) {
-      const size_t total_bytes = T[lvl] * F[lvl] * A * sizeof(feature_storage_t);
-      write_file_with_header(out_dir + "/features_L" + std::to_string(lvl) + ".zst",
-                             T[lvl], F[lvl], A, LEVEL_FINGERPRINTS[lvl], slot->data[lvl], total_bytes);
-    }
-
-    // Depth (分钟频)
-    {
-      const size_t total_bytes = DEPTH_ROWS * DEPTH_TOTAL_WIDTH * A * sizeof(feature_storage_t);
-      write_file_with_header(out_dir + "/depth.zst", DEPTH_ROWS, DEPTH_TOTAL_WIDTH, A,
-                             DEPTH_FINGERPRINT, slot->depth_data, total_bytes);
     }
 
     auto t_end = std::chrono::high_resolution_clock::now();
@@ -962,27 +899,27 @@ public:
 };
 
 // ============================================================================
-// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数, 字段用 L*_FieldOffset 枚举, 定址全部编译期
-//   ts_write<L>(store, date, t, field, a, value, w)              单值
-//   ts_write_range<L>(store, date, t, a, f_begin, f_end, src, w)  连续字段闭区间 (width 1 列)
+// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1/2 = L0/L1/DEPTH), 字段用 <LVL>_Field 枚举, 定址全部编译期
+//   ts_write<L>(store, date, t, field, a, value, w)               单值
+//   ts_write_range<L>(store, date, t, a, f_begin, f_end, src, w)  字段闭区间 (可含宽字段) 按偏移连续写 src
 //   ts_write_row<L>(store, date, t, a, dag, w)                    按字段表 SRC 列写一行全部 OP/FUND 列
-//   depth_write / depth_write_range                                盘口快照张量 (分钟频)
-//   cs_read(store, date, lvl, t, field) / cs_write(...)            CS worker: 一列全部资产
-//   OP(node[, port]) → dag.node.last(port); FUND(f) → dag.fund_row_[fund::f]; CS/LABEL/META 不在 row 写
+//   cs_read(store, date, lvl, t, field) / cs_write(...)           CS worker: 一列全部资产
+//   OP(node[, port]) → dag.node.last(port); FUND(f) → dag.fund_row_[fund::f]; CS/LABEL/FLAG/META 不在 row 写
 // ============================================================================
 namespace fstore {
 
 template <size_t LVL>
 struct Level;
-#define STORE_LEVEL_TRAITS(level_name, level_num, fields)                                                                    \
+#define STORE_LEVEL_TRAITS(name, num, fields, rows, psd, columnar)                                                           \
   template <>                                                                                                                \
-  struct Level<level_num> {                                                                                                  \
-    static constexpr const auto &OFFS = level_name##_FIELD_OFFSETS;                                                          \
-    static constexpr size_t F = level_name##_TOTAL_WIDTH;                                                                    \
-    static constexpr size_t T = MAX_ROWS_PER_LEVEL[level_num];                                                               \
+  struct Level<num> {                                                                                                        \
+    static constexpr const auto &OFFS = name##_FIELD_OFFSETS;                                                                \
+    static constexpr const auto &INFO = name##_FIELD_INFO;                                                                   \
+    static constexpr size_t F = name##_TOTAL_WIDTH;                                                                          \
+    static constexpr size_t T = rows;                                                                                        \
     template <class DAG>                                                                                                     \
     [[gnu::always_inline]] static inline void write_row(feature_storage_t *row, size_t A, [[maybe_unused]] const DAG &dag) { \
-      namespace FO = level_name##_FieldOffset;                                                                               \
+      namespace FO = name##_Field;                                                                                           \
       fields(STORE_ROW_ONE)                                                                                                  \
     }                                                                                                                        \
   };
@@ -996,8 +933,9 @@ struct Level;
   row[OFFS[FO::code] * A] = dag.fund_row_[fund::field];
 #define STORE_ROW_CS(code, ...)
 #define STORE_ROW_LABEL(code)
-#define STORE_ROW_META(code)
-#define STORE_ROW_ONE(code, width, vtype, c1, c2, norm, psd, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
+#define STORE_ROW_FLAG(code)
+#define STORE_ROW_META(code, w)
+#define STORE_ROW_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
 
 ALL_LEVELS(STORE_LEVEL_TRAITS)
 #undef STORE_LEVEL_TRAITS
@@ -1019,14 +957,14 @@ template <size_t LVL>
   row[Level<LVL>::OFFS[field] * A] = value;
 }
 
-// 闭区间 [f_begin, f_end] 逐列写 src[i]; 区间内列必须都是 width 1
+// 字段闭区间 [f_begin, f_end] (可含宽字段) 按偏移连续写 src[0 .. span), span = 区间总宽
 template <size_t LVL>
 [[gnu::always_inline]] inline void ts_write_range(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, size_t f_begin, size_t f_end, const float *src, int worker_id) {
+  assert(f_begin <= f_end && "invalid field range");
   size_t A;
   feature_storage_t *row = ts_row<LVL>(s, date, t, a, worker_id, A);
-  const size_t o_begin = Level<LVL>::OFFS[f_begin], o_end = Level<LVL>::OFFS[f_end];
-  assert(o_begin <= o_end && o_end - o_begin == f_end - f_begin && "range must be contiguous width-1 fields");
-  for (size_t o = o_begin; o <= o_end; ++o)
+  const size_t o_begin = Level<LVL>::OFFS[f_begin], o_end = Level<LVL>::OFFS[f_end] + Level<LVL>::INFO[f_end].width;
+  for (size_t o = o_begin; o < o_end; ++o)
     row[o * A] = src[o - o_begin];
 }
 
@@ -1037,40 +975,15 @@ template <size_t LVL, class DAG>
   Level<LVL>::write_row(row, A, dag);
 }
 
-[[gnu::always_inline]] inline feature_storage_t *depth_row(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, int worker_id, size_t &A) {
-  auto &slot = s.ts_get_slot(date, worker_id);
-  assert(slot.depth_data && "depth_data is null");
-  A = s.query_A();
-  assert(t < DEPTH_ROWS && "time index out of bounds");
-  assert(a < A && "asset index out of bounds");
-  return slot.depth_data + (t * DEPTH_TOTAL_WIDTH) * A + a;
-}
-
-[[gnu::always_inline]] inline void depth_write(GlobalFeatureStore &s, const std::string &date, size_t t, size_t field, size_t a, float value, int worker_id) {
-  size_t A;
-  feature_storage_t *row = depth_row(s, date, t, a, worker_id, A);
-  row[DEPTH_FIELD_OFFSETS[field] * A] = value;
-}
-
-// 闭区间 [f_begin, f_end] 按偏移逐列写 src[i] (可含宽字段, src 长度 = 偏移跨度)
-[[gnu::always_inline]] inline void depth_write_range(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, size_t f_begin, size_t f_end, const float *src, int worker_id) {
-  size_t A;
-  feature_storage_t *row = depth_row(s, date, t, a, worker_id, A);
-  const size_t o_begin = DEPTH_FIELD_OFFSETS[f_begin], o_end = DEPTH_FIELD_OFFSETS[f_end];
-  assert(o_begin <= o_end && "invalid feature range");
-  for (size_t o = o_begin; o <= o_end; ++o)
-    row[o * A] = src[o - o_begin];
-}
-
 // CS worker: 某层某列在 t 时刻全部资产的连续段 (A 个)
 inline feature_storage_t *cs_read(GlobalFeatureStore &s, const std::string &date, size_t lvl, size_t t, size_t field) {
   auto &slot = s.cs_get_slot(date);
   assert(lvl < LEVEL_COUNT && slot.data[lvl] && "data[lvl] is null");
-  const size_t F = FIELDS_PER_LEVEL[lvl], A = s.query_A();
-  const size_t f = get_field_offset(lvl, field);
-  assert(t < MAX_ROWS_PER_LEVEL[lvl] && "time index out of bounds");
-  assert(f < F && "feature index out of bounds");
-  return slot.data[lvl] + (t * F + f) * A;
+  const auto &L = LEVELS[lvl];
+  const size_t A = s.query_A();
+  assert(t < L.rows && "time index out of bounds");
+  assert(field < L.field_count && "field index out of bounds");
+  return slot.data[lvl] + (t * L.width + L.offsets[field]) * A;
 }
 
 inline void cs_write(GlobalFeatureStore &s, const std::string &date, size_t lvl, size_t t, size_t field, const feature_storage_t *src, size_t count) {

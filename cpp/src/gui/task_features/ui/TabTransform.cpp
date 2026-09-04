@@ -407,9 +407,8 @@ static void Render_StatusInfo(SharedData &data) {
   // 主特征名称
   ImGui::SameLine(0, 15);
   int feat_idx = data.feature.selection.primary_feature_idx;
-  if (feat_idx >= 0) {
-    const auto &meta = level == 0 ? data.feature.metadata.features_l0
-                                  : data.feature.metadata.features_l1;
+  if (feat_idx >= 0 && level >= 0 && level < (int)LEVEL_COUNT) {
+    const auto &meta = data.feature.metadata.features[level];
     if (feat_idx < (int)meta.size()) {
       ImGui::Text("%s", meta[feat_idx].code);
     }

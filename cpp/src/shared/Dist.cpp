@@ -60,15 +60,8 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
   mc.init(n_assets);
 
   // Get feature metadata for valid_type (constexpr branch elimination)
-  const FeatureMetadata *meta_list = nullptr;
-  size_t meta_count = 0;
-  if (level == 0) {
-    meta_list = feature.metadata.features_l0.data();
-    meta_count = feature.metadata.features_l0.size();
-  } else {
-    meta_list = feature.metadata.features_l1.data();
-    meta_count = feature.metadata.features_l1.size();
-  }
+  const FeatureMetadata *meta_list = feature.metadata.features[level].data();
+  const size_t meta_count = feature.metadata.features[level].size();
 
   // Determine columns to load
   std::vector<size_t> columns = {static_cast<size_t>(primary_idx)};

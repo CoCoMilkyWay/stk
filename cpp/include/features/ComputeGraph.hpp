@@ -1,19 +1,19 @@
 #pragma once
 
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
+#include "features/FeaturesDefine.hpp" // NODE_COMPUTE / NODE_FLUSH
 #include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: 全部算子 #include + NODES(N) + NODE_PREV_* + 字段表
 #include "features/Operator/TS/Label/LabelReturn.hpp"
 #include <cassert>
 #include <string>
 
 // ============================================================================
-// Node: 算子实例 + 它的输出 CBuffer. 算子只写 y[口], 推入缓冲由 Node 统一做.
+// Node: 算子实例 + 它的输出 Series. 算子只写 y[口], 推入缓冲由 Node 统一做.
 //   node.compute()                   算子的
 //   node.flush()                     算子有 flush() 先调 (降频型结算到 y), 然后 y[i] → bufs_[i]
 //   node.reset()                     算子有 reset() 才调
 //   node.out(i) / node.out()         第 i 个输出口 (下游节点输入用); 单口默认 0
-//   node.outs()                      全部输出口数组 CBuffer[K] (下游按口成组消费)
+//   node.outs()                      全部输出口数组 Series[K] (下游按口成组消费)
 //   node.last(i)                     输出口最新值, 尚无输出时 0 (字段表写回用)
 //   node.<port>                      算子 enum Out 的枚举值 (node.out(node.price))
 // ============================================================================
@@ -22,17 +22,17 @@ namespace graph {
 template <class Op, size_t K = Op::kCount>
 struct Node : Op {
   using Op::Op;
-  CBuffer<float, L2::BLEN> bufs_[K];
+  Series bufs_[K];
 
-  CBuffer<float, L2::BLEN> &out(size_t i = 0) {
+  Series &out(size_t i = 0) {
     assert(i < K);
     return bufs_[i];
   }
-  const CBuffer<float, L2::BLEN> &out(size_t i = 0) const {
+  const Series &out(size_t i = 0) const {
     assert(i < K);
     return bufs_[i];
   }
-  const CBuffer<float, L2::BLEN> (&outs() const)[K] { return bufs_; }
+  const Series (&outs() const)[K] { return bufs_; }
   float last(size_t i = 0) const {
     assert(i < K);
     return bufs_[i].empty() ? 0.0f : bufs_[i].back();
@@ -83,7 +83,7 @@ struct DAG_Root {
   DAG_Root(TickData &td, const std::string &code) : tick_data(td), asset_code_(code) {}
 };
 
-#define DAG_DECLARE_NODE(name, type, args, ct, ft)     \
+#define DAG_DECLARE_NODE(name, type, args, ...)        \
   struct DAG_##name : NODE_PREV_##name {               \
     using NODE_PREV_##name::NODE_PREV_##name;          \
     graph::Node<DAG_UNPAREN type> name DAG_BRACE args; \
@@ -96,13 +96,8 @@ class DAG : public DAG_LAST {
 public:
   void set_day_fundamental(const float *row) { fund_row_ = row; }
 
-  // ===========================================================================
-  // 标签 (回填别的时间行, 不在节点表; 写回在 CoreSequential)
-  // ===========================================================================
-  // 组内顺序: [long_5w, long_20w, short_5w, short_20w] × {5m,10m,30m}, 分钟锚定落 L1 12 列
-  LabelReturnOp LabelReturn{DepthData.bid_price, DepthData.ask_price, DepthData.bid_qty, DepthData.ask_qty};
-  // L0 秒级: 1 分钟 × 5 万, 只落 long
-  LabelReturn1mOp LabelReturn1m{DepthData.bid_price, DepthData.ask_price, DepthData.bid_qty, DepthData.ask_qty};
+  // 标签 (回填别的时间行, 不在节点表; 快照 / 回填调用在 CoreSequential::run_tick)
+  ::LabelReturn LabelReturn{DepthData.bid_price, DepthData.ask_price, DepthData.bid_qty, DepthData.ask_qty};
 
   explicit DAG(TickData &td, const std::string &code) : DAG_LAST(td, code) {}
 
@@ -111,30 +106,23 @@ public:
   // ===========================================================================
   template <Trigger trig>
   [[gnu::always_inline]] inline void run() {
-#define DAG_RUN_NODE(name, type, args, ct, ft) \
-  if constexpr (Trigger::ct == trig)           \
-    name.compute();                            \
-  if constexpr (Trigger::ft == trig)           \
+#define DAG_RUN_NODE(name, type, args, ...)          \
+  if constexpr (NODE_COMPUTE(__VA_ARGS__) == trig) \
+    name.compute();                                \
+  if constexpr (NODE_FLUSH(__VA_ARGS__) == trig)   \
     name.flush();
     NODES(DAG_RUN_NODE)
 #undef DAG_RUN_NODE
   }
 
-  // ===========================================================================
   // 盘前重置
-  // ===========================================================================
   void at_day_start() {
-#define DAG_RESET_NODE(name, type, args, ct, ft) name.reset();
+#define DAG_RESET_NODE(name, type, args, ...) name.reset();
     NODES(DAG_RESET_NODE)
 #undef DAG_RESET_NODE
     LabelReturn.reset();
-    LabelReturn1m.reset();
   }
 
-  // ===========================================================================
-  // 盘尾计算 (主要给标签类特征用)
-  // ===========================================================================
-  void at_day_end() {
-    // 例如: LabelReturn 可能需要在此做最后的计算
-  }
+  // 盘尾钩子 (目前无事可做; 留给需要收盘结算的特征)
+  void at_day_end() {}
 };

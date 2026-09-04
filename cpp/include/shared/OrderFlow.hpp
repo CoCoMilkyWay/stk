@@ -66,8 +66,8 @@ namespace OrderFlowConst {
 // ============================================================================
 // Data Capacity
 // ============================================================================
-constexpr size_t L0_CAPACITY = MAX_ROWS_PER_LEVEL[0]; // ~15300 ticks/day
-constexpr size_t L1_CAPACITY = MAX_ROWS_PER_LEVEL[1]; // ~255 bars/day
+constexpr size_t L0_CAPACITY = LEVELS[0].rows;      // ~15300 ticks/day
+constexpr size_t L1_CAPACITY = LEVELS[1].rows;      // ~255 bars/day
 constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;           // 30 levels
 
 // ============================================================================
