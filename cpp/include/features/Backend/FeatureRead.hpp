@@ -9,14 +9,9 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <fstream>
-#endif
 
 // ============================================================================
 // FEATURE READER - Hybrid Compressed Format
@@ -48,33 +43,16 @@ private:
                             size_t *A_actual = nullptr) const {
     Trace;
 
-#ifdef _WIN32
-    HANDLE hFile;
-    {
-      TraceN("OpenFile");
-      hFile = CreateFileA(filepath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
-                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-      assert(hFile != INVALID_HANDLE_VALUE && "File not found");
-    }
-#else
-    // Use standard C++ file I/O for cross-platform compatibility
     std::ifstream file(filepath, std::ios::binary);
     assert(file.is_open() && "File not found");
-#endif
     constexpr size_t header_size = FEATURE_FILE_HEADER_WORDS * sizeof(size_t);
 
     size_t T, F, A_file;
     {
       TraceN("ReadHeader");
       size_t header[FEATURE_FILE_HEADER_WORDS];
-#ifdef _WIN32
-      DWORD bytes_read;
-      BOOL result = ReadFile(hFile, header, header_size, &bytes_read, NULL);
-      assert(result && bytes_read == header_size);
-#else
       file.read(reinterpret_cast<char *>(header), header_size);
       assert(file.gcount() == static_cast<std::streamsize>(header_size));
-#endif
 
       T = header[0];
       F = header[1];
@@ -105,46 +83,18 @@ private:
     size_t compressed_size;
     {
       TraceN("GetFileSize");
-#ifdef _WIN32
-      LARGE_INTEGER file_size;
-      BOOL result = GetFileSizeEx(hFile, &file_size);
-      assert(result);
-      compressed_size = static_cast<size_t>(file_size.QuadPart) - header_size;
-#else
       file.seekg(0, std::ios::end);
       compressed_size = static_cast<size_t>(file.tellg()) - header_size;
       file.seekg(header_size, std::ios::beg);
-#endif
     }
 
     std::vector<uint8_t> compressed;
     {
       TraceN("ReadCompressed");
       compressed.resize(compressed_size);
-
-#ifdef _WIN32
-      size_t remaining = compressed_size;
-      char *current = reinterpret_cast<char *>(compressed.data());
-      constexpr size_t READ_CHUNK = 64 * 1024 * 1024;
-
-      while (remaining > 0) {
-        DWORD to_read = (remaining > READ_CHUNK) ? static_cast<DWORD>(READ_CHUNK) : static_cast<DWORD>(remaining);
-        DWORD bytes_read;
-        BOOL result = ReadFile(hFile, current, to_read, &bytes_read, NULL);
-        assert(result && bytes_read == to_read);
-        current += bytes_read;
-        remaining -= bytes_read;
-      }
-    }
-
-    CloseHandle(hFile);
-#else
       file.read(reinterpret_cast<char *>(compressed.data()), compressed_size);
       assert(file.gcount() == static_cast<std::streamsize>(compressed_size));
     }
-
-    file.close();
-#endif
     {
       TraceN("Decompress");
       const size_t decompressed_size = T * F * A * sizeof(feature_storage_t);

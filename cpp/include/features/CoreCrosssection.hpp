@@ -16,7 +16,8 @@
 //   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_read + _data_valid) 看世界,
 //   看不到 tick / LOB / 事件到达顺序. TS 行是资产局部纯函数 (见 CoreSequential.hpp),
 //   所以 CS 在 t 的输入对重放调度不变 —— 一致性由这个输入契约保证, 与"CS 是流式
-//   伴随还是离线第二遍"无关. cs_wait 只提供因果 (t 行全就绪), 不提供调度形态.
+//   伴随还是整日后扫"无关. 回测按日门控 (cs_open 等全部 TS 写完, 见 FeatureStore.hpp),
+//   实盘由 feed 层按墙钟逐秒驱动 —— 两种调度下每行的输入相同, 输出逐值相同.
 //
 //   无回环: 特征层是单向 DAG (逐笔 → TS → 张量 → CS 列 = 终端输出, TS 不回读 CS).
 //   任何"用截面结果再加工"的表达放因子层 (离线读落盘特征拼接, 跨资产/跨时间/嵌套
@@ -54,11 +55,12 @@ ALL_LEVELS(CS_LEVEL_TRAITS)
 class CoreCrosssection {
 public:
   explicit CoreCrosssection(GlobalFeatureStore &store)
-      : store_(store), A_(store.query_A()), input_fp32_(A_), output_fp32_(A_), output_fp16_(A_), logmc_dense_(A_), industry_dense_(A_) {
+      : A_(store.query_A()), input_fp32_(A_), output_fp32_(A_), output_fp16_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
   }
 
-  void set_date(const std::string &date_str) { date_str_ = date_str; }
+  // day = 本日读写句柄 (store.cs_open, 已按日门控: 三层张量整体就绪)
+  void set_day(const GlobalFeatureStore::CsDay &day) { day_ = day; }
 
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
@@ -67,9 +69,9 @@ public:
       TraceN("CS_Tick");
       run<0>(t);
     }
-    if (t % 60 == 0 && t > 0) { // 分钟边界级联
+    if (t % 60 == 59) { // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行)
       TraceN("CS_Minute");
-      run<1>(t / 60);
+      run<1>(L0_to_L1(t));
     }
   }
 
@@ -81,7 +83,7 @@ public:
     const size_t ts = SRC_LVL == LVL ? t : (LVL == 0 ? L0_to_L1(t) : L1_to_L0(t)); // 跨层源列的时间索引 (L1 用分钟起始秒)
 
     float *y = input_fp32_.data();
-    gather_(fstore::cs_read(store_, date_str_, SRC_LVL, ts, SRC), y);
+    gather_(fstore::cs_read<SRC_LVL>(day_, ts, SRC), y);
     Tf::apply(y, n_);
     if constexpr (Method::kNeutral)
       Method::apply(y, n_, neutral_(t));
@@ -94,7 +96,7 @@ private:
   template <size_t LVL>
   void run(size_t t) {
     constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::_data_valid) : size_t(L1_Field::_data_valid);
-    const _Float16 *valid_flags = fstore::cs_read(store_, date_str_, LVL, t, VALID);
+    const _Float16 *valid_flags = fstore::cs_read<LVL>(day_, t, VALID);
     valid_indices_.clear();
     for (size_t a = 0; a < A_; ++a)
       if (static_cast<float>(valid_flags[a]) > 0.5f)
@@ -109,9 +111,9 @@ private:
   // NeutralRank 上下文 (L1): 首个 NeutralRank 行触发, 本分钟内复用
   const cs::NeutralRank::Ctx &neutral_(size_t t) {
     if (!neutral_ready_) {
-      gather_(fstore::cs_read(store_, date_str_, 1, t, L1_Field::NEUTRAL_RANK_MCAP), logmc_dense_.data());
+      gather_(fstore::cs_read<1>(day_, t, L1_Field::NEUTRAL_RANK_MCAP), logmc_dense_.data());
       cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n_);
-      gather_(fstore::cs_read(store_, date_str_, 1, t, L1_Field::NEUTRAL_RANK_INDUSTRY), industry_dense_.data());
+      gather_(fstore::cs_read<1>(day_, t, L1_Field::NEUTRAL_RANK_INDUSTRY), industry_dense_.data());
       neutral_ready_ = true;
     }
     return neutral_ctx_;
@@ -131,11 +133,10 @@ private:
       output_fp32_[valid_indices_[i]] = y[i];
     for (size_t a = 0; a < A_; ++a)
       output_fp16_[a] = static_cast<_Float16>(output_fp32_[a]);
-    fstore::cs_write(store_, date_str_, LVL, t, dst, output_fp16_.data(), A_);
+    fstore::cs_write<LVL>(day_, t, dst, output_fp16_.data(), A_);
   }
 
-  GlobalFeatureStore &store_;
-  std::string date_str_;
+  GlobalFeatureStore::CsDay day_{}; // 本日读写句柄, set_day 换入
   size_t A_;
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)

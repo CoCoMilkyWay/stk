@@ -21,13 +21,11 @@
 class CoreSequential {
 public:
   CoreSequential(TickData &tick_data,
-                 GlobalFeatureStore &store,
                  const fund::Pool &fund_pool,
                  const std::string &asset_code,
                  size_t asset_id = 0,
                  size_t core_id = 0)
-      : store_(store),
-        asset_id_(asset_id),
+      : asset_id_(asset_id),
         core_id_(core_id),
         asset_code_(asset_code),
         dag_(tick_data, fund_pool, asset_code, asset_id),
@@ -38,8 +36,10 @@ public:
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
 
-  void begin_day(const std::string &date_str) {
-    date_str_ = date_str;
+  // day = worker 本日的写句柄 (store.ts_open, 每 worker 每日一次), 之后
+  // 本类的全部写回都是纯指针算术 —— 热路径不再携带 date / worker_id.
+  void begin_day(const std::string &date_str, const GlobalFeatureStore::TsDay &day) {
+    day_ = day;
     dag_.at_day_start(date_str);
   }
 
@@ -65,8 +65,6 @@ public:
       TraceN("TS_Minute");
       run_minute();
     }
-    if (!date_str_.empty())
-      store_.ts_update(date_str_, core_id_, asset_id_, dag_.tick_data.l0_index);
   }
 
 private:
@@ -74,7 +72,6 @@ private:
   inline void run_tick() {
     const size_t t = dag_.tick_data.l0_index;
     const auto &lob = dag_.tick_data.lob;
-    const int w = static_cast<int>(core_id_);
 
     switch (lob.order_type) {
     case L2::OrderType::TAKER:
@@ -98,14 +95,14 @@ private:
       dag_.LabelReturn.snapshot(t);
       dag_.LabelReturn.minute_anchored(t, [&](size_t h, size_t label_l1, const float *values) {
         const size_t f = kL1LabelBase + h * LabelReturn::GROUP_SIZE;
-        fstore::ts_write_range<1>(store_, date_str_, label_l1, asset_id_, f, f + LabelReturn::GROUP_SIZE - 1, values, w);
+        fstore::ts_write_range<1>(day_, label_l1, f, f + LabelReturn::GROUP_SIZE - 1, asset_id_, values);
       });
       size_t label_l0;
       float label_v;
       if (dag_.LabelReturn.second(t, label_l0, label_v))
-        fstore::ts_write<0>(store_, date_str_, label_l0, kL0LabelBase, asset_id_, label_v, w);
+        fstore::ts_write<0>(day_, label_l0, kL0LabelBase, asset_id_, label_v);
 
-      fstore::ts_write<0>(store_, date_str_, t, L0_Field::_depth_valid, asset_id_, 1.0f, w);
+      fstore::ts_write<0>(day_, t, L0_Field::_depth_valid, asset_id_, 1.0f);
 
       // DEPTH 快照 (GUI, 分钟频: 同分钟覆盖, 终值 = 分钟末盘口); 布局 = DEPTH_FIELDS 行序 (见 Meta.hpp)
       constexpr size_t N = L2::LOB_DEPTH;
@@ -118,12 +115,12 @@ private:
       }
       depth_row_[4 * N] = dag_.MidPrice.last();
       depth_row_[4 * N + 1] = 1.0f; // _depth_valid
-      fstore::ts_write_range<2>(store_, date_str_, L0_to_L1(t), asset_id_, DEPTH_Field::_bid_price, DEPTH_Field::_depth_valid, depth_row_.data(), w);
+      fstore::ts_write_range<2>(day_, L0_to_L1(t), DEPTH_Field::_bid_price, DEPTH_Field::_depth_valid, asset_id_, depth_row_.data());
     }
 
-    fstore::ts_write_row<0>(store_, date_str_, t, asset_id_, dag_, w);
-    fstore::ts_write<0>(store_, date_str_, t, L0_Field::_data_valid, asset_id_, 1.0f, w);
-    fstore::ts_write<2>(store_, date_str_, L0_to_L1(t), DEPTH_Field::_data_valid, asset_id_, 1.0f, w);
+    fstore::ts_write_row<0>(day_, t, asset_id_, dag_);
+    fstore::ts_write<0>(day_, t, L0_Field::_data_valid, asset_id_, 1.0f);
+    fstore::ts_write<2>(day_, L0_to_L1(t), DEPTH_Field::_data_valid, asset_id_, 1.0f);
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----
@@ -133,14 +130,13 @@ private:
       return;
 
     const size_t t = md.l1_index;
-    const int w = static_cast<int>(core_id_);
     const bool valid = md.close.back() > 0 && (md.bid_volume.back() + md.ask_volume.back()) > 0; // 有成交的分钟才算
 
     if (valid) {
       dag_.run<Trigger::onMinute>();
-      fstore::ts_write_row<1>(store_, date_str_, t, asset_id_, dag_, w);
+      fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
     }
-    fstore::ts_write<1>(store_, date_str_, t, L1_Field::_data_valid, asset_id_, valid ? 1.0f : 0.0f, w);
+    fstore::ts_write<1>(day_, t, L1_Field::_data_valid, asset_id_, valid ? 1.0f : 0.0f);
   }
 
   // 标签列定位: 按类型 (LB) 在字段表里找, 不依赖列名; 列数 / 连续性与 LabelReturn 配置对账
@@ -150,11 +146,10 @@ private:
   static_assert(count_of_kind(L1_FIELD_INFO, FeatureDataType::LB) == LabelReturn::L1_LABEL_COUNT && kind_contiguous(L1_FIELD_INFO, FeatureDataType::LB),
                 "L1 label columns must be HOLD_COUNT × GROUP_SIZE contiguous");
 
-  GlobalFeatureStore &store_;
+  GlobalFeatureStore::TsDay day_{}; // 本日写句柄, begin_day 换入
   size_t asset_id_;
   size_t core_id_;
   std::string asset_code_;
-  std::string date_str_;
 
   DAG dag_;
   ResamplerTick2Min tick2min_;

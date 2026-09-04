@@ -120,8 +120,7 @@ void ComputeService::start_compute(int num_workers) {
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(
         num_assets, num_ts_workers, asset_axis().hash_at(num_assets),
-        data_.config.feature_dir,
-        static_cast<int>(cs_worker_core), static_cast<int>(io_worker_core));
+        data_.config.feature_dir);
 
     // Clean up directories before compute
     namespace fs = std::filesystem;

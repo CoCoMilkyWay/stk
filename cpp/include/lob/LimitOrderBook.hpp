@@ -73,9 +73,9 @@ public:
   // 工作区的 TickData: per-asset CoreSequential 构造时引用它
   TickData &tick_data() { return tick_data_; }
 
-  void begin_day(const std::string &date_str) {
+  void begin_day(const std::string &date_str, const GlobalFeatureStore::TsDay &day) {
     assert(core_ && "begin_day: LOB not bound");
-    core_->begin_day(date_str);
+    core_->begin_day(date_str, day);
 
 #if DEBUG_BOOK_PRINT
     should_log_this_day_ = false;

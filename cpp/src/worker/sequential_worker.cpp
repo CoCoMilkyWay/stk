@@ -22,9 +22,6 @@ void sequential_worker(int worker_id,
   TraceValue(worker_id);
   TraceThread(("ts_worker_" + std::to_string(worker_id)).c_str());
 
-  // Initialize thread-local state (MUST be first - handles thread reuse across compute runs)
-  store.ts_worker_init(worker_id);
-
   // Initialize as idle (will be updated if assets are assigned)
   progress_handle.set_label("Idle");
   progress_handle.update(1, 1, "");
@@ -53,7 +50,7 @@ void sequential_worker(int worker_id,
     for (size_t i = 0; i < my_asset_ids.size(); ++i) {
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
-      cores.push_back(std::make_unique<CoreSequential>(lob.tick_data(), store, data.fund_pool, asset.asset_code, asset.asset_id, worker_id));
+      cores.push_back(std::make_unique<CoreSequential>(lob.tick_data(), data.fund_pool, asset.asset_code, asset.asset_id, worker_id));
     }
   }
 
@@ -95,12 +92,15 @@ void sequential_worker(int worker_id,
     // 日期 → 日期轴下标, 一天查一次; 资产内循环 O(1) 定址
     const size_t didx = data.asset.date_idx(date_str);
 
+    // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术
+    const auto day = store.ts_open(date_str, worker_id);
+
     // Process each asset at this date
     for (size_t i = 0; i < my_asset_ids.size(); ++i) {
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
       lob.bind(cores[i].get(), asset_id, asset.exchange_type); // 工作区换绑本资产 (簿此刻是干净的)
-      lob.begin_day(date_str);                                 // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
+      lob.begin_day(date_str, day);                            // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
       // Hot path: has data and binaries
       if (asset.date_at(didx).has_binaries()) [[likely]] {
 
@@ -162,10 +162,10 @@ void sequential_worker(int worker_id,
       Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(date_assets_processed) + " assets, " + std::to_string(date_orders) + " orders");
     }
 
-    // Mark this worker done for this date (will also set all asset progress atomically)
+    // 本 worker 本日写完; 全部 worker close 后 CS 放行 (按日门控)
     {
       TraceN("StoreDone");
-      store.ts_done(date_str, worker_id);
+      store.ts_close(day, worker_id);
     }
 
     // Update progress

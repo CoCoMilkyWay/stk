@@ -29,7 +29,6 @@ void crosssectional_worker(int worker_id,
     TraceN("DateLoop");
     const std::string &date_str = data.asset.all_dates[date_idx];
     TraceTextS(date_str.c_str());
-    const size_t capacity = store.query_T(0);
 
     // Update progress label
     char label_buf[128];
@@ -37,31 +36,32 @@ void crosssectional_worker(int worker_id,
              worker_id, date_idx + 1, total_dates, date_str.c_str());
     progress_handle.set_label(label_buf);
 
-    core.set_date(date_str);
-
-    // Process each time slot. cs_wait 只保证因果 (t 行全就绪), 不保证调度形态;
+    // 按日门控: 阻塞至全部 TS 写完本日, 返回后三层张量整体可读.
     // 数值一致性由输入契约锚定 (CS 只读秒网格张量行, 见 CoreCrosssection.hpp),
-    // 所以 TS/CS 流式伴随或离线两遍分离, 结果逐值相同.
-    for (size_t t = 0; t < capacity; ++t) {
+    // 与"CS 流式伴随还是整日后扫"的调度形态无关, 结果逐值相同.
+    GlobalFeatureStore::CsDay day;
+    {
+      TraceN("WaitSync");
+      TraceColor(C_Orange);
+      day = store.cs_open(date_str);
+    }
+    core.set_day(day);
+
+    // 有效秒 [0, 15300): 末行是哨兵 (label lookahead 落点), 不进截面
+    const size_t T = level_valid_rows(0);
+    for (size_t t = 0; t < T; ++t) {
       TraceN("TimeslotLoop");
       TraceValue(t);
-
-      {
-        TraceN("WaitSync");
-        TraceColor(C_Orange);
-        store.cs_wait(date_str, t);
-      }
-
       core.compute_and_store(t);
     }
 
     ++completed_dates;
     progress_handle.update(completed_dates, total_dates, "");
 
-    // Mark this date as complete for tensor pool recycling
-    store.cs_done(date_str);
+    // 本日截面完成, slot 交给 IO 落盘
+    store.cs_close(day);
 
-    Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(capacity) + " timeslots");
+    Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(T) + " timeslots");
 
     TraceFrame;
   }
