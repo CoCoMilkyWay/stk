@@ -2,14 +2,12 @@
 //
 // 线程模型 (对仗 Dist.hpp 的发布协议):
 //   - GUI 线程: RequestCompute 解析参数快照 (特征列 + valid 列 + 月份表) → 唤醒 worker
-//   - worker 线程: 逐月载入、资产维度流式发布; 新请求/Cancel 置 cancel_, 逐资产检查后放弃在跑
+//   - worker 线程: 抽样转置入平面、资产维度流式发布; 新请求/Cancel 置 cancel_, 逐日/逐资产检查后放弃在跑
 //   - UI 渲染持 dist.mutex 读; 进度走原子, 免锁
 //
 // 生命周期: Tab 打开 Start(data) 起线程, Tab 关闭 Stop() 取消并 join;
 //           挂起的请求 (pending_) 跨 Stop/Start 存活, 重进 Tab 自动续算.
 #pragma once
-
-#include "shared/Dist.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -40,7 +38,7 @@ public:
 
 private:
   struct Request {
-    Dist::Params params;
+    std::vector<size_t> columns;     // [值列 (+ valid 列)]
     std::vector<std::string> months; // "YYYYMM" 升序
   };
 

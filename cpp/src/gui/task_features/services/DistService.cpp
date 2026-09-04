@@ -3,51 +3,9 @@
 #include "shared/SharedData.hpp"
 
 #include <cassert>
-#include <cstdio>
 #include <cstring>
 
 namespace GUI::Features {
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-namespace {
-
-// "YYYY-MM-DD" / "YYYYMMDD" -> "YYYYMM"
-std::string parse_month(const std::string &date) {
-  std::string d;
-  for (char c : date)
-    if (c != '-')
-      d += c;
-  assert(d.size() >= 6);
-  return d.substr(0, 6);
-}
-
-// 枚举 [start, end] 闭区间月份
-std::vector<std::string> enumerate_months(const std::string &start_date, const std::string &end_date) {
-  std::vector<std::string> months;
-  const std::string start_month = parse_month(start_date);
-  const std::string end_month = parse_month(end_date);
-
-  int y = std::stoi(start_month.substr(0, 4));
-  int m = std::stoi(start_month.substr(4, 2));
-  while (true) {
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%04d%02d", y, m);
-    std::string month_key = buf;
-    if (month_key > end_month)
-      break;
-    months.push_back(month_key);
-    if (++m > 12) {
-      m = 1;
-      ++y;
-    }
-  }
-  return months;
-}
-
-} // namespace
 
 // ============================================================================
 // DistService
@@ -87,9 +45,7 @@ void DistService::RequestCompute(SharedData &data) {
     return;
 
   Request req;
-  req.params.feature_idx = sel.primary_feature_idx;
-  req.params.level = sel.selected_level;
-  req.params.columns = {static_cast<size_t>(sel.primary_feature_idx)};
+  req.columns = {static_cast<size_t>(sel.primary_feature_idx)};
 
   // valid 列: 按特征元数据的 valid_type 解析
   const auto &meta_list = data.feature.metadata.features[sel.selected_level];
@@ -99,13 +55,13 @@ void DistService::RequestCompute(SharedData &data) {
     const char *flag_name = (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
     for (size_t i = 0; i < meta_list.size(); ++i) {
       if (std::strcmp(meta_list[i].code, flag_name) == 0) {
-        req.params.columns.push_back(i);
+        req.columns.push_back(i);
         break;
       }
     }
   }
 
-  req.months = enumerate_months(data.config.start_date, data.config.end_date);
+  req.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
   if (req.months.empty())
     return;
 
@@ -122,8 +78,7 @@ void DistService::RequestCompute(SharedData &data) {
 // ============================================================================
 
 void DistService::worker_loop() {
-  FeatureRead reader(features_dir_);
-  FeatureRead::MonthTensor block; // 常驻块, 跨请求复用 (值列 + valid 列, 抽样后 ≤ kMaxBlockBytes)
+  FeatureRead reader(features_dir_); // 常驻平面挂在 Dist 私有缓冲里, 跨请求复用
 
   while (true) {
     Request req;
@@ -140,9 +95,9 @@ void DistService::worker_loop() {
     auto &dist = data_->dist;
     const size_t n_assets = data_->asset.items.size();
 
-    dist.reset_for_build(std::move(req.params), req.months, n_assets);
+    dist.reset_for_build(std::move(req.columns), req.months, n_assets);
 
-    if (dist.build(reader, block, cancel_)) {
+    if (dist.build(reader, cancel_)) {
       dist.status.store(Dist::Status::Done, std::memory_order_release);
     } else {
       dist.status.store(Dist::Status::Cancelled, std::memory_order_release);

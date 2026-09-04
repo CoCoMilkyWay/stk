@@ -65,21 +65,42 @@ static double point_to_segment_dist_sq(double px, double py, double x1, double y
   return (px - closest_x) * (px - closest_x) + (py - closest_y) * (py - closest_y);
 }
 
-// Compute median and MAD from a vector of values
-static std::pair<float, float> compute_median_mad(const std::vector<float> &vals) {
-  if (vals.empty())
-    return {0.0f, 0.0f};
-  std::vector<float> sorted = vals;
-  std::sort(sorted.begin(), sorted.end());
-  float median = sorted[sorted.size() / 2];
-  std::vector<float> abs_devs;
-  abs_devs.reserve(vals.size());
-  for (float v : vals) {
-    abs_devs.push_back(std::abs(v - median));
+// Hover 命中阈值 (绘图区归一化坐标的距离平方)
+constexpr double kHoverDistSq = 0.001;
+
+// 折线到鼠标的最近段距离平方 (归一化坐标).
+// PDF 的 x 网格等距 → x 方向超出命中半径的段不可能入选, 只扫鼠标 x 窗口内的段
+// (资产截面 5000 条线 × 127 段, 逐段全扫每帧 ~64 万次, 裁剪后 ~2 段/线)
+static double nearest_seg_dist_sq(const float *x, const float *y, size_t n,
+                                  const ImPlotPoint &mouse, const ImPlotRect &limits) {
+  if (n < 2)
+    return 1e9;
+  const double x_range = limits.X.Max - limits.X.Min;
+  const double y_range = limits.Y.Max - limits.Y.Min;
+  const double nmx = (mouse.x - limits.X.Min) / x_range;
+  const double nmy = (mouse.y - limits.Y.Min) / y_range;
+
+  size_t j0 = 0, j1 = n - 1; // 扫段 [j0, j1)
+  const double dx = (x[n - 1] - x[0]) / static_cast<double>(n - 1);
+  if (dx > 0) {
+    const double wx = std::sqrt(kHoverDistSq) * x_range; // 命中半径换回 value 域
+    const double lo = (mouse.x - wx - x[0]) / dx;
+    const double hi = (mouse.x + wx - x[0]) / dx;
+    if (hi < 0.0 || lo > static_cast<double>(n - 1))
+      return 1e9;
+    j0 = lo <= 0.0 ? 0 : static_cast<size_t>(lo);
+    j1 = hi >= static_cast<double>(n - 1) ? n - 1 : static_cast<size_t>(hi) + 1;
   }
-  std::sort(abs_devs.begin(), abs_devs.end());
-  float mad = abs_devs[abs_devs.size() / 2];
-  return {median, mad};
+
+  double best = 1e9;
+  for (size_t j = j0; j < j1; ++j) {
+    const double nx1 = (x[j] - limits.X.Min) / x_range;
+    const double ny1 = (y[j] - limits.Y.Min) / y_range;
+    const double nx2 = (x[j + 1] - limits.X.Min) / x_range;
+    const double ny2 = (y[j + 1] - limits.Y.Min) / y_range;
+    best = std::min(best, point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2));
+  }
+  return best;
 }
 
 // ============================================================================
@@ -89,6 +110,20 @@ static std::pair<float, float> compute_median_mad(const std::vector<float> &vals
 
 constexpr int kW2Deciles = 19; // 5%, 10%, ..., 95%
 
+// 分位查询: exportICDF 的 u 网格等距 → 直接定址 + 线性插值 (免二分)
+static float QuantileAt(const KLLcache &kll, double q) {
+  const auto icdf = kll.exportICDF();
+  const double u0 = icdf.x[0], u1 = icdf.x[icdf.n - 1];
+  if (q <= u0)
+    return icdf.y[0];
+  if (q >= u1)
+    return icdf.y[icdf.n - 1];
+  const double f = (q - u0) / (u1 - u0) * static_cast<double>(icdf.n - 1);
+  const size_t lo = static_cast<size_t>(f);
+  const double t = f - static_cast<double>(lo);
+  return static_cast<float>(icdf.y[lo] + t * (icdf.y[lo + 1] - icdf.y[lo]));
+}
+
 struct W2GlobalRef {
   std::array<float, kW2Deciles> q;
   float mean = 0.0f;
@@ -97,20 +132,20 @@ struct W2GlobalRef {
 
 static W2GlobalRef ComputeW2GlobalRef(const Dist &dist) {
   W2GlobalRef ref;
-  if (dist.total.count() < kMinSamples)
+  if (dist.total.totalCount() < kMinSamples)
     return ref;
   for (int d = 0; d < kW2Deciles; ++d)
-    ref.q[d] = static_cast<float>(dist.total.quantile(0.05 * (d + 1)));
+    ref.q[d] = QuantileAt(dist.total, 0.05 * (d + 1));
   ref.mean = static_cast<float>(dist.total.mean());
   ref.valid = true;
   return ref;
 }
 
-static float ComputeW2(const Dist::KLLWithMoments &kll, const W2GlobalRef &ref) {
+static float ComputeW2(const KLLcache &kll, const W2GlobalRef &ref) {
   const float shift = static_cast<float>(kll.mean()) - ref.mean;
   float sum_sq = 0.0f;
   for (int d = 0; d < kW2Deciles; ++d) {
-    const float qi = static_cast<float>(kll.quantile(0.05 * (d + 1)));
+    const float qi = QuantileAt(kll, 0.05 * (d + 1));
     const float diff = (qi - shift) - ref.q[d];
     sum_sq += diff * diff;
   }
@@ -220,7 +255,11 @@ static void RenderIntegrity(const Dist::Integrity &integrity) {
   ImGui::Text(")");
   ImGui::SameLine();
 
-  // Min/Max with color
+  // Min/Max with color (无有效样本时 min/max 恒为 ±inf, 显示 --)
+  if (integrity.n_valid == 0) {
+    ImGui::Text("Min: -- Max: --");
+    return;
+  }
   ImGui::Text("Min: ");
   ImGui::SameLine(0, 0);
   ImGui::TextColored(GetMinMaxColor(integrity.val_min), "%.2f", integrity.val_min);
@@ -250,45 +289,10 @@ static std::string get_month_label(const Dist &dist, int idx,
     return "";
   std::string label = format_month(months[idx]);
   // Add n_samples if data available (随资产流增长)
-  if (idx < static_cast<int>(dist.months.size()) && dist.months[idx].total.count() > 0) {
-    label += " (" + std::to_string(dist.months[idx].total.count()) + ")";
+  if (idx < static_cast<int>(dist.months.size()) && dist.months[idx].kll.totalCount() > 0) {
+    label += " (" + std::to_string(dist.months[idx].kll.totalCount()) + ")";
   }
   return label;
-}
-
-// Generate months list from config date range
-static std::vector<std::string> generate_months(const std::string &start_date,
-                                                const std::string &end_date) {
-  std::vector<std::string> months;
-  // Parse dates (YYYY-MM-DD or YYYYMMDD)
-  auto parse_month = [](const std::string &date) -> std::string {
-    std::string d;
-    for (char c : date)
-      if (c != '-')
-        d += c;
-    return d.size() >= 6 ? d.substr(0, 6) : "";
-  };
-
-  std::string start_month = parse_month(start_date);
-  std::string end_month = parse_month(end_date);
-  if (start_month.empty() || end_month.empty())
-    return months;
-
-  int y = std::stoi(start_month.substr(0, 4));
-  int m = std::stoi(start_month.substr(4, 2));
-  while (true) {
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%04d%02d", y, m);
-    std::string month_key = buf;
-    if (month_key > end_month)
-      break;
-    months.push_back(month_key);
-    if (++m > 12) {
-      m = 1;
-      ++y;
-    }
-  }
-  return months;
 }
 
 static void RenderWindowControl(DistService *service, SharedData &data,
@@ -325,13 +329,17 @@ static void RenderWindowControl(DistService *service, SharedData &data,
               dist.days_loaded.load(), dist.days_total.load(),
               dist.assets_done.load(), dist.assets.size());
 
-  // Row 2: Month slider (always visible from config date range)
-  auto months = generate_months(data.config.start_date, data.config.end_date);
-  if (!months.empty()) {
-    int n_months = static_cast<int>(months.size());
+  // Row 2: Month slider (config 区间月份表, 缓存; 枚举逻辑与 DistService 共用)
+  const std::string months_key = data.config.start_date + "|" + data.config.end_date;
+  if (ui.months_key != months_key) {
+    ui.months_key = months_key;
+    ui.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
+  }
+  if (!ui.months.empty()) {
+    int n_months = static_cast<int>(ui.months.size());
     ui.focus_month_idx = std::clamp(ui.focus_month_idx, 0, n_months - 1);
 
-    std::string label = get_month_label(dist, ui.focus_month_idx, months);
+    std::string label = get_month_label(dist, ui.focus_month_idx, ui.months);
     ImGui::SetNextItemWidth(-1);
     ImGui::SliderInt("##FocusMonth", &ui.focus_month_idx, 0, n_months - 1, label.c_str());
   }
@@ -670,51 +678,33 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
 
   // Collect moment values based on selected dimension (流式: 随资产完成度增长)
   std::vector<float> means, vars, skews, kurts;
+  auto collect = [&](const KLLcache &kll) {
+    if (kll.totalCount() < kMinSamples)
+      return;
+    means.push_back(static_cast<float>(kll.mean()));
+    vars.push_back(static_cast<float>(kll.var()));
+    skews.push_back(static_cast<float>(kll.skew()));
+    kurts.push_back(static_cast<float>(kll.kurt()));
+  };
 
-  // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS
-  if (selected_dimension == 0) {
-    // MONTH dimension
-    for (const auto &mc : dist.months) {
-      if (mc.total.count() >= kMinSamples) {
-        means.push_back(static_cast<float>(mc.total.mean()));
-        vars.push_back(static_cast<float>(mc.total.var()));
-        skews.push_back(static_cast<float>(mc.total.skew()));
-        kurts.push_back(static_cast<float>(mc.total.kurt()));
-      }
-    }
-  } else if (selected_dimension == 1) {
-    // WEEKDAY dimension
-    for (size_t wd = 0; wd < dist.by_weekday.size() && wd < 7; ++wd) {
-      const auto &kll = dist.by_weekday[wd];
-      if (kll.count() >= kMinSamples) {
-        means.push_back(static_cast<float>(kll.mean()));
-        vars.push_back(static_cast<float>(kll.var()));
-        skews.push_back(static_cast<float>(kll.skew()));
-        kurts.push_back(static_cast<float>(kll.kurt()));
-      }
-    }
-  } else if (selected_dimension == 2) {
-    // HOUR dimension
-    for (size_t h = 0; h < dist.by_hour.size() && h < 24; ++h) {
-      const auto &kll = dist.by_hour[h];
-      if (kll.count() >= kMinSamples) {
-        means.push_back(static_cast<float>(kll.mean()));
-        vars.push_back(static_cast<float>(kll.var()));
-        skews.push_back(static_cast<float>(kll.skew()));
-        kurts.push_back(static_cast<float>(kll.kurt()));
-      }
-    }
-  } else if (selected_dimension == 3) {
-    // ASSETS dimension (随机序流式发布, 槽发布即终态: 扫全部槽按 count 过滤即已发布集合)
-    for (size_t a = 0; a < dist.assets.size(); ++a) {
-      const auto &kll = dist.assets[a].kll;
-      if (kll.count() >= kMinSamples) {
-        means.push_back(static_cast<float>(kll.mean()));
-        vars.push_back(static_cast<float>(kll.var()));
-        skews.push_back(static_cast<float>(kll.skew()));
-        kurts.push_back(static_cast<float>(kll.kurt()));
-      }
-    }
+  // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS (随机序流式发布, 槽发布即终态)
+  switch (selected_dimension) {
+  case 0:
+    for (const auto &mc : dist.months)
+      collect(mc.kll);
+    break;
+  case 1:
+    for (const auto &kll : dist.by_weekday)
+      collect(kll);
+    break;
+  case 2:
+    for (const auto &kll : dist.by_hour)
+      collect(kll);
+    break;
+  case 3:
+    for (const auto &kll : dist.assets)
+      collect(kll);
+    break;
   }
 
   if (means.empty()) {
@@ -807,13 +797,13 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
 
   if (selected_dimension == 0 && focus_month_idx >= 0 &&
       focus_month_idx < static_cast<int>(dist.months.size()) &&
-      dist.months[focus_month_idx].total.count() > 0) {
+      dist.months[focus_month_idx].kll.totalCount() > 0) {
     // MONTH dimension: show slider month value
-    const auto &mc = dist.months[focus_month_idx];
-    display_mean = static_cast<float>(mc.total.mean());
-    display_var = static_cast<float>(mc.total.var());
-    display_skew = static_cast<float>(mc.total.skew());
-    display_kurt = static_cast<float>(mc.total.kurt());
+    const auto &kll = dist.months[focus_month_idx].kll;
+    display_mean = static_cast<float>(kll.mean());
+    display_var = static_cast<float>(kll.var());
+    display_skew = static_cast<float>(kll.skew());
+    display_kurt = static_cast<float>(kll.kurt());
   } else {
     // Other dimensions: show mean value
     display_mean = mean_mean;
@@ -839,12 +829,9 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
 // PDF Panels - Multiple views with hover tooltips
 // ============================================================================
 
-// Common PDF data structure
+// Common PDF data structure (零拷贝: 指向 KLL 内部重建缓存, 帧内有效)
 struct PDFData {
-  const float *x = nullptr;
-  const float *y = nullptr;
-  size_t n = 0;
-  std::string label;
+  KLLcache::LinePtr line{nullptr, nullptr, 0};
   int month_idx = -1; // Original month index for focus comparison
 };
 
@@ -871,7 +858,7 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
     int max_dist = 0;
     if (focus_idx >= 0) {
       for (int i = 0; i < n_items; ++i) {
-        if (pdfs[i].n == 0 || pdfs[i].month_idx < 0)
+        if (pdfs[i].line.n == 0 || pdfs[i].month_idx < 0)
           continue;
         int dist = std::abs(pdfs[i].month_idx - focus_idx);
         max_dist = std::max(max_dist, dist);
@@ -881,7 +868,7 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
     // Draw all lines with color based on distance to focus
     ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f);
     for (int i = 0; i < n_items; ++i) {
-      if (pdfs[i].n == 0)
+      if (pdfs[i].line.n == 0)
         continue;
 
       float t; // colormap parameter: 0=dark, 1=bright
@@ -896,34 +883,19 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
 
       ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Hot);
       ImPlot::SetNextLineStyle(color, 1.0f);
-      ImPlot::PlotLine("##pdf", pdfs[i].x, pdfs[i].y, static_cast<int>(pdfs[i].n));
+      ImPlot::PlotLine("##pdf", pdfs[i].line.x, pdfs[i].line.y, static_cast<int>(pdfs[i].line.n));
     }
     ImPlot::PopStyleVar();
 
-    // Detect hover
+    // Detect hover (x 窗口裁剪, 只扫鼠标附近的段)
     if (ImPlot::IsPlotHovered()) {
       ImPlotPoint mouse = ImPlot::GetPlotMousePos();
       ImPlotRect limits = ImPlot::GetPlotLimits();
-      double x_range = limits.X.Max - limits.X.Min;
-      double y_range = limits.Y.Max - limits.Y.Min;
-
       for (int i = 0; i < n_items; ++i) {
-        if (pdfs[i].n < 2)
-          continue;
-
-        for (size_t j = 0; j + 1 < pdfs[i].n; ++j) {
-          double nx1 = (pdfs[i].x[j] - limits.X.Min) / x_range;
-          double ny1 = (pdfs[i].y[j] - limits.Y.Min) / y_range;
-          double nx2 = (pdfs[i].x[j + 1] - limits.X.Min) / x_range;
-          double ny2 = (pdfs[i].y[j + 1] - limits.Y.Min) / y_range;
-          double nmx = (mouse.x - limits.X.Min) / x_range;
-          double nmy = (mouse.y - limits.Y.Min) / y_range;
-
-          double d_sq = point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2);
-          if (d_sq < min_dist_sq) {
-            min_dist_sq = d_sq;
-            hovered_idx = i;
-          }
+        double d_sq = nearest_seg_dist_sq(pdfs[i].line.x, pdfs[i].line.y, pdfs[i].line.n, mouse, limits);
+        if (d_sq < min_dist_sq) {
+          min_dist_sq = d_sq;
+          hovered_idx = i;
         }
       }
     }
@@ -939,7 +911,7 @@ static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
   }
 
   // Tooltip
-  if (hovered_idx >= 0 && min_dist_sq < 0.001) {
+  if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
     ImGui::BeginTooltip();
     get_tooltip(hovered_idx);
     ImGui::EndTooltip();
@@ -968,17 +940,16 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
 
   for (int m = 0; m < n_months; ++m) {
     const auto &mc = dist.months[m];
-    if (mc.total.count() >= 10) {
-      mc.total.exportPDF(pdfs[m].x, pdfs[m].y, pdfs[m].n);
-      pdfs[m].label = mc.month;
+    if (mc.kll.totalCount() >= 10) {
+      pdfs[m].line = mc.kll.exportPDF();
       pdfs[m].month_idx = m; // Save original month index
     }
   }
 
   int hovered = RenderPDFPlot("##PDFMonth", pdfs, focus_month_idx, need_autofit, [&](int idx) {
-    const auto &kll = dist.months[idx].total;
-    ImGui::Text("%s", pdfs[idx].label.c_str());
-    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.count()));
+    const auto &kll = dist.months[idx].kll;
+    ImGui::Text("%s", dist.months[idx].month.c_str());
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
@@ -1019,16 +990,15 @@ static void RenderPDFByWeekday(const Dist &dist, bool need_autofit,
   std::vector<PDFData> pdfs(7);
 
   for (size_t wd = 0; wd < 7; ++wd) {
-    if (global_weekday[wd].count() >= 10) {
-      global_weekday[wd].exportPDF(pdfs[wd].x, pdfs[wd].y, pdfs[wd].n);
-      pdfs[wd].label = wd_names[wd];
+    if (global_weekday[wd].totalCount() >= 10) {
+      pdfs[wd].line = global_weekday[wd].exportPDF();
     }
   }
 
   int hovered = RenderPDFPlot("##PDFWeekday", pdfs, -1, need_autofit, [&](int idx) {
     const auto &kll = global_weekday[idx];
     ImGui::Text("%s", wd_names[idx]);
-    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.count()));
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
@@ -1068,16 +1038,15 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
   std::vector<PDFData> pdfs(24);
 
   for (size_t h = 0; h < 24; ++h) {
-    if (global_hour[h].count() >= 10) {
-      global_hour[h].exportPDF(pdfs[h].x, pdfs[h].y, pdfs[h].n);
-      pdfs[h].label = "Hour " + std::to_string(h);
+    if (global_hour[h].totalCount() >= 10) {
+      pdfs[h].line = global_hour[h].exportPDF();
     }
   }
 
   int hovered = RenderPDFPlot("##PDFHour", pdfs, -1, need_autofit, [&](int idx) {
     const auto &kll = global_hour[idx];
     ImGui::Text("Hour %d", idx);
-    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.count()));
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
   });
@@ -1131,7 +1100,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   std::vector<size_t> asset_indices;
   asset_indices.reserve(dist.assets.size());
   for (size_t a = 0; a < dist.assets.size(); ++a) {
-    if (dist.assets[a].kll.count() >= kMinAssetSamples)
+    if (dist.assets[a].totalCount() >= kMinAssetSamples)
       asset_indices.push_back(a);
   }
   const size_t n_valid = asset_indices.size();
@@ -1149,7 +1118,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   if (has_dots) {
     x_norm.resize(n_valid);
     for (size_t i = 0; i < n_valid; ++i) {
-      x_norm[i] = ComputeW2(dist.assets[asset_indices[i]].kll, w2_ref);
+      x_norm[i] = ComputeW2(dist.assets[asset_indices[i]], w2_ref);
       w2_max = std::max(w2_max, x_norm[i]);
     }
     const float inv = w2_max > 1e-9f ? 1.0f / w2_max : 1.0f;
@@ -1171,16 +1140,12 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
 
     ImPlotRect limits = ImPlot::GetPlotLimits();
-    double x_range = limits.X.Max - limits.X.Min;
-    double y_range = limits.Y.Max - limits.Y.Min;
 
     // ========================================================================
     // Phase 1: Hover detection (both PDF lines and W2 dots)
     // ========================================================================
     if (ImPlot::IsPlotHovered()) {
       ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-      double nmx = (mouse.x - limits.X.Min) / x_range;
-      double nmy = (mouse.y - limits.Y.Min) / y_range;
 
       // Get mouse position in pixels for dot detection
       ImVec2 mouse_pixels = ImGui::GetMousePos();
@@ -1205,26 +1170,14 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
         }
       }
 
-      // Check PDF lines (if not hovering dots)
+      // Check PDF lines (if not hovering dots; x 窗口裁剪, 只扫鼠标附近的段)
       if (hovered_idx < 0) {
         for (size_t i = 0; i < n_valid; ++i) {
-          const auto &kll = dist.assets[asset_indices[i]].kll;
-          const float *px, *py;
-          size_t pn;
-          kll.exportPDF(px, py, pn);
-          if (pn == 0)
-            continue;
-
-          for (size_t j = 0; j + 1 < pn; ++j) {
-            double nx1 = (px[j] - limits.X.Min) / x_range;
-            double ny1 = (py[j] - limits.Y.Min) / y_range;
-            double nx2 = (px[j + 1] - limits.X.Min) / x_range;
-            double ny2 = (py[j + 1] - limits.Y.Min) / y_range;
-            double d_sq = point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2);
-            if (d_sq < min_dist_sq) {
-              min_dist_sq = d_sq;
-              hovered_idx = static_cast<int>(i);
-            }
+          const auto pdf = dist.assets[asset_indices[i]].exportPDF();
+          double d_sq = nearest_seg_dist_sq(pdf.x, pdf.y, pdf.n, mouse, limits);
+          if (d_sq < min_dist_sq) {
+            min_dist_sq = d_sq;
+            hovered_idx = static_cast<int>(i);
           }
         }
       }
@@ -1234,11 +1187,8 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     // Phase 2: Draw all PDFs (highlight hovered)
     // ========================================================================
     for (size_t i = 0; i < n_valid; ++i) {
-      const auto &kll = dist.assets[asset_indices[i]].kll;
-      const float *x, *y;
-      size_t n;
-      kll.exportPDF(x, y, n);
-      if (n == 0)
+      const auto pdf = dist.assets[asset_indices[i]].exportPDF();
+      if (pdf.n == 0)
         continue;
 
       bool is_hovered = (static_cast<int>(i) == hovered_idx);
@@ -1249,17 +1199,17 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
         // Highlighted: thick white outline + bright color
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
         ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
-        ImPlot::PlotLine("##pdf_outline", x, y, static_cast<int>(n));
+        ImPlot::PlotLine("##pdf_outline", pdf.x, pdf.y, static_cast<int>(pdf.n));
         ImPlot::PopStyleVar();
 
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
         ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f); // cyan
-        ImPlot::PlotLine("##pdf_hl", x, y, static_cast<int>(n));
+        ImPlot::PlotLine("##pdf_hl", pdf.x, pdf.y, static_cast<int>(pdf.n));
         ImPlot::PopStyleVar();
       } else {
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
         ImPlot::SetNextLineStyle(color, 1.0f);
-        ImPlot::PlotLine("##pdf", x, y, static_cast<int>(n));
+        ImPlot::PlotLine("##pdf", pdf.x, pdf.y, static_cast<int>(pdf.n));
         ImPlot::PopStyleVar();
       }
     }
@@ -1320,7 +1270,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   }
 
   // Output: convert draw index to original asset index
-  if (hovered_idx >= 0 && min_dist_sq < 0.001) {
+  if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
     hovered_asset_out = static_cast<int>(asset_indices[hovered_idx]);
   } else {
     hovered_asset_out = -1;
@@ -1355,15 +1305,17 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
   ImGui::PopFont();
   ImGui::Separator();
 
+  // 槽被重算清空后 hover 残留下标会指向空 sketch → 一并挡掉
   if (hovered_asset < 0 || static_cast<size_t>(hovered_asset) >= asset.items.size() ||
-      static_cast<size_t>(hovered_asset) >= dist.assets.size()) {
+      static_cast<size_t>(hovered_asset) >= dist.assets.size() ||
+      dist.assets[hovered_asset].totalCount() < kMinAssetSamples) {
     ImGui::TextDisabled("(hover on PDF/dot)");
     ImGui::EndChild();
     return;
   }
 
   const auto &asset_item = asset.items[hovered_asset];
-  const auto &kll = dist.assets[hovered_asset].kll;
+  const auto &kll = dist.assets[hovered_asset];
 
   // Get real-time info from AssetInfo
   std::string exchange_lower = asset_item.exchange;
@@ -1416,7 +1368,7 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
     // Row 1: n | PE
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("样本数 = %llu", static_cast<unsigned long long>(kll.count()));
+    ImGui::Text("样本数 = %llu", static_cast<unsigned long long>(kll.totalCount()));
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PE = %s", stock_info ? fmt_val(stock_info->peTTM).c_str() : "--");
 
@@ -1487,18 +1439,16 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   // 流式维护 x/y range: 构建期间只要有新资产发布就 autofit (ImPlot 按当帧数据重算范围);
   // Done 后停止跟随, 把缩放还给用户 (完成瞬间再 fit 一次收尾)
-  static size_t last_assets_done = 0;
-  static auto last_status = dist.status.load();
   const size_t cur_assets_done = dist.assets_done.load(std::memory_order_acquire);
   const auto cur_status = dist.status.load(std::memory_order_acquire);
-  if (cur_status == Dist::Status::Building && cur_assets_done != last_assets_done) {
+  if (cur_status == Dist::Status::Building && cur_assets_done != ui.last_assets_done) {
     ui.need_autofit = true;
   }
-  if (last_status != Dist::Status::Done && cur_status == Dist::Status::Done) {
+  if (ui.last_status != Dist::Status::Done && cur_status == Dist::Status::Done) {
     ui.need_autofit = true;
   }
-  last_assets_done = cur_assets_done;
-  last_status = cur_status;
+  ui.last_assets_done = cur_assets_done;
+  ui.last_status = cur_status;
 
   // 渲染帧内持锁: worker 逐资产短锁发布, UI 读 sketch (含懒缓存写) 与其互斥
   std::lock_guard<std::mutex> dist_lock(dist.mutex);
@@ -1515,9 +1465,6 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   RenderWindowControl(service, data, ui);
   ImGui::EndChild();
 
-  // Track hovered asset across frames
-  static int hovered_asset = -1;
-
   // Main content: Left (Moments + Asset Info) + Right (PDFs)
   float content_height = ImGui::GetContentRegionAvail().y;
   ImGui::Columns(2, "MainCols", true);
@@ -1526,7 +1473,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Left column: Moments Panel (auto-height) + Hovered Asset Info (remaining)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
   RenderMomentsPanel(dist, ui.selected_dimension, ui.focus_month_idx);
-  RenderHoveredAssetInfo(dist, data.asset, data.assetinfo, hovered_asset);
+  RenderHoveredAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_asset);
   ImGui::EndChild();
 
   ImGui::NextColumn();
@@ -1559,9 +1506,9 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   ImGui::PopStyleVar();
   ImGui::EndChild();
 
-  // Bottom: Assets PDF (outputs hovered_asset)
+  // Bottom: Assets PDF (outputs ui.hovered_asset)
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(dist, data.asset, data.assetinfo, ui, clicked_dimension, hovered_asset);
+  RenderAssetsPDF(dist, data.asset, data.assetinfo, ui, clicked_dimension, ui.hovered_asset);
   ImGui::EndChild();
 
   // Update selected dimension if any plot was clicked

@@ -4,12 +4,14 @@
 //   1. Integrity panel - Zero/NaN/Inf counts
 //   2. Window control - Compute | Cancel | Status (IO/资产进度) | Month slider
 //   3. Moments panel (color bands) + PDF evolution (side by side)
-//   4. Assets PDF - 流式渲染已完成资产前缀, stability 完成后叠加 W2/Ward
+//   4. Assets PDF - 流式渲染已发布资产 + W2 偏移散点 (每帧派生)
 //
 // Threading:
 //   - UI runs on main thread, 渲染帧内持 dist.mutex
 //   - Computation via DistService 单 worker 线程 (资产维度流式发布)
 #pragma once
+
+#include "shared/Dist.hpp"
 
 #include <string>
 #include <vector>
@@ -31,8 +33,17 @@ struct DistUIState {
   // Month focus slider (index into available months)
   int focus_month_idx = 0;
 
-  // Autofit trigger (set when compute completes)
+  // Autofit: 构建期间新资产发布即跟随, Done 瞬间收尾一次后把缩放还给用户
   bool need_autofit = false;
+  size_t last_assets_done = 0;
+  Dist::Status last_status = Dist::Status::Idle;
+
+  // 跨帧 hover 的资产 (资产截面图输出, 左栏详情面板消费)
+  int hovered_asset = -1;
+
+  // config 区间月份表缓存 (滑条每帧要用, 日期变了才重算)
+  std::vector<std::string> months;
+  std::string months_key; // start_date + "|" + end_date
 
   // 行业色缓存 (资产表静态, 构建一次): 一个行业一个颜色
   std::vector<int> industry_idx;           // [A], -1 = 未知

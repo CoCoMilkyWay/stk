@@ -160,7 +160,8 @@ public:
    *   批量接口允许实现层面优化(如延迟排序、批量晋升),
    *   减少 compaction 的排序开销。
    */
-  void addBatch(const std::vector<float> &X);
+  void addBatch(const float *X, size_t m);
+  void addBatch(const std::vector<float> &X) { addBatch(X.data(), X.size()); }
 
   /**
    * mergeWith
@@ -620,8 +621,8 @@ inline void KLLcache::compact(size_t idx) {
   compactIfNeeded(idx + 1);
 }
 
-inline void KLLcache::addBatch(const std::vector<float> &X) {
-  if (X.empty()) [[unlikely]]
+inline void KLLcache::addBatch(const float *X, size_t m) {
+  if (m == 0) [[unlikely]]
     return;
 
   invalidateCache();
@@ -629,7 +630,7 @@ inline void KLLcache::addBatch(const std::vector<float> &X) {
   // 批量计算 min/max(向量化友好)
   float batch_min = X[0];
   float batch_max = X[0];
-  for (size_t i = 1; i < X.size(); ++i) {
+  for (size_t i = 1; i < m; ++i) {
     if (X[i] < batch_min)
       batch_min = X[i];
     if (X[i] > batch_max)
@@ -646,21 +647,21 @@ inline void KLLcache::addBatch(const std::vector<float> &X) {
       max_ = batch_max;
   }
 
-  assert(count_ <= ((std::numeric_limits<uint64_t>::max)() - X.size()));
-  count_ += X.size();
+  assert(count_ <= ((std::numeric_limits<uint64_t>::max)() - m));
+  count_ += m;
 
   // 批量插入到 level 0,保持 size ≤ k+1
   // 每层已 reserve 2k,插入到 k+1 无 reallocation
   // 大 batch 会分批处理:插满 k+1 → compact → 继续
   auto &buf = levels_[0].buffer;
   size_t idx = 0;
-  while (idx < X.size()) {
+  while (idx < m) {
     // 计算可插入数量(插入到 k+1 触发 compact)
     size_t remaining = capacity_ + 1 - buf.size();
-    size_t to_insert = (std::min)(remaining, X.size() - idx);
+    size_t to_insert = (std::min)(remaining, m - idx);
 
     // 批量插入(无 reallocation,因为 capacity = 2k > k+1)
-    buf.insert(buf.end(), X.begin() + idx, X.begin() + idx + to_insert);
+    buf.insert(buf.end(), X + idx, X + idx + to_insert);
     idx += to_insert;
 
     // 满了就 compact(减半)
