@@ -23,7 +23,7 @@ stk/
 │   │   │   ├── AssetAxis.hpp                            # 📦 A轴(资产轴)对齐
 │   │   │   ├── Feature.hpp                              # 📦 特征数据结构
 │   │   │   ├── OrderFlow.hpp                            # 📦 订单流数据
-│   │   │   ├── Dist.hpp                                 # 📦 分布分析
+│   │   │   ├── Dist.hpp                                 # 📦 分布分析 (KLL sketch, 随机序资产流式发布, UI 每帧派生 W2 偏移)
 │   │   │   ├── TimeSeries.hpp                           # 📦 时序分析
 │   │   │   ├── Transform.hpp                            # 📦 特征变换
 │   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
@@ -54,7 +54,7 @@ stk/
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), DEPTH 第三层, width/valid/psd 全推导
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
-│   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/列式加载 (DayTensor 统一 L0/L1/DEPTH)
+│   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
 │   │   │       └── ZstdHelper.hpp                       # 🧮 Zstd压缩工具
 │   │   ├── worker/                                      # ⚡ 多线程工作流编排
 │   │   │   ├── io_worker.hpp                            # ⚡ IO工作器: 文件读写
@@ -115,7 +115,7 @@ stk/
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       |                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
-│   │   ├── math/                                        # 📐 autoencoder / cluster / distribution / model / normalize / sample / spectral / stationary / timeseries
+│   │   ├── math/                                        # 📐 autoencoder / distribution / model / normalize / sample / spectral / stationary / timeseries
 │   │   │   └── Operator.hpp                             # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   ├── api/                                         # 🌐 数据源 API
 │   │   │   ├── bigquant/                                # 🌐 BigQuant (dai/pipeline/spec)
@@ -154,9 +154,9 @@ stk/
     │   └── YYYY/MM/DD/<CODE>.<EX>.bin                   # 单资产单日一个 .bin; 同目录 .stat = 当天唯一的元数据 (账目+逐资产计量+墓碑)
     ├── features/                                        # 特征张量库 (Float16 + Zstd, 按交易日全市场列式)
     │   └── YYYY/MM/DD/
-    │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A]
-    │       ├── features_L1.zst                          # L1 整层 [T×F×A]
-    │       └── features_DEPTH.zst                       # 盘口深度快照 [T×F×A] (分钟频, GUI OrderFlow 用)
+    │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A] (列式, 按列选读)
+    │       ├── features_L1_f<f>.zst                     # L1 逐特征列 [T×A] (列式, 按列选读)
+    │       └── features_DEPTH.zst                       # 盘口深度快照 [T×F×A] 整层 (分钟频, GUI OrderFlow 用)
     ├── fundamental/                                     # 日频基本面 (表清单见上方 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                         # 月度分片 (2015-01 起, 每表一文件; 0 行月也落文件 = "拉过")
     │   ├── _meta/<表>.parquet                           # Static/Snapshot 单文件整刷 (cn_stock_basic_info / cn_stock_static_data)

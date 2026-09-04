@@ -17,8 +17,8 @@
 // FEATURE READER - Hybrid Compressed Format
 // ============================================================================
 // Storage format (header = 5 × size_t: T, F, A, axis_hash, table_fingerprint), 每层按 LEVELS[lvl].columnar:
-//   逐列 (L0):        features_L0_f{idx}.zst   [Header: T,1,A,h][Zstd column]   (Dist 按列选读)
-//   整层 (L1/DEPTH):  features_<LVL>.zst       [Header: T,F,A,h][Zstd merged]
+//   逐列 (L0/L1):     features_<LVL>_f{idx}.zst [Header: T,1,A,h][Zstd column]  (Dist 按列选读)
+//   整层 (DEPTH):     features_<LVL>.zst        [Header: T,F,A,h][Zstd merged]
 //
 // 形状是编译期常量: 写端永远写满 (LEVELS[lvl].rows / width), 文件头的 T/F 只做
 // 校验, 不做"实际维度" —— 消费端时间轴一律 level_valid_rows(lvl).
