@@ -5,7 +5,7 @@
 //   - Tab switch: Blocking start/stop of coroutine
 #pragma once
 
-#include "features/Backend/FeatureReader.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "misc/profiler.hpp"
 #include "shared/OrderFlow.hpp"
@@ -70,11 +70,11 @@ public:
 
     // Create depth buffer once for entire coroutine lifetime (~500MB)
     // Reused across all L0 loads within this tab session
-    FeatureReader::DayTensor depth_buffer;
+    FeatureRead::DayTensor depth_buffer;
     depth_buffer.preallocate_level(of.l1.num_assets, 2);
 
     // Create L0 feature buffer (preallocated for L0 level)
-    FeatureReader::DayTensor l0_tensor;
+    FeatureRead::DayTensor l0_tensor;
     l0_tensor.preallocate_level(of.l1.num_assets, 0);
 
     while (!of.loader.coro_should_stop) {
@@ -179,7 +179,7 @@ public:
     // Create L1 buffer once, reuse across all days
     // Only allocate L1 level memory (T=255, F=~20, A=num_assets)
     // Avoids repeated allocation/deallocation of ~50MB buffer per day
-    FeatureReader::DayTensor tensor;
+    FeatureRead::DayTensor tensor;
     tensor.preallocate_level(num_assets, 1);
 
     {
@@ -249,7 +249,7 @@ public:
   // ========================================================================
   // Load L0 data for single day (sparse, pre-reserved)
   // ========================================================================
-  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, const OrderFlow::L1Cache &l1_cache, FeatureReader::DayTensor &depth_tensor) {
+  bool load_l0(OrderFlow::L0Cache &cache, const std::string &date, size_t asset_idx, const OrderFlow::L1Cache &l1_cache, FeatureRead::DayTensor &depth_tensor) {
     if (cache.matches(date, asset_idx))
       return true;
 
@@ -366,7 +366,7 @@ public:
   // ========================================================================
   bool load_l0_feature(OrderFlow::L0FeatureCache &cache, const std::string &date, size_t asset_idx,
                        int feature_idx, const OrderFlow::L0Cache &l0_cache,
-                       FeatureReader::DayTensor &day_tensor) {
+                       FeatureRead::DayTensor &day_tensor) {
     if (cache.matches(date, asset_idx, feature_idx))
       return true;
 
@@ -462,7 +462,7 @@ public:
           if (day.size() != 2)
             continue;
 
-          if (FeatureReader::has_date(features_dir_, year + month + day))
+          if (FeatureRead::has_date(features_dir_, year + month + day))
             dates.push_back(year + month + day);
         }
       }
@@ -473,7 +473,7 @@ public:
   }
 
 private:
-  FeatureReader reader_;
+  FeatureRead reader_;
   std::string features_dir_;
 };
 

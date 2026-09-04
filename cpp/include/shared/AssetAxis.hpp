@@ -66,6 +66,6 @@ private:
 // 进程内唯一 A 轴实例, 首次访问自动 load + 自校验.
 //
 // 不放进 SharedData: 轴是跨模块的全局真理 — encode 按它过滤 universe, 特征
-// 计算按它定列序, FeatureReader 按它验文件指纹. 两份实例就是两套列序, 所以
+// 计算按它定列序, FeatureRead 按它验文件指纹. 两份实例就是两套列序, 所以
 // 语言层面只给一份. 读侧只调 hash_at (O(1) 数组取值), 热路径无成本.
 AssetAxis &asset_axis();

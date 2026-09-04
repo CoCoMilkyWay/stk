@@ -286,7 +286,7 @@ set(HEADERS
     ../../include/codec/L2_Validator.hpp
     ../../include/features/FeaturesDefine.hpp
     ../../include/features/TimeIndex.hpp
-    ../../include/features/Backend/FeatureReader.hpp
+    ../../include/features/Backend/FeatureRead.hpp
     ../../include/features/Backend/FeatureStoreConfig.hpp
     ../../include/features/Backend/FeatureStore.hpp
     ../../include/features/Backend/ZstdHelper.hpp

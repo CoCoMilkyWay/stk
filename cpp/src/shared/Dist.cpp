@@ -1,5 +1,5 @@
 #include "shared/Dist.hpp"
-#include "features/Backend/FeatureReader.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "math/cluster/Ward1D.hpp"
 #include "misc/profiler.hpp"
@@ -83,11 +83,11 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
   }
 
   // Batch load entire month (columnar compressed format)
-  FeatureReader reader(features_dir);
+  FeatureRead reader(features_dir);
   std::string year = mc.month.substr(0, 4);
   std::string month_str = mc.month.substr(4, 2);
 
-  FeatureReader::MonthTensor month_tensor;
+  FeatureRead::MonthTensor month_tensor;
   {
     TraceN("PreallocateTensor");
     month_tensor.preallocate(n_assets, 31, columns.size(), level);

@@ -7,7 +7,7 @@
 //
 #pragma once
 
-#include "features/Backend/FeatureReader.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include "gui/coro/CoroManager.hpp"
 
 #include <boost/asio/awaitable.hpp>
@@ -100,8 +100,8 @@ private:
   std::string features_dir_;
 
   // Feature reader
-  FeatureReader reader_;
-  FeatureReader::DayTensor day_tensor_;
+  FeatureRead reader_;
+  FeatureRead::DayTensor day_tensor_;
 
   // Worker pool
   std::unique_ptr<TransformWorkerPool> pool_;

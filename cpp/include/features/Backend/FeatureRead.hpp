@@ -35,7 +35,7 @@
 //   2. load_month_columns()                  - Dist: 整月, 选列
 // ============================================================================
 
-class FeatureReader {
+class FeatureRead {
 private:
   // Read compressed data with optional header validation
   // T_max, F_max, A: max capacity (for buffer size validation)
@@ -192,7 +192,7 @@ public:
     }
   };
 
-  explicit FeatureReader(const std::string &base_dir) : base_dir_(base_dir) {}
+  explicit FeatureRead(const std::string &base_dir) : base_dir_(base_dir) {}
 
   // ========================================================================
   // Single Day Loading (GUI: 单日整层, 任一层)

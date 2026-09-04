@@ -1,5 +1,5 @@
 #include "shared/TimeSeries.hpp"
-#include "features/Backend/FeatureReader.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include "math/spectral/MultiResPSD.hpp"
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/KPSS.hpp"
@@ -457,7 +457,7 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
 
       {
         TraceN("LoadMonth");
-        FeatureReader reader(features_dir_copy);
+        FeatureRead reader(features_dir_copy);
         std::string year = month.substr(0, 4);
         std::string month_str = month.substr(4, 2);
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "features/Backend/FeatureReader.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -190,7 +190,7 @@ struct TimeSeries {
   };
 
   struct SharedMonthData {
-    std::vector<FeatureReader::MonthTensor> months; // [n_months]
+    std::vector<FeatureRead::MonthTensor> months; // [n_months]
     std::vector<DayRange> day_ranges;               // 连续时间索引
 
     size_t n_months = 0;
