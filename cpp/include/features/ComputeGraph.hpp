@@ -1,8 +1,9 @@
 #pragma once
 
 #include "features/DataDefine.hpp"
-#include "features/FeaturesDefine.hpp" // NODE_COMPUTE / NODE_FLUSH
-#include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: 全部算子 #include + NODES(N) + NODE_PREV_* + 字段表
+#include "features/FeaturesDefine.hpp"     // NODE_COMPUTE / NODE_FLUSH
+#include "features/Method/Fundamental.hpp" // fund::Pool (DAG_Root 日频输入)
+#include "features/NodesGenerated.hpp"     // CMake 从算子文件汇总: 全部算子 #include + NODES(N) + NODE_PREV_* + 字段表
 #include "features/Operator/TS/Label/LabelReturn.hpp"
 #include <cassert>
 #include <string>
@@ -76,11 +77,14 @@ struct Node<Op, 0> : Op {
 // 构造序 (基类先) 和 run<>() 的执行序 (NODES 行序) 因此一定一致. 空基类无运行时开销.
 // ============================================================================
 struct DAG_Root {
-  TickData &tick_data;             // L0 输入 (外部传入)
-  MinuteData minute_data;          // L1 输入 (内部管理, 由 resampler 填充)
-  std::string asset_code_;         // 股票代码 (用于涨跌幅判断)
-  const float *fund_row_{nullptr}; // 当日基本面输入行 (Fund::kCount, begin_day 设置; 只有 Fund 节点消费)
-  DAG_Root(TickData &td, const std::string &code) : tick_data(td), asset_code_(code) {}
+  TickData &tick_data;         // L0 输入 (外部传入)
+  MinuteData minute_data;      // L1 输入 (内部管理, 由 resampler 填充)
+  const fund::Pool &fund_pool; // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
+  std::string asset_code_;     // 股票代码 (用于涨跌幅判断)
+  size_t asset_id_;            // AssetAxis 下标
+  std::string date_;           // 当日 "YYYYMMDD" (at_day_start 设置)
+  DAG_Root(TickData &td, const fund::Pool &pool, const std::string &code, size_t asset_id)
+      : tick_data(td), fund_pool(pool), asset_code_(code), asset_id_(asset_id) {}
 };
 
 #define DAG_DECLARE_NODE(name, type, args, ...)        \
@@ -94,12 +98,10 @@ NODES(DAG_DECLARE_NODE)
 // DAG: 有向无环计算图 = 声明链末端 + 标签 + 调度.
 class DAG : public DAG_LAST {
 public:
-  void set_day_fundamental(const float *row) { fund_row_ = row; }
-
   // 标签 (回填别的时间行, 不在节点表; 快照 / 回填调用在 CoreSequential::run_tick)
   ::LabelReturn LabelReturn{DepthData.bid_price, DepthData.ask_price, DepthData.bid_qty, DepthData.ask_qty};
 
-  explicit DAG(TickData &td, const std::string &code) : DAG_LAST(td, code) {}
+  DAG(TickData &td, const fund::Pool &pool, const std::string &code, size_t asset_id) : DAG_LAST(td, pool, code, asset_id) {}
 
   // ===========================================================================
   // 触发域调度: 对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush()
@@ -115,12 +117,14 @@ public:
 #undef DAG_RUN_NODE
   }
 
-  // 盘前重置
-  void at_day_start() {
+  // 盘前: 设日期 → 全部节点 reset → onDay 域 (日频算子 compute)
+  void at_day_start(const std::string &date) {
+    date_ = date;
 #define DAG_RESET_NODE(name, type, args, ...) name.reset();
     NODES(DAG_RESET_NODE)
 #undef DAG_RESET_NODE
     LabelReturn.reset();
+    run<Trigger::onDay>();
   }
 
   // 盘尾钩子 (目前无事可做; 留给需要收盘结算的特征)

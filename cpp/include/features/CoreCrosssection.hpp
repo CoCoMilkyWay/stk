@@ -1,8 +1,7 @@
 #pragma once
 
 #include "features/Backend/FeatureStore.hpp"
-#include "features/Operator/CS/NeutralRank.hpp" // Ctx + NEUTRAL_RANK_* 源列 (方法文件本身由 NodesGenerated.hpp 汇总 include)
-#include "features/Operator/CS/Transform.hpp"
+#include "features/Method/CS.hpp" // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
 #include "misc/profiler.hpp"
 #include <algorithm>
 #include <vector>
@@ -11,8 +10,8 @@
 // CoreCrosssection: 截面计算 (CS worker), L0 每秒 + L1 分钟边界级联
 //   字段表 CS(src_lvl, src, Tf, Method) 行由 CsLevel<LVL>::run 编译期展开 (与 fstore::Level<LVL>::write_row 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
-//   算子契约见 DataDefine.hpp; kernel 在 CSKernels.cpp (precise TU). NeutralRank 的上下文 (log 市值 + 行业,
-//   源列由 NeutralRank.hpp 声明) 每分钟按需准备一次, 全部 NeutralRank 行复用; L0 用 NeutralRank = 编译错误.
+//   算子契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
+//   源列由 Method/CS.hpp 声明) 每分钟按需准备一次, 全部 NeutralRank 行复用; L0 用 NeutralRank = 编译错误.
 // ============================================================================
 
 // ============================================================================

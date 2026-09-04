@@ -209,8 +209,8 @@ set(SOURCES
     ../../src/worker/sequential_worker.cpp
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/io_worker.cpp
-    ../../src/features/FundamentalDaily.cpp
-    ../../src/features/CSKernels.cpp
+    ../../src/features/Method/Fundamental.cpp
+    ../../src/features/Method/CS.cpp
     ../../src/gui/Gui.cpp
     ../../src/gui/Tasks.cpp
     ../../src/gui/coro/CoroManager.cpp
@@ -332,7 +332,7 @@ set(HEADERS
 
 # ============================================================================
 # features/NodesGenerated.hpp (生成到 build 目录) — 计算图节点表 + 落盘字段表.
-#   节点实例和落盘列直接写在算子文件里 (include/features/Operator/**/*.hpp: TS/ 时序节点, CS/ 截面方法):
+#   节点实例和落盘列直接写在算子文件里 (include/features/Operator/**/*.hpp: TS/ 时序节点, CS/ 按源节点分文件的截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (OpType), (ctor inputs), compute_trigger, flush_trigger)
 #     #define FIELDS_<LVL>_<Owner>(X) X(code, ...)   LVL ∈ {L0, L1, DEPTH}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG/META) 的任意名字
 #   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / DepthData.bid_qty ...), 不需要任何 include.
@@ -485,8 +485,8 @@ set_source_files_properties(
     ../../src/api/tushare/spec.cpp
     ../../src/api/tushare/parse.cpp
     ../../src/api/tushare/pipeline.cpp
-    ../../src/features/FundamentalDaily.cpp
-    ../../src/features/CSKernels.cpp
+    ../../src/features/Method/Fundamental.cpp
+    ../../src/features/Method/CS.cpp
     ../../src/codec/json_config.cpp
     ../../src/shared/Config.cpp
     ../../src/shared/AssetAxis.cpp

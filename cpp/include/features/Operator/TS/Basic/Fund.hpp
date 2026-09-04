@@ -1,17 +1,20 @@
 #pragma once
 
 // =============================================================================
-// Fund - 当日基本面行盘中广播: begin_day 设置的 fund_row_ (FundamentalDaily 网格一行, PIT 预计算, 缺失=NaN)
-//        每分钟原样推出, 下游 (Valuation) 按口取 Series, 落盘列直接 OP(Fund, 口)
+// Fund - 日频 PIT 基本面 (广播型算子: compute=onDay 每天一次, flush=onMinute 每分钟原样推出)
+//        持一个 fund::Stream (per-资产日频状态机), 盘前沿交易日历推进到当日算出全部口 (估值分母 / 因子 raw / filter),
+//        盘中每分钟广播; 下游 (Valuation) 按口取 Series, 落盘列直接 OP(Fund, 口). 方法见 Method/Fundamental.hpp
 // =============================================================================
-//   Out 即 FundamentalDaily 网格的列布局 (一处定义, 构建端按 Fund::<口> 写, 这里按下标原样拷贝).
+//   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.
 //   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L1 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
 //
-// 【fast-math 契约】只拷贝, NaN 硬件透传; 不做 isnan/isfinite.
+// 【fast-math 契约】本文件不做 isnan/isfinite (状态机在 precise-math TU 里), y 只被下游算术消费, NaN 硬件透传.
 // =============================================================================
 
+#include "features/Method/Fundamental.hpp"
 #include <cassert>
 #include <cstddef>
+#include <string>
 
 class Fund {
 public:
@@ -48,20 +51,24 @@ public:
   };
   float y[kCount] = {};
 
-  explicit Fund(const float *const &row) : row_(row) {}
+  Fund(const fund::Pool &pool, size_t asset_id, const std::string &date)
+      : pool_(pool), date_(date), stream_(pool, asset_id) {}
 
+  // onDay (盘前): 状态机推进到当日, 写 y; 之后每分钟 flush 原样广播
   void compute() {
-    assert(row_ != nullptr && "begin_day 未设置当日基本面行");
-    for (size_t i = 0; i < kCount; ++i)
-      y[i] = row_[i];
+    const int d = pool_.date_index(date_);
+    assert(d >= 0 && "回测日不在基本面交易日历里");
+    stream_.advance_to(d, y);
   }
 
 private:
-  const float *const &row_; // 指向 DAG::fund_row_, begin_day 更新
+  const fund::Pool &pool_;  // DAG_Root::fund_pool (只读共享数据源)
+  const std::string &date_; // DAG_Root::date_ (begin_day 设置)
+  fund::Stream stream_;     // 本资产的日频状态机
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Fund(N) N(Fund, (Fund), (fund_row_), onMinute)
+#define NODE_Fund(N) N(Fund, (Fund), (fund_pool, asset_id_, date_), onDay, onMinute)
 
 #define FIELDS_L1_Fund(X)                                                                                                                                                                          \
   X(industry_l1, BASIC, RAW, NONE, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", OP(Fund, industry_l1))                                                      \

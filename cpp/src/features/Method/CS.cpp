@@ -1,4 +1,4 @@
-// CSKernels — 截面算子 (Operator/CS/*.hpp) 的 kernel 实现, qmt/cpp/src/feature/cs.cpp 逐步复刻.
+// 截面方法实现 (Method/CS.hpp), qmt/cpp/src/feature/cs.cpp 逐步复刻.
 //   Reciprocal::apply / NormRank::apply / WinsorRank::apply / NeutralRank::apply + prepare_logmc
 //
 // 忠实性契约 (决定 qmt 因子效果能否复现, 改动前先对 qmt 源码逐行核对):
@@ -15,10 +15,7 @@
 //   上游已按 _data_valid 收成 dense 活跃子集 (停牌/退市自然缺席), 无需再 mask.
 //
 // 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
-#include "features/Operator/CS/NeutralRank.hpp"
-#include "features/Operator/CS/NormRank.hpp"
-#include "features/Operator/CS/Transform.hpp"
-#include "features/Operator/CS/WinsorRank.hpp"
+#include "features/Method/CS.hpp"
 
 #include <algorithm>
 #include <array>

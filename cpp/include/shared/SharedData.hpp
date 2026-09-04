@@ -9,7 +9,7 @@
 #include "./TaskState.hpp"
 #include "./TimeSeries.hpp"
 #include "./Transform.hpp"
-#include "features/Fundamental/FundamentalDaily.hpp"
+#include "features/Method/Fundamental.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
 
@@ -18,7 +18,7 @@ struct SharedData {
   TaskState taskstate;
   Asset asset;
   AssetInfo assetinfo;
-  FundamentalDaily fundamental_daily;
+  fund::Pool fund_pool; // 日频 PIT 基本面数据源 (Phase 2 前 build, TS worker 只读共享)
   Feature feature;
   OrderFlow orderflow;
   Dist dist;

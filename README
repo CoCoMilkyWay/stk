@@ -48,9 +48,9 @@ stk/
 │   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图: Node<Op,K> 输出 Series + DAG (CMake 拓扑序生成 NodesGenerated.hpp, NODE_ 变参 flush 默认=compute)
 │   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; DEPTH 快照/标签回填手工写 (ts_write_range<LVL>)
 │   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 行编译期展开 (CsLevel<LVL>), L0 每秒 + L1 分钟级联
-│   │   │   ├── Fundamental/FundamentalDaily.hpp         # 🧮 日频 PIT 基本面网格 (Fund 节点数据源, 行布局 = Fund::Out)
-│   │   │   ├── Operator/TS/                             # 🧮 时序算子 = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic[Fund/Valuation..]/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
-│   │   │   ├── Operator/CS/                             # 🧮 截面算子 = 无状态 struct + 文件末尾 FIELDS_ 宏 (Transform/NormRank/WinsorRank/NeutralRank; kernel 在 src/features/CSKernels.cpp)
+│   │   │   ├── Operator/TS/                             # 🧮 时序算子 (按特征命名) = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic[Fund/Valuation..]/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
+│   │   │   ├── Operator/CS/                             # 🧮 截面算子 (按源节点命名: Spread/Valuation/Fund/Ohlc) = 文件末尾 FIELDS_ 宏 CS(src, Tf, Method)
+│   │   │   ├── Method/                                  # 🧮 方法声明 (实现在 src/features/Method/, precise-math): CS.hpp (Reciprocal/NormRank/WinsorRank/NeutralRank), Fundamental.hpp (fund::Pool 日频 PIT 数据源 [网格切片 + 事件链] + fund::Stream per-资产逐日状态机, Fund 算子 onDay 推进)
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), DEPTH 第三层, width/valid/psd 全推导
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)

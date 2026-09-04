@@ -46,7 +46,7 @@ void sequential_worker(int worker_id,
     for (size_t i = 0; i < my_asset_ids.size(); ++i) {
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
-      lobs.push_back(std::make_unique<LimitOrderBook>(L2::LOB_ORDER_CAPACITY, store, asset.asset_code, asset.exchange_type, asset.asset_id, worker_id));
+      lobs.push_back(std::make_unique<LimitOrderBook>(L2::LOB_ORDER_CAPACITY, store, data.fund_pool, asset.asset_code, asset.exchange_type, asset.asset_id, worker_id));
       decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_ORDER_SIZE));
     }
   }
@@ -85,9 +85,7 @@ void sequential_worker(int worker_id,
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
       auto it = asset.date_info.find(date_str);
-      const float *fund_row = data.fundamental_daily.find(date_str, asset_id);
-      assert(fund_row != nullptr && "FundamentalDaily 未覆盖回测日");
-      lobs[i]->begin_day(date_str, fund_row);
+      lobs[i]->begin_day(date_str); // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
       // Hot path: has data and binaries
       if (it != asset.date_info.end() && it->second.has_binaries()) [[likely]] {
 

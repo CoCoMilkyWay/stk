@@ -1,12 +1,15 @@
-// FundamentalDaily — 日频 PIT 基本面预计算实现 (qmt pit.cpp + def/ 链路移植)
+// fund — 日频 PIT 基本面实现 (qmt pit.cpp + def/ 链路移植)
 //
-// 结构: parquet 月度分片 → 网格/事件池 (raw cutoff 单点应用) → per-A 日频序列
-//   (估值分母 / 因子 raw / filter 状态机) → 回测日采样 → 纯 float 行网格
-//   (Fund::kCount 列, 缺失 = NaN, fp16 存不下的极值也归 NaN).
+// 结构: Pool::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
+//       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与 qmt 批量扫描逐日等价:
+//                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红 365 日滑窗 + 3 年双阈值,
+//                       预亏/营收区间 = "d < max{off : on ≤ d}" (区间并集的流式形式), 行业 replay, trading_st 连续计数
+//                     每日产出 Fund::kCount 列 (缺失 = NaN, fp16 存不下的极值也归 NaN).
 //
 // 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
-#include "features/Fundamental/FundamentalDaily.hpp"
+#include "features/Method/Fundamental.hpp"
 
+#include "features/Operator/TS/Basic/Fund.hpp" // Fund::Out 输出行布局
 #include "misc/date.hpp"
 #include "misc/parquet.hpp"
 
@@ -24,10 +27,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+namespace fund {
 namespace {
 
 namespace pq = misc::pq;
@@ -141,6 +146,9 @@ struct DividendEv {
   std::int32_t report_date;
   float cash_before_tax;
   float cash_after_tax;
+  // 公告日股本快照 × 每股现金 (build 末尾按全史网格标注, 之后网格切片不再覆盖历史事件)
+  float amt_pre;   // dy 365 日滑窗: cash_before_tax × shares[v]; 非 finite / ≤0 → 0
+  float amt_after; // dividend_st 3 年累计: cash_after_tax × shares[v]; 任一非 finite → NaN (跳过)
 };
 enum class ForecastType : std::uint8_t { Other = 0,
                                          FirstLoss = 1,
@@ -156,8 +164,15 @@ struct IndustryEv {
   std::uint8_t l1_id;
 };
 
-struct Pool {
-  // 网格 [a-major, d-minor]
+struct PitPool {
+  // 网格 [a-major, d-minor]; build 期覆盖全 D 轴 (g0=0, n_g=n_d), slice() 后只留 [g0, g0+n_g)
+  int g0 = 0, n_g = 0;
+  template <class T>
+  T at(const std::vector<T> &g, int a, int d) const {
+    assert(d >= g0 && d < g0 + n_g && "网格切片不覆盖该日");
+    return g[static_cast<std::size_t>(a) * static_cast<std::size_t>(n_g) + static_cast<std::size_t>(d - g0)];
+  }
+
   std::vector<float> close;          // bar1d.close (不复权, cutoff=-1, ffill)
   std::vector<float> total_shares;   // cutoff=-1, ffill
   std::vector<float> a_float_shares; // cutoff=-1, ffill
@@ -177,7 +192,47 @@ struct Pool {
   std::vector<std::vector<ForecastEv>> forecast;
   std::vector<std::vector<IndustryEv>> industry_component;
   std::vector<std::vector<IndustryEv>> industry_change;
+
+  // 网格切到 [new_g0, n_d): 逐列拷贝 (峰值 = 全网格 + 一列切片), 事件链不动
+  void slice(int n_a, int new_g0) {
+    assert(g0 == 0 && new_g0 >= 0 && new_g0 <= n_g);
+    const int nn = n_g - new_g0;
+    auto cut = [&](auto &g) {
+      using V = std::decay_t<decltype(g)>;
+      V out(static_cast<std::size_t>(n_a) * static_cast<std::size_t>(nn));
+      for (int a = 0; a < n_a; ++a)
+        std::copy_n(g.begin() + static_cast<std::ptrdiff_t>(a) * n_g + new_g0, nn,
+                    out.begin() + static_cast<std::ptrdiff_t>(a) * nn);
+      g.swap(out);
+    };
+    cut(close);
+    cut(total_shares);
+    cut(a_float_shares);
+    cut(up_lim);
+    cut(dn_lim);
+    cut(st_status);
+    cut(suspended);
+    cut(is_margin);
+    cut(fin_balance);
+    cut(sec_balance);
+    g0 = new_g0;
+    n_g = nn;
+  }
 };
+
+} // namespace
+
+// ============================================================================
+// Data: Pool 的全部内容 (只读共享)
+// ============================================================================
+struct Data {
+  Axes axes;
+  Meta meta;
+  PitPool pit;
+  int axes_warmup_d = 0; // dividend_st 数据轴 warmup: 轴起点 + 3 年
+};
+
+namespace {
 
 // ============================================================================
 // row 定位 memo (qmt GridRowMemo / EventRowMemo)
@@ -298,10 +353,12 @@ void sort_events(std::vector<std::vector<Ev>> &chains) {
 // ============================================================================
 // itf 构建 (qmt pit.cpp 各 itf_* 移植; cutoff 语义逐一保持)
 // ============================================================================
-void build_grids(const Axes &axes, Pool &p) {
+void build_grids(const Axes &axes, PitPool &p) {
   const std::size_t n = static_cast<std::size_t>(axes.n_a()) *
                         static_cast<std::size_t>(axes.n_d());
   const std::size_t n_d = static_cast<std::size_t>(axes.n_d());
+  p.g0 = 0;
+  p.n_g = axes.n_d();
 
   auto alloc_f = [&](std::vector<float> &g) { g.assign(n, NaNF); };
   alloc_f(p.close);
@@ -424,7 +481,7 @@ void build_grids(const Axes &axes, Pool &p) {
   grid_ffill(p.dn_lim, axes.n_a(), axes.n_d());
 }
 
-void build_events(const Axes &axes, Pool &p) {
+void build_events(const Axes &axes, PitPool &p) {
   const std::size_t n_a = static_cast<std::size_t>(axes.n_a());
   p.ttm.assign(n_a, {});
   p.balance.assign(n_a, {});
@@ -557,6 +614,8 @@ void build_events(const Axes &axes, Pool &p) {
                             ev.report_date = rd.yyyymmdd(i);
                             ev.cash_before_tax = cash_b.f32(i);
                             ev.cash_after_tax = cash.f32(i);
+                            ev.amt_pre = 0.0f; // build 末尾标注
+                            ev.amt_after = NaNF;
                             std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
                             p.dividend[static_cast<std::size_t>(a)].push_back(ev);
                           }
@@ -644,44 +703,8 @@ void build_events(const Axes &axes, Pool &p) {
 }
 
 // ============================================================================
-// 财务扫描 helper (qmt def/detail.hpp 移植; 上市前事件丢弃)
+// 财务 helper (qmt def/detail.hpp 移植)
 // ============================================================================
-
-// ttm 流: per-A 沿 v 升序取 latest event; compute(d, ev*) 写 out[d]
-template <class Compute>
-void scan_latest_ttm(int a, const Axes &axes, const Pool &pool, int list_d,
-                     float *out, Compute compute) {
-  int n_d = axes.n_d();
-  const auto &events = pool.ttm[static_cast<std::size_t>(a)];
-  std::size_t ep = 0;
-  int last_idx = -1;
-  for (int d = 0; d < n_d; ++d) {
-    while (ep < events.size() && events[ep].v <= d) {
-      if (events[ep].v >= list_d)
-        last_idx = static_cast<int>(ep);
-      ++ep;
-    }
-    out[d] = (last_idx >= 0) ? compute(d, events[static_cast<std::size_t>(last_idx)]) : NaNF;
-  }
-}
-
-// balance 流: 维护 map<report_date, ev>, 取 max(report_date) (MRQ)
-template <class Compute>
-void scan_latest_balance(int a, const Axes &axes, const Pool &pool, int list_d,
-                         float *out, Compute compute) {
-  int n_d = axes.n_d();
-  const auto &events = pool.balance[static_cast<std::size_t>(a)];
-  std::map<std::int32_t, FinancialBalanceEv> latest_by_rd;
-  std::size_t ep = 0;
-  for (int d = 0; d < n_d; ++d) {
-    while (ep < events.size() && events[ep].v <= d) {
-      if (events[ep].v >= list_d)
-        latest_by_rd[events[ep].report_date] = events[ep];
-      ++ep;
-    }
-    out[d] = latest_by_rd.empty() ? NaNF : compute(d, latest_by_rd.rbegin()->second);
-  }
-}
 
 // report_date 的上一个季末; 非标准季末 → 0
 std::int32_t prev_quarter_end(std::int32_t rd) {
@@ -721,33 +744,6 @@ float ttm_window_avg(std::int32_t anchor,
   return static_cast<float>(sum / 5.0);
 }
 
-// ttm + balance 双流 (roe/roa)
-template <class Compute>
-void scan_latest_ttm_and_balance(int a, const Axes &axes, const Pool &pool,
-                                 int list_d, float *out, Compute compute) {
-  int n_d = axes.n_d();
-  const auto &ttms = pool.ttm[static_cast<std::size_t>(a)];
-  const auto &bals = pool.balance[static_cast<std::size_t>(a)];
-  std::map<std::int32_t, FinancialBalanceEv> latest_by_rd;
-  std::size_t tp = 0, bp = 0;
-  int last_ttm = -1;
-  for (int d = 0; d < n_d; ++d) {
-    while (tp < ttms.size() && ttms[tp].v <= d) {
-      if (ttms[tp].v >= list_d)
-        last_ttm = static_cast<int>(tp);
-      ++tp;
-    }
-    while (bp < bals.size() && bals[bp].v <= d) {
-      if (bals[bp].v >= list_d)
-        latest_by_rd[bals[bp].report_date] = bals[bp];
-      ++bp;
-    }
-    out[d] = (last_ttm < 0 || latest_by_rd.empty())
-                 ? NaNF
-                 : compute(d, ttms[static_cast<std::size_t>(last_ttm)], latest_by_rd);
-  }
-}
-
 // forecast 触发 → 终止 d: min(对应 report_date 正式年报 PIT 首见 row, 次年 4/30 ceil)
 int find_forecast_off_d(const ForecastEv &fe,
                         const std::vector<FinancialIncomeAnnualEv> &financials,
@@ -779,37 +775,45 @@ int find_forecast_off_d(const ForecastEv &fe,
   return off;
 }
 
-// 区间状态机: 触发事件 [ev.v, find_off(ev)) 写 1, 多触发取并集
-template <class TEv, class FindOff>
-void state_machine_intervals(const std::vector<TEv> &triggers, int n_d,
-                             FindOff find_off, float *dst) {
-  std::fill(dst, dst + n_d, 0.0f);
-  for (const TEv &e : triggers) {
-    int on_d = e.v;
-    int off_d = find_off(e);
-    if (on_d < 0)
-      on_d = 0;
-    if (off_d > n_d)
-      off_d = n_d;
-    for (int d = on_d; d < off_d; ++d)
-      dst[d] = 1.0f;
-  }
+// D 轴日 d 的年份
+inline int year_of_d(const Axes &axes, int d) {
+  return std::stoi(axes.dates[static_cast<std::size_t>(d)].substr(0, 4));
 }
 
-} // anonymous namespace
+// 首个年份 ≥ y 的 D 轴下标; 无 → n_d
+int first_d_of_year(const Axes &axes, int y) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%04d0101", y);
+  auto it = std::lower_bound(axes.dates.begin(), axes.dates.end(), std::string(buf));
+  return static_cast<int>(std::distance(axes.dates.begin(), it));
+}
+
+} // namespace
 
 // ============================================================================
-// FundamentalDaily::build
+// Pool
 // ============================================================================
-void FundamentalDaily::build(const std::vector<std::string> &codes,
-                             const std::vector<std::string> &dates) {
+Pool::Pool() = default;
+Pool::~Pool() = default;
+
+int Pool::date_index(const std::string &yyyymmdd) const {
+  const auto &idx = data().axes.date_idx;
+  auto it = idx.find(yyyymmdd);
+  return it == idx.end() ? -1 : it->second;
+}
+
+void Pool::build(const std::vector<std::string> &codes,
+                 const std::vector<std::string> &dates) {
   assert(!codes.empty() && "AssetAxis 为空");
   assert(!dates.empty() && "回测日为空");
 
   auto t0 = std::chrono::steady_clock::now();
+  auto data = std::make_unique<Data>();
+  Axes &axes = data->axes;
+  Meta &meta = data->meta;
+  PitPool &pit = data->pit;
 
   // ---- D 轴: all_trading_days (market_code='CN', 截到 today) ----
-  Axes axes;
   {
     const std::string today = misc::today_yyyymmdd();
     std::set<std::string> trading;
@@ -846,16 +850,15 @@ void FundamentalDaily::build(const std::vector<std::string> &codes,
   const int n_d = axes.n_d();
   assert(static_cast<std::size_t>(n_a) == codes.size() && "AssetAxis code 重复");
 
-  // ---- 回测日 → D 轴 idx (必须全部命中交易日历) ----
-  std::vector<int> sample_d(dates.size());
-  for (std::size_t i = 0; i < dates.size(); ++i) {
-    auto it = axes.date_idx.find(dates[i]);
+  // ---- 回测日必须全部命中交易日历; 首回测日决定网格切片起点 ----
+  int first_d = n_d;
+  for (const auto &s : dates) {
+    auto it = axes.date_idx.find(s);
     assert(it != axes.date_idx.end() && "回测日不在交易日历里");
-    sample_d[i] = it->second;
+    first_d = std::min(first_d, it->second);
   }
 
   // ---- 静态 meta: cn_stock_basic_info (_meta) ----
-  Meta meta;
   meta.list_day.assign(static_cast<std::size_t>(n_a), {});
   meta.has_list.assign(static_cast<std::size_t>(n_a), 0);
   meta.delist_day.assign(static_cast<std::size_t>(n_a), {});
@@ -890,466 +893,358 @@ void FundamentalDaily::build(const std::vector<std::string> &codes,
     }
   }
 
-  // ---- PIT 池构建 ----
-  Pool pool;
-  build_grids(axes, pool);
-  build_events(axes, pool);
+  // ---- PIT 池: 全 D 轴网格 + 事件链 ----
+  build_grids(axes, pit);
+  build_events(axes, pit);
 
-  // ---- 输出网格 ----
-  dates_ = dates;
-  date_idx_.clear();
-  for (std::size_t i = 0; i < dates_.size(); ++i)
-    date_idx_.emplace(dates_[i], i);
-  n_a_ = static_cast<std::size_t>(n_a);
-  grid_.assign(dates_.size() * n_a_ * Fund::kCount, NaNF);
+  // ---- 分红事件标注公告日股本快照 (需全史网格, 在切片之前) ----
+  for (int a = 0; a < n_a; ++a) {
+    for (auto &e : pit.dividend[static_cast<std::size_t>(a)]) {
+      const float sh = pit.at(pit.total_shares, a, e.v);
+      const float c = e.cash_before_tax;
+      e.amt_pre = (std::isfinite(c) && c > 0.0f && std::isfinite(sh)) ? c * sh : 0.0f;
+      const float ca = e.cash_after_tax;
+      e.amt_after = (std::isfinite(ca) && std::isfinite(sh)) ? ca * sh : NaNF;
+    }
+  }
 
   // ---- dividend_st 数据轴 warmup (轴起点 + 3 年) ----
-  int axes_warmup_d = n_d;
-  {
-    int start_y = std::stoi(axes.dates[0].substr(0, 4));
-    for (int d = 0; d < n_d; ++d) {
-      if (std::stoi(axes.dates[static_cast<std::size_t>(d)].substr(0, 4)) >=
-          start_y + 3) {
-        axes_warmup_d = d;
-        break;
-      }
-    }
-  }
+  data->axes_warmup_d = first_d_of_year(axes, year_of_d(axes, 0) + 3);
 
-  // ---- per-A 并行: 日频序列计算 + 回测日采样 ----
-  std::atomic<int> next{0};
-  unsigned nt = std::thread::hardware_concurrency();
-  if (nt == 0)
-    nt = 1;
+  // ---- 网格切片: 首回测日前留 15 日 (trading_st 连续 15 日计数), 其余历史只在事件链上 ----
+  pit.slice(n_a, std::max(0, first_d - 15));
 
-  auto worker = [&]() {
-    const std::size_t nd = static_cast<std::size_t>(n_d);
-    // per-thread scratch (n_d 长的日频序列)
-    std::vector<float> close_raw(nd), mcap_raw(nd);
-    std::vector<float> np_ttm(nd), rev_ttm(nd), cffoa_ttm(nd), equity_mrq(nd);
-    std::vector<float> roe(nd), roa(nd), dy(nd), cffoa_chg(nd);
-    std::vector<float> rev_raw(nd), ni_raw(nd);
-    std::vector<float> profit_st(nd), revenue_st(nd), dividend_st(nd);
-    std::vector<std::uint8_t> industry(nd);
-
-    for (;;) {
-      int a = next.fetch_add(1, std::memory_order_relaxed);
-      if (a >= n_a)
-        break;
-      const std::size_t ai = static_cast<std::size_t>(a);
-      const std::size_t base = ai * nd;
-      const int list_d = get_list_d(a, axes, meta);
-      const bool mb = meta.main_board[ai] != 0;
-
-      // -- close_raw / mcap_raw (上市前 0 哨兵, qmt fill_before_list) --
-      for (int d = 0; d < n_d; ++d) {
-        float c = pool.close[base + static_cast<std::size_t>(d)];
-        float s = pool.total_shares[base + static_cast<std::size_t>(d)];
-        close_raw[static_cast<std::size_t>(d)] = c;
-        mcap_raw[static_cast<std::size_t>(d)] =
-            (std::isfinite(c) && std::isfinite(s)) ? c * s : NaNF;
-      }
-      for (int d = 0; d < std::min(list_d, n_d); ++d) {
-        close_raw[static_cast<std::size_t>(d)] = 0.0f;
-        mcap_raw[static_cast<std::size_t>(d)] = 0.0f;
-      }
-
-      // -- 财务分母序列 (估值 = 分钟价 × 股本 / 这些分母) --
-      scan_latest_ttm(a, axes, pool, list_d, np_ttm.data(),
-                      [](int, const FinancialTtmEv &e) {
-                        float n = e.net_profit_to_parent_shareholders_ttm;
-                        return (std::isfinite(n) && n != 0.0f) ? n : NaNF;
-                      });
-      scan_latest_ttm(a, axes, pool, list_d, rev_ttm.data(),
-                      [](int, const FinancialTtmEv &e) {
-                        float r = e.total_operating_revenue_ttm;
-                        // 负营收是源脏值 (qmt ps_raw 口径): ≤0 → NaN
-                        return (std::isfinite(r) && r > 0.0f) ? r : NaNF;
-                      });
-      scan_latest_ttm(a, axes, pool, list_d, cffoa_ttm.data(),
-                      [](int, const FinancialTtmEv &e) {
-                        float c = e.net_cffoa_ttm;
-                        return (std::isfinite(c) && c != 0.0f) ? c : NaNF;
-                      });
-      scan_latest_balance(a, axes, pool, list_d, equity_mrq.data(),
-                          [](int, const FinancialBalanceEv &e) {
-                            float eq = e.total_equity_to_parent_shareholders;
-                            return (std::isfinite(eq) && eq != 0.0f) ? eq : NaNF;
-                          });
-
-      // -- roe / roa (ttm + balance 双流, avg5 分母) --
-      scan_latest_ttm_and_balance(
-          a, axes, pool, list_d, roe.data(),
-          [](int, const FinancialTtmEv &t,
-             const std::map<std::int32_t, FinancialBalanceEv> &by_rd) {
-            float n = t.net_profit_to_parent_shareholders_ttm;
-            float eq = ttm_window_avg(
-                t.report_date, by_rd,
-                &FinancialBalanceEv::total_equity_to_parent_shareholders);
-            return (std::isfinite(n) && std::isfinite(eq) && eq > 0.0f)
-                       ? (n / eq) * 100.0f
-                       : NaNF;
-          });
-      scan_latest_ttm_and_balance(
-          a, axes, pool, list_d, roa.data(),
-          [](int, const FinancialTtmEv &t,
-             const std::map<std::int32_t, FinancialBalanceEv> &by_rd) {
-            float n = t.net_profit_ttm;
-            float as = ttm_window_avg(t.report_date, by_rd,
-                                      &FinancialBalanceEv::total_assets);
-            return (std::isfinite(n) && std::isfinite(as) && as > 0.0f)
-                       ? (n / as) * 100.0f
-                       : NaNF;
-          });
-
-      // -- cffoa_raw = tanh((c0 - c4) / mcap) --
-      scan_latest_ttm(a, axes, pool, list_d, cffoa_chg.data(),
-                      [&](int d, const FinancialTtmEv &e) {
-                        float m = mcap_raw[static_cast<std::size_t>(d)];
-                        float c0 = e.net_cffoa_ttm;
-                        float c4 = e.net_cffoa_ttm_shift4;
-                        return (std::isfinite(m) && m > 0.0f &&
-                                std::isfinite(c0) && std::isfinite(c4))
-                                   ? std::tanh((c0 - c4) / m)
-                                   : NaNF;
-                      });
-
-      // -- dy_raw: 365 日滑窗税前分红总额 / mcap (公告日锚, 股本取公告日快照) --
-      {
-        const auto &divs = pool.dividend[ai];
-        std::vector<float> amt(divs.size(), 0.0f);
-        for (std::size_t i = 0; i < divs.size(); ++i) {
-          float c = divs[i].cash_before_tax;
-          if (!std::isfinite(c) || c <= 0.0f)
-            continue;
-          float sh = pool.total_shares[base + static_cast<std::size_t>(divs[i].v)];
-          if (std::isfinite(sh))
-            amt[i] = c * sh;
-        }
-        std::size_t lo = 0, hi = 0;
-        float cash_sum = 0.0f;
-        for (int d = 0; d < n_d; ++d) {
-          auto Tlo = axes.date_days[static_cast<std::size_t>(d)] -
-                     std::chrono::days{365};
-          while (hi < divs.size() && divs[hi].v <= d) {
-            cash_sum += amt[hi];
-            ++hi;
-          }
-          while (lo < hi &&
-                 axes.date_days[static_cast<std::size_t>(divs[lo].v)] <= Tlo) {
-            cash_sum -= amt[lo];
-            ++lo;
-          }
-          if (lo >= hi)
-            cash_sum = 0.0f;
-          float m = mcap_raw[static_cast<std::size_t>(d)];
-          if (!std::isfinite(m) || m <= 0.0f)
-            dy[static_cast<std::size_t>(d)] = NaNF;
-          else
-            dy[static_cast<std::size_t>(d)] = std::max(cash_sum / m, 0.0f);
-        }
-      }
-
-      // -- rev_raw / ni_raw (filter 依赖) --
-      scan_latest_ttm(a, axes, pool, list_d, rev_raw.data(),
-                      [](int, const FinancialTtmEv &e) {
-                        float r = e.total_operating_revenue_ttm;
-                        return (std::isfinite(r) && r > 0.0f) ? r : NaNF;
-                      });
-      {
-        std::fill(ni_raw.begin(), ni_raw.end(), NaNF);
-        struct Cell {
-          float val;
-          int last_v;
-        };
-        std::vector<std::pair<std::int32_t, Cell>> annuals;
-        std::size_t ev_ptr = 0;
-        const auto &events = pool.income_annual[ai];
-        for (int d = 0; d < n_d; ++d) {
-          while (ev_ptr < events.size() && events[ev_ptr].v <= d) {
-            const auto &e = events[ev_ptr++];
-            if (!std::isfinite(e.net_profit_to_parent_shareholders))
-              continue;
-            int idx = -1;
-            for (std::size_t i = 0; i < annuals.size(); ++i)
-              if (annuals[i].first == e.report_date) {
-                idx = static_cast<int>(i);
-                break;
-              }
-            if (idx < 0)
-              annuals.emplace_back(
-                  e.report_date, Cell{e.net_profit_to_parent_shareholders, e.v});
-            else
-              annuals[static_cast<std::size_t>(idx)].second =
-                  Cell{e.net_profit_to_parent_shareholders, e.v};
-          }
-          if (annuals.empty())
-            continue;
-          int i0 = -1, i1 = -1, v0 = -1, v1 = -1;
-          for (std::size_t i = 0; i < annuals.size(); ++i) {
-            int v = annuals[i].second.last_v;
-            if (v > v0) {
-              v1 = v0;
-              i1 = i0;
-              v0 = v;
-              i0 = static_cast<int>(i);
-            } else if (v > v1) {
-              v1 = v;
-              i1 = static_cast<int>(i);
-            }
-          }
-          if (i0 >= 0 && i1 >= 0)
-            ni_raw[static_cast<std::size_t>(d)] =
-                (annuals[static_cast<std::size_t>(i0)].second.val +
-                 annuals[static_cast<std::size_t>(i1)].second.val) *
-                0.5f;
-          else if (i0 >= 0)
-            ni_raw[static_cast<std::size_t>(d)] =
-                annuals[static_cast<std::size_t>(i0)].second.val;
-        }
-      }
-
-      // -- profit_st: 年报预亏状态机 --
-      {
-        std::vector<ForecastEv> trig;
-        for (const auto &e : pool.forecast[ai]) {
-          if (month_of(e.end_date) != 12)
-            continue;
-          if (e.type != ForecastType::FirstLoss &&
-              e.type != ForecastType::ContinueLoss)
-            continue;
-          if (!std::isfinite(e.last_parent_net) || e.last_parent_net >= 0.0f)
-            continue;
-          trig.push_back(e);
-        }
-        state_machine_intervals(trig, n_d, [&](const ForecastEv &fe) { return find_forecast_off_d(
-                                                                           fe, pool.income_annual[ai], axes); }, profit_st.data());
-      }
-
-      // -- revenue_st: 主板营收退市预警 (2021 新规后) --
-      {
-        std::fill(revenue_st.begin(), revenue_st.end(), 0.0f);
-        if (mb) {
-          for (const auto &e : pool.forecast[ai]) {
-            if (month_of(e.end_date) != 12)
-              continue;
-            if (e.type != ForecastType::FirstLoss &&
-                e.type != ForecastType::ContinueLoss)
-              continue;
-            int end_y = year_of(e.end_date);
-            if (end_y < 2021)
-              continue;
-            if (e.v < 1 || e.v >= n_d)
-              continue;
-            // ann_date >= 20210101: e.v 是 row D, e.v-1 是 visible_d
-            if (axes.dates[static_cast<std::size_t>(e.v - 1)] < "20210101")
-              continue;
-            int on_d = e.v;
-            int off_d = find_forecast_off_d(e, pool.income_annual[ai], axes);
-            if (off_d > n_d)
-              off_d = n_d;
-            float thr = (end_y >= 2024) ? 3e8f : 1e8f;
-            for (int d = on_d; d < off_d; ++d) {
-              float r = rev_raw[static_cast<std::size_t>(d)];
-              if (std::isfinite(r) && r < thr)
-                revenue_st[static_cast<std::size_t>(d)] = 1.0f;
-            }
-          }
-        }
-      }
-
-      // -- dividend_st: 主板分红不足预警 (3y 双阈值, 阶梯 forward fill) --
-      {
-        std::fill(dividend_st.begin(), dividend_st.end(), 0.0f);
-        if (mb) {
-          int stock_warmup_d = n_d;
-          if (meta.has_list[ai]) {
-            int list_y = static_cast<int>(
-                std::stoi(meta.list_date_str[ai].substr(0, 4)));
-            for (int d = 0; d < n_d; ++d) {
-              if (std::stoi(axes.dates[static_cast<std::size_t>(d)].substr(0, 4)) >=
-                  list_y + 3) {
-                stock_warmup_d = d;
-                break;
-              }
-            }
-          }
-          int warmup_d = std::max(axes_warmup_d, stock_warmup_d);
-          const auto &divs = pool.dividend[ai];
-
-          auto apply_segment = [&](int seg_start, int seg_end, float val_3ysum) {
-            if (seg_start < warmup_d)
-              seg_start = warmup_d;
-            if (seg_start < 0)
-              seg_start = 0;
-            if (seg_end > n_d)
-              seg_end = n_d;
-            for (int d = seg_start; d < seg_end; ++d) {
-              float ni = ni_raw[static_cast<std::size_t>(d)];
-              if (!std::isfinite(ni) || ni <= 0.0f)
-                continue;
-              if (val_3ysum < 0.30f * ni && val_3ysum < 5e7f)
-                dividend_st[static_cast<std::size_t>(d)] = 1.0f;
-            }
-          };
-
-          float current_3ysum = 0.0f;
-          int next_apply_d = 0;
-          for (std::size_t ev_idx = 0; ev_idx < divs.size(); ++ev_idx) {
-            const auto &e = divs[ev_idx];
-            apply_segment(next_apply_d, e.v, current_3ysum);
-            next_apply_d = e.v;
-
-            int ann_y = (e.v >= 1 && e.v < n_d)
-                            ? std::stoi(axes.dates[static_cast<std::size_t>(e.v - 1)]
-                                            .substr(0, 4))
-                            : 0;
-            if (ann_y == 0)
-              continue;
-            int lo_y = ann_y - 3, hi_y = ann_y - 1;
-            float sum = 0.0f;
-            for (std::size_t j = 0; j <= ev_idx; ++j) {
-              const auto &pd = divs[j];
-              int py = year_of(pd.report_date);
-              if (py < lo_y || py > hi_y)
-                continue;
-              if (!std::isfinite(pd.cash_after_tax))
-                continue;
-              float sh =
-                  pool.total_shares[base + static_cast<std::size_t>(pd.v)];
-              // 上市前 0 哨兵不适用 (grid 未填 0), 但 NaN 需跳过
-              if (!std::isfinite(sh))
-                continue;
-              sum += pd.cash_after_tax * sh;
-            }
-            current_3ysum = sum;
-          }
-          apply_segment(next_apply_d, n_d, current_3ysum);
-        }
-      }
-
-      // -- industry_l1 replay (component 月初快照 + change 月内增量) --
-      {
-        const auto &comp = pool.industry_component[ai];
-        const auto &chg = pool.industry_change[ai];
-        std::size_t ic = 0, ig = 0;
-        std::uint8_t last_id = 0;
-        for (int d = 0; d < n_d; ++d) {
-          while (ic < comp.size() && comp[ic].v <= d) {
-            last_id = comp[ic].l1_id;
-            ++ic;
-          }
-          while (ig < chg.size() && chg[ig].v <= d) {
-            last_id = chg[ig].l1_id;
-            ++ig;
-          }
-          industry[static_cast<std::size_t>(d)] = last_id;
-        }
-      }
-
-      // -- trading_st: 连续 15 日 (日频 low_p ∨ low_mc), 采样点直接算 run --
-      // (与其余序列一起在采样循环外先算全序列)
-      // low_p = close ∈ (0,1); low_mc = mcap ∈ (0, thr)
-      const float mc_thr = mb ? 5e8f : 3e8f;
-
-      // ---- 采样回测日 ----
-      // trading_st run 需要顺序扫描, 单独预算
-      // (放在这里避免多一份 n_d scratch: 用局部数组)
-      {
-        // run 计数序列化为采样值: 遍历一遍 n_d, 遇到采样点记录
-        std::size_t si = 0;
-        int run = 0;
-        std::vector<std::uint8_t> trading_flag(dates_.size(), 0);
-        for (int d = 0; d < n_d && si < sample_d.size(); ++d) {
-          float c = close_raw[static_cast<std::size_t>(d)];
-          float m = mcap_raw[static_cast<std::size_t>(d)];
-          bool lp = std::isfinite(c) && c > 0.0f && c < 1.0f;
-          bool lmc = std::isfinite(m) && m > 0.0f && m < mc_thr;
-          run = (lp || lmc) ? run + 1 : 0;
-          if (d == sample_d[si]) {
-            trading_flag[si] = (run >= 15) ? 1 : 0;
-            ++si;
-          }
-        }
-
-        for (std::size_t s = 0; s < dates_.size(); ++s) {
-          const int d = sample_d[s];
-          const std::size_t di = static_cast<std::size_t>(d);
-          float *out = grid_.data() + (s * n_a_ + ai) * Fund::kCount;
-
-          // fp16 饱和 (下游存 _Float16): 极值 → NaN; 违约束 (+inf 标记) 同归 NaN
-          constexpr float kFp16Max = 65504.0f;
-          auto sat = [](float v) {
-            return (std::isfinite(v) && v > -kFp16Max && v < kFp16Max) ? v
-                                                                       : NaNF;
-          };
-          auto pos = [](float v) {
-            return (std::isfinite(v) && v > 0.0f) ? v : NaNF;
-          };
-
-          // 股本 / 估值分母 (亿单位)
-          out[Fund::total_shares] = pos(pool.total_shares[base + di]) * 1e-8f;
-          out[Fund::float_shares] = pos(pool.a_float_shares[base + di]) * 1e-8f;
-          out[Fund::net_profit_ttm] = sat(np_ttm[di] * 1e-8f);
-          out[Fund::equity_mrq] = sat(equity_mrq[di] * 1e-8f);
-          out[Fund::revenue_ttm] = sat(rev_ttm[di] * 1e-8f);
-          out[Fund::cffoa_ttm] = sat(cffoa_ttm[di] * 1e-8f);
-          out[Fund::up_lim] = pos(pool.up_lim[base + di]);
-          out[Fund::dn_lim] = pos(pool.dn_lim[base + di]);
-          out[Fund::low_mc_thr] = mb ? 5.0f : 3.0f;
-
-          // 日频因子 raw
-          out[Fund::roe_raw] = sat(roe[di]);
-          out[Fund::roa_raw] = sat(roa[di]);
-          out[Fund::dy_raw] = sat(dy[di]);
-          out[Fund::cffoa_raw] = sat(cffoa_chg[di]);
-          out[Fund::mr_bal] = sat(pool.fin_balance[base + di] * 1e-8f);
-          out[Fund::ms_bal] = sat(pool.sec_balance[base + di] * 1e-8f);
-
-          // 上市龄 / 退市龄 (日历日; 未上市/未退市 = NaN)
-          float lage = NaNF;
-          if (meta.has_list[ai]) {
-            float age = static_cast<float>(
-                (axes.date_days[di] - meta.list_day[ai]).count());
-            if (age >= 0.0f)
-              lage = age;
-          }
-          out[Fund::list_age] = lage;
-          if (meta.has_delist[ai]) {
-            float age = static_cast<float>(
-                (axes.date_days[di] - meta.delist_day[ai]).count());
-            if (age >= 0.0f)
-              out[Fund::delist_age] = age;
-          }
-
-          // 状态 / filter (0/1 常量)
-          out[Fund::industry_l1] = static_cast<float>(industry[di]);
-          out[Fund::is_margin] = static_cast<float>(pool.is_margin[base + di]);
-          out[Fund::susp] = static_cast<float>(pool.suspended[base + di]);
-          out[Fund::risk_warn] = static_cast<float>(pool.st_status[base + di]);
-          out[Fund::profit_st] = profit_st[di] > 0.5f ? 1.0f : 0.0f;
-          out[Fund::revenue_st] = revenue_st[di] > 0.5f ? 1.0f : 0.0f;
-          out[Fund::dividend_st] = dividend_st[di] > 0.5f ? 1.0f : 0.0f;
-          out[Fund::trading_st] = static_cast<float>(trading_flag[s]);
-          out[Fund::new_list] =
-              (std::isfinite(lage) && lage < 60.0f) ? 1.0f : 0.0f;
-        }
-      }
-    }
-  };
-
-  {
-    std::vector<std::thread> ts;
-    ts.reserve(nt);
-    for (unsigned t = 0; t < nt; ++t)
-      ts.emplace_back(worker);
-    for (auto &t : ts)
-      t.join();
-  }
+  d_ = std::move(data);
 
   auto t1 = std::chrono::steady_clock::now();
   double sec = std::chrono::duration<double>(t1 - t0).count();
-  std::printf("[FundamentalDaily] built: %zu dates x %zu assets (D axis %d, "
-              "%.1fs)\n",
-              dates_.size(), n_a_, n_d, sec);
+  std::printf("[fund::Pool] built: %d assets, D axis %d, grid [%d, %d) (%.1fs)\n",
+              n_a, n_d, pit.g0, pit.g0 + pit.n_g, sec);
 }
+
+// ============================================================================
+// State / Stream: per-A 日频状态机 (qmt 批量前扫的逐日形式; 状态只依赖 ≤ d 的事件)
+// ============================================================================
+struct State {
+  struct Trig {
+    int on, off; // 区间 [on, off)
+    float thr;   // 仅 revenue_st: 营收阈值
+  };
+  struct Annual {
+    std::int32_t report_date;
+    float val;
+    int last_v;
+  };
+
+  const Data &D;
+  const int a;
+  int list_d;   // 上市日 D 轴 lower_bound; 无 → n_d
+  bool mb;      // 主板
+  float mc_thr; // 低市值阈值 [元]
+  int warmup_d; // dividend_st 生效起点 = max(轴起点+3y, 上市+3y)
+  int cur_d = -1;
+
+  // ttm / balance: latest (上市前事件丢弃)
+  std::size_t tp = 0, bp = 0;
+  int last_ttm = -1;
+  std::map<std::int32_t, FinancialBalanceEv> latest_by_rd;
+  // 年报 (ni_raw): 同 report_date 覆盖
+  std::size_t ip = 0;
+  std::vector<Annual> annuals;
+  // 分红: 365 日滑窗 (dy) + 3 年累计 (dividend_st, 公告日锚)
+  std::size_t div_lo = 0, div_hi = 0;
+  float cash_sum = 0.0f, sum_3y = 0.0f;
+  // 预亏 / 营收预警: 区间并集 ⇔ d < max{off : on ≤ d}
+  std::vector<Trig> profit_trig, revenue_trig;
+  std::size_t pp = 0, rp = 0;
+  int profit_until = 0, rev_until_1e8 = 0, rev_until_3e8 = 0;
+  // 行业 replay
+  std::size_t ic = 0, ig = 0;
+  std::uint8_t industry = 0;
+  // trading_st: 连续 (低价 ∨ 低市值) 日数
+  int run = 0;
+
+  State(const Data &data, int asset) : D(data), a(asset) {
+    const Axes &axes = D.axes;
+    const Meta &meta = D.meta;
+    const std::size_t ai = static_cast<std::size_t>(a);
+    const int n_d = axes.n_d();
+    list_d = get_list_d(a, axes, meta);
+    mb = meta.main_board[ai] != 0;
+    mc_thr = mb ? 5e8f : 3e8f;
+
+    int stock_warmup_d = n_d;
+    if (meta.has_list[ai])
+      stock_warmup_d = first_d_of_year(axes, std::stoi(meta.list_date_str[ai].substr(0, 4)) + 3);
+    warmup_d = std::max(D.axes_warmup_d, stock_warmup_d);
+
+    // 触发区间 (forecast v 升序 → on 升序); 年报预亏 (首亏/续亏, 12 月末报告期)
+    const auto &inc = D.pit.income_annual[ai];
+    for (const auto &e : D.pit.forecast[ai]) {
+      if (month_of(e.end_date) != 12)
+        continue;
+      if (e.type != ForecastType::FirstLoss && e.type != ForecastType::ContinueLoss)
+        continue;
+      const int off = std::min(find_forecast_off_d(e, inc, axes), n_d);
+      // profit_st: ∧ 上年归母净利 < 0
+      if (std::isfinite(e.last_parent_net) && e.last_parent_net < 0.0f)
+        profit_trig.push_back({e.v, off, 0.0f});
+      // revenue_st: 主板 ∧ 2021 新规后 (报告期年 ≥ 2021, ann_date ≥ 20210101: e.v 是 row D, e.v-1 是 visible_d)
+      if (mb) {
+        const int end_y = year_of(e.end_date);
+        if (end_y >= 2021 && e.v >= 1 && e.v < n_d &&
+            axes.dates[static_cast<std::size_t>(e.v - 1)] >= "20210101")
+          revenue_trig.push_back({e.v, off, (end_y >= 2024) ? 3e8f : 1e8f});
+      }
+    }
+  }
+
+  // 上市前 0 哨兵 (qmt fill_before_list)
+  float close_raw(int d) const {
+    return d < list_d ? 0.0f : D.pit.at(D.pit.close, a, d);
+  }
+  float mcap_raw(int d) const {
+    if (d < list_d)
+      return 0.0f;
+    const float c = D.pit.at(D.pit.close, a, d);
+    const float s = D.pit.at(D.pit.total_shares, a, d);
+    return (std::isfinite(c) && std::isfinite(s)) ? c * s : NaNF;
+  }
+
+  // 推进一日: 吸收 v ≤ d 的事件, 更新连续计数
+  void step(int d) {
+    const Axes &axes = D.axes;
+    const PitPool &p = D.pit;
+    const std::size_t ai = static_cast<std::size_t>(a);
+
+    {
+      const auto &ev = p.ttm[ai];
+      while (tp < ev.size() && ev[tp].v <= d) {
+        if (ev[tp].v >= list_d)
+          last_ttm = static_cast<int>(tp);
+        ++tp;
+      }
+    }
+    {
+      const auto &ev = p.balance[ai];
+      while (bp < ev.size() && ev[bp].v <= d) {
+        if (ev[bp].v >= list_d)
+          latest_by_rd[ev[bp].report_date] = ev[bp];
+        ++bp;
+      }
+    }
+    {
+      const auto &ev = p.income_annual[ai];
+      while (ip < ev.size() && ev[ip].v <= d) {
+        const auto &e = ev[ip++];
+        if (!std::isfinite(e.net_profit_to_parent_shareholders))
+          continue;
+        auto it = std::find_if(annuals.begin(), annuals.end(),
+                               [&](const Annual &x) { return x.report_date == e.report_date; });
+        if (it == annuals.end())
+          annuals.push_back({e.report_date, e.net_profit_to_parent_shareholders, e.v});
+        else {
+          it->val = e.net_profit_to_parent_shareholders;
+          it->last_v = e.v;
+        }
+      }
+    }
+    {
+      const auto &divs = p.dividend[ai];
+      // 入窗; 每到一笔公告重算 3 年累计 (公告年 ann_y 的前 3 个报告年)
+      while (div_hi < divs.size() && divs[div_hi].v <= d) {
+        const auto &e = divs[div_hi];
+        cash_sum += e.amt_pre;
+        if (mb && e.v >= 1) {
+          const int ann_y = year_of_d(axes, e.v - 1);
+          const int lo_y = ann_y - 3, hi_y = ann_y - 1;
+          float sum = 0.0f;
+          for (std::size_t j = 0; j <= div_hi; ++j) {
+            const auto &pd = divs[j];
+            const int py = year_of(pd.report_date);
+            if (py < lo_y || py > hi_y)
+              continue;
+            if (!std::isfinite(pd.amt_after))
+              continue;
+            sum += pd.amt_after;
+          }
+          sum_3y = sum;
+        }
+        ++div_hi;
+      }
+      // 出窗: 公告日 ≤ T − 365
+      const auto Tlo = axes.date_days[static_cast<std::size_t>(d)] - std::chrono::days{365};
+      while (div_lo < div_hi && axes.date_days[static_cast<std::size_t>(divs[div_lo].v)] <= Tlo) {
+        cash_sum -= divs[div_lo].amt_pre;
+        ++div_lo;
+      }
+      if (div_lo >= div_hi)
+        cash_sum = 0.0f;
+    }
+    while (pp < profit_trig.size() && profit_trig[pp].on <= d) {
+      profit_until = std::max(profit_until, profit_trig[pp].off);
+      ++pp;
+    }
+    while (rp < revenue_trig.size() && revenue_trig[rp].on <= d) {
+      int &until = (revenue_trig[rp].thr > 2e8f) ? rev_until_3e8 : rev_until_1e8;
+      until = std::max(until, revenue_trig[rp].off);
+      ++rp;
+    }
+    {
+      // component 月初快照 + change 月内增量 (同日 change 覆盖)
+      const auto &comp = p.industry_component[ai];
+      const auto &chg = p.industry_change[ai];
+      while (ic < comp.size() && comp[ic].v <= d) {
+        industry = comp[ic].l1_id;
+        ++ic;
+      }
+      while (ig < chg.size() && chg[ig].v <= d) {
+        industry = chg[ig].l1_id;
+        ++ig;
+      }
+    }
+    // trading_st: 网格切片起点 = 首回测日 − 15, 切片外的 warmup 日不计 (首回测日时已满 15 日)
+    if (d >= p.g0) {
+      const float c = close_raw(d), m = mcap_raw(d);
+      const bool lp = std::isfinite(c) && c > 0.0f && c < 1.0f;
+      const bool lmc = std::isfinite(m) && m > 0.0f && m < mc_thr;
+      run = (lp || lmc) ? run + 1 : 0;
+    }
+    cur_d = d;
+  }
+
+  // 当日行 (布局 Fund::Out; 亿单位; fp16 饱和: 极值 / +inf 违约束标记 → NaN)
+  void emit(int d, float *out) const {
+    const Axes &axes = D.axes;
+    const Meta &meta = D.meta;
+    const PitPool &p = D.pit;
+    const std::size_t ai = static_cast<std::size_t>(a);
+    constexpr float kFp16Max = 65504.0f;
+    auto sat = [](float v) { return (std::isfinite(v) && v > -kFp16Max && v < kFp16Max) ? v : NaNF; };
+    auto pos = [](float v) { return (std::isfinite(v) && v > 0.0f) ? v : NaNF; };
+
+    const float m = mcap_raw(d);
+    const FinancialTtmEv *t = (last_ttm >= 0) ? &p.ttm[ai][static_cast<std::size_t>(last_ttm)] : nullptr;
+
+    // -- 财务分母 / cffoa 改善 --
+    float np = NaNF, rev = NaNF, cf = NaNF, cf_chg = NaNF;
+    if (t) {
+      const float n = t->net_profit_to_parent_shareholders_ttm;
+      np = (std::isfinite(n) && n != 0.0f) ? n : NaNF;
+      const float r = t->total_operating_revenue_ttm; // 负营收是源脏值 (qmt ps_raw 口径): ≤0 → NaN
+      rev = (std::isfinite(r) && r > 0.0f) ? r : NaNF;
+      const float c = t->net_cffoa_ttm;
+      cf = (std::isfinite(c) && c != 0.0f) ? c : NaNF;
+      const float c0 = t->net_cffoa_ttm, c4 = t->net_cffoa_ttm_shift4;
+      cf_chg = (std::isfinite(m) && m > 0.0f && std::isfinite(c0) && std::isfinite(c4))
+                   ? std::tanh((c0 - c4) / m)
+                   : NaNF;
+    }
+    // -- 权益 MRQ / roe / roa (avg5 分母) --
+    float eq = NaNF, roe = NaNF, roa = NaNF;
+    if (!latest_by_rd.empty()) {
+      const float e = latest_by_rd.rbegin()->second.total_equity_to_parent_shareholders;
+      eq = (std::isfinite(e) && e != 0.0f) ? e : NaNF;
+      if (t) {
+        const float n = t->net_profit_to_parent_shareholders_ttm;
+        const float e5 = ttm_window_avg(t->report_date, latest_by_rd,
+                                        &FinancialBalanceEv::total_equity_to_parent_shareholders);
+        roe = (std::isfinite(n) && std::isfinite(e5) && e5 > 0.0f) ? (n / e5) * 100.0f : NaNF;
+        const float na = t->net_profit_ttm;
+        const float a5 = ttm_window_avg(t->report_date, latest_by_rd, &FinancialBalanceEv::total_assets);
+        roa = (std::isfinite(na) && std::isfinite(a5) && a5 > 0.0f) ? (na / a5) * 100.0f : NaNF;
+      }
+    }
+    // -- dy: 365 日税前分红总额 / mcap --
+    const float dy = (std::isfinite(m) && m > 0.0f) ? std::max(cash_sum / m, 0.0f) : NaNF;
+    // -- ni_raw: 最近两份年报 (按 PIT 首见序) 归母净利均值 --
+    float ni = NaNF;
+    if (!annuals.empty()) {
+      int i0 = -1, i1 = -1, v0 = -1, v1 = -1;
+      for (std::size_t i = 0; i < annuals.size(); ++i) {
+        const int v = annuals[i].last_v;
+        if (v > v0) {
+          v1 = v0;
+          i1 = i0;
+          v0 = v;
+          i0 = static_cast<int>(i);
+        } else if (v > v1) {
+          v1 = v;
+          i1 = static_cast<int>(i);
+        }
+      }
+      if (i0 >= 0 && i1 >= 0)
+        ni = (annuals[static_cast<std::size_t>(i0)].val + annuals[static_cast<std::size_t>(i1)].val) * 0.5f;
+      else if (i0 >= 0)
+        ni = annuals[static_cast<std::size_t>(i0)].val;
+    }
+    // -- filter --
+    const bool profit_st = d < profit_until;
+    const bool revenue_st = mb && std::isfinite(rev) &&
+                            ((d < rev_until_1e8 && rev < 1e8f) || (d < rev_until_3e8 && rev < 3e8f));
+    const bool dividend_st = mb && d >= warmup_d && std::isfinite(ni) && ni > 0.0f &&
+                             sum_3y < 0.30f * ni && sum_3y < 5e7f;
+
+    // 股本 / 估值分母 (亿单位)
+    out[Fund::total_shares] = pos(p.at(p.total_shares, a, d)) * 1e-8f;
+    out[Fund::float_shares] = pos(p.at(p.a_float_shares, a, d)) * 1e-8f;
+    out[Fund::net_profit_ttm] = sat(np * 1e-8f);
+    out[Fund::equity_mrq] = sat(eq * 1e-8f);
+    out[Fund::revenue_ttm] = sat(rev * 1e-8f);
+    out[Fund::cffoa_ttm] = sat(cf * 1e-8f);
+    out[Fund::up_lim] = pos(p.at(p.up_lim, a, d));
+    out[Fund::dn_lim] = pos(p.at(p.dn_lim, a, d));
+    out[Fund::low_mc_thr] = mb ? 5.0f : 3.0f;
+
+    // 日频因子 raw
+    out[Fund::roe_raw] = sat(roe);
+    out[Fund::roa_raw] = sat(roa);
+    out[Fund::dy_raw] = sat(dy);
+    out[Fund::cffoa_raw] = sat(cf_chg);
+    out[Fund::mr_bal] = sat(p.at(p.fin_balance, a, d) * 1e-8f);
+    out[Fund::ms_bal] = sat(p.at(p.sec_balance, a, d) * 1e-8f);
+
+    // 上市龄 / 退市龄 (日历日; 未上市/未退市 = NaN)
+    const auto day = axes.date_days[static_cast<std::size_t>(d)];
+    float lage = NaNF, dage = NaNF;
+    if (meta.has_list[ai]) {
+      const float age = static_cast<float>((day - meta.list_day[ai]).count());
+      if (age >= 0.0f)
+        lage = age;
+    }
+    if (meta.has_delist[ai]) {
+      const float age = static_cast<float>((day - meta.delist_day[ai]).count());
+      if (age >= 0.0f)
+        dage = age;
+    }
+    out[Fund::list_age] = lage;
+    out[Fund::delist_age] = dage;
+
+    // 状态 / filter (0/1 常量)
+    out[Fund::industry_l1] = static_cast<float>(industry);
+    out[Fund::is_margin] = static_cast<float>(p.at(p.is_margin, a, d));
+    out[Fund::susp] = static_cast<float>(p.at(p.suspended, a, d));
+    out[Fund::risk_warn] = static_cast<float>(p.at(p.st_status, a, d));
+    out[Fund::profit_st] = profit_st ? 1.0f : 0.0f;
+    out[Fund::revenue_st] = revenue_st ? 1.0f : 0.0f;
+    out[Fund::dividend_st] = dividend_st ? 1.0f : 0.0f;
+    out[Fund::trading_st] = (run >= 15) ? 1.0f : 0.0f;
+    out[Fund::new_list] = (std::isfinite(lage) && lage < 60.0f) ? 1.0f : 0.0f;
+  }
+};
+
+Stream::Stream(const Pool &pool, std::size_t asset_id)
+    : s_(std::make_unique<State>(pool.data(), static_cast<int>(asset_id))) {
+  assert(static_cast<int>(asset_id) < pool.data().axes.n_a() && "asset_id 越界 (AssetAxis)");
+}
+Stream::~Stream() = default;
+
+void Stream::advance_to(int d, float *out) {
+  assert(d >= 0 && d < s_->D.axes.n_d() && "D 轴越界");
+  assert(d >= s_->cur_d && "advance_to 必须单调不减");
+  for (int k = s_->cur_d + 1; k <= d; ++k)
+    s_->step(k);
+  s_->emit(d, out);
+}
+
+} // namespace fund

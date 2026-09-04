@@ -48,6 +48,7 @@ public:
 
   explicit LimitOrderBook(size_t ORDER_SIZE,
                           GlobalFeatureStore &store,
+                          const fund::Pool &fund_pool,
                           const std::string &asset_code,
                           L2::ExchangeType exchange_type = L2::ExchangeType::SSE,
                           size_t asset_id = 0,
@@ -56,12 +57,12 @@ public:
         order_memory_pool_(ORDER_SIZE), // BumpPool for Order objects
         exchange_type_(exchange_type),
         asset_id_(asset_id),
-        core_sequential_(tick_data_, store, asset_code, asset_id, core_id) {
+        core_sequential_(tick_data_, store, fund_pool, asset_code, asset_id, core_id) {
     init_sentinel_levels();
   }
 
-  void begin_day(const std::string &date_str, const float *fund_row) {
-    core_sequential_.begin_day(date_str, fund_row);
+  void begin_day(const std::string &date_str) {
+    core_sequential_.begin_day(date_str);
 
 #if DEBUG_BOOK_PRINT
     should_log_this_day_ = false;

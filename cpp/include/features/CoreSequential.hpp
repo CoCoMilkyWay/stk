@@ -16,6 +16,7 @@ class CoreSequential {
 public:
   CoreSequential(TickData &tick_data,
                  GlobalFeatureStore &store,
+                 const fund::Pool &fund_pool,
                  const std::string &asset_code,
                  size_t asset_id = 0,
                  size_t core_id = 0)
@@ -23,7 +24,7 @@ public:
         asset_id_(asset_id),
         core_id_(core_id),
         asset_code_(asset_code),
-        dag_(tick_data, asset_code),
+        dag_(tick_data, fund_pool, asset_code, asset_id),
         tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id_);
@@ -31,10 +32,9 @@ public:
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
 
-  void begin_day(const std::string &date_str, const float *fund_row) {
+  void begin_day(const std::string &date_str) {
     date_str_ = date_str;
-    dag_.at_day_start();
-    dag_.set_day_fundamental(fund_row);
+    dag_.at_day_start(date_str);
   }
 
   void end_day() {

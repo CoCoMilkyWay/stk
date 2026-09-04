@@ -50,14 +50,14 @@
 //   #define NODE_<Name>(N)  N(<Name>, (OpType), (inputs...), trigger[, flush_trigger])
 //     Name     节点名 (DAG 成员名), 同一算子可有多个实例 (CI.hpp: Ci_1 / Ci_5 / Ci_10 / Ci_30)
 //     OpType   算子类型, 必须加括号 (模板参数里有逗号)
-//     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / asset_code_ / fund_row_ /
+//     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / fund_pool / asset_code_ / asset_id_ / date_ /
 //              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 源层数组 DepthData.bid_qty 等.
 //              必须字面写在这一行 (CMake 按 "Up." 抽依赖), 不要藏进 helper 宏
 //     触发域   Trigger:: 下的名字. 采样型只写一个 (compute 与 flush 同域);
-//              降频型写两个: compute=onTick, flush=onMinute
+//              降频型写两个: compute=onTick, flush=onMinute; 广播型 (日频): compute=onDay, flush=onMinute
 //     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游算子
 //
-// 截面算子文件 (Operator/CS/<Method>.hpp) = 无状态 struct (契约见 DataDefine.hpp) + 文件末尾 FIELDS_ 宏; 无 NODE_.
+// 截面算子文件 (Operator/CS/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
 //
 //   #define FIELDS_<LVL>_<Name>(X)  X(code, cat_l1, cat_l2, norm_method, name_en, name_cn, description, formula, SRC) ...
 //     LVL ∈ {L0, L1, DEPTH}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
@@ -69,7 +69,7 @@
 //       FLAG                       有效标志列 _data_valid / _depth_valid (CoreSequential 手工写). META; 宽 1; ALL
 //       META(width)                其他基建手写列 (盘口快照, 宽 width). META; DEPTH
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG/META → Operator/TS/Meta/Meta.hpp,
-//     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<Method>.hpp (方法文件自己产出的行).
+//     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
 //     推荐频谱 (psd) 按层给 (ALL_LEVELS), 不逐列写.
 //
 // CMake (projects/main/CMakeLists.txt) 扫描 features/Operator/**/*.hpp, 按 inputs 引用
@@ -79,7 +79,7 @@
 //
 // 加特征 = 改 (或新建) 一个算子文件. 删特征 = 删几行 / 删文件. 其他地方不动.
 // 顺序保证: DAG 按拓扑序声明成一条链, 节点只看得到排在自己前面的节点 → 引用了排后面的节点 = 编译错误.
-// 各触发域一个 tick 内的执行顺序: onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute.
+// 各触发域执行顺序: 盘前 (节点 reset 后) → onDay; 一个 tick 内 onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute.
 // 字段表改动会改变落盘布局: 文件头带表指纹, 读旧文件即断言失败, 需重算.
 // 标签 (LabelReturn) 回填别的时间行, 不走节点表, 在 ComputeGraph.hpp 手工声明.
 

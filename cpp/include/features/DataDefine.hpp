@@ -21,6 +21,7 @@
 // 声明 (compute 触发, flush 触发), ComputeGraph 按 CMake 汇总的 NODES 表展开成直线调度代码.
 //----------------------------------------------------------------------------------------
 enum class Trigger : uint8_t {
+  onDay,    // 盘前 (begin_day, 节点 reset 之后): 日频算子的 compute 域, 配 flush=onMinute 盘中广播
   onTaker,  // 成交单
   onMaker,  // 挂单
   onCancel, // 撤单
@@ -50,17 +51,17 @@ using DepthSeries = Series[L2::LOB_DEPTH];
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------
-// CS OPERATOR CONTRACT (截面算子统一接口, Operator/CS/<Method>.hpp, namespace cs)
+// CS OPERATOR CONTRACT (截面: 算子 = Operator/CS/<源节点>.hpp 只有 FIELDS_ 行; 方法 = Method/CS.hpp, namespace cs)
 //----------------------------------------------------------------------------------------
 //   struct <Method> {
 //     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, 仅 L1)
 //     static void apply(float *y, size_t n[, const Ctx &]); // dense 列原地: 输入 = 有效资产子集的源列 (缺失 NaN), 输出 = 结果
 //   };
-//   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换 (Transform.hpp), 先于 <Method>
+//   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换, 先于 <Method>
 // 无状态 (静态函数), 无实例; 一行字段 CS(src_lvl, src, Tf, Method) = gather → Tf::apply → Method::apply → scatter,
 // CoreCrosssection 按字段表编译期展开 (与 TS 的 NODES 展开同构). 无效资产输出 0 由基建写.
-// kernel 依赖 NaN 语义 (isfinite): 实现集中在 src/features/CSKernels.cpp (precise-math TU), 头文件只声明.
-// 落盘列 (FIELDS_) 写在方法文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
+// 方法依赖 NaN 语义 (isfinite): 实现在 src/features/Method/CS.cpp (precise-math TU), 头文件只声明.
+// 算子文件按"算的是什么特征"命名 (= 源节点名), 不按方法命名; 一文件 = 该节点输出列的全部截面因子.
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------

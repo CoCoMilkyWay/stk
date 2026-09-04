@@ -101,13 +101,13 @@ void ComputeService::start_compute(int num_workers) {
       worker_loads[min_worker] += weight;
     }
 
-    // Phase 2 前置: 日频 PIT 基本面预计算 (估值分母/因子/filter), worker 只读
+    // Phase 2 前置: 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 算子在 worker 内逐日推进; worker 只读
     {
       std::vector<std::string> axis_codes(num_assets);
       for (size_t i = 0; i < num_assets; ++i) {
         axis_codes[i] = asset_axis().code(i);
       }
-      data_.fundamental_daily.build(axis_codes, backtest_dates);
+      data_.fund_pool.build(axis_codes, backtest_dates);
     }
 
     // Temporarily replace all_dates with backtest_dates for workers
