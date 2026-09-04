@@ -37,9 +37,8 @@ void sequential_worker(int worker_id,
     }
   }
 
-  // Initialize LOBs and decoders for each asset
+  // Initialize LOBs for each asset
   std::vector<std::unique_ptr<LimitOrderBook>> lobs;
-  std::vector<std::unique_ptr<L2::BinaryDecoder_L2>> decoders;
 
   {
     TraceN("InitLOBs");
@@ -47,9 +46,14 @@ void sequential_worker(int worker_id,
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
       lobs.push_back(std::make_unique<LimitOrderBook>(L2::LOB_ORDER_CAPACITY, store, data.fund_pool, asset.asset_code, asset.exchange_type, asset.asset_id, worker_id));
-      decoders.push_back(std::make_unique<L2::BinaryDecoder_L2>(L2::DEFAULT_ENCODER_ORDER_SIZE));
     }
   }
+
+  // 每 worker 一个 decoder (非每资产): decode 是按 (asset, date) 文件的无状态操作,
+  // 且 worker 内资产串行 —— 解码结果在下一次 decode 前已被 process_batch 消费完,
+  // 零拷贝契约天然满足. 缓冲跨资产/跨日复用, 自动长到本 worker 最忙资产的单日
+  // 条数后稳定 (零分配稳态);
+  L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_ORDER_SIZE);
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
                                                          std::to_string(data.asset.all_dates.size()) + " dates");
@@ -95,17 +99,17 @@ void sequential_worker(int worker_id,
             data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
             config::BINARY_EXTENSION);
 
-        size_t order_num = 0;
-        const L2::Order *orders = nullptr;
-        {
-          TraceN("DecodeOrders");
-          orders = decoders[i]->decode_orders_stream(orders_file, order_num);
-        }
+      size_t order_num = 0;
+      const L2::Order *orders = nullptr;
+      {
+        TraceN("DecodeOrders");
+        orders = decoder.decode_orders_stream(orders_file, order_num);
+      }
 
-        if (orders != nullptr) [[likely]] {
-          // 档位索引基准来自这一天的文件头, 必须先于第一条订单设进去 —— 绝对价
-          // 要减去它才是档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
-          lobs[i]->set_price_base(decoders[i]->last_price_base());
+      if (orders != nullptr) [[likely]] {
+        // 档位索引基准来自这一天的文件头, 必须先于第一条订单设进去 —— 绝对价
+        // 要减去它才是档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
+        lobs[i]->set_price_base(decoder.last_price_base());
 
           // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
           size_t order_invalid_cnt = 0;

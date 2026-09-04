@@ -94,6 +94,12 @@ float CalculateMarketCap(const StockInfo &info) {
   return std::stod(info.mcap);
 }
 
+double AverageOrdersPerDay(const Asset::AssetStats &stats) {
+  return stats.total_days > 0
+             ? static_cast<double>(stats.total_orders) / static_cast<double>(stats.total_days)
+             : 0.0;
+}
+
 // ============================================================================
 // Helper: ST level from StockInfo (isST = cn_stock_status.st_status 原值)
 // ============================================================================
@@ -451,8 +457,8 @@ void RebuildView(TableView &view, const Asset &asset,
         return (na ? CalculateMarketCap(*na) : 0) < (nb ? CalculateMarketCap(*nb) : 0);
       case 16: // Days
         return sa.total_days < sb.total_days;
-      case 17: // Orders
-        return sa.total_orders < sb.total_orders;
+      case 17: // Avg Orders/Day
+        return AverageOrdersPerDay(sa) < AverageOrdersPerDay(sb);
       case 18: { // Orders% — 无分母的 (北交所/未上市) 恒排在最后
         const float pa = sa.expected_days > 0 ? sa.orders_coverage_percent() : -1.0f;
         const float pb = sb.expected_days > 0 ? sb.orders_coverage_percent() : -1.0f;
@@ -670,7 +676,7 @@ void RenderDataTable(
   ImGui::TableSetupColumn("DY5");
   ImGui::TableSetupColumn("Cap");
   ImGui::TableSetupColumn("Days");
-  ImGui::TableSetupColumn("Orders");
+  ImGui::TableSetupColumn("Orders/Day");
   ImGui::TableSetupColumn("Orders%");
 
   ImGui::TableSetupScrollFreeze(0, 1);
@@ -679,7 +685,7 @@ void RenderDataTable(
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   const char *header_labels[] = {"Code", "Name", "Exch", "Board", "ST", "DL", "Listed", "Ind",
                                  "PE", "PB", "PS", "PCF", "DY1", "DY3", "DY5", "Cap", "Days",
-                                 "Orders", "Orders%"};
+                                 "Orders/Day", "Orders%"};
   const char *header_tooltips[] = {
       "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
 
@@ -715,7 +721,7 @@ void RenderDataTable(
 
       "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info.size()\n可用于判断数据完整性",
 
-      "逐笔总数 (Total Orders)\n所有交易日的逐笔记录总数量 (委托+成交合并后)\n= Σ order_count (累加所有日期)\n\n说明:\n- 单位:条记录\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数由文件头 raw_size 推出, 扫描时一并读到",
+      "日均逐笔数 (Average Orders per Trading Day)\n所有已有逐笔数据交易日的平均记录数量 (委托+成交合并后)\n= Σ order_count / 有逐笔数据的交易日数\n\n说明:\n- 单位:条记录/日\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数由文件头 raw_size 推出, 扫描时一并读到",
 
       "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该标的\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Browser 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数"};
 
@@ -1042,18 +1048,20 @@ void RenderDataTable(
     ImGui::Text("%zu", total_days);
     handle_column_click(16);
 
-    // Col 17: Total Orders
+    // Col 17: Average Orders per Trading Day
     ImGui::TableSetColumnIndex(17);
     if (hovered_col == 17) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    size_t total_orders = stats.total_orders;
-    if (total_orders > 1000000) {
-      ImGui::Text("%.2fM", total_orders / 1000000.0);
-    } else if (total_orders > 1000) {
-      ImGui::Text("%.1fK", total_orders / 1000.0);
+    const double avg_orders = AverageOrdersPerDay(stats);
+    if (stats.total_days == 0) {
+      ImGui::TextColored(COLOR_GRAY, "-");
+    } else if (avg_orders > 1000000.0) {
+      ImGui::Text("%.2fM", avg_orders / 1000000.0);
+    } else if (avg_orders > 1000.0) {
+      ImGui::Text("%.1fK", avg_orders / 1000.0);
     } else {
-      ImGui::Text("%zu", total_orders);
+      ImGui::Text("%.0f", avg_orders);
     }
     handle_column_click(17);
 
@@ -1113,7 +1121,7 @@ static ColumnDataType GetColumnDataType(int col_idx) {
     return ColumnDataType::Categorical;
   }
   // Numeric: Listed Days(6), PE(8), PB(9), PS(10), PCF(11), DY1/3/5(12,13,14),
-  //          Market Cap(15), Trading Days(16), Total Orders(17), Orders%(18)
+  //          Market Cap(15), Trading Days(16), Avg Orders/Day(17), Orders%(18)
   if (col_idx >= 6 && col_idx <= 18) {
     return ColumnDataType::Numeric;
   }
@@ -1140,7 +1148,7 @@ void RenderCrossSectionPanel(
       "Code", "Name", "Exchange", "Board", "ST", "DL", "Listed Days (在市总天数)", "Industry",
       "PE(TTM)", "PB(MRQ)", "PS(TTM)", "PCF", "DY 近1年 (年化 %)", "DY 近3年 (年化 %)",
       "DY 近5年 (年化 %)", "Market Cap (亿元)", "Trading Days",
-      "Total Orders", "Orders % (回测区间完整性)"};
+      "Avg Orders / Day", "Orders % (回测区间完整性)"};
 
   int col_idx = table_state.selected_column_idx;
   if (col_idx >= 19) {
@@ -1254,9 +1262,9 @@ static void RenderNumericAnalysis(
       value = stats.total_days;
       is_valid = true;
       break;
-    case 17: // Total Orders
-      value = stats.total_orders;
-      is_valid = true;
+    case 17: // Avg Orders/Day
+      value = AverageOrdersPerDay(stats);
+      is_valid = stats.total_days > 0;
       break;
     case 18: // Orders% — 没有分母的标的不参与横截面
       value = stats.orders_coverage_percent();

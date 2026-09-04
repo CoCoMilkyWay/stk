@@ -39,7 +39,9 @@ void crosssectional_worker(int worker_id,
 
     core.set_date(date_str);
 
-    // Process each time slot (per-slot sync for live trading compatibility)
+    // Process each time slot. cs_wait 只保证因果 (t 行全就绪), 不保证调度形态;
+    // 数值一致性由输入契约锚定 (CS 只读秒网格张量行, 见 CoreCrosssection.hpp),
+    // 所以 TS/CS 流式伴随或离线两遍分离, 结果逐值相同.
     for (size_t t = 0; t < capacity; ++t) {
       TraceN("TimeslotLoop");
       TraceValue(t);
