@@ -1,7 +1,5 @@
 #pragma once
 
-#include "yyjson/yyjson.h"
-
 #include <arrow/flight/client.h>
 #include <arrow/table.h>
 

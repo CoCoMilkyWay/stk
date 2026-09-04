@@ -3,7 +3,7 @@
 #include <cstdint>
 
 #include "features/DataDefine.hpp"
-#include "features/FeaturesDefine.hpp"
+#include "features/TimeIndex.hpp"
 
 //========================================================================================
 // RESAMPLER: MINUTE -> HOUR

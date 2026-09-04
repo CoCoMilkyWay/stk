@@ -10,17 +10,22 @@
 #include <utility>
 
 // ============================================================================
-// Node: 算子实例 + 它的输出 CBuffer. 算子 (Op) 只拿引用, 缓冲由 Node 持有.
-//   node.compute()/flush()/reset()   直接是算子的
+// Node: 算子实例 + 它的输出 CBuffer. 算子只写 y[口], 推入缓冲由 Node 统一做.
+//   node.compute()                   算子的
+//   node.flush()                     算子有 flush() 先调 (降频型结算到 y), 然后 y[i] → bufs_[i]
+//   node.reset()                     算子有 reset() 才调
 //   node.out(i) / node.out()         第 i 个输出口 (下游节点输入用); 单口默认 0
+//   node.outs()                      全部输出口数组 CBuffer[K] (下游按口成组消费)
 //   node.last(i)                     输出口最新值, 尚无输出时 0 (字段表写回用)
 //   node.<port>                      算子 enum Out 的枚举值 (node.out(node.price))
 // ============================================================================
 namespace graph {
 
-template <size_t K>
-struct Outs {
+template <class Op, size_t K = Op::kCount>
+struct Node : Op {
+  using Op::Op;
   CBuffer<float, L2::BLEN> bufs_[K];
+
   CBuffer<float, L2::BLEN> &out(size_t i = 0) {
     assert(i < K);
     return bufs_[i];
@@ -29,23 +34,36 @@ struct Outs {
     assert(i < K);
     return bufs_[i];
   }
+  const CBuffer<float, L2::BLEN> (&outs() const)[K] { return bufs_; }
   float last(size_t i = 0) const {
     assert(i < K);
     return bufs_[i].empty() ? 0.0f : bufs_[i].back();
   }
+
+  [[gnu::always_inline]] inline void flush() {
+    if constexpr (requires(Op &o) { o.flush(); })
+      Op::flush();
+    for (size_t i = 0; i < K; ++i)
+      bufs_[i].push_back(Op::y[i]);
+  }
+  void reset() {
+    if constexpr (requires(Op &o) { o.reset(); })
+      Op::reset();
+  }
 };
 
-template <class Op, size_t K = Op::kCount>
-struct Node : Outs<K>, Op {
-  template <class... A>
-  explicit Node(A &&...a) : Outs<K>(), Op(std::forward<A>(a)..., this->bufs_) {}
-};
-
-// 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 DepthData 的 N 档数组)
+// 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 DepthData 的 N 档数组); flush/reset 有才调
 template <class Op>
 struct Node<Op, 0> : Op {
-  template <class... A>
-  explicit Node(A &&...a) : Op(std::forward<A>(a)...) {}
+  using Op::Op;
+  void flush() {
+    if constexpr (requires(Op &o) { o.flush(); })
+      Op::flush();
+  }
+  void reset() {
+    if constexpr (requires(Op &o) { o.reset(); })
+      Op::reset();
+  }
 };
 
 } // namespace graph
@@ -81,7 +99,7 @@ public:
   void set_day_fundamental(const float *row) { fund_row_ = row; }
 
   // ===========================================================================
-  // 标签 (回填别的时间行, 不在节点表; 写回在 Tick_Sequential)
+  // 标签 (回填别的时间行, 不在节点表; 写回在 CoreSequential)
   // ===========================================================================
   // 组内顺序: [long_5w, long_20w, short_5w, short_20w] × {5m,10m,30m}, 分钟锚定落 L1 12 列
   LabelReturnOp LabelReturn{DepthData.bid_price, DepthData.ask_price, DepthData.bid_qty, DepthData.ask_qty};

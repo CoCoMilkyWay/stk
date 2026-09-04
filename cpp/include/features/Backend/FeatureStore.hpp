@@ -397,7 +397,7 @@ public:
   }
 
   // Update progress after writing to (asset_id, l0_time_index)
-  // Called by TS_WRITE_* macros or LimitOrderBook internally
+  // Called by fstore::ts_write* / depth_write*
   // HOT PATH - no checks, assumes ts_worker_init() was called
   void ts_update(const std::string &date, int worker_id, size_t asset_id, size_t l0_time_index) const {
     Slot &slot = ts_get_slot(date, worker_id);
@@ -622,7 +622,7 @@ public:
   int query_cs_worker_id() const { return cs_worker_id_; }
   int query_io_worker_id() const { return io_worker_id_; }
 
-  // ===== MACRO SUPPORT API (used by TS_WRITE_*/CS_READ_ALL/CS_WRITE_ALL) =====
+  // ===== fstore:: free-function support API =====
   // TS worker get: cached with epoch validation, allocates on demand
   [[gnu::hot, gnu::always_inline]]
   inline Slot &ts_get_slot(const std::string &date, int worker_id) const {
@@ -962,150 +962,120 @@ public:
 };
 
 // ============================================================================
-// PUBLIC API - 4 macros, only use field enums, 100% static compilation
+// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数, 字段用 L*_FieldOffset 枚举, 定址全部编译期
+//   ts_write<L>(store, date, t, field, a, value, w)              单值
+//   ts_write_range<L>(store, date, t, a, f_begin, f_end, src, w)  连续字段闭区间 (width 1 列)
+//   ts_write_row<L>(store, date, t, a, dag, w)                    按字段表 SRC 列写一行全部 OP/FUND 列
+//   depth_write / depth_write_range                                盘口快照张量 (分钟频)
+//   cs_read(store, date, lvl, t, field) / cs_write(...)            CS worker: 一列全部资产
+//   OP(node[, port]) → dag.node.last(port); FUND(f) → dag.fund_row_[fund::f]; CS/LABEL/META 不在 row 写
 // ============================================================================
-// TS_WRITE_SINGLE(store, date, lvl, t, field_enum, asset, value, worker_id)
-// TS_WRITE_FEATURES(store, date, lvl, t, asset, f_start, f_end, src, worker_id)
-// CS_READ_ALL(store, date, lvl, t, field_enum)
-// CS_WRITE_ALL(store, date, lvl, t, field_enum, src, count)
-//
-// Usage: Pass field enum directly (e.g., L0_FieldOffset::_data_valid)
-//        lvl must be literal 0, 1, or 2 for static compilation
-// ============================================================================
+namespace fstore {
 
-// TS_WRITE_SINGLE: Write single field for one asset
-#define TS_WRITE_SINGLE(store, date, lvl, t, field_enum, a, value, worker_id) \
-  do {                                                                        \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                      \
-    assert(_slot.data[lvl] && "data[lvl] is null");                           \
-    const size_t _F = (store)->query_F(lvl);                                  \
-    const size_t _A = (store)->query_A();                                     \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                 \
-    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                     \
-    assert((t) < _T && "time index out of bounds");                           \
-    assert(_f < _F && "feature index out of bounds");                         \
-    assert((a) < _A && "asset index out of bounds");                          \
-    const size_t _idx = ((t) * _F + _f) * _A + (a);                           \
-    _slot.data[lvl][_idx] = (value);                                          \
-  } while (0)
+template <size_t LVL>
+struct Level;
+#define STORE_LEVEL_TRAITS(level_name, level_num, fields)                                                                    \
+  template <>                                                                                                                \
+  struct Level<level_num> {                                                                                                  \
+    static constexpr const auto &OFFS = level_name##_FIELD_OFFSETS;                                                          \
+    static constexpr size_t F = level_name##_TOTAL_WIDTH;                                                                    \
+    static constexpr size_t T = MAX_ROWS_PER_LEVEL[level_num];                                                               \
+    template <class DAG>                                                                                                     \
+    [[gnu::always_inline]] static inline void write_row(feature_storage_t *row, size_t A, [[maybe_unused]] const DAG &dag) { \
+      namespace FO = level_name##_FieldOffset;                                                                               \
+      fields(STORE_ROW_ONE)                                                                                                  \
+    }                                                                                                                        \
+  };
 
-// TS_WRITE_FEATURES: Write field range [f_start_enum, f_end_enum] for one asset (closed interval)
-// Pass enums directly, macro converts to offsets via L##lvl##_FIELD_OFFSETS
-#define TS_WRITE_FEATURES(store, date, lvl, t, a, f_start_enum, f_end_enum, src, worker_id) \
-  do {                                                                                      \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                                    \
-    assert(_slot.data[lvl] && "data[lvl] is null");                                         \
-    const size_t _F = (store)->query_F(lvl);                                                \
-    const size_t _A = (store)->query_A();                                                   \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                               \
-    const size_t _f_start = L##lvl##_FIELD_OFFSETS[f_start_enum];                           \
-    const size_t _f_end = L##lvl##_FIELD_OFFSETS[f_end_enum];                               \
-    assert((t) < _T && "time index out of bounds");                                         \
-    assert((a) < _A && "asset index out of bounds");                                        \
-    assert(_f_start <= _f_end && "invalid feature range");                                  \
-    assert(_f_end < _F && "feature end out of bounds");                                     \
-    for (size_t _f = _f_start; _f <= _f_end; ++_f) {                                        \
-      const size_t _idx = ((t) * _F + _f) * _A + (a);                                       \
-      _slot.data[lvl][_idx] = (src)[_f - _f_start];                                         \
-    }                                                                                       \
-  } while (0)
+#define STORE_ROW_OP_PICK(_1, _2, NAME, ...) NAME
+#define STORE_ROW_OP_1(node) dag.node.last()
+#define STORE_ROW_OP_2(node, port) dag.node.last(dag.node.port)
+#define STORE_ROW_OP(code, ...) row[OFFS[FO::code] * A] = STORE_ROW_OP_PICK(__VA_ARGS__, STORE_ROW_OP_2, STORE_ROW_OP_1, )(__VA_ARGS__);
+#define STORE_ROW_FUND(code, field)             \
+  assert(dag.fund_row_ && "fund_row_ not set"); \
+  row[OFFS[FO::code] * A] = dag.fund_row_[fund::field];
+#define STORE_ROW_CS(code, ...)
+#define STORE_ROW_LABEL(code)
+#define STORE_ROW_META(code)
+#define STORE_ROW_ONE(code, width, vtype, c1, c2, norm, psd, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
 
-// TS_WRITE_ROW: 按字段表 (各算子文件 FIELDS_*, CMake 汇总) SRC 列写一行 (t, a) 的全部 OP/FUND 列 (width 必须为 1)
-//   OP(node[, port]) → dag.node.last(port)      FUND(f) → dag.fund_row_[fund::f]
-//   CS / LABEL / META 列不在此写 (分别由 CS worker / 标签回填 / 基建手工写)
-// lvl 必须是字面量 0/1 (展开 LEVEL_##lvl##_FIELDS)
-#define TS_SRC_OP_PICK(_1, _2, NAME, ...) NAME
-#define TS_SRC_OP_1(node) _dag.node.last()
-#define TS_SRC_OP_2(node, port) _dag.node.last(_dag.node.port)
-#define TS_SRC_OP(...) TS_SRC_OP_PICK(__VA_ARGS__, TS_SRC_OP_2, TS_SRC_OP_1, )(__VA_ARGS__)
-#define TS_SRC_FUND(field) (assert(_dag.fund_row_ && "fund_row_ not set"), _dag.fund_row_[fund::field])
+ALL_LEVELS(STORE_LEVEL_TRAITS)
+#undef STORE_LEVEL_TRAITS
 
-#define TS_WRITE_ROW_TS(code, src) _row[_offs[_FO::code] * _A] = TS_SRC_##src;
-#define TS_WRITE_ROW_CS(code, src)
-#define TS_WRITE_ROW_LB(code, src)
-#define TS_WRITE_ROW_SH(code, src)
-#define TS_WRITE_ROW_META(code, src)
-#define TS_WRITE_ROW_FIELD(code, width, vtype, dtype, c1, c2, norm, psd, en, cn, desc, formula, src) \
-  TS_WRITE_ROW_##dtype(code, src)
+template <size_t LVL>
+[[gnu::always_inline]] inline feature_storage_t *ts_row(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, int worker_id, size_t &A) {
+  auto &slot = s.ts_get_slot(date, worker_id);
+  assert(slot.data[LVL] && "data[lvl] is null");
+  A = s.query_A();
+  assert(t < Level<LVL>::T && "time index out of bounds");
+  assert(a < A && "asset index out of bounds");
+  return slot.data[LVL] + (t * Level<LVL>::F) * A + a;
+}
 
-#define TS_WRITE_ROW(store, date, lvl, t, a, dag, worker_id)                 \
-  do {                                                                       \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                     \
-    assert(_slot.data[lvl] && "data[lvl] is null");                          \
-    const size_t _F = (store)->query_F(lvl);                                 \
-    const size_t _A = (store)->query_A();                                    \
-    assert((t) < (store)->query_T(lvl) && "time index out of bounds");       \
-    assert((a) < _A && "asset index out of bounds");                         \
-    feature_storage_t *const _row = _slot.data[lvl] + ((t) * _F) * _A + (a); \
-    constexpr const auto &_offs = L##lvl##_FIELD_OFFSETS;                    \
-    namespace _FO = L##lvl##_FieldOffset;                                    \
-    [[maybe_unused]] auto &_dag = (dag);                                     \
-    LEVEL_##lvl##_FIELDS(TS_WRITE_ROW_FIELD)                                 \
-  } while (0)
+template <size_t LVL>
+[[gnu::always_inline]] inline void ts_write(GlobalFeatureStore &s, const std::string &date, size_t t, size_t field, size_t a, float value, int worker_id) {
+  size_t A;
+  feature_storage_t *row = ts_row<LVL>(s, date, t, a, worker_id, A);
+  row[Level<LVL>::OFFS[field] * A] = value;
+}
 
-// DEPTH_WRITE_SINGLE: Write single depth field (similar to TS_WRITE_SINGLE but for depth store)
-#define DEPTH_WRITE_SINGLE(store, date, t, field_enum, a, value, worker_id) \
-  do {                                                                      \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                    \
-    assert(_slot.depth_data && "depth_data is null");                       \
-    const size_t _F = DEPTH_TOTAL_WIDTH;                                    \
-    const size_t _A = (store)->query_A();                                   \
-    [[maybe_unused]] const size_t _T = DEPTH_ROWS;                          \
-    const size_t _f = DEPTH_FIELD_OFFSETS[field_enum];                      \
-    assert((t) < _T && "time index out of bounds");                         \
-    assert(_f < _F && "feature index out of bounds");                       \
-    assert((a) < _A && "asset index out of bounds");                        \
-    const size_t _idx = ((t) * _F + _f) * _A + (a);                         \
-    _slot.depth_data[_idx] = (value);                                       \
-  } while (0)
+// 闭区间 [f_begin, f_end] 逐列写 src[i]; 区间内列必须都是 width 1
+template <size_t LVL>
+[[gnu::always_inline]] inline void ts_write_range(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, size_t f_begin, size_t f_end, const float *src, int worker_id) {
+  size_t A;
+  feature_storage_t *row = ts_row<LVL>(s, date, t, a, worker_id, A);
+  const size_t o_begin = Level<LVL>::OFFS[f_begin], o_end = Level<LVL>::OFFS[f_end];
+  assert(o_begin <= o_end && o_end - o_begin == f_end - f_begin && "range must be contiguous width-1 fields");
+  for (size_t o = o_begin; o <= o_end; ++o)
+    row[o * A] = src[o - o_begin];
+}
 
-// DEPTH_WRITE_FEATURES: Write depth data [f_start_enum, f_end_enum] (closed interval)
-#define DEPTH_WRITE_FEATURES(store, date, t, a, f_start_enum, f_end_enum, src, worker_id) \
-  do {                                                                                    \
-    auto &_slot = (store)->ts_get_slot(date, worker_id);                                  \
-    assert(_slot.depth_data && "depth_data is null");                                     \
-    const size_t _F = DEPTH_TOTAL_WIDTH;                                                  \
-    const size_t _A = (store)->query_A();                                                 \
-    [[maybe_unused]] const size_t _T = DEPTH_ROWS;                                        \
-    const size_t _f_start = DEPTH_FIELD_OFFSETS[f_start_enum];                            \
-    const size_t _f_end = DEPTH_FIELD_OFFSETS[f_end_enum];                                \
-    assert((t) < _T && "time index out of bounds");                                       \
-    assert((a) < _A && "asset index out of bounds");                                      \
-    assert(_f_start <= _f_end && "invalid feature range");                                \
-    assert(_f_end < _F && "feature end out of bounds");                                   \
-    for (size_t _f = _f_start; _f <= _f_end; ++_f) {                                      \
-      const size_t _idx = ((t) * _F + _f) * _A + (a);                                     \
-      _slot.depth_data[_idx] = (src)[_f - _f_start];                                      \
-    }                                                                                     \
-  } while (0)
+template <size_t LVL, class DAG>
+[[gnu::always_inline]] inline void ts_write_row(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, const DAG &dag, int worker_id) {
+  size_t A;
+  feature_storage_t *row = ts_row<LVL>(s, date, t, a, worker_id, A);
+  Level<LVL>::write_row(row, A, dag);
+}
 
-// CS_READ_ALL: Read all assets for one field → returns _Float16*
-#define CS_READ_ALL(store, date, lvl, t, field_enum)          \
-  [&]() -> feature_storage_t * {                              \
-    auto &_slot = (store)->cs_get_slot(date);                 \
-    assert(_slot.data[lvl] && "data[lvl] is null");           \
-    const size_t _F = (store)->query_F(lvl);                  \
-    const size_t _A = (store)->query_A();                     \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl); \
-    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];     \
-    assert((t) < _T && "time index out of bounds");           \
-    assert(_f < _F && "feature index out of bounds");         \
-    const size_t _offset = ((t) * _F + _f) * _A;              \
-    return _slot.data[lvl] + _offset;                         \
-  }()
+[[gnu::always_inline]] inline feature_storage_t *depth_row(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, int worker_id, size_t &A) {
+  auto &slot = s.ts_get_slot(date, worker_id);
+  assert(slot.depth_data && "depth_data is null");
+  A = s.query_A();
+  assert(t < DEPTH_ROWS && "time index out of bounds");
+  assert(a < A && "asset index out of bounds");
+  return slot.depth_data + (t * DEPTH_TOTAL_WIDTH) * A + a;
+}
 
-// CS_WRITE_ALL: Write all assets for one field
-#define CS_WRITE_ALL(store, date, lvl, t, field_enum, src, count)                       \
-  do {                                                                                  \
-    auto &_slot = (store)->cs_get_slot(date);                                           \
-    assert(_slot.data[lvl] && "data[lvl] is null");                                     \
-    const size_t _F = (store)->query_F(lvl);                                            \
-    const size_t _A = (store)->query_A();                                               \
-    [[maybe_unused]] const size_t _T = (store)->query_T(lvl);                           \
-    const size_t _f = L##lvl##_FIELD_OFFSETS[field_enum];                               \
-    assert((t) < _T && "time index out of bounds");                                     \
-    assert(_f < _F && "feature index out of bounds");                                   \
-    assert((count) <= _A && "count exceeds num_assets");                                \
-    const size_t _offset = ((t) * _F + _f) * _A;                                        \
-    std::memcpy(_slot.data[lvl] + _offset, (src), (count) * sizeof(feature_storage_t)); \
-  } while (0)
+[[gnu::always_inline]] inline void depth_write(GlobalFeatureStore &s, const std::string &date, size_t t, size_t field, size_t a, float value, int worker_id) {
+  size_t A;
+  feature_storage_t *row = depth_row(s, date, t, a, worker_id, A);
+  row[DEPTH_FIELD_OFFSETS[field] * A] = value;
+}
+
+// 闭区间 [f_begin, f_end] 按偏移逐列写 src[i] (可含宽字段, src 长度 = 偏移跨度)
+[[gnu::always_inline]] inline void depth_write_range(GlobalFeatureStore &s, const std::string &date, size_t t, size_t a, size_t f_begin, size_t f_end, const float *src, int worker_id) {
+  size_t A;
+  feature_storage_t *row = depth_row(s, date, t, a, worker_id, A);
+  const size_t o_begin = DEPTH_FIELD_OFFSETS[f_begin], o_end = DEPTH_FIELD_OFFSETS[f_end];
+  assert(o_begin <= o_end && "invalid feature range");
+  for (size_t o = o_begin; o <= o_end; ++o)
+    row[o * A] = src[o - o_begin];
+}
+
+// CS worker: 某层某列在 t 时刻全部资产的连续段 (A 个)
+inline feature_storage_t *cs_read(GlobalFeatureStore &s, const std::string &date, size_t lvl, size_t t, size_t field) {
+  auto &slot = s.cs_get_slot(date);
+  assert(lvl < LEVEL_COUNT && slot.data[lvl] && "data[lvl] is null");
+  const size_t F = FIELDS_PER_LEVEL[lvl], A = s.query_A();
+  const size_t f = get_field_offset(lvl, field);
+  assert(t < MAX_ROWS_PER_LEVEL[lvl] && "time index out of bounds");
+  assert(f < F && "feature index out of bounds");
+  return slot.data[lvl] + (t * F + f) * A;
+}
+
+inline void cs_write(GlobalFeatureStore &s, const std::string &date, size_t lvl, size_t t, size_t field, const feature_storage_t *src, size_t count) {
+  assert(count <= s.query_A() && "count exceeds num_assets");
+  std::memcpy(cs_read(s, date, lvl, t, field), src, count * sizeof(feature_storage_t));
+}
+
+} // namespace fstore

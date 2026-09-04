@@ -144,8 +144,8 @@ static std::vector<int> get_filtered_indices(const Feature::Selection &sel, cons
 // ============================================================================
 
 // Render multi-select dropdown for filters
-template <typename EnumType>
-static void render_filter_dropdown(const char *label, bool &show_dropdown, std::set<EnumType> &selected_values, int num_values) {
+template <typename EnumType, size_t N>
+static void render_filter_dropdown(const char *label, bool &show_dropdown, std::set<EnumType> &selected_values, const std::array<EnumType, N> &all_values) {
   ImGui::Text("%s:", label);
   ImGui::SameLine();
 
@@ -164,8 +164,7 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
     ImGui::Begin(label, &show_dropdown, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
 
-    for (int i = 0; i < num_values; ++i) {
-      EnumType value = static_cast<EnumType>(i);
+    for (EnumType value : all_values) {
       auto s = to_string(value);
       char display[128];
       snprintf(display, sizeof(display), "%s (%s)", s.en, s.cn);
@@ -226,13 +225,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
 
   // All filters in one line
-  render_filter_dropdown("DataType", ui_state.show_filter_data_type, sel.filter_data_type, 5);
+  render_filter_dropdown("DataType", ui_state.show_filter_data_type, sel.filter_data_type, FeatureDataType_ALL);
   ImGui::SameLine();
-  render_filter_dropdown("Cat L1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, 10);
+  render_filter_dropdown("Cat L1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, FeatureCategoryL1_ALL);
   ImGui::SameLine();
-  render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, 10);
+  render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, FeatureCategoryL2_ALL);
   ImGui::SameLine();
-  render_filter_dropdown("Norm", ui_state.show_filter_norm_method, sel.filter_norm_method, 8);
+  render_filter_dropdown("Norm", ui_state.show_filter_norm_method, sel.filter_norm_method, NormMethod_ALL);
   ImGui::SameLine();
 
   // Reset filters button

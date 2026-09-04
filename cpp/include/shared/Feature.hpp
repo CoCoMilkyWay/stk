@@ -13,7 +13,7 @@ struct FeatureMetadata {
   const char *code;          // tick_ret_z
   uint8_t width;             // 1 or LOB_DEPTH
   L2::ValidType valid_type;  // ALL/DATA/DEPTH (valid粒度)
-  FeatureDataType data_type; // TS/CS/LB/SH/META
+  FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
   FeatureCategoryL1 cat_l1;  // MOMENTUM, IMBALANCE, etc.
   FeatureCategoryL2 cat_l2;  // NORMALIZED, OSCILLATOR, etc.
   NormMethod norm_method;    // ZSCORE, CLIP, etc.
@@ -29,11 +29,9 @@ struct FeatureMetadata {
 // Compile-time Metadata Generation from FeaturesDefine.hpp
 // ============================================================================
 
-// Macro to expand LEVEL_X_FIELDS into FeatureMetadata array
-// Note: Parameter order matches FeaturesDefine.hpp: ...psd, name_en, name_cn, description, formula
-//       But struct field order is: ...psd, formula, name_en, name_cn, description
-#define GENERATE_METADATA(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method, psd, name_en, name_cn, description, formula, src) \
-  {#code, width, L2::ValidType::valid_type, FeatureDataType::data_type, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, psd, formula, name_en, name_cn, description, 255},
+// 字段表一行 → FeatureMetadata (列序见 FeaturesDefine.hpp; data_type 由 SRC 推出)
+#define GENERATE_METADATA(code, width, valid_type, cat_l1, cat_l2, norm_method, psd, name_en, name_cn, description, formula, src) \
+  {#code, width, L2::ValidType::valid_type, SRC_KIND_##src, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, psd, formula, name_en, name_cn, description, 255},
 
 // Compile-time generated constexpr arrays
 namespace FeatureMetadataRegistry {

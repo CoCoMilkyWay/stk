@@ -282,15 +282,12 @@ set(HEADERS
     ../../include/codec/L2_DataType.hpp
     ../../include/codec/L2_Validator.hpp
     ../../include/features/FeaturesDefine.hpp
+    ../../include/features/TimeIndex.hpp
     ../../include/features/Backend/FeatureReader.hpp
     ../../include/features/Backend/FeatureStoreConfig.hpp
     ../../include/features/Backend/FeatureStore.hpp
     ../../include/features/Backend/ZstdHelper.hpp
-    ../../include/features/FeaturesMinute/Minute_Sequential.hpp
     ../../include/features/ComputeGraph.hpp
-    ../../include/features/FeaturesTick/Tick_Sequential.hpp
-    ../../include/features/FeaturesMinute/Minute_Crosssection.hpp
-    ../../include/features/FeaturesTick/Tick_Crosssection.hpp
     ../../include/features/CoreSequential.hpp
     ../../include/features/CoreCrosssection.hpp
     ../../include/lob/LimitOrderBookDefine.hpp

@@ -1,109 +1,57 @@
 #pragma once
 
 // =============================================================================
-// PEAK (Peak Location & Concentration) - 峰值位置与集中度
+// PEAK - 前 5 档深度分布的峰值位置与集中度
 // =============================================================================
-// 计算深度分布的峰值特征（只考虑前5档）
-//
-// 【公式定义】
-//   peak_loc   = argmax(V[1:5])               (最大量所在档位, 1-indexed)
-//   peak_ratio = max(V[1:5]) / mean(V[1:5])  (峰值集中度, >=1)
-//
-// 【触发域】
-//   compute: onMinute
-//   flush:   onMinute
-//
-// 【输入输出】
-//   输入: {bid/ask}_qty[0:4] (onDepth)
-//   输出: peak_{loc/ratio}_{bid/ask} (onMinute)
-//
-// 【模板参数】
-//   IS_BID - true=买侧, false=卖侧
-//   IS_LOC - true=输出位置, false=输出集中度
-//
-// 【备注】
-//   - peak_loc: 值越大表示峰值离盘口越远
-//   - peak_ratio: 值越大表示订单越集中在单一档位
+//   loc   = argmax(V[1:5])              (1-indexed, 越大峰值离盘口越远)
+//   ratio = max(V[1:5]) / mean(V[1:5])  (>=1, 越大越集中在单一档位)
+//   一侧一个节点两口; IS_BID: true=买侧, false=卖侧
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "define/CBuffer.hpp"
 
-template <bool IS_BID, bool IS_LOC, size_t DEPTH_SIZE = L2::LOB_DEPTH>
+template <bool IS_BID, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class Peak {
-  static constexpr size_t N_LEVELS = 5; // 只考虑前5档
+  static constexpr size_t N_LEVELS = 5;
 
 public:
-  enum Out : size_t { value,
+  enum Out : size_t { loc,
+                      ratio,
                       kCount };
+  float y[kCount] = {};
 
-  Peak(const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE],
-       CBuffer<float, L2::BLEN> (&out)[kCount])
-      : qty_(qty), out_(out[value]) {}
+  explicit Peak(const CBuffer<float, L2::BLEN> (&qty)[DEPTH_SIZE]) : qty_(qty) {}
 
   inline void compute() {
-    float max_v = 0.0f; // 最大数量
-    float sum_v = 0.0f; // 总数量
-    size_t max_idx = 0; // 最大值所在档位
-
-    // 遍历前5档，找到峰值位置和总量
+    float max_v = 0.0f, sum_v = 0.0f;
+    size_t max_idx = 0;
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      float v = qty_[i].back();
-      if constexpr (!IS_BID) {
-        v = -v; // ask qty 是负值，取绝对值
-      }
-      sum_v += v;      // 累加总量
-      if (v > max_v) { // 更新最大值和位置
+      float v = IS_BID ? qty_[i].back() : -qty_[i].back(); // ask 存负值
+      sum_v += v;
+      if (v > max_v) {
         max_v = v;
         max_idx = i;
       }
     }
-
-    float result = 0.0f;
-    if constexpr (IS_LOC) {
-      // 输出峰值位置：1-indexed档位（1表示第一档）
-      // 值越大表示峰值离盘口越远
-      result = static_cast<float>(max_idx + 1);
-    } else {
-      // 输出峰值集中度：max / mean
-      // 值越大表示订单越集中在单一档位，>=1
-      float mean_v = sum_v / static_cast<float>(N_LEVELS);
-      result = (mean_v > 1e-6f) ? (max_v / mean_v) : 1.0f;
-    }
-
-    value_ = result;
+    float mean_v = sum_v / static_cast<float>(N_LEVELS);
+    y[loc] = static_cast<float>(max_idx + 1);
+    y[ratio] = mean_v > 1e-6f ? max_v / mean_v : 1.0f;
   }
-
-  inline void flush() {
-    // 将compute中计算的峰值特征写入输出CBuffer
-    out_.push_back(value_);
-  }
-
-  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&qty_)[DEPTH_SIZE];
-  CBuffer<float, L2::BLEN> &out_;
-  float value_ = 0.0f;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Peak_loc_ask(N) N(Peak_loc_ask, (Peak<false, true>), (DepthData.ask_qty), onMinute, onMinute)
+#define NODE_Peak_ask(N) N(Peak_ask, (Peak<false>), (DepthData.ask_qty), onMinute, onMinute)
 
-#define FIELDS_L1_Peak_loc_ask(X) \
-  X(peak_loc_ask, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Ask Peak Location", "卖侧峰位置", "卖侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,A})", OP(Peak_loc_ask))
+#define FIELDS_L1_Peak_ask(X)                                                                                                                                                                     \
+  X(peak_loc_ask, 1, DATA, SHAPE, RAW, NONE, "00/100/00", "Ask Peak Location", "卖侧峰位置", "卖侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,A})", OP(Peak_ask, loc)) \
+  X(peak_ratio_ask, 1, DATA, SHAPE, RATIO, NONE, "00/100/00", "Ask Peak Concentration", "卖侧峰集中度", "卖侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,A}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,A}})", OP(Peak_ask, ratio))
 
-#define NODE_Peak_loc_bid(N) N(Peak_loc_bid, (Peak<true, true>), (DepthData.bid_qty), onMinute, onMinute)
+#define NODE_Peak_bid(N) N(Peak_bid, (Peak<true>), (DepthData.bid_qty), onMinute, onMinute)
 
-#define FIELDS_L1_Peak_loc_bid(X) \
-  X(peak_loc_bid, 1, DATA, TS, SHAPE, RAW, NONE, "00/100/00", "Bid Peak Location", "买侧峰位置", "买侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,B})", OP(Peak_loc_bid))
-
-#define NODE_Peak_ratio_ask(N) N(Peak_ratio_ask, (Peak<false, false>), (DepthData.ask_qty), onMinute, onMinute)
-
-#define FIELDS_L1_Peak_ratio_ask(X) \
-  X(peak_ratio_ask, 1, DATA, TS, SHAPE, RATIO, NONE, "00/100/00", "Ask Peak Concentration", "卖侧峰集中度", "卖侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,A}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,A}})", OP(Peak_ratio_ask))
-
-#define NODE_Peak_ratio_bid(N) N(Peak_ratio_bid, (Peak<true, false>), (DepthData.bid_qty), onMinute, onMinute)
-
-#define FIELDS_L1_Peak_ratio_bid(X) \
-  X(peak_ratio_bid, 1, DATA, TS, SHAPE, RATIO, NONE, "00/100/00", "Bid Peak Concentration", "买侧峰集中度", "买侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,B}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Peak_ratio_bid))
+#define FIELDS_L1_Peak_bid(X)                                                                                                                                                                     \
+  X(peak_loc_bid, 1, DATA, SHAPE, RAW, NONE, "00/100/00", "Bid Peak Location", "买侧峰位置", "买侧深度最大值所在档位(前5档)(降频)", R"(\arg\max_{i \in [1,5]} V_{i,t}^{M,B})", OP(Peak_bid, loc)) \
+  X(peak_ratio_bid, 1, DATA, SHAPE, RATIO, NONE, "00/100/00", "Bid Peak Concentration", "买侧峰集中度", "买侧最大档位深度/平均档位深度(前5档)(降频)", R"(\frac{\max_{i \in [1,5]} V_{i,t}^{M,B}}{\frac{1}{5}\sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Peak_bid, ratio))

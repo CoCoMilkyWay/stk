@@ -1,92 +1,60 @@
 #pragma once
 
 // =============================================================================
-// ToxicCr - 毒订单流撤单率
+// ToxicCr - 毒订单流撤单率: 短窗口撤单 / 长窗口撤单, 检测高频撤单
 // =============================================================================
-// 短窗口撤单占长窗口撤单比例, 检测高频撤单行为
-//
-// 【公式定义】
-//   toxic_cr = Σ|O^C|_{t-5s}^{t} / Σ|O^C|_{t-60s}^{t}
-//
-// 【触发域】
-//   compute: onCancel (内部按秒推进环形缓冲区)
-//   flush:   onMinute
-//
-// 【输入输出】
-//   输入: TickData.lob.{order_type, volume, l0_index} (onCancel)
-//   输出: toxic_cr (onMinute)
-//
-// 【备注】
-//   - 使用60秒环形缓冲区，按秒推进
+//   toxic_cr = Σ|O^C|_{t-5s}^{t} / Σ|O^C|_{t-60s}^{t}   (60 秒环形缓冲, 按秒推进)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
 class ToxicCr {
-  static constexpr size_t SHORT_WINDOW = 5; // 5秒
-  static constexpr size_t LONG_WINDOW = 60; // 60秒
+  static constexpr size_t SHORT_WINDOW = 5; // 秒
+  static constexpr size_t LONG_WINDOW = 60; // 秒
 
 public:
   enum Out : size_t { value,
                       kCount };
+  float y[kCount] = {};
 
-  ToxicCr(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
-      : td_(td), out_(out[value]) {}
+  explicit ToxicCr(TickData &td) : td_(td) {}
 
   inline void compute() {
     const uint32_t cur_sec = td_.l0_index;
 
-    // 按秒推进环形缓冲区
+    // 按秒推进: 当前槽入账 → 写指针前移 → 移出长/短窗口尾部 → 清新槽
     while (last_sec_ < cur_sec) {
-      // 将当前槽位累计值加入滚动累加器
       short_sum_ += cancel_buffer_[write_idx_];
       long_sum_ += cancel_buffer_[write_idx_];
-
-      // 推进写指针
       write_idx_ = (write_idx_ + 1) % LONG_WINDOW;
-
-      // 移除离开长窗口的旧值
       long_sum_ -= cancel_buffer_[write_idx_];
-
-      // 移除离开短窗口的旧值
-      size_t short_out_idx = (write_idx_ + LONG_WINDOW - SHORT_WINDOW) % LONG_WINDOW;
-      short_sum_ -= cancel_buffer_[short_out_idx];
-
-      // 清空新槽位
+      short_sum_ -= cancel_buffer_[(write_idx_ + LONG_WINDOW - SHORT_WINDOW) % LONG_WINDOW];
       cancel_buffer_[write_idx_] = 0.0f;
-
       ++last_sec_;
     }
 
-    // 累计撤单量到当前秒的槽位
-    if (td_.lob.order_type == L2::OrderType::CANCEL) {
+    if (td_.lob.order_type == L2::OrderType::CANCEL)
       cancel_buffer_[write_idx_] += static_cast<float>(td_.lob.volume);
-    }
   }
 
+  // 分钟末结算 (含当前秒尚未入账的量)
   inline void flush() {
-    // 输出当前比率 (包含当前秒尚未入账的累计量)
     float cur_short = short_sum_ + cancel_buffer_[write_idx_];
     float cur_long = long_sum_ + cancel_buffer_[write_idx_];
-    float ratio = (cur_long > 1e-6f) ? (cur_short / cur_long) : 0.0f;
-    out_.push_back(ratio);
+    y[value] = cur_long > 1e-6f ? cur_short / cur_long : 0.0f;
   }
 
   inline void reset() {
-    for (size_t i = 0; i < LONG_WINDOW; ++i) {
+    for (size_t i = 0; i < LONG_WINDOW; ++i)
       cancel_buffer_[i] = 0.0f;
-    }
     write_idx_ = 0;
     last_sec_ = 0;
-    short_sum_ = 0.0f;
-    long_sum_ = 0.0f;
+    short_sum_ = long_sum_ = 0.0f;
   }
 
 private:
   TickData &td_;
-  CBuffer<float, L2::BLEN> &out_;
   float cancel_buffer_[LONG_WINDOW] = {};
   size_t write_idx_ = 0;
   uint32_t last_sec_ = 0;
@@ -98,4 +66,4 @@ private:
 #define NODE_ToxicCr(N) N(ToxicCr, (ToxicCr), (tick_data), onTick, onMinute)
 
 #define FIELDS_L1_ToxicCr(X) \
-  X(toxic_cr, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Toxic Cancel Ratio", "毒订单流撤单率", "短窗口撤单占长窗口撤单比例,检测高频撤单行为(降频)", R"(\frac{\sum_{\tau=t-5\mathrm{s}}^{t}|O_{\tau}^{C}|}{\sum_{\tau=t-60\mathrm{s}}^{t}|O_{\tau}^{C}|}, \quad |O_{\tau}^{C}|=|O_{\tau}^{C,B}|+|O_{\tau}^{C,A}|)", OP(ToxicCr))
+  X(toxic_cr, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Toxic Cancel Ratio", "毒订单流撤单率", "短窗口撤单占长窗口撤单比例,检测高频撤单行为(降频)", R"(\frac{\sum_{\tau=t-5\mathrm{s}}^{t}|O_{\tau}^{C}|}{\sum_{\tau=t-60\mathrm{s}}^{t}|O_{\tau}^{C}|}, \quad |O_{\tau}^{C}|=|O_{\tau}^{C,B}|+|O_{\tau}^{C,A}|)", OP(ToxicCr))

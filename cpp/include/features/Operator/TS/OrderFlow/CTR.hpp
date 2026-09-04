@@ -1,40 +1,24 @@
 #pragma once
 
 // =============================================================================
-// CTR (Cumulative Trade Ratio) - 累计成交比率
+// CTR (Cumulative Trade Ratio) - 开盘至今的累计成交统计
 // =============================================================================
-// 计算从开盘到当前时刻的累计成交统计
-//
-// 【公式定义】
-//   cc_r = |O^{T,CA}| / |O^T|                             (连续竞价成交占比)
-//   ctr_xl/l/m/s = Σ|O^{T,c}| / Σ|O^T|                   (按大小单分类的累计成交占比)
+//   cc_r = |O^{T,CA}| / |O^T|                                     (连续竞价成交占比)
+//   ctr_xl/l/m/s = Σ|O^{T,c}| / Σ|O^T|                            (按大小单分类的累计成交占比)
 //   cnbi = (Σ|O^{T,B}| - Σ|O^{T,A}|) / (Σ|O^{T,B}| + Σ|O^{T,A}|)  (累计净买入比率)
-//   cnbi_xl/l/m/s = N^c / Σ|N^c|                          (按大小单的净买入贡献)
+//   cnbi_xl/l/m/s = N^c / Σ|N^c|                                  (按大小单的净买入贡献)
 //   cnbi_am/pm = 早盘/尾盘净买入比率
-//
-// 【触发域】
-//   compute: onTaker
-//   flush:   onDepth (按秒输出)
-//
-// 【输入输出】
-//   输入: TickData.lob.{order_dir, volume, price, market_state} (onTaker)
-//   输出: cc_r, ctr_xl, ctr_l, ctr_m, ctr_s, cnbi, cnbi_xl, cnbi_l, cnbi_m, cnbi_s, cnbi_am, cnbi_pm (onDepth)
-//
-// 【备注】
-//   - 大单分类动态分位数: S(<P50), M(P50-P80), L(P80-P95), XL(>=P95)
-//   - 使用KLL Sketch滚动4周历史计算阈值
-//   - 需要reset()更新跨天阈值
+//   大小单阈值: S(<P50), M(P50-P80), L(P80-P95), XL(>=P95), KLL Sketch 滚动 4 周历史, reset() 时更新
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
-// compute: 每笔订单时累计 (内部过滤非TAKER), flush: 按秒输出
+// compute: 每笔订单时累计 (内部过滤非TAKER), flush: 分钟末结算
 class CTR {
   static constexpr size_t N_WEEKS = 4;       // 保留4周KLL历史
   static constexpr size_t DAYS_PER_WEEK = 5; // 每周5个交易日
@@ -60,13 +44,9 @@ public:
                       cnbi_am,
                       cnbi_pm,
                       kCount };
+  float y[kCount] = {};
 
-  CTR(TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
-      : td_(td),
-        cc_r_(out[cc_r]), ctr_xl_(out[ctr_xl]), ctr_l_(out[ctr_l]), ctr_m_(out[ctr_m]), ctr_s_(out[ctr_s]),
-        cnbi_(out[cnbi]), cnbi_xl_(out[cnbi_xl]), cnbi_l_(out[cnbi_l]), cnbi_m_(out[cnbi_m]), cnbi_s_(out[cnbi_s]),
-        cnbi_am_(out[cnbi_am]), cnbi_pm_(out[cnbi_pm]),
-        current_kll_(KLL_K, KLL_RECON) {
+  explicit CTR(TickData &td) : td_(td), current_kll_(KLL_K, KLL_RECON) {
     for (auto &w : weekly_kll_)
       w = KLLcache(KLL_K, KLL_RECON);
     amt_buffer_.reserve(1024);
@@ -127,46 +107,42 @@ public:
     }
   }
 
-  // 每秒输出
+  // 分钟末结算到 y
   inline void flush() {
-    // 0. 将缓冲的成交金额批量写入当前周KLL
+    // 0. 缓冲的成交金额批量写入当前周KLL
     if (!amt_buffer_.empty()) {
       current_kll_.addBatch(amt_buffer_);
       amt_buffer_.clear();
     }
 
-    // 1. cc_r：连续竞价成交占比 = 连续竞价成交 / 总成交
-    cc_r_.push_back(cum_total_ > 1e-6f ? cum_ca_ / cum_total_ : 0.0f);
+    // 1. cc_r：连续竞价成交 / 总成交
+    y[cc_r] = cum_total_ > 1e-6f ? cum_ca_ / cum_total_ : 0.0f;
 
     // 2. ctr_*：各类大小单的累计成交占比（小单由总量推算）
     const float inv_total = cum_total_ > 1e-6f ? 1.0f / cum_total_ : 0.0f;
-    const float r_xl = cum_xl_ * inv_total;
-    const float r_l = cum_l_ * inv_total;
-    const float r_m = cum_m_ * inv_total;
-    ctr_xl_.push_back(r_xl);
-    ctr_l_.push_back(r_l);
-    ctr_m_.push_back(r_m);
-    ctr_s_.push_back(std::max(0.0f, 1.0f - r_xl - r_l - r_m)); // 推算
+    y[ctr_xl] = cum_xl_ * inv_total;
+    y[ctr_l] = cum_l_ * inv_total;
+    y[ctr_m] = cum_m_ * inv_total;
+    y[ctr_s] = std::max(0.0f, 1.0f - y[ctr_xl] - y[ctr_l] - y[ctr_m]);
 
     // 3. cnbi：累计净买入比率
     float sum_bs = cum_buy_ + cum_sell_;
-    cnbi_.push_back(sum_bs > 1e-6f ? (cum_buy_ - cum_sell_) / sum_bs : 0.0f);
+    y[cnbi] = sum_bs > 1e-6f ? (cum_buy_ - cum_sell_) / sum_bs : 0.0f;
 
     // 4. cnbi_*：各类大小单的净买入贡献度（小单由总净买入推算）
     const float net_s = (cum_buy_ - cum_sell_) - net_xl_ - net_l_ - net_m_;
     float sum_abs_net = std::abs(net_xl_) + std::abs(net_l_) + std::abs(net_m_) + std::abs(net_s);
     const float inv_abs = sum_abs_net > 1e-6f ? 1.0f / sum_abs_net : 0.0f;
-    cnbi_xl_.push_back(net_xl_ * inv_abs);
-    cnbi_l_.push_back(net_l_ * inv_abs);
-    cnbi_m_.push_back(net_m_ * inv_abs);
-    cnbi_s_.push_back(net_s * inv_abs); // 推算
+    y[cnbi_xl] = net_xl_ * inv_abs;
+    y[cnbi_l] = net_l_ * inv_abs;
+    y[cnbi_m] = net_m_ * inv_abs;
+    y[cnbi_s] = net_s * inv_abs;
 
     // 5. cnbi_am/pm：早盘/尾盘净买入比率
-    // 反映不同时段的资金流向差异
     float sum_am = cum_am_buy_ + cum_am_sell_;
     float sum_pm = cum_pm_buy_ + cum_pm_sell_;
-    cnbi_am_.push_back(sum_am > 1e-6f ? (cum_am_buy_ - cum_am_sell_) / sum_am : 0.0f); // 早盘净买入
-    cnbi_pm_.push_back(sum_pm > 1e-6f ? (cum_pm_buy_ - cum_pm_sell_) / sum_pm : 0.0f); // 尾盘净买入
+    y[cnbi_am] = sum_am > 1e-6f ? (cum_am_buy_ - cum_am_sell_) / sum_am : 0.0f;
+    y[cnbi_pm] = sum_pm > 1e-6f ? (cum_pm_buy_ - cum_pm_sell_) / sum_pm : 0.0f;
   }
 
   // 跨天重置: 周轮换 + 重新计算阈值 + 重置日内累计
@@ -249,11 +225,6 @@ private:
 
   TickData &td_;
 
-  // 输出 CBuffer
-  CBuffer<float, L2::BLEN> &cc_r_, &ctr_xl_, &ctr_l_, &ctr_m_, &ctr_s_;
-  CBuffer<float, L2::BLEN> &cnbi_, &cnbi_xl_, &cnbi_l_, &cnbi_m_, &cnbi_s_;
-  CBuffer<float, L2::BLEN> &cnbi_am_, &cnbi_pm_;
-
   // 动态阈值（万元, 每日开盘前从KLL历史计算）
   float threshold_xl_ = DEFAULT_XL;
   float threshold_l_ = DEFAULT_L;
@@ -281,16 +252,16 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Ctr(N) N(Ctr, (CTR), (tick_data), onTick, onMinute)
 
-#define FIELDS_L1_Ctr(X)                                                                                                                                                                                                                                                                                                                    \
-  X(cc_r, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "CC Trade Ratio", "连续竞价成交占比", "连续竞价成交额占全天成交额的比例(降频)", R"(\frac{|O_t^{T,\mathrm{CA}}|}{|O_t^{T}|})", OP(Ctr, cc_r))                                                                                                                                   \
-  X(ctr_xl, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative XL Trade Ratio", "特大单累计成交占比", "从开盘到t时刻,特大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{XL}}|+|O_{\tau}^{T,A,\mathrm{XL}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_xl))    \
-  X(ctr_l, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative L Trade Ratio", "大单累计成交占比", "从开盘到t时刻,大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{L}}|+|O_{\tau}^{T,A,\mathrm{L}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_l))             \
-  X(ctr_m, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative M Trade Ratio", "中单累计成交占比", "从开盘到t时刻,中单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{M}}|+|O_{\tau}^{T,A,\mathrm{M}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_m))             \
-  X(ctr_s, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative S Trade Ratio", "小单累计成交占比", "从开盘到t时刻,小单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{S}}|+|O_{\tau}^{T,A,\mathrm{S}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_s))             \
-  X(cnbi, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio", "累计净买入比率", "从开盘到t,主动买入成交额减主动卖出成交额(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|-|O_{\tau}^{T,A}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, cnbi))                                     \
-  X(cnbi_xl, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio XL", "特大单累计净买入比率", "特大单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{XL}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_xl)) \
-  X(cnbi_l, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio L", "大单累计净买入比率", "大单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{L}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_l))         \
-  X(cnbi_m, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio M", "中单累计净买入比率", "中单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{M}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_m))         \
-  X(cnbi_s, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio S", "小单累计净买入比率", "小单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{S}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_s))         \
-  X(cnbi_am, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Net Buy Ratio AM", "早盘净买入比率", "上午有符号净主动成交额(降频)", R"(\frac{\sum_{\tau\in\mathcal{T}_{\mathrm{AM}}}(|O_{\tau}^{T,B}|-|O_{\tau}^{T,A}|)}{\sum_{\tau\in\mathcal{T}_{\mathrm{AM}}}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, cnbi_am))                 \
-  X(cnbi_pm, 1, DATA, TS, ORDER_FLOW, RATIO, NONE, "00/100/00", "Net Buy Ratio PM", "尾盘净买入比率", "下午有符号净主动成交额(降频)", R"(\frac{\sum_{\tau\in\mathcal{T}_{\mathrm{PM}}}(|O_{\tau}^{T,B}|-|O_{\tau}^{T,A}|)}{\sum_{\tau\in\mathcal{T}_{\mathrm{PM}}}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, cnbi_pm))
+#define FIELDS_L1_Ctr(X)                                                                                                                                                                                                                                                                                                                \
+  X(cc_r, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "CC Trade Ratio", "连续竞价成交占比", "连续竞价成交额占全天成交额的比例(降频)", R"(\frac{|O_t^{T,\mathrm{CA}}|}{|O_t^{T}|})", OP(Ctr, cc_r))                                                                                                                                   \
+  X(ctr_xl, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative XL Trade Ratio", "特大单累计成交占比", "从开盘到t时刻,特大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{XL}}|+|O_{\tau}^{T,A,\mathrm{XL}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_xl))    \
+  X(ctr_l, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative L Trade Ratio", "大单累计成交占比", "从开盘到t时刻,大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{L}}|+|O_{\tau}^{T,A,\mathrm{L}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_l))             \
+  X(ctr_m, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative M Trade Ratio", "中单累计成交占比", "从开盘到t时刻,中单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{M}}|+|O_{\tau}^{T,A,\mathrm{M}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_m))             \
+  X(ctr_s, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative S Trade Ratio", "小单累计成交占比", "从开盘到t时刻,小单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{S}}|+|O_{\tau}^{T,A,\mathrm{S}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_s))             \
+  X(cnbi, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio", "累计净买入比率", "从开盘到t,主动买入成交额减主动卖出成交额(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|-|O_{\tau}^{T,A}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, cnbi))                                     \
+  X(cnbi_xl, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio XL", "特大单累计净买入比率", "特大单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{XL}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_xl)) \
+  X(cnbi_l, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio L", "大单累计净买入比率", "大单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{L}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_l))         \
+  X(cnbi_m, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio M", "中单累计净买入比率", "中单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{M}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_m))         \
+  X(cnbi_s, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Cumulative Net Buy Ratio S", "小单累计净买入比率", "小单对累计净买入失衡的贡献(降频)", R"(\frac{N_t^{\mathrm{S}}}{\sum_{c}|N_t^{c}|}, \quad N_t^{c}=\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,c}|-|O_{\tau}^{T,A,c}|), \quad c\in\{\mathrm{XL,L,M,S}\})", OP(Ctr, cnbi_s))         \
+  X(cnbi_am, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Net Buy Ratio AM", "早盘净买入比率", "上午有符号净主动成交额(降频)", R"(\frac{\sum_{\tau\in\mathcal{T}_{\mathrm{AM}}}(|O_{\tau}^{T,B}|-|O_{\tau}^{T,A}|)}{\sum_{\tau\in\mathcal{T}_{\mathrm{AM}}}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, cnbi_am))                 \
+  X(cnbi_pm, 1, DATA, ORDER_FLOW, RATIO, NONE, "00/100/00", "Net Buy Ratio PM", "尾盘净买入比率", "下午有符号净主动成交额(降频)", R"(\frac{\sum_{\tau\in\mathcal{T}_{\mathrm{PM}}}(|O_{\tau}^{T,B}|-|O_{\tau}^{T,A}|)}{\sum_{\tau\in\mathcal{T}_{\mathrm{PM}}}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, cnbi_pm))

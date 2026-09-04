@@ -1,8 +1,8 @@
 #pragma once
 
 #include "codec/L2_DataType.hpp"
+#include "features/TimeIndex.hpp"
 #include <array>
-#include <cstddef>
 #include <cstdint>
 
 // 核心理念: 在低信噪比、强竞争的二级市场，端到端的深度模型(数据先验)会先被淘汰, 特征工程因子挖掘(结构性先验)是生存条件，不是选择。
@@ -75,10 +75,11 @@
 //              采样型算子两者相同, 降频型算子 compute=onTick/flush=onMinute
 //     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游算子
 //
-//   #define FIELDS_<LVL>_<Name>(X)  X(code, width, valid_type, data_type, cat_l1, cat_l2, norm_method,
+//   #define FIELDS_<LVL>_<Name>(X)  X(code, width, valid_type, cat_l1, cat_l2, norm_method,
 //                                     PSD, name_en, name_cn, description, formula, SRC) ...
 //     LVL ∈ {L0, L1, DEPTH}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
-//     SRC 这一列的值从哪来 (基建按它生成写回 / 截面配置 / 广播):
+//     valid_type   ALL / DATA / DEPTH: 该列的有效性看哪个标志 (_data_valid / _depth_valid)
+//     SRC 这一列的值从哪来 (基建按它生成写回 / 截面配置 / 广播), 也决定数据类型 (TS/CS/LB/META):
 //       OP(Node) / OP(Node, port)  节点输出口 (Node::Out::value / Node::Out::port); 层必须 == 节点 flush 域
 //       FUND(field)                当日基本面行 fund::field 盘中广播 (仅 L1)
 //       CS(lvl, src, tf, m)        截面: 源层 lvl (0/1) 的字段 src → cs::Transform::tf → cs::Method::m
@@ -88,7 +89,7 @@
 //
 // CMake (projects/main/CMakeLists.txt) 扫描 features/{Operator,Fundamental,Misc}/**/*.hpp, 按 inputs 引用
 // 分层拓扑排序, 生成 build/generated/features/NodesGenerated.hpp: 全部 #include + NODES(N) +
-// LEVEL_{0,1}_FIELDS(X) + DEPTH_FIELDS(X). 基建 (ComputeGraph / *_Sequential / *_Crosssection /
+// LEVEL_{0,1}_FIELDS(X) + DEPTH_FIELDS(X). 基建 (ComputeGraph / CoreSequential / CoreCrosssection /
 // FeatureStore / Feature.hpp GUI 元数据) 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
 //
 // 加特征 = 改 (或新建) 一个算子文件. 删特征 = 删几行 / 删文件. 其他地方不动.
@@ -98,412 +99,100 @@
 // 标签 (LabelReturn*) 回填别的时间行, 不走节点表, 在 ComputeGraph.hpp 手工声明.
 
 // ============================================================================
-// FEATURE METADATA ENCODING SYSTEM
+// 字段元数据枚举 (X-macro: 一处定义 → enum + to_string(en/cn) + 全值表)
 // ============================================================================
-
-// Data type classification
-enum class FeatureDataType : uint8_t {
-  TS = 0,  // Time-series (时序)
-  CS = 1,  // Cross-sectional (截面)
-  LB = 2,  // Label (标签)
-  SH = 3,  // Shared (共享值)
-  META = 4 // Metadata (backend系统元数据)
-};
-
-// Primary category
-enum class FeatureCategoryL1 : uint8_t {
-  IMBALANCE = 0,  // 失衡
-  SHAPE = 1,      // 形状
-  ORDER_FLOW = 2, // 订单流
-  BEHAVIORAL = 3, // 行为
-  RESILIENCE = 4, // 韧性
-  LIQUIDITY = 5,  // 流动性
-  VOLATILITY = 6, // 波动率
-  BASIC = 7,      // 基础
-  LABEL = 8,      // 标签/目标
-  META = 9        // 元数据/共享变量
-};
-
-// Secondary category
-enum class FeatureCategoryL2 : uint8_t {
-  RAW = 0,        // 原始
-  NORMALIZED = 1, // 标准化
-  OSCILLATOR = 2, // 震荡器
-  DEVIATION = 3,  // 偏离
-  RATIO = 4,      // 比率
-  RANK = 5,       // 排名
-  FUTURE_RET = 6, // 未来收益
-  SCORE = 7,      // 评分
-  UNIVERSE = 8,   // 全域统计
-  BENCHMARK = 9   // 基准/市场
-};
-
-// Normalization method
-enum class NormMethod : uint8_t {
-
-  // --- identity ---
-  NONE = 0, // x
-
-  // --- scale (linear) ---
-  ZSCORE = 1,        // (x - mean) / std
-  ROBUST_ZSCORE = 2, // (x - median) / MAD
-  IQR_ZSCORE = 3,    // (x - Q2) / (Q3 - Q1)
-
-  // --- order based ---
-  RANK = 4,        // rank / N
-  RANK_ZSCORE = 5, // rank → inverse normal
-
-  // --- bounding ---
-  CLIP = 6,   // clip(x, [-k, k])
-  WINSOR = 7, // winsorize by percentile
-
-  // --- nonlinear transform ---
-  LOG = 8,    // log/log1p
-  POWER = 9,  // x^α
-  ASINH = 10, // asinh(x)
-  TANH = 11,  // tanh(x)
-
-  // --- encoding / embedding ---
-  SINCOS = 12, // x → (sin, cos)
-
-  // --- composite (common pipelines) ---
-  LOG_ZSCORE = 20,   // log/log1p → zscore
-  POWER_ZSCORE = 21, // power → zscore
-  ASINH_ZSCORE = 22, // asinh → zscore
-
-  CLIP_ZSCORE = 23,     // zscore → clip
-  WINSOR_ZSCORE = 24,   // winsor → zscore
-  CLIP_LOG_ZSCORE = 25, // clip → log → zscore
-};
-
-// ============================================================================
-// ALL LEVELS REGISTRY
-// ============================================================================
-// Format: X(level_name, level_index, fields_macro)
-
-#define ALL_LEVELS(X)      \
-  X(L0, 0, LEVEL_0_FIELDS) \
-  X(L1, 1, LEVEL_1_FIELDS)
-
-// ============================================================================
-// TIME GRANULARITY CONFIGURATION
-// ============================================================================
-
-constexpr size_t TRADE_MINUTES_PER_DAY = 255;                        // 9:15-11:30 (135min) + 13:00-15:00 (120min)
-constexpr size_t TRADE_SECONDS_PER_DAY = TRADE_MINUTES_PER_DAY * 60; // 15300 seconds
-
-// Time unit types
-enum class TimeUnit : uint8_t {
-  MILLISECOND = 0,
-  SECOND = 1,
-  MINUTE = 2,
-  HOUR = 3
-};
-
-// Level time configuration
-struct LevelTimeConfig {
-  TimeUnit unit;
-  size_t interval; // Number of units per time index
-
-  constexpr size_t max_capacity() const {
-    switch (unit) {
-    case TimeUnit::MILLISECOND:
-      return (TRADE_SECONDS_PER_DAY * 1000) / interval + 1;
-    case TimeUnit::SECOND:
-      return TRADE_SECONDS_PER_DAY / interval + 1;
-    case TimeUnit::MINUTE:
-      return (TRADE_SECONDS_PER_DAY / 60) / interval + 1;
-    case TimeUnit::HOUR:
-      return (TRADE_SECONDS_PER_DAY / 3600) / interval + 1;
-    }
-    return TRADE_SECONDS_PER_DAY + 1;
-  }
-};
-
-// Predefined level configurations
-constexpr LevelTimeConfig LEVEL_CONFIGS[2] = {
-    {TimeUnit::SECOND, 1}, // L0: 1s
-    {TimeUnit::MINUTE, 1}  // L1: 1min
-};
-
-// ============================================================================
-// TRADING SESSION CONSTANTS
-// ============================================================================
-// A股交易时段 (含集合竞价):
-//
-//   时段       时钟时间         分钟数    秒数      L0 范围        L1 范围
-//   ──────────────────────────────────────────────────────────────────────
-//   上午       09:15 - 11:30    135 min   8100 s    [0, 8099]      [0, 134]
-//   午休       11:30 - 13:00    (非交易)
-//   下午       13:00 - 15:00    120 min   7200 s    [8100, 15299]  [135, 254]
-//   ──────────────────────────────────────────────────────────────────────
-//   合计                        255 min   15300 s
-//
-// 关键边界值:
-//   MORNING_SECONDS = 8100   (上午总秒数, 也是下午 L0 起点)
-//   MORNING_MINUTES = 135    (上午总分钟数, 也是下午 L1 起点)
-
-constexpr uint16_t MORNING_START_MIN = L2::MORNING_CALL_AUCTION_START_HOUR * 60 + L2::MORNING_CALL_AUCTION_START_MINUTE;                   // 555 (09:15)
-constexpr uint16_t MORNING_END_MIN = L2::CONTINUOUS_TRADING_MORNING_END_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_END_MINUTE;             // 690 (11:30)
-constexpr uint16_t AFTERNOON_START_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_START_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_START_MINUTE; // 780 (13:00)
-constexpr uint16_t AFTERNOON_END_MIN = L2::CONTINUOUS_TRADING_AFTERNOON_END_HOUR * 60 + L2::CONTINUOUS_TRADING_AFTERNOON_END_MINUTE;       // 900 (15:00)
-
-constexpr size_t MORNING_SECONDS = 8100; // 135 min × 60 = 上午交易秒数
-constexpr size_t MORNING_MINUTES = 135;  // 上午交易分钟数
-
-// ============================================================================
-// INTERNAL: Compile-time LUT for Clock → L0
-// ============================================================================
-// 预计算 1440 个 (hour, minute) → L0 base offset 的映射表
-// 运行时只需 O(1) 查表 + 加秒数
-
-namespace detail {
-
-// 返回该 (hour, minute) 对应的 L0 base (不含秒)
-// 返回 -1 表示盘前, 返回 15299 表示盘后
-constexpr int16_t minute_offset(uint8_t hour, uint8_t minute) {
-  const uint16_t m = hour * 60 + minute;
-  if (m >= MORNING_START_MIN && m < MORNING_END_MIN) // 09:15-11:29
-    return static_cast<int16_t>((m - MORNING_START_MIN) * 60);
-  if (m >= AFTERNOON_START_MIN && m < AFTERNOON_END_MIN) // 13:00-14:59
-    return static_cast<int16_t>(MORNING_SECONDS + (m - AFTERNOON_START_MIN) * 60);
-  if (m >= MORNING_END_MIN && m < AFTERNOON_START_MIN) // 11:30-12:59 午休
-    return static_cast<int16_t>(MORNING_SECONDS);      // → 映射到下午开盘
-  if (m < MORNING_START_MIN)                           // 00:00-09:14 盘前
-    return -1;
-  return static_cast<int16_t>(TRADE_SECONDS_PER_DAY - 1); // 15:00+ 盘后
-}
-
-constexpr auto generate_minute_offset_table() {
-  std::array<int16_t, 24 * 60> table{};
-  for (size_t i = 0; i < 24 * 60; ++i)
-    table[i] = minute_offset(static_cast<uint8_t>(i / 60), static_cast<uint8_t>(i % 60));
-  return table;
-}
-
-} // namespace detail
-
-// 编译期生成的查表 (1440 entries × 2 bytes = 2.88 KB)
-static constexpr auto MINUTE_OFFSET_LUT = detail::generate_minute_offset_table();
-
-// ============================================================================
-// CLOCK TIME STRUCTURE
-// ============================================================================
-
-struct ClockTime {
-  uint8_t hour = 0;
-  uint8_t minute = 0;
-  uint8_t second = 0;
-};
-
-// ============================================================================
-// TIME INDEX CONVERSION
-// ============================================================================
-// 命名规则: X2Y 表示 X → Y
-//
-// 两级索引体系:
-//   L0 (tick)   : 0-15299  秒级索引
-//   L1 (minute) : 0-254    分钟级索引
-//
-// L1 分钟边界 (相对于 L0):
-//   上午: L1=0 → L0=[0,59], L1=1 → L0=[60,119], ..., L1=134 → L0=[8040,8099]
-//   下午: L1=135 → L0=[8100,8159], ..., L1=254 → L0=[15240,15299]
-
-// -------------------------------- 降采样 --------------------------------
-// Clock → L0 → L1
-
-// Clock → L0: 09:15:00→0, 11:29:59→8099, 13:00:00→8100, 14:59:59→15299
-inline constexpr size_t Clock_to_L0(uint8_t hour, uint8_t minute, uint8_t second) {
-  const int16_t base = MINUTE_OFFSET_LUT[hour * 60 + minute];
-  // Branchless: base<0 (盘前) 时右移 15 位得全 1, 取反 AND 后清零
-  const size_t clamped = base & ~(base >> 15);
-  const size_t result = clamped + second;
-  return (result < TRADE_SECONDS_PER_DAY) ? result : (TRADE_SECONDS_PER_DAY - 1);
-}
-
-// L0 → L1: 0→0, 59→0, 60→1, 8099→134, 8100→135, 15299→254
-inline constexpr size_t L0_to_L1(size_t l0_idx) {
-  return (l0_idx < MORNING_SECONDS)
-             ? (l0_idx / 60)
-             : (MORNING_MINUTES + (l0_idx - MORNING_SECONDS) / 60);
-}
-
-// -------------------------------- 升采样 --------------------------------
-// L1 → L0 → Clock
-
-// L1 → L0: 0→0, 134→8040, 135→8100, 254→15240 (返回该分钟的起始秒索引)
-inline constexpr size_t L1_to_L0(size_t l1_idx) {
-  return (l1_idx < MORNING_MINUTES)
-             ? (l1_idx * 60)
-             : (MORNING_SECONDS + (l1_idx - MORNING_MINUTES) * 60);
-}
-
-// L0 → Clock: 0→09:15:00, 8099→11:29:59, 8100→13:00:00, 15299→14:59:59
-inline constexpr ClockTime L0_to_Clock(size_t l0_idx) {
-  ClockTime t;
-  if (l0_idx < MORNING_SECONDS) {
-    size_t total = MORNING_START_MIN * 60 + l0_idx;
-    t.hour = static_cast<uint8_t>(total / 3600);
-    t.minute = static_cast<uint8_t>((total % 3600) / 60);
-    t.second = static_cast<uint8_t>(total % 60);
-  } else {
-    size_t total = AFTERNOON_START_MIN * 60 + (l0_idx - MORNING_SECONDS);
-    t.hour = static_cast<uint8_t>(total / 3600);
-    t.minute = static_cast<uint8_t>((total % 3600) / 60);
-    t.second = static_cast<uint8_t>(total % 60);
-  }
-  return t;
-}
-
-// L1 → Clock: 0→09:15, 134→11:29, 135→13:00, 254→14:59
-inline constexpr ClockTime L1_to_Clock(size_t l1_idx) {
-  ClockTime t;
-  t.second = 0;
-  if (l1_idx < MORNING_MINUTES) {
-    size_t total = MORNING_START_MIN + l1_idx;
-    t.hour = static_cast<uint8_t>(total / 60);
-    t.minute = static_cast<uint8_t>(total % 60);
-  } else {
-    size_t total = AFTERNOON_START_MIN + (l1_idx - MORNING_MINUTES);
-    t.hour = static_cast<uint8_t>(total / 60);
-    t.minute = static_cast<uint8_t>(total % 60);
-  }
-  return t;
-}
-
-// ============================================================================
-// FORMAT UTILITIES
-// ============================================================================
-
-inline void format_time(char *buf, size_t buf_size, const ClockTime &t) {
-  std::snprintf(buf, buf_size, "%02d:%02d:%02d", t.hour, t.minute, t.second);
-}
-
-inline void format_time_hm(char *buf, size_t buf_size, const ClockTime &t) {
-  std::snprintf(buf, buf_size, "%02d:%02d", t.hour, t.minute);
-}
-
-// ============================================================================
-// ENUM TO STRING
-// ============================================================================
+// 值 = 落盘/GUI 稳定编号, 不要改已有值; 加新项追加即可.
 
 struct EnumStr {
   const char *en;
   const char *cn;
 };
 
-inline constexpr EnumStr to_string(FeatureDataType t) {
-  switch (t) {
-  case FeatureDataType::TS:
-    return {"TS", "时序"};
-  case FeatureDataType::CS:
-    return {"CS", "截面"};
-  case FeatureDataType::LB:
-    return {"LB", "标签"};
-  case FeatureDataType::SH:
-    return {"SH", "共享"};
-  case FeatureDataType::META:
-    return {"META", "元数据"};
-  }
-  return {"?", "未知"};
-}
+#define ENUM_ENTRY(name, value, cn) name = value,
+#define ENUM_CASE(name, value, cn) \
+  case decltype(t)::name:          \
+    return {#name, cn};
+#define ENUM_VALUE(name, value, cn) E_t::name,
+#define DEFINE_ENUM(E, LIST)                   \
+  enum class E : uint8_t { LIST(ENUM_ENTRY) }; \
+  inline constexpr EnumStr to_string(E t) {    \
+    switch (t) { LIST(ENUM_CASE) }             \
+    return {"?", "未知"};                      \
+  }                                            \
+  inline constexpr auto E##_ALL = [] {         \
+    using E_t = E;                             \
+    return std::array{LIST(ENUM_VALUE)};       \
+  }();
 
-inline constexpr EnumStr to_string(FeatureCategoryL1 t) {
-  switch (t) {
-  case FeatureCategoryL1::IMBALANCE:
-    return {"IMBALANCE", "失衡"};
-  case FeatureCategoryL1::SHAPE:
-    return {"SHAPE", "形状"};
-  case FeatureCategoryL1::ORDER_FLOW:
-    return {"ORDER_FLOW", "订单流"};
-  case FeatureCategoryL1::BEHAVIORAL:
-    return {"BEHAVIORAL", "行为"};
-  case FeatureCategoryL1::RESILIENCE:
-    return {"RESILIENCE", "韧性"};
-  case FeatureCategoryL1::LIQUIDITY:
-    return {"LIQUIDITY", "流动性"};
-  case FeatureCategoryL1::VOLATILITY:
-    return {"VOLATILITY", "波动率"};
-  case FeatureCategoryL1::BASIC:
-    return {"BASIC", "基础"};
-  case FeatureCategoryL1::LABEL:
-    return {"LABEL", "标签"};
-  case FeatureCategoryL1::META:
-    return {"META", "元数据"};
-  }
-  return {"?", "未知"};
-}
+// 数据类型 (由字段表 SRC 列推出, 见下 SRC_KIND_*)
+#define FEATURE_DATA_TYPES(X) \
+  X(TS, 0, "时序")            \
+  X(CS, 1, "截面")            \
+  X(LB, 2, "标签")            \
+  X(META, 3, "元数据")
 
-inline constexpr EnumStr to_string(FeatureCategoryL2 t) {
-  switch (t) {
-  case FeatureCategoryL2::RAW:
-    return {"RAW", "原始"};
-  case FeatureCategoryL2::NORMALIZED:
-    return {"NORMALIZED", "标准化"};
-  case FeatureCategoryL2::OSCILLATOR:
-    return {"OSCILLATOR", "震荡器"};
-  case FeatureCategoryL2::DEVIATION:
-    return {"DEVIATION", "偏离"};
-  case FeatureCategoryL2::RATIO:
-    return {"RATIO", "比率"};
-  case FeatureCategoryL2::RANK:
-    return {"RANK", "排名"};
-  case FeatureCategoryL2::FUTURE_RET:
-    return {"FUTURE_RET", "未来收益"};
-  case FeatureCategoryL2::SCORE:
-    return {"SCORE", "评分"};
-  case FeatureCategoryL2::UNIVERSE:
-    return {"UNIVERSE", "全域统计"};
-  case FeatureCategoryL2::BENCHMARK:
-    return {"BENCHMARK", "基准"};
-  }
-  return {"?", "未知"};
-}
+#define FEATURE_CATEGORY_L1S(X) \
+  X(IMBALANCE, 0, "失衡")       \
+  X(SHAPE, 1, "形状")           \
+  X(ORDER_FLOW, 2, "订单流")    \
+  X(BEHAVIORAL, 3, "行为")      \
+  X(RESILIENCE, 4, "韧性")      \
+  X(LIQUIDITY, 5, "流动性")     \
+  X(VOLATILITY, 6, "波动率")    \
+  X(BASIC, 7, "基础")           \
+  X(LABEL, 8, "标签")           \
+  X(META, 9, "元数据")
 
-inline constexpr EnumStr to_string(NormMethod t) {
-  switch (t) {
-  case NormMethod::NONE:
-    return {"NONE", "无"};
-  case NormMethod::ZSCORE:
-    return {"ZSCORE", "Z标准化"};
-  case NormMethod::ROBUST_ZSCORE:
-    return {"ROBUST_ZSCORE", "稳健Z"};
-  case NormMethod::IQR_ZSCORE:
-    return {"IQR_ZSCORE", "IQR标准化"};
-  case NormMethod::RANK:
-    return {"RANK", "排名"};
-  case NormMethod::RANK_ZSCORE:
-    return {"RANK_ZSCORE", "排名标准化"};
-  case NormMethod::CLIP:
-    return {"CLIP", "截断"};
-  case NormMethod::WINSOR:
-    return {"WINSOR", "缩尾"};
-  case NormMethod::LOG:
-    return {"LOG", "对数"};
-  case NormMethod::POWER:
-    return {"POWER", "幂变换"};
-  case NormMethod::ASINH:
-    return {"ASINH", "反双曲正弦"};
-  case NormMethod::TANH:
-    return {"TANH", "双曲正切"};
-  case NormMethod::SINCOS:
-    return {"SINCOS", "正余弦编码"};
-  case NormMethod::LOG_ZSCORE:
-    return {"LOG_ZSCORE", "对数+Z"};
-  case NormMethod::POWER_ZSCORE:
-    return {"POWER_ZSCORE", "幂+Z"};
-  case NormMethod::ASINH_ZSCORE:
-    return {"ASINH_ZSCORE", "asinh+Z"};
-  case NormMethod::CLIP_ZSCORE:
-    return {"CLIP_ZSCORE", "Z+截断"};
-  case NormMethod::WINSOR_ZSCORE:
-    return {"WINSOR_ZSCORE", "缩尾+Z"};
-  case NormMethod::CLIP_LOG_ZSCORE:
-    return {"CLIP_LOG_ZSCORE", "截断+对数+Z"};
-  }
-  return {"?", "未知"};
-}
+#define FEATURE_CATEGORY_L2S(X) \
+  X(RAW, 0, "原始")             \
+  X(NORMALIZED, 1, "标准化")    \
+  X(OSCILLATOR, 2, "震荡器")    \
+  X(DEVIATION, 3, "偏离")       \
+  X(RATIO, 4, "比率")           \
+  X(RANK, 5, "排名")            \
+  X(FUTURE_RET, 6, "未来收益")  \
+  X(SCORE, 7, "评分")           \
+  X(UNIVERSE, 8, "全域统计")    \
+  X(BENCHMARK, 9, "基准")
 
+// 推荐归一化 (仅元数据提示, 不参与计算)
+#define NORM_METHODS(X)                                       \
+  X(NONE, 0, "无") /* x */                                    \
+  /* scale (linear) */                                        \
+  X(ZSCORE, 1, "Z标准化")       /* (x - mean) / std */        \
+  X(ROBUST_ZSCORE, 2, "稳健Z")  /* (x - median) / MAD */      \
+  X(IQR_ZSCORE, 3, "IQR标准化") /* (x - Q2) / (Q3 - Q1) */    \
+  /* order based */                                           \
+  X(RANK, 4, "排名")              /* rank / N */              \
+  X(RANK_ZSCORE, 5, "排名标准化") /* rank → inverse normal */ \
+  /* bounding */                                              \
+  X(CLIP, 6, "截断")   /* clip(x, [-k, k]) */                 \
+  X(WINSOR, 7, "缩尾") /* winsorize by percentile */          \
+  /* nonlinear */                                             \
+  X(LOG, 8, "对数")                                           \
+  X(POWER, 9, "幂变换")                                       \
+  X(ASINH, 10, "反双曲正弦")                                  \
+  X(TANH, 11, "双曲正切")                                     \
+  X(SINCOS, 12, "正余弦编码") /* x → (sin, cos) */            \
+  /* composite pipelines */                                   \
+  X(LOG_ZSCORE, 20, "对数+Z")                                 \
+  X(POWER_ZSCORE, 21, "幂+Z")                                 \
+  X(ASINH_ZSCORE, 22, "asinh+Z")                              \
+  X(CLIP_ZSCORE, 23, "Z+截断")                                \
+  X(WINSOR_ZSCORE, 24, "缩尾+Z")                              \
+  X(CLIP_LOG_ZSCORE, 25, "截断+对数+Z")
+
+DEFINE_ENUM(FeatureDataType, FEATURE_DATA_TYPES)
+DEFINE_ENUM(FeatureCategoryL1, FEATURE_CATEGORY_L1S)
+DEFINE_ENUM(FeatureCategoryL2, FEATURE_CATEGORY_L2S)
+DEFINE_ENUM(NormMethod, NORM_METHODS)
+
+#undef DEFINE_ENUM
+#undef ENUM_VALUE
+#undef ENUM_CASE
+#undef ENUM_ENTRY
+
+// L2::ValidType 定义在 codec, 只补 to_string
 inline constexpr EnumStr to_string(L2::ValidType t) {
   switch (t) {
   case L2::ValidType::ALL:
@@ -515,3 +204,31 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
   }
   return {"?", "未知"};
 }
+
+// ----------------------------------------------------------------------------
+// SRC 列解析 (字段表消费者共用)
+//   SRC_KIND_##src             → FeatureDataType
+//   SRC_DISPATCH(P, code, src) → P_OP(code, node[, port]) / P_FUND(code, f) / P_CS(code, lvl, s, tf, m) /
+//                                P_LABEL(code) / P_META(code)   (消费者按来源各定义一组 P_*)
+// ----------------------------------------------------------------------------
+#define SRC_KIND_OP(...) FeatureDataType::TS
+#define SRC_KIND_FUND(...) FeatureDataType::TS
+#define SRC_KIND_CS(...) FeatureDataType::CS
+#define SRC_KIND_LABEL FeatureDataType::LB
+#define SRC_KIND_META FeatureDataType::META
+
+#define SRC_ARGS_OP(...) OP, __VA_ARGS__
+#define SRC_ARGS_FUND(f) FUND, f
+#define SRC_ARGS_CS(l, s, tf, m) CS, l, s, tf, m
+#define SRC_ARGS_LABEL LABEL
+#define SRC_ARGS_META META
+#define SRC_DISPATCH(prefix, code, src) SRC_DISPATCH_I(prefix, code, SRC_ARGS_##src)
+#define SRC_DISPATCH_I(prefix, code, ...) SRC_DISPATCH_II(prefix, code, __VA_ARGS__)
+#define SRC_DISPATCH_II(prefix, code, kind, ...) prefix##_##kind(code __VA_OPT__(, ) __VA_ARGS__)
+
+// ----------------------------------------------------------------------------
+// 落盘层注册: X(level_name, level_index, fields_macro). DEPTH 层单独 (见 FeatureStoreConfig)
+// ----------------------------------------------------------------------------
+#define ALL_LEVELS(X)      \
+  X(L0, 0, LEVEL_0_FIELDS) \
+  X(L1, 1, LEVEL_1_FIELDS)

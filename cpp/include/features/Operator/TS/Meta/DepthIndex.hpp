@@ -1,52 +1,23 @@
 #pragma once
 
 // =============================================================================
-// DepthIndex - Depth索引算子
-// =============================================================================
-// 记录 depth 更新时对应的原始 tick 索引
-//
-// 【公式定义】
-//   _depth_index = l0_index (原始tick索引 [0-15299])
-//
-// 【触发域】
-//   compute: onDepth
-//   flush:   onDepth
-//
-// 【输入输出】
-//   输入: TickData.l0_index (onDepth)
-//   输出: _depth_index (onDepth)
-//
-// 【备注】
-//   - 供其他 depth 级别的算子使用
+// DepthIndex - 盘口更新时对应的原始 tick 索引 (l0_index), 供 depth 域算子对齐用
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
 class DepthIndex {
 public:
   enum Out : size_t { value,
                       kCount };
+  float y[kCount] = {};
 
-  DepthIndex(const TickData &td, CBuffer<float, L2::BLEN> (&out)[kCount])
-      : td_(td), index_buffer_(out[value]) {}
+  explicit DepthIndex(const TickData &td) : td_(td) {}
 
-  inline void compute() {
-    // 从tick_data读取当前tick索引，记录depth更新时对应的原始tick位置
-    index_value_ = static_cast<float>(td_.l0_index);
-  }
-  inline void flush() {
-    // 将depth索引写入CBuffer，供其他depth级别算子使用
-    index_buffer_.push_back(index_value_);
-  }
-
-  inline void reset() {}
+  inline void compute() { y[value] = static_cast<float>(td_.l0_index); }
 
 private:
   const TickData &td_;
-  CBuffer<float, L2::BLEN> &index_buffer_;
-  float index_value_ = 0.0f;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

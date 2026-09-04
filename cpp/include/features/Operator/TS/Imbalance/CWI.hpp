@@ -1,28 +1,11 @@
 #pragma once
 
 // =============================================================================
-// CWI (Convexity-Weighted Imbalance) - 凸加权失衡
+// CWI (Convexity-Weighted Imbalance) - 凸加权失衡: 按档位 i^(-γ) 加权的多档失衡
 // =============================================================================
-// 按档位 i^(-γ) 加权的多档失衡
-//
-// 【公式定义】
 //   w_i = 1 / (i + ε)^γ
 //   CWI = Σ w_i·(V_{i,t}^{M,B} - V_{i,t}^{M,A}) / Σ w_i·(V_{i,t}^{M,B} + V_{i,t}^{M,A})
-//
-// 【触发域】
-//   compute: onDepth
-//   flush:   onDepth
-//
-// 【输入输出】
-//   输入: bid_qty[0:29] (onDepth), ask_qty[0:29] (onDepth)
-//   输出: cwi_γ (onDepth)
-//
-// 【模板参数】
-//   GAMMA_X10 - γ值的10倍 (10=γ1.0, 20=γ2.0), 避免浮点模板参数
-//
-// 【使用示例】
-//   CWI<10> cwi_1{BidQty_, AskQty_, Cwi_1_};  // γ=1.0
-//   CWI<20> cwi_2{BidQty_, AskQty_, Cwi_2_};  // γ=2.0
+//   GAMMA_X10 = γ×10 (避免浮点模板参数)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -37,56 +20,41 @@ public:
 
   enum Out : size_t { value,
                       kCount };
+  float y[kCount] = {};
 
   CWI(const CBuffer<float, L2::BLEN> (&bid_qty)[DEPTH_SIZE],
-      const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE],
-      CBuffer<float, L2::BLEN> (&out)[kCount])
-      : bid_qty_(bid_qty), ask_qty_(ask_qty), out_(out[value]) {
-    // 预计算权重
-    for (size_t i = 0; i < DEPTH_SIZE; ++i) {
+      const CBuffer<float, L2::BLEN> (&ask_qty)[DEPTH_SIZE])
+      : bid_qty_(bid_qty), ask_qty_(ask_qty) {
+    for (size_t i = 0; i < DEPTH_SIZE; ++i)
       weights_[i] = 1.0f / std::pow(static_cast<float>(i + 1) + EPSILON, GAMMA);
-    }
   }
 
   inline void compute() {
-    float numer = 0.0f; // 加权失衡和
-    float denom = 0.0f; // 加权总量
-
-    // 遍历所有档位，计算凸加权失衡
+    float numer = 0.0f;
+    float denom = 0.0f;
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
-      float b = bid_qty_[i].back();  // 买i+1档数量
-      float a = -ask_qty_[i].back(); // 卖i+1档数量（取反）
-      float w = weights_[i];         // 第i+1档的权重：1/(i+1)^γ
-
-      numer += w * (b - a); // 加权失衡 = w * (买量-卖量)
-      denom += w * (b + a); // 加权总量 = w * (买量+卖量)
+      float b = bid_qty_[i].back();
+      float a = -ask_qty_[i].back(); // 卖方存负值
+      float w = weights_[i];
+      numer += w * (b - a);
+      denom += w * (b + a);
     }
-
-    // 计算凸加权失衡率，值域[-1,1]
-    value_ = denom > 1e-6f ? numer / denom : 0.0f;
+    y[value] = denom > 1e-6f ? numer / denom : 0.0f;
   }
-
-  inline void flush() {
-    out_.push_back(value_);
-  }
-
-  inline void reset() {}
 
 private:
   const CBuffer<float, L2::BLEN> (&bid_qty_)[DEPTH_SIZE];
   const CBuffer<float, L2::BLEN> (&ask_qty_)[DEPTH_SIZE];
-  CBuffer<float, L2::BLEN> &out_;
   float weights_[DEPTH_SIZE];
-  float value_ = 0.0f;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Cwi_1(N) N(Cwi_1, (CWI<10>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
 
 #define FIELDS_L1_Cwi_1(X) \
-  X(cwi_1, 1, DATA, TS, IMBALANCE, RATIO, NONE, "00/100/00", "Convexity-weighted Imb γ=1", "凸加权失衡γ=1", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 1)", OP(Cwi_1))
+  X(cwi_1, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Convexity-weighted Imb γ=1", "凸加权失衡γ=1", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 1)", OP(Cwi_1))
 
 #define NODE_Cwi_2(N) N(Cwi_2, (CWI<20>), (DepthData.bid_qty, DepthData.ask_qty), onMinute, onMinute)
 
 #define FIELDS_L1_Cwi_2(X) \
-  X(cwi_2, 1, DATA, TS, IMBALANCE, RATIO, NONE, "00/100/00", "Convexity-weighted Imb γ=2", "凸加权失衡γ=2", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 2)", OP(Cwi_2))
+  X(cwi_2, 1, DATA, IMBALANCE, RATIO, NONE, "00/100/00", "Convexity-weighted Imb γ=2", "凸加权失衡γ=2", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 2)", OP(Cwi_2))

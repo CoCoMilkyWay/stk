@@ -48,8 +48,6 @@ stk/
 │   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图
 │   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面特征核心: 横截面处理
 │   │   │   ├── CoreSequential.hpp                       # 🧮 序列特征核心: 时间序列处理
-│   │   │   ├── FeaturesTick/                            # 🧮 Tick级特征 (逐笔粒度)
-│   │   │   ├── FeaturesMinute/                          # 🧮 分钟级特征
 │   │   │   ├── Fundamental/FundamentalDaily.hpp         # 🧮 财务基本面日频特征
 │   │   │   ├── Operator/TS/                             # 🧮 时序算子 (Basic/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
 │   │   │   ├── Misc/                                    # 🧮 杂项特征工具 (CSMethods 截面方法 / Misc 截面数学函数)
