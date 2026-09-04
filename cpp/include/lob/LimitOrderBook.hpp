@@ -11,7 +11,6 @@
 // #include "codec/L2_DataType.hpp"
 #include "define/FastBitmap.hpp"
 #include "define/MemPool.hpp"
-#include "features/Backend/FeatureStore.hpp"
 #include "features/CoreSequential.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
 
@@ -46,23 +45,37 @@ public:
   // CONSTRUCTOR & CONFIGURATION
   //======================================================================================
 
-  explicit LimitOrderBook(size_t ORDER_SIZE,
-                          GlobalFeatureStore &store,
-                          const fund::Pool &fund_pool,
-                          const std::string &asset_code,
-                          L2::ExchangeType exchange_type = L2::ExchangeType::SSE,
-                          size_t asset_id = 0,
-                          size_t core_id = 0)
-      : order_lookup_(ORDER_SIZE),      // BumpDict with pre-allocated capacity
-        order_memory_pool_(ORDER_SIZE), // BumpPool for Order objects
-        exchange_type_(exchange_type),
-        asset_id_(asset_id),
-        core_sequential_(tick_data_, store, fund_pool, asset_code, asset_id, core_id) {
+  // LOB 是可换绑的工作区: 簿状态 (档位数组/订单池/桶表/位图/TOB) 全部日内瞬态
+  // (每天 clear()), 不含任何跨日状态 —— 跨日状态 (DAG 暖历史 + Fund 状态机 +
+  // 分钟缓冲) 在 per-asset 的 CoreSequential 里, 经 bind() 换绑.
+  //   回测: 每 worker 一个工作区, 资产串行复用 (页面/cache/TLB 常驻, 稳态零扩容);
+  //   实盘: 每资产一个工作区, 启动时 bind 一次.
+  // DAG 与簿的唯一耦合是 tick_data_: per-asset 的 DAG_Root 构造时引用本工作区
+  // 的这一份 (资产归属 worker 静态独占, 引用终身有效), 见 sequential_worker.
+  explicit LimitOrderBook(size_t ORDER_SIZE)
+      : order_lookup_(ORDER_SIZE),       // BumpDict with pre-allocated capacity
+        order_memory_pool_(ORDER_SIZE) { // BumpPool for Order objects
     init_sentinel_levels();
   }
 
+  // 换绑资产. 前置条件: 簿是干净的 (刚构造或已 clear()).
+  // 每单内部的时序编排 (update_depth → 特征 → update_lob) 是本类的不变量,
+  // 特征侧只是一个可换绑的出口 —— 这是回测/实盘一致性的一部分.
+  void bind(CoreSequential *core, size_t asset_id, L2::ExchangeType exchange_type) {
+    assert(core && "bind: null core");
+    assert(order_lookup_.size() == 0 && "bind: book not clean");
+    core_ = core;
+    asset_id_ = asset_id;
+    exchange_type_ = exchange_type;
+    tick_data_.asset_id = static_cast<uint32_t>(asset_id);
+  }
+
+  // 工作区的 TickData: per-asset CoreSequential 构造时引用它
+  TickData &tick_data() { return tick_data_; }
+
   void begin_day(const std::string &date_str) {
-    core_sequential_.begin_day(date_str);
+    assert(core_ && "begin_day: LOB not bound");
+    core_->begin_day(date_str);
 
 #if DEBUG_BOOK_PRINT
     should_log_this_day_ = false;
@@ -92,7 +105,7 @@ public:
   }
 
   void end_day() {
-    core_sequential_.end_day();
+    core_->end_day();
   }
 
   // Get TOB invalid count
@@ -139,6 +152,7 @@ public:
 
   // Complete reset
   HOT_NOINLINE void clear() {
+    assert(core_ && "clear: LOB not bound");
     price_levels_.fill(nullptr); // Reset direct array (all nullptr)
     level_storage_.clear();
     order_lookup_.clear();
@@ -172,7 +186,7 @@ public:
 #endif
 
     // Reset feature state for new day
-    core_sequential_.reset();
+    core_->reset();
 
     // Reinitialize sentinel levels
     init_sentinel_levels();
@@ -292,8 +306,9 @@ private:
   // Resampling components
   // ResampleRunBar resampler_;
 
-  // Feature update component (unified sequential core)
-  CoreSequential core_sequential_;
+  // Feature update component (per-asset 跨日状态, bind() 换绑; 每单一次指针间接,
+  // 相对 DAG 本身的开销可忽略)
+  CoreSequential *core_ = nullptr;
 
   //======================================================================================
   // LEVEL MANAGEMENT (价格档位基础操作)
@@ -879,7 +894,7 @@ private:
 #endif
     }
 
-    core_sequential_.compute_and_store();
+    core_->compute_and_store();
 
     // ========================= lob update ==============================
     bool result = update_lob(order);
