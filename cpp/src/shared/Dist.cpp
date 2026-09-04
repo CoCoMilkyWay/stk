@@ -104,7 +104,7 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
   const bool has_valid_flag = (F_selected > 1);
 
   // Pre-allocate sample buffers
-  size_t total_T = month_tensor.day_offsets.back();
+  size_t total_T = month_tensor.day_start(month_tensor.dates.size());
   std::vector<float> month_samples;
   std::vector<std::vector<float>> asset_samples(A);
   std::vector<std::vector<float>> hour_samples(24);
@@ -141,8 +141,8 @@ void Dist::build_month(size_t cache_idx, const std::string &features_dir,
       auto [year_val, month_val, day] = parse_date(month_tensor.dates[day_idx]);
       uint8_t weekday = calc_weekday(year_val, month_val, day);
 
-      size_t t_start = month_tensor.day_offsets[day_idx];
-      // day_offsets 步长 = 落盘行数 (含末尾哨兵); 哨兵行会虚增 n_total 并落进假的 15:00 桶
+      size_t t_start = month_tensor.day_start(day_idx);
+      // 日步长 = 落盘行数 (含末尾哨兵); 哨兵行会虚增 n_total 并落进假的 15:00 桶
       size_t t_end = t_start + level_valid_rows(static_cast<size_t>(level));
 
       auto &day_fc = month_feature_days[day_idx];

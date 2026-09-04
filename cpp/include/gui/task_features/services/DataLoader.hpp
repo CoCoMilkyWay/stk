@@ -71,11 +71,11 @@ public:
     // Create depth buffer once for entire coroutine lifetime (~500MB)
     // Reused across all L0 loads within this tab session
     FeatureRead::DayTensor depth_buffer;
-    depth_buffer.preallocate_level(of.l1.num_assets, 2);
+    depth_buffer.preallocate(of.l1.num_assets, 2);
 
     // Create L0 feature buffer (preallocated for L0 level)
     FeatureRead::DayTensor l0_tensor;
-    l0_tensor.preallocate_level(of.l1.num_assets, 0);
+    l0_tensor.preallocate(of.l1.num_assets, 0);
 
     while (!of.loader.coro_should_stop) {
       // Check for L0 load request
@@ -180,7 +180,7 @@ public:
     // Only allocate L1 level memory (T=255, F=~20, A=num_assets)
     // Avoids repeated allocation/deallocation of ~50MB buffer per day
     FeatureRead::DayTensor tensor;
-    tensor.preallocate_level(num_assets, 1);
+    tensor.preallocate(num_assets, 1);
 
     {
       TraceN("LoadAllDays");
@@ -195,14 +195,14 @@ public:
           cache.days[d][a].day_idx = d;
         }
 
-        reader_.load_day_level(date, 1, tensor); // Reuse same buffer, reads actual T/F from header
+        reader_.load_day(date, tensor); // Reuse same buffer
 
         for (size_t a = 0; a < num_assets && a < tensor.A; ++a) {
           auto &day = cache.days[d][a];
           day.reserve(OrderFlowConst::L1_CAPACITY);
 
-          // Use actual T from file header (not constant); 末行是哨兵, 不消费
-          for (size_t t = 0; t < tensor.T[1] && t < level_valid_rows(1); ++t) {
+          // 末行是哨兵, 不消费
+          for (size_t t = 0; t < level_valid_rows(1); ++t) {
             float valid_flag = static_cast<float>(tensor.get<1>(t, L1_Field::_data_valid, a));
             if (valid_flag <= 0.5f)
               continue;
@@ -263,13 +263,10 @@ public:
 
     // Load depth data into reusable buffer (for orderflow visualization and validity flags)
     // Buffer is managed by coroutine lifetime, not reallocated per load
-    // Actual T/F dimensions read from file header
     {
       TraceN("L0_LoadDepth");
-      reader_.load_day_level(date, 2, depth_tensor);
+      reader_.load_day(date, depth_tensor);
     }
-    const size_t depth_T = depth_tensor.T[2];
-    assert(depth_T <= LEVELS[2].rows && "Depth tensor rows exceed minute capacity");
 
     if (asset_idx >= depth_tensor.A) {
       cache.loaded = true;
@@ -294,7 +291,7 @@ public:
     // Depth 张量为分钟频 (行 m = 分钟末盘口快照); GUI 保持秒级 X 轴:
     // 映射到该分钟最后一秒, step 渲染自然铺满整分钟
     // 末行是哨兵, 不是时间: 必须在坐标映射前排除 (L1_to_L0(255)+59 会冲出 L0_CAPACITY)
-    for (size_t m = 0; m < depth_T && m < level_valid_rows(2); ++m) {
+    for (size_t m = 0; m < level_valid_rows(2); ++m) {
       const size_t t = L1_to_L0(m) + 59; // 分钟末秒
       assert(t < OrderFlowConst::L0_CAPACITY && "depth minute row exceeds L0_CAPACITY");
 
@@ -379,9 +376,9 @@ public:
     cache.feature_idx = feature_idx;
 
     // Load L0 features (uses preallocated buffer)
-    reader_.load_day_level(date, 0, day_tensor);
+    reader_.load_day(date, day_tensor);
 
-    if (asset_idx >= day_tensor.A || day_tensor.T[0] == 0)
+    if (asset_idx >= day_tensor.A)
       return false;
 
     // Build plot data from L0 cache (use same X coordinates as depth data)
@@ -398,9 +395,8 @@ public:
         if (!tick.depth_valid)
           continue;
 
-        size_t t = tick.tick_idx;
-        if (t >= day_tensor.T[0])
-          continue;
+        size_t t = tick.tick_idx; // 分钟末秒, 恒 < 有效行数 (哨兵行在 load_l0 已排除)
+        assert(t < level_valid_rows(0));
 
         // tick_idx 是分钟末秒 (depth 分钟频); L0 特征逐笔稀疏, 该秒不一定有写入
         // → 在本分钟内向前回溯到最近一个 _data_valid 秒

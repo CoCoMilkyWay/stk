@@ -29,8 +29,8 @@ static void build_day_ranges(TimeSeries::SharedMonthData &shared) {
       TimeSeries::DayRange dr;
       dr.month_idx = m;
       dr.day_in_month = d;
-      dr.t_start = tensor.day_offsets[d];
-      // day_offsets 步长 = 落盘行数 (含末尾哨兵); 时间轴只到有效行
+      dr.t_start = tensor.day_start(d);
+      // 日步长 = 落盘行数 (含末尾哨兵); 时间轴只到有效行
       dr.t_end = dr.t_start + level_valid_rows(static_cast<size_t>(shared.level));
       dr.date = tensor.dates[d];
       shared.day_ranges.push_back(dr);
@@ -141,12 +141,12 @@ static void compute_stationarity_for_month(
 
   // 收集每个 asset 的时间序列
   std::vector<std::vector<float>> asset_series(A);
-  size_t total_T = tensor.day_offsets.back();
+  size_t total_T = tensor.day_start(tensor.dates.size());
   for (auto &v : asset_series)
     v.reserve(total_T);
 
   for (size_t day_idx = 0; day_idx < tensor.dates.size(); ++day_idx) {
-    size_t t_start = tensor.day_offsets[day_idx];
+    size_t t_start = tensor.day_start(day_idx);
     // 同上: 哨兵行不进平稳性检验序列
     size_t t_end = t_start + level_valid_rows(static_cast<size_t>(shared.level));
 

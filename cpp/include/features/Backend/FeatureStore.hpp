@@ -223,18 +223,7 @@ public:
 
     auto allocate_slot = [&](size_t i) {
       pool_[i].allocate(num_assets_);
-
-      // Touch all pages to force physical allocation
-      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        const size_t total_bytes = level_bytes(lvl, num_assets);
-        const size_t page_size = 4096;
-        for (size_t offset = 0; offset < total_bytes; offset += page_size) {
-          reinterpret_cast<volatile char *>(pool_[i].data[lvl])[offset] = 0;
-        }
-        reinterpret_cast<volatile char *>(pool_[i].data[lvl])[total_bytes - 1] = 0;
-      }
-
-      pool_[i].reset(num_assets_); // FREE 态不变量: 张量已清零, 拿来即写
+      pool_[i].reset(num_assets_); // memset 清零 = 坐实物理页 + FREE 态不变量: 拿来即写
 
       const size_t completed = ++progress_counter;
       std::cout << "  " << completed << "/" << pool_size_ << " slots\r" << std::flush;
@@ -309,17 +298,18 @@ public:
 
   // 按日门控: 阻塞至本日 slot 存在且全部 TS ts_close. 返回后本日三层张量
   // 整体可读 —— CS 内部不需要任何行级等待. 等待发生在日粒度, 轮询开销无所谓.
+  //
+  // 无锁 (与 io_try_flush_one 同姿态; 锁只属于 ts_open 的分配互斥):
+  //   date 在 ts_open 的 release store(BUSY) 之前写完, acquire 观察到 BUSY 即可读;
+  //   BUSY→DONE 只由本 CS 线程自己做 (cs_close), 不存在读期状态漂移.
   CsDay cs_open(const std::string &date) {
     size_t backoff_us = 100;
     while (true) {
-      {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-        for (size_t i = 0; i < pool_size_; ++i) {
-          Slot &s = pool_[i];
-          if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date &&
-              s.ts_done_count.load(std::memory_order_acquire) == num_ts_workers_)
-            return {&s, num_assets_};
-        }
+      for (size_t i = 0; i < pool_size_; ++i) {
+        Slot &s = pool_[i];
+        if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date &&
+            s.ts_done_count.load(std::memory_order_acquire) == num_ts_workers_)
+          return {&s, num_assets_};
       }
       std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
       backoff_us = std::min<size_t>(backoff_us * 2, 1000);
@@ -372,24 +362,21 @@ private:
   // 增删改列即变, 读旧文件断言失败而不是静默错位.
   void write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
                               uint64_t table_fp, const void *raw_data, size_t raw_size) {
-    const size_t header_size = FEATURE_FILE_HEADER_WORDS * sizeof(size_t);
-    const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
-
-    io_buf_.resize(header_size + compressed_bound); // 复用容量, 稳态零分配
-    size_t *header = reinterpret_cast<size_t *>(io_buf_.data());
-    header[0] = T;
-    header[1] = F;
-    header[2] = A;
-    header[3] = static_cast<size_t>(axis_hash_);
-    header[4] = static_cast<size_t>(table_fp);
-
-    const size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size,
-                                                                  io_buf_.data() + header_size,
-                                                                  compressed_bound);
+    const size_t header[FEATURE_FILE_HEADER_WORDS] = {T, F, A, static_cast<size_t>(axis_hash_), static_cast<size_t>(table_fp)};
 
     std::ofstream file(filepath, std::ios::binary);
     assert(file.is_open());
-    file.write(reinterpret_cast<const char *>(io_buf_.data()), header_size + compressed_size);
+    file.write(reinterpret_cast<const char *>(header), sizeof(header));
+
+    if constexpr (ZstdHelper::COMPRESSION_LEVEL == 0) {
+      // 无压缩: 张量直写, 不过中转缓冲
+      file.write(reinterpret_cast<const char *>(raw_data), raw_size);
+    } else {
+      const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
+      io_buf_.resize(compressed_bound); // 复用容量, 稳态零分配
+      const size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size, io_buf_.data(), compressed_bound);
+      file.write(reinterpret_cast<const char *>(io_buf_.data()), compressed_size);
+    }
     assert(file.good());
   }
 
@@ -434,28 +421,27 @@ private:
 
 // ============================================================================
 // 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1/2 = L0/L1/DEPTH),
-// 字段用 <LVL>_Field 枚举, 定址全部编译期; 数据面走句柄 (TsDay / CsDay, 由
-// ts_open / cs_open 定址一次), 每次调用只剩指针算术.
+// 字段用 <LVL>_Field 枚举; 布局常量一律取 constexpr LEVELS[LVL] (单一事实源),
+// 常量下标下定址照样编译期折叠. 数据面走句柄 (TsDay / CsDay, 由 ts_open /
+// cs_open 定址一次), 每次调用只剩指针算术.
 //   ts_write<L>(day, t, field, a, value)               单值
 //   ts_write_range<L>(day, t, f_begin, f_end, a, src)  字段闭区间 (可含宽字段) 按偏移连续写 src
 //   ts_write_row<L>(day, t, a, dag)                    按字段表 SRC 列写一行全部 OP 列
-//   cs_read<L>(day, t, field) / cs_write<L>(...)       CS worker: 一列全部资产
+//   cs_col<L>(day, t, field)                           某列 t 时刻全部资产的连续段 (CS 读源列 / 就地写目标列)
 //   OP(node[, port]) → dag.node.last(port); CS/LABEL/FLAG/META 不在 row 写
 // ============================================================================
 namespace fstore {
 
+// 唯一真正需要逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
 template <size_t LVL>
-struct Level;
-#define STORE_LEVEL_TRAITS(name, num, fields, rows, psd, columnar)                                                           \
+struct RowWriter;
+#define STORE_ROW_WRITER(name, num, fields, rows, psd, columnar)                                                             \
   template <>                                                                                                                \
-  struct Level<num> {                                                                                                        \
-    static constexpr const auto &OFFS = name##_FIELD_OFFSETS;                                                                \
-    static constexpr const auto &INFO = name##_FIELD_INFO;                                                                   \
-    static constexpr size_t F = name##_TOTAL_WIDTH;                                                                          \
-    static constexpr size_t T = rows;                                                                                        \
+  struct RowWriter<num> {                                                                                                    \
     template <class DAG>                                                                                                     \
     [[gnu::always_inline]] static inline void write_row(feature_storage_t *row, size_t A, [[maybe_unused]] const DAG &dag) { \
       namespace FO = name##_Field;                                                                                           \
+      [[maybe_unused]] constexpr const auto &OFFS = name##_FIELD_OFFSETS;                                                    \
       fields(STORE_ROW_ONE)                                                                                                  \
     }                                                                                                                        \
   };
@@ -470,20 +456,20 @@ struct Level;
 #define STORE_ROW_META(code, w)
 #define STORE_ROW_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
 
-ALL_LEVELS(STORE_LEVEL_TRAITS)
-#undef STORE_LEVEL_TRAITS
+ALL_LEVELS(STORE_ROW_WRITER)
+#undef STORE_ROW_WRITER
 
 template <size_t LVL>
 [[gnu::always_inline]] inline feature_storage_t *ts_row(const GlobalFeatureStore::TsDay &d, size_t t, size_t a) {
   assert(d.slot && d.slot->data[LVL] && "ts_row: day not open");
-  assert(t < Level<LVL>::T && "time index out of bounds");
+  assert(t < LEVELS[LVL].rows && "time index out of bounds");
   assert(a < d.A && "asset index out of bounds");
-  return d.slot->data[LVL] + (t * Level<LVL>::F) * d.A + a;
+  return d.slot->data[LVL] + (t * LEVELS[LVL].width) * d.A + a;
 }
 
 template <size_t LVL>
 [[gnu::always_inline]] inline void ts_write(const GlobalFeatureStore::TsDay &d, size_t t, size_t field, size_t a, float value) {
-  ts_row<LVL>(d, t, a)[Level<LVL>::OFFS[field] * d.A] = value;
+  ts_row<LVL>(d, t, a)[LEVELS[LVL].offsets[field] * d.A] = value;
 }
 
 // 字段闭区间 [f_begin, f_end] (可含宽字段) 按偏移连续写 src[0 .. span), span = 区间总宽
@@ -491,29 +477,24 @@ template <size_t LVL>
 [[gnu::always_inline]] inline void ts_write_range(const GlobalFeatureStore::TsDay &d, size_t t, size_t f_begin, size_t f_end, size_t a, const float *src) {
   assert(f_begin <= f_end && "invalid field range");
   feature_storage_t *row = ts_row<LVL>(d, t, a);
-  const size_t o_begin = Level<LVL>::OFFS[f_begin], o_end = Level<LVL>::OFFS[f_end] + Level<LVL>::INFO[f_end].width;
+  const size_t o_begin = LEVELS[LVL].offsets[f_begin], o_end = LEVELS[LVL].offsets[f_end] + LEVELS[LVL].fields[f_end].width;
   for (size_t o = o_begin; o < o_end; ++o)
     row[o * d.A] = src[o - o_begin];
 }
 
 template <size_t LVL, class DAG>
 [[gnu::always_inline]] inline void ts_write_row(const GlobalFeatureStore::TsDay &d, size_t t, size_t a, const DAG &dag) {
-  Level<LVL>::write_row(ts_row<LVL>(d, t, a), d.A, dag);
+  RowWriter<LVL>::write_row(ts_row<LVL>(d, t, a), d.A, dag);
 }
 
-// CS worker: 某层某列在 t 时刻全部资产的连续段 (A 个); 与 TS 侧同构, 定址编译期
+// CS worker: 某层某列在 t 时刻全部资产的连续段 (A 个). 读源列和就地写目标列
+// 都是它 —— 与 TS 侧同构, 定址编译期
 template <size_t LVL>
-[[gnu::always_inline]] inline feature_storage_t *cs_read(const GlobalFeatureStore::CsDay &d, size_t t, size_t field) {
-  assert(d.slot && d.slot->data[LVL] && "cs_read: day not open");
-  assert(t < Level<LVL>::T && "time index out of bounds");
-  assert(field < std::size(Level<LVL>::INFO) && "field index out of bounds");
-  return d.slot->data[LVL] + (t * Level<LVL>::F + Level<LVL>::OFFS[field]) * d.A;
-}
-
-template <size_t LVL>
-inline void cs_write(const GlobalFeatureStore::CsDay &d, size_t t, size_t field, const feature_storage_t *src, size_t count) {
-  assert(count <= d.A && "count exceeds num_assets");
-  std::memcpy(cs_read<LVL>(d, t, field), src, count * sizeof(feature_storage_t));
+[[gnu::always_inline]] inline feature_storage_t *cs_col(const GlobalFeatureStore::CsDay &d, size_t t, size_t field) {
+  assert(d.slot && d.slot->data[LVL] && "cs_col: day not open");
+  assert(t < LEVELS[LVL].rows && "time index out of bounds");
+  assert(field < LEVELS[LVL].field_count && "field index out of bounds");
+  return d.slot->data[LVL] + (t * LEVELS[LVL].width + LEVELS[LVL].offsets[field]) * d.A;
 }
 
 } // namespace fstore

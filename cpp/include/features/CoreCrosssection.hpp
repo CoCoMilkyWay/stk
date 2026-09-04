@@ -3,17 +3,17 @@
 #include "features/Backend/FeatureStore.hpp"
 #include "features/Method/CS.hpp" // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
 #include "misc/profiler.hpp"
-#include <algorithm>
+#include <cstring>
 #include <vector>
 
 // ============================================================================
 // CoreCrosssection: 截面计算 (CS worker), L0 每秒 + L1 分钟边界级联
-//   字段表 CS(src_lvl, src, Tf, Method) 行由 CsLevel<LVL>::run 编译期展开 (与 fstore::Level<LVL>::write_row 同构),
+//   字段表 CS(src_lvl, src, Tf, Method) 行由 CsLevel<LVL>::run 编译期展开 (与 fstore::RowWriter<LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
 //   算子契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
 //   源列由 Method/CS.hpp 声明) 每分钟按需准备一次, 全部 NeutralRank 行复用; L0 用 NeutralRank = 编译错误.
 //
-//   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_read + _data_valid) 看世界,
+//   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + _data_valid) 看世界,
 //   看不到 tick / LOB / 事件到达顺序. TS 行是资产局部纯函数 (见 CoreSequential.hpp),
 //   所以 CS 在 t 的输入对重放调度不变 —— 一致性由这个输入契约保证, 与"CS 是流式
 //   伴随还是整日后扫"无关. 回测按日门控 (cs_open 等全部 TS 写完, 见 FeatureStore.hpp),
@@ -55,7 +55,7 @@ ALL_LEVELS(CS_LEVEL_TRAITS)
 class CoreCrosssection {
 public:
   explicit CoreCrosssection(GlobalFeatureStore &store)
-      : A_(store.query_A()), input_fp32_(A_), output_fp32_(A_), output_fp16_(A_), logmc_dense_(A_), industry_dense_(A_) {
+      : A_(store.query_A()), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
   }
 
@@ -83,7 +83,7 @@ public:
     const size_t ts = SRC_LVL == LVL ? t : (LVL == 0 ? L0_to_L1(t) : L1_to_L0(t)); // 跨层源列的时间索引 (L1 用分钟起始秒)
 
     float *y = input_fp32_.data();
-    gather_(fstore::cs_read<SRC_LVL>(day_, ts, SRC), y);
+    gather_(fstore::cs_col<SRC_LVL>(day_, ts, SRC), y);
     Tf::apply(y, n_);
     if constexpr (Method::kNeutral)
       Method::apply(y, n_, neutral_(t));
@@ -96,7 +96,7 @@ private:
   template <size_t LVL>
   void run(size_t t) {
     constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::_data_valid) : size_t(L1_Field::_data_valid);
-    const _Float16 *valid_flags = fstore::cs_read<LVL>(day_, t, VALID);
+    const _Float16 *valid_flags = fstore::cs_col<LVL>(day_, t, VALID);
     valid_indices_.clear();
     for (size_t a = 0; a < A_; ++a)
       if (static_cast<float>(valid_flags[a]) > 0.5f)
@@ -111,9 +111,9 @@ private:
   // NeutralRank 上下文 (L1): 首个 NeutralRank 行触发, 本分钟内复用
   const cs::NeutralRank::Ctx &neutral_(size_t t) {
     if (!neutral_ready_) {
-      gather_(fstore::cs_read<1>(day_, t, L1_Field::NEUTRAL_RANK_MCAP), logmc_dense_.data());
+      gather_(fstore::cs_col<1>(day_, t, L1_Field::NEUTRAL_RANK_MCAP), logmc_dense_.data());
       cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n_);
-      gather_(fstore::cs_read<1>(day_, t, L1_Field::NEUTRAL_RANK_INDUSTRY), industry_dense_.data());
+      gather_(fstore::cs_col<1>(day_, t, L1_Field::NEUTRAL_RANK_INDUSTRY), industry_dense_.data());
       neutral_ready_ = true;
     }
     return neutral_ctx_;
@@ -125,15 +125,13 @@ private:
       dst[i] = static_cast<float>(src[valid_indices_[i]]);
   }
 
-  // dense fp32 → 全资产列 (无效资产 0) → fp16 写回
+  // dense fp32 → 目标列就地写 (清零后只写有效资产): 无中转缓冲, 全 A 只扫一遍
   template <size_t LVL>
   void scatter_(size_t t, size_t dst, const float *y) {
-    std::fill(output_fp32_.begin(), output_fp32_.end(), 0.0f);
+    feature_storage_t *col = fstore::cs_col<LVL>(day_, t, dst);
+    std::memset(col, 0, A_ * sizeof(feature_storage_t)); // fp16 的 0 是全零位
     for (size_t i = 0; i < n_; ++i)
-      output_fp32_[valid_indices_[i]] = y[i];
-    for (size_t a = 0; a < A_; ++a)
-      output_fp16_[a] = static_cast<_Float16>(output_fp32_[a]);
-    fstore::cs_write<LVL>(day_, t, dst, output_fp16_.data(), A_);
+      col[valid_indices_[i]] = static_cast<feature_storage_t>(y[i]);
   }
 
   GlobalFeatureStore::CsDay day_{}; // 本日读写句柄, set_day 换入
@@ -142,8 +140,6 @@ private:
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
   size_t n_ = 0;                      // = valid_indices_.size()
   std::vector<float> input_fp32_;
-  std::vector<float> output_fp32_;
-  std::vector<_Float16> output_fp16_;
   std::vector<float> logmc_dense_;    // L1 中性化输入
   std::vector<float> industry_dense_; // L1 中性化输入
   bool neutral_ready_ = false;
