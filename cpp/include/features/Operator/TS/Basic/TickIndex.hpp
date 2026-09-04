@@ -7,8 +7,6 @@
 //   tick_index = l0_index                   (原始索引 [0-15299])
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
-#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 #include "features/Misc/Misc.hpp"
 #include <array>

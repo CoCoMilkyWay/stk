@@ -12,7 +12,7 @@ stk/
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 直接调用 CMake
 │   ├── mode_*.py          # 🐍 模式开关: tsan/debug/profile/assert/production
-│   └── app/               # 🐍 FileRepair / pdf2txt / procdump
+│   └── app/               # 🐍 FileRepair / pdf2txt / procdump / format_cpp (clang-format) / lint_cpp (clangd 诊断)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                      # 📦 跨模块数据层
@@ -42,18 +42,19 @@ stk/
 │   │   │   ├── L2_Validator.hpp                         # 🔄 逐笔数据准入校验 (编码期判完整性, 防缺片污染盘口)
 │   │   │   └── json_config.hpp                          # 🔄 JSON配置解析
 │   │   ├── features/                                    # 🧮 特征工程 (多时间尺度)
-│   │   │   ├── FeaturesDefine.hpp                       # 🧮 特征定义: ID/元数据
-│   │   │   ├── DataDefine.hpp                           # 🧮 数据定义: 基础数据类型
+│   │   │   ├── FeaturesDefine.hpp                       # 🧮 字段表格式说明 (NODE_/FIELDS_ 12列) + 元数据枚举 (X-macro) + SRC 列解析
+│   │   │   ├── TimeIndex.hpp                            # 🧮 时间索引: Clock ↔ L0(秒) ↔ L1(分钟), 交易时段常数
+│   │   │   ├── DataDefine.hpp                           # 🧮 TickData/MinuteData, Trigger 触发域, 算子契约
 │   │   │   ├── ProcessDefine.hpp                        # 🧮 处理流程定义
-│   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图
-│   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面特征核心: 横截面处理
-│   │   │   ├── CoreSequential.hpp                       # 🧮 序列特征核心: 时间序列处理
-│   │   │   ├── Fundamental/FundamentalDaily.hpp         # 🧮 财务基本面日频特征
-│   │   │   ├── Operator/TS/                             # 🧮 时序算子 (Basic/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
-│   │   │   ├── Misc/                                    # 🧮 杂项特征工具 (CSMethods 截面方法 / Misc 截面数学函数)
+│   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图: Node<Op,K> 输出环形缓冲 + DAG (CMake 拓扑序生成 NodesGenerated.hpp)
+│   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1/标签/盘口快照
+│   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 列驱动, L0 每秒 + L1 分钟级联 (template<LVL>)
+│   │   │   ├── Fundamental/FundamentalDaily.hpp         # 🧮 财务基本面日频特征 (FUND 列盘中广播)
+│   │   │   ├── Operator/TS/                             # 🧮 时序算子 = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
+│   │   │   ├── Misc/                                    # 🧮 CSMethods 截面方法 (NormRank/WinsorRank/NeutralRank, 复刻 qmt) / Misc 截面数学函数
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
-│   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: 写入/并发控制
-│   │   │       ├── FeatureStoreConfig.hpp               # 🧮 存储配置: Float16/布局
+│   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数
+│   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表展开: 各层字段数/宽度/偏移/枚举/截面表/指纹
 │   │   │       ├── FeatureReader.hpp                    # 🧮 读取引擎: Zstd解压/列式加载
 │   │   │       └── ZstdHelper.hpp                       # 🧮 Zstd压缩工具
 │   │   ├── worker/                                      # ⚡ 多线程工作流编排

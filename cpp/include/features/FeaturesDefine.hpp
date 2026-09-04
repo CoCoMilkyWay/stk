@@ -1,7 +1,6 @@
 #pragma once
 
 #include "codec/L2_DataType.hpp"
-#include "features/TimeIndex.hpp"
 #include <array>
 #include <cstdint>
 
