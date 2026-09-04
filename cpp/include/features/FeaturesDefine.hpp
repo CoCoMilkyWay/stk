@@ -238,12 +238,12 @@ constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDep
 
 // ----------------------------------------------------------------------------
 // 落盘层注册: X(name, index, fields_macro, rows, psd, columnar)
-//   L0    秒频 (T = L0_ROWS), 逐列落盘 (Dist 按列选读)
-//   L1    分钟频, 整层一个文件
+//   L0    秒频 (T = L0_ROWS), 逐列落盘 (Dist/overlay 按列选读)
+//   L1    分钟频 (T = L1_ROWS), 逐列落盘 (Dist 全区间选列流式读)
 //   DEPTH 分钟频盘口快照 (与 L1 同 T, 分钟内多次更新覆盖同一行), 整层一个文件; GUI OrderFlow 用
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
 // ----------------------------------------------------------------------------
-#define ALL_LEVELS(X)                              \
-  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", true)  \
-  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", false) \
+#define ALL_LEVELS(X)                             \
+  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", true) \
+  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", true) \
   X(DEPTH, 2, DEPTH_FIELDS, L1_ROWS, "00/100/00", false)

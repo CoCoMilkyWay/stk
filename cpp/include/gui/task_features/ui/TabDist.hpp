@@ -1,14 +1,14 @@
-// TabDist - Distribution Analysis Tab (KLL-based Monthly View)
+// TabDist - Distribution Analysis Tab (KLL-based, 资产优先流式)
 //
 // UI Layout:
 //   1. Integrity panel - Zero/NaN/Inf counts
-//   2. Window control - By selector | Status (n/m) | Compute | Cancel | Month slider
+//   2. Window control - Compute | Cancel | Status (IO/资产进度) | Month slider
 //   3. Moments panel (color bands) + PDF evolution (side by side)
-//   4. Trajectory plot - Asset distribution evolution
+//   4. Assets PDF - 流式渲染已完成资产前缀, stability 完成后叠加 W2/Ward
 //
 // Threading:
-//   - UI runs on main thread
-//   - Computation via coroutine -> thread pool (one thread per month)
+//   - UI runs on main thread, 渲染帧内持 dist.mutex
+//   - Computation via DistService 单 worker 线程 (资产维度流式发布)
 #pragma once
 
 struct SharedData;

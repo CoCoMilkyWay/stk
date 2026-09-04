@@ -1,5 +1,6 @@
 #pragma once
 
+#include "features/Backend/FeatureRead.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include <algorithm>
 #include <array>
@@ -7,28 +8,40 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <functional>
-#include <limits>
-#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
 
-// Forward declarations
-struct Feature;
-struct Config;
-struct Asset;
+// ============================================================================
+// Distribution Analysis (KLL-based, 资产优先流式)
+// ============================================================================
+// 层次: 资产优先 —— 先拿到一个资产的全时段 (抽样) 数据, 再流下一个资产.
+// 这样月度漂移/时刻/星期视图在前几百个资产完成时就是覆盖全时段的图景,
+// 而不是等所有月份跑完才拼齐漂移.
+//
+// 发布协议 (与 FeatureStore 的门控同一姿态: 单调发布, UI 画已完成前缀):
+//
+//   worker (单线程, DistService):
+//     Phase IO:  日期枚举 → 自适应日抽样 (块 ≤ kMaxBlockBytes; 区间小则 stride=1 全量;
+//                stride 与交易周互质避免星期偏置) → 逐日载入常驻块, days_loaded++
+//     Phase 流:  for a in 0..A:                  ← 资产优先, 每资产走完全时段
+//                  无锁收集样本 → 加锁发布:
+//                    assets[a] (发布即终态) / months[*] / by_hour / by_weekday / total
+//                  assets_done = a+1             ← UI 下一帧就画到 [0, assets_done)
+//     Stability: W2 偏移 + W1 主成分投影排序, 全部完成后一次 (分块持锁, 不冻 UI)
+//
+//   UI (每帧): 持 mutex 渲染全部视图; 进度 (status/days_loaded/assets_done) 原子免锁.
+//   生命周期: 改参数 → 新请求即取消在跑重算; 切走 Tab → 立刻中断 + clear() 释放;
+//             切回 Tab → 自动重算 (构建只需秒级, 不留常驻).
+// ============================================================================
 
-// ============================================================================
-// Distribution Analysis Data Structure (KLL-based)
-// ============================================================================
-// Per-month KLL caches with Welford moments
-// Thread pool: one thread per month
-// ============================================================================
-
-static constexpr size_t kMinSamples = 1000; // sample不够的不纳入统计
-static constexpr size_t KLL_CAPACITY = 512;
+static constexpr size_t kMinSamples = 1000;     // sample 不够的不纳入统计
+static constexpr size_t kMinAssetSamples = 100; // 资产纳入截面视图的最小样本数
+static constexpr size_t KLL_CAPACITY = 512;     // 月/小时/星期/全局 sketch
 static constexpr size_t KLL_RESOLUTION = 1024;
+static constexpr size_t KLL_ASSET_CAPACITY = 256;         // 每资产 sketch (5000+ 个, 精度换内存)
+static constexpr size_t KLL_ASSET_RESOLUTION = 128;       // 资产 PDF 网格 (画细线, 128 点足够)
+static constexpr size_t kMaxBlockBytes = size_t(2) << 30; // 常驻块上限, 超出则日抽样
 
 struct Dist {
 
@@ -215,206 +228,43 @@ struct Dist {
   };
 
   // ==========================================================================
-  // Monthly Cache
+  // Slots (worker 写, UI 持锁读)
   // ==========================================================================
 
-  struct MonthlyCache {
+  // 每资产终态槽: 全区间累积 (不按月×资产存, 内存 ÷ 月数)
+  struct AssetSlot {
+    KLLWithMoments kll{KLL_ASSET_CAPACITY, KLL_ASSET_RESOLUTION};
+    Integrity integrity;
+
+    void clear() {
+      kll.clear();
+      integrity.clear();
+    }
+  };
+
+  // 每月聚合 (月度漂移视图 + 滑条标签)
+  struct MonthAgg {
     std::string month; // "YYYYMM"
-
-    Integrity integrity;
-
-    std::vector<KLLWithMoments> by_asset;   // [n_assets]
-    std::vector<KLLWithMoments> by_hour;    // [24] dynamic
-    std::vector<KLLWithMoments> by_weekday; // [7] dynamic
     KLLWithMoments total;
-
-    size_t n_assets = 0;
-    bool valid = false;
-
-    void clear() {
-      month.clear();
-      integrity.clear();
-      by_asset.clear();
-      by_hour.clear();
-      by_weekday.clear();
-      total.clear();
-      n_assets = 0;
-      valid = false;
-    }
-
-    void init(size_t n_assets_val, size_t kll_k = KLL_CAPACITY) {
-      n_assets = n_assets_val;
-      by_asset.clear();
-      by_asset.reserve(n_assets);
-      for (size_t i = 0; i < n_assets; ++i) {
-        by_asset.emplace_back(kll_k);
-      }
-      by_hour.clear();
-      by_hour.reserve(24);
-      for (size_t i = 0; i < 24; ++i) {
-        by_hour.emplace_back(kll_k);
-      }
-      by_weekday.clear();
-      by_weekday.reserve(7);
-      for (size_t i = 0; i < 7; ++i) {
-        by_weekday.emplace_back(kll_k);
-      }
-      total = KLLWithMoments(kll_k);
-    }
-  };
-
-  // ==========================================================================
-  // Query Result
-  // ==========================================================================
-
-  struct QueryResult {
-    struct BinStats {
-      std::string key;
-      size_t n_samples = 0;
-
-      // Moments
-      float mean = 0.0f;
-      float variance = 0.0f;
-      float skewness = 0.0f;
-      float kurtosis = 0.0f;
-
-      // Quantiles: q01, q05, q25, q50, q75, q95, q99
-      std::array<float, 7> quantiles = {};
-
-      // PDF (zero-copy pointers to KLL internal cache)
-      const float *pdf_x = nullptr;
-      const float *pdf_y = nullptr;
-      size_t pdf_n = 0;
-
-      void extract_from(const KLLWithMoments &src) {
-        n_samples = src.count();
-        mean = static_cast<float>(src.mean());
-        variance = static_cast<float>(src.var());
-        skewness = static_cast<float>(src.skew());
-        kurtosis = static_cast<float>(src.kurt());
-
-        if (n_samples > 0) {
-          quantiles[0] = static_cast<float>(src.quantile(0.01));
-          quantiles[1] = static_cast<float>(src.quantile(0.05));
-          quantiles[2] = static_cast<float>(src.quantile(0.25));
-          quantiles[3] = static_cast<float>(src.quantile(0.50));
-          quantiles[4] = static_cast<float>(src.quantile(0.75));
-          quantiles[5] = static_cast<float>(src.quantile(0.95));
-          quantiles[6] = static_cast<float>(src.quantile(0.99));
-
-          // Zero-copy: get pointers to KLL internal cache
-          src.exportPDF(pdf_x, pdf_y, pdf_n);
-        }
-      }
-    };
-
-    // Storage for merged KLLs (keeps pointers valid)
-    std::vector<KLLWithMoments> kll_storage;
-    std::vector<BinStats> bins;
     Integrity integrity;
-    bool valid = false;
-
-    void clear() {
-      kll_storage.clear();
-      bins.clear();
-      integrity.clear();
-      valid = false;
-    }
   };
 
   // ==========================================================================
-  // Compute Control
+  // Build Params (GUI 线程解析好的快照, worker 只读)
   // ==========================================================================
 
-  struct Compute {
-    enum class Status : uint8_t {
-      Idle,
-      Building,
-      Querying,
-      Done,
-      Error,
-      Cancelled
-    };
-
-    Status status = Status::Idle;
-    std::string error;
-
-    std::atomic<size_t> done{0};
-    std::atomic<size_t> total{0};
-    std::atomic<bool> cancel{false};
-
-    float progress() const {
-      size_t t = total.load();
-      return t > 0 ? 100.0f * done.load() / t : 0.0f;
-    }
-
-    bool is_idle() const {
-      return status == Status::Idle || status == Status::Done;
-    }
-
-    bool is_busy() const {
-      return status == Status::Building || status == Status::Querying;
-    }
-
-    void reset() {
-      status = Status::Idle;
-      error.clear();
-      done = 0;
-      total = 0;
-      cancel = false;
-    }
-  };
-
-  // ==========================================================================
-  // Input Control
-  // ==========================================================================
-
-  struct Input {
-    enum class GroupBy : uint8_t { MONTH,
-                                   WEEKDAY,
-                                   HOUR,
-                                   ASSETS };
-
-    GroupBy group_by = GroupBy::MONTH;
-    int focus_month_idx = -1; // for trajectory highlight
-
-    // Cache keys for change detection
+  struct Params {
     int feature_idx = -1;
     int level = -1;
-    std::string month_range;
-
-    bool has_changes(int feat_idx, int lvl, const std::string &range) const {
-      return feature_idx != feat_idx || level != lvl || month_range != range;
-    }
-
-    void update_cache(int feat_idx, int lvl, const std::string &range) {
-      feature_idx = feat_idx;
-      level = lvl;
-      month_range = range;
-    }
+    std::vector<size_t> columns; // [特征列 (+ valid 列)], 由 Feature 元数据解析
   };
-
-  // ==========================================================================
-  // Main Data Members
-  // ==========================================================================
-
-  Input input;
-  std::vector<MonthlyCache> cache; // [n_months], sorted by month
-  QueryResult result;
-  Compute compute;
-
-  // Global aggregations (computed once, reused for PDF visualization)
-  std::vector<KLLWithMoments> global_by_hour;    // [24]
-  std::vector<KLLWithMoments> global_by_weekday; // [7]
-  std::vector<KLLWithMoments> global_by_asset;   // [n_assets]
-  KLLWithMoments global_total;                   // merged from all assets
 
   // ==========================================================================
   // Stability Visualization (cross-sectional distribution stability)
   // ==========================================================================
 
   struct StabilityViz {
-    // Only includes assets with count >= 1000
+    // Only includes assets with count >= kMinAssetSamples
     std::vector<size_t> asset_idx; // original asset indices [n_valid]
     std::vector<float> x_norm;     // normalized x position [0,1] [n_valid]
     std::vector<float> color_t;    // color parameter [0,1] [n_valid]
@@ -431,162 +281,55 @@ struct Dist {
       valid = false;
     }
   };
+
+  // ==========================================================================
+  // State
+  // ==========================================================================
+
+  enum class Status : uint8_t { Idle,
+                                Building,
+                                Done,
+                                Cancelled };
+
+  // 进度: 原子, UI 免锁读
+  std::atomic<Status> status{Status::Idle};
+  std::atomic<size_t> days_loaded{0}; // Phase IO 进度
+  std::atomic<size_t> days_total{0};  // 抽样后入块天数
+  std::atomic<size_t> assets_done{0}; // Phase 流 进度 (全程单调, 槽发布即终态)
+
+  // 聚合状态: mutex 保护 (worker 逐资产短锁发布; UI 渲染帧内持锁)
+  mutable std::mutex mutex;
+
+  Params params;                          // 本次构建参数
+  std::vector<MonthAgg> months;           // [n_months]
+  std::vector<AssetSlot> assets;          // [A] 全区间累积
+  std::vector<KLLWithMoments> by_hour;    // [24] 全区间
+  std::vector<KLLWithMoments> by_weekday; // [7]  全区间
+  KLLWithMoments total;                   // 全区间
+  Integrity integrity;                    // 全区间
   StabilityViz stability;
 
   // ==========================================================================
-  // Feature Cache (for OrderFlow plot overlay)
-  // ==========================================================================
-  // Stores resampled feature data at minute granularity (L1 index 0-254)
-  // All levels (L0/L1/L2) are converted to minute-level OHLC bars
-
-  struct FeatureCache {
-    // Single minute bar (OHLC aggregation)
-    struct MinuteBar {
-      float open = 0.0f;
-      float high = std::numeric_limits<float>::lowest();
-      float low = std::numeric_limits<float>::max();
-      float close = 0.0f;
-      bool valid = false;
-
-      void update(float val) {
-        if (!valid) {
-          open = val;
-          high = val;
-          low = val;
-          valid = true;
-        }
-        if (val > high)
-          high = val;
-        if (val < low)
-          low = val;
-        close = val;
-      }
-
-      void clear() {
-        open = 0.0f;
-        high = std::numeric_limits<float>::lowest();
-        low = std::numeric_limits<float>::max();
-        close = 0.0f;
-        valid = false;
-      }
-    };
-
-    // Single day cache (per asset)
-    struct DayCache {
-      std::string date;                               // "YYYYMMDD"
-      std::vector<std::vector<MinuteBar>> asset_bars; // [asset_idx][minute_idx]
-
-      void init(size_t n_assets) {
-        asset_bars.resize(n_assets);
-        for (auto &bars : asset_bars) {
-          bars.resize(255);
-          for (auto &bar : bars)
-            bar.clear();
-        }
-      }
-
-      void clear() {
-        date.clear();
-        asset_bars.clear();
-      }
-    };
-
-    std::vector<DayCache> days; // sorted by date (after finalize)
-    std::map<std::string, size_t> date_to_idx;
-    size_t n_assets = 0; // number of assets
-    int level = -1;
-    int feature_idx = -1;
-    bool valid = false;
-
-    // Mutex for thread-safe day insertion during parallel build
-    mutable std::mutex mutex;
-
-    void clear() {
-      std::lock_guard<std::mutex> lock(mutex);
-      days.clear();
-      date_to_idx.clear();
-      n_assets = 0;
-      level = -1;
-      feature_idx = -1;
-      valid = false;
-    }
-
-    // Thread-safe: add days from a month (called from build_month)
-    void add_days(std::vector<DayCache> &&month_days) {
-      std::lock_guard<std::mutex> lock(mutex);
-      for (auto &day : month_days) {
-        days.push_back(std::move(day));
-      }
-    }
-
-    // Build date index after all months are processed (called from finalize)
-    void build_index() {
-      // Sort by date
-      std::sort(days.begin(), days.end(),
-                [](const DayCache &a, const DayCache &b) { return a.date < b.date; });
-      // Build index
-      date_to_idx.clear();
-      for (size_t i = 0; i < days.size(); ++i) {
-        date_to_idx[days[i].date] = i;
-      }
-      valid = true;
-    }
-
-    // Check if cache matches current selection
-    bool matches(int lvl, int feat_idx) const {
-      return valid && level == lvl && feature_idx == feat_idx;
-    }
-  };
-
-  FeatureCache feature_cache;
-
-  // ==========================================================================
-  // Methods - Build
+  // Methods (worker 线程调用, 内部按需加锁)
   // ==========================================================================
 
-  // Build single month cache (thread-safe, called from worker)
-  void build_month(size_t cache_idx, const std::string &features_dir,
-                   const Feature &feature, const Asset &asset);
+  // 重置全部状态并进入 Building (sketch 容量复用, 稳态零分配)
+  void reset_for_build(Params p, const std::vector<std::string> &month_keys, size_t n_assets);
 
-  // Build all months (dispatch to thread pool)
-  void build_all(const std::vector<std::string> &months,
-                 const std::string &features_dir, const Feature &feature,
-                 const Asset &asset,
-                 std::function<void(std::function<void()>)> submit);
+  // 全区间构建: Phase IO (逐日入块) + Phase 资产流 (逐资产发布); 被取消返回 false
+  // block 为 worker 私有的复用缓冲 (preallocate 在内部按抽样天数做)
+  bool build(FeatureRead &reader, FeatureRead::MonthTensor &block,
+             const std::atomic<bool> &cancel);
 
-  // ==========================================================================
-  // Methods - Finalize & Query
-  // ==========================================================================
+  // 全部资产完成后: W2 偏移 + 主成分投影排序 (分块持锁, 不冻 UI); 被取消返回 false
+  bool build_stability(const std::atomic<bool> &cancel);
 
-  // Finalize after build_all completes: build globals + assets + query
-  void finalize();
+  void clear();
 
-  // Re-query with different grouping (for UI group_by switching)
-  void query(Input::GroupBy group_by);
-
-  // ==========================================================================
-  // Methods - Control
-  // ==========================================================================
-
-  void cancel() {
-    compute.cancel = true;
-    compute.status = Compute::Status::Cancelled;
-  }
-
-  void clear() {
-    input = Input{};
-    cache.clear();
-    result.clear();
-    compute.reset();
-    global_by_hour.clear();
-    global_by_weekday.clear();
-    global_by_asset.clear();
-    global_total.clear();
-    stability.clear();
-    feature_cache.clear();
-  }
-
-  bool need_rebuild(int feat_idx, int lvl, const std::string &range) const {
-    return input.has_changes(feat_idx, lvl, range);
-  }
+private:
+  // worker 私有采样缓冲 (跨资产复用, 稳态零分配)
+  std::vector<float> scratch_all_;
+  std::array<std::vector<float>, 24> scratch_hour_;
+  std::array<std::vector<float>, 7> scratch_weekday_;
+  std::vector<std::vector<float>> scratch_month_; // [n_months]
 };

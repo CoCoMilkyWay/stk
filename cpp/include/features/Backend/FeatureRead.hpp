@@ -153,8 +153,8 @@ private:
   }
 
 public:
-  // 整月选列张量 (Dist/TimeSeries), 布局 [N_days × T][F_selected][A]; 日步长恒为
-  // LEVELS[level].rows (含末尾哨兵行), 时间轴消费用 level_valid_rows(level)
+  // 选列区间张量 (Dist 任意日期集 / TimeSeries 整月), 布局 [N_days × T][F_selected][A];
+  // 日步长恒为 LEVELS[level].rows (含末尾哨兵行), 时间轴消费用 level_valid_rows(level)
   struct MonthTensor {
     std::vector<std::string> dates;      // [N_days]
     std::vector<feature_storage_t> data; // [N_days*T × F_selected × A]
@@ -266,6 +266,17 @@ public:
   // Batch Monthly Loading (for Dist analysis)
   // ========================================================================
 
+  // 单日选列载入到区间张量的第 day_idx 槽 (Dist 抽样流式: 逐日 IO, 进度/取消粒度归调用方)
+  // dates/feature_indices 由调用方维护
+  void load_date_columns_into(const std::string &date, const std::vector<size_t> &feature_indices,
+                              MonthTensor &out, size_t day_idx) const {
+    assert(out.A > 0 && "Must preallocate() before load_date_columns_into()");
+    const size_t n = feature_indices.size();
+    assert(n <= out.max_features && day_idx < out.max_days);
+    load_fields(date, out.level, feature_indices.data(), n,
+                out.data.data() + out.day_start(day_idx) * n * out.A, out.A, out.scratch);
+  }
+
   void load_month_columns(
       const std::string &year,
       const std::string &month,
@@ -286,12 +297,10 @@ public:
       assert(out.dates.size() <= out.max_days && "Day count exceeds preallocated");
     }
 
-    const size_t n = feature_indices.size();
     for (size_t day_idx = 0; day_idx < out.dates.size(); ++day_idx) {
       TraceN("LoadDay");
       TraceTextS(out.dates[day_idx].c_str());
-      load_fields(out.dates[day_idx], out.level, feature_indices.data(), n,
-                  out.data.data() + out.day_start(day_idx) * n * out.A, out.A, out.scratch);
+      load_date_columns_into(out.dates[day_idx], feature_indices, out, day_idx);
     }
   }
 

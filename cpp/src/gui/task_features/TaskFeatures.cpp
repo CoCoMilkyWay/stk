@@ -155,13 +155,8 @@ TaskHandle CreateFeaturesTask() {
       bool has_valid_selection = (sel.primary_feature_idx >= 0);
 
       if ((feature_changed || level_changed) && has_valid_selection) {
-        // Cancel old computation if running
-        if (data.dist.compute.is_busy()) {
-          data.dist.cancel();
-        }
-
-        // Trigger new computation
-        state->dist_service->RequestCompute();
+        // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L1 选择静默忽略)
+        state->dist_service->RequestCompute(data);
 
         // Update tracking
         state->prev_primary_feature_idx = sel.primary_feature_idx;
@@ -204,9 +199,9 @@ TaskHandle CreateFeaturesTask() {
       const bool compute_busy =
           (state->compute_service &&
            state->compute_service->get_status() == Features::ComputeStatus::Running);
-      const bool dist_busy = data.dist.compute.is_busy();
+      // Dist 是流式构建 (切走即取消, 随时可中断), 不参与锁 Tab
       const bool timeseries_busy = data.timeseries.compute.is_busy();
-      const bool any_busy = compute_busy || dist_busy || timeseries_busy;
+      const bool any_busy = compute_busy || timeseries_busy;
 
       if (any_busy) {
         if (!state->tabs_locked) {
@@ -312,9 +307,12 @@ TaskHandle CreateFeaturesTask() {
       if (disable[TAB_DISTRIBUTION])
         ImGui::EndDisabled();
 
-      // Distribution lifecycle
+      // Distribution lifecycle: 切回自动重算 (切走时已 clear 释放), 切走立刻中断+释放
       if (dist_tab_open && !state->dist_tab_was_active) {
         state->dist_tab_was_active = true;
+        if (data.dist.status.load() == Dist::Status::Idle) {
+          state->dist_service->RequestCompute(data);
+        }
       } else if (!dist_tab_open && state->dist_tab_was_active) {
         Features::StopTabDist(state->dist_service.get(), data);
         state->dist_tab_was_active = false;

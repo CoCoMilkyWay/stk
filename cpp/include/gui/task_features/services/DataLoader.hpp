@@ -19,6 +19,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +50,7 @@ public:
     if (force_reload) {
       TraceN("L1_Clear");
       of.l1.clear();
+      of.l1_feature.clear(); // 与 dates 对齐, 一起失效
     }
 
     load_all_l1(of.l1, num_assets);
@@ -77,6 +79,10 @@ public:
     FeatureRead::DayColumns l0_cols;
     l0_cols.preallocate(of.l1.num_assets, 0, 2);
 
+    // L1 特征选列缓冲 (overlay 逐日流式加载, 每日 2 个列文件)
+    FeatureRead::DayColumns l1_cols;
+    l1_cols.preallocate(of.l1.num_assets, 1, 2);
+
     while (!of.loader.coro_should_stop) {
       // Check for L0 load request
       if (of.loader.l0_requested.exchange(false)) {
@@ -91,6 +97,20 @@ public:
           !of.l0_feature.matches(of.loader.l0_date, of.loader.l0_asset, feature_idx_ref)) {
         load_l0_feature(of.l0_feature, of.loader.l0_date, of.loader.l0_asset,
                         feature_idx_ref, of.l0, l0_cols);
+      }
+
+      // L1 特征 overlay: 逐日流式填充 (选中 asset/feature 变了就重来; 每 tick 4 天, 控帧)
+      if (selected_level_ref == 1 && feature_idx_ref >= 0 && of.l1.loaded) {
+        auto &fc = of.l1_feature;
+        const size_t asset_idx = static_cast<size_t>(of.ui.selected_asset_idx);
+        if (!fc.matches(asset_idx, feature_idx_ref)) {
+          fc.reset(asset_idx, feature_idx_ref, of.l1.num_days);
+        }
+        const size_t end = std::min(fc.days_loaded + 4, of.l1.num_days);
+        for (; fc.days_loaded < end;) {
+          load_l1_feature_day(fc, of.l1.dates[fc.days_loaded], l1_cols);
+          ++fc.days_loaded; // 先填后发布 (单调)
+        }
       }
 
       // Yield to allow other tasks
@@ -428,6 +448,27 @@ public:
     }
 
     return cache.plot.valid;
+  }
+
+  // ========================================================================
+  // Load L1 feature data for single day (for L1 plot overlay, 流式逐日)
+  // ========================================================================
+  void load_l1_feature_day(OrderFlow::L1FeatureCache &fc, const std::string &date,
+                           FeatureRead::DayColumns &l1_cols) {
+    TraceN("L1_Feature_Day");
+
+    // 选列加载: 特征列 + _data_valid (L1 逐列文件, 只读 2 个列文件)
+    const std::vector<size_t> columns = {static_cast<size_t>(fc.feature_idx),
+                                         static_cast<size_t>(L1_Field::_data_valid)};
+    reader_.load_day_columns(date, columns, l1_cols);
+    assert(fc.asset_idx < l1_cols.A);
+
+    auto &dst = fc.days[fc.days_loaded];
+    for (size_t m = 0; m < level_valid_rows(1); ++m) {
+      const bool valid = static_cast<float>(l1_cols.get(m, 1, fc.asset_idx)) > 0.5f;
+      dst[m] = valid ? static_cast<float>(l1_cols.get(m, 0, fc.asset_idx))
+                     : std::numeric_limits<float>::quiet_NaN();
+    }
   }
 
   // ========================================================================

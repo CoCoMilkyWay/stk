@@ -435,7 +435,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, bool force_reset
 // L1 Plot Renderer
 // ============================================================================
 
-static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature, size_t asset_idx, float height, bool force_reset) {
+static void RenderL1Plot(OrderFlow &of, const Feature &feature, size_t asset_idx, float height, bool force_reset) {
   if (!of.l1.loaded || asset_idx >= of.l1.plot_data.size()) {
     ImGui::TextDisabled("No L1 data available");
     return;
@@ -484,13 +484,13 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
     }
 
     // ========================================================================
-    // Feature Cache Check (before any plotting to setup Y2 axis if needed)
+    // L1 Feature Overlay Check (before any plotting to setup Y2 axis if needed)
+    // 按需缓存: 只有选中 (asset, feature), 协程逐日流式填充, 画 [0, days_loaded)
     // ========================================================================
-    const auto &fc = dist.feature_cache;
+    const auto &fc = of.l1_feature;
     const auto &sel = feature.selection;
-    const bool cache_matches = fc.valid && !fc.days.empty() &&
-                               fc.level == sel.selected_level &&
-                               fc.feature_idx == sel.primary_feature_idx;
+    const bool cache_matches = sel.selected_level == 1 && fc.days_loaded > 0 &&
+                               fc.matches(asset_idx, sel.primary_feature_idx);
 
     // Setup Y2 axis if we have valid feature cache
     // First frame: use placeholder range, subsequent frames use cached range
@@ -512,7 +512,7 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
                       pd.low.data(), pd.close.data(), static_cast<int>(pd.x.size()));
 
       // ========================================================================
-      // Feature Plot Overlay (if feature_cache matches current selection)
+      // Feature Plot Overlay (选中资产的 L1 特征分钟序列, 流式已加载前缀)
       // ========================================================================
       if (cache_matches) {
         // Get current visible X range
@@ -522,16 +522,16 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
 
         // Collect feature data points in visible range
         std::vector<double> feat_x;
-        std::vector<double> feat_high, feat_low;
-        feat_x.reserve(256);
-        feat_high.reserve(256);
-        feat_low.reserve(256);
+        std::vector<double> feat_y;
+        feat_x.reserve(1024);
+        feat_y.reserve(1024);
 
         double feat_y_min = std::numeric_limits<double>::max();
         double feat_y_max = std::numeric_limits<double>::lowest();
 
-        // Iterate through days that intersect with visible range
-        for (size_t d = 0; d < of.l1.dates.size(); ++d) {
+        // fc.days 与 of.l1.dates 按下标对齐; 只画已加载 + 可视范围相交的天
+        const size_t n_days = std::min(fc.days_loaded, of.l1.dates.size());
+        for (size_t d = 0; d < n_days; ++d) {
           double day_x_start = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
           double day_x_end = day_x_start + OrderFlowConst::L1_CAPACITY;
 
@@ -539,21 +539,10 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
           if (day_x_end < view_x_min || day_x_start > view_x_max)
             continue;
 
-          // Find this date in feature cache
-          const std::string &date = of.l1.dates[d];
-          auto it = fc.date_to_idx.find(date);
-          if (it == fc.date_to_idx.end())
-            continue;
-
-          const auto &day_fc = fc.days[it->second];
-          // Check asset index is valid
-          if (asset_idx >= day_fc.asset_bars.size())
-            continue;
-
-          const auto &asset_bars = day_fc.asset_bars[asset_idx];
-          for (size_t m = 0; m < asset_bars.size(); ++m) {
-            const auto &bar = asset_bars[m];
-            if (!bar.valid)
+          const auto &vals = fc.days[d];
+          for (size_t m = 0; m < vals.size(); ++m) {
+            const float val = vals[m];
+            if (val != val) // NaN = 无效分钟
               continue;
 
             double x = day_x_start + static_cast<double>(m);
@@ -561,14 +550,12 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
               continue;
 
             feat_x.push_back(x);
-            feat_high.push_back(static_cast<double>(bar.high));
-            feat_low.push_back(static_cast<double>(bar.low));
+            feat_y.push_back(static_cast<double>(val));
 
-            // Track min/max for dynamic Y2 range
-            if (bar.high > feat_y_max)
-              feat_y_max = bar.high;
-            if (bar.low < feat_y_min)
-              feat_y_min = bar.low;
+            if (val > feat_y_max)
+              feat_y_max = val;
+            if (val < feat_y_min)
+              feat_y_min = val;
           }
         }
 
@@ -582,27 +569,9 @@ static void RenderL1Plot(OrderFlow &of, const Dist &dist, const Feature &feature
           // Plot on Y2 axis (right side shows feature scale)
           ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
 
-          // Draw shaded area between high and low (subtle teal fill)
-          ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.2f, 0.6f, 0.7f, 0.15f));
-          ImPlot::PlotShaded("Feature", feat_x.data(), feat_low.data(),
-                             feat_high.data(), static_cast<int>(feat_x.size()));
-          ImPlot::PopStyleColor();
-
-          // Check if "Feature" legend item is hidden (sync visibility for all feature plots)
-          ImPlotItem *feature_item = ImPlot::GetCurrentPlot()->Items.GetItem("Feature");
-          bool hidden = feature_item ? !feature_item->Show : false;
-
-          // Draw high line (step plot, brighter teal)
-          ImPlot::HideNextItem(hidden, ImPlotCond_Always);
-          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.6f));
-          ImPlot::PlotStairs("##FeatureHigh", feat_x.data(), feat_high.data(),
-                             static_cast<int>(feat_x.size()));
-          ImPlot::PopStyleColor();
-
-          // Draw low line (step plot, darker teal)
-          ImPlot::HideNextItem(hidden, ImPlotCond_Always);
-          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.15f, 0.5f, 0.6f, 0.5f));
-          ImPlot::PlotStairs("##FeatureLow", feat_x.data(), feat_low.data(),
+          // 单线阶梯图 (L1 分钟频单值, 无需 OHLC 带)
+          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.7f));
+          ImPlot::PlotStairs("Feature", feat_x.data(), feat_y.data(),
                              static_cast<int>(feat_x.size()));
           ImPlot::PopStyleColor();
 
@@ -887,7 +856,7 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   RenderStatusBar(of, asset_idx);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
-  RenderL1Plot(of, data.dist, data.feature, asset_idx, kline_height, params_changed);
+  RenderL1Plot(of, data.feature, asset_idx, kline_height, params_changed);
 
   ImGui::EndChild(); // BottomSection
 }

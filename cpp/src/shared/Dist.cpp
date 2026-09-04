@@ -1,13 +1,9 @@
 #include "shared/Dist.hpp"
-#include "features/Backend/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
-#include "math/cluster/Ward1D.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Asset.hpp"
-#include "shared/Feature.hpp"
 
-#include <array>
-#include <cassert>
+#include <cstring>
+#include <tuple>
 
 // ============================================================================
 // Helper: Date parsing
@@ -38,511 +34,397 @@ uint8_t calc_weekday(uint16_t y, uint8_t m, uint8_t d) {
 } // namespace
 
 // ============================================================================
-// Build Single Month
+// Reset
 // ============================================================================
 
-void Dist::build_month(size_t cache_idx, const std::string &features_dir,
-                       const Feature &feature, const Asset &asset) {
-  TraceN("BuildMonth");
+void Dist::reset_for_build(Params p, const std::vector<std::string> &month_keys, size_t n_assets) {
+  std::lock_guard<std::mutex> lock(mutex);
 
-  assert(cache_idx < cache.size());
-  auto &mc = cache[cache_idx];
+  params = std::move(p);
+  assert(params.level == 1 && "Dist 只在 L1 上跑");
 
-  if (compute.cancel.load())
-    return;
-
-  const int level = feature.selection.selected_level;
-  const int primary_idx = feature.selection.primary_feature_idx;
-  assert(primary_idx >= 0);
-  assert(level >= 0 && level < 2);
-
-  const size_t n_assets = asset.items.size();
-  mc.init(n_assets);
-
-  // Get feature metadata for valid_type (constexpr branch elimination)
-  const FeatureMetadata *meta_list = feature.metadata.features[level].data();
-  const size_t meta_count = feature.metadata.features[level].size();
-
-  // Determine columns to load
-  std::vector<size_t> columns = {static_cast<size_t>(primary_idx)};
-
-  L2::ValidType valid_type = L2::ValidType::ALL;
-  if (primary_idx >= 0 && static_cast<size_t>(primary_idx) < meta_count) {
-    valid_type = meta_list[primary_idx].valid_type;
+  // 月聚合: 数量随区间变, sketch 容量复用不到就重建
+  months.clear();
+  months.resize(month_keys.size());
+  for (size_t i = 0; i < month_keys.size(); ++i) {
+    months[i].month = month_keys[i];
   }
 
-  // Find valid flag index
-  if (valid_type != L2::ValidType::ALL) {
-    const char *flag_name = (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
-    for (size_t i = 0; i < meta_count; ++i) {
-      if (std::strcmp(meta_list[i].code, flag_name) == 0) {
-        columns.push_back(i);
-        break;
-      }
-    }
+  // 资产槽: 尺寸不变时只 clear (KLL 保留容量, 稳态零分配)
+  if (assets.size() != n_assets) {
+    assets.clear();
+    assets.resize(n_assets);
+  } else {
+    for (auto &slot : assets)
+      slot.clear();
   }
 
-  // Batch load entire month (columnar compressed format)
-  FeatureRead reader(features_dir);
-  std::string year = mc.month.substr(0, 4);
-  std::string month_str = mc.month.substr(4, 2);
-
-  FeatureRead::MonthTensor month_tensor;
-  {
-    TraceN("PreallocateTensor");
-    month_tensor.preallocate(n_assets, 31, columns.size(), level);
+  if (by_hour.size() != 24) {
+    by_hour.clear();
+    by_hour.resize(24);
+  } else {
+    for (auto &kll : by_hour)
+      kll.clear();
+  }
+  if (by_weekday.size() != 7) {
+    by_weekday.clear();
+    by_weekday.resize(7);
+  } else {
+    for (auto &kll : by_weekday)
+      kll.clear();
   }
 
-  {
-    TraceN("LoadMonthData");
-    reader.load_month_columns(year, month_str, columns, month_tensor);
-  }
+  total.clear();
+  integrity.clear();
+  stability.clear();
 
-  const size_t A = month_tensor.A;
-  assert(A == n_assets);
-  const size_t F_selected = columns.size();
-  const bool has_valid_flag = (F_selected > 1);
-
-  // Pre-allocate sample buffers
-  size_t total_T = month_tensor.day_start(month_tensor.dates.size());
-  std::vector<float> month_samples;
-  std::vector<std::vector<float>> asset_samples(A);
-  std::vector<std::vector<float>> hour_samples(24);
-  std::vector<std::vector<float>> weekday_samples(7);
-
-  {
-    TraceN("PreallocateSamples");
-    month_samples.reserve(total_T * A);
-    for (auto &v : asset_samples)
-      v.reserve(total_T);
-    for (auto &v : hour_samples)
-      v.reserve((total_T * A) / 24);
-    for (auto &v : weekday_samples)
-      v.reserve((total_T * A) / 7);
-  }
-
-  // Prepare per-day feature cache for this month (all assets)
-  std::vector<FeatureCache::DayCache> month_feature_days;
-  month_feature_days.resize(month_tensor.dates.size());
-  for (size_t d = 0; d < month_tensor.dates.size(); ++d) {
-    month_feature_days[d].date = month_tensor.dates[d];
-    month_feature_days[d].init(A);
-  }
-
-  // Process entire month (zero-copy pointers into month_tensor.data)
-  {
-    TraceN("ProcessSamples");
-    for (size_t day_idx = 0; day_idx < month_tensor.dates.size(); ++day_idx) {
-      TraceN("ProcessDay");
-      if (compute.cancel.load())
-        return;
-
-      // Parse date for weekday (cached)
-      auto [year_val, month_val, day] = parse_date(month_tensor.dates[day_idx]);
-      uint8_t weekday = calc_weekday(year_val, month_val, day);
-
-      size_t t_start = month_tensor.day_start(day_idx);
-      // 日步长 = 落盘行数 (含末尾哨兵); 哨兵行会虚增 n_total 并落进假的 15:00 桶
-      size_t t_end = t_start + level_valid_rows(static_cast<size_t>(level));
-
-      auto &day_fc = month_feature_days[day_idx];
-
-      for (size_t t = t_start; t < t_end; ++t) {
-        size_t local_t = t - t_start;
-
-        // Convert time index to clock hour (按小时整数边界分配)
-        uint8_t hour;
-        if (level == 0) {
-          // Level 0 (tick/second): use L0_to_Clock
-          ClockTime time = L0_to_Clock(local_t);
-          hour = time.hour;
-        } else {
-          // Level 1 (minute): use L1_to_Clock
-          ClockTime time = L1_to_Clock(local_t);
-          hour = time.hour;
-        }
-
-        // Zero-copy pointers into month tensor
-        const feature_storage_t *values = &month_tensor.data[t * F_selected * A];
-        const feature_storage_t *valid_flags = has_valid_flag ? &month_tensor.data[t * F_selected * A + A] : nullptr;
-
-        for (size_t a = 0; a < A; ++a) {
-          float val = static_cast<float>(values[a]);
-          mc.integrity.n_total++;
-
-          // Check valid flag
-          if (valid_flags && static_cast<float>(valid_flags[a]) <= 0.5f)
-            continue;
-
-          // Check NaN/Inf (branchless where possible)
-          if (val != val) {
-            mc.integrity.n_nan++;
-            continue;
-          }
-          if (val > 1e38f) {
-            mc.integrity.n_pos_inf++;
-            continue;
-          }
-          if (val < -1e38f) {
-            mc.integrity.n_neg_inf++;
-            continue;
-          }
-
-          // Count zero
-          if (val == 0.0f)
-            mc.integrity.n_zero++;
-
-          // Accumulate valid samples
-          mc.integrity.n_valid++;
-          mc.integrity.update_minmax(val);
-          month_samples.push_back(val);
-          asset_samples[a].push_back(val);
-          hour_samples[hour].push_back(val);
-          weekday_samples[weekday].push_back(val);
-
-          // ================================================================
-          // Feature Cache: resample to minute-level OHLC (all assets)
-          // ================================================================
-          {
-            auto &asset_bars = day_fc.asset_bars[a];
-            if (level == 0) {
-              // L0 秒级 → 分钟级 OHLC
-              size_t min_idx = L0_to_L1(local_t);
-              assert(min_idx < 255);
-              asset_bars[min_idx].update(val);
-            } else {
-              // L1 分钟级 → 直接使用
-              assert(local_t < 255);
-              asset_bars[local_t].update(val);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Add feature cache days (thread-safe)
-  feature_cache.add_days(std::move(month_feature_days));
-
-  // Batch insert once per month (amortized allocation)
-  {
-    TraceN("BuildDist");
-    {
-      TraceN("AddTotal");
-      if (!month_samples.empty())
-        mc.total.addBatch(month_samples);
-    }
-
-    {
-      TraceN("AddByAsset");
-      for (size_t a = 0; a < A; ++a) {
-        if (!asset_samples[a].empty()) {
-          TraceN("AddAsset");
-          mc.by_asset[a].addBatch(asset_samples[a]);
-        }
-      }
-    }
-
-    {
-      TraceN("AddByHour");
-      for (size_t h = 0; h < 24; ++h) {
-        if (!hour_samples[h].empty()) {
-          TraceN("AddHour");
-          mc.by_hour[h].addBatch(hour_samples[h]);
-        }
-      }
-    }
-
-    {
-      TraceN("AddByWeekday");
-      for (size_t wd = 0; wd < 7; ++wd) {
-        if (!weekday_samples[wd].empty()) {
-          TraceN("AddWeekday");
-          mc.by_weekday[wd].addBatch(weekday_samples[wd]);
-        }
-      }
-    }
-  }
-
-  mc.valid = true;
+  days_loaded.store(0, std::memory_order_relaxed);
+  days_total.store(0, std::memory_order_relaxed);
+  assets_done.store(0, std::memory_order_relaxed);
+  status.store(Status::Building, std::memory_order_release);
 }
 
 // ============================================================================
-// Build All Months (Parallel)
+// Build (Phase IO: 抽样入块 → Phase 流: 资产优先发布)
 // ============================================================================
 
-void Dist::build_all(const std::vector<std::string> &months,
-                     const std::string &features_dir, const Feature &feature,
-                     const Asset &asset,
-                     std::function<void(std::function<void()>)> submit) {
-  compute.reset();
-  compute.status = Compute::Status::Building;
-  compute.total = months.size();
+bool Dist::build(FeatureRead &reader, FeatureRead::MonthTensor &block,
+                 const std::atomic<bool> &cancel) {
+  TraceN("DistBuild");
 
-  // Initialize cache
-  cache.clear();
-  cache.resize(months.size());
-  for (size_t i = 0; i < months.size(); ++i) {
-    cache[i].month = months[i];
+  const size_t A = assets.size();
+  const size_t n_cols = params.columns.size();
+  const bool has_valid = (n_cols > 1);
+  const size_t rows = LEVELS[params.level].rows;
+  const size_t valid_rows = level_valid_rows(static_cast<size_t>(params.level));
+  const size_t n_months = months.size();
+
+  // ==========================================================================
+  // 日期枚举 + 自适应日抽样
+  // ==========================================================================
+  std::vector<std::string> all_dates;
+  std::vector<size_t> all_month; // 日 → 月下标
+  for (size_t m = 0; m < n_months; ++m) {
+    const std::string &key = months[m].month; // reset 后不变, 免锁读
+    auto ds = reader.list_dates(key.substr(0, 4), key.substr(4, 2));
+    for (auto &d : ds) {
+      all_dates.push_back(std::move(d));
+      all_month.push_back(m);
+    }
+  }
+  if (all_dates.empty())
+    return true;
+
+  const size_t bytes_per_day = rows * n_cols * A * sizeof(feature_storage_t);
+  size_t stride = (all_dates.size() * bytes_per_day + kMaxBlockBytes - 1) / kMaxBlockBytes;
+  if (stride == 0)
+    stride = 1;
+  if (stride % 5 == 0)
+    ++stride; // 与交易周互质, 避免星期偏置
+
+  std::vector<size_t> sel;
+  for (size_t i = 0; i < all_dates.size(); i += stride)
+    sel.push_back(i);
+  const size_t n_sel = sel.size();
+
+  days_total.store(n_sel, std::memory_order_release);
+
+  // ==========================================================================
+  // Phase IO: 逐日载入常驻块 (worker 私有, 无锁; 逐列文件只碰特征列 + valid 列)
+  // ==========================================================================
+  block.preallocate(A, n_sel, n_cols, static_cast<size_t>(params.level));
+  block.reset();
+  block.feature_indices = params.columns;
+
+  for (size_t i = 0; i < n_sel; ++i) {
+    if (cancel.load(std::memory_order_relaxed))
+      return false;
+    TraceN("LoadDay");
+    block.dates.push_back(all_dates[sel[i]]);
+    reader.load_date_columns_into(block.dates.back(), params.columns, block, i);
+    days_loaded.store(i + 1, std::memory_order_release);
   }
 
-  // Initialize feature cache (metadata only, days added in build_month)
-  feature_cache.clear();
-  feature_cache.level = feature.selection.selected_level;
-  feature_cache.feature_idx = feature.selection.primary_feature_idx;
-  feature_cache.n_assets = asset.items.size();
-
-  // Dispatch tasks
-  for (size_t i = 0; i < months.size(); ++i) {
-    submit([this, i, &features_dir, &feature, &asset]() {
-      build_month(i, features_dir, feature, asset);
-      compute.done.fetch_add(1);
-    });
+  // 预计算: 每日星期/月下标, 分钟 → 小时 (L1)
+  std::vector<uint8_t> weekdays(n_sel);
+  std::vector<size_t> day_month(n_sel);
+  for (size_t i = 0; i < n_sel; ++i) {
+    auto [y, m, dd] = parse_date(block.dates[i]);
+    weekdays[i] = calc_weekday(y, m, dd);
+    day_month[i] = all_month[sel[i]];
   }
+  std::array<uint8_t, 255> hour_lut;
+  for (size_t lt = 0; lt < valid_rows; ++lt) {
+    hour_lut[lt] = L1_to_Clock(lt).hour;
+  }
+
+  // ==========================================================================
+  // Phase 流: 资产优先, 逐资产 收集全时段(无锁) → 发布(短锁) → 水位+1
+  // ==========================================================================
+  scratch_month_.resize(n_months);
+  std::vector<Integrity> inte_month(n_months);
+
+  for (size_t a = 0; a < A; ++a) {
+    if (cancel.load(std::memory_order_relaxed))
+      return false;
+
+    scratch_all_.clear();
+    for (auto &v : scratch_hour_)
+      v.clear();
+    for (auto &v : scratch_weekday_)
+      v.clear();
+    for (auto &v : scratch_month_)
+      v.clear();
+    for (auto &inte : inte_month)
+      inte.clear();
+
+    for (size_t i = 0; i < n_sel; ++i) {
+      const size_t t0 = block.day_start(i);
+      const uint8_t wd = weekdays[i];
+      const size_t m = day_month[i];
+      Integrity &inte = inte_month[m];
+
+      for (size_t lt = 0; lt < valid_rows; ++lt) {
+        // 布局 [T][n_cols][A]: 值列 i=0, valid 列 i=1
+        const size_t base = ((t0 + lt) * n_cols) * A + a;
+        inte.n_total++;
+
+        if (has_valid && static_cast<float>(block.data[base + A]) <= 0.5f)
+          continue;
+
+        const float val = static_cast<float>(block.data[base]);
+        if (val != val) {
+          inte.n_nan++;
+          continue;
+        }
+        if (val > 1e38f) {
+          inte.n_pos_inf++;
+          continue;
+        }
+        if (val < -1e38f) {
+          inte.n_neg_inf++;
+          continue;
+        }
+        if (val == 0.0f)
+          inte.n_zero++;
+
+        inte.n_valid++;
+        inte.update_minmax(val);
+        scratch_all_.push_back(val);
+        scratch_hour_[hour_lut[lt]].push_back(val);
+        scratch_weekday_[wd].push_back(val);
+        scratch_month_[m].push_back(val);
+      }
+    }
+
+    // 发布 (短锁: KLL 批量摄入 + 计数); 该资产全时段贡献一次到位, 槽即终态
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      auto &slot = assets[a];
+      if (!scratch_all_.empty()) {
+        slot.kll.addBatch(scratch_all_);
+        total.addBatch(scratch_all_);
+        for (size_t h = 0; h < 24; ++h) {
+          if (!scratch_hour_[h].empty())
+            by_hour[h].addBatch(scratch_hour_[h]);
+        }
+        for (size_t w = 0; w < 7; ++w) {
+          if (!scratch_weekday_[w].empty())
+            by_weekday[w].addBatch(scratch_weekday_[w]);
+        }
+        for (size_t m = 0; m < n_months; ++m) {
+          if (!scratch_month_[m].empty())
+            months[m].total.addBatch(scratch_month_[m]);
+        }
+      }
+      for (size_t m = 0; m < n_months; ++m) {
+        if (inte_month[m].n_total > 0) {
+          slot.integrity.add(inte_month[m]);
+          months[m].integrity.add(inte_month[m]);
+          integrity.add(inte_month[m]);
+        }
+      }
+    }
+    assets_done.store(a + 1, std::memory_order_release);
+  }
+
+  return true;
 }
 
 // ============================================================================
-// Query
+// Stability (全部资产完成后一次: W2 偏移 + 主成分投影排序)
 // ============================================================================
 
-void Dist::query(Input::GroupBy group_by) {
-  const size_t min_samples = kMinSamples;
-  result.clear();
-  result.integrity.clear();
+bool Dist::build_stability(const std::atomic<bool> &cancel) {
+  TraceN("DistStability");
 
-  if (cache.empty()) {
-    result.valid = true;
-    return;
+  const size_t n_assets = assets.size();
+  constexpr int N_PERCENTILES = 19;
+  std::array<double, N_PERCENTILES> percentiles;
+  for (int i = 0; i < N_PERCENTILES; ++i) {
+    percentiles[i] = 0.05 * (i + 1); // 5%, 10%, ..., 95%
   }
 
-  // Aggregate integrity
-  for (const auto &mc : cache) {
-    result.integrity.add(mc.integrity);
-  }
-
-  switch (group_by) {
-  case Input::GroupBy::MONTH: {
-    // Each month as a bin - pointers directly to cache (already persistent)
-    for (const auto &mc : cache) {
-      if (mc.total.count() >= min_samples) {
-        result.bins.emplace_back();
-        result.bins.back().key = mc.month;
-        result.bins.back().extract_from(mc.total);
-      }
-    }
-    break;
-  }
-
-  case Input::GroupBy::WEEKDAY: {
-    // Use pre-computed global_by_weekday
-    const char *wd_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-    for (size_t wd = 0; wd < global_by_weekday.size() && wd < 7; ++wd) {
-      if (global_by_weekday[wd].count() >= min_samples) {
-        result.bins.emplace_back();
-        result.bins.back().key = std::string("weekday_") + wd_names[wd];
-        result.bins.back().extract_from(global_by_weekday[wd]);
-      }
-    }
-    break;
-  }
-
-  case Input::GroupBy::HOUR: {
-    // Use pre-computed global_by_hour
-    for (size_t h = 0; h < global_by_hour.size() && h < 24; ++h) {
-      if (global_by_hour[h].count() >= min_samples) {
-        result.bins.emplace_back();
-        result.bins.back().key = "hour_" + std::to_string(h);
-        result.bins.back().extract_from(global_by_hour[h]);
-      }
-    }
-    break;
-  }
-
-  case Input::GroupBy::ASSETS: {
-    // Per-asset statistics from global aggregation
-    for (size_t a = 0; a < global_by_asset.size(); ++a) {
-      if (global_by_asset[a].count() >= min_samples) {
-        result.bins.emplace_back();
-        result.bins.back().key = "asset_" + std::to_string(a);
-        result.bins.back().extract_from(global_by_asset[a]);
-      }
-    }
-    break;
-  }
-  }
-
-  result.valid = true;
-}
-
-// ============================================================================
-// Finalize (after build_all completes)
-// ============================================================================
-
-void Dist::finalize() {
-  if (cache.empty())
-    return;
-
-  // 1. Build global hour/weekday aggregations
+  // ==========================================================================
+  // 抽取 (分块持锁: quantile 会写 KLL 懒缓存, 与 UI 读互斥; 分块避免冻 UI)
+  // ==========================================================================
+  std::array<float, N_PERCENTILES> q_global;
+  float global_mean = 0.0f, global_median = 0.0f;
+  uint64_t global_count = 0;
   {
-    global_by_hour.clear();
-    global_by_hour.reserve(24);
-    for (size_t h = 0; h < 24; ++h) {
-      global_by_hour.emplace_back(KLL_CAPACITY);
-    }
+    std::lock_guard<std::mutex> lock(mutex);
+    global_count = total.count();
+    global_mean = static_cast<float>(total.mean());
+    global_median = static_cast<float>(total.quantile(0.5));
+    for (int d = 0; d < N_PERCENTILES; ++d)
+      q_global[d] = static_cast<float>(total.quantile(percentiles[d]));
+  }
 
-    global_by_weekday.clear();
-    global_by_weekday.reserve(7);
-    for (size_t wd = 0; wd < 7; ++wd) {
-      global_by_weekday.emplace_back(KLL_CAPACITY);
-    }
+  std::vector<size_t> valid_idx;
+  std::vector<std::array<float, N_PERCENTILES>> q_asset; // [n_valid]
+  std::vector<float> mean_asset, median_asset;
 
-    for (const auto &mc : cache) {
-      if (!mc.valid)
+  constexpr size_t CHUNK = 256;
+  for (size_t a0 = 0; a0 < n_assets; a0 += CHUNK) {
+    if (cancel.load(std::memory_order_relaxed))
+      return false;
+    std::lock_guard<std::mutex> lock(mutex);
+    const size_t a1 = std::min(a0 + CHUNK, n_assets);
+    for (size_t a = a0; a < a1; ++a) {
+      const auto &kll = assets[a].kll;
+      if (kll.count() < kMinAssetSamples)
         continue;
-
-      for (size_t h = 0; h < mc.by_hour.size() && h < 24; ++h) {
-        if (mc.by_hour[h].count() > 0) {
-          global_by_hour[h].merge(mc.by_hour[h]);
-        }
-      }
-
-      for (size_t wd = 0; wd < mc.by_weekday.size() && wd < 7; ++wd) {
-        if (mc.by_weekday[wd].count() > 0) {
-          global_by_weekday[wd].merge(mc.by_weekday[wd]);
-        }
-      }
+      valid_idx.push_back(a);
+      mean_asset.push_back(static_cast<float>(kll.mean()));
+      median_asset.push_back(static_cast<float>(kll.quantile(0.5)));
+      auto &qs = q_asset.emplace_back();
+      for (int d = 0; d < N_PERCENTILES; ++d)
+        qs[d] = static_cast<float>(kll.quantile(percentiles[d]));
     }
   }
 
-  // 2. Build global asset aggregations
-  const size_t n_assets = cache[0].n_assets;
+  const size_t n_valid = valid_idx.size();
+  if (global_count <= kMinSamples || n_valid <= 1)
+    return true;
+
+  // ==========================================================================
+  // 计算 (纯本地数据, 无锁)
+  // ==========================================================================
+
+  // X 轴: W2 距离 (ICDF + 均值对齐)
+  std::vector<float> scores_w2(n_valid);
+  for (size_t i = 0; i < n_valid; ++i) {
+    const float mean_shift = mean_asset[i] - global_mean;
+    float sum_sq = 0.0f;
+    for (int d = 0; d < N_PERCENTILES; ++d) {
+      const float diff = (q_asset[i][d] - mean_shift) - q_global[d];
+      sum_sq += diff * diff;
+    }
+    scores_w2[i] = std::sqrt(sum_sq / N_PERCENTILES);
+  }
+
+  float M = *std::max_element(scores_w2.begin(), scores_w2.end());
+  if (M < 1e-9f)
+    M = 1.0f;
+
+  // 偏移色: W1 偏移向量 (ICDF + 中位数对齐) → 主成分投影排序
+  // (Ward 聚类是 O(n³), 5000+ 资产不可行; 主模投影 O(n·D²) 毫秒级, 同样"形状相近颜色相近")
+  std::vector<std::array<float, N_PERCENTILES>> offsets(n_valid);
+  std::array<double, N_PERCENTILES> mean_off{};
+  for (size_t i = 0; i < n_valid; ++i) {
+    const float median_shift = median_asset[i] - global_median;
+    for (int d = 0; d < N_PERCENTILES; ++d) {
+      offsets[i][d] = (q_asset[i][d] - median_shift) - q_global[d];
+      mean_off[d] += offsets[i][d];
+    }
+  }
+  for (int d = 0; d < N_PERCENTILES; ++d)
+    mean_off[d] /= static_cast<double>(n_valid);
+
+  // 协方差 (D×D) → 幂迭代主特征向量
+  std::array<std::array<double, N_PERCENTILES>, N_PERCENTILES> cov{};
+  for (size_t i = 0; i < n_valid; ++i) {
+    for (int d1 = 0; d1 < N_PERCENTILES; ++d1) {
+      const double x1 = offsets[i][d1] - mean_off[d1];
+      for (int d2 = d1; d2 < N_PERCENTILES; ++d2) {
+        cov[d1][d2] += x1 * (offsets[i][d2] - mean_off[d2]);
+      }
+    }
+  }
+  for (int d1 = 0; d1 < N_PERCENTILES; ++d1)
+    for (int d2 = 0; d2 < d1; ++d2)
+      cov[d1][d2] = cov[d2][d1];
+
+  std::array<double, N_PERCENTILES> v;
+  v.fill(1.0);
+  for (int iter = 0; iter < 50; ++iter) {
+    std::array<double, N_PERCENTILES> w{};
+    for (int d1 = 0; d1 < N_PERCENTILES; ++d1)
+      for (int d2 = 0; d2 < N_PERCENTILES; ++d2)
+        w[d1] += cov[d1][d2] * v[d2];
+    double norm = 0.0;
+    for (int d = 0; d < N_PERCENTILES; ++d)
+      norm += w[d] * w[d];
+    norm = std::sqrt(norm);
+    if (norm < 1e-30)
+      break;
+    for (int d = 0; d < N_PERCENTILES; ++d)
+      v[d] = w[d] / norm;
+  }
+
+  // 投影 → 排序 → 色标
+  std::vector<float> proj(n_valid);
+  for (size_t i = 0; i < n_valid; ++i) {
+    double p = 0.0;
+    for (int d = 0; d < N_PERCENTILES; ++d)
+      p += v[d] * (offsets[i][d] - mean_off[d]);
+    proj[i] = static_cast<float>(p);
+  }
+  std::vector<size_t> order(n_valid);
+  for (size_t i = 0; i < n_valid; ++i)
+    order[i] = i;
+  std::sort(order.begin(), order.end(),
+            [&](size_t a, size_t b) { return proj[a] < proj[b]; });
+
+  // ==========================================================================
+  // 发布
+  // ==========================================================================
+  StabilityViz viz;
+  viz.asset_idx = std::move(valid_idx);
+  viz.score_min = 0.0f; // W2 距离非负
+  viz.score_max = M;
+  viz.x_norm.resize(n_valid);
+  for (size_t i = 0; i < n_valid; ++i)
+    viz.x_norm[i] = scores_w2[i] / M;
+  viz.color_t.resize(n_valid);
+  for (size_t pos = 0; pos < n_valid; ++pos) {
+    viz.color_t[order[pos]] = static_cast<float>(pos) / (n_valid - 1);
+  }
+  viz.valid = true;
+
   {
-    global_by_asset.clear();
-    global_by_asset.reserve(n_assets);
-    for (size_t a = 0; a < n_assets; ++a) {
-      global_by_asset.emplace_back(KLL_CAPACITY);
-    }
-
-    for (const auto &mc : cache) {
-      if (!mc.valid)
-        continue;
-      for (size_t a = 0; a < mc.by_asset.size() && a < n_assets; ++a) {
-        if (mc.by_asset[a].count() > 0) {
-          global_by_asset[a].merge(mc.by_asset[a]);
-        }
-      }
-    }
+    std::lock_guard<std::mutex> lock(mutex);
+    stability = std::move(viz);
   }
+  return true;
+}
 
-  // 3. Build global_total (merge weekday KLLs - only 7 to merge)
-  {
-    global_total.clear();
-    for (const auto &kll : global_by_weekday) {
-      if (kll.count() > 0) {
-        global_total.merge(kll);
-      }
-    }
-  }
+// ============================================================================
+// Clear
+// ============================================================================
 
-  // 4. Build stability visualization (only assets with count >= 1000)
-  {
-    stability.clear();
-    constexpr size_t MIN_ASSET_SAMPLES = 100;
-
-    // Collect valid asset indices
-    std::vector<size_t> valid_idx;
-    for (size_t a = 0; a < n_assets; ++a) {
-      if (global_by_asset[a].count() >= MIN_ASSET_SAMPLES) {
-        valid_idx.push_back(a);
-      }
-    }
-
-    const size_t n_valid = valid_idx.size();
-    if (global_total.count() > kMinSamples && n_valid > 1) {
-      constexpr int N_PERCENTILES = 19;
-      std::array<double, N_PERCENTILES> percentiles;
-      for (int i = 0; i < N_PERCENTILES; ++i) {
-        percentiles[i] = 0.05 * (i + 1); // 5%, 10%, ..., 95%
-      }
-
-      // Global median for W₁ alignment
-      float global_median = static_cast<float>(global_total.quantile(0.5));
-
-      // ======================================================================
-      // X-axis: W₂ distance (ICDF + mean alignment)
-      // ======================================================================
-      std::vector<float> scores_w2(n_valid);
-      for (size_t i = 0; i < n_valid; ++i) {
-        size_t a = valid_idx[i];
-
-        // Mean alignment (optimal for W₂)
-        float mean_shift = static_cast<float>(
-            global_by_asset[a].mean() - global_total.mean());
-
-        // Compute W₂ distance on ICDF
-        float sum_sq = 0.0f;
-        for (int d = 0; d < N_PERCENTILES; ++d) {
-          float Q_i = static_cast<float>(global_by_asset[a].quantile(percentiles[d]));
-          float Q_g = static_cast<float>(global_total.quantile(percentiles[d]));
-          float diff = (Q_i - mean_shift) - Q_g;
-          sum_sq += diff * diff;
-        }
-        scores_w2[i] = std::sqrt(sum_sq / N_PERCENTILES);
-      }
-
-      // Normalize to [0,1] (distance is non-negative)
-      float M = *std::max_element(scores_w2.begin(), scores_w2.end());
-      if (M < 1e-9f)
-        M = 1.0f;
-
-      stability.asset_idx = valid_idx;
-      stability.score_min = 0.0f; // W₂ distance is non-negative
-      stability.score_max = M;
-      stability.x_norm.resize(n_valid);
-      for (size_t i = 0; i < n_valid; ++i) {
-        stability.x_norm[i] = scores_w2[i] / M;
-      }
-
-      // ======================================================================
-      // Color: W₁ offset vector (ICDF + median alignment) for clustering
-      // ======================================================================
-      std::vector<std::vector<float>> offsets(N_PERCENTILES);
-      for (int d = 0; d < N_PERCENTILES; ++d) {
-        offsets[d].resize(n_valid);
-      }
-
-      for (size_t i = 0; i < n_valid; ++i) {
-        size_t a = valid_idx[i];
-
-        // Median alignment (robust for W₁)
-        float asset_median = static_cast<float>(global_by_asset[a].quantile(0.5));
-        float median_shift = asset_median - global_median;
-
-        // Compute W₁ offset components on ICDF
-        for (int d = 0; d < N_PERCENTILES; ++d) {
-          float Q_i = static_cast<float>(global_by_asset[a].quantile(percentiles[d]));
-          float Q_g = static_cast<float>(global_total.quantile(percentiles[d]));
-          offsets[d][i] = (Q_i - median_shift) - Q_g;
-        }
-      }
-
-      // Ward clustering (uses L1 distance internally)
-      std::vector<int> leaf_order = ward_leaf_order(offsets);
-
-      // leaf_order[pos] = index in valid array, map to color
-      stability.color_t.resize(n_valid);
-      for (size_t pos = 0; pos < n_valid; ++pos) {
-        int idx = leaf_order[pos];
-        stability.color_t[idx] = static_cast<float>(pos) / (n_valid - 1);
-      }
-
-      stability.valid = true;
-    }
-  }
-
-  // 5. Build feature cache index
-  feature_cache.build_index();
-
-  // 6. Query with MONTH grouping (default)
-  query(Input::GroupBy::MONTH);
+void Dist::clear() {
+  std::lock_guard<std::mutex> lock(mutex);
+  params = Params{};
+  months.clear();
+  assets.clear();
+  by_hour.clear();
+  by_weekday.clear();
+  total.clear();
+  integrity.clear();
+  stability.clear();
+  days_loaded.store(0, std::memory_order_relaxed);
+  days_total.store(0, std::memory_order_relaxed);
+  assets_done.store(0, std::memory_order_relaxed);
+  status.store(Status::Idle, std::memory_order_release);
 }

@@ -19,36 +19,29 @@ namespace GUI::Features {
 // Helpers
 // ============================================================================
 
-static const char *StatusText(Dist::Compute::Status s) {
+static const char *StatusText(Dist::Status s) {
   switch (s) {
-  case Dist::Compute::Status::Idle:
+  case Dist::Status::Idle:
     return "Idle";
-  case Dist::Compute::Status::Building:
+  case Dist::Status::Building:
     return "Building...";
-  case Dist::Compute::Status::Querying:
-    return "Querying...";
-  case Dist::Compute::Status::Done:
+  case Dist::Status::Done:
     return "Done";
-  case Dist::Compute::Status::Error:
-    return "Error";
-  case Dist::Compute::Status::Cancelled:
+  case Dist::Status::Cancelled:
     return "Cancelled";
   }
   return "?";
 }
 
-static ImVec4 StatusColor(Dist::Compute::Status s) {
+static ImVec4 StatusColor(Dist::Status s) {
   switch (s) {
-  case Dist::Compute::Status::Idle:
+  case Dist::Status::Idle:
     return ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // 灰色
-  case Dist::Compute::Status::Building:
-  case Dist::Compute::Status::Querying:
+  case Dist::Status::Building:
     return ImVec4(0.2f, 0.7f, 1.0f, 1.0f); // 蓝色
-  case Dist::Compute::Status::Done:
+  case Dist::Status::Done:
     return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
-  case Dist::Compute::Status::Error:
-    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
-  case Dist::Compute::Status::Cancelled:
+  case Dist::Status::Cancelled:
     return ImVec4(0.9f, 0.6f, 0.2f, 1.0f); // 橙色
   }
   return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -180,15 +173,15 @@ static std::string format_month(const std::string &m) {
   return m;
 }
 
-// Get slider label: "YYYY/MM (n_samples)" or "YYYY/MM" if no cache
+// Get slider label: "YYYY/MM (n_samples)" or "YYYY/MM" if no data yet
 static std::string get_month_label(const Dist &dist, int idx,
                                    const std::vector<std::string> &months) {
   if (idx < 0 || idx >= static_cast<int>(months.size()))
     return "";
   std::string label = format_month(months[idx]);
-  // Add n_samples if cache available
-  if (idx < static_cast<int>(dist.cache.size()) && dist.cache[idx].valid) {
-    label += " (" + std::to_string(dist.cache[idx].total.count()) + ")";
+  // Add n_samples if data available (随资产流增长)
+  if (idx < static_cast<int>(dist.months.size()) && dist.months[idx].total.count() > 0) {
+    label += " (" + std::to_string(dist.months[idx].total.count()) + ")";
   }
   return label;
 }
@@ -231,29 +224,36 @@ static std::vector<std::string> generate_months(const std::string &start_date,
 static void RenderWindowControl(DistService *service, SharedData &data,
                                 DistUIState &ui) {
   auto &dist = data.dist;
+  const Dist::Status status = dist.status.load(std::memory_order_acquire);
 
   // Row 1: Compute | Cancel | Status | By selector
-  bool can_compute =
-      !dist.compute.is_busy() && data.feature.selection.primary_feature_idx >= 0;
+  const bool is_l1 = (data.feature.selection.selected_level == 1);
+  bool can_compute = status != Dist::Status::Building &&
+                     data.feature.selection.primary_feature_idx >= 0 && is_l1;
   ImGui::BeginDisabled(!can_compute);
   if (ImGui::Button("Compute")) {
-    service->RequestCompute();
+    service->RequestCompute(data);
   }
   ImGui::EndDisabled();
+  if (!is_l1) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(仅 L1)");
+  }
 
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) {
-    dist.cancel();
+    service->RequestCancel();
   }
 
   ImGui::SameLine();
-  size_t done = dist.compute.done.load();
-  size_t total = dist.compute.total;
   ImGui::Text("Status: ");
   ImGui::SameLine(0, 0);
-  ImGui::TextColored(StatusColor(dist.compute.status), "%s", StatusText(dist.compute.status));
+  ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
   ImGui::SameLine(0, 0);
-  ImGui::Text(" (%zu/%zu)", done, total);
+  // 进度: Phase IO (抽样天) + Phase 流 (资产)
+  ImGui::Text(" (IO %zu/%zu | 资产 %zu/%zu)",
+              dist.days_loaded.load(), dist.days_total.load(),
+              dist.assets_done.load(), dist.assets.size());
 
   // Row 2: Month slider (always visible from config date range)
   auto months = generate_months(data.config.start_date, data.config.end_date);
@@ -263,9 +263,7 @@ static void RenderWindowControl(DistService *service, SharedData &data,
 
     std::string label = get_month_label(dist, ui.focus_month_idx, months);
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::SliderInt("##FocusMonth", &ui.focus_month_idx, 0, n_months - 1, label.c_str())) {
-      dist.input.focus_month_idx = ui.focus_month_idx;
-    }
+    ImGui::SliderInt("##FocusMonth", &ui.focus_month_idx, 0, n_months - 1, label.c_str());
   }
 }
 
@@ -600,20 +598,14 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
 
   ImGui::Separator();
 
-  if (dist.compute.status != Dist::Compute::Status::Done) {
-    ImGui::Text("No data");
-    ImGui::EndChild();
-    return;
-  }
-
-  // Collect moment values based on selected dimension
+  // Collect moment values based on selected dimension (流式: 随资产完成度增长)
   std::vector<float> means, vars, skews, kurts;
 
   // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS
   if (selected_dimension == 0) {
     // MONTH dimension
-    for (const auto &mc : dist.cache) {
-      if (mc.valid && mc.total.count() >= kMinSamples) {
+    for (const auto &mc : dist.months) {
+      if (mc.total.count() >= kMinSamples) {
         means.push_back(static_cast<float>(mc.total.mean()));
         vars.push_back(static_cast<float>(mc.total.var()));
         skews.push_back(static_cast<float>(mc.total.skew()));
@@ -622,8 +614,8 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
     }
   } else if (selected_dimension == 1) {
     // WEEKDAY dimension
-    for (size_t wd = 0; wd < dist.global_by_weekday.size() && wd < 7; ++wd) {
-      const auto &kll = dist.global_by_weekday[wd];
+    for (size_t wd = 0; wd < dist.by_weekday.size() && wd < 7; ++wd) {
+      const auto &kll = dist.by_weekday[wd];
       if (kll.count() >= kMinSamples) {
         means.push_back(static_cast<float>(kll.mean()));
         vars.push_back(static_cast<float>(kll.var()));
@@ -633,8 +625,8 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
     }
   } else if (selected_dimension == 2) {
     // HOUR dimension
-    for (size_t h = 0; h < dist.global_by_hour.size() && h < 24; ++h) {
-      const auto &kll = dist.global_by_hour[h];
+    for (size_t h = 0; h < dist.by_hour.size() && h < 24; ++h) {
+      const auto &kll = dist.by_hour[h];
       if (kll.count() >= kMinSamples) {
         means.push_back(static_cast<float>(kll.mean()));
         vars.push_back(static_cast<float>(kll.var()));
@@ -643,9 +635,10 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
       }
     }
   } else if (selected_dimension == 3) {
-    // ASSETS dimension
-    for (size_t a = 0; a < dist.global_by_asset.size(); ++a) {
-      const auto &kll = dist.global_by_asset[a];
+    // ASSETS dimension (只看已发布前缀, 槽发布即终态)
+    const size_t done = dist.assets_done.load(std::memory_order_acquire);
+    for (size_t a = 0; a < done && a < dist.assets.size(); ++a) {
+      const auto &kll = dist.assets[a].kll;
       if (kll.count() >= kMinSamples) {
         means.push_back(static_cast<float>(kll.mean()));
         vars.push_back(static_cast<float>(kll.var()));
@@ -744,10 +737,10 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
   float display_mean, display_var, display_skew, display_kurt;
 
   if (selected_dimension == 0 && focus_month_idx >= 0 &&
-      focus_month_idx < static_cast<int>(dist.cache.size()) &&
-      dist.cache[focus_month_idx].valid) {
+      focus_month_idx < static_cast<int>(dist.months.size()) &&
+      dist.months[focus_month_idx].total.count() > 0) {
     // MONTH dimension: show slider month value
-    const auto &mc = dist.cache[focus_month_idx];
+    const auto &mc = dist.months[focus_month_idx];
     display_mean = static_cast<float>(mc.total.mean());
     display_var = static_cast<float>(mc.total.var());
     display_skew = static_cast<float>(mc.total.skew());
@@ -894,19 +887,19 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
   ImGui::Text("PDF密度(月度漂移)");
   ImGui::Separator();
 
-  // Unified check: wait for compute to finish
-  if (dist.compute.status != Dist::Compute::Status::Done || dist.cache.empty()) {
+  if (dist.months.empty()) {
     ImGui::Text("No data");
     ImGui::EndChild();
     return;
   }
 
-  int n_months = static_cast<int>(dist.cache.size());
+  // 流式: 月 sketch 随资产完成度增长, count 够了就画
+  int n_months = static_cast<int>(dist.months.size());
   std::vector<PDFData> pdfs(n_months);
 
   for (int m = 0; m < n_months; ++m) {
-    const auto &mc = dist.cache[m];
-    if (mc.valid && mc.total.count() >= 10) {
+    const auto &mc = dist.months[m];
+    if (mc.total.count() >= 10) {
       mc.total.exportPDF(pdfs[m].x, pdfs[m].y, pdfs[m].n);
       pdfs[m].label = mc.month;
       pdfs[m].month_idx = m; // Save original month index
@@ -914,7 +907,7 @@ static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_au
   }
 
   int hovered = RenderPDFPlot("##PDFMonth", pdfs, focus_month_idx, need_autofit, [&](int idx) {
-    const auto &kll = dist.cache[idx].total;
+    const auto &kll = dist.months[idx].total;
     ImGui::Text("%s", pdfs[idx].label.c_str());
     ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.count()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
@@ -945,15 +938,13 @@ static void RenderPDFByWeekday(const Dist &dist, bool need_autofit,
   ImGui::Text("PDF密度(周内偏移)");
   ImGui::Separator();
 
-  // Unified check: wait for compute to finish
-  if (dist.compute.status != Dist::Compute::Status::Done || dist.global_by_weekday.size() != 7) {
+  if (dist.by_weekday.size() != 7) {
     ImGui::Text("No data");
     ImGui::EndChild();
     return;
   }
 
-  // Use pre-computed global data (no aggregation)
-  const auto &global_weekday = dist.global_by_weekday;
+  const auto &global_weekday = dist.by_weekday;
 
   const char *wd_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
   std::vector<PDFData> pdfs(7);
@@ -997,15 +988,13 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
   ImGui::Text("PDF密度(日内偏移)");
   ImGui::Separator();
 
-  // Unified check: wait for compute to finish
-  if (dist.compute.status != Dist::Compute::Status::Done || dist.global_by_hour.size() != 24) {
+  if (dist.by_hour.size() != 24) {
     ImGui::Text("No data");
     ImGui::EndChild();
     return;
   }
 
-  // Use pre-computed global data (no aggregation)
-  const auto &global_hour = dist.global_by_hour;
+  const auto &global_hour = dist.by_hour;
 
   std::vector<PDFData> pdfs(24);
 
@@ -1071,10 +1060,26 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
   }
   ImGui::Separator();
 
-  // Only show assets in stability (count >= 100)
-  if (dist.compute.status != Dist::Compute::Status::Done || !dist.stability.valid ||
-      dist.stability.asset_idx.empty()) {
-    ImGui::Text("No data (need assets with n >= 100)");
+  // 流式: 已发布前缀里 count 够的资产就画 (前几百个资产完成时就能看图);
+  // stability (W2 坐标 + Ward 色) 在全部完成后叠加, 沿用其资产序.
+  const auto &stab = dist.stability;
+  const bool has_stab = stab.valid && !stab.asset_idx.empty();
+
+  std::vector<size_t> stream_idx;
+  if (!has_stab) {
+    const size_t done = std::min(dist.assets_done.load(std::memory_order_acquire),
+                                 dist.assets.size());
+    stream_idx.reserve(done);
+    for (size_t a = 0; a < done; ++a) {
+      if (dist.assets[a].kll.count() >= kMinAssetSamples)
+        stream_idx.push_back(a);
+    }
+  }
+  const std::vector<size_t> &asset_indices = has_stab ? stab.asset_idx : stream_idx;
+  const size_t n_valid = asset_indices.size();
+
+  if (n_valid == 0) {
+    ImGui::Text("No data (need assets with n >= %zu)", kMinAssetSamples);
     return;
   }
 
@@ -1082,9 +1087,9 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
   // This prevents the "slow zoom out" issue by providing static anchors
   float global_min_x = 0.0f;
   float global_max_x = 0.0f;
-  if (dist.global_total.count() > 0) {
-    global_min_x = static_cast<float>(dist.global_total.quantile(0.0));
-    global_max_x = static_cast<float>(dist.global_total.quantile(1.0));
+  if (dist.total.count() > 0) {
+    global_min_x = static_cast<float>(dist.total.quantile(0.0));
+    global_max_x = static_cast<float>(dist.total.quantile(1.0));
   }
   // Ensure some width
   if (global_max_x <= global_min_x) {
@@ -1096,9 +1101,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     ImPlot::SetNextAxesToFit();
   }
 
-  const auto &stab = dist.stability;
-  size_t n_valid = stab.asset_idx.size();
-  int hovered_idx = -1; // index into stability arrays
+  int hovered_idx = -1; // index into asset_indices
   double min_dist_sq = 1e9;
   bool plot_clicked = false;
 
@@ -1131,7 +1134,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
       float dot_y_screen = plot_pos.y + 15.0f; // Fixed: 15px from plot top edge
 
       // Check stability dots first (top band priority) - use pixel coordinates
-      if (std::abs(mouse_pixels.y - dot_y_screen) < 20.0f) {
+      if (has_stab && std::abs(mouse_pixels.y - dot_y_screen) < 20.0f) {
         float best_dist_px = 15.0f; // 15 pixel threshold
         for (size_t i = 0; i < n_valid; ++i) {
           // Map data x to screen x (scale invariant linear mapping)
@@ -1151,7 +1154,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
       // Check PDF lines (if not hovering stability)
       if (hovered_idx < 0) {
         for (size_t i = 0; i < n_valid; ++i) {
-          const auto &kll = dist.global_by_asset[stab.asset_idx[i]];
+          const auto &kll = dist.assets[asset_indices[i]].kll;
           const float *px, *py;
           size_t pn;
           kll.exportPDF(px, py, pn);
@@ -1177,7 +1180,7 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     // Phase 2: Draw all PDFs (highlight hovered)
     // ========================================================================
     for (size_t i = 0; i < n_valid; ++i) {
-      const auto &kll = dist.global_by_asset[stab.asset_idx[i]];
+      const auto &kll = dist.assets[asset_indices[i]].kll;
       const float *x, *y;
       size_t n;
       kll.exportPDF(x, y, n);
@@ -1209,8 +1212,9 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
 
     // ========================================================================
     // Phase 3: Draw stability scatter (overlay on top, scale invariant)
+    // 仅在 stability 完成后叠加 (流式阶段只有 PDF 线)
     // ========================================================================
-    {
+    if (has_stab) {
       ImDrawList *draw = ImPlot::GetPlotDrawList();
 
       // Get fixed plot pixel boundaries (scale invariant)
@@ -1265,9 +1269,9 @@ static void RenderAssetsPDF(const Dist &dist, bool need_autofit,
     ImPlot::EndPlot();
   }
 
-  // Output: convert stability index to original asset index
+  // Output: convert draw index to original asset index
   if (hovered_idx >= 0 && min_dist_sq < 0.001) {
-    hovered_asset_out = static_cast<int>(stab.asset_idx[hovered_idx]);
+    hovered_asset_out = static_cast<int>(asset_indices[hovered_idx]);
   } else {
     hovered_asset_out = -1;
   }
@@ -1302,14 +1306,14 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
   ImGui::Separator();
 
   if (hovered_asset < 0 || static_cast<size_t>(hovered_asset) >= asset.items.size() ||
-      static_cast<size_t>(hovered_asset) >= dist.global_by_asset.size()) {
+      static_cast<size_t>(hovered_asset) >= dist.assets.size()) {
     ImGui::TextDisabled("(hover on PDF/dot)");
     ImGui::EndChild();
     return;
   }
 
   const auto &asset_item = asset.items[hovered_asset];
-  const auto &kll = dist.global_by_asset[hovered_asset];
+  const auto &kll = dist.assets[hovered_asset].kll;
 
   // Get real-time info from AssetInfo
   std::string exchange_lower = asset_item.exchange;
@@ -1426,25 +1430,35 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
     input_map_configured = true;
   }
 
-  // Auto-start coroutine
+  // Auto-start worker thread
   if (!service->is_running()) {
-    service->StartCompute(data.coromgr, data);
+    service->Start(data);
   }
 
   auto &dist = data.dist;
 
-  // Trigger autofit when compute just finished
-  static auto last_status = dist.compute.status;
-  if (last_status != Dist::Compute::Status::Done &&
-      dist.compute.status == Dist::Compute::Status::Done) {
+  // 流式维护 x/y range: 构建期间只要有新资产发布就 autofit (ImPlot 按当帧数据重算范围);
+  // Done 后停止跟随, 把缩放还给用户 (完成瞬间再 fit 一次收尾)
+  static size_t last_assets_done = 0;
+  static auto last_status = dist.status.load();
+  const size_t cur_assets_done = dist.assets_done.load(std::memory_order_acquire);
+  const auto cur_status = dist.status.load(std::memory_order_acquire);
+  if (cur_status == Dist::Status::Building && cur_assets_done != last_assets_done) {
     ui.need_autofit = true;
   }
-  last_status = dist.compute.status;
+  if (last_status != Dist::Status::Done && cur_status == Dist::Status::Done) {
+    ui.need_autofit = true;
+  }
+  last_assets_done = cur_assets_done;
+  last_status = cur_status;
+
+  // 渲染帧内持锁: worker 逐资产短锁发布, UI 读 sketch (含懒缓存写) 与其互斥
+  std::lock_guard<std::mutex> dist_lock(dist.mutex);
 
   // Integrity (auto-fit height)
   float integrity_height = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y * 1.5;
   ImGui::BeginChild("IntegrityBar", ImVec2(0, integrity_height), true);
-  RenderIntegrity(dist.result.integrity);
+  RenderIntegrity(dist.integrity);
   ImGui::EndChild();
 
   // Window control (auto-fit height: 2 rows + padding)
@@ -1516,7 +1530,9 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 }
 
 void StopTabDist(DistService *service, SharedData &data) {
-  service->StopCompute(data.coromgr, data);
+  // 切走: 立刻中断在跑构建 (cancel + join), 释放全部 sketch/块内存 (切回自动重算)
+  service->Stop();
+  data.dist.clear();
 }
 
 } // namespace GUI::Features

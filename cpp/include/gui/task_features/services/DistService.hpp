@@ -1,108 +1,60 @@
-// DistService - Distribution Analysis Service (KLL-based)
+// DistService — Dist 的单 worker 线程编排
 //
-// Threading Model:
-//   - Main thread: GUI rendering, polls status
-//   - Coroutine: Manages computation lifecycle, yields to allow polling
-//   - Thread pool: One thread per month for parallel KLL building
+// 线程模型 (对仗 Dist.hpp 的发布协议):
+//   - GUI 线程: RequestCompute 解析参数快照 (特征列 + valid 列 + 月份表) → 唤醒 worker
+//   - worker 线程: 逐月载入、资产维度流式发布; 新请求/Cancel 置 cancel_, 逐资产检查后放弃在跑
+//   - UI 渲染持 dist.mutex 读; 进度走原子, 免锁
 //
-// Data Flow:
-//   1. UI calls RequestCompute()
-//   2. Coroutine dispatches build_all() to thread pool
-//   3. Each worker builds one month's KLLs
-//   4. Coroutine polls completion, then calls query() and build_trajectory()
-//   5. UI renders results from Dist.result and Dist.trajectory
+// 生命周期: Tab 打开 Start(data) 起线程, Tab 关闭 Stop() 取消并 join;
+//           挂起的请求 (pending_) 跨 Stop/Start 存活, 重进 Tab 自动续算.
 #pragma once
 
-#include "gui/coro/CoroManager.hpp"
-
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include "shared/Dist.hpp"
 
 #include <atomic>
 #include <condition_variable>
-#include <functional>
-#include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 #include <vector>
-
-namespace asio = boost::asio;
 
 struct SharedData;
 
 namespace GUI::Features {
-
-// ============================================================================
-// Thread Pool (CPU count threads)
-// ============================================================================
-
-class SimpleThreadPool {
-public:
-  explicit SimpleThreadPool(size_t num_threads);
-  ~SimpleThreadPool();
-
-  template <typename Func>
-  void submit(Func &&task) {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      tasks_.emplace_back(std::forward<Func>(task));
-    }
-    cv_.notify_one();
-  }
-
-  void wait_all();
-  size_t size() const { return threads_.size(); }
-
-private:
-  void worker();
-
-  std::vector<std::thread> threads_;
-  std::vector<std::function<void()>> tasks_;
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  std::atomic<bool> stop_{false};
-  std::atomic<size_t> active_{0};
-};
-
-// ============================================================================
-// DistService
-// ============================================================================
 
 class DistService {
 public:
   explicit DistService(const std::string &features_dir);
   ~DistService();
 
-  // Coroutine loop (runs async)
-  asio::awaitable<void> ComputeLoop(SharedData &data);
+  // Lifecycle (幂等)
+  void Start(SharedData &data);
+  void Stop();
 
-  // Lifecycle
-  void StartCompute(CoroManager &coro, SharedData &data);
-  void StopCompute(CoroManager &coro, SharedData &data);
+  // GUI 线程: 参数快照 + 取消在跑 (非 L1 选择静默忽略)
+  void RequestCompute(SharedData &data);
+  void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
 
-  // UI requests (non-blocking)
-  void RequestCompute();
-  void RequestQuery();
-
-  // Status
-  bool is_running() const { return coro_running_.load(); }
+  bool is_running() const { return thread_.joinable(); }
 
 private:
-  // Features directory
+  struct Request {
+    Dist::Params params;
+    std::vector<std::string> months; // "YYYYMM" 升序
+  };
+
+  void worker_loop();
+
   std::string features_dir_;
+  SharedData *data_ = nullptr;
+  std::thread thread_;
 
-  // Thread pool (CPU count)
-  std::unique_ptr<SimpleThreadPool> pool_;
-
-  // Coroutine state
-  std::unique_ptr<CoroutineHandle> coro_;
-  std::atomic<bool> coro_running_{false};
-  std::atomic<bool> coro_stop_{false};
-
-  // Request flags
-  std::atomic<bool> compute_requested_{false};
-  std::atomic<bool> query_requested_{false};
+  std::mutex req_mutex_;
+  std::condition_variable req_cv_;
+  std::optional<Request> pending_; // 最新请求覆盖旧的
+  std::atomic<bool> cancel_{false};
+  std::atomic<bool> stop_{false};
 };
 
 } // namespace GUI::Features

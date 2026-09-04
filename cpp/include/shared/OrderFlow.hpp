@@ -404,6 +404,35 @@ struct OrderFlow {
   };
 
   // ==========================================================================
+  // L1 Feature Cache - 选中资产的特征分钟序列 (L1 plot overlay)
+  // ==========================================================================
+  // 按需加载: 只取选中 (asset, feature), 协程逐日流式填充 (L1 逐列文件, 每日 2 个小列文件)
+  // 发布协议: days_loaded 单调, UI 画 [0, days_loaded); GUI 单线程 (协程帧间跑), 免锁
+
+  struct L1FeatureCache {
+    size_t asset_idx = SIZE_MAX;
+    int feature_idx = -1;
+    std::vector<std::array<float, 255>> days; // [day][minute], NaN = 无效; 与 L1Cache.dates 对齐
+    size_t days_loaded = 0;
+
+    bool matches(size_t a, int f) const { return asset_idx == a && feature_idx == f; }
+
+    void reset(size_t a, int f, size_t n_days) {
+      asset_idx = a;
+      feature_idx = f;
+      days.assign(n_days, {});
+      days_loaded = 0;
+    }
+
+    void clear() {
+      asset_idx = SIZE_MAX;
+      feature_idx = -1;
+      days.clear();
+      days_loaded = 0;
+    }
+  };
+
+  // ==========================================================================
   // UI State - User interaction and rendering parameters
   // ==========================================================================
 
@@ -478,6 +507,7 @@ struct OrderFlow {
   L1Cache l1;
   L0Cache l0;
   L0FeatureCache l0_feature;
+  L1FeatureCache l1_feature;
   UI ui;
   Loader loader;
 

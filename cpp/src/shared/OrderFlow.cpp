@@ -695,6 +695,7 @@ void OrderFlow::clear() {
   l1.clear();
   l0.clear();
   l0_feature.clear();
+  l1_feature.clear();
   ui.clear();
   loader.clear();
 }
