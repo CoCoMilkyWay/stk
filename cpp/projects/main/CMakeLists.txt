@@ -143,6 +143,9 @@ include_directories(
     ../../package/tracy/public/tracy
 )
 
+# Boost 头在 C++23 下会触发 -Wdeprecated-declarations 等, 用 SYSTEM 抑制第三方头警告.
+include_directories(SYSTEM ../../package/boost)
+
 # ============================================================================
 # Vendored Arrow C++ Flight + Parquet (基本面数据 sync: api/bigquant + api/tushare)
 #   headers + 预编译 .so 由 vendor_from_pyarrow.sh 从 pyarrow manylinux wheel 提取
