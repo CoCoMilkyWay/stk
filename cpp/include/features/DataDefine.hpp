@@ -50,6 +50,20 @@ using DepthSeries = Series[L2::LOB_DEPTH];
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------
+// CS OPERATOR CONTRACT (截面算子统一接口, Operator/CS/<Method>.hpp, namespace cs)
+//----------------------------------------------------------------------------------------
+//   struct <Method> {
+//     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, 仅 L1)
+//     static void apply(float *y, size_t n[, const Ctx &]); // dense 列原地: 输入 = 有效资产子集的源列 (缺失 NaN), 输出 = 结果
+//   };
+//   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换 (Transform.hpp), 先于 <Method>
+// 无状态 (静态函数), 无实例; 一行字段 CS(src_lvl, src, Tf, Method) = gather → Tf::apply → Method::apply → scatter,
+// CoreCrosssection 按字段表编译期展开 (与 TS 的 NODES 展开同构). 无效资产输出 0 由基建写.
+// kernel 依赖 NaN 语义 (isfinite): 实现集中在 src/features/CSKernels.cpp (precise-math TU), 头文件只声明.
+// 落盘列 (FIELDS_) 写在方法文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
+//----------------------------------------------------------------------------------------
+
+//----------------------------------------------------------------------------------------
 // TICK LEVEL (L0): Raw order book data
 //----------------------------------------------------------------------------------------
 // Re-export LOB_Feature as part of the data hierarchy

@@ -47,10 +47,10 @@ stk/
 │   │   │   ├── DataDefine.hpp                           # 🧮 TickData/MinuteData, Trigger 触发域, Series/DepthSeries 别名, 算子契约
 │   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图: Node<Op,K> 输出 Series + DAG (CMake 拓扑序生成 NodesGenerated.hpp, NODE_ 变参 flush 默认=compute)
 │   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; DEPTH 快照/标签回填手工写 (ts_write_range<LVL>)
-│   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 列驱动, L0 每秒 + L1 分钟级联 (template<LVL>)
-│   │   │   ├── Fundamental/FundamentalDaily.hpp         # 🧮 财务基本面日频特征 (FUND 列盘中广播)
-│   │   │   ├── Operator/TS/                             # 🧮 时序算子 = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
-│   │   │   ├── Misc/                                    # 🧮 CSMethods 截面方法 (NormRank/WinsorRank/NeutralRank)
+│   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 行编译期展开 (CsLevel<LVL>), L0 每秒 + L1 分钟级联
+│   │   │   ├── Fundamental/FundamentalDaily.hpp         # 🧮 日频 PIT 基本面网格 (Fund 节点数据源, 行布局 = Fund::Out)
+│   │   │   ├── Operator/TS/                             # 🧮 时序算子 = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic[Fund/Valuation..]/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
+│   │   │   ├── Operator/CS/                             # 🧮 截面算子 = 无状态 struct + 文件末尾 FIELDS_ 宏 (Transform/NormRank/WinsorRank/NeutralRank; kernel 在 src/features/CSKernels.cpp)
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), DEPTH 第三层, width/valid/psd 全推导
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)

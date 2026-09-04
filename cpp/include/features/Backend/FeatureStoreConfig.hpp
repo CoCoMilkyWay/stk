@@ -1,7 +1,6 @@
 #pragma once
 
 #include "features/FeaturesDefine.hpp"
-#include "features/Misc/CSMethods.hpp"
 #include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: NODES(N) / L0_FIELDS(X) / L1_FIELDS(X) / DEPTH_FIELDS(X)
 #include <array>
 #include <cstddef>
@@ -18,7 +17,6 @@
 //     <LVL>_FIELD_INFO[]     每列 {code, width, valid, kind} (宽 / 有效性 / 类型均由 SRC 列推出)
 //     <LVL>_FIELD_OFFSETS[]  列下标 → 行内偏移
 //     <LVL>_Field::<code>    列下标枚举 (非偏移)
-//     <LVL>_CS_DEFS[]        截面表
 //     <LVL>_FINGERPRINT      字段表指纹 (落文件头)
 //   汇总成 LEVELS[lvl] (LevelInfo), 运行时按层下标取 rows / width / offsets / fingerprint / 文件布局.
 //   字段格式: X(code, cat_l1, cat_l2, norm_method, name_en, name_cn, desc, formula, SRC)
@@ -103,10 +101,9 @@ ALL_LEVELS(GENERATE_LEVEL_FIELDS)
 
 // ============================================================================
 // 编译期一致性检查: 列所在层 == 来源允许的层
-//   OP → 节点 flush 域 (onMinute→L1, 其余→L0); FUND → L1; CS/LABEL → L0/L1; META(w) → DEPTH; FLAG 任意
+//   OP → 节点 flush 域 (onMinute→L1, 其余→L0); CS/LABEL → L0/L1; META(w) → DEPTH; FLAG 任意
 // ============================================================================
 #define SRC_LEVEL_OP(node, ...) level_of(node_flush::node)
-#define SRC_LEVEL_FUND(...) 1
 #define SRC_LEVEL_CS(...) (kLevel == 2 ? -1 : kLevel)
 #define SRC_LEVEL_LABEL (kLevel == 2 ? -1 : kLevel)
 #define SRC_LEVEL_FLAG kLevel
@@ -119,36 +116,6 @@ ALL_LEVELS(GENERATE_LEVEL_FIELDS)
     fields(CHECK_FIELD_ONE)                                          \
   }
 ALL_LEVELS(GENERATE_CHECK_LEVEL)
-
-// ============================================================================
-// 截面表 (由字段表 CS(src_lvl, src, tf, m) 列生成): <LVL>_CS_DEFS[] / <LVL>_CS_COUNT
-//   每行 = 源列 + 元素变换 + 截面方法 → 目标列; CoreCrosssection 按表 gather → cs::apply → scatter.
-//   数组末尾带哨兵 (dst == SIZE_MAX), 允许某层没有 CS 字段.
-// ============================================================================
-struct CSFeatureDef {
-  std::uint8_t src_lvl; // 源列所在层 (0 = L0 取分钟起始秒, 1 = L1)
-  cs::Transform tf;     // 元素变换
-  cs::Method method;    // 截面方法
-  std::size_t src;      // 源列 (field index, 用 <LVL>_FIELD_OFFSETS[src] 取 offset)
-  std::size_t dst;      // 目标列 (本层 field index)
-};
-
-#define CS_ROW_CS(code, src_lvl, s, tf, m) {src_lvl, cs::Transform::tf, cs::Method::m, L##src_lvl##_Field::s, FO::code},
-#define CS_ROW_OP(code, ...)
-#define CS_ROW_FUND(code, ...)
-#define CS_ROW_LABEL(code)
-#define CS_ROW_FLAG(code)
-#define CS_ROW_META(code, w)
-#define CS_ROW_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(CS_ROW, code, src)
-
-#define GENERATE_CS_TABLE(name, num, fields, rows, psd, columnar)                        \
-  namespace name##_cs_detail {                                                           \
-    namespace FO = name##_Field;                                                         \
-    inline constexpr CSFeatureDef DEFS[] = {fields(CS_ROW_ONE){0, {}, {}, 0, SIZE_MAX}}; \
-  }                                                                                      \
-  inline constexpr const CSFeatureDef *name##_CS_DEFS = name##_cs_detail::DEFS;          \
-  constexpr size_t name##_CS_COUNT = std::size(name##_cs_detail::DEFS) - 1;
-ALL_LEVELS(GENERATE_CS_TABLE)
 
 // ============================================================================
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)

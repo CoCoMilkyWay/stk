@@ -2,7 +2,7 @@
 //
 // 结构: parquet 月度分片 → 网格/事件池 (raw cutoff 单点应用) → per-A 日频序列
 //   (估值分母 / 因子 raw / filter 状态机) → 回测日采样 → 纯 float 行网格
-//   (fund::kCount 列, 缺失 = NaN, fp16 存不下的极值也归 NaN).
+//   (Fund::kCount 列, 缺失 = NaN, fp16 存不下的极值也归 NaN).
 //
 // 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
 #include "features/Fundamental/FundamentalDaily.hpp"
@@ -901,7 +901,7 @@ void FundamentalDaily::build(const std::vector<std::string> &codes,
   for (std::size_t i = 0; i < dates_.size(); ++i)
     date_idx_.emplace(dates_[i], i);
   n_a_ = static_cast<std::size_t>(n_a);
-  grid_.assign(dates_.size() * n_a_ * fund::kCount, NaNF);
+  grid_.assign(dates_.size() * n_a_ * Fund::kCount, NaNF);
 
   // ---- dividend_st 数据轴 warmup (轴起点 + 3 年) ----
   int axes_warmup_d = n_d;
@@ -1275,7 +1275,7 @@ void FundamentalDaily::build(const std::vector<std::string> &codes,
         for (std::size_t s = 0; s < dates_.size(); ++s) {
           const int d = sample_d[s];
           const std::size_t di = static_cast<std::size_t>(d);
-          float *out = grid_.data() + (s * n_a_ + ai) * fund::kCount;
+          float *out = grid_.data() + (s * n_a_ + ai) * Fund::kCount;
 
           // fp16 饱和 (下游存 _Float16): 极值 → NaN; 违约束 (+inf 标记) 同归 NaN
           constexpr float kFp16Max = 65504.0f;
@@ -1288,23 +1288,23 @@ void FundamentalDaily::build(const std::vector<std::string> &codes,
           };
 
           // 股本 / 估值分母 (亿单位)
-          out[fund::total_shares] = pos(pool.total_shares[base + di]) * 1e-8f;
-          out[fund::float_shares] = pos(pool.a_float_shares[base + di]) * 1e-8f;
-          out[fund::net_profit_ttm] = sat(np_ttm[di] * 1e-8f);
-          out[fund::equity_mrq] = sat(equity_mrq[di] * 1e-8f);
-          out[fund::revenue_ttm] = sat(rev_ttm[di] * 1e-8f);
-          out[fund::cffoa_ttm] = sat(cffoa_ttm[di] * 1e-8f);
-          out[fund::up_lim] = pos(pool.up_lim[base + di]);
-          out[fund::dn_lim] = pos(pool.dn_lim[base + di]);
-          out[fund::low_mc_thr] = mb ? 5.0f : 3.0f;
+          out[Fund::total_shares] = pos(pool.total_shares[base + di]) * 1e-8f;
+          out[Fund::float_shares] = pos(pool.a_float_shares[base + di]) * 1e-8f;
+          out[Fund::net_profit_ttm] = sat(np_ttm[di] * 1e-8f);
+          out[Fund::equity_mrq] = sat(equity_mrq[di] * 1e-8f);
+          out[Fund::revenue_ttm] = sat(rev_ttm[di] * 1e-8f);
+          out[Fund::cffoa_ttm] = sat(cffoa_ttm[di] * 1e-8f);
+          out[Fund::up_lim] = pos(pool.up_lim[base + di]);
+          out[Fund::dn_lim] = pos(pool.dn_lim[base + di]);
+          out[Fund::low_mc_thr] = mb ? 5.0f : 3.0f;
 
           // 日频因子 raw
-          out[fund::roe_raw] = sat(roe[di]);
-          out[fund::roa_raw] = sat(roa[di]);
-          out[fund::dy_raw] = sat(dy[di]);
-          out[fund::cffoa_raw] = sat(cffoa_chg[di]);
-          out[fund::mr_bal] = sat(pool.fin_balance[base + di] * 1e-8f);
-          out[fund::ms_bal] = sat(pool.sec_balance[base + di] * 1e-8f);
+          out[Fund::roe_raw] = sat(roe[di]);
+          out[Fund::roa_raw] = sat(roa[di]);
+          out[Fund::dy_raw] = sat(dy[di]);
+          out[Fund::cffoa_raw] = sat(cffoa_chg[di]);
+          out[Fund::mr_bal] = sat(pool.fin_balance[base + di] * 1e-8f);
+          out[Fund::ms_bal] = sat(pool.sec_balance[base + di] * 1e-8f);
 
           // 上市龄 / 退市龄 (日历日; 未上市/未退市 = NaN)
           float lage = NaNF;
@@ -1314,24 +1314,24 @@ void FundamentalDaily::build(const std::vector<std::string> &codes,
             if (age >= 0.0f)
               lage = age;
           }
-          out[fund::list_age] = lage;
+          out[Fund::list_age] = lage;
           if (meta.has_delist[ai]) {
             float age = static_cast<float>(
                 (axes.date_days[di] - meta.delist_day[ai]).count());
             if (age >= 0.0f)
-              out[fund::delist_age] = age;
+              out[Fund::delist_age] = age;
           }
 
           // 状态 / filter (0/1 常量)
-          out[fund::industry_l1] = static_cast<float>(industry[di]);
-          out[fund::is_margin] = static_cast<float>(pool.is_margin[base + di]);
-          out[fund::susp] = static_cast<float>(pool.suspended[base + di]);
-          out[fund::risk_warn] = static_cast<float>(pool.st_status[base + di]);
-          out[fund::profit_st] = profit_st[di] > 0.5f ? 1.0f : 0.0f;
-          out[fund::revenue_st] = revenue_st[di] > 0.5f ? 1.0f : 0.0f;
-          out[fund::dividend_st] = dividend_st[di] > 0.5f ? 1.0f : 0.0f;
-          out[fund::trading_st] = static_cast<float>(trading_flag[s]);
-          out[fund::new_list] =
+          out[Fund::industry_l1] = static_cast<float>(industry[di]);
+          out[Fund::is_margin] = static_cast<float>(pool.is_margin[base + di]);
+          out[Fund::susp] = static_cast<float>(pool.suspended[base + di]);
+          out[Fund::risk_warn] = static_cast<float>(pool.st_status[base + di]);
+          out[Fund::profit_st] = profit_st[di] > 0.5f ? 1.0f : 0.0f;
+          out[Fund::revenue_st] = revenue_st[di] > 0.5f ? 1.0f : 0.0f;
+          out[Fund::dividend_st] = dividend_st[di] > 0.5f ? 1.0f : 0.0f;
+          out[Fund::trading_st] = static_cast<float>(trading_flag[s]);
+          out[Fund::new_list] =
               (std::isfinite(lage) && lage < 60.0f) ? 1.0f : 0.0f;
         }
       }

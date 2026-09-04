@@ -902,9 +902,9 @@ public:
 // 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1/2 = L0/L1/DEPTH), 字段用 <LVL>_Field 枚举, 定址全部编译期
 //   ts_write<L>(store, date, t, field, a, value, w)               单值
 //   ts_write_range<L>(store, date, t, a, f_begin, f_end, src, w)  字段闭区间 (可含宽字段) 按偏移连续写 src
-//   ts_write_row<L>(store, date, t, a, dag, w)                    按字段表 SRC 列写一行全部 OP/FUND 列
+//   ts_write_row<L>(store, date, t, a, dag, w)                    按字段表 SRC 列写一行全部 OP 列
 //   cs_read(store, date, lvl, t, field) / cs_write(...)           CS worker: 一列全部资产
-//   OP(node[, port]) → dag.node.last(port); FUND(f) → dag.fund_row_[fund::f]; CS/LABEL/FLAG/META 不在 row 写
+//   OP(node[, port]) → dag.node.last(port); CS/LABEL/FLAG/META 不在 row 写
 // ============================================================================
 namespace fstore {
 
@@ -928,9 +928,6 @@ struct Level;
 #define STORE_ROW_OP_1(node) dag.node.last()
 #define STORE_ROW_OP_2(node, port) dag.node.last(dag.node.port)
 #define STORE_ROW_OP(code, ...) row[OFFS[FO::code] * A] = STORE_ROW_OP_PICK(__VA_ARGS__, STORE_ROW_OP_2, STORE_ROW_OP_1, )(__VA_ARGS__);
-#define STORE_ROW_FUND(code, field)             \
-  assert(dag.fund_row_ && "fund_row_ not set"); \
-  row[OFFS[FO::code] * A] = dag.fund_row_[fund::field];
 #define STORE_ROW_CS(code, ...)
 #define STORE_ROW_LABEL(code)
 #define STORE_ROW_FLAG(code)

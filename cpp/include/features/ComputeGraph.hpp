@@ -79,7 +79,7 @@ struct DAG_Root {
   TickData &tick_data;             // L0 输入 (外部传入)
   MinuteData minute_data;          // L1 输入 (内部管理, 由 resampler 填充)
   std::string asset_code_;         // 股票代码 (用于涨跌幅判断)
-  const float *fund_row_{nullptr}; // 当日基本面输入行 (fund::kCount, begin_day 设置)
+  const float *fund_row_{nullptr}; // 当日基本面输入行 (Fund::kCount, begin_day 设置; 只有 Fund 节点消费)
   DAG_Root(TickData &td, const std::string &code) : tick_data(td), asset_code_(code) {}
 };
 

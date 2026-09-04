@@ -1,4 +1,5 @@
-// CSMethods 实现 — qmt/cpp/src/feature/cs.cpp 截面 kernel 逐步复刻.
+// CSKernels — 截面算子 (Operator/CS/*.hpp) 的 kernel 实现, qmt/cpp/src/feature/cs.cpp 逐步复刻.
+//   Reciprocal::apply / NormRank::apply / WinsorRank::apply / NeutralRank::apply + prepare_logmc
 //
 // 忠实性契约 (决定 qmt 因子效果能否复现, 改动前先对 qmt 源码逐行核对):
 //   median_in_place: nth_element 取上中位, 偶数长度与下中位平均
@@ -14,7 +15,10 @@
 //   上游已按 _data_valid 收成 dense 活跃子集 (停牌/退市自然缺席), 无需再 mask.
 //
 // 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
-#include "features/Misc/CSMethods.hpp"
+#include "features/Operator/CS/NeutralRank.hpp"
+#include "features/Operator/CS/NormRank.hpp"
+#include "features/Operator/CS/Transform.hpp"
+#include "features/Operator/CS/WinsorRank.hpp"
 
 #include <algorithm>
 #include <array>
@@ -291,42 +295,41 @@ void rank_inverse_normal(float *y, std::size_t n) {
 
 } // anonymous namespace
 
-void prepare_logmc(float *mcap, std::size_t n) {
+// ---- 元素预变换 ----
+// qmt ep/bp/sp/cp 口径: 非 finite 或 0 → NaN, 否则 1/x
+void Reciprocal::apply(float *y, std::size_t n) {
+  for (std::size_t i = 0; i < n; ++i) {
+    float v = y[i];
+    y[i] = (std::isfinite(v) && v != 0.0f) ? 1.0f / v : nanf_();
+  }
+}
+
+// ---- 截面方法 ----
+void NormRank::apply(float *y, std::size_t n) {
+  rank_inverse_normal(y, n);
+}
+
+void WinsorRank::apply(float *y, std::size_t n) {
+  winsor_mad(y, n, 3.0f);
+  z(y, n);
+  pct_rank(y, n);
+  mean_fill(y, n);
+}
+
+void NeutralRank::prepare_logmc(float *mcap, std::size_t n) {
   for (std::size_t i = 0; i < n; ++i) {
     float v = mcap[i];
     mcap[i] = (std::isfinite(v) && v > 0.0f) ? std::log(v) : nanf_();
   }
 }
 
-void apply(Method m, Transform tf, float *y, std::size_t n,
-           const float *logmc, const float *industry) {
-  if (tf == Transform::Reciprocal) {
-    // qmt ep/bp/sp/cp 口径: 非 finite 或 0 → NaN, 否则 1/x
-    for (std::size_t i = 0; i < n; ++i) {
-      float v = y[i];
-      y[i] = (std::isfinite(v) && v != 0.0f) ? 1.0f / v : nanf_();
-    }
-  }
-
-  switch (m) {
-  case Method::NormRank:
-    rank_inverse_normal(y, n);
-    break;
-  case Method::WinsorRank:
-    winsor_mad(y, n, 3.0f);
-    z(y, n);
-    pct_rank(y, n);
-    mean_fill(y, n);
-    break;
-  case Method::NeutralRank:
-    assert(logmc != nullptr && industry != nullptr);
-    winsorize_quantile(y, n, 0.01f, 0.99f);
-    neutralize(y, logmc, industry, n);
-    z(y, n);
-    pct_rank(y, n);
-    mean_fill(y, n);
-    break;
-  }
+void NeutralRank::apply(float *y, std::size_t n, const Ctx &c) {
+  assert(c.logmc != nullptr && c.industry != nullptr);
+  winsorize_quantile(y, n, 0.01f, 0.99f);
+  neutralize(y, c.logmc, c.industry, n);
+  z(y, n);
+  pct_rank(y, n);
+  mean_fill(y, n);
 }
 
 } // namespace cs
