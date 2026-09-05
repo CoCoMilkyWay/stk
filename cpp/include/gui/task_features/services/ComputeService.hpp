@@ -5,6 +5,7 @@
 #include "misc/progress_parallel.hpp"
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <future>
 #include <memory>
 #include <vector>
@@ -41,6 +42,7 @@ private:
   ComputeStatus status_ = ComputeStatus::Idle;
 
   int num_workers_ = 0;
+  size_t pool_slots_ = 4;
   std::chrono::steady_clock::time_point start_time_;
 
   std::future<void> compute_thread_; // Background compute thread
@@ -53,7 +55,7 @@ public:
   ~ComputeService();
 
   // Lifecycle (background thread, non-blocking)
-  void start_compute(int num_workers);
+  void start_compute(int num_workers, size_t pool_slots);
   void stop_compute();
 
   // Query

@@ -141,6 +141,17 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Unindent();
 
   ImGui::Spacing();
+  ImGui::Text("Pool Slots:");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(150);
+  if (ImGui::InputInt("##pool_slots", &state.pool_slots, 1, 1)) {
+    if (state.pool_slots < 2)
+      state.pool_slots = 2;
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("(in-flight day tensors)");
+
+  ImGui::Spacing();
   ImGui::Separator();
   ImGui::Spacing();
 
@@ -386,6 +397,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Indent();
     ImGui::BulletText("GUI entering sleep mode");
     ImGui::BulletText("Using %d CPU cores", actual_workers);
+    ImGui::BulletText("Allocating %d pool slots", state.pool_slots);
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 

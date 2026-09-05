@@ -57,7 +57,7 @@ inline size_t get_available_memory_bytes() {
 }
 
 // 池 slot 数 = 在飞日期上限: TS 当前日 (可超前 1-2 日) + CS 尾随日 + IO flush 中的日.
-inline constexpr size_t kPoolSlots = 4;
+inline constexpr size_t kDefaultPoolSlots = 4;
 
 // ============================================================================
 // FEATURE STORE - 按日门控的张量池
@@ -149,7 +149,7 @@ private:
   std::string output_dir_;
 
   // Pool: 固定 slot 数组. 不需要 date→slot map / freelist / epoch ——
-  // slot 就 kPoolSlots 个, 线性扫 state 就是查找和空闲表.
+  // slot 数由计算页配置, 线性扫 state 就是查找和空闲表.
   Slot *pool_ = nullptr;
   std::mutex pool_mutex_; // 只串行化 ts_open 的查找/分配; 其余状态转移无锁
 
@@ -161,10 +161,12 @@ public:
   // axis_hash: AssetAxis::hash_at(num_assets), 写进每个特征文件头锁定列序
   GlobalFeatureStore(size_t num_assets, size_t num_ts_workers,
                      std::uint64_t axis_hash,
-                     const std::string &output_dir = "")
+                     const std::string &output_dir = "",
+                     size_t pool_slots = kDefaultPoolSlots)
       : axis_hash_(axis_hash),
         num_assets_(num_assets), num_ts_workers_(num_ts_workers),
-        pool_size_(kPoolSlots) {
+        pool_size_(pool_slots) {
+    assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");
 
     if (!output_dir.empty()) {
       output_dir_ = output_dir;

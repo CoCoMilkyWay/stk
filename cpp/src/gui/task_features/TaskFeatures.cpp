@@ -196,7 +196,7 @@ TaskHandle CreateFeaturesTask() {
       const int num_workers = (state->compute_state.num_workers == 0)
                                   ? misc::Affinity::core_count()
                                   : state->compute_state.num_workers;
-      state->compute_service->start_compute(num_workers);
+      state->compute_service->start_compute(num_workers, static_cast<size_t>(state->compute_state.pool_slots));
     }
 
     // Detect compute completion and mark L1 for reload

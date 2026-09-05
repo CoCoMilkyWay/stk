@@ -30,6 +30,7 @@ enum class ComputeUIState {
 
 struct ComputeState {
   int num_workers = 0; // 0 means auto-detect (use max cores)
+  int pool_slots = 4;
 
   // State machine
   ComputeUIState ui_state = ComputeUIState::Idle;

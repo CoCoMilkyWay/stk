@@ -10,6 +10,7 @@
 #include "worker/sequential_worker.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <filesystem>
 #include <iostream>
 
@@ -24,13 +25,15 @@ ComputeService::~ComputeService() {
   }
 }
 
-void ComputeService::start_compute(int num_workers) {
+void ComputeService::start_compute(int num_workers, size_t pool_slots) {
   if (status_ == ComputeStatus::Running)
     return;
+  assert(pool_slots >= 2 && "pool slots must be at least 2");
 
   status_ = ComputeStatus::Running;
   cancel_flag_.store(false);
   num_workers_ = num_workers;
+  pool_slots_ = pool_slots;
   start_time_ = std::chrono::steady_clock::now();
 
   // Enable High Performance Mode: GUI sleeps, all CPU for computation
@@ -60,6 +63,7 @@ void ComputeService::start_compute(int num_workers) {
 
     std::cout << "\n=== Phase 2: Feature Computation ===\n"
               << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
+              << " | Pool slots: " << pool_slots_
               << " | Backtest dates: " << backtest_dates.size()
               << " (" << backtest_start << " - " << backtest_end << ")\n"
               << std::endl;
@@ -127,7 +131,7 @@ void ComputeService::start_compute(int num_workers) {
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(
         num_assets, num_ts_workers, asset_axis().hash_at(num_assets),
-        data_.config.feature_dir);
+        data_.config.feature_dir, pool_slots_);
 
     // Clean up directories before compute
     namespace fs = std::filesystem;
