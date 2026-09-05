@@ -22,8 +22,6 @@ static std::string GetCWD() {
 // Settings task - config management with auto-sync
 class SettingsTask {
 private:
-  bool is_expanded_ = false;
-
   // Date picker state
   struct DatePickerState {
     int year = 2025;
@@ -193,18 +191,13 @@ private:
     ts.initialized = true;
   }
 
+  // 每帧维护 (无论选中): 状态标签 + 自动落盘 —— 切走 Settings 后 dirty 配置照样落盘
   void MaintainAutoSync(SharedData &data) {
     auto &ts = data.taskstate.settings;
     Config &cfg = data.config;
 
     if (!ts.initialized) {
       ts.status = TaskState::Settings::Status::Initializing;
-      return;
-    }
-
-    if (!is_expanded_) {
-      ts.status = TaskState::Settings::Status::Synced;
-      cfg.AutoSync();
       return;
     }
 
@@ -475,24 +468,35 @@ public:
     return "Settings";
   }
 
-  // 与 DrawPanel/选中态解耦: 创建后立即落盘配置到内存, 让 Database 等任务的
+  // 与 Draw/选中态解耦: 创建后立即落盘配置到内存, 让 Database 等任务的
   // Init 能在第一帧前拿到真实 backtest range (顺序见 Tasks.cpp::CreateAllTasks).
   void Init(SharedData &data) {
     EnsureConfigReady(data);
   }
 
-  void OnExpand() {
-    is_expanded_ = true;
-  }
-
-  void OnCollapse() {
-    is_expanded_ = false;
-  }
-
-  void DrawPanel(SharedData &data) {
-    EnsureConfigReady(data);
+  // 每帧 (无论选中): 状态标签 + AutoSync
+  void Update(SharedData &data) {
     MaintainAutoSync(data);
+  }
 
+  // 任务行状态标签 (子行无)
+  TaskStatus Status(const SharedData &data, int /*idx*/) const {
+    switch (data.taskstate.settings.status) {
+    case TaskState::Settings::Status::Initializing:
+      return {TaskStatus::Kind::Muted, "initializing"};
+    case TaskState::Settings::Status::Syncing:
+      return {TaskStatus::Kind::Busy, "syncing"};
+    case TaskState::Settings::Status::Writing:
+      return {TaskStatus::Kind::Warn, "writing"};
+    case TaskState::Settings::Status::Synced:
+      return {TaskStatus::Kind::Ready, "synced"};
+    case TaskState::Settings::Status::None:
+      break;
+    }
+    return {};
+  }
+
+  void Draw(SharedData &data, int /*idx*/) {
     Config &cfg = data.config;
     bool changed = false;
 
@@ -523,12 +527,11 @@ TaskHandle CreateSettingsTask() {
 
   TaskHandle handle;
   handle.name = instance->GetName();
-  handle.task_instance = instance.get();
   handle.storage = instance;
   handle.Init = [instance](SharedData &data) { instance->Init(data); };
-  handle.OnExpand = [instance]() { instance->OnExpand(); };
-  handle.OnCollapse = [instance]() { instance->OnCollapse(); };
-  handle.DrawPanel = [instance](SharedData &data) { instance->DrawPanel(data); };
+  handle.Update = [instance](SharedData &data) { instance->Update(data); };
+  handle.Status = [instance](const SharedData &data, int idx) { return instance->Status(data, idx); };
+  handle.Draw = [instance](SharedData &data, int idx) { instance->Draw(data, idx); };
   handle.Destroy = [instance]() mutable { instance.reset(); };
 
   return handle;

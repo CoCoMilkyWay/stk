@@ -1,13 +1,11 @@
 #pragma once
 
 // ============================================================================
-// Task State - 统一的任务状态管理
+// Task State - 统一的任务状态管理 (纯数据, 跨任务通信面)
 // 各 Task 写入自己的状态，读取其他 Task 的状态
 // 通过 data.taskstate.xxx 直接访问，无需设计 API
+// 显示层 (文字/颜色) 在各任务的 TaskHandle::Status 回调里 (见 gui/Tasks.hpp)
 // ============================================================================
-
-// Forward declaration for ImVec4
-struct ImVec4;
 
 struct TaskState {
   // ==========================================================================
@@ -21,9 +19,6 @@ struct TaskState {
                         Synced };
     Status status = Status::None;
     bool initialized = false;
-
-    const char *status_text() const;
-    ImVec4 status_color() const;
   } settings;
 
   // ==========================================================================
@@ -32,6 +27,8 @@ struct TaskState {
   struct Database {
     enum class Status { None,
                         Initializing,
+                        Syncing,  // 基本面同步中 (json_update_inflight)
+                        Scanning, // L2 覆盖扫描中 (l2_scan_inflight)
                         NotScanned,
                         Incomplete,
                         Error,
@@ -49,9 +46,6 @@ struct TaskState {
     // 内部握手信号 (防止并发操作)
     bool json_update_inflight = false;
     bool l2_scan_inflight = false;
-
-    const char *status_text() const;
-    ImVec4 status_color() const;
   } database;
 
   // ==========================================================================
@@ -68,8 +62,5 @@ struct TaskState {
 
     bool computing = false;
     bool has_selection = false; // 主 feature 已选好
-
-    const char *status_text() const;
-    ImVec4 status_color() const;
   } features;
 };

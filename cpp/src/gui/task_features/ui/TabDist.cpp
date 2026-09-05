@@ -1406,18 +1406,19 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   auto &dist = data.dist;
 
-  // 流式维护 x/y range: 构建期间每批发布就 autofit (ImPlot 按当帧数据重算范围);
-  // Done 后停止跟随, 把缩放还给用户 (完成瞬间再 fit 一次收尾)
+  // 流式维护 x/y range: 任何新发布 epoch (= 数据变了) 都 autofit 一次.
+  // 覆盖: 构建期间每批, 末批到达 Done (含 tab 隐藏期间完成的构建), Cancelled 末态.
+  // 稳态 (epoch 未变) 不 autofit, 把缩放还给用户.
+  // 用 lines_epoch 做唯一判据, 不依赖 status 转移检测 —— 后者在 tab 隐藏期间会漏掉
+  // 完成转移 (last_status 停在上一次 Done), 导致切回来 zoom 还停在上一个特征.
   const uint64_t cur_epoch = dist.lines_epoch.load(std::memory_order_acquire);
   const auto cur_status = dist.status.load(std::memory_order_acquire);
-  if (cur_status == Dist::Status::Building && cur_epoch != ui.last_lines_epoch) {
-    ui.need_autofit = true;
-  }
-  if (ui.last_status != Dist::Status::Done && cur_status == Dist::Status::Done) {
+  if (cur_epoch != ui.last_lines_epoch &&
+      (cur_status == Dist::Status::Building || cur_status == Dist::Status::Done ||
+       cur_status == Dist::Status::Cancelled)) {
     ui.need_autofit = true;
   }
   ui.last_lines_epoch = cur_epoch;
-  ui.last_status = cur_status;
 
   // 渲染帧内持锁: worker 块末/批末短锁发布, UI 读快照与聚合槽与其互斥
   std::lock_guard<std::mutex> dist_lock(dist.mutex);

@@ -7,35 +7,31 @@
 
 namespace GUI {
 
-// 切换选中叶子: 跨任务时触发 OnCollapse/OnExpand, 同任务内切 tab 不触发
-static void SelectLeaf(std::vector<TaskHandle> &tasks, int &selected_task,
-                       int task_idx, int tab_idx) {
-  if (task_idx < 0 || task_idx >= (int)tasks.size())
+// 行状态标签: 行名后画 [text], 颜色查全局色表 (idx == -1 任务行, >= 0 子行)
+static void DrawRowStatus(const SharedData &data, const TaskHandle &t, int idx) {
+  if (!t.Status)
     return;
-  TaskHandle &t = tasks[task_idx];
-  // 无子项任务: tab_idx 必须是 -1
-  if (t.tab_names.empty())
-    tab_idx = -1;
-  else if (tab_idx < 0 || tab_idx >= (int)t.tab_names.size())
-    tab_idx = 0; // 默认首个子项
-
-  if (selected_task != task_idx) {
-    if (selected_task >= 0 && selected_task < (int)tasks.size())
-      tasks[selected_task].OnCollapse();
-    selected_task = task_idx;
-    tasks[task_idx].OnExpand();
-  }
-  tasks[task_idx].selected_tab = tab_idx;
+  TaskStatus s = t.Status(data, idx);
+  if (s.kind == TaskStatus::Kind::None || s.text.empty())
+    return;
+  ImGui::SameLine();
+  ImGui::TextColored(StatusColor(s.kind), "[%s]", s.text.c_str());
 }
 
 // Shared business logic: Draw GUI layout (called by both OpenGL and Vulkan pipelines)
-void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &selected_task) {
+void DrawGUILayout(SharedData &data, TaskTree &tree) {
+
+  // 帧首: 全部任务 Update (无论选中) —— 状态标签/使能同帧就绪,
+  // 左栏不再依赖 "打开过页面" 的上一帧缓存
+  for (auto &t : tree.tasks)
+    if (t.Update)
+      t.Update(data);
 
   // Get window size
   int display_w = (int)ImGui::GetIO().DisplaySize.x;
   int display_h = (int)ImGui::GetIO().DisplaySize.y;
 
-  // Left panel: 多层选择栏 (任务树, 叶子=可选项)
+  // Left panel: 多层选择栏 (任务树, 叶子=可选项; 纯渲染, 不认识任何具体任务)
   ImGui::SetNextWindowPos(ImVec2(0, 0));
   ImGui::SetNextWindowSize(ImVec2(200, display_h));
   ImGui::Begin("Tasks", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
@@ -43,72 +39,51 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
   // Task tree (leave minimal space for compact icon bar)
   ImGui::BeginChild("TaskList", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing() * 1.2f), false);
 
-  for (int i = 0; i < (int)tasks.size(); i++) {
-    TaskHandle &t = tasks[i];
+  for (int i = 0; i < (int)tree.tasks.size(); i++) {
+    TaskHandle &t = tree.tasks[i];
 
-    // Draw status from unified taskstate (top-level row only)
-    const char *status = nullptr;
-    ImVec4 color;
-    switch (i) {
-    case 0: // Settings
-      status = data.taskstate.settings.status_text();
-      color = data.taskstate.settings.status_color();
-      break;
-    case 1: // SystemInfo - no status
-      break;
-    case 2: // Database
-      status = data.taskstate.database.status_text();
-      color = data.taskstate.database.status_color();
-      break;
-    case 3: // Features
-      status = data.taskstate.features.status_text();
-      color = data.taskstate.features.status_color();
-      break;
-    }
-
-    if (t.tab_names.empty()) {
+    if (t.tabs.empty()) {
       // 无子项: 直接作为叶子
-      bool is_selected = (selected_task == i);
+      bool enabled = t.Enabled ? t.Enabled(data, -1) : true;
+      bool is_selected = (tree.selected == i);
       char name_label[256];
-      snprintf(name_label, sizeof(name_label), "> %s", t.name.c_str());
+      snprintf(name_label, sizeof(name_label), "> %s###Task_%d", t.name.c_str(), i);
+      if (!enabled)
+        ImGui::BeginDisabled();
       if (ImGui::Selectable(name_label, is_selected)) {
-        SelectLeaf(tasks, selected_task, i, -1);
+        tree.Select(i, -1);
       }
-      if (status && status[0] != '\0') {
-        ImGui::SameLine();
-        ImGui::TextColored(color, "[%s]", status);
-      }
+      if (!enabled)
+        ImGui::EndDisabled();
+      DrawRowStatus(data, t, -1);
     } else {
-      // 有子项: 父节点可展开, 子项为叶子
+      // 有子项: 父节点可展开 (本身不可选), 子项为叶子
       char header_label[256];
       snprintf(header_label, sizeof(header_label), "%s###TaskHeader_%d", t.name.c_str(), i);
       // 父节点选中态: 任一子项被选中时高亮父节点
-      bool parent_active = (selected_task == i);
       ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen |
                                  ImGuiTreeNodeFlags_FramePadding;
-      if (parent_active)
+      if (tree.selected == i)
         flags |= ImGuiTreeNodeFlags_Selected;
       bool opened = ImGui::TreeNodeEx(header_label, flags);
-      if (status && status[0] != '\0') {
-        ImGui::SameLine();
-        ImGui::TextColored(color, "[%s]", status);
-      }
+      DrawRowStatus(data, t, -1);
       if (opened) {
-        for (int j = 0; j < (int)t.tab_names.size(); j++) {
-          bool enabled = t.IsTabEnabled ? t.IsTabEnabled(j) : true;
-          bool is_selected = (selected_task == i && t.selected_tab == j);
+        for (int j = 0; j < (int)t.tabs.size(); j++) {
+          bool enabled = t.Enabled ? t.Enabled(data, j) : true;
+          bool is_selected = (tree.selected == i && t.selected_tab == j);
           char child_label[256];
-          snprintf(child_label, sizeof(child_label), "  > %s###%d_%d", t.tab_names[j].c_str(), i, j);
+          snprintf(child_label, sizeof(child_label), "  > %s###%d_%d", t.tabs[j].c_str(), i, j);
           if (!enabled)
             ImGui::BeginDisabled();
           if (ImGui::Selectable(child_label, is_selected)) {
-            SelectLeaf(tasks, selected_task, i, j);
+            tree.Select(i, j);
           }
           if (!enabled) {
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
               ImGui::SetTooltip("Tab not ready");
             ImGui::EndDisabled();
           }
+          DrawRowStatus(data, t, j);
         }
         ImGui::TreePop();
       }
@@ -130,17 +105,13 @@ void DrawGUILayout(SharedData &data, std::vector<TaskHandle> &tasks, int &select
   snprintf(panel_title, sizeof(panel_title), "Panel (%dx%d)###Panel", display_w, display_h);
   ImGui::Begin(panel_title, nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
-  if (selected_task >= 0 && selected_task < (int)tasks.size()) {
-    TaskHandle &t = tasks[selected_task];
-    if (t.tab_names.empty()) {
-      t.DrawPanel(data);
-    } else {
-      int idx = t.selected_tab;
-      if (idx < 0 || idx >= (int)t.tab_names.size())
-        idx = 0;
-      assert(t.DrawTab && "tabbed task must provide DrawTab");
-      t.DrawTab(data, idx);
-    }
+  if (tree.selected >= 0 && tree.selected < (int)tree.tasks.size()) {
+    TaskHandle &t = tree.tasks[tree.selected];
+    int idx = t.selected_tab;
+    if (!t.tabs.empty() && (idx < 0 || idx >= (int)t.tabs.size()))
+      idx = 0;
+    assert(t.Draw && "task must provide Draw");
+    t.Draw(data, idx);
   }
 
   ImGui::End();

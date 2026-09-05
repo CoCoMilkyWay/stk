@@ -11,8 +11,7 @@
 //   - Computation via DistService 单 worker 线程 (分批流式, 批末发布快照)
 #pragma once
 
-#include "shared/Dist.hpp"
-
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -33,10 +32,9 @@ struct DistUIState {
   // Month focus slider (index into available months)
   int focus_month_idx = 0;
 
-  // Autofit: 构建期间每批发布即跟随, Done 瞬间收尾一次后把缩放还给用户
+  // Autofit: 任何新发布 epoch (= 数据变了) 即跟随, 稳态把缩放还给用户
   bool need_autofit = false;
   uint64_t last_lines_epoch = 0;
-  Dist::Status last_status = Dist::Status::Idle;
 
   // 跨帧 hover 的线 (dist.lines 下标; 资产截面图输出, 左栏详情面板消费)
   int hovered_line = -1;

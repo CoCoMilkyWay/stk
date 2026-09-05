@@ -34,14 +34,9 @@ int RunGUI() {
     data.request_reinit = true;
   };
 
-  // Create GUI tasks (Init 在其中按顺序立即触发, 后台检查无需等待手动打开页面)
-  auto tasks = GUI::CreateAllTasks(data);
-
-  // Track selected task
-  int selected_task = 0;
-  if (!tasks.empty()) {
-    tasks[selected_task].OnExpand();
-  }
+  // Create GUI tasks (Init 在其中按顺序立即触发, 后台检查无需等待手动打开页面;
+  // 选中态在 TaskTree 内, 默认选中并展开首个任务)
+  auto tree = GUI::CreateAllTasks(data);
 
   // Print startup banner
   std::cout << "=== Launching GUI ===\n"
@@ -165,7 +160,7 @@ int RunGUI() {
       std::cout << "=== Reinitializing GUI (config changed) ===" << std::endl;
 
       // Cleanup and recreate all tasks and state
-      GUI::ReinitAllTasks(tasks, selected_task, data);
+      GUI::ReinitAllTasks(tree, data);
 
       std::cout << "GUI reinitialized successfully" << std::endl;
     }
@@ -186,7 +181,7 @@ int RunGUI() {
     ImGui::NewFrame();
 
     // Draw GUI layout (shared business logic)
-    GUI::DrawGUILayout(data, tasks, selected_task);
+    GUI::DrawGUILayout(data, tree);
 
     // Render
     ImGui::Render();

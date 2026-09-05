@@ -35,7 +35,7 @@ TaskHandle CreateToolsTask() {
     // 什么都不做，保留所有状态
   };
 
-  handle.DrawPanel = [state](SharedData &data) {
+  handle.Draw = [state](SharedData &data, int /*idx*/) {
     ImGui::BeginChild("ToolsPanel");
     if (state->latex_state) {
       Tools::DrawLatexEditor(*state->latex_state);

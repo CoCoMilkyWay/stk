@@ -180,7 +180,6 @@ set(SOURCES
     ../../src/shared/EncodeDayRecord.cpp
     ../../src/shared/Feature.cpp
     ../../src/shared/OrderFlow.cpp
-    ../../src/shared/TaskState.cpp
     ../../src/shared/TimeSeries.cpp
     ../../src/shared/Transform.cpp
     # misc

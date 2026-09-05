@@ -41,9 +41,6 @@ private:
   // Lifecycle
   bool is_expanded_ = false;
   bool initialized_ = false;
-  // IsTabEnabled 缓存: DrawTab 每帧更新, 左栏渲染时读 (一帧延迟不可见)
-  // 默认仅 Overview 可进 (基本面未同步前其它 tab 锁定)
-  bool tab_enabled_cache_[4] = {true, false, false, false};
   CoroManager *coro_mgr_ = nullptr;
   SharedData *data_ = nullptr; // Pointer to shared data
   Config *config_ = nullptr;   // Pointer to config for accessing backtest dates
@@ -77,16 +74,48 @@ public:
     is_expanded_ = false;
   }
 
-  // IsTabEnabled: 左栏叶子是否可用 (读上一帧 DrawTab 缓存的使能状态)
-  // idx: 0=Overview 1=Encode 2=Table 3=Browser
-  bool IsTabEnabled(int idx) const {
-    if (idx < 0 || idx >= 4)
-      return false;
-    return tab_enabled_cache_[idx];
+  // 每帧 (无论选中): 聚合服务状态 → taskstate.database (左栏标签/使能同帧读)
+  void Update(SharedData & /*data*/) {
+    if (state_mgr_)
+      state_mgr_->refresh_state();
+    UpdateTaskState();
   }
 
-  // DrawTab: 渲染指定 tab (状态头 + 对应 DrawTabX) + 处理编码触发
-  void DrawTab(SharedData &data, int idx) {
+  // Enabled: 左栏叶子是否可点, 直读 StateManager 的解锁进度 (Update 同帧已刷新)
+  // idx: -1=任务行(不可点选, 恒真) 0=Overview 1=Encode 2=Table 3=Browser
+  bool Enabled(const SharedData & /*data*/, int idx) const {
+    if (idx <= 0)
+      return true; // 任务行 / Overview 永远可用
+    if (!state_mgr_)
+      return false;
+    const auto &tabs = state_mgr_->get_state().tabs;
+    switch (idx) {
+    case 1:
+      return tabs.can_access_encode;
+    case 2:
+      return tabs.can_access_table;
+    case 3:
+      return tabs.can_access_browser;
+    }
+    return false;
+  }
+
+  // Status: 行状态标签. idx == -1 任务行 (总体), 0 Overview (基本面), 1 Encode
+  // (编码进度/覆盖检查结果), Table/Browser 纯浏览无标签 (锁定用灰显表达)
+  TaskStatus Status(const SharedData &data, int idx) const {
+    switch (idx) {
+    case -1:
+      return TaskLevelStatus(data);
+    case 0:
+      return OverviewStatus();
+    case 1:
+      return EncodeStatus(data);
+    }
+    return {};
+  }
+
+  // Draw: 渲染指定 tab (状态头 + 对应 DrawTabX) + 处理编码触发
+  void Draw(SharedData &data, int idx) {
     assert(idx >= 0 && idx < 4);
     RenderUI(idx);
 
@@ -166,6 +195,8 @@ private:
   }
 
   void UpdateTaskState() {
+    if (!data_)
+      return; // Init 前 (第一帧不会发生: Init 在 CreateAllTasks 里已跑)
     auto &ts = data_->taskstate.database;
 
     if (!state_mgr_ || !scan_svc_) {
@@ -181,16 +212,93 @@ private:
     ts.binary_pass = (check_result.status == DatabaseStatus::Pass);
     ts.all_json_ready = state.all_json_ready();
 
-    // Update status
-    if (check_result.status == DatabaseStatus::Error ||
-        check_result.status == DatabaseStatus::NoData ||
-        check_result.status == DatabaseStatus::NeedArchive) {
+    // Update status (busy 态优先: 流水线顺序 基本面同步 → L2 扫描)
+    if (ts.json_update_inflight) {
+      ts.status = TaskState::Database::Status::Syncing;
+    } else if (ts.l2_scan_inflight || scan_svc_->is_scanning()) {
+      ts.status = TaskState::Database::Status::Scanning;
+    } else if (check_result.status == DatabaseStatus::Error ||
+               check_result.status == DatabaseStatus::NoData ||
+               check_result.status == DatabaseStatus::NeedArchive) {
       ts.status = TaskState::Database::Status::Error;
+    } else if (check_result.status == DatabaseStatus::Unchecked) {
+      ts.status = TaskState::Database::Status::NotScanned;
     } else if (check_result.status != DatabaseStatus::Pass || !state.all_json_ready()) {
       ts.status = TaskState::Database::Status::Incomplete;
     } else {
       ts.status = TaskState::Database::Status::Ready;
     }
+  }
+
+  // 任务行标签: taskstate.database.status → (Kind, text)
+  TaskStatus TaskLevelStatus(const SharedData &data) const {
+    switch (data.taskstate.database.status) {
+    case TaskState::Database::Status::Initializing:
+      return {TaskStatus::Kind::Muted, "initializing"};
+    case TaskState::Database::Status::Syncing:
+      return {TaskStatus::Kind::Busy, "syncing"};
+    case TaskState::Database::Status::Scanning:
+      return {TaskStatus::Kind::Busy, "scanning"};
+    case TaskState::Database::Status::NotScanned:
+      return {TaskStatus::Kind::Warn, "not scanned"};
+    case TaskState::Database::Status::Incomplete:
+      return {TaskStatus::Kind::Warn, "incomplete"};
+    case TaskState::Database::Status::Error:
+      return {TaskStatus::Kind::Error, "error"};
+    case TaskState::Database::Status::Ready:
+      return {TaskStatus::Kind::Ready, "ready"};
+    case TaskState::Database::Status::None:
+      break;
+    }
+    return {};
+  }
+
+  // Overview 子行标签: 基本面流水线状态 (BigQuant + Tushare → AssetInfo)
+  TaskStatus OverviewStatus() const {
+    if (!fundamental_svc_)
+      return {TaskStatus::Kind::Muted, "initializing"};
+    switch (fundamental_svc_->get_state().status) {
+    case FundamentalStatus::Idle:
+      return {TaskStatus::Kind::Muted, "idle"};
+    case FundamentalStatus::Updating:
+      return {TaskStatus::Kind::Busy, "updating"};
+    case FundamentalStatus::Building:
+      return {TaskStatus::Kind::Busy, "building"};
+    case FundamentalStatus::Ready:
+      return {TaskStatus::Kind::Ready, "ready"};
+    case FundamentalStatus::Error:
+      return {TaskStatus::Kind::Error, "error"};
+    }
+    return {};
+  }
+
+  // Encode 子行标签: 编码进行中显示进度, 否则显示 L2 覆盖检查结果
+  TaskStatus EncodeStatus(const SharedData &data) const {
+    if (encoding_svc_ && encoding_svc_->is_running()) {
+      auto p = encoding_svc_->get_progress();
+      int pct = p.total_assets > 0 ? (int)(100 * p.completed_assets / p.total_assets) : 0;
+      return {TaskStatus::Kind::Busy, "encoding " + std::to_string(pct) + "%"};
+    }
+    if (data.taskstate.database.l2_scan_inflight || (scan_svc_ && scan_svc_->is_scanning()))
+      return {TaskStatus::Kind::Busy, "scanning"};
+    if (!scan_svc_)
+      return {};
+    switch (scan_svc_->get_last_check_result().status) {
+    case DatabaseStatus::Unchecked:
+      return {}; // 未扫描时任务行已有 not scanned, 子行不重复
+    case DatabaseStatus::Pass:
+      return {TaskStatus::Kind::Ready, "pass"};
+    case DatabaseStatus::Incomplete:
+      return {TaskStatus::Kind::Warn, "incomplete"};
+    case DatabaseStatus::NotEncoded:
+      return {TaskStatus::Kind::Warn, "not encoded"};
+    case DatabaseStatus::NeedArchive:
+      return {TaskStatus::Kind::Error, "need archive"};
+    case DatabaseStatus::NoData:
+    case DatabaseStatus::Error:
+      return {TaskStatus::Kind::Error, "error"};
+    }
+    return {};
   }
 
   void RenderUI(int idx) {
@@ -199,9 +307,7 @@ private:
       return;
     }
 
-    // Refresh state before rendering
-    state_mgr_->refresh_state();
-    UpdateTaskState();
+    // 状态已在 Update (帧首) 刷新, 这里只读
     const auto &state = state_mgr_->get_state();
 
     // Get database check result from scan service
@@ -279,12 +385,7 @@ private:
 
     ImGui::Separator();
 
-    // 缓存 tab 使能状态供左栏 IsTabEnabled 下一帧读
     const auto &tabs = state.tabs;
-    tab_enabled_cache_[0] = true; // Overview 永远可进
-    tab_enabled_cache_[1] = tabs.can_access_encode;
-    tab_enabled_cache_[2] = tabs.can_access_table;
-    tab_enabled_cache_[3] = tabs.can_access_browser;
 
     // 渲染当前选中 tab (左栏已按 can_access_* 屏蔽未解锁项, 这里直接分发)
     switch (idx) {
@@ -375,19 +476,16 @@ TaskHandle CreateDatabaseTask() {
 
   TaskHandle handle;
   handle.name = instance->GetName();
-  handle.task_instance = instance.get();
   handle.storage = instance;
+  // 子项 (叶子) 顺序: Overview / Encode / Table / Browser
+  handle.tabs = {"Overview", "Encode", "Table", "Browser"};
   handle.Init = [instance](SharedData &data) { instance->Init(data); };
+  handle.Update = [instance](SharedData &data) { instance->Update(data); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
-  // 子项 (叶子) 顺序: Overview / Encode / Table / Browser
-  handle.tab_names = {"Overview", "Encode", "Table", "Browser"};
-  handle.IsTabEnabled = [instance](int i) -> bool {
-    return instance->IsTabEnabled(i);
-  };
-  handle.DrawTab = [instance](SharedData &data, int idx) {
-    instance->DrawTab(data, idx);
-  };
+  handle.Status = [instance](const SharedData &data, int idx) { return instance->Status(data, idx); };
+  handle.Enabled = [instance](const SharedData &data, int idx) { return instance->Enabled(data, idx); };
+  handle.Draw = [instance](SharedData &data, int idx) { instance->Draw(data, idx); };
   handle.Destroy = [instance]() mutable { instance.reset(); };
 
   return handle;

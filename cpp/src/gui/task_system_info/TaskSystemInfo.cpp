@@ -112,10 +112,20 @@ public:
   const char *GetName() const { return "SystemInfo"; }
 
   // 面板重新打开时清空曲线: 关着的这段时间没有采样, 留着旧数据会被误读成"刚刚发生的"
-  void OnExpand() { Reset(); }
-  void OnCollapse() {}
+  void OnExpand() {
+    Reset();
+    is_live_ = true;
+  }
+  void OnCollapse() { is_live_ = false; }
 
-  void DrawPanel(SharedData & /*data*/) {
+  // 任务行状态标签: 选中采样中 = live, 其余无 (关着不采样)
+  TaskStatus Status(const SharedData & /*data*/, int /*idx*/) const {
+    if (is_live_)
+      return {TaskStatus::Kind::Ready, "live"};
+    return {};
+  }
+
+  void Draw(SharedData & /*data*/, int /*idx*/) {
     sysmon::Monitor &monitor = sysmon::Monitor::instance();
     const auto now = std::chrono::steady_clock::now();
     if (now - last_update_ >= UPDATE_INTERVAL) {
@@ -132,6 +142,8 @@ public:
   }
 
 private:
+  bool is_live_ = false; // 选中(展开)期间采样中, 左栏标 [live]
+
   // ==========================================================================
   // 历史数据
   // ==========================================================================
@@ -461,11 +473,11 @@ TaskHandle CreateSystemInfoTask() {
 
   TaskHandle handle;
   handle.name = instance->GetName();
-  handle.task_instance = instance.get();
   handle.storage = instance;
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
-  handle.DrawPanel = [instance](SharedData &data) { instance->DrawPanel(data); };
+  handle.Status = [instance](const SharedData &data, int idx) { return instance->Status(data, idx); };
+  handle.Draw = [instance](SharedData &data, int idx) { instance->Draw(data, idx); };
   handle.Destroy = [instance]() mutable { instance.reset(); };
 
   return handle;
