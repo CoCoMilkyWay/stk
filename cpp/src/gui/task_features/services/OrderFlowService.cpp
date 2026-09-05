@@ -155,17 +155,17 @@ void OrderFlowService::worker_loop() {
       }
     }
 
+    // 取出的请求必须全部执行 —— 已从 pending_ 摘走, 丢掉就永久丢失
+    // (GUI 侧期望态已更新, 不会重发 → 发布代永远追不上请求代)
     if (kreq)
       kline_begin(*kreq);
-    if (ureq) {
-      universe_build(*ureq); // 资产选择依赖它, 排在 depth 前
-      continue;
-    }
-    if (dreq) {
+    if (ureq)
+      universe_build(*ureq); // 资产选择依赖它, 先于 depth
+    if (dreq)
       depth_build(*dreq);
-      continue; // 构建后先回头看新请求
-    }
-    if (kline_active_)
+
+    // 流式垫底: 仅在无按需请求时推进 (下一轮轮询即可被新请求打断)
+    if (!ureq && !dreq && kline_active_)
       kline_active_ = kline_step();
   }
 }

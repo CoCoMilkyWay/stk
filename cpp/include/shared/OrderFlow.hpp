@@ -308,6 +308,7 @@ struct OrderFlow {
   struct UI {
     // Selection state
     int selected_asset_idx = 0;
+    bool asset_initialized = false; // 首个候选就绪时自动选一次 (之后尊重用户选择)
     double l1_anchor_x = 0;
     std::string l1_anchor_date;       // GUI 自持副本 (dates 重建期间仍可用)
     size_t l0_anchor_tick = SIZE_MAX; // 图1 锚点 = 秒下标 (跨日/换资产稳定; SIZE_MAX = 未设)

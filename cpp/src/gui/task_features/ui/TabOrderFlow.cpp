@@ -7,6 +7,7 @@
 #include "features/Method/Fundamental.hpp"
 #include "gui/task_database/models/SharedTypes.hpp" // BoardType / GetBoardType (板块口径与 TABLE 同源)
 #include "gui/task_features/services/OrderFlowService.hpp"
+#include "gui/util/AssetFilter.hpp" // 筛选控件 (与 TABLE 共用)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -16,7 +17,6 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -345,6 +345,15 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature) {
       ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n);
       ImPlot::PopStyleColor();
+
+      // 双击复位 = 新标的初始渲染的口径 (X 全天 + Y 带 margin); 否则 ImPlot 默认
+      // fit 会贴紧数据边缘, 与初始视图不一致且难操作. 必须在有 item 之后 (SetupLock 已发生)
+      if (ImPlot::FitThisFrame()) {
+        ImPlot::FitPointX(0.0);
+        ImPlot::FitPointX(static_cast<double>(OrderFlowConst::L0_CAPACITY));
+        ImPlot::FitPointY(dp.plot.y_min_with_margin);
+        ImPlot::FitPointY(dp.plot.y_max_with_margin);
+      }
     }
 
     // ------------------------------------------------------------------
@@ -513,72 +522,16 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, float height) {
 // Asset Filter + Selector (筛选口径搬自 DATABASE/TABLE, 数据换成锚点日的逐日 PIT)
 // ============================================================================
 
-// 多选下拉 (空集 = 不筛; 对仗 TabTable::RenderMultiSelectCombo)
-static bool RenderFilterCombo(const char *label, float width,
-                              const std::vector<std::pair<int, std::string>> &items,
-                              std::set<int> &selected) {
-  std::string preview;
-  if (selected.empty()) {
-    preview = "All";
-  } else {
-    for (const auto &[value, text] : items) {
-      if (selected.count(value)) {
-        if (!preview.empty())
-          preview += ", ";
-        preview += text;
-      }
-    }
-    if (preview.size() > 24)
-      preview = std::to_string(selected.size()) + " selected";
-  }
-
-  bool changed = false;
-  ImGui::SetNextItemWidth(width);
-  if (ImGui::BeginCombo(label, preview.c_str())) {
-    for (const auto &[value, text] : items) {
-      bool is_selected = selected.count(value) != 0;
-      if (ImGui::Checkbox(text.c_str(), &is_selected)) {
-        if (is_selected)
-          selected.insert(value);
-        else
-          selected.erase(value);
-        changed = true;
-      }
-    }
-    ImGui::Separator();
-    if (ImGui::SmallButton("All")) {
-      selected.clear();
-      changed = true;
-    }
-    ImGui::EndCombo();
-  }
-  return changed;
-}
-
 static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
   auto &uni = of.universe;
-  bool changed = false;
 
-  static const std::vector<std::pair<int, std::string>> st_items = {
-      {0, "正常"}, {1, "ST"}, {2, "*ST"}, {3, "退市整理"}};
-  changed |= RenderFilterCombo("ST##ofSt", 100.0f, st_items, uni.st_filter);
+  // ST/Listed/Board 与 DATABASE/TABLE 共用控件 (gui/util/AssetFilter.hpp);
+  // risk_warn 有 3=退市整理期, 所以 ST 要全 4 档
+  bool changed = GUI::Filter::CommonFilters<int>("of", true, uni.st_filter,
+                                                 uni.listed_filter, uni.board_filter);
 
-  static const std::vector<std::pair<int, std::string>> listed_items = {{0, "在市"}, {1, "退市"}};
-  ImGui::SameLine();
-  changed |= RenderFilterCombo("Listed##ofListed", 100.0f, listed_items, uni.listed_filter);
-
-  using GUI::Database::BoardType;
-  static const std::vector<std::pair<int, std::string>> board_items = {
-      {static_cast<int>(BoardType::Unknown), "Unknown"},
-      {static_cast<int>(BoardType::SH_Main), "沪主板"},
-      {static_cast<int>(BoardType::SZ_Main), "深主板"},
-      {static_cast<int>(BoardType::STAR), "科创板"},
-      {static_cast<int>(BoardType::ChiNext), "创业板"},
-      {static_cast<int>(BoardType::BSE), "北交所"}};
-  ImGui::SameLine();
-  changed |= RenderFilterCombo("Board##ofBoard", 120.0f, board_items, uni.board_filter);
-
-  // 行业: SW2021 一级 (0 = 未知), 表在 fund::SW2021_L1_NAMES
+  // 行业维自绘: 这里的键是数字 SW2021 一级 ID (0 = 未知), 与 TABLE 的字符串
+  // 行业码不同源, 表在 fund::SW2021_L1_NAMES
   static const std::vector<std::pair<int, std::string>> industry_items = [] {
     std::vector<std::pair<int, std::string>> v;
     for (size_t i = 0; i < fund::SW2021_L1_COUNT; ++i)
@@ -586,7 +539,8 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
     return v;
   }();
   ImGui::SameLine();
-  changed |= RenderFilterCombo("Industry##ofInd", 140.0f, industry_items, uni.industry_filter);
+  changed |= GUI::Filter::MultiSelectCombo("Industry##ofInd", 140.0f, industry_items,
+                                           uni.industry_filter);
 
   if (changed)
     ++uni.filter_epoch;
@@ -852,6 +806,17 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     const OrderFlow::Universe::Slot &slot = uni.front_slot();
     if (slot.gen == uni.gen && slot.meta.size() == num_assets && !uni.matches(slot.gen))
       uni.rebuild_candidates(slot, asset_boards);
+  }
+
+  // 初始标的: 候选里代码编号最小的 (默认筛选已排除退市/未上市; 仅首次自动选)
+  if (!ui.asset_initialized && !uni.candidates.empty()) {
+    size_t best = uni.candidates.front();
+    for (size_t i : uni.candidates) {
+      if (data.asset.items[i].asset_code < data.asset.items[best].asset_code)
+        best = i;
+    }
+    ui.selected_asset_idx = static_cast<int>(best);
+    ui.asset_initialized = true;
   }
 
   // ==========================================================================

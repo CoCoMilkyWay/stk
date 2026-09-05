@@ -149,8 +149,10 @@ void OrderFlow::Depth::build_plot() {
   }
 
   if (!plot.mid_price.empty()) {
-    plot.y_min = *std::min_element(plot.mid_price.begin(), plot.mid_price.end());
-    plot.y_max = *std::max_element(plot.mid_price.begin(), plot.mid_price.end());
+    // 范围取 best_bid/best_ask 极值 (bid <= mid <= ask): 初始视图不切掉 spread 边缘,
+    // 且与图1 双击 fit 的口径一致 (见 RenderL0Plot 的 fit 钩子)
+    plot.y_min = *std::min_element(plot.best_bid.begin(), plot.best_bid.end());
+    plot.y_max = *std::max_element(plot.best_ask.begin(), plot.best_ask.end());
 
     const double margin = std::max((plot.y_max - plot.y_min) * OrderFlowConst::Y_MARGIN_RATIO, 0.1);
     plot.y_min_with_margin = plot.y_min - margin;

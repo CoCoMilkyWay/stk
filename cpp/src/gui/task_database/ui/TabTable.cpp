@@ -4,6 +4,7 @@
 #include "gui/task_database/ui/TabTable.hpp"
 #include "gui/task_database/models/SharedTypes.hpp"
 #include "gui/task_database/ui/CrossSectionAnalysis.hpp"
+#include "gui/util/AssetFilter.hpp" // 筛选控件 (与 ORDERFLOW 共用)
 #include "imgui.h"
 #include "implot.h"
 #include <algorithm>
@@ -497,54 +498,6 @@ void SyncView(TableState &state, const Asset &asset, const StockInfoMap &stock_i
 }
 
 // ============================================================================
-// Helper: 通用多选下拉框
-// ============================================================================
-// items: (取值, 显示名) 列表; selected 为空集合表示"全选/不过滤" (与
-// ShouldShowAsset 的判据一致, 而不是"什么都不选").
-// 预览文本: 全不选 = "All"; 少量选中 = 逐项列出; 选多了折成 "N selected".
-template <typename T>
-void RenderMultiSelectCombo(
-    const char *label,
-    float width,
-    const std::vector<std::pair<T, std::string>> &items,
-    std::set<T> &selected) {
-
-  std::string preview;
-  if (selected.empty()) {
-    preview = "All";
-  } else {
-    for (const auto &[value, text] : items) {
-      if (selected.count(value)) {
-        if (!preview.empty())
-          preview += ", ";
-        preview += text;
-      }
-    }
-    if (preview.size() > 24) {
-      preview = std::to_string(selected.size()) + " selected";
-    }
-  }
-
-  ImGui::SetNextItemWidth(width);
-  if (ImGui::BeginCombo(label, preview.c_str())) {
-    for (const auto &[value, text] : items) {
-      bool is_selected = selected.count(value) != 0;
-      if (ImGui::Checkbox(text.c_str(), &is_selected)) {
-        if (is_selected)
-          selected.insert(value);
-        else
-          selected.erase(value);
-      }
-    }
-    ImGui::Separator();
-    if (ImGui::SmallButton("All")) {
-      selected.clear();
-    }
-    ImGui::EndCombo();
-  }
-}
-
-// ============================================================================
 // Helper: Render filter bar
 // ============================================================================
 
@@ -563,30 +516,15 @@ void RenderFilterBar(
     state.search_query = search_buf;
   }
 
-  // ST filter: 正常/ST/*ST 多选下拉 (GetStLevel 口径)
-  static const std::vector<std::pair<int, std::string>> st_items = {
-      {0, "正常"}, {1, "ST"}, {2, "*ST"}};
+  // ST/Listed/Board: 与 FEATURES/ORDERFLOW 共用控件 (gui/util/AssetFilter.hpp).
+  // ST 只有 0..2 (GetStLevel 口径, 无退市整理期档); Listed 看 outDate 是否为空
   ImGui::SameLine();
-  RenderMultiSelectCombo("ST##StFilter", 90.0f, st_items, state.st_filter);
-
-  // Listed filter: 在市/退市 多选下拉 (outDate 是否为空)
-  static const std::vector<std::pair<int, std::string>> listed_items = {
-      {0, "在市"}, {1, "退市"}};
-  ImGui::SameLine();
-  RenderMultiSelectCombo("Listed##ListedFilter", 100.0f, listed_items, state.listed_filter);
-
-  // Board filter: 多选下拉 (不含 All 哨兵, 空集合即等价于全选)
-  static const std::vector<std::pair<BoardType, std::string>> board_items = {
-      {BoardType::Unknown, "Unknown"},
-      {BoardType::SH_Main, "沪主板"},
-      {BoardType::SZ_Main, "深主板"},
-      {BoardType::STAR, "科创板"},
-      {BoardType::ChiNext, "创业板"},
-      {BoardType::BSE, "北交所"}};
-  ImGui::SameLine();
-  RenderMultiSelectCombo("Board##BoardFilter", 120.0f, board_items, state.board_filter);
+  GUI::Filter::CommonFilters<BoardType>("Table", false, state.st_filter,
+                                        state.listed_filter, state.board_filter);
 
   // Industry filter - collect all unique industries (多选下拉)
+  // 行业维自绘: 这里的键是字符串行业码 ind_code, 与 ORDERFLOW 的数字 SW2021 ID
+  // 不同源, 且选项要从当前 stock_info 动态扫出来
   // 基本面可能在本页首次渲染之后才载入完, 所以缓存要跟着 stock_info 规模失效,
   // 否则行业下拉框会永久停在空列表
   static std::vector<std::pair<std::string, std::string>> industries; // code, name
@@ -608,7 +546,7 @@ void RenderFilterBar(
   }
 
   ImGui::SameLine();
-  RenderMultiSelectCombo("Industry##IndFilter", 150.0f, industries, state.industry_filter);
+  GUI::Filter::MultiSelectCombo("Industry##IndFilter", 150.0f, industries, state.industry_filter);
 
   // Count & panel toggle
   ImGui::SameLine();
