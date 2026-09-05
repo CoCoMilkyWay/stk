@@ -320,11 +320,8 @@ set(HEADERS
     ../../include/features/Backend/FeatureStoreConfig.hpp
     ../../include/features/Backend/ZstdHelper.hpp
     # worker
-    ../../include/worker/crosssectional_worker.hpp
     ../../include/worker/encoding_worker.hpp
-    ../../include/worker/io_worker.hpp
-    ../../include/worker/prefetch_worker.hpp
-    ../../include/worker/sequential_worker.hpp
+    ../../include/worker/feature_workers.hpp
     # gui
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp

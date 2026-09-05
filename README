@@ -57,10 +57,8 @@ stk/
 │   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
 │   │   │       └── ZstdHelper.hpp                       # 🧮 Zstd压缩工具
 │   │   ├── worker/                                      # ⚡ 多线程工作流编排
-│   │   │   ├── io_worker.hpp                            # ⚡ IO工作器: 文件读写
 │   │   │   ├── encoding_worker.hpp                      # ⚡ 编码工作器
-│   │   │   ├── sequential_worker.hpp                    # ⚡ 序列特征工作器
-│   │   │   └── crosssectional_worker.hpp                # ⚡ 截面特征工作器
+│   │   │   └── feature_workers.hpp                      # ⚡ 特征计算四角色 (预取/时序/截面/落盘): 统一签名 WorkerCtx + TS 调度面 TsSchedule
 │   │   ├── label/                                       # 🏷️ 标签生成
 │   │   │   └── LabelCalmar.hpp                          # 🏷️ Calmar比率标签
 │   │   ├── gui/                                         # 🖥️ GUI (ImGui + 协程)

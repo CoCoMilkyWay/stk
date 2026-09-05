@@ -7,6 +7,8 @@
 
 #include "imgui.h"
 
+#include <algorithm>
+
 #include <string>
 
 namespace GUI::Features {
@@ -155,6 +157,16 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   }
   ImGui::SameLine();
   ImGui::TextDisabled("(in-flight day tensors)");
+
+  ImGui::Spacing();
+  ImGui::Text("Adopt %%:");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(150);
+  if (ImGui::InputInt("##adopt_pct", &state.config.adopt_pct, 1, 5)) {
+    state.config.adopt_pct = std::clamp(state.config.adopt_pct, 0, 100);
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("(时序核负载再平衡阈值: lagger 每天最多让出持仓 N%%, leader 每天最多领养均值 N%%; 0 = 关闭)");
 
   ImGui::Spacing();
   ImGui::Separator();

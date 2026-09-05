@@ -1,5 +1,5 @@
-#include "worker/io_worker.hpp"
 #include "shared/SharedData.hpp"
+#include "worker/feature_workers.hpp"
 
 #include "features/Backend/FeatureStore.hpp"
 #include "misc/logging.hpp"
@@ -10,11 +10,13 @@
 #include <string>
 #include <thread>
 
-void io_worker(int worker_id,
-               SharedData &data,
-               GlobalFeatureStore &store,
-               const std::atomic<bool> &cancel_requested,
-               misc::ProgressHandle progress_handle) {
+void io_worker(WorkerCtx ctx) {
+  const int worker_id = ctx.worker_id;
+  SharedData &data = ctx.data;
+  GlobalFeatureStore &store = ctx.store;
+  const std::atomic<bool> &cancel_requested = ctx.cancel;
+  const misc::ProgressHandle progress_handle = std::move(ctx.progress);
+
   TraceNS("IOWorker", 5);
   TraceValue(worker_id);
   TraceThread(("io_worker_" + std::to_string(worker_id)).c_str());
@@ -41,7 +43,7 @@ void io_worker(int worker_id,
     {
       TraceN("TryFlush");
       TraceColor(C_Red);
-      flushed = store.io_try_flush_one();
+      flushed = store.io_try_flush();
     }
 
     if (flushed) {

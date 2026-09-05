@@ -78,7 +78,7 @@ public:
     return *tick_data_;
   }
 
-  void begin_day(const std::string &date_str, const GlobalFeatureStore::TsDay &day) {
+  void begin_day(const std::string &date_str, const GlobalFeatureStore::Day &day) {
     assert(core_ && "begin_day: LOB not bound");
     core_->begin_day(date_str, day);
 

@@ -60,7 +60,7 @@ public:
   }
 
   // day = 本日读写句柄 (store.cs_open, 已按日门控: 三层张量整体就绪)
-  void set_day(const GlobalFeatureStore::CsDay &day) { day_ = day; }
+  void set_day(const GlobalFeatureStore::Day &day) { day_ = day; }
 
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
@@ -134,7 +134,7 @@ private:
       col[valid_indices_[i]] = static_cast<feature_storage_t>(y[i]);
   }
 
-  GlobalFeatureStore::CsDay day_{}; // 本日读写句柄, set_day 换入
+  GlobalFeatureStore::Day day_{}; // 本日读写句柄, set_day 换入
   size_t A_;
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)

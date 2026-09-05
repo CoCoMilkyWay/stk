@@ -120,6 +120,7 @@ struct StageLayout {
 
 struct ComputeConfig {
   int pool_slots = 4;
+  int adopt_pct = 10; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
   bool prefetch_share_io = false;
 };
 
@@ -153,7 +154,7 @@ private:
   // Feature store (allocated during compute)
   std::unique_ptr<GlobalFeatureStore> feature_store_;
 
-  // TS 调度面: per-asset 处置权 / 认领游标 / cores (见 sequential_worker.hpp)
+  // TS 调度面: per-asset 处置权 / 认领游标 / cores (见 feature_workers.hpp)
   std::unique_ptr<TsSchedule> ts_schedule_;
 
 public:

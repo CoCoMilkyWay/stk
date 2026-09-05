@@ -5,10 +5,7 @@
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/SharedData.hpp"
-#include "worker/crosssectional_worker.hpp"
-#include "worker/io_worker.hpp"
-#include "worker/prefetch_worker.hpp"
-#include "worker/sequential_worker.hpp"
+#include "worker/feature_workers.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -30,6 +27,7 @@ void ComputeService::start_compute(ComputeConfig config) {
   if (status_.load(std::memory_order_relaxed) == ComputeStatus::Running)
     return;
   assert(config.pool_slots >= 2 && "pool slots must be at least 2");
+  assert(config.adopt_pct >= 0 && config.adopt_pct <= 100 && "adopt pct must be in [0, 100]");
 
   status_.store(ComputeStatus::Running, std::memory_order_relaxed);
   cancel_flag_.store(false);
@@ -70,6 +68,7 @@ void ComputeService::start_compute(ComputeConfig config) {
               << stage_summary << "\n"
               << "Assets: " << data_.asset.items.size()
               << " | Pool slots: " << config_.pool_slots
+              << " | Adopt pct: " << config_.adopt_pct << "%"
               << " | Backtest dates: " << backtest_dates.size()
               << " (" << backtest_start << " - " << backtest_end << ")\n"
               << std::endl;
@@ -78,9 +77,11 @@ void ComputeService::start_compute(ComputeConfig config) {
     const size_t num_assets = data_.asset.items.size();
     const size_t total_dates = backtest_dates.size();
 
-    // Load balancing (初始形态): 按回测区间内的逐笔条数给资产排序, LPT 贪心
-    // 配平. 权重模型必有偏差 + 负载时间分布不均, 运行期差距由 worker 间的
-    // 处置权转移收敛 (见 sequential_worker 的 try_adopt), 这里只求起点均衡.
+    // Load balancing (初始形态): 按回测区间内的逐笔条数降序 + 轮询分配 ——
+    // 标的数每核严格均匀 (±1), 权重也近似均衡. 贪心 LPT 会把大量小标的堆到
+    // 少数核上 (标的数悬殊), 而每日固定开销 (decode 头/begin_day/分钟网格)
+    // 随标的数走, 反而更歪. 运行期差距由 worker 间的处置权转移收敛
+    // (见 sequential_worker 的 try_adopt), 这里只求起点均衡.
     //
     // 条数是扫描时随文件头一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
@@ -105,15 +106,13 @@ void ComputeService::start_compute(ComputeConfig config) {
     std::sort(asset_workloads.begin(), asset_workloads.end(),
               [](const auto &a, const auto &b) { return a.second > b.second; });
 
-    // Greedy assignment: each asset goes to TS worker with minimum current load
-    ts_schedule_ = std::make_unique<TsSchedule>(num_assets);
-    std::vector<size_t> worker_loads(num_ts_workers, 0);
-
-    for (const auto &[asset_id, weight] : asset_workloads) {
-      size_t min_worker = std::min_element(worker_loads.begin(), worker_loads.end()) - worker_loads.begin();
-      ts_schedule_->owner[asset_id].store(static_cast<int32_t>(min_worker), std::memory_order_relaxed);
+    // Round-robin assignment: 降序轮询, 第 k 重的标的给 worker k % N
+    ts_schedule_ = std::make_unique<TsSchedule>(num_assets, num_ts_workers);
+    ts_schedule_->adopt_pct = static_cast<uint64_t>(config_.adopt_pct);
+    for (size_t k = 0; k < asset_workloads.size(); ++k) {
+      const auto &[asset_id, weight] = asset_workloads[k];
+      ts_schedule_->owner[asset_id].store(static_cast<int32_t>(k % num_ts_workers), std::memory_order_relaxed);
       ts_schedule_->weight[asset_id] = weight;
-      worker_loads[min_worker] += weight;
     }
 
     // Phase 2 前置: 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 算子在 worker 内逐日推进; worker 只读
@@ -157,52 +156,40 @@ void ComputeService::start_compute(ComputeConfig config) {
     Logger::init(data_.config.log_dir);
 
     // Launch workers: 统一 launch(core, row, fn) —— pin 到 core, 进度挂到
-    // row, worker_id = core. TS 多带一个调度面参数 (处置权转移), 单独包一层.
+    // row, worker_id = core. 四角色同签名 (WorkerCtx, 见 feature_workers.hpp),
+    // 调度面 sched 随 ctx 带入, 只有 TS 用.
     progress_ = std::make_shared<misc::ParallelProgress>(L.progress_rows());
     workers_.clear();
     workers_.reserve(static_cast<size_t>(L.progress_rows()));
 
-    using WorkerFn = void (*)(int, SharedData &, GlobalFeatureStore &, const std::atomic<bool> &, misc::ProgressHandle);
-    auto launch = [this](int core, int row, WorkerFn fn) {
-      workers_.push_back(std::async(std::launch::async, [this, core, row, fn]() {
-        if (misc::Affinity::supported()) {
-          misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
-        }
-        fn(core, data_, *feature_store_, cancel_flag_, progress_->get_handle(row));
-      }));
-    };
-    auto launch_ts = [this](int core, int row) {
-      workers_.push_back(std::async(std::launch::async, [this, core, row]() {
-        if (misc::Affinity::supported()) {
-          misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
-        }
-        sequential_worker(core, data_, *feature_store_, *ts_schedule_, cancel_flag_, progress_->get_handle(row));
-      }));
-    };
-
+    using WorkerFn = void (*)(WorkerCtx);
     auto worker_fn = [](ComputeStage stage) -> WorkerFn {
       switch (stage) {
       case ComputeStage::Prefetch:
         return prefetch_worker;
+      case ComputeStage::TS:
+        return sequential_worker;
       case ComputeStage::CS:
         return crosssectional_worker;
       case ComputeStage::IO:
         return io_worker;
-      case ComputeStage::TS:
-        break; // launch_ts
       }
       assert(false && "unknown compute stage");
       return nullptr;
     };
 
-    for (const StageLayout::Stage &s : L.stages()) {
-      for (int i = 0; i < s.threads; ++i) {
-        if (s.kind == ComputeStage::TS)
-          launch_ts(s.first_core + i, s.first_row + i);
-        else
-          launch(s.first_core + i, s.first_row + i, worker_fn(s.kind));
-      }
-    }
+    auto launch = [this](int core, int row, WorkerFn fn) {
+      workers_.push_back(std::async(std::launch::async, [this, core, row, fn]() {
+        if (misc::Affinity::supported()) {
+          misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
+        }
+        fn({core, data_, *feature_store_, *ts_schedule_, cancel_flag_, progress_->get_handle(row)});
+      }));
+    };
+
+    for (const StageLayout::Stage &s : L.stages())
+      for (int i = 0; i < s.threads; ++i)
+        launch(s.first_core + i, s.first_row + i, worker_fn(s.kind));
 
     // Wait for completion
     for (auto &worker : workers_)

@@ -52,6 +52,9 @@ public:
   // Set label (e.g., asset code)
   void set_label(const std::string &label) const;
 
+  // 整行颜色 (ANSI 前缀, 如 "\033[38;2;255;128;128m"); 空串 = 默认色
+  void set_color(const std::string &color) const;
+
   // 全局汇总计数 +n (跨 worker 共享, 推进汇总行). worked 见 ParallelProgress
   void bump_summary(size_t n = 1, bool worked = true) const;
 
@@ -89,6 +92,7 @@ private:
     std::atomic<long long> last_note_ms{-1};
     char label[64] = {0};
     char message[96] = {0};
+    char color[24] = {0}; // ANSI 前缀 (整行着色), 空 = 默认色
   };
 
 public:
@@ -201,6 +205,15 @@ private:
     size_t len = std::min(label.size(), sizeof(slot.label) - 1);
     std::memcpy(slot.label, label.c_str(), len);
     slot.label[len] = '\0';
+  }
+
+  // Internal set color (called by handle)
+  void set_color_internal(int worker_id, const std::string &color) {
+    WorkerSlot &slot = slots_[worker_id];
+    size_t len = std::min(color.size(), sizeof(slot.color) - 1);
+    std::memcpy(slot.color, color.c_str(), len);
+    slot.color[len] = '\0';
+    slot.dirty.store(true, std::memory_order_release);
   }
 
   void bump_summary_internal(size_t n, bool worked) {
@@ -357,6 +370,10 @@ private:
       int lines_up = num_workers_ - i;
       buffer << "\033[" << lines_up << "A\r";
 
+      // 整行着色 (行尾复位)
+      if (slot.color[0] != '\0')
+        buffer << slot.color;
+
       // Render progress bar
       float progress = (total > 0) ? static_cast<float>(current) / total : 0.0f;
       int filled = static_cast<int>(bar_width_ * progress);
@@ -380,6 +397,9 @@ private:
       if (slot.message[0] != '\0') {
         buffer << " - " << slot.message;
       }
+
+      if (slot.color[0] != '\0')
+        buffer << "\033[0m";
 
       buffer << "\033[K";
       buffer << "\033[" << lines_up << "B";
@@ -422,6 +442,12 @@ inline void ProgressHandle::update(size_t current, size_t total, const std::stri
 inline void ProgressHandle::set_label(const std::string &label) const {
   if (progress_ && worker_id_ >= 0) {
     progress_->set_label_internal(worker_id_, label);
+  }
+}
+
+inline void ProgressHandle::set_color(const std::string &color) const {
+  if (progress_ && worker_id_ >= 0) {
+    progress_->set_color_internal(worker_id_, color);
   }
 }
 

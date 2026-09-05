@@ -1,5 +1,5 @@
-#include "worker/sequential_worker.hpp"
 #include "shared/SharedData.hpp"
+#include "worker/feature_workers.hpp"
 
 #include "codec/L2_DataType.hpp"
 #include "codec/binary_decoder_L2.hpp"
@@ -8,38 +8,46 @@
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <memory>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // cores 的 unique_ptr 需要 CoreSequential 完整类型, 只在本 TU 实例化
-TsSchedule::TsSchedule(size_t num_assets)
+TsSchedule::TsSchedule(size_t num_assets, size_t num_workers)
     : owner(num_assets), claimed(num_assets), done(num_assets),
-      weight(num_assets, 0), cores(num_assets) {
+      weight(num_assets, 0), cores(num_assets), adopt_window(num_workers) {
   for (size_t i = 0; i < num_assets; ++i) {
     owner[i].store(-1, std::memory_order_relaxed);
     claimed[i].store(-1, std::memory_order_relaxed);
     done[i].store(-1, std::memory_order_relaxed);
   }
+  for (size_t w = 0; w < num_workers; ++w)
+    adopt_window[w].store(0, std::memory_order_relaxed);
 }
 
 TsSchedule::~TsSchedule() = default;
 
-// 领养阈值/冷却: 领先最慢者 ≥ kAdoptGapDays 才伸手 (赶在池满卡死之前);
-// 全局每 kAdoptCooldownDays 天至多一笔转移 —— 反馈是即时的 (落后者下一天
-// 立刻变轻), 小步慢走就能收敛, 不会一下子接多.
-inline constexpr size_t kAdoptGapDays = 3;
-inline constexpr int64_t kAdoptCooldownDays = 10;
+// 领养节流: 单一阈值 N (%) = sched.adopt_pct (UI 可调, 0 = 关闭领养).
+// 触发时机 = 领跑者在池边干等 slot (它已领先, 等待时间白白浪费, 正好拿来
+// 帮最慢者).
+//   victim 侧: 每天 (预算窗口按其前沿滚动) 最多让出自己持仓的 N% ——
+//              让完这波它下一轮几乎不再是最慢者, 也不会被过度掏空;
+//   leader 侧: 每天最多领养 (全市场标的数 / worker 数) 的 N% —— 单核不会
+//              一天暴涨吃成新的 lagger.
 
-void sequential_worker(int worker_id,
-                       SharedData &data,
-                       GlobalFeatureStore &store,
-                       TsSchedule &sched,
-                       const std::atomic<bool> &cancel_requested,
-                       misc::ProgressHandle progress_handle) {
+void sequential_worker(WorkerCtx ctx) {
+  const int worker_id = ctx.worker_id;
+  SharedData &data = ctx.data;
+  GlobalFeatureStore &store = ctx.store;
+  TsSchedule &sched = ctx.sched;
+  const std::atomic<bool> &cancel_requested = ctx.cancel;
+  const misc::ProgressHandle progress_handle = std::move(ctx.progress);
+
   TraceNS("TSWorker", 5);
   TraceValue(worker_id);
   TraceThread(("ts_worker_" + std::to_string(worker_id)).c_str());
@@ -108,9 +116,31 @@ void sequential_worker(int worker_id,
     return sched.claimed[asset_id].compare_exchange_strong(expected, d, std::memory_order_acq_rel);
   };
 
+  // 进度: 日数为主刻度, 日内排 [已完成/持有] 紧凑计数; 行色按与领跑者的
+  // 差距 (slot 粒度) 白→红 (满红 = 差距吃满整个池子, 即本核快把全员拖死).
+  auto update_progress = [&](size_t days_done, const std::string &date_str, size_t done_today) {
+    size_t max_days = days_done;
+    for (int w = 0; w < static_cast<int>(store.query_ts_workers()); ++w)
+      max_days = std::max(max_days, store.ts_frontier(w));
+    const size_t gap = max_days - days_done;
+    const float t = std::min(1.0f, static_cast<float>(gap) / static_cast<float>(store.query_slots()));
+    const int gb = static_cast<int>(255.0f * (1.0f - t));
+    char color_buf[24];
+    snprintf(color_buf, sizeof(color_buf), "\033[38;2;255;%d;%dm", gb, gb);
+    progress_handle.set_color(color_buf);
+
+    const float elapsed_seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
+    const float speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
+
+    char msg_buf[128];
+    snprintf(msg_buf, sizeof(msg_buf), "%s [%3zu/%3zu] [%.1fM/s (%.1fM)]",
+             date_str.c_str(), done_today, my_asset_ids.size(), speed_M_per_sec, cumulative_orders / 1e6);
+    progress_handle.update(days_done, total_dates, msg_buf);
+  };
+
   // 处理一个 asset-day (缺 binary 则空过, 张量保持默认值), 返回订单数.
   // 主循环与领养回填共用 —— 两者只差句柄来自哪一天.
-  auto process_asset_day = [&](size_t asset_id, size_t didx, const std::string &date_str, const GlobalFeatureStore::TsDay &day) -> size_t {
+  auto process_asset_day = [&](size_t asset_id, size_t didx, const std::string &date_str, const GlobalFeatureStore::Day &day) -> size_t {
     const auto &asset = data.asset.items[asset_id];
     if (!asset.date_at(didx).has_binaries())
       return 0; // 缺二进制: 当天张量保持默认值, warm 状态不推进.
@@ -171,83 +201,111 @@ void sequential_worker(int worker_id,
     return order_num;
   };
 
-  // 负载再平衡: 领先最慢 worker 超阈值 → 接手其最轻资产, 立刻回填落下的旧
-  // 日期 (旧日 slot 未计满必为 BUSY, ts_open 直接命中), 之后并入本 worker
-  // 日循环. 落后者下一天马上变轻 —— 反馈即时, 全局冷却限速, 一次一个.
+  // Leader 侧记账: 本 worker 今天已领养数 (每日在日循环头重置).
+  // 上限 = 平均每核持仓 (全市场 / worker 数) 的 adopt_pct%; 0 = 关闭领养.
+  size_t adopted_today = 0;
+  const size_t leader_cap =
+      (sched.adopt_pct == 0) ? 0 : std::max<size_t>(1, sched.owner.size() / store.query_ts_workers() * sched.adopt_pct / 100);
+
+  // 负载再平衡: 在池边干等 slot 时调用 (本 worker 已领先, 等待时间正好拿来
+  // 帮落后者). 接手 victim 的最轻资产, 立刻回填落下的旧日期 —— 含 victim
+  // 的"当天" (claim CAS 唯一裁决: victim 日循环还没轮到它就被本 worker 先
+  // claim 走, victim 见 owner 已变直接跳过, 当天即刻变轻). 旧日 slot 未计
+  // 满必为 BUSY, ts_open 直接命中; 回填后并入本 worker 日循环.
+  // 两侧 N% 预算限量, 不会一下子掏空/吃撑.
   auto try_adopt = [&](size_t my_days_done) {
-    // 最慢 worker (排除自己). min_days ≥ 1 兼保证 victim 的 core 构造已
-    // 通过前沿计数的 release/acquire 发布.
-    size_t min_days = SIZE_MAX;
-    int victim = -1;
+    if (adopted_today >= leader_cap)
+      return;
+
+    // 候选 victim: 所有落后 ≥ 2 天者 (1 天差是相位噪声), 按前沿升序逐个试
+    // —— 最慢者预算耗尽/撞车时顺延帮第二慢者, 而不是空转干等.
+    // f ≥ 1 兼保证 victim 的 core 构造已通过前沿计数的 release/acquire 发布.
+    std::vector<std::pair<size_t, int>> laggers; // (前沿, worker)
     for (int w = 0; w < static_cast<int>(store.query_ts_workers()); ++w) {
-      if (w == worker_id)
-        continue;
       const size_t f = store.ts_frontier(w);
-      if (f < min_days) {
-        min_days = f;
-        victim = w;
-      }
+      if (w != worker_id && f >= 1 && my_days_done >= f + 2)
+        laggers.emplace_back(f, w);
     }
-    if (victim < 0 || min_days < 1 || my_days_done < min_days + kAdoptGapDays)
-      return;
+    std::sort(laggers.begin(), laggers.end());
 
-    // 全局冷却 CAS: 每 kAdoptCooldownDays 天至多一笔 (失败 = 别人刚领过)
-    int64_t last = sched.last_adopt_didx.load(std::memory_order_relaxed);
-    const int64_t now = static_cast<int64_t>(my_days_done);
-    if (now < last + kAdoptCooldownDays)
-      return;
-    if (!sched.last_adopt_didx.compare_exchange_strong(last, now, std::memory_order_relaxed))
-      return;
-
-    // victim 手里最轻的资产 (至少给它留 2 个; 冷却 CAS 已串行化领养方,
-    // 计数窗口内不会有并发转移把它掏空)
-    size_t victim_count = 0, pick = SIZE_MAX, pick_weight = SIZE_MAX;
-    for (size_t i = 0; i < sched.owner.size(); ++i) {
-      if (sched.owner[i].load(std::memory_order_relaxed) != victim)
+    for (const auto &[victim_days, victim] : laggers) {
+      // victim 手里最轻的资产 (顺便数持仓; 至少给它留 2 个)
+      size_t victim_count = 0, pick = SIZE_MAX, pick_weight = SIZE_MAX;
+      for (size_t i = 0; i < sched.owner.size(); ++i) {
+        if (sched.owner[i].load(std::memory_order_relaxed) != victim)
+          continue;
+        ++victim_count;
+        if (sched.weight[i] < pick_weight) {
+          pick_weight = sched.weight[i];
+          pick = i;
+        }
+      }
+      if (victim_count < 2 || pick == SIZE_MAX)
         continue;
-      ++victim_count;
-      if (sched.weight[i] < pick_weight) {
-        pick_weight = sched.weight[i];
-        pick = i;
+
+      // victim 侧预算 CAS: 本窗 (其前沿推进即换窗) 最多让出持仓的 adopt_pct%.
+      // 编码 (前沿 << 16) | 已让出数.
+      const uint64_t victim_budget = std::max<uint64_t>(1, victim_count * sched.adopt_pct / 100);
+      bool budget_ok = false;
+      {
+        std::atomic<uint64_t> &win = sched.adopt_window[victim];
+        uint64_t w = win.load(std::memory_order_relaxed);
+        while (true) {
+          if ((w >> 16) != victim_days) {
+            // 新窗口: 重置并领第 1 个
+            if (win.compare_exchange_weak(w, (static_cast<uint64_t>(victim_days) << 16) | 1, std::memory_order_relaxed)) {
+              budget_ok = true;
+              break;
+            }
+          } else if ((w & 0xFFFF) >= victim_budget) {
+            break; // 本窗预算已耗尽, 试下一个 victim
+          } else if (win.compare_exchange_weak(w, w + 1, std::memory_order_relaxed)) {
+            budget_ok = true;
+            break;
+          }
+        }
       }
+      if (!budget_ok)
+        continue;
+
+      // 处置权 CAS: 路标改指本 worker, victim 下一天起直接跳过 pick.
+      // 失败 = 与其他领养方撞车 (预算多扣一格, 无妨, 试下一个 victim).
+      int32_t expect = victim;
+      if (!sched.owner[pick].compare_exchange_strong(expect, worker_id, std::memory_order_acq_rel))
+        continue;
+      ++adopted_today;
+
+      // victim 可能正在算 pick 的在飞一天: 等它交割 (窗口 = 单个 asset-day)
+      while (sched.claimed[pick].load(std::memory_order_acquire) != sched.done[pick].load(std::memory_order_acquire)) {
+        if (cancel_requested.load(std::memory_order_relaxed))
+          return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+
+      const int32_t from = sched.done[pick].load(std::memory_order_acquire) + 1;
+      const int32_t upto = static_cast<int32_t>(my_days_done) - 1; // 回填到本 worker 前沿
+      Logger::log("worker_" + std::to_string(worker_id),
+                  "adopt: asset " + std::to_string(pick) + " from worker " + std::to_string(victim) +
+                      " (gap " + std::to_string(my_days_done - victim_days) + "d), backfill didx " +
+                      std::to_string(from) + ".." + std::to_string(upto));
+
+      for (int32_t d = from; d <= upto; ++d) {
+        if (cancel_requested.load(std::memory_order_relaxed))
+          return;
+        TraceN("AdoptBackfill");
+        [[maybe_unused]] const bool claimed_ok = claim(pick, d);
+        assert(claimed_ok && "adopt backfill: claim 竞争 (处置权已归本 worker, 不应有对手)");
+        const std::string &bdate = data.asset.all_dates[static_cast<size_t>(d)];
+        const auto bday = store.ts_open(bdate, worker_id, cancel_requested);
+        if (!bday)
+          return;
+        cumulative_orders += process_asset_day(pick, data.asset.date_idx(bdate), bdate, bday);
+        sched.done[pick].store(d, std::memory_order_release);
+        store.ts_close(bday);
+      }
+      my_asset_ids.push_back(pick);
+      return; // 一次领养一个; 还在等 slot 的话下轮再来
     }
-    if (victim_count < 2 || pick == SIZE_MAX)
-      return;
-
-    // 处置权 CAS: 路标改指本 worker, victim 下一天起直接跳过 pick
-    int32_t expect = victim;
-    if (!sched.owner[pick].compare_exchange_strong(expect, worker_id, std::memory_order_acq_rel))
-      return;
-
-    // victim 可能正在算 pick 的在飞一天: 等它交割 (窗口 = 单个 asset-day)
-    while (sched.claimed[pick].load(std::memory_order_acquire) != sched.done[pick].load(std::memory_order_acquire)) {
-      if (cancel_requested.load(std::memory_order_relaxed))
-        return;
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-
-    const int32_t from = sched.done[pick].load(std::memory_order_acquire) + 1;
-    const int32_t upto = static_cast<int32_t>(my_days_done) - 1; // 回填到本 worker 前沿
-    Logger::log("worker_" + std::to_string(worker_id),
-                "adopt: asset " + std::to_string(pick) + " from worker " + std::to_string(victim) +
-                    " (gap " + std::to_string(my_days_done - min_days) + "d), backfill didx " +
-                    std::to_string(from) + ".." + std::to_string(upto));
-
-    for (int32_t d = from; d <= upto; ++d) {
-      if (cancel_requested.load(std::memory_order_relaxed))
-        return;
-      TraceN("AdoptBackfill");
-      [[maybe_unused]] const bool claimed_ok = claim(pick, d);
-      assert(claimed_ok && "adopt backfill: claim 竞争 (处置权已归本 worker, 不应有对手)");
-      const std::string &bdate = data.asset.all_dates[static_cast<size_t>(d)];
-      const auto bday = store.ts_open(bdate, worker_id, cancel_requested);
-      if (!bday.slot)
-        return;
-      cumulative_orders += process_asset_day(pick, data.asset.date_idx(bdate), bdate, bday);
-      sched.done[pick].store(d, std::memory_order_release);
-      store.ts_asset_done(bday);
-    }
-    my_asset_ids.push_back(pick);
   };
 
   // Zero-copy streaming: decoder maintains internal buffer, worker receives const pointer
@@ -262,16 +320,27 @@ void sequential_worker(int worker_id,
     TraceTextS(date_str.c_str());
     date_orders = 0;
     date_assets_processed = 0;
+    adopted_today = 0; // leader 侧领养预算按日重置
 
     // 日期 → 日期轴下标, 一天查一次; 资产内循环 O(1) 定址
     const size_t didx = data.asset.date_idx(date_str);
 
-    // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术
-    const auto day = store.ts_open(date_str, worker_id, cancel_requested);
-    if (!day.slot)
+    // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术.
+    // 池满 = 本 worker 领先到把池子吃满 —— 干等的时间拿去领养最慢者的资产
+    // 并回填 (回填日必为 BUSY, 不占新 slot), 等 IO 释放后再继续本日.
+    auto day = store.ts_try_open(date_str, worker_id);
+    while (!day && !cancel_requested.load(std::memory_order_relaxed)) {
+      TraceN("PoolWait");
+      TraceColor(C_Orange);
+      try_adopt(date_idx); // date_idx = 本 worker 已完成日数
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      day = store.ts_try_open(date_str, worker_id);
+    }
+    if (!day)
       break;
 
     // Process each asset at this date
+    size_t done_today = 0;
     for (size_t i = 0; i < my_asset_ids.size();) {
       const size_t asset_id = my_asset_ids[i];
       // 处置权已转走 (或 claim 输给领养方的回填): 移除, 计数由新 owner 负责
@@ -281,12 +350,15 @@ void sequential_worker(int worker_id,
         my_asset_ids.pop_back();
         continue;
       }
-      date_orders += process_asset_day(asset_id, didx, date_str, day);
+      const size_t order_num = process_asset_day(asset_id, didx, date_str, day);
+      date_orders += order_num;
+      cumulative_orders += order_num;
       sched.done[asset_id].store(static_cast<int32_t>(date_idx), std::memory_order_release);
-      store.ts_asset_done(day);
+      store.ts_close(day);
       ++i;
+      ++done_today;
+      update_progress(date_idx, date_str, done_today);
     }
-    cumulative_orders += date_orders;
 
     if (date_assets_processed > 0) {
       Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(date_assets_processed) + " assets, " + std::to_string(date_orders) + " orders");
@@ -298,23 +370,13 @@ void sequential_worker(int worker_id,
       store.ts_report_frontier(worker_id, date_idx + 1);
     }
 
-    // Update progress
-    auto current_time = std::chrono::steady_clock::now();
-    float elapsed_seconds = std::chrono::duration<float>(current_time - start_time).count();
-    float speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
-
-    char msg_buf[128];
-    snprintf(msg_buf, sizeof(msg_buf), "%2zu Assets: %s [%.1fM/s (%.1fM)]",
-             my_asset_ids.size(), date_str.c_str(), speed_M_per_sec, cumulative_orders / 1e6);
     completed_dates = date_idx + 1;
-    progress_handle.update(completed_dates, total_dates, msg_buf);
-
-    // 负载再平衡检查 (本日已计完, 正是接活的空当)
-    try_adopt(date_idx + 1);
+    update_progress(completed_dates, date_str, done_today);
 
     TraceFrame; // Mark frame boundary for timeline
   }
 
+  progress_handle.set_color("");
   if (cancel_requested.load(std::memory_order_relaxed)) {
     progress_handle.update(completed_dates, data.asset.all_dates.size(), "Cancelled");
     Logger::log("worker_" + std::to_string(worker_id), "Cancelled: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(completed_dates) + " dates");

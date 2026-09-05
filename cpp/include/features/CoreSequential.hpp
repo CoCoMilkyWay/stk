@@ -42,7 +42,7 @@ public:
 
   // day = worker 本日的写句柄 (store.ts_open, 每 worker 每日一次), 之后
   // 本类的全部写回都是纯指针算术 —— 热路径不再携带 date / worker_id.
-  void begin_day(const std::string &date_str, const GlobalFeatureStore::TsDay &day) {
+  void begin_day(const std::string &date_str, const GlobalFeatureStore::Day &day) {
     day_ = day;
     dag_.at_day_start(date_str);
   }
@@ -150,7 +150,7 @@ private:
   static_assert(count_of_kind(L1_FIELD_INFO, FeatureDataType::LB) == LabelReturn::L1_LABEL_COUNT && kind_contiguous(L1_FIELD_INFO, FeatureDataType::LB),
                 "L1 label columns must be HOLD_COUNT × GROUP_SIZE contiguous");
 
-  GlobalFeatureStore::TsDay day_{}; // 本日写句柄, begin_day 换入
+  GlobalFeatureStore::Day day_{}; // 本日写句柄, begin_day 换入
   size_t asset_id_;
   size_t core_id_;
   std::string asset_code_;
