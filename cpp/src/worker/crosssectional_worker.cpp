@@ -36,6 +36,8 @@ void crosssectional_worker(WorkerCtx ctx) {
 
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
+    if (cancel_requested.load(std::memory_order_relaxed))
+      break;
     TraceN("DateLoop");
     const std::string &date_str = data.asset.all_dates[date_idx];
     TraceTextS(date_str.c_str());
@@ -47,8 +49,10 @@ void crosssectional_worker(WorkerCtx ctx) {
     {
       TraceN("WaitSync");
       TraceColor(C_Orange);
+      // Cancel 即退 (不等 ts_days_done 追平): 取消后的截面是弃子, 多算是
+      // 浪费, 更不能拿退出条件去赌 TS 侧计数的时序.
       while (!(day = store.cs_try_open(date_str))) {
-        if (cancel_requested.load(std::memory_order_relaxed) && date_idx >= store.query_ts_days_done()) {
+        if (cancel_requested.load(std::memory_order_relaxed)) {
           progress_handle.update(completed_dates, total_dates, "Cancelled");
           Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(completed_dates) + " dates");
           return;

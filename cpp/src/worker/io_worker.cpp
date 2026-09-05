@@ -56,9 +56,11 @@ void io_worker(WorkerCtx ctx) {
     } else {
       TraceN("WaitForData");
       TraceColor(C_Orange);
+      // Cancel 退出: CS 关掉的日子都已刷完即走. 不能再和 ts_days_done 比 ——
+      // CS 按 cancel 即退, 而某个 TS 可能之后才把在飞的一天计满, ts_days_done
+      // 反超定格的 cs_days_done, 等相等就是死等 (cancel 卡死的根因).
       if (cancel_requested.load(std::memory_order_relaxed) &&
-          flush_count >= store.query_cs_days_done() &&
-          store.query_cs_days_done() >= store.query_ts_days_done()) {
+          flush_count >= store.query_cs_days_done()) {
         progress_handle.update(flush_count, total_dates, "Cancelled");
         Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(flush_count) + " dates");
         cancelled = true;

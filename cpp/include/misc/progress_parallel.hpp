@@ -247,49 +247,6 @@ private:
     return os.str();
   }
 
-  // 终端显示宽度: CJK/全角占 2 列, 其余按 1 列
-  static size_t display_width(const char *s) {
-    size_t w = 0;
-    const unsigned char *p = reinterpret_cast<const unsigned char *>(s);
-    while (*p) {
-      unsigned cp = *p;
-      int n = 1;
-      if (cp >= 0xF0)
-        n = 4, cp &= 0x07;
-      else if (cp >= 0xE0)
-        n = 3, cp &= 0x0F;
-      else if (cp >= 0xC0)
-        n = 2, cp &= 0x1F;
-      for (int k = 1; k < n && p[k]; ++k)
-        cp = (cp << 6) | (p[k] & 0x3F);
-      p += n;
-      w += (cp >= 0x1100 &&
-            ((cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
-             (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
-             (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-             cp <= 0x115F))
-               ? 2
-               : 1;
-    }
-    return w;
-  }
-
-  // 补空格到固定显示宽度; 超宽则按字符截断 — 各行同列必须严格对齐
-  static std::string pad_display(const char *s, size_t cols) {
-    std::string out(s);
-    size_t w = display_width(out.c_str());
-    while (w > cols && !out.empty()) {
-      // 去掉最后一个完整 UTF-8 字符
-      size_t cut = out.size() - 1;
-      while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80)
-        --cut;
-      out.resize(cut);
-      w = display_width(out.c_str());
-    }
-    out.append(cols - w, ' ');
-    return out;
-  }
-
   void render_summary(std::ostringstream &buffer) {
     const size_t done = summary_done_.load(std::memory_order_relaxed);
     const size_t total = summary_total_.load(std::memory_order_relaxed);
@@ -388,14 +345,14 @@ private:
           buffer << " ";
       }
 
-      // 所有字段定宽 — 多行并排滚动时列必须严格对齐:
-      //   百分比 3, 计数各 3, 标签按显示宽度补齐 (中文占 2 列)
+      // 定宽字段 (百分比 3, 计数各 3) 保证多行并排滚动时列对齐; 标签不再
+      // 补齐到固定列宽 —— 同一 stage 的标签天然等宽, 紧凑优先.
       buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% "
              << "(" << std::setw(3) << current << "/" << std::setw(3) << total << ") "
-             << pad_display(slot.label, label_cols_);
+             << slot.label;
 
       if (slot.message[0] != '\0') {
-        buffer << " - " << slot.message;
+        buffer << " " << slot.message;
       }
 
       if (slot.color[0] != '\0')
@@ -409,8 +366,7 @@ private:
   }
 
   int num_workers_;
-  int bar_width_ = 40;
-  int label_cols_ = 24; // 标签列显示宽度 (代码 6 + 空格 + 中文名 ≤8 字)
+  int bar_width_ = 28;
   int refresh_interval_ms_;
 
   std::vector<WorkerSlot> slots_;
