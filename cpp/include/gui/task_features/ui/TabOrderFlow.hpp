@@ -1,19 +1,16 @@
 // TabOrderFlow - OrderFlow Visualization Tab
 // Lifecycle:
-//   - RenderTabOrderFlow: spawns loader coroutine on first call
-//   - StopTabOrderFlow: cancels loader coroutine when tab closes
+//   - RenderTabOrderFlow: 首帧启动 OrderFlowService worker (幂等)
+//   - 切 tab 不停 worker (流式继续, 回来即全); 切出任务由 service 析构 join
 #pragma once
 
 struct SharedData;
 
 namespace GUI::Features {
 
-class DataLoader;
+class OrderFlowService;
 
-// Render OrderFlow tab - spawns loader on first call
-void RenderTabOrderFlow(DataLoader *loader, SharedData &data);
-
-// Stop loader coroutine - call when tab is closed
-void StopTabOrderFlow(DataLoader *loader, SharedData &data);
+// Render OrderFlow tab - starts service on first call
+void RenderTabOrderFlow(OrderFlowService *service, SharedData &data);
 
 } // namespace GUI::Features

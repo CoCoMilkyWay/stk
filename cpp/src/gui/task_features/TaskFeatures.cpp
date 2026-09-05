@@ -2,8 +2,8 @@
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
-#include "gui/task_features/services/DataLoader.hpp"
 #include "gui/task_features/services/DistService.hpp"
+#include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/services/TimeSeriesService.hpp"
 #include "gui/task_features/services/TransformService.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
@@ -40,7 +40,7 @@ enum TabIdx {
 struct TaskFeaturesState {
   // Services
   std::unique_ptr<Features::ComputeService> compute_service;
-  std::unique_ptr<Features::DataLoader> data_loader;
+  std::unique_ptr<Features::OrderFlowService> orderflow_service;
   std::unique_ptr<Features::DistService> dist_service;
   std::unique_ptr<Features::TimeSeriesService> timeseries_service;
   std::unique_ptr<Features::TransformService> transform_service;
@@ -56,7 +56,6 @@ struct TaskFeaturesState {
   Features::TimeSeriesUIState timeseries_ui_state;
 
   // Tab state
-  bool orderflow_tab_was_active = false;
   bool dist_tab_was_active = false;
   bool timeseries_tab_was_active = false;
   bool transform_tab_was_active = false;
@@ -115,8 +114,8 @@ TaskHandle CreateFeaturesTask() {
       state->terminal = &data.terminal;
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
-    if (!state->data_loader) {
-      state->data_loader = std::make_unique<Features::DataLoader>(data.config.feature_dir);
+    if (!state->orderflow_service) {
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>();
     }
     if (!state->dist_service) {
       state->dist_service = std::make_unique<Features::DistService>(data.config.feature_dir);
@@ -201,8 +200,8 @@ TaskHandle CreateFeaturesTask() {
       if (state->prev_compute_status == Features::ComputeStatus::Running &&
           (current_status == Features::ComputeStatus::Completed ||
            current_status == Features::ComputeStatus::Cancelled)) {
-        // Compute just finished - mark OrderFlow L1 cache for reload
-        data.orderflow.loader.l1_needs_reload = true;
+        // Compute just finished - OrderFlow 重扫日期 + 整体重拉
+        data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
       }
       state->prev_compute_status = current_status;
     }
@@ -362,23 +361,15 @@ TaskHandle CreateFeaturesTask() {
       // Tab: OrderFlow
       if (disable[TAB_ORDERFLOW])
         ImGui::BeginDisabled();
-      bool orderflow_tab_open = ImGui::BeginTabItem("OrderFlow");
-      if (orderflow_tab_open) {
+      if (ImGui::BeginTabItem("OrderFlow")) {
         state->selected_tab = TAB_ORDERFLOW;
         ImGui::Spacing();
-        Features::RenderTabOrderFlow(state->data_loader.get(), data);
+        Features::RenderTabOrderFlow(state->orderflow_service.get(), data);
         ImGui::EndTabItem();
       }
       if (disable[TAB_ORDERFLOW])
         ImGui::EndDisabled();
-
-      // OrderFlow lifecycle
-      if (orderflow_tab_open && !state->orderflow_tab_was_active) {
-        state->orderflow_tab_was_active = true;
-      } else if (!orderflow_tab_open && state->orderflow_tab_was_active) {
-        Features::StopTabOrderFlow(state->data_loader.get(), data);
-        state->orderflow_tab_was_active = false;
-      }
+      // OrderFlow 切 tab 不停 worker: 流式在后台继续, 切回即全 (任务级回收在 Destroy)
 
       // Auto-trigger TimeSeries compute
       if (timeseries_tab_open && state->timeseries_service &&
@@ -433,8 +424,6 @@ TaskHandle CreateFeaturesTask() {
 
   // Destroy
   handle.Destroy = [state]() {
-    // Note: OrderFlow and Dist coroutines will auto-cancel on CoroutineHandle destruction
-
     if (state->compute_service) {
       if (state->compute_service->is_running()) {
         state->compute_service->stop_compute();
@@ -442,7 +431,7 @@ TaskHandle CreateFeaturesTask() {
       state->compute_service.reset();
     }
 
-    state->data_loader.reset();
+    state->orderflow_service.reset(); // 析构 Stop() join worker
     if (state->dist_service)
       state->dist_service->Shutdown(); // Reinit 复用 SharedData, 构建内存一并释放
     state->dist_service.reset();

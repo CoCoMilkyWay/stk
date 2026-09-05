@@ -1,12 +1,10 @@
 // TabOrderFlow Implementation - OrderFlow Visualization
-// Architecture:
-//   1. State Machine: Unified state detection (params_changed)
-//   2. Conditional Rendering: Single axis_cond for all plots
-//   3. Static Caching: No redundant computations
-//   4. Modular Helpers: Clear separation of concerns
-
+// 渲染面 (数据面/线程模型见 shared/OrderFlow.hpp):
+//   1. 帧首 ack: depth 背槽发布 → 翻 front
+//   2. 期望态检测: asset / anchor date / 选中特征 变了 → gen++ → Request*
+//   3. 渲染: Kline 画已发布前缀 (gen 配对), Depth 画 front 槽 (新代在途时旧槽照画 + Loading 提示)
 #include "gui/task_features/ui/TabOrderFlow.hpp"
-#include "gui/task_features/services/DataLoader.hpp"
+#include "gui/task_features/services/OrderFlowService.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -16,34 +14,34 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <vector>
 
 namespace GUI::Features {
-
-// ============================================================================
-// Constants
-// ============================================================================
-
-namespace {
-// All parameters moved to OrderFlowConst namespace in OrderFlow.hpp
-}
 
 // ============================================================================
 // Formatters
 // ============================================================================
 
-// Custom formatter converts X coordinate → time index → actual time
-// Example: X=900 → tick_idx=900 → L0_to_Clock(900) → 09:30
+// 图1 X (交易秒下标) → HH:MM:SS (缩放自适应: 默认刻度 + 逐值换算)
 static int L0TimeFormatter(double value, char *buff, int size, void * /*user_data*/) {
-  // Extract time index from global_x
-  // global_x = day_idx * L0_CAPACITY + tick_idx, where tick_idx is time index
-  const size_t global_x = static_cast<size_t>(value);
-  const size_t tick_idx = global_x % OrderFlowConst::L0_CAPACITY;
+  const size_t tick_idx = std::min(static_cast<size_t>(std::max(0.0, value)), OrderFlowConst::L0_CAPACITY);
+  const ClockTime ct = L0_to_Clock(tick_idx); // 15300 → 15:00:00 (右边界)
+  return std::snprintf(buff, size, "%02d:%02d:%02d", ct.hour, ct.minute, ct.second);
+}
 
-  // Convert time index (0-15299) to ClockTime
-  ClockTime ct = L0_to_Clock(tick_idx);
-
-  // Format as HH:MM (matching TimeAxisLUT labels)
-  return std::snprintf(buff, size, "%02d:%02d", ct.hour, ct.minute);
+// 图2 X (day_idx * L1_CAPACITY + minute) → YY/MM/DD HH:MM (user_data = Kline, gen 配对期间 dates 稳定)
+static int L1TimeFormatter(double value, char *buff, int size, void *user_data) {
+  const auto &k = *static_cast<const OrderFlow::Kline *>(user_data);
+  if (k.dates.empty() || value < 0)
+    return std::snprintf(buff, size, " ");
+  const size_t d = std::min(k.day_idx_from_x(value), k.dates.size() - 1);
+  const size_t m = std::min(static_cast<size_t>(value) % OrderFlowConst::L1_CAPACITY, TRADE_MINUTES_PER_DAY);
+  const ClockTime ct = L1_to_Clock(m); // 255 → 15:00 (日右边界)
+  const std::string &date = k.dates[d];
+  if (date.size() != 8)
+    return std::snprintf(buff, size, "%s %02d:%02d", date.c_str(), ct.hour, ct.minute);
+  return std::snprintf(buff, size, "%s/%s/%s %02d:%02d", date.substr(2, 2).c_str(),
+                       date.substr(4, 2).c_str(), date.substr(6, 2).c_str(), ct.hour, ct.minute);
 }
 
 static void FormatTimeHMS(char *buf, size_t size, uint8_t hour, uint8_t minute, uint8_t second) {
@@ -68,6 +66,27 @@ static void FormatDateShort(char *buf, size_t size, const std::string &date) {
   }
 }
 
+// 选中特征列 (当前层): primary + secondary, 截断 MAX_FEATURES
+static std::vector<int> CollectFeats(const Feature::Selection &sel, int level) {
+  std::vector<int> v;
+  if (sel.selected_level != level)
+    return v;
+  if (sel.primary_feature_idx >= 0)
+    v.push_back(sel.primary_feature_idx);
+  for (int f : sel.secondary_features) {
+    if (v.size() >= OrderFlowConst::MAX_FEATURES)
+      break;
+    if (f != sel.primary_feature_idx)
+      v.push_back(f);
+  }
+  return v;
+}
+
+static const char *FeatName(const Feature &feature, int level, int idx) {
+  const auto &metas = feature.metadata.features[level];
+  return (idx >= 0 && static_cast<size_t>(idx) < metas.size()) ? metas[idx].name_cn : "?";
+}
+
 // ============================================================================
 // Candlestick Renderer
 // ============================================================================
@@ -78,7 +97,6 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
     return;
 
   ImDrawList *draw_list = ImPlot::GetPlotDrawList();
-  // Each bar occupies 1 X-unit (index), no gap between bars
   constexpr double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH;
 
   if (ImPlot::BeginItem(label_id)) {
@@ -91,7 +109,12 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
       }
     }
 
-    for (int i = 0; i < count; ++i) {
+    // 视野裁剪: 只画可视 X 区间 (数组按 x 升序)
+    const ImPlotRect limits = ImPlot::GetPlotLimits();
+    const double *lo = std::lower_bound(xs, xs + count, limits.X.Min - 1.0);
+    const double *hi = std::upper_bound(xs, xs + count, limits.X.Max + 1.0);
+
+    for (int i = static_cast<int>(lo - xs); i < static_cast<int>(hi - xs); ++i) {
       const double o = opens[i], h = highs[i], l = lows[i], c = closes[i];
       const ImVec2 open_pos = ImPlot::PlotToPixels(xs[i] - half_width, o);
       const ImVec2 close_pos = ImPlot::PlotToPixels(xs[i] + half_width, c);
@@ -99,21 +122,16 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
       const ImVec2 high_pos = ImPlot::PlotToPixels(xs[i], h);
       const ImU32 color = c >= o ? IM_COL32(0, 200, 0, 255) : IM_COL32(200, 0, 0, 255);
 
-      // Draw wick (high to low line)
       draw_list->AddLine(low_pos, high_pos, color);
 
-      // Draw body - ensure minimum visible height when open == close
       ImVec2 body_top = open_pos;
       ImVec2 body_bottom = close_pos;
-
       constexpr float min_body_height = OrderFlowConst::MIN_CANDLESTICK_BODY_HEIGHT;
       if (std::abs(body_bottom.y - body_top.y) < min_body_height) {
-        // Draw horizontal line when body is too small
         const float mid_y = (body_top.y + body_bottom.y) * 0.5f;
         body_top.y = mid_y - min_body_height * 0.5f;
         body_bottom.y = mid_y + min_body_height * 0.5f;
       }
-
       draw_list->AddRectFilled(body_top, body_bottom, color);
     }
 
@@ -125,7 +143,7 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
 // Depth Panel Renderer
 // ============================================================================
 
-static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, const std::string &date, float panel_width) {
+static void RenderDepthPanel(const OrderFlow::Depth::Snapshot &depth, const std::string &date, float panel_width) {
   if (!depth.valid) {
     ImGui::TextDisabled("No valid data");
     return;
@@ -135,49 +153,45 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
   FormatDateFull(date_buf, sizeof(date_buf), date);
   FormatTimeHMS(time_buf, sizeof(time_buf), depth.time.hour, depth.time.minute, depth.time.second);
 
-  // Use smaller font and tighter spacing for more compact display
-  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);               // Use default small font
-  ImGui::SetWindowFontScale(0.75f);                              // Scale down to 85%
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));  // No spacing
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1, 0)); // Ultra minimal padding
+  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+  ImGui::SetWindowFontScale(0.75f);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1, 0));
 
   ImGui::Text("%s %s", date_buf, time_buf);
   ImGui::Separator();
 
   const float bar_max_width = panel_width - 100.0f;
 
-  // Helper lambda to render a single depth level
-  // NOTE: volume is SIGNED (bid_volume > 0, ask_volume < 0), so amount preserves sign
-  // Sentinel values (NaN) are already filtered at data load time
+  // NOTE: volume is SIGNED (bid > 0, ask < 0); NaN 档位 (哨兵) 直接跳过
   auto render_level = [&](float price, float volume, bool is_bid) {
-    float amount = volume_to_amount(volume, price); // Preserves sign: bid+, ask-
-    float abs_amount = std::abs(amount);
-    float ratio = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT); // 100W = full bar
-    float amount_in_wan = amount_to_wan(amount);
+    if (price != price) { // NaN: 无此档
+      ImGui::TextDisabled("      --");
+      return;
+    }
+    const float amount = volume_to_amount(volume, price); // Preserves sign
+    const float abs_amount = std::abs(amount);
+    const float ratio = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
+    const float amount_in_wan = amount_to_wan(amount);
 
-    // Color intensity based on depth bar max (100W)
     ImVec4 bar_color;
-    bool expected_sign = is_bid ? (amount > 0) : (amount < 0);
-
+    const bool expected_sign = is_bid ? (amount > 0) : (amount < 0);
     if (expected_sign) {
-      // Normal case: green for bid (amount > 0), red for ask (amount < 0)
-      float intensity = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
+      const float intensity = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
       if (is_bid) {
         bar_color = ImVec4(0.3f * (1.0f - intensity * 0.5f), 0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.8f);
       } else {
         bar_color = ImVec4(0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.3f * (1.0f - intensity * 0.5f), 0.8f);
       }
     } else {
-      // Anomaly: wrong sign, show as yellow warning
-      bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f);
+      bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f); // 符号异常: 黄色告警
     }
 
-    // Align text vertically with progress bar
-    float bar_height = 5.0f;
-    float text_height = ImGui::GetTextLineHeight();
-    float y_offset = (text_height - bar_height) * 0.5f;
+    const float bar_height = 5.0f;
+    const float text_height = ImGui::GetTextLineHeight();
+    const float y_offset = (text_height - bar_height) * 0.5f;
 
-    float cursor_y = ImGui::GetCursorPosY();
+    const float cursor_y = ImGui::GetCursorPosY();
     ImGui::SetCursorPosY(cursor_y + y_offset);
 
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
@@ -194,7 +208,6 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
     render_level((*depth.ask_price)[i], (*depth.ask_volume)[i], false);
   }
 
-  // Mid price - no separator to save space
   ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.2f元", depth.mid_price);
 
   // Bid side (green) - 10 levels, from top (bid1) to bottom (bid10)
@@ -202,105 +215,72 @@ static void RenderDepthPanel(const OrderFlow::L0Cache::DepthSnapshot &depth, con
     render_level((*depth.bid_price)[i], (*depth.bid_volume)[i], true);
   }
 
-  ImGui::SetWindowFontScale(1.0f); // Reset font scale
+  ImGui::SetWindowFontScale(1.0f);
   ImGui::PopStyleVar(2);
   ImGui::PopFont();
 }
 
 // ============================================================================
-// L0 Plot Renderer
+// L0 Plot Renderer (图1: front Depth 槽)
 // ============================================================================
 
-static void RenderL0Plot(OrderFlow &of, const Feature &feature, bool force_reset) {
-  if (!of.l0.loaded || of.l0.plot.x.empty()) {
-    ImGui::TextDisabled(of.l0.loaded ? "No L0 data for this date" : "Waiting for L1 load...");
+static void RenderL0Plot(OrderFlow &of, const Feature &feature) {
+  auto &ui = of.ui;
+  const OrderFlow::Depth &dp = of.depth_front_slot();
+
+  if (dp.asset_idx == SIZE_MAX) {
+    ImGui::TextDisabled("Waiting for depth replay...");
+    return;
+  }
+  if (!dp.has_data && dp.n_feat == 0) {
+    ImGui::TextDisabled("No orders data for this (day, asset)");
     return;
   }
 
-  auto &ui = of.ui;
+  // 新槽 (gen 变了) → 重置视图
+  const bool slot_changed = (ui.l0_last_gen != dp.gen);
+  ui.l0_last_gen = dp.gen;
 
   if (ImPlot::BeginPlot("##L0Price", ImVec2(-1, -1))) {
-    const size_t day_idx = of.l0.days.empty() ? 0 : of.l0.days[0].day_idx;
-    const double x_min = static_cast<double>(day_idx * OrderFlowConst::L0_CAPACITY);
-    const double x_max = static_cast<double>((day_idx + 1) * OrderFlowConst::L0_CAPACITY);
-
-    // Reset view when params changed or on first load
-    ImPlotCond cond = force_reset ? ImPlotCond_Always : ImPlotCond_Once;
+    const ImPlotCond cond = slot_changed ? ImPlotCond_Always : ImPlotCond_Once;
 
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
-    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, cond);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, of.l0.plot.y_min_with_margin, of.l0.plot.y_max_with_margin, cond);
-
-    // ========================================================================
-    // Feature Plot Overlay: Setup Y2 axis if L0 feature cache valid
-    // ========================================================================
-    const auto &fc = of.l0_feature;
-    const auto &sel = feature.selection;
-    const bool has_l0_feature = sel.selected_level == 0 && sel.primary_feature_idx >= 0 &&
-                                fc.plot.valid && fc.feature_idx == sel.primary_feature_idx;
-    if (has_l0_feature) {
-      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
-      if (ui.l0_feat_y2_valid) {
-        ImPlot::SetupAxisLimits(ImAxis_Y2, ui.l0_feat_y2_min, ui.l0_feat_y2_max, ImPlotCond_Always);
-      }
-    }
-
-    // Setup X-axis formatter: converts X coordinates (time index) to time strings
-    // This ensures correct time display for ALL positions, not just tick marks
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(OrderFlowConst::L0_CAPACITY), cond);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, dp.plot.y_min_with_margin, dp.plot.y_max_with_margin, cond);
     ImPlot::SetupAxisFormat(ImAxis_X1, L0TimeFormatter);
 
-    // Setup L0 ticks (use pre-computed TimeAxisLUT)
-    if (ui.l0_cached_day_idx != day_idx) {
-      const auto &lut = TimeAxisLUT::instance();
-
-      ui.l0_tick_positions.clear();
-      ui.l0_tick_labels.clear();
-
-      for (size_t offset : lut.l0_tick_offsets) {
-        double tick_pos = x_min + static_cast<double>(offset);
-        ui.l0_tick_positions.push_back(tick_pos);
+    // Y2: 特征 overlay (全部特征共轴, 范围 = 并集)
+    if (dp.n_feat > 0) {
+      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
+      float y2_min = (std::numeric_limits<float>::max)();
+      float y2_max = std::numeric_limits<float>::lowest();
+      for (size_t i = 0; i < dp.n_feat; ++i) {
+        if (dp.feat[i].x.empty())
+          continue;
+        y2_min = std::min(y2_min, dp.feat_y_min[i]);
+        y2_max = std::max(y2_max, dp.feat_y_max[i]);
       }
-      for (const auto &label : lut.l0_tick_labels) {
-        ui.l0_tick_labels.push_back(label.c_str());
-      }
-
-      ui.l0_cached_day_idx = day_idx;
+      if (y2_min <= y2_max)
+        ImPlot::SetupAxisLimits(ImAxis_Y2, y2_min, y2_max, ImPlotCond_Always);
     }
 
-    if (!ui.l0_tick_positions.empty()) {
-      ImPlot::SetupAxisTicks(ImAxis_X1, ui.l0_tick_positions.data(),
-                             static_cast<int>(ui.l0_tick_positions.size()), ui.l0_tick_labels.data());
-    }
+    // ------------------------------------------------------------------
+    // Heatmap (GUI 侧着色缓存: 槽 gen + 阈值变了才重建)
+    // ------------------------------------------------------------------
+    if (ui.show_heatmap && dp.merged.rect_count > 0) {
+      if (!of.heatmap_colored.matches(dp.gen, ui.log_amount_threshold))
+        of.heatmap_colored.build(dp, ui.log_amount_threshold);
 
-    // Render heatmap if enabled (using multi-level cache)
-    if (ui.show_heatmap && !of.l0.days.empty()) {
-      // ========================================================================
-      // LEVEL 2: Merged cache (already built in DataLoader)
-      // ========================================================================
-      if (!of.l0.check_heatmap_merged_cache()) {
-        // Fallback: rebuild if somehow invalid
-        of.l0.build_heatmap_merged();
-      }
-
-      // ========================================================================
-      // LEVEL 3: Colored cache (rebuild only when threshold changes)
-      // ========================================================================
-      if (!of.l0.check_heatmap_colored_cache(ui.log_amount_threshold)) {
-        of.l0.build_heatmap_colored(ui.log_amount_threshold);
-      }
-
-      // ========================================================================
-      // RENDER: Use colored cache (static, no CPU work per frame)
-      // ========================================================================
       ImPlot::PushPlotClipRect();
       ImDrawList *draw_list = ImPlot::GetPlotDrawList();
+      const ImPlotRect limits = ImPlot::GetPlotLimits();
 
-      // Detect hovered rect (O(N) but only when plot is hovered)
+      // Hover 检测 (仅悬停帧, O(N))
       int hovered_idx = -1;
       if (ImPlot::IsPlotHovered()) {
         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
-        for (size_t i = 0; i < of.l0.heatmap_colored.rects.size(); ++i) {
-          const auto &rect = of.l0.heatmap_colored.rects[i];
+        for (size_t i = 0; i < of.heatmap_colored.rects.size(); ++i) {
+          const auto &rect = of.heatmap_colored.rects[i];
           if (mouse_pos.x >= rect.x1 && mouse_pos.x <= rect.x2 &&
               mouse_pos.y >= rect.y2 && mouse_pos.y <= rect.y1) {
             hovered_idx = static_cast<int>(i);
@@ -309,121 +289,100 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, bool force_reset
         }
       }
 
-      // Render all rects (highlight hovered one)
-      for (size_t i = 0; i < of.l0.heatmap_colored.rects.size(); ++i) {
-        const auto &rect = of.l0.heatmap_colored.rects[i];
-        ImVec2 p_min = ImPlot::PlotToPixels(rect.x1, rect.y1);
-        ImVec2 p_max = ImPlot::PlotToPixels(rect.x2, rect.y2);
+      // 渲染 (视野裁剪: 秒级矩形量比分钟频大 60×)
+      for (size_t i = 0; i < of.heatmap_colored.rects.size(); ++i) {
+        const auto &rect = of.heatmap_colored.rects[i];
+        if (rect.x2 < limits.X.Min || rect.x1 > limits.X.Max ||
+            rect.y1 < limits.Y.Min || rect.y2 > limits.Y.Max)
+          continue;
+        const ImVec2 p_min = ImPlot::PlotToPixels(rect.x1, rect.y1);
+        const ImVec2 p_max = ImPlot::PlotToPixels(rect.x2, rect.y2);
 
         if (static_cast<int>(i) == hovered_idx) {
-          // Highlight: increase alpha and add white border
-          uint8_t r = (rect.color >> 0) & 0xFF;
-          uint8_t g = (rect.color >> 8) & 0xFF;
-          uint8_t b = (rect.color >> 16) & 0xFF;
-          uint32_t highlight_color = IM_COL32(r, g, b, 255);
-          draw_list->AddRectFilled(p_min, p_max, highlight_color);
+          const uint8_t r = (rect.color >> 0) & 0xFF;
+          const uint8_t g = (rect.color >> 8) & 0xFF;
+          const uint8_t b = (rect.color >> 16) & 0xFF;
+          draw_list->AddRectFilled(p_min, p_max, IM_COL32(r, g, b, 255));
           draw_list->AddRect(p_min, p_max, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
         } else {
           draw_list->AddRectFilled(p_min, p_max, rect.color);
         }
       }
-
       ImPlot::PopPlotClipRect();
 
-      // Display tooltip with amount info (O(1) lookup via metadata)
-      if (hovered_idx >= 0 && static_cast<size_t>(hovered_idx) < of.l0.heatmap_colored.metadata.size()) {
-        const auto &meta = of.l0.heatmap_colored.metadata[hovered_idx];
-        float amount_wan = amount_to_wan(static_cast<float>(meta.amount_rmb));
-        ImGui::SetTooltip("%.2f万元\n价格: %.2f\nTicks: %zu-%zu",
-                          amount_wan, meta.price,
-                          meta.tick_start, meta.tick_end);
+      if (hovered_idx >= 0 && static_cast<size_t>(hovered_idx) < of.heatmap_colored.metadata.size()) {
+        const auto &meta = of.heatmap_colored.metadata[hovered_idx];
+        const ClockTime t0 = L0_to_Clock(meta.tick_start);
+        const ClockTime t1 = L0_to_Clock(meta.tick_end); // 开区间右界 → 边界时刻
+        ImGui::SetTooltip("%.2f万元\n价格: %.2f\n%02d:%02d:%02d - %02d:%02d:%02d",
+                          amount_to_wan(static_cast<float>(meta.amount_rmb)), meta.price,
+                          t0.hour, t0.minute, t0.second, t1.hour, t1.minute, t1.second);
       }
     }
 
-    // Draw best bid and ask lines with fill between
-    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.3f, 0.8f, 0.3f, 0.7f));
-    ImPlot::PlotStairs("Best Bid", of.l0.plot.x.data(), of.l0.plot.best_bid.data(),
-                       static_cast<int>(of.l0.plot.x.size()));
-    ImPlot::PopStyleColor();
-
-    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.8f, 0.3f, 0.3f, 0.7f));
-    ImPlot::PlotStairs("Best Ask", of.l0.plot.x.data(), of.l0.plot.best_ask.data(),
-                       static_cast<int>(of.l0.plot.x.size()));
-    ImPlot::PopStyleColor();
-
-    // Fill between best bid and best ask with solid yellow
-    ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(1.0f, 1.0f, 0.0f, 0.6f));
-    ImPlot::PlotShaded("Spread", of.l0.plot.x.data(), of.l0.plot.best_bid.data(),
-                       of.l0.plot.best_ask.data(), static_cast<int>(of.l0.plot.x.size()));
-    ImPlot::PopStyleColor();
-
-    // Draw mid price with step mode (for sparse data)
-    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
-    ImPlot::PlotStairs("Mid Price", of.l0.plot.x.data(), of.l0.plot.mid_price.data(),
-                       static_cast<int>(of.l0.plot.x.size()));
-    ImPlot::PopStyleColor();
-
-    // ========================================================================
-    // L0 Feature Plot Overlay (true L0 granularity, not downsampled)
-    // ========================================================================
-    if (has_l0_feature && !fc.plot.x.empty()) {
-      // Cache Y range for next frame's axis setup
-      ui.l0_feat_y2_min = static_cast<double>(fc.plot.y_min);
-      ui.l0_feat_y2_max = static_cast<double>(fc.plot.y_max);
-      ui.l0_feat_y2_valid = true;
-
-      // Convert float values to double for plotting
-      std::vector<double> feat_values(fc.plot.values.begin(), fc.plot.values.end());
-
-      // Plot on Y2 axis (right side shows feature scale)
-      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-
-      // Get feature name for legend
-      const char *feat_name = "L0 Feature";
-      if (sel.primary_feature_idx >= 0 &&
-          static_cast<size_t>(sel.primary_feature_idx) < feature.metadata.features[0].size()) {
-        feat_name = feature.metadata.features[0][sel.primary_feature_idx].name_cn;
-      }
-
-      // Draw feature line (step plot, teal color matching L1 overlay style)
-      ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.6f));
-      ImPlot::PlotStairs(feat_name, fc.plot.x.data(), feat_values.data(),
-                         static_cast<int>(fc.plot.x.size()));
+    // ------------------------------------------------------------------
+    // 盘口线: best bid / ask + spread 填充 + mid
+    // ------------------------------------------------------------------
+    if (!dp.plot.x.empty()) {
+      const int n = static_cast<int>(dp.plot.x.size());
+      ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.3f, 0.8f, 0.3f, 0.7f));
+      ImPlot::PlotStairs("Best Bid", dp.plot.x.data(), dp.plot.best_bid.data(), n);
       ImPlot::PopStyleColor();
 
-      // Switch back to Y1 for subsequent plots
+      ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.8f, 0.3f, 0.3f, 0.7f));
+      ImPlot::PlotStairs("Best Ask", dp.plot.x.data(), dp.plot.best_ask.data(), n);
+      ImPlot::PopStyleColor();
+
+      ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(1.0f, 1.0f, 0.0f, 0.6f));
+      ImPlot::PlotShaded("Spread", dp.plot.x.data(), dp.plot.best_bid.data(), dp.plot.best_ask.data(), n);
+      ImPlot::PopStyleColor();
+
+      ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
+      ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n);
+      ImPlot::PopStyleColor();
+    }
+
+    // ------------------------------------------------------------------
+    // 特征 overlay (Y2, 多选; legend = 中文名, 颜色 ImPlot 自动分配)
+    // ------------------------------------------------------------------
+    for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
+      const auto &fl = dp.feat[i];
+      if (fl.x.empty())
+        continue;
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+      ImPlot::PlotStairs(FeatName(feature, 0, ui.depth_feats[i]),
+                         fl.x.data(), fl.y.data(), static_cast<int>(fl.x.size()));
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-    } else {
-      // No valid L0 feature data, invalidate Y2 cache
-      ui.l0_feat_y2_valid = false;
     }
 
-    // Anchor: get snapped X from plot_idx (single source of truth)
-    double anchor_x = ui.l0_anchor_plot_idx < of.l0.plot.x.size()
-                          ? of.l0.plot.x[ui.l0_anchor_plot_idx]
-                          : x_min;
+    // ------------------------------------------------------------------
+    // Anchor: 锚在秒级时间 (跨日/换资产稳定); DragLineX + 双击, 落点吸附有效秒
+    // ------------------------------------------------------------------
+    if (!dp.plot.x.empty()) {
+      if (ui.l0_anchor_tick == SIZE_MAX)
+        ui.l0_anchor_tick = dp.ticks.front().tick_idx; // 首次: 默认首个有效秒
 
-    // DragLineX: modifies anchor_x during drag, returns true when changed
-    bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
-    bool drag_active = ImGui::IsItemActive();
+      double anchor_x = static_cast<double>(ui.l0_anchor_tick);
+      const bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
+      const bool drag_active = ImGui::IsItemActive();
+      if (drag_changed) // 拖动中跟手 (原样), 释放时吸附有效秒
+        ui.l0_anchor_tick = drag_active
+                                ? static_cast<size_t>(std::clamp(anchor_x, 0.0, static_cast<double>(OrderFlowConst::L0_CAPACITY - 1)))
+                                : dp.ticks[dp.snap_to_valid_plot_idx(anchor_x)].tick_idx;
 
-    // Snap only when drag is released (changed but no longer active)
-    if (drag_changed && !drag_active) {
-      ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(anchor_x);
-    }
+      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
+        ui.l0_anchor_tick = dp.ticks[dp.snap_to_valid_plot_idx(ImPlot::GetPlotMousePos().x)].tick_idx;
 
-    if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-      ui.l0_anchor_plot_idx = of.l0.snap_to_valid_plot_idx(ImPlot::GetPlotMousePos().x);
-    }
-
-    // Annotation: use snapped data (re-fetch from plot_idx for consistency)
-    if (ui.l0_anchor_plot_idx < of.l0.plot.x.size()) {
-      auto depth = of.l0.query_depth(ui.l0_anchor_plot_idx);
-      if (depth.valid) {
-        char time_buf[16];
-        FormatTimeHMS(time_buf, sizeof(time_buf), depth.time.hour, depth.time.minute, depth.time.second);
-        ImPlot::Annotation(of.l0.plot.x[ui.l0_anchor_plot_idx], of.l0.plot.mid_price[ui.l0_anchor_plot_idx],
-                           ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", time_buf);
+      // 当日该秒无数据 → 就近吸附取值 (锚点本身不动)
+      const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.l0_anchor_tick));
+      if (plot_idx < dp.plot.x.size()) {
+        const auto depth = dp.query_depth(plot_idx);
+        if (depth.valid) {
+          char time_buf[16];
+          FormatTimeHMS(time_buf, sizeof(time_buf), depth.time.hour, depth.time.minute, depth.time.second);
+          ImPlot::Annotation(dp.plot.x[plot_idx], dp.plot.mid_price[plot_idx],
+                             ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", time_buf);
+        }
       }
     }
 
@@ -432,186 +391,107 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, bool force_reset
 }
 
 // ============================================================================
-// L1 Plot Renderer
+// L1 Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
-static void RenderL1Plot(OrderFlow &of, const Feature &feature, size_t asset_idx, float height, bool force_reset) {
-  if (!of.l1.loaded || asset_idx >= of.l1.plot_data.size()) {
-    ImGui::TextDisabled("No L1 data available");
+static void RenderL1Plot(OrderFlow &of, const Feature &feature, float height) {
+  auto &ui = of.ui;
+  auto &k = of.kline;
+
+  uint32_t pub_gen;
+  size_t pub_days, pub_points;
+  OrderFlow::Kline::unpack(k.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_points);
+
+  if (pub_gen != (ui.kline_gen & 0xFFFF)) {
+    ImGui::TextDisabled("Preparing K-line stream...");
+    return;
+  }
+  if (k.dates.empty()) {
+    ImGui::TextDisabled("No feature dates found");
     return;
   }
 
-  auto &ui = of.ui;
-  const auto &pd = of.l1.plot_data[asset_idx];
+  const bool gen_changed = (ui.l1_last_pub_days == SIZE_MAX);
 
   if (ImPlot::BeginPlot("##KLine", ImVec2(-1, height))) {
-    const double x_min = 0;
-    double x_max = static_cast<double>(of.l1.num_days * OrderFlowConst::L1_CAPACITY);
-    if (x_max <= x_min)
-      x_max = x_min + 1;
-
-    // Reset view when params changed or on first load
-    ImPlotCond cond = force_reset ? ImPlotCond_Always : ImPlotCond_Once;
+    const double x_max = static_cast<double>(k.dates.size() * OrderFlowConst::L1_CAPACITY);
 
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
-    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, cond);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, pd.y_min, pd.y_max, cond);
-
-    // Setup K-line ticks: show all tick lines, but only label at intervals
-    if (ui.l1_cached_num_days != of.l1.num_days) {
-      ui.l1_tick_positions.clear();
-      ui.l1_tick_label_storage.clear();
-
-      // Adaptive label interval: limit to max 16 ticks
-      constexpr size_t MAX_TICKS = 16;
-      size_t label_interval = std::max<size_t>(1, (of.l1.num_days + MAX_TICKS - 1) / MAX_TICKS);
-
-      // Add tick positions only at label intervals (to avoid overcrowding grid lines)
-      for (size_t d = 0; d < of.l1.num_days; d += label_interval) {
-        ui.l1_tick_positions.push_back(static_cast<double>(d * OrderFlowConst::L1_CAPACITY));
-
-        char buf[16];
-        FormatDateShort(buf, sizeof(buf), of.l1.dates[d]);
-        ui.l1_tick_label_storage.push_back(buf);
-      }
-
-      ui.l1_tick_labels.clear();
-      for (const auto &s : ui.l1_tick_label_storage) {
-        ui.l1_tick_labels.push_back(s.c_str());
-      }
-
-      ui.l1_cached_num_days = of.l1.num_days;
+    // X: 全区间固定 (dates 数已知), 只在换代时重置 → 流式追加不打扰用户视野
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(x_max, 1.0), gen_changed ? ImPlotCond_Always : ImPlotCond_Once);
+    ImPlot::SetupAxisFormat(ImAxis_X1, L1TimeFormatter, &k); // YY/MM/DD HH:MM, 缩放自适应
+    // Y1: 发布范围变化 (流式追加) 时跟随; 稳定后不再打扰
+    if (pub_points > 0 && ui.l1_last_pub_days != pub_days) {
+      ImPlot::SetupAxisLimits(ImAxis_Y1, k.y_min.load(std::memory_order_relaxed),
+                              k.y_max.load(std::memory_order_relaxed), ImPlotCond_Always);
     }
+    ui.l1_last_pub_days = pub_days;
 
-    // ========================================================================
-    // L1 Feature Overlay Check (before any plotting to setup Y2 axis if needed)
-    // 按需缓存: 只有选中 (asset, feature), 协程逐日流式填充, 画 [0, days_loaded)
-    // ========================================================================
-    const auto &fc = of.l1_feature;
-    const auto &sel = feature.selection;
-    const bool cache_matches = sel.selected_level == 1 && fc.days_loaded > 0 &&
-                               fc.matches(asset_idx, sel.primary_feature_idx);
-
-    // Setup Y2 axis if we have valid feature cache
-    // First frame: use placeholder range, subsequent frames use cached range
-    const bool setup_y2 = cache_matches;
-    if (setup_y2) {
-      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
-      if (ui.feat_y2_valid) {
-        ImPlot::SetupAxisLimits(ImAxis_Y2, ui.feat_y2_min, ui.feat_y2_max, ImPlotCond_Always);
+    // Y2: 特征 overlay (共轴, 范围 = 并集)
+    const size_t nf = std::min(k.n_feat, ui.kline_feats.size());
+    std::array<size_t, OrderFlowConst::MAX_FEATURES> feat_counts{};
+    bool any_feat = false;
+    {
+      float y2_min = (std::numeric_limits<float>::max)();
+      float y2_max = std::numeric_limits<float>::lowest();
+      for (size_t i = 0; i < nf; ++i) {
+        feat_counts[i] = k.feat_n[i].load(std::memory_order_acquire);
+        if (feat_counts[i] == 0)
+          continue;
+        any_feat = true;
+        y2_min = std::min(y2_min, k.feat_y_min[i].load(std::memory_order_relaxed));
+        y2_max = std::max(y2_max, k.feat_y_max[i].load(std::memory_order_relaxed));
+      }
+      if (any_feat) {
+        ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
+        if (y2_min <= y2_max)
+          ImPlot::SetupAxisLimits(ImAxis_Y2, y2_min, y2_max, ImPlotCond_Always);
       }
     }
 
-    if (!ui.l1_tick_positions.empty()) {
-      ImPlot::SetupAxisTicks(ImAxis_X1, ui.l1_tick_positions.data(),
-                             static_cast<int>(ui.l1_tick_positions.size()), ui.l1_tick_labels.data());
+    // ------------------------------------------------------------------
+    // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名)
+    // ------------------------------------------------------------------
+    if (pub_points > 0) {
+      PlotCandlestick("OHLC", k.x.data(), k.open.data(), k.high.data(),
+                      k.low.data(), k.close.data(), static_cast<int>(pub_points));
     }
 
-    if (!pd.x.empty()) {
-      PlotCandlestick("OHLC", pd.x.data(), pd.open.data(), pd.high.data(),
-                      pd.low.data(), pd.close.data(), static_cast<int>(pd.x.size()));
+    for (size_t i = 0; i < nf; ++i) {
+      if (feat_counts[i] == 0)
+        continue;
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+      ImPlot::PlotStairs(FeatName(feature, 1, ui.kline_feats[i]),
+                         k.feat[i].x.data(), k.feat[i].y.data(), static_cast<int>(feat_counts[i]));
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    }
 
-      // ========================================================================
-      // Feature Plot Overlay (选中资产的 L1 特征分钟序列, 流式已加载前缀)
-      // ========================================================================
-      if (cache_matches) {
-        // Get current visible X range
-        ImPlotRect limits = ImPlot::GetPlotLimits();
-        double view_x_min = limits.X.Min;
-        double view_x_max = limits.X.Max;
-
-        // Collect feature data points in visible range
-        std::vector<double> feat_x;
-        std::vector<double> feat_y;
-        feat_x.reserve(1024);
-        feat_y.reserve(1024);
-
-        double feat_y_min = std::numeric_limits<double>::max();
-        double feat_y_max = std::numeric_limits<double>::lowest();
-
-        // fc.days 与 of.l1.dates 按下标对齐; 只画已加载 + 可视范围相交的天
-        const size_t n_days = std::min(fc.days_loaded, of.l1.dates.size());
-        for (size_t d = 0; d < n_days; ++d) {
-          double day_x_start = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
-          double day_x_end = day_x_start + OrderFlowConst::L1_CAPACITY;
-
-          // Skip days outside visible range
-          if (day_x_end < view_x_min || day_x_start > view_x_max)
-            continue;
-
-          const auto &vals = fc.days[d];
-          for (size_t m = 0; m < vals.size(); ++m) {
-            const float val = vals[m];
-            if (val != val) // NaN = 无效分钟
-              continue;
-
-            double x = day_x_start + static_cast<double>(m);
-            if (x < view_x_min || x > view_x_max)
-              continue;
-
-            feat_x.push_back(x);
-            feat_y.push_back(static_cast<double>(val));
-
-            if (val > feat_y_max)
-              feat_y_max = val;
-            if (val < feat_y_min)
-              feat_y_min = val;
-          }
-        }
-
-        // Draw feature plot if we have data
-        if (!feat_x.empty() && feat_y_max > feat_y_min) {
-          // Cache Y range for next frame's axis setup
-          ui.feat_y2_min = feat_y_min;
-          ui.feat_y2_max = feat_y_max;
-          ui.feat_y2_valid = true;
-
-          // Plot on Y2 axis (right side shows feature scale)
-          ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-
-          // 单线阶梯图 (L1 分钟频单值, 无需 OHLC 带)
-          ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.1f, 0.85f, 0.9f, 0.7f));
-          ImPlot::PlotStairs("Feature", feat_x.data(), feat_y.data(),
-                             static_cast<int>(feat_x.size()));
-          ImPlot::PopStyleColor();
-
-          // Switch back to Y1 for subsequent plots
-          ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-        } else {
-          // No valid feature data in view, invalidate cache
-          ui.feat_y2_valid = false;
-        }
-      } else {
-        // Cache not matching, invalidate
-        ui.feat_y2_valid = false;
-      }
-
-      // Anchor: use snapped X (ui.l1_anchor_x is source of truth)
+    // ------------------------------------------------------------------
+    // Anchor: 吸附日起点 → 驱动图1 (day, asset) 请求
+    // ------------------------------------------------------------------
+    {
       double anchor_x = ui.l1_anchor_x;
+      const bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
+      const bool drag_active = ImGui::IsItemActive();
 
-      // DragLineX: snap only when drag is released
-      bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
-      bool drag_active = ImGui::IsItemActive();
-
-      if (drag_changed && !drag_active) {
-        ui.l1_anchor_x = of.l1.snap_to_day_start(anchor_x);
-        ui.l1_anchor_date = of.l1.date_from_x(ui.l1_anchor_x);
-      }
-
-      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-        ui.l1_anchor_x = of.l1.snap_to_day_start(ImPlot::GetPlotMousePos().x);
-        ui.l1_anchor_date = of.l1.date_from_x(ui.l1_anchor_x);
-      }
-
-      // Annotation: use snapped position and find corresponding Y value
-      if (!ui.l1_anchor_date.empty()) {
-        auto it = std::lower_bound(pd.x.begin(), pd.x.end(), ui.l1_anchor_x);
-        double anchor_y = 0;
-        if (it != pd.x.end()) {
-          size_t idx = static_cast<size_t>(it - pd.x.begin());
-          if (idx < pd.close.size())
-            anchor_y = pd.close[idx];
+      if (drag_changed) {
+        if (drag_active) { // 拖动中跟手, 不动 anchor_date (释放才吸附日起点 → 触发图1 重放)
+          ui.l1_anchor_x = std::max(0.0, anchor_x);
+        } else {
+          ui.l1_anchor_x = k.snap_to_day_start(anchor_x);
+          ui.l1_anchor_date = k.date_from_x(ui.l1_anchor_x);
         }
+      }
+      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
+        ui.l1_anchor_x = k.snap_to_day_start(ImPlot::GetPlotMousePos().x);
+        ui.l1_anchor_date = k.date_from_x(ui.l1_anchor_x);
+      }
+
+      if (!ui.l1_anchor_date.empty() && pub_points > 0) {
+        const auto it = std::lower_bound(k.x.begin(), k.x.begin() + static_cast<long>(pub_points), ui.l1_anchor_x);
+        double anchor_y = 0;
+        if (it != k.x.begin() + static_cast<long>(pub_points))
+          anchor_y = k.close[static_cast<size_t>(it - k.x.begin())];
 
         char date_buf[16];
         FormatDateShort(date_buf, sizeof(date_buf), ui.l1_anchor_date);
@@ -659,23 +539,17 @@ static void RenderAssetSelector(SharedData &data, OrderFlow &of) {
                     asset.asset_code.c_str(), asset.exchange.c_str(),
                     asset.asset_name.c_str(), is_delisted ? " (DL)" : "");
 
-      if (is_delisted) {
+      if (is_delisted)
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-      }
 
       const bool is_selected = (ui.selected_asset_idx == static_cast<int>(i));
-      if (ImGui::Selectable(label, is_selected, is_delisted ? ImGuiSelectableFlags_Disabled : 0)) {
+      if (ImGui::Selectable(label, is_selected, is_delisted ? ImGuiSelectableFlags_Disabled : 0))
         ui.selected_asset_idx = static_cast<int>(i);
-        of.l1.build_plot_data(i);
-      }
 
-      if (is_delisted) {
+      if (is_delisted)
         ImGui::PopStyleColor();
-      }
-
-      if (is_selected) {
+      if (is_selected)
         ImGui::SetItemDefaultFocus();
-      }
     }
     ImGui::EndCombo();
   }
@@ -685,37 +559,45 @@ static void RenderAssetSelector(SharedData &data, OrderFlow &of) {
 // Status Bar
 // ============================================================================
 
-static void RenderStatusBar(const OrderFlow &of, size_t asset_idx) {
+static void RenderStatusBar(const OrderFlow &of) {
+  const auto &ui = of.ui;
+  const auto &k = of.kline;
+
+  // Kline 流式进度
+  uint32_t pub_gen;
+  size_t pub_days, pub_points;
+  OrderFlow::Kline::unpack(k.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_points);
+
   ImGui::SameLine();
-  if (of.l1.loaded && asset_idx < of.l1.plot_data.size()) {
-    const auto &pd = of.l1.plot_data[asset_idx];
-    ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "[L1: %zu days, %zu points]",
-                       of.l1.num_days, pd.x.size());
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("L1 (分钟级别):\n"
-                        "所有显示的K线都有完整的OHLCV数据\n"
-                        "仅使用 data_valid 标记");
-    }
+  if (pub_gen == (ui.kline_gen & 0xFFFF) && !k.dates.empty()) {
+    const bool streaming = pub_days < k.dates.size();
+    ImGui::TextColored(streaming ? ImVec4(1.0f, 0.8f, 0.0f, 1.0f) : ImVec4(0.3f, 0.8f, 0.3f, 1.0f),
+                       "[L1: %zu/%zu days, %zu pts]", pub_days, k.dates.size(), pub_points);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("K线流式加载 (从前往后逐日): 已发布日数 / 总日数, 有效分钟数");
+  } else {
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L1: rebuilding]");
   }
+
   ImGui::SameLine();
-  if (!of.ui.l1_anchor_date.empty()) {
+  if (!ui.l1_anchor_date.empty()) {
     char date_buf[16];
-    FormatDateShort(date_buf, sizeof(date_buf), of.ui.l1_anchor_date);
+    FormatDateShort(date_buf, sizeof(date_buf), ui.l1_anchor_date);
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Anchor: %s", date_buf);
   }
+
+  // Depth 重放状态
   ImGui::SameLine();
-  if (of.loader.l0_requested) {
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[Loading L0...]");
-  } else if (of.l0.loaded) {
-    auto stats = of.l0.compute_stats();
-    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu/%zu/%zu]",
-                       stats.heatmap_rects, stats.depth_valid, stats.data_valid);
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("合并矩形数 / 有效深度 / 有效数据\n"
-                        "合并矩形数: 热力图缓存中的矩形总数(已合并)\n"
-                        "有效深度: LOB深度缓冲完整的tick数(含买卖价格/挂单量/中间价)\n"
-                        "有效数据: 事件驱动数据存在的tick数(含其他tick特征)");
-    }
+  const OrderFlow::Depth &dp = of.depth_front_slot();
+  if (dp.gen != ui.depth_gen) {
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L0: replaying...]");
+  } else if (dp.has_data) {
+    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu snaps / %zu rects / %zu orders]",
+                       dp.ticks.size(), dp.merged.rect_count, dp.order_count);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("秒级盘口快照数 (LOB 逐笔重放) / 热力图合并矩形数 / 当日逐笔条数");
+  } else if (dp.asset_idx != SIZE_MAX) {
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "[L0: no data]");
   }
 }
 
@@ -745,8 +627,6 @@ static void RenderHeatmapControls(OrderFlow &of) {
       ImGui::Text("7.0 = 1000万元 (仅显示大额档位)");
       ImGui::Separator();
       ImGui::TextWrapped("范围: [阈值, 1000万] 映射到 [透明, 完全实色]");
-      ImGui::TextWrapped("降低阈值: 看到更多薄档位");
-      ImGui::TextWrapped("提高阈值: 只关注大额档位");
       ImGui::EndTooltip();
     }
   }
@@ -756,9 +636,9 @@ static void RenderHeatmapControls(OrderFlow &of) {
 // Main Orchestration
 // ============================================================================
 
-void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
-  if (!loader) {
-    ImGui::TextDisabled("DataLoader not initialized");
+void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
+  if (!service) {
+    ImGui::TextDisabled("OrderFlowService not initialized");
     return;
   }
 
@@ -772,44 +652,61 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   auto &of = data.orderflow;
   auto &ui = of.ui;
   const size_t num_assets = data.asset.items.size();
+  if (num_assets == 0) {
+    ImGui::TextDisabled("No assets");
+    return;
+  }
+
+  service->Start(data); // 幂等: 首帧启动 worker
+
+  // ==========================================================================
+  // 帧首: depth 背槽发布 ack → 翻 front (先翻面后清 pending, worker 等 pending 清)
+  // ==========================================================================
+  if (of.depth_pending.load(std::memory_order_acquire)) {
+    of.depth_front.store(1 - of.depth_front.load(std::memory_order_relaxed), std::memory_order_release);
+    of.depth_pending.store(false, std::memory_order_release);
+  }
+
+  // ==========================================================================
+  // 期望态检测 → 请求 (gen++ 即"停止消费旧代", 发布追上后自动恢复渲染)
+  // ==========================================================================
+  const bool rescan = of.needs_rescan.exchange(false, std::memory_order_relaxed);
+  const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  // ==========================================================================
-  // Data Loading
-  // ==========================================================================
-
-  // L1: Synchronous load once
-  if (num_assets > 0) {
-    loader->EnsureL1Loaded(of, num_assets);
+  std::vector<int> l1_feats = CollectFeats(sel, 1);
+  if (rescan || ui.kline_asset != asset_idx || ui.kline_feats != l1_feats) {
+    ui.kline_asset = asset_idx;
+    ui.kline_feats = l1_feats;
+    ++ui.kline_gen;
+    ui.l1_last_pub_days = SIZE_MAX; // 换代: 重置轴管理
+    service->RequestKline(ui.kline_gen, asset_idx, std::move(l1_feats), rescan);
   }
 
-  // L0 coroutine lifecycle
-  if (of.l1.loaded && !of.loader.coro_running) {
-    loader->StartL0Loader(data.coromgr, of, data.feature.selection.selected_level, data.feature.selection.primary_feature_idx);
-    if (!ui.l1_anchor_date.empty()) {
-      loader->RequestL0Load(of, ui.l1_anchor_date, asset_idx);
-    }
+  // Kline 发布状态 (anchor 默认值需要 dates)
+  uint32_t pub_gen;
+  size_t pub_days, pub_points;
+  OrderFlow::Kline::unpack(of.kline.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_points);
+  const bool kline_ready = (pub_gen == (ui.kline_gen & 0xFFFF));
+
+  if (ui.l1_anchor_date.empty() && kline_ready && !of.kline.dates.empty()) {
+    ui.l1_anchor_x = 0;
+    ui.l1_anchor_date = of.kline.dates.front();
   }
 
-  // Detect parameter changes (date/asset changed)
-  const bool params_changed = ui.detect_and_update_changes();
-
-  // L0: Request load on parameter change
-  if (params_changed && !ui.l1_anchor_date.empty()) {
-    loader->RequestL0Load(of, ui.l1_anchor_date, asset_idx);
+  std::vector<int> l0_feats = CollectFeats(sel, 0);
+  if (!ui.l1_anchor_date.empty() &&
+      (rescan || ui.depth_date != ui.l1_anchor_date || ui.depth_asset != asset_idx || ui.depth_feats != l0_feats)) {
+    ui.depth_date = ui.l1_anchor_date;
+    ui.depth_asset = asset_idx;
+    ui.depth_feats = l0_feats;
+    ++ui.depth_gen;
+    service->RequestDepth(ui.depth_gen, ui.l1_anchor_date, asset_idx, std::move(l0_feats));
   }
 
-  // Detect L0 data just finished loading (for auto-zoom)
-  const bool l0_just_loaded = ui.prev_l0_loading && !of.loader.l0_requested;
-  ui.prev_l0_loading = of.loader.l0_requested;
-
-  // Force reset when params changed OR when L0 data just finished loading
-  const bool force_reset = params_changed || l0_just_loaded;
-
   // ==========================================================================
-  // LAYOUT: Compute dimensions
+  // LAYOUT
   // ==========================================================================
-
   const float content_height = ImGui::GetContentRegionAvail().y;
   const float content_width = ImGui::GetContentRegionAvail().x;
   const float top_view_height = content_height * OrderFlowConst::TOP_VIEW_RATIO;
@@ -817,54 +714,41 @@ void RenderTabOrderFlow(DataLoader *loader, SharedData &data) {
   const float chart_width = content_width - OrderFlowConst::DEPTH_PANEL_WIDTH - 10.0f;
 
   // ==========================================================================
-  // TOP SECTION: L0 Order Flow + Depth
+  // TOP: L0 秒级盘口 + 深度面板
   // ==========================================================================
-
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
   ImGui::BeginChild("L0Chart", ImVec2(chart_width, -1), false);
-
-  RenderL0Plot(of, data.feature, force_reset);
-
+  RenderL0Plot(of, data.feature);
   ImGui::EndChild();
 
   ImGui::SameLine();
   ImGui::BeginChild("DepthPanel", ImVec2(OrderFlowConst::DEPTH_PANEL_WIDTH, -1), true);
-
-  if (of.l0.loaded && ui.l0_anchor_plot_idx < of.l0.plot.x.size()) {
-    auto depth = of.l0.query_depth(ui.l0_anchor_plot_idx);
-    std::string date = of.l0.date_from_plot_idx(ui.l0_anchor_plot_idx);
-    RenderDepthPanel(depth, date, OrderFlowConst::DEPTH_PANEL_WIDTH);
-  } else {
-    ImGui::TextDisabled("No L0 data");
+  {
+    const OrderFlow::Depth &dp = of.depth_front_slot();
+    if (dp.has_data && ui.l0_anchor_tick != SIZE_MAX) {
+      const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.l0_anchor_tick));
+      RenderDepthPanel(dp.query_depth(plot_idx), dp.date, OrderFlowConst::DEPTH_PANEL_WIDTH);
+    } else {
+      ImGui::TextDisabled("No L0 data");
+    }
   }
-
   ImGui::EndChild();
   ImGui::EndChild(); // TopSection
 
   // ==========================================================================
-  // BOTTOM SECTION: L1 K-Line + Controls
+  // BOTTOM: K线 + 控件
   // ==========================================================================
-
   ImGui::BeginChild("BottomSection", ImVec2(0, bottom_view_height), true);
 
-  // First line: Asset selector + Heatmap controls
   RenderAssetSelector(data, of);
   ImGui::SameLine();
   RenderHeatmapControls(of);
-
-  // Second line: Status bar
-  RenderStatusBar(of, asset_idx);
+  RenderStatusBar(of);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
-  RenderL1Plot(of, data.feature, asset_idx, kline_height, params_changed);
+  RenderL1Plot(of, data.feature, kline_height);
 
   ImGui::EndChild(); // BottomSection
-}
-
-void StopTabOrderFlow(DataLoader *loader, SharedData &data) {
-  if (loader && data.orderflow.loader.coro_running) {
-    loader->StopL0Loader(data.coromgr, data.orderflow);
-  }
 }
 
 } // namespace GUI::Features

@@ -72,6 +72,19 @@ public:
     assert(tick_data_->asset_id == static_cast<uint32_t>(asset_id) && "bind: core/asset 不匹配");
   }
 
+  // 无特征侧绑定 (GUI OrderFlow 重放): 盘口写出口指向调用方的 TickData, 不跑 DAG.
+  // 与回测绑定的唯一差异是 core_ == nullptr → 特征侧出口全部跳过 (if (core_), 恒真
+  // 指针在回测热路径上是被完美预测的分支). 撮合/簿维护逐字节同一条路径.
+  void bind(TickData *sink, size_t asset_id, L2::ExchangeType exchange_type) {
+    assert(sink && "bind: null sink");
+    assert(order_lookup_.size() == 0 && "bind: book not clean");
+    core_ = nullptr;
+    asset_id_ = asset_id;
+    exchange_type_ = exchange_type;
+    sink->asset_id = static_cast<uint32_t>(asset_id);
+    tick_data_ = sink;
+  }
+
   // 当前绑定资产的 TickData (归 core 所有)
   TickData &tick_data() {
     assert(tick_data_ && "tick_data: LOB not bound");
@@ -157,7 +170,6 @@ public:
 
   // Complete reset
   HOT_NOINLINE void clear() {
-    assert(core_ && "clear: LOB not bound");
     price_levels_.fill(nullptr); // Reset direct array (all nullptr)
     level_storage_.clear();
     order_lookup_.clear();
@@ -190,11 +202,27 @@ public:
     debug_.printed_anomalies.clear();
 #endif
 
-    // Reset feature state for new day
-    core_->reset();
+    // Reset feature state for new day (无特征侧绑定时无事可做)
+    if (core_)
+      core_->reset();
 
     // Reinitialize sentinel levels
     init_sentinel_levels();
+  }
+
+  // 全簿可见档位枚举 (GUI OrderFlow 重放用): 按价升序回调 f(price_idx, net_qty).
+  // 跳过特殊档 0 与两端哨兵/停靠档 (判据同 init_sentinel_levels / park_price:
+  // 低端 [1, LOB_DEPTH], 高端 [PRICE_RANGE_SIZE-1-LOB_DEPTH, PRICE_RANGE_SIZE-1]).
+  // net_qty 为股数, SIGNED: 买压 > 0, 卖压 < 0.
+  template <typename F>
+  void for_each_visible_level(F &&f) const {
+    constexpr size_t HIGH_SENTINEL_BEGIN = PRICE_RANGE_SIZE - 1 - L2::LOB_DEPTH;
+    for (size_t p = visible_price_bitmap_.find_next(L2::LOB_DEPTH); p < HIGH_SENTINEL_BEGIN;
+         p = visible_price_bitmap_.find_next(p)) {
+      const Level *level = price_levels_[p];
+      assert(level && "for_each_visible_level: visible price without level");
+      f(static_cast<uint32_t>(p), level->net_quantity);
+    }
   }
 
 private:
@@ -905,7 +933,8 @@ private:
 #endif
     }
 
-    core_->compute_and_store();
+    if (core_) [[likely]]
+      core_->compute_and_store();
 
     // ========================= lob update ==============================
     bool result = update_lob(order);

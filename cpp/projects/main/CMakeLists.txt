@@ -238,6 +238,7 @@ set(SOURCES
     ../../src/gui/task_features/TaskFeatures.cpp
     ../../src/gui/task_features/services/ComputeService.cpp
     ../../src/gui/task_features/services/DistService.cpp
+    ../../src/gui/task_features/services/OrderFlowService.cpp
     ../../src/gui/task_features/services/TimeSeriesService.cpp
     ../../src/gui/task_features/services/TransformService.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
