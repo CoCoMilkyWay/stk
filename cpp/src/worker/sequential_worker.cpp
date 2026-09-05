@@ -46,17 +46,14 @@ void sequential_worker(WorkerCtx ctx) {
   GlobalFeatureStore &store = ctx.store;
   TsSchedule &sched = ctx.sched;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  const misc::ProgressHandle progress_handle = std::move(ctx.progress);
+  // 本核计数发布槽 (单写者): 前沿/持仓在 store/sched 里, 渲染线程自取
+  ComputeStats::Ts &stat = ctx.stats.ts[static_cast<size_t>(worker_id)];
 
   TraceNS("TSWorker", 5);
   TraceValue(worker_id);
   TraceThread(("ts_worker_" + std::to_string(worker_id)).c_str());
 
   const size_t total_dates = data.asset.all_dates.size();
-
-  // Initialize as idle (will be updated if assets are assigned)
-  progress_handle.set_label("Idle");
-  progress_handle.update(1, 1, "");
 
   // Find assets initially assigned to this worker
   std::vector<size_t> my_asset_ids;
@@ -98,44 +95,16 @@ void sequential_worker(WorkerCtx ctx) {
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
                                                          std::to_string(data.asset.all_dates.size()) + " dates");
 
-  // Progress label
-  char label_buf[128];
-  snprintf(label_buf, sizeof(label_buf), "时序核心%2d:", worker_id);
-  progress_handle.set_label(label_buf);
-
   size_t cumulative_orders = 0;
   size_t completed_dates = 0;
   size_t date_orders = 0;
   size_t date_assets_processed = 0;
-  auto start_time = std::chrono::steady_clock::now();
 
   // 认领 (asset, d): CAS d-1→d 唯一裁决谁处理这个 asset-day —— 处置权转移
   // 瞬间的双写/漏写由它兜底, owner 只是"该不该去试"的路标.
   auto claim = [&sched](size_t asset_id, int32_t d) {
     int32_t expected = d - 1;
     return sched.claimed[asset_id].compare_exchange_strong(expected, d, std::memory_order_acq_rel);
-  };
-
-  // 进度: 日数为主刻度, 日内排 [已完成/持有] 紧凑计数; 行色按与领跑者的
-  // 差距 (slot 粒度) 白→红 (满红 = 差距吃满整个池子, 即本核快把全员拖死).
-  auto update_progress = [&](size_t days_done, const std::string &date_str, size_t done_today) {
-    size_t max_days = days_done;
-    for (int w = 0; w < static_cast<int>(store.query_ts_workers()); ++w)
-      max_days = std::max(max_days, store.ts_frontier(w));
-    const size_t gap = max_days - days_done;
-    const float t = std::min(1.0f, static_cast<float>(gap) / static_cast<float>(store.query_slots()));
-    const int gb = static_cast<int>(255.0f * (1.0f - t));
-    char color_buf[24];
-    snprintf(color_buf, sizeof(color_buf), "\033[38;2;255;%d;%dm", gb, gb);
-    progress_handle.set_color(color_buf);
-
-    const float elapsed_seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
-    const float speed_M_per_sec = (elapsed_seconds > 0) ? (cumulative_orders / 1e6) / elapsed_seconds : 0.0;
-
-    char msg_buf[128];
-    snprintf(msg_buf, sizeof(msg_buf), "%s [%3zu/%3zu] [%.1fM/s (%.1fM)]",
-             date_str.c_str(), done_today, my_asset_ids.size(), speed_M_per_sec, cumulative_orders / 1e6);
-    progress_handle.update(days_done, total_dates, msg_buf);
   };
 
   // 处理一个 asset-day (缺 binary 则空过, 张量保持默认值), 返回订单数.
@@ -300,6 +269,7 @@ void sequential_worker(WorkerCtx ctx) {
         if (!bday)
           return;
         cumulative_orders += process_asset_day(pick, data.asset.date_idx(bdate), bdate, bday);
+        stat.orders.store(cumulative_orders, std::memory_order_relaxed);
         sched.done[pick].store(d, std::memory_order_release);
         store.ts_close(bday);
       }
@@ -321,6 +291,7 @@ void sequential_worker(WorkerCtx ctx) {
     date_orders = 0;
     date_assets_processed = 0;
     adopted_today = 0; // leader 侧领养预算按日重置
+    stat.done_today.store(0, std::memory_order_relaxed);
 
     // 日期 → 日期轴下标, 一天查一次; 资产内循环 O(1) 定址
     const size_t didx = data.asset.date_idx(date_str);
@@ -357,7 +328,8 @@ void sequential_worker(WorkerCtx ctx) {
       store.ts_close(day);
       ++i;
       ++done_today;
-      update_progress(date_idx, date_str, done_today);
+      stat.done_today.store(static_cast<uint32_t>(done_today), std::memory_order_relaxed);
+      stat.orders.store(cumulative_orders, std::memory_order_relaxed);
     }
 
     if (date_assets_processed > 0) {
@@ -371,14 +343,11 @@ void sequential_worker(WorkerCtx ctx) {
     }
 
     completed_dates = date_idx + 1;
-    update_progress(completed_dates, date_str, done_today);
 
     TraceFrame; // Mark frame boundary for timeline
   }
 
-  progress_handle.set_color("");
   if (cancel_requested.load(std::memory_order_relaxed)) {
-    progress_handle.update(completed_dates, data.asset.all_dates.size(), "Cancelled");
     Logger::log("worker_" + std::to_string(worker_id), "Cancelled: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(completed_dates) + " dates");
   } else {
     Logger::log("worker_" + std::to_string(worker_id), "Completed: processed " + std::to_string(cumulative_orders) + " orders across " + std::to_string(data.asset.all_dates.size()) + " dates");

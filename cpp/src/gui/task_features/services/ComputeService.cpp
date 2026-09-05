@@ -155,12 +155,13 @@ void ComputeService::start_compute(ComputeConfig config) {
     // Initialize logger for all workers (shared log file)
     Logger::init(data_.config.log_dir);
 
-    // Launch workers: 统一 launch(core, row, fn) —— pin 到 core, 进度挂到
-    // row, worker_id = core. 四角色同签名 (WorkerCtx, 见 feature_workers.hpp),
-    // 调度面 sched 随 ctx 带入, 只有 TS 用.
-    progress_ = std::make_shared<misc::ParallelProgress>(L.progress_rows());
+    // Launch workers: 统一 launch(core, fn) —— pin 到 core, worker_id = core.
+    // 四角色同签名 (WorkerCtx, 见 feature_workers.hpp), 调度面 sched 随 ctx
+    // 带入, 只有 TS 用. 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
+    stats_ = std::make_unique<ComputeStats>(static_cast<size_t>(L.num_ts));
+    progress_ = std::make_unique<FeatureProgress>(*feature_store_, *ts_schedule_, *stats_, data_.asset.all_dates);
     workers_.clear();
-    workers_.reserve(static_cast<size_t>(L.progress_rows()));
+    workers_.reserve(static_cast<size_t>(L.total_threads()));
 
     using WorkerFn = void (*)(WorkerCtx);
     auto worker_fn = [](ComputeStage stage) -> WorkerFn {
@@ -178,23 +179,26 @@ void ComputeService::start_compute(ComputeConfig config) {
       return nullptr;
     };
 
-    auto launch = [this](int core, int row, WorkerFn fn) {
-      workers_.push_back(std::async(std::launch::async, [this, core, row, fn]() {
+    auto launch = [this](int core, WorkerFn fn) {
+      workers_.push_back(std::async(std::launch::async, [this, core, fn]() {
         if (misc::Affinity::supported()) {
           misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
         }
-        fn({core, data_, *feature_store_, *ts_schedule_, cancel_flag_, progress_->get_handle(row)});
+        fn({core, data_, *feature_store_, *ts_schedule_, cancel_flag_, *stats_});
       }));
     };
 
     for (const StageLayout::Stage &s : L.stages())
       for (int i = 0; i < s.threads; ++i)
-        launch(s.first_core + i, s.first_row + i, worker_fn(s.kind));
+        launch(s.first_core + i, worker_fn(s.kind));
 
     // Wait for completion
     for (auto &worker : workers_)
       worker.wait();
+    // 仪表盘引用 store/sched/all_dates, 必须先于它们的复原/析构停掉
     progress_->stop();
+    progress_.reset();
+    stats_.reset();
     workers_.clear();
 
     // Restore original all_dates

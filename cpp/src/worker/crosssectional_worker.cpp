@@ -15,7 +15,7 @@ void crosssectional_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  const misc::ProgressHandle progress_handle = std::move(ctx.progress);
+  // 进度不需本 worker 发布: 天数前沿 = store.query_cs_days_done(), 渲染线程自取
 
   TraceNS("CSWorker", 5);
   TraceValue(worker_id);
@@ -28,11 +28,6 @@ void crosssectional_worker(WorkerCtx ctx) {
 
   // Initialize CoreCrosssection (manages buffers and 3-level computation)
   CoreCrosssection core(store);
-
-  char label_buf[128];
-  snprintf(label_buf, sizeof(label_buf), "截面核心%2d:", worker_id);
-  progress_handle.set_label(label_buf);
-  progress_handle.update(0, total_dates, "等待数据");
 
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
@@ -53,7 +48,6 @@ void crosssectional_worker(WorkerCtx ctx) {
       // 浪费, 更不能拿退出条件去赌 TS 侧计数的时序.
       while (!(day = store.cs_try_open(date_str))) {
         if (cancel_requested.load(std::memory_order_relaxed)) {
-          progress_handle.update(completed_dates, total_dates, "Cancelled");
           Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(completed_dates) + " dates");
           return;
         }
@@ -71,7 +65,6 @@ void crosssectional_worker(WorkerCtx ctx) {
     }
 
     ++completed_dates;
-    progress_handle.update(completed_dates, total_dates, date_str);
 
     // 本日截面完成, slot 交给 IO 落盘
     store.cs_close(day);
@@ -82,7 +75,6 @@ void crosssectional_worker(WorkerCtx ctx) {
   }
 
   const bool cancelled = cancel_requested.load(std::memory_order_relaxed);
-  progress_handle.update(cancelled ? completed_dates : total_dates, total_dates, cancelled ? "Cancelled" : "Complete");
 
   if (cancelled)
     Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(completed_dates) + " dates");

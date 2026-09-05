@@ -15,7 +15,7 @@ void io_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  const misc::ProgressHandle progress_handle = std::move(ctx.progress);
+  ComputeStats &stats = ctx.stats; // 单写者: 渲染线程只读
 
   TraceNS("IOWorker", 5);
   TraceValue(worker_id);
@@ -23,12 +23,6 @@ void io_worker(WorkerCtx ctx) {
 
   const size_t total_dates = data.asset.all_dates.size();
   size_t flush_count = 0;
-
-  // Update initial label
-  char label_buf[128];
-  snprintf(label_buf, sizeof(label_buf), "落盘核心%2d:", worker_id);
-  progress_handle.set_label(label_buf);
-  progress_handle.update(0, total_dates, "等待数据");
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to flush");
 
@@ -49,9 +43,9 @@ void io_worker(WorkerCtx ctx) {
     if (flushed) {
       flush_count++;
       wait_count = 0;
+      stats.io_days.store(flush_count, std::memory_order_relaxed);
       Logger::log("worker_" + std::to_string(worker_id), "Flushed: " + std::to_string(flush_count) + "/" + std::to_string(total_dates));
 
-      progress_handle.update(flush_count, total_dates, "");
       TraceFrame;
     } else {
       TraceN("WaitForData");
@@ -61,7 +55,6 @@ void io_worker(WorkerCtx ctx) {
       // 反超定格的 cs_days_done, 等相等就是死等 (cancel 卡死的根因).
       if (cancel_requested.load(std::memory_order_relaxed) &&
           flush_count >= store.query_cs_days_done()) {
-        progress_handle.update(flush_count, total_dates, "Cancelled");
         Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(flush_count) + " dates");
         cancelled = true;
         break;
@@ -74,8 +67,6 @@ void io_worker(WorkerCtx ctx) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
-
-  progress_handle.update(cancelled ? flush_count : total_dates, total_dates, cancelled ? "Cancelled" : "Complete");
 
   if (!cancelled)
     Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates flushed");

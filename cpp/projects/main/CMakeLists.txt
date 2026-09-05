@@ -211,6 +211,7 @@ set(SOURCES
     # worker
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/encoding_worker.cpp
+    ../../src/worker/feature_progress.cpp
     ../../src/worker/io_worker.cpp
     ../../src/worker/prefetch_worker.cpp
     ../../src/worker/sequential_worker.cpp

@@ -1,9 +1,11 @@
 #pragma once
 
-#include "misc/progress_parallel.hpp"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <thread>
 #include <vector>
 
 // Forward declarations
@@ -53,11 +55,69 @@ struct TsSchedule {
 };
 
 // ============================================================================
+// 特征计算进度 —— 拉取式仪表盘 (总条 + 阶段行 + TS 热力条 + 慢核明细)
+//
+// worker 不再各持一行进度句柄: 前沿/持仓等共享状态本就躺在 FeatureStore /
+// TsSchedule 里, worker 只把剩下的少量本地计数发布成原子 (ComputeStats,
+// 单写者, 渲染线程只读). FeatureProgress 的采样线程每 100ms 拉取全量状态,
+// 原地重画固定 5 行:
+//
+//   [#######>            ]  48% 238/500 天 | 12m03s, ETA 13m10s (3.1s/天)
+//   预取 251/500 20230811 812MB/s (1.2TB) | 截面 240/500 | 落盘 238/500
+//   时序 前沿 242..248/500 (20230805) Σ14.2M/s (28.4G单) 持仓 69..75
+//   核压 [▆█▇█▅█▇█▂█▇█...]   每核1格: 块高 = 当日进度, 颜色 = 落后领跑者天数
+//   慢核 12:-3天 [34/75] 0.9M/s · 41:-2天 [51/70] 1.3M/s   (差距≥2天, 按差距降序)
+//
+// 总条以落盘天数为准 (端到端真完成). TS 核间前沿差被池深钳住 (≤ slots),
+// 差距本身就是"压力", 白→红着色; 健康核逐核数值全在热力条里 (前沿 = 领跑
+// 前沿 − 颜色档, 当日进度 = 块高), 只有逐核速度浓缩进 Σ —— 一旦某核落后
+// ≥2 天, 其完整数值 (核号/差距/当日计数/速度) 自动展开到慢核行.
+// ============================================================================
+struct ComputeStats {
+  struct alignas(64) Ts {
+    std::atomic<size_t> orders{0};       // 累计已处理逐笔条数 (速度 = orders / elapsed)
+    std::atomic<uint32_t> done_today{0}; // 当日已完成资产数 (日循环头清零)
+  };
+  std::atomic<size_t> prefetch_days{0};
+  std::atomic<size_t> prefetch_bytes{0};
+  std::atomic<size_t> io_days{0}; // 已落盘天数
+  std::vector<Ts> ts;
+  explicit ComputeStats(size_t num_ts) : ts(num_ts) {}
+};
+
+class FeatureProgress {
+public:
+  // dates = 回测日期轴 (渲染期内调用方保证存活); 构造即预留 5 行并启动采样线程
+  FeatureProgress(const GlobalFeatureStore &store, const TsSchedule &sched,
+                  const ComputeStats &stats, const std::vector<std::string> &dates);
+  ~FeatureProgress();
+
+  void stop(); // 终画一帧并换行 (幂等)
+
+private:
+  void render();
+  long long elapsed_ms() const;
+
+  const GlobalFeatureStore &store_;
+  const TsSchedule &sched_;
+  const ComputeStats &stats_;
+  const std::vector<std::string> &dates_;
+  std::chrono::steady_clock::time_point start_time_;
+
+  // ETA 标定: 首个落盘样本 (时刻, 当时天数), 只用之后的增量算每天耗时 ——
+  // 首日落盘要等流水线灌满, 混进平均只会虚高
+  long long first_io_ms_ = -1;
+  size_t first_io_days_ = 0;
+
+  std::atomic<bool> running_{true};
+  std::thread refresh_thread_;
+};
+
+// ============================================================================
 // PHASE 2 WORKERS —— 四角色统一签名: void xxx_worker(WorkerCtx)
 //
-// 上下文按值传入 (ProgressHandle move-only, 整个 ctx 随之 move-only).
 // sched 只有 TS 用, 其余角色不碰 —— 统一签名换来统一 launch (见 ComputeService).
-// worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做标签/日志.
+// worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做日志/stats 下标.
 // ============================================================================
 struct WorkerCtx {
   int worker_id;
@@ -65,7 +125,7 @@ struct WorkerCtx {
   GlobalFeatureStore &store;
   TsSchedule &sched;
   const std::atomic<bool> &cancel;
-  misc::ProgressHandle progress;
+  ComputeStats &stats;
 };
 
 // 预取: 顺日期把 .bin 读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.

@@ -2,7 +2,6 @@
 // High-performance mode: Prefetch + TS workers + CS worker + IO worker
 #pragma once
 
-#include "misc/progress_parallel.hpp"
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -18,6 +17,8 @@
 struct SharedData;
 class GlobalFeatureStore;
 struct TsSchedule;
+struct ComputeStats;
+class FeatureProgress;
 
 namespace GUI::Features {
 
@@ -29,8 +30,8 @@ namespace GUI::Features {
 //                                    阻塞, 互不打架; 小核数机器把预取核让给 TS)
 //
 // 全部线程 pin 死 —— 没有浮动线程抢占 pinned worker 的时间片.
-// 每个 stage 一对 {core, row}: core = pin 的物理核, row = 进度条行号.
-// stage 顺序 = UI 表格顺序 = 终端进度顺序 = 预取, TS..., CS, IO.
+// stage 顺序 = UI 表格顺序 = 预取, TS..., CS, IO.
+// 进度不再按行挂 worker: 仪表盘 (FeatureProgress) 自行采样, 见 feature_workers.hpp.
 // ============================================================================
 enum class ComputeStage : size_t {
   Prefetch = 0,
@@ -48,32 +49,31 @@ struct StageLayout {
     int cores = 0;      // 独占核心数 (共核 stage 可为 0)
     int first_core = 0; // pin 的首核
     int last_core = 0;  // pin 的尾核
-    int first_row = 0;  // 进度首行
     bool shared = false;
   };
 
   static constexpr size_t kStageCount = 4;
 
   int total_cores = 0;
-  int num_ts = 0; // TS worker 数, 核/行 0..num_ts-1
+  int num_ts = 0; // TS worker 数, 核 0..num_ts-1
   bool prefetch_shared = false;
 
-  int progress_rows() const { return num_ts + 3; }
+  int total_threads() const { return num_ts + 3; }
 
   Stage stage(ComputeStage kind) const {
     switch (kind) {
     case ComputeStage::Prefetch:
       return {kind, "预取 Prefetch", "顺日期把 .bin 读进 page cache, 领先最慢时序核不超过 pool slots + 2 天",
-              1, prefetch_shared ? 0 : 1, prefetch_shared ? num_ts + 1 : num_ts + 2, prefetch_shared ? num_ts + 1 : num_ts + 2, 0, prefetch_shared};
+              1, prefetch_shared ? 0 : 1, prefetch_shared ? num_ts + 1 : num_ts + 2, prefetch_shared ? num_ts + 1 : num_ts + 2, prefetch_shared};
     case ComputeStage::TS:
       return {kind, "时序 TS", "逐资产 decode + LOB 重建 + DAG, 写 L0/L1/DEPTH 张量; 领跑核自动接手落后核的资产 (处置权转移)",
-              num_ts, num_ts, 0, num_ts - 1, 1, false};
+              num_ts, num_ts, 0, num_ts - 1, false};
     case ComputeStage::CS:
       return {kind, "截面 CS", "本日全部时序核写完后整日扫截面列",
-              1, 1, num_ts, num_ts, num_ts + 1, false};
+              1, 1, num_ts, num_ts, false};
     case ComputeStage::IO:
       return {kind, "落盘 IO", "摘 DONE slot 落盘并归还池",
-              1, 1, num_ts + 1, num_ts + 1, num_ts + 2, false};
+              1, 1, num_ts + 1, num_ts + 1, false};
     }
     assert(false && "unknown compute stage");
     return {};
@@ -141,7 +141,8 @@ private:
   SharedData &data_;
 
   std::atomic<bool> cancel_flag_{false};
-  std::shared_ptr<misc::ParallelProgress> progress_;
+  std::unique_ptr<ComputeStats> stats_;       // worker 发布的原子计数
+  std::unique_ptr<FeatureProgress> progress_; // 采样渲染线程 (5 行仪表盘)
   std::vector<std::future<void>> workers_;
   std::atomic<ComputeStatus> status_{ComputeStatus::Idle};
 

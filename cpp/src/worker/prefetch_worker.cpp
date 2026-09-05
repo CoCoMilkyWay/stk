@@ -16,7 +16,7 @@ void prefetch_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  const misc::ProgressHandle progress_handle = std::move(ctx.progress);
+  ComputeStats &stats = ctx.stats; // 单写者: 渲染线程只读
 
   TraceNS("PrefetchWorker", 5);
   TraceValue(worker_id);
@@ -27,11 +27,6 @@ void prefetch_worker(WorkerCtx ctx) {
   // 窗口 = TS 在飞跨度上限 (pool slots) + 超前余量: 保证最快 TS 到达前缓存已暖
   const size_t window_days = store.query_slots() + 2;
 
-  char label_buf[128];
-  snprintf(label_buf, sizeof(label_buf), "预取核心%2d:", worker_id);
-  progress_handle.set_label(label_buf);
-  progress_handle.update(0, total_dates, "");
-
   Logger::log("worker_" + std::to_string(worker_id), "Prefetch started: " + std::to_string(total_dates) + " dates, window " + std::to_string(window_days));
 
   // 读缓冲: 只为把文件拖进 page cache, 内容即弃 (decode 在 TS worker 内联)
@@ -39,7 +34,6 @@ void prefetch_worker(WorkerCtx ctx) {
 
   size_t cumulative_bytes = 0;
   size_t completed_dates = 0;
-  auto start_time = std::chrono::steady_clock::now();
 
   for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
     if (cancel_requested.load(std::memory_order_relaxed))
@@ -83,24 +77,17 @@ void prefetch_worker(WorkerCtx ctx) {
         while ((n = std::fread(scratch.data(), 1, scratch.size(), f)) > 0)
           cumulative_bytes += n;
         std::fclose(f);
+        stats.prefetch_bytes.store(cumulative_bytes, std::memory_order_relaxed);
       }
     }
 
-    // Update progress
-    auto current_time = std::chrono::steady_clock::now();
-    float elapsed_seconds = std::chrono::duration<float>(current_time - start_time).count();
-    float speed_MB_per_sec = (elapsed_seconds > 0) ? (cumulative_bytes / 1e6) / elapsed_seconds : 0.0;
-
-    char msg_buf[128];
-    snprintf(msg_buf, sizeof(msg_buf), "%s [%.0fMB/s (%.1fGB)]", date_str.c_str(), speed_MB_per_sec, cumulative_bytes / 1e9);
     completed_dates = date_idx + 1;
-    progress_handle.update(completed_dates, total_dates, msg_buf);
+    stats.prefetch_days.store(completed_dates, std::memory_order_relaxed);
 
     TraceFrame;
   }
 
   const bool cancelled = cancel_requested.load(std::memory_order_relaxed);
-  progress_handle.update(cancelled ? completed_dates : total_dates, total_dates, cancelled ? "Cancelled" : "Complete");
 
   if (cancelled)
     Logger::log("worker_" + std::to_string(worker_id), "Prefetch cancelled: " + std::to_string(cumulative_bytes) + " bytes across " + std::to_string(completed_dates) + " dates");
