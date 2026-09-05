@@ -275,15 +275,7 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
   ImGui::SameLine(0, 0);
   // 进度: 分批流式, 天是唯一流式维度 (每批扫全部资产, 全资产逐批收敛)
-  ImGui::Text(" (天 %zu/%zu | %zu 资产全算, 折线画 %zu)",
-              dist.days_loaded.load(), dist.days_total.load(),
-              dist.lines.size(), std::min(kDrawAssets, dist.lines.size()));
-  // 聚合槽抽样率: 月/星期/小时/全局的 n 是抽样后的数, 资产线恒全量 —— 说明白免得看着矛盾
-  const size_t agg_stride = dist.agg_stride.load();
-  if (agg_stride > 1) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("(月/星期/小时 1/%zu 抽样)", agg_stride);
-  }
+  ImGui::Text(" (天 %zu/%zu)", dist.days_loaded.load(), dist.days_total.load());
 
   // Row 2: Month slider (config 区间月份表, 缓存; 枚举逻辑与 DistService 共用)
   const std::string months_key = data.config.start_date + "|" + data.config.end_date;
@@ -302,489 +294,112 @@ static void RenderWindowControl(DistService *service, SharedData &data,
 }
 
 // ============================================================================
-// Moments Panel (Left Column)
-// Color bands with boundary labels, current month value vs all months MAD
+// Asset Color (图4 顶部散点 + PDF 折线)
+// 模式: 0=行业(Jet), 1=市值, 2=PE, 3=PB, 4=PS, 5=PCF, 6=股息率(Viridis)
+// 连续值按 5/95 分位 winsorize 后线性映射到 colormap, 离群值饱和
 // ============================================================================
 
-// Zone determination: 0=normal(green), 1=warn(yellow), 2=anomaly(red)
-static int get_zone(float val, float normal_lo, float normal_hi, float warn_lo,
-                    float warn_hi) {
-  if (val >= normal_lo && val <= normal_hi)
-    return 0;
-  if (val >= warn_lo && val <= warn_hi)
-    return 1;
-  return 2;
-}
-
-static ImU32 zone_color(int zone) {
-  if (zone == 0)
-    return IM_COL32(60, 200, 60, 255); // green
-  if (zone == 1)
-    return IM_COL32(220, 200, 60, 255); // yellow
-  return IM_COL32(220, 80, 80, 255);    // red
-}
-
-// Color band with boundary labels
-// Format: Label text first, then bar below
-static void RenderMomentBand(const char *label, float current_val,
-                             float bound_lo, float bound_hi,
-                             float range_lo, float range_hi, float normal_lo,
-                             float normal_hi, float warn_lo, float warn_hi) {
-  // Text: "Label: current (bound_lo/bound_hi)" with zone colors, first
-  int zone_cur = get_zone(current_val, normal_lo, normal_hi, warn_lo, warn_hi);
-  int zone_bound_lo = get_zone(bound_lo, normal_lo, normal_hi, warn_lo, warn_hi);
-  int zone_bound_hi = get_zone(bound_hi, normal_lo, normal_hi, warn_lo, warn_hi);
-
-  // Label with bold font and underline
-  ImVec2 label_pos = ImGui::GetCursorScreenPos();
-
-  // Use bold font if available (Fonts[0] is typically bold)
-  ImFont *font = ImGui::GetIO().Fonts->Fonts.Size > 0 ? ImGui::GetIO().Fonts->Fonts[0] : ImGui::GetFont();
-  ImGui::PushFont(font);
-
-  char label_text[128];
-  snprintf(label_text, sizeof(label_text), "%s: ", label);
-  ImVec2 text_size = ImGui::CalcTextSize(label_text);
-
-  ImGui::Text("%s", label_text);
-
-  // Draw underline
-  ImDrawList *draw_label = ImGui::GetWindowDrawList();
-  draw_label->AddLine(ImVec2(label_pos.x, label_pos.y + text_size.y),
-                      ImVec2(label_pos.x + text_size.x, label_pos.y + text_size.y),
-                      ImGui::GetColorU32(ImGuiCol_Text), 1.0f);
-
-  ImGui::PopFont();
-  ImGui::SameLine(0, 0);
-  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_cur));
-  ImGui::Text("%.2f", current_val);
-  ImGui::PopStyleColor();
-  ImGui::SameLine(0, 0);
-  ImGui::Text(" (");
-  ImGui::SameLine(0, 0);
-  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_bound_lo));
-  ImGui::Text("%.2f", bound_lo);
-  ImGui::PopStyleColor();
-  ImGui::SameLine(0, 0);
-  ImGui::Text("/");
-  ImGui::SameLine(0, 0);
-  ImGui::PushStyleColor(ImGuiCol_Text, zone_color(zone_bound_hi));
-  ImGui::Text("%.2f", bound_hi);
-  ImGui::PopStyleColor();
-  ImGui::SameLine(0, 0);
-  ImGui::Text(")");
-
-  // Now draw the bar below
-  ImDrawList *draw = ImGui::GetWindowDrawList();
-  ImVec2 pos = ImGui::GetCursorScreenPos();
-  float width = ImGui::GetContentRegionAvail().x;
-  float bar_height = 12.0f; // Compact bar height
-
-  float range = range_hi - range_lo;
-  auto to_x = [&](float v) {
-    return pos.x + std::clamp((v - range_lo) / range, 0.0f, 1.0f) * width;
-  };
-
-  // Bar vertical bounds (labels directly on bar)
-  float y_top = pos.y;
-  float y_bot = y_top + bar_height;
-
-  // Draw color bands (all aligned y_top to y_bot)
-  // Anomaly bands (red)
-  draw->AddRectFilled(ImVec2(to_x(range_lo), y_top),
-                      ImVec2(to_x(warn_lo), y_bot),
-                      IM_COL32(180, 60, 60, 200));
-  draw->AddRectFilled(ImVec2(to_x(warn_hi), y_top),
-                      ImVec2(to_x(range_hi), y_bot),
-                      IM_COL32(180, 60, 60, 200));
-
-  // Warn bands (yellow)
-  draw->AddRectFilled(ImVec2(to_x(warn_lo), y_top),
-                      ImVec2(to_x(normal_lo), y_bot),
-                      IM_COL32(200, 180, 60, 200));
-  draw->AddRectFilled(ImVec2(to_x(normal_hi), y_top),
-                      ImVec2(to_x(warn_hi), y_bot),
-                      IM_COL32(200, 180, 60, 200));
-
-  // Normal band (green)
-  draw->AddRectFilled(ImVec2(to_x(normal_lo), y_top),
-                      ImVec2(to_x(normal_hi), y_bot),
-                      IM_COL32(60, 160, 60, 200));
-
-  // Bound range markers (slightly inset) - either MAD or min/max
-  draw->AddRect(ImVec2(to_x(bound_lo), y_top + 1),
-                ImVec2(to_x(bound_hi), y_bot - 1),
-                IM_COL32(255, 255, 255, 180), 0.0f, 0, 1.5f);
-
-  // Current value marker (cyan diamond, centered)
-  float cv_x = to_x(current_val);
-  float cy = (y_top + y_bot) * 0.5f;
-  draw->AddQuadFilled(ImVec2(cv_x, cy - 4), ImVec2(cv_x + 3, cy),
-                      ImVec2(cv_x, cy + 4), ImVec2(cv_x - 3, cy),
-                      IM_COL32(0, 255, 255, 255));
-
-  // Boundary labels - small font, directly on bar
-  // All labels drawn at same height, overlaid on the bar
-  ImFont *small_font = ImGui::GetFont();
-  float small_font_size = ImGui::GetFontSize() * 0.75f;          // Compact font size
-  float label_y = y_top + (bar_height - small_font_size) * 0.5f; // Vertically centered
-  char buf[16];
-
-  // warn_lo (align right edge to boundary)
-  snprintf(buf, sizeof(buf), "%.1f", warn_lo);
-  float text_width_warn_lo = small_font->CalcTextSizeA(small_font_size, FLT_MAX, 0.0f, buf).x;
-  draw->AddText(small_font, small_font_size, ImVec2(to_x(warn_lo) - text_width_warn_lo, label_y), IM_COL32(255, 255, 255, 255), buf);
-
-  // normal_lo (align right edge to boundary)
-  snprintf(buf, sizeof(buf), "%.1f", normal_lo);
-  float text_width_normal_lo = small_font->CalcTextSizeA(small_font_size, FLT_MAX, 0.0f, buf).x;
-  draw->AddText(small_font, small_font_size, ImVec2(to_x(normal_lo) - text_width_normal_lo, label_y), IM_COL32(255, 255, 255, 255), buf);
-
-  // normal_hi (align left edge to boundary)
-  snprintf(buf, sizeof(buf), "%.1f", normal_hi);
-  draw->AddText(small_font, small_font_size, ImVec2(to_x(normal_hi) + 1, label_y), IM_COL32(255, 255, 255, 255), buf);
-
-  // warn_hi (align left edge to boundary)
-  snprintf(buf, sizeof(buf), "%.1f", warn_hi);
-  draw->AddText(small_font, small_font_size, ImVec2(to_x(warn_hi) + 1, label_y), IM_COL32(255, 255, 255, 255), buf);
-
-  ImGui::Dummy(ImVec2(width, bar_height));
-}
-
-static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int focus_month_idx) {
-  // Compact height: header + 4 moment bands (each = label line + 12px bar)
-  float line_h = ImGui::GetTextLineHeightWithSpacing();
-  float bar_px = 12.0f;
-  float band_h = line_h + bar_px;
-  float panel_h = line_h * 2 + band_h * 4 + ImGui::GetStyle().WindowPadding.y * 2;
-  ImGui::BeginChild("MomentsPanel", ImVec2(350, panel_h), true);
-  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // Use default font with bold style
-  ImGui::TextUnformatted("[阶矩展开]");
-  ImGui::PopFont();
-  ImGui::SameLine();
-  ImGui::TextDisabled("(?)");
-
-  // Tooltip on help marker
-  if (ImGui::IsItemHovered()) {
-    ImGui::BeginTooltip();
-
-    // Expansion objects table
-    if (ImGui::BeginTable("ExpansionTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
-      ImGui::TableSetupColumn("展开对象");
-      ImGui::TableSetupColumn("展开变量");
-      ImGui::TableSetupColumn("展开形式");
-      ImGui::TableSetupColumn("名称 / 定理");
-      ImGui::TableSetupColumn("为什么重要");
-      ImGui::TableHeadersRow();
-
-      // Row 1: 函数期望
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("函数期望 (E[f(X)])");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("(X - E[X])");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("幂级数");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("Taylor + 矩展开");
-      ImGui::TableSetColumnIndex(4);
-      ImGui::Text("风险、PnL、凸性分析的基础");
-
-      // Row 2: 特征函数
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("特征函数 (φ(t)=E[e^{itX}])");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("(t)");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("幂级数");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("特征函数展开");
-      ImGui::TableSetColumnIndex(4);
-      ImGui::Text("所有矩的母体");
-
-      // Row 3: 对数特征函数
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("对数特征函数 (log φ(t))");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("(t)");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("幂级数");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("累积量展开");
-      ImGui::TableSetColumnIndex(4);
-      ImGui::Text("比矩稳定,叠加最干净");
-
-      // Row 4: 概率密度函数 (Hermite)
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("概率密度函数 (p(x))");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("Hermite 基");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("正交级数");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("Gram-Charlier A");
-      ImGui::TableSetColumnIndex(4);
-      ImGui::Text("最直接的\"分布级\"展开");
-
-      // Row 5: 概率密度函数 (Edgeworth)
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("概率密度函数 (p(x))");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("(n^{-1/2})");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("渐近级数");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("Edgeworth 展开");
-      ImGui::TableSetColumnIndex(4);
-      ImGui::Text("CLT 的高阶修正");
-
-      // Row 6: 小噪声随机变量
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("小噪声随机变量 (X+ε)");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("(ε)");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("幂级数");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("Delta Method");
-      ImGui::TableSetColumnIndex(4);
-      ImGui::Text("统计误差传播核心");
-
-      ImGui::EndTable();
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // Moments definition table
-    if (ImGui::BeginTable("MomentsDefTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
-      ImGui::TableSetupColumn("阶数");
-      ImGui::TableSetupColumn("普通矩 (m_n)");
-      ImGui::TableSetupColumn("中心矩 (μ_n)");
-      ImGui::TableSetupColumn("标准矩 (γ_n)");
-      ImGui::TableHeadersRow();
-
-      // Row: 定义
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("定义");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("E[X^n]");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("E[(X-E[X])^n]");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("E[(X-E[X])^n]/(E[(X-E[X])^2])^(n/2)");
-
-      // Row: 1阶
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("1");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("均值");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("0");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("0");
-
-      // Row: 2阶
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("2");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("\\");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("方差");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("1");
-
-      // Row: 3阶
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("3");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("\\");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("\\");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("偏度");
-
-      // Row: 4阶
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      ImGui::Text("4");
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("\\");
-      ImGui::TableSetColumnIndex(2);
-      ImGui::Text("\\");
-      ImGui::TableSetColumnIndex(3);
-      ImGui::Text("峰度");
-
-      ImGui::EndTable();
-    }
-    ImGui::EndTooltip();
-  }
-
-  ImGui::Separator();
-
-  // Collect moment values based on selected dimension (逐批收敛)
-  std::vector<float> means, vars, skews, kurts;
-  auto collect = [&](const KLLcache &kll) {
-    if (kll.totalCount() < kMinSamples)
-      return;
-    means.push_back(static_cast<float>(kll.mean()));
-    vars.push_back(static_cast<float>(kll.var()));
-    skews.push_back(static_cast<float>(kll.skew()));
-    kurts.push_back(static_cast<float>(kll.kurt()));
-  };
-
-  // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS (绘制子集快照, 矩已在发布侧算好)
-  switch (selected_dimension) {
-  case 0:
-    for (const auto &mc : dist.months)
-      collect(mc.kll);
-    break;
+// 取连续值字段的字符串 → float; 缺失/解析失败 → NaN
+static float AssetColorValue(const StockInfo &si, int mode) {
+  const std::string *field = nullptr;
+  switch (mode) {
   case 1:
-    for (const auto &kll : dist.by_weekday)
-      collect(kll);
+    field = &si.mcap;
     break;
   case 2:
-    for (const auto &kll : dist.by_hour)
-      collect(kll);
+    field = &si.peTTM;
     break;
   case 3:
-    for (const auto &ln : dist.lines) {
-      if (ln.n < kMinSamples)
-        continue;
-      means.push_back(ln.mean);
-      vars.push_back(ln.var);
-      skews.push_back(ln.skew);
-      kurts.push_back(ln.kurt);
-    }
+    field = &si.pbMRQ;
     break;
+  case 4:
+    field = &si.psTTM;
+    break;
+  case 5:
+    field = &si.pcfNcfTTM;
+    break;
+  case 6:
+    field = &si.dy1y;
+    break;
+  default:
+    return std::nanf("");
   }
+  if (field->empty())
+    return std::nanf("");
+  try {
+    return std::stof(*field);
+  } catch (...) {
+    return std::nanf("");
+  }
+}
 
-  if (means.empty()) {
-    ImGui::Text("No data");
-    ImGui::EndChild();
+// 构建连续值缓存 (资产表静态, 每模式一次): [A] + 5/95 分位范围
+static void EnsureColorCache(DistUIState &ui, const Asset &asset, const AssetInfo &assetinfo) {
+  if (ui.color_cache_mode == ui.color_mode && !ui.color_values.empty())
     return;
+  ui.color_cache_mode = ui.color_mode;
+  ui.color_values.assign(asset.items.size(), std::nanf(""));
+  std::vector<float> valid;
+  valid.reserve(asset.items.size());
+  for (size_t a = 0; a < asset.items.size(); ++a) {
+    const auto &item = asset.items[a];
+    std::string ex = item.exchange;
+    std::transform(ex.begin(), ex.end(), ex.begin(), ::tolower);
+    const StockInfo *si = assetinfo.find_stock_info(ex + "." + item.asset_code);
+    float v = si ? AssetColorValue(*si, ui.color_mode) : std::nanf("");
+    ui.color_values[a] = v;
+    if (!std::isnan(v))
+      valid.push_back(v);
   }
-
-  // Compute mean (average) for each moment type
-  auto compute_mean = [](const std::vector<float> &vals) -> float {
-    if (vals.empty())
-      return 0.0f;
-    float sum = 0.0f;
-    for (float v : vals)
-      sum += v;
-    return sum / vals.size();
-  };
-
-  // Compute min/max
-  auto compute_min = [](const std::vector<float> &vals) -> float {
-    if (vals.empty())
-      return 0.0f;
-    return *std::min_element(vals.begin(), vals.end());
-  };
-
-  auto compute_max = [](const std::vector<float> &vals) -> float {
-    if (vals.empty())
-      return 0.0f;
-    return *std::max_element(vals.begin(), vals.end());
-  };
-
-  // Compute MAD for each moment type
-  auto compute_mad = [](const std::vector<float> &vals) -> float {
-    if (vals.empty())
-      return 0.0f;
-    // Compute median
-    std::vector<float> sorted = vals;
-    std::sort(sorted.begin(), sorted.end());
-    float median = sorted[sorted.size() / 2];
-    // Compute MAD
-    std::vector<float> abs_devs;
-    abs_devs.reserve(vals.size());
-    for (float v : vals) {
-      abs_devs.push_back(std::abs(v - median));
-    }
-    std::sort(abs_devs.begin(), abs_devs.end());
-    return abs_devs[abs_devs.size() / 2];
-  };
-
-  float mean_mean = compute_mean(means);
-  float mean_var = compute_mean(vars);
-  float mean_skew = compute_mean(skews);
-  float mean_kurt = compute_mean(kurts);
-
-  // For dimensions 0,1,2 (MONTH, WEEKDAY, HOUR): use min/max
-  // For dimension 3 (ASSETS): use MAD
-  float lower_mean, upper_mean, lower_var, upper_var;
-  float lower_skew, upper_skew, lower_kurt, upper_kurt;
-
-  if (selected_dimension == 3) {
-    // ASSETS dimension: use MAD
-    float mad_mean = compute_mad(means);
-    float mad_var = compute_mad(vars);
-    float mad_skew = compute_mad(skews);
-    float mad_kurt = compute_mad(kurts);
-
-    lower_mean = mean_mean - 2.5f * mad_mean;
-    upper_mean = mean_mean + 2.5f * mad_mean;
-    lower_var = mean_var - 2.5f * mad_var;
-    upper_var = mean_var + 2.5f * mad_var;
-    lower_skew = mean_skew - 2.5f * mad_skew;
-    upper_skew = mean_skew + 2.5f * mad_skew;
-    lower_kurt = mean_kurt - 2.5f * mad_kurt;
-    upper_kurt = mean_kurt + 2.5f * mad_kurt;
+  if (valid.size() >= 2) {
+    std::sort(valid.begin(), valid.end());
+    size_t n = valid.size();
+    ui.color_lo = valid[static_cast<size_t>(0.05f * n)];
+    ui.color_hi = valid[static_cast<size_t>(0.95f * n)];
+    if (ui.color_hi <= ui.color_lo)
+      ui.color_hi = ui.color_lo + 1e-6f;
   } else {
-    // MONTH, WEEKDAY, HOUR dimensions: use min/max
-    lower_mean = compute_min(means);
-    upper_mean = compute_max(means);
-    lower_var = compute_min(vars);
-    upper_var = compute_max(vars);
-    lower_skew = compute_min(skews);
-    upper_skew = compute_max(skews);
-    lower_kurt = compute_min(kurts);
-    upper_kurt = compute_max(kurts);
+    ui.color_lo = 0.0f;
+    ui.color_hi = 1.0f;
   }
+}
 
-  // Get current value to display
-  // For MONTH: use slider month value; for others: use mean
-  float display_mean, display_var, display_skew, display_kurt;
+// 统一取色: 行业 → Jet; 连续值 → Viridis (5/95 winsorize)
+static ImVec4 AssetColor(const DistUIState &ui, size_t asset_idx) {
+  if (ui.color_mode == 0)
+    return IndustryColor(ui, asset_idx);
+  if (asset_idx >= ui.color_values.size())
+    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+  float v = ui.color_values[asset_idx];
+  if (std::isnan(v))
+    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+  float t = (ui.color_hi > ui.color_lo)
+                ? std::clamp((v - ui.color_lo) / (ui.color_hi - ui.color_lo), 0.0f, 1.0f)
+                : 0.5f;
+  return ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
+}
 
-  if (selected_dimension == 0 && focus_month_idx >= 0 &&
-      focus_month_idx < static_cast<int>(dist.months.size()) &&
-      dist.months[focus_month_idx].kll.totalCount() > 0) {
-    // MONTH dimension: show slider month value
-    const auto &kll = dist.months[focus_month_idx].kll;
-    display_mean = static_cast<float>(kll.mean());
-    display_var = static_cast<float>(kll.var());
-    display_skew = static_cast<float>(kll.skew());
-    display_kurt = static_cast<float>(kll.kurt());
-  } else {
-    // Other dimensions: show mean value
-    display_mean = mean_mean;
-    display_var = mean_var;
-    display_skew = mean_skew;
-    display_kurt = mean_kurt;
+// ============================================================================
+// Color Mode Selector (Left Column, hover 详情上方)
+// ============================================================================
+
+static const char *kColorModeNames[] = {"行业", "市值", "PE", "PB",
+                                        "PS", "PCF", "股息率"};
+
+static void RenderColorModeSelector(DistUIState &ui, const Asset &asset,
+                                    const AssetInfo &assetinfo) {
+  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+  ImGui::TextUnformatted("[染色]");
+  ImGui::PopFont();
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(-1);
+  ImGui::Combo("##ColorMode", &ui.color_mode, kColorModeNames,
+               IM_ARRAYSIZE(kColorModeNames));
+  EnsureColorCache(ui, asset, assetinfo);
+  // 连续模式显示当前 winsorize 范围
+  if (ui.color_mode != 0 && ui.color_hi > ui.color_lo) {
+    ImGui::TextDisabled("范围 [%.3g, %.3g]", ui.color_lo, ui.color_hi);
   }
-
-  // Color bands with boundaries (compact layout, no extra spacing)
-  RenderMomentBand("Mean/均值(1阶普通矩)", display_mean, lower_mean, upper_mean, -1.0f, 1.0f, -0.1f,
-                   0.1f, -0.3f, 0.3f);
-  RenderMomentBand("Var/方差(2阶中心矩)", display_var, lower_var, upper_var, 0.0f, 3.0f,
-                   0.5f, 1.2f, 0.2f, 2.0f);
-  RenderMomentBand("Skew/偏度(3阶标准矩)", display_skew, lower_skew, upper_skew, -4.0f, 4.0f,
-                   -0.5f, 0.5f, -1.5f, 1.5f);
-  RenderMomentBand("Kurt/峰度(4阶标准矩)", display_kurt, lower_kurt, upper_kurt, -3.0f, 15.0f,
-                   0.0f, 3.0f, -1.0f, 6.0f);
-
-  ImGui::EndChild();
 }
 
 // ============================================================================
@@ -1050,7 +665,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
         "相对上一批末的全局分位在发布侧算好, 随构建逐批收敛");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
                        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
-    ImGui::Text("\n颜色 = 行业 (一个行业一个颜色); W2 散点/矩/hover 为全资产,\n"
+    ImGui::Text("\n颜色 = 左栏 [染色] 选项 (行业/市值/估值/股息率); W2 散点/hover 为全资产,\n"
                 "PDF 细线只画固定随机子集 (纯顶点预算, 即全市场无偏抽样)");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
@@ -1059,6 +674,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
 
   // 发布快照: worker 批末算好整条线 (PDF/矩/W2), UI 零计算零重建只画
   EnsureIndustryCache(ui, asset, assetinfo);
+  EnsureColorCache(ui, asset, assetinfo);
 
   auto &line_indices = ui.line_indices;
   line_indices.clear();
@@ -1104,8 +720,9 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   bool plot_clicked = false;
 
   if (ImPlot::BeginPlot("##AssetsPDF", ImVec2(-1, -1))) {
+    // x 轴显示刻度 (特征取值), y 轴隐藏 (密度无具体值意义)
     ImPlot::SetupAxes(nullptr, nullptr,
-                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels,
+                      ImPlotAxisFlags_NoLabel,
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
 
     ImPlotRect limits = ImPlot::GetPlotLimits();
@@ -1155,18 +772,27 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     }
 
     // ========================================================================
-    // Phase 2: Draw PDF lines (只画绘制子集, 顶点预算; highlight hovered)
+    // Phase 2: Draw PDF lines
+    // hover 顶部点时: 先画其他全部资产线 (0.1 透明), 再画高亮曲线置顶 (聚焦)
+    // hover 折线时: 只高亮该线, 其他保持 0.75 (现有行为)
     // ========================================================================
-    for (size_t i = 0; i < n_valid; ++i) {
-      const auto &ln = dist.lines[line_indices[i]];
-      bool is_hovered = (static_cast<int>(i) == hovered_idx);
-      if (!ln.draw && !is_hovered)
-        continue; // 散点 hover 到非绘制资产时, 临时把它的线画出来
-      ImVec4 color = IndustryColor(ui, ln.asset);
-      color.w = 0.75f; // 线多, 半透明降噪
-
-      if (is_hovered) {
-        // Highlighted: thick white outline + bright color
+    const bool dot_hovered = (hovered_idx >= 0 && min_dist_sq == 0.0);
+    if (dot_hovered) {
+      // Pass 1: 其他全部资产线降到 0.1 透明
+      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
+      for (size_t i = 0; i < n_valid; ++i) {
+        if (static_cast<int>(i) == hovered_idx)
+          continue;
+        const auto &ln = dist.lines[line_indices[i]];
+        ImVec4 color = AssetColor(ui, ln.asset);
+        color.w = 0.1f;
+        ImPlot::SetNextLineStyle(color, 1.0f);
+        ImPlot::PlotLine("##pdf_dim", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
+      }
+      ImPlot::PopStyleVar();
+      // Pass 2: 高亮曲线置顶
+      {
+        const auto &ln = dist.lines[line_indices[hovered_idx]];
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
         ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
         ImPlot::PlotLine("##pdf_outline", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
@@ -1176,17 +802,39 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
         ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f); // cyan
         ImPlot::PlotLine("##pdf_hl", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
         ImPlot::PopStyleVar();
-      } else {
-        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
-        ImPlot::SetNextLineStyle(color, 1.0f);
-        ImPlot::PlotLine("##pdf", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-        ImPlot::PopStyleVar();
+      }
+    } else {
+      for (size_t i = 0; i < n_valid; ++i) {
+        const auto &ln = dist.lines[line_indices[i]];
+        bool is_hovered = (static_cast<int>(i) == hovered_idx);
+        if (!ln.draw && !is_hovered)
+          continue; // 只画绘制子集 + hover 临时画
+
+        ImVec4 color = AssetColor(ui, ln.asset);
+        if (is_hovered) {
+          // Highlighted: thick white outline + bright color
+          ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
+          ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
+          ImPlot::PlotLine("##pdf_outline", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
+          ImPlot::PopStyleVar();
+
+          ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
+          ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f); // cyan
+          ImPlot::PlotLine("##pdf_hl", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
+          ImPlot::PopStyleVar();
+        } else {
+          color.w = 0.75f;
+          ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
+          ImPlot::SetNextLineStyle(color, 1.0f);
+          ImPlot::PlotLine("##pdf", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
+          ImPlot::PopStyleVar();
+        }
       }
     }
 
     // ========================================================================
     // Phase 3: Draw W2 offset scatter (overlay on top, scale invariant)
-    // 发布侧算好的 W2, 随全局分位逐批收敛; 颜色 = 行业
+    // 发布侧算好的 W2, 随全局分位逐批收敛; 颜色 = 左栏 [染色] 选项
     // ========================================================================
     if (has_dots) {
       ImDrawList *draw = ImPlot::GetPlotDrawList();
@@ -1208,27 +856,10 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
           draw->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255));
           draw->AddCircleFilled(center, 4.0f, IM_COL32(0, 255, 255, 255));
         } else {
-          ImU32 color = ImGui::ColorConvertFloat4ToU32(IndustryColor(ui, dist.lines[line_indices[i]].asset));
+          ImU32 color = ImGui::ColorConvertFloat4ToU32(AssetColor(ui, dist.lines[line_indices[i]].asset));
           draw->AddCircleFilled(center, 2.5f, color);
         }
       }
-
-      // Draw reference labels: 0 (min) and max (流式最大值)
-      char buf_max[16];
-      std::snprintf(buf_max, sizeof(buf_max), "%.3f", w2_max);
-
-      // Label positions (scale invariant)
-      float x_screen_min = plot_pos.x;
-      float x_screen_max = plot_pos.x + plot_size.x;
-
-      // Use bold font if available
-      ImFont *font = ImGui::GetIO().Fonts->Fonts.Size > 0 ? ImGui::GetIO().Fonts->Fonts[0] : ImGui::GetFont();
-      float font_size = ImGui::GetFontSize();
-
-      draw->AddText(font, font_size, ImVec2(x_screen_min + 5, y_screen + 8), IM_COL32(255, 255, 255, 255), "0");
-
-      ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, buf_max);
-      draw->AddText(font, font_size, ImVec2(x_screen_max - text_size.x - 5, y_screen + 8), IM_COL32(255, 255, 255, 255), buf_max);
     }
 
     // Click detection
@@ -1371,15 +1002,6 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
     ImGui::Text("行业 = %s",
                 stock_info && !stock_info->ind_name.empty() ? stock_info->ind_name.c_str() : "--");
 
-    // Row 6: W2 偏移 (发布侧算好, 相对上一批末的全局分位)
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    if (ln.w2 >= 0.0f) {
-      ImGui::Text("W2 = %.4f", ln.w2);
-    } else {
-      ImGui::TextUnformatted("W2 = --");
-    }
-
     ImGui::EndTable();
   }
 
@@ -1435,14 +1057,14 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   RenderWindowControl(service, data, ui);
   ImGui::EndChild();
 
-  // Main content: Left (Moments + Asset Info) + Right (PDFs)
+  // Main content: Left (Color Mode + Asset Info) + Right (PDFs)
   float content_height = ImGui::GetContentRegionAvail().y;
   ImGui::Columns(2, "MainCols", true);
   ImGui::SetColumnWidth(0, 350);
 
-  // Left column: Moments Panel (auto-height) + Hovered Asset Info (remaining)
+  // Left column: Color Mode Selector + Hovered Asset Info (剩余空间)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
-  RenderMomentsPanel(dist, ui.selected_dimension, ui.focus_month_idx);
+  RenderColorModeSelector(ui, data.asset, data.assetinfo);
   RenderHoveredAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_line);
   ImGui::EndChild();
 

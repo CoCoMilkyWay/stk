@@ -3,7 +3,7 @@
 // UI Layout:
 //   1. Integrity panel - Zero/NaN/Inf counts
 //   2. Window control - Compute | Cancel | Status (天进度) | Month slider
-//   3. Moments panel (color bands) + PDF evolution (side by side)
+//   3. Left: Color Mode Selector + Hovered Asset Info | Right: PDF evolution (3 panels)
 //   4. Assets PDF - 消费 dist.lines 发布快照 (绘制子集), 零计算只画
 //
 // Threading:
@@ -50,6 +50,14 @@ struct DistUIState {
   // 资产截面图帧内缓冲 (可画线的 dist.lines 下标 + 归一化 W2)
   std::vector<size_t> line_indices;
   std::vector<float> w2_norm;
+
+  // 图4 顶部散点 + PDF 折线的染色模式:
+  // 0=行业(Jet), 1=市值, 2=PE, 3=PB, 4=PS, 5=PCF, 6=股息率(连续值用 Viridis)
+  int color_mode = 0;
+  // 连续值缓存 (资产表静态, 每模式构建一次): [A], NaN = 缺失
+  std::vector<float> color_values;
+  float color_lo = 0.0f, color_hi = 1.0f; // 5/95 分位 winsorize 范围
+  int color_cache_mode = -1;              // -1 = 未构建
 };
 
 // ============================================================================
