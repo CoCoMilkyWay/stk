@@ -72,13 +72,13 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define PARA_FIELDS(X, side, S, en, cn)                                                                                                                                                                                                                                                        \
-  X(side##_para_c0, SHAPE, RAW, NONE, en " Depth Parabola c0", cn "侧抛物线截距", cn "侧近端流动性(降频)", R"(c_{0,t}^{M,)" S R"(}, \quad \text{where } V_{i,t}^{M,)" S R"(} \sim c_{0,t}^{M,)" S R"(} + c_{1,t}^{M,)" S R"(} i + c_{2,t}^{M,)" S R"(} i^2)", OP(Para_##side, c0))             \
-  X(side##_para_c1, SHAPE, RAW, NONE, en " Depth Parabola c1", cn "侧抛物线斜率", cn "方风偏(近端还是远端挂单)(降频)", R"(c_{1,t}^{M,)" S R"(}, \quad \text{where } V_{i,t}^{M,)" S R"(} \sim c_{0,t}^{M,)" S R"(} + c_{1,t}^{M,)" S R"(} i + c_{2,t}^{M,)" S R"(} i^2)", OP(Para_##side, c1)) \
-  X(side##_para_c2, SHAPE, RAW, NONE, en " Depth Parabola c2", cn "侧抛物线曲率", "<0:近端有订单块(降频)", R"(c_{2,t}^{M,)" S R"(}, \quad \text{where } V_{i,t}^{M,)" S R"(} \sim c_{0,t}^{M,)" S R"(} + c_{1,t}^{M,)" S R"(} i + c_{2,t}^{M,)" S R"(} i^2)", OP(Para_##side, c2))
+#define PARA_FIELDS(X, CAT1, side, S, en, cn)                                                                                                                                                                                                                                                 \
+  X(side##_para_c0, CAT1, RAW, NONE, en " Depth Parabola c0", cn "侧抛物线截距", cn "侧近端流动性(降频)", R"(c_{0,t}^{M,)" S R"(}, \quad \text{where } V_{i,t}^{M,)" S R"(} \sim c_{0,t}^{M,)" S R"(} + c_{1,t}^{M,)" S R"(} i + c_{2,t}^{M,)" S R"(} i^2)", OP(Para_##side, c0))             \
+  X(side##_para_c1, CAT1, RAW, NONE, en " Depth Parabola c1", cn "侧抛物线斜率", cn "方风偏(近端还是远端挂单)(降频)", R"(c_{1,t}^{M,)" S R"(}, \quad \text{where } V_{i,t}^{M,)" S R"(} \sim c_{0,t}^{M,)" S R"(} + c_{1,t}^{M,)" S R"(} i + c_{2,t}^{M,)" S R"(} i^2)", OP(Para_##side, c1)) \
+  X(side##_para_c2, CAT1, RAW, NONE, en " Depth Parabola c2", cn "侧抛物线曲率", "<0:近端有订单块(降频)", R"(c_{2,t}^{M,)" S R"(}, \quad \text{where } V_{i,t}^{M,)" S R"(} \sim c_{0,t}^{M,)" S R"(} + c_{1,t}^{M,)" S R"(} i + c_{2,t}^{M,)" S R"(} i^2)", OP(Para_##side, c2))
 
 #define NODE_Para_a(N) N(Para_a, (Para<false>), (DepthData.ask_qty), onMinute)
-#define FIELDS_L1_Para_a(X) PARA_FIELDS(X, a, "A", "Ask", "卖")
+#define FIELDS_L1_Para_a(X, CAT1) PARA_FIELDS(X, CAT1, a, "A", "Ask", "卖")
 
 #define NODE_Para_b(N) N(Para_b, (Para<true>), (DepthData.bid_qty), onMinute)
-#define FIELDS_L1_Para_b(X) PARA_FIELDS(X, b, "B", "Bid", "买")
+#define FIELDS_L1_Para_b(X, CAT1) PARA_FIELDS(X, CAT1, b, "B", "Bid", "买")

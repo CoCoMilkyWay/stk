@@ -33,11 +33,11 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define GRAD_FIELD(X, side, S, en, cn, n) \
-  X(side##_##n##_c1, SHAPE, RAW, NONE, "Top " #n "-level " en " Grad", cn "侧" #n "档梯度", cn "侧梯度(近端斜率)(降频)", R"(\frac{1}{N-1}\sum_{i=1}^{N-1}(V_{i+1,t}^{M,)" S R"(} - V_{i,t}^{M,)" S R"(}), \quad N = )" #n, OP(Grad_##side##_##n##_c1))
+#define GRAD_FIELD(X, CAT1, side, S, en, cn, n) \
+  X(side##_##n##_c1, CAT1, RAW, NONE, "Top " #n "-level " en " Grad", cn "侧" #n "档梯度", cn "侧梯度(近端斜率)(降频)", R"(\frac{1}{N-1}\sum_{i=1}^{N-1}(V_{i+1,t}^{M,)" S R"(} - V_{i,t}^{M,)" S R"(}), \quad N = )" #n, OP(Grad_##side##_##n##_c1))
 
 #define NODE_Grad_a_5_c1(N) N(Grad_a_5_c1, (Grad<5, false>), (DepthData.ask_qty), onMinute)
-#define FIELDS_L1_Grad_a_5_c1(X) GRAD_FIELD(X, a, "A", "Ask", "卖", 5)
+#define FIELDS_L1_Grad_a_5_c1(X, CAT1) GRAD_FIELD(X, CAT1, a, "A", "Ask", "卖", 5)
 
 #define NODE_Grad_b_5_c1(N) N(Grad_b_5_c1, (Grad<5, true>), (DepthData.bid_qty), onMinute)
-#define FIELDS_L1_Grad_b_5_c1(X) GRAD_FIELD(X, b, "B", "Bid", "买", 5)
+#define FIELDS_L1_Grad_b_5_c1(X, CAT1) GRAD_FIELD(X, CAT1, b, "B", "Bid", "买", 5)

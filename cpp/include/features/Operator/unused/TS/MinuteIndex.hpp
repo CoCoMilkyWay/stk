@@ -35,5 +35,5 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_MinuteIndex(N) N(MinuteIndex, (MinuteIndex), (minute_data), onMinute)
 
-#define FIELDS_L1_MinuteIndex(X) \
-  X(min, BASIC, OSCILLATOR, SINCOS, "Time Min Phase", "时间-分钟相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{m}}))", OP(MinuteIndex, min))
+#define FIELDS_L1_MinuteIndex(X, CAT1) \
+  X(min, CAT1, OSCILLATOR, SINCOS, "Time Min Phase", "时间-分钟相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{m}}))", OP(MinuteIndex, min))

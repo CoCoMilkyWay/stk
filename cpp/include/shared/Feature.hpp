@@ -2,6 +2,7 @@
 
 #include "features/Backend/FeatureStoreConfig.hpp" // 字段表 + LEVELS (width / valid / psd 由此推出)
 #include <set>
+#include <string_view>
 #include <vector>
 
 // ============================================================================
@@ -13,8 +14,8 @@ struct FeatureMetadata {
   uint8_t width;             // 1 or LOB_DEPTH (由 SRC 推出)
   L2::ValidType valid_type;  // ALL/DATA/DEPTH (由 SRC / 节点 flush 域推出)
   FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
-  FeatureCategoryL1 cat_l1;  // MOMENTUM, IMBALANCE, etc.
-  FeatureCategoryL2 cat_l2;  // NORMALIZED, OSCILLATOR, etc.
+  const char *cat_l1;        // Operator/TS/<dir> or Operator/CS/<dir>
+  const char *cat_l2;        // FIELDS row token, generated into FeatureCategoryL2_ALL
   NormMethod norm_method;    // ZSCORE, CLIP, etc.
   const char *psd;           // "100/00/00" 推荐频谱 (按层, ALL_LEVELS)
   const char *formula;       // "(r-μ)/σ, W=50"
@@ -28,7 +29,7 @@ struct FeatureMetadata {
 // Compile-time Metadata Generation: 每层一张表 (字段表行 + 层信息)
 // ============================================================================
 #define GENERATE_METADATA(code, cat_l1, cat_l2, norm_method, name_en, name_cn, description, formula, src) \
-  {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src, FeatureCategoryL1::cat_l1, FeatureCategoryL2::cat_l2, NormMethod::norm_method, kPsd, formula, name_en, name_cn, description, kLevel},
+  {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, NormMethod::norm_method, kPsd, formula, name_en, name_cn, description, kLevel},
 #define GENERATE_METADATA_TABLE(name, num, fields, rows, psd, columnar)     \
   namespace name##_meta_detail {                                            \
     constexpr const char *kPsd = psd;                                       \
@@ -74,8 +75,8 @@ struct Feature {
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;
-    std::set<FeatureCategoryL1> filter_cat_l1;
-    std::set<FeatureCategoryL2> filter_cat_l2;
+    std::set<std::string_view> filter_cat_l1;
+    std::set<std::string_view> filter_cat_l2;
     std::set<NormMethod> filter_norm_method;
 
     // Selected features

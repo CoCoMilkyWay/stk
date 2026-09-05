@@ -47,17 +47,17 @@ private:
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 // 家族行: side ∈ {a, b}, S = 公式侧标 "A"/"B", en/cn = 侧名, n = 档数
-#define ENTROPY_FIELD(X, side, S, en, cn, n) \
-  X(side##_##n##_entropy, SHAPE, RAW, NONE, "Top " #n "-level " en " ShannonEntropy", cn "侧" #n "档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,)" S R"(} \log(\pi_{i,t}^{M,)" S R"(}), \quad \pi_{i,t}^{M,)" S R"(} = \frac{V_{i,t}^{M,)" S R"(}}{\sum_{j=1}^{N} V_{j,t}^{M,)" S R"(}}, \quad N = )" #n, OP(Entropy_##side##_##n))
+#define ENTROPY_FIELD(X, CAT1, side, S, en, cn, n) \
+  X(side##_##n##_entropy, CAT1, RAW, NONE, "Top " #n "-level " en " ShannonEntropy", cn "侧" #n "档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,)" S R"(} \log(\pi_{i,t}^{M,)" S R"(}), \quad \pi_{i,t}^{M,)" S R"(} = \frac{V_{i,t}^{M,)" S R"(}}{\sum_{j=1}^{N} V_{j,t}^{M,)" S R"(}}, \quad N = )" #n, OP(Entropy_##side##_##n))
 
 #define NODE_Entropy_a_30(N) N(Entropy_a_30, (Entropy<30, false>), (DepthData.ask_qty), onMinute)
-#define FIELDS_L1_Entropy_a_30(X) ENTROPY_FIELD(X, a, "A", "Ask", "卖", 30)
+#define FIELDS_L1_Entropy_a_30(X, CAT1) ENTROPY_FIELD(X, CAT1, a, "A", "Ask", "卖", 30)
 
 #define NODE_Entropy_a_5(N) N(Entropy_a_5, (Entropy<5, false>), (DepthData.ask_qty), onMinute)
-#define FIELDS_L1_Entropy_a_5(X) ENTROPY_FIELD(X, a, "A", "Ask", "卖", 5)
+#define FIELDS_L1_Entropy_a_5(X, CAT1) ENTROPY_FIELD(X, CAT1, a, "A", "Ask", "卖", 5)
 
 #define NODE_Entropy_b_30(N) N(Entropy_b_30, (Entropy<30, true>), (DepthData.bid_qty), onMinute)
-#define FIELDS_L1_Entropy_b_30(X) ENTROPY_FIELD(X, b, "B", "Bid", "买", 30)
+#define FIELDS_L1_Entropy_b_30(X, CAT1) ENTROPY_FIELD(X, CAT1, b, "B", "Bid", "买", 30)
 
 #define NODE_Entropy_b_5(N) N(Entropy_b_5, (Entropy<5, true>), (DepthData.bid_qty), onMinute)
-#define FIELDS_L1_Entropy_b_5(X) ENTROPY_FIELD(X, b, "B", "Bid", "买", 5)
+#define FIELDS_L1_Entropy_b_5(X, CAT1) ENTROPY_FIELD(X, CAT1, b, "B", "Bid", "买", 5)

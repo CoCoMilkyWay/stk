@@ -54,7 +54,7 @@ using DepthSeries = Series[L2::LOB_DEPTH];
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------
-// CS OPERATOR CONTRACT (截面: 算子 = Operator/CS/<源节点>.hpp 只有 FIELDS_ 行; 方法 = Method/CS.hpp, namespace cs)
+// CS OPERATOR CONTRACT (截面: 算子 = Operator/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行; 方法 = Method/CS.hpp, namespace cs)
 //----------------------------------------------------------------------------------------
 //   struct <Method> {
 //     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, 仅 L1)

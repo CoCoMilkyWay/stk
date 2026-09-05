@@ -46,5 +46,5 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_TickIndex(N) N(TickIndex, (TickIndex), (tick_data), onTick)
 
-#define FIELDS_L0_TickIndex(X) \
-  X(sec, BASIC, OSCILLATOR, SINCOS, "Time Sec Phase", "时间-秒相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{s}}))", OP(TickIndex, sec))
+#define FIELDS_L0_TickIndex(X, CAT1) \
+  X(sec, CAT1, OSCILLATOR, SINCOS, "Time Sec Phase", "时间-秒相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{s}}))", OP(TickIndex, sec))

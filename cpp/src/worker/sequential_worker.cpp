@@ -99,62 +99,61 @@ void sequential_worker(int worker_id,
     for (size_t i = 0; i < my_asset_ids.size(); ++i) {
       const size_t asset_id = my_asset_ids[i];
       const auto &asset = data.asset.items[asset_id];
+      if (!asset.date_at(didx).has_binaries())
+        continue; // 缺二进制: 当天张量保持默认值, warm 状态不推进.
+
       lob.bind(cores[i].get(), asset_id, asset.exchange_type); // 工作区换绑本资产 (簿此刻是干净的)
       lob.begin_day(date_str, day);                            // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
-      // Hot path: has data and binaries
-      if (asset.date_at(didx).has_binaries()) [[likely]] {
 
-        // 路径由 (date, code, exchange) 现算 — DateInfo 不再为五百万条记录
-        // 各存一份字符串
-        const std::string orders_file = Utils::generate_orders_path(
-            data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
-            config::BINARY_EXTENSION);
+      // 路径由 (date, code, exchange) 现算 — DateInfo 不再为五百万条记录
+      // 各存一份字符串
+      const std::string orders_file = Utils::generate_orders_path(
+          data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
+          config::BINARY_EXTENSION);
 
-        size_t order_num = 0;
-        const L2::Order *orders = nullptr;
-        {
-          TraceN("DecodeOrders");
-          orders = decoder.decode_orders_stream(orders_file, order_num);
-        }
-
-        if (orders != nullptr) [[likely]] {
-          // 档位索引基准来自这一天的文件头, 必须先于第一条订单设进去 —— 绝对价
-          // 要减去它才是档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
-          lob.set_price_base(decoder.last_price_base());
-
-          // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
-          size_t order_invalid_cnt = 0;
-          {
-            TraceN("ProcessLobs");
-            TraceValue(order_num);
-            order_invalid_cnt = lob.process_batch(orders, order_num);
-          }
-
-          if (order_invalid_cnt > 100) {
-            Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " order_invalid=" + std::to_string(order_invalid_cnt));
-            std::exit(1);
-          }
-
-          if (order_num > 0) {
-            Logger::log("worker_" + std::to_string(worker_id),
-                        date_str + " asset:" + std::to_string(asset_id) + " " + asset.asset_code + "." + asset.exchange + " " + asset.asset_name +
-                            " decoded=" + std::to_string(order_num) +
-                            " order_invalid=" + std::to_string(order_invalid_cnt) +
-                            " tob_invalid=" + std::to_string(lob.get_tob_invalid_count()) +
-                            " tob_refresh=" + std::to_string(lob.get_tob_refresh_count()));
-          }
-
-          lob.end_day();
-          date_orders += order_num;
-          date_assets_processed++;
-          cumulative_orders += order_num;
-        } else {
-          Logger::log("worker_" + std::to_string(worker_id), "WARNING: " + date_str + " failed to decode " + orders_file);
-        }
+      size_t order_num = 0;
+      const L2::Order *orders = nullptr;
+      {
+        TraceN("DecodeOrders");
+        orders = decoder.decode_orders_stream(orders_file, order_num);
       }
 
-      // 归还工作区: 无论有无数据/解码成败, 换绑下一个资产前簿必须干净
-      // (bind 断言 order_lookup_ 为空). clear() 同时 reset 本资产的日内特征态.
+      if (orders != nullptr) [[likely]] {
+        // 档位索引基准来自这一天的文件头, 必须先于第一条订单设进去 —— 绝对价
+        // 要减去它才是档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
+        lob.set_price_base(decoder.last_price_base());
+
+        // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
+        size_t order_invalid_cnt = 0;
+        {
+          TraceN("ProcessLobs");
+          TraceValue(order_num);
+          order_invalid_cnt = lob.process_batch(orders, order_num);
+        }
+
+        if (order_invalid_cnt > 100) {
+          Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + date_str + " asset_id=" + std::to_string(asset_id) + " order_invalid=" + std::to_string(order_invalid_cnt));
+          std::exit(1);
+        }
+
+        if (order_num > 0) {
+          Logger::log("worker_" + std::to_string(worker_id),
+                      date_str + " asset:" + std::to_string(asset_id) + " " + asset.asset_code + "." + asset.exchange + " " + asset.asset_name +
+                          " decoded=" + std::to_string(order_num) +
+                          " order_invalid=" + std::to_string(order_invalid_cnt) +
+                          " tob_invalid=" + std::to_string(lob.get_tob_invalid_count()) +
+                          " tob_refresh=" + std::to_string(lob.get_tob_refresh_count()));
+        }
+
+        lob.end_day();
+        date_orders += order_num;
+        date_assets_processed++;
+        cumulative_orders += order_num;
+      } else {
+        Logger::log("worker_" + std::to_string(worker_id), "WARNING: " + date_str + " failed to decode " + orders_file);
+      }
+
+      // 归还工作区: 换绑下一个资产前簿必须干净 (bind 断言 order_lookup_ 为空).
       lob.clear();
     }
 

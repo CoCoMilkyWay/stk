@@ -68,6 +68,7 @@ struct TaskFeaturesState {
   // Auto-compute tracking (Dist)
   int prev_primary_feature_idx = -1; // Track feature selection changes
   int prev_selected_level = 0;       // Track level changes
+  bool dist_prewarmed = false;       // 输入就绪后预热一次 (切出任务时回收并复位)
 
   // Auto-compute tracking (TimeSeries)
   int timeseries_prev_step = -1;        // Track step changes, -1 = first entry
@@ -99,9 +100,13 @@ TaskHandle CreateFeaturesTask() {
     // Initialization will happen in DrawPanel (first call)
   };
 
-  // OnCollapse
+  // OnCollapse: 切出 Features 任务才回收 Dist 的构建内存 (任务内切 tab 不回收)
   handle.OnCollapse = [state]() {
-    // Cleanup if needed (but keep state for resume)
+    if (state->dist_service) {
+      state->dist_service->Shutdown();
+      state->dist_prewarmed = false;      // 重进任务时重新预热
+      state->dist_tab_was_active = false; // 数据已清, 重进按"初次进 tab"走自动重算
+    }
   };
 
   // DrawPanel
@@ -126,11 +131,16 @@ TaskHandle CreateFeaturesTask() {
 
     // Update features task state
     auto &fs = data.taskstate.features;
-    const bool db_ready = data.taskstate.database.ready();
+    const bool feature_inputs_ready =
+        data.taskstate.database.all_json_ready &&
+        data.taskstate.database.binary_scanned &&
+        data.asset.binary.exists &&
+        !data.asset.backtest.required_dates.empty() &&
+        !data.taskstate.database.l2_scan_inflight;
     const bool has_selection = (data.feature.selection.primary_feature_idx >= 0);
     fs.has_selection = has_selection;
 
-    if (!db_ready) {
+    if (!feature_inputs_ready) {
       fs.status = TaskState::Features::Status::Waiting;
       fs.computing = false;
     } else if (state->compute_service &&
@@ -143,6 +153,16 @@ TaskHandle CreateFeaturesTask() {
     } else {
       fs.status = TaskState::Features::Status::Ready;
       fs.computing = false;
+    }
+
+    // Dist 预热: 输入就绪即起 worker 并预分配全部构建内存 (worker 线程做, 不卡帧),
+    // 点 Distribution 零额外分配; 内存保留到切出 Features 任务 (OnCollapse 回收).
+    // 先入队预热再起线程: worker 首次醒来若已有真实构建请求排队, 会丢弃预热 ——
+    // 反序则 worker 可能先抢走请求开跑, 预热落在非 Idle 状态撞断言.
+    if (!state->dist_prewarmed && feature_inputs_ready && !data.asset.items.empty()) {
+      state->dist_service->RequestPrewarm(data);
+      state->dist_service->Start(data);
+      state->dist_prewarmed = true;
     }
 
     // Auto-trigger Dist compute on feature selection change
@@ -219,12 +239,12 @@ TaskHandle CreateFeaturesTask() {
       // Order must match TabIdx enum: Feature, Compute, Transform, Distribution, TimeSeries, OrderFlow
       auto is_locked = [&](int tab) { return state->tabs_locked && state->locked_tab != tab; };
       const bool disable[TAB_COUNT] = {
-          is_locked(TAB_FEATURE),                                     // Feature: always accessible
-          !db_ready || is_locked(TAB_COMPUTE),                        // Compute: needs db
-          !db_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs db + selection
-          !db_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs db + selection
-          !db_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs db + selection
-          !db_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs db
+          is_locked(TAB_FEATURE),                                                 // Feature: always accessible
+          !feature_inputs_ready || is_locked(TAB_COMPUTE),                        // Compute: needs scanned inputs
+          !feature_inputs_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs inputs + selection
+          !feature_inputs_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs inputs + selection
+          !feature_inputs_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs inputs + selection
+          !feature_inputs_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs scanned inputs
       };
 
       // Tab: Feature
@@ -307,10 +327,12 @@ TaskHandle CreateFeaturesTask() {
       if (disable[TAB_DISTRIBUTION])
         ImGui::EndDisabled();
 
-      // Distribution lifecycle: 切回自动重算 (切走时已 clear 释放), 切走立刻中断+释放
+      // Distribution lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在
+      // OnCollapse); 切回时 Idle/Cancelled 自动重算, Done 的结果直接复用
       if (dist_tab_open && !state->dist_tab_was_active) {
         state->dist_tab_was_active = true;
-        if (data.dist.status.load() == Dist::Status::Idle) {
+        const auto st = data.dist.status.load();
+        if (st == Dist::Status::Idle || st == Dist::Status::Cancelled) {
           state->dist_service->RequestCompute(data);
         }
       } else if (!dist_tab_open && state->dist_tab_was_active) {
@@ -425,6 +447,8 @@ TaskHandle CreateFeaturesTask() {
     }
 
     state->data_loader.reset();
+    if (state->dist_service)
+      state->dist_service->Shutdown(); // Reinit 复用 SharedData, 构建内存一并释放
     state->dist_service.reset();
     state->timeseries_service.reset();
     state->transform_service.reset();

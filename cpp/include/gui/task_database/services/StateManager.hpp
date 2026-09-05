@@ -25,8 +25,7 @@ struct TabAccessState {
 
   // Table 主要展示 Overview 的日频基本面, Browser 本身就是在展示 L2 数据
   // 完整性 (缺口正是它要呈现的东西) —— 两者都不需要 L2 覆盖 100% Pass,
-  // 但仍要等 Encode 页跑过一遍覆盖扫描 (数据才建好). 100% Pass 只是
-  // Features→Compute 的硬要求.
+  // 但仍要等 Encode 页跑过一遍覆盖扫描 (数据才建好).
   bool can_access_table = false;   // 基本面 Ready 且已扫描过一遍
   bool can_access_browser = false; // 基本面 Ready 且已扫描过一遍
 };

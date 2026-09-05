@@ -128,6 +128,7 @@ std::vector<std::string> dist_enumerate_months(const std::string &start_date,
 
 void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::string> &month_keys,
                            size_t n_assets) {
+  TraceN("DistReset"); // 首帧账目: 全资产 sketch/快照的 (再) 分配都在这
   std::lock_guard<std::mutex> lock(mutex);
 
   columns = std::move(cols);
@@ -148,18 +149,19 @@ void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::stri
   prepare_slots(by_hour, 24, KLL_CAPACITY, KLL_RESOLUTION);
   prepare_slots(by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
 
-  // 绘制子集: 固定种子洗牌取前 n_draw 个 → 无偏随机, 画面统计形态与全量等价
-  const size_t n_draw = std::min(kDrawAssets, n_assets);
+  // 全资产快照 (槽位 == 资产下标); PDF 折线绘制子集 = 固定种子洗牌取前 kDrawAssets 个
+  // → 无偏随机, 画面统计形态与全量等价 (纯 UI 顶点预算, 计算恒为全资产)
+  prepare_slots(asset_klls_, n_assets, KLL_ASSET_CAPACITY, KLL_ASSET_RESOLUTION);
+  lines.assign(n_assets, AssetLine{});
+  lines_staging_.assign(n_assets, AssetLine{});
   std::vector<uint32_t> order(n_assets);
   std::iota(order.begin(), order.end(), uint32_t{0});
   std::shuffle(order.begin(), order.end(), std::mt19937{0x5eed});
-  draw_pos_.assign(n_assets, -1);
+  const size_t n_draw = std::min(kDrawAssets, n_assets);
+  for (size_t a = 0; a < n_assets; ++a)
+    lines[a].asset = lines_staging_[a].asset = static_cast<uint32_t>(a);
   for (size_t i = 0; i < n_draw; ++i)
-    draw_pos_[order[i]] = static_cast<int32_t>(i);
-
-  prepare_slots(asset_klls_, n_draw, KLL_ASSET_CAPACITY, KLL_ASSET_RESOLUTION);
-  lines.assign(n_draw, AssetLine{});
-  lines_staging_.assign(n_draw, AssetLine{});
+    lines[order[i]].draw = lines_staging_[order[i]].draw = 1;
   w2_ref_ = W2Ref{};
 
   total.clear();
@@ -173,13 +175,71 @@ void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::stri
 }
 
 // ============================================================================
+// Runtime 容量准备 (prewarm 与 build 共用; 幂等, 尺寸对得上零分配)
+// ============================================================================
+
+size_t Dist::prepare_runtime(size_t n_months, size_t n_cols, size_t agg_stride) {
+  TraceN("PrepareShards"); // 首帧账目: 批平面 + n_threads × (staging + 聚合 sketch)
+  const size_t A = asset_klls_.size();
+  const size_t asset_stride = kDaysPerBatch * level_valid_rows(kDistLevel);
+  plane_.resize(A * asset_stride);
+
+  // 扫描块数封顶线程数; IO 每批最多 kDaysPerBatch 个任务, staging 只给前 n_io 个线程备
+  const size_t n_blocks = (A + kAssetBlock - 1) / kAssetBlock;
+  const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
+  const size_t n_threads = std::min(n_hw, std::max(kDaysPerBatch, n_blocks));
+  const size_t n_io = std::min(n_threads, kDaysPerBatch);
+  shards_.resize(n_threads);
+  for (size_t i = 0; i < n_threads; ++i) {
+    Shard &sh = shards_[i];
+    if (i < n_io)
+      sh.staging.preallocate(A, kDistLevel, n_cols);
+    sh.nan_seen = 0;
+    sh.samples.reserve(asset_stride);
+    sh.agg_samples.reserve(asset_stride / agg_stride + 1);
+    sh.day_groups.reserve(kDaysPerBatch);
+    sh.hour_runs.reserve(kDaysPerBatch * 8); // L1 一天只跨 5 个小时 (9/10/11/13/14)
+    prepare_slots(sh.months, n_months, KLL_CAPACITY, KLL_RESOLUTION);
+    prepare_slots(sh.by_hour, 24, KLL_CAPACITY, KLL_RESOLUTION);
+    prepare_slots(sh.by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
+    sh.total.clear();
+    sh.integrity.clear();
+  }
+  return n_threads;
+}
+
+// ============================================================================
+// Prewarm (进 Features 任务时 worker 线程调用一次: 点 Distribution 零额外分配)
+// ============================================================================
+
+void Dist::prewarm(size_t n_assets, size_t n_months) {
+  TraceN("DistPrewarm");
+  assert(n_assets > 0 && "资产轴为空, prewarm 无意义");
+  assert(status.load(std::memory_order_acquire) == Status::Idle && "prewarm 只允许 Idle 时调");
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (months.size() != n_months) {
+      months.clear();
+      months.resize(n_months); // 月份 key 由 reset_for_build 填
+    }
+    prepare_slots(by_hour, 24, KLL_CAPACITY, KLL_RESOLUTION);
+    prepare_slots(by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
+    prepare_slots(asset_klls_, n_assets, KLL_ASSET_CAPACITY, KLL_ASSET_RESOLUTION);
+    lines.resize(n_assets);
+    lines_staging_.resize(n_assets);
+  }
+  // 缓冲上界: 值列 + valid 列 (n_cols=2), agg_stride=1 (agg_samples 最大)
+  prepare_runtime(n_months, 2, 1);
+}
+
+// ============================================================================
 // Build (分批流式: 每批 IO → 扫描 → 发布, 首帧与总区间长度无关)
 // ============================================================================
 
 bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
 
-  const size_t A = draw_pos_.size();
+  const size_t A = asset_klls_.size();
   const size_t n_cols = columns.size();
   const bool has_valid = (n_cols > 1);
   const size_t VR = level_valid_rows(kDistLevel); // 分钟/日
@@ -200,12 +260,15 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   // ==========================================================================
   std::vector<std::string> all_dates;
   std::vector<size_t> all_month; // 日 → 月下标
-  for (size_t m = 0; m < n_months; ++m) {
-    const std::string &key = months[m].month; // reset 后不变, 免锁读
-    auto ds = reader.list_dates(key.substr(0, 4), key.substr(4, 2));
-    for (auto &d : ds) {
-      all_dates.push_back(std::move(d));
-      all_month.push_back(m);
+  {
+    TraceN("EnumDates"); // 首帧账目: 每月一次目录迭代 + 每天一次 stat
+    for (size_t m = 0; m < n_months; ++m) {
+      const std::string &key = months[m].month; // reset 后不变, 免锁读
+      auto ds = reader.list_dates(key.substr(0, 4), key.substr(4, 2));
+      for (auto &d : ds) {
+        all_dates.push_back(std::move(d));
+        all_month.push_back(m);
+      }
     }
   }
   if (all_dates.empty())
@@ -230,7 +293,6 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
   const auto invalid = std::bit_cast<feature_storage_t>(kInvalidBits);
   const size_t asset_stride = kDaysPerBatch * VR; // 批平面内每资产步长 (按满批)
-  plane_.resize(A * asset_stride);
 
   // 聚合槽抽样 stride: 按总格子数 (有效样本的上界) 折到 kAggTargetSamples 量级.
   // 区间小 → stride=1, 全量进聚合槽, 小数据集下不会被抽到低于 kMinSamples.
@@ -239,28 +301,9 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     ++agg_stride; // 与日内分钟数互质: 整除会让每天固定落在同一批分钟上, 扭曲小时分布
   this->agg_stride.store(agg_stride, std::memory_order_release);
 
-  // 线程私有状态 (跨请求复用; 槽数对得上只 clear).
-  // 扫描块数封顶线程数; IO 每批最多 kDaysPerBatch 个任务, staging 只给前 n_io 个线程备
-  const size_t n_blocks = (A + kAssetBlock - 1) / kAssetBlock;
-  const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
-  const size_t n_threads = std::min(n_hw, std::max(kDaysPerBatch, n_blocks));
+  // 批平面 + 线程 shard (prewarm 已做过则全部命中零分配路径)
+  const size_t n_threads = prepare_runtime(n_months, n_cols, agg_stride);
   const size_t n_io = std::min(n_threads, kDaysPerBatch);
-  shards_.resize(n_threads);
-  for (size_t i = 0; i < n_threads; ++i) {
-    Shard &sh = shards_[i];
-    if (i < n_io)
-      sh.staging.preallocate(A, kDistLevel, n_cols);
-    sh.nan_seen = 0;
-    sh.samples.reserve(asset_stride);
-    sh.agg_samples.reserve(asset_stride / agg_stride + 1);
-    sh.day_groups.reserve(kDaysPerBatch);
-    sh.hour_runs.reserve(kDaysPerBatch * 8); // L1 一天只跨 5 个小时 (9/10/11/13/14)
-    prepare_slots(sh.months, n_months, KLL_CAPACITY, KLL_RESOLUTION);
-    prepare_slots(sh.by_hour, 24, KLL_CAPACITY, KLL_RESOLUTION);
-    prepare_slots(sh.by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
-    sh.total.clear();
-    sh.integrity.clear();
-  }
 
   // ==========================================================================
   // 批循环: 一波常驻线程, 每批两道栅栏 (IO 完成 → 扫描完成).
@@ -273,6 +316,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   size_t pub_begin = 0; // completion 私有推进 (每批恰好执行一次, 串行)
 
   auto publish = [&]() noexcept {
+    TraceN("Publish");
     const size_t bd = std::min(kDaysPerBatch, n_sel - pub_begin);
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -351,10 +395,9 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         if (k0 >= A || cancel.load(std::memory_order_relaxed))
           break;
         const size_t k1 = std::min(k0 + kAssetBlock, A);
+        TraceN("ScanBlock");
 
         for (size_t a = k0; a < k1; ++a) {
-          const int32_t dpos = draw_pos_[a];
-
           sh.samples.clear();
           sh.agg_samples.clear();
           sh.day_groups.clear();
@@ -386,10 +429,9 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
               sh.integrity.val_min = std::min(sh.integrity.val_min, v);
               sh.integrity.val_max = std::max(sh.integrity.val_max, v);
 
-              if (dpos >= 0)
-                sh.samples.push_back(v); // 绘制子集吃全量 → asset_klls_
+              sh.samples.push_back(v); // 全量 → 该资产私有 sketch
 
-              if (++agg_tick < agg_stride) // 其余只走 stride 抽样 → 聚合槽
+              if (++agg_tick < agg_stride) // 聚合槽只吃 stride 抽样
                 continue;
               agg_tick = 0;
               const int h = hour_lut[t];
@@ -425,36 +467,34 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
               sh.by_hour[r.hour].addBatch(s + r.begin, r.end - r.begin);
           }
 
-          // 绘制子集: 累积 sketch + 导出整条线到 staging.
+          // 每资产: 累积 sketch + 导出整条线到 staging (槽位 == 资产下标).
           // asset_klls_/lines_staging_ 是 worker 私有且每资产单线程 → 全程无锁
-          if (dpos >= 0) {
-            KLLcache &kll = asset_klls_[dpos];
-            if (!sh.samples.empty())
-              kll.addBatch(sh.samples.data(), sh.samples.size());
+          KLLcache &kll = asset_klls_[a];
+          if (!sh.samples.empty())
+            kll.addBatch(sh.samples.data(), sh.samples.size());
 
-            AssetLine &ln = lines_staging_[dpos];
-            ln.asset = static_cast<uint32_t>(a);
-            ln.n = kll.totalCount();
-            if (ln.n >= kMinAssetSamples) {
-              const auto pdf = kll.exportPDF();
-              assert(pdf.n <= ln.x.size());
-              ln.n_pts = static_cast<uint32_t>(pdf.n);
-              std::copy_n(pdf.x, pdf.n, ln.x.data());
-              std::copy_n(pdf.y, pdf.n, ln.y.data());
-              ln.mean = static_cast<float>(kll.mean());
-              ln.var = static_cast<float>(kll.var());
-              ln.skew = static_cast<float>(kll.skew());
-              ln.kurt = static_cast<float>(kll.kurt());
-              ln.w2 = w2_ref_.valid ? compute_w2(kll.exportICDF(), ln.mean, w2_ref_) : -1.0f;
-            } else {
-              ln.n_pts = 0;
-              ln.w2 = -1.0f;
-            }
+          AssetLine &ln = lines_staging_[a];
+          ln.n = kll.totalCount();
+          if (ln.n >= kMinAssetSamples) {
+            const auto pdf = kll.exportPDF();
+            assert(pdf.n <= ln.x.size());
+            ln.n_pts = static_cast<uint32_t>(pdf.n);
+            std::copy_n(pdf.x, pdf.n, ln.x.data());
+            std::copy_n(pdf.y, pdf.n, ln.y.data());
+            ln.mean = static_cast<float>(kll.mean());
+            ln.var = static_cast<float>(kll.var());
+            ln.skew = static_cast<float>(kll.skew());
+            ln.kurt = static_cast<float>(kll.kurt());
+            ln.w2 = w2_ref_.valid ? compute_w2(kll.exportICDF(), ln.mean, w2_ref_) : -1.0f;
+          } else {
+            ln.n_pts = 0;
+            ln.w2 = -1.0f;
           }
         }
 
-        // 块末: 私有聚合槽一次并入全局 (锁内只有 sketch 级 merge)
+        // 块末: 私有聚合槽一次并入全局 (锁内只有 sketch 级 merge; UI 帧持锁会在这排队)
         {
+          TraceN("MergeAgg");
           std::lock_guard<std::mutex> lock(mutex);
           total.mergeWith(sh.total);
           for (size_t m = 0; m < n_months; ++m)
@@ -494,7 +534,6 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 void Dist::clear() {
   std::lock_guard<std::mutex> lock(mutex);
   columns.clear();
-  draw_pos_.clear();
   months.clear();
   lines.clear();
   by_hour.clear();

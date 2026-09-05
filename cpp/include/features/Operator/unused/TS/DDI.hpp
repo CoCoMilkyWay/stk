@@ -59,10 +59,10 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Ddi_1(N) N(Ddi_1, (DDI<1>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onMinute)
 
-#define FIELDS_L1_Ddi_1(X) \
-  X(ddi_1, IMBALANCE, RATIO, NONE, "Distance-discounted Imb λ=0.01", "距离折扣失衡λ=0.01", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.01)", OP(Ddi_1))
+#define FIELDS_L1_Ddi_1(X, CAT1) \
+  X(ddi_1, CAT1, RATIO, NONE, "Distance-discounted Imb λ=0.01", "距离折扣失衡λ=0.01", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.01)", OP(Ddi_1))
 
 #define NODE_Ddi_2(N) N(Ddi_2, (DDI<2>), (DepthData.bid_qty, DepthData.ask_qty, DepthData.bid_price, DepthData.ask_price), onMinute)
 
-#define FIELDS_L1_Ddi_2(X) \
-  X(ddi_2, IMBALANCE, RATIO, NONE, "Distance-discounted Imb λ=0.02", "距离折扣失衡λ=0.02", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.02)", OP(Ddi_2))
+#define FIELDS_L1_Ddi_2(X, CAT1) \
+  X(ddi_2, CAT1, RATIO, NONE, "Distance-discounted Imb λ=0.02", "距离折扣失衡λ=0.02", "考虑全量, 但是近端更高权重(按距离, 降频)", R"(\frac{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{N} e^{-\lambda \Delta P_{i,t}} (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad \Delta P_{i,t} = i \cdot \text{tick}, \quad \lambda = 0.02)", OP(Ddi_2))

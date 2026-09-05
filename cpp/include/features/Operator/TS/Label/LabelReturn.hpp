@@ -219,11 +219,11 @@ private:
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 // 行由配置生成: L1 每个 hold 一组 [long × LABEL_AMTS, short × LABEL_AMTS], 组序 = LABEL_HOLDS 序 (与 GROUP_SIZE / minute_anchored 的 h 对应)
-#define LABEL_ROW(X, side, en, cn, formula, h, a) \
-  X(lb_##side##_##h##m_##a##w, LABEL, FUTURE_RET, NONE, en " " #h "min " #a "w Return", cn #h "分钟收益(" #a "万)", "吃单" cn #h "分钟收益(" #a "万元,含冲击+税佣)", formula R"(, \quad A=)" #a R"(\mathrm{w}, T=)" #h R"(\mathrm{min})", LABEL)
-#define LABEL_ROW_LONG(a, h, X) LABEL_ROW(X, long, "Long", "做多", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}})", h, a)
-#define LABEL_ROW_SHORT(a, h, X) LABEL_ROW(X, short, "Short", "做空", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}})", h, a)
-#define LABEL_GROUP(h, X) LABEL_AMTS(LABEL_ROW_LONG, h, X) LABEL_AMTS(LABEL_ROW_SHORT, h, X)
+#define LABEL_ROW(X, CAT1, side, en, cn, formula, h, a) \
+  X(lb_##side##_##h##m_##a##w, CAT1, FUTURE_RET, NONE, en " " #h "min " #a "w Return", cn #h "分钟收益(" #a "万)", "吃单" cn #h "分钟收益(" #a "万元,含冲击+税佣)", formula R"(, \quad A=)" #a R"(\mathrm{w}, T=)" #h R"(\mathrm{min})", LABEL)
+#define LABEL_ROW_LONG(a, h, X, CAT1) LABEL_ROW(X, CAT1, long, "Long", "做多", R"(\frac{P_{exit}^{sell}-P_{entry}^{buy}}{P_{entry}^{buy}})", h, a)
+#define LABEL_ROW_SHORT(a, h, X, CAT1) LABEL_ROW(X, CAT1, short, "Short", "做空", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}})", h, a)
+#define LABEL_GROUP(h, X, CAT1) LABEL_AMTS(LABEL_ROW_LONG, h, X, CAT1) LABEL_AMTS(LABEL_ROW_SHORT, h, X, CAT1)
 
-#define FIELDS_L0_LabelReturn(X) LABEL_ROW_LONG(LABEL_L0_AMT, LABEL_L0_HOLD, X)
-#define FIELDS_L1_LabelReturn(X) LABEL_HOLDS(LABEL_GROUP, X)
+#define FIELDS_L0_LabelReturn(X, CAT1) LABEL_ROW_LONG(LABEL_L0_AMT, LABEL_L0_HOLD, X, CAT1)
+#define FIELDS_L1_LabelReturn(X, CAT1) LABEL_HOLDS(LABEL_GROUP, X, CAT1)

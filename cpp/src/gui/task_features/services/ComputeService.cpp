@@ -48,13 +48,15 @@ void ComputeService::start_compute(int num_workers) {
     backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
     backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
 
-    // Filter all_dates to backtest period
+    // 计算日期轴以交易日历为准: binary/archive 缺日也要落一份默认张量.
     std::vector<std::string> backtest_dates;
-    for (const auto &date : data_.asset.all_dates) {
+    backtest_dates.reserve(data_.asset.backtest.required_dates.size());
+    for (const auto &date : data_.asset.backtest.required_dates) {
       if (date >= backtest_start && date <= backtest_end) {
         backtest_dates.push_back(date);
       }
     }
+    assert(!backtest_dates.empty() && "回测区间内无交易日, 不应触发特征计算");
 
     std::cout << "\n=== Phase 2: Feature Computation ===\n"
               << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()

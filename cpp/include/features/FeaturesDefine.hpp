@@ -57,9 +57,9 @@
 //              降频型写两个: compute=onTick, flush=onMinute; 广播型 (日频): compute=onDay, flush=onMinute
 //     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游算子
 //
-// 截面算子文件 (Operator/CS/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
+// 截面算子文件 (Operator/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
 //
-//   #define FIELDS_<LVL>_<Name>(X)  X(code, cat_l1, cat_l2, norm_method, name_en, name_cn, description, formula, SRC) ...
+//   #define FIELDS_<LVL>_<Name>(X, CAT1)  X(code, CAT1, cat_l2, norm_method, name_en, name_cn, description, formula, SRC) ...
 //     LVL ∈ {L0, L1, DEPTH}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
 //     同族实例 (Ci_1/5/10/30 …) 在文件内用 helper 宏生成行, #n 拼进名字/公式.
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 列宽 / 有效性标志全部由它推出:
@@ -69,10 +69,10 @@
 //       FLAG                       有效标志列 _data_valid / _depth_valid (CoreSequential 手工写). META; 宽 1; ALL
 //       META(width)                其他基建手写列 (盘口快照, 宽 width). META; DEPTH
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG/META → Operator/TS/Meta/Meta.hpp,
-//     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
+//     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
 //     推荐频谱 (psd) 按层给 (ALL_LEVELS), 不逐列写.
 //
-// CMake (projects/main/CMakeLists.txt) 扫描 features/Operator/**/*.hpp, 按 inputs 引用
+// CMake (projects/main/CMakeLists.txt) 扫描 features/Operator/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
 // 分层拓扑排序, 生成 build/generated/features/NodesGenerated.hpp: 全部 #include + NODES(N) +
 // L0_FIELDS(X) / L1_FIELDS(X) / DEPTH_FIELDS(X). 基建 (ComputeGraph / CoreSequential / CoreCrosssection /
 // FeatureStore / Feature.hpp GUI 元数据) 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
@@ -116,30 +116,6 @@ struct EnumStr {
   X(LB, 2, "标签")            \
   X(META, 3, "元数据")
 
-#define FEATURE_CATEGORY_L1S(X) \
-  X(IMBALANCE, 0, "失衡")       \
-  X(SHAPE, 1, "形状")           \
-  X(ORDER_FLOW, 2, "订单流")    \
-  X(BEHAVIORAL, 3, "行为")      \
-  X(RESILIENCE, 4, "韧性")      \
-  X(LIQUIDITY, 5, "流动性")     \
-  X(VOLATILITY, 6, "波动率")    \
-  X(BASIC, 7, "基础")           \
-  X(LABEL, 8, "标签")           \
-  X(META, 9, "元数据")
-
-#define FEATURE_CATEGORY_L2S(X) \
-  X(RAW, 0, "原始")             \
-  X(NORMALIZED, 1, "标准化")    \
-  X(OSCILLATOR, 2, "震荡器")    \
-  X(DEVIATION, 3, "偏离")       \
-  X(RATIO, 4, "比率")           \
-  X(RANK, 5, "排名")            \
-  X(FUTURE_RET, 6, "未来收益")  \
-  X(SCORE, 7, "评分")           \
-  X(UNIVERSE, 8, "全域统计")    \
-  X(BENCHMARK, 9, "基准")
-
 // 推荐归一化 (仅元数据提示, 不参与计算)
 #define NORM_METHODS(X)                                       \
   X(NONE, 0, "无") /* x */                                    \
@@ -168,8 +144,6 @@ struct EnumStr {
   X(CLIP_LOG_ZSCORE, 25, "截断+对数+Z")
 
 DEFINE_ENUM(FeatureDataType, FEATURE_DATA_TYPES)
-DEFINE_ENUM(FeatureCategoryL1, FEATURE_CATEGORY_L1S)
-DEFINE_ENUM(FeatureCategoryL2, FEATURE_CATEGORY_L2S)
 DEFINE_ENUM(NormMethod, NORM_METHODS)
 
 #undef DEFINE_ENUM

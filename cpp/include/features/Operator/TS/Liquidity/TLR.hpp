@@ -41,10 +41,10 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Tar_5(N) N(Tar_5, (TLR<5, false>), (DepthData.ask_qty, tick_data), onMinute)
 
-#define FIELDS_L1_Tar_5(X) \
-  X(tar_5, LIQUIDITY, RATIO, NONE, "Top 5-level Ask Ratio", "前5档卖单占比", "卖单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,A}}{\sum_{i=1}^{\infty} V_{i,t}^{M,A}}, \quad N = 5)", OP(Tar_5))
+#define FIELDS_L1_Tar_5(X, CAT1) \
+  X(tar_5, CAT1, RATIO, NONE, "Top 5-level Ask Ratio", "前5档卖单占比", "卖单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,A}}{\sum_{i=1}^{\infty} V_{i,t}^{M,A}}, \quad N = 5)", OP(Tar_5))
 
 #define NODE_Tbr_5(N) N(Tbr_5, (TLR<5, true>), (DepthData.bid_qty, tick_data), onMinute)
 
-#define FIELDS_L1_Tbr_5(X) \
-  X(tbr_5, LIQUIDITY, RATIO, NONE, "Top 5-level Bid Ratio", "前5档买单占比", "买单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,B}}{\sum_{i=1}^{\infty} V_{i,t}^{M,B}}, \quad N = 5)", OP(Tbr_5))
+#define FIELDS_L1_Tbr_5(X, CAT1) \
+  X(tbr_5, CAT1, RATIO, NONE, "Top 5-level Bid Ratio", "前5档买单占比", "买单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,B}}{\sum_{i=1}^{\infty} V_{i,t}^{M,B}}, \quad N = 5)", OP(Tbr_5))

@@ -1,5 +1,6 @@
 // Tab Feature Implementation
 #include "gui/task_features/ui/TabFeature.hpp"
+#include "features/FeatureCategoriesGenerated.hpp"
 #include "graphic/graphic_basic.h"
 #include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
@@ -12,6 +13,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
+#include <string_view>
 #include <unordered_map>
 
 namespace GUI::Features {
@@ -72,31 +75,14 @@ static void renderLatexFormula(tex::TeXRender *render) {
 // ============================================================================
 
 // Get background color for feature category
-static ImU32 get_category_color(FeatureCategoryL1 cat) {
+static ImU32 get_category_color(std::string_view cat) {
   constexpr float alpha = 0.15f; // 背景透明度
-  switch (cat) {
-  case FeatureCategoryL1::IMBALANCE:
-    return ImGui::GetColorU32(ImVec4(1.0f, 0.4f, 0.4f, alpha)); // 红色 - 失衡
-  case FeatureCategoryL1::SHAPE:
-    return ImGui::GetColorU32(ImVec4(0.4f, 0.8f, 1.0f, alpha)); // 浅蓝 - 形状
-  case FeatureCategoryL1::ORDER_FLOW:
-    return ImGui::GetColorU32(ImVec4(1.0f, 0.7f, 0.3f, alpha)); // 橙色 - 订单流
-  case FeatureCategoryL1::BEHAVIORAL:
-    return ImGui::GetColorU32(ImVec4(0.8f, 0.4f, 1.0f, alpha)); // 紫色 - 行为
-  case FeatureCategoryL1::RESILIENCE:
-    return ImGui::GetColorU32(ImVec4(0.4f, 1.0f, 0.6f, alpha)); // 绿色 - 韧性
-  case FeatureCategoryL1::LIQUIDITY:
-    return ImGui::GetColorU32(ImVec4(0.2f, 0.8f, 0.7f, alpha)); // 青绿 - 流动性
-  case FeatureCategoryL1::VOLATILITY:
-    return ImGui::GetColorU32(ImVec4(1.0f, 0.5f, 0.7f, alpha)); // 粉色 - 波动率
-  case FeatureCategoryL1::BASIC:
-    return ImGui::GetColorU32(ImVec4(0.7f, 0.7f, 0.7f, alpha)); // 灰色 - 基础
-  case FeatureCategoryL1::LABEL:
-    return ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 0.4f, alpha)); // 黄色 - 标签
-  case FeatureCategoryL1::META:
-    return ImGui::GetColorU32(ImVec4(0.5f, 0.5f, 0.5f, alpha)); // 深灰 - 元数据
-  }
-  return ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.0f)); // 透明
+  uint32_t h = 2166136261u;
+  for (char c : cat)
+    h = (h ^ static_cast<unsigned char>(c)) * 16777619u;
+  float r, g, b;
+  ImGui::ColorConvertHSVtoRGB(static_cast<float>(h % 360u) / 360.0f, 0.45f, 0.95f, r, g, b);
+  return ImGui::GetColorU32(ImVec4(r, g, b, alpha));
 }
 
 // Get current level features based on selection
@@ -167,6 +153,40 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
           selected_values.insert(value);
         else
           selected_values.erase(value);
+      }
+    }
+    ImGui::End();
+  }
+}
+
+template <size_t N>
+static void render_filter_dropdown(const char *label, bool &show_dropdown, std::set<std::string_view> &selected_values, const std::array<const char *, N> &all_values) {
+  ImGui::Text("%s:", label);
+  ImGui::SameLine();
+
+  char button_label[128];
+  if (selected_values.empty()) {
+    snprintf(button_label, sizeof(button_label), "All###%s", label);
+  } else {
+    snprintf(button_label, sizeof(button_label), "%d###%s", (int)selected_values.size(), label);
+  }
+
+  if (ImGui::Button(button_label, ImVec2(80, 0))) {
+    show_dropdown = !show_dropdown;
+  }
+
+  if (show_dropdown) {
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
+    ImGui::Begin(label, &show_dropdown, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+
+    for (const char *value : all_values) {
+      std::string_view key(value);
+      bool is_selected = selected_values.find(key) != selected_values.end();
+      if (ImGui::Checkbox(value, &is_selected)) {
+        if (is_selected)
+          selected_values.insert(key);
+        else
+          selected_values.erase(key);
       }
     }
     ImGui::End();
@@ -333,10 +353,10 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
           cmp = (int)fa.data_type - (int)fb.data_type;
           break; // DataType
         case 7:
-          cmp = (int)fa.cat_l1 - (int)fb.cat_l1;
+          cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
           break; // Cat L1
         case 8:
-          cmp = (int)fa.cat_l2 - (int)fb.cat_l2;
+          cmp = std::strcmp(fa.cat_l2, fb.cat_l2);
           break; // Cat L2
         case 9:
           cmp = (int)fa.norm_method - (int)fb.norm_method;
@@ -440,15 +460,11 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
       // Column: Cat L1
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.cat_l1).en);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", to_string(f.cat_l1).cn);
+      ImGui::TextUnformatted(f.cat_l1);
 
       // Column: Cat L2
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.cat_l2).en);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", to_string(f.cat_l2).cn);
+      ImGui::TextUnformatted(f.cat_l2);
 
       // Column: Norm Method
       ImGui::TableNextColumn();

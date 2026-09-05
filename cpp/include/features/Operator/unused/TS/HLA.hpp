@@ -74,5 +74,5 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Hla(N) N(Hla, (HLA), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
-#define FIELDS_L1_Hla(X) \
-  X(hla_imba, ORDER_FLOW, RATIO, NONE, "Hidden-liquidity-adjusted Imba", "潜在流动性失衡", "预测后续时刻的失衡(按照refill/cancel rate)(降频)", R"(\frac{\tilde{V}_{1,t}^{M,B} - \tilde{V}_{1,t}^{M,A}}{\tilde{V}_{1,t}^{M,B} + \tilde{V}_{1,t}^{M,A}}, \quad \tilde{V}_{1,t}^{M,s} = V_{1,t}^{M,s}(1+\rho_t^{s}), \quad \rho_t^{s} = \frac{|O_t^{M,s}| - |O_t^{C,s}|}{|O_t^{M,s}| + |O_t^{C,s}|}, \quad s \in \{B,A\})", OP(Hla))
+#define FIELDS_L1_Hla(X, CAT1) \
+  X(hla_imba, CAT1, RATIO, NONE, "Hidden-liquidity-adjusted Imba", "潜在流动性失衡", "预测后续时刻的失衡(按照refill/cancel rate)(降频)", R"(\frac{\tilde{V}_{1,t}^{M,B} - \tilde{V}_{1,t}^{M,A}}{\tilde{V}_{1,t}^{M,B} + \tilde{V}_{1,t}^{M,A}}, \quad \tilde{V}_{1,t}^{M,s} = V_{1,t}^{M,s}(1+\rho_t^{s}), \quad \rho_t^{s} = \frac{|O_t^{M,s}| - |O_t^{C,s}|}{|O_t^{M,s}| + |O_t^{C,s}|}, \quad s \in \{B,A\})", OP(Hla))

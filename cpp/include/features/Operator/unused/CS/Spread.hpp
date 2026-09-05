@@ -7,8 +7,6 @@
 // =============================================================================
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define FIELDS_L0_CsSpread(X) \
-  X(cs_spread_rank, LIQUIDITY, RANK, RANK_ZSCORE, "CS Spread Rank", "价差截面排名", "spread截面rank→inverse normal", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))", CS(0, spread, None, NormRank))
+#define FIELDS_L0_CsSpread(X, CAT1) X(cs_spread_rank, CAT1, RANK, RANK_ZSCORE, "CS Spread Rank", "价差截面排名", "spread截面rank→inverse normal", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))", CS(0, spread, None, NormRank))
 
-#define FIELDS_L1_CsSpread(X) \
-  X(cs_spread_rank, LIQUIDITY, RANK, RANK_ZSCORE, "CS Spread Rank", "价差截面排名", "spread截面rank→inverse normal", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))", CS(0, spread, None, NormRank))
+#define FIELDS_L1_CsSpread(X, CAT1) X(cs_spread_rank, CAT1, RANK, RANK_ZSCORE, "CS Spread Rank", "价差截面排名", "spread截面rank→inverse normal", R"(\Phi^{-1}(\mathrm{pctl}(\mathrm{spread})))", CS(0, spread, None, NormRank))

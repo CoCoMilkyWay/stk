@@ -28,16 +28,20 @@
 //                   (f16; valid 门控与真 NaN 折叠成统一哨兵, NaN 就地记账)
 //       ── 栅栏 ──
 //       Phase 扫描: 抢 kAssetBlock 个资产一块, 全在锁外:
-//                   integrity 账目 + stride 抽样喂聚合槽私有副本 (全部资产);
-//                   绘制子集另吃全量样本 → 私有资产 sketch → 顺手导出整条
-//                   AssetLine (PDF/矩/W2) 到 staging; 块末短锁 merge 聚合槽
+//                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本
+//                   + 全量样本 → 该资产私有 sketch → 顺手导出整条 AssetLine
+//                   (PDF/矩/W2) 到 staging; 块末短锁 merge 聚合槽.
+//                   全部资产一视同仁 —— 每批覆盖全资产 × 批内天, 收敛维度只有天,
+//                   跑完即全资产 × 全区间的终态 (UI 只画其中固定随机子集的折线)
 //       ── 栅栏 (completion, 单线程): 短锁 swap 发布 lines + NaN 账目 + 进度 ──
 //
 //   UI (每帧): 持 mutex 渲染; 资产截面消费 lines 快照, 零计算零重建只画
 //     (增量收敛每批都作废 sketch 缓存, 拉模式会让 UI 每帧重建几百条 — 故推模式).
 //     聚合视图 (月/星期/小时/全局) 槽数少, 仍 lazy 导出.
-//   生命周期: 改参数 → 新请求即取消在跑重算; 切走 Tab → 立刻中断 + clear() 释放;
-//             切回 Tab → 自动重算 (首帧几十 ms, 不留常驻).
+//   生命周期: 进 Features 任务且输入就绪 → prewarm() 预热全部构建内存 (worker 线程做,
+//             与 build 共用同一套容量准备, 点 Distribution 零额外分配);
+//             改参数 → 新请求即取消在跑重算; 切走 Tab → 只中断, 内存与 worker 保留;
+//             切回 Tab → 自动重算; 切出 Features 任务 → clear() 整体释放.
 // ============================================================================
 
 static constexpr size_t kMinSamples = 1000;         // sample 不够的不纳入统计
@@ -50,8 +54,9 @@ static constexpr size_t kDistLevel = 1;             // Dist 只在 L1 上跑
 static constexpr size_t kDaysPerBatch = 8;          // 批大小: 首帧 = 一批的 IO + 扫描
 static constexpr int kW2Deciles = 19;               // W2 用的分位点: 5%, 10%, ..., 95%
 
-// 绘制子集大小: 固定种子随机抽 → 无偏, 画面统计形态与全量等价 (同一哲学: 任意随机
-// 子集即全市场抽样). 资产 sketch 只为绘制服务, 其余资产只进 integrity 与聚合槽.
+// PDF 折线只画的资产数: 固定种子随机抽 → 无偏, 画面统计形态与全量等价 (同一哲学:
+// 任意随机子集即全市场抽样). 纯 UI 顶点预算 —— 计算恒为全资产 (sketch/矩/W2 全都有),
+// W2 散点 / 矩统计 / hover 覆盖全部资产.
 static constexpr size_t kDrawAssets = 512;
 
 // 总样本预算: 超出则日抽样 (stride 与交易周互质避免星期偏置). 分批后平面只存一批,
@@ -60,7 +65,7 @@ static constexpr size_t kMaxTotalSamples = size_t(2) << 30;
 
 // 聚合槽 (月/星期/小时/全局) 的目标样本量. KLL 的分位误差 ε≈1/k 只由容量决定, 与样本数
 // 无关 —— 5 年全市场灌进去的几亿样本, 最终也只存下 k·log2(n/k) ≈ 1 万个点, 早已饱和.
-// 所以按总量自适应 stride 抽到这个量级即可, 图上看不出差别. 绘制子集的资产槽仍吃全量.
+// 所以按总量自适应 stride 抽到这个量级即可, 图上看不出差别. 每资产的资产槽仍吃全量.
 static constexpr size_t kAggTargetSamples = size_t(32) << 20; // 32M
 
 // 区间月份枚举 "YYYYMM" 升序 (start/end: "YYYY-MM-DD" 或 "YYYYMMDD"; Service 与 UI 共用)
@@ -114,14 +119,16 @@ struct Dist {
     KLLcache kll{KLL_CAPACITY, KLL_RESOLUTION};
   };
 
-  // 绘制子集一条线的发布快照: worker 批末在锁外算好整条 (PDF/矩/W2), 短锁 swap 进
-  // lines. UI 消费快照零计算零重建 —— 收敛式构建下 sketch 缓存每批作废, 不能让 UI 拉.
+  // 每资产一条线的发布快照 (槽位 == 资产下标): worker 批末在锁外算好整条 (PDF/矩/W2),
+  // 短锁 swap 进 lines. UI 消费快照零计算零重建 —— 收敛式构建下 sketch 缓存每批作废,
+  // 不能让 UI 拉. draw 只是 UI 折线顶点预算, 散点/矩/hover 覆盖全资产.
   struct AssetLine {
-    uint32_t asset = 0; // 资产下标 (行业色 / 详情面板)
+    uint32_t asset = 0; // 资产下标 (行业色 / 详情面板; 恒 == 槽位, reset 时定好)
     uint64_t n = 0;     // 累积样本数 (全量)
     float mean = 0.0f, var = 0.0f, skew = 0.0f, kurt = 0.0f;
     float w2 = -1.0f;                                     // 均值校准 W2, 相对上一批末的全局分位 (逐批收敛); < 0 = 参考未就绪
     uint32_t n_pts = 0;                                   // 折线点数; 0 = 样本不足, 本条不画
+    uint8_t draw = 0;                                     // 1 = PDF 折线绘制子集 (固定种子随机, reset 时定好)
     std::array<float, KLL_ASSET_RESOLUTION - 1> x{}, y{}; // PDF 折线
   };
 
@@ -147,7 +154,7 @@ struct Dist {
   mutable std::mutex mutex;
 
   std::vector<MonthSlot> months;                // [n_months]
-  std::vector<AssetLine> lines;                 // [n_draw] 绘制子集快照 (每批整体换新)
+  std::vector<AssetLine> lines;                 // [A] 全资产快照 (槽位 == 资产下标, 每批整体换新)
   std::vector<KLLcache> by_hour;                // [24] 全区间 (KLL_CAPACITY/RESOLUTION, 下同)
   std::vector<KLLcache> by_weekday;             // [7]  全区间
   KLLcache total{KLL_CAPACITY, KLL_RESOLUTION}; // 全区间
@@ -157,7 +164,11 @@ struct Dist {
   // Methods (worker 线程调用, 内部按需加锁)
   // ==========================================================================
 
-  // 重置全部状态并进入 Building (sketch 容量复用, 稳态零分配)
+  // 预热: 把 reset/build 的全部容量准备提前做掉 (进任务时 worker 线程调用一次,
+  // 之后 reset/build 的同名调用全部命中"尺寸对得上"的零分配路径). 只允许 Idle 时调.
+  void prewarm(size_t n_assets, size_t n_months);
+
+  // 重置全部状态并进入 Building (sketch 容量复用, 预热/稳态下零分配)
   void reset_for_build(std::vector<size_t> cols, const std::vector<std::string> &month_keys,
                        size_t n_assets);
 
@@ -167,9 +178,8 @@ struct Dist {
   void clear();
 
 private:
-  // 构建参数/内部映射 (UI 不看): reset 时定好, build 全程只读
-  std::vector<size_t> columns;    // [值列 (+ valid 列)], GUI 线程解析好的快照
-  std::vector<int32_t> draw_pos_; // [A] 资产 → 绘制子集槽位; -1 = 不画 (固定种子随机抽)
+  // 构建参数 (UI 不看): reset 时定好, build 全程只读
+  std::vector<size_t> columns; // [值列 (+ valid 列)], GUI 线程解析好的快照
 
   // 上一批末的全局分位参考 (批末 completion 单线程更新, 扫描线程只读 — 栅栏同步)
   struct W2Ref {
@@ -200,7 +210,7 @@ private:
   struct Shard {
     FeatureRead::DayColumns staging; // Phase IO: 单日 [T][列][A] 暂存 (只前 kDaysPerBatch 个线程用)
     uint64_t nan_seen = 0;           // Phase IO: 本批真 NaN 数 (批末并入 integrity)
-    std::vector<float> samples;      // Phase 扫描: 绘制子集单资产本批全量样本
+    std::vector<float> samples;      // Phase 扫描: 单资产本批全量样本 → 该资产 sketch
     std::vector<float> agg_samples;  // Phase 扫描: stride 抽样样本 → 聚合槽 (下面两表索引它)
     std::vector<DayGroup> day_groups;
     std::vector<HourRun> hour_runs;
@@ -211,9 +221,13 @@ private:
     Integrity integrity;
   };
 
+  // 批平面 + 线程 shard 的容量准备, 返回线程数 (prewarm 与 build 共用; 幂等,
+  // 尺寸对得上零分配). n_cols/agg_stride 只影响缓冲上界, prewarm 传上界 (2, 1).
+  size_t prepare_runtime(size_t n_months, size_t n_cols, size_t agg_stride);
+
   // worker 私有 (clear() 只在 worker join 之后调用, 无竞争)
-  std::vector<KLLcache> asset_klls_;     // [n_draw] 绘制子集累积 sketch (UI 不读, 全程无锁)
-  std::vector<AssetLine> lines_staging_; // [n_draw] 扫描线程各写各槽, 批末与 lines 交换
+  std::vector<KLLcache> asset_klls_;     // [A] 每资产累积 sketch (UI 不读, 全程无锁)
+  std::vector<AssetLine> lines_staging_; // [A] 扫描线程各写各槽, 批末与 lines 交换
   std::vector<feature_storage_t> plane_; // [A][批天][分钟] 资产主序批平面 (f16, ~20MB)
   std::vector<Shard> shards_;            // [n_threads]
 };

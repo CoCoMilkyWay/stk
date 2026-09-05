@@ -4,17 +4,14 @@ project(Main VERSION 1.0.0 LANGUAGES CXX C)
 # ============================================================================
 # Platform Detection
 # ============================================================================
+set(IS_WINDOWS FALSE)
+set(IS_MACOS FALSE)
+set(IS_LINUX FALSE)
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(IS_WINDOWS TRUE)
-    set(IS_MACOS FALSE)
-    set(IS_LINUX FALSE)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(IS_WINDOWS FALSE)
     set(IS_MACOS TRUE)
-    set(IS_LINUX FALSE)
 else()
-    set(IS_WINDOWS FALSE)
-    set(IS_MACOS FALSE)
     set(IS_LINUX TRUE)
 endif()
 
@@ -174,77 +171,88 @@ include_directories(SYSTEM ${ARROW_INCLUDE})
 # ============================================================================
 
 set(SOURCES
-    ../../src/shared/Config.cpp
+    # shared
     ../../src/shared/Asset.cpp
     ../../src/shared/AssetAxis.cpp
-    ../../src/shared/EncodeDayRecord.cpp
     ../../src/shared/AssetInfo.cpp
-    ../../src/shared/OrderFlow.cpp
-    ../../src/shared/Feature.cpp
+    ../../src/shared/Config.cpp
     ../../src/shared/Dist.cpp
+    ../../src/shared/EncodeDayRecord.cpp
+    ../../src/shared/Feature.cpp
+    ../../src/shared/OrderFlow.cpp
+    ../../src/shared/TaskState.cpp
     ../../src/shared/TimeSeries.cpp
     ../../src/shared/Transform.cpp
-    ../../src/shared/TaskState.cpp
-    ../../src/misc/logging.cpp
+    # misc
     ../../src/misc/archive.cpp
-    ../../src/misc/file_check.cpp
     ../../src/misc/date.cpp
+    ../../src/misc/file_check.cpp
     ../../src/misc/fs.cpp
+    ../../src/misc/logging.cpp
     ../../src/misc/parquet.cpp
     ../../src/misc/schedule.cpp
     ../../src/misc/system_metrics.cpp
+    # api
     ../../src/api/bigquant/dai.cpp
-    ../../src/api/bigquant/spec.cpp
     ../../src/api/bigquant/pipeline.cpp
+    ../../src/api/bigquant/spec.cpp
     ../../src/api/tushare/http.cpp
-    ../../src/api/tushare/spec.cpp
     ../../src/api/tushare/parse.cpp
     ../../src/api/tushare/pipeline.cpp
-    ../../package/yyjson/yyjson.c
-    ../../src/codec/json_config.cpp
+    ../../src/api/tushare/spec.cpp
+    # codec
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
+    ../../src/codec/json_config.cpp
     ../../src/codec/L2_Validator.cpp
-    ../../src/worker/encoding_worker.cpp
-    ../../src/worker/sequential_worker.cpp
-    ../../src/worker/crosssectional_worker.cpp
-    ../../src/worker/io_worker.cpp
-    ../../src/features/Method/Fundamental.cpp
+    # features
     ../../src/features/Method/CS.cpp
+    ../../src/features/Method/Fundamental.cpp
+    # worker
+    ../../src/worker/crosssectional_worker.cpp
+    ../../src/worker/encoding_worker.cpp
+    ../../src/worker/io_worker.cpp
+    ../../src/worker/sequential_worker.cpp
+    # gui
     ../../src/gui/Gui.cpp
     ../../src/gui/Tasks.cpp
     ../../src/gui/coro/CoroManager.cpp
-    ../../src/gui/task_icon_bar/TaskIconBar.cpp
     ../../src/gui/task_icon_bar/CoroNetwork.cpp
+    ../../src/gui/task_icon_bar/TaskIconBar.cpp
+    # gui / task_database
+    ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
-    ../../src/gui/task_database/services/StateManager.cpp
-    ../../src/gui/task_database/services/FundamentalService.cpp
-    ../../src/gui/task_database/services/ScanService.cpp
-    ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/EncodingService.cpp
-    ../../src/gui/task_database/ui/TabOverview.cpp
-    ../../src/gui/task_database/ui/TabTable.cpp
+    ../../src/gui/task_database/services/FundamentalService.cpp
+    ../../src/gui/task_database/services/L2DatabaseService.cpp
+    ../../src/gui/task_database/services/ScanService.cpp
+    ../../src/gui/task_database/services/StateManager.cpp
+    ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_database/ui/TabBrowser.cpp
     ../../src/gui/task_database/ui/TabEncode.cpp
-    ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
-    ../../src/gui/task_database/TaskDatabase.cpp
+    ../../src/gui/task_database/ui/TabOverview.cpp
+    ../../src/gui/task_database/ui/TabTable.cpp
+    # gui / task_features
+    ../../src/gui/task_features/TaskFeatures.cpp
     ../../src/gui/task_features/services/ComputeService.cpp
     ../../src/gui/task_features/services/DistService.cpp
     ../../src/gui/task_features/services/TimeSeriesService.cpp
     ../../src/gui/task_features/services/TransformService.cpp
-    ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
-    ../../src/gui/task_features/ui/TabTransform.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
-    ../../src/gui/task_features/ui/TabTimeSeries.cpp
+    ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
-    ../../src/gui/task_features/TaskFeatures.cpp
+    ../../src/gui/task_features/ui/TabTimeSeries.cpp
+    ../../src/gui/task_features/ui/TabTransform.cpp
+    # gui / 其他 task
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
+    # 入口 + 第三方
     ../../src/main.cpp
     ../../package/tracy/public/TracyClient.cpp
+    ../../package/yyjson/yyjson.c
 )
 
 # Add GUI backend implementation
@@ -255,86 +263,97 @@ else()
 endif()
 
 set(HEADERS
-    ../../include/api/bigquant/dai.hpp
-    ../../include/api/bigquant/spec.hpp
-    ../../include/api/bigquant/pipeline.hpp
-    ../../include/api/tushare/http.hpp
-    ../../include/api/tushare/spec.hpp
-    ../../include/api/tushare/parse.hpp
-    ../../include/api/tushare/pipeline.hpp
+    # shared
+    ../../include/shared/Asset.hpp
+    ../../include/shared/AssetInfo.hpp
+    ../../include/shared/Config.hpp
+    ../../include/shared/Dist.hpp
+    ../../include/shared/Feature.hpp
+    ../../include/shared/OrderFlow.hpp
+    ../../include/shared/SharedData.hpp
+    ../../include/shared/TaskState.hpp
+    ../../include/shared/TimeSeries.hpp
+    ../../include/shared/Transform.hpp
+    # misc
+    ../../include/misc/affinity.hpp
+    ../../include/misc/archive.hpp
+    ../../include/misc/cross_platform.hpp
     ../../include/misc/date.hpp
+    ../../include/misc/file_check.hpp
     ../../include/misc/fs.hpp
+    ../../include/misc/logging.hpp
     ../../include/misc/parquet.hpp
+    ../../include/misc/print.hpp
+    ../../include/misc/profiler.hpp
+    ../../include/misc/progress_parallel.hpp
+    ../../include/misc/progress_single.hpp
     ../../include/misc/schedule.hpp
     ../../include/misc/system_metrics.hpp
-    ../../include/misc/cross_platform.hpp
-    ../../package/yyjson/yyjson.h
     ../../include/misc/timer.hpp
-    ../../include/misc/print.hpp
-    ../../include/misc/progress_single.hpp
-    ../../include/misc/progress_parallel.hpp
-    ../../include/misc/affinity.hpp
-    ../../include/misc/logging.hpp
-    ../../include/misc/file_check.hpp
-    ../../include/misc/archive.hpp
-    ../../include/misc/profiler.hpp
-    ../../include/define/CBuffer.hpp
-    ../../include/codec/json_config.hpp
+    # api
+    ../../include/api/bigquant/dai.hpp
+    ../../include/api/bigquant/pipeline.hpp
+    ../../include/api/bigquant/spec.hpp
+    ../../include/api/tushare/http.hpp
+    ../../include/api/tushare/parse.hpp
+    ../../include/api/tushare/pipeline.hpp
+    ../../include/api/tushare/spec.hpp
+    # codec
     ../../include/codec/binary_decoder_L2.hpp
     ../../include/codec/binary_encoder_L2.hpp
+    ../../include/codec/json_config.hpp
     ../../include/codec/L2_DataType.hpp
     ../../include/codec/L2_Validator.hpp
+    # define / lob
+    ../../include/define/CBuffer.hpp
+    ../../include/lob/LimitOrderBook.hpp
+    ../../include/lob/LimitOrderBookDefine.hpp
+    # features
+    ../../include/features/ComputeGraph.hpp
+    ../../include/features/CoreCrosssection.hpp
+    ../../include/features/CoreSequential.hpp
     ../../include/features/FeaturesDefine.hpp
     ../../include/features/TimeIndex.hpp
     ../../include/features/Backend/FeatureRead.hpp
-    ../../include/features/Backend/FeatureStoreConfig.hpp
     ../../include/features/Backend/FeatureStore.hpp
+    ../../include/features/Backend/FeatureStoreConfig.hpp
     ../../include/features/Backend/ZstdHelper.hpp
-    ../../include/features/ComputeGraph.hpp
-    ../../include/features/CoreSequential.hpp
-    ../../include/features/CoreCrosssection.hpp
-    ../../include/lob/LimitOrderBookDefine.hpp
-    ../../include/lob/LimitOrderBook.hpp
-    ../../include/worker/encoding_worker.hpp
-    ../../include/worker/sequential_worker.hpp
+    # worker
     ../../include/worker/crosssectional_worker.hpp
+    ../../include/worker/encoding_worker.hpp
     ../../include/worker/io_worker.hpp
-    ../../include/shared/Config.hpp
-    ../../include/shared/Asset.hpp
-    ../../include/shared/AssetInfo.hpp
-    ../../include/shared/OrderFlow.hpp
-    ../../include/shared/Feature.hpp
-    ../../include/shared/Dist.hpp
-    ../../include/shared/TimeSeries.hpp
-    ../../include/shared/Transform.hpp
-    ../../include/shared/TaskState.hpp
-    ../../include/shared/SharedData.hpp
+    ../../include/worker/sequential_worker.hpp
+    # gui
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp
     ../../include/gui/Tasks.hpp
     ../../include/gui/coro/CoroManager.hpp
-    ../../include/gui/task_icon_bar/TaskIconBar.hpp
     ../../include/gui/task_icon_bar/CoroNetwork.hpp
+    ../../include/gui/task_icon_bar/TaskIconBar.hpp
+    # gui / task_database
+    ../../include/gui/task_database/TaskDatabase.hpp
     ../../include/gui/task_database/models/SharedTypes.hpp
     ../../include/gui/task_database/services/ClassifierService.hpp
     ../../include/gui/task_database/services/FundamentalService.hpp
-    ../../include/gui/task_database/services/ScanService.hpp
     ../../include/gui/task_database/services/L2DatabaseService.hpp
+    ../../include/gui/task_database/services/ScanService.hpp
     ../../include/gui/task_database/services/StateManager.hpp
+    ../../include/gui/task_database/ui/TabBrowser.hpp
     ../../include/gui/task_database/ui/TabOverview.hpp
     ../../include/gui/task_database/ui/TabTable.hpp
-    ../../include/gui/task_database/ui/TabBrowser.hpp
-    ../../include/gui/task_database/TaskDatabase.hpp
+    # gui / 其他 task
     ../../include/gui/task_settings/TaskSettings.hpp
     ../../include/gui/task_system_info/TaskSystemInfo.hpp
     ../../include/gui/task_terminal/TaskTerminal.hpp
+    # 第三方
+    ../../package/yyjson/yyjson.h
 )
 
 # ============================================================================
 # features/NodesGenerated.hpp (生成到 build 目录) — 计算图节点表 + 落盘字段表.
-#   节点实例和落盘列直接写在算子文件里 (include/features/Operator/**/*.hpp: TS/ 时序节点, CS/ 按源节点分文件的截面列; 方法在 Method/):
+#   节点实例和落盘列直接写在算子文件里 (include/features/Operator/{TS,CS}/<分类>/**/*.hpp: TS/ 时序节点, CS/ 截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (OpType), (ctor inputs), compute_trigger, flush_trigger)
-#     #define FIELDS_<LVL>_<Owner>(X) X(code, ...)   LVL ∈ {L0, L1, DEPTH}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG/META) 的任意名字
+#     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ {L0, L1, DEPTH}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG/META) 的任意名字
 #   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / DepthData.bid_qty ...), 不需要任何 include.
 #   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 生成
 #     NODES(N) / NODE_PREV_<Name> (声明链, 让顺序错误变成编译错误) /
@@ -342,32 +361,55 @@ set(HEADERS
 #   CMAKE_CONFIGURE_DEPENDS 盯住每个文件内容: 改动后下次 build 自动重新 configure.
 # ============================================================================
 set(DAG_SCAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../include/features)
-file(GLOB_RECURSE DAG_SCAN_FILES CONFIGURE_DEPENDS ${DAG_SCAN_ROOT}/Operator/*.hpp)
+file(GLOB_RECURSE DAG_SCAN_FILES CONFIGURE_DEPENDS
+    ${DAG_SCAN_ROOT}/Operator/TS/*.hpp
+    ${DAG_SCAN_ROOT}/Operator/CS/*.hpp)
 list(SORT DAG_SCAN_FILES)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DAG_SCAN_FILES})
 
-set(DAG_NODES "")        # 全部节点名 (发现序)
+set(DAG_NODES "") # 全部节点名 (发现序)
 set(DAG_FIELD_OWNERS "") # 有任一 FIELDS_ 宏的名字 (节点或非算子列)
+set(DAG_CATEGORIES "") # Operator/TS/<分类> 或 Operator/CS/<分类> 的目录名
+set(DAG_CAT2S "") # 字段表中实际出现过的二级分类 token
 set(DAG_GEN_INCLUDES "")
 foreach(scan_file ${DAG_SCAN_FILES})
     file(RELATIVE_PATH scan_rel ${CMAKE_CURRENT_SOURCE_DIR}/../../include ${scan_file})
+    file(RELATIVE_PATH scan_op_rel ${DAG_SCAN_ROOT}/Operator ${scan_file})
+    string(REPLACE "/" ";" scan_parts "${scan_op_rel}")
+    list(LENGTH scan_parts scan_parts_len)
+    if(scan_parts_len LESS 3)
+        message(FATAL_ERROR "Operator 文件必须放在 Operator/TS/<分类>/ 或 Operator/CS/<分类>/ 下: ${scan_rel}")
+    endif()
+    list(GET scan_parts 1 scan_cat)
+    if(NOT scan_cat IN_LIST DAG_CATEGORIES)
+        list(APPEND DAG_CATEGORIES ${scan_cat})
+    endif()
     file(READ ${scan_file} scan_src)
     string(REGEX REPLACE "\\\\\n" " " scan_src "${scan_src}") # 续行拼成一行
-    string(REGEX MATCHALL "#define NODE_[A-Za-z0-9_]+\\(" node_defs "${scan_src}")
-    string(REGEX MATCHALL "#define FIELDS_(L0|L1|DEPTH)_[A-Za-z0-9_]+\\(" field_defs "${scan_src}")
+    set(scan_defs "${scan_src}")
+    string(REGEX REPLACE "(^|\n) *//[^\n]*" "\n" scan_defs "${scan_defs}")
+    string(REGEX MATCHALL "(^|\n) *#define NODE_[A-Za-z0-9_]+\\(" node_defs "${scan_defs}")
+    string(REGEX MATCHALL "(^|\n) *#define FIELDS_(L0|L1|DEPTH)_[A-Za-z0-9_]+\\(" field_defs "${scan_defs}")
+    string(REGEX MATCHALL "X\\([^,\n]+, *CAT1, *[A-Za-z0-9_]+," cat2_uses "${scan_defs}")
+    foreach(cat2_use ${cat2_uses})
+        string(REGEX REPLACE ".*CAT1, *([A-Za-z0-9_]+),.*" "\\1" cat2 "${cat2_use}")
+        if(NOT cat2 IN_LIST DAG_CAT2S)
+            list(APPEND DAG_CAT2S ${cat2})
+        endif()
+    endforeach()
     if(NOT node_defs AND NOT field_defs)
         continue()
     endif()
     string(APPEND DAG_GEN_INCLUDES "#include \"${scan_rel}\"\n")
     foreach(node_def ${node_defs})
-        string(REGEX REPLACE "#define NODE_([A-Za-z0-9_]+)\\(" "\\1" node_name "${node_def}")
+        string(REGEX REPLACE ".*#define NODE_([A-Za-z0-9_]+)\\(" "\\1" node_name "${node_def}")
         if(node_name IN_LIST DAG_NODES)
             message(FATAL_ERROR "NODE_${node_name} 重复定义 (${scan_rel})")
         endif()
         list(APPEND DAG_NODES ${node_name})
         set(DAG_FILE_${node_name} ${scan_rel})
         # 依赖 = 该行里所有 "<Ident>." (先全收, 排序时只认节点名)
-        string(REGEX MATCH "#define NODE_${node_name}\\([^\n]*" node_line "${scan_src}")
+        string(REGEX MATCH "(^|\n) *#define NODE_${node_name}\\([^\n]*" node_line "${scan_defs}")
         string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*\\." node_refs "${node_line}")
         set(DAG_DEPS_${node_name} "")
         foreach(ref ${node_refs})
@@ -376,13 +418,14 @@ foreach(scan_file ${DAG_SCAN_FILES})
         endforeach()
     endforeach()
     foreach(field_def ${field_defs})
-        string(REGEX REPLACE "#define FIELDS_(L0|L1|DEPTH)_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
+        string(REGEX REPLACE ".*#define FIELDS_(L0|L1|DEPTH)_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
         list(GET lvl_owner 0 lvl)
         list(GET lvl_owner 1 owner)
         if(DAG_HAS_${lvl}_${owner})
             message(FATAL_ERROR "FIELDS_${lvl}_${owner} 重复定义 (${scan_rel})")
         endif()
         set(DAG_HAS_${lvl}_${owner} TRUE)
+        set(DAG_CAT_${lvl}_${owner} "${scan_cat}")
         if(NOT owner IN_LIST DAG_FIELD_OWNERS)
             list(APPEND DAG_FIELD_OWNERS ${owner})
         endif()
@@ -434,19 +477,48 @@ foreach(lvl L0 L1 DEPTH) # 层名与 FeaturesDefine.hpp ALL_LEVELS 一致, 生�
     string(APPEND DAG_GEN_FIELDS "#define ${lvl}_FIELDS(X)")
     foreach(owner ${dag_field_order})
         if(DAG_HAS_${lvl}_${owner})
-            string(APPEND DAG_GEN_FIELDS " \\\n  FIELDS_${lvl}_${owner}(X)")
+            set(field_cat "${DAG_CAT_${lvl}_${owner}}")
+            string(APPEND DAG_GEN_FIELDS " \\\n  FIELDS_${lvl}_${owner}(X, \"${field_cat}\")")
         endif()
     endforeach()
     string(APPEND DAG_GEN_FIELDS "\n\n")
 endforeach()
 list(LENGTH DAG_ORDER DAG_N)
+list(SORT DAG_CATEGORIES)
+list(SORT DAG_CAT2S)
+set(DAG_GEN_CATEGORIES "")
+foreach(cat ${DAG_CATEGORIES})
+    string(APPEND DAG_GEN_CATEGORIES "  \"${cat}\",\n")
+endforeach()
+set(DAG_GEN_CAT2S "")
+foreach(cat2 ${DAG_CAT2S})
+    string(APPEND DAG_GEN_CAT2S "  \"${cat2}\",\n")
+endforeach()
+list(LENGTH DAG_CATEGORIES DAG_CAT_N)
+list(LENGTH DAG_CAT2S DAG_CAT2_N)
+file(CONFIGURE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/features/FeatureCategoriesGenerated.hpp
+    CONTENT
+    "#pragma once
+
+#include <array>
+
+inline constexpr std::array<const char *, ${DAG_CAT_N}> FeatureCategoryL1_ALL = {
+${DAG_GEN_CATEGORIES}};
+
+inline constexpr std::array<const char *, ${DAG_CAT2_N}> FeatureCategoryL2_ALL = {
+${DAG_GEN_CAT2S}};
+"
+    @ONLY
+    NEWLINE_STYLE UNIX
+)
 file(CONFIGURE
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/features/NodesGenerated.hpp
     CONTENT
-"#pragma once
+    "#pragma once
 
 // AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
-// 由 include/features/Operator/**/*.hpp 里的 NODE_/FIELDS_ 宏扫描生成
+// 由 include/features/Operator/{TS,CS}/<分类>/**/*.hpp 里的 NODE_/FIELDS_ 宏扫描生成
 // (${DAG_N} 个节点, 按输入引用分层拓扑排序). 改动后下次 build 自动重新 configure.
 
 ${DAG_GEN_INCLUDES}
@@ -479,38 +551,44 @@ endif()
 # api / parquet 路径用 NaN 标记缺失值, 与 -ffast-math
 # (-ffinite-math-only) 冲突会出错, 必须 precise math.
 set_source_files_properties(
+    # shared
+    ../../src/shared/AssetAxis.cpp
+    ../../src/shared/AssetInfo.cpp
+    ../../src/shared/Config.cpp
+    ../../src/shared/Dist.cpp
+    ../../src/shared/Transform.cpp
+    # misc
     ../../src/misc/date.cpp
     ../../src/misc/fs.cpp
     ../../src/misc/parquet.cpp
     ../../src/misc/schedule.cpp
+    # api
     ../../src/api/bigquant/dai.cpp
-    ../../src/api/bigquant/spec.cpp
     ../../src/api/bigquant/pipeline.cpp
+    ../../src/api/bigquant/spec.cpp
     ../../src/api/tushare/http.cpp
-    ../../src/api/tushare/spec.cpp
     ../../src/api/tushare/parse.cpp
     ../../src/api/tushare/pipeline.cpp
-    ../../src/features/Method/Fundamental.cpp
-    ../../src/features/Method/CS.cpp
+    ../../src/api/tushare/spec.cpp
+    # codec
     ../../src/codec/json_config.cpp
-    ../../src/shared/Config.cpp
-    ../../src/shared/AssetAxis.cpp
-    ../../src/shared/AssetInfo.cpp
-    ../../src/shared/Dist.cpp
-    ../../src/shared/Transform.cpp
+    # features
+    ../../src/features/Method/CS.cpp
+    ../../src/features/Method/Fundamental.cpp
+    # gui
+    ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/FundamentalService.cpp
-    ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
+    ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/StateManager.cpp
-    ../../src/gui/task_database/TaskDatabase.cpp
-    ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
-    ../../src/gui/task_features/ui/TabFeature.cpp
-    ../../src/gui/task_features/ui/TabTransform.cpp
+    ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
-    ../../src/gui/task_features/ui/TabTimeSeries.cpp
+    ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
+    ../../src/gui/task_features/ui/TabTimeSeries.cpp
+    ../../src/gui/task_features/ui/TabTransform.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
     PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
@@ -547,7 +625,9 @@ else()
     message(STATUS "✓ OpenGL found: ${OPENGL_LIBRARIES}")
 endif()
 
-message(STATUS "✓ Windows SDK available (Win32 API)")
+if(IS_WINDOWS)
+    message(STATUS "✓ Windows SDK available (Win32 API)")
+endif()
 message(STATUS "All GUI dependencies satisfied")
 message(STATUS "")
 

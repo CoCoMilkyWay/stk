@@ -65,5 +65,5 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_ToxicCr(N) N(ToxicCr, (ToxicCr), (tick_data), onTick, onMinute)
 
-#define FIELDS_L1_ToxicCr(X) \
-  X(toxic_cr, ORDER_FLOW, RATIO, NONE, "Toxic Cancel Ratio", "毒订单流撤单率", "短窗口撤单占长窗口撤单比例,检测高频撤单行为(降频)", R"(\frac{\sum_{\tau=t-5\mathrm{s}}^{t}|O_{\tau}^{C}|}{\sum_{\tau=t-60\mathrm{s}}^{t}|O_{\tau}^{C}|}, \quad |O_{\tau}^{C}|=|O_{\tau}^{C,B}|+|O_{\tau}^{C,A}|)", OP(ToxicCr))
+#define FIELDS_L1_ToxicCr(X, CAT1) \
+  X(toxic_cr, CAT1, RATIO, NONE, "Toxic Cancel Ratio", "毒订单流撤单率", "短窗口撤单占长窗口撤单比例,检测高频撤单行为(降频)", R"(\frac{\sum_{\tau=t-5\mathrm{s}}^{t}|O_{\tau}^{C}|}{\sum_{\tau=t-60\mathrm{s}}^{t}|O_{\tau}^{C}|}, \quad |O_{\tau}^{C}|=|O_{\tau}^{C,B}|+|O_{\tau}^{C,A}|)", OP(ToxicCr))

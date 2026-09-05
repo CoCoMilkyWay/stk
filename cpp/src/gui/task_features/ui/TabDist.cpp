@@ -274,10 +274,10 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
   ImGui::SameLine(0, 0);
-  // 进度: 分批流式, 天是唯一流式维度 (每批扫全部资产)
-  ImGui::Text(" (天 %zu/%zu | 画 %zu/%zu 资产)",
+  // 进度: 分批流式, 天是唯一流式维度 (每批扫全部资产, 全资产逐批收敛)
+  ImGui::Text(" (天 %zu/%zu | %zu 资产全算, 折线画 %zu)",
               dist.days_loaded.load(), dist.days_total.load(),
-              dist.lines.size(), data.asset.items.size());
+              dist.lines.size(), std::min(kDrawAssets, dist.lines.size()));
   // 聚合槽抽样率: 月/星期/小时/全局的 n 是抽样后的数, 资产线恒全量 —— 说明白免得看着矛盾
   const size_t agg_stride = dist.agg_stride.load();
   if (agg_stride > 1) {
@@ -1050,7 +1050,8 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
         "相对上一批末的全局分位在发布侧算好, 随构建逐批收敛");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
                        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
-    ImGui::Text("\n颜色 = 行业 (一个行业一个颜色); 画的是固定随机绘制子集, 即全市场无偏抽样");
+    ImGui::Text("\n颜色 = 行业 (一个行业一个颜色); W2 散点/矩/hover 为全资产,\n"
+                "PDF 细线只画固定随机子集 (纯顶点预算, 即全市场无偏抽样)");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
@@ -1138,10 +1139,12 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
         }
       }
 
-      // Check PDF lines (if not hovering dots; x 窗口裁剪, 只扫鼠标附近的段)
+      // Check PDF lines (if not hovering dots; x 窗口裁剪, 只扫鼠标附近的段; 只有画出来的线可 hover)
       if (hovered_idx < 0) {
         for (size_t i = 0; i < n_valid; ++i) {
           const auto &ln = dist.lines[line_indices[i]];
+          if (!ln.draw)
+            continue;
           double d_sq = nearest_seg_dist_sq(ln.x.data(), ln.y.data(), ln.n_pts, mouse, limits);
           if (d_sq < min_dist_sq) {
             min_dist_sq = d_sq;
@@ -1152,12 +1155,13 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     }
 
     // ========================================================================
-    // Phase 2: Draw all PDFs (highlight hovered)
+    // Phase 2: Draw PDF lines (只画绘制子集, 顶点预算; highlight hovered)
     // ========================================================================
     for (size_t i = 0; i < n_valid; ++i) {
       const auto &ln = dist.lines[line_indices[i]];
-
       bool is_hovered = (static_cast<int>(i) == hovered_idx);
+      if (!ln.draw && !is_hovered)
+        continue; // 散点 hover 到非绘制资产时, 临时把它的线画出来
       ImVec4 color = IndustryColor(ui, ln.asset);
       color.w = 0.75f; // 线多, 半透明降噪
 
@@ -1490,9 +1494,10 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 }
 
 void StopTabDist(DistService *service, SharedData &data) {
-  // 切走: 立刻中断在跑构建 (cancel + join), 释放全部 sketch/块内存 (切回自动重算)
-  service->Stop();
-  data.dist.clear();
+  // 切走 tab: 只中断在跑构建, 内存与 worker 保留 (任务级回收在 OnCollapse 的 Shutdown);
+  // 切回时 Idle/Cancelled 自动重算, Done 的结果直接复用
+  service->RequestCancel();
+  (void)data;
 }
 
 } // namespace GUI::Features
