@@ -38,8 +38,9 @@
  *   数学性质:保持秩估计的无偏性 E[r̂] = r
  *
  * 【重建接口】
- *   四大族(CDF / PDF / ICDF / QDF),使用 PCHIP 重建方法:
- *   PCHIP:单调三次 Hermite 插值(C¹平滑),保单调,快速
+ *   四大族(CDF / PDF / ICDF / QDF),使用 阶梯求值 + 高斯核平滑:
+ *   经验阶梯 CDF/广义逆 在均匀网格上直接求值,再做固定核高斯滤波
+ *   (≡ 加权样本 KDE) —— 连续/离散统一, 点质量呈等面积窄峰而非被插值抹平
  *
  * 【参考文献】
  *   [1] Karnin, Lang, Liberty. "Optimal Quantile Approximation in Streams"
@@ -216,7 +217,7 @@ public:
    * exportCDF — 导出累积分布函数 F(x)
    *
    * 【数学定义】F(x) = P(X ≤ x),单调非减,F(-∞)=0, F(+∞)=1
-   * 【算法】PCHIP 单调三次 Hermite 插值(C¹平滑)
+   * 【算法】经验阶梯 CDF 网格求值 + 高斯核平滑 (≡ 加权样本 KDE)
    * 【输出】{x ∈ [min,max], F ∈ [0,1], n=n_recon}
    * 【前提】!empty()
    */
@@ -226,7 +227,7 @@ public:
    * exportPDF — 导出概率密度函数 f(x) = dF/dx
    *
    * 【数学定义】f(x) ≥ 0,∫ f(x)dx = 1
-   * 【算法】从 PCHIP 平滑的 CDF 差分得到
+   * 【算法】从核平滑的阶梯 CDF 差分得到 (点质量 → 等面积窄峰)
    * 【输出】{x ∈ [min,max], f ≥ 0, n=n_recon-1}
    * 【前提】!empty()
    */
@@ -236,7 +237,7 @@ public:
    * exportICDF — 导出逆累积分布函数 Q(u) = F^{-1}(u)
    *
    * 【数学定义】Q(u) = inf{x: F(x)≥u},单调非减,Q(0)=min, Q(1)=max
-   * 【算法】PCHIP 单调三次 Hermite 插值(C¹平滑)
+   * 【算法】广义逆阶梯求值 + 高斯核平滑 (与 CDF 侧对偶)
    * 【输出】{u ∈ [0,1], Q ∈ [min,max], n=n_recon}
    * 【前提】!empty()
    */
@@ -246,7 +247,7 @@ public:
    * exportQDF — 导出分位密度函数 ρ(u) = dQ/du = 1/f(Q(u))
    *
    * 【数学定义】ρ(u) ≥ 0,通过 ICDF 导数估计密度(对偶于 PDF)
-   * 【算法】从 PCHIP 平滑的 ICDF 差分得到
+   * 【算法】从核平滑的阶梯 ICDF 差分得到
    * 【输出】{u ∈ [0,1], ρ ≥ 0, n=n_recon-1}
    * 【前提】!empty()
    */
@@ -1329,9 +1330,12 @@ inline void KLLcache::buildCache() const {
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * buildCDF_PCHIP — PCHIP方法重建CDF
+ * buildCDF_PCHIP — 重建CDF: 经验阶梯 CDF 网格求值 + 高斯核平滑
  *
- * 【算法】从稀疏knots用PCHIP插值到resolution个均匀点
+ * 【算法】阶梯 CDF (右连续) 在 resolution 个均匀点上直接求值, 再高斯滤波。
+ *   等价于对加权样本做固定带宽 KDE 的 CDF —— 连续/离散统一:
+ *   点质量 (如 0/1 特征) 保持垂直跳变 → 滤波后成等面积窄峰,
+ *   不再被跨空隙插值抹成斜线 (伪均匀分布)。
  */
 inline void KLLcache::buildCDF_PCHIP() const {
   const size_t n = resolution_;
@@ -1347,24 +1351,25 @@ inline void KLLcache::buildCDF_PCHIP() const {
     return;
   }
 
-  // 均匀采样 x 轴
+  // 均匀采样 x 轴 (末点强制 = max_, 抵消浮点累加误差, 保证扫尾覆盖全部 knots)
   float dx = (max_ - min_) / static_cast<float>(n - 1);
   for (size_t i = 0; i < n; i++) {
-    cache_.cdf_pchip_x[i] = min_ + static_cast<float>(i) * dx;
+    cache_.cdf_pchip_x[i] = (i + 1 == n) ? max_ : min_ + static_cast<float>(i) * dx;
   }
 
-  // PCHIP 插值
-  static thread_local std::vector<float> slopes, widths, deltas;
-  pchipSlopes(cache_.cdf_x, cache_.cdf_F, slopes, widths, deltas);
-  pchipEval(cache_.cdf_pchip_x, cache_.cdf_x, cache_.cdf_F, slopes,
-            cache_.cdf_pchip_F, nullptr);
-
-  // Clamp to [0, 1]
+  // 阶梯求值: F(x) = max{F_j : x_j ≤ x}; 网格与 knots 皆升序 → 双指针一遍 O(n+m)
+  const size_t m = cache_.cdf_x.size();
+  size_t j = 0;
+  float F = 0.0f;
   for (size_t i = 0; i < n; i++) {
-    cache_.cdf_pchip_F[i] = std::clamp(cache_.cdf_pchip_F[i], 0.0f, 1.0f);
+    while (j < m && cache_.cdf_x[j] <= cache_.cdf_pchip_x[i]) {
+      F = cache_.cdf_F[j];
+      ++j;
+    }
+    cache_.cdf_pchip_F[i] = F;
   }
 
-  // 高斯滤波平滑(自适应sigma)
+  // 高斯滤波平滑(自适应sigma): 阶梯 + 固定核 ≡ 加权样本 KDE
   float adaptive_sigma = resolution_ * CDF_BLUR_RADIUS_RATIO / 3.0f; // radius ≈ 3*sigma
   gaussianBlur1D(cache_.cdf_pchip_F, adaptive_sigma);
 }
@@ -1394,9 +1399,11 @@ inline void KLLcache::buildPDF_PCHIP() const {
 }
 
 /**
- * buildICDF_PCHIP — PCHIP方法重建ICDF
+ * buildICDF_PCHIP — 重建ICDF: 广义逆阶梯求值 + 高斯核平滑
  *
- * 【算法】从稀疏knots用PCHIP插值到resolution个均匀点
+ * 【算法】广义逆 Q(u) = min{Q_j : u_j ≥ u} 在 resolution 个均匀点上求值,
+ *   再高斯滤波。与 CDF 侧对偶: 点质量在 u 轴呈平台 (真实分位),
+ *   不再被跨平台插值出不存在的中间取值。
  */
 inline void KLLcache::buildICDF_PCHIP() const {
   const size_t n = resolution_;
@@ -1407,23 +1414,21 @@ inline void KLLcache::buildICDF_PCHIP() const {
     return;
   }
 
-  // 均匀采样概率轴 [u_min, u_max]
+  // 均匀采样概率轴 [u_min, u_max] (末点强制 = u_max, 抵消浮点累加误差)
   float u_min = cache_.icdf_u.front();
   float u_max = cache_.icdf_u.back();
   float du = (u_max - u_min) / static_cast<float>(n - 1);
   for (size_t i = 0; i < n; i++) {
-    cache_.icdf_pchip_u[i] = u_min + static_cast<float>(i) * du;
+    cache_.icdf_pchip_u[i] = (i + 1 == n) ? u_max : u_min + static_cast<float>(i) * du;
   }
 
-  // PCHIP 插值
-  static thread_local std::vector<float> slopes, widths, deltas;
-  pchipSlopes(cache_.icdf_u, cache_.icdf_Q, slopes, widths, deltas);
-  pchipEval(cache_.icdf_pchip_u, cache_.icdf_u, cache_.icdf_Q, slopes,
-            cache_.icdf_pchip_Q, nullptr);
-
-  // Clamp to [min, max]
+  // 阶梯求值: Q(u) = min{Q_j : u_j ≥ u}; 网格与 knots 皆升序 → 双指针一遍 O(n+m)
+  const size_t m = cache_.icdf_u.size();
+  size_t j = 0;
   for (size_t i = 0; i < n; i++) {
-    cache_.icdf_pchip_Q[i] = std::clamp(cache_.icdf_pchip_Q[i], min_, max_);
+    while (j + 1 < m && cache_.icdf_u[j] < cache_.icdf_pchip_u[i])
+      ++j;
+    cache_.icdf_pchip_Q[i] = cache_.icdf_Q[j];
   }
 
   // 高斯滤波平滑（自适应sigma)

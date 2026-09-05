@@ -2,7 +2,8 @@
 //
 // 线程模型 (对仗 Dist.hpp 的发布协议):
 //   - GUI 线程: RequestCompute 解析参数快照 (特征列 + valid 列 + 月份表) → 唤醒 worker
-//   - worker 线程: 抽样转置入平面、资产维度流式发布; 新请求/Cancel 置 cancel_, 逐日/逐资产检查后放弃在跑
+//   - worker 线程: 编排一次构建 (Dist::build 内部起一波常驻线程分批流式:
+//     每批抢天入批平面 → 抢资产块扫描 → 批末发布); 新请求/Cancel 置 cancel_, 抢任务处检查后放弃在跑
 //   - UI 渲染持 dist.mutex 读; 进度走原子, 免锁
 //
 // 生命周期: Tab 打开 Start(data) 起线程, Tab 关闭 Stop() 取消并 join;

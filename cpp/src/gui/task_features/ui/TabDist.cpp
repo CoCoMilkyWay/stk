@@ -10,7 +10,6 @@
 #include "implot.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -101,55 +100,6 @@ static double nearest_seg_dist_sq(const float *x, const float *y, size_t n,
     best = std::min(best, point_to_segment_dist_sq(nmx, nmy, nx1, ny1, nx2, ny2));
   }
   return best;
-}
-
-// ============================================================================
-// W2 偏移 (每帧派生, 全程流式): 均值校准的 Wasserstein-L2 偏移距离,
-// 相对"当前"全局分位 —— 随构建推进逐帧收敛, 无需收尾阶段.
-// ============================================================================
-
-constexpr int kW2Deciles = 19; // 5%, 10%, ..., 95%
-
-// 分位查询: exportICDF 的 u 网格等距 → 直接定址 + 线性插值 (免二分)
-static float QuantileAt(const KLLcache &kll, double q) {
-  const auto icdf = kll.exportICDF();
-  const double u0 = icdf.x[0], u1 = icdf.x[icdf.n - 1];
-  if (q <= u0)
-    return icdf.y[0];
-  if (q >= u1)
-    return icdf.y[icdf.n - 1];
-  const double f = (q - u0) / (u1 - u0) * static_cast<double>(icdf.n - 1);
-  const size_t lo = static_cast<size_t>(f);
-  const double t = f - static_cast<double>(lo);
-  return static_cast<float>(icdf.y[lo] + t * (icdf.y[lo + 1] - icdf.y[lo]));
-}
-
-struct W2GlobalRef {
-  std::array<float, kW2Deciles> q;
-  float mean = 0.0f;
-  bool valid = false;
-};
-
-static W2GlobalRef ComputeW2GlobalRef(const Dist &dist) {
-  W2GlobalRef ref;
-  if (dist.total.totalCount() < kMinSamples)
-    return ref;
-  for (int d = 0; d < kW2Deciles; ++d)
-    ref.q[d] = QuantileAt(dist.total, 0.05 * (d + 1));
-  ref.mean = static_cast<float>(dist.total.mean());
-  ref.valid = true;
-  return ref;
-}
-
-static float ComputeW2(const KLLcache &kll, const W2GlobalRef &ref) {
-  const float shift = static_cast<float>(kll.mean()) - ref.mean;
-  float sum_sq = 0.0f;
-  for (int d = 0; d < kW2Deciles; ++d) {
-    const float qi = QuantileAt(kll, 0.05 * (d + 1));
-    const float diff = (qi - shift) - ref.q[d];
-    sum_sq += diff * diff;
-  }
-  return std::sqrt(sum_sq / kW2Deciles);
 }
 
 // ============================================================================
@@ -324,10 +274,16 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
   ImGui::SameLine(0, 0);
-  // 进度: Phase IO (抽样天) + Phase 流 (资产)
-  ImGui::Text(" (IO %zu/%zu | 资产 %zu/%zu)",
+  // 进度: 分批流式, 天是唯一流式维度 (每批扫全部资产)
+  ImGui::Text(" (天 %zu/%zu | 画 %zu/%zu 资产)",
               dist.days_loaded.load(), dist.days_total.load(),
-              dist.assets_done.load(), dist.assets.size());
+              dist.lines.size(), data.asset.items.size());
+  // 聚合槽抽样率: 月/星期/小时/全局的 n 是抽样后的数, 资产线恒全量 —— 说明白免得看着矛盾
+  const size_t agg_stride = dist.agg_stride.load();
+  if (agg_stride > 1) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(月/星期/小时 1/%zu 抽样)", agg_stride);
+  }
 
   // Row 2: Month slider (config 区间月份表, 缓存; 枚举逻辑与 DistService 共用)
   const std::string months_key = data.config.start_date + "|" + data.config.end_date;
@@ -676,7 +632,7 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
 
   ImGui::Separator();
 
-  // Collect moment values based on selected dimension (流式: 随资产完成度增长)
+  // Collect moment values based on selected dimension (逐批收敛)
   std::vector<float> means, vars, skews, kurts;
   auto collect = [&](const KLLcache &kll) {
     if (kll.totalCount() < kMinSamples)
@@ -687,7 +643,7 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
     kurts.push_back(static_cast<float>(kll.kurt()));
   };
 
-  // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS (随机序流式发布, 槽发布即终态)
+  // Dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS (绘制子集快照, 矩已在发布侧算好)
   switch (selected_dimension) {
   case 0:
     for (const auto &mc : dist.months)
@@ -702,8 +658,14 @@ static void RenderMomentsPanel(const Dist &dist, int selected_dimension, int foc
       collect(kll);
     break;
   case 3:
-    for (const auto &kll : dist.assets)
-      collect(kll);
+    for (const auto &ln : dist.lines) {
+      if (ln.n < kMinSamples)
+        continue;
+      means.push_back(ln.mean);
+      vars.push_back(ln.var);
+      skews.push_back(ln.skew);
+      kurts.push_back(ln.kurt);
+    }
     break;
   }
 
@@ -1072,7 +1034,7 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
 // ============================================================================
 
 static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInfo &assetinfo,
-                            DistUIState &ui, int &clicked_dimension, int &hovered_asset_out) {
+                            DistUIState &ui, int &clicked_dimension, int &hovered_line_out) {
   // Title with tooltip
   ImGui::Text("资产截面(分布密度 + 分位数偏移)");
   ImGui::SameLine();
@@ -1085,52 +1047,58 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
         "不同资产的分位数取值(ICDF)应该尽量靠近, 以保证因子组合阶段分位数的截面一致性\n\n"
         "F_i: CDF; Q_i: 逆CDF; X_i: Feature i\n\n"
         "偏移散点(强调全局差异): 均值校准(最优中心化)的 Wasserstein-L2 偏移距离(积分),\n"
-        "相对当前全局分位每帧派生, 随构建流式收敛");
+        "相对上一批末的全局分位在发布侧算好, 随构建逐批收敛");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
                        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
-    ImGui::Text("\n颜色 = 行业 (一个行业一个颜色); 资产按随机序流式发布, 已画集合即全市场无偏抽样");
+    ImGui::Text("\n颜色 = 行业 (一个行业一个颜色); 画的是固定随机绘制子集, 即全市场无偏抽样");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
   ImGui::Separator();
 
-  // 流式: 随机序发布 + 槽发布即终态 → 扫全部槽按 count 过滤即已发布集合 (无偏抽样)
+  // 发布快照: worker 批末算好整条线 (PDF/矩/W2), UI 零计算零重建只画
   EnsureIndustryCache(ui, asset, assetinfo);
 
-  std::vector<size_t> asset_indices;
-  asset_indices.reserve(dist.assets.size());
-  for (size_t a = 0; a < dist.assets.size(); ++a) {
-    if (dist.assets[a].totalCount() >= kMinAssetSamples)
-      asset_indices.push_back(a);
+  auto &line_indices = ui.line_indices;
+  line_indices.clear();
+  line_indices.reserve(dist.lines.size());
+  for (size_t i = 0; i < dist.lines.size(); ++i) {
+    if (dist.lines[i].n_pts > 0)
+      line_indices.push_back(i);
   }
-  const size_t n_valid = asset_indices.size();
+  const size_t n_valid = line_indices.size();
 
   if (n_valid == 0) {
     ImGui::Text("No data (need assets with n >= %zu)", kMinAssetSamples);
     return;
   }
 
-  // W2 偏移散点: 每帧对当前全局分位派生 (流式, 无收尾阶段)
-  const W2GlobalRef w2_ref = ComputeW2GlobalRef(dist);
-  std::vector<float> x_norm;
+  // W2 偏移散点: 发布侧算好原始值, 每帧只做 max 归一化 (w2 < 0 = 首批参考未就绪)
+  auto &x_norm = ui.w2_norm;
+  x_norm.resize(n_valid);
   float w2_max = 0.0f;
-  const bool has_dots = w2_ref.valid;
-  if (has_dots) {
-    x_norm.resize(n_valid);
-    for (size_t i = 0; i < n_valid; ++i) {
-      x_norm[i] = ComputeW2(dist.assets[asset_indices[i]], w2_ref);
-      w2_max = std::max(w2_max, x_norm[i]);
+  bool has_dots = true;
+  for (size_t i = 0; i < n_valid; ++i) {
+    x_norm[i] = dist.lines[line_indices[i]].w2;
+    if (x_norm[i] < 0.0f) {
+      has_dots = false;
+      break;
     }
+    w2_max = std::max(w2_max, x_norm[i]);
+  }
+  if (has_dots) {
     const float inv = w2_max > 1e-9f ? 1.0f / w2_max : 1.0f;
     for (float &v : x_norm)
       v *= inv;
+  } else {
+    x_norm.clear();
   }
 
   if (ui.need_autofit) {
     ImPlot::SetNextAxesToFit();
   }
 
-  int hovered_idx = -1; // index into asset_indices
+  int hovered_idx = -1; // index into line_indices
   double min_dist_sq = 1e9;
   bool plot_clicked = false;
 
@@ -1173,8 +1141,8 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
       // Check PDF lines (if not hovering dots; x 窗口裁剪, 只扫鼠标附近的段)
       if (hovered_idx < 0) {
         for (size_t i = 0; i < n_valid; ++i) {
-          const auto pdf = dist.assets[asset_indices[i]].exportPDF();
-          double d_sq = nearest_seg_dist_sq(pdf.x, pdf.y, pdf.n, mouse, limits);
+          const auto &ln = dist.lines[line_indices[i]];
+          double d_sq = nearest_seg_dist_sq(ln.x.data(), ln.y.data(), ln.n_pts, mouse, limits);
           if (d_sq < min_dist_sq) {
             min_dist_sq = d_sq;
             hovered_idx = static_cast<int>(i);
@@ -1187,36 +1155,34 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     // Phase 2: Draw all PDFs (highlight hovered)
     // ========================================================================
     for (size_t i = 0; i < n_valid; ++i) {
-      const auto pdf = dist.assets[asset_indices[i]].exportPDF();
-      if (pdf.n == 0)
-        continue;
+      const auto &ln = dist.lines[line_indices[i]];
 
       bool is_hovered = (static_cast<int>(i) == hovered_idx);
-      ImVec4 color = IndustryColor(ui, asset_indices[i]);
+      ImVec4 color = IndustryColor(ui, ln.asset);
       color.w = 0.75f; // 线多, 半透明降噪
 
       if (is_hovered) {
         // Highlighted: thick white outline + bright color
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
         ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
-        ImPlot::PlotLine("##pdf_outline", pdf.x, pdf.y, static_cast<int>(pdf.n));
+        ImPlot::PlotLine("##pdf_outline", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
         ImPlot::PopStyleVar();
 
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
         ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f); // cyan
-        ImPlot::PlotLine("##pdf_hl", pdf.x, pdf.y, static_cast<int>(pdf.n));
+        ImPlot::PlotLine("##pdf_hl", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
         ImPlot::PopStyleVar();
       } else {
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
         ImPlot::SetNextLineStyle(color, 1.0f);
-        ImPlot::PlotLine("##pdf", pdf.x, pdf.y, static_cast<int>(pdf.n));
+        ImPlot::PlotLine("##pdf", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
         ImPlot::PopStyleVar();
       }
     }
 
     // ========================================================================
     // Phase 3: Draw W2 offset scatter (overlay on top, scale invariant)
-    // 流式: 已发布资产的散点每帧重派生, 随全局分位收敛; 颜色 = 行业
+    // 发布侧算好的 W2, 随全局分位逐批收敛; 颜色 = 行业
     // ========================================================================
     if (has_dots) {
       ImDrawList *draw = ImPlot::GetPlotDrawList();
@@ -1238,7 +1204,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
           draw->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255));
           draw->AddCircleFilled(center, 4.0f, IM_COL32(0, 255, 255, 255));
         } else {
-          ImU32 color = ImGui::ColorConvertFloat4ToU32(IndustryColor(ui, asset_indices[i]));
+          ImU32 color = ImGui::ColorConvertFloat4ToU32(IndustryColor(ui, dist.lines[line_indices[i]].asset));
           draw->AddCircleFilled(center, 2.5f, color);
         }
       }
@@ -1269,11 +1235,11 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     ImPlot::EndPlot();
   }
 
-  // Output: convert draw index to original asset index
+  // Output: convert draw index to dist.lines index
   if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
-    hovered_asset_out = static_cast<int>(asset_indices[hovered_idx]);
+    hovered_line_out = static_cast<int>(line_indices[hovered_idx]);
   } else {
-    hovered_asset_out = -1;
+    hovered_line_out = -1;
   }
 
   // Click detection
@@ -1295,7 +1261,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
 // ============================================================================
 
 static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
-                                   const AssetInfo &assetinfo, int hovered_asset) {
+                                   const AssetInfo &assetinfo, int hovered_line) {
   // Use remaining height in parent
   float remaining_height = ImGui::GetContentRegionAvail().y;
   ImGui::BeginChild("HoveredAssetPanel", ImVec2(350, remaining_height), true);
@@ -1305,17 +1271,17 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
   ImGui::PopFont();
   ImGui::Separator();
 
-  // 槽被重算清空后 hover 残留下标会指向空 sketch → 一并挡掉
-  if (hovered_asset < 0 || static_cast<size_t>(hovered_asset) >= asset.items.size() ||
-      static_cast<size_t>(hovered_asset) >= dist.assets.size() ||
-      dist.assets[hovered_asset].totalCount() < kMinAssetSamples) {
+  // 重算后 lines 被整体换新, hover 残留下标可能指向未发布的线 → 一并挡掉
+  if (hovered_line < 0 || static_cast<size_t>(hovered_line) >= dist.lines.size() ||
+      dist.lines[hovered_line].n_pts == 0 ||
+      static_cast<size_t>(dist.lines[hovered_line].asset) >= asset.items.size()) {
     ImGui::TextDisabled("(hover on PDF/dot)");
     ImGui::EndChild();
     return;
   }
 
-  const auto &asset_item = asset.items[hovered_asset];
-  const auto &kll = dist.assets[hovered_asset];
+  const auto &ln = dist.lines[hovered_line];
+  const auto &asset_item = asset.items[ln.asset];
 
   // Get real-time info from AssetInfo
   std::string exchange_lower = asset_item.exchange;
@@ -1368,45 +1334,44 @@ static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
     // Row 1: n | PE
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("样本数 = %llu", static_cast<unsigned long long>(kll.totalCount()));
+    ImGui::Text("样本数 = %llu", static_cast<unsigned long long>(ln.n));
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PE = %s", stock_info ? fmt_val(stock_info->peTTM).c_str() : "--");
 
     // Row 2: Mean | PB
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("均值 = %.4f", kll.mean());
+    ImGui::Text("均值 = %.4f", ln.mean);
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PB = %s", stock_info ? fmt_val(stock_info->pbMRQ).c_str() : "--");
 
     // Row 3: Var | PS
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("方差 = %.4f", kll.var());
+    ImGui::Text("方差 = %.4f", ln.var);
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PS = %s", stock_info ? fmt_val(stock_info->psTTM).c_str() : "--");
 
     // Row 4: Skew | PCF
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("偏度 = %.3f", kll.skew());
+    ImGui::Text("偏度 = %.3f", ln.skew);
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("PCF = %s", stock_info ? fmt_val(stock_info->pcfNcfTTM).c_str() : "--");
 
     // Row 5: Kurt | 行业
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::Text("峰度 = %.3f", kll.kurt());
+    ImGui::Text("峰度 = %.3f", ln.kurt);
     ImGui::TableSetColumnIndex(1);
     ImGui::Text("行业 = %s",
                 stock_info && !stock_info->ind_name.empty() ? stock_info->ind_name.c_str() : "--");
 
-    // Row 6: W2 偏移 (相对当前全局分位, 流式派生)
+    // Row 6: W2 偏移 (发布侧算好, 相对上一批末的全局分位)
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    const W2GlobalRef w2_ref = ComputeW2GlobalRef(dist);
-    if (w2_ref.valid) {
-      ImGui::Text("W2 = %.4f", ComputeW2(kll, w2_ref));
+    if (ln.w2 >= 0.0f) {
+      ImGui::Text("W2 = %.4f", ln.w2);
     } else {
       ImGui::TextUnformatted("W2 = --");
     }
@@ -1437,20 +1402,20 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   auto &dist = data.dist;
 
-  // 流式维护 x/y range: 构建期间只要有新资产发布就 autofit (ImPlot 按当帧数据重算范围);
+  // 流式维护 x/y range: 构建期间每批发布就 autofit (ImPlot 按当帧数据重算范围);
   // Done 后停止跟随, 把缩放还给用户 (完成瞬间再 fit 一次收尾)
-  const size_t cur_assets_done = dist.assets_done.load(std::memory_order_acquire);
+  const uint64_t cur_epoch = dist.lines_epoch.load(std::memory_order_acquire);
   const auto cur_status = dist.status.load(std::memory_order_acquire);
-  if (cur_status == Dist::Status::Building && cur_assets_done != ui.last_assets_done) {
+  if (cur_status == Dist::Status::Building && cur_epoch != ui.last_lines_epoch) {
     ui.need_autofit = true;
   }
   if (ui.last_status != Dist::Status::Done && cur_status == Dist::Status::Done) {
     ui.need_autofit = true;
   }
-  ui.last_assets_done = cur_assets_done;
+  ui.last_lines_epoch = cur_epoch;
   ui.last_status = cur_status;
 
-  // 渲染帧内持锁: worker 逐资产短锁发布, UI 读 sketch (含懒缓存写) 与其互斥
+  // 渲染帧内持锁: worker 块末/批末短锁发布, UI 读快照与聚合槽与其互斥
   std::lock_guard<std::mutex> dist_lock(dist.mutex);
 
   // Integrity (auto-fit height)
@@ -1473,7 +1438,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Left column: Moments Panel (auto-height) + Hovered Asset Info (remaining)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
   RenderMomentsPanel(dist, ui.selected_dimension, ui.focus_month_idx);
-  RenderHoveredAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_asset);
+  RenderHoveredAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_line);
   ImGui::EndChild();
 
   ImGui::NextColumn();
@@ -1506,9 +1471,9 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   ImGui::PopStyleVar();
   ImGui::EndChild();
 
-  // Bottom: Assets PDF (outputs ui.hovered_asset)
+  // Bottom: Assets PDF (outputs ui.hovered_line)
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(dist, data.asset, data.assetinfo, ui, clicked_dimension, ui.hovered_asset);
+  RenderAssetsPDF(dist, data.asset, data.assetinfo, ui, clicked_dimension, ui.hovered_line);
   ImGui::EndChild();
 
   // Update selected dimension if any plot was clicked
