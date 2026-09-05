@@ -2,11 +2,7 @@
 // Controls multi-threaded feature extraction (TS + CS + IO workers)
 #pragma once
 
-// Forward declarations
-namespace GUI::Features {
-class ComputeService;
-struct ComputeProgress;
-} // namespace GUI::Features
+#include "gui/task_features/services/ComputeService.hpp"
 
 struct Asset;
 struct Config;
@@ -29,8 +25,8 @@ enum class ComputeUIState {
 };
 
 struct ComputeState {
-  int num_workers = 0; // 0 means auto-detect (use max cores)
-  int pool_slots = 4;
+  // worker 数不可配: 核布局由机器核数唯一推导 (StageLayout::make)
+  ComputeConfig config;
 
   // State machine
   ComputeUIState ui_state = ComputeUIState::Idle;

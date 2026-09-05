@@ -32,9 +32,9 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   skip_existing_ = skip_existing;
   start_time_ = std::chrono::steady_clock::now();
 
-  // Enable High Performance Mode: GUI sleeps, all CPU for encoding
+  // Enable High Performance Mode: GUI low-refresh, workers own cores
   data_.EnableHighPerformanceMode();
-  std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
+  std::cout << "[High Performance Mode] Enabled - GUI low-refresh\n"
             << std::endl;
 
   // 大内存假设 (不为小机器妥协): 各 worker 并发解压+解码的工作集要装得下.
@@ -144,9 +144,9 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
       scan_callback_();
     }
 
-    // Disable High Performance Mode: GUI resumes
+    // Disable High Performance Mode: GUI full-refresh
     data_.DisableHighPerformanceMode();
-    std::cout << "\n[High Performance Mode] Disabled - GUI thread resumed\n"
+    std::cout << "\n[High Performance Mode] Disabled - GUI full-refresh\n"
               << std::endl;
   });
 }

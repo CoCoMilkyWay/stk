@@ -20,21 +20,25 @@
 // ============================================================================
 class CoreSequential {
 public:
-  CoreSequential(TickData &tick_data,
-                 const fund::Pool &fund_pool,
+  CoreSequential(const fund::Pool &fund_pool,
                  const std::string &asset_code,
                  size_t asset_id = 0,
                  size_t core_id = 0)
       : asset_id_(asset_id),
         core_id_(core_id),
         asset_code_(asset_code),
-        dag_(tick_data, fund_pool, asset_code, asset_id),
+        dag_(tick_data_, fund_pool, asset_code, asset_id),
         tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.tick_data.core_id = static_cast<uint32_t>(core_id);
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
+
+  // 本资产的 L0 工作区: 自持而非引用 worker LOB 的 —— DAG 节点引用它 (终身
+  // 有效), LOB 经 bind() 把写出口换到这里. 资产因此可在 worker 间转移处置权
+  // (负载再平衡), 任意 worker 的 LOB 都能驱动本 core.
+  TickData &tick_data() { return tick_data_; }
 
   // day = worker 本日的写句柄 (store.ts_open, 每 worker 每日一次), 之后
   // 本类的全部写回都是纯指针算术 —— 热路径不再携带 date / worker_id.
@@ -151,6 +155,7 @@ private:
   size_t core_id_;
   std::string asset_code_;
 
+  TickData tick_data_; // 本资产 L0 工作区 (dag_ 引用它, 须先于 dag_ 声明)
   DAG dag_;
   ResamplerTick2Min tick2min_;
 

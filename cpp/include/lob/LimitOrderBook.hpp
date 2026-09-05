@@ -47,11 +47,12 @@ public:
 
   // LOB 是可换绑的工作区: 簿状态 (档位数组/订单池/桶表/位图/TOB) 全部日内瞬态
   // (每天 clear()), 不含任何跨日状态 —— 跨日状态 (DAG 暖历史 + Fund 状态机 +
-  // 分钟缓冲) 在 per-asset 的 CoreSequential 里, 经 bind() 换绑.
+  // 分钟缓冲 + TickData) 全在 per-asset 的 CoreSequential 里, 经 bind() 换绑.
   //   回测: 每 worker 一个工作区, 资产串行复用 (页面/cache/TLB 常驻, 稳态零扩容);
   //   实盘: 每资产一个工作区, 启动时 bind 一次.
-  // DAG 与簿的唯一耦合是 tick_data_: per-asset 的 DAG_Root 构造时引用本工作区
-  // 的这一份 (资产归属 worker 静态独占, 引用终身有效), 见 sequential_worker.
+  // DAG 与簿的唯一耦合是 tick_data_ 指针: TickData 归 core 所有 (DAG 节点引用
+  // 它, 终身有效), bind() 把本簿的写出口指过去 —— 资产因此不与任何 worker 绑死,
+  // 处置权可转移 (见 sequential_worker 的负载再平衡).
   explicit LimitOrderBook(size_t ORDER_SIZE)
       : order_lookup_(ORDER_SIZE),       // BumpDict with pre-allocated capacity
         order_memory_pool_(ORDER_SIZE) { // BumpPool for Order objects
@@ -67,11 +68,15 @@ public:
     core_ = core;
     asset_id_ = asset_id;
     exchange_type_ = exchange_type;
-    tick_data_.asset_id = static_cast<uint32_t>(asset_id);
+    tick_data_ = &core->tick_data();
+    assert(tick_data_->asset_id == static_cast<uint32_t>(asset_id) && "bind: core/asset 不匹配");
   }
 
-  // 工作区的 TickData: per-asset CoreSequential 构造时引用它
-  TickData &tick_data() { return tick_data_; }
+  // 当前绑定资产的 TickData (归 core 所有)
+  TickData &tick_data() {
+    assert(tick_data_ && "tick_data: LOB not bound");
+    return *tick_data_;
+  }
 
   void begin_day(const std::string &date_str, const GlobalFeatureStore::TsDay &day) {
     assert(core_ && "begin_day: LOB not bound");
@@ -147,7 +152,7 @@ public:
   // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的档位下标会指向别的价格.
   HOT_NOINLINE void set_price_base(uint32_t price_base) {
     price_base_ = price_base;
-    LOB_feature_.price_base = price_base;
+    LOB_feature_ref().price_base = price_base;
   }
 
   // Complete reset
@@ -165,8 +170,8 @@ public:
     tob_refresh_cnt_ = 0;
     best_bid_ = 0;
     best_ask_ = 0;
-    LOB_feature_ = {};
-    LOB_feature_.depth_buffer.clear();
+    LOB_feature_ref() = {};
+    LOB_feature_ref().depth_buffer.clear();
     last_depth_update_tick_ = 0;
     next_depth_update_tick_ = 0;
     was_in_matching_period_ = false;
@@ -254,8 +259,14 @@ private:
   //------------------------------------------------------------------------------------
   // Layer 5: Feature Depth (特征深度层 - 时间驱动低频更新)
   //------------------------------------------------------------------------------------
-  mutable TickData tick_data_;                // Tick data wrapper containing LOB_feature
-  LOB_Feature &LOB_feature_ = tick_data_.lob; // Feature depth data with integrated depth_buffer (reference for convenience)
+  // 写出口: 指向当前绑定 core 的 TickData (bind() 换绑). 未绑定时指向 detached_
+  // —— 构造期 init_sentinel_levels 的可见性回调要读 depth_buffer (空, 早退),
+  // 给它一个合法对象而不是在热路径上加空指针分支.
+  TickData detached_{};
+  TickData *tick_data_ = &detached_;
+
+  // 便捷访问当前 LOB_Feature (原引用成员, 换绑后必须走指针)
+  HOT_INLINE LOB_Feature &LOB_feature_ref() const { return tick_data_->lob; }
 
   // Time-driven depth update control
   mutable uint32_t last_depth_update_tick_ = 0; // Last tick when depth was updated
@@ -514,7 +525,7 @@ private:
 
     // Single lookup instead of multiple branches
     assert(hhmm < state_table.size() && "market state table index out of bounds");
-    LOB_feature_.market_state = state_table[hhmm];
+    LOB_feature_ref().market_state = state_table[hhmm];
 
     // Precompute flags using lookup table for faster access
     static constexpr bool is_matching[7] = {
@@ -527,9 +538,9 @@ private:
         true,  // CLOSING_MATCHING_PERIOD
     };
 
-    in_matching_period_ = is_matching[LOB_feature_.market_state];
-    in_call_auction_ = (LOB_feature_.market_state == L2::MarketState::OPENING_CALL_AUCTION ||
-                        LOB_feature_.market_state == L2::MarketState::CLOSING_CALL_AUCTION ||
+    in_matching_period_ = is_matching[LOB_feature_ref().market_state];
+    in_call_auction_ = (LOB_feature_ref().market_state == L2::MarketState::OPENING_CALL_AUCTION ||
+                        LOB_feature_ref().market_state == L2::MarketState::CLOSING_CALL_AUCTION ||
                         in_matching_period_);
     in_continuous_trading_ = !in_call_auction_;
   }
@@ -626,8 +637,8 @@ private:
 
         // Update feature all_volume (incremental) before removal
         const uint32_t abs_qty = std::abs(old_qty);
-        LOB_feature_.all_bid_volume -= (old_qty > 0) ? abs_qty : 0;
-        LOB_feature_.all_ask_volume -= (old_qty < 0) ? abs_qty : 0;
+        LOB_feature_ref().all_bid_volume -= (old_qty > 0) ? abs_qty : 0;
+        LOB_feature_ref().all_ask_volume -= (old_qty < 0) ? abs_qty : 0;
 
         // Record visibility state BEFORE removal
         const bool was_visible = level->has_visible_quantity();
@@ -664,8 +675,8 @@ private:
 
         // Update feature all_volume (incremental) - apply delta
         const uint32_t abs_delta = std::abs(quantity_delta);
-        LOB_feature_.all_bid_volume += (quantity_delta > 0) ? abs_delta : 0;
-        LOB_feature_.all_ask_volume += (quantity_delta < 0) ? abs_delta : 0;
+        LOB_feature_ref().all_bid_volume += (quantity_delta > 0) ? abs_delta : 0;
+        LOB_feature_ref().all_ask_volume += (quantity_delta < 0) ? abs_delta : 0;
 
         // Update flags if needed (rare)
         if ((flags != OrderFlags::NORMAL || order->flags != OrderFlags::NORMAL)) [[unlikely]] {
@@ -701,8 +712,8 @@ private:
 
       // Update feature all_volume (incremental) for new order
       const uint32_t abs_delta = std::abs(quantity_delta);
-      LOB_feature_.all_bid_volume += (quantity_delta > 0) ? abs_delta : 0;
-      LOB_feature_.all_ask_volume += (quantity_delta < 0) ? abs_delta : 0;
+      LOB_feature_ref().all_bid_volume += (quantity_delta > 0) ? abs_delta : 0;
+      LOB_feature_ref().all_ask_volume += (quantity_delta < 0) ? abs_delta : 0;
 
       // Update visibility if level just became visible
       if (quantity_delta != 0 && !visibility_is_visible(level->price)) [[likely]] {
@@ -836,7 +847,7 @@ private:
   HOT_INLINE bool process_impl(const L2::Order &order_abs) {
     // .bin 里存的是绝对价 (分), 而档位数组只开了 kPriceIndexRange 档并按下标直接
     // 寻址. 在入口一次性折算, 函数体内此后所有价格比较与寻址都留在下标空间; 只有
-    // 对外暴露的 LOB_feature_.price 用回绝对价.
+    // 对外暴露的 LOB_feature_ref().price 用回绝对价.
     L2::Order order = order_abs;
     order.price = price_to_index(order_abs.price);
 
@@ -853,10 +864,10 @@ private:
 
     // Update feature timestamp (only on new tick)
     if (new_tick_) {
-      LOB_feature_.hour = order.hour;
-      LOB_feature_.minute = order.minute;
-      LOB_feature_.second = order.second;
-      LOB_feature_.millisecond = order.millisecond;
+      LOB_feature_ref().hour = order.hour;
+      LOB_feature_ref().minute = order.minute;
+      LOB_feature_ref().second = order.second;
+      LOB_feature_ref().millisecond = order.millisecond;
       update_trading_session_state();
     }
 
@@ -867,10 +878,10 @@ private:
     is_bid_ = (order.order_dir == L2::OrderDirection::BID);
 
     // Update feature order metadata (every order)
-    LOB_feature_.order_type = order.order_type;
-    LOB_feature_.order_dir = order.order_dir;
-    LOB_feature_.price = order_abs.price * 0.01; // 对外一律给绝对价
-    LOB_feature_.volume = order.volume;
+    LOB_feature_ref().order_type = order.order_type;
+    LOB_feature_ref().order_dir = order.order_dir;
+    LOB_feature_ref().price = order_abs.price * 0.01; // 对外一律给绝对价
+    LOB_feature_ref().volume = order.volume;
 
     // Detect transition from matching period to continuous trading
     if (was_in_matching_period_ && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
@@ -1135,10 +1146,10 @@ private:
 
   // Binary search price in entire depth_buffer (descending order)
   HOT_INLINE size_t depth_binary_search(Price price) const {
-    size_t left = 0, right = LOB_feature_.depth_buffer.size();
+    size_t left = 0, right = LOB_feature_ref().depth_buffer.size();
     while (left < right) {
       size_t mid = left + (right - left) / 2;
-      if (LOB_feature_.depth_buffer[mid]->price > price) {
+      if (LOB_feature_ref().depth_buffer[mid]->price > price) {
         left = mid + 1;
       } else {
         right = mid;
@@ -1176,12 +1187,12 @@ private:
 
   // Order-driven: Add level to depth buffer
   HOT_INLINE void depth_on_level_add_remove(Level *level, bool add) {
-    if (level->price == 0 || (LOB_feature_.depth_buffer.size() <= 2)) [[unlikely]]
+    if (level->price == 0 || (LOB_feature_ref().depth_buffer.size() <= 2)) [[unlikely]]
       return;
 
     // Check if price is within current range
-    Price high_price = LOB_feature_.depth_buffer.front()->price;
-    Price low_price = LOB_feature_.depth_buffer.back()->price;
+    Price high_price = LOB_feature_ref().depth_buffer.front()->price;
+    Price low_price = LOB_feature_ref().depth_buffer.back()->price;
     if (level->price > high_price || low_price > level->price)
       return;
 
@@ -1191,10 +1202,10 @@ private:
     // Logger::log(std::to_string(asset_id_), std::to_string(level->price) + ": add/remove " + std::to_string(add) + " high_price=" + std::to_string(high_price) + " low_price=" + std::to_string(low_price) + " idx=" + std::to_string(idx));
     if (add) {
       // Just insert, CBuffer will auto-pop front when full
-      LOB_feature_.depth_buffer.insert(idx, level);
+      LOB_feature_ref().depth_buffer.insert(idx, level);
     } else {
       // Just remove, CBuffer will auto-pop back when empty
-      LOB_feature_.depth_buffer.erase(idx);
+      LOB_feature_ref().depth_buffer.erase(idx);
     }
   }
 
@@ -1207,14 +1218,14 @@ private:
 
     if (!(new_tick_ && curr_tick_ >= next_depth_update_tick_)) {
       // if (!(new_tick_)) {
-      LOB_feature_.depth_updated = false;
+      LOB_feature_ref().depth_updated = false;
       return false;
     };
 
     update_tob();
 
     // Determine if rebuild needed
-    size_t current_depth = LOB_feature_.depth_buffer.size();
+    size_t current_depth = LOB_feature_ref().depth_buffer.size();
 
     // Calculate insertion counts
     size_t bid_idx = depth_binary_search(best_bid_);
@@ -1231,30 +1242,30 @@ private:
     // }
 
     if (need_rebuild)
-      LOB_feature_.depth_buffer.clear();
+      LOB_feature_ref().depth_buffer.clear();
 
     // Fill ask side (upper half)
-    Price price = need_rebuild ? best_ask_ : LOB_feature_.depth_buffer.front()->price;
+    Price price = need_rebuild ? best_ask_ : LOB_feature_ref().depth_buffer.front()->price;
     for (size_t i = 0; i < ask_count && price > 0; ++i) {
       if (!need_rebuild) {
         price = next_ask_above(price);
         if (price == 0)
           break;
       }
-      LOB_feature_.depth_buffer.push_front(price_levels_[price]);
+      LOB_feature_ref().depth_buffer.push_front(price_levels_[price]);
       if (need_rebuild)
         price = next_ask_above(price);
     }
 
     // Fill bid side (lower half)
-    price = need_rebuild ? best_bid_ : LOB_feature_.depth_buffer.back()->price;
+    price = need_rebuild ? best_bid_ : LOB_feature_ref().depth_buffer.back()->price;
     for (size_t i = 0; i < bid_count && price > 0; ++i) {
       if (!need_rebuild) {
         price = next_bid_below(price);
         if (price == 0)
           break;
       }
-      LOB_feature_.depth_buffer.push_back(price_levels_[price]);
+      LOB_feature_ref().depth_buffer.push_back(price_levels_[price]);
       if (need_rebuild)
         price = next_bid_below(price);
     }
@@ -1284,7 +1295,7 @@ private:
       next_depth_update_tick_ = (next_depth_update_tick_ & 0xFFFF0000) | (s << 8) | ms;
     } while (next_depth_update_tick_ <= curr_tick_);
 
-    return LOB_feature_.depth_updated = LOB_feature_.depth_buffer.size() >= 2 * L2::LOB_DEPTH;
+    return LOB_feature_ref().depth_updated = LOB_feature_ref().depth_buffer.size() >= 2 * L2::LOB_DEPTH;
   }
 
   //======================================================================================
@@ -1571,9 +1582,9 @@ private:
       out << std::setw(LEVEL_WIDTH) << " ";
     for (int i = N - 1; i >= 0; --i) {
       const size_t buf_idx = L2::LOB_DEPTH - 1 - i;
-      if (buf_idx < LOB_feature_.depth_buffer.size() && LOB_feature_.depth_buffer[buf_idx]) {
-        Price p = LOB_feature_.depth_buffer[buf_idx]->price;
-        int32_t v = LOB_feature_.depth_buffer[buf_idx]->net_quantity;
+      if (buf_idx < LOB_feature_ref().depth_buffer.size() && LOB_feature_ref().depth_buffer[buf_idx]) {
+        Price p = LOB_feature_ref().depth_buffer[buf_idx]->price;
+        int32_t v = LOB_feature_ref().depth_buffer[buf_idx]->net_quantity;
         std::string level_str = format_level(p, -v);
         out << level_str << std::string(LEVEL_WIDTH > display_width(level_str) ? LEVEL_WIDTH - display_width(level_str) : 0, ' ');
       } else {
@@ -1586,9 +1597,9 @@ private:
     // Display bids
     for (size_t i = 0; i < N; ++i) {
       const size_t buf_idx = L2::LOB_DEPTH + i;
-      if (buf_idx < LOB_feature_.depth_buffer.size() && LOB_feature_.depth_buffer[buf_idx]) {
-        Price p = LOB_feature_.depth_buffer[buf_idx]->price;
-        int32_t v = LOB_feature_.depth_buffer[buf_idx]->net_quantity;
+      if (buf_idx < LOB_feature_ref().depth_buffer.size() && LOB_feature_ref().depth_buffer[buf_idx]) {
+        Price p = LOB_feature_ref().depth_buffer[buf_idx]->price;
+        int32_t v = LOB_feature_ref().depth_buffer[buf_idx]->net_quantity;
         std::string level_str = format_level(p, v);
         out << level_str << std::string(LEVEL_WIDTH > display_width(level_str) ? LEVEL_WIDTH - display_width(level_str) : 0, ' ');
       } else {

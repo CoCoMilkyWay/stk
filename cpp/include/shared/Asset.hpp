@@ -78,9 +78,6 @@ struct AssetItem {
     return date_info[date_idx];
   }
 
-  // worker 分配
-  int assigned_worker_id = -1; // 扫描任务派给哪个 worker; -1 = 未派发
-
   // 构造
   AssetItem() = default;
   AssetItem(size_t id, std::string code, std::string name, std::string exch, std::string start, std::string end);

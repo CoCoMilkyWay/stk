@@ -170,6 +170,7 @@ int RunGUI() {
   // Main loop
   while (!glfwWindowShouldClose(window)) {
     double frame_start = 0.0;
+    const double frame_time = data.high_performance_mode ? COMPUTE_FRAME_TIME : FRAME_TIME;
 
     // Check for reinit request (triggered by config save)
     if (data.request_reinit) {
@@ -181,17 +182,8 @@ int RunGUI() {
       data.terminal.AddLine("GUI reinitialized successfully", Color::Green());
     }
 
-    // High Performance Mode: GUI sleeps 1 second, all CPU for compute tasks
-    if (data.high_performance_mode) {
-      std::this_thread::sleep_for(std::chrono::seconds(1)); // 1 FPS
-      glfwPollEvents();
-      data.coromgr.Poll();
-      continue; // Skip rendering entirely
-    }
-
-    // Normal Mode: Full GUI rendering
     if constexpr (HIGH_FPS_ON_EVENTS) {
-      glfwWaitEventsTimeout(FRAME_TIME);
+      glfwWaitEventsTimeout(frame_time);
     } else {
       frame_start = glfwGetTime();
       glfwPollEvents();
@@ -224,8 +216,8 @@ int RunGUI() {
     if constexpr (!HIGH_FPS_ON_EVENTS) {
       double frame_end = glfwGetTime();
       double elapsed = frame_end - frame_start;
-      if (elapsed < FRAME_TIME) {
-        auto sleep_duration = std::chrono::duration<double>(FRAME_TIME - elapsed);
+      if (elapsed < frame_time) {
+        auto sleep_duration = std::chrono::duration<double>(frame_time - elapsed);
         std::this_thread::sleep_for(sleep_duration);
       }
     }

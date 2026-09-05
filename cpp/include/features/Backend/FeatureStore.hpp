@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -64,17 +65,23 @@ inline constexpr size_t kDefaultPoolSlots = 4;
 //
 // 并发模型 (回测): TS worker 是资产串行的 (一个资产写完一整天才换下一个),
 // "秒级流式伴随"在这种调度下没有可用的进度语义 —— 且 label / L1 分钟行都是
-// 向过去回填, 行级进度天然罩不住. 所以门控就是按日:
+// 向过去回填, 行级进度天然罩不住. 所以门控就是按日, 计数粒度是 asset-day:
 //
-//   TS:  ts_open(date, w) → 句柄写 (纯指针算术, 无锁无验证) → ts_close
-//   CS:  cs_open(date) 阻塞至全部 TS ts_close → 整日扫 → cs_close
+//   TS:  ts_open(date) → 句柄写 (纯指针算术, 无锁无验证) → 每资产 ts_asset_done
+//   CS:  cs_open(date) 阻塞至本日 assets_done == num_assets → 整日扫 → cs_close
 //   IO:  io_try_flush_one: 摘 DONE → 落盘 → reset → FREE
 //
+// 按资产计数 (而非按 worker close 计数) 使资产处置权可在 worker 间转移: 领跑
+// worker 可从落后 worker 接手资产并回填旧日期 (旧日 slot 未计满必为 BUSY,
+// ts_open 随时可再取句柄), 见 sequential_worker 的负载再平衡. 资产内日序由
+// 调度侧的 claim/done 原子保证, 因此 "d+1 日全资产计满 ⇒ d 日已计满" ——
+// 日完成天然单调, ts_days_done_ 只增.
+//
 // slot 生命周期: FREE → BUSY (首个 ts_open) → DONE (cs_close) → FLUSH → FREE.
-// 句柄在 open..close 之间被状态机钉住 (TS 未齐 done 不给 CS, CS 未 done 不给
-// IO), 有效期内不可能被回收 —— 不需要 epoch / 每次访问的缓存验证. 数值一致性
-// 与调度形态无关, 由输入契约锚定 (见 CoreSequential.hpp / CoreCrosssection.hpp),
-// 按日门控只是回测里的因果保证.
+// 句柄在有效期内被状态机钉住 (TS 未计满不给 CS, CS 未 done 不给 IO), 不可能
+// 被回收 —— 不需要 epoch / 每次访问的缓存验证. 数值一致性与调度形态无关, 由
+// 输入契约锚定 (见 CoreSequential.hpp / CoreCrosssection.hpp), 按日门控只是
+// 回测里的因果保证.
 // ============================================================================
 class GlobalFeatureStore {
 public:
@@ -88,7 +95,7 @@ public:
   // Per-date slot
   struct Slot {
     std::atomic<TensorState> state{TensorState::FREE};
-    std::atomic<uint32_t> ts_done_count{0};           // == num_ts_workers ⇒ 本日 TS 全部写完 (CS 放行)
+    std::atomic<uint32_t> assets_done{0};             // == num_assets ⇒ 本日 TS 全部写完 (CS 放行)
     char date[16] = {0};                              // "YYYYMMDD"
     feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]
 
@@ -115,7 +122,7 @@ public:
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
         std::memset(data[lvl], 0, level_bytes(lvl, num_assets));
       std::memset(date, 0, sizeof(date));
-      ts_done_count.store(0, std::memory_order_relaxed);
+      assets_done.store(0, std::memory_order_relaxed);
     }
 
     ~Slot() {
@@ -153,6 +160,14 @@ private:
   Slot *pool_ = nullptr;
   std::mutex pool_mutex_; // 只串行化 ts_open 的查找/分配; 其余状态转移无锁
 
+  // 计满 num_assets 的日数 (单调, 见 ts_asset_done), 预取门控用
+  std::atomic<size_t> ts_days_done_{0};
+  std::atomic<size_t> cs_days_done_{0};
+
+  // Per-worker 已完成日数 (worker 自报, release; 领养方 acquire 读 —— 与被
+  // 领养资产的 core 构造/状态写入构成 happens-before). 负载再平衡的观测面.
+  std::unique_ptr<std::atomic<uint32_t>[]> ts_frontier_;
+
   // IO worker 专用复用缓冲 (单线程): 列抽取 / 头 + 压缩输出, 稳态零分配
   std::vector<feature_storage_t> io_column_;
   std::vector<uint8_t> io_buf_;
@@ -167,6 +182,10 @@ public:
         num_assets_(num_assets), num_ts_workers_(num_ts_workers),
         pool_size_(pool_slots) {
     assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");
+
+    ts_frontier_ = std::make_unique<std::atomic<uint32_t>[]>(num_ts_workers_);
+    for (size_t w = 0; w < num_ts_workers_; ++w)
+      ts_frontier_[w].store(0, std::memory_order_relaxed);
 
     if (!output_dir.empty()) {
       output_dir_ = output_dir;
@@ -253,17 +272,21 @@ public:
     }
   }
 
-  // ===== TS WORKER API: 每 (worker, date) 一对 open/close =====
+  // ===== TS WORKER API: 句柄按 (date) 取, 完成按 (asset, date) 计 =====
 
   // 找到 / 分配本日 slot. 首个到达的 worker 分配 (FREE→BUSY), 其余直接命中.
+  // 回填旧日期也走这里: 未计满的日子必为 BUSY, 直接命中, 不会重分配.
   // slot 在 flush 时已 reset (FREE 态不变量: 张量清零), 拿来即写.
   // 池满则等 IO 释放 —— 这是 TS 超前于 CS/IO 的唯一背压点.
-  TsDay ts_open(const std::string &date, int worker_id) {
+  TsDay ts_open(const std::string &date, int worker_id, const std::atomic<bool> &cancel_requested) {
     assert(worker_id >= 0 && worker_id < static_cast<int>(num_ts_workers_));
     std::unique_lock<std::mutex> lock(pool_mutex_);
     for (int waited = 0;; ++waited) {
-      // 本日已被其他 worker 打开. 只匹配 BUSY: 日期严格向前推进, TS 不会
-      // 重开已过 CS/IO 阶段的日子; FLUSH 中的 slot date 正被 reset, 不可读.
+      if (cancel_requested.load(std::memory_order_relaxed))
+        return {};
+      // 本日已被其他 worker 打开 (领养回填的旧日期也从这里命中). 只匹配
+      // BUSY: 未计满的日子必为 BUSY, 已过 CS/IO 阶段的日子不可能再被打开;
+      // FLUSH 中的 slot date 正被 reset, 不可读.
       for (size_t i = 0; i < pool_size_; ++i) {
         Slot &s = pool_[i];
         if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date)
@@ -286,35 +309,58 @@ public:
     }
   }
 
-  // 本 worker 本日全部资产写完. 计数攒齐 num_ts_workers 后 cs_open 放行;
+  // 一个 (asset, date) 写完. 计数攒齐 num_assets 后 cs_open 放行;
   // release 与 cs_open 的 acquire 配对, 保证张量写入对 CS 可见.
-  void ts_close(const TsDay &day, int worker_id) {
+  // 缺 binary 的 asset-day 也要计 (张量保持默认值), 由当时的处置权持有者计.
+  void ts_asset_done(const TsDay &day) {
     assert(day.slot);
-    [[maybe_unused]] const uint32_t prev = day.slot->ts_done_count.fetch_add(1, std::memory_order_release);
-    assert(prev < num_ts_workers_ && "ts_close: 计数超过 worker 数 (重复 close?)");
-    Logger::log("worker_" + std::to_string(worker_id), "ts_close: " + std::string(day.slot->date));
+    const uint32_t prev = day.slot->assets_done.fetch_add(1, std::memory_order_release);
+    assert(prev < num_assets_ && "ts_asset_done: 计数超过资产数 (重复计?)");
+    if (prev + 1 == num_assets_) {
+      ts_days_done_.fetch_add(1, std::memory_order_relaxed);
+      Logger::log("store", "ts_day_done: " + std::string(day.slot->date));
+    }
+  }
+
+  // Worker 自报已完成日数 (领养观测面, release 兼发布 core 构造/状态)
+  void ts_report_frontier(int worker_id, size_t days_done) {
+    assert(worker_id >= 0 && worker_id < static_cast<int>(num_ts_workers_));
+    ts_frontier_[worker_id].store(static_cast<uint32_t>(days_done), std::memory_order_release);
+  }
+
+  size_t ts_frontier(int worker_id) const {
+    assert(worker_id >= 0 && worker_id < static_cast<int>(num_ts_workers_));
+    return ts_frontier_[worker_id].load(std::memory_order_acquire);
   }
 
   // ===== CS WORKER API: 每 date 一对 open/close =====
 
-  // 按日门控: 阻塞至本日 slot 存在且全部 TS ts_close. 返回后本日三层张量
+  // 按日门控: 阻塞至本日 slot 存在且 asset-day 计满. 返回后本日三层张量
   // 整体可读 —— CS 内部不需要任何行级等待. 等待发生在日粒度, 轮询开销无所谓.
   //
   // 无锁 (与 io_try_flush_one 同姿态; 锁只属于 ts_open 的分配互斥):
   //   date 在 ts_open 的 release store(BUSY) 之前写完, acquire 观察到 BUSY 即可读;
   //   BUSY→DONE 只由本 CS 线程自己做 (cs_close), 不存在读期状态漂移.
+  bool cs_try_open(const std::string &date, CsDay &day) {
+    for (size_t i = 0; i < pool_size_; ++i) {
+      Slot &s = pool_[i];
+      if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date &&
+          s.assets_done.load(std::memory_order_acquire) == num_assets_) {
+        day = {&s, num_assets_};
+        return true;
+      }
+    }
+    return false;
+  }
+
   CsDay cs_open(const std::string &date) {
     size_t backoff_us = 100;
-    while (true) {
-      for (size_t i = 0; i < pool_size_; ++i) {
-        Slot &s = pool_[i];
-        if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date &&
-            s.ts_done_count.load(std::memory_order_acquire) == num_ts_workers_)
-          return {&s, num_assets_};
-      }
+    CsDay day;
+    while (!cs_try_open(date, day)) {
       std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
       backoff_us = std::min<size_t>(backoff_us * 2, 1000);
     }
+    return day;
   }
 
   // CS 写完本日全部截面列, slot 交给 IO (BUSY→DONE)
@@ -323,6 +369,7 @@ public:
     Logger::log("store", "cs_close: " + std::string(day.slot->date));
     [[maybe_unused]] const TensorState prev = day.slot->state.exchange(TensorState::DONE, std::memory_order_acq_rel);
     assert(prev == TensorState::BUSY && "cs_close: 状态机乱序");
+    cs_days_done_.fetch_add(1, std::memory_order_relaxed);
   }
 
   // ===== IO WORKER API =====
@@ -350,6 +397,10 @@ public:
 
   // ===== QUERY API =====
   size_t query_A() const { return num_assets_; }
+  size_t query_slots() const { return pool_size_; }
+  size_t query_ts_workers() const { return num_ts_workers_; }
+  size_t query_ts_days_done() const { return ts_days_done_.load(std::memory_order_relaxed); } // asset-day 计满的日数
+  size_t query_cs_days_done() const { return cs_days_done_.load(std::memory_order_relaxed); }
 
 private:
   // Write file with header + compressed data

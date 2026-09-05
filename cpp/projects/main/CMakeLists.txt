@@ -212,6 +212,7 @@ set(SOURCES
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/encoding_worker.cpp
     ../../src/worker/io_worker.cpp
+    ../../src/worker/prefetch_worker.cpp
     ../../src/worker/sequential_worker.cpp
     # gui
     ../../src/gui/Gui.cpp
@@ -322,6 +323,7 @@ set(HEADERS
     ../../include/worker/crosssectional_worker.hpp
     ../../include/worker/encoding_worker.hpp
     ../../include/worker/io_worker.hpp
+    ../../include/worker/prefetch_worker.hpp
     ../../include/worker/sequential_worker.hpp
     # gui
     ../../include/gui/Config.hpp

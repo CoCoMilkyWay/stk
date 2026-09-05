@@ -6,11 +6,14 @@
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 void crosssectional_worker(int worker_id,
                            SharedData &data,
                            GlobalFeatureStore &store,
+                           const std::atomic<bool> &cancel_requested,
                            misc::ProgressHandle progress_handle) {
   TraceNS("CSWorker", 5);
   TraceValue(worker_id);
@@ -24,17 +27,16 @@ void crosssectional_worker(int worker_id,
   // Initialize CoreCrosssection (manages buffers and 3-level computation)
   CoreCrosssection core(store);
 
+  char label_buf[128];
+  snprintf(label_buf, sizeof(label_buf), "截面核心%2d:", worker_id);
+  progress_handle.set_label(label_buf);
+  progress_handle.update(0, total_dates, "等待数据");
+
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
     TraceN("DateLoop");
     const std::string &date_str = data.asset.all_dates[date_idx];
     TraceTextS(date_str.c_str());
-
-    // Update progress label
-    char label_buf[128];
-    snprintf(label_buf, sizeof(label_buf), "截面核心%2d: %3zu/%3zu 日期: %s",
-             worker_id, date_idx + 1, total_dates, date_str.c_str());
-    progress_handle.set_label(label_buf);
 
     // 按日门控: 阻塞至全部 TS 写完本日, 返回后三层张量整体可读.
     // 数值一致性由输入契约锚定 (CS 只读秒网格张量行, 见 CoreCrosssection.hpp),
@@ -43,7 +45,14 @@ void crosssectional_worker(int worker_id,
     {
       TraceN("WaitSync");
       TraceColor(C_Orange);
-      day = store.cs_open(date_str);
+      while (!store.cs_try_open(date_str, day)) {
+        if (cancel_requested.load(std::memory_order_relaxed) && date_idx >= store.query_ts_days_done()) {
+          progress_handle.update(completed_dates, total_dates, "Cancelled");
+          Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(completed_dates) + " dates");
+          return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
     }
     core.set_day(day);
 
@@ -56,7 +65,7 @@ void crosssectional_worker(int worker_id,
     }
 
     ++completed_dates;
-    progress_handle.update(completed_dates, total_dates, "");
+    progress_handle.update(completed_dates, total_dates, date_str);
 
     // 本日截面完成, slot 交给 IO 落盘
     store.cs_close(day);
@@ -66,12 +75,11 @@ void crosssectional_worker(int worker_id,
     TraceFrame;
   }
 
-  // Final update
-  char label_buf[128];
-  snprintf(label_buf, sizeof(label_buf), "截面核心%2d: %3zu/%3zu 日期: Complete",
-           worker_id, total_dates, total_dates);
-  progress_handle.set_label(label_buf);
-  progress_handle.update(total_dates, total_dates, "");
+  const bool cancelled = cancel_requested.load(std::memory_order_relaxed);
+  progress_handle.update(cancelled ? completed_dates : total_dates, total_dates, cancelled ? "Cancelled" : "Complete");
 
-  Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates processed");
+  if (cancelled)
+    Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(completed_dates) + " dates");
+  else
+    Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates processed");
 }

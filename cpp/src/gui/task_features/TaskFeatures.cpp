@@ -13,7 +13,6 @@
 #include "gui/task_features/ui/TabTimeSeries.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
 #include "gui/task_terminal/TaskTerminal.hpp"
-#include "misc/affinity.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -190,13 +189,10 @@ TaskHandle CreateFeaturesTask() {
       }
     }
 
-    // Handle trigger from UI
+    // Handle trigger from UI (核布局由 start_compute 内部按机器核数推导)
     if (state->compute_state.trigger_start) {
       state->compute_state.trigger_start = false;
-      const int num_workers = (state->compute_state.num_workers == 0)
-                                  ? misc::Affinity::core_count()
-                                  : state->compute_state.num_workers;
-      state->compute_service->start_compute(num_workers, static_cast<size_t>(state->compute_state.pool_slots));
+      state->compute_service->start_compute(state->compute_state.config);
     }
 
     // Detect compute completion and mark L1 for reload

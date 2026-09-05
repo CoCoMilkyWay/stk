@@ -7,11 +7,14 @@
 
 #include "imgui.h"
 
+#include <string>
+
 namespace GUI::Features {
 
 void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/, Config &config) {
   const auto status = service->get_status();
   const bool is_running = status == ComputeStatus::Running;
+  const bool is_cancelling = service->is_cancelling();
 
   // ========================================================================
   // State Machine Logic
@@ -65,8 +68,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
 
   switch (status) {
   case ComputeStatus::Running:
-    status_text = "Running";
-    status_color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+    status_text = is_cancelling ? "Cancelling" : "Running";
+    status_color = is_cancelling ? ImVec4(1.0f, 0.5f, 0.0f, 1.0f) : ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
     break;
   case ComputeStatus::Completed:
     status_text = "Completed";
@@ -88,7 +91,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
 
   if (is_running) {
     ImGui::SameLine();
-    ImGui::TextDisabled("(GUI sleeping, all CPU for computation)");
+    ImGui::TextDisabled("(GUI throttled, compute owns cores)");
   }
 
   ImGui::Spacing();
@@ -101,52 +104,54 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Configuration");
   ImGui::Spacing();
 
-  const int max_cores = misc::Affinity::core_count();
+  // 核布局: 机器核数唯一推导, worker 数不可配 (见 StageLayout)
+  const int max_cores = static_cast<int>(misc::Affinity::core_count());
+  const StageLayout layout = StageLayout::make(max_cores, state.config.prefetch_share_io);
 
-  ImGui::Text("Worker Threads:");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(150);
+  ImGui::Text("Stages (%d cores, auto):", layout.total_cores);
+  ImGui::Spacing();
 
-  if (state.num_workers == 0) {
-    if (ImGui::InputInt("##workers", &state.num_workers, 1, 1)) {
-      if (state.num_workers < 0)
-        state.num_workers = 0;
-      if (state.num_workers > max_cores)
-        state.num_workers = max_cores;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(auto: %d cores)", max_cores);
-  } else {
-    if (ImGui::InputInt("##workers", &state.num_workers, 1, 1)) {
-      if (state.num_workers < 3)
-        state.num_workers = 3; // min: 1 TS + 1 CS + 1 IO
-      if (state.num_workers > max_cores)
-        state.num_workers = max_cores;
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Auto")) {
-      state.num_workers = 0;
-    }
+  if (ImGui::BeginTable("StageLayout", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+    ImGui::TableSetupColumn("Stage");
+    ImGui::TableSetupColumn("线程");
+    ImGui::TableSetupColumn("专核");
+    ImGui::TableSetupColumn("核号");
+    ImGui::TableSetupColumn("说明", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    auto stage_row = [](const StageLayout::Stage &stage) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", stage.name);
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", stage.threads);
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", stage.cores);
+      ImGui::TableNextColumn();
+      const std::string cores = StageLayout::core_text(stage);
+      ImGui::Text("%s", cores.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextWrapped("%s", stage.desc);
+    };
+
+    for (const StageLayout::Stage &stage : layout.stages())
+      stage_row(stage);
+
+    ImGui::EndTable();
   }
 
-  const int actual_workers = (state.num_workers == 0) ? max_cores : state.num_workers;
-  const int ts_workers = actual_workers - 2;
-  const int cs_workers = 1;
-  const int io_workers = 1;
-
-  ImGui::Indent();
-  ImGui::TextDisabled("TS workers: %d (time-series, parallel)", ts_workers);
-  ImGui::TextDisabled("CS worker: %d (cross-sectional, single-threaded)", cs_workers);
-  ImGui::TextDisabled("IO worker: %d (disk flush, single-threaded)", io_workers);
-  ImGui::Unindent();
+  ImGui::Spacing();
+  ImGui::Checkbox("预取与落盘共核##prefetch_share", &state.config.prefetch_share_io);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(两者都 IO-bound, 共核把预取核让给 TS; 小核数机器建议勾选)");
 
   ImGui::Spacing();
   ImGui::Text("Pool Slots:");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(150);
-  if (ImGui::InputInt("##pool_slots", &state.pool_slots, 1, 1)) {
-    if (state.pool_slots < 2)
-      state.pool_slots = 2;
+  if (ImGui::InputInt("##pool_slots", &state.config.pool_slots, 1, 1)) {
+    if (state.config.pool_slots < 2)
+      state.config.pool_slots = 2;
   }
   ImGui::SameLine();
   ImGui::TextDisabled("(in-flight day tensors)");
@@ -349,7 +354,11 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       state.popup_frame_count = 0;
     }
   } else {
-    ImGui::TextWrapped("Computation in progress...");
+    if (is_cancelling) {
+      ImGui::TextWrapped("Cancelling at date boundary...");
+    } else if (ImGui::Button("Cancel Compute", ImVec2(200, 30))) {
+      service->request_cancel();
+    }
   }
 
   // ========================================================================
@@ -395,9 +404,9 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Spacing();
     ImGui::Text("System Status:");
     ImGui::Indent();
-    ImGui::BulletText("GUI entering sleep mode");
-    ImGui::BulletText("Using %d CPU cores", actual_workers);
-    ImGui::BulletText("Allocating %d pool slots", state.pool_slots);
+    ImGui::BulletText("GUI entering low-refresh mode");
+    ImGui::BulletText("%s", layout.summary().c_str());
+    ImGui::BulletText("Allocating %d pool slots", state.config.pool_slots);
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 
@@ -415,13 +424,24 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       break;
     case ComputeUIState::WaitingStart:
     case ComputeUIState::Computing:
-      ImGui::Text("Computing... GUI is frozen, please wait.");
+      ImGui::Text("%s", is_cancelling ? "Cancelling at date boundary..." : "Computing... GUI is throttled.");
       break;
     default:
       break;
     }
 
     ImGui::EndChild();
+
+    if (state.ui_state == ComputeUIState::WaitingStart || state.ui_state == ComputeUIState::Computing) {
+      if (is_cancelling) {
+        ImGui::BeginDisabled();
+        ImGui::Button("Cancelling...", ImVec2(160, 28));
+        ImGui::EndDisabled();
+      } else if (ImGui::Button("Cancel Compute", ImVec2(160, 28))) {
+        service->request_cancel();
+      }
+    }
+
     ImGui::PopItemWidth();
 
     ImGui::EndPopup();

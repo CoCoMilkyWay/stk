@@ -7,6 +7,7 @@
 #include "shared/SharedData.hpp"
 #include "worker/crosssectional_worker.hpp"
 #include "worker/io_worker.hpp"
+#include "worker/prefetch_worker.hpp"
 #include "worker/sequential_worker.hpp"
 
 #include <algorithm>
@@ -25,20 +26,20 @@ ComputeService::~ComputeService() {
   }
 }
 
-void ComputeService::start_compute(int num_workers, size_t pool_slots) {
-  if (status_ == ComputeStatus::Running)
+void ComputeService::start_compute(ComputeConfig config) {
+  if (status_.load(std::memory_order_relaxed) == ComputeStatus::Running)
     return;
-  assert(pool_slots >= 2 && "pool slots must be at least 2");
+  assert(config.pool_slots >= 2 && "pool slots must be at least 2");
 
-  status_ = ComputeStatus::Running;
+  status_.store(ComputeStatus::Running, std::memory_order_relaxed);
   cancel_flag_.store(false);
-  num_workers_ = num_workers;
-  pool_slots_ = pool_slots;
+  config_ = config;
+  layout_ = StageLayout::make(static_cast<int>(misc::Affinity::core_count()), config_.prefetch_share_io);
   start_time_ = std::chrono::steady_clock::now();
 
-  // Enable High Performance Mode: GUI sleeps, all CPU for computation
+  // Enable High Performance Mode: GUI low-refresh, compute owns cores
   data_.EnableHighPerformanceMode();
-  std::cout << "[High Performance Mode] Enabled - GUI thread sleeping\n"
+  std::cout << "[High Performance Mode] Enabled - GUI low-refresh\n"
             << std::endl;
 
   // Launch compute in background thread
@@ -61,21 +62,25 @@ void ComputeService::start_compute(int num_workers, size_t pool_slots) {
     }
     assert(!backtest_dates.empty() && "回测区间内无交易日, 不应触发特征计算");
 
+    // 核布局: 预取 → TS → CS → IO 四个 stage, 全部 pin 死 (见 StageLayout)
+    const StageLayout &L = layout_;
+    const std::string stage_summary = L.summary();
+
     std::cout << "\n=== Phase 2: Feature Computation ===\n"
-              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
-              << " | Pool slots: " << pool_slots_
+              << stage_summary << "\n"
+              << "Assets: " << data_.asset.items.size()
+              << " | Pool slots: " << config_.pool_slots
               << " | Backtest dates: " << backtest_dates.size()
               << " (" << backtest_start << " - " << backtest_end << ")\n"
               << std::endl;
 
-    // Analysis phase: (N-2) TS workers + 1 CS worker + 1 Flush IO worker = N total workers
-    const unsigned int num_ts_workers = num_workers_ - 2;
-    const unsigned int cs_worker_core = num_workers_ - 2; // Second-to-last core for CS
-    const unsigned int io_worker_core = num_workers_ - 1; // Last core for Flush IO
+    const unsigned int num_ts_workers = static_cast<unsigned int>(L.num_ts);
     const size_t num_assets = data_.asset.items.size();
     const size_t total_dates = backtest_dates.size();
 
-    // Load balancing: 按回测区间内的逐笔条数给资产排序.
+    // Load balancing (初始形态): 按回测区间内的逐笔条数给资产排序, LPT 贪心
+    // 配平. 权重模型必有偏差 + 负载时间分布不均, 运行期差距由 worker 间的
+    // 处置权转移收敛 (见 sequential_worker 的 try_adopt), 这里只求起点均衡.
     //
     // 条数是扫描时随文件头一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
@@ -101,11 +106,13 @@ void ComputeService::start_compute(int num_workers, size_t pool_slots) {
               [](const auto &a, const auto &b) { return a.second > b.second; });
 
     // Greedy assignment: each asset goes to TS worker with minimum current load
+    ts_schedule_ = std::make_unique<TsSchedule>(num_assets);
     std::vector<size_t> worker_loads(num_ts_workers, 0);
 
     for (const auto &[asset_id, weight] : asset_workloads) {
       size_t min_worker = std::min_element(worker_loads.begin(), worker_loads.end()) - worker_loads.begin();
-      data_.asset.items[asset_id].assigned_worker_id = min_worker;
+      ts_schedule_->owner[asset_id].store(static_cast<int32_t>(min_worker), std::memory_order_relaxed);
+      ts_schedule_->weight[asset_id] = weight;
       worker_loads[min_worker] += weight;
     }
 
@@ -131,7 +138,7 @@ void ComputeService::start_compute(int num_workers, size_t pool_slots) {
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(
         num_assets, num_ts_workers, asset_axis().hash_at(num_assets),
-        data_.config.feature_dir, pool_slots_);
+        data_.config.feature_dir, static_cast<size_t>(config_.pool_slots));
 
     // Clean up directories before compute
     namespace fs = std::filesystem;
@@ -149,36 +156,53 @@ void ComputeService::start_compute(int num_workers, size_t pool_slots) {
     // Initialize logger for all workers (shared log file)
     Logger::init(data_.config.log_dir);
 
-    // Launch workers: IO + TS[] + CS
-    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_);
+    // Launch workers: 统一 launch(core, row, fn) —— pin 到 core, 进度挂到
+    // row, worker_id = core. TS 多带一个调度面参数 (处置权转移), 单独包一层.
+    progress_ = std::make_shared<misc::ParallelProgress>(L.progress_rows());
     workers_.clear();
-    workers_.reserve(num_workers_);
+    workers_.reserve(static_cast<size_t>(L.progress_rows()));
 
-    // IO worker (core N-1, last core)
-    workers_.push_back(std::async(std::launch::async, [this, io_worker_core, total_dates]() {
-      if (misc::Affinity::supported()) {
-        misc::Affinity::pin_to_core(io_worker_core);
-      }
-      io_worker(static_cast<int>(io_worker_core), *feature_store_, progress_->get_handle(static_cast<int>(io_worker_core)), total_dates);
-    }));
-
-    // TS workers (cores 0 to N-3)
-    for (unsigned int i = 0; i < num_ts_workers; ++i) {
-      workers_.push_back(std::async(std::launch::async, [this, i]() {
+    using WorkerFn = void (*)(int, SharedData &, GlobalFeatureStore &, const std::atomic<bool> &, misc::ProgressHandle);
+    auto launch = [this](int core, int row, WorkerFn fn) {
+      workers_.push_back(std::async(std::launch::async, [this, core, row, fn]() {
         if (misc::Affinity::supported()) {
-          misc::Affinity::pin_to_core(i);
+          misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
         }
-        sequential_worker(static_cast<int>(i), data_, *feature_store_, progress_->get_handle(static_cast<int>(i)));
+        fn(core, data_, *feature_store_, cancel_flag_, progress_->get_handle(row));
       }));
-    }
+    };
+    auto launch_ts = [this](int core, int row) {
+      workers_.push_back(std::async(std::launch::async, [this, core, row]() {
+        if (misc::Affinity::supported()) {
+          misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
+        }
+        sequential_worker(core, data_, *feature_store_, *ts_schedule_, cancel_flag_, progress_->get_handle(row));
+      }));
+    };
 
-    // CS worker (core N-2, second-to-last core)
-    workers_.push_back(std::async(std::launch::async, [this, cs_worker_core]() {
-      if (misc::Affinity::supported()) {
-        misc::Affinity::pin_to_core(cs_worker_core);
+    auto worker_fn = [](ComputeStage stage) -> WorkerFn {
+      switch (stage) {
+      case ComputeStage::Prefetch:
+        return prefetch_worker;
+      case ComputeStage::CS:
+        return crosssectional_worker;
+      case ComputeStage::IO:
+        return io_worker;
+      case ComputeStage::TS:
+        break; // launch_ts
       }
-      crosssectional_worker(static_cast<int>(cs_worker_core), data_, *feature_store_, progress_->get_handle(static_cast<int>(cs_worker_core)));
-    }));
+      assert(false && "unknown compute stage");
+      return nullptr;
+    };
+
+    for (const StageLayout::Stage &s : L.stages()) {
+      for (int i = 0; i < s.threads; ++i) {
+        if (s.kind == ComputeStage::TS)
+          launch_ts(s.first_core + i, s.first_row + i);
+        else
+          launch(s.first_core + i, s.first_row + i, worker_fn(s.kind));
+      }
+    }
 
     // Wait for completion
     for (auto &worker : workers_)
@@ -189,31 +213,39 @@ void ComputeService::start_compute(int num_workers, size_t pool_slots) {
     // Restore original all_dates
     data_.asset.all_dates = std::move(original_dates);
 
-    // Cleanup feature store
+    // Cleanup feature store + TS 调度面 (cores 随之析构)
     feature_store_.reset();
+    ts_schedule_.reset();
 
     // Finalize
-    status_ = cancel_flag_.load() ? ComputeStatus::Cancelled : ComputeStatus::Completed;
+    const ComputeStatus final_status = cancel_flag_.load(std::memory_order_relaxed) ? ComputeStatus::Cancelled : ComputeStatus::Completed;
+    status_.store(final_status, std::memory_order_relaxed);
 
     std::cout << "\n=== Feature Computation "
-              << (status_ == ComputeStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
+              << (final_status == ComputeStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
               << "Processed: " << total_dates << " dates\n"
               << std::endl;
 
     // Disable High Performance Mode: GUI resumes
     data_.DisableHighPerformanceMode();
-    std::cout << "[High Performance Mode] Disabled - GUI thread resumed\n"
+    std::cout << "[High Performance Mode] Disabled - GUI full-refresh\n"
               << std::endl;
   });
 }
 
-void ComputeService::stop_compute() {
-  if (status_ != ComputeStatus::Running) {
+void ComputeService::request_cancel() {
+  if (status_.load(std::memory_order_relaxed) != ComputeStatus::Running) {
     return;
   }
 
-  cancel_flag_.store(true);
+  if (cancel_flag_.exchange(true, std::memory_order_relaxed)) {
+    return;
+  }
   std::cout << "[Compute] Cancelling..." << std::endl;
+}
+
+void ComputeService::stop_compute() {
+  request_cancel();
 
   // Wait for compute thread to finish
   if (compute_thread_.valid()) {
