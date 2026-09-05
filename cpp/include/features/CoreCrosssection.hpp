@@ -13,7 +13,7 @@
 //   算子契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
 //   源列由 Method/CS.hpp 声明) 每分钟按需准备一次, 全部 NeutralRank 行复用; L0 用 NeutralRank = 编译错误.
 //
-//   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + _data_valid) 看世界,
+//   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + _meta) 看世界,
 //   看不到 tick / LOB / 事件到达顺序. TS 行是资产局部纯函数 (见 CoreSequential.hpp),
 //   所以 CS 在 t 的输入对重放调度不变 —— 一致性由这个输入契约保证, 与"CS 是流式
 //   伴随还是整日后扫"无关. 回测按日门控 (cs_open 等全部 TS 写完, 见 FeatureStore.hpp),
@@ -39,7 +39,7 @@
 
 template <size_t LVL>
 struct CsLevel;
-#define CS_LEVEL_TRAITS(name, num, fields, rows, psd, columnar)                                             \
+#define CS_LEVEL_TRAITS(name, num, fields, rows, psd, columnar, xor_delta)                                  \
   template <>                                                                                               \
   struct CsLevel<num> {                                                                                     \
     static constexpr size_t kLevel = num;                                                                   \
@@ -95,11 +95,11 @@ public:
 private:
   template <size_t LVL>
   void run(size_t t) {
-    constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::_data_valid) : size_t(L1_Field::_data_valid);
+    constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::_meta) : size_t(L1_Field::_meta);
     const _Float16 *valid_flags = fstore::cs_col<LVL>(day_, t, VALID);
     valid_indices_.clear();
     for (size_t a = 0; a < A_; ++a)
-      if (static_cast<float>(valid_flags[a]) > 0.5f)
+      if (fmeta::data_valid(static_cast<float>(valid_flags[a])))
         valid_indices_.push_back(a);
     if (valid_indices_.empty())
       return;

@@ -49,6 +49,7 @@ struct FeatureConfig {
   const FeatureMetadata *meta_list = nullptr;
   size_t meta_count = 0;
   bool has_valid_flag = false;
+  L2::ValidType valid_type = L2::ValidType::ALL;
 };
 
 static FeatureConfig get_feature_config(const Feature &feature) {
@@ -68,12 +69,12 @@ static FeatureConfig get_feature_config(const Feature &feature) {
   if (primary_idx >= 0 && static_cast<size_t>(primary_idx) < cfg.meta_count) {
     valid_type = cfg.meta_list[primary_idx].valid_type;
   }
+  cfg.valid_type = valid_type;
 
+  // 门控列 = 同层 _meta (按 valid_type 测 data/depth 位, 编码见 Meta.hpp)
   if (valid_type != L2::ValidType::ALL) {
-    const char *flag_name =
-        (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
     for (size_t i = 0; i < cfg.meta_count; ++i) {
-      if (std::strcmp(cfg.meta_list[i].code, flag_name) == 0) {
+      if (std::strcmp(cfg.meta_list[i].code, "_meta") == 0) {
         cfg.columns.push_back(i);
         break;
       }
@@ -98,6 +99,7 @@ static void collect_asset_series(const TimeSeries::SharedMonthData &shared,
   const size_t A = shared.n_assets;
   const size_t F = shared.F_selected;
   const bool has_valid = shared.has_valid_flag;
+  const L2::ValidType vt = shared.valid_type;
 
   for (const auto &dr : shared.day_ranges) {
     const auto &tensor = shared.months[dr.month_idx];
@@ -108,7 +110,7 @@ static void collect_asset_series(const TimeSeries::SharedMonthData &shared,
 
       if (has_valid) {
         float flag = static_cast<float>(tensor.data[base + A + asset_idx]);
-        if (flag <= 0.5f)
+        if (!fmeta::valid(flag, vt))
           continue;
       }
 
@@ -138,6 +140,7 @@ static void compute_stationarity_for_month(
   const size_t A = shared.n_assets;
   const size_t F = shared.F_selected;
   const bool has_valid = shared.has_valid_flag;
+  const L2::ValidType vt = shared.valid_type;
 
   // 收集每个 asset 的时间序列
   std::vector<std::vector<float>> asset_series(A);
@@ -158,7 +161,7 @@ static void compute_stationarity_for_month(
 
         if (has_valid) {
           float flag = static_cast<float>(tensor.data[base + A + a]);
-          if (flag <= 0.5f)
+          if (!fmeta::valid(flag, vt))
             continue;
         }
 
@@ -222,6 +225,7 @@ static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
   const size_t A = shared.n_assets;
   const size_t F = shared.F_selected;
   const bool has_valid = shared.has_valid_flag;
+  const L2::ValidType vt = shared.valid_type;
   const int level = shared.level;
 
   std::array<float, TimeSeries::PSDHeatmap::N_SCALE_BINS> out_buf;
@@ -236,7 +240,7 @@ static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
 
       if (has_valid) {
         float flag = static_cast<float>(tensor.data[base + A + asset_idx]);
-        if (flag <= 0.5f)
+        if (!fmeta::valid(flag, vt))
           continue;
       }
 
@@ -306,6 +310,7 @@ static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
   const size_t A = shared.n_assets;
   const size_t F = shared.F_selected;
   const bool has_valid = shared.has_valid_flag;
+  const L2::ValidType vt = shared.valid_type;
 
   // 收集当天所有 asset 的平均值
   std::vector<float> day_values(A, 0.0f);
@@ -319,7 +324,7 @@ static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
 
       if (has_valid) {
         float flag = static_cast<float>(tensor.data[base + A + a]);
-        if (flag <= 0.5f)
+        if (!fmeta::valid(flag, vt))
           continue;
       }
 
@@ -364,7 +369,7 @@ static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
 
         if (has_valid) {
           float flag = static_cast<float>(prev_tensor.data[base + A + a]);
-          if (flag <= 0.5f)
+          if (!fmeta::valid(flag, vt))
             continue;
         }
 
@@ -423,6 +428,7 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
   auto cfg = get_feature_config(feature);
   shared.F_selected = cfg.columns.size();
   shared.has_valid_flag = cfg.has_valid_flag;
+  shared.valid_type = cfg.valid_type;
 
   // Worker 数量 = min(core_count, n_months)
   const size_t n_workers = n_months;

@@ -75,7 +75,7 @@ public:
     FeatureRead::DayTensor depth_buffer;
     depth_buffer.preallocate(of.l1.num_assets, 2);
 
-    // L0 特征选列缓冲 [T][2][A]: 特征列 + _data_valid (整层 DayTensor 会把全部 L0 列文件读一遍)
+    // L0 特征选列缓冲 [T][2][A]: 特征列 + _meta (整层 DayTensor 会把全部 L0 列文件读一遍)
     FeatureRead::DayColumns l0_cols;
     l0_cols.preallocate(of.l1.num_assets, 0, 2);
 
@@ -223,8 +223,7 @@ public:
 
           // 末行是哨兵, 不消费
           for (size_t t = 0; t < level_valid_rows(1); ++t) {
-            float valid_flag = static_cast<float>(tensor.get<1>(t, L1_Field::_data_valid, a));
-            if (valid_flag <= 0.5f)
+            if (!fmeta::data_valid(static_cast<float>(tensor.get<1>(t, L1_Field::_meta, a))))
               continue;
 
             // OHLC 已是元 (Ohlc 节点直写 MinuteData)
@@ -315,12 +314,11 @@ public:
       const size_t t = L1_to_L0(m) + 59; // 分钟末秒
       assert(t < OrderFlowConst::L0_CAPACITY && "depth minute row exceeds L0_CAPACITY");
 
-      // Read validity flags (from depth tensor)
-      float depth_valid_val = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_depth_valid, asset_idx));
-      float data_valid_val = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_data_valid, asset_idx));
+      // Read validity flags (from depth tensor _meta, 编码见 Meta.hpp)
+      const float meta_val = static_cast<float>(depth_tensor.get<2>(m, DEPTH_Field::_meta, asset_idx));
 
-      bool depth_valid = (depth_valid_val > 0.5f);
-      bool data_valid = (data_valid_val > 0.5f);
+      bool depth_valid = fmeta::depth_valid(meta_val);
+      bool data_valid = fmeta::data_valid(meta_val);
 
       // Skip if neither valid
       if (!depth_valid && !data_valid)
@@ -395,9 +393,9 @@ public:
     cache.asset_idx = asset_idx;
     cache.feature_idx = feature_idx;
 
-    // 选列加载: 特征列 + _data_valid (L0 逐列文件, 只读 2 个列文件, 免整层)
+    // 选列加载: 特征列 + _meta (L0 逐列文件, 只读 2 个列文件, 免整层)
     const std::vector<size_t> columns = {static_cast<size_t>(feature_idx),
-                                         static_cast<size_t>(L0_Field::_data_valid)};
+                                         static_cast<size_t>(L0_Field::_meta)};
     reader_.load_day_columns(date, columns, l0_cols);
 
     if (asset_idx >= l0_cols.A)
@@ -421,14 +419,16 @@ public:
         assert(t < level_valid_rows(0));
 
         // tick_idx 是分钟末秒 (depth 分钟频); L0 特征逐笔稀疏, 该秒不一定有写入
-        // → 在本分钟内向前回溯到最近一个 _data_valid 秒
+        // → 在本分钟内向前回溯到最近一个 data 有效秒 (_meta 非 0)
         {
           size_t lo = (t >= 59) ? t - 59 : 0;
-          while (t > lo && static_cast<float>(l0_cols.get(t, 1, asset_idx)) <= 0.5f)
+          while (t > lo && !fmeta::data_valid(static_cast<float>(l0_cols.get(t, 1, asset_idx))))
             --t;
         }
 
         float val = static_cast<float>(l0_cols.get(t, 0, asset_idx));
+        if (feature_idx == static_cast<int>(L0_Field::_meta))
+          val = fmeta::price(val); // _meta 本身被选中时展示幅值 = micro price
 
         double global_x = day.to_global_x(i);
         cache.plot.x.push_back(global_x);
@@ -457,15 +457,15 @@ public:
                            FeatureRead::DayColumns &l1_cols) {
     TraceN("L1_Feature_Day");
 
-    // 选列加载: 特征列 + _data_valid (L1 逐列文件, 只读 2 个列文件)
+    // 选列加载: 特征列 + _meta (L1 逐列文件, 只读 2 个列文件)
     const std::vector<size_t> columns = {static_cast<size_t>(fc.feature_idx),
-                                         static_cast<size_t>(L1_Field::_data_valid)};
+                                         static_cast<size_t>(L1_Field::_meta)};
     reader_.load_day_columns(date, columns, l1_cols);
     assert(fc.asset_idx < l1_cols.A);
 
     auto &dst = fc.days[fc.days_loaded];
     for (size_t m = 0; m < level_valid_rows(1); ++m) {
-      const bool valid = static_cast<float>(l1_cols.get(m, 1, fc.asset_idx)) > 0.5f;
+      const bool valid = fmeta::data_valid(static_cast<float>(l1_cols.get(m, 1, fc.asset_idx)));
       dst[m] = valid ? static_cast<float>(l1_cols.get(m, 0, fc.asset_idx))
                      : std::numeric_limits<float>::quiet_NaN();
     }

@@ -319,7 +319,8 @@ set(HEADERS
     ../../include/features/Backend/FeatureRead.hpp
     ../../include/features/Backend/FeatureStore.hpp
     ../../include/features/Backend/FeatureStoreConfig.hpp
-    ../../include/features/Backend/ZstdHelper.hpp
+    ../../include/features/Backend/SparseCodec.hpp
+    ../../include/features/Backend/ZstdCodec.hpp
     # worker
     ../../include/worker/encoding_worker.hpp
     ../../include/worker/feature_workers.hpp

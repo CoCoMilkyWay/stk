@@ -46,8 +46,9 @@ void sequential_worker(WorkerCtx ctx) {
   GlobalFeatureStore &store = ctx.store;
   TsSchedule &sched = ctx.sched;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 本核计数发布槽 (单写者): 前沿/持仓在 store/sched 里, 渲染线程自取
-  ComputeStats::Ts &stat = ctx.stats.ts[static_cast<size_t>(worker_id)];
+  // 本核发布槽 (单写者): work = 累计逐笔条数, idle_ms = 累计干等毫秒;
+  // 前沿/持仓在 store/sched 里, 渲染线程自取
+  ComputeStats::Core &stat = ctx.stats.ts[static_cast<size_t>(worker_id)];
 
   TraceNS("TSWorker", 5);
   TraceValue(worker_id);
@@ -249,6 +250,7 @@ void sequential_worker(WorkerCtx ctx) {
         if (cancel_requested.load(std::memory_order_relaxed))
           return;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        stat.idle_ms.fetch_add(1, std::memory_order_relaxed);
       }
 
       const int32_t from = sched.done[pick].load(std::memory_order_acquire) + 1;
@@ -269,7 +271,7 @@ void sequential_worker(WorkerCtx ctx) {
         if (!bday)
           return;
         cumulative_orders += process_asset_day(pick, data.asset.date_idx(bdate), bdate, bday);
-        stat.orders.store(cumulative_orders, std::memory_order_relaxed);
+        stat.work.store(cumulative_orders, std::memory_order_relaxed);
         sched.done[pick].store(d, std::memory_order_release);
         store.ts_close(bday);
       }
@@ -291,7 +293,6 @@ void sequential_worker(WorkerCtx ctx) {
     date_orders = 0;
     date_assets_processed = 0;
     adopted_today = 0; // leader 侧领养预算按日重置
-    stat.done_today.store(0, std::memory_order_relaxed);
 
     // 日期 → 日期轴下标, 一天查一次; 资产内循环 O(1) 定址
     const size_t didx = data.asset.date_idx(date_str);
@@ -305,13 +306,13 @@ void sequential_worker(WorkerCtx ctx) {
       TraceColor(C_Orange);
       try_adopt(date_idx); // date_idx = 本 worker 已完成日数
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      stat.idle_ms.fetch_add(10, std::memory_order_relaxed); // 只有 sleep 算干等 (领养回填是干活)
       day = store.ts_try_open(date_str, worker_id);
     }
     if (!day)
       break;
 
     // Process each asset at this date
-    size_t done_today = 0;
     for (size_t i = 0; i < my_asset_ids.size();) {
       const size_t asset_id = my_asset_ids[i];
       // 处置权已转走 (或 claim 输给领养方的回填): 移除, 计数由新 owner 负责
@@ -327,9 +328,7 @@ void sequential_worker(WorkerCtx ctx) {
       sched.done[asset_id].store(static_cast<int32_t>(date_idx), std::memory_order_release);
       store.ts_close(day);
       ++i;
-      ++done_today;
-      stat.done_today.store(static_cast<uint32_t>(done_today), std::memory_order_relaxed);
-      stat.orders.store(cumulative_orders, std::memory_order_relaxed);
+      stat.work.store(cumulative_orders, std::memory_order_relaxed);
     }
 
     if (date_assets_processed > 0) {

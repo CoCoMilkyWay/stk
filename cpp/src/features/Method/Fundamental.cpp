@@ -9,7 +9,7 @@
 // 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
 #include "features/Method/Fundamental.hpp"
 
-#include "features/Operator/TS/Basic/Fund.hpp" // Fund::Out 输出行布局
+#include "features/Operator/TS/Fund/Fund.hpp" // Fund::Out 输出行布局
 #include "misc/date.hpp"
 #include "misc/parquet.hpp"
 

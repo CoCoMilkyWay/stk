@@ -1,7 +1,6 @@
 #pragma once
 
-#include "FeatureStoreConfig.hpp"
-#include "ZstdHelper.hpp"
+#include "FeatureStoreConfig.hpp" // 含落盘编码选型 FeatureCodec / CODEC_ENABLED
 #include "misc/logging.hpp"
 #include <algorithm>
 #include <atomic>
@@ -430,14 +429,14 @@ private:
       assert(file.is_open());
       file.write(reinterpret_cast<const char *>(header), sizeof(header));
 
-      if constexpr (ZstdHelper::COMPRESSION_LEVEL == 0) {
-        // 无压缩: 张量直写, 不过中转缓冲
+      if constexpr (!CODEC_ENABLED) {
+        // 无编码: 张量直写, 不过中转缓冲
         file.write(reinterpret_cast<const char *>(raw_data), raw_size);
       } else {
-        const size_t compressed_bound = ZstdHelper::compress_bound(raw_size);
-        io_buf_.resize(compressed_bound); // 复用容量, 稳态零分配
-        const size_t compressed_size = ZstdHelper::compress_to_buffer(raw_data, raw_size, io_buf_.data(), compressed_bound);
-        file.write(reinterpret_cast<const char *>(io_buf_.data()), compressed_size);
+        const size_t cap = FeatureCodec::bound(raw_size);
+        io_buf_.resize(cap); // 复用容量, 稳态零分配
+        const size_t payload = FeatureCodec::encode(raw_data, raw_size, io_buf_.data(), cap);
+        file.write(reinterpret_cast<const char *>(io_buf_.data()), payload);
       }
       assert(file.good());
     }
@@ -465,9 +464,14 @@ private:
         for (size_t f = 0; f < L.width; ++f) {
           for (size_t t = 0; t < L.rows; ++t)
             std::memcpy(&io_column_[t * A], &slot->data[lvl][(t * L.width + f) * A], A * sizeof(feature_storage_t));
+          if (L.xor_delta)
+            xor_delta_encode(io_column_.data(), L.rows, A);
           write_file_with_header(feature_column_file(out_dir, lvl, f), L.rows, 1, A, L.fingerprint, io_column_.data(), io_column_.size() * sizeof(feature_storage_t));
         }
       } else {
+        // 整层文件就地差分: slot 落盘后随即 reset (memset), 破坏张量无妨
+        if (L.xor_delta)
+          xor_delta_encode(slot->data[lvl], L.rows, L.width * A);
         write_file_with_header(feature_file(out_dir, lvl), L.rows, L.width, A, L.fingerprint, slot->data[lvl], level_bytes(lvl, A));
       }
     }
@@ -499,7 +503,7 @@ namespace fstore {
 // 唯一真正需要逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
 template <size_t LVL>
 struct RowWriter;
-#define STORE_ROW_WRITER(name, num, fields, rows, psd, columnar)                                                             \
+#define STORE_ROW_WRITER(name, num, fields, rows, psd, columnar, xor_delta)                                                  \
   template <>                                                                                                                \
   struct RowWriter<num> {                                                                                                    \
     template <class DAG>                                                                                                     \

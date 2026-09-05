@@ -16,7 +16,8 @@ void prefetch_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  ComputeStats &stats = ctx.stats; // 单写者: 渲染线程只读
+  // 本核发布槽 (单写者): work = 累计读入字节, idle_ms = 累计门控干等毫秒
+  ComputeStats::Core &stat = ctx.stats.prefetch;
 
   TraceNS("PrefetchWorker", 5);
   TraceValue(worker_id);
@@ -51,6 +52,7 @@ void prefetch_worker(WorkerCtx ctx) {
         if (cancel_requested.load(std::memory_order_relaxed))
           break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        stat.idle_ms.fetch_add(10, std::memory_order_relaxed);
       }
       if (cancel_requested.load(std::memory_order_relaxed))
         break;
@@ -77,12 +79,12 @@ void prefetch_worker(WorkerCtx ctx) {
         while ((n = std::fread(scratch.data(), 1, scratch.size(), f)) > 0)
           cumulative_bytes += n;
         std::fclose(f);
-        stats.prefetch_bytes.store(cumulative_bytes, std::memory_order_relaxed);
+        stat.work.store(cumulative_bytes, std::memory_order_relaxed);
       }
     }
 
     completed_dates = date_idx + 1;
-    stats.prefetch_days.store(completed_dates, std::memory_order_relaxed);
+    ctx.stats.prefetch_days.store(completed_dates, std::memory_order_relaxed);
 
     TraceFrame;
   }

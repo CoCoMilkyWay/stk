@@ -440,7 +440,7 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
   if (block.dates.empty())
     return;
 
-  // 选列: 特征列 [+ 有效标志列] (按该列 valid_type 选 _depth_valid / _data_valid)
+  // 选列: 特征列 [+ _meta 门控列] (按该列 valid_type 测 data/depth 位, 编码见 Meta.hpp)
   assert(level >= 0 && level < (int)LEVEL_COUNT);
   const auto &meta = data.feature.metadata.features[level];
   assert(feature_idx >= 0 && feature_idx < (int)meta.size());
@@ -449,11 +449,10 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
   const auto &L = LEVELS[level];
   std::vector<size_t> columns = {static_cast<size_t>(feature_idx)};
   if (valid_type != L2::ValidType::ALL) {
-    const char *flag = valid_type == L2::ValidType::DEPTH ? "_depth_valid" : "_data_valid";
     size_t i = 0;
-    while (i < L.field_count && std::strcmp(L.fields[i].code, flag) != 0)
+    while (i < L.field_count && std::strcmp(L.fields[i].code, "_meta") != 0)
       ++i;
-    assert(i < L.field_count && "valid flag column missing in this level");
+    assert(i < L.field_count && "_meta 门控列 missing in this level");
     columns.push_back(i);
   }
   const bool has_valid = columns.size() == 2;
@@ -491,7 +490,7 @@ void TransformService::load_block(SharedData &data, int level, int feature_idx, 
           float val = static_cast<float>(day_columns_.get(t, 0, a));
           cache.raw[a][t_base + t] = val;
 
-          if (!has_valid || static_cast<float>(day_columns_.get(t, 1, a)) > 0.5f) {
+          if (!has_valid || fmeta::valid(static_cast<float>(day_columns_.get(t, 1, a)), valid_type)) {
             cache.sparse[a].push(val, t_base + t);
           }
         }

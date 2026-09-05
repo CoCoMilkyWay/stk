@@ -1,7 +1,6 @@
 #pragma once
 
-#include "FeatureStoreConfig.hpp"
-#include "ZstdHelper.hpp"
+#include "FeatureStoreConfig.hpp" // 含落盘编码选型 FeatureCodec / CODEC_ENABLED
 #include "misc/profiler.hpp"
 #include "shared/AssetAxis.hpp"
 #include <algorithm>
@@ -17,14 +16,16 @@
 // FEATURE READER - Hybrid Compressed Format
 // ============================================================================
 // Storage format (header = 5 × size_t: T, F, A, axis_hash, table_fingerprint), 每层按 LEVELS[lvl].columnar:
-//   逐列 (L0/L1):     features_<LVL>_f{idx}.zst [Header: T,1,A,h][Zstd column]  (Dist 按列选读)
-//   整层 (DEPTH):     features_<LVL>.zst        [Header: T,F,A,h][Zstd merged]
+//   逐列 (L0/L1):     features_<LVL>_f{idx}.zst [Header: T,1,A,h][FeatureCodec column]  (Dist 按列选读)
+//   整层 (DEPTH):     features_<LVL>.zst        [Header: T,F,A,h][FeatureCodec merged]
+// 载荷 = FeatureCodec (SparseCodec / ZstdCodec, 选型见 FeatureStoreConfig.hpp);
+// xor_delta 层解码后再前缀 XOR 还原.
 //
 // 形状是编译期常量: 写端永远写满 (LEVELS[lvl].rows / width), 文件头的 T/F 只做
 // 校验, 不做"实际维度" —— 消费端时间轴一律 level_valid_rows(lvl).
 // axis_hash = AssetAxis::hash_at(A_file): 列 → 资产的映射不在文件里, 靠 A 轴顺序.
 //   轴 append-only, 前缀指纹永久有效 → 旧文件 (A_file < 当前 A) 照样可读:
-//   逐行展宽, 新增资产列清零 (_data_valid = 0, 消费端天然视为无效).
+//   逐行展宽, 新增资产列清零 (_meta = 0, 消费端天然视为无效).
 // table_fingerprint = 写入时字段表指纹 (LEVELS[lvl].fingerprint):
 //   字段表改了旧文件立刻断言失败, 不会静默错位.
 //
@@ -38,7 +39,7 @@ class FeatureRead {
 public:
   // 复用缓冲 (稳态零分配), 每个张量结构自带一份
   struct Scratch {
-    std::vector<uint8_t> zbuf;             // 压缩载荷 (仅 COMPRESSION_LEVEL > 0 时用)
+    std::vector<uint8_t> zbuf;             // 编码载荷 (仅 CODEC_ENABLED 时用)
     std::vector<feature_storage_t> narrow; // 旧文件 (A_file < A) 的展宽中转
     std::vector<feature_storage_t> tile;   // 逐列交织 / 整层抽列中转
   };
@@ -92,24 +93,31 @@ private:
       landing = s.narrow.data();
     }
 
-    if constexpr (ZstdHelper::COMPRESSION_LEVEL == 0) {
-      TraceN("ReadRaw"); // 无压缩: 载荷直读进落点, 无中转
+    if constexpr (!CODEC_ENABLED) {
+      TraceN("ReadRaw"); // 无编码: 载荷直读进落点, 无中转
       assert(payload_size == raw_size && "payload size mismatch");
       file.read(reinterpret_cast<char *>(landing), payload_size);
       assert(file.gcount() == static_cast<std::streamsize>(payload_size));
     } else {
       {
-        TraceN("ReadCompressed");
+        TraceN("ReadPayload");
         s.zbuf.resize(payload_size);
         file.read(reinterpret_cast<char *>(s.zbuf.data()), payload_size);
         assert(file.gcount() == static_cast<std::streamsize>(payload_size));
       }
-      TraceN("Decompress");
-      ZstdHelper::decompress(s.zbuf.data(), payload_size, landing, raw_size);
+      TraceN("CodecDecode");
+      FeatureCodec::decode(s.zbuf.data(), payload_size, landing, raw_size);
+    }
+
+    // T 轴 XOR 差分还原 (写端 disk_write 对 xor_delta 层压缩前编码); 必须在
+    // 展宽前做 —— 差分行宽是写入时的 F×A_file
+    if (LEVELS[lvl].xor_delta) {
+      TraceN("XorDeltaDecode");
+      xor_delta_decode(landing, T, F * A_file);
     }
 
     if (A_file < A) {
-      TraceN("WidenAxis"); // 旧文件展宽: 新增资产列清零 (_data_valid = 0 → 无效)
+      TraceN("WidenAxis"); // 旧文件展宽: 新增资产列清零 (_meta = 0 → 无效)
       for (size_t r = 0; r < rows; ++r) {
         std::memcpy(dst + r * A, s.narrow.data() + r * A_file, A_file * sizeof(feature_storage_t));
         std::memset(dst + r * A + A_file, 0, (A - A_file) * sizeof(feature_storage_t));

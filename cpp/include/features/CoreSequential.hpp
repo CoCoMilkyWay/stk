@@ -44,6 +44,7 @@ public:
   // 本类的全部写回都是纯指针算术 —— 热路径不再携带 date / worker_id.
   void begin_day(const std::string &date_str, const GlobalFeatureStore::Day &day) {
     day_ = day;
+    meta_.reset();
     dag_.at_day_start(date_str);
   }
 
@@ -95,18 +96,12 @@ private:
     if (lob.depth_updated) {
       dag_.run<Trigger::onDepth>();
 
-      // 标签: 共享快照, 然后 L1 分钟锚定回填 (组 h 占 GROUP_SIZE 个连续列) + L0 秒级回填 (long only)
+      // 标签: 共享快照, 然后 L1 分钟锚定回填 (组 h 占 GROUP_SIZE 个连续列)
       dag_.LabelReturn.snapshot(t);
       dag_.LabelReturn.minute_anchored(t, [&](size_t h, size_t label_l1, const float *values) {
         const size_t f = kL1LabelBase + h * LabelReturn::GROUP_SIZE;
         fstore::ts_write_range<1>(day_, label_l1, f, f + LabelReturn::GROUP_SIZE - 1, asset_id_, values);
       });
-      size_t label_l0;
-      float label_v;
-      if (dag_.LabelReturn.second(t, label_l0, label_v))
-        fstore::ts_write<0>(day_, label_l0, kL0LabelBase, asset_id_, label_v);
-
-      fstore::ts_write<0>(day_, t, L0_Field::_depth_valid, asset_id_, 1.0f);
 
       // DEPTH 快照 (GUI, 分钟频: 同分钟覆盖, 终值 = 分钟末盘口); 布局 = DEPTH_FIELDS 行序 (见 Meta.hpp)
       constexpr size_t N = L2::LOB_DEPTH;
@@ -118,13 +113,15 @@ private:
         depth_row_[3 * N + i] = dag_.DepthData.ask_qty[i].back() * VOLUME_TO_LOT;
       }
       depth_row_[4 * N] = dag_.MidPrice.last();
-      depth_row_[4 * N + 1] = 1.0f; // _depth_valid
-      fstore::ts_write_range<2>(day_, L0_to_L1(t), DEPTH_Field::_bid_price, DEPTH_Field::_depth_valid, asset_id_, depth_row_.data());
+      fstore::ts_write_range<2>(day_, L0_to_L1(t), DEPTH_Field::_bid_price, DEPTH_Field::_mid_price, asset_id_, depth_row_.data());
     }
 
     fstore::ts_write_row<0>(day_, t, asset_id_, dag_);
-    fstore::ts_write<0>(day_, t, L0_Field::_data_valid, asset_id_, 1.0f);
-    fstore::ts_write<2>(day_, L0_to_L1(t), DEPTH_Field::_data_valid, asset_id_, 1.0f);
+
+    // _meta (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒/分钟内累积值
+    meta_.on_tick(t, lob.depth_updated, dag_.MicroPrice.last(), dag_.DepthData.bid_price[0].back(), dag_.DepthData.ask_price[0].back(), lob.price);
+    fstore::ts_write<0>(day_, t, L0_Field::_meta, asset_id_, meta_.l0());
+    fstore::ts_write<2>(day_, L0_to_L1(t), DEPTH_Field::_meta, asset_id_, meta_.depth());
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----
@@ -140,13 +137,11 @@ private:
       dag_.run<Trigger::onMinute>();
       fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
     }
-    fstore::ts_write<1>(day_, t, L1_Field::_data_valid, asset_id_, valid ? 1.0f : 0.0f);
+    fstore::ts_write<1>(day_, t, L1_Field::_meta, asset_id_, meta_.l1(valid));
   }
 
   // 标签列定位: 按类型 (LB) 在字段表里找, 不依赖列名; 列数 / 连续性与 LabelReturn 配置对账
-  static constexpr size_t kL0LabelBase = first_of_kind(L0_FIELD_INFO, FeatureDataType::LB);
   static constexpr size_t kL1LabelBase = first_of_kind(L1_FIELD_INFO, FeatureDataType::LB);
-  static_assert(count_of_kind(L0_FIELD_INFO, FeatureDataType::LB) == 1, "L0 has exactly one label column");
   static_assert(count_of_kind(L1_FIELD_INFO, FeatureDataType::LB) == LabelReturn::L1_LABEL_COUNT && kind_contiguous(L1_FIELD_INFO, FeatureDataType::LB),
                 "L1 label columns must be HOLD_COUNT × GROUP_SIZE contiguous");
 
@@ -159,7 +154,9 @@ private:
   DAG dag_;
   ResamplerTick2Min tick2min_;
 
-  // DEPTH 快照行缓冲: 4 × N 档 + mid + _depth_valid (= DEPTH_TOTAL_WIDTH - _data_valid)
+  MetaTracker meta_; // _meta 基建列状态机 (编码/累积语义见 Meta.hpp; begin_day 重置)
+
+  // DEPTH 快照行缓冲: 4 × N 档 + mid (= DEPTH_TOTAL_WIDTH - _meta)
   std::array<float, DEPTH_TOTAL_WIDTH - 1> depth_row_;
-  static_assert(DEPTH_Field::_data_valid == DEPTH_FIELD_COUNT - 1 && DEPTH_FIELD_OFFSETS[DEPTH_Field::_depth_valid] == 4 * L2::LOB_DEPTH + 1, "DEPTH row layout");
+  static_assert(DEPTH_Field::_meta == DEPTH_FIELD_COUNT - 1 && DEPTH_FIELD_OFFSETS[DEPTH_Field::_mid_price] == 4 * L2::LOB_DEPTH, "DEPTH row layout");
 };

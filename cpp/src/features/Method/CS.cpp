@@ -12,7 +12,7 @@
 //   均值填充:        NaN → finite 均值; 全缺失 → 全 0
 //
 // 与 qmt 的唯一口径差: 参与集. qmt 用在市全集 (mask_offmarket), 本项目热路径
-//   上游已按 _data_valid 收成 dense 活跃子集 (停牌/退市自然缺席), 无需再 mask.
+//   上游已按 _meta 收成 dense 活跃子集 (停牌/退市自然缺席), 无需再 mask.
 //
 // 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
 #include "features/Method/CS.hpp"

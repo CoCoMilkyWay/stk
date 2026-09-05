@@ -55,7 +55,8 @@ stk/
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), DEPTH 第三层, width/valid/psd 全推导
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
 │   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
-│   │   │       └── ZstdHelper.hpp                       # 🧮 Zstd压缩工具
+│   │   │       ├── SparseCodec.hpp                      # 🧮 落盘编码之一: 位图+非零字面 (手搓, 内存带宽级, 默认)
+│   │   │       └── ZstdCodec.hpp                        # 🧮 落盘编码之二: zstd 熵压缩 (压得狠但单核慢; 同 API, 选型在 FeatureStoreConfig)
 │   │   ├── worker/                                      # ⚡ 多线程工作流编排
 │   │   │   ├── encoding_worker.hpp                      # ⚡ 编码工作器
 │   │   │   └── feature_workers.hpp                      # ⚡ 特征计算四角色 (预取/时序/截面/落盘): 统一签名 WorkerCtx + TS 调度面 TsSchedule

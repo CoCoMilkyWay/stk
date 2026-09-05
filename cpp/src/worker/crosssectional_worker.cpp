@@ -15,7 +15,9 @@ void crosssectional_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 进度不需本 worker 发布: 天数前沿 = store.query_cs_days_done(), 渲染线程自取
+  // 本核发布槽 (单写者): work = 累计已扫秒格, idle_ms = 累计干等毫秒;
+  // 天数前沿 = store.query_cs_days_done(), 渲染线程自取
+  ComputeStats::Core &stat = ctx.stats.cs;
 
   TraceNS("CSWorker", 5);
   TraceValue(worker_id);
@@ -23,6 +25,7 @@ void crosssectional_worker(WorkerCtx ctx) {
 
   const size_t total_dates = data.asset.all_dates.size();
   size_t completed_dates = 0;
+  size_t timeslots_done = 0;
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to process");
 
@@ -52,6 +55,7 @@ void crosssectional_worker(WorkerCtx ctx) {
           return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        stat.idle_ms.fetch_add(1, std::memory_order_relaxed);
       }
     }
     core.set_day(day);
@@ -62,6 +66,7 @@ void crosssectional_worker(WorkerCtx ctx) {
       TraceN("TimeslotLoop");
       TraceValue(t);
       core.compute_and_store(t);
+      stat.work.store(++timeslots_done, std::memory_order_relaxed); // 秒格计数 (带宽标定用)
     }
 
     ++completed_dates;

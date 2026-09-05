@@ -17,7 +17,7 @@
 // =============================================================================
 
 #include "features/DataDefine.hpp"
-#include "features/Operator/TS/Basic/Fund.hpp" // Fund::Out 口下标
+#include "features/Operator/TS/Fund/Fund.hpp" // Fund::Out 口下标
 
 #include <limits>
 

@@ -53,21 +53,20 @@ void DistService::RequestCompute(SharedData &data) {
   Request req;
   req.columns = {static_cast<size_t>(sel.primary_feature_idx)};
 
-  // valid 列: 按特征元数据的 valid_type 解析
+  // valid 列: 按特征元数据的 valid_type 决定是否带 _meta 列 (编码见 Meta.hpp; L1 只有 DATA 门控)
   const auto &meta_list = data.feature.metadata.features[sel.selected_level];
   assert(static_cast<size_t>(sel.primary_feature_idx) < meta_list.size());
   const L2::ValidType valid_type = meta_list[sel.primary_feature_idx].valid_type;
   if (valid_type != L2::ValidType::ALL) {
-    const char *flag_name = (valid_type == L2::ValidType::DEPTH) ? "_depth_valid" : "_data_valid";
     bool found = false;
     for (size_t i = 0; i < meta_list.size(); ++i) {
-      if (std::strcmp(meta_list[i].code, flag_name) == 0) {
+      if (std::strcmp(meta_list[i].code, "_meta") == 0) {
         req.columns.push_back(i);
         found = true;
         break;
       }
     }
-    assert(found && "valid_type 要求 valid 标记列, 但字段表里找不到");
+    assert(found && "valid_type 要求 _meta 门控列, 但字段表里找不到");
   }
 
   req.months = dist_enumerate_months(data.config.start_date, data.config.end_date);

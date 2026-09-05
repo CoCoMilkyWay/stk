@@ -9,7 +9,7 @@
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node). 一份深度快照环 (各金额档 VWAP 预计算) 供两条路径共用:
 //   snapshot(t)                 每次 onDepth 先调: 存当前盘口的吃单 VWAP
-//   second(t, l0, v)            L0 秒级: LABEL_L0_HOLD 分钟 × LABEL_L0_AMT 万, 只落 long, 回填 l0 行
+//   second(t, l0, v)            L0 秒级 (当前停用, 见文件末): LABEL_L0_HOLD 分钟 × LABEL_L0_AMT 万, 只落 long
 //   minute_anchored(t, writer)  L1 分钟锚定惰性回填: writer(h, l1, values[GROUP_SIZE])
 // 配置 (LABEL_HOLDS / LABEL_AMTS / LABEL_L0_*) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
@@ -225,5 +225,6 @@ private:
 #define LABEL_ROW_SHORT(a, h, X, CAT1) LABEL_ROW(X, CAT1, short, "Short", "做空", R"(\frac{P_{entry}^{sell}-P_{exit}^{buy}}{P_{entry}^{sell}})", h, a)
 #define LABEL_GROUP(h, X, CAT1) LABEL_AMTS(LABEL_ROW_LONG, h, X, CAT1) LABEL_AMTS(LABEL_ROW_SHORT, h, X, CAT1)
 
-#define FIELDS_L0_LabelReturn(X, CAT1) LABEL_ROW_LONG(LABEL_L0_AMT, LABEL_L0_HOLD, X, CAT1)
+// L0 秒级标签已停用 (L0 只落 _meta 一列, 秒频张量成本太高); 恢复 = 取消注释 + CoreSequential 加回 second() 回填
+// #define FIELDS_L0_LabelReturn(X, CAT1) LABEL_ROW_LONG(LABEL_L0_AMT, LABEL_L0_HOLD, X, CAT1)
 #define FIELDS_L1_LabelReturn(X, CAT1) LABEL_HOLDS(LABEL_GROUP, X, CAT1)

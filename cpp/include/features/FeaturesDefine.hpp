@@ -66,7 +66,7 @@
 //       OP(Node) / OP(Node, port)  节点输出口. TS; 宽 1; 层必须 == 节点 flush 域; 有效性: flush 域 onDepth → DEPTH, 其余 → DATA
 //       CS(lvl, src, Tf, Method)   截面: 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 宽 1; DATA
 //       LABEL                      标签回填 (CoreSequential 手工写). LB; 宽 1; DATA
-//       FLAG                       有效标志列 _data_valid / _depth_valid (CoreSequential 手工写). META; 宽 1; ALL
+//       FLAG                       基建标志列 _meta (CoreSequential 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; 宽 1; ALL
 //       META(width)                其他基建手写列 (盘口快照, 宽 width). META; DEPTH
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG/META → Operator/TS/Meta/Meta.hpp,
 //     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
@@ -211,13 +211,16 @@ constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDep
 #define SRC_DISPATCH_II(prefix, code, kind, ...) prefix##_##kind(code __VA_OPT__(, ) __VA_ARGS__)
 
 // ----------------------------------------------------------------------------
-// 落盘层注册: X(name, index, fields_macro, rows, psd, columnar)
+// 落盘层注册: X(name, index, fields_macro, rows, psd, columnar, xor_delta)
 //   L0    秒频 (T = L0_ROWS), 逐列落盘 (Dist/overlay 按列选读)
 //   L1    分钟频 (T = L1_ROWS), 逐列落盘 (Dist 全区间选列流式读)
 //   DEPTH 分钟频盘口快照 (与 L1 同 T, 分钟内多次更新覆盖同一行), 整层一个文件; GUI OrderFlow 用
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
+//   xor_delta = 落盘前沿 T 轴 XOR 差分 (无损, 见 FeatureStoreConfig.hpp):
+//     分钟频稠密层相邻行几乎相同, 差分后零字 ~60%, 喂给 SparseCodec (位图+字面);
+//     L0 事件稀疏本身就是大片零 (~62%), 差分反而打散, 不开
 // ----------------------------------------------------------------------------
-#define ALL_LEVELS(X)                             \
-  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", true) \
-  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", true) \
-  X(DEPTH, 2, DEPTH_FIELDS, L1_ROWS, "00/100/00", false)
+#define ALL_LEVELS(X)                                    \
+  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", true, false) \
+  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", true, true)  \
+  X(DEPTH, 2, DEPTH_FIELDS, L1_ROWS, "00/100/00", false, true)

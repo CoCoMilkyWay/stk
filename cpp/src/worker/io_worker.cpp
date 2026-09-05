@@ -15,7 +15,8 @@ void io_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  ComputeStats &stats = ctx.stats; // 单写者: 渲染线程只读
+  // 本核发布槽 (单写者): work = 已落盘天数, idle_ms = 累计等 CS_DONE 毫秒
+  ComputeStats::Core &stat = ctx.stats.io;
 
   TraceNS("IOWorker", 5);
   TraceValue(worker_id);
@@ -43,7 +44,7 @@ void io_worker(WorkerCtx ctx) {
     if (flushed) {
       flush_count++;
       wait_count = 0;
-      stats.io_days.store(flush_count, std::memory_order_relaxed);
+      stat.work.store(flush_count, std::memory_order_relaxed);
       Logger::log("worker_" + std::to_string(worker_id), "Flushed: " + std::to_string(flush_count) + "/" + std::to_string(total_dates));
 
       TraceFrame;
@@ -65,6 +66,7 @@ void io_worker(WorkerCtx ctx) {
         Logger::log("worker_" + std::to_string(worker_id), "Waiting for tensors (" + std::to_string(wait_count * 10) + "ms)");
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      stat.idle_ms.fetch_add(10, std::memory_order_relaxed);
     }
   }
 

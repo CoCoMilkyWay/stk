@@ -1,5 +1,8 @@
 #pragma once
 
+// 落盘编码两实现 (同 API 对仗), 选型见文件末尾 FeatureCodec
+#include "SparseCodec.hpp"
+#include "ZstdCodec.hpp" // IWYU pragma: keep
 #include "features/FeaturesDefine.hpp"
 #include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: NODES(N) / L0_FIELDS(X) / L1_FIELDS(X) / DEPTH_FIELDS(X)
 #include "features/TimeIndex.hpp"      // ALL_LEVELS 的 rows 参数 (L0_ROWS / L1_ROWS) 在此展开
@@ -90,7 +93,7 @@ constexpr bool kind_contiguous(const FieldInfo (&f)[N], FeatureDataType k) {
   return true;
 }
 
-#define GENERATE_LEVEL_FIELDS(name, num, fields, rows, psd, columnar)                                \
+#define GENERATE_LEVEL_FIELDS(name, num, fields, rows, psd, columnar, xor_delta)                     \
   inline constexpr FieldInfo name##_FIELD_INFO[] = {fields(FIELD_INFO_ONE)};                         \
   constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);                                \
   inline constexpr auto name##_FIELD_OFFSETS = field_offsets(name##_FIELD_INFO);                     \
@@ -111,10 +114,10 @@ ALL_LEVELS(GENERATE_LEVEL_FIELDS)
 #define SRC_LEVEL_META(w) 2
 #define CHECK_FIELD_ONE(code, c1, c2, norm, en, cn, desc, formula, src) \
   static_assert(SRC_LEVEL_##src == kLevel, "field level != source level: " #code);
-#define GENERATE_CHECK_LEVEL(name, num, fields, rows, psd, columnar) \
-  namespace name##_level_check {                                     \
-    constexpr int kLevel = num;                                      \
-    fields(CHECK_FIELD_ONE)                                          \
+#define GENERATE_CHECK_LEVEL(name, num, fields, rows, psd, columnar, xor_delta) \
+  namespace name##_level_check {                                                \
+    constexpr int kLevel = num;                                                 \
+    fields(CHECK_FIELD_ONE)                                                     \
   }
 ALL_LEVELS(GENERATE_CHECK_LEVEL)
 
@@ -139,7 +142,7 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
     h = fnv1a_u64(fnv1a_u64(fnv1a_str(h, f[i].code), f[i].width), static_cast<uint64_t>(f[i].kind));
   return h;
 }
-#define GENERATE_FINGERPRINT(name, num, fields, rows, psd, columnar) \
+#define GENERATE_FINGERPRINT(name, num, fields, rows, psd, columnar, xor_delta) \
   constexpr uint64_t name##_FINGERPRINT = table_fingerprint(name##_FIELD_INFO);
 ALL_LEVELS(GENERATE_FINGERPRINT)
 
@@ -156,12 +159,13 @@ struct LevelInfo {
   uint64_t fingerprint;    // 字段表指纹
   const char *psd;         // 该层特征的推荐频谱 (GUI 元数据)
   bool columnar;           // true: 每列一个文件 (按列选读); false: 整层一个文件
+  bool xor_delta;          // true: 落盘前沿 T 轴 XOR 差分 (无损预变换, 提升 zstd 收益, 见 ALL_LEVELS)
 };
-#define LEVEL_INFO_ONE(name, num, fields, rows, psd, columnar) \
-  {#name, rows, name##_TOTAL_WIDTH, name##_FIELD_COUNT, name##_FIELD_INFO, name##_FIELD_OFFSETS.data(), name##_FINGERPRINT, psd, columnar},
+#define LEVEL_INFO_ONE(name, num, fields, rows, psd, columnar, xor_delta) \
+  {#name, rows, name##_TOTAL_WIDTH, name##_FIELD_COUNT, name##_FIELD_INFO, name##_FIELD_OFFSETS.data(), name##_FINGERPRINT, psd, columnar, xor_delta},
 inline constexpr LevelInfo LEVELS[] = {ALL_LEVELS(LEVEL_INFO_ONE)};
 constexpr size_t LEVEL_COUNT = std::size(LEVELS);
-#define CHECK_LEVEL_INDEX(name, num, fields, rows, psd, columnar) \
+#define CHECK_LEVEL_INDEX(name, num, fields, rows, psd, columnar, xor_delta) \
   static_assert(std::string_view(LEVELS[num].level_name) == #name, "ALL_LEVELS index must equal position");
 ALL_LEVELS(CHECK_LEVEL_INDEX)
 static_assert(LEVELS[2].rows == LEVELS[1].rows, "DEPTH shares the L1 minute axis");
@@ -185,3 +189,33 @@ inline std::string feature_file(const std::string &day_dir, size_t lvl) {
 inline std::string feature_column_file(const std::string &day_dir, size_t lvl, size_t col) {
   return day_dir + "/features_" + LEVELS[lvl].level_name + "_f" + std::to_string(col) + ".zst";
 }
+
+// ============================================================================
+// T 轴 XOR 差分 (LEVELS[lvl].xor_delta 层的落盘预变换, 无损, 就地)
+//   编码 (写端, 压缩前): row[t] ^= row[t-1], t 从高往低; row = 文件内一个时间行
+//   (整层文件 F_total×A, 逐列文件 1×A). 解码 (读端, 解压后): 前缀 XOR, t 从低往高.
+//   fp16 按位当 uint16 处理, 往返恒等 (含 NaN/Inf 位型).
+// ============================================================================
+static_assert(sizeof(feature_storage_t) == sizeof(uint16_t));
+inline void xor_delta_encode(feature_storage_t *data, size_t T, size_t row_elems) {
+  auto *u = reinterpret_cast<uint16_t *>(data);
+  for (size_t t = T - 1; t >= 1; --t)
+    for (size_t i = 0; i < row_elems; ++i)
+      u[t * row_elems + i] ^= u[(t - 1) * row_elems + i];
+}
+inline void xor_delta_decode(feature_storage_t *data, size_t T, size_t row_elems) {
+  auto *u = reinterpret_cast<uint16_t *>(data);
+  for (size_t t = 1; t < T; ++t)
+    for (size_t i = 0; i < row_elems; ++i)
+      u[t * row_elems + i] ^= u[(t - 1) * row_elems + i];
+}
+
+// ============================================================================
+// 落盘编码选型: 两种实现同一 API (bound / encode / decode), 载荷不落自述信息,
+// 读端按此别名解码 —— 换选型 = 换别名 + 重算特征库 (解码断言会拦住旧文件)
+//   SparseCodec  位图+非零字面: 全天 ~45%, 内存带宽级, IO 单核无压力 (默认)
+//   ZstdCodec    zstd 熵压缩:   全天 ~29%, 单核 ~185 MB/s 顶不住落盘节奏
+//   CODEC_ENABLED = false: 裸写直读 (写读两端 if constexpr 免掉中转拷贝)
+// ============================================================================
+using FeatureCodec = SparseCodec;
+inline constexpr bool CODEC_ENABLED = true;

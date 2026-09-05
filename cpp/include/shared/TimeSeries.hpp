@@ -199,6 +199,7 @@ struct TimeSeries {
     int level = 0;
     size_t F_selected = 0;
     bool has_valid_flag = false;
+    L2::ValidType valid_type = L2::ValidType::ALL; // 主特征的门控语义 (_meta 位选择, 见 Meta.hpp)
 
     size_t total_days() const { return day_ranges.size(); }
 
@@ -211,6 +212,7 @@ struct TimeSeries {
       level = 0;
       F_selected = 0;
       has_valid_flag = false;
+      valid_type = L2::ValidType::ALL;
     }
   };
 

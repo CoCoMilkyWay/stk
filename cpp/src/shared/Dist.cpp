@@ -374,7 +374,8 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
                 const feature_storage_t *val = sh.staging.data.data() + (t * n_cols) * A;
                 const feature_storage_t *valid = val + A; // valid 列紧随其后 (has_valid 才读)
                 for (size_t a = a0; a < a1; ++a) {
-                  const bool ok = !has_valid || static_cast<float>(valid[a]) > 0.5f;
+                  // Dist 只跑 L1 → 门控只有 DATA 语义 (_meta 非 0; 编码见 Meta.hpp)
+                  const bool ok = !has_valid || fmeta::data_valid(static_cast<float>(valid[a]));
                   const feature_storage_t raw = val[a];
                   const bool is_nan = ok && !(raw == raw);
                   sh.nan_seen += is_nan;

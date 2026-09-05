@@ -85,6 +85,6 @@ private:
   X(profit_st, CAT1, RAW, NONE, "Profit ST Warning", "预亏预警", "年报预亏状态机(首亏/续亏∧上年归母净利<0)", R"(\mathbf{1}_{\mathrm{profit\_st}})", OP(Fund, profit_st))                          \
   X(revenue_st, CAT1, RAW, NONE, "Revenue ST Warning", "营收预警", "主板营收退市预警(预亏∧营收TTM<年度阈值)", R"(\mathbf{1}_{\mathrm{revenue\_st}})", OP(Fund, revenue_st))                       \
   X(dividend_st, CAT1, RAW, NONE, "Dividend ST Warning", "分红预警", "主板分红不足预警(3年累计分红双阈值)", R"(\mathbf{1}_{\mathrm{dividend\_st}})", OP(Fund, dividend_st))                       \
-  X(trading_st, CAT1, RAW, NONE, "Trading ST Warning", "交易类退市预警", "连续15日(日频低价∨低市值)", R"(\mathbf{1}_{\mathrm{trading\_st}})", OP(Fund, trading_st))                               \
+  X(trading_st, CAT1, RAW, NONE, "Trading ST Warning", "交易预警", "连续15日(日频低价∨低市值)", R"(\mathbf{1}_{\mathrm{trading\_st}})", OP(Fund, trading_st))                                     \
   X(risk_warn, CAT1, RAW, NONE, "Risk Warning", "风险预警", "0=正常/1=ST/2=*ST/3=退市整理期", R"(\mathrm{st}_{D} \in \{0,1,2,3\})", OP(Fund, risk_warn))                                          \
   X(new_list, CAT1, RAW, NONE, "New Listing", "次新股", "上市龄 < 60 日历日", R"(\mathbf{1}[0 \leq D - D_{list} < 60])", OP(Fund, new_list))
