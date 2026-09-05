@@ -1,17 +1,14 @@
 #pragma once
-// 元数据列: 基建标志 _meta (FLAG) / 盘口快照 (META(w)), 由 CoreSequential 手工写.
-// 无算子 (不进 DAG: L1 行落不落还取决于分钟有效性, DEPTH 层无行写回器), 但全部逻辑收在本文件:
+// 元数据列: 基建标志 _meta (FLAG), 由 CoreSequential 手工写.
+// 无算子 (不进 DAG: L1 行落不落还取决于分钟有效性), 但全部逻辑收在本文件:
 //   fmeta        _meta 编码/解码唯一事实源 (写入端 pack, 消费端 data_valid/depth_valid/price/valid)
 //   MetaTracker  秒内/分钟内 depth OR + micro price 状态机 (CoreSequential 每笔喂一次)
 //
 //   _meta 单槽三态编码: 0 = 该行无事件; 非 0 = 有事件写入 (data 有效); 负 = 盘口有更新 (depth 有效)
-//   幅值: L0 = 当时 micro price (量加权中间价, 元; 开盘竞价盘口未发布时退化为最近事件价); L1/DEPTH = 1 (纯标志)
+//   幅值: L0 = 当时 micro price (量加权中间价, 元; 开盘竞价盘口未发布时退化为最近事件价); L1 = 1 (纯标志)
 //   依据: 盘口更新必来自事件 → depth ⟹ data, 三态刚好用 零/符号 编进一个 Float16 槽, 价格精度无损
-//
-//   DEPTH 行 = [bid_price[N], ask_price[N], bid_volume[N], ask_volume[N], mid_price] 一次 ts_write_range 写入,
-//   顺序必须与 CoreSequential::run_tick 的快照缓冲一致; _meta 单独每笔覆盖写 (行终值 = 累积值).
 
-#include "codec/L2_DataType.hpp"  // L2::ValidType (fmeta::valid) / L2::LOB_DEPTH (DEPTH 字段表)
+#include "codec/L2_DataType.hpp"  // L2::ValidType (fmeta::valid)
 #include "features/TimeIndex.hpp" // L0_to_L1
 #include <cassert>
 #include <cstddef>
@@ -27,7 +24,7 @@ inline constexpr bool valid(float v, L2::ValidType vt) {
 }
 } // namespace fmeta
 
-// _meta 状态机: 同秒 (L0 行) / 同分钟 (DEPTH 行) 多笔的 depth 位 OR 累积 + micro price 维护.
+// _meta 状态机: 同秒 (L0 行) / 同分钟 (L1 行) 多笔的 depth 位 OR 累积 + micro price 维护.
 // 逐笔覆盖写同一槽位, 最后一笔的累积值 = 该行终值 (免读改写). 分钟翻转与 ResamplerTick2Min
 // 由同一笔 tick 驱动 (同一个 L0_to_L1(l0_index)), 所以 run_minute 时 prev = 刚完结的分钟.
 class MetaTracker {
@@ -61,7 +58,6 @@ public:
   }
 
   float l0() const { return fmeta::pack(sec_depth_, price_); }                                           // L0 行 (当前秒)
-  float depth() const { return fmeta::pack(min_depth_, 1.0f); }                                          // DEPTH 行 (当前分钟)
   float l1(bool minute_valid) const { return minute_valid ? fmeta::pack(prev_min_depth_, 1.0f) : 0.0f; } // L1 行 (刚完结分钟)
 
   void reset() {
@@ -83,11 +79,3 @@ private:
 
 #define FIELDS_L1_Meta(X, CAT1) \
   X(_meta, CAT1, RAW, NONE, "Meta Flags", "元数据", "0=无效分钟; ±1, 负=该分钟盘口有更新", R"(\pm\mathbf{1}_{\mathrm{data}})", FLAG)
-
-#define FIELDS_DEPTH_Meta(X, CAT1)                                                                                         \
-  X(_bid_price, CAT1, RAW, NONE, "Bid Prices", "买盘价格", "N档买盘价格(元)", R"(P^{M,B}_{1:N})", META(L2::LOB_DEPTH))     \
-  X(_ask_price, CAT1, RAW, NONE, "Ask Prices", "卖盘价格", "N档卖盘价格(元)", R"(P^{M,A}_{1:N})", META(L2::LOB_DEPTH))     \
-  X(_bid_volume, CAT1, RAW, NONE, "Bid Volumes", "买盘量", "N档买盘量(手)", R"(V^{M,B}_{1:N})", META(L2::LOB_DEPTH))       \
-  X(_ask_volume, CAT1, RAW, NONE, "Ask Volumes", "卖盘量", "N档卖盘量(手)", R"(V^{M,A}_{1:N})", META(L2::LOB_DEPTH))       \
-  X(_mid_price, CAT1, RAW, NONE, "Mid Price", "中间价", "分钟末中间价(元)", R"(\frac{P^{M,B}_1 + P^{M,A}_1}{2})", META(1)) \
-  X(_meta, CAT1, RAW, NONE, "Meta Flags", "元数据", "0=无事件分钟; ±1, 负=该分钟盘口有更新", R"(\pm\mathbf{1}_{\mathrm{data}})", FLAG)

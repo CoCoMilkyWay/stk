@@ -4,7 +4,7 @@
 #include "SparseCodec.hpp"
 #include "ZstdCodec.hpp" // IWYU pragma: keep
 #include "features/FeaturesDefine.hpp"
-#include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: NODES(N) / L0_FIELDS(X) / L1_FIELDS(X) / DEPTH_FIELDS(X)
+#include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: NODES(N) / L0_FIELDS(X) / L1_FIELDS(X)
 #include "features/TimeIndex.hpp"      // ALL_LEVELS 的 rows 参数 (L0_ROWS / L1_ROWS) 在此展开
 #include <array>
 #include <cstddef>
@@ -16,7 +16,7 @@
 // ============================================================================
 // FEATURE STORE CONFIGURATION — 全部由字段表 (FIELDS_*, CMake 汇总) + ALL_LEVELS 编译期展开
 // ============================================================================
-//   布局: 每层平铺 [T][F_total][A], data[(t * F_total + offset) * A + a], 变宽字段 (1 或 LOB_DEPTH)
+//   布局: 每层平铺 [T][F_total][A], data[(t * F_total + offset) * A + a]
 //   每层 <LVL> ∈ ALL_LEVELS 生成:
 //     <LVL>_FIELD_INFO[]     每列 {code, width, valid, kind} (宽 / 有效性 / 类型均由 SRC 列推出)
 //     <LVL>_FIELD_OFFSETS[]  列下标 → 行内偏移
@@ -109,13 +109,12 @@ ALL_LEVELS(GENERATE_LEVEL_FIELDS)
 // ============================================================================
 struct FieldSource {
   const char *code;   // 字段 code
-  const char *source; // 节点名 (OP) / 源字段 code (CS) / 空 (LABEL/FLAG/META)
+  const char *source; // 节点名 (OP) / 源字段 code (CS) / 空 (LABEL/FLAG)
 };
 #define SRCSRC_OP(code, node, ...) #node
 #define SRCSRC_CS(code, lvl, src, ...) #src
 #define SRCSRC_LABEL(code) ""
 #define SRCSRC_FLAG(code) ""
-#define SRCSRC_META(code, w) ""
 #define FIELD_SOURCE_ONE(code, c1, c2, norm, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src)},
 #define GENERATE_LEVEL_SOURCES(name, num, fields, rows, psd, columnar, xor_delta) \
   inline constexpr FieldSource name##_FIELD_SOURCE[] = {fields(FIELD_SOURCE_ONE)};
@@ -123,13 +122,12 @@ ALL_LEVELS(GENERATE_LEVEL_SOURCES)
 
 // ============================================================================
 // 编译期一致性检查: 列所在层 == 来源允许的层
-//   OP → 节点 flush 域 (onMinute→L1, 其余→L0); CS/LABEL → L0/L1; META(w) → DEPTH; FLAG 任意
+//   OP → 节点 flush 域 (onMinute→L1, 其余→L0); CS/LABEL → L0/L1; FLAG 任意
 // ============================================================================
 #define SRC_LEVEL_OP(node, ...) level_of(node_flush::node)
-#define SRC_LEVEL_CS(...) (kLevel == 2 ? -1 : kLevel)
-#define SRC_LEVEL_LABEL (kLevel == 2 ? -1 : kLevel)
+#define SRC_LEVEL_CS(...) kLevel
+#define SRC_LEVEL_LABEL kLevel
 #define SRC_LEVEL_FLAG kLevel
-#define SRC_LEVEL_META(w) 2
 #define CHECK_FIELD_ONE(code, c1, c2, norm, en, cn, desc, formula, src) \
   static_assert(SRC_LEVEL_##src == kLevel, "field level != source level: " #code);
 #define GENERATE_CHECK_LEVEL(name, num, fields, rows, psd, columnar, xor_delta) \
@@ -168,7 +166,7 @@ ALL_LEVELS(GENERATE_FINGERPRINT)
 // 层表: LEVELS[lvl] — 运行时按层下标索引的一切
 // ============================================================================
 struct LevelInfo {
-  const char *level_name;  // "L0" / "L1" / "DEPTH": 文件名 features_<name>[_f<i>].zst
+  const char *level_name;  // "L0" / "L1": 文件名 features_<name>[_f<i>].zst
   size_t rows;             // T
   size_t width;            // F_total
   size_t field_count;      // 列数 (≤ width)
@@ -186,13 +184,11 @@ constexpr size_t LEVEL_COUNT = std::size(LEVELS);
 #define CHECK_LEVEL_INDEX(name, num, fields, rows, psd, columnar, xor_delta) \
   static_assert(std::string_view(LEVELS[num].level_name) == #name, "ALL_LEVELS index must equal position");
 ALL_LEVELS(CHECK_LEVEL_INDEX)
-static_assert(LEVELS[2].rows == LEVELS[1].rows, "DEPTH shares the L1 minute axis");
 
 // 有效行数 = 落盘行数 - 1: 末行是哨兵 (label lookahead 的落点, 不是真实时间).
 // rows 用于缓冲区 / stride; 消费端迭代时间轴一律用本函数, 不要用 rows.
 inline constexpr size_t level_valid_rows(size_t lvl) { return LEVELS[lvl].rows - 1; }
-static_assert(level_valid_rows(0) == TRADE_SECONDS_PER_DAY && level_valid_rows(1) == TRADE_MINUTES_PER_DAY &&
-                  level_valid_rows(2) == TRADE_MINUTES_PER_DAY,
+static_assert(level_valid_rows(0) == TRADE_SECONDS_PER_DAY && level_valid_rows(1) == TRADE_MINUTES_PER_DAY,
               "每层落盘 T 必须是 有效行数 + 1 哨兵行");
 
 // 特征文件: <base>/YYYY/MM/DD/features_<LVL>.zst (整层) 或 features_<LVL>_f<i>.zst (逐列)

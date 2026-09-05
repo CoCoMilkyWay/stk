@@ -4,13 +4,12 @@
 #include "features/ComputeGraph.hpp"
 #include "math/sample/ResamplerTick2Min.hpp"
 #include "misc/profiler.hpp"
-#include <array>
 
 // ============================================================================
 // CoreSequential: 单资产时序计算. LOB → L0 (tick, 秒索引) → resample → L1 (minute)
-//   每笔: run_tick()  按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L0 行 + 标签回填 + DEPTH 快照
+//   每笔: run_tick()  按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L0 行 + 标签回填
 //   分钟: run_minute() 调 onMinute 域, 写 L1 行
-//   节点调度全部由 NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL / META 列
+//   节点调度全部由 NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的逐笔流 + 日频 PIT
 //   (fund::Pool), 不读其他资产 / 全局状态 / CS 结果. 张量行 (t, f, a) 因此只由
@@ -102,26 +101,13 @@ private:
         const size_t f = kL1LabelBase + h * LabelReturn::GROUP_SIZE;
         fstore::ts_write_range<1>(day_, label_l1, f, f + LabelReturn::GROUP_SIZE - 1, asset_id_, values);
       });
-
-      // DEPTH 快照 (GUI, 分钟频: 同分钟覆盖, 终值 = 分钟末盘口); 布局 = DEPTH_FIELDS 行序 (见 Meta.hpp)
-      constexpr size_t N = L2::LOB_DEPTH;
-      constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手
-      for (size_t i = 0; i < N; ++i) {
-        depth_row_[i] = dag_.DepthData.bid_price[i].back();
-        depth_row_[N + i] = dag_.DepthData.ask_price[i].back();
-        depth_row_[2 * N + i] = dag_.DepthData.bid_qty[i].back() * VOLUME_TO_LOT;
-        depth_row_[3 * N + i] = dag_.DepthData.ask_qty[i].back() * VOLUME_TO_LOT;
-      }
-      depth_row_[4 * N] = dag_.MidPrice.last();
-      fstore::ts_write_range<2>(day_, L0_to_L1(t), DEPTH_Field::_bid_price, DEPTH_Field::_mid_price, asset_id_, depth_row_.data());
     }
 
     fstore::ts_write_row<0>(day_, t, asset_id_, dag_);
 
-    // _meta (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒/分钟内累积值
-    meta_.on_tick(t, lob.depth_updated, dag_.MicroPrice.last(), dag_.DepthData.bid_price[0].back(), dag_.DepthData.ask_price[0].back(), lob.price);
+    // _meta (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值
+    meta_.on_tick(t, lob.depth_updated, dag_.MicroPrice.last(), dag_.Depth.bid_price[0].back(), dag_.Depth.ask_price[0].back(), lob.price);
     fstore::ts_write<0>(day_, t, L0_Field::_meta, asset_id_, meta_.l0());
-    fstore::ts_write<2>(day_, L0_to_L1(t), DEPTH_Field::_meta, asset_id_, meta_.depth());
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----
@@ -155,8 +141,4 @@ private:
   ResamplerTick2Min tick2min_;
 
   MetaTracker meta_; // _meta 基建列状态机 (编码/累积语义见 Meta.hpp; begin_day 重置)
-
-  // DEPTH 快照行缓冲: 4 × N 档 + mid (= DEPTH_TOTAL_WIDTH - _meta)
-  std::array<float, DEPTH_TOTAL_WIDTH - 1> depth_row_;
-  static_assert(DEPTH_Field::_meta == DEPTH_FIELD_COUNT - 1 && DEPTH_FIELD_OFFSETS[DEPTH_Field::_mid_price] == 4 * L2::LOB_DEPTH, "DEPTH row layout");
 };

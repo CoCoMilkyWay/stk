@@ -17,7 +17,6 @@
 // ============================================================================
 // Storage format (header = 5 × size_t: T, F, A, axis_hash, table_fingerprint), 每层按 LEVELS[lvl].columnar:
 //   逐列 (L0/L1):     features_<LVL>_f{idx}.zst [Header: T,1,A,h][FeatureCodec column]  (Dist 按列选读)
-//   整层 (DEPTH):     features_<LVL>.zst        [Header: T,F,A,h][FeatureCodec merged]
 // 载荷 = FeatureCodec (SparseCodec / ZstdCodec, 选型见 FeatureStoreConfig.hpp);
 // xor_delta 层解码后再前缀 XOR 还原.
 //
@@ -30,7 +29,7 @@
 //   字段表改了旧文件立刻断言失败, 不会静默错位.
 //
 // APIs (缓冲全部挂在张量结构里复用, 与写端 io_buf_/io_column_ 对仗, 稳态零分配):
-//   1. load_day(date, DayTensor)          - GUI: 单日整层 (L0/L1/DEPTH 同一套; 整层文件直读零中转)
+//   1. load_day(date, DayTensor)          - GUI: 单日整层 (L0/L1 同一套; 整层文件直读零中转)
 //   2. load_day_columns(date, cols, out)  - GUI overlay / Transform: 单日, 选列 (L0 逐列文件只碰 n 个)
 //   3. load_month_columns()               - Dist/TimeSeries: 整月, 选列
 // ============================================================================
@@ -205,7 +204,7 @@ public:
     std::vector<feature_storage_t> data;
     Scratch scratch;
 
-    // 宽字段 (DEPTH 的 N 档) 用 sub 取档内下标; LVL 模板参数保住编译期定址
+    // 宽字段用 sub 取档内下标; LVL 模板参数保住编译期定址
     template <size_t LVL>
     inline feature_storage_t get(size_t t, size_t field, size_t a, size_t sub = 0) const {
       static_assert(LVL < LEVEL_COUNT);
@@ -235,8 +234,8 @@ public:
   // ========================================================================
 
   // 单日选列张量 [T][n][A]: load_day 的选列版, 布局与 MonthTensor 的单日切片同构.
-  // 列宽必须为 1 (与 load_month_columns 同约束); L0 逐列文件下只读 n 个列文件,
-  // 整层文件 (L1/DEPTH) 读一次抽 n 列 —— dst 内存都只有 [T][n][A].
+  // 列宽必须为 1 (与 load_month_columns 同约束); L0/L1 逐列文件下只读 n 个列文件,
+  // dst 内存都只有 [T][n][A].
   struct DayColumns {
     std::string date;
     size_t level = 0;
@@ -316,10 +315,11 @@ public:
   // Utility Functions
   // ========================================================================
 
-  // 该日是否有特征文件 (以最后一层的整层文件为准: IO worker 按层序落盘, 它在则全在)
+  // 该日是否有特征文件 (以最后一层最后一列文件为准: IO worker 按层序落盘, 它在则全在)
   static bool has_date(const std::string &base_dir, const std::string &date) {
     assert(date.size() == 8);
-    return std::filesystem::exists(feature_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1));
+    const auto &L = LEVELS[LEVEL_COUNT - 1];
+    return std::filesystem::exists(feature_column_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1, L.width - 1));
   }
   bool has_date(const std::string &date) const { return has_date(base_dir_, date); }
 

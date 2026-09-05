@@ -45,9 +45,12 @@ struct TaskFeaturesState {
   std::unique_ptr<Features::TransformService> transform_service;
 
   // UI State
-  int selected_tab = 0;
+  int active_tab = -1; // 当前选中 tab (由 DrawTab 入口写入), -1 = 未选中
   int locked_tab = -1;
   bool tabs_locked = false;
+  // IsTabEnabled 缓存: DrawTab 每帧更新, 左栏渲染时读 (一帧延迟不可见)
+  bool tab_enabled_cache[TAB_COUNT] = {};
+  bool tab_cache_valid = false;
   Features::FeatureUIState feature_ui_state;
   Features::ComputeState compute_state;
   Features::TransformUIState transform_ui_state;
@@ -89,9 +92,10 @@ TaskHandle CreateFeaturesTask() {
   handle.storage = state;
   handle.task_instance = state.get();
 
-  // OnExpand
+  // OnExpand: 切到 Features 任务时由 Gui.cpp 默认 selected_tab=0 (首个子项).
+  // Services 延迟到首次 DrawTab 时创建.
   handle.OnExpand = [state]() {
-    // Initialization will happen in DrawPanel (first call)
+    // no-op
   };
 
   // OnCollapse: 切出 Features 任务才回收 Dist 的构建内存 (任务内切 tab 不回收)
@@ -103,8 +107,24 @@ TaskHandle CreateFeaturesTask() {
     }
   };
 
-  // DrawPanel
-  handle.DrawPanel = [state](SharedData &data) {
+  // 子项 (叶子) 名字, 顺序与 TabIdx 一致
+  handle.tab_names = {"Feature", "Compute", "Transform", "Distribution",
+                      "TimeSeries", "OrderFlow"};
+
+  // IsTabEnabled: 读上一帧 DrawTab 缓存的使能状态 (未缓存前全开, 避免阻塞首次选择)
+  handle.IsTabEnabled = [state](int i) -> bool {
+    if (i < 0 || i >= TAB_COUNT)
+      return false;
+    if (!state->tab_cache_valid)
+      return true;
+    return state->tab_enabled_cache[i];
+  };
+
+  // DrawTab: 渲染指定 tab 内容 + 每帧状态更新 + 生命周期/自动重算触发
+  handle.DrawTab = [state](SharedData &data, int idx) {
+    assert(idx >= 0 && idx < TAB_COUNT);
+    state->active_tab = idx;
+
     // Lazy initialization
     if (!state->compute_service) {
       state->compute_service = std::make_unique<Features::ComputeService>(data);
@@ -201,219 +221,171 @@ TaskHandle CreateFeaturesTask() {
       state->prev_compute_status = current_status;
     }
 
-    // Render tabs
-    ImGui::BeginChild("FeaturesTabs", ImVec2(0, 0), false);
+    // Compute busy/lock state + 缓存使能状态 (供左栏 IsTabEnabled 下一帧读)
+    const bool compute_busy =
+        (state->compute_service &&
+         state->compute_service->get_status() == Features::ComputeStatus::Running);
+    // Dist 是流式构建 (切走即取消, 随时可中断), 不参与锁 Tab
+    const bool timeseries_busy = data.timeseries.compute.is_busy();
+    const bool any_busy = compute_busy || timeseries_busy;
 
-    if (ImGui::BeginTabBar("FeaturesTabBar", ImGuiTabBarFlags_None)) {
-      // Compute busy state for tab locking
-      const bool compute_busy =
-          (state->compute_service &&
-           state->compute_service->get_status() == Features::ComputeStatus::Running);
-      // Dist 是流式构建 (切走即取消, 随时可中断), 不参与锁 Tab
-      const bool timeseries_busy = data.timeseries.compute.is_busy();
-      const bool any_busy = compute_busy || timeseries_busy;
-
-      if (any_busy) {
-        if (!state->tabs_locked) {
-          state->tabs_locked = true;
-          state->locked_tab = state->selected_tab;
-          if (state->locked_tab < 0)
-            state->locked_tab = TAB_FEATURE;
-        }
-      } else {
-        state->tabs_locked = false;
-        state->locked_tab = -1;
+    if (any_busy) {
+      if (!state->tabs_locked) {
+        state->tabs_locked = true;
+        state->locked_tab = state->active_tab;
+        if (state->locked_tab < 0)
+          state->locked_tab = TAB_FEATURE;
       }
-
-      // Pre-compute all tab disable states (whitelist mechanism)
-      // Order must match TabIdx enum: Feature, Compute, Transform, Distribution, TimeSeries, OrderFlow
-      auto is_locked = [&](int tab) { return state->tabs_locked && state->locked_tab != tab; };
-      const bool disable[TAB_COUNT] = {
-          is_locked(TAB_FEATURE),                                                 // Feature: always accessible
-          !feature_inputs_ready || is_locked(TAB_COMPUTE),                        // Compute: needs scanned inputs
-          !feature_inputs_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs inputs + selection
-          !feature_inputs_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs inputs + selection
-          !feature_inputs_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs inputs + selection
-          !feature_inputs_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs scanned inputs
-      };
-
-      // Tab: Feature
-      if (disable[TAB_FEATURE])
-        ImGui::BeginDisabled();
-      if (ImGui::BeginTabItem("Feature")) {
-        state->selected_tab = TAB_FEATURE;
-        ImGui::Spacing();
-        Features::RenderTabFeature(data, state->feature_ui_state);
-        ImGui::EndTabItem();
-      }
-      if (disable[TAB_FEATURE])
-        ImGui::EndDisabled();
-
-      // Tab: Compute
-      if (disable[TAB_COMPUTE])
-        ImGui::BeginDisabled();
-      if (ImGui::BeginTabItem("Compute")) {
-        state->selected_tab = TAB_COMPUTE;
-        ImGui::Spacing();
-        Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data.asset, data.config);
-        ImGui::EndTabItem();
-      }
-      if (disable[TAB_COMPUTE])
-        ImGui::EndDisabled();
-
-      // Tab: Transform
-      if (disable[TAB_TRANSFORM])
-        ImGui::BeginDisabled();
-      bool transform_tab_open = ImGui::BeginTabItem("Transform");
-      if (transform_tab_open) {
-        state->selected_tab = TAB_TRANSFORM;
-        ImGui::Spacing();
-        Features::RenderTabTransform(state->transform_service.get(), data, state->transform_ui_state);
-        ImGui::EndTabItem();
-      }
-      if (disable[TAB_TRANSFORM])
-        ImGui::EndDisabled();
-
-      // Transform lifecycle
-      if (transform_tab_open && !state->transform_tab_was_active) {
-        state->transform_tab_was_active = true;
-        state->transform_prev_feature_idx = -1; // Reset tracking on tab enter
-        state->transform_prev_level = -1;
-      } else if (!transform_tab_open && state->transform_tab_was_active) {
-        Features::StopTabTransform(state->transform_service.get(), data);
-        state->transform_tab_was_active = false;
-      }
-
-      // Auto-trigger Transform compute on feature/level change
-      if (transform_tab_open && state->transform_service &&
-          state->transform_service->is_running()) {
-        auto &sel = data.feature.selection;
-        bool feature_changed = (sel.primary_feature_idx != state->transform_prev_feature_idx);
-        bool level_changed = (sel.selected_level != state->transform_prev_level);
-
-        if (feature_changed || level_changed) {
-          // Cancel old computation if running
-          if (data.transform.compute.is_busy()) {
-            data.transform.cancel();
-          }
-          // Trigger new computation
-          state->transform_service->RequestCompute();
-          // Update tracking
-          state->transform_prev_feature_idx = sel.primary_feature_idx;
-          state->transform_prev_level = sel.selected_level;
-        }
-      }
-
-      // Tab: Distribution
-      if (disable[TAB_DISTRIBUTION])
-        ImGui::BeginDisabled();
-      bool dist_tab_open = ImGui::BeginTabItem("Distribution");
-      if (dist_tab_open) {
-        state->selected_tab = TAB_DISTRIBUTION;
-        ImGui::Spacing();
-        Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
-        ImGui::EndTabItem();
-      }
-      if (disable[TAB_DISTRIBUTION])
-        ImGui::EndDisabled();
-
-      // Distribution lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在
-      // OnCollapse); 切回时 Idle/Cancelled 自动重算, Done 的结果直接复用
-      if (dist_tab_open && !state->dist_tab_was_active) {
-        state->dist_tab_was_active = true;
-        const auto st = data.dist.status.load();
-        if (st == Dist::Status::Idle || st == Dist::Status::Cancelled) {
-          state->dist_service->RequestCompute(data);
-        }
-      } else if (!dist_tab_open && state->dist_tab_was_active) {
-        Features::StopTabDist(state->dist_service.get(), data);
-        state->dist_tab_was_active = false;
-      }
-
-      // Tab: TimeSeries
-      if (disable[TAB_TIMESERIES])
-        ImGui::BeginDisabled();
-      bool timeseries_tab_open = ImGui::BeginTabItem("TimeSeries");
-      if (timeseries_tab_open) {
-        state->selected_tab = TAB_TIMESERIES;
-        ImGui::Spacing();
-        Features::RenderTabTimeSeries(state->timeseries_service.get(), data,
-                                      state->timeseries_ui_state);
-        ImGui::EndTabItem();
-      }
-      if (disable[TAB_TIMESERIES])
-        ImGui::EndDisabled();
-
-      // TimeSeries lifecycle
-      if (timeseries_tab_open && !state->timeseries_tab_was_active) {
-        state->timeseries_tab_was_active = true;
-        state->timeseries_prev_step = -1;
-      } else if (!timeseries_tab_open && state->timeseries_tab_was_active) {
-        Features::StopTabTimeSeries(state->timeseries_service.get(), data);
-        state->timeseries_tab_was_active = false;
-      }
-
-      // Tab: OrderFlow
-      if (disable[TAB_ORDERFLOW])
-        ImGui::BeginDisabled();
-      if (ImGui::BeginTabItem("OrderFlow")) {
-        state->selected_tab = TAB_ORDERFLOW;
-        ImGui::Spacing();
-        Features::RenderTabOrderFlow(state->orderflow_service.get(), data);
-        ImGui::EndTabItem();
-      }
-      if (disable[TAB_ORDERFLOW])
-        ImGui::EndDisabled();
-      // OrderFlow 切 tab 不停 worker: 流式在后台继续, 切回即全 (任务级回收在 Destroy)
-
-      // Auto-trigger TimeSeries compute
-      if (timeseries_tab_open && state->timeseries_service &&
-          state->timeseries_service->is_running()) {
-        auto &ts = data.timeseries;
-        auto &sel = data.feature.selection;
-        int current_step = state->timeseries_ui_state.selected_step;
-
-        bool feature_changed = (sel.primary_feature_idx != state->timeseries_prev_feature_idx);
-        bool level_changed = (sel.selected_level != state->timeseries_prev_level);
-        if (feature_changed || level_changed) {
-          ts.clear();
-          state->timeseries_prev_feature_idx = sel.primary_feature_idx;
-          state->timeseries_prev_level = sel.selected_level;
-        }
-
-        bool step_changed = (current_step != state->timeseries_prev_step);
-        bool step_needs_compute = false;
-        switch (current_step) {
-        case 0:
-          step_needs_compute = !ts.step0_stationarity.valid;
-          break;
-        case 1:
-          step_needs_compute = !ts.step1_frequency.valid;
-          break;
-        case 2:
-          step_needs_compute = !ts.step2_arma.valid;
-          break;
-        case 3:
-          step_needs_compute = !ts.step3_residual.valid;
-          break;
-        case 4:
-          step_needs_compute = !ts.step4_temporal_decay.valid;
-          break;
-        default:
-          break;
-        }
-
-        if (step_changed || feature_changed || level_changed) {
-          state->timeseries_prev_step = current_step;
-          if (step_needs_compute && has_selection && !ts.compute.is_busy()) {
-            state->timeseries_service->RequestCompute();
-          }
-        }
-      }
-
-      ImGui::EndTabBar();
+    } else {
+      state->tabs_locked = false;
+      state->locked_tab = -1;
     }
 
+    // Pre-compute all tab disable states (whitelist mechanism)
+    // Order must match TabIdx enum: Feature, Compute, Transform, Distribution, TimeSeries, OrderFlow
+    auto is_locked = [&](int tab) { return state->tabs_locked && state->locked_tab != tab; };
+    const bool disable[TAB_COUNT] = {
+        is_locked(TAB_FEATURE),                                                 // Feature: always accessible
+        !feature_inputs_ready || is_locked(TAB_COMPUTE),                        // Compute: needs scanned inputs
+        !feature_inputs_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs inputs + selection
+        !feature_inputs_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs inputs + selection
+        !feature_inputs_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs inputs + selection
+        !feature_inputs_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs scanned inputs
+    };
+    for (int k = 0; k < TAB_COUNT; k++)
+      state->tab_enabled_cache[k] = !disable[k];
+    state->tab_cache_valid = true;
+
+    // 生命周期: 基于 active_tab 判定各 tab 是否 open (同一时刻仅一个 open, 等价旧 tab-bar 语义)
+    const bool transform_tab_open = (idx == TAB_TRANSFORM);
+    const bool dist_tab_open = (idx == TAB_DISTRIBUTION);
+    const bool timeseries_tab_open = (idx == TAB_TIMESERIES);
+
+    // Transform lifecycle
+    if (transform_tab_open && !state->transform_tab_was_active) {
+      state->transform_tab_was_active = true;
+      state->transform_prev_feature_idx = -1; // Reset tracking on tab enter
+      state->transform_prev_level = -1;
+    } else if (!transform_tab_open && state->transform_tab_was_active) {
+      Features::StopTabTransform(state->transform_service.get(), data);
+      state->transform_tab_was_active = false;
+    }
+
+    // Auto-trigger Transform compute on feature/level change
+    if (transform_tab_open && state->transform_service &&
+        state->transform_service->is_running()) {
+      auto &sel = data.feature.selection;
+      bool feature_changed = (sel.primary_feature_idx != state->transform_prev_feature_idx);
+      bool level_changed = (sel.selected_level != state->transform_prev_level);
+
+      if (feature_changed || level_changed) {
+        // Cancel old computation if running
+        if (data.transform.compute.is_busy()) {
+          data.transform.cancel();
+        }
+        // Trigger new computation
+        state->transform_service->RequestCompute();
+        // Update tracking
+        state->transform_prev_feature_idx = sel.primary_feature_idx;
+        state->transform_prev_level = sel.selected_level;
+      }
+    }
+
+    // Distribution lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在
+    // OnCollapse); 切回时 Idle/Cancelled 自动重算, Done 的结果直接复用
+    if (dist_tab_open && !state->dist_tab_was_active) {
+      state->dist_tab_was_active = true;
+      const auto st = data.dist.status.load();
+      if (st == Dist::Status::Idle || st == Dist::Status::Cancelled) {
+        state->dist_service->RequestCompute(data);
+      }
+    } else if (!dist_tab_open && state->dist_tab_was_active) {
+      Features::StopTabDist(state->dist_service.get(), data);
+      state->dist_tab_was_active = false;
+    }
+
+    // TimeSeries lifecycle
+    if (timeseries_tab_open && !state->timeseries_tab_was_active) {
+      state->timeseries_tab_was_active = true;
+      state->timeseries_prev_step = -1;
+    } else if (!timeseries_tab_open && state->timeseries_tab_was_active) {
+      Features::StopTabTimeSeries(state->timeseries_service.get(), data);
+      state->timeseries_tab_was_active = false;
+    }
+
+    // Auto-trigger TimeSeries compute
+    if (timeseries_tab_open && state->timeseries_service &&
+        state->timeseries_service->is_running()) {
+      auto &ts = data.timeseries;
+      auto &sel = data.feature.selection;
+      int current_step = state->timeseries_ui_state.selected_step;
+
+      bool feature_changed = (sel.primary_feature_idx != state->timeseries_prev_feature_idx);
+      bool level_changed = (sel.selected_level != state->timeseries_prev_level);
+      if (feature_changed || level_changed) {
+        ts.clear();
+        state->timeseries_prev_feature_idx = sel.primary_feature_idx;
+        state->timeseries_prev_level = sel.selected_level;
+      }
+
+      bool step_changed = (current_step != state->timeseries_prev_step);
+      bool step_needs_compute = false;
+      switch (current_step) {
+      case 0:
+        step_needs_compute = !ts.step0_stationarity.valid;
+        break;
+      case 1:
+        step_needs_compute = !ts.step1_frequency.valid;
+        break;
+      case 2:
+        step_needs_compute = !ts.step2_arma.valid;
+        break;
+      case 3:
+        step_needs_compute = !ts.step3_residual.valid;
+        break;
+      case 4:
+        step_needs_compute = !ts.step4_temporal_decay.valid;
+        break;
+      default:
+        break;
+      }
+
+      if (step_changed || feature_changed || level_changed) {
+        state->timeseries_prev_step = current_step;
+        if (step_needs_compute && has_selection && !ts.compute.is_busy()) {
+          state->timeseries_service->RequestCompute();
+        }
+      }
+    }
+
+    // Render active tab content (OrderFlow 切 tab 不停 worker: 流式后台继续, 切回即全)
+    ImGui::BeginChild("FeaturesTab", ImVec2(0, 0), false);
+    ImGui::Spacing();
+    switch (idx) {
+    case TAB_FEATURE:
+      Features::RenderTabFeature(data, state->feature_ui_state);
+      break;
+    case TAB_COMPUTE:
+      Features::RenderTabCompute(state->compute_service.get(), state->compute_state,
+                                 data.asset, data.config);
+      break;
+    case TAB_TRANSFORM:
+      Features::RenderTabTransform(state->transform_service.get(), data,
+                                   state->transform_ui_state);
+      break;
+    case TAB_DISTRIBUTION:
+      Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
+      break;
+    case TAB_TIMESERIES:
+      Features::RenderTabTimeSeries(state->timeseries_service.get(), data,
+                                    state->timeseries_ui_state);
+      break;
+    case TAB_ORDERFLOW:
+      Features::RenderTabOrderFlow(state->orderflow_service.get(), data);
+      break;
+    default:
+      break;
+    }
     ImGui::EndChild();
   };
 

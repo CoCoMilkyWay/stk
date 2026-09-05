@@ -354,11 +354,11 @@ set(HEADERS
 # features/NodesGenerated.hpp (生成到 build 目录) — 计算图节点表 + 落盘字段表.
 #   节点实例和落盘列直接写在算子文件里 (include/features/Operator/{TS,CS}/<分类>/**/*.hpp: TS/ 时序节点, CS/ 截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (OpType), (ctor inputs), compute_trigger, flush_trigger)
-#     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ {L0, L1, DEPTH}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG/META) 的任意名字
-#   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / DepthData.bid_qty ...), 不需要任何 include.
+#     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ {L0, L1}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
+#   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / Depth.bid_qty ...), 不需要任何 include.
 #   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 生成
 #     NODES(N) / NODE_PREV_<Name> (声明链, 让顺序错误变成编译错误) /
-#     LEVEL_{0,1}_FIELDS(X) / DEPTH_FIELDS(X) 和 #include 清单.
+#     LEVEL_{0,1}_FIELDS(X) 和 #include 清单.
 #   CMAKE_CONFIGURE_DEPENDS 盯住每个文件内容: 改动后下次 build 自动重新 configure.
 # ============================================================================
 set(DAG_SCAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../include/features)
@@ -390,7 +390,7 @@ foreach(scan_file ${DAG_SCAN_FILES})
     set(scan_defs "${scan_src}")
     string(REGEX REPLACE "(^|\n) *//[^\n]*" "\n" scan_defs "${scan_defs}")
     string(REGEX MATCHALL "(^|\n) *#define NODE_[A-Za-z0-9_]+\\(" node_defs "${scan_defs}")
-    string(REGEX MATCHALL "(^|\n) *#define FIELDS_(L0|L1|DEPTH)_[A-Za-z0-9_]+\\(" field_defs "${scan_defs}")
+    string(REGEX MATCHALL "(^|\n) *#define FIELDS_(L0|L1)_[A-Za-z0-9_]+\\(" field_defs "${scan_defs}")
     string(REGEX MATCHALL "X\\([^,\n]+, *CAT1, *[A-Za-z0-9_]+," cat2_uses "${scan_defs}")
     foreach(cat2_use ${cat2_uses})
         string(REGEX REPLACE ".*CAT1, *([A-Za-z0-9_]+),.*" "\\1" cat2 "${cat2_use}")
@@ -419,7 +419,7 @@ foreach(scan_file ${DAG_SCAN_FILES})
         endforeach()
     endforeach()
     foreach(field_def ${field_defs})
-        string(REGEX REPLACE ".*#define FIELDS_(L0|L1|DEPTH)_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
+        string(REGEX REPLACE ".*#define FIELDS_(L0|L1)_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
         list(GET lvl_owner 0 lvl)
         list(GET lvl_owner 1 owner)
         if(DAG_HAS_${lvl}_${owner})
@@ -467,7 +467,7 @@ foreach(node_name ${DAG_ORDER})
 endforeach()
 string(APPEND DAG_GEN_PREV "#define DAG_LAST ${dag_prev}\n")
 
-# 节点上游依赖 (仅保留指向真实节点的引用, 过滤掉 DepthData / tick_data 等源)
+# 节点上游依赖 (仅保留指向真实节点的引用, 过滤掉 Depth / tick_data 等源)
 # 生成 node_deps::TABLE: {node, deps[], count}, 供 GUI 特征依赖解析使用
 set(DAG_GEN_DEP_ARRAYS "")
 set(DAG_GEN_DEP_TABLE "")
@@ -501,7 +501,7 @@ foreach(owner ${DAG_FIELD_OWNERS})
     endif()
 endforeach()
 set(DAG_GEN_FIELDS "")
-foreach(lvl L0 L1 DEPTH) # 层名与 FeaturesDefine.hpp ALL_LEVELS 一致, 生成 <LVL>_FIELDS(X)
+foreach(lvl L0 L1) # 层名与 FeaturesDefine.hpp ALL_LEVELS 一致, 生成 <LVL>_FIELDS(X)
     string(APPEND DAG_GEN_FIELDS "#define ${lvl}_FIELDS(X)")
     foreach(owner ${dag_field_order})
         if(DAG_HAS_${lvl}_${owner})

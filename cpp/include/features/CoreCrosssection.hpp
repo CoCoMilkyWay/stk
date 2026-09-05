@@ -34,7 +34,6 @@
 #define CS_RUN_OP(code, ...)
 #define CS_RUN_LABEL(code)
 #define CS_RUN_FLAG(code)
-#define CS_RUN_META(code, w)
 #define CS_RUN_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(CS_RUN, code, src)
 
 template <size_t LVL>
@@ -59,7 +58,7 @@ public:
     valid_indices_.reserve(A_);
   }
 
-  // day = 本日读写句柄 (store.cs_open, 已按日门控: 三层张量整体就绪)
+  // day = 本日读写句柄 (store.cs_open, 已按日门控: 两层张量整体就绪)
   void set_day(const GlobalFeatureStore::Day &day) { day_ = day; }
 
   void compute_and_store(size_t t) noexcept {

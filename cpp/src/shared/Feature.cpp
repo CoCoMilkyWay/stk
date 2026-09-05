@@ -42,7 +42,6 @@ void Feature::Metadata::init_from_compile_time() {
   };
   add_node_fields(L0_FIELD_SOURCE, std::size(L0_FIELD_SOURCE));
   add_node_fields(L1_FIELD_SOURCE, std::size(L1_FIELD_SOURCE));
-  add_node_fields(DEPTH_FIELD_SOURCE, std::size(DEPTH_FIELD_SOURCE));
 
   // 4. 逐字段解析直接依赖 (字段 code, 分号分隔)
   auto resolve_level = [&](const FieldSource *srcs, size_t n, std::vector<std::string> &out) {
@@ -72,7 +71,6 @@ void Feature::Metadata::init_from_compile_time() {
   };
   resolve_level(L0_FIELD_SOURCE, std::size(L0_FIELD_SOURCE), deps[0]);
   resolve_level(L1_FIELD_SOURCE, std::size(L1_FIELD_SOURCE), deps[1]);
-  resolve_level(DEPTH_FIELD_SOURCE, std::size(DEPTH_FIELD_SOURCE), deps[2]);
 }
 
 // ============================================================================

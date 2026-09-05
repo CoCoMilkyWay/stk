@@ -8,7 +8,6 @@
 namespace GUI::Tasks {
 
 struct TaskToolsState {
-  int selected_tab = 0;
   std::unique_ptr<Tools::LatexEditorState> latex_state;
   bool latex_engine_initialized = false;
 };
@@ -38,17 +37,9 @@ TaskHandle CreateToolsTask() {
 
   handle.DrawPanel = [state](SharedData &data) {
     ImGui::BeginChild("ToolsPanel");
-
-    if (ImGui::BeginTabBar("ToolsTabs")) {
-      if (ImGui::BeginTabItem("LaTeX")) {
-        if (state->latex_state) {
-          Tools::DrawLatexEditor(*state->latex_state);
-        }
-        ImGui::EndTabItem();
-      }
-      ImGui::EndTabBar();
+    if (state->latex_state) {
+      Tools::DrawLatexEditor(*state->latex_state);
     }
-
     ImGui::EndChild();
   };
 

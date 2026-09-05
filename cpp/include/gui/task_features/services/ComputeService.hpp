@@ -66,7 +66,7 @@ struct StageLayout {
       return {kind, "预取 Prefetch", "顺日期把 .bin 读进 page cache, 领先最慢时序核不超过 pool slots + 2 天",
               1, prefetch_shared ? 0 : 1, prefetch_shared ? num_ts + 1 : num_ts + 2, prefetch_shared ? num_ts + 1 : num_ts + 2, prefetch_shared};
     case ComputeStage::TS:
-      return {kind, "时序 TS", "逐资产 decode + LOB 重建 + DAG, 写 L0/L1/DEPTH 张量; 领跑核自动接手落后核的资产 (处置权转移)",
+      return {kind, "时序 TS", "逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量; 领跑核自动接手落后核的资产 (处置权转移)",
               num_ts, num_ts, 0, num_ts - 1, false};
     case ComputeStage::CS:
       return {kind, "截面 CS", "本日全部时序核写完后整日扫截面列",

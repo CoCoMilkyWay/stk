@@ -40,7 +40,7 @@ void crosssectional_worker(WorkerCtx ctx) {
     const std::string &date_str = data.asset.all_dates[date_idx];
     TraceTextS(date_str.c_str());
 
-    // 按日门控: 阻塞至全部 TS 写完本日, 返回后三层张量整体可读.
+    // 按日门控: 阻塞至全部 TS 写完本日, 返回后两层张量整体可读.
     // 数值一致性由输入契约锚定 (CS 只读秒网格张量行, 见 CoreCrosssection.hpp),
     // 与"CS 流式伴随还是整日后扫"的调度形态无关, 结果逐值相同.
     GlobalFeatureStore::Day day;

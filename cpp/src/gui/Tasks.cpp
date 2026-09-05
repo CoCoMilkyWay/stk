@@ -40,6 +40,10 @@ void CleanupAllTasks(std::vector<TaskHandle> &tasks) {
     handle.OnExpand = {};
     handle.OnCollapse = {};
     handle.DrawPanel = {};
+    handle.IsTabEnabled = {};
+    handle.DrawTab = {};
+    handle.tab_names.clear();
+    handle.selected_tab = -1;
     handle.Destroy = {};
     handle.storage.reset();
     handle.task_instance = nullptr;

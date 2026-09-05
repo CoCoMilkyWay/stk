@@ -51,7 +51,7 @@
 //     Name     节点名 (DAG 成员名), 同一算子可有多个实例 (CI.hpp: Ci_1 / Ci_5 / Ci_10 / Ci_30)
 //     OpType   算子类型, 必须加括号 (模板参数里有逗号)
 //     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / fund_pool / asset_code_ / asset_id_ / date_ /
-//              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 源层数组 DepthData.bid_qty 等.
+//              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 源层数组 Depth.bid_qty 等.
 //              必须字面写在这一行 (CMake 按 "Up." 抽依赖), 不要藏进 helper 宏
 //     触发域   Trigger:: 下的名字. 采样型只写一个 (compute 与 flush 同域);
 //              降频型写两个: compute=onTick, flush=onMinute; 广播型 (日频): compute=onDay, flush=onMinute
@@ -60,21 +60,20 @@
 // 截面算子文件 (Operator/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
 //
 //   #define FIELDS_<LVL>_<Name>(X, CAT1)  X(code, CAT1, cat_l2, norm_method, name_en, name_cn, description, formula, SRC) ...
-//     LVL ∈ {L0, L1, DEPTH}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
+//     LVL ∈ {L0, L1}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
 //     同族实例 (Ci_1/5/10/30 …) 在文件内用 helper 宏生成行, #n 拼进名字/公式.
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 列宽 / 有效性标志全部由它推出:
 //       OP(Node) / OP(Node, port)  节点输出口. TS; 宽 1; 层必须 == 节点 flush 域; 有效性: flush 域 onDepth → DEPTH, 其余 → DATA
 //       CS(lvl, src, Tf, Method)   截面: 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 宽 1; DATA
 //       LABEL                      标签回填 (CoreSequential 手工写). LB; 宽 1; DATA
 //       FLAG                       基建标志列 _meta (CoreSequential 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; 宽 1; ALL
-//       META(width)                其他基建手写列 (盘口快照, 宽 width). META; DEPTH
-//     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG/META → Operator/TS/Meta/Meta.hpp,
+//     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Operator/TS/Meta/Meta.hpp,
 //     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
 //     推荐频谱 (psd) 按层给 (ALL_LEVELS), 不逐列写.
 //
 // CMake (projects/main/CMakeLists.txt) 扫描 features/Operator/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
 // 分层拓扑排序, 生成 build/generated/features/NodesGenerated.hpp: 全部 #include + NODES(N) +
-// L0_FIELDS(X) / L1_FIELDS(X) / DEPTH_FIELDS(X). 基建 (ComputeGraph / CoreSequential / CoreCrosssection /
+// L0_FIELDS(X) / L1_FIELDS(X). 基建 (ComputeGraph / CoreSequential / CoreCrosssection /
 // FeatureStore / Feature.hpp GUI 元数据) 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
 //
 // 加特征 = 改 (或新建) 一个算子文件. 删特征 = 删几行 / 删文件. 其他地方不动.
@@ -178,34 +177,30 @@ constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDep
 // ----------------------------------------------------------------------------
 // SRC 列解析 (字段表消费者共用)
 //   SRC_KIND_##src             → FeatureDataType
-//   SRC_WIDTH_##src            → 列宽 (只有 META(w) 不是 1)
+//   SRC_WIDTH_##src            → 列宽 (恒为 1)
 //   SRC_VALID_##src            → L2::ValidType (OP 看节点 flush 域: 需要 node_flush::<node>, 见 FeatureStoreConfig)
 //   SRC_DISPATCH(P, code, src) → P_OP(code, node[, port]) / P_CS(code, lvl, s, Tf, Method) /
-//                                P_LABEL(code) / P_FLAG(code) / P_META(code, w)   (消费者按来源各定义一组 P_*)
+//                                P_LABEL(code) / P_FLAG(code)   (消费者按来源各定义一组 P_*)
 // ----------------------------------------------------------------------------
 #define SRC_KIND_OP(...) FeatureDataType::TS
 #define SRC_KIND_CS(...) FeatureDataType::CS
 #define SRC_KIND_LABEL FeatureDataType::LB
 #define SRC_KIND_FLAG FeatureDataType::META
-#define SRC_KIND_META(w) FeatureDataType::META
 
 #define SRC_WIDTH_OP(...) 1
 #define SRC_WIDTH_CS(...) 1
 #define SRC_WIDTH_LABEL 1
 #define SRC_WIDTH_FLAG 1
-#define SRC_WIDTH_META(w) (w)
 
 #define SRC_VALID_OP(node, ...) valid_of(node_flush::node)
 #define SRC_VALID_CS(...) L2::ValidType::DATA
 #define SRC_VALID_LABEL L2::ValidType::DATA
 #define SRC_VALID_FLAG L2::ValidType::ALL
-#define SRC_VALID_META(w) L2::ValidType::DEPTH
 
 #define SRC_ARGS_OP(...) OP, __VA_ARGS__
 #define SRC_ARGS_CS(l, s, tf, m) CS, l, s, tf, m
 #define SRC_ARGS_LABEL LABEL
 #define SRC_ARGS_FLAG FLAG
-#define SRC_ARGS_META(w) META, w
 #define SRC_DISPATCH(prefix, code, src) SRC_DISPATCH_I(prefix, code, SRC_ARGS_##src)
 #define SRC_DISPATCH_I(prefix, code, ...) SRC_DISPATCH_II(prefix, code, __VA_ARGS__)
 #define SRC_DISPATCH_II(prefix, code, kind, ...) prefix##_##kind(code __VA_OPT__(, ) __VA_ARGS__)
@@ -214,7 +209,6 @@ constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDep
 // 落盘层注册: X(name, index, fields_macro, rows, psd, columnar, xor_delta)
 //   L0    秒频 (T = L0_ROWS), 逐列落盘 (Dist/overlay 按列选读)
 //   L1    分钟频 (T = L1_ROWS), 逐列落盘 (Dist 全区间选列流式读)
-//   DEPTH 分钟频盘口快照 (与 L1 同 T, 分钟内多次更新覆盖同一行), 整层一个文件; GUI OrderFlow 用
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
 //   xor_delta = 落盘前沿 T 轴 XOR 差分 (无损, 见 FeatureStoreConfig.hpp):
 //     分钟频稠密层相邻行几乎相同, 差分后零字 ~60%, 喂给 SparseCodec (位图+字面);
@@ -222,5 +216,4 @@ constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDep
 // ----------------------------------------------------------------------------
 #define ALL_LEVELS(X)                                    \
   X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", true, false) \
-  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", true, true)  \
-  X(DEPTH, 2, DEPTH_FIELDS, L1_ROWS, "00/100/00", false, true)
+  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", true, true)

@@ -41,7 +41,9 @@ private:
   // Lifecycle
   bool is_expanded_ = false;
   bool initialized_ = false;
-  bool focus_overview_next_frame_ = true;
+  // IsTabEnabled 缓存: DrawTab 每帧更新, 左栏渲染时读 (一帧延迟不可见)
+  // 默认仅 Overview 可进 (基本面未同步前其它 tab 锁定)
+  bool tab_enabled_cache_[4] = {true, false, false, false};
   CoroManager *coro_mgr_ = nullptr;
   SharedData *data_ = nullptr; // Pointer to shared data
   Config *config_ = nullptr;   // Pointer to config for accessing backtest dates
@@ -54,7 +56,7 @@ public:
     return "Database";
   }
 
-  // 与 DrawPanel/选中态解耦: 创建后立即起后台检查 (基本面 sync → L2 scan),
+  // 与 DrawTab/选中态解耦: 创建后立即起后台检查 (基本面 sync → L2 scan),
   // 不需要用户手动点开 Database 页面. Init 只调一次 (initialized_ 兜底),
   // 顺序依赖见 Tasks.cpp::CreateAllTasks (Settings 先落盘配置到内存).
   void Init(SharedData &data) {
@@ -69,18 +71,26 @@ public:
 
   void OnExpand() {
     is_expanded_ = true;
-    focus_overview_next_frame_ = true;
   }
 
   void OnCollapse() {
     is_expanded_ = false;
   }
 
-  void DrawPanel(SharedData &data) {
-    // Services 已在 Init() 里提前起好, 中途打开本页只管渲染当前进度.
-    RenderUI();
+  // IsTabEnabled: 左栏叶子是否可用 (读上一帧 DrawTab 缓存的使能状态)
+  // idx: 0=Overview 1=Encode 2=Table 3=Browser
+  bool IsTabEnabled(int idx) const {
+    if (idx < 0 || idx >= 4)
+      return false;
+    return tab_enabled_cache_[idx];
+  }
 
-    // Handle encoding trigger from UI
+  // DrawTab: 渲染指定 tab (状态头 + 对应 DrawTabX) + 处理编码触发
+  void DrawTab(SharedData &data, int idx) {
+    assert(idx >= 0 && idx < 4);
+    RenderUI(idx);
+
+    // Handle encoding trigger from UI (Encode tab 设置 trigger_start)
     if (encode_state_.trigger_start && encoding_svc_ && !encoding_svc_->is_running()) {
       encode_state_.trigger_start = false;
 
@@ -183,7 +193,7 @@ private:
     }
   }
 
-  void RenderUI() {
+  void RenderUI(int idx) {
     if (!state_mgr_) {
       ImGui::TextDisabled("Initializing services...");
       return;
@@ -269,60 +279,38 @@ private:
 
     ImGui::Separator();
 
-    // TabBar structure (流水线顺序: Overview 基本面 → Encode L2 → Table/Browser)
-    if (ImGui::BeginTabBar("DatabaseTabs", ImGuiTabBarFlags_None)) {
-      // Get tab access control (managed centrally)
-      const auto &tabs = state.tabs;
+    // 缓存 tab 使能状态供左栏 IsTabEnabled 下一帧读
+    const auto &tabs = state.tabs;
+    tab_enabled_cache_[0] = true; // Overview 永远可进
+    tab_enabled_cache_[1] = tabs.can_access_encode;
+    tab_enabled_cache_[2] = tabs.can_access_table;
+    tab_enabled_cache_[3] = tabs.can_access_browser;
 
-      // Overview tab (基本面面板) - 流水线第一步, 永远可进
-      const ImGuiTabItemFlags overview_flags =
-          focus_overview_next_frame_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
-      if (ImGui::BeginTabItem("Overview", nullptr, overview_flags)) {
-        focus_overview_next_frame_ = false;
-        DrawTabOverview();
-        ImGui::EndTabItem();
-      }
-
-      // Encode tab - 基本面 Ready 后解锁 (覆盖检查依赖交易日历)
-      ImGui::BeginDisabled(!tabs.can_access_encode);
-      if (ImGui::BeginTabItem("Encode")) {
-        if (tabs.can_access_encode)
-          DrawTabEncode();
-        ImGui::EndTabItem();
-      }
-      ImGui::EndDisabled();
-
-      if (!tabs.can_access_encode && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Sync fundamental data in Overview tab first");
-      }
-
-      // Table tab - 基本面 Ready 且已扫描过一遍 (不要求 L2 覆盖 Pass)
-      ImGui::BeginDisabled(!tabs.can_access_table);
-      if (ImGui::BeginTabItem("Table")) {
-        if (tabs.can_access_table)
-          DrawTabTable();
-        ImGui::EndTabItem();
-      }
-      ImGui::EndDisabled();
-
-      if (!tabs.can_access_table && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Requires fundamental data ready and at least one coverage scan (Encode tab)");
-      }
-
-      // Browser tab - 基本面 Ready 且已扫描过一遍 (不要求 L2 覆盖 Pass, Browser 本身就是来看覆盖缺口的)
-      ImGui::BeginDisabled(!tabs.can_access_browser);
-      if (ImGui::BeginTabItem("Browser")) {
-        if (tabs.can_access_browser)
-          DrawTabBrowser();
-        ImGui::EndTabItem();
-      }
-      ImGui::EndDisabled();
-
-      if (!tabs.can_access_browser && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Requires fundamental data ready and at least one coverage scan (Encode tab)");
-      }
-
-      ImGui::EndTabBar();
+    // 渲染当前选中 tab (左栏已按 can_access_* 屏蔽未解锁项, 这里直接分发)
+    switch (idx) {
+    case 0:
+      DrawTabOverview();
+      break;
+    case 1:
+      if (tabs.can_access_encode)
+        DrawTabEncode();
+      else
+        ImGui::TextDisabled("Sync fundamental data in Overview tab first");
+      break;
+    case 2:
+      if (tabs.can_access_table)
+        DrawTabTable();
+      else
+        ImGui::TextDisabled("Requires fundamental data ready and at least one coverage scan (Encode tab)");
+      break;
+    case 3:
+      if (tabs.can_access_browser)
+        DrawTabBrowser();
+      else
+        ImGui::TextDisabled("Requires fundamental data ready and at least one coverage scan (Encode tab)");
+      break;
+    default:
+      break;
     }
   }
 
@@ -392,8 +380,13 @@ TaskHandle CreateDatabaseTask() {
   handle.Init = [instance](SharedData &data) { instance->Init(data); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };
   handle.OnCollapse = [instance]() { instance->OnCollapse(); };
-  handle.DrawPanel = [instance](SharedData &data) {
-    instance->DrawPanel(data);
+  // 子项 (叶子) 顺序: Overview / Encode / Table / Browser
+  handle.tab_names = {"Overview", "Encode", "Table", "Browser"};
+  handle.IsTabEnabled = [instance](int i) -> bool {
+    return instance->IsTabEnabled(i);
+  };
+  handle.DrawTab = [instance](SharedData &data, int idx) {
+    instance->DrawTab(data, idx);
   };
   handle.Destroy = [instance]() mutable { instance.reset(); };
 

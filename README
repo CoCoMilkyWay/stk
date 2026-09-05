@@ -42,17 +42,17 @@ stk/
 │   │   │   ├── L2_Validator.hpp                         # 🔄 逐笔数据准入校验 (编码期判完整性, 防缺片污染盘口)
 │   │   │   └── json_config.hpp                          # 🔄 JSON配置解析
 │   │   ├── features/                                    # 🧮 特征工程 (多时间尺度)
-│   │   │   ├── FeaturesDefine.hpp                       # 🧮 字段表格式说明 (NODE_/FIELDS_ 9列) + 元数据枚举 (X-macro) + SRC 列解析 + ALL_LEVELS (L0/L1/DEPTH 三层)
+│   │   │   ├── FeaturesDefine.hpp                       # 🧮 字段表格式说明 (NODE_/FIELDS_ 9列) + 元数据枚举 (X-macro) + SRC 列解析 + ALL_LEVELS (L0/L1 两层)
 │   │   │   ├── TimeIndex.hpp                            # 🧮 时间索引: Clock ↔ L0(秒) ↔ L1(分钟), 交易时段常数
 │   │   │   ├── DataDefine.hpp                           # 🧮 TickData/MinuteData, Trigger 触发域, Series/DepthSeries 别名, 算子契约
 │   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图: Node<Op,K> 输出 Series + DAG (CMake 拓扑序生成 NodesGenerated.hpp, NODE_ 变参 flush 默认=compute)
-│   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; DEPTH 快照/标签回填手工写 (ts_write_range<LVL>)
+│   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; 标签回填手工写 (ts_write_range<LVL>)
 │   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 行编译期展开 (CsLevel<LVL>), L0 每秒 + L1 分钟级联
 │   │   │   ├── Operator/TS/                             # 🧮 时序算子 (按特征命名) = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic[Fund/Valuation..]/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
 │   │   │   ├── Operator/CS/                             # 🧮 截面算子 (按源节点命名: Spread/Valuation/Fund/Ohlc) = 文件末尾 FIELDS_ 宏 CS(src, Tf, Method)
 │   │   │   ├── Method/                                  # 🧮 方法声明 (实现在 src/features/Method/, precise-math): CS.hpp (Reciprocal/NormRank/WinsorRank/NeutralRank), Fundamental.hpp (fund::Pool 日频 PIT 数据源 [网格切片 + 事件链] + fund::Stream per-资产逐日状态机, Fund 算子 onDay 推进)
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
-│   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), DEPTH 第三层, width/valid/psd 全推导
+│   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), width/valid/psd 全推导
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
 │   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
 │   │   │       ├── SparseCodec.hpp                      # 🧮 落盘编码之一: 位图+非零字面 (手搓, 内存带宽级, 默认)
@@ -152,8 +152,7 @@ stk/
     ├── features/                                        # 特征张量库 (Float16 + Zstd, 按交易日全市场列式)
     │   └── YYYY/MM/DD/
     │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A] (列式, 按列选读)
-    │       ├── features_L1_f<f>.zst                     # L1 逐特征列 [T×A] (列式, 按列选读)
-    │       └── features_DEPTH.zst                       # 盘口深度快照 [T×F×A] 整层 (分钟频, GUI OrderFlow 用)
+    │       └── features_L1_f<f>.zst                     # L1 逐特征列 [T×A] (列式, 按列选读)
     ├── fundamental/                                     # 日频基本面 (表清单见上方 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                         # 月度分片 (2015-01 起, 每表一文件; 0 行月也落文件 = "拉过")
     │   ├── _meta/<表>.parquet                           # Static/Snapshot 单文件整刷 (cn_stock_basic_info / cn_stock_static_data)

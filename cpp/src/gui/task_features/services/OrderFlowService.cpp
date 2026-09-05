@@ -396,7 +396,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
 
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
     constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
-    constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手 (对仗 CoreSequential 的 DEPTH 快照)
+    constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手
     const LOB_Feature &lf = impl_->tick_data.lob;
     const float base = static_cast<float>(impl_->decoder.last_price_base());
 
@@ -441,7 +441,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
         if (is_sentinel(bid1->price) || is_sentinel(ask1->price))
           continue;
 
-        // 秒内覆盖写: 终值 = 秒末盘口 (与 DEPTH 落盘的分钟语义对仗, 粒度换成秒)
+        // 秒内覆盖写: 终值 = 秒末盘口 (分钟语义, 粒度换成秒)
         int32_t &si = sec_slot[t];
         if (si < 0) {
           assert(slot.ticks.empty() || t > slot.ticks.back().tick_idx);

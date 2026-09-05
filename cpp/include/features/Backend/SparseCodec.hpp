@@ -9,7 +9,7 @@
 // SPARSE CODEC — 特征张量落盘编码之一: 位图 + 非零字面 (手搓, 无第三方依赖,
 // 与 ZstdCodec 同 API 对仗, bound / encode / decode; 选型见 FeatureStoreConfig.hpp)
 // ============================================================================
-// 数据特性: L0 事件稀疏 / L1·DEPTH 经 T 轴 XOR 差分 (见 FeatureStoreConfig.hpp)
+// 数据特性: L0 事件稀疏 / L1 经 T 轴 XOR 差分 (见 FeatureStoreConfig.hpp)
 // 后, 零字 (uint16) 占比 ~60%, 但沿 A 轴逐字散布不成游程 —— RLE 吃不到 (实测
 // 仅 ~82%), 位图刚好: 每 64 字 1 个 u64 掩码 (1/16 开销) + 非零字面原样.
 //

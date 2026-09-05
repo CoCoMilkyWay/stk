@@ -31,7 +31,7 @@ enum class Trigger : uint8_t {
 };
 
 //----------------------------------------------------------------------------------------
-// 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 档 = DepthSeries (DepthData 的 bid_qty 等)
+// 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 档 = DepthSeries (Depth 的 bid_qty 等)
 //----------------------------------------------------------------------------------------
 using Series = CBuffer<float, L2::BLEN>;
 using DepthSeries = Series[L2::LOB_DEPTH];

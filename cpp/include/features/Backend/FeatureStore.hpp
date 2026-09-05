@@ -340,7 +340,7 @@ public:
 
   // ===== CS WORKER API: 每 date 一对 open/close =====
 
-  // 按日门控: 阻塞至本日 slot 存在且 asset-day 计满. 返回后本日三层张量
+  // 按日门控: 阻塞至本日 slot 存在且 asset-day 计满. 返回后本日两层张量
   // 整体可读 —— CS 内部不需要任何行级等待. 等待发生在日粒度, 轮询开销无所谓.
   //
   // 无锁 (与 io_try_flush 同姿态; 锁只属于 ts_open 的分配互斥):
@@ -421,7 +421,7 @@ private:
     const size_t header[FEATURE_FILE_HEADER_WORDS] = {T, F, A, static_cast<size_t>(axis_hash_), static_cast<size_t>(table_fp)};
 
     // 原子发布: 写 .tmp 再同目录 rename (POSIX 原子) —— 半写文件不可能以正式名
-    // 存在. disk_write 按层序落盘, 最后一层的整层文件因此兼任本日 commit 标记
+    // 存在. disk_write 按层序落盘, 最后一层的最后一列文件因此兼任本日 commit 标记
     // (FeatureRead::has_date 的判据): 它在则全日齐备, 中断只留 .tmp 残片.
     const std::string tmp_path = filepath + ".tmp";
     {
@@ -488,7 +488,7 @@ private:
 };
 
 // ============================================================================
-// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1/2 = L0/L1/DEPTH),
+// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L0/L1),
 // 字段用 <LVL>_Field 枚举; 布局常量一律取 constexpr LEVELS[LVL] (单一事实源),
 // 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_open / cs_open
 // 定址一次), 每次调用只剩指针算术.
@@ -521,7 +521,6 @@ struct RowWriter;
 #define STORE_ROW_CS(code, ...)
 #define STORE_ROW_LABEL(code)
 #define STORE_ROW_FLAG(code)
-#define STORE_ROW_META(code, w)
 #define STORE_ROW_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
 
 ALL_LEVELS(STORE_ROW_WRITER)

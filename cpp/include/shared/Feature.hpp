@@ -12,7 +12,7 @@
 
 struct FeatureMetadata {
   const char *code;          // tick_ret_z
-  uint8_t width;             // 1 or LOB_DEPTH (由 SRC 推出)
+  uint8_t width;             // 1 (由 SRC 推出)
   L2::ValidType valid_type;  // ALL/DATA/DEPTH (由 SRC / 节点 flush 域推出)
   FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
   const char *cat_l1;        // Operator/TS/<dir> or Operator/CS/<dir>
@@ -22,7 +22,7 @@ struct FeatureMetadata {
   const char *name_en;       // "Tick Return Z-score"
   const char *name_cn;       // "微小对数收益"
   const char *description;   // "滚动窗口标准化..."
-  uint8_t level;             // 0=L0, 1=L1, 2=DEPTH
+  uint8_t level;             // 0=L0, 1=L1
 };
 
 // ============================================================================
@@ -59,7 +59,7 @@ struct Feature {
   // ==========================================================================
 
   struct Metadata {
-    std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1, 2=DEPTH)
+    std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1)
     std::vector<std::string> deps[LEVEL_COUNT];         // [level][i] = 该特征直接依赖的字段 code (分号分隔), 与 features 平行
     void init_from_compile_time();                      // Copy from constexpr arrays + resolve deps
   };

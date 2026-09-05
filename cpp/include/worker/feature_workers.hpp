@@ -154,7 +154,7 @@ struct WorkerCtx {
 //       门控 = 领先最慢 TS (query_ts_days_done) 不超过 pool slots + 余量.
 void prefetch_worker(WorkerCtx ctx);
 
-// 时序: 逐资产 decode + LOB 重建 + DAG, 写 L0/L1/DEPTH 张量 (日期主序遍历);
+// 时序: 逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量 (日期主序遍历);
 //       领跑核在池边领养落后核的资产并回填 (处置权转移, 见 TsSchedule).
 void sequential_worker(WorkerCtx ctx);
 

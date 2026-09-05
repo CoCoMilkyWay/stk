@@ -28,4 +28,4 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_MidPrice(N) N(MidPrice, (MidPrice), (DepthData.bid_price[0], DepthData.ask_price[0]), onDepth)
+#define NODE_MidPrice(N) N(MidPrice, (MidPrice), (Depth.bid_price[0], Depth.ask_price[0]), onDepth)
