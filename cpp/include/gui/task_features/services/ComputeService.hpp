@@ -119,8 +119,8 @@ struct StageLayout {
 // ============================================================================
 
 struct ComputeConfig {
-  int pool_slots = 4;
-  int adopt_pct = 10; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
+  int pool_slots = 6;
+  int adopt_pct = 50; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
   bool prefetch_share_io = false;
 };
 
