@@ -247,9 +247,12 @@ static std::vector<std::string> split_deps(const std::string &s) {
   return out;
 }
 
-// 单个 cat_l1 组内排序 (四个正交组件, Python 原型在真实特征表上验证过):
-//   1. 相似度: 2×token Jaccard + 1×bigram Jaccard (均去数字) + 2×依赖/出度
-//      (单依赖对如 mcap→mcap_cs 强配对; 17 路节点级扇入摊薄成噪声级)
+// 单个 cat_l1 组内排序 (四个正交组件, Python 原型在真实特征表上验证过).
+// 依赖只是约束 (先后满足即可), 不参与聚类 —— 聚类纯看名称 match
+// (*_ttm12 互相抱团, 而不是各自贴依赖源):
+//   1. 相似度: 2×token Jaccard + 1×bigram Jaccard (均去数字:
+//      数字是序号不是身份, cost_buy_1/5/10 相似度全等, 由自然序排);
+//      无共享 token 时 fallback 字符级前/后缀 (绑住 pb/pe/ps/pcf 缩写族)
 //   2. 平均链接凝聚聚类, 平局取自然序最小对 (确定性)
 //   3. 聚类树线性化: 依赖定向 (被依赖侧在前), 无依赖按自然序
 //   4. 粘性 Kahn 拓扑修复: 优先取上一节点的提议后继 (保簇邻接),
@@ -281,27 +284,34 @@ static std::vector<int> topo_cluster_group(const std::vector<int> &group,
   }
 
   // ---- 1. 相似度矩阵 ----
+  std::vector<std::string> stripped(n);
   std::vector<std::vector<std::string>> toks(n), bigs(n);
   for (int i = 0; i < n; ++i) {
-    std::string a = strip_digits(code_of(i));
-    toks[i] = token_set(a);
-    bigs[i] = bigram_set(a);
+    stripped[i] = strip_digits(code_of(i));
+    toks[i] = token_set(stripped[i]);
+    bigs[i] = bigram_set(stripped[i]);
   }
   std::vector<double> S((std::size_t)n * n, 0.0);
   for (int i = 0; i < n; ++i)
     for (int j = i + 1; j < n; ++j) {
-      double s = 2.0 * jaccard(toks[i], toks[j]) + 1.0 * jaccard(bigs[i], bigs[j]);
+      double tok = jaccard(toks[i], toks[j]);
+      double s = 2.0 * tok + 1.0 * jaccard(bigs[i], bigs[j]);
+      if (tok == 0.0) {
+        // fallback: 无共享 token 的缩写名 (pb/pe/ps/pcf), 用字符级
+        // 共同前/后缀近似; 有 token 信号时不加 (避免前缀把派生拉回
+        // 主体, 压过 ttm/cs 等变换族的 token 抱团)
+        const std::string &a = stripped[i], &b = stripped[j];
+        std::size_t mn = std::min(a.size(), b.size()), mx = std::max(a.size(), b.size());
+        std::size_t pre = 0, suf = 0;
+        while (pre < mn && a[pre] == b[pre])
+          ++pre;
+        while (suf < mn && a[a.size() - 1 - suf] == b[b.size() - 1 - suf])
+          ++suf;
+        if (mx > 0)
+          s += 0.5 * (double)(pre + suf) / (double)mx;
+      }
       S[(std::size_t)i * n + j] = S[(std::size_t)j * n + i] = s;
     }
-  for (int i = 0; i < n; ++i) {
-    if (deps_local[i].empty())
-      continue;
-    double b = 2.0 / (double)deps_local[i].size(); // 出度归一化
-    for (int d : deps_local[i]) {
-      S[(std::size_t)i * n + d] += b;
-      S[(std::size_t)d * n + i] += b;
-    }
-  }
 
   // ---- 2. 平均链接凝聚聚类 (簇 id: 0..n-1 叶, n..2n-2 内部节点) ----
   const int total = 2 * n - 1;
