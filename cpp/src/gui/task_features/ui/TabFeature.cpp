@@ -12,8 +12,12 @@
 #include "utfcpp/utf8.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
+#include <cctype>
+#include <cmath>
 #include <cstring>
+#include <functional>
 #include <string_view>
 #include <unordered_map>
 
@@ -116,6 +120,339 @@ static std::vector<int> get_filtered_indices(const Feature::Selection &sel, cons
       result.push_back(i);
   }
   return result;
+}
+
+// ============================================================================
+// Within-group ordering: 拓扑依赖序 + 贪心名字相似度聚类.
+// 参考: qmt/cpp/src/feature/report.cpp (by_kind_then_topo + greedy_nearest_neighbor).
+// 仅在单个 cat_l1 组内生效, 只考虑组内依赖 (跨组依赖被忽略, cat_l1 分组优先).
+// ============================================================================
+
+// 相似度设计原则: 数字只当序号不当身份 —— 去掉数字后算 token / bigram 相似度,
+// 数字差异只影响自然序 (natural_compare). 这样 cost_buy_1/5/10 相似度全等
+// (由自然序排 1,5,10), 而不会被 "_1"/"10" 的 bigram 巧合干扰.
+
+// 去掉全部数字字符, 再去掉首尾 '_'.
+static std::string strip_digits(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s)
+    if (!std::isdigit((unsigned char)c))
+      out.push_back(c);
+  std::size_t b = out.find_first_not_of('_');
+  std::size_t e = out.find_last_not_of('_');
+  return b == std::string::npos ? std::string() : out.substr(b, e - b + 1);
+}
+
+// 按 '_' 切分为 token 集合 (排序去重). 完整 token 匹配是聚类主信号:
+// mcap / mcap_cs 共享 "mcap", cost_buy_* 共享 "cost","buy".
+static std::vector<std::string> token_set(const std::string &s) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  while (start <= s.size()) {
+    std::size_t sep = s.find('_', start);
+    if (sep == std::string::npos)
+      sep = s.size();
+    if (sep > start)
+      out.emplace_back(s.substr(start, sep - start));
+    start = sep + 1;
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
+// bigram 集合 (排序去重), 次信号: 部分子串重叠 (mcap↔fmcap 靠此靠近).
+static std::vector<std::string> bigram_set(const std::string &s) {
+  std::vector<std::string> out;
+  for (std::size_t i = 0; i + 1 < s.size(); ++i)
+    out.push_back(s.substr(i, 2));
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
+// Jaccard 相似度 (两侧已排序去重).
+static double jaccard(const std::vector<std::string> &a, const std::vector<std::string> &b) {
+  if (a.empty() || b.empty())
+    return 0.0;
+  std::size_t i = 0, j = 0, inter = 0;
+  while (i < a.size() && j < b.size()) {
+    if (a[i] < b[j])
+      ++i;
+    else if (a[i] > b[j])
+      ++j;
+    else {
+      ++inter;
+      ++i;
+      ++j;
+    }
+  }
+  return static_cast<double>(inter) / static_cast<double>(a.size() + b.size() - inter);
+}
+
+// 自然序比较: 字母段按字典序, 数字段按数值. "cost_buy_1" < "cost_buy_5" < "cost_buy_10".
+// 用作聚类的最终兜底 (name_sim 打平时按此升序), 保证确定性 + 符合直觉.
+static int natural_compare(const std::string &a, const std::string &b) {
+  std::size_t i = 0, j = 0, na = a.size(), nb = b.size();
+  while (i < na && j < nb) {
+    bool da = std::isdigit((unsigned char)a[i]);
+    bool db = std::isdigit((unsigned char)b[j]);
+    if (da != db)
+      return da ? -1 : 1; // 数字段 < 字母段
+    if (!da) {
+      while (i < na && j < nb && !std::isdigit((unsigned char)a[i]) && !std::isdigit((unsigned char)b[j])) {
+        if (a[i] != b[j])
+          return (unsigned char)a[i] < (unsigned char)b[j] ? -1 : 1;
+        ++i;
+        ++j;
+      }
+    } else {
+      std::size_t sa = i, sb = j;
+      while (i < na && std::isdigit((unsigned char)a[i]))
+        ++i;
+      while (j < nb && std::isdigit((unsigned char)b[j]))
+        ++j;
+      while (sa < i && a[sa] == '0')
+        ++sa;
+      while (sb < j && b[sb] == '0')
+        ++sb;
+      std::size_t la = i - sa, lb = j - sb;
+      if (la != lb)
+        return la < lb ? -1 : 1;
+      int c = std::strncmp(a.c_str() + sa, b.c_str() + sb, la);
+      if (c != 0)
+        return c < 0 ? -1 : 1;
+    }
+  }
+  if (i < na)
+    return 1;
+  if (j < nb)
+    return -1;
+  return 0;
+}
+
+// 拆分 deps_list[i] ("code1;code2;...") 为单个 code.
+static std::vector<std::string> split_deps(const std::string &s) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  while (start <= s.size()) {
+    std::size_t sep = s.find(';', start);
+    if (sep == std::string::npos)
+      sep = s.size();
+    if (sep > start)
+      out.emplace_back(s.substr(start, sep - start));
+    start = sep + 1;
+  }
+  return out;
+}
+
+// 单个 cat_l1 组内排序 (四个正交组件, Python 原型在真实特征表上验证过):
+//   1. 相似度: 2×token Jaccard + 1×bigram Jaccard (均去数字) + 2×依赖/出度
+//      (单依赖对如 mcap→mcap_cs 强配对; 17 路节点级扇入摊薄成噪声级)
+//   2. 平均链接凝聚聚类, 平局取自然序最小对 (确定性)
+//   3. 聚类树线性化: 依赖定向 (被依赖侧在前), 无依赖按自然序
+//   4. 粘性 Kahn 拓扑修复: 优先取上一节点的提议后继 (保簇邻接),
+//      否则取提议序最靠前的就绪节点; 无就绪节点 = 依赖成环 (assert)
+static std::vector<int> topo_cluster_group(const std::vector<int> &group,
+                                           const std::vector<FeatureMetadata> &features,
+                                           const std::vector<std::string> &deps_list) {
+  const int n = (int)group.size();
+  if (n <= 1)
+    return group;
+  const auto code_of = [&](int local) -> std::string { return features[group[local]].code; };
+
+  // code -> 组内本地下标 (仅本组出现的 code)
+  std::unordered_map<std::string, int> code_to_local;
+  for (int i = 0; i < n; ++i)
+    code_to_local.emplace(code_of(i), i);
+
+  // 组内依赖邻接 (跨组依赖忽略: cat_l1 分组优先级更高)
+  std::vector<std::vector<int>> deps_local(n);
+  for (int i = 0; i < n; ++i) {
+    int idx = group[i];
+    if (idx >= (int)deps_list.size())
+      continue;
+    for (const auto &code : split_deps(deps_list[idx])) {
+      auto it = code_to_local.find(code);
+      if (it != code_to_local.end())
+        deps_local[i].push_back(it->second);
+    }
+  }
+
+  // ---- 1. 相似度矩阵 ----
+  std::vector<std::vector<std::string>> toks(n), bigs(n);
+  for (int i = 0; i < n; ++i) {
+    std::string a = strip_digits(code_of(i));
+    toks[i] = token_set(a);
+    bigs[i] = bigram_set(a);
+  }
+  std::vector<double> S((std::size_t)n * n, 0.0);
+  for (int i = 0; i < n; ++i)
+    for (int j = i + 1; j < n; ++j) {
+      double s = 2.0 * jaccard(toks[i], toks[j]) + 1.0 * jaccard(bigs[i], bigs[j]);
+      S[(std::size_t)i * n + j] = S[(std::size_t)j * n + i] = s;
+    }
+  for (int i = 0; i < n; ++i) {
+    if (deps_local[i].empty())
+      continue;
+    double b = 2.0 / (double)deps_local[i].size(); // 出度归一化
+    for (int d : deps_local[i]) {
+      S[(std::size_t)i * n + d] += b;
+      S[(std::size_t)d * n + i] += b;
+    }
+  }
+
+  // ---- 2. 平均链接凝聚聚类 (簇 id: 0..n-1 叶, n..2n-2 内部节点) ----
+  const int total = 2 * n - 1;
+  std::vector<double> sum((std::size_t)total * total, 0.0); // 簇间相似度和
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j)
+      sum[(std::size_t)i * total + j] = S[(std::size_t)i * n + j];
+  std::vector<int> sz(total, 0), repv(total, -1); // rep = 自然序最小成员
+  std::vector<std::array<int, 2>> kids(total, {-1, -1});
+  std::vector<char> active(total, 0);
+  for (int i = 0; i < n; ++i) {
+    sz[i] = 1;
+    repv[i] = i;
+    active[i] = 1;
+  }
+  for (int nid = n; nid < total; ++nid) {
+    int ba = -1, bb = -1;
+    double best_avg = -1e18;
+    for (int a = 0; a < nid; ++a) {
+      if (!active[a])
+        continue;
+      for (int b = a + 1; b < nid; ++b) {
+        if (!active[b])
+          continue;
+        double avg = sum[(std::size_t)a * total + b] / ((double)sz[a] * sz[b]);
+        bool better = avg > best_avg + 1e-12;
+        if (!better && std::fabs(avg - best_avg) <= 1e-12) {
+          // 平局: (min rep, max rep) 自然序最小的对胜出
+          const std::string ra = code_of(repv[a]), rb = code_of(repv[b]);
+          const std::string &lo1 = natural_compare(ra, rb) <= 0 ? ra : rb;
+          const std::string &hi1 = natural_compare(ra, rb) <= 0 ? rb : ra;
+          const std::string ca = code_of(repv[ba]), cb = code_of(repv[bb]);
+          const std::string &lo2 = natural_compare(ca, cb) <= 0 ? ca : cb;
+          const std::string &hi2 = natural_compare(ca, cb) <= 0 ? cb : ca;
+          int c = natural_compare(lo1, lo2);
+          better = c < 0 || (c == 0 && natural_compare(hi1, hi2) < 0);
+        }
+        if (better) {
+          best_avg = avg;
+          ba = a;
+          bb = b;
+        }
+      }
+    }
+    assert(ba >= 0 && bb >= 0);
+    kids[nid] = {ba, bb};
+    sz[nid] = sz[ba] + sz[bb];
+    repv[nid] = natural_compare(code_of(repv[ba]), code_of(repv[bb])) <= 0 ? repv[ba] : repv[bb];
+    for (int c = 0; c < nid; ++c) {
+      if (!active[c])
+        continue;
+      double v = sum[(std::size_t)ba * total + c] + sum[(std::size_t)bb * total + c];
+      sum[(std::size_t)nid * total + c] = sum[(std::size_t)c * total + nid] = v;
+    }
+    active[ba] = active[bb] = 0;
+    active[nid] = 1;
+  }
+  const int root = total - 1;
+
+  // ---- 3. 树线性化: 每个内部节点决定左右子树先后 ----
+  //   有依赖跨子树 → 被依赖侧在前; 双向 (只能靠修复) / 无依赖 → 自然序小的在前.
+  std::vector<std::vector<int>> members(total);
+  std::function<void(int)> collect = [&](int cid) {
+    if (kids[cid][0] < 0) {
+      members[cid] = {cid};
+      return;
+    }
+    collect(kids[cid][0]);
+    collect(kids[cid][1]);
+    members[cid] = members[kids[cid][0]];
+    members[cid].insert(members[cid].end(), members[kids[cid][1]].begin(), members[kids[cid][1]].end());
+  };
+  collect(root);
+  std::vector<int> prop;
+  prop.reserve(n);
+  std::vector<char> mark(n, 0);
+  std::function<void(int)> lin = [&](int cid) {
+    if (kids[cid][0] < 0) {
+      prop.push_back(cid);
+      return;
+    }
+    int l = kids[cid][0], r = kids[cid][1];
+    // mark: 1 = l 成员, 2 = r 成员
+    for (int x : members[l])
+      mark[x] = 1;
+    for (int x : members[r])
+      mark[x] = 2;
+    bool l_first = false, r_first = false;
+    for (int x : members[r])
+      for (int d : deps_local[x])
+        if (mark[d] == 1)
+          l_first = true; // r 依赖 l → l 在前
+    for (int x : members[l])
+      for (int d : deps_local[x])
+        if (mark[d] == 2)
+          r_first = true; // l 依赖 r → r 在前
+    for (int x : members[cid])
+      mark[x] = 0;
+    bool swap_lr;
+    if (l_first != r_first)
+      swap_lr = r_first;
+    else
+      swap_lr = natural_compare(code_of(repv[r]), code_of(repv[l])) < 0;
+    if (swap_lr)
+      std::swap(l, r);
+    lin(l);
+    lin(r);
+  };
+  lin(root);
+
+  // ---- 4. 粘性 Kahn 拓扑修复 ----
+  //   优先取上一发出节点的提议后继 (就绪即取, 保簇邻接); 否则取提议序最靠前的
+  //   就绪节点 (被推迟的节点在依赖满足后尽早归位).
+  std::vector<int> pos(n);
+  for (int k = 0; k < n; ++k)
+    pos[prop[k]] = k;
+  std::vector<char> emitted(n, 0);
+  std::vector<int> out_local;
+  out_local.reserve(n);
+  auto is_ready = [&](int x) {
+    for (int d : deps_local[x])
+      if (!emitted[d])
+        return false;
+    return true;
+  };
+  while ((int)out_local.size() < n) {
+    int pick = -1;
+    if (!out_local.empty()) {
+      int k = pos[out_local.back()] + 1;
+      if (k < n && !emitted[prop[k]] && is_ready(prop[k]))
+        pick = prop[k];
+    }
+    if (pick < 0) {
+      for (int x : prop) {
+        if (!emitted[x] && is_ready(x)) {
+          pick = x;
+          break;
+        }
+      }
+    }
+    assert(pick >= 0 && "组内依赖成环");
+    out_local.push_back(pick);
+    emitted[pick] = 1;
+  }
+
+  // 本地下标 → 原始 features 下标
+  std::vector<int> out;
+  out.reserve(n);
+  for (int local : out_local)
+    out.push_back(group[local]);
+  return out;
 }
 
 // ============================================================================
@@ -324,51 +661,86 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       sort_specs->SpecsDirty = false;
     }
 
-    // Apply persistent sorting: 始终以 cat_l1 为主键 (同组相邻), 用户所选列为次键
+    // 排序: 主键恒为 cat_l1 (升序, 同组相邻). 组内次序:
+    //   - 用户未选列 (sort_column == -1): 依赖拓扑 + 名字聚类 (topo_cluster_group)
+    //   - 用户选了列: 按该列升/降序 (保留原交互)
     {
-      std::sort(filtered_indices.begin(), filtered_indices.end(), [&](int a, int b) {
-        const FeatureMetadata &fa = features[a];
-        const FeatureMetadata &fb = features[b];
+      // 1. 按 cat_l1 升序稳定分组 (同组相邻, 组内原序暂保留)
+      std::stable_sort(filtered_indices.begin(), filtered_indices.end(),
+                       [&](int a, int b) {
+                         return std::strcmp(features[a].cat_l1, features[b].cat_l1) < 0;
+                       });
 
-        // 主键: cat_l1 (恒为升序, 保证同组相邻)
-        int cat_cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
-        if (cat_cmp != 0)
-          return cat_cmp < 0;
+      // 聚类排序较重, 缓存: level / 过滤集不变 → 直接用上次结果
+      const bool use_cluster_cache =
+          ui_state.sort_column == -1 &&
+          ui_state.cluster_cache_level == sel.selected_level &&
+          ui_state.cluster_cache_key == filtered_indices;
+      if (use_cluster_cache) {
+        filtered_indices = ui_state.cluster_cache_val;
+      } else {
+        if (ui_state.sort_column == -1)
+          ui_state.cluster_cache_key = filtered_indices; // 先存 key (下面就地重排)
 
-        // 次键: 用户所选列 (无选择则保持原序)
-        int cmp = 0;
-        switch (ui_state.sort_column) {
-        case 2:
-          cmp = strcmp(fa.code, fb.code);
-          break; // Code
-        case 3:
-          cmp = fa.width - fb.width;
-          break; // Width
-        case 4:
-          cmp = (int)fa.valid_type - (int)fb.valid_type;
-          break; // Valid
-        case 5:
-          cmp = strcmp(fa.name_cn, fb.name_cn);
-          break; // Name CN
-        case 6:
-          cmp = (int)fa.data_type - (int)fb.data_type;
-          break; // DataType
-        case 7:
-          cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
-          break; // Cat L1 (主键已排, 此处必相等)
-        case 8:
-          cmp = std::strcmp(fa.cat_l2, fb.cat_l2);
-          break; // Cat L2
-        case 9:
-          cmp = (int)fa.norm_method - (int)fb.norm_method;
-          break; // Norm
-        case 10:
-          cmp = deps_list[a].compare(deps_list[b]);
-          break; // Deps
+        // 2. 逐 cat_l1 组应用组内排序
+        auto it = filtered_indices.begin();
+        while (it != filtered_indices.end()) {
+          auto g_end = it;
+          while (g_end != filtered_indices.end() &&
+                 std::strcmp(features[*g_end].cat_l1, features[*it].cat_l1) == 0)
+            ++g_end;
+
+          if (ui_state.sort_column == -1) {
+            // 默认: 依赖拓扑 + 名字聚类
+            std::vector<int> group(it, g_end);
+            group = topo_cluster_group(group, features, deps_list);
+            std::copy(group.begin(), group.end(), it);
+          } else {
+            // 用户选列: 按该列排序
+            std::sort(it, g_end, [&](int a, int b) {
+              const FeatureMetadata &fa = features[a];
+              const FeatureMetadata &fb = features[b];
+              int cmp = 0;
+              switch (ui_state.sort_column) {
+              case 2:
+                cmp = strcmp(fa.code, fb.code);
+                break;
+              case 3:
+                cmp = fa.width - fb.width;
+                break;
+              case 4:
+                cmp = (int)fa.valid_type - (int)fb.valid_type;
+                break;
+              case 5:
+                cmp = strcmp(fa.name_cn, fb.name_cn);
+                break;
+              case 6:
+                cmp = (int)fa.data_type - (int)fb.data_type;
+                break;
+              case 7:
+                cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
+                break;
+              case 8:
+                cmp = std::strcmp(fa.cat_l2, fb.cat_l2);
+                break;
+              case 9:
+                cmp = (int)fa.norm_method - (int)fb.norm_method;
+                break;
+              case 10:
+                cmp = deps_list[a].compare(deps_list[b]);
+                break;
+              }
+              return ui_state.sort_ascending ? cmp < 0 : cmp > 0;
+            });
+          }
+          it = g_end;
         }
 
-        return ui_state.sort_ascending ? cmp < 0 : cmp > 0;
-      });
+        if (ui_state.sort_column == -1) {
+          ui_state.cluster_cache_level = sel.selected_level;
+          ui_state.cluster_cache_val = filtered_indices;
+        }
+      } // !use_cluster_cache
     }
 
     // Table rows

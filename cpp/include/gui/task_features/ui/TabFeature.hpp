@@ -6,6 +6,8 @@
 //   4. (Future) View analysis results
 #pragma once
 
+#include <vector>
+
 struct SharedData;
 
 namespace GUI::Features {
@@ -24,6 +26,11 @@ struct FeatureUIState {
   // Table display
   int sort_column = -1;
   bool sort_ascending = true;
+
+  // 聚类排序缓存 (凝聚聚类较重, 只在 level / 过滤集变化时重算)
+  int cluster_cache_level = -1;
+  std::vector<int> cluster_cache_key; // cat_l1 稳定排序后的 filtered_indices
+  std::vector<int> cluster_cache_val; // 聚类排序结果
 
   // Search
   char search_buffer[256] = {0};
