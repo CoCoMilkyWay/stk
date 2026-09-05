@@ -244,6 +244,80 @@ void OrderFlow::Depth::clear() {
 }
 
 // ============================================================================
+// OrderFlow::Universe Implementation
+// ============================================================================
+
+void OrderFlow::Universe::Slot::clear() {
+  gen = 0;
+  date.clear();
+  meta.clear();
+}
+
+bool OrderFlow::Universe::passes(const Meta &m, int board) const {
+  // 前置: 当日无有效分钟 → 状态位全为落盘零值, 不可判读
+  if (!m.has_data)
+    return false;
+
+  if (!st_filter.empty() && !st_filter.count(static_cast<int>(m.risk_warn)))
+    return false;
+
+  // 0=在市 1=退市; 未上市 (两者皆否) 在任何非空选择下都排除
+  if (!listed_filter.empty()) {
+    const int state = m.listed ? 0 : (m.delisted ? 1 : -1);
+    if (state < 0 || !listed_filter.count(state))
+      return false;
+  }
+
+  if (!board_filter.empty() && !board_filter.count(board))
+    return false;
+
+  if (!industry_filter.empty() && !industry_filter.count(static_cast<int>(m.industry_l1)))
+    return false;
+
+  return true;
+}
+
+void OrderFlow::Universe::build_display_order(
+    const std::vector<std::pair<std::string, std::string>> &exch_code) {
+  display_order.resize(exch_code.size());
+  for (size_t i = 0; i < exch_code.size(); ++i)
+    display_order[i] = i;
+  std::sort(display_order.begin(), display_order.end(), [&](size_t a, size_t b) {
+    return exch_code[a] < exch_code[b]; // 市场 → 代码 (pair 字典序)
+  });
+}
+
+void OrderFlow::Universe::rebuild_candidates(const Slot &s, const std::vector<int> &boards) {
+  assert(display_order.size() == boards.size() && "boards 与 display_order 不同长");
+  candidates.clear();
+  // 按 display_order 遍历 → 候选天然保持 市场 → 代码 序
+  for (size_t idx : display_order) {
+    if (idx < s.meta.size() && passes(s.meta[idx], boards[idx]))
+      candidates.push_back(idx);
+  }
+  cached_gen = s.gen;
+  cached_epoch = filter_epoch;
+}
+
+void OrderFlow::Universe::clear() {
+  slot[0].clear();
+  slot[1].clear();
+  front.store(0, std::memory_order_relaxed);
+  pending.store(false, std::memory_order_relaxed);
+  st_filter.clear();
+  listed_filter = {0};
+  board_filter.clear();
+  industry_filter.clear();
+  candidates.clear();
+  display_order.clear();
+  cached_gen = UINT32_MAX;
+  filter_epoch = 0;
+  cached_epoch = UINT64_MAX;
+  gen = 0;
+  req_date.clear();
+}
+
+// ============================================================================
 // OrderFlow::HeatmapColored Implementation (GUI 线程)
 // ============================================================================
 
@@ -325,6 +399,7 @@ void OrderFlow::clear() {
   depth[1].clear();
   depth_front.store(0, std::memory_order_relaxed);
   depth_pending.store(false, std::memory_order_relaxed);
+  universe.clear();
   heatmap_colored.clear();
   ui.clear();
   needs_rescan.store(false, std::memory_order_relaxed);

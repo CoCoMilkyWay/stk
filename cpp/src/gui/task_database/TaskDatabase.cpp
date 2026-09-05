@@ -127,8 +127,8 @@ private:
 
     // Create services (in dependency order)
     fundamental_svc_ = std::make_unique<FundamentalService>(io, data);
-    scan_svc_ = std::make_unique<ScanService>(data, io, &data.terminal);
-    encoding_svc_ = std::make_unique<EncodingService>(data, &data.terminal);
+    scan_svc_ = std::make_unique<ScanService>(data, io);
+    encoding_svc_ = std::make_unique<EncodingService>(data);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
     state_mgr_ = std::make_unique<StateManager>(data, fundamental_svc_.get(), scan_svc_.get());
 

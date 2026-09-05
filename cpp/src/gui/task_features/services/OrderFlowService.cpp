@@ -10,10 +10,24 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <limits>
 
 namespace GUI::Features {
+
+// ============================================================================
+// Universe 状态列 (L1, Fund 算子日频广播; 顺序 = uni_cols 的列下标)
+// ============================================================================
+
+namespace {
+enum UniCol : size_t { UNI_META = 0,
+                       UNI_RISK_WARN,
+                       UNI_LIST_AGE,
+                       UNI_DELIST_AGE,
+                       UNI_INDUSTRY };
+constexpr size_t UNIVERSE_COL_COUNT = 5;
+} // namespace
 
 // ============================================================================
 // Impl — worker 线程私有常驻资源 (稳态零分配)
@@ -24,7 +38,7 @@ struct OrderFlowService::Impl {
   L2::BinaryDecoder_L2 decoder;
   LimitOrderBook lob; // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
   TickData tick_data; // 无特征侧绑定的盘口写出口
-  FeatureRead::DayColumns l1_cols, l0_cols;
+  FeatureRead::DayColumns l1_cols, l0_cols, uni_cols;
   OrderFlow::Depth::HeatmapScratch scratch;
   std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
   std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
@@ -36,6 +50,7 @@ struct OrderFlowService::Impl {
         lob(L2::LOB_ORDER_CAPACITY) {
     l1_cols.preallocate(A, 1, 5 + OrderFlowConst::MAX_FEATURES); // OHLC 4 + _meta + 特征
     l0_cols.preallocate(A, 0, 1 + OrderFlowConst::MAX_FEATURES); // _meta + 特征
+    uni_cols.preallocate(A, 1, UNIVERSE_COL_COUNT);              // 资产筛选状态列
   }
 };
 
@@ -90,6 +105,14 @@ void OrderFlowService::RequestDepth(uint32_t gen, std::string date, size_t asset
   req_cv_.notify_all();
 }
 
+void OrderFlowService::RequestUniverse(uint32_t gen, std::string date) {
+  {
+    std::lock_guard<std::mutex> lock(req_mutex_);
+    pending_universe_ = UniverseReq{gen, std::move(date)};
+  }
+  req_cv_.notify_all();
+}
+
 // ============================================================================
 // Worker loop — Depth 重放优先, Kline 逐日流式垫底, 每步之间轮询新请求
 // ============================================================================
@@ -101,15 +124,17 @@ void OrderFlowService::worker_loop() {
   while (true) {
     std::optional<KlineReq> kreq;
     std::optional<DepthReq> dreq;
+    std::optional<UniverseReq> ureq;
     {
       std::unique_lock<std::mutex> lock(req_mutex_);
       auto has_work = [&] {
         return stop_.load(std::memory_order_relaxed) || pending_kline_.has_value() ||
                (pending_depth_.has_value() && !of.depth_pending.load(std::memory_order_acquire)) ||
+               (pending_universe_.has_value() && !of.universe.pending.load(std::memory_order_acquire)) ||
                (kline_active_ && kline_next_day_ < of.kline.dates.size());
       };
       if (!has_work()) {
-        if (pending_depth_.has_value()) // 背槽待 GUI ack: 无 cv 信号, 限时睡
+        if (pending_depth_.has_value() || pending_universe_.has_value()) // 背槽待 GUI ack: 无 cv 信号, 限时睡
           req_cv_.wait_for(lock, std::chrono::milliseconds(2), has_work);
         else
           req_cv_.wait(lock, has_work);
@@ -124,10 +149,18 @@ void OrderFlowService::worker_loop() {
         dreq = std::move(pending_depth_);
         pending_depth_.reset();
       }
+      if (pending_universe_ && !of.universe.pending.load(std::memory_order_acquire)) {
+        ureq = std::move(pending_universe_);
+        pending_universe_.reset();
+      }
     }
 
     if (kreq)
       kline_begin(*kreq);
+    if (ureq) {
+      universe_build(*ureq); // 资产选择依赖它, 排在 depth 前
+      continue;
+    }
     if (dreq) {
       depth_build(*dreq);
       continue; // 构建后先回头看新请求
@@ -256,6 +289,67 @@ bool OrderFlowService::kline_step() {
 
   ++kline_next_day_;
   return kline_next_day_ < k.dates.size();
+}
+
+// ============================================================================
+// Universe: 锚点日的 L1 filter 列 → 全资产 PIT 状态 → 背槽发布
+//   Fund 是 onDay 算一次 / onMinute 原样广播, 故当日任一有效分钟的值即当日状态;
+//   取首个 _meta 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
+// ============================================================================
+
+void OrderFlowService::universe_build(const UniverseReq &req) {
+  TraceN("OF_UniverseBuild");
+  OrderFlow &of = data_->orderflow;
+  auto &uni = of.universe;
+  assert(!uni.pending.load(std::memory_order_acquire) && "universe_build: 背槽未 ack");
+
+  OrderFlow::Universe::Slot &slot = uni.slot[1 - uni.front.load(std::memory_order_acquire)];
+  slot.clear();
+  slot.gen = req.gen;
+  slot.date = req.date;
+
+  const size_t A = data_->asset.items.size();
+  slot.meta.assign(A, OrderFlow::Universe::Meta{});
+
+  auto &cols = impl_->columns;
+  cols.assign({static_cast<size_t>(L1_Field::_meta), static_cast<size_t>(L1_Field::risk_warn),
+               static_cast<size_t>(L1_Field::list_age), static_cast<size_t>(L1_Field::delist_age),
+               static_cast<size_t>(L1_Field::industry_l1)});
+  assert(cols.size() == UNIVERSE_COL_COUNT);
+  impl_->reader.load_day_columns(req.date, cols, impl_->uni_cols);
+
+  // 时间外层 / 资产内层 (布局 [T][n][A]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
+  const FeatureRead::DayColumns &c = impl_->uni_cols;
+  assert(A <= c.A);
+  size_t remaining = A;
+  for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
+    for (size_t a = 0; a < A; ++a) {
+      OrderFlow::Universe::Meta &meta = slot.meta[a];
+      if (meta.has_data) // 已取到当日状态 (日频广播, 后续分钟同值)
+        continue;
+      if (!fmeta::data_valid(static_cast<float>(c.get(m, UNI_META, a))))
+        continue;
+
+      meta.has_data = true;
+      --remaining;
+
+      const float rw = static_cast<float>(c.get(m, UNI_RISK_WARN, a));
+      meta.risk_warn = (rw >= 0.0f && rw <= 3.0f) ? static_cast<uint8_t>(rw + 0.5f) : 0;
+
+      const float ind = static_cast<float>(c.get(m, UNI_INDUSTRY, a));
+      meta.industry_l1 = (ind >= 0.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT))
+                             ? static_cast<uint8_t>(ind + 0.5f)
+                             : 0;
+
+      // list_age/delist_age: 非 NaN = 已上市/已退市 (>= 0 日历日), NaN = 未发生
+      const float lage = static_cast<float>(c.get(m, UNI_LIST_AGE, a));
+      const float dage = static_cast<float>(c.get(m, UNI_DELIST_AGE, a));
+      meta.delisted = !std::isnan(dage);
+      meta.listed = !std::isnan(lage) && !meta.delisted;
+    }
+  }
+
+  uni.pending.store(true, std::memory_order_release);
 }
 
 // ============================================================================

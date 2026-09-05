@@ -22,8 +22,8 @@ unsigned scan_threads() {
 }
 } // namespace
 
-ScanService::ScanService(SharedData &data, io_context &io, TaskTerminal *term)
-    : data_(data), io_(io), terminal_(term) {}
+ScanService::ScanService(SharedData &data, io_context &io)
+    : data_(data), io_(io) {}
 
 void ScanService::trigger_scan(ScanMode mode) {
   // Atomic check: if already scanning, ignore request

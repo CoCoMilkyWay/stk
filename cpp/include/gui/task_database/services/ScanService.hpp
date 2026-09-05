@@ -10,7 +10,6 @@
 
 // Forward declarations
 struct SharedData;
-struct TaskTerminal;
 
 namespace GUI::Database {
 
@@ -126,7 +125,6 @@ class ScanService {
 private:
   SharedData &data_;
   io_context &io_;
-  TaskTerminal *terminal_;
 
   std::atomic<bool> is_scanning_{false};
   ScanStatus status_ = ScanStatus::Idle;
@@ -134,7 +132,7 @@ private:
   std::function<void()> on_complete_callback_;
 
 public:
-  ScanService(SharedData &data, io_context &io, TaskTerminal *term = nullptr);
+  ScanService(SharedData &data, io_context &io);
 
   // ============================================================================
   // Lifecycle

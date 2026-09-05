@@ -11,7 +11,6 @@
 
 // Forward declarations
 struct SharedData;
-struct TaskTerminal;
 class BatchQueue;
 
 namespace GUI::Database {
@@ -53,7 +52,6 @@ struct EncodingProgress {
 class EncodingService {
 private:
   SharedData &data_;
-  TaskTerminal *terminal_;
 
   std::atomic<bool> cancel_flag_{false};
   std::shared_ptr<misc::ParallelProgress> progress_;
@@ -74,7 +72,7 @@ private:
   std::function<void()> scan_callback_; // Callback to trigger scan after encoding
 
 public:
-  EncodingService(SharedData &data, TaskTerminal *term);
+  EncodingService(SharedData &data);
   ~EncodingService(); // 定义在 cpp — BatchQueue 对头文件是不完整类型
 
   // Lifecycle (changed to non-coroutine, uses background threads)

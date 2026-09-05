@@ -1,6 +1,5 @@
 #include "gui/task_settings/TaskSettings.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
 #include "misc/cross_platform.hpp"
 #include "shared/SharedData.hpp"
@@ -8,6 +7,7 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <iostream>
 #include <ranges>
 #include <string_view>
 
@@ -186,8 +186,8 @@ private:
     if (ts.initialized) {
       return;
     }
-    data.config.log_callback = [&data](const std::string &msg) {
-      data.terminal.AddLine(msg);
+    data.config.log_callback = [](const std::string &msg) {
+      std::cout << msg << std::endl;
     };
     data.config.Initialize();
     ts.initialized = true;

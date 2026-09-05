@@ -1,6 +1,5 @@
 // Encoding Service Implementation
 #include "gui/task_database/services/EncodingService.hpp"
-#include "gui/task_terminal/TaskTerminal.hpp"
 #include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
 #include "shared/SharedData.hpp"
@@ -15,8 +14,8 @@
 
 namespace GUI::Database {
 
-EncodingService::EncodingService(SharedData &data, TaskTerminal *term)
-    : data_(data), terminal_(term) {
+EncodingService::EncodingService(SharedData &data)
+    : data_(data) {
   // Scan operations now in Asset class
 }
 
@@ -192,11 +191,8 @@ EncodingProgress EncodingService::get_progress() const {
 }
 
 void EncodingService::run_file_check(const std::string &archive_base_dir) {
-  if (!terminal_)
-    return;
-
   if (file_check_running_.load()) {
-    terminal_->AddLine("[File Check] Already running, please wait...", Color::Yellow());
+    std::cout << "[File Check] Already running, please wait..." << std::endl;
     return;
   }
 
@@ -208,71 +204,70 @@ void EncodingService::run_file_check(const std::string &archive_base_dir) {
 }
 
 void EncodingService::run_file_check_async(const std::string &archive_base_dir) {
-  terminal_->AddLine("========================================");
-  terminal_->AddLine("[File Check] Starting Archive Validation");
-  terminal_->AddLine("========================================");
-  terminal_->AddLine("[File Check] Archive path: " + archive_base_dir);
-  terminal_->AddLine("");
+  std::cout << "========================================\n"
+            << "[File Check] Starting Archive Validation\n"
+            << "========================================\n"
+            << "[File Check] Archive path: " << archive_base_dir << "\n"
+            << std::endl;
 
   // Step 1: Check directory exists
-  terminal_->AddLine("[File Check] Step 1: Checking archive directory...");
+  std::cout << "[File Check] Step 1: Checking archive directory..." << std::endl;
 
   // Each probe (unrar lb) does O(entries) scattered read+lseek pairs across
   // the whole archive to walk its header chain (measured via strace: ~6500
   // read+lseek pairs for a 3270-entry / 3.9GB archive). The archive store is
   // a single-actuator spinning disk, so probes run sequentially -- running
   // several concurrently thrashes the disk head (measured 359x slowdown).
-  auto progress = [this](size_t done, size_t total, const std::string &path) {
-    terminal_->AddLine("[File Check]   (" + std::to_string(done) + "/" +
-                       std::to_string(total) + ") " + path);
+  auto progress = [](size_t done, size_t total, const std::string &path) {
+    std::cout << "[File Check]   (" << done << "/" << total << ") " << path << std::endl;
   };
 
   FileCheck::FileCheckResult local_result =
       FileCheck::check_src_archives(archive_base_dir, progress);
 
   if (!local_result.archive_dir_exists) {
-    terminal_->AddLine("[File Check] ✗ Archive directory does not exist", Color::Yellow());
-    terminal_->AddLine("[File Check] Will use built binaries instead");
-    terminal_->AddLine("========================================");
+    std::cout << "[File Check] ✗ Archive directory does not exist\n"
+              << "[File Check] Will use built binaries instead\n"
+              << "========================================" << std::endl;
     file_check_result_ = local_result;
     return;
   }
 
-  terminal_->AddLine("[File Check] ✓ Archive directory exists", Color::Green());
-  terminal_->AddLine("");
+  std::cout << "[File Check] ✓ Archive directory exists\n"
+            << std::endl;
 
   // Step 2: Check required commands
-  terminal_->AddLine("[File Check] Step 2: Checking required commands (unrar, 7z, rar, gdb)...");
+  std::cout << "[File Check] Step 2: Checking required commands (unrar, 7z, rar, gdb)..." << std::endl;
   if (!local_result.commands_available) {
-    terminal_->AddLine("[File Check] ✗ Some required commands are missing", Color::Red());
-    terminal_->AddLine("[File Check] Please install: unrar, 7z, rar, gdb");
-    terminal_->AddLine("========================================");
+    std::cout << "[File Check] ✗ Some required commands are missing\n"
+              << "[File Check] Please install: unrar, 7z, rar, gdb\n"
+              << "========================================" << std::endl;
     file_check_result_ = local_result;
     return;
   }
-  terminal_->AddLine("[File Check] ✓ All required commands available", Color::Green());
-  terminal_->AddLine("");
+  std::cout << "[File Check] ✓ All required commands available\n"
+            << std::endl;
 
   // Step 3: Scan archives
-  terminal_->AddLine("[File Check] Step 3: Scanning archive files...");
-  terminal_->AddLine("[File Check] Total archives found: " + std::to_string(local_result.total_archives), Color::Green());
-  terminal_->AddLine("");
+  std::cout << "[File Check] Step 3: Scanning archive files...\n"
+            << "[File Check] Total archives found: " << local_result.total_archives << "\n"
+            << std::endl;
 
   // Step 4-7: Validate naming, format, structure, ZIP files
-  auto print_errors = [this](const std::string &step, const std::string &desc, size_t count,
-                             const std::vector<std::string> &files, const std::string &fix = "") {
-    terminal_->AddLine("[File Check] " + step + ": " + desc + "...");
+  auto print_errors = [](const std::string &step, const std::string &desc, size_t count,
+                         const std::vector<std::string> &files, const std::string &fix = "") {
+    std::cout << "[File Check] " << step << ": " << desc << "..." << std::endl;
     if (count > 0) {
-      terminal_->AddLine("[File Check] ✗ Found " + std::to_string(count) + " error(s)", Color::Red());
+      std::cout << "[File Check] ✗ Found " << count << " error(s)" << std::endl;
       if (!fix.empty())
-        terminal_->AddLine("[File Check]   Fix: " + fix);
+        std::cout << "[File Check]   Fix: " << fix << std::endl;
       for (const auto &file : files) {
-        terminal_->AddLine("[File Check]   - " + file, Color::Yellow());
+        std::cout << "[File Check]   - " << file << std::endl;
       }
     } else {
-      terminal_->AddLine("[File Check] ✓ All correct", Color::Green());
+      std::cout << "[File Check] ✓ All correct" << std::endl;
     }
-    terminal_->AddLine("");
+    std::cout << std::endl;
   };
 
   print_errors("Step 4", "Checking archive naming (YYYY/YYYYMM/YYYYMMDD.rar)",
@@ -295,20 +290,18 @@ void EncodingService::run_file_check_async(const std::string &archive_base_dir) 
                "Run py/app/FileRepair/fix_to_rar.py");
 
   // Summary
-  terminal_->AddLine("========================================");
+  std::cout << "========================================" << std::endl;
   if (local_result.passed) {
-    terminal_->AddLine("[File Check] ✓ ALL CHECKS PASSED", Color::Green());
-    terminal_->AddLine("[File Check] Valid archives: " + std::to_string(local_result.valid_archives));
+    std::cout << "[File Check] ✓ ALL CHECKS PASSED\n"
+              << "[File Check] Valid archives: " << local_result.valid_archives << std::endl;
   } else {
-    terminal_->AddLine("[File Check] ✗ SOME CHECKS FAILED", Color::Red());
-    terminal_->AddLine("[File Check] Valid: " + std::to_string(local_result.valid_archives) +
-                       " / Total: " + std::to_string(local_result.total_archives));
-    terminal_->AddLine("[File Check] Total errors: " + std::to_string(
-                                                           local_result.naming_errors + local_result.format_errors +
-                                                           local_result.structure_errors + local_result.integrity_errors +
-                                                           local_result.zip_files));
+    std::cout << "[File Check] ✗ SOME CHECKS FAILED\n"
+              << "[File Check] Valid: " << local_result.valid_archives
+              << " / Total: " << local_result.total_archives << "\n"
+              << "[File Check] Total errors: " << (local_result.naming_errors + local_result.format_errors + local_result.structure_errors + local_result.integrity_errors + local_result.zip_files)
+              << std::endl;
   }
-  terminal_->AddLine("========================================");
+  std::cout << "========================================" << std::endl;
 
   // Publish result once, atomically, at the end.
   file_check_result_ = local_result;

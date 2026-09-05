@@ -4,6 +4,8 @@
 //   2. 期望态检测: asset / anchor date / 选中特征 变了 → gen++ → Request*
 //   3. 渲染: Kline 画已发布前缀 (gen 配对), Depth 画 front 槽 (新代在途时旧槽照画 + Loading 提示)
 #include "gui/task_features/ui/TabOrderFlow.hpp"
+#include "features/Method/Fundamental.hpp"
+#include "gui/task_database/models/SharedTypes.hpp" // BoardType / GetBoardType (板块口径与 TABLE 同源)
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "shared/SharedData.hpp"
 
@@ -14,6 +16,9 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace GUI::Features {
@@ -505,8 +510,102 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, float height) {
 }
 
 // ============================================================================
-// Asset Selector
+// Asset Filter + Selector (筛选口径搬自 DATABASE/TABLE, 数据换成锚点日的逐日 PIT)
 // ============================================================================
+
+// 多选下拉 (空集 = 不筛; 对仗 TabTable::RenderMultiSelectCombo)
+static bool RenderFilterCombo(const char *label, float width,
+                              const std::vector<std::pair<int, std::string>> &items,
+                              std::set<int> &selected) {
+  std::string preview;
+  if (selected.empty()) {
+    preview = "All";
+  } else {
+    for (const auto &[value, text] : items) {
+      if (selected.count(value)) {
+        if (!preview.empty())
+          preview += ", ";
+        preview += text;
+      }
+    }
+    if (preview.size() > 24)
+      preview = std::to_string(selected.size()) + " selected";
+  }
+
+  bool changed = false;
+  ImGui::SetNextItemWidth(width);
+  if (ImGui::BeginCombo(label, preview.c_str())) {
+    for (const auto &[value, text] : items) {
+      bool is_selected = selected.count(value) != 0;
+      if (ImGui::Checkbox(text.c_str(), &is_selected)) {
+        if (is_selected)
+          selected.insert(value);
+        else
+          selected.erase(value);
+        changed = true;
+      }
+    }
+    ImGui::Separator();
+    if (ImGui::SmallButton("All")) {
+      selected.clear();
+      changed = true;
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
+static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
+  auto &uni = of.universe;
+  bool changed = false;
+
+  static const std::vector<std::pair<int, std::string>> st_items = {
+      {0, "正常"}, {1, "ST"}, {2, "*ST"}, {3, "退市整理"}};
+  changed |= RenderFilterCombo("ST##ofSt", 100.0f, st_items, uni.st_filter);
+
+  static const std::vector<std::pair<int, std::string>> listed_items = {{0, "在市"}, {1, "退市"}};
+  ImGui::SameLine();
+  changed |= RenderFilterCombo("Listed##ofListed", 100.0f, listed_items, uni.listed_filter);
+
+  using GUI::Database::BoardType;
+  static const std::vector<std::pair<int, std::string>> board_items = {
+      {static_cast<int>(BoardType::Unknown), "Unknown"},
+      {static_cast<int>(BoardType::SH_Main), "沪主板"},
+      {static_cast<int>(BoardType::SZ_Main), "深主板"},
+      {static_cast<int>(BoardType::STAR), "科创板"},
+      {static_cast<int>(BoardType::ChiNext), "创业板"},
+      {static_cast<int>(BoardType::BSE), "北交所"}};
+  ImGui::SameLine();
+  changed |= RenderFilterCombo("Board##ofBoard", 120.0f, board_items, uni.board_filter);
+
+  // 行业: SW2021 一级 (0 = 未知), 表在 fund::SW2021_L1_NAMES
+  static const std::vector<std::pair<int, std::string>> industry_items = [] {
+    std::vector<std::pair<int, std::string>> v;
+    for (size_t i = 0; i < fund::SW2021_L1_COUNT; ++i)
+      v.emplace_back(static_cast<int>(i), std::string(fund::SW2021_L1_NAMES[i]));
+    return v;
+  }();
+  ImGui::SameLine();
+  changed |= RenderFilterCombo("Industry##ofInd", 140.0f, industry_items, uni.industry_filter);
+
+  if (changed)
+    ++uni.filter_epoch;
+
+  // 候选数 / 锚点日
+  const OrderFlow::Universe::Slot &slot = uni.front_slot();
+  ImGui::SameLine();
+  if (slot.gen == uni.gen && !slot.meta.empty()) {
+    ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "%zu/%zu",
+                       uni.candidates.size(), data.asset.items.size());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s 通过筛选的标的数 / 总数\n"
+                        "状态取自当日 L1 落盘列 (ST / 上市 / 行业);\n"
+                        "当日无有效分钟的标的不列入 (无盘口可看)",
+                        slot.date.c_str());
+  } else {
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "loading...");
+  }
+}
 
 static void RenderAssetSelector(SharedData &data, OrderFlow &of) {
   const size_t num_assets = data.asset.items.size();
@@ -514,42 +613,58 @@ static void RenderAssetSelector(SharedData &data, OrderFlow &of) {
     return;
 
   auto &ui = of.ui;
+  auto &uni = of.universe;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
-  const std::string &latest_date = data.asset.all_dates.back();
+
+  // 当前选中是否在候选内 (切日期/改筛选后可能落选; 保留选中, 仅标注)
+  const bool cur_in_candidates =
+      std::find(uni.candidates.begin(), uni.candidates.end(), asset_idx) != uni.candidates.end();
 
   ImGui::Text("Asset:");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(200);
+  ImGui::SetNextItemWidth(220);
 
   const auto &current_asset = data.asset.items[asset_idx];
-  const bool current_delisted = current_asset.end_date < latest_date;
-
   char preview_buf[256];
   std::snprintf(preview_buf, sizeof(preview_buf), "%s-%s-%s%s",
                 current_asset.asset_code.c_str(), current_asset.exchange.c_str(),
-                current_asset.asset_name.c_str(), current_delisted ? " (DL)" : "");
+                current_asset.asset_name.c_str(), cur_in_candidates ? "" : " (不符筛选)");
 
-  if (ImGui::BeginCombo("##asset", preview_buf)) {
-    for (size_t i = 0; i < num_assets; ++i) {
-      const auto &asset = data.asset.items[i];
-      const bool is_delisted = asset.end_date < latest_date;
+  if (!cur_in_candidates)
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f));
+  const bool combo_open = ImGui::BeginCombo("##asset", preview_buf);
+  if (!cur_in_candidates)
+    ImGui::PopStyleColor();
 
-      char label[256];
-      std::snprintf(label, sizeof(label), "%s-%s-%s%s",
-                    asset.asset_code.c_str(), asset.exchange.c_str(),
-                    asset.asset_name.c_str(), is_delisted ? " (DL)" : "");
+  if (combo_open) {
+    if (uni.candidates.empty())
+      ImGui::TextDisabled("无符合筛选的标的");
 
-      if (is_delisted)
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+    // candidates 可能建于上一代槽 (新代在途), ST 标记按当前 front 槽尽力显示
+    const auto &meta_now = uni.front_slot().meta;
 
-      const bool is_selected = (ui.selected_asset_idx == static_cast<int>(i));
-      if (ImGui::Selectable(label, is_selected, is_delisted ? ImGuiSelectableFlags_Disabled : 0))
-        ui.selected_asset_idx = static_cast<int>(i);
+    // candidates 已是 市场 → 代码 序
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(uni.candidates.size()));
+    while (clipper.Step()) {
+      for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+        const size_t i = uni.candidates[static_cast<size_t>(row)];
+        const auto &asset = data.asset.items[i];
+        const uint8_t rw = i < meta_now.size() ? meta_now[i].risk_warn : 0;
 
-      if (is_delisted)
-        ImGui::PopStyleColor();
-      if (is_selected)
-        ImGui::SetItemDefaultFocus();
+        char label[256];
+        std::snprintf(label, sizeof(label), "%s-%s-%s%s##a%zu",
+                      asset.asset_code.c_str(), asset.exchange.c_str(),
+                      asset.asset_name.c_str(),
+                      rw == 2 ? " *ST" : (rw == 1 ? " ST" : (rw == 3 ? " 退整" : "")),
+                      i);
+
+        const bool is_selected = (asset_idx == i);
+        if (ImGui::Selectable(label, is_selected))
+          ui.selected_asset_idx = static_cast<int>(i);
+        if (is_selected)
+          ImGui::SetItemDefaultFocus();
+      }
     }
     ImGui::EndCombo();
   }
@@ -660,11 +775,15 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   service->Start(data); // 幂等: 首帧启动 worker
 
   // ==========================================================================
-  // 帧首: depth 背槽发布 ack → 翻 front (先翻面后清 pending, worker 等 pending 清)
+  // 帧首: 背槽发布 ack → 翻 front (先翻面后清 pending, worker 等 pending 清)
   // ==========================================================================
   if (of.depth_pending.load(std::memory_order_acquire)) {
     of.depth_front.store(1 - of.depth_front.load(std::memory_order_relaxed), std::memory_order_release);
     of.depth_pending.store(false, std::memory_order_release);
+  }
+  if (of.universe.pending.load(std::memory_order_acquire)) {
+    of.universe.front.store(1 - of.universe.front.load(std::memory_order_relaxed), std::memory_order_release);
+    of.universe.pending.store(false, std::memory_order_release);
   }
 
   // ==========================================================================
@@ -705,6 +824,37 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   }
 
   // ==========================================================================
+  // Universe: 锚点日的资产筛选状态 (先定日期, 再 apply filter)
+  // ==========================================================================
+  auto &uni = of.universe;
+
+  // 静态显示序 (市场 → 代码) + 板块表: 建一次
+  static std::vector<int> asset_boards;
+  if (uni.display_order.size() != num_assets) {
+    std::vector<std::pair<std::string, std::string>> exch_code(num_assets);
+    asset_boards.resize(num_assets);
+    for (size_t i = 0; i < num_assets; ++i) {
+      exch_code[i] = {data.asset.items[i].exchange, data.asset.items[i].asset_code};
+      asset_boards[i] = static_cast<int>(GUI::Database::GetBoardType(data.asset.items[i].asset_code));
+    }
+    uni.build_display_order(exch_code);
+    uni.cached_gen = UINT32_MAX; // 强制重建候选
+  }
+
+  if (!ui.l1_anchor_date.empty() && (rescan || uni.req_date != ui.l1_anchor_date)) {
+    uni.req_date = ui.l1_anchor_date;
+    ++uni.gen;
+    service->RequestUniverse(uni.gen, ui.l1_anchor_date);
+  }
+
+  // 候选重建 (槽换代 或 筛选条件变)
+  {
+    const OrderFlow::Universe::Slot &slot = uni.front_slot();
+    if (slot.gen == uni.gen && slot.meta.size() == num_assets && !uni.matches(slot.gen))
+      uni.rebuild_candidates(slot, asset_boards);
+  }
+
+  // ==========================================================================
   // LAYOUT
   // ==========================================================================
   const float content_height = ImGui::GetContentRegionAvail().y;
@@ -740,6 +890,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // ==========================================================================
   ImGui::BeginChild("BottomSection", ImVec2(0, bottom_view_height), true);
 
+  RenderAssetFilterBar(data, of);
   RenderAssetSelector(data, of);
   ImGui::SameLine();
   RenderHeatmapControls(of);

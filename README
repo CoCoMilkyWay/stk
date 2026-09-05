@@ -69,8 +69,6 @@ stk/
 │   │   │   ├── util/Color.hpp                           # 🖥️
 │   │   │   ├── coro/                                    # 🖥️ 协程基础设施
 │   │   │   │   └── CoroManager.hpp                      # 🖥️ 协程管理器: 调度/生命周期
-│   │   │   ├── task_terminal/                           # 🖥️ GUI任务模块
-│   │   │   │   └── TaskTerminal.hpp                     # 🖥️ 终端: 命令输出/日志显示
 │   │   │   ├── task_settings/                           # 🖥️
 │   │   │   │   └── TaskSettings.hpp                     # 🖥️ 设置: 配置管理 [synced/syncing/writing]
 │   │   │   ├── task_system_info/                        # 🖥️
@@ -109,10 +107,10 @@ stk/
 │   │   │   │  > SystemInfo[""/live]               │                                    │
 │   │   │   │  > DataBase                          │                                    │
 │   │   │   │  > Features                          │                                    │
-│   │   │   │  > Tools                             ├────────────────────────────────────┤
-│   │   │   │  ...                                 │ Terminal:                          │
+│   │   │   │  > Tools                             │                                    │
+│   │   │   │  ...                                 │                                    │
 │   │   │   │ Icon:                                │                                    │
-│   │   │   │  |Network|FPS│                       |                                    │
+│   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── math/                                        # 📐 autoencoder / distribution / model / normalize / sample / spectral / stationary / timeseries
 │   │   │   └── Operator.hpp                             # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)

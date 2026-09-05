@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -220,6 +221,62 @@ struct OrderFlow {
   std::atomic<int> depth_front{0};        // GUI ack 时翻转
   std::atomic<bool> depth_pending{false}; // worker 置位 / GUI ack
   const Depth &depth_front_slot() const { return depth[depth_front.load(std::memory_order_acquire)]; }
+
+  // ==========================================================================
+  // Universe (资产选择) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
+  //   状态源 = L1 落盘列 (Fund 算子日频广播): risk_warn / list_age / delist_age
+  //   / industry_l1, 配合同层 _meta 判有效 —— 当日无有效分钟的资产读不到状态
+  //   (落盘缓冲清零, 值全 0 会被误读成"正常在市"), 一律不进候选.
+  // ==========================================================================
+  struct Universe {
+    // 单资产当日状态 (worker 写背槽, 发布后只读)
+    struct Meta {
+      uint8_t industry_l1 = 0; // SW2021 一级行业 ID (0 = 未知), 见 fund::SW2021_L1_NAMES
+      uint8_t risk_warn = 0;   // 0=正常 1=ST 2=*ST 3=退市整理期
+      bool has_data = false;   // 当日有有效分钟 (false = 其余字段无意义)
+      bool listed = false;     // 当日在市 (已上市 且 未退市)
+      bool delisted = false;   // 当日已退市
+    };
+
+    // ---- 逐日状态槽 (双槽 ping-pong, 对仗 Depth) ----
+    struct Slot {
+      uint32_t gen = 0;
+      std::string date;
+      std::vector<Meta> meta; // [A] 与 AssetAxis 同序 (asset_idx 直接下标)
+      void clear();
+    };
+    Slot slot[2];
+    std::atomic<int> front{0};
+    std::atomic<bool> pending{false};
+    const Slot &front_slot() const { return slot[front.load(std::memory_order_acquire)]; }
+
+    // ---- 筛选条件 (GUI; 空集 = 该维不筛, 对仗 DATABASE/TABLE) ----
+    std::set<int> st_filter;        // risk_warn 取值 0..3
+    std::set<int> listed_filter{0}; // 0=在市 1=退市 (默认在市)
+    std::set<int> board_filter;     // GUI::Database::BoardType 的底层值
+    std::set<int> industry_filter;  // SW2021 一级行业 ID
+
+    // ---- 候选列表 (GUI 派生缓存: 过滤 + 排序) ----
+    std::vector<size_t> candidates;    // 通过筛选的 asset_idx (市场 → 代码序)
+    std::vector<size_t> display_order; // 全部 asset_idx 按 市场 → 代码 排序 (静态, 建一次)
+    uint32_t cached_gen = UINT32_MAX;  // 上次 rebuild 绑定的槽 gen
+    uint64_t filter_epoch = 0;         // 筛选条件版本 (改一次 +1)
+    uint64_t cached_epoch = UINT64_MAX;
+    bool matches(uint32_t g) const { return cached_gen == g && cached_epoch == filter_epoch; }
+
+    // 请求快照 (GUI; 锚点日变 → gen++ → RequestUniverse)
+    uint32_t gen = 0;
+    std::string req_date;
+
+    // GUI: 单资产是否通过筛选 (has_data 是前置条件)
+    bool passes(const Meta &m, int board) const;
+    // GUI: display_order 建一次 (市场 → 代码序); codes/exchanges 与 AssetAxis 同序
+    void build_display_order(const std::vector<std::pair<std::string, std::string>> &exch_code);
+    // GUI: 重建候选 (front 槽 + 筛选条件); boards[asset_idx] 由调用方按代码推出
+    void rebuild_candidates(const Slot &s, const std::vector<int> &boards);
+
+    void clear();
+  } universe;
 
   // ==========================================================================
   // HeatmapColored — GUI 线程私有: front Depth 槽 + 阈值 → 着色矩形

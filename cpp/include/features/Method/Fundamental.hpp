@@ -18,11 +18,32 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fund {
+
+// ============================================================================
+// SW2021 一级行业 (与 qmt feature/industry.hpp 同表同 ID, 顺序不得改动)
+//   落盘列 industry_l1 的取值域: 0 = 未知, 1..31; GUI 行业筛选按此显示中文名
+// ============================================================================
+inline constexpr std::string_view SW2021_L1_NAMES[32] = {
+    "未知", "交通运输", "传媒", "公用事业", "农林牧渔", "医药生物", "商贸零售",
+    "国防军工", "基础化工", "家用电器", "建筑材料", "建筑装饰", "房地产",
+    "有色金属", "机械设备", "汽车", "煤炭", "环保", "电力设备", "电子",
+    "石油石化", "社会服务", "纺织服饰", "综合", "美容护理", "计算机",
+    "轻工制造", "通信", "钢铁", "银行", "非银金融", "食品饮料"};
+inline constexpr std::size_t SW2021_L1_COUNT = 32;
+
+inline std::uint8_t sw2021_l1_name_to_id(std::string_view name) {
+  for (std::uint8_t i = 1; i < SW2021_L1_COUNT; ++i)
+    if (SW2021_L1_NAMES[i] == name)
+      return i;
+  return 0;
+}
 
 struct Data;  // 轴 / meta / 网格切片 / 事件链 (定义在 .cpp)
 struct State; // Stream 内部状态 (定义在 .cpp)

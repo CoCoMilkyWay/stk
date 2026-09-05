@@ -11,7 +11,6 @@
 #include "./Transform.hpp"
 #include "features/Method/Fundamental.hpp"
 #include "gui/coro/CoroManager.hpp"
-#include "gui/task_terminal/TaskTerminal.hpp"
 
 struct SharedData {
   Config config;
@@ -26,7 +25,6 @@ struct SharedData {
   Transform transform;
 
   CoroManager coromgr;
-  TaskTerminal terminal;
 
   bool request_reinit = false;
   bool high_performance_mode = false;

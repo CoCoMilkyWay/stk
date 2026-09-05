@@ -12,7 +12,6 @@
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabTimeSeries.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
-#include "gui/task_terminal/TaskTerminal.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -76,9 +75,6 @@ struct TaskFeaturesState {
   // Auto-compute tracking (Transform)
   int transform_prev_feature_idx = -1; // Track feature changes for transform
   int transform_prev_level = -1;       // Track level changes for transform
-
-  // Terminal reference
-  TaskTerminal *terminal = nullptr;
 };
 
 // ============================================================================
@@ -111,7 +107,6 @@ TaskHandle CreateFeaturesTask() {
   handle.DrawPanel = [state](SharedData &data) {
     // Lazy initialization
     if (!state->compute_service) {
-      state->terminal = &data.terminal;
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
     if (!state->orderflow_service) {

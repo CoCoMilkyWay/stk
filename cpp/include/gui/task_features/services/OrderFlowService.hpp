@@ -6,6 +6,8 @@
 //   - worker 线程: 两类工作交错 —
 //       Depth 重放 (延迟敏感, 优先): decode .bin → LOB 逐笔重放 → 秒级快照 →
 //         plot/heatmap 构建 → 背槽整体发布 (pending 未 ack 时等 GUI 翻面)
+//       Universe 逐日状态 (延迟敏感): 锚点日的 L1 filter 列选读 → 全资产 PIT
+//         状态 (ST / 在市 / 行业) → 背槽整体发布 (供 GUI 资产筛选)
 //       Kline 流式 (吞吐型): 逐日选列读 (OHLC + _meta + 特征) → 抽选中资产 →
 //         追加 + 单调前缀发布; 每天之间轮询新请求, 随时被新代打断
 //
@@ -39,6 +41,7 @@ public:
   // GUI 线程: 期望态快照 (最新覆盖旧请求; gen 调用方递增自持, 与发布面配对)
   void RequestKline(uint32_t gen, size_t asset_idx, std::vector<int> feats, bool rescan_dates);
   void RequestDepth(uint32_t gen, std::string date, size_t asset_idx, std::vector<int> feats);
+  void RequestUniverse(uint32_t gen, std::string date);
 
   bool is_running() const { return thread_.joinable(); }
 
@@ -55,14 +58,19 @@ private:
     size_t asset;
     std::vector<int> feats; // L0 字段下标
   };
+  struct UniverseReq {
+    uint32_t gen;
+    std::string date;
+  };
 
   struct Impl; // worker 线程私有常驻资源 (reader / decoder / LOB / 缓冲)
 
   void worker_loop();
   void scan_dates(std::vector<std::string> &out) const;
   void kline_begin(const KlineReq &req);
-  bool kline_step();                     // 装一天并发布; 返回是否还有下一天
-  void depth_build(const DepthReq &req); // 重放 + 构建 + 背槽发布
+  bool kline_step();                           // 装一天并发布; 返回是否还有下一天
+  void depth_build(const DepthReq &req);       // 重放 + 构建 + 背槽发布
+  void universe_build(const UniverseReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   SharedData *data_ = nullptr;
   std::thread thread_;
@@ -71,6 +79,7 @@ private:
   std::condition_variable req_cv_;
   std::optional<KlineReq> pending_kline_;
   std::optional<DepthReq> pending_depth_;
+  std::optional<UniverseReq> pending_universe_;
   std::atomic<bool> stop_{false};
 
   // ---- worker 线程私有 ----

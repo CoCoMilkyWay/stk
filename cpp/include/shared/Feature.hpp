@@ -2,6 +2,7 @@
 
 #include "features/Backend/FeatureStoreConfig.hpp" // 字段表 + LEVELS (width / valid / psd 由此推出)
 #include <set>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -17,7 +18,6 @@ struct FeatureMetadata {
   const char *cat_l1;        // Operator/TS/<dir> or Operator/CS/<dir>
   const char *cat_l2;        // FIELDS row token, generated into FeatureCategoryL2_ALL
   NormMethod norm_method;    // ZSCORE, CLIP, etc.
-  const char *psd;           // "100/00/00" 推荐频谱 (按层, ALL_LEVELS)
   const char *formula;       // "(r-μ)/σ, W=50"
   const char *name_en;       // "Tick Return Z-score"
   const char *name_cn;       // "微小对数收益"
@@ -29,10 +29,9 @@ struct FeatureMetadata {
 // Compile-time Metadata Generation: 每层一张表 (字段表行 + 层信息)
 // ============================================================================
 #define GENERATE_METADATA(code, cat_l1, cat_l2, norm_method, name_en, name_cn, description, formula, src) \
-  {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, NormMethod::norm_method, kPsd, formula, name_en, name_cn, description, kLevel},
+  {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, NormMethod::norm_method, formula, name_en, name_cn, description, kLevel},
 #define GENERATE_METADATA_TABLE(name, num, fields, rows, psd, columnar, xor_delta) \
   namespace name##_meta_detail {                                                   \
-    constexpr const char *kPsd = psd;                                              \
     constexpr uint8_t kLevel = num;                                                \
     inline constexpr FeatureMetadata TABLE[] = {fields(GENERATE_METADATA)};        \
   }
@@ -61,8 +60,8 @@ struct Feature {
 
   struct Metadata {
     std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1, 2=DEPTH)
-
-    void init_from_compile_time(); // Copy from constexpr arrays
+    std::vector<std::string> deps[LEVEL_COUNT];         // [level][i] = 该特征直接依赖的字段 code (分号分隔), 与 features 平行
+    void init_from_compile_time();                      // Copy from constexpr arrays + resolve deps
   };
   Metadata metadata;
 
@@ -71,7 +70,7 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    int selected_level = 0; // 0=L0, 1=L1 (GUI 只在这两层选特征)
+    int selected_level = 1; // 0=L0, 1=L1 (GUI 只在这两层选特征, 默认 L1)
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;

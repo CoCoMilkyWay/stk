@@ -6,7 +6,6 @@
 #include "gui/Gui.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_icon_bar/TaskIconBar.hpp"
-#include "gui/task_terminal/TaskTerminal.hpp"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -16,28 +15,19 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <thread>
 
 namespace GUI {
 
-// Global pointer for error callback logging
-static TaskTerminal *g_terminal = nullptr;
-
 // GLFW error callback
 void glfw_error_callback(int error, const char *description) {
-  char buffer[512];
-  snprintf(buffer, sizeof(buffer), "GLFW Error %d: %s", error, description);
-  if (g_terminal) {
-    g_terminal->AddLine(buffer);
-  }
+  std::fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
 int RunGUI() {
   // Initialize shared data (contains everything)
   SharedData data;
-
-  // Setup global state for logging
-  g_terminal = &data.terminal;
 
   // Setup config reinit callback
   data.config.reinit_callback = [&data]() {
@@ -54,15 +44,15 @@ int RunGUI() {
   }
 
   // Print startup banner
-  data.terminal.AddLine("=== Launching GUI ===", Color::Green());
-  data.terminal.AddLine("平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)", Color::Green());
-  data.terminal.AddLine("跨平台窗口管理库 : GLFW (Graphics Library Framework)", Color::Green());
-  data.terminal.AddLine("GPU 渲染库 : OpenGL", Color::Green());
-  data.terminal.AddLine("UI库(即时模式) : ImGui", Color::Green());
-  data.terminal.AddLine("绘图库 : ImPlot", Color::Green());
+  std::cout << "=== Launching GUI ===\n"
+            << "平台窗口库 : Linux(Wayland/X11), macOS(Cocoa), Windows(Win32)\n"
+            << "跨平台窗口管理库 : GLFW (Graphics Library Framework)\n"
+            << "GPU 渲染库 : OpenGL\n"
+            << "UI库(即时模式) : ImGui\n"
+            << "绘图库 : ImPlot\n";
   char init_msg[256];
   snprintf(init_msg, sizeof(init_msg), "GUI initialized (OpenGL backend, %.0f FPS)", TARGET_FPS);
-  data.terminal.AddLine(init_msg, Color::Blue());
+  std::cout << init_msg << std::endl;
 
   // Initialize icon bar with network monitoring
   TaskIconBar::InitIconBar(data.coromgr);
@@ -80,7 +70,6 @@ int RunGUI() {
       fprintf(stderr, "ERROR: Failed to initialize GLFW (code %d)\n", err_code);
     }
     fprintf(stderr, "Hint: Check DISPLAY environment variable and X Server status\n");
-    data.terminal.AddLine("Failed to initialize GLFW");
     return 1;
   }
 
@@ -110,7 +99,6 @@ int RunGUI() {
       fprintf(stderr, "ERROR: Failed to create GLFW window (code %d)\n", err_code);
     }
     fprintf(stderr, "Hint: Check OpenGL drivers and X Server compatibility\n");
-    data.terminal.AddLine("Failed to create GLFW window");
     glfwTerminate();
     return 1;
   }
@@ -151,7 +139,7 @@ int RunGUI() {
   char config_msg[256];
   snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)",
            font_size, base_font_size, dpi_scale);
-  data.terminal.AddLine(config_msg, Color::Blue());
+  std::cout << config_msg << std::endl;
 
   // Load font with RasterizerDensity
   ImFontConfig config;
@@ -174,12 +162,12 @@ int RunGUI() {
 
     // Check for reinit request (triggered by config save)
     if (data.request_reinit) {
-      data.terminal.AddLine("=== Reinitializing GUI (config changed) ===", Color::Yellow());
+      std::cout << "=== Reinitializing GUI (config changed) ===" << std::endl;
 
       // Cleanup and recreate all tasks and state
       GUI::ReinitAllTasks(tasks, selected_task, data);
 
-      data.terminal.AddLine("GUI reinitialized successfully", Color::Green());
+      std::cout << "GUI reinitialized successfully" << std::endl;
     }
 
     if constexpr (HIGH_FPS_ON_EVENTS) {
@@ -225,7 +213,6 @@ int RunGUI() {
 
   // Cleanup
   TaskIconBar::CleanupIconBar();
-  g_terminal = nullptr;
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();
