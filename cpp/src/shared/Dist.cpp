@@ -2,7 +2,6 @@
 #include "misc/profiler.hpp"
 
 #include <barrier>
-#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <numeric>
@@ -181,19 +180,16 @@ size_t Dist::prepare_runtime(size_t n_months, size_t n_cols, size_t agg_stride) 
   TraceN("PrepareShards"); // 首帧账目: 批平面 + n_threads × (staging + 聚合 sketch)
   const size_t A = asset_klls_.size();
   const size_t asset_stride = kDaysPerBatch * level_valid_rows(kDistLevel);
-  plane_.resize(A * asset_stride);
 
   // 扫描块数封顶线程数; IO 每批最多 kDaysPerBatch 个任务, staging 只给前 n_io 个线程备
   const size_t n_blocks = (A + kAssetBlock - 1) / kAssetBlock;
   const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
   const size_t n_threads = std::min(n_hw, std::max(kDaysPerBatch, n_blocks));
   const size_t n_io = std::min(n_threads, kDaysPerBatch);
+  plane_.prepare(A, kDistLevel, kDaysPerBatch, 1, n_io, n_cols);
   shards_.resize(n_threads);
   for (size_t i = 0; i < n_threads; ++i) {
     Shard &sh = shards_[i];
-    if (i < n_io)
-      sh.staging.preallocate(A, kDistLevel, n_cols);
-    sh.nan_seen = 0;
     sh.samples.reserve(asset_stride);
     sh.agg_samples.reserve(asset_stride / agg_stride + 1);
     sh.day_groups.reserve(kDaysPerBatch);
@@ -290,9 +286,6 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   const size_t n_sel = dates.size();
   days_total.store(n_sel, std::memory_order_release);
 
-  const auto invalid = std::bit_cast<feature_storage_t>(kInvalidBits);
-  const size_t asset_stride = kDaysPerBatch * VR; // 批平面内每资产步长 (按满批)
-
   // 聚合槽抽样 stride: 按总格子数 (有效样本的上界) 折到 kAggTargetSamples 量级.
   // 区间小 → stride=1, 全量进聚合槽, 小数据集下不会被抽到低于 kMinSamples.
   size_t agg_stride = std::max<size_t>(1, (n_sel * A * VR) / kAggTargetSamples);
@@ -320,10 +313,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     {
       std::lock_guard<std::mutex> lock(mutex);
       lines.swap(lines_staging_); // 整批换新; UI 消费快照零重建
-      for (Shard &sh : shards_) {
-        integrity.n_nan += sh.nan_seen;
-        sh.nan_seen = 0;
-      }
+      integrity.n_nan += plane_.take_nan_seen();
       // 下一批的 W2 参考 = 本批后的全局分位 (滞后一批, 逐批收敛)
       const bool had_ref = w2_ref_.valid;
       w2_ref_ = W2Ref{};
@@ -362,38 +352,15 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       const size_t bd = std::min(kDaysPerBatch, n_sel - b0);
 
       // ------------------------------------------------------------------
-      // Phase IO: 抢单天载入 [T][列][A] → 转置进批平面 (天与天写不同段, 无重叠)
+      // Phase IO: 抢单天载入 → 转置进批平面 (天与天写不同段, 无重叠; 门控/NaN 分账在 plane 内)
+      // Dist 只跑 L1 → 门控只有 DATA 语义 (_meta 非 0; 编码见 Meta.hpp)
       // ------------------------------------------------------------------
       if (tid < n_io) {
         for (;;) {
           const size_t j = next_day.fetch_add(1, std::memory_order_relaxed);
           if (j >= bd || cancel.load(std::memory_order_relaxed))
             break;
-          {
-            TraceN("LoadDay");
-            reader.load_day_columns(dates[b0 + j], columns, sh.staging);
-          }
-          {
-            TraceN("TransposeDay");
-            // [T][列][A] → plane[a][j][t]; 64 资产一块, 块内写驻留在 64 条 cache line 上.
-            // valid 不过 与 真 NaN 一并折叠成哨兵; 真 NaN 就地记账 (这里才看得见 valid 列)
-            feature_storage_t *day_base = plane_.data() + j * VR;
-            for (size_t a0 = 0; a0 < A; a0 += 64) {
-              const size_t a1 = std::min(a0 + 64, A);
-              for (size_t t = 0; t < VR; ++t) {
-                const feature_storage_t *val = sh.staging.data.data() + (t * n_cols) * A;
-                const feature_storage_t *valid = val + A; // valid 列紧随其后 (has_valid 才读)
-                for (size_t a = a0; a < a1; ++a) {
-                  // Dist 只跑 L1 → 门控只有 DATA 语义 (_meta 非 0; 编码见 Meta.hpp)
-                  const bool ok = !has_valid || fmeta::data_valid(static_cast<float>(valid[a]));
-                  const feature_storage_t raw = val[a];
-                  const bool is_nan = ok && !(raw == raw);
-                  sh.nan_seen += is_nan;
-                  day_base[a * asset_stride + t] = (ok && !is_nan) ? raw : invalid;
-                }
-              }
-            }
-          }
+          plane_.load_day(reader, dates[b0 + j], columns, has_valid, L2::ValidType::DATA, j, tid);
         }
       }
       io_done.arrive_and_wait();
@@ -414,13 +381,12 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
           sh.day_groups.clear();
           sh.tod_runs.clear();
 
-          const feature_storage_t *pa = plane_.data() + a * asset_stride;
           int cur_bin = -1;       // 日内桶 run 跨天延续 (同桶连续样本即一段)
           uint32_t run_begin = 0; // 索引 agg_samples
           size_t agg_tick = 0;
 
           for (size_t i = 0; i < bd; ++i) {
-            const feature_storage_t *p = pa + i * VR;
+            const feature_storage_t *p = plane_.series(0, a, i);
             const uint32_t day_begin = static_cast<uint32_t>(sh.agg_samples.size());
 
             for (size_t t = 0; t < VR; ++t) {
@@ -556,7 +522,7 @@ void Dist::clear() {
   // 必须 move 赋空容器: `= {}` 走 initializer_list 重载, 只清元素不还内存.
   asset_klls_ = std::vector<KLLcache>{};
   lines_staging_ = std::vector<AssetLine>{};
-  plane_ = std::vector<feature_storage_t>{};
+  plane_.clear();
   shards_ = std::vector<Shard>{};
   days_loaded.store(0, std::memory_order_relaxed);
   days_total.store(0, std::memory_order_relaxed);

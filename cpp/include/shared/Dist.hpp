@@ -1,6 +1,6 @@
 #pragma once
 
-#include "features/Backend/FeatureRead.hpp"
+#include "features/Backend/DayBatchPlane.hpp"
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include <algorithm>
@@ -25,8 +25,8 @@
 //
 //   worker (DistService 单线程编排; build 起一波 n_threads 常驻线程, 每批两道栅栏):
 //     for 每批 kDaysPerBatch 个抽样天:
-//       Phase IO:   抢单天并行载入 [T][列][A] → 转置进批平面 [A][批天][分钟]
-//                   (f16; valid 门控与真 NaN 折叠成统一哨兵, NaN 就地记账)
+//       Phase IO:   抢单天并行载入 → 资产主序批平面 [A][批天][分钟] (DayBatchPlane, 与 Transform 共用:
+//                   f16; valid 门控与真 NaN 折叠成统一哨兵, NaN 就地记账)
 //       ── 栅栏 ──
 //       Phase 扫描: 抢 kAssetBlock 个资产一块, 全在锁外:
 //                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本
@@ -214,11 +214,6 @@ private:
   };
   W2Ref w2_ref_;
 
-  // 平面里"不可用"的统一哨兵 (f16 qNaN): valid 门控不过 与 真 NaN 都折叠到它.
-  // 两者的分账在 Phase IO 就地做完 (那里还看得见 valid 列, 判得比事后猜位模式更准),
-  // 所以平面不必区分二者 —— 热扫描一次 v != v 就能跳过, 也不用怕哨兵撞上数据里的 NaN.
-  static constexpr uint16_t kInvalidBits = 0x7E00u;
-
   static constexpr size_t kAssetBlock = 64; // Phase 扫描 抢块粒度 (聚合槽每块 merge 一次)
 
   struct DayGroup {
@@ -232,11 +227,10 @@ private:
   }; // 同日内桶连续段 → by_tod
 
   // 每线程私有: 扫描缓冲 + 聚合槽副本. 重活全在锁外做完, 只把 sketch 级结果并入全局.
+  // (IO 暂存与 NaN 账目在 plane_ 里, 按 IO 线程分槽)
   struct Shard {
-    FeatureRead::DayColumns staging; // Phase IO: 单日 [T][列][A] 暂存 (只前 kDaysPerBatch 个线程用)
-    uint64_t nan_seen = 0;           // Phase IO: 本批真 NaN 数 (批末并入 integrity)
-    std::vector<float> samples;      // Phase 扫描: 单资产本批全量样本 → 该资产 sketch
-    std::vector<float> agg_samples;  // Phase 扫描: stride 抽样样本 → 聚合槽 (下面两表索引它)
+    std::vector<float> samples;     // Phase 扫描: 单资产本批全量样本 → 该资产 sketch
+    std::vector<float> agg_samples; // Phase 扫描: stride 抽样样本 → 聚合槽 (下面两表索引它)
     std::vector<DayGroup> day_groups;
     std::vector<TodRun> tod_runs;
     std::vector<KLLcache> months;     // [n_months]
@@ -253,6 +247,6 @@ private:
   // worker 私有 (clear() 只在 worker join 之后调用, 无竞争)
   std::vector<KLLcache> asset_klls_;     // [A] 每资产累积 sketch (UI 不读, 全程无锁)
   std::vector<AssetLine> lines_staging_; // [A] 扫描线程各写各槽, 批末与 lines 交换
-  std::vector<feature_storage_t> plane_; // [A][批天][分钟] 资产主序批平面 (f16, ~20MB)
+  DayBatchPlane plane_;                  // [A][批天][分钟] 资产主序批平面 (f16, ~20MB) + IO 暂存
   std::vector<Shard> shards_;            // [n_threads]
 };

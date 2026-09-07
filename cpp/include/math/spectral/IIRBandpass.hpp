@@ -1,31 +1,30 @@
 #pragma once
 
-#include "math/Operator.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
 #include <complex>
 #include <numbers>
-#include <span>
-#include <vector>
 
 // ============================================================================
-// IIR Bandpass Filter (带通IIR滤波器)
+// IIR Bandpass Filter (带通IIR滤波器) —— 因果流式
 // ============================================================================
 //
 // 设计方法: RBJ Audio EQ Cookbook - 纯 Bandpass Biquad 级联
-//
-// 关键设计决策:
 //   1. 直接用 RBJ BPF biquad，不是 HP+LP 级联
 //   2. 级联后做整体归一化 (在 f0 处增益 = 1)
-//   3. 极限情况特判 (全带/纯LP/纯HP)
 //
 // 参数:
 //   - f0 = sqrt(f_lo * f_hi): 几何中心频率
 //   - Q = f0 / (f_hi - f_lo): 品质因数
 //   - order: biquad 级联数 (总阶数 = 2*order)
 //
+// 只有前向 (因果) 滤波: y_t 只依赖 x_{≤t}, 任何 TS 算子都能逐值复现 (DataDefine.hpp 红线).
+// 零相位 filtfilt / FIR 中心对齐都用了未来值, 已删. 用法:
+//   IIRCoeffs c; c.compute(f_lo, f_hi, order, type);   // 一次设计 (相对 Nyquist 的 0-1)
+//   IIRState s;  s.init(c.n_sections);                  // 每段 (每天) 复位, 隔夜跳空不进滤波器
+//   y = s.process(x, c);                                // 逐样本流式
 // ============================================================================
 
 namespace math::spectral {
@@ -310,88 +309,14 @@ struct IIRState {
 };
 
 // ============================================================================
-// IIR滤波 (零相位: 前向+反向)
+// 一段前向滤波 (状态从零起, 段 = 一天): 原地允许 (in == out)
 // ============================================================================
 
-inline void iir_filter_forward(const float *__restrict in, float *__restrict out, size_t n,
-                               const IIRCoeffs &coeffs) {
-  if (n == 0) [[unlikely]]
-    return;
-
+inline void iir_filter_forward(const float *in, float *out, size_t n, const IIRCoeffs &coeffs) {
   IIRState state;
   state.init(coeffs.n_sections);
-
-  for (size_t i = 0; i < n; ++i) {
+  for (size_t i = 0; i < n; ++i)
     out[i] = state.process(in[i], coeffs);
-  }
-}
-
-inline void iir_filter_zero_phase(const float *__restrict in, float *__restrict out, size_t n,
-                                  const IIRCoeffs &coeffs, float *__restrict tmp) {
-  // 前向滤波
-  iir_filter_forward(in, tmp, n, coeffs);
-
-  // 反向滤波
-  for (size_t i = 0; i < n / 2; ++i) {
-    std::swap(tmp[i], tmp[n - 1 - i]);
-  }
-  iir_filter_forward(tmp, out, n, coeffs);
-  for (size_t i = 0; i < n / 2; ++i) {
-    std::swap(out[i], out[n - 1 - i]);
-  }
-}
-
-// ============================================================================
-// 算子定义
-// ============================================================================
-
-struct IIRBandpass {
-  static constexpr ParamMeta meta[] = {
-      {"低频", 0.1f, 0.001f, 0.999f},
-      {"高频", 0.3f, 0.001f, 0.999f},
-      {"阶数", 2, 1, 8},
-      {"类型", 0, 0, 2},
-  };
-  static constexpr OperatorDef def = {"IIR带通", meta, 4};
-
-  template <typename GetLoFreq, typename GetHiFreq, typename GetOrder, typename GetType>
-  static void compute(std::span<const float> in, std::span<float> out,
-                      GetLoFreq get_lo, GetHiFreq get_hi, GetOrder get_order, GetType get_type) {
-    iir_bandpass(in, out, get_lo(), get_hi(), static_cast<int>(get_order()),
-                 static_cast<IIRType>(static_cast<int>(get_type())));
-  }
-};
-
-// 便捷函数 (内部分配)
-inline void iir_bandpass(std::span<const float> in, std::span<float> out,
-                         float f_lo, float f_hi, int order, IIRType type = IIRType::Butterworth) {
-  assert(in.size() == out.size());
-  assert(f_lo >= 0.001f && f_lo <= 0.999f);
-  assert(f_hi >= 0.001f && f_hi <= 0.999f);
-  assert(f_lo < f_hi);
-
-  const size_t n = in.size();
-  if (n == 0) [[unlikely]]
-    return;
-
-  IIRCoeffs coeffs;
-  coeffs.compute(f_lo, f_hi, order, type);
-
-  std::vector<float> tmp(n);
-  iir_filter_zero_phase(in.data(), out.data(), n, coeffs, tmp.data());
-}
-
-// 使用预计算系数 (高效)
-inline void iir_bandpass(std::span<const float> in, std::span<float> out,
-                         const IIRCoeffs &coeffs, std::span<float> tmp) {
-  assert(in.size() == out.size());
-  assert(tmp.size() >= in.size());
-
-  const size_t n = in.size();
-  if (n == 0) [[unlikely]]
-    return;
-
-  iir_filter_zero_phase(in.data(), out.data(), n, coeffs, tmp.data());
 }
 
 } // namespace math::spectral

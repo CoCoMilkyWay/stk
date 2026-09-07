@@ -1,1900 +1,544 @@
-// Tab Transform Implementation
 #include "gui/task_features/ui/TabTransform.hpp"
-#include "features/FeaturesDefine.hpp"
-#include "graphic/graphic_basic.h"
 #include "gui/task_features/services/TransformService.hpp"
+#include "misc/profiler.hpp"
+#include "shared/Asset.hpp"
+#include "shared/Feature.hpp"
+#include "shared/SharedData.hpp"
+
 #include "imgui.h"
 #include "implot.h"
-#include "latex.h"
-#include "misc/profiler.hpp"
-#include "platform/imgui/graphic_imgui.h"
-#include "render.h"
-#include "shared/Asset.hpp"
-#include "shared/SharedData.hpp"
-#include "utfcpp/utf8.hpp"
+
 #include <algorithm>
-#include <cassert>
+#include <cmath>
 #include <cstdio>
-#include <unordered_map>
+#include <vector>
 
 namespace GUI::Features {
-
-// ============================================================================
-// Color Gradient for Asset Differentiation (使用ImPlot内置colormap)
-// ============================================================================
-
-static ImVec4 GetAssetColor(size_t idx, size_t total) {
-  if (total <= 1)
-    return ImPlot::GetColormapColor(0);
-  float t = static_cast<float>(idx) / static_cast<float>(total - 1);
-  return ImPlot::SampleColormap(t, ImPlotColormap_Spectral);
-}
-
-// ============================================================================
-// LaTeX Formula Rendering (shared with TabFeature)
-// ============================================================================
-
-static std::wstring utf8ToWide(std::string_view s) {
-  auto u16 = utf8::utf8to16(s);
-  return {u16.begin(), u16.end()};
-}
-
-static std::unordered_map<const char *, tex::TeXRender *> s_formula_cache;
-
-static tex::TeXRender *getOrCreateFormulaRender(const char *formula, float text_size = 24.0f) {
-  auto it = s_formula_cache.find(formula);
-  if (it != s_formula_cache.end()) {
-    return it->second;
-  }
-
-  static bool s_latex_initialized = false;
-  if (!s_latex_initialized) {
-    tex::LaTeX::init("res");
-    s_latex_initialized = true;
-  }
-
-  std::wstring wlatex = utf8ToWide(formula);
-  tex::TeXRender *render = tex::LaTeX::parse(wlatex, 0, text_size, 5.0f, tex::green);
-
-  s_formula_cache[formula] = render;
-  return render;
-}
-
-static void renderLatexFormula(tex::TeXRender *render) {
-  assert(render);
-
-  tex::Font_imgui::rebuildFontAtlasIfNeeded();
-
-  ImDrawList *draw_list = ImGui::GetWindowDrawList();
-  ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
-
-  tex::Graphics2D_imgui g2(draw_list);
-  g2.translate(cursor_pos.x, cursor_pos.y);
-  render->draw(g2, 0, 0);
-
-  ImGui::Dummy(ImVec2((float)render->getWidth(), (float)render->getHeight()));
-}
-
-// ============================================================================
-// Stationarity Comparison Table (Tooltip)
-// ============================================================================
-
-static void RenderStationarityTooltip() {
-  ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(800.0f);
-
-  ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.4f, 1.0f), "平稳化方法对比");
-  ImGui::Spacing();
-
-  // Define formulas
-  static const char *formula_ma = "x_t - \\text{MA}_W(x_t)";
-  static const char *formula_diff_int = "(1-L)^d x_t, \\; d \\in \\mathbb{Z}^+";
-  static const char *formula_diff_frac = "(1-L)^d x_t, \\; d \\in \\mathbb{R}";
-
-  if (ImGui::BeginTable("StationarityTable", 4,
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-    ImGui::TableSetupColumn("属性", ImGuiTableColumnFlags_WidthFixed, 160.0f);
-    ImGui::TableSetupColumn("移动平均去趋势", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("整数阶差分", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("分数阶差分", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableHeadersRow();
-
-    // Row: 典型形式
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("典型形式");
-    ImGui::TableSetColumnIndex(1);
-    {
-      tex::TeXRender *r = getOrCreateFormulaRender(formula_ma);
-      if (r)
-        renderLatexFormula(r);
-    }
-    ImGui::TableSetColumnIndex(2);
-    {
-      tex::TeXRender *r = getOrCreateFormulaRender(formula_diff_int);
-      if (r)
-        renderLatexFormula(r);
-    }
-    ImGui::TableSetColumnIndex(3);
-    {
-      tex::TeXRender *r = getOrCreateFormulaRender(formula_diff_frac);
-      if (r)
-        renderLatexFormula(r);
-    }
-
-    // Row: 是否线性算子
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("是否线性算子");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[?] 依赖 x_{t-} 定义");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-
-    // Row: 是否消除单位根
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("是否消除单位根");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N 不保证");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-
-    // Row: 平稳性保证
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("平稳性保证");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N 经验性");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y 理论保证");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y 理论保证");
-
-    // Row: ADF / KPSS 典型表现
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("ADF / KPSS 典型表现");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::Text("ADF +  KPSS -");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::Text("ADF ++  KPSS +");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::Text("ADF +  KPSS + (合适d)");
-
-    // Row: 残留低频结构
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("残留低频结构");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "多");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "极少");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "可控");
-
-    // Row: 长期记忆保留
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("长期记忆保留");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "不稳定");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-
-    // Row: 过度平稳风险
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("过度平稳风险");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "中");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "高");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "低 (最小d原则)");
-
-    // Row: 引入伪均值回归
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("引入伪均值回归");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "高");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "低");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "低");
-
-    // Row: 对参数/窗口敏感性
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("对参数/窗口敏感性");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "高 (依赖W)");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "低");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "低");
-
-    // Row: 可逆性
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("可逆性");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-
-    // Row: ACF 典型形态
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("ACF 典型形态");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted("慢衰减");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted("快速衰减/振荡");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted("慢→快");
-
-    // Row: 本质作用
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("本质作用");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "局部去趋势");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "强力去单位根");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "温和去单位根");
-
-    // Row: 是否严格 I(0)
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("是否严格 I(0)");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "N");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Y");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "~Y");
-
-    ImGui::EndTable();
-  }
-
-  ImGui::PopTextWrapPos();
-  ImGui::EndTooltip();
-}
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-static const char *StatusText(Transform::Compute::Status s) {
+static const char *StatusText(Transform::Status s) {
   switch (s) {
-  case Transform::Compute::Status::Idle:
+  case Transform::Status::Idle:
     return "Idle";
-  case Transform::Compute::Status::Loading:
-    return "Loading...";
-  case Transform::Compute::Status::Computing:
-    return "Computing...";
-  case Transform::Compute::Status::Done:
+  case Transform::Status::Building:
+    return "Building...";
+  case Transform::Status::Done:
     return "Done";
-  case Transform::Compute::Status::Error:
-    return "Error";
-  case Transform::Compute::Status::Cancelled:
+  case Transform::Status::Cancelled:
     return "Cancelled";
   }
   return "?";
 }
 
-static ImVec4 StatusColor(Transform::Compute::Status s) {
+static ImVec4 StatusColor(Transform::Status s) {
   switch (s) {
-  case Transform::Compute::Status::Idle:
-  case Transform::Compute::Status::Cancelled:
+  case Transform::Status::Idle:
     return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-  case Transform::Compute::Status::Loading:
-    return ImVec4(0.3f, 0.7f, 1.0f, 1.0f);
-  case Transform::Compute::Status::Computing:
-    return ImVec4(1.0f, 0.7f, 0.3f, 1.0f);
-  case Transform::Compute::Status::Done:
-    return ImVec4(0.4f, 0.9f, 0.5f, 1.0f);
-  case Transform::Compute::Status::Error:
-    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+  case Transform::Status::Building:
+    return ImVec4(0.2f, 0.7f, 1.0f, 1.0f);
+  case Transform::Status::Done:
+    return ImVec4(0.2f, 0.8f, 0.4f, 1.0f);
+  case Transform::Status::Cancelled:
+    return ImVec4(0.9f, 0.6f, 0.2f, 1.0f);
   }
-  return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+  return ImVec4(1, 1, 1, 1);
 }
 
-static const char *StationaryMethodName(Transform::StationaryMethod m) {
-  switch (m) {
-  case Transform::StationaryMethod::NONE:
-    return "无";
-  case Transform::StationaryMethod::MA_DETREND:
-    return "MA去趋势";
-  case Transform::StationaryMethod::INT_DIFF:
-    return "整数差分";
-  case Transform::StationaryMethod::FRAC_DIFF:
-    return "分数差分";
-  }
-  return "?";
+// 通过率 → 颜色: 红 (0) → 黄 (0.5) → 绿 (1); < 0 = 无数据 (灰)
+static ImU32 RateColor(float r) {
+  if (r < 0.0f)
+    return IM_COL32(70, 70, 70, 255);
+  const float g = std::min(1.0f, 2.0f * r);
+  const float rd = std::min(1.0f, 2.0f * (1.0f - r));
+  return IM_COL32(static_cast<int>(200 * rd + 40), static_cast<int>(200 * g + 40), 60, 255);
 }
 
-static const char *NormMethodName(NormMethod m) {
-  switch (m) {
-  case NormMethod::NONE:
-    return "NONE";
-  case NormMethod::ZSCORE:
-    return "ZSCORE";
-  case NormMethod::ROBUST_ZSCORE:
-    return "ROBUST";
-  case NormMethod::IQR_ZSCORE:
-    return "IQR";
-  case NormMethod::RANK:
-    return "RANK";
-  case NormMethod::RANK_ZSCORE:
-    return "RANK_Z";
-  case NormMethod::CLIP:
-    return "CLIP";
-  case NormMethod::WINSOR:
-    return "WINSOR";
-  case NormMethod::LOG:
-    return "LOG";
-  case NormMethod::POWER:
-    return "POWER";
-  case NormMethod::ASINH:
-    return "ASINH";
-  case NormMethod::TANH:
-    return "TANH";
-  case NormMethod::SINCOS:
-    return "SINCOS";
-  case NormMethod::LOG_ZSCORE:
-    return "LOG_Z";
-  case NormMethod::POWER_ZSCORE:
-    return "POW_Z";
-  case NormMethod::ASINH_ZSCORE:
-    return "ASH_Z";
-  case NormMethod::CLIP_ZSCORE:
-    return "CLP_Z";
-  case NormMethod::WINSOR_ZSCORE:
-    return "WIN_Z";
-  case NormMethod::CLIP_LOG_ZSCORE:
-    return "CLG_Z";
-  }
-  return "?";
+static ImVec4 AssetColor(size_t idx, size_t total) {
+  const float t = total > 1 ? static_cast<float>(idx) / static_cast<float>(total - 1) : 0.0f;
+  return ImPlot::SampleColormap(t, ImPlotColormap_Spectral);
 }
 
-// ADF颜色: p < 0.05 绿, p > 0.1 红
-static ImU32 GetADFColor(float pval) {
-  if (pval < 0.05f)
-    return IM_COL32(60, 200, 60, 255);
-  if (pval < 0.10f)
-    return IM_COL32(200, 200, 60, 255);
-  return IM_COL32(200, 60, 60, 255);
-}
-
-// KPSS颜色: p > 0.05 绿, p < 0.01 红
-static ImU32 GetKPSSColor(float pval) {
-  if (pval > 0.05f)
-    return IM_COL32(60, 200, 60, 255);
-  if (pval > 0.01f)
-    return IM_COL32(200, 200, 60, 255);
-  return IM_COL32(200, 60, 60, 255);
-}
-
-// ============================================================================
-// Row 1: Status + Level + Feature + Stationary + Normalization
-// ============================================================================
-
-static void Render_StatusInfo(SharedData &data) {
-  TraceN("UI:StatusInfo");
-  auto &tf = data.transform;
-  int level = data.feature.selection.selected_level;
-
-  // Level
-  static const char *level_names[] = {"L0", "L1"};
-  if (level >= 0 && level < 2) {
-    ImGui::Text("%s", level_names[level]);
-  } else {
-    ImGui::TextDisabled("--");
-  }
-
-  // 主特征名称
-  ImGui::SameLine(0, 15);
-  int feat_idx = data.feature.selection.primary_feature_idx;
-  if (feat_idx >= 0 && level >= 0 && level < (int)LEVEL_COUNT) {
-    const auto &meta = data.feature.metadata.features[level];
-    if (feat_idx < (int)meta.size()) {
-      ImGui::Text("%s", meta[feat_idx].code);
-    }
-  } else {
-    ImGui::TextDisabled("无特征");
-  }
-  ImGui::SameLine(0, 15);
-
-  // Status (左边，长度可变)
-  ImGui::TextColored(StatusColor(tf.compute.status), "%s", StatusText(tf.compute.status));
-  if (tf.compute.is_busy()) {
-    ImGui::SameLine(0, 0);
-    ImGui::Text(" %.0f%%", tf.compute.progress());
-  }
-}
-
-// ============================================================================
-// Row 3: Asset Selector + Time Window Slider
-// ============================================================================
-
-// 格式化 asset slider 标签: index.exchange.name(sample_count)
-static const char *FormatAssetLabel(const Asset &asset, const Transform &tf, int sel, char *buf, size_t buf_size) {
-  if (sel < 0 || sel >= (int)asset.items.size()) {
-    snprintf(buf, buf_size, "---");
-    return buf;
-  }
-
-  const auto &item = asset.items[sel];
-  size_t sample_count = 0;
-  if (sel < (int)tf.cache.sparse.size()) {
-    sample_count = tf.cache.sparse[sel].size();
-  }
-
-  snprintf(buf, buf_size, "%d.%s.%s(%zu)",
-           sel,
-           item.exchange.c_str(),
-           item.asset_name.c_str(),
-           sample_count);
-  return buf;
-}
-
-static bool Render_AssetAndWindow(TransformService *service, SharedData &data, TransformUIState &ui) {
-  TraceN("UI:AssetAndWindow");
-  auto &tf = data.transform;
-  bool changed = false;
-  const auto &items = data.asset.items;
-  const int n_assets = static_cast<int>(items.size());
-
-  // All checkbox
-  bool is_all = (tf.display.selected_asset < 0);
-  if (ImGui::Checkbox("All", &is_all)) {
-    if (is_all) {
-      if (tf.display.selected_asset != -1)
-        changed = true;
-      tf.display.selected_asset = -1;
-    } else {
-      // 取消 All，选择第一个 asset
-      if (tf.display.selected_asset < 0 && n_assets > 0) {
-        tf.display.selected_asset = 0;
-        changed = true;
-      }
-    }
-  }
-
-  // Asset slider (禁用状态: All 模式或无 asset)
-  ImGui::SameLine(0, 10);
-  ImGui::BeginDisabled(is_all || n_assets == 0);
-  {
-    ImGui::SetNextItemWidth(300);
-    int sel = tf.display.selected_asset;
-    if (sel < 0)
-      sel = 0;
-
-    char label_buf[128];
-    FormatAssetLabel(data.asset, tf, sel, label_buf, sizeof(label_buf));
-
-    if (ImGui::SliderInt("##AssetSlider", &sel, 0, std::max(0, n_assets - 1), label_buf)) {
-      if (tf.display.selected_asset != sel) {
-        tf.display.selected_asset = sel;
-        changed = true;
-      }
-    }
-  }
-  ImGui::EndDisabled();
-
-  // Time slider (显示 YY/MM/DD)
-  ImGui::SameLine(0, 20);
-  ImGui::SetNextItemWidth(300);
-  if (!tf.blocks.empty()) {
-    int block_idx = tf.selected_block;
-
-    const auto &block = tf.blocks[block_idx];
-
-    if (ImGui::SliderInt("##TimeSlider", &block_idx, 0,
-                         static_cast<int>(tf.blocks.size() - 1), block.label.c_str())) {
-      if (tf.selected_block != block_idx) {
-        tf.selected_block = block_idx;
-        changed = true;
-        service->RequestCompute();
-        // 重置 autofit 跟踪，使得新计算完成后会触发 autofit
-        ui.last_autofit_generation = 0;
-      }
-    }
-  } else {
-    // 保持占位
-    ImGui::BeginDisabled();
-    int dummy = 0;
-    ImGui::SliderInt("##TimeSlider", &dummy, 0, 0, "---");
-    ImGui::EndDisabled();
-  }
-
-  return changed;
-}
-
-// ============================================================================
-// Stationarity Config Panel (Left)
-// ============================================================================
-
-// 通用参数 slider 渲染 (完全自动化)
+// 通用参数 slider (math::Operator 元数据驱动)
 static bool RenderOperatorParams(math::Operator &op, const char *suffix) {
   bool changed = false;
   for (size_t i = 0; i < op.param_count; ++i) {
-    auto &m = op.meta[i];
+    const auto &m = op.meta[i];
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
-    char label[32];
+    ImGui::SetNextItemWidth(90);
+    char label[48];
     snprintf(label, sizeof(label), "%s##%s%zu", m.name, suffix, i);
-    if (ImGui::SliderFloat(label, &op[i], m.min_val, m.max_val, "%.2f")) {
-      changed = true;
-    }
+    changed |= ImGui::SliderFloat(label, &op[i], m.min_val, m.max_val, "%.2f");
   }
   return changed;
 }
 
-static bool RenderStationaryConfig(Transform::Params &config) {
-  TraceN("UI:StationaryConfig");
+// ============================================================================
+// Row 1: Compute | Cancel | Status | 特征 | 完整性
+// ============================================================================
+
+static void RenderControl(TransformService *service, SharedData &data, TransformUIState &ui) {
+  auto &tf = data.transform;
+  const auto status = tf.status.load(std::memory_order_acquire);
+  const auto &sel = data.feature.selection;
+  const bool is_l1 = sel.selected_level == static_cast<int>(kTfLevel);
+
+  ImGui::BeginDisabled(status == Transform::Status::Building || sel.primary_feature_idx < 0 || !is_l1);
+  if (ImGui::Button("Compute"))
+    service->RequestCompute(data, ui.params);
+  ImGui::EndDisabled();
+  if (!is_l1) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(仅 L1)");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel"))
+    service->RequestCancel();
+
+  ImGui::SameLine();
+  ImGui::Text("Status: ");
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
+  ImGui::SameLine(0, 0);
+  ImGui::Text(" (天 %zu/%zu)", tf.days_loaded.load(), tf.days_total.load());
+
+  ImGui::SameLine(0, 20);
+  if (sel.primary_feature_idx >= 0 && sel.selected_level >= 0 && sel.selected_level < static_cast<int>(LEVEL_COUNT)) {
+    const auto &meta = data.feature.metadata.features[sel.selected_level];
+    if (sel.primary_feature_idx < static_cast<int>(meta.size()))
+      ImGui::Text("L%d %s", sel.selected_level, meta[sel.primary_feature_idx].code);
+  } else {
+    ImGui::TextDisabled("无特征");
+  }
+}
+
+static void RenderIntegrity(const Transform::Integrity &it) {
+  if (it.n_total == 0) {
+    ImGui::TextDisabled("完整性: --");
+    return;
+  }
+  const float in_pct = 100.0f * static_cast<float>(it.n_in_valid) / static_cast<float>(it.n_total);
+  const float out_pct = 100.0f * static_cast<float>(it.n_out_valid) / static_cast<float>(it.n_total);
+  const float nan_pct = 100.0f * static_cast<float>(it.n_in_nan) / static_cast<float>(it.n_total);
+  ImGui::Text("完整性: 输入有效 %.1f%%  输出有效 %.1f%%  ", in_pct, out_pct);
+  ImGui::SameLine(0, 0);
+  ImGui::TextColored(nan_pct > 0.0f ? ImVec4(1.0f, 0.9f, 0.3f, 1.0f) : ImVec4(0.2f, 0.8f, 0.4f, 1.0f),
+                     "NaN %.2f%%", nan_pct);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("输出有效 < 输入有效 的差 = 差分预热 / TOD 轮廓未成形 / 常数槽");
+}
+
+// ============================================================================
+// Row 2: 变换链参数 (顺序 == 计算顺序). 返回 true = 有改动
+// ============================================================================
+
+template <class E, size_t N>
+static bool EnumCombo(const char *id, E &v, const char *const (&names)[N], float width) {
+  bool changed = false;
+  ImGui::SetNextItemWidth(width);
+  if (ImGui::BeginCombo(id, names[static_cast<size_t>(v)])) {
+    for (size_t i = 0; i < N; ++i) {
+      const E e = static_cast<E>(i);
+      if (ImGui::Selectable(names[i], v == e) && v != e) {
+        v = e;
+        changed = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
+static bool RenderPipeline(Transform::Params &p) {
+  TraceN("UI:Pipeline");
   bool changed = false;
 
+  // 1. 季节
+  ImGui::Text("季节");
+  ImGui::SameLine();
+  changed |= EnumCombo("##season", p.season, math::stationary::TodProfile::MODE_NAMES, 110);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("日内轮廓去季节: 每资产每分钟槽的 expanding 均值/标准差 (截至昨日, 因果).\n"
+                      "日内 U 形是确定性周期, 不是单位根 —— 差分/MA 不对症, 先减轮廓.");
+
+  // 2. 平稳化
+  ImGui::SameLine(0, 16);
   ImGui::Text("平稳化");
   ImGui::SameLine();
-  ImGui::TextDisabled("(?)");
-  if (ImGui::IsItemHovered()) {
-    RenderStationarityTooltip();
-  }
-
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(150);
-
-  // 使用 Transform::g_stationary 表
-  auto &cur = Transform::GetStationaryDef(config.stationary_method);
-  if (ImGui::BeginCombo("##st_method", cur.name)) {
+  ImGui::SetNextItemWidth(110);
+  if (ImGui::BeginCombo("##st", Transform::stationary_def(p.stationary).name)) {
     for (size_t i = 0; i < Transform::g_stationary_count; ++i) {
-      auto &e = Transform::g_stationary[i];
-      if (ImGui::Selectable(e.def->name, config.stationary_method == e.method)) {
-        if (config.stationary_method != e.method) {
-          config.stationary_method = e.method;
-          config.reset_stationary();
-          changed = true;
-        }
+      const auto &e = Transform::g_stationary[i];
+      if (ImGui::Selectable(e.def->name, p.stationary == e.method) && p.stationary != e.method) {
+        p.stationary = e.method;
+        p.reset_stationary();
+        changed = true;
       }
     }
     ImGui::EndCombo();
   }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("按天分段, 天首从零起 (隔夜跳空不进差分/滤波); 差分预热段输出 NaN");
+  changed |= RenderOperatorParams(p.st, "st");
 
-  // 自动渲染参数
-  if (RenderOperatorParams(config.stationary, "st"))
-    changed = true;
+  // 3. 带通
+  ImGui::SameLine(0, 16);
+  changed |= ImGui::Checkbox("带通", &p.bandpass);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("IIR 因果前向滤波 (天首复位), 通带 = PSD 图上两根光标之间的周期 [%.1f, %.1f] 分钟",
+                      p.bp_lo_period, p.bp_hi_period);
+  if (p.bandpass) {
+    ImGui::SameLine();
+    changed |= EnumCombo("##iir", p.iir_type, Transform::IIR_TYPE_NAMES, 110);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70);
+    changed |= ImGui::SliderInt("阶##iir", &p.iir_order, 1, 8);
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%.0f-%.0f min]", p.bp_lo_period, p.bp_hi_period);
+  }
 
-  return changed;
-}
-
-// ============================================================================
-// Normalization Config (TS/CS 对仗)
-// ============================================================================
-
-// 使用 math::normalize::g_methods 表，无需手动定义
-
-// 统一渲染参数 slider
-static bool RenderTSNormConfig(Transform::Params &config) {
-  TraceN("UI:TSNormConfig");
-  bool changed = false;
-
-  ImGui::Text("时序归一化");
+  // 4. TS 归一
+  ImGui::SameLine(0, 16);
+  ImGui::Text("TS归一");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(120);
-
-  auto &cur = math::normalize::GetMethod(config.ts_norm);
-  if (ImGui::BeginCombo("##ts_norm", cur.name)) {
+  ImGui::SetNextItemWidth(90);
+  if (ImGui::BeginCombo("##ts", math::normalize::GetMethod(p.ts_norm).name)) {
     for (size_t i = 0; i < math::normalize::g_method_count; ++i) {
-      auto &d = math::normalize::g_methods[i];
-      if (ImGui::Selectable(d.name, config.ts_norm == d.method)) {
-        if (config.ts_norm != d.method) {
-          config.ts_norm = d.method;
-          config.reset_ts();
-          changed = true;
-        }
+      const auto &d = math::normalize::g_methods[i];
+      if (ImGui::Selectable(d.name, p.ts_norm == d.method) && p.ts_norm != d.method) {
+        p.ts_norm = d.method;
+        p.reset_ts();
+        changed = true;
       }
     }
     ImGui::EndCombo();
   }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("天内 expanding 统计 (只用历史), 每天从零起");
+  changed |= RenderOperatorParams(p.ts, "ts");
 
-  // 自动渲染参数
-  if (RenderOperatorParams(config.ts, "ts"))
-    changed = true;
-
-  return changed;
-}
-
-static bool RenderCSNormConfig(Transform::Params &config) {
-  TraceN("UI:CSNormConfig");
-  bool changed = false;
-
-  ImGui::Text("截面归一化");
+  // 5. 截面 (生产同一套 cs::{Tf, Method})
+  ImGui::SameLine(0, 16);
+  ImGui::Text("截面");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(120);
-
-  auto &cur = math::normalize::GetMethod(config.cs_norm);
-  if (ImGui::BeginCombo("##cs_norm", cur.name)) {
-    for (size_t i = 0; i < math::normalize::g_method_count; ++i) {
-      auto &d = math::normalize::g_methods[i];
-      if (ImGui::Selectable(d.name, config.cs_norm == d.method)) {
-        if (config.cs_norm != d.method) {
-          config.cs_norm = d.method;
-          config.reset_cs();
-          changed = true;
-        }
-      }
-    }
-    ImGui::EndCombo();
-  }
-
-  // 自动渲染参数
-  if (RenderOperatorParams(config.cs, "cs"))
-    changed = true;
+  changed |= EnumCombo("##cstf", p.cs_tf, cs::TF_NAMES, 70);
+  ImGui::SameLine();
+  changed |= EnumCombo("##csm", p.cs_method, cs::METHOD_NAMES, 110);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("每 (天, 分钟) 一个截面: Tf 元素预变换 → Method. 与回测/实盘 features/Method/CS.hpp 同一份代码.\n"
+                      "NeutralRank 需 mcap + ind_l1 上下文列 (行业 + log 市值中性化)");
 
   return changed;
 }
 
 // ============================================================================
-// Bandpass Config
+// Row 3: 统计子集焦点滑条 + ADF/KPSS 通过率热力条
 // ============================================================================
 
-static const char *BandpassTypeName(Transform::BandpassType t) {
-  switch (t) {
-  case Transform::BandpassType::NONE:
-    return "无";
-  case Transform::BandpassType::FIR:
-    return "FIR";
-  case Transform::BandpassType::IIR:
-    return "IIR";
-  }
-  return "?";
-}
-
-static const char *FIRWindowName(int w) {
-  switch (w) {
-  case 0:
-    return "Hann";
-  case 1:
-    return "Hamming";
-  case 2:
-    return "Blackman";
-  }
-  return "?";
-}
-
-static const char *IIRTypeName(int t) {
-  switch (t) {
-  case 0:
-    return "Butterworth";
-  case 1:
-    return "Chebyshev I";
-  case 2:
-    return "Chebyshev II";
-  }
-  return "?";
-}
-
-// ============================================================================
-// Bandpass Filter Comparison Table (Tooltip)
-// ============================================================================
-
-static void RenderBandpassTooltip() {
-  ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(900.0f);
-
-  ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.4f, 1.0f), "FIR vs IIR 带通滤波器对比");
-  ImGui::Spacing();
-
-  // 主对比表格
-  if (ImGui::BeginTable("BandpassTable", 3,
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-    ImGui::TableSetupColumn("对比维度", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-    ImGui::TableSetupColumn("FIR", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("IIR", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableHeadersRow();
-
-    // 相位响应
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("相位响应");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "严格线性相位");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "非线性相位");
-
-    // 群时延
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("群时延");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "常数 (无相位失真)");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "随频率变化 (有失真)");
-
-    // 过渡带宽度
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("过渡带宽度");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "较宽 (同阶数)");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较窄 (同阶数)");
-
-    // 阻带衰减效率
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("阻带衰减效率");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "提升慢, 需更高阶数");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "提升快, 低阶即可");
-
-    // 阶数需求
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("阶数需求");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "高");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "低");
-
-    // 实时计算量
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("实时计算量");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "大 (乘加多)");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "小");
-
-    // 数值稳定性
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("数值稳定性");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "绝对稳定");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "高阶时可能不稳定");
-
-    // 频响设计灵活性
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("设计灵活性");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "非常灵活");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "受结构限制");
-
-    // 截止频率精度
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("截止频率精度");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "相对较低");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较高");
-
-    // 通带纹波
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("通带纹波");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted("可控 (等波纹设计)");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted("一般较小");
-
-    // 阻带纹波
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("阻带纹波");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted("可控");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted("可能存在");
-
-    // 典型外观
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("典型频响外观");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "平直 + 规则波纹");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "陡峭 + 模拟滤波器形状");
-
-    ImGui::EndTable();
-  }
-
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::Spacing();
-
-  // 两个子表格并排
-  float sub_table_width = 420.0f;
-
-  // 左边：FIR窗函数对比
-  ImGui::BeginGroup();
-  ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "FIR 窗函数类型");
-  if (ImGui::BeginTable("FIRWindowTable", 4,
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg,
-                        ImVec2(sub_table_width, 0))) {
-    ImGui::TableSetupColumn("窗函数", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-    ImGui::TableSetupColumn("主瓣宽度", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("旁瓣衰减", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("特点", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableHeadersRow();
-
-    // Hann
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("Hann");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted("中等");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted("-31dB");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted("平滑过渡");
-
-    // Hamming
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("Hamming");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted("中等");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted("-42dB");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted("旁瓣更低");
-
-    // Blackman
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("Blackman");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted("较宽");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted("-58dB");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted("最佳旁瓣抑制");
-
-    ImGui::EndTable();
-  }
-  ImGui::EndGroup();
-
-  ImGui::SameLine(0, 20.0f);
-
-  // 右边：IIR滤波器类型对比
-  ImGui::BeginGroup();
-  ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "IIR 滤波器类型");
-  if (ImGui::BeginTable("IIRTypeTable", 4,
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg,
-                        ImVec2(sub_table_width, 0))) {
-    ImGui::TableSetupColumn("类型", ImGuiTableColumnFlags_WidthFixed, 85.0f);
-    ImGui::TableSetupColumn("通带", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("过渡带", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("特点", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableHeadersRow();
-
-    // Butterworth
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("Butterworth");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "最大平坦");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted("最宽");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted("无纹波");
-
-    // Chebyshev I
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("Chebyshev I");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "有纹波");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较窄");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted("通带纹波换陡峭");
-
-    // Chebyshev II
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("Chebyshev II");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "平坦");
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "较窄");
-    ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted("阻带纹波换陡峭");
-
-    ImGui::EndTable();
-  }
-  ImGui::EndGroup();
-
-  ImGui::PopTextWrapPos();
-  ImGui::EndTooltip();
-}
-
-// 非标 bin index → 周期(秒)
-static float BinToPeriod(float bin_idx) {
-  if (bin_idx < 58.0f) {
-    return bin_idx + 2.0f;
-  } else if (bin_idx < 117.0f) {
-    return (bin_idx - 58.0f + 1.0f) * 60.0f;
-  } else {
-    return 1e9f;
-  }
-}
-
-// bin → 归一化频率 (与 TransformService 一致)
-static float BinToFreq(float bin_idx, int level) {
-  float period = BinToPeriod(bin_idx);
-  float sample_rate = (level == 0) ? 1.0f : (1.0f / 60.0f);
-  float nyquist = sample_rate / 2.0f;
-  return std::clamp((1.0f / period) / nyquist, 0.001f, 0.999f);
-}
-
-// 检查两个 bin 转换后的频率是否满足 f_lo < f_hi
-static bool FreqValid(double lo_bin, double hi_bin, int level) {
-  float f_lo = BinToFreq(static_cast<float>(hi_bin), level);
-  float f_hi = BinToFreq(static_cast<float>(lo_bin), level);
-  return f_lo < f_hi;
-}
-
-// 非标bin index → 周期描述 (使用双 buffer 避免连续调用覆盖)
-static const char *BinToLabel(float bin_idx, int buf_idx = 0) {
-  static char buf[2][32];
-  size_t idx = static_cast<size_t>(bin_idx);
-  char *b = buf[buf_idx & 1];
-  if (idx < 58) {
-    std::snprintf(b, 32, "%zus", idx + 2);
-  } else if (idx < 117) {
-    std::snprintf(b, 32, "%zum", idx - 58 + 1);
-  } else if (idx < 127) {
-    std::snprintf(b, 32, "%zuh", idx - 117 + 1);
-  } else {
-    std::snprintf(b, 32, "DC");
-  }
-  return b;
-}
-
-static bool RenderBandpassConfig(Transform::Params &config, TransformUIState &ui) {
-  TraceN("UI:BandpassConfig");
-  bool changed = false;
-
-  ImGui::Text("带通");
-  ImGui::SameLine();
-  ImGui::TextDisabled("(?)");
-  if (ImGui::IsItemHovered()) {
-    RenderBandpassTooltip();
-  }
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(80);
-
-  // 类型选择
-  if (ImGui::BeginCombo("##bp_type", BandpassTypeName(config.bandpass_type))) {
-    for (int i = 0; i < 3; ++i) {
-      auto t = static_cast<Transform::BandpassType>(i);
-      if (ImGui::Selectable(BandpassTypeName(t), config.bandpass_type == t)) {
-        if (config.bandpass_type != t) {
-          config.bandpass_type = t;
-          config.reset_bandpass();
-          changed = true;
-        }
-      }
-    }
-    ImGui::EndCombo();
-  }
-
-  // 子类型 (FIR: 窗类型, IIR: 滤波器类型)
-  if (config.bandpass_type != Transform::BandpassType::NONE) {
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
-
-    if (config.bandpass_type == Transform::BandpassType::FIR) {
-      if (ImGui::BeginCombo("##bp_subtype", FIRWindowName(config.bandpass_subtype))) {
-        for (int i = 0; i < 3; ++i) {
-          if (ImGui::Selectable(FIRWindowName(i), config.bandpass_subtype == i)) {
-            if (config.bandpass_subtype != i) {
-              config.bandpass_subtype = i;
-              changed = true;
-            }
-          }
-        }
-        ImGui::EndCombo();
-      }
-    } else {
-      if (ImGui::BeginCombo("##bp_subtype", IIRTypeName(config.bandpass_subtype))) {
-        for (int i = 0; i < 3; ++i) {
-          if (ImGui::Selectable(IIRTypeName(i), config.bandpass_subtype == i)) {
-            if (config.bandpass_subtype != i) {
-              config.bandpass_subtype = i;
-              changed = true;
-            }
-          }
-        }
-        ImGui::EndCombo();
-      }
-    }
-
-    // 阶数
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
-    int order_min = (config.bandpass_type == Transform::BandpassType::FIR) ? 8 : 1;
-    int order_max = (config.bandpass_type == Transform::BandpassType::FIR) ? 512 : 8;
-    if (ImGui::SliderInt("阶数##bp", &config.bandpass_order, order_min, order_max)) {
-      changed = true;
-    }
-
-    // 频带显示 (只读, 实际值从光标同步)
-    ImGui::SameLine();
-    ImGui::TextDisabled("[%s - %s]", BinToLabel(ui.bandpass_lo, 0), BinToLabel(ui.bandpass_hi, 1));
-  } else {
-    // 未启用带通时也显示光标范围
-    ImGui::SameLine();
-    ImGui::TextDisabled("[%s - %s]", BinToLabel(ui.bandpass_lo, 0), BinToLabel(ui.bandpass_hi, 1));
-  }
-
-  return changed;
-}
-
-// ============================================================================
-// ADF/KPSS Heatmap (单行紧凑版)
-// ============================================================================
-
-static void RenderStationarityHeatmap(const Transform &tf, const Asset &asset) {
-  TraceN("UI:StationarityHeatmap");
-  // 直接画，不显示"无数据" - 计算线程会很快更新
-  if (tf.results.empty()) {
-    ImGui::Dummy(ImVec2(0, 18.0f)); // 保持行高稳定
+static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, TransformUIState &ui) {
+  TraceN("UI:Heatmap");
+  const size_t n = tf.stat_assets.size();
+  if (n == 0) {
+    ImGui::TextDisabled("统计子集: --");
+    ImGui::Dummy(ImVec2(0, 34));
     return;
   }
+  ui.focus = std::clamp(ui.focus, 0, static_cast<int>(n) - 1);
 
-  const size_t n = tf.results.size();
-  ImVec2 avail = ImGui::GetContentRegionAvail();
+  // 滑条: 标签 = 资产下标.交易所.名字 (n_days 检验天数)
+  {
+    const uint32_t a = tf.stat_assets[ui.focus];
+    const auto &st = tf.stat_lines[ui.focus];
+    char label[128];
+    if (a < asset.items.size()) {
+      const auto &it = asset.items[a];
+      snprintf(label, sizeof(label), "%u.%s.%s (%u 天)", a, it.exchange.c_str(), it.asset_name.c_str(), st.n_days);
+    } else {
+      snprintf(label, sizeof(label), "%u (%u 天)", a, st.n_days);
+    }
+    ImGui::Text("统计子集 (%zu)", n);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::SliderInt("##focus", &ui.focus, 0, static_cast<int>(n) - 1, label);
+  }
 
-  // 计算单元格大小，确保 ADF + KPSS 能放在一行
-  float label_w = 40.0f;
-  float gap = 10.0f;
-  float usable = avail.x - label_w * 2 - gap * 3;
-  float cell_w = std::min(12.0f, usable / (2 * n));
-  float cell_h = 14.0f;
-
+  // 热力条: 两行 (ADF 通过率 / KPSS 通过率), 每列一个统计子集资产
+  const float label_w = 44.0f, cell_h = 12.0f;
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const float cell_w = std::max(1.0f, (avail.x - label_w) / static_cast<float>(n));
   ImDrawList *draw = ImGui::GetWindowDrawList();
-  ImVec2 pos = ImGui::GetCursorScreenPos();
-  float y = pos.y + 2;
-
-  // ADF 标签 + 热力条
-  draw->AddText(ImVec2(pos.x, y), IM_COL32(180, 180, 180, 255), "ADF");
-  float x_adf_start = pos.x + label_w;
-  for (size_t i = 0; i < n; ++i) {
-    if (!tf.results[i].valid)
-      continue;
-    float x = x_adf_start + i * cell_w;
-    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + cell_w - 1, y + cell_h),
-                        GetADFColor(tf.results[i].adf_pval));
+  const ImVec2 pos = ImGui::GetCursorScreenPos();
+  const float x0 = pos.x + label_w;
+  draw->AddText(ImVec2(pos.x, pos.y), IM_COL32(180, 180, 180, 255), "ADF");
+  draw->AddText(ImVec2(pos.x, pos.y + cell_h + 2), IM_COL32(180, 180, 180, 255), "KPSS");
+  for (size_t s = 0; s < n; ++s) {
+    const auto &st = tf.stat_lines[s];
+    const float x = x0 + s * cell_w;
+    draw->AddRectFilled(ImVec2(x, pos.y), ImVec2(x + cell_w - 1, pos.y + cell_h), RateColor(st.adf_rate()));
+    draw->AddRectFilled(ImVec2(x, pos.y + cell_h + 2), ImVec2(x + cell_w - 1, pos.y + 2 * cell_h + 2), RateColor(st.kpss_rate()));
   }
-
-  // KPSS 标签 + 热力条
-  float x_kpss_label = x_adf_start + n * cell_w + gap;
-  draw->AddText(ImVec2(x_kpss_label, y), IM_COL32(180, 180, 180, 255), "KPSS");
-  float x_kpss_start = x_kpss_label + label_w;
-  for (size_t i = 0; i < n; ++i) {
-    if (!tf.results[i].valid)
-      continue;
-    float x = x_kpss_start + i * cell_w;
-    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + cell_w - 1, y + cell_h),
-                        GetKPSSColor(tf.results[i].kpss_pval));
+  // 焦点列描边
+  {
+    const float x = x0 + ui.focus * cell_w;
+    draw->AddRect(ImVec2(x - 1, pos.y - 1), ImVec2(x + cell_w, pos.y + 2 * cell_h + 3), IM_COL32(0, 255, 255, 255));
   }
+  ImGui::Dummy(ImVec2(avail.x, 2 * cell_h + 4));
 
-  // Tooltip
-  ImVec2 mouse = ImGui::GetMousePos();
-  if (mouse.y >= y && mouse.y < y + cell_h) {
-    for (size_t i = 0; i < n; ++i) {
-      if (!tf.results[i].valid)
-        continue;
-      float xa = x_adf_start + i * cell_w;
-      float xk = x_kpss_start + i * cell_w;
-      bool in_adf = mouse.x >= xa && mouse.x < xa + cell_w;
-      bool in_kpss = mouse.x >= xk && mouse.x < xk + cell_w;
-
-      if (in_adf || in_kpss) {
-        const auto &r = tf.results[i];
+  // 悬停 / 点选
+  ui.hovered_stat = -1;
+  if (ImGui::IsItemHovered()) {
+    const ImVec2 m = ImGui::GetMousePos();
+    if (m.x >= x0) {
+      const int s = static_cast<int>((m.x - x0) / cell_w);
+      if (s >= 0 && s < static_cast<int>(n)) {
+        ui.hovered_stat = s;
+        const auto &st = tf.stat_lines[s];
+        const uint32_t a = tf.stat_assets[s];
         ImGui::BeginTooltip();
-        if (i < asset.items.size()) {
-          ImGui::Text("%s", asset.items[i].asset_code.c_str());
-        }
-        if (in_adf) {
-          ImGui::Text("ADF: %.3f (p=%.3f) %s", r.adf_stat, r.adf_pval,
-                      r.adf_pass ? "PASS" : "FAIL");
+        if (a < asset.items.size())
+          ImGui::Text("%u %s.%s", a, asset.items[a].exchange.c_str(), asset.items[a].asset_name.c_str());
+        if (st.n_days > 0) {
+          ImGui::Text("检验天数 %u", st.n_days);
+          ImGui::Text("ADF  通过 %.0f%%  均值统计量 %.2f", 100.0f * st.adf_rate(), st.adf_sum / st.n_days);
+          ImGui::Text("KPSS 通过 %.0f%%  均值统计量 %.3f", 100.0f * st.kpss_rate(), st.kpss_sum / st.n_days);
         } else {
-          ImGui::Text("KPSS: %.3f (p=%.3f) %s", r.kpss_stat, r.kpss_pval,
-                      r.kpss_pass ? "PASS" : "FAIL");
+          ImGui::TextDisabled("无有效天");
         }
         ImGui::EndTooltip();
-        break;
+        if (ImGui::IsMouseClicked(0))
+          ui.focus = s;
       }
     }
   }
-
-  ImGui::Dummy(ImVec2(avail.x, cell_h + 4));
 }
 
 // ============================================================================
-// Time Formatting for Anchor
+// 序列视图: 最近一批 原始 (+TOD 轮廓) | 链末输出
 // ============================================================================
 
-// 格式化索引为时间字符串
-// L0: 单日，idx → HH:MM:SS
-// L1: 多日，idx → D{day} HH:MM
-static void FormatAnchorTime(char *buf, size_t buf_size, size_t idx, int level) {
-  if (level == 0) {
-    // L0: 单日，直接用 L0_to_Clock
-    ClockTime ct = L0_to_Clock(idx);
-    std::snprintf(buf, buf_size, "%02d:%02d:%02d", ct.hour, ct.minute, ct.second);
-  } else {
-    // L1: 多日，每天 240 分钟
-    constexpr size_t MINS_PER_DAY = 240;
-    size_t day_idx = idx / MINS_PER_DAY;
-    size_t min_idx = idx % MINS_PER_DAY;
-    ClockTime ct = L1_to_Clock(min_idx);
-    std::snprintf(buf, buf_size, "D%zu %02d:%02d", day_idx, ct.hour, ct.minute);
-  }
-}
+static void RenderSeries(const Transform &tf, const TransformUIState &ui, bool autofit, float height) {
+  TraceN("UI:Series");
+  const auto &sn = tf.series;
+  const bool has = sn.n_days > 0 && ui.focus < static_cast<int>(tf.stat_assets.size());
+  const size_t n_pts = sn.n_days * kTfVR;
+  const size_t s = static_cast<size_t>(std::max(0, ui.focus));
+  static std::vector<float> tod_tile;
 
-// ============================================================================
-// Render Decision Helper: 判断是否应该渲染某个 asset 的数据
-// ============================================================================
-
-// 判断是否应该渲染 asset 结果
-// 简单逻辑：有数据且 valid 就渲染
-static bool ShouldRenderAssetResult(const Transform::AssetResult &r, bool has_data) {
-  return r.valid && has_data;
-}
-
-// ============================================================================
-// Feature Plots (Raw vs Processed)
-// ============================================================================
-
-// 更新 min/max 值的辅助函数
-static void UpdateMinMax(std::vector<float> &min_vals, std::vector<float> &max_vals, size_t idx, float val) {
-  if (idx >= min_vals.size() || !std::isfinite(val))
-    return;
-  // 初始化为 0，第一次遇到有效值时直接设置，后续更新 min/max
-  if (min_vals[idx] == 0.0f && max_vals[idx] == 0.0f) {
-    min_vals[idx] = val;
-    max_vals[idx] = val;
-  } else {
-    min_vals[idx] = std::min(min_vals[idx], val);
-    max_vals[idx] = std::max(max_vals[idx], val);
-  }
-}
-
-// 初始化 min/max 数组 (zero allocate: 只在大小变化时 resize)
-static void InitMinMaxArrays(std::vector<float> &min_vals, std::vector<float> &max_vals, size_t n_samples) {
-  if (min_vals.size() != n_samples) {
-    min_vals.resize(n_samples);
-    max_vals.resize(n_samples);
-  }
-  std::fill(min_vals.begin(), min_vals.end(), 0.0f);
-  std::fill(max_vals.begin(), max_vals.end(), 0.0f);
-}
-
-static void RenderFeaturePlots(const Transform &tf, TransformUIState &ui, bool need_autofit, int level, float height) {
-  TraceN("UI:FeaturePlots");
-  const size_t n_assets = tf.results.size();
-  const int sel = tf.display.selected_asset; // -1 = ALL
-  const bool show_all = (sel < 0);
-  const bool has_data = !tf.results.empty();
-  const size_t n_samples = tf.cache.n_samples;
-  const uint64_t cur_gen = tf.compute.generation.load();
-
-  // Clamp anchor_x
-  if (n_samples > 0 && ui.anchor_x >= static_cast<double>(n_samples)) {
-    ui.anchor_x = static_cast<double>(n_samples - 1);
-  }
-
-  // 更新 anchor 缓存 (只在变化时重新计算)
-  size_t anchor_idx = static_cast<size_t>(ui.anchor_x);
-  auto &cache = ui.anchor_cache;
-  if (anchor_idx < n_samples &&
-      (cache.idx != anchor_idx || cache.generation != cur_gen || cache.selected_asset != sel)) {
-    cache.idx = anchor_idx;
-    cache.generation = cur_gen;
-    cache.selected_asset = sel;
-    cache.raw_y = 0.0;
-    cache.norm_y = 0.0;
-    cache.valid = false;
-
-    // 查找 raw_y
-    for (size_t i = 0; i < tf.cache.raw.size(); ++i) {
-      if (!show_all && (int)i != sel)
-        continue;
-      if (i >= tf.results.size() || !tf.results[i].valid)
-        continue;
-      const auto &raw = tf.cache.raw[i];
-      if (anchor_idx < raw.size() && std::isfinite(raw[anchor_idx])) {
-        cache.raw_y = raw[anchor_idx];
-        break;
-      }
-    }
-
-    // 查找 norm_y
-    for (size_t i = 0; i < tf.results.size(); ++i) {
-      if (!show_all && (int)i != sel)
-        continue;
-      const auto &r = tf.results[i];
-      if (!r.valid || anchor_idx >= r.cs_normed.size())
-        continue;
-      if (std::isfinite(r.cs_normed[anchor_idx])) {
-        cache.norm_y = r.cs_normed[anchor_idx];
-        break;
-      }
-    }
-
-    // 格式化时间字符串
-    FormatAnchorTime(cache.time_str, sizeof(cache.time_str), anchor_idx, level);
-    cache.valid = true;
-  }
-
-  // 左: 原始特征 (从 cache 获取)
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
-  ImGui::Text("原始特征");
-
-  // Plot 0 (Raw): 应用同步或 autofit
-  if (need_autofit && has_data) {
+  if (has)
+    ImGui::Text("原始  %s ~ %s (%zu 天)", sn.date_begin.c_str(), sn.date_end.c_str(), sn.n_days);
+  else
+    ImGui::TextDisabled("原始");
+  if (autofit)
     ImPlot::SetNextAxesToFit();
-    ui.feature_limits.sync_target = -1; // autofit 后清除同步标记
-  } else if (ui.feature_limits.sync_target == 0) {
-    // 从 plot1 同步过来
-    ImPlot::SetNextAxisLimits(ImAxis_X1, ui.feature_limits.sync_x_min, ui.feature_limits.sync_x_max, ImGuiCond_Always);
-    // 立即更新 last_x，避免 EndPlot 时触发反向同步
-    ui.feature_limits.last_x_min[0] = ui.feature_limits.sync_x_min;
-    ui.feature_limits.last_x_max[0] = ui.feature_limits.sync_x_max;
-    ui.feature_limits.sync_target = -1; // 应用后清除
-  }
-
   if (ImPlot::BeginPlot("##Raw", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
-
-    if (show_all && n_samples > 0) {
-      // ALL 模式: 使用 fill in between
-      static std::vector<float> min_vals, max_vals;
-      InitMinMaxArrays(min_vals, max_vals, n_samples);
-
-      // 遍历每个 asset 的 sparse data
-      for (size_t i = 0; i < tf.cache.sparse.size(); ++i) {
-        if (i >= tf.results.size() || !ShouldRenderAssetResult(tf.results[i], !tf.cache.sparse[i].empty())) {
-          continue;
-        }
-        const auto &sp = tf.cache.sparse[i];
-        for (size_t j = 0; j < sp.size(); ++j) {
-          UpdateMinMax(min_vals, max_vals, sp.index[j], sp.value[j]);
-        }
+    if (has) {
+      // 天界竖线
+      for (size_t d = 1; d < sn.n_days; ++d) {
+        double xd = static_cast<double>(d * kTfVR);
+        ImPlot::PlotInfLines("##day", &xd, 1);
       }
-
-      // 准备 x 轴数据，所有点都有值（初始化为 0）
-      static std::vector<float> x_data, y_min, y_max;
-      x_data.resize(n_samples);
-      y_min.resize(n_samples);
-      y_max.resize(n_samples);
-      for (size_t i = 0; i < n_samples; ++i) {
-        x_data[i] = static_cast<float>(i);
-        y_min[i] = min_vals[i];
-        y_max[i] = max_vals[i];
-      }
-
-      if (n_samples > 0) {
-        ImVec4 col = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // 黄色，更明显
-        ImPlot::PushStyleColor(ImPlotCol_Fill, col);
-        ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.6f);
-        ImPlot::PlotShaded("##raw_range", x_data.data(), y_min.data(), y_max.data(), static_cast<int>(n_samples));
-        ImPlot::PopStyleVar();
-        ImPlot::PopStyleColor();
-      }
-    } else {
-      // 单 asset 模式: 画单条线
-      for (size_t i = 0; i < tf.cache.raw.size(); ++i) {
-        if ((int)i != sel)
-          continue;
-        const auto &raw = tf.cache.raw[i];
-        if (raw.empty())
-          continue;
-        if (i >= tf.results.size() || !ShouldRenderAssetResult(tf.results[i], !raw.empty())) {
-          continue;
-        }
-        ImVec4 col = GetAssetColor(i, n_assets);
-        ImPlot::SetNextLineStyle(col, 0.8f);
-        ImPlot::PlotLine("##r", raw.data(), static_cast<int>(raw.size()));
+      ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), 1.0f);
+      ImPlot::PlotLine("##raw", sn.raw_of(s), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
+      if (tf.params.season != Transform::Season::None) {
+        // TOD 均值轮廓按天平铺叠在原始上 (截至本批末的轮廓)
+        tod_tile.resize(n_pts);
+        const float *tm = sn.tod_mean.data() + s * kTfVR;
+        for (size_t d = 0; d < sn.n_days; ++d)
+          std::copy_n(tm, kTfVR, tod_tile.data() + d * kTfVR);
+        ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 1.0f, 0.9f), 1.5f);
+        ImPlot::PlotLine("##tod", tod_tile.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
       }
     }
-
-    // 光标 (DragLineX)
-    if (n_samples > 0) {
-      bool drag_changed = ImPlot::DragLineX(0, &ui.anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
-      bool drag_active = ImGui::IsItemActive();
-
-      // Snap on release
-      if (drag_changed && !drag_active) {
-        ui.anchor_x = std::clamp(std::round(ui.anchor_x), 0.0, static_cast<double>(n_samples - 1));
-      }
-
-      // Double-click to set anchor
-      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-        ui.anchor_x = std::clamp(std::round(ImPlot::GetPlotMousePos().x), 0.0, static_cast<double>(n_samples - 1));
-      }
-
-      // Annotation: 使用缓存
-      if (cache.valid) {
-        ImPlot::Annotation(ui.anchor_x, cache.raw_y, ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", cache.time_str);
-      }
-    }
-
-    // 读取当前 limits，检测是否变化 (用户 zoom 或 autofit)
-    ImPlotRect limits = ImPlot::GetPlotLimits();
-    constexpr double EPSILON = 1e-9;
-    bool x_changed = (std::abs(limits.X.Min - ui.feature_limits.last_x_min[0]) > EPSILON ||
-                      std::abs(limits.X.Max - ui.feature_limits.last_x_max[0]) > EPSILON);
-
-    if (x_changed) {
-      // Plot0 变化了，同步到 Plot1
-      ui.feature_limits.last_x_min[0] = limits.X.Min;
-      ui.feature_limits.last_x_max[0] = limits.X.Max;
-      ui.feature_limits.sync_x_min = limits.X.Min;
-      ui.feature_limits.sync_x_max = limits.X.Max;
-      ui.feature_limits.sync_target = 1; // 下一帧同步到 Proc plot
-    }
-
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
 
   ImGui::SameLine();
-
-  // 右: 处理后特征 (带通启用时显示带通后的数据)
-  ImGui::BeginChild("ProcPlot", ImVec2(0, height), true);
-  bool use_bandpass = (tf.params.bandpass_type != Transform::BandpassType::NONE);
-  if (use_bandpass) {
-    ImGui::Text("处理后特征 (带通)");
-  } else {
-    ImGui::Text("处理后特征");
-  }
-
-  // Plot 1 (Proc): 应用同步或 autofit
-  if (need_autofit && has_data) {
+  ImGui::BeginChild("OutPlot", ImVec2(0, height), true);
+  ImGui::Text("链末输出");
+  if (autofit)
     ImPlot::SetNextAxesToFit();
-    ui.feature_limits.sync_target = -1; // autofit 后清除同步标记
-  } else if (ui.feature_limits.sync_target == 1) {
-    // 从 plot0 同步过来
-    ImPlot::SetNextAxisLimits(ImAxis_X1, ui.feature_limits.sync_x_min, ui.feature_limits.sync_x_max, ImGuiCond_Always);
-    // 立即更新 last_x，避免 EndPlot 时触发反向同步
-    ui.feature_limits.last_x_min[1] = ui.feature_limits.sync_x_min;
-    ui.feature_limits.last_x_max[1] = ui.feature_limits.sync_x_max;
-    ui.feature_limits.sync_target = -1; // 应用后清除
-  }
-
-  if (ImPlot::BeginPlot("##Proc", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+  if (ImPlot::BeginPlot("##Out", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
-
-    if (show_all && n_samples > 0) {
-      // ALL 模式: 使用 fill in between
-      static std::vector<float> min_vals, max_vals;
-      InitMinMaxArrays(min_vals, max_vals, n_samples);
-
-      // 遍历每个 asset 的数据 (带通启用时用 bandpass，否则用 cs_normed)
-      for (size_t i = 0; i < tf.results.size(); ++i) {
-        const auto &r = tf.results[i];
-        const auto &vec = use_bandpass ? r.bandpass : r.cs_normed;
-        if (!ShouldRenderAssetResult(r, !vec.empty())) {
-          continue;
-        }
-        for (size_t idx = 0; idx < std::min(n_samples, vec.size()); ++idx) {
-          UpdateMinMax(min_vals, max_vals, idx, vec[idx]);
-        }
+    if (has) {
+      for (size_t d = 1; d < sn.n_days; ++d) {
+        double xd = static_cast<double>(d * kTfVR);
+        ImPlot::PlotInfLines("##day", &xd, 1);
       }
-
-      // 准备 x 轴数据，所有点都有值（初始化为 0）
-      static std::vector<float> x_data, y_min, y_max;
-      x_data.resize(n_samples);
-      y_min.resize(n_samples);
-      y_max.resize(n_samples);
-      for (size_t i = 0; i < n_samples; ++i) {
-        x_data[i] = static_cast<float>(i);
-        y_min[i] = min_vals[i];
-        y_max[i] = max_vals[i];
-      }
-
-      if (n_samples > 0) {
-        ImVec4 col = use_bandpass ? ImVec4(0.3f, 0.9f, 0.5f, 1.0f) : ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
-        ImPlot::PushStyleColor(ImPlotCol_Fill, col);
-        ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.6f);
-        ImPlot::PlotShaded("##norm_range", x_data.data(), y_min.data(), y_max.data(), static_cast<int>(n_samples));
-        ImPlot::PopStyleVar();
-        ImPlot::PopStyleColor();
-      }
-    } else {
-      // 单 asset 模式: 画单条线
-      for (size_t i = 0; i < tf.results.size(); ++i) {
-        if ((int)i != sel)
-          continue;
-        const auto &r = tf.results[i];
-        const auto &vec = use_bandpass ? r.bandpass : r.cs_normed;
-        if (vec.empty())
-          continue;
-        if (!ShouldRenderAssetResult(r, !vec.empty())) {
-          continue;
-        }
-        ImVec4 col = use_bandpass ? ImVec4(0.3f, 0.9f, 0.5f, 1.0f) : GetAssetColor(i, n_assets);
-        ImPlot::SetNextLineStyle(col, 0.8f);
-        ImPlot::PlotLine("##n", vec.data(), static_cast<int>(vec.size()));
-      }
+      ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 0.5f, 1.0f), 1.0f);
+      ImPlot::PlotLine("##out", sn.out_of(s), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
     }
-
-    // 光标 (同步)
-    if (n_samples > 0) {
-      bool drag_changed = ImPlot::DragLineX(1, &ui.anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
-      bool drag_active = ImGui::IsItemActive();
-
-      if (drag_changed && !drag_active) {
-        ui.anchor_x = std::clamp(std::round(ui.anchor_x), 0.0, static_cast<double>(n_samples - 1));
-      }
-
-      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-        ui.anchor_x = std::clamp(std::round(ImPlot::GetPlotMousePos().x), 0.0, static_cast<double>(n_samples - 1));
-      }
-
-      // Annotation: 使用缓存
-      if (cache.valid) {
-        ImPlot::Annotation(ui.anchor_x, cache.norm_y, ImVec4(1, 0.5f, 0, 1), ImVec2(5, -15), false, "%s", cache.time_str);
-      }
-    }
-
-    // 读取当前 limits，检测是否变化
-    ImPlotRect limits = ImPlot::GetPlotLimits();
-    constexpr double EPSILON = 1e-9;
-    bool x_changed = (std::abs(limits.X.Min - ui.feature_limits.last_x_min[1]) > EPSILON ||
-                      std::abs(limits.X.Max - ui.feature_limits.last_x_max[1]) > EPSILON);
-
-    if (x_changed) {
-      // Plot1 变化了，同步到 Plot0
-      ui.feature_limits.last_x_min[1] = limits.X.Min;
-      ui.feature_limits.last_x_max[1] = limits.X.Max;
-      ui.feature_limits.sync_x_min = limits.X.Min;
-      ui.feature_limits.sync_x_max = limits.X.Max;
-      ui.feature_limits.sync_target = 0; // 下一帧同步到 Raw plot
-    }
-
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
 }
 
 // ============================================================================
-// Asset PDF & FFT (直接从 AssetResult 读取，零分配)
+// 输出分布 (全局 + 绘制子集 + 焦点) | 单日 PSD 均值 (周期轴 + 带通光标)
 // ============================================================================
 
-static void RenderBottomPlots(const Transform &tf, const SharedData &data, TransformUIState &ui, bool need_autofit, int level, float height) {
-  TraceN("UI:BottomPlots");
+static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, bool autofit, float height, bool &bp_changed) {
+  TraceN("UI:DistPSD");
+  const size_t A = tf.lines.size();
+  const uint32_t focus_asset = ui.focus < static_cast<int>(tf.stat_assets.size()) ? tf.stat_assets[ui.focus] : UINT32_MAX;
 
-  const size_t n_assets = tf.results.size();
-  const int sel = tf.display.selected_asset; // -1 = ALL
-  const bool show_all = (sel < 0);
-
-  size_t n_valid = 0;
-  for (const auto &r : tf.results) {
-    if (r.valid)
-      ++n_valid;
-  }
-
-  // 左: 每个 asset 的 PDF 叠加 (直接从 KLLcache 读取)
+  // 左: 分布
   ImGui::BeginChild("PDFPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
-  ImGui::Text("资产分布 (n=%zu)", tf.results.size());
-
+  ImGui::Text("链末输出分布  n=%llu", static_cast<unsigned long long>(tf.total.totalCount()));
+  if (tf.total.totalCount() >= kTfMinAssetSamples) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("mean %.3g  sd %.3g  skew %.2f  kurt %.2f", tf.total.mean(), std::sqrt(tf.total.var()),
+                        tf.total.skew(), tf.total.kurt());
+  }
+  if (autofit)
+    ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot("##PDF", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
-    // 先收集所有要渲染的数据
-    struct PDFData {
-      size_t idx;
-      KLLcache::LinePtr pdf;
-    };
-    static std::vector<PDFData> to_render;
-    to_render.clear();
-
-    for (size_t i = 0; i < tf.results.size(); ++i) {
-      if (!show_all && (int)i != sel)
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
+    for (size_t a = 0; a < A; ++a) {
+      const auto &ln = tf.lines[a];
+      if (!ln.draw || ln.n_pts == 0 || a == focus_asset)
         continue;
-      const auto &r = tf.results[i];
-      if (r.KLL.empty() || !ShouldRenderAssetResult(r, !r.KLL.empty()))
-        continue;
-      auto pdf = r.KLL.exportPDF();
-      if (pdf.n > 0) {
-        to_render.push_back({i, pdf});
-      }
+      ImVec4 c = AssetColor(a, A);
+      c.w = 0.35f;
+      ImPlot::SetNextLineStyle(c, 0.8f);
+      ImPlot::PlotLine("##a", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
     }
-
-    // 只在 need_autofit 时计算一次整体 range (merge 所有 KLL 后计算)
-    float x_extent = 0.0f;
-    if (need_autofit && !to_render.empty()) {
-      // Merge 所有 asset 的 KLL 到一个临时 KLL
-      static KLLcache merged_kll(512, 1024);
-      merged_kll.clear();
-
-      for (const auto &d : to_render) {
-        const auto &r = tf.results[d.idx];
-        if (!r.KLL.empty()) {
-          merged_kll.mergeWith(r.KLL);
-        }
-      }
-
-      if (!merged_kll.empty()) {
-        // 直接从 ICDF 获取 2.5% 和 97.5% 分位数 (tail cut)
-        auto icdf = merged_kll.exportICDF();
-        if (icdf.n >= 2) {
-          // ICDF: u ∈ [0,1] 均匀分布，直接计算索引
-          size_t i025 = static_cast<size_t>(0.025f * (icdf.n - 1));
-          size_t i975 = static_cast<size_t>(0.975f * (icdf.n - 1));
-
-          float x_low = icdf.y[i025];
-          float x_high = icdf.y[i975];
-
-          // 取绝对值最大值，用于对称居中
-          x_extent = std::max(std::abs(x_low), std::abs(x_high));
-        }
-      }
+    if (!tf.total.empty() && tf.total.totalCount() >= kTfMinAssetSamples) {
+      const auto pdf = tf.total.exportPDF();
+      ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 2.5f);
+      ImPlot::PlotLine("##total", pdf.x, pdf.y, static_cast<int>(pdf.n));
     }
-
-    // 设置轴: 使用收集好的 range
-    ImPlotAxisFlags y_flags = ImPlotAxisFlags_NoLabel | (need_autofit ? ImPlotAxisFlags_AutoFit : 0);
-    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, y_flags);
-    if (need_autofit && x_extent > 0.0f) {
-      float margin = x_extent * 0.05f;
-      ImPlot::SetupAxisLimits(ImAxis_X1, -(x_extent + margin), x_extent + margin, ImGuiCond_Always);
+    if (focus_asset < A && tf.lines[focus_asset].n_pts > 0) {
+      const auto &ln = tf.lines[focus_asset];
+      ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 2.5f);
+      ImPlot::PlotLine("##focus", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
     }
-
-    // 渲染收集好的数据
-    for (const auto &d : to_render) {
-      ImVec4 col = GetAssetColor(d.idx, n_assets);
-      ImPlot::SetNextLineStyle(col, 0.8f);
-      ImPlot::PlotLine("##KLL", d.pdf.x, d.pdf.y, static_cast<int>(d.pdf.n));
-    }
-
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
 
   ImGui::SameLine();
 
-  // 右: PSD 功率谱 (非标周期轴, 128 bins)
+  // 右: PSD (x = 周期 分钟, log; y = log10 功率)
   ImGui::BeginChild("PSDPlot", ImVec2(0, height), true);
-
-  // 标题 + 频段比例 (四色bar)
-  const auto &psd = tf.psd;
-  ImGui::Text("PSD");
-  if (psd.valid) {
-    ImGui::SameLine();
-
-    // 固定长度bar
-    constexpr float BAR_W = 200.0f;
-    constexpr float BAR_H = 14.0f;
-
-    ImVec2 bar_pos = ImGui::GetCursorScreenPos();
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-
-    // 四色: 秒(蓝) 分(绿) 时(橙) DC(灰)
-    ImU32 col_sec = IM_COL32(80, 140, 200, 255);
-    ImU32 col_min = IM_COL32(120, 180, 80, 255);
-    ImU32 col_hour = IM_COL32(220, 140, 60, 255);
-    ImU32 col_dc = IM_COL32(140, 140, 140, 255);
-
-    float x = bar_pos.x;
-    float y = bar_pos.y;
-    float w_sec = BAR_W * psd.ratio_sec;
-    float w_min = BAR_W * psd.ratio_min;
-    float w_hour = BAR_W * psd.ratio_hour;
-    float w_dc = BAR_W * psd.ratio_dc;
-
-    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_sec, y + BAR_H), col_sec);
-    x += w_sec;
-    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_min, y + BAR_H), col_min);
-    x += w_min;
-    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_hour, y + BAR_H), col_hour);
-    x += w_hour;
-    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w_dc, y + BAR_H), col_dc);
-
-    // 占位 + tooltip
-    ImGui::Dummy(ImVec2(BAR_W, BAR_H));
-    if (ImGui::IsItemHovered()) {
-      ImGui::BeginTooltip();
-      ImGui::TextColored(ImVec4(0.3f, 0.55f, 0.8f, 1.0f), "秒级: %.1f%%", psd.ratio_sec * 100.0f);
-      ImGui::TextColored(ImVec4(0.47f, 0.7f, 0.3f, 1.0f), "分钟级: %.1f%%", psd.ratio_min * 100.0f);
-      ImGui::TextColored(ImVec4(0.86f, 0.55f, 0.24f, 1.0f), "小时级: %.1f%%", psd.ratio_hour * 100.0f);
-      ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "DC: %.1f%%", psd.ratio_dc * 100.0f);
-      ImGui::EndTooltip();
-    }
+  ImGui::Text("单日 PSD 均值  (%llu 资产·天)", static_cast<unsigned long long>(tf.psd_n));
+  constexpr size_t NF = TfDayPSD::N_FREQS;
+  static std::vector<float> px, py;
+  px.resize(NF - 1);
+  py.resize(NF - 1);
+  for (size_t k = 1; k < NF; ++k) { // 跳 DC
+    px[k - 1] = TfDayPSD::period_of(k);
+    const float v = tf.psd_mean[k];
+    py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
-
-  // 准备刻度指针
-  static std::vector<const char *> tick_ptrs;
-  if (tick_ptrs.size() != psd.tick_labels.size()) {
-    tick_ptrs.resize(psd.tick_labels.size());
-    for (size_t i = 0; i < psd.tick_labels.size(); ++i) {
-      tick_ptrs[i] = psd.tick_labels[i].c_str();
-    }
-  }
-
-  constexpr size_t N_BINS = 128;
-  static std::vector<float> psd_log;
-  psd_log.resize(N_BINS);
-
+  if (autofit)
+    ImPlot::SetNextAxisToFit(ImAxis_Y1);
   if (ImPlot::BeginPlot("##PSD", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
-    ImPlot::SetupAxes("Period", "Power");
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0, static_cast<double>(N_BINS), ImGuiCond_Once);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0, 3.0, ImGuiCond_Always);
+    ImPlot::SetupAxes("周期 (min)", "log10 P");
+    ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, static_cast<double>(TfDayPSD::N), ImGuiCond_Once);
 
-    if (!psd.tick_positions.empty()) {
-      ImPlot::SetupAxisTicks(ImAxis_X1, psd.tick_positions.data(),
-                             static_cast<int>(psd.tick_positions.size()),
-                             tick_ptrs.data());
-    }
-
-    // 三色背景 (秒/分/时)
-    ImPlotRect limits = ImPlot::GetPlotLimits();
+    // 通带阴影
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
     ImPlot::PushPlotClipRect();
-    ImDrawList *draw = ImPlot::GetPlotDrawList();
-
-    ImU32 col_sec = IM_COL32(50, 100, 150, 40);
-    ImU32 col_min = IM_COL32(100, 130, 50, 40);
-    ImU32 col_hour = IM_COL32(150, 80, 50, 40);
-
-    float y_top = static_cast<float>(limits.Y.Max);
-    float y_bot = static_cast<float>(limits.Y.Min);
-
-    // 秒级背景 (0-58)
     {
-      ImVec2 p0 = ImPlot::PlotToPixels(0, y_top);
-      ImVec2 p1 = ImPlot::PlotToPixels(58, y_bot);
-      draw->AddRectFilled(p0, p1, col_sec);
-    }
-    // 分钟级背景 (58-117)
-    {
-      ImVec2 p0 = ImPlot::PlotToPixels(58, y_top);
-      ImVec2 p1 = ImPlot::PlotToPixels(117, y_bot);
-      draw->AddRectFilled(p0, p1, col_min);
-    }
-    // 小时级背景 (117-128)
-    {
-      ImVec2 p0 = ImPlot::PlotToPixels(117, y_top);
-      ImVec2 p1 = ImPlot::PlotToPixels(128, y_bot);
-      draw->AddRectFilled(p0, p1, col_hour);
-    }
-
-    ImPlot::PopPlotClipRect();
-
-    // 画 PSD
-    if (psd.valid) {
-      if (show_all) {
-        // ALL 模式: 只画平均 PSD (已经是先能量平均再 dB)
-        ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 2.0f);
-        ImPlot::PlotLine("Avg", psd.plot_x.data(), psd.avg_psd_db.data(), static_cast<int>(N_BINS));
-      } else if (sel >= 0 && sel < (int)psd.asset_psd.size() && tf.results[sel].valid) {
-        // 单 asset 模式: 只画该 asset
-        const auto &src = psd.asset_psd[sel];
-        for (size_t k = 0; k < N_BINS; ++k) {
-          float v = src[k];
-          psd_log[k] = (v > 1e-20f) ? std::log10(v) : -20.0f;
-        }
-        ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 2.0f);
-        ImPlot::PlotLine("Asset", psd.plot_x.data(), psd_log.data(), static_cast<int>(N_BINS));
-      }
-    }
-
-    // 带通光标 (始终显示)
-    // 绘制选中区域半透明填充
-    ImPlot::PushPlotClipRect();
-    ImDrawList *draw_bp = ImPlot::GetPlotDrawList();
-    {
-      ImVec2 p0 = ImPlot::PlotToPixels(ui.bandpass_lo, limits.Y.Max);
-      ImVec2 p1 = ImPlot::PlotToPixels(ui.bandpass_hi, limits.Y.Min);
-      // 启用带通时绿色，否则灰色
-      ImU32 fill_col = (tf.params.bandpass_type != Transform::BandpassType::NONE)
-                           ? IM_COL32(100, 200, 100, 60)
-                           : IM_COL32(150, 150, 150, 40);
-      draw_bp->AddRectFilled(p0, p1, fill_col);
+      ImVec2 p0 = ImPlot::PlotToPixels(ui.params.bp_lo_period, lim.Y.Max);
+      ImVec2 p1 = ImPlot::PlotToPixels(ui.params.bp_hi_period, lim.Y.Min);
+      ImPlot::GetPlotDrawList()->AddRectFilled(p0, p1, ui.params.bandpass ? IM_COL32(100, 200, 100, 60) : IM_COL32(150, 150, 150, 40));
     }
     ImPlot::PopPlotClipRect();
 
-    // 保存旧值用于回退
-    constexpr double MIN_GAP = 5.0;
-    double old_lo = ui.bandpass_lo;
-    double old_hi = ui.bandpass_hi;
-
-    // 低频光标 (绿色)
-    ImPlot::DragLineX(100, &ui.bandpass_lo, ImVec4(0.3f, 0.9f, 0.3f, 1.0f), 2.0f);
-    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-      ImPlot::Annotation(ui.bandpass_lo, limits.Y.Max, ImVec4(0.3f, 0.9f, 0.3f, 1.0f),
-                         ImVec2(5, -10), false, "Lo: %s", BinToLabel(static_cast<float>(ui.bandpass_lo), 0));
-    }
-    // lo 约束：clamp，先保证 MIN_GAP，再确保 FreqValid
-    ui.bandpass_lo = std::clamp(ui.bandpass_lo, 0.0, 127.0 - MIN_GAP);
-    // 推 hi 保持 MIN_GAP
-    if (ui.bandpass_hi - ui.bandpass_lo < MIN_GAP) {
-      ui.bandpass_hi = ui.bandpass_lo + MIN_GAP;
-    }
-    // 继续推 hi 直到 FreqValid
-    while (ui.bandpass_hi <= 127.0 && !FreqValid(ui.bandpass_lo, ui.bandpass_hi, level)) {
-      ui.bandpass_hi += 1.0;
-    }
-    // hi 超边界则回退 lo
-    if (ui.bandpass_hi > 127.0) {
-      ui.bandpass_hi = 127.0;
-      ui.bandpass_lo = old_lo;
+    if (tf.psd_n > 0) {
+      ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 2.0f);
+      ImPlot::PlotLine("##psd", px.data(), py.data(), static_cast<int>(NF - 1));
     }
 
-    // 高频光标 (红色)
-    ImPlot::DragLineX(101, &ui.bandpass_hi, ImVec4(0.9f, 0.3f, 0.3f, 1.0f), 2.0f);
-    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-      ImPlot::Annotation(ui.bandpass_hi, limits.Y.Max, ImVec4(0.9f, 0.3f, 0.3f, 1.0f),
-                         ImVec2(5, -10), false, "Hi: %s", BinToLabel(static_cast<float>(ui.bandpass_hi), 0));
+    // 带通光标 (周期): lo < hi, 松手才发请求
+    double lo = ui.params.bp_lo_period, hi = ui.params.bp_hi_period;
+    constexpr double kMinRatio = 1.2;
+    bool moved = false;
+    moved |= ImPlot::DragLineX(100, &lo, ImVec4(0.3f, 0.9f, 0.3f, 1.0f), 2.0f);
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered())
+      ImPlot::Annotation(lo, lim.Y.Max, ImVec4(0.3f, 0.9f, 0.3f, 1.0f), ImVec2(5, -10), false, "%.1f min", lo);
+    moved |= ImPlot::DragLineX(101, &hi, ImVec4(0.9f, 0.3f, 0.3f, 1.0f), 2.0f);
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered())
+      ImPlot::Annotation(hi, lim.Y.Max, ImVec4(0.9f, 0.3f, 0.3f, 1.0f), ImVec2(5, -10), false, "%.1f min", hi);
+    if (moved) {
+      lo = std::clamp(lo, static_cast<double>(Transform::Params::kMinPeriod), static_cast<double>(Transform::Params::kMaxPeriod) / kMinRatio);
+      hi = std::clamp(hi, lo * kMinRatio, static_cast<double>(Transform::Params::kMaxPeriod));
+      ui.params.bp_lo_period = static_cast<float>(lo);
+      ui.params.bp_hi_period = static_cast<float>(hi);
+      bp_changed = ui.params.bandpass; // 带通关着时光标只是预览, 不触发重算
     }
-    // hi 约束：clamp，先保证 MIN_GAP，再确保 FreqValid
-    ui.bandpass_hi = std::clamp(ui.bandpass_hi, MIN_GAP, 127.0);
-    // 推 lo 保持 MIN_GAP
-    if (ui.bandpass_hi - ui.bandpass_lo < MIN_GAP) {
-      ui.bandpass_lo = ui.bandpass_hi - MIN_GAP;
-    }
-    // 继续推 lo 直到 FreqValid
-    while (ui.bandpass_lo >= 0.0 && !FreqValid(ui.bandpass_lo, ui.bandpass_hi, level)) {
-      ui.bandpass_lo -= 1.0;
-    }
-    // lo 低于边界则回退 hi
-    if (ui.bandpass_lo < 0.0) {
-      ui.bandpass_lo = 0.0;
-      ui.bandpass_hi = old_hi;
-    }
-
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
 }
 
 // ============================================================================
-// Main Render
+// Main
 // ============================================================================
 
 void RenderTabTransform(TransformService *service, SharedData &data, TransformUIState &ui) {
   TraceN("UI:RenderTabTransform");
-  // 配置ImPlot输入映射 (框选缩放)
   static bool input_configured = false;
   if (!input_configured) {
     ImPlot::MapInputReverse();
     input_configured = true;
   }
-
-  // Auto-start coroutine
-  if (!service->is_running()) {
-    service->StartCompute(data.coromgr, data);
-  }
+  if (!service->is_running())
+    service->Start(data);
 
   auto &tf = data.transform;
 
-  // Autozoom 逻辑: 计算完成后触发
+  // 控件 (不持锁)
+  RenderControl(service, data, ui);
+  bool changed = RenderPipeline(ui.params);
+
+  // autofit 只在 焦点切换 / 构建状态变 (新 build 启动 = 旧图留住 fit 一次; Done = 终态 fit 一次) 那帧触发.
+  // 不在每批 epoch 触发 —— 流式逐批 fit 会让轴随数据长而抖.
+  const auto cur_status = tf.status.load(std::memory_order_acquire);
+  if (cur_status != ui.last_status || ui.focus != ui.last_focus)
+    ui.need_autofit = true;
+  ui.last_status = cur_status;
+
+  const float avail_h = ImGui::GetContentRegionAvail().y - 3 * ImGui::GetTextLineHeightWithSpacing() - 40.0f;
+  const float plot_h = std::max(100.0f, avail_h * 0.5f);
+
+  bool bp_changed = false;
   {
-    TraceN("UI:AutozoomCheck");
-    int cur_asset = tf.display.selected_asset;
-    uint64_t cur_gen = tf.compute.generation.load();
-    bool should_autofit = false;
-
-    if (cur_asset < 0) {
-      // ALL mode: 只在计算完成时触发
-      if (tf.compute.status == Transform::Compute::Status::Done &&
-          (ui.last_autofit_asset != -1 || ui.last_autofit_generation != cur_gen)) {
-        should_autofit = true;
-      }
-    } else {
-      // 单 asset mode: 当选中的 asset 有效数据时触发
-      if (cur_asset >= 0 && cur_asset < (int)tf.results.size() &&
-          tf.results[cur_asset].valid &&
-          (ui.last_autofit_asset != cur_asset || ui.last_autofit_generation != cur_gen)) {
-        should_autofit = true;
-      }
-    }
-
-    if (should_autofit) {
-      ui.need_autofit = true;
-      ui.last_autofit_asset = cur_asset;
-      ui.last_autofit_generation = cur_gen;
-    }
+    std::lock_guard<std::mutex> lock(tf.mutex);
+    RenderIntegrity(tf.integrity);
+    RenderFocusAndHeatmap(tf, data.asset, ui);
+    RenderSeries(tf, ui, ui.need_autofit, plot_h);
+    RenderDistAndPSD(tf, ui, ui.need_autofit, plot_h, bp_changed);
   }
-
-  // 第一行: 状态 + 级别 + 特征
-  Render_StatusInfo(data);
-
-  // 第二行: 平稳化
-  bool st_changed = RenderStationaryConfig(tf.params);
-
-  // 第三行: 归一化 (TS/CS 各自独立参数)
-  bool ts_changed = RenderTSNormConfig(tf.params);
-  bool cs_changed = RenderCSNormConfig(tf.params);
-  bool norm_changed = ts_changed || cs_changed;
-
-  // 第四行: 带通滤波
-  bool bp_changed = RenderBandpassConfig(tf.params, ui);
-
-  // ADF/KPSS热力图
-  RenderStationarityHeatmap(tf, data.asset);
-
-  // 第三行: Asset选择 + 时间窗口滑块
-  bool sel_changed = Render_AssetAndWindow(service, data, ui);
-
-  // 参数变化触发重计算 (autozoom 由上面的逻辑自动处理)
-  if (st_changed || norm_changed || bp_changed) {
-    ui.params_changed = true;
-    service->RequestCompute();
-    // 重置 autofit 跟踪，使得新计算完成后会触发 autofit
-    ui.last_autofit_generation = 0;
-  }
-  (void)sel_changed; // asset选择变化不再直接触发autozoom
-
-  // 更新渲染缓存
-  {
-    uint64_t cur_gen = tf.compute.generation.load();
-    if (tf.compute.status == Transform::Compute::Status::Done &&
-        cur_gen != ui.last_rendered_generation) {
-      ui.last_rendered_generation = cur_gen;
-    }
-  }
-
-  // 获取当前 level
-  int level = data.feature.selection.selected_level;
-
-  // 计算剩余可用空间，平均分配给两行plot（每行各占50%高度）
-  float avail_h = ImGui::GetContentRegionAvail().y;
-  float plot_height = std::max(100.0f, avail_h * 0.5f); // 每行plot占剩余空间的50%
-
-  // 特征对比图
-  RenderFeaturePlots(tf, ui, ui.need_autofit, level, plot_height);
-
-  // 底部: PDF + PSD
-  RenderBottomPlots(tf, data, ui, ui.need_autofit, level, plot_height);
-
-  // 同步光标值到 params (用于计算)
-  if (tf.params.bandpass_type != Transform::BandpassType::NONE) {
-    float lo = static_cast<float>(ui.bandpass_lo);
-    float hi = static_cast<float>(ui.bandpass_hi);
-    if (std::abs(tf.params.bandpass_lo_bin - lo) >= 0.5f ||
-        std::abs(tf.params.bandpass_hi_bin - hi) >= 0.5f) {
-      tf.params.bandpass_lo_bin = lo;
-      tf.params.bandpass_hi_bin = hi;
-      service->RequestCompute();
-      // 频谱参数变化也触发 autofit
-      ui.last_autofit_generation = 0;
-    }
-  }
-
-  // 清除autofit
+  ui.last_focus = ui.focus;
   ui.need_autofit = false;
+
+  // 参数改动: 记 dirty, 拖动中按时间 gate 节流发请求, 松手必发 —— 边拖边算
+  ui.dirty |= changed || bp_changed;
+  if (ui.dirty) {
+    const float now = static_cast<float>(ImGui::GetTime());
+    constexpr float kDragGate = 0.15f; // 拖动中至少隔 150ms 才发新请求 (取消在跑, 从头重来)
+    const bool released = !ImGui::IsAnyItemActive();
+    const bool due = ui.last_req_time < 0.0f || (now - ui.last_req_time) >= kDragGate;
+    if (released || due) {
+      ui.dirty = false;
+      ui.last_req_time = now;
+      service->RequestCompute(data, ui.params);
+    }
+  }
 }
 
 void StopTabTransform(TransformService *service, SharedData &data) {
-  // 只停止协程，不清理数据
-  if (data.transform.compute.is_busy()) {
-    data.transform.cancel();
-  }
-  if (service && service->is_running()) {
-    service->StopCompute(data.coromgr, data);
-  }
+  // 切走 tab: 只中断在跑构建 (内存与 worker 保留); 切出 Features 任务由 Shutdown 整体释放
+  service->RequestCancel();
+  (void)data;
 }
 
 } // namespace GUI::Features

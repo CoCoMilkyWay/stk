@@ -1,118 +1,63 @@
-// TransformService - Transform Analysis Service
+// TransformService — Transform 的单 worker 线程编排 (对仗 DistService)
 //
-// 计算流程 (两阶段):
-//   phase_ts: raw → stationary → ts_normed (每个 worker 独立)
-//   barrier:  等待所有 worker 完成 ts 阶段
-//   phase_cs: ts_normed[all] → cs_normed + 指标 (每个 worker 读共享)
+// 线程模型:
+//   - GUI 线程: RequestCompute 把 UI 参数 + 列选择 (特征列 / NeutralRank 上下文列 / _meta 门控列)
+//     + 月份表 快照成 Request → 唤醒 worker; 新请求覆盖旧的并取消在跑
+//   - worker 线程: 编排一次构建 (Transform::build 内部起一波常驻线程分批流式: IO → TS → CS → 统计 → 发布)
+//   - UI 渲染持 transform.mutex 读; 进度走原子, 免锁
 //
+// 生命周期: 进 Transform tab Start; 切走 tab 只 RequestCancel (内存与 worker 保留);
+//           切出 Features 任务 Shutdown() = Stop + transform.clear() 整体释放.
 #pragma once
 
-#include "features/Backend/FeatureRead.hpp"
-#include "gui/coro/CoroManager.hpp"
-
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include "shared/Transform.hpp"
 
 #include <atomic>
 #include <condition_variable>
-#include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 #include <vector>
-
-namespace asio = boost::asio;
 
 struct SharedData;
 
 namespace GUI::Features {
-
-// ============================================================================
-// Transform Worker (每个worker负责固定的asset集合)
-// ============================================================================
-
-class TransformWorkerPool {
-public:
-  explicit TransformWorkerPool(size_t num_workers);
-  ~TransformWorkerPool();
-
-  // 触发新一轮计算
-  void trigger(uint64_t gen);
-
-  // 暂停/恢复 worker（在修改共享数据前调用）
-  void pause();  // 暂停并等待所有 worker 进入空闲状态
-  void resume(); // 恢复 worker
-
-  void bind(SharedData *data,
-            void (*compute_fn)(SharedData &, size_t, uint64_t, bool),
-            void (*on_all_done)(SharedData &));
-
-  size_t num_workers() const { return workers_.size(); }
-
-private:
-  void worker_loop(size_t worker_id);
-
-  std::vector<std::thread> workers_;
-  std::atomic<bool> stop_{false};
-  std::atomic<size_t> n_waiting_{0}; // 当前在等待状态的 worker 数量
-
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  uint64_t triggered_gen_{0};
-
-  SharedData *data_{nullptr};
-  void (*compute_fn_)(SharedData &, size_t, uint64_t, bool) = nullptr;
-  void (*on_all_done_)(SharedData &) = nullptr;
-};
-
-// ============================================================================
-// TransformService
-// ============================================================================
 
 class TransformService {
 public:
   explicit TransformService(const std::string &features_dir);
   ~TransformService();
 
-  // Coroutine loop (runs async)
-  asio::awaitable<void> ComputeLoop(SharedData &data);
+  void Start(SharedData &data);
+  void Stop();
+  void Shutdown();
 
-  // Lifecycle
-  void StartCompute(CoroManager &coro, SharedData &data);
-  void StopCompute(CoroManager &coro, SharedData &data);
+  // GUI 线程: 参数快照 + 取消在跑 (非 L1 / 无选择 静默忽略)
+  void RequestCompute(SharedData &data, const Transform::Params &params);
+  void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
 
-  // UI requests (non-blocking) - 触发重算
-  void RequestCompute();
-
-  // Status
-  bool is_running() const { return coro_running_.load(); }
+  bool is_running() const { return thread_.joinable(); }
 
 private:
-  // 内部方法
-  void load_block(SharedData &data, int level, int feature_idx, int block_idx);
-  void invalidate_all(SharedData &data);
+  struct Request {
+    Transform::Params params;
+    std::vector<size_t> columns; // [特征 (+ mcap, ind_l1) (+ _meta)]
+    bool has_valid = false;
+    std::vector<std::string> months; // "YYYYMM" 升序
+  };
 
-  // 静态回调 (after_barrier: false=TS阶段, true=CS阶段)
-  static void compute_asset_static(SharedData &data, size_t asset_idx, uint64_t gen, bool after_barrier);
-  static void on_all_done_static(SharedData &data);
+  void worker_loop();
 
-  // Features directory
   std::string features_dir_;
+  SharedData *data_ = nullptr;
+  std::thread thread_;
 
-  // Feature reader
-  FeatureRead reader_;
-  FeatureRead::DayColumns day_columns_; // 单日选列缓冲: 特征列 [+ 有效标志列]
-
-  // Worker pool
-  std::unique_ptr<TransformWorkerPool> pool_;
-
-  // Coroutine state
-  std::unique_ptr<CoroutineHandle> coro_;
-  std::atomic<bool> coro_running_{false};
-  std::atomic<bool> coro_stop_{false};
-
-  // Request flag
-  std::atomic<bool> compute_requested_{false};
+  std::mutex req_mutex_;
+  std::condition_variable req_cv_;
+  std::optional<Request> pending_;
+  std::atomic<bool> cancel_{false};
+  std::atomic<bool> stop_{false};
 };
 
 } // namespace GUI::Features

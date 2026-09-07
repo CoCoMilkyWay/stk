@@ -1,5 +1,6 @@
 // 截面方法实现 (Method/CS.hpp), qmt/cpp/src/feature/cs.cpp 逐步复刻.
-//   Reciprocal::apply / NormRank::apply / WinsorRank::apply / NeutralRank::apply + prepare_logmc
+//   Tf:     Reciprocal / Log
+//   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ (+ 运行期分派表 column_fn)
 //
 // 忠实性契约 (决定 qmt 因子效果能否复现, 改动前先对 qmt 源码逐行核对):
 //   median_in_place: nth_element 取上中位, 偶数长度与下中位平均
@@ -21,6 +22,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -251,6 +253,31 @@ void neutralize(float *y, const float *logmc, const float *industry,
   }
 }
 
+// NaN → 0 (z / demean 类输出的中性值 == 0)
+void zero_fill(float *y, std::size_t n) {
+  for (std::size_t i = 0; i < n; ++i)
+    if (!std::isfinite(y[i]))
+      y[i] = 0.0f;
+}
+
+// x − mean (double 累加), 全缺失 → 不动
+void demean(float *x, std::size_t n) {
+  double sum = 0.0;
+  std::size_t cnt = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(x[i]))
+      continue;
+    sum += x[i];
+    ++cnt;
+  }
+  if (cnt == 0)
+    return;
+  const float mean = static_cast<float>(sum / static_cast<double>(cnt));
+  for (std::size_t i = 0; i < n; ++i)
+    if (std::isfinite(x[i]))
+      x[i] -= mean;
+}
+
 // NaN → finite 均值; 全缺失 → 全 0 (只表达"无横截面信息", 不制造排序差异)
 void mean_fill(float *y, std::size_t n) {
   double sum = 0.0;
@@ -301,7 +328,20 @@ void Reciprocal::apply(float *y, std::size_t n) {
   }
 }
 
+// signed log1p: 保号压尾, 0 → 0, 非 finite → NaN
+void Log::apply(float *y, std::size_t n) {
+  for (std::size_t i = 0; i < n; ++i) {
+    float v = y[i];
+    y[i] = std::isfinite(v) ? std::copysign(std::log1p(std::fabs(v)), v) : nanf_();
+  }
+}
+
 // ---- 截面方法 ----
+void Rank::apply(float *y, std::size_t n) {
+  pct_rank(y, n);
+  mean_fill(y, n);
+}
+
 void NormRank::apply(float *y, std::size_t n) {
   rank_inverse_normal(y, n);
 }
@@ -311,6 +351,22 @@ void WinsorRank::apply(float *y, std::size_t n) {
   z(y, n);
   pct_rank(y, n);
   mean_fill(y, n);
+}
+
+void Demean::apply(float *y, std::size_t n) {
+  demean(y, n);
+  zero_fill(y, n);
+}
+
+void Z::apply(float *y, std::size_t n) {
+  z(y, n);
+  zero_fill(y, n);
+}
+
+void WinsorZ::apply(float *y, std::size_t n) {
+  winsor_mad(y, n, 3.0f);
+  z(y, n);
+  zero_fill(y, n);
 }
 
 void NeutralRank::prepare_logmc(float *mcap, std::size_t n) {
@@ -327,6 +383,46 @@ void NeutralRank::apply(float *y, std::size_t n, const Ctx &c) {
   z(y, n);
   pct_rank(y, n);
   mean_fill(y, n);
+}
+
+// ---- 运行期分派表: 全组合静态实例化, 与 CoreCrosssection::run_one 同一条调用链 ----
+namespace {
+
+template <class Tf, class Method>
+void run(float *y, std::size_t n, const NeutralRank::Ctx *ctx) {
+  Tf::apply(y, n);
+  if constexpr (Method::kNeutral) {
+    assert(ctx != nullptr && "中性化方法需要 Ctx");
+    Method::apply(y, n, *ctx);
+  } else {
+    Method::apply(y, n);
+  }
+}
+
+// 行 = Tf, 列 = Method (两层 X-macro 展开)
+constexpr std::size_t kNumTf = static_cast<std::size_t>(TfId::kCount);
+constexpr std::size_t kNumMethod = static_cast<std::size_t>(MethodId::kCount);
+
+struct Row {
+  std::array<ColumnFn, kNumMethod> fn;
+};
+#define CS_ROW_ONE(method, label) &run<Tf, method>,
+template <class Tf>
+constexpr Row make_row() { return Row{{CS_METHODS(CS_ROW_ONE)}}; }
+#undef CS_ROW_ONE
+
+#define CS_TABLE_ROW(tf, label) make_row<tf>(),
+constexpr Row kTable[kNumTf] = {CS_TFS(CS_TABLE_ROW)};
+#undef CS_TABLE_ROW
+
+static_assert(std::size(TF_NAMES) == kNumTf && std::size(METHOD_NAMES) == kNumMethod);
+
+} // anonymous namespace
+
+ColumnFn column_fn(TfId tf, MethodId m) {
+  const std::size_t i = static_cast<std::size_t>(tf), j = static_cast<std::size_t>(m);
+  assert(i < kNumTf && j < kNumMethod);
+  return kTable[i].fn[j];
 }
 
 } // namespace cs

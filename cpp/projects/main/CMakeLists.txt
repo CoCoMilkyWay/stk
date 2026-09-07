@@ -316,6 +316,7 @@ set(HEADERS
     ../../include/features/CoreSequential.hpp
     ../../include/features/FeaturesDefine.hpp
     ../../include/features/TimeIndex.hpp
+    ../../include/features/Backend/DayBatchPlane.hpp
     ../../include/features/Backend/FeatureRead.hpp
     ../../include/features/Backend/FeatureStore.hpp
     ../../include/features/Backend/FeatureStoreConfig.hpp

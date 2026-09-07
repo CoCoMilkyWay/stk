@@ -75,9 +75,9 @@ struct TaskFeaturesState {
   int timeseries_prev_feature_idx = -1; // Track feature changes for timeseries
   int timeseries_prev_level = -1;       // Track level changes for timeseries
 
-  // Auto-compute tracking (Transform)
-  int transform_prev_feature_idx = -1; // Track feature changes for transform
-  int transform_prev_level = -1;       // Track level changes for transform
+  // Auto-compute tracking (Transform): 特征/层变了即重算 (tab 打开时)
+  int transform_prev_feature_idx = -1;
+  int transform_prev_level = -1;
 };
 
 // ============================================================================
@@ -94,12 +94,16 @@ TaskHandle CreateFeaturesTask() {
   // OnExpand 不需要: 切到 Features 时 TaskTree::Select 默认 selected_tab=0,
   // Services 延迟到首次 Draw 时创建.
 
-  // OnCollapse: 切出 Features 任务才回收 Dist 的构建内存 (任务内切 tab 不回收)
+  // OnCollapse: 切出 Features 任务才回收 Dist / Transform 的构建内存 (任务内切 tab 不回收)
   handle.OnCollapse = [state]() {
     if (state->dist_service) {
       state->dist_service->Shutdown();
       state->dist_prewarmed = false;      // 重进任务时重新预热
       state->dist_tab_was_active = false; // 数据已清, 重进按"初次进 tab"走自动重算
+    }
+    if (state->transform_service) {
+      state->transform_service->Shutdown();
+      state->transform_tab_was_active = false;
     }
   };
 
@@ -222,11 +226,14 @@ TaskHandle CreateFeaturesTask() {
       }
       return {};
 
-    case TAB_TRANSFORM: // 变换计算中才标注 (done/idle 无噪音)
-      if (data.transform.compute.is_busy())
-        return {TaskStatus::Kind::Busy,
-                "computing " + std::to_string((int)data.transform.compute.progress()) + "%"};
-      return {};
+    case TAB_TRANSFORM: { // 流式构建中显示天数进度
+      if (data.transform.status.load(std::memory_order_relaxed) != Transform::Status::Building)
+        return {};
+      const size_t total = data.transform.days_total.load(std::memory_order_relaxed);
+      const size_t done = data.transform.days_loaded.load(std::memory_order_relaxed);
+      const int pct = total > 0 ? (int)(100 * done / total) : 0;
+      return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
+    }
 
     case TAB_DISTRIBUTION: { // 流式构建中显示天数进度
       if (data.dist.status.load(std::memory_order_relaxed) != Dist::Status::Building)
@@ -336,31 +343,22 @@ TaskHandle CreateFeaturesTask() {
     const bool dist_tab_open = (idx == TAB_DISTRIBUTION);
     const bool timeseries_tab_open = (idx == TAB_TIMESERIES);
 
-    // Transform lifecycle
+    // Transform lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在 OnCollapse);
+    // 进 tab / 特征或层变了 → 用 UI 当前参数发新请求 (RequestCompute 内部取消在跑; 非 L1 静默忽略)
     if (transform_tab_open && !state->transform_tab_was_active) {
       state->transform_tab_was_active = true;
-      state->transform_prev_feature_idx = -1; // Reset tracking on tab enter
+      state->transform_prev_feature_idx = -1;
       state->transform_prev_level = -1;
+      state->transform_service->Start(data);
     } else if (!transform_tab_open && state->transform_tab_was_active) {
       Features::StopTabTransform(state->transform_service.get(), data);
       state->transform_tab_was_active = false;
     }
-
-    // Auto-trigger Transform compute on feature/level change
-    if (transform_tab_open && state->transform_service &&
-        state->transform_service->is_running()) {
+    if (transform_tab_open) {
       auto &sel = data.feature.selection;
-      bool feature_changed = (sel.primary_feature_idx != state->transform_prev_feature_idx);
-      bool level_changed = (sel.selected_level != state->transform_prev_level);
-
-      if (feature_changed || level_changed) {
-        // Cancel old computation if running
-        if (data.transform.compute.is_busy()) {
-          data.transform.cancel();
-        }
-        // Trigger new computation
-        state->transform_service->RequestCompute();
-        // Update tracking
+      if (sel.primary_feature_idx != state->transform_prev_feature_idx ||
+          sel.selected_level != state->transform_prev_level) {
+        state->transform_service->RequestCompute(data, state->transform_ui_state.params);
         state->transform_prev_feature_idx = sel.primary_feature_idx;
         state->transform_prev_level = sel.selected_level;
       }
@@ -472,6 +470,8 @@ TaskHandle CreateFeaturesTask() {
       state->dist_service->Shutdown(); // Reinit 复用 SharedData, 构建内存一并释放
     state->dist_service.reset();
     state->timeseries_service.reset();
+    if (state->transform_service)
+      state->transform_service->Shutdown();
     state->transform_service.reset();
   };
 
