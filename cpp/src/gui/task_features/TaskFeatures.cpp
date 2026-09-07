@@ -413,13 +413,7 @@ TaskHandle CreateFeaturesTask() {
         step_needs_compute = !ts.step1_frequency.valid;
         break;
       case 2:
-        step_needs_compute = !ts.step2_arma.valid;
-        break;
-      case 3:
-        step_needs_compute = !ts.step3_residual.valid;
-        break;
-      case 4:
-        step_needs_compute = !ts.step4_temporal_decay.valid;
+        step_needs_compute = !ts.step2_acf.valid;
         break;
       default:
         break;

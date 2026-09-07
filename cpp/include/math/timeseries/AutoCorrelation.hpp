@@ -10,12 +10,8 @@
 // ============================================================================
 //
 // ACF: 自相关函数，测量序列与其滞后版本的相关性
-// PACF: 偏自相关函数，去除中间滞后的影响后的相关性
-//
-// 用于 ARMA 模型阶数识别:
-//   - ACF 截尾 + PACF 拖尾 → AR(p) 模型
-//   - ACF 拖尾 + PACF 截尾 → MA(q) 模型
-//   - 两者都拖尾 → ARMA(p,q) 模型
+// PACF: 偏自相关函数，去除中间滞后的影响后的相关性 (Durbin-Levinson)
+// 只出曲线 + Bartlett 置信带, 不做定阶 (特征诊断看记忆结构, 不建 ARMA)
 //
 // ============================================================================
 
@@ -25,10 +21,7 @@ struct ACFResult {
   std::vector<float> acf;        // [max_lag+1], acf[0] = 1.0
   std::vector<float> pacf;       // [max_lag+1], pacf[0] = 1.0
   float confidence_bound = 0.0f; // 95% 置信区间
-  int cutoff_lag_acf = 0;        // ACF 首次落入置信区间的滞后
-  int cutoff_lag_pacf = 0;       // PACF 首次落入置信区间的滞后
   size_t n_obs = 0;
-  bool is_white_noise = false; // 所有 ACF 都在置信区间内
   bool valid = false;
 };
 
@@ -124,27 +117,6 @@ inline ACFResult compute_acf_pacf(std::span<const float> y, int max_lag, ACFWork
   // ========== 5. 计算 95% 置信区间 ==========
   // Bartlett 公式: ±1.96/√n
   result.confidence_bound = 1.96f / std::sqrt(static_cast<float>(n));
-
-  // ========== 6. 检测截尾点 ==========
-  result.cutoff_lag_acf = max_lag + 1;
-  result.cutoff_lag_pacf = max_lag + 1;
-
-  for (int k = 1; k <= max_lag; ++k) {
-    if (std::abs(result.acf[static_cast<size_t>(k)]) < result.confidence_bound) {
-      result.cutoff_lag_acf = k;
-      break;
-    }
-  }
-
-  for (int k = 1; k <= max_lag; ++k) {
-    if (std::abs(result.pacf[static_cast<size_t>(k)]) < result.confidence_bound) {
-      result.cutoff_lag_pacf = k;
-      break;
-    }
-  }
-
-  // ========== 7. 白噪声检验 ==========
-  result.is_white_noise = (result.cutoff_lag_acf == 1);
 
   result.valid = true;
   return result;

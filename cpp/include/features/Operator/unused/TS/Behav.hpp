@@ -3,10 +3,10 @@
 // =============================================================================
 // BEHAV (Behavioral) - 行为特征 (降频版): 每笔订单累计, 按秒结算, 分钟末输出
 // =============================================================================
-//   agg_buy/sell = avg(log(P_order / P_best))   (买/卖单侵略性)
-//   agg_dif = agg_buy - agg_sell                (侵略性差)
+//   agg_bid/ask = avg(log(P_order / P_best))   (买/卖单侵略性)
+//   agg_diff = agg_bid - agg_ask                (侵略性差)
 //   cpr = |O^C| / |O^M|                         (撤挂比)
-//   agg_trd = linear_slope(agg_dif, 20s 窗口)   (侵略性趋势)
+//   agg_trend = linear_slope(agg_diff, 20s 窗口)   (侵略性趋势)
 //   ord_size = avg(|O^M|)                       (平均单笔规模)
 // =============================================================================
 
@@ -19,11 +19,11 @@ class Behav {
   static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
 
 public:
-  enum Out : size_t { agg_buy,
-                      agg_sell,
-                      agg_dif,
+  enum Out : size_t { agg_bid,
+                      agg_ask,
+                      agg_diff,
                       cpr,
-                      agg_trd,
+                      agg_trend,
                       ord_size,
                       kCount };
   float y[kCount] = {}; // 秒结算写入, 分钟末由 Node 推出
@@ -102,11 +102,11 @@ private:
   // 秒级聚合: 无新样本的秒沿用上一值
   inline void flush_second_() {
     // 1. 平均侵略性
-    y[agg_buy] = cnt_agg_buy_ > 0 ? sum_agg_buy_ / cnt_agg_buy_ : y[agg_buy];
-    y[agg_sell] = cnt_agg_sell_ > 0 ? sum_agg_sell_ / cnt_agg_sell_ : y[agg_sell];
+    y[agg_bid] = cnt_agg_buy_ > 0 ? sum_agg_buy_ / cnt_agg_buy_ : y[agg_bid];
+    y[agg_ask] = cnt_agg_sell_ > 0 ? sum_agg_sell_ / cnt_agg_sell_ : y[agg_ask];
 
     // 2. 侵略性差: 正值买方更激进
-    y[agg_dif] = y[agg_buy] - y[agg_sell];
+    y[agg_diff] = y[agg_bid] - y[agg_ask];
 
     // 3. 撤挂比: 值越大撤单越频繁 (虚假挂单 / 试探)
     y[cpr] = vol_maker_ > 1e-6f ? vol_cancel_ / vol_maker_ : y[cpr];
@@ -114,8 +114,8 @@ private:
     // 4. 平均订单规模
     y[ord_size] = cnt_maker_ > 0 ? vol_maker_ / cnt_maker_ : y[ord_size];
 
-    // 5. 侵略性趋势: agg_dif 滑动窗口的线性回归斜率
-    agg_window_[agg_idx_] = y[agg_dif];
+    // 5. 侵略性趋势: agg_diff 滑动窗口的线性回归斜率
+    agg_window_[agg_idx_] = y[agg_diff];
     agg_idx_ = (agg_idx_ + 1) % AGG_WINDOW;
     if (agg_cnt_ < AGG_WINDOW)
       ++agg_cnt_;
@@ -136,7 +136,7 @@ private:
       }
 
       const float denom = n * sum_xx - sum_x * sum_x;
-      y[agg_trd] = denom > 1e-6f ? (n * sum_xy - sum_x * sum_y) / denom : 0.0f;
+      y[agg_trend] = denom > 1e-6f ? (n * sum_xy - sum_x * sum_y) / denom : 0.0f;
     }
 
     // 重置秒内累计器
@@ -165,10 +165,10 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Behav(N) N(Behav, (Behav), (tick_data), onTick, onMinute)
 
-#define FIELDS_L1_Behav(X, CAT1)                                                                                                                                                                                                                                                                                                         \
-  X(agg_buy, CAT1, RAW, NONE, "Bid Aggressiveness", "买单平均侵略性", "限价买单相对best bid的激进程度(降频)", R"(\frac{1}{\#O_W^{M,B,\mathrm{lmt}}}\sum_{i\in O_W^{M,B,\mathrm{lmt}}}\log\frac{P_i}{P_{1,\tau_i}^{M,B}}, \quad O_W^{M,B,\mathrm{lmt}}=\{i: \tau_i\in W, s_i=B, \mathrm{type}_i=\mathrm{limit}\})", OP(Behav, agg_buy))   \
-  X(agg_sell, CAT1, RAW, NONE, "Ask Aggressiveness", "卖单平均侵略性", "限价卖单相对best ask的激进程度(降频)", R"(\frac{1}{\#O_W^{M,A,\mathrm{lmt}}}\sum_{i\in O_W^{M,A,\mathrm{lmt}}}\log\frac{P_{1,\tau_i}^{M,A}}{P_i}, \quad O_W^{M,A,\mathrm{lmt}}=\{i: \tau_i\in W, s_i=A, \mathrm{type}_i=\mathrm{limit}\})", OP(Behav, agg_sell)) \
-  X(agg_dif, CAT1, RAW, NONE, "Aggressiveness Diff", "侵略性差", "买卖侵略性差值(降频)", R"(\bar{a}_W^{B} - \bar{a}_W^{A}, \quad \bar{a}_W^{s}=\frac{1}{\#O_W^{M,s,\mathrm{lmt}}}\sum_{i\in O_W^{M,s,\mathrm{lmt}}}\log\frac{P_i}{P_{1,\tau_i}^{M,s}}, \quad s \in \{B,A\})", OP(Behav, agg_dif))                                        \
-  X(cpr, CAT1, RATIO, NONE, "Cancel-to-Post Ratio", "撤挂比", "撤单量占挂单量比例(降频)", R"(\frac{\sum_{\tau\in W}(|O_{\tau}^{C,B}|+|O_{\tau}^{C,A}|)}{\sum_{\tau\in W}(|O_{\tau}^{M,B}|+|O_{\tau}^{M,A}|)})", OP(Behav, cpr))                                                                                                          \
-  X(agg_trd, CAT1, RAW, NONE, "Aggressiveness Trend", "侵略性趋势", "子窗口侵略性序列线性回归斜率(降频)", R"(\hat{\beta}_1, \quad \bar{a}_{\tau}=\hat{\beta}_0+\hat{\beta}_1\tau+\epsilon_{\tau}, \quad \tau\in\{t-W,\ldots,t\})", OP(Behav, agg_trd))                                                                                   \
+#define FIELDS_L1_Behav(X, CAT1)                                                                                                                                                                                                                                                                                                       \
+  X(agg_bid, CAT1, RAW, NONE, "Bid Aggressiveness", "买单平均侵略性", "限价买单相对best bid的激进程度(降频)", R"(\frac{1}{\#O_W^{M,B,\mathrm{lmt}}}\sum_{i\in O_W^{M,B,\mathrm{lmt}}}\log\frac{P_i}{P_{1,\tau_i}^{M,B}}, \quad O_W^{M,B,\mathrm{lmt}}=\{i: \tau_i\in W, s_i=B, \mathrm{type}_i=\mathrm{limit}\})", OP(Behav, agg_bid)) \
+  X(agg_ask, CAT1, RAW, NONE, "Ask Aggressiveness", "卖单平均侵略性", "限价卖单相对best ask的激进程度(降频)", R"(\frac{1}{\#O_W^{M,A,\mathrm{lmt}}}\sum_{i\in O_W^{M,A,\mathrm{lmt}}}\log\frac{P_{1,\tau_i}^{M,A}}{P_i}, \quad O_W^{M,A,\mathrm{lmt}}=\{i: \tau_i\in W, s_i=A, \mathrm{type}_i=\mathrm{limit}\})", OP(Behav, agg_ask)) \
+  X(agg_diff, CAT1, RAW, NONE, "Aggressiveness Diff", "侵略性差", "买卖侵略性差值(降频)", R"(\bar{a}_W^{B} - \bar{a}_W^{A}, \quad \bar{a}_W^{s}=\frac{1}{\#O_W^{M,s,\mathrm{lmt}}}\sum_{i\in O_W^{M,s,\mathrm{lmt}}}\log\frac{P_i}{P_{1,\tau_i}^{M,s}}, \quad s \in \{B,A\})", OP(Behav, agg_diff))                                    \
+  X(cpr, CAT1, RATIO, NONE, "Cancel-to-Post Ratio", "撤挂比", "撤单量占挂单量比例(降频)", R"(\frac{\sum_{\tau\in W}(|O_{\tau}^{C,B}|+|O_{\tau}^{C,A}|)}{\sum_{\tau\in W}(|O_{\tau}^{M,B}|+|O_{\tau}^{M,A}|)})", OP(Behav, cpr))                                                                                                        \
+  X(agg_trend, CAT1, RAW, NONE, "Aggressiveness Trend", "侵略性趋势", "子窗口侵略性序列线性回归斜率(降频)", R"(\hat{\beta}_1, \quad \bar{a}_{\tau}=\hat{\beta}_0+\hat{\beta}_1\tau+\epsilon_{\tau}, \quad \tau\in\{t-W,\ldots,t\})", OP(Behav, agg_trend))                                                                             \
   X(ord_size, CAT1, RAW, LOG_ZSCORE, "Avg Order Size", "平均单笔规模", "窗口内订单平均量(降频)", R"(\frac{1}{\#O_W^{M}}\sum_{i\in O_W^{M}}|O_i|)", OP(Behav, ord_size))

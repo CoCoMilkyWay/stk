@@ -312,9 +312,9 @@ void OrderFlowService::universe_build(const UniverseReq &req) {
   slot.meta.assign(A, OrderFlow::Universe::Meta{});
 
   auto &cols = impl_->columns;
-  cols.assign({static_cast<size_t>(L1_Field::_meta), static_cast<size_t>(L1_Field::risk_warn),
+  cols.assign({static_cast<size_t>(L1_Field::_meta), static_cast<size_t>(L1_Field::st_level),
                static_cast<size_t>(L1_Field::list_age), static_cast<size_t>(L1_Field::delist_age),
-               static_cast<size_t>(L1_Field::industry_l1)});
+               static_cast<size_t>(L1_Field::ind_l1)});
   assert(cols.size() == UNIVERSE_COL_COUNT);
   impl_->reader.load_day_columns(req.date, cols, impl_->uni_cols);
 

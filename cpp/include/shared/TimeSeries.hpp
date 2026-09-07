@@ -16,15 +16,10 @@ struct Asset;
 // TimeSeries Analysis Data Structure
 // ============================================================================
 //
-// 时序分析流程 (SARIMA + GARCH 框架):
-//   目标: 如果存在稳定可预测的成分,剥离它,减少与其他特征的虚假相关性
-//
-// 分析步骤:
-//   Step 0: 平稳性检验 - ADF/KPSS 确认序列可建模
-//   Step 1: 频域分析   - 检测周期性成分,确认频谱宽度
-//   Step 2: ARMA建模   - ACF/PACF 确定模型阶数
-//   Step 3: 残差分析   - 验证模型充分性,诊断残差性质
-//   Step 4: 时间衰减   - 评估截面结构的时间稳定性
+// 特征时序诊断 (特征是因子原料, 不建模, 只看记忆结构):
+//   Step 0: 平稳性检验 - ADF/KPSS (per-asset per-month)
+//   Step 1: 频域分析   - 逐日 FFT 多分辨率 PSD, 检测周期性成分
+//   Step 2: 自相关     - ACF/PACF 曲线 (全资产平均, 带 95% 置信带)
 //
 // ============================================================================
 
@@ -225,8 +220,6 @@ struct TimeSeries {
     size_t month_idx = 0;   // 负责加载的月
     size_t asset_start = 0; // 负责的asset范围起始
     size_t asset_end = 0;   // 负责的asset范围结束
-    size_t day_start = 0;   // 负责的天范围起始 (用于Stage 4)
-    size_t day_end = 0;     // 负责的天范围结束
   };
 
   // ==========================================================================
@@ -243,73 +236,15 @@ struct TimeSeries {
     }
   };
 
-  // Step 2: ARMA建模分析结果
-  struct ARMAAnalysis {
-    int acf_cutoff_lag = 0;
-    bool acf_is_cutoff = false;
-
-    int pacf_cutoff_lag = 0;
-    bool pacf_is_cutoff = false;
-
-    int suggested_p = 0;
-    int suggested_q = 0;
-    bool is_white_noise = false;
-
+  // Step 2: 自相关 (全资产平均 ACF/PACF + 置信带; 不定阶)
+  struct AutoCorrAnalysis {
     std::vector<float> acf_values;
     std::vector<float> pacf_values;
     float confidence_bound = 0.0f;
     int max_lag = 0;
 
     bool valid = false;
-    void clear() { *this = ARMAAnalysis{}; }
-  };
-
-  // Step 3: 残差分析结果
-  struct ResidualAnalysis {
-    float ljung_box_pvalue = 0.0f;
-    float ljung_box_statistic = 0.0f;
-    bool ljung_box_pass = false;
-
-    float arch_lm_pvalue = 0.0f;
-    float arch_lm_statistic = 0.0f;
-    bool arch_lm_pass = false;
-
-    float jarque_bera_pvalue = 0.0f;
-    float jarque_bera_statistic = 0.0f;
-    float skewness = 0.0f;
-    float kurtosis = 0.0f;
-    bool jarque_bera_pass = false;
-    bool jarque_bera_warn = false;
-
-    bool cusum_pass = false;
-    bool cusumq_pass = false;
-
-    std::vector<float> residuals;
-    std::vector<float> qq_theoretical;
-    std::vector<float> qq_empirical;
-    std::vector<float> cusum_values;
-    std::vector<float> cusum_upper;
-    std::vector<float> cusum_lower;
-
-    bool valid = false;
-    void clear() { *this = ResidualAnalysis{}; }
-  };
-
-  // Step 4: 时间衰减分析结果
-  struct TemporalDecay {
-    float gini_stability = 0.0f;
-    float hhi_stability = 0.0f;
-    float grs_stability = 0.0f;
-
-    float rank_corr_stability = 0.0f;
-
-    std::vector<float> time_points;
-    std::vector<float> gini_series;
-    std::vector<float> hhi_series;
-    std::vector<float> rank_corr_series;
-
-    bool valid = false;
-    void clear() { *this = TemporalDecay{}; }
+    void clear() { *this = AutoCorrAnalysis{}; }
   };
 
   // ==========================================================================
@@ -391,45 +326,18 @@ struct TimeSeries {
   // PSD cache: per-asset per-day (持久)
   PSDHeatmap psd_cache;
 
-  // Step 2: ARMA cache: per-asset
-  struct ARMACell {
+  // Step 2: ACF cache: per-asset
+  struct ACFCell {
     std::vector<float> acf;  // [max_lag+1]
     std::vector<float> pacf; // [max_lag+1]
-    int cutoff_lag_acf = 0;
-    int cutoff_lag_pacf = 0;
     bool valid = false;
   };
-  std::vector<ARMACell> arma_cache; // [n_assets]
-
-  // Step 3: Residual cache: per-asset
-  struct ResidualCell {
-    float ljung_box_stat = 0.0f;
-    float ljung_box_pval = 0.0f;
-    float arch_lm_stat = 0.0f;
-    float arch_lm_pval = 0.0f;
-    float jarque_bera_stat = 0.0f;
-    float jarque_bera_pval = 0.0f;
-    float skewness = 0.0f;
-    float kurtosis = 0.0f;
-    bool valid = false;
-  };
-  std::vector<ResidualCell> residual_cache; // [n_assets]
-
-  // Step 4: Temporal Decay cache: per-day
-  struct TemporalCell {
-    float gini = 0.0f;
-    float hhi = 0.0f;
-    float rank_corr = 0.0f; // vs previous day
-    bool valid = false;
-  };
-  std::vector<TemporalCell> temporal_cache; // [n_days]
+  std::vector<ACFCell> acf_cache; // [n_assets]
 
   // Step results (聚合统计)
   StationarityTest step0_stationarity;
   FrequencyAnalysis step1_frequency;
-  ARMAAnalysis step2_arma;
-  ResidualAnalysis step3_residual;
-  TemporalDecay step4_temporal_decay;
+  AutoCorrAnalysis step2_acf;
 
   Input input;
   Compute compute;
@@ -462,14 +370,10 @@ struct TimeSeries {
     barriers.reset();
     stationarity_cache.clear();
     psd_cache.clear();
-    arma_cache.clear();
-    residual_cache.clear();
-    temporal_cache.clear();
+    acf_cache.clear();
     step0_stationarity.clear();
     step1_frequency.clear();
-    step2_arma.clear();
-    step3_residual.clear();
-    step4_temporal_decay.clear();
+    step2_acf.clear();
     input = Input{};
     compute.reset();
   }

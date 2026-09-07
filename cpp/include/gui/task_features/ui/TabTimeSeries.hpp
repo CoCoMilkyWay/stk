@@ -1,20 +1,17 @@
 // TabTimeSeries - Time Series Analysis Tab
 // ============================================================================
 //
-// 时序分析流程 (SARIMA + GARCH 框架):
-//   目标: 如果存在稳定可预测的成分,剥离它,减少与其他特征的虚假相关性
+// 特征时序诊断 (不建模, 只看记忆结构):
 //
 // UI布局:
-//   控制栏: Compute | Cancel | Status (step/5)
-//   左侧: 检验流程面板 (5个Step,可点击切换)
+//   控制栏: Status (done/total)
+//   左侧: 诊断步骤面板 (3 个 Step, 可点击切换)
 //   右侧: 可视化面板 (根据选中Step切换图表)
 //
 // Step与图表对应:
-//   Step 0: 平稳性检验 → 原序列 + 去趋势/去季节后序列
-//   Step 1: 频域分析   → Power Spectrum + Q因子标注
-//   Step 2: ARMA建模   → ACF + PACF 双图 (含置信区间)
-//   Step 3: 残差分析   → Q-Q图 + 残差时序 + CUSUM
-//   Step 4: 时间衰减   → Gini(t) / HHI(t) / RankCorr(t)
+//   Step 0: 平稳性检验 → ADF / KPSS 热力图 (月 × 资产)
+//   Step 1: 频域分析   → PSD 热力图 (日 × 尺度) + 单日功率谱
+//   Step 2: 自相关     → ACF + PACF 双图 (含置信带)
 //
 // ============================================================================
 #pragma once
@@ -30,7 +27,7 @@ class TimeSeriesService;
 // ============================================================================
 
 struct TimeSeriesUIState {
-  // 当前选中的Step (0-5)
+  // 当前选中的Step (0-2)
   int selected_step = 0;
 
   // Autofit trigger (set when compute completes)

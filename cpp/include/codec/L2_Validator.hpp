@@ -137,13 +137,19 @@ enum Check : uint32_t {
   // 与上一行分毫不差. 拿它去比逐笔的最后一笔成交价, 比的是两个规则上就不必相等
   // 的量. 极值则完全由成交记录决定, 两边语义严格一致.
   PriceMismatch = 1u << 12,
+  // 价格字段用了科学计数法 (如 1.7226e+006). parse_numeric_field 不认 'e',
+  // 只读 '.' 之前的整数位再 /divisor, 静默得到 0 或错误值 —— 高价股 (≥100 元,
+  // 即 0.0001 RMB 单位下 ≥1e6) 整天的逐笔价格会被解析成 0, 盘口与特征全部失真.
+  // 实测 20240206 沪深逐笔委托命中, 相邻日期均为普通整数. 这种源数据不该入库.
+  // 占用枚举里 bit 7 这个空洞 (见 kCheckMeta), 不动 kCheckBitCount 以免破坏 .stat 格式.
+  PriceScientific = 1u << 7,
 };
 
 // 判据位的元信息 — 下标即 Check 的移位量.
 //
 // 整天记录文件 (见 shared/EncodeDayRecord.hpp) 按位存命中标的数, Encode 页
 // 的按日分析表按位出列, 两边都要给这些位起名字. 名字集中在这一张表里, 加一
-// 条判据只改这一处. bit 7 是枚举里的空洞, 三个字段都是 nullptr.
+// 条判据只改这一处. bit 7 原是枚举里的空洞, 现已被 PriceScientific 占用.
 //
 // key 与 describe() 的键名一致, 日志和界面说的是同一件事. 两个例外是
 // VolumeMismatch / TurnoverMismatch —— describe() 那里打的是偏差量而不是
@@ -199,9 +205,10 @@ struct ValidationReport {
   size_t cancel_unresolved = 0;
   size_t trade_both_missing = 0;
   size_t trade_side_missing = 0;
-  size_t over_consumed = 0;  // 委托流不完整时照常统计, 只是不置位
-  size_t field_overflow = 0; // 超出 Order 位宽的记录数
-  size_t lob_unusable = 0;   // LOB 抵扣不动的记录数
+  size_t over_consumed = 0;    // 委托流不完整时照常统计, 只是不置位
+  size_t field_overflow = 0;   // 超出 Order 位宽的记录数
+  size_t lob_unusable = 0;     // LOB 抵扣不动的记录数
+  size_t price_scientific = 0; // 价格字段用了科学计数法的记录数
   bool strict_ledger = false;
 
   // 当日非零价格的上下界 (分) 与由此定出的 LOB 索引基准. price_base 要跟着

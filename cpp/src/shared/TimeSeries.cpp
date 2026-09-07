@@ -4,7 +4,6 @@
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/KPSS.hpp"
 #include "math/timeseries/AutoCorrelation.hpp"
-#include "math/timeseries/TemporalDecay.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Feature.hpp"
@@ -264,18 +263,18 @@ static void compute_psd_for_asset(TimeSeries &ts, size_t asset_idx,
 }
 
 // ============================================================================
-// Stage 2: ARMA 分析 (按 asset 并行)
+// Stage 2: 自相关 ACF/PACF (按 asset 并行)
 // ============================================================================
 
-static void compute_arma_for_asset(TimeSeries &ts, size_t asset_idx,
-                                   const TimeSeries::SharedMonthData &shared) {
+static void compute_acf_for_asset(TimeSeries &ts, size_t asset_idx,
+                                  const TimeSeries::SharedMonthData &shared) {
   Trace;
   thread_local std::vector<float> series;
   thread_local math::timeseries::ACFWorkspace ws;
 
   collect_asset_series(shared, asset_idx, series);
 
-  auto &cell = ts.arma_cache[asset_idx];
+  auto &cell = ts.acf_cache[asset_idx];
   cell.valid = false;
 
   if (series.size() < 100)
@@ -290,109 +289,6 @@ static void compute_arma_for_asset(TimeSeries &ts, size_t asset_idx,
 
   cell.acf = std::move(result.acf);
   cell.pacf = std::move(result.pacf);
-  cell.cutoff_lag_acf = result.cutoff_lag_acf;
-  cell.cutoff_lag_pacf = result.cutoff_lag_pacf;
-  cell.valid = true;
-}
-
-// ============================================================================
-// Stage 4: 时间衰减分析 (按天并行)
-// ============================================================================
-
-static void compute_temporal_for_day(TimeSeries &ts, size_t day_idx,
-                                     const TimeSeries::SharedMonthData &shared) {
-  Trace;
-  auto &cell = ts.temporal_cache[day_idx];
-  cell.valid = false;
-
-  const auto &dr = shared.day_ranges[day_idx];
-  const auto &tensor = shared.months[dr.month_idx];
-  const size_t A = shared.n_assets;
-  const size_t F = shared.F_selected;
-  const bool has_valid = shared.has_valid_flag;
-  const L2::ValidType vt = shared.valid_type;
-
-  // 收集当天所有 asset 的平均值
-  std::vector<float> day_values(A, 0.0f);
-  std::vector<size_t> counts(A, 0);
-
-  for (size_t t = dr.t_start; t < dr.t_end; ++t) {
-    const size_t base = t * F * A;
-
-    for (size_t a = 0; a < A; ++a) {
-      float val = static_cast<float>(tensor.data[base + a]);
-
-      if (has_valid) {
-        float flag = static_cast<float>(tensor.data[base + A + a]);
-        if (!fmeta::valid(flag, vt))
-          continue;
-      }
-
-      if (val != val || val > 1e38f || val < -1e38f)
-        continue;
-
-      day_values[a] += val;
-      counts[a]++;
-    }
-  }
-
-  // 计算平均
-  size_t valid_count = 0;
-  for (size_t a = 0; a < A; ++a) {
-    if (counts[a] > 0) {
-      day_values[a] /= static_cast<float>(counts[a]);
-      valid_count++;
-    }
-  }
-
-  if (valid_count < 10)
-    return;
-
-  const std::span<const float> dv(day_values.data(), day_values.size());
-
-  cell.gini = math::timeseries::compute_gini(dv);
-  cell.hhi = math::timeseries::compute_hhi(dv);
-
-  // Rank correlation vs 前一天
-  if (day_idx > 0) {
-    const auto &prev_dr = shared.day_ranges[day_idx - 1];
-    const auto &prev_tensor = shared.months[prev_dr.month_idx];
-
-    std::vector<float> prev_values(A, 0.0f);
-    std::vector<size_t> prev_counts(A, 0);
-
-    for (size_t t = prev_dr.t_start; t < prev_dr.t_end; ++t) {
-      const size_t base = t * F * A;
-
-      for (size_t a = 0; a < A; ++a) {
-        float val = static_cast<float>(prev_tensor.data[base + a]);
-
-        if (has_valid) {
-          float flag = static_cast<float>(prev_tensor.data[base + A + a]);
-          if (!fmeta::valid(flag, vt))
-            continue;
-        }
-
-        if (val != val || val > 1e38f || val < -1e38f)
-          continue;
-
-        prev_values[a] += val;
-        prev_counts[a]++;
-      }
-    }
-
-    for (size_t a = 0; a < A; ++a) {
-      if (prev_counts[a] > 0) {
-        prev_values[a] /= static_cast<float>(prev_counts[a]);
-      }
-    }
-
-    cell.rank_corr = math::timeseries::spearman_rank_correlation(
-        dv, std::span<const float>(prev_values.data(), prev_values.size()));
-  } else {
-    cell.rank_corr = 1.0f;
-  }
-
   cell.valid = true;
 }
 
@@ -494,11 +390,8 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
           psd_cache.dates[d] = shared.day_ranges[d].date;
         }
 
-        arma_cache.clear();
-        arma_cache.resize(shared.n_assets);
-
-        temporal_cache.clear();
-        temporal_cache.resize(shared.n_days);
+        acf_cache.clear();
+        acf_cache.resize(shared.n_assets);
 
         compute.status = Compute::Status::Building;
         barriers.shared_built.store(true);
@@ -521,7 +414,7 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
         compute_stationarity_for_month(*this, alloc.month_idx, shared);
       }
 
-      // Stage 1-3: 按 asset 并行
+      // Stage 1-2: 按 asset 并行
       for (size_t a = alloc.asset_start; a < alloc.asset_end; ++a) {
         if (compute.cancel.load())
           return;
@@ -532,24 +425,11 @@ void TimeSeries::build_all(const std::vector<std::string> &months,
         }
 
         {
-          TraceN("Stage2_ARMA");
-          compute_arma_for_asset(*this, a, shared);
+          TraceN("Stage2_ACF");
+          compute_acf_for_asset(*this, a, shared);
         }
 
         compute.done.fetch_add(1);
-      }
-
-      // Stage 4: 按天并行 (分配给各 worker)
-      {
-        TraceN("Stage4_Temporal");
-        size_t day_start = alloc.worker_id * shared.n_days / n_workers;
-        size_t day_end = (alloc.worker_id + 1) * shared.n_days / n_workers;
-
-        for (size_t d = day_start; d < day_end; ++d) {
-          if (compute.cancel.load())
-            return;
-          compute_temporal_for_day(*this, d, shared);
-        }
       }
     });
   }
@@ -767,13 +647,13 @@ void TimeSeries::finalize_all() {
     }
   }
 
-  // ========== Step 2: 聚合 ARMA 结果 ==========
+  // ========== Step 2: 聚合 ACF/PACF (全资产平均) ==========
   {
-    TraceN("Step2_AggregateARMA");
+    TraceN("Step2_AggregateACF");
     std::vector<float> all_acf, all_pacf;
     int max_len = 0;
 
-    for (const auto &cell : arma_cache) {
+    for (const auto &cell : acf_cache) {
       if (!cell.valid)
         continue;
       max_len = std::max(max_len, static_cast<int>(cell.acf.size()));
@@ -784,7 +664,7 @@ void TimeSeries::finalize_all() {
       all_pacf.resize(static_cast<size_t>(max_len), 0.0f);
       size_t count = 0;
 
-      for (const auto &cell : arma_cache) {
+      for (const auto &cell : acf_cache) {
         if (!cell.valid)
           continue;
         count++;
@@ -801,95 +681,18 @@ void TimeSeries::finalize_all() {
           all_pacf[k] *= inv;
         }
 
-        step2_arma.acf_values = std::move(all_acf);
-        step2_arma.pacf_values = std::move(all_pacf);
-        step2_arma.max_lag = max_len - 1;
+        step2_acf.acf_values = std::move(all_acf);
+        step2_acf.pacf_values = std::move(all_pacf);
+        step2_acf.max_lag = max_len - 1;
 
-        // 置信区间阈值
-        // 理论值 1.96/sqrt(n) 对大数据集太严格，设置实用最小阈值
-        // 0.05 = 5% 相关性，是金融数据中有意义的下限
+        // 置信带: 理论值 1.96/sqrt(n) 对大数据集太严格, 设实用下限 0.05 (5% 相关性)
         constexpr float PRACTICAL_MIN_THRESHOLD = 0.05f;
         size_t n_samples = shared.n_days > 0 ? shared.n_days * 14400 : 1;
         float theoretical = 1.96f / std::sqrt(static_cast<float>(n_samples));
-        step2_arma.confidence_bound = std::max(theoretical, PRACTICAL_MIN_THRESHOLD);
+        step2_acf.confidence_bound = std::max(theoretical, PRACTICAL_MIN_THRESHOLD);
 
-        // 检测截尾：使用相对衰减判断
-        // 当值衰减到 lag=1 值的 10% 以下，认为截尾（更符合实际）
-        const float acf1 = std::abs(step2_arma.acf_values[1]);
-        const float pacf1 = std::abs(step2_arma.pacf_values[1]);
-        const float acf_decay_threshold = std::max(acf1 * 0.1f, step2_arma.confidence_bound);
-        const float pacf_decay_threshold = std::max(pacf1 * 0.1f, step2_arma.confidence_bound);
-
-        // ACF 截尾点
-        step2_arma.acf_cutoff_lag = max_len;
-        for (int k = 2; k < max_len; ++k) {
-          if (std::abs(step2_arma.acf_values[static_cast<size_t>(k)]) < acf_decay_threshold) {
-            step2_arma.acf_cutoff_lag = k;
-            break;
-          }
-        }
-        step2_arma.acf_is_cutoff = (step2_arma.acf_cutoff_lag < max_len);
-
-        // PACF 截尾点
-        step2_arma.pacf_cutoff_lag = max_len;
-        for (int k = 2; k < max_len; ++k) {
-          if (std::abs(step2_arma.pacf_values[static_cast<size_t>(k)]) < pacf_decay_threshold) {
-            step2_arma.pacf_cutoff_lag = k;
-            break;
-          }
-        }
-        step2_arma.pacf_is_cutoff = (step2_arma.pacf_cutoff_lag < max_len);
-
-        // 模型阶数建议
-        step2_arma.suggested_q = step2_arma.acf_is_cutoff ? (step2_arma.acf_cutoff_lag - 1) : 0;
-        step2_arma.suggested_p = step2_arma.pacf_is_cutoff ? (step2_arma.pacf_cutoff_lag - 1) : 0;
-
-        // 白噪声检测：lag=1 的值就已经很小
-        step2_arma.is_white_noise = (acf1 < step2_arma.confidence_bound &&
-                                     pacf1 < step2_arma.confidence_bound);
-
-        step2_arma.valid = true;
+        step2_acf.valid = true;
       }
-    }
-  }
-
-  // ========== Step 3: 残差分析 (TODO: 未实现) ==========
-  // step3_residual 保持无效状态
-
-  // ========== Step 4: 聚合时间衰减结果 ==========
-  {
-    TraceN("Step4_AggregateTemporal");
-    std::vector<float> gini_series, hhi_series, rank_series;
-
-    for (const auto &cell : temporal_cache) {
-      if (!cell.valid)
-        continue;
-      gini_series.push_back(cell.gini);
-      hhi_series.push_back(cell.hhi);
-      rank_series.push_back(cell.rank_corr);
-    }
-
-    if (!gini_series.empty()) {
-      step4_temporal_decay.gini_series = std::move(gini_series);
-      step4_temporal_decay.hhi_series = std::move(hhi_series);
-      step4_temporal_decay.rank_corr_series = std::move(rank_series);
-
-      step4_temporal_decay.gini_stability = math::timeseries::compute_stability(
-          std::span<const float>(step4_temporal_decay.gini_series.data(),
-                                 step4_temporal_decay.gini_series.size()));
-      step4_temporal_decay.hhi_stability = math::timeseries::compute_stability(
-          std::span<const float>(step4_temporal_decay.hhi_series.data(),
-                                 step4_temporal_decay.hhi_series.size()));
-      step4_temporal_decay.rank_corr_stability = math::timeseries::compute_stability(
-          std::span<const float>(step4_temporal_decay.rank_corr_series.data(),
-                                 step4_temporal_decay.rank_corr_series.size()));
-
-      step4_temporal_decay.time_points.resize(step4_temporal_decay.gini_series.size());
-      for (size_t i = 0; i < step4_temporal_decay.time_points.size(); ++i) {
-        step4_temporal_decay.time_points[i] = static_cast<float>(i);
-      }
-
-      step4_temporal_decay.valid = true;
     }
   }
 

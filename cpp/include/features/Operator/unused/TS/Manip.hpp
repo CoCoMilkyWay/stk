@@ -3,8 +3,8 @@
 // =============================================================================
 // MANIP (Manipulation) - 市场操纵行为特征 (降频版, 简化实现, 不追踪订单ID)
 // =============================================================================
-//   ptc_rt    = 成交前近期撤单占比 (窗口统计近似)
-//   fleet_rt  = 短存活订单占比 (撤单率近似)
+//   ptc_ratio    = 成交前近期撤单占比 (窗口统计近似)
+//   fleet_ratio  = 短存活订单占比 (撤单率近似)
 //   spoof_int = 近端大额快速撤单强度 (大额撤单率近似)
 //   stale_ratio_bid/ask = 老单占比 (深度稳定性近似)
 // =============================================================================
@@ -17,8 +17,8 @@ class Manip {
   static constexpr float LARGE_ORDER_THRESHOLD = 10000.0f; // 大单阈值 (股)
 
 public:
-  enum Out : size_t { ptc_rt,
-                      fleet_rt,
+  enum Out : size_t { ptc_ratio,
+                      fleet_ratio,
                       spoof_int,
                       stale_ratio_bid,
                       stale_ratio_ask,
@@ -75,9 +75,9 @@ private:
   // 秒级聚合: 无新样本的秒沿用上一值
   inline void flush_second_() {
     // 1. 成交前撤单率 = 有撤单的成交次数 / 总成交次数
-    y[ptc_rt] = cnt_taker_ > 0 ? static_cast<float>(cnt_ptc_) / cnt_taker_ : y[ptc_rt];
+    y[ptc_ratio] = cnt_taker_ > 0 ? static_cast<float>(cnt_ptc_) / cnt_taker_ : y[ptc_ratio];
     // 2. 闪单率 = 撤单量 / 挂单量
-    y[fleet_rt] = vol_maker_ > 1e-6f ? vol_cancel_ / vol_maker_ : y[fleet_rt];
+    y[fleet_ratio] = vol_maker_ > 1e-6f ? vol_cancel_ / vol_maker_ : y[fleet_ratio];
     // 3. 欺骗挂单强度 = 大额撤单 / 总撤单
     y[spoof_int] = vol_cancel_ > 1e-6f ? vol_spoof_ / vol_cancel_ : y[spoof_int];
 
@@ -119,8 +119,8 @@ private:
 #define NODE_Manip(N) N(Manip, (Manip), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
 #define FIELDS_L1_Manip(X, CAT1)                                                                                                                                                                                                                                                                                                                                                                            \
-  X(ptc_rt, CAT1, RATIO, NONE, "Pre-Trade Cancel Ratio", "成交前撤单比", "成交前T_pre内同向近价撤单占比(降频)", R"(\frac{\sum_{j\in O_W^{T}}\sum_{\tau=\tau_j-T_{\mathrm{pre}}}^{\tau_j}|O_{\tau}^{C,s_j}|}{\sum_{j\in O_W^{T}}|O_j|}, \quad O_W^{T}=\{j: \tau_j\in W, \mathrm{is\_trade}_j\})", OP(Manip, ptc_rt))                                                                                         \
-  X(fleet_rt, CAT1, RATIO, NONE, "Fleeting Order Ratio", "闪单占比", "存活时间<Δ的订单量占比(降频)", R"(\frac{\sum_{i\in O_W^{M,\mathrm{fleet}}}|O_i|}{\sum_{i\in O_W^{M}}|O_i|}, \quad O_W^{M,\mathrm{fleet}}=\{i\in O_W^{M}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<\Delta\})", OP(Manip, fleet_rt))                                                                                                \
+  X(ptc_ratio, CAT1, RATIO, NONE, "Pre-Trade Cancel Ratio", "成交前撤单比", "成交前T_pre内同向近价撤单占比(降频)", R"(\frac{\sum_{j\in O_W^{T}}\sum_{\tau=\tau_j-T_{\mathrm{pre}}}^{\tau_j}|O_{\tau}^{C,s_j}|}{\sum_{j\in O_W^{T}}|O_j|}, \quad O_W^{T}=\{j: \tau_j\in W, \mathrm{is\_trade}_j\})", OP(Manip, ptc_ratio))                                                                                   \
+  X(fleet_ratio, CAT1, RATIO, NONE, "Fleeting Order Ratio", "闪单占比", "存活时间<Δ的订单量占比(降频)", R"(\frac{\sum_{i\in O_W^{M,\mathrm{fleet}}}|O_i|}{\sum_{i\in O_W^{M}}|O_i|}, \quad O_W^{M,\mathrm{fleet}}=\{i\in O_W^{M}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<\Delta\})", OP(Manip, fleet_ratio))                                                                                          \
   X(spoof_int, CAT1, RATIO, NONE, "Spoofing Intensity", "欺骗强度", "近端大额快速撤单占总撤单比例(降频)", R"(\frac{\sum_{i\in O_W^{C,\mathrm{spoof}}}|O_i|}{\sum_{i\in O_W^{C}}|O_i|}, \quad O_W^{C,\mathrm{spoof}}=\{i\in O_W^{C}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<T_{\mathrm{fast}}, |P_i-P_{1,\tau_i}^{M}|\leq k\cdot\mathrm{tick}, |O_i|\geq q_{\mathrm{large}}\})", OP(Manip, spoof_int)) \
   X(stale_ratio_bid, CAT1, RATIO, NONE, "Bid Stale Order Ratio", "买侧老单占比", "存活超T秒大单量占比(降频)", R"(\frac{\sum_{i \in O_t^{M,B,\mathrm{stale}}} |O_i|}{\sum_{i \in O_t^{M,B}} |O_i|}, \quad O^{M,s,\mathrm{stale}}=\{i: t-\tau_i^{\mathrm{post}}>T, |O_i|>q_{\mathrm{large}}\})", OP(Manip, stale_ratio_bid))                                                                                  \
   X(stale_ratio_ask, CAT1, RATIO, NONE, "Ask Stale Order Ratio", "卖侧老单占比", "存活超T秒大单量占比(降频)", R"(\frac{\sum_{i \in O_t^{M,A,\mathrm{stale}}} |O_i|}{\sum_{i \in O_t^{M,A}} |O_i|}, \quad O^{M,s,\mathrm{stale}}=\{i: t-\tau_i^{\mathrm{post}}>T, |O_i|>q_{\mathrm{large}}\})", OP(Manip, stale_ratio_ask))

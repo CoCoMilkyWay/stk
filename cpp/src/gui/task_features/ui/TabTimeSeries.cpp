@@ -1,15 +1,10 @@
 // TabTimeSeries - Time Series Analysis Tab Implementation
 // ============================================================================
 //
-// 时序分析流程 (SARIMA + GARCH 框架):
-//   目标: 如果存在稳定可预测的成分,剥离它,减少与其他特征的虚假相关性
-//
-// 分析步骤:
-//   Step 0: 平稳性检验 - ADF/KPSS 确认序列可建模
-//   Step 1: 频域分析   - 检测周期性成分,确认频谱宽度
-//   Step 2: ARMA建模   - ACF/PACF 确定模型阶数
-//   Step 3: 残差分析   - 验证模型充分性,诊断残差性质
-//   Step 4: 时间衰减   - 评估截面结构的时间稳定性
+// 特征时序诊断 (不建模, 只看记忆结构):
+//   Step 0: 平稳性检验 - ADF/KPSS (per-asset per-month)
+//   Step 1: 频域分析   - 逐日 PSD, 检测周期性成分
+//   Step 2: 自相关     - ACF/PACF 曲线 + 置信带
 //
 // ============================================================================
 
@@ -89,8 +84,7 @@ static void RenderControlPanel([[maybe_unused]] TimeSeriesService *service, Shar
   if (ImGui::IsItemHovered()) {
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(450.0f);
-    ImGui::TextUnformatted("在极低信噪比环境下, 对于输入特征, 尝试剥离稳定, 显著, 可预测(建模)的经典时序成分(SARIMA + GARCH), 降低特征之间的相关性和共线性, 提高后续因子质量");
-    ImGui::TextUnformatted("先剥离均值(SARIMA), 再剥离方差(GARCH)");
+    ImGui::TextUnformatted("特征时序诊断: 平稳性 (能不能直接用) / 频谱 (有没有确定性周期要剥) / 自相关 (记忆多长, 要不要平滑). 特征是因子原料, 这里不建模.");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
@@ -176,7 +170,7 @@ static void RenderStep1Tooltip() {
   ImGui::TextUnformatted("    公式: Q = f₀ / Δf  (峰值频率 / 峰宽)");
   ImGui::TextUnformatted("    判断:");
   ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "      Q < 3  → 宽频谱,可开始ARMA建模 ✓");
+                     "      Q < 3  → 宽频谱, 无需剥离周期成分 ✓");
   ImGui::Spacing();
 
   ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "频谱形态解读:");
@@ -189,212 +183,31 @@ static void RenderStep1Tooltip() {
 }
 
 // ============================================================================
-// Step 2: ARMA建模分析 - Tooltip
+// Step 2: 自相关 - Tooltip
 // ============================================================================
 
 static void RenderStep2Tooltip() {
   ImGui::BeginTooltip();
   ImGui::PushTextWrapPos(450.0f);
 
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[ARMA建模分析]");
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[自相关]");
   ImGui::Separator();
 
-  ImGui::TextUnformatted("核心问题: 序列是否存在可建模的自相关结构?");
+  ImGui::TextUnformatted("核心问题: 特征的记忆有多长? 组合前要不要平滑 / 差分?");
   ImGui::Spacing();
 
-  ImGui::TextUnformatted("分析工具:");
-  ImGui::TextUnformatted("├─ ACF (自相关函数) → 确定 MA(q) 阶数");
-  ImGui::TextUnformatted("│   观察: ACF 在滞后 q 处截断(骤降至置信区间内)");
-  ImGui::TextUnformatted("│   解释: 过去 q 期的随机冲击影响当前值");
-  ImGui::TextUnformatted("│   示例: ACF 在 lag=2 截断 → MA(2) 候选");
+  ImGui::TextUnformatted("├─ ACF (自相关函数): 与滞后 k 的相关");
+  ImGui::TextUnformatted("│   快速衰减 → 短记忆, 可直接用; 缓慢衰减 (幂律) → 长记忆, 考虑分数阶差分");
+  ImGui::TextUnformatted("│   全在置信带内 → 近似白噪声, 无可用时序结构");
   ImGui::TextUnformatted("│");
-  ImGui::TextUnformatted("└─ PACF (偏自相关函数) → 确定 AR(p) 阶数");
-  ImGui::TextUnformatted("    观察: PACF 在滞后 p 处截断");
-  ImGui::TextUnformatted("    解释: 控制中间变量后,滞后 p 期与当前值的直接相关");
-  ImGui::TextUnformatted("    示例: PACF 在 lag=1 截断 → AR(1) 候选");
+  ImGui::TextUnformatted("└─ PACF (偏自相关): 控制中间滞后后的直接相关");
+  ImGui::TextUnformatted("    显著的 lag 数 ≈ 有效回看窗口");
   ImGui::Spacing();
 
-  ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "模型识别指南:");
-  ImGui::TextUnformatted("  ACF 截断 + PACF 拖尾 → MA(q) 过程");
-  ImGui::TextUnformatted("  ACF 拖尾 + PACF 截断 → AR(p) 过程");
-  ImGui::TextUnformatted("  ACF 拖尾 + PACF 拖尾 → ARMA(p,q) 混合过程");
-  ImGui::TextUnformatted("  两者都在 lag=0 截断  → 白噪声,无需建模");
-  ImGui::Spacing();
-
-  ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.5f, 1.0f), "原理:");
-  ImGui::TextUnformatted(
-      "在:\n"
-      "   - 离散时间, \n"
-      "   - 因果(无未来信息), \n"
-      "   - 弱平稳(不变的一二阶矩, 和只依赖滞后的协方差)、\n"
-      "   - 输入(创新项)i.i.d, \n"
-      "   - 且过程具有有理谱密度(有限个极点/零点/参数)的条件下, \n"
-      "   - 若时间重排仅通过LTI(滤波器效果)引入, \n"
-      "则此过程必然等价于一个ARMA(p, q) 过程\n"
-      "(AR: IIR卷积(频响极点) MA: FIR卷积(频响零点))");
-  ImGui::PopTextWrapPos();
-  ImGui::EndTooltip();
-}
-
-// ============================================================================
-// Step 3: 残差分析 - Tooltip
-// ============================================================================
-
-static void RenderStep3Tooltip() {
-  ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(500.0f);
-
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[残差分析]");
-  ImGui::Separator();
-
-  ImGui::TextUnformatted("核心问题: 模型残差是否满足白噪声假设?");
-  ImGui::Spacing();
-
-  ImGui::TextUnformatted("检验项目:");
-  ImGui::TextUnformatted("├─ Ljung-Box Q 检验 (自相关性)");
-  ImGui::TextUnformatted("│   H0: 残差无自相关");
-  ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "│   判断: p > 0.05 → 残差无显著自相关 ✓");
-  ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f),
-                     "│   失败: 均值模型不完整,需增加 AR/MA 阶数");
-  ImGui::TextUnformatted("│");
-  ImGui::TextUnformatted("├─ ARCH LM 检验 (条件异方差)");
-  ImGui::TextUnformatted("│   H0: 残差无 ARCH 效应(波动聚集)");
-  ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "│   判断: p > 0.05 → 无异方差 ✓");
-  ImGui::TextUnformatted("│   失败 + 需要波动率建模 → 考虑 GARCH");
-  ImGui::TextUnformatted("│   失败 + 不需要 → 可忽略,但记录");
-  ImGui::TextUnformatted("│   辅助: 观察残差平方的 ACF/PACF");
-  ImGui::TextUnformatted("│");
-  ImGui::TextUnformatted("├─ Jarque-Bera 检验 (正态性)");
-  ImGui::TextUnformatted("│   H0: 残差服从正态分布");
-  ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "│   判断: p > 0.05 → 近似正态 ✓");
-  ImGui::TextUnformatted("│   失败:");
-  ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f),
-                     "│     轻微 (p > 0.01) → 警告,模型仍可用 ⚠");
-  ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                     "│     严重 (p < 0.01) → 考虑 t分布/偏态分布 ✗");
-  ImGui::TextUnformatted("│   辅助: Q-Q 图直观判断尾部行为");
-  ImGui::TextUnformatted("│");
-  ImGui::TextUnformatted("└─ CUSUM / CUSUMQ 检验 (时间稳定性)");
-  ImGui::TextUnformatted("    目的: 检验模型参数是否随时间稳定");
-  ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "    判断: 累积和在置信带内 → 参数稳定 ✓");
-  ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f),
-                     "    失败: 存在结构性断点 → 需要分段建模");
-  ImGui::Spacing();
-
-  ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.5f, 1.0f), "残差分析流程图:");
-  ImGui::TextUnformatted("  残差 → Ljung-Box ✓ → ARCH LM → 正态性 → CUSUM");
-  ImGui::TextUnformatted("           ↓ ✗");
-  ImGui::TextUnformatted("        增加ARMA阶数");
+  ImGui::TextUnformatted("曲线 = 全资产平均; 置信带 = max(1.96/√n, 0.05)");
 
   ImGui::PopTextWrapPos();
   ImGui::EndTooltip();
-}
-
-// ============================================================================
-// Step 4: 时间衰减分析 - Tooltip
-// ============================================================================
-
-static void RenderStep4Tooltip() {
-  ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(500.0f);
-
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[时间衰减分析]");
-  ImGui::Separator();
-
-  ImGui::TextUnformatted("核心问题: 特征的截面结构是否随时间保持稳定?");
-  ImGui::Spacing();
-
-  ImGui::TextUnformatted("分析维度:");
-  ImGui::TextUnformatted("├─ 截面异质时序一致性 (Heterogeneity Consistency)");
-  ImGui::TextUnformatted("│   目标: 资产分散程度是否稳定(CovMatrix协方差矩阵稳定性)");
-  ImGui::TextUnformatted("│");
-  ImGui::TextUnformatted("│   ├─ Gini(t): 基尼系数随时间的演化");
-  ImGui::TextUnformatted("│   │   解释: 衡量截面分布的不平等程度");
-  ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "│   │   稳定: Gini(t) 波动小 → 异质性结构稳定 ✓");
-  ImGui::TextUnformatted("│   │");
-  ImGui::TextUnformatted("│   ├─ HHI(t): 赫芬达尔指数随时间的演化");
-  ImGui::TextUnformatted("│   │   解释: 衡量截面集中度");
-  ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "│   │   稳定: HHI(t) 波动小 → 无资产主导切换 ✓");
-  ImGui::TextUnformatted("│   │");
-  ImGui::TextUnformatted("│   └─ GRS(t): 协方差矩阵稳定性 (Gibbons-Ross-Shanken)");
-  ImGui::TextUnformatted("│       解释: 资产间相关结构是否稳定");
-  ImGui::TextUnformatted("│       应用: 因子组合权重的稳定性前提");
-  ImGui::TextUnformatted("│");
-  ImGui::TextUnformatted("└─ 截面排序时序一致性 (Scale Robustness)");
-  ImGui::TextUnformatted("    目标: 资产排序是否稳定(RankCorr秩相关矩阵稳定性)");
-  ImGui::TextUnformatted("");
-  ImGui::TextUnformatted("    测试: raw ↔ zscore ↔ minmax ↔ robust 标准化");
-  ImGui::TextUnformatted("    指标: RankCorr(t) - 秩相关矩阵随时间的稳定性");
-  ImGui::TextUnformatted("");
-  ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                     "    稳定: 不同标准化下排序高度一致 → 因子信号robust ✓");
-  ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f),
-                     "    不稳定: 排序对标准化敏感 → 因子信号fragile ⚠");
-  ImGui::Spacing();
-
-  ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "为什么重要:");
-  ImGui::TextUnformatted("  - Gini/HHI 不稳定 → 因子暴露不稳定 → 需要动态权重");
-  ImGui::TextUnformatted("  - RankCorr 不稳定 → 因子选股不稳定 → 信号噪声大");
-  ImGui::TextUnformatted("  - 两者都稳定 → 可放心用于多因子组合");
-
-  ImGui::PopTextWrapPos();
-  ImGui::EndTooltip();
-}
-
-// ============================================================================
-// Step Panel Item Renderer
-// ============================================================================
-
-static bool RenderStepItem(int step_idx, const char *title, int selected_step,
-                           void (*tooltip_func)()) {
-  bool is_selected = (step_idx == selected_step);
-  bool clicked = false;
-
-  // Highlight selected step
-  if (is_selected) {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.35f, 0.45f, 1.0f));
-  }
-
-  char child_id[32];
-  snprintf(child_id, sizeof(child_id), "Step%d", step_idx);
-  ImGui::BeginChild(child_id, ImVec2(0, 0), true,
-                    ImGuiWindowFlags_NoScrollbar);
-
-  // Step header: "Step X: Title (?)"
-  char header[64];
-  snprintf(header, sizeof(header), "Step %d: %s", step_idx, title);
-
-  if (ImGui::Selectable(header, is_selected, ImGuiSelectableFlags_AllowOverlap)) {
-    clicked = true;
-  }
-
-  ImGui::SameLine();
-  ImGui::TextDisabled("(?)");
-  if (ImGui::IsItemHovered()) {
-    tooltip_func();
-  }
-
-  ImGui::EndChild();
-
-  if (is_selected) {
-    ImGui::PopStyleColor();
-  }
-
-  // Border for selected
-  if (is_selected) {
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-    ImVec2 p_min = ImGui::GetItemRectMin();
-    ImVec2 p_max = ImGui::GetItemRectMax();
-    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 2.0f);
-  }
-
-  return clicked;
 }
 
 // ============================================================================
@@ -487,10 +300,10 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
   }
   ImGui::EndChild();
 
-  // Step 2: ARMA建模
-  ImGui::BeginChild("Step2Child", ImVec2(0, 95), true);
+  // Step 2: 自相关
+  ImGui::BeginChild("Step2Child", ImVec2(0, 80), true);
   {
-    ImGui::Text("Step 2: ARMA建模");
+    ImGui::Text("Step 2: 自相关");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
@@ -500,94 +313,15 @@ static void RenderStepPanel(SharedData &data, TimeSeriesUIState &ui) {
       ui.selected_step = 2;
     }
 
-    if (ts.step2_arma.valid) {
-      ImGui::Text("  ACF截断:  q=%d %s", ts.step2_arma.acf_cutoff_lag,
-                  ts.step2_arma.acf_is_cutoff ? "(截断)" : "(拖尾)");
-      ImGui::Text("  PACF截断: p=%d %s", ts.step2_arma.pacf_cutoff_lag,
-                  ts.step2_arma.pacf_is_cutoff ? "(截断)" : "(拖尾)");
-      if (ts.step2_arma.is_white_noise) {
-        ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "  → 白噪声,无需建模");
-      } else {
-        ImGui::Text("  → ARMA(%d,%d) 候选", ts.step2_arma.suggested_p,
-                    ts.step2_arma.suggested_q);
-      }
+    const auto &ac = ts.step2_acf;
+    if (ac.valid && ac.acf_values.size() > 1) {
+      ImGui::Text("  ACF(1):  %.3f", ac.acf_values[1]);
+      ImGui::Text("  PACF(1): %.3f", ac.pacf_values[1]);
     } else {
       ImGui::TextDisabled("  (no data)");
     }
   }
   if (ui.selected_step == 2) {
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-    ImVec2 p_min = ImGui::GetWindowPos();
-    ImVec2 p_max = ImVec2(p_min.x + ImGui::GetWindowWidth(),
-                          p_min.y + ImGui::GetWindowHeight());
-    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 2.0f);
-  }
-  ImGui::EndChild();
-
-  // Step 3: 残差分析
-  ImGui::BeginChild("Step3Child", ImVec2(0, 85), true);
-  {
-    ImGui::Text("Step 3: 残差分析");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-      RenderStep3Tooltip();
-
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && can_switch) {
-      ui.selected_step = 3;
-    }
-
-    if (ts.step3_residual.valid) {
-      ImGui::Text("  Ljung-Box: p=%.3f", ts.step3_residual.ljung_box_pvalue);
-      ImGui::SameLine();
-      RenderStatus(ts.step3_residual.ljung_box_pass);
-
-      ImGui::Text("  ARCH LM:   p=%.3f", ts.step3_residual.arch_lm_pvalue);
-      ImGui::SameLine();
-      RenderStatus(ts.step3_residual.arch_lm_pass);
-
-      ImGui::Text("  J-B:       p=%.3f", ts.step3_residual.jarque_bera_pvalue);
-      ImGui::SameLine();
-      RenderStatus(ts.step3_residual.jarque_bera_pass,
-                   ts.step3_residual.jarque_bera_warn);
-
-      ImGui::Text("  CUSUM:     %s", ts.step3_residual.cusum_pass ? "stable" : "unstable");
-      ImGui::SameLine();
-      RenderStatus(ts.step3_residual.cusum_pass);
-    } else {
-      ImGui::TextDisabled("  (no data)");
-    }
-  }
-  if (ui.selected_step == 3) {
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-    ImVec2 p_min = ImGui::GetWindowPos();
-    ImVec2 p_max = ImVec2(p_min.x + ImGui::GetWindowWidth(),
-                          p_min.y + ImGui::GetWindowHeight());
-    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 2.0f);
-  }
-  ImGui::EndChild();
-
-  // Step 4: 时间衰减
-  ImGui::BeginChild("Step4Child", ImVec2(0, 80), true);
-  {
-    ImGui::Text("Step 4: 时间衰减");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-      RenderStep4Tooltip();
-
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && can_switch) {
-      ui.selected_step = 4;
-    }
-
-    if (ts.step4_temporal_decay.valid) {
-      ImGui::Text("  Gini一致性:   %.2f", ts.step4_temporal_decay.gini_stability);
-      ImGui::Text("  秩相关稳定性: %.2f", ts.step4_temporal_decay.rank_corr_stability);
-    } else {
-      ImGui::TextDisabled("  (no data)");
-    }
-  }
-  if (ui.selected_step == 4) {
     ImDrawList *draw = ImGui::GetWindowDrawList();
     ImVec2 p_min = ImGui::GetWindowPos();
     ImVec2 p_max = ImVec2(p_min.x + ImGui::GetWindowWidth(),
@@ -1010,57 +744,13 @@ static void RenderStep1Plot(TimeSeries &ts, const Asset &asset, bool need_autofi
 }
 
 static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
-  ImGui::Text("自相关分析 (ACF / PACF)");
+  ImGui::Text("自相关 (ACF / PACF, 全资产平均, 置信带 ±%.3f)", ts.step2_acf.confidence_bound);
   ImGui::Separator();
 
-  if (!ts.step2_arma.valid || ts.step2_arma.acf_values.empty()) {
+  if (!ts.step2_acf.valid || ts.step2_acf.acf_values.empty()) {
     ImGui::TextDisabled("No data - run compute first");
     return;
   }
-
-  const auto &arma = ts.step2_arma;
-
-  // 模型建议信息
-  if (arma.is_white_noise) {
-    ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "结论: 白噪声过程，无需 ARMA 建模");
-  } else {
-    // ACF 分析
-    if (arma.acf_is_cutoff) {
-      ImGui::Text("ACF 在 lag=%d 截尾", arma.acf_cutoff_lag);
-      ImGui::SameLine();
-      ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "-> MA(%d)", arma.suggested_q);
-    } else {
-      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "ACF 拖尾");
-    }
-
-    ImGui::SameLine(200);
-
-    // PACF 分析
-    if (arma.pacf_is_cutoff) {
-      ImGui::Text("PACF 在 lag=%d 截尾", arma.pacf_cutoff_lag);
-      ImGui::SameLine();
-      ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "-> AR(%d)", arma.suggested_p);
-    } else {
-      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "PACF 拖尾");
-    }
-
-    // 综合建议
-    if (arma.suggested_p > 0 && arma.suggested_q > 0) {
-      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
-                         "建议模型: ARMA(%d, %d)", arma.suggested_p, arma.suggested_q);
-    } else if (arma.suggested_p > 0) {
-      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
-                         "建议模型: AR(%d)", arma.suggested_p);
-    } else if (arma.suggested_q > 0) {
-      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
-                         "建议模型: MA(%d)", arma.suggested_q);
-    } else {
-      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f),
-                         "ACF/PACF 均拖尾 -> ARMA(p,q) 混合过程");
-    }
-  }
-
-  ImGui::Spacing();
 
   float height = (ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing()) * 0.5f;
 
@@ -1070,10 +760,10 @@ static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
   if (ImPlot::BeginPlot("##ACFPlot", ImVec2(-1, height))) {
     ImPlot::SetupAxes("Lag", "ACF");
 
-    const auto &acf = ts.step2_arma.acf_values;
+    const auto &acf = ts.step2_acf.acf_values;
     int n = static_cast<int>(acf.size());
 
-    float cb = ts.step2_arma.confidence_bound;
+    float cb = ts.step2_acf.confidence_bound;
     float cb_neg = -cb;
     ImPlot::PlotInfLines("##cb_pos", &cb, 1, ImPlotInfLinesFlags_Horizontal);
     ImPlot::PlotInfLines("##cb_neg", &cb_neg, 1, ImPlotInfLinesFlags_Horizontal);
@@ -1092,10 +782,10 @@ static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
   if (ImPlot::BeginPlot("##PACFPlot", ImVec2(-1, height))) {
     ImPlot::SetupAxes("Lag", "PACF");
 
-    const auto &pacf = ts.step2_arma.pacf_values;
+    const auto &pacf = ts.step2_acf.pacf_values;
     int n = static_cast<int>(pacf.size());
 
-    float cb = ts.step2_arma.confidence_bound;
+    float cb = ts.step2_acf.confidence_bound;
     float cb_neg = -cb;
     ImPlot::PlotInfLines("##cb_pos", &cb, 1, ImPlotInfLinesFlags_Horizontal);
     ImPlot::PlotInfLines("##cb_neg", &cb_neg, 1, ImPlotInfLinesFlags_Horizontal);
@@ -1104,90 +794,6 @@ static void RenderStep2Plot(const TimeSeries &ts, bool need_autofit) {
     for (int i = 0; i < n; ++i)
       lags[i] = static_cast<float>(i);
     ImPlot::PlotBars("PACF", lags.data(), pacf.data(), n, 0.4);
-
-    ImPlot::EndPlot();
-  }
-}
-
-static void RenderStep3Plot(const TimeSeries & /*ts*/, bool /*need_autofit*/) {
-  ImGui::Text("残差诊断 (Q-Q / 残差时序 / CUSUM)");
-  ImGui::Separator();
-
-  // TODO: 残差分析尚未实现
-  // 需要先确定 ARMA 模型拟合方式，再计算残差
-  //
-  // 计划内容:
-  //   - Q-Q Plot: 残差正态性可视化
-  //   - 残差时序图: 检查残差随时间变化的模式
-  //   - CUSUM: 累积和检验，检测结构性变化
-  //   - Ljung-Box Q 检验: 残差自相关性
-  //   - ARCH-LM 检验: 条件异方差效应
-  //   - Jarque-Bera 检验: 正态性
-
-  ImGui::Dummy(ImVec2(0, 20));
-  ImGui::TextDisabled("残差分析尚未实现");
-  ImGui::TextDisabled("需要先完成 ARMA 模型拟合");
-}
-
-static void RenderStep4Plot(const TimeSeries &ts, bool need_autofit) {
-  ImGui::Text("时间衰减分析 (Gini / HHI / RankCorr)");
-  ImGui::Separator();
-
-  if (!ts.step4_temporal_decay.valid ||
-      ts.step4_temporal_decay.time_points.empty()) {
-    ImGui::TextDisabled("No data - run compute first");
-    return;
-  }
-
-  const auto &td = ts.step4_temporal_decay;
-
-  // 稳定性指标显示
-  auto StabilityColor = [](float stability) -> ImVec4 {
-    // stability 越高越好 (越接近 1 越稳定)
-    if (stability > 0.9f)
-      return ImVec4(0.2f, 0.9f, 0.2f, 1.0f); // 绿色
-    if (stability > 0.7f)
-      return ImVec4(0.9f, 0.9f, 0.2f, 1.0f); // 黄色
-    return ImVec4(0.9f, 0.4f, 0.2f, 1.0f);   // 橙红色
-  };
-
-  ImGui::Text("稳定性指标 (1-CV, 值越大越稳定):");
-  ImGui::SameLine();
-  ImGui::TextColored(StabilityColor(td.gini_stability),
-                     "Gini: %.3f", td.gini_stability);
-  ImGui::SameLine();
-  ImGui::TextColored(StabilityColor(td.hhi_stability),
-                     "HHI: %.3f", td.hhi_stability);
-  ImGui::SameLine();
-  ImGui::TextColored(StabilityColor(td.rank_corr_stability),
-                     "RankCorr: %.3f", td.rank_corr_stability);
-
-  ImGui::Spacing();
-
-  if (need_autofit) {
-    ImPlot::SetNextAxesToFit();
-  }
-
-  if (ImPlot::BeginPlot("##TemporalDecayPlot", ImVec2(-1, -1))) {
-    ImPlot::SetupAxes("Day Index", "Value");
-    ImPlot::SetupLegend(ImPlotLocation_NorthEast);
-
-    const auto &t = td.time_points;
-    const auto &gini = td.gini_series;
-    const auto &hhi = td.hhi_series;
-    const auto &rank = td.rank_corr_series;
-
-    int n = static_cast<int>(t.size());
-
-    if (!gini.empty() && gini.size() == t.size()) {
-      ImPlot::PlotLine("Gini(t)", t.data(), gini.data(), n);
-    }
-    if (!hhi.empty() && hhi.size() == t.size()) {
-      ImPlot::PlotLine("HHI(t)", t.data(), hhi.data(), n);
-    }
-    if (!rank.empty() && rank.size() == t.size()) {
-      ImPlot::PlotLine("RankCorr(t)", t.data(), rank.data(), n);
-    }
 
     ImPlot::EndPlot();
   }
@@ -1205,12 +811,6 @@ static void RenderVisualizationPanel(SharedData &data, TimeSeriesUIState &ui) {
     break;
   case 2:
     RenderStep2Plot(ts, ui.need_autofit);
-    break;
-  case 3:
-    RenderStep3Plot(ts, ui.need_autofit);
-    break;
-  case 4:
-    RenderStep4Plot(ts, ui.need_autofit);
     break;
   default:
     ImGui::TextDisabled("Invalid step");

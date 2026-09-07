@@ -72,6 +72,18 @@ static inline uint64_t parse_numeric_field(std::string_view str, uint32_t diviso
   return value == 0 ? 0 : value / divisor;
 }
 
+// 价格字段是否用了科学计数法 (如 1.7226e+006 = 1722600).
+// parse_numeric_field 不认 'e', 只读 '.' 之前的整数位就停, 再 /divisor 得到 0
+// 或错误值 —— 这种源数据不该入库, 由 Validator::PriceScientific 拦下.
+// 在 parse_order_line/parse_trade_line 里与 bad_lines 同处一行内计数 (对仗),
+// 不另起独立扫描, 也不进 CSVOrder (不污染下游).
+static inline bool price_is_scientific(std::string_view str) {
+  for (const char c : str)
+    if (c == 'e' || c == 'E')
+      return true;
+  return false;
+}
+
 // Time decomposition helpers
 static inline uint8_t extract_hour(uint32_t time_ms) {
   return static_cast<uint8_t>(time_ms / 3600000);
@@ -249,8 +261,10 @@ static bool parse_csv_buffer(const char *data, size_t len, ParseFunc parse_func)
 }
 
 // 逐笔委托单行 → CSVOrder. 坏行只计数不解析 (见 market_of).
+// sci_count 与 bad_lines 对仗: 同一行内计数"价格字段用了科学计数法"的记录,
+// 不另起独立扫描, 也不进 CSVOrder (见 Validator::PriceScientific).
 static void parse_order_line(std::string_view line, std::vector<CSVOrder> &orders,
-                             size_t &bad_lines) {
+                             size_t &bad_lines, size_t &sci_count) {
   auto fields = BinaryEncoder_L2::split_csv_line_view(line);
   if (fields.size() < 10) {
     ++bad_lines;
@@ -289,13 +303,16 @@ static void parse_order_line(std::string_view line, std::vector<CSVOrder> &order
 
   order.price = BinaryEncoder_L2::parse_price_to_fen(fields[8]);
   order.volume = BinaryEncoder_L2::parse_volume(fields[9]);
+  if (price_is_scientific(fields[8]))
+    ++sci_count;
 
   orders.push_back(order);
 }
 
 // 逐笔成交单行 → CSVTrade. 坏行只计数不解析 (见 market_of).
+// sci_count 与 bad_lines 对仗 (见 parse_order_line).
 static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trades,
-                             size_t &bad_lines) {
+                             size_t &bad_lines, size_t &sci_count) {
   auto fields = BinaryEncoder_L2::split_csv_line_view(line);
   if (fields.size() < 12) {
     ++bad_lines;
@@ -332,6 +349,8 @@ static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trade
   trade.volume = BinaryEncoder_L2::parse_volume(fields[9]);
   trade.ask_order_id = fast_parse_u64(fields[10]);
   trade.bid_order_id = fast_parse_u64(fields[11]);
+  if (price_is_scientific(fields[8]))
+    ++sci_count;
 
   trades.push_back(trade);
 }
@@ -339,14 +358,14 @@ static void parse_trade_line(std::string_view line, std::vector<CSVTrade> &trade
 bool BinaryEncoder_L2::parse_order_csv(const char *data, size_t len,
                                        std::vector<CSVOrder> &orders) {
   return parse_csv_buffer(data, len, [&orders, this](std::string_view line) {
-    parse_order_line(line, orders, bad_line_count_);
+    parse_order_line(line, orders, bad_line_count_, sci_price_count_);
   });
 }
 
 bool BinaryEncoder_L2::parse_trade_csv(const char *data, size_t len,
                                        std::vector<CSVTrade> &trades) {
   return parse_csv_buffer(data, len, [&trades, this](std::string_view line) {
-    parse_trade_line(line, trades, bad_line_count_);
+    parse_trade_line(line, trades, bad_line_count_, sci_price_count_);
   });
 }
 
@@ -616,6 +635,7 @@ void BinaryEncoder_L2::begin_asset() {
   csv_trades_.clear();
   orders_.clear();
   bad_line_count_ = 0;
+  sci_price_count_ = 0;
   market_ = MarketSummary{};
   report_ = ValidationReport{};
 }
@@ -668,6 +688,14 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
   //
   // 也必须先于转换: 档位窗口的基准由校验算出, 转换要拿它折价.
   validator_.run(csv_orders_, csv_trades_, market_, report_);
+
+  // 科学计数法价格在 parse_numeric_field 里被解析成 0, 校验器拿到的 CSVOrder 已无原始
+  // 字符串, 无法在 run() 里判 (price=0 与市价单('1'/'U') 不可区分). 这里用 feed 阶段
+  // 独立扫描原始缓冲累计的计数补进 report_, 命中即拦 (见 Validator::PriceScientific).
+  if (sci_price_count_ > 0) {
+    report_.price_scientific = sci_price_count_;
+    report_.flags |= Check::PriceScientific;
+  }
 
   if (report_.blocked()) {
     Logger::log("encoding", "[INVALID DATA] " + tag + " — " + report_.describe() +

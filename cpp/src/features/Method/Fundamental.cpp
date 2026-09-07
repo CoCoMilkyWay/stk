@@ -1182,12 +1182,12 @@ struct State {
     out[Fund::low_mc_thr] = mb ? 5.0f : 3.0f;
 
     // 日频因子 raw
-    out[Fund::roe_raw] = sat(roe);
-    out[Fund::roa_raw] = sat(roa);
-    out[Fund::dy_raw] = sat(dy);
-    out[Fund::cffoa_raw] = sat(cf_chg);
-    out[Fund::mr_bal] = sat(p.at(p.fin_balance, a, d) * 1e-8f);
-    out[Fund::ms_bal] = sat(p.at(p.sec_balance, a, d) * 1e-8f);
+    out[Fund::roe_ttm] = sat(roe);
+    out[Fund::roa_ttm] = sat(roa);
+    out[Fund::dy_ttm] = sat(dy);
+    out[Fund::cfo_chg_ttm] = sat(cf_chg);
+    out[Fund::rz_bal] = sat(p.at(p.fin_balance, a, d) * 1e-8f);
+    out[Fund::rq_bal] = sat(p.at(p.sec_balance, a, d) * 1e-8f);
 
     // 上市龄 / 退市龄 (日历日; 未上市/未退市 = NaN)
     const auto day = axes.date_days[static_cast<std::size_t>(d)];
@@ -1206,15 +1206,15 @@ struct State {
     out[Fund::delist_age] = dage;
 
     // 状态 / filter (0/1 常量)
-    out[Fund::industry_l1] = static_cast<float>(industry);
+    out[Fund::ind_l1] = static_cast<float>(industry);
     out[Fund::is_margin] = static_cast<float>(p.at(p.is_margin, a, d));
-    out[Fund::susp] = static_cast<float>(p.at(p.suspended, a, d));
-    out[Fund::risk_warn] = static_cast<float>(p.at(p.st_status, a, d));
-    out[Fund::profit_st] = profit_st ? 1.0f : 0.0f;
-    out[Fund::revenue_st] = revenue_st ? 1.0f : 0.0f;
-    out[Fund::dividend_st] = dividend_st ? 1.0f : 0.0f;
-    out[Fund::trading_st] = (run >= 15) ? 1.0f : 0.0f;
-    out[Fund::new_list] = (std::isfinite(lage) && lage < 60.0f) ? 1.0f : 0.0f;
+    out[Fund::is_susp] = static_cast<float>(p.at(p.suspended, a, d));
+    out[Fund::st_level] = static_cast<float>(p.at(p.st_status, a, d));
+    out[Fund::st_profit] = profit_st ? 1.0f : 0.0f;
+    out[Fund::st_revenue] = revenue_st ? 1.0f : 0.0f;
+    out[Fund::st_dividend] = dividend_st ? 1.0f : 0.0f;
+    out[Fund::st_trading] = (run >= 15) ? 1.0f : 0.0f;
+    out[Fund::is_new] = (std::isfinite(lage) && lage < 60.0f) ? 1.0f : 0.0f;
   }
 };
 

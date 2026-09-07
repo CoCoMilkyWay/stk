@@ -146,7 +146,7 @@ void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::stri
   for (size_t i = 0; i < month_keys.size(); ++i)
     months[i].month = month_keys[i];
 
-  prepare_slots(by_hour, 24, KLL_CAPACITY, KLL_RESOLUTION);
+  prepare_slots(by_tod, kTodBins, KLL_CAPACITY, KLL_RESOLUTION);
   prepare_slots(by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
 
   // 全资产快照 (槽位 == 资产下标); PDF 折线绘制子集 = 固定种子洗牌取前 kDrawAssets 个
@@ -198,9 +198,9 @@ size_t Dist::prepare_runtime(size_t n_months, size_t n_cols, size_t agg_stride) 
     sh.samples.reserve(asset_stride);
     sh.agg_samples.reserve(asset_stride / agg_stride + 1);
     sh.day_groups.reserve(kDaysPerBatch);
-    sh.hour_runs.reserve(kDaysPerBatch * 8); // L1 一天只跨 5 个小时 (9/10/11/13/14)
+    sh.tod_runs.reserve(kDaysPerBatch * kTodBins); // 每天最多 kTodBins 段
     prepare_slots(sh.months, n_months, KLL_CAPACITY, KLL_RESOLUTION);
-    prepare_slots(sh.by_hour, 24, KLL_CAPACITY, KLL_RESOLUTION);
+    prepare_slots(sh.by_tod, kTodBins, KLL_CAPACITY, KLL_RESOLUTION);
     prepare_slots(sh.by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
     sh.total.clear();
     sh.integrity.clear();
@@ -222,7 +222,7 @@ void Dist::prewarm(size_t n_assets, size_t n_months) {
       months.clear();
       months.resize(n_months); // 月份 key 由 reset_for_build 填
     }
-    prepare_slots(by_hour, 24, KLL_CAPACITY, KLL_RESOLUTION);
+    prepare_slots(by_tod, kTodBins, KLL_CAPACITY, KLL_RESOLUTION);
     prepare_slots(by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
     prepare_slots(asset_klls_, n_assets, KLL_ASSET_CAPACITY, KLL_ASSET_RESOLUTION);
     lines.resize(n_assets);
@@ -247,12 +247,12 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   assert(A > 0 && "资产轴为空, Distribution 无法构建");
   assert(n_cols <= 2 && "Dist 只接受值列 + 可选 valid 列");
 
-  // 预计算: 分钟 → 小时 (L1)
-  std::vector<uint8_t> hour_lut(VR);
+  // 预计算: 分钟 → 日内桶 (L1)
+  std::vector<uint8_t> tod_lut(VR);
   for (size_t t = 0; t < VR; ++t) {
-    const uint8_t hour = L1_to_Clock(t).hour;
-    assert(hour < 24);
-    hour_lut[t] = hour;
+    const size_t bin = tod_bin_of(t);
+    assert(bin < kTodBins);
+    tod_lut[t] = static_cast<uint8_t>(bin);
   }
 
   // ==========================================================================
@@ -298,7 +298,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   // 区间小 → stride=1, 全量进聚合槽, 小数据集下不会被抽到低于 kMinSamples.
   size_t agg_stride = std::max<size_t>(1, (n_sel * A * VR) / kAggTargetSamples);
   while (agg_stride > 1 && VR % agg_stride == 0)
-    ++agg_stride; // 与日内分钟数互质: 整除会让每天固定落在同一批分钟上, 扭曲小时分布
+    ++agg_stride; // 与日内分钟数互质: 整除会让每天固定落在同一批分钟上, 扭曲日内分布
   this->agg_stride.store(agg_stride, std::memory_order_release);
 
   // 批平面 + 线程 shard (prewarm 已做过则全部命中零分配路径)
@@ -402,10 +402,10 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
           sh.samples.clear();
           sh.agg_samples.clear();
           sh.day_groups.clear();
-          sh.hour_runs.clear();
+          sh.tod_runs.clear();
 
           const feature_storage_t *pa = plane_.data() + a * asset_stride;
-          int cur_hour = -1;      // 小时 run 跨天延续 (同小时连续样本即一段)
+          int cur_bin = -1;       // 日内桶 run 跨天延续 (同桶连续样本即一段)
           uint32_t run_begin = 0; // 索引 agg_samples
           size_t agg_tick = 0;
 
@@ -435,12 +435,12 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
               if (++agg_tick < agg_stride) // 聚合槽只吃 stride 抽样
                 continue;
               agg_tick = 0;
-              const int h = hour_lut[t];
-              if (h != cur_hour) {
-                if (cur_hour >= 0)
-                  sh.hour_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
-                                          static_cast<uint8_t>(cur_hour)});
-                cur_hour = h;
+              const int b = tod_lut[t];
+              if (b != cur_bin) {
+                if (cur_bin >= 0)
+                  sh.tod_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
+                                         static_cast<uint8_t>(cur_bin)});
+                cur_bin = b;
                 run_begin = static_cast<uint32_t>(sh.agg_samples.size());
               }
               sh.agg_samples.push_back(v);
@@ -450,9 +450,9 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
               sh.day_groups.push_back({day_begin, static_cast<uint32_t>(sh.agg_samples.size()),
                                        day_month[b0 + i], weekdays[b0 + i]});
           }
-          if (cur_hour >= 0)
-            sh.hour_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
-                                    static_cast<uint8_t>(cur_hour)});
+          if (cur_bin >= 0)
+            sh.tod_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
+                                   static_cast<uint8_t>(cur_bin)});
 
           sh.integrity.n_total += bd * VR;
 
@@ -464,8 +464,8 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
               sh.months[g.month].addBatch(s + g.begin, g.end - g.begin);
               sh.by_weekday[g.weekday].addBatch(s + g.begin, g.end - g.begin);
             }
-            for (const HourRun &r : sh.hour_runs)
-              sh.by_hour[r.hour].addBatch(s + r.begin, r.end - r.begin);
+            for (const TodRun &r : sh.tod_runs)
+              sh.by_tod[r.bin].addBatch(s + r.begin, r.end - r.begin);
           }
 
           // 每资产: 累积 sketch + 导出整条线到 staging (槽位 == 资产下标).
@@ -502,14 +502,14 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
             months[m].kll.mergeWith(sh.months[m]);
           for (size_t w = 0; w < 7; ++w)
             by_weekday[w].mergeWith(sh.by_weekday[w]);
-          for (size_t h = 0; h < 24; ++h)
-            by_hour[h].mergeWith(sh.by_hour[h]);
+          for (size_t b = 0; b < kTodBins; ++b)
+            by_tod[b].mergeWith(sh.by_tod[b]);
           integrity.add(sh.integrity);
         }
         sh.total.clear();
         clear_slots(sh.months);
         clear_slots(sh.by_weekday);
-        clear_slots(sh.by_hour);
+        clear_slots(sh.by_tod);
         sh.integrity.clear();
       }
       scan_done.arrive_and_wait(); // → publish() (单线程), 重置抢任务原子供下批
@@ -537,7 +537,7 @@ void Dist::clear() {
   columns.clear();
   months.clear();
   lines.clear();
-  by_hour.clear();
+  by_tod.clear();
   by_weekday.clear();
   total.clear();
   integrity.clear();

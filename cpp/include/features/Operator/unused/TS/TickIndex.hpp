@@ -3,7 +3,7 @@
 // =============================================================================
 // TickIndex - Tick 索引: 分钟内秒位置的正弦相位嵌入
 // =============================================================================
-//   sec = sin(2π · (l0_index % 60) / 60)   (60 秒一周期, 相位连续可导, 频谱干净)
+//   tod_sec = sin(2π · (l0_index % 60) / 60)   (60 秒一周期, 相位连续可导, 频谱干净)
 //   tick_index = l0_index                   (原始索引 [0-15299])
 // =============================================================================
 
@@ -26,7 +26,7 @@ inline const std::array<float, 60> &get_sec_phase_lut() {
 
 class TickIndex {
 public:
-  enum Out : size_t { sec,
+  enum Out : size_t { tod_sec,
                       tick_index,
                       kCount };
   float y[kCount] = {};
@@ -35,7 +35,7 @@ public:
 
   inline void compute() {
     uint32_t idx = td_.l0_index;
-    y[sec] = get_sec_phase_lut()[idx % 60];
+    y[tod_sec] = get_sec_phase_lut()[idx % 60];
     y[tick_index] = static_cast<float>(idx);
   }
 
@@ -47,4 +47,4 @@ private:
 #define NODE_TickIndex(N) N(TickIndex, (TickIndex), (tick_data), onTick)
 
 #define FIELDS_L0_TickIndex(X, CAT1) \
-  X(sec, CAT1, OSCILLATOR, SINCOS, "Time Sec Phase", "时间-秒相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{s}}))", OP(TickIndex, sec))
+  X(tod_sec, CAT1, OSCILLATOR, SINCOS, "Time Sec Phase", "时间-秒相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{s}}))", OP(TickIndex, tod_sec))

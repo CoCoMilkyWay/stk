@@ -233,6 +233,12 @@ private:
   // 源损坏, finish_asset 报 CorruptSource 并带上行数, 方便定位到具体标的.
   size_t bad_line_count_ = 0;
 
+  // 当前资产累计的"价格字段用了科学计数法"的记录数 (见 Validator::PriceScientific).
+  // parse_numeric_field 不认 'e', 这种价格会被解析成 0 — 高价股整天的逐笔价格失真.
+  // 在 parse_order_line/parse_trade_line 里与 bad_lines 同一行内计数 (对仗),
+  // 不另起独立扫描, 也不进 CSVOrder (不污染下游).
+  size_t sci_price_count_ = 0;
+
   // 准入校验 (见 L2_Validator.hpp). validator_ 内部的哈希表跨资产复用.
   MarketSummary market_;
   Validator validator_;

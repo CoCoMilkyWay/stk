@@ -1,6 +1,7 @@
 #pragma once
 
 #include "features/Backend/FeatureRead.hpp"
+#include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include <algorithm>
 #include <array>
@@ -37,7 +38,9 @@
 //
 //   UI (每帧): 持 mutex 渲染; 资产截面消费 lines 快照, 零计算零重建只画
 //     (增量收敛每批都作废 sketch 缓存, 拉模式会让 UI 每帧重建几百条 — 故推模式).
-//     聚合视图 (月/星期/小时/全局) 槽数少, 仍 lazy 导出.
+//     聚合视图 (月/星期/日内/全局) 槽数少, 仍 lazy 导出.
+//   四个维度对仗: 月度漂移 (months) / 周内偏移 (by_weekday) / 日内偏移 (by_tod) / 资产截面 (lines),
+//     UI 一条通用焦点滑条按选中维度切换 (焦点槽 = 高亮 + 详情).
 //   生命周期: 进 Features 任务且输入就绪 → prewarm() 预热全部构建内存 (worker 线程做,
 //             与 build 共用同一套容量准备, 点 Distribution 零额外分配);
 //             改参数 → 新请求即取消在跑重算; 切走 Tab → 只中断, 内存与 worker 保留;
@@ -46,7 +49,7 @@
 
 static constexpr size_t kMinSamples = 1000;         // sample 不够的不纳入统计
 static constexpr size_t kMinAssetSamples = 100;     // 资产纳入截面视图的最小样本数
-static constexpr size_t KLL_CAPACITY = 512;         // 月/小时/星期/全局 sketch
+static constexpr size_t KLL_CAPACITY = 512;         // 月/星期/日内/全局 sketch
 static constexpr size_t KLL_RESOLUTION = 256;       // 小面板 ~400px, 255 点 PDF 足够
 static constexpr size_t KLL_ASSET_CAPACITY = 256;   // 每资产 sketch (精度换内存)
 static constexpr size_t KLL_ASSET_RESOLUTION = 128; // 资产 PDF 网格 (画细线, 128 点足够)
@@ -63,7 +66,29 @@ static constexpr size_t kDrawAssets = 512;
 // 内存不再约束天数 —— 这个预算只是总扫描/IO 时长的旋钮, 5 年 × 5000 标的在预算内全量.
 static constexpr size_t kMaxTotalSamples = size_t(2) << 30;
 
-// 聚合槽 (月/星期/小时/全局) 的目标样本量. KLL 的分位误差 ε≈1/k 只由容量决定, 与样本数
+// 日内桶: 按时钟 10 分钟对齐 (09:15-09:19 单独一桶 = 集合竞价; 午休不跨桶), 共 kTodBins 个.
+// 桶键 = 时钟分钟 / 10, 上下午各自连续编号 → 槽位紧凑无空洞.
+static constexpr size_t kTodBinMinutes = 10;
+constexpr size_t tod_bin_of(size_t l1) {
+  const ClockTime c = L1_to_Clock(l1);
+  const size_t key = (static_cast<size_t>(c.hour) * 60 + c.minute) / kTodBinMinutes;
+  constexpr size_t key_am0 = MORNING_START_MIN / kTodBinMinutes;
+  constexpr size_t n_am = (MORNING_END_MIN - 1) / kTodBinMinutes - key_am0 + 1;
+  constexpr size_t key_pm0 = AFTERNOON_START_MIN / kTodBinMinutes;
+  return l1 < MORNING_MINUTES ? key - key_am0 : n_am + key - key_pm0;
+}
+static constexpr size_t kTodBins = tod_bin_of(TRADE_MINUTES_PER_DAY - 1) + 1;
+static_assert(tod_bin_of(0) == 0 && tod_bin_of(MORNING_MINUTES) == tod_bin_of(MORNING_MINUTES - 1) + 1);
+// 桶首分钟 (L1 下标) → UI 标签 "HH:MM"
+constexpr std::array<uint16_t, kTodBins> make_tod_bin_start() {
+  std::array<uint16_t, kTodBins> s{};
+  for (size_t l1 = TRADE_MINUTES_PER_DAY; l1-- > 0;)
+    s[tod_bin_of(l1)] = static_cast<uint16_t>(l1);
+  return s;
+}
+inline constexpr auto kTodBinStart = make_tod_bin_start();
+
+// 聚合槽 (月/星期/日内/全局) 的目标样本量. KLL 的分位误差 ε≈1/k 只由容量决定, 与样本数
 // 无关 —— 5 年全市场灌进去的几亿样本, 最终也只存下 k·log2(n/k) ≈ 1 万个点, 早已饱和.
 // 所以按总量自适应 stride 抽到这个量级即可, 图上看不出差别. 每资产的资产槽仍吃全量.
 static constexpr size_t kAggTargetSamples = size_t(32) << 20; // 32M
@@ -146,7 +171,7 @@ struct Dist {
   std::atomic<size_t> days_loaded{0};   // 已完成批的累计天数
   std::atomic<size_t> days_total{0};    // 抽样后总天数
   std::atomic<uint64_t> lines_epoch{0}; // 每批发布 +1 (UI 以此触发 autofit)
-  // 聚合槽抽样 stride (1 = 全量). 月/星期/小时/全局视图的 totalCount 是抽样后的数,
+  // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局视图的 totalCount 是抽样后的数,
   // 绘制子集的资产线恒为全量 —— UI 得把这个比例说出来, 免得两边的 n 并列看着矛盾.
   std::atomic<size_t> agg_stride{1};
 
@@ -155,7 +180,7 @@ struct Dist {
 
   std::vector<MonthSlot> months;                // [n_months]
   std::vector<AssetLine> lines;                 // [A] 全资产快照 (槽位 == 资产下标, 每批整体换新)
-  std::vector<KLLcache> by_hour;                // [24] 全区间 (KLL_CAPACITY/RESOLUTION, 下同)
+  std::vector<KLLcache> by_tod;                 // [kTodBins] 全区间 日内 10 分钟桶 (KLL_CAPACITY/RESOLUTION, 下同)
   std::vector<KLLcache> by_weekday;             // [7]  全区间
   KLLcache total{KLL_CAPACITY, KLL_RESOLUTION}; // 全区间
   Integrity integrity;                          // 全区间
@@ -201,10 +226,10 @@ private:
     uint16_t month;
     uint8_t weekday;
   }; // shard.agg_samples 按天切片 → months / by_weekday
-  struct HourRun {
+  struct TodRun {
     uint32_t begin, end;
-    uint8_t hour;
-  }; // 同小时连续段 → by_hour
+    uint8_t bin;
+  }; // 同日内桶连续段 → by_tod
 
   // 每线程私有: 扫描缓冲 + 聚合槽副本. 重活全在锁外做完, 只把 sketch 级结果并入全局.
   struct Shard {
@@ -213,9 +238,9 @@ private:
     std::vector<float> samples;      // Phase 扫描: 单资产本批全量样本 → 该资产 sketch
     std::vector<float> agg_samples;  // Phase 扫描: stride 抽样样本 → 聚合槽 (下面两表索引它)
     std::vector<DayGroup> day_groups;
-    std::vector<HourRun> hour_runs;
+    std::vector<TodRun> tod_runs;
     std::vector<KLLcache> months;     // [n_months]
-    std::vector<KLLcache> by_hour;    // [24]
+    std::vector<KLLcache> by_tod;     // [kTodBins]
     std::vector<KLLcache> by_weekday; // [7]
     KLLcache total{KLL_CAPACITY, KLL_RESOLUTION};
     Integrity integrity;

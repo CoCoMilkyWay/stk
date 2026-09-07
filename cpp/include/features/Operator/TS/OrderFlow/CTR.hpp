@@ -3,7 +3,7 @@
 // =============================================================================
 // CTR (Cumulative Trade Ratio) - 开盘至今的累计成交统计
 // =============================================================================
-//   cc_r = |O^{T,CA}| / |O^T|                                     (连续竞价成交占比)
+//   ctr_ca = |O^{T,CA}| / |O^T|                                   (连续竞价成交占比)
 //   ctr_xl/l/m/s = Σ|O^{T,c}| / Σ|O^T|                            (按大小单分类的累计成交占比)
 //   cnbi = (Σ|O^{T,B}| - Σ|O^{T,A}|) / (Σ|O^{T,B}| + Σ|O^{T,A}|)  (累计净买入比率)
 //   cnbi_xl/l/m/s = N^c / Σ|N^c|                                  (按大小单的净买入贡献)
@@ -31,7 +31,7 @@ class CTR {
   static constexpr float DEFAULT_M = 4.0f;    // 中单 4-20万
 
 public:
-  enum Out : size_t { cc_r,
+  enum Out : size_t { ctr_ca,
                       ctr_xl,
                       ctr_l,
                       ctr_m,
@@ -115,8 +115,8 @@ public:
       amt_buffer_.clear();
     }
 
-    // 1. cc_r：连续竞价成交 / 总成交
-    y[cc_r] = cum_total_ > 1e-6f ? cum_ca_ / cum_total_ : 0.0f;
+    // 1. ctr_ca：连续竞价成交 / 总成交
+    y[ctr_ca] = cum_total_ > 1e-6f ? cum_ca_ / cum_total_ : 0.0f;
 
     // 2. ctr_*：各类大小单的累计成交占比（小单由总量推算）
     const float inv_total = cum_total_ > 1e-6f ? 1.0f / cum_total_ : 0.0f;
@@ -253,7 +253,7 @@ private:
 #define NODE_Ctr(N) N(Ctr, (CTR), (tick_data), onTick, onMinute)
 
 #define FIELDS_L1_Ctr(X, CAT1)                                                                                                                                                                                                                                                                              \
-  X(cc_r, CAT1, RATIO, NONE, "CC Trade Ratio", "连续竞价成交占比", "连续竞价成交额占全天成交额的比例(降频)", R"(\frac{|O_t^{T,\mathrm{CA}}|}{|O_t^{T}|})", OP(Ctr, cc_r))                                                                                                                                   \
+  X(ctr_ca, CAT1, RATIO, NONE, "Continuous Auction Trade Ratio", "连续竞价成交占比", "连续竞价成交额占全天成交额的比例(降频)", R"(\frac{|O_t^{T,\mathrm{CA}}|}{|O_t^{T}|})", OP(Ctr, ctr_ca))                                                                                                               \
   X(ctr_xl, CAT1, RATIO, NONE, "Cumulative XL Trade Ratio", "特大单累计成交占比", "从开盘到t时刻,特大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{XL}}|+|O_{\tau}^{T,A,\mathrm{XL}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_xl))    \
   X(ctr_l, CAT1, RATIO, NONE, "Cumulative L Trade Ratio", "大单累计成交占比", "从开盘到t时刻,大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{L}}|+|O_{\tau}^{T,A,\mathrm{L}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_l))             \
   X(ctr_m, CAT1, RATIO, NONE, "Cumulative M Trade Ratio", "中单累计成交占比", "从开盘到t时刻,中单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{M}}|+|O_{\tau}^{T,A,\mathrm{M}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", OP(Ctr, ctr_m))             \

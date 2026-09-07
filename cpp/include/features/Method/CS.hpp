@@ -57,4 +57,4 @@ struct NeutralRank {
 
 // NeutralRank 上下文源列 (L1 字段 code): CoreCrosssection 每分钟按 L1_Field::<token> gather 一次
 #define NEUTRAL_RANK_MCAP mcap
-#define NEUTRAL_RANK_INDUSTRY industry_l1
+#define NEUTRAL_RANK_INDUSTRY ind_l1

@@ -282,6 +282,8 @@ void Validator::run(const std::vector<CSVOrder> &orders,
     out.flags |= Check::FieldOverflow;
   if (out.lob_unusable != 0)
     out.flags |= Check::LobUnusable;
+  // PriceScientific 不在此处置位: 计数来自 feed 阶段对原始缓冲的独立扫描
+  // (见 BinaryEncoder_L2::finish_asset), run() 拿到的 CSVOrder 已无原始字符串.
   if (out.dup_maker != 0)
     out.flags |= Check::DupMakerId;
   if (out.cancel_unresolved != 0)
@@ -325,7 +327,7 @@ static constexpr CheckMeta kCheckMeta[kCheckBitCount] = {
     {"over", "over_consumed", "某挂单被扣减的量超过它挂出的量\n只在委托流完整时判"},
     {"mkt", "market_absent", "行情.csv 缺失或末行解析不出来\n没有对照真值, 对拍类判据无从判断"},
     {"vol", "volume_mismatch", "Σ逐笔成交量 ≠ 快照当日累计成交量 (已放行 uint32 回绕)\n成交流完整性的判决书"},
-    {nullptr, nullptr, nullptr}, // bit 7: Check 里没有这一位
+    {"sci", "price_scientific", "价格字段用了科学计数法 (如 1.7226e+006)\nparse_numeric_field 不认 'e', 高价股价格会被解析成 0\n源数据格式异常, 不该入库"},
     {"ovf", "field_overflow", "源数据字段超出 Order 位宽, 落盘会被静默截断"},
     {"lob", "lob_unusable", "LimitOrderBook 处理不了的记录\n数量为 0, 或定位 id 为 0"},
     {"band", "trade_band_unfit", "当日成交带装不进 LOB 档位窗口\n只可能在无涨跌幅限制的新股上命中"},
@@ -388,6 +390,8 @@ std::string ValidationReport::describe() const {
       text += ' ';
     text += "price_mismatch";
   }
+  if (flags & Check::PriceScientific)
+    append("price_scientific", static_cast<int64_t>(price_scientific));
   return text;
 }
 

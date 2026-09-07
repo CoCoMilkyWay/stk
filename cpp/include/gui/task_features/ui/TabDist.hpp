@@ -2,9 +2,12 @@
 //
 // UI Layout:
 //   1. Integrity panel - Zero/NaN/Inf counts
-//   2. Window control - Compute | Cancel | Status (天进度) | Month slider
-//   3. Left: Color Mode Selector + Hovered Asset Info | Right: PDF evolution (3 panels)
+//   2. Window control - Compute | Cancel | Status (天进度) | 通用焦点滑条 (按选中维度切换)
+//   3. Left: Color Mode Selector + Asset Info (hover 优先, 否则焦点资产) | Right: PDF 三维度 (月/周/日内)
 //   4. Assets PDF - 消费 dist.lines 发布快照 (绘制子集), 零计算只画
+//
+// 四维度对仗 (点图选中 → 滑条切到该维度的焦点):
+//   0 月度漂移 (焦点 = 月)  1 周内偏移 (焦点 = 星期)  2 日内偏移 (焦点 = 10 分钟桶)  3 资产截面 (焦点 = 资产)
 //
 // Threading:
 //   - UI runs on main thread, 渲染帧内持 dist.mutex
@@ -26,17 +29,19 @@ class DistService;
 // ============================================================================
 
 struct DistUIState {
-  // Selected dimension: 0=MONTH, 1=WEEKDAY, 2=HOUR, 3=ASSETS
+  static constexpr int kDims = 4;
+
+  // Selected dimension: 0=MONTH, 1=WEEKDAY, 2=TOD, 3=ASSETS (滑条作用于该维度)
   int selected_dimension = 0;
 
-  // Month focus slider (index into available months)
-  int focus_month_idx = 0;
+  // 各维度的焦点槽 (滑条值, 每维独立记忆): 月下标 / 星期 / 日内桶 / 资产下标
+  int focus[kDims] = {0, 0, 0, 0};
 
   // Autofit: 任何新发布 epoch (= 数据变了) 即跟随, 稳态把缩放还给用户
   bool need_autofit = false;
   uint64_t last_lines_epoch = 0;
 
-  // 跨帧 hover 的线 (dist.lines 下标; 资产截面图输出, 左栏详情面板消费)
+  // 跨帧 hover 的线 (dist.lines 下标; 资产截面图输出, 左栏详情面板消费; 无 hover 时详情落到 focus[3])
   int hovered_line = -1;
 
   // config 区间月份表缓存 (滑条每帧要用, 日期变了才重算)

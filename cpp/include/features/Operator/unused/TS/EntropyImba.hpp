@@ -3,7 +3,7 @@
 // =============================================================================
 // EntropyImba - 熵失衡: 对比买卖两侧熵值的大小
 // =============================================================================
-//   entropy_imba = (H^B - H^A) / (H^B + H^A)
+//   ent_imb_N = (H^B - H^A) / (H^B + H^A)
 //   正值表示买侧分布更均匀 (做市意愿强)
 // =============================================================================
 
@@ -35,9 +35,9 @@ private:
 #define NODE_EntropyImba_30(N) N(EntropyImba_30, (EntropyImba), (Entropy_b_30.out(), Entropy_a_30.out()), onMinute)
 
 #define FIELDS_L1_EntropyImba_30(X, CAT1) \
-  X(imba_30_entropy, CAT1, RATIO, NONE, "Top 30-level Entropy Imba", "三十档香农熵失衡", "三十档香农熵失衡(降频)", R"(\frac{H_{t}^{M,B} - H_{t}^{M,A}}{H_{t}^{M,B} + H_{t}^{M,A}}, \quad H_{t}^{M,s} = -\sum_{i=1}^{N} \pi_{i,t}^{M,s} \log(\pi_{i,t}^{M,s}), \quad N = 30)", OP(EntropyImba_30))
+  X(ent_imb_30, CAT1, RATIO, NONE, "Top 30-level Entropy Imba", "三十档香农熵失衡", "三十档香农熵失衡(降频)", R"(\frac{H_{t}^{M,B} - H_{t}^{M,A}}{H_{t}^{M,B} + H_{t}^{M,A}}, \quad H_{t}^{M,s} = -\sum_{i=1}^{N} \pi_{i,t}^{M,s} \log(\pi_{i,t}^{M,s}), \quad N = 30)", OP(EntropyImba_30))
 
 #define NODE_EntropyImba_5(N) N(EntropyImba_5, (EntropyImba), (Entropy_b_5.out(), Entropy_a_5.out()), onMinute)
 
 #define FIELDS_L1_EntropyImba_5(X, CAT1) \
-  X(imba_5_entropy, CAT1, RATIO, NONE, "Top 5-level Entropy Imba", "五档香农熵失衡", "五档香农熵失衡(降频)", R"(\frac{H_{t}^{M,B} - H_{t}^{M,A}}{H_{t}^{M,B} + H_{t}^{M,A}}, \quad H_{t}^{M,s} = -\sum_{i=1}^{N} \pi_{i,t}^{M,s} \log(\pi_{i,t}^{M,s}), \quad N = 5)", OP(EntropyImba_5))
+  X(ent_imb_5, CAT1, RATIO, NONE, "Top 5-level Entropy Imba", "五档香农熵失衡", "五档香农熵失衡(降频)", R"(\frac{H_{t}^{M,B} - H_{t}^{M,A}}{H_{t}^{M,B} + H_{t}^{M,A}}, \quad H_{t}^{M,s} = -\sum_{i=1}^{N} \pi_{i,t}^{M,s} \log(\pi_{i,t}^{M,s}), \quad N = 5)", OP(EntropyImba_5))

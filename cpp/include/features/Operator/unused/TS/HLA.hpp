@@ -3,7 +3,7 @@
 // =============================================================================
 // HLA (Hidden Liquidity Adjusted) - 潜在流动性调整失衡: 按 refill rate 预测后续失衡
 // =============================================================================
-//   hla_imba = (Ṽ^B - Ṽ^A) / (Ṽ^B + Ṽ^A),  Ṽ^s = V_1^s · (1 + ρ^s)
+//   hla_imb = (Ṽ^B - Ṽ^A) / (Ṽ^B + Ṽ^A),  Ṽ^s = V_1^s · (1 + ρ^s)
 //   ρ^s = (|O^{M,s}| - |O^{C,s}|) / (|O^{M,s}| + |O^{C,s}|)   (分钟内 refill rate)
 // =============================================================================
 
@@ -75,4 +75,4 @@ private:
 #define NODE_Hla(N) N(Hla, (HLA), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
 #define FIELDS_L1_Hla(X, CAT1) \
-  X(hla_imba, CAT1, RATIO, NONE, "Hidden-liquidity-adjusted Imba", "潜在流动性失衡", "预测后续时刻的失衡(按照refill/cancel rate)(降频)", R"(\frac{\tilde{V}_{1,t}^{M,B} - \tilde{V}_{1,t}^{M,A}}{\tilde{V}_{1,t}^{M,B} + \tilde{V}_{1,t}^{M,A}}, \quad \tilde{V}_{1,t}^{M,s} = V_{1,t}^{M,s}(1+\rho_t^{s}), \quad \rho_t^{s} = \frac{|O_t^{M,s}| - |O_t^{C,s}|}{|O_t^{M,s}| + |O_t^{C,s}|}, \quad s \in \{B,A\})", OP(Hla))
+  X(hla_imb, CAT1, RATIO, NONE, "Hidden-liquidity-adjusted Imba", "潜在流动性失衡", "预测后续时刻的失衡(按照refill/cancel rate)(降频)", R"(\frac{\tilde{V}_{1,t}^{M,B} - \tilde{V}_{1,t}^{M,A}}{\tilde{V}_{1,t}^{M,B} + \tilde{V}_{1,t}^{M,A}}, \quad \tilde{V}_{1,t}^{M,s} = V_{1,t}^{M,s}(1+\rho_t^{s}), \quad \rho_t^{s} = \frac{|O_t^{M,s}| - |O_t^{C,s}|}{|O_t^{M,s}| + |O_t^{C,s}|}, \quad s \in \{B,A\})", OP(Hla))

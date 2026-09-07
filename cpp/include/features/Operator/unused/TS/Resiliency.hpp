@@ -3,11 +3,11 @@
 // =============================================================================
 // RESIL (Resiliency) - 韧性与恢复 (降频版): 每笔累计, 按秒结算, 分钟末输出
 // =============================================================================
-//   ratio_bid/ask = |O^M| / (|O^T| + |O^C|)   (韧性比, >1 深度增长)
-//   imba = (R^B - R^A) / (R^B + R^A)          (韧性失衡)
-//   dev_bid/ask = (D_t - D̄_W) / D̄_W          (深度偏离度, 60s 移动均值)
-//   mr_bid/ask = d_t - d_{t-1}                (均值回归速度)
-//   recovery_bid/ask = max(0, Δd) · 1_{d<0}   (恢复信号)
+//   resil_ratio_bid/ask = |O^M| / (|O^T| + |O^C|)   (韧性比, >1 深度增长)
+//   resil_imb = (R^B - R^A) / (R^B + R^A)          (韧性失衡)
+//   resil_dev_bid/ask = (D_t - D̄_W) / D̄_W          (深度偏离度, 60s 移动均值)
+//   resil_mr_bid/ask = d_t - d_{t-1}                (均值回归速度)
+//   resil_recov_bid/ask = max(0, Δd) · 1_{d<0}   (恢复信号)
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -17,15 +17,15 @@ class Resiliency {
   static constexpr size_t DEPTH_WINDOW = 60; // 秒
 
 public:
-  enum Out : size_t { ratio_bid,
-                      ratio_ask,
-                      imba,
-                      dev_bid,
-                      dev_ask,
-                      mr_bid,
-                      mr_ask,
-                      recovery_bid,
-                      recovery_ask,
+  enum Out : size_t { resil_ratio_bid,
+                      resil_ratio_ask,
+                      resil_imb,
+                      resil_dev_bid,
+                      resil_dev_ask,
+                      resil_mr_bid,
+                      resil_mr_ask,
+                      resil_recov_bid,
+                      resil_recov_ask,
                       kCount };
   float y[kCount] = {}; // 秒结算写入, 分钟末由 Node 推出
 
@@ -72,7 +72,7 @@ public:
     last_sec_ = 0;
     for (size_t i = 0; i < kCount; ++i)
       y[i] = 0.0f;
-    y[ratio_bid] = y[ratio_ask] = 1.0f; // 无消耗时视为韧性中性
+    y[resil_ratio_bid] = y[resil_ratio_ask] = 1.0f; // 无消耗时视为韧性中性
   }
 
 private:
@@ -99,26 +99,26 @@ private:
     // 3. 韧性比 (无消耗沿用上一值)
     float consume_bid = vol_taker_bid_ + vol_cancel_bid_;
     float consume_ask = vol_taker_ask_ + vol_cancel_ask_;
-    y[ratio_bid] = consume_bid > 1e-6f ? vol_maker_bid_ / consume_bid : y[ratio_bid];
-    y[ratio_ask] = consume_ask > 1e-6f ? vol_maker_ask_ / consume_ask : y[ratio_ask];
+    y[resil_ratio_bid] = consume_bid > 1e-6f ? vol_maker_bid_ / consume_bid : y[resil_ratio_bid];
+    y[resil_ratio_ask] = consume_ask > 1e-6f ? vol_maker_ask_ / consume_ask : y[resil_ratio_ask];
 
     // 4. 韧性失衡
-    float sum_r = y[ratio_bid] + y[ratio_ask];
-    y[imba] = sum_r > 1e-6f ? (y[ratio_bid] - y[ratio_ask]) / sum_r : 0.0f;
+    float sum_r = y[resil_ratio_bid] + y[resil_ratio_ask];
+    y[resil_imb] = sum_r > 1e-6f ? (y[resil_ratio_bid] - y[resil_ratio_ask]) / sum_r : 0.0f;
 
     // 5. 深度偏离度 (负 = 被冲击)
     float d_bid = mean_bid > 1e-6f ? (depth_bid - mean_bid) / mean_bid : 0.0f;
     float d_ask = mean_ask > 1e-6f ? (depth_ask - mean_ask) / mean_ask : 0.0f;
-    y[dev_bid] = d_bid;
-    y[dev_ask] = d_ask;
+    y[resil_dev_bid] = d_bid;
+    y[resil_dev_ask] = d_ask;
 
     // 6. 均值回归速度 (正 = 恢复中)
-    y[mr_bid] = d_bid - prev_d_bid_;
-    y[mr_ask] = d_ask - prev_d_ask_;
+    y[resil_mr_bid] = d_bid - prev_d_bid_;
+    y[resil_mr_ask] = d_ask - prev_d_ask_;
 
     // 7. 恢复信号: 冲击状态 (d<0) 下的正向回归
-    y[recovery_bid] = d_bid < 0 ? std::max(0.0f, y[mr_bid]) : 0.0f;
-    y[recovery_ask] = d_ask < 0 ? std::max(0.0f, y[mr_ask]) : 0.0f;
+    y[resil_recov_bid] = d_bid < 0 ? std::max(0.0f, y[resil_mr_bid]) : 0.0f;
+    y[resil_recov_ask] = d_ask < 0 ? std::max(0.0f, y[resil_mr_ask]) : 0.0f;
 
     prev_d_bid_ = d_bid;
     prev_d_ask_ = d_ask;
@@ -150,13 +150,13 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Resiliency(N) N(Resiliency, (Resiliency), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
-#define FIELDS_L1_Resiliency(X, CAT1)                                                                                                                                                                                                                                                                                         \
-  X(ratio_bid, CAT1, RATIO, NONE, "Bid Resiliency Ratio", "买侧韧性比", "买侧挂单量/消耗量,>1深度增长(降频)", R"(\frac{|O_W^{M,B}|}{|O_W^{T,B}|+|O_W^{C,B}|})", OP(Resiliency, ratio_bid))                                                                                                                                    \
-  X(ratio_ask, CAT1, RATIO, NONE, "Ask Resiliency Ratio", "卖侧韧性比", "卖侧挂单量/消耗量,>1深度增长(降频)", R"(\frac{|O_W^{M,A}|}{|O_W^{T,A}|+|O_W^{C,A}|})", OP(Resiliency, ratio_ask))                                                                                                                                    \
-  X(resil_imba, CAT1, RATIO, NONE, "Resiliency Imbalance", "韧性失衡", "买卖韧性比差异(正=买侧恢复快)(降频)", R"(\frac{R^B-R^A}{R^B+R^A}, \quad R^s=\frac{|O_W^{M,s}|}{|O_W^{T,s}|+|O_W^{C,s}|})", OP(Resiliency, imba))                                                                                                      \
-  X(dev_bid, CAT1, RAW, NONE, "Bid Depth Deviation", "买侧深度偏离", "当前深度vs移动均值偏离度(负=被冲击)(降频)", R"(\frac{D_t^B-\bar{D}_W^B}{\bar{D}_W^B}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s}, \quad \bar{D}_W^s=\frac{1}{|W|}\sum_{\tau\in W}D_\tau^s)", OP(Resiliency, dev_bid))                                      \
-  X(dev_ask, CAT1, RAW, NONE, "Ask Depth Deviation", "卖侧深度偏离", "当前深度vs移动均值偏离度(负=被冲击)(降频)", R"(\frac{D_t^A-\bar{D}_W^A}{\bar{D}_W^A}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s}, \quad \bar{D}_W^s=\frac{1}{|W|}\sum_{\tau\in W}D_\tau^s)", OP(Resiliency, dev_ask))                                      \
-  X(mr_bid, CAT1, RAW, NONE, "Bid Mean-Reversion Speed", "买侧均值回归速度", "深度偏离度变化率(正=恢复中)(降频)", R"(d_t^B-d_{t-1}^B, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, mr_bid))                                                                   \
-  X(mr_ask, CAT1, RAW, NONE, "Ask Mean-Reversion Speed", "卖侧均值回归速度", "深度偏离度变化率(正=恢复中)(降频)", R"(d_t^A-d_{t-1}^A, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, mr_ask))                                                                   \
-  X(recovery_bid, CAT1, RAW, NONE, "Bid Recovery Signal", "买侧恢复信号", "冲击状态下的正向恢复强度(降频)", R"(\max(0,\Delta d_t^B)\cdot\mathbf{1}_{d_t^B<0}, \quad \Delta d_t^s=d_t^s-d_{t-1}^s, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, recovery_bid)) \
-  X(recovery_ask, CAT1, RAW, NONE, "Ask Recovery Signal", "卖侧恢复信号", "冲击状态下的正向恢复强度(降频)", R"(\max(0,\Delta d_t^A)\cdot\mathbf{1}_{d_t^A<0}, \quad \Delta d_t^s=d_t^s-d_{t-1}^s, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, recovery_ask))
+#define FIELDS_L1_Resiliency(X, CAT1)                                                                                                                                                                                                                                                                                               \
+  X(resil_ratio_bid, CAT1, RATIO, NONE, "Bid Resiliency Ratio", "买侧韧性比", "买侧挂单量/消耗量,>1深度增长(降频)", R"(\frac{|O_W^{M,B}|}{|O_W^{T,B}|+|O_W^{C,B}|})", OP(Resiliency, resil_ratio_bid))                                                                                                                              \
+  X(resil_ratio_ask, CAT1, RATIO, NONE, "Ask Resiliency Ratio", "卖侧韧性比", "卖侧挂单量/消耗量,>1深度增长(降频)", R"(\frac{|O_W^{M,A}|}{|O_W^{T,A}|+|O_W^{C,A}|})", OP(Resiliency, resil_ratio_ask))                                                                                                                              \
+  X(resil_imb, CAT1, RATIO, NONE, "Resiliency Imbalance", "韧性失衡", "买卖韧性比差异(正=买侧恢复快)(降频)", R"(\frac{R^B-R^A}{R^B+R^A}, \quad R^s=\frac{|O_W^{M,s}|}{|O_W^{T,s}|+|O_W^{C,s}|})", OP(Resiliency, resil_imb))                                                                                                        \
+  X(resil_dev_bid, CAT1, RAW, NONE, "Bid Depth Deviation", "买侧深度偏离", "当前深度vs移动均值偏离度(负=被冲击)(降频)", R"(\frac{D_t^B-\bar{D}_W^B}{\bar{D}_W^B}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s}, \quad \bar{D}_W^s=\frac{1}{|W|}\sum_{\tau\in W}D_\tau^s)", OP(Resiliency, resil_dev_bid))                                \
+  X(resil_dev_ask, CAT1, RAW, NONE, "Ask Depth Deviation", "卖侧深度偏离", "当前深度vs移动均值偏离度(负=被冲击)(降频)", R"(\frac{D_t^A-\bar{D}_W^A}{\bar{D}_W^A}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s}, \quad \bar{D}_W^s=\frac{1}{|W|}\sum_{\tau\in W}D_\tau^s)", OP(Resiliency, resil_dev_ask))                                \
+  X(resil_mr_bid, CAT1, RAW, NONE, "Bid Mean-Reversion Speed", "买侧均值回归速度", "深度偏离度变化率(正=恢复中)(降频)", R"(d_t^B-d_{t-1}^B, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, resil_mr_bid))                                                             \
+  X(resil_mr_ask, CAT1, RAW, NONE, "Ask Mean-Reversion Speed", "卖侧均值回归速度", "深度偏离度变化率(正=恢复中)(降频)", R"(d_t^A-d_{t-1}^A, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, resil_mr_ask))                                                             \
+  X(resil_recov_bid, CAT1, RAW, NONE, "Bid Recovery Signal", "买侧恢复信号", "冲击状态下的正向恢复强度(降频)", R"(\max(0,\Delta d_t^B)\cdot\mathbf{1}_{d_t^B<0}, \quad \Delta d_t^s=d_t^s-d_{t-1}^s, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, resil_recov_bid)) \
+  X(resil_recov_ask, CAT1, RAW, NONE, "Ask Recovery Signal", "卖侧恢复信号", "冲击状态下的正向恢复强度(降频)", R"(\max(0,\Delta d_t^A)\cdot\mathbf{1}_{d_t^A<0}, \quad \Delta d_t^s=d_t^s-d_{t-1}^s, \quad d_t^s=\frac{D_t^s-\bar{D}_W^s}{\bar{D}_W^s}, \quad D_t^s=\sum_{i=1}^{N}V_{i,t}^{M,s})", OP(Resiliency, resil_recov_ask))

@@ -220,10 +220,18 @@ static void RenderIntegrity(const Dist::Integrity &integrity) {
 }
 
 // ============================================================================
-// Window Control Panel
-// Row 1: Compute | Cancel | Status (n/m) | By selector
-// Row 2: Month slider (always visible, from config date range)
+// 维度 (四图对仗): 槽数 / 槽 sketch / 槽标签 —— 焦点滑条、PDF 面板、详情面板共用
+//   0 月度漂移 (months)  1 周内偏移 (by_weekday)  2 日内偏移 (by_tod)  3 资产截面 (lines)
 // ============================================================================
+
+enum Dim : int { DIM_MONTH = 0,
+                 DIM_WEEKDAY = 1,
+                 DIM_TOD = 2,
+                 DIM_ASSETS = 3 };
+
+static const char *kDimTitles[DistUIState::kDims] = {"PDF密度(月度漂移)", "PDF密度(周内偏移)",
+                                                     "PDF密度(日内偏移)", "资产截面(分布密度 + 分位数偏移)"};
+static const char *kWeekdayNames[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 
 // Format month key "YYYYMM" -> "YYYY/MM"
 static std::string format_month(const std::string &m) {
@@ -232,25 +240,81 @@ static std::string format_month(const std::string &m) {
   return m;
 }
 
-// Get slider label: "YYYY/MM (n_samples)" or "YYYY/MM" if no data yet
-static std::string get_month_label(const Dist &dist, int idx,
-                                   const std::vector<std::string> &months) {
-  if (idx < 0 || idx >= static_cast<int>(months.size()))
-    return "";
-  std::string label = format_month(months[idx]);
-  // Add n_samples if data available (随资产流增长)
-  if (idx < static_cast<int>(dist.months.size()) && dist.months[idx].kll.totalCount() > 0) {
-    label += " (" + std::to_string(dist.months[idx].kll.totalCount()) + ")";
+// 槽数 (滑条范围). 月取 config 区间月份表 (构建前也有), 资产取资产轴
+static int DimCount(const DistUIState &ui, const Asset &asset, int dim) {
+  switch (dim) {
+  case DIM_MONTH:
+    return static_cast<int>(ui.months.size());
+  case DIM_WEEKDAY:
+    return 7;
+  case DIM_TOD:
+    return static_cast<int>(kTodBins);
+  case DIM_ASSETS:
+    return static_cast<int>(asset.items.size());
   }
+  return 0;
+}
+
+// 聚合维度 (0-2) 的槽 sketch; 数据未就绪 (槽表还没建) 返回 nullptr. 资产维度走 lines 快照
+static const KLLcache *DimSlot(const Dist &dist, int dim, int i) {
+  switch (dim) {
+  case DIM_MONTH:
+    return i < static_cast<int>(dist.months.size()) ? &dist.months[i].kll : nullptr;
+  case DIM_WEEKDAY:
+    return i < static_cast<int>(dist.by_weekday.size()) ? &dist.by_weekday[i] : nullptr;
+  case DIM_TOD:
+    return i < static_cast<int>(dist.by_tod.size()) ? &dist.by_tod[i] : nullptr;
+  }
+  return nullptr;
+}
+
+// 槽名 (不含样本数): "2024/01" / "Mon" / "09:15" / "000001 平安银行"
+static std::string DimName(const DistUIState &ui, const Asset &asset, int dim, int i) {
+  switch (dim) {
+  case DIM_MONTH:
+    return format_month(ui.months[i]);
+  case DIM_WEEKDAY:
+    return kWeekdayNames[i];
+  case DIM_TOD: {
+    char buf[8];
+    format_time_hm(buf, sizeof(buf), L1_to_Clock(kTodBinStart[i]));
+    return buf;
+  }
+  case DIM_ASSETS:
+    return asset.items[i].asset_code + " " + asset.items[i].asset_name;
+  }
+  return "";
+}
+
+// 槽样本数 (0 = 尚无数据)
+static uint64_t DimSamples(const Dist &dist, int dim, int i) {
+  if (dim == DIM_ASSETS)
+    return i < static_cast<int>(dist.lines.size()) ? dist.lines[i].n : 0;
+  const KLLcache *kll = DimSlot(dist, dim, i);
+  return kll ? kll->totalCount() : 0;
+}
+
+// 滑条标签: "槽名 (n)" / "槽名"
+static std::string DimLabel(const Dist &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
+  std::string label = DimName(ui, asset, dim, i);
+  const uint64_t n = DimSamples(dist, dim, i);
+  if (n > 0)
+    label += " (" + std::to_string(n) + ")";
   return label;
 }
+
+// ============================================================================
+// Window Control Panel
+// Row 1: Compute | Cancel | Status (n/m)
+// Row 2: 通用焦点滑条: 作用于 selected_dimension, 各维度焦点独立记忆
+// ============================================================================
 
 static void RenderWindowControl(DistService *service, SharedData &data,
                                 DistUIState &ui) {
   auto &dist = data.dist;
   const Dist::Status status = dist.status.load(std::memory_order_acquire);
 
-  // Row 1: Compute | Cancel | Status | By selector
+  // Row 1: Compute | Cancel | Status
   const bool is_l1 = (data.feature.selection.selected_level == 1);
   bool can_compute = status != Dist::Status::Building &&
                      data.feature.selection.primary_feature_idx >= 0 && is_l1;
@@ -277,24 +341,25 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   // 进度: 分批流式, 天是唯一流式维度 (每批扫全部资产, 全资产逐批收敛)
   ImGui::Text(" (天 %zu/%zu)", dist.days_loaded.load(), dist.days_total.load());
 
-  // Row 2: Month slider (config 区间月份表, 缓存; 枚举逻辑与 DistService 共用)
+  // Row 2: 焦点滑条 (月份表来自 config 区间, 缓存; 枚举逻辑与 DistService 共用)
   const std::string months_key = data.config.start_date + "|" + data.config.end_date;
   if (ui.months_key != months_key) {
     ui.months_key = months_key;
     ui.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
   }
-  if (!ui.months.empty()) {
-    int n_months = static_cast<int>(ui.months.size());
-    ui.focus_month_idx = std::clamp(ui.focus_month_idx, 0, n_months - 1);
-
-    std::string label = get_month_label(dist, ui.focus_month_idx, ui.months);
+  const int dim = ui.selected_dimension;
+  const int n = DimCount(ui, data.asset, dim);
+  if (n > 0) {
+    int &focus = ui.focus[dim];
+    focus = std::clamp(focus, 0, n - 1);
+    const std::string label = DimLabel(dist, ui, data.asset, dim, focus);
     ImGui::SetNextItemWidth(-1);
-    ImGui::SliderInt("##FocusMonth", &ui.focus_month_idx, 0, n_months - 1, label.c_str());
+    ImGui::SliderInt("##Focus", &focus, 0, n - 1, label.c_str());
   }
 }
 
 // ============================================================================
-// Asset Color (图4 顶部散点 + PDF 折线)
+// Asset Color (资产截面图 顶部散点 + PDF 折线)
 // 模式: 0=行业(Jet), 1=市值, 2=PE, 3=PB, 4=PS, 5=PCF, 6=股息率(Viridis)
 // 连续值按 5/95 分位 winsorize 后线性映射到 colormap, 离群值饱和
 // ============================================================================
@@ -406,240 +471,112 @@ static void RenderColorModeSelector(DistUIState &ui, const Asset &asset,
 // PDF Panels - Multiple views with hover tooltips
 // ============================================================================
 
-// Common PDF data structure (零拷贝: 指向 KLL 内部重建缓存, 帧内有效)
-struct PDFData {
-  KLLcache::LinePtr line{nullptr, nullptr, 0};
-  int month_idx = -1; // Original month index for focus comparison
-};
+// 选中维度的边框高亮 (四图共用)
+static void DrawSelectedBorder() {
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  draw->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
+}
 
-// Generic PDF rendering with hover detection
-template <typename GetTooltipFunc>
-static int RenderPDFPlot(const char *plot_id, const std::vector<PDFData> &pdfs,
-                         int focus_idx, bool need_autofit, GetTooltipFunc get_tooltip) {
-  int hovered_idx = -1;
-  double min_dist_sq = 1e9;
+// 聚合维度 (月/周/日内) PDF 面板: 每槽一条线, 离焦点越近越亮 (Hot colormap), 焦点线加粗置顶.
+// PDF 零拷贝: 指向 KLL 内部重建缓存, 帧内有效. 点击图 → 选中该维度 (滑条切过去).
+static void RenderPDFByDim(const Dist &dist, const DistUIState &ui, const Asset &asset, int dim,
+                           bool need_autofit, int &clicked_dimension) {
+  char child_id[16];
+  snprintf(child_id, sizeof(child_id), "PDFDim%d", dim);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
+  ImGui::BeginChild(child_id, ImVec2(0, 0), false);
+  ImGui::PopStyleVar();
+  ImGui::TextUnformatted(kDimTitles[dim]);
+  ImGui::Separator();
 
-  // Trigger autofit if requested
-  if (need_autofit) {
-    ImPlot::SetNextAxesToFit();
+  const int n_items = DimCount(ui, asset, dim);
+  if (n_items == 0 || DimSlot(dist, dim, 0) == nullptr) {
+    ImGui::Text("No data");
+    ImGui::EndChild();
+    return;
   }
 
+  // 流式: 槽 sketch 随批次增长, count 够了就画
+  std::vector<KLLcache::LinePtr> lines(n_items, KLLcache::LinePtr{nullptr, nullptr, 0});
+  int max_dist = 0;
+  const int focus = ui.focus[dim];
+  for (int i = 0; i < n_items; ++i) {
+    const KLLcache *kll = DimSlot(dist, dim, i);
+    if (kll && kll->totalCount() >= 10) {
+      lines[i] = kll->exportPDF();
+      max_dist = std::max(max_dist, std::abs(i - focus));
+    }
+  }
+
+  int hovered_idx = -1;
+  double min_dist_sq = 1e9;
+  bool plot_clicked = false;
+
+  if (need_autofit)
+    ImPlot::SetNextAxesToFit();
+
+  char plot_id[16];
+  snprintf(plot_id, sizeof(plot_id), "##PDF%d", dim);
   if (ImPlot::BeginPlot(plot_id, ImVec2(-1, -1))) {
     ImPlot::SetupAxes(nullptr, nullptr,
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels,
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
 
-    int n_items = static_cast<int>(pdfs.size());
-
-    // Compute max distance for normalization (only for month plots with focus)
-    int max_dist = 0;
-    if (focus_idx >= 0) {
-      for (int i = 0; i < n_items; ++i) {
-        if (pdfs[i].line.n == 0 || pdfs[i].month_idx < 0)
-          continue;
-        int dist = std::abs(pdfs[i].month_idx - focus_idx);
-        max_dist = std::max(max_dist, dist);
-      }
-    }
-
-    // Draw all lines with color based on distance to focus
+    // 非焦点线: 亮度 = 与焦点的距离 (越近越亮)
     ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f);
     for (int i = 0; i < n_items; ++i) {
-      if (pdfs[i].line.n == 0)
+      if (lines[i].n == 0 || i == focus)
         continue;
-
-      float t; // colormap parameter: 0=dark, 1=bright
-      if (focus_idx >= 0 && pdfs[i].month_idx >= 0 && max_dist > 0) {
-        // Month plot with focus: closer to focus = brighter
-        int dist = std::abs(pdfs[i].month_idx - focus_idx);
-        t = 1.0f - static_cast<float>(dist) / static_cast<float>(max_dist);
-      } else {
-        // No focus (weekday/hour) or single month: uniform distribution
-        t = static_cast<float>(i) / static_cast<float>(n_items);
-      }
-
-      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Hot);
-      ImPlot::SetNextLineStyle(color, 1.0f);
-      ImPlot::PlotLine("##pdf", pdfs[i].line.x, pdfs[i].line.y, static_cast<int>(pdfs[i].line.n));
+      const float t = max_dist > 0 ? 1.0f - static_cast<float>(std::abs(i - focus)) / static_cast<float>(max_dist) : 0.5f;
+      ImPlot::SetNextLineStyle(ImPlot::SampleColormap(t, ImPlotColormap_Hot), 1.0f);
+      ImPlot::PlotLine("##pdf", lines[i].x, lines[i].y, static_cast<int>(lines[i].n));
     }
     ImPlot::PopStyleVar();
 
-    // Detect hover (x 窗口裁剪, 只扫鼠标附近的段)
+    // 焦点线置顶: 白描边 + cyan (与资产截面图焦点线同一画法)
+    if (focus < n_items && lines[focus].n > 0) {
+      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 4.0f);
+      ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
+      ImPlot::PlotLine("##pdf_outline", lines[focus].x, lines[focus].y, static_cast<int>(lines[focus].n));
+      ImPlot::PopStyleVar();
+      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.5f);
+      ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f);
+      ImPlot::PlotLine("##pdf_focus", lines[focus].x, lines[focus].y, static_cast<int>(lines[focus].n));
+      ImPlot::PopStyleVar();
+    }
+
+    // Hover (x 窗口裁剪, 只扫鼠标附近的段)
     if (ImPlot::IsPlotHovered()) {
-      ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-      ImPlotRect limits = ImPlot::GetPlotLimits();
+      const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+      const ImPlotRect limits = ImPlot::GetPlotLimits();
       for (int i = 0; i < n_items; ++i) {
-        double d_sq = nearest_seg_dist_sq(pdfs[i].line.x, pdfs[i].line.y, pdfs[i].line.n, mouse, limits);
+        const double d_sq = nearest_seg_dist_sq(lines[i].x, lines[i].y, lines[i].n, mouse, limits);
         if (d_sq < min_dist_sq) {
           min_dist_sq = d_sq;
           hovered_idx = i;
         }
       }
-    }
-
-    // Note: no visual hover highlight; tooltip is enough and won't fight the focus line.
-
-    // Click detection for dimension selection
-    if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(0)) {
-      hovered_idx = -2; // Signal that plot was clicked
+      plot_clicked = ImGui::IsMouseClicked(0);
     }
 
     ImPlot::EndPlot();
   }
 
-  // Tooltip
+  // Tooltip (无视觉高亮, 不与焦点线打架)
   if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
+    const KLLcache &kll = *DimSlot(dist, dim, hovered_idx);
     ImGui::BeginTooltip();
-    get_tooltip(hovered_idx);
+    ImGui::TextUnformatted(DimName(ui, asset, dim, hovered_idx).c_str());
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
+    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
+    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
     ImGui::EndTooltip();
   }
 
-  return hovered_idx;
-}
-
-static void RenderPDFByMonth(const Dist &dist, int focus_month_idx, bool need_autofit,
-                             int selected_dimension, int &clicked_dimension) {
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
-  ImGui::BeginChild("PDFByMonth", ImVec2(0, 0), false);
-  ImGui::PopStyleVar();
-  ImGui::Text("PDF密度(月度漂移)");
-  ImGui::Separator();
-
-  if (dist.months.empty()) {
-    ImGui::Text("No data");
-    ImGui::EndChild();
-    return;
-  }
-
-  // 流式: 月 sketch 随资产完成度增长, count 够了就画
-  int n_months = static_cast<int>(dist.months.size());
-  std::vector<PDFData> pdfs(n_months);
-
-  for (int m = 0; m < n_months; ++m) {
-    const auto &mc = dist.months[m];
-    if (mc.kll.totalCount() >= 10) {
-      pdfs[m].line = mc.kll.exportPDF();
-      pdfs[m].month_idx = m; // Save original month index
-    }
-  }
-
-  int hovered = RenderPDFPlot("##PDFMonth", pdfs, focus_month_idx, need_autofit, [&](int idx) {
-    const auto &kll = dist.months[idx].kll;
-    ImGui::Text("%s", dist.months[idx].month.c_str());
-    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
-    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
-    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
-  });
-
-  // Click detection
-  if (hovered == -2) {
-    clicked_dimension = 0; // MONTH
-  }
-
-  // Highlight border if selected
-  if (selected_dimension == 0) {
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-    ImVec2 p_min = ImGui::GetItemRectMin();
-    ImVec2 p_max = ImGui::GetItemRectMax();
-    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
-  }
-
-  ImGui::EndChild();
-}
-
-static void RenderPDFByWeekday(const Dist &dist, bool need_autofit,
-                               int selected_dimension, int &clicked_dimension) {
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
-  ImGui::BeginChild("PDFByWeekday", ImVec2(0, 0), false);
-  ImGui::PopStyleVar();
-  ImGui::Text("PDF密度(周内偏移)");
-  ImGui::Separator();
-
-  if (dist.by_weekday.size() != 7) {
-    ImGui::Text("No data");
-    ImGui::EndChild();
-    return;
-  }
-
-  const auto &global_weekday = dist.by_weekday;
-
-  const char *wd_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-  std::vector<PDFData> pdfs(7);
-
-  for (size_t wd = 0; wd < 7; ++wd) {
-    if (global_weekday[wd].totalCount() >= 10) {
-      pdfs[wd].line = global_weekday[wd].exportPDF();
-    }
-  }
-
-  int hovered = RenderPDFPlot("##PDFWeekday", pdfs, -1, need_autofit, [&](int idx) {
-    const auto &kll = global_weekday[idx];
-    ImGui::Text("%s", wd_names[idx]);
-    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
-    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
-    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
-  });
-
-  // Click detection
-  if (hovered == -2) {
-    clicked_dimension = 1; // WEEKDAY
-  }
-
-  // Highlight border if selected
-  if (selected_dimension == 1) {
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-    ImVec2 p_min = ImGui::GetItemRectMin();
-    ImVec2 p_max = ImGui::GetItemRectMax();
-    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
-  }
-
-  ImGui::EndChild();
-}
-
-static void RenderPDFByHour(const Dist &dist, bool need_autofit,
-                            int selected_dimension, int &clicked_dimension) {
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
-  ImGui::BeginChild("PDFByHour", ImVec2(0, 0), false);
-  ImGui::PopStyleVar();
-  ImGui::Text("PDF密度(日内偏移)");
-  ImGui::Separator();
-
-  if (dist.by_hour.size() != 24) {
-    ImGui::Text("No data");
-    ImGui::EndChild();
-    return;
-  }
-
-  const auto &global_hour = dist.by_hour;
-
-  std::vector<PDFData> pdfs(24);
-
-  for (size_t h = 0; h < 24; ++h) {
-    if (global_hour[h].totalCount() >= 10) {
-      pdfs[h].line = global_hour[h].exportPDF();
-    }
-  }
-
-  int hovered = RenderPDFPlot("##PDFHour", pdfs, -1, need_autofit, [&](int idx) {
-    const auto &kll = global_hour[idx];
-    ImGui::Text("Hour %d", idx);
-    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
-    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
-    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
-  });
-
-  // Click detection
-  if (hovered == -2) {
-    clicked_dimension = 2; // HOUR
-  }
-
-  // Highlight border if selected
-  if (selected_dimension == 2) {
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-    ImVec2 p_min = ImGui::GetItemRectMin();
-    ImVec2 p_max = ImGui::GetItemRectMax();
-    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
-  }
+  if (plot_clicked)
+    clicked_dimension = dim;
+  if (ui.selected_dimension == dim)
+    DrawSelectedBorder();
 
   ImGui::EndChild();
 }
@@ -648,10 +585,24 @@ static void RenderPDFByHour(const Dist &dist, bool need_autofit,
 // Assets PDF Plot
 // ============================================================================
 
+// 高亮一条资产线 (hover / 焦点共用画法: 白描边 + cyan, 与聚合维度焦点线对仗)
+static void PlotHighlightLine(const Dist::AssetLine &ln) {
+  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
+  ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
+  ImPlot::PlotLine("##pdf_outline", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
+  ImPlot::PopStyleVar();
+  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
+  ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f);
+  ImPlot::PlotLine("##pdf_hl", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
+  ImPlot::PopStyleVar();
+}
+
+// 资产截面: 焦点 = ui.focus[DIM_ASSETS] (滑条选的资产, 常亮置顶); hover 临时高亮另一条.
+// 输出 hovered_line_out (无 hover → -1, 详情面板回落到焦点资产)
 static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInfo &assetinfo,
                             DistUIState &ui, int &clicked_dimension, int &hovered_line_out) {
   // Title with tooltip
-  ImGui::Text("资产截面(分布密度 + 分位数偏移)");
+  ImGui::TextUnformatted(kDimTitles[DIM_ASSETS]);
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered()) {
@@ -666,7 +617,8 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
                        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
     ImGui::Text("\n颜色 = 左栏 [染色] 选项 (行业/市值/估值/股息率); W2 散点/hover 为全资产,\n"
-                "PDF 细线只画固定随机子集 (纯顶点预算, 即全市场无偏抽样)");
+                "PDF 细线只画固定随机子集 (纯顶点预算, 即全市场无偏抽样)\n"
+                "焦点资产 (顶部滑条) 常亮置顶, hover 临时高亮");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
@@ -719,6 +671,11 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   double min_dist_sq = 1e9;
   bool plot_clicked = false;
 
+  // 焦点资产 (滑条): 有线才画; 折线不在绘制子集也画 (与 hover 同待遇)
+  const int focus_asset = ui.focus[DIM_ASSETS];
+  const bool focus_drawable = focus_asset >= 0 && static_cast<size_t>(focus_asset) < dist.lines.size() &&
+                              dist.lines[focus_asset].n_pts > 0;
+
   if (ImPlot::BeginPlot("##AssetsPDF", ImVec2(-1, -1))) {
     // x 轴显示刻度 (特征取值), y 轴隐藏 (密度无具体值意义)
     ImPlot::SetupAxes(nullptr, nullptr,
@@ -760,7 +717,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
       if (hovered_idx < 0) {
         for (size_t i = 0; i < n_valid; ++i) {
           const auto &ln = dist.lines[line_indices[i]];
-          if (!ln.draw)
+          if (!ln.draw && static_cast<int>(line_indices[i]) != focus_asset)
             continue;
           double d_sq = nearest_seg_dist_sq(ln.x.data(), ln.y.data(), ln.n_pts, mouse, limits);
           if (d_sq < min_dist_sq) {
@@ -773,64 +730,31 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
 
     // ========================================================================
     // Phase 2: Draw PDF lines
-    // hover 顶部点时: 先画其他全部资产线 (0.1 透明), 再画高亮曲线置顶 (聚焦)
-    // hover 折线时: 只高亮该线, 其他保持 0.75 (现有行为)
+    // 底层: 绘制子集 (hover 顶部点时全资产降到 0.1 透明, 否则 0.75)
+    // 置顶: 焦点资产线 (常亮), 再 hover 线 (临时) —— 同一画法, hover 盖在焦点上
     // ========================================================================
     const bool dot_hovered = (hovered_idx >= 0 && min_dist_sq == 0.0);
-    if (dot_hovered) {
-      // Pass 1: 其他全部资产线降到 0.1 透明
-      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
-      for (size_t i = 0; i < n_valid; ++i) {
-        if (static_cast<int>(i) == hovered_idx)
-          continue;
-        const auto &ln = dist.lines[line_indices[i]];
-        ImVec4 color = AssetColor(ui, ln.asset);
-        color.w = 0.1f;
-        ImPlot::SetNextLineStyle(color, 1.0f);
-        ImPlot::PlotLine("##pdf_dim", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-      }
-      ImPlot::PopStyleVar();
-      // Pass 2: 高亮曲线置顶
-      {
-        const auto &ln = dist.lines[line_indices[hovered_idx]];
-        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
-        ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
-        ImPlot::PlotLine("##pdf_outline", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-        ImPlot::PopStyleVar();
-
-        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
-        ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f); // cyan
-        ImPlot::PlotLine("##pdf_hl", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-        ImPlot::PopStyleVar();
-      }
-    } else {
-      for (size_t i = 0; i < n_valid; ++i) {
-        const auto &ln = dist.lines[line_indices[i]];
-        bool is_hovered = (static_cast<int>(i) == hovered_idx);
-        if (!ln.draw && !is_hovered)
-          continue; // 只画绘制子集 + hover 临时画
-
-        ImVec4 color = AssetColor(ui, ln.asset);
-        if (is_hovered) {
-          // Highlighted: thick white outline + bright color
-          ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
-          ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
-          ImPlot::PlotLine("##pdf_outline", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-          ImPlot::PopStyleVar();
-
-          ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
-          ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f); // cyan
-          ImPlot::PlotLine("##pdf_hl", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-          ImPlot::PopStyleVar();
-        } else {
-          color.w = 0.75f;
-          ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
-          ImPlot::SetNextLineStyle(color, 1.0f);
-          ImPlot::PlotLine("##pdf", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-          ImPlot::PopStyleVar();
-        }
-      }
+    if (hovered_idx >= 0 && min_dist_sq >= kHoverDistSq)
+      hovered_idx = -1; // 最近线也够不着: 不算 hover
+    const int hovered_line = hovered_idx >= 0 ? static_cast<int>(line_indices[hovered_idx]) : -1;
+    ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
+    for (size_t i = 0; i < n_valid; ++i) {
+      const int line = static_cast<int>(line_indices[i]);
+      if (line == hovered_line || line == focus_asset)
+        continue; // 置顶层单独画
+      const auto &ln = dist.lines[line];
+      if (!ln.draw && !dot_hovered)
+        continue; // 只画绘制子集; hover 顶部点时全资产淡出作背景
+      ImVec4 color = AssetColor(ui, ln.asset);
+      color.w = dot_hovered ? 0.1f : 0.75f;
+      ImPlot::SetNextLineStyle(color, 1.0f);
+      ImPlot::PlotLine("##pdf", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
     }
+    ImPlot::PopStyleVar();
+    if (focus_drawable && focus_asset != hovered_line)
+      PlotHighlightLine(dist.lines[focus_asset]);
+    if (hovered_line >= 0)
+      PlotHighlightLine(dist.lines[hovered_line]);
 
     // ========================================================================
     // Phase 3: Draw W2 offset scatter (overlay on top, scale invariant)
@@ -844,21 +768,26 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
       ImVec2 plot_size = ImPlot::GetPlotSize();
       float y_screen = plot_pos.y + 15.0f; // Fixed: 15px from plot top edge
 
-      // Draw asset dots
+      // Draw asset dots (焦点 / hover 点放大置顶, 与折线同一高亮色)
+      int top_a = -1, top_b = -1; // 置顶的 line_indices 下标: 焦点, hover
       for (size_t i = 0; i < n_valid; ++i) {
-        float x_screen = plot_pos.x + x_norm[i] * plot_size.x;
-        ImVec2 center(x_screen, y_screen);
-
-        bool is_hovered = (static_cast<int>(i) == hovered_idx);
-
-        if (is_hovered) {
-          // Highlighted: large white outline + cyan fill
-          draw->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255));
-          draw->AddCircleFilled(center, 4.0f, IM_COL32(0, 255, 255, 255));
-        } else {
-          ImU32 color = ImGui::ColorConvertFloat4ToU32(AssetColor(ui, dist.lines[line_indices[i]].asset));
-          draw->AddCircleFilled(center, 2.5f, color);
-        }
+        const int line = static_cast<int>(line_indices[i]);
+        if (line == focus_asset)
+          top_a = static_cast<int>(i);
+        if (static_cast<int>(i) == hovered_idx)
+          top_b = static_cast<int>(i);
+        if (line == focus_asset || static_cast<int>(i) == hovered_idx)
+          continue;
+        ImVec2 center(plot_pos.x + x_norm[i] * plot_size.x, y_screen);
+        ImU32 color = ImGui::ColorConvertFloat4ToU32(AssetColor(ui, dist.lines[line].asset));
+        draw->AddCircleFilled(center, 2.5f, color);
+      }
+      for (int top : {top_a, top_b}) {
+        if (top < 0)
+          continue;
+        ImVec2 center(plot_pos.x + x_norm[top] * plot_size.x, y_screen);
+        draw->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255));
+        draw->AddCircleFilled(center, 4.0f, IM_COL32(0, 255, 255, 255));
       }
     }
 
@@ -870,52 +799,44 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     ImPlot::EndPlot();
   }
 
-  // Output: convert draw index to dist.lines index
-  if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
-    hovered_line_out = static_cast<int>(line_indices[hovered_idx]);
-  } else {
-    hovered_line_out = -1;
-  }
+  // Output: convert draw index to dist.lines index (hovered_idx 已按阈值过滤)
+  hovered_line_out = hovered_idx >= 0 ? static_cast<int>(line_indices[hovered_idx]) : -1;
 
-  // Click detection
-  if (plot_clicked) {
-    clicked_dimension = 3; // ASSETS
-  }
-
-  // Highlight border if selected
-  if (ui.selected_dimension == 3) {
-    ImDrawList *draw = ImGui::GetWindowDrawList();
-    ImVec2 p_min = ImGui::GetItemRectMin();
-    ImVec2 p_max = ImGui::GetItemRectMax();
-    draw->AddRect(p_min, p_max, IM_COL32(0, 255, 255, 255), 0.0f, 0, 3.0f);
-  }
+  if (plot_clicked)
+    clicked_dimension = DIM_ASSETS;
+  if (ui.selected_dimension == DIM_ASSETS)
+    DrawSelectedBorder();
 }
 
 // ============================================================================
-// Hovered Asset Info Panel (displayed in left column)
+// Asset Info Panel (left column): hover 优先, 否则焦点资产 (滑条)
 // ============================================================================
 
-static void RenderHoveredAssetInfo(const Dist &dist, const Asset &asset,
-                                   const AssetInfo &assetinfo, int hovered_line) {
+static void RenderAssetInfo(const Dist &dist, const Asset &asset,
+                            const AssetInfo &assetinfo, int hovered_line, int focus_asset) {
   // Use remaining height in parent
   float remaining_height = ImGui::GetContentRegionAvail().y;
-  ImGui::BeginChild("HoveredAssetPanel", ImVec2(350, remaining_height), true);
+  ImGui::BeginChild("AssetInfoPanel", ImVec2(350, remaining_height), true);
 
   ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-  ImGui::TextUnformatted("[资产详情]");
+  ImGui::TextUnformatted(hovered_line >= 0 ? "[资产详情: hover]" : "[资产详情: 焦点]");
   ImGui::PopFont();
   ImGui::Separator();
 
   // 重算后 lines 被整体换新, hover 残留下标可能指向未发布的线 → 一并挡掉
-  if (hovered_line < 0 || static_cast<size_t>(hovered_line) >= dist.lines.size() ||
-      dist.lines[hovered_line].n_pts == 0 ||
-      static_cast<size_t>(dist.lines[hovered_line].asset) >= asset.items.size()) {
-    ImGui::TextDisabled("(hover on PDF/dot)");
+  auto showable = [&](int line) {
+    return line >= 0 && static_cast<size_t>(line) < dist.lines.size() &&
+           dist.lines[line].n_pts > 0 &&
+           static_cast<size_t>(dist.lines[line].asset) < asset.items.size();
+  };
+  const int line = showable(hovered_line) ? hovered_line : (showable(focus_asset) ? focus_asset : -1);
+  if (line < 0) {
+    ImGui::TextDisabled("(hover on PDF/dot, or pick asset with the slider)");
     ImGui::EndChild();
     return;
   }
 
-  const auto &ln = dist.lines[hovered_line];
+  const auto &ln = dist.lines[line];
   const auto &asset_item = asset.items[ln.asset];
 
   // Get real-time info from AssetInfo
@@ -1062,10 +983,10 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   ImGui::Columns(2, "MainCols", true);
   ImGui::SetColumnWidth(0, 350);
 
-  // Left column: Color Mode Selector + Hovered Asset Info (剩余空间)
+  // Left column: Color Mode Selector + Asset Info (hover 优先, 否则焦点资产; 剩余空间)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
   RenderColorModeSelector(ui, data.asset, data.assetinfo);
-  RenderHoveredAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_line);
+  RenderAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_line, ui.focus[DIM_ASSETS]);
   ImGui::EndChild();
 
   ImGui::NextColumn();
@@ -1083,16 +1004,12 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Track clicked dimension (-1 = none clicked)
   int clicked_dimension = -1;
 
-  // PDF by Month (focus month only)
-  RenderPDFByMonth(dist, ui.focus_month_idx, ui.need_autofit, ui.selected_dimension, clicked_dimension);
-  ImGui::NextColumn();
-
-  // PDF by Weekday (global)
-  RenderPDFByWeekday(dist, ui.need_autofit, ui.selected_dimension, clicked_dimension);
-  ImGui::NextColumn();
-
-  // PDF by Hour (global)
-  RenderPDFByHour(dist, ui.need_autofit, ui.selected_dimension, clicked_dimension);
+  // 三个聚合维度: 月度漂移 | 周内偏移 | 日内偏移 (同一渲染, 各自焦点)
+  for (int dim = DIM_MONTH; dim <= DIM_TOD; ++dim) {
+    if (dim != DIM_MONTH)
+      ImGui::NextColumn();
+    RenderPDFByDim(dist, ui, data.asset, dim, ui.need_autofit, clicked_dimension);
+  }
 
   ImGui::Columns(1);
   ImGui::PopStyleVar();
@@ -1103,7 +1020,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   RenderAssetsPDF(dist, data.asset, data.assetinfo, ui, clicked_dimension, ui.hovered_line);
   ImGui::EndChild();
 
-  // Update selected dimension if any plot was clicked
+  // 点图 → 选中该维度 (顶部滑条切到它的焦点)
   if (clicked_dimension >= 0) {
     ui.selected_dimension = clicked_dimension;
   }
