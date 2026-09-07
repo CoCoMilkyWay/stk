@@ -170,7 +170,7 @@ struct Dist {
   std::atomic<Status> status{Status::Idle};
   std::atomic<size_t> days_loaded{0};   // 已完成批的累计天数
   std::atomic<size_t> days_total{0};    // 抽样后总天数
-  std::atomic<uint64_t> lines_epoch{0}; // 每批发布 +1 (UI 以此触发 autofit)
+  std::atomic<uint64_t> lines_epoch{0}; // 数据每变一次 +1 (reset/clear/每批发布), 跨构建单调不归零 (UI 以此触发 autofit)
   // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局视图的 totalCount 是抽样后的数,
   // 绘制子集的资产线恒为全量 —— UI 得把这个比例说出来, 免得两边的 n 并列看着矛盾.
   std::atomic<size_t> agg_stride{1};

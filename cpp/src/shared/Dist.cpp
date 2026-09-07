@@ -1,5 +1,4 @@
 #include "shared/Dist.hpp"
-#include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 
 #include <barrier>
@@ -169,7 +168,7 @@ void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::stri
 
   days_loaded.store(0, std::memory_order_relaxed);
   days_total.store(0, std::memory_order_relaxed);
-  lines_epoch.store(0, std::memory_order_relaxed);
+  lines_epoch.fetch_add(1, std::memory_order_release); // 单调: 清空态也是一次数据变化
   agg_stride.store(1, std::memory_order_relaxed);
   status.store(Status::Building, std::memory_order_release);
 }
@@ -326,6 +325,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         sh.nan_seen = 0;
       }
       // 下一批的 W2 参考 = 本批后的全局分位 (滞后一批, 逐批收敛)
+      const bool had_ref = w2_ref_.valid;
       w2_ref_ = W2Ref{};
       if (total.totalCount() >= kMinSamples) {
         const auto icdf = total.exportICDF();
@@ -333,6 +333,16 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
           w2_ref_.q[d] = quantile_at(icdf, 0.05 * (d + 1));
         w2_ref_.mean = static_cast<float>(total.mean());
         w2_ref_.valid = true;
+      }
+      // 首个有参考的批: 本批扫描时还没参考 (w2 全 -1), 用刚建好的参考就地补算一次,
+      // 否则单批区间 (天数 ≤ kDaysPerBatch) 永远没有散点. 一次性 A 次 exportICDF, 后续批走滞后路径
+      if (!had_ref && w2_ref_.valid) {
+        TraceN("W2Backfill");
+        for (size_t a = 0; a < A; ++a) {
+          AssetLine &ln = lines[a];
+          if (ln.n_pts > 0)
+            ln.w2 = compute_w2(asset_klls_[a].exportICDF(), ln.mean, w2_ref_);
+        }
       }
     }
     days_loaded.fetch_add(bd, std::memory_order_release);
@@ -550,7 +560,7 @@ void Dist::clear() {
   shards_ = std::vector<Shard>{};
   days_loaded.store(0, std::memory_order_relaxed);
   days_total.store(0, std::memory_order_relaxed);
-  lines_epoch.store(0, std::memory_order_relaxed);
+  lines_epoch.fetch_add(1, std::memory_order_release); // 单调, 不归零
   agg_stride.store(1, std::memory_order_relaxed);
   status.store(Status::Idle, std::memory_order_release);
 }

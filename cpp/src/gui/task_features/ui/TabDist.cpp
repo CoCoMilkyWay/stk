@@ -355,7 +355,32 @@ static void RenderWindowControl(DistService *service, SharedData &data,
     const std::string label = DimLabel(dist, ui, data.asset, dim, focus);
     ImGui::SetNextItemWidth(-1);
     ImGui::SliderInt("##Focus", &focus, 0, n - 1, label.c_str());
+    ui.focus_active = ImGui::IsItemActive(); // 按住拖动中 → 该维度的图高亮焦点
+  } else {
+    ui.focus_active = false;
   }
+}
+
+// ============================================================================
+// 统一高亮 (四图 + 图4 hover 共用): 目标线 白描边 + cyan 置顶; 高亮模式下其余线压到 kDimAlpha
+// ============================================================================
+
+constexpr float kDimAlpha = 0.1f;
+
+static void PlotHighlightLine(const float *x, const float *y, size_t n) {
+  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
+  ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
+  ImPlot::PlotLine("##hl_outline", x, y, static_cast<int>(n));
+  ImPlot::PopStyleVar();
+  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
+  ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f);
+  ImPlot::PlotLine("##hl", x, y, static_cast<int>(n));
+  ImPlot::PopStyleVar();
+}
+
+// 该维度是否处于"滑条拖动高亮"模式
+static bool FocusHighlighting(const DistUIState &ui, int dim) {
+  return ui.focus_active && ui.selected_dimension == dim;
 }
 
 // ============================================================================
@@ -522,28 +547,23 @@ static void RenderPDFByDim(const Dist &dist, const DistUIState &ui, const Asset 
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels,
                       ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
 
-    // 非焦点线: 亮度 = 与焦点的距离 (越近越亮)
+    // 亮度 = 与焦点的距离 (越近越亮); 滑条拖动中: 其余压暗, 焦点线置顶高亮 (松手即恢复)
+    const bool dimmed = FocusHighlighting(ui, dim);
     ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f);
     for (int i = 0; i < n_items; ++i) {
-      if (lines[i].n == 0 || i == focus)
+      if (lines[i].n == 0 || (dimmed && i == focus))
         continue;
       const float t = max_dist > 0 ? 1.0f - static_cast<float>(std::abs(i - focus)) / static_cast<float>(max_dist) : 0.5f;
-      ImPlot::SetNextLineStyle(ImPlot::SampleColormap(t, ImPlotColormap_Hot), 1.0f);
+      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Hot);
+      if (dimmed)
+        color.w = kDimAlpha;
+      ImPlot::SetNextLineStyle(color, 1.0f);
       ImPlot::PlotLine("##pdf", lines[i].x, lines[i].y, static_cast<int>(lines[i].n));
     }
     ImPlot::PopStyleVar();
 
-    // 焦点线置顶: 白描边 + cyan (与资产截面图焦点线同一画法)
-    if (focus < n_items && lines[focus].n > 0) {
-      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 4.0f);
-      ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
-      ImPlot::PlotLine("##pdf_outline", lines[focus].x, lines[focus].y, static_cast<int>(lines[focus].n));
-      ImPlot::PopStyleVar();
-      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.5f);
-      ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f);
-      ImPlot::PlotLine("##pdf_focus", lines[focus].x, lines[focus].y, static_cast<int>(lines[focus].n));
-      ImPlot::PopStyleVar();
-    }
+    if (dimmed && focus < n_items && lines[focus].n > 0)
+      PlotHighlightLine(lines[focus].x, lines[focus].y, lines[focus].n);
 
     // Hover (x 窗口裁剪, 只扫鼠标附近的段)
     if (ImPlot::IsPlotHovered()) {
@@ -585,20 +605,13 @@ static void RenderPDFByDim(const Dist &dist, const DistUIState &ui, const Asset 
 // Assets PDF Plot
 // ============================================================================
 
-// 高亮一条资产线 (hover / 焦点共用画法: 白描边 + cyan, 与聚合维度焦点线对仗)
 static void PlotHighlightLine(const Dist::AssetLine &ln) {
-  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
-  ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
-  ImPlot::PlotLine("##pdf_outline", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-  ImPlot::PopStyleVar();
-  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
-  ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f);
-  ImPlot::PlotLine("##pdf_hl", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-  ImPlot::PopStyleVar();
+  PlotHighlightLine(ln.x.data(), ln.y.data(), ln.n_pts);
 }
 
-// 资产截面: 焦点 = ui.focus[DIM_ASSETS] (滑条选的资产, 常亮置顶); hover 临时高亮另一条.
-// 输出 hovered_line_out (无 hover → -1, 详情面板回落到焦点资产)
+// 资产截面: 高亮模式 = hover 到线/点, 或滑条按住中 (焦点 = ui.focus[DIM_ASSETS]); 高亮线置顶,
+// 其余线全资产压暗作背景; 松手/移开即恢复常态. 输出 hovered_line_out (无 hover → -1,
+// 详情面板回落到焦点资产)
 static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInfo &assetinfo,
                             DistUIState &ui, int &clicked_dimension, int &hovered_line_out) {
   // Title with tooltip
@@ -618,7 +631,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
                        "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
     ImGui::Text("\n颜色 = 左栏 [染色] 选项 (行业/市值/估值/股息率); W2 散点/hover 为全资产,\n"
                 "PDF 细线只画固定随机子集 (纯顶点预算, 即全市场无偏抽样)\n"
-                "焦点资产 (顶部滑条) 常亮置顶, hover 临时高亮");
+                "按住顶部滑条 / hover 时高亮该资产, 其余压暗; 松手即恢复");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
@@ -642,26 +655,19 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     return;
   }
 
-  // W2 偏移散点: 发布侧算好原始值, 每帧只做 max 归一化 (w2 < 0 = 首批参考未就绪)
+  // W2 偏移散点: 发布侧算好原始值, 每帧只做 max 归一化. 不 gate: 有值的就画, 无值 (<0,
+  // 首批参考未就绪) 的跳过, 随批次增量出现
   auto &x_norm = ui.w2_norm;
   x_norm.resize(n_valid);
   float w2_max = 0.0f;
-  bool has_dots = true;
   for (size_t i = 0; i < n_valid; ++i) {
     x_norm[i] = dist.lines[line_indices[i]].w2;
-    if (x_norm[i] < 0.0f) {
-      has_dots = false;
-      break;
-    }
     w2_max = std::max(w2_max, x_norm[i]);
   }
-  if (has_dots) {
-    const float inv = w2_max > 1e-9f ? 1.0f / w2_max : 1.0f;
-    for (float &v : x_norm)
+  const float inv = w2_max > 1e-9f ? 1.0f / w2_max : 1.0f;
+  for (float &v : x_norm)
+    if (v >= 0.0f)
       v *= inv;
-  } else {
-    x_norm.clear();
-  }
 
   if (ui.need_autofit) {
     ImPlot::SetNextAxesToFit();
@@ -671,8 +677,9 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   double min_dist_sq = 1e9;
   bool plot_clicked = false;
 
-  // 焦点资产 (滑条): 有线才画; 折线不在绘制子集也画 (与 hover 同待遇)
-  const int focus_asset = ui.focus[DIM_ASSETS];
+  // 焦点资产: 只在滑条按住时高亮 (松手即恢复常态, 与 hover 同待遇); 无高亮时视为无焦点
+  const bool focus_hl = FocusHighlighting(ui, DIM_ASSETS);
+  const int focus_asset = focus_hl ? ui.focus[DIM_ASSETS] : -1;
   const bool focus_drawable = focus_asset >= 0 && static_cast<size_t>(focus_asset) < dist.lines.size() &&
                               dist.lines[focus_asset].n_pts > 0;
 
@@ -699,9 +706,11 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
       float dot_y_screen = plot_pos.y + 15.0f; // Fixed: 15px from plot top edge
 
       // Check W2 dots first (top band priority) - use pixel coordinates
-      if (has_dots && std::abs(mouse_pixels.y - dot_y_screen) < 20.0f) {
+      if (std::abs(mouse_pixels.y - dot_y_screen) < 20.0f) {
         float best_dist_px = 15.0f; // 15 pixel threshold
         for (size_t i = 0; i < n_valid; ++i) {
+          if (x_norm[i] < 0.0f)
+            continue;
           float dot_x_screen = plot_pos.x + x_norm[i] * plot_size.x;
 
           float dx_px = std::abs(mouse_pixels.x - dot_x_screen);
@@ -730,23 +739,23 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
 
     // ========================================================================
     // Phase 2: Draw PDF lines
-    // 底层: 绘制子集 (hover 顶部点时全资产降到 0.1 透明, 否则 0.75)
-    // 置顶: 焦点资产线 (常亮), 再 hover 线 (临时) —— 同一画法, hover 盖在焦点上
+    // 底层: 常态只画绘制子集 (0.75); 高亮模式 (hover 或滑条拖动) 全资产压到 kDimAlpha 作背景
+    // 置顶: 焦点资产线 (常亮), 再 hover 线 (临时) —— 统一高亮画法, hover 盖在焦点上
     // ========================================================================
-    const bool dot_hovered = (hovered_idx >= 0 && min_dist_sq == 0.0);
     if (hovered_idx >= 0 && min_dist_sq >= kHoverDistSq)
       hovered_idx = -1; // 最近线也够不着: 不算 hover
     const int hovered_line = hovered_idx >= 0 ? static_cast<int>(line_indices[hovered_idx]) : -1;
+    const bool dimmed = hovered_line >= 0 || focus_hl;
     ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.5f);
     for (size_t i = 0; i < n_valid; ++i) {
       const int line = static_cast<int>(line_indices[i]);
       if (line == hovered_line || line == focus_asset)
         continue; // 置顶层单独画
       const auto &ln = dist.lines[line];
-      if (!ln.draw && !dot_hovered)
-        continue; // 只画绘制子集; hover 顶部点时全资产淡出作背景
+      if (!ln.draw && !dimmed)
+        continue;
       ImVec4 color = AssetColor(ui, ln.asset);
-      color.w = dot_hovered ? 0.1f : 0.75f;
+      color.w = dimmed ? kDimAlpha : 0.75f;
       ImPlot::SetNextLineStyle(color, 1.0f);
       ImPlot::PlotLine("##pdf", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
     }
@@ -760,7 +769,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     // Phase 3: Draw W2 offset scatter (overlay on top, scale invariant)
     // 发布侧算好的 W2, 随全局分位逐批收敛; 颜色 = 左栏 [染色] 选项
     // ========================================================================
-    if (has_dots) {
+    {
       ImDrawList *draw = ImPlot::GetPlotDrawList();
 
       // Get fixed plot pixel boundaries (scale invariant)
@@ -768,9 +777,11 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
       ImVec2 plot_size = ImPlot::GetPlotSize();
       float y_screen = plot_pos.y + 15.0f; // Fixed: 15px from plot top edge
 
-      // Draw asset dots (焦点 / hover 点放大置顶, 与折线同一高亮色)
+      // Draw asset dots (无 W2 的跳过; 焦点 / hover 点放大置顶, 与折线同一高亮色)
       int top_a = -1, top_b = -1; // 置顶的 line_indices 下标: 焦点, hover
       for (size_t i = 0; i < n_valid; ++i) {
+        if (x_norm[i] < 0.0f)
+          continue;
         const int line = static_cast<int>(line_indices[i]);
         if (line == focus_asset)
           top_a = static_cast<int>(i);
@@ -949,18 +960,12 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   auto &dist = data.dist;
 
-  // 流式维护 x/y range: 任何新发布 epoch (= 数据变了) 都 autofit 一次.
-  // 覆盖: 构建期间每批, 末批到达 Done (含 tab 隐藏期间完成的构建), Cancelled 末态.
-  // 稳态 (epoch 未变) 不 autofit, 把缩放还给用户.
-  // 用 lines_epoch 做唯一判据, 不依赖 status 转移检测 —— 后者在 tab 隐藏期间会漏掉
-  // 完成转移 (last_status 停在上一次 Done), 导致切回来 zoom 还停在上一个特征.
+  // 流式维护 x/y range: epoch 变了 (= 数据变了) 就 autofit 一次, 稳态把缩放还给用户.
+  // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧
+  // 之间也不会被看成"没变" (归零版单批区间每次都停在 1, 会漏), 也不依赖 status 转移.
   const uint64_t cur_epoch = dist.lines_epoch.load(std::memory_order_acquire);
-  const auto cur_status = dist.status.load(std::memory_order_acquire);
-  if (cur_epoch != ui.last_lines_epoch &&
-      (cur_status == Dist::Status::Building || cur_status == Dist::Status::Done ||
-       cur_status == Dist::Status::Cancelled)) {
+  if (cur_epoch != ui.last_lines_epoch)
     ui.need_autofit = true;
-  }
   ui.last_lines_epoch = cur_epoch;
 
   // 渲染帧内持锁: worker 块末/批末短锁发布, UI 读快照与聚合槽与其互斥
