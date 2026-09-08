@@ -10,6 +10,7 @@ Modes:
     - ASSERT:     Optimized build with assertions
     - PRODUCTION: Maximum performance (-O3, fastest)
 """
+
 import os
 import platform
 import subprocess
@@ -37,11 +38,13 @@ def _cleanup_processes():
     if platform.system() == "Windows":
         process_names = [f"app_{APP_NAME}.exe"]
         for name in process_names:
-            subprocess.run(["taskkill", "/F", "/IM", name],
-                           capture_output=True, check=False)
+            subprocess.run(
+                ["taskkill", "/F", "/IM", name], capture_output=True, check=False
+            )
     else:  # macOS/Linux
-        subprocess.run(["pkill", "-f", f"app_{APP_NAME}"],
-                       capture_output=True, check=False)
+        subprocess.run(
+            ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False
+        )
     time.sleep(0.3)
 
 
@@ -54,17 +57,19 @@ def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert):
         sys.exit(1)
 
     env = os.environ.copy()
-    env['TSAN_MODE'] = 'ON' if enable_tsan else 'OFF'
-    env['DEBUG_MODE'] = 'ON' if enable_debug else 'OFF'
-    env['PROFILE_MODE'] = 'ON' if enable_profile else 'OFF'
-    env['ASSERT_MODE'] = 'ON' if enable_assert else 'OFF'
+    env["TSAN_MODE"] = "ON" if enable_tsan else "OFF"
+    env["DEBUG_MODE"] = "ON" if enable_debug else "OFF"
+    env["PROFILE_MODE"] = "ON" if enable_profile else "OFF"
+    env["ASSERT_MODE"] = "ON" if enable_assert else "OFF"
 
     result = subprocess.run(["python", py_script], env=env)
     if result.returncode != 0:
         sys.exit(1)
 
 
-def _run(binary_path, working_dir, enable_tsan, enable_debug, enable_profile, enable_assert):
+def _run(
+    binary_path, working_dir, enable_tsan, enable_debug, enable_profile, enable_assert
+):
     """Run binary with selected mode."""
     if not os.path.exists(binary_path):
         print(f"ERROR: Binary not found: {binary_path}")
@@ -96,8 +101,9 @@ def main():
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
     exe_ext = ".exe" if platform.system() == "Windows" else ""
     binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}{exe_ext}")
-    _run(binary_path, build_dir, ENABLE_TSAN,
-         ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT)
+    _run(
+        binary_path, build_dir, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT
+    )
 
 
 if __name__ == "__main__":

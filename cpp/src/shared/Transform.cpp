@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <barrier>
 #include <cmath>
-#include <numeric>
 #include <random>
 #include <thread>
 
@@ -81,10 +80,11 @@ struct Transform::Runtime {
   };
   std::vector<Shard> shards;
 
-  size_t prepare(size_t A, size_t n_cols, size_t n_stat, const Params &p) {
+  // A = 全轴 (平面/out/sketch 尺寸), n_active = 活跃资产数 (线程数按扫描块数封顶)
+  size_t prepare(size_t A, size_t n_active, size_t n_cols, size_t n_stat, const Params &p) {
     TraceN("TransformPrepare");
     const size_t VR = kTfVR;
-    const size_t n_blocks = (A + kAssetBlock - 1) / kAssetBlock;
+    const size_t n_blocks = (n_active + kAssetBlock - 1) / kAssetBlock;
     const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
     const size_t n_threads = std::min(n_hw, std::max(kTfDaysPerBatch, n_blocks));
     const size_t n_io = std::min(n_threads, kTfDaysPerBatch);
@@ -157,10 +157,15 @@ Transform::~Transform() = default;
 // ============================================================================
 
 void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                                const std::vector<std::string> &month_keys, size_t n_assets) {
+                                const std::vector<std::string> &month_keys, size_t n_assets,
+                                std::vector<uint32_t> active_ids) {
   TraceN("TransformReset");
   assert(p.level == kTfLevel && "Transform 目前只在 L1 跑 (VR / PSD 模板按 L1 配)");
   assert(n_assets > 0 && "资产轴为空");
+  assert(!active_ids.empty() && "universe 为空");
+  assert(std::is_sorted(active_ids.begin(), active_ids.end()) &&
+         std::adjacent_find(active_ids.begin(), active_ids.end()) == active_ids.end() &&
+         active_ids.back() < n_assets && "active_ids 必须升序去重且全部 < n_assets");
   assert(cols.size() == 1u + (p.cs_neutral() ? 2u : 0u) + (has_valid ? 1u : 0u));
   std::lock_guard<std::mutex> lock(mutex);
 
@@ -168,13 +173,14 @@ void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool 
   columns_ = std::move(cols);
   has_valid_ = has_valid;
   months_ = month_keys;
+  active = std::move(active_ids);
 
-  // 固定种子洗牌: 前 kTfStatAssets 个 = 统计子集, 前 kTfDrawAssets 个 = PDF 绘制子集
-  std::vector<uint32_t> order(n_assets);
-  std::iota(order.begin(), order.end(), uint32_t{0});
+  // 活跃资产固定种子洗牌: 前 kTfStatAssets 个 = 统计子集, 前 kTfDrawAssets 个 = PDF 绘制子集.
+  // 池只含 active: 池含 universe 外的空列会让子集被永远无数据的资产占坑
+  std::vector<uint32_t> order = active;
   std::shuffle(order.begin(), order.end(), std::mt19937{0x5eed});
-  const size_t n_stat = std::min(kTfStatAssets, n_assets);
-  const size_t n_draw = std::min(kTfDrawAssets, n_assets);
+  const size_t n_stat = std::min(kTfStatAssets, order.size());
+  const size_t n_draw = std::min(kTfDrawAssets, order.size());
   stat_assets.assign(order.begin(), order.begin() + n_stat);
   std::sort(stat_assets.begin(), stat_assets.end());
 
@@ -185,15 +191,27 @@ void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool 
     for (size_t a = 0; a < n_assets; ++a)
       lines[a].asset = static_cast<uint32_t>(a);
   }
-  for (size_t a = 0; a < n_assets; ++a)
-    lines[a].draw = 0;
+  // universe 外的槽必须清空: 上一次构建 (可能是别的 universe) 留下的线不会再被任何批覆盖,
+  // 留着就是陈旧数据冒充结果. active 槽照旧留住旧图等首批 publish 覆盖.
+  {
+    std::vector<uint8_t> is_active(n_assets, 0);
+    for (const uint32_t a : active)
+      is_active[a] = 1;
+    for (size_t a = 0; a < n_assets; ++a) {
+      if (!is_active[a]) {
+        lines[a] = AssetLine{};
+        lines[a].asset = static_cast<uint32_t>(a);
+      }
+      lines[a].draw = 0;
+    }
+  }
   for (size_t i = 0; i < n_draw; ++i)
     lines[order[i]].draw = 1;
-  if (stat_lines.size() != n_stat) {
+  // 子集成员随 universe 变 (不只是数量): 一律按当前 stat_assets 重贴 asset, 旧累积由首批 publish 覆盖
+  if (stat_lines.size() != n_stat)
     stat_lines.assign(n_stat, StatLine{});
-    for (size_t s = 0; s < n_stat; ++s)
-      stat_lines[s].asset = stat_assets[s];
-  }
+  for (size_t s = 0; s < n_stat; ++s)
+    stat_lines[s].asset = stat_assets[s];
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
   rt_->stat_slot_of.assign(n_assets, Runtime::kNoStat);
@@ -216,8 +234,10 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   Runtime &rt = *rt_;
   const Params &p = params;
   const size_t A = lines.size();
+  const size_t n_act = active.size(); // TS / CS gather / 统计 只走活跃资产
   const size_t VR = kTfVR;
   assert(level_valid_rows(p.level) == VR);
+  assert(n_act > 0 && n_act <= A && "reset_for_build 未给 active");
   const size_t n_cols = columns_.size() - (has_valid_ ? 1 : 0);
   const size_t n_stat = stat_assets.size();
   const size_t stride = kTfDaysPerBatch * VR; // out_ 每资产步长 (按满批)
@@ -236,7 +256,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   const size_t n_days = dates.size();
   days_total.store(n_days, std::memory_order_release);
 
-  const size_t n_threads = rt.prepare(A, n_cols, n_stat, p);
+  const size_t n_threads = rt.prepare(A, n_act, n_cols, n_stat, p);
   const size_t n_io = std::min(n_threads, kTfDaysPerBatch);
   rt.lines_staging = lines; // asset / draw 标记随之带过去
 
@@ -342,15 +362,17 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       io_done.arrive_and_wait();
 
       // ------------------------------------------------------------------
-      // Phase TS: 每 (资产, 天) 一条因果链 → out_
+      // Phase TS: 每 (活跃资产, 天) 一条因果链 → out_ (k 索引 active, a = 资产下标;
+      // universe 外的 out_ 行从不写 —— CS gather / 统计 也只走 active, 不会读到)
       // ------------------------------------------------------------------
       for (;;) {
         const size_t k0 = next_block.fetch_add(Runtime::kAssetBlock, std::memory_order_relaxed);
-        if (k0 >= A || cancel.load(std::memory_order_relaxed))
+        if (k0 >= n_act || cancel.load(std::memory_order_relaxed))
           break;
-        const size_t k1 = std::min(k0 + Runtime::kAssetBlock, A);
+        const size_t k1 = std::min(k0 + Runtime::kAssetBlock, n_act);
         TraceN("TSBlock");
-        for (size_t a = k0; a < k1; ++a) {
+        for (size_t k = k0; k < k1; ++k) {
+          const size_t a = active[k];
           for (size_t j = 0; j < bd; ++j) {
             const feature_storage_t *src = rt.plane.series(0, a, j);
             float *x = sh.x.data();
@@ -428,7 +450,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
             const feature_storage_t *mc = neutral ? rt.plane.column(1, j, t) : nullptr;
             const feature_storage_t *ind = neutral ? rt.plane.column(2, j, t) : nullptr;
             size_t n = 0;
-            for (size_t a = 0; a < A; ++a) {
+            for (const uint32_t a : active) {
               const float v = base[a * stride];
               if (v != v)
                 continue;
@@ -454,15 +476,16 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       cs_done.arrive_and_wait();
 
       // ------------------------------------------------------------------
-      // Phase 统计: sketch (全资产) + 统计子集 (ADF/KPSS/ACF/PSD/序列快照)
+      // Phase 统计: sketch (全部活跃资产) + 统计子集 (ADF/KPSS/ACF/PSD/序列快照)
       // ------------------------------------------------------------------
       for (;;) {
         const size_t k0 = next_block.fetch_add(Runtime::kAssetBlock, std::memory_order_relaxed);
-        if (k0 >= A || cancel.load(std::memory_order_relaxed))
+        if (k0 >= n_act || cancel.load(std::memory_order_relaxed))
           break;
-        const size_t k1 = std::min(k0 + Runtime::kAssetBlock, A);
+        const size_t k1 = std::min(k0 + Runtime::kAssetBlock, n_act);
         TraceN("StatBlock");
-        for (size_t a = k0; a < k1; ++a) {
+        for (size_t k = k0; k < k1; ++k) {
+          const size_t a = active[k];
           sh.samples.clear();
           const uint16_t s = rt.stat_slot_of[a];
           for (size_t j = 0; j < bd; ++j) {
@@ -579,6 +602,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 void Transform::clear() {
   std::lock_guard<std::mutex> lock(mutex);
   lines = std::vector<AssetLine>{};
+  active = std::vector<uint32_t>{};
   stat_assets = std::vector<uint32_t>{};
   stat_lines = std::vector<StatLine>{};
   series = SeriesSnap{};

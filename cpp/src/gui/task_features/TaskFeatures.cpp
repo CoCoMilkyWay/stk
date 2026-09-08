@@ -59,14 +59,11 @@ struct TaskFeaturesState {
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
 
-  // Auto-compute tracking (Dist)
+  // Auto-compute tracking (Dist / Transform 共用): 特征/层变了即重算 (无论当前在哪个 tab)
   int prev_primary_feature_idx = -1; // Track feature selection changes
   int prev_selected_level = 0;       // Track level changes
   bool dist_prewarmed = false;       // 输入就绪后预热一次 (切出任务时回收并复位)
-
-  // Auto-compute tracking (Transform): 特征/层变了即重算 (tab 打开时)
-  int transform_prev_feature_idx = -1;
-  int transform_prev_level = -1;
+  bool transform_started = false;    // 输入就绪后起 worker 一次 (切出任务时回收并复位)
 };
 
 // ============================================================================
@@ -92,7 +89,8 @@ TaskHandle CreateFeaturesTask() {
     }
     if (state->transform_service) {
       state->transform_service->Shutdown();
-      state->transform_tab_was_active = false;
+      state->transform_started = false;        // 重进任务时重新起 worker
+      state->transform_tab_was_active = false; // 数据已清, 重进按"初次进 tab"走自动重算
     }
   };
 
@@ -279,9 +277,15 @@ TaskHandle CreateFeaturesTask() {
       state->dist_service->Start(data);
       state->dist_prewarmed = true;
     }
+    // Transform worker 同点起 (无预热: 构建内存按请求参数分配), 与 Dist 对仗
+    if (!state->transform_started && feature_inputs_ready) {
+      state->transform_service->Start(data);
+      state->transform_started = true;
+    }
 
-    // Auto-trigger Dist compute on feature selection change
-    if (state->dist_service) {
+    // Auto-trigger Dist / Transform compute on feature selection change (无论当前在哪个 tab:
+    // 选了就算, 切进 tab 直接看结果)
+    {
       auto &sel = data.feature.selection;
 
       // Detect change
@@ -292,6 +296,7 @@ TaskHandle CreateFeaturesTask() {
       if ((feature_changed || level_changed) && has_valid_selection) {
         // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L1 选择静默忽略)
         state->dist_service->RequestCompute(data);
+        state->transform_service->RequestCompute(data, state->transform_ui_state.params);
 
         // Update tracking
         state->prev_primary_feature_idx = sel.primary_feature_idx();
@@ -329,25 +334,17 @@ TaskHandle CreateFeaturesTask() {
     const bool transform_tab_open = (idx == TAB_TRANSFORM);
     const bool dist_tab_open = (idx == TAB_DISTRIBUTION);
 
-    // Transform lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在 OnCollapse);
-    // 进 tab / 特征或层变了 → 用 UI 当前参数发新请求 (RequestCompute 内部取消在跑; 非 L1 静默忽略)
+    // Transform lifecycle (与 Distribution 完全对仗): 切走只中断在跑构建 (内存与 worker 保留,
+    // 任务级回收在 OnCollapse); 切回时 Idle/Cancelled 用 UI 当前参数自动重算, Done 的结果直接复用
     if (transform_tab_open && !state->transform_tab_was_active) {
       state->transform_tab_was_active = true;
-      state->transform_prev_feature_idx = -1;
-      state->transform_prev_level = -1;
-      state->transform_service->Start(data);
+      const auto st = data.transform.status.load();
+      if (st == Transform::Status::Idle || st == Transform::Status::Cancelled) {
+        state->transform_service->RequestCompute(data, state->transform_ui_state.params);
+      }
     } else if (!transform_tab_open && state->transform_tab_was_active) {
       Features::StopTabTransform(state->transform_service.get(), data);
       state->transform_tab_was_active = false;
-    }
-    if (transform_tab_open) {
-      auto &sel = data.feature.selection;
-      if (sel.primary_feature_idx() != state->transform_prev_feature_idx ||
-          sel.selected_level != state->transform_prev_level) {
-        state->transform_service->RequestCompute(data, state->transform_ui_state.params);
-        state->transform_prev_feature_idx = sel.primary_feature_idx();
-        state->transform_prev_level = sel.selected_level;
-      }
     }
 
     // Distribution lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在

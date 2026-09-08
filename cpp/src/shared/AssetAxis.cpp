@@ -2,7 +2,9 @@
 
 #include "misc/fs.hpp"
 #include "nlohmann/json.hpp"
+#include "shared/Config.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -125,4 +127,28 @@ AssetAxis &asset_axis() {
     return a;
   }();
   return instance;
+}
+
+std::vector<uint32_t> universe_asset_ids(const Config &cfg, std::size_t num_assets) {
+  assert(num_assets > 0 && "资产轴为空");
+  std::vector<uint32_t> ids;
+  if (cfg.universe == "all") {
+    ids.resize(num_assets);
+    for (std::size_t i = 0; i < num_assets; ++i)
+      ids[i] = static_cast<uint32_t>(i);
+    return ids;
+  }
+
+  const AssetAxis &axis = asset_axis();
+  const std::vector<std::string> codes = cfg.UniverseCodes();
+  ids.reserve(codes.size());
+  for (const std::string &code : codes) {
+    const std::size_t asset_id = axis.find(code);
+    assert(asset_id < num_assets && "universe 名单代码不在 A 轴上");
+    ids.push_back(static_cast<uint32_t>(asset_id));
+  }
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  assert(!ids.empty() && "universe 为空");
+  return ids;
 }

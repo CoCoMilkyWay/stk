@@ -69,3 +69,10 @@ private:
 // 计算按它定列序, FeatureRead 按它验文件指纹. 两份实例就是两套列序, 所以
 // 语言层面只给一份. 读侧只调 hash_at (O(1) 数组取值), 热路径无成本.
 AssetAxis &asset_axis();
+
+// universe → 轴下标 (升序, 去重). cfg.universe == "all" → [0, num_assets);
+// 否则 cfg.UniverseCodes() (JSON 解析在 Config.cpp) 逐条按轴 find.
+// 代码不在轴前缀 [0, num_assets) 内 → assert: 名单写错宁可启动即死, 不要静默算出
+// 一个残缺 universe. Compute (派活) 与 Dist/Transform (活跃资产表) 共用, 三处永远同一名单.
+struct Config;
+std::vector<uint32_t> universe_asset_ids(const Config &cfg, std::size_t num_assets);

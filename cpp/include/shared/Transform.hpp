@@ -53,6 +53,9 @@ class FeatureRead;
 // UI: 每帧持 mutex 读快照; 改任何参数 = 新请求 (取消在跑, 从第一天重来) —— 海量数据下
 //     交互仍即时, 因为每次都只等第一批.
 // 层: 只在 L1 跑 (Params.level 参数化, 目前断言 == kTfLevel; L0 的 VR/PSD 模板另配).
+// universe (active): 与特征计算同一名单 (universe_asset_ids). 平面 / out / lines / sketch / TOD
+//   仍按全轴 A 分配 (槽位 == 资产下标, 与文件列序一致), 但 TS / CS gather / 统计 / integrity
+//   分母 / 统计与绘制子集 只走 active —— universe 外的列在特征库里本就恒零 (从未派活).
 // ============================================================================
 
 static constexpr size_t kTfLevel = 1;
@@ -191,7 +194,8 @@ struct Transform {
   mutable std::mutex mutex;
 
   Params params;                                              // 本次构建的参数快照 (reset 时定, UI 只读)
-  std::vector<AssetLine> lines;                               // [A]
+  std::vector<uint32_t> active;                               // [n_active] universe 资产下标 (升序; reset 时定, 构建期只读)
+  std::vector<AssetLine> lines;                               // [A] (active 外的槽恒空)
   std::vector<uint32_t> stat_assets;                          // [n_stat] 统计子集资产下标 (升序; reset 时定)
   std::vector<StatLine> stat_lines;                           // [n_stat] 槽位 == 子集下标
   SeriesSnap series;                                          // 统计子集最近一批
@@ -210,8 +214,10 @@ struct Transform {
   ~Transform();
 
   // 重置全部状态并进入 Building. columns = [特征列 (+ mcap, ind_l1 若 NeutralRank) (+ _meta 门控列)]
+  // active_ids = universe 资产下标 (升序去重, 非空, 全部 < n_assets; 见 universe_asset_ids)
   void reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                       const std::vector<std::string> &month_keys, size_t n_assets);
+                       const std::vector<std::string> &month_keys, size_t n_assets,
+                       std::vector<uint32_t> active_ids);
 
   // 全区间构建: 分批流式; 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);

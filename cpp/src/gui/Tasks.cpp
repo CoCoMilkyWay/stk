@@ -101,8 +101,13 @@ void CleanupAllTasks(TaskTree &tree) {
 void ReinitAllTasks(TaskTree &tree, SharedData &data) {
   // Config range 变化只需要重算 coverage, 不该丢掉底层 L2 扫描缓存.
   // 如果 orders/archive 路径变了, StateManager::initialize 会发现 path 不匹配并重扫.
+  // date_axis / date_axis_idx 必须随 items 一起保留: items[i].date_info 按轴下标
+  // 密集存储, 轴丢了 date_info 就是一堆无主下标 (coverage 统计按 date_axis.size()
+  // 预算 in_range, 再拿 date_info 下标去查 → 越界).
   auto preserved_items = std::move(data.asset.items);
   auto preserved_all_dates = std::move(data.asset.all_dates);
+  auto preserved_date_axis = std::move(data.asset.date_axis);
+  auto preserved_date_axis_idx = std::move(data.asset.date_axis_idx);
   auto preserved_day_records = std::move(data.asset.day_records);
   auto preserved_binary = std::move(data.asset.binary);
   auto preserved_archive = std::move(data.asset.archive);
@@ -123,6 +128,8 @@ void ReinitAllTasks(TaskTree &tree, SharedData &data) {
   };
   data.asset.items = std::move(preserved_items);
   data.asset.all_dates = std::move(preserved_all_dates);
+  data.asset.date_axis = std::move(preserved_date_axis);
+  data.asset.date_axis_idx = std::move(preserved_date_axis_idx);
   data.asset.day_records = std::move(preserved_day_records);
   data.asset.binary = std::move(preserved_binary);
   data.asset.archive = std::move(preserved_archive);

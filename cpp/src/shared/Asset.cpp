@@ -621,6 +621,7 @@ boost::asio::awaitable<void> Asset::coro_compute_backtest_coverage(
   float backtest_orders_size = 0.0;
   for (size_t i = 0; i < items.size(); ++i) {
     const auto &di = items[i].date_info;
+    assert(di.size() <= date_axis.size() && "date_info 下标超出日期轴 (轴与 items 未一起保留/重建?)");
     for (size_t d = 0; d < di.size(); ++d) {
       if (in_range[d] && di[d].orders_encoded) {
         backtest_orders += di[d].order_count;

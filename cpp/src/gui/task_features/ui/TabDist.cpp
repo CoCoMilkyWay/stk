@@ -240,8 +240,9 @@ static std::string format_month(const std::string &m) {
   return m;
 }
 
-// 槽数 (滑条范围). 月取 config 区间月份表 (构建前也有), 资产取资产轴
-static int DimCount(const DistUIState &ui, const Asset &asset, int dim) {
+// 槽数 (滑条范围). 月取 config 区间月份表 (构建前也有), 资产取 universe 活跃表
+// (dist.active, reset 时定; 首次构建前为空 → 滑条不显示, 免得列出几千个恒空的轴外资产)
+static int DimCount(const Dist &dist, const DistUIState &ui, int dim) {
   switch (dim) {
   case DIM_MONTH:
     return static_cast<int>(ui.months.size());
@@ -250,9 +251,14 @@ static int DimCount(const DistUIState &ui, const Asset &asset, int dim) {
   case DIM_TOD:
     return static_cast<int>(kTodBins);
   case DIM_ASSETS:
-    return static_cast<int>(asset.items.size());
+    return static_cast<int>(dist.active.size());
   }
   return 0;
+}
+
+// 资产维焦点槽 (active 下标) → 资产下标; 越界 (构建前 / universe 变小) 返回 -1
+static int FocusAssetOf(const Dist &dist, int focus) {
+  return focus >= 0 && static_cast<size_t>(focus) < dist.active.size() ? static_cast<int>(dist.active[focus]) : -1;
 }
 
 // 聚合维度 (0-2) 的槽 sketch; 数据未就绪 (槽表还没建) 返回 nullptr. 资产维度走 lines 快照
@@ -268,8 +274,8 @@ static const KLLcache *DimSlot(const Dist &dist, int dim, int i) {
   return nullptr;
 }
 
-// 槽名 (不含样本数): "2024/01" / "Mon" / "09:15" / "000001 平安银行"
-static std::string DimName(const DistUIState &ui, const Asset &asset, int dim, int i) {
+// 槽名 (不含样本数): "2024/01" / "Mon" / "09:15" / "000001 平安银行" (资产维 i = active 下标)
+static std::string DimName(const Dist &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
   switch (dim) {
   case DIM_MONTH:
     return format_month(ui.months[i]);
@@ -280,23 +286,28 @@ static std::string DimName(const DistUIState &ui, const Asset &asset, int dim, i
     format_time_hm(buf, sizeof(buf), L1_to_Clock(kTodBinStart[i]));
     return buf;
   }
-  case DIM_ASSETS:
-    return asset.items[i].asset_code + " " + asset.items[i].asset_name;
+  case DIM_ASSETS: {
+    const int a = FocusAssetOf(dist, i);
+    assert(a >= 0 && static_cast<size_t>(a) < asset.items.size());
+    return asset.items[a].asset_code + " " + asset.items[a].asset_name;
+  }
   }
   return "";
 }
 
-// 槽样本数 (0 = 尚无数据)
+// 槽样本数 (0 = 尚无数据; 资产维 i = active 下标)
 static uint64_t DimSamples(const Dist &dist, int dim, int i) {
-  if (dim == DIM_ASSETS)
-    return i < static_cast<int>(dist.lines.size()) ? dist.lines[i].n : 0;
+  if (dim == DIM_ASSETS) {
+    const int a = FocusAssetOf(dist, i);
+    return a >= 0 && static_cast<size_t>(a) < dist.lines.size() ? dist.lines[a].n : 0;
+  }
   const KLLcache *kll = DimSlot(dist, dim, i);
   return kll ? kll->totalCount() : 0;
 }
 
 // 滑条标签: "槽名 (n)" / "槽名"
 static std::string DimLabel(const Dist &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
-  std::string label = DimName(ui, asset, dim, i);
+  std::string label = DimName(dist, ui, asset, dim, i);
   const uint64_t n = DimSamples(dist, dim, i);
   if (n > 0)
     label += " (" + std::to_string(n) + ")";
@@ -348,7 +359,7 @@ static void RenderWindowControl(DistService *service, SharedData &data,
     ui.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
   }
   const int dim = ui.selected_dimension;
-  const int n = DimCount(ui, data.asset, dim);
+  const int n = DimCount(dist, ui, dim);
   if (n > 0) {
     int &focus = ui.focus[dim];
     focus = std::clamp(focus, 0, n - 1);
@@ -514,7 +525,7 @@ static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset
   ImGui::TextUnformatted(kDimTitles[dim]);
   ImGui::Separator();
 
-  const int n_items = DimCount(ui, asset, dim);
+  const int n_items = DimCount(dist, ui, dim);
   if (n_items == 0 || DimSlot(dist, dim, 0) == nullptr) {
     ImGui::Text("No data");
     ImGui::EndChild();
@@ -591,7 +602,7 @@ static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset
   if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
     const KLLcache &kll = *DimSlot(dist, dim, hovered_idx);
     ImGui::BeginTooltip();
-    ImGui::TextUnformatted(DimName(ui, asset, dim, hovered_idx).c_str());
+    ImGui::TextUnformatted(DimName(dist, ui, asset, dim, hovered_idx).c_str());
     ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
     ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
     ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
@@ -686,7 +697,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
 
   // 焦点资产: 只在滑条按住时高亮 (松手即恢复常态, 与 hover 同待遇); 无高亮时视为无焦点
   const bool focus_hl = FocusHighlighting(ui, DIM_ASSETS);
-  const int focus_asset = focus_hl ? ui.focus[DIM_ASSETS] : -1;
+  const int focus_asset = focus_hl ? FocusAssetOf(dist, ui.focus[DIM_ASSETS]) : -1; // 滑条槽 → 资产下标
   const bool focus_drawable = focus_asset >= 0 && static_cast<size_t>(focus_asset) < dist.lines.size() &&
                               dist.lines[focus_asset].n_pts > 0;
 
@@ -1000,7 +1011,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Left column: Color Mode Selector + Asset Info (hover 优先, 否则焦点资产; 剩余空间)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
   RenderColorModeSelector(ui, data.asset, data.assetinfo);
-  RenderAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_line, ui.focus[DIM_ASSETS]);
+  RenderAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_line, FocusAssetOf(dist, ui.focus[DIM_ASSETS]));
   ImGui::EndChild();
 
   ImGui::NextColumn();

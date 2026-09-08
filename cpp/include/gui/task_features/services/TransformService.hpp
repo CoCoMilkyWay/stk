@@ -6,8 +6,10 @@
 //   - worker 线程: 编排一次构建 (Transform::build 内部起一波常驻线程分批流式: IO → TS → CS → 统计 → 发布)
 //   - UI 渲染持 transform.mutex 读; 进度走原子, 免锁
 //
-// 生命周期: 进 Transform tab Start; 切走 tab 只 RequestCancel (内存与 worker 保留);
+// 生命周期 (与 DistService 对仗): 进 Features 任务输入就绪即 Start; 选中特征/层变了即 RequestCompute
+//           (无论当前在哪个 tab); 切走 Transform tab 只 RequestCancel (内存与 worker 保留, 切回自动重算);
 //           切出 Features 任务 Shutdown() = Stop + transform.clear() 整体释放.
+//           挂起的请求 (pending_) 跨 Stop/Start 存活, 重进自动续算.
 #pragma once
 
 #include "shared/Transform.hpp"
@@ -45,6 +47,7 @@ private:
     std::vector<size_t> columns; // [特征 (+ mcap, ind_l1) (+ _meta)]
     bool has_valid = false;
     std::vector<std::string> months; // "YYYYMM" 升序
+    std::vector<uint32_t> active;    // universe 资产下标 (GUI 线程解析 config, worker 不碰 config)
   };
 
   void worker_loop();

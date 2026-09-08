@@ -14,30 +14,6 @@
 
 namespace GUI::Features {
 
-namespace {
-
-// universe 掩码 [A]: 1 = 派活. "all" → 全 1; 否则名单 (Config::UniverseCodes,
-// JSON 解析在 Config.cpp —— 本 TU 是 -ffast-math, 不碰 nlohmann) 按 A 轴 find
-// 置位. 代码必须在轴上且 < num_assets (items 与轴同构), 否则 assert ——
-// 名单写错宁可启动即死, 不要静默算出一个残缺 universe.
-std::vector<uint8_t> load_universe_mask(const Config &cfg, size_t num_assets) {
-  std::vector<uint8_t> mask(num_assets, 0);
-  if (cfg.universe == "all") {
-    std::fill(mask.begin(), mask.end(), 1);
-    return mask;
-  }
-
-  const AssetAxis &axis = asset_axis();
-  for (const std::string &code : cfg.UniverseCodes()) {
-    const size_t asset_id = axis.find(code);
-    assert(asset_id < num_assets && "universe 名单代码不在 A 轴上");
-    mask[asset_id] = 1;
-  }
-  return mask;
-}
-
-} // namespace
-
 ComputeService::ComputeService(SharedData &data)
     : data_(data) {}
 
@@ -101,10 +77,13 @@ void ComputeService::start_compute(ComputeConfig config) {
     const size_t num_assets = data_.asset.items.size();
     const size_t total_dates = backtest_dates.size();
 
-    // universe: A 维仍是全轴 (列序/指纹不变), 只有掩码内的资产派活/预取/计
+    // universe: A 维仍是全轴 (列序/指纹不变), 只有名单内的资产派活/预取/计
     // ts_close; 轴外资产 owner 保持 -1, 当天列留零 (与缺 .bin 同一语义, CS 靠
     // _meta 自动排除). 全市场 1000 天算不动, 子集就是为此.
-    const std::vector<uint8_t> universe_mask = load_universe_mask(data_.config, num_assets);
+    // 名单解析与 Dist/Transform 同一函数 (universe_asset_ids), 三处永远一致.
+    std::vector<uint8_t> universe_mask(num_assets, 0);
+    for (const uint32_t a : universe_asset_ids(data_.config, num_assets))
+      universe_mask[a] = 1;
     const size_t num_scheduled = static_cast<size_t>(std::count(universe_mask.begin(), universe_mask.end(), 1));
     assert(num_scheduled > 0 && "universe 为空");
     std::cout << "Universe: " << data_.config.universe << " → " << num_scheduled << " / " << num_assets << " assets\n"

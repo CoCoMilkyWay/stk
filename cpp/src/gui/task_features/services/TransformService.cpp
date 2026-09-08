@@ -1,6 +1,7 @@
 #include "gui/task_features/services/TransformService.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "misc/profiler.hpp"
+#include "shared/AssetAxis.hpp" // universe_asset_ids
 #include "shared/Config.hpp"
 #include "shared/Dist.hpp" // dist_enumerate_months
 #include "shared/SharedData.hpp"
@@ -76,6 +77,8 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
   req.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
   if (req.months.empty())
     return;
+  // universe: 与特征计算同一名单 (Compute 只算这些列, 其余恒零)
+  req.active = universe_asset_ids(data.config, data.asset.items.size());
 
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
@@ -103,7 +106,7 @@ void TransformService::worker_loop() {
 
     auto &tf = data_->transform;
     tf.reset_for_build(req.params, std::move(req.columns), req.has_valid, req.months,
-                       data_->asset.items.size());
+                       data_->asset.items.size(), std::move(req.active));
     tf.status.store(tf.build(reader, cancel_) ? Transform::Status::Done : Transform::Status::Cancelled,
                     std::memory_order_release);
   }

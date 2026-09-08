@@ -1,7 +1,7 @@
 // DistService — Dist 的单 worker 线程编排
 //
 // 线程模型 (对仗 Dist.hpp 的发布协议):
-//   - GUI 线程: RequestCompute 解析参数快照 (特征列 + valid 列 + 月份表) → 唤醒 worker
+//   - GUI 线程: RequestCompute 解析参数快照 (特征列 + valid 列 + 月份表 + universe 名单) → 唤醒 worker
 //   - worker 线程: 编排一次构建 (Dist::build 内部起一波常驻线程分批流式:
 //     每批抢天入批平面 → 抢资产块扫描 → 批末发布); 新请求/Cancel 置 cancel_, 抢任务处检查后放弃在跑
 //   - UI 渲染持 dist.mutex 读; 进度走原子, 免锁
@@ -50,6 +50,7 @@ private:
   struct Request {
     std::vector<size_t> columns;     // [值列 (+ valid 列)]
     std::vector<std::string> months; // "YYYYMM" 升序
+    std::vector<uint32_t> active;    // universe 资产下标 (GUI 线程解析 config, worker 不碰 config)
   };
 
   void worker_loop();

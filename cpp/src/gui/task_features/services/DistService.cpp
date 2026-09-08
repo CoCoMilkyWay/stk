@@ -1,4 +1,5 @@
 #include "gui/task_features/services/DistService.hpp"
+#include "shared/AssetAxis.hpp" // universe_asset_ids
 #include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
 
@@ -72,6 +73,8 @@ void DistService::RequestCompute(SharedData &data) {
   req.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
   if (req.months.empty())
     return;
+  // universe: 与特征计算同一名单 (Compute 只算这些列, 其余恒零, 扫了白扫)
+  req.active = universe_asset_ids(data.config, data.asset.items.size());
 
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
@@ -122,7 +125,7 @@ void DistService::worker_loop() {
     auto &dist = data_->dist;
     const size_t n_assets = data_->asset.items.size();
 
-    dist.reset_for_build(std::move(req.columns), req.months, n_assets);
+    dist.reset_for_build(std::move(req.columns), req.months, n_assets, std::move(req.active));
 
     if (dist.build(reader, cancel_)) {
       dist.status.store(Dist::Status::Done, std::memory_order_release);
