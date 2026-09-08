@@ -489,7 +489,7 @@ public:
     case TaskState::Settings::Status::Writing:
       return {TaskStatus::Kind::Warn, "writing"};
     case TaskState::Settings::Status::Synced:
-      return {TaskStatus::Kind::Ready, "synced"};
+      return {TaskStatus::Kind::Ready, "done"};
     case TaskState::Settings::Status::None:
       break;
     }

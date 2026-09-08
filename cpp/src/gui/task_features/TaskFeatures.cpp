@@ -193,7 +193,7 @@ TaskHandle CreateFeaturesTask() {
       case TaskState::Features::Status::Computing:
         return {TaskStatus::Kind::Busy, "computing"};
       case TaskState::Features::Status::Ready:
-        return {TaskStatus::Kind::Ready, "ready"};
+        return {TaskStatus::Kind::Ready, "done"};
       case TaskState::Features::Status::Error:
         return {TaskStatus::Kind::Error, "error"};
       case TaskState::Features::Status::None:

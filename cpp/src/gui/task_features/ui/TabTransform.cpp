@@ -499,12 +499,14 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   RenderControl(service, data, ui);
   bool changed = RenderPipeline(ui.params);
 
-  // autofit 只在 焦点切换 / 构建状态变 (新 build 启动 = 旧图留住 fit 一次; Done = 终态 fit 一次) 那帧触发.
-  // 不在每批 epoch 触发 —— 流式逐批 fit 会让轴随数据长而抖.
-  const auto cur_status = tf.status.load(std::memory_order_acquire);
-  if (cur_status != ui.last_status || ui.focus != ui.last_focus)
+  // 流式维护 x/y range: epoch 变了 (= 数据变了) 就 autofit 一次, 稳态把缩放还给用户.
+  // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧
+  // 之间也不会被看成"没变", 也不依赖 status 转移 (Building 中换特征 cancel→restart
+  // 全程停在 Building 会漏). 与 TabDist 同一逻辑.
+  const uint64_t cur_epoch = tf.epoch.load(std::memory_order_acquire);
+  if (cur_epoch != ui.last_epoch || ui.focus != ui.last_focus)
     ui.need_autofit = true;
-  ui.last_status = cur_status;
+  ui.last_epoch = cur_epoch;
 
   const float avail_h = ImGui::GetContentRegionAvail().y - 3 * ImGui::GetTextLineHeightWithSpacing() - 40.0f;
   const float plot_h = std::max(100.0f, avail_h * 0.5f);

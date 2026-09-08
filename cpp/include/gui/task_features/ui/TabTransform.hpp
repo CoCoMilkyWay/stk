@@ -23,8 +23,8 @@ struct TransformUIState {
   Transform::Params params;    // UI 编辑中的参数 (请求时快照)
   bool dirty = false;          // 参数改了但还没发请求
   float last_req_time = -1.0f; // 上次发请求的 ImGui 时间 (秒), 拖动节流用
-  bool need_autofit = false;   // 焦点/状态变那帧 autofit 一次, 流式逐批不 fit
-  Transform::Status last_status = Transform::Status::Idle;
+  bool need_autofit = false;   // epoch/focus 变那帧 autofit 一次, 流式逐批不 fit
+  uint64_t last_epoch = 0;     // 数据版本 (reset/clear/每批发布 +1), 跨构建单调, 不依赖 status 转移
   int last_focus = -1;
 
   int focus = 0;         // 统计子集焦点槽位 (0..n_stat-1)

@@ -251,7 +251,7 @@ private:
     case TaskState::Database::Status::Error:
       return {TaskStatus::Kind::Error, "error"};
     case TaskState::Database::Status::Ready:
-      return {TaskStatus::Kind::Ready, "ready"};
+      return {TaskStatus::Kind::Ready, "done"};
     case TaskState::Database::Status::None:
       break;
     }
@@ -270,7 +270,7 @@ private:
     case FundamentalStatus::Building:
       return {TaskStatus::Kind::Busy, "building"};
     case FundamentalStatus::Ready:
-      return {TaskStatus::Kind::Ready, "ready"};
+      return {TaskStatus::Kind::Ready, "done"};
     case FundamentalStatus::Error:
       return {TaskStatus::Kind::Error, "error"};
     }
@@ -292,7 +292,7 @@ private:
     case DatabaseStatus::Unchecked:
       return {}; // 未扫描时任务行已有 not scanned, 子行不重复
     case DatabaseStatus::Pass:
-      return {TaskStatus::Kind::Ready, "pass"};
+      return {TaskStatus::Kind::Ready, "done"};
     case DatabaseStatus::Incomplete:
       return {TaskStatus::Kind::Warn, "incomplete"};
     case DatabaseStatus::NotEncoded:
