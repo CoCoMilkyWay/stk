@@ -179,6 +179,7 @@ set(SOURCES
     ../../src/shared/Dist.cpp
     ../../src/shared/EncodeDayRecord.cpp
     ../../src/shared/Feature.cpp
+    ../../src/shared/FeaturePreview.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Transform.cpp
     # misc
@@ -237,6 +238,7 @@ set(SOURCES
     ../../src/gui/task_features/services/ComputeService.cpp
     ../../src/gui/task_features/services/DistService.cpp
     ../../src/gui/task_features/services/OrderFlowService.cpp
+    ../../src/gui/task_features/services/PreviewService.cpp
     ../../src/gui/task_features/services/TransformService.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
@@ -268,6 +270,7 @@ set(HEADERS
     ../../include/shared/Config.hpp
     ../../include/shared/Dist.hpp
     ../../include/shared/Feature.hpp
+    ../../include/shared/FeaturePreview.hpp
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/SharedData.hpp
     ../../include/shared/TaskState.hpp
@@ -592,6 +595,7 @@ set_source_files_properties(
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Config.cpp
     ../../src/shared/Dist.cpp
+    ../../src/shared/FeaturePreview.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Transform.cpp
     # misc

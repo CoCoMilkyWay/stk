@@ -6,6 +6,7 @@
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
+#include "implot.h"
 #include "latex.h"
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
@@ -466,6 +467,102 @@ static std::vector<int> topo_cluster_group(const std::vector<int> &group,
 }
 
 // ============================================================================
+// Preview 迷你图 (Dist / PSD 两列): cell 内 polyline, hover 弹 ImPlot 放大图
+// ============================================================================
+
+static constexpr float kSparkWidth = 96.0f; // 迷你图列宽 (px)
+static const ImVec4 kSparkDistColor{0.4f, 0.8f, 1.0f, 1.0f};
+static const ImVec4 kSparkPsdColor{1.0f, 0.8f, 0.2f, 1.0f};
+
+// PSD 迷你图 x 轴: log10 周期升序 (k 降序), 与 TabTransform 的 PSD 周期轴同向
+struct PsdSparkAxis {
+  std::array<float, kPvPsdPts> log_period{};
+  PsdSparkAxis() {
+    for (size_t j = 0; j < kPvPsdPts; ++j)
+      log_period[j] = std::log10(PvDayPSD::period_of(kPvPsdPts - j));
+  }
+};
+static const PsdSparkAxis s_psd_axis;
+
+// 迷你折线: 当前光标处画 size 大小的 polyline (x/y 各自归一化), 返回是否 hover
+static bool sparkline(const char *id, const float *xs, const float *ys, int n, ImVec2 size, const ImVec4 &color) {
+  assert(n >= 2);
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton(id, size);
+  const bool hovered = ImGui::IsItemHovered();
+
+  float ymin = ys[0], ymax = ys[0];
+  for (int i = 1; i < n; ++i) {
+    ymin = std::min(ymin, ys[i]);
+    ymax = std::max(ymax, ys[i]);
+  }
+  const float xr = xs[n - 1] - xs[0];
+  const float inv_x = xr > 0.0f ? 1.0f / xr : 0.0f;
+  const float yr = ymax - ymin;
+  const float inv_y = yr > 0.0f ? 1.0f / yr : 0.0f;
+
+  static std::vector<ImVec2> pts; // GUI 单线程, 帧内复用
+  pts.resize(n);
+  for (int i = 0; i < n; ++i) {
+    const float u = (xs[i] - xs[0]) * inv_x;
+    const float v = yr > 0.0f ? (ys[i] - ymin) * inv_y : 0.5f;
+    pts[i] = ImVec2(p0.x + u * size.x, p0.y + (1.0f - v) * (size.y - 2.0f) + 1.0f);
+  }
+  ImGui::GetWindowDrawList()->AddPolyline(pts.data(), n, ImGui::GetColorU32(color), 0, 1.0f);
+  return hovered;
+}
+
+// Dist 列 cell: PDF 迷你图 + hover 放大
+static void render_preview_dist(const FeaturePreview::Cell &cell, const char *code) {
+  if (cell.n_pts < 2) {
+    ImGui::TextDisabled("—");
+    return;
+  }
+  const ImVec2 size(kSparkWidth, ImGui::GetTextLineHeight());
+  if (!sparkline("##spark_dist", cell.x.data(), cell.y.data(), (int)cell.n_pts, size, kSparkDistColor))
+    return;
+  ImGui::BeginTooltip();
+  ImGui::Text("%s  平均分布 (n = %llu)", code, (unsigned long long)cell.n);
+  if (ImPlot::BeginPlot("##pv_pdf", ImVec2(360, 200), ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxes(nullptr, "pdf", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetNextLineStyle(kSparkDistColor, 2.0f);
+    ImPlot::PlotLine("##pdf", cell.x.data(), cell.y.data(), (int)cell.n_pts);
+    ImPlot::EndPlot();
+  }
+  ImGui::EndTooltip();
+}
+
+// PSD 列 cell: log10 谱迷你图 (周期升序) + hover 放大 (log 周期轴)
+static void render_preview_psd(const FeaturePreview::Cell &cell, const char *code) {
+  if (cell.psd_n == 0) {
+    ImGui::TextDisabled("—");
+    return;
+  }
+  static std::vector<float> py; // 重排到周期升序 (k 降序)
+  py.resize(kPvPsdPts);
+  for (size_t j = 0; j < kPvPsdPts; ++j)
+    py[j] = cell.psd[kPvPsdPts - j - 1];
+
+  const ImVec2 size(kSparkWidth, ImGui::GetTextLineHeight());
+  if (!sparkline("##spark_psd", s_psd_axis.log_period.data(), py.data(), (int)kPvPsdPts, size, kSparkPsdColor))
+    return;
+  ImGui::BeginTooltip();
+  ImGui::Text("%s  单日 PSD 均值 (%u 资产·天)", code, cell.psd_n);
+  if (ImPlot::BeginPlot("##pv_psd", ImVec2(360, 200), ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxes("周期 (min)", "log10 P", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
+    static std::vector<float> px;
+    px.resize(kPvPsdPts);
+    for (size_t j = 0; j < kPvPsdPts; ++j)
+      px[j] = PvDayPSD::period_of(kPvPsdPts - j);
+    ImPlot::SetNextLineStyle(kSparkPsdColor, 2.0f);
+    ImPlot::PlotLine("##psd", px.data(), py.data(), (int)kPvPsdPts);
+    ImPlot::EndPlot();
+  }
+  ImGui::EndTooltip();
+}
+
+// ============================================================================
 // UI Components
 // ============================================================================
 
@@ -608,11 +705,22 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
   ImGui::Text("Showing %d / %d", (int)filtered_indices.size(), (int)features.size());
 
+  // Preview 轮训进度 (Dist/PSD 两列逐轮收敛; 免锁读原子)
+  {
+    const auto pv_status = data.preview.status.load(std::memory_order_relaxed);
+    if (pv_status == FeaturePreview::Status::Building) {
+      const int done = (int)data.preview.rounds_done.load(std::memory_order_relaxed);
+      const int total = (int)data.preview.rounds_total.load(std::memory_order_relaxed);
+      ImGui::SameLine();
+      ImGui::TextDisabled("(preview %d/%d)", done, total);
+    }
+  }
+
   // Feature table - 占满剩余高度 (留一行给下方按钮)
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f)); // Tighter padding
   const float table_height = std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing(), ImGui::GetFrameHeight());
 
-  if (ImGui::BeginTable("FeatureTable", 10,
+  if (ImGui::BeginTable("FeatureTable", 12,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate,
@@ -628,12 +736,14 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Norm", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
+    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
     ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm", "Deps"};
+    const char *headers[] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm", "Dist", "PSD", "Deps"};
     const char *tooltips[] = {
         "多选: 选择多个特征进行对比 (首个作为主特征)",
         "代码: 特征的唯一标识符",
@@ -644,10 +754,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "一级分类: 特征的类别 (同色同组相邻)",
         "二级分类: 特征的量纲",
         "标准化方法: 特征的归一化处理方式",
+        "平均分布: 抽样 (日 × 资产) 的 PDF, 后台轮训逐轮收敛 (仅 L1); hover 放大",
+        "平均频谱: 单日 PSD 的算术平均 (log10 功率, x = 周期), 逐轮收敛 (仅 L1); hover 放大",
         "直接依赖: 该特征计算所依赖的其他特征 code (分号分隔)",
     };
 
-    for (int column = 0; column < 10; column++) {
+    for (int column = 0; column < 12; column++) {
       ImGui::TableSetColumnIndex(column);
       ImGui::TableHeader(headers[column]);
       if (ImGui::IsItemHovered()) {
@@ -733,7 +845,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               case 8:
                 cmp = (int)fa.norm_method - (int)fb.norm_method;
                 break;
-              case 9:
+              case 11:
                 cmp = deps_list[a].compare(deps_list[b]);
                 break;
               }
@@ -750,7 +862,11 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       } // !use_cluster_cache
     }
 
-    // Table rows
+    // Table rows (行循环期间持 preview 锁: worker 只在块末短锁发布, 不会长等)
+    std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+    const bool preview_level = (sel.selected_level == (int)kPvLevel);
+    static const FeaturePreview::Cell s_empty_cell{};
+
     for (int idx : filtered_indices) {
       const FeatureMetadata &f = features[idx];
 
@@ -835,6 +951,18 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TextUnformatted(to_string(f.norm_method).en);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", to_string(f.norm_method).cn);
+
+      // Columns: Dist / PSD (预览迷你图, 仅 L1; 槽位 = metadata 下标)
+      const FeaturePreview::Cell &cell =
+          (preview_level && idx < (int)data.preview.cells.size())
+              ? data.preview.cells[idx]
+              : s_empty_cell;
+      ImGui::PushID(idx);
+      ImGui::TableNextColumn();
+      render_preview_dist(cell, f.code);
+      ImGui::TableNextColumn();
+      render_preview_psd(cell, f.code);
+      ImGui::PopID();
 
       // Column: Deps (直接依赖的其他特征 code, 分号分隔)
       ImGui::TableNextColumn();

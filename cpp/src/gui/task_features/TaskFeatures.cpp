@@ -4,6 +4,7 @@
 #include "gui/task_features/services/ComputeService.hpp"
 #include "gui/task_features/services/DistService.hpp"
 #include "gui/task_features/services/OrderFlowService.hpp"
+#include "gui/task_features/services/PreviewService.hpp"
 #include "gui/task_features/services/TransformService.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
 #include "gui/task_features/ui/TabDist.hpp"
@@ -39,6 +40,7 @@ struct TaskFeaturesState {
   std::unique_ptr<Features::OrderFlowService> orderflow_service;
   std::unique_ptr<Features::DistService> dist_service;
   std::unique_ptr<Features::TransformService> transform_service;
+  std::unique_ptr<Features::PreviewService> preview_service;
 
   // UI State
   int active_tab = -1; // 当前选中 tab (由 Draw 入口写入), -1 = 未选中
@@ -64,6 +66,11 @@ struct TaskFeaturesState {
   int prev_selected_level = 0;       // Track level changes
   bool dist_prewarmed = false;       // 输入就绪后预热一次 (切出任务时回收并复位)
   bool transform_started = false;    // 输入就绪后起 worker 一次 (切出任务时回收并复位)
+
+  // Preview (特征表内联 PDF/PSD 迷你图): 输入就绪即自动构建, 不依赖选中特征.
+  // universe / 日期区间变了自动重算 (下面三个快照做变更检测)
+  bool preview_started = false;
+  std::string preview_universe, preview_start, preview_end;
 };
 
 // ============================================================================
@@ -91,6 +98,10 @@ TaskHandle CreateFeaturesTask() {
       state->transform_service->Shutdown();
       state->transform_started = false;        // 重进任务时重新起 worker
       state->transform_tab_was_active = false; // 数据已清, 重进按"初次进 tab"走自动重算
+    }
+    if (state->preview_service) {
+      state->preview_service->Shutdown();
+      state->preview_started = false; // 重进任务时重新构建
     }
   };
 
@@ -265,6 +276,9 @@ TaskHandle CreateFeaturesTask() {
     if (!state->transform_service) {
       state->transform_service = std::make_unique<Features::TransformService>();
     }
+    if (!state->preview_service) {
+      state->preview_service = std::make_unique<Features::PreviewService>();
+    }
 
     const bool feature_inputs_ready = state->inputs_ready; // Update (帧首) 已算
 
@@ -281,6 +295,25 @@ TaskHandle CreateFeaturesTask() {
     if (!state->transform_started && feature_inputs_ready) {
       state->transform_service->Start(data);
       state->transform_started = true;
+    }
+
+    // Preview 同点起 + 立即自动构建 (全 L1 特征轮训抽样, 不依赖选中);
+    // universe / 日期区间变了自动重算 (特征库目录/文件列序都跟着 universe 走)
+    if (!state->preview_started && feature_inputs_ready && !data.asset.items.empty()) {
+      state->preview_service->Start(data);
+      state->preview_service->RequestCompute(data);
+      state->preview_started = true;
+      state->preview_universe = data.config.universe;
+      state->preview_start = data.config.start_date;
+      state->preview_end = data.config.end_date;
+    } else if (state->preview_started &&
+               (state->preview_universe != data.config.universe ||
+                state->preview_start != data.config.start_date ||
+                state->preview_end != data.config.end_date)) {
+      state->preview_universe = data.config.universe;
+      state->preview_start = data.config.start_date;
+      state->preview_end = data.config.end_date;
+      state->preview_service->RequestCompute(data);
     }
 
     // Auto-trigger Dist / Transform compute on feature selection change (无论当前在哪个 tab:
@@ -323,8 +356,10 @@ TaskHandle CreateFeaturesTask() {
       if (state->prev_compute_status == Features::ComputeStatus::Running &&
           (current_status == Features::ComputeStatus::Completed ||
            current_status == Features::ComputeStatus::Cancelled)) {
-        // Compute just finished - OrderFlow 重扫日期 + 整体重拉
+        // Compute just finished - OrderFlow 重扫日期 + 整体重拉; 预览重抽 (新库落盘)
         data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
+        if (state->preview_started)
+          state->preview_service->RequestCompute(data);
       }
       state->prev_compute_status = current_status;
     }
@@ -405,6 +440,9 @@ TaskHandle CreateFeaturesTask() {
     if (state->transform_service)
       state->transform_service->Shutdown();
     state->transform_service.reset();
+    if (state->preview_service)
+      state->preview_service->Shutdown();
+    state->preview_service.reset();
   };
 
   return handle;

@@ -5,6 +5,7 @@
 #include "./Config.hpp"
 #include "./Dist.hpp"
 #include "./Feature.hpp"
+#include "./FeaturePreview.hpp"
 #include "./OrderFlow.hpp"
 #include "./TaskState.hpp"
 #include "./Transform.hpp"
@@ -18,6 +19,7 @@ struct SharedData {
   AssetInfo assetinfo;
   fund::Pool fund_pool; // 日频 PIT 基本面数据源 (Phase 2 前 build, TS worker 只读共享)
   Feature feature;
+  FeaturePreview preview;
   OrderFlow orderflow;
   Dist dist;
   Transform transform;
