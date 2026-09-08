@@ -260,10 +260,10 @@ TaskHandle CreateFeaturesTask() {
       state->orderflow_service = std::make_unique<Features::OrderFlowService>();
     }
     if (!state->dist_service) {
-      state->dist_service = std::make_unique<Features::DistService>(data.config.feature_dir);
+      state->dist_service = std::make_unique<Features::DistService>();
     }
     if (!state->transform_service) {
-      state->transform_service = std::make_unique<Features::TransformService>(data.config.feature_dir);
+      state->transform_service = std::make_unique<Features::TransformService>();
     }
 
     const bool feature_inputs_ready = state->inputs_ready; // Update (帧首) 已算
@@ -296,7 +296,8 @@ TaskHandle CreateFeaturesTask() {
       if ((feature_changed || level_changed) && has_valid_selection) {
         // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L1 选择静默忽略)
         state->dist_service->RequestCompute(data);
-        state->transform_service->RequestCompute(data, state->transform_ui_state.params);
+        state->transform_service->RequestCompute(data, state->transform_ui_state.params,
+                                                 state->transform_ui_state.focus);
 
         // Update tracking
         state->prev_primary_feature_idx = sel.primary_feature_idx();
@@ -340,7 +341,8 @@ TaskHandle CreateFeaturesTask() {
       state->transform_tab_was_active = true;
       const auto st = data.transform.status.load();
       if (st == Transform::Status::Idle || st == Transform::Status::Cancelled) {
-        state->transform_service->RequestCompute(data, state->transform_ui_state.params);
+        state->transform_service->RequestCompute(data, state->transform_ui_state.params,
+                                                 state->transform_ui_state.focus);
       }
     } else if (!transform_tab_open && state->transform_tab_was_active) {
       Features::StopTabTransform(state->transform_service.get(), data);

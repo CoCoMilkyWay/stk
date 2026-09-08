@@ -1149,7 +1149,7 @@ const TableFileStat *FundamentalState::find_table(const std::string &name) const
 }
 
 awaitable<void> FundamentalService::update_all() {
-  co_await run(/*with_network=*/true);
+  co_await run(/*with_network=*/data_.config.network_sync);
 }
 
 awaitable<void> FundamentalService::run(bool with_network) {

@@ -6,7 +6,7 @@
 stk/
 ├── run.py                 # 🚀 主入口 → py/main.py (模式选择: TSAN/DEBUG/PROFILE/ASSERT/PRODUCTION)
 ├── config/                # ⚙️ 全局配置
-│   ├── config.json        # ⚙️ 路径/日期范围等全局配置
+│   ├── config.json        # ⚙️ 路径/日期范围/universe/基本面联网同步(network_sync) 等全局配置
 │   ├── data_manager.json / stock_*.json  # ⚙️ 运行时缓存状态 (自动生成)
 │   └── sample/            # ⚙️ 样例数据 (L1/L2/财务报表样例)
 ├── py/                    # 🐍 Python工具链

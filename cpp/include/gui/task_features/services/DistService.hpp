@@ -12,6 +12,8 @@
 //           挂起的请求 (pending_) 跨 Stop/Start 存活, 重进自动续算.
 #pragma once
 
+#include "shared/AssetAxis.hpp" // UniverseAxis
+
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -26,7 +28,7 @@ namespace GUI::Features {
 
 class DistService {
 public:
-  explicit DistService(const std::string &features_dir);
+  DistService();
   ~DistService();
 
   // Lifecycle (幂等)
@@ -50,12 +52,12 @@ private:
   struct Request {
     std::vector<size_t> columns;     // [值列 (+ valid 列)]
     std::vector<std::string> months; // "YYYYMM" 升序
-    std::vector<uint32_t> active;    // universe 资产下标 (GUI 线程解析 config, worker 不碰 config)
+    UniverseAxis uni;                // universe 子轴 (GUI 线程解析 config, worker 不碰 config)
+    std::string features_dir;        // 该 universe 的特征库目录 (Config::FeatureUniverseDir)
   };
 
   void worker_loop();
 
-  std::string features_dir_;
   SharedData *data_ = nullptr;
   std::thread thread_;
 

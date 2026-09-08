@@ -45,24 +45,23 @@ class FeatureRead;
 //   Phase CS:   抢截面列块 (天×分钟); 每列 gather 有效子集 → column_fn → scatter 回 out_
 //   ── 栅栏 ──
 //   Phase 统计: 抢资产块; 每资产: 全量输出 → 该资产累积 sketch → 导出 AssetLine (PDF/矩);
-//               统计子集 (固定随机 kTfStatAssets 个) 额外: 逐天 ADF/KPSS (通过率累积)、逐天 PSD
-//               与 ACF/PACF (算术平均累积)、本批原始/输出序列 + TOD 轮廓 快照 (UI 序列视图)
+//               并且逐天 ADF/KPSS (通过率累积)、逐天 PSD 与 ACF/PACF (算术平均累积) ——
+//               全资产, 无子集上限; 焦点资产额外攒 全程 原始/输出序列 + TOD 轮廓 (UI 序列视图)
 //   ── 栅栏 (completion, 单线程): 短锁 swap 发布 + 进度 + epoch ──
 //   首帧 = 一批的 IO + 三段计算 (几十 ms), 与总区间长度无关; 视图逐批收敛.
 //
 // UI: 每帧持 mutex 读快照; 改任何参数 = 新请求 (取消在跑, 从第一天重来) —— 海量数据下
 //     交互仍即时, 因为每次都只等第一批.
 // 层: 只在 L1 跑 (Params.level 参数化, 目前断言 == kTfLevel; L0 的 VR/PSD 模板另配).
-// universe (active): 与特征计算同一名单 (universe_asset_ids). 平面 / out / lines / sketch / TOD
-//   仍按全轴 A 分配 (槽位 == 资产下标, 与文件列序一致), 但 TS / CS gather / 统计 / integrity
-//   分母 / 统计与绘制子集 只走 active —— universe 外的列在特征库里本就恒零 (从未派活).
+// universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 UniverseAxis) —— 平面 /
+//   out / lines / sketch / TOD 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
+//   槽位 = 子轴下标; AssetLine/StatLine 的 .asset 存全局轴下标 (UI 查 items 用).
 // ============================================================================
 
 static constexpr size_t kTfLevel = 1;
 static constexpr size_t kTfVR = TRADE_MINUTES_PER_DAY; // L1 有效行 (== level_valid_rows(kTfLevel), build 内断言)
 static constexpr size_t kTfDaysPerBatch = 8;
-static constexpr size_t kTfStatAssets = 256;       // 统计子集: ADF/KPSS/PSD/序列快照 (固定种子随机, 无偏)
-static constexpr size_t kTfDrawAssets = 512;       // PDF 折线绘制子集 (纯 UI 顶点预算, sketch 恒为全资产)
+static constexpr size_t kTfDrawAssets = 512;       // PDF 折线绘制子集 (纯 UI 顶点预算, sketch/统计恒为全资产)
 static constexpr size_t kTfKllCapacity = 256;      // 每资产 sketch
 static constexpr size_t kTfKllResolution = 128;    // 资产 PDF 网格
 static constexpr size_t kTfTotalKllCapacity = 512; // 全局输出 sketch
@@ -121,6 +120,9 @@ struct Transform {
     NormMethod ts_norm = NormMethod::NONE;
     math::Operator ts; // 按 math::normalize::GetMethod(ts_norm) 初始化
 
+    // 构建天数上限: 0 = 全区间; 否则只算区间头 N 天, 不往后算 (快速迭代档: 1/5/30)
+    size_t max_days = 0;
+
     cs::TfId cs_tf = cs::TfId::None;
     cs::MethodId cs_method = cs::MethodId::None;
 
@@ -138,19 +140,19 @@ struct Transform {
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   // ==========================================================================
 
-  // 每资产: 最终输出的累积分布 (槽位 == 资产下标)
+  // 每资产: 最终输出的累积分布 (槽位 == 子轴下标)
   struct AssetLine {
-    uint32_t asset = 0;
-    uint64_t n = 0; // 累积有效输出样本数
+    uint32_t asset = 0; // 全局轴下标 (UI 查 items 用)
+    uint64_t n = 0;     // 累积有效输出样本数
     float mean = 0.0f, var = 0.0f, skew = 0.0f, kurt = 0.0f;
     uint32_t n_pts = 0; // 0 = 样本不足, 不画
     uint8_t draw = 0;   // PDF 折线绘制子集
     std::array<float, kTfKllResolution - 1> x{}, y{};
   };
 
-  // 统计子集每资产 (槽位 == 子集下标): 逐天平稳性检验累积
+  // 每资产 (槽位 == 子轴下标, 与 lines 对齐): 逐天平稳性检验累积
   struct StatLine {
-    uint32_t asset = 0;
+    uint32_t asset = 0;  // 全局轴下标 (UI 查 items 用)
     uint32_t n_days = 0; // 参与检验的天数 (有效样本 ≥ kTfMinStatSamples)
     uint32_t adf_pass = 0, kpss_pass = 0;
     double adf_sum = 0.0, kpss_sum = 0.0; // 统计量之和 → UI 取均值
@@ -158,15 +160,16 @@ struct Transform {
     float kpss_rate() const { return n_days ? static_cast<float>(kpss_pass) / n_days : -1.0f; }
   };
 
-  // 统计子集 最近一批 的序列快照 (UI 序列视图: 原始 vs 输出 + TOD 轮廓)
+  // 焦点资产 全程 的序列快照 (UI 序列视图: 原始 vs 输出 + TOD 轮廓).
+  // 只存一个资产 → 内存 O(总天数 × VR), 与 universe 大小无关; 换焦点 = 重跑构建
+  // (与改参数同流程 —— 链末输出经过 CS 截面, 单资产无法离线重放).
   struct SeriesSnap {
-    size_t n_days = 0;                   // 本批天数 (≤ kTfDaysPerBatch)
-    std::string date_begin, date_end;    // 本批首末日 "YYYYMMDD"
-    std::vector<float> raw;              // [kStat][kTfDaysPerBatch * VR] (f16 → float, NaN = 缺)
-    std::vector<float> out;              // [kStat][kTfDaysPerBatch * VR] 链末输出 (NaN = 缺/预热)
-    std::vector<float> tod_mean, tod_sd; // [kStat][VR] 截至本批末的 TOD 轮廓 (season 关时不填)
-    const float *raw_of(size_t s) const { return raw.data() + s * kTfDaysPerBatch * kTfVR; }
-    const float *out_of(size_t s) const { return out.data() + s * kTfDaysPerBatch * kTfVR; }
+    uint32_t asset = 0;                  // 焦点资产全局轴下标 (UI 查 items; 构建起手定)
+    size_t n_days = 0;                   // 已处理天数 (逐批递增至全程)
+    std::string date_begin, date_end;    // 已处理区间首末日 "YYYYMMDD"
+    std::vector<float> raw;              // [总天数 * VR] (f16 → float, NaN = 缺/未到批)
+    std::vector<float> out;              // [总天数 * VR] 链末输出 (NaN = 缺/预热/未到批)
+    std::vector<float> tod_mean, tod_sd; // [VR] 截至末批的 TOD 轮廓 (season 关时不填)
   };
 
   struct Integrity {
@@ -194,14 +197,12 @@ struct Transform {
   mutable std::mutex mutex;
 
   Params params;                                              // 本次构建的参数快照 (reset 时定, UI 只读)
-  std::vector<uint32_t> active;                               // [n_active] universe 资产下标 (升序; reset 时定, 构建期只读)
-  std::vector<AssetLine> lines;                               // [A] (active 外的槽恒空)
-  std::vector<uint32_t> stat_assets;                          // [n_stat] 统计子集资产下标 (升序; reset 时定)
-  std::vector<StatLine> stat_lines;                           // [n_stat] 槽位 == 子集下标
-  SeriesSnap series;                                          // 统计子集最近一批
-  std::array<float, TfDayPSD::N_FREQS> psd_mean{};            // 逐 (统计资产, 天) 单日谱的算术平均 (逐批收敛)
+  std::vector<AssetLine> lines;                               // [A_sub] (槽位 == 子轴下标, .asset = 全局轴下标)
+  std::vector<StatLine> stat_lines;                           // [A_sub] 槽位 == 子轴下标 (与 lines 对齐)
+  SeriesSnap series;                                          // 焦点资产全程 (逐批增长)
+  std::array<float, TfDayPSD::N_FREQS> psd_mean{};            // 逐 (资产, 天) 单日谱的算术平均 (逐批收敛)
   uint64_t psd_n = 0;                                         // 参与平均的 (资产, 天) 数
-  std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{};   // 逐 (统计资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
+  std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{};   // 逐 (资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
   uint64_t acf_n = 0;                                         // 参与平均的 (资产, 天) 数 (有效样本 ≥ 4×kTfMaxLag)
   KLLcache total{kTfTotalKllCapacity, kTfTotalKllResolution}; // 全资产全区间链末输出
   Integrity integrity;
@@ -214,10 +215,11 @@ struct Transform {
   ~Transform();
 
   // 重置全部状态并进入 Building. columns = [特征列 (+ mcap, ind_l1 若 NeutralRank) (+ _meta 门控列)]
-  // active_ids = universe 资产下标 (升序去重, 非空, 全部 < n_assets; 见 universe_asset_ids)
+  // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids; A_sub = size, 升序去重非空)
+  // series_focus = 序列快照焦点 (子轴下标, < A_sub)
   void reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                       const std::vector<std::string> &month_keys, size_t n_assets,
-                       std::vector<uint32_t> active_ids);
+                       const std::vector<std::string> &month_keys,
+                       std::vector<uint32_t> global_ids, uint32_t series_focus);
 
   // 全区间构建: 分批流式; 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
@@ -230,4 +232,6 @@ private:
   std::vector<size_t> columns_;
   bool has_valid_ = false;
   std::vector<std::string> months_;
+  std::vector<uint32_t> global_ids_; // 子轴 → 全局轴映射 (reset 时定, 构建期只读)
+  uint32_t series_focus_ = 0;        // 序列快照焦点 (子轴下标; reset 时定, 构建期只读)
 };

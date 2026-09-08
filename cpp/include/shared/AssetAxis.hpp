@@ -17,6 +17,8 @@
 //   轴锁定; 只有按下标寻址的特征库需要.
 #pragma once
 
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -70,9 +72,37 @@ private:
 // 语言层面只给一份. 读侧只调 hash_at (O(1) 数组取值), 热路径无成本.
 AssetAxis &asset_axis();
 
-// universe → 轴下标 (升序, 去重). cfg.universe == "all" → [0, num_assets);
-// 否则 cfg.UniverseCodes() (JSON 解析在 Config.cpp) 逐条按轴 find.
-// 代码不在轴前缀 [0, num_assets) 内 → assert: 名单写错宁可启动即死, 不要静默算出
-// 一个残缺 universe. Compute (派活) 与 Dist/Transform (活跃资产表) 共用, 三处永远同一名单.
+// ============================================================================
+// UniverseAxis — 特征管线的 A 轴 = universe 子轴
+//
+// 由 config.universe + 全局 AssetAxis 唯一确定: ids = 名单在全局轴上的下标
+// (升序去重), hash = 按子轴顺序对码表做同一条 FNV 累积链 (fnv_append). 特征文件
+// 头存 (A_sub, hash): 写读两端各自从 config 推导同一子轴, hash 不符 = 名单与
+// 特征库不一致, 立刻 assert (需重算). "all" 是普通特例: ids = [0, num_assets),
+// hash == asset_axis().hash_at(num_assets) (同一条链的前缀值).
+//
+// 整条特征管线 (张量池 / 落盘 / 读端 / Dist / Transform / OrderFlow 特征读)
+// 一律用子轴下标 (sub); 需要查 items/码表/行业等全局资源时经 global() 映射.
+// ============================================================================
+struct UniverseAxis {
+  std::vector<uint32_t> ids; // sub → global (升序去重, 非空)
+  std::uint64_t hash = 0;    // 子轴码表累积 hash (特征文件头校验值)
+
+  std::size_t size() const { return ids.size(); }
+  uint32_t global(std::size_t sub) const {
+    assert(sub < ids.size() && "UniverseAxis::global: 子轴下标越界");
+    return ids[sub];
+  }
+  // global → sub (二分); 不在子轴内返回 size()
+  std::size_t sub_of(uint32_t global_id) const {
+    const auto it = std::lower_bound(ids.begin(), ids.end(), global_id);
+    return (it != ids.end() && *it == global_id) ? static_cast<std::size_t>(it - ids.begin()) : ids.size();
+  }
+};
+
+// universe 子轴构建: cfg.universe == "all" → 全轴前缀; 否则 cfg.UniverseCodes()
+// (JSON 解析在 Config.cpp) 逐条按轴 find. 代码不在轴前缀 [0, num_assets) 内 →
+// assert: 名单写错宁可启动即死, 不要静默算出一个残缺 universe.
+// Compute (派活/落盘) 与 Dist/Transform/OrderFlow (读端) 共用, 各处永远同一子轴.
 struct Config;
-std::vector<uint32_t> universe_asset_ids(const Config &cfg, std::size_t num_assets);
+UniverseAxis universe_axis(const Config &cfg, std::size_t num_assets);

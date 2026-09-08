@@ -7,8 +7,12 @@
 //   做空: (entry_vwap·(1-fee_sell) - exit_vwap·(1+fee_buy)) / entry_vwap·(1-fee_sell)
 //   费用: 买入万 1 佣金, 卖出万 11 (印花 + 佣金)
 //
-// 非 DAG 节点 (未来标签需回填, 不走 Node). 一份深度快照环 (各金额档 VWAP 预计算) 供两条路径共用:
-//   snapshot(t)                 每次 onDepth 先调: 存当前盘口的吃单 VWAP
+// 非 DAG 节点 (未来标签需回填, 不走 Node). 一份深度快照环 (各金额档吃单 VWAP) 供两条路径共用:
+//   snapshot(t)                 每次 onDepth 先调: 只记账, VWAP 惰性结算 —— 同一秒内只有最后一次
+//                               盘口状态会被消费, 所以等下一个活跃秒的首次更新到来时才从 Depth 环
+//                               的上一格结算入环 (materialize offset=1); 查询目标恰为当前秒 (还没
+//                               结算) 时从环末现算 (offset=0). 与"每次更新都算"逐值一致, VWAP 计算
+//                               次数从每笔盘口更新降到每活跃秒一次.
 //   second(t, l0, v)            L0 秒级 (当前停用, 见文件末): LABEL_L0_HOLD 分钟 × LABEL_L0_AMT 万, 只落 long
 //   minute_anchored(t, writer)  L1 分钟锚定惰性回填: writer(h, l1, values[GROUP_SIZE])
 // 配置 (LABEL_HOLDS / LABEL_AMTS / LABEL_L0_*) 同时生成 constexpr 数组和落盘字段行, 只改一处.
@@ -18,6 +22,7 @@
 #include "features/TimeIndex.hpp" // L1_to_L0 (分钟锚定路径)
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <iterator>
 
 // ---- 配置 ----
@@ -54,16 +59,13 @@ public:
               const DepthSeries &bid_qty, const DepthSeries &ask_qty)
       : bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
-  // 保存当前深度: 预计算各金额档吃单 VWAP (每次 onDepth 调一次, 先于 second / minute_anchored)
+  // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
+  // 换秒时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
+  // 一次更新的盘口 —— 与旧实现"每次更新覆盖写"的最终留存值逐位相同.
   inline void snapshot(size_t t) {
-    auto &snap = ring_[t % RING_SIZE];
-    snap.l0_index = t;
-    snap.valid = true;
-    for (size_t a = 0; a < AMT_COUNT; ++a) {
-      const float amt = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f;
-      calc_vwap(ask_price_, ask_qty_, amt, true, snap.buy_vwap[a], snap.buy_shares[a]);    // 吃 ask (买入)
-      calc_vwap(bid_price_, bid_qty_, amt, false, snap.sell_vwap[a], snap.sell_shares[a]); // 吃 bid (卖出)
-    }
+    if (pending_l0_ != kNoPending && pending_l0_ != t)
+      materialize(ring_[pending_l0_ % RING_SIZE], pending_l0_, 1);
+    pending_l0_ = t;
   }
 
   // L0 秒级: 以 t 为平仓时刻, 反推 label_l0 = t - DELAY - hold 的做多收益; 有则返回 true
@@ -118,6 +120,7 @@ public:
       snap.valid = false;
     for (size_t h = 0; h < HOLD_COUNT; ++h)
       next_label_l1_[h] = 0;
+    pending_l0_ = kNoPending; // 昨日最后一个活跃秒不结算 (当日 ring 已整体作废)
   }
 
 private:
@@ -164,8 +167,23 @@ private:
     }
   }
 
+  // 从 Depth 环末尾回退 offset 格的盘口状态结算快照 (0 = 当前更新, 1 = 上一次更新)
+  void materialize(Snapshot &snap, size_t l0, size_t offset) const {
+    snap.l0_index = l0;
+    snap.valid = true;
+    for (size_t a = 0; a < AMT_COUNT; ++a) {
+      const float amt = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f;
+      calc_vwap(ask_price_, ask_qty_, amt, true, offset, snap.buy_vwap[a], snap.buy_shares[a]);    // 吃 ask (买入)
+      calc_vwap(bid_price_, bid_qty_, amt, false, offset, snap.sell_vwap[a], snap.sell_shares[a]); // 吃 bid (卖出)
+    }
+  }
+
   // 指定 l0 时刻的快照; 深度不是每秒都更新, 向前找 ≤60s 内最近的有效快照
   const Snapshot *get_snapshot(size_t target) const {
+    if (target == pending_l0_) { // 当前秒未结算: 从环末现算 (只有锚点查询走到, 频次 ~分钟级)
+      materialize(scratch_, target, 0);
+      return &scratch_;
+    }
     const auto &s = ring_[target % RING_SIZE];
     if (s.valid && s.l0_index == target)
       return &s;
@@ -178,12 +196,15 @@ private:
   }
 
   // 模拟吃单: 遍历盘口深度算 VWAP. is_buy: 吃 ask (qty 存负值); 否则吃 bid (正值)
+  // offset: 从 Depth 环末尾回退几格取盘口 (所有档的环长同步推进, 下标一致)
   static inline void calc_vwap(const DepthSeries &price, const DepthSeries &qty,
-                               float amount, bool is_buy, float &vwap, float &shares) {
+                               float amount, bool is_buy, size_t offset, float &vwap, float &shares) {
+    assert(price[0].size() > offset && "calc_vwap: Depth 环深度不足 offset");
     float cost = 0.0f, sh = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH && amount > 1e-6f; ++i) {
-      const float p = price[i].back();
-      const float q = is_buy ? -qty[i].back() : qty[i].back();
+      const size_t k = price[i].size() - 1 - offset;
+      const float p = price[i][k];
+      const float q = is_buy ? -qty[i][k] : qty[i][k];
       if (p < 1e-6f || q < 1e-6f)
         continue;
       const float fill = std::min(amount, p * q); // 本档成交金额
@@ -213,8 +234,12 @@ private:
   const DepthSeries &bid_qty_;
   const DepthSeries &ask_qty_;
 
+  static constexpr size_t kNoPending = SIZE_MAX;
+
   std::array<Snapshot, RING_SIZE> ring_;  // 深度快照环
   size_t next_label_l1_[HOLD_COUNT] = {}; // 分钟锚定路径: 各组下一个待写 L1 行
+  size_t pending_l0_ = kNoPending;        // 当前活跃秒 (有盘口更新, 尚未结算入环)
+  mutable Snapshot scratch_;              // pending 秒被查询时的现算暂存
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

@@ -67,7 +67,7 @@ inline constexpr size_t kDefaultPoolSlots = 4;
 // 向过去回填, 行级进度天然罩不住. 所以门控就是按日, 计数粒度是 asset-day:
 //
 //   TS:  ts_open(date) → 句柄写 (纯指针算术, 无锁无验证) → 每资产 ts_close
-//   CS:  cs_open(date) 阻塞至本日 assets_done == assets_per_day → 整日扫 → cs_close
+//   CS:  cs_open(date) 阻塞至本日 assets_done == num_assets (universe 子轴) → 整日扫 → cs_close
 //   IO:  io_try_flush: 摘 DONE → 落盘 → reset → FREE
 //
 // 按资产计数 (而非按 worker close 计数) 使资产处置权可在 worker 间转移: 领跑
@@ -94,7 +94,7 @@ public:
   // Per-date slot
   struct Slot {
     std::atomic<TensorState> state{TensorState::FREE};
-    std::atomic<uint32_t> assets_done{0};             // == assets_per_day ⇒ 本日 TS 全部写完 (CS 放行)
+    std::atomic<uint32_t> assets_done{0};             // == num_assets ⇒ 本日 TS 全部写完 (CS 放行)
     char date[16] = {0};                              // "YYYYMMDD"
     feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]
 
@@ -146,9 +146,8 @@ private:
   }
 
   // Config
-  const std::uint64_t axis_hash_; // A 轴前缀指纹, 落进每个特征文件头
-  const size_t num_assets_;       // A 维 = 全轴 (列序/指纹绑死, 与 universe 无关)
-  const size_t assets_per_day_;   // 每日 ts_close 计满数 = 派活资产数 (universe); ≤ num_assets_
+  const std::uint64_t axis_hash_; // universe 子轴指纹 (UniverseAxis::hash), 落进每个特征文件头
+  const size_t num_assets_;       // A 维 = universe 子轴大小 (张量/落盘/门控全按它)
   const size_t num_ts_workers_;
   size_t pool_size_;
   std::string output_dir_;
@@ -158,7 +157,7 @@ private:
   Slot *pool_ = nullptr;
   std::mutex pool_mutex_; // 只串行化 ts_open 的查找/分配; 其余状态转移无锁
 
-  // 计满 assets_per_day 的日数 (单调, 见 ts_close), 预取门控用
+  // 计满 num_assets 的日数 (单调, 见 ts_close), 预取门控用
   std::atomic<size_t> ts_days_done_{0};
   std::atomic<size_t> cs_days_done_{0};
 
@@ -171,18 +170,17 @@ private:
   std::vector<uint8_t> io_buf_;
 
 public:
-  // axis_hash: AssetAxis::hash_at(num_assets), 写进每个特征文件头锁定列序
-  // assets_per_day: 每日会被 ts_close 的资产数 (sub-universe 时 < num_assets;
-  //   轴外资产无人派活/无人计, 列保持零)
-  GlobalFeatureStore(size_t num_assets, size_t assets_per_day, size_t num_ts_workers,
+  // num_assets: universe 子轴大小; axis_hash: UniverseAxis::hash, 写进每个
+  // 特征文件头锁定"列 → 资产"映射 (读端从同一 config 推导同一子轴比对)
+  GlobalFeatureStore(size_t num_assets, size_t num_ts_workers,
                      std::uint64_t axis_hash,
                      const std::string &output_dir = "",
                      size_t pool_slots = kDefaultPoolSlots)
       : axis_hash_(axis_hash),
-        num_assets_(num_assets), assets_per_day_(assets_per_day), num_ts_workers_(num_ts_workers),
+        num_assets_(num_assets), num_ts_workers_(num_ts_workers),
         pool_size_(pool_slots) {
     assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");
-    assert(assets_per_day_ >= 1 && assets_per_day_ <= num_assets_ && "assets_per_day 必须在 [1, A] 内");
+    assert(num_assets_ >= 1 && "A 轴为空");
 
     ts_frontier_ = std::make_unique<std::atomic<uint32_t>[]>(num_ts_workers_);
     for (size_t w = 0; w < num_ts_workers_; ++w)
@@ -318,15 +316,14 @@ public:
     }
   }
 
-  // 一个 (asset, date) 写完. 计数攒齐 assets_per_day 后 cs_open 放行;
+  // 一个 (asset, date) 写完. 计数攒齐全轴 (universe 子轴) 后 cs_open 放行;
   // release 与 cs_open 的 acquire 配对, 保证张量写入对 CS 可见.
-  // 缺 binary 的 asset-day 也要计 (张量保持默认值), 由当时的处置权持有者计;
-  // universe 外的资产不派活也不计 (门控数已按 universe 缩).
+  // 缺 binary 的 asset-day 也要计 (张量保持默认值), 由当时的处置权持有者计.
   void ts_close(const Day &day) {
     assert(day.slot);
     const uint32_t prev = day.slot->assets_done.fetch_add(1, std::memory_order_release);
-    assert(prev < assets_per_day_ && "ts_close: 计数超过派活资产数 (重复计?)");
-    if (prev + 1 == assets_per_day_) {
+    assert(prev < num_assets_ && "ts_close: 计数超过派活资产数 (重复计?)");
+    if (prev + 1 == num_assets_) {
       ts_days_done_.fetch_add(1, std::memory_order_relaxed);
       Logger::log("store", "ts_day_done: " + std::string(day.slot->date));
     }
@@ -355,7 +352,7 @@ public:
     for (size_t i = 0; i < pool_size_; ++i) {
       Slot &s = pool_[i];
       if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date &&
-          s.assets_done.load(std::memory_order_acquire) == assets_per_day_)
+          s.assets_done.load(std::memory_order_acquire) == num_assets_)
         return {&s, num_assets_};
     }
     return {};
@@ -414,10 +411,10 @@ public:
 private:
   // Write file with header + compressed data
   //
-  // header[3] = A 轴前缀指纹 (AssetAxis::hash_at(A)): 列 → 资产的映射不存在
-  // 文件里, 全靠 A 轴顺序. 存下指纹后, 读文件时 O(1) 就能确认"该文件的列序与
-  // 当前注册表前 A 条一致"; 轴 append-only, 所以追加新资产不会动历史文件的
-  // 指纹. 热路径 (解压/索引) 不受影响.
+  // header[3] = universe 子轴指纹 (UniverseAxis::hash): 列 → 资产的映射不存在
+  // 文件里, 全靠子轴顺序 (universe 名单 → 全局轴下标升序). 读端从同一 config
+  // 推导同一子轴, O(1) 比对即确认列序一致; universe == "all" 时值等于全局轴
+  // 前缀 hash (hash_at(A)). 热路径 (解压/索引) 不受影响.
   //
   // header[4] = 字段表指纹 (LEVELS[lvl].fingerprint): 字段表
   // 增删改列即变, 读旧文件断言失败而不是静默错位.

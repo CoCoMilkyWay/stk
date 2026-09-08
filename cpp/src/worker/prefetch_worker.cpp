@@ -63,11 +63,9 @@ void prefetch_worker(WorkerCtx ctx) {
 
     {
       TraceN("ReadFiles");
-      for (size_t asset_id = 0; asset_id < data.asset.items.size(); ++asset_id) {
-        // universe 外 (无人派活) 不暖: TS 永远不会 decode 它
-        if (ctx.sched.owner[asset_id].load(std::memory_order_relaxed) == -1)
-          continue;
-        const AssetItem &asset = data.asset.items[asset_id];
+      // 资产集 = universe 子轴 (sched.global_ids): TS 只 decode 这些
+      for (const uint32_t global_id : ctx.sched.global_ids) {
+        const AssetItem &asset = data.asset.items[global_id];
         if (!asset.date_at(didx).has_binaries())
           continue;
 

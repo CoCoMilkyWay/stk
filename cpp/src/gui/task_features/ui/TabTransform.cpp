@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -88,7 +89,7 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
 
   ImGui::BeginDisabled(status == Transform::Status::Building || sel.primary_feature_idx() < 0 || !is_l1);
   if (ImGui::Button("Compute"))
-    service->RequestCompute(data, ui.params);
+    service->RequestCompute(data, ui.params, ui.focus);
   ImGui::EndDisabled();
   if (!is_l1) {
     ImGui::SameLine();
@@ -231,6 +232,30 @@ static bool RenderPipeline(Transform::Params &p) {
     ImGui::SetTooltip("每 (天, 分钟) 一个截面: Tf 元素预变换 → Method. 与回测/实盘 features/Method/CS.hpp 同一份代码.\n"
                       "NeutralRank 需 mcap + ind_l1 上下文列 (行业 + log 市值中性化)");
 
+  // 6. 构建天数档位: 只算区间头 N 天 (快速迭代), 不往后算
+  ImGui::SameLine(0, 16);
+  ImGui::Text("天数");
+  ImGui::SameLine();
+  {
+    static constexpr size_t kDays[] = {1, 5, 30, 0};
+    static constexpr const char *kDayNames[] = {"1", "5", "30", "全部"};
+    size_t cur = 3;
+    for (size_t i = 0; i < 4; ++i)
+      if (p.max_days == kDays[i])
+        cur = i;
+    ImGui::SetNextItemWidth(70);
+    if (ImGui::BeginCombo("##days", kDayNames[cur])) {
+      for (size_t i = 0; i < 4; ++i)
+        if (ImGui::Selectable(kDayNames[i], cur == i) && cur != i) {
+          p.max_days = kDays[i];
+          changed = true;
+        }
+      ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("重算只算区间头 N 天, 不往后算 (统计/分布/序列都只覆盖头 N 天); 全部 = 全区间");
+  }
+
   return changed;
 }
 
@@ -240,18 +265,18 @@ static bool RenderPipeline(Transform::Params &p) {
 
 static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, TransformUIState &ui) {
   TraceN("UI:Heatmap");
-  const size_t n = tf.stat_assets.size();
+  const size_t n = tf.stat_lines.size(); // 全资产 (槽位 == 子轴下标)
   if (n == 0) {
-    ImGui::TextDisabled("统计子集: --");
+    ImGui::TextDisabled("资产: --");
     ImGui::Dummy(ImVec2(0, 34));
     return;
   }
   ui.focus = std::clamp(ui.focus, 0, static_cast<int>(n) - 1);
 
-  // 滑条: 标签 = 资产下标.交易所.名字 (n_days 检验天数)
+  // 滑条: 标签 = 全局资产下标.交易所.名字 (n_days 检验天数)
   {
-    const uint32_t a = tf.stat_assets[ui.focus];
     const auto &st = tf.stat_lines[ui.focus];
+    const uint32_t a = st.asset; // 全局轴下标 (items 查询)
     char label[128];
     if (a < asset.items.size()) {
       const auto &it = asset.items[a];
@@ -259,13 +284,13 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
     } else {
       snprintf(label, sizeof(label), "%u (%u 天)", a, st.n_days);
     }
-    ImGui::Text("统计子集 (%zu)", n);
+    ImGui::Text("资产 (%zu)", n);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1);
     ImGui::SliderInt("##focus", &ui.focus, 0, static_cast<int>(n) - 1, label);
   }
 
-  // 热力条: 两行 (ADF 通过率 / KPSS 通过率), 每列一个统计子集资产
+  // 热力条: 两行 (ADF 通过率 / KPSS 通过率), 每列一个资产 (全市场时 1px 起)
   const float label_w = 44.0f, cell_h = 12.0f;
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   const float cell_w = std::max(1.0f, (avail.x - label_w) / static_cast<float>(n));
@@ -296,7 +321,7 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
       if (s >= 0 && s < static_cast<int>(n)) {
         ui.hovered_stat = s;
         const auto &st = tf.stat_lines[s];
-        const uint32_t a = tf.stat_assets[s];
+        const uint32_t a = st.asset; // 全局轴下标 (items 查询)
         ImGui::BeginTooltip();
         if (a < asset.items.size())
           ImGui::Text("%u %s.%s", a, asset.items[a].exchange.c_str(), asset.items[a].asset_name.c_str());
@@ -316,42 +341,62 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
 }
 
 // ============================================================================
-// 序列视图: 最近一批 原始 (+TOD 轮廓) | 链末输出
+// 序列视图: 焦点资产全程 (逐批增长) 原始 (+TOD 轮廓) | 链末输出
+// 快照只存焦点资产 (内存与 universe 大小无关); 换焦点 = 重跑构建 (与改参数同流程)
+// 两图轴永远互锁 (SetupAxisLinks): 任一图缩放/平移另一图跟随;
+// autofit 不能各图各 fit —— 手动求 原始/TOD/输出 数据并集写进链接值, 两图同视野
 // ============================================================================
 
-static void RenderSeries(const Transform &tf, TransformUIState &ui, float height) {
+static void RenderSeries(const Transform &tf, const Asset &asset, TransformUIState &ui, float height) {
   TraceN("UI:Series");
   const auto &sn = tf.series;
-  const bool has = sn.n_days > 0 && ui.focus < static_cast<int>(tf.stat_assets.size());
+  const bool has = sn.n_days > 0;
   const size_t n_pts = sn.n_days * kTfVR;
-  const size_t s = static_cast<size_t>(std::max(0, ui.focus));
   static std::vector<float> tod_tile;
 
-  // 两图同源: 有数据才 fit, 并就此消费掉 pending
+  // 有数据才 fit, 并就此消费掉 pending
   const bool autofit = ui.fit_series && has;
   ui.fit_series &= !autofit;
+  if (autofit) {
+    float lo = FLT_MAX, hi = -FLT_MAX;
+    auto scan = [&](const float *v, size_t n) {
+      for (size_t i = 0; i < n; ++i)
+        if (v[i] == v[i]) {
+          lo = std::min(lo, v[i]);
+          hi = std::max(hi, v[i]);
+        }
+    };
+    scan(sn.raw.data(), n_pts);
+    scan(sn.out.data(), n_pts);
+    if (tf.params.season != Transform::Season::None)
+      scan(sn.tod_mean.data(), kTfVR);
+    if (lo <= hi) {
+      const double margin = hi > lo ? 0.05 * (hi - lo) : 1.0;
+      ui.series_y_min = lo - margin;
+      ui.series_y_max = hi + margin;
+      ui.series_x_min = 0.0;
+      ui.series_x_max = static_cast<double>(n_pts);
+    }
+  }
 
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
-  if (has)
-    ImGui::Text("原始  %s ~ %s (%zu 天)", sn.date_begin.c_str(), sn.date_end.c_str(), sn.n_days);
-  else
+  if (has) {
+    const char *name = sn.asset < asset.items.size() ? asset.items[sn.asset].asset_name.c_str() : "?";
+    ImGui::Text("原始 %u.%s  %s ~ %s (%zu 天)", sn.asset, name, sn.date_begin.c_str(), sn.date_end.c_str(), sn.n_days);
+  } else {
     ImGui::TextDisabled("原始");
-  if (autofit)
-    ImPlot::SetNextAxesToFit();
+  }
   if (ImPlot::BeginPlot("##Raw", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
+    ImPlot::SetupAxisLinks(ImAxis_X1, &ui.series_x_min, &ui.series_x_max);
+    ImPlot::SetupAxisLinks(ImAxis_Y1, &ui.series_y_min, &ui.series_y_max);
     if (has) {
-      // 天界竖线
-      for (size_t d = 1; d < sn.n_days; ++d) {
-        double xd = static_cast<double>(d * kTfVR);
-        ImPlot::PlotInfLines("##day", &xd, 1);
-      }
       ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), 1.0f);
-      ImPlot::PlotLine("##raw", sn.raw_of(s), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
+      ImPlot::PlotLine("##raw", sn.raw.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
       if (tf.params.season != Transform::Season::None) {
-        // TOD 均值轮廓按天平铺叠在原始上 (截至本批末的轮廓)
+        // TOD 均值轮廓按天平铺叠在原始上 (截至末批的轮廓)
         tod_tile.resize(n_pts);
-        const float *tm = sn.tod_mean.data() + s * kTfVR;
+        const float *tm = sn.tod_mean.data();
         for (size_t d = 0; d < sn.n_days; ++d)
           std::copy_n(tm, kTfVR, tod_tile.data() + d * kTfVR);
         ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 1.0f, 0.9f), 1.5f);
@@ -365,17 +410,13 @@ static void RenderSeries(const Transform &tf, TransformUIState &ui, float height
   ImGui::SameLine();
   ImGui::BeginChild("OutPlot", ImVec2(0, height), true);
   ImGui::Text("链末输出");
-  if (autofit)
-    ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot("##Out", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
+    ImPlot::SetupAxisLinks(ImAxis_X1, &ui.series_x_min, &ui.series_x_max);
+    ImPlot::SetupAxisLinks(ImAxis_Y1, &ui.series_y_min, &ui.series_y_max);
     if (has) {
-      for (size_t d = 1; d < sn.n_days; ++d) {
-        double xd = static_cast<double>(d * kTfVR);
-        ImPlot::PlotInfLines("##day", &xd, 1);
-      }
       ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 0.5f, 1.0f), 1.0f);
-      ImPlot::PlotLine("##out", sn.out_of(s), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
+      ImPlot::PlotLine("##out", sn.out.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
     }
     ImPlot::EndPlot();
   }
@@ -390,7 +431,8 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   TraceN("UI:DistPSD");
   const float col_w = ImGui::GetContentRegionAvail().x / 3.0f;
   const size_t A = tf.lines.size();
-  const uint32_t focus_asset = ui.focus < static_cast<int>(tf.stat_assets.size()) ? tf.stat_assets[ui.focus] : UINT32_MAX;
+  // 焦点槽位 == 子轴下标 (统计无子集, 与 lines 同轴)
+  const uint32_t focus_asset = ui.focus >= 0 && ui.focus < static_cast<int>(A) ? static_cast<uint32_t>(ui.focus) : UINT32_MAX;
 
   // 有数据才 fit, 并就此消费掉 pending (PDF 画的是总体线 + 绘制子集线, 二者任一就绪即算有)
   bool pdf_has = tf.total.totalCount() >= kTfMinAssetSamples;
@@ -402,8 +444,6 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
       }
   const bool fit_pdf = ui.fit_pdf && pdf_has;
   ui.fit_pdf &= !fit_pdf;
-  const bool fit_psd = ui.fit_psd && tf.psd_n > 0;
-  ui.fit_psd &= !fit_psd;
   const bool fit_acf = ui.fit_acf && tf.acf_n > 0;
   ui.fit_acf &= !fit_acf;
 
@@ -456,12 +496,13 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     const float v = tf.psd_mean[k];
     py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
-  if (fit_psd)
-    ImPlot::SetNextAxisToFit(ImAxis_Y1);
+  // PSD 不 autofit: 带通光标拖动 → 重算 → epoch 变 → refit 会和光标共振 (轴跳光标跟着跳).
+  // 固定默认视野 (y = log10 功率 [-10, 0]), 手动缩放不被打断
   if (ImPlot::BeginPlot("##PSD", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes("周期 (min)", "log10 P");
     ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
     ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, static_cast<double>(TfDayPSD::N), ImGuiCond_Once);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, -10.0, 0.0, ImGuiCond_Once);
 
     // 通带阴影
     const ImPlotRect lim = ImPlot::GetPlotLimits();
@@ -566,9 +607,13 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // 之间也不会被看成"没变", 也不依赖 status 转移 (Building 中换特征 cancel→restart
   // 全程停在 Building 会漏). 置位后由各图在画上数据那帧自行消费 (见 TransformUIState).
   const uint64_t cur_epoch = tf.epoch.load(std::memory_order_acquire);
-  if (cur_epoch != ui.last_epoch || ui.focus != ui.last_focus)
-    ui.fit_series = ui.fit_pdf = ui.fit_psd = ui.fit_acf = true;
+  // focus 快照必须在渲染前比 (滑条/热力条点选在下面的渲染里改 ui.focus):
+  // 若帧末才记, 改动帧就被覆盖, 焦点变化永远检测不到 → 不 autofit 也不触发重算
+  const bool focus_changed = ui.focus != ui.last_focus;
+  if (cur_epoch != ui.last_epoch || focus_changed)
+    ui.fit_series = ui.fit_pdf = ui.fit_acf = true;
   ui.last_epoch = cur_epoch;
+  ui.last_focus = ui.focus;
 
   const float avail_h = ImGui::GetContentRegionAvail().y - 3 * ImGui::GetTextLineHeightWithSpacing() - 40.0f;
   const float plot_h = std::max(100.0f, avail_h * 0.5f);
@@ -578,13 +623,13 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
     std::lock_guard<std::mutex> lock(tf.mutex);
     RenderIntegrity(tf.integrity);
     RenderFocusAndHeatmap(tf, data.asset, ui);
-    RenderSeries(tf, ui, plot_h);
+    RenderSeries(tf, data.asset, ui, plot_h);
     RenderDistAndPSD(tf, ui, plot_h, bp_changed);
   }
-  ui.last_focus = ui.focus;
 
-  // 参数改动: 记 dirty, 拖动中按时间 gate 节流发请求, 松手必发 —— 边拖边算
-  ui.dirty |= changed || bp_changed;
+  // 参数/焦点改动: 记 dirty, 拖动中按时间 gate 节流发请求, 松手必发 —— 边拖边算
+  // (序列快照只存焦点资产全程, 换焦点必须重跑构建, 与改参数同流程)
+  ui.dirty |= changed || bp_changed || focus_changed;
   if (ui.dirty) {
     const float now = static_cast<float>(ImGui::GetTime());
     constexpr float kDragGate = 0.15f; // 拖动中至少隔 150ms 才发新请求 (取消在跑, 从头重来)
@@ -593,7 +638,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
     if (released || due) {
       ui.dirty = false;
       ui.last_req_time = now;
-      service->RequestCompute(data, ui.params);
+      service->RequestCompute(data, ui.params, ui.focus);
     }
   }
 }

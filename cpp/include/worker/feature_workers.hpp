@@ -36,11 +36,16 @@ class CoreSequential;
 // release/acquire 链观察到构造完成后才会触碰.
 // ============================================================================
 struct TsSchedule {
-  std::vector<std::atomic<int32_t>> owner;            // 处置权 worker id; -1 = 不派活 (universe 外, 列留零)
+  // 全部数组按 universe 子轴下标 (sub) 索引, 大小 = 子轴大小 (= 张量 A 维)
+  std::vector<std::atomic<int32_t>> owner;            // 处置权 worker id (每个子轴资产都有 owner)
   std::vector<std::atomic<int32_t>> claimed;          // 已认领日 didx, -1 起
   std::vector<std::atomic<int32_t>> done;             // 已完成日 didx, -1 起
   std::vector<size_t> weight;                         // 回测期逐笔总条数 (领养挑最轻)
   std::vector<std::unique_ptr<CoreSequential>> cores; // per-asset 跨日状态
+
+  // sub → 全局轴下标 (UniverseAxis::ids 快照): worker 查 items/码表/bin 路径用.
+  // ComputeService 启动前写好, 运行期只读.
+  std::vector<uint32_t> global_ids;
 
   // Per-worker 被领养预算窗口: (victim 前沿 << 16) | 本窗已被领走数.
   // 前沿推进即换窗重置 —— "下一天最多能被领走多少个"的全局记账.
@@ -49,10 +54,6 @@ struct TsSchedule {
   // 领养节流阈值 N (%), 来自 UI 配置 (worker 启动前写好, 运行期只读);
   // 0 = 关闭领养.
   uint64_t adopt_pct = 10;
-
-  // 派活资产数 (owner != -1 的个数) = universe 大小; 领养上限按它算平均持仓
-  // (不用 owner.size(): 那是全轴 A). worker 启动前写好, 运行期只读.
-  size_t num_scheduled = 0;
 
   TsSchedule(size_t num_assets, size_t num_workers);
   ~TsSchedule();
@@ -142,7 +143,7 @@ private:
 // ============================================================================
 // PHASE 2 WORKERS —— 四角色统一签名: void xxx_worker(WorkerCtx)
 //
-// sched 主要 TS 用 (预取只读 owner 判 universe 内外), 其余角色不碰 ——
+// sched 主要 TS 用 (预取只读 global_ids 定位 .bin), 其余角色不碰 ——
 // 统一签名换来统一 launch (见 ComputeService).
 // worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做日志/stats 下标.
 // ============================================================================
@@ -157,7 +158,7 @@ struct WorkerCtx {
 
 // 预取: 顺日期把 .bin 读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
 //       门控 = 领先最慢 TS (query_ts_days_done) 不超过 pool slots + 余量.
-//       只暖 universe 内 (sched.owner != -1) 的资产.
+//       资产集 = universe 子轴 (sched.global_ids).
 void prefetch_worker(WorkerCtx ctx);
 
 // 时序: 逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量 (日期主序遍历);

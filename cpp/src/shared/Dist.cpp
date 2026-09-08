@@ -124,18 +124,18 @@ std::vector<std::string> dist_enumerate_months(const std::string &start_date,
 // ============================================================================
 
 void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::string> &month_keys,
-                           size_t n_assets, std::vector<uint32_t> active_ids) {
+                           std::vector<uint32_t> global_ids) {
   TraceN("DistReset"); // 首帧账目: 全资产 sketch/快照的 (再) 分配都在这
   std::lock_guard<std::mutex> lock(mutex);
 
   columns = std::move(cols);
   assert(!columns.empty() && "至少要有值列");
-  assert(n_assets > 0 && "资产轴为空, Distribution 无法构建");
-  assert(!active_ids.empty() && "universe 为空, Distribution 无法构建");
-  assert(std::is_sorted(active_ids.begin(), active_ids.end()) &&
-         std::adjacent_find(active_ids.begin(), active_ids.end()) == active_ids.end() &&
-         active_ids.back() < n_assets && "active_ids 必须升序去重且全部 < n_assets");
-  active = std::move(active_ids);
+  assert(!global_ids.empty() && "universe 为空, Distribution 无法构建");
+  assert(std::is_sorted(global_ids.begin(), global_ids.end()) &&
+         std::adjacent_find(global_ids.begin(), global_ids.end()) == global_ids.end() &&
+         "global_ids 必须升序去重 (UniverseAxis::ids)");
+  global_ids_ = std::move(global_ids);
+  const size_t n_assets = global_ids_.size(); // A 轴 = universe 子轴
 
   // 月聚合: 槽数随区间变, 数量对得上就复用 sketch 容量
   if (months.size() != month_keys.size()) {
@@ -151,17 +151,19 @@ void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::stri
   prepare_slots(by_tod, kTodBins, KLL_CAPACITY, KLL_RESOLUTION);
   prepare_slots(by_weekday, 7, KLL_CAPACITY, KLL_RESOLUTION);
 
-  // 全轴快照 (槽位 == 资产下标); PDF 折线绘制子集 = 活跃资产固定种子洗牌取前 kDrawAssets 个
-  // → 无偏随机, 画面统计形态与 universe 全量等价 (纯 UI 顶点预算, 计算恒为全部活跃资产).
-  // 洗牌池只含 active: 池含空列会让绘制预算被永远无线的资产占坑.
+  // 快照 (槽位 == 子轴下标, .asset = 全局轴下标); PDF 折线绘制子集 = 固定种子
+  // 洗牌取前 kDrawAssets 个 → 无偏随机, 画面统计形态与 universe 全量等价
+  // (纯 UI 顶点预算, 计算恒为全部资产).
   prepare_slots(asset_klls_, n_assets, KLL_ASSET_CAPACITY, KLL_ASSET_RESOLUTION);
   lines.assign(n_assets, AssetLine{});
   lines_staging_.assign(n_assets, AssetLine{});
-  std::vector<uint32_t> order = active;
+  std::vector<uint32_t> order(n_assets);
+  for (size_t a = 0; a < n_assets; ++a)
+    order[a] = static_cast<uint32_t>(a);
   std::shuffle(order.begin(), order.end(), std::mt19937{0x5eed});
   const size_t n_draw = std::min(kDrawAssets, order.size());
   for (size_t a = 0; a < n_assets; ++a)
-    lines[a].asset = lines_staging_[a].asset = static_cast<uint32_t>(a);
+    lines[a].asset = lines_staging_[a].asset = global_ids_[a];
   for (size_t i = 0; i < n_draw; ++i)
     lines[order[i]].draw = lines_staging_[order[i]].draw = 1;
   w2_ref_ = W2Ref{};
@@ -181,14 +183,12 @@ void Dist::reset_for_build(std::vector<size_t> cols, const std::vector<std::stri
 // ============================================================================
 
 size_t Dist::prepare_runtime(size_t n_months, size_t n_cols, size_t agg_stride) {
-  TraceN("PrepareShards"); // 首帧账目: 批平面 + n_threads × (staging + 聚合 sketch)
-  const size_t A = asset_klls_.size();
+  TraceN("PrepareShards");             // 首帧账目: 批平面 + n_threads × (staging + 聚合 sketch)
+  const size_t A = asset_klls_.size(); // universe 子轴大小
   const size_t asset_stride = kDaysPerBatch * level_valid_rows(kDistLevel);
 
-  // 扫描块数封顶线程数 (按活跃资产数; prewarm 时 active 还空, 按全轴上界备);
-  // IO 每批最多 kDaysPerBatch 个任务, staging 只给前 n_io 个线程备
-  const size_t n_scan = active.empty() ? A : active.size();
-  const size_t n_blocks = (n_scan + kAssetBlock - 1) / kAssetBlock;
+  // 扫描块数封顶线程数; IO 每批最多 kDaysPerBatch 个任务, staging 只给前 n_io 个线程备
+  const size_t n_blocks = (A + kAssetBlock - 1) / kAssetBlock;
   const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
   const size_t n_threads = std::min(n_hw, std::max(kDaysPerBatch, n_blocks));
   const size_t n_io = std::min(n_threads, kDaysPerBatch);
@@ -240,14 +240,12 @@ void Dist::prewarm(size_t n_assets, size_t n_months) {
 bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
 
-  [[maybe_unused]] const size_t A = asset_klls_.size();
-  const size_t n_act = active.size(); // 扫描 / 抽样预算 / 分母 全按活跃资产数, 不按全轴 A
+  const size_t A = asset_klls_.size(); // universe 子轴大小 (扫描/抽样预算/分母全按它)
   const size_t n_cols = columns.size();
   const bool has_valid = (n_cols > 1);
   const size_t VR = level_valid_rows(kDistLevel); // 分钟/日
   const size_t n_months = months.size();
-  assert(A > 0 && "资产轴为空, Distribution 无法构建");
-  assert(n_act > 0 && n_act <= A && "reset_for_build 未给 active");
+  assert(A > 0 && A == global_ids_.size() && "资产轴为空 / reset_for_build 未调");
   assert(n_cols <= 2 && "Dist 只接受值列 + 可选 valid 列");
 
   // 预计算: 分钟 → 日内桶 (L1)
@@ -278,7 +276,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     return true;
 
   // 日抽样: 总样本预算 (分批后平面只存一批, 内存不再约束天数; 预算只是总时长旋钮)
-  size_t stride = (all_dates.size() * n_act * VR + kMaxTotalSamples - 1) / kMaxTotalSamples;
+  size_t stride = (all_dates.size() * A * VR + kMaxTotalSamples - 1) / kMaxTotalSamples;
   if (stride % 5 == 0)
     ++stride; // 与交易周互质, 避免星期偏置
 
@@ -296,7 +294,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
   // 聚合槽抽样 stride: 按总格子数 (有效样本的上界) 折到 kAggTargetSamples 量级.
   // 区间小 → stride=1, 全量进聚合槽, 小数据集下不会被抽到低于 kMinSamples.
-  size_t agg_stride = std::max<size_t>(1, (n_sel * n_act * VR) / kAggTargetSamples);
+  size_t agg_stride = std::max<size_t>(1, (n_sel * A * VR) / kAggTargetSamples);
   while (agg_stride > 1 && VR % agg_stride == 0)
     ++agg_stride; // 与日内分钟数互质: 整除会让每天固定落在同一批分钟上, 扭曲日内分布
   this->agg_stride.store(agg_stride, std::memory_order_release);
@@ -336,7 +334,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       // 否则单批区间 (天数 ≤ kDaysPerBatch) 永远没有散点. 一次性 A 次 exportICDF, 后续批走滞后路径
       if (!had_ref && w2_ref_.valid) {
         TraceN("W2Backfill");
-        for (const uint32_t a : active) {
+        for (size_t a = 0; a < lines.size(); ++a) {
           AssetLine &ln = lines[a];
           if (ln.n_pts > 0)
             ln.w2 = compute_w2(asset_klls_[a].exportICDF(), ln.mean, w2_ref_);
@@ -374,18 +372,17 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       io_done.arrive_and_wait();
 
       // ------------------------------------------------------------------
-      // Phase 扫描: 抢 kAssetBlock 个活跃资产一块 (k 索引 active, a = 资产下标),
-      // 全在锁外; 块末短锁 merge 聚合槽. universe 外的列不扫 (恒零, 从未派活)
+      // Phase 扫描: 抢 kAssetBlock 个资产一块 (a = 子轴下标), 全在锁外;
+      // 块末短锁 merge 聚合槽.
       // ------------------------------------------------------------------
       for (;;) {
         const size_t k0 = next_block.fetch_add(kAssetBlock, std::memory_order_relaxed);
-        if (k0 >= n_act || cancel.load(std::memory_order_relaxed))
+        if (k0 >= A || cancel.load(std::memory_order_relaxed))
           break;
-        const size_t k1 = std::min(k0 + kAssetBlock, n_act);
+        const size_t k1 = std::min(k0 + kAssetBlock, A);
         TraceN("ScanBlock");
 
-        for (size_t k = k0; k < k1; ++k) {
-          const size_t a = active[k];
+        for (size_t a = k0; a < k1; ++a) {
           sh.samples.clear();
           sh.agg_samples.clear();
           sh.day_groups.clear();
@@ -522,7 +519,7 @@ void Dist::clear() {
   std::lock_guard<std::mutex> lock(mutex);
   columns.clear();
   months.clear();
-  active.clear();
+  global_ids_ = std::vector<uint32_t>{};
   lines.clear();
   by_tod.clear();
   by_weekday.clear();

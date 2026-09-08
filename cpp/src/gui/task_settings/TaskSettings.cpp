@@ -291,6 +291,20 @@ private:
           ImGui::EndCombo();
         }
 
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("基本面联网同步");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("启动时是否联网同步 BigQuant/Tushare 基本面 parquet.\n"
+                            "关闭 = 只本地构建 AssetInfo (零网络, 绕过配额/离线); "
+                            "本地 parquet 照常消费.");
+        }
+        ImGui::TableNextColumn();
+        if (ImGui::Checkbox("##network_sync", &cfg.network_sync)) {
+          changed = true;
+        }
+
         ImGui::EndTable();
       }
     }

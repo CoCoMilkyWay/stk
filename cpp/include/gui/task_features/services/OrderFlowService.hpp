@@ -85,6 +85,7 @@ private:
   // ---- worker 线程私有 ----
   std::unique_ptr<Impl> impl_;
   KlineReq kline_cur_{};
+  size_t kline_sub_ = 0; // 选中资产的子轴下标 (kline_begin 映射一次)
   bool kline_active_ = false;
   size_t kline_next_day_ = 0;
   double kline_y_min_ = 0.0, kline_y_max_ = 0.0; // OHLC 运行范围

@@ -35,10 +35,9 @@
 //                   活跃资产一视同仁 —— 每批覆盖 universe × 批内天, 收敛维度只有天,
 //                   跑完即 universe × 全区间的终态 (UI 只画其中固定随机子集的折线)
 //
-//   universe (active): 与特征计算同一名单 (universe_asset_ids). 平面 / lines / sketch 仍按
-//     全轴 A 分配 (槽位 == 资产下标, 与文件列序一致), 但扫描 / 抽样预算 / integrity 分母 /
-//     绘制子集 / UI 资产滑条只走 active —— universe 外的列在特征库里本就恒零 (从未派活),
-//     扫它们只会白花 CPU, 并把 nan_pct 分母和抽样 stride 撑虚.
+//   universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 UniverseAxis) ——
+//     平面 / lines / sketch 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
+//     槽位 = 子轴下标; AssetLine.asset 存全局轴下标 (UI 查 items/行业用).
 //       ── 栅栏 (completion, 单线程): 短锁 swap 发布 lines + NaN 账目 + 进度 ──
 //
 //   UI (每帧): 持 mutex 渲染; 资产截面消费 lines 快照, 零计算零重建只画
@@ -149,11 +148,11 @@ struct Dist {
     KLLcache kll{KLL_CAPACITY, KLL_RESOLUTION};
   };
 
-  // 每资产一条线的发布快照 (槽位 == 资产下标): worker 批末在锁外算好整条 (PDF/矩/W2),
+  // 每资产一条线的发布快照 (槽位 == 子轴下标): worker 批末在锁外算好整条 (PDF/矩/W2),
   // 短锁 swap 进 lines. UI 消费快照零计算零重建 —— 收敛式构建下 sketch 缓存每批作废,
   // 不能让 UI 拉. draw 只是 UI 折线顶点预算, 散点/矩/hover 覆盖全资产.
   struct AssetLine {
-    uint32_t asset = 0; // 资产下标 (行业色 / 详情面板; 恒 == 槽位, reset 时定好)
+    uint32_t asset = 0; // 全局轴下标 (行业色 / 详情面板查 items; reset 时定好)
     uint64_t n = 0;     // 累积样本数 (全量)
     float mean = 0.0f, var = 0.0f, skew = 0.0f, kurt = 0.0f;
     float w2 = -1.0f;                                     // 均值校准 W2, 相对上一批末的全局分位 (逐批收敛); < 0 = 参考未就绪
@@ -184,8 +183,7 @@ struct Dist {
   mutable std::mutex mutex;
 
   std::vector<MonthSlot> months;                // [n_months]
-  std::vector<uint32_t> active;                 // [n_active] universe 资产下标 (升序; reset 时定, 构建期只读; UI 资产滑条按它索引)
-  std::vector<AssetLine> lines;                 // [A] 全轴快照 (槽位 == 资产下标, 每批整体换新; active 外的槽恒空)
+  std::vector<AssetLine> lines;                 // [A_sub] 快照 (槽位 == 子轴下标, 每批整体换新; .asset = 全局轴下标)
   std::vector<KLLcache> by_tod;                 // [kTodBins] 全区间 日内 10 分钟桶 (KLL_CAPACITY/RESOLUTION, 下同)
   std::vector<KLLcache> by_weekday;             // [7]  全区间
   KLLcache total{KLL_CAPACITY, KLL_RESOLUTION}; // 全区间
@@ -197,12 +195,13 @@ struct Dist {
 
   // 预热: 把 reset/build 的全部容量准备提前做掉 (进任务时 worker 线程调用一次,
   // 之后 reset/build 的同名调用全部命中"尺寸对得上"的零分配路径). 只允许 Idle 时调.
+  // n_assets = universe 子轴大小 (universe_axis(cfg).size())
   void prewarm(size_t n_assets, size_t n_months);
 
   // 重置全部状态并进入 Building (sketch 容量复用, 预热/稳态下零分配).
-  // active_ids = universe 资产下标 (升序去重, 非空, 全部 < n_assets; 见 universe_asset_ids)
+  // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids; A_sub = size, 升序去重非空)
   void reset_for_build(std::vector<size_t> cols, const std::vector<std::string> &month_keys,
-                       size_t n_assets, std::vector<uint32_t> active_ids);
+                       std::vector<uint32_t> global_ids);
 
   // 全区间构建: 分批流式 (每批 IO → 扫描 → 发布); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
@@ -233,6 +232,9 @@ private:
     uint8_t bin;
   }; // 同日内桶连续段 → by_tod
 
+  // 上面 lines 的 .asset 来源: 子轴 → 全局轴映射快照 (reset 时定, 构建期只读)
+  std::vector<uint32_t> global_ids_;
+
   // 每线程私有: 扫描缓冲 + 聚合槽副本. 重活全在锁外做完, 只把 sketch 级结果并入全局.
   // (IO 暂存与 NaN 账目在 plane_ 里, 按 IO 线程分槽)
   struct Shard {
@@ -252,8 +254,8 @@ private:
   size_t prepare_runtime(size_t n_months, size_t n_cols, size_t agg_stride);
 
   // worker 私有 (clear() 只在 worker join 之后调用, 无竞争)
-  std::vector<KLLcache> asset_klls_;     // [A] 每资产累积 sketch (UI 不读, 全程无锁; 只有 active 槽被写)
-  std::vector<AssetLine> lines_staging_; // [A] 扫描线程各写各槽, 批末与 lines 交换
+  std::vector<KLLcache> asset_klls_;     // [A_sub] 每资产累积 sketch (UI 不读, 全程无锁)
+  std::vector<AssetLine> lines_staging_; // [A_sub] 扫描线程各写各槽, 批末与 lines 交换
   DayBatchPlane plane_;                  // [A][批天][分钟] 资产主序批平面 (f16, ~20MB) + IO 暂存
   std::vector<Shard> shards_;            // [n_threads]
 };

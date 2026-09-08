@@ -12,6 +12,7 @@
 //           挂起的请求 (pending_) 跨 Stop/Start 存活, 重进自动续算.
 #pragma once
 
+#include "shared/AssetAxis.hpp" // UniverseAxis
 #include "shared/Transform.hpp"
 
 #include <atomic>
@@ -28,15 +29,16 @@ namespace GUI::Features {
 
 class TransformService {
 public:
-  explicit TransformService(const std::string &features_dir);
+  TransformService();
   ~TransformService();
 
   void Start(SharedData &data);
   void Stop();
   void Shutdown();
 
-  // GUI 线程: 参数快照 + 取消在跑 (非 L1 / 无选择 静默忽略)
-  void RequestCompute(SharedData &data, const Transform::Params &params);
+  // GUI 线程: 参数快照 + 取消在跑 (非 L1 / 无选择 静默忽略).
+  // focus = 序列快照焦点 (UI 滑条槽位 == 子轴下标, 内部按子轴大小 clamp) —— 换焦点也是一次新构建
+  void RequestCompute(SharedData &data, const Transform::Params &params, int focus);
   void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
 
   bool is_running() const { return thread_.joinable(); }
@@ -47,12 +49,13 @@ private:
     std::vector<size_t> columns; // [特征 (+ mcap, ind_l1) (+ _meta)]
     bool has_valid = false;
     std::vector<std::string> months; // "YYYYMM" 升序
-    std::vector<uint32_t> active;    // universe 资产下标 (GUI 线程解析 config, worker 不碰 config)
+    UniverseAxis uni;                // universe 子轴 (GUI 线程解析 config, worker 不碰 config)
+    std::string features_dir;        // 该 universe 的特征库目录 (Config::FeatureUniverseDir)
+    uint32_t focus = 0;              // 序列快照焦点 (子轴下标, 已 clamp)
   };
 
   void worker_loop();
 
-  std::string features_dir_;
   SharedData *data_ = nullptr;
   std::thread thread_;
 

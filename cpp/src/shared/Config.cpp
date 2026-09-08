@@ -122,6 +122,7 @@ bool Config::LoadFromFile() {
   csv_market_data = j.value("csv_market_data", csv_market_data);
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
   csv_market_order = j.value("csv_market_order", csv_market_order);
+  network_sync = j.value("network_sync", network_sync);
 
   return true;
 }
@@ -142,6 +143,7 @@ bool Config::SaveToFile() {
   j["csv_market_data"] = csv_market_data;
   j["csv_market_trade"] = csv_market_trade;
   j["csv_market_order"] = csv_market_order;
+  j["network_sync"] = network_sync;
 
   std::ofstream file(filepath);
   if (!file.is_open()) {

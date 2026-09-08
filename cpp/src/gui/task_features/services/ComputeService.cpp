@@ -74,19 +74,15 @@ void ComputeService::start_compute(ComputeConfig config) {
               << std::endl;
 
     const unsigned int num_ts_workers = static_cast<unsigned int>(L.num_ts);
-    const size_t num_assets = data_.asset.items.size();
     const size_t total_dates = backtest_dates.size();
 
-    // universe: A 维仍是全轴 (列序/指纹不变), 只有名单内的资产派活/预取/计
-    // ts_close; 轴外资产 owner 保持 -1, 当天列留零 (与缺 .bin 同一语义, CS 靠
-    // _meta 自动排除). 全市场 1000 天算不动, 子集就是为此.
-    // 名单解析与 Dist/Transform 同一函数 (universe_asset_ids), 三处永远一致.
-    std::vector<uint8_t> universe_mask(num_assets, 0);
-    for (const uint32_t a : universe_asset_ids(data_.config, num_assets))
-      universe_mask[a] = 1;
-    const size_t num_scheduled = static_cast<size_t>(std::count(universe_mask.begin(), universe_mask.end(), 1));
-    assert(num_scheduled > 0 && "universe 为空");
-    std::cout << "Universe: " << data_.config.universe << " → " << num_scheduled << " / " << num_assets << " assets\n"
+    // universe 子轴 = 特征管线的 A 轴 (见 AssetAxis.hpp 的 UniverseAxis):
+    // 张量/调度/落盘全按子轴大小, 需要 items/码表时经 global_ids 映射.
+    // 子轴推导与 Dist/Transform/OrderFlow 读端同一函数 (universe_axis), 永远一致.
+    const UniverseAxis uni = universe_axis(data_.config, data_.asset.items.size());
+    const size_t num_assets = uni.size();
+    std::cout << "Universe: " << data_.config.universe << " → " << num_assets
+              << " / " << data_.asset.items.size() << " assets\n"
               << std::endl;
 
     // Load balancing (初始形态): 按回测区间内的逐笔条数降序 + 轮询分配 ——
@@ -97,24 +93,22 @@ void ComputeService::start_compute(ComputeConfig config) {
     //
     // 条数是扫描时随文件头一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
-    std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, weight), 仅 universe 内
-    asset_workloads.reserve(num_scheduled);
+    std::vector<std::pair<size_t, size_t>> asset_workloads; // (sub, weight)
+    asset_workloads.reserve(num_assets);
 
     // 回测日期 → 日期轴下标, 只查一次 (内层 资产 × 日期 是百万量级)
     std::vector<size_t> backtest_didx(backtest_dates.size());
     for (size_t d = 0; d < backtest_dates.size(); ++d)
       backtest_didx[d] = data_.asset.date_idx(backtest_dates[d]);
 
-    for (size_t i = 0; i < data_.asset.items.size(); ++i) {
-      if (!universe_mask[i])
-        continue;
-      const AssetItem &item = data_.asset.items[i];
+    for (size_t sub = 0; sub < num_assets; ++sub) {
+      const AssetItem &item = data_.asset.items[uni.global(sub)];
 
       size_t weight = 0;
       for (const size_t didx : backtest_didx)
         weight += item.date_at(didx).order_count;
 
-      asset_workloads.push_back({i, weight});
+      asset_workloads.push_back({sub, weight});
     }
 
     std::sort(asset_workloads.begin(), asset_workloads.end(),
@@ -123,19 +117,19 @@ void ComputeService::start_compute(ComputeConfig config) {
     // Round-robin assignment: 降序轮询, 第 k 重的标的给 worker k % N
     ts_schedule_ = std::make_unique<TsSchedule>(num_assets, num_ts_workers);
     ts_schedule_->adopt_pct = static_cast<uint64_t>(config_.adopt_pct);
-    ts_schedule_->num_scheduled = num_scheduled;
+    ts_schedule_->global_ids = uni.ids;
     for (size_t k = 0; k < asset_workloads.size(); ++k) {
-      const auto &[asset_id, weight] = asset_workloads[k];
-      ts_schedule_->owner[asset_id].store(static_cast<int32_t>(k % num_ts_workers), std::memory_order_relaxed);
-      ts_schedule_->weight[asset_id] = weight;
+      const auto &[sub, weight] = asset_workloads[k];
+      ts_schedule_->owner[sub].store(static_cast<int32_t>(k % num_ts_workers), std::memory_order_relaxed);
+      ts_schedule_->weight[sub] = weight;
     }
 
-    // Phase 2 前置: 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 算子在 worker 内逐日推进; worker 只读
+    // Phase 2 前置: 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 算子在
+    // worker 内逐日推进; worker 只读. 只 build 子轴码表 —— 池大小随 universe 缩.
     {
       std::vector<std::string> axis_codes(num_assets);
-      for (size_t i = 0; i < num_assets; ++i) {
-        axis_codes[i] = asset_axis().code(i);
-      }
+      for (size_t sub = 0; sub < num_assets; ++sub)
+        axis_codes[sub] = asset_axis().code(uni.global(sub));
       data_.fund_pool.build(axis_codes, backtest_dates);
     }
 
@@ -144,15 +138,17 @@ void ComputeService::start_compute(ComputeConfig config) {
     std::vector<std::string> original_dates = std::move(data_.asset.all_dates);
     data_.asset.all_dates = backtest_dates;
 
-    // 回测全量重算: 显式清特征库 (清库是调用方的决定, 不是 store 构造的副作用)
-    if (std::filesystem::exists(data_.config.feature_dir)) {
-      std::filesystem::remove_all(data_.config.feature_dir);
+    // 回测全量重算: 显式清本 universe 的特征库 (清库是调用方的决定, 不是
+    // store 构造的副作用; 别的 universe 的库不碰 —— 按目录分片, 见 Config)
+    const std::string feature_dir = data_.config.FeatureUniverseDir();
+    if (std::filesystem::exists(feature_dir)) {
+      std::filesystem::remove_all(feature_dir);
     }
 
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(
-        num_assets, num_scheduled, num_ts_workers, asset_axis().hash_at(num_assets),
-        data_.config.feature_dir, static_cast<size_t>(config_.pool_slots));
+        num_assets, num_ts_workers, uni.hash,
+        feature_dir, static_cast<size_t>(config_.pool_slots));
 
     // Clean up directories before compute
     namespace fs = std::filesystem;

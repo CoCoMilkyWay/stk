@@ -5,6 +5,7 @@
 #include "features/Backend/FeatureRead.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
+#include "shared/AssetAxis.hpp" // UniverseAxis
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -34,6 +35,7 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 // ============================================================================
 
 struct OrderFlowService::Impl {
+  UniverseAxis uni; // 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
   FeatureRead reader;
   L2::BinaryDecoder_L2 decoder;
   LimitOrderBook lob; // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
@@ -44,10 +46,12 @@ struct OrderFlowService::Impl {
   std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
   std::vector<size_t> columns;   // 选列缓冲
 
-  Impl(const std::string &features_dir, size_t A)
-      : reader(features_dir),
+  Impl(const std::string &features_dir, UniverseAxis uni_)
+      : uni(std::move(uni_)),
+        reader(features_dir, uni.size(), uni.hash),
         decoder(L2::DEFAULT_ENCODER_ORDER_SIZE),
         lob(L2::LOB_ORDER_CAPACITY) {
+    const size_t A = uni.size();
     l1_cols.preallocate(A, 1, 5 + OrderFlowConst::MAX_FEATURES); // OHLC 4 + _meta + 特征
     l0_cols.preallocate(A, 0, 1 + OrderFlowConst::MAX_FEATURES); // _meta + 特征
     uni_cols.preallocate(A, 1, UNIVERSE_COL_COUNT);              // 资产筛选状态列
@@ -119,7 +123,8 @@ void OrderFlowService::RequestUniverse(uint32_t gen, std::string date) {
 
 void OrderFlowService::worker_loop() {
   OrderFlow &of = data_->orderflow;
-  impl_ = std::make_unique<Impl>(data_->config.feature_dir, data_->asset.items.size());
+  impl_ = std::make_unique<Impl>(data_->config.FeatureUniverseDir(),
+                                 universe_axis(data_->config, data_->asset.items.size()));
 
   while (true) {
     std::optional<KlineReq> kreq;
@@ -171,12 +176,12 @@ void OrderFlowService::worker_loop() {
 }
 
 // ============================================================================
-// 日期扫描: features/YYYY/MM/DD 有整层文件的日, 升序
+// 日期扫描: features/<universe>/YYYY/MM/DD 有整层文件的日, 升序
 // ============================================================================
 
 void OrderFlowService::scan_dates(std::vector<std::string> &out) const {
   TraceN("OF_ScanDates");
-  const std::string &dir = data_->config.feature_dir;
+  const std::string dir = data_->config.FeatureUniverseDir();
   if (!std::filesystem::exists(dir))
     return;
 
@@ -194,7 +199,7 @@ void OrderFlowService::scan_dates(std::vector<std::string> &out) const {
         if (!day_entry.is_directory() || day_entry.path().filename().string().size() != 2)
           continue;
         const std::string date = year + month + day_entry.path().filename().string();
-        if (FeatureRead::has_date(data_->config.feature_dir, date))
+        if (FeatureRead::has_date(dir, date))
           out.push_back(date);
       }
     }
@@ -226,6 +231,15 @@ void OrderFlowService::kline_begin(const KlineReq &req) {
 
   k.begin_generation(req.gen, req.asset, req.feats.size());
   k.reserve_capacity(); // 发布前完成: 之后 data() 恒稳定
+
+  // 请求侧 asset 是全局轴下标, 特征列按 universe 子轴索引. 不在子轴内 (初始
+  // 默认选中 / 换 universe 后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
+  // 列可读, 直接发布"完整但空"的一代 —— 与全轴时代读到恒零列的语义一致.
+  kline_sub_ = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
+  if (kline_sub_ >= impl_->uni.size()) {
+    k.pub.store(OrderFlow::Kline::pack(req.gen, k.dates.size(), 0), std::memory_order_release);
+    kline_active_ = false;
+  }
 }
 
 bool OrderFlowService::kline_step() {
@@ -242,8 +256,9 @@ bool OrderFlowService::kline_step() {
     cols.push_back(static_cast<size_t>(f));
   impl_->reader.load_day_columns(k.dates[d], cols, impl_->l1_cols);
 
-  const size_t a = kline_cur_.asset;
-  assert(a < impl_->l1_cols.A);
+  // 选中资产的子轴下标 (kline_begin 映射并保证在轴内, 否则不会流式到这)
+  const size_t a = kline_sub_;
+  assert(a < impl_->uni.size());
   const double x0 = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
   const size_t nf = kline_cur_.feats.size();
 
@@ -308,8 +323,9 @@ void OrderFlowService::universe_build(const UniverseReq &req) {
   slot.gen = req.gen;
   slot.date = req.date;
 
-  const size_t A = data_->asset.items.size();
-  slot.meta.assign(A, OrderFlow::Universe::Meta{});
+  // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 特征列 = 子轴,
+  // 子轴外的资产恒 has_data = false (自然被候选过滤掉)
+  slot.meta.assign(data_->asset.items.size(), OrderFlow::Universe::Meta{});
 
   auto &cols = impl_->columns;
   cols.assign({static_cast<size_t>(L1_Field::_meta), static_cast<size_t>(L1_Field::st_level),
@@ -318,13 +334,14 @@ void OrderFlowService::universe_build(const UniverseReq &req) {
   assert(cols.size() == UNIVERSE_COL_COUNT);
   impl_->reader.load_day_columns(req.date, cols, impl_->uni_cols);
 
-  // 时间外层 / 资产内层 (布局 [T][n][A]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
+  // 时间外层 / 资产内层 (布局 [T][n][A_sub]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
   const FeatureRead::DayColumns &c = impl_->uni_cols;
-  assert(A <= c.A);
+  const size_t A = impl_->uni.size();
+  assert(A == c.A);
   size_t remaining = A;
   for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
     for (size_t a = 0; a < A; ++a) {
-      OrderFlow::Universe::Meta &meta = slot.meta[a];
+      OrderFlow::Universe::Meta &meta = slot.meta[impl_->uni.global(a)];
       if (meta.has_data) // 已取到当日状态 (日频广播, 后续分钟同值)
         continue;
       if (!fmeta::data_valid(static_cast<float>(c.get(m, UNI_META, a))))
@@ -475,7 +492,10 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   }
 
   // ---- L0 特征 overlay (与盘口独立: 特征列 + _meta 选列读, data_valid 秒) ----
-  if (!req.feats.empty()) {
+  // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
+  // 可读, overlay 留空 (盘口重放走 .bin, 不受 universe 约束, 上面照常构建)
+  const size_t depth_sub = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
+  if (!req.feats.empty() && depth_sub < impl_->uni.size()) {
     TraceN("OF_DepthFeats");
     auto &cols = impl_->columns;
     cols.assign({static_cast<size_t>(L0_Field::_meta)});
@@ -483,8 +503,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       cols.push_back(static_cast<size_t>(f));
     impl_->reader.load_day_columns(req.date, cols, impl_->l0_cols);
 
-    const size_t a = req.asset;
-    assert(a < impl_->l0_cols.A);
+    const size_t a = depth_sub;
     slot.n_feat = req.feats.size();
     slot.feat_y_min.fill((std::numeric_limits<float>::max)());
     slot.feat_y_max.fill(std::numeric_limits<float>::lowest());

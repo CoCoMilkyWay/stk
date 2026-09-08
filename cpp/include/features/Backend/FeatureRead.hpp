@@ -2,7 +2,6 @@
 
 #include "FeatureStoreConfig.hpp" // 含落盘编码选型 FeatureCodec / CODEC_ENABLED
 #include "misc/profiler.hpp"
-#include "shared/AssetAxis.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -22,9 +21,10 @@
 //
 // 形状是编译期常量: 写端永远写满 (LEVELS[lvl].rows / width), 文件头的 T/F 只做
 // 校验, 不做"实际维度" —— 消费端时间轴一律 level_valid_rows(lvl).
-// axis_hash = AssetAxis::hash_at(A_file): 列 → 资产的映射不在文件里, 靠 A 轴顺序.
-//   轴 append-only, 前缀指纹永久有效 → 旧文件 (A_file < 当前 A) 照样可读:
-//   逐行展宽, 新增资产列清零 (_meta = 0, 消费端天然视为无效).
+// A / axis_hash = universe 子轴大小 / 指纹 (UniverseAxis, 见 AssetAxis.hpp):
+//   列 → 资产的映射不在文件里, 靠子轴顺序 (名单 → 全局轴下标升序). 读端构造
+//   时带期望子轴 (A + hash), 逐文件精确比对 —— universe 名单/全局轴/特征库
+//   任何一方漂移都立刻断言炸 (需重算特征), 不做兼容展宽.
 // table_fingerprint = 写入时字段表指纹 (LEVELS[lvl].fingerprint):
 //   字段表改了旧文件立刻断言失败, 不会静默错位.
 //
@@ -38,14 +38,12 @@ class FeatureRead {
 public:
   // 复用缓冲 (稳态零分配), 每个张量结构自带一份
   struct Scratch {
-    std::vector<uint8_t> zbuf;             // 编码载荷 (仅 CODEC_ENABLED 时用)
-    std::vector<feature_storage_t> narrow; // 旧文件 (A_file < A) 的展宽中转
-    std::vector<feature_storage_t> tile;   // 逐列交织 / 整层抽列中转
+    std::vector<uint8_t> zbuf;           // 编码载荷 (仅 CODEC_ENABLED 时用)
+    std::vector<feature_storage_t> tile; // 逐列交织 / 整层抽列中转
   };
 
 private:
-  // 读一个特征文件到 dst (T×F 行, 每行 A 个): 头校验 + 载荷落地.
-  // A 轴前缀兼容: A_file <= A; 旧文件解压到 narrow 再逐行展宽, 尾部资产清零.
+  // 读一个特征文件到 dst (T×F 行, 每行 A 个): 头校验 (子轴精确匹配) + 载荷落地.
   void read_file(const std::string &filepath, size_t lvl, size_t F,
                  feature_storage_t *dst, size_t A, Scratch &s) const {
     Trace;
@@ -55,7 +53,6 @@ private:
     std::ifstream file(filepath, std::ios::binary);
     assert(file.is_open() && "File not found");
 
-    size_t A_file;
     {
       TraceN("ReadHeader");
       size_t header[FEATURE_FILE_HEADER_WORDS];
@@ -64,14 +61,10 @@ private:
 
       assert(header[0] == T && "T mismatch: 落盘形状恒为满 (LEVELS[lvl].rows)");
       assert(header[1] == F && "F mismatch: 落盘形状恒为满");
-      A_file = header[2];
-      assert(A_file <= A && "A 轴回缩: 特征文件比当前 asset_axis.json 还宽 (需重算特征)");
-
-      // A 轴列序锁定: 文件头存的是写入时 AssetAxis::hash_at(A_file) — 轴 append-only,
-      // 该值只依赖前 A_file 条, 所以历史文件的指纹永久有效. 一次 O(1) 比对即可确认
-      // "列 → 资产的映射没有漂移", 轴被重排/截断或文件被换掉都会立刻炸.
-      assert(static_cast<std::uint64_t>(header[3]) == asset_axis().hash_at(A_file) &&
-             "A 轴指纹不符: 特征文件与当前 asset_axis.json 列序不一致 (需重算特征)");
+      assert(header[2] == A && header[2] == axis_A_ &&
+             "A 不符: 特征文件与当前 universe 子轴大小不一致 (需重算特征)");
+      assert(static_cast<std::uint64_t>(header[3]) == axis_hash_ &&
+             "子轴指纹不符: 特征文件与当前 universe 名单/asset_axis.json 列序不一致 (需重算特征)");
       assert(static_cast<std::uint64_t>(header[4]) == LEVELS[lvl].fingerprint &&
              "字段表指纹不符: 特征文件是旧字段表写的 (需重算特征)");
     }
@@ -84,18 +77,12 @@ private:
       file.seekg(header_size, std::ios::beg);
     }
 
-    const size_t rows = T * F; // 每行 A_file 个
-    const size_t raw_size = rows * A_file * sizeof(feature_storage_t);
-    feature_storage_t *landing = dst;
-    if (A_file < A) {
-      s.narrow.resize(rows * A_file);
-      landing = s.narrow.data();
-    }
+    const size_t raw_size = T * F * A * sizeof(feature_storage_t);
 
     if constexpr (!CODEC_ENABLED) {
       TraceN("ReadRaw"); // 无编码: 载荷直读进落点, 无中转
       assert(payload_size == raw_size && "payload size mismatch");
-      file.read(reinterpret_cast<char *>(landing), payload_size);
+      file.read(reinterpret_cast<char *>(dst), payload_size);
       assert(file.gcount() == static_cast<std::streamsize>(payload_size));
     } else {
       {
@@ -105,22 +92,13 @@ private:
         assert(file.gcount() == static_cast<std::streamsize>(payload_size));
       }
       TraceN("CodecDecode");
-      FeatureCodec::decode(s.zbuf.data(), payload_size, landing, raw_size);
+      FeatureCodec::decode(s.zbuf.data(), payload_size, dst, raw_size);
     }
 
-    // T 轴 XOR 差分还原 (写端 disk_write 对 xor_delta 层压缩前编码); 必须在
-    // 展宽前做 —— 差分行宽是写入时的 F×A_file
+    // T 轴 XOR 差分还原 (写端 disk_write 对 xor_delta 层压缩前编码)
     if (LEVELS[lvl].xor_delta) {
       TraceN("XorDeltaDecode");
-      xor_delta_decode(landing, T, F * A_file);
-    }
-
-    if (A_file < A) {
-      TraceN("WidenAxis"); // 旧文件展宽: 新增资产列清零 (_meta = 0 → 无效)
-      for (size_t r = 0; r < rows; ++r) {
-        std::memcpy(dst + r * A, s.narrow.data() + r * A_file, A_file * sizeof(feature_storage_t));
-        std::memset(dst + r * A + A_file, 0, (A - A_file) * sizeof(feature_storage_t));
-      }
+      xor_delta_decode(dst, T, F * A);
     }
   }
 
@@ -190,7 +168,12 @@ public:
     }
   };
 
-  explicit FeatureRead(const std::string &base_dir) : base_dir_(base_dir) {}
+  // base_dir = 该 universe 的特征库目录 (Config::FeatureUniverseDir);
+  // axis_A / axis_hash = 期望子轴 (universe_axis(cfg).size() / .hash)
+  FeatureRead(const std::string &base_dir, size_t axis_A, std::uint64_t axis_hash)
+      : base_dir_(base_dir), axis_A_(axis_A), axis_hash_(axis_hash) {
+    assert(axis_A_ > 0 && "期望子轴为空");
+  }
 
   // ========================================================================
   // Single Day Loading (GUI: 单日整层, 任一层)
@@ -347,4 +330,6 @@ public:
   }
 
   std::string base_dir_;
+  size_t axis_A_;
+  std::uint64_t axis_hash_;
 };

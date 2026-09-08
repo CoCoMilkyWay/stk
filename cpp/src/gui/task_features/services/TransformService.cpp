@@ -1,11 +1,11 @@
 #include "gui/task_features/services/TransformService.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "misc/profiler.hpp"
-#include "shared/AssetAxis.hpp" // universe_asset_ids
 #include "shared/Config.hpp"
 #include "shared/Dist.hpp" // dist_enumerate_months
 #include "shared/SharedData.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 
@@ -14,8 +14,7 @@
 
 namespace GUI::Features {
 
-TransformService::TransformService(const std::string &features_dir)
-    : features_dir_(features_dir) {}
+TransformService::TransformService() = default;
 
 TransformService::~TransformService() { Stop(); }
 
@@ -45,7 +44,7 @@ void TransformService::Shutdown() {
     data_->transform.clear();
 }
 
-void TransformService::RequestCompute(SharedData &data, const Transform::Params &params) {
+void TransformService::RequestCompute(SharedData &data, const Transform::Params &params, int focus) {
   const auto &sel = data.feature.selection;
   if (sel.primary_feature_idx() < 0)
     return;
@@ -77,8 +76,11 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
   req.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
   if (req.months.empty())
     return;
-  // universe: 与特征计算同一名单 (Compute 只算这些列, 其余恒零)
-  req.active = universe_asset_ids(data.config, data.asset.items.size());
+  // universe 子轴: 与特征计算同一推导 (A 轴/文件列序/目录都由它定)
+  req.uni = universe_axis(data.config, data.asset.items.size());
+  req.features_dir = data.config.FeatureUniverseDir();
+  // 焦点按新子轴 clamp: UI 槽位可能来自上一个 universe (切 universe 后子轴大小已变)
+  req.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.uni.size()) - 1));
 
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
@@ -90,8 +92,7 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
 
 void TransformService::worker_loop() {
   TraceThread("TransformWorker");
-  FeatureRead reader(features_dir_);
-
+  // FeatureRead 每请求现构造 (轻量, 只有目录 + 期望子轴)
   while (true) {
     Request req;
     {
@@ -105,8 +106,9 @@ void TransformService::worker_loop() {
     }
 
     auto &tf = data_->transform;
+    FeatureRead reader(req.features_dir, req.uni.size(), req.uni.hash);
     tf.reset_for_build(req.params, std::move(req.columns), req.has_valid, req.months,
-                       data_->asset.items.size(), std::move(req.active));
+                       std::move(req.uni.ids), req.focus);
     tf.status.store(tf.build(reader, cancel_) ? Transform::Status::Done : Transform::Status::Cancelled,
                     std::memory_order_release);
   }

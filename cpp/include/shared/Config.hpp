@@ -12,8 +12,9 @@ struct Config {
   std::string end_date = "2025-02-01";
 
   // 特征计算 universe: "all" = 全 A 轴; 其他 = <config_dir>/universe/<name>.json
-  // (["600000.SH", ...]). 只约束 Compute 派活 (轴外资产列留零), A 维/文件指纹
-  // 仍是全轴; encode 不受影响 (始终全市场).
+  // (["600000.SH", ...]). 特征管线的 A 轴 = universe 子轴 (见 AssetAxis.hpp 的
+  // UniverseAxis): 张量/落盘/读端全部只含名单内资产, 特征库按 universe 分目录
+  // (FeatureUniverseDir); encode 不受影响 (始终全市场).
   std::string universe = "all";
 
   // Paths
@@ -28,6 +29,10 @@ struct Config {
   std::string csv_market_data = "行情.csv";
   std::string csv_market_trade = "逐笔成交.csv";
   std::string csv_market_order = "逐笔委托.csv";
+
+  // 基本面联网同步开关: false 时启动只本地构建 AssetInfo (零网络, 不碰 BigQuant/Tushare).
+  //   配额耗尽 / 离线时关掉即可绕过 bigquant::update 的 assert; 本地 parquet 仍照常消费.
+  bool network_sync = true;
 
   // Config file path
   std::string filepath = "../../../../config/config.json";
@@ -72,6 +77,10 @@ struct Config {
   // universe 名单: 读 <config_dir>/universe/<universe>.json → ["600000.SH", ...].
   // universe == "all" 时不得调用 (无名单文件). 文件缺失/非非空字符串数组 → assert.
   std::vector<std::string> UniverseCodes() const;
+
+  // 特征库目录按 universe 分片: <feature_dir>/<universe>. 不同 universe 的库
+  // 并存, 切 universe 不清别人的库; 写读两端唯一的路径入口.
+  std::string FeatureUniverseDir() const { return feature_dir + "/" + universe; }
 
 private:
   // Load config from JSON file

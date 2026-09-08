@@ -129,26 +129,32 @@ AssetAxis &asset_axis() {
   return instance;
 }
 
-std::vector<uint32_t> universe_asset_ids(const Config &cfg, std::size_t num_assets) {
+UniverseAxis universe_axis(const Config &cfg, std::size_t num_assets) {
   assert(num_assets > 0 && "资产轴为空");
-  std::vector<uint32_t> ids;
+  const AssetAxis &axis = asset_axis();
+
+  UniverseAxis uni;
   if (cfg.universe == "all") {
-    ids.resize(num_assets);
+    uni.ids.resize(num_assets);
     for (std::size_t i = 0; i < num_assets; ++i)
-      ids[i] = static_cast<uint32_t>(i);
-    return ids;
+      uni.ids[i] = static_cast<uint32_t>(i);
+    uni.hash = axis.hash_at(num_assets); // 同一条链的前缀值, 免重算
+    return uni;
   }
 
-  const AssetAxis &axis = asset_axis();
   const std::vector<std::string> codes = cfg.UniverseCodes();
-  ids.reserve(codes.size());
+  uni.ids.reserve(codes.size());
   for (const std::string &code : codes) {
     const std::size_t asset_id = axis.find(code);
     assert(asset_id < num_assets && "universe 名单代码不在 A 轴上");
-    ids.push_back(static_cast<uint32_t>(asset_id));
+    uni.ids.push_back(static_cast<uint32_t>(asset_id));
   }
-  std::sort(ids.begin(), ids.end());
-  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-  assert(!ids.empty() && "universe 为空");
-  return ids;
+  std::sort(uni.ids.begin(), uni.ids.end());
+  uni.ids.erase(std::unique(uni.ids.begin(), uni.ids.end()), uni.ids.end());
+  assert(!uni.ids.empty() && "universe 为空");
+
+  uni.hash = kFnvOffset;
+  for (const uint32_t a : uni.ids)
+    uni.hash = fnv_append(uni.hash, axis.code(a));
+  return uni;
 }

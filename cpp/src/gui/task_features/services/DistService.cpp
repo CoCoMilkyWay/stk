@@ -1,5 +1,5 @@
 #include "gui/task_features/services/DistService.hpp"
-#include "shared/AssetAxis.hpp" // universe_asset_ids
+#include "features/Backend/FeatureRead.hpp"
 #include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
 
@@ -12,8 +12,7 @@ namespace GUI::Features {
 // DistService
 // ============================================================================
 
-DistService::DistService(const std::string &features_dir)
-    : features_dir_(features_dir) {}
+DistService::DistService() = default;
 
 DistService::~DistService() { Stop(); }
 
@@ -73,8 +72,9 @@ void DistService::RequestCompute(SharedData &data) {
   req.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
   if (req.months.empty())
     return;
-  // universe: 与特征计算同一名单 (Compute 只算这些列, 其余恒零, 扫了白扫)
-  req.active = universe_asset_ids(data.config, data.asset.items.size());
+  // universe 子轴: 与特征计算同一推导 (A 轴/文件列序/目录都由它定)
+  req.uni = universe_axis(data.config, data.asset.items.size());
+  req.features_dir = data.config.FeatureUniverseDir();
 
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
@@ -85,7 +85,7 @@ void DistService::RequestCompute(SharedData &data) {
 }
 
 void DistService::RequestPrewarm(SharedData &data) {
-  const size_t n_assets = data.asset.items.size();
+  const size_t n_assets = universe_axis(data.config, data.asset.items.size()).size();
   const size_t n_months = dist_enumerate_months(data.config.start_date, data.config.end_date).size();
   assert(n_assets > 0 && n_months > 0 && "prewarm 只在输入就绪后触发");
   {
@@ -100,8 +100,8 @@ void DistService::RequestPrewarm(SharedData &data) {
 // ============================================================================
 
 void DistService::worker_loop() {
-  FeatureRead reader(features_dir_); // 常驻平面挂在 Dist 私有缓冲里, 跨请求复用
-
+  // FeatureRead 每请求现构造 (轻量, 只有目录 + 期望子轴);
+  // 常驻平面挂在 Dist 私有缓冲里, 跨请求复用
   while (true) {
     Request req;
     {
@@ -123,9 +123,9 @@ void DistService::worker_loop() {
     }
 
     auto &dist = data_->dist;
-    const size_t n_assets = data_->asset.items.size();
 
-    dist.reset_for_build(std::move(req.columns), req.months, n_assets, std::move(req.active));
+    FeatureRead reader(req.features_dir, req.uni.size(), req.uni.hash);
+    dist.reset_for_build(std::move(req.columns), req.months, std::move(req.uni.ids));
 
     if (dist.build(reader, cancel_)) {
       dist.status.store(Dist::Status::Done, std::memory_order_release);
