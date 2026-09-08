@@ -36,7 +36,7 @@ class CoreSequential;
 // release/acquire 链观察到构造完成后才会触碰.
 // ============================================================================
 struct TsSchedule {
-  std::vector<std::atomic<int32_t>> owner;            // 处置权 worker id
+  std::vector<std::atomic<int32_t>> owner;            // 处置权 worker id; -1 = 不派活 (universe 外, 列留零)
   std::vector<std::atomic<int32_t>> claimed;          // 已认领日 didx, -1 起
   std::vector<std::atomic<int32_t>> done;             // 已完成日 didx, -1 起
   std::vector<size_t> weight;                         // 回测期逐笔总条数 (领养挑最轻)
@@ -49,6 +49,10 @@ struct TsSchedule {
   // 领养节流阈值 N (%), 来自 UI 配置 (worker 启动前写好, 运行期只读);
   // 0 = 关闭领养.
   uint64_t adopt_pct = 10;
+
+  // 派活资产数 (owner != -1 的个数) = universe 大小; 领养上限按它算平均持仓
+  // (不用 owner.size(): 那是全轴 A). worker 启动前写好, 运行期只读.
+  size_t num_scheduled = 0;
 
   TsSchedule(size_t num_assets, size_t num_workers);
   ~TsSchedule();
@@ -138,7 +142,8 @@ private:
 // ============================================================================
 // PHASE 2 WORKERS —— 四角色统一签名: void xxx_worker(WorkerCtx)
 //
-// sched 只有 TS 用, 其余角色不碰 —— 统一签名换来统一 launch (见 ComputeService).
+// sched 主要 TS 用 (预取只读 owner 判 universe 内外), 其余角色不碰 ——
+// 统一签名换来统一 launch (见 ComputeService).
 // worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做日志/stats 下标.
 // ============================================================================
 struct WorkerCtx {
@@ -152,6 +157,7 @@ struct WorkerCtx {
 
 // 预取: 顺日期把 .bin 读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
 //       门控 = 领先最慢 TS (query_ts_days_done) 不超过 pool slots + 余量.
+//       只暖 universe 内 (sched.owner != -1) 的资产.
 void prefetch_worker(WorkerCtx ctx);
 
 // 时序: 逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量 (日期主序遍历);

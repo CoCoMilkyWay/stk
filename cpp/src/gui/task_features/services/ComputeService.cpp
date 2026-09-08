@@ -14,6 +14,30 @@
 
 namespace GUI::Features {
 
+namespace {
+
+// universe 掩码 [A]: 1 = 派活. "all" → 全 1; 否则名单 (Config::UniverseCodes,
+// JSON 解析在 Config.cpp —— 本 TU 是 -ffast-math, 不碰 nlohmann) 按 A 轴 find
+// 置位. 代码必须在轴上且 < num_assets (items 与轴同构), 否则 assert ——
+// 名单写错宁可启动即死, 不要静默算出一个残缺 universe.
+std::vector<uint8_t> load_universe_mask(const Config &cfg, size_t num_assets) {
+  std::vector<uint8_t> mask(num_assets, 0);
+  if (cfg.universe == "all") {
+    std::fill(mask.begin(), mask.end(), 1);
+    return mask;
+  }
+
+  const AssetAxis &axis = asset_axis();
+  for (const std::string &code : cfg.UniverseCodes()) {
+    const size_t asset_id = axis.find(code);
+    assert(asset_id < num_assets && "universe 名单代码不在 A 轴上");
+    mask[asset_id] = 1;
+  }
+  return mask;
+}
+
+} // namespace
+
 ComputeService::ComputeService(SharedData &data)
     : data_(data) {}
 
@@ -77,6 +101,15 @@ void ComputeService::start_compute(ComputeConfig config) {
     const size_t num_assets = data_.asset.items.size();
     const size_t total_dates = backtest_dates.size();
 
+    // universe: A 维仍是全轴 (列序/指纹不变), 只有掩码内的资产派活/预取/计
+    // ts_close; 轴外资产 owner 保持 -1, 当天列留零 (与缺 .bin 同一语义, CS 靠
+    // _meta 自动排除). 全市场 1000 天算不动, 子集就是为此.
+    const std::vector<uint8_t> universe_mask = load_universe_mask(data_.config, num_assets);
+    const size_t num_scheduled = static_cast<size_t>(std::count(universe_mask.begin(), universe_mask.end(), 1));
+    assert(num_scheduled > 0 && "universe 为空");
+    std::cout << "Universe: " << data_.config.universe << " → " << num_scheduled << " / " << num_assets << " assets\n"
+              << std::endl;
+
     // Load balancing (初始形态): 按回测区间内的逐笔条数降序 + 轮询分配 ——
     // 标的数每核严格均匀 (±1), 权重也近似均衡. 贪心 LPT 会把大量小标的堆到
     // 少数核上 (标的数悬殊), 而每日固定开销 (decode 头/begin_day/分钟网格)
@@ -85,8 +118,8 @@ void ComputeService::start_compute(ComputeConfig config) {
     //
     // 条数是扫描时随文件头一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
-    std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, weight)
-    asset_workloads.reserve(data_.asset.items.size());
+    std::vector<std::pair<size_t, size_t>> asset_workloads; // (asset_id, weight), 仅 universe 内
+    asset_workloads.reserve(num_scheduled);
 
     // 回测日期 → 日期轴下标, 只查一次 (内层 资产 × 日期 是百万量级)
     std::vector<size_t> backtest_didx(backtest_dates.size());
@@ -94,6 +127,8 @@ void ComputeService::start_compute(ComputeConfig config) {
       backtest_didx[d] = data_.asset.date_idx(backtest_dates[d]);
 
     for (size_t i = 0; i < data_.asset.items.size(); ++i) {
+      if (!universe_mask[i])
+        continue;
       const AssetItem &item = data_.asset.items[i];
 
       size_t weight = 0;
@@ -109,6 +144,7 @@ void ComputeService::start_compute(ComputeConfig config) {
     // Round-robin assignment: 降序轮询, 第 k 重的标的给 worker k % N
     ts_schedule_ = std::make_unique<TsSchedule>(num_assets, num_ts_workers);
     ts_schedule_->adopt_pct = static_cast<uint64_t>(config_.adopt_pct);
+    ts_schedule_->num_scheduled = num_scheduled;
     for (size_t k = 0; k < asset_workloads.size(); ++k) {
       const auto &[asset_id, weight] = asset_workloads[k];
       ts_schedule_->owner[asset_id].store(static_cast<int32_t>(k % num_ts_workers), std::memory_order_relaxed);
@@ -136,7 +172,7 @@ void ComputeService::start_compute(ComputeConfig config) {
 
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(
-        num_assets, num_ts_workers, asset_axis().hash_at(num_assets),
+        num_assets, num_scheduled, num_ts_workers, asset_axis().hash_at(num_assets),
         data_.config.feature_dir, static_cast<size_t>(config_.pool_slots));
 
     // Clean up directories before compute

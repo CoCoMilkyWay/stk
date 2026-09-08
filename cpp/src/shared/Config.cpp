@@ -1,5 +1,6 @@
 #include "shared/Config.hpp"
 #include "nlohmann/json.hpp"
+#include <cassert>
 #include <fstream>
 
 using json = nlohmann::json;
@@ -38,6 +39,7 @@ void Config::MarkDirty() {
 void Config::SyncStringBuffers() {
   snprintf(start_date_buf, sizeof(start_date_buf), "%s", start_date.c_str());
   snprintf(end_date_buf, sizeof(end_date_buf), "%s", end_date.c_str());
+  snprintf(universe_buf, sizeof(universe_buf), "%s", universe.c_str());
   snprintf(archive_dir_buf, sizeof(archive_dir_buf), "%s", archive_dir.c_str());
   snprintf(orders_dir_buf, sizeof(orders_dir_buf), "%s", orders_dir.c_str());
   snprintf(feature_dir_buf, sizeof(feature_dir_buf), "%s", feature_dir.c_str());
@@ -79,6 +81,25 @@ void Config::AutoSync() {
   }
 }
 
+std::vector<std::string> Config::UniverseCodes() const {
+  assert(universe != "all" && "universe == all 无名单文件");
+  const fs::path path = fs::path(config_dir) / "universe" / (universe + ".json");
+  std::ifstream file(path);
+  assert(file.is_open() && "universe 名单文件不存在: <config_dir>/universe/<name>.json");
+
+  json j;
+  file >> j;
+  assert(j.is_array() && !j.empty() && "universe 名单必须是非空数组 [\"600000.SH\", ...]");
+
+  std::vector<std::string> codes;
+  codes.reserve(j.size());
+  for (const auto &code : j) {
+    assert(code.is_string() && "universe 名单元素必须是字符串 \"CODE.EX\"");
+    codes.push_back(code.get<std::string>());
+  }
+  return codes;
+}
+
 bool Config::LoadFromFile() {
   std::ifstream file(filepath);
   if (!file.is_open()) {
@@ -91,6 +112,7 @@ bool Config::LoadFromFile() {
   // Parse JSON to Config with default values as fallback
   start_date = j.value("start_date", start_date);
   end_date = j.value("end_date", end_date);
+  universe = j.value("universe", universe);
   archive_dir = j.value("archive_dir", archive_dir);
   orders_dir = j.value("orders_dir", orders_dir);
   feature_dir = j.value("feature_dir", feature_dir);
@@ -110,6 +132,7 @@ bool Config::SaveToFile() {
   // Convert Config to JSON
   j["start_date"] = start_date;
   j["end_date"] = end_date;
+  j["universe"] = universe;
   j["archive_dir"] = archive_dir;
   j["orders_dir"] = orders_dir;
   j["feature_dir"] = feature_dir;

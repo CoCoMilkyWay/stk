@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "misc/cross_platform.hpp"
 #include "shared/SharedData.hpp"
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <ctime>
@@ -10,6 +11,7 @@
 #include <iostream>
 #include <ranges>
 #include <string_view>
+#include <vector>
 
 namespace GUI::Tasks {
 namespace {
@@ -249,6 +251,46 @@ private:
           changed = true;
         }
 
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Universe");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("特征计算 universe: all = 全 A 轴; 其他 = <Config Dir>/universe/<name>.json\n"
+                            "名单为 [\"600000.SH\", ...]; 轴外资产列留零 (A 维/文件指纹仍是全轴).\n"
+                            "只约束 Compute, encode 始终全市场.");
+        }
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1);
+        // 下拉: "all" + <config_dir>/universe/*.json 的文件名 (去 .json). 只在展开
+        // 那一帧扫目录 —— 新建名单文件后重新展开即可见, 不用重启.
+        if (ImGui::BeginCombo("##universe", cfg.universe.c_str())) {
+          std::vector<std::string> names{"all"};
+          const std::filesystem::path dir = std::filesystem::path(cfg.config_dir) / "universe";
+          if (std::filesystem::is_directory(dir)) {
+            for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+              if (entry.is_regular_file() && entry.path().extension() == ".json")
+                names.push_back(entry.path().stem().string());
+            }
+            std::sort(names.begin() + 1, names.end());
+          }
+          // 当前值对应的文件已被删: 仍列出, 让用户看得见并能换掉
+          if (std::find(names.begin(), names.end(), cfg.universe) == names.end())
+            names.push_back(cfg.universe + " (missing)");
+
+          for (const std::string &name : names) {
+            const bool selected = (name == cfg.universe);
+            if (ImGui::Selectable(name.c_str(), selected) && !selected && !name.ends_with(" (missing)")) {
+              cfg.universe = name;
+              snprintf(cfg.universe_buf, sizeof(cfg.universe_buf), "%s", name.c_str());
+              changed = true;
+            }
+            if (selected)
+              ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+
         ImGui::EndTable();
       }
     }
@@ -403,8 +445,8 @@ private:
   bool DrawDatabaseSection(Config &cfg) {
     bool changed = false;
     if (ImGui::CollapsingHeader("数据库配置", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::TextWrapped("universe 无需配置: encode / features 两级 cache 均为全市场日频,"
-                         " A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json)");
+      ImGui::TextWrapped("encode 始终全市场日频, A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json);"
+                         " 特征计算的 universe 子集见上方回测周期栏.");
       ImGui::Spacing();
 
       auto readonly_table = [](const char *table_id, auto draw_rows) {

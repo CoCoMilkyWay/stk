@@ -37,7 +37,7 @@ TsSchedule::~TsSchedule() = default;
 // 帮最慢者).
 //   victim 侧: 每天 (预算窗口按其前沿滚动) 最多让出自己持仓的 N% ——
 //              让完这波它下一轮几乎不再是最慢者, 也不会被过度掏空;
-//   leader 侧: 每天最多领养 (全市场标的数 / worker 数) 的 N% —— 单核不会
+//   leader 侧: 每天最多领养 (universe 标的数 / worker 数) 的 N% —— 单核不会
 //              一天暴涨吃成新的 lagger.
 
 void sequential_worker(WorkerCtx ctx) {
@@ -172,10 +172,11 @@ void sequential_worker(WorkerCtx ctx) {
   };
 
   // Leader 侧记账: 本 worker 今天已领养数 (每日在日循环头重置).
-  // 上限 = 平均每核持仓 (全市场 / worker 数) 的 adopt_pct%; 0 = 关闭领养.
+  // 上限 = 平均每核持仓 (universe / worker 数) 的 adopt_pct%; 0 = 关闭领养.
   size_t adopted_today = 0;
+  assert(sched.num_scheduled > 0 && "TsSchedule::num_scheduled 未由 ComputeService 写入");
   const size_t leader_cap =
-      (sched.adopt_pct == 0) ? 0 : std::max<size_t>(1, sched.owner.size() / store.query_ts_workers() * sched.adopt_pct / 100);
+      (sched.adopt_pct == 0) ? 0 : std::max<size_t>(1, sched.num_scheduled / store.query_ts_workers() * sched.adopt_pct / 100);
 
   // 负载再平衡: 在池边干等 slot 时调用 (本 worker 已领先, 等待时间正好拿来
   // 帮落后者). 接手 victim 的最轻资产, 立刻回填落下的旧日期 —— 含 victim

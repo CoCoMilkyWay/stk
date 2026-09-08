@@ -3,12 +3,18 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 struct Config {
 
   // Backtest/Analysis Period
   std::string start_date = "2025-01-01";
   std::string end_date = "2025-02-01";
+
+  // 特征计算 universe: "all" = 全 A 轴; 其他 = <config_dir>/universe/<name>.json
+  // (["600000.SH", ...]). 只约束 Compute 派活 (轴外资产列留零), A 维/文件指纹
+  // 仍是全轴; encode 不受影响 (始终全市场).
+  std::string universe = "all";
 
   // Paths
   std::string archive_dir = "/mnt/dev/sde/A_stock/L2";
@@ -29,6 +35,7 @@ struct Config {
   // String buffers for GUI (max 512 chars for path)
   char start_date_buf[64] = "";
   char end_date_buf[64] = "";
+  char universe_buf[128] = "";
   char archive_dir_buf[512] = "";
   char orders_dir_buf[512] = "";
   char feature_dir_buf[512] = "";
@@ -61,6 +68,10 @@ struct Config {
 
   // Auto-sync: check file changes and debounced save
   void AutoSync();
+
+  // universe 名单: 读 <config_dir>/universe/<universe>.json → ["600000.SH", ...].
+  // universe == "all" 时不得调用 (无名单文件). 文件缺失/非非空字符串数组 → assert.
+  std::vector<std::string> UniverseCodes() const;
 
 private:
   // Load config from JSON file
