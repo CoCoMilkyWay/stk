@@ -7,6 +7,7 @@
 //   3. 统计子集焦点滑条 + ADF/KPSS 逐天通过率热力条 (统计子集, 悬停详情, 点选焦点)
 //   4. 序列视图 (最近一批): 原始 (+TOD 轮廓) | 链末输出
 //   5. 输出分布 (全局 + 绘制子集资产 PDF, 焦点高亮) | 单日 PSD 均值 (周期轴, 带通光标拖动即调参)
+//      | 单日 ACF/PACF 均值 (Bartlett 参考带)
 //
 // Threading: UI 渲染帧内持 transform.mutex; 计算在 TransformService 单 worker (批末发布快照)
 #pragma once
@@ -23,8 +24,14 @@ struct TransformUIState {
   Transform::Params params;    // UI 编辑中的参数 (请求时快照)
   bool dirty = false;          // 参数改了但还没发请求
   float last_req_time = -1.0f; // 上次发请求的 ImGui 时间 (秒), 拖动节流用
-  bool need_autofit = false;   // epoch/focus 变那帧 autofit 一次, 流式逐批不 fit
-  uint64_t last_epoch = 0;     // 数据版本 (reset/clear/每批发布 +1), 跨构建单调, 不依赖 status 转移
+  // 待 autofit (epoch/focus 变即置位). 粘滞: 不按帧清, 等该图真正画上数据那帧才消费 ——
+  // reset 只 +epoch 不填数据 (首次构建 series/lines/psd 全空), 按帧清会把 fit 浪费在空图上.
+  // 四图数据就绪时机不同 (series.n_days / total 样本数 / psd_n / acf_n), 各自独立记账.
+  bool fit_series = false;
+  bool fit_pdf = false;
+  bool fit_psd = false;
+  bool fit_acf = false;
+  uint64_t last_epoch = 0; // 数据版本 (reset/clear/每批发布 +1), 跨构建单调, 不依赖 status 转移
   int last_focus = -1;
 
   int focus = 0;         // 统计子集焦点槽位 (0..n_stat-1)

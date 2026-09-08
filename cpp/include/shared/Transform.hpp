@@ -46,7 +46,7 @@ class FeatureRead;
 //   ── 栅栏 ──
 //   Phase 统计: 抢资产块; 每资产: 全量输出 → 该资产累积 sketch → 导出 AssetLine (PDF/矩);
 //               统计子集 (固定随机 kTfStatAssets 个) 额外: 逐天 ADF/KPSS (通过率累积)、逐天 PSD
-//               (算术平均累积)、本批原始/输出序列 + TOD 轮廓 快照 (UI 序列视图)
+//               与 ACF/PACF (算术平均累积)、本批原始/输出序列 + TOD 轮廓 快照 (UI 序列视图)
 //   ── 栅栏 (completion, 单线程): 短锁 swap 发布 + 进度 + epoch ──
 //   首帧 = 一批的 IO + 三段计算 (几十 ms), 与总区间长度无关; 视图逐批收敛.
 //
@@ -66,7 +66,9 @@ static constexpr size_t kTfTotalKllCapacity = 512; // 全局输出 sketch
 static constexpr size_t kTfTotalKllResolution = 256;
 static constexpr size_t kTfMinAssetSamples = 100;
 static constexpr size_t kTfMinStatSamples = 20; // 单日 ADF/KPSS 的最少有效样本
+static constexpr size_t kTfMaxLag = 40;         // 单日 ACF/PACF 最大滞后 (样本 = 分钟); 需有效样本 ≥ 4×lag
 using TfDayPSD = math::spectral::DayPSD<kTfVR>;
+static_assert(4 * kTfMaxLag <= kTfVR);
 
 struct Transform {
   using Season = math::stationary::TodProfile::Mode;
@@ -195,6 +197,8 @@ struct Transform {
   SeriesSnap series;                                          // 统计子集最近一批
   std::array<float, TfDayPSD::N_FREQS> psd_mean{};            // 逐 (统计资产, 天) 单日谱的算术平均 (逐批收敛)
   uint64_t psd_n = 0;                                         // 参与平均的 (资产, 天) 数
+  std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{};   // 逐 (统计资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
+  uint64_t acf_n = 0;                                         // 参与平均的 (资产, 天) 数 (有效样本 ≥ 4×kTfMaxLag)
   KLLcache total{kTfTotalKllCapacity, kTfTotalKllResolution}; // 全资产全区间链末输出
   Integrity integrity;
 

@@ -9,6 +9,7 @@
 #include "implot.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -318,13 +319,17 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
 // 序列视图: 最近一批 原始 (+TOD 轮廓) | 链末输出
 // ============================================================================
 
-static void RenderSeries(const Transform &tf, const TransformUIState &ui, bool autofit, float height) {
+static void RenderSeries(const Transform &tf, TransformUIState &ui, float height) {
   TraceN("UI:Series");
   const auto &sn = tf.series;
   const bool has = sn.n_days > 0 && ui.focus < static_cast<int>(tf.stat_assets.size());
   const size_t n_pts = sn.n_days * kTfVR;
   const size_t s = static_cast<size_t>(std::max(0, ui.focus));
   static std::vector<float> tod_tile;
+
+  // 两图同源: 有数据才 fit, 并就此消费掉 pending
+  const bool autofit = ui.fit_series && has;
+  ui.fit_series &= !autofit;
 
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   if (has)
@@ -378,23 +383,39 @@ static void RenderSeries(const Transform &tf, const TransformUIState &ui, bool a
 }
 
 // ============================================================================
-// 输出分布 (全局 + 绘制子集 + 焦点) | 单日 PSD 均值 (周期轴 + 带通光标)
+// 输出分布 (全局 + 绘制子集 + 焦点) | 单日 PSD 均值 (周期轴 + 带通光标) | 单日 ACF/PACF 均值
 // ============================================================================
 
-static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, bool autofit, float height, bool &bp_changed) {
+static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float height, bool &bp_changed) {
   TraceN("UI:DistPSD");
+  const float col_w = ImGui::GetContentRegionAvail().x / 3.0f;
   const size_t A = tf.lines.size();
   const uint32_t focus_asset = ui.focus < static_cast<int>(tf.stat_assets.size()) ? tf.stat_assets[ui.focus] : UINT32_MAX;
 
+  // 有数据才 fit, 并就此消费掉 pending (PDF 画的是总体线 + 绘制子集线, 二者任一就绪即算有)
+  bool pdf_has = tf.total.totalCount() >= kTfMinAssetSamples;
+  if (ui.fit_pdf && !pdf_has)
+    for (const auto &ln : tf.lines)
+      if (ln.draw && ln.n_pts > 0) {
+        pdf_has = true;
+        break;
+      }
+  const bool fit_pdf = ui.fit_pdf && pdf_has;
+  ui.fit_pdf &= !fit_pdf;
+  const bool fit_psd = ui.fit_psd && tf.psd_n > 0;
+  ui.fit_psd &= !fit_psd;
+  const bool fit_acf = ui.fit_acf && tf.acf_n > 0;
+  ui.fit_acf &= !fit_acf;
+
   // 左: 分布
-  ImGui::BeginChild("PDFPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
+  ImGui::BeginChild("PDFPlot", ImVec2(col_w, height), true);
   ImGui::Text("链末输出分布  n=%llu", static_cast<unsigned long long>(tf.total.totalCount()));
   if (tf.total.totalCount() >= kTfMinAssetSamples) {
     ImGui::SameLine();
     ImGui::TextDisabled("mean %.3g  sd %.3g  skew %.2f  kurt %.2f", tf.total.mean(), std::sqrt(tf.total.var()),
                         tf.total.skew(), tf.total.kurt());
   }
-  if (autofit)
+  if (fit_pdf)
     ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot("##PDF", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
@@ -423,8 +444,8 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, bool aut
 
   ImGui::SameLine();
 
-  // 右: PSD (x = 周期 分钟, log; y = log10 功率)
-  ImGui::BeginChild("PSDPlot", ImVec2(0, height), true);
+  // 中: PSD (x = 周期 分钟, log; y = log10 功率)
+  ImGui::BeginChild("PSDPlot", ImVec2(col_w, height), true);
   ImGui::Text("单日 PSD 均值  (%llu 资产·天)", static_cast<unsigned long long>(tf.psd_n));
   constexpr size_t NF = TfDayPSD::N_FREQS;
   static std::vector<float> px, py;
@@ -435,7 +456,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, bool aut
     const float v = tf.psd_mean[k];
     py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
-  if (autofit)
+  if (fit_psd)
     ImPlot::SetNextAxisToFit(ImAxis_Y1);
   if (ImPlot::BeginPlot("##PSD", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
     ImPlot::SetupAxes("周期 (min)", "log10 P");
@@ -457,7 +478,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, bool aut
       ImPlot::PlotLine("##psd", px.data(), py.data(), static_cast<int>(NF - 1));
     }
 
-    // 带通光标 (周期): lo < hi, 松手才发请求
+    // 带通光标 (周期): lo < hi. DragLineX 按住不动也返回 true (IsMouseDragging 粘滞), 值真变了才算改动
     double lo = ui.params.bp_lo_period, hi = ui.params.bp_hi_period;
     constexpr double kMinRatio = 1.2;
     bool moved = false;
@@ -470,11 +491,52 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, bool aut
     if (moved) {
       lo = std::clamp(lo, static_cast<double>(Transform::Params::kMinPeriod), static_cast<double>(Transform::Params::kMaxPeriod) / kMinRatio);
       hi = std::clamp(hi, lo * kMinRatio, static_cast<double>(Transform::Params::kMaxPeriod));
-      ui.params.bp_lo_period = static_cast<float>(lo);
-      ui.params.bp_hi_period = static_cast<float>(hi);
-      bp_changed = ui.params.bandpass; // 带通关着时光标只是预览, 不触发重算
+      const float new_lo = static_cast<float>(lo), new_hi = static_cast<float>(hi);
+      if (new_lo != ui.params.bp_lo_period || new_hi != ui.params.bp_hi_period) {
+        ui.params.bp_lo_period = new_lo;
+        ui.params.bp_hi_period = new_hi;
+        bp_changed = ui.params.bandpass; // 带通关着时光标只是预览, 不触发重算
+      }
     }
     ImPlot::EndPlot();
+  }
+  ImGui::EndChild();
+
+  ImGui::SameLine();
+
+  // 右: ACF / PACF (上下两图, 跳 lag 0; 参考带 = 单天 Bartlett ±1.96/√VR)
+  ImGui::BeginChild("ACFPlot", ImVec2(0, height), true);
+  {
+    constexpr int NL = static_cast<int>(kTfMaxLag);
+    const float cb = 1.96f / std::sqrt(static_cast<float>(kTfVR));
+    const float cb_neg = -cb;
+    ImGui::Text("单日 ACF / PACF 均值  (%llu 资产·天)  参考带 ±%.3f", static_cast<unsigned long long>(tf.acf_n), cb);
+    static std::array<float, kTfMaxLag> lags = [] {
+      std::array<float, kTfMaxLag> l{};
+      for (size_t i = 0; i < kTfMaxLag; ++i)
+        l[i] = static_cast<float>(i + 1);
+      return l;
+    }();
+    const float sub_h = (ImGui::GetContentRegionAvail().y - ImGui::GetStyle().ItemSpacing.y) * 0.5f;
+    auto plot = [&](const char *id, const char *ylabel, const std::array<float, kTfMaxLag + 1> &v, ImVec4 color) {
+      if (fit_acf)
+        ImPlot::SetNextAxisToFit(ImAxis_Y1);
+      if (ImPlot::BeginPlot(id, ImVec2(-1, sub_h), ImPlotFlags_NoLegend)) {
+        ImPlot::SetupAxes("lag (min)", ylabel);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(NL) + 1.0, ImGuiCond_Once);
+        ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+        ImPlot::PlotInfLines("##cbp", &cb, 1, ImPlotInfLinesFlags_Horizontal);
+        ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+        ImPlot::PlotInfLines("##cbn", &cb_neg, 1, ImPlotInfLinesFlags_Horizontal);
+        if (tf.acf_n > 0) {
+          ImPlot::SetNextFillStyle(color);
+          ImPlot::PlotBars("##v", lags.data(), v.data() + 1, NL, 0.6);
+        }
+        ImPlot::EndPlot();
+      }
+    };
+    plot("##ACF", "ACF", tf.acf_mean, ImVec4(0.3f, 0.7f, 1.0f, 0.9f));
+    plot("##PACF", "PACF", tf.pacf_mean, ImVec4(1.0f, 0.6f, 0.3f, 0.9f));
   }
   ImGui::EndChild();
 }
@@ -502,10 +564,10 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // 流式维护 x/y range: epoch 变了 (= 数据变了) 就 autofit 一次, 稳态把缩放还给用户.
   // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧
   // 之间也不会被看成"没变", 也不依赖 status 转移 (Building 中换特征 cancel→restart
-  // 全程停在 Building 会漏). 与 TabDist 同一逻辑.
+  // 全程停在 Building 会漏). 置位后由各图在画上数据那帧自行消费 (见 TransformUIState).
   const uint64_t cur_epoch = tf.epoch.load(std::memory_order_acquire);
   if (cur_epoch != ui.last_epoch || ui.focus != ui.last_focus)
-    ui.need_autofit = true;
+    ui.fit_series = ui.fit_pdf = ui.fit_psd = ui.fit_acf = true;
   ui.last_epoch = cur_epoch;
 
   const float avail_h = ImGui::GetContentRegionAvail().y - 3 * ImGui::GetTextLineHeightWithSpacing() - 40.0f;
@@ -516,11 +578,10 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
     std::lock_guard<std::mutex> lock(tf.mutex);
     RenderIntegrity(tf.integrity);
     RenderFocusAndHeatmap(tf, data.asset, ui);
-    RenderSeries(tf, ui, ui.need_autofit, plot_h);
-    RenderDistAndPSD(tf, ui, ui.need_autofit, plot_h, bp_changed);
+    RenderSeries(tf, ui, plot_h);
+    RenderDistAndPSD(tf, ui, plot_h, bp_changed);
   }
   ui.last_focus = ui.focus;
-  ui.need_autofit = false;
 
   // 参数改动: 记 dirty, 拖动中按时间 gate 节流发请求, 松手必发 —— 边拖边算
   ui.dirty |= changed || bp_changed;

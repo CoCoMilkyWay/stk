@@ -180,7 +180,6 @@ set(SOURCES
     ../../src/shared/EncodeDayRecord.cpp
     ../../src/shared/Feature.cpp
     ../../src/shared/OrderFlow.cpp
-    ../../src/shared/TimeSeries.cpp
     ../../src/shared/Transform.cpp
     # misc
     ../../src/misc/archive.cpp
@@ -238,13 +237,11 @@ set(SOURCES
     ../../src/gui/task_features/services/ComputeService.cpp
     ../../src/gui/task_features/services/DistService.cpp
     ../../src/gui/task_features/services/OrderFlowService.cpp
-    ../../src/gui/task_features/services/TimeSeriesService.cpp
     ../../src/gui/task_features/services/TransformService.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
-    ../../src/gui/task_features/ui/TabTimeSeries.cpp
     ../../src/gui/task_features/ui/TabTransform.cpp
     # gui / 其他 task
     ../../src/gui/task_settings/TaskSettings.cpp
@@ -274,7 +271,6 @@ set(HEADERS
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/SharedData.hpp
     ../../include/shared/TaskState.hpp
-    ../../include/shared/TimeSeries.hpp
     ../../include/shared/Transform.hpp
     # misc
     ../../include/misc/affinity.hpp
@@ -629,7 +625,6 @@ set_source_files_properties(
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
-    ../../src/gui/task_features/ui/TabTimeSeries.cpp
     ../../src/gui/task_features/ui/TabTransform.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp

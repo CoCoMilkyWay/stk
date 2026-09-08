@@ -7,7 +7,6 @@
 #include "./Feature.hpp"
 #include "./OrderFlow.hpp"
 #include "./TaskState.hpp"
-#include "./TimeSeries.hpp"
 #include "./Transform.hpp"
 #include "features/Method/Fundamental.hpp"
 #include "gui/coro/CoroManager.hpp"
@@ -21,7 +20,6 @@ struct SharedData {
   Feature feature;
   OrderFlow orderflow;
   Dist dist;
-  TimeSeries timeseries;
   Transform transform;
 
   CoroManager coromgr;

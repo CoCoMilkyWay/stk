@@ -39,8 +39,10 @@ struct DistUIState {
   // 滑条按住中 (本帧): 选中维度的图进入高亮模式 (焦点线置顶, 其余线压暗), 与图4 hover 同一套
   bool focus_active = false;
 
-  // Autofit: 任何新发布 epoch (= 数据变了) 即跟随, 稳态把缩放还给用户
-  bool need_autofit = false;
+  // 待 autofit (新发布 epoch = 数据变了 即置位), 稳态把缩放还给用户.
+  // 粘滞: 不按帧清, 等该图真正画上数据那帧才消费 —— reset 只 +epoch 不填数据 (首次构建槽表
+  // 全空), 按帧清会把 fit 浪费在空图上. 四维就绪时机不同, 与 focus 同样逐维记账.
+  bool fit[kDims] = {};
   uint64_t last_lines_epoch = 0;
 
   // 跨帧 hover 的线 (dist.lines 下标; 资产截面图输出, 左栏详情面板消费; 无 hover 时详情落到 focus[3])

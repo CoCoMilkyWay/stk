@@ -4,13 +4,11 @@
 #include "gui/task_features/services/ComputeService.hpp"
 #include "gui/task_features/services/DistService.hpp"
 #include "gui/task_features/services/OrderFlowService.hpp"
-#include "gui/task_features/services/TimeSeriesService.hpp"
 #include "gui/task_features/services/TransformService.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
 #include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
-#include "gui/task_features/ui/TabTimeSeries.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
 #include "shared/SharedData.hpp"
 
@@ -27,7 +25,6 @@ enum TabIdx {
   TAB_COMPUTE,
   TAB_TRANSFORM,
   TAB_DISTRIBUTION,
-  TAB_TIMESERIES,
   TAB_ORDERFLOW,
   TAB_COUNT
 };
@@ -41,7 +38,6 @@ struct TaskFeaturesState {
   std::unique_ptr<Features::ComputeService> compute_service;
   std::unique_ptr<Features::OrderFlowService> orderflow_service;
   std::unique_ptr<Features::DistService> dist_service;
-  std::unique_ptr<Features::TimeSeriesService> timeseries_service;
   std::unique_ptr<Features::TransformService> transform_service;
 
   // UI State
@@ -55,11 +51,9 @@ struct TaskFeaturesState {
   Features::ComputeState compute_state;
   Features::TransformUIState transform_ui_state;
   Features::DistUIState dist_ui_state;
-  Features::TimeSeriesUIState timeseries_ui_state;
 
   // Tab state
   bool dist_tab_was_active = false;
-  bool timeseries_tab_was_active = false;
   bool transform_tab_was_active = false;
 
   // Compute status tracking (to detect completion)
@@ -69,11 +63,6 @@ struct TaskFeaturesState {
   int prev_primary_feature_idx = -1; // Track feature selection changes
   int prev_selected_level = 0;       // Track level changes
   bool dist_prewarmed = false;       // 输入就绪后预热一次 (切出任务时回收并复位)
-
-  // Auto-compute tracking (TimeSeries)
-  int timeseries_prev_step = -1;        // Track step changes, -1 = first entry
-  int timeseries_prev_feature_idx = -1; // Track feature changes for timeseries
-  int timeseries_prev_level = -1;       // Track level changes for timeseries
 
   // Auto-compute tracking (Transform): 特征/层变了即重算 (tab 打开时)
   int transform_prev_feature_idx = -1;
@@ -108,8 +97,7 @@ TaskHandle CreateFeaturesTask() {
   };
 
   // 子项 (叶子) 名字, 顺序与 TabIdx 一致
-  handle.tabs = {"Feature", "Compute", "Transform", "Distribution",
-                 "TimeSeries", "OrderFlow"};
+  handle.tabs = {"Feature", "Compute", "Transform", "Distribution", "OrderFlow"};
 
   // Update: 每帧 (无论选中) 更新 taskstate.features + tab 锁定/使能 ——
   // 左栏标签/使能同帧读取, 不再依赖 "打开过 Features 页" 的上一帧缓存
@@ -143,10 +131,8 @@ TaskHandle CreateFeaturesTask() {
       fs.computing = false;
     }
 
-    // Tab 锁定: 计算期间锁住其它 tab (Dist 是流式构建, 切走即取消, 不参与锁)
-    const bool timeseries_busy = data.timeseries.compute.is_busy();
-    const bool any_busy = compute_busy || timeseries_busy;
-    if (any_busy) {
+    // Tab 锁定: 计算期间锁住其它 tab (Dist/Transform 是流式构建, 切走即取消, 不参与锁)
+    if (compute_busy) {
       if (!state->tabs_locked) {
         state->tabs_locked = true;
         state->locked_tab = state->active_tab;
@@ -166,7 +152,6 @@ TaskHandle CreateFeaturesTask() {
         !inputs_ready || is_locked(TAB_COMPUTE),                        // Compute: needs scanned inputs
         !inputs_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs inputs + selection
         !inputs_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs inputs + selection
-        !inputs_ready || !has_selection || is_locked(TAB_TIMESERIES),   // TimeSeries: needs inputs + selection
         !inputs_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs scanned inputs
     };
     for (int k = 0; k < TAB_COUNT; k++)
@@ -256,21 +241,6 @@ TaskHandle CreateFeaturesTask() {
       return {};
     }
 
-    case TAB_TIMESERIES: { // 计算中显示进度, 完成后 done, 取消 cancelled, 出错 error
-      const auto st = data.timeseries.compute.status;
-      if (st == TimeSeries::Compute::Status::Loading ||
-          st == TimeSeries::Compute::Status::Building)
-        return {TaskStatus::Kind::Busy,
-                "computing " + std::to_string((int)data.timeseries.compute.progress()) + "%"};
-      if (st == TimeSeries::Compute::Status::Done)
-        return {TaskStatus::Kind::Ready, "done"};
-      if (st == TimeSeries::Compute::Status::Cancelled)
-        return {TaskStatus::Kind::Warn, "cancelled"};
-      if (st == TimeSeries::Compute::Status::Error)
-        return {TaskStatus::Kind::Error, "error"};
-      return {};
-    }
-
     case TAB_ORDERFLOW: // 后台流式 worker 常驻 (背景常态, 灰色)
       if (state->orderflow_service && state->orderflow_service->is_running())
         return {TaskStatus::Kind::Muted, "streaming"};
@@ -294,15 +264,11 @@ TaskHandle CreateFeaturesTask() {
     if (!state->dist_service) {
       state->dist_service = std::make_unique<Features::DistService>(data.config.feature_dir);
     }
-    if (!state->timeseries_service) {
-      state->timeseries_service = std::make_unique<Features::TimeSeriesService>(data.config.feature_dir);
-    }
     if (!state->transform_service) {
       state->transform_service = std::make_unique<Features::TransformService>(data.config.feature_dir);
     }
 
     const bool feature_inputs_ready = state->inputs_ready; // Update (帧首) 已算
-    const bool has_selection = data.taskstate.features.has_selection;
 
     // Dist 预热: 输入就绪即起 worker 并预分配全部构建内存 (worker 线程做, 不卡帧),
     // 点 Distribution 零额外分配; 内存保留到切出 Features 任务 (OnCollapse 回收).
@@ -362,7 +328,6 @@ TaskHandle CreateFeaturesTask() {
     // 生命周期: 基于 active_tab 判定各 tab 是否 open (同一时刻仅一个 open, 等价旧 tab-bar 语义)
     const bool transform_tab_open = (idx == TAB_TRANSFORM);
     const bool dist_tab_open = (idx == TAB_DISTRIBUTION);
-    const bool timeseries_tab_open = (idx == TAB_TIMESERIES);
 
     // Transform lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在 OnCollapse);
     // 进 tab / 特征或层变了 → 用 UI 当前参数发新请求 (RequestCompute 内部取消在跑; 非 L1 静默忽略)
@@ -398,54 +363,6 @@ TaskHandle CreateFeaturesTask() {
       state->dist_tab_was_active = false;
     }
 
-    // TimeSeries lifecycle
-    if (timeseries_tab_open && !state->timeseries_tab_was_active) {
-      state->timeseries_tab_was_active = true;
-      state->timeseries_prev_step = -1;
-    } else if (!timeseries_tab_open && state->timeseries_tab_was_active) {
-      Features::StopTabTimeSeries(state->timeseries_service.get(), data);
-      state->timeseries_tab_was_active = false;
-    }
-
-    // Auto-trigger TimeSeries compute
-    if (timeseries_tab_open && state->timeseries_service &&
-        state->timeseries_service->is_running()) {
-      auto &ts = data.timeseries;
-      auto &sel = data.feature.selection;
-      int current_step = state->timeseries_ui_state.selected_step;
-
-      bool feature_changed = (sel.primary_feature_idx() != state->timeseries_prev_feature_idx);
-      bool level_changed = (sel.selected_level != state->timeseries_prev_level);
-      if (feature_changed || level_changed) {
-        ts.clear();
-        state->timeseries_prev_feature_idx = sel.primary_feature_idx();
-        state->timeseries_prev_level = sel.selected_level;
-      }
-
-      bool step_changed = (current_step != state->timeseries_prev_step);
-      bool step_needs_compute = false;
-      switch (current_step) {
-      case 0:
-        step_needs_compute = !ts.step0_stationarity.valid;
-        break;
-      case 1:
-        step_needs_compute = !ts.step1_frequency.valid;
-        break;
-      case 2:
-        step_needs_compute = !ts.step2_acf.valid;
-        break;
-      default:
-        break;
-      }
-
-      if (step_changed || feature_changed || level_changed) {
-        state->timeseries_prev_step = current_step;
-        if (step_needs_compute && has_selection && !ts.compute.is_busy()) {
-          state->timeseries_service->RequestCompute();
-        }
-      }
-    }
-
     // Render active tab content (OrderFlow 切 tab 不停 worker: 流式后台继续, 切回即全)
     ImGui::BeginChild("FeaturesTab", ImVec2(0, 0), false);
     ImGui::Spacing();
@@ -463,10 +380,6 @@ TaskHandle CreateFeaturesTask() {
       break;
     case TAB_DISTRIBUTION:
       Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
-      break;
-    case TAB_TIMESERIES:
-      Features::RenderTabTimeSeries(state->timeseries_service.get(), data,
-                                    state->timeseries_ui_state);
       break;
     case TAB_ORDERFLOW:
       Features::RenderTabOrderFlow(state->orderflow_service.get(), data);
@@ -490,7 +403,6 @@ TaskHandle CreateFeaturesTask() {
     if (state->dist_service)
       state->dist_service->Shutdown(); // Reinit 复用 SharedData, 构建内存一并释放
     state->dist_service.reset();
-    state->timeseries_service.reset();
     if (state->transform_service)
       state->transform_service->Shutdown();
     state->transform_service.reset();

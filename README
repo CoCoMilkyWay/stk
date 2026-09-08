@@ -24,8 +24,7 @@ stk/
 │   │   │   ├── Feature.hpp                              # 📦 特征元数据 + 选择 (多选 selected_features, 首个=主特征)
 │   │   │   ├── OrderFlow.hpp                            # 📦 订单流数据
 │   │   │   ├── Dist.hpp                                 # 📦 分布分析 (KLL, 分批流式, DayBatchPlane, 月/周/日内/资产四维)
-│   │   │   ├── TimeSeries.hpp                           # 📦 时序诊断: ADF/KPSS → 逐日 PSD → ACF/PACF (不建模)
-│   │   │   ├── Transform.hpp                            # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套
+│   │   │   ├── Transform.hpp                            # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套; 统计子集逐天 ADF/KPSS/PSD/ACF
 │   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
 │   │   ├── define/                                      # 🔷 底层数据结构
 │   │   │   ├── CBuffer.hpp                              # 🔷 循环缓冲区
@@ -92,7 +91,6 @@ stk/
 │   │   │       ├── services/                            # 🖥️ 特征服务层
 │   │   │       │   ├── ComputeService.hpp               # 🖥️ 计算服务
 │   │   │       │   ├── DistService.hpp                  # 🖥️ 分布分析服务 (分批流式)
-│   │   │       │   ├── TimeSeriesService.hpp            # 🖥️ 时序分析服务
 │   │   │       │   ├── TransformService.hpp             # 🖥️ 特征变换服务 (分批流式)
 │   │   │       │   └── OrderFlowService.hpp             # 🖥️ 订单流服务
 │   │   │       └── ui/                                  # 🖥️ UI组件
@@ -100,8 +98,7 @@ stk/
 │   │   │           ├── TabCompute.hpp                   # 🖥️ 计算标签页
 │   │   │           ├── TabOrderFlow.hpp                 # 🖥️ 订单流标签页
 │   │   │           ├── TabDist.hpp                      # 🖥️ 分布: 月/周/日内/资产 四维 PDF
-│   │   │           ├── TabTimeSeries.hpp                # 🖥️ 时序: 平稳性 / PSD / ACF
-│   │   │           └── TabTransform.hpp                 # 🖥️ 变换链: 季节→平稳化→带通→TS归一→截面
+│   │   │           └── TabTransform.hpp                 # 🖥️ 变换链: 季节→平稳化→带通→TS归一→截面; 诊断: ADF/KPSS 热力条 / PSD / ACF/PACF
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
 │   │   │   │ Tasks                                │ Panel:                             │
@@ -109,7 +106,7 @@ stk/
 │   │   │   │  > SystemInfo[""/live]               │                                    │
 │   │   │   │  > DataBase                          │ Overview / Encode / Table / Browser│
 │   │   │   │  > Features                          │ Feature / Compute / Transform /    │
-│   │   │   │                                      │ Dist / TimeSeries / OrderFlow      │
+│   │   │   │                                      │ Dist / OrderFlow                   │
 │   │   │   │  > Tools                             │ LaTeX                              │
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       │                                    │

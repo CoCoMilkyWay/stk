@@ -504,8 +504,8 @@ static void DrawSelectedBorder() {
 
 // 聚合维度 (月/周/日内) PDF 面板: 每槽一条线, 离焦点越近越亮 (Hot colormap), 焦点线加粗置顶.
 // PDF 零拷贝: 指向 KLL 内部重建缓存, 帧内有效. 点击图 → 选中该维度 (滑条切过去).
-static void RenderPDFByDim(const Dist &dist, const DistUIState &ui, const Asset &asset, int dim,
-                           bool need_autofit, int &clicked_dimension) {
+static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset, int dim,
+                           int &clicked_dimension) {
   char child_id[16];
   snprintf(child_id, sizeof(child_id), "PDFDim%d", dim);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
@@ -524,11 +524,13 @@ static void RenderPDFByDim(const Dist &dist, const DistUIState &ui, const Asset 
   // 流式: 槽 sketch 随批次增长, count 够了就画
   std::vector<KLLcache::LinePtr> lines(n_items, KLLcache::LinePtr{nullptr, nullptr, 0});
   int max_dist = 0;
+  bool any_line = false;
   const int focus = ui.focus[dim];
   for (int i = 0; i < n_items; ++i) {
     const KLLcache *kll = DimSlot(dist, dim, i);
     if (kll && kll->totalCount() >= 10) {
       lines[i] = kll->exportPDF();
+      any_line |= lines[i].n > 0;
       max_dist = std::max(max_dist, std::abs(i - focus));
     }
   }
@@ -537,6 +539,9 @@ static void RenderPDFByDim(const Dist &dist, const DistUIState &ui, const Asset 
   double min_dist_sq = 1e9;
   bool plot_clicked = false;
 
+  // 有线才 fit, 并就此消费掉 pending
+  const bool need_autofit = ui.fit[dim] && any_line;
+  ui.fit[dim] &= !need_autofit;
   if (need_autofit)
     ImPlot::SetNextAxesToFit();
 
@@ -669,7 +674,9 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     if (v >= 0.0f)
       v *= inv;
 
-  if (ui.need_autofit) {
+  // 到这里 n_valid > 0 (无线的 No data 路径已提前 return, pending 留到下批): fit 并消费
+  if (ui.fit[DIM_ASSETS]) {
+    ui.fit[DIM_ASSETS] = false;
     ImPlot::SetNextAxesToFit();
   }
 
@@ -963,9 +970,11 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // 流式维护 x/y range: epoch 变了 (= 数据变了) 就 autofit 一次, 稳态把缩放还给用户.
   // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧
   // 之间也不会被看成"没变" (归零版单批区间每次都停在 1, 会漏), 也不依赖 status 转移.
+  // 置位后由各维图在画上数据那帧自行消费 (见 DistUIState::fit)
   const uint64_t cur_epoch = dist.lines_epoch.load(std::memory_order_acquire);
   if (cur_epoch != ui.last_lines_epoch)
-    ui.need_autofit = true;
+    for (bool &f : ui.fit)
+      f = true;
   ui.last_lines_epoch = cur_epoch;
 
   // 渲染帧内持锁: worker 块末/批末短锁发布, UI 读快照与聚合槽与其互斥
@@ -1013,7 +1022,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   for (int dim = DIM_MONTH; dim <= DIM_TOD; ++dim) {
     if (dim != DIM_MONTH)
       ImGui::NextColumn();
-    RenderPDFByDim(dist, ui, data.asset, dim, ui.need_autofit, clicked_dimension);
+    RenderPDFByDim(dist, ui, data.asset, dim, clicked_dimension);
   }
 
   ImGui::Columns(1);
@@ -1033,9 +1042,6 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   ImGui::EndChild();
 
   ImGui::Columns(1);
-
-  // Clear autofit flag after all plots rendered
-  ui.need_autofit = false;
 }
 
 void StopTabDist(DistService *service, SharedData &data) {

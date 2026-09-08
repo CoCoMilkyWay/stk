@@ -2,6 +2,7 @@
 #include "features/Backend/DayBatchPlane.hpp"
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/KPSS.hpp"
+#include "math/timeseries/AutoCorrelation.hpp"
 #include "misc/profiler.hpp"
 
 #include <algorithm>
@@ -47,12 +48,16 @@ struct Transform::Runtime {
   math::stationary::FFDWeights ffd;              // 分数差分权重 (一次算)
   cs::ColumnFn cs_fn = nullptr;
 
-  std::vector<KLLcache> asset_klls;                // [A] 每资产累积 sketch
-  std::vector<AssetLine> lines_staging;            // [A]
-  std::vector<uint16_t> stat_slot_of;              // [A] → 统计子集槽位, kNoStat = 不在子集
-  std::vector<StatLine> stat_staging;              // [n_stat] 累积 (发布时整体拷贝)
-  SeriesSnap series_staging;                       // 统计子集本批序列
-  std::array<double, TfDayPSD::N_FREQS> psd_sum{}; // 全区间单日谱累加 (completion 单线程更新)
+  std::vector<KLLcache> asset_klls;                           // [A] 每资产累积 sketch
+  std::vector<AssetLine> lines_staging;                       // [A]
+  std::vector<uint16_t> stat_slot_of;                         // [A] → 统计子集槽位, kNoStat = 不在子集
+  std::vector<StatLine> stat_staging;                         // [n_stat] 累积 (发布时整体拷贝)
+  SeriesSnap series_staging;                                  // 统计子集本批序列
+  std::array<double, TfDayPSD::N_FREQS> psd_sum{};            // 全区间单日谱累加 (completion 单线程更新)
+  std::array<double, kTfMaxLag + 1> acf_sum{}, pacf_sum{};    // 全区间单日 ACF/PACF 累加 (同上)
+  uint64_t psd_n = 0, acf_n = 0;                              // 同上. 展示字段 (Transform::psd_n 等) 只在 publish 写,
+  KLLcache total{kTfTotalKllCapacity, kTfTotalKllResolution}; // 重算期间旧图留住不闪空
+  Integrity integrity;
 
   // 每线程私有
   struct Shard {
@@ -68,6 +73,9 @@ struct Transform::Runtime {
     std::unique_ptr<TfDayPSD> psd; // 大对象 (FFT 工作区), 堆上
     std::array<double, TfDayPSD::N_FREQS> psd_sum{};
     uint64_t psd_n = 0;
+    math::timeseries::ACFWorkspace acf_ws;
+    std::array<double, kTfMaxLag + 1> acf_sum{}, pacf_sum{};
+    uint64_t acf_n = 0;
     KLLcache total{kTfTotalKllCapacity, kTfTotalKllResolution};
     Integrity integrity;
   };
@@ -108,6 +116,12 @@ struct Transform::Runtime {
     series_staging.tod_sd.assign(n_stat * VR, 0.0f);
     series_staging.n_days = 0;
     psd_sum.fill(0.0);
+    acf_sum.fill(0.0);
+    pacf_sum.fill(0.0);
+    psd_n = 0;
+    acf_n = 0;
+    total.clear();
+    integrity.clear();
 
     shards.resize(n_threads);
     for (Shard &sh : shards) {
@@ -124,6 +138,10 @@ struct Transform::Runtime {
         sh.psd = std::make_unique<TfDayPSD>();
       sh.psd_sum.fill(0.0);
       sh.psd_n = 0;
+      sh.acf_ws.ensure(kTfMaxLag);
+      sh.acf_sum.fill(0.0);
+      sh.pacf_sum.fill(0.0);
+      sh.acf_n = 0;
       sh.total.clear();
       sh.integrity.clear();
     }
@@ -160,8 +178,8 @@ void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool 
   stat_assets.assign(order.begin(), order.begin() + n_stat);
   std::sort(stat_assets.begin(), stat_assets.end());
 
-  // 视觉快照 (lines PDF / series / psd_mean / stat_lines) 不清: 拖动调参时旧图留住, 新批逐批覆盖, 不闪空.
-  // 累加器 (stat_staging 在 Runtime.prepare 里新分配; psd_n / total / integrity) 在新 build 里重新累.
+  // 展示字段 (lines PDF / series / psd_mean / psd_n / acf_n / total / integrity / stat_lines) 一律不清:
+  // 拖动调参时旧图留住, 首批 publish 整体覆盖, 不闪空. 累加器全在 Runtime (prepare 里重置).
   if (lines.size() != n_assets) {
     lines.assign(n_assets, AssetLine{});
     for (size_t a = 0; a < n_assets; ++a)
@@ -176,10 +194,6 @@ void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool 
     for (size_t s = 0; s < n_stat; ++s)
       stat_lines[s].asset = stat_assets[s];
   }
-  psd_n = 0; // 累加器重置 (psd_mean 视觉留旧, 首批发布时覆盖)
-  total.clear();
-  integrity.clear();
-
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
   rt_->stat_slot_of.assign(n_assets, Runtime::kNoStat);
@@ -239,6 +253,30 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   auto publish = [&]() noexcept {
     TraceN("Publish");
     const size_t bd = std::min(kTfDaysPerBatch, n_days - pub_begin);
+    // 各 shard 并入 Runtime 累加器 (锁外, completion 单线程)
+    rt.integrity.n_in_nan += rt.plane.take_nan_seen();
+    for (auto &sh : rt.shards) {
+      for (size_t k = 0; k < TfDayPSD::N_FREQS; ++k)
+        rt.psd_sum[k] += sh.psd_sum[k];
+      rt.psd_n += sh.psd_n;
+      sh.psd_sum.fill(0.0);
+      sh.psd_n = 0;
+      for (size_t k = 0; k <= kTfMaxLag; ++k) {
+        rt.acf_sum[k] += sh.acf_sum[k];
+        rt.pacf_sum[k] += sh.pacf_sum[k];
+      }
+      rt.acf_n += sh.acf_n;
+      sh.acf_sum.fill(0.0);
+      sh.pacf_sum.fill(0.0);
+      sh.acf_n = 0;
+      rt.integrity.n_total += sh.integrity.n_total;
+      rt.integrity.n_in_valid += sh.integrity.n_in_valid;
+      rt.integrity.n_out_valid += sh.integrity.n_out_valid;
+      sh.integrity.clear();
+      rt.total.mergeWith(sh.total);
+      sh.total.clear();
+    }
+    // 短锁: 展示字段整体覆盖 (旧图 → 新图, 中间没有空态)
     {
       std::lock_guard<std::mutex> lock(mutex);
       lines.swap(rt.lines_staging);
@@ -254,21 +292,19 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         rt.series_staging.tod_mean.assign(series.tod_mean.size(), 0.0f);
         rt.series_staging.tod_sd.assign(series.tod_sd.size(), 0.0f);
       }
-      integrity.n_in_nan += rt.plane.take_nan_seen();
-      for (auto &sh : rt.shards) {
-        for (size_t k = 0; k < TfDayPSD::N_FREQS; ++k)
-          rt.psd_sum[k] += sh.psd_sum[k];
-        psd_n += sh.psd_n;
-        sh.psd_sum.fill(0.0);
-        sh.psd_n = 0;
-        integrity.n_total += sh.integrity.n_total;
-        integrity.n_in_valid += sh.integrity.n_in_valid;
-        integrity.n_out_valid += sh.integrity.n_out_valid;
-        sh.integrity.clear();
-      }
+      integrity = rt.integrity;
+      psd_n = rt.psd_n;
+      acf_n = rt.acf_n;
       if (psd_n > 0)
         for (size_t k = 0; k < TfDayPSD::N_FREQS; ++k)
           psd_mean[k] = static_cast<float>(rt.psd_sum[k] / static_cast<double>(psd_n));
+      if (acf_n > 0)
+        for (size_t k = 0; k <= kTfMaxLag; ++k) {
+          acf_mean[k] = static_cast<float>(rt.acf_sum[k] / static_cast<double>(acf_n));
+          pacf_mean[k] = static_cast<float>(rt.pacf_sum[k] / static_cast<double>(acf_n));
+        }
+      total.clear();
+      total.mergeWith(rt.total);
     }
     days_loaded.fetch_add(bd, std::memory_order_release);
     epoch.fetch_add(1, std::memory_order_release);
@@ -418,7 +454,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       cs_done.arrive_and_wait();
 
       // ------------------------------------------------------------------
-      // Phase 统计: sketch (全资产) + 统计子集 (ADF/KPSS/PSD/序列快照)
+      // Phase 统计: sketch (全资产) + 统计子集 (ADF/KPSS/ACF/PSD/序列快照)
       // ------------------------------------------------------------------
       for (;;) {
         const size_t k0 = next_block.fetch_add(Runtime::kAssetBlock, std::memory_order_relaxed);
@@ -467,6 +503,18 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
                 st.kpss_sum += kpss.statistic;
               }
             }
+            // 逐天 ACF / PACF (同一份压实输出; 样本够 4×lag 才算, 保证滞后数满)
+            if (n >= 4 * kTfMaxLag) {
+              const auto ac = math::timeseries::compute_acf_pacf({sh.y.data(), n}, static_cast<int>(kTfMaxLag), sh.acf_ws);
+              if (ac.valid) {
+                assert(ac.acf.size() == kTfMaxLag + 1 && ac.pacf.size() == kTfMaxLag + 1);
+                for (size_t k = 0; k <= kTfMaxLag; ++k) {
+                  sh.acf_sum[k] += ac.acf[k];
+                  sh.pacf_sum[k] += ac.pacf[k];
+                }
+                ++sh.acf_n;
+              }
+            }
             // 逐天 PSD
             if (sh.psd->compute(row)) {
               for (size_t k = 0; k < TfDayPSD::N_FREQS; ++k)
@@ -508,14 +556,8 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
             ln.n_pts = 0;
           }
         }
-        // 块末: 全局输出 sketch 短锁并入
-        {
-          std::lock_guard<std::mutex> lock(mutex);
-          total.mergeWith(sh.total);
-        }
-        sh.total.clear();
       }
-      stats_done.arrive_and_wait(); // → publish()
+      stats_done.arrive_and_wait(); // → publish() (sh.total 批内累积, 批末并入 rt.total)
     }
   };
 
@@ -542,6 +584,9 @@ void Transform::clear() {
   series = SeriesSnap{};
   psd_mean.fill(0.0f);
   psd_n = 0;
+  acf_mean.fill(0.0f);
+  pacf_mean.fill(0.0f);
+  acf_n = 0;
   total.clear();
   integrity.clear();
   rt_.reset(); // worker 已 join, 整体释放
