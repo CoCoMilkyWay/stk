@@ -71,18 +71,15 @@ static void FormatDateShort(char *buf, size_t size, const std::string &date) {
   }
 }
 
-// 选中特征列 (当前层): primary + secondary, 截断 MAX_FEATURES
+// 选中特征列 (当前层): 多选集合, 截断 MAX_FEATURES
 static std::vector<int> CollectFeats(const Feature::Selection &sel, int level) {
   std::vector<int> v;
   if (sel.selected_level != level)
     return v;
-  if (sel.primary_feature_idx >= 0)
-    v.push_back(sel.primary_feature_idx);
-  for (int f : sel.secondary_features) {
+  for (int f : sel.selected_features) {
     if (v.size() >= OrderFlowConst::MAX_FEATURES)
       break;
-    if (f != sel.primary_feature_idx)
-      v.push_back(f);
+    v.push_back(f);
   }
   return v;
 }

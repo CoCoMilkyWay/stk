@@ -317,7 +317,7 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   // Row 1: Compute | Cancel | Status
   const bool is_l1 = (data.feature.selection.selected_level == 1);
   bool can_compute = status != Dist::Status::Building &&
-                     data.feature.selection.primary_feature_idx >= 0 && is_l1;
+                     data.feature.selection.primary_feature_idx() >= 0 && is_l1;
   ImGui::BeginDisabled(!can_compute);
   if (ImGui::Button("Compute")) {
     service->RequestCompute(data);

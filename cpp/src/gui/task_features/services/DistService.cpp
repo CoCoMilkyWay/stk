@@ -44,19 +44,19 @@ void DistService::Shutdown() {
 
 void DistService::RequestCompute(SharedData &data) {
   const auto &sel = data.feature.selection;
-  if (sel.primary_feature_idx < 0)
+  if (sel.primary_feature_idx() < 0)
     return;
   // 分析只在 L1 上跑 (L0 数据量下全量分布分析无意义)
   if (sel.selected_level != 1)
     return;
 
   Request req;
-  req.columns = {static_cast<size_t>(sel.primary_feature_idx)};
+  req.columns = {static_cast<size_t>(sel.primary_feature_idx())};
 
   // valid 列: 按特征元数据的 valid_type 决定是否带 _meta 列 (编码见 Meta.hpp; L1 只有 DATA 门控)
   const auto &meta_list = data.feature.metadata.features[sel.selected_level];
-  assert(static_cast<size_t>(sel.primary_feature_idx) < meta_list.size());
-  const L2::ValidType valid_type = meta_list[sel.primary_feature_idx].valid_type;
+  assert(static_cast<size_t>(sel.primary_feature_idx()) < meta_list.size());
+  const L2::ValidType valid_type = meta_list[sel.primary_feature_idx()].valid_type;
   if (valid_type != L2::ValidType::ALL) {
     bool found = false;
     for (size_t i = 0; i < meta_list.size(); ++i) {

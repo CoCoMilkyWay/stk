@@ -101,7 +101,8 @@ public:
   }
 
   // Status: 行状态标签. idx == -1 任务行 (总体), 0 Overview (基本面), 1 Encode
-  // (编码进度/覆盖检查结果), Table/Browser 纯浏览无标签 (锁定用灰显表达)
+  // (编码进度/覆盖检查结果), 2 Table / 3 Browser (纯浏览: 前置计算中显示进行中,
+  // 解锁后 done, 锁定且无在跑 none)
   TaskStatus Status(const SharedData &data, int idx) const {
     switch (idx) {
     case -1:
@@ -110,6 +111,10 @@ public:
       return OverviewStatus();
     case 1:
       return EncodeStatus(data);
+    case 2:
+      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_table);
+    case 3:
+      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_browser);
     }
     return {};
   }
@@ -298,6 +303,20 @@ private:
     case DatabaseStatus::Error:
       return {TaskStatus::Kind::Error, "error"};
     }
+    return {};
+  }
+
+  // Table / Browser 子行标签: 纯浏览页, 状态跟随前置计算.
+  // 前置 (基本面同步 / L2 扫描) 在跑 → 显示进行中; 解锁后 → done; 锁定且无在跑 → none
+  TaskStatus BrowseStatus(const SharedData &data, bool can_access) const {
+    if (data.taskstate.database.json_update_inflight ||
+        (fundamental_svc_ && fundamental_svc_->is_busy()))
+      return {TaskStatus::Kind::Busy, "syncing"};
+    if (data.taskstate.database.l2_scan_inflight ||
+        (scan_svc_ && scan_svc_->is_scanning()))
+      return {TaskStatus::Kind::Busy, "scanning"};
+    if (can_access)
+      return {TaskStatus::Kind::Ready, "done"};
     return {};
   }
 

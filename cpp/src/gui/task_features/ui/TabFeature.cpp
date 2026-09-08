@@ -565,8 +565,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
   // Clear selection when level changes
   if (level_changed) {
-    sel.primary_feature_idx = -1;
-    sel.secondary_features.clear();
+    sel.selected_features.clear();
   }
 
   ImGui::Separator();
@@ -613,14 +612,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f)); // Tighter padding
   const float table_height = std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing(), ImGui::GetFrameHeight());
 
-  if (ImGui::BeginTable("FeatureTable", 11,
+  if (ImGui::BeginTable("FeatureTable", 10,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate,
                         ImVec2(0, table_height))) {
 
     // Table headers - fixed fit (auto shrink to content)
-    ImGui::TableSetupColumn("Primary", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
     ImGui::TableSetupColumn("Multi", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
     ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);
@@ -635,10 +633,9 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[] = {"Primary", "Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm", "Deps"};
+    const char *headers[] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm", "Deps"};
     const char *tooltips[] = {
-        "主特征: 用于分析的主要特征",
-        "多选: 选择多个特征进行对比",
+        "多选: 选择多个特征进行对比 (首个作为主特征)",
         "代码: 特征的唯一标识符",
         "宽度: 特征的维度数量",
         "有效粒度: ALL=全部, DATA=数据, DEPTH=深度(仅L0)",
@@ -650,7 +647,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "直接依赖: 该特征计算所依赖的其他特征 code (分号分隔)",
     };
 
-    for (int column = 0; column < 11; column++) {
+    for (int column = 0; column < 10; column++) {
       ImGui::TableSetColumnIndex(column);
       ImGui::TableHeader(headers[column]);
       if (ImGui::IsItemHovered()) {
@@ -712,31 +709,31 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               const FeatureMetadata &fb = features[b];
               int cmp = 0;
               switch (ui_state.sort_column) {
-              case 2:
+              case 1:
                 cmp = strcmp(fa.code, fb.code);
                 break;
-              case 3:
+              case 2:
                 cmp = fa.width - fb.width;
                 break;
-              case 4:
+              case 3:
                 cmp = (int)fa.valid_type - (int)fb.valid_type;
                 break;
-              case 5:
+              case 4:
                 cmp = strcmp(fa.name_cn, fb.name_cn);
                 break;
-              case 6:
+              case 5:
                 cmp = (int)fa.data_type - (int)fb.data_type;
                 break;
-              case 7:
+              case 6:
                 cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
                 break;
-              case 8:
+              case 7:
                 cmp = std::strcmp(fa.cat_l2, fb.cat_l2);
                 break;
-              case 9:
+              case 8:
                 cmp = (int)fa.norm_method - (int)fb.norm_method;
                 break;
-              case 10:
+              case 9:
                 cmp = deps_list[a].compare(deps_list[b]);
                 break;
               }
@@ -758,9 +755,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       const FeatureMetadata &f = features[idx];
 
       // Check if this row is selected
-      bool is_primary = (sel.primary_feature_idx == idx);
-      bool is_secondary = (sel.secondary_features.find(idx) != sel.secondary_features.end());
-      bool is_selected = is_primary || is_secondary;
+      bool is_selected = (sel.selected_features.find(idx) != sel.selected_features.end());
 
       ImGui::TableNextRow();
 
@@ -772,30 +767,16 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImVec4(0.2f, 0.4f, 0.6f, 0.3f)));
       }
 
-      // Column: Primary (RadioButton)
-      ImGui::TableNextColumn();
-      char radio_label[32];
-      snprintf(radio_label, sizeof(radio_label), "##primary_%d", idx);
-      if (ImGui::RadioButton(radio_label, sel.primary_feature_idx == idx)) {
-        sel.primary_feature_idx = idx;
-        // Remove from secondary if present
-        sel.secondary_features.erase(idx);
-      }
-
       // Column: Multi (Checkbox)
       ImGui::TableNextColumn();
       char check_label[32];
       snprintf(check_label, sizeof(check_label), "##multi_%d", idx);
-      bool is_multi_checked = is_secondary;
+      bool is_multi_checked = is_selected;
       if (ImGui::Checkbox(check_label, &is_multi_checked)) {
-        if (is_multi_checked) {
-          // Add to secondary only if not primary
-          if (sel.primary_feature_idx != idx) {
-            sel.secondary_features.insert(idx);
-          }
-        } else {
-          sel.secondary_features.erase(idx);
-        }
+        if (is_multi_checked)
+          sel.selected_features.insert(idx);
+        else
+          sel.selected_features.erase(idx);
       }
 
       // Column: Code
@@ -875,15 +856,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // Select all filtered button
   if (ImGui::Button("Select All Multi", ImVec2(120, 0))) {
     for (int idx : filtered_indices) {
-      if (sel.primary_feature_idx != idx) {
-        sel.secondary_features.insert(idx);
-      }
+      sel.selected_features.insert(idx);
     }
   }
   ImGui::SameLine();
   if (ImGui::Button("Clear All", ImVec2(80, 0))) {
-    sel.primary_feature_idx = -1;
-    sel.secondary_features.clear();
+    sel.selected_features.clear();
   }
 }
 

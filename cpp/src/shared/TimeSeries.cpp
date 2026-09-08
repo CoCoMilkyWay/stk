@@ -55,7 +55,7 @@ static FeatureConfig get_feature_config(const Feature &feature) {
   FeatureConfig cfg;
 
   const int level = feature.selection.selected_level;
-  const int primary_idx = feature.selection.primary_feature_idx;
+  const int primary_idx = feature.selection.primary_feature_idx();
   assert(primary_idx >= 0);
   assert(level >= 0 && level < 2);
 

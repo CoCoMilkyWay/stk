@@ -82,8 +82,7 @@ void Feature::Selection::clear() {
   filter_cat_l1.clear();
   filter_cat_l2.clear();
   filter_norm_method.clear();
-  primary_feature_idx = -1;
-  secondary_features.clear();
+  selected_features.clear();
 }
 
 // ============================================================================

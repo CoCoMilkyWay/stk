@@ -12,7 +12,7 @@ stk/
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 直接调用 CMake
 │   ├── mode_*.py          # 🐍 模式开关: tsan/debug/profile/assert/production
-│   └── app/               # 🐍 FileRepair / pdf2txt / procdump / format_cpp (clang-format) / lint_cpp (clangd 诊断)
+│   └── app/               # 🐍 FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                      # 📦 跨模块数据层
@@ -21,11 +21,11 @@ stk/
 │   │   │   ├── TaskState.hpp                            # 📦 任务状态
 │   │   │   ├── Asset.hpp / AssetInfo.hpp                # 📦 资产定义与元数据
 │   │   │   ├── AssetAxis.hpp                            # 📦 A轴(资产轴)对齐
-│   │   │   ├── Feature.hpp                              # 📦 特征数据结构
+│   │   │   ├── Feature.hpp                              # 📦 特征元数据 + 选择 (多选 selected_features, 首个=主特征)
 │   │   │   ├── OrderFlow.hpp                            # 📦 订单流数据
-│   │   │   ├── Dist.hpp                                 # 📦 分布分析 (KLL sketch, 随机序资产流式发布, UI 每帧派生 W2 偏移)
-│   │   │   ├── TimeSeries.hpp                           # 📦 时序分析
-│   │   │   ├── Transform.hpp                            # 📦 特征变换
+│   │   │   ├── Dist.hpp                                 # 📦 分布分析 (KLL, 分批流式, DayBatchPlane, 月/周/日内/资产四维)
+│   │   │   ├── TimeSeries.hpp                           # 📦 时序诊断: ADF/KPSS → 逐日 PSD → ACF/PACF (不建模)
+│   │   │   ├── Transform.hpp                            # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套
 │   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
 │   │   ├── define/                                      # 🔷 底层数据结构
 │   │   │   ├── CBuffer.hpp                              # 🔷 循环缓冲区
@@ -48,13 +48,15 @@ stk/
 │   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图: Node<Op,K> 输出 Series + DAG (CMake 拓扑序生成 NodesGenerated.hpp, NODE_ 变参 flush 默认=compute)
 │   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; 标签回填手工写 (ts_write_range<LVL>)
 │   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 行编译期展开 (CsLevel<LVL>), L0 每秒 + L1 分钟级联
-│   │   │   ├── Operator/TS/                             # 🧮 时序算子 (按特征命名) = 数学 class + 文件末尾 NODE_/FIELDS_ 宏 (Basic[Fund/Valuation..]/Behavioral/Imbalance/Label/Liquidity/Meta/OrderFlow/Resilience/Shape)
-│   │   │   ├── Operator/CS/                             # 🧮 截面算子 (按源节点命名: Spread/Valuation/Fund/Ohlc) = 文件末尾 FIELDS_ 宏 CS(src, Tf, Method)
-│   │   │   ├── Method/                                  # 🧮 方法声明 (实现在 src/features/Method/, precise-math): CS.hpp (Reciprocal/NormRank/WinsorRank/NeutralRank), Fundamental.hpp (fund::Pool 日频 PIT 数据源 [网格切片 + 事件链] + fund::Stream per-资产逐日状态机, Fund 算子 onDay 推进)
+│   │   │   ├── Operator/TS/                             # 🧮 时序算子(数学 class + 文件末尾 NODE_/FIELDS_ 宏)
+│   │   │   ├── Operator/CS/                             # 🧮 截面算子(文件末尾 FIELDS_ 宏)
+│   │   │   ├── Operator/unused/                         # 🧮 未启用 
+│   │   │   ├── Method/                                  # 🧮 CS.hpp: Tf(None/Reciprocal/Log)×Method(Rank/NormRank/WinsorRank/NeutralRank/Demean/Z/WinsorZ); Fundamental.hpp: fund::Pool + fund::Stream
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), width/valid/psd 全推导
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
 │   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
+│   │   │       ├── DayBatchPlane.hpp                    # 🧮 Dist/Transform 共用天批平面: 抢单天并行载入 → [列][A][批天][VR]
 │   │   │       ├── SparseCodec.hpp                      # 🧮 落盘编码之一: 位图+非零字面 (手搓, 内存带宽级, 默认)
 │   │   │       └── ZstdCodec.hpp                        # 🧮 落盘编码之二: zstd 熵压缩 (压得狠但单核慢; 同 API, 选型在 FeatureStoreConfig)
 │   │   ├── worker/                                      # ⚡ 多线程工作流编排
@@ -65,8 +67,8 @@ stk/
 │   │   ├── gui/                                         # 🖥️ GUI (ImGui + 协程)
 │   │   │   ├── Gui.hpp                                  # 🖥️ GUI主循环: ImGui渲染 + 事件分发
 │   │   │   ├── Config.hpp                               # 🖥️ GUI配置: 颜色/字体/布局
-│   │   │   ├── Tasks.hpp                                # 🖥️ 任务注册表
-│   │   │   ├── util/Color.hpp                           # 🖥️
+│   │   │   ├── Tasks.hpp                                # 🖥️ 任务树: 左栏选中/状态标签/生命周期 (idx==-1 任务行, idx>=0 子行)
+│   │   │   ├── util/Color.hpp / AssetFilter.hpp         # 🖥️ 颜色 / 资产过滤
 │   │   │   ├── coro/                                    # 🖥️ 协程基础设施
 │   │   │   │   └── CoroManager.hpp                      # 🖥️ 协程管理器: 调度/生命周期
 │   │   │   ├── task_settings/                           # 🖥️
@@ -89,31 +91,33 @@ stk/
 │   │   │       ├── TaskFeatures.hpp                     # 🖥️ 特征任务主界面
 │   │   │       ├── services/                            # 🖥️ 特征服务层
 │   │   │       │   ├── ComputeService.hpp               # 🖥️ 计算服务
-│   │   │       │   ├── DataLoader.hpp                   # 🖥️ 数据加载器
-│   │   │       │   ├── DistService.hpp                  # 🖥️ 分布分析服务
+│   │   │       │   ├── DistService.hpp                  # 🖥️ 分布分析服务 (分批流式)
 │   │   │       │   ├── TimeSeriesService.hpp            # 🖥️ 时序分析服务
-│   │   │       │   └── TransformService.hpp             # 🖥️ 特征变换服务
+│   │   │       │   ├── TransformService.hpp             # 🖥️ 特征变换服务 (分批流式)
+│   │   │       │   └── OrderFlowService.hpp             # 🖥️ 订单流服务
 │   │   │       └── ui/                                  # 🖥️ UI组件
-│   │   │           ├── TabFeature.hpp                   # 🖥️ 特征标签页
+│   │   │           ├── TabFeature.hpp                   # 🖥️ 特征表: 过滤 + 多选 (首个=主特征)
 │   │   │           ├── TabCompute.hpp                   # 🖥️ 计算标签页
 │   │   │           ├── TabOrderFlow.hpp                 # 🖥️ 订单流标签页
-│   │   │           ├── TabDist.hpp                      # 🖥️ 分布分析标签页
-│   │   │           ├── TabTimeSeries.hpp                # 🖥️ 时序分析标签页
-│   │   │           └── TabTransform.hpp                 # 🖥️ 变换标签页
+│   │   │           ├── TabDist.hpp                      # 🖥️ 分布: 月/周/日内/资产 四维 PDF
+│   │   │           ├── TabTimeSeries.hpp                # 🖥️ 时序: 平稳性 / PSD / ACF
+│   │   │           └── TabTransform.hpp                 # 🖥️ 变换链: 季节→平稳化→带通→TS归一→截面
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
 │   │   │   │ Tasks                                │ Panel:                             │
 │   │   │   │  > Settings[synced/syncing/writing]  │                                    │
 │   │   │   │  > SystemInfo[""/live]               │                                    │
-│   │   │   │  > DataBase                          │                                    │
-│   │   │   │  > Features                          │                                    │
-│   │   │   │  > Tools                             │                                    │
-│   │   │   │  ...                                 │                                    │
+│   │   │   │  > DataBase                          │ Overview / Encode / Table / Browser│
+│   │   │   │  > Features                          │ Feature / Compute / Transform /    │
+│   │   │   │                                      │ Dist / TimeSeries / OrderFlow      │
+│   │   │   │  > Tools                             │ LaTeX                              │
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── math/                                        # 📐 autoencoder / distribution / model / normalize / sample / spectral / stationary / timeseries
-│   │   │   └── Operator.hpp                             # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
+│   │   │   ├── Operator.hpp                             # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
+│   │   │   ├── stationary/TodProfile.hpp                # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
+│   │   │   └── spectral/IIRBandpass.hpp                 # 📐 因果 IIR 带通 (无 FIR/零相位)
 │   │   ├── api/                                         # 🌐 数据源 API
 │   │   │   ├── bigquant/                                # 🌐 BigQuant (dai/pipeline/spec)
 │   │   │   └── tushare/                                 # 🌐 Tushare (http/parse/pipeline/spec)
@@ -149,10 +153,10 @@ stk/
 └── output/                                              # 📁 运行时输出 (与cpp/同级)
     ├── orders/                                          # L2 编码 .bin (逐笔委托+成交合并)
     │   └── YYYY/MM/DD/<CODE>.<EX>.bin                   # 单资产单日一个 .bin; 同目录 .stat = 当天唯一的元数据 (账目+逐资产计量+墓碑)
-    ├── features/                                        # 特征张量库 (Float16 + Zstd, 按交易日全市场列式)
+    ├── features/                                        # 特征张量库 (Float16, 按交易日全市场列式; L0/L1 皆逐列)
     │   └── YYYY/MM/DD/
-    │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A] (列式, 按列选读)
-    │       └── features_L1_f<f>.zst                     # L1 逐特征列 [T×A] (列式, 按列选读)
+    │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A] (秒频, 按列选读)
+    │       └── features_L1_f<f>.zst                     # L1 逐特征列 [T×A] (分钟频, XOR 差分 + 按列选读)
     ├── fundamental/                                     # 日频基本面 (表清单见上方 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                         # 月度分片 (2015-01 起, 每表一文件; 0 行月也落文件 = "拉过")
     │   ├── _meta/<表>.parquet                           # Static/Snapshot 单文件整刷 (cn_stock_basic_info / cn_stock_static_data)

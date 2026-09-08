@@ -46,13 +46,13 @@ void TransformService::Shutdown() {
 
 void TransformService::RequestCompute(SharedData &data, const Transform::Params &params) {
   const auto &sel = data.feature.selection;
-  if (sel.primary_feature_idx < 0)
+  if (sel.primary_feature_idx() < 0)
     return;
   if (sel.selected_level != static_cast<int>(params.level))
     return;
 
   const auto &meta_list = data.feature.metadata.features[sel.selected_level];
-  assert(static_cast<size_t>(sel.primary_feature_idx) < meta_list.size());
+  assert(static_cast<size_t>(sel.primary_feature_idx()) < meta_list.size());
   auto find_col = [&](const char *code) -> size_t {
     for (size_t i = 0; i < meta_list.size(); ++i)
       if (std::strcmp(meta_list[i].code, code) == 0)
@@ -63,13 +63,13 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
 
   Request req;
   req.params = params;
-  req.columns = {static_cast<size_t>(sel.primary_feature_idx)};
+  req.columns = {static_cast<size_t>(sel.primary_feature_idx())};
   if (params.cs_neutral()) {
     req.columns.push_back(find_col(TF_STR(NEUTRAL_RANK_MCAP)));
     req.columns.push_back(find_col(TF_STR(NEUTRAL_RANK_INDUSTRY)));
   }
   // valid 列: 按特征元数据的 valid_type 决定是否带 _meta 门控列 (恒为末列; L1 只有 DATA 门控)
-  if (meta_list[sel.primary_feature_idx].valid_type != L2::ValidType::ALL) {
+  if (meta_list[sel.primary_feature_idx()].valid_type != L2::ValidType::ALL) {
     req.columns.push_back(find_col("_meta"));
     req.has_valid = true;
   }

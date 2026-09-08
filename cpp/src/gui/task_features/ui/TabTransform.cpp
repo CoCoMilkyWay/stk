@@ -85,7 +85,7 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
   const auto &sel = data.feature.selection;
   const bool is_l1 = sel.selected_level == static_cast<int>(kTfLevel);
 
-  ImGui::BeginDisabled(status == Transform::Status::Building || sel.primary_feature_idx < 0 || !is_l1);
+  ImGui::BeginDisabled(status == Transform::Status::Building || sel.primary_feature_idx() < 0 || !is_l1);
   if (ImGui::Button("Compute"))
     service->RequestCompute(data, ui.params);
   ImGui::EndDisabled();
@@ -105,10 +105,10 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
   ImGui::Text(" (天 %zu/%zu)", tf.days_loaded.load(), tf.days_total.load());
 
   ImGui::SameLine(0, 20);
-  if (sel.primary_feature_idx >= 0 && sel.selected_level >= 0 && sel.selected_level < static_cast<int>(LEVEL_COUNT)) {
+  if (sel.primary_feature_idx() >= 0 && sel.selected_level >= 0 && sel.selected_level < static_cast<int>(LEVEL_COUNT)) {
     const auto &meta = data.feature.metadata.features[sel.selected_level];
-    if (sel.primary_feature_idx < static_cast<int>(meta.size()))
-      ImGui::Text("L%d %s", sel.selected_level, meta[sel.primary_feature_idx].code);
+    if (sel.primary_feature_idx() < static_cast<int>(meta.size()))
+      ImGui::Text("L%d %s", sel.selected_level, meta[sel.primary_feature_idx()].code);
   } else {
     ImGui::TextDisabled("无特征");
   }

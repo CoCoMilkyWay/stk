@@ -78,9 +78,11 @@ struct Feature {
     std::set<std::string_view> filter_cat_l2;
     std::set<NormMethod> filter_norm_method;
 
-    // Selected features
-    int primary_feature_idx = -1;     // Primary feature (single selection)
-    std::set<int> secondary_features; // Other features (multi-selection)
+    // Selected features (multi-selection; primary = 首个, 供需要单选的消费方)
+    std::set<int> selected_features;
+
+    // 单选视图: 多选的首个, 无选时 -1
+    int primary_feature_idx() const { return selected_features.empty() ? -1 : *selected_features.begin(); }
 
     void clear();
   };

@@ -121,7 +121,7 @@ TaskHandle CreateFeaturesTask() {
         data.asset.binary.exists &&
         !data.asset.backtest.required_dates.empty() &&
         !data.taskstate.database.l2_scan_inflight;
-    const bool has_selection = (data.feature.selection.primary_feature_idx >= 0);
+    const bool has_selection = (data.feature.selection.primary_feature_idx() >= 0);
     fs.has_selection = has_selection;
 
     // Services 懒创建 (首次 Draw), 未创建 = 必然没在算
@@ -226,29 +226,50 @@ TaskHandle CreateFeaturesTask() {
       }
       return {};
 
-    case TAB_TRANSFORM: { // 流式构建中显示天数进度
-      if (data.transform.status.load(std::memory_order_relaxed) != Transform::Status::Building)
-        return {};
-      const size_t total = data.transform.days_total.load(std::memory_order_relaxed);
-      const size_t done = data.transform.days_loaded.load(std::memory_order_relaxed);
-      const int pct = total > 0 ? (int)(100 * done / total) : 0;
-      return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
+    case TAB_TRANSFORM: { // 流式构建中显示天数进度, 完成后 done, 取消 cancelled
+      const auto st = data.transform.status.load(std::memory_order_relaxed);
+      if (st == Transform::Status::Building) {
+        const size_t total = data.transform.days_total.load(std::memory_order_relaxed);
+        const size_t done = data.transform.days_loaded.load(std::memory_order_relaxed);
+        const int pct = total > 0 ? (int)(100 * done / total) : 0;
+        return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
+      }
+      if (st == Transform::Status::Done)
+        return {TaskStatus::Kind::Ready, "done"};
+      if (st == Transform::Status::Cancelled)
+        return {TaskStatus::Kind::Warn, "cancelled"};
+      return {};
     }
 
-    case TAB_DISTRIBUTION: { // 流式构建中显示天数进度
-      if (data.dist.status.load(std::memory_order_relaxed) != Dist::Status::Building)
-        return {};
-      const size_t total = data.dist.days_total.load(std::memory_order_relaxed);
-      const size_t done = data.dist.days_loaded.load(std::memory_order_relaxed);
-      const int pct = total > 0 ? (int)(100 * done / total) : 0;
-      return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
+    case TAB_DISTRIBUTION: { // 流式构建中显示天数进度, 完成后 done, 取消 cancelled
+      const auto st = data.dist.status.load(std::memory_order_relaxed);
+      if (st == Dist::Status::Building) {
+        const size_t total = data.dist.days_total.load(std::memory_order_relaxed);
+        const size_t done = data.dist.days_loaded.load(std::memory_order_relaxed);
+        const int pct = total > 0 ? (int)(100 * done / total) : 0;
+        return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
+      }
+      if (st == Dist::Status::Done)
+        return {TaskStatus::Kind::Ready, "done"};
+      if (st == Dist::Status::Cancelled)
+        return {TaskStatus::Kind::Warn, "cancelled"};
+      return {};
     }
 
-    case TAB_TIMESERIES:
-      if (data.timeseries.compute.is_busy())
+    case TAB_TIMESERIES: { // 计算中显示进度, 完成后 done, 取消 cancelled, 出错 error
+      const auto st = data.timeseries.compute.status;
+      if (st == TimeSeries::Compute::Status::Loading ||
+          st == TimeSeries::Compute::Status::Building)
         return {TaskStatus::Kind::Busy,
                 "computing " + std::to_string((int)data.timeseries.compute.progress()) + "%"};
+      if (st == TimeSeries::Compute::Status::Done)
+        return {TaskStatus::Kind::Ready, "done"};
+      if (st == TimeSeries::Compute::Status::Cancelled)
+        return {TaskStatus::Kind::Warn, "cancelled"};
+      if (st == TimeSeries::Compute::Status::Error)
+        return {TaskStatus::Kind::Error, "error"};
       return {};
+    }
 
     case TAB_ORDERFLOW: // 后台流式 worker 常驻 (背景常态, 灰色)
       if (state->orderflow_service && state->orderflow_service->is_running())
@@ -298,22 +319,22 @@ TaskHandle CreateFeaturesTask() {
       auto &sel = data.feature.selection;
 
       // Detect change
-      bool feature_changed = (sel.primary_feature_idx != state->prev_primary_feature_idx);
+      bool feature_changed = (sel.primary_feature_idx() != state->prev_primary_feature_idx);
       bool level_changed = (sel.selected_level != state->prev_selected_level);
-      bool has_valid_selection = (sel.primary_feature_idx >= 0);
+      bool has_valid_selection = (sel.primary_feature_idx() >= 0);
 
       if ((feature_changed || level_changed) && has_valid_selection) {
         // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L1 选择静默忽略)
         state->dist_service->RequestCompute(data);
 
         // Update tracking
-        state->prev_primary_feature_idx = sel.primary_feature_idx;
+        state->prev_primary_feature_idx = sel.primary_feature_idx();
         state->prev_selected_level = sel.selected_level;
       }
 
       // Update tracking even if no change (initialization case)
       if (!feature_changed && state->prev_primary_feature_idx == -1) {
-        state->prev_primary_feature_idx = sel.primary_feature_idx;
+        state->prev_primary_feature_idx = sel.primary_feature_idx();
         state->prev_selected_level = sel.selected_level;
       }
     }
@@ -356,10 +377,10 @@ TaskHandle CreateFeaturesTask() {
     }
     if (transform_tab_open) {
       auto &sel = data.feature.selection;
-      if (sel.primary_feature_idx != state->transform_prev_feature_idx ||
+      if (sel.primary_feature_idx() != state->transform_prev_feature_idx ||
           sel.selected_level != state->transform_prev_level) {
         state->transform_service->RequestCompute(data, state->transform_ui_state.params);
-        state->transform_prev_feature_idx = sel.primary_feature_idx;
+        state->transform_prev_feature_idx = sel.primary_feature_idx();
         state->transform_prev_level = sel.selected_level;
       }
     }
@@ -393,11 +414,11 @@ TaskHandle CreateFeaturesTask() {
       auto &sel = data.feature.selection;
       int current_step = state->timeseries_ui_state.selected_step;
 
-      bool feature_changed = (sel.primary_feature_idx != state->timeseries_prev_feature_idx);
+      bool feature_changed = (sel.primary_feature_idx() != state->timeseries_prev_feature_idx);
       bool level_changed = (sel.selected_level != state->timeseries_prev_level);
       if (feature_changed || level_changed) {
         ts.clear();
-        state->timeseries_prev_feature_idx = sel.primary_feature_idx;
+        state->timeseries_prev_feature_idx = sel.primary_feature_idx();
         state->timeseries_prev_level = sel.selected_level;
       }
 

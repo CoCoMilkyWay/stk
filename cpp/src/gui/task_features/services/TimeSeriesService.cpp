@@ -90,7 +90,7 @@ asio::awaitable<void> TimeSeriesService::ComputeLoop(SharedData &data) {
     // Handle compute request
     if (compute_requested_.exchange(false)) {
       // Guard: require a selected feature
-      if (data.feature.selection.primary_feature_idx < 0) {
+      if (data.feature.selection.primary_feature_idx() < 0) {
         ts.compute.status = TimeSeries::Compute::Status::Idle;
         continue;
       }
@@ -160,7 +160,7 @@ asio::awaitable<void> TimeSeriesService::ComputeLoop(SharedData &data) {
       }
 
       // Update input cache
-      ts.input.update_cache(data.feature.selection.primary_feature_idx,
+      ts.input.update_cache(data.feature.selection.primary_feature_idx(),
                             data.feature.selection.selected_level,
                             data.config.start_date + "-" +
                                 data.config.end_date);
