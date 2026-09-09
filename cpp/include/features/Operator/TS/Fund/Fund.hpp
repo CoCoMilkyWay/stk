@@ -70,21 +70,21 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Fund(N) N(Fund, (Fund), (fund_pool, asset_id_, date_), onDay, onMinute)
 
-#define FIELDS_L1_Fund(X, CAT1)                                                                                                                                                                       \
-  X(ind_l1, CAT1, RAW, NONE, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", OP(Fund, ind_l1))                                                                    \
-  X(list_age, CAT1, RAW, NONE, "List Age", "上市龄", "上市日历日数(未上市→NaN)", R"(D - D_{list})", OP(Fund, list_age))                                                                               \
-  X(delist_age, CAT1, RAW, NONE, "Delist Age", "退市龄", "退市日历日数(未退市→NaN)", R"(D - D_{delist})", OP(Fund, delist_age))                                                                       \
-  X(is_margin, CAT1, RAW, NONE, "Is Margin", "两融标记", "当日是否融资融券标的", R"(\mathbf{1}_{\mathrm{margin}})", OP(Fund, is_margin))                                                              \
-  X(is_susp, CAT1, RAW, NONE, "Is Suspended", "停牌标记", "当日是否停牌", R"(\mathbf{1}_{\mathrm{susp}})", OP(Fund, is_susp))                                                                         \
-  X(roe_ttm, CAT1, RATIO, NONE, "ROE TTM", "净资产收益率TTM", "归母净利TTM/归母权益TTM窗口5点均值×100", R"(\frac{NP^{TTM}}{\overline{EQ}_5} \times 100)", OP(Fund, roe_ttm))                          \
-  X(roa_ttm, CAT1, RATIO, NONE, "ROA TTM", "总资产收益率TTM", "净利TTM(含少数)/总资产TTM窗口5点均值×100", R"(\frac{NP^{TTM}_{all}}{\overline{TA}_5} \times 100)", OP(Fund, roa_ttm))                  \
-  X(dy_ttm, CAT1, RATIO, NONE, "Dividend Yield TTM", "股息率TTM", "近365日税前分红总额/总市值(公告日锚)", R"(\frac{\sum_{365d} Div}{MC_{D}})", OP(Fund, dy_ttm))                                      \
-  X(cfo_chg_ttm, CAT1, RATIO, NONE, "CFO Change TTM", "现金流改善率TTM", "经营现金流TTM同比增量/市值(tanh封顶[-1,1])", R"(\tanh(\frac{CF^{TTM}_0 - CF^{TTM}_{-4Q}}{MC_{D}}))", OP(Fund, cfo_chg_ttm)) \
-  X(rz_bal, CAT1, RAW, LOG_ZSCORE, "Margin Buy Balance", "融资余额", "融资余额(亿元,非标的→NaN)", R"(\frac{Bal^{rz}_{D}}{10^{8}})", OP(Fund, rz_bal))                                                 \
-  X(rq_bal, CAT1, RAW, LOG_ZSCORE, "Margin Sell Balance", "融券余额", "融券余额(亿元,非标的→NaN)", R"(\frac{Bal^{rq}_{D}}{10^{8}})", OP(Fund, rq_bal))                                                \
-  X(st_profit, CAT1, RAW, NONE, "ST Profit Warning", "预亏预警", "年报预亏状态机(首亏/续亏∧上年归母净利<0)", R"(\mathbf{1}_{\mathrm{st\_profit}})", OP(Fund, st_profit))                              \
-  X(st_revenue, CAT1, RAW, NONE, "ST Revenue Warning", "营收预警", "主板营收退市预警(预亏∧营收TTM<年度阈值)", R"(\mathbf{1}_{\mathrm{st\_revenue}})", OP(Fund, st_revenue))                           \
-  X(st_dividend, CAT1, RAW, NONE, "ST Dividend Warning", "分红预警", "主板分红不足预警(3年累计分红双阈值)", R"(\mathbf{1}_{\mathrm{st\_dividend}})", OP(Fund, st_dividend))                           \
-  X(st_trading, CAT1, RAW, NONE, "ST Trading Warning", "交易预警", "连续15日(日频低价∨低市值)", R"(\mathbf{1}_{\mathrm{st\_trading}})", OP(Fund, st_trading))                                         \
-  X(st_level, CAT1, RAW, NONE, "ST Level", "风险等级", "0=正常/1=ST/2=*ST/3=退市整理期", R"(\mathrm{st}_{D} \in \{0,1,2,3\})", OP(Fund, st_level))                                                    \
-  X(is_new, CAT1, RAW, NONE, "Is New Listing", "次新股", "上市龄 < 60 日历日", R"(\mathbf{1}[0 \leq D - D_{list} < 60])", OP(Fund, is_new))
+#define FIELDS_L1_Fund(X, CAT1)                                                                                                                                                                             \
+  X(ind_l1, CAT1, RAW, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", OP(Fund, ind_l1, None, None))                                                                    \
+  X(list_age, CAT1, RAW, "List Age", "上市龄", "上市日历日数(未上市→NaN)", R"(D - D_{list})", OP(Fund, list_age, None, None))                                                                               \
+  X(delist_age, CAT1, RAW, "Delist Age", "退市龄", "退市日历日数(未退市→NaN)", R"(D - D_{delist})", OP(Fund, delist_age, None, None))                                                                       \
+  X(is_margin, CAT1, RAW, "Is Margin", "两融标记", "当日是否融资融券标的", R"(\mathbf{1}_{\mathrm{margin}})", OP(Fund, is_margin, None, None))                                                              \
+  X(is_susp, CAT1, RAW, "Is Suspended", "停牌标记", "当日是否停牌", R"(\mathbf{1}_{\mathrm{susp}})", OP(Fund, is_susp, None, None))                                                                         \
+  X(roe_ttm, CAT1, RATIO, "ROE TTM", "净资产收益率TTM", "归母净利TTM/归母权益TTM窗口5点均值×100", R"(\frac{NP^{TTM}}{\overline{EQ}_5} \times 100)", OP(Fund, roe_ttm, None, None))                          \
+  X(roa_ttm, CAT1, RATIO, "ROA TTM", "总资产收益率TTM", "净利TTM(含少数)/总资产TTM窗口5点均值×100", R"(\frac{NP^{TTM}_{all}}{\overline{TA}_5} \times 100)", OP(Fund, roa_ttm, None, None))                  \
+  X(dy_ttm, CAT1, RATIO, "Dividend Yield TTM", "股息率TTM", "近365日税前分红总额/总市值(公告日锚)", R"(\frac{\sum_{365d} Div}{MC_{D}})", OP(Fund, dy_ttm, None, None))                                      \
+  X(cfo_chg_ttm, CAT1, RATIO, "CFO Change TTM", "现金流改善率TTM", "经营现金流TTM同比增量/市值(tanh封顶[-1,1])", R"(\tanh(\frac{CF^{TTM}_0 - CF^{TTM}_{-4Q}}{MC_{D}}))", OP(Fund, cfo_chg_ttm, None, None)) \
+  X(rz_bal, CAT1, RAW, "Margin Buy Balance", "融资余额", "融资余额(亿元,非标的→NaN)", R"(\frac{Bal^{rz}_{D}}{10^{8}})", OP(Fund, rz_bal, None, None))                                                       \
+  X(rq_bal, CAT1, RAW, "Margin Sell Balance", "融券余额", "融券余额(亿元,非标的→NaN)", R"(\frac{Bal^{rq}_{D}}{10^{8}})", OP(Fund, rq_bal, None, None))                                                      \
+  X(st_profit, CAT1, RAW, "ST Profit Warning", "预亏预警", "年报预亏状态机(首亏/续亏∧上年归母净利<0)", R"(\mathbf{1}_{\mathrm{st\_profit}})", OP(Fund, st_profit, None, None))                              \
+  X(st_revenue, CAT1, RAW, "ST Revenue Warning", "营收预警", "主板营收退市预警(预亏∧营收TTM<年度阈值)", R"(\mathbf{1}_{\mathrm{st\_revenue}})", OP(Fund, st_revenue, None, None))                           \
+  X(st_dividend, CAT1, RAW, "ST Dividend Warning", "分红预警", "主板分红不足预警(3年累计分红双阈值)", R"(\mathbf{1}_{\mathrm{st\_dividend}})", OP(Fund, st_dividend, None, None))                           \
+  X(st_trading, CAT1, RAW, "ST Trading Warning", "交易预警", "连续15日(日频低价∨低市值)", R"(\mathbf{1}_{\mathrm{st\_trading}})", OP(Fund, st_trading, None, None))                                         \
+  X(st_level, CAT1, RAW, "ST Level", "风险等级", "0=正常/1=ST/2=*ST/3=退市整理期", R"(\mathrm{st}_{D} \in \{0,1,2,3\})", OP(Fund, st_level, None, None))                                                    \
+  X(is_new, CAT1, RAW, "Is New Listing", "次新股", "上市龄 < 60 日历日", R"(\mathbf{1}[0 \leq D - D_{list} < 60])", OP(Fund, is_new, None, None))

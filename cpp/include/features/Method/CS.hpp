@@ -115,6 +115,11 @@ inline constexpr const char *TF_NAMES[] = {CS_TFS(CS_NAME_ONE)};
 inline constexpr const char *METHOD_NAMES[] = {CS_METHODS(CS_NAME_ONE)};
 #undef CS_NAME_ONE
 
+#define CS_TOKEN_ONE(name, label) #name,
+inline constexpr const char *TF_TOKENS[] = {CS_TFS(CS_TOKEN_ONE)};
+inline constexpr const char *METHOD_TOKENS[] = {CS_METHODS(CS_TOKEN_ONE)};
+#undef CS_TOKEN_ONE
+
 #define CS_NEUTRAL_ONE(name, label) name::kNeutral,
 inline constexpr bool METHOD_NEUTRAL[] = {CS_METHODS(CS_NEUTRAL_ONE)};
 #undef CS_NEUTRAL_ONE

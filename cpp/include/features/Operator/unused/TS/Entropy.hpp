@@ -48,7 +48,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 // 家族行: side ∈ {a, b} (节点名), sd ∈ {ask, bid} (列名), S = 公式侧标 "A"/"B", en/cn = 侧名, n = 档数
 #define ENTROPY_FIELD(X, CAT1, side, sd, S, en, cn, n) \
-  X(ent_##sd##_##n, CAT1, RAW, NONE, "Top " #n "-level " en " Shannon Entropy", cn "侧" #n "档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,)" S R"(} \log(\pi_{i,t}^{M,)" S R"(}), \quad \pi_{i,t}^{M,)" S R"(} = \frac{V_{i,t}^{M,)" S R"(}}{\sum_{j=1}^{N} V_{j,t}^{M,)" S R"(}}, \quad N = )" #n, OP(Entropy_##side##_##n))
+  X(ent_##sd##_##n, CAT1, RAW, "Top " #n "-level " en " Shannon Entropy", cn "侧" #n "档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,)" S R"(} \log(\pi_{i,t}^{M,)" S R"(}), \quad \pi_{i,t}^{M,)" S R"(} = \frac{V_{i,t}^{M,)" S R"(}}{\sum_{j=1}^{N} V_{j,t}^{M,)" S R"(}}, \quad N = )" #n, OP(Entropy_##side##_##n, None, None))
 
 #define NODE_Entropy_a_30(N) N(Entropy_a_30, (Entropy<30, false>), (DepthData.ask_qty), onMinute)
 #define FIELDS_L1_Entropy_a_30(X, CAT1) ENTROPY_FIELD(X, CAT1, a, ask, "A", "Ask", "卖", 30)

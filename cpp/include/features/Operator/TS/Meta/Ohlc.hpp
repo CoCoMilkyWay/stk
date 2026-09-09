@@ -35,9 +35,9 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Ohlc(N) N(Ohlc, (Ohlc), (minute_data), onMinute)
 
-#define FIELDS_L1_Ohlc(X, CAT1)                                                                        \
-  X(_ohlc_open, CAT1, RAW, NONE, "OHLC Open", "开盘价", "分钟开盘价(元)", R"(O_t)", OP(Ohlc, open))    \
-  X(_ohlc_high, CAT1, RAW, NONE, "OHLC High", "最高价", "分钟最高价(元)", R"(H_t)", OP(Ohlc, high))    \
-  X(_ohlc_low, CAT1, RAW, NONE, "OHLC Low", "最低价", "分钟最低价(元)", R"(L_t)", OP(Ohlc, low))       \
-  X(_ohlc_close, CAT1, RAW, NONE, "OHLC Close", "收盘价", "分钟收盘价(元)", R"(C_t)", OP(Ohlc, close)) \
-  X(_ohlc_volume, CAT1, RAW, NONE, "OHLC Volume", "成交量", "分钟成交量(股)", R"(V_t)", OP(Ohlc, volume))
+#define FIELDS_L1_Ohlc(X, CAT1)                                                                              \
+  X(_ohlc_open, CAT1, RAW, "OHLC Open", "开盘价", "分钟开盘价(元)", R"(O_t)", OP(Ohlc, open, None, None))    \
+  X(_ohlc_high, CAT1, RAW, "OHLC High", "最高价", "分钟最高价(元)", R"(H_t)", OP(Ohlc, high, None, None))    \
+  X(_ohlc_low, CAT1, RAW, "OHLC Low", "最低价", "分钟最低价(元)", R"(L_t)", OP(Ohlc, low, None, None))       \
+  X(_ohlc_close, CAT1, RAW, "OHLC Close", "收盘价", "分钟收盘价(元)", R"(C_t)", OP(Ohlc, close, None, None)) \
+  X(_ohlc_volume, CAT1, RAW, "OHLC Volume", "成交量", "分钟成交量(股)", R"(V_t)", OP(Ohlc, volume, None, None))

@@ -21,7 +21,8 @@ struct FeatureUIState {
   bool show_filter_data_type = false;
   bool show_filter_cat_l1 = false;
   bool show_filter_cat_l2 = false;
-  bool show_filter_norm_method = false;
+  bool show_filter_ts_method = false;
+  bool show_filter_cs_method = false;
 
   // Table display
   int sort_column = -1;

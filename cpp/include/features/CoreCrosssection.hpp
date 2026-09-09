@@ -34,7 +34,7 @@
 #define CS_RUN_OP(code, ...)
 #define CS_RUN_LABEL(code)
 #define CS_RUN_FLAG(code)
-#define CS_RUN_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(CS_RUN, code, src)
+#define CS_RUN_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(CS_RUN, code, src)
 
 template <size_t LVL>
 struct CsLevel;

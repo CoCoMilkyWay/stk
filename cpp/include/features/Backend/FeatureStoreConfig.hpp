@@ -4,6 +4,7 @@
 #include "SparseCodec.hpp"
 #include "ZstdCodec.hpp" // IWYU pragma: keep
 #include "features/FeaturesDefine.hpp"
+#include "features/Method/TS.hpp"      // OP 行 Tf (FieldInfo.ts_tf → 指纹; RowWriter 落盘套用)
 #include "features/NodesGenerated.hpp" // CMake 从算子文件汇总: NODES(N) / L0_FIELDS(X) / L1_FIELDS(X)
 #include "features/TimeIndex.hpp"      // ALL_LEVELS 的 rows 参数 (L0_ROWS / L1_ROWS) 在此展开
 #include <array>
@@ -23,7 +24,7 @@
 //     <LVL>_Field::<code>    列下标枚举 (非偏移)
 //     <LVL>_FINGERPRINT      字段表指纹 (落文件头)
 //   汇总成 LEVELS[lvl] (LevelInfo), 运行时按层下标取 rows / width / offsets / fingerprint / 文件布局.
-//   字段格式: X(code, cat_l1, cat_l2, norm_method, name_en, name_cn, desc, formula, SRC)
+//   字段格式: X(code, cat_l1, cat_l2, name_en, name_cn, desc, formula, SRC)
 // ============================================================================
 
 // 存储类型: _Float16 (内存/磁盘减半, F16C/AVX-512 FP16/NEON 硬件转换, ±65504, ~3.3 位有效数字)
@@ -46,10 +47,11 @@ struct FieldInfo {
   size_t width;
   L2::ValidType valid;
   FeatureDataType kind;
+  ts::TfId ts_tf; // OP 行落盘前套用的元素变换 (改变落盘值 → 进指纹); 非 OP 行 None
 };
 
-#define FIELD_INFO_ONE(code, c1, c2, norm, en, cn, desc, formula, src) {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src},
-#define FIELD_CODE_ONE(code, c1, c2, norm, en, cn, desc, formula, src) code,
+#define FIELD_INFO_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src, SRC_TS_TF_##src},
+#define FIELD_CODE_ONE(code, c1, c2, en, cn, desc, formula, src) code,
 
 template <size_t N>
 constexpr auto field_offsets(const FieldInfo (&f)[N]) {
@@ -115,7 +117,7 @@ struct FieldSource {
 #define SRCSRC_CS(code, lvl, src, ...) #src
 #define SRCSRC_LABEL(code) ""
 #define SRCSRC_FLAG(code) ""
-#define FIELD_SOURCE_ONE(code, c1, c2, norm, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src)},
+#define FIELD_SOURCE_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src)},
 #define GENERATE_LEVEL_SOURCES(name, num, fields, rows, psd, columnar, xor_delta) \
   inline constexpr FieldSource name##_FIELD_SOURCE[] = {fields(FIELD_SOURCE_ONE)};
 ALL_LEVELS(GENERATE_LEVEL_SOURCES)
@@ -128,7 +130,7 @@ ALL_LEVELS(GENERATE_LEVEL_SOURCES)
 #define SRC_LEVEL_CS(...) kLevel
 #define SRC_LEVEL_LABEL kLevel
 #define SRC_LEVEL_FLAG kLevel
-#define CHECK_FIELD_ONE(code, c1, c2, norm, en, cn, desc, formula, src) \
+#define CHECK_FIELD_ONE(code, c1, c2, en, cn, desc, formula, src) \
   static_assert(SRC_LEVEL_##src == kLevel, "field level != source level: " #code);
 #define GENERATE_CHECK_LEVEL(name, num, fields, rows, psd, columnar, xor_delta) \
   namespace name##_level_check {                                                \
@@ -154,8 +156,11 @@ constexpr uint64_t fnv1a_u64(uint64_t h, uint64_t v) {
 template <size_t N>
 constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
   uint64_t h = 0xcbf29ce484222325ULL;
-  for (size_t i = 0; i < N; ++i)
+  for (size_t i = 0; i < N; ++i) {
     h = fnv1a_u64(fnv1a_u64(fnv1a_str(h, f[i].code), f[i].width), static_cast<uint64_t>(f[i].kind));
+    if (f[i].ts_tf != ts::TfId::None) // Tf 改变落盘值; None 不折入, 旧文件 (无 Tf 时代) 指纹不变
+      h = fnv1a_u64(h, static_cast<uint64_t>(f[i].ts_tf));
+  }
   return h;
 }
 #define GENERATE_FINGERPRINT(name, num, fields, rows, psd, columnar, xor_delta) \

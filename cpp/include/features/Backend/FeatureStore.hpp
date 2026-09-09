@@ -498,7 +498,7 @@ private:
 //   ts_write_range<L>(day, t, f_begin, f_end, a, src)  字段闭区间 (可含宽字段) 按偏移连续写 src
 //   ts_write_row<L>(day, t, a, dag)                    按字段表 SRC 列写一行全部 OP 列
 //   cs_col<L>(day, t, field)                           某列 t 时刻全部资产的连续段 (CS 读源列 / 就地写目标列)
-//   OP(node[, port]) → dag.node.last(port); CS/LABEL/FLAG/META 不在 row 写
+//   OP(node[, port], Tf, Method) → ts::Tf::apply(dag.node.last(port)); CS/LABEL/FLAG/META 不在 row 写
 // ============================================================================
 namespace fstore {
 
@@ -516,14 +516,14 @@ struct RowWriter;
     }                                                                                                                        \
   };
 
-#define STORE_ROW_OP_PICK(_1, _2, NAME, ...) NAME
-#define STORE_ROW_OP_1(node) dag.node.last()
-#define STORE_ROW_OP_2(node, port) dag.node.last(dag.node.port)
-#define STORE_ROW_OP(code, ...) row[OFFS[FO::code] * A] = STORE_ROW_OP_PICK(__VA_ARGS__, STORE_ROW_OP_2, STORE_ROW_OP_1, )(__VA_ARGS__);
+// OP(node, Tf, Method) / OP(node, port, Tf, Method): 落盘值 = ts::Tf::apply(节点输出). Method 占位未接入 (Method/TS.hpp ★)
+#define STORE_ROW_OP_3(node, tf, m) ts::tf::apply(dag.node.last())
+#define STORE_ROW_OP_4(node, port, tf, m) ts::tf::apply(dag.node.last(dag.node.port))
+#define STORE_ROW_OP(code, ...) row[OFFS[FO::code] * A] = SRC_OP_PICK(__VA_ARGS__, STORE_ROW_OP_4, STORE_ROW_OP_3, , )(__VA_ARGS__);
 #define STORE_ROW_CS(code, ...)
 #define STORE_ROW_LABEL(code)
 #define STORE_ROW_FLAG(code)
-#define STORE_ROW_ONE(code, c1, c2, norm, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
+#define STORE_ROW_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
 
 ALL_LEVELS(STORE_ROW_WRITER)
 #undef STORE_ROW_WRITER

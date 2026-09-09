@@ -52,7 +52,8 @@ stk/
 │   │   │   ├── Operator/TS/                             # 🧮 时序算子(数学 class + 文件末尾 NODE_/FIELDS_ 宏)
 │   │   │   ├── Operator/CS/                             # 🧮 截面算子(文件末尾 FIELDS_ 宏)
 │   │   │   ├── Operator/unused/                         # 🧮 未启用 
-│   │   │   ├── Method/                                  # 🧮 CS.hpp: Tf(None/Reciprocal/Log)×Method(Rank/NormRank/WinsorRank/NeutralRank/Demean/Z/WinsorZ); Fundamental.hpp: fund::Pool + fund::Stream
+│   │   │   ├── Method/                                  # 🧮 CS.hpp: Tf(None/Reciprocal/Log)×Method(Rank/NormRank/WinsorRank/NeutralRank/Demean/Z/WinsorZ);
+│   │   │   │                                            # 🧮 TS.hpp: Tf(None/Log/Asinh/Tanh/Sqrt)×Method(占位);
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
 │   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), width/valid/psd 全推导
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)

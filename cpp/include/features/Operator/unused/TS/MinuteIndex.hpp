@@ -36,4 +36,4 @@ private:
 #define NODE_MinuteIndex(N) N(MinuteIndex, (MinuteIndex), (minute_data), onMinute)
 
 #define FIELDS_L1_MinuteIndex(X, CAT1) \
-  X(tod_min, CAT1, OSCILLATOR, SINCOS, "Time Min Phase", "时间-分钟相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{m}}))", OP(MinuteIndex, tod_min))
+  X(tod_min, CAT1, OSCILLATOR, "Time Min Phase", "时间-分钟相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{m}}))", OP(MinuteIndex, tod_min, None, None))

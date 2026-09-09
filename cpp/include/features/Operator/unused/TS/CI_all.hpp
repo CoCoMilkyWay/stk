@@ -32,4 +32,4 @@ private:
 #define NODE_Ci_all(N) N(Ci_all, (CI_all), (tick_data), onMinute)
 
 #define FIELDS_L1_Ci_all(X, CAT1) \
-  X(obi_all, CAT1, RATIO, NONE, "Order Book Imbalance All-Level", "累计全档失衡", "累计所有档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_all))
+  X(obi_all, CAT1, RATIO, "Order Book Imbalance All-Level", "累计全档失衡", "累计所有档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{\infty}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_all, None, None))

@@ -93,7 +93,8 @@ void Feature::Selection::clear() {
   filter_data_type.clear();
   filter_cat_l1.clear();
   filter_cat_l2.clear();
-  filter_norm_method.clear();
+  filter_ts_method.clear();
+  filter_cs_method.clear();
   selected_features.clear();
 }
 

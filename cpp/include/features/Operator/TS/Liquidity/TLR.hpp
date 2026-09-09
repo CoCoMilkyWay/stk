@@ -42,9 +42,9 @@ private:
 #define NODE_Tar_5(N) N(Tar_5, (TLR<5, false>), (Depth.ask_qty, tick_data), onMinute)
 
 #define FIELDS_L1_Tar_5(X, CAT1) \
-  X(tlr_ask_5, CAT1, RATIO, NONE, "Top Level Ratio Ask 5", "前5档卖单占比", "卖单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,A}}{\sum_{i=1}^{\infty} V_{i,t}^{M,A}}, \quad N = 5)", OP(Tar_5))
+  X(tlr_ask_5, CAT1, RATIO, "Top Level Ratio Ask 5", "前5档卖单占比", "卖单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,A}}{\sum_{i=1}^{\infty} V_{i,t}^{M,A}}, \quad N = 5)", OP(Tar_5, None, None))
 
 #define NODE_Tbr_5(N) N(Tbr_5, (TLR<5, true>), (Depth.bid_qty, tick_data), onMinute)
 
 #define FIELDS_L1_Tbr_5(X, CAT1) \
-  X(tlr_bid_5, CAT1, RATIO, NONE, "Top Level Ratio Bid 5", "前5档买单占比", "买单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,B}}{\sum_{i=1}^{\infty} V_{i,t}^{M,B}}, \quad N = 5)", OP(Tbr_5))
+  X(tlr_bid_5, CAT1, RATIO, "Top Level Ratio Bid 5", "前5档买单占比", "买单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,B}}{\sum_{i=1}^{\infty} V_{i,t}^{M,B}}, \quad N = 5)", OP(Tbr_5, None, None))

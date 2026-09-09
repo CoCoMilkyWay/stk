@@ -93,6 +93,17 @@ static ImU32 get_category_color(std::string_view cat) {
   return ImGui::GetColorU32(ImVec4(r, g, b, alpha));
 }
 
+// 归一化单元: Method 名 (None → "-"), 悬停给中文
+static void render_norm_cell(EnumStr method, bool none) {
+  if (none) {
+    ImGui::TextDisabled("-");
+    return;
+  }
+  ImGui::TextUnformatted(method.en);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", method.cn);
+}
+
 // Get current level features based on selection
 static const std::vector<FeatureMetadata> &get_current_level_features(const Feature &feature) {
   return feature.metadata.features[feature.selection.selected_level];
@@ -116,8 +127,10 @@ static std::vector<int> get_filtered_indices(const Feature::Selection &sel, cons
     if (!sel.filter_cat_l2.empty() && sel.filter_cat_l2.find(features[i].cat_l2) == sel.filter_cat_l2.end())
       pass = false;
 
-    // Filter by norm_method
-    if (!sel.filter_norm_method.empty() && sel.filter_norm_method.find(features[i].norm_method) == sel.filter_norm_method.end())
+    // Filter by TS / CS norm method (Tf 不参与过滤)
+    if (!sel.filter_ts_method.empty() && sel.filter_ts_method.find(features[i].ts_method) == sel.filter_ts_method.end())
+      pass = false;
+    if (!sel.filter_cs_method.empty() && sel.filter_cs_method.find(features[i].cs_method) == sel.filter_cs_method.end())
       pass = false;
 
     if (pass)
@@ -735,7 +748,9 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
   render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, FeatureCategoryL2_ALL);
   ImGui::SameLine();
-  render_filter_dropdown("Norm", ui_state.show_filter_norm_method, sel.filter_norm_method, NormMethod_ALL);
+  render_filter_dropdown("TS Norm", ui_state.show_filter_ts_method, sel.filter_ts_method, ts_MethodId_ALL);
+  ImGui::SameLine();
+  render_filter_dropdown("CS Norm", ui_state.show_filter_cs_method, sel.filter_cs_method, cs_MethodId_ALL);
   ImGui::SameLine();
 
   // Reset filters button
@@ -743,7 +758,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     sel.filter_data_type.clear();
     sel.filter_cat_l1.clear();
     sel.filter_cat_l2.clear();
-    sel.filter_norm_method.clear();
+    sel.filter_ts_method.clear();
+    sel.filter_cs_method.clear();
     ui_state.sort_column = -1; // Reset table sorting
   }
 
@@ -776,7 +792,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   const float table_height = std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing(), ImGui::GetFrameHeight());
 
   // 表列序 (sort_column / 排序 switch 皆按此下标)
-  constexpr int kNumCols = 14;
+  constexpr int kNumCols = 15;
   if (ImGui::BeginTable("FeatureTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
@@ -793,17 +809,18 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("DataType", ImGuiTableColumnFlags_WidthFixed);                             // 5
     ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);                               // 6
     ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed);                               // 7
-    ImGui::TableSetupColumn("Norm", ImGuiTableColumnFlags_WidthFixed);                                 // 8
-    ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                 // 9
-    ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                // 10
-    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 11
-    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 12
-    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                 // 13
+    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                              // 8
+    ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                              // 9
+    ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                 // 10
+    ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                // 11
+    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 12
+    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 13
+    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                 // 14
     ImGui::TableSetupScrollFreeze(0, 1);                                                               // Freeze header row
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm",
+    const char *headers[kNumCols] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "TS Norm", "CS Norm",
                                      "Stat", "Range", "Dist", "PSD", "Deps"};
     const char *tooltips[kNumCols] = {
         "多选: 选择多个特征进行对比 (首个作为主特征)",
@@ -814,7 +831,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
         "一级分类: 特征的类别 (同色同组相邻)",
         "二级分类: 特征的量纲",
-        "标准化方法: 特征的归一化处理方式",
+        "时序归一化: SRC 列 OP(..., Tf, Method) 推出",
+        "截面归一化: SRC 列 CS(..., Tf, Method) 推出",
         "账目: nan,zero,-inf,+inf 占比%",
         "值域: min -1sd +1sd max",
         "平均分布: 抽样 (日 × 资产) 的 PDF",
@@ -917,16 +935,19 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               case 7:
                 cmp = std::strcmp(fa.cat_l2, fb.cat_l2);
                 break;
-              case 8:
-                cmp = (int)fa.norm_method - (int)fb.norm_method;
+              case 8: // TS Norm
+                cmp = (int)fa.ts_method - (int)fb.ts_method;
                 break;
-              case 9: // Stat: nan%
+              case 9: // CS Norm
+                cmp = (int)fa.cs_method - (int)fb.cs_method;
+                break;
+              case 10: // Stat: nan%
                 cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
                 break;
-              case 10: // Range: sd (var 单调等价)
+              case 11: // Range: sd (var 单调等价)
                 cmp = cmp3(ca.var, cb.var);
                 break;
-              case 13:
+              case 14:
                 cmp = deps_list[a].compare(deps_list[b]);
                 break;
               }
@@ -1023,11 +1044,11 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(f.cat_l2);
 
-      // Column: Norm Method
+      // Columns: TS Norm / CS Norm (SRC 推出的 Method; Tf 不显示; None 显 "-")
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(to_string(f.norm_method).en);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", to_string(f.norm_method).cn);
+      render_norm_cell(to_string(f.ts_method), f.ts_method == ts::MethodId::None);
+      ImGui::TableNextColumn();
+      render_norm_cell(to_string(f.cs_method), f.cs_method == cs::MethodId::None);
 
       // Columns: Stat / Range 账目 + Dist / PSD 迷你图 (预览, 仅 L1; 槽位 = metadata 下标)
       const FeaturePreview::Cell &cell = cell_of(idx);

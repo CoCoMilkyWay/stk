@@ -52,9 +52,9 @@ private:
 #define NODE_Cwi_1(N) N(Cwi_1, (CWI<10>), (DepthData.bid_qty, DepthData.ask_qty), onMinute)
 
 #define FIELDS_L1_Cwi_1(X, CAT1) \
-  X(cwi_1, CAT1, RATIO, NONE, "Convexity-weighted Imb γ=1", "凸加权失衡γ=1", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 1)", OP(Cwi_1))
+  X(cwi_1, CAT1, RATIO, "Convexity-weighted Imb γ=1", "凸加权失衡γ=1", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 1)", OP(Cwi_1, None, None))
 
 #define NODE_Cwi_2(N) N(Cwi_2, (CWI<20>), (DepthData.bid_qty, DepthData.ask_qty), onMinute)
 
 #define FIELDS_L1_Cwi_2(X, CAT1) \
-  X(cwi_2, CAT1, RATIO, NONE, "Convexity-weighted Imb γ=2", "凸加权失衡γ=2", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 2)", OP(Cwi_2))
+  X(cwi_2, CAT1, RATIO, "Convexity-weighted Imb γ=2", "凸加权失衡γ=2", "考虑全量, 但是近端更高权重(按档位, 降频)", R"(\frac{\sum_{i=1}^{N} w_i V_{i,t}^{M,B} - \sum_{i=1}^{N} w_i V_{i,t}^{M,A}}{\sum_{i=1}^{N} w_i (V_{i,t}^{M,B} + V_{i,t}^{M,A})}, \quad w_i = \frac{1}{(i+\epsilon)^\gamma}, \quad \gamma = 2)", OP(Cwi_2, None, None))

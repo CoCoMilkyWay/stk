@@ -75,7 +75,7 @@ private:
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define FIELDS_L0_Meta(X, CAT1) \
-  X(_meta, CAT1, RAW, NONE, "Meta Flags", "元数据", "0=无事件; ±micro price, 负=该秒盘口有更新", R"(\pm P_t^{micro} \cdot \mathbf{1}_{\mathrm{data}})", FLAG)
+  X(_meta, CAT1, RAW, "Meta Flags", "元数据", "0=无事件; ±micro price, 负=该秒盘口有更新", R"(\pm P_t^{micro} \cdot \mathbf{1}_{\mathrm{data}})", FLAG)
 
 #define FIELDS_L1_Meta(X, CAT1) \
-  X(_meta, CAT1, RAW, NONE, "Meta Flags", "元数据", "0=无效分钟; ±1, 负=该分钟盘口有更新", R"(\pm\mathbf{1}_{\mathrm{data}})", FLAG)
+  X(_meta, CAT1, RAW, "Meta Flags", "元数据", "0=无效分钟; ±1, 负=该分钟盘口有更新", R"(\pm\mathbf{1}_{\mathrm{data}})", FLAG)
