@@ -27,19 +27,23 @@ void Feature::Metadata::init_from_compile_time() {
     features[lvl].assign(FeatureMetadataRegistry::FEATURES[lvl],
                          FeatureMetadataRegistry::FEATURES[lvl] + FeatureMetadataRegistry::COUNTS[lvl]);
 
-  // 2. 节点上游依赖表: node name → 直接依赖的上游节点名 (来自 CMake 生成的 node_deps::TABLE)
+  // 2. 节点上游依赖表: node name → 直接依赖项 (来自 CMake 生成的 node_deps::TABLE)
+  //    项 = "Up" (整节点: Up.out() / Up.outs() / Up.member) 或 "Up.port" (单口: Up.out(Up.port))
   std::unordered_map<std::string, std::vector<std::string>> node_deps_map;
   for (const auto &e : node_deps::TABLE)
     node_deps_map.emplace(e.node, std::vector<std::string>(e.deps, e.deps + e.count));
 
-  // 3. 节点 → 产出字段 code (跨所有层)
+  // 3. 节点 → 产出字段 (code, 口名) (跨所有层)
   //    FieldSource.source: OP → 节点名 (在 node_deps_map 中); CS → 源字段 code; "" → 无
-  std::unordered_map<std::string, std::vector<std::string>> node_fields;
+  struct NodeField {
+    std::string code, port;
+  };
+  std::unordered_map<std::string, std::vector<NodeField>> node_fields;
   auto add_node_fields = [&](const FieldSource *srcs, size_t n) {
     for (size_t i = 0; i < n; ++i) {
       std::string_view s = srcs[i].source;
       if (!s.empty() && node_deps_map.count(std::string(s)))
-        node_fields[std::string(s)].push_back(srcs[i].code);
+        node_fields[std::string(s)].push_back({srcs[i].code, srcs[i].port});
     }
   };
   add_node_fields(L0_FIELD_SOURCE, std::size(L0_FIELD_SOURCE));
@@ -54,15 +58,20 @@ void Feature::Metadata::init_from_compile_time() {
         continue;
       std::string key(s);
       if (node_deps_map.count(key)) {
-        // OP 字段: 依赖 = 上游节点产出的所有字段 code
+        // OP 字段: 依赖 = 上游节点产出的字段 code; 单口引用只取该口的字段
         std::unordered_set<std::string> seen;
-        for (const auto &up : node_deps_map[key]) {
+        for (const auto &dep : node_deps_map[key]) {
+          const size_t dot = dep.find('.');
+          const std::string up = dep.substr(0, dot);
+          const std::string port = dot == std::string::npos ? "" : dep.substr(dot + 1);
           auto it = node_fields.find(up);
           if (it == node_fields.end())
             continue;
-          for (const auto &fc : it->second) {
-            if (seen.insert(fc).second)
-              out[i] += (out[i].empty() ? "" : ";") + fc;
+          for (const auto &f : it->second) {
+            if (!port.empty() && f.port != port)
+              continue;
+            if (seen.insert(f.code).second)
+              out[i] += (out[i].empty() ? "" : ";") + f.code;
           }
         }
       } else {

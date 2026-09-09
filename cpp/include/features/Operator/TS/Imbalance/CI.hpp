@@ -4,7 +4,7 @@
 // CI (Cumulative Imbalance) - 累计失衡: 前 N 档的累计买卖失衡率
 // =============================================================================
 //   CI_N = (Σ V_{i,t}^{M,B} - Σ V_{i,t}^{M,A}) / (Σ V_{i,t}^{M,B} + Σ V_{i,t}^{M,A}), i=1..N
-//   值域 [-1,1], 正值买方占优
+//   值域 [-1,1] (Depth 已钳 bid ≥ 0 / ask ≤ 0), 正值买方占优; 当日尚无盘口 / 两侧皆空 → NaN
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -24,6 +24,10 @@ public:
       : bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
   inline void compute() {
+    if (bid_qty_[0].empty()) [[unlikely]] { // 当日首次盘口更新前 (Depth 每日清空)
+      y[value] = kNaN;
+      return;
+    }
     float sum_bid = 0.0f;
     float sum_ask = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
@@ -31,7 +35,7 @@ public:
       sum_ask += -ask_qty_[i].back(); // 卖方存负值
     }
     float denom = sum_bid + sum_ask;
-    y[value] = denom > 1e-6f ? (sum_bid - sum_ask) / denom : 0.0f;
+    y[value] = denom > 1e-6f ? (sum_bid - sum_ask) / denom : kNaN;
   }
 
 private:

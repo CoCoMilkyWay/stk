@@ -5,7 +5,8 @@
 // =============================================================================
 //   做多: (exit_vwap·(1-fee_sell) - entry_vwap·(1+fee_buy)) / entry_vwap·(1+fee_buy)
 //   做空: (entry_vwap·(1-fee_sell) - exit_vwap·(1+fee_buy)) / entry_vwap·(1-fee_sell)
-//   费用: 买入万 1 佣金, 卖出万 11 (印花 + 佣金)
+//   费用: 双边万 1 佣金; 卖出另加印花税, 按日期取当时税率 (2023-08-28 起千 1 → 万 5), reset(date) 时定
+//   缺失 = NaN (盘口不足 / 快照缺口 / exit 过收盘): 0 是合法零收益, 不作哨兵. 尾部无标签行由 finish() 补 NaN.
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node). 一份深度快照环 (各金额档吃单 VWAP) 供两条路径共用:
 //   snapshot(t)                 每次 onDepth 先调: 只记账, VWAP 惰性结算 —— 同一秒内只有最后一次
@@ -14,7 +15,8 @@
 //                               结算) 时从环末现算 (offset=0). 与"每次更新都算"逐值一致, VWAP 计算
 //                               次数从每笔盘口更新降到每活跃秒一次.
 //   second(t, l0, v)            L0 秒级 (当前停用, 见文件末): LABEL_L0_HOLD 分钟 × LABEL_L0_AMT 万, 只落 long
-//   minute_anchored(t, writer)  L1 分钟锚定惰性回填: writer(h, l1, values[GROUP_SIZE])
+//   minute_anchored(t, writer)  L1 分钟锚定惰性回填 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐): writer(h, l1, values[GROUP_SIZE])
+//   finish(writer)              收盘: 各组尚未写出的尾部行 (exit 过收盘) 全部写 NaN
 // 配置 (LABEL_HOLDS / LABEL_AMTS / LABEL_L0_*) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
 
@@ -24,6 +26,7 @@
 #include <array>
 #include <cassert>
 #include <iterator>
+#include <string_view>
 
 // ---- 配置 ----
 #define LABEL_HOLDS(X, ...) X(5, __VA_ARGS__) X(10, __VA_ARGS__) X(30, __VA_ARGS__) // L1 持仓分钟
@@ -38,8 +41,8 @@ inline constexpr size_t LABEL_AMOUNT_WAN[] = {LABEL_AMTS(LABEL_LIST_ONE)};
 #undef LABEL_LIST_ONE
 
 // 交易费用
-constexpr float FEE_BUY = 0.0001f;  // 买入佣金 万1
-constexpr float FEE_SELL = 0.0011f; // 卖出 万11 (印花万10 + 佣金万1)
+constexpr float FEE_COMMISSION = 0.0001f; // 佣金 万1 (双边)
+constexpr float STAMP = 0.0010f;
 
 class LabelReturn {
 public:
@@ -68,7 +71,7 @@ public:
     pending_l0_ = t;
   }
 
-  // L0 秒级: 以 t 为平仓时刻, 反推 label_l0 = t - DELAY - hold 的做多收益; 有则返回 true
+  // L0 秒级: 以 t 为平仓时刻, 反推 label_l0 = t - DELAY - hold 的做多收益 (缺失 = NaN); 时间不足返回 false
   inline bool second(size_t t, size_t &label_l0, float &value) const {
     constexpr size_t hold_sec = LABEL_L0_HOLD * 60;
     constexpr size_t total = LABEL_DELAY_SECONDS + hold_sec;
@@ -77,45 +80,55 @@ public:
     label_l0 = t - total;
     const auto *entry = get_snapshot(label_l0 + LABEL_DELAY_SECONDS);
     const auto *exit = get_snapshot(t);
-    if (!entry || !exit)
-      return false;
-    value = calc_return(entry, exit, L0_AMT_IDX, true);
-    return value != 0.0f;
+    value = (entry && exit) ? calc_return(entry, exit, L0_AMT_IDX, true) : kNaN;
+    return true;
   }
 
-  // L1 分钟锚定惰性回填: 锚点 = 分钟 m 起始秒, entry = 锚点+DELAY, exit = entry+hold.
-  //   每次推进: exit 已过线的分钟逐个补算 (深度稀疏也不漏分钟, 快照缺口沿用 60s 回溯; 找不到则该分钟无标签).
+  // L1 分钟锚定惰性回填: 锚点 = 分钟 m 末 (= m+1 起始秒; 11:29 → 13:00:00), entry = 锚点+DELAY, exit = entry+hold.
+  //   L1 行 m 的特征是分钟 m 结束时才可知的 (CoreSequential 顺序), 所以标签只能从 m 末起算, 锚到 m 起始秒会前视一分钟.
+  //   每次推进: exit 已过线的分钟逐个写出 (深度稀疏也不漏分钟, 快照缺口沿用 60s 回溯; 找不到则整组 NaN).
   //   writer(h, label_l1, values[GROUP_SIZE]) 负责落盘.
   template <class Writer>
   inline void minute_anchored(size_t t, Writer &&writer) {
     for (size_t h = 0; h < HOLD_COUNT; ++h) {
       const size_t hold_sec = LABEL_HOLD_MINUTES[h] * 60;
       for (;;) {
-        const size_t label_l0 = L1_to_L0(next_label_l1_[h]);
+        const size_t label_l0 = L1_to_L0(next_label_l1_[h] + 1); // 末分钟 254 → 15300 (盘后), exit 永不过线 → 留给 finish
         const size_t entry_l0 = label_l0 + LABEL_DELAY_SECONDS;
         const size_t exit_l0 = entry_l0 + hold_sec;
         if (exit_l0 > t)
           break;
         const auto *entry = get_snapshot(entry_l0);
         const auto *exit = get_snapshot(exit_l0);
+        float values[GROUP_SIZE];
         if (entry && exit) {
-          float values[GROUP_SIZE];
-          bool any = false;
           for (size_t a = 0; a < AMT_COUNT; ++a) {
             values[a] = calc_return(entry, exit, a, true);
             values[AMT_COUNT + a] = calc_return(entry, exit, a, false);
-            any = any || values[a] != 0.0f || values[AMT_COUNT + a] != 0.0f;
           }
-          if (any)
-            writer(h, next_label_l1_[h], static_cast<const float *>(values));
+        } else {
+          std::fill_n(values, GROUP_SIZE, kNaN);
         }
+        writer(h, next_label_l1_[h], static_cast<const float *>(values));
         ++next_label_l1_[h];
       }
     }
   }
 
-  // 每日重置
-  inline void reset() {
+  // 收盘: 各组剩余行 (exit 过收盘, 永不过线) 写 NaN, 使"无标签"与"零收益"可区分
+  template <class Writer>
+  inline void finish(Writer &&writer) {
+    float values[GROUP_SIZE];
+    std::fill_n(values, GROUP_SIZE, kNaN);
+    for (size_t h = 0; h < HOLD_COUNT; ++h)
+      for (; next_label_l1_[h] < TRADE_MINUTES_PER_DAY; ++next_label_l1_[h])
+        writer(h, next_label_l1_[h], static_cast<const float *>(values));
+  }
+
+  // 每日重置: 快照环作废, 行游标归零, 按日期定卖出费率 (印花税)
+  inline void reset(std::string_view yyyymmdd) {
+    assert(yyyymmdd.size() == 8 && "reset: 日期须为 YYYYMMDD");
+    fee_sell_ = FEE_COMMISSION + STAMP;
     for (auto &snap : ring_)
       snap.valid = false;
     for (size_t h = 0; h < HOLD_COUNT; ++h)
@@ -138,31 +151,31 @@ private:
   // 环长: 最远回看 = 延迟 + 最长持仓; +128 覆盖 get_snapshot 的 60s 回溯再留余量
   static constexpr size_t RING_SIZE = LABEL_DELAY_SECONDS + MAX_HOLD * 60 + 128;
 
-  // 单个 label 的收益率; 数据不足返回 0
+  // 单个 label 的收益率; 盘口不足 (进出任一侧吃不到) 返回 NaN
   inline float calc_return(const Snapshot *entry, const Snapshot *exit, size_t amt_idx, bool is_long) const {
     if (is_long) {
       // 做多: entry 买入 (吃 ask), exit 卖出 (吃 bid)
       const float entry_vwap = entry->buy_vwap[amt_idx];
       const float shares = entry->buy_shares[amt_idx];
       if (entry_vwap < 1e-6f || shares < 1e-6f)
-        return 0.0f;
-      const float entry_cost = entry_vwap * (1.0f + FEE_BUY);
+        return kNaN;
+      const float entry_cost = entry_vwap * (1.0f + FEE_COMMISSION);
       const float exit_vwap = interp_vwap(exit->sell_vwap, exit->sell_shares, shares); // 同股数卖出, 档间插值
       if (exit_vwap < 1e-6f)
-        return 0.0f;
-      const float exit_income = exit_vwap * (1.0f - FEE_SELL);
+        return kNaN;
+      const float exit_income = exit_vwap * (1.0f - fee_sell_);
       return (exit_income - entry_cost) / entry_cost;
     } else {
       // 做空: entry 卖出 (吃 bid), exit 买入 (吃 ask)
       const float entry_vwap = entry->sell_vwap[amt_idx];
       const float shares = entry->sell_shares[amt_idx];
       if (entry_vwap < 1e-6f || shares < 1e-6f)
-        return 0.0f;
-      const float entry_income = entry_vwap * (1.0f - FEE_SELL);
+        return kNaN;
+      const float entry_income = entry_vwap * (1.0f - fee_sell_);
       const float exit_vwap = interp_vwap(exit->buy_vwap, exit->buy_shares, shares);
       if (exit_vwap < 1e-6f)
-        return 0.0f;
-      const float exit_cost = exit_vwap * (1.0f + FEE_BUY);
+        return kNaN;
+      const float exit_cost = exit_vwap * (1.0f + FEE_COMMISSION);
       return (entry_income - exit_cost) / entry_income;
     }
   }
@@ -236,10 +249,11 @@ private:
 
   static constexpr size_t kNoPending = SIZE_MAX;
 
-  std::array<Snapshot, RING_SIZE> ring_;  // 深度快照环
-  size_t next_label_l1_[HOLD_COUNT] = {}; // 分钟锚定路径: 各组下一个待写 L1 行
-  size_t pending_l0_ = kNoPending;        // 当前活跃秒 (有盘口更新, 尚未结算入环)
-  mutable Snapshot scratch_;              // pending 秒被查询时的现算暂存
+  std::array<Snapshot, RING_SIZE> ring_;    // 深度快照环
+  size_t next_label_l1_[HOLD_COUNT] = {};   // 分钟锚定路径: 各组下一个待写 L1 行
+  size_t pending_l0_ = kNoPending;          // 当前活跃秒 (有盘口更新, 尚未结算入环)
+  mutable Snapshot scratch_;                // pending 秒被查询时的现算暂存
+  float fee_sell_ = FEE_COMMISSION + STAMP; // 当日卖出费率 (佣金 + 印花), reset(date) 设定
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

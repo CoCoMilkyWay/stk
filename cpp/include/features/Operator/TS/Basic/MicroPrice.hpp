@@ -26,7 +26,8 @@ public:
     float ask_price = ask_price_0_.back();
     float bid_qty = bid_qty_0_.back();
     float ask_qty = -ask_qty_0_.back(); // 卖方存负值
-    y[value] = (ask_price * bid_qty + bid_price * ask_qty) / (bid_qty + ask_qty);
+    const float denom = bid_qty + ask_qty;
+    y[value] = denom > 0.0f ? (ask_price * bid_qty + bid_price * ask_qty) / denom : kNaN; // 两侧一档皆空 → NaN
   }
 
 private:

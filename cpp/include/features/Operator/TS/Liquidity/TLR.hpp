@@ -7,6 +7,8 @@
 //   TAR_N = Σ V_i^{M,A} / V_all^{M,A}   (IS_BID=false)
 //   值越大订单越集中在前 N 档, 越易被击穿
 //   单侧算子: 只收一侧 qty; IS_BID 决定符号 (ask 存负值) 及全市场总量来源
+//   分子 = Depth 档位量 (已钳符号), 分母 = LOB 增量维护的全簿单侧总量 (同一套 Level 净量, 同步记账);
+//   当日尚无盘口 / 全簿该侧为空 → NaN
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -25,12 +27,16 @@ public:
       : qty_(qty), td_(td) {}
 
   inline void compute() {
+    if (qty_[0].empty()) [[unlikely]] { // 当日首次盘口更新前 (Depth 每日清空)
+      y[value] = kNaN;
+      return;
+    }
     float top_sum = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i)
       top_sum += IS_BID ? qty_[i].back() : -qty_[i].back(); // ask 存负值
 
     float total_sum = static_cast<float>(IS_BID ? td_.lob.all_bid_volume : td_.lob.all_ask_volume);
-    y[value] = total_sum > 1e-6f ? top_sum / total_sum : 0.0f;
+    y[value] = total_sum > 1e-6f ? top_sum / total_sum : kNaN;
   }
 
 private:

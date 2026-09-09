@@ -21,6 +21,7 @@
 #include <cassert>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1089,95 +1090,89 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 }
 
 // ============================================================================
-// 特征表落地 JSON (表格列 1:1 对应: 元数据 + Stat / Range / Dist / PSD + Deps)
+// 特征表落地 JSON (给人看: 表格可见列 + Stat / Range, 一行一特征; Dist / PSD 曲线不落)
 // ============================================================================
+
+// 4 位有效数字 (人读; 全精度 float 一串尾数只添噪)
+static double sig4(float v) {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.4g", (double)v);
+  return std::strtod(buf, nullptr);
+}
 
 void SaveFeatureTableJson(SharedData &data) {
   using json = nlohmann::json;
   const Feature::Metadata &meta = data.feature.metadata;
 
-  json j;
-  j["universe"] = data.config.universe;
-  j["start_date"] = data.config.start_date;
-  j["end_date"] = data.config.end_date;
-
-  // 预览抽样口径 + PSD 横轴 (各行 psd 数组与之平行: k = 1..N_FREQS-1, 周期 = 分钟)
-  {
-    json pv;
-    pv["level"] = LEVELS[analysis::kLevel].level_name;
-    pv["rounds"] = data.preview.done.load(std::memory_order_relaxed);
-    pv["assets_per_round"] = kPvAssetsPerRound;
-    json periods = json::array();
-    for (size_t k = 1; k < analysis::DayPSD::N_FREQS; ++k)
-      periods.push_back(analysis::DayPSD::period_of(k));
-    pv["psd_period_min"] = std::move(periods);
-    j["preview"] = std::move(pv);
-  }
-
-  std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
-  json levels = json::array();
-  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-    const auto &features = meta.features[lvl];
-    const auto &deps_list = meta.deps[lvl];
-    assert(deps_list.size() == features.size());
-    const bool preview_level = (lvl == analysis::kLevel);
-
-    json rows = json::array();
-    for (size_t i = 0; i < features.size(); ++i) {
-      const FeatureMetadata &f = features[i];
-      json r;
-      r["col"] = i;
-      r["code"] = f.code;
-      r["width"] = f.width;
-      r["valid"] = to_string(f.valid_type).en;
-      r["data_type"] = to_string(f.data_type).en;
-      r["cat_l1"] = f.cat_l1;
-      r["cat_l2"] = f.cat_l2;
-      r["ts_tf"] = to_string(f.ts_tf).en;
-      r["ts_method"] = to_string(f.ts_method).en;
-      r["cs_tf"] = to_string(f.cs_tf).en;
-      r["cs_method"] = to_string(f.cs_method).en;
-      r["name_en"] = f.name_en;
-      r["name_cn"] = f.name_cn;
-      r["formula"] = f.formula;
-      r["description"] = f.description;
-      r["deps"] = split_deps(deps_list[i]);
-
-      // 预览四列 (仅预览层且该格有账目; 表格显示 "—" 的格子不落键)
-      if (preview_level && i < data.preview.cells.size()) {
-        const FeaturePreview::Cell &cell = data.preview.cells[i];
-        const analysis::Integrity &it = cell.integrity;
-        if (it.n_total > 0) {
-          r["stat"] = {{"n_total", it.n_total}, {"n_valid", it.n_valid}, {"n_nan", it.n_nan}, {"n_zero", it.n_zero}, {"n_pos_inf", it.n_pos_inf}, {"n_neg_inf", it.n_neg_inf}};
-        }
-        if (it.n_valid > 0) {
-          r["range"] = {{"min", it.val_min}, {"max", it.val_max}, {"mean", cell.mean}, {"sd", cell.sd()}, {"skew", cell.skew}, {"kurt", cell.kurt}, {"n", cell.n}};
-        }
-        if (cell.n_pts > 0) {
-          r["dist"] = {{"x", std::vector<float>(cell.x.begin(), cell.x.begin() + cell.n_pts)},
-                       {"y", std::vector<float>(cell.y.begin(), cell.y.begin() + cell.n_pts)}};
-        }
-        if (cell.psd_n > 0) {
-          r["psd"] = {{"n", cell.psd_n}, {"log10_power", std::vector<float>(cell.psd.begin(), cell.psd.end())}};
-        }
-      }
-      rows.push_back(std::move(r));
-    }
-    levels.push_back({{"level", LEVELS[lvl].level_name}, {"features", std::move(rows)}});
-  }
-  j["levels"] = std::move(levels);
-
-  // 写 tmp 再 rename: 崩在中途不留半截文件 (同 AssetAxis::save)
   const std::filesystem::path path = std::filesystem::path(data.config.FeatureUniverseDir()) / "features.json";
   std::filesystem::create_directories(path.parent_path());
   const std::filesystem::path tmp = path.string() + ".tmp";
   {
     std::ofstream file(tmp);
     assert(file.is_open() && "features.json: 临时文件打不开");
-    file << j.dump(1);
+    file << "{\n";
+    file << " \"universe\": " << json(data.config.universe).dump() << ",\n";
+    file << " \"start_date\": " << json(data.config.start_date).dump() << ",\n";
+    file << " \"end_date\": " << json(data.config.end_date).dump() << ",\n";
+    file << " \"preview\": {\"level\": " << json(LEVELS[analysis::kLevel].level_name).dump()
+         << ", \"rounds\": " << data.preview.done.load(std::memory_order_relaxed)
+         << ", \"assets_per_round\": " << kPvAssetsPerRound << "},\n";
+
+    std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      const auto &features = meta.features[lvl];
+      const auto &deps_list = meta.deps[lvl];
+      assert(deps_list.size() == features.size());
+      const bool preview_level = (lvl == analysis::kLevel);
+
+      file << " \"" << LEVELS[lvl].level_name << "\": [\n";
+      for (size_t i = 0; i < features.size(); ++i) {
+        const FeatureMetadata &f = features[i];
+        // 键序 = 表格列序 (nlohmann ordered_json 保插入序)
+        nlohmann::ordered_json r;
+        r["col"] = i;
+        r["code"] = f.code;
+        r["w"] = f.width;
+        r["valid"] = to_string(f.valid_type).en;
+        r["name_cn"] = f.name_cn;
+        r["type"] = to_string(f.data_type).en;
+        r["cat_l1"] = f.cat_l1;
+        r["cat_l2"] = f.cat_l2;
+        r["ts_norm"] = to_string(f.ts_method).en;
+        r["cs_norm"] = to_string(f.cs_method).en;
+
+        // Stat / Range 与表格同口径 (百分比 / min -1sd +1sd max); 表格显示 "—" 的格子不落键
+        if (preview_level && i < data.preview.cells.size()) {
+          const FeaturePreview::Cell &cell = data.preview.cells[i];
+          const analysis::Integrity &it = cell.integrity;
+          if (it.n_total > 0) {
+            const float n_total = static_cast<float>(it.n_total);
+            r["stat"] = {{"nan%", sig4(it.nan_pct())},
+                         {"zero%", sig4(it.zero_pct())},
+                         {"-inf%", sig4(100.0f * static_cast<float>(it.n_neg_inf) / n_total)},
+                         {"+inf%", sig4(100.0f * static_cast<float>(it.n_pos_inf) / n_total)},
+                         {"n", it.n_total}};
+          }
+          if (it.n_valid > 0) {
+            const float sd = cell.sd();
+            r["range"] = {{"min", sig4(it.val_min)},
+                          {"-1sd", sig4(cell.mean - sd)},
+                          {"+1sd", sig4(cell.mean + sd)},
+                          {"max", sig4(it.val_max)},
+                          {"mean", sig4(cell.mean)},
+                          {"sd", sig4(sd)}};
+          }
+        }
+        r["deps"] = split_deps(deps_list[i]);
+
+        file << "  " << r.dump() << (i + 1 < features.size() ? ",\n" : "\n");
+      }
+      file << " ]" << (lvl + 1 < LEVEL_COUNT ? ",\n" : "\n");
+    }
+    file << "}\n";
     assert(file.good() && "features.json: 写入失败");
   }
-  std::filesystem::rename(tmp, path);
+  std::filesystem::rename(tmp, path); // 原子替换: 崩在中途不留半截文件 (同 AssetAxis::save)
 }
 
 } // namespace GUI::Features

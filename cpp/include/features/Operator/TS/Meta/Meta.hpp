@@ -25,8 +25,8 @@ inline constexpr bool valid(float v, L2::ValidType vt) {
 } // namespace fmeta
 
 // _meta 状态机: 同秒 (L0 行) / 同分钟 (L1 行) 多笔的 depth 位 OR 累积 + micro price 维护.
-// 逐笔覆盖写同一槽位, 最后一笔的累积值 = 该行终值 (免读改写). 分钟翻转与 ResamplerTick2Min
-// 由同一笔 tick 驱动 (同一个 L0_to_L1(l0_index)), 所以 run_minute 时 prev = 刚完结的分钟.
+// 逐笔覆盖写同一槽位, 最后一笔的累积值 = 该行终值 (免读改写). run_minute 在跨分钟的那笔
+// 进入 on_tick 之前调 (CoreSequential 顺序), 所以 l1() 读到的 min_depth_ 就是刚完结分钟的 OR.
 class MetaTracker {
 public:
   // 每笔一次 (run_tick 末尾, onDepth 已跑完): micro = MicroPrice 节点值 (单边盘口公式给 0);
@@ -38,7 +38,6 @@ public:
     }
     const size_t m = L0_to_L1(t);
     if (m != min_) {
-      prev_min_depth_ = min_depth_;
       min_ = m;
       min_depth_ = false;
     }
@@ -57,18 +56,18 @@ public:
     assert(price_ > 0.0f && "日内首笔必有价: 竞价阶段只有限价单, 撤单前必有挂单");
   }
 
-  float l0() const { return fmeta::pack(sec_depth_, price_); }                                           // L0 行 (当前秒)
-  float l1(bool minute_valid) const { return minute_valid ? fmeta::pack(prev_min_depth_, 1.0f) : 0.0f; } // L1 行 (刚完结分钟)
+  float l0() const { return fmeta::pack(sec_depth_, price_); }                                      // L0 行 (当前秒)
+  float l1(bool minute_valid) const { return minute_valid ? fmeta::pack(min_depth_, 1.0f) : 0.0f; } // L1 行 (刚完结分钟; 跨分钟那笔尚未 on_tick)
 
   void reset() {
     sec_ = min_ = SIZE_MAX;
-    sec_depth_ = min_depth_ = prev_min_depth_ = book_priced_ = false;
+    sec_depth_ = min_depth_ = book_priced_ = false;
     price_ = 0.0f;
   }
 
 private:
   size_t sec_ = SIZE_MAX, min_ = SIZE_MAX;
-  bool sec_depth_ = false, min_depth_ = false, prev_min_depth_ = false;
+  bool sec_depth_ = false, min_depth_ = false;
   bool book_priced_ = false; // 日内是否已有盘口价 (之前幅值退化为事件价)
   float price_ = 0.0f;       // 最近价 (元, 日内): 盘口 micro price, 竞价阶段为事件价
 };

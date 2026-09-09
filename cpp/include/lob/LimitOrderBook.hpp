@@ -701,10 +701,12 @@ private:
         level->net_quantity += quantity_delta;
         order->qty = new_qty;
 
-        // Update feature all_volume (incremental) - apply delta
-        const uint32_t abs_delta = std::abs(quantity_delta);
-        LOB_feature_ref().all_bid_volume += (quantity_delta > 0) ? abs_delta : 0;
-        LOB_feature_ref().all_ask_volume += (quantity_delta < 0) ? abs_delta : 0;
+        // Update feature all_volume: 按订单所属侧 (qty 符号) 换算贡献, 旧值出账新值入账.
+        // 抵扣 (delta 与 qty 反号) 是减量, 且 qty 可能翻号 (过度抵扣), 不能按 delta 符号直接加到某一侧.
+        auto side_bid = [](Quantity q) -> uint32_t { return q > 0 ? static_cast<uint32_t>(q) : 0u; };
+        auto side_ask = [](Quantity q) -> uint32_t { return q < 0 ? static_cast<uint32_t>(-q) : 0u; };
+        LOB_feature_ref().all_bid_volume += side_bid(new_qty) - side_bid(old_qty);
+        LOB_feature_ref().all_ask_volume += side_ask(new_qty) - side_ask(old_qty);
 
         // Update flags if needed (rare)
         if ((flags != OrderFlags::NORMAL || order->flags != OrderFlags::NORMAL)) [[unlikely]] {

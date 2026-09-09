@@ -4,6 +4,7 @@
 // Ohlc - 分钟 K 线 (GUI / 截面源列): 开高低收 (元) + 成交量 (股)
 // =============================================================================
 //   直接透传 MinuteData 的分钟聚合 (ResamplerTick2Min 填充), 走节点表统一写回.
+//   成交量以 ts::Log 落盘: 分钟股数常超 Float16 上限 (65504), 原值直存 → inf.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -40,4 +41,4 @@ private:
   X(_ohlc_high, CAT1, RAW, "OHLC High", "最高价", "分钟最高价(元)", R"(H_t)", OP(Ohlc, high, None, None))    \
   X(_ohlc_low, CAT1, RAW, "OHLC Low", "最低价", "分钟最低价(元)", R"(L_t)", OP(Ohlc, low, None, None))       \
   X(_ohlc_close, CAT1, RAW, "OHLC Close", "收盘价", "分钟收盘价(元)", R"(C_t)", OP(Ohlc, close, None, None)) \
-  X(_ohlc_volume, CAT1, RAW, "OHLC Volume", "成交量", "分钟成交量(股)", R"(V_t)", OP(Ohlc, volume, None, None))
+  X(_ohlc_volume, CAT1, RAW, "OHLC Volume", "成交量", "分钟成交量(股), log1p 落盘 (原值超 fp16 上限 65504)", R"(\log(1 + V_t))", OP(Ohlc, volume, Log, None))

@@ -6,6 +6,8 @@
 //   cost_buy_N  = VWAP(ask[1:N]) / mid - 1   (买方, 正值)
 //   cost_sell_N = 1 - VWAP(bid[1:N]) / mid   (卖方, 正值)
 //   IS_BUY: true=吃 ask, false=吃 bid
+//   N=1 时 cost_buy_1 ≡ cost_sell_1 = (ask1−bid1)/(ask1+bid1) (相对半价差), 只落 buy 一列.
+//   当日尚无盘口 / 该侧 N 档皆空 / mid 无效 → NaN
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -22,23 +24,27 @@ public:
 
   Cost(const DepthSeries &price,
        const DepthSeries &qty,
-       const Series mid_price)
+       const Series &mid_price)
       : price_(price), qty_(qty), mid_price_(mid_price) {}
 
   inline void compute() {
+    if (qty_[0].empty()) [[unlikely]] { // 当日首次盘口更新前 (Depth 每日清空)
+      y[value] = kNaN;
+      return;
+    }
     float sum_pv = 0.0f;
     float sum_v = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
       float p = price_[i].back();
       float v = qty_[i].back();
       if constexpr (IS_BUY)
-        v = -v; // ask qty 存负值
+        v = -v; // ask qty 存负值 (Depth 已钳符号, 此处 v ≥ 0)
       sum_pv += p * v;
       sum_v += v;
     }
 
     float mid = mid_price_.back();
-    float cost = 0.0f;
+    float cost = kNaN;
     if (sum_v > 1e-6f && mid > 1e-6f) {
       float vwap = sum_pv / sum_v;
       cost = IS_BUY ? vwap / mid - 1.0f : 1.0f - vwap / mid;
@@ -49,36 +55,31 @@ public:
 private:
   const DepthSeries &price_;
   const DepthSeries &qty_;
-  const Series mid_price_;
+  const Series &mid_price_; // 引用 (按值拷贝会拿到构造时的空环, back() 读垃圾)
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Cost_buy_1(N) N(Cost_buy_1, (Cost<1, true>), (Depth.ask_price, Depth.ask_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_buy_1(X, CAT1) \
-  X(cost_buy_1, CAT1, RAW, "Buy Impact Cost 1-Level", "买方冲击成本1档", "吃1档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{1} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{1} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_1, None, None))
+  X(cost_buy_1, CAT1, RAW, "Buy Impact Cost 1-Level", "买方冲击成本1档", "吃1档卖盘的执行价vs中间价偏离(比率,降频)=相对半价差,买卖对称故只落此列", R"(\frac{\sum_{i=1}^{1} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{1} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_1, None, None))
 
 #define NODE_Cost_buy_10(N) N(Cost_buy_10, (Cost<10, true>), (Depth.ask_price, Depth.ask_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_buy_10(X, CAT1) \
-  X(cost_buy_10, CAT1, RAW, "Buy Impact Cost 10-Level", "买方冲击成本10档", "吃10档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{10} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_10, None, None))
+  X(cost_buy_10, CAT1, RAW, "Buy Impact Cost 10-Level", "买方冲击成本10档", "吃10档卖盘的执行价vs中间价偏离(比率,降频)", R"(\frac{\sum_{i=1}^{10} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_10, None, None))
 
 #define NODE_Cost_buy_5(N) N(Cost_buy_5, (Cost<5, true>), (Depth.ask_price, Depth.ask_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_buy_5(X, CAT1) \
-  X(cost_buy_5, CAT1, RAW, "Buy Impact Cost 5-Level", "买方冲击成本5档", "吃5档卖盘的执行价vs中间价偏离(bps)(降频)", R"(\frac{\sum_{i=1}^{5} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_5, None, None))
-
-#define NODE_Cost_sell_1(N) N(Cost_sell_1, (Cost<1, false>), (Depth.bid_price, Depth.bid_qty, MidPrice.out()), onMinute)
-
-#define FIELDS_L1_Cost_sell_1(X, CAT1) \
-  X(cost_sell_1, CAT1, RAW, "Sell Impact Cost 1-Level", "卖方冲击成本1档", "吃1档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{1} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{1} V_{i,t}^{M,B}})", OP(Cost_sell_1, None, None))
+  X(cost_buy_5, CAT1, RAW, "Buy Impact Cost 5-Level", "买方冲击成本5档", "吃5档卖盘的执行价vs中间价偏离(比率,降频)", R"(\frac{\sum_{i=1}^{5} P_{i,t}^{M,A} V_{i,t}^{M,A}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,A}} - 1)", OP(Cost_buy_5, None, None))
 
 #define NODE_Cost_sell_10(N) N(Cost_sell_10, (Cost<10, false>), (Depth.bid_price, Depth.bid_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_sell_10(X, CAT1) \
-  X(cost_sell_10, CAT1, RAW, "Sell Impact Cost 10-Level", "卖方冲击成本10档", "吃10档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{10} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,B}})", OP(Cost_sell_10, None, None))
+  X(cost_sell_10, CAT1, RAW, "Sell Impact Cost 10-Level", "卖方冲击成本10档", "吃10档买盘的执行价vs中间价偏离(比率,降频)", R"(1 - \frac{\sum_{i=1}^{10} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{10} V_{i,t}^{M,B}})", OP(Cost_sell_10, None, None))
 
 #define NODE_Cost_sell_5(N) N(Cost_sell_5, (Cost<5, false>), (Depth.bid_price, Depth.bid_qty, MidPrice.out()), onMinute)
 
 #define FIELDS_L1_Cost_sell_5(X, CAT1) \
-  X(cost_sell_5, CAT1, RAW, "Sell Impact Cost 5-Level", "卖方冲击成本5档", "吃5档买盘的执行价vs中间价偏离(bps)(降频)", R"(1 - \frac{\sum_{i=1}^{5} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Cost_sell_5, None, None))
+  X(cost_sell_5, CAT1, RAW, "Sell Impact Cost 5-Level", "卖方冲击成本5档", "吃5档买盘的执行价vs中间价偏离(比率,降频)", R"(1 - \frac{\sum_{i=1}^{5} P_{i,t}^{M,B} V_{i,t}^{M,B}}{P_{\mathrm{mid},t} \sum_{i=1}^{5} V_{i,t}^{M,B}})", OP(Cost_sell_5, None, None))

@@ -43,8 +43,9 @@ struct FeatureUIState {
 
 void RenderTabFeature(SharedData &data, FeatureUIState &ui_state);
 
-// 特征表落地 JSON: <FeatureUniverseDir>/features.json (两层全部行, 元数据下标序, 不受过滤/排序影响;
-// 表格各列 + 预览账目/值域/PDF/PSD (仅 L1 有预览的行)). 预览跑完 (Building → Done) 时由 TaskFeatures 调
+// 特征表落地 JSON (给人看, 一行一特征): <FeatureUniverseDir>/features.json (两层全部行, 元数据下标序,
+// 不受过滤/排序影响; 表格可见列 + Stat / Range (仅 L1 有预览的行), 不落 Dist / PSD 曲线).
+// 预览跑完 (Building → Done) 时由 TaskFeatures 调
 void SaveFeatureTableJson(SharedData &data);
 
 } // namespace GUI::Features

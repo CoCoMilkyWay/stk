@@ -8,7 +8,9 @@
 // ============================================================================
 // CoreSequential: 单资产时序计算. LOB → L0 (tick, 秒索引) → resample → L1 (minute)
 //   每笔: run_tick()  按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L0 行 + 标签回填
-//   分钟: run_minute() 调 onMinute 域, 写 L1 行
+//   分钟: run_minute() 调 onMinute 域, 写 L1 行 (末分钟由 end_day 结算, 收盘后再无 tick 触发 roll)
+//   顺序: 本笔若跨入新分钟, 先结算上一分钟 (roll → run_minute), 再让本笔进 DAG (run_tick → accumulate).
+//   所以 L1 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态".
 //   节点调度全部由 NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的逐笔流 + 日频 PIT
@@ -47,7 +49,12 @@ public:
     dag_.at_day_start(date_str);
   }
 
+  // 收盘: 末分钟 (收盘集合竞价 → L1 254) 没有后续 tick 触发 roll, 这里结算;
+  // 标签: exit 永不过线的尾部行补 NaN (缺失), 与 Fund/Valuation 的 NaN 约定一致
   void end_day() {
+    if (tick2min_.finish())
+      run_minute();
+    dag_.LabelReturn.finish([&](size_t h, size_t label_l1, const float *values) { write_label(h, label_l1, values); });
     dag_.at_day_end();
   }
 
@@ -61,14 +68,15 @@ public:
     TraceColor(C_Cyan);
 
     dag_.tick_data.l0_index = static_cast<uint32_t>(Clock_to_L0(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second));
+    if (tick2min_.roll()) [[unlikely]] {
+      TraceN("TS_Minute");
+      run_minute(); // 上一分钟结算: 本笔尚未进任何节点 / meta_
+    }
     {
       TraceN("TS_Tick");
       run_tick();
     }
-    if (tick2min_.update()) {
-      TraceN("TS_Minute");
-      run_minute();
-    }
+    tick2min_.accumulate();
   }
 
 private:
@@ -92,22 +100,29 @@ private:
     }
     dag_.run<Trigger::onTick>();
 
-    if (lob.depth_updated) {
+    const bool depth_updated = lob.depth_updated;
+    if (depth_updated) {
       dag_.run<Trigger::onDepth>();
 
       // 标签: 共享快照, 然后 L1 分钟锚定回填 (组 h 占 GROUP_SIZE 个连续列)
       dag_.LabelReturn.snapshot(t);
-      dag_.LabelReturn.minute_anchored(t, [&](size_t h, size_t label_l1, const float *values) {
-        const size_t f = kL1LabelBase + h * LabelReturn::GROUP_SIZE;
-        fstore::ts_write_range<1>(day_, label_l1, f, f + LabelReturn::GROUP_SIZE - 1, asset_id_, values);
-      });
+      dag_.LabelReturn.minute_anchored(t, [&](size_t h, size_t label_l1, const float *values) { write_label(h, label_l1, values); });
     }
 
     fstore::ts_write_row<0>(day_, t, asset_id_, dag_);
 
-    // _meta (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值
-    meta_.on_tick(t, lob.depth_updated, dag_.MicroPrice.last(), dag_.Depth.bid_price[0].back(), dag_.Depth.ask_price[0].back(), lob.price);
+    // _meta (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值.
+    // 盘口价只在 depth_updated 时取 (Depth 序列每日清空, 首次更新前为空环)
+    meta_.on_tick(t, depth_updated, dag_.MicroPrice.last(),
+                  depth_updated ? dag_.Depth.bid_price[0].back() : 0.0f,
+                  depth_updated ? dag_.Depth.ask_price[0].back() : 0.0f, lob.price);
     fstore::ts_write<0>(day_, t, L0_Field::_meta, asset_id_, meta_.l0());
+  }
+
+  // 标签组 h 的 GROUP_SIZE 个连续列写到 L1 行 label_l1
+  inline void write_label(size_t h, size_t label_l1, const float *values) {
+    const size_t f = kL1LabelBase + h * LabelReturn::GROUP_SIZE;
+    fstore::ts_write_range<1>(day_, label_l1, f, f + LabelReturn::GROUP_SIZE - 1, asset_id_, values);
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----

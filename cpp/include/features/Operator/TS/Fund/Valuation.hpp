@@ -17,7 +17,6 @@
 // =============================================================================
 
 #include "features/DataDefine.hpp"
-#include "features/Operator/TS/Fund/Fund.hpp" // Fund::Out 口下标
 
 #include <limits>
 
@@ -36,24 +35,32 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  Valuation(const MinuteData &md, const Series (&fund)[Fund::kCount])
-      : md_(md), f_(fund) {}
+  // 只接用到的 Fund 口 (不接 Fund.outs()): 依赖表按口解析, 这些口都不落盘 → 估值列无字段级依赖
+  Valuation(const MinuteData &md,
+            const Series &total_shares, const Series &float_shares,
+            const Series &net_profit_ttm, const Series &equity_mrq,
+            const Series &revenue_ttm, const Series &cffoa_ttm,
+            const Series &up_lim, const Series &dn_lim, const Series &low_mc_thr)
+      : md_(md),
+        total_shares_(total_shares), float_shares_(float_shares),
+        net_profit_ttm_(net_profit_ttm), equity_mrq_(equity_mrq),
+        revenue_ttm_(revenue_ttm), cffoa_ttm_(cffoa_ttm),
+        up_lim_(up_lim), dn_lim_(dn_lim), low_mc_thr_(low_mc_thr) {}
 
   void compute() {
     const float close = md_.close.back(); // [元]
-    const auto f = [this](Fund::Out k) { return f_[k].back(); };
 
-    const float mc = close * f(Fund::total_shares); // [亿元]
+    const float mc = close * total_shares_.back(); // [亿元]
     y[mcap] = sat(mc);
-    y[fmcap] = sat(close * f(Fund::float_shares));
-    y[pe_ttm] = sat(mc / f(Fund::net_profit_ttm));
-    y[pb_mrq] = sat(mc / f(Fund::equity_mrq));
-    y[ps_ttm] = sat(mc / f(Fund::revenue_ttm));
-    y[pcf_ttm] = sat(mc / f(Fund::cffoa_ttm));
-    y[is_limit_up] = (close >= f(Fund::up_lim) - 1e-4f) ? 1.0f : 0.0f;
-    y[is_limit_dn] = (close <= f(Fund::dn_lim) + 1e-4f) ? 1.0f : 0.0f;
+    y[fmcap] = sat(close * float_shares_.back());
+    y[pe_ttm] = sat(mc / net_profit_ttm_.back());
+    y[pb_mrq] = sat(mc / equity_mrq_.back());
+    y[ps_ttm] = sat(mc / revenue_ttm_.back());
+    y[pcf_ttm] = sat(mc / cffoa_ttm_.back());
+    y[is_limit_up] = (close >= up_lim_.back() - 1e-4f) ? 1.0f : 0.0f;
+    y[is_limit_dn] = (close <= dn_lim_.back() + 1e-4f) ? 1.0f : 0.0f;
     y[is_low_px] = (close < 1.0f) ? 1.0f : 0.0f;
-    y[is_low_mcap] = (mc < f(Fund::low_mc_thr)) ? 1.0f : 0.0f;
+    y[is_low_mcap] = (mc < low_mc_thr_.back()) ? 1.0f : 0.0f;
   }
 
 private:
@@ -66,11 +73,14 @@ private:
   }
 
   const MinuteData &md_;
-  const Series (&f_)[Fund::kCount]; // Fund 节点全部输出口 (同域 onMinute, 拓扑序在前, back() 即本分钟值)
+  // Fund 节点输出口 (同域 onMinute, 拓扑序在前, back() 即本分钟值)
+  const Series &total_shares_, &float_shares_;
+  const Series &net_profit_ttm_, &equity_mrq_, &revenue_ttm_, &cffoa_ttm_;
+  const Series &up_lim_, &dn_lim_, &low_mc_thr_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Val(N) N(Val, (Valuation), (minute_data, Fund.outs()), onMinute)
+#define NODE_Val(N) N(Val, (Valuation), (minute_data, Fund.out(Fund.total_shares), Fund.out(Fund.float_shares), Fund.out(Fund.net_profit_ttm), Fund.out(Fund.equity_mrq), Fund.out(Fund.revenue_ttm), Fund.out(Fund.cffoa_ttm), Fund.out(Fund.up_lim), Fund.out(Fund.dn_lim), Fund.out(Fund.low_mc_thr)), onMinute)
 
 #define FIELDS_L1_Val(X, CAT1)                                                                                                                                                          \
   X(mcap, CAT1, RAW, "Market Cap RT", "实时总市值", "分钟最新价×总股本(亿元,不复权真市值)", R"(\frac{P_t \cdot S^{total}_{D}}{10^{8}})", OP(Val, mcap, None, None))                     \

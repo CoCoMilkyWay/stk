@@ -107,17 +107,25 @@ ALL_LEVELS(GENERATE_LEVEL_FIELDS)
 
 // ============================================================================
 // 每个字段的"来源" (GUI 特征依赖解析用)
-//   OP(node[,port]) → 节点名 (如 "Ci_5"); CS(lvl,src,...) → 源字段 code; 其余 → ""
+//   OP(node[,port]) → 节点名 (如 "Ci_5") + 口名 (单口节点 ""); CS(lvl,src,...) → 源字段 code; 其余 → ""
+//   口名配合 node_deps::TABLE 的 "Up.port" 项: 下游只引用某一口时, 依赖只算该口的字段
 // ============================================================================
 struct FieldSource {
   const char *code;   // 字段 code
   const char *source; // 节点名 (OP) / 源字段 code (CS) / 空 (LABEL/FLAG)
+  const char *port;   // 口名 (OP 多口) / 空
 };
 #define SRCSRC_OP(code, node, ...) #node
 #define SRCSRC_CS(code, lvl, src, ...) #src
 #define SRCSRC_LABEL(code) ""
 #define SRCSRC_FLAG(code) ""
-#define FIELD_SOURCE_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src)},
+#define SRCPORT_OP_3(node, tf, m) ""
+#define SRCPORT_OP_4(node, port, tf, m) #port
+#define SRCPORT_OP(code, ...) SRC_OP_PICK(__VA_ARGS__, SRCPORT_OP_4, SRCPORT_OP_3, , )(__VA_ARGS__)
+#define SRCPORT_CS(...) ""
+#define SRCPORT_LABEL(code) ""
+#define SRCPORT_FLAG(code) ""
+#define FIELD_SOURCE_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src), SRC_DISPATCH(SRCPORT, code, src)},
 #define GENERATE_LEVEL_SOURCES(name, num, fields, rows, psd, columnar, xor_delta) \
   inline constexpr FieldSource name##_FIELD_SOURCE[] = {fields(FIELD_SOURCE_ONE)};
 ALL_LEVELS(GENERATE_LEVEL_SOURCES)

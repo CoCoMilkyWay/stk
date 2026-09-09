@@ -3,6 +3,7 @@
 #include "define/CBuffer.hpp"
 #include "lob/LimitOrderBookDefine.hpp" // IWYU pragma: export
 #include <cstdint>
+#include <limits>
 
 //========================================================================================
 // HIERARCHICAL DATA DEFINITIONS
@@ -35,6 +36,10 @@ enum class Trigger : uint8_t {
 //----------------------------------------------------------------------------------------
 using Series = CBuffer<float, L2::BLEN>;
 using DepthSeries = Series[L2::LOB_DEPTH];
+
+// 缺失值约定 (全部算子 / 标签 / Fund 同一口径): "无定义" (空盘口 / 零分母 / 无标签 / PIT 缺失) 一律 NaN,
+// 不用 0 —— 0 是合法取值 (零收益 / 完全均衡), 消费端无法区分. 【fast-math 契约】只生产 NaN, 不 isnan.
+inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
 //----------------------------------------------------------------------------------------
 // OPERATOR CONTRACT (算子统一接口)

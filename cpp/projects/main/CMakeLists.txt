@@ -413,12 +413,26 @@ foreach(scan_file ${DAG_SCAN_FILES})
         list(APPEND DAG_NODES ${node_name})
         set(DAG_FILE_${node_name} ${scan_rel})
         # 依赖 = 该行里所有 "<Ident>." (先全收, 排序时只认节点名)
+        # 单口引用 Up.out(Up.port) 另记成 "Up.port" (GUI 依赖解析按口过滤, 不把上游整节点的字段都算进来);
+        # 其余形态 (Up.out() / Up.outs() / Up.member) = 整节点
         string(REGEX MATCH "(^|\n) *#define NODE_${node_name}\\([^\n]*" node_line "${scan_defs}")
-        string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*\\." node_refs "${node_line}")
-        set(DAG_DEPS_${node_name} "")
+        set(port_ref_re "[A-Za-z_][A-Za-z0-9_]*\\.out\\( *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\)")
+        string(REGEX MATCHALL "${port_ref_re}" port_refs "${node_line}")
+        string(REGEX REPLACE "${port_ref_re}" " " node_rest "${node_line}")
+        string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*\\." node_refs "${node_rest}")
+        set(DAG_DEPS_${node_name} "")    # 节点名 (拓扑排序用)
+        set(DAG_DEPREFS_${node_name} "") # "Up" / "Up.port" (node_deps::TABLE 用)
         foreach(ref ${node_refs})
             string(REGEX REPLACE "\\.$" "" ref "${ref}")
             list(APPEND DAG_DEPS_${node_name} ${ref})
+            list(APPEND DAG_DEPREFS_${node_name} ${ref})
+        endforeach()
+        foreach(ref ${port_refs})
+            string(REGEX REPLACE "^([A-Za-z_][A-Za-z0-9_]*)\\.out\\( *[A-Za-z_][A-Za-z0-9_]*\\.([A-Za-z0-9_]+) *\\)$" "\\1;\\2" up_port "${ref}")
+            list(GET up_port 0 up)
+            list(GET up_port 1 port)
+            list(APPEND DAG_DEPS_${node_name} ${up})
+            list(APPEND DAG_DEPREFS_${node_name} "${up}.${port}")
         endforeach()
     endforeach()
     foreach(field_def ${field_defs})
@@ -470,15 +484,16 @@ foreach(node_name ${DAG_ORDER})
 endforeach()
 string(APPEND DAG_GEN_PREV "#define DAG_LAST ${dag_prev}\n")
 
-# 节点上游依赖 (仅保留指向真实节点的引用, 过滤掉 Depth / tick_data 等源)
-# 生成 node_deps::TABLE: {node, deps[], count}, 供 GUI 特征依赖解析使用
+# 节点上游依赖 (仅保留指向真实节点的引用, 过滤掉 tick_data 等源; 去重)
+# 生成 node_deps::TABLE: {node, deps[], count}, 项 = "Up" (整节点) 或 "Up.port" (单口), 供 GUI 特征依赖解析使用
 set(DAG_GEN_DEP_ARRAYS "")
 set(DAG_GEN_DEP_TABLE "")
 set(dep_idx 0)
 foreach(node_name ${DAG_ORDER})
     set(dep_list "")
-    foreach(dep ${DAG_DEPS_${node_name}})
-        if(dep IN_LIST DAG_ORDER)
+    foreach(dep ${DAG_DEPREFS_${node_name}})
+        string(REGEX REPLACE "\\..*$" "" dep_node "${dep}")
+        if(dep_node IN_LIST DAG_ORDER AND NOT dep IN_LIST dep_list)
             list(APPEND dep_list ${dep})
         endif()
     endforeach()
@@ -564,7 +579,7 @@ ${DAG_GEN_PREV}
 // 落盘字段表 (按层; 行序 = 列序)
 ${DAG_GEN_FIELDS}
 
-// 节点上游依赖 (仅真实节点, 拓扑序; GUI 特征依赖解析用)
+// 节点上游依赖 (仅真实节点, 拓扑序; GUI 特征依赖解析用). 项 = \"Up\" 整节点 / \"Up.port\" 单口 (Up.out(Up.port) 形态)
 namespace node_deps {
   struct NodeDepsEntry { const char* node; const char* const* deps; size_t count; };
 ${DAG_GEN_DEP_ARRAYS}
