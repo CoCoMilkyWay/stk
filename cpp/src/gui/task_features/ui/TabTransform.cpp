@@ -470,11 +470,15 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
   // PSD 只 autofit y: x 是光标所在轴, 带通光标拖动 → 重算 → epoch 变 → x refit 会和光标共振
-  // (轴跳光标跟着跳), 所以 x 固定默认视野 [2, N] 只由用户缩放; y 与其他图同规则 (BeginPlot 成功才消费)
-  const bool fit_psd = ui.fit_psd && tf.psd_n > 0;
+  // (轴跳光标跟着跳), 所以 x 固定默认视野 [2, N] 只由用户缩放; y 与其他图同规则 (BeginPlot 成功才消费).
+  // 拖动中 (任一控件 active, 与下方请求节流的 released 同判据) 也不 fit y: y 每批 refit → y 刻度
+  // 文本宽度变 → PlotRect 左边界横移 → x 刻度/光标像素位置抖 (x 范围其实没变). 松手后再消费 pending.
+  const bool fit_psd = ui.fit_psd && tf.psd_n > 0 && !ImGui::IsAnyItemActive();
   if (fit_psd)
     ImPlot::SetNextAxisToFit(ImAxis_Y1);
-  if (ImPlot::BeginPlot("##PSD", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+  // NoBoxSelect: 左键 (MapInputReverse 后 = box-select) 与带通光标 DragLineX 共用,
+  // 释放时会把 X 范围 zoom 到拖动跨度 (与光标共振 → flicker). PSD 是诊断图, 缩放靠光标/滚轮即可.
+  if (ImPlot::BeginPlot("##PSD", ImVec2(-1, -1), ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
     ui.fit_psd &= !fit_psd;
     ImPlot::SetupAxes("周期 (min)", "log10 P");
     ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
