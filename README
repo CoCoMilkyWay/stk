@@ -23,8 +23,10 @@ stk/
 │   │   │   ├── AssetAxis.hpp                            # 📦 A轴(资产轴)对齐
 │   │   │   ├── Feature.hpp                              # 📦 特征元数据 + 选择 (多选 selected_features, 首个=主特征)
 │   │   │   ├── OrderFlow.hpp                            # 📦 订单流数据
+│   │   │   ├── Analysis.hpp                             # 📦 流式分析公共骨架: StreamState (进度/epoch/锁) / Integrity / PdfSnap (KLL 成品) / ReadScope / 常量
 │   │   │   ├── Dist.hpp                                 # 📦 分布分析 (KLL, 分批流式, DayBatchPlane, 月/周/日内/资产四维)
-│   │   │   ├── Transform.hpp                            # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套; 统计子集逐天 ADF/KPSS/PSD/ACF
+│   │   │   ├── Transform.hpp                            # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套; 全资产逐天 ADF/KPSS/PSD/ACF
+│   │   │   ├── FeaturePreview.hpp                       # 📦 特征表内联预览 (轮训抽样): 每特征 PDF + 单日 PSD 均值
 │   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
 │   │   ├── define/                                      # 🔷 底层数据结构
 │   │   │   ├── CBuffer.hpp                              # 🔷 循环缓冲区
@@ -90,10 +92,13 @@ stk/
 │   │   │       ├── TaskFeatures.hpp                     # 🖥️ 特征任务主界面
 │   │   │       ├── services/                            # 🖥️ 特征服务层
 │   │   │       │   ├── ComputeService.hpp               # 🖥️ 计算服务
-│   │   │       │   ├── DistService.hpp                  # 🖥️ 分布分析服务 (分批流式)
-│   │   │       │   ├── TransformService.hpp             # 🖥️ 特征变换服务 (分批流式)
+│   │   │       │   ├── StreamService.hpp                # 🖥️ 流式分析单 worker 编排骨架 (CRTP): Request 覆盖/取消/Start/Stop/Shutdown
+│   │   │       │   ├── DistService.hpp                  # 🖥️ 分布分析服务 (StreamService)
+│   │   │       │   ├── TransformService.hpp             # 🖥️ 特征变换服务 (StreamService)
+│   │   │       │   ├── PreviewService.hpp               # 🖥️ 特征表预览服务 (StreamService)
 │   │   │       │   └── OrderFlowService.hpp             # 🖥️ 订单流服务
 │   │   │       └── ui/                                  # 🖥️ UI组件
+│   │   │           ├── Common.hpp                       # 🖥️ 流式 tab 公共件: 状态行 (Compute/Cancel/进度) / 账目着色 / 高亮线
 │   │   │           ├── TabFeature.hpp                   # 🖥️ 特征表: 过滤 + 多选 (首个=主特征)
 │   │   │           ├── TabCompute.hpp                   # 🖥️ 计算标签页
 │   │   │           ├── TabOrderFlow.hpp                 # 🖥️ 订单流标签页

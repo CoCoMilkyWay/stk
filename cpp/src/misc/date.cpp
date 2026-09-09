@@ -71,6 +71,37 @@ std::string add_days(std::string_view yyyymmdd, int n) {
   return fmt_yyyymmdd(parse_yyyymmdd(yyyymmdd) + days{n});
 }
 
+std::vector<std::string> iter_months(std::string_view start, std::string_view end) {
+  // 去 '-' 取前 6 位 "YYYYMM"
+  auto yyyymm = [](std::string_view s) {
+    std::string d;
+    for (char c : s)
+      if (c != '-')
+        d += c;
+    assert(d.size() >= 6);
+    return d.substr(0, 6);
+  };
+  const std::string s = yyyymm(start), e = yyyymm(end);
+  std::vector<std::string> out;
+  int y = std::stoi(s.substr(0, 4)), m = std::stoi(s.substr(4, 2));
+  for (;;) {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%04d%02d", y, m);
+    if (std::string_view(buf) > e)
+      break;
+    out.emplace_back(buf);
+    if (++m > 12) {
+      m = 1;
+      ++y;
+    }
+  }
+  return out;
+}
+
+int weekday_of(std::string_view yyyymmdd) {
+  return static_cast<int>(weekday{parse_yyyymmdd(yyyymmdd)}.iso_encoding()) - 1;
+}
+
 std::string month_last_dd(std::string_view yyyymm) {
   assert(yyyymm.size() == 6);
   int y = std::stoi(std::string(yyyymm.substr(0, 4)));

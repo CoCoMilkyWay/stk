@@ -11,6 +11,7 @@
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
+#include "shared/Analysis.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -54,24 +55,56 @@ struct TaskFeaturesState {
   Features::TransformUIState transform_ui_state;
   Features::DistUIState dist_ui_state;
 
-  // Tab state
+  // Tab state (Dist / Transform 流式 tab: 切走中断, 切回自动重算)
   bool dist_tab_was_active = false;
   bool transform_tab_was_active = false;
 
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
 
+  // 流式分析三件 (Dist / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
+  bool streams_started = false;
   // Auto-compute tracking (Dist / Transform 共用): 特征/层变了即重算 (无论当前在哪个 tab)
-  int prev_primary_feature_idx = -1; // Track feature selection changes
-  int prev_selected_level = 0;       // Track level changes
-  bool dist_prewarmed = false;       // 输入就绪后预热一次 (切出任务时回收并复位)
-  bool transform_started = false;    // 输入就绪后起 worker 一次 (切出任务时回收并复位)
-
-  // Preview (特征表内联 PDF/PSD 迷你图): 输入就绪即自动构建, 不依赖选中特征.
-  // universe / 日期区间变了自动重算 (下面三个快照做变更检测)
-  bool preview_started = false;
+  int prev_primary_feature_idx = -1;
+  int prev_selected_level = 0;
+  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; universe / 日期区间变了自动重算 (快照做变更检测)
   std::string preview_universe, preview_start, preview_end;
 };
+
+// 流式 tab 的行状态: 构建中显示进度, 完成后 done, 取消 cancelled
+static TaskStatus StreamTaskStatus(const analysis::StreamState &st) {
+  switch (st.status.load(std::memory_order_relaxed)) {
+  case analysis::Status::Building: {
+    const size_t total = st.total.load(std::memory_order_relaxed);
+    const size_t done = st.done.load(std::memory_order_relaxed);
+    const int pct = total > 0 ? (int)(100 * done / total) : 0;
+    return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
+  }
+  case analysis::Status::Done:
+    return {TaskStatus::Kind::Ready, "done"};
+  case analysis::Status::Cancelled:
+    return {TaskStatus::Kind::Warn, "cancelled"};
+  case analysis::Status::Idle:
+    break;
+  }
+  return {};
+}
+
+// 流式 tab 生命周期: 切进 (Idle/Cancelled 才重算, Done 直接复用) / 切走 (只中断在跑构建,
+// 内存与 worker 保留, 任务级回收在 OnCollapse). request 返回 void, stop 调 Service::RequestCancel
+template <class Request, class Stop>
+static void StreamTabLifecycle(bool open, bool &was_active, const analysis::StreamState &st,
+                               Request &&request, Stop &&stop) {
+  if (open && !was_active) {
+    was_active = true;
+    const auto s = st.status.load();
+    if (s == analysis::Status::Idle || s == analysis::Status::Cancelled)
+      request();
+  } else if (!open && was_active) {
+    stop();
+    was_active = false;
+  }
+}
 
 // ============================================================================
 // Task Features Implementation
@@ -87,22 +120,18 @@ TaskHandle CreateFeaturesTask() {
   // OnExpand 不需要: 切到 Features 时 TaskTree::Select 默认 selected_tab=0,
   // Services 延迟到首次 Draw 时创建.
 
-  // OnCollapse: 切出 Features 任务才回收 Dist / Transform 的构建内存 (任务内切 tab 不回收)
+  // OnCollapse: 切出 Features 任务才回收三个流式分析的构建内存 (任务内切 tab 不回收)
   handle.OnCollapse = [state]() {
-    if (state->dist_service) {
+    if (state->dist_service)
       state->dist_service->Shutdown();
-      state->dist_prewarmed = false;      // 重进任务时重新预热
-      state->dist_tab_was_active = false; // 数据已清, 重进按"初次进 tab"走自动重算
-    }
-    if (state->transform_service) {
+    if (state->transform_service)
       state->transform_service->Shutdown();
-      state->transform_started = false;        // 重进任务时重新起 worker
-      state->transform_tab_was_active = false; // 数据已清, 重进按"初次进 tab"走自动重算
-    }
-    if (state->preview_service) {
+    if (state->preview_service)
       state->preview_service->Shutdown();
-      state->preview_started = false; // 重进任务时重新构建
-    }
+    state->streams_started = false; // 重进任务时重新起 worker
+    // 数据已清, 重进按"初次进 tab"走自动重算
+    state->dist_tab_was_active = false;
+    state->transform_tab_was_active = false;
   };
 
   // 子项 (叶子) 名字, 顺序与 TabIdx 一致
@@ -220,35 +249,11 @@ TaskHandle CreateFeaturesTask() {
       }
       return {};
 
-    case TAB_TRANSFORM: { // 流式构建中显示天数进度, 完成后 done, 取消 cancelled
-      const auto st = data.transform.status.load(std::memory_order_relaxed);
-      if (st == Transform::Status::Building) {
-        const size_t total = data.transform.days_total.load(std::memory_order_relaxed);
-        const size_t done = data.transform.days_loaded.load(std::memory_order_relaxed);
-        const int pct = total > 0 ? (int)(100 * done / total) : 0;
-        return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
-      }
-      if (st == Transform::Status::Done)
-        return {TaskStatus::Kind::Ready, "done"};
-      if (st == Transform::Status::Cancelled)
-        return {TaskStatus::Kind::Warn, "cancelled"};
-      return {};
-    }
+    case TAB_TRANSFORM:
+      return StreamTaskStatus(data.transform);
 
-    case TAB_DISTRIBUTION: { // 流式构建中显示天数进度, 完成后 done, 取消 cancelled
-      const auto st = data.dist.status.load(std::memory_order_relaxed);
-      if (st == Dist::Status::Building) {
-        const size_t total = data.dist.days_total.load(std::memory_order_relaxed);
-        const size_t done = data.dist.days_loaded.load(std::memory_order_relaxed);
-        const int pct = total > 0 ? (int)(100 * done / total) : 0;
-        return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
-      }
-      if (st == Dist::Status::Done)
-        return {TaskStatus::Kind::Ready, "done"};
-      if (st == Dist::Status::Cancelled)
-        return {TaskStatus::Kind::Warn, "cancelled"};
-      return {};
-    }
+    case TAB_DISTRIBUTION:
+      return StreamTaskStatus(data.dist);
 
     case TAB_ORDERFLOW: // 后台流式 worker 常驻 (背景常态, 灰色)
       if (state->orderflow_service && state->orderflow_service->is_running())
@@ -280,36 +285,23 @@ TaskHandle CreateFeaturesTask() {
       state->preview_service = std::make_unique<Features::PreviewService>();
     }
 
-    const bool feature_inputs_ready = state->inputs_ready; // Update (帧首) 已算
-
-    // Dist 预热: 输入就绪即起 worker 并预分配全部构建内存 (worker 线程做, 不卡帧),
-    // 点 Distribution 零额外分配; 内存保留到切出 Features 任务 (OnCollapse 回收).
-    // 先入队预热再起线程: worker 首次醒来若已有真实构建请求排队, 会丢弃预热 ——
-    // 反序则 worker 可能先抢走请求开跑, 预热落在非 Idle 状态撞断言.
-    if (!state->dist_prewarmed && feature_inputs_ready && !data.asset.items.empty()) {
-      state->dist_service->RequestPrewarm(data);
+    // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (universe 子轴要它).
+    // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
+    // Preview 起手即自动构建 (全 L1 特征轮训抽样, 不依赖选中); Dist / Transform 等选中特征
+    if (!state->streams_started && state->inputs_ready && !data.asset.items.empty()) {
       state->dist_service->Start(data);
-      state->dist_prewarmed = true;
-    }
-    // Transform worker 同点起 (无预热: 构建内存按请求参数分配), 与 Dist 对仗
-    if (!state->transform_started && feature_inputs_ready) {
       state->transform_service->Start(data);
-      state->transform_started = true;
-    }
-
-    // Preview 同点起 + 立即自动构建 (全 L1 特征轮训抽样, 不依赖选中);
-    // universe / 日期区间变了自动重算 (特征库目录/文件列序都跟着 universe 走)
-    if (!state->preview_started && feature_inputs_ready && !data.asset.items.empty()) {
       state->preview_service->Start(data);
       state->preview_service->RequestCompute(data);
-      state->preview_started = true;
+      state->streams_started = true;
       state->preview_universe = data.config.universe;
       state->preview_start = data.config.start_date;
       state->preview_end = data.config.end_date;
-    } else if (state->preview_started &&
+    } else if (state->streams_started &&
                (state->preview_universe != data.config.universe ||
                 state->preview_start != data.config.start_date ||
                 state->preview_end != data.config.end_date)) {
+      // universe / 日期区间变了 → 预览重算 (特征库目录/文件列序都跟着 universe 走)
       state->preview_universe = data.config.universe;
       state->preview_start = data.config.start_date;
       state->preview_end = data.config.end_date;
@@ -358,7 +350,7 @@ TaskHandle CreateFeaturesTask() {
            current_status == Features::ComputeStatus::Cancelled)) {
         // Compute just finished - OrderFlow 重扫日期 + 整体重拉; 预览重抽 (新库落盘)
         data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
-        if (state->preview_started)
+        if (state->streams_started)
           state->preview_service->RequestCompute(data);
       }
       state->prev_compute_status = current_status;
@@ -366,36 +358,16 @@ TaskHandle CreateFeaturesTask() {
 
     // Tab 锁定/使能已移到 Update (帧首, 无论选中都跑), 这里只管渲染与生命周期
 
-    // 生命周期: 基于 active_tab 判定各 tab 是否 open (同一时刻仅一个 open, 等价旧 tab-bar 语义)
-    const bool transform_tab_open = (idx == TAB_TRANSFORM);
-    const bool dist_tab_open = (idx == TAB_DISTRIBUTION);
-
-    // Transform lifecycle (与 Distribution 完全对仗): 切走只中断在跑构建 (内存与 worker 保留,
-    // 任务级回收在 OnCollapse); 切回时 Idle/Cancelled 用 UI 当前参数自动重算, Done 的结果直接复用
-    if (transform_tab_open && !state->transform_tab_was_active) {
-      state->transform_tab_was_active = true;
-      const auto st = data.transform.status.load();
-      if (st == Transform::Status::Idle || st == Transform::Status::Cancelled) {
-        state->transform_service->RequestCompute(data, state->transform_ui_state.params,
-                                                 state->transform_ui_state.focus);
-      }
-    } else if (!transform_tab_open && state->transform_tab_was_active) {
-      Features::StopTabTransform(state->transform_service.get(), data);
-      state->transform_tab_was_active = false;
-    }
-
-    // Distribution lifecycle: 切走只中断在跑构建 (内存与 worker 保留, 任务级回收在
-    // OnCollapse); 切回时 Idle/Cancelled 自动重算, Done 的结果直接复用
-    if (dist_tab_open && !state->dist_tab_was_active) {
-      state->dist_tab_was_active = true;
-      const auto st = data.dist.status.load();
-      if (st == Dist::Status::Idle || st == Dist::Status::Cancelled) {
-        state->dist_service->RequestCompute(data);
-      }
-    } else if (!dist_tab_open && state->dist_tab_was_active) {
-      Features::StopTabDist(state->dist_service.get(), data);
-      state->dist_tab_was_active = false;
-    }
+    // 流式 tab 生命周期 (Transform / Distribution 完全对仗): 基于 active_tab 判定 open
+    // (同一时刻仅一个 open); 切回时 Transform 用 UI 当前参数重算
+    StreamTabLifecycle(
+        idx == TAB_TRANSFORM, state->transform_tab_was_active, data.transform,
+        [&] { state->transform_service->RequestCompute(data, state->transform_ui_state.params, state->transform_ui_state.focus); },
+        [&] { Features::StopTabTransform(state->transform_service.get(), data); });
+    StreamTabLifecycle(
+        idx == TAB_DISTRIBUTION, state->dist_tab_was_active, data.dist,
+        [&] { state->dist_service->RequestCompute(data); },
+        [&] { Features::StopTabDist(state->dist_service.get(), data); });
 
     // Render active tab content (OrderFlow 切 tab 不停 worker: 流式后台继续, 切回即全)
     ImGui::BeginChild("FeaturesTab", ImVec2(0, 0), false);

@@ -62,6 +62,9 @@ struct Feature {
     std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1)
     std::vector<std::string> deps[LEVEL_COUNT];         // [level][i] = 该特征直接依赖的字段 code (分号分隔), 与 features 平行
     void init_from_compile_time();                      // Copy from constexpr arrays + resolve deps
+
+    // 字段 code → 该层列下标; 字段表里找不到 = 字段表与消费方脱节, assert
+    size_t col_of(size_t level, const char *code) const;
   };
   Metadata metadata;
 
@@ -87,33 +90,6 @@ struct Feature {
     void clear();
   };
   Selection selection;
-
-  // ==========================================================================
-  // Analysis Results (reserved for future expansion)
-  // ==========================================================================
-
-  struct AnalysisResults {
-    // Distribution statistics
-    struct Distribution {
-      // mean, std, min, max, quantiles, histogram, etc.
-      // TODO: expand in the future
-    };
-
-    // Time series visualization
-    struct TimeSeries {
-      // plot data, rolling stats, etc.
-      // TODO: expand in the future
-    };
-
-    // Correlation analysis
-    struct Correlation {
-      // correlation matrix, heatmap data, etc.
-      // TODO: expand in the future
-    };
-
-    // More analysis types can be added here...
-  };
-  AnalysisResults analysis;
 
   // ==========================================================================
   // Methods

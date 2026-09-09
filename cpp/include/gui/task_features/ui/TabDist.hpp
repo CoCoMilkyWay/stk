@@ -19,16 +19,10 @@
 #include <vector>
 
 struct SharedData;
-struct ImVec4;
 
 namespace GUI::Features {
 
 class DistService;
-
-// 完整性账目着色 (Distribution 完整性条 与 Feature 表账目列 共用同一套阈值)
-ImVec4 GetMinMaxColor(float val);    // |val| > 100 红
-ImVec4 GetZeroPctColor(float pct);   // ≥10% 红, ≥5% 黄
-ImVec4 GetNanInfPctColor(float pct); // ≥1% 红, >0 黄
 
 // ============================================================================
 // UI State
@@ -49,7 +43,7 @@ struct DistUIState {
   // 粘滞: 不按帧清, 等该图真正画上数据那帧才消费 —— reset 只 +epoch 不填数据 (首次构建槽表
   // 全空), 按帧清会把 fit 浪费在空图上. 四维就绪时机不同, 与 focus 同样逐维记账.
   bool fit[kDims] = {};
-  uint64_t last_lines_epoch = 0;
+  uint64_t last_epoch = 0; // 数据版本 (reset/clear/每批发布 +1), 跨构建单调
 
   // 跨帧 hover 的线 (dist.lines 下标; 资产截面图输出, 左栏详情面板消费; 无 hover 时详情落到 focus[3])
   int hovered_line = -1;

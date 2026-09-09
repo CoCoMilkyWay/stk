@@ -2,9 +2,10 @@
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "features/FeatureCategoriesGenerated.hpp"
 #include "graphic/graphic_basic.h"
-#include "gui/task_features/ui/TabDist.hpp" // 账目着色 helpers
-#include "misc/format.hpp"                  // misc::fmt_width
+#include "gui/task_features/ui/Common.hpp" // 账目着色 / 状态文本
+#include "misc/format.hpp"                 // misc::fmt_width
 #include "shared/Feature.hpp"
+#include "shared/FeaturePreview.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -481,7 +482,7 @@ struct PsdSparkAxis {
   std::array<float, kPvPsdPts> log_period{};
   PsdSparkAxis() {
     for (size_t j = 0; j < kPvPsdPts; ++j)
-      log_period[j] = std::log10(PvDayPSD::period_of(kPvPsdPts - j));
+      log_period[j] = std::log10(analysis::DayPSD::period_of(kPvPsdPts - j));
   }
 };
 static const PsdSparkAxis s_psd_axis;
@@ -556,7 +557,7 @@ static void render_preview_psd(const FeaturePreview::Cell &cell, const char *cod
     static std::vector<float> px;
     px.resize(kPvPsdPts);
     for (size_t j = 0; j < kPvPsdPts; ++j)
-      px[j] = PvDayPSD::period_of(kPvPsdPts - j);
+      px[j] = analysis::DayPSD::period_of(kPvPsdPts - j);
     ImPlot::SetNextLineStyle(kSparkPsdColor, 2.0f);
     ImPlot::PlotLine("##psd", px.data(), py.data(), (int)kPvPsdPts);
     ImPlot::EndPlot();
@@ -570,7 +571,7 @@ static void render_preview_psd(const FeaturePreview::Cell &cell, const char *cod
 //   Range: "min -1sd +1sd max"     四个数, 每个恰 4 字符 (sd 来自 sketch 矩)
 // ============================================================================
 
-static void render_stat_cell(const Dist::Integrity &it) {
+static void render_stat_cell(const analysis::Integrity &it) {
   if (it.n_total == 0) {
     ImGui::TextDisabled("—");
     return;
@@ -597,22 +598,23 @@ static void render_stat_cell(const Dist::Integrity &it) {
 }
 
 static void render_range_cell(const FeaturePreview::Cell &cell) {
-  const Dist::Integrity &it = cell.integrity;
+  const analysis::Integrity &it = cell.integrity;
   if (it.n_valid == 0) {
     ImGui::TextDisabled("—");
     return;
   }
+  const float sd = cell.sd();
   char s[4][8];
   misc::fmt_width(s[0], sizeof(s[0]), it.val_min, 4);
-  misc::fmt_width(s[1], sizeof(s[1]), cell.mean - cell.sd, 4);
-  misc::fmt_width(s[2], sizeof(s[2]), cell.mean + cell.sd, 4);
+  misc::fmt_width(s[1], sizeof(s[1]), cell.mean - sd, 4);
+  misc::fmt_width(s[2], sizeof(s[2]), cell.mean + sd, 4);
   misc::fmt_width(s[3], sizeof(s[3]), it.val_max, 4);
   ImGui::TextColored(GetMinMaxColor(std::max(std::fabs(it.val_min), std::fabs(it.val_max))),
                      "%s %s %s %s", s[0], s[1], s[2], s[3]);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("min %.4g  -1sd %.4g  +1sd %.4g  max %.4g\nmean %.4g  sd %.4g  n %llu",
-                      it.val_min, cell.mean - cell.sd, cell.mean + cell.sd, it.val_max,
-                      cell.mean, cell.sd, static_cast<unsigned long long>(cell.n));
+                      it.val_min, cell.mean - sd, cell.mean + sd, it.val_max,
+                      cell.mean, sd, static_cast<unsigned long long>(cell.n));
 }
 
 // ============================================================================
@@ -761,9 +763,9 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // Preview 轮训进度 (Dist/PSD 两列逐轮收敛; 免锁读原子)
   {
     const auto pv_status = data.preview.status.load(std::memory_order_relaxed);
-    if (pv_status == FeaturePreview::Status::Building) {
-      const int done = (int)data.preview.rounds_done.load(std::memory_order_relaxed);
-      const int total = (int)data.preview.rounds_total.load(std::memory_order_relaxed);
+    if (pv_status == analysis::Status::Building) {
+      const int done = (int)data.preview.done.load(std::memory_order_relaxed);
+      const int total = (int)data.preview.total.load(std::memory_order_relaxed);
       ImGui::SameLine();
       ImGui::TextDisabled("(preview %d/%d)", done, total);
     }
@@ -843,7 +845,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
     // 持 preview 锁覆盖 排序 + 行循环 (账目列可排序, 比较器要读 cells; worker 只在块末短锁发布, 不会长等)
     std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
-    const bool preview_level = (sel.selected_level == (int)kPvLevel);
+    const bool preview_level = (sel.selected_level == (int)analysis::kLevel);
     static const FeaturePreview::Cell s_empty_cell{};
     // 槽位 = metadata 下标; 非预览层 / 未就绪 → 空 cell
     auto cell_of = [&](int i) -> const FeaturePreview::Cell & {
@@ -921,8 +923,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               case 9: // Stat: nan%
                 cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
                 break;
-              case 10: // Range: sd
-                cmp = cmp3(ca.sd, cb.sd);
+              case 10: // Range: sd (var 单调等价)
+                cmp = cmp3(ca.var, cb.var);
                 break;
               case 13:
                 cmp = deps_list[a].compare(deps_list[b]);

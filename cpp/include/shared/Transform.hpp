@@ -2,29 +2,25 @@
 
 #include "features/FeaturesDefine.hpp"
 #include "features/Method/CS.hpp"
-#include "features/TimeIndex.hpp"
 #include "math/Operator.hpp"
-#include "math/distribution/KLLcache.hpp"
 #include "math/normalize/Normalize.hpp"
-#include "math/spectral/DayPSD.hpp"
 #include "math/spectral/IIRBandpass.hpp"
 #include "math/stationary/FracDiff.hpp"
 #include "math/stationary/IntDiff.hpp"
 #include "math/stationary/MADetrend.hpp"
 #include "math/stationary/TodProfile.hpp"
+#include "shared/Analysis.hpp"
 
 #include <array>
-#include <atomic>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
 class FeatureRead;
 
 // ============================================================================
-// Transform Analysis (特征变换探索, 分批流式)
+// Transform Analysis (特征变换探索, 分批流式; 公共骨架见 shared/Analysis.hpp)
 // ============================================================================
 // 目的: 在全区间 × 全资产上试一条变换链, 看它对平稳性 / 分布 / 频谱的效果 —— 而且
 // 链上每一步都必须是生产算子能逐值复现的东西, 否则结论不可迁移:
@@ -37,7 +33,7 @@ class FeatureRead;
 //   今天用截至昨日的轮廓, 再把今天并入). 全部因果, 不用未来值.
 //   CS 段: 每个 (天, 分钟) 截面一列, 有效资产子集 dense 化 → cs::column_fn (Tf, Method) 原地.
 //
-// 流式 (对仗 Dist.hpp): 天是流式维度, 每批 kTfDaysPerBatch 天, 从前往后:
+// 流式 (对仗 Dist.hpp): 天是流式维度, 每批 kDaysPerBatch 天, 从前往后:
 //   Phase IO:   抢单天并行载入 → DayBatchPlane [列][A][批天][VR] (f16, 无效 = 哨兵 NaN)
 //   ── 栅栏 ──
 //   Phase TS:   抢资产块; 每 (资产, 天): 上面的 TS 链 → out_ [A][批天][VR] (float, NaN = 缺/预热)
@@ -52,27 +48,17 @@ class FeatureRead;
 //
 // UI: 每帧持 mutex 读快照; 改任何参数 = 新请求 (取消在跑, 从第一天重来) —— 海量数据下
 //     交互仍即时, 因为每次都只等第一批.
-// 层: 只在 L1 跑 (Params.level 参数化, 目前断言 == kTfLevel; L0 的 VR/PSD 模板另配).
+// 重算: reset 不清展示字段 (拖动调参时旧图留住), 首批 publish 整体覆盖 —— 与 Dist 同一约定.
 // universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 UniverseAxis) —— 平面 /
 //   out / lines / sketch / TOD 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
 //   槽位 = 子轴下标; AssetLine/StatLine 的 .asset 存全局轴下标 (UI 查 items 用).
 // ============================================================================
 
-static constexpr size_t kTfLevel = 1;
-static constexpr size_t kTfVR = TRADE_MINUTES_PER_DAY; // L1 有效行 (== level_valid_rows(kTfLevel), build 内断言)
-static constexpr size_t kTfDaysPerBatch = 8;
-static constexpr size_t kTfDrawAssets = 512;       // PDF 折线绘制子集 (纯 UI 顶点预算, sketch/统计恒为全资产)
-static constexpr size_t kTfKllCapacity = 256;      // 每资产 sketch
-static constexpr size_t kTfKllResolution = 128;    // 资产 PDF 网格
-static constexpr size_t kTfTotalKllCapacity = 512; // 全局输出 sketch
-static constexpr size_t kTfTotalKllResolution = 256;
-static constexpr size_t kTfMinAssetSamples = 100;
 static constexpr size_t kTfMinStatSamples = 20; // 单日 ADF/KPSS 的最少有效样本
 static constexpr size_t kTfMaxLag = 40;         // 单日 ACF/PACF 最大滞后 (样本 = 分钟); 需有效样本 ≥ 4×lag
-using TfDayPSD = math::spectral::DayPSD<kTfVR>;
-static_assert(4 * kTfMaxLag <= kTfVR);
+static_assert(4 * kTfMaxLag <= analysis::kVR);
 
-struct Transform {
+struct Transform : analysis::StreamState {
   using Season = math::stationary::TodProfile::Mode;
   static constexpr size_t kSeasonCount = 3;
 
@@ -101,8 +87,6 @@ struct Transform {
   // 参数 (UI 编辑一份, 请求时快照进 Transform; 任何字段变了都是一次新构建)
   // ==========================================================================
   struct Params {
-    size_t level = kTfLevel;
-
     Season season = Season::None;
 
     Stationary stationary = Stationary::None;
@@ -114,8 +98,8 @@ struct Transform {
     int iir_order = 2;
     float bp_lo_period = 5.0f;
     float bp_hi_period = 60.0f;
-    static constexpr float kMinPeriod = 2.5f;                      // f = 2/period 相对 Nyquist 必须 < 1
-    static constexpr float kMaxPeriod = static_cast<float>(kTfVR); // 最长看一天
+    static constexpr float kMinPeriod = 2.5f;                              // f = 2/period 相对 Nyquist 必须 < 1
+    static constexpr float kMaxPeriod = static_cast<float>(analysis::kVR); // 最长看一天
 
     NormMethod ts_norm = NormMethod::NONE;
     math::Operator ts; // 按 math::normalize::GetMethod(ts_norm) 初始化
@@ -140,15 +124,7 @@ struct Transform {
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   // ==========================================================================
 
-  // 每资产: 最终输出的累积分布 (槽位 == 子轴下标)
-  struct AssetLine {
-    uint32_t asset = 0; // 全局轴下标 (UI 查 items 用)
-    uint64_t n = 0;     // 累积有效输出样本数
-    float mean = 0.0f, var = 0.0f, skew = 0.0f, kurt = 0.0f;
-    uint32_t n_pts = 0; // 0 = 样本不足, 不画
-    uint8_t draw = 0;   // PDF 折线绘制子集
-    std::array<float, kTfKllResolution - 1> x{}, y{};
-  };
+  using AssetLine = analysis::AssetLine; // 每资产链末输出的累积分布 (槽位 == 子轴下标)
 
   // 每资产 (槽位 == 子轴下标, 与 lines 对齐): 逐天平稳性检验累积
   struct StatLine {
@@ -172,6 +148,7 @@ struct Transform {
     std::vector<float> tod_mean, tod_sd; // [VR] 截至末批的 TOD 轮廓 (season 关时不填)
   };
 
+  // 链路账目 (输入 → 链末输出; 与 analysis::Integrity 的值账目语义不同, 不共用)
   struct Integrity {
     uint64_t n_total = 0;     // 格子数 (A × 天 × VR)
     uint64_t n_in_valid = 0;  // 输入有效 (门控过 且 非 NaN)
@@ -181,30 +158,18 @@ struct Transform {
   };
 
   // ==========================================================================
-  // State
+  // State (进度/epoch/mutex 在 StreamState)
   // ==========================================================================
 
-  enum class Status : uint8_t { Idle,
-                                Building,
-                                Done,
-                                Cancelled };
-
-  std::atomic<Status> status{Status::Idle};
-  std::atomic<size_t> days_loaded{0};
-  std::atomic<size_t> days_total{0};
-  std::atomic<uint64_t> epoch{0}; // 数据每变一次 +1 (reset/clear/每批发布), 跨构建单调 (UI 以此 autofit)
-
-  mutable std::mutex mutex;
-
-  Params params;                                              // 本次构建的参数快照 (reset 时定, UI 只读)
-  std::vector<AssetLine> lines;                               // [A_sub] (槽位 == 子轴下标, .asset = 全局轴下标)
-  std::vector<StatLine> stat_lines;                           // [A_sub] 槽位 == 子轴下标 (与 lines 对齐)
-  SeriesSnap series;                                          // 焦点资产全程 (逐批增长)
-  std::array<float, TfDayPSD::N_FREQS> psd_mean{};            // 逐 (资产, 天) 单日谱的算术平均 (逐批收敛)
-  uint64_t psd_n = 0;                                         // 参与平均的 (资产, 天) 数
-  std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{};   // 逐 (资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
-  uint64_t acf_n = 0;                                         // 参与平均的 (资产, 天) 数 (有效样本 ≥ 4×kTfMaxLag)
-  KLLcache total{kTfTotalKllCapacity, kTfTotalKllResolution}; // 全资产全区间链末输出
+  Params params;                                            // 本次构建的参数快照 (reset 时定, UI 只读)
+  std::vector<AssetLine> lines;                             // [A_sub] (槽位 == 子轴下标, .asset = 全局轴下标)
+  std::vector<StatLine> stat_lines;                         // [A_sub] 槽位 == 子轴下标 (与 lines 对齐)
+  SeriesSnap series;                                        // 焦点资产全程 (逐批增长)
+  std::array<float, analysis::DayPSD::N_FREQS> psd_mean{};  // 逐 (资产, 天) 单日谱的算术平均 (逐批收敛)
+  uint64_t psd_n = 0;                                       // 参与平均的 (资产, 天) 数
+  std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{}; // 逐 (资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
+  uint64_t acf_n = 0;                                       // 参与平均的 (资产, 天) 数 (有效样本 ≥ 4×kTfMaxLag)
+  analysis::AggPdf global;                                  // 全资产全区间链末输出
   Integrity integrity;
 
   // ==========================================================================
@@ -214,11 +179,11 @@ struct Transform {
   Transform();
   ~Transform();
 
-  // 重置全部状态并进入 Building. columns = [特征列 (+ mcap, ind_l1 若 NeutralRank) (+ _meta 门控列)]
-  // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids; A_sub = size, 升序去重非空)
-  // series_focus = 序列快照焦点 (子轴下标, < A_sub)
+  // 重置构建参数并进入 Building. cols = [特征列 (+ mcap, ind_l1 若 NeutralRank) (+ _meta 门控列)]
+  // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids); series_focus = 序列快照焦点 (子轴下标).
+  // 展示字段不清 (旧图留住), universe 变了才整体重建.
   void reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                       const std::vector<std::string> &month_keys,
+                       std::vector<std::string> month_keys,
                        std::vector<uint32_t> global_ids, uint32_t series_focus);
 
   // 全区间构建: 分批流式; 被取消返回 false
@@ -229,9 +194,10 @@ struct Transform {
 private:
   struct Runtime; // worker 私有 (批平面 / TS 链状态 / 线程 shard), 定义在 Transform.cpp
   std::unique_ptr<Runtime> rt_;
+  // 构建参数 (UI 不看): reset 时定好, build 全程只读
   std::vector<size_t> columns_;
   bool has_valid_ = false;
   std::vector<std::string> months_;
-  std::vector<uint32_t> global_ids_; // 子轴 → 全局轴映射 (reset 时定, 构建期只读)
-  uint32_t series_focus_ = 0;        // 序列快照焦点 (子轴下标; reset 时定, 构建期只读)
+  std::vector<uint32_t> global_ids_; // 子轴 → 全局轴映射
+  uint32_t series_focus_ = 0;        // 序列快照焦点 (子轴下标)
 };

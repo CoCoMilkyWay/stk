@@ -36,4 +36,10 @@ std::string add_days(std::string_view yyyymmdd, int n);
 // "YYYYMM" -> 该月最后一天 "DD" ("28" / "29" / "30" / "31")
 std::string month_last_dd(std::string_view yyyymm);
 
+// [start, end] 覆盖的月份 "YYYYMM" 升序 (start/end: "YYYY-MM-DD" 或 "YYYYMMDD"; start > end → 空)
+std::vector<std::string> iter_months(std::string_view start, std::string_view end);
+
+// "YYYYMMDD" -> 星期 (Mon=0 .. Sun=6)
+int weekday_of(std::string_view yyyymmdd);
+
 } // namespace misc

@@ -1,5 +1,7 @@
 #include "shared/Feature.hpp"
 
+#include <cassert>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -73,6 +75,16 @@ void Feature::Metadata::init_from_compile_time() {
   resolve_level(L1_FIELD_SOURCE, std::size(L1_FIELD_SOURCE), deps[1]);
 }
 
+size_t Feature::Metadata::col_of(size_t level, const char *code) const {
+  assert(level < LEVEL_COUNT);
+  const auto &list = features[level];
+  for (size_t i = 0; i < list.size(); ++i)
+    if (std::strcmp(list[i].code, code) == 0)
+      return i;
+  assert(false && "字段表里找不到该列");
+  return 0;
+}
+
 // ============================================================================
 // Feature::Selection Implementation
 // ============================================================================
@@ -89,7 +101,4 @@ void Feature::Selection::clear() {
 // Feature Implementation
 // ============================================================================
 
-void Feature::clear() {
-  selection.clear();
-  // analysis留空,以后扩展
-}
+void Feature::clear() { selection.clear(); }

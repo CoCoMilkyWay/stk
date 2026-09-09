@@ -1,9 +1,10 @@
 #include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_features/services/DistService.hpp"
+#include "gui/task_features/ui/Common.hpp"
+#include "misc/date.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Config.hpp"
 #include "shared/Dist.hpp"
-#include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -16,37 +17,11 @@
 
 namespace GUI::Features {
 
+using analysis::AggPdf;
+
 // ============================================================================
 // Helpers
 // ============================================================================
-
-static const char *StatusText(Dist::Status s) {
-  switch (s) {
-  case Dist::Status::Idle:
-    return "Idle";
-  case Dist::Status::Building:
-    return "Building...";
-  case Dist::Status::Done:
-    return "Done";
-  case Dist::Status::Cancelled:
-    return "Cancelled";
-  }
-  return "?";
-}
-
-static ImVec4 StatusColor(Dist::Status s) {
-  switch (s) {
-  case Dist::Status::Idle:
-    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // 灰色
-  case Dist::Status::Building:
-    return ImVec4(0.2f, 0.7f, 1.0f, 1.0f); // 蓝色
-  case Dist::Status::Done:
-    return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
-  case Dist::Status::Cancelled:
-    return ImVec4(0.9f, 0.6f, 0.2f, 1.0f); // 橙色
-  }
-  return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-}
 
 // Calculate distance from point to line segment (normalized coords)
 static double point_to_segment_dist_sq(double px, double py, double x1, double y1,
@@ -136,90 +111,6 @@ static ImVec4 IndustryColor(const DistUIState &ui, size_t asset_idx) {
 }
 
 // ============================================================================
-// Integrity Panel
-// ============================================================================
-
-// Color helpers for integrity display (声明在 TabDist.hpp, Feature 表账目列复用)
-ImVec4 GetMinMaxColor(float val) {
-  // Red if outside [-100, 100]
-  if (val > 100.0f || val < -100.0f) {
-    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
-  }
-  return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
-}
-
-ImVec4 GetZeroPctColor(float pct) {
-  // 20%以上红色, 10%以上黄色
-  if (pct >= 10.0f) {
-    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
-  } else if (pct >= 5.0f) {
-    return ImVec4(1.0f, 0.9f, 0.3f, 1.0f); // 黄色
-  }
-  return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
-}
-
-ImVec4 GetNanInfPctColor(float pct) {
-  // 1%以上红色, 非零黄色
-  if (pct >= 1.0f) {
-    return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
-  } else if (pct > 0.0f) {
-    return ImVec4(1.0f, 0.9f, 0.3f, 1.0f); // 黄色
-  }
-  return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
-}
-
-static void RenderIntegrity(const Dist::Integrity &integrity) {
-  float zero_pct = integrity.zero_pct();
-  float nan_pct = integrity.nan_pct();
-  float inf_pct = integrity.inf_pct();
-
-  // Zero with color
-  ImGui::Text("Zero: %zu (", integrity.n_zero);
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(GetZeroPctColor(zero_pct), "%.1f%%", zero_pct);
-  ImGui::SameLine(0, 0);
-  ImGui::Text(")");
-  ImGui::SameLine();
-
-  // NaN with color
-  ImGui::Text("NaN: %zu (", integrity.n_nan);
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(GetNanInfPctColor(nan_pct), "%.1f%%", nan_pct);
-  ImGui::SameLine(0, 0);
-  ImGui::Text(")");
-  ImGui::SameLine();
-
-  // +Inf with color
-  ImGui::Text("+Inf: %zu (", integrity.n_pos_inf);
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(GetNanInfPctColor(inf_pct), "%.1f%%", inf_pct);
-  ImGui::SameLine(0, 0);
-  ImGui::Text(")");
-  ImGui::SameLine();
-
-  // -Inf with color (same inf_pct as +Inf)
-  ImGui::Text("-Inf: %zu (", integrity.n_neg_inf);
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(GetNanInfPctColor(inf_pct), "%.1f%%", inf_pct);
-  ImGui::SameLine(0, 0);
-  ImGui::Text(")");
-  ImGui::SameLine();
-
-  // Min/Max with color (无有效样本时 min/max 恒为 ±inf, 显示 --)
-  if (integrity.n_valid == 0) {
-    ImGui::Text("Min: -- Max: --");
-    return;
-  }
-  ImGui::Text("Min: ");
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(GetMinMaxColor(integrity.val_min), "%.2f", integrity.val_min);
-  ImGui::SameLine();
-  ImGui::Text("Max: ");
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(GetMinMaxColor(integrity.val_max), "%.2f", integrity.val_max);
-}
-
-// ============================================================================
 // 维度 (四图对仗): 槽数 / 槽 sketch / 槽标签 —— 焦点滑条、PDF 面板、详情面板共用
 //   0 月度漂移 (months)  1 周内偏移 (by_weekday)  2 日内偏移 (by_tod)  3 资产截面 (lines)
 // ============================================================================
@@ -262,11 +153,11 @@ static int FocusAssetOf(const Dist &dist, int focus) {
   return focus >= 0 && static_cast<size_t>(focus) < dist.lines.size() ? focus : -1;
 }
 
-// 聚合维度 (0-2) 的槽 sketch; 数据未就绪 (槽表还没建) 返回 nullptr. 资产维度走 lines 快照
-static const KLLcache *DimSlot(const Dist &dist, int dim, int i) {
+// 聚合维度 (0-2) 的槽快照; 数据未就绪 (槽表还没建) 返回 nullptr. 资产维度走 lines 快照
+static const AggPdf *DimSlot(const Dist &dist, int dim, int i) {
   switch (dim) {
   case DIM_MONTH:
-    return i < static_cast<int>(dist.months.size()) ? &dist.months[i].kll : nullptr;
+    return i < static_cast<int>(dist.months.size()) ? &dist.months[i] : nullptr;
   case DIM_WEEKDAY:
     return i < static_cast<int>(dist.by_weekday.size()) ? &dist.by_weekday[i] : nullptr;
   case DIM_TOD:
@@ -303,8 +194,8 @@ static uint64_t DimSamples(const Dist &dist, int dim, int i) {
     const int s = FocusAssetOf(dist, i);
     return s >= 0 ? dist.lines[s].n : 0;
   }
-  const KLLcache *kll = DimSlot(dist, dim, i);
-  return kll ? kll->totalCount() : 0;
+  const AggPdf *p = DimSlot(dist, dim, i);
+  return p ? p->n : 0;
 }
 
 // 滑条标签: "槽名 (n)" / "槽名"
@@ -325,40 +216,19 @@ static std::string DimLabel(const Dist &dist, const DistUIState &ui, const Asset
 static void RenderWindowControl(DistService *service, SharedData &data,
                                 DistUIState &ui) {
   auto &dist = data.dist;
-  const Dist::Status status = dist.status.load(std::memory_order_acquire);
 
-  // Row 1: Compute | Cancel | Status
-  const bool is_l1 = (data.feature.selection.selected_level == 1);
-  bool can_compute = status != Dist::Status::Building &&
-                     data.feature.selection.primary_feature_idx() >= 0 && is_l1;
-  ImGui::BeginDisabled(!can_compute);
-  if (ImGui::Button("Compute")) {
+  // Row 1: Compute | Cancel | Status (天是唯一流式维度: 每批扫全部资产, 全资产逐批收敛)
+  const int action = RenderStreamControl(dist, data, "天");
+  if (action > 0)
     service->RequestCompute(data);
-  }
-  ImGui::EndDisabled();
-  if (!is_l1) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("(仅 L1)");
-  }
-
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel")) {
+  else if (action < 0)
     service->RequestCancel();
-  }
 
-  ImGui::SameLine();
-  ImGui::Text("Status: ");
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
-  ImGui::SameLine(0, 0);
-  // 进度: 分批流式, 天是唯一流式维度 (每批扫全部资产, 全资产逐批收敛)
-  ImGui::Text(" (天 %zu/%zu)", dist.days_loaded.load(), dist.days_total.load());
-
-  // Row 2: 焦点滑条 (月份表来自 config 区间, 缓存; 枚举逻辑与 DistService 共用)
+  // Row 2: 焦点滑条 (月份表来自 config 区间, 缓存; 枚举与 ReadScope 同一函数)
   const std::string months_key = data.config.start_date + "|" + data.config.end_date;
   if (ui.months_key != months_key) {
     ui.months_key = months_key;
-    ui.months = dist_enumerate_months(data.config.start_date, data.config.end_date);
+    ui.months = misc::iter_months(data.config.start_date, data.config.end_date);
   }
   const int dim = ui.selected_dimension;
   const int n = DimCount(dist, ui, dim);
@@ -379,17 +249,6 @@ static void RenderWindowControl(DistService *service, SharedData &data,
 // ============================================================================
 
 constexpr float kDimAlpha = 0.1f;
-
-static void PlotHighlightLine(const float *x, const float *y, size_t n) {
-  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 5.0f);
-  ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 1.0f);
-  ImPlot::PlotLine("##hl_outline", x, y, static_cast<int>(n));
-  ImPlot::PopStyleVar();
-  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 3.0f);
-  ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 1.0f);
-  ImPlot::PlotLine("##hl", x, y, static_cast<int>(n));
-  ImPlot::PopStyleVar();
-}
 
 // 该维度是否处于"滑条拖动高亮"模式
 static bool FocusHighlighting(const DistUIState &ui, int dim) {
@@ -516,7 +375,7 @@ static void DrawSelectedBorder() {
 }
 
 // 聚合维度 (月/周/日内) PDF 面板: 每槽一条线, 离焦点越近越亮 (Hot colormap), 焦点线加粗置顶.
-// PDF 零拷贝: 指向 KLL 内部重建缓存, 帧内有效. 点击图 → 选中该维度 (滑条切过去).
+// 消费 AggPdf 发布快照 (worker 批末导出成品), 零计算只画. 点击图 → 选中该维度 (滑条切过去).
 static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset, int dim,
                            int &clicked_dimension) {
   char child_id[16];
@@ -534,19 +393,19 @@ static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset
     return;
   }
 
-  // 流式: 槽 sketch 随批次增长, count 够了就画
-  std::vector<KLLcache::LinePtr> lines(n_items, KLLcache::LinePtr{nullptr, nullptr, 0});
+  // 流式: 槽随批次增长, 样本够了 (n_pts > 0) 就画
+  auto line_of = [&](int i) -> const AggPdf * {
+    const AggPdf *p = DimSlot(dist, dim, i);
+    return p && p->n_pts > 0 ? p : nullptr;
+  };
   int max_dist = 0;
   bool any_line = false;
   const int focus = ui.focus[dim];
-  for (int i = 0; i < n_items; ++i) {
-    const KLLcache *kll = DimSlot(dist, dim, i);
-    if (kll && kll->totalCount() >= 10) {
-      lines[i] = kll->exportPDF();
-      any_line |= lines[i].n > 0;
+  for (int i = 0; i < n_items; ++i)
+    if (line_of(i)) {
+      any_line = true;
       max_dist = std::max(max_dist, std::abs(i - focus));
     }
-  }
 
   int hovered_idx = -1;
   double min_dist_sq = 1e9;
@@ -569,26 +428,31 @@ static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset
     const bool dimmed = FocusHighlighting(ui, dim);
     ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f);
     for (int i = 0; i < n_items; ++i) {
-      if (lines[i].n == 0 || (dimmed && i == focus))
+      const AggPdf *p = line_of(i);
+      if (!p || (dimmed && i == focus))
         continue;
       const float t = max_dist > 0 ? 1.0f - static_cast<float>(std::abs(i - focus)) / static_cast<float>(max_dist) : 0.5f;
       ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Hot);
       if (dimmed)
         color.w = kDimAlpha;
       ImPlot::SetNextLineStyle(color, 1.0f);
-      ImPlot::PlotLine("##pdf", lines[i].x, lines[i].y, static_cast<int>(lines[i].n));
+      ImPlot::PlotLine("##pdf", p->x.data(), p->y.data(), static_cast<int>(p->n_pts));
     }
     ImPlot::PopStyleVar();
 
-    if (dimmed && focus < n_items && lines[focus].n > 0)
-      PlotHighlightLine(lines[focus].x, lines[focus].y, lines[focus].n);
+    if (dimmed && focus < n_items)
+      if (const AggPdf *p = line_of(focus))
+        PlotHighlightLine(*p);
 
     // Hover (x 窗口裁剪, 只扫鼠标附近的段)
     if (ImPlot::IsPlotHovered()) {
       const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
       const ImPlotRect limits = ImPlot::GetPlotLimits();
       for (int i = 0; i < n_items; ++i) {
-        const double d_sq = nearest_seg_dist_sq(lines[i].x, lines[i].y, lines[i].n, mouse, limits);
+        const AggPdf *p = line_of(i);
+        if (!p)
+          continue;
+        const double d_sq = nearest_seg_dist_sq(p->x.data(), p->y.data(), p->n_pts, mouse, limits);
         if (d_sq < min_dist_sq) {
           min_dist_sq = d_sq;
           hovered_idx = i;
@@ -602,12 +466,12 @@ static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset
 
   // Tooltip (无视觉高亮, 不与焦点线打架)
   if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
-    const KLLcache &kll = *DimSlot(dist, dim, hovered_idx);
+    const AggPdf &p = *DimSlot(dist, dim, hovered_idx);
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(DimName(dist, ui, asset, dim, hovered_idx).c_str());
-    ImGui::Text("n=%llu", static_cast<unsigned long long>(kll.totalCount()));
-    ImGui::Text("mean=%.4f std=%.4f", kll.mean(), std::sqrt(kll.var()));
-    ImGui::Text("skew=%.4f kurt=%.4f", kll.skew(), kll.kurt());
+    ImGui::Text("n=%llu", static_cast<unsigned long long>(p.n));
+    ImGui::Text("mean=%.4f std=%.4f", p.mean, p.sd());
+    ImGui::Text("skew=%.4f kurt=%.4f", p.skew, p.kurt);
     ImGui::EndTooltip();
   }
 
@@ -622,10 +486,6 @@ static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset
 // ============================================================================
 // Assets PDF Plot
 // ============================================================================
-
-static void PlotHighlightLine(const Dist::AssetLine &ln) {
-  PlotHighlightLine(ln.x.data(), ln.y.data(), ln.n_pts);
-}
 
 // 资产截面: 高亮模式 = hover 到线/点, 或滑条按住中 (焦点 = ui.focus[DIM_ASSETS]); 高亮线置顶,
 // 其余线全资产压暗作背景; 松手/移开即恢复常态. 输出 hovered_line_out (无 hover → -1,
@@ -669,7 +529,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
   const size_t n_valid = line_indices.size();
 
   if (n_valid == 0) {
-    ImGui::Text("No data (need assets with n >= %zu)", kMinAssetSamples);
+    ImGui::Text("No data (need assets with n >= %zu)", analysis::kMinAssetSamples);
     return;
   }
 
@@ -986,11 +846,11 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧
   // 之间也不会被看成"没变" (归零版单批区间每次都停在 1, 会漏), 也不依赖 status 转移.
   // 置位后由各维图在画上数据那帧自行消费 (见 DistUIState::fit)
-  const uint64_t cur_epoch = dist.lines_epoch.load(std::memory_order_acquire);
-  if (cur_epoch != ui.last_lines_epoch)
+  const uint64_t cur_epoch = dist.epoch.load(std::memory_order_acquire);
+  if (cur_epoch != ui.last_epoch)
     for (bool &f : ui.fit)
       f = true;
-  ui.last_lines_epoch = cur_epoch;
+  ui.last_epoch = cur_epoch;
 
   // 渲染帧内持锁: worker 块末/批末短锁发布, UI 读快照与聚合槽与其互斥
   std::lock_guard<std::mutex> dist_lock(dist.mutex);

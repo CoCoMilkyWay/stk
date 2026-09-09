@@ -172,6 +172,7 @@ include_directories(SYSTEM ${ARROW_INCLUDE})
 
 set(SOURCES
     # shared
+    ../../src/shared/Analysis.cpp
     ../../src/shared/Asset.cpp
     ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
@@ -241,6 +242,7 @@ set(SOURCES
     ../../src/gui/task_features/services/OrderFlowService.cpp
     ../../src/gui/task_features/services/PreviewService.cpp
     ../../src/gui/task_features/services/TransformService.cpp
+    ../../src/gui/task_features/ui/Common.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
@@ -266,6 +268,7 @@ endif()
 
 set(HEADERS
     # shared
+    ../../include/shared/Analysis.hpp
     ../../include/shared/Asset.hpp
     ../../include/shared/AssetInfo.hpp
     ../../include/shared/Config.hpp
@@ -592,6 +595,7 @@ endif()
 # (-ffinite-math-only) 冲突会出错, 必须 precise math.
 set_source_files_properties(
     # shared
+    ../../src/shared/Analysis.cpp
     ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Config.cpp
@@ -628,6 +632,7 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
     ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_features/services/OrderFlowService.cpp
+    ../../src/gui/task_features/ui/Common.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp

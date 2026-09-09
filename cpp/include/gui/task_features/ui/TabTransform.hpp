@@ -29,7 +29,7 @@ struct TransformUIState {
   // 待 autofit (epoch/focus 变即置位; 序列图双击也置位 → 两图并集 fit). 粘滞: 不按帧清,
   // 等该图有数据 且 BeginPlot 真成功那帧才消费 —— reset 只 +epoch 不填数据 (首次构建
   // series/lines 全空), 子窗被裁剪时 BeginPlot 失败会静默丢掉 SetNextAxesToFit, 按帧清都会漏.
-  // 各图数据就绪时机不同 (series.n_days / total 样本数 / psd_n / acf_n), 各自独立记账.
+  // 各图数据就绪时机不同 (series.n_days / global.n_pts / psd_n / acf_n), 各自独立记账.
   // PSD 只 fit y: x 是带通光标所在轴, 拖动 → 重算 → x refit 会与光标共振, x 固定只由用户缩放.
   bool fit_series = false;
   bool fit_pdf = false;

@@ -1,5 +1,6 @@
 #include "gui/task_features/ui/TabTransform.hpp"
 #include "gui/task_features/services/TransformService.hpp"
+#include "gui/task_features/ui/Common.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Feature.hpp"
@@ -17,37 +18,12 @@
 
 namespace GUI::Features {
 
+using analysis::DayPSD;
+using analysis::kVR;
+
 // ============================================================================
 // Helpers
 // ============================================================================
-
-static const char *StatusText(Transform::Status s) {
-  switch (s) {
-  case Transform::Status::Idle:
-    return "Idle";
-  case Transform::Status::Building:
-    return "Building...";
-  case Transform::Status::Done:
-    return "Done";
-  case Transform::Status::Cancelled:
-    return "Cancelled";
-  }
-  return "?";
-}
-
-static ImVec4 StatusColor(Transform::Status s) {
-  switch (s) {
-  case Transform::Status::Idle:
-    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-  case Transform::Status::Building:
-    return ImVec4(0.2f, 0.7f, 1.0f, 1.0f);
-  case Transform::Status::Done:
-    return ImVec4(0.2f, 0.8f, 0.4f, 1.0f);
-  case Transform::Status::Cancelled:
-    return ImVec4(0.9f, 0.6f, 0.2f, 1.0f);
-  }
-  return ImVec4(1, 1, 1, 1);
-}
 
 // 通过率 → 颜色: 红 (0) → 黄 (0.5) → 绿 (1); < 0 = 无数据 (灰)
 static ImU32 RateColor(float r) {
@@ -82,29 +58,12 @@ static bool RenderOperatorParams(math::Operator &op, const char *suffix) {
 // ============================================================================
 
 static void RenderControl(TransformService *service, SharedData &data, TransformUIState &ui) {
-  auto &tf = data.transform;
-  const auto status = tf.status.load(std::memory_order_acquire);
   const auto &sel = data.feature.selection;
-  const bool is_l1 = sel.selected_level == static_cast<int>(kTfLevel);
-
-  ImGui::BeginDisabled(status == Transform::Status::Building || sel.primary_feature_idx() < 0 || !is_l1);
-  if (ImGui::Button("Compute"))
+  const int action = RenderStreamControl(data.transform, data, "天");
+  if (action > 0)
     service->RequestCompute(data, ui.params, ui.focus);
-  ImGui::EndDisabled();
-  if (!is_l1) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("(仅 L1)");
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel"))
+  else if (action < 0)
     service->RequestCancel();
-
-  ImGui::SameLine();
-  ImGui::Text("Status: ");
-  ImGui::SameLine(0, 0);
-  ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
-  ImGui::SameLine(0, 0);
-  ImGui::Text(" (天 %zu/%zu)", tf.days_loaded.load(), tf.days_total.load());
 
   ImGui::SameLine(0, 20);
   if (sel.primary_feature_idx() >= 0 && sel.selected_level >= 0 && sel.selected_level < static_cast<int>(LEVEL_COUNT)) {
@@ -116,7 +75,8 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
   }
 }
 
-static void RenderIntegrity(const Transform::Integrity &it) {
+// 链路账目 (输入 → 链末输出), 与 Common 的值账目 RenderIntegrity 语义不同
+static void RenderChainIntegrity(const Transform::Integrity &it) {
   if (it.n_total == 0) {
     ImGui::TextDisabled("完整性: --");
     return;
@@ -351,7 +311,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
   TraceN("UI:Series");
   const auto &sn = tf.series;
   const bool has = sn.n_days > 0;
-  const size_t n_pts = sn.n_days * kTfVR;
+  const size_t n_pts = sn.n_days * kVR;
   static std::vector<float> tod_tile;
 
   // 有数据才 fit. pending 只在"并集范围真写进了链接值 且 至少一图真画了"那帧消费:
@@ -369,7 +329,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
     scan(sn.raw.data(), n_pts);
     scan(sn.out.data(), n_pts);
     if (tf.params.season != Transform::Season::None)
-      scan(sn.tod_mean.data(), kTfVR);
+      scan(sn.tod_mean.data(), kVR);
     if (lo <= hi) {
       const double margin = hi > lo ? 0.05 * (hi - lo) : 1.0;
       ui.series_y_min = lo - margin;
@@ -408,7 +368,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
         tod_tile.resize(n_pts);
         const float *tm = sn.tod_mean.data();
         for (size_t d = 0; d < sn.n_days; ++d)
-          std::copy_n(tm, kTfVR, tod_tile.data() + d * kTfVR);
+          std::copy_n(tm, kVR, tod_tile.data() + d * kVR);
         ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 1.0f, 0.9f), 1.5f);
         ImPlot::PlotLine("##tod", tod_tile.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
       }
@@ -453,7 +413,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
 
   // 有数据才 fit (PDF 画的是总体线 + 绘制子集线, 二者任一就绪即算有). pending 只在 BeginPlot
   // 成功那帧消费: SetNextAxesToFit 在 BeginPlot 失败 (子窗 SkipItems / 被裁剪) 时会被 ImPlot 静默丢弃
-  bool pdf_has = tf.total.totalCount() >= kTfMinAssetSamples;
+  bool pdf_has = tf.global.n_pts > 0;
   if (ui.fit_pdf && !pdf_has)
     for (const auto &ln : tf.lines)
       if (ln.draw && ln.n_pts > 0) {
@@ -463,13 +423,13 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   const bool fit_pdf = ui.fit_pdf && pdf_has;
   const bool fit_acf = ui.fit_acf && tf.acf_n > 0;
 
-  // 左: 分布
+  // 左: 分布 (全局 + 绘制子集 + 焦点; 全部是 PdfSnap 成品, 零计算只画)
   ImGui::BeginChild("PDFPlot", ImVec2(col_w, height), true);
-  ImGui::Text("链末输出分布  n=%llu", static_cast<unsigned long long>(tf.total.totalCount()));
-  if (tf.total.totalCount() >= kTfMinAssetSamples) {
+  ImGui::Text("链末输出分布  n=%llu", static_cast<unsigned long long>(tf.global.n));
+  if (tf.global.n_pts > 0) {
     ImGui::SameLine();
-    ImGui::TextDisabled("mean %.3g  sd %.3g  skew %.2f  kurt %.2f", tf.total.mean(), std::sqrt(tf.total.var()),
-                        tf.total.skew(), tf.total.kurt());
+    ImGui::TextDisabled("mean %.3g  sd %.3g  skew %.2f  kurt %.2f", tf.global.mean, tf.global.sd(),
+                        tf.global.skew, tf.global.kurt);
   }
   if (fit_pdf)
     ImPlot::SetNextAxesToFit();
@@ -485,16 +445,12 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
       ImPlot::SetNextLineStyle(c, 0.8f);
       ImPlot::PlotLine("##a", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
     }
-    if (!tf.total.empty() && tf.total.totalCount() >= kTfMinAssetSamples) {
-      const auto pdf = tf.total.exportPDF();
+    if (tf.global.n_pts > 0) {
       ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 2.5f);
-      ImPlot::PlotLine("##total", pdf.x, pdf.y, static_cast<int>(pdf.n));
+      ImPlot::PlotLine("##global", tf.global.x.data(), tf.global.y.data(), static_cast<int>(tf.global.n_pts));
     }
-    if (focus_asset < A && tf.lines[focus_asset].n_pts > 0) {
-      const auto &ln = tf.lines[focus_asset];
-      ImPlot::SetNextLineStyle(ImVec4(0, 1, 1, 1), 2.5f);
-      ImPlot::PlotLine("##focus", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
-    }
+    if (focus_asset < A && tf.lines[focus_asset].n_pts > 0)
+      PlotHighlightLine(tf.lines[focus_asset]);
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
@@ -504,12 +460,12 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   // 中: PSD (x = 周期 分钟, log; y = log10 功率)
   ImGui::BeginChild("PSDPlot", ImVec2(col_w, height), true);
   ImGui::Text("单日 PSD 均值  (%llu 资产·天)", static_cast<unsigned long long>(tf.psd_n));
-  constexpr size_t NF = TfDayPSD::N_FREQS;
+  constexpr size_t NF = DayPSD::N_FREQS;
   static std::vector<float> px, py;
   px.resize(NF - 1);
   py.resize(NF - 1);
   for (size_t k = 1; k < NF; ++k) { // 跳 DC
-    px[k - 1] = TfDayPSD::period_of(k);
+    px[k - 1] = DayPSD::period_of(k);
     const float v = tf.psd_mean[k];
     py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
@@ -522,7 +478,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     ui.fit_psd &= !fit_psd;
     ImPlot::SetupAxes("周期 (min)", "log10 P");
     ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
-    ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, static_cast<double>(TfDayPSD::N), ImGuiCond_Once);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, static_cast<double>(DayPSD::N), ImGuiCond_Once);
     ImPlot::SetupAxisLimits(ImAxis_Y1, -10.0, 0.0, ImGuiCond_Once);
 
     // 通带阴影
@@ -570,7 +526,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   ImGui::BeginChild("ACFPlot", ImVec2(0, height), true);
   {
     constexpr int NL = static_cast<int>(kTfMaxLag);
-    const float cb = 1.96f / std::sqrt(static_cast<float>(kTfVR));
+    const float cb = 1.96f / std::sqrt(static_cast<float>(kVR));
     const float cb_neg = -cb;
     ImGui::Text("单日 ACF / PACF 均值  (%llu 资产·天)  参考带 ±%.3f", static_cast<unsigned long long>(tf.acf_n), cb);
     static std::array<float, kTfMaxLag> lags = [] {
@@ -646,7 +602,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   bool bp_changed = false;
   {
     std::lock_guard<std::mutex> lock(tf.mutex);
-    RenderIntegrity(tf.integrity);
+    RenderChainIntegrity(tf.integrity);
     RenderFocusAndHeatmap(tf, data.asset, ui);
     RenderSeries(tf, data.asset, ui, plot_h);
     RenderDistAndPSD(tf, ui, plot_h, bp_changed);

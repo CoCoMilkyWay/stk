@@ -1,70 +1,55 @@
 #pragma once
 
-#include "features/Backend/DayBatchPlane.hpp"
 #include "features/TimeIndex.hpp"
-#include "math/distribution/KLLcache.hpp"
-#include <algorithm>
+#include "shared/Analysis.hpp"
+
 #include <array>
-#include <atomic>
-#include <bit>
-#include <cassert>
 #include <cstdint>
-#include <mutex>
+#include <memory>
 #include <string>
 #include <vector>
 
+class FeatureRead;
+
 // ============================================================================
-// Distribution Analysis (KLL-based, 分批流式)
+// Distribution Analysis (KLL-based, 分批流式; 公共骨架见 shared/Analysis.hpp)
 // ============================================================================
 // 天是流式维度: 每批 kDaysPerBatch 个抽样天, 批内扫全部资产, 全部视图逐批收敛.
 // 首帧 = 第一批的 IO + 扫描 (几十 ms), 与总区间长度无关 —— 列存按天分文件,
 // 任何"某资产的完整历史"都要等全量 IO, 所以终态式发布与快速首帧不可兼得,
 // 这里选收敛式: 视图从第一批起就是全市场全时段的完整图景, 只是精度逐批收紧.
 //
-// 发布协议 (单调收敛, UI 画已发布快照):
+// 发布协议 (单调收敛, UI 画已发布快照; 与 Transform 同一 flow):
 //
-//   worker (DistService 单线程编排; build 起一波 n_threads 常驻线程, 每批两道栅栏):
+//   worker (DistService 单线程编排; build 起一波 n_threads 常驻线程, 每批三道栅栏):
 //     for 每批 kDaysPerBatch 个抽样天:
 //       Phase IO:   抢单天并行载入 → 资产主序批平面 [A][批天][分钟] (DayBatchPlane, 与 Transform 共用:
 //                   f16; valid 门控与真 NaN 折叠成统一哨兵, NaN 就地记账)
 //       ── 栅栏 ──
 //       Phase 扫描: 抢 kAssetBlock 个活跃资产一块, 全在锁外:
-//                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本
-//                   + 全量样本 → 该资产私有 sketch → 顺手导出整条 AssetLine
-//                   (PDF/矩/W2) 到 staging; 块末短锁 merge 聚合槽.
+//                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本 (shard)
+//                   + 全量样本 → 该资产私有 sketch → 顺手导出整条 AssetLine (PDF/矩/W2) 到 staging.
 //                   活跃资产一视同仁 —— 每批覆盖 universe × 批内天, 收敛维度只有天,
 //                   跑完即 universe × 全区间的终态 (UI 只画其中固定随机子集的折线)
+//       ── 栅栏 ──
+//       Phase 归约: shard 两两并行归约 (log2 步) → shard 0 并入 Runtime 累加器 (全程锁外)
+//       ── 栅栏 (completion, 单线程): 累加器导出 PdfSnap 成品 (锁外) → 短锁 swap 发布 + 进度 + epoch ──
 //
 //   universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 UniverseAxis) ——
 //     平面 / lines / sketch 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
 //     槽位 = 子轴下标; AssetLine.asset 存全局轴下标 (UI 查 items/行业用).
-//       ── 栅栏 (completion, 单线程): 短锁 swap 发布 lines + NaN 账目 + 进度 ──
 //
-//   UI (每帧): 持 mutex 渲染; 资产截面消费 lines 快照, 零计算零重建只画
+//   UI (每帧): 持 mutex 渲染; 全部视图消费 PdfSnap 快照, 零计算零重建只画
 //     (增量收敛每批都作废 sketch 缓存, 拉模式会让 UI 每帧重建几百条 — 故推模式).
-//     聚合视图 (月/星期/日内/全局) 槽数少, 仍 lazy 导出.
 //   四个维度对仗: 月度漂移 (months) / 周内偏移 (by_weekday) / 日内偏移 (by_tod) / 资产截面 (lines),
 //     UI 一条通用焦点滑条按选中维度切换 (焦点槽 = 高亮 + 详情).
-//   生命周期: 进 Features 任务且输入就绪 → prewarm() 预热全部构建内存 (worker 线程做,
-//             与 build 共用同一套容量准备, 点 Distribution 零额外分配);
-//             改参数 → 新请求即取消在跑重算; 切走 Tab → 只中断, 内存与 worker 保留;
-//             切回 Tab → 自动重算; 切出 Features 任务 → clear() 整体释放.
+//   重算: reset 不清展示字段 (旧图留住), 首批 publish 整体覆盖 —— 与 Transform 同一约定.
+//   生命周期: 进 Features 任务且输入就绪 → 起 worker; 选中特征/层变了 → 新请求取消在跑重算;
+//             切走 Tab → 只中断, 内存与 worker 保留; 切回 Tab → 自动重算; 切出 Features 任务 → clear() 整体释放.
 // ============================================================================
 
-static constexpr size_t kMinSamples = 1000;         // sample 不够的不纳入统计
-static constexpr size_t kMinAssetSamples = 100;     // 资产纳入截面视图的最小样本数
-static constexpr size_t KLL_CAPACITY = 512;         // 月/星期/日内/全局 sketch
-static constexpr size_t KLL_RESOLUTION = 256;       // 小面板 ~400px, 255 点 PDF 足够
-static constexpr size_t KLL_ASSET_CAPACITY = 256;   // 每资产 sketch (精度换内存)
-static constexpr size_t KLL_ASSET_RESOLUTION = 128; // 资产 PDF 网格 (画细线, 128 点足够)
-static constexpr size_t kDistLevel = 1;             // Dist 只在 L1 上跑
-static constexpr size_t kDaysPerBatch = 8;          // 批大小: 首帧 = 一批的 IO + 扫描
-static constexpr int kW2Deciles = 19;               // W2 用的分位点: 5%, 10%, ..., 95%
-
-// PDF 折线只画的资产数: 固定种子随机抽 → 无偏, 画面统计形态与全量等价 (同一哲学:
-// 任意随机子集即全市场抽样). 纯 UI 顶点预算 —— 计算恒为全资产 (sketch/矩/W2 全都有),
-// W2 散点 / 矩统计 / hover 覆盖全部资产.
-static constexpr size_t kDrawAssets = 512;
+static constexpr size_t kMinSamples = 1000; // 全局 sketch 达到此样本数才作 W2 参考
+static constexpr int kW2Deciles = 19;       // W2 用的分位点: 5%, 10%, ..., 95%
 
 // 总样本预算: 超出则日抽样 (stride 与交易周互质避免星期偏置). 分批后平面只存一批,
 // 内存不再约束天数 —— 这个预算只是总扫描/IO 时长的旋钮, 5 年 × 5000 标的在预算内全量.
@@ -97,165 +82,49 @@ inline constexpr auto kTodBinStart = make_tod_bin_start();
 // 所以按总量自适应 stride 抽到这个量级即可, 图上看不出差别. 每资产的资产槽仍吃全量.
 static constexpr size_t kAggTargetSamples = size_t(32) << 20; // 32M
 
-// 区间月份枚举 "YYYYMM" 升序 (start/end: "YYYY-MM-DD" 或 "YYYYMMDD"; Service 与 UI 共用)
-std::vector<std::string> dist_enumerate_months(const std::string &start_date,
-                                               const std::string &end_date);
+struct Dist : analysis::StreamState {
+  using Integrity = analysis::Integrity;
 
-struct Dist {
-
-  // ==========================================================================
-  // Integrity (全区间账目)
-  // ==========================================================================
-
-  struct Integrity {
-    size_t n_total = 0;
-    size_t n_valid = 0;
-    size_t n_zero = 0;
-    size_t n_nan = 0;
-    size_t n_pos_inf = 0;
-    size_t n_neg_inf = 0;
-    // 无有效样本时恒为 ±inf: 空账目可与任意账目无条件合并 (UI 层 n_valid == 0 时显示 "--").
-    // bit 模式构造: 本头会被 fast-math TU 包含, 不能碰 numeric_limits::infinity();
-    // ±inf 的比较只发生在 precise-math TU (Dist.cpp / TabDist.cpp)
-    float val_min = std::bit_cast<float>(0x7F800000u);
-    float val_max = std::bit_cast<float>(0xFF800000u);
-
-    void add(const Integrity &o) {
-      n_total += o.n_total;
-      n_valid += o.n_valid;
-      n_zero += o.n_zero;
-      n_nan += o.n_nan;
-      n_pos_inf += o.n_pos_inf;
-      n_neg_inf += o.n_neg_inf;
-      val_min = std::min(val_min, o.val_min);
-      val_max = std::max(val_max, o.val_max);
-    }
-
-    float zero_pct() const { return n_valid > 0 ? 100.0f * n_zero / n_valid : 0.0f; }
-    float nan_pct() const { return n_total > 0 ? 100.0f * n_nan / n_total : 0.0f; }
-    float inf_pct() const { return n_total > 0 ? 100.0f * (n_pos_inf + n_neg_inf) / n_total : 0.0f; }
-
-    void clear() { *this = Integrity{}; }
+  // 每资产一条线 (槽位 == 子轴下标) + 相对全局分位的 W2 偏移
+  struct AssetLine : analysis::AssetLine {
+    float w2 = -1.0f; // 均值校准 W2, 相对上一批末的全局分位 (逐批收敛); < 0 = 参考未就绪
   };
 
   // ==========================================================================
-  // Slots (worker 写, UI 持锁读)
+  // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   // ==========================================================================
-
-  // 每月聚合 (月度漂移视图 + 滑条标签); 资产槽直接是 KLLcache (全区间累积, 不按月×资产存)
-  struct MonthSlot {
-    std::string month; // "YYYYMM"
-    KLLcache kll{KLL_CAPACITY, KLL_RESOLUTION};
-  };
-
-  // 每资产一条线的发布快照 (槽位 == 子轴下标): worker 批末在锁外算好整条 (PDF/矩/W2),
-  // 短锁 swap 进 lines. UI 消费快照零计算零重建 —— 收敛式构建下 sketch 缓存每批作废,
-  // 不能让 UI 拉. draw 只是 UI 折线顶点预算, 散点/矩/hover 覆盖全资产.
-  struct AssetLine {
-    uint32_t asset = 0; // 全局轴下标 (行业色 / 详情面板查 items; reset 时定好)
-    uint64_t n = 0;     // 累积样本数 (全量)
-    float mean = 0.0f, var = 0.0f, skew = 0.0f, kurt = 0.0f;
-    float w2 = -1.0f;                                     // 均值校准 W2, 相对上一批末的全局分位 (逐批收敛); < 0 = 参考未就绪
-    uint32_t n_pts = 0;                                   // 折线点数; 0 = 样本不足, 本条不画
-    uint8_t draw = 0;                                     // 1 = PDF 折线绘制子集 (固定种子随机, reset 时定好)
-    std::array<float, KLL_ASSET_RESOLUTION - 1> x{}, y{}; // PDF 折线
-  };
-
-  // ==========================================================================
-  // State
-  // ==========================================================================
-
-  enum class Status : uint8_t { Idle,
-                                Building,
-                                Done,
-                                Cancelled };
-
-  // 进度: 原子, UI 免锁读
-  std::atomic<Status> status{Status::Idle};
-  std::atomic<size_t> days_loaded{0};   // 已完成批的累计天数
-  std::atomic<size_t> days_total{0};    // 抽样后总天数
-  std::atomic<uint64_t> lines_epoch{0}; // 数据每变一次 +1 (reset/clear/每批发布), 跨构建单调不归零 (UI 以此触发 autofit)
-  // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局视图的 totalCount 是抽样后的数,
-  // 绘制子集的资产线恒为全量 —— UI 得把这个比例说出来, 免得两边的 n 并列看着矛盾.
+  std::vector<analysis::AggPdf> months;     // [n_months] 月度漂移 (月键 = config 区间月份表, UI 自持)
+  std::vector<analysis::AggPdf> by_weekday; // [7]
+  std::vector<analysis::AggPdf> by_tod;     // [kTodBins] 日内 10 分钟桶
+  analysis::AggPdf global;                  // 全区间
+  std::vector<AssetLine> lines;             // [A_sub] 槽位 == 子轴下标, .asset = 全局轴下标
+  Integrity integrity;                      // 全区间
+  // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局的 n 是抽样后的数, 资产线恒为全量 ——
+  // UI 得把这个比例说出来, 免得两边的 n 并列看着矛盾.
   std::atomic<size_t> agg_stride{1};
 
-  // 聚合状态: mutex 保护 (worker 块末/批末短锁发布; UI 渲染帧内持锁)
-  mutable std::mutex mutex;
-
-  std::vector<MonthSlot> months;                // [n_months]
-  std::vector<AssetLine> lines;                 // [A_sub] 快照 (槽位 == 子轴下标, 每批整体换新; .asset = 全局轴下标)
-  std::vector<KLLcache> by_tod;                 // [kTodBins] 全区间 日内 10 分钟桶 (KLL_CAPACITY/RESOLUTION, 下同)
-  std::vector<KLLcache> by_weekday;             // [7]  全区间
-  KLLcache total{KLL_CAPACITY, KLL_RESOLUTION}; // 全区间
-  Integrity integrity;                          // 全区间
-
   // ==========================================================================
-  // Methods (worker 线程调用, 内部按需加锁)
+  // Methods (worker 线程调用)
   // ==========================================================================
 
-  // 预热: 把 reset/build 的全部容量准备提前做掉 (进任务时 worker 线程调用一次,
-  // 之后 reset/build 的同名调用全部命中"尺寸对得上"的零分配路径). 只允许 Idle 时调.
-  // n_assets = universe 子轴大小 (universe_axis(cfg).size())
-  void prewarm(size_t n_assets, size_t n_months);
+  Dist();
+  ~Dist();
 
-  // 重置全部状态并进入 Building (sketch 容量复用, 预热/稳态下零分配).
-  // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids; A_sub = size, 升序去重非空)
-  void reset_for_build(std::vector<size_t> cols, const std::vector<std::string> &month_keys,
+  // 重置构建参数并进入 Building. cols = [值列 (+ valid 列)]; global_ids = 子轴 → 全局轴映射
+  // (UniverseAxis::ids). 展示字段不清 (旧图留住), universe 变了才整体重建.
+  void reset_for_build(std::vector<size_t> cols, std::vector<std::string> month_keys,
                        std::vector<uint32_t> global_ids);
 
-  // 全区间构建: 分批流式 (每批 IO → 扫描 → 发布); 被取消返回 false
+  // 全区间构建: 分批流式 (每批 IO → 扫描 → 归约 → 发布); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
 
   void clear();
 
 private:
+  struct Runtime; // worker 私有 (批平面 / sketch / staging / shard), 定义在 Dist.cpp
+  std::unique_ptr<Runtime> rt_;
   // 构建参数 (UI 不看): reset 时定好, build 全程只读
-  std::vector<size_t> columns; // [值列 (+ valid 列)], GUI 线程解析好的快照
-
-  // 上一批末的全局分位参考 (批末 completion 单线程更新, 扫描线程只读 — 栅栏同步)
-  struct W2Ref {
-    std::array<float, kW2Deciles> q{};
-    float mean = 0.0f;
-    bool valid = false;
-  };
-  W2Ref w2_ref_;
-
-  static constexpr size_t kAssetBlock = 64; // Phase 扫描 抢块粒度 (聚合槽每块 merge 一次)
-
-  struct DayGroup {
-    uint32_t begin, end;
-    uint16_t month;
-    uint8_t weekday;
-  }; // shard.agg_samples 按天切片 → months / by_weekday
-  struct TodRun {
-    uint32_t begin, end;
-    uint8_t bin;
-  }; // 同日内桶连续段 → by_tod
-
-  // 上面 lines 的 .asset 来源: 子轴 → 全局轴映射快照 (reset 时定, 构建期只读)
+  std::vector<size_t> columns_;
+  std::vector<std::string> months_;
   std::vector<uint32_t> global_ids_;
-
-  // 每线程私有: 扫描缓冲 + 聚合槽副本. 重活全在锁外做完, 只把 sketch 级结果并入全局.
-  // (IO 暂存与 NaN 账目在 plane_ 里, 按 IO 线程分槽)
-  struct Shard {
-    std::vector<float> samples;     // Phase 扫描: 单资产本批全量样本 → 该资产 sketch
-    std::vector<float> agg_samples; // Phase 扫描: stride 抽样样本 → 聚合槽 (下面两表索引它)
-    std::vector<DayGroup> day_groups;
-    std::vector<TodRun> tod_runs;
-    std::vector<KLLcache> months;     // [n_months]
-    std::vector<KLLcache> by_tod;     // [kTodBins]
-    std::vector<KLLcache> by_weekday; // [7]
-    KLLcache total{KLL_CAPACITY, KLL_RESOLUTION};
-    Integrity integrity;
-  };
-
-  // 批平面 + 线程 shard 的容量准备, 返回线程数 (prewarm 与 build 共用; 幂等,
-  // 尺寸对得上零分配). n_cols/agg_stride 只影响缓冲上界, prewarm 传上界 (2, 1).
-  size_t prepare_runtime(size_t n_months, size_t n_cols, size_t agg_stride);
-
-  // worker 私有 (clear() 只在 worker join 之后调用, 无竞争)
-  std::vector<KLLcache> asset_klls_;     // [A_sub] 每资产累积 sketch (UI 不读, 全程无锁)
-  std::vector<AssetLine> lines_staging_; // [A_sub] 扫描线程各写各槽, 批末与 lines 交换
-  DayBatchPlane plane_;                  // [A][批天][分钟] 资产主序批平面 (f16, ~20MB) + IO 暂存
-  std::vector<Shard> shards_;            // [n_threads]
 };
