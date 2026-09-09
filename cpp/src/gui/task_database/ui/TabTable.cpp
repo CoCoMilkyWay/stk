@@ -590,7 +590,7 @@ void RenderDataTable(
   ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
-                          ImGuiTableFlags_SizingFixedFit;
+                          ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
   if (!ImGui::BeginTable("AssetsTable", 19, flags)) {
     return;
@@ -1228,7 +1228,9 @@ static void RenderNumericAnalysis(
   ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Board Statistics");
   auto board_stats = GroupNumericByBoard(codes, values);
 
-  if (ImGui::BeginTable("BoardStatsTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+  if (ImGui::BeginTable("BoardStatsTable", 5,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("Board");
     ImGui::TableSetupColumn("Mean");
     ImGui::TableSetupColumn("Median");

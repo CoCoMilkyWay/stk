@@ -170,7 +170,8 @@ Totals count_totals(const FundamentalState &state) {
 
 constexpr ImGuiTableFlags kTableFlags =
     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-    ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit;
+    ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit |
+    ImGuiTableFlags_NoSavedSettings;
 
 } // namespace
 

@@ -350,7 +350,8 @@ private:
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 0.0f));
 
     if (ImGui::BeginTable("StatsTable", 3,
-                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoPadOuterX,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoPadOuterX |
+                              ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings,
                           ImVec2(0, height))) {
       ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthFixed, 60.0f);
       ImGui::TableSetupColumn("Usage", ImGuiTableColumnFlags_WidthStretch);

@@ -186,6 +186,7 @@ set(SOURCES
     ../../src/misc/archive.cpp
     ../../src/misc/date.cpp
     ../../src/misc/file_check.cpp
+    ../../src/misc/format.cpp
     ../../src/misc/fs.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/parquet.cpp
@@ -600,6 +601,7 @@ set_source_files_properties(
     ../../src/shared/Transform.cpp
     # misc
     ../../src/misc/date.cpp
+    ../../src/misc/format.cpp
     ../../src/misc/fs.cpp
     ../../src/misc/parquet.cpp
     ../../src/misc/schedule.cpp

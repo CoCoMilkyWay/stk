@@ -221,7 +221,9 @@ private:
   bool DrawPeriodSection(Config &cfg) {
     bool changed = false;
     if (ImGui::CollapsingHeader("回测/分析周期: YYYY-MM-DD", ImGuiTreeNodeFlags_DefaultOpen)) {
-      if (ImGui::BeginTable("period_table", 2, ImGuiTableFlags_SizingFixedFit)) {
+      if (ImGui::BeginTable("period_table", 2,
+                            ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable |
+                                ImGuiTableFlags_NoSavedSettings)) {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
@@ -317,7 +319,9 @@ private:
       ImGui::TextWrapped("请尽量使用GPT分区 + XFS文件系统 以满足海量小文件的高性能读写需求");
       ImGui::Spacing();
 
-      if (ImGui::BeginTable("path_table", 2, ImGuiTableFlags_SizingFixedFit)) {
+      if (ImGui::BeginTable("path_table", 2,
+                            ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable |
+                                ImGuiTableFlags_NoSavedSettings)) {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
@@ -396,7 +400,9 @@ private:
   bool DrawCsvSection(Config &cfg) {
     bool changed = false;
     if (ImGui::CollapsingHeader("L2原始数据", ImGuiTreeNodeFlags_DefaultOpen)) {
-      if (ImGui::BeginTable("csv_table", 2, ImGuiTableFlags_SizingFixedFit)) {
+      if (ImGui::BeginTable("csv_table", 2,
+                            ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable |
+                                ImGuiTableFlags_NoSavedSettings)) {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
@@ -464,7 +470,9 @@ private:
       ImGui::Spacing();
 
       auto readonly_table = [](const char *table_id, auto draw_rows) {
-        if (ImGui::BeginTable(table_id, 2, ImGuiTableFlags_SizingFixedFit)) {
+        if (ImGui::BeginTable(table_id, 2,
+                              ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable |
+                                  ImGuiTableFlags_NoSavedSettings)) {
           ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
           ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
           draw_rows();

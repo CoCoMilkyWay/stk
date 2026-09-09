@@ -2,6 +2,8 @@
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "features/FeatureCategoriesGenerated.hpp"
 #include "graphic/graphic_basic.h"
+#include "gui/task_features/ui/TabDist.hpp" // 账目着色 helpers
+#include "misc/format.hpp"                  // misc::fmt_width
 #include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
 
@@ -563,6 +565,57 @@ static void render_preview_psd(const FeaturePreview::Cell &cell, const char *cod
 }
 
 // ============================================================================
+// 账目两列 (与 Distribution 完整性条同口径同着色, 抽样格子逐轮累积):
+//   Stat:  "nan,zero,-inf,+inf%"  四个占比, 每个恰 3 字符 (nan/inf 相对全部格子, zero 相对有效值)
+//   Range: "min -1sd +1sd max"     四个数, 每个恰 4 字符 (sd 来自 sketch 矩)
+// ============================================================================
+
+static void render_stat_cell(const Dist::Integrity &it) {
+  if (it.n_total == 0) {
+    ImGui::TextDisabled("—");
+    return;
+  }
+  const float n_total = static_cast<float>(it.n_total);
+  const float pct[4] = {it.nan_pct(), it.zero_pct(),
+                        100.0f * static_cast<float>(it.n_neg_inf) / n_total,
+                        100.0f * static_cast<float>(it.n_pos_inf) / n_total};
+  char s[8];
+  for (int k = 0; k < 4; ++k) {
+    if (k > 0) {
+      ImGui::SameLine(0, 0);
+      ImGui::TextUnformatted(",");
+      ImGui::SameLine(0, 0);
+    }
+    misc::fmt_width(s, sizeof(s), pct[k], 3, /*fixed_zero_ok=*/true); // 百分比有界 [0,100]: 小量显示 "0.0", 不走 SI
+    ImGui::TextColored(k == 1 ? GetZeroPctColor(pct[k]) : GetNanInfPctColor(pct[k]), "%s", s);
+  }
+  ImGui::SameLine(0, 0);
+  ImGui::TextUnformatted("%");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("nan %zu, zero %zu, -inf %zu, +inf %zu  /  格子 %zu, 有效 %zu",
+                      it.n_nan, it.n_zero, it.n_neg_inf, it.n_pos_inf, it.n_total, it.n_valid);
+}
+
+static void render_range_cell(const FeaturePreview::Cell &cell) {
+  const Dist::Integrity &it = cell.integrity;
+  if (it.n_valid == 0) {
+    ImGui::TextDisabled("—");
+    return;
+  }
+  char s[4][8];
+  misc::fmt_width(s[0], sizeof(s[0]), it.val_min, 4);
+  misc::fmt_width(s[1], sizeof(s[1]), cell.mean - cell.sd, 4);
+  misc::fmt_width(s[2], sizeof(s[2]), cell.mean + cell.sd, 4);
+  misc::fmt_width(s[3], sizeof(s[3]), it.val_max, 4);
+  ImGui::TextColored(GetMinMaxColor(std::max(std::fabs(it.val_min), std::fabs(it.val_max))),
+                     "%s %s %s %s", s[0], s[1], s[2], s[3]);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("min %.4g  -1sd %.4g  +1sd %.4g  max %.4g\nmean %.4g  sd %.4g  n %llu",
+                      it.val_min, cell.mean - cell.sd, cell.mean + cell.sd, it.val_max,
+                      cell.mean, cell.sd, static_cast<unsigned long long>(cell.n));
+}
+
+// ============================================================================
 // UI Components
 // ============================================================================
 
@@ -720,31 +773,37 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f)); // Tighter padding
   const float table_height = std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing(), ImGui::GetFrameHeight());
 
-  if (ImGui::BeginTable("FeatureTable", 12,
+  // 表列序 (sort_column / 排序 switch 皆按此下标)
+  constexpr int kNumCols = 14;
+  if (ImGui::BeginTable("FeatureTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
-                            ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate,
+                            ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
+                            ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, table_height))) {
 
     // Table headers - fixed fit (auto shrink to content)
-    ImGui::TableSetupColumn("Multi", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
-    ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("DataType", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Norm", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
-    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);
-    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
+    ImGui::TableSetupColumn("Multi", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 0
+    ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed);                                 // 1
+    ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);                                    // 2
+    ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed);                                // 3
+    ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);                              // 4
+    ImGui::TableSetupColumn("DataType", ImGuiTableColumnFlags_WidthFixed);                             // 5
+    ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);                               // 6
+    ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed);                               // 7
+    ImGui::TableSetupColumn("Norm", ImGuiTableColumnFlags_WidthFixed);                                 // 8
+    ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                 // 9
+    ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                // 10
+    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 11
+    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 12
+    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                 // 13
+    ImGui::TableSetupScrollFreeze(0, 1);                                                               // Freeze header row
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm", "Dist", "PSD", "Deps"};
-    const char *tooltips[] = {
+    const char *headers[kNumCols] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "Norm",
+                                     "Stat", "Range", "Dist", "PSD", "Deps"};
+    const char *tooltips[kNumCols] = {
         "多选: 选择多个特征进行对比 (首个作为主特征)",
         "代码: 特征的唯一标识符",
         "宽度: 特征的维度数量",
@@ -754,12 +813,14 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "一级分类: 特征的类别 (同色同组相邻)",
         "二级分类: 特征的量纲",
         "标准化方法: 特征的归一化处理方式",
-        "平均分布: 抽样 (日 × 资产) 的 PDF, 后台轮训逐轮收敛 (仅 L1); hover 放大",
-        "平均频谱: 单日 PSD 的算术平均 (log10 功率, x = 周期), 逐轮收敛 (仅 L1); hover 放大",
-        "直接依赖: 该特征计算所依赖的其他特征 code (分号分隔)",
+        "账目: nan,zero,-inf,+inf 占比%",
+        "值域: min -1sd +1sd max",
+        "平均分布: 抽样 (日 × 资产) 的 PDF",
+        "平均频谱: 单日 PSD 的算术平均 (log10 功率, x = 周期)",
+        "直接依赖: 该特征计算所依赖的其他特征 code",
     };
 
-    for (int column = 0; column < 12; column++) {
+    for (int column = 0; column < kNumCols; column++) {
       ImGui::TableSetColumnIndex(column);
       ImGui::TableHeader(headers[column]);
       if (ImGui::IsItemHovered()) {
@@ -779,6 +840,15 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       }
       sort_specs->SpecsDirty = false;
     }
+
+    // 持 preview 锁覆盖 排序 + 行循环 (账目列可排序, 比较器要读 cells; worker 只在块末短锁发布, 不会长等)
+    std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+    const bool preview_level = (sel.selected_level == (int)kPvLevel);
+    static const FeaturePreview::Cell s_empty_cell{};
+    // 槽位 = metadata 下标; 非预览层 / 未就绪 → 空 cell
+    auto cell_of = [&](int i) -> const FeaturePreview::Cell & {
+      return (preview_level && i < (int)data.preview.cells.size()) ? data.preview.cells[i] : s_empty_cell;
+    };
 
     // 排序: 主键恒为 cat_l1 (升序, 同组相邻). 组内次序:
     //   - 用户未选列 (sort_column == -1): 依赖拓扑 + 名字聚类 (topo_cluster_group)
@@ -816,9 +886,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
             std::copy(group.begin(), group.end(), it);
           } else {
             // 用户选列: 按该列排序
+            auto cmp3 = [](auto x, auto y) { return x < y ? -1 : (x > y ? 1 : 0); };
             std::sort(it, g_end, [&](int a, int b) {
               const FeatureMetadata &fa = features[a];
               const FeatureMetadata &fb = features[b];
+              const FeaturePreview::Cell &ca = cell_of(a);
+              const FeaturePreview::Cell &cb = cell_of(b);
               int cmp = 0;
               switch (ui_state.sort_column) {
               case 1:
@@ -845,7 +918,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               case 8:
                 cmp = (int)fa.norm_method - (int)fb.norm_method;
                 break;
-              case 11:
+              case 9: // Stat: nan%
+                cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
+                break;
+              case 10: // Range: sd
+                cmp = cmp3(ca.sd, cb.sd);
+                break;
+              case 13:
                 cmp = deps_list[a].compare(deps_list[b]);
                 break;
               }
@@ -862,11 +941,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       } // !use_cluster_cache
     }
 
-    // Table rows (行循环期间持 preview 锁: worker 只在块末短锁发布, 不会长等)
-    std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
-    const bool preview_level = (sel.selected_level == (int)kPvLevel);
-    static const FeaturePreview::Cell s_empty_cell{};
-
+    // Table rows (preview 锁已在上方持有)
     for (int idx : filtered_indices) {
       const FeatureMetadata &f = features[idx];
 
@@ -952,12 +1027,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", to_string(f.norm_method).cn);
 
-      // Columns: Dist / PSD (预览迷你图, 仅 L1; 槽位 = metadata 下标)
-      const FeaturePreview::Cell &cell =
-          (preview_level && idx < (int)data.preview.cells.size())
-              ? data.preview.cells[idx]
-              : s_empty_cell;
+      // Columns: Stat / Range 账目 + Dist / PSD 迷你图 (预览, 仅 L1; 槽位 = metadata 下标)
+      const FeaturePreview::Cell &cell = cell_of(idx);
       ImGui::PushID(idx);
+      ImGui::TableNextColumn();
+      render_stat_cell(cell.integrity);
+      ImGui::TableNextColumn();
+      render_range_cell(cell);
       ImGui::TableNextColumn();
       render_preview_dist(cell, f.code);
       ImGui::TableNextColumn();
@@ -981,13 +1057,6 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
   ImGui::PopStyleVar(); // CellPadding
 
-  // Select all filtered button
-  if (ImGui::Button("Select All Multi", ImVec2(120, 0))) {
-    for (int idx : filtered_indices) {
-      sel.selected_features.insert(idx);
-    }
-  }
-  ImGui::SameLine();
   if (ImGui::Button("Clear All", ImVec2(80, 0))) {
     sel.selected_features.clear();
   }

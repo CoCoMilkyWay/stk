@@ -354,10 +354,10 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
   const size_t n_pts = sn.n_days * kTfVR;
   static std::vector<float> tod_tile;
 
-  // 有数据才 fit, 并就此消费掉 pending
-  const bool autofit = ui.fit_series && has;
-  ui.fit_series &= !autofit;
-  if (autofit) {
+  // 有数据才 fit. pending 只在"并集范围真写进了链接值 且 至少一图真画了"那帧消费:
+  // 焦点资产首批可能全 NaN (lo > hi, 无可 fit), 或子窗被裁剪 BeginPlot 失败 —— 都留到下帧
+  bool fitted = false;
+  if (ui.fit_series && has) {
     float lo = FLT_MAX, hi = -FLT_MAX;
     auto scan = [&](const float *v, size_t n) {
       for (size_t i = 0; i < n; ++i)
@@ -376,8 +376,16 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
       ui.series_y_max = hi + margin;
       ui.series_x_min = 0.0;
       ui.series_x_max = static_cast<double>(n_pts);
+      fitted = true;
     }
   }
+  bool drawn = false;   // 本帧至少一图 BeginPlot 成功
+  bool dbl_fit = false; // 双击任一图/轴: ImPlot 自带 fit 只看本图数据 → 改走两图并集 (下帧 autofit)
+  auto poll_dbl = [&] { // BeginPlot 内调用
+    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+        (ImPlot::IsPlotHovered() || ImPlot::IsAxisHovered(ImAxis_X1) || ImPlot::IsAxisHovered(ImAxis_Y1)))
+      dbl_fit = true;
+  };
 
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   if (has) {
@@ -387,9 +395,11 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
     ImGui::TextDisabled("原始");
   }
   if (ImPlot::BeginPlot("##Raw", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+    drawn = true;
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
     ImPlot::SetupAxisLinks(ImAxis_X1, &ui.series_x_min, &ui.series_x_max);
     ImPlot::SetupAxisLinks(ImAxis_Y1, &ui.series_y_min, &ui.series_y_max);
+    poll_dbl();
     if (has) {
       ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), 1.0f);
       ImPlot::PlotLine("##raw", sn.raw.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
@@ -411,9 +421,11 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
   ImGui::BeginChild("OutPlot", ImVec2(0, height), true);
   ImGui::Text("链末输出");
   if (ImPlot::BeginPlot("##Out", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+    drawn = true;
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
     ImPlot::SetupAxisLinks(ImAxis_X1, &ui.series_x_min, &ui.series_x_max);
     ImPlot::SetupAxisLinks(ImAxis_Y1, &ui.series_y_min, &ui.series_y_max);
+    poll_dbl();
     if (has) {
       ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 0.5f, 1.0f), 1.0f);
       ImPlot::PlotLine("##out", sn.out.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
@@ -421,6 +433,11 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
+
+  if (fitted && drawn)
+    ui.fit_series = false;
+  if (dbl_fit) // 本帧 ImPlot 已按单图数据 fit 并推进链接值; 下帧用两图并集覆盖 (与 autofit 同一路径)
+    ui.fit_series = true;
 }
 
 // ============================================================================
@@ -434,7 +451,8 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   // 焦点槽位 == 子轴下标 (统计无子集, 与 lines 同轴)
   const uint32_t focus_asset = ui.focus >= 0 && ui.focus < static_cast<int>(A) ? static_cast<uint32_t>(ui.focus) : UINT32_MAX;
 
-  // 有数据才 fit, 并就此消费掉 pending (PDF 画的是总体线 + 绘制子集线, 二者任一就绪即算有)
+  // 有数据才 fit (PDF 画的是总体线 + 绘制子集线, 二者任一就绪即算有). pending 只在 BeginPlot
+  // 成功那帧消费: SetNextAxesToFit 在 BeginPlot 失败 (子窗 SkipItems / 被裁剪) 时会被 ImPlot 静默丢弃
   bool pdf_has = tf.total.totalCount() >= kTfMinAssetSamples;
   if (ui.fit_pdf && !pdf_has)
     for (const auto &ln : tf.lines)
@@ -443,9 +461,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
         break;
       }
   const bool fit_pdf = ui.fit_pdf && pdf_has;
-  ui.fit_pdf &= !fit_pdf;
   const bool fit_acf = ui.fit_acf && tf.acf_n > 0;
-  ui.fit_acf &= !fit_acf;
 
   // 左: 分布
   ImGui::BeginChild("PDFPlot", ImVec2(col_w, height), true);
@@ -458,6 +474,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   if (fit_pdf)
     ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot("##PDF", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+    ui.fit_pdf &= !fit_pdf;
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
     for (size_t a = 0; a < A; ++a) {
       const auto &ln = tf.lines[a];
@@ -496,9 +513,13 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     const float v = tf.psd_mean[k];
     py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
-  // PSD 不 autofit: 带通光标拖动 → 重算 → epoch 变 → refit 会和光标共振 (轴跳光标跟着跳).
-  // 固定默认视野 (y = log10 功率 [-10, 0]), 手动缩放不被打断
+  // PSD 只 autofit y: x 是光标所在轴, 带通光标拖动 → 重算 → epoch 变 → x refit 会和光标共振
+  // (轴跳光标跟着跳), 所以 x 固定默认视野 [2, N] 只由用户缩放; y 与其他图同规则 (BeginPlot 成功才消费)
+  const bool fit_psd = ui.fit_psd && tf.psd_n > 0;
+  if (fit_psd)
+    ImPlot::SetNextAxisToFit(ImAxis_Y1);
   if (ImPlot::BeginPlot("##PSD", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+    ui.fit_psd &= !fit_psd;
     ImPlot::SetupAxes("周期 (min)", "log10 P");
     ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
     ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, static_cast<double>(TfDayPSD::N), ImGuiCond_Once);
@@ -559,10 +580,12 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
       return l;
     }();
     const float sub_h = (ImGui::GetContentRegionAvail().y - ImGui::GetStyle().ItemSpacing.y) * 0.5f;
+    int acf_drawn = 0; // 上下两图都画上了才消费 pending
     auto plot = [&](const char *id, const char *ylabel, const std::array<float, kTfMaxLag + 1> &v, ImVec4 color) {
       if (fit_acf)
         ImPlot::SetNextAxisToFit(ImAxis_Y1);
       if (ImPlot::BeginPlot(id, ImVec2(-1, sub_h), ImPlotFlags_NoLegend)) {
+        ++acf_drawn;
         ImPlot::SetupAxes("lag (min)", ylabel);
         ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(NL) + 1.0, ImGuiCond_Once);
         ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
@@ -578,6 +601,8 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     };
     plot("##ACF", "ACF", tf.acf_mean, ImVec4(0.3f, 0.7f, 1.0f, 0.9f));
     plot("##PACF", "PACF", tf.pacf_mean, ImVec4(1.0f, 0.6f, 0.3f, 0.9f));
+    if (fit_acf && acf_drawn == 2)
+      ui.fit_acf = false;
   }
   ImGui::EndChild();
 }
@@ -611,7 +636,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // 若帧末才记, 改动帧就被覆盖, 焦点变化永远检测不到 → 不 autofit 也不触发重算
   const bool focus_changed = ui.focus != ui.last_focus;
   if (cur_epoch != ui.last_epoch || focus_changed)
-    ui.fit_series = ui.fit_pdf = ui.fit_acf = true;
+    ui.fit_series = ui.fit_pdf = ui.fit_psd = ui.fit_acf = true;
   ui.last_epoch = cur_epoch;
   ui.last_focus = ui.focus;
 

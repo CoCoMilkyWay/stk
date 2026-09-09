@@ -418,7 +418,8 @@ void RenderMonthGrid(
           ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 1.0f));
           if (ImGui::BeginTable(
                   "##dividend_events", 3,
-                  ImGuiTableFlags_PadOuterX | ImGuiTableFlags_RowBg)) {
+                  ImGuiTableFlags_PadOuterX | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                      ImGuiTableFlags_NoSavedSettings)) {
             ImGui::TableSetupColumn("code", ImGuiTableColumnFlags_WidthFixed, 90.0f);
             ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, 90.0f);
             ImGui::TableSetupColumn("ratio", ImGuiTableColumnFlags_WidthFixed, 80.0f);

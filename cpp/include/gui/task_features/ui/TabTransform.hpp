@@ -26,12 +26,14 @@ struct TransformUIState {
   Transform::Params params;    // UI 编辑中的参数 (请求时快照)
   bool dirty = false;          // 参数改了但还没发请求
   float last_req_time = -1.0f; // 上次发请求的 ImGui 时间 (秒), 拖动节流用
-  // 待 autofit (epoch/focus 变即置位). 粘滞: 不按帧清, 等该图真正画上数据那帧才消费 ——
-  // reset 只 +epoch 不填数据 (首次构建 series/lines 全空), 按帧清会把 fit 浪费在空图上.
-  // 各图数据就绪时机不同 (series.n_days / total 样本数 / acf_n), 各自独立记账.
-  // PSD 无 autofit: 固定视野 (y [-10, 0]), 否则带通光标拖动 → 重算 → refit 会与光标共振.
+  // 待 autofit (epoch/focus 变即置位; 序列图双击也置位 → 两图并集 fit). 粘滞: 不按帧清,
+  // 等该图有数据 且 BeginPlot 真成功那帧才消费 —— reset 只 +epoch 不填数据 (首次构建
+  // series/lines 全空), 子窗被裁剪时 BeginPlot 失败会静默丢掉 SetNextAxesToFit, 按帧清都会漏.
+  // 各图数据就绪时机不同 (series.n_days / total 样本数 / psd_n / acf_n), 各自独立记账.
+  // PSD 只 fit y: x 是带通光标所在轴, 拖动 → 重算 → x refit 会与光标共振, x 固定只由用户缩放.
   bool fit_series = false;
   bool fit_pdf = false;
+  bool fit_psd = false;
   bool fit_acf = false;
   uint64_t last_epoch = 0; // 数据版本 (reset/clear/每批发布 +1), 跨构建单调, 不依赖 status 转移
   int last_focus = -1;

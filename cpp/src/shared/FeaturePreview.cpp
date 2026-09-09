@@ -47,6 +47,7 @@ void FeaturePreview::reset_for_build(std::vector<size_t> feat_cols,
     for (auto &kll : klls_)
       kll.clear();
   }
+  integ_.assign(n_pv, Dist::Integrity{});
   psd_sum_.assign(n_pv, {});
   psd_n_.assign(n_pv, 0);
 
@@ -118,16 +119,32 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
       for (size_t i = 0; i < nb; ++i) {
         const size_t slot = f0 + i;
         const L2::ValidType vt = valid_types_[slot];
+        Dist::Integrity &it = integ_[slot];
         samples_.clear();
 
         for (size_t k = 0; k < n_draw; ++k) {
           const size_t a = asset_order_[(a_off + k) % A_];
           const feature_storage_t *v = plane_.series(i, a, 0);
           const feature_storage_t *mv = plane_.series(nb, a, 0);
+          it.n_total += kPvVR;
           for (size_t t = 0; t < kPvVR; ++t) {
             const float x = static_cast<float>(v[t]);
-            // 哨兵 NaN (真 NaN 已折叠) / 门控不过 / ±inf 一律不进统计
-            const bool ok = x == x && fmeta::valid(static_cast<float>(mv[t]), vt) && !std::isinf(x);
+            // 账目与 Dist 同口径: 只记门控过的格子 (NaN = 哨兵, 真 NaN 已折叠; ±inf 单列);
+            // 只有有限值进 sketch / PSD
+            bool ok = false;
+            if (fmeta::valid(static_cast<float>(mv[t]), vt)) {
+              if (x != x) {
+                ++it.n_nan;
+              } else if (std::isinf(x)) {
+                ++(x > 0.0f ? it.n_pos_inf : it.n_neg_inf);
+              } else {
+                ok = true;
+                ++it.n_valid;
+                it.n_zero += (x == 0.0f);
+                it.val_min = std::min(it.val_min, x);
+                it.val_max = std::max(it.val_max, x);
+              }
+            }
             day_buf_[t] = ok ? x : qnan;
             if (ok)
               samples_.push_back(x);
@@ -151,6 +168,10 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
           KLLcache &kll = klls_[slot];
           Cell c;
           c.n = kll.totalCount();
+          if (c.n > 0) {
+            c.mean = static_cast<float>(kll.mean());
+            c.sd = static_cast<float>(std::sqrt(std::max(0.0, kll.var())));
+          }
           if (c.n >= kPvMinSamples) {
             const auto pdf = kll.exportPDF();
             assert(pdf.n <= c.x.size());
@@ -158,6 +179,7 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
             std::copy_n(pdf.x, pdf.n, c.x.data());
             std::copy_n(pdf.y, pdf.n, c.y.data());
           }
+          c.integrity = integ_[slot];
           c.psd_n = static_cast<uint32_t>(psd_n_[slot]);
           if (c.psd_n > 0) {
             const double inv = 1.0 / static_cast<double>(psd_n_[slot]);
@@ -192,6 +214,7 @@ void FeaturePreview::clear() {
   // 必须 move 赋空容器: `= {}` 走 initializer_list 重载, 只清元素不还内存
   cells = std::vector<Cell>{};
   klls_ = std::vector<KLLcache>{};
+  integ_ = std::vector<Dist::Integrity>{};
   psd_sum_ = std::vector<std::array<double, PvDayPSD::N_FREQS>>{};
   psd_n_ = std::vector<uint64_t>{};
   asset_order_ = std::vector<uint32_t>{};

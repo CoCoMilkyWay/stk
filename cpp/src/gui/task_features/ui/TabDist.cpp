@@ -139,8 +139,8 @@ static ImVec4 IndustryColor(const DistUIState &ui, size_t asset_idx) {
 // Integrity Panel
 // ============================================================================
 
-// Color helpers for integrity display
-static ImVec4 GetMinMaxColor(float val) {
+// Color helpers for integrity display (声明在 TabDist.hpp, Feature 表账目列复用)
+ImVec4 GetMinMaxColor(float val) {
   // Red if outside [-100, 100]
   if (val > 100.0f || val < -100.0f) {
     return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
@@ -148,7 +148,7 @@ static ImVec4 GetMinMaxColor(float val) {
   return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
 }
 
-static ImVec4 GetZeroPctColor(float pct) {
+ImVec4 GetZeroPctColor(float pct) {
   // 20%以上红色, 10%以上黄色
   if (pct >= 10.0f) {
     return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
@@ -158,7 +158,7 @@ static ImVec4 GetZeroPctColor(float pct) {
   return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿色
 }
 
-static ImVec4 GetNanInfPctColor(float pct) {
+ImVec4 GetNanInfPctColor(float pct) {
   // 1%以上红色, 非零黄色
   if (pct >= 1.0f) {
     return ImVec4(1.0f, 0.3f, 0.3f, 1.0f); // 红色
@@ -914,7 +914,9 @@ static void RenderAssetInfo(const Dist &dist, const Asset &asset,
     }
   };
 
-  if (ImGui::BeginTable("StatsTable", 2, ImGuiTableFlags_SizingFixedFit)) {
+  if (ImGui::BeginTable("StatsTable", 2,
+                        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, 160);
     ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, 160);
 

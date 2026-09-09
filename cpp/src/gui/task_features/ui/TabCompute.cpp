@@ -113,7 +113,9 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Text("Stages (%d cores, auto):", layout.total_cores);
   ImGui::Spacing();
 
-  if (ImGui::BeginTable("StageLayout", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+  if (ImGui::BeginTable("StageLayout", 5,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("Stage");
     ImGui::TableSetupColumn("线程");
     ImGui::TableSetupColumn("专核");
@@ -189,7 +191,9 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Text("访问模式分析 (优化目标: 最小化总内存访问时间)");
 
   // Access pattern table
-  if (ImGui::BeginTable("AccessPattern", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+  if (ImGui::BeginTable("AccessPattern", 7,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("操作");
     ImGui::TableSetupColumn("循环结构");
     ImGui::TableSetupColumn("单次vector访问");
@@ -251,7 +255,9 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   }
 
   // Memory layout table
-  if (ImGui::BeginTable("MemoryLayout", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+  if (ImGui::BeginTable("MemoryLayout", 6,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("布局");
     ImGui::TableSetupColumn("地址公式");
     ImGui::TableSetupColumn("TS_write(39%%)");

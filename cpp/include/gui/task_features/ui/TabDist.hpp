@@ -19,10 +19,16 @@
 #include <vector>
 
 struct SharedData;
+struct ImVec4;
 
 namespace GUI::Features {
 
 class DistService;
+
+// 完整性账目着色 (Distribution 完整性条 与 Feature 表账目列 共用同一套阈值)
+ImVec4 GetMinMaxColor(float val);    // |val| > 100 红
+ImVec4 GetZeroPctColor(float pct);   // ≥10% 红, ≥5% 黄
+ImVec4 GetNanInfPctColor(float pct); // ≥1% 红, >0 黄
 
 // ============================================================================
 // UI State

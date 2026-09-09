@@ -5,6 +5,7 @@
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/spectral/DayPSD.hpp"
+#include "shared/Dist.hpp" // Dist::Integrity (账目结构与 Distribution 共用)
 
 #include <array>
 #include <atomic>
@@ -55,6 +56,8 @@ struct FeaturePreview {
     uint32_t n_pts = 0;                               // PDF 点数; 0 = 未就绪/样本不足
     std::array<float, kPvKllResolution - 1> x{}, y{}; // PDF 折线
     std::array<float, kPvPsdPts> psd{};               // log10 单日谱均值 (k = 1.., 跳 DC)
+    Dist::Integrity integrity;                        // 抽样格子账目 (NaN/±Inf/零/极值), 逐轮累积
+    float mean = 0.0f, sd = 0.0f;                     // 有限值的均值 / 标准差 (sketch 矩; n == 0 时无意义)
   };
 
   enum class Status : uint8_t { Idle,
@@ -98,6 +101,7 @@ private:
 
   // worker 私有 (clear() 只在 worker join 之后调用, 无竞争)
   std::vector<KLLcache> klls_;                                 // [n_preview] 每特征累积 sketch
+  std::vector<Dist::Integrity> integ_;                         // [n_preview] 每特征累积账目
   std::vector<std::array<double, PvDayPSD::N_FREQS>> psd_sum_; // [n_preview] 单日谱累加
   std::vector<uint64_t> psd_n_;                                // [n_preview] 参与谱平均的 (资产, 天) 数
   std::vector<uint32_t> asset_order_;                          // [A] 固定种子洗牌 (轮间旋转取片)

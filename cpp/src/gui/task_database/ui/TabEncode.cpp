@@ -146,7 +146,8 @@ void render_missing_table(const char *table_id, const Asset &asset, AssetTableVi
 
   if (ImGui::BeginTable(table_id, 5,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-                            ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingFixedFit,
+                            ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 400))) {
     ImGui::TableSetupColumn("Asset");
     ImGui::TableSetupColumn("Name");
@@ -416,7 +417,8 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
 
   if (!ImGui::BeginTable(table_id, column_count,
                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingFixedFit,
+                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingFixedFit |
+                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings,
                          ImVec2(0, 320)))
     return;
 
