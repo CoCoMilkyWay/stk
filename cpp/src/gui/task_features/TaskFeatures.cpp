@@ -69,6 +69,8 @@ struct TaskFeaturesState {
   int prev_selected_level = 0;
   // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; universe / 日期区间变了自动重算 (快照做变更检测)
   std::string preview_universe, preview_start, preview_end;
+  // 预览完成检测 (→ Done 那一帧把特征表落地 features.json)
+  analysis::Status prev_preview_status = analysis::Status::Idle;
 };
 
 // 流式 tab 的行状态: 构建中显示进度, 完成后 done, 取消 cancelled
@@ -194,6 +196,14 @@ TaskHandle CreateFeaturesTask() {
     };
     for (int k = 0; k < TAB_COUNT; k++)
       state->tab_enabled[k] = !disable[k];
+
+    // 预览跑完 (→ Done) 的那一帧: 特征表 (元数据 + 账目/值域/PDF/PSD) 落地 <FeatureUniverseDir>/features.json
+    {
+      const auto pv_status = data.preview.status.load(std::memory_order_acquire);
+      if (pv_status == analysis::Status::Done && state->prev_preview_status != analysis::Status::Done)
+        Features::SaveFeatureTableJson(data);
+      state->prev_preview_status = pv_status;
+    }
   };
 
   // Enabled: 左栏子行是否可点 (Update 同帧已写 tab_enabled)

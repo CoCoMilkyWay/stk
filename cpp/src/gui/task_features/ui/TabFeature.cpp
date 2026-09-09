@@ -11,6 +11,7 @@
 #include "imgui.h"
 #include "implot.h"
 #include "latex.h"
+#include "nlohmann/json.hpp"
 #include "platform/imgui/graphic_imgui.h"
 #include "render.h"
 #include "utfcpp/utf8.hpp"
@@ -21,6 +22,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string_view>
 #include <unordered_map>
@@ -1083,6 +1086,98 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   if (ImGui::Button("Clear All", ImVec2(80, 0))) {
     sel.selected_features.clear();
   }
+}
+
+// ============================================================================
+// 特征表落地 JSON (表格列 1:1 对应: 元数据 + Stat / Range / Dist / PSD + Deps)
+// ============================================================================
+
+void SaveFeatureTableJson(SharedData &data) {
+  using json = nlohmann::json;
+  const Feature::Metadata &meta = data.feature.metadata;
+
+  json j;
+  j["universe"] = data.config.universe;
+  j["start_date"] = data.config.start_date;
+  j["end_date"] = data.config.end_date;
+
+  // 预览抽样口径 + PSD 横轴 (各行 psd 数组与之平行: k = 1..N_FREQS-1, 周期 = 分钟)
+  {
+    json pv;
+    pv["level"] = LEVELS[analysis::kLevel].level_name;
+    pv["rounds"] = data.preview.done.load(std::memory_order_relaxed);
+    pv["assets_per_round"] = kPvAssetsPerRound;
+    json periods = json::array();
+    for (size_t k = 1; k < analysis::DayPSD::N_FREQS; ++k)
+      periods.push_back(analysis::DayPSD::period_of(k));
+    pv["psd_period_min"] = std::move(periods);
+    j["preview"] = std::move(pv);
+  }
+
+  std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+  json levels = json::array();
+  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+    const auto &features = meta.features[lvl];
+    const auto &deps_list = meta.deps[lvl];
+    assert(deps_list.size() == features.size());
+    const bool preview_level = (lvl == analysis::kLevel);
+
+    json rows = json::array();
+    for (size_t i = 0; i < features.size(); ++i) {
+      const FeatureMetadata &f = features[i];
+      json r;
+      r["col"] = i;
+      r["code"] = f.code;
+      r["width"] = f.width;
+      r["valid"] = to_string(f.valid_type).en;
+      r["data_type"] = to_string(f.data_type).en;
+      r["cat_l1"] = f.cat_l1;
+      r["cat_l2"] = f.cat_l2;
+      r["ts_tf"] = to_string(f.ts_tf).en;
+      r["ts_method"] = to_string(f.ts_method).en;
+      r["cs_tf"] = to_string(f.cs_tf).en;
+      r["cs_method"] = to_string(f.cs_method).en;
+      r["name_en"] = f.name_en;
+      r["name_cn"] = f.name_cn;
+      r["formula"] = f.formula;
+      r["description"] = f.description;
+      r["deps"] = split_deps(deps_list[i]);
+
+      // 预览四列 (仅预览层且该格有账目; 表格显示 "—" 的格子不落键)
+      if (preview_level && i < data.preview.cells.size()) {
+        const FeaturePreview::Cell &cell = data.preview.cells[i];
+        const analysis::Integrity &it = cell.integrity;
+        if (it.n_total > 0) {
+          r["stat"] = {{"n_total", it.n_total}, {"n_valid", it.n_valid}, {"n_nan", it.n_nan}, {"n_zero", it.n_zero}, {"n_pos_inf", it.n_pos_inf}, {"n_neg_inf", it.n_neg_inf}};
+        }
+        if (it.n_valid > 0) {
+          r["range"] = {{"min", it.val_min}, {"max", it.val_max}, {"mean", cell.mean}, {"sd", cell.sd()}, {"skew", cell.skew}, {"kurt", cell.kurt}, {"n", cell.n}};
+        }
+        if (cell.n_pts > 0) {
+          r["dist"] = {{"x", std::vector<float>(cell.x.begin(), cell.x.begin() + cell.n_pts)},
+                       {"y", std::vector<float>(cell.y.begin(), cell.y.begin() + cell.n_pts)}};
+        }
+        if (cell.psd_n > 0) {
+          r["psd"] = {{"n", cell.psd_n}, {"log10_power", std::vector<float>(cell.psd.begin(), cell.psd.end())}};
+        }
+      }
+      rows.push_back(std::move(r));
+    }
+    levels.push_back({{"level", LEVELS[lvl].level_name}, {"features", std::move(rows)}});
+  }
+  j["levels"] = std::move(levels);
+
+  // 写 tmp 再 rename: 崩在中途不留半截文件 (同 AssetAxis::save)
+  const std::filesystem::path path = std::filesystem::path(data.config.FeatureUniverseDir()) / "features.json";
+  std::filesystem::create_directories(path.parent_path());
+  const std::filesystem::path tmp = path.string() + ".tmp";
+  {
+    std::ofstream file(tmp);
+    assert(file.is_open() && "features.json: 临时文件打不开");
+    file << j.dump(1);
+    assert(file.good() && "features.json: 写入失败");
+  }
+  std::filesystem::rename(tmp, path);
 }
 
 } // namespace GUI::Features
