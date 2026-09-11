@@ -1,6 +1,5 @@
 // Tab Feature Implementation
 #include "gui/task_features/ui/TabFeature.hpp"
-#include "features/FeatureCategoriesGenerated.hpp"
 #include "graphic/graphic_basic.h"
 #include "gui/task_features/ui/Common.hpp" // 账目着色 / 状态文本
 #include "misc/format.hpp"                 // misc::fmt_width
@@ -675,8 +674,7 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
   }
 }
 
-template <size_t N>
-static void render_filter_dropdown(const char *label, bool &show_dropdown, std::set<std::string_view> &selected_values, const std::array<const char *, N> &all_values) {
+static void render_filter_dropdown(const char *label, bool &show_dropdown, std::set<std::string_view> &selected_values, std::span<const char *const> all_values) {
   ImGui::Text("%s:", label);
   ImGui::SameLine();
 
@@ -748,9 +746,9 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // All filters in one line
   render_filter_dropdown("DataType", ui_state.show_filter_data_type, sel.filter_data_type, FeatureDataType_ALL);
   ImGui::SameLine();
-  render_filter_dropdown("Cat L1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, FeatureCategoryL1_ALL);
+  render_filter_dropdown("Cat L1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, feature_meta::categories_l1());
   ImGui::SameLine();
-  render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, FeatureCategoryL2_ALL);
+  render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, feature_meta::categories_l2());
   ImGui::SameLine();
   render_filter_dropdown("TS Norm", ui_state.show_filter_ts_method, sel.filter_ts_method, ts_MethodId_ALL);
   ImGui::SameLine();
@@ -1114,7 +1112,7 @@ void SaveFeatureTableJson(SharedData &data) {
     file << " \"universe\": " << json(data.config.universe).dump() << ",\n";
     file << " \"start_date\": " << json(data.config.start_date).dump() << ",\n";
     file << " \"end_date\": " << json(data.config.end_date).dump() << ",\n";
-    file << " \"preview\": {\"level\": " << json(LEVELS[analysis::kLevel].level_name).dump()
+    file << " \"preview\": {\"level\": " << json(level_info(analysis::kLevel).level_name).dump()
          << ", \"rounds\": " << data.preview.done.load(std::memory_order_relaxed)
          << ", \"assets_per_round\": " << kPvAssetsPerRound << "},\n";
 
@@ -1125,7 +1123,7 @@ void SaveFeatureTableJson(SharedData &data) {
       assert(deps_list.size() == features.size());
       const bool preview_level = (lvl == analysis::kLevel);
 
-      file << " \"" << LEVELS[lvl].level_name << "\": [\n";
+      file << " \"" << level_info(lvl).level_name << "\": [\n";
       for (size_t i = 0; i < features.size(); ++i) {
         const FeatureMetadata &f = features[i];
         // 键序 = 表格列序 (nlohmann ordered_json 保插入序)

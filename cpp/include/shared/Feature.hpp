@@ -1,9 +1,12 @@
 #pragma once
 
-#include "features/Backend/FeatureStoreConfig.hpp" // 字段表 + LEVELS (width / valid / psd 由此推出)
-#include "features/Method/CS.hpp"                  // CS 行 Tf / Method (SRC 推出, GUI "CS Norm" 列); TS 侧经 FeatureStoreConfig 带入
+#include "features/Backend/FeatureLevels.hpp" // LEVEL_COUNT / FieldInfo (稳定层, 不依赖字段表)
+#include "features/FeaturesDefine.hpp"        // FeatureDataType / EnumStr
+#include "features/Method/CS.hpp"             // CS 行 Tf / Method (GUI "CS Norm" 列)
+#include "features/Method/TS.hpp"             // TS 行 Tf / Method (GUI "TS Norm" 列)
 #include <array>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -31,29 +34,14 @@ struct FeatureMetadata {
 };
 
 // ============================================================================
-// Compile-time Metadata Generation: 每层一张表 (字段表行 + 层信息)
+// 字段表元数据的运行时入口 (定义在 src/features/FeatureMeta.cpp — 唯一依赖生成字段表
+// 的元数据 TU; 本头保持稳定, 增删改特征不重编 GUI/shared 消费者, 只重编 FeatureMeta.cpp)
 // ============================================================================
-#define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                                        \
-  {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, SRC_TS_TF_##src, SRC_TS_METHOD_##src, SRC_CS_TF_##src, \
-   SRC_CS_METHOD_##src, formula, name_en, name_cn, description, kLevel},
-#define GENERATE_METADATA_TABLE(name, num, fields, rows, psd, columnar, xor_delta) \
-  namespace name##_meta_detail {                                                   \
-    constexpr uint8_t kLevel = num;                                                \
-    inline constexpr FeatureMetadata TABLE[] = {fields(GENERATE_METADATA)};        \
-  }
-#define METADATA_TABLE_PTR(name, num, fields, rows, psd, columnar, xor_delta) name##_meta_detail::TABLE,
-#define METADATA_TABLE_COUNT(name, num, fields, rows, psd, columnar, xor_delta) std::size(name##_meta_detail::TABLE),
-
-namespace FeatureMetadataRegistry {
-ALL_LEVELS(GENERATE_METADATA_TABLE)
-inline constexpr const FeatureMetadata *FEATURES[LEVEL_COUNT] = {ALL_LEVELS(METADATA_TABLE_PTR)};
-inline constexpr size_t COUNTS[LEVEL_COUNT] = {ALL_LEVELS(METADATA_TABLE_COUNT)};
-} // namespace FeatureMetadataRegistry
-
-#undef GENERATE_METADATA
-#undef GENERATE_METADATA_TABLE
-#undef METADATA_TABLE_PTR
-#undef METADATA_TABLE_COUNT
+namespace feature_meta {
+std::span<const FeatureMetadata> features(size_t level); // 该层字段表 (行序 = 列序)
+std::span<const char *const> categories_l1();            // Operator/{TS,CS}/<分类> 目录名 (排序)
+std::span<const char *const> categories_l2();            // 字段表二级分类 token (排序)
+} // namespace feature_meta
 
 // ts:: / cs:: 归一化枚举的 GUI 适配 (与 FeaturesDefine 的 to_string / *_ALL 同形, 供 TabFeature 过滤下拉 / 两列显示)
 inline constexpr EnumStr to_string(ts::TfId t) { return {ts::TF_TOKENS[static_cast<size_t>(t)], ts::TF_NAMES[static_cast<size_t>(t)]}; }

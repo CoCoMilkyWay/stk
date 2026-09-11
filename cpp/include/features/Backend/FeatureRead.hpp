@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FeatureStoreConfig.hpp" // 含落盘编码选型 FeatureCodec / CODEC_ENABLED
+#include "FeatureLevels.hpp" // 稳定层: level_info / 文件布局 / FeatureCodec / CODEC_ENABLED (不依赖字段表, 增删特征不重编读端)
 #include "misc/profiler.hpp"
 #include <algorithm>
 #include <cassert>
@@ -47,7 +47,7 @@ private:
   void read_file(const std::string &filepath, size_t lvl, size_t F,
                  feature_storage_t *dst, size_t A, Scratch &s) const {
     Trace;
-    const size_t T = LEVELS[lvl].rows;
+    const size_t T = level_info(lvl).rows;
     constexpr size_t header_size = FEATURE_FILE_HEADER_WORDS * sizeof(size_t);
 
     std::ifstream file(filepath, std::ios::binary);
@@ -65,7 +65,7 @@ private:
              "A 不符: 特征文件与当前 universe 子轴大小不一致 (需重算特征)");
       assert(static_cast<std::uint64_t>(header[3]) == axis_hash_ &&
              "子轴指纹不符: 特征文件与当前 universe 名单/asset_axis.json 列序不一致 (需重算特征)");
-      assert(static_cast<std::uint64_t>(header[4]) == LEVELS[lvl].fingerprint &&
+      assert(static_cast<std::uint64_t>(header[4]) == level_info(lvl).fingerprint &&
              "字段表指纹不符: 特征文件是旧字段表写的 (需重算特征)");
     }
 
@@ -96,7 +96,7 @@ private:
     }
 
     // T 轴 XOR 差分还原 (写端 disk_write 对 xor_delta 层压缩前编码)
-    if (LEVELS[lvl].xor_delta) {
+    if (level_info(lvl).xor_delta) {
       TraceN("XorDeltaDecode");
       xor_delta_decode(dst, T, F * A);
     }
@@ -106,7 +106,7 @@ private:
   // (n == field_count); 整层文件 + 全列时直读 dst, 零中转.
   void load_fields(const std::string &date, size_t lvl, const size_t *fields, size_t n,
                    feature_storage_t *dst, size_t A, Scratch &s) const {
-    const auto &L = LEVELS[lvl];
+    const auto &L = level_info(lvl);
     const std::string day_dir = feature_day_dir(base_dir_, date);
     const size_t T = L.rows;
     assert(n <= L.field_count && (fields || n == L.field_count));
@@ -151,14 +151,14 @@ public:
     Scratch scratch;
 
     // 日 d 的时间轴起点 (定步长, 免存偏移表)
-    size_t day_start(size_t d) const { return d * LEVELS[level].rows; }
+    size_t day_start(size_t d) const { return d * level_info(level).rows; }
 
     void preallocate(size_t A_, size_t max_days_, size_t max_features_, size_t level_) {
       A = A_;
       level = level_;
       max_days = max_days_;
       max_features = max_features_;
-      data.resize(max_days * LEVELS[level].rows * max_features * A);
+      data.resize(max_days * level_info(level).rows * max_features * A);
     }
 
     void reset() {
@@ -179,7 +179,7 @@ public:
   // Single Day Loading (GUI: 单日整层, 任一层)
   // ========================================================================
 
-  // 单日单层张量 [T][F_total][A]: 一个实例 = 一层, 形状是 LEVELS[level] 编译期常量
+  // 单日单层张量 [T][F_total][A]: 一个实例 = 一层, 形状是 level_info(level) 层表常量
   struct DayTensor {
     std::string date;
     size_t level = 0;
@@ -187,19 +187,20 @@ public:
     std::vector<feature_storage_t> data;
     Scratch scratch;
 
-    // 宽字段用 sub 取档内下标; LVL 模板参数保住编译期定址
+    // 宽字段用 sub 取档内下标
     template <size_t LVL>
     inline feature_storage_t get(size_t t, size_t field, size_t a, size_t sub = 0) const {
       static_assert(LVL < LEVEL_COUNT);
       assert(LVL == level && "DayTensor level mismatch");
-      assert(t < LEVELS[LVL].rows && a < A && sub < LEVELS[LVL].fields[field].width);
-      return data[(t * LEVELS[LVL].width + LEVELS[LVL].offsets[field] + sub) * A + a];
+      const auto &L = level_info(LVL);
+      assert(t < L.rows && a < A && sub < L.fields[field].width);
+      return data[(t * L.width + L.offsets[field] + sub) * A + a];
     }
 
     void preallocate(size_t A_, size_t level_) {
       A = A_;
       level = level_;
-      data.resize(LEVELS[level].rows * LEVELS[level].width * A);
+      data.resize(level_info(level).rows * level_info(level).width * A);
     }
   };
 
@@ -209,7 +210,7 @@ public:
     assert(date.size() == 8);
     assert(out.A > 0 && "Must preallocate() before load_day()");
     out.date = date;
-    load_fields(date, out.level, nullptr, LEVELS[out.level].field_count, out.data.data(), out.A, out.scratch);
+    load_fields(date, out.level, nullptr, level_info(out.level).field_count, out.data.data(), out.A, out.scratch);
   }
 
   // ========================================================================
@@ -229,7 +230,7 @@ public:
     Scratch scratch;
 
     inline feature_storage_t get(size_t t, size_t i, size_t a) const {
-      assert(t < LEVELS[level].rows && i < fields.size() && a < A);
+      assert(t < level_info(level).rows && i < fields.size() && a < A);
       return data[(t * fields.size() + i) * A + a];
     }
 
@@ -237,7 +238,7 @@ public:
       A = A_;
       level = level_;
       max_features = max_features_;
-      data.resize(LEVELS[level].rows * max_features * A);
+      data.resize(level_info(level).rows * max_features * A);
     }
   };
 
@@ -301,7 +302,7 @@ public:
   // 该日是否有特征文件 (以最后一层最后一列文件为准: IO worker 按层序落盘, 它在则全在)
   static bool has_date(const std::string &base_dir, const std::string &date) {
     assert(date.size() == 8);
-    const auto &L = LEVELS[LEVEL_COUNT - 1];
+    const auto &L = level_info(LEVEL_COUNT - 1);
     return std::filesystem::exists(feature_column_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1, L.width - 1));
   }
   bool has_date(const std::string &date) const { return has_date(base_dir_, date); }

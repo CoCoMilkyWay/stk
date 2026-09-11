@@ -1,6 +1,7 @@
 #pragma once
 
 #include "features/Backend/FeatureStore.hpp"
+#include "features/MetaFlag.hpp"  // fmeta::data_valid (之前经 NodesGenerated→Meta.hpp 传递获得)
 #include "features/Method/CS.hpp" // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
 #include "misc/profiler.hpp"
 #include <cstring>

@@ -1,5 +1,6 @@
 // OrderFlow Implementation
 #include "shared/OrderFlow.hpp"
+#include "features/Backend/FeatureLevels.hpp" // level_valid_rows
 #include "misc/profiler.hpp"
 
 #include <algorithm>

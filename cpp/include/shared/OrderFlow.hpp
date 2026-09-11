@@ -16,7 +16,8 @@
 //          pending 未 ack 期间 worker 不碰任何槽.
 #pragma once
 
-#include "features/Backend/FeatureStoreConfig.hpp"
+#include "codec/L2_DataType.hpp"  // L2::LOB_DEPTH
+#include "features/TimeIndex.hpp" // L0_ROWS / L1_ROWS (稳定形状常量, 不依赖字段表)
 
 #include <array>
 #include <atomic>
@@ -33,10 +34,10 @@
 
 namespace OrderFlowConst {
 // Data Capacity
-constexpr size_t L0_CAPACITY = LEVELS[0].rows; // ~15300 秒/日 (X 轴跨度)
-constexpr size_t L1_CAPACITY = LEVELS[1].rows; // ~255 分钟/日 (X 轴跨度)
-constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;    // 30 levels
-constexpr size_t MAX_FEATURES = 8;             // overlay 特征多选上限 (两图同限)
+constexpr size_t L0_CAPACITY = L0_ROWS;     // ~15300 秒/日 (X 轴跨度)
+constexpr size_t L1_CAPACITY = L1_ROWS;     // ~255 分钟/日 (X 轴跨度)
+constexpr size_t LOB_DEPTH = L2::LOB_DEPTH; // 30 levels
+constexpr size_t MAX_FEATURES = 8;          // overlay 特征多选上限 (两图同限)
 
 // Price and Volume Conversion
 constexpr float TICK_SIZE = 0.01f;            // Minimum price step (RMB)

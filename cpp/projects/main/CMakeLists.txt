@@ -113,6 +113,11 @@ endif()
 
 add_compile_options(-fcolor-diagnostics -fansi-escape-codes -Wno-overriding-option)
 
+# 链接加速: lld (LLVM 自带, 并行) — 增量迭代每轮都要重链, 默认 GNU ld 是常数项瓶颈
+if(IS_LINUX)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
+endif()
+
 # Platform-specific defines
 if(IS_WINDOWS)
     add_compile_definitions(_WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -207,6 +212,7 @@ set(SOURCES
     ../../src/codec/json_config.cpp
     ../../src/codec/L2_Validator.cpp
     # features
+    ../../src/features/FeatureMeta.cpp
     ../../src/features/Method/CS.cpp
     ../../src/features/Method/Fundamental.cpp
     # worker
@@ -318,8 +324,10 @@ set(HEADERS
     ../../include/features/CoreCrosssection.hpp
     ../../include/features/CoreSequential.hpp
     ../../include/features/FeaturesDefine.hpp
+    ../../include/features/MetaFlag.hpp
     ../../include/features/TimeIndex.hpp
     ../../include/features/Backend/DayBatchPlane.hpp
+    ../../include/features/Backend/FeatureLevels.hpp
     ../../include/features/Backend/FeatureRead.hpp
     ../../include/features/Backend/FeatureStore.hpp
     ../../include/features/Backend/FeatureStoreConfig.hpp
@@ -354,7 +362,13 @@ set(HEADERS
 )
 
 # ============================================================================
-# features/NodesGenerated.hpp (生成到 build 目录) — 计算图节点表 + 落盘字段表.
+# 生成物两份 (build 目录), 切开"字段表消费者"与"算子代码消费者"的编译依赖:
+#   FieldsGenerated.hpp  宏文本汇总, 不 #include 任何算子头 —— NODE_/FIELDS_/helper 宏
+#                        原样抽自算子文件 (逐 token 一致) + NODES(N) + L*_FIELDS(X) + node_deps.
+#                        消费者 = FeatureStoreConfig (写端布局/指纹) / FeatureMeta.cpp (GUI 元数据).
+#                        只改算子实现体 → 本文件内容不变 (file(CONFIGURE) 不重写) → 消费者不重编.
+#   NodesGenerated.hpp   全部算子 #include + NODE_PREV_* 声明链 —— 只给 ComputeGraph (构图端) 用.
+#                        消费者 = sequential_worker / OrderFlowService (经 LOB→CoreSequential).
 #   节点实例和落盘列直接写在算子文件里 (include/features/Operator/{TS,CS}/<分类>/**/*.hpp: TS/ 时序节点, CS/ 截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (OpType), (ctor inputs), compute_trigger, flush_trigger)
 #     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ {L0, L1}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
@@ -376,6 +390,8 @@ set(DAG_FIELD_OWNERS "") # 有任一 FIELDS_ 宏的名字 (节点或非算子列
 set(DAG_CATEGORIES "") # Operator/TS/<分类> 或 Operator/CS/<分类> 的目录名
 set(DAG_CAT2S "") # 字段表中实际出现过的二级分类 token
 set(DAG_GEN_INCLUDES "")
+set(DAG_GEN_MACROS "") # 抽取的 #define/#undef 行 (FieldsGenerated 内联)
+set(DAG_MACRO_NAMES "") # 抽取宏名 (NodesGenerated 先 #undef 再 include 算子头, 免重复定义诊断)
 foreach(scan_file ${DAG_SCAN_FILES})
     file(RELATIVE_PATH scan_rel ${CMAKE_CURRENT_SOURCE_DIR}/../../include ${scan_file})
     file(RELATIVE_PATH scan_op_rel ${DAG_SCAN_ROOT}/Operator ${scan_file})
@@ -405,6 +421,25 @@ foreach(scan_file ${DAG_SCAN_FILES})
         continue()
     endif()
     string(APPEND DAG_GEN_INCLUDES "#include \"${scan_rel}\"\n")
+    # 抽出该文件全部 #define/#undef 行 (NODE_/FIELDS_/helper 宏), 原样内联进 FieldsGenerated.hpp.
+    # 分号先换占位符 (CMake 列表分隔符), 逐行还原; #define 加 #ifndef 守卫 (算子头先included 时跳过).
+    string(REPLACE ";" "@SEMICOLON@" scan_nosemi "${scan_src}")
+    string(REGEX MATCHALL "(^|\n)[ \t]*#[ \t]*(define|undef)[ \t][^\n]*" macro_lines "${scan_nosemi}")
+    string(APPEND DAG_GEN_MACROS "// ---- ${scan_rel} ----\n")
+    foreach(macro_line ${macro_lines})
+        string(REGEX REPLACE "^\n" "" macro_line "${macro_line}")
+        string(REPLACE "@SEMICOLON@" ";" macro_line "${macro_line}")
+        if(macro_line MATCHES "#[ \t]*define[ \t]+([A-Za-z0-9_]+)")
+            set(macro_name ${CMAKE_MATCH_1})
+            string(APPEND DAG_GEN_MACROS "#ifndef ${macro_name}\n${macro_line}\n#endif\n")
+            if(NOT macro_name IN_LIST DAG_MACRO_NAMES)
+                list(APPEND DAG_MACRO_NAMES ${macro_name})
+            endif()
+        else()
+            string(APPEND DAG_GEN_MACROS "${macro_line}\n")
+        endif()
+    endforeach()
+    string(APPEND DAG_GEN_MACROS "\n")
     foreach(node_def ${node_defs})
         string(REGEX REPLACE ".*#define NODE_([A-Za-z0-9_]+)\\(" "\\1" node_name "${node_def}")
         if(node_name IN_LIST DAG_NODES)
@@ -473,6 +508,13 @@ while(dag_remaining)
         message(FATAL_ERROR "节点依赖成环: ${dag_remaining}")
     endif()
 endwhile()
+
+# NodesGenerated 在 include 算子头前先 #undef 全部抽取宏 (FieldsGenerated 可能已定义同名守卫宏),
+# 让算子头内的定义成为现行定义, 两种 include 顺序都无重复定义诊断.
+set(DAG_GEN_UNDEFS "")
+foreach(macro_name ${DAG_MACRO_NAMES})
+    string(APPEND DAG_GEN_UNDEFS "#undef ${macro_name}\n")
+endforeach()
 
 set(DAG_GEN_NODES "#define NODES(N)")
 set(DAG_GEN_PREV "")
@@ -559,7 +601,7 @@ ${DAG_GEN_CAT2S}};
     NEWLINE_STYLE UNIX
 )
 file(CONFIGURE
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/features/NodesGenerated.hpp
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/features/FieldsGenerated.hpp
     CONTENT
     "#pragma once
 
@@ -567,15 +609,15 @@ file(CONFIGURE
 #include <iterator>
 
 // AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
-// 由 include/features/Operator/{TS,CS}/<分类>/**/*.hpp 里的 NODE_/FIELDS_ 宏扫描生成
-// (${DAG_N} 个节点, 按输入引用分层拓扑排序). 改动后下次 build 自动重新 configure.
+// 字段表/节点宏汇总, 不 #include 任何算子头: NODE_/FIELDS_/helper 宏文本原样抽自
+// include/features/Operator/{TS,CS}/<分类>/**/*.hpp (逐 token 一致; #ifndef 守卫兼容
+// 算子头先 include 的 TU). 消费者 = FeatureStoreConfig / FeatureMeta.cpp —— 只改算子
+// 实现体时本文件内容不变 (不重写, 消费者不重编); 改宏行 (增删特征/调参) 才重写.
 
-${DAG_GEN_INCLUDES}
+${DAG_GEN_MACROS}
 // 节点表 (拓扑序 = DAG 声明序 = 同一触发域内执行序)
 ${DAG_GEN_NODES}
 
-// 声明链: DAG_<name> : NODE_PREV_<name>, 节点只看得到排在自己前面的节点, 顺序错误即编译错误
-${DAG_GEN_PREV}
 // 落盘字段表 (按层; 行序 = 列序)
 ${DAG_GEN_FIELDS}
 
@@ -588,6 +630,23 @@ ${DAG_GEN_DEP_TABLE}  };
   inline constexpr size_t COUNT = std::size(TABLE);
 }
 "    @ONLY
+    NEWLINE_STYLE UNIX
+)
+file(CONFIGURE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/features/NodesGenerated.hpp
+    CONTENT
+    "#pragma once
+
+// AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
+// 算子头 #include 清单 + DAG 声明链 (${DAG_N} 个节点, 按输入引用分层拓扑排序).
+// 只给构图端 (ComputeGraph.hpp) 用; 字段表消费者走 FieldsGenerated.hpp (不随算子实现体重编).
+
+// 先 #undef 抽取宏 (本 TU 可能已 include FieldsGenerated.hpp), 让算子头内定义成为现行定义
+${DAG_GEN_UNDEFS}
+${DAG_GEN_INCLUDES}#include \"features/FieldsGenerated.hpp\" // NODES(N) / 字段表 / node_deps (守卫宏全部跳过)
+
+// 声明链: DAG_<name> : NODE_PREV_<name>, 节点只看得到排在自己前面的节点, 顺序错误即编译错误
+${DAG_GEN_PREV}"    @ONLY
     NEWLINE_STYLE UNIX
 )
 
