@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Valuation (CS) - 实时估值的截面因子 (源 = Val 节点 L1 列)
+// Valuation (CS) - 实时估值的截面因子 (源 = Valuation 节点 L1 列)
 // =============================================================================
 //   ep_ttm_cs / bp_mrq_cs / sp_ttm_cs / cp_ttm_cs = pct_rank(z(neutralize(winsor_q(1/pe|pb|ps|pcf))))   收益率口径 + 行业/市值中性化 (Reciprocal + NeutralRank)
 //   mcap_cs / fmcap_cs                            = pct_rank(z(winsor_mad(mcap|fmcap)))                  市值因子 (WinsorRank)

@@ -250,8 +250,8 @@ bool OrderFlowService::kline_step() {
 
   // 选列: [open, high, low, close, _meta, 特征...] — L1 逐列文件, 每日只碰 n 个小文件
   auto &cols = impl_->columns;
-  cols.assign({L1_Field::_ohlc_open, L1_Field::_ohlc_high, L1_Field::_ohlc_low,
-               L1_Field::_ohlc_close, L1_Field::_meta});
+  cols.assign({L1_Field::open, L1_Field::high, L1_Field::low,
+               L1_Field::close, L1_Field::_meta});
   for (int f : kline_cur_.feats)
     cols.push_back(static_cast<size_t>(f));
   impl_->reader.load_day_columns(k.dates[d], cols, impl_->l1_cols);

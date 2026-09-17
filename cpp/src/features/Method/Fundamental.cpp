@@ -231,8 +231,8 @@ struct PitPool {
   std::vector<float> adj_factor;     // bar1d.adjust_factor (cutoff=0: 除权除息事先公告, ffill)
   std::vector<float> total_shares;   // cutoff=-1, ffill
   std::vector<float> a_float_shares; // cutoff=-1, ffill
-  std::vector<float> up_lim;         // cutoff=-1 后 row T = T 当日适用, ffill
-  std::vector<float> dn_lim;
+  std::vector<float> lim_up;         // cutoff=-1 后 row T = T 当日适用, ffill
+  std::vector<float> lim_dn;
   std::vector<std::int8_t> st_status; // cutoff=0, 4 态派生, 不 ffill
   std::vector<std::uint8_t> suspended;
   std::vector<std::uint8_t> is_margin; // cutoff=0
@@ -273,8 +273,8 @@ struct PitPool {
     cut(adj_factor);
     cut(total_shares);
     cut(a_float_shares);
-    cut(up_lim);
-    cut(dn_lim);
+    cut(lim_up);
+    cut(lim_dn);
     cut(st_status);
     cut(suspended);
     cut(is_margin);
@@ -435,8 +435,8 @@ void build_grids(const Axes &axes, PitPool &p) {
   alloc_f(p.adj_factor);
   alloc_f(p.total_shares);
   alloc_f(p.a_float_shares);
-  alloc_f(p.up_lim);
-  alloc_f(p.dn_lim);
+  alloc_f(p.lim_up);
+  alloc_f(p.lim_dn);
   alloc_f(p.fin_balance);
   alloc_f(p.sec_balance);
   alloc_f(p.fin_purchase);
@@ -503,8 +503,8 @@ void build_grids(const Axes &axes, PitPool &p) {
                             if (a < 0)
                               continue;
                             std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
-                            p.up_lim[off] = positive_or_inf(up.f32(i));
-                            p.dn_lim[off] = positive_or_inf(dn.f32(i));
+                            p.lim_up[off] = positive_or_inf(up.f32(i));
+                            p.lim_dn[off] = positive_or_inf(dn.f32(i));
                           }
                         });
 
@@ -566,8 +566,8 @@ void build_grids(const Axes &axes, PitPool &p) {
   grid_ffill(p.adj_factor, axes.n_a(), axes.n_d());
   grid_ffill(p.total_shares, axes.n_a(), axes.n_d());
   grid_ffill(p.a_float_shares, axes.n_a(), axes.n_d());
-  grid_ffill(p.up_lim, axes.n_a(), axes.n_d());
-  grid_ffill(p.dn_lim, axes.n_a(), axes.n_d());
+  grid_ffill(p.lim_up, axes.n_a(), axes.n_d());
+  grid_ffill(p.lim_dn, axes.n_a(), axes.n_d());
 }
 
 void build_events(const Axes &axes, PitPool &p) {
@@ -1483,8 +1483,8 @@ struct State {
     out[Fund::equity_mrq] = sat(eq * 1e-8f);
     out[Fund::revenue_ttm] = sat(rev * 1e-8f);
     out[Fund::cffoa_ttm] = sat(cf * 1e-8f);
-    out[Fund::up_lim] = pos(p.at(p.up_lim, a, d));
-    out[Fund::dn_lim] = pos(p.at(p.dn_lim, a, d));
+    out[Fund::lim_up] = pos(p.at(p.lim_up, a, d));
+    out[Fund::lim_dn] = pos(p.at(p.lim_dn, a, d));
     out[Fund::low_mc_thr] = mb ? 5.0f : 3.0f;
 
     // 日频因子 raw

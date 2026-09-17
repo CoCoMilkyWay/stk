@@ -7,6 +7,8 @@
 // =============================================================================
 //   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.
 //   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L1 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
+//   盘中 tick 域算子 (Depth / Flow) 读 Fund.y[Fund.lim_up] 而非 Fund.out(): 盘口 / 委托 9:15 就开始,
+//   Fund 的 Series 要到首个分钟 flush 才有当日值; 涨跌停比较容差统一用 kPxEps (DataDefine.hpp).
 //
 // 【fast-math 契约】本文件不做 isnan/isfinite (状态机在 precise-math TU 里), y 只被下游算术消费, NaN 硬件透传.
 // =============================================================================
@@ -26,8 +28,8 @@ public:
     equity_mrq,     // [亿元] 归母权益 MRQ (可负)
     revenue_ttm,    // [亿元] 营业总收入 TTM (>0; ≤0 为源脏值 → NaN)
     cffoa_ttm,      // [亿元] 经营现金流 TTM (可负)
-    up_lim,         // [元] T 当日适用涨停价 (无限制 → NaN)
-    dn_lim,         // [元] T 当日适用跌停价
+    lim_up,         // [元] T 当日适用涨停价 (无限制 → NaN)
+    lim_dn,         // [元] T 当日适用跌停价
     low_mc_thr,     // [亿元] 低市值阈值 (主板 5 / 其他 3)
     // ---- 日频常量列 (直接落盘, 与 FIELDS_L1_Fund 一一对应) ----
     ind_l1,      // SW2021 一级行业 ID (0=未知, 1..31)
@@ -177,8 +179,8 @@ private:
   X(is_new, CAT1, RAW, "Is New Listing", "次新股", "上市龄 < 60 日历日", R"(\mathbf{1}[0 \leq D - D_{list} < 60])", OP(Fund, is_new, None, None))                                                           \
   X(total_shares, CAT1, RAW, "Total Shares", "总股本", "总股本(亿股, PIT)", R"(S^{total}_{D})", OP(Fund, total_shares, None, None))                                                                         \
   X(float_shares, CAT1, RAW, "Float Shares", "流通股本", "A股流通股本(亿股, PIT); 换手率=vol/float_shares", R"(S^{float}_{D})", OP(Fund, float_shares, None, None))                                         \
-  X(up_lim, CAT1, RAW, "Upper Limit Price", "涨停价", "当日适用涨停价(元, 无限制→NaN)", R"(P^{up}_{D})", OP(Fund, up_lim, None, None))                                                                      \
-  X(dn_lim, CAT1, RAW, "Lower Limit Price", "跌停价", "当日适用跌停价(元, 无限制→NaN)", R"(P^{dn}_{D})", OP(Fund, dn_lim, None, None))                                                                      \
+  X(lim_up, CAT1, RAW, "Upper Limit Price", "涨停价", "当日适用涨停价(元, 无限制→NaN)", R"(P^{up}_{D})", OP(Fund, lim_up, None, None))                                                                      \
+  X(lim_dn, CAT1, RAW, "Lower Limit Price", "跌停价", "当日适用跌停价(元, 无限制→NaN)", R"(P^{dn}_{D})", OP(Fund, lim_dn, None, None))                                                                      \
   X(pre_close, CAT1, RAW, "Pre Close", "前收", "除权后前收盘价(元, 盘前可知); 隔夜收益=open/pre_close", R"(P^{pre}_{D})", OP(Fund, pre_close, None, None))                                                  \
   X(adj_factor, CAT1, RAW, "Adjust Factor", "复权因子", "复权因子(盘前可知); 跨日价格拼接", R"(\mathrm{adj}_{D})", OP(Fund, adj_factor, None, None))                                                        \
   X(rz_buy, CAT1, RAW, "Margin Buy Amount", "融资买入额", "融资买入额(亿元, 非标的→NaN)", R"(\frac{Buy^{rz}_{D}}{10^{8}})", OP(Fund, rz_buy, None, None))                                                   \

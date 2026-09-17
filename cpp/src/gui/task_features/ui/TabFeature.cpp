@@ -745,11 +745,11 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
 
   // All filters in one line
-  render_filter_dropdown("DataType", ui_state.show_filter_data_type, sel.filter_data_type, FeatureDataType_ALL);
+  render_filter_dropdown("Type", ui_state.show_filter_data_type, sel.filter_data_type, FeatureDataType_ALL);
   ImGui::SameLine();
-  render_filter_dropdown("Cat L1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, feature_meta::categories_l1());
+  render_filter_dropdown("Cat1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, feature_meta::categories_l1());
   ImGui::SameLine();
-  render_filter_dropdown("Cat L2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, feature_meta::categories_l2());
+  render_filter_dropdown("Cat2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, feature_meta::categories_l2());
   ImGui::SameLine();
   render_filter_dropdown("TS Norm", ui_state.show_filter_ts_method, sel.filter_ts_method, ts_MethodId_ALL);
   ImGui::SameLine();
@@ -825,15 +825,15 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);                                    // 2
     ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed);                                // 3
     ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);                              // 4
-    ImGui::TableSetupColumn("DataType", ImGuiTableColumnFlags_WidthFixed);                             // 5
-    ImGui::TableSetupColumn("Cat L1", ImGuiTableColumnFlags_WidthFixed);                               // 6
-    ImGui::TableSetupColumn("Cat L2", ImGuiTableColumnFlags_WidthFixed);                               // 7
-    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                              // 8
-    ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                              // 9
-    ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                 // 10
-    ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                // 11
-    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 12
-    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 13
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);                             // 5
+    ImGui::TableSetupColumn("Cat1", ImGuiTableColumnFlags_WidthFixed);                               // 6
+    ImGui::TableSetupColumn("Cat2", ImGuiTableColumnFlags_WidthFixed);                               // 7
+    ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                 // 8
+    ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                // 9
+    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 10
+    ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 11
+    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                             // 12
+    ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                              // 13
     ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                 // 14
     ImGui::TableSetupScrollFreeze(0, 1);                                                               // Freeze header row
 
@@ -846,8 +846,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"Multi", "Code", "W", "Valid", "Name CN", "DataType", "Cat L1", "Cat L2", "TS Norm", "CS Norm",
-                                     "Stat", "Range", "Dist", "PSD", "Deps"};
+    const char *headers[kNumCols] = {"Multi", "Code", "W", "Valid", "Name CN", "Type", "Cat1", "Cat2",
+                                     "Stat", "Range", "Dist", "PSD", "TS Norm", "CS Norm", "Deps"};
     const char *tooltips[kNumCols] = {
         "多选: 选择多个特征进行对比 (首个作为主特征)",
         "代码: 特征的唯一标识符",
@@ -857,12 +857,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
         "一级分类: 特征的类别 (同色同组相邻)",
         "二级分类: 特征的量纲",
-        "时序归一化: SRC 列 OP(..., Tf, Method) 推出",
-        "截面归一化: SRC 列 CS(..., Tf, Method) 推出",
         "账目: nan,zero,-inf,+inf 占比%",
         "值域: min -1sd +1sd max",
         "平均分布: 抽样 (日 × 资产) 的 PDF",
         "平均频谱: 单日 PSD 的算术平均 (log10 功率, x = 周期)",
+        "时序归一化: SRC 列 OP(..., Tf, Method) 推出",
+        "截面归一化: SRC 列 CS(..., Tf, Method) 推出",
         "直接依赖: 该特征计算所依赖的其他特征 code",
     };
 
@@ -961,17 +961,17 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               case 7:
                 cmp = std::strcmp(fa.cat_l2, fb.cat_l2);
                 break;
-              case 8: // TS Norm
-                cmp = (int)fa.ts_method - (int)fb.ts_method;
-                break;
-              case 9: // CS Norm
-                cmp = (int)fa.cs_method - (int)fb.cs_method;
-                break;
-              case 10: // Stat: nan%
+              case 8: // Stat: nan%
                 cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
                 break;
-              case 11: // Range: sd (var 单调等价)
+              case 9: // Range: sd (var 单调等价)
                 cmp = cmp3(ca.var, cb.var);
+                break;
+              case 12: // TS Norm
+                cmp = (int)fa.ts_method - (int)fb.ts_method;
+                break;
+              case 13: // CS Norm
+                cmp = (int)fa.cs_method - (int)fb.cs_method;
                 break;
               case 14:
                 cmp = deps_list[a].compare(deps_list[b]);
@@ -1058,23 +1058,17 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         ImGui::EndTooltip();
       }
 
-      // Column: DataType
+      // Column: Type
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(to_string(f.data_type).en);
 
-      // Column: Cat L1
+      // Column: Cat1
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(f.cat_l1);
 
-      // Column: Cat L2
+      // Column: Cat2
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(f.cat_l2);
-
-      // Columns: TS Norm / CS Norm (SRC 推出的 Method; Tf 不显示; None 显 "-")
-      ImGui::TableNextColumn();
-      render_norm_cell(to_string(f.ts_method), f.ts_method == ts::MethodId::None);
-      ImGui::TableNextColumn();
-      render_norm_cell(to_string(f.cs_method), f.cs_method == cs::MethodId::None);
 
       // Columns: Stat / Range 账目 + Dist / PSD 迷你图 (预览, 仅 L1; 槽位 = metadata 下标)
       const FeaturePreview::Cell &cell = cell_of(idx);
@@ -1088,6 +1082,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TableNextColumn();
       render_preview_psd(cell, f.code);
       ImGui::PopID();
+
+      // Columns: TS Norm / CS Norm (SRC 推出的 Method; Tf 不显示; None 显 "-")
+      ImGui::TableNextColumn();
+      render_norm_cell(to_string(f.ts_method), f.ts_method == ts::MethodId::None);
+      ImGui::TableNextColumn();
+      render_norm_cell(to_string(f.cs_method), f.cs_method == cs::MethodId::None);
 
       // Column: Deps (直接依赖的其他特征 code, 分号分隔)
       ImGui::TableNextColumn();
@@ -1160,8 +1160,6 @@ void SaveFeatureTableJson(SharedData &data) {
         r["type"] = to_string(f.data_type).en;
         r["cat_l1"] = f.cat_l1;
         r["cat_l2"] = f.cat_l2;
-        r["ts_norm"] = to_string(f.ts_method).en;
-        r["cs_norm"] = to_string(f.cs_method).en;
 
         // Stat / Range 与表格同口径 (百分比 / min -1sd +1sd max); 表格显示 "—" 的格子不落键
         if (preview_level && i < data.preview.cells.size()) {
@@ -1185,6 +1183,8 @@ void SaveFeatureTableJson(SharedData &data) {
                           {"sd", sig4(sd)}};
           }
         }
+        r["ts_norm"] = to_string(f.ts_method).en;
+        r["cs_norm"] = to_string(f.cs_method).en;
         r["deps"] = split_deps(deps_list[i]);
 
         file << "  " << r.dump() << (i + 1 < features.size() ? ",\n" : "\n");

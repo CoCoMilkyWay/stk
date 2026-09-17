@@ -41,6 +41,10 @@ using DepthSeries = Series[L2::LOB_DEPTH];
 // 不用 0 —— 0 是合法取值 (零收益 / 完全均衡), 消费端无法区分. 【fast-math 契约】只生产 NaN, 不 isnan.
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
+// 价格比较容差 (元): 档位价 / 委托价 / 成交价由整数分换算成 float, 与解析的涨跌停价可能差 1 ulp.
+// 涨跌停判定 (Depth 钳档 / Flow 彩票委托 / Valuation 触板标记) 统一用它, 不各写一个.
+inline constexpr float kPxEps = 1e-4f;
+
 //----------------------------------------------------------------------------------------
 // OPERATOR CONTRACT (算子统一接口)
 //----------------------------------------------------------------------------------------
@@ -85,6 +89,10 @@ struct TickData {
 
   LOB_Feature lob;
 };
+
+// 事件时刻: 交易时段毫秒 (l0_index × 1000 + ms; 分钟边界 = 60000 整数倍, 午休不计时). 时间加权算子 (Book / Realized) 共用.
+// 14:57-15:00 全部映射到哨兵秒 15299, ms 每秒回绕 → t 可倒退; 消费方对 uint32 差必须钳零 (t > t_prev ? t - t_prev : 0).
+inline uint32_t tick_ms(const TickData &td) { return td.l0_index * 1000u + td.lob.millisecond * 10u; }
 
 //----------------------------------------------------------------------------------------
 // MINUTE LEVEL (L1): Resampled from tick data

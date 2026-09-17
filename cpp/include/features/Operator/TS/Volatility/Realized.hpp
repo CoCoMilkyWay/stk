@@ -27,8 +27,6 @@
 class Realized {
 public:
   static constexpr float kBp = 1e4f; // 收益量纲: 基点 (fp16 下 Σr² 在 ratio 量纲会落进次正规区)
-  // 事件时刻: 交易时段毫秒 (l0_index × 1000 + ms; 分钟边界 = 60000 整数倍, 午休不计时)
-  static inline uint32_t tick_ms(const TickData &td) { return td.l0_index * 1000u + td.lob.millisecond * 10u; }
 
 private:
   static constexpr float ALPHA = 4.0f;               // 跳跃阈值倍数

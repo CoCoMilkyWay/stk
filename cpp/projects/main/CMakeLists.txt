@@ -448,10 +448,10 @@ foreach(scan_file ${DAG_SCAN_FILES})
         list(APPEND DAG_NODES ${node_name})
         set(DAG_FILE_${node_name} ${scan_rel})
         # 依赖 = 该行里所有 "<Ident>." (先全收, 排序时只认节点名)
-        # 单口引用 Up.out(Up.port) 另记成 "Up.port" (GUI 依赖解析按口过滤, 不把上游整节点的字段都算进来);
-        # 其余形态 (Up.out() / Up.outs() / Up.member) = 整节点
+        # 单口引用 Up.out(Up.port) / Up.y[Up.port] 另记成 "Up.port" (GUI 依赖解析按口过滤, 不把上游整节点的字段都算进来);
+        # 其余形态 (Up.out() / Up.outs() / Up.y / Up.member) = 整节点
         string(REGEX MATCH "(^|\n) *#define NODE_${node_name}\\([^\n]*" node_line "${scan_defs}")
-        set(port_ref_re "[A-Za-z_][A-Za-z0-9_]*\\.out\\( *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\)")
+        set(port_ref_re "[A-Za-z_][A-Za-z0-9_]*\\.(out\\( *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\)|y\\[ *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\])")
         string(REGEX MATCHALL "${port_ref_re}" port_refs "${node_line}")
         string(REGEX REPLACE "${port_ref_re}" " " node_rest "${node_line}")
         string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*\\." node_refs "${node_rest}")
@@ -463,7 +463,7 @@ foreach(scan_file ${DAG_SCAN_FILES})
             list(APPEND DAG_DEPREFS_${node_name} ${ref})
         endforeach()
         foreach(ref ${port_refs})
-            string(REGEX REPLACE "^([A-Za-z_][A-Za-z0-9_]*)\\.out\\( *[A-Za-z_][A-Za-z0-9_]*\\.([A-Za-z0-9_]+) *\\)$" "\\1;\\2" up_port "${ref}")
+            string(REGEX REPLACE "^([A-Za-z_][A-Za-z0-9_]*)\\.(out\\(|y\\[) *[A-Za-z_][A-Za-z0-9_]*\\.([A-Za-z0-9_]+) *.$" "\\1;\\3" up_port "${ref}")
             list(GET up_port 0 up)
             list(GET up_port 1 port)
             list(APPEND DAG_DEPS_${node_name} ${up})

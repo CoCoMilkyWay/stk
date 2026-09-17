@@ -3,7 +3,7 @@
 // =============================================================================
 // Tod - 同分钟历史基准 z 值 (compute=onMinute; feature_list.md 1.8, 前 D 日版, D ∈ {5, 10}; 20 / 60 跨周版不做)
 // =============================================================================
-//   x_t = 本分钟成交额 / 成交量, μ_t / σ_t = 前 D 个交易日 同一分钟槽 的均值 / 样本标准差 (不含今天; 因果):
+//   x_t = 本分钟成交额 / 成交量 (MinuteData 买 + 卖, 与 Flow 的 taker 口同源), μ_t / σ_t = 前 D 个交易日 同一分钟槽 的均值 / 样本标准差 (不含今天; 因果):
 //     amt_todz_{D}d = (amt_t − μ_t) / σ_t      vol_todz_{D}d = (vol_t − μ_t) / σ_t
 //   槽内有效样本 < 3 或 σ = 0 → NaN. 无成交的分钟不 flush → 该槽当天缺样本 (位图标缺).
 //   状态: [255 槽][D_MAX] 环 + 有效位图, 每日 reset 清掉被覆盖的一列; D=5 取环上最近 5 列 (位掩码).
@@ -30,11 +30,11 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  Tod(const MinuteData &md, const Series &amt) : md_(md), amt_(amt) { update_short_mask(); }
+  explicit Tod(const MinuteData &md) : md_(md) { update_short_mask(); }
 
   inline void compute() {
     const size_t slot = md_.l1_index;
-    const float xa = amt_.back();
+    const float xa = md_.bid_amount.back() + md_.ask_amount.back();
     const float xv = static_cast<float>(md_.bid_volume.back() + md_.ask_volume.back());
     const uint16_t v_all = valid_[slot];
     const uint16_t v_short = static_cast<uint16_t>(v_all & short_mask_);
@@ -86,7 +86,6 @@ private:
   }
 
   const MinuteData &md_;
-  const Series &amt_;
   float ring_a_[SLOTS][D_MAX] = {};
   float ring_v_[SLOTS][D_MAX] = {};
   uint16_t valid_[SLOTS] = {};
@@ -95,7 +94,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Tod(N) N(Tod, (Tod), (minute_data, Flow.out(Flow.amt)), onMinute)
+#define NODE_Tod(N) N(Tod, (Tod), (minute_data), onMinute)
 
 #define TOD_ROWS(X, CAT1, D)                                                                                                                                                                                                                                                                   \
   X(amt_todz_##D##d, CAT1, RATIO, "Amount TOD Z " #D "d", "成交额同分钟z值" #D "日", "本分钟成交额对前" #D "日同分钟均值/标准差的z值(样本<3或σ=0→NaN)", R"(\frac{A_t - \mu^{()" #D R"(d)}_{\mathrm{tod}(t)}}{\sigma^{()" #D R"(d)}_{\mathrm{tod}(t)}})", OP(Tod, amt_todz_##D##d, None, None)) \
