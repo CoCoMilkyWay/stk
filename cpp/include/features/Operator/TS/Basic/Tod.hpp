@@ -5,7 +5,7 @@
 // =============================================================================
 //   x_t = 本分钟成交额 / 成交量 (MinuteData 买 + 卖, 与 Flow 的 taker 口同源), μ_t / σ_t = 前 D 个交易日 同一分钟槽 的均值 / 样本标准差 (不含今天; 因果):
 //     amt_todz_{D}d = (amt_t − μ_t) / σ_t      vol_todz_{D}d = (vol_t − μ_t) / σ_t
-//   槽内有效样本 < 3 或 σ = 0 → NaN. 无成交的分钟不 flush → 该槽当天缺样本 (位图标缺).
+//   槽内有效样本 < 3 或 σ = 0 → 0 (z 的中性值 = 与历史均值一致; 不产 NaN, 下游多日序列无缺口). 无成交的分钟不 flush → 该槽当天缺样本 (位图标缺).
 //   状态: [255 槽][D_MAX] 环 + 有效位图, 每日 reset 清掉被覆盖的一列; D=5 取环上最近 5 列 (位掩码).
 //   智臾 调整后成交量相关性 / 日内持续异常交易量; 开源 029 TGD 基准.
 // =============================================================================
@@ -72,7 +72,7 @@ private:
       if (valid & (1u << i))
         s += ring[i], ++n;
     if (n < MIN_N)
-      return kNaN;
+      return 0.0f; // 槽内样本不足 (上市初期 / 稀疏槽): z 的中性值 = 0 (与历史均值一致), 不产 NaN
     const float nf = static_cast<float>(n);
     const float mean = s / nf;
     float ss = 0.0f;
@@ -82,7 +82,7 @@ private:
         ss += d * d;
       }
     const float var = ss / (nf - 1.0f);
-    return var > 0.0f ? (x - mean) / std::sqrt(var) : kNaN;
+    return var > 0.0f ? (x - mean) / std::sqrt(var) : 0.0f; // σ = 0 (历史全同值): 无离散度可归一, 同样落中性 0
   }
 
   const MinuteData &md_;

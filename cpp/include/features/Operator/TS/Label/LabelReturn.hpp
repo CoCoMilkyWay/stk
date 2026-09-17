@@ -6,7 +6,9 @@
 //   做多: (exit_vwap·(1-fee_sell) - entry_vwap·(1+fee_buy)) / entry_vwap·(1+fee_buy)
 //   做空: (entry_vwap·(1-fee_sell) - exit_vwap·(1+fee_buy)) / entry_vwap·(1-fee_sell)
 //   费用: 双边万 1 佣金; 卖出另加印花税, 按日期取当时税率 (2023-08-28 起千 1 → 万 5), reset(date) 时定
-//   缺失 = NaN (盘口不足 / 快照缺口 / exit 过收盘): 0 是合法零收益, 不作哨兵. 尾部无标签行由 finish() 补 NaN.
+//   尾部 (exit 过收盘): 持有窗口自动截到当日收盘 —— T0 必须当日平仓, 所以"持有到收盘"才是真实可交易收益;
+//     窗口缩到 0 时自然退化为 −(税佣 + 冲击), 不留 NaN (见 finish()).
+//   仍为 NaN 的只剩"根本吃不到单": 某侧盘口全空 → 建不了仓 (calc_return) / 60s 内无快照 (minute_anchored). 0 是合法零收益, 不作哨兵.
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node). 一份深度快照环 (各金额档吃单 VWAP) 供两条路径共用:
 //   snapshot(t)                 每次 onDepth 先调: 只记账, VWAP 惰性结算 —— 同一秒内只有最后一次
@@ -16,7 +18,7 @@
 //                               次数从每笔盘口更新降到每活跃秒一次.
 //   second(t, l0, v)            L0 秒级 (当前停用, 见文件末): LABEL_L0_HOLD 分钟 × LABEL_L0_AMT 万, 只落 long
 //   minute_anchored(t, writer)  L1 分钟锚定惰性回填 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐): writer(h, l1, values[GROUP_SIZE])
-//   finish(writer)              收盘: 各组尚未写出的尾部行 (exit 过收盘) 全部写 NaN
+//   finish(writer)              收盘: 各组尚未写出的尾部行 (exit 过收盘) 按 exit = 当日最后盘口 结算
 // 配置 (LABEL_HOLDS / LABEL_AMTS / LABEL_L0_*) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
 
@@ -115,14 +117,28 @@ public:
     }
   }
 
-  // 收盘: 各组剩余行 (exit 过收盘, 永不过线) 写 NaN, 使"无标签"与"零收益"可区分
+  // 收盘: 各组剩余行 (exit 过收盘, 永不过线) —— T0 头寸必须当日平掉, 所以把 exit 截到当日最后盘口 (收盘竞价;
+  // 14:57 起全部 tick 钳到 L0 15299, 见 TimeIndex), 标签 = "持有到收盘" 的真实可交易收益, 而非缺失.
+  // 持有窗口随行号递减, 缩到 0 时自然退化为 −(税佣 + 冲击) —— 不赚钱还扣手续费, 连续无跳变.
   template <class Writer>
   inline void finish(Writer &&writer) {
+    const Snapshot *last = pending_l0_ != kNoPending ? get_snapshot(pending_l0_) : nullptr;
+    if (!last)
+      return;                          // 全日无任何盘口更新: 整日 _meta 皆无效, 标签无从谈起
+    const Snapshot close_snap = *last; // 下面还要查 entry, 而 get_snapshot 可能复用 scratch_, 先拷出
     float values[GROUP_SIZE];
-    std::fill_n(values, GROUP_SIZE, kNaN);
     for (size_t h = 0; h < HOLD_COUNT; ++h)
-      for (; next_label_l1_[h] < TRADE_MINUTES_PER_DAY; ++next_label_l1_[h])
+      for (; next_label_l1_[h] < TRADE_MINUTES_PER_DAY; ++next_label_l1_[h]) {
+        const size_t entry_l0 = L1_to_L0(next_label_l1_[h] + 1) + LABEL_DELAY_SECONDS;
+        const Snapshot *entry = get_snapshot(entry_l0);
+        if (!entry)
+          entry = &close_snap; // 该锚点已无盘口 (14:57 后的哨兵分钟): 退化为收盘即建即平, 只剩成本
+        for (size_t a = 0; a < AMT_COUNT; ++a) {
+          values[a] = calc_return(entry, &close_snap, a, true);
+          values[AMT_COUNT + a] = calc_return(entry, &close_snap, a, false);
+        }
         writer(h, next_label_l1_[h], static_cast<const float *>(values));
+      }
   }
 
   // 每日重置: 快照环作废, 行游标归零, 按日期定卖出费率 (印花税)
@@ -259,7 +275,7 @@ private:
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 // 行由配置生成: L1 每个 hold 一组 [long × LABEL_AMTS, short × LABEL_AMTS], 组序 = LABEL_HOLDS 序 (与 GROUP_SIZE / minute_anchored 的 h 对应)
 #define LABEL_ROW(X, CAT1, side, en, cn, formula, h, a) \
-  X(lb_##side##_##h##m_##a##w, CAT1, ret, en " " #h "min " #a "w Return", cn #h "分钟收益(" #a "万)", "吃单" cn #h "分钟收益(" #a "万元,含冲击+税佣)", formula R"(, \quad A=)" #a R"(\mathrm{w}, T=)" #h R"(\mathrm{min})", LABEL)
+  X(lb_##side##_##h##m_##a##w, CAT1, ret, en " " #h "min " #a "w Return", cn #h "分钟收益(" #a "万)", "吃单" cn #h "分钟收益(" #a "万元,含冲击+税佣); 尾部不足" #h "分钟则持有到收盘", formula R"(, \quad A=)" #a R"(\mathrm{w}, T=)" #h R"(\mathrm{min})", LABEL)
 #define LABEL_ROW_LONG(a, h, X, CAT1) LABEL_ROW(X, CAT1, long, "Long", "做多", R"(\frac{\mathrm{VWAP}^{B}_{exit}-\mathrm{VWAP}^{A}_{entry}}{\mathrm{VWAP}^{A}_{entry}})", h, a)
 #define LABEL_ROW_SHORT(a, h, X, CAT1) LABEL_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}^{B}_{entry}-\mathrm{VWAP}^{A}_{exit}}{\mathrm{VWAP}^{B}_{entry}})", h, a)
 #define LABEL_GROUP(h, X, CAT1) LABEL_AMTS(LABEL_ROW_LONG, h, X, CAT1) LABEL_AMTS(LABEL_ROW_SHORT, h, X, CAT1)

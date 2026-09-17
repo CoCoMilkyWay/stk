@@ -4,7 +4,7 @@
 // Book - 盘口状态量的分钟降频: 一次扫描出全部盘口特征 (compute=onDepth, flush=onMinute; feature_list.md 1.0 盘口部分 + 1.6)
 // =============================================================================
 //   全部状态列 = 时间加权均值 (状态量在两次盘口更新之间视为持有; 末状态持有到分钟末; 无盘口更新的分钟并入下一有效分钟).
-//   某快照某列无定义 (深度不足 / 分母 0) → 该列该段时长不计权 (ok_ 位图), 分钟内全程无定义 → NaN.
+//   某快照某列无定义 (深度不足 / 分母 0) → 该列该段时长不计权 (ok_ 位图), 分钟内全程无定义 → 见下方兜底约定.
 //     spread_l{1,5,10}       第 N 档 (a_N − b_N) / mid                          (基点; 单档, 非前 N 档累计; N=1 即相对价差)
 //     spread_w_{5,10}        Σ_{i≤N}(a_i−b_i)(q^A_i+q^B_i) / Σ(q^A_i+q^B_i) / mid  (基点, 量加权价差)
 //     qty_{bid,ask}_{1,5,10,all}   前 N 档量深度 (股; all = 全簿单侧挂单量, LOB 增量维护)
@@ -12,12 +12,18 @@
 //     qty_eff_1              min(q^B_1, q^A_1) (有效深度, 逐快照取 min 后加权)
 //     obi_{1,5,10,all}       (Q^B_N − Q^A_N) / (Q^B_N + Q^A_N)   ∈ [−1, 1], 正 = 买方占优
 //     tlr_{bid,ask}_{1,5,10} Q_N / Q_all                          前 N 档占全簿比, 越大越易被击穿
-//     cost_{buy,sell}_{10w,100w,300w}  吃掉 A 元 (沿 30 档累计, 末档按比例) 的 VWAP 对 mid 偏离 (基点; 全簿不足 A → 该快照无定义)
+//     cost_{buy,sell}_{10w,100w,300w}  吃掉 A 元 (沿 30 档累计, 末档按比例) 的 VWAP 对 mid 偏离 (基点; 全簿不足 A → 余量假设在涨跌停价成交)
 //     micro                  量加权中间价 (元)
 //     mid                    中间价 (元)
 //   事件型 (每次盘口更新一个中间价变化率 r = 1e4·ln(mid/mid_prev), 分钟内累计; 命名与 Realized 的 rv_3s 族对仗):
-//     rv_mid = Σ r²   rm3_mid = Σ r³   r_max_mid = max r  (无更新 → NaN)
-//   一档为空 (价 ≤ 0) 的快照跳过 (持有上一状态). 当日尚无有效盘口 → 全 NaN.
+//     rv_mid = Σ r²   rm3_mid = Σ r³   r_max_mid = max r  (无更新 → 0, 即"无变动")
+//   一档为空 (价 ≤ 0) 的快照跳过 (持有上一状态).
+//   【兜底约定】本节点不产 NaN: 下游多日拉取的序列要求无缺口、无跳变 (真实缺失由 _meta 列标注, 不靠 NaN).
+//     状态列 (价差 / 量额 / 失衡 / 占比 / 成本 / 价): 分钟内全程无定义 → 延续该列上一个有定义的分钟值 (last_, 跨日延续);
+//     价列 (micro / mid) 例外: 当日尚无有效盘口 → 用本分钟成交价 (flush 仅在有成交的分钟触发, 必 > 0; 09:25 即竞价撮合价).
+//       不沿用昨日盘口原值是因为除权会造成假跳变, 而成交价与 OHLC / vwap 同源同刻, 天然对齐;
+//     流量列 (rv_mid / rm3_mid / r_max_mid): 无盘口更新 → 0 (无变动), 不延续 —— 延续会凭空造出波动;
+//     全历史第一次无定义时 last_ 尚无内容 → 落 0 (仅限非价列的首日空窗分钟, 无先验信息可用).
 //   fp16 落盘: 量 / 额 / 幂和 Log Tf; 基点 / 比率 / 价 / 极值 原值.
 //   【fast-math 契约】不做 isnan; 无定义用 ok_ 位图显式表示, 不靠 NaN 传播.
 // =============================================================================
@@ -35,6 +41,7 @@ class Book {
   static constexpr float kBp = 1e4f;
   static constexpr size_t NCOST = 3;
   static constexpr float COST_TARGET[NCOST] = {1e5f, 1e6f, 3e6f}; // 元: 10 万 / 100 万 / 300 万 (升序)
+  static constexpr float LIMIT_FILL_QTY = 1e9f;                   // 股: 涨跌停补齐用的"无限量", 任何价位 × 它都盖过最大目标额
 
 public:
   // 前 NTW 口 = 时间加权量 (与 tw_/tt_/cur_/ok_ 下标一致), 后 3 口 = 中间价变化率
@@ -91,8 +98,10 @@ public:
   Book(const TickData &td, const MinuteData &md,
        const DepthSeries &bid_price, const DepthSeries &ask_price,
        const DepthSeries &bid_qty, const DepthSeries &ask_qty,
-       const Series &mid_price, const Series &micro_price)
-      : td_(td), md_(md), bp_(bid_price), ap_(ask_price), bq_(bid_qty), aq_(ask_qty), mid_(mid_price), micro_(micro_price) {}
+       const Series &mid_price, const Series &micro_price,
+       const float &lim_up, const float &lim_dn)
+      : td_(td), md_(md), bp_(bid_price), ap_(ask_price), bq_(bid_qty), aq_(ask_qty), mid_(mid_price), micro_(micro_price),
+        lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   inline void compute() {
     const float b1 = bp_[0].back(), a1 = ap_[0].back();
@@ -143,8 +152,15 @@ public:
       if (ka < NCOST)
         ka = eat(cost_buy_10w, ka, pa, va, ea_pv, ea_v, mid, true);
     }
+    // 全簿吃不完: 余量假设在涨跌停价成交 (买吃卖盘 → 涨停, 卖吃买盘 → 跌停), 当一档无限量档位再吃一次即补齐剩余目标.
+    // 边界 NaN (无限制股 / 缺失) → 比较恒 false → 不补 (与 Depth 同约)
+    if (kb < NCOST && lim_dn_ > 0.0f)
+      kb = eat(cost_sell_10w, kb, lim_dn_, LIMIT_FILL_QTY, eb_pv, eb_v, mid, false);
+    if (ka < NCOST && lim_up_ > 0.0f)
+      ka = eat(cost_buy_10w, ka, lim_up_, LIMIT_FILL_QTY, ea_pv, ea_v, mid, true);
+    // 仍未补齐 (涨跌停价缺失): 该快照该列无定义, 由 flush 延续上一有效值
     for (size_t k = kb; k < NCOST; ++k)
-      ok_ &= ~(1ull << (cost_sell_10w + k)); // 全簿不足目标金额: 该快照无定义
+      ok_ &= ~(1ull << (cost_sell_10w + k));
     for (size_t k = ka; k < NCOST; ++k)
       ok_ &= ~(1ull << (cost_buy_10w + k));
 
@@ -172,19 +188,29 @@ public:
       hold(static_cast<float>(t_end > t_prev_ ? t_end - t_prev_ : 0u)); // 末状态持有到分钟末
       t_prev_ = t_end;
     }
+    // 状态型: 有定义则更新 last_, 无定义则延续它 (跨分钟 / 跨日, last_ 不随 reset 清) → 多日序列无 NaN 无跳变
     for (size_t i = 0; i < NTW; ++i) {
-      y[i] = tt_[i] > 0.0f ? tw_[i] / tt_[i] : kNaN; // 分钟内全程无定义 (或当日尚无盘口) → NaN
+      if (tt_[i] > 0.0f)
+        last_[i] = tw_[i] / tt_[i];
+      y[i] = last_[i];
       tw_[i] = tt_[i] = 0.0f;
     }
-    const bool any = n_mid_ > 0;
-    y[rv_mid] = any ? rv_ : kNaN;
-    y[rm3_mid] = any ? rm3_ : kNaN;
-    y[r_max_mid] = any ? rmax_ : kNaN;
+    // 价列例外: 当日尚无有效盘口时用本分钟成交价做代理 (flush 只在有成交的分钟触发, 必 > 0; 09:25 即集合竞价撮合价).
+    // 不沿用昨日盘口原值 —— 除权会造成假跳变; 成交价与 OHLC / vwap 同源同刻, 天然对齐.
+    if (!has_state_) {
+      const float px = md_.close.back();
+      y[micro] = last_[micro] = px;
+      y[Out::mid] = last_[Out::mid] = px;
+    }
+    // 流量型: 本分钟无盘口更新 → 累加器就是 0 = "无变动", 直接落 0 (不延续: 延续会凭空造出波动)
+    y[rv_mid] = rv_;
+    y[rm3_mid] = rm3_;
+    y[r_max_mid] = rmax_;
     rv_ = rm3_ = rmax_ = 0.0f;
     n_mid_ = 0;
   }
 
-  void reset() {
+  void reset() { // last_ 刻意不清: 兜底源需跨日延续 (见文件头)
     has_state_ = false;
     t_prev_ = 0;
     ok_ = 0;
@@ -228,19 +254,21 @@ private:
   const MinuteData &md_;
   const DepthSeries &bp_, &ap_, &bq_, &aq_;
   const Series &mid_, &micro_;
+  const float &lim_up_, &lim_dn_; // Fund 当日涨跌停价 (盘前已知), 吃单成本吃不完时补齐余量用
 
   bool has_state_ = false;
-  uint32_t t_prev_ = 0; // 当前状态起点 (ms)
-  uint64_t ok_ = 0;     // cur_ 各口是否有定义 (位 i ↔ 口 i)
-  float tw_[NTW] = {};  // Σ 值 × 持有时长 (ms), 只计有定义的段
-  float tt_[NTW] = {};  // Σ 持有时长 (ms), 只计有定义的段
-  float cur_[NTW] = {}; // 当前持有状态
+  uint32_t t_prev_ = 0;  // 当前状态起点 (ms)
+  uint64_t ok_ = 0;      // cur_ 各口是否有定义 (位 i ↔ 口 i)
+  float tw_[NTW] = {};   // Σ 值 × 持有时长 (ms), 只计有定义的段
+  float tt_[NTW] = {};   // Σ 持有时长 (ms), 只计有定义的段
+  float cur_[NTW] = {};  // 当前持有状态
+  float last_[NTW] = {}; // 各口最后一个有定义的分钟值 (兜底源; 跨日延续, 不随 reset 清; 全历史首次无定义 → 0)
   float mid_prev_ = 0.0f, rv_ = 0.0f, rm3_ = 0.0f, rmax_ = 0.0f;
   uint32_t n_mid_ = 0;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Book(N) N(Book, (Book<L2::LOB_DEPTH>), (tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, MidPrice.out(), MicroPrice.out()), onDepth, onMinute)
+#define NODE_Book(N) N(Book, (Book<L2::LOB_DEPTH>), (tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, MidPrice.out(), MicroPrice.out(), Fund.y[Fund.lim_up], Fund.y[Fund.lim_dn]), onDepth, onMinute)
 
 // 一侧 (side token, S 公式上标, CN) 的 量深度 4 + 金额深度 4 + 顶部占比 3 行
 #define BOOK_SIDE_ROWS(X, CAT1, side, S, CN)                                                                                                                                                                                                                            \
@@ -257,10 +285,10 @@ private:
   X(tlr_##side##_10, CAT1, AUTO, "Top Level Ratio " S "10", "前10档" CN "占比", "分钟内" CN "前10档量占全簿" CN "量的时间加权均值", R"(\overline{\sum_{i \leq 10} V_{i}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, tlr_##side##_10, None, None))
 
 // 一个吃单方向 (dir token buy/sell, EN / CN 方向名, S = 被吃一侧中文, F1 / F2 = 公式中金额前后段) 的 3 个金额档
-#define BOOK_COST_ROWS(X, CAT1, dir, EN, CN, S, F1, F2)                                                                                                                                                                                                            \
-  X(cost_##dir##_10w, CAT1, AUTO, "Impact Cost " EN " 100k", CN "冲击成本10万", "吃掉10万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(10^5)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_10w, None, None))   \
-  X(cost_##dir##_100w, CAT1, AUTO, "Impact Cost " EN " 1M", CN "冲击成本100万", "吃掉100万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_100w, None, None)) \
-  X(cost_##dir##_300w, CAT1, AUTO, "Impact Cost " EN " 3M", CN "冲击成本300万", "吃掉300万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(3 \times 10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_300w, None, None))
+#define BOOK_COST_ROWS(X, CAT1, dir, EN, CN, S, F1, F2)                                                                                                                                                                                                                      \
+  X(cost_##dir##_10w, CAT1, AUTO, "Impact Cost " EN " 100k", CN "冲击成本10万", "吃掉10万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→余量按涨跌停价成交", R"(\overline{)" F1 R"(10^5)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_10w, None, None))   \
+  X(cost_##dir##_100w, CAT1, AUTO, "Impact Cost " EN " 1M", CN "冲击成本100万", "吃掉100万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→余量按涨跌停价成交", R"(\overline{)" F1 R"(10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_100w, None, None)) \
+  X(cost_##dir##_300w, CAT1, AUTO, "Impact Cost " EN " 3M", CN "冲击成本300万", "吃掉300万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→余量按涨跌停价成交", R"(\overline{)" F1 R"(3 \times 10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_300w, None, None))
 
 #define FIELDS_L1_Book(X, CAT1)                                                                                                                                                                                                                                                                                 \
   X(spread_l1, CAT1, AUTO, "Spread L1", "第1档价差", "分钟内第1档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_1^{M,A}-P_1^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", OP(Book, spread_l1, None, None))                                                                                              \
@@ -277,8 +305,8 @@ private:
   X(obi_all, CAT1, AUTO, "Order Book Imbalance All", "全簿失衡", "分钟内全簿买卖挂单量失衡率的时间加权均值", R"(\overline{\frac{V_{all}^{M,B} - V_{all}^{M,A}}{V_{all}^{M,B} + V_{all}^{M,A}}}^{\,tw})", OP(Book, obi_all, None, None))                                                                         \
   BOOK_COST_ROWS(X, CAT1, buy, "Buy", "买方", "卖", R"(\frac{\mathrm{VWAP}^{A}()", R"()}{P_{mid}} - 1)")                                                                                                                                                                                                        \
   BOOK_COST_ROWS(X, CAT1, sell, "Sell", "卖方", "买", R"(1 - \frac{\mathrm{VWAP}^{B}()", R"()}{P_{mid}})")                                                                                                                                                                                                      \
-  X(micro, CAT1, AUTO, "Micro Price", "微观价格", "分钟内量加权中间价的时间加权均值(元)", R"(\overline{P_{micro}}^{\,tw})", OP(Book, micro, None, None))                                                                                                                                                        \
-  X(mid, CAT1, AUTO, "Mid Price", "中间价", "分钟内中间价的时间加权均值(元)", R"(\overline{P_{mid}}^{\,tw})", OP(Book, mid, None, None))                                                                                                                                                                        \
+  X(micro, CAT1, AUTO, "Micro Price", "微观价格", "分钟内量加权中间价的时间加权均值(元); 无盘口→延续当日上一有效值, 当日尚无→本分钟成交价", R"(\overline{P_{micro}}^{\,tw})", OP(Book, micro, None, None))                                                                                                      \
+  X(mid, CAT1, AUTO, "Mid Price", "中间价", "分钟内中间价的时间加权均值(元); 无盘口→延续当日上一有效值, 当日尚无→本分钟成交价", R"(\overline{P_{mid}}^{\,tw})", OP(Book, mid, None, None))                                                                                                                      \
   X(rv_mid, CAT1, AUTO, "Mid-Price Realized Variance", "中间价变化率平方和", "分钟内逐次盘口更新中间价对数变化率(基点)平方和", R"(\sum_{j \in \Delta t} r_j^2,\; r_j = 10^4 \ln\frac{P_{mid,j}}{P_{mid,j-1}})", OP(Book, rv_mid, Log, None))                                                                    \
   X(rm3_mid, CAT1, AUTO, "Mid-Price Third Moment", "中间价变化率立方和", "分钟内中间价对数变化率(基点)立方和; 偏度=rm3/rv^1.5", R"(\sum_{j \in \Delta t} r_j^3)", OP(Book, rm3_mid, Log, None))                                                                                                                 \
   X(r_max_mid, CAT1, AUTO, "Mid-Price Max Change", "中间价变化率最大值", "分钟内中间价对数变化率(基点)最大值", R"(\max_{j \in \Delta t} r_j)", OP(Book, r_max_mid, None, None))

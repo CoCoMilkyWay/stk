@@ -10,7 +10,7 @@
 //     rm3/rm4 = Σ r³ / Σ r⁴    (偏度 = rm3 / rv^{3/2}, 峰度 = rm4 / rv², 因子层做)
 //     bpv     = Σ |r_c||r_{c-1}|                    tpv = Σ (|r_c||r_{c-1}||r_{c-2}|)^{2/3}   (滞后链跨分钟连续)
 //     rv_bigup / rv_bigdn = Σ_{r>θ} r² / Σ_{r<-θ} r²,  θ = α·σ_Δ,  σ_Δ² = (π/2)·Σ_{前一日} bpv_Δ / N_Δ  (α = 4, N_Δ = 14400/Δ)
-//               (原文用当日 IV 定阈, 非因果; 这里用前一日, 首日 NaN)
+//               (原文用当日 IV 定阈, 非因果; 这里用前一日, 首日 θ 未定 → 大跳跃列落 0)
 //     r_max / r_min (3s 网格分钟内极值, 基点)
 //   逐笔 / 时间加权:
 //     path_len = Σ |1e4·Δln p| 逐笔 (基点, Δln p 复用 TakerRet 节点, 与 TradeSize 共享一次 log);
@@ -178,10 +178,10 @@ public:
     write(g15_, rv_15s, false);
 
     y[path_len] = path_len_;
-    // twap: 末笔持有到分钟末; 时段长 0 (收盘竞价整段映射同一秒) → NaN
+    // twap: 末笔持有到分钟末; 时段长 0 (收盘竞价整段映射同一秒) → 退化为末笔成交价 (价列不产 NaN)
     twap_acc_ += px_last_ * static_cast<float>(t_end > t_last_ ? t_end - t_last_ : 0u);
     const float span = static_cast<float>(t_end > t_start_ ? t_end - t_start_ : 0u);
-    y[twap] = span > 0.0f ? twap_acc_ / span : kNaN;
+    y[twap] = span > 0.0f ? twap_acc_ / span : px_last_;
 
     g3_.clear_minute();
     g15_.clear_minute();
@@ -207,12 +207,13 @@ private:
     y[base + 4] = g.m4;
     y[base + 5] = g.bpv;
     y[base + 6] = g.tpv;
-    y[base + 7] = has_theta ? g.big_up : kNaN;
-    y[base + 8] = has_theta ? g.big_dn : kNaN;
+    // θ 未定 (首日 / 前日零波动) → 判不出大跳跃, 落 0 = 无大跳跃; 与上面 rv 族空分钟同样落 0 的约定一致, 不产 NaN
+    y[base + 7] = has_theta ? g.big_up : 0.0f;
+    y[base + 8] = has_theta ? g.big_dn : 0.0f;
     if (extremes) {
-      const bool any = g.n_cells > 0; // 分钟内无已闭合格 → NaN
-      y[base + 9] = any ? g.rmax : kNaN;
-      y[base + 10] = any ? g.rmin : kNaN;
+      const bool any = g.n_cells > 0; // 分钟内无已闭合格 → 无变动观测, 落 0
+      y[base + 9] = any ? g.rmax : 0.0f;
+      y[base + 10] = any ? g.rmin : 0.0f;
     }
   }
 
@@ -231,16 +232,16 @@ private:
 #define NODE_Realized(N) N(Realized, (Realized), (tick_data, minute_data, TakerRet.out()), onTaker, onMinute)
 
 // 一个 Δ 网格的幂和族 (d = 网格 token, dd = 网格秒数字面)
-#define REALIZED_GRID_ROWS(X, CAT1, d, dd)                                                                                                                                                                                                                                                                                                 \
-  X(rv_##d, CAT1, AUTO, "Realized Variance " #dd "s", #dd "秒已实现方差", #dd "秒网格格收益(基点)平方分钟和; 日级=行求和", R"(\sum_{c \in \Delta t} r_c^2,\; r_c = 10^4 \ln\frac{P_c}{P_{c-1}},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_##d, Log, None))                                                                          \
-  X(rv_up_##d, CAT1, AUTO, "Realized Upside Variance " #dd "s", #dd "秒上行已实现方差", #dd "秒网格正收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c>0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_up_##d, Log, None))                                                                                        \
-  X(rv_dn_##d, CAT1, AUTO, "Realized Downside Variance " #dd "s", #dd "秒下行已实现方差", #dd "秒网格负收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c<0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_dn_##d, Log, None))                                                                                      \
-  X(rm3_##d, CAT1, AUTO, "Realized Third Moment " #dd "s", #dd "秒已实现三阶矩", #dd "秒网格收益立方分钟和(基点³); 偏度=rm3/rv^1.5", R"(\sum_{c \in \Delta t} r_c^3,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm3_##d, Log, None))                                                                                                    \
-  X(rm4_##d, CAT1, AUTO, "Realized Fourth Moment " #dd "s", #dd "秒已实现四阶矩", #dd "秒网格收益四次方分钟和(基点⁴); 峰度=rm4/rv²", R"(\sum_{c \in \Delta t} r_c^4,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm4_##d, Log, None))                                                                                                    \
-  X(bpv_##d, CAT1, AUTO, "Bipower Variation " #dd "s", #dd "秒已实现双幂次变差", "相邻格|收益|乘积分钟和(基点²), 滞后链跨分钟连续; 跳跃=rv-π/2·bpv", R"(\sum_{c \in \Delta t} |r_c||r_{c-1}|,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, bpv_##d, Log, None))                                                                           \
-  X(tpv_##d, CAT1, AUTO, "Tripower Variation " #dd "s", #dd "秒已实现三幂次变差", "连续三格|收益|^(2/3)乘积分钟和(基点²)", R"(\sum_{c \in \Delta t} (|r_c||r_{c-1}||r_{c-2}|)^{2/3},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, tpv_##d, Log, None))                                                                                    \
-  X(rv_bigup_##d, CAT1, AUTO, "Big Upside Jump Variance " #dd "s", #dd "秒大上行跳跃方差", "超过阈值θ=4σ_Δ的正收益平方和(基点²), σ_Δ由前一日BPV推出; 首日NaN", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c > 4\sigma_\Delta],\; \sigma_\Delta^2 = \frac{\pi}{2}\frac{\sum_{D-1} bpv}{N_\Delta})", OP(Realized, rv_bigup_##d, Log, None)) \
-  X(rv_bigdn_##d, CAT1, AUTO, "Big Downside Jump Variance " #dd "s", #dd "秒大下行跳跃方差", "低于阈值-θ的负收益平方和(基点²); 首日NaN", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c < -4\sigma_\Delta])", OP(Realized, rv_bigdn_##d, Log, None))
+#define REALIZED_GRID_ROWS(X, CAT1, d, dd)                                                                                                                                                                                                                                                                                                     \
+  X(rv_##d, CAT1, AUTO, "Realized Variance " #dd "s", #dd "秒已实现方差", #dd "秒网格格收益(基点)平方分钟和; 日级=行求和", R"(\sum_{c \in \Delta t} r_c^2,\; r_c = 10^4 \ln\frac{P_c}{P_{c-1}},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_##d, Log, None))                                                                              \
+  X(rv_up_##d, CAT1, AUTO, "Realized Upside Variance " #dd "s", #dd "秒上行已实现方差", #dd "秒网格正收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c>0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_up_##d, Log, None))                                                                                            \
+  X(rv_dn_##d, CAT1, AUTO, "Realized Downside Variance " #dd "s", #dd "秒下行已实现方差", #dd "秒网格负收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c<0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_dn_##d, Log, None))                                                                                          \
+  X(rm3_##d, CAT1, AUTO, "Realized Third Moment " #dd "s", #dd "秒已实现三阶矩", #dd "秒网格收益立方分钟和(基点³); 偏度=rm3/rv^1.5", R"(\sum_{c \in \Delta t} r_c^3,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm3_##d, Log, None))                                                                                                        \
+  X(rm4_##d, CAT1, AUTO, "Realized Fourth Moment " #dd "s", #dd "秒已实现四阶矩", #dd "秒网格收益四次方分钟和(基点⁴); 峰度=rm4/rv²", R"(\sum_{c \in \Delta t} r_c^4,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm4_##d, Log, None))                                                                                                        \
+  X(bpv_##d, CAT1, AUTO, "Bipower Variation " #dd "s", #dd "秒已实现双幂次变差", "相邻格|收益|乘积分钟和(基点²), 滞后链跨分钟连续; 跳跃=rv-π/2·bpv", R"(\sum_{c \in \Delta t} |r_c||r_{c-1}|,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, bpv_##d, Log, None))                                                                               \
+  X(tpv_##d, CAT1, AUTO, "Tripower Variation " #dd "s", #dd "秒已实现三幂次变差", "连续三格|收益|^(2/3)乘积分钟和(基点²)", R"(\sum_{c \in \Delta t} (|r_c||r_{c-1}||r_{c-2}|)^{2/3},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, tpv_##d, Log, None))                                                                                        \
+  X(rv_bigup_##d, CAT1, AUTO, "Big Upside Jump Variance " #dd "s", #dd "秒大上行跳跃方差", "超过阈值θ=4σ_Δ的正收益平方和(基点²), σ_Δ由前一日BPV推出; 首日θ未定→0", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c > 4\sigma_\Delta],\; \sigma_\Delta^2 = \frac{\pi}{2}\frac{\sum_{D-1} bpv}{N_\Delta})", OP(Realized, rv_bigup_##d, Log, None)) \
+  X(rv_bigdn_##d, CAT1, AUTO, "Big Downside Jump Variance " #dd "s", #dd "秒大下行跳跃方差", "低于阈值-θ的负收益平方和(基点²); 首日θ未定→0", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c < -4\sigma_\Delta])", OP(Realized, rv_bigdn_##d, Log, None))
 
 #define FIELDS_L1_Realized(X, CAT1)                                                                                                                                                                                              \
   REALIZED_GRID_ROWS(X, CAT1, 3s, 3)                                                                                                                                                                                             \
