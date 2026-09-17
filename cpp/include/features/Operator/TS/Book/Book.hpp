@@ -5,7 +5,7 @@
 // =============================================================================
 //   全部状态列 = 时间加权均值 (状态量在两次盘口更新之间视为持有; 末状态持有到分钟末; 无盘口更新的分钟并入下一有效分钟).
 //   某快照某列无定义 (深度不足 / 分母 0) → 该列该段时长不计权 (ok_ 位图), 分钟内全程无定义 → NaN.
-//     spread_{1,5,10}        (a_N − b_N) / mid                                  (基点; N=1 即相对价差)
+//     spread_l{1,5,10}       第 N 档 (a_N − b_N) / mid                          (基点; 单档, 非前 N 档累计; N=1 即相对价差)
 //     spread_w_{5,10}        Σ_{i≤N}(a_i−b_i)(q^A_i+q^B_i) / Σ(q^A_i+q^B_i) / mid  (基点, 量加权价差)
 //     qty_{bid,ask}_{1,5,10,all}   前 N 档量深度 (股; all = 全簿单侧挂单量, LOB 增量维护)
 //     amt_{bid,ask}_{1,5,10,all}   前 N 档金额深度 Σ p_i q_i (元; all = 全簿量 × 一档价 近似)
@@ -38,9 +38,9 @@ class Book {
 public:
   // 前 NTW 口 = 时间加权量 (与 tw_/tt_/cur_/ok_ 下标一致), 后 3 口 = 中间价变化率
   enum Out : size_t {
-    spread_1,
-    spread_5,
-    spread_10,
+    spread_l1,
+    spread_l5,
+    spread_l10,
     spread_w_5,
     spread_w_10,
     qty_bid_1,
@@ -120,18 +120,18 @@ public:
           cur_[qty_bid_1] = vb, cur_[qty_ask_1] = va;
           cur_[amt_bid_1] = ab, cur_[amt_ask_1] = aa;
           cur_[qty_eff_1] = std::min(vb, va);
-          cur_[spread_1] = (pa - pb) * inv_mid;
+          cur_[spread_l1] = (pa - pb) * inv_mid;
           imbalance(obi_1, qb, qa);
         } else if (i == 4) {
           cur_[qty_bid_5] = qb, cur_[qty_ask_5] = qa;
           cur_[amt_bid_5] = ab, cur_[amt_ask_5] = aa;
-          cur_[spread_5] = (pa - pb) * inv_mid;
+          cur_[spread_l5] = (pa - pb) * inv_mid;
           weighted(spread_w_5, ws, wq, inv_mid);
           imbalance(obi_5, qb, qa);
         } else if (i == 9) {
           cur_[qty_bid_10] = qb, cur_[qty_ask_10] = qa;
           cur_[amt_bid_10] = ab, cur_[amt_ask_10] = aa;
-          cur_[spread_10] = (pa - pb) * inv_mid;
+          cur_[spread_l10] = (pa - pb) * inv_mid;
           weighted(spread_w_10, ws, wq, inv_mid);
           imbalance(obi_10, qb, qa);
         }
@@ -240,41 +240,41 @@ private:
 #define NODE_Book(N) N(Book, (Book<L2::LOB_DEPTH>), (tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, MidPrice.out(), MicroPrice.out()), onDepth, onMinute)
 
 // 一侧 (side token, S 公式上标, CN) 的 量深度 4 + 金额深度 4 + 顶部占比 3 行
-#define BOOK_SIDE_ROWS(X, CAT1, side, S, CN)                                                                                                                                                                                                                             \
-  X(qty_##side##_1, CAT1, RAW, "Depth " S "1 Qty", CN "一档量", "分钟内" CN "一档挂单量时间加权均值(股)", R"(\overline{V_{1}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_1, Log, None))                                                                                \
-  X(qty_##side##_5, CAT1, RAW, "Depth " S "5 Qty", CN "五档量深度", "分钟内" CN "前5档挂单量之和的时间加权均值(股)", R"(\overline{\sum_{i \leq 5} V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_5, Log, None))                                                     \
-  X(qty_##side##_10, CAT1, RAW, "Depth " S "10 Qty", CN "十档量深度", "分钟内" CN "前10档挂单量之和的时间加权均值(股)", R"(\overline{\sum_{i \leq 10} V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_10, Log, None))                                                \
-  X(qty_##side##_all, CAT1, RAW, "Depth " S " All Qty", CN "全簿量", "分钟内" CN "全簿挂单量时间加权均值(股)", R"(\overline{V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_all, Log, None))                                                                       \
-  X(amt_##side##_1, CAT1, RAW, "Depth " S "1 Amount", CN "一档金额", "分钟内" CN "一档挂单金额时间加权均值(元)", R"(\overline{P_1 V_{1}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_1, Log, None))                                                                     \
-  X(amt_##side##_5, CAT1, RAW, "Depth " S "5 Amount", CN "五档金额深度", "分钟内" CN "前5档挂单金额之和的时间加权均值(元)", R"(\overline{\sum_{i \leq 5} P_i V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_5, Log, None))                                          \
-  X(amt_##side##_10, CAT1, RAW, "Depth " S "10 Amount", CN "十档金额深度", "分钟内" CN "前10档挂单金额之和的时间加权均值(元)", R"(\overline{\sum_{i \leq 10} P_i V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_10, Log, None))                                     \
-  X(amt_##side##_all, CAT1, RAW, "Depth " S " All Amount", CN "全簿金额", "分钟内" CN "全簿挂单量×一档价的时间加权均值(元, 近似)", R"(\overline{P_1 V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_all, Log, None))                                               \
-  X(tlr_##side##_1, CAT1, RATIO, "Top Level Ratio " S "1", "一档" CN "占比", "分钟内" CN "一档量占全簿" CN "量的时间加权均值", R"(\overline{V_{1}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, tlr_##side##_1, None, None))                                   \
-  X(tlr_##side##_5, CAT1, RATIO, "Top Level Ratio " S "5", "前5档" CN "占比", "分钟内" CN "前5档量占全簿" CN "量的时间加权均值(越大越易被击穿)", R"(\overline{\sum_{i \leq 5} V_{i}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, tlr_##side##_5, None, None)) \
-  X(tlr_##side##_10, CAT1, RATIO, "Top Level Ratio " S "10", "前10档" CN "占比", "分钟内" CN "前10档量占全簿" CN "量的时间加权均值", R"(\overline{\sum_{i \leq 10} V_{i}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, tlr_##side##_10, None, None))
+#define BOOK_SIDE_ROWS(X, CAT1, side, S, CN)                                                                                                                                                                                                                            \
+  X(qty_##side##_1, CAT1, AUTO, "Depth " S "1 Qty", CN "一档量", "分钟内" CN "一档挂单量时间加权均值(股)", R"(\overline{V_{1}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_1, Log, None))                                                                              \
+  X(qty_##side##_5, CAT1, AUTO, "Depth " S "5 Qty", CN "五档量深度", "分钟内" CN "前5档挂单量之和的时间加权均值(股)", R"(\overline{\sum_{i \leq 5} V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_5, Log, None))                                                   \
+  X(qty_##side##_10, CAT1, AUTO, "Depth " S "10 Qty", CN "十档量深度", "分钟内" CN "前10档挂单量之和的时间加权均值(股)", R"(\overline{\sum_{i \leq 10} V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_10, Log, None))                                              \
+  X(qty_##side##_all, CAT1, AUTO, "Depth " S " All Qty", CN "全簿量", "分钟内" CN "全簿挂单量时间加权均值(股)", R"(\overline{V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, qty_##side##_all, Log, None))                                                                     \
+  X(amt_##side##_1, CAT1, AUTO, "Depth " S "1 Amount", CN "一档金额", "分钟内" CN "一档挂单金额时间加权均值(元)", R"(\overline{P_1 V_{1}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_1, Log, None))                                                                   \
+  X(amt_##side##_5, CAT1, AUTO, "Depth " S "5 Amount", CN "五档金额深度", "分钟内" CN "前5档挂单金额之和的时间加权均值(元)", R"(\overline{\sum_{i \leq 5} P_i V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_5, Log, None))                                        \
+  X(amt_##side##_10, CAT1, AUTO, "Depth " S "10 Amount", CN "十档金额深度", "分钟内" CN "前10档挂单金额之和的时间加权均值(元)", R"(\overline{\sum_{i \leq 10} P_i V_{i}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_10, Log, None))                                   \
+  X(amt_##side##_all, CAT1, AUTO, "Depth " S " All Amount", CN "全簿金额", "分钟内" CN "全簿挂单量×一档价的时间加权均值(元, 近似)", R"(\overline{P_1 V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, amt_##side##_all, Log, None))                                             \
+  X(tlr_##side##_1, CAT1, AUTO, "Top Level Ratio " S "1", "一档" CN "占比", "分钟内" CN "一档量占全簿" CN "量的时间加权均值", R"(\overline{V_{1}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, tlr_##side##_1, None, None))                                   \
+  X(tlr_##side##_5, CAT1, AUTO, "Top Level Ratio " S "5", "前5档" CN "占比", "分钟内" CN "前5档量占全簿" CN "量的时间加权均值(越大越易被击穿)", R"(\overline{\sum_{i \leq 5} V_{i}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, tlr_##side##_5, None, None)) \
+  X(tlr_##side##_10, CAT1, AUTO, "Top Level Ratio " S "10", "前10档" CN "占比", "分钟内" CN "前10档量占全簿" CN "量的时间加权均值", R"(\overline{\sum_{i \leq 10} V_{i}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", OP(Book, tlr_##side##_10, None, None))
 
 // 一个吃单方向 (dir token buy/sell, EN / CN 方向名, S = 被吃一侧中文, F1 / F2 = 公式中金额前后段) 的 3 个金额档
-#define BOOK_COST_ROWS(X, CAT1, dir, EN, CN, S, F1, F2)                                                                                                                                                                                                           \
-  X(cost_##dir##_10w, CAT1, RAW, "Impact Cost " EN " 100k", CN "冲击成本10万", "吃掉10万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(10^5)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_10w, None, None))   \
-  X(cost_##dir##_100w, CAT1, RAW, "Impact Cost " EN " 1M", CN "冲击成本100万", "吃掉100万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_100w, None, None)) \
-  X(cost_##dir##_300w, CAT1, RAW, "Impact Cost " EN " 3M", CN "冲击成本300万", "吃掉300万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(3 \times 10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_300w, None, None))
+#define BOOK_COST_ROWS(X, CAT1, dir, EN, CN, S, F1, F2)                                                                                                                                                                                                            \
+  X(cost_##dir##_10w, CAT1, AUTO, "Impact Cost " EN " 100k", CN "冲击成本10万", "吃掉10万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(10^5)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_10w, None, None))   \
+  X(cost_##dir##_100w, CAT1, AUTO, "Impact Cost " EN " 1M", CN "冲击成本100万", "吃掉100万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_100w, None, None)) \
+  X(cost_##dir##_300w, CAT1, AUTO, "Impact Cost " EN " 3M", CN "冲击成本300万", "吃掉300万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→该段不计", R"(\overline{)" F1 R"(3 \times 10^6)" F2 R"(}^{\,tw} \times 10^4)", OP(Book, cost_##dir##_300w, None, None))
 
-#define FIELDS_L1_Book(X, CAT1)                                                                                                                                                                                                                                                                    \
-  X(spread_1, CAT1, RAW, "Spread 1", "一档价差", "分钟内一档价差对中间价的时间加权均值(基点)", R"(\overline{\frac{P_1^{M,A}-P_1^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", OP(Book, spread_1, None, None))                                                                                             \
-  X(spread_5, CAT1, RAW, "Spread 5", "五档价差", "分钟内第5档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_5^{M,A}-P_5^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", OP(Book, spread_5, None, None))                                                                                      \
-  X(spread_10, CAT1, RAW, "Spread 10", "十档价差", "分钟内第10档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_{10}^{M,A}-P_{10}^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", OP(Book, spread_10, None, None))                                                                            \
-  X(spread_w_5, CAT1, RAW, "Weighted Spread 5", "五档加权价差", "前5档价差按两侧挂单量加权对中间价的时间加权均值(基点)", R"(\overline{\frac{\sum_{i\leq5}(P_i^{A}-P_i^{B})(V_i^{A}+V_i^{B})}{P_{mid}\sum_{i\leq5}(V_i^{A}+V_i^{B})}}^{\,tw} \times 10^4)", OP(Book, spread_w_5, None, None))       \
-  X(spread_w_10, CAT1, RAW, "Weighted Spread 10", "十档加权价差", "前10档价差按两侧挂单量加权对中间价的时间加权均值(基点)", R"(\overline{\frac{\sum_{i\leq10}(P_i^{A}-P_i^{B})(V_i^{A}+V_i^{B})}{P_{mid}\sum_{i\leq10}(V_i^{A}+V_i^{B})}}^{\,tw} \times 10^4)", OP(Book, spread_w_10, None, None)) \
-  BOOK_SIDE_ROWS(X, CAT1, bid, "B", "买盘")                                                                                                                                                                                                                                                        \
-  BOOK_SIDE_ROWS(X, CAT1, ask, "A", "卖盘")                                                                                                                                                                                                                                                        \
-  X(qty_eff_1, CAT1, RAW, "Effective Depth", "有效深度", "分钟内min(买一量,卖一量)的时间加权均值(股)", R"(\overline{\min(V_1^{M,B}, V_1^{M,A})}^{\,tw})", OP(Book, qty_eff_1, Log, None))                                                                                                          \
-  X(obi_1, CAT1, RATIO, "Order Book Imbalance 1", "一档失衡", "分钟内一档买卖量失衡率的时间加权均值", R"(\overline{\frac{V_{1}^{M,B} - V_{1}^{M,A}}{V_{1}^{M,B} + V_{1}^{M,A}}}^{\,tw})", OP(Book, obi_1, None, None))                                                                             \
-  X(obi_5, CAT1, RATIO, "Order Book Imbalance 5", "五档失衡", "分钟内前5档累计买卖量失衡率的时间加权均值", R"(\overline{\frac{\sum_{i\leq5}(V_{i}^{M,B} - V_{i}^{M,A})}{\sum_{i\leq5}(V_{i}^{M,B} + V_{i}^{M,A})}}^{\,tw})", OP(Book, obi_5, None, None))                                          \
-  X(obi_10, CAT1, RATIO, "Order Book Imbalance 10", "十档失衡", "分钟内前10档累计买卖量失衡率的时间加权均值", R"(\overline{\frac{\sum_{i\leq10}(V_{i}^{M,B} - V_{i}^{M,A})}{\sum_{i\leq10}(V_{i}^{M,B} + V_{i}^{M,A})}}^{\,tw})", OP(Book, obi_10, None, None))                                    \
-  X(obi_all, CAT1, RATIO, "Order Book Imbalance All", "全簿失衡", "分钟内全簿买卖挂单量失衡率的时间加权均值", R"(\overline{\frac{V_{all}^{M,B} - V_{all}^{M,A}}{V_{all}^{M,B} + V_{all}^{M,A}}}^{\,tw})", OP(Book, obi_all, None, None))                                                           \
-  BOOK_COST_ROWS(X, CAT1, buy, "Buy", "买方", "卖", R"(\frac{\mathrm{VWAP}^{A}()", R"()}{P_{mid}} - 1)")                                                                                                                                                                                           \
-  BOOK_COST_ROWS(X, CAT1, sell, "Sell", "卖方", "买", R"(1 - \frac{\mathrm{VWAP}^{B}()", R"()}{P_{mid}})")                                                                                                                                                                                         \
-  X(micro, CAT1, RAW, "Micro Price", "微观价格", "分钟内量加权中间价的时间加权均值(元)", R"(\overline{P_{micro}}^{\,tw})", OP(Book, micro, None, None))                                                                                                                                            \
-  X(rv_mid, CAT1, RAW, "Mid-Price Realized Variance", "中间价变化率平方和", "分钟内逐次盘口更新中间价对数变化率(基点)平方和", R"(\sum_{j \in \Delta t} r_j^2,\; r_j = 10^4 \ln\frac{P_{mid,j}}{P_{mid,j-1}})", OP(Book, rv_mid, Log, None))                                                        \
-  X(rm3_mid, CAT1, RAW, "Mid-Price Third Moment", "中间价变化率立方和", "分钟内中间价对数变化率(基点)立方和; 偏度=rm3/rv^1.5", R"(\sum_{j \in \Delta t} r_j^3)", OP(Book, rm3_mid, Log, None))                                                                                                     \
-  X(r_max_mid, CAT1, RAW, "Mid-Price Max Change", "中间价变化率最大值", "分钟内中间价对数变化率(基点)最大值", R"(\max_{j \in \Delta t} r_j)", OP(Book, r_max_mid, None, None))
+#define FIELDS_L1_Book(X, CAT1)                                                                                                                                                                                                                                                                                 \
+  X(spread_l1, CAT1, AUTO, "Spread L1", "第1档价差", "分钟内第1档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_1^{M,A}-P_1^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", OP(Book, spread_l1, None, None))                                                                                              \
+  X(spread_l5, CAT1, AUTO, "Spread L5", "第5档价差", "分钟内第5档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_5^{M,A}-P_5^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", OP(Book, spread_l5, None, None))                                                                                              \
+  X(spread_l10, CAT1, AUTO, "Spread L10", "第10档价差", "分钟内第10档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_{10}^{M,A}-P_{10}^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", OP(Book, spread_l10, None, None))                                                                                   \
+  X(spread_w_5, CAT1, AUTO, "Weighted Spread 5", "五档加权价差", "前5档价差按两侧挂单量加权对中间价的时间加权均值(基点)", R"(\overline{\frac{\sum_{i\leq5}(P_i^{M,A}-P_i^{M,B})(V_i^{M,A}+V_i^{M,B})}{P_{mid}\sum_{i\leq5}(V_i^{M,A}+V_i^{M,B})}}^{\,tw} \times 10^4)", OP(Book, spread_w_5, None, None))       \
+  X(spread_w_10, CAT1, AUTO, "Weighted Spread 10", "十档加权价差", "前10档价差按两侧挂单量加权对中间价的时间加权均值(基点)", R"(\overline{\frac{\sum_{i\leq10}(P_i^{M,A}-P_i^{M,B})(V_i^{M,A}+V_i^{M,B})}{P_{mid}\sum_{i\leq10}(V_i^{M,A}+V_i^{M,B})}}^{\,tw} \times 10^4)", OP(Book, spread_w_10, None, None)) \
+  BOOK_SIDE_ROWS(X, CAT1, bid, "B", "买盘")                                                                                                                                                                                                                                                                     \
+  BOOK_SIDE_ROWS(X, CAT1, ask, "A", "卖盘")                                                                                                                                                                                                                                                                     \
+  X(qty_eff_1, CAT1, AUTO, "Effective Depth", "有效深度", "分钟内min(买一量,卖一量)的时间加权均值(股)", R"(\overline{\min(V_1^{M,B}, V_1^{M,A})}^{\,tw})", OP(Book, qty_eff_1, Log, None))                                                                                                                      \
+  X(obi_1, CAT1, AUTO, "Order Book Imbalance 1", "一档失衡", "分钟内一档买卖量失衡率的时间加权均值", R"(\overline{\frac{V_{1}^{M,B} - V_{1}^{M,A}}{V_{1}^{M,B} + V_{1}^{M,A}}}^{\,tw})", OP(Book, obi_1, None, None))                                                                                           \
+  X(obi_5, CAT1, AUTO, "Order Book Imbalance 5", "五档失衡", "分钟内前5档累计买卖量失衡率的时间加权均值", R"(\overline{\frac{\sum_{i\leq5}(V_{i}^{M,B} - V_{i}^{M,A})}{\sum_{i\leq5}(V_{i}^{M,B} + V_{i}^{M,A})}}^{\,tw})", OP(Book, obi_5, None, None))                                                        \
+  X(obi_10, CAT1, AUTO, "Order Book Imbalance 10", "十档失衡", "分钟内前10档累计买卖量失衡率的时间加权均值", R"(\overline{\frac{\sum_{i\leq10}(V_{i}^{M,B} - V_{i}^{M,A})}{\sum_{i\leq10}(V_{i}^{M,B} + V_{i}^{M,A})}}^{\,tw})", OP(Book, obi_10, None, None))                                                  \
+  X(obi_all, CAT1, AUTO, "Order Book Imbalance All", "全簿失衡", "分钟内全簿买卖挂单量失衡率的时间加权均值", R"(\overline{\frac{V_{all}^{M,B} - V_{all}^{M,A}}{V_{all}^{M,B} + V_{all}^{M,A}}}^{\,tw})", OP(Book, obi_all, None, None))                                                                         \
+  BOOK_COST_ROWS(X, CAT1, buy, "Buy", "买方", "卖", R"(\frac{\mathrm{VWAP}^{A}()", R"()}{P_{mid}} - 1)")                                                                                                                                                                                                        \
+  BOOK_COST_ROWS(X, CAT1, sell, "Sell", "卖方", "买", R"(1 - \frac{\mathrm{VWAP}^{B}()", R"()}{P_{mid}})")                                                                                                                                                                                                      \
+  X(micro, CAT1, AUTO, "Micro Price", "微观价格", "分钟内量加权中间价的时间加权均值(元)", R"(\overline{P_{micro}}^{\,tw})", OP(Book, micro, None, None))                                                                                                                                                        \
+  X(rv_mid, CAT1, AUTO, "Mid-Price Realized Variance", "中间价变化率平方和", "分钟内逐次盘口更新中间价对数变化率(基点)平方和", R"(\sum_{j \in \Delta t} r_j^2,\; r_j = 10^4 \ln\frac{P_{mid,j}}{P_{mid,j-1}})", OP(Book, rv_mid, Log, None))                                                                    \
+  X(rm3_mid, CAT1, AUTO, "Mid-Price Third Moment", "中间价变化率立方和", "分钟内中间价对数变化率(基点)立方和; 偏度=rm3/rv^1.5", R"(\sum_{j \in \Delta t} r_j^3)", OP(Book, rm3_mid, Log, None))                                                                                                                 \
+  X(r_max_mid, CAT1, AUTO, "Mid-Price Max Change", "中间价变化率最大值", "分钟内中间价对数变化率(基点)最大值", R"(\max_{j \in \Delta t} r_j)", OP(Book, r_max_mid, None, None))

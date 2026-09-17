@@ -100,11 +100,12 @@ void OrderFlowService::RequestKline(uint32_t gen, size_t asset_idx, std::vector<
   req_cv_.notify_all();
 }
 
-void OrderFlowService::RequestDepth(uint32_t gen, std::string date, size_t asset_idx, std::vector<int> feats) {
+void OrderFlowService::RequestDepth(uint32_t gen, std::string date, size_t asset_idx, int feat_level, std::vector<int> feats) {
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
+  assert(feat_level == 0 || feat_level == 1);
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_depth_ = DepthReq{gen, std::move(date), asset_idx, std::move(feats)};
+    pending_depth_ = DepthReq{gen, std::move(date), asset_idx, feat_level, std::move(feats)};
   }
   req_cv_.notify_all();
 }
@@ -494,34 +495,41 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       slot.build_plot(); // 热力图已在重放中增量建好
   }
 
-  // ---- L0 特征 overlay (与盘口独立: 特征列 + _meta 选列读, data_valid 秒) ----
+  // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + _meta 选列读, 与图2 同源指标;
+  //      L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒 → 只取当日日内段) ----
   // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
   // 可读, overlay 留空 (盘口重放走 .bin, 不受 universe 约束, 上面照常构建)
   const size_t depth_sub = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
   if (!req.feats.empty() && depth_sub < impl_->uni.size()) {
     TraceN("OF_DepthFeats");
+    assert(req.feat_level == 0 || req.feat_level == 1);
+    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(L0_Field::_meta)
+                                                : static_cast<size_t>(L1_Field::_meta);
     auto &cols = impl_->columns;
-    cols.assign({static_cast<size_t>(L0_Field::_meta)});
+    cols.assign({meta_col});
     for (int f : req.feats)
       cols.push_back(static_cast<size_t>(f));
-    impl_->reader.load_day_columns(req.date, cols, impl_->l0_cols);
+    FeatureRead::DayColumns &day_cols = req.feat_level == 0 ? impl_->l0_cols : impl_->l1_cols;
+    impl_->reader.load_day_columns(req.date, cols, day_cols);
 
     const size_t a = depth_sub;
     slot.n_feat = req.feats.size();
+    slot.feat_level = req.feat_level;
     slot.feat_y_min.fill((std::numeric_limits<float>::max)());
     slot.feat_y_max.fill(std::numeric_limits<float>::lowest());
 
-    for (size_t t = 0; t < level_valid_rows(0); ++t) {
-      const float meta = static_cast<float>(impl_->l0_cols.get(t, 0, a));
+    for (size_t r = 0; r < level_valid_rows(static_cast<size_t>(req.feat_level)); ++r) {
+      const float meta = static_cast<float>(day_cols.get(r, 0, a));
       if (!fmeta::data_valid(meta))
         continue;
+      const double x = req.feat_level == 0 ? static_cast<double>(r) : static_cast<double>(L1_to_L0(r));
       for (size_t i = 0; i < req.feats.size(); ++i) {
-        float v = static_cast<float>(impl_->l0_cols.get(t, 1 + i, a));
-        if (req.feats[i] == static_cast<int>(L0_Field::_meta))
+        float v = static_cast<float>(day_cols.get(r, 1 + i, a));
+        if (static_cast<size_t>(req.feats[i]) == meta_col)
           v = fmeta::price(v); // _meta 被选中时展示幅值 = micro price
         if (v != v)            // NaN
           continue;
-        slot.feat[i].x.push_back(static_cast<double>(t));
+        slot.feat[i].x.push_back(x);
         slot.feat[i].y.push_back(static_cast<double>(v));
         slot.feat_y_min[i] = std::min(slot.feat_y_min[i], v);
         slot.feat_y_max[i] = std::max(slot.feat_y_max[i], v);

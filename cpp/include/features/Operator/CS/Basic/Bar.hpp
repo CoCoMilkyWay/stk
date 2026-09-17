@@ -8,4 +8,4 @@
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define FIELDS_L1_CsBar(X, CAT1) \
-  X(close_cs, CAT1, RANK, "Price Factor", "股价因子", "pct_rank(z(winsor_mad(P_t)))", R"(\mathrm{pctl}(z(\mathrm{w}(P_t))))", CS(1, close, None, WinsorRank))
+  X(close_cs, CAT1, AUTO, "Price Factor", "股价因子", "pct_rank(z(winsor_mad(close)))", R"(\mathrm{pctl}(z(\mathrm{w}(P^{\mathrm{close}}_t))))", CS(1, close, None, WinsorRank))

@@ -4,7 +4,7 @@
 // ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (L1 分钟频)
 // │            worker 逐日流式 (从前往后, 每日一次选列读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: orders/*.bin 逐笔重放 LOB
-// │            + 多特征 overlay (L0 逐列选读); 双槽 ping-pong 整体发布
+// │            + 多特征 overlay (当前选中层逐列选读, L1 分钟映射到秒); 双槽 ping-pong 整体发布
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
@@ -195,9 +195,11 @@ struct OrderFlow {
     std::vector<Tick> ticks; // 按 tick_idx 升序
     Plot plot;
     HeatmapMerged merged;
-    std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat; // L0 特征线 (data_valid 秒)
+    // 特征线 (当前选中层, 与图2 同源): L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒
+    std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat;
     std::array<float, OrderFlowConst::MAX_FEATURES> feat_y_min{}, feat_y_max{};
     size_t n_feat = 0;
+    int feat_level = 0; // 特征所属层 (0=L0, 1=L1; legend 命名按此层取元数据)
 
     // ---- 查询 (GUI, front 槽; X = 秒下标) ----
     size_t plot_idx_from_x(double x) const;
@@ -321,7 +323,8 @@ struct OrderFlow {
     // 请求快照 (期望态; 变化 → gen++ → Request*)
     uint32_t kline_gen = 0, depth_gen = 0;
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
-    std::vector<int> kline_feats, depth_feats; // 选中特征列 (L1 / L0)
+    std::vector<int> kline_feats, depth_feats; // 选中特征列 (图2 = L1; 图1 = 当前选中层)
+    int depth_feat_level = -1;                 // 图1 特征所属层 (期望态; -1 = 未设)
     std::string depth_date;
 
     // Y 轴管理 (流式期间跟随发布范围)

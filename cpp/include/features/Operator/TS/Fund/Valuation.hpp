@@ -83,13 +83,13 @@ private:
 #define NODE_Valuation(N) N(Valuation, (Valuation), (minute_data, Fund.out(Fund.total_shares), Fund.out(Fund.float_shares), Fund.out(Fund.net_profit_ttm), Fund.out(Fund.equity_mrq), Fund.out(Fund.revenue_ttm), Fund.out(Fund.cffoa_ttm), Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn), Fund.out(Fund.low_mc_thr)), onMinute)
 
 #define FIELDS_L1_Valuation(X, CAT1)                                                                                                                                                          \
-  X(mcap, CAT1, RAW, "Market Cap RT", "实时总市值", "分钟最新价×总股本(亿元,不复权真市值)", R"(\frac{P_t \cdot S^{total}_{D}}{10^{8}})", OP(Valuation, mcap, None, None))                     \
-  X(fmcap, CAT1, RAW, "Float Market Cap RT", "实时流通市值", "分钟最新价×A股流通股本(亿元)", R"(\frac{P_t \cdot S^{float}_{D}}{10^{8}})", OP(Valuation, fmcap, None, None))                   \
-  X(pe_ttm, CAT1, RATIO, "PE TTM RT", "实时市盈率TTM", "实时市值/归母净利TTM(亏损→负PE保留,分母0→NaN)", R"(\frac{P_t S^{total}_{D}}{NP^{TTM}_{D}})", OP(Valuation, pe_ttm, None, None))       \
-  X(pb_mrq, CAT1, RATIO, "PB MRQ RT", "实时市净率MRQ", "实时市值/归母权益MRQ(负权益→负PB保留,分母0→NaN)", R"(\frac{P_t S^{total}_{D}}{EQ^{MRQ}_{D}})", OP(Valuation, pb_mrq, None, None))     \
-  X(ps_ttm, CAT1, RATIO, "PS TTM RT", "实时市销率TTM", "实时市值/营业总收入TTM(营收≤0为脏值→NaN)", R"(\frac{P_t S^{total}_{D}}{REV^{TTM}_{D}})", OP(Valuation, ps_ttm, None, None))           \
-  X(pcf_ttm, CAT1, RATIO, "PCF TTM RT", "实时市现率TTM", "实时市值/经营现金流TTM(烧钱→负PCF保留,分母0→NaN)", R"(\frac{P_t S^{total}_{D}}{CF^{TTM}_{D}})", OP(Valuation, pcf_ttm, None, None)) \
-  X(is_limit_up, CAT1, RAW, "Limit Up RT", "实时涨停标记", "分钟最新价触及当日涨停价", R"(\mathbf{1}[P_t \geq P^{up}_{D} - 10^{-4}])", OP(Valuation, is_limit_up, None, None))                \
-  X(is_limit_dn, CAT1, RAW, "Limit Down RT", "实时跌停标记", "分钟最新价触及当日跌停价", R"(\mathbf{1}[P_t \leq P^{dn}_{D} + 10^{-4}])", OP(Valuation, is_limit_dn, None, None))              \
-  X(is_low_px, CAT1, RAW, "Low Price RT", "实时低价标记", "分钟最新价 < 1元(面值退市风险)", R"(\mathbf{1}[P_t < 1])", OP(Valuation, is_low_px, None, None))                                   \
-  X(is_low_mcap, CAT1, RAW, "Low Market Cap RT", "实时低市值标记", "实时市值 < 阈值(主板5亿/其他3亿)", R"(\mathbf{1}[P_t S^{total}_{D} < \theta])", OP(Valuation, is_low_mcap, None, None))
+  X(mcap, CAT1, AUTO, "Market Cap RT", "实时总市值", "分钟最新价×总股本(亿元,不复权真市值)", R"(\frac{P_t \cdot S^{total}_{D}}{10^{8}})", OP(Valuation, mcap, None, None))                    \
+  X(fmcap, CAT1, AUTO, "Float Market Cap RT", "实时流通市值", "分钟最新价×A股流通股本(亿元)", R"(\frac{P_t \cdot S^{float}_{D}}{10^{8}})", OP(Valuation, fmcap, None, None))                  \
+  X(pe_ttm, CAT1, AUTO, "PE TTM RT", "实时市盈率TTM", "实时市值/归母净利TTM(亏损→负PE保留,分母0→NaN)", R"(\frac{P_t S^{total}_{D}}{NP^{TTM}_{D}})", OP(Valuation, pe_ttm, None, None))        \
+  X(pb_mrq, CAT1, AUTO, "PB MRQ RT", "实时市净率MRQ", "实时市值/归母权益MRQ(负权益→负PB保留,分母0→NaN)", R"(\frac{P_t S^{total}_{D}}{EQ^{MRQ}_{D}})", OP(Valuation, pb_mrq, None, None))      \
+  X(ps_ttm, CAT1, AUTO, "PS TTM RT", "实时市销率TTM", "实时市值/营业总收入TTM(营收≤0为脏值→NaN)", R"(\frac{P_t S^{total}_{D}}{REV^{TTM}_{D}})", OP(Valuation, ps_ttm, None, None))            \
+  X(pcf_ttm, CAT1, AUTO, "PCF TTM RT", "实时市现率TTM", "实时市值/经营现金流TTM(烧钱→负PCF保留,分母0→NaN)", R"(\frac{P_t S^{total}_{D}}{CFO^{TTM}_{D}})", OP(Valuation, pcf_ttm, None, None)) \
+  X(is_limit_up, CAT1, AUTO, "Limit Up RT", "实时涨停标记", "分钟最新价触及当日涨停价", R"(\mathbf{1}[P_t \geq P^{up}_{D} - \varepsilon])", OP(Valuation, is_limit_up, None, None))           \
+  X(is_limit_dn, CAT1, AUTO, "Limit Down RT", "实时跌停标记", "分钟最新价触及当日跌停价", R"(\mathbf{1}[P_t \leq P^{dn}_{D} + \varepsilon])", OP(Valuation, is_limit_dn, None, None))         \
+  X(is_low_px, CAT1, AUTO, "Low Price RT", "实时低价标记", "分钟最新价 < 1元(面值退市风险)", R"(\mathbf{1}[P_t < 1])", OP(Valuation, is_low_px, None, None))                                  \
+  X(is_low_mcap, CAT1, AUTO, "Low Market Cap RT", "实时低市值标记", "实时市值 < 阈值(主板5亿/其他3亿)", R"(\mathbf{1}[P_t S^{total}_{D} < \theta])", OP(Valuation, is_low_mcap, None, None))

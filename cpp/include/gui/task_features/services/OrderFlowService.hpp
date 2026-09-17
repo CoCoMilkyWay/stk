@@ -40,7 +40,7 @@ public:
 
   // GUI 线程: 期望态快照 (最新覆盖旧请求; gen 调用方递增自持, 与发布面配对)
   void RequestKline(uint32_t gen, size_t asset_idx, std::vector<int> feats, bool rescan_dates);
-  void RequestDepth(uint32_t gen, std::string date, size_t asset_idx, std::vector<int> feats);
+  void RequestDepth(uint32_t gen, std::string date, size_t asset_idx, int feat_level, std::vector<int> feats);
   void RequestUniverse(uint32_t gen, std::string date);
 
   bool is_running() const { return thread_.joinable(); }
@@ -56,7 +56,8 @@ private:
     uint32_t gen;
     std::string date;
     size_t asset;
-    std::vector<int> feats; // L0 字段下标
+    int feat_level;         // 特征所属层 (0=L0, 1=L1)
+    std::vector<int> feats; // feat_level 层字段下标
   };
   struct UniverseReq {
     uint32_t gen;

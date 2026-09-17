@@ -113,8 +113,67 @@ static const std::vector<FeatureMetadata> &get_current_level_features(const Feat
   return feature.metadata.features[feature.selection.selected_level];
 }
 
-// Filter features based on current filter settings
-static std::vector<int> get_filtered_indices(const Feature::Selection &sel, const std::vector<FeatureMetadata> &features) {
+// ============================================================================
+// Cat2 自动探测 (值域启发, 与 Range 列同口径: 预览抽样 min/max):
+//   字段表 cat_l2 = AUTO (dummy) 的行按值域归类; 写了别的 token = 人类强行赋值,
+//   覆盖探测并绿字显示. 无预览 (L0 层 / 未就绪 / 无有效样本) → "?".
+//   price:     逐日笼内 (preview 主扫描随批判定, 见 FeaturePreview::Cell 笼账目):
+//              每个抽样日每资产的有效值都落在该资产当日 [lim_dn, lim_up] 内
+//   rank:      CS 且值域 ⊆ [0, 1]
+//   ratio_*:   全绿 (|min|,|max| ≤ 100, 同 GetMinMaxColor): ≥0 → ratio_pos, ≤0 → ratio_neg, 跨零 → ratio
+//   raw:       其余
+// ============================================================================
+
+static constexpr const char *kCat2Dummy = "AUTO";
+static constexpr const char *kCat2Unknown = "?";
+static constexpr const char *kCat2Classes[6] = {"price", "rank", "ratio_pos", "ratio_neg", "ratio", "raw"};
+
+static bool cat2_overridden(const FeatureMetadata &f) {
+  return std::strcmp(f.cat_l2, kCat2Dummy) != 0;
+}
+
+static const char *detect_cat2(const FeatureMetadata &f, const FeaturePreview::Cell &cell) {
+  const analysis::Integrity &it = cell.integrity;
+  if (it.n_valid == 0)
+    return kCat2Unknown;
+  if (cell.cage_n > 0 && cell.cage_miss == 0)
+    return kCat2Classes[0]; // price (逐日笼内, 无一笼外)
+  if (f.data_type == FeatureDataType::CS && it.val_min >= 0.0f && it.val_max <= 1.0f)
+    return kCat2Classes[1];                                               // rank
+  if (std::max(std::fabs(it.val_min), std::fabs(it.val_max)) <= 100.0f) { // 全绿
+    if (it.val_min >= 0.0f)
+      return kCat2Classes[2]; // ratio_pos
+    if (it.val_max <= 0.0f)
+      return kCat2Classes[3]; // ratio_neg
+    return kCat2Classes[4];   // ratio
+  }
+  return kCat2Classes[5]; // raw
+}
+
+// (需持 preview 锁) 该层每行有效 Cat2 快照; out[i] 指向静态串或字段表串
+static void effective_cat2_snapshot(const Feature::Metadata &meta, const FeaturePreview &pv,
+                                    size_t level, std::vector<const char *> &out) {
+  const auto &features = meta.features[level];
+  out.resize(features.size());
+
+  const bool preview_level = (level == analysis::kLevel);
+  static const FeaturePreview::Cell s_empty{};
+  for (size_t i = 0; i < features.size(); ++i) {
+    const FeatureMetadata &f = features[i];
+    const FeaturePreview::Cell &cell = (preview_level && i < pv.cells.size()) ? pv.cells[i] : s_empty;
+    out[i] = cat2_overridden(f) ? f.cat_l2 : detect_cat2(f, cell);
+  }
+}
+
+// 公开口 (见 TabFeature.hpp): 自加短锁, OrderFlow 两图 legend 标注用
+void EffectiveCat2Snapshot(SharedData &data, size_t level, std::vector<const char *> &out) {
+  std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+  effective_cat2_snapshot(data.feature.metadata, data.preview, level, out);
+}
+
+// Filter features based on current filter settings (eff_cat2 = 探测/覆盖后的有效 Cat2)
+static std::vector<int> get_filtered_indices(const Feature::Selection &sel, const std::vector<FeatureMetadata> &features,
+                                             const std::vector<const char *> &eff_cat2) {
   std::vector<int> result;
   for (int i = 0; i < (int)features.size(); ++i) {
     bool pass = true;
@@ -127,8 +186,8 @@ static std::vector<int> get_filtered_indices(const Feature::Selection &sel, cons
     if (!sel.filter_cat_l1.empty() && sel.filter_cat_l1.find(features[i].cat_l1) == sel.filter_cat_l1.end())
       pass = false;
 
-    // Filter by cat_l2
-    if (!sel.filter_cat_l2.empty() && sel.filter_cat_l2.find(features[i].cat_l2) == sel.filter_cat_l2.end())
+    // Filter by cat_l2 (有效值)
+    if (!sel.filter_cat_l2.empty() && sel.filter_cat_l2.find(eff_cat2[i]) == sel.filter_cat_l2.end())
       pass = false;
 
     // Filter by TS / CS norm method (Tf 不参与过滤)
@@ -749,7 +808,22 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
   render_filter_dropdown("Cat1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, feature_meta::categories_l1());
   ImGui::SameLine();
-  render_filter_dropdown("Cat2", ui_state.show_filter_cat_l2, sel.filter_cat_l2, feature_meta::categories_l2());
+  // Cat2 过滤项 = 探测类 + 字段表人工 token (dummy AUTO 不列, 与探测类重名去重)
+  static const std::vector<const char *> s_cat2_items = [] {
+    std::vector<const char *> v(std::begin(kCat2Classes), std::end(kCat2Classes));
+    for (const char *t : feature_meta::categories_l2()) {
+      if (std::strcmp(t, kCat2Dummy) == 0)
+        continue;
+      bool dup = false;
+      for (const char *u : v)
+        dup |= std::strcmp(u, t) == 0;
+      if (!dup)
+        v.push_back(t);
+    }
+    return v;
+  }();
+  render_filter_dropdown("Cat2", ui_state.show_filter_cat_l2, sel.filter_cat_l2,
+                         std::span<const char *const>(s_cat2_items.data(), s_cat2_items.size()));
   ImGui::SameLine();
   render_filter_dropdown("TS Norm", ui_state.show_filter_ts_method, sel.filter_ts_method, ts_MethodId_ALL);
   ImGui::SameLine();
@@ -773,7 +847,14 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // ==========================================================================
   const auto &features = get_current_level_features(feature);
   const auto &deps_list = feature.metadata.deps[sel.selected_level];
-  auto filtered_indices = get_filtered_indices(sel, features);
+
+  // Cat2 有效值快照 (探测 or 人工覆盖; 过滤/排序/显示共用). 短锁读 preview cells
+  static std::vector<const char *> s_eff_cat2;
+  {
+    std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+    effective_cat2_snapshot(feature.metadata, data.preview, (size_t)sel.selected_level, s_eff_cat2);
+  }
+  auto filtered_indices = get_filtered_indices(sel, features, s_eff_cat2);
 
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "3. Features:");
   ImGui::SameLine();
@@ -856,7 +937,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "中文名称: 特征的描述性名称",
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
         "一级分类: 特征的类别 (同色同组相邻)",
-        "二级分类: 特征的量纲",
+        "二级分类: 值域自动探测 (price/rank/ratio_pos/ratio_neg/ratio/raw); 绿字 = 字段表人工赋值覆盖",
         "账目: nan,zero,-inf,+inf 占比%",
         "值域: min -1sd +1sd max",
         "平均分布: 抽样 (日 × 资产) 的 PDF",
@@ -959,7 +1040,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
                 cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
                 break;
               case 7:
-                cmp = std::strcmp(fa.cat_l2, fb.cat_l2);
+                cmp = std::strcmp(s_eff_cat2[a], s_eff_cat2[b]);
                 break;
               case 8: // Stat: nan%
                 cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
@@ -1066,9 +1147,14 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(f.cat_l1);
 
-      // Column: Cat2
+      // Column: Cat2 (值域自动探测; 绿字 = 字段表人工赋值覆盖)
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(f.cat_l2);
+      if (cat2_overridden(f))
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.4f, 1.0f), "%s", f.cat_l2);
+      else if (s_eff_cat2[idx] == kCat2Unknown)
+        ImGui::TextDisabled("?");
+      else
+        ImGui::TextUnformatted(s_eff_cat2[idx]);
 
       // Columns: Stat / Range 账目 + Dist / PSD 迷你图 (预览, 仅 L1; 槽位 = metadata 下标)
       const FeaturePreview::Cell &cell = cell_of(idx);
@@ -1141,11 +1227,13 @@ void SaveFeatureTableJson(SharedData &data) {
          << ", \"assets_per_round\": " << kPvAssetsPerRound << "},\n";
 
     std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+    std::vector<const char *> eff_cat2;
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
       const auto &features = meta.features[lvl];
       const auto &deps_list = meta.deps[lvl];
       assert(deps_list.size() == features.size());
       const bool preview_level = (lvl == analysis::kLevel);
+      effective_cat2_snapshot(meta, data.preview, lvl, eff_cat2); // 与表格同口径 (探测 or 人工覆盖)
 
       file << " \"" << level_info(lvl).level_name << "\": [\n";
       for (size_t i = 0; i < features.size(); ++i) {
@@ -1159,7 +1247,7 @@ void SaveFeatureTableJson(SharedData &data) {
         r["name_cn"] = f.name_cn;
         r["type"] = to_string(f.data_type).en;
         r["cat_l1"] = f.cat_l1;
-        r["cat_l2"] = f.cat_l2;
+        r["cat_l2"] = eff_cat2[i];
 
         // Stat / Range 与表格同口径 (百分比 / min -1sd +1sd max); 表格显示 "—" 的格子不落键
         if (preview_level && i < data.preview.cells.size()) {

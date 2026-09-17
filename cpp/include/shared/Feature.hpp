@@ -21,7 +21,7 @@ struct FeatureMetadata {
   L2::ValidType valid_type;  // ALL/DATA/DEPTH (由 SRC / 节点 flush 域推出)
   FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
   const char *cat_l1;        // Operator/TS/<dir> or Operator/CS/<dir>
-  const char *cat_l2;        // FIELDS row token, generated into FeatureCategoryL2_ALL
+  const char *cat_l2;        // FIELDS row token (AUTO = GUI 值域自动探测; 其他 = 人工覆盖), generated into FeatureCategoryL2_ALL
   ts::TfId ts_tf;            // 由 SRC 推出: OP(..., Tf, Method) → 时序归一化 (Tf 已落盘套用, Method 占位); 非 OP 行 None
   ts::MethodId ts_method;
   cs::TfId cs_tf; // 由 SRC 推出: CS(..., Tf, Method) → 截面归一化; 非 CS 行 None

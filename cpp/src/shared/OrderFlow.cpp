@@ -244,6 +244,7 @@ void OrderFlow::Depth::clear() {
   feat_y_min.fill(0.0f);
   feat_y_max.fill(0.0f);
   n_feat = 0;
+  feat_level = 0;
 }
 
 // ============================================================================

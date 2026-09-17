@@ -12,6 +12,7 @@
 //     dlogp_taker_ge_{B|q}                  单笔成交额 ≥ 阈值 的成交 Σ 1e4·Δln(成交价) (相对上一笔任意成交; 基点)
 //   "≥" 为嵌套集: 分档 = 相邻两档之差 (因子层做), 全体 = Flow 的 taker 列.
 //   实现: 9 阈值每日合并升序 (thr_ / slot_ 记原输出槽), 每笔只落一个桶 (桶 = 满足的阈值个数 0..n), flush 时后缀和 → 每笔 O(1).
+//   Δln p 不自算: 复用 TakerRet 节点 (与 Realized 的 path_len 共享, 每笔 taker 只算一次 log).
 //   fp16 落盘: 额 / 量 / 笔 Log Tf; dlogp 原值 (基点).
 // =============================================================================
 
@@ -108,7 +109,7 @@ public:
   static_assert(kCount == 2 * NB * 3 + NB);
   float y[kCount] = {};
 
-  explicit TradeSize(const TickData &td) : td_(td), dq_(PROBS) { rebuild(); }
+  TradeSize(const TickData &td, const Series &taker_dlogp) : td_(td), taker_dlogp_(taker_dlogp), dq_(PROBS) { rebuild(); }
 
   inline void compute() {
     const auto &lob = td_.lob;
@@ -124,9 +125,7 @@ public:
       ++b;
     float (&bk)[3] = bucket_[s][b];
     bk[0] += a, bk[1] += v, bk[2] += 1.0f;
-    if (p_last_ > 0.0f)
-      dlogp_[b] += kBp * std::log(p / p_last_);
-    p_last_ = p;
+    dlogp_[b] += taker_dlogp_.back(); // TakerRet 同域已 flush; 首笔 = 0, 加零无影响
   }
 
   // ≥ 第 k 个 (升序) 阈值 ⇔ 桶 ≥ k+1: 后缀和写到该阈值的输出槽; 无阈值的 q 轴槽 (首日) NaN
@@ -163,7 +162,6 @@ public:
         thr_q_[j] = std::exp(lq[j]);
     rebuild();
     clear();
-    p_last_ = 0.0f;
   }
 
 private:
@@ -186,6 +184,7 @@ private:
   }
 
   const TickData &td_;
+  const Series &taker_dlogp_; // TakerRet 输出口 (同域 onTaker, 拓扑序在前, back() 即本笔值)
   DailyQuantile<NQ, N_DAYS> dq_;
   float thr_q_[NQ] = {}; // 元, 升序 (分位单调)
   bool has_q_ = false;
@@ -194,23 +193,22 @@ private:
   size_t n_thr_ = 0;
   float bucket_[2][NB + 1][3] = {}; // [侧][桶][amt, vol, n]
   float dlogp_[NB + 1] = {};
-  float p_last_ = 0.0f; // 上一笔成交价 (任意档)
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_TradeSize(N) N(TradeSize, (TradeSize), (tick_data), onTaker, onMinute)
+#define NODE_TradeSize(N) N(TradeSize, (TradeSize), (tick_data, TakerRet.out()), onTaker, onMinute)
 
 // 一侧 (side token, S = 公式侧上标, CN 侧中文) × 一阈值 (b token; TE / TC / TF = 阈值的 英文 / 中文 / 公式 字面) 的 额/量/笔 3 行
-#define TRADESIZE_ROWS(X, CAT1, side, S, CN, b, TE, TC, TF)                                                                                                                                                                                                                        \
-  X(amt_taker_##side##_ge_##b, CAT1, RAW, "Taker " S " >= " TE " Amount", "主动" CN "≥" TC "成交额", "分钟内单笔成交额≥" TC "的主动" CN "成交额(元)", R"(\sum_{\Delta t} P|O^{T,)" S R"(}| \mathbf{1}[P|O| \geq )" TF R"(])", OP(TradeSize, amt_taker_##side##_ge_##b, Log, None)) \
-  X(vol_taker_##side##_ge_##b, CAT1, RAW, "Taker " S " >= " TE " Volume", "主动" CN "≥" TC "成交量", "分钟内单笔成交额≥" TC "的主动" CN "成交量(股)", R"(\sum_{\Delta t} |O^{T,)" S R"(}| \mathbf{1}[P|O| \geq )" TF R"(])", OP(TradeSize, vol_taker_##side##_ge_##b, Log, None))  \
-  X(n_taker_##side##_ge_##b, CAT1, RAW, "Taker " S " >= " TE " Count", "主动" CN "≥" TC "成交笔数", "分钟内单笔成交额≥" TC "的主动" CN "成交笔数", R"(\#O_{\Delta t}^{T,)" S R"(} \mathbf{1}[P|O| \geq )" TF R"(])", OP(TradeSize, n_taker_##side##_ge_##b, Log, None))
+#define TRADESIZE_ROWS(X, CAT1, side, S, CN, b, TE, TC, TF)                                                                                                                                                                                                                                                       \
+  X(amt_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Amount", "主动" CN "≥" TC "成交额", "分钟内单笔成交额≥" TC "的主动" CN "成交额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{T,)" S R"(}| \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, amt_taker_##side##_ge_##b, Log, None)) \
+  X(vol_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Volume", "主动" CN "≥" TC "成交量", "分钟内单笔成交额≥" TC "的主动" CN "成交量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{T,)" S R"(}| \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, vol_taker_##side##_ge_##b, Log, None))        \
+  X(n_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Count", "主动" CN "≥" TC "成交笔数", "分钟内单笔成交额≥" TC "的主动" CN "成交笔数", R"(\#O_{\Delta t}^{T,)" S R"(} \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, n_taker_##side##_ge_##b, Log, None))
 
 // 一阈值的 买 3 + 卖 3 + dlogp 1 = 7 行
 #define TRADESIZE_THR_ROWS(X, CAT1, b, TE, TC, TF)       \
   TRADESIZE_ROWS(X, CAT1, bid, "B", "买", b, TE, TC, TF) \
   TRADESIZE_ROWS(X, CAT1, ask, "A", "卖", b, TE, TC, TF) \
-  X(dlogp_taker_ge_##b, CAT1, RAW, "Big Trade Log-Price Change >= " TE, "≥" TC "成交价变动和", "分钟内单笔成交额≥" TC "的成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{i \in \Delta t} 10^4 \ln\frac{p_i}{p_{i-1}} \mathbf{1}[p_i v_i \geq )" TF R"(])", OP(TradeSize, dlogp_taker_ge_##b, None, None))
+  X(dlogp_taker_ge_##b, CAT1, AUTO, "Big Trade Log-Price Change >= " TE, "≥" TC "成交价变动和", "分钟内单笔成交额≥" TC "的成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, dlogp_taker_ge_##b, None, None))
 
 #define FIELDS_L1_TradeSize(X, CAT1)                                          \
   TRADESIZE_THR_ROWS(X, CAT1, 4w, "4w", "4万元", R"(4 \times 10^4)")          \

@@ -6,6 +6,7 @@
 //   4. (Future) View analysis results
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -51,6 +52,10 @@ struct FeatureUIState {
 // ============================================================================
 
 void RenderTabFeature(SharedData &data, FeatureUIState &ui_state);
+
+// 该层每行有效 Cat2 (值域探测 or 字段表人工覆盖, 与 FEATURE 表同口径; 无预览 = "?").
+// out[i] 指向静态串或字段表串 (稳定). 内部短锁读 preview cells. OrderFlow legend 标注用
+void EffectiveCat2Snapshot(SharedData &data, size_t level, std::vector<const char *> &out);
 
 // 特征表落地 JSON (给人看, 一行一特征): <FeatureUniverseDir>/features.json (两层全部行, 元数据下标序,
 // 不受过滤/排序影响; 表格可见列 + Stat / Range (仅 L1 有预览的行), 不落 Dist / PSD 曲线).

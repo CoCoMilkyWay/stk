@@ -7,7 +7,8 @@
 #include "features/Method/Fundamental.hpp"
 #include "gui/task_database/models/SharedTypes.hpp" // BoardType / GetBoardType (板块口径与 TABLE 同源)
 #include "gui/task_features/services/OrderFlowService.hpp"
-#include "gui/util/AssetFilter.hpp" // 筛选控件 (与 TABLE 共用)
+#include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)
+#include "gui/util/AssetFilter.hpp"            // 筛选控件 (与 TABLE 共用)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -84,9 +85,14 @@ static std::vector<int> CollectFeats(const Feature::Selection &sel, int level) {
   return v;
 }
 
-static const char *FeatName(const Feature &feature, int level, int idx) {
+// legend = "中文名 (cat2)"; cat2 = 该层有效 Cat2 快照 (探测 or 人工覆盖, 无预览 = "?")
+static const char *FeatName(const Feature &feature, const std::vector<const char *> &cat2,
+                            int level, int idx, char *buf, size_t size) {
   const auto &metas = feature.metadata.features[level];
-  return (idx >= 0 && static_cast<size_t>(idx) < metas.size()) ? metas[idx].name_cn : "?";
+  const bool ok = idx >= 0 && static_cast<size_t>(idx) < metas.size();
+  std::snprintf(buf, size, "%s (%s)", ok ? metas[idx].name_cn : "?",
+                ok && static_cast<size_t>(idx) < cat2.size() ? cat2[static_cast<size_t>(idx)] : "?");
+  return buf;
 }
 
 // ============================================================================
@@ -226,7 +232,7 @@ static void RenderDepthPanel(const OrderFlow::Depth::Snapshot &depth, const std:
 // L0 Plot Renderer (图1: front Depth 槽)
 // ============================================================================
 
-static void RenderL0Plot(OrderFlow &of, const Feature &feature) {
+static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vector<const char *> &cat2) {
   auto &ui = of.ui;
   const OrderFlow::Depth &dp = of.depth_front_slot();
 
@@ -354,14 +360,15 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature) {
     }
 
     // ------------------------------------------------------------------
-    // 特征 overlay (Y2, 多选; legend = 中文名, 颜色 ImPlot 自动分配)
+    // 特征 overlay (Y2, 多选; legend = 中文名 (cat2), 颜色 ImPlot 自动分配)
     // ------------------------------------------------------------------
     for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
       const auto &fl = dp.feat[i];
       if (fl.x.empty())
         continue;
+      char label[128];
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-      ImPlot::PlotStairs(FeatName(feature, 0, ui.depth_feats[i]),
+      ImPlot::PlotStairs(FeatName(feature, cat2, dp.feat_level, ui.depth_feats[i], label, sizeof(label)),
                          fl.x.data(), fl.y.data(), static_cast<int>(fl.x.size()));
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     }
@@ -405,7 +412,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature) {
 // L1 Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
-static void RenderL1Plot(OrderFlow &of, const Feature &feature, float height) {
+static void RenderL1Plot(OrderFlow &of, const Feature &feature, const std::vector<const char *> &cat2, float height) {
   auto &ui = of.ui;
   auto &k = of.kline;
 
@@ -461,7 +468,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, float height) {
     }
 
     // ------------------------------------------------------------------
-    // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名)
+    // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名 (cat2))
     // ------------------------------------------------------------------
     if (pub_points > 0) {
       PlotCandlestick("OHLC", k.x.data(), k.open.data(), k.high.data(),
@@ -471,8 +478,9 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, float height) {
     for (size_t i = 0; i < nf; ++i) {
       if (feat_counts[i] == 0)
         continue;
+      char label[128];
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-      ImPlot::PlotStairs(FeatName(feature, 1, ui.kline_feats[i]),
+      ImPlot::PlotStairs(FeatName(feature, cat2, 1, ui.kline_feats[i], label, sizeof(label)),
                          k.feat[i].x.data(), k.feat[i].y.data(), static_cast<int>(feat_counts[i]));
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     }
@@ -764,14 +772,17 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.l1_anchor_date = of.kline.dates.front();
   }
 
-  std::vector<int> l0_feats = CollectFeats(sel, 0);
+  // 图1 特征 = 当前选中层的指标集 (L0/L1 皆可): 选 L1 时与图2 同源, 只取锚点日的日内段
+  std::vector<int> depth_feats = CollectFeats(sel, sel.selected_level);
   if (!ui.l1_anchor_date.empty() &&
-      (rescan || ui.depth_date != ui.l1_anchor_date || ui.depth_asset != asset_idx || ui.depth_feats != l0_feats)) {
+      (rescan || ui.depth_date != ui.l1_anchor_date || ui.depth_asset != asset_idx ||
+       ui.depth_feats != depth_feats || ui.depth_feat_level != sel.selected_level)) {
     ui.depth_date = ui.l1_anchor_date;
     ui.depth_asset = asset_idx;
-    ui.depth_feats = l0_feats;
+    ui.depth_feats = depth_feats;
+    ui.depth_feat_level = sel.selected_level;
     ++ui.depth_gen;
-    service->RequestDepth(ui.depth_gen, ui.l1_anchor_date, asset_idx, std::move(l0_feats));
+    service->RequestDepth(ui.depth_gen, ui.l1_anchor_date, asset_idx, sel.selected_level, std::move(depth_feats));
   }
 
   // ==========================================================================
@@ -816,6 +827,12 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.asset_initialized = true;
   }
 
+  // Cat2 有效值快照 (与 FEATURE 表同口径): 两图 legend 括号标注.
+  // 图1 用 front 槽实际渲染的特征层 (换层在途时与旧槽数据配对)
+  static std::vector<const char *> s_cat2_depth, s_cat2_l1;
+  EffectiveCat2Snapshot(data, 1, s_cat2_l1);
+  EffectiveCat2Snapshot(data, static_cast<size_t>(of.depth_front_slot().feat_level), s_cat2_depth);
+
   // ==========================================================================
   // LAYOUT
   // ==========================================================================
@@ -830,7 +847,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // ==========================================================================
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
   ImGui::BeginChild("L0Chart", ImVec2(chart_width, -1), false);
-  RenderL0Plot(of, data.feature);
+  RenderL0Plot(of, data.feature, s_cat2_depth);
   ImGui::EndChild();
 
   ImGui::SameLine();
@@ -859,7 +876,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   RenderStatusBar(of);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
-  RenderL1Plot(of, data.feature, kline_height);
+  RenderL1Plot(of, data.feature, s_cat2_l1, kline_height);
 
   ImGui::EndChild(); // BottomSection
 }

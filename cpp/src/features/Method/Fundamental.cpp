@@ -167,7 +167,7 @@ enum IncomeItem : std::size_t {
 enum CashflowItem : std::size_t {
   cf_ocf,   // 经营活动现金流净额
   cf_icf,   // 投资活动现金流净额
-  cf_fcf,   // 筹资活动现金流净额
+  cf_fin,   // 筹资活动现金流净额
   cf_net,   // 现金及等价物净增加
   cf_capex, // 购建固定/无形/长期资产支付
   cf_div,   // 分配股利利润或偿付利息支付
@@ -748,7 +748,7 @@ void build_events(const Axes &axes, PitPool &p) {
           ev.report_date = rd.yyyymmdd(i);
           ev.x[cf_ocf] = ocf.f32(i);
           ev.x[cf_icf] = icf.f32(i);
-          ev.x[cf_fcf] = fcf.f32(i);
+          ev.x[cf_fin] = fcf.f32(i);
           ev.x[cf_net] = net.f32(i);
           ev.x[cf_capex] = capex.f32(i);
           ev.x[cf_div] = div.f32(i);
@@ -1525,8 +1525,8 @@ struct State {
     // ---- 行情日线项 / 两融明细 ----
     out[Fund::pre_close] = pos(p.at(p.pre_close, a, d));
     out[Fund::adj_factor] = pos(p.at(p.adj_factor, a, d));
-    out[Fund::rz_buy] = sat(p.at(p.fin_purchase, a, d) * 1e-8f);
-    out[Fund::rz_repay] = sat(p.at(p.fin_repayment, a, d) * 1e-8f);
+    out[Fund::rz_buy_amt] = sat(p.at(p.fin_purchase, a, d) * 1e-8f);
+    out[Fund::rz_repay_amt] = sat(p.at(p.fin_repayment, a, d) * 1e-8f);
     out[Fund::rq_sell_vol] = sat(p.at(p.sec_sales_qty, a, d) * 1e-4f);
     out[Fund::rq_repay_vol] = sat(p.at(p.sec_repay_qty, a, d) * 1e-4f);
 
@@ -1612,7 +1612,7 @@ struct State {
       };
       put(cf_ocf, Fund::cf_ocf_q, Fund::cf_ocf_ttm, Fund::cf_ocf_lyr);
       put(cf_icf, Fund::cf_icf_q, Fund::cf_icf_ttm, Fund::cf_icf_lyr);
-      put(cf_fcf, Fund::cf_fcf_q, Fund::cf_fcf_ttm, Fund::cf_fcf_lyr);
+      put(cf_fin, Fund::cf_fin_q, Fund::cf_fin_ttm, Fund::cf_fin_lyr);
       put(cf_net, Fund::cf_net_q, Fund::cf_net_ttm, Fund::cf_net_lyr);
       put(cf_capex, Fund::cf_capex_q, Fund::cf_capex_ttm, Fund::cf_capex_lyr);
       put(cf_div, Fund::cf_div_q, Fund::cf_div_ttm, Fund::cf_div_lyr);

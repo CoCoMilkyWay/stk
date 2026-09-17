@@ -13,7 +13,8 @@
 //               (原文用当日 IV 定阈, 非因果; 这里用前一日, 首日 NaN)
 //     r_max / r_min (3s 网格分钟内极值, 基点)
 //   逐笔 / 时间加权:
-//     path_len = Σ |1e4·Δln p| 逐笔 (基点);  twap = 分钟内成交价的时间加权均值 (元, 末笔持有到分钟末)
+//     path_len = Σ |1e4·Δln p| 逐笔 (基点, Δln p 复用 TakerRet 节点, 与 TradeSize 共享一次 log);
+//     twap = 分钟内成交价的时间加权均值 (元, 末笔持有到分钟末)
 //   fp16 落盘: 幂和用 Log Tf (基点量纲下 Σr² ~ 1e2..1e6), 极值 / 路径长 / twap 原值.
 //   跨分钟状态: 网格 (p_prev / 滞后链 / last_cell) 与 twap 持有价; 未 flush 的无成交分钟并入下一有效分钟.
 // =============================================================================
@@ -147,7 +148,7 @@ public:
   };
   float y[kCount] = {};
 
-  Realized(const TickData &td, const MinuteData &md) : td_(td), md_(md) {}
+  Realized(const TickData &td, const MinuteData &md, const Series &taker_dlogp) : td_(td), md_(md), taker_dlogp_(taker_dlogp) {}
 
   inline void compute() {
     const float p = td_.lob.price;
@@ -155,8 +156,8 @@ public:
       return;
     const uint32_t l0 = td_.l0_index;
     const uint32_t t = tick_ms(td_);
+    path_len_ += std::fabs(taker_dlogp_.back()); // TakerRet 同域已 flush; 首笔 = 0, 加零无影响
     if (px_last_ > 0.0f) {
-      path_len_ += std::fabs(kBp * std::log(p / px_last_));
       twap_acc_ += px_last_ * static_cast<float>(t > t_last_ ? t - t_last_ : 0u); // 哨兵秒内 ms 回绕 → 钳零 (同 Book)
     } else {
       t_start_ = t; // 当日首笔: 时间加权从这里起算
@@ -217,6 +218,7 @@ private:
 
   const TickData &td_;
   const MinuteData &md_;
+  const Series &taker_dlogp_; // TakerRet 输出口 (同域 onTaker, 拓扑序在前, back() 即本笔值)
   Grid<3> g3_;
   Grid<15> g15_;
   float px_last_ = 0.0f;
@@ -226,24 +228,24 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Realized(N) N(Realized, (Realized), (tick_data, minute_data), onTaker, onMinute)
+#define NODE_Realized(N) N(Realized, (Realized), (tick_data, minute_data, TakerRet.out()), onTaker, onMinute)
 
 // 一个 Δ 网格的幂和族 (d = 网格 token, dd = 网格秒数字面)
-#define REALIZED_GRID_ROWS(X, CAT1, d, dd)                                                                                                                                                                                                                                                                                                \
-  X(rv_##d, CAT1, RAW, "Realized Variance " #dd "s", #dd "秒已实现方差", #dd "秒网格格收益(基点)平方分钟和; 日级=行求和", R"(\sum_{c \in \Delta t} r_c^2,\; r_c = 10^4 \ln\frac{P_c}{P_{c-1}},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_##d, Log, None))                                                                          \
-  X(rv_up_##d, CAT1, RAW, "Realized Upside Variance " #dd "s", #dd "秒上行已实现方差", #dd "秒网格正收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c>0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_up_##d, Log, None))                                                                                        \
-  X(rv_dn_##d, CAT1, RAW, "Realized Downside Variance " #dd "s", #dd "秒下行已实现方差", #dd "秒网格负收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c<0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_dn_##d, Log, None))                                                                                      \
-  X(rm3_##d, CAT1, RAW, "Realized Third Moment " #dd "s", #dd "秒已实现三阶矩", #dd "秒网格收益立方分钟和(基点³); 偏度=rm3/rv^1.5", R"(\sum_{c \in \Delta t} r_c^3,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm3_##d, Log, None))                                                                                                    \
-  X(rm4_##d, CAT1, RAW, "Realized Fourth Moment " #dd "s", #dd "秒已实现四阶矩", #dd "秒网格收益四次方分钟和(基点⁴); 峰度=rm4/rv²", R"(\sum_{c \in \Delta t} r_c^4,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm4_##d, Log, None))                                                                                                    \
-  X(bpv_##d, CAT1, RAW, "Bipower Variation " #dd "s", #dd "秒已实现双幂次变差", "相邻格|收益|乘积分钟和(基点²), 滞后链跨分钟连续; 跳跃=rv-π/2·bpv", R"(\sum_{c \in \Delta t} |r_c||r_{c-1}|,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, bpv_##d, Log, None))                                                                           \
-  X(tpv_##d, CAT1, RAW, "Tripower Variation " #dd "s", #dd "秒已实现三幂次变差", "连续三格|收益|^(2/3)乘积分钟和(基点²)", R"(\sum_{c \in \Delta t} (|r_c||r_{c-1}||r_{c-2}|)^{2/3},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, tpv_##d, Log, None))                                                                                    \
-  X(rv_bigup_##d, CAT1, RAW, "Big Upside Jump Variance " #dd "s", #dd "秒大上行跳跃方差", "超过阈值θ=4σ_Δ的正收益平方和(基点²), σ_Δ由前一日BPV推出; 首日NaN", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c > 4\sigma_\Delta],\; \sigma_\Delta^2 = \frac{\pi}{2}\frac{\sum_{D-1} bpv}{N_\Delta})", OP(Realized, rv_bigup_##d, Log, None)) \
-  X(rv_bigdn_##d, CAT1, RAW, "Big Downside Jump Variance " #dd "s", #dd "秒大下行跳跃方差", "低于阈值-θ的负收益平方和(基点²); 首日NaN", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c < -4\sigma_\Delta])", OP(Realized, rv_bigdn_##d, Log, None))
+#define REALIZED_GRID_ROWS(X, CAT1, d, dd)                                                                                                                                                                                                                                                                                                 \
+  X(rv_##d, CAT1, AUTO, "Realized Variance " #dd "s", #dd "秒已实现方差", #dd "秒网格格收益(基点)平方分钟和; 日级=行求和", R"(\sum_{c \in \Delta t} r_c^2,\; r_c = 10^4 \ln\frac{P_c}{P_{c-1}},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_##d, Log, None))                                                                          \
+  X(rv_up_##d, CAT1, AUTO, "Realized Upside Variance " #dd "s", #dd "秒上行已实现方差", #dd "秒网格正收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c>0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_up_##d, Log, None))                                                                                        \
+  X(rv_dn_##d, CAT1, AUTO, "Realized Downside Variance " #dd "s", #dd "秒下行已实现方差", #dd "秒网格负收益平方分钟和(基点²)", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c<0],\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rv_dn_##d, Log, None))                                                                                      \
+  X(rm3_##d, CAT1, AUTO, "Realized Third Moment " #dd "s", #dd "秒已实现三阶矩", #dd "秒网格收益立方分钟和(基点³); 偏度=rm3/rv^1.5", R"(\sum_{c \in \Delta t} r_c^3,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm3_##d, Log, None))                                                                                                    \
+  X(rm4_##d, CAT1, AUTO, "Realized Fourth Moment " #dd "s", #dd "秒已实现四阶矩", #dd "秒网格收益四次方分钟和(基点⁴); 峰度=rm4/rv²", R"(\sum_{c \in \Delta t} r_c^4,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, rm4_##d, Log, None))                                                                                                    \
+  X(bpv_##d, CAT1, AUTO, "Bipower Variation " #dd "s", #dd "秒已实现双幂次变差", "相邻格|收益|乘积分钟和(基点²), 滞后链跨分钟连续; 跳跃=rv-π/2·bpv", R"(\sum_{c \in \Delta t} |r_c||r_{c-1}|,\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, bpv_##d, Log, None))                                                                           \
+  X(tpv_##d, CAT1, AUTO, "Tripower Variation " #dd "s", #dd "秒已实现三幂次变差", "连续三格|收益|^(2/3)乘积分钟和(基点²)", R"(\sum_{c \in \Delta t} (|r_c||r_{c-1}||r_{c-2}|)^{2/3},\; \Delta=)" #dd R"(\mathrm{s})", OP(Realized, tpv_##d, Log, None))                                                                                    \
+  X(rv_bigup_##d, CAT1, AUTO, "Big Upside Jump Variance " #dd "s", #dd "秒大上行跳跃方差", "超过阈值θ=4σ_Δ的正收益平方和(基点²), σ_Δ由前一日BPV推出; 首日NaN", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c > 4\sigma_\Delta],\; \sigma_\Delta^2 = \frac{\pi}{2}\frac{\sum_{D-1} bpv}{N_\Delta})", OP(Realized, rv_bigup_##d, Log, None)) \
+  X(rv_bigdn_##d, CAT1, AUTO, "Big Downside Jump Variance " #dd "s", #dd "秒大下行跳跃方差", "低于阈值-θ的负收益平方和(基点²); 首日NaN", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c < -4\sigma_\Delta])", OP(Realized, rv_bigdn_##d, Log, None))
 
-#define FIELDS_L1_Realized(X, CAT1)                                                                                                                                                                                    \
-  REALIZED_GRID_ROWS(X, CAT1, 3s, 3)                                                                                                                                                                                   \
-  X(r_max_3s, CAT1, RAW, "Max Grid Return 3s", "3秒格收益最大值", "分钟内3秒网格格收益极大值(基点, 含零收益格)", R"(\max_{c \in \Delta t} r_c,\; \Delta = 3\mathrm{s})", OP(Realized, r_max_3s, None, None))           \
-  X(r_min_3s, CAT1, RAW, "Min Grid Return 3s", "3秒格收益最小值", "分钟内3秒网格格收益极小值(基点, 含零收益格)", R"(\min_{c \in \Delta t} r_c,\; \Delta = 3\mathrm{s})", OP(Realized, r_min_3s, None, None))           \
-  REALIZED_GRID_ROWS(X, CAT1, 15s, 15)                                                                                                                                                                                 \
-  X(path_len, CAT1, RAW, "Trade Path Length", "逐笔路径长", "分钟内逐笔|对数价变动|之和(基点); 趋势占比=|ret|/path_len", R"(\sum_{i \in \Delta t} |10^4 \ln\frac{p_i}{p_{i-1}}|)", OP(Realized, path_len, None, None)) \
-  X(twap, CAT1, RAW, "TWAP", "时间加权成交价", "分钟内成交价时间加权均值(元, 末笔持有到分钟末)", R"(\frac{\sum_i p_i (t_{i+1}-t_i)}{\sum_i (t_{i+1}-t_i)})", OP(Realized, twap, None, None))
+#define FIELDS_L1_Realized(X, CAT1)                                                                                                                                                                                              \
+  REALIZED_GRID_ROWS(X, CAT1, 3s, 3)                                                                                                                                                                                             \
+  X(r_max_3s, CAT1, AUTO, "Max Grid Return 3s", "3秒格收益最大值", "分钟内3秒网格格收益极大值(基点, 含零收益格)", R"(\max_{c \in \Delta t} r_c,\; \Delta = 3\mathrm{s})", OP(Realized, r_max_3s, None, None))                    \
+  X(r_min_3s, CAT1, AUTO, "Min Grid Return 3s", "3秒格收益最小值", "分钟内3秒网格格收益极小值(基点, 含零收益格)", R"(\min_{c \in \Delta t} r_c,\; \Delta = 3\mathrm{s})", OP(Realized, r_min_3s, None, None))                    \
+  REALIZED_GRID_ROWS(X, CAT1, 15s, 15)                                                                                                                                                                                           \
+  X(path_len, CAT1, AUTO, "Trade Path Length", "逐笔路径长", "分钟内逐笔|对数价变动|之和(基点); 趋势占比=|ret|/path_len", R"(\sum_{\tau \in \Delta t} |10^4 \ln\frac{P_\tau}{P_{\tau-1}}|)", OP(Realized, path_len, None, None)) \
+  X(twap, CAT1, AUTO, "TWAP", "时间加权均价", "分钟内成交价时间加权均值(元, 末笔持有到分钟末)", R"(\frac{\sum_\tau P_\tau (t_{\tau+1}-t_\tau)}{\sum_\tau (t_{\tau+1}-t_\tau)})", OP(Realized, twap, None, None))

@@ -49,13 +49,16 @@ stk/
 │   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图: Node<Op,K> 输出 Series + DAG (CMake 拓扑序生成 NodesGenerated.hpp, NODE_ 变参 flush 默认=compute)
 │   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; 标签回填手工写 (ts_write_range<LVL>)
 │   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 行编译期展开 (CsLevel<LVL>), L0 每秒 + L1 分钟级联
+│   │   │   ├── MetaFlag.hpp                             # 🧮 _meta 列三态(零/正data/负depth)编码解码稳定头 (消费端不依赖 Meta 算子)
 │   │   │   ├── Operator/TS/                             # 🧮 时序算子(数学 class + 文件末尾 NODE_/FIELDS_ 宏)
 │   │   │   ├── Operator/CS/                             # 🧮 截面算子(文件末尾 FIELDS_ 宏)
-│   │   │   ├── Operator/unused/                         # 🧮 未启用 
+│   │   │   ├── Operator/unused/                         # 🧮 未启用 (TS/ 与 CS/ 两层, 保留半成品) 
 │   │   │   ├── Method/                                  # 🧮 CS.hpp: Tf(None/Reciprocal/Log)×Method(Rank/NormRank/WinsorRank/NeutralRank/Demean/Z/WinsorZ);
 │   │   │   │                                            # 🧮 TS.hpp: Tf(None/Log/Asinh/Tanh/Sqrt)×Method(占位);
+│   │   │   │                                            # 🧮 Fundamental.hpp: 日频 PIT 基本面数据源(Pool) + 逐日推进状态机(Stream), Fund 算子共用;
 │   │   │   └── Backend/                                 # 🧮 特征存储后端
-│   │   │       ├── FeatureStoreConfig.hpp               # 🧮 由字段表 + ALL_LEVELS 展开: LevelInfo 表 (rows/width/offsets/fingerprint/psd/columnar), width/valid/psd 全推导
+│   │   │       ├── FeatureStoreConfig.hpp               # 🧮 写端: 由字段表 + ALL_LEVELS 展开编译期 LEVELS[] (定址折叠), width/valid/psd 全推导
+│   │   │       ├── FeatureLevels.hpp                    # 🧮 读端稳定层 (字段表无关): LevelInfo 结构 + 运行时层表 level_info(), 增删特征不触发读侧重编
 │   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
 │   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
 │   │   │       ├── DayBatchPlane.hpp                    # 🧮 Dist/Transform 共用天批平面: 抢单天并行载入 → [列][A][批天][VR]
@@ -117,7 +120,7 @@ stk/
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
-│   │   ├── math/                                        # 📐 autoencoder / distribution / model / normalize / sample / spectral / stationary / timeseries
+│   │   ├── math/                                        # 📐 distribution / normalize / sample / spectral / stationary / timeseries
 │   │   │   ├── Operator.hpp                             # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   │   ├── stationary/TodProfile.hpp                # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
 │   │   │   └── spectral/IIRBandpass.hpp                 # 📐 因果 IIR 带通 (无 FIR/零相位)
@@ -163,11 +166,35 @@ stk/
     ├── fundamental/                                     # 日频基本面 (表清单见上方 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                         # 月度分片 (2015-01 起, 每表一文件; 0 行月也落文件 = "拉过")
     │   ├── _meta/<表>.parquet                           # Static/Snapshot 单文件整刷 (cn_stock_basic_info / cn_stock_static_data)
-    │   ├── asset_axis.json                              # A 轴 (资产轴) 码表, 只增不删
-    │   └── pool/*.bin                                   # ⚠ 旧版 PIT 事件池缓存, 现行代码已不再读写
+    │   └── asset_axis.json                              # A 轴 (资产轴) 码表, 只增不删
     ├── factors/                                         # 因子库 (预留)
     │   └── YYYY/MM/DD/
     └── log/                                             # 运行日志
 ```
 
 # ================================================
+# 加新特征 Guideline (给 agent: 加特征 = 改/新建一个算子文件, 其他地方不动)
+# ================================================
+#
+# 动手前必读 (按序):
+#   1. cpp/include/features/FeaturesDefine.hpp   NODE_/FIELDS_ 宏格式 + 公式符号规范 (τ/c/j/i/t/D 索引, P 价格族, O 订单流, ε 容差)
+#   2. cpp/include/features/DataDefine.hpp       算子契约 (enum Out / y[] / compute / flush / reset), Trigger 触发域, 输入红线 (只准本资产数据 + 日频 PIT)
+#   3. cpp/include/features/Operator/unused/     先翻一遍: 想要的算子可能已有半成品
+#   4. 同类别现有算子 1-2 个作模板 (命名/公式/注释风格照抄):
+#        累计降频型 → Operator/TS/OrderFlow/Flow.hpp    盘口时间加权 → Operator/TS/Book/Book.hpp
+#        分钟采样型 → Operator/TS/Basic/Bar.hpp         日频广播型  → Operator/TS/Fund/Fund.hpp
+#
+# 加在哪:
+#   时序特征  Operator/TS/<类别>/<Op>.hpp   = class (纯数学) + 文件末尾 NODE_<Name>(节点实例) + FIELDS_L1_<Name>(落盘列)
+#   截面因子  Operator/CS/<分类>/<源节点>.hpp = 只有 FIELDS_ 行 (方法在 Method/CS.hpp, owner 名 Cs<源节点>)
+#   除此以外不改任何文件: CMake 自动扫描 Operator/{TS,CS} → 拓扑排序生成 NodesGenerated.hpp, 下次 build 自动 configure
+#
+# 规矩:
+#   复用上游(流式计算图), 不重复计算: 盘口取 Depth.*, 逐笔成交 Δln p 取 TakerRet.out(), 涨跌停取 Fund.y[Fund.lim_up/lim_dn],
+#     中间价/微观价取 MidPrice/MicroPrice.out(); 依赖必须字面写在 NODE_ 行 (CMake 按 "Up." 抽取, 不要藏进 helper 宏)
+#   命名语法 {measure}_{event}_{side}_{qualifier}: amt/vol/n/qty + taker/maker/cancel + bid/ask + 窗口/档位/阈值
+#     (qty=存量 vol=流量; 单档用 l5, 前 N 档累计用裸 5; 缩写忌歧义, 反例: fcf 曾被误读 free cash flow → cf_fin)
+#   缺失一律 NaN 不用 0; fast-math TU 不写 isnan, 无定义用位图/守卫显式表示
+#   只用断言不用错误处理; 失败越早越好
+#   改动字段表 = 落盘指纹变化, 旧特征文件读取即断言失败, 需全量重算 (加列也是)
+#   收尾: python3 py/app/format_cpp.py 格式化; 编译和运行留给人类

@@ -52,11 +52,11 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Bar(N) N(Bar, (Bar), (minute_data), onMinute)
 
-#define FIELDS_L1_Bar(X, CAT1)                                                                                                                                                    \
-  X(open, CAT1, RAW, "Open", "开盘价", "分钟开盘价(元)", R"(O_t)", OP(Bar, open, None, None))                                                                                     \
-  X(high, CAT1, RAW, "High", "最高价", "分钟最高价(元)", R"(H_t)", OP(Bar, high, None, None))                                                                                     \
-  X(low, CAT1, RAW, "Low", "最低价", "分钟最低价(元)", R"(L_t)", OP(Bar, low, None, None))                                                                                        \
-  X(close, CAT1, RAW, "Close", "收盘价", "分钟收盘价(元)", R"(C_t)", OP(Bar, close, None, None))                                                                                  \
-  X(ret, CAT1, RAW, "Minute Log Return", "分钟对数收益", "收盘价对上一有效分钟收盘价的对数收益(基点; 日内首分钟NaN)", R"(10^4 \ln\frac{C_t}{C_{t-1}})", OP(Bar, ret, None, None)) \
-  X(range, CAT1, RAW, "Minute Log Range", "分钟对数振幅", "分钟最高/最低对数比(基点)", R"(10^4 \ln\frac{H_t}{L_t})", OP(Bar, range, None, None))                                  \
-  X(body, CAT1, RAW, "Minute Log Body", "分钟对数实体", "分钟收/开对数比(基点)", R"(10^4 \ln\frac{C_t}{O_t})", OP(Bar, body, None, None))
+#define FIELDS_L1_Bar(X, CAT1)                                                                                                                                                                                       \
+  X(open, CAT1, AUTO, "Open", "开盘价", "分钟开盘价(元)", R"(P^{\mathrm{open}}_t)", OP(Bar, open, None, None))                                                                                                       \
+  X(high, CAT1, AUTO, "High", "最高价", "分钟最高价(元)", R"(P^{\mathrm{high}}_t)", OP(Bar, high, None, None))                                                                                                       \
+  X(low, CAT1, AUTO, "Low", "最低价", "分钟最低价(元)", R"(P^{\mathrm{low}}_t)", OP(Bar, low, None, None))                                                                                                           \
+  X(close, CAT1, AUTO, "Close", "收盘价", "分钟收盘价(元)", R"(P^{\mathrm{close}}_t)", OP(Bar, close, None, None))                                                                                                   \
+  X(ret, CAT1, AUTO, "Minute Log Return", "分钟对数收益", "收盘价对上一有效分钟收盘价的对数收益(基点; 日内首分钟NaN)", R"(10^4 \ln\frac{P^{\mathrm{close}}_t}{P^{\mathrm{close}}_{t-1}})", OP(Bar, ret, None, None)) \
+  X(range, CAT1, AUTO, "Minute Log Range", "分钟对数振幅", "分钟最高/最低对数比(基点)", R"(10^4 \ln\frac{P^{\mathrm{high}}_t}{P^{\mathrm{low}}_t})", OP(Bar, range, None, None))                                     \
+  X(body, CAT1, AUTO, "Minute Log Body", "分钟对数实体", "分钟收/开对数比(基点)", R"(10^4 \ln\frac{P^{\mathrm{close}}_t}{P^{\mathrm{open}}_t})", OP(Bar, body, None, None))
