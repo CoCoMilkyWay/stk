@@ -6,9 +6,12 @@
 //   做多: (exit_vwap·(1-fee_sell) - entry_vwap·(1+fee_buy)) / entry_vwap·(1+fee_buy)
 //   做空: (entry_vwap·(1-fee_sell) - exit_vwap·(1+fee_buy)) / entry_vwap·(1-fee_sell)
 //   费用: 双边万 1 佣金; 卖出另加印花税, 按日期取当时税率 (2023-08-28 起千 1 → 万 5), reset(date) 时定
-//   尾部 (exit 过收盘): 持有窗口自动截到当日收盘 —— T0 必须当日平仓, 所以"持有到收盘"才是真实可交易收益;
-//     窗口缩到 0 时自然退化为 −(税佣 + 冲击), 不留 NaN (见 finish()).
-//   仍为 NaN 的只剩"根本吃不到单": 某侧盘口全空 → 建不了仓 (calc_return) / 60s 内无快照 (minute_anchored). 0 是合法零收益, 不作哨兵.
+//   【不产 NaN】标签一律取"实盘真能做到的那笔交易", 缺口用可成交时刻/价格顶上, 幅值都在收益量纲内, 多日拉取无跳变:
+//     exit 过收盘 / 越过连续竞价末秒 → 持有到收盘 (T0 必须当日平仓, 见 finish())
+//     entry 锚点在非交易空窗 (09:25 撮合后到 09:30 开盘) → 顺延到最早可成交时刻 (见 get_snapshot_tradable)
+//     名义 exit 早于最早可成交时刻 (09:30 前的锚点) → 建仓即平, 只剩 −(税佣 + 冲击)
+//     全簿吃不完 / 涨跌停封板该侧全空 → 余量按涨跌停价成交 (与 Book 吃单成本同约, 见 calc_vwap)
+//     该侧全空且无涨跌停价可补 (无限制股) → 这笔交易成不了, 收益 0 (未建仓 = 无盈亏)
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node). 一份深度快照环 (各金额档吃单 VWAP) 供两条路径共用:
 //   snapshot(t)                 每次 onDepth 先调: 只记账, VWAP 惰性结算 —— 同一秒内只有最后一次
@@ -61,8 +64,10 @@ public:
   static_assert(L0_AMT_IDX < AMT_COUNT, "LABEL_L0_AMT must be one of LABEL_AMTS");
 
   LabelReturn(const DepthSeries &bid_price, const DepthSeries &ask_price,
-              const DepthSeries &bid_qty, const DepthSeries &ask_qty)
-      : bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty) {}
+              const DepthSeries &bid_qty, const DepthSeries &ask_qty,
+              const float &lim_up, const float &lim_dn)
+      : bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty),
+        lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
   // 换秒时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
@@ -88,7 +93,9 @@ public:
 
   // L1 分钟锚定惰性回填: 锚点 = 分钟 m 末 (= m+1 起始秒; 11:29 → 13:00:00), entry = 锚点+DELAY, exit = entry+hold.
   //   L1 行 m 的特征是分钟 m 结束时才可知的 (CoreSequential 顺序), 所以标签只能从 m 末起算, 锚到 m 起始秒会前视一分钟.
-  //   每次推进: exit 已过线的分钟逐个写出 (深度稀疏也不漏分钟, 快照缺口沿用 60s 回溯; 找不到则整组 NaN).
+  //   每次推进: exit 已过线的分钟逐个写出 (深度稀疏也不漏分钟, 快照缺口沿用 60s 回溯).
+  //   exit 越过连续竞价末秒的行不在此结算 —— 14:57 起全部 tick 钳到盘后哨兵, 中间那段 L0 无人占位,
+  //   回溯搭不回 14:56:59, 与"exit 过收盘"本质同类, 一并留给 finish() 按持有到收盘结算.
   //   writer(h, label_l1, values[GROUP_SIZE]) 负责落盘.
   template <class Writer>
   inline void minute_anchored(size_t t, Writer &&writer) {
@@ -98,18 +105,18 @@ public:
         const size_t label_l0 = L1_to_L0(next_label_l1_[h] + 1); // 末分钟 254 → 15300 (盘后), exit 永不过线 → 留给 finish
         const size_t entry_l0 = label_l0 + LABEL_DELAY_SECONDS;
         const size_t exit_l0 = entry_l0 + hold_sec;
-        if (exit_l0 > t)
+        if (exit_l0 > t || exit_l0 > LAST_CONTINUOUS_L0)
           break;
-        const auto *entry = get_snapshot(entry_l0);
+        // 建仓顺延上限取当前秒 t: t 必是刚记账的活跃秒 (snapshot(t) 先于本函数), 故顺延必命中
+        const auto *entry = get_snapshot_tradable(entry_l0, t);
+        assert(entry && "entry 恒有值: 顺延上限 t 即 snapshot(t) 刚记账的活跃秒");
         const auto *exit = get_snapshot(exit_l0);
+        if (!exit)
+          exit = entry; // 名义平仓时刻早于最早可成交时刻 (09:30 前的锚点): 退化为建仓即平, 只剩成本
         float values[GROUP_SIZE];
-        if (entry && exit) {
-          for (size_t a = 0; a < AMT_COUNT; ++a) {
-            values[a] = calc_return(entry, exit, a, true);
-            values[AMT_COUNT + a] = calc_return(entry, exit, a, false);
-          }
-        } else {
-          std::fill_n(values, GROUP_SIZE, kNaN);
+        for (size_t a = 0; a < AMT_COUNT; ++a) {
+          values[a] = calc_return(entry, exit, a, true);
+          values[AMT_COUNT + a] = calc_return(entry, exit, a, false);
         }
         writer(h, next_label_l1_[h], static_cast<const float *>(values));
         ++next_label_l1_[h];
@@ -163,22 +170,26 @@ private:
     bool valid = false;
   };
 
+  // 连续竞价末秒 (14:56:59 → 15119): AFTERNOON_END_MIN 之后的 tick 全钳到盘后哨兵 15299,
+  // 中间那段 L0 永无 tick 占位, 任何锚点落进去都查不到快照 (见 TimeIndex)
+  static constexpr size_t LAST_CONTINUOUS_L0 = MORNING_SECONDS + (AFTERNOON_END_MIN - AFTERNOON_START_MIN) * 60 - 1;
+
   static constexpr size_t MAX_HOLD = std::max<size_t>(LABEL_L0_HOLD, *std::max_element(std::begin(LABEL_HOLD_MINUTES), std::end(LABEL_HOLD_MINUTES)));
   // 环长: 最远回看 = 延迟 + 最长持仓; +128 覆盖 get_snapshot 的 60s 回溯再留余量
   static constexpr size_t RING_SIZE = LABEL_DELAY_SECONDS + MAX_HOLD * 60 + 128;
 
-  // 单个 label 的收益率; 盘口不足 (进出任一侧吃不到) 返回 NaN
+  // 单个 label 的收益率; 该侧全空且无涨跌停价可补 (无限制股) → 这笔交易根本成不了, 收益 0 (未建仓 = 无盈亏)
   inline float calc_return(const Snapshot *entry, const Snapshot *exit, size_t amt_idx, bool is_long) const {
     if (is_long) {
       // 做多: entry 买入 (吃 ask), exit 卖出 (吃 bid)
       const float entry_vwap = entry->buy_vwap[amt_idx];
       const float shares = entry->buy_shares[amt_idx];
       if (entry_vwap < 1e-6f || shares < 1e-6f)
-        return kNaN;
+        return 0.0f;
       const float entry_cost = entry_vwap * (1.0f + FEE_COMMISSION);
       const float exit_vwap = interp_vwap(exit->sell_vwap, exit->sell_shares, shares); // 同股数卖出, 档间插值
       if (exit_vwap < 1e-6f)
-        return kNaN;
+        return 0.0f;
       const float exit_income = exit_vwap * (1.0f - fee_sell_);
       return (exit_income - entry_cost) / entry_cost;
     } else {
@@ -186,11 +197,11 @@ private:
       const float entry_vwap = entry->sell_vwap[amt_idx];
       const float shares = entry->sell_shares[amt_idx];
       if (entry_vwap < 1e-6f || shares < 1e-6f)
-        return kNaN;
+        return 0.0f;
       const float entry_income = entry_vwap * (1.0f - fee_sell_);
       const float exit_vwap = interp_vwap(exit->buy_vwap, exit->buy_shares, shares);
       if (exit_vwap < 1e-6f)
-        return kNaN;
+        return 0.0f;
       const float exit_cost = exit_vwap * (1.0f + FEE_COMMISSION);
       return (entry_income - exit_cost) / entry_income;
     }
@@ -202,8 +213,8 @@ private:
     snap.valid = true;
     for (size_t a = 0; a < AMT_COUNT; ++a) {
       const float amt = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f;
-      calc_vwap(ask_price_, ask_qty_, amt, true, offset, snap.buy_vwap[a], snap.buy_shares[a]);    // 吃 ask (买入)
-      calc_vwap(bid_price_, bid_qty_, amt, false, offset, snap.sell_vwap[a], snap.sell_shares[a]); // 吃 bid (卖出)
+      calc_vwap(ask_price_, ask_qty_, amt, true, offset, lim_up_, snap.buy_vwap[a], snap.buy_shares[a]);    // 吃 ask (买入): 余量按涨停
+      calc_vwap(bid_price_, bid_qty_, amt, false, offset, lim_dn_, snap.sell_vwap[a], snap.sell_shares[a]); // 吃 bid (卖出): 余量按跌停
     }
   }
 
@@ -224,10 +235,30 @@ private:
     return nullptr;
   }
 
+  // 建仓侧快照: 锚点先按常规 60s 回溯; 落在非交易空窗 (09:25 撮合后到 09:30 开盘不受理委托, 全段无盘口更新)
+  // 时顺延到 limit 之前首个真实成交时刻 —— "最早能成交的时刻才是建仓点", 比留 NaN 贴近 T0 实盘.
+  // 取锚点之后的快照不引入前视: 标签本就是未来量, 行 m 的特征在分钟 m 末已定.
+  const Snapshot *get_snapshot_tradable(size_t target, size_t limit) const {
+    if (const auto *s = get_snapshot(target))
+      return s;
+    for (size_t l0 = target + 1; l0 <= limit; ++l0) {
+      if (l0 == pending_l0_) { // 当前秒未结算, 同 get_snapshot: 从环末现算
+        materialize(scratch_, l0, 0);
+        return &scratch_;
+      }
+      const auto &s = ring_[l0 % RING_SIZE];
+      if (s.valid && s.l0_index == l0)
+        return &s;
+    }
+    return nullptr;
+  }
+
   // 模拟吃单: 遍历盘口深度算 VWAP. is_buy: 吃 ask (qty 存负值); 否则吃 bid (正值)
   // offset: 从 Depth 环末尾回退几格取盘口 (所有档的环长同步推进, 下标一致)
+  // limit_px: 全簿吃不完时余量的成交价 (买 → 涨停, 卖 → 跌停), 与 Book 的吃单成本同约;
+  //           涨跌停封板 (该侧全空, 如涨停无卖盘) 也走这条 —— 恒有定义, 不产 NaN
   static inline void calc_vwap(const DepthSeries &price, const DepthSeries &qty,
-                               float amount, bool is_buy, size_t offset, float &vwap, float &shares) {
+                               float amount, bool is_buy, size_t offset, float limit_px, float &vwap, float &shares) {
     assert(price[0].size() > offset && "calc_vwap: Depth 环深度不足 offset");
     float cost = 0.0f, sh = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH && amount > 1e-6f; ++i) {
@@ -240,6 +271,10 @@ private:
       cost += fill;
       sh += fill / p;
       amount -= fill;
+    }
+    if (amount > 1e-6f && limit_px > 0.0f) { // 余量按涨跌停价成交 (边界 NaN = 无限制股 → 比较恒 false, 不补)
+      cost += amount;
+      sh += amount / limit_px;
     }
     vwap = (sh > 1e-6f) ? (cost / sh) : 0.0f;
     shares = sh;
@@ -262,6 +297,7 @@ private:
   const DepthSeries &ask_price_;
   const DepthSeries &bid_qty_;
   const DepthSeries &ask_qty_;
+  const float &lim_up_, &lim_dn_; // Fund 当日涨跌停价 (盘前已知), 簿子吃不完时补齐余量用
 
   static constexpr size_t kNoPending = SIZE_MAX;
 

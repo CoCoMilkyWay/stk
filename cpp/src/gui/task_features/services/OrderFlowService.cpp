@@ -471,6 +471,10 @@ void OrderFlowService::depth_build(const DepthReq &req) {
           slot.ticks.back().tick_idx = t;
         }
         OrderFlow::Depth::Tick &tk = slot.ticks[static_cast<size_t>(si)];
+        // 竞价预撮合 (LOB 竞价分支产出; ref > 0 = 竞价且簿交叉, 其余恒 0)
+        tk.ref_price = lf.auction_ref_price;
+        tk.matched_amount = lf.auction_ref_price * static_cast<float>(lf.auction_matched_qty);
+        tk.imbalance_amount = lf.auction_ref_price * static_cast<float>(lf.auction_imbalance);
         for (size_t k = 0; k < N; ++k) {
           const Level *bl = lf.depth_buffer[N + k];     // 买 k+1 档
           const Level *al = lf.depth_buffer[N - 1 - k]; // 卖 k+1 档
@@ -480,7 +484,9 @@ void OrderFlowService::depth_build(const DepthReq &req) {
           tk.ask_price[k] = as ? NAN_F : (base + static_cast<float>(al->price)) * 0.01f;
           tk.ask_volume[k] = as ? 0.0f : static_cast<float>(al->net_quantity) * VOLUME_TO_LOT; // < 0
         }
-        tk.mid_price = (tk.bid_price[0] + tk.ask_price[0]) * 0.5f;
+        // 竞价交叉秒: mid = 预撮合参考价 (图1 mid 线在竞价段即预撮合曲线)
+        tk.mid_price = tk.ref_price > 0.0f ? tk.ref_price
+                                           : (tk.bid_price[0] + tk.ask_price[0]) * 0.5f;
       }
       if (cur_sec != SIZE_MAX)
         commit_second(cur_sec); // 收尾: 最后一秒
@@ -491,8 +497,10 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       slot.data_valid_count += v;
     slot.has_data = !slot.ticks.empty();
 
-    if (slot.has_data)
-      slot.build_plot(); // 热力图已在重放中增量建好
+    if (slot.has_data) {
+      slot.build_plot();           // 热力图已在重放中增量建好
+      slot.build_auto_threshold(); // 依赖 plot 的初始 Y 视野
+    }
   }
 
   // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + _meta 选列读, 与图2 同源指标;

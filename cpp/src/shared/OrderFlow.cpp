@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 // ============================================================================
 // OrderFlow::Kline Implementation
@@ -115,6 +116,9 @@ OrderFlow::Depth::Snapshot OrderFlow::Depth::query_depth(size_t plot_idx) const 
 
   const Tick &tick = ticks[plot_idx];
   result.mid_price = tick.mid_price;
+  result.ref_price = tick.ref_price;
+  result.matched_amount = tick.matched_amount;
+  result.imbalance_amount = tick.imbalance_amount;
   result.bid_price = &tick.bid_price;
   result.ask_price = &tick.ask_price;
   result.bid_volume = &tick.bid_volume;
@@ -138,27 +142,96 @@ void OrderFlow::Depth::build_plot() {
   plot.best_ask.reserve(ticks.size());
   plot.tick_idx_map.assign(OrderFlowConst::L0_CAPACITY, SIZE_MAX);
 
+  constexpr double NAN_D = std::numeric_limits<double>::quiet_NaN();
+  double y_min = (std::numeric_limits<double>::max)();
+  double y_max = std::numeric_limits<double>::lowest();
+  double y_min_all = y_min, y_max_all = y_max; // 全时段兜底 (当日无连续竞价秒才用)
+
   for (size_t i = 0; i < ticks.size(); ++i) {
     const Tick &tick = ticks[i];
     assert(tick.tick_idx < OrderFlowConst::L0_CAPACITY && "tick_idx out of intra-day range");
 
+    // 竞价交叉秒: bid/ask/spread 无意义 → NaN 断线不画, mid 已是预撮合参考价
+    const bool crossed = tick.ref_price > 0.0f;
+
     plot.tick_idx_map[tick.tick_idx] = i;
     plot.x.push_back(static_cast<double>(tick.tick_idx));
     plot.mid_price.push_back(static_cast<double>(tick.mid_price));
-    plot.best_bid.push_back(static_cast<double>(tick.bid_price[0]));
-    plot.best_ask.push_back(static_cast<double>(tick.ask_price[0]));
+    plot.best_bid.push_back(crossed ? NAN_D : static_cast<double>(tick.bid_price[0]));
+    plot.best_ask.push_back(crossed ? NAN_D : static_cast<double>(tick.ask_price[0]));
+
+    // 范围: bid/ask 极值 (bid <= mid <= ask, 初始视图不切掉 spread 边缘, 与图1 双击 fit
+    // 口径一致); 只统计连续竞价秒 —— 竞价预撮合价可能摸涨跌停, 不应撑大初始视野
+    const double lo = crossed ? static_cast<double>(tick.mid_price) : static_cast<double>(tick.bid_price[0]);
+    const double hi = crossed ? static_cast<double>(tick.mid_price) : static_cast<double>(tick.ask_price[0]);
+    y_min_all = std::min(y_min_all, lo);
+    y_max_all = std::max(y_max_all, hi);
+    if (tick.tick_idx >= OrderFlowConst::SEG_PREOPEN_END &&
+        tick.tick_idx < OrderFlowConst::SEG_AUCTION_CLOSE_BEGIN) {
+      y_min = std::min(y_min, lo);
+      y_max = std::max(y_max, hi);
+    }
+  }
+  if (y_min > y_max) { // 当日只有竞价段快照: 退回全时段
+    y_min = y_min_all;
+    y_max = y_max_all;
   }
 
   if (!plot.mid_price.empty()) {
-    // 范围取 best_bid/best_ask 极值 (bid <= mid <= ask): 初始视图不切掉 spread 边缘,
-    // 且与图1 双击 fit 的口径一致 (见 RenderL0Plot 的 fit 钩子)
-    plot.y_min = *std::min_element(plot.best_bid.begin(), plot.best_bid.end());
-    plot.y_max = *std::max_element(plot.best_ask.begin(), plot.best_ask.end());
+    plot.y_min = y_min;
+    plot.y_max = y_max;
 
     const double margin = std::max((plot.y_max - plot.y_min) * OrderFlowConst::Y_MARGIN_RATIO, 0.1);
     plot.y_min_with_margin = plot.y_min - margin;
     plot.y_max_with_margin = plot.y_max + margin;
   }
+}
+
+// 自动阈值 = 「档·秒」权重下 log10(净额) 的上分位数:
+//   权重 w = 矩形持续秒数 (档高恒 1 tick → w ∝ 该档在图上的着色面积),
+//   自高额 bin 向低累计到总权重的 HEATMAP_AUTO_INK_RATIO 即停 → 着色面积 / 有量面积
+//   恒定, 故不同日/标的的色块浓度观感一致. 单趟 O(rect_count), 无分配.
+void OrderFlow::Depth::build_auto_threshold() {
+  constexpr float THR_MIN = OrderFlowConst::HEATMAP_LOG_THR_MIN;
+  constexpr float STEP = OrderFlowConst::HEATMAP_LOG_THR_STEP;
+  constexpr size_t NBIN =
+      static_cast<size_t>((OrderFlowConst::HEATMAP_LOG_THR_MAX - THR_MIN) / STEP + 0.5f);
+
+  auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
+  if (merged.rect_count == 0)
+    return;
+
+  const float min_amount = std::pow(10.0f, THR_MIN); // 低于滑条下限的档永远不显示, 不计入总量
+  std::array<double, NBIN> hist{};
+  double total = 0.0;
+  for (const auto &level : merged.levels) {
+    // 初始视野外的价位不影响观感 (双击复位即此视野)
+    if (level.price < plot.y_min_with_margin || level.price > plot.y_max_with_margin)
+      continue;
+    for (const auto &r : level.rects) {
+      const float a = std::abs(static_cast<float>(r.amount_rmb));
+      if (a < min_amount)
+        continue;
+      const size_t b = std::min(NBIN - 1, static_cast<size_t>((std::log10(a) - THR_MIN) / STEP));
+      const double w = static_cast<double>(r.tick_end - r.tick_start);
+      hist[b] += w;
+      total += w;
+    }
+  }
+  if (total <= 0.0)
+    return;
+
+  const double target = total * OrderFlowConst::HEATMAP_AUTO_INK_RATIO;
+  double cum = 0.0;
+  size_t bin = 0; // 累计不到目标 (ratio >= 1) 才落在下限
+  for (size_t i = NBIN; i-- > 0;) {
+    cum += hist[i];
+    if (cum >= target) {
+      bin = i;
+      break;
+    }
+  }
+  auto_log_threshold = THR_MIN + static_cast<float>(bin) * STEP; // 该 bin 下沿
 }
 
 void OrderFlow::Depth::heatmap_begin(HeatmapScratch &scratch) {
@@ -239,6 +312,7 @@ void OrderFlow::Depth::clear() {
   ticks.clear();
   plot.clear();
   merged.clear();
+  auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
   for (auto &f : feat)
     f.clear();
   feat_y_min.fill(0.0f);
@@ -337,23 +411,42 @@ static float map_amount_to_intensity(float amount, float log_threshold) {
   return std::min(1.0f, std::max(0.0f, normalized));
 }
 
-// Signed amount → RGBA (ABGR packed): bid = green, ask = red
-static uint32_t amount_to_color(int32_t amount_rmb, float log_threshold) {
+// 日内时段 → 色系 (用户可一眼分辨三段): 0 = 集合竞价 (开盘/收盘, 蓝/品红),
+// 1 = 盘前5分钟 (单色灰, 不分买卖), 2 = 连续竞价 (绿/红, 原色系)
+static int tick_segment(size_t t) {
+  if (t < OrderFlowConst::SEG_AUCTION_OPEN_END || t >= OrderFlowConst::SEG_AUCTION_CLOSE_BEGIN)
+    return 0;
+  return t < OrderFlowConst::SEG_PREOPEN_END ? 1 : 2;
+}
+
+// Signed amount → RGBA (ABGR packed), 按时段换色系
+static uint32_t amount_to_color(int32_t amount_rmb, float log_threshold, int segment) {
   const float intensity = map_amount_to_intensity(static_cast<float>(amount_rmb), log_threshold);
   if (intensity <= 0.0f)
     return 0; // Transparent
 
   const uint8_t alpha = static_cast<uint8_t>(intensity * 200 + 55); // [55, 255]
+  auto pack = [alpha](uint8_t r, uint8_t g, uint8_t b) {
+    return static_cast<uint32_t>(alpha) << 24 | static_cast<uint32_t>(b) << 16 |
+           static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(r);
+  };
+
+  if (segment == 1) { // 盘前5分钟: 单色灰 (簿冻结, 无方向语义)
+    const uint8_t v = static_cast<uint8_t>(110 + intensity * 110);
+    return pack(v, v, v);
+  }
+  if (segment == 0) { // 集合竞价: bid = 蓝, ask = 品红
+    if (amount_rmb > 0)
+      return pack(0, static_cast<uint8_t>(60 + intensity * 60), static_cast<uint8_t>(150 + intensity * 105));
+    const uint8_t v = static_cast<uint8_t>(150 + intensity * 105);
+    return pack(v, 0, v);
+  }
+  // 连续竞价: bid = 绿, ask = 红
   if (amount_rmb > 0) {
     const uint8_t g = static_cast<uint8_t>(100 + intensity * 155);
-    const uint8_t b = static_cast<uint8_t>(intensity * 100);
-    return static_cast<uint32_t>(alpha) << 24 | static_cast<uint32_t>(b) << 16 |
-           static_cast<uint32_t>(g) << 8 | 0;
+    return pack(0, g, static_cast<uint8_t>(intensity * 100));
   }
-  const uint8_t r = static_cast<uint8_t>(150 + intensity * 105);
-  const uint8_t g = static_cast<uint8_t>(intensity * 50);
-  return static_cast<uint32_t>(alpha) << 24 | 0 << 16 |
-         static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(r);
+  return pack(static_cast<uint8_t>(150 + intensity * 105), static_cast<uint8_t>(intensity * 50), 0);
 }
 
 void OrderFlow::HeatmapColored::build(const Depth &src, float log_threshold) {
@@ -363,18 +456,33 @@ void OrderFlow::HeatmapColored::build(const Depth &src, float log_threshold) {
   rects.reserve(src.merged.rect_count);
   metadata.reserve(src.merged.rect_count);
 
+  // 时段边界 (跨段的合并矩形按边界切开, 各段各自色系)
+  constexpr size_t SEG_BOUNDS[3] = {OrderFlowConst::SEG_AUCTION_OPEN_END,
+                                    OrderFlowConst::SEG_PREOPEN_END,
+                                    OrderFlowConst::SEG_AUCTION_CLOSE_BEGIN};
+
   for (const auto &level : src.merged.levels) {
     for (const auto &mr : level.rects) {
-      const uint32_t color = amount_to_color(mr.amount_rmb, log_threshold);
-      if (color == 0)
-        continue;
-
-      rects.push_back({static_cast<double>(mr.tick_start), static_cast<double>(mr.price_high),
-                       static_cast<double>(mr.tick_end), static_cast<double>(mr.price_low), color});
-      // bid (正) 展示 price_high, ask (负) 展示 price_low
-      metadata.push_back({mr.amount_rmb,
-                          mr.amount_rmb > 0 ? mr.price_high : mr.price_low,
-                          mr.tick_start, mr.tick_end});
+      size_t t0 = mr.tick_start;
+      while (t0 < mr.tick_end) {
+        size_t t1 = mr.tick_end;
+        for (size_t b : SEG_BOUNDS) {
+          if (b > t0 && b < t1) {
+            t1 = b;
+            break;
+          }
+        }
+        const uint32_t color = amount_to_color(mr.amount_rmb, log_threshold, tick_segment(t0));
+        if (color != 0) {
+          rects.push_back({static_cast<double>(t0), static_cast<double>(mr.price_high),
+                           static_cast<double>(t1), static_cast<double>(mr.price_low), color});
+          // bid (正) 展示 price_high, ask (负) 展示 price_low
+          metadata.push_back({mr.amount_rmb,
+                              mr.amount_rmb > 0 ? mr.price_high : mr.price_low,
+                              t0, t1});
+        }
+        t0 = t1;
+      }
     }
   }
 
@@ -387,6 +495,86 @@ void OrderFlow::HeatmapColored::clear() {
   metadata.clear();
   gen = UINT32_MAX;
   threshold = -1.0f;
+}
+
+// ============================================================================
+// OrderFlow::DepthProfile Implementation (GUI 线程)
+// ============================================================================
+
+void OrderFlow::DepthProfile::build(const Depth &src, size_t tick_idx) {
+  Trace;
+  price.clear();
+  amount.clear();
+  bid_cum_x.clear();
+  bid_cum_y.clear();
+  ask_cum_x.clear();
+  ask_cum_y.clear();
+  bid_top = ask_low = 0;
+  cum_max = 0;
+
+  // 锚点秒全簿截面: 每价位在 rects (tick_start 升序, 首尾相连) 里二分找覆盖秒
+  std::vector<std::pair<double, double>> rows; // (price, SIGNED amount 元)
+  rows.reserve(src.merged.levels.size());
+  for (const auto &level : src.merged.levels) {
+    const auto &rects = level.rects;
+    auto it = std::upper_bound(rects.begin(), rects.end(), tick_idx,
+                               [](size_t t, const Depth::HeatmapMerged::Rect &r) { return t < r.tick_start; });
+    if (it == rects.begin())
+      continue;
+    const auto &r = *(it - 1);
+    if (r.tick_end <= tick_idx || r.amount_rmb == 0)
+      continue;
+    rows.emplace_back(static_cast<double>(level.price), static_cast<double>(r.amount_rmb));
+  }
+  std::sort(rows.begin(), rows.end()); // 价升序
+
+  price.reserve(rows.size());
+  amount.reserve(rows.size());
+  for (const auto &[p, a] : rows) {
+    price.push_back(p);
+    amount.push_back(a);
+    if (a > 0)
+      bid_top = p; // 价升序: 最终值 = 最高买档
+    else if (ask_low == 0)
+      ask_low = p; // 首个卖档 = 最低卖价
+  }
+
+  // 累计曲线 (万元): 买自最高买价向下, 卖自最低卖价向上
+  constexpr double TO_WAN = 1e-4;
+  double cum = 0;
+  for (size_t i = rows.size(); i-- > 0;) {
+    if (rows[i].second <= 0)
+      continue;
+    cum += rows[i].second * TO_WAN;
+    bid_cum_x.push_back(cum);
+    bid_cum_y.push_back(rows[i].first);
+  }
+  cum_max = cum;
+  cum = 0;
+  for (const auto &[p, a] : rows) {
+    if (a >= 0)
+      continue;
+    cum += -a * TO_WAN;
+    ask_cum_x.push_back(cum);
+    ask_cum_y.push_back(p);
+  }
+  cum_max = std::max(cum_max, cum);
+
+  gen = src.gen;
+  tick = tick_idx;
+}
+
+void OrderFlow::DepthProfile::clear() {
+  price.clear();
+  amount.clear();
+  bid_cum_x.clear();
+  bid_cum_y.clear();
+  ask_cum_x.clear();
+  ask_cum_y.clear();
+  bid_top = ask_low = 0;
+  cum_max = 0;
+  gen = UINT32_MAX;
+  tick = SIZE_MAX;
 }
 
 // ============================================================================
@@ -405,6 +593,7 @@ void OrderFlow::clear() {
   depth_pending.store(false, std::memory_order_relaxed);
   universe.clear();
   heatmap_colored.clear();
+  depth_profile.clear();
   ui.clear();
   needs_rescan.store(false, std::memory_order_relaxed);
 }

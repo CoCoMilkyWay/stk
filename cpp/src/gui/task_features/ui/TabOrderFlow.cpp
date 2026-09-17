@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
@@ -48,6 +49,18 @@ static int L1TimeFormatter(double value, char *buff, int size, void *user_data) 
     return std::snprintf(buff, size, "%s %02d:%02d", date.c_str(), ct.hour, ct.minute);
   return std::snprintf(buff, size, "%s/%s/%s %02d:%02d", date.substr(2, 2).c_str(),
                        date.substr(4, 2).c_str(), date.substr(6, 2).c_str(), ct.hour, ct.minute);
+}
+
+// 图1/图2 Y (价格) → 定宽 (右对齐补空格, 等宽字体下宽度恒定): 刻度文字宽度决定
+// 左侧留白, 换标的时价位数量级一变, plot 区域边界跟着挪 → X 像素映射看起来在抖
+static int PriceFormatter(double value, char *buff, int size, void * /*user_data*/) {
+  return std::snprintf(buff, size, "%8.2f", value);
+}
+
+// 图1右 Y (价格) → 相对锚点 mid/参考价的百分比 (user_data = 基准价 double*)
+static int DepthPercentFormatter(double value, char *buff, int size, void *user_data) {
+  const double base = *static_cast<const double *>(user_data);
+  return std::snprintf(buff, size, "%+.1f%%", (value / base - 1.0) * 100.0);
 }
 
 static void FormatTimeHMS(char *buf, size_t size, uint8_t hour, uint8_t minute, uint8_t second) {
@@ -93,6 +106,46 @@ static const char *FeatName(const Feature &feature, const std::vector<const char
   std::snprintf(buf, size, "%s (%s)", ok ? metas[idx].name_cn : "?",
                 ok && static_cast<size_t>(idx) < cat2.size() ? cat2[static_cast<size_t>(idx)] : "?");
   return buf;
+}
+
+// ============================================================================
+// Feature Overlay Axes (仅特征信号; 两图自身的轴行为不受影响)
+//   price     → Y1: 与主图价格共轴 (NoFit, 不参与主图自动缩放)
+//   rank      → Y2: 固定 [-0.1, 1.1] (值域 [0,1] 两头留余量, 贴边线不压轴框)
+//   ratio*/raw/? → Y3: 同类共轴, 范围 = 各线 min/max 并集 (自动缩放)
+//   rank 与 ratio/raw 同时在场 → 右轴语义冲突, 两轴隐去刻度 (线照常画)
+// ============================================================================
+
+enum FeatAxisKind { FEAT_AXIS_PRICE = 0,
+                    FEAT_AXIS_RANK,
+                    FEAT_AXIS_SCALE };
+
+static FeatAxisKind FeatAxisOf(const std::vector<const char *> &cat2, int idx) {
+  const char *c = (idx >= 0 && static_cast<size_t>(idx) < cat2.size()) ? cat2[static_cast<size_t>(idx)] : "?";
+  if (std::strcmp(c, "price") == 0)
+    return FEAT_AXIS_PRICE;
+  if (std::strcmp(c, "rank") == 0)
+    return FEAT_AXIS_RANK;
+  return FEAT_AXIS_SCALE; // ratio / ratio_pos / ratio_neg / raw / ?
+}
+
+static ImAxis FeatYAxis(FeatAxisKind kind) {
+  return kind == FEAT_AXIS_PRICE ? ImAxis_Y1 : (kind == FEAT_AXIS_RANK ? ImAxis_Y2 : ImAxis_Y3);
+}
+
+// Setup 阶段: 按在场类别开右轴 (必须在任何绘制调用之前)
+static void SetupFeatAxes(bool has_rank, bool has_scale, float scale_min, float scale_max) {
+  const ImPlotAxisFlags flags = ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite |
+                                ((has_rank && has_scale) ? ImPlotAxisFlags_NoDecorations : 0);
+  if (has_rank) {
+    ImPlot::SetupAxis(ImAxis_Y2, nullptr, flags);
+    ImPlot::SetupAxisLimits(ImAxis_Y2, -0.1, 1.1, ImPlotCond_Always); // [0,1] 两头各留点余量
+  }
+  if (has_scale) {
+    ImPlot::SetupAxis(ImAxis_Y3, nullptr, flags);
+    if (scale_min <= scale_max)
+      ImPlot::SetupAxisLimits(ImAxis_Y3, scale_min, scale_max, ImPlotCond_Always);
+  }
 }
 
 // ============================================================================
@@ -148,84 +201,140 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
 }
 
 // ============================================================================
-// Depth Panel Renderer
+// Depth Panel Renderer (图1右: 锚点秒纵向深度图, 全簿 = 热力图截面)
+//   Y = 价格, 每帧同步图1视野 (严格对齐), 刻度显示相对基准价百分比
+//   逐档净额密堆横条 (像素空间, 100W cap; hover 高亮 + 数值) 与
+//   买卖累计曲线 (X 轴, 万元) 解耦, 各自看各自细节;
+//   竞价交叉簿三态: 纯买 / 纯卖 / 重合区 (过渡色带), 预撮合参考价横线
 // ============================================================================
 
-static void RenderDepthPanel(const OrderFlow::Depth::Snapshot &depth, const std::string &date, float panel_width) {
-  if (!depth.valid) {
+static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t plot_idx) {
+  const OrderFlow::Depth::Snapshot snap = dp.query_depth(plot_idx);
+  if (!snap.valid) {
     ImGui::TextDisabled("No valid data");
     return;
   }
 
-  char date_buf[16], time_buf[16];
-  FormatDateFull(date_buf, sizeof(date_buf), date);
-  FormatTimeHMS(time_buf, sizeof(time_buf), depth.time.hour, depth.time.minute, depth.time.second);
+  // 截面缓存: (槽 gen, 锚点秒) 变了才重建
+  auto &prof = of.depth_profile;
+  const bool rebuilt = !prof.matches(dp.gen, snap.tick_idx);
+  if (rebuilt)
+    prof.build(dp, snap.tick_idx);
+  if (prof.price.empty()) {
+    ImGui::TextDisabled("No book at anchor");
+    return;
+  }
 
-  ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-  ImGui::SetWindowFontScale(0.75f);
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1, 0));
+  // 基准价 (Y 轴百分比 / 横线): 竞价交叉秒 = 预撮合参考价, 其余 = 中间价
+  double mark = snap.ref_price > 0.0f ? static_cast<double>(snap.ref_price)
+                                      : static_cast<double>(snap.mid_price);
 
-  ImGui::Text("%s %s", date_buf, time_buf);
-  ImGui::Separator();
+  if (ImPlot::BeginPlot("##DepthProfile", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
+    const ImPlotCond cond = rebuilt ? ImPlotCond_Always : ImPlotCond_Once;
+    // Y 与图1 视野每帧同步 (价格严格对齐, Lock 不可单独缩放); 刻度显示相对基准价百分比
+    ImPlot::SetupAxes(nullptr, nullptr, 0, ImPlotAxisFlags_Opposite | ImPlotAxisFlags_Lock);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(prof.cum_max * 1.05, 1.0), cond);
+    const auto &ui = of.ui;
+    if (ui.l0_y_min < ui.l0_y_max)
+      ImPlot::SetupAxisLimits(ImAxis_Y1, ui.l0_y_min, ui.l0_y_max, ImPlotCond_Always);
+    else
+      ImPlot::SetupAxisLimits(ImAxis_Y1, dp.plot.y_min_with_margin, dp.plot.y_max_with_margin, cond);
+    ImPlot::SetupAxisFormat(ImAxis_Y1, DepthPercentFormatter, &mark);
 
-  const float bar_max_width = panel_width - 100.0f;
+    ImPlot::PushPlotClipRect();
+    ImDrawList *draw_list = ImPlot::GetPlotDrawList();
+    const ImPlotRect limits = ImPlot::GetPlotLimits();
 
-  // NOTE: volume is SIGNED (bid > 0, ask < 0); NaN 档位 (哨兵) 直接跳过
-  auto render_level = [&](float price, float volume, bool is_bid) {
-    if (price != price) { // NaN: 无此档
-      ImGui::TextDisabled("      --");
-      return;
+    // 重合区带 (竞价交叉: 买卖档在 [ask_low, bid_top] 混排) — 过渡色打底
+    if (prof.ask_low > 0 && prof.bid_top > 0 && prof.ask_low < prof.bid_top) {
+      const ImVec2 p0 = ImPlot::PlotToPixels(limits.X.Min, prof.bid_top);
+      const ImVec2 p1 = ImPlot::PlotToPixels(limits.X.Max, prof.ask_low);
+      draw_list->AddRectFilled(p0, p1, IM_COL32(230, 180, 60, 40));
     }
-    const float amount = volume_to_amount(volume, price); // Preserves sign
-    const float abs_amount = std::abs(amount);
-    const float ratio = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
-    const float amount_in_wan = amount_to_wan(amount);
 
-    ImVec4 bar_color;
-    const bool expected_sign = is_bid ? (amount > 0) : (amount < 0);
-    if (expected_sign) {
-      const float intensity = std::min(1.0f, abs_amount / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
-      if (is_bid) {
-        bar_color = ImVec4(0.3f * (1.0f - intensity * 0.5f), 0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.8f);
+    // 逐档净额横条: 密堆矩形 (档高 = 1 tick, 相邻档无缝), 像素空间自左向右,
+    // 100W cap 满宽 —— 与 X 轴 (累计曲线) 解耦, 缩放曲线不影响柱子
+    const ImVec2 plot_pos = ImPlot::GetPlotPos();
+    const float plot_w = ImPlot::GetPlotSize().x;
+    constexpr double HALF_TICK = OrderFlowConst::TICK_SIZE * 0.5;
+
+    // Hover: 鼠标价格落在哪个档 (价升序二分)
+    int hovered = -1;
+    if (ImPlot::IsPlotHovered()) {
+      const double mp = ImPlot::GetPlotMousePos().y;
+      const auto it = std::lower_bound(prof.price.begin(), prof.price.end(), mp - HALF_TICK);
+      if (it != prof.price.end() && std::abs(*it - mp) <= HALF_TICK)
+        hovered = static_cast<int>(it - prof.price.begin());
+    }
+
+    for (size_t i = 0; i < prof.price.size(); ++i) {
+      const double p = prof.price[i];
+      if (p + HALF_TICK < limits.Y.Min || p - HALF_TICK > limits.Y.Max)
+        continue;
+      const double a = prof.amount[i];
+      const float ratio = std::min(1.0f, static_cast<float>(std::abs(a)) / OrderFlowConst::DEPTH_BAR_MAX_AMOUNT);
+      const bool hov = static_cast<int>(i) == hovered;
+      const ImU32 col = a > 0 ? IM_COL32(60, 200, 60, hov ? 230 : 140)
+                              : IM_COL32(220, 70, 70, hov ? 230 : 140);
+      const ImVec2 r0(plot_pos.x, ImPlot::PlotToPixels(0.0, p + HALF_TICK).y);
+      const ImVec2 r1(plot_pos.x + ratio * plot_w, ImPlot::PlotToPixels(0.0, p - HALF_TICK).y);
+      draw_list->AddRectFilled(r0, r1, col);
+      if (hov)
+        draw_list->AddRect(r0, r1, IM_COL32(255, 255, 255, 255));
+    }
+
+    // 角标信息 (图内左上角; 图外不放文本, 保证与图1 plot 区域像素级对齐)
+    {
+      char buf[64], date_buf[16], time_buf[16];
+      FormatDateFull(date_buf, sizeof(date_buf), dp.date);
+      FormatTimeHMS(time_buf, sizeof(time_buf), snap.time.hour, snap.time.minute, snap.time.second);
+      const float lh = ImGui::GetTextLineHeight();
+      const ImVec2 tp(plot_pos.x + 6.0f, plot_pos.y + 4.0f);
+      std::snprintf(buf, sizeof(buf), "%s %s", date_buf, time_buf);
+      draw_list->AddText(tp, IM_COL32(255, 255, 255, 210), buf);
+      if (snap.ref_price > 0.0f) { // 竞价交叉秒: 预撮合三元组
+        std::snprintf(buf, sizeof(buf), "预撮合 %.2f元", snap.ref_price);
+        draw_list->AddText(ImVec2(tp.x, tp.y + lh), IM_COL32(255, 190, 50, 255), buf);
+        std::snprintf(buf, sizeof(buf), "匹配%.0f万 失衡%+.0f万",
+                      amount_to_wan(snap.matched_amount), amount_to_wan(snap.imbalance_amount));
+        draw_list->AddText(ImVec2(tp.x, tp.y + 2.0f * lh), IM_COL32(255, 190, 50, 255), buf);
       } else {
-        bar_color = ImVec4(0.8f, 0.3f * (1.0f - intensity * 0.5f), 0.3f * (1.0f - intensity * 0.5f), 0.8f);
+        std::snprintf(buf, sizeof(buf), "中间价 %.2f元", snap.mid_price);
+        draw_list->AddText(ImVec2(tp.x, tp.y + lh), IM_COL32(255, 255, 0, 255), buf);
       }
-    } else {
-      bar_color = ImVec4(0.9f, 0.9f, 0.3f, 0.8f); // 符号异常: 黄色告警
+    }
+    ImPlot::PopPlotClipRect();
+
+    if (hovered >= 0) {
+      const double p = prof.price[static_cast<size_t>(hovered)];
+      const double a = prof.amount[static_cast<size_t>(hovered)];
+      ImGui::SetTooltip("%.2f元 (%+.2f%%)\n%s %.1f万", p, (p / mark - 1.0) * 100.0,
+                        a > 0 ? "买" : "卖", amount_to_wan(static_cast<float>(std::abs(a))));
     }
 
-    const float bar_height = 5.0f;
-    const float text_height = ImGui::GetTextLineHeight();
-    const float y_offset = (text_height - bar_height) * 0.5f;
+    // 累计曲线: 买自最高买价向下, 卖自最低卖价向上 (交叉簿两线在重合区交叠)
+    if (!prof.bid_cum_x.empty()) {
+      ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 0.3f, 0.9f), 2.0f);
+      ImPlot::PlotLine("BidΣ", prof.bid_cum_x.data(), prof.bid_cum_y.data(),
+                       static_cast<int>(prof.bid_cum_x.size()));
+    }
+    if (!prof.ask_cum_x.empty()) {
+      ImPlot::SetNextLineStyle(ImVec4(0.95f, 0.35f, 0.35f, 0.9f), 2.0f);
+      ImPlot::PlotLine("AskΣ", prof.ask_cum_x.data(), prof.ask_cum_y.data(),
+                       static_cast<int>(prof.ask_cum_x.size()));
+    }
 
-    const float cursor_y = ImGui::GetCursorPosY();
-    ImGui::SetCursorPosY(cursor_y + y_offset);
+    // 参考价 / 中间价横线 (标注绝对价, 轴刻度已是百分比)
+    ImPlot::SetNextLineStyle(snap.ref_price > 0.0f ? ImVec4(1.0f, 0.75f, 0.2f, 1.0f)
+                                                   : ImVec4(1.0f, 1.0f, 1.0f, 0.7f),
+                             snap.ref_price > 0.0f ? 2.0f : 1.0f);
+    ImPlot::PlotInfLines("##mark", &mark, 1, ImPlotInfLinesFlags_Horizontal);
+    ImPlot::Annotation(limits.X.Max, mark,
+                       snap.ref_price > 0.0f ? ImVec4(1.0f, 0.75f, 0.2f, 1.0f) : ImVec4(1, 1, 1, 0.7f),
+                       ImVec2(-5, -5), true, "%.2f", mark);
 
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-    ImGui::ProgressBar(ratio, ImVec2(bar_max_width, bar_height), "");
-    ImGui::PopStyleColor();
-
-    ImGui::SameLine();
-    ImGui::SetCursorPosY(cursor_y);
-    ImGui::Text("%6.2f元 %+7.2f万", price, amount_in_wan);
-  };
-
-  // Ask side (red) - 10 levels, from top (ask10) to bottom (ask1)
-  for (int i = 9; i >= 0; --i) {
-    render_level((*depth.ask_price)[i], (*depth.ask_volume)[i], false);
+    ImPlot::EndPlot();
   }
-
-  ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.2f元", depth.mid_price);
-
-  // Bid side (green) - 10 levels, from top (bid1) to bottom (bid10)
-  for (int i = 0; i < 10; ++i) {
-    render_level((*depth.bid_price)[i], (*depth.bid_volume)[i], true);
-  }
-
-  ImGui::SetWindowFontScale(1.0f);
-  ImGui::PopStyleVar(2);
-  ImGui::PopFont();
 }
 
 // ============================================================================
@@ -245,31 +354,45 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vecto
     return;
   }
 
-  // 新槽 (gen 变了) → 重置视图
+  // 新槽 (gen 变了) → 重置视图 + 热力图阈值回到当日自动初值 (之后尊重用户拖动)
   const bool slot_changed = (ui.l0_last_gen != dp.gen);
   ui.l0_last_gen = dp.gen;
+  if (slot_changed)
+    ui.log_amount_threshold = dp.auto_log_threshold;
 
   if (ImPlot::BeginPlot("##L0Price", ImVec2(-1, -1))) {
     const ImPlotCond cond = slot_changed ? ImPlotCond_Always : ImPlotCond_Once;
 
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(OrderFlowConst::L0_CAPACITY), cond);
+    // X 是固定域 (全天交易秒), 只在首帧设一次 → 换标的/换日不动视野 (双击才复位)
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(OrderFlowConst::L0_CAPACITY), ImPlotCond_Once);
     ImPlot::SetupAxisLimits(ImAxis_Y1, dp.plot.y_min_with_margin, dp.plot.y_max_with_margin, cond);
     ImPlot::SetupAxisFormat(ImAxis_X1, L0TimeFormatter);
+    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换标的不挪 plot 左边界
 
-    // Y2: 特征 overlay (全部特征共轴, 范围 = 并集)
-    if (dp.n_feat > 0) {
-      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
-      float y2_min = (std::numeric_limits<float>::max)();
-      float y2_max = std::numeric_limits<float>::lowest();
-      for (size_t i = 0; i < dp.n_feat; ++i) {
-        if (dp.feat[i].x.empty())
-          continue;
-        y2_min = std::min(y2_min, dp.feat_y_min[i]);
-        y2_max = std::max(y2_max, dp.feat_y_max[i]);
+    // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
+    bool feat_rank = false, feat_scale = false;
+    float scale_min = (std::numeric_limits<float>::max)();
+    float scale_max = std::numeric_limits<float>::lowest();
+    for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
+      if (dp.feat[i].x.empty())
+        continue;
+      const FeatAxisKind kind = FeatAxisOf(cat2, ui.depth_feats[i]);
+      if (kind == FEAT_AXIS_RANK) {
+        feat_rank = true;
+      } else if (kind == FEAT_AXIS_SCALE) {
+        feat_scale = true;
+        scale_min = std::min(scale_min, dp.feat_y_min[i]);
+        scale_max = std::max(scale_max, dp.feat_y_max[i]);
       }
-      if (y2_min <= y2_max)
-        ImPlot::SetupAxisLimits(ImAxis_Y2, y2_min, y2_max, ImPlotCond_Always);
+    }
+    SetupFeatAxes(feat_rank, feat_scale, scale_min, scale_max);
+
+    // 当前 Y 视野快照 → 右侧深度面板每帧同步 (两图价格轴严格对齐)
+    {
+      const ImPlotRect lr = ImPlot::GetPlotLimits();
+      ui.l0_y_min = lr.Y.Min;
+      ui.l0_y_max = lr.Y.Max;
     }
 
     // ------------------------------------------------------------------
@@ -332,21 +455,24 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vecto
     // 盘口线: best bid / ask + spread 填充 + mid
     // ------------------------------------------------------------------
     if (!dp.plot.x.empty()) {
+      // 盘口线全部 NoFit: 双击 fit 只认下方手动 FitPoint (= 初始视野口径),
+      // 竞价段预撮合 mid 摸涨跌停不会撑大 fit
       const int n = static_cast<int>(dp.plot.x.size());
       ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.3f, 0.8f, 0.3f, 0.7f));
-      ImPlot::PlotStairs("Best Bid", dp.plot.x.data(), dp.plot.best_bid.data(), n);
+      ImPlot::PlotStairs("Best Bid", dp.plot.x.data(), dp.plot.best_bid.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
       ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.8f, 0.3f, 0.3f, 0.7f));
-      ImPlot::PlotStairs("Best Ask", dp.plot.x.data(), dp.plot.best_ask.data(), n);
+      ImPlot::PlotStairs("Best Ask", dp.plot.x.data(), dp.plot.best_ask.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
       ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(1.0f, 1.0f, 0.0f, 0.6f));
-      ImPlot::PlotShaded("Spread", dp.plot.x.data(), dp.plot.best_bid.data(), dp.plot.best_ask.data(), n);
+      ImPlot::PlotShaded("Spread", dp.plot.x.data(), dp.plot.best_bid.data(), dp.plot.best_ask.data(), n,
+                         ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
       ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
-      ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n);
+      ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
       // 双击复位 = 新标的初始渲染的口径 (X 全天 + Y 带 margin); 否则 ImPlot 默认
@@ -360,16 +486,22 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vecto
     }
 
     // ------------------------------------------------------------------
-    // 特征 overlay (Y2, 多选; legend = 中文名 (cat2), 颜色 ImPlot 自动分配)
+    // 特征 overlay (多选; 轴按 Cat2 分流, legend = 中文名 (cat2), 颜色 ImPlot 自动分配)
     // ------------------------------------------------------------------
     for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
       const auto &fl = dp.feat[i];
       if (fl.x.empty())
         continue;
       char label[128];
-      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+      const FeatAxisKind kind = FeatAxisOf(cat2, ui.depth_feats[i]);
+      ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
+      // 颜色按选中槽位取 (不用 ImPlot 的 item 序自动分配): 两图 item 序不同, 同一
+      // 特征才能在图1 图2 同色
+      ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
+      // price 类共用主图 Y1: NoFit 保证图1 自动/双击缩放口径不被特征撑大
       ImPlot::PlotStairs(FeatName(feature, cat2, dp.feat_level, ui.depth_feats[i], label, sizeof(label)),
-                         fl.x.data(), fl.y.data(), static_cast<int>(fl.x.size()));
+                         fl.x.data(), fl.y.data(), static_cast<int>(fl.x.size()),
+                         kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     }
 
@@ -417,54 +549,64 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const std::vecto
   auto &k = of.kline;
 
   uint32_t pub_gen;
-  size_t pub_days, pub_points;
+  size_t pub_days = 0, pub_points = 0;
   OrderFlow::Kline::unpack(k.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_points);
+  const bool ready = (pub_gen == (ui.kline_gen & 0xFFFF)); // 发布代追上请求代 = 数组前缀可读
 
-  if (pub_gen != (ui.kline_gen & 0xFFFF)) {
+  // 换代在途 (拖动标的): 照画空图, 轴与视野原样留着 —— 撤掉整张图会闪.
+  // 只有 dates 正在重扫 (rescan / 首帧) 时连 X 域和刻度都读不出来, 才出提示
+  if (!ready && (ui.kline_rescan_pending || ui.l1_x_max <= 0.0)) {
     ImGui::TextDisabled("Preparing K-line stream...");
     return;
   }
-  if (k.dates.empty()) {
-    ImGui::TextDisabled("No feature dates found");
-    return;
+  if (ready) {
+    if (k.dates.empty()) {
+      ImGui::TextDisabled("No feature dates found");
+      return;
+    }
+    ui.l1_x_max = static_cast<double>(k.dates.size() * OrderFlowConst::L1_CAPACITY);
+  } else {
+    pub_days = pub_points = 0; // 旧代计数不可用于本帧 (数组正在重建)
   }
 
-  const bool gen_changed = (ui.l1_last_pub_days == SIZE_MAX);
-
   if (ImPlot::BeginPlot("##KLine", ImVec2(-1, height))) {
-    const double x_max = static_cast<double>(k.dates.size() * OrderFlowConst::L1_CAPACITY);
-
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
-    // X: 全区间固定 (dates 数已知), 只在换代时重置 → 流式追加不打扰用户视野
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(x_max, 1.0), gen_changed ? ImPlotCond_Always : ImPlotCond_Once);
-    ImPlot::SetupAxisFormat(ImAxis_X1, L1TimeFormatter, &k); // YY/MM/DD HH:MM, 缩放自适应
-    // Y1: 发布范围变化 (流式追加) 时跟随; 稳定后不再打扰
+    // X: 固定域 (0 ~ 全部特征日), 只在域本身变了 (重扫日期) 才复位 → 换标的 / 流式追加都不动视野
+    const bool x_domain_changed = (ui.l1_x_applied != ui.l1_x_max);
+    ui.l1_x_applied = ui.l1_x_max;
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(ui.l1_x_max, 1.0),
+                            x_domain_changed ? ImPlotCond_Always : ImPlotCond_Once);
+    ImPlot::SetupAxisFormat(ImAxis_X1, L1TimeFormatter, &k); // YY/MM/DD HH:MM (非重扫期 dates 稳定)
+    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter);      // 定宽: 换标的不挪 plot 左边界
+    // Y1: 发布范围变化 (换代 / 流式追加) 时跟随; 稳定后不再打扰
     if (pub_points > 0 && ui.l1_last_pub_days != pub_days) {
       ImPlot::SetupAxisLimits(ImAxis_Y1, k.y_min.load(std::memory_order_relaxed),
                               k.y_max.load(std::memory_order_relaxed), ImPlotCond_Always);
     }
-    ui.l1_last_pub_days = pub_days;
+    if (ready)
+      ui.l1_last_pub_days = pub_days;
 
-    // Y2: 特征 overlay (共轴, 范围 = 并集)
-    const size_t nf = std::min(k.n_feat, ui.kline_feats.size());
+    // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
+    const size_t nf = ready ? std::min(k.n_feat, ui.kline_feats.size()) : 0;
     std::array<size_t, OrderFlowConst::MAX_FEATURES> feat_counts{};
-    bool any_feat = false;
     {
-      float y2_min = (std::numeric_limits<float>::max)();
-      float y2_max = std::numeric_limits<float>::lowest();
+      bool feat_rank = false, feat_scale = false;
+      float scale_min = (std::numeric_limits<float>::max)();
+      float scale_max = std::numeric_limits<float>::lowest();
       for (size_t i = 0; i < nf; ++i) {
         feat_counts[i] = k.feat_n[i].load(std::memory_order_acquire);
         if (feat_counts[i] == 0)
           continue;
-        any_feat = true;
-        y2_min = std::min(y2_min, k.feat_y_min[i].load(std::memory_order_relaxed));
-        y2_max = std::max(y2_max, k.feat_y_max[i].load(std::memory_order_relaxed));
+        const FeatAxisKind kind = FeatAxisOf(cat2, ui.kline_feats[i]);
+        if (kind == FEAT_AXIS_RANK) {
+          feat_rank = true;
+        } else if (kind == FEAT_AXIS_SCALE) {
+          feat_scale = true;
+          scale_min = std::min(scale_min, k.feat_y_min[i].load(std::memory_order_relaxed));
+          scale_max = std::max(scale_max, k.feat_y_max[i].load(std::memory_order_relaxed));
+        }
       }
-      if (any_feat) {
-        ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
-        if (y2_min <= y2_max)
-          ImPlot::SetupAxisLimits(ImAxis_Y2, y2_min, y2_max, ImPlotCond_Always);
-      }
+      SetupFeatAxes(feat_rank, feat_scale, scale_min, scale_max);
     }
 
     // ------------------------------------------------------------------
@@ -479,9 +621,14 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const std::vecto
       if (feat_counts[i] == 0)
         continue;
       char label[128];
-      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+      const FeatAxisKind kind = FeatAxisOf(cat2, ui.kline_feats[i]);
+      ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
+      // 颜色按选中槽位取, 与图1 同一口径 (选中层 = L1 时两图特征列表逐项相同 → 同色)
+      ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
+      // price 类共用主图 Y1: NoFit 保证 K线自身的缩放口径不被特征撑大
       ImPlot::PlotStairs(FeatName(feature, cat2, 1, ui.kline_feats[i], label, sizeof(label)),
-                         k.feat[i].x.data(), k.feat[i].y.data(), static_cast<int>(feat_counts[i]));
+                         k.feat[i].x.data(), k.feat[i].y.data(), static_cast<int>(feat_counts[i]),
+                         kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     }
 
@@ -566,67 +713,54 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
   }
 }
 
-static void RenderAssetSelector(SharedData &data, OrderFlow &of) {
-  const size_t num_assets = data.asset.items.size();
-  if (num_assets == 0)
-    return;
-
+// 标的选择 = 候选序位拖动条 (无下拉菜单): 条面覆盖显示 "代码-市场-名称[ST] 序位/总数",
+// 与筛选栏同行右侧; 滚轮在条上 ±1 档微调 (拖动条一像素可能跨多个标的)
+static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
   auto &ui = of.ui;
   auto &uni = of.universe;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  // 当前选中是否在候选内 (切日期/改筛选后可能落选; 保留选中, 仅标注)
-  const bool cur_in_candidates =
-      std::find(uni.candidates.begin(), uni.candidates.end(), asset_idx) != uni.candidates.end();
-
-  ImGui::Text("Asset:");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(220);
+  const int n = static_cast<int>(uni.candidates.size());
+  if (n == 0) {
+    ImGui::TextDisabled("无符合筛选的标的");
+    return;
+  }
 
-  const auto &current_asset = data.asset.items[asset_idx];
-  char preview_buf[256];
-  std::snprintf(preview_buf, sizeof(preview_buf), "%s-%s-%s%s",
-                current_asset.asset_code.c_str(), current_asset.exchange.c_str(),
-                current_asset.asset_name.c_str(), cur_in_candidates ? "" : " (不符筛选)");
+  // 当前选中是否在候选内 (切日期/改筛选后可能落选; 保留选中, 仅标注)
+  const auto it = std::find(uni.candidates.begin(), uni.candidates.end(), asset_idx);
+  const bool in_candidates = (it != uni.candidates.end());
+  int pos = in_candidates ? static_cast<int>(it - uni.candidates.begin()) : 0;
 
-  if (!cur_in_candidates)
+  // candidates 可能建于上一代槽 (新代在途), ST 标记按当前 front 槽尽力显示
+  const auto &meta_now = uni.front_slot().meta;
+  const uint8_t rw = asset_idx < meta_now.size() ? meta_now[asset_idx].risk_warn : 0;
+  const auto &asset = data.asset.items[asset_idx];
+  char overlay[256];
+  std::snprintf(overlay, sizeof(overlay), "%s-%s-%s%s  %d/%d",
+                asset.asset_code.c_str(), asset.exchange.c_str(), asset.asset_name.c_str(),
+                in_candidates ? (rw == 2 ? " *ST" : (rw == 1 ? " ST" : (rw == 3 ? " 退整" : "")))
+                              : " (不符筛选)",
+                in_candidates ? pos + 1 : 0, n);
+
+  ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - 4.0f, 160.0f));
+  if (!in_candidates)
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f));
-  const bool combo_open = ImGui::BeginCombo("##asset", preview_buf);
-  if (!cur_in_candidates)
+  bool changed = ImGui::SliderInt("##asset", &pos, 0, n - 1, overlay, ImGuiSliderFlags_AlwaysClamp);
+  if (!in_candidates)
     ImGui::PopStyleColor();
 
-  if (combo_open) {
-    if (uni.candidates.empty())
-      ImGui::TextDisabled("无符合筛选的标的");
-
-    // candidates 可能建于上一代槽 (新代在途), ST 标记按当前 front 槽尽力显示
-    const auto &meta_now = uni.front_slot().meta;
-
-    // candidates 已是 市场 → 代码 序
-    ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(uni.candidates.size()));
-    while (clipper.Step()) {
-      for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
-        const size_t i = uni.candidates[static_cast<size_t>(row)];
-        const auto &asset = data.asset.items[i];
-        const uint8_t rw = i < meta_now.size() ? meta_now[i].risk_warn : 0;
-
-        char label[256];
-        std::snprintf(label, sizeof(label), "%s-%s-%s%s##a%zu",
-                      asset.asset_code.c_str(), asset.exchange.c_str(),
-                      asset.asset_name.c_str(),
-                      rw == 2 ? " *ST" : (rw == 1 ? " ST" : (rw == 3 ? " 退整" : "")),
-                      i);
-
-        const bool is_selected = (asset_idx == i);
-        if (ImGui::Selectable(label, is_selected))
-          ui.selected_asset_idx = static_cast<int>(i);
-        if (is_selected)
-          ImGui::SetItemDefaultFocus();
-      }
+  const bool hovered = ImGui::IsItemHovered();
+  if (hovered) {
+    const float wheel = ImGui::GetIO().MouseWheel;
+    if (wheel != 0.0f) {
+      pos = std::clamp(pos + (wheel > 0.0f ? 1 : -1), 0, n - 1);
+      changed = true;
     }
-    ImGui::EndCombo();
+    ImGui::SetTooltip("拖动切标的 (候选序: 市场 → 代码), 滚轮 ±1");
   }
+  if (changed)
+    ui.selected_asset_idx = static_cast<int>(uni.candidates[static_cast<size_t>(pos)]);
 }
 
 // ============================================================================
@@ -687,12 +821,13 @@ static void RenderHeatmapControls(OrderFlow &of) {
   if (ui.show_heatmap) {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(150);
-    ImGui::SliderFloat("Threshold", &ui.log_amount_threshold, 3.0f, 7.0f, "%.1f");
+    ImGui::SliderFloat("Threshold", &ui.log_amount_threshold,
+                       OrderFlowConst::HEATMAP_LOG_THR_MIN, OrderFlowConst::HEATMAP_LOG_THR_MAX, "%.1f");
 
     if (ImGui::IsItemHovered()) {
       ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Always);
       ImGui::BeginTooltip();
-      ImGui::Text("Log10(金额) 下限阈值");
+      ImGui::Text("Log10(金额) 下限阈值 (换日/换标的自动取当日初值)");
       ImGui::Separator();
       ImGui::Text("3.0 = 1千元 (显示所有 >= 1千的档位)");
       ImGui::Text("4.0 = 1万元");
@@ -701,6 +836,8 @@ static void RenderHeatmapControls(OrderFlow &of) {
       ImGui::Text("7.0 = 1000万元 (仅显示大额档位)");
       ImGui::Separator();
       ImGui::TextWrapped("范围: [阈值, 1000万] 映射到 [透明, 完全实色]");
+      ImGui::TextWrapped("自动初值: 按当日全簿 (档·秒) 加权金额分位取, "
+                         "使着色面积占有量面积恒定 → 各日色块浓度观感一致");
       ImGui::EndTooltip();
     }
   }
@@ -757,7 +894,8 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.kline_asset = asset_idx;
     ui.kline_feats = l1_feats;
     ++ui.kline_gen;
-    ui.l1_last_pub_days = SIZE_MAX; // 换代: 重置轴管理
+    ui.l1_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
+    ui.kline_rescan_pending = rescan || ui.l1_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
     service->RequestKline(ui.kline_gen, asset_idx, std::move(l1_feats), rescan);
   }
 
@@ -766,6 +904,8 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   size_t pub_days, pub_points;
   OrderFlow::Kline::unpack(of.kline.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_points);
   const bool kline_ready = (pub_gen == (ui.kline_gen & 0xFFFF));
+  if (kline_ready)
+    ui.kline_rescan_pending = false; // dates 已随新代落定
 
   if (ui.l1_anchor_date.empty() && kline_ready && !of.kline.dates.empty()) {
     ui.l1_anchor_x = 0;
@@ -851,12 +991,13 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   ImGui::EndChild();
 
   ImGui::SameLine();
-  ImGui::BeginChild("DepthPanel", ImVec2(OrderFlowConst::DEPTH_PANEL_WIDTH, -1), true);
+  // 无边框: 与 L0Chart 同 padding, 两图 plot 区域上下像素级对齐
+  ImGui::BeginChild("DepthPanel", ImVec2(OrderFlowConst::DEPTH_PANEL_WIDTH, -1), false);
   {
     const OrderFlow::Depth &dp = of.depth_front_slot();
     if (dp.has_data && ui.l0_anchor_tick != SIZE_MAX) {
       const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.l0_anchor_tick));
-      RenderDepthPanel(dp.query_depth(plot_idx), dp.date, OrderFlowConst::DEPTH_PANEL_WIDTH);
+      RenderDepthPanel(of, dp, plot_idx);
     } else {
       ImGui::TextDisabled("No L0 data");
     }
@@ -870,8 +1011,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   ImGui::BeginChild("BottomSection", ImVec2(0, bottom_view_height), true);
 
   RenderAssetFilterBar(data, of);
-  RenderAssetSelector(data, of);
-  ImGui::SameLine();
+  RenderAssetSlider(data, of); // 同行右侧 (筛选控件之后剩余宽度)
   RenderHeatmapControls(of);
   RenderStatusBar(of);
 

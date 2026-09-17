@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <deque>
 #include <iomanip>
 #include <iostream>
@@ -56,6 +58,8 @@ public:
   explicit LimitOrderBook(size_t ORDER_SIZE)
       : order_lookup_(ORDER_SIZE),       // BumpDict with pre-allocated capacity
         order_memory_pool_(ORDER_SIZE) { // BumpPool for Order objects
+    auction_bids_.reserve(1024);
+    auction_asks_.reserve(1024);
     init_sentinel_levels();
   }
 
@@ -186,6 +190,7 @@ public:
     LOB_feature_ref().depth_buffer.clear();
     last_depth_update_tick_ = 0;
     next_depth_update_tick_ = 0;
+    depth_from_auction_ = false;
     was_in_matching_period_ = false;
     prev_tick_ = 0;
     curr_tick_ = 0;
@@ -299,6 +304,10 @@ private:
   // Time-driven depth update control
   mutable uint32_t last_depth_update_tick_ = 0; // Last tick when depth was updated
   mutable uint32_t next_depth_update_tick_ = 0; // Next allowed tick for depth update
+
+  // 集合竞价 depth 分支状态: buffer 出自竞价重建 (出竞价首个连续更新强制 rebuild) + 分侧走扫 scratch
+  bool depth_from_auction_ = false;
+  std::vector<Level *> auction_bids_, auction_asks_; // 价升序, 每次竞价更新重填 (常驻容量)
 
   // Track matching period transition
   bool was_in_matching_period_ = false;
@@ -1217,8 +1226,9 @@ private:
   }
 
   // Order-driven: Add level to depth buffer
+  // 竞价期跳过: 交叉簿下 buffer 非单调 (卖1 可 < 买1), 二分失效; 竞价分支每节流点整簿重建
   HOT_INLINE void depth_on_level_add_remove(Level *level, bool add) {
-    if (level->price == 0 || (LOB_feature_ref().depth_buffer.size() <= 2)) [[unlikely]]
+    if (level->price == 0 || in_call_auction_ || (LOB_feature_ref().depth_buffer.size() <= 2)) [[unlikely]]
       return;
 
     // Check if price is within current range
@@ -1244,6 +1254,133 @@ private:
   // FEATURE UPDATES (特征更新 - 时间驱动)
   //======================================================================================
 
+  // 节流推进: packed tick add, 跳过所有空 slot (竞价/连续两分支共用)
+  HOT_INLINE void depth_advance_throttle() {
+    last_depth_update_tick_ = curr_tick_;
+
+    constexpr uint32_t INTERVAL_10MS = (L2::L2_MIN_TIME_INTERVAL_MS / 10) % 100;
+    constexpr uint32_t INTERVAL_S = (L2::L2_MIN_TIME_INTERVAL_MS / 10) / 100;
+    do {
+      uint32_t ms = next_depth_update_tick_ & 0xFF;
+      uint32_t s = (next_depth_update_tick_ >> 8) & 0xFF;
+      if constexpr (INTERVAL_10MS > 0) {
+        ms += INTERVAL_10MS;
+        if (ms >= 100) {
+          ms -= 100;
+          s++;
+        }
+      }
+      if constexpr (INTERVAL_S > 0) {
+        s += INTERVAL_S;
+        if (s >= 60) {
+          s -= 60;
+          next_depth_update_tick_ += (1 << 16);
+        }
+      }
+      next_depth_update_tick_ = (next_depth_update_tick_ & 0xFFFF0000) | (s << 8) | ms;
+    } while (next_depth_update_tick_ <= curr_tick_);
+  }
+
+  // ==== 集合竞价 depth 更新 (9:15-9:30 / 14:57-15:00) ====
+  // 交叉簿 (bid1 可 ≥ ask1) 下 TOB 扫描与增量维护的单调性不变量全部失效: 每个节流点
+  // 整簿重建 —— 一次升序位图走扫分侧收集 (交叉区买卖档混排, 按 net_quantity 符号过滤),
+  // 随手完成预撮合 (最大成交量价位, 平局取失衡最小); 真实档不足 N 由两端哨兵垫满
+  // (与连续路径口径一致). O(可见档数), 每秒至多一次, 成本可忽略.
+  HOT_NOINLINE bool update_depth_auction() {
+    constexpr size_t HIGH_SENTINEL_BEGIN = PRICE_RANGE_SIZE - 1 - L2::LOB_DEPTH;
+    LOB_Feature &lf = LOB_feature_ref();
+
+    auction_bids_.clear();
+    auction_asks_.clear();
+    for (size_t p = visible_price_bitmap_.find_next(L2::LOB_DEPTH); p < HIGH_SENTINEL_BEGIN;
+         p = visible_price_bitmap_.find_next(p)) {
+      Level *lv = price_levels_[p];
+      assert(lv && "auction scan: visible price without level");
+      if (lv->net_quantity > 0)
+        auction_bids_.push_back(lv);
+      else if (lv->net_quantity < 0)
+        auction_asks_.push_back(lv);
+    }
+
+    lf.auction_ref_price = 0.0f;
+    lf.auction_matched_qty = 0;
+    lf.auction_imbalance = 0;
+    if (auction_bids_.empty() || auction_asks_.empty())
+      return lf.depth_updated = false; // 单边簿: 无盘口可出 (对仗连续路径 TOB 无效)
+
+    best_bid_ = auction_bids_.back()->price; // 交叉簿下可 ≥ best_ask_
+    best_ask_ = auction_asks_.front()->price;
+
+    // ---- 重建 depth_buffer: 两侧各取近端 N 档, 不足由哨兵垫满 ----
+    auto &buf = lf.depth_buffer;
+    buf.clear();
+    {
+      // 卖侧升序 push_front → [0]=卖N ... [N-1]=卖1 (对仗连续路径的填法)
+      const size_t n_ask = std::min(auction_asks_.size(), L2::LOB_DEPTH);
+      for (size_t i = 0; i < n_ask; ++i)
+        buf.push_front(auction_asks_[i]);
+      for (size_t i = n_ask, p = HIGH_SENTINEL_BEGIN; i < L2::LOB_DEPTH; ++i, ++p)
+        buf.push_front(price_levels_[p]);
+
+      // 买侧降序 push_back → [N]=买1 ... [2N-1]=买N
+      const size_t n_bid = std::min(auction_bids_.size(), L2::LOB_DEPTH);
+      for (size_t i = 0; i < n_bid; ++i)
+        buf.push_back(auction_bids_[auction_bids_.size() - 1 - i]);
+      for (size_t i = n_bid, p = L2::LOB_DEPTH; i < L2::LOB_DEPTH; ++i, --p)
+        buf.push_back(price_levels_[p]);
+    }
+    depth_from_auction_ = true;
+
+    // ---- 预撮合: 簿交叉时求最大成交量价位 ----
+    // 候选价 p ∈ 交叉区档价并集 (升序双指针); A(p) = Σ 卖量 (价 ≤ p) 单调升,
+    // B(p) = Σ 买量 (价 ≥ p) 单调降 → matched = min(A,B) 单峰; 平局取 |B-A| 最小.
+    if (best_bid_ > best_ask_) {
+      // 参与档: 买价 ≥ 卖1, 卖价 ≤ 买1
+      size_t bid_lo = 0;
+      while (bid_lo < auction_bids_.size() && auction_bids_[bid_lo]->price < best_ask_)
+        ++bid_lo;
+      size_t ask_hi = auction_asks_.size();
+      while (ask_hi > 0 && auction_asks_[ask_hi - 1]->price > best_bid_)
+        --ask_hi;
+
+      int64_t B = 0;
+      for (size_t i = bid_lo; i < auction_bids_.size(); ++i)
+        B += auction_bids_[i]->net_quantity;
+
+      int64_t A = 0;
+      int64_t best_v = -1, best_imb = 0;
+      uint32_t best_p = 0;
+      size_t ai = 0, bi = bid_lo;
+      while (ai < ask_hi || bi < auction_bids_.size()) {
+        const uint32_t pa = ai < ask_hi ? auction_asks_[ai]->price : UINT32_MAX;
+        const uint32_t pb = bi < auction_bids_.size() ? auction_bids_[bi]->price : UINT32_MAX;
+        const uint32_t p = std::min(pa, pb);
+        // A(p): 卖 ≤ p 全部计入 (含 p 档, 头为卖时在此消费)
+        while (ai < ask_hi && auction_asks_[ai]->price <= p)
+          A += -static_cast<int64_t>(auction_asks_[ai++]->net_quantity);
+
+        const int64_t v = std::min(A, B);
+        const int64_t imb = B - A;
+        if (v > best_v || (v == best_v && std::abs(imb) < std::abs(best_imb))) {
+          best_v = v;
+          best_imb = imb;
+          best_p = p;
+        }
+
+        // B(下个候选): 评估后消费 p 档买头 (bid == p 计入本轮 B, 不计入更高价);
+        // 每轮至少消费一个头 (卖 ≤ p 或买 == p) —— 推进保证, 不然 p 不增长死循环
+        while (bi < auction_bids_.size() && auction_bids_[bi]->price == p)
+          B -= auction_bids_[bi++]->net_quantity;
+      }
+
+      lf.auction_ref_price = static_cast<float>(price_base_ + best_p) * 0.01f;
+      lf.auction_matched_qty = static_cast<int32_t>(best_v);
+      lf.auction_imbalance = static_cast<int32_t>(best_imb);
+    }
+
+    return lf.depth_updated = buf.size() >= 2 * L2::LOB_DEPTH;
+  }
+
   // Update depth if TOB is valid (called from process() when time interval reached)
   HOT_NOINLINE bool update_depth() {
 
@@ -1252,6 +1389,17 @@ private:
       LOB_feature_ref().depth_updated = false;
       return false;
     };
+
+    // 竞价期 (含撮合期): 交叉簿专用路径 (整簿重建 + 预撮合)
+    if (in_call_auction_) [[unlikely]] {
+      const bool updated = update_depth_auction();
+      depth_advance_throttle();
+      return updated;
+    }
+    // 连续竞价: 预撮合口清零 (mid/micro 回常规公式; 仅竞价交叉时 > 0)
+    LOB_feature_ref().auction_ref_price = 0.0f;
+    LOB_feature_ref().auction_matched_qty = 0;
+    LOB_feature_ref().auction_imbalance = 0;
 
     update_tob();
 
@@ -1263,7 +1411,10 @@ private:
     size_t ask_count = static_cast<int>(L2::LOB_DEPTH) - static_cast<int>(bid_idx);
     size_t bid_count = static_cast<int>(bid_idx + L2::LOB_DEPTH) - static_cast<int>(current_depth);
 
-    bool need_rebuild = current_depth <= 2 || ask_count >= L2::LOB_DEPTH || bid_count >= L2::LOB_DEPTH;
+    // 出竞价首个更新强制重建: 竞价 buffer 可能交叉 (非单调), 增量口径不可续用
+    bool need_rebuild = current_depth <= 2 || ask_count >= L2::LOB_DEPTH ||
+                        bid_count >= L2::LOB_DEPTH || depth_from_auction_;
+    depth_from_auction_ = false;
 
     ask_count = need_rebuild ? L2::LOB_DEPTH : ask_count;
     bid_count = need_rebuild ? L2::LOB_DEPTH : bid_count;
@@ -1301,30 +1452,7 @@ private:
         price = next_bid_below(price);
     }
 
-    last_depth_update_tick_ = curr_tick_;
-
-    // packed tick add: 跳过所有空slot, 避免稀疏数据导致连续触发
-    constexpr uint32_t INTERVAL_10MS = (L2::L2_MIN_TIME_INTERVAL_MS / 10) % 100;
-    constexpr uint32_t INTERVAL_S = (L2::L2_MIN_TIME_INTERVAL_MS / 10) / 100;
-    do {
-      uint32_t ms = next_depth_update_tick_ & 0xFF;
-      uint32_t s = (next_depth_update_tick_ >> 8) & 0xFF;
-      if constexpr (INTERVAL_10MS > 0) {
-        ms += INTERVAL_10MS;
-        if (ms >= 100) {
-          ms -= 100;
-          s++;
-        }
-      }
-      if constexpr (INTERVAL_S > 0) {
-        s += INTERVAL_S;
-        if (s >= 60) {
-          s -= 60;
-          next_depth_update_tick_ += (1 << 16);
-        }
-      }
-      next_depth_update_tick_ = (next_depth_update_tick_ & 0xFFFF0000) | (s << 8) | ms;
-    } while (next_depth_update_tick_ <= curr_tick_);
+    depth_advance_throttle();
 
     return LOB_feature_ref().depth_updated = LOB_feature_ref().depth_buffer.size() >= 2 * L2::LOB_DEPTH;
   }

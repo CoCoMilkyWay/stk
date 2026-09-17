@@ -101,7 +101,7 @@ NODES(DAG_DECLARE_NODE)
 class DAG : public DAG_LAST {
 public:
   // 标签 (回填别的时间行, 不在节点表; 快照 / 回填调用在 CoreSequential::run_tick)
-  ::LabelReturn LabelReturn{Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty};
+  ::LabelReturn LabelReturn{Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, Fund.y[Fund.lim_up], Fund.y[Fund.lim_dn]};
 
   DAG(TickData &td, const fund::Pool &pool, const std::string &code, size_t asset_id) : DAG_LAST(td, pool, code, asset_id) {}
 

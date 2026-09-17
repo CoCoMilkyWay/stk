@@ -414,6 +414,13 @@ struct LOB_Feature {
   uint32_t all_bid_volume = 0; // 22bit - volume of all bid orders in shares
   uint32_t all_ask_volume = 0; // 22bit - volume of all ask orders in shares
 
+  // 集合竞价预撮合 (update_depth 竞价分支产出, 与 depth_buffer 同节流频率):
+  //   ref_price = 最大成交量价位 (元); 仅竞价期且簿交叉 (bid1 ≥ ask1) 时 > 0, 其余恒 0
+  //   → 消费方 (MidPrice/MicroPrice/GUI) 单分支 ref > 0 判定, 无 NaN (fast-math 安全)
+  float auction_ref_price = 0.0f;  // 元, 预撮合参考价 (0 = 非竞价/未交叉/单边簿)
+  int32_t auction_matched_qty = 0; // 股, 参考价位的虚拟匹配量
+  int32_t auction_imbalance = 0;   // 股, 参考价位的未匹配量 (SIGNED: + 买剩, - 卖剩)
+
   // =================================================================================================
   // =========================================[低频定时更新]===========================================
 

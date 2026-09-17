@@ -128,15 +128,15 @@ public:
     dlogp_[b] += taker_dlogp_.back(); // TakerRet 同域已 flush; 首笔 = 0, 加零无影响
   }
 
-  // ≥ 第 k 个 (升序) 阈值 ⇔ 桶 ≥ k+1: 后缀和写到该阈值的输出槽; 无阈值的 q 轴槽 (首日) NaN
+  // ≥ 第 k 个 (升序) 阈值 ⇔ 桶 ≥ k+1: 后缀和写到该阈值的输出槽; 无阈值的 q 轴槽 (首日) 归 0 = 该桶无笔数
   inline void flush() {
     dq_.flush_batch();
     if (!has_q_)
       for (size_t j = NFIX; j < NB; ++j) {
         for (size_t s = 0; s < 2; ++s)
           for (size_t d = 0; d < 3; ++d)
-            y[(s * NB + j) * 3 + d] = kNaN;
-        y[2 * NB * 3 + j] = kNaN;
+            y[(s * NB + j) * 3 + d] = 0.0f;
+        y[2 * NB * 3 + j] = 0.0f;
       }
     for (size_t s = 0; s < 2; ++s) {
       float run[3] = {0.0f, 0.0f, 0.0f};

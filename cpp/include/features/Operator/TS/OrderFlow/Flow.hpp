@@ -7,7 +7,7 @@
 //     {amt,vol,n}_taker_{bid,ask}   主动买 / 主动卖 成交 额 / 量 / 笔
 //     {amt,vol,n}_maker_{bid,ask}   新增委托 额 / 量 / 笔 (price=0 的市价单只计笔数与量)
 //     {amt,vol,n}_cancel_{bid,ask}  撤单 额 / 量 / 笔
-//     vwap                          Σamt_taker / Σvol_taker (元; 无成交 NaN)
+//     vwap                          Σamt_taker / Σvol_taker (元; 无成交沿用上一有效值, 首日无历史取当日涨跌停中值)
 //     vol_maker_lim_{bid,ask}       以跌停价挂买 / 涨停价挂卖 的委托量 (彩票委托; 边界 = Fund 当日涨跌停, NaN → 0)
 //     vol_first30s / vol_last30s    分钟前 / 后 30 秒成交量
 //   竞价 (全日常量, 定格后每分钟广播):
@@ -104,7 +104,12 @@ public:
 
     const float amt_total = acc_[0][0] + acc_[0][1];
     const float vol_total = acc_[1][0] + acc_[1][1];
-    y[vwap] = vol_total > 0.0f ? amt_total / vol_total : kNaN;
+    // 价格列不留 NaN: 无成交则沿用上一有效 VWAP (跨日保留 ≈ 上日收盘价), 首日无历史退当日涨跌停中值
+    if (vol_total > 0.0f)
+      vwap_last_ = amt_total / vol_total;
+    else if (vwap_last_ <= 0.0f && lim_up_ > 0.0f)
+      vwap_last_ = (lim_up_ + lim_dn_) * 0.5f;
+    y[vwap] = vwap_last_;
 
     y[vol_maker_lim_bid] = vol_lim_[0];
     y[vol_maker_lim_ask] = vol_lim_[1];
@@ -121,7 +126,7 @@ public:
     vol_lim_[0] = vol_lim_[1] = 0.0f;
   }
 
-  void reset() {
+  void reset() { // vwap_last_ 不清: 跨日保留, 供开盘首个无成交分钟兜底
     for (auto &g : acc_)
       g[0] = g[1] = 0.0f;
     vol_30a_ = vol_30b_ = 0.0f;
@@ -138,6 +143,7 @@ private:
   float vol_30a_ = 0.0f, vol_30b_ = 0.0f;
   float vol_lim_[2] = {};
   float call_open_v_ = 0.0f, call_open_a_ = 0.0f, call_close_v_ = 0.0f, call_close_a_ = 0.0f;
+  float vwap_last_ = 0.0f; // 上一有效 VWAP, 跨日保留 (无成交分钟兜底用)
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
@@ -156,7 +162,7 @@ private:
   FLOW_EVENT_ROWS(X, CAT1, taker, "T", "Taker", "主动成交")                                                                                                                                                                                                              \
   FLOW_EVENT_ROWS(X, CAT1, maker, "M", "Maker", "新增委托")                                                                                                                                                                                                              \
   FLOW_EVENT_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单")                                                                                                                                                                                                                \
-  X(vwap, CAT1, AUTO, "VWAP", "成交量加权均价", "分钟成交额/成交量(元; 无成交NaN)", R"(\frac{\sum_{\tau \in \Delta t} P_\tau |O_\tau^T|}{\sum_{\tau \in \Delta t} |O_\tau^T|})", OP(Flow, vwap, None, None))                                                             \
+  X(vwap, CAT1, AUTO, "VWAP", "成交量加权均价", "分钟成交额/成交量(元; 无成交沿用上一有效值)", R"(\frac{\sum_{\tau \in \Delta t} P_\tau |O_\tau^T|}{\sum_{\tau \in \Delta t} |O_\tau^T|})", OP(Flow, vwap, None, None))                                                  \
   X(vol_maker_lim_bid, CAT1, AUTO, "Limit-Down Bid Order Volume", "跌停价挂买量", "分钟内以当日跌停价挂出的买委托量(股, 彩票委托)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,B}| \mathbf{1}[P_\tau \leq P^{dn}_D + \varepsilon])", OP(Flow, vol_maker_lim_bid, Log, None)) \
   X(vol_maker_lim_ask, CAT1, AUTO, "Limit-Up Ask Order Volume", "涨停价挂卖量", "分钟内以当日涨停价挂出的卖委托量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,A}| \mathbf{1}[P_\tau \geq P^{up}_D - \varepsilon])", OP(Flow, vol_maker_lim_ask, Log, None))             \
   X(vol_first30s, CAT1, AUTO, "Volume First 30s", "前30秒成交量", "分钟前半段(0-29s)成交量(股)", R"(\sum_{\tau \in [0,30s)} |O_\tau^T|)", OP(Flow, vol_first30s, Log, None))                                                                                             \

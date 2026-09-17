@@ -41,7 +41,6 @@ constexpr size_t MAX_FEATURES = 8;          // overlay 特征多选上限 (两�
 
 // Price and Volume Conversion
 constexpr float TICK_SIZE = 0.01f;            // Minimum price step (RMB)
-constexpr float SHARES_PER_LOT = 100.0f;      // 1 lot = N shares
 constexpr float PRICE_SCALE = 100.0f;         // Price stored as integer * N
 constexpr float ROUNDING_OFFSET = 0.5f;       // For float to int conversion
 constexpr int32_t AMOUNT_ROUND_TO_RMB = 1000; // Round amount to nearest N RMB
@@ -54,8 +53,21 @@ constexpr float AMOUNT_MIN_VISIBLE = 1000.0f;      // 1K RMB (transparent in hea
 constexpr float AMOUNT_MAX_VISIBLE = 10000000.0f;  // 10M RMB (solid in heatmap)
 constexpr float DEPTH_BAR_MAX_AMOUNT = 1000000.0f; // 100W RMB (full bar in depth panel)
 
+// 热力图阈值 (log10 金额): 滑条区间 / 显示精度 / 自动初值目标浓度
+constexpr float HEATMAP_LOG_THR_MIN = 3.0f;     // 1千元
+constexpr float HEATMAP_LOG_THR_MAX = 7.0f;     // 1千万元 (= AMOUNT_MAX_VISIBLE)
+constexpr float HEATMAP_LOG_THR_STEP = 0.1f;    // 自动阈值直方图分辨率 = 滑条显示精度
+constexpr float HEATMAP_LOG_THR_DEFAULT = 5.0f; // 无数据兜底 (10万元)
+constexpr float HEATMAP_AUTO_INK_RATIO = 0.60f; // 自动阈值目标: 着色档秒 / 有量档秒 (越大越密)
+
+// 日内时段边界 (L0 秒下标): 开盘竞价 [0,600) / 盘前5分钟 [600,900)
+// / 连续竞价 [900,15120) / 收盘竞价 [15120,15300)
+constexpr size_t SEG_AUCTION_OPEN_END = Clock_to_L0(9, 25, 0);     // 600
+constexpr size_t SEG_PREOPEN_END = Clock_to_L0(9, 30, 0);          // 900
+constexpr size_t SEG_AUCTION_CLOSE_BEGIN = Clock_to_L0(14, 57, 0); // 15120
+
 // GUI Layout Parameters
-constexpr float DEPTH_PANEL_WIDTH = 160.0f; // Width of depth panel (pixels)
+constexpr float DEPTH_PANEL_WIDTH = 160.0f; // Width of depth panel (pixels; 纵向深度图)
 constexpr float TOP_VIEW_RATIO = 0.55f;     // Top view height ratio (55%)
 constexpr float Y_MARGIN_RATIO = 0.20f;     // Y-axis margin for plots (20%)
 
@@ -139,7 +151,11 @@ struct OrderFlow {
     // 单秒盘口快照 (秒末终值; 稀疏, 只存重放出有效盘口的秒, 按 tick_idx 升序)
     struct Tick {
       size_t tick_idx; // 交易秒下标 [0, 15300)
-      float mid_price;
+      float mid_price; // 竞价交叉秒 = 预撮合参考价, 其余 = (bid1+ask1)/2
+      // 集合竞价预撮合 (LOB update_depth 竞价分支): ref > 0 = 竞价且簿交叉, 其余恒 0
+      float ref_price;                                                   // 元
+      float matched_amount;                                              // 元, 参考价位虚拟匹配额
+      float imbalance_amount;                                            // 元, SIGNED: + 买剩, - 卖剩
       std::array<float, OrderFlowConst::LOB_DEPTH> bid_price, ask_price; // 元, NaN = 笼外/哨兵
       std::array<float, OrderFlowConst::LOB_DEPTH> bid_volume;           // 手, SIGNED: > 0
       std::array<float, OrderFlowConst::LOB_DEPTH> ask_volume;           // 手, SIGNED: < 0
@@ -173,6 +189,9 @@ struct OrderFlow {
     // 深度面板查询结果
     struct Snapshot {
       float mid_price = 0;
+      float ref_price = 0; // 预撮合 (> 0 = 竞价交叉秒), 语义同 Tick
+      float matched_amount = 0;
+      float imbalance_amount = 0;
       const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_price = nullptr;
       const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_price = nullptr;
       const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_volume = nullptr;
@@ -195,6 +214,8 @@ struct OrderFlow {
     std::vector<Tick> ticks; // 按 tick_idx 升序
     Plot plot;
     HeatmapMerged merged;
+    // 当日自动热力图阈值 (log10 元): 载入新槽时 GUI 取作初值 → 色块浓度跨日/跨标的一致
+    float auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
     // 特征线 (当前选中层, 与图2 同源): L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒
     std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat;
     std::array<float, OrderFlowConst::MAX_FEATURES> feat_y_min{}, feat_y_max{};
@@ -213,6 +234,8 @@ struct OrderFlow {
       void clear();
     };
     void build_plot();
+    // 自动阈值: 合并矩形按持续秒加权的 log10(净额) 上分位 (依赖 build_plot 的初始 Y 视野)
+    void build_auto_threshold();
     // 热力图增量构建: begin 一次 → 重放中逐有效秒 (caller 填好 current_tick) commit
     void heatmap_begin(HeatmapScratch &scratch);
     void heatmap_commit_tick(HeatmapScratch &scratch, size_t tick_idx);
@@ -306,6 +329,28 @@ struct OrderFlow {
   } heatmap_colored;
 
   // ==========================================================================
+  // DepthProfile — GUI 线程私有: 锚点秒的全簿截面 → 纵向深度图 (图1右)
+  //   数据源 = 热力图合并矩形 (全簿, 不受 30 档限制): 每价位二分找覆盖锚点秒的矩形.
+  //   竞价交叉簿三态: 纯买区 (< 最低卖档) / 纯卖区 (> 最高买档) / 重合区 [ask_low, bid_top]
+  // ==========================================================================
+  struct DepthProfile {
+    // 逐档净额 (价升序; amount SIGNED 元: + 买 - 卖)
+    std::vector<double> price, amount;
+    // 累计曲线 (万元): 买自最高买价向下累计, 卖自最低卖价向上累计 (各自独立点集)
+    std::vector<double> bid_cum_x, bid_cum_y; // y = 价格降序
+    std::vector<double> ask_cum_x, ask_cum_y; // y = 价格升序
+    double bid_top = 0, ask_low = 0;          // 最高买档价 / 最低卖档价 (交叉: ask_low < bid_top)
+    double cum_max = 0;                       // 两侧累计额最大值 (万元, X 轴范围)
+
+    uint32_t gen = UINT32_MAX; // 绑定的 Depth 槽 gen
+    size_t tick = SIZE_MAX;    // 绑定的锚点秒
+    bool matches(uint32_t g, size_t t) const { return gen == g && tick == t; }
+
+    void build(const Depth &src, size_t tick_idx); // GUI 线程
+    void clear();
+  } depth_profile;
+
+  // ==========================================================================
   // UI State — GUI 线程私有 (请求代 gen 与发布面配对)
   // ==========================================================================
   struct UI {
@@ -318,7 +363,8 @@ struct OrderFlow {
 
     // Rendering parameters
     bool show_heatmap = true;
-    float log_amount_threshold = 5.0f; // log10(amount) threshold [3.0, 7.0]
+    // log10(amount) 阈值, 区间 [HEATMAP_LOG_THR_MIN, MAX]; 换槽时取该槽 auto_log_threshold
+    float log_amount_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
 
     // 请求快照 (期望态; 变化 → gen++ → Request*)
     uint32_t kline_gen = 0, depth_gen = 0;
@@ -327,9 +373,15 @@ struct OrderFlow {
     int depth_feat_level = -1;                 // 图1 特征所属层 (期望态; -1 = 未设)
     std::string depth_date;
 
+    // 图2 X 域 (= 特征日数 × L1_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
+    // 只在域本身变了 (重扫日期) 才复位视野 —— 换标的不动 X
+    double l1_x_max = 0.0, l1_x_applied = 0.0;
+    bool kline_rescan_pending = false; // 请求带 rescan (dates 正在重扫): 期间 dates 不可读
+
     // Y 轴管理 (流式期间跟随发布范围)
-    size_t l1_last_pub_days = SIZE_MAX; // 上次应用 Y1 范围时的已发布日数
-    uint32_t l0_last_gen = UINT32_MAX;  // 上次 L0 视图重置时的槽 gen
+    size_t l1_last_pub_days = SIZE_MAX;    // 上次应用 Y1 范围时的已发布日数
+    uint32_t l0_last_gen = UINT32_MAX;     // 上次 L0 视图重置时的槽 gen
+    double l0_y_min = 0.0, l0_y_max = 0.0; // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
 
     void clear();
   } ui;
@@ -343,12 +395,6 @@ struct OrderFlow {
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-// Convert volume and price to amount (RMB)
-// NOTE: volume is SIGNED (bid > 0, ask < 0), so amount preserves the sign
-inline float volume_to_amount(float volume, float price) {
-  return volume * price * OrderFlowConst::SHARES_PER_LOT;
-}
 
 // Convert price to integer key for heatmap
 inline int price_to_key(float price) {
