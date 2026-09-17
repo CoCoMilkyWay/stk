@@ -37,11 +37,14 @@ struct FeatureUIState {
 
   // 列宽贴合: FixedFit 只在列首次出现那几帧量内容, 之后宽度冻结; 且 ScrollX 下
   // 视野外的列被跳过提交, 根本量不到 → 内容变了必须显式 TableSetColumnWidthAutoAll
-  // (它顺带置 CannotSkipItemsQueue 强制这批列提交), 收敛要 2 帧, 故连发几帧.
-  int fit_frames = 0;             // >0 = 本帧请求贴合 (每帧递减)
+  // (它顺带置 CannotSkipItemsQueue 强制这批列提交). 行侧平时走 clipper 只提交视野内
+  // 行, 贴合请求若用 clipper 帧的窄测量会先缩后弹 (抽搐) → 贴合窗全程全行提交,
+  // 首帧只喂测量, 中段两帧才发请求, 尾帧落定 (见 TabFeature.cpp 贴合窗).
+  int fit_frames = 0;             // >0 = 贴合窗剩余帧数 (每帧递减, 窗内全行提交)
   int fit_level = -1;             // 快照: 层
   uint64_t fit_rows_hash = 0;     // 快照: 过滤后行集
   uint64_t fit_preview_epoch = 0; // 快照: preview 发布代 (Stat/Range/Dist/PSD 列内容)
+  double fit_last_time = 0.0;     // 上次 epoch 触发贴合的时刻 (构建期发布密, 限速 0.5s)
 
   // Search
   char search_buffer[256] = {0};

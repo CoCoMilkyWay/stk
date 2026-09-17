@@ -550,21 +550,31 @@ static std::vector<int> topo_cluster_group(const std::vector<int> &group,
 // ============================================================================
 
 static constexpr float kSparkWidth = 96.0f; // 迷你图列宽 (px)
-static const ImVec4 kSparkDistColor{0.4f, 0.8f, 1.0f, 1.0f};
 static const ImVec4 kSparkPsdColor{1.0f, 0.8f, 0.2f, 1.0f};
+static const ImVec4 kSparkPosColor{1.0f, 0.3f, 0.3f, 1.0f}; // Dist: x > 0 段 (红)
+static const ImVec4 kSparkNegColor{0.2f, 0.8f, 0.4f, 1.0f}; // Dist: x < 0 段 (绿)
 
-// PSD 迷你图 x 轴: log10 周期升序 (k 降序), 与 TabTransform 的 PSD 周期轴同向
+// PSD 迷你图 x 轴: log10 周期升序 (k 降序), 与 TabTransform 的 PSD 周期轴同向.
+// 固定域 2~2048 min (log10): 2 min = Nyquist, 2048 min = 5 日段 FFT 最长周期 (~一周),
+// 全表同轴绝对可比 (基本面类低频特征的重心不再挤在右缘)
+static constexpr float kPsdXDomain[2] = {0.30103f, 3.31133f};
 struct PsdSparkAxis {
   std::array<float, kPvPsdPts> log_period{};
   PsdSparkAxis() {
     for (size_t j = 0; j < kPvPsdPts; ++j)
-      log_period[j] = std::log10(analysis::DayPSD::period_of(kPvPsdPts - j));
+      log_period[j] = std::log10(PvSegPSD::period_of(kPvPsdPts - j));
   }
 };
 static const PsdSparkAxis s_psd_axis;
 
-// 迷你折线: 当前光标处画 size 大小的 polyline (x/y 各自归一化), 返回是否 hover
-static bool sparkline(const char *id, const float *xs, const float *ys, int n, ImVec2 size, const ImVec4 &color) {
+// 迷你折线: 当前光标处画 size 大小的 polyline (x/y 各自按数据范围归一化, 铺满格子),
+// 返回是否 hover. neg_color 非空 → 以 x = 0 为界两色 (左 neg_color, 右 color),
+// 同一条 polyline 用裁剪矩形分段, 不切数组.
+// pt_colors 非空 ([n]) → 逐段渐变色 (段色 = 起点色), 覆盖 color/neg_color.
+// x_domain 非空 ([2] = {lo, hi}) → x 按固定域归一化 (不铺满, 全表同轴可比)
+static bool sparkline(const char *id, const float *xs, const float *ys, int n, ImVec2 size,
+                      const ImVec4 &color, const ImVec4 *neg_color = nullptr,
+                      const ImU32 *pt_colors = nullptr, const float *x_domain = nullptr) {
   assert(n >= 2);
   const ImVec2 p0 = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton(id, size);
@@ -575,7 +585,8 @@ static bool sparkline(const char *id, const float *xs, const float *ys, int n, I
     ymin = std::min(ymin, ys[i]);
     ymax = std::max(ymax, ys[i]);
   }
-  const float xr = xs[n - 1] - xs[0];
+  const float xlo = x_domain ? x_domain[0] : xs[0];
+  const float xr = (x_domain ? x_domain[1] : xs[n - 1]) - xlo;
   const float inv_x = xr > 0.0f ? 1.0f / xr : 0.0f;
   const float yr = ymax - ymin;
   const float inv_y = yr > 0.0f ? 1.0f / yr : 0.0f;
@@ -583,57 +594,247 @@ static bool sparkline(const char *id, const float *xs, const float *ys, int n, I
   static std::vector<ImVec2> pts; // GUI 单线程, 帧内复用
   pts.resize(n);
   for (int i = 0; i < n; ++i) {
-    const float u = (xs[i] - xs[0]) * inv_x;
+    const float u = (xs[i] - xlo) * inv_x;
     const float v = yr > 0.0f ? (ys[i] - ymin) * inv_y : 0.5f;
     pts[i] = ImVec2(p0.x + u * size.x, p0.y + (1.0f - v) * (size.y - 2.0f) + 1.0f);
   }
-  ImGui::GetWindowDrawList()->AddPolyline(pts.data(), n, ImGui::GetColorU32(color), 0, 1.0f);
+
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  if (pt_colors) {
+    for (int i = 0; i + 1 < n; ++i)
+      dl->AddLine(pts[i], pts[i + 1], pt_colors[i], 1.0f);
+  } else if (!neg_color) {
+    dl->AddPolyline(pts.data(), n, ImGui::GetColorU32(color), 0, 1.0f);
+  } else {
+    const float xz = p0.x + std::clamp((0.0f - xlo) * inv_x, 0.0f, 1.0f) * size.x; // x = 0 的像素位
+    dl->PushClipRect(ImVec2(p0.x, p0.y), ImVec2(xz, p0.y + size.y), true);
+    dl->AddPolyline(pts.data(), n, ImGui::GetColorU32(*neg_color), 0, 1.0f);
+    dl->PopClipRect();
+    dl->PushClipRect(ImVec2(xz, p0.y), ImVec2(p0.x + size.x, p0.y + size.y), true);
+    dl->AddPolyline(pts.data(), n, ImGui::GetColorU32(color), 0, 1.0f);
+    dl->PopClipRect();
+  }
   return hovered;
 }
 
-// Dist 列 cell: PDF 迷你图 + hover 放大
+// Dist 列 cell: PDF 迷你图 + hover 放大.
+// x 域 = 分位截尾 [P0.5, P99.5] (winsorize, 分位天然在数据范围内), 再强行含住 0 →
+// 全表同口径可比; 以 0 为界 x > 0 红 / x < 0 绿
 static void render_preview_dist(const FeaturePreview::Cell &cell, const char *code) {
   if (cell.n_pts < 2) {
     ImGui::TextDisabled("—");
     return;
   }
   const ImVec2 size(kSparkWidth, ImGui::GetTextLineHeight());
-  if (!sparkline("##spark_dist", cell.x.data(), cell.y.data(), (int)cell.n_pts, size, kSparkDistColor))
+  if (!ImGui::IsRectVisible(size)) { // 视野外行 (列宽贴合帧全行提交): 占位即可, 不算点列
+    ImGui::Dummy(size);
+    return;
+  }
+  const float *cx = cell.x.data(), *cy = cell.y.data();
+  const int m = (int)cell.n_pts;
+
+  // 分位截尾 [P0.5, P99.5]: PDF 是等距网格密度, 就地积分 CDF 找分位下标 (dx 约掉).
+  // 分位点即网格点 → 裁剪就是下标截取, 无需插值; total = 0 (退化 PDF) 自然不裁
+  constexpr float kTailQ = 0.005f;
+  double total = 0.0;
+  for (int i = 0; i < m; ++i)
+    total += cy[i];
+  int i_lo = 0, i_hi = m - 1;
+  double cum = 0.0;
+  for (; i_lo < m - 1; ++i_lo) {
+    cum += cy[i_lo];
+    if (cum >= kTailQ * total)
+      break;
+  }
+  cum = 0.0;
+  for (; i_hi > i_lo; --i_hi) {
+    cum += cy[i_hi];
+    if (cum >= kTailQ * total)
+      break;
+  }
+
+  // 点列 = 截取段, 两端强行含住 0 (贴底补点, 全表同口径可比);
+  // sparkline 按数据范围归一化 → 整格铺满
+  static std::vector<float> xs, ys; // GUI 单线程, 帧内复用
+  xs.clear();
+  ys.clear();
+  if (cx[i_lo] > 0.0f) {
+    xs.push_back(0.0f);
+    ys.push_back(0.0f);
+  }
+  xs.insert(xs.end(), cx + i_lo, cx + i_hi + 1);
+  ys.insert(ys.end(), cy + i_lo, cy + i_hi + 1);
+  if (cx[i_hi] < 0.0f) {
+    xs.push_back(0.0f);
+    ys.push_back(0.0f);
+  }
+  if (xs.front() == xs.back()) { // 恒 0 特征: 域退化成单点, 铺条对称底线
+    xs.assign({-1.0f, 1.0f});
+    ys.assign({0.0f, 0.0f});
+  }
+  const int n = (int)xs.size();
+  assert(n >= 2);
+
+  if (!sparkline("##spark_dist", xs.data(), ys.data(), n, size, kSparkPosColor, &kSparkNegColor))
     return;
   ImGui::BeginTooltip();
   ImGui::Text("%s  平均分布 (n = %llu)", code, (unsigned long long)cell.n);
   if (ImPlot::BeginPlot("##pv_pdf", ImVec2(360, 200), ImPlotFlags_NoLegend)) {
-    ImPlot::SetupAxes(nullptr, "pdf", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-    ImPlot::SetNextLineStyle(kSparkDistColor, 2.0f);
-    ImPlot::PlotLine("##pdf", cell.x.data(), cell.y.data(), (int)cell.n_pts);
+    // 点列已裁到域内, y 直接 AutoFit 即可 (无域外长尾干扰)
+    ImPlot::SetupAxes(nullptr, "pdf", 0, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetupAxisLimits(ImAxis_X1, xs.front(), xs.back(), ImPlotCond_Always); // 与迷你图同域
+    // 跨 0 的那段两色各画一次 (重叠一段, 视觉无碍), 与迷你图着色一致
+    int k = 0;
+    while (k < n && xs[k] < 0.0f)
+      ++k;
+    if (k > 0) {
+      ImPlot::SetNextLineStyle(kSparkNegColor, 2.0f);
+      ImPlot::PlotLine("##pdf_neg", xs.data(), ys.data(), std::min(k + 1, n));
+    }
+    if (k < n) {
+      ImPlot::SetNextLineStyle(kSparkPosColor, 2.0f);
+      ImPlot::PlotLine("##pdf_pos", xs.data() + k, ys.data() + k, n - k);
+    }
     ImPlot::EndPlot();
   }
   ImGui::EndTooltip();
 }
 
-// PSD 列 cell: log10 谱迷你图 (周期升序) + hover 放大 (log 周期轴)
-static void render_preview_psd(const FeaturePreview::Cell &cell, const char *code) {
+// PSD 能量占比染色: 色域锚在白噪声参照 -log10(bins) (≈ -3, bin 数变自动跟):
+// 低于白噪声 1 个数量级 → 纯绿, 0 (全能量单 bin) → 纯红, 中间渐进 (黄 = kSparkPsdColor)
+static ImU32 psd_share_color(float v) {
+  static const float lo = -std::log10(static_cast<float>(kPvPsdPts)) - 1.0f;
+  const float t = std::clamp((v - lo) / (0.0f - lo), 0.0f, 1.0f);
+  ImVec4 c;
+  if (t < 0.5f) { // 绿 (0.2, 0.8, 0.2) → 黄 (1, 0.8, 0.2)
+    c = ImVec4(0.2f + 1.6f * t, 0.8f, 0.2f, 1.0f);
+  } else { // 黄 → 红 (1, 0.2, 0.2)
+    c = ImVec4(1.0f, 0.8f - 1.2f * (t - 0.5f), 0.2f, 1.0f);
+  }
+  return ImGui::GetColorU32(c);
+}
+
+// PSD 迷你图逐行缓存: 派生量 (能量中位周期 + 像素桶降采样折线) 只在 preview 发布代
+// 变化时重算 (epoch 跨构建单调不归零, 见 StreamState), 帧间零计算直接画;
+// hover 放大图仍全分辨率现算 (一次最多一行)
+struct PsdSparkCache {
+  uint64_t epoch = UINT64_MAX; // 计算时的 preview 发布代 (UINT64_MAX = 未算)
+  float xm = 0.0f;             // 能量中位 log10 周期
+  float med_period = 0.0f;     // 能量中位周期 (min)
+  std::vector<float> xs, ys;   // 降采样折线 (log10 周期升序)
+  std::vector<ImU32> cs;       // 逐段渐变色 (桶 max 占比染色)
+};
+static std::vector<PsdSparkCache> s_psd_cache; // [metadata 下标] (非预览行早退不建)
+
+static void rebuild_psd_spark(PsdSparkCache &pc, const FeaturePreview::Cell &cell, uint64_t epoch) {
+  pc.epoch = epoch;
+  static std::vector<float> py;  // 周期升序 (k 降序) log10 占比
+  static std::vector<double> pw; // 线性域占比
+  py.resize(kPvPsdPts);
+  pw.resize(kPvPsdPts);
+  double total = 0.0;
+  for (size_t j = 0; j < kPvPsdPts; ++j) {
+    py[j] = cell.psd[kPvPsdPts - j - 1];
+    pw[j] = std::pow(10.0, static_cast<double>(py[j]));
+    total += pw[j];
+  }
+
+  // 能量中位周期: 线性域占比沿周期轴累积过半的位置 (左右各半, 一眼看能量重心)
+  double cum = 0.0;
+  size_t jm = 0;
+  float frac = 0.0f; // bin 内插值 [0, 1)
+  for (; jm < kPvPsdPts; ++jm) {
+    if (cum + pw[jm] >= 0.5 * total) {
+      frac = static_cast<float>((0.5 * total - cum) / pw[jm]);
+      break;
+    }
+    cum += pw[jm];
+  }
+  pc.xm = jm + 1 < kPvPsdPts
+              ? s_psd_axis.log_period[jm] + frac * (s_psd_axis.log_period[jm + 1] - s_psd_axis.log_period[jm])
+              : s_psd_axis.log_period.back();
+  pc.med_period = std::pow(10.0f, pc.xm); // min
+
+  // 像素桶 min/max 包络降采样: 同一像素列内的 bin 折成 ≤ 2 点 (1023 bin → ≤ 2×列宽;
+  // max 保毛刺, min 保谷底, 白噪声平底不变形); 长周期端 bin 稀疏, 自然一桶一点
+  pc.xs.clear();
+  pc.ys.clear();
+  pc.cs.clear();
+  const float px_per_x = kSparkWidth / (kPsdXDomain[1] - kPsdXDomain[0]);
+  const auto bucket = [&](size_t j) { return (int)((s_psd_axis.log_period[j] - kPsdXDomain[0]) * px_per_x); };
+  size_t j = 0;
+  while (j < kPvPsdPts) {
+    const int b = bucket(j);
+    float ymin = py[j], ymax = py[j];
+    double xsum = 0.0;
+    size_t j2 = j;
+    for (; j2 < kPvPsdPts && bucket(j2) == b; ++j2) {
+      ymin = std::min(ymin, py[j2]);
+      ymax = std::max(ymax, py[j2]);
+      xsum += s_psd_axis.log_period[j2];
+    }
+    const float xc = static_cast<float>(xsum / static_cast<double>(j2 - j));
+    const ImU32 col = psd_share_color(ymax);
+    if (ymin < ymax) {
+      pc.xs.push_back(xc);
+      pc.ys.push_back(ymin);
+      pc.cs.push_back(col);
+    }
+    pc.xs.push_back(xc);
+    pc.ys.push_back(ymax);
+    pc.cs.push_back(col);
+    j = j2;
+  }
+}
+
+// PSD 列 cell: log10 谱迷你图 (周期升序, 逐段占比染色, 缓存降采样) + hover 放大 (log 周期轴)
+static void render_preview_psd(const FeaturePreview::Cell &cell, const char *code, size_t idx, uint64_t epoch) {
   if (cell.psd_n == 0) {
     ImGui::TextDisabled("—");
     return;
   }
-  static std::vector<float> py; // 重排到周期升序 (k 降序)
-  py.resize(kPvPsdPts);
-  for (size_t j = 0; j < kPvPsdPts; ++j)
-    py[j] = cell.psd[kPvPsdPts - j - 1];
-
   const ImVec2 size(kSparkWidth, ImGui::GetTextLineHeight());
-  if (!sparkline("##spark_psd", s_psd_axis.log_period.data(), py.data(), (int)kPvPsdPts, size, kSparkPsdColor))
+  if (!ImGui::IsRectVisible(size)) { // 视野外行 (列宽贴合帧全行提交): 占位即可, 不算不画
+    ImGui::Dummy(size);
+    return;
+  }
+  if (idx >= s_psd_cache.size())
+    s_psd_cache.resize(idx + 1);
+  PsdSparkCache &pc = s_psd_cache[idx];
+  if (pc.epoch != epoch)
+    rebuild_psd_spark(pc, cell, epoch);
+
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  const bool hovered = sparkline("##spark_psd", pc.xs.data(), pc.ys.data(), (int)pc.xs.size(), size,
+                                 kSparkPsdColor, nullptr, pc.cs.data(), kPsdXDomain);
+  {
+    // 中位竖刀 (与 sparkline 同一 x 归一化: 固定域 2~2048 min)
+    const float xpix = p0.x + (pc.xm - kPsdXDomain[0]) / (kPsdXDomain[1] - kPsdXDomain[0]) * size.x;
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(xpix, p0.y), ImVec2(xpix, p0.y + size.y),
+                                        IM_COL32(220, 220, 220, 180), 1.0f);
+  }
+  if (!hovered)
     return;
   ImGui::BeginTooltip();
-  ImGui::Text("%s  单日 PSD 均值 (%u 资产·天)", code, cell.psd_n);
+  ImGui::Text("%s  5日段 PSD 能量占比均值 (%u 资产·段)  中位周期 %.1f min", code, cell.psd_n, pc.med_period);
   if (ImPlot::BeginPlot("##pv_psd", ImVec2(360, 200), ImPlotFlags_NoLegend)) {
-    ImPlot::SetupAxes("周期 (min)", "log10 P", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetupAxes("周期 (min)", "log10 占比", 0, ImPlotAxisFlags_AutoFit);
     ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
-    static std::vector<float> px;
+    ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, 2048.0, ImPlotCond_Always); // 与迷你图同域
+    // 白噪声参照: 每 bin 占比 = 1/kPvPsdPts (Parseval 归一后全表恒定), 高于线 = 超白噪声份额
+    static const float kWhiteRef = -std::log10(static_cast<float>(kPvPsdPts));
+    ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+    ImPlot::PlotInfLines("##white_ref", &kWhiteRef, 1, ImPlotInfLinesFlags_Horizontal);
+    // 能量中位竖线 (与迷你图同一把刀)
+    ImPlot::SetNextLineStyle(ImVec4(0.85f, 0.85f, 0.85f, 0.8f), 1.0f);
+    ImPlot::PlotInfLines("##med_ref", &pc.med_period, 1, 0);
+    static std::vector<float> px, py; // hover 全分辨率 (一次最多一行, 现算)
     px.resize(kPvPsdPts);
-    for (size_t j = 0; j < kPvPsdPts; ++j)
-      px[j] = analysis::DayPSD::period_of(kPvPsdPts - j);
+    py.resize(kPvPsdPts);
+    for (size_t j = 0; j < kPvPsdPts; ++j) {
+      px[j] = PvSegPSD::period_of(kPvPsdPts - j);
+      py[j] = cell.psd[kPvPsdPts - j - 1];
+    }
     ImPlot::SetNextLineStyle(kSparkPsdColor, 2.0f);
     ImPlot::PlotLine("##psd", px.data(), py.data(), (int)kPvPsdPts);
     ImPlot::EndPlot();
@@ -860,7 +1061,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::SameLine();
   ImGui::Text("Showing %d / %d", (int)filtered_indices.size(), (int)features.size());
 
-  // Preview 轮训进度 (Dist/PSD 两列逐轮收敛; 免锁读原子)
+  // Preview 分段进度 (Dist/PSD 两列逐段收敛; 免锁读原子)
   {
     const auto pv_status = data.preview.status.load(std::memory_order_relaxed);
     if (pv_status == analysis::Status::Building) {
@@ -873,17 +1074,22 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
   // 内容变了 (层 / 过滤行集 / preview 发布代) → 请求列宽重新贴合.
   // 连发 3 帧: TableSetColumnWidthAutoAll 先解除列裁剪, 下一帧才量到内容.
+  // 贴合帧全行提交 (跳过视野裁剪), 构建期发布很密 (每块一个 epoch) → epoch 触发限速;
+  // epoch 未消化的话每帧重查, 限速窗口过了必然补上最后一次贴合
+  const uint64_t pv_epoch = data.preview.epoch.load(std::memory_order_relaxed);
   {
     uint64_t rows_hash = filtered_indices.size();
     for (int i : filtered_indices)
       rows_hash = rows_hash * 1099511628211ull + (uint64_t)(uint32_t)i;
-    const uint64_t pv_epoch = data.preview.epoch.load(std::memory_order_relaxed);
-    if (ui_state.fit_level != sel.selected_level || ui_state.fit_rows_hash != rows_hash ||
-        ui_state.fit_preview_epoch != pv_epoch) {
+    const bool struct_changed = ui_state.fit_level != sel.selected_level || ui_state.fit_rows_hash != rows_hash;
+    const bool epoch_changed = ui_state.fit_preview_epoch != pv_epoch;
+    const double now = ImGui::GetTime();
+    if (struct_changed || (epoch_changed && now - ui_state.fit_last_time >= 0.5)) {
       ui_state.fit_level = sel.selected_level;
       ui_state.fit_rows_hash = rows_hash;
       ui_state.fit_preview_epoch = pv_epoch;
-      ui_state.fit_frames = 3;
+      ui_state.fit_last_time = now;
+      ui_state.fit_frames = 5; // 递减后 4→1 共 4 帧全行提交: 喂测量 / 请求 ×2 / 落定
     }
   }
 
@@ -918,11 +1124,17 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                 // 14
     ImGui::TableSetupScrollFreeze(0, 1);                                                               // Freeze header row
 
+    // 贴合窗 (kFitFrames 帧) 全程全行提交, 但只在中段两帧真正请求贴合:
+    // 请求用的是上一帧的测量 —— 若上一帧是 clipper 帧 (只量到视野内行),
+    // 列宽会先缩窄再弹回 (肉眼抽搐). 首帧先把全行喂进测量, 尾帧让最后
+    // 一次请求在全量测量下落定, 之后才交还 clipper
     if (ui_state.fit_frames > 0) {
       ui_state.fit_frames--;
-      ImGuiTable *table = ImGui::GetCurrentTable();
-      assert(table);
-      ImGui::TableSetColumnWidthAutoAll(table); // 全列贴合内容 (含视野外列)
+      if (ui_state.fit_frames == 2 || ui_state.fit_frames == 3) {
+        ImGuiTable *table = ImGui::GetCurrentTable();
+        assert(table);
+        ImGui::TableSetColumnWidthAutoAll(table); // 全列贴合内容 (含视野外列)
+      }
     }
 
     // Custom header row with tooltips
@@ -941,7 +1153,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "账目: nan,zero,-inf,+inf 占比%",
         "值域: min -1sd +1sd max",
         "平均分布: 抽样 (日 × 资产) 的 PDF",
-        "平均频谱: 单日 PSD 的算术平均 (log10 功率, x = 周期)",
+        "平均频谱: 5日段 PSD (Parseval 归一) 的算术平均 (log10 能量占比, x = 周期 2~2048 min)",
         "时序归一化: SRC 列 OP(..., Tf, Method) 推出",
         "截面归一化: SRC 列 CS(..., Tf, Method) 推出",
         "直接依赖: 该特征计算所依赖的其他特征 code",
@@ -1071,8 +1283,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       } // !use_cluster_cache
     }
 
-    // Table rows (preview 锁已在上方持有)
-    for (int idx : filtered_indices) {
+    // Table rows (preview 锁已在上方持有): 行体 lambda, 下面按视野裁剪分两条路提交
+    auto render_row = [&](int idx) {
       const FeatureMetadata &f = features[idx];
 
       // Check if this row is selected
@@ -1166,7 +1378,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TableNextColumn();
       render_preview_dist(cell, f.code);
       ImGui::TableNextColumn();
-      render_preview_psd(cell, f.code);
+      render_preview_psd(cell, f.code, (size_t)idx, pv_epoch);
       ImGui::PopID();
 
       // Columns: TS Norm / CS Norm (SRC 推出的 Method; Tf 不显示; None 显 "-")
@@ -1185,6 +1397,19 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       } else {
         ImGui::TextDisabled("—");
       }
+    };
+
+    if (ui_state.fit_frames > 0) {
+      // 贴合帧: 全行提交 (视野外行的列宽也要量到; 迷你图两列在渲染器内占位早退, 便宜)
+      for (int idx : filtered_indices)
+        render_row(idx);
+    } else {
+      // 等高行 → clipper 只提交视野内行 (几百行表格的主滚动开销就在这)
+      ImGuiListClipper clipper;
+      clipper.Begin((int)filtered_indices.size());
+      while (clipper.Step())
+        for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r)
+          render_row(filtered_indices[r]);
     }
 
     ImGui::EndTable();
@@ -1223,8 +1448,9 @@ void SaveFeatureTableJson(SharedData &data) {
     file << " \"start_date\": " << json(data.config.start_date).dump() << ",\n";
     file << " \"end_date\": " << json(data.config.end_date).dump() << ",\n";
     file << " \"preview\": {\"level\": " << json(level_info(analysis::kLevel).level_name).dump()
-         << ", \"rounds\": " << data.preview.done.load(std::memory_order_relaxed)
-         << ", \"assets_per_round\": " << kPvAssetsPerRound << "},\n";
+         << ", \"segments\": " << data.preview.done.load(std::memory_order_relaxed)
+         << ", \"seg_days\": " << kPvSegDays
+         << ", \"assets_per_seg\": " << kPvAssetsPerSeg << "},\n";
 
     std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
     std::vector<const char *> eff_cat2;
