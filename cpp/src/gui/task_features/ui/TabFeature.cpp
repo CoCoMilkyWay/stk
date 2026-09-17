@@ -825,14 +825,14 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);                                    // 2
     ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed);                                // 3
     ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);                              // 4
-    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);                             // 5
-    ImGui::TableSetupColumn("Cat1", ImGuiTableColumnFlags_WidthFixed);                               // 6
-    ImGui::TableSetupColumn("Cat2", ImGuiTableColumnFlags_WidthFixed);                               // 7
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);                                 // 5
+    ImGui::TableSetupColumn("Cat1", ImGuiTableColumnFlags_WidthFixed);                                 // 6
+    ImGui::TableSetupColumn("Cat2", ImGuiTableColumnFlags_WidthFixed);                                 // 7
     ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                 // 8
     ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                // 9
     ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 10
     ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 11
-    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                             // 12
+    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                              // 12
     ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                              // 13
     ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                 // 14
     ImGui::TableSetupScrollFreeze(0, 1);                                                               // Freeze header row
