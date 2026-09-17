@@ -151,23 +151,27 @@ VPIN (智臾 知情交易概率 ×2) 用 1.2 的分钟级主动买卖量做交�
 | `rz_buy` / `rz_repay` / `rq_sell_vol` / `rq_repay_vol` | 融资买入额 / 偿还额 (亿元), 融券卖出量 / 偿还量 (万股) (`cn_stock_margin_trading_detail`; 非两融标的 NaN) | ✓    | 中金 007 margin_* 12 个                                                                                           |
 | `days_since_report`                                    | 距最近财报公告日 (日历日)                                                                                 | ✓    | 中金 007 `mmt_report_overnight` / `mmt_report_jump_open` / `mmt_report_period` (`mmt_report_jump_low` 原文无定义) |
 
-### 2.3 财务原始项 (PIT, 口径 c ∈ {Q 单季, TTM, LYR}; 增长率 / ts_rank 由因子层对日序列取 lag)
+### 2.3 财务原始项 (PIT, 口径 c ∈ {q 单季, ttm, lyr}; 增长率 / ts_rank 由因子层对日序列取 lag) — ✓
 
-| 特征       | 项                                                                                                                                                                                               | 支撑因子                                                                                                                                                                                                                                                                                                                |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 资产负债表 | `total_assets total_liab noncurrent_liab interest_bearing_debt current_assets current_liab cash inventory acct_recv acct_pay fixed_assets_cip intangibles_goodwill equity_parent minority` (MRQ) | CNE6 MLEV / BLEV / DTOA / ABS / ATO / AGRO / CXGRO / Btop / EM; 光大 002 BP / CUR / QR / CCR / Debt_Asset / AT / TAG; 华泰 002 BP / EV2EBITDA; 华泰 008 `debttoassets catoassets currentdebttodebt current quick cashtocurrentdebt debttotangibleequity invturn caturn assetsturn arturn apturn`; 华泰 013 对应 ts_rank |
-| 利润表     | `revenue cogs total_cost_expense op_profit ebit dep_amort interest_exp income_tax net_profit np_deducted eps_basic` × c                                                                          | CNE6 VSAL / VERN / GP / GPM / ROA / ETOP / SGRO / EGRO; 光大 002 EP / SP / PEG / NPM / OPM / ROE / ROA / *G_TTM; 华泰 002 EP / EPcut / SP / PEG; 华泰 003 Sales_G / Profit_G / ROE_G ×3 口径; 华泰 008 roe/roa/margin/roic/taxtoebt/operateincometoebt/deductedprofittoprofit/ebittointerest 族; 华泰 013 ts_rank 族    |
-| 现金流量表 | `cffoa cfi cff net_cf capex dividends_paid` × c                                                                                                                                                  | CNE6 VFLO / ACF / CETOP / CXGRO / DTOP; 光大 002 OCFP / NCFP / FCFP / DP / DPR; 华泰 002 NCFP / OCFP / FCFP / DP; 华泰 003 OCF_G ×3; 华泰 008 ocftoor / ocftocf / ocftoassets / ocftodividend                                                                                                                           |
-| 股本变动   | `shares_issued_yoy` (`cn_stock_shares` 差分)                                                                                                                                                     | CNE6 IGRO                                                                                                                                                                                                                                                                                                               |
+实现口径 (`Fundamental.cpp` `YtdState`): 利润表 / 现金流量表按 **报告期 YTD 累计值** 差分: q = YTD_R − YTD_{R−1Q} (Q1 = 自身), ttm = YTD_R + FY_{Y−1} − YTD_{R−1Y}, lyr = ≤ R 的最近年报; 追溯重述按公告日覆盖. 任一参与项缺 → NaN, 不回退旧报告期. 列名 `bs_* / pl_*_{q,ttm,lyr} / cf_*_{q,ttm,lyr}`.
 
-(`interest_bearing_debt` → 华泰 008 roic / 光大 EV2EBITDA; `intangibles_goodwill` → debttotangibleequity; `total_cost_expense` → nptocostexpense; `dep_amort` → EBITDA.)
+| 特征       | 项                                                                                                                                                                                                                                                                                                                                                            | 支撑因子                                                                                                                                                                                                                                                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 资产负债表 | `bs_ta bs_tl bs_ncl bs_ibd bs_ca bs_cl bs_cash bs_inv bs_ar bs_ap bs_fa_cip bs_intang_gw bs_eq bs_minority` (MRQ). 合成: `bs_ibd` = 短借+一年内到期非流动+长借+应付债券, `bs_fa_cip` = 固定资产合计+在建工程合计 (2018 格式后值在 `*_sum` 列, 旧年份在原列, 两者回退), `bs_intang_gw` = 无形+商誉. `bs_minority` 源表约 1/4 为空 (无少数股东) 保持 NaN        | CNE6 MLEV / BLEV / DTOA / ABS / ATO / AGRO / CXGRO / Btop / EM; 光大 002 BP / CUR / QR / CCR / Debt_Asset / AT / TAG; 华泰 002 BP / EV2EBITDA; 华泰 008 `debttoassets catoassets currentdebttodebt current quick cashtocurrentdebt debttotangibleequity invturn caturn assetsturn arturn apturn`; 华泰 013 对应 ts_rank |
+| 利润表     | `pl_rev pl_cogs pl_cost pl_op pl_ebit pl_int pl_tax pl_np pl_npp pl_eps` × c (30 列) + `pl_npd_ttm` (扣非归母, 只有 TTM: 源表 `notes_shift` 直接给 TTM). `pl_ebit` = 利润总额 + 利息费用, `pl_int` = 利息费用 (缺 → 财务费用). 折旧摊销归现金流量表 (`cf_da`)                                                                                                 | CNE6 VSAL / VERN / GP / GPM / ROA / ETOP / SGRO / EGRO; 光大 002 EP / SP / PEG / NPM / OPM / ROE / ROA / *G_TTM; 华泰 002 EP / EPcut / SP / PEG; 华泰 003 Sales_G / Profit_G / ROE_G ×3 口径; 华泰 008 roe/roa/margin/roic/taxtoebt/operateincometoebt/deductedprofittoprofit/ebittointerest 族; 华泰 013 ts_rank 族    |
+| 现金流量表 | `cf_ocf cf_icf cf_fcf cf_net cf_capex cf_div cf_da` × c (21 列). **`cf_da` 源表只在半年报 / 年报有** (间接法附表), 故 `cf_da_q` 基本全 NaN, `cf_da_ttm` 只在 H1 报出后 ~2 个月有值 (Q1 与年报同日发布, 年报 TTM 立刻被 Q1 的 NaN 覆盖), `cf_da_lyr` 正常 — 待定: 是否把 `cf_da_ttm` 改锚到最近半年报 / 年报并删 `cf_da_q`. `cf_div_q` Q1 缺失 ~15% 为源表如此 | CNE6 VFLO / ACF / CETOP / CXGRO / DTOP; 光大 002 OCFP / NCFP / FCFP / DP / DPR; 华泰 002 NCFP / OCFP / FCFP / DP; 华泰 003 OCF_G ×3; 华泰 008 ocftoor / ocftocf / ocftoassets / ocftodividend                                                                                                                           |
+| 股本变动   | `shares_yoy` = 总股本 / 一年前总股本 − 1 (`cn_stock_shares` 变动点链)                                                                                                                                                                                                                                                                                         | CNE6 IGRO                                                                                                                                                                                                                                                                                                               |
+
+(`bs_ibd` → 华泰 008 roic / 光大 EV2EBITDA; `bs_intang_gw` → debttotangibleequity; `pl_cost` → nptocostexpense; `cf_da` → EBITDA.)
+
+估值列 (`pe_ttm` 等) 为 `Valuation.hpp` 现有实现, `sat` 在 fast-math 下偶有 +inf 漏过 (0.04%), 基建侧待修.
 
 ### 2.4 日频标签 (LB, 裁判用, 非特征)
 
-| 标签                            | 定义                                                  | 状态                                                |
-| ------------------------------- | ----------------------------------------------------- | --------------------------------------------------- |
-| `lb_d{1,5,20}`                  | T+1 开 → T+1+n 开 复权收益, 停牌 / 开盘即涨跌停 → NaN | 新 (对齐库里 daily / weekly / monthly 三档 horizon) |
-| `lb_{long,short}_{5,10,30}m_*w` | 日内吃单收益                                          | ✓                                                   |
+| 标签                            | 定义                                                  | 状态                                                                        |
+| ------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| `lb_d{1,5,20}`                  | T+1 开 → T+1+n 开 复权收益, 停牌 / 开盘即涨跌停 → NaN | 未做 (对齐库里 daily / weekly / monthly 三档 horizon; 需跨日回填, 不在本轮) |
+| `lb_{long,short}_{5,10,30}m_*w` | 日内吃单收益                                          | ✓                                                                           |
 
 ---
 
@@ -175,7 +179,7 @@ VPIN (智臾 知情交易概率 ×2) 用 1.2 的分钟级主动买卖量做交�
 
 - 日内滚动 W (5/15/30/50 根)、5 分钟重采样、时段切片与求和、全天占比归一.
 - 排序 / 分位 / top-N 成交量 K 线选取、筹码分箱、熵、FFT、日内 OLS / corr / 时间重心.
-- 跨日滚动 (5/10/20/60/120/240 日)、复权拼接、ts_rank (华泰 013)、增长率 lag.
+- 跨日滚动 (5/10/20/60/120/240 日)、复权拼接、ts_rank (华泰 013)、增长率 lag. 需要 20 / 60 日 TOD 基准或 4 周分位阈值的因子, 用 1.8 / 1.3 的 5–10 日版近似, 或因子层自己对日序列滚.
 - CS: 去极值 / 中性化 / 排名 (现有 `Method/CS.hpp`); 中金 007 `mmt_sec_rank_M` 日截面排名.
 - 跨资产: 市场 / 行业收益 (池内加权均值代指数)、FF3 (SMB / HML 自建)、行业动量 INDMOM、CNE6 二级合成.
 
@@ -194,17 +198,17 @@ VPIN (智臾 知情交易概率 ×2) 用 1.2 的分钟级主动买卖量做交�
 
 ## 5. 综述覆盖核对
 
-| 报告                    | 用到特征族                                                                            | 缺口                                                                                     |
-| ----------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| 中金 007 价量手册 (168) | 1.1 日线派生 · 1.3 / 1.4 大小单 · 1.2 主动流 · 2.1 · 2.2                              | 陆股通 9 个; `mmt_report_jump_low` 原文无定义; 隔夜超额需指数                            |
-| 智臾 高频低频化 (115)   | 1.0 秒级降频 · 1.1 · 1.2 · 1.3 / 1.4 (集中度 / dlogp / 小单主动) · 1.8 TOD · 1.6 盘口 | 惊恐度 需指数; 4 个原文 OCR 缺失无公式; 近似项见 1.0 表末列 及 1.2 (卖出反弹 / 买入浮亏) |
-| 广发 L2-001 大小单 (94) | 1.4 委托维度 四象限 × q                                                               | 因果口径差异 (原始量 vs 全日成交量)                                                      |
-| 中金 012 高频手册 (87)  | 1.1 · 1.2 · 1.6 · 1.7 竞价 · 1.0 (`vol_30s` / 深度)                                   | `crowd_fftv20_3s_w0_std` 1 个 (3s 网格)                                                  |
-| 广发 DL-007 (78)        | 1.1 · 1.3 / 1.4 固定档 B · 1.2 · 竞价行极值                                           | `hf3` / 特征组合模型 为模型输出, 不复现                                                  |
-| 西南 CNE6 (71)          | 2.1 · 2.3 · 换手                                                                      | 分析师 7 个; 指数 8 个 (可替代)                                                          |
-| 广发 048 (55)           | 1.1 · 竞价行极值                                                                      | 需确认 LOB 竞价阶段虚拟匹配价                                                            |
-| 开源 029 (47)           | 1.5 订单生命周期 · 1.6 盘口 · 1.2 · 1.1 · 1.8                                         | 毒流动性 TOX 原文无闭式                                                                  |
-| 光大 002 (89)           | 2.3 · 2.1 · 1.1 日线                                                                  | 分析师 20 个                                                                             |
-| 华泰 002~013 (373)      | 2.3 · 2.1 · 1.1 · 1.3 / 1.4 (007 资金流)                                              | 009 全部 19 个 (分析师); 006 FF3 需自建                                                  |
+| 报告                    | 用到特征族                                                                            | 缺口                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 中金 007 价量手册 (168) | 1.1 日线派生 · 1.3 / 1.4 大小单 · 1.2 主动流 · 2.1 · 2.2                              | 陆股通 9 个; `mmt_report_jump_low` 原文无定义; 隔夜超额需指数; 1.4 非主动口径 待批                                     |
+| 智臾 高频低频化 (115)   | 1.0 秒级降频 · 1.1 · 1.2 · 1.3 / 1.4 (集中度 / dlogp / 小单主动) · 1.8 TOD · 1.6 盘口 | 惊恐度 需指数; 4 个原文 OCR 缺失无公式; 近似项见 1.0 表末列 及 1.2 (卖出反弹 / 买入浮亏); 集中度 / 小单主动 (1.4) 待批 |
+| 广发 L2-001 大小单 (94) | 1.4 委托维度 四象限 × q                                                               | **整体待批** (需委托号); 因果口径差异 (原始量 vs 全日成交量)                                                           |
+| 中金 012 高频手册 (87)  | 1.1 · 1.2 · 1.6 · 1.7 竞价 · 1.0 (`vol_30s` / 深度)                                   | `crowd_fftv20_3s_w0_std` 1 个 (3s 网格)                                                                                |
+| 广发 DL-007 (78)        | 1.1 · 1.3 / 1.4 固定档 B · 1.2 · 竞价行极值                                           | `hf3` / 特征组合模型 为模型输出, 不复现                                                                                |
+| 西南 CNE6 (71)          | 2.1 · 2.3 · 换手                                                                      | 分析师 7 个; 指数 8 个 (可替代)                                                                                        |
+| 广发 048 (55)           | 1.1 · 竞价行极值                                                                      | 需确认 LOB 竞价阶段虚拟匹配价                                                                                          |
+| 开源 029 (47)           | 1.5 订单生命周期 · 1.6 盘口 · 1.2 · 1.1 · 1.8                                         | 毒流动性 TOX 原文无闭式; 成交用时 / 撤单用时 / 高频撤单率 / 广义市价比例 (1.5 前三行) 待批                             |
+| 光大 002 (89)           | 2.3 · 2.1 · 1.1 日线                                                                  | 分析师 20 个                                                                                                           |
+| 华泰 002~013 (373)      | 2.3 · 2.1 · 1.1 · 1.3 / 1.4 (007 资金流)                                              | 009 全部 19 个 (分析师); 006 FF3 需自建                                                                                |
 
-新增列估算 (全部 L1): 秒级降频 ≈ 35 列; K 线 / 流量 ≈ 25 列; 大小单 1.3 + 1.4 ≈ 175 列; 订单生命周期 ≈ 40 列; 盘口 / 竞价 / TOD ≈ 25 列; Fund 广播 ≈ 100 列. 合计 ≈ 400 列 × 256 行 × A, 常量列与增量列经 XOR 差分 + SparseCodec 后体积很小.
+现状 (smallcap400 跑批, 2026-09-17): L1 共 317 列已落盘 (含原有 ~80 列). 待批部分 (1.4 委托维度 ≈ 112 列 + 1.5 生命周期 ≈ 34 列) 只差 LOB 委托号 2 字段. 常量列与增量列经 XOR 差分 + SparseCodec 后体积很小.
