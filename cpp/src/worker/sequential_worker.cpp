@@ -263,12 +263,27 @@ void sequential_worker(WorkerCtx ctx) {
                       " (gap " + std::to_string(my_days_done - victim_days) + "d), backfill didx " +
                       std::to_string(from) + ".." + std::to_string(upto));
 
-      for (int32_t d = from; d <= upto; ++d) {
+      for (int32_t d = from; d <= upto;) {
         if (cancel_requested.load(std::memory_order_relaxed))
           return;
         TraceN("AdoptBackfill");
-        [[maybe_unused]] const bool claimed_ok = claim(pick, d);
-        assert(claimed_ok && "adopt backfill: claim 竞争 (处置权已归本 worker, 不应有对手)");
+        // 处置权可能被更快的 leader 再领养 (本 worker 转做 victim): 剩余回填
+        // 归新 owner, 本 worker 不再持有此资产.
+        if (sched.owner[pick].load(std::memory_order_relaxed) != worker_id)
+          return;
+        if (!claim(pick, d)) {
+          // 对手凭陈旧 owner 路标赢下在飞一天 (claim CAS 唯一裁决, 见日循环):
+          // victim "查 owner → claim" 非原子, 其 claim 可落在上面等交割之后.
+          // 等它交割, 从其 done 之后继续.
+          while (sched.claimed[pick].load(std::memory_order_acquire) != sched.done[pick].load(std::memory_order_acquire)) {
+            if (cancel_requested.load(std::memory_order_relaxed))
+              return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            stat.idle_ms.fetch_add(1, std::memory_order_relaxed);
+          }
+          d = sched.done[pick].load(std::memory_order_acquire) + 1;
+          continue;
+        }
         const std::string &bdate = data.asset.all_dates[static_cast<size_t>(d)];
         const auto bday = store.ts_open(bdate, worker_id, cancel_requested);
         if (!bday)
@@ -277,6 +292,7 @@ void sequential_worker(WorkerCtx ctx) {
         stat.work.store(cumulative_orders, std::memory_order_relaxed);
         sched.done[pick].store(d, std::memory_order_release);
         store.ts_close(bday);
+        ++d;
       }
       my_asset_ids.push_back(pick);
       return; // 一次领养一个; 还在等 slot 的话下轮再来

@@ -217,6 +217,7 @@ void OrderFlowService::kline_begin(const KlineReq &req) {
 
   // 此刻 GUI 请求代 == req.gen, 发布代 == 旧代 → GUI 不读 kline, dates/数组可安全重建
   if (req.rescan || k.dates.empty()) {
+    impl_->reader.revive(); // 重扫 = 库换代 (重算清库/判废后新库落地), 判废解除
     k.dates.clear();
     scan_dates(k.dates);
   }

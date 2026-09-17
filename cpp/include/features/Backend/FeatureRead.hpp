@@ -71,10 +71,11 @@ private:
 
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
-      // 另一个 reader 判废删库了 (本实例还没察觉) → 同样空转收工;
-      // 库目录还在却缺文件 = 落盘/枚举有 bug, 照旧当场炸
-      assert(!std::filesystem::exists(base_dir_) && "File not found");
-      mark_stale("特征库已被判废删除", /*wipe=*/false);
+      // 文件缺失 = 库被外部清除: 另一 reader 判废删库, 或 ComputeService 重算
+      // 前显式清库 (与读端并发; store 随即重建目录, 故 base_dir_ 是否存在不可
+      // 作判据). 落盘侧 .tmp+rename 原子发布 + 末列 commit 标记 (has_date) 保证
+      // 正常库不会"目录在文件缺" → 一律判废空转收工, 重扫/重算后 revive.
+      mark_stale("特征库已被清除", /*wipe=*/false);
       return;
     }
 
@@ -207,6 +208,9 @@ public:
 
   // 字段表指纹不符 → 旧库已删, 本次构建产出无效 (调用方重算)
   bool stale() const { return stale_.load(std::memory_order_relaxed); }
+
+  // 复活: 常驻 reader (OrderFlow) 在重算完成后重扫时调用 —— 新库已落地, 判废解除
+  void revive() { stale_.store(false, std::memory_order_relaxed); }
 
   // ========================================================================
   // Single Day Loading (GUI: 单日整层, 任一层)
