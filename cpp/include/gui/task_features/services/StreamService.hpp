@@ -97,9 +97,11 @@ private:
         cancel_.store(false, std::memory_order_relaxed); // 与消费同临界区, 免竞争
       }
       auto &target = Derived::target(*data_);
-      FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash);
+      // reader 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退)
+      FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
       static_cast<Derived *>(this)->reset(target, req);
-      target.end_build(target.build(reader, cancel_));
+      const bool done = target.build(reader, cancel_);
+      target.end_build(done && !reader.stale());
     }
   }
 

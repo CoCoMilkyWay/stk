@@ -3,11 +3,13 @@
 #include "FeatureLevels.hpp" // 稳定层: level_info / 文件布局 / FeatureCodec / CODEC_ENABLED (不依赖字段表, 增删特征不重编读端)
 #include "misc/profiler.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -26,7 +28,9 @@
 //   时带期望子轴 (A + hash), 逐文件精确比对 —— universe 名单/全局轴/特征库
 //   任何一方漂移都立刻断言炸 (需重算特征), 不做兼容展宽.
 // table_fingerprint = 写入时字段表指纹 (LEVELS[lvl].fingerprint):
-//   字段表改了旧文件立刻断言失败, 不会静默错位.
+//   不符 = 旧字段表写的库, 已无法解释 → 就地判废: 删掉整个 base_dir_ + 置 stale()
+//   + 拉起构建的取消旗 (构造时可传), 在跑的构建在既有取消检查点收工, 等重算.
+//   (不断言: 改字段表是常规操作, 不该闪退; 特征库是纯派生数据, 删了重跑即可)
 //
 // APIs (缓冲全部挂在张量结构里复用, 与写端 io_buf_/io_column_ 对仗, 稳态零分配):
 //   1. load_day(date, DayTensor)          - GUI: 单日整层 (L0/L1 同一套; 整层文件直读零中转)
@@ -43,15 +47,36 @@ public:
   };
 
 private:
+  // 库判废: 记日志 + 删库 (wipe) + 置 stale + 拉起取消旗. 幂等 (多 IO 线程共用一个 reader).
+  void mark_stale(const char *why, bool wipe) const {
+    if (stale_.exchange(true, std::memory_order_relaxed))
+      return;
+    // 不用 Logger: 它未 init 时 std::exit(1), 而这里正是"进 Features 页" (compute 还没跑过) 的路径
+    std::cout << "[features] " << why << " → 删除特征库待重算: " << base_dir_ << std::endl;
+    if (wipe)
+      std::filesystem::remove_all(base_dir_);
+    if (abort_)
+      abort_->store(true, std::memory_order_relaxed); // 复用取消信号: 构建循环的既有检查点即刻收工
+  }
+
   // 读一个特征文件到 dst (T×F 行, 每行 A 个): 头校验 (子轴精确匹配) + 载荷落地.
+  // 库已判废时空转 (dst 保持原样): 在跑的构建靠取消旗收工, 中途读到的内容一律丢弃.
   void read_file(const std::string &filepath, size_t lvl, size_t F,
                  feature_storage_t *dst, size_t A, Scratch &s) const {
     Trace;
+    if (stale_.load(std::memory_order_relaxed))
+      return;
     const size_t T = level_info(lvl).rows;
     constexpr size_t header_size = FEATURE_FILE_HEADER_WORDS * sizeof(size_t);
 
     std::ifstream file(filepath, std::ios::binary);
-    assert(file.is_open() && "File not found");
+    if (!file.is_open()) {
+      // 另一个 reader 判废删库了 (本实例还没察觉) → 同样空转收工;
+      // 库目录还在却缺文件 = 落盘/枚举有 bug, 照旧当场炸
+      assert(!std::filesystem::exists(base_dir_) && "File not found");
+      mark_stale("特征库已被判废删除", /*wipe=*/false);
+      return;
+    }
 
     {
       TraceN("ReadHeader");
@@ -65,8 +90,11 @@ private:
              "A 不符: 特征文件与当前 universe 子轴大小不一致 (需重算特征)");
       assert(static_cast<std::uint64_t>(header[3]) == axis_hash_ &&
              "子轴指纹不符: 特征文件与当前 universe 名单/asset_axis.json 列序不一致 (需重算特征)");
-      assert(static_cast<std::uint64_t>(header[4]) == level_info(lvl).fingerprint &&
-             "字段表指纹不符: 特征文件是旧字段表写的 (需重算特征)");
+      // 字段表指纹不符 = 旧字段表写的库: 不闪退, 删库判废等重算 (纯派生数据)
+      if (static_cast<std::uint64_t>(header[4]) != level_info(lvl).fingerprint) {
+        mark_stale("字段表指纹不符 (特征文件是旧字段表写的)", /*wipe=*/true);
+        return;
+      }
     }
 
     size_t payload_size;
@@ -170,10 +198,15 @@ public:
 
   // base_dir = 该 universe 的特征库目录 (Config::FeatureUniverseDir);
   // axis_A / axis_hash = 期望子轴 (universe_axis(cfg).size() / .hash)
-  FeatureRead(const std::string &base_dir, size_t axis_A, std::uint64_t axis_hash)
-      : base_dir_(base_dir), axis_A_(axis_A), axis_hash_(axis_hash) {
+  // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
+  FeatureRead(const std::string &base_dir, size_t axis_A, std::uint64_t axis_hash,
+              std::atomic<bool> *abort = nullptr)
+      : base_dir_(base_dir), axis_A_(axis_A), axis_hash_(axis_hash), abort_(abort) {
     assert(axis_A_ > 0 && "期望子轴为空");
   }
+
+  // 字段表指纹不符 → 旧库已删, 本次构建产出无效 (调用方重算)
+  bool stale() const { return stale_.load(std::memory_order_relaxed); }
 
   // ========================================================================
   // Single Day Loading (GUI: 单日整层, 任一层)
@@ -333,4 +366,6 @@ public:
   std::string base_dir_;
   size_t axis_A_;
   std::uint64_t axis_hash_;
+  std::atomic<bool> *abort_ = nullptr;     // 可选取消旗 (不持有)
+  mutable std::atomic<bool> stale_{false}; // 库判废 (多 IO 线程共用一个 reader, 故原子)
 };

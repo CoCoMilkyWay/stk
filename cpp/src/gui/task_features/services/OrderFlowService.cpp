@@ -255,6 +255,8 @@ bool OrderFlowService::kline_step() {
   for (int f : kline_cur_.feats)
     cols.push_back(static_cast<size_t>(f));
   impl_->reader.load_day_columns(k.dates[d], cols, impl_->l1_cols);
+  if (impl_->reader.stale())
+    return false; // 特征库被判废删除 (字段表改了): 停流, 别把空转的陈旧列喂进 K 线; 重算后 needs_rescan 自愈
 
   // 选中资产的子轴下标 (kline_begin 映射并保证在轴内, 否则不会流式到这)
   const size_t a = kline_sub_;
