@@ -8,6 +8,7 @@
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
+#include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)
 #include "implot.h"
 #include "latex.h"
 #include "nlohmann/json.hpp"
@@ -789,6 +790,22 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     }
   }
 
+  // 内容变了 (层 / 过滤行集 / preview 发布代) → 请求列宽重新贴合.
+  // 连发 3 帧: TableSetColumnWidthAutoAll 先解除列裁剪, 下一帧才量到内容.
+  {
+    uint64_t rows_hash = filtered_indices.size();
+    for (int i : filtered_indices)
+      rows_hash = rows_hash * 1099511628211ull + (uint64_t)(uint32_t)i;
+    const uint64_t pv_epoch = data.preview.epoch.load(std::memory_order_relaxed);
+    if (ui_state.fit_level != sel.selected_level || ui_state.fit_rows_hash != rows_hash ||
+        ui_state.fit_preview_epoch != pv_epoch) {
+      ui_state.fit_level = sel.selected_level;
+      ui_state.fit_rows_hash = rows_hash;
+      ui_state.fit_preview_epoch = pv_epoch;
+      ui_state.fit_frames = 3;
+    }
+  }
+
   // Feature table - 占满剩余高度 (留一行给下方按钮)
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f)); // Tighter padding
   const float table_height = std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing(), ImGui::GetFrameHeight());
@@ -819,6 +836,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("PSD", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 13
     ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                 // 14
     ImGui::TableSetupScrollFreeze(0, 1);                                                               // Freeze header row
+
+    if (ui_state.fit_frames > 0) {
+      ui_state.fit_frames--;
+      ImGuiTable *table = ImGui::GetCurrentTable();
+      assert(table);
+      ImGui::TableSetColumnWidthAutoAll(table); // 全列贴合内容 (含视野外列)
+    }
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);

@@ -20,6 +20,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -51,6 +53,19 @@ inline float non_negative_or_inf(float v) {
     return v;
   return (std::isfinite(v) && v >= 0.0f) ? v : InfF;
 }
+// 财报合成项: 分项缺失视为 0, 全部缺失 → NaN
+inline float sum_nan0(std::initializer_list<float> xs) {
+  double s = 0.0;
+  bool any = false;
+  for (float x : xs)
+    if (std::isfinite(x)) {
+      s += static_cast<double>(x);
+      any = true;
+    }
+  return any ? static_cast<float>(s) : NaNF;
+}
+// 首选缺失 → 回退
+inline float first_finite(float a, float b) { return std::isfinite(a) ? a : b; }
 
 inline int year_of(std::int32_t yyyymmdd) { return yyyymmdd / 10000; }
 inline int month_of(std::int32_t yyyymmdd) { return yyyymmdd / 100 % 100; }
@@ -120,6 +135,59 @@ struct FinancialBalanceEv {
   std::int32_t report_date;
   float total_equity_to_parent_shareholders;
   float total_assets;
+  // MRQ 原始项 (Fund::bs_*); 合成项在读入时 NaN→0 求和, 全缺 → NaN
+  float total_liabilities;
+  float total_noncurr_liabilities;
+  float ib_debt; // 有息负债 = 短期借款 + 一年内到期非流动负债 + 长期借款 + 应付债券
+  float total_current_assets;
+  float total_current_liabilities;
+  float moneytary_assets;
+  float inventories;
+  float accounts_receivable;
+  float accounts_payable;
+  float fixed_cip; // 固定资产 + 在建工程
+  float intang_gw; // 无形资产 + 商誉
+  float minority_interests;
+};
+// 利润表 / 现金流量表 YTD 事件 (每公告一行, 含追溯重述行; 值 = 报告期年初至今累计).
+// 三口径 (Q 单季 / TTM / LYR) 在 State 里由 report_date 差分得到, 不依赖 ttm 表.
+enum IncomeItem : std::size_t {
+  inc_rev,       // 营业总收入
+  inc_cogs,      // 营业成本
+  inc_cost,      // 营业总成本
+  inc_op,        // 营业利润
+  inc_ebit,      // 利润总额 + 利息费用 (利息费用缺 → 财务费用)
+  inc_int,       // 利息费用 (同上回退)
+  inc_tax,       // 所得税
+  inc_np,        // 净利润 (含少数)
+  inc_np_parent, // 归母净利润
+  inc_eps,       // 基本 EPS [元]
+  INC_COUNT
+};
+enum CashflowItem : std::size_t {
+  cf_ocf,   // 经营活动现金流净额
+  cf_icf,   // 投资活动现金流净额
+  cf_fcf,   // 筹资活动现金流净额
+  cf_net,   // 现金及等价物净增加
+  cf_capex, // 购建固定/无形/长期资产支付
+  cf_div,   // 分配股利利润或偿付利息支付
+  cf_da,    // 折旧 + 无形摊销 + 长期待摊摊销 (间接法附表, 多为年报/半年报)
+  CF_COUNT
+};
+template <std::size_t N>
+struct YtdEv {
+  std::int32_t v;
+  std::int32_t report_date;
+  float x[N];
+};
+struct NonrecurEv { // cn_stock_financial_notes_shift (shift=0): 非经常性损益 TTM (归母口径)
+  std::int32_t v;
+  std::int32_t report_date;
+  float nonrecurring_ttm;
+};
+struct SharesEv { // total_shares 全史网格变点 (切片前抽取; shares_issued_yoy 回看 1 年)
+  int d;
+  float shares;
 };
 struct FinancialIncomeAnnualEv {
   std::int32_t v;
@@ -159,6 +227,8 @@ struct PitPool {
   }
 
   std::vector<float> close;          // bar1d.close (不复权, cutoff=-1, ffill)
+  std::vector<float> pre_close;      // bar1d.pre_close (除权后前收, cutoff=0: 交易所盘前公布, ffill)
+  std::vector<float> adj_factor;     // bar1d.adjust_factor (cutoff=0: 除权除息事先公告, ffill)
   std::vector<float> total_shares;   // cutoff=-1, ffill
   std::vector<float> a_float_shares; // cutoff=-1, ffill
   std::vector<float> up_lim;         // cutoff=-1 后 row T = T 当日适用, ffill
@@ -168,15 +238,23 @@ struct PitPool {
   std::vector<std::uint8_t> is_margin; // cutoff=0
   std::vector<float> fin_balance;      // 融资余额, 不 ffill
   std::vector<float> sec_balance;      // 融券余额
+  std::vector<float> fin_purchase;     // 融资买入额
+  std::vector<float> fin_repayment;    // 融资偿还额
+  std::vector<float> sec_sales_qty;    // 融券卖出量 [股]
+  std::vector<float> sec_repay_qty;    // 融券偿还量 [股]
 
   // 事件 (per-a, v 升序)
   std::vector<std::vector<FinancialTtmEv>> ttm;
   std::vector<std::vector<FinancialBalanceEv>> balance;
   std::vector<std::vector<FinancialIncomeAnnualEv>> income_annual;
+  std::vector<std::vector<YtdEv<INC_COUNT>>> income_ytd;
+  std::vector<std::vector<YtdEv<CF_COUNT>>> cashflow_ytd;
+  std::vector<std::vector<NonrecurEv>> nonrecur;
   std::vector<std::vector<DividendEv>> dividend;
   std::vector<std::vector<ForecastEv>> forecast;
   std::vector<std::vector<IndustryEv>> industry_component;
   std::vector<std::vector<IndustryEv>> industry_change;
+  std::vector<std::vector<SharesEv>> shares_chg; // d 升序 (build 末尾从全史 total_shares 网格抽取)
 
   // 网格切到 [new_g0, n_d): 逐列拷贝 (峰值 = 全网格 + 一列切片), 事件链不动
   void slice(int n_a, int new_g0) {
@@ -191,6 +269,8 @@ struct PitPool {
       g.swap(out);
     };
     cut(close);
+    cut(pre_close);
+    cut(adj_factor);
     cut(total_shares);
     cut(a_float_shares);
     cut(up_lim);
@@ -200,6 +280,10 @@ struct PitPool {
     cut(is_margin);
     cut(fin_balance);
     cut(sec_balance);
+    cut(fin_purchase);
+    cut(fin_repayment);
+    cut(sec_sales_qty);
+    cut(sec_repay_qty);
     g0 = new_g0;
     n_g = nn;
   }
@@ -347,31 +431,42 @@ void build_grids(const Axes &axes, PitPool &p) {
 
   auto alloc_f = [&](std::vector<float> &g) { g.assign(n, NaNF); };
   alloc_f(p.close);
+  alloc_f(p.pre_close);
+  alloc_f(p.adj_factor);
   alloc_f(p.total_shares);
   alloc_f(p.a_float_shares);
   alloc_f(p.up_lim);
   alloc_f(p.dn_lim);
   alloc_f(p.fin_balance);
   alloc_f(p.sec_balance);
+  alloc_f(p.fin_purchase);
+  alloc_f(p.fin_repayment);
+  alloc_f(p.sec_sales_qty);
+  alloc_f(p.sec_repay_qty);
   p.st_status.assign(n, 0);
   p.suspended.assign(n, 0);
   p.is_margin.assign(n, 0);
 
-  // ---- cn_stock_real_bar1d (CUTOFF=-1) ----
+  // ---- cn_stock_real_bar1d: close CUTOFF=-1; pre_close / adjust_factor CUTOFF=0 (盘前可知: 交易所公布前收, 除权事先公告) ----
   parallel_parse_months(pq::list_month_files("cn_stock_real_bar1d"),
                         [&](const pq::TableView &v) {
                           pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col close = v.col("close");
-                          GridRowMemo memo(axes, -1);
+                          pq::Col close = v.col("close"), pre = v.col("pre_close"), adj = v.col("adjust_factor");
+                          GridRowMemo memo(axes, -1), memo0(axes, 0);
                           for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
                             int a = lookup_a(axes, inst.str(i));
                             if (a < 0)
                               continue;
-                            p.close[static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row)] =
-                                positive_or_inf(close.f32(i));
+                            const std::int32_t ymd = date.yyyymmdd(i);
+                            const std::size_t base = static_cast<std::size_t>(a) * n_d;
+                            int row = memo.row(ymd);
+                            if (row >= 0)
+                              p.close[base + static_cast<std::size_t>(row)] = positive_or_inf(close.f32(i));
+                            int row0 = memo0.row(ymd);
+                            if (row0 >= 0) {
+                              p.pre_close[base + static_cast<std::size_t>(row0)] = positive_or_inf(pre.f32(i));
+                              p.adj_factor[base + static_cast<std::size_t>(row0)] = positive_or_inf(adj.f32(i));
+                            }
                           }
                         });
 
@@ -444,6 +539,9 @@ void build_grids(const Axes &axes, PitPool &p) {
                           pq::Col date = v.col("date"), inst = v.col("instrument");
                           pq::Col fb = v.col("financing_balance");
                           pq::Col sb = v.col("securities_lending_balance");
+                          pq::Col fp = v.col("financing_purchase"), fr = v.col("financing_repayment");
+                          pq::Col ss = v.col("securities_lending_sales_quantity");
+                          pq::Col sr = v.col("securities_lending_repayment_quantity");
                           GridRowMemo memo(axes, 0);
                           for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
                             int row = memo.row(date.yyyymmdd(i));
@@ -456,10 +554,16 @@ void build_grids(const Axes &axes, PitPool &p) {
                             p.is_margin[off] = 1;
                             p.fin_balance[off] = non_negative_or_inf(fb.f32(i));
                             p.sec_balance[off] = non_negative_or_inf(sb.f32(i));
+                            p.fin_purchase[off] = non_negative_or_inf(fp.f32(i));
+                            p.fin_repayment[off] = non_negative_or_inf(fr.f32(i));
+                            p.sec_sales_qty[off] = non_negative_or_inf(ss.f32(i));
+                            p.sec_repay_qty[off] = non_negative_or_inf(sr.f32(i));
                           }
                         });
 
   grid_ffill(p.close, axes.n_a(), axes.n_d());
+  grid_ffill(p.pre_close, axes.n_a(), axes.n_d());
+  grid_ffill(p.adj_factor, axes.n_a(), axes.n_d());
   grid_ffill(p.total_shares, axes.n_a(), axes.n_d());
   grid_ffill(p.a_float_shares, axes.n_a(), axes.n_d());
   grid_ffill(p.up_lim, axes.n_a(), axes.n_d());
@@ -471,6 +575,9 @@ void build_events(const Axes &axes, PitPool &p) {
   p.ttm.assign(n_a, {});
   p.balance.assign(n_a, {});
   p.income_annual.assign(n_a, {});
+  p.income_ytd.assign(n_a, {});
+  p.cashflow_ytd.assign(n_a, {});
+  p.nonrecur.assign(n_a, {});
   p.dividend.assign(n_a, {});
   p.forecast.assign(n_a, {});
   p.industry_component.assign(n_a, {});
@@ -535,6 +642,17 @@ void build_events(const Axes &axes, PitPool &p) {
         pq::Col rd = v.col("report_date");
         pq::Col tep = v.col("total_equity_to_parent_shareholders");
         pq::Col ta = v.col("total_assets");
+        pq::Col tl = v.col("total_liabilities"), ncl = v.col("total_noncurr_liabilities");
+        pq::Col stb = v.col("shortterm_borrowings"), ncl1y = v.col("noncurr_liabilities_due_within_1y");
+        pq::Col ltb = v.col("longterm_borrowings"), bonds = v.col("bonds_payable");
+        pq::Col ca = v.col("total_current_assets"), cl = v.col("total_current_liabilities");
+        pq::Col cash = v.col("moneytary_assets"), inv = v.col("inventories");
+        pq::Col ar = v.col("accounts_receivable"), ap = v.col("accounts_payable");
+        // 2018 报表格式后 fixed_assets / construction_in_progress 半数为空, 值在 *_sum (固定资产合计 / 在建工程合计); 旧年份反之
+        pq::Col fa = v.col("fixed_assets"), fa_sum = v.col("fixed_assets_sum");
+        pq::Col cip = v.col("construction_in_progress"), cip_sum = v.col("construction_in_progress_sum");
+        pq::Col ia = v.col("intangible_assets"), gw = v.col("goodwill");
+        pq::Col mi = v.col("minority_interests");
         EventRowMemo memo(axes, -1);
         for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
           int row = memo.row(date.yyyymmdd(i));
@@ -548,36 +666,119 @@ void build_events(const Axes &axes, PitPool &p) {
           ev.report_date = rd.yyyymmdd(i);
           ev.total_equity_to_parent_shareholders = tep.f32(i);
           ev.total_assets = ta.f32(i);
+          ev.total_liabilities = tl.f32(i);
+          ev.total_noncurr_liabilities = ncl.f32(i);
+          ev.ib_debt = sum_nan0({stb.f32(i), ncl1y.f32(i), ltb.f32(i), bonds.f32(i)});
+          ev.total_current_assets = ca.f32(i);
+          ev.total_current_liabilities = cl.f32(i);
+          ev.moneytary_assets = cash.f32(i);
+          ev.inventories = inv.f32(i);
+          ev.accounts_receivable = ar.f32(i);
+          ev.accounts_payable = ap.f32(i);
+          ev.fixed_cip = sum_nan0({first_finite(fa_sum.f32(i), fa.f32(i)), first_finite(cip_sum.f32(i), cip.f32(i))});
+          ev.intang_gw = sum_nan0({ia.f32(i), gw.f32(i)});
+          ev.minority_interests = mi.f32(i);
           std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
           p.balance[static_cast<std::size_t>(a)].push_back(ev);
         }
       });
 
-  // ---- cn_stock_financial_income_general_pit (CUTOFF=-1; 仅年报) ----
+  // ---- cn_stock_financial_income_general_pit (CUTOFF=-1; 年报链 ni_raw + 全报告期 YTD 链) ----
   parallel_parse_months(
       pq::list_month_files("cn_stock_financial_income_general_pit"),
       [&](const pq::TableView &v) {
         pq::Col date = v.col("date"), inst = v.col("instrument");
         pq::Col fqi = v.col("fs_quarter_index"), rd = v.col("report_date");
         pq::Col np = v.col("net_profit_to_parent_shareholders");
+        pq::Col rev = v.col("total_operating_revenue"), cogs = v.col("operating_costs");
+        pq::Col cost = v.col("total_operating_costs"), op = v.col("operating_profit");
+        pq::Col tp = v.col("total_profit"), fie = v.col("fin_interest_expense"), fe = v.col("finance_expense");
+        pq::Col tax = v.col("income_tax_expense"), npa = v.col("net_profit"), eps = v.col("eps_basic");
         EventRowMemo memo(axes, -1);
         for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-          if (fqi.i32(i, -1) != 4)
-            continue;
           int row = memo.row(date.yyyymmdd(i));
           if (row < 0)
             continue;
           int a = lookup_a(axes, inst.str(i));
           if (a < 0)
             continue;
-          FinancialIncomeAnnualEv ev;
+          const std::size_t ai = static_cast<std::size_t>(a);
+          YtdEv<INC_COUNT> ev;
           ev.v = row;
           ev.report_date = rd.yyyymmdd(i);
-          ev.net_profit_to_parent_shareholders = np.f32(i);
-          std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-          p.income_annual[static_cast<std::size_t>(a)].push_back(ev);
+          const float interest = first_finite(fie.f32(i), fe.f32(i));
+          ev.x[inc_rev] = rev.f32(i);
+          ev.x[inc_cogs] = cogs.f32(i);
+          ev.x[inc_cost] = cost.f32(i);
+          ev.x[inc_op] = op.f32(i);
+          ev.x[inc_ebit] = tp.f32(i) + interest; // 任一缺 → NaN
+          ev.x[inc_int] = interest;
+          ev.x[inc_tax] = tax.f32(i);
+          ev.x[inc_np] = npa.f32(i);
+          ev.x[inc_np_parent] = np.f32(i);
+          ev.x[inc_eps] = eps.f32(i);
+          std::lock_guard<std::mutex> lk(mu[ai]);
+          p.income_ytd[ai].push_back(ev);
+          if (fqi.i32(i, -1) == 4)
+            p.income_annual[ai].push_back({ev.v, ev.report_date, ev.x[inc_np_parent]});
         }
       });
+
+  // ---- cn_stock_financial_cashflow_general_pit (CUTOFF=-1; 全报告期 YTD 链) ----
+  parallel_parse_months(
+      pq::list_month_files("cn_stock_financial_cashflow_general_pit"),
+      [&](const pq::TableView &v) {
+        pq::Col date = v.col("date"), inst = v.col("instrument");
+        pq::Col rd = v.col("report_date");
+        pq::Col ocf = v.col("net_cffoa"), icf = v.col("net_cffia"), fcf = v.col("net_cfffa");
+        pq::Col net = v.col("netinc_in_cce"), capex = v.col("cash_paid_for_filt_assets");
+        pq::Col div = v.col("cash_paid_for_dividends_profits_interests");
+        pq::Col dep = v.col("depreciation_of_fa_oga_pba"), am_ia = v.col("amorization_of_intangible_assets");
+        pq::Col am_ld = v.col("amortization_of_longterm_deferred_expenses");
+        EventRowMemo memo(axes, -1);
+        for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
+          int row = memo.row(date.yyyymmdd(i));
+          if (row < 0)
+            continue;
+          int a = lookup_a(axes, inst.str(i));
+          if (a < 0)
+            continue;
+          YtdEv<CF_COUNT> ev;
+          ev.v = row;
+          ev.report_date = rd.yyyymmdd(i);
+          ev.x[cf_ocf] = ocf.f32(i);
+          ev.x[cf_icf] = icf.f32(i);
+          ev.x[cf_fcf] = fcf.f32(i);
+          ev.x[cf_net] = net.f32(i);
+          ev.x[cf_capex] = capex.f32(i);
+          ev.x[cf_div] = div.f32(i);
+          ev.x[cf_da] = sum_nan0({dep.f32(i), am_ia.f32(i), am_ld.f32(i)});
+          std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
+          p.cashflow_ytd[static_cast<std::size_t>(a)].push_back(ev);
+        }
+      });
+
+  // ---- cn_stock_financial_notes_shift (CUTOFF=-1; shift=0 非经常性损益 TTM) ----
+  parallel_parse_months(pq::list_month_files("cn_stock_financial_notes_shift"),
+                        [&](const pq::TableView &v) {
+                          pq::Col date = v.col("date"), inst = v.col("instrument");
+                          pq::Col shift = v.col("shift"), rd = v.col("report_date");
+                          pq::Col nr_owner = v.col("nonrecurring_income_to_owner_ttm");
+                          EventRowMemo memo(axes, -1);
+                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
+                            if (shift.i32(i, -1) != 0)
+                              continue;
+                            int row = memo.row(date.yyyymmdd(i));
+                            if (row < 0)
+                              continue;
+                            int a = lookup_a(axes, inst.str(i));
+                            if (a < 0)
+                              continue;
+                            NonrecurEv ev{row, rd.yyyymmdd(i), nr_owner.f32(i)};
+                            std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
+                            p.nonrecur[static_cast<std::size_t>(a)].push_back(ev);
+                          }
+                        });
 
   // ---- cn_stock_dividend (CUTOFF=-1; v ← publish_date) ----
   parallel_parse_months(pq::list_month_files("cn_stock_dividend"),
@@ -681,6 +882,9 @@ void build_events(const Axes &axes, PitPool &p) {
   sort_events(p.ttm);
   sort_events(p.balance);
   sort_events(p.income_annual);
+  sort_events(p.income_ytd);
+  sort_events(p.cashflow_ytd);
+  sort_events(p.nonrecur);
   sort_events(p.dividend);
   sort_events(p.forecast);
   sort_events(p.industry_component);
@@ -707,6 +911,79 @@ std::int32_t prev_quarter_end(std::int32_t rd) {
     return 0;
   }
 }
+
+// 报告期季序 1..4; 非标准季末 → 0
+inline int quarter_of(std::int32_t rd) {
+  switch (rd % 10000) {
+  case 331:
+    return 1;
+  case 630:
+    return 2;
+  case 930:
+    return 3;
+  case 1231:
+    return 4;
+  default:
+    return 0;
+  }
+}
+
+// YTD 链 → 三口径 (qmt 无此链路; 差分口径为标准定义):
+//   Q   = YTD(R) − YTD(上季末 R)            (Q1 即 YTD)
+//   TTM = YTD(R) + YTD(上年年报) − YTD(去年同期 R)  (年报即 YTD)
+//   LYR = YTD(≤ R 的最近年报)
+// 任一所需报告期缺失 → NaN; 各表 R 取各自 latest 的最大 report_date.
+template <std::size_t N>
+struct YtdState {
+  std::map<std::int32_t, YtdEv<N>> by_rd; // report_date → latest (追溯重述覆盖)
+  std::size_t p = 0;
+  int last_v = -1; // 最近一次公告 row (上市前事件丢弃)
+
+  void absorb(const std::vector<YtdEv<N>> &ev, int d, int list_d) {
+    while (p < ev.size() && ev[p].v <= d) {
+      if (ev[p].v >= list_d) {
+        by_rd[ev[p].report_date] = ev[p];
+        last_v = ev[p].v;
+      }
+      ++p;
+    }
+  }
+
+  const float *find(std::int32_t rd) const {
+    auto it = by_rd.find(rd);
+    return it == by_rd.end() ? nullptr : it->second.x;
+  }
+
+  void emit(float *q, float *ttm, float *lyr) const {
+    for (std::size_t i = 0; i < N; ++i)
+      q[i] = ttm[i] = lyr[i] = NaNF;
+    if (by_rd.empty())
+      return;
+    const std::int32_t R = by_rd.rbegin()->first;
+    const int qi = quarter_of(R);
+    if (qi == 0)
+      return;
+    const int y = year_of(R);
+    const float *cur = by_rd.rbegin()->second.x;
+    const float *prev_q = (qi == 1) ? nullptr : find(prev_quarter_end(R));
+    const float *ly_annual = find((y - 1) * 10000 + 1231);
+    const float *ly_same = find(R - 10000);
+    // LYR: ≤ R 的最近年报 (R 本身为年报时即 R)
+    const float *lyr_row = (qi == 4) ? cur : ly_annual;
+    for (std::size_t i = 0; i < N; ++i) {
+      if (qi == 1)
+        q[i] = cur[i];
+      else if (prev_q)
+        q[i] = cur[i] - prev_q[i];
+      if (qi == 4)
+        ttm[i] = cur[i];
+      else if (ly_annual && ly_same)
+        ttm[i] = cur[i] + ly_annual[i] - ly_same[i];
+      if (lyr_row)
+        lyr[i] = lyr_row[i];
+    }
+  }
+};
 
 // TTM 窗口 5 点平均 (anchor + 前 4 季末; 任一缺失 → NaN)
 float ttm_window_avg(std::int32_t anchor,
@@ -893,6 +1170,20 @@ void Pool::build(const std::vector<std::string> &codes,
     }
   }
 
+  // ---- total_shares 全史变点链 (shares_issued_yoy 回看 1 年, 切片后网格不再覆盖) ----
+  pit.shares_chg.assign(static_cast<std::size_t>(n_a), {});
+  for (int a = 0; a < n_a; ++a) {
+    auto &chain = pit.shares_chg[static_cast<std::size_t>(a)];
+    float last = NaNF;
+    for (int d = 0; d < n_d; ++d) {
+      const float s = pit.at(pit.total_shares, a, d);
+      if (std::isfinite(s) && s != last) {
+        chain.push_back({d, s});
+        last = s;
+      }
+    }
+  }
+
   // ---- dividend_st 数据轴 warmup (轴起点 + 3 年) ----
   data->axes_warmup_d = first_d_of_year(axes, year_of_d(axes, 0) + 3);
 
@@ -936,6 +1227,11 @@ struct State {
   // 年报 (ni_raw): 同 report_date 覆盖
   std::size_t ip = 0;
   std::vector<Annual> annuals;
+  // 利润表 / 现金流量表 YTD 链 (三口径 raw) + 非经常性损益 TTM (latest)
+  YtdState<INC_COUNT> income;
+  YtdState<CF_COUNT> cashflow;
+  std::size_t nrp = 0;
+  int last_nonrecur = -1;
   // 分红: 365 日滑窗 (dy) + 3 年累计 (dividend_st, 公告日锚)
   std::size_t div_lo = 0, div_hi = 0;
   float cash_sum = 0.0f, sum_3y = 0.0f;
@@ -1032,6 +1328,16 @@ struct State {
           it->val = e.net_profit_to_parent_shareholders;
           it->last_v = e.v;
         }
+      }
+    }
+    income.absorb(p.income_ytd[ai], d, list_d);
+    cashflow.absorb(p.cashflow_ytd[ai], d, list_d);
+    {
+      const auto &ev = p.nonrecur[ai];
+      while (nrp < ev.size() && ev[nrp].v <= d) {
+        if (ev[nrp].v >= list_d)
+          last_nonrecur = static_cast<int>(nrp);
+        ++nrp;
       }
     }
     {
@@ -1215,6 +1521,103 @@ struct State {
     out[Fund::st_dividend] = dividend_st ? 1.0f : 0.0f;
     out[Fund::st_trading] = (run >= 15) ? 1.0f : 0.0f;
     out[Fund::is_new] = (std::isfinite(lage) && lage < 60.0f) ? 1.0f : 0.0f;
+
+    // ---- 行情日线项 / 两融明细 ----
+    out[Fund::pre_close] = pos(p.at(p.pre_close, a, d));
+    out[Fund::adj_factor] = pos(p.at(p.adj_factor, a, d));
+    out[Fund::rz_buy] = sat(p.at(p.fin_purchase, a, d) * 1e-8f);
+    out[Fund::rz_repay] = sat(p.at(p.fin_repayment, a, d) * 1e-8f);
+    out[Fund::rq_sell_vol] = sat(p.at(p.sec_sales_qty, a, d) * 1e-4f);
+    out[Fund::rq_repay_vol] = sat(p.at(p.sec_repay_qty, a, d) * 1e-4f);
+
+    // ---- 距最近财报公告日 (利润表链 last_v 是 row = 公告可见日 + 1) ----
+    out[Fund::days_since_report] =
+        (income.last_v >= 1)
+            ? static_cast<float>((day - axes.date_days[static_cast<std::size_t>(income.last_v - 1)]).count())
+            : NaNF;
+
+    // ---- 股本同比: total_shares(d) / total_shares(日历日 −365 的 D 轴 floor) − 1 ----
+    {
+      float yoy = NaNF;
+      const float s_now = p.at(p.total_shares, a, d);
+      const auto ago_it = std::upper_bound(axes.date_days.begin(), axes.date_days.end(), day - std::chrono::days{365});
+      const int d_ago = static_cast<int>(std::distance(axes.date_days.begin(), ago_it)) - 1;
+      const auto &chain = p.shares_chg[ai];
+      if (d_ago >= 0 && std::isfinite(s_now)) {
+        auto it = std::upper_bound(chain.begin(), chain.end(), d_ago,
+                                   [](int x, const SharesEv &e) { return x < e.d; });
+        if (it != chain.begin()) {
+          const float s_ago = std::prev(it)->shares;
+          yoy = s_now / s_ago - 1.0f;
+        }
+      }
+      out[Fund::shares_yoy] = sat(yoy);
+    }
+
+    // ---- 资产负债表 MRQ (亿元) ----
+    {
+      const FinancialBalanceEv *b = latest_by_rd.empty() ? nullptr : &latest_by_rd.rbegin()->second;
+      auto bs = [&](float FinancialBalanceEv::*f) { return b ? sat((b->*f) * 1e-8f) : NaNF; };
+      out[Fund::bs_ta] = bs(&FinancialBalanceEv::total_assets);
+      out[Fund::bs_tl] = bs(&FinancialBalanceEv::total_liabilities);
+      out[Fund::bs_ncl] = bs(&FinancialBalanceEv::total_noncurr_liabilities);
+      out[Fund::bs_ibd] = bs(&FinancialBalanceEv::ib_debt);
+      out[Fund::bs_ca] = bs(&FinancialBalanceEv::total_current_assets);
+      out[Fund::bs_cl] = bs(&FinancialBalanceEv::total_current_liabilities);
+      out[Fund::bs_cash] = bs(&FinancialBalanceEv::moneytary_assets);
+      out[Fund::bs_inv] = bs(&FinancialBalanceEv::inventories);
+      out[Fund::bs_ar] = bs(&FinancialBalanceEv::accounts_receivable);
+      out[Fund::bs_ap] = bs(&FinancialBalanceEv::accounts_payable);
+      out[Fund::bs_fa_cip] = bs(&FinancialBalanceEv::fixed_cip);
+      out[Fund::bs_intang_gw] = bs(&FinancialBalanceEv::intang_gw);
+      out[Fund::bs_eq] = bs(&FinancialBalanceEv::total_equity_to_parent_shareholders);
+      out[Fund::bs_minority] = bs(&FinancialBalanceEv::minority_interests);
+    }
+
+    // ---- 利润表 / 现金流量表 三口径 (亿元; eps 元) ----
+    {
+      float q[INC_COUNT], ttm[INC_COUNT], lyr[INC_COUNT];
+      income.emit(q, ttm, lyr);
+      auto put = [&](std::size_t item, float scale, Fund::Out oq, Fund::Out ottm, Fund::Out olyr) {
+        out[oq] = sat(q[item] * scale);
+        out[ottm] = sat(ttm[item] * scale);
+        out[olyr] = sat(lyr[item] * scale);
+      };
+      put(inc_rev, 1e-8f, Fund::pl_rev_q, Fund::pl_rev_ttm, Fund::pl_rev_lyr);
+      put(inc_cogs, 1e-8f, Fund::pl_cogs_q, Fund::pl_cogs_ttm, Fund::pl_cogs_lyr);
+      put(inc_cost, 1e-8f, Fund::pl_cost_q, Fund::pl_cost_ttm, Fund::pl_cost_lyr);
+      put(inc_op, 1e-8f, Fund::pl_op_q, Fund::pl_op_ttm, Fund::pl_op_lyr);
+      put(inc_ebit, 1e-8f, Fund::pl_ebit_q, Fund::pl_ebit_ttm, Fund::pl_ebit_lyr);
+      put(inc_int, 1e-8f, Fund::pl_int_q, Fund::pl_int_ttm, Fund::pl_int_lyr);
+      put(inc_tax, 1e-8f, Fund::pl_tax_q, Fund::pl_tax_ttm, Fund::pl_tax_lyr);
+      put(inc_np, 1e-8f, Fund::pl_np_q, Fund::pl_np_ttm, Fund::pl_np_lyr);
+      put(inc_np_parent, 1e-8f, Fund::pl_npp_q, Fund::pl_npp_ttm, Fund::pl_npp_lyr);
+      put(inc_eps, 1.0f, Fund::pl_eps_q, Fund::pl_eps_ttm, Fund::pl_eps_lyr);
+      // 扣非归母 TTM = 归母 TTM (差分口径) − 非经常性损益 TTM (notes 表 latest); 报告期不一致 → NaN
+      float np_ded = NaNF;
+      if (last_nonrecur >= 0 && !income.by_rd.empty()) {
+        const NonrecurEv &nr = p.nonrecur[ai][static_cast<std::size_t>(last_nonrecur)];
+        if (nr.report_date == income.by_rd.rbegin()->first)
+          np_ded = ttm[inc_np_parent] - nr.nonrecurring_ttm;
+      }
+      out[Fund::pl_npd_ttm] = sat(np_ded * 1e-8f);
+    }
+    {
+      float q[CF_COUNT], ttm[CF_COUNT], lyr[CF_COUNT];
+      cashflow.emit(q, ttm, lyr);
+      auto put = [&](std::size_t item, Fund::Out oq, Fund::Out ottm, Fund::Out olyr) {
+        out[oq] = sat(q[item] * 1e-8f);
+        out[ottm] = sat(ttm[item] * 1e-8f);
+        out[olyr] = sat(lyr[item] * 1e-8f);
+      };
+      put(cf_ocf, Fund::cf_ocf_q, Fund::cf_ocf_ttm, Fund::cf_ocf_lyr);
+      put(cf_icf, Fund::cf_icf_q, Fund::cf_icf_ttm, Fund::cf_icf_lyr);
+      put(cf_fcf, Fund::cf_fcf_q, Fund::cf_fcf_ttm, Fund::cf_fcf_lyr);
+      put(cf_net, Fund::cf_net_q, Fund::cf_net_ttm, Fund::cf_net_lyr);
+      put(cf_capex, Fund::cf_capex_q, Fund::cf_capex_ttm, Fund::cf_capex_lyr);
+      put(cf_div, Fund::cf_div_q, Fund::cf_div_ttm, Fund::cf_div_lyr);
+      put(cf_da, Fund::cf_da_q, Fund::cf_da_ttm, Fund::cf_da_lyr);
+    }
   }
 };
 

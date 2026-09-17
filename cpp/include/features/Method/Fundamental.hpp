@@ -9,8 +9,9 @@
 //
 // PIT 口径 (与 qmt 完全一致):
 //   cutoff=-1 (承认滞后, row D=T 取 T-1 可见): bar1d/shares/limit_price/industry/dividend/financial_ttm/balance/income/forecast
-//   cutoff=0  (盘前可知): status(st/susp), margin_trading_detail
+//   cutoff=0  (盘前可知): status(st/susp), margin_trading_detail, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
 //   涨跌停价: cutoff=-1 后 row T 即 "T 当日适用涨跌停" (基于 T-1 close 推出), 直接配盘中实时价判触板.
+//   三表 raw (qmt 无): 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
 //
 // fast-math 契约: 输出行被 -ffast-math TU (Valuation 算子/CoreSequential) 盲算消费 — 只做算术 (NaN 硬件透传) 与
 //   "NaN 恒 false" 语义的比较, 不做 isnan/isfinite. 本文件 .cpp 在 precise-math 列表里, 类型细节全在 .cpp.

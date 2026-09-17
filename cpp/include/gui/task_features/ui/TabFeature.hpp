@@ -6,6 +6,7 @@
 //   4. (Future) View analysis results
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 struct SharedData;
@@ -32,6 +33,14 @@ struct FeatureUIState {
   int cluster_cache_level = -1;
   std::vector<int> cluster_cache_key; // cat_l1 稳定排序后的 filtered_indices
   std::vector<int> cluster_cache_val; // 聚类排序结果
+
+  // 列宽贴合: FixedFit 只在列首次出现那几帧量内容, 之后宽度冻结; 且 ScrollX 下
+  // 视野外的列被跳过提交, 根本量不到 → 内容变了必须显式 TableSetColumnWidthAutoAll
+  // (它顺带置 CannotSkipItemsQueue 强制这批列提交), 收敛要 2 帧, 故连发几帧.
+  int fit_frames = 0;             // >0 = 本帧请求贴合 (每帧递减)
+  int fit_level = -1;             // 快照: 层
+  uint64_t fit_rows_hash = 0;     // 快照: 过滤后行集
+  uint64_t fit_preview_epoch = 0; // 快照: preview 发布代 (Stat/Range/Dist/PSD 列内容)
 
   // Search
   char search_buffer[256] = {0};

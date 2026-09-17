@@ -54,3 +54,13 @@ private:
 
 #define FIELDS_L1_Tbr_5(X, CAT1) \
   X(tlr_bid_5, CAT1, RATIO, "Top Level Ratio Bid 5", "前5档买单占比", "买单侧是否容易被击穿(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,B}}{\sum_{i=1}^{\infty} V_{i,t}^{M,B}}, \quad N = 5)", OP(Tbr_5, None, None))
+
+#define NODE_Tar_10(N) N(Tar_10, (TLR<10, false>), (Depth.ask_qty, tick_data), onMinute)
+
+#define FIELDS_L1_Tar_10(X, CAT1) \
+  X(tlr_ask_10, CAT1, RATIO, "Top Level Ratio Ask 10", "前10档卖单占比", "前10档卖单量占全簿卖单量(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,A}}{\sum_{i=1}^{\infty} V_{i,t}^{M,A}}, \quad N = 10)", OP(Tar_10, None, None))
+
+#define NODE_Tbr_10(N) N(Tbr_10, (TLR<10, true>), (Depth.bid_qty, tick_data), onMinute)
+
+#define FIELDS_L1_Tbr_10(X, CAT1) \
+  X(tlr_bid_10, CAT1, RATIO, "Top Level Ratio Bid 10", "前10档买单占比", "前10档买单量占全簿买单量(降频)", R"(\frac{\sum_{i=1}^{N} V_{i,t}^{M,B}}{\sum_{i=1}^{\infty} V_{i,t}^{M,B}}, \quad N = 10)", OP(Tbr_10, None, None))

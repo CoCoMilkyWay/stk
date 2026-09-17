@@ -44,8 +44,8 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// #define NODE_Ci_1(N) N(Ci_1, (CI<1>), (Depth.bid_qty, Depth.ask_qty), onDepth)
-// #define FIELDS_L0_Ci_1(X, CAT1) X(obi_1, CAT1, RATIO, "Order Book Imbalance 1-Level", "顶部1档失衡", "顶部1档订单失衡率", R"(\frac{V_{1,t}^{M,B} - V_{1,t}^{M,A}}{V_{1,t}^{M,B} + V_{1,t}^{M,A}})", OP(Ci_1, None, None))
+#define NODE_Ci_1(N) N(Ci_1, (CI<1>), (Depth.bid_qty, Depth.ask_qty), onMinute)
+#define FIELDS_L1_Ci_1(X, CAT1) X(obi_1, CAT1, RATIO, "Order Book Imbalance 1-Level", "顶部1档失衡", "顶部1档订单失衡率(降频)", R"(\frac{V_{1,t}^{M,B} - V_{1,t}^{M,A}}{V_{1,t}^{M,B} + V_{1,t}^{M,A}})", OP(Ci_1, None, None))
 
 #define NODE_Ci_5(N) N(Ci_5, (CI<5>), (Depth.bid_qty, Depth.ask_qty), onMinute)
 #define FIELDS_L1_Ci_5(X, CAT1) X(obi_5, CAT1, RATIO, "Order Book Imbalance 5-Level", "累计5档失衡", "累计5档订单失衡率(降频)", R"(\frac{\sum_{i=1}^{5}(V_{i,t}^{M,B} - V_{i,t}^{M,A})}{\sum_{i=1}^{5}(V_{i,t}^{M,B} + V_{i,t}^{M,A})})", OP(Ci_5, None, None))
