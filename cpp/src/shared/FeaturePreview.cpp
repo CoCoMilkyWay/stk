@@ -1,7 +1,8 @@
 #include "shared/FeaturePreview.hpp"
 #include "features/Backend/DayBatchPlane.hpp"
 #include "features/Backend/FeatureRead.hpp"
-#include "features/MetaFlag.hpp" // fmeta::valid
+#include "features/DataDefine.hpp" // kPxEps (涨跌停比较容差, 全库统一)
+#include "features/MetaFlag.hpp"   // fmeta::valid
 #include "misc/profiler.hpp"
 
 #include <algorithm>
@@ -120,13 +121,18 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
       cols.assign({lim_dn_col_, lim_up_col_});
       rt.plane.prepare(A_, kLevel, 1, 2, 1, kPvBlockCols + 1);
       rt.plane.load_day(reader, dates[r], cols, false, L2::ValidType::ALL, 0, 0);
+      // 笼外扩容差 (存快照时做, 热循环保持严格比较): 贴板成交价与 lim 两列来源不同
+      // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
+      // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
+      constexpr float kF16Rel = 1.0f / 1024.0f; // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
       for (size_t k = 0; k < n_draw; ++k) {
         const size_t a = rt.asset_order[(a_off + k) % A_];
-        const feature_storage_t *dn = rt.plane.series(0, a, 0);
-        const feature_storage_t *up = rt.plane.series(1, a, 0);
+        const feature_storage_t *dn_p = rt.plane.series(0, a, 0);
+        const feature_storage_t *up_p = rt.plane.series(1, a, 0);
         for (size_t t = 0; t < VR; ++t) {
-          rt.cage_dn[k * VR + t] = static_cast<float>(dn[t]);
-          rt.cage_up[k * VR + t] = static_cast<float>(up[t]);
+          const float dn = static_cast<float>(dn_p[t]), up = static_cast<float>(up_p[t]);
+          rt.cage_dn[k * VR + t] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
+          rt.cage_up[k * VR + t] = up + (std::fabs(up) * kF16Rel + kPxEps);
         }
       }
     }

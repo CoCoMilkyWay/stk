@@ -50,7 +50,8 @@ struct FeaturePreview : analysis::StreamState {
     std::array<float, kPvPsdPts> psd{}; // log10 单日谱均值 (k = 1.., 跳 DC)
     analysis::Integrity integrity;      // 抽样格子账目 (NaN/±Inf/零/极值), 逐轮累积
     // price 笼账目 (随主扫描逐 (资产, 分钟) 判, 逐轮累积): 有效值对照当日该资产
-    // [lim_dn, lim_up]; cage_n > 0 且 cage_miss == 0 → 每个抽样日都全落笼内 = price
+    // [lim_dn, lim_up] (带 f16 量化 + kPxEps 容差, 见 FeaturePreview.cpp 笼快照);
+    // cage_n > 0 且 cage_miss == 0 → 每个抽样日都全落笼内 = price
     uint32_t cage_n = 0;    // 受检样本数 (值有效 且 当日笼两列有值)
     uint32_t cage_miss = 0; // 笼外样本数
   };

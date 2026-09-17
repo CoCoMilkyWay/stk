@@ -229,14 +229,14 @@ struct PitPool {
   std::vector<float> close;          // bar1d.close (不复权, cutoff=-1, ffill)
   std::vector<float> pre_close;      // bar1d.pre_close (除权后前收, cutoff=0: 交易所盘前公布, ffill)
   std::vector<float> adj_factor;     // bar1d.adjust_factor (cutoff=0: 除权除息事先公告, ffill)
-  std::vector<float> total_shares;   // cutoff=-1, ffill
-  std::vector<float> a_float_shares; // cutoff=-1, ffill
-  std::vector<float> lim_up;         // cutoff=-1 后 row T = T 当日适用, ffill
+  std::vector<float> total_shares;   // cutoff=0 (按生效日记账, 与 adj_factor 同日), ffill
+  std::vector<float> a_float_shares; // cutoff=0, ffill
+  std::vector<float> lim_up;         // cutoff=0: row T = T 当日适用 (源表按适用日记账, 由 pre_close 推出, 盘前可知), ffill
   std::vector<float> lim_dn;
   std::vector<std::int8_t> st_status; // cutoff=0, 4 态派生, 不 ffill
   std::vector<std::uint8_t> suspended;
   std::vector<std::uint8_t> is_margin; // cutoff=0
-  std::vector<float> fin_balance;      // 融资余额, 不 ffill
+  std::vector<float> fin_balance;      // 融资余额 (cutoff=-1: T 日盘后数据 T+1 可用), 不 ffill
   std::vector<float> sec_balance;      // 融券余额
   std::vector<float> fin_purchase;     // 融资买入额
   std::vector<float> fin_repayment;    // 融资偿还额
@@ -470,12 +470,13 @@ void build_grids(const Axes &axes, PitPool &p) {
                           }
                         });
 
-  // ---- cn_stock_shares (CUTOFF=-1) ----
+  // ---- cn_stock_shares (CUTOFF=0: 按生效日记账, 除权日与 adj_factor 同日变动, 盘前公告可知;
+  //      曾误按 -1 → 送转/除权日股本滞后一天而价格已调整, mcap/换手率当日错位) ----
   parallel_parse_months(pq::list_month_files("cn_stock_shares"),
                         [&](const pq::TableView &v) {
                           pq::Col date = v.col("date"), inst = v.col("instrument");
                           pq::Col ts = v.col("total_shares"), fs = v.col("a_float_shares");
-                          GridRowMemo memo(axes, -1);
+                          GridRowMemo memo(axes, 0);
                           for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
                             int row = memo.row(date.yyyymmdd(i));
                             if (row < 0)
@@ -489,12 +490,13 @@ void build_grids(const Axes &axes, PitPool &p) {
                           }
                         });
 
-  // ---- cn_stock_limit_price (CUTOFF=-1; row T = T 当日适用涨跌停) ----
+  // ---- cn_stock_limit_price (CUTOFF=0: date=T 行即 T 当日适用涨跌停, 由 pre_close(T) 推出,
+  //      盘前可知, 同 pre_close/adj_factor; 曾误按 -1 解析 → 全列滞后一天, 涨跌停次日必被打穿) ----
   parallel_parse_months(pq::list_month_files("cn_stock_limit_price"),
                         [&](const pq::TableView &v) {
                           pq::Col date = v.col("date"), inst = v.col("instrument");
                           pq::Col up = v.col("upper_limit"), dn = v.col("lower_limit");
-                          GridRowMemo memo(axes, -1);
+                          GridRowMemo memo(axes, 0);
                           for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
                             int row = memo.row(date.yyyymmdd(i));
                             if (row < 0)
@@ -533,7 +535,9 @@ void build_grids(const Axes &axes, PitPool &p) {
                           }
                         });
 
-  // ---- cn_stock_margin_trading_detail (CUTOFF=0; 不 ffill) ----
+  // ---- cn_stock_margin_trading_detail (CUTOFF=-1; 不 ffill): date=T 行是 T 日盘后余额/流量
+  //      (余额差 = 当行买入-偿还, 已验证), 交易所 T+1 盘前公布 → T+1 起可用;
+  //      曾误按 0 解析 = 盘中用当日盘后数据 (未来函数) ----
   parallel_parse_months(pq::list_month_files("cn_stock_margin_trading_detail"),
                         [&](const pq::TableView &v) {
                           pq::Col date = v.col("date"), inst = v.col("instrument");
@@ -542,7 +546,7 @@ void build_grids(const Axes &axes, PitPool &p) {
                           pq::Col fp = v.col("financing_purchase"), fr = v.col("financing_repayment");
                           pq::Col ss = v.col("securities_lending_sales_quantity");
                           pq::Col sr = v.col("securities_lending_repayment_quantity");
-                          GridRowMemo memo(axes, 0);
+                          GridRowMemo memo(axes, -1);
                           for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
                             int row = memo.row(date.yyyymmdd(i));
                             if (row < 0)

@@ -14,6 +14,7 @@
 //     tlr_{bid,ask}_{1,5,10} Q_N / Q_all                          前 N 档占全簿比, 越大越易被击穿
 //     cost_{buy,sell}_{10w,100w,300w}  吃掉 A 元 (沿 30 档累计, 末档按比例) 的 VWAP 对 mid 偏离 (基点; 全簿不足 A → 该快照无定义)
 //     micro                  量加权中间价 (元)
+//     mid                    中间价 (元)
 //   事件型 (每次盘口更新一个中间价变化率 r = 1e4·ln(mid/mid_prev), 分钟内累计; 命名与 Realized 的 rv_3s 族对仗):
 //     rv_mid = Σ r²   rm3_mid = Σ r³   r_max_mid = max r  (无更新 → NaN)
 //   一档为空 (价 ≤ 0) 的快照跳过 (持有上一状态). 当日尚无有效盘口 → 全 NaN.
@@ -77,6 +78,7 @@ public:
     cost_sell_100w,
     cost_sell_300w,
     micro,
+    mid,
     rv_mid,
     rm3_mid,
     r_max_mid,
@@ -153,6 +155,7 @@ public:
     ratio(tlr_bid_1, cur_[qty_bid_1], all_b), ratio(tlr_bid_5, cur_[qty_bid_5], all_b), ratio(tlr_bid_10, cur_[qty_bid_10], all_b);
     ratio(tlr_ask_1, cur_[qty_ask_1], all_a), ratio(tlr_ask_5, cur_[qty_ask_5], all_a), ratio(tlr_ask_10, cur_[qty_ask_10], all_a);
     cur_[micro] = micro_.back();
+    cur_[Out::mid] = mid; // 局部变量 mid 遮蔽枚举名, 用 Out:: 限定
 
     if (mid_prev_ > 0.0f) {
       const float r = kBp * std::log(mid / mid_prev_);
@@ -275,6 +278,7 @@ private:
   BOOK_COST_ROWS(X, CAT1, buy, "Buy", "买方", "卖", R"(\frac{\mathrm{VWAP}^{A}()", R"()}{P_{mid}} - 1)")                                                                                                                                                                                                        \
   BOOK_COST_ROWS(X, CAT1, sell, "Sell", "卖方", "买", R"(1 - \frac{\mathrm{VWAP}^{B}()", R"()}{P_{mid}})")                                                                                                                                                                                                      \
   X(micro, CAT1, AUTO, "Micro Price", "微观价格", "分钟内量加权中间价的时间加权均值(元)", R"(\overline{P_{micro}}^{\,tw})", OP(Book, micro, None, None))                                                                                                                                                        \
+  X(mid, CAT1, AUTO, "Mid Price", "中间价", "分钟内中间价的时间加权均值(元)", R"(\overline{P_{mid}}^{\,tw})", OP(Book, mid, None, None))                                                                                                                                                                        \
   X(rv_mid, CAT1, AUTO, "Mid-Price Realized Variance", "中间价变化率平方和", "分钟内逐次盘口更新中间价对数变化率(基点)平方和", R"(\sum_{j \in \Delta t} r_j^2,\; r_j = 10^4 \ln\frac{P_{mid,j}}{P_{mid,j-1}})", OP(Book, rv_mid, Log, None))                                                                    \
   X(rm3_mid, CAT1, AUTO, "Mid-Price Third Moment", "中间价变化率立方和", "分钟内中间价对数变化率(基点)立方和; 偏度=rm3/rv^1.5", R"(\sum_{j \in \Delta t} r_j^3)", OP(Book, rm3_mid, Log, None))                                                                                                                 \
   X(r_max_mid, CAT1, AUTO, "Mid-Price Max Change", "中间价变化率最大值", "分钟内中间价对数变化率(基点)最大值", R"(\max_{j \in \Delta t} r_j)", OP(Book, r_max_mid, None, None))
