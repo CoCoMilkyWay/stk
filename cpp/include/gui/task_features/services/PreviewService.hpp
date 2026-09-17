@@ -16,6 +16,7 @@ struct PreviewRequest {
   std::vector<size_t> feat_cols;          // 预览特征列 (metadata 下标, 升序)
   std::vector<L2::ValidType> valid_types; // 与 feat_cols 平行
   size_t meta_col = 0;                    // "_meta" 门控列下标
+  size_t lim_dn_col = 0, lim_up_col = 0;  // price 笼两列 (逐日笼内判定)
   size_t n_features = 0;                  // 该层特征总数 (cells 尺寸)
 };
 

@@ -17,6 +17,8 @@ void PreviewService::RequestCompute(SharedData &data) {
     return;
   req.n_features = meta_list.size();
   req.meta_col = meta.col_of(analysis::kLevel, "_meta");
+  req.lim_dn_col = meta.col_of(analysis::kLevel, "lim_dn");
+  req.lim_up_col = meta.col_of(analysis::kLevel, "lim_up");
   for (size_t i = 0; i < meta_list.size(); ++i) {
     if (meta_list[i].data_type == FeatureDataType::META)
       continue; // 元数据列不预览 (含 _meta 自身)
@@ -29,6 +31,7 @@ void PreviewService::RequestCompute(SharedData &data) {
 
 void PreviewService::reset(FeaturePreview &pv, PreviewRequest &req) {
   pv.reset_for_build(std::move(req.feat_cols), std::move(req.valid_types), req.meta_col,
+                     req.lim_dn_col, req.lim_up_col,
                      std::move(req.scope.months), req.n_features, req.scope.uni.size());
 }
 

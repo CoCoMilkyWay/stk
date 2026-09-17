@@ -49,6 +49,10 @@ struct FeaturePreview : analysis::StreamState {
     uint32_t psd_n = 0;                 // 参与谱平均的 (资产, 天) 数
     std::array<float, kPvPsdPts> psd{}; // log10 单日谱均值 (k = 1.., 跳 DC)
     analysis::Integrity integrity;      // 抽样格子账目 (NaN/±Inf/零/极值), 逐轮累积
+    // price 笼账目 (随主扫描逐 (资产, 分钟) 判, 逐轮累积): 有效值对照当日该资产
+    // [lim_dn, lim_up]; cage_n > 0 且 cage_miss == 0 → 每个抽样日都全落笼内 = price
+    uint32_t cage_n = 0;    // 受检样本数 (值有效 且 当日笼两列有值)
+    uint32_t cage_miss = 0; // 笼外样本数
   };
 
   // 发布快照 (进度/epoch/mutex 在 StreamState; done/total = 轮)
@@ -63,9 +67,11 @@ struct FeaturePreview : analysis::StreamState {
 
   // 重置全部状态并进入 Building. feat_cols = 预览特征列 (metadata 下标, 升序,
   // 不含 META 类), valid_types 与之平行; meta_col = "_meta" 门控列下标;
+  // lim_dn_col / lim_up_col = price 笼两列 (逐日笼内判定, 融合进主扫描);
   // n_features = 该层特征总数 (cells 尺寸); n_assets = universe 子轴大小
   void reset_for_build(std::vector<size_t> feat_cols, std::vector<L2::ValidType> valid_types,
-                       size_t meta_col, std::vector<std::string> month_keys,
+                       size_t meta_col, size_t lim_dn_col, size_t lim_up_col,
+                       std::vector<std::string> month_keys,
                        size_t n_features, size_t n_assets);
 
   // 轮训构建 (单线程串行 IO + 扫描, 块末发布); 被取消返回 false
@@ -80,6 +86,7 @@ private:
   std::vector<size_t> feat_cols_;
   std::vector<L2::ValidType> valid_types_;
   size_t meta_col_ = 0;
-  std::vector<std::string> months_; // "YYYYMM" 升序
-  size_t A_ = 0;                    // universe 子轴大小
+  size_t lim_dn_col_ = 0, lim_up_col_ = 0; // price 笼两列
+  std::vector<std::string> months_;        // "YYYYMM" 升序
+  size_t A_ = 0;                           // universe 子轴大小
 };

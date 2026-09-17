@@ -20,6 +20,8 @@ struct FeaturePreview::Runtime {
   std::vector<Integrity> integ;                             // [n_preview] 每特征累积账目
   std::vector<std::array<double, DayPSD::N_FREQS>> psd_sum; // [n_preview] 单日谱累加
   std::vector<uint64_t> psd_n;                              // [n_preview] 参与谱平均的 (资产, 天) 数
+  std::vector<uint32_t> cage_n, cage_miss;                  // [n_preview] price 笼账目 (受检/笼外) 累积
+  std::vector<float> cage_dn, cage_up;                      // [n_draw][VR] 当轮抽样资产的笼快照 (NaN = 当日无值)
   std::vector<uint32_t> asset_order;                        // [A] 固定种子洗牌 (轮间旋转取片)
   std::vector<float> samples;                               // 单 (特征, 轮) 有效样本缓冲
   std::array<float, kVR> day_buf{};                         // 单 (资产, 日) 序列 (NaN = 缺)
@@ -33,6 +35,11 @@ struct FeaturePreview::Runtime {
     integ.assign(n_pv, Integrity{});
     psd_sum.assign(n_pv, {});
     psd_n.assign(n_pv, 0);
+    cage_n.assign(n_pv, 0);
+    cage_miss.assign(n_pv, 0);
+    const size_t n_draw = std::min(kPvAssetsPerRound, A);
+    cage_dn.resize(n_draw * kVR);
+    cage_up.resize(n_draw * kVR);
     asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
     samples.reserve(kPvAssetsPerRound * kVR);
     // plane 按块 prepare (块列数随尾块变)
@@ -48,17 +55,21 @@ FeaturePreview::~FeaturePreview() = default;
 
 void FeaturePreview::reset_for_build(std::vector<size_t> feat_cols,
                                      std::vector<L2::ValidType> valid_types,
-                                     size_t meta_col, std::vector<std::string> month_keys,
+                                     size_t meta_col, size_t lim_dn_col, size_t lim_up_col,
+                                     std::vector<std::string> month_keys,
                                      size_t n_features, size_t n_assets) {
   TraceN("PreviewReset");
   assert(!feat_cols.empty() && feat_cols.size() == valid_types.size());
   assert(std::is_sorted(feat_cols.begin(), feat_cols.end()) && feat_cols.back() < n_features);
   assert(meta_col < n_features && n_assets > 0 && !month_keys.empty());
+  assert(lim_dn_col < n_features && lim_up_col < n_features);
   std::lock_guard<std::mutex> lock(mutex);
 
   feat_cols_ = std::move(feat_cols);
   valid_types_ = std::move(valid_types);
   meta_col_ = meta_col;
+  lim_dn_col_ = lim_dn_col;
+  lim_up_col_ = lim_up_col;
   months_ = std::move(month_keys);
   A_ = n_assets;
 
@@ -103,6 +114,23 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
   for (size_t r = 0; r < n_rounds; ++r) {
     const size_t a_off = (r * n_draw) % A_; // 洗牌序旋转取片
 
+    // 轮首: 笼两列 (lim_dn/lim_up) 一次 IO → 抽样资产当日笼快照 (price 逐日判定融合进块扫描)
+    {
+      TraceN("PreviewCageIO");
+      cols.assign({lim_dn_col_, lim_up_col_});
+      rt.plane.prepare(A_, kLevel, 1, 2, 1, kPvBlockCols + 1);
+      rt.plane.load_day(reader, dates[r], cols, false, L2::ValidType::ALL, 0, 0);
+      for (size_t k = 0; k < n_draw; ++k) {
+        const size_t a = rt.asset_order[(a_off + k) % A_];
+        const feature_storage_t *dn = rt.plane.series(0, a, 0);
+        const feature_storage_t *up = rt.plane.series(1, a, 0);
+        for (size_t t = 0; t < VR; ++t) {
+          rt.cage_dn[k * VR + t] = static_cast<float>(dn[t]);
+          rt.cage_up[k * VR + t] = static_cast<float>(up[t]);
+        }
+      }
+    }
+
     for (size_t f0 = 0; f0 < n_pv; f0 += kPvBlockCols) {
       if (cancel.load(std::memory_order_relaxed))
         return false;
@@ -125,6 +153,7 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
         const size_t slot = f0 + i;
         const L2::ValidType vt = valid_types_[slot];
         Integrity &it = rt.integ[slot];
+        uint32_t cage_n = 0, cage_miss = 0; // 本 (特征, 轮) price 笼账目
         rt.samples.clear();
 
         for (size_t k = 0; k < n_draw; ++k) {
@@ -145,6 +174,12 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
               } else {
                 ok = true;
                 it.add_finite(x);
+                // price 笼: 对照该资产当日 [lim_dn, lim_up] (NaN 笼 = 当日无值, 不受检)
+                const float dn = rt.cage_dn[k * VR + t], up = rt.cage_up[k * VR + t];
+                if (dn == dn && up == up) {
+                  ++cage_n;
+                  cage_miss += !(x >= dn && x <= up);
+                }
               }
             }
             rt.day_buf[t] = ok ? x : qnan;
@@ -160,6 +195,8 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
         }
         if (!rt.samples.empty())
           rt.klls[slot].addBatch(rt.samples.data(), rt.samples.size());
+        rt.cage_n[slot] += cage_n;
+        rt.cage_miss[slot] += cage_miss;
       }
 
       // 块末发布: 锁外导出成品, 短锁拷贝进 cells
@@ -170,6 +207,8 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
           Cell c;
           c.fill(rt.klls[slot], kPvMinSamples);
           c.integrity = rt.integ[slot];
+          c.cage_n = rt.cage_n[slot];
+          c.cage_miss = rt.cage_miss[slot];
           c.psd_n = static_cast<uint32_t>(rt.psd_n[slot]);
           if (c.psd_n > 0) {
             const double inv = 1.0 / static_cast<double>(rt.psd_n[slot]);
