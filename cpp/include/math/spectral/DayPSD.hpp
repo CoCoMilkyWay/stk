@@ -13,6 +13,10 @@
 // 一天 VR 个样本 (NaN = 缺): 有效样本去均值, 缺样本补 0, Hann(VR) 加窗, 零填到 N = 2^k ≥ VR,
 // 实 FFT → 单边功率 P[k], k ∈ [0, N/2]. 频率轴: bin k ↔ 周期 N/k 个样本 (L1: 分钟).
 // 归一化: 除以有效样本上的窗能量 Σw², 缺得多的天不会因补零显得"更安静".
+// 去均值偏差修正 (unbias): 减掉的样本均值 ε̄ 与各 bin 相关, 白噪声下 E|X_k|² = σ²(Σw² − |W_k|²/L),
+// W_k = Hann 零填后的 DFT, L = VR. |W_k|² 只在主瓣 (k ≲ 2N/L) 显著: 单日 (255/256) k=1 压 17%,
+// k=2 起可忽略. 逐 bin 乘 1/(1 − |W_k|²/(L·Σw²)) 还回去, 白噪声下精确; 有色谱 / 带缺口是近似
+// (只动前几 bin, 幅度如上).
 // 不跨天拼接 → 隔夜跳空不进谱; 多天/多资产的谱在调用方做算术平均 (逐批收敛).
 // ============================================================================
 
@@ -37,7 +41,7 @@ struct DayPSD {
   std::array<float, N> buf{};
   std::array<float, N_FREQS> power{};
   std::array<float, VR> hann{};
-  float w2_dense = 0.0f; // Σw² (全 VR 有效时的窗能量, compute_pair_dense 用)
+  std::array<float, N_FREQS> unbias{}; // 去均值偏差修正 1/(1 − |W_k|²/(L·Σw²)), 见文件头
 
   DayPSD() {
     double w2 = 0.0;
@@ -45,7 +49,16 @@ struct DayPSD {
       hann[i] = static_cast<float>(0.5 * (1.0 - std::cos(2.0 * PI * static_cast<double>(i) / static_cast<double>(VR - 1))));
       w2 += static_cast<double>(hann[i]) * hann[i];
     }
-    w2_dense = static_cast<float>(w2);
+    // |W_k|² = 窗零填后的功率谱 (fft_power_spectrum 已除 N, 乘回)
+    for (size_t t = 0; t < N; ++t)
+      buf[t] = t < VR ? hann[t] : 0.0f;
+    fft_real_to_power<N>(buf.data(), power.data(), ws);
+    for (size_t k = 0; k < N_FREQS; ++k) {
+      const double wk2 = static_cast<double>(power[k]) * static_cast<double>(N);
+      const double d = 1.0 - wk2 / (static_cast<double>(VR) * w2);
+      assert(d > 0.0); // k=0 处 = 1/3 (Hann: (Σw)²/(L·Σw²) = 2/3), 其余更接近 1
+      unbias[k] = static_cast<float>(1.0 / d);
+    }
   }
 
   // 返回 false = 有效样本不足, power 未写
@@ -76,37 +89,9 @@ struct DayPSD {
       buf[t] = 0.0f;
     fft_real_to_power<N>(buf.data(), power.data(), ws);
     const float inv = static_cast<float>(static_cast<double>(N) / w2); // fft_power_spectrum 已除 N, 还回来再除 Σw²
-    for (float &p : power)
-      p *= inv;
+    for (size_t k = 0; k < N_FREQS; ++k)
+      power[k] *= inv * unbias[k];
     return true;
-  }
-
-  // 双实序列打包复 FFT (两条谱一次 FFT, 次数减半): Z = FFT(a + i·b), 共轭对称拆回
-  //   A[k] = (Z[k] + conj(Z[N-k])) / 2,  B[k] = (Z[k] - conj(Z[N-k])) / 2i.
-  // 仅稠密输入 (调用方保证无 NaN, 缺口已填 0 — FeaturePreview 段谱即此口径),
-  // 与 compute() 全有效情形结果逐 bin 一致 (P[k] = |X[k]|² / Σw²)
-  void compute_pair_dense(const float *a, const float *b, float *pa, float *pb) {
-    double sa = 0.0, sb = 0.0;
-    for (size_t t = 0; t < VR; ++t) {
-      sa += a[t];
-      sb += b[t];
-    }
-    const float ma = static_cast<float>(sa / static_cast<double>(VR));
-    const float mb = static_cast<float>(sb / static_cast<double>(VR));
-    const auto &bitrev = detail::BITREV<N>;
-    ws.buf.fill({}); // t ≥ VR 零填
-    for (size_t t = 0; t < VR; ++t)
-      ws.buf[bitrev.indices[t]] = {(a[t] - ma) * hann[t], (b[t] - mb) * hann[t]};
-    fft_inplace<N>(ws);
-    const float inv = 1.0f / w2_dense;
-    for (size_t k = 0; k < N_FREQS; ++k) {
-      const auto z = ws.buf[k];
-      const auto y = ws.buf[(N - k) & (N - 1)];
-      const float ar = 0.5f * (z.real() + y.real()), ai = 0.5f * (z.imag() - y.imag());
-      const float br = 0.5f * (z.imag() + y.imag()), bi = 0.5f * (y.real() - z.real());
-      pa[k] = (ar * ar + ai * ai) * inv;
-      pb[k] = (br * br + bi * bi) * inv;
-    }
   }
 };
 

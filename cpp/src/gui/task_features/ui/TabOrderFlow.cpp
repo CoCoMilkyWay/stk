@@ -111,13 +111,15 @@ static const char *FeatName(const Feature &feature, const std::vector<const char
 // ============================================================================
 // Feature Overlay Axes (仅特征信号; 两图自身的轴行为不受影响)
 //   price     → Y1: 与主图价格共轴 (NoFit, 不参与主图自动缩放)
-//   rank      → Y2: 固定 [-0.1, 1.1] (值域 [0,1] 两头留余量, 贴边线不压轴框)
+//   rank/flag → Y2: 固定 = 值域两头各留 10% 余量 (贴边线不压轴框); rank 值域 [0,1] → [-0.1, 1.1],
+//                flag 值域 = 各线 min/max 并集 (整数, 跨度至少按 1 算), 与 rank 同场取并集
 //   ratio*/raw/? → Y3: 同类共轴, 范围 = 各线 min/max 并集 (自动缩放)
-//   rank 与 ratio/raw 同时在场 → 右轴语义冲突, 两轴隐去刻度 (线照常画)
+//   Y2 与 Y3 同时在场 → 右轴语义冲突, 两轴隐去刻度 (线照常画)
 // ============================================================================
 
 enum FeatAxisKind { FEAT_AXIS_PRICE = 0,
                     FEAT_AXIS_RANK,
+                    FEAT_AXIS_FLAG,
                     FEAT_AXIS_SCALE };
 
 static FeatAxisKind FeatAxisOf(const std::vector<const char *> &cat2, int idx) {
@@ -126,20 +128,36 @@ static FeatAxisKind FeatAxisOf(const std::vector<const char *> &cat2, int idx) {
     return FEAT_AXIS_PRICE;
   if (std::strcmp(c, "rank") == 0)
     return FEAT_AXIS_RANK;
+  if (std::strcmp(c, "flag") == 0)
+    return FEAT_AXIS_FLAG;
   return FEAT_AXIS_SCALE; // ratio / ratio_pos / ratio_neg / raw / ?
 }
 
 static ImAxis FeatYAxis(FeatAxisKind kind) {
-  return kind == FEAT_AXIS_PRICE ? ImAxis_Y1 : (kind == FEAT_AXIS_RANK ? ImAxis_Y2 : ImAxis_Y3);
+  return kind == FEAT_AXIS_PRICE ? ImAxis_Y1 : (kind == FEAT_AXIS_SCALE ? ImAxis_Y3 : ImAxis_Y2);
+}
+
+// Y2 (rank/flag) 值域并集累加: rank 固定 [0,1], flag 取该线实际 min/max
+static void FeatFixedRange(FeatAxisKind kind, float y_min, float y_max, float &fixed_min, float &fixed_max) {
+  if (kind == FEAT_AXIS_RANK) {
+    fixed_min = std::min(fixed_min, 0.0f);
+    fixed_max = std::max(fixed_max, 1.0f);
+  } else {
+    fixed_min = std::min(fixed_min, y_min);
+    fixed_max = std::max(fixed_max, y_max);
+  }
 }
 
 // Setup 阶段: 按在场类别开右轴 (必须在任何绘制调用之前)
-static void SetupFeatAxes(bool has_rank, bool has_scale, float scale_min, float scale_max) {
+static void SetupFeatAxes(bool has_fixed, float fixed_min, float fixed_max,
+                          bool has_scale, float scale_min, float scale_max) {
   const ImPlotAxisFlags flags = ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite |
-                                ((has_rank && has_scale) ? ImPlotAxisFlags_NoDecorations : 0);
-  if (has_rank) {
+                                ((has_fixed && has_scale) ? ImPlotAxisFlags_NoDecorations : 0);
+  if (has_fixed) {
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, flags);
-    ImPlot::SetupAxisLimits(ImAxis_Y2, -0.1, 1.1, ImPlotCond_Always); // [0,1] 两头各留点余量
+    // 两头各留 10% 余量; 跨度下限 1 (flag 整数, 恒值线跨度 0 也给一格)
+    const float margin = 0.1f * std::max(fixed_max - fixed_min, 1.0f);
+    ImPlot::SetupAxisLimits(ImAxis_Y2, fixed_min - margin, fixed_max + margin, ImPlotCond_Always);
   }
   if (has_scale) {
     ImPlot::SetupAxis(ImAxis_Y3, nullptr, flags);
@@ -371,22 +389,23 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vecto
     ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换标的不挪 plot 左边界
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
-    bool feat_rank = false, feat_scale = false;
-    float scale_min = (std::numeric_limits<float>::max)();
-    float scale_max = std::numeric_limits<float>::lowest();
+    bool feat_fixed = false, feat_scale = false;
+    float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
+    float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
     for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
       if (dp.feat[i].x.empty())
         continue;
       const FeatAxisKind kind = FeatAxisOf(cat2, ui.depth_feats[i]);
-      if (kind == FEAT_AXIS_RANK) {
-        feat_rank = true;
+      if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
+        feat_fixed = true;
+        FeatFixedRange(kind, dp.feat_y_min[i], dp.feat_y_max[i], fixed_min, fixed_max);
       } else if (kind == FEAT_AXIS_SCALE) {
         feat_scale = true;
         scale_min = std::min(scale_min, dp.feat_y_min[i]);
         scale_max = std::max(scale_max, dp.feat_y_max[i]);
       }
     }
-    SetupFeatAxes(feat_rank, feat_scale, scale_min, scale_max);
+    SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max);
 
     // 当前 Y 视野快照 → 右侧深度面板每帧同步 (两图价格轴严格对齐)
     {
@@ -590,23 +609,25 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const std::vecto
     const size_t nf = ready ? std::min(k.n_feat, ui.kline_feats.size()) : 0;
     std::array<size_t, OrderFlowConst::MAX_FEATURES> feat_counts{};
     {
-      bool feat_rank = false, feat_scale = false;
-      float scale_min = (std::numeric_limits<float>::max)();
-      float scale_max = std::numeric_limits<float>::lowest();
+      bool feat_fixed = false, feat_scale = false;
+      float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
+      float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
       for (size_t i = 0; i < nf; ++i) {
         feat_counts[i] = k.feat_n[i].load(std::memory_order_acquire);
         if (feat_counts[i] == 0)
           continue;
         const FeatAxisKind kind = FeatAxisOf(cat2, ui.kline_feats[i]);
-        if (kind == FEAT_AXIS_RANK) {
-          feat_rank = true;
+        if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
+          feat_fixed = true;
+          FeatFixedRange(kind, k.feat_y_min[i].load(std::memory_order_relaxed),
+                         k.feat_y_max[i].load(std::memory_order_relaxed), fixed_min, fixed_max);
         } else if (kind == FEAT_AXIS_SCALE) {
           feat_scale = true;
           scale_min = std::min(scale_min, k.feat_y_min[i].load(std::memory_order_relaxed));
           scale_max = std::max(scale_max, k.feat_y_max[i].load(std::memory_order_relaxed));
         }
       }
-      SetupFeatAxes(feat_rank, feat_scale, scale_min, scale_max);
+      SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max);
     }
 
     // ------------------------------------------------------------------

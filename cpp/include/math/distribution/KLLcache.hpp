@@ -437,7 +437,9 @@ private:
   static void densityFromCumulative(const float *x, const float *y, size_t n,
                                     float *x_mid, float *density);
 
-  // 高斯滤波
+  // 高斯滤波 (CDF/ICDF 重建共用 σ; radius 公式与 gaussianBlur1D 内部一致, CDF 侧留白依赖它)
+  float blurSigma() const noexcept { return resolution_ * CDF_BLUR_RADIUS_RATIO / 3.0f; }
+  static int blurRadius(float sigma) noexcept { return static_cast<int>(std::ceil(3.0f * sigma)); }
   static void gaussianBlur1D(std::vector<float> &data, float sigma);
 
   // ----------------
@@ -1189,7 +1191,7 @@ inline void KLLcache::gaussianBlur1D(std::vector<float> &data, float sigma) {
   if (sigma <= 0.0f || data.size() < 2)
     return;
 
-  int radius = static_cast<int>(std::ceil(3.0f * sigma));
+  int radius = blurRadius(sigma);
   int len = static_cast<int>(data.size());
   std::vector<float> kernel(2 * radius + 1);
   std::vector<float> temp(data.size());
@@ -1352,12 +1354,20 @@ inline void KLLcache::buildCDF_PCHIP() const {
   }
 
   // 均匀采样 x 轴 (末点强制 = max_, 抵消浮点累加误差, 保证扫尾覆盖全部 knots)
-  float dx = (max_ - min_) / static_cast<float>(n - 1);
-  for (size_t i = 0; i < n; i++) {
+  const float dx = (max_ - min_) / static_cast<float>(n - 1);
+  for (size_t i = 0; i < n; i++)
     cache_.cdf_pchip_x[i] = (i + 1 == n) ? max_ : min_ + static_cast<float>(i) * dx;
-  }
 
-  // 阶梯求值: F(x) = max{F_j : x_j ≤ x}; 网格与 knots 皆升序 → 双指针一遍 O(n+m)
+  // 阶梯求值进两侧各带 pad (= 滤波半径) 个格留白的暂存 (左 F ≡ 0, 右 F ≡ F(max)):
+  // 直接在 [min, max] 网格上滤波时端点质量的跳变正落网格边界 —— 左端 F 从第一格起就是
+  // P(min), 镜像边界视为常数 → 导数 0, 最大质量点 (如 0/1 特征的 0) 反而无峰; 右端跳变成
+  // 孤立尖刺, 峰高只剩零头. 留白后阶梯完整落在核支撑内, 滤波完再切回 [min, max] 段 (x 域不变)
+  const float sigma = blurSigma();
+  const size_t pad = static_cast<size_t>(blurRadius(sigma));
+  static thread_local std::vector<float> padded;
+  padded.assign(n + 2 * pad, 0.0f);
+
+  // F(x) = max{F_j : x_j ≤ x}; 网格与 knots 皆升序 → 双指针一遍 O(n+m)
   const size_t m = cache_.cdf_x.size();
   size_t j = 0;
   float F = 0.0f;
@@ -1366,12 +1376,13 @@ inline void KLLcache::buildCDF_PCHIP() const {
       F = cache_.cdf_F[j];
       ++j;
     }
-    cache_.cdf_pchip_F[i] = F;
+    padded[pad + i] = F;
   }
+  std::fill(padded.begin() + static_cast<std::ptrdiff_t>(pad + n), padded.end(), F);
 
-  // 高斯滤波平滑(自适应sigma): 阶梯 + 固定核 ≡ 加权样本 KDE
-  float adaptive_sigma = resolution_ * CDF_BLUR_RADIUS_RATIO / 3.0f; // radius ≈ 3*sigma
-  gaussianBlur1D(cache_.cdf_pchip_F, adaptive_sigma);
+  // 高斯滤波平滑: 阶梯 + 固定核 ≡ 加权样本 KDE (留白 = 半径, 镜像边界只碰常数段)
+  gaussianBlur1D(padded, sigma);
+  std::copy_n(padded.begin() + static_cast<std::ptrdiff_t>(pad), n, cache_.cdf_pchip_F.begin());
 }
 
 /**
@@ -1431,9 +1442,8 @@ inline void KLLcache::buildICDF_PCHIP() const {
     cache_.icdf_pchip_Q[i] = cache_.icdf_Q[j];
   }
 
-  // 高斯滤波平滑（自适应sigma)
-  float adaptive_sigma = resolution_ * CDF_BLUR_RADIUS_RATIO / 3.0f; // radius ≈ 3*sigma
-  gaussianBlur1D(cache_.icdf_pchip_Q, adaptive_sigma);
+  // 高斯滤波平滑 (u 轴两端本就是 Q = min / max 的平台, 镜像边界即正确延拓, 无需留白)
+  gaussianBlur1D(cache_.icdf_pchip_Q, blurSigma());
 }
 
 /**
