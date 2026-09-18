@@ -171,10 +171,21 @@ static void effective_cat2_snapshot(const Feature::Metadata &meta, const Feature
   }
 }
 
-// 公开口 (见 TabFeature.hpp): 自加短锁, OrderFlow 两图 legend 标注用
-void EffectiveCat2Snapshot(SharedData &data, size_t level, std::vector<const char *> &out) {
+// 公开口 (见 TabFeature.hpp): 自加短锁, OrderFlow 两图 legend 标注 / flag 轴缩放用
+void EffectiveCat2Snapshot(SharedData &data, size_t level, Cat2Snapshot &out) {
   std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
-  effective_cat2_snapshot(data.feature.metadata, data.preview, level, out);
+  const FeaturePreview &pv = data.preview;
+  effective_cat2_snapshot(data.feature.metadata, pv, level, out.cat2);
+  const size_t n = out.cat2.size();
+  out.val_min.resize(n);
+  out.val_max.resize(n);
+  const bool preview_level = (level == analysis::kLevel);
+  static const FeaturePreview::Cell s_empty{};
+  for (size_t i = 0; i < n; ++i) {
+    const analysis::Integrity &it = (preview_level && i < pv.cells.size()) ? pv.cells[i].integrity : s_empty.integrity;
+    out.val_min[i] = it.val_min;
+    out.val_max[i] = it.val_max;
+  }
 }
 
 // Filter features based on current filter settings (eff_cat2 = 探测/覆盖后的有效 Cat2)

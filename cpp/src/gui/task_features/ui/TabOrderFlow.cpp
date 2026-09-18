@@ -112,7 +112,8 @@ static const char *FeatName(const Feature &feature, const std::vector<const char
 // Feature Overlay Axes (仅特征信号; 两图自身的轴行为不受影响)
 //   price     → Y1: 与主图价格共轴 (NoFit, 不参与主图自动缩放)
 //   rank/flag → Y2: 固定 = 值域两头各留 10% 余量 (贴边线不压轴框); rank 值域 [0,1] → [-0.1, 1.1],
-//                flag 值域 = 各线 min/max 并集 (整数, 跨度至少按 1 算), 与 rank 同场取并集
+//                flag 值域 = 该特征预览抽样的全局 min/max (换标的/换日不跳; 无预览退回该线自身范围),
+//                整数跨度至少按 1 算; 多线同场取并集
 //   ratio*/raw/? → Y3: 同类共轴, 范围 = 各线 min/max 并集 (自动缩放)
 //   Y2 与 Y3 同时在场 → 右轴语义冲突, 两轴隐去刻度 (线照常画)
 // ============================================================================
@@ -137,15 +138,20 @@ static ImAxis FeatYAxis(FeatAxisKind kind) {
   return kind == FEAT_AXIS_PRICE ? ImAxis_Y1 : (kind == FEAT_AXIS_SCALE ? ImAxis_Y3 : ImAxis_Y2);
 }
 
-// Y2 (rank/flag) 值域并集累加: rank 固定 [0,1], flag 取该线实际 min/max
-static void FeatFixedRange(FeatAxisKind kind, float y_min, float y_max, float &fixed_min, float &fixed_max) {
+// Y2 (rank/flag) 值域并集累加: rank 固定 [0,1]; flag 取该特征全局 min/max (预览快照),
+// 无预览 (快照 min > max) 退回该线自身 y_min/y_max
+static void FeatFixedRange(FeatAxisKind kind, const Cat2Snapshot &snap, int idx,
+                           float y_min, float y_max, float &fixed_min, float &fixed_max) {
   if (kind == FEAT_AXIS_RANK) {
-    fixed_min = std::min(fixed_min, 0.0f);
-    fixed_max = std::max(fixed_max, 1.0f);
-  } else {
-    fixed_min = std::min(fixed_min, y_min);
-    fixed_max = std::max(fixed_max, y_max);
+    y_min = 0.0f;
+    y_max = 1.0f;
+  } else if (idx >= 0 && static_cast<size_t>(idx) < snap.val_min.size() &&
+             snap.val_min[static_cast<size_t>(idx)] <= snap.val_max[static_cast<size_t>(idx)]) {
+    y_min = snap.val_min[static_cast<size_t>(idx)];
+    y_max = snap.val_max[static_cast<size_t>(idx)];
   }
+  fixed_min = std::min(fixed_min, y_min);
+  fixed_max = std::max(fixed_max, y_max);
 }
 
 // Setup 阶段: 按在场类别开右轴 (必须在任何绘制调用之前)
@@ -359,7 +365,7 @@ static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t p
 // L0 Plot Renderer (图1: front Depth 槽)
 // ============================================================================
 
-static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vector<const char *> &cat2) {
+static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap) {
   auto &ui = of.ui;
   const OrderFlow::Depth &dp = of.depth_front_slot();
 
@@ -395,10 +401,10 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vecto
     for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
       if (dp.feat[i].x.empty())
         continue;
-      const FeatAxisKind kind = FeatAxisOf(cat2, ui.depth_feats[i]);
+      const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.depth_feats[i]);
       if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
         feat_fixed = true;
-        FeatFixedRange(kind, dp.feat_y_min[i], dp.feat_y_max[i], fixed_min, fixed_max);
+        FeatFixedRange(kind, snap, ui.depth_feats[i], dp.feat_y_min[i], dp.feat_y_max[i], fixed_min, fixed_max);
       } else if (kind == FEAT_AXIS_SCALE) {
         feat_scale = true;
         scale_min = std::min(scale_min, dp.feat_y_min[i]);
@@ -512,13 +518,13 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vecto
       if (fl.x.empty())
         continue;
       char label[128];
-      const FeatAxisKind kind = FeatAxisOf(cat2, ui.depth_feats[i]);
+      const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.depth_feats[i]);
       ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
       // 颜色按选中槽位取 (不用 ImPlot 的 item 序自动分配): 两图 item 序不同, 同一
       // 特征才能在图1 图2 同色
       ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
       // price 类共用主图 Y1: NoFit 保证图1 自动/双击缩放口径不被特征撑大
-      ImPlot::PlotStairs(FeatName(feature, cat2, dp.feat_level, ui.depth_feats[i], label, sizeof(label)),
+      ImPlot::PlotStairs(FeatName(feature, snap.cat2, dp.feat_level, ui.depth_feats[i], label, sizeof(label)),
                          fl.x.data(), fl.y.data(), static_cast<int>(fl.x.size()),
                          kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -563,7 +569,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const std::vecto
 // L1 Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
-static void RenderL1Plot(OrderFlow &of, const Feature &feature, const std::vector<const char *> &cat2, float height) {
+static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap, float height) {
   auto &ui = of.ui;
   auto &k = of.kline;
 
@@ -616,10 +622,10 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const std::vecto
         feat_counts[i] = k.feat_n[i].load(std::memory_order_acquire);
         if (feat_counts[i] == 0)
           continue;
-        const FeatAxisKind kind = FeatAxisOf(cat2, ui.kline_feats[i]);
+        const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.kline_feats[i]);
         if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
           feat_fixed = true;
-          FeatFixedRange(kind, k.feat_y_min[i].load(std::memory_order_relaxed),
+          FeatFixedRange(kind, snap, ui.kline_feats[i], k.feat_y_min[i].load(std::memory_order_relaxed),
                          k.feat_y_max[i].load(std::memory_order_relaxed), fixed_min, fixed_max);
         } else if (kind == FEAT_AXIS_SCALE) {
           feat_scale = true;
@@ -642,12 +648,12 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const std::vecto
       if (feat_counts[i] == 0)
         continue;
       char label[128];
-      const FeatAxisKind kind = FeatAxisOf(cat2, ui.kline_feats[i]);
+      const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.kline_feats[i]);
       ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
       // 颜色按选中槽位取, 与图1 同一口径 (选中层 = L1 时两图特征列表逐项相同 → 同色)
       ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
       // price 类共用主图 Y1: NoFit 保证 K线自身的缩放口径不被特征撑大
-      ImPlot::PlotStairs(FeatName(feature, cat2, 1, ui.kline_feats[i], label, sizeof(label)),
+      ImPlot::PlotStairs(FeatName(feature, snap.cat2, 1, ui.kline_feats[i], label, sizeof(label)),
                          k.feat[i].x.data(), k.feat[i].y.data(), static_cast<int>(feat_counts[i]),
                          kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -990,7 +996,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
 
   // Cat2 有效值快照 (与 FEATURE 表同口径): 两图 legend 括号标注.
   // 图1 用 front 槽实际渲染的特征层 (换层在途时与旧槽数据配对)
-  static std::vector<const char *> s_cat2_depth, s_cat2_l1;
+  static Cat2Snapshot s_cat2_depth, s_cat2_l1;
   EffectiveCat2Snapshot(data, 1, s_cat2_l1);
   EffectiveCat2Snapshot(data, static_cast<size_t>(of.depth_front_slot().feat_level), s_cat2_depth);
 
