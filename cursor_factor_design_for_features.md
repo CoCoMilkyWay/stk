@@ -1,5 +1,5 @@
 # Factor design for features
-_Exported on 9/21/2026 at 21:59:05 GMT+8 from Cursor (3.20.21)_
+_Exported on 9/21/2026 at 22:17:19 GMT+8 from Cursor (3.20.21)_
 
 ---
 
@@ -204,4 +204,10 @@ py/factor/
 算子要做干净, 整齐, 高度对仗
 
 继续
+
+---
+
+**Cursor**
+
+Now the runner.
 
