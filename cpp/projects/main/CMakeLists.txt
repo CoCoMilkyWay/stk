@@ -723,6 +723,16 @@ set_source_files_properties(
 )
 
 # ============================================================================
+# op_stream: 因子算子流式对拍 CLI (factor/OpTable.hpp 展开; 与 py/factor/check 配对)
+# ============================================================================
+# 只依赖 factor/stream/*.hpp + Method/CS.cpp, 无 GUI / Arrow. 整 target precise math (NaN 语义).
+add_executable(op_stream
+    ../../src/factor/op_stream.cpp
+    ../../src/features/Method/CS.cpp
+)
+target_compile_options(op_stream PRIVATE "${PRECISE_MATH_FLAG}")
+
+# ============================================================================
 # GUI Dependencies and Libraries
 # ============================================================================
 
