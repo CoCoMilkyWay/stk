@@ -1,5 +1,5 @@
 """
-Build script for 'main' C++ project (Windows/macOS/Linux).
+Build script for 'main' C++ project (Linux).
 Directly invokes CMake to configure and build the project.
 """
 
@@ -13,8 +13,7 @@ import sys
 def build_main_project():
     """Build main project using CMake."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    cpp_project_dir = os.path.abspath(
-        os.path.join(script_dir, "../cpp/projects/main"))
+    cpp_project_dir = os.path.abspath(os.path.join(script_dir, "../cpp/projects/main"))
     build_dir = os.path.join(cpp_project_dir, "build")
 
     system = platform.system()
@@ -32,58 +31,50 @@ def build_main_project():
 
     # Build configuration
     build_type = "Release"
-    
-    # Platform-specific compiler setup
+
     cmake_args = [
         "cmake",
-        "-S", ".",
-        "-B", "build",
+        "-S",
+        ".",
+        "-B",
+        "build",
         f"-DCMAKE_BUILD_TYPE={build_type}",
-        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
     ]
-    
-    if system == "Windows":
-        cmake_args.extend([
-            "-G", "Ninja",
-            "-DCMAKE_CXX_COMPILER=clang-cl",
-            "-DCMAKE_C_COMPILER=clang-cl",
-        ])
-    elif system == "Darwin":  # macOS
-        cmake_args.extend([
-            "-G", "Ninja",
+
+    # Linux: clang + Ninja
+    cmake_args.extend(
+        [
+            "-G",
+            "Ninja",
             "-DCMAKE_CXX_COMPILER=clang++",
             "-DCMAKE_C_COMPILER=clang",
-        ])
-    else:  # Linux
-        cmake_args.extend([
-            "-G", "Ninja",
-            "-DCMAKE_CXX_COMPILER=clang++",
-            "-DCMAKE_C_COMPILER=clang",
-        ])
+        ]
+    )
 
     # ThreadSanitizer mode
-    if env.get('TSAN_MODE') == 'ON':
+    if env.get("TSAN_MODE") == "ON":
         print("ThreadSanitizer mode: ENABLED")
         cmake_args.append("-DTSAN_MODE=ON")
     else:
         cmake_args.append("-DTSAN_MODE=OFF")
 
     # Profile mode
-    if env.get('PROFILE_MODE') == 'ON':
+    if env.get("PROFILE_MODE") == "ON":
         print("Profile mode: ENABLED")
         cmake_args.append("-DPROFILE_MODE=ON")
     else:
         cmake_args.append("-DPROFILE_MODE=OFF")
 
     # Debug mode
-    if env.get('DEBUG_MODE') == 'ON':
+    if env.get("DEBUG_MODE") == "ON":
         print("Debug mode: ENABLED")
         cmake_args.append("-DDEBUG_MODE=ON")
     else:
         cmake_args.append("-DDEBUG_MODE=OFF")
 
     # Assert mode
-    if env.get('ASSERT_MODE') == 'ON':
+    if env.get("ASSERT_MODE") == "ON":
         print("Assert mode: ENABLED")
         cmake_args.append("-DASSERT_MODE=ON")
     else:
@@ -101,7 +92,7 @@ def build_main_project():
     result = subprocess.run(
         ["cmake", "--build", "build", "--config", build_type, "--parallel"],
         cwd=cpp_project_dir,
-        env=env
+        env=env,
     )
     if result.returncode != 0:
         print(f"\nError: CMake build failed with code {result.returncode}")
@@ -119,5 +110,5 @@ def build_main_project():
     print("=" * 40)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     build_main_project()

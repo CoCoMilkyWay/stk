@@ -1,4 +1,5 @@
 """Assert Mode - Optimized build with assertions enabled"""
+
 import subprocess
 import time
 
@@ -15,11 +16,12 @@ def run(binary_path, working_dir):
 
     print(f"\n{'='*80}")
     if result.returncode != 0:
-        print(f"[X] Assert Mode Failed! (exit code: {result.returncode}, {elapsed_time:.2f}s)")
+        print(
+            f"[X] Assert Mode Failed! (exit code: {result.returncode}, {elapsed_time:.2f}s)"
+        )
         print("(Assert messages should appear above)")
         print(f"{'='*80}")
         raise subprocess.CalledProcessError(result.returncode, binary_path)
     else:
         print(f"[OK] Assert Mode Complete! ({elapsed_time:.2f}s)")
         print(f"{'='*80}")
-

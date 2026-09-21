@@ -28,7 +28,9 @@ OUTPUT_NAME = "smallcap400"
 
 
 def latest_month_dir() -> Path:
-    months = sorted(p.name for p in FUND_DIR.iterdir() if p.is_dir() and p.name[:2].isdigit())
+    months = sorted(
+        p.name for p in FUND_DIR.iterdir() if p.is_dir() and p.name[:2].isdigit()
+    )
     assert months, f"未找到月度分片目录: {FUND_DIR}"
     return FUND_DIR / months[-1]
 
@@ -43,22 +45,35 @@ def main() -> None:
     basic = pd.read_parquet(FUND_DIR / "_meta" / "cn_stock_basic_info.parquet")
 
     latest_date = status["date"].max()
-    assert latest_date == shares["date"].max() == bar1d["date"].max() == instruments["date"].max(), \
-        "status/shares/real_bar1d/instruments 最新日期不一致, 需重新同步基本面数据"
+    assert (
+        latest_date
+        == shares["date"].max()
+        == bar1d["date"].max()
+        == instruments["date"].max()
+    ), "status/shares/real_bar1d/instruments 最新日期不一致, 需重新同步基本面数据"
     print(f"最新交易日: {latest_date.date()}")
 
-    status = status[status["date"] == latest_date][["instrument", "st_status", "suspended"]]
+    status = status[status["date"] == latest_date][
+        ["instrument", "st_status", "suspended"]
+    ]
     shares = shares[shares["date"] == latest_date][["instrument", "total_shares"]]
     bar1d = bar1d[bar1d["date"] == latest_date][["instrument", "close"]]
     # name 用 cn_stock_instruments 的 PIT 简称 (戴帽/改名当日即变), 而非
     # cn_stock_basic_info 的静态 name (改名后不追溯更新, 仅用于展示会误导).
-    instruments = instruments[instruments["date"] == latest_date][["instrument", "name"]]
+    instruments = instruments[instruments["date"] == latest_date][
+        ["instrument", "name"]
+    ]
 
-    df = status.merge(shares, on="instrument", how="inner") \
-                .merge(bar1d, on="instrument", how="inner") \
-                .merge(instruments, on="instrument", how="inner") \
-                .merge(basic[["instrument", "list_date", "delist_date"]],
-                       on="instrument", how="inner")
+    df = (
+        status.merge(shares, on="instrument", how="inner")
+        .merge(bar1d, on="instrument", how="inner")
+        .merge(instruments, on="instrument", how="inner")
+        .merge(
+            basic[["instrument", "list_date", "delist_date"]],
+            on="instrument",
+            how="inner",
+        )
+    )
     print(f"当日在册: {len(df)}")
 
     df = df[df["delist_date"].isna()]
@@ -83,8 +98,10 @@ def main() -> None:
     assert len(df) >= N, f"候选池只有 {len(df)} 只, 不足 {N} 只"
     picked = df.head(N)
 
-    print(f"最终 {len(picked)} 只, 市值区间: "
-          f"{picked['market_cap'].min():.2e} ~ {picked['market_cap'].max():.2e}")
+    print(
+        f"最终 {len(picked)} 只, 市值区间: "
+        f"{picked['market_cap'].min():.2e} ~ {picked['market_cap'].max():.2e}"
+    )
     print(picked[["instrument", "name", "market_cap"]].head(5))
     print("...")
     print(picked[["instrument", "name", "market_cap"]].tail(5))
@@ -92,7 +109,9 @@ def main() -> None:
     codes = sorted(picked["instrument"].tolist())
     UNIVERSE_DIR.mkdir(parents=True, exist_ok=True)
     out_path = UNIVERSE_DIR / f"{OUTPUT_NAME}.json"
-    out_path.write_text(json.dumps(codes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    out_path.write_text(
+        json.dumps(codes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(f"已写入: {out_path}")
 
 

@@ -27,24 +27,28 @@ CALENDAR_STALE_THRESHOLD_DAYS = 7
 
 def main():
     stock_days_path = get_project_root() / "config" / "stock_days.json"
-    assert stock_days_path.exists(
-    ), f"Missing calendar file: {stock_days_path}"
+    assert stock_days_path.exists(), f"Missing calendar file: {stock_days_path}"
 
     with open(stock_days_path) as f:
         stock_days = json.load(f)
 
     calendar_last_date = max(d for d, _ in stock_days)
     today = date.today()
-    calendar_last = date(*map(int, calendar_last_date.split('-')))
+    calendar_last = date(*map(int, calendar_last_date.split("-")))
     stale_days = (today - calendar_last).days
     if stale_days > CALENDAR_STALE_THRESHOLD_DAYS:
-        print(f"[!] WARNING: config/stock_days.json only goes up to {calendar_last_date}, "
-              f"but today is {today.isoformat()} ({stale_days} days stale).")
-        print(f"[!] Dates after {calendar_last_date} are NOT checked below - update "
-              f"stock_days.json first (Task Database -> Data Overview -> update).\n")
+        print(
+            f"[!] WARNING: config/stock_days.json only goes up to {calendar_last_date}, "
+            f"but today is {today.isoformat()} ({stale_days} days stale)."
+        )
+        print(
+            f"[!] Dates after {calendar_last_date} are NOT checked below - update "
+            f"stock_days.json first (Task Database -> Data Overview -> update).\n"
+        )
 
-    trading_dates = [d.replace('-', '')
-                     for d, is_trading in stock_days if is_trading == '1']
+    trading_dates = [
+        d.replace("-", "") for d, is_trading in stock_days if is_trading == "1"
+    ]
     trading_dates.sort()
 
     truly_missing = []
@@ -55,8 +59,10 @@ def main():
         if rar_path.exists():
             continue
 
-        other_ext = next((ext for ext in OTHER_EXTENSIONS
-                          if rar_path.with_suffix(ext).exists()), None)
+        other_ext = next(
+            (ext for ext in OTHER_EXTENSIONS if rar_path.with_suffix(ext).exists()),
+            None,
+        )
         if other_ext:
             pending_conversion[other_ext].append(d)
         else:
@@ -87,5 +93,5 @@ def main():
         print_tree(dates, f"Pending conversion ({ext})")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

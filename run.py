@@ -1,4 +1,4 @@
-"""Build & Run Pipeline (Windows/macOS/Linux)
+"""Build & Run Pipeline (Linux)
 
 Usage:
     Set ONE mode flag to True, then: python run.py
@@ -12,7 +12,6 @@ Modes:
 """
 
 import os
-import platform
 import subprocess
 import sys
 import time
@@ -28,23 +27,16 @@ APP_NAME = "main"
 # Build & Run modes (set ONLY ONE to True)
 ENABLE_TSAN = False
 ENABLE_DEBUG = False
-ENABLE_PROFILE = False
-ENABLE_ASSERT = True
+ENABLE_PROFILE = True
+ENABLE_ASSERT = False
 ENABLE_PRODUCTION = False  # Auto-enabled if all others are False
 
 
 def _cleanup_processes():
     """Kill old processes."""
-    if platform.system() == "Windows":
-        process_names = [f"app_{APP_NAME}.exe"]
-        for name in process_names:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", name], capture_output=True, check=False
-            )
-    else:  # macOS/Linux
-        subprocess.run(
-            ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False
-        )
+    subprocess.run(
+        ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False
+    )
     time.sleep(0.3)
 
 
@@ -99,8 +91,7 @@ def main():
 
     print("Running...")
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
-    exe_ext = ".exe" if platform.system() == "Windows" else ""
-    binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}{exe_ext}")
+    binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}")
     _run(
         binary_path, build_dir, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT
     )

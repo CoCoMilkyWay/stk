@@ -27,15 +27,15 @@ def setup_output_dirs() -> Tuple[Path, Path]:
     """Setup output and temp directories by cleaning and creating them."""
     output_dir = get_output_fix_dir()
     temp_dir = get_output_fix_temp_dir()
-    
+
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
-    
+
     return output_dir, temp_dir
 
 
@@ -48,17 +48,17 @@ def cleanup_dirs(output_dir: Path, temp_dir: Path):
 def process_with_pool(
     items: List[Any],
     process_func: Callable[[Any, int], Tuple[str, bool, str]],
-    num_workers: int = 4
+    num_workers: int = 4,
 ) -> Tuple[int, List[Tuple[str, str]]]:
     """
     Process items in parallel using ProcessPoolExecutor.
     Each worker writes to its own log file.
-    
+
     Args:
         items: List of items to process
         process_func: Function that takes (item, worker_idx) and returns (name, success, message)
         num_workers: Number of worker processes
-    
+
     Returns:
         Tuple of (success_count, failed_items)
     """
@@ -66,11 +66,13 @@ def process_with_pool(
     failed_items = []
     total = len(items)
     completed = 0
-    
+
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(process_func, item, idx): item 
-                   for idx, item in enumerate(items)}
-        
+        futures = {
+            executor.submit(process_func, item, idx): item
+            for idx, item in enumerate(items)
+        }
+
         for future in as_completed(futures):
             completed += 1
             name, success, message = future.result()
@@ -80,7 +82,7 @@ def process_with_pool(
             else:
                 failed_items.append((name, message))
                 print(f"[{completed}/{total}] ✗ {name}: {message}")
-    
+
     return success_count, failed_items
 
 
@@ -97,6 +99,5 @@ def log_message(worker_idx: int, message: str):
     log_dir = get_output_fix_dir() / "logs"
     log_dir.mkdir(exist_ok=True)
     log_file = log_dir / f"worker_{worker_idx}.log"
-    with open(log_file, 'a') as f:
-        f.write(message + '\n')
-
+    with open(log_file, "a") as f:
+        f.write(message + "\n")

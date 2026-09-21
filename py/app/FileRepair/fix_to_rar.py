@@ -100,7 +100,9 @@ def convert_one(task: Tuple[int, Path]) -> Tuple[Path, Optional[Path], str]:
         log(stem, f"Extracting {source.name}...")
         result = subprocess.run(
             ["7z", "x", str(source), f"-o{extract_dir}/", "-y"],
-            capture_output=True, text=True, preexec_fn=_die_with_parent,
+            capture_output=True,
+            text=True,
+            preexec_fn=_die_with_parent,
         )
         if result.returncode != 0:
             log(stem, f"Extract failed: {result.stderr}")
@@ -113,7 +115,9 @@ def convert_one(task: Tuple[int, Path]) -> Tuple[Path, Optional[Path], str]:
         result = subprocess.run(
             ["rar", "a", "-m3", "-ma5", "-r", str(local_rar), "."],
             cwd=extract_dir,
-            capture_output=True, text=True, preexec_fn=_die_with_parent,
+            capture_output=True,
+            text=True,
+            preexec_fn=_die_with_parent,
         )
         if result.returncode != 0:
             log(stem, f"RAR creation failed: {result.stderr}")
@@ -191,9 +195,9 @@ def main():
     LOG_DIR.mkdir(parents=True)
 
     total = len(tasks)
-    convert_failed = []   # (source, error)
-    replace_failed = []   # (source, error)
-    replaced = []         # final paths
+    convert_failed = []  # (source, error)
+    replace_failed = []  # (source, error)
+    replaced = []  # final paths
 
     replace_q: "queue.Queue" = queue.Queue()
 
@@ -242,7 +246,9 @@ def main():
     except KeyboardInterrupt:
         pool.terminate()  # kills workers; their 7z/rar children die via PDEATHSIG
         pool.join()
-        print("\nInterrupted. Unfinished files keep their original source; re-run to resume.")
+        print(
+            "\nInterrupted. Unfinished files keep their original source; re-run to resume."
+        )
         sys.exit(130)
     finally:
         shutil.rmtree(RUN_DIR, ignore_errors=True)
