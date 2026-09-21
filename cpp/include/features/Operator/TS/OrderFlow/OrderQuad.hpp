@@ -3,8 +3,12 @@
 // =============================================================================
 // OrderQuad - 大小单 · 委托维度 (compute=onTick, flush=onMinute; feature_list.md 1.4)
 // =============================================================================
-//   每笔成交的买卖双方各是一张委托, 按 "委托大小 (元)" 各归大/小, 落四象限 (首字母 = 买方委托, 次字母 = 卖方委托; 与主动方向无关):
+//   每笔成交的买卖双方各是一张委托, 按 "委托大小 (元)" 各归大/小, 落四象限 (首字母 = 买方委托, 次字母 = 卖方委托), 再按主动方向 (bid / ask) 分两口:
 //     bb 大买×大卖   bs 大买×小卖 (大单扫散户卖盘)   sb 小买×大卖 (散户接大单抛压)   ss 小买×小卖
+//   [买委托大小][卖委托大小][主动方向] 是完全分解, 其余口径皆边缘和 (因子层做):
+//     广发 L2-001 四象限 (不分向)      = bid + ask
+//     海通 085 大买单主动成交额 (≥thr) = bid_bb + bid_bs;  大卖单主动 = ask_bb + ask_sb
+//     智臾 小买单主动成交额 (<P50)     = bid_sb + bid_ss (p50 槽)
 //   委托大小 Q (股 → 元 = 股 × 本笔成交价; 输入面 = LOB_Feature::ord_*, 语义见 LimitOrderBookDefine.hpp):
 //     被动方 (Resting)  = 申报量 ord_orig
 //     主动方            = 截止本笔 (含本笔) 的连续累计成交量 f + v:  Aggressor (沪市, 不入簿) f = ord_rest;
@@ -16,10 +20,9 @@
 //   剔除: 任一侧不可信 —— ord_role==None (乱序, 未见挂单) / 占位单 (ord_flag ∈ {OUT_OF_ORDER, ZERO_PRICE}, orig 不是申报量) /
 //         被动方非 Resting / 过度抵扣 (rest > orig) —— 的成交不进四象限; 被剔量 = Flow {amt,vol,n}_taker_bid+ask − 四象限之和 (因子层还原, 不单列).
 //   输出 (每分钟增量):
-//     {amt,vol,n}_od_{bb,bs,sb,ss}_{B|q}   四象限成交 额(元) / 量(股) / 笔
-//     od_sq_{bid,ask}                      Σ ((f+v)² − f²)·p²  该侧委托累计成交额平方的增量 (各侧独立判可信; 日 Σ = 各委托成交额平方和 → 买/卖单集中度)
-//     amt_od_taker_{bid,ask}_lt_p50        该侧为主动方 且 Q < P50 的成交额 (小单主动成交度; 首日 0)
-//   实现: 二维桶 [买桶][卖桶] 每笔 O(1); flush 逐非空格按 "格 ≥ 阈值 k" 分派到 4 象限 (纯加法, 不做后缀和相减 → 空象限精确 0).
+//     {amt,vol,n}_od_{bid,ask}_{bb,bs,sb,ss}_{B|q}   主动买 / 主动卖 × 四象限 成交 额(元) / 量(股) / 笔
+//     od_sq_{bid,ask}                                Σ ((f+v)² − f²)·p²  该侧委托累计成交额平方的增量 (各侧独立判可信; 日 Σ = 各委托成交额平方和 → 买/卖单集中度)
+//   实现: 三维桶 [主动侧][买桶][卖桶] 每笔 O(1); flush 逐非空格按 "格 ≥ 阈值 k" 分派到 4 象限 (纯加法, 不做后缀和相减 → 空象限精确 0).
 //   fp16 落盘: 全部 Log Tf.
 // =============================================================================
 
@@ -30,12 +33,9 @@
 #include <cstdint>
 #include <utility>
 
-// 阈值枚举 (输出槽序): 前 3 = B 轴固定金额, 后 6 = q 轴分位
-#define ORDERQUAD_THRS(T) T(4w) T(20w) T(100w) T(p50) T(p80) T(p84) T(p93) T(p95) T(p98)
-#define ORDERQUAD_ENUM_BB(b) amt_od_bb_##b, vol_od_bb_##b, n_od_bb_##b,
-#define ORDERQUAD_ENUM_BS(b) amt_od_bs_##b, vol_od_bs_##b, n_od_bs_##b,
-#define ORDERQUAD_ENUM_SB(b) amt_od_sb_##b, vol_od_sb_##b, n_od_sb_##b,
-#define ORDERQUAD_ENUM_SS(b) amt_od_ss_##b, vol_od_ss_##b, n_od_ss_##b,
+// 阈值枚举 (输出槽序): 前 3 = B 轴固定金额, 后 6 = q 轴分位; aq = 主动侧_象限 token (bid_bb …)
+#define ORDERQUAD_THRS(T, aq) T(aq, 4w) T(aq, 20w) T(aq, 100w) T(aq, p50) T(aq, p80) T(aq, p84) T(aq, p93) T(aq, p95) T(aq, p98)
+#define ORDERQUAD_ENUM(aq, b) amt_od_##aq##_##b, vol_od_##aq##_##b, n_od_##aq##_##b,
 
 class OrderQuad {
   static constexpr size_t NFIX = 3, NQ = 6, NB = NFIX + NQ, N_DAYS = 5;
@@ -43,13 +43,12 @@ class OrderQuad {
   static constexpr float PROBS[NQ] = {0.50f, 0.80f, 0.84f, 0.93f, 0.95f, 0.98f};
 
 public:
-  // 布局: 象限 外层 (bb, bs, sb, ss) × 阈值槽 中层 × {amt, vol, n} 内层 —— y[(quad·NB + j)·3 + d]; 其后 od_sq ×2, lt_p50 ×2
-  enum Out : size_t { ORDERQUAD_THRS(ORDERQUAD_ENUM_BB) ORDERQUAD_THRS(ORDERQUAD_ENUM_BS) ORDERQUAD_THRS(ORDERQUAD_ENUM_SB) ORDERQUAD_THRS(ORDERQUAD_ENUM_SS) od_sq_bid,
+  // 布局: 主动侧 外层 (bid, ask) × 象限 (bb, bs, sb, ss) × 阈值槽 × {amt, vol, n} 内层 —— y[((act·4 + quad)·NB + j)·3 + d]; 其后 od_sq ×2
+  enum Out : size_t { ORDERQUAD_THRS(ORDERQUAD_ENUM, bid_bb) ORDERQUAD_THRS(ORDERQUAD_ENUM, bid_bs) ORDERQUAD_THRS(ORDERQUAD_ENUM, bid_sb) ORDERQUAD_THRS(ORDERQUAD_ENUM, bid_ss)
+                          ORDERQUAD_THRS(ORDERQUAD_ENUM, ask_bb) ORDERQUAD_THRS(ORDERQUAD_ENUM, ask_bs) ORDERQUAD_THRS(ORDERQUAD_ENUM, ask_sb) ORDERQUAD_THRS(ORDERQUAD_ENUM, ask_ss) od_sq_bid,
                       od_sq_ask,
-                      amt_od_taker_bid_lt_p50,
-                      amt_od_taker_ask_lt_p50,
                       kCount };
-  static_assert(od_sq_bid == 4 * NB * 3 && kCount == 4 * NB * 3 + 4);
+  static_assert(od_sq_bid == 2 * 4 * NB * 3 && kCount == 2 * 4 * NB * 3 + 2);
   float y[kCount] = {};
 
   explicit OrderQuad(const TickData &td) : td_(td), dq_(PROBS) { rebuild(); }
@@ -82,7 +81,6 @@ public:
       return;
 
     size_t k[2];
-    float q_act = 0.0f;
     for (size_t s = 0; s < 2; ++s) {
       const float qty = s == act ? static_cast<float>(f[s]) + v : static_cast<float>(lob.ord_orig[s]);
       const float q = qty * p; // 委托大小 (元)
@@ -90,13 +88,9 @@ public:
       while (b < n_thr_ && q >= thr_[b])
         ++b;
       k[s] = b;
-      if (s == act)
-        q_act = q;
     }
-    float (&bk)[3] = bucket_[k[0]][k[1]];
+    float (&bk)[3] = bucket_[act][k[0]][k[1]];
     bk[0] += a, bk[1] += v, bk[2] += 1.0f;
-    if (has_q_ && q_act < thr_q_[0]) // P50 = thr_q_[0] (PROBS 升序)
-      lt_[act] += a;
   }
 
   // 格 (i, j) 对阈值 k (升序第 k 个, 1-based): 买 ≥ ⇔ i ≥ k, 卖 ≥ ⇔ j ≥ k → 象限 {0 bb, 1 bs, 2 sb, 3 ss}; 写到该阈值的输出槽
@@ -104,21 +98,20 @@ public:
     dq_.flush_batch();
     for (size_t o = 0; o < od_sq_bid; ++o)
       y[o] = 0.0f;
-    for (size_t i = 0; i <= n_thr_; ++i)
-      for (size_t j = 0; j <= n_thr_; ++j) {
-        const float (&c)[3] = bucket_[i][j];
-        if (c[2] == 0.0f)
-          continue;
-        for (size_t k = 1; k <= n_thr_; ++k) {
-          const size_t quad = (i >= k ? 0 : 2) + (j >= k ? 0 : 1);
-          float *o = &y[(quad * NB + slot_[k - 1]) * 3];
-          o[0] += c[0], o[1] += c[1], o[2] += c[2];
+    for (size_t act = 0; act < 2; ++act)
+      for (size_t i = 0; i <= n_thr_; ++i)
+        for (size_t j = 0; j <= n_thr_; ++j) {
+          const float (&c)[3] = bucket_[act][i][j];
+          if (c[2] == 0.0f)
+            continue;
+          for (size_t k = 1; k <= n_thr_; ++k) {
+            const size_t quad = (i >= k ? 0 : 2) + (j >= k ? 0 : 1);
+            float *o = &y[((act * 4 + quad) * NB + slot_[k - 1]) * 3];
+            o[0] += c[0], o[1] += c[1], o[2] += c[2];
+          }
         }
-      }
     y[od_sq_bid] = sq_[0];
     y[od_sq_ask] = sq_[1];
-    y[amt_od_taker_bid_lt_p50] = lt_[0];
-    y[amt_od_taker_ask_lt_p50] = lt_[1];
     clear();
   }
 
@@ -160,11 +153,11 @@ private:
   }
 
   void clear() {
-    for (auto &row : bucket_)
-      for (auto &c : row)
-        c[0] = c[1] = c[2] = 0.0f;
+    for (auto &side : bucket_)
+      for (auto &row : side)
+        for (auto &c : row)
+          c[0] = c[1] = c[2] = 0.0f;
     sq_[0] = sq_[1] = 0.0f;
-    lt_[0] = lt_[1] = 0.0f;
   }
 
   const TickData &td_;
@@ -174,27 +167,32 @@ private:
   float thr_[NB] = {};   // 当日生效阈值, 升序
   size_t slot_[NB] = {}; // thr_[k] 对应的输出槽
   size_t n_thr_ = 0;
-  float bucket_[NB + 1][NB + 1][3] = {}; // [买桶][卖桶][amt, vol, n]
-  float sq_[2] = {};                     // [侧] 累计成交额平方增量
-  float lt_[2] = {};                     // [侧] 主动小单成交额
+  float bucket_[2][NB + 1][NB + 1][3] = {}; // [主动侧][买桶][卖桶][amt, vol, n]
+  float sq_[2] = {};                        // [侧] 累计成交额平方增量
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_OrderQuad(N) N(OrderQuad, (OrderQuad), (tick_data), onTick, onMinute)
 
-// 一象限 (quad token; QEN / QCN 象限英 / 中文名; RB / RS 买 / 卖方关系中文字面 "≥" 或 "<"; FB / FS 对应公式) × 一阈值 (b token; TE / TC / TF = 阈值的 英文 / 中文 / 公式 字面) 的 额/量/笔 3 行
+// 一主动侧 (act token; S 公式侧上标; ACN 中文) × 一象限 (quad token; QEN / QCN 象限英 / 中文名; RB / RS 买 / 卖方关系中文字面 "≥" 或 "<"; FB / FS 对应公式)
+// × 一阈值 (b token; TE / TC / TF = 阈值的 英文 / 中文 / 公式 字面) 的 额/量/笔 3 行
 // Q^B_τ / Q^A_τ = 买方 / 卖方委托大小 (元): 被动方申报额, 主动方累计成交额 (含本笔)
-#define ORDERQUAD_ROWS(X, CAT1, quad, QEN, QCN, RB, RS, FB, FS, b, TE, TC, TF)                                                                                                                                                                                                                                                                                                     \
-  X(amt_od_##quad##_##b, CAT1, AUTO, QEN " Trade Amount (" TE ")", QCN "成交额(" TC ")", "分钟内 买方委托" RB TC " 且 卖方委托" RS TC " 的成交额(元; 委托大小: 被动方申报额, 主动方含本笔累计成交额)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^T| \mathbf{1}[Q^B_\tau )" FB " " TF R"(] \mathbf{1}[Q^A_\tau )" FS " " TF R"(])", OP(OrderQuad, amt_od_##quad##_##b, Log, None)) \
-  X(vol_od_##quad##_##b, CAT1, AUTO, QEN " Trade Volume (" TE ")", QCN "成交量(" TC ")", "分钟内 买方委托" RB TC " 且 卖方委托" RS TC " 的成交量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^T| \mathbf{1}[Q^B_\tau )" FB " " TF R"(] \mathbf{1}[Q^A_\tau )" FS " " TF R"(])", OP(OrderQuad, vol_od_##quad##_##b, Log, None))                                                        \
-  X(n_od_##quad##_##b, CAT1, AUTO, QEN " Trade Count (" TE ")", QCN "成交笔数(" TC ")", "分钟内 买方委托" RB TC " 且 卖方委托" RS TC " 的成交笔数", R"(\#O_{\Delta t}^T \mathbf{1}[Q^B_\tau )" FB " " TF R"(] \mathbf{1}[Q^A_\tau )" FS " " TF R"(])", OP(OrderQuad, n_od_##quad##_##b, Log, None))
+#define ORDERQUAD_ROWS(X, CAT1, act, S, ACN, quad, QEN, QCN, RB, RS, FB, FS, b, TE, TC, TF)                                                                                                                                                                                                                                                                                                                                                     \
+  X(amt_od_##act##_##quad##_##b, CAT1, AUTO, "Taker " S " " QEN " Trade Amount (" TE ")", ACN " " QCN "成交额(" TC ")", "分钟内 " ACN " 且 买方委托" RB TC " 且 卖方委托" RS TC " 的成交额(元; 委托大小: 被动方申报额, 主动方含本笔累计成交额)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{T,)" S R"(}| \mathbf{1}[Q^B_\tau )" FB " " TF R"(] \mathbf{1}[Q^A_\tau )" FS " " TF R"(])", OP(OrderQuad, amt_od_##act##_##quad##_##b, Log, None)) \
+  X(vol_od_##act##_##quad##_##b, CAT1, AUTO, "Taker " S " " QEN " Trade Volume (" TE ")", ACN " " QCN "成交量(" TC ")", "分钟内 " ACN " 且 买方委托" RB TC " 且 卖方委托" RS TC " 的成交量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{T,)" S R"(}| \mathbf{1}[Q^B_\tau )" FB " " TF R"(] \mathbf{1}[Q^A_\tau )" FS " " TF R"(])", OP(OrderQuad, vol_od_##act##_##quad##_##b, Log, None))                                                        \
+  X(n_od_##act##_##quad##_##b, CAT1, AUTO, "Taker " S " " QEN " Trade Count (" TE ")", ACN " " QCN "成交笔数(" TC ")", "分钟内 " ACN " 且 买方委托" RB TC " 且 卖方委托" RS TC " 的成交笔数", R"(\#O_{\Delta t}^{T,)" S R"(} \mathbf{1}[Q^B_\tau )" FB " " TF R"(] \mathbf{1}[Q^A_\tau )" FS " " TF R"(])", OP(OrderQuad, n_od_##act##_##quad##_##b, Log, None))
 
-// 一阈值的 4 象限 × 3 = 12 行
-#define ORDERQUAD_THR_ROWS(X, CAT1, b, TE, TC, TF)                                                          \
-  ORDERQUAD_ROWS(X, CAT1, bb, "BigBuy-BigSell", "大买×大卖", "≥", "≥", R"(\geq)", R"(\geq)", b, TE, TC, TF) \
-  ORDERQUAD_ROWS(X, CAT1, bs, "BigBuy-SmallSell", "大买×小卖", "≥", "<", R"(\geq)", "<", b, TE, TC, TF)     \
-  ORDERQUAD_ROWS(X, CAT1, sb, "SmallBuy-BigSell", "小买×大卖", "<", "≥", "<", R"(\geq)", b, TE, TC, TF)     \
-  ORDERQUAD_ROWS(X, CAT1, ss, "SmallBuy-SmallSell", "小买×小卖", "<", "<", "<", "<", b, TE, TC, TF)
+// 一主动侧 × 一阈值的 4 象限 × 3 = 12 行
+#define ORDERQUAD_ACT_ROWS(X, CAT1, act, S, ACN, b, TE, TC, TF)                                                          \
+  ORDERQUAD_ROWS(X, CAT1, act, S, ACN, bb, "BigBuy-BigSell", "大买×大卖", "≥", "≥", R"(\geq)", R"(\geq)", b, TE, TC, TF) \
+  ORDERQUAD_ROWS(X, CAT1, act, S, ACN, bs, "BigBuy-SmallSell", "大买×小卖", "≥", "<", R"(\geq)", "<", b, TE, TC, TF)     \
+  ORDERQUAD_ROWS(X, CAT1, act, S, ACN, sb, "SmallBuy-BigSell", "小买×大卖", "<", "≥", "<", R"(\geq)", b, TE, TC, TF)     \
+  ORDERQUAD_ROWS(X, CAT1, act, S, ACN, ss, "SmallBuy-SmallSell", "小买×小卖", "<", "<", "<", "<", b, TE, TC, TF)
+
+// 一阈值的 主动买 12 + 主动卖 12 = 24 行
+#define ORDERQUAD_THR_ROWS(X, CAT1, b, TE, TC, TF)               \
+  ORDERQUAD_ACT_ROWS(X, CAT1, bid, "B", "主动买", b, TE, TC, TF) \
+  ORDERQUAD_ACT_ROWS(X, CAT1, ask, "A", "主动卖", b, TE, TC, TF)
 
 #define FIELDS_L1_OrderQuad(X, CAT1)                                                                                                                                                                                                                                                                                                \
   ORDERQUAD_THR_ROWS(X, CAT1, 4w, "4w", "4万元", R"(4 \times 10^4)")                                                                                                                                                                                                                                                                \
@@ -207,6 +205,4 @@ private:
   ORDERQUAD_THR_ROWS(X, CAT1, p95, "P95", "前5日委托额P95", R"(Q_{95\%}^{5d})")                                                                                                                                                                                                                                                     \
   ORDERQUAD_THR_ROWS(X, CAT1, p98, "P98", "前5日委托额P98", R"(Q_{98\%}^{5d})")                                                                                                                                                                                                                                                     \
   X(od_sq_bid, CAT1, AUTO, "Bid Order Fill Concentration Increment", "买委托成交额平方增量", "分钟内 Σ((f+v)²−f²)·p², f=买方委托此前累计成交量(股), v=本笔量; 日累计=各买委托成交额平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \left[(f^B_\tau + |O_\tau^T|)^2 - (f^B_\tau)^2\right])", OP(OrderQuad, od_sq_bid, Log, None)) \
-  X(od_sq_ask, CAT1, AUTO, "Ask Order Fill Concentration Increment", "卖委托成交额平方增量", "分钟内 Σ((f+v)²−f²)·p², f=卖方委托此前累计成交量(股), v=本笔量; 日累计=各卖委托成交额平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \left[(f^A_\tau + |O_\tau^T|)^2 - (f^A_\tau)^2\right])", OP(OrderQuad, od_sq_ask, Log, None)) \
-  X(amt_od_taker_bid_lt_p50, CAT1, AUTO, "Small Bid Order Taker Amount (< P50)", "小买单主动成交额", "分钟内 主动买 且 买方委托大小<前5日委托额P50 的成交额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{T,B}| \mathbf{1}[Q^B_\tau < Q_{50\%}^{5d}])", OP(OrderQuad, amt_od_taker_bid_lt_p50, Log, None))                      \
-  X(amt_od_taker_ask_lt_p50, CAT1, AUTO, "Small Ask Order Taker Amount (< P50)", "小卖单主动成交额", "分钟内 主动卖 且 卖方委托大小<前5日委托额P50 的成交额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{T,A}| \mathbf{1}[Q^A_\tau < Q_{50\%}^{5d}])", OP(OrderQuad, amt_od_taker_ask_lt_p50, Log, None))
+  X(od_sq_ask, CAT1, AUTO, "Ask Order Fill Concentration Increment", "卖委托成交额平方增量", "分钟内 Σ((f+v)²−f²)·p², f=卖方委托此前累计成交量(股), v=本笔量; 日累计=各卖委托成交额平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \left[(f^A_\tau + |O_\tau^T|)^2 - (f^A_\tau)^2\right])", OP(OrderQuad, od_sq_ask, Log, None))
