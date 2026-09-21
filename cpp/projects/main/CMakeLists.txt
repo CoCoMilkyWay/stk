@@ -111,7 +111,10 @@ endif()
 # Global Compile Options
 # ============================================================================
 
-add_compile_options(-fcolor-diagnostics -fansi-escape-codes -Wno-overriding-option)
+# 排除 CUDA: nvcc 的 -forward-unknown-to-host-compiler 会把这些 clang 专属 flag 转给 gcc 宿主
+# (genex 必须整体加引号, 否则里面的 ; 会先被当成 add_compile_options 的参数分隔符)
+set(CLANG_ONLY_FLAGS -fcolor-diagnostics -fansi-escape-codes -Wno-overriding-option)
+add_compile_options("$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:${CLANG_ONLY_FLAGS}>")
 
 # 链接加速: lld (LLVM 自带, 并行) — 增量迭代每轮都要重链, 默认 GNU ld 是常数项瓶颈
 if(IS_LINUX)
@@ -723,14 +726,39 @@ set_source_files_properties(
 )
 
 # ============================================================================
-# op_stream: 因子算子流式对拍 CLI (factor/OpTable.hpp 展开; 与 py/factor/check 配对)
+# op_check: 因子算子三方对拍 (naive 参考 / stream 流式 / gpu 向量; OpTable.hpp 展开)
 # ============================================================================
-# 只依赖 factor/stream/*.hpp + Method/CS.cpp, 无 GUI / Arrow. 整 target precise math (NaN 语义).
-add_executable(op_stream
-    ../../src/factor/op_stream.cpp
-    ../../src/features/Method/CS.cpp
-)
-target_compile_options(op_stream PRIVATE "${PRECISE_MATH_FLAG}")
+# 只依赖 factor/*.hpp, 无 GUI / Arrow / Python. 整 target precise math:
+# 退化判据 (disp_ok / den_ok) 与 guard 依赖受控浮点, -ffast-math 下会失效.
+option(FACTOR_CUDA "编译 GPU 算子后端 (nvcc)" OFF)
+set(FACTOR_CUDA_ARCH "75" CACHE STRING "GPU 架构算力号 (RTX 2060 = 75)")
+
+set(OP_CHECK_SOURCES ../../src/factor/op_check.cpp)
+if(FACTOR_CUDA)
+    # 必须走 nvcc: clang 21 最高只认到 CUDA 12.8, 本机是 13.x (13 删掉了 clang 依赖的
+    # texture_fetch_functions.h 等旧头), -x cuda 直接编不过.
+    # 宿主侧仍是 clang++ -std=c++23, CUDA 侧是 nvcc+g++ -std=c++20;
+    # 两边只通过 GpuRun.hpp 的 POD 接口相见, libstdc++ ABI 相同, 可直接链接.
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 20)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    find_package(CUDAToolkit REQUIRED)
+    list(APPEND OP_CHECK_SOURCES ../../src/factor/op_check_gpu.cu)
+else()
+    list(APPEND OP_CHECK_SOURCES ../../src/factor/op_check_gpu_stub.cpp)
+endif()
+
+add_executable(op_check ${OP_CHECK_SOURCES})
+target_compile_options(op_check PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${PRECISE_MATH_FLAG}>)
+
+if(FACTOR_CUDA)
+    set_target_properties(op_check PROPERTIES CUDA_ARCHITECTURES "${FACTOR_CUDA_ARCH}")
+    target_compile_options(op_check PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${PRECISE_MATH_FLAG}>)
+    target_link_libraries(op_check PRIVATE CUDA::cudart)
+    message(STATUS "op_check: GPU 后端 ON (sm_${FACTOR_CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION})")
+else()
+    message(STATUS "op_check: GPU 后端 OFF (naive / stream 两方对拍)")
+endif()
 
 # ============================================================================
 # GUI Dependencies and Libraries
