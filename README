@@ -13,7 +13,11 @@ stk/
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 直接调用 CMake
 │   ├── mode_*.py          # 🐍 模式开关: tsan/debug/profile/assert/production
-│   └── app/               # 🐍 build_universe (股票池) / FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
+│   ├── app/               # 🐍 build_universe (股票池) / FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
+│   └── factor/            # 🐍 因子算子向量式 (torch, GPU 挖掘) + 对拍
+│       ├── optable.py     # 🐍 解析 OpTable.hpp → 注册表
+│       ├── ops/           # 🐍 elem / cum / roll / cs (与 cpp factor/stream 同名同义), _util 公共件
+│       └── check/         # 🐍 流式 vs 向量式对拍: cases (输入+边界) / tol (容差) / run (主程序, 合入门槛)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                   # 📦 跨模块数据层
@@ -121,6 +125,9 @@ stk/
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
+│   │   ├── factor/                                         # 🧬 因子算子基建 (特征之上的 TS/CS 算子; 因子 = 特征的非线性算子组合, 表见 operator.md)
+│   │   │   ├── OpTable.hpp                                 # 🧬 真相表 X-macro: 轴 (ELEM/CUM/ROLL/CS) × 元数 分组, 三方 (流式/向量式/对拍) 同名展开
+│   │   │   └── stream/                                     # 🧬 流式 kernel (实盘, 单资产因果, precise-math TU): Kernel.hpp 契约+公共件 / Elem / Cum / Roll / Cs
 │   │   ├── math/                                           # 📐 distribution / normalize / sample / spectral / stationary / timeseries / autoencoder / model
 │   │   │   ├── Operator.hpp                                # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
@@ -142,6 +149,7 @@ stk/
 │   │       └── VariableMonitor.hpp                         # 🔧 变量值监控
 │   ├── src/                                                # 💾 源文件实现 (多数对应include/, boost/math为header-only无实现)
 │   │   ├── main.cpp                                        # 💾 程序入口
+│   │   ├── factor/op_stream.cpp                            # 💾 流式算子对拍 CLI (独立 target op_stream: npy in → 逐 t push → npy out)
 │   │   ├── api/ codec/ shared/ misc/ worker/ features/     # 💾 对应模块实现
 │   │   ├── gui/Gui.cpp / Tasks.cpp                         # 💾 GUI主循环与任务注册实现
 │   │   ├── gui/Run_OpenGL.cpp                              # 💾 OpenGL后端入口

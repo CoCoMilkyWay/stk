@@ -2,6 +2,13 @@
 
 因子 = 特征 (features.json L1 列) 上的非线性算子组合. 本表是算子全集: 名字 / 公式 / 流式状态 / 向量式对照 / 来源. 加算子 = 在表里加一行, 流式与向量式同名同义, 逐值对拍.
 
+## 落地 (已实现; 本文 §1–§6 是设计稿, 以代码真相表为准)
+
+- 真相表 `cpp/include/factor/OpTable.hpp`: X-macro 按 轴 × 元数 分组 `OP_ELEM1/2/3 · OP_CUM1/2 · OP_ROLL1/2 · OP_CS1/2/3`, 行 = `X(Name, "params", "公式")`. 86 个算子.
+- 流式 `cpp/include/factor/stream/{Kernel,Elem,Cum,Roll,Cs}.hpp` (实盘, 接计算图的 Node 适配层后做); 向量式 `py/factor/ops/{elem,cum,roll,cs}.py` (torch, GPU 挖掘); 对拍 `op_stream` (CMake target) + `python3 py/factor/check/run.py`.
+- 加算子 = OpTable 一行 + stream 一个 struct + ops 一个函数 + 跑 check. 缺任一侧: 编译错 / `MISSING_VEC`.
+- 与设计稿的差异: `TsDecayLinear`→`TsWma`; `CountIf`→`CumCountGt` / `TsCountGt` (cond 固定为 x > k); `Concentration`→`CumHhi` / `CumEntropy` / `CumTopK`; `CsQuantile`→`CsMedian`; `CumCorrLag` 未做 (需 y 延迟 ring, 后补); `Clip(x, lo, hi)` 三元未做, 只有 `Clip⟨k⟩`; ROLL 满窗后在 ring 上重算 (O(d), 与 unfold 严格同义, 无递推漂移), 不追求 O(1); 二元回归类统一 `(x, y)` = x 对 y 的斜率/残差; `CsGroupResid(x, y, z)` 是 NeutralRank 的通用核; `CsMean/CsMedian/CsStd/CsBeta/CsCorr` 输出广播列 (§7.2 回流的入口).
+
 ## 0. 约定
 
 - 元数 = **序列操作数个数**. 窗口 D / 阈值 k / 时段 [a,b) 是模板参数, 不算元 (AlphaMining 把 window 算成一元, 这里不沿用).
