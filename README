@@ -8,106 +8,107 @@ stk/
 ├── config/                # ⚙️ 全局配置
 │   ├── config.json        # ⚙️ 路径/日期范围/universe/基本面联网同步(network_sync) 等全局配置
 │   ├── data_manager.json / stock_*.json  # ⚙️ 运行时缓存状态 (自动生成)
+│   ├── universe/          # ⚙️ 股票池定义 (smallcap400.json 等, 供 config.json 引用)
 │   └── sample/            # ⚙️ 样例数据 (L1/L2/财务报表样例)
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 直接调用 CMake
 │   ├── mode_*.py          # 🐍 模式开关: tsan/debug/profile/assert/production
-│   └── app/               # 🐍 FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
+│   └── app/               # 🐍 build_universe (股票池) / FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
 ├── cpp/
 │   ├── include/
-│   │   ├── shared/                                      # 📦 跨模块数据层
-│   │   │   ├── SharedData.hpp                           # 📦 顶层数据容器 (全局状态)
-│   │   │   ├── Config.hpp                               # 📦 配置数据结构
-│   │   │   ├── TaskState.hpp                            # 📦 任务状态
-│   │   │   ├── Asset.hpp / AssetInfo.hpp                # 📦 资产定义与元数据
-│   │   │   ├── AssetAxis.hpp                            # 📦 A轴(资产轴)对齐
-│   │   │   ├── Feature.hpp                              # 📦 特征元数据 + 选择 (多选 selected_features, 首个=主特征)
-│   │   │   ├── OrderFlow.hpp                            # 📦 订单流数据
-│   │   │   ├── Analysis.hpp                             # 📦 流式分析公共骨架: StreamState (进度/epoch/锁) / Integrity / PdfSnap (KLL 成品) / ReadScope / 常量
-│   │   │   ├── Dist.hpp                                 # 📦 分布分析 (KLL, 分批流式, DayBatchPlane, 月/周/日内/资产四维)
-│   │   │   ├── Transform.hpp                            # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套; 全资产逐天 ADF/KPSS/PSD/ACF
-│   │   │   ├── FeaturePreview.hpp                       # 📦 特征表内联预览 (轮训抽样): 每特征 PDF + 单日 PSD 均值
-│   │   │   └── EncodeDayRecord.hpp                      # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
-│   │   ├── define/                                      # 🔷 底层数据结构
-│   │   │   ├── CBuffer.hpp                              # 🔷 循环缓冲区
-│   │   │   ├── FastBitmap.hpp                           # 🔷 快速位图
-│   │   │   └── MemPool.hpp                              # 🔷 内存池
-│   │   ├── lob/                                         # 📊 限价订单簿引擎 (LOB)
-│   │   │   ├── LimitOrderBook.hpp                       # 📊 LOB主引擎: 维护买卖盘+撮合逻辑
-│   │   │   └── LimitOrderBookDefine.hpp                 # 📊 订单/价格档位数据结构
-│   │   ├── codec/                                       # 🔄 L2数据编解码
-│   │   │   ├── L2_DataType.hpp                          # 🔄 L2数据类型: 快照/逐笔成交/逐笔委托
-│   │   │   ├── L2_Gateway_DataType.hpp                  # 🔄 L2网关数据类型
-│   │   │   ├── binary_decoder_L2.hpp                    # 🔄 二进制解码: .bin -> L2对象
-│   │   │   ├── binary_encoder_L2.hpp                    # 🔄 二进制编码: L2对象 -> .bin
-│   │   │   ├── L2_Validator.hpp                         # 🔄 逐笔数据准入校验 (编码期判完整性, 防缺片污染盘口)
-│   │   │   └── json_config.hpp                          # 🔄 JSON配置解析
-│   │   ├── features/                                    # 🧮 特征工程 (多时间尺度)
-│   │   │   ├── FeaturesDefine.hpp                       # 🧮 字段表格式说明 (NODE_/FIELDS_ 9列) + 元数据枚举 (X-macro) + SRC 列解析 + ALL_LEVELS (L0/L1 两层)
-│   │   │   ├── TimeIndex.hpp                            # 🧮 时间索引: Clock ↔ L0(秒) ↔ L1(分钟), 交易时段常数
-│   │   │   ├── DataDefine.hpp                           # 🧮 TickData/MinuteData, Trigger 触发域, Series/DepthSeries 别名, 算子契约
-│   │   │   ├── ComputeGraph.hpp                         # 🧮 计算图: Node<Op,K> 输出 Series + DAG (CMake 拓扑序生成 NodesGenerated.hpp, NODE_ 变参 flush 默认=compute)
-│   │   │   ├── CoreSequential.hpp                       # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; 标签回填手工写 (ts_write_range<LVL>)
-│   │   │   ├── CoreCrosssection.hpp                     # 🧮 截面: 字段表 CS(...) 行编译期展开 (CsLevel<LVL>), L0 每秒 + L1 分钟级联
-│   │   │   ├── MetaFlag.hpp                             # 🧮 _meta 列三态(零/正data/负depth)编码解码稳定头 (消费端不依赖 Meta 算子)
-│   │   │   ├── Operator/TS/                             # 🧮 时序算子(数学 class + 文件末尾 NODE_/FIELDS_ 宏)
-│   │   │   ├── Operator/CS/                             # 🧮 截面算子(文件末尾 FIELDS_ 宏)
-│   │   │   ├── Operator/unused/                         # 🧮 未启用 (TS/ 与 CS/ 两层, 保留半成品) 
-│   │   │   ├── Method/                                  # 🧮 CS.hpp: Tf(None/Reciprocal/Log)×Method(Rank/NormRank/WinsorRank/NeutralRank/Demean/Z/WinsorZ);
-│   │   │   │                                            # 🧮 TS.hpp: Tf(None/Log/Asinh/Tanh/Sqrt)×Method(占位);
-│   │   │   │                                            # 🧮 Fundamental.hpp: 日频 PIT 基本面数据源(Pool) + 逐日推进状态机(Stream), Fund 算子共用;
-│   │   │   └── Backend/                                 # 🧮 特征存储后端
-│   │   │       ├── FeatureStoreConfig.hpp               # 🧮 写端: 由字段表 + ALL_LEVELS 展开编译期 LEVELS[] (定址折叠), width/valid/psd 全推导
-│   │   │       ├── FeatureLevels.hpp                    # 🧮 读端稳定层 (字段表无关): LevelInfo 结构 + 运行时层表 level_info(), 增删特征不触发读侧重编
-│   │   │       ├── FeatureStore.hpp                     # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
-│   │   │       ├── FeatureRead.hpp                      # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
-│   │   │       ├── DayBatchPlane.hpp                    # 🧮 Dist/Transform 共用天批平面: 抢单天并行载入 → [列][A][批天][VR]
-│   │   │       ├── SparseCodec.hpp                      # 🧮 落盘编码之一: 位图+非零字面 (手搓, 内存带宽级, 默认)
-│   │   │       └── ZstdCodec.hpp                        # 🧮 落盘编码之二: zstd 熵压缩 (压得狠但单核慢; 同 API, 选型在 FeatureStoreConfig)
-│   │   ├── worker/                                      # ⚡ 多线程工作流编排
-│   │   │   ├── encoding_worker.hpp                      # ⚡ 编码工作器
-│   │   │   └── feature_workers.hpp                      # ⚡ 特征计算四角色 (预取/时序/截面/落盘): 统一签名 WorkerCtx + TS 调度面 TsSchedule
-│   │   ├── label/                                       # 🏷️ 标签生成
-│   │   │   └── LabelCalmar.hpp                          # 🏷️ Calmar比率标签
-│   │   ├── gui/                                         # 🖥️ GUI (ImGui + 协程)
-│   │   │   ├── Gui.hpp                                  # 🖥️ GUI主循环: ImGui渲染 + 事件分发
-│   │   │   ├── Config.hpp                               # 🖥️ GUI配置: 颜色/字体/布局
-│   │   │   ├── Tasks.hpp                                # 🖥️ 任务树: 左栏选中/状态标签/生命周期 (idx==-1 任务行, idx>=0 子行)
-│   │   │   ├── util/Color.hpp / AssetFilter.hpp         # 🖥️ 颜色 / 资产过滤
-│   │   │   ├── coro/                                    # 🖥️ 协程基础设施
-│   │   │   │   └── CoroManager.hpp                      # 🖥️ 协程管理器: 调度/生命周期
-│   │   │   ├── task_settings/                           # 🖥️
-│   │   │   │   └── TaskSettings.hpp                     # 🖥️ 设置: 配置管理 [synced/syncing/writing]
-│   │   │   ├── task_system_info/                        # 🖥️
-│   │   │   │   └── TaskSystemInfo.hpp                   # 🖥️ 系统信息: CPU/内存/磁盘监控 [/live]
-│   │   │   ├── task_icon_bar/                           # 🖥️
-│   │   │   │   ├── TaskIconBar.hpp                      # 🖥️ 图标栏: 网络状态/FPS
-│   │   │   │   └── CoroNetwork.hpp                      # 🖥️ 网络子协程: 异步请求
-│   │   │   ├── task_tools/                              # 🖥️
-│   │   │   │   ├── TaskTools.hpp                        # 🖥️ 工具任务主界面
-│   │   │   │   └── ui/TabLatex.hpp                      # 🖥️ LaTeX 渲染标签页
-│   │   │   ├── task_database/                           # 🖥️ 数据库管理
-│   │   │   │   ├── TaskDatabase.hpp                     # 🖥️ 数据库任务主界面
-│   │   │   │   ├── models/SharedTypes.hpp               # 🖥️ 数据模型
-│   │   │   │   ├── services/                            # 🖥️ 业务服务层 (Asset/Encoding/Fundamental/L2Database/Scan/Classifier/StateManager)
-│   │   │   │   ├── infrastructure/ScanThreadPool.hpp    # 🖥️ 扫描线程池
-│   │   │   │   └── ui/                                  # 🖥️ UI (TabOverview 基本面同步 ↓ /TabBrowser/TabTable/TabEncode/CrossSectionAnalysis)
-│   │   │   └── task_features/                           # 🖥️ 特征计算管理
-│   │   │       ├── TaskFeatures.hpp                     # 🖥️ 特征任务主界面
-│   │   │       ├── services/                            # 🖥️ 特征服务层
-│   │   │       │   ├── ComputeService.hpp               # 🖥️ 计算服务
-│   │   │       │   ├── StreamService.hpp                # 🖥️ 流式分析单 worker 编排骨架 (CRTP): Request 覆盖/取消/Start/Stop/Shutdown
-│   │   │       │   ├── DistService.hpp                  # 🖥️ 分布分析服务 (StreamService)
-│   │   │       │   ├── TransformService.hpp             # 🖥️ 特征变换服务 (StreamService)
-│   │   │       │   ├── PreviewService.hpp               # 🖥️ 特征表预览服务 (StreamService)
-│   │   │       │   └── OrderFlowService.hpp             # 🖥️ 订单流服务
-│   │   │       └── ui/                                  # 🖥️ UI组件
-│   │   │           ├── Common.hpp                       # 🖥️ 流式 tab 公共件: 状态行 (Compute/Cancel/进度) / 账目着色 / 高亮线
-│   │   │           ├── TabFeature.hpp                   # 🖥️ 特征表: 过滤 + 多选 (首个=主特征)
-│   │   │           ├── TabCompute.hpp                   # 🖥️ 计算标签页
-│   │   │           ├── TabOrderFlow.hpp                 # 🖥️ 订单流标签页
-│   │   │           ├── TabDist.hpp                      # 🖥️ 分布: 月/周/日内/资产 四维 PDF
-│   │   │           └── TabTransform.hpp                 # 🖥️ 变换链: 季节→平稳化→带通→TS归一→截面; 诊断: ADF/KPSS 热力条 / PSD / ACF/PACF
+│   │   ├── shared/                                   # 📦 跨模块数据层
+│   │   │   ├── SharedData.hpp                        # 📦 顶层数据容器 (全局状态)
+│   │   │   ├── Config.hpp                            # 📦 配置数据结构
+│   │   │   ├── TaskState.hpp                         # 📦 任务状态
+│   │   │   ├── Asset.hpp / AssetInfo.hpp             # 📦 资产定义与元数据
+│   │   │   ├── AssetAxis.hpp                         # 📦 A轴(资产轴)对齐
+│   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 选择 (多选 selected_features, 首个=主特征)
+│   │   │   ├── OrderFlow.hpp                         # 📦 订单流数据
+│   │   │   ├── Analysis.hpp                          # 📦 流式分析公共骨架: StreamState (进度/epoch/锁) / Integrity / PdfSnap (KLL 成品) / ReadScope / 常量
+│   │   │   ├── Dist.hpp                              # 📦 分布分析 (KLL, 分批流式, DayBatchPlane, 月/周/日内/资产四维)
+│   │   │   ├── Transform.hpp                         # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套; 全资产逐天 ADF/KPSS/PSD/ACF
+│   │   │   ├── FeaturePreview.hpp                    # 📦 特征表内联预览 (轮训抽样): 每特征 PDF + 单日 PSD 均值
+│   │   │   └── EncodeDayRecord.hpp                   # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
+│   │   ├── define/                                   # 🔷 底层数据结构
+│   │   │   ├── CBuffer.hpp                           # 🔷 循环缓冲区
+│   │   │   ├── FastBitmap.hpp                        # 🔷 快速位图
+│   │   │   └── MemPool.hpp                           # 🔷 内存池
+│   │   ├── lob/                                      # 📊 限价订单簿引擎 (LOB)
+│   │   │   ├── LimitOrderBook.hpp                    # 📊 LOB主引擎: 维护买卖盘+撮合逻辑
+│   │   │   └── LimitOrderBookDefine.hpp              # 📊 订单/价格档位数据结构
+│   │   ├── codec/                                    # 🔄 L2数据编解码
+│   │   │   ├── L2_DataType.hpp                       # 🔄 L2数据类型: 快照/逐笔成交/逐笔委托
+│   │   │   ├── L2_Gateway_DataType.hpp               # 🔄 L2网关数据类型
+│   │   │   ├── binary_decoder_L2.hpp                 # 🔄 二进制解码: .bin -> L2对象
+│   │   │   ├── binary_encoder_L2.hpp                 # 🔄 二进制编码: L2对象 -> .bin
+│   │   │   ├── L2_Validator.hpp                      # 🔄 逐笔数据准入校验 (编码期判完整性, 防缺片污染盘口)
+│   │   │   └── json_config.hpp                       # 🔄 JSON配置解析
+│   │   ├── features/                                 # 🧮 特征工程 (多时间尺度)
+│   │   │   ├── FeaturesDefine.hpp                    # 🧮 字段表格式说明 (NODE_/FIELDS_ 9列) + 元数据枚举 (X-macro) + SRC 列解析 + ALL_LEVELS (L0/L1 两层)
+│   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L0(秒) ↔ L1(分钟), 交易时段常数
+│   │   │   ├── DataDefine.hpp                        # 🧮 TickData/MinuteData, Trigger 触发域, Series/DepthSeries 别名, 算子契约
+│   │   │   ├── ComputeGraph.hpp                      # 🧮 计算图: Node<Op,K> 输出 Series + DAG (CMake 拓扑序生成 NodesGenerated.hpp, NODE_ 变参 flush 默认=compute)
+│   │   │   ├── CoreSequential.hpp                    # 🧮 单资产时序: tick→DAG→写 L0, 分钟边界→重采样→写 L1; 标签回填手工写 (ts_write_range<LVL>)
+│   │   │   ├── CoreCrosssection.hpp                  # 🧮 截面: 字段表 CS(...) 行编译期展开 (CsLevel<LVL>), L0 每秒 + L1 分钟级联
+│   │   │   ├── MetaFlag.hpp                          # 🧮 _meta 列三态(零/正data/负depth)编码解码稳定头 (消费端不依赖 Meta 算子)
+│   │   │   ├── Operator/TS/                          # 🧮 时序算子(数学 class + 文件末尾 NODE_/FIELDS_ 宏)
+│   │   │   ├── Operator/CS/                          # 🧮 截面算子(文件末尾 FIELDS_ 宏)
+│   │   │   ├── Operator/unused/                      # 🧮 未启用 (TS/ 与 CS/ 两层, 保留半成品) 
+│   │   │   ├── Method/                               # 🧮 CS.hpp: Tf(None/Reciprocal/Log)×Method(Rank/NormRank/WinsorRank/NeutralRank/Demean/Z/WinsorZ);
+│   │   │   │                                         # 🧮 TS.hpp: Tf(None/Log/Asinh/Tanh/Sqrt)×Method(占位);
+│   │   │   │                                         # 🧮 Fundamental.hpp: 日频 PIT 基本面数据源(Pool) + 逐日推进状态机(Stream), Fund 算子共用;
+│   │   │   └── Backend/                              # 🧮 特征存储后端
+│   │   │       ├── FeatureStoreConfig.hpp            # 🧮 写端: 由字段表 + ALL_LEVELS 展开编译期 LEVELS[] (定址折叠), width/valid/psd 全推导
+│   │   │       ├── FeatureLevels.hpp                 # 🧮 读端稳定层 (字段表无关): LevelInfo 结构 + 运行时层表 level_info(), 增删特征不触发读侧重编
+│   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
+│   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
+│   │   │       ├── DayBatchPlane.hpp                 # 🧮 Dist/Transform 共用天批平面: 抢单天并行载入 → [列][A][批天][VR]
+│   │   │       ├── SparseCodec.hpp                   # 🧮 落盘编码之一: 位图+非零字面 (手搓, 内存带宽级, 默认)
+│   │   │       └── ZstdCodec.hpp                     # 🧮 落盘编码之二: zstd 熵压缩 (压得狠但单核慢; 同 API, 选型在 FeatureStoreConfig)
+│   │   ├── worker/                                   # ⚡ 多线程工作流编排
+│   │   │   ├── encoding_worker.hpp                   # ⚡ 编码工作器
+│   │   │   └── feature_workers.hpp                   # ⚡ 特征计算四角色 (预取/时序/截面/落盘): 统一签名 WorkerCtx + TS 调度面 TsSchedule
+│   │   ├── label/                                    # 🏷️ 标签生成
+│   │   │   └── LabelCalmar.hpp                       # 🏷️ Calmar比率标签
+│   │   ├── gui/                                      # 🖥️ GUI (ImGui + 协程)
+│   │   │   ├── Gui.hpp                               # 🖥️ GUI主循环: ImGui渲染 + 事件分发
+│   │   │   ├── Config.hpp                            # 🖥️ GUI配置: 颜色/字体/布局
+│   │   │   ├── Tasks.hpp                             # 🖥️ 任务树: 左栏选中/状态标签/生命周期 (idx==-1 任务行, idx>=0 子行)
+│   │   │   ├── util/Color.hpp / AssetFilter.hpp      # 🖥️ 颜色 / 资产过滤
+│   │   │   ├── coro/                                 # 🖥️ 协程基础设施
+│   │   │   │   └── CoroManager.hpp                   # 🖥️ 协程管理器: 调度/生命周期
+│   │   │   ├── task_settings/                        # 🖥️
+│   │   │   │   └── TaskSettings.hpp                  # 🖥️ 设置: 配置管理 [synced/syncing/writing]
+│   │   │   ├── task_system_info/                     # 🖥️
+│   │   │   │   └── TaskSystemInfo.hpp                # 🖥️ 系统信息: CPU/内存/磁盘监控 [/live]
+│   │   │   ├── task_icon_bar/                        # 🖥️
+│   │   │   │   ├── TaskIconBar.hpp                   # 🖥️ 图标栏: 网络状态/FPS
+│   │   │   │   └── CoroNetwork.hpp                   # 🖥️ 网络子协程: 异步请求
+│   │   │   ├── task_tools/                           # 🖥️
+│   │   │   │   ├── TaskTools.hpp                     # 🖥️ 工具任务主界面
+│   │   │   │   └── ui/TabLatex.hpp                   # 🖥️ LaTeX 渲染标签页
+│   │   │   ├── task_database/                        # 🖥️ 数据库管理
+│   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
+│   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
+│   │   │   │   ├── services/                         # 🖥️ 业务服务层 (Asset/Encoding/Fundamental/L2Database/Scan/Classifier/StateManager)
+│   │   │   │   ├── infrastructure/ScanThreadPool.hpp # 🖥️ 扫描线程池
+│   │   │   │   └── ui/                               # 🖥️ UI (TabOverview 基本面同步 ↓ /TabBrowser/TabTable/TabEncode/CrossSectionAnalysis)
+│   │   │   └── task_features/                        # 🖥️ 特征计算管理
+│   │   │       ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
+│   │   │       ├── services/                         # 🖥️ 特征服务层
+│   │   │       │   ├── ComputeService.hpp            # 🖥️ 计算服务
+│   │   │       │   ├── StreamService.hpp             # 🖥️ 流式分析单 worker 编排骨架 (CRTP): Request 覆盖/取消/Start/Stop/Shutdown
+│   │   │       │   ├── DistService.hpp               # 🖥️ 分布分析服务 (StreamService)
+│   │   │       │   ├── TransformService.hpp          # 🖥️ 特征变换服务 (StreamService)
+│   │   │       │   ├── PreviewService.hpp            # 🖥️ 特征表预览服务 (StreamService)
+│   │   │       │   └── OrderFlowService.hpp          # 🖥️ 订单流服务
+│   │   │       └── ui/                               # 🖥️ UI组件
+│   │   │           ├── Common.hpp                    # 🖥️ 流式 tab 公共件: 状态行 (Compute/Cancel/进度) / 账目着色 / 高亮线
+│   │   │           ├── TabFeature.hpp                # 🖥️ 特征表: 过滤 + 多选 (首个=主特征)
+│   │   │           ├── TabCompute.hpp                # 🖥️ 计算标签页
+│   │   │           ├── TabOrderFlow.hpp              # 🖥️ 订单流标签页
+│   │   │           ├── TabDist.hpp                   # 🖥️ 分布: 月/周/日内/资产 四维 PDF
+│   │   │           └── TabTransform.hpp              # 🖥️ 变换链: 季节→平稳化→带通→TS归一→截面; 诊断: ADF/KPSS 热力条 / PSD / ACF/PACF
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
 │   │   │   │ Tasks                                │ Panel:                             │
@@ -120,56 +121,62 @@ stk/
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
-│   │   ├── math/                                        # 📐 distribution / normalize / sample / spectral / stationary / timeseries
-│   │   │   ├── Operator.hpp                             # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
-│   │   │   ├── stationary/TodProfile.hpp                # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
-│   │   │   └── spectral/IIRBandpass.hpp                 # 📐 因果 IIR 带通 (无 FIR/零相位)
-│   │   ├── api/                                         # 🌐 数据源 API
-│   │   │   ├── bigquant/                                # 🌐 BigQuant (dai/pipeline/spec)
-│   │   │   └── tushare/                                 # 🌐 Tushare (http/parse/pipeline/spec)
-│   │   ├── mining/                                      # ⛏️ 数据挖掘(特征->因子) 设计文档
-│   │   └── misc/                                        # 🔧 通用工具库
-│   │       ├── logging.hpp / print.hpp                  # 🔧 日志 / STL容器格式化打印
-│   │       ├── timer.hpp / profiler.hpp                 # 🔧 计时器 / 性能剖析
-│   │       ├── progress_single/parallel.hpp             # 🔧 单行/多线程进度条
-│   │       ├── affinity.hpp / schedule.hpp              # 🔧 CPU亲和性 / 月度调度器 (bigquant+tushare共用)
-│   │       ├── archive.hpp / parquet.hpp                # 🔧 归档操作 / Parquet读写
-│   │       ├── fs.hpp / file_check.hpp                  # 🔧 文件系统 / 归档完整性校验
-│   │       ├── date.hpp / cross_platform.hpp            # 🔧 YYYYMMDD日历运算 / Win-Linux-Mac兼容层
-│   │       ├── system_metrics.hpp                       # 🔧 系统监控采集 (CPU/内存/磁盘, GUI共用)
-│   │       └── VariableMonitor.hpp                      # 🔧 变量值监控
-│   ├── src/                                             # 💾 源文件实现 (多数对应include/, boost/math为header-only无实现)
-│   │   ├── main.cpp                                     # 💾 程序入口
-│   │   ├── api/ codec/ shared/ misc/ worker/ features/  # 💾 对应模块实现
-│   │   ├── gui/Gui.cpp / Tasks.cpp                      # 💾 GUI主循环与任务注册实现
-│   │   ├── gui/Run_OpenGL.cpp                           # 💾 OpenGL后端入口
-│   │   └── gui/Run_Vulkan.cpp                           # 💾 Vulkan后端入口
-│   ├── package/                                         # 📚 第三方库 (源码内置, header-only 直接 include)
-│   │   ├── boost/                                       # 📚 asio / beast / optional (header-only)
-│   │   ├── nlohmann/ yyjson/ utfcpp/                    # 📚 JSON / 文本编解码
-│   │   ├── zlib-1.3.1/ zstd-1.5.7/ arrow/               # 📚 压缩 / Parquet列式存储
-│   │   ├── imgui/ implot/ glfw/                         # 📚 GUI渲染
-│   │   ├── microtex/ tinyxml2/                          # 📚 LaTeX渲染 / XML解析
-│   │   └── tracy/                                       # 📚 性能剖析
-│   ├── fonts/                                           # 🔤 GUI字体文件
-│   ├── script/                                          # 🐍 绘图脚本 (bookmap/plot_bars/plot_signals)
-│   └── projects/main/                                   # 🏗️ 构建系统
-│       ├── CMakeLists.txt                               # 🏗️ CMake配置 (C++23, Clang)
-│       └── build/bin/app_main                           # 🎯 最终可执行文件
-└── output/                                              # 📁 运行时输出 (与cpp/同级)
-    ├── orders/                                          # L2 编码 .bin (逐笔委托+成交合并)
-    │   └── YYYY/MM/DD/<CODE>.<EX>.bin                   # 单资产单日一个 .bin; 同目录 .stat = 当天唯一的元数据 (账目+逐资产计量+墓碑)
-    ├── features/                                        # 特征张量库 (Float16, 按交易日全市场列式; L0/L1 皆逐列)
+│   │   ├── math/                                           # 📐 distribution / normalize / sample / spectral / stationary / timeseries / autoencoder / model
+│   │   │   ├── Operator.hpp                                # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
+│   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
+│   │   │   └── spectral/IIRBandpass.hpp                    # 📐 因果 IIR 带通 (无 FIR/零相位)
+│   │   ├── api/                                            # 🌐 数据源 API
+│   │   │   ├── bigquant/                                   # 🌐 BigQuant (dai/pipeline/spec)
+│   │   │   └── tushare/                                    # 🌐 Tushare (http/parse/pipeline/spec)
+│   │   ├── mining/                                         # ⛏️ 数据挖掘(特征->因子) 设计文档
+│   │   └── misc/                                           # 🔧 通用工具库
+│   │       ├── logging.hpp / print.hpp                     # 🔧 日志 / STL容器格式化打印
+│   │       ├── format.hpp                                  # 🔧 定宽数值格式化 (UI 表格 / 日志对齐, 精度换宽度)
+│   │       ├── timer.hpp / profiler.hpp                    # 🔧 计时器 / 性能剖析
+│   │       ├── progress_single.hpp / progress_parallel.hpp # 🔧 单行/多线程进度条
+│   │       ├── affinity.hpp / schedule.hpp                 # 🔧 CPU亲和性 / 月度调度器 (bigquant+tushare共用)
+│   │       ├── archive.hpp / parquet.hpp                   # 🔧 归档操作 / Parquet读写
+│   │       ├── fs.hpp / file_check.hpp                     # 🔧 文件系统 / 归档完整性校验
+│   │       ├── date.hpp / cross_platform.hpp               # 🔧 YYYYMMDD日历运算 / Win-Linux-Mac兼容层
+│   │       ├── system_metrics.hpp                          # 🔧 系统监控采集 (CPU/内存/磁盘, GUI共用)
+│   │       └── VariableMonitor.hpp                         # 🔧 变量值监控
+│   ├── src/                                                # 💾 源文件实现 (多数对应include/, boost/math为header-only无实现)
+│   │   ├── main.cpp                                        # 💾 程序入口
+│   │   ├── api/ codec/ shared/ misc/ worker/ features/     # 💾 对应模块实现
+│   │   ├── gui/Gui.cpp / Tasks.cpp                         # 💾 GUI主循环与任务注册实现
+│   │   ├── gui/Run_OpenGL.cpp                              # 💾 OpenGL后端入口
+│   │   └── gui/Run_Vulkan.cpp                              # 💾 Vulkan后端入口
+│   ├── package/                                            # 📚 第三方库 (源码内置, header-only 直接 include)
+│   │   ├── boost/                                          # 📚 asio / beast / optional (header-only)
+│   │   ├── nlohmann/ yyjson/ utfcpp/                       # 📚 JSON / 文本编解码
+│   │   ├── zlib-1.3.1/ zstd-1.5.7/ arrow/                  # 📚 压缩 / Parquet列式存储
+│   │   ├── imgui/ implot/ glfw/                            # 📚 GUI渲染
+│   │   ├── microtex/ tinyxml2/                             # 📚 LaTeX渲染 / XML解析
+│   │   └── tracy/                                          # 📚 性能剖析
+│   ├── fonts/                                              # 🔤 GUI字体文件
+│   ├── script/                                             # 🐍 绘图脚本 (bookmap/plot_bars/plot_signals)
+│   └── projects/main/                                      # 🏗️ 构建系统
+│       ├── CMakeLists.txt                                  # 🏗️ CMake配置 (C++23, Clang)
+│       └── build/bin/app_main                              # 🎯 最终可执行文件
+└── output/                                                 # 📁 运行时输出 (与cpp/同级)
+    ├── orders/                                             # L2 编码 .bin (逐笔委托+成交合并)
+    │   └── YYYY/MM/DD/<CODE>.<EX>.bin                      # 单资产单日一个 .bin; 同目录 .stat = 当天唯一的元数据 (账目+逐资产计量+墓碑)
+    ├── features/                                           # 特征张量库 (Float16, 按交易日全市场列式; L0/L1 皆逐列)
     │   └── YYYY/MM/DD/
-    │       ├── features_L0_f<f>.zst                     # L0 逐特征列 [T×A] (秒频, 按列选读)
-    │       └── features_L1_f<f>.zst                     # L1 逐特征列 [T×A] (分钟频, XOR 差分 + 按列选读)
-    ├── fundamental/                                     # 日频基本面 (表清单见上方 DataBase → Overview)
-    │   ├── YYYY-MM/<表>.parquet                         # 月度分片 (2015-01 起, 每表一文件; 0 行月也落文件 = "拉过")
-    │   ├── _meta/<表>.parquet                           # Static/Snapshot 单文件整刷 (cn_stock_basic_info / cn_stock_static_data)
-    │   └── asset_axis.json                              # A 轴 (资产轴) 码表, 只增不删
-    ├── factors/                                         # 因子库 (预留)
+    │       ├── features_L0_f<f>.zst                        # L0 逐特征列 [T×A] (秒频, 按列选读)
+    │       └── features_L1_f<f>.zst                        # L1 逐特征列 [T×A] (分钟频, XOR 差分 + 按列选读)
+    ├── fundamental/                                        # 日频基本面 (表清单见上方 DataBase → Overview)
+    │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (2015-01 起, 每表一文件; 0 行月也落文件 = "拉过")
+    │   ├── _meta/<表>.parquet                              # Static/Snapshot 单文件整刷 (cn_stock_basic_info / cn_stock_static_data)
+    │   └── asset_axis.json                                 # A 轴 (资产轴) 码表, 只增不删
+    ├── doc/                                                # 文档/资料 (resources-* 符号链接指向仓库外 ../doc)
+    │   ├── checked.md                                      # 研报因子库勾选清单 (按主题分组, 标注因子数)
+    │   ├── resources-raw -> ../../../doc/resources-raw     # 原始资料 (gzh 公众号 / paper / report / web)
+    │   ├── resources-proc -> ../../../doc/resources-proc   # 加工后 (fix_stat.py 重算 .stat + report/, MinerU转markdown)
+    │   └── resources-tag -> ../../../doc/resources-tag     # 标注后(for AI agent) (tag.md 标签体系 + tag_stat.md 统计 + report/)
+    ├── factors/                                            # 因子库 (预留)
     │   └── YYYY/MM/DD/
-    └── log/                                             # 运行日志
+    └── log/                                                # 运行日志
 ```
 
 # ================================================
