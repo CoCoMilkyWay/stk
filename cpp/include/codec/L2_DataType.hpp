@@ -22,12 +22,11 @@ namespace L2 {
 
 inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交), encoder/decoder 缓冲上限
 
-// LimitOrderBook 工作区容量 (order_lookup_/order_memory_pool_/桶表 初始预留).
+// LimitOrderBook 委托表 (OrderTable) 初始预留: 槽数 = next_pow2(2 × 本值), 32 B/槽.
 //
 // LOB 是每 worker 一个的复用工作区 (非每资产常驻, 见 sequential_worker), 所以
-// 按"最忙资产的单日逐笔数"奢侈预留, 换稳态零扩容 + 桶表低负载因子 (HashMap
-// 桶数构造时定死不 rehash, 预留不足只是链表变长, 不影响正确性). 每 worker
-// ~70MB 量级, ×W 而非 ×A. BumpPool 超容量仍会自动 expand_storage() (不截断).
+// 按"最忙资产的单日逐笔数"奢侈预留 (每 worker 64MB, ×W 而非 ×A). 每日再按当日
+// 事件数 reserve_orders 收窄在用表长; 事件数超过预留时表会在空表状态下扩容 (不截断).
 inline constexpr size_t LOB_ORDER_CAPACITY = 1000000;
 
 // Data Struct

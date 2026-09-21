@@ -7,6 +7,8 @@
 //   布局: depth_buffer [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N); 本类 bid_*[i]/ask_*[i] = 买/卖 i+1 档
 //   符号钳制: LOB 抵扣模型下 Level::net_quantity 可能反号 (乱序/过度抵扣), 这里统一钳成 bid ≥ 0 / ask ≤ 0,
 //            下游 (Book / MidPrice / MicroPrice / Spread / LabelReturn) 只依赖这一处的符号约定.
+//   交叉簿不到这里: 买一 ≥ 卖一 的快照在 LOB 侧就不算 depth_updated, onDepth 域整个不跑 —— 本类
+//            每次 compute 必推一格, 环长与 onDepth 次数严格同步 (LabelReturn 的 offset 依赖这条).
 //   跨天: reset() 清空 4 组序列 —— 当日首次盘口更新前序列为空, onMinute 采样算子据此给 NaN, 不读昨日尾值.
 //   涨跌停保护: 边界 = Fund 的当日适用涨跌停价 (PIT, 与 Valuation 同源; ST 5% / 无限制 NaN 都在数据里),
 //              超限档强制为边界价, qty=1股. 边界 NaN (无限制 / 缺失) → 比较恒 false → 不钳.

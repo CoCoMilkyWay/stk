@@ -139,6 +139,7 @@ void sequential_worker(WorkerCtx ctx) {
       // 档位索引基准来自这一天的文件头, 必须先于第一条订单设进去 —— 绝对价
       // 要减去它才是档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
       lob.set_price_base(decoder.last_price_base());
+      lob.reserve_orders(order_num); // 委托表按当日事件数定长
 
       // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
       size_t order_invalid_cnt = 0;
@@ -159,7 +160,8 @@ void sequential_worker(WorkerCtx ctx) {
                         " decoded=" + std::to_string(order_num) +
                         " order_invalid=" + std::to_string(order_invalid_cnt) +
                         " tob_invalid=" + std::to_string(lob.get_tob_invalid_count()) +
-                        " tob_refresh=" + std::to_string(lob.get_tob_refresh_count()));
+                        " tob_refresh=" + std::to_string(lob.get_tob_refresh_count()) +
+                        " depth_crossed=" + std::to_string(lob.get_depth_crossed_count()) + "/" + std::to_string(lob.get_depth_seen_count()));
       }
 
       lob.end_day();
@@ -169,7 +171,7 @@ void sequential_worker(WorkerCtx ctx) {
       order_num = 0;
     }
 
-    // 归还工作区: 换绑下一个资产前簿必须干净 (bind 断言 order_lookup_ 为空).
+    // 归还工作区: 换绑下一个资产前簿必须干净 (bind 断言委托表为空).
     lob.clear();
     return order_num;
   };

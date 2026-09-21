@@ -12,7 +12,6 @@
 
 // #include "codec/L2_DataType.hpp"
 #include "define/FastBitmap.hpp"
-#include "define/MemPool.hpp"
 #include "features/CoreSequential.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
 
@@ -56,8 +55,7 @@ public:
   // 它, 终身有效), bind() 把本簿的写出口指过去 —— 资产因此不与任何 worker 绑死,
   // 处置权可转移 (见 sequential_worker 的负载再平衡).
   explicit LimitOrderBook(size_t ORDER_SIZE)
-      : order_lookup_(ORDER_SIZE),       // BumpDict with pre-allocated capacity
-        order_memory_pool_(ORDER_SIZE) { // BumpPool for Order objects
+      : order_table_(ORDER_SIZE) { // 委托表按最忙资产预留, reserve_orders 按日收窄
     auction_bids_.reserve(1024);
     auction_asks_.reserve(1024);
     init_sentinel_levels();
@@ -68,7 +66,7 @@ public:
   // 特征侧只是一个可换绑的出口 —— 这是回测/实盘一致性的一部分.
   void bind(CoreSequential *core, size_t asset_id, L2::ExchangeType exchange_type) {
     assert(core && "bind: null core");
-    assert(order_lookup_.size() == 0 && "bind: book not clean");
+    assert(order_table_.size() == 0 && "bind: book not clean");
     core_ = core;
     asset_id_ = asset_id;
     exchange_type_ = exchange_type;
@@ -81,7 +79,7 @@ public:
   // 指针在回测热路径上是被完美预测的分支). 撮合/簿维护逐字节同一条路径.
   void bind(TickData *sink, size_t asset_id, L2::ExchangeType exchange_type) {
     assert(sink && "bind: null sink");
-    assert(order_lookup_.size() == 0 && "bind: book not clean");
+    assert(order_table_.size() == 0 && "bind: book not clean");
     core_ = nullptr;
     asset_id_ = asset_id;
     exchange_type_ = exchange_type;
@@ -140,6 +138,15 @@ public:
     return tob_refresh_cnt_;
   }
 
+  // 交叉簿率 = crossed / seen: 定位报单乱序 / TOB 失效的量级
+  size_t get_depth_seen_count() const {
+    return depth_seen_;
+  }
+
+  size_t get_depth_crossed_count() const {
+    return depth_crossed_;
+  }
+
   //======================================================================================
   // PUBLIC API: Order Processing
   //======================================================================================
@@ -172,18 +179,28 @@ public:
     LOB_feature_ref().price_base = price_base;
   }
 
+  // 当日事件数 (解码后已知). clear() 之后、第一条订单之前调用: 委托表按 2× 事件数定长, 小票的表
+  // 小到进 L2, 换日只清这一段. 不调用 (实盘, 事件数未知) 则用整张预留表.
+  HOT_NOINLINE void reserve_orders(size_t events) {
+    order_table_.reserve(events);
+  }
+
   // Complete reset
   HOT_NOINLINE void clear() {
     price_levels_.fill(nullptr); // Reset direct array (all nullptr)
     level_storage_.clear();
-    order_lookup_.clear();
-    order_memory_pool_.reset();
+    order_table_.clear();
+    loc_[0] = loc_[1] = nullptr;
+    last_taker_id_ = 0;
+    last_taker_cum_ = 0;
     visible_price_bitmap_.reset();
     tob_price_ = 0;
     tob_dir_ = false;
     tob_valid_ = false;
     tob_invalid_cnt_ = 0;
     tob_refresh_cnt_ = 0;
+    depth_seen_ = 0;
+    depth_crossed_ = 0;
     best_bid_ = 0;
     best_ask_ = 0;
     LOB_feature_ref() = {};
@@ -268,8 +285,18 @@ private:
   //------------------------------------------------------------------------------------
   // Layer 2: Order Tracking Infrastructure (订单追踪层)
   //------------------------------------------------------------------------------------
-  MemPool::BumpDict<OrderId, Location, OrderIdHash> order_lookup_; // OrderId -> Location(Level*, index) for O(1) order lookup
-  MemPool::BumpPool<Order> order_memory_pool_;                     // Memory pool for Order object allocation
+  OrderTable order_table_; // OrderId → Order (委托就地存槽), 见 LimitOrderBookDefine.hpp
+
+  // 本笔两侧命中的委托 (下标 0=bid 1=ask). process_impl 入口查一次, 快照与 update_lob 共用 ——
+  // 查的正是 update_lob 要动的那几个 id, 探针数与不做快照时相同. 中间只隔 compute_and_store
+  // (不改簿), 表内槽位不搬家, 指针跨过去仍有效. 没查 / 查无的一侧 nullptr.
+  Order *loc_[2] = {nullptr, nullptr};
+
+  // 主动单累计成交量寄存器. 撮合对一笔进场单是原子的, 它打出的 N 笔成交在流里连续、中间不夹
+  // 别的事件 —— 所以"这单截止上一笔成交了多少"只需记住上一笔主动 id 与其累计量, 不需要 id 表.
+  // 乱序到达会让累计从头计, 与 OUT_OF_ORDER 占位单是同一类近似.
+  OrderId last_taker_id_ = 0;
+  uint32_t last_taker_cum_ = 0;
 
   //------------------------------------------------------------------------------------
   // Layer 3: Global Visibility Tracking (全局可见性层 - 逐笔更新)
@@ -286,6 +313,8 @@ private:
   mutable bool tob_valid_ = false;     // Tick-by-tick TOB validity: false=invalid, true=valid
   mutable size_t tob_invalid_cnt_ = 0; // Tick-by-tick TOB invalid count
   mutable size_t tob_refresh_cnt_ = 0; // Tick-by-tick TOB invalid count
+  mutable size_t depth_seen_ = 0;      // 连续竞价段满 2N 档的盘口更新次数
+  mutable size_t depth_crossed_ = 0;   // 其中买一 ≥ 卖一 被判交叉丢弃的次数
   mutable Price best_bid_ = 0;         // Tick-by-tick best bid (highest buy price with visible quantity)
   mutable Price best_ask_ = 0;         // Tick-by-tick best ask (lowest sell price with visible quantity)
 
@@ -584,19 +613,15 @@ private:
 
   // Clear CALL_AUCTION flags at 9:30:00 (orders stay at current levels)
   HOT_NOINLINE void flush_call_auction_flags() {
-    // Optimization: Iterate level_storage_ (actual levels) instead of price_levels_ array (full range)
-    // Complexity: O(active_levels) instead of O(PRICE_RANGE_SIZE)
-    // Performance gain: 10x-100x for sparse order books
-    for (Level &level : level_storage_) {
-      for (Order *order : level.orders) {
-        if (order->flags == OrderFlags::CALL_AUCTION) {
+    // 一天一次, O(当日表长)
+    order_table_.for_each([&](Order &order) {
+      if (order.flags == OrderFlags::CALL_AUCTION) {
 #if DEBUG_ORDER_FLAGS_RESOLVE
-          print_order_flags_resolve(order->id, level.price, level.price, order->qty, order->qty, OrderFlags::CALL_AUCTION, OrderFlags::NORMAL, "FLUSH_930 ");
+        print_order_flags_resolve(order.id, order.level->price, order.level->price, order.qty, order.qty, OrderFlags::CALL_AUCTION, OrderFlags::NORMAL, "FLUSH_930 ");
 #endif
-          order->flags = OrderFlags::NORMAL;
-        }
+        order.flags = OrderFlags::NORMAL;
       }
-    }
+    });
     // TOB will be updated by first continuous trading order
   }
 
@@ -638,27 +663,23 @@ private:
   //   order_id        - Unique order identifier
   //   price           - Price level for this order
   //   quantity_delta  - Signed quantity change (+add, -deduct)
-  //   loc             - Location pointer from order_lookup (from prior find operation)
+  //   order           - 表内槽: 已建委托 (level != nullptr) → 更新; 刚预留的槽 (level == nullptr) → 建单;
+  //                     nullptr → 本函数自己 find_or_insert 一个 (冷路径: 占位单)
   //   flags           - Order state flags (NORMAL, OUT_OF_ORDER, etc.)
   //   level_hint      - Optional pre-fetched level pointer (optimization)
   //
   // Returns: true if order was fully consumed (removed), false otherwise
-  //
-  // Optimization: Pass level_hint to avoid redundant hash lookups when caller
-  //               already knows the target level
   HOT_NOINLINE bool order_upsert(
       OrderId order_id,
       Price price,
       Quantity quantity_delta,
-      Location *loc,
+      Order *order,
       OrderFlags flags = OrderFlags::NORMAL,
       Level *level_hint = nullptr) {
 
-    if (loc != nullptr) [[likely]] {
+    if (order != nullptr && order->level != nullptr) [[likely]] {
       // ORDER EXISTS - Update existing order (HOT PATH)
-      Level *level = loc->level;
-      size_t order_index = loc->index;
-      Order *order = level->orders[order_index];
+      Level *level = order->level;
 
       // Apply quantity delta
       const Quantity old_qty = order->qty;
@@ -680,18 +701,9 @@ private:
         // Record visibility state BEFORE removal
         const bool was_visible = level->has_visible_quantity();
 
-        // Remove order from level (BumpPool doesn't need individual deallocation)
-        level->remove(order_index);
-        order_lookup_.erase(order_id);
-        // order_memory_pool_.deallocate(order); // No-op for BumpPool, memory reclaimed at EOD clear()
-
-        // Fix up order_lookup_ index for moved order (swap-and-pop side effect)
-        if (order_index < level->orders.size()) {
-          Location *moved_loc = order_lookup_.find(level->orders[order_index]->id);
-          if (moved_loc != nullptr) {
-            moved_loc->index = order_index;
-          }
-        }
+        // 出档 + 就地墓碑, 无需再探针
+        level->detach(old_qty);
+        order_table_.erase(order);
 
         // Cleanup: Remove empty level or update visibility
         if (level->empty()) [[unlikely]] {
@@ -707,7 +719,7 @@ private:
       } else {
         // PARTIALLY CONSUMED - Update order quantity (HOT PATH)
         const bool was_visible = level->has_visible_quantity();
-        level->net_quantity += quantity_delta;
+        level->adjust(quantity_delta);
         order->qty = new_qty;
 
         // Update feature all_volume: 按订单所属侧 (qty 符号) 换算贡献, 旧值出账新值入账.
@@ -737,17 +749,24 @@ private:
 
     } else {
       // ORDER DOESN'T EXIST - Create new order (LESS FREQUENT)
-      const uint32_t ts = DEBUG_ANOMALY_PRINT ? curr_tick_ : 0;
-      Order *new_order = order_memory_pool_.construct(quantity_delta, order_id, ts, flags);
-      // Note: BumpPool never returns nullptr, it throws on OOM
+      if (order == nullptr) { // 占位单 (冷路径): 调用方只做过 find, 这里再占槽
+        auto [slot, inserted] = order_table_.find_or_insert(order_id);
+        assert(inserted && "order_upsert: 建单时 id 已在表中");
+        order = slot;
+      }
+      assert(order->id == order_id && order->level == nullptr && "order_upsert: 槽不是刚预留的");
 
       // Get level: use hint if provided (optimization), otherwise get or create atomically
       Level *level = level_hint ? level_hint : level_get_or_create(price);
 
-      // Add order to level and register in lookup table
-      size_t order_index = level->orders.size();
-      level->add(new_order);
-      order_lookup_.try_emplace(order_id, Location{level, order_index});
+      // 建单时刻始终填: 挂单→成交 / 挂单→撤单 用时只有这一个来源.
+      order->qty = quantity_delta;
+      order->timestamp = curr_tick_;
+      order->orig_qty = static_cast<uint32_t>(std::abs(quantity_delta));
+      order->flags = flags;
+      order->level = level;
+      assert(order->orig_qty == static_cast<uint32_t>(std::abs(quantity_delta)) && "orig_qty:28 容不下建单量");
+      level->attach(quantity_delta);
 
       // Update feature all_volume (incremental) for new order
       const uint32_t abs_delta = std::abs(quantity_delta);
@@ -767,46 +786,24 @@ private:
     }
   }
 
-  // Move: Relocate order from one price level to another (using location pointer)
-  // Optimization: Accepts location pointer to avoid redundant hash lookup
+  // Move: Relocate order from one price level to another (委托本体不动, 只改归属与两档聚合量)
   HOT_NOINLINE void order_move_to_price(
-      Location *loc,
+      Order *order,
       Price new_price) {
-    Level *old_level = loc->level;
-    size_t old_index = loc->index;
+    Level *old_level = order->level;
     Price old_price = old_level->price;
 
     if (old_price == new_price)
       return; // Already at correct level
 
-    Order *order = old_level->orders[old_index];
-
-    // Step 1: Remove from old level (swap-and-pop)
-    old_level->remove(old_index);
-
-    // Step 2: Fix up order_lookup_ for swapped order (swap-and-pop side effect)
-    if (old_index < old_level->orders.size()) {
-      Location *swapped_loc = order_lookup_.find(old_level->orders[old_index]->id);
-      if (swapped_loc != nullptr) {
-        swapped_loc->index = old_index;
-      }
-    }
-
-    // Step 3: Add to new level (get or create atomically)
     Level *new_level = level_get_or_create(new_price);
+    old_level->detach(order->qty);
+    new_level->attach(order->qty);
+    order->level = new_level;
 
-    size_t new_index = new_level->orders.size();
-    new_level->add(order);
-
-    // Step 4: Update order_lookup_ to point to new location
-    loc->level = new_level;
-    loc->index = new_index;
-
-    // Step 5: Update visibility for both levels
     visibility_update_from_level(old_level);
     visibility_update_from_level(new_level);
 
-    // Step 6: Cleanup empty old level
     if (old_level->empty()) {
       level_remove(old_level);
     }
@@ -814,15 +811,6 @@ private:
 #if DEBUG_ORDER_FLAGS_RESOLVE
     print_order_flags_resolve(order->id, old_price, new_price, order->qty, order->qty, order->flags, order->flags, "MIGRATE   ");
 #endif
-  }
-
-  // Move: Relocate order by ID (requires hash lookup, less efficient)
-  HOT_NOINLINE void order_move_by_id(OrderId order_id, Price new_price) {
-    Location *loc = order_lookup_.find(order_id);
-    if (loc == nullptr)
-      return; // Order not found
-
-    order_move_to_price(loc, new_price);
   }
 
   //======================================================================================
@@ -922,6 +910,12 @@ private:
     LOB_feature_ref().price = order_abs.price * 0.01; // 对外一律给绝对价
     LOB_feature_ref().volume = order.volume;
 
+    // 操作参数 + 簿内位置一次算好, 快照与 update_lob 共用 (二者之间簿不变).
+    // 快照必须在 update_lob 之前取: 下游 compute_and_store 看的就是"更新前"的簿.
+    order_extract_params(order);
+    resolve_order_locations(order);
+    publish_order_snapshot(order);
+
     // Detect transition from matching period to continuous trading
     if (was_in_matching_period_ && !in_matching_period_ && !in_call_auction_) [[unlikely]] {
       flush_call_auction_flags();
@@ -956,14 +950,85 @@ private:
     return result;
   }
 
+  // 双边成交 (两侧委托都要动): 深交所全程, 沪市只在集合竞价撮合段. 沪市连续竞价是单边 —— 主动方
+  // 的委托记录在它的成交之后才到 (残量才入簿), 成交时它不在簿, 只动被动方.
+  HOT_INLINE bool is_bilateral(const L2::Order &order) const {
+    const bool need = (exchange_type_ == L2::ExchangeType::SZSE) ||
+                      (exchange_type_ == L2::ExchangeType::SSE && in_matching_period_);
+    return is_taker_ && need && order.bid_order_id != 0 && order.ask_order_id != 0;
+  }
+
+  // target_id_ (order_extract_params 所取: MAKER/CANCEL 本方, TAKER 取 id 较小者 = 先到的被动方) 落在哪一侧
+  HOT_INLINE size_t target_side(const L2::Order &order) const {
+    return target_id_ == order.bid_order_id ? 0 : 1;
+  }
+
+  // 只查 update_lob 真正要动的 id, 探针数与不做快照时逐笔相同:
+  //   双边 TAKER: 两侧;  单边 TAKER / CANCEL: 仅 target;  MAKER: 不查 (自己的 find 与建单 try_emplace 同桶, 留在 update_lob)
+  // 单边 TAKER 的主动方不查 —— 它按数据形态就不在簿 (见 is_bilateral), 查也是 miss 走满整条链.
+  HOT_INLINE void resolve_order_locations(const L2::Order &order) {
+    loc_[0] = loc_[1] = nullptr;
+    if (is_maker_)
+      return;
+    if (is_bilateral(order)) {
+      loc_[0] = order_table_.find(order.bid_order_id);
+      loc_[1] = order_table_.find(order.ask_order_id);
+    } else if (target_id_ != 0) {
+      loc_[target_side(order)] = order_table_.find(target_id_);
+    }
+  }
+
+  // 把两侧委托状态摊平到 LOB_Feature (字段语义见 LOB_Feature 的 ord_* 注释). 全部来自 loc_ 与寄存器, 不查表.
+  HOT_INLINE void publish_order_snapshot(const L2::Order &order) {
+    LOB_Feature &lf = LOB_feature_ref();
+    for (size_t s = 0; s < 2; ++s) {
+      lf.ord_role[s] = OrderRole::None;
+      lf.ord_orig[s] = 0;
+      lf.ord_rest[s] = 0;
+      lf.ord_tick[s] = 0;
+      lf.ord_flag[s] = OrderFlags::NORMAL;
+    }
+    if (is_maker_) // 新委托此刻还没进簿, 两侧恒 None
+      return;
+
+    for (size_t s = 0; s < 2; ++s) {
+      if (const Order *o = loc_[s]) {
+        const Quantity q = o->qty;
+        lf.ord_role[s] = OrderRole::Resting;
+        lf.ord_orig[s] = o->orig_qty;
+        lf.ord_rest[s] = static_cast<uint32_t>(q < 0 ? -q : q);
+        lf.ord_tick[s] = o->timestamp;
+        lf.ord_flag[s] = o->flags;
+      }
+    }
+
+    // 主动方 (target 的对侧) 不在簿 → 累计量出自寄存器. 在簿 (深交所: 委托记录先到) 则上面已按 Resting 给出,
+    // 消费方用 ord_orig − ord_rest 得已成交量. id 为 0 (单边数据不给主动 id) 留 None.
+    if (is_taker_) {
+      const size_t a = 1 - target_side(order);
+      const OrderId aid = a == 0 ? order.bid_order_id : order.ask_order_id;
+      if (loc_[a] == nullptr && aid != 0) {
+        lf.ord_role[a] = OrderRole::Aggressor;
+        lf.ord_rest[a] = (aid == last_taker_id_) ? last_taker_cum_ : 0;
+      }
+    }
+  }
+
+  // 主动单成交量入寄存器 (同一主动 id 连续成交累加, 换 id 重计)
+  HOT_INLINE void taker_register_add(OrderId id, uint32_t volume) {
+    last_taker_cum_ = (id == last_taker_id_) ? last_taker_cum_ + volume : volume;
+    last_taker_id_ = id;
+  }
+
   // Helper: Process one taker side (for bilateral or unilateral)
+  // loc: 该 id 的委托 (resolve_order_locations 查好的; nullptr = 不在簿)
   // Returns: true if order was fully consumed
   HOT_INLINE bool process_taker_side(
       const L2::Order &order,
       OrderId order_id,
-      Quantity delta) {
+      Quantity delta,
+      Order *loc) {
 
-    Location *loc = order_lookup_.find(order_id);
     const bool found = (loc != nullptr);
 
     // FAST PATH: found && correct price && not in call auction
@@ -991,55 +1056,72 @@ private:
     // MAKER: Always unilateral, never enters loop
     //====================================================================================
     if (is_maker_) {
-      order_extract_params(order);
       if (delta_qty_ == 0 || target_id_ == 0) [[unlikely]]
         return false;
 
+      // 一次探针: 查无则同时占槽 (99% 的 MAKER 走这里)
+      auto [slot, inserted] = order_table_.find_or_insert(target_id_);
+
       // FAST PATH: Normal maker with price
-      if (!in_call_auction_ && order.price != 0) [[likely]] {
-        Location *loc = order_lookup_.find(target_id_);
-        if (loc == nullptr) [[likely]] {
-          actual_price_ = order.price;
-          order_upsert(target_id_, actual_price_, delta_qty_, loc, OrderFlags::NORMAL);
-          return true;
-        }
+      if (inserted && !in_call_auction_ && order.price != 0) [[likely]] {
+        actual_price_ = order.price;
+        order_upsert(target_id_, actual_price_, delta_qty_, slot, OrderFlags::NORMAL);
+        return true;
       }
 
       // DEFERRED PATH: Special cases (out-of-order, call auction, price=0)
-      Location *loc = order_lookup_.find(target_id_);
-      return update_lob_deferred(order, loc, loc != nullptr, in_call_auction_, in_matching_period_);
+      return update_lob_deferred(order, slot, !inserted, in_call_auction_, in_matching_period_);
     }
 
     //====================================================================================
     // TAKER/CANCEL: May be bilateral or unilateral
     //====================================================================================
-    const bool need_bilateral = (exchange_type_ == L2::ExchangeType::SZSE) || (exchange_type_ == L2::ExchangeType::SSE && in_matching_period_);
-    const bool is_bilateral = is_taker_ && need_bilateral && order.bid_order_id != 0 && order.ask_order_id != 0;
-
-    if (is_bilateral) {
+    if (is_bilateral(order)) {
       //==================================================================================
-      // BILATERAL TAKER: Process both bid and ask sides (symmetrically)
+      // BILATERAL TAKER: 被动方扣减; 主动方在簿则同扣, 不在簿则只进寄存器
       //==================================================================================
-      const bool is_active_bid = (order.bid_order_id > order.ask_order_id);
+      // 主动方 = 后到达 = id 较大的一侧 (与 order_extract_params 取 id 较小者当 target 同一判据).
+      // 深交所委托记录先到, 主动方通常已在簿 (含 price=0 挂 Level[0] 的市价单), 照常扣减.
+      // 查无 (乱序) 不建占位单: 占位单的 -volume 会原地抵掉被动侧的 +volume, 成交就不消耗盘口
+      // 深度了, qty_* / obi_* 系统性偏大; 且与沪市单边路径 (主动方本就不入簿) 语义不一致, 截面不可比.
+      // 两侧同 id 时 loc_[0]==loc_[1], 先扣主动方再用同一槽扣被动方会踩到已打墓碑的槽
+      assert(order.bid_order_id != order.ask_order_id && "bilateral: 买卖同一委托 id");
+      const size_t passive_s = target_side(order), active_s = 1 - passive_s;
+      const bool is_active_bid = (active_s == 0);
+      const OrderId active_id = is_active_bid ? order.bid_order_id : order.ask_order_id;
+      const OrderId passive_id = is_active_bid ? order.ask_order_id : order.bid_order_id;
+      // 被动方是卖单 (qty < 0) 则加正量趋零, 是买单 (qty > 0) 则加负量趋零
+      const Quantity passive_delta = is_active_bid ? +static_cast<Quantity>(order.volume)
+                                                   : -static_cast<Quantity>(order.volume);
 
-      [[maybe_unused]] bool consumed_bid = process_taker_side(order, order.bid_order_id, -static_cast<Quantity>(order.volume));
-      [[maybe_unused]] bool consumed_ask = process_taker_side(order, order.ask_order_id, +static_cast<Quantity>(order.volume));
+      if (loc_[active_s] != nullptr) {
+        process_taker_side(order, active_id, -passive_delta, loc_[active_s]);
+      } else {
+        taker_register_add(active_id, order.volume);
+      }
+      [[maybe_unused]] bool consumed_passive = process_taker_side(order, passive_id, passive_delta, loc_[passive_s]);
 
       actual_price_ = order.price; // for safety
       tob_price_ = actual_price_;
       tob_dir_ = is_active_bid;
-      // update_tob(is_active_bid, is_active_bid ? consumed_ask : consumed_bid, actual_price_);
+      // update_tob(is_active_bid, consumed_passive, actual_price_);
       return true;
 
     } else {
       //==================================================================================
       // UNILATERAL TAKER/CANCEL: Single target
       //==================================================================================
-      order_extract_params(order);
       if (delta_qty_ == 0 || target_id_ == 0) [[unlikely]]
         return false;
 
-      [[maybe_unused]] bool consumed = process_taker_side(order, target_id_, delta_qty_);
+      // 单边成交的主动方不在簿 (见 is_bilateral), 只进寄存器; 主动 id 为 0 (数据不给) 时寄存器不写
+      if (is_taker_) {
+        const OrderId active_id = target_side(order) == 0 ? order.ask_order_id : order.bid_order_id;
+        if (active_id != 0)
+          taker_register_add(active_id, order.volume);
+      }
+
+      [[maybe_unused]] bool consumed = process_taker_side(order, target_id_, delta_qty_, loc_[target_side(order)]);
 
       if (is_taker_) {
         tob_price_ = actual_price_;
@@ -1052,9 +1134,10 @@ private:
 
   // Slow path: handle corner cases (out-of-order, call auction, special prices)
   // NOTE: Uses cached is_maker_/is_taker_/is_cancel_ and is_bid_ from process()
+  // loc: found 时是已建委托; MAKER 且 !found 时是 find_or_insert 刚预留的槽; TAKER/CANCEL 且 !found 时为 nullptr
   [[gnu::cold]] [[gnu::noinline]] bool update_lob_deferred(
       const L2::Order &order,
-      Location *loc,
+      Order *loc,
       bool found,
       bool in_call_auction,
       bool in_matching_period) {
@@ -1087,6 +1170,10 @@ private:
         if (existing_price != placement_price) {
           order_move_to_price(loc, placement_price);
         }
+        // 迟到的 MAKER 才带真实申报量与挂单时刻: 占位单建单时记的是首笔成交/撤单量, 这里改正.
+        // (改正后 order_upsert 加上 delta_qty_ → qty = 申报量 − 已成交量 = 真实余量)
+        loc->orig_qty = static_cast<uint32_t>(std::abs(delta_qty_));
+        loc->timestamp = curr_tick_;
         order_upsert(target_id_, placement_price, delta_qty_, loc, flags);
       } else {
         // Create new order
@@ -1100,26 +1187,17 @@ private:
     // TAKER ORDER
     //====================================================================================
     if (is_taker_) {
-      const OrderId self_id = is_bid_ ? order.bid_order_id : order.ask_order_id;
-      const bool both_ids_present = (order.bid_order_id != 0 && order.ask_order_id != 0);
-
       // Handle target order (counterparty)
       bool fully_consumed = false;
       if (found) {
         Price target_price = loc->level->price;
 
         if (target_price != order.price) {
-          OrderFlags anomaly_flag = OrderFlags::NORMAL;
-          if (!in_call_auction && !in_matching_period) {
-            anomaly_flag = OrderFlags::ANOMALY_MATCH;
-          }
-
+          // 连续竞价里挂价 ≠ 成交价是异常撮合; 竞价段挂价本就不是最终价, 迁移不打标.
+          // 占位单 (OUT_OF_ORDER / ZERO_PRICE) 的标记不覆盖: 它是 "orig_qty 不是申报量" 的唯一凭据 (LOB_Feature::ord_flag 消费方靠它剔除)
           order_move_to_price(loc, order.price);
-
-          if (anomaly_flag == OrderFlags::ANOMALY_MATCH) {
-            Order *target_order = loc->level->orders[loc->index];
-            target_order->flags = anomaly_flag;
-          }
+          if (!in_call_auction && !in_matching_period && loc->flags != OrderFlags::OUT_OF_ORDER && loc->flags != OrderFlags::ZERO_PRICE)
+            loc->flags = OrderFlags::ANOMALY_MATCH;
         }
 
         actual_price_ = order.price;
@@ -1127,27 +1205,8 @@ private:
       } else {
         // OUT_OF_ORDER: create placeholder
         actual_price_ = order.price;
-        order_upsert(target_id_, actual_price_, delta_qty_, loc, OrderFlags::OUT_OF_ORDER);
+        order_upsert(target_id_, actual_price_, delta_qty_, nullptr, OrderFlags::OUT_OF_ORDER);
         fully_consumed = false;
-      }
-
-      // Handle self order (market orders from Level[0])
-      const bool need_self_order = (self_id != 0 && self_id != target_id_) && !both_ids_present;
-
-      if (need_self_order) {
-        Location *self_loc = order_lookup_.find(self_id);
-        if (self_loc != nullptr) {
-          Order *self_order = self_loc->level->orders[self_loc->index];
-
-          if (self_order->flags == OrderFlags::SPECIAL_MAKER) {
-            Price self_price = self_loc->level->price;
-            if (self_price != order.price) {
-              order_move_to_price(self_loc, order.price);
-            }
-          }
-
-          order_upsert(self_id, order.price, -delta_qty_, self_loc);
-        }
       }
 
       return fully_consumed;
@@ -1171,7 +1230,7 @@ private:
         // OUT_OF_ORDER or ZERO_PRICE: create placeholder
         Price placement_price = (order.price == 0) ? 0 : order.price;
         OrderFlags flags = (order.price == 0) ? OrderFlags::ZERO_PRICE : OrderFlags::OUT_OF_ORDER;
-        order_upsert(target_id_, placement_price, delta_qty_, loc, flags);
+        order_upsert(target_id_, placement_price, delta_qty_, nullptr, flags);
       }
 
       return true;
@@ -1454,7 +1513,22 @@ private:
 
     depth_advance_throttle();
 
-    return LOB_feature_ref().depth_updated = LOB_feature_ref().depth_buffer.size() >= 2 * L2::LOB_DEPTH;
+    if (LOB_feature_ref().depth_buffer.size() < 2 * L2::LOB_DEPTH)
+      return LOB_feature_ref().depth_updated = false;
+
+    // 交叉簿: 买一 ≥ 卖一. 报单乱序到达 / TOB 失效导致的瞬时错位, 此刻的簿不是真盘口.
+    // 判定放在这里而不是下游算子里 —— 不算一次盘口更新, onDepth 整个域都不跑, 于是
+    // "每个 onDepth tick, Depth 环必推一格" 对下游 (LabelReturn 的 offset 回溯) 恒成立.
+    // 连续竞价段簿已单调, 两侧一档必是实档 (不足 2N 已在上面返回), 无需再筛哨兵.
+    ++depth_seen_;
+    const Price bid1 = LOB_feature_ref().depth_buffer[L2::LOB_DEPTH]->price;
+    const Price ask1 = LOB_feature_ref().depth_buffer[L2::LOB_DEPTH - 1]->price;
+    if (bid1 >= ask1) [[unlikely]] {
+      ++depth_crossed_;
+      return LOB_feature_ref().depth_updated = false;
+    }
+
+    return LOB_feature_ref().depth_updated = true;
   }
 
   //======================================================================================
@@ -1506,7 +1580,7 @@ private:
         << " | ID=" << std::setw(7) << std::right << order_id
         << " Price=" << std::setw(5) << std::right << price
         << " Qty=" << std::setw(6) << std::right << qty
-        << " | TotalOrders=" << std::setw(5) << std::right << (order_lookup_.size() + 1)
+        << " | TotalOrders=" << std::setw(5) << std::right << (order_table_.size() + 1)
         << "\033[0m";
     Logger::log(std::to_string(asset_id_), msg.str());
   }
@@ -1546,7 +1620,7 @@ private:
       msg << " Qty=" << std::setw(6) << std::right << new_qty << "      ";
     }
 
-    msg << " | TotalOrders=" << std::setw(5) << std::right << order_lookup_.size()
+    msg << " | TotalOrders=" << std::setw(5) << std::right << order_table_.size()
         << "\033[0m";
     Logger::log(std::to_string(asset_id_), msg.str());
   }
@@ -1594,15 +1668,17 @@ private:
     if (!should_log())
       return;
 
-    // Collect all reverse-sign orders (unmatched orders)
+    // Collect all reverse-sign orders (unmatched orders) — 档位不持队列, 扫全表筛归属 (调试路径)
     std::vector<Order *> anomaly_orders;
     anomaly_orders.reserve(level->order_count); // Pre-allocate
 
-    for (Order *order : level->orders) {
-      const bool is_reverse = (is_bid_side && order->qty < 0) || (!is_bid_side && order->qty > 0);
+    const_cast<OrderTable &>(order_table_).for_each([&](Order &order) {
+      if (order.level != level)
+        return;
+      const bool is_reverse = (is_bid_side && order.qty < 0) || (!is_bid_side && order.qty > 0);
       if (is_reverse)
-        anomaly_orders.push_back(order);
-    }
+        anomaly_orders.push_back(&order);
+    });
     if (anomaly_orders.empty())
       return;
 

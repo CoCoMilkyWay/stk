@@ -406,6 +406,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
     LimitOrderBook &lob = impl_->lob;
     lob.bind(&impl_->tick_data, req.asset, asset.exchange_type); // 无特征侧绑定
     lob.set_price_base(impl_->decoder.last_price_base());
+    lob.reserve_orders(order_num); // 委托表按当日事件数定长
 
     auto &sec_slot = impl_->sec_slot;
     auto &sec_data = impl_->sec_data;
