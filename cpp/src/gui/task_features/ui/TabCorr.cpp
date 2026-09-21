@@ -386,17 +386,15 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
 
   ImGui::BeginChild("##corr_map", ImVec2(map_w, 0), false);
   {
-    // 轴刻度只在列少时标 (几百列的标签会糊成一片; 具体是谁靠悬停)
-    constexpr size_t kMaxTicks = 40;
-    const bool show_ticks = n <= kMaxTicks;
-    if (show_ticks) {
-      ui.tick_pos.resize(n);
-      ui.tick_labels.resize(n);
-      for (size_t k = 0; k < n; ++k) {
-        ui.tick_pos[k] = static_cast<double>(k) + 0.5;
-        ui.tick_labels[k] = meta_list[corr.cols[ui.disp_order[k]]].code;
-      }
-    }
+    // 轴刻度统一标显示序号 (具体是谁靠悬停); Y 轴要翻转 (第 r 行在 y ∈ [n-r-1, n-r))
+    static const auto fmt_x = [](double v, char *buf, int size, void *) {
+      return std::snprintf(buf, (size_t)size, "%d", (int)std::floor(v));
+    };
+    static const auto fmt_y = [](double v, char *buf, int size, void *user) {
+      const int n = *(const int *)user;
+      return std::snprintf(buf, (size_t)size, "%d", n - 1 - (int)std::floor(v));
+    };
+    int n_int = (int)n;
 
     // lag 图用 PiYG (紫 ← 白 → 绿), 与 ρ 图的蓝白红一眼分得开; 量程 ±kCorrMaxLag
     ImPlot::PushColormap(ui.lag_mode ? ImPlotColormap_PiYG
@@ -415,14 +413,8 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
                         ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoGridLines);
       ImPlot::SetupAxisLimits(ImAxis_X1, 0, (double)n, ImPlotCond_Always);
       ImPlot::SetupAxisLimits(ImAxis_Y1, 0, (double)n, ImPlotCond_Always);
-      if (show_ticks) {
-        // Y 轴刻度位置要随行序翻转 (第 r 行在 y = n - r - 0.5)
-        ui.tick_pos_y.resize(n);
-        for (size_t k = 0; k < n; ++k)
-          ui.tick_pos_y[k] = (double)n - (double)k - 0.5;
-        ImPlot::SetupAxisTicks(ImAxis_X1, ui.tick_pos.data(), (int)n, ui.tick_labels.data());
-        ImPlot::SetupAxisTicks(ImAxis_Y1, ui.tick_pos_y.data(), (int)n, ui.tick_labels.data());
-      }
+      ImPlot::SetupAxisFormat(ImAxis_X1, fmt_x);
+      ImPlot::SetupAxisFormat(ImAxis_Y1, fmt_y, &n_int);
       // 下三角逐行画 (第 r 行 r+1 格): PlotHeatmap 无逐格透明度, 整块画会把上三角镜像也涂上
       char lbl[16];
       for (size_t r = 0; r < n; ++r) {

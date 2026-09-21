@@ -52,10 +52,6 @@ struct CorrUIState {
   int req_level = -1;
   std::vector<int> lag_req_rows;
   int lag_req_level = -1;
-
-  // ---- 轴刻度 (n 小时才标, 否则挤成一团); Y 轴位置要翻转 (第 r 行在 y = n-r-0.5) ----
-  std::vector<double> tick_pos, tick_pos_y;
-  std::vector<const char *> tick_labels;
 };
 
 // Render tab (进 tab / 行集变更时自动提交计算请求)
