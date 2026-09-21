@@ -94,6 +94,27 @@ struct TickData {
 // 14:57-15:00 全部映射到哨兵秒 15299, ms 每秒回绕 → t 可倒退; 消费方对 uint32 差必须钳零 (t > t_prev ? t - t_prev : 0).
 inline uint32_t tick_ms(const TickData &td) { return td.l0_index * 1000u + td.lob.millisecond * 10u; }
 
+// LOB_Feature::ord_* 解码 (字段语义见 LimitOrderBookDefine.hpp; OrderLife / OrderQuad / Moment / Flow 共用, 算子不各写一份):
+//   ord_reliable(lob, s)         该侧是可信的在簿委托: Resting 且非占位单 → ord_orig / ord_tick / ord_price 可信
+//   ord_filled_before(lob, s, f) 该侧委托截止本笔之前的累计成交量 f (股); false = 该侧不可信 (无 id / 占位单 / 过度抵扣)
+inline bool ord_reliable(const LOB_Feature &lob, size_t s) {
+  return lob.ord_role[s] == OrderRole::Resting && lob.ord_flag[s] != OrderFlags::OUT_OF_ORDER && lob.ord_flag[s] != OrderFlags::ZERO_PRICE;
+}
+inline bool ord_filled_before(const LOB_Feature &lob, size_t s, uint32_t &f) {
+  switch (lob.ord_role[s]) {
+  case OrderRole::Aggressor:
+    f = lob.ord_rest[s];
+    return true;
+  case OrderRole::Resting:
+    if (!ord_reliable(lob, s) || lob.ord_rest[s] > lob.ord_orig[s])
+      return false;
+    f = lob.ord_orig[s] - lob.ord_rest[s];
+    return true;
+  default:
+    return false;
+  }
+}
+
 //----------------------------------------------------------------------------------------
 // MINUTE LEVEL (L1): Resampled from tick data
 //----------------------------------------------------------------------------------------

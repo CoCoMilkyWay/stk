@@ -8,13 +8,16 @@
 //     vol{2,3,4}_{taker,maker,cancel}_{bid,ask}   Σ|O|², Σ|O|³, Σ|O|⁴
 //   委托价一阶 / 二阶 (元 / 元²; 与 amt_maker = ΣP|O| 合出 corr(委托量, 委托价)):
 //     px{1,2}_maker_{bid,ask}                      ΣP, ΣP²  只计 P>0 (市价单 P=0 不入; 配对的 n 用 Flow n_maker 时含市价单, 深市极少, 偏差可忽略)
-//     成交价 / 撤单价 不做: 成交价分布归 vwap / twap / Realized; 深市撤单 P=0 无价.
-//   支撑: 华泰 072 skew/kurt_order_diff / early_kurt_order / corr_buyorder_volume_price; 光大 024 bs_std_ratio (主买 / 主卖 单笔量标准差比).
+//     成交价 / 撤单价 不做: 成交价分布归 vwap / twap / Realized; 撤单价分布无文献需求.
+//   委托维度二阶 (元²; 每张委托累计成交额的平方, 分钟增量 Σ((f+v)² − f²)·p², f = 该侧委托此前累计成交量; 各侧独立判可信 ord_filled_before):
+//     amt2_od_{bid,ask}                            日 Σ = 各委托成交额平方和 → 买 / 卖 单集中度 (HHI = amt2_od / (amt_taker)²)
+//   支撑: 华泰 072 skew/kurt_order_diff / early_kurt_order / corr_buyorder_volume_price; 光大 024 bs_std_ratio (主买 / 主卖 单笔量标准差比); 智臾 买/卖单集中度.
 //   量纲: |O| ≤ 10⁶ 股 (交易所单笔上限) → |O|⁴ ≤ 10²⁴, fp32 分钟累加不溢出; fp16 落盘 Log Tf.
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
 #include "features/DataDefine.hpp"
+#include <cstdint>
 
 #define MOMENT_EVENTS(T) T(taker) T(maker) T(cancel)
 #define MOMENT_ENUM(e) vol2_##e##_bid, vol2_##e##_ask, vol3_##e##_bid, vol3_##e##_ask, vol4_##e##_bid, vol4_##e##_ask,
@@ -23,13 +26,15 @@ class Moment {
   static constexpr size_t NE = 3, NK = 3; // 事件 {taker, maker, cancel} × 幂 {2, 3, 4}
 
 public:
-  // 布局: 事件 外层 × 幂 中层 × 侧 内层 —— y[(e·NK + k)·2 + s]; 其后 px1 ×2, px2 ×2
+  // 布局: 事件 外层 × 幂 中层 × 侧 内层 —— y[(e·NK + k)·2 + s]; 其后 px1 ×2, px2 ×2, amt2_od ×2
   enum Out : size_t { MOMENT_EVENTS(MOMENT_ENUM) px1_maker_bid,
                       px1_maker_ask,
                       px2_maker_bid,
                       px2_maker_ask,
+                      amt2_od_bid,
+                      amt2_od_ask,
                       kCount };
-  static_assert(px1_maker_bid == NE * NK * 2 && kCount == NE * NK * 2 + 4);
+  static_assert(px1_maker_bid == NE * NK * 2 && kCount == NE * NK * 2 + 6);
   float y[kCount] = {};
 
   explicit Moment(const TickData &td) : td_(td) {}
@@ -56,6 +61,13 @@ public:
     acc_[e][0][s] += v2, acc_[e][1][s] += v2 * v, acc_[e][2][s] += v2 * v2;
     if (e == 1 && lob.price > 0.0f)
       px_[0][s] += lob.price, px_[1][s] += lob.price * lob.price;
+    if (e == 0) { // 成交两侧各是一张委托: 累计成交额平方的增量 (一侧不可信不拖累另一侧)
+      const float p2 = lob.price * lob.price;
+      uint32_t f;
+      for (size_t k = 0; k < 2; ++k)
+        if (ord_filled_before(lob, k, f))
+          od2_[k] += (2.0f * static_cast<float>(f) * v + v2) * p2;
+    }
   }
 
   inline void flush() {
@@ -65,6 +77,7 @@ public:
           y[(e * NK + k) * 2 + s] = acc_[e][k][s];
     y[px1_maker_bid] = px_[0][0], y[px1_maker_ask] = px_[0][1];
     y[px2_maker_bid] = px_[1][0], y[px2_maker_ask] = px_[1][1];
+    y[amt2_od_bid] = od2_[0], y[amt2_od_ask] = od2_[1];
     clear();
   }
 
@@ -76,11 +89,13 @@ private:
       for (auto &k : e)
         k[0] = k[1] = 0.0f;
     px_[0][0] = px_[0][1] = px_[1][0] = px_[1][1] = 0.0f;
+    od2_[0] = od2_[1] = 0.0f;
   }
 
   const TickData &td_;
   float acc_[NE][NK][2] = {}; // [事件][幂-2][侧]
   float px_[2][2] = {};       // [幂-1][侧] 委托价 ΣP / ΣP²
+  float od2_[2] = {};         // [侧] 委托累计成交额平方增量
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
@@ -95,11 +110,13 @@ private:
   X(vol4_##e##_bid, CAT1, AUTO, EN " Bid Volume^4", "买方" CN "量四次方和", "分钟内买方" CN "单笔量四次方和(股⁴)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E R"(,B}|^4)", OP(Moment, vol4_##e##_bid, Log, None)) \
   X(vol4_##e##_ask, CAT1, AUTO, EN " Ask Volume^4", "卖方" CN "量四次方和", "分钟内卖方" CN "单笔量四次方和(股⁴)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E R"(,A}|^4)", OP(Moment, vol4_##e##_ask, Log, None))
 
-#define FIELDS_L1_Moment(X, CAT1)                                                                                                                                                                                                          \
-  MOMENT_EVENT_ROWS(X, CAT1, taker, "T", "Taker", "主动成交")                                                                                                                                                                              \
-  MOMENT_EVENT_ROWS(X, CAT1, maker, "M", "Maker", "新增委托")                                                                                                                                                                              \
-  MOMENT_EVENT_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单")                                                                                                                                                                                \
-  X(px1_maker_bid, CAT1, AUTO, "Maker Bid Price Sum", "买委托价和", "分钟内买方新增限价委托的委托价之和(元; 市价单不入)", R"(\sum_{\tau \in \Delta t} P_\tau \mathbf{1}[O_\tau^{M,B}, P_\tau > 0])", OP(Moment, px1_maker_bid, Log, None)) \
-  X(px1_maker_ask, CAT1, AUTO, "Maker Ask Price Sum", "卖委托价和", "分钟内卖方新增限价委托的委托价之和(元; 市价单不入)", R"(\sum_{\tau \in \Delta t} P_\tau \mathbf{1}[O_\tau^{M,A}, P_\tau > 0])", OP(Moment, px1_maker_ask, Log, None)) \
-  X(px2_maker_bid, CAT1, AUTO, "Maker Bid Price^2 Sum", "买委托价平方和", "分钟内买方新增限价委托的委托价平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \mathbf{1}[O_\tau^{M,B}, P_\tau > 0])", OP(Moment, px2_maker_bid, Log, None))  \
-  X(px2_maker_ask, CAT1, AUTO, "Maker Ask Price^2 Sum", "卖委托价平方和", "分钟内卖方新增限价委托的委托价平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \mathbf{1}[O_\tau^{M,A}, P_\tau > 0])", OP(Moment, px2_maker_ask, Log, None))
+#define FIELDS_L1_Moment(X, CAT1)                                                                                                                                                                                                                                                                                               \
+  MOMENT_EVENT_ROWS(X, CAT1, taker, "T", "Taker", "主动成交")                                                                                                                                                                                                                                                                   \
+  MOMENT_EVENT_ROWS(X, CAT1, maker, "M", "Maker", "新增委托")                                                                                                                                                                                                                                                                   \
+  MOMENT_EVENT_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单")                                                                                                                                                                                                                                                                     \
+  X(px1_maker_bid, CAT1, AUTO, "Maker Bid Price Sum", "买委托价和", "分钟内买方新增限价委托的委托价之和(元; 市价单不入)", R"(\sum_{\tau \in \Delta t} P_\tau \mathbf{1}[O_\tau^{M,B}, P_\tau > 0])", OP(Moment, px1_maker_bid, Log, None))                                                                                      \
+  X(px1_maker_ask, CAT1, AUTO, "Maker Ask Price Sum", "卖委托价和", "分钟内卖方新增限价委托的委托价之和(元; 市价单不入)", R"(\sum_{\tau \in \Delta t} P_\tau \mathbf{1}[O_\tau^{M,A}, P_\tau > 0])", OP(Moment, px1_maker_ask, Log, None))                                                                                      \
+  X(px2_maker_bid, CAT1, AUTO, "Maker Bid Price^2 Sum", "买委托价平方和", "分钟内买方新增限价委托的委托价平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \mathbf{1}[O_\tau^{M,B}, P_\tau > 0])", OP(Moment, px2_maker_bid, Log, None))                                                                                       \
+  X(px2_maker_ask, CAT1, AUTO, "Maker Ask Price^2 Sum", "卖委托价平方和", "分钟内卖方新增限价委托的委托价平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \mathbf{1}[O_\tau^{M,A}, P_\tau > 0])", OP(Moment, px2_maker_ask, Log, None))                                                                                       \
+  X(amt2_od_bid, CAT1, AUTO, "Bid Order Fill Amount^2 Increment", "买委托成交额平方增量", "分钟内 Σ((f+v)²−f²)·p², f=买方委托此前累计成交量(股), v=本笔量; 日累计=各买委托成交额平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \left[(f^B_\tau + |O_\tau^T|)^2 - (f^B_\tau)^2\right])", OP(Moment, amt2_od_bid, Log, None)) \
+  X(amt2_od_ask, CAT1, AUTO, "Ask Order Fill Amount^2 Increment", "卖委托成交额平方增量", "分钟内 Σ((f+v)²−f²)·p², f=卖方委托此前累计成交量(股), v=本笔量; 日累计=各卖委托成交额平方和(元²)", R"(\sum_{\tau \in \Delta t} P_\tau^2 \left[(f^A_\tau + |O_\tau^T|)^2 - (f^A_\tau)^2\right])", OP(Moment, amt2_od_ask, Log, None))

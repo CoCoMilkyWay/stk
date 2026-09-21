@@ -407,6 +407,11 @@ private:
     return static_cast<Price>(index < PRICE_RANGE_SIZE ? index : PRICE_RANGE_SIZE - 1);
   }
 
+  // 逆映射: 档位下标 → 绝对价 (元). 下标 0 (市价单 / 占位档) 无价 → 0, 与 LOB_feature_ref().price 的口径一致
+  HOT_INLINE float index_to_price(Price index) const {
+    return index == 0 ? 0.0f : static_cast<float>(price_base_ + index) * 0.01f;
+  }
+
   HOT_INLINE Level *level_get_or_create(Price price) {
     Level *level = price_levels_[price];
     if (level == nullptr) [[unlikely]] {
@@ -987,18 +992,21 @@ private:
       lf.ord_rest[s] = 0;
       lf.ord_tick[s] = 0;
       lf.ord_flag[s] = OrderFlags::NORMAL;
+      lf.ord_price[s] = 0.0f;
     }
     if (is_maker_) // 新委托此刻还没进簿, 两侧恒 None
       return;
 
     for (size_t s = 0; s < 2; ++s) {
       if (const Order *o = loc_[s]) {
+        assert(o->level != nullptr && "在簿委托必有档位");
         const Quantity q = o->qty;
         lf.ord_role[s] = OrderRole::Resting;
         lf.ord_orig[s] = o->orig_qty;
         lf.ord_rest[s] = static_cast<uint32_t>(q < 0 ? -q : q);
         lf.ord_tick[s] = o->timestamp;
         lf.ord_flag[s] = o->flags;
+        lf.ord_price[s] = index_to_price(o->level->price);
       }
     }
 

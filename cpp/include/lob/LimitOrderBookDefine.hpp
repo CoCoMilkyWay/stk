@@ -504,6 +504,7 @@ struct LOB_Feature {
   //   ord_rest 处理前量 (股; Resting = 未成交余量, Aggressor = 本笔之前连续成交的累计量)
   //   ord_tick 挂单时刻 (仅 Resting; 与本结构 hour/minute/second/millisecond 同编码 h<<24|m<<16|s<<8|ms10)
   //   ord_flag 建单时的 OrderFlags (仅 Resting)
+  //   ord_price 委托所在档的绝对价 (元; 仅 Resting; Level[0] 市价单 / 占位单 = 0). 深市撤单事件 price=0, 撤单额只能由它得
   // 主动方已成交量: Resting (深交所, 委托记录先到) = ord_orig − ord_rest; Aggressor (沪市) = ord_rest.
   // 语义速查 (order_type, order_dir):
   //   (MAKER,  BID) [0]=本次新挂的买委托 (簿里还没有 → None, 建单在 update_lob 里)
@@ -516,6 +517,7 @@ struct LOB_Feature {
   uint32_t ord_rest[2] = {};
   uint32_t ord_tick[2] = {};
   OrderFlags ord_flag[2] = {OrderFlags::NORMAL, OrderFlags::NORMAL};
+  float ord_price[2] = {};
 
   // =================================================================================================
   // =========================================[低频定时更新]===========================================

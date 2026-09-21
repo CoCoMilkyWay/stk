@@ -15,16 +15,14 @@
 //     cost_{buy,sell}_{10w,100w,300w}  吃掉 A 元 (沿 30 档累计, 末档按比例) 的 VWAP 对 mid 偏离 (基点; 全簿不足 A → 余量假设在涨跌停价成交)
 //     micro                  量加权中间价 (元)
 //     mid                    中间价 (元)
-//   事件型 (每次盘口更新一个中间价变化率 r = 1e4·ln(mid/mid_prev), 分钟内累计; 命名与 Realized 的 rv_3s 族对仗):
-//     rv_mid = Σ r²   rm3_mid = Σ r³   r_max_mid = max r  (无更新 → 0, 即"无变动")
+//   中间价变化率的事件型幂和 ({rv,rv_up,rv_dn,rm3,rm4,r_max,r_min}_mid) 在 Volatility/RealizedMid.hpp: 本节点只有时间加权状态量.
 //   一档为空 (价 ≤ 0) 的快照跳过 (持有上一状态).
 //   【兜底约定】本节点不产 NaN: 下游多日拉取的序列要求无缺口、无跳变 (真实缺失由 _meta 列标注, 不靠 NaN).
 //     状态列 (价差 / 量额 / 失衡 / 占比 / 成本 / 价): 分钟内全程无定义 → 延续该列上一个有定义的分钟值 (last_, 跨日延续);
 //     价列 (micro / mid) 例外: 当日尚无有效盘口 → 用本分钟成交价 (flush 仅在有成交的分钟触发, 必 > 0; 09:25 即竞价撮合价).
 //       不沿用昨日盘口原值是因为除权会造成假跳变, 而成交价与 OHLC / vwap 同源同刻, 天然对齐;
-//     流量列 (rv_mid / rm3_mid / r_max_mid): 无盘口更新 → 0 (无变动), 不延续 —— 延续会凭空造出波动;
 //     全历史第一次无定义时 last_ 尚无内容 → 落 0 (仅限非价列的首日空窗分钟, 无先验信息可用).
-//   fp16 落盘: 量 / 额 / 幂和 Log Tf; 基点 / 比率 / 价 / 极值 原值.
+//   fp16 落盘: 量 / 额 Log Tf; 基点 / 比率 / 价 原值.
 //   【fast-math 契约】不做 isnan; 无定义用 ok_ 位图显式表示, 不靠 NaN 传播.
 // =============================================================================
 
@@ -32,7 +30,6 @@
 #include "features/DataDefine.hpp"
 #include "features/TimeIndex.hpp"
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 
 template <size_t DEPTH_SIZE = L2::LOB_DEPTH>
@@ -44,7 +41,7 @@ class Book {
   static constexpr float LIMIT_FILL_QTY = 1e9f;                   // 股: 涨跌停补齐用的"无限量", 任何价位 × 它都盖过最大目标额
 
 public:
-  // 前 NTW 口 = 时间加权量 (与 tw_/tt_/cur_/ok_ 下标一致), 后 3 口 = 中间价变化率
+  // 全部口 = 时间加权量 (与 tw_/tt_/cur_/ok_ 下标一致)
   enum Out : size_t {
     spread_l1,
     spread_l5,
@@ -86,12 +83,9 @@ public:
     cost_sell_300w,
     micro,
     mid,
-    rv_mid,
-    rm3_mid,
-    r_max_mid,
     kCount
   };
-  static constexpr size_t NTW = rv_mid; // 时间加权口数
+  static constexpr size_t NTW = kCount; // 时间加权口数
   static_assert(NTW <= 64, "ok_ 位图 uint64_t");
   float y[kCount] = {};
 
@@ -172,14 +166,6 @@ public:
     ratio(tlr_ask_1, cur_[qty_ask_1], all_a), ratio(tlr_ask_5, cur_[qty_ask_5], all_a), ratio(tlr_ask_10, cur_[qty_ask_10], all_a);
     cur_[micro] = micro_.back();
     cur_[Out::mid] = mid; // 局部变量 mid 遮蔽枚举名, 用 Out:: 限定
-
-    if (mid_prev_ > 0.0f) {
-      const float r = kBp * std::log(mid / mid_prev_);
-      const float r2 = r * r;
-      rv_ += r2, rm3_ += r2 * r;
-      rmax_ = n_mid_++ == 0 ? r : std::max(rmax_, r);
-    }
-    mid_prev_ = mid;
   }
 
   inline void flush() {
@@ -202,12 +188,6 @@ public:
       y[micro] = last_[micro] = px;
       y[Out::mid] = last_[Out::mid] = px;
     }
-    // 流量型: 本分钟无盘口更新 → 累加器就是 0 = "无变动", 直接落 0 (不延续: 延续会凭空造出波动)
-    y[rv_mid] = rv_;
-    y[rm3_mid] = rm3_;
-    y[r_max_mid] = rmax_;
-    rv_ = rm3_ = rmax_ = 0.0f;
-    n_mid_ = 0;
   }
 
   void reset() { // last_ 刻意不清: 兜底源需跨日延续 (见文件头)
@@ -216,8 +196,6 @@ public:
     ok_ = 0;
     for (size_t i = 0; i < NTW; ++i)
       tw_[i] = tt_[i] = cur_[i] = 0.0f;
-    mid_prev_ = rv_ = rm3_ = rmax_ = 0.0f;
-    n_mid_ = 0;
   }
 
 private:
@@ -263,8 +241,6 @@ private:
   float tt_[NTW] = {};   // Σ 持有时长 (ms), 只计有定义的段
   float cur_[NTW] = {};  // 当前持有状态
   float last_[NTW] = {}; // 各口最后一个有定义的分钟值 (兜底源; 跨日延续, 不随 reset 清; 全历史首次无定义 → 0)
-  float mid_prev_ = 0.0f, rv_ = 0.0f, rm3_ = 0.0f, rmax_ = 0.0f;
-  uint32_t n_mid_ = 0;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
@@ -306,7 +282,4 @@ private:
   BOOK_COST_ROWS(X, CAT1, buy, "Buy", "买方", "卖", R"(\frac{\mathrm{VWAP}^{A}()", R"()}{P_{mid}} - 1)")                                                                                                                                                                                                        \
   BOOK_COST_ROWS(X, CAT1, sell, "Sell", "卖方", "买", R"(1 - \frac{\mathrm{VWAP}^{B}()", R"()}{P_{mid}})")                                                                                                                                                                                                      \
   X(micro, CAT1, AUTO, "Micro Price", "微观价格", "分钟内量加权中间价的时间加权均值(元); 无盘口→延续当日上一有效值, 当日尚无→本分钟成交价", R"(\overline{P_{micro}}^{\,tw})", OP(Book, micro, None, None))                                                                                                      \
-  X(mid, CAT1, AUTO, "Mid Price", "中间价", "分钟内中间价的时间加权均值(元); 无盘口→延续当日上一有效值, 当日尚无→本分钟成交价", R"(\overline{P_{mid}}^{\,tw})", OP(Book, mid, None, None))                                                                                                                      \
-  X(rv_mid, CAT1, AUTO, "Mid-Price Realized Variance", "中间价变化率平方和", "分钟内逐次盘口更新中间价对数变化率(基点)平方和", R"(\sum_{j \in \Delta t} r_j^2,\; r_j = 10^4 \ln\frac{P_{mid,j}}{P_{mid,j-1}})", OP(Book, rv_mid, Log, None))                                                                    \
-  X(rm3_mid, CAT1, AUTO, "Mid-Price Third Moment", "中间价变化率立方和", "分钟内中间价对数变化率(基点)立方和; 偏度=rm3/rv^1.5", R"(\sum_{j \in \Delta t} r_j^3)", OP(Book, rm3_mid, Log, None))                                                                                                                 \
-  X(r_max_mid, CAT1, AUTO, "Mid-Price Max Change", "中间价变化率最大值", "分钟内中间价对数变化率(基点)最大值", R"(\max_{j \in \Delta t} r_j)", OP(Book, r_max_mid, None, None))
+  X(mid, CAT1, AUTO, "Mid Price", "中间价", "分钟内中间价的时间加权均值(元); 无盘口→延续当日上一有效值, 当日尚无→本分钟成交价", R"(\overline{P_{mid}}^{\,tw})", OP(Book, mid, None, None))
