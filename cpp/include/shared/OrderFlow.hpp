@@ -383,6 +383,12 @@ struct OrderFlow {
     uint32_t l0_last_gen = UINT32_MAX;     // 上次 L0 视图重置时的槽 gen
     double l0_y_min = 0.0, l0_y_max = 0.0; // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
 
+    // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx
+    // (kline_gen, pub_days) 变才重算 — 流式追加 / 换标的 / 重扫日期 都被 gen 覆盖
+    std::vector<size_t> l1_missing_days;
+    uint32_t l1_missing_days_gen = UINT32_MAX;
+    size_t l1_missing_days_pub_days = 0;
+
     void clear();
   } ui;
 

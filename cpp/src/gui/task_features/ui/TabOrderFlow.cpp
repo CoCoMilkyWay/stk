@@ -639,6 +639,42 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     // ------------------------------------------------------------------
     // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名 (cat2))
     // ------------------------------------------------------------------
+
+    // 缺失日竖条: 已发布前缀里该资产无 data_valid 分钟的 day_idx → 淡黄色竖 stripe
+    // (alpha 0.1) 打底, 画在 K 线之前以免遮挡. 缓存键 (kline_gen, pub_days), 流式
+    // 追加 / 换标的 / 重扫日期都使 gen 变 → 自动失效. 二分判定每日有无 K 线点.
+    if (ready && pub_days > 0) {
+      const uint32_t cur_gen = ui.kline_gen & 0xFFFF;
+      if (ui.l1_missing_days_gen != cur_gen || ui.l1_missing_days_pub_days != pub_days) {
+        ui.l1_missing_days_gen = cur_gen;
+        ui.l1_missing_days_pub_days = pub_days;
+        ui.l1_missing_days.clear();
+        const auto &xs = k.x;
+        for (size_t d = 0; d < pub_days; ++d) {
+          const double lo = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
+          const double hi = lo + static_cast<double>(OrderFlowConst::L1_CAPACITY);
+          auto it = std::lower_bound(xs.begin(), xs.begin() + static_cast<long>(pub_points), lo);
+          if (it == xs.begin() + static_cast<long>(pub_points) || *it >= hi)
+            ui.l1_missing_days.push_back(d);
+        }
+      }
+
+      if (!ui.l1_missing_days.empty()) {
+        ImPlot::PushPlotClipRect();
+        ImDrawList *draw_list = ImPlot::GetPlotDrawList();
+        const ImPlotRect limits = ImPlot::GetPlotLimits();
+        constexpr ImU32 col = IM_COL32(255, 240, 170, 26); // 淡黄, alpha 0.1
+        for (size_t d : ui.l1_missing_days) {
+          const double x0 = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
+          const double x1 = x0 + static_cast<double>(OrderFlowConst::L1_CAPACITY);
+          const ImVec2 p0 = ImPlot::PlotToPixels(x0, limits.Y.Min);
+          const ImVec2 p1 = ImPlot::PlotToPixels(x1, limits.Y.Max);
+          draw_list->AddRectFilled(p0, p1, col);
+        }
+        ImPlot::PopPlotClipRect();
+      }
+    }
+
     if (pub_points > 0) {
       PlotCandlestick("OHLC", k.x.data(), k.open.data(), k.high.data(),
                       k.low.data(), k.close.data(), static_cast<int>(pub_points));
