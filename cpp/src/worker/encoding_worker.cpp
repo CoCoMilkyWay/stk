@@ -65,45 +65,6 @@ namespace {
 //   负载均衡: 批是 worker 的调度粒度, 批太大会在收尾时让部分 worker 空转.
 constexpr size_t kAssetsPerBatch = 64;
 
-// 当天盘上的 .bin 是否与 .stat 明细严格同一批.
-//
-// 判据与扫描端一致 (见 Asset::coro_scan_binary_database): 明细里的非墓碑条目
-// ↔ readdir 到的 .bin, 个数与成员都要对上. 只数个数不够 —— 一增一删就会个数
-// 相同而内容错位. 墓碑不参与: 它记的正是"这个资产当天没有 .bin".
-bool day_products_match(const std::string &day_dir, const EncodeDayRecord &rec,
-                        const AssetAxis &axis) {
-  std::unordered_set<uint32_t> declared;
-  declared.reserve(rec.assets.size());
-  for (const auto &entry : rec.assets)
-    if (!entry.is_tombstone())
-      declared.insert(entry.asset_id);
-
-  const std::string bin_ext = config::BINARY_EXTENSION;
-
-  std::error_code ec;
-  auto dir = std::filesystem::directory_iterator(day_dir, ec);
-  if (ec)
-    return false; // 目录读不动 (被整个删了?) — 让这天走正常列举
-
-  size_t found = 0;
-  for (const auto &file_entry : dir) {
-    const std::string filename = file_entry.path().filename().string();
-    if (!filename.ends_with(bin_ext))
-      continue;
-
-    // .bin 是按当前代码落盘的 (归档里的老代码只出现在包内路径上), 直接查轴
-    const size_t asset_id = axis.find(filename.substr(0, filename.size() - bin_ext.size()));
-    if (asset_id == axis.size())
-      continue; // 轴外文件, 与扫描端同样忽略
-
-    if (declared.count(static_cast<uint32_t>(asset_id)) == 0)
-      return false; // 盘上多了一个明细没声明的
-    ++found;
-  }
-
-  return found == declared.size();
-}
-
 } // namespace
 
 void encoding_producer(SharedData &data,
@@ -185,11 +146,11 @@ void encoding_producer(SharedData &data,
     //
     // 但 complete 说的是"上一轮收工时齐备", 不是"现在还齐备": 有人手工删掉
     // 损坏的 .bin 之后, 光看这一项会整天跳过, 刚删掉的永远补不回来. 所以再
-    // 拿一次 readdir 跟明细核一遍. 一天几千个 entry, 全库不到一秒, 相比它省
-    // 下的 unrar l 可以忽略 —— 换掉的是"手删 .bin 必须同时手删 .stat"这条
+    // 核一遍明细是否仍与盘上一致 (目录 mtime 没变就一次 stat, 变了才 readdir,
+    // 见 day_index_current) —— 换掉的是"手删 .bin 必须同时手删 .stat"这条
     // 只能靠人记住的纪律.
     if (prev_fresh && prev.complete) {
-      if (day_products_match(day_dir, prev, axis)) {
+      if (day_index_current(day_dir, prev, axis)) {
         stats.days_skipped.fetch_add(1);
         if (progress)
           progress->bump_summary(1, false); // 秒回的一天, 不参与 ETA 速率
@@ -393,7 +354,6 @@ void encoding_producer(SharedData &data,
       stats.days_inflight.emplace(date_str,
                                   EncodeStats::DayProgress{0, tasks.size(), 0, day_rec,
                                                            std::move(day_index)});
-      stats.days_touched.insert(date_str);
       if (oldest && progress)
         progress->set_summary_note(date_str + ": 0/" + std::to_string(tasks.size()) +
                                    " assets");

@@ -131,14 +131,8 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
                 << std::endl;
     }
 
-    // 把本轮动过的天交给增量扫描 (见 Asset::binary.dirty_dates)
-    {
-      std::lock_guard<std::mutex> lock(stats.days_mutex);
-      data_.asset.binary.dirty_dates.insert(stats.days_touched.begin(),
-                                            stats.days_touched.end());
-    }
-
     // Trigger scan callback after encoding completion
+    // (扫描整体重建, 动过的天由目录 mtime 与 .stat 自己对账, 不用在这里告诉它)
     if (scan_callback_) {
       scan_callback_();
     }

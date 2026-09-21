@@ -2,7 +2,7 @@
 #include "codec/binary_decoder_L2.hpp"
 #include "gui/coro/CoroManager.hpp"
 #include "gui/task_database/infrastructure/ScanThreadPool.hpp"
-#include "misc/logging.hpp"
+#include "shared/AssetAxis.hpp"
 #include "shared/AssetInfo.hpp"
 
 #include <boost/asio/awaitable.hpp>
@@ -14,22 +14,16 @@
 #include <future>
 #include <mutex>
 #include <set>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace {
 
-// 每处理这么多个"外层元素"(资产 / 交易日) 让一次步.
-//
-// 批不能太大也不能太小: 一批的耗时就是那一帧的卡顿, 而一次让步至少要等到
-// 下一帧才会被 Poll 回来 (让 N 次 ≈ 多花 N 帧). 按一批 5~10ms 取, 全库
-// (5800 资产 × 885 交易日) 大约分十几到几十批, 帧不掉, 总时长也就多半秒.
-constexpr size_t kAggregateChunk = 512; // 遍历资产的 date_info
-constexpr size_t kCoverageChunk = 32;   // 遍历交易日 × 全部资产
-
 // 等一批线程池任务跑完, 期间每 50ms 让一次步给 GUI 渲染.
-// (扫描本身在线程池上, 这里只是轮询, 让步间隔可以放宽)
+// (重活全在线程池上, GUI 线程只轮询, 让步间隔可以放宽)
 boost::asio::awaitable<void> await_futures(boost::asio::io_context &io,
                                            std::vector<std::future<void>> &futures) {
   while (true) {
@@ -79,7 +73,6 @@ AssetItem::AssetItem(size_t id, std::string code, std::string name, std::string 
 boost::asio::awaitable<void> Asset::coro_scan_binary_database(
     boost::asio::io_context &io,
     const std::string &orders_dir,
-    const std::string &binary_extension,
     std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
 
   namespace fs = std::filesystem;
@@ -91,317 +84,200 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   date_gaps.clear();
   asset_stats.clear();
 
+  scan_days_done.store(0, std::memory_order_relaxed);
+  scan_days_total.store(0, std::memory_order_relaxed);
+
   binary.scanned = true;
   binary.path = orders_dir;
   binary.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
 
-  if (!binary.exists) {
-    binary.dates.clear();
-    binary.min_date.clear();
-    binary.max_date.clear();
-    binary.encoded_assets = 0;
-    binary.total_orders = 0;
-    binary.orders_size_gb = 0.0;
-    binary.day_mtimes.clear(); // 库没了, 增量基线也作废
-    binary.dirty_dates.clear();
-    all_dates.clear();
-    day_records.clear();
-    for (auto &item : items)
-      item.date_info.clear();
-    date_axis.clear(); // 全部 date_info 已清空, 轴可以安全重建
-    date_axis_idx.clear();
-    co_return;
-  }
+  // 整体重建: 轴、全部 date_info、账目. 不做增量 (见 Asset.hpp 日期轴的说明).
+  day_records.clear();
+  date_axis.clear();
+  date_axis_idx.clear();
+  for (auto &item : items)
+    item.date_info.clear();
+  all_dates.clear();
+  binary.dates.clear();
+  binary.min_date.clear();
+  binary.max_date.clear();
+  binary.total_orders = 0;
+  binary.orders_size_gb = 0.0;
+  binary.encoded_assets = 0; // 由 coro_compute_coverage_statistics 填
 
-  // Day path structure
+  if (!binary.exists)
+    co_return;
+
+  // ------------------------------------------------------------------
+  // 1. 列出全部日目录 (orders/YYYY/MM/DD, 三层 readdir 共几百个条目), 每个
+  //    stat 一次拿 mtime —— 这是快路径唯一要碰盘的地方 (加一次读 .stat).
+  // ------------------------------------------------------------------
   struct DayPath {
     std::string path;
-    std::string date_str; // YYYYMMDD
+    std::string date; // YYYYMMDD
+    int64_t mtime;    // 与 EncodeDayRecord::dir_mtime 同一口径
   };
-
-  // Collect all day paths.
-  //
-  // 并行粒度是"天"而不是"月": 每个 .bin 的读头在冷页缓存下都是一次随机 IO,
-  // 按月切的话新库只有一两个月目录 = 实际单线程 (实测 9.4 万文件 8.0s);
-  // 按天切能把 NVMe 的队列深度喂满 (同样 9.4 万文件 0.6s).
-  std::vector<DayPath> day_paths;
-  std::set<std::string> current_dates;             // 这次 readdir 到的全部天
-  std::unordered_map<std::string, int64_t> mtimes; // date -> 本次 mtime
+  std::vector<DayPath> days;
 
   for (const auto &year_entry : fs::directory_iterator(orders_dir)) {
     if (!year_entry.is_directory())
       continue;
-    std::string year_str = year_entry.path().filename().string();
+    const std::string year_str = year_entry.path().filename().string();
     for (const auto &month_entry : fs::directory_iterator(year_entry.path())) {
       if (!month_entry.is_directory())
         continue;
-      std::string month_str = month_entry.path().filename().string();
+      const std::string month_str = month_entry.path().filename().string();
       for (const auto &day_entry : fs::directory_iterator(month_entry.path())) {
         if (!day_entry.is_directory())
           continue;
-        const std::string date_str =
-            year_str + month_str + day_entry.path().filename().string();
-        current_dates.insert(date_str);
-
-        // 取不到 mtime 就当它变了 (重扫), 不去猜
-        std::error_code ec;
-        const auto wt = fs::last_write_time(day_entry.path(), ec);
-        mtimes[date_str] = ec ? 0 : wt.time_since_epoch().count();
-
-        day_paths.push_back({day_entry.path().string(), date_str});
+        const std::string path = day_entry.path().string();
+        days.push_back({path, year_str + month_str + day_entry.path().filename().string(),
+                        day_dir_mtime(path)});
       }
     }
   }
+  std::sort(days.begin(), days.end(),
+            [](const DayPath &a, const DayPath &b) { return a.date < b.date; });
 
-  // 只重扫"目录动过的"和"编码动过的"; 其余沿用上次的 date_info
-  std::vector<DayPath> days_to_scan;
-  std::set<std::string> dates_to_purge;
-  for (const auto &dp : day_paths) {
-    auto prev = binary.day_mtimes.find(dp.date_str);
-    const bool unchanged = prev != binary.day_mtimes.end() &&
-                           prev->second != 0 &&
-                           prev->second == mtimes[dp.date_str] &&
-                           binary.dirty_dates.count(dp.date_str) == 0;
-    if (unchanged)
-      continue;
-    days_to_scan.push_back(dp);
-    dates_to_purge.insert(dp.date_str);
+  // ------------------------------------------------------------------
+  // 2. 轴 = 全部日目录 (升序); 每个资产的向量一次扩到位, 之后各天的任务只往
+  //    自己那一列写 (不同天 = 不同下标, 线程间不相交, 免锁免合并).
+  // ------------------------------------------------------------------
+  date_axis.reserve(days.size());
+  for (const auto &day : days) {
+    date_axis_idx[day.date] = static_cast<uint32_t>(date_axis.size());
+    date_axis.push_back(day.date);
   }
+  all_dates = date_axis;
+  for (auto &item : items)
+    item.date_info.assign(days.size(), DateInfo{});
 
-  // 整个日目录被删掉的, 旧条目也要清 —— 否则它会一直冒充"这天有数据"
-  for (const auto &[date, mtime] : binary.day_mtimes) {
-    if (!current_dates.count(date))
-      dates_to_purge.insert(date);
-  }
-
-  // 脏日赋零 (轴 append-only, 不 erase 下标)
-  for (const auto &date : dates_to_purge) {
-    const size_t didx = date_idx(date);
-    if (didx == kNoDate)
-      continue;
-    for (auto &item : items)
-      if (didx < item.date_info.size())
-        item.date_info[didx] = DateInfo{};
-  }
-  for (const auto &date : dates_to_purge)
-    day_records.erase(date);
-
-  binary.day_mtimes = std::move(mtimes);
-  binary.dirty_dates.clear();
-
-  // Build asset lookup map
-  std::unordered_map<std::string, size_t> asset_map;
-  for (size_t i = 0; i < items.size(); ++i) {
-    asset_map[items[i].asset_code + "." + items[i].exchange] = i;
-  }
-
-  // Shared result accumulator.
-  // 只装本次重扫的天; 聚合量 (总条数/体积/每天覆盖数) 最后从完整的 date_info
-  // 统一重算, 否则沿用下来的那些天会被漏掉.
-  struct ScanResult {
-    std::mutex mutex;
-    std::unordered_map<size_t, std::unordered_map<std::string, DateInfo>> asset_date_info;
-    std::unordered_map<std::string, EncodeDayRecord> day_records;
-  };
-  auto result = std::make_shared<ScanResult>();
-
-  // Lambda for scanning a single day (runs in thread pool).
+  // ------------------------------------------------------------------
+  // 3. 每天一个任务.
   //
-  // 目录是扁平的: orders/YYYY/MM/DD/<CODE>.<EX>.bin, 一天一层 readdir 就够,
-  // 不再是"一天下面几千个每资产目录、每个目录再 readdir 一次".
-  auto scan_day = [&asset_map, &binary_extension, result, this](const DayPath &day_path) {
-    // readdir 一趟拿到当天的 .bin 名单. 它同时是下面那张明细表的采信依据 ——
-    // 名单对不上就不用表里的数.
-    std::vector<std::pair<size_t, std::string>> bins; // (资产下标, 完整路径)
-    for (const auto &file_entry : fs::directory_iterator(day_path.path)) {
-      const std::string filename = file_entry.path().filename().string();
-      if (!filename.ends_with(binary_extension))
-        continue;
+  // 并行粒度是"天"而不是"月": 慢路径里每个 .bin 的读头在冷页缓存下都是一次
+  // 随机 IO, 按月切的话新库只有一两个月目录 = 实际单线程 (实测 9.4 万文件
+  // 8.0s); 按天切能把 NVMe 的队列深度喂满 (同样 9.4 万文件 0.6s).
+  // ------------------------------------------------------------------
+  struct DayOut {
+    bool accounted = false;
+    EncodeDayRecord record; // 账目 (明细已搬空), 仅 accounted 时有意义
+    size_t orders = 0;      // 当天条数
+    double bytes = 0.0;     // 当天 .bin 体积
+    size_t bins = 0;        // 当天有 .bin 的资产数
+  };
+  std::vector<DayOut> outs(days.size());
 
-      // "000023.SZ.bin" → "000023.SZ"
-      const std::string asset_full =
-          filename.substr(0, filename.size() - binary_extension.size());
+  const AssetAxis &axis = asset_axis();
+  assert(items.size() == axis.size() && "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
 
-      auto it = asset_map.find(asset_full);
-      if (it == asset_map.end())
-        continue;
-
-      bins.emplace_back(it->second, file_entry.path().string());
-    }
+  auto scan_day = [this, &days, &outs, &axis](size_t d) {
+    const DayPath &day = days[d];
 
     // 当天的统计文件 —— 账目 (缺口的原因只有编码器知道) 与逐资产明细都在里面.
     // 读不到就是这天既没编过、也没被扫描回填过.
-    EncodeDayRecord local_record;
-    const bool has_stat = read_encode_day_stat(day_path.path, local_record);
+    EncodeDayRecord rec;
+    const bool has_stat = read_encode_day_stat(day.path, rec);
 
-    std::unordered_map<size_t, DateInfo> local_date_info;
+    // 快路径: 目录 mtime 与明细落盘时一致 ⇒ 明细就是盘上现状, 不 readdir.
+    const bool trusted = has_stat && day.mtime != 0 && day.mtime == rec.dir_mtime;
+    if (!trusted) {
+      // 目录动过 (或从没有明细): readdir 核对. 对上仍可用; 对不上逐个读 32 字节
+      // 文件头重建 —— 全库四百多万次随机 open 就出在这里, 没有明细的老库一轮
+      // 扫描即自愈.
+      //
+      // 头损坏的文件当作没有数据 (它本来也解不出来), 但那样明细就配不上名单,
+      // 这天以后每次都会走到这里 —— 正是想要的: 坏文件不该被缓存成"已知".
+      const std::vector<DayBin> bins = list_day_bins(day.path, axis);
+      if (!(has_stat && day_index_matches(rec, bins))) {
+        std::vector<EncodeDayIndexEntry> rebuilt;
+        rebuilt.reserve(bins.size() + rec.assets.size());
+        std::unordered_set<uint32_t> on_disk;
+        on_disk.reserve(bins.size());
 
-    // 快路径: 明细里已经有条数和体积 (见 EncodeDayRecord.hpp), 一个 .bin 都
-    // 不用打开. 采信的前提是它记的 .bin 与 readdir 的名单是同一批 —— 个数
-    // 相等还不够, 一增一删就会个数相同而内容错位.
-    //
-    // 墓碑条目不参与比对: 它记的正是"这个资产当天没有 .bin".
-    size_t index_bins = 0;
-    for (const auto &entry : local_record.assets)
-      if (!entry.is_tombstone())
-        ++index_bins;
-
-    bool index_usable = has_stat && index_bins == bins.size();
-    if (index_usable) {
-      for (const auto &entry : local_record.assets) {
-        if (entry.is_tombstone())
-          continue;
-        DateInfo di;
-        di.orders_encoded = 1;
-        di.order_count = entry.order_count;
-        di.orders_file_size = entry.orders_file_size;
-        local_date_info[entry.asset_id] = di;
-      }
-      for (const auto &[asset_idx, path] : bins) {
-        if (local_date_info.count(asset_idx) == 0) {
-          index_usable = false;
-          local_date_info.clear();
-          break;
+        for (const auto &bin : bins) {
+          // 一次读头同时拿到条数和体积 (文件总长 = 32 + compressed_size)
+          size_t order_count = 0, file_size = 0;
+          if (!L2::BinaryDecoder_L2::read_file_stats(bin.path, order_count, file_size))
+            continue;
+          rebuilt.push_back(make_day_index_entry(bin.asset_id, order_count, file_size));
+          on_disk.insert(static_cast<uint32_t>(bin.asset_id));
         }
+
+        // 墓碑是编码器的结论, 扫描无从重建 (要归档才知道"源数据只有表头"),
+        // 原样搬过去 —— 丢了它们, 下一轮增量会把那些资产白解一遍. 盘上后来
+        // 又有了 .bin 的除外 (明细一资产一条).
+        for (const auto &entry : rec.assets)
+          if (entry.is_tombstone() && on_disk.count(entry.asset_id) == 0)
+            rebuilt.push_back(entry);
+
+        rec.assets = std::move(rebuilt);
       }
+
+      // 写回: 明细 + 新的目录 mtime. 账目部分原样 —— 那只有编码器填得起;
+      // complete 还算不算数由编码器自己在跳过之前核 (见 day_index_current),
+      // 扫描不替它改账.
+      write_encode_day_stat(day.path, rec);
     }
 
-    // 慢路径: 逐个读 32 字节文件头 —— 全库四百多万次随机 open 就出在这里.
-    // 读完把明细写回去, 于是没有明细的老库一轮扫描即自愈.
-    //
-    // 头损坏的文件当作没有数据 (它本来也解不出来), 但那样明细就配不上名单,
-    // 这天以后每次都会走到这条慢路径 —— 正是想要的: 坏文件不该被缓存成"已知".
-    if (!index_usable) {
-      // 账目部分原样保留 (accounted / complete / 分类账 都只有编码器填得起),
-      // 只换掉明细 —— 否则一次扫描就会把编码器的齐备标记抹掉, 增量从此每轮
-      // 都要把全库重新列举一遍.
-      std::vector<EncodeDayIndexEntry> rebuilt;
-      rebuilt.reserve(bins.size());
-
-      for (const auto &[asset_idx, path] : bins) {
-        // 一次读头同时拿到条数和体积 (文件总长 = 32 + compressed_size), 不再
-        // 额外 stat.
-        size_t order_count = 0, file_size = 0;
-        if (!L2::BinaryDecoder_L2::read_file_stats(path, order_count, file_size))
-          continue;
-
-        DateInfo di;
-        di.orders_encoded = 1;
-        di.order_count = order_count;
-        di.orders_file_size = file_size;
-        local_date_info[asset_idx] = di;
-
-        rebuilt.push_back(make_day_index_entry(asset_idx, order_count, file_size));
-      }
-
-      // 墓碑是编码器的结论, 扫描无从重建 (要归档才知道"源数据只有表头"),
-      // 原样搬过去 —— 丢了它们, 下一轮增量会把那些资产白解一遍.
-      for (const auto &entry : local_record.assets)
-        if (entry.is_tombstone())
-          rebuilt.push_back(entry);
-
-      // 走到这里而且账目是编码器填过的 ⇒ 它声明齐备之后产物被动过 (最常见是
-      // 手工删掉了损坏的 .bin). 齐备标记必须跟着作废: 只把明细改成与盘上一致
-      // 而留着 complete=1, 等于亲手把缺口抹平 —— 增量的整天快路径从此永远
-      // 跳过这天, 删掉的再也补不回来.
-      //
-      // 账目的其余计数留着: 那些仍是上一轮的事实, 界面照旧能按日拆解原因.
-      if (local_record.accounted && local_record.complete) {
-        local_record.complete = false;
-        Logger::log("encoding", "[STALE STAT] " + day_path.path +
-                                    " — .bin 与明细不符, 齐备标记作废, 待增量重编");
-      }
-
-      local_record.assets = std::move(rebuilt);
-      write_encode_day_stat(day_path.path, local_record);
+    DayOut &out = outs[d];
+    for (const auto &entry : rec.assets) {
+      if (entry.is_tombstone())
+        continue;
+      assert(entry.asset_id < items.size() && "明细里的 A 轴下标超出 items");
+      DateInfo &di = items[entry.asset_id].date_info[d];
+      di.orders_encoded = 1;
+      di.order_count = entry.order_count;
+      di.orders_file_size = entry.orders_file_size;
+      out.orders += entry.order_count;
+      out.bytes += static_cast<double>(entry.orders_file_size);
+      ++out.bins;
     }
 
     // 明细不进 day_records: 全库 885 天 × 5200 条是五十多兆, 而且与刚灌好的
-    // date_info 是同一份数据 (见 EncodeDayRecord::assets).
-    local_record.assets.clear();
-    local_record.assets.shrink_to_fit();
-
-    // Merge into shared result
-    {
-      std::lock_guard<std::mutex> lock(result->mutex);
-      for (auto &[asset_idx, info] : local_date_info) {
-        result->asset_date_info[asset_idx][day_path.date_str] = std::move(info);
-      }
-      // 只有账目填过的天才进去 —— 扫描自己回填出来的 .stat 只有明细, 界面
-      // 不该把它显示成"编过但不齐备".
-      if (local_record.accounted)
-        result->day_records[day_path.date_str] = std::move(local_record);
-    }
+    // date_info 是同一份数据. 只有账目填过的天才留账 —— 扫描自己回填出来的
+    // .stat 只有明细, 界面不该把它显示成"编过但不齐备".
+    rec.assets.clear();
+    rec.assets.shrink_to_fit();
+    out.accounted = rec.accounted;
+    if (rec.accounted)
+      out.record = std::move(rec);
 
     scan_days_done.fetch_add(1, std::memory_order_relaxed);
   };
 
-  // Submit all day scan tasks to thread pool
-  scan_days_done.store(0, std::memory_order_relaxed);
-  scan_days_total.store(days_to_scan.size(), std::memory_order_relaxed);
+  scan_days_total.store(days.size(), std::memory_order_relaxed);
 
   std::vector<std::future<void>> futures;
-  futures.reserve(days_to_scan.size());
-  for (const auto &day_path : days_to_scan) {
-    futures.push_back(thread_pool->submit([scan_day, day_path]() { scan_day(day_path); }));
-  }
+  futures.reserve(days.size());
+  for (size_t d = 0; d < days.size(); ++d)
+    futures.push_back(thread_pool->submit([&scan_day, d]() { scan_day(d); }));
 
   co_await await_futures(io, futures);
 
-  // 灌入本次重扫的天 (要重扫的那些天的旧条目已在上面清掉了)
-  for (const auto &[asset_idx, date_map] : result->asset_date_info) {
-    for (const auto &[date, info] : date_map) {
-      items[asset_idx].date_slot(date_idx_add(date)) = info;
-    }
-  }
-  for (const auto &[date, record] : result->day_records)
-    day_records[date] = record;
-
-  all_dates.assign(current_dates.begin(), current_dates.end());
-
-  // 聚合量从完整的 date_info 重算 —— 增量扫描下 result 里只有本次重扫的天,
-  // 沿用下来的那些天必须一起算进来. 五百万条 date_info 一趟走完 (条数/体积/
-  // 日期集合/已编码资产数), 按资产分批让步.
+  // ------------------------------------------------------------------
+  // 4. 汇总 (按天, 几百项; 全库 date_info 那趟遍历归 coverage 阶段)
+  // ------------------------------------------------------------------
   size_t total_orders = 0;
-  size_t encoded_assets = 0;
-  float total_orders_size = 0.0;
-  std::vector<uint8_t> date_seen(date_axis.size(), 0); // 先按轴下标标记, 最后一次性建集合 (省 1670 万次 set insert)
-  for (size_t i = 0; i < items.size(); ++i) {
-    bool has_any = false;
-    const auto &di = items[i].date_info;
-    for (size_t d = 0; d < di.size(); ++d) {
-      if (!di[d].orders_encoded)
-        continue; // 零值 = 该日无数据
-      total_orders += di[d].order_count;
-      total_orders_size += static_cast<float>(di[d].orders_file_size);
-      date_seen[d] = 1;
-      has_any = true;
-    }
-    if (has_any)
-      ++encoded_assets;
-
-    if ((i + 1) % kAggregateChunk == 0)
-      co_await Coro::Yield(io);
+  double total_bytes = 0.0;
+  for (size_t d = 0; d < days.size(); ++d) {
+    DayOut &out = outs[d];
+    total_orders += out.orders;
+    total_bytes += out.bytes;
+    // 空日目录 (readdir 到了但没有一个 .bin 对上 A 轴) 不算"有这天", 否则会
+    // 把 min/max 区间往外撑
+    if (out.bins > 0)
+      binary.dates.insert(days[d].date);
+    if (out.accounted)
+      day_records[days[d].date] = std::move(out.record);
   }
-
-  std::set<std::string> dates;
-  for (size_t d = 0; d < date_seen.size(); ++d)
-    if (date_seen[d])
-      dates.insert(date_axis[d]);
 
   binary.total_orders = total_orders;
-  binary.encoded_assets = encoded_assets;
-  binary.orders_size_gb = total_orders_size / (1024.0 * 1024.0 * 1024.0);
-  binary.dates = std::move(dates);
+  binary.orders_size_gb = static_cast<float>(total_bytes / (1024.0 * 1024.0 * 1024.0));
 
-  // 取自 binary.dates 而不是 all_dates: 后者含空日目录 (readdir 到了但里面
-  // 没有一个能对上 asset_map 的文件), 会把区间往外撑.
   if (!binary.dates.empty()) {
     binary.min_date = *binary.dates.begin();
     binary.max_date = *binary.dates.rbegin();
-  } else {
-    binary.min_date.clear();
-    binary.max_date.clear();
   }
 
   co_return;
@@ -544,16 +420,8 @@ boost::asio::awaitable<void> Asset::coro_scan_archive_database(
 // Backtest Coverage Analysis
 // ============================================================================
 
-boost::asio::awaitable<void> Asset::coro_compute_backtest_coverage(
-    boost::asio::io_context &io,
-    const std::string &start, const std::string &end,
-    const AssetInfo &assetinfo) {
-  // 进度计数换阶段: 底下几个 Step 都是内存里的集合运算, 快到不值得报进度,
-  // 归零后界面显示不带 (x/y) 的裸标签. 真正要等的是紧随其后的
-  // coro_compute_coverage_statistics, 它自己会把总量立起来.
-  scan_days_done.store(0, std::memory_order_relaxed);
-  scan_days_total.store(0, std::memory_order_relaxed);
-
+void Asset::compute_backtest_coverage(const std::string &start, const std::string &end,
+                                      const AssetInfo &assetinfo) {
   // Clear previous results
   backtest.start = start;
   backtest.end = end;
@@ -601,42 +469,14 @@ boost::asio::awaitable<void> Asset::coro_compute_backtest_coverage(
     backtest.need_download = backtest.missing_dates;
   }
 
-  // Step 4: Calculate backtest range statistics
-  //
-  // 有数据的天数直接从 binary.dates 取交集 —— 原先为此遍历全部 items 的
-  // date_info (五百万条) 只为数出几百个日期.
+  // Step 4: 区间内有数据的天数 (区间内条数/体积要遍历 date_info, 归
+  // coro_compute_coverage_statistics 那趟)
   size_t backtest_order_days = 0;
   for (const auto &date : binary.dates) {
     if (date >= start && date <= end)
       ++backtest_order_days;
   }
-
-  // 区间内的条数和体积仍得逐条累加 (per-date 明细只有 date_info 有), 五百万
-  // 条走一趟, 按资产分批让步. 区间判定按轴下标预算一次, 内循环免字符串比较.
-  std::vector<uint8_t> in_range(date_axis.size(), 0);
-  for (size_t d = 0; d < date_axis.size(); ++d)
-    in_range[d] = date_axis[d] >= start && date_axis[d] <= end;
-
-  size_t backtest_orders = 0;
-  float backtest_orders_size = 0.0;
-  for (size_t i = 0; i < items.size(); ++i) {
-    const auto &di = items[i].date_info;
-    assert(di.size() <= date_axis.size() && "date_info 下标超出日期轴 (轴与 items 未一起保留/重建?)");
-    for (size_t d = 0; d < di.size(); ++d) {
-      if (in_range[d] && di[d].orders_encoded) {
-        backtest_orders += di[d].order_count;
-        backtest_orders_size += static_cast<float>(di[d].orders_file_size);
-      }
-    }
-    if ((i + 1) % kAggregateChunk == 0)
-      co_await Coro::Yield(io);
-  }
-
-  binary.backtest_orders = backtest_orders;
-  binary.backtest_orders_size_gb = backtest_orders_size / (1024.0 * 1024.0 * 1024.0);
   binary.backtest_order_days = backtest_order_days;
-
-  co_return;
 }
 
 // ============================================================================
@@ -645,7 +485,8 @@ boost::asio::awaitable<void> Asset::coro_compute_backtest_coverage(
 
 boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     boost::asio::io_context &io,
-    const AssetInfo &assetinfo) {
+    const AssetInfo &assetinfo,
+    std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
   const auto &stock_info = assetinfo.get_stock_info();
   const auto &stock_days = assetinfo.get_stock_days();
   const auto &suspended = assetinfo.get_suspended();
@@ -662,18 +503,47 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   std::map<std::string, DateGap> local_date_gaps;
   std::vector<AssetStats> local_asset_stats(items.size());
 
-  // 全库口径的两列 (Table 的 Days / Orders) 只跟 date_info 有关, 单独扫一遍
-  for (size_t i = 0; i < items.size(); ++i) {
-    AssetStats &st = local_asset_stats[i];
-    for (const DateInfo &info : items[i].date_info) {
-      if (!info.orders_encoded)
-        continue; // 密集向量: 零值槽位不是"有数据的天"
-      ++st.total_days;
-      st.total_orders += info.order_count;
-    }
+  std::vector<std::future<void>> futures;
+  const size_t n_workers = thread_pool->get_num_workers();
 
-    if ((i + 1) % kAggregateChunk == 0)
-      co_await Coro::Yield(io);
+  // 全库 date_info 唯一的一趟遍历, 按资产段切给线程池: 每资产的全库口径两列
+  // (Table 的 Days / Orders) 写各自的 local_asset_stats[i], 不相交, 免锁;
+  // 顺路把回测区间内的条数/体积和"至少有一天有数据"的资产数按段累加.
+  // 区间判定按轴下标预算一次, 内循环免字符串比较.
+  struct RangeSum {
+    size_t orders = 0;
+    double bytes = 0.0;
+    size_t encoded_assets = 0;
+  };
+  std::vector<uint8_t> in_range(date_axis.size(), 0);
+  for (size_t d = 0; d < date_axis.size(); ++d)
+    in_range[d] = date_axis[d] >= backtest.start && date_axis[d] <= backtest.end;
+
+  const size_t per_task = std::max<size_t>(1, (items.size() + n_workers - 1) / n_workers);
+  std::vector<RangeSum> range_sums((items.size() + per_task - 1) / per_task);
+  for (size_t t = 0; t < range_sums.size(); ++t) {
+    const size_t begin = t * per_task;
+    const size_t end = std::min(items.size(), begin + per_task);
+    RangeSum *sum = &range_sums[t];
+    futures.push_back(thread_pool->submit([this, &local_asset_stats, &in_range, sum, begin, end]() {
+      for (size_t i = begin; i < end; ++i) {
+        AssetStats &st = local_asset_stats[i];
+        const auto &di = items[i].date_info;
+        assert(di.size() <= in_range.size() && "date_info 下标超出日期轴");
+        for (size_t d = 0; d < di.size(); ++d) {
+          if (!di[d].orders_encoded)
+            continue; // 密集向量: 零值槽位不是"有数据的天"
+          ++st.total_days;
+          st.total_orders += di[d].order_count;
+          if (in_range[d]) {
+            sum->orders += di[d].order_count;
+            sum->bytes += static_cast<double>(di[d].orders_file_size);
+          }
+        }
+        if (st.total_days > 0)
+          ++sum->encoded_assets;
+      }
+    }));
   }
 
   // 每资产的常量先摊平: 交易所小写全码 / 上市 / 退市. 这些原先是在
@@ -685,6 +555,8 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     bool excluded = false; // 北交所: L2 archive 从不覆盖
   };
   std::vector<AssetKey> keys(items.size());
+  std::unordered_map<std::string, size_t> key_to_idx; // 停牌名单 (全码) → 资产下标
+  key_to_idx.reserve(items.size());
   for (size_t i = 0; i < items.size(); ++i) {
     AssetKey &k = keys[i];
     if (items[i].exchange == "BJ") {
@@ -694,6 +566,7 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     std::string exchange_lower = items[i].exchange;
     std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
     k.full_code = exchange_lower + "." + items[i].asset_code;
+    key_to_idx[k.full_code] = i;
 
     auto info_it = stock_info.find(k.full_code);
     if (info_it != stock_info.end()) {
@@ -707,26 +580,25 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   const bool has_db_range = !binary.min_date.empty() && !binary.max_date.empty();
   const bool has_bt_range = !backtest.start.empty() && !backtest.end.empty();
 
-  // 这个双重循环 (交易日 × 全部资产) 是整个 coverage 阶段唯一要等的部分,
-  // 进度就报它. 上面那几趟 items 遍历相比之下可以忽略.
-  scan_days_done.store(0, std::memory_order_relaxed);
-  scan_days_total.store(stock_days.size(), std::memory_order_relaxed);
-
-  size_t days_done = 0;
+  // 要算的交易日先挑出来 (区间外的不进任务, 进度分母也只数这些).
+  // per-date 统计沿用全库范围; per-asset 缺口只看回测区间 —— 区间外没编
+  // 码不算缺, 那不是要跑的行情.
+  struct DayJob {
+    std::string date; // YYYYMMDD
+    size_t didx;      // 日期轴下标, 内循环 O(1) 定址 (原先是 资产数 次 hash find)
+    bool in_db_range;
+    bool in_backtest;
+    bool archive_has_day;
+  };
+  std::vector<DayJob> jobs;
+  jobs.reserve(stock_days.size());
   for (const auto &day_info : stock_days) {
-    if (++days_done % kCoverageChunk == 0)
-      co_await Coro::Yield(io);
-    scan_days_done.store(days_done, std::memory_order_relaxed);
-
     if (day_info.size() < 2)
       continue;
-
-    const std::string date_dense = date_to_dense(day_info[0]);
+    std::string date_dense = date_to_dense(day_info[0]);
     if (date_dense.empty())
       continue;
 
-    // per-date 统计沿用全库范围; per-asset 缺口只看回测区间 —— 区间外没编
-    // 码不算缺, 那不是要跑的行情.
     const bool in_db_range =
         !has_db_range || (date_dense >= binary.min_date && date_dense <= binary.max_date);
     const bool in_backtest = has_bt_range && day_info[1] == "1" &&
@@ -734,57 +606,138 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     if (!in_db_range && !in_backtest)
       continue;
 
-    // 当日停牌名单 (无条目 = 该日无人停牌)
-    auto susp_it = suspended.find(date_dense);
-    const auto *susp_today = (susp_it != suspended.end()) ? &susp_it->second : nullptr;
+    DayJob job;
+    job.didx = date_idx(date_dense);
+    job.in_db_range = in_db_range;
+    job.in_backtest = in_backtest;
+    job.archive_has_day = archive.dates.count(date_dense) > 0;
+    job.date = std::move(date_dense);
+    jobs.push_back(std::move(job));
+  }
 
-    const bool archive_has_day = archive.dates.count(date_dense) > 0;
-    DateStats *ds = in_db_range ? &local_date_stats[date_dense] : nullptr;
-    // 一天一个条目, 哪怕零缺口 —— By Date 表要能说"这天检查过, 没事"
-    DateGap *dg = in_backtest ? &local_date_gaps[date_dense] : nullptr;
+  // 这个双重循环 (交易日 × 全部资产) 是整个 coverage 阶段唯一要等的部分,
+  // 进度就报它. 上面那几趟 items 遍历相比之下可以忽略.
+  scan_days_done.store(0, std::memory_order_relaxed);
+  scan_days_total.store(jobs.size(), std::memory_order_relaxed);
 
-    // 日期→轴下标一天查一次, 内循环 O(1) 定址 (原先是 资产数 次 hash find)
-    const size_t didx = date_idx(date_dense);
+  // 按连续的交易日段切任务: 每段自己的 date_stats / date_gaps (按天, 段间
+  // 不相交) 和一份 per-asset 部分和, 结束后按段序合并 —— 缺失日期样本取的
+  // 是"最早的 kMissingSample 个", 段序 = 时间序才能保住这一点.
+  // 段数取线程数的两倍摊平尾部; 每段一份 AssetStats 向量是几百 KB.
+  struct Chunk {
+    std::unordered_map<std::string, DateStats> date_stats;
+    std::map<std::string, DateGap> date_gaps;
+    std::vector<AssetStats> asset_stats; // 只填回测口径 (expected/missing/样本)
+  };
+  const size_t n_chunks = std::max<size_t>(1, std::min(jobs.size(), n_workers * 2));
+  std::vector<Chunk> chunks(n_chunks);
+  const size_t per_chunk = jobs.empty() ? 1 : (jobs.size() + n_chunks - 1) / n_chunks;
 
-    for (size_t i = 0; i < items.size(); ++i) {
-      const AssetKey &k = keys[i];
-      if (k.excluded)
-        continue;
-      if (susp_today && susp_today->count(k.full_code))
-        continue;
-      if (!k.list_date.empty() && date_dense < k.list_date)
-        continue;
-      // 退市日当天已经不交易了 (最后交易日是它之前那个交易日), 用 > 的话
-      // 每只退市股都会平白多出一天缺口 —— 实测 145 只退市股各缺 1 天, 缺
-      // 的正是各自的 delist_date.
-      if (!k.delist_date.empty() && date_dense >= k.delist_date)
-        continue;
+  auto run_chunk = [this, &jobs, &keys, &key_to_idx, &suspended](size_t begin, size_t end, Chunk &out) {
+    out.asset_stats.assign(items.size(), AssetStats{});
+    std::vector<uint8_t> susp(items.size(), 0); // 当日停牌位图, 按资产下标
 
-      const bool has_orders = items[i].date_at(didx).orders_encoded != 0;
+    for (size_t j = begin; j < end; ++j) {
+      const DayJob &job = jobs[j];
 
-      if (ds) {
-        ds->total_assets++;
-        if (has_orders)
-          ds->assets_with_orders++;
-      }
-
-      if (in_backtest) {
-        AssetStats &st = local_asset_stats[i];
-        st.expected_days++;
-        dg->expected++;
-        if (!has_orders) {
-          st.orders_missing++;
-          dg->orders_missing++;
-          if (st.orders_missing_sample.size() < kMissingSample)
-            st.orders_missing_sample.push_back(date_dense);
-        }
-        if (!archive_has_day) {
-          st.archive_missing++;
-          dg->archive_missing++;
-          if (st.archive_missing_sample.size() < kMissingSample)
-            st.archive_missing_sample.push_back(date_dense);
+      // 当日停牌名单 (无条目 = 该日无人停牌) → 位图, 内循环免字符串 hash
+      std::fill(susp.begin(), susp.end(), 0);
+      auto susp_it = suspended.find(job.date);
+      if (susp_it != suspended.end()) {
+        for (const auto &code : susp_it->second) {
+          auto kit = key_to_idx.find(code);
+          if (kit != key_to_idx.end())
+            susp[kit->second] = 1;
         }
       }
+
+      DateStats *ds = job.in_db_range ? &out.date_stats[job.date] : nullptr;
+      // 一天一个条目, 哪怕零缺口 —— By Date 表要能说"这天检查过, 没事"
+      DateGap *dg = job.in_backtest ? &out.date_gaps[job.date] : nullptr;
+
+      for (size_t i = 0; i < items.size(); ++i) {
+        const AssetKey &k = keys[i];
+        if (k.excluded || susp[i])
+          continue;
+        if (!k.list_date.empty() && job.date < k.list_date)
+          continue;
+        // 退市日当天已经不交易了 (最后交易日是它之前那个交易日), 用 > 的话
+        // 每只退市股都会平白多出一天缺口 —— 实测 145 只退市股各缺 1 天, 缺
+        // 的正是各自的 delist_date.
+        if (!k.delist_date.empty() && job.date >= k.delist_date)
+          continue;
+
+        const bool has_orders = items[i].date_at(job.didx).orders_encoded != 0;
+
+        if (ds) {
+          ds->total_assets++;
+          if (has_orders)
+            ds->assets_with_orders++;
+        }
+
+        if (job.in_backtest) {
+          AssetStats &st = out.asset_stats[i];
+          st.expected_days++;
+          dg->expected++;
+          if (!has_orders) {
+            st.orders_missing++;
+            dg->orders_missing++;
+            if (st.orders_missing_sample.size() < kMissingSample)
+              st.orders_missing_sample.push_back(job.date);
+          }
+          if (!job.archive_has_day) {
+            st.archive_missing++;
+            dg->archive_missing++;
+            if (st.archive_missing_sample.size() < kMissingSample)
+              st.archive_missing_sample.push_back(job.date);
+          }
+        }
+      }
+
+      scan_days_done.fetch_add(1, std::memory_order_relaxed);
+    }
+  };
+
+  for (size_t c = 0; c < n_chunks; ++c) {
+    const size_t begin = c * per_chunk;
+    const size_t end = std::min(jobs.size(), begin + per_chunk);
+    if (begin >= end)
+      break;
+    Chunk *out = &chunks[c];
+    futures.push_back(thread_pool->submit([&run_chunk, begin, end, out]() { run_chunk(begin, end, *out); }));
+  }
+
+  co_await await_futures(io, futures);
+
+  {
+    RangeSum total;
+    for (const RangeSum &s : range_sums) {
+      total.orders += s.orders;
+      total.bytes += s.bytes;
+      total.encoded_assets += s.encoded_assets;
+    }
+    binary.backtest_orders = total.orders;
+    binary.backtest_orders_size_gb = static_cast<float>(total.bytes / (1024.0 * 1024.0 * 1024.0));
+    binary.encoded_assets = total.encoded_assets;
+  }
+
+  // 按段序合并. 段的 per-asset 部分和只有回测口径那几列, 全库口径两列已由
+  // 上面的资产段任务直接写进 local_asset_stats.
+  for (Chunk &chunk : chunks) {
+    local_date_stats.merge(chunk.date_stats);
+    local_date_gaps.merge(chunk.date_gaps);
+    for (size_t i = 0; i < chunk.asset_stats.size(); ++i) {
+      AssetStats &st = local_asset_stats[i];
+      AssetStats &cs = chunk.asset_stats[i];
+      st.expected_days += cs.expected_days;
+      st.orders_missing += cs.orders_missing;
+      st.archive_missing += cs.archive_missing;
+      for (const auto &d : cs.orders_missing_sample)
+        if (st.orders_missing_sample.size() < kMissingSample)
+          st.orders_missing_sample.push_back(d);
+      for (const auto &d : cs.archive_missing_sample)
+        if (st.archive_missing_sample.size() < kMissingSample)
+          st.archive_missing_sample.push_back(d);
     }
   }
 

@@ -9,7 +9,6 @@
 #include <deque>
 #include <map>
 #include <mutex>
-#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -39,9 +38,9 @@ struct SharedData;
 // 产物 stat —— 没有它, "确认无事可做"本身就要几秒一天.
 // 扫描端按 .bin 后缀过滤, 天然忽略它.
 //
-// 手工删掉损坏的 .bin 不需要连带删 .stat: 快路径在信 complete 之前会拿一次
-// readdir 跟明细核对 (见 day_products_match), 扫描那侧发现不符也会把齐备标记
-// 作废 —— 两边都能自己发现盘上少了东西, 那天于是回到重编队列.
+// 手工删掉损坏的 .bin 不需要连带删 .stat: 快路径在信 complete 之前会核一遍
+// 明细是否仍与盘上一致 (目录 mtime / readdir, 见 day_index_current), 不符就
+// 重新列举这一天. 账目 (含 complete) 只有编码器写, 扫描只回填明细.
 
 // 一个 (资产, 日期) 的待编码任务.
 //
@@ -120,10 +119,6 @@ struct EncodeStats {
   };
   std::mutex days_mutex;
   std::map<std::string, DayProgress> days_inflight;
-
-  // 本轮真正动过的天 (producer 列举出活儿就记, 整天跳过的不记).
-  // 收工后交给增量扫描做定向重扫, 见 Asset::binary.dirty_dates.
-  std::set<std::string> days_touched;
 };
 
 // producer: 逐天 [列举 → 增量过滤 → 切批 → 推批].

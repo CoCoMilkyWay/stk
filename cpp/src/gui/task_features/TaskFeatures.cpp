@@ -2,11 +2,13 @@
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
+#include "gui/task_features/services/CorrService.hpp"
 #include "gui/task_features/services/DistService.hpp"
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/services/PreviewService.hpp"
 #include "gui/task_features/services/TransformService.hpp"
 #include "gui/task_features/ui/TabCompute.hpp"
+#include "gui/task_features/ui/TabCorr.hpp"
 #include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
@@ -27,6 +29,7 @@ enum TabIdx {
   TAB_COMPUTE,
   TAB_TRANSFORM,
   TAB_DISTRIBUTION,
+  TAB_CORR,
   TAB_ORDERFLOW,
   TAB_COUNT
 };
@@ -42,6 +45,9 @@ struct TaskFeaturesState {
   std::unique_ptr<Features::DistService> dist_service;
   std::unique_ptr<Features::TransformService> transform_service;
   std::unique_ptr<Features::PreviewService> preview_service;
+  std::unique_ptr<Features::CorrService> corr_service;
+  std::unique_ptr<Features::CorrPairService> corr_pair_service;
+  std::unique_ptr<Features::CorrLagService> corr_lag_service;
 
   // UI State
   int active_tab = -1; // 当前选中 tab (由 Draw 入口写入), -1 = 未选中
@@ -54,10 +60,13 @@ struct TaskFeaturesState {
   Features::ComputeState compute_state;
   Features::TransformUIState transform_ui_state;
   Features::DistUIState dist_ui_state;
+  Features::CorrUIState corr_ui_state;
 
   // Tab state (Dist / Transform 流式 tab: 切走中断, 切回自动重算)
   bool dist_tab_was_active = false;
   bool transform_tab_was_active = false;
+  // Corr: 切走只中断 (矩阵留在内存); 请求由 TabCorr 按"过滤行集变了"自发, 不走 StreamTabLifecycle
+  bool corr_tab_was_active = false;
 
   // Compute status tracking (to detect completion)
   Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
@@ -69,8 +78,9 @@ struct TaskFeaturesState {
   int prev_selected_level = 0;
   // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; universe / 日期区间变了自动重算 (快照做变更检测)
   std::string preview_universe, preview_start, preview_end;
-  // 预览完成检测 (→ Done 那一帧把特征表落地 features.json)
+  // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
   analysis::Status prev_preview_status = analysis::Status::Idle;
+  size_t prev_preview_done = 0;
 };
 
 // 流式 tab 的行状态: 构建中显示进度, 完成后 done, 取消 cancelled
@@ -130,14 +140,22 @@ TaskHandle CreateFeaturesTask() {
       state->transform_service->Shutdown();
     if (state->preview_service)
       state->preview_service->Shutdown();
+    if (state->corr_service)
+      state->corr_service->Shutdown();
+    if (state->corr_pair_service)
+      state->corr_pair_service->Shutdown();
+    if (state->corr_lag_service)
+      state->corr_lag_service->Shutdown();
     state->streams_started = false; // 重进任务时重新起 worker
     // 数据已清, 重进按"初次进 tab"走自动重算
     state->dist_tab_was_active = false;
     state->transform_tab_was_active = false;
+    state->corr_tab_was_active = false;
+    state->corr_ui_state = Features::CorrUIState{}; // 行集快照也清, 重进必然重算
   };
 
   // 子项 (叶子) 名字, 顺序与 TabIdx 一致
-  handle.tabs = {"Feature", "Compute", "Transform", "Distribution", "OrderFlow"};
+  handle.tabs = {"Feature", "Compute", "Transform", "Distribution", "Corr", "OrderFlow"};
 
   // Update: 每帧 (无论选中) 更新 taskstate.features + tab 锁定/使能 ——
   // 左栏标签/使能同帧读取, 不再依赖 "打开过 Features 页" 的上一帧缓存
@@ -192,16 +210,22 @@ TaskHandle CreateFeaturesTask() {
         !inputs_ready || is_locked(TAB_COMPUTE),                        // Compute: needs scanned inputs
         !inputs_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs inputs + selection
         !inputs_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs inputs + selection
+        !inputs_ready || is_locked(TAB_CORR),                           // Corr: 矩阵按过滤行集算, 不看选中
         !inputs_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs scanned inputs
     };
     for (int k = 0; k < TAB_COUNT; k++)
       state->tab_enabled[k] = !disable[k];
 
-    // 预览跑完 (→ Done) 的那一帧: 特征表 (元数据 + 账目/值域/PDF/PSD) 落地 <FeatureUniverseDir>/features.json
+    // 预览每跑完一轮 (done 增长) 就把特征表 (元数据 + 账目/值域) 落地
+    // <FeatureUniverseDir>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
+    // done 回退 (新请求 begin_build 清零) 不落, 避免写出空表; Done 那一帧补一次 (空库 0 轮也有文件)
     {
       const auto pv_status = data.preview.status.load(std::memory_order_acquire);
-      if (pv_status == analysis::Status::Done && state->prev_preview_status != analysis::Status::Done)
+      const size_t pv_done = data.preview.done.load(std::memory_order_acquire);
+      if (pv_done > state->prev_preview_done ||
+          (pv_status == analysis::Status::Done && state->prev_preview_status != analysis::Status::Done))
         Features::SaveFeatureTableJson(data);
+      state->prev_preview_done = pv_done;
       state->prev_preview_status = pv_status;
     }
   };
@@ -265,6 +289,9 @@ TaskHandle CreateFeaturesTask() {
     case TAB_DISTRIBUTION:
       return StreamTaskStatus(data.dist);
 
+    case TAB_CORR:
+      return StreamTaskStatus(data.corr);
+
     case TAB_ORDERFLOW: // 后台流式 worker 常驻 (背景常态, 灰色)
       if (state->orderflow_service && state->orderflow_service->is_running())
         return {TaskStatus::Kind::Muted, "streaming"};
@@ -294,6 +321,15 @@ TaskHandle CreateFeaturesTask() {
     if (!state->preview_service) {
       state->preview_service = std::make_unique<Features::PreviewService>();
     }
+    if (!state->corr_service) {
+      state->corr_service = std::make_unique<Features::CorrService>();
+    }
+    if (!state->corr_pair_service) {
+      state->corr_pair_service = std::make_unique<Features::CorrPairService>();
+    }
+    if (!state->corr_lag_service) {
+      state->corr_lag_service = std::make_unique<Features::CorrLagService>();
+    }
 
     // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (universe 子轴要它).
     // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
@@ -302,6 +338,9 @@ TaskHandle CreateFeaturesTask() {
       state->dist_service->Start(data);
       state->transform_service->Start(data);
       state->preview_service->Start(data);
+      state->corr_service->Start(data);
+      state->corr_pair_service->Start(data);
+      state->corr_lag_service->Start(data);
       state->preview_service->RequestCompute(data);
       state->streams_started = true;
       state->preview_universe = data.config.universe;
@@ -316,6 +355,8 @@ TaskHandle CreateFeaturesTask() {
       state->preview_start = data.config.start_date;
       state->preview_end = data.config.end_date;
       state->preview_service->RequestCompute(data);
+      // 相关矩阵也跟着 universe / 区间走: 清掉请求快照, TabCorr 下一帧自发重算
+      Features::InvalidateCorrRequests(state->corr_ui_state);
     }
 
     // Auto-trigger Dist / Transform compute on feature selection change (无论当前在哪个 tab:
@@ -360,8 +401,10 @@ TaskHandle CreateFeaturesTask() {
            current_status == Features::ComputeStatus::Cancelled)) {
         // Compute just finished - OrderFlow 重扫日期 + 整体重拉; 预览重抽 (新库落盘)
         data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
-        if (state->streams_started)
+        if (state->streams_started) {
           state->preview_service->RequestCompute(data);
+          Features::InvalidateCorrRequests(state->corr_ui_state); // 新库落盘: 相关矩阵同样作废
+        }
       }
       state->prev_compute_status = current_status;
     }
@@ -378,6 +421,14 @@ TaskHandle CreateFeaturesTask() {
         idx == TAB_DISTRIBUTION, state->dist_tab_was_active, data.dist,
         [&] { state->dist_service->RequestCompute(data); },
         [&] { Features::StopTabDist(state->dist_service.get(), data); });
+    // Corr 的请求内容 (过滤行集) 只有 TabCorr 算得出 → 切回时清快照, 由它下一帧自发提交
+    StreamTabLifecycle(
+        idx == TAB_CORR, state->corr_tab_was_active, data.corr,
+        [&] { Features::InvalidateCorrRequests(state->corr_ui_state); },
+        [&] {
+          Features::StopTabCorr(state->corr_service.get(), state->corr_pair_service.get(),
+                                state->corr_lag_service.get(), data);
+        });
 
     // Render active tab content (OrderFlow 切 tab 不停 worker: 流式后台继续, 切回即全)
     ImGui::BeginChild("FeaturesTab", ImVec2(0, 0), false);
@@ -396,6 +447,10 @@ TaskHandle CreateFeaturesTask() {
       break;
     case TAB_DISTRIBUTION:
       Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
+      break;
+    case TAB_CORR:
+      Features::RenderTabCorr(state->corr_service.get(), state->corr_pair_service.get(),
+                              state->corr_lag_service.get(), data, state->corr_ui_state);
       break;
     case TAB_ORDERFLOW:
       Features::RenderTabOrderFlow(state->orderflow_service.get(), data);
@@ -425,6 +480,15 @@ TaskHandle CreateFeaturesTask() {
     if (state->preview_service)
       state->preview_service->Shutdown();
     state->preview_service.reset();
+    if (state->corr_service)
+      state->corr_service->Shutdown();
+    state->corr_service.reset();
+    if (state->corr_pair_service)
+      state->corr_pair_service->Shutdown();
+    state->corr_pair_service.reset();
+    if (state->corr_lag_service)
+      state->corr_lag_service->Shutdown();
+    state->corr_lag_service.reset();
   };
 
   return handle;

@@ -3,6 +3,7 @@
 #include "./Asset.hpp"
 #include "./AssetInfo.hpp"
 #include "./Config.hpp"
+#include "./Correlation.hpp"
 #include "./Dist.hpp"
 #include "./Feature.hpp"
 #include "./FeaturePreview.hpp"
@@ -23,6 +24,9 @@ struct SharedData {
   OrderFlow orderflow;
   Dist dist;
   Transform transform;
+  Correlation corr;   // 特征两两相关矩阵 (Corr tab)
+  CorrPair corr_pair; // 悬停对的 lead-lag 曲线
+  CorrLag corr_lag;   // 全矩阵 lead-lag 峭点 (Corr tab 勾选 "Lag 图" 才算)
 
   CoroManager coromgr;
 

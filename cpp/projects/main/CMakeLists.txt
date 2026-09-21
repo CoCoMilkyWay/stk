@@ -182,6 +182,7 @@ set(SOURCES
     ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Config.cpp
+    ../../src/shared/Correlation.cpp
     ../../src/shared/Dist.cpp
     ../../src/shared/EncodeDayRecord.cpp
     ../../src/shared/Feature.cpp
@@ -244,12 +245,14 @@ set(SOURCES
     # gui / task_features
     ../../src/gui/task_features/TaskFeatures.cpp
     ../../src/gui/task_features/services/ComputeService.cpp
+    ../../src/gui/task_features/services/CorrService.cpp
     ../../src/gui/task_features/services/DistService.cpp
     ../../src/gui/task_features/services/OrderFlowService.cpp
     ../../src/gui/task_features/services/PreviewService.cpp
     ../../src/gui/task_features/services/TransformService.cpp
     ../../src/gui/task_features/ui/Common.cpp
     ../../src/gui/task_features/ui/TabCompute.cpp
+    ../../src/gui/task_features/ui/TabCorr.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
@@ -278,6 +281,7 @@ set(HEADERS
     ../../include/shared/Asset.hpp
     ../../include/shared/AssetInfo.hpp
     ../../include/shared/Config.hpp
+    ../../include/shared/Correlation.hpp
     ../../include/shared/Dist.hpp
     ../../include/shared/Feature.hpp
     ../../include/shared/FeaturePreview.hpp
@@ -673,6 +677,7 @@ set_source_files_properties(
     ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Config.cpp
+    ../../src/shared/Correlation.cpp
     ../../src/shared/Dist.cpp
     ../../src/shared/FeaturePreview.cpp
     ../../src/shared/OrderFlow.cpp
@@ -707,6 +712,7 @@ set_source_files_properties(
     ../../src/gui/task_database/ui/TabTable.cpp
     ../../src/gui/task_features/services/OrderFlowService.cpp
     ../../src/gui/task_features/ui/Common.cpp
+    ../../src/gui/task_features/ui/TabCorr.cpp
     ../../src/gui/task_features/ui/TabDist.cpp
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp

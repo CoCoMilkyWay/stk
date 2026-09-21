@@ -135,8 +135,7 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
     // 8/24/72 线程分别是 4.50 / 3.27 / 4.09 秒 —— 超过二十几个之后争用反而
     // 吃掉收益.
     auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
-    co_await data_.asset.coro_scan_binary_database(io_, data_.config.orders_dir,
-                                                   config::BINARY_EXTENSION, scan_pool);
+    co_await data_.asset.coro_scan_binary_database(io_, data_.config.orders_dir, scan_pool);
   }
 
   // ========================================
@@ -162,13 +161,18 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
   // required_dates 的 ground truth = 基本面交易日历 (调用方保证基本面 Ready:
   // StateManager::initialize / TriggerRefreshFlow 只在 Ready 后触发扫描)
   assert(!data_.assetinfo.get_stock_days().empty() && "基本面日历未就绪, 不应触发扫描");
-  co_await data_.asset.coro_compute_backtest_coverage(io_, backtest_start, backtest_end,
-                                                      data_.assetinfo);
+  data_.asset.compute_backtest_coverage(backtest_start, backtest_end, data_.assetinfo);
 
   // Encode 的缺失表、Table 的 Orders%、Browser 的完整性是同一份统计, 在这里
   // 一次算完. 放在扫描里而不是各页首帧惰性算: 那是 885 天 × 5800 资产的双重
   // 遍历, 摊在渲染帧上会直接卡住一次交互.
-  co_await data_.asset.coro_compute_coverage_statistics(io_, data_.assetinfo);
+  //
+  // 这一段是纯 CPU (与扫描那个按内核路径解析定的 24 不同), 线程数取核数.
+  {
+    const unsigned cores = std::thread::hardware_concurrency();
+    auto coverage_pool = std::make_shared<ScanThreadPool>(cores > 0 ? cores : 1);
+    co_await data_.asset.coro_compute_coverage_statistics(io_, data_.assetinfo, coverage_pool);
+  }
 
   // ========================================
   // Phase 6: Analyze and determine status - update status, yield, then analyze

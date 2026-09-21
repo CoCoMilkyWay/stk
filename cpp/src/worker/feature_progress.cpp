@@ -158,6 +158,14 @@ void FeatureProgress::render() {
                                ? (now_ms - first_io_ms_) / 1000.0 / static_cast<double>(io_days - first_io_days_)
                                : 0.0;
 
+  // 全程均值 (瞬时速率见各行; 此处为 start→now 的端到端口径)
+  size_t sum_orders = 0;
+  for (size_t w = 0; w < num_ts; ++w)
+    sum_orders += work[1 + w];
+  const double elapsed_s = static_cast<double>(now_ms) / 1000.0;
+  const double global_rate = elapsed_s > 0.0 ? static_cast<double>(sum_orders) / elapsed_s : 0.0;
+  const double global_day_s = io_days > 0 ? elapsed_s / static_cast<double>(io_days) : 0.0;
+
   std::ostringstream out;
   out << "\033[" << kLines << "A\r";
   char buf[256];
@@ -171,11 +179,16 @@ void FeatureProgress::render() {
       out << (j < filled ? '#' : (j == filled && io_days < total ? '>' : ' '));
     out << "] " << std::setw(3) << static_cast<int>(p * 100) << "% "
         << io_days << "/" << total << " 天 | " << fmt_duration(now_ms / 1000);
-    if (per_day_s > 0.0 && io_days < total) {
-      out << ", ETA " << fmt_duration(static_cast<long long>(per_day_s * static_cast<double>(total - io_days)));
-      snprintf(buf, sizeof(buf), " (%.1fs/天)", per_day_s);
+    if (global_rate > 0.0) {
+      snprintf(buf, sizeof(buf), " | Σ%.1fM单/s", global_rate / 1e6);
       out << buf;
     }
+    if (global_day_s > 0.0) {
+      snprintf(buf, sizeof(buf), " %.1fs/天", global_day_s);
+      out << buf;
+    }
+    if (per_day_s > 0.0 && io_days < total)
+      out << ", ETA " << fmt_duration(static_cast<long long>(per_day_s * static_cast<double>(total - io_days)));
     out << "\033[K\n";
   }
 
@@ -199,16 +212,10 @@ void FeatureProgress::render() {
            busy[1 + w] < kIdleBusy && frontier[w] < total);
     }
     out << "\033[0m] ";
-    double sum_rate = 0.0;
-    size_t sum_orders = 0;
-    for (size_t w = 0; w < num_ts; ++w) {
-      sum_rate += rate[1 + w];
-      sum_orders += work[1 + w];
-    }
     const auto [hmin, hmax] = std::minmax_element(holding.begin(), holding.end());
-    snprintf(buf, sizeof(buf), "前沿 %zu..%zu/%zu (%s) Σ%.1fM/s (%.2fG单) 持仓 %zu..%zu",
+    snprintf(buf, sizeof(buf), "前沿 %zu..%zu/%zu (%s) %.2fG单 持仓 %zu..%zu",
              lag, lead, total, dates_[std::min(lead, total - 1)].c_str(),
-             sum_rate / 1e6, sum_orders / 1e9, *hmin, *hmax);
+             static_cast<double>(sum_orders) / 1e9, *hmin, *hmax);
     out << buf << "\033[K\n";
   }
 
@@ -231,12 +238,7 @@ void FeatureProgress::render() {
     cell(out, busy[2 + num_ts], busy[2 + num_ts] < kIdleBusy || io_days >= total);
     out << "\033[0m] ";
     snprintf(buf, sizeof(buf), "%zu/%zu", io_days, total);
-    out << buf;
-    if (rate[2 + num_ts] > 0.0) {
-      snprintf(buf, sizeof(buf), " %.1fs/天", 1.0 / rate[2 + num_ts]);
-      out << buf;
-    }
-    out << "\033[K\n";
+    out << buf << "\033[K\n";
   }
 
   std::cout << out.str() << std::flush;

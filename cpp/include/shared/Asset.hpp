@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -59,9 +60,9 @@ struct AssetItem {
 
   // 按日状态: 按全局日期轴 (Asset::date_axis) 下标密集存储.
   //
-  // 密集向量 = 资产数 × 日期数 × 24B ≈ 400MB, 定址 O(1). 轴 append-only,
-  // 下标进程内稳定; "无数据"就是零值元素 (orders_encoded == 0), 增量重扫
-  // 清空脏日用赋零而不是 erase. 向量按需增长 (date_at 对越界返回零值).
+  // 密集向量 = 资产数 × 日期数 × 24B ≈ 400MB, 定址 O(1). 每次扫描整体重建
+  // (轴与全部 date_info 一起), "无数据"就是零值元素 (orders_encoded == 0).
+  // 扫描之后新上市的资产 (AssetLoader 追加) 向量为空, date_at 对越界返回零值.
   std::vector<DateInfo> date_info;
 
   static constexpr DateInfo kEmptyDateInfo{};
@@ -69,13 +70,6 @@ struct AssetItem {
   // 读: 越界 (含 Asset::kNoDate) = 该日无数据
   const DateInfo &date_at(size_t date_idx) const {
     return date_idx < date_info.size() ? date_info[date_idx] : kEmptyDateInfo;
-  }
-
-  // 写: 自动扩容到轴下标
-  DateInfo &date_slot(size_t date_idx) {
-    if (date_idx >= date_info.size())
-      date_info.resize(date_idx + 1);
-    return date_info[date_idx];
   }
 
   // 构造
@@ -99,11 +93,11 @@ struct Asset {
   std::vector<std::string> all_dates; // 扫描得到的所有已知交易日
 
   // ========================================
-  // 日期轴 (append-only): AssetItem::date_info 的下标空间
+  // 日期轴: AssetItem::date_info 的下标空间
   // ========================================
-  // 与 all_dates 分开: all_dates 每次扫描按字典序重建 (下标不稳定), 而
-  // date_info 的下标必须跨增量重扫稳定 —— 轴只追加不排序不删除, 脏日在
-  // 各资产里赋零. 只活在内存里: 进程重启后整库重扫, 轴随之重建.
+  // 有 .bin 目录的天, 升序. 每次二进制扫描与全部 date_info 一起整体重建,
+  // 中间不做增量修补 —— 一次重建是 800 次 stat + 读 .stat, 百毫秒量级,
+  // 不值得为它维护脏日/基线那套状态.
   std::vector<std::string> date_axis;                      // idx -> "YYYYMMDD"
   std::unordered_map<std::string, uint32_t> date_axis_idx; // date -> idx
 
@@ -113,14 +107,6 @@ struct Asset {
   size_t date_idx(const std::string &date) const {
     auto it = date_axis_idx.find(date);
     return it != date_axis_idx.end() ? it->second : kNoDate;
-  }
-
-  // 查/增 (仅扫描合并路径调用, 单线程)
-  size_t date_idx_add(const std::string &date) {
-    auto [it, inserted] = date_axis_idx.try_emplace(date, static_cast<uint32_t>(date_axis.size()));
-    if (inserted)
-      date_axis.push_back(date);
-    return it->second;
   }
 
   // ========================================
@@ -203,26 +189,7 @@ struct Asset {
     std::string max_date;        // YYYYMMDD, 已编码日期的最晚
     std::set<std::string> dates; // 所有已完整编码的日期
 
-    // 增量扫描: 上次扫完时每个日目录的 mtime.
-    //
-    // 一天的开销是"一次 readdir + 一次读 .stat" (当天统计, 见
-    // shared/EncodeDayRecord.hpp); 只有明细缺失或与名单对不上的天才退回逐个
-    // 读头 —— 那条路全库是 451 万次 open+pread+close 约 3 秒.
-    //
-    // 这份 mtime 基线是更上一层: 目录内容没动过的天连 readdir 都省掉.
-    // 只活在内存里, 进程重启后的首次扫描仍要过一遍全部日目录 —— 挡住那趟
-    // 全量读头的是盘上的明细, 不是这里.
-    //
-    // 新增/删除/重命名覆盖都会改目录 mtime (覆盖同名也变 —— rename 按 POSIX
-    // 要更新目标目录的 mtime, 何况编码的 .tmp 就落在同目录, 那个条目的增删
-    // 本身已经改了 mtime), 所以手动删 .bin 也能被发现.
-    std::unordered_map<std::string, int64_t> day_mtimes;
-
-    // 编码动过的天 —— 无条件重扫. mtime 那层之外, 这里把"谁改了库"变成
-    // 编码路径的显式契约, 不让正确性依赖文件系统 mtime 的细节语义.
-    std::set<std::string> dirty_dates;
-
-    // 统计 (由 items 算出)
+    // 统计 (由 coro_compute_coverage_statistics 的逐资产遍历算出)
     size_t encoded_assets = 0; // 至少有一天有编码数据的资产数
 
     // 全库统计
@@ -281,7 +248,6 @@ struct Asset {
   boost::asio::awaitable<void> coro_scan_binary_database(
       boost::asio::io_context &io,
       const std::string &orders_dir,
-      const std::string &binary_extension,
       std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
 
   boost::asio::awaitable<void> coro_scan_archive_database(
@@ -290,15 +256,12 @@ struct Asset {
       const std::string &archive_extension,
       std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
 
-  // 覆盖分析 (扫描完成或配置变更后调用), 同时用缓存数据算回测区间统计.
-  // required_dates 的基准 = 基本面交易日历 (assetinfo.stock_days)
-  //
-  // 协程而不是普通函数: 末段要遍历全库 date_info (资产数 × 交易日, 五百万条),
-  // 单线程不间断跑会卡住一帧 —— 按资产分批, 每批让步 (见 Coro::Yield).
-  boost::asio::awaitable<void> coro_compute_backtest_coverage(
-      boost::asio::io_context &io,
-      const std::string &start, const std::string &end,
-      const AssetInfo &assetinfo);
+  // 覆盖分析 (扫描完成或配置变更后调用): 回测区间内哪些交易日有/缺/可编/
+  // 需下载. required_dates 的基准 = 基本面交易日历 (assetinfo.stock_days).
+  // 纯集合运算, 几百个日期, 同步跑完. 区间内的条数/体积 (要遍历 date_info)
+  // 归 coro_compute_coverage_statistics 那趟一起算.
+  void compute_backtest_coverage(const std::string &start, const std::string &end,
+                                 const AssetInfo &assetinfo);
 
   // 用 AssetInfo 同步 AssetItem 字段 (AssetInfo 更新后调用)
   template <typename StockInfoMap>
@@ -344,12 +307,17 @@ struct Asset {
   //   - 当日全天停牌 (suspended, 无逐笔可编码)
   // 这两项不剔掉的话全市场完整性会被压到 ~94%, 掩盖真实缺口.
   //
-  // 协程而不是普通函数: 交易日 × 资产的双重遍历 (885 × 5800 量级), 按交易日
-  // 分批让步 (见 Coro::Yield). 结果先算在局部, 算完一次性换进来 —— 中途打开
-  // 页面看到的是"上一版或没有", 不会是半成品.
+  // 全库 date_info 只在这里遍历一趟 (按资产段并行): 每资产 total_days /
+  // total_orders, 全库与回测区间的条数/体积, encoded_assets.
+  //
+  // 交易日 × 资产的双重遍历 (885 × 5800 量级) 切成连续的交易日段扔进线程池,
+  // 每段各自累加, 结束后按段的先后顺序合并 (缺失日期样本要保持时间序);
+  // GUI 线程只轮询等待. 结果先算在局部, 算完一次性换进来 —— 中途打开页面
+  // 看到的是"上一版或没有", 不会是半成品.
   boost::asio::awaitable<void> coro_compute_coverage_statistics(
       boost::asio::io_context &io,
-      const AssetInfo &assetinfo);
+      const AssetInfo &assetinfo,
+      std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
 };
 
 // ============================================================================

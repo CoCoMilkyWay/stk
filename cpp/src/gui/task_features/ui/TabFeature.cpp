@@ -219,6 +219,18 @@ static std::vector<int> get_filtered_indices(const Feature::Selection &sel, cons
   return result;
 }
 
+// 公开口 (见 TabFeature.hpp): 自加短锁, Corr 热图取与表格同一行集
+void FilteredFeatureIndices(SharedData &data, std::vector<int> &out) {
+  const Feature &feature = data.feature;
+  const size_t level = static_cast<size_t>(feature.selection.selected_level);
+  static std::vector<const char *> s_cat2; // GUI 单线程, 帧内复用
+  {
+    std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
+    effective_cat2_snapshot(feature.metadata, data.preview, level, s_cat2);
+  }
+  out = get_filtered_indices(feature.selection, feature.metadata.features[level], s_cat2);
+}
+
 // ============================================================================
 // Within-group ordering: 拓扑依赖序 + 贪心名字相似度聚类.
 // 参考: qmt/cpp/src/feature/report.cpp (by_kind_then_topo + greedy_nearest_neighbor).
