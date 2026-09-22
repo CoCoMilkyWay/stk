@@ -92,7 +92,8 @@ def main():
     _cleanup_processes()
 
     print("Building...")
-    _build(APP_NAME, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT, ENABLE_CUDA)
+    _build(APP_NAME, ENABLE_TSAN, ENABLE_DEBUG,
+           ENABLE_PROFILE, ENABLE_ASSERT, ENABLE_CUDA)
 
     print("Running...")
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")

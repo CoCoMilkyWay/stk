@@ -265,9 +265,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);                                      // 0
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);                                   // 1
     ImGui::TableSetupColumn("Ar", ImGuiTableColumnFlags_WidthFixed);                                     // 2
-    ImGui::TableSetupColumn("Win", ImGuiTableColumnFlags_WidthFixed);                                    // 3
-    ImGui::TableSetupColumn("Scope", ImGuiTableColumnFlags_WidthFixed);                                  // 4
-    ImGui::TableSetupColumn("Kern", ImGuiTableColumnFlags_WidthFixed);                                   // 5
+    ImGui::TableSetupColumn("T", ImGuiTableColumnFlags_WidthFixed);                                      // 3
+    ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthFixed);                                      // 4
+    ImGui::TableSetupColumn("Kernel", ImGuiTableColumnFlags_WidthFixed);                                 // 5
     ImGui::TableSetupColumn("Args", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 6
     ImGui::TableSetupColumn("Formula", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 7
     ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                              // 8
@@ -284,7 +284,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"#", "Name", "Ar", "Win", "Scope", "Kern", "Args", "Formula",
+    const char *headers[kNumCols] = {"#", "Name", "Ar", "T", "A", "Kernel", "Args", "Formula",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
         "全局 idx = OpTable 表序 = operators.json 的 idx (code 与 UI 统一按它):\n"
@@ -305,7 +305,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "    k2  第二阈值 (仅 TodMask 上界)",
         "公式 (OpTable.hpp, LaTeX). 符号继承 features/FeaturesDefine.hpp (t 分钟, D 交易日, 1[·] 指示), 算子库补充:\n"
         "  x_t 本资产 t 分钟值; x_a 同一时刻资产 a 的值; t_D 段内位置\n"
-        "  W_t 窗 (由 Win 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
+        "  W_t 窗 (由 T 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
         "  n / N 窗内 / 截面有效样本数; μ_t σ_t 窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心总体矩\n"
         "  Σ_{W_t} / Π_{W_t} 窗内求和 / 乘积 (求和变量恒是 s 或 b); max min med cov var corr 的下标 = 取值域\n"
         "  pct(v; S) 并列均秩 pct rank ∈ [0,1]; Q_p 截面 p 分位; Φ⁻¹ 标准正态分位; G(a) 组 (整数 id 由 y / z 给)\n"
@@ -499,9 +499,9 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       j["idx"] = i;
       j["name"] = r.name;
       j["arity"] = r.arity;
-      j["win"] = win_name(r.win);
-      j["scope"] = scope_name(r.scope);
-      j["kern"] = kern_name(r.kern);
+      j["T"] = win_name(r.win);
+      j["A"] = scope_name(r.scope);
+      j["kernel"] = kern_name(r.kern);
       j["inputs"] = inputs_of(r);
       nlohmann::ordered_json params = nlohmann::ordered_json::object();
       for_each_param(r, [&](const char *name, double v) { params[name] = v; });
@@ -577,8 +577,8 @@ bool load_diff(const nlohmann::json &j, factor::check::Diff &out) {
 bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   if (!j.is_object())
     return false;
-  if (!str_is(j, "name", dst.name) || !str_is(j, "win", win_name(dst.win)) || !str_is(j, "scope", scope_name(dst.scope)) ||
-      !str_is(j, "kern", kern_name(dst.kern)) || !str_is(j, "inputs", inputs_of(dst)) || !str_is(j, "formula", dst.formula))
+  if (!str_is(j, "name", dst.name) || !str_is(j, "T", win_name(dst.win)) || !str_is(j, "A", scope_name(dst.scope)) ||
+      !str_is(j, "kernel", kern_name(dst.kern)) || !str_is(j, "inputs", inputs_of(dst)) || !str_is(j, "formula", dst.formula))
     return false;
   int arity = -1;
   if (!get_int(j, "arity", arity) || arity != dst.arity)
