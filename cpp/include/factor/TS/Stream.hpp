@@ -3,7 +3,7 @@
 // =============================================================================
 // TS 流式实现 (实盘: 每分钟一次 push, O(1) 或 O(d) 状态; 语义契约见 factor/Contract.hpp)
 // =============================================================================
-//   结构 = 两节, 对应 OpTable 的"窗"列 (每个 struct 带 static constexpr Win kWin, op_check 对表):
+//   结构 = 两节, 对应 OpTable 的 T 窗列 (每个 struct 带 static constexpr T kT, op_check 对表):
 //     节一  POINT             无状态纯函数   struct Op : Point { static Val apply(Val x[, Val y[, Val z]], const Param &); }
 //                             TodMask 元数 0: apply(int t_seg, const Param &)
 //     节二  EXPAND/ROLL/EXPO  有状态          struct Op { explicit Op(const Param &); Val push(Val x[, Val y]); }
@@ -36,7 +36,7 @@ namespace factor::ts {
 // =========================== 节一: POINT (无状态) ===========================
 
 struct Point {
-  static constexpr Win kWin = Win::POINT;
+  static constexpr T kT = T::POINT;
 };
 
 struct TsAbs : Point {
@@ -378,7 +378,7 @@ struct WMean { // y 为权
 template <class C>
 class Expand {
 public:
-  static constexpr Win kWin = Win::EXPAND;
+  static constexpr T kT = T::EXPAND;
   explicit Expand(const Param &p) : p_(p) { reset(); }
   void reset() { c_.reset(p_), i_ = 0; }
   Val push(Val x) { return step(x, Val{}); }
@@ -402,7 +402,7 @@ private:
 template <class C, int Extra = 0>
 class Roll {
 public:
-  static constexpr Win kWin = Win::ROLL;
+  static constexpr T kT = T::ROLL;
   explicit Roll(const Param &p) : p_(p), L_(p.d + Extra), bx_(static_cast<size_t>(L_)), by_(static_cast<size_t>(L_)) {
     assert(p.d >= 1);
   }
@@ -435,7 +435,7 @@ private:
 // ---- 窗: EXPO (指数递推, 全程不重置 → 没有 reset; 核与窗一体, 只服务均值) ----
 class Ema {
 public:
-  static constexpr Win kWin = Win::EXPO;
+  static constexpr T kT = T::EXPO;
   explicit Ema(const Param &p) : k_(p.k) { assert(k_ > 0.f && k_ <= 1.f); }
   Val push(Val x) { // x 无效 → 状态与掩码都保持
     if (x.m)

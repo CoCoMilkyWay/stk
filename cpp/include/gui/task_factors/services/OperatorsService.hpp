@@ -45,19 +45,20 @@ enum class RowStatus : uint8_t { Pending,
                                  Running,
                                  Done };
 
-// 一行 = OpTable 一个算子: 静态列直接来自表 (三维分类: T 窗 × A 域 × 核类), 动态列由 worker 发布
+// 一行 = OpTable 一个算子: 静态列直接来自表 (三维分类: T 窗 × A 域 × 核类), 动态列由 worker 发布.
+// 字段名 = JSON 键 = UI 表头 (全库统一叫法); 唯一例外: operator 是 C++ 保留字, 字段退而叫 op
 struct OperatorRow {
   // 静态
-  const char *name = nullptr;                // en_name (OpTable 行名, 域_核_窗)
-  const char *cn_name = nullptr;             // 中文名: 域 (时/截/组) + 窗 (累/滚/指) + 核, 与 en_name 逐段对应
+  const char *e_name = nullptr; // 英文名 (OpTable 行名, 域_核_窗)
+  const char *c_name = nullptr; // 中文名: 域 (时/截/组) + 窗 (累/滚/指) + 核, 与 e_name 逐段对应
   int arity = 0;
-  factor::Win win = factor::Win::POINT;      // T 窗 (CS 组恒 POINT)
-  factor::Scope scope = factor::Scope::SELF; // A 域
-  factor::Kern kern = factor::Kern::MAP;     // 核类
-  const char *params = nullptr;              // OpTable 参数列: 本算子读取的 Param 字段名, 如 "d,k"
-  const char *operands = nullptr;            // 签名与值域 (LaTeX 模板, 占位符 ⟨d⟩⟨k⟩⟨k2⟩ 由 UI 换成本轮实际值)
-  const char *formula = nullptr;             // 算子定义 (LaTeX, OpTable 公式列, 符号规范见 OpTable.hpp 头注)
-  const char *note = nullptr;                // 用途与选型 (一句话: 量什么; 怎么用 / 配什么)
+  factor::T T = factor::T::POINT;        // T 窗 (CS 组恒 POINT)
+  factor::A A = factor::A::SELF;         // A 域
+  factor::Kern kern = factor::Kern::MAP; // 核类
+  const char *params = nullptr;          // OpTable 参数列: 本算子读取的 Param 字段名, 如 "d,k"
+  const char *operand = nullptr;         // 签名与值域 (LaTeX 模板, 占位符 ⟨d⟩⟨k⟩⟨k2⟩ 由 UI 换成本轮实际值)
+  const char *op = nullptr;              // 算子定义 (LaTeX; JSON / UI 键叫 operator)
+  const char *note = nullptr;            // 用途与选型 (一句话: 量什么; 怎么用 / 配什么)
   // 动态
   factor::Param param; // 本轮实际喂的参数 (d/k/k2 来自 Check.hpp 每算子默认表); 复位时就填, 不等跑到
   RowStatus status = RowStatus::Pending;

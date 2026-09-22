@@ -46,44 +46,44 @@ void for_each_param(const OperatorRow &r, Fn &&fn) {
   }
 }
 
-// Operands 列: OpTable 模板 (LaTeX) 里的占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ → 本轮实际参数值.
+// operand 列: OpTable 模板 (LaTeX) 里的占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ → 本轮实际参数值.
 // 参数列声明的字段必须都有占位符, 且替换后不得残留 (表与模板不齐 = OpTable 的 bug)
-std::string subst_operands(const OperatorRow &r) {
-  std::string s = r.operands;
+std::string subst_operand(const OperatorRow &r) {
+  std::string s = r.operand;
   for_each_param(r, [&](const char *name, double v) {
     char tok[16], val[32];
     std::snprintf(tok, sizeof(tok), "⟨%s⟩", name);
     std::snprintf(val, sizeof(val), "%g", v);
     size_t pos = s.find(tok);
-    assert(pos != std::string::npos && "OpTable operands 列缺该参数的占位符");
+    assert(pos != std::string::npos && "OpTable operand 列缺该参数的占位符");
     for (; pos != std::string::npos; pos = s.find(tok, pos))
       s.replace(pos, std::strlen(tok), val);
   });
-  assert(s.find("⟨") == std::string::npos && "operands 占位符未被参数列覆盖");
+  assert(s.find("⟨") == std::string::npos && "operand 占位符未被参数列覆盖");
   return s;
 }
 
-const char *win_name(factor::Win w) {
-  switch (w) {
-  case factor::Win::POINT:
+const char *T_name(factor::T t) {
+  switch (t) {
+  case factor::T::POINT:
     return "POINT";
-  case factor::Win::EXPAND:
+  case factor::T::EXPAND:
     return "EXPAND";
-  case factor::Win::ROLL:
+  case factor::T::ROLL:
     return "ROLL";
-  case factor::Win::EXPO:
+  case factor::T::EXPO:
     return "EXPO";
   }
   return "?";
 }
 
-const char *scope_name(factor::Scope s) {
-  switch (s) {
-  case factor::Scope::SELF:
+const char *A_name(factor::A a) {
+  switch (a) {
+  case factor::A::SELF:
     return "SELF";
-  case factor::Scope::ALL:
+  case factor::A::ALL:
     return "ALL";
-  case factor::Scope::GROUP:
+  case factor::A::GROUP:
     return "GROUP";
   }
   return "?";
@@ -240,9 +240,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "2. Operators:");
   ImGui::SameLine();
   ImGui::Text("%d (SELF %d / ALL %d / GROUP %d)", n,
-              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.scope == factor::Scope::SELF; }),
-              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.scope == factor::Scope::ALL; }),
-              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.scope == factor::Scope::GROUP; }));
+              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.A == factor::A::SELF; }),
+              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.A == factor::A::ALL; }),
+              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.A == factor::A::GROUP; }));
   if (st != OperatorsStatus::Idle) {
     ImGui::SameLine();
     ImGui::TextDisabled(from_json ? "(from operators.json: %d × %d)" : "(last run: %d × %d)", cur.times, cur.A);
@@ -270,14 +270,14 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate | ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 0))) {
     ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);                                       // 0
-    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);                                    // 1
-    ImGui::TableSetupColumn("CN", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);       // 2
+    ImGui::TableSetupColumn("e_name", ImGuiTableColumnFlags_WidthFixed);                                  // 1
+    ImGui::TableSetupColumn("c_name", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);   // 2
     ImGui::TableSetupColumn("Ar", ImGuiTableColumnFlags_WidthFixed);                                      // 3
     ImGui::TableSetupColumn("T", ImGuiTableColumnFlags_WidthFixed);                                       // 4
     ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthFixed);                                       // 5
     ImGui::TableSetupColumn("Kernel", ImGuiTableColumnFlags_WidthFixed);                                  // 6
-    ImGui::TableSetupColumn("Operands", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 7
-    ImGui::TableSetupColumn("Operator", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 8
+    ImGui::TableSetupColumn("operand", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 7
+    ImGui::TableSetupColumn("operator", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 8
     ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                               // 9
     ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 10
     ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 11
@@ -292,16 +292,16 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"#", "Name", "CN", "Ar", "T", "A", "Kernel", "Operands", "Operator",
+    const char *headers[kNumCols] = {"#", "e_name", "c_name", "Ar", "T", "A", "Kernel", "operand", "operator",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
         "全局 idx = OpTable 表序 = operators.json 的 idx (code 与 UI 统一按它):\n"
         "元数 → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL→GROUP → 核类 → 名字字母序\n"
         "默认排序即此列; 点表头按列排 (三态, 第三态回默认)",
-        "算子英文名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点",
-        "算子中文名, 与英文名逐段对应 (固定规则, 无冗余字):\n"
+        "英文名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点",
+        "中文名, 与 e_name 逐段对应 (固定规则, 无冗余字):\n"
         "域 时 (Ts) / 截 (Cs·ALL) / 组 (Cs·GROUP) + 窗 累 (Cum) / 滚 (Roll) / 指 (Ema), 逐点无窗字 + 核",
-        "元数: 输入序列数 0..3 (Operands 里分号前的部分); d / k 是参数不算元",
+        "元数: 输入序列数 0..3 (operand 里分号前的部分); d / k 是参数不算元",
         "T 窗 (时间支撑): POINT 当前点 / EXPAND 段内 expanding (段界 reset) / ROLL 最近 d 期 (跨段) / EXPO 指数加权全历史\n"
         "截面算子恒 POINT (只看当前时刻)",
         "A 域 (资产支撑): SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 由 y 或 z 给)",
@@ -360,27 +360,27 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
           cmp = a - b;
           break;
         case 1:
-          cmp = std::strcmp(ra.name, rb.name);
-          break;
-        case 2:
-          cmp = ra.arity - rb.arity;
+          cmp = std::strcmp(ra.e_name, rb.e_name);
           break;
         case 3:
-          cmp = (int)ra.win - (int)rb.win;
+          cmp = ra.arity - rb.arity;
           break;
         case 4:
-          cmp = (int)ra.scope - (int)rb.scope;
+          cmp = (int)ra.T - (int)rb.T;
           break;
         case 5:
+          cmp = (int)ra.A - (int)rb.A;
+          break;
+        case 6:
           cmp = (int)ra.kern - (int)rb.kern;
           break;
-        case 8:
+        case 9:
           cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
           break;
-        case 9:
+        case 10:
           cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.stream), sort_ms_chk(rb, rb.cpu_ms, rb.stream));
           break;
-        case 10:
+        case 11:
           cmp = cmp3(sort_ms_chk(ra, ra.gpu_ms, ra.gpu), sort_ms_chk(rb, rb.gpu_ms, rb.gpu));
           break;
         }
@@ -388,8 +388,17 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       });
     }
 
+    // operand 列: 模板占位符 → 本轮实际参数值. 只建一次 (默认参数是编译期常量, 不随轮变);
+    // string 常驻不再动, c_str 指针稳定, 供 Latex::Get 按指针缓存
+    static std::vector<std::string> s_operand;
+    if (s_operand.empty()) {
+      s_operand.reserve(s_rows.size());
+      for (const OperatorRow &r : s_rows)
+        s_operand.push_back(subst_operand(r));
+    }
+    assert(s_operand.size() == s_rows.size());
+
     // 全行提交 (~90 行, 不需要 clipper; 贴合帧也因此测量完整)
-    char args[96];
     for (int idx : order) {
       const OperatorRow &r = s_rows[idx];
       ImGui::TableNextRow();
@@ -400,30 +409,34 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
                                          ? ((r.stream.ok() && (r.gpu_ms < 0 || r.gpu.ok())) ? TaskStatus::Kind::Ready
                                                                                             : TaskStatus::Kind::Error)
                                          : (r.status == RowStatus::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted)),
-                         "%s", r.name);
+                         "%s", r.e_name);
       ImGui::TableSetColumnIndex(2);
-      ImGui::Text("%d", r.arity);
+      ImGui::TextUnformatted(r.c_name);
       ImGui::TableSetColumnIndex(3);
-      ImGui::TextUnformatted(win_name(r.win));
+      ImGui::Text("%d", r.arity);
       ImGui::TableSetColumnIndex(4);
-      ImGui::TextUnformatted(scope_name(r.scope));
+      ImGui::TextUnformatted(T_name(r.T));
       ImGui::TableSetColumnIndex(5);
-      ImGui::TextUnformatted(kern_name(r.kern));
+      ImGui::TextUnformatted(A_name(r.A));
       ImGui::TableSetColumnIndex(6);
-      format_args(r, args, sizeof(args));
-      ImGui::TextUnformatted(args);
+      ImGui::TextUnformatted(kern_name(r.kern));
       ImGui::TableSetColumnIndex(7);
-      if (tex::TeXRender *render = Latex::Get(r.formula, kFormulaTextSize))
+      if (tex::TeXRender *render = Latex::Get(s_operand[idx].c_str(), kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
       else
-        ImGui::TextUnformatted(r.formula); // 解析失败回退原文
+        ImGui::TextUnformatted(s_operand[idx].c_str()); // 解析失败回退原文
       ImGui::TableSetColumnIndex(8);
-      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据
+      if (tex::TeXRender *render = Latex::Get(r.op, kFormulaTextSize))
+        Latex::Draw(render, ImGui::GetTextLineHeight());
+      else
+        ImGui::TextUnformatted(r.op); // 解析失败回退原文
       ImGui::TableSetColumnIndex(9);
-      render_time_cell(r, r.cpu_ms, &r.stream, r.cpu_ms > r.stream_ms);
+      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据
       ImGui::TableSetColumnIndex(10);
-      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      render_time_cell(r, r.cpu_ms, &r.stream, r.cpu_ms > r.stream_ms);
       ImGui::TableSetColumnIndex(11);
+      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      ImGui::TableSetColumnIndex(12);
       if (r.note[0] == '\0')
         ImGui::TextDisabled("-");
       else
@@ -505,19 +518,20 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
     const size_t n = svc.rows.size();
     for (size_t i = 0; i < n; ++i) {
       const OperatorRow &r = svc.rows[i];
-      // 键序 = 表格列序
+      // 键序 = 表格列序 (operand 落原始模板, 占位符 ⟨d⟩⟨k⟩⟨k2⟩; 实际值在 params 键)
       nlohmann::ordered_json j;
       j["idx"] = i;
-      j["name"] = r.name;
+      j["e_name"] = r.e_name;
+      j["c_name"] = r.c_name;
       j["arity"] = r.arity;
-      j["T"] = win_name(r.win);
-      j["A"] = scope_name(r.scope);
+      j["T"] = T_name(r.T);
+      j["A"] = A_name(r.A);
       j["kernel"] = kern_name(r.kern);
-      j["inputs"] = inputs_of(r);
+      j["operand"] = r.operand;
       nlohmann::ordered_json params = nlohmann::ordered_json::object();
       for_each_param(r, [&](const char *name, double v) { params[name] = v; });
       j["params"] = params;
-      j["formula"] = r.formula;
+      j["operator"] = r.op;
       j["note"] = r.note;
       j["status"] = row_status_name(r.status);
       // 动态列只落跑完的行 (表格显示 "…" 的格子不落键)
@@ -584,12 +598,13 @@ bool load_diff(const nlohmann::json &j, factor::check::Diff &out) {
 }
 
 // 一行: 静态列逐个对当前 OpTable, 对上了才把动态列灌进 dst (dst 进来时是 rows[i] 的拷贝).
-// 参数比实际值不只比键名: kDParams / kKParams 改过 → 旧耗时作废. note 不比 (纯文字, 改错别字不该作废整表)
+// 参数比实际值不只比键名: kDParams / kKParams 改过 → 旧耗时作废. operand / operator 比 (语义列, 改了
+// 即算子含义变); c_name / note 不比 (纯文字, 改错别字不该作废整表)
 bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   if (!j.is_object())
     return false;
-  if (!str_is(j, "name", dst.name) || !str_is(j, "T", win_name(dst.win)) || !str_is(j, "A", scope_name(dst.scope)) ||
-      !str_is(j, "kernel", kern_name(dst.kern)) || !str_is(j, "inputs", inputs_of(dst)) || !str_is(j, "formula", dst.formula))
+  if (!str_is(j, "e_name", dst.e_name) || !str_is(j, "T", T_name(dst.T)) || !str_is(j, "A", A_name(dst.A)) ||
+      !str_is(j, "kernel", kern_name(dst.kern)) || !str_is(j, "operand", dst.operand) || !str_is(j, "operator", dst.op))
     return false;
   int arity = -1;
   if (!get_int(j, "arity", arity) || arity != dst.arity)

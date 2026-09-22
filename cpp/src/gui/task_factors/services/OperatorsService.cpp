@@ -30,16 +30,16 @@ double ms_since(Clock::time_point t0) {
 // 本轮实际参数: 参数列含 d 才吃默认窗长表 (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams
 factor::Param param_of(const OperatorRow &row) {
   factor::Param p;
-  p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.name) : 1;
-  factor::check::set_k(row.name, p);
+  p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.e_name) : 1;
+  factor::check::set_k(row.e_name, p);
   return p;
 }
 
 // 一个算子: 造数 (PLAIN, 配方按算子, 与 op_check 同 seed 同张量) → cpu / stream / gpu 各计时 → 对拍
-template <class S, class C, int AR, factor::Win W, bool IS_CS>
+template <class S, class C, int AR, factor::T W, bool IS_CS>
 void run_op(const OperatorsRequest &rq, OperatorRow &row) {
   using namespace factor::check;
-  const std::string nm = row.name;
+  const std::string nm = row.e_name;
   const Recipe rc = recipe_of(nm);
   std::mt19937 rng(rq.seed);
   Data d;
@@ -68,7 +68,7 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
     g.resize(static_cast<size_t>(d.T) * d.A);
     auto call = IS_CS ? factor::gpu::run_cs : factor::gpu::run_ts;
     double kms = -1; // 纯 kernel (cudaEvent): malloc / H2D / D2H 是对拍接口的成本, 不算算子
-    call(row.name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
+    call(row.e_name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
          pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), d.T, d.A, p, &kms);
     row.gpu_ms = kms;
     row.gpu = compare(ref, g, tol_of(nm, true, Profile::PLAIN));
@@ -84,12 +84,12 @@ OperatorsService::OperatorsService() {
   // 行序 = OpTable 表序 = 全局 idx (UI 默认序 / operators.json 的 idx 都按它);
   // 静态列直接抄 OpTable 三维分类列, 跑手按 A 域 token 粘贴选后端命名空间
   // (SELF → ts, ALL/GROUP → cs; 缺任一后端同名 struct → 此处编译错)
-#define RUN_SELF(Name, ar, win) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::Win::win, false>)
-#define RUN_ALL(Name, ar, win) (&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::Win::win, true>)
+#define RUN_SELF(Name, ar, t) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>)
+#define RUN_ALL(Name, ar, t) (&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>)
 #define RUN_GROUP RUN_ALL
-#define ROW(Name, cn, ar, win, scope, kern, prm, opnd, tex, note)                                                     \
-  rows.push_back({#Name, cn, ar, factor::Win::win, factor::Scope::scope, factor::Kern::kern, prm, opnd, tex, note}); \
-  runners_.push_back(RUN_##scope(Name, ar, win));
+#define ROW(Name, c_name, ar, t, a, kern, prm, operand, op, note)                                              \
+  rows.push_back({#Name, c_name, ar, factor::T::t, factor::A::a, factor::Kern::kern, prm, operand, op, note}); \
+  runners_.push_back(RUN_##a(Name, ar, t));
   OP_ALL(ROW)
 #undef ROW
 #undef RUN_GROUP

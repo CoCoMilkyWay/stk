@@ -17,8 +17,9 @@
 //
 //   行格式统一, 三个分类列 = 三个正交维度 (语义与类型约束见 Contract.hpp【分类】):
 //
-//   X(Name, "中文名", 元数, T窗, A域, 核类, "参数", R"tex(操作数)tex", R"tex(公式)tex", "备注")
-//     中文名 与英文名逐段对应的固定规则 (无冗余字): 域 时(Ts) / 截(Cs·ALL) / 组(Cs·GROUP)
+//   X(e_name, "c_name", 元数, T, A, 核类, "参数", R"tex(operand)tex", R"tex(operator)tex", "备注")
+//   (列名 = OperatorRow 字段名 = operators.json 键名 = GUI 表头, 全库统一叫法)
+//     c_name 与 e_name 逐段对应的固定规则 (无冗余字): 域 时(Ts) / 截(Cs·ALL) / 组(Cs·GROUP)
 //            + 窗 累(Cum) / 滚(Roll) / 指(Ema) (逐点无窗字) + 核 (标准术语: 均值 / 方差 / 秩 / 贝塔 …)
 //     元数   输入序列数 0..3 (窗长 d / 阈值 k 不算元)
 //     T窗    POINT  当前点 (无时间状态)
@@ -31,9 +32,9 @@
 //
 //   参数列 = 本算子读取的 Param 字段 (Contract.hpp struct Param), 逗号分隔, 空 = 无参数:
 //     d   窗长 / 滞后 (期 = 分钟)                         k2  第二阈值 (仅 TodMask 上界)
-//     k   阈值 / 桶数 / EMA 系数 / 分位 (含义见各行公式)
+//     k   阈值 / 桶数 / EMA 系数 / 分位 (含义见各行 operand / operator)
 //
-//   操作数列 = 签名与值域 (LaTeX, 单行): 自变量在前, 参数在后, 顺序恒 x, y, z → d → k → k2, 每项都写值域:
+//   operand 列 = 签名与值域 (LaTeX, 单行): 自变量在前, 参数在后, 顺序恒 x, y, z → d → k → k2, 每项都写值域:
 //     值域符号  \mathbb{R} 实数 / \mathbb{R}_{\ge 0} 非负 / \mathbb{R}_{>0} 正 / \mathbb{Z}_{+} 正整数 /
 //               (0,1) 等区间 / \{0..1023\} 整数段 (组 id, 上限 = kMaxGroup)
 //     参数写成 名{=}⟨名⟩ \in 值域: ⟨d⟩ ⟨k⟩ ⟨k2⟩ 是占位符, GUI 渲染前替换成本轮实际值
@@ -42,16 +43,16 @@
 //   备注列 = 用途与选型 (给 agent 检索的一句话, 统一 "量什么; 怎么用 / 配什么"):
 //     不写实现 / 近似 / 退化数值细节 (那些在 Contract.hpp 与 operator.md)
 //
-//   【公式写法】一律单行 (操作数列同; GUI 表格内联渲染, 行高须齐): 不用 \frac (除法写 A / B 加括号)、不用大号
+//   【operator 写法】一律单行 (operand 列同; GUI 表格内联渲染, 行高须齐): 不用 \frac (除法写 X / Y 加括号)、不用大号
 //   \sum \prod \sqrt \lfloor (求和写 \Sigma_下标, 乘积 \Pi_下标, 开方写 ^{1/2}, 取整写 \mathrm{floor}),
 //   归约算子一律 \mathrm{名}_下标 (\mathrm 不是 mathop, 下标必落右下, 不会顶到符号正下方把行撑高).
 //
-//   【公式符号】继承 features/FeaturesDefine.hpp 的规范 (t = 分钟, D = 交易日, 1[·] 指示),
+//   【operator 符号】继承 features/FeaturesDefine.hpp 的规范 (t = 分钟, D = 交易日, 1[·] 指示),
 //   算子库专用补充 (GUI Factors→Operators 页按 LaTeX 渲染):
 //     x, y, z     输入序列, 按元数取前 1..3 个; 每格 Val{v, m}, 所有 ∑ / 计数 / 极值只计有效 (m = 1) 样本
 //     a, b        资产 (截面轴). TS 只看本资产, 省略 a; CS 只看同一 t 的截面, 写 x_a 省略 t
 //     t_D         段内分钟位置 = t − 当日首分钟 (0..kSegLen−1)
-//     W_t         TS 窗 (由"窗"列决定, 公式里统一写 W_t):
+//     W_t         TS 窗 (由 T 列决定, operator 里统一写 W_t):
 //                   EXPAND  W_t = {s : D(s) = D(t), s ≤ t}   ROLL  W_t = {s : t−d < s ≤ t}
 //     Σ_{W_t}     窗内求和 ∑_{s∈W_t} (下标只写窗 / 组, 求和变量恒是 s 或 b); Π_{W_t} 同理为乘积
 //     n           W_t 内有效样本数 (二元: x, y 同格同时有效); N  截面有效资产数
@@ -80,7 +81,7 @@
 //     TsYoY    = TsDelayRoll + TsDiv, 且 d 需一年分钟数, 超出块 carry 上限
 //
 //   加算子 = 本表一行 + TS(或 CS) 的 Stream / Cpu / Gpu 各一个同名 struct; 缺任一侧 → op_check 编译错;
-//   流式 TS struct::kWin 与本表 T 窗列不符 → op_check static_assert 错 (A 域/核类是纯语义列, 无实现侧载荷).
+//   流式 TS struct::kT 与本表 T 窗列不符 → op_check static_assert 错 (A 域/核类是纯语义列, 无实现侧载荷).
 // =============================================================================
 
 // ---- 0 元 × SELF (1) ----

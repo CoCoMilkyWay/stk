@@ -31,8 +31,8 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui);
 void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc);
 
 // 载入落盘快照 (Save 的逆, 进页时由 TaskFactors 调一次): 只吃整轮跑完 (status/done/total 齐备, 逐行
-// status = done) 且静态列逐行对得上当前 OpTable (name/元数/三维分类/输入/公式/参数实际值; note 不比)
-// 的文件, 命中则经 AdoptSnapshot 摆成 Done 并把页面张量参数跟成快照的形状 —— 进页不用算.
+// status = done) 且静态列逐行对得上当前 OpTable (e_name/元数/三维分类/operand/operator/参数实际值;
+// c_name 与 note 不比) 的文件, 命中则经 AdoptSnapshot 摆成 Done 并把页面张量参数跟成快照的形状 —— 进页不用算.
 // 返回 false = 没文件 / 解析不了 / 校验不过 (后两者已把文件删掉), 由调用方起算一轮.
 bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc, OperatorsUIState &ui);
 

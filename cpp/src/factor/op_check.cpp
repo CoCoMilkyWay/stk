@@ -8,7 +8,7 @@
 //   分派表由 OpTable.hpp 展开: 表里有名字而某个后端没有同名 struct → 此处编译错.
 //
 //   比较口径 (契约): 掩码必须**逐位相等**; 有效位上 |Δ| ≤ atol + rtol·max(|a|,|b|).
-//   属性列也对拍: 流式 TS struct::kWin 与 OpTable 的 T 窗列不符 → static_assert 错.
+//   属性列也对拍: 流式 TS struct::kT 与 OpTable 的 T 窗列不符 → static_assert 错.
 //   造数 / 配方 / 容差 / 比较 / 驱动在 factor/Check.hpp (与 GUI Factors→Operators 页共用同一口径);
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
 // =============================================================================
@@ -37,7 +37,6 @@ namespace {
 using namespace factor::check;
 using factor::kSegLen;
 using factor::Param;
-using factor::Win;
 
 // ---- 汇总 ----
 struct Report {
@@ -61,7 +60,7 @@ void emit(Report &rep, const char *name, const Param &p, const char *prof, const
 
 // 一个算子的全部用例: profile × d 扫描
 //   d 扫 {1, 5, 20, 240, 300}: 240 = 恰一段 (ROLL 窗界与段界重合), 300 > 段 (窗跨段, GPU 块界不对齐段界)
-template <class S, class C, int AR, Win W, bool IS_CS>
+template <class S, class C, int AR, factor::T W, bool IS_CS>
 void check(const char *name, const char *params, int T, int A, unsigned seed, Report &rep) {
   const std::string nm = name;
   const Recipe rc = recipe_of(nm);
@@ -146,16 +145,17 @@ int main(int argc, char **argv) {
               factor::gpu::available() ? "on" : "off (未编译 CUDA 后端)");
 
   // 分派: 表里每一行展开成一个用例组, 按 A 域列 token 粘贴选后端命名空间 (SELF → ts, ALL/GROUP → cs);
-  // 缺任一后端的同名 struct → 编译错; 流式 TS kWin 与表的 T 窗列不符 → 编译错
-#define CK_SELF(Name, ar, win, prm)                                                             \
-  static_assert(factor::ts::Name::kWin == Win::win, #Name ": 流式 kWin 与 OpTable T 窗列不符"); \
+  // 缺任一后端的同名 struct → 编译错; 流式 TS kT 与表的 T 窗列不符 → 编译错.
+  // 枚举 factor::T / factor::A 必须全限定: 本函数局部 int T / int A 遮蔽了不限定名
+#define CK_SELF(Name, ar, t, prm)                                                               \
+  static_assert(factor::ts::Name::kT == factor::T::t, #Name ": 流式 kT 与 OpTable T 窗列不符"); \
   if (only.empty() || only == #Name)                                                            \
-    check<factor::ts::Name, factor::cpu::ts::Name, ar, Win::win, false>(#Name, prm, T, A, seed, rep);
-#define CK_ALL(Name, ar, win, prm)   \
+    check<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>(#Name, prm, T, A, seed, rep);
+#define CK_ALL(Name, ar, t, prm)     \
   if (only.empty() || only == #Name) \
-    check<factor::cs::Name, factor::cpu::cs::Name, ar, Win::win, true>(#Name, prm, T, A, seed, rep);
+    check<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>(#Name, prm, T, A, seed, rep);
 #define CK_GROUP CK_ALL
-#define CK(Name, cn, ar, win, scope, kern, prm, opnd, tex, note) CK_##scope(Name, ar, win, prm)
+#define CK(Name, c_name, ar, t, a, kern, prm, operand, op, note) CK_##a(Name, ar, t, prm)
   OP_ALL(CK)
 #undef CK
 #undef CK_GROUP

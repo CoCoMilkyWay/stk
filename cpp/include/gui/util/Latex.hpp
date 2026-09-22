@@ -1,5 +1,5 @@
-// LaTeX 公式渲染 (MicroTeX → ImGui drawlist) 的公共件: 特征表 (Name CN 悬停) 与 Factors→Operators 表 (Formula 列) 共用.
-// 解析结果按 (公式串指针, 字号) 缓存, 公式串必须是静态存活的字面量 (字段表 / OpTable 都是).
+// LaTeX 公式渲染 (MicroTeX → ImGui drawlist) 的公共件: 特征表 (Name CN 悬停) 与 Factors→Operators 表 (Operands / Operator 列) 共用.
+// 解析结果按 (公式串指针, 字号) 缓存, 公式串必须常驻存活且指针稳定 (字段表 / OpTable 是字面量; Operands 替换串是常驻 vector<string>).
 #pragma once
 
 namespace tex {

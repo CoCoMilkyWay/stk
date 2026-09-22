@@ -4,8 +4,8 @@
 // 因子算子语义契约 (三后端唯一共享件之一, 另一件是 factor/OpTable.hpp)
 // =============================================================================
 //   【分类】算子 = 核作用在支撑集 S(t,a) 上, 三个正交维度各取一值 (每维穷尽互斥):
-//     T 窗 (Win)    输出在 t 依赖的时间支撑: POINT 当前点 / EXPAND 段内 expanding / ROLL 最近 d 期 / EXPO 指数加权全历史
-//     A 域 (Scope)  资产支撑: SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 列给组)
+//     T 窗 (enum T)    输出在 t 依赖的时间支撑: POINT 当前点 / EXPAND 段内 expanding / ROLL 最近 d 期 / EXPO 指数加权全历史
+//     A 域 (enum A)    资产支撑: SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 列给组)
 //     核类 (Kern)   统计核的代数类: MAP 逐元素变换 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) /
 //                   EXTREME 极值及 arg 族 (半群不可逆) / ORDER 序统计 / RECUR 递推
 //   类型约束 (非归约核不消费集合, 部分格子空): MAP ⇒ POINT×SELF; SHIFT ⇒ SELF 纯滞后 (不看整窗);
@@ -19,7 +19,7 @@
 //     factor::cpu::ts::<Name>  factor::cpu::cs::<Name>  挖掘 CPU (整张量向量化批算)     TS/Cpu.hpp     CS/Cpu.hpp
 //     factor::gpu::ts::<Name>  factor::gpu::cs::<Name>  挖掘 GPU (CUDA, 向量化)         TS/Gpu.cuh     CS/Gpu.cuh
 //   缺任一侧 → op_check 编译错 (分派由 OP_ALL 宏展开).
-//   OpTable 的"T 窗"列是**载荷**: 流式 TS struct 带 kWin, op_check static_assert 对表;
+//   OpTable 的"T 窗"列是**载荷**: 流式 TS struct 带 kT, op_check static_assert 对表;
 //   A 域 / 核类是纯语义列, 实现侧不带载荷 (后端怎么算不受表约束).
 //
 //   【数据布局】
@@ -68,14 +68,14 @@ inline constexpr int kSegLen = 240;     // 段 (交易日) 的分钟数
 inline constexpr int kBuckets = 256;    // 序统计近似的直方图桶数
 inline constexpr int kMaxGroup = 1024;  // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
 
-// ---- 三维分类 (OpTable 三列; 语义见文件头【分类】; 流式 TS struct::kWin 对表) ----
-enum class Win { POINT,
-                 EXPAND,
-                 ROLL,
-                 EXPO };
-enum class Scope { SELF,
-                   ALL,
-                   GROUP };
+// ---- 三维分类 (OpTable 三列; 列名 = 枚举名 = 行字段名, 全库统一叫 T / A; 流式 TS struct::kT 对表) ----
+enum class T { POINT,
+               EXPAND,
+               ROLL,
+               EXPO };
+enum class A { SELF,
+               ALL,
+               GROUP };
 enum class Kern { MAP,
                   SHIFT,
                   MOMENT,

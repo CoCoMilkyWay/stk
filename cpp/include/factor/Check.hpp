@@ -103,9 +103,9 @@ inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
     }
 }
 
-// 输入配方: 默认全 NORM, 只列出需要特殊数据的算子
+// 输入配方: 默认全 NORM, 只列出需要特殊数据的算子 (e_name 索引, 与 OpTable 行名一致)
 struct Recipe {
-  const char *name;
+  const char *e_name;
   Gen x, y, z;
 };
 inline constexpr Recipe kRecipes[] = {
@@ -121,7 +121,7 @@ inline constexpr Recipe kRecipes[] = {
 };
 inline Recipe recipe_of(const std::string &name) {
   for (const Recipe &r : kRecipes)
-    if (name == r.name)
+    if (name == r.e_name)
       return r;
   return {"", Gen::NORM, Gen::NORM, Gen::NORM};
 }
@@ -129,7 +129,7 @@ inline Recipe recipe_of(const std::string &name) {
 // 窗长参数: 每算子一个"典型用法"的默认 d (期 = 分钟), 给 GUI Operators 表用;
 // op_check 不吃这份 (它全扫 d = {1, 5, 20, 240, 300} 打边界)
 struct DParam {
-  const char *name;
+  const char *e_name;
   int d;
 };
 inline constexpr DParam kDParams[] = {
@@ -150,14 +150,14 @@ inline constexpr DParam kDParams[] = {
 };
 inline int default_d(const std::string &name) {
   for (const DParam &q : kDParams)
-    if (name == q.name)
+    if (name == q.e_name)
       return q.d;
   return 30; // 其余 ROLL 族 (均值/和/斜率/计数等): 半小时
 }
 
 // 阈值型参数: 这里只定 k / k2
 struct KParam {
-  const char *name;
+  const char *e_name;
   float k, k2;
 };
 inline constexpr KParam kKParams[] = {
@@ -173,7 +173,7 @@ inline constexpr KParam kKParams[] = {
 inline void set_k(const std::string &name, Param &p) {
   p.k = 1.f, p.k2 = 0.f;
   for (const KParam &q : kKParams)
-    if (name == q.name)
+    if (name == q.e_name)
       p.k = q.k, p.k2 = q.k2;
 }
 
@@ -238,10 +238,10 @@ void run_cpu(const Data &d, const Param &p, int ar, Plane &o) {
 }
 
 // TS 流式: 逐资产建一个 kernel 沿 t 推进 (与实盘同路: EXPAND 推满 kSegLen 自动归零, 不手动 reset)
-template <class S, int AR, Win W>
+template <class S, int AR, T W>
 void run_stream_ts(const Data &d, const Param &p, Plane &o) {
   o.resize(static_cast<size_t>(d.T) * d.A);
-  if constexpr (W == Win::POINT) {
+  if constexpr (W == T::POINT) {
     for (int t = 0; t < d.T; ++t)
       for (int a = 0; a < d.A; ++a) {
         const size_t i = static_cast<size_t>(t) * d.A + a;
