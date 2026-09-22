@@ -1,5 +1,7 @@
 // Task Factors - 因子算子库 (factor/) 的 GUI 入口. 首个子页 Operators: OpTable 全部算子对拍 + 计时.
-// 不依赖特征库 / 数据库扫描 (合成张量), 故任何时候可进; worker 首次进页自动起跑, 之后按 Run 重跑.
+// 不依赖特征库 / 数据库扫描 (合成张量), 故任何时候可进.
+// 首次进页默认不算: 先载入本地 operators.json 显示 (校验不过则删文件); 只有手动 Run —— 或本地无有效
+// 快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
@@ -22,7 +24,7 @@ enum TabIdx {
 struct TaskFactorsState {
   std::unique_ptr<Factors::OperatorsService> operators_service;
   Factors::OperatorsUIState operators_ui;
-  bool operators_started = false; // 首次 Draw 自动 Request 一次
+  bool operators_started = false; // 首次 Draw 载入本地 json, 没有才 Request 一次
   // 一轮结束检测 (Running → Done / Cancelled 那一帧把算子表落地 operators.json)
   Factors::OperatorsStatus prev_operators_status = Factors::OperatorsStatus::Idle;
 };
@@ -74,15 +76,18 @@ TaskHandle CreateFactorsTask() {
     return {};
   };
 
-  handle.Draw = [state](SharedData & /*data*/, int idx) {
+  handle.Draw = [state](SharedData &data, int idx) {
     assert(idx >= 0 && idx < TAB_COUNT);
     if (!state->operators_service)
       state->operators_service = std::make_unique<Factors::OperatorsService>();
     auto &svc = *state->operators_service;
 
+    // 默认不自动跑: 先吃本地 operators.json (校验不过它自己会删掉文件), 没有有效快照才起算一轮.
+    // 载入的一轮状态直接是 Done 且不经 Running, Update 的落盘判据 (prev == Running) 因此不会触发
     if (!state->operators_started) {
-      svc.Request(state->operators_ui.req);
       state->operators_started = true;
+      if (!Factors::LoadOperatorTableJson(data.config.factor_dir, svc, state->operators_ui))
+        svc.Request(state->operators_ui.req);
     }
 
     ImGui::BeginChild("FactorsTab", ImVec2(0, 0), false);

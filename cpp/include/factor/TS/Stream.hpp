@@ -577,7 +577,8 @@ private:
 };
 
 // =========================== 实例化: 核 × 窗 ===========================
-//   Ts<核>Cum / Ts<核>Roll = 同一个核挂两个窗; 公式只有核那一份. 顺序与 OpTable 的 OP_TS_WIN 一致.
+//   Ts<核>Cum / Ts<核>Roll = 同一个核挂两个窗; 公式只有核那一份. 此处按核分组, 同核不同窗相邻
+//   (全局 idx 序只归 OpTable 管, 实现文件不跟着排).
 //   Delay/Delta 要看 d 期之前那一格 → 窗长 d+1
 
 using TsDelayRoll = Roll<core::Oldest, 1>;

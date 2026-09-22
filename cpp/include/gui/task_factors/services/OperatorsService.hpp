@@ -6,6 +6,10 @@
 //   - worker:   取最新请求 → 全行复位 Pending → 逐算子 Running → 算 → 持锁写回 Done, epoch++
 //   - UI:       持 mutex 读 rows 快照; 进度走原子, 免锁
 //
+// 默认不自动跑: 进页先由 TabOperators 的 LoadOperatorTableJson 吃本地 operators.json (校验静态列
+// 与整轮完整性, 不过就删文件), 命中的话经 AdoptSnapshot 直接摆成 Done, worker 根本不起; 只有手动
+// Run (或本地无有效快照) 才真算, 一轮结束由 TaskFactors 落盘.
+//
 // 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp): PLAIN profile, 配方按算子,
 // d/k 按每算子默认表 (kDParams / kKParams), 容差 tol_of(name, gpu, PLAIN). 差别只在
 // op_check 全扫 profile × d, 这里每算子只跑一组默认参数.
@@ -76,6 +80,9 @@ public:
   void Request(const OperatorsRequest &req);
   void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
   void Stop(); // join (幂等)
+  // 直接吃一份落盘快照当"已跑完"(进页载入 operators.json 用, 不起 worker, 不算不落盘):
+  // snap 由调用方从 rows 拷出后只填动态列 (静态列原样), 校验过了才进来; 仅允许 worker 未起时调
+  void AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed);
 
   // 进度 (原子, 免锁)
   OperatorsStatus status() const { return status_.load(std::memory_order_acquire); }
@@ -88,6 +95,7 @@ public:
   std::mutex mutex;
   std::vector<OperatorRow> rows;
   OperatorsRequest current;
+  bool from_json = false; // 表内容来自本地 operators.json 载入 (非本进程算的), UI 标注用
 
 private:
   // 每行一个跑手: 由 OpTable 宏实例化的模板, 只算动态列 (静态列 worker 不碰)

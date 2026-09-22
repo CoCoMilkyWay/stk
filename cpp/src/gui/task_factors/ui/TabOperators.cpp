@@ -221,10 +221,12 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   // 短锁拷快照 (~90 行小结构, worker 只在行末短锁写)
   static std::vector<OperatorRow> s_rows;
   OperatorsRequest cur;
+  bool from_json = false;
   {
     std::lock_guard<std::mutex> lock(svc.mutex);
     s_rows = svc.rows;
     cur = svc.current;
+    from_json = svc.from_json;
   }
   const int n = static_cast<int>(s_rows.size());
 
@@ -236,7 +238,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
               (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.scope == factor::Scope::GROUP; }));
   if (st != OperatorsStatus::Idle) {
     ImGui::SameLine();
-    ImGui::TextDisabled("(last run: %d × %d)", cur.times, cur.A);
+    ImGui::TextDisabled(from_json ? "(from operators.json: %d × %d)" : "(last run: %d × %d)", cur.times, cur.A);
+    if (from_json && ImGui::IsItemHovered())
+      ImGui::SetTooltip("表内容是上次跑完落盘的 operators.json (静态列已逐行校验过), 本进程没算;\n"
+                        "按 Run 才重算, 跑完覆盖该文件");
   }
 
   // 列宽贴合: 发布代变了 (限速 0.5s) → 连发 2 帧 AutoAll (全行每帧都提交, 测量完整, 不必像 TabFeature 那样等 clipper)
@@ -251,23 +256,24 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
-  constexpr int kNumCols = 11;
+  constexpr int kNumCols = 12;
   if (ImGui::BeginTable("OperatorTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate | ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 0))) {
-    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);                                   // 0
-    ImGui::TableSetupColumn("Ar", ImGuiTableColumnFlags_WidthFixed);                                     // 1
-    ImGui::TableSetupColumn("Win", ImGuiTableColumnFlags_WidthFixed);                                    // 2
-    ImGui::TableSetupColumn("Scope", ImGuiTableColumnFlags_WidthFixed);                                  // 3
-    ImGui::TableSetupColumn("Kern", ImGuiTableColumnFlags_WidthFixed);                                   // 4
-    ImGui::TableSetupColumn("Args", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 5
-    ImGui::TableSetupColumn("Formula", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 6
-    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                              // 7
-    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 8
-    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 9
-    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 10
+    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);                                      // 0
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);                                   // 1
+    ImGui::TableSetupColumn("Ar", ImGuiTableColumnFlags_WidthFixed);                                     // 2
+    ImGui::TableSetupColumn("Win", ImGuiTableColumnFlags_WidthFixed);                                    // 3
+    ImGui::TableSetupColumn("Scope", ImGuiTableColumnFlags_WidthFixed);                                  // 4
+    ImGui::TableSetupColumn("Kern", ImGuiTableColumnFlags_WidthFixed);                                   // 5
+    ImGui::TableSetupColumn("Args", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 6
+    ImGui::TableSetupColumn("Formula", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 7
+    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                              // 8
+    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 9
+    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 10
+    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 11
     ImGui::TableSetupScrollFreeze(0, 1);
 
     if (ui.fit_frames > 0) {
@@ -278,11 +284,13 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"Name", "Ar", "Win", "Scope", "Kern", "Args", "Formula",
+    const char *headers[kNumCols] = {"#", "Name", "Ar", "Win", "Scope", "Kern", "Args", "Formula",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
-        "算子名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点.\n"
-        "默认排序: 元数 → T 窗 → A 域 → OpTable 表序; 点表头按列排 (三态)",
+        "全局 idx = OpTable 表序 = operators.json 的 idx (code 与 UI 统一按它):\n"
+        "元数 → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL→GROUP → 核类 → 名字字母序\n"
+        "默认排序即此列; 点表头按列排 (三态, 第三态回默认)",
+        "算子名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点",
         "元数: 输入序列数 0..3 (Args 里分号前的部分); d / k 是参数不算元",
         "T 窗 (时间支撑): POINT 当前点 / EXPAND 段内 expanding (段界 reset) / ROLL 最近 d 期 (跨段) / EXPO 指数加权全历史\n"
         "截面算子恒 POINT (只看当前时刻)",
@@ -328,17 +336,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       }
       specs->SpecsDirty = false;
     }
-    // 默认序: 元数 → T 窗 → A 域 (SELF 先) → OpTable 表序 (下标); 用户选列时在此序上 stable_sort
+    // 默认序 = 全局 idx (行序即 OpTable 表序, 不另排); 用户选列时在此序上 stable_sort
     std::vector<int> order(n);
     std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-      const OperatorRow &ra = s_rows[a], &rb = s_rows[b];
-      if (ra.arity != rb.arity)
-        return ra.arity < rb.arity;
-      if (ra.win != rb.win)
-        return (int)ra.win < (int)rb.win;
-      return (int)ra.scope < (int)rb.scope;
-    });
     if (ui.sort_column >= 0) {
       auto cmp3 = [](double x, double y) { return x < y ? -1 : (x > y ? 1 : 0); };
       std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
@@ -346,27 +346,30 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         int cmp = 0;
         switch (ui.sort_column) {
         case 0:
-          cmp = std::strcmp(ra.name, rb.name);
+          cmp = a - b;
           break;
         case 1:
-          cmp = ra.arity - rb.arity;
+          cmp = std::strcmp(ra.name, rb.name);
           break;
         case 2:
-          cmp = (int)ra.win - (int)rb.win;
+          cmp = ra.arity - rb.arity;
           break;
         case 3:
-          cmp = (int)ra.scope - (int)rb.scope;
+          cmp = (int)ra.win - (int)rb.win;
           break;
         case 4:
+          cmp = (int)ra.scope - (int)rb.scope;
+          break;
+        case 5:
           cmp = (int)ra.kern - (int)rb.kern;
           break;
-        case 7:
+        case 8:
           cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
           break;
-        case 8:
+        case 9:
           cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.stream), sort_ms_chk(rb, rb.cpu_ms, rb.stream));
           break;
-        case 9:
+        case 10:
           cmp = cmp3(sort_ms_chk(ra, ra.gpu_ms, ra.gpu), sort_ms_chk(rb, rb.gpu_ms, rb.gpu));
           break;
         }
@@ -380,34 +383,36 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       const OperatorRow &r = s_rows[idx];
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
+      ImGui::TextDisabled("%d", idx); // 全局 idx = 行在 OpTable 的表序 = operators.json 的 idx
+      ImGui::TableSetColumnIndex(1);
       ImGui::TextColored(StatusColor(r.status == RowStatus::Done
                                          ? ((r.stream.ok() && (r.gpu_ms < 0 || r.gpu.ok())) ? TaskStatus::Kind::Ready
                                                                                             : TaskStatus::Kind::Error)
                                          : (r.status == RowStatus::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted)),
                          "%s", r.name);
-      ImGui::TableSetColumnIndex(1);
-      ImGui::Text("%d", r.arity);
       ImGui::TableSetColumnIndex(2);
-      ImGui::TextUnformatted(win_name(r.win));
+      ImGui::Text("%d", r.arity);
       ImGui::TableSetColumnIndex(3);
-      ImGui::TextUnformatted(scope_name(r.scope));
+      ImGui::TextUnformatted(win_name(r.win));
       ImGui::TableSetColumnIndex(4);
-      ImGui::TextUnformatted(kern_name(r.kern));
+      ImGui::TextUnformatted(scope_name(r.scope));
       ImGui::TableSetColumnIndex(5);
+      ImGui::TextUnformatted(kern_name(r.kern));
+      ImGui::TableSetColumnIndex(6);
       format_args(r, args, sizeof(args));
       ImGui::TextUnformatted(args);
-      ImGui::TableSetColumnIndex(6);
+      ImGui::TableSetColumnIndex(7);
       if (tex::TeXRender *render = Latex::Get(r.formula, kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
       else
         ImGui::TextUnformatted(r.formula); // 解析失败回退原文
-      ImGui::TableSetColumnIndex(7);
-      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据
       ImGui::TableSetColumnIndex(8);
-      render_time_cell(r, r.cpu_ms, &r.stream, r.cpu_ms > r.stream_ms);
+      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据
       ImGui::TableSetColumnIndex(9);
-      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      render_time_cell(r, r.cpu_ms, &r.stream, r.cpu_ms > r.stream_ms);
       ImGui::TableSetColumnIndex(10);
+      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      ImGui::TableSetColumnIndex(11);
       if (r.note[0] == '\0')
         ImGui::TextDisabled("-");
       else
@@ -524,6 +529,135 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
     assert(file.good() && "operators.json: 写入失败");
   }
   std::filesystem::rename(tmp, path); // 原子替换: 崩在中途不留半截文件 (同 features.json)
+}
+
+// ============================================================================
+// 算子表载入 JSON (Save 的逆): 只吃整轮跑完 + 静态列对得上当前 OpTable 的快照, 别的一概判废
+// ============================================================================
+
+namespace {
+
+// 文件是上次运行留下的 (可能来自旧代码 / 半截崩的), 故 parse 关异常, 取值全走 find + 类型判定:
+// 任一环节不合就整份判废 (调用方删了重算), 不做部分接受
+bool get_num(const nlohmann::json &j, const char *key, double &out) {
+  const auto it = j.find(key);
+  if (it == j.end() || !it->is_number())
+    return false;
+  out = it->get<double>();
+  return true;
+}
+
+bool get_int(const nlohmann::json &j, const char *key, int &out) {
+  const auto it = j.find(key);
+  if (it == j.end() || !it->is_number_integer())
+    return false;
+  out = it->get<int>();
+  return true;
+}
+
+bool str_is(const nlohmann::json &j, const char *key, const char *want) {
+  const auto it = j.find(key);
+  return it != j.end() && it->is_string() && it->get_ref<const std::string &>() == want;
+}
+
+bool load_diff(const nlohmann::json &j, factor::check::Diff &out) {
+  if (!j.is_object())
+    return false;
+  factor::check::Diff d;
+  if (!get_int(j, "mask_bad", d.mask_bad) || !get_int(j, "val_bad", d.val_bad) || !get_int(j, "compared", d.compared) ||
+      !get_num(j, "worst", d.worst))
+    return false;
+  d.worst_at = -1; // 落盘不记下标 (只 op_check 的 CLI 用), ok() 由 mask_bad / val_bad 现推
+  out = d;
+  return true;
+}
+
+// 一行: 静态列逐个对当前 OpTable, 对上了才把动态列灌进 dst (dst 进来时是 rows[i] 的拷贝).
+// 参数比实际值不只比键名: kDParams / kKParams 改过 → 旧耗时作废. note 不比 (纯文字, 改错别字不该作废整表)
+bool load_row(const nlohmann::json &j, OperatorRow &dst) {
+  if (!j.is_object())
+    return false;
+  if (!str_is(j, "name", dst.name) || !str_is(j, "win", win_name(dst.win)) || !str_is(j, "scope", scope_name(dst.scope)) ||
+      !str_is(j, "kern", kern_name(dst.kern)) || !str_is(j, "inputs", inputs_of(dst)) || !str_is(j, "formula", dst.formula))
+    return false;
+  int arity = -1;
+  if (!get_int(j, "arity", arity) || arity != dst.arity)
+    return false;
+  const auto pit = j.find("params");
+  if (pit == j.end() || !pit->is_object())
+    return false;
+  size_t np = 0;
+  bool param_ok = true;
+  for_each_param(dst, [&](const char *name, double v) { // dst.param = 构造期填的当轮默认
+    double got = 0;
+    param_ok = param_ok && get_num(*pit, name, got) && got == v;
+    np++;
+  });
+  if (!param_ok || pit->size() != np)
+    return false;
+  // 动态列: 只认跑完的行 (取消/半截留下的 pending 行 → 整份判废)
+  if (!str_is(j, "status", "done"))
+    return false;
+  const auto sit = j.find("stream_vs_cpu");
+  if (sit == j.end() || !load_diff(*sit, dst.stream) || !get_num(j, "cpu_ms", dst.cpu_ms) ||
+      !get_num(j, "stream_ms", dst.stream_ms))
+    return false;
+  const auto git = j.find("gpu_vs_cpu"); // 落盘那轮没 GPU 后端 → 无 gpu_* 键, 载入后 GPU 列显示 n/a
+  if (git == j.end()) {
+    dst.gpu = {}, dst.gpu_ms = -1;
+  } else if (!load_diff(*git, dst.gpu) || !get_num(j, "gpu_ms", dst.gpu_ms) || dst.gpu_ms < 0) {
+    return false;
+  }
+  dst.status = RowStatus::Done;
+  return true;
+}
+
+} // namespace
+
+bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc, OperatorsUIState &ui) {
+  assert(svc.status() == OperatorsStatus::Idle && "载入只在进页第一帧 (worker 未起) 做");
+  const std::filesystem::path path = std::filesystem::path(factor_dir) / "operators.json";
+  std::ifstream file(path);
+  if (!file.is_open())
+    return false; // 没落过盘: 无文件可删, 调用方直接起算一轮
+
+  OperatorsRequest req;
+  std::vector<OperatorRow> snap;
+  int failed = 0;
+  const bool ok = [&] {
+    const nlohmann::json j = nlohmann::json::parse(file, nullptr, /*allow_exceptions=*/false);
+    if (j.is_discarded() || !j.is_object())
+      return false;
+    if (!str_is(j, "status", "done")) // cancelled / running 的半截快照不吃
+      return false;
+    int total = 0, done = 0;
+    if (!get_int(j, "total", total) || !get_int(j, "done", done) || total != svc.total() || done != total)
+      return false;
+    const auto tit = j.find("tensor");
+    if (tit == j.end() || !tit->is_object() || !get_int(*tit, "times", req.times) || !get_int(*tit, "assets", req.A))
+      return false;
+    if (req.times < factor::kSegLen || req.times % factor::kSegLen != 0 || req.A < 2) // Request 的前置条件
+      return false;
+    const auto rit = j.find("rows");
+    if (rit == j.end() || !rit->is_array() || rit->size() != static_cast<size_t>(svc.total()))
+      return false;
+    snap = svc.rows; // 静态列 + 构造期默认参数原样带过去, load_row 只改动态列
+    for (size_t i = 0; i < snap.size(); ++i)
+      if (!load_row((*rit)[i], snap[i]))
+        return false;
+    for (const OperatorRow &r : snap) // 表头的 failed 不信, 按行现算
+      if (!r.stream.ok() || (r.gpu_ms >= 0 && !r.gpu.ok()))
+        failed++;
+    return true;
+  }();
+  if (!ok) {
+    file.close();
+    std::filesystem::remove(path); // 不完整 / 与当前 OpTable 不一致: 删掉, 调用方重算后落新的
+    return false;
+  }
+  svc.AdoptSnapshot(req, std::move(snap), failed);
+  ui.req.times = req.times, ui.req.A = req.A; // 页面参数跟上快照 (Run 默认按同一形状重跑)
+  return true;
 }
 
 } // namespace GUI::Factors

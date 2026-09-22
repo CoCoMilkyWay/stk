@@ -81,7 +81,8 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
 } // namespace
 
 OperatorsService::OperatorsService() {
-  // 表序即行序; 静态列直接抄 OpTable 三维分类列, 跑手按 A 域 token 粘贴选后端命名空间
+  // 行序 = OpTable 表序 = 全局 idx (UI 默认序 / operators.json 的 idx 都按它);
+  // 静态列直接抄 OpTable 三维分类列, 跑手按 A 域 token 粘贴选后端命名空间
   // (SELF → ts, ALL/GROUP → cs; 缺任一后端同名 struct → 此处编译错)
 #define RUN_SELF(Name, ar, win) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::Win::win, false>)
 #define RUN_ALL(Name, ar, win) (&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::Win::win, true>)
@@ -115,6 +116,21 @@ void OperatorsService::Request(const OperatorsRequest &req) {
     stop_.store(false, std::memory_order_relaxed);
     thread_ = std::thread(&OperatorsService::worker_loop, this);
   }
+}
+
+void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed) {
+  assert(!thread_.joinable() && status_.load() == OperatorsStatus::Idle && "载入只在 worker 未起时做");
+  assert(snap.size() == rows.size());
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    rows = std::move(snap);
+    current = req;
+    from_json = true;
+  }
+  done_.store(static_cast<int>(rows.size()), std::memory_order_relaxed);
+  failed_.store(failed, std::memory_order_relaxed);
+  status_.store(OperatorsStatus::Done, std::memory_order_release);
+  epoch_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void OperatorsService::Stop() {
@@ -157,6 +173,7 @@ void OperatorsService::worker_loop() {
     {
       std::lock_guard<std::mutex> lock(mutex);
       current = req;
+      from_json = false; // 这一轮是本进程算的
       for (OperatorRow &r : rows) {
         r.param = param_of(r);
         r.status = RowStatus::Pending;

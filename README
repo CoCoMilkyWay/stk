@@ -112,11 +112,11 @@ stk/
 │   │   │   │       ├── TabTransform.hpp              # 🖥️ 变换链: 季节→平稳化→带通→TS归一→截面; 诊断: ADF/KPSS 热力条 / PSD / ACF/PACF
 │   │   │   │       └── TabCorr.hpp                   # 🖥️ 相关矩阵热图: 下三角 + hover lead-lag 曲线 + lag 矩阵 (聚类排序 O(n³))
 │   │   │   └── task_factors/                         # 🖥️ 因子算子库 (factor/ 的 GUI; 合成张量对拍, 不依赖特征库/数据库扫描)
-│   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (单子页 Operators; 一轮跑完落 operators.json)
+│   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (单子页 Operators; 进页优先载入 operators.json, 缺/校验不过才自动算一轮, 手动 Run 重算, 跑完落盘)
 │   │   │       ├── services/
 │   │   │       │   └── OperatorsService.hpp          # 🖥️ 算子表服务: OpTable 全算子一行一算子, worker 三后端对拍+计时 (stream 为 golden; d/k 每算子默认表, seed 取时间戳; gpu 计时 = 纯 kernel)
 │   │   │       └── ui/
-│   │   │           └── TabOperators.hpp              # 🖥️ 算子表 tab: 静态列 (轴/窗/元数/公式/参数/Note) + 动态列 (stream/cpu/gpu 耗时与对拍 Δ)
+│   │   │           └── TabOperators.hpp              # 🖥️ 算子表 tab: 静态列 (idx/元数/窗/域/核/参数/公式/Note, 默认按全局 idx 排) + 动态列 (stream/cpu/gpu 耗时与对拍 Δ); operators.json 存/取 (取时逐行校验静态列, 不过即删)
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
 │   │   │   │ Tasks                                │ Panel:                             │
@@ -132,7 +132,7 @@ stk/
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── factor/                                         # 🧬 因子算子基建 (特征之上的 TS/CS 算子; 因子 = 特征的非线性算子组合)
 │   │   │   ├── Contract.hpp                                # 🧬 语义契约 (三后端唯一共享件之一): 三维分类 T窗(POINT|EXPAND|ROLL|EXPO) × A域(SELF|ALL|GROUP) × 核类(MAP|SHIFT|MOMENT|EXTREME|ORDER|RECUR); SoA 布局 [T][A], branchless 数值, 退化判据
-│   │   │   ├── OpTable.hpp                                 # 🧬 真相表 X-macro (另一共享件): 命名 域_核_窗 (TsMeanRoll/TsMeanCum/CsMean); 统一行格式 (元数/T窗/A域/核类/参数/公式), 三后端同名展开; 后端怎么算不进表
+│   │   │   ├── OpTable.hpp                                 # 🧬 真相表 X-macro (另一共享件): 命名 域_核_窗 (TsMeanRoll/TsMeanCum/CsMean); 统一行格式 (元数/T窗/A域/核类/参数/公式), 三后端同名展开; 行序 = 全局 idx (元数→Ts/Cs→窗/域→核→字母), code 与 UI 统一按它; 后端怎么算不进表
 │   │   │   ├── StreamHist.hpp                              # 🧬 流式后端专用分桶直方图 (序统计族 rank/quantile, 整数桶计数 → 三后端逐位一致)
 │   │   │   ├── Check.hpp                                   # 🧬 对拍公共件: recipe_of / kKParams (阈值) / kDParams·default_d (每算子默认窗长, GUI Operators 表用; op_check 不吃, 全扫 d) / tol_of 容差 / compare 掩码逐位+数值
 │   │   │   ├── GpuRun.hpp                                  # 🧬 GPU 对拍宿主接口 (POD 指针; run_ts/run_cs 可选回填纯 kernel 耗时 kernel_ms = cudaEvent, 不含 malloc/H2D/D2H; device_name() 探测 0 号设备型号; 未开 CUDA 链 stub, 退化为两方对拍)
@@ -200,6 +200,7 @@ stk/
     │   └── resources-tag -> ../../../doc/resources-tag     # 标注后(for AI agent) (tag.md 标签体系 + tag_stat.md 统计 + report/)
     ├── factors/                                            # 因子算子库 (factor/ 的落地)
     │   └── operators.json                                  # 算子表全量快照 (一行一算子: 静态列 + stream/cpu/gpu 对拍与耗时), 每轮跑完覆盖; 与 universe/日期无关
+    │                                                       #   进页即载入显示 (不重算): 整轮 done + 逐行静态列对上当前 OpTable 才吃, 否则删掉自动重算
     └── log/                                                # 运行日志
 ```
 
