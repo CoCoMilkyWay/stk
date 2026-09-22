@@ -87,8 +87,8 @@ OperatorsService::OperatorsService() {
 #define RUN_SELF(Name, ar, win) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::Win::win, false>)
 #define RUN_ALL(Name, ar, win) (&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::Win::win, true>)
 #define RUN_GROUP RUN_ALL
-#define ROW(Name, ar, win, scope, kern, prm, tex, note)                                                    \
-  rows.push_back({#Name, ar, factor::Win::win, factor::Scope::scope, factor::Kern::kern, prm, tex, note}); \
+#define ROW(Name, cn, ar, win, scope, kern, prm, opnd, tex, note)                                                     \
+  rows.push_back({#Name, cn, ar, factor::Win::win, factor::Scope::scope, factor::Kern::kern, prm, opnd, tex, note}); \
   runners_.push_back(RUN_##scope(Name, ar, win));
   OP_ALL(ROW)
 #undef ROW
@@ -96,7 +96,7 @@ OperatorsService::OperatorsService() {
 #undef RUN_ALL
 #undef RUN_SELF
   assert(rows.size() == runners_.size());
-  // 未跑之前也显示每算子默认参数, 表一打开就有 Args 列
+  // 未跑之前也显示每算子默认参数, 表一打开 Operands 列就有实际值
   for (OperatorRow &r : rows)
     r.param = param_of(r);
 }

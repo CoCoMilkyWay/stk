@@ -155,7 +155,7 @@ int main(int argc, char **argv) {
   if (only.empty() || only == #Name) \
     check<factor::cs::Name, factor::cpu::cs::Name, ar, Win::win, true>(#Name, prm, T, A, seed, rep);
 #define CK_GROUP CK_ALL
-#define CK(Name, ar, win, scope, kern, prm, tex, note) CK_##scope(Name, ar, win, prm)
+#define CK(Name, cn, ar, win, scope, kern, prm, opnd, tex, note) CK_##scope(Name, ar, win, prm)
   OP_ALL(CK)
 #undef CK
 #undef CK_GROUP

@@ -32,12 +32,12 @@ namespace GUI::Factors {
 
 // 页面参数: 张量形状 [times × A]. times = 时间轴长度 (期 = 分钟, 以后可选秒), 必须整段
 // (段 = 交易日 = kSegLen 分钟, 段界对齐是 EXPAND 的前提, UI 负责取整).
-// A 默认 5000 = GPU 后端设计点 (一线程一资产, 太小喂不满卡, 吞吐不公允).
+// 默认 24000 × 1000.
 // d/k 每算子自带默认 (Check.hpp kDParams / kKParams); seed 由 Request() 取时间戳
 // (不做复现, 同一轮内所有算子共享同一张量).
 struct OperatorsRequest {
-  int times = 10 * factor::kSegLen;
-  int A = 5000;
+  int times = 24000;
+  int A = 1000;
   unsigned seed = 1; // Request() 时间戳填充, UI 不编辑
 };
 
@@ -48,14 +48,16 @@ enum class RowStatus : uint8_t { Pending,
 // 一行 = OpTable 一个算子: 静态列直接来自表 (三维分类: T 窗 × A 域 × 核类), 动态列由 worker 发布
 struct OperatorRow {
   // 静态
-  const char *name = nullptr;
+  const char *name = nullptr;                // en_name (OpTable 行名, 域_核_窗)
+  const char *cn_name = nullptr;             // 中文名: 域 (时/截/组) + 窗 (累/滚/指) + 核, 与 en_name 逐段对应
   int arity = 0;
   factor::Win win = factor::Win::POINT;      // T 窗 (CS 组恒 POINT)
   factor::Scope scope = factor::Scope::SELF; // A 域
   factor::Kern kern = factor::Kern::MAP;     // 核类
   const char *params = nullptr;              // OpTable 参数列: 本算子读取的 Param 字段名, 如 "d,k"
-  const char *formula = nullptr;             // LaTeX (OpTable 公式列, 符号规范见 OpTable.hpp 头注)
-  const char *note = nullptr;                // 备注 (退化条件 / 参数含义)
+  const char *operands = nullptr;            // 签名与值域 (LaTeX 模板, 占位符 ⟨d⟩⟨k⟩⟨k2⟩ 由 UI 换成本轮实际值)
+  const char *formula = nullptr;             // 算子定义 (LaTeX, OpTable 公式列, 符号规范见 OpTable.hpp 头注)
+  const char *note = nullptr;                // 用途与选型 (一句话: 量什么; 怎么用 / 配什么)
   // 动态
   factor::Param param; // 本轮实际喂的参数 (d/k/k2 来自 Check.hpp 每算子默认表); 复位时就填, 不等跑到
   RowStatus status = RowStatus::Pending;

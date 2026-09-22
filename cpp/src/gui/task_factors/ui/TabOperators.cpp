@@ -2,7 +2,7 @@
 #include "gui/task_factors/ui/TabOperators.hpp"
 #include "factor/GpuRun.hpp"  // device_name: GPU 型号显示
 #include "gui/Tasks.hpp"      // StatusColor: 全局色表, 行状态着色不自配颜色
-#include "gui/util/Latex.hpp" // Formula 列 LaTeX 渲染 (与特征表共用缓存)
+#include "gui/util/Latex.hpp" // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)
@@ -17,6 +17,7 @@
 #include <fstream>
 #include <mutex>
 #include <numeric>
+#include <string>
 #include <vector>
 
 namespace GUI::Factors {
@@ -25,13 +26,6 @@ namespace {
 
 // 表内公式字号 (特征表悬停用 32, 表格行内要小一号)
 constexpr float kFormulaTextSize = 18.0f;
-
-// 输入签名按元数: 0 元 = t_D (TodMask), 1..3 元 = x / x, y / x, y, z
-const char *inputs_of(const OperatorRow &r) {
-  static const char *kInputs[4] = {"t_D", "x", "x, y", "x, y, z"};
-  assert(r.arity >= 0 && r.arity <= 3);
-  return kInputs[r.arity];
-}
 
 // 逐个走 OpTable 参数列 ("d,k" 等) 的字段, 取本轮实际值: fn(name, value). 只允许 d / k / k2
 template <class Fn>
@@ -52,15 +46,21 @@ void for_each_param(const OperatorRow &r, Fn &&fn) {
   }
 }
 
-// Args 列: "(输入; 参数=实际值)"
-void format_args(const OperatorRow &r, char *out, size_t cap) {
-  int len = std::snprintf(out, cap, "(%s", inputs_of(r));
-  bool first = true;
+// Operands 列: OpTable 模板 (LaTeX) 里的占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ → 本轮实际参数值.
+// 参数列声明的字段必须都有占位符, 且替换后不得残留 (表与模板不齐 = OpTable 的 bug)
+std::string subst_operands(const OperatorRow &r) {
+  std::string s = r.operands;
   for_each_param(r, [&](const char *name, double v) {
-    len += std::snprintf(out + len, cap - len, "%s%s=%g", first ? "; " : ", ", name, v);
-    first = false;
+    char tok[16], val[32];
+    std::snprintf(tok, sizeof(tok), "⟨%s⟩", name);
+    std::snprintf(val, sizeof(val), "%g", v);
+    size_t pos = s.find(tok);
+    assert(pos != std::string::npos && "OpTable operands 列缺该参数的占位符");
+    for (; pos != std::string::npos; pos = s.find(tok, pos))
+      s.replace(pos, std::strlen(tok), val);
   });
-  std::snprintf(out + len, cap - len, ")");
+  assert(s.find("⟨") == std::string::npos && "operands 占位符未被参数列覆盖");
+  return s;
 }
 
 const char *win_name(factor::Win w) {
@@ -155,7 +155,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   ImGui::SetNextItemWidth(80);
   ImGui::InputInt("Times", &ui.req.times, 0);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("时间轴长度 (期 = 分钟, 以后可选秒), 自动取整到整段 (段 = 交易日 = %d 分钟, 段界对齐是 EXPAND 的前提)",
+    ImGui::SetTooltip("时间轴长度 (无单位), 自动取整到 %d 的倍数 (段界对齐是 EXPAND 的前提)",
                       factor::kSegLen);
   ImGui::SameLine();
   ImGui::Text("×");
@@ -168,7 +168,14 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   ui.req.times -= ui.req.times % factor::kSegLen;
   ui.req.A = std::max(ui.req.A, 2);
   ImGui::SameLine();
-  ImGui::TextDisabled("= %d 段 × %d 分钟", ui.req.times / factor::kSegLen, factor::kSegLen);
+  {
+    double bytes = double(ui.req.times) * ui.req.A * (sizeof(float) + sizeof(uint8_t)); // factor::Plane: v + m
+    const char *units[] = {"B", "KiB", "MiB", "GiB"};
+    int u = 0;
+    while (u < 3 && bytes >= 1024.0)
+      bytes /= 1024.0, ++u;
+    ImGui::TextDisabled("= %.1f %s", bytes, units[u]);
+  }
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("PLAIN 造数, 配方按算子 (正值型给对数正态, 分组型给整数 id); seed 取时间戳 (不做复现)\n"
                       "d / k 每算子自带默认值 (见 Args 列; Check.hpp kDParams / kKParams)");
@@ -256,24 +263,25 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
-  constexpr int kNumCols = 12;
+  constexpr int kNumCols = 13;
   if (ImGui::BeginTable("OperatorTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate | ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 0))) {
-    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);                                      // 0
-    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);                                   // 1
-    ImGui::TableSetupColumn("Ar", ImGuiTableColumnFlags_WidthFixed);                                     // 2
-    ImGui::TableSetupColumn("T", ImGuiTableColumnFlags_WidthFixed);                                      // 3
-    ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthFixed);                                      // 4
-    ImGui::TableSetupColumn("Kernel", ImGuiTableColumnFlags_WidthFixed);                                 // 5
-    ImGui::TableSetupColumn("Args", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 6
-    ImGui::TableSetupColumn("Formula", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 7
-    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                              // 8
-    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 9
-    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 10
-    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 11
+    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);                                       // 0
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);                                    // 1
+    ImGui::TableSetupColumn("CN", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);       // 2
+    ImGui::TableSetupColumn("Ar", ImGuiTableColumnFlags_WidthFixed);                                      // 3
+    ImGui::TableSetupColumn("T", ImGuiTableColumnFlags_WidthFixed);                                       // 4
+    ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthFixed);                                       // 5
+    ImGui::TableSetupColumn("Kernel", ImGuiTableColumnFlags_WidthFixed);                                  // 6
+    ImGui::TableSetupColumn("Operands", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 7
+    ImGui::TableSetupColumn("Operator", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 8
+    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                               // 9
+    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 10
+    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 11
+    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);     // 12
     ImGui::TableSetupScrollFreeze(0, 1);
 
     if (ui.fit_frames > 0) {
@@ -284,26 +292,28 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"#", "Name", "Ar", "T", "A", "Kernel", "Args", "Formula",
+    const char *headers[kNumCols] = {"#", "Name", "CN", "Ar", "T", "A", "Kernel", "Operands", "Operator",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
         "全局 idx = OpTable 表序 = operators.json 的 idx (code 与 UI 统一按它):\n"
         "元数 → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL→GROUP → 核类 → 名字字母序\n"
         "默认排序即此列; 点表头按列排 (三态, 第三态回默认)",
-        "算子名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点",
-        "元数: 输入序列数 0..3 (Args 里分号前的部分); d / k 是参数不算元",
+        "算子英文名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点",
+        "算子中文名, 与英文名逐段对应 (固定规则, 无冗余字):\n"
+        "域 时 (Ts) / 截 (Cs·ALL) / 组 (Cs·GROUP) + 窗 累 (Cum) / 滚 (Roll) / 指 (Ema), 逐点无窗字 + 核",
+        "元数: 输入序列数 0..3 (Operands 里分号前的部分); d / k 是参数不算元",
         "T 窗 (时间支撑): POINT 当前点 / EXPAND 段内 expanding (段界 reset) / ROLL 最近 d 期 (跨段) / EXPO 指数加权全历史\n"
         "截面算子恒 POINT (只看当前时刻)",
         "A 域 (资产支撑): SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 由 y 或 z 给)",
         "核类 (统计核的代数类): MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /\n"
         "ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级. 三维分类见 factor/Contract.hpp【分类】",
-        "签名 (输入; 参数=本轮实际值):\n"
-        "  输入  x, y, z = 按元数取的序列 (每格 值 + 有效位); t_D = 段内分钟位置 (TodMask 无序列输入)\n"
-        "  参数  Param 字段 (factor/Contract.hpp), 每算子自带默认值:\n"
+        "签名与值域 (OpTable.hpp, LaTeX): 自变量在前, 参数在后, 顺序恒 x, y, z → d → k → k2, 每项都带值域\n"
+        "  自变量  x, y, z = 按元数取的序列 (每格 值 + 有效位); t_D = 段内分钟位置 (TodMask 无序列输入)\n"
+        "  参数    = 号后是本轮实际值 (OpTable 里是占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩, 渲染前替换), 每算子自带默认值:\n"
         "    d   窗长 / 滞后 (期 = 分钟), 来自 Check.hpp kDParams; 参数列不含 d 的算子固定 1 (与 op_check 同)\n"
-        "    k   阈值 / 桶数 / EMA 系数 / 分位 (含义见该行 Note), 来自 Check.hpp kKParams\n"
+        "    k   阈值 / 桶数 / EMA 系数 / 分位, 来自 Check.hpp kKParams\n"
         "    k2  第二阈值 (仅 TodMask 上界)",
-        "公式 (OpTable.hpp, LaTeX). 符号继承 features/FeaturesDefine.hpp (t 分钟, D 交易日, 1[·] 指示), 算子库补充:\n"
+        "算子定义 (OpTable.hpp, LaTeX). 符号继承 features/FeaturesDefine.hpp (t 分钟, D 交易日, 1[·] 指示), 算子库补充:\n"
         "  x_t 本资产 t 分钟值; x_a 同一时刻资产 a 的值; t_D 段内位置\n"
         "  W_t 窗 (由 T 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
         "  n / N 窗内 / 截面有效样本数; μ_t σ_t 窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心总体矩\n"
@@ -317,7 +327,8 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "GPU 纯 kernel 耗时 (cudaEvent): 不含 cudaMalloc / H2D / D2H (搬运是对拍接口的成本, 不是算子的), 首次调用前已热身\n"
         "  没过对拍 (对 cpu: |Δ| ≤ 1e-3 + 1e-3·max, CsNormRank / 三四阶矩单独放宽) → 红色 FAIL + Δ, 不显示时间\n"
         "  过了但比 cpu 慢 → ms 标红",
-        "备注: 退化条件 (输出无效) / 参数含义 / 近似说明. \"退化\"见 Contract.hpp: 全并列 (精确) / 相消 (相对 1e-6) / 除零",
+        "用途与选型 (给 agent 检索的一句话, 统一 \"量什么; 怎么用 / 配什么\"): 不含实现 / 近似 / 退化细节\n"
+        "退化与数值契约见 factor/Contract.hpp, 成本与误差见 operator.md",
     };
     for (int c = 0; c < kNumCols; c++) {
       ImGui::TableSetColumnIndex(c);

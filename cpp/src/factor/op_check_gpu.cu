@@ -116,8 +116,8 @@ const char *device_name() {
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms) {
-#define G_TS(Name, ar, win, scope, kern, prm, tex, note) \
-  if (std::strcmp(name, #Name) == 0)                     \
+#define G_TS(Name, cn, ar, win, scope, kern, prm, opnd, tex, note) \
+  if (std::strcmp(name, #Name) == 0)                               \
     return call<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
@@ -127,8 +127,8 @@ void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *y
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms) {
-#define G_CS(Name, ar, win, scope, kern, prm, tex, note) \
-  if (std::strcmp(name, #Name) == 0)                     \
+#define G_CS(Name, cn, ar, win, scope, kern, prm, opnd, tex, note) \
+  if (std::strcmp(name, #Name) == 0)                               \
     return call<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
