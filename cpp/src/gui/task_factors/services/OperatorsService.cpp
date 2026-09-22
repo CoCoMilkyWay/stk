@@ -27,10 +27,10 @@ double ms_since(Clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
-// 本轮实际参数: 参数列含 d 才吃请求的 d (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams
-factor::Param param_of(const OperatorRow &row, const OperatorsRequest &rq) {
+// 本轮实际参数: 参数列含 d 才吃默认窗长表 (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams
+factor::Param param_of(const OperatorRow &row) {
   factor::Param p;
-  p.d = std::strchr(row.params, 'd') != nullptr ? rq.d : 1;
+  p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.name) : 1;
   factor::check::set_k(row.name, p);
   return p;
 }
@@ -43,7 +43,7 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
   const Recipe rc = recipe_of(nm);
   std::mt19937 rng(rq.seed);
   Data d;
-  d.T = rq.T(), d.A = rq.A;
+  d.T = rq.times, d.A = rq.A;
   fill(d.x, rc.x, Profile::PLAIN, d.T, d.A, rng);
   fill(d.y, rc.y, Profile::PLAIN, d.T, d.A, rng);
   fill(d.z, rc.z, Profile::PLAIN, d.T, d.A, rng);
@@ -67,10 +67,10 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
     Plane g;
     g.resize(static_cast<size_t>(d.T) * d.A);
     auto call = IS_CS ? factor::gpu::run_cs : factor::gpu::run_ts;
-    t0 = Clock::now();
+    double kms = -1; // 纯 kernel (cudaEvent): malloc / H2D / D2H 是对拍接口的成本, 不算算子
     call(row.name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-         pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), d.T, d.A, p);
-    row.gpu_ms = ms_since(t0);
+         pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), d.T, d.A, p, &kms);
+    row.gpu_ms = kms;
     row.gpu = compare(ref, g, tol_of(nm, true, Profile::PLAIN));
   } else {
     row.gpu_ms = -1;
@@ -81,28 +81,33 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
 } // namespace
 
 OperatorsService::OperatorsService() {
-  // 表序即行序; 静态列直接抄 OpTable, 跑手按同一行实例化 (缺任一后端同名 struct → 此处编译错)
-#define ROW_TS(Name, ar, win, prm, gpu, tex, note)                                          \
-  rows.push_back({#Name, false, ar, factor::Win::win, factor::Strat::gpu, prm, tex, note}); \
-  runners_.push_back(&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::Win::win, false>);
-#define ROW_CS(Name, ar, prm, gpu, tex, note)                                                \
-  rows.push_back({#Name, true, ar, factor::Win::POINT, factor::Strat::gpu, prm, tex, note}); \
-  runners_.push_back(&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::Win::POINT, true>);
-  OP_TS(ROW_TS)
-  OP_CS(ROW_CS)
-#undef ROW_TS
-#undef ROW_CS
+  // 表序即行序; 静态列直接抄 OpTable 三维分类列, 跑手按 A 域 token 粘贴选后端命名空间
+  // (SELF → ts, ALL/GROUP → cs; 缺任一后端同名 struct → 此处编译错)
+#define RUN_SELF(Name, ar, win) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::Win::win, false>)
+#define RUN_ALL(Name, ar, win) (&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::Win::win, true>)
+#define RUN_GROUP RUN_ALL
+#define ROW(Name, ar, win, scope, kern, prm, tex, note)                                                    \
+  rows.push_back({#Name, ar, factor::Win::win, factor::Scope::scope, factor::Kern::kern, prm, tex, note}); \
+  runners_.push_back(RUN_##scope(Name, ar, win));
+  OP_ALL(ROW)
+#undef ROW
+#undef RUN_GROUP
+#undef RUN_ALL
+#undef RUN_SELF
   assert(rows.size() == runners_.size());
-  // 未跑之前也显示默认请求下的参数 (d 默认值), 表一打开就有 Args 列
+  // 未跑之前也显示每算子默认参数, 表一打开就有 Args 列
   for (OperatorRow &r : rows)
-    r.param = param_of(r, OperatorsRequest{});
+    r.param = param_of(r);
 }
 
 void OperatorsService::Request(const OperatorsRequest &req) {
-  assert(req.days >= 1 && req.A >= 1 && req.d >= 1);
+  assert(req.times >= factor::kSegLen && req.times % factor::kSegLen == 0 && req.A >= 2);
+  OperatorsRequest r = req;
+  // 时间戳做种子: 不做复现, 同一轮内所有算子共享同一张量 (run_op 都从 r.seed 造数)
+  r.seed = static_cast<unsigned>(std::chrono::system_clock::now().time_since_epoch().count());
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_ = req;
+    pending_ = r;
     cancel_.store(true, std::memory_order_relaxed);
   }
   req_cv_.notify_all();
@@ -139,8 +144,7 @@ void OperatorsService::worker_loop() {
     }
 
     // GPU 探测 + 首次热身 (CUDA 上下文初始化几百 ms, 不能算进首个算子的 gpu_ms)
-    gpu_.store(factor::gpu::available(), std::memory_order_relaxed);
-    if (gpu_.load(std::memory_order_relaxed) && !gpu_warmed_) {
+    if (factor::gpu::available() && !gpu_warmed_) {
       factor::check::Plane x, o;
       x.resize(factor::kSegLen), o.resize(factor::kSegLen);
       factor::Param p;
@@ -154,7 +158,7 @@ void OperatorsService::worker_loop() {
       std::lock_guard<std::mutex> lock(mutex);
       current = req;
       for (OperatorRow &r : rows) {
-        r.param = param_of(r, req);
+        r.param = param_of(r);
         r.status = RowStatus::Pending;
         r.stream = {}, r.gpu = {};
         r.cpu_ms = 0, r.stream_ms = 0, r.gpu_ms = -1;

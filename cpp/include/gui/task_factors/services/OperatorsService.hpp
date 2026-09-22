@@ -6,10 +6,11 @@
 //   - worker:   取最新请求 → 全行复位 Pending → 逐算子 Running → 算 → 持锁写回 Done, epoch++
 //   - UI:       持 mutex 读 rows 快照; 进度走原子, 免锁
 //
-// 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp): PLAIN profile, 配方按算子, k 按 kKParams,
-// 容差 tol_of(name, gpu, PLAIN). 差别只在 op_check 全扫 profile × d, 这里只跑页面给的一组 (d, seed).
-// 计时 = 各后端整段 wall time (steady_clock); GPU 含 cudaMalloc + H2D/D2H (GpuRun 接口如此), 首次调用
-// 前做一次热身 (CUDA 上下文初始化不计入).
+// 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp): PLAIN profile, 配方按算子,
+// d/k 按每算子默认表 (kDParams / kKParams), 容差 tol_of(name, gpu, PLAIN). 差别只在
+// op_check 全扫 profile × d, 这里每算子只跑一组默认参数.
+// 计时: cpu / stream = 整段 wall time (steady_clock); gpu = 纯 kernel (cudaEvent, 不含
+// cudaMalloc + H2D/D2H —— 搬运是 GpuRun 对拍接口的成本, 不是算子的), 首次调用前做一次热身.
 #pragma once
 
 #include "factor/Check.hpp"
@@ -25,36 +26,38 @@
 
 namespace GUI::Factors {
 
-// 页面参数: 张量形状 + 窗长 + 种子. T = days · kSegLen (段界对齐是 EXPAND 的前提, 故按段数给)
+// 页面参数: 张量形状 [times × A]. times = 时间轴长度 (期 = 分钟, 以后可选秒), 必须整段
+// (段 = 交易日 = kSegLen 分钟, 段界对齐是 EXPAND 的前提, UI 负责取整).
+// A 默认 5000 = GPU 后端设计点 (一线程一资产, 太小喂不满卡, 吞吐不公允).
+// d/k 每算子自带默认 (Check.hpp kDParams / kKParams); seed 由 Request() 取时间戳
+// (不做复现, 同一轮内所有算子共享同一张量).
 struct OperatorsRequest {
-  int days = 10;
-  int A = 128;
-  int d = 20;
-  unsigned seed = 1;
-  int T() const { return days * factor::kSegLen; }
+  int times = 10 * factor::kSegLen;
+  int A = 5000;
+  unsigned seed = 1; // Request() 时间戳填充, UI 不编辑
 };
 
 enum class RowStatus : uint8_t { Pending,
                                  Running,
                                  Done };
 
-// 一行 = OpTable 一个算子: 静态列直接来自表, 动态列由 worker 发布
+// 一行 = OpTable 一个算子: 静态列直接来自表 (三维分类: T 窗 × A 域 × 核类), 动态列由 worker 发布
 struct OperatorRow {
   // 静态
   const char *name = nullptr;
-  bool is_cs = false;
   int arity = 0;
-  factor::Win win = factor::Win::POINT; // CS 无窗, 恒 POINT
-  factor::Strat strat = factor::Strat::POINT;
-  const char *params = nullptr;  // OpTable 参数列: 本算子读取的 Param 字段名, 如 "d,k"
-  const char *formula = nullptr; // LaTeX (OpTable 公式列, 符号规范见 OpTable.hpp 头注)
-  const char *note = nullptr;    // 备注 (退化条件 / 参数含义)
+  factor::Win win = factor::Win::POINT;      // T 窗 (CS 组恒 POINT)
+  factor::Scope scope = factor::Scope::SELF; // A 域
+  factor::Kern kern = factor::Kern::MAP;     // 核类
+  const char *params = nullptr;              // OpTable 参数列: 本算子读取的 Param 字段名, 如 "d,k"
+  const char *formula = nullptr;             // LaTeX (OpTable 公式列, 符号规范见 OpTable.hpp 头注)
+  const char *note = nullptr;                // 备注 (退化条件 / 参数含义)
   // 动态
-  factor::Param param; // 本轮实际喂的参数 (d 来自请求, k/k2 来自 Check.hpp kKParams); 复位时就填, 不等跑到
+  factor::Param param; // 本轮实际喂的参数 (d/k/k2 来自 Check.hpp 每算子默认表); 复位时就填, 不等跑到
   RowStatus status = RowStatus::Pending;
   factor::check::Diff stream;                    // stream vs cpu
   factor::check::Diff gpu;                       // gpu vs cpu (gpu_ms < 0 时无意义)
-  double cpu_ms = 0, stream_ms = 0, gpu_ms = -1; // gpu_ms < 0 = 无 GPU 后端
+  double cpu_ms = 0, stream_ms = 0, gpu_ms = -1; // gpu_ms = 纯 kernel; < 0 = 无 GPU 后端
 };
 
 enum class OperatorsStatus : uint8_t { Idle,
@@ -80,7 +83,6 @@ public:
   int total() const { return static_cast<int>(rows.size()); }
   int failed() const { return failed_.load(std::memory_order_relaxed); }
   uint64_t epoch() const { return epoch_.load(std::memory_order_relaxed); }
-  bool gpu_available() const { return gpu_.load(std::memory_order_relaxed); }
 
   // UI 持锁读; current = 正在跑 / 上次跑完的参数快照
   std::mutex mutex;
@@ -104,7 +106,6 @@ private:
   std::atomic<int> done_{0};
   std::atomic<int> failed_{0};
   std::atomic<uint64_t> epoch_{0};
-  std::atomic<bool> gpu_{false};
   bool gpu_warmed_ = false; // 仅 worker 线程读写
 };
 

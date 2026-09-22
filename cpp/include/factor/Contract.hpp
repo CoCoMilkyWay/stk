@@ -3,18 +3,24 @@
 // =============================================================================
 // 因子算子语义契约 (三后端唯一共享件之一, 另一件是 factor/OpTable.hpp)
 // =============================================================================
-//   【分类】只有两轴, 穷尽且互斥:
-//     TS  只准接本资产 (含逐点: 逐点 = TS 在 Point 窗上的退化, 只看本资产当前点)
-//     CS  只准接同一时刻的截面
-//   窗形是 TS 的内部属性 (Point / Expand⟨段⟩ / Roll⟨d⟩ / Expo⟨k⟩), GPU 策略是各轴内部私事,
-//   二者都只是 OpTable 的属性列, 不上升为分类.
+//   【分类】算子 = 核作用在支撑集 S(t,a) 上, 三个正交维度各取一值 (每维穷尽互斥):
+//     T 窗 (Win)    输出在 t 依赖的时间支撑: POINT 当前点 / EXPAND 段内 expanding / ROLL 最近 d 期 / EXPO 指数加权全历史
+//     A 域 (Scope)  资产支撑: SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 列给组)
+//     核类 (Kern)   统计核的代数类: MAP 逐元素变换 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) /
+//                   EXTREME 极值及 arg 族 (半群不可逆) / ORDER 序统计 / RECUR 递推
+//   类型约束 (非归约核不消费集合, 部分格子空): MAP ⇒ POINT×SELF; SHIFT ⇒ SELF 纯滞后 (不看整窗);
+//   RECUR ⇔ EXPO 一一绑定; 归约核 (MOMENT / EXTREME / ORDER) 与窗/域自由组合. 复合算子标主导 (最重) 一级.
+//   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀);
+//   十字外 (如 EXPAND×GROUP 段内组均值) 是合法格子, 留待将来, 命名按计算顺序 TsCs<核> / CsTs<核>.
+//   CPU / GPU 具体怎么算 (逐格融合 / scan / van Herk / 直方图 …) 是后端私事, 不进表不进分类.
 //
 //   【三后端】同名 struct, 三处**完全独立**实现, 不共享一行算法代码 (否则对拍空转):
 //     factor::ts::<Name>       factor::cs::<Name>       实盘流式 (逐点因果, O(d) 状态)  TS/Stream.hpp  CS/Stream.hpp
 //     factor::cpu::ts::<Name>  factor::cpu::cs::<Name>  挖掘 CPU (整张量向量化批算)     TS/Cpu.hpp     CS/Cpu.hpp
 //     factor::gpu::ts::<Name>  factor::gpu::cs::<Name>  挖掘 GPU (CUDA, 向量化)         TS/Gpu.cuh     CS/Gpu.cuh
-//   缺任一侧 → op_check 编译错 (分派由 OP_TS / OP_CS 宏展开).
-//   OpTable 的"窗"列与"GPU 策略"列都是**载荷**: 流式 struct 带 kWin, GPU struct 带 kStrat, op_check static_assert 对表.
+//   缺任一侧 → op_check 编译错 (分派由 OP_ALL 宏展开).
+//   OpTable 的"T 窗"列是**载荷**: 流式 TS struct 带 kWin, op_check static_assert 对表;
+//   A 域 / 核类是纯语义列, 实现侧不带载荷 (后端怎么算不受表约束).
 //
 //   【数据布局】
 //     数组一律 SoA 两平面: 值 float* + 有效位 uint8_t*, 行主序 [T][A] (t*A + a).
@@ -62,19 +68,20 @@ inline constexpr int kSegLen = 240;     // 段 (交易日) 的分钟数
 inline constexpr int kBuckets = 256;    // 序统计近似的直方图桶数
 inline constexpr int kMaxGroup = 1024;  // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
 
-// ---- OpTable 属性列的类型 (流式 struct::kWin / GPU struct::kStrat 对表) ----
+// ---- 三维分类 (OpTable 三列; 语义见文件头【分类】; 流式 TS struct::kWin 对表) ----
 enum class Win { POINT,
                  EXPAND,
                  ROLL,
                  EXPO };
-enum class Strat { POINT,
-                   GATHER,
-                   SCAN,
-                   EXTREME,
-                   HIST,
-                   RECUR,
-                   REDUCE,
+enum class Scope { SELF,
+                   ALL,
                    GROUP };
+enum class Kern { MAP,
+                  SHIFT,
+                  MOMENT,
+                  EXTREME,
+                  ORDER,
+                  RECUR };
 
 // ---- 值 + 有效位 ----
 struct Val {

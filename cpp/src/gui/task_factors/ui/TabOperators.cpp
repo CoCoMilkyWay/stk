@@ -1,5 +1,6 @@
 // Tab Operators — 见头文件
 #include "gui/task_factors/ui/TabOperators.hpp"
+#include "factor/GpuRun.hpp"  // device_name: GPU 型号显示
 #include "gui/Tasks.hpp"      // StatusColor: 全局色表, 行状态着色不自配颜色
 #include "gui/util/Latex.hpp" // Formula 列 LaTeX 渲染 (与特征表共用缓存)
 
@@ -76,24 +77,32 @@ const char *win_name(factor::Win w) {
   return "?";
 }
 
-const char *strat_name(factor::Strat s) {
+const char *scope_name(factor::Scope s) {
   switch (s) {
-  case factor::Strat::POINT:
-    return "POINT";
-  case factor::Strat::GATHER:
-    return "GATHER";
-  case factor::Strat::SCAN:
-    return "SCAN";
-  case factor::Strat::EXTREME:
-    return "EXTREME";
-  case factor::Strat::HIST:
-    return "HIST";
-  case factor::Strat::RECUR:
-    return "RECUR";
-  case factor::Strat::REDUCE:
-    return "REDUCE";
-  case factor::Strat::GROUP:
+  case factor::Scope::SELF:
+    return "SELF";
+  case factor::Scope::ALL:
+    return "ALL";
+  case factor::Scope::GROUP:
     return "GROUP";
+  }
+  return "?";
+}
+
+const char *kern_name(factor::Kern k) {
+  switch (k) {
+  case factor::Kern::MAP:
+    return "MAP";
+  case factor::Kern::SHIFT:
+    return "SHIFT";
+  case factor::Kern::MOMENT:
+    return "MOMENT";
+  case factor::Kern::EXTREME:
+    return "EXTREME";
+  case factor::Kern::ORDER:
+    return "ORDER";
+  case factor::Kern::RECUR:
+    return "RECUR";
   }
   return "?";
 }
@@ -139,32 +148,30 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   const bool running = st == OperatorsStatus::Running;
 
   // ==========================================================================
-  // 1. 张量参数 + Run / Cancel + 进度
+  // 1. 张量 [times × assets] + Run / Cancel + 进度
   // ==========================================================================
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Tensor:");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
-  ImGui::InputInt("Days", &ui.req.days, 0);
+  ImGui::SetNextItemWidth(80);
+  ImGui::InputInt("Times", &ui.req.times, 0);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("时间轴长度 (期 = 分钟, 以后可选秒), 自动取整到整段 (段 = 交易日 = %d 分钟, 段界对齐是 EXPAND 的前提)",
+                      factor::kSegLen);
+  ImGui::SameLine();
+  ImGui::Text("×");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
   ImGui::InputInt("Assets", &ui.req.A, 0);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
-  ImGui::InputInt("d", &ui.req.d, 0);
-  ImGui::SameLine();
-  int seed = static_cast<int>(ui.req.seed);
-  ImGui::SetNextItemWidth(60);
-  ImGui::InputInt("Seed", &seed, 0);
-  ui.req.days = std::max(ui.req.days, 1);
-  ui.req.A = std::max(ui.req.A, 1);
-  ui.req.d = std::max(ui.req.d, 1);
-  ui.req.seed = static_cast<unsigned>(std::max(seed, 0));
-  ImGui::SameLine();
-  ImGui::TextDisabled("T=%d A=%d", ui.req.T(), ui.req.A);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("T = Days × %d (段 = 交易日, 段界对齐是 EXPAND 窗的前提)\n"
-                      "PLAIN 造数, 配方按算子 (正值型给对数正态, 分组型给整数 id), 与 op_check 同 seed 同张量",
-                      factor::kSegLen);
+    ImGui::SetTooltip("资产轴宽度. GPU 后端一线程一资产, 设计点 5000: 太小喂不满卡, 吞吐不公允");
+  ui.req.times = std::max(ui.req.times, factor::kSegLen);
+  ui.req.times -= ui.req.times % factor::kSegLen;
+  ui.req.A = std::max(ui.req.A, 2);
+  ImGui::SameLine();
+  ImGui::TextDisabled("= %d 段 × %d 分钟", ui.req.times / factor::kSegLen, factor::kSegLen);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("PLAIN 造数, 配方按算子 (正值型给对数正态, 分组型给整数 id); seed 取时间戳 (不做复现)\n"
+                      "d / k 每算子自带默认值 (见 Args 列; Check.hpp kDParams / kKParams)");
   ImGui::SameLine();
 
   if (running)
@@ -201,7 +208,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     break;
   }
   ImGui::SameLine();
-  ImGui::TextDisabled("| GPU: %s", svc.gpu_available() ? "on" : "off (未编译 CUDA 后端: cmake -DFACTOR_CUDA=ON)");
+  if (const char *gname = factor::gpu::device_name())
+    ImGui::TextDisabled("| GPU: %s", gname);
+  else
+    ImGui::TextDisabled("| GPU: off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
 
   ImGui::Separator();
 
@@ -220,11 +230,13 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
 
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "2. Operators:");
   ImGui::SameLine();
-  ImGui::Text("%d (TS %d / CS %d)", n, (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return !r.is_cs; }),
-              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.is_cs; }));
+  ImGui::Text("%d (SELF %d / ALL %d / GROUP %d)", n,
+              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.scope == factor::Scope::SELF; }),
+              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.scope == factor::Scope::ALL; }),
+              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.scope == factor::Scope::GROUP; }));
   if (st != OperatorsStatus::Idle) {
     ImGui::SameLine();
-    ImGui::TextDisabled("(last run: T=%d A=%d d=%d seed=%u)", cur.T(), cur.A, cur.d, cur.seed);
+    ImGui::TextDisabled("(last run: %d × %d)", cur.times, cur.A);
   }
 
   // 列宽贴合: 发布代变了 (限速 0.5s) → 连发 2 帧 AutoAll (全行每帧都提交, 测量完整, 不必像 TabFeature 那样等 clipper)
@@ -248,9 +260,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);                                   // 0
     ImGui::TableSetupColumn("Ar", ImGuiTableColumnFlags_WidthFixed);                                     // 1
     ImGui::TableSetupColumn("Win", ImGuiTableColumnFlags_WidthFixed);                                    // 2
-    ImGui::TableSetupColumn("Axis", ImGuiTableColumnFlags_WidthFixed);                                   // 3
-    ImGui::TableSetupColumn("Args", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 4
-    ImGui::TableSetupColumn("GPU", ImGuiTableColumnFlags_WidthFixed);                                    // 5
+    ImGui::TableSetupColumn("Scope", ImGuiTableColumnFlags_WidthFixed);                                  // 3
+    ImGui::TableSetupColumn("Kern", ImGuiTableColumnFlags_WidthFixed);                                   // 4
+    ImGui::TableSetupColumn("Args", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 5
     ImGui::TableSetupColumn("Formula", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 6
     ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                              // 7
     ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 8
@@ -266,22 +278,23 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"Name", "Ar", "Win", "Axis", "Args", "GPU", "Formula",
+    const char *headers[kNumCols] = {"Name", "Ar", "Win", "Scope", "Kern", "Args", "Formula",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
-        "算子名: 轴_核_窗. Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点.\n"
-        "默认排序: 元数 → 窗 → 轴 (TS 先) → OpTable 表序; 点表头按列排 (三态)",
+        "算子名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点.\n"
+        "默认排序: 元数 → T 窗 → A 域 → OpTable 表序; 点表头按列排 (三态)",
         "元数: 输入序列数 0..3 (Args 里分号前的部分); d / k 是参数不算元",
-        "窗形 (TS): POINT 逐点 / EXPAND 段内 expanding (段界 reset) / ROLL 最近 d 期 (跨段) / EXPO 指数递推 (全程)\n"
-        "CS 无窗 (每个时刻取一整行截面)",
-        "轴: TS 只接本资产的序列; CS 只接同一时刻的截面",
+        "T 窗 (时间支撑): POINT 当前点 / EXPAND 段内 expanding (段界 reset) / ROLL 最近 d 期 (跨段) / EXPO 指数加权全历史\n"
+        "截面算子恒 POINT (只看当前时刻)",
+        "A 域 (资产支撑): SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 由 y 或 z 给)",
+        "核类 (统计核的代数类): MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /\n"
+        "ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级. 三维分类见 factor/Contract.hpp【分类】",
         "签名 (输入; 参数=本轮实际值):\n"
         "  输入  x, y, z = 按元数取的序列 (每格 值 + 有效位); t_D = 段内分钟位置 (TodMask 无序列输入)\n"
-        "  参数  Param 字段 (factor/Contract.hpp):\n"
-        "    d   窗长 / 滞后 (期 = 分钟), 来自页面 d; 参数列不含 d 的算子固定 1 (与 op_check 同)\n"
+        "  参数  Param 字段 (factor/Contract.hpp), 每算子自带默认值:\n"
+        "    d   窗长 / 滞后 (期 = 分钟), 来自 Check.hpp kDParams; 参数列不含 d 的算子固定 1 (与 op_check 同)\n"
         "    k   阈值 / 指数 / 桶数 / EMA 系数 / 分位 / topk (含义见该行 Note), 来自 Check.hpp kKParams\n"
         "    k2  第二阈值 (仅 TodMask 上界)",
-        "GPU 策略: POINT 逐格 / GATHER 移位 / SCAN 分段前缀和 / EXTREME van Herk / HIST 桶直方图 / RECUR 仿射 scan / REDUCE 沿资产归约 / GROUP 分组归约",
         "公式 (OpTable.hpp, LaTeX). 符号继承 features/FeaturesDefine.hpp (t 分钟, D 交易日, 1[·] 指示), 算子库补充:\n"
         "  x_t 本资产 t 分钟值; x_a 同一时刻资产 a 的值; t_D 段内位置\n"
         "  W_t 窗 (由 Win 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
@@ -293,7 +306,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "cpu 整张量一次批算的 wall time (不含造数)\n"
         "  没过对拍 (掩码逐位相等且 |Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|)) → 红色 FAIL + Δ, 不显示时间\n"
         "  过了但比 stream 慢 → ms 标红 (要求 stream ≥ cpu ≥ gpu)",
-        "GPU wall time: 含 cudaMalloc + H2D/D2H 拷贝 (GpuRun 接口如此), 首次调用前已热身\n"
+        "GPU 纯 kernel 耗时 (cudaEvent): 不含 cudaMalloc / H2D / D2H (搬运是对拍接口的成本, 不是算子的), 首次调用前已热身\n"
         "  没过对拍 (对 cpu: |Δ| ≤ 1e-3 + 1e-3·max, CsNormRank / 三四阶矩单独放宽) → 红色 FAIL + Δ, 不显示时间\n"
         "  过了但比 cpu 慢 → ms 标红",
         "备注: 退化条件 (输出无效) / 参数含义 / 近似说明. \"退化\"见 Contract.hpp: 全并列 (精确) / 相消 (相对 1e-6) / 除零",
@@ -315,7 +328,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       }
       specs->SpecsDirty = false;
     }
-    // 默认序: 元数 → 窗 → 轴 (TS 先) → OpTable 表序 (下标); 用户选列时在此序上 stable_sort
+    // 默认序: 元数 → T 窗 → A 域 (SELF 先) → OpTable 表序 (下标); 用户选列时在此序上 stable_sort
     std::vector<int> order(n);
     std::iota(order.begin(), order.end(), 0);
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
@@ -324,7 +337,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         return ra.arity < rb.arity;
       if (ra.win != rb.win)
         return (int)ra.win < (int)rb.win;
-      return (int)ra.is_cs < (int)rb.is_cs;
+      return (int)ra.scope < (int)rb.scope;
     });
     if (ui.sort_column >= 0) {
       auto cmp3 = [](double x, double y) { return x < y ? -1 : (x > y ? 1 : 0); };
@@ -342,10 +355,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
           cmp = (int)ra.win - (int)rb.win;
           break;
         case 3:
-          cmp = (int)ra.is_cs - (int)rb.is_cs;
+          cmp = (int)ra.scope - (int)rb.scope;
           break;
-        case 5:
-          cmp = (int)ra.strat - (int)rb.strat;
+        case 4:
+          cmp = (int)ra.kern - (int)rb.kern;
           break;
         case 7:
           cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
@@ -375,17 +388,14 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       ImGui::TableSetColumnIndex(1);
       ImGui::Text("%d", r.arity);
       ImGui::TableSetColumnIndex(2);
-      if (r.is_cs)
-        ImGui::TextDisabled("-");
-      else
-        ImGui::TextUnformatted(win_name(r.win));
+      ImGui::TextUnformatted(win_name(r.win));
       ImGui::TableSetColumnIndex(3);
-      ImGui::TextUnformatted(r.is_cs ? "CS" : "TS");
+      ImGui::TextUnformatted(scope_name(r.scope));
       ImGui::TableSetColumnIndex(4);
+      ImGui::TextUnformatted(kern_name(r.kern));
+      ImGui::TableSetColumnIndex(5);
       format_args(r, args, sizeof(args));
       ImGui::TextUnformatted(args);
-      ImGui::TableSetColumnIndex(5);
-      ImGui::TextUnformatted(strat_name(r.strat));
       ImGui::TableSetColumnIndex(6);
       if (tex::TeXRender *render = Latex::Get(r.formula, kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
@@ -466,10 +476,10 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
 
     std::lock_guard<std::mutex> lock(svc.mutex);
     const OperatorsRequest &cur = svc.current;
+    const char *gname = factor::gpu::device_name();
     file << "{\n";
-    file << " \"tensor\": {\"days\": " << cur.days << ", \"assets\": " << cur.A << ", \"T\": " << cur.T()
-         << ", \"d\": " << cur.d << ", \"seed\": " << cur.seed << "},\n";
-    file << " \"gpu\": " << (svc.gpu_available() ? "true" : "false") << ",\n";
+    file << " \"tensor\": {\"times\": " << cur.times << ", \"assets\": " << cur.A << "},\n";
+    file << " \"gpu\": " << (gname ? json(gname).dump() : "false") << ",\n";
     file << " \"status\": " << json(status_name(svc.status())).dump() << ", \"done\": " << svc.done()
          << ", \"total\": " << svc.total() << ", \"failed\": " << svc.failed() << ",\n";
     file << " \"tol\": {\"stream\": \"|Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|), mask 逐位相等\","
@@ -484,14 +494,13 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       j["idx"] = i;
       j["name"] = r.name;
       j["arity"] = r.arity;
-      j["axis"] = r.is_cs ? "CS" : "TS";
-      if (!r.is_cs)
-        j["win"] = win_name(r.win);
+      j["win"] = win_name(r.win);
+      j["scope"] = scope_name(r.scope);
+      j["kern"] = kern_name(r.kern);
       j["inputs"] = inputs_of(r);
       nlohmann::ordered_json params = nlohmann::ordered_json::object();
       for_each_param(r, [&](const char *name, double v) { params[name] = v; });
       j["params"] = params;
-      j["gpu_strat"] = strat_name(r.strat);
       j["formula"] = r.formula;
       j["note"] = r.note;
       j["status"] = row_status_name(r.status);

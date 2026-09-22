@@ -1324,13 +1324,12 @@ inline dim3 g_roll(int T, int A, int C) { return dim3(static_cast<unsigned>((A +
 } // namespace k
 
 // =============================================================================
-// 算子: 统一签名 (未用到的指针传 nullptr, 全部设备指针); kStrat 对 OpTable 的 GPU 策略列
+// 算子: 统一签名 (未用到的指针传 nullptr, 全部设备指针); 怎么算是本后端私事, 不进 OpTable
 // =============================================================================
 
 // ---- POINT (22) ----
 #define FACTOR_TS_POINT(Name, NARY, BODY)                                                                                                                                             \
   struct Name {                                                                                                                                                                       \
-    static constexpr Strat kStrat = Strat::POINT;                                                                                                                                     \
     struct F {                                                                                                                                                                        \
       __device__ static void apply(DVal x, DVal y, DVal z, int t_seg, const Param &p, float &v, bool &m) {                                                                            \
         (void)x, (void)y, (void)z, (void)t_seg, (void)p;                                                                                                                              \
@@ -1372,7 +1371,6 @@ FACTOR_TS_POINT(TsClip3, 3, { v = fminf(fmaxf(x.v, y.v), z.v); m = x.m && y.m &&
 // ---- GATHER (2): d 只改地址 ----
 #define FACTOR_TS_GATHER(Name, DELTA)                                                                                                                                                 \
   struct Name {                                                                                                                                                                       \
-    static constexpr Strat kStrat = Strat::GATHER;                                                                                                                                    \
     static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                    \
     static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, void *, \
                     cudaStream_t stream) {                                                                                                                                            \
@@ -1387,7 +1385,6 @@ FACTOR_TS_GATHER(TsDeltaRoll, true)  // x_t − x_{t−d}
 // ---- EXPAND (SCAN 族): 段内 expanding, 段界 reset ----
 #define FACTOR_TS_EXPAND(Name, Fn)                                                                                                                                                \
   struct Name {                                                                                                                                                                   \
-    static constexpr Strat kStrat = Strat::SCAN;                                                                                                                                  \
     static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                \
     static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, \
                     void *, cudaStream_t stream) {                                                                                                                                \
@@ -1420,7 +1417,6 @@ FACTOR_TS_EXPAND(TsCorrLagCum, FnCorrLag) // y 延迟 k 期, 取样在核内完�
 // ---- ROLL (SCAN 族): 块内预热 + 滑窗 add/sub, 跨段不 reset ----
 #define FACTOR_TS_ROLL(Name, Fn)                                                                                                                                                  \
   struct Name {                                                                                                                                                                   \
-    static constexpr Strat kStrat = Strat::SCAN;                                                                                                                                  \
     static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                \
     static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, \
                     void *, cudaStream_t stream) {                                                                                                                                \
@@ -1452,7 +1448,6 @@ FACTOR_TS_ROLL(TsWMeanRoll, FnWMean)
 //   workspace = 每时间块一份环形后缀区 [d][A]: gridY·d·A·sizeof(E). T=19200 A=5000 d=240: 20×240×5000×8B = 192 MB (pair 版)
 #define FACTOR_TS_EXTREME(Name, MAXOP, ELEM)                                                                                                                                  \
   struct Name {                                                                                                                                                               \
-    static constexpr Strat kStrat = Strat::EXTREME;                                                                                                                           \
     static size_t workspace(int T, int A, const Param &p) {                                                                                                                   \
       const int C = k::ext_chunk(p.d);                                                                                                                                        \
       return static_cast<size_t>((T + C - 1) / C) * p.d * A * sizeof(ELEM);                                                                                                   \
@@ -1473,7 +1468,6 @@ FACTOR_TS_EXTREME(TsArgMinRoll, false, k::FI)
 // ---- HIST (6) ----
 #define FACTOR_TS_HIST(Name, MODE, H)                                                                                                                                                 \
   struct Name {                                                                                                                                                                       \
-    static constexpr Strat kStrat = Strat::HIST;                                                                                                                                      \
     static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                    \
     static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, void *, \
                     cudaStream_t stream) {                                                                                                                                            \
@@ -1493,7 +1487,6 @@ FACTOR_TS_HIST(TsMadRoll, 1, HMad)
 
 // ---- EXPO (1) ----
 struct TsMeanEma {
-  static constexpr Strat kStrat = Strat::RECUR;
   // 块前缀 (a, b_seen, b_seed, seen) × nc 块: 80×5000×(4+4+4+1) = 5.2 MB
   static size_t workspace(int T, int A, const Param &) {
     const size_t nc = static_cast<size_t>((T + kSegLen - 1) / kSegLen);

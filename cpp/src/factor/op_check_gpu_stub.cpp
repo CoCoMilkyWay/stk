@@ -10,12 +10,14 @@ namespace factor::gpu {
 
 bool available() { return false; }
 
+const char *device_name() { return nullptr; }
+
 void run_ts(const char *, const float *, const uint8_t *, const float *, const uint8_t *, const float *,
-            const uint8_t *, float *, uint8_t *, int, int, const Param &) {
+            const uint8_t *, float *, uint8_t *, int, int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 void run_cs(const char *, const float *, const uint8_t *, const float *, const uint8_t *, const float *,
-            const uint8_t *, float *, uint8_t *, int, int, const Param &) {
+            const uint8_t *, float *, uint8_t *, int, int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 

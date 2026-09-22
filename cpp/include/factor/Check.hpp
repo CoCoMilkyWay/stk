@@ -128,7 +128,38 @@ inline Recipe recipe_of(const std::string &name) {
   return {"", Gen::NORM, Gen::NORM, Gen::NORM};
 }
 
-// 阈值型参数: d 由消费者给, 这里只定 k / k2
+// 窗长参数: 每算子一个"典型用法"的默认 d (期 = 分钟), 给 GUI Operators 表用;
+// op_check 不吃这份 (它全扫 d = {1, 5, 20, 240, 300} 打边界)
+struct DParam {
+  const char *name;
+  int d;
+};
+inline constexpr DParam kDParams[] = {
+    {"TsDelayRoll", 5}, // 短滞后差分
+    {"TsDeltaRoll", 5},
+    {"TsSkewRoll", 60}, // 高阶矩 / 序统计 / 二元统计: 样本量要足
+    {"TsKurtRoll", 60},
+    {"TsRankRoll", 60},
+    {"TsMedianRoll", 60},
+    {"TsMadRoll", 60},
+    {"TsMaxRoll", 60},
+    {"TsMinRoll", 60},
+    {"TsArgMaxRoll", 60},
+    {"TsArgMinRoll", 60},
+    {"TsCovRoll", 60},
+    {"TsCorrRoll", 60},
+    {"TsBetaRoll", 60},
+    {"TsResidRoll", 60},
+    {"TsAgeRoll", 60},
+};
+inline int default_d(const std::string &name) {
+  for (const DParam &q : kDParams)
+    if (name == q.name)
+      return q.d;
+  return 30; // 其余 ROLL 族 (均值/和/斜率/计数等): 半小时
+}
+
+// 阈值型参数: 这里只定 k / k2
 struct KParam {
   const char *name;
   float k, k2;

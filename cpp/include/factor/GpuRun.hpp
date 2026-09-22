@@ -16,10 +16,16 @@ namespace factor::gpu {
 
 bool available();
 
+// 0 号设备型号 (UI 显示用, 首次调用探测后缓存); 未编译 CUDA 或无设备 → nullptr
+const char *device_name();
+
 // name 必须在 OpTable 里; 不在则断言死 (三后端同名是硬约束)
+// kernel_ms 非空 → 回填纯 kernel 耗时 (cudaEvent), 不含 cudaMalloc / H2D / D2H (搬运是对拍接口的成本, 不是算子的)
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p);
+            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
+            double *kernel_ms = nullptr);
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p);
+            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
+            double *kernel_ms = nullptr);
 
 } // namespace factor::gpu

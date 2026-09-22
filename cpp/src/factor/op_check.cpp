@@ -8,7 +8,7 @@
 //   分派表由 OpTable.hpp 展开: 表里有名字而某个后端没有同名 struct → 此处编译错.
 //
 //   比较口径 (契约): 掩码必须**逐位相等**; 有效位上 |Δ| ≤ atol + rtol·max(|a|,|b|).
-//   属性列也对拍: 流式 struct::kWin / GPU struct::kStrat 与 OpTable 不符 → static_assert 错.
+//   属性列也对拍: 流式 TS struct::kWin 与 OpTable 的 T 窗列不符 → static_assert 错.
 //   造数 / 配方 / 容差 / 比较 / 驱动在 factor/Check.hpp (与 GUI Factors→Operators 页共用同一口径);
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
 // =============================================================================
@@ -102,7 +102,7 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
         g.resize(static_cast<size_t>(T) * A);
         auto call = IS_CS ? factor::gpu::run_cs : factor::gpu::run_ts;
         call(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-             pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p);
+             pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p, nullptr);
         Diff dg = compare(ref, g, tol_of(nm, true, pr));
         if (!dg.ok())
           ++rep.gpu_bad;
@@ -145,18 +145,22 @@ int main(int argc, char **argv) {
   std::printf("op_check  T=%d (%d 段) A=%d seed=%u  gpu=%s\n", T, T / kSegLen, A, seed,
               factor::gpu::available() ? "on" : "off (未编译 CUDA 后端)");
 
-  // 分派: 表里每一行展开成一个用例组; 缺任一后端的同名 struct → 编译错; 流式 kWin 与表不符 → 编译错
-#define CK_TS(Name, ar, win, prm, gpu, tex, note)                                             \
-  static_assert(factor::ts::Name::kWin == Win::win, #Name ": 流式 kWin 与 OpTable 窗列不符"); \
-  if (only.empty() || only == #Name)                                                          \
+  // 分派: 表里每一行展开成一个用例组, 按 A 域列 token 粘贴选后端命名空间 (SELF → ts, ALL/GROUP → cs);
+  // 缺任一后端的同名 struct → 编译错; 流式 TS kWin 与表的 T 窗列不符 → 编译错
+#define CK_SELF(Name, ar, win, prm)                                                             \
+  static_assert(factor::ts::Name::kWin == Win::win, #Name ": 流式 kWin 与 OpTable T 窗列不符"); \
+  if (only.empty() || only == #Name)                                                            \
     check<factor::ts::Name, factor::cpu::ts::Name, ar, Win::win, false>(#Name, prm, T, A, seed, rep);
-#define CK_CS(Name, ar, prm, gpu, tex, note) \
-  if (only.empty() || only == #Name)         \
-    check<factor::cs::Name, factor::cpu::cs::Name, ar, Win::POINT, true>(#Name, prm, T, A, seed, rep);
-  OP_TS(CK_TS)
-  OP_CS(CK_CS)
-#undef CK_TS
-#undef CK_CS
+#define CK_ALL(Name, ar, win, prm)   \
+  if (only.empty() || only == #Name) \
+    check<factor::cs::Name, factor::cpu::cs::Name, ar, Win::win, true>(#Name, prm, T, A, seed, rep);
+#define CK_GROUP CK_ALL
+#define CK(Name, ar, win, scope, kern, prm, tex, note) CK_##scope(Name, ar, win, prm)
+  OP_ALL(CK)
+#undef CK
+#undef CK_GROUP
+#undef CK_ALL
+#undef CK_SELF
 
   std::printf("=== %d 算子 / %d 用例: stream 失败 %d, gpu 失败 %d; 算子级失败 %d ===\n", rep.ops,
               rep.cases, rep.stream_bad, rep.gpu_bad, rep.ops_bad);

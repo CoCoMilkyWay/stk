@@ -366,8 +366,7 @@ __global__ void row(const float *xv, const uint8_t *xm, const float *yv, const u
 // =============================================================================
 // 算子: 统一签名 (未用到的指针传 nullptr, 全部设备指针)
 // =============================================================================
-#define FACTOR_CS_RUN(STRAT)                                                                                                                                                        \
-  static constexpr Strat kStrat = Strat::STRAT;                  /* 对表 OpTable 的 GPU 策略列 (op_check static_assert) */                                                          \
+#define FACTOR_CS_RUN()                                                                                                                                                             \
   static size_t workspace(int, int, const Param &) { return 0; } /* 全部在 shared 里做完, 不要临时显存 */                                                                           \
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p, \
                   void *, cudaStream_t stream) {                                                                                                                                    \
@@ -395,7 +394,7 @@ __global__ void row(const float *xv, const uint8_t *xm, const float *yv, const u
             dev::store(ov, om, i, v, m);                                                                                                                                  \
       }                                                                                                                                                                   \
     }                                                                                                                                                                     \
-    FACTOR_CS_RUN(REDUCE)                                                                                                                                                 \
+    FACTOR_CS_RUN()                                                                                                                                                       \
   };
 
 // 截面均值广播
@@ -457,7 +456,7 @@ struct CsRank {
       dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, cnt, lo, hi, rok, xv[i]), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN(HIST)
+  FACTOR_CS_RUN()
 };
 // Φ⁻¹(clamp(pct, 1/(N+1), N/(N+1)))
 //   注: host 侧用 Contract::probit (Wichura AS241), 这里用 CUDA 自带 normcdfinvf, 两者差 ~1e-7
@@ -481,7 +480,7 @@ struct CsNormRank {
       dev::store(ov, om, i, normcdfinvf(cl), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN(HIST)
+  FACTOR_CS_RUN()
 };
 // 中位数 / k 分位 广播 (桶近似下不做偶数上下平均)
 #define FACTOR_CS_QUANT(Name, QEXPR)                                                                                                                                            \
@@ -503,7 +502,7 @@ struct CsNormRank {
       for (int a = threadIdx.x; a < A; a += kCB)                                                                                                                                \
         dev::store(ov, om, base + a, q, cnt >= 1);                                                                                                                              \
     }                                                                                                                                                                           \
-    FACTOR_CS_RUN(HIST)                                                                                                                                                         \
+    FACTOR_CS_RUN()                                                                                                                                                             \
   };
 FACTOR_CS_QUANT(CsMedian, 0.5)
 FACTOR_CS_QUANT(CsQuantile, p.k)
@@ -531,7 +530,7 @@ struct CsWinsor {
       dev::store(ov, om, i, fminf(fmaxf(xv[i], ql), qh), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN(HIST)
+  FACTOR_CS_RUN()
 };
 // 先缩尾 (k = 0.01) 再 pct rank: 缩尾后值域变了, 必须按缩尾样本集重新定 lo/hi 与直方图
 struct CsWinsorRank {
@@ -562,7 +561,7 @@ struct CsWinsorRank {
       dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, c2, lo2, hi2, rok2, u), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN(HIST)
+  FACTOR_CS_RUN()
 };
 // 先缩尾 (k = 0.01) 再 z: 均值/方差都在缩尾后的量上两遍求
 struct CsWinsorZ {
@@ -603,7 +602,7 @@ struct CsWinsorZ {
       dev::store(ov, om, i, (u - mu) / sd, xm[i] && ok);
     }
   }
-  FACTOR_CS_RUN(HIST)
+  FACTOR_CS_RUN()
 };
 // floor(pct·k) ∈ 0..k−1 (值域退化 → 0)
 struct CsBucket {
@@ -625,7 +624,7 @@ struct CsBucket {
       dev::store(ov, om, i, static_cast<float>(b), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN(HIST)
+  FACTOR_CS_RUN()
 };
 // pct_rank(x) − pct_rank(y): 两套桶各自定 lo/hi (x 的样本集 = 有效 x, y 的 = 有效 y)
 struct CsRankDiff {
@@ -650,7 +649,7 @@ struct CsRankDiff {
       dev::store(ov, om, i, px - py, xm[i] && ym[i] && cx >= 1 && cy >= 1);
     }
   }
-  FACTOR_CS_RUN(HIST)
+  FACTOR_CS_RUN()
 };
 
 // ---- GROUP (4) ----
@@ -676,7 +675,7 @@ struct CsGroupMean {
       dev::store(ov, om, i, (g >= 0) ? sh.gsx[g] / static_cast<float>(max(c, 1)) : 0.f, xm[i] && g >= 0 && c >= 1);
     }
   }
-  FACTOR_CS_RUN(GROUP)
+  FACTOR_CS_RUN()
 };
 
 // 组内 pct rank 的公共实现: 逐组重建直方图 (组数 G 约 30 → O(G·A) 每行)
@@ -725,7 +724,7 @@ struct CsGroupRank {
     const k::GidCol gi{yv, ym, base};
     group_rank(sh, xv, xm, gi, ov, om, base, A);
   }
-  FACTOR_CS_RUN(GROUP)
+  FACTOR_CS_RUN()
 };
 // y 分 k 桶 (= CsBucket(k)) 当组 id, x 在桶内 pct rank
 struct CsCondRank {
@@ -759,7 +758,7 @@ struct CsCondRank {
     const GidBin gi{yv, ym, sh.cb2, sh.pre2, base, cy, K, loy, hiy, ry};
     group_rank(sh, xv, xm, gi, ov, om, base, A);
   }
-  FACTOR_CS_RUN(GROUP)
+  FACTOR_CS_RUN()
 };
 // 按 z 分组: x, y 组内 demean 后, 用**全体参与样本**做一个标量回归 (FWL)
 struct CsGroupResid {
@@ -809,7 +808,7 @@ struct CsGroupResid {
       dev::store(ov, om, i, dx - b * dy, ok && ok2);
     }
   }
-  FACTOR_CS_RUN(GROUP)
+  FACTOR_CS_RUN()
 };
 
 } // namespace factor::gpu::cs

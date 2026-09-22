@@ -2,8 +2,7 @@
 // GpuRun 的 CUDA 实现: 收宿主指针 → 拷进显存 → 跑 Gpu.cuh 的算子 → 拷回
 // =============================================================================
 //   只服务 op_check 的正确性对拍, 不是挖掘的性能路径 (挖掘侧数据常驻显存, 不走这里).
-//   分派表由 OpTable.hpp 展开: 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错;
-//   struct::kStrat 与表的 GPU 策略列不符 → static_assert 错.
+//   分派表由 OpTable.hpp 展开: 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错.
 // =============================================================================
 
 #include "factor/CS/Gpu.cuh" // IWYU pragma: keep
@@ -13,6 +12,7 @@
 #include "factor/OpTable.hpp"
 
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 
 #define CU(call)                                         \
@@ -58,7 +58,7 @@ struct DevPlane {
 
 template <class Op>
 void call(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv,
-          const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p) {
+          const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms) {
   const size_t n = static_cast<size_t>(T) * A;
   DevPlane x, y, z, o;
   x.up(xv, xm, n), y.up(yv, ym, n), z.up(zv, zm, n), o.alloc(n);
@@ -68,9 +68,22 @@ void call(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym
   if (wsn)
     CU(cudaMalloc(&ws, wsn));
 
+  // 纯 kernel 计时 (cudaEvent 夹 Op::run): malloc / 搬运是本接口的成本, 不算进算子
+  cudaEvent_t e0, e1;
+  CU(cudaEventCreate(&e0));
+  CU(cudaEventCreate(&e1));
+  CU(cudaEventRecord(e0));
   Op::run(x.v, x.m, y.v, y.m, z.v, z.m, o.v, o.m, T, A, p, ws, nullptr);
-  CU(cudaStreamSynchronize(nullptr));
+  CU(cudaEventRecord(e1));
+  CU(cudaEventSynchronize(e1));
   CU(cudaGetLastError());
+  if (kernel_ms) {
+    float f = 0.f;
+    CU(cudaEventElapsedTime(&f, e0, e1));
+    *kernel_ms = f;
+  }
+  CU(cudaEventDestroy(e0));
+  CU(cudaEventDestroy(e1));
 
   o.down(ov, om, n);
   if (ws)
@@ -85,23 +98,38 @@ bool available() {
   return cudaGetDeviceCount(&n) == cudaSuccess && n > 0;
 }
 
+const char *device_name() {
+  static char buf[256] = {0};
+  static bool probed = false;
+  if (!probed) {
+    probed = true;
+    int n = 0;
+    if (cudaGetDeviceCount(&n) == cudaSuccess && n > 0) {
+      cudaDeviceProp prop;
+      CU(cudaGetDeviceProperties(&prop, 0));
+      std::snprintf(buf, sizeof(buf), "%s", prop.name);
+    }
+  }
+  return buf[0] ? buf : nullptr;
+}
+
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p) {
-#define G_TS(Name, ar, win, prm, gpu, tex, note)                                             \
-  static_assert(ts::Name::kStrat == Strat::gpu, #Name ": GPU kStrat 与 OpTable 策略列不符"); \
-  if (std::strcmp(name, #Name) == 0)                                                         \
-    return call<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p);
+            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
+            double *kernel_ms) {
+#define G_TS(Name, ar, win, scope, kern, prm, tex, note) \
+  if (std::strcmp(name, #Name) == 0)                     \
+    return call<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
   assert(false && "算子不在 OpTable 的 TS 组");
 }
 
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p) {
-#define G_CS(Name, ar, prm, gpu, tex, note)                                                  \
-  static_assert(cs::Name::kStrat == Strat::gpu, #Name ": GPU kStrat 与 OpTable 策略列不符"); \
-  if (std::strcmp(name, #Name) == 0)                                                         \
-    return call<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p);
+            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
+            double *kernel_ms) {
+#define G_CS(Name, ar, win, scope, kern, prm, tex, note) \
+  if (std::strcmp(name, #Name) == 0)                     \
+    return call<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
   assert(false && "算子不在 OpTable 的 CS 组");
