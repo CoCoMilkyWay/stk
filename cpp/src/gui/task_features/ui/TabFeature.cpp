@@ -1,7 +1,7 @@
 // Tab Feature Implementation
 #include "gui/task_features/ui/TabFeature.hpp"
-#include "graphic/graphic_basic.h"
 #include "gui/task_features/ui/Common.hpp" // 账目着色 / 状态文本
+#include "gui/util/Latex.hpp"              // 公式渲染 (Name CN 悬停)
 #include "misc/format.hpp"                 // misc::fmt_width
 #include "shared/Feature.hpp"
 #include "shared/FeaturePreview.hpp"
@@ -10,11 +10,7 @@
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)
 #include "implot.h"
-#include "latex.h"
 #include "nlohmann/json.hpp"
-#include "platform/imgui/graphic_imgui.h"
-#include "render.h"
-#include "utfcpp/utf8.hpp"
 
 #include <algorithm>
 #include <array>
@@ -31,57 +27,6 @@
 #include <unordered_map>
 
 namespace GUI::Features {
-
-// ============================================================================
-// LaTeX Formula Rendering Cache
-// ============================================================================
-
-static std::wstring utf8ToWide(std::string_view s) {
-  auto u16 = utf8::utf8to16(s);
-  return {u16.begin(), u16.end()};
-}
-
-// Cache for parsed LaTeX formulas (keyed by formula string pointer for efficiency)
-static std::unordered_map<const char *, tex::TeXRender *> s_formula_cache;
-
-static tex::TeXRender *getOrCreateFormulaRender(const char *formula) {
-  auto it = s_formula_cache.find(formula);
-  if (it != s_formula_cache.end()) {
-    return it->second;
-  }
-
-  // Ensure LaTeX engine is initialized
-  static bool s_latex_initialized = false;
-  if (!s_latex_initialized) {
-    tex::LaTeX::init("res");
-    s_latex_initialized = true;
-  }
-
-  // Parse LaTeX formula
-  std::wstring wlatex = utf8ToWide(formula);
-  constexpr float kFormulaTextSize = 32.0f;
-  tex::TeXRender *render = tex::LaTeX::parse(wlatex, 0, kFormulaTextSize, 5.0f, tex::green);
-
-  s_formula_cache[formula] = render; // May be nullptr if parse failed
-  return render;
-}
-
-// Render LaTeX formula at current cursor position
-static void renderLatexFormula(tex::TeXRender *render) {
-  assert(render);
-
-  // Font atlas may have been invalidated by new glyphs during parse
-  tex::Font_imgui::rebuildFontAtlasIfNeeded();
-
-  ImDrawList *draw_list = ImGui::GetWindowDrawList();
-  ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
-
-  tex::Graphics2D_imgui g2(draw_list);
-  g2.translate(cursor_pos.x, cursor_pos.y);
-  render->draw(g2, 0, 0);
-
-  ImGui::Dummy(ImVec2((float)render->getWidth(), (float)render->getHeight()));
-}
 
 // ============================================================================
 // Helper Functions
@@ -1360,10 +1305,10 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         ImGui::Separator();
         ImGui::Text("Formula:");
 
-        // Render LaTeX formula
-        tex::TeXRender *render = getOrCreateFormulaRender(f.formula);
+        // Render LaTeX formula (gui/util/Latex: 与 Operators 表共用缓存)
+        tex::TeXRender *render = Latex::Get(f.formula, 32.0f);
         if (render) {
-          renderLatexFormula(render);
+          Latex::Draw(render);
         } else {
           ImGui::TextWrapped("%s", f.formula); // Fallback to plain text
         }

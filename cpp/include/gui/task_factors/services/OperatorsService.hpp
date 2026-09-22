@@ -46,9 +46,11 @@ struct OperatorRow {
   int arity = 0;
   factor::Win win = factor::Win::POINT; // CS 无窗, 恒 POINT
   factor::Strat strat = factor::Strat::POINT;
-  const char *params = nullptr;
-  const char *doc = nullptr;
+  const char *params = nullptr;  // OpTable 参数列: 本算子读取的 Param 字段名, 如 "d,k"
+  const char *formula = nullptr; // LaTeX (OpTable 公式列, 符号规范见 OpTable.hpp 头注)
+  const char *note = nullptr;    // 备注 (退化条件 / 参数含义)
   // 动态
+  factor::Param param; // 本轮实际喂的参数 (d 来自请求, k/k2 来自 Check.hpp kKParams); 复位时就填, 不等跑到
   RowStatus status = RowStatus::Pending;
   factor::check::Diff stream;                      // stream vs naive
   factor::check::Diff gpu;                         // gpu vs naive (gpu_ms < 0 时无意义)

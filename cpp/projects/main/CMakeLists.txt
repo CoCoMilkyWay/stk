@@ -230,6 +230,7 @@ set(SOURCES
     ../../src/gui/Gui.cpp
     ../../src/gui/Tasks.cpp
     ../../src/gui/coro/CoroManager.cpp
+    ../../src/gui/util/Latex.cpp
     ../../src/gui/task_icon_bar/CoroNetwork.cpp
     ../../src/gui/task_icon_bar/TaskIconBar.cpp
     # gui / task_database
@@ -750,6 +751,12 @@ if(FACTOR_CUDA)
     # texture_fetch_functions.h 等旧头), -x cuda 直接编不过.
     # 宿主侧仍是 clang++ -std=c++23, CUDA 侧是 nvcc+g++ -std=c++20;
     # 两边只通过 GpuRun.hpp 的 POD 接口相见, libstdc++ ABI 相同, 可直接链接.
+    # 先探再 enable: enable_language(CUDA) 自己找不到 nvcc 时只抛 CMake 内部错.
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(NOT CMAKE_CUDA_COMPILER)
+        message(FATAL_ERROR "找不到 nvcc: sudo apt install cuda-toolkit-13-0 (NVIDIA apt 源)\n")
+    endif()
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 20)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -762,7 +769,7 @@ if(FACTOR_CUDA)
         PATH_SUFFIXES cccl
         NO_DEFAULT_PATH)
     if(NOT FACTOR_CUB_DIR)
-        message(FATAL_ERROR "sudo apt install cuda-toolkit-13-0\n")
+        message(FATAL_ERROR "缺 cub/cub.cuh: sudo apt install cuda-toolkit-13-0 (NVIDIA apt 源)\n")
     endif()
     set(FACTOR_GPU_SOURCE ../../src/factor/op_check_gpu.cu)
 endif()

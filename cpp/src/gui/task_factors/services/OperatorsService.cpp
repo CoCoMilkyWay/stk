@@ -27,6 +27,14 @@ double ms_since(Clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
+// 本轮实际参数: 参数列含 d 才吃请求的 d (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams
+factor::Param param_of(const OperatorRow &row, const OperatorsRequest &rq) {
+  factor::Param p;
+  p.d = std::strchr(row.params, 'd') != nullptr ? rq.d : 1;
+  factor::check::set_k(row.name, p);
+  return p;
+}
+
 // 一个算子: 造数 (PLAIN, 配方按算子, 与 op_check 同 seed 同张量) → naive / stream / gpu 各计时 → 对拍
 template <class S, class N, int AR, factor::Win W, bool IS_CS>
 void run_op(const OperatorsRequest &rq, OperatorRow &row) {
@@ -40,9 +48,7 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
   fill(d.y, rc.y, Profile::PLAIN, d.T, d.A, rng);
   fill(d.z, rc.z, Profile::PLAIN, d.T, d.A, rng);
 
-  factor::Param p;
-  p.d = std::strchr(row.params, 'd') != nullptr ? rq.d : 1; // 无 d 参数的算子与 op_check 同给 1
-  set_k(nm, p);
+  const factor::Param &p = row.param; // 复位阶段已按请求填好 (见 param_of)
 
   Plane ref, got;
   Clock::time_point t0 = Clock::now();
@@ -76,17 +82,20 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
 
 OperatorsService::OperatorsService() {
   // 表序即行序; 静态列直接抄 OpTable, 跑手按同一行实例化 (缺任一后端同名 struct → 此处编译错)
-#define ROW_TS(Name, ar, win, prm, gpu, doc)                                          \
-  rows.push_back({#Name, false, ar, factor::Win::win, factor::Strat::gpu, prm, doc}); \
+#define ROW_TS(Name, ar, win, prm, gpu, tex, note)                                          \
+  rows.push_back({#Name, false, ar, factor::Win::win, factor::Strat::gpu, prm, tex, note}); \
   runners_.push_back(&run_op<factor::ts::Name, factor::naive::ts::Name, ar, factor::Win::win, false>);
-#define ROW_CS(Name, ar, prm, gpu, doc)                                                \
-  rows.push_back({#Name, true, ar, factor::Win::POINT, factor::Strat::gpu, prm, doc}); \
+#define ROW_CS(Name, ar, prm, gpu, tex, note)                                                \
+  rows.push_back({#Name, true, ar, factor::Win::POINT, factor::Strat::gpu, prm, tex, note}); \
   runners_.push_back(&run_op<factor::cs::Name, factor::naive::cs::Name, ar, factor::Win::POINT, true>);
   OP_TS(ROW_TS)
   OP_CS(ROW_CS)
 #undef ROW_TS
 #undef ROW_CS
   assert(rows.size() == runners_.size());
+  // 未跑之前也显示默认请求下的参数 (d 默认值), 表一打开就有 Args 列
+  for (OperatorRow &r : rows)
+    r.param = param_of(r, OperatorsRequest{});
 }
 
 void OperatorsService::Request(const OperatorsRequest &req) {
@@ -145,6 +154,7 @@ void OperatorsService::worker_loop() {
       std::lock_guard<std::mutex> lock(mutex);
       current = req;
       for (OperatorRow &r : rows) {
+        r.param = param_of(r, req);
         r.status = RowStatus::Pending;
         r.stream = {}, r.gpu = {};
         r.naive_ms = 0, r.stream_ms = 0, r.gpu_ms = -1;

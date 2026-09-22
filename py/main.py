@@ -80,6 +80,13 @@ def build_main_project():
     else:
         cmake_args.append("-DASSERT_MODE=OFF")
 
+    # 因子 GPU 后端 (nvcc; run.py ENABLE_CUDA)
+    if env.get("FACTOR_CUDA") == "ON":
+        print("Factor CUDA backend: ENABLED")
+        cmake_args.append("-DFACTOR_CUDA=ON")
+    else:
+        cmake_args.append("-DFACTOR_CUDA=OFF")
+
     # Configure
     print("\nConfiguring with CMake...")
     result = subprocess.run(cmake_args, cwd=cpp_project_dir, env=env)

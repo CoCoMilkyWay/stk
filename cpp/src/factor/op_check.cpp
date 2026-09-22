@@ -145,12 +145,12 @@ int main(int argc, char **argv) {
               factor::gpu::available() ? "on" : "off (未编译 CUDA 后端)");
 
   // 分派: 表里每一行展开成一个用例组; 缺任一后端的同名 struct → 编译错; 流式 kWin 与表不符 → 编译错
-#define CK_TS(Name, ar, win, prm, gpu, doc)                                                   \
+#define CK_TS(Name, ar, win, prm, gpu, tex, note)                                             \
   static_assert(factor::ts::Name::kWin == Win::win, #Name ": 流式 kWin 与 OpTable 窗列不符"); \
   if (only.empty() || only == #Name)                                                          \
     check<factor::ts::Name, factor::naive::ts::Name, ar, Win::win, false>(#Name, prm, T, A, seed, rep);
-#define CK_CS(Name, ar, prm, gpu, doc) \
-  if (only.empty() || only == #Name)   \
+#define CK_CS(Name, ar, prm, gpu, tex, note) \
+  if (only.empty() || only == #Name)         \
     check<factor::cs::Name, factor::naive::cs::Name, ar, Win::POINT, true>(#Name, prm, T, A, seed, rep);
   OP_TS(CK_TS)
   OP_CS(CK_CS)

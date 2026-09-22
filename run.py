@@ -31,6 +31,10 @@ ENABLE_PROFILE = False
 ENABLE_ASSERT = True
 ENABLE_PRODUCTION = False  # Auto-enabled if all others are False
 
+# 因子 GPU 后端 (factor/*/Gpu.cuh, nvcc): 与上面的模式正交. ON 需要完整 CUDA Toolkit (nvcc + CCCL),
+# op_check 与 app_main (Factors→Operators 页 GPU 列) 一并链 cudart; OFF 链 stub, GPU 列显示 n/a.
+ENABLE_CUDA = False
+
 
 def _cleanup_processes():
     """Kill old processes."""
@@ -40,7 +44,7 @@ def _cleanup_processes():
     time.sleep(0.3)
 
 
-def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert):
+def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert, enable_cuda):
     """Build project via py/{app_name}.py."""
     py_script = f"py/{app_name}.py"
 
@@ -53,6 +57,7 @@ def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert):
     env["DEBUG_MODE"] = "ON" if enable_debug else "OFF"
     env["PROFILE_MODE"] = "ON" if enable_profile else "OFF"
     env["ASSERT_MODE"] = "ON" if enable_assert else "OFF"
+    env["FACTOR_CUDA"] = "ON" if enable_cuda else "OFF"
 
     result = subprocess.run(["python", py_script], env=env)
     if result.returncode != 0:
@@ -87,7 +92,7 @@ def main():
     _cleanup_processes()
 
     print("Building...")
-    _build(APP_NAME, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT)
+    _build(APP_NAME, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT, ENABLE_CUDA)
 
     print("Running...")
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
