@@ -739,13 +739,13 @@ set_source_files_properties(
 )
 
 # ============================================================================
-# op_check: 因子算子三方对拍 (naive 参考 / stream 流式 / gpu 向量; OpTable.hpp 展开)
+# op_check: 因子算子三方对拍 (stream 实盘流式 / cpu 挖掘向量 / gpu 挖掘 CUDA; OpTable.hpp 展开)
 # ============================================================================
 # 只依赖 factor/*.hpp, 无 GUI / Arrow / Python. 整 target precise math:
 # 退化判据 (disp_ok / den_ok) 与 guard 依赖受控浮点, -ffast-math 下会失效.
 # GPU 后端 (op_check_gpu.cu 或 stub) 同时挂给 app_main: GUI Factors→Operators 页经同一 GpuRun.hpp 调 GPU.
 option(FACTOR_CUDA "编译 GPU 算子后端 (nvcc)" OFF)
-set(FACTOR_CUDA_ARCH "75" CACHE STRING "GPU 架构算力号 (RTX 2060 = 75)")
+set(FACTOR_CUDA_ARCH "native" CACHE STRING "GPU 架构算力号, native = 探测本机 GPU")
 
 set(FACTOR_GPU_SOURCE ../../src/factor/op_check_gpu_stub.cpp)
 if(FACTOR_CUDA)
@@ -788,7 +788,7 @@ if(FACTOR_CUDA)
         target_compile_options(${tgt} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${PRECISE_MATH_FLAG}>)
         target_link_libraries(${tgt} PRIVATE CUDA::cudart)
     endforeach()
-    message(STATUS "factor: GPU 后端 ON (sm_${FACTOR_CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION}, CUB ${FACTOR_CUB_DIR}) → op_check + app_main")
+    message(STATUS "factor: GPU 后端 ON (arch=${FACTOR_CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION}, CUB ${FACTOR_CUB_DIR}) → op_check + app_main")
 else()
     message(STATUS "factor: GPU 后端 OFF (op_check 两方对拍; GUI Operators 页 GPU 列 n/a)")
 endif()

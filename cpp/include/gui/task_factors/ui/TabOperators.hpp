@@ -1,5 +1,6 @@
-// Factors→Operators: OpTable 全部算子一张表. 静态列 = 表属性, 动态列 = worker 逐行发布的
-// 对拍结果 (stream / gpu 各对 naive) 与三后端耗时. 顶部一行参数 + Run / Cancel.
+// Factors→Operators: OpTable 全部算子一张表. 静态列 = 表属性, 动态列 = worker 逐行发布的三后端耗时
+// (stream 为 golden; cpu / gpu 没过对拍就以红色 error + Δ 顶替时间, 过了但比上游慢则 ms 标红).
+// 顶部一行参数 + Run / Cancel.
 #pragma once
 
 #include "gui/task_factors/services/OperatorsService.hpp"

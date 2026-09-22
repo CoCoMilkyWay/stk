@@ -4,7 +4,7 @@
 // CS 轴挖掘后端 (CUDA, sm_75 / RTX 2060 6GB / 336 GB·s⁻¹; clang -x cuda)
 // =============================================================================
 //   语义契约见 factor/Contract.hpp, 算子真相表见 factor/OpTable.hpp.
-//   本文件与 CS/Naive.hpp / CS/Stream.hpp **完全独立**, 只依赖 Contract + CUDA/CUB.
+//   本文件与 CS/Cpu.hpp / CS/Stream.hpp **完全独立**, 只依赖 Contract + CUDA/CUB.
 //
 //   【布局】SoA 行主序 [T][A]: 同一时刻的 A 个资产在内存里连续 → 截面归约天然合并访存.
 //   【核配置总则】**一行一 block**, grid = T (19200 个 block), blockDim = 512:
@@ -522,7 +522,7 @@ struct CsWinsor {
     if (rok) {
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
       ql = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, p.k);
-      // 上分位必须在 double 下算 1−k: 先 float 减再提升会与 naive / stream 差一个桶
+      // 上分位必须在 double 下算 1−k: 先 float 减再提升会与 cpu / stream 差一个桶
       // (⌈q·cnt⌉ 的取整对 q 的末位极敏感, 见 CsWinsorRank 的 0.99f vs 0.99 之坑)
       qh = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 1.0 - static_cast<double>(p.k));
     }

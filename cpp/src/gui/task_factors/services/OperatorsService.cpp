@@ -1,11 +1,11 @@
-// OperatorsService — 见头文件. 本 TU include 三后端头 (Stream / Naive; GPU 经 GpuRun.hpp),
+// OperatorsService — 见头文件. 本 TU include 三后端头 (Stream / Cpu; GPU 经 GpuRun.hpp),
 // 依赖受控浮点: CMake 里已列入 PRECISE_MATH 源 (-fno-fast-math), 与 op_check 同待遇.
 #include "gui/task_factors/services/OperatorsService.hpp"
 
-#include "factor/TS/Naive.hpp"  // IWYU pragma: keep
+#include "factor/TS/Cpu.hpp"    // IWYU pragma: keep
 #include "factor/TS/Stream.hpp" // IWYU pragma: keep
 
-#include "factor/CS/Naive.hpp"  // IWYU pragma: keep
+#include "factor/CS/Cpu.hpp"    // IWYU pragma: keep
 #include "factor/CS/Stream.hpp" // IWYU pragma: keep
 
 #include "factor/GpuRun.hpp"
@@ -35,8 +35,8 @@ factor::Param param_of(const OperatorRow &row, const OperatorsRequest &rq) {
   return p;
 }
 
-// 一个算子: 造数 (PLAIN, 配方按算子, 与 op_check 同 seed 同张量) → naive / stream / gpu 各计时 → 对拍
-template <class S, class N, int AR, factor::Win W, bool IS_CS>
+// 一个算子: 造数 (PLAIN, 配方按算子, 与 op_check 同 seed 同张量) → cpu / stream / gpu 各计时 → 对拍
+template <class S, class C, int AR, factor::Win W, bool IS_CS>
 void run_op(const OperatorsRequest &rq, OperatorRow &row) {
   using namespace factor::check;
   const std::string nm = row.name;
@@ -52,8 +52,8 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
 
   Plane ref, got;
   Clock::time_point t0 = Clock::now();
-  run_naive<N>(d, p, AR, ref);
-  row.naive_ms = ms_since(t0);
+  run_cpu<C>(d, p, AR, ref);
+  row.cpu_ms = ms_since(t0);
 
   t0 = Clock::now();
   if constexpr (IS_CS)
@@ -84,10 +84,10 @@ OperatorsService::OperatorsService() {
   // 表序即行序; 静态列直接抄 OpTable, 跑手按同一行实例化 (缺任一后端同名 struct → 此处编译错)
 #define ROW_TS(Name, ar, win, prm, gpu, tex, note)                                          \
   rows.push_back({#Name, false, ar, factor::Win::win, factor::Strat::gpu, prm, tex, note}); \
-  runners_.push_back(&run_op<factor::ts::Name, factor::naive::ts::Name, ar, factor::Win::win, false>);
+  runners_.push_back(&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::Win::win, false>);
 #define ROW_CS(Name, ar, prm, gpu, tex, note)                                                \
   rows.push_back({#Name, true, ar, factor::Win::POINT, factor::Strat::gpu, prm, tex, note}); \
-  runners_.push_back(&run_op<factor::cs::Name, factor::naive::cs::Name, ar, factor::Win::POINT, true>);
+  runners_.push_back(&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::Win::POINT, true>);
   OP_TS(ROW_TS)
   OP_CS(ROW_CS)
 #undef ROW_TS
@@ -157,7 +157,7 @@ void OperatorsService::worker_loop() {
         r.param = param_of(r, req);
         r.status = RowStatus::Pending;
         r.stream = {}, r.gpu = {};
-        r.naive_ms = 0, r.stream_ms = 0, r.gpu_ms = -1;
+        r.cpu_ms = 0, r.stream_ms = 0, r.gpu_ms = -1;
       }
     }
     done_.store(0, std::memory_order_relaxed);

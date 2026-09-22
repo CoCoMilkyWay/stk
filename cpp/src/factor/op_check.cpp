@@ -1,8 +1,9 @@
 // =============================================================================
-// op_check: 因子算子三方对拍 (naive 参考 / stream 流式 / gpu 向量, 全程 C++, 不经 Python)
+// op_check: 因子算子三方对拍 (stream 实盘流式 / cpu 挖掘向量 / gpu 挖掘 CUDA, 全程 C++, 不经 Python)
 // =============================================================================
 //   用法  op_check [--op Name] [--T 720] [--A 32] [--seed 1] [-v]
-//   naive 是基准 (按定义直白算, double), stream 与 gpu 各自与它比.
+//   stream 是语义锚 (实盘路径); cpu 整张量一次算出参考平面, stream 与 gpu 各自与它比
+//   (cpu↔stream 紧容差互证, gpu↔cpu 松容差 —— 传递闭包覆盖三方).
 //   三份实现互不可见 (各自只 include Contract.hpp), 所以这套对拍不会空转.
 //   分派表由 OpTable.hpp 展开: 表里有名字而某个后端没有同名 struct → 此处编译错.
 //
@@ -12,10 +13,10 @@
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
 // =============================================================================
 
-#include "factor/TS/Naive.hpp"  // IWYU pragma: keep
+#include "factor/TS/Cpu.hpp"    // IWYU pragma: keep
 #include "factor/TS/Stream.hpp" // IWYU pragma: keep
 
-#include "factor/CS/Naive.hpp"  // IWYU pragma: keep
+#include "factor/CS/Cpu.hpp"    // IWYU pragma: keep
 #include "factor/CS/Stream.hpp" // IWYU pragma: keep
 
 #include "factor/Check.hpp"
@@ -60,7 +61,7 @@ void emit(Report &rep, const char *name, const Param &p, const char *prof, const
 
 // 一个算子的全部用例: profile × d 扫描
 //   d 扫 {1, 5, 20, 240, 300}: 240 = 恰一段 (ROLL 窗界与段界重合), 300 > 段 (窗跨段, GPU 块界不对齐段界)
-template <class S, class N, int AR, Win W, bool IS_CS>
+template <class S, class C, int AR, Win W, bool IS_CS>
 void check(const char *name, const char *params, int T, int A, unsigned seed, Report &rep) {
   const std::string nm = name;
   const Recipe rc = recipe_of(nm);
@@ -85,7 +86,7 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
       set_k(nm, p);
 
       Plane ref, got;
-      run_naive<N>(d, p, AR, ref);
+      run_cpu<C>(d, p, AR, ref);
       if constexpr (IS_CS)
         run_stream_cs<S>(d, p, AR, got);
       else
@@ -148,10 +149,10 @@ int main(int argc, char **argv) {
 #define CK_TS(Name, ar, win, prm, gpu, tex, note)                                             \
   static_assert(factor::ts::Name::kWin == Win::win, #Name ": 流式 kWin 与 OpTable 窗列不符"); \
   if (only.empty() || only == #Name)                                                          \
-    check<factor::ts::Name, factor::naive::ts::Name, ar, Win::win, false>(#Name, prm, T, A, seed, rep);
+    check<factor::ts::Name, factor::cpu::ts::Name, ar, Win::win, false>(#Name, prm, T, A, seed, rep);
 #define CK_CS(Name, ar, prm, gpu, tex, note) \
   if (only.empty() || only == #Name)         \
-    check<factor::cs::Name, factor::naive::cs::Name, ar, Win::POINT, true>(#Name, prm, T, A, seed, rep);
+    check<factor::cs::Name, factor::cpu::cs::Name, ar, Win::POINT, true>(#Name, prm, T, A, seed, rep);
   OP_TS(CK_TS)
   OP_CS(CK_CS)
 #undef CK_TS

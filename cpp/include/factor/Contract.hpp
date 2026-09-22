@@ -10,9 +10,9 @@
 //   二者都只是 OpTable 的属性列, 不上升为分类.
 //
 //   【三后端】同名 struct, 三处**完全独立**实现, 不共享一行算法代码 (否则对拍空转):
-//     factor::ts::<Name>         factor::cs::<Name>         实盘流式 (CPU, O(d) 状态)   TS/Stream.hpp  CS/Stream.hpp
-//     factor::naive::ts::<Name>  factor::naive::cs::<Name>  对拍参考 (double, 按定义)   TS/Naive.hpp   CS/Naive.hpp
-//     factor::gpu::ts::<Name>    factor::gpu::cs::<Name>    挖掘 (CUDA, 向量化)         TS/Gpu.cuh     CS/Gpu.cuh
+//     factor::ts::<Name>       factor::cs::<Name>       实盘流式 (逐点因果, O(d) 状态)  TS/Stream.hpp  CS/Stream.hpp
+//     factor::cpu::ts::<Name>  factor::cpu::cs::<Name>  挖掘 CPU (整张量向量化批算)     TS/Cpu.hpp     CS/Cpu.hpp
+//     factor::gpu::ts::<Name>  factor::gpu::cs::<Name>  挖掘 GPU (CUDA, 向量化)         TS/Gpu.cuh     CS/Gpu.cuh
 //   缺任一侧 → op_check 编译错 (分派由 OP_TS / OP_CS 宏展开).
 //   OpTable 的"窗"列与"GPU 策略"列都是**载荷**: 流式 struct 带 kWin, GPU struct 带 kStrat, op_check static_assert 对表.
 //

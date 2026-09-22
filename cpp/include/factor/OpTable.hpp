@@ -47,7 +47,7 @@
 //     Q_p         截面 p 分位;  Φ⁻¹  标准正态分位;  G(a)  a 所在组 (整数 id 由 y 或 z 给)
 //     序统计族 (rank / median / mad / quantile / topk / gini) 三后端同用 kBuckets 桶近似, 桶计数整数, 对拍逐位
 //
-//   加算子 = 本表一行 + TS(或 CS) 的 Stream / Naive / Gpu 各一个同名 struct; 缺任一侧 → op_check 编译错;
+//   加算子 = 本表一行 + TS(或 CS) 的 Stream / Cpu / Gpu 各一个同名 struct; 缺任一侧 → op_check 编译错;
 //   流式 struct::kWin / GPU struct::kStrat 与本表不符 → op_check static_assert 错.
 //   TsYoY 不入表: = TsDelayRoll + TsDiv 的组合, 且 d 需一年分钟数, 超出块 carry 上限.
 //   "退化" 一词的含义见 Contract.hpp: 全并列 (精确) / 相消 (相对 kRelEps) / y = 0 (逐点).

@@ -6,7 +6,7 @@
 //   两个消费者共用同一份 (口径必须一致, 否则 GUI 里"过"而 op_check 里"挂"):
 //     src/factor/op_check.cpp                     命令行三方对拍 (profile × d 全扫)
 //     src/gui/task_factors/services/OperatorsService  GUI Operators 表 (单张量, 逐算子对拍 + 计时)
-//   本头只依赖 Contract.hpp; 驱动是模板, 具体的 Stream / Naive struct 由消费者 include 后实例化.
+//   本头只依赖 Contract.hpp; 驱动是模板, 具体的 Stream / Cpu struct 由消费者 include 后实例化.
 //   依赖受控浮点: 消费者 TU 必须编进 -fno-fast-math (CMake PRECISE_MATH_FLAG).
 // =============================================================================
 
@@ -159,7 +159,7 @@ inline void set_k(const std::string &name, Param &p) {
 struct Tol {
   double atol, rtol;
 };
-// GPU 走 fp32 与完全不同的并行序, 容差比 CPU 两份宽; 个别算子再单独放宽.
+// GPU 走 fp32 与完全不同的并行序, 容差比 cpu↔stream 宽; 个别算子再单独放宽.
 // TINY profile 把 atol 一起按量级缩 (否则 atol 比数据还大, 比较空转); rtol 本来就无量纲.
 inline Tol tol_of(const std::string &name, bool gpu, Profile pr) {
   Tol t{1e-3, 1e-3};
@@ -203,15 +203,15 @@ inline Diff compare(const Plane &ref, const Plane &got, Tol tol) {
   return d;
 }
 
-// ---- 驱动: naive (整段一次) / stream (逐点推进) / gpu 由消费者经 GpuRun.hpp 调 ----
+// ---- 驱动: cpu (整张量一次) / stream (逐点推进) / gpu 由消费者经 GpuRun.hpp 调 ----
 
 inline const float *pv(const Plane &p, bool use) { return use ? p.v.data() : nullptr; }
 inline const uint8_t *pm(const Plane &p, bool use) { return use ? p.m.data() : nullptr; }
 
-template <class N>
-void run_naive(const Data &d, const Param &p, int ar, Plane &o) {
+template <class C>
+void run_cpu(const Data &d, const Param &p, int ar, Plane &o) {
   o.resize(static_cast<size_t>(d.T) * d.A);
-  N::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
+  C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
          pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
 }
 

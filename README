@@ -127,11 +127,11 @@ stk/
 │   │   │   ├── StreamHist.hpp                              # 🧬 流式后端专用分桶直方图 (序统计族 rank/quantile, 整数桶计数 → 三后端逐位一致)
 │   │   │   ├── GpuRun.hpp                                  # 🧬 GPU 对拍宿主接口 (POD 指针; 未开 CUDA 链 stub, 退化为两方对拍)
 │   │   │   ├── TS/                                         # 🧬 时序算子三后端 (同名 struct, 互不可见, 缺一 → op_check 编译错)
-│   │   │   │   ├── Stream.hpp                              # 🧬   实盘流式 (CPU, O(1) 状态, 单资产因果)
-│   │   │   │   ├── Naive.hpp                               # 🧬   对拍参考 (double, 按定义直白算)
-│   │   │   │   └── Gpu.cuh                                 # 🧬   挖掘 (CUDA 向量化, POINT/GATHER/SCAN/EXTREME/HIST/RECUR)
+│   │   │   │   ├── Stream.hpp                              # 🧬   实盘流式 (逐点因果, O(d) 状态, 单资产推进)
+│   │   │   │   ├── Cpu.hpp                                 # 🧬   挖掘 CPU (整张量向量化批算, 无 GPU 时的 fallback, 吞吐 ≥ stream)
+│   │   │   │   └── Gpu.cuh                                 # 🧬   挖掘 GPU (CUDA 向量化, POINT/GATHER/SCAN/EXTREME/HIST/RECUR, 吞吐 ≥ CPU)
 │   │   │   └── CS/                                         # 🧬 截面算子三后端 (同名 struct, 同 TS 三份独立实现)
-│   │   │       ├── Stream.hpp / Naive.hpp / Gpu.cuh        # 🧬   GPU 策略: REDUCE / HIST / GROUP
+│   │   │       ├── Stream.hpp / Cpu.hpp / Gpu.cuh          # 🧬   GPU 策略: REDUCE / HIST / GROUP
 │   │   ├── math/                                           # 📐 distribution / normalize / sample / spectral / stationary / timeseries / autoencoder / model
 │   │   │   ├── Operator.hpp                                # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
@@ -153,9 +153,9 @@ stk/
 │   │       └── VariableMonitor.hpp                         # 🔧 变量值监控
 │   ├── src/                                                # 💾 源文件实现 (多数对应include/, boost/math为header-only无实现)
 │   │   ├── main.cpp                                        # 💾 程序入口
-│   │   ├── factor/op_check.cpp                             # 💾 三方对拍 CLI (独立 target op_check: naive 参考 / stream 流式 / gpu 向量; 造数+边界 profile, 掩码逐位相等+容差)
+│   │   ├── factor/op_check.cpp                             # 💾 三方对拍 CLI (独立 target op_check: stream 实盘流式 / cpu 挖掘向量 / gpu 挖掘 CUDA; 造数+边界 profile, 掩码逐位相等+容差)
 │   │   ├── factor/op_check_gpu.cu                          # 💾 GPU 后端 CUDA 实现 (nvcc 编译, 仅 FACTOR_CUDA ON 时入链)
-│   │   ├── factor/op_check_gpu_stub.cpp                    # 💾 GPU stub (无 CUDA 时 available()=false, op_check 退化为 naive↔stream 两方对拍)
+│   │   ├── factor/op_check_gpu_stub.cpp                    # 💾 GPU stub (无 CUDA 时 available()=false, op_check 退化为 cpu↔stream 两方对拍)
 │   │   ├── api/ codec/ shared/ misc/ worker/ features/     # 💾 对应模块实现
 │   │   ├── gui/Gui.cpp / Tasks.cpp                         # 💾 GUI主循环与任务注册实现
 │   │   ├── gui/Run_OpenGL.cpp                              # 💾 OpenGL后端入口

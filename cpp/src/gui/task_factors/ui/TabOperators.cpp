@@ -98,39 +98,37 @@ const char *strat_name(factor::Strat s) {
   return "?";
 }
 
-// 对拍列: 未跑 "…" / 跑中 "running" / ok + max|Δ| / FAIL + 掩码不符数 + 超差数
-void render_diff_cell(const OperatorRow &r, const factor::check::Diff &d, bool absent) {
+// 时间列 (stream 是 golden, cpu / gpu 各自带对拍结论):
+//   未跑 "…" / 跑中 "running" / 无后端 "n/a" / 没过 check → 红色 error + Δ (不显示时间) / 过了 → ms
+//   slower = 该后端比上游慢 (要求 stream ≥ cpu ≥ gpu), 标红 ms
+// chk = nullptr 表示该列无对拍 (stream 列)
+void render_time_cell(const OperatorRow &r, double ms, const factor::check::Diff *chk, bool slower) {
   if (r.status != RowStatus::Done) {
     ImGui::TextColored(StatusColor(r.status == RowStatus::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted),
                        "%s", r.status == RowStatus::Running ? "running" : "…");
     return;
   }
-  if (absent) {
+  if (ms < 0) {
     ImGui::TextDisabled("n/a");
     return;
   }
-  if (d.ok())
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "ok  Δ=%.2g", d.worst);
-  else
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "FAIL mask %d val %d/%d Δ=%.2g", d.mask_bad,
-                       d.val_bad, d.compared, d.worst);
-}
-
-void render_ms_cell(const OperatorRow &r, double ms) {
-  if (r.status != RowStatus::Done)
-    ImGui::TextDisabled("…");
-  else if (ms < 0)
-    ImGui::TextDisabled("n/a");
+  if (chk && !chk->ok()) {
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "FAIL mask %d val %d/%d Δ=%.2g", chk->mask_bad,
+                       chk->val_bad, chk->compared, chk->worst);
+    return;
+  }
+  if (slower)
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "%.3f", ms);
   else
     ImGui::Text("%.3f", ms);
 }
 
-// 排序键: 未跑的行排最后 (时间列 / 误差列都按 -1 处理)
+// 排序键: 未跑的行按 -1 (排最前 / 降序时最后), FAIL 恒排在 ok 之后
 double sort_ms(const OperatorRow &r, double ms) { return r.status == RowStatus::Done ? ms : -1.0; }
-double sort_worst(const OperatorRow &r, const factor::check::Diff &d) {
-  if (r.status != RowStatus::Done)
+double sort_ms_chk(const OperatorRow &r, double ms, const factor::check::Diff &d) {
+  if (r.status != RowStatus::Done || ms < 0)
     return -1.0;
-  return d.ok() ? d.worst : 1e300; // FAIL 恒排在 ok 之后 (降序时 FAIL 置顶)
+  return d.ok() ? ms : 1e300;
 }
 
 } // namespace
@@ -241,7 +239,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
-  constexpr int kNumCols = 14;
+  constexpr int kNumCols = 11;
   if (ImGui::BeginTable("OperatorTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
@@ -254,13 +252,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::TableSetupColumn("Args", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 4
     ImGui::TableSetupColumn("GPU", ImGuiTableColumnFlags_WidthFixed);                                    // 5
     ImGui::TableSetupColumn("Formula", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 6
-    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 7
-    ImGui::TableSetupColumn("Stream vs Naive", ImGuiTableColumnFlags_WidthFixed);                        // 8
-    ImGui::TableSetupColumn("GPU vs Naive", ImGuiTableColumnFlags_WidthFixed);                           // 9
-    ImGui::TableSetupColumn("Naive ms", ImGuiTableColumnFlags_WidthFixed);                               // 10
-    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                              // 11
-    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 12
-    ImGui::TableSetupColumn("Stream/GPU", ImGuiTableColumnFlags_WidthFixed);                             // 13
+    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                              // 7
+    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 8
+    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                 // 9
+    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);    // 10
     ImGui::TableSetupScrollFreeze(0, 1);
 
     if (ui.fit_frames > 0) {
@@ -271,8 +266,8 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"Name", "Ar", "Win", "Axis", "Args", "GPU", "Formula", "Note",
-                                     "Stream vs Naive", "GPU vs Naive", "Naive ms", "Stream ms", "GPU ms", "Stream/GPU"};
+    const char *headers[kNumCols] = {"Name", "Ar", "Win", "Axis", "Args", "GPU", "Formula",
+                                     "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
         "算子名: 轴_核_窗. Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点.\n"
         "默认排序: 元数 → 窗 → 轴 (TS 先) → OpTable 表序; 点表头按列排 (三态)",
@@ -294,13 +289,14 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "  Σ_{W_t} / Π_{W_t} 窗内求和 / 乘积 (求和变量恒是 s 或 b); max min med cov var corr 的下标 = 取值域\n"
         "  pct(v; S) 并列均秩 pct rank ∈ [0,1]; Q_p 截面 p 分位; Φ⁻¹ 标准正态分位; G(a) 组 (整数 id 由 y / z 给)\n"
         "  所有 Σ / 计数 / 极值只计有效样本; 序统计族三后端同用 256 桶近似",
+        "stream (实盘路径, 逐资产逐点 push) 的 wall time = golden: 正确性基准, 也是耗时上界",
+        "cpu 整张量一次批算的 wall time (不含造数)\n"
+        "  没过对拍 (掩码逐位相等且 |Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|)) → 红色 FAIL + Δ, 不显示时间\n"
+        "  过了但比 stream 慢 → ms 标红 (要求 stream ≥ cpu ≥ gpu)",
+        "GPU wall time: 含 cudaMalloc + H2D/D2H 拷贝 (GpuRun 接口如此), 首次调用前已热身\n"
+        "  没过对拍 (对 cpu: |Δ| ≤ 1e-3 + 1e-3·max, CsNormRank / 三四阶矩单独放宽) → 红色 FAIL + Δ, 不显示时间\n"
+        "  过了但比 cpu 慢 → ms 标红",
         "备注: 退化条件 (输出无效) / 参数含义 / 近似说明. \"退化\"见 Contract.hpp: 全并列 (精确) / 相消 (相对 1e-6) / 除零",
-        "流式 (实盘路径, 逐点 push) 对 naive (double, 按定义): 掩码逐位相等且 |Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|)",
-        "GPU (fp32 并行) 对 naive: |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽)",
-        "naive 整段一次的 wall time (不含造数)",
-        "stream 逐资产沿 t 推进的 wall time",
-        "GPU wall time: 含 cudaMalloc + H2D/D2H 拷贝 (GpuRun 接口如此), 首次调用前已热身",
-        "stream_ms / gpu_ms",
     };
     for (int c = 0; c < kNumCols; c++) {
       ImGui::TableSetColumnIndex(c);
@@ -351,28 +347,15 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         case 5:
           cmp = (int)ra.strat - (int)rb.strat;
           break;
-        case 8:
-          cmp = cmp3(sort_worst(ra, ra.stream), sort_worst(rb, rb.stream));
-          break;
-        case 9:
-          cmp = cmp3(ra.gpu_ms < 0 ? -1.0 : sort_worst(ra, ra.gpu), rb.gpu_ms < 0 ? -1.0 : sort_worst(rb, rb.gpu));
-          break;
-        case 10:
-          cmp = cmp3(sort_ms(ra, ra.naive_ms), sort_ms(rb, rb.naive_ms));
-          break;
-        case 11:
+        case 7:
           cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
           break;
-        case 12:
-          cmp = cmp3(sort_ms(ra, ra.gpu_ms), sort_ms(rb, rb.gpu_ms));
+        case 8:
+          cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.stream), sort_ms_chk(rb, rb.cpu_ms, rb.stream));
           break;
-        case 13: {
-          auto sp = [](const OperatorRow &r) {
-            return r.status == RowStatus::Done && r.gpu_ms > 0 ? r.stream_ms / r.gpu_ms : -1.0;
-          };
-          cmp = cmp3(sp(ra), sp(rb));
+        case 9:
+          cmp = cmp3(sort_ms_chk(ra, ra.gpu_ms, ra.gpu), sort_ms_chk(rb, rb.gpu_ms, rb.gpu));
           break;
-        }
         }
         return ui.sort_ascending ? cmp < 0 : cmp > 0;
       });
@@ -409,25 +392,16 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       else
         ImGui::TextUnformatted(r.formula); // 解析失败回退原文
       ImGui::TableSetColumnIndex(7);
+      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据
+      ImGui::TableSetColumnIndex(8);
+      render_time_cell(r, r.cpu_ms, &r.stream, r.cpu_ms > r.stream_ms);
+      ImGui::TableSetColumnIndex(9);
+      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      ImGui::TableSetColumnIndex(10);
       if (r.note[0] == '\0')
         ImGui::TextDisabled("-");
       else
         ImGui::TextUnformatted(r.note);
-      ImGui::TableSetColumnIndex(8);
-      render_diff_cell(r, r.stream, false);
-      ImGui::TableSetColumnIndex(9);
-      render_diff_cell(r, r.gpu, r.gpu_ms < 0);
-      ImGui::TableSetColumnIndex(10);
-      render_ms_cell(r, r.naive_ms);
-      ImGui::TableSetColumnIndex(11);
-      render_ms_cell(r, r.stream_ms);
-      ImGui::TableSetColumnIndex(12);
-      render_ms_cell(r, r.gpu_ms);
-      ImGui::TableSetColumnIndex(13);
-      if (r.status == RowStatus::Done && r.gpu_ms > 0)
-        ImGui::Text("%.2fx", r.stream_ms / r.gpu_ms);
-      else
-        ImGui::TextDisabled("%s", r.status == RowStatus::Done ? "n/a" : "…");
     }
     ImGui::EndTable();
   }
@@ -523,10 +497,10 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       j["status"] = row_status_name(r.status);
       // 动态列只落跑完的行 (表格显示 "…" 的格子不落键)
       if (r.status == RowStatus::Done) {
-        j["stream_vs_naive"] = diff_json(r.stream);
+        j["stream_vs_cpu"] = diff_json(r.stream);
         if (r.gpu_ms >= 0)
-          j["gpu_vs_naive"] = diff_json(r.gpu);
-        j["naive_ms"] = sig4(r.naive_ms);
+          j["gpu_vs_cpu"] = diff_json(r.gpu);
+        j["cpu_ms"] = sig4(r.cpu_ms);
         j["stream_ms"] = sig4(r.stream_ms);
         if (r.gpu_ms >= 0) {
           j["gpu_ms"] = sig4(r.gpu_ms);

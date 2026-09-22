@@ -1,5 +1,5 @@
 // OperatorsService — Factors→Operators 表的单 worker: 一张合成张量喂给 OpTable 全部算子,
-// 逐算子跑 naive (参考) / stream (实盘流式) / gpu (CUDA, 编了才有), 对拍 + 计时, 算完一行发布一行.
+// 逐算子跑 cpu (挖掘向量) / stream (实盘流式) / gpu (CUDA, 编了才有), 对拍 + 计时, 算完一行发布一行.
 //
 // 线程模型 (对仗 task_features 的 StreamService, 但不读特征库, 故不套它):
 //   - GUI 线程: Request(req) 覆盖挂起请求 + 取消在跑 + 唤醒 (worker 懒起); RequestCancel 只中断
@@ -52,9 +52,9 @@ struct OperatorRow {
   // 动态
   factor::Param param; // 本轮实际喂的参数 (d 来自请求, k/k2 来自 Check.hpp kKParams); 复位时就填, 不等跑到
   RowStatus status = RowStatus::Pending;
-  factor::check::Diff stream;                      // stream vs naive
-  factor::check::Diff gpu;                         // gpu vs naive (gpu_ms < 0 时无意义)
-  double naive_ms = 0, stream_ms = 0, gpu_ms = -1; // gpu_ms < 0 = 无 GPU 后端
+  factor::check::Diff stream;                    // stream vs cpu
+  factor::check::Diff gpu;                       // gpu vs cpu (gpu_ms < 0 时无意义)
+  double cpu_ms = 0, stream_ms = 0, gpu_ms = -1; // gpu_ms < 0 = 无 GPU 后端
 };
 
 enum class OperatorsStatus : uint8_t { Idle,

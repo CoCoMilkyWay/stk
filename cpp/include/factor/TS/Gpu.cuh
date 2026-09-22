@@ -4,7 +4,7 @@
 // TS 轴挖掘后端 (CUDA, sm_75 / RTX  / 336 GB·s⁻¹; clang -x cuda)
 // =============================================================================
 //   语义契约见 factor/Contract.hpp, 算子真相表见 factor/OpTable.hpp.
-//   本文件与 TS/Naive.hpp / TS/Stream.hpp **完全独立** (对拍才有意义), 只依赖 Contract + CUDA/CUB.
+//   本文件与 TS/Cpu.hpp / TS/Stream.hpp **完全独立** (对拍才有意义), 只依赖 Contract + CUDA/CUB.
 //
 //   【布局】SoA 行主序 [T][A], 下标 t*A + a. 同一时刻的资产在内存里连续
 //     → TS 方向"一线程一资产 + 沿 t 串行"天然合并访存 (相邻线程读相邻地址, 128B/warp).
