@@ -291,8 +291,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "  x_t 本资产 t 分钟值; x_a 同一时刻资产 a 的值; t_D 段内位置\n"
         "  W_t 窗 (由 Win 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
         "  n / N 窗内 / 截面有效样本数; μ_t σ_t 窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心总体矩\n"
+        "  Σ_{W_t} / Π_{W_t} 窗内求和 / 乘积 (求和变量恒是 s 或 b); max min med cov var corr 的下标 = 取值域\n"
         "  pct(v; S) 并列均秩 pct rank ∈ [0,1]; Q_p 截面 p 分位; Φ⁻¹ 标准正态分位; G(a) 组 (整数 id 由 y / z 给)\n"
-        "  所有 ∑ / 计数 / 极值只计有效样本; 序统计族三后端同用 256 桶近似",
+        "  所有 Σ / 计数 / 极值只计有效样本; 序统计族三后端同用 256 桶近似",
         "备注: 退化条件 (输出无效) / 参数含义 / 近似说明. \"退化\"见 Contract.hpp: 全并列 (精确) / 相消 (相对 1e-6) / 除零",
         "流式 (实盘路径, 逐点 push) 对 naive (double, 按定义): 掩码逐位相等且 |Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|)",
         "GPU (fp32 并行) 对 naive: |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽)",
@@ -404,7 +405,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       ImGui::TextUnformatted(strat_name(r.strat));
       ImGui::TableSetColumnIndex(6);
       if (tex::TeXRender *render = Latex::Get(r.formula, kFormulaTextSize))
-        Latex::Draw(render);
+        Latex::Draw(render, ImGui::GetTextLineHeight());
       else
         ImGui::TextUnformatted(r.formula); // 解析失败回退原文
       ImGui::TableSetColumnIndex(7);

@@ -8,6 +8,7 @@
 #include "render.h"
 #include "utfcpp/utf8.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <string>
 #include <string_view>
@@ -55,7 +56,7 @@ tex::TeXRender *Get(const char *formula, float text_size) {
   return render;
 }
 
-void Draw(tex::TeXRender *render) {
+void Draw(tex::TeXRender *render, float min_height) {
   assert(render);
   // 解析可能加了新字形, 字体图集失效则重建
   tex::Font_imgui::rebuildFontAtlasIfNeeded();
@@ -65,7 +66,7 @@ void Draw(tex::TeXRender *render) {
   tex::Graphics2D_imgui g2(draw_list);
   g2.translate(cursor_pos.x, cursor_pos.y);
   render->draw(g2, 0, 0);
-  ImGui::Dummy(ImVec2((float)render->getWidth(), (float)render->getHeight()));
+  ImGui::Dummy(ImVec2((float)render->getWidth(), std::max((float)render->getHeight(), min_height)));
 }
 
 } // namespace GUI::Latex

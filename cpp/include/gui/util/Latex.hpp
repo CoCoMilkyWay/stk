@@ -11,7 +11,8 @@ namespace GUI::Latex {
 // 解析 (首次) 并缓存; 解析失败返回 nullptr, 调用方回退纯文本. 引擎按需 init("res")
 tex::TeXRender *Get(const char *formula, float text_size);
 
-// 在当前光标处绘制并按渲染尺寸占位 (Dummy)
-void Draw(tex::TeXRender *render);
+// 在当前光标处绘制并按渲染尺寸占位 (Dummy). min_height = 占位高度下限 (只放宽占位, 不缩放绘制):
+// 表格内联渲染传 ImGui::GetTextLineHeight(), 无上下标的公式才不会比邻行矮几像素 (行高由最高格决定)
+void Draw(tex::TeXRender *render, float min_height = 0.0f);
 
 } // namespace GUI::Latex
