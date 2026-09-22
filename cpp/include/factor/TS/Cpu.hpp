@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// TS 算子的挖掘 CPU 后端 (factor::cpu::ts, 72 个, 对应 OpTable 的 OP_TS = OP_TS0..3)
+// TS 算子的挖掘 CPU 后端 (factor::cpu::ts, 62 个, 对应 OpTable 的 OP_TS = OP_TS0..3)
 // =============================================================================
 //   定位: 因子挖掘无 GPU 时的 fallback —— 整张量批量直算, 不逐点因果推进, 吞吐必须 ≥ stream.
 //   语义与流式一致 (掩码逐位相等, 值在对拍容差内); 独立第二实现, **不得** include 任何
@@ -275,7 +275,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, bool pre, int n, bool spx
 } // namespace detail
 
 // -----------------------------------------------------------------------------
-// 统一签名 (72 个算子同形; 元数不足时调用方传 nullptr, 故未用到的指针一律不许读)
+// 统一签名 (62 个算子同形; 元数不足时调用方传 nullptr, 故未用到的指针一律不许读)
 // -----------------------------------------------------------------------------
 #define CP_SIG                                                                              \
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,   \
@@ -286,7 +286,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, bool pre, int n, bool spx
 #define CP_NO3 (void)zv, (void)zm
 
 // =============================================================================
-// POINT (22): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
+// POINT (20): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
 // =============================================================================
 #define CP_P1(Name, V, M)                                            \
   struct Name {                                                      \
@@ -335,12 +335,11 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, bool pre, int n, bool spx
 CP_P1(TsAbs, std::fabs(x), mx)
 CP_P1(TsSign, x > 0.f ? 1.f : (x < 0.f ? -1.f : 0.f), mx)
 CP_P1(TsLog, std::copysign(std::log1p(std::fabs(x)), x), mx)
-CP_P1(TsAsinh, std::asinh(x), mx)
-CP_P1(TsTanh, std::tanh(x), mx)
 CP_P1(TsSqrt, std::copysign(std::sqrt(std::fabs(x)), x), mx)
 CP_P1(TsRelu, std::fmax(0.f, x), mx)
 CP_P1(TsRecip, 1.f / x, mx &&x != 0.f) // x = 0 退化, 溢出由 mk 转无效
-CP_P1(TsSignedPow, std::copysign(std::pow(std::fabs(x), p.k), x), mx)
+// TsGt: 指示 (严格大于); 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
+CP_P1(TsGt, x > p.k ? 1.f : 0.f, mx)
 
 // TsClip: clamp 要求 lo ≤ hi, 即 k ≥ 0 —— 参数级约束, 早死在 assert 上
 struct TsClip {
@@ -380,13 +379,13 @@ CP_P2(TsMin, std::fmin(x, y), mx &&my)
 CP_P2(TsImb, (x - y) / (x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
 CP_P2(TsShare, x / (x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
 CP_P2(TsLogRatio, std::log(x) - std::log(y), mx && my && x > 0.f && y > 0.f)
+// TsMask: y 当掩码, y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
+CP_P2(TsMask, x, mx && my && y > 0.f)
 // TsWhere: 未被选中的那支不要求有效
 CP_P3(TsWhere, x > 0.f ? y : z, mx && (x > 0.f ? my : mz))
-// TsClip3: y > z 退化; 掩码含 y ≤ z, 故 clamp 只在前置条件成立时求值
-CP_P3(TsClip3, std::clamp(x, y, z), mx && my && mz && (y <= z))
 
 // =============================================================================
-// EXPAND (23): 沿 t 递推, 段界 reset. 状态 = 跨资产数组.
+// EXPAND (18): 沿 t 递推, 段界 reset. 状态 = 跨资产数组.
 // =============================================================================
 
 // ---- Sum / Mean ----
@@ -618,213 +617,6 @@ struct TsEntropyCum {
   }
 };
 
-// ---- TopKCum: 增量直方图 + 幂和 (输出从最高桶向下取 K 个) ----
-struct TsTopKCum {
-  CP_SIG {
-    CP_NO23;
-    const int K = static_cast<int>(p.k);
-    std::vector<float> buf, lo, hi;
-    std::vector<int> hist, cnt;
-    std::vector<double> s, sabs;
-    for (int a0 = 0; a0 < A; a0 += detail::kBlockA) {
-      const int W = std::min(detail::kBlockA, A - a0);
-      buf.resize(static_cast<size_t>(W) * kSegLen);
-      hist.assign(static_cast<size_t>(W) * kBuckets, 0);
-      cnt.assign(static_cast<size_t>(W), 0);
-      lo.assign(static_cast<size_t>(W), detail::kInf);
-      hi.assign(static_cast<size_t>(W), -detail::kInf);
-      s.assign(static_cast<size_t>(W), 0.0);
-      sabs.assign(static_cast<size_t>(W), 0.0);
-      for (int seg = 0; seg < T; seg += kSegLen) {
-        std::fill(cnt.begin(), cnt.end(), 0);
-        std::fill(lo.begin(), lo.end(), detail::kInf);
-        std::fill(hi.begin(), hi.end(), -detail::kInf);
-        std::fill(s.begin(), s.end(), 0.0);
-        std::fill(sabs.begin(), sabs.end(), 0.0);
-        const int e = std::min(seg + kSegLen, T);
-        for (int t = seg; t < e; ++t) {
-          const size_t r = static_cast<size_t>(t) * A + a0;
-          for (int j = 0; j < W; ++j) {
-            const float x = xv[r + j];
-            const bool m = xm[r + j] != 0;
-            int *h = hist.data() + static_cast<size_t>(j) * kBuckets;
-            if (m) {
-              buf[static_cast<size_t>(j) * kSegLen + cnt[j]] = x;
-              ++cnt[j];
-              s[j] += x;
-              sabs[j] += std::fabs(x);
-              const float pl = lo[j], ph = hi[j];
-              const float nl = std::fmin(pl, x), nh = std::fmax(ph, x);
-              lo[j] = nl;
-              hi[j] = nh;
-              if (nh > nl) {
-                if (nl != pl || nh != ph) {
-                  std::fill(h, h + kBuckets, 0);
-                  const float *b = buf.data() + static_cast<size_t>(j) * kSegLen;
-                  for (int q = 0; q < cnt[j]; ++q)
-                    ++h[bin_of(b[q], nl, nh)];
-                } else {
-                  ++h[bin_of(x, nl, nh)];
-                }
-              }
-            }
-            const bool ok = cnt[j] >= K && K >= 1 && den_ok(s[j], sabs[j]);
-            double v = 0.0;
-            if (ok) {
-              if (!(hi[j] > lo[j]))
-                v = cnt[j] >= 1 ? static_cast<double>(std::min(K, cnt[j])) / cnt[j] : 0.0;
-              else {
-                double top = 0.0;
-                int taken = 0;
-                for (int b = kBuckets - 1; b >= 0 && taken < K; --b) {
-                  const int take = std::min(h[b], K - taken);
-                  top += static_cast<double>(bin_center(b, lo[j], hi[j])) * take;
-                  taken += take;
-                }
-                v = top / s[j];
-              }
-            }
-            detail::put(ov, om, r + j, v, ok);
-          }
-        }
-      }
-    }
-  }
-};
-
-// ---- GiniCum: 只计 x > 0 的样本 (正样本独立定桶); 输出两遍桶扫 (总值 + Lorenz) ----
-struct TsGiniCum {
-  CP_SIG {
-    CP_NO23;
-    (void)p;
-    std::vector<float> buf, lo, hi;
-    std::vector<int> hist, np;
-    for (int a0 = 0; a0 < A; a0 += detail::kBlockA) {
-      const int W = std::min(detail::kBlockA, A - a0);
-      buf.resize(static_cast<size_t>(W) * kSegLen);
-      hist.assign(static_cast<size_t>(W) * kBuckets, 0);
-      np.assign(static_cast<size_t>(W), 0);
-      lo.assign(static_cast<size_t>(W), detail::kInf);
-      hi.assign(static_cast<size_t>(W), -detail::kInf);
-      for (int seg = 0; seg < T; seg += kSegLen) {
-        std::fill(np.begin(), np.end(), 0);
-        std::fill(lo.begin(), lo.end(), detail::kInf);
-        std::fill(hi.begin(), hi.end(), -detail::kInf);
-        const int e = std::min(seg + kSegLen, T);
-        for (int t = seg; t < e; ++t) {
-          const size_t r = static_cast<size_t>(t) * A + a0;
-          for (int j = 0; j < W; ++j) {
-            const float x = xv[r + j];
-            const bool pos = xm[r + j] && x > 0.f;
-            int *h = hist.data() + static_cast<size_t>(j) * kBuckets;
-            if (pos) {
-              buf[static_cast<size_t>(j) * kSegLen + np[j]] = x;
-              ++np[j];
-              const float pl = lo[j], ph = hi[j];
-              const float nl = std::fmin(pl, x), nh = std::fmax(ph, x);
-              lo[j] = nl;
-              hi[j] = nh;
-              if (nh > nl) {
-                if (nl != pl || nh != ph) {
-                  std::fill(h, h + kBuckets, 0);
-                  const float *b = buf.data() + static_cast<size_t>(j) * kSegLen;
-                  for (int q = 0; q < np[j]; ++q)
-                    ++h[bin_of(b[q], nl, nh)];
-                } else {
-                  ++h[bin_of(x, nl, nh)];
-                }
-              }
-            }
-            const bool ok = np[j] >= 2;
-            double v = 0.0;
-            if (ok && hi[j] > lo[j]) {
-              double tot = 0.0;
-              for (int b = 0; b < kBuckets; ++b)
-                tot += static_cast<double>(bin_center(b, lo[j], hi[j])) * h[b];
-              double cp = 0.0, cl = 0.0, g = 1.0;
-              for (int b = 0; b < kBuckets; ++b) {
-                if (h[b] == 0)
-                  continue;
-                const double pp = cp + static_cast<double>(h[b]) / np[j];
-                const double ll = cl + static_cast<double>(bin_center(b, lo[j], hi[j])) * h[b] / tot;
-                g -= (pp - cp) * (ll + cl);
-                cp = pp;
-                cl = ll;
-              }
-              v = g;
-            }
-            detail::put(ov, om, r + j, v, ok);
-          }
-        }
-      }
-    }
-  }
-};
-
-// ---- CountGtCum ----
-struct TsCountGtCum {
-  CP_SIG {
-    CP_NO23;
-    std::vector<int> n(static_cast<size_t>(A)), c(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += kSegLen) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(c.begin(), c.end(), 0);
-      const int e = std::min(seg + kSegLen, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool m = xm[r + a] != 0;
-          c[a] += m && (xv[r + a] > p.k);
-          n[a] += m;
-          const bool ok = n[a] >= 1;
-          detail::put(ov, om, r + a, ok ? static_cast<double>(c[a]) : 0.0, ok);
-        }
-      }
-    }
-  }
-};
-
-// ---- PeaksCum: 峰在 s 处成立需三点相邻有效且 x_s > k·mean_{≤s}; 在 s+1 时刻确认计入 ----
-struct TsPeaksCum {
-  CP_SIG {
-    CP_NO23;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W), c(W);
-    std::vector<double> s(W), mean1(W);
-    std::vector<float> p2v(W), p1v(W);
-    std::vector<uint8_t> p2m(W), p1m(W);
-    for (int seg = 0; seg < T; seg += kSegLen) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(c.begin(), c.end(), 0);
-      std::fill(s.begin(), s.end(), 0.0);
-      std::fill(mean1.begin(), mean1.end(), 0.0);
-      std::fill(p2v.begin(), p2v.end(), 0.f);
-      std::fill(p1v.begin(), p1v.end(), 0.f);
-      std::fill(p2m.begin(), p2m.end(), 0);
-      std::fill(p1m.begin(), p1m.end(), 0);
-      const int e = std::min(seg + kSegLen, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[r + a];
-          const bool m = xm[r + a] != 0;
-          s[a] += m ? static_cast<double>(x) : 0.0;
-          n[a] += m;
-          const double mc = n[a] >= 1 ? s[a] / n[a] : 0.0;
-          c[a] += (p2m[a] && p1m[a] && m && p2v[a] < p1v[a] && p1v[a] > x &&
-                   p1v[a] > static_cast<double>(p.k) * mean1[a]);
-          detail::put(ov, om, r + a, static_cast<double>(c[a]), n[a] >= 1);
-          p2v[a] = p1v[a];
-          p2m[a] = p1m[a];
-          p1v[a] = x;
-          p1m[a] = m ? 1 : 0;
-          mean1[a] = mc;
-        }
-      }
-    }
-  }
-};
-
 // ---- Cov / Corr / Beta / Resid (Cum): 二元幂和递推 + 双有效样本的段内极值 ----
 template <detail::Pair K>
 struct ExpPair {
@@ -914,67 +706,10 @@ struct TsWMeanCum {
   }
 };
 
-// ---- CorrLagCum: 样本对 (x_s, y_{s−K}), 两值都要在本段内且有效; 逐 t 增量配对 ----
-struct TsCorrLagCum {
-  CP_SIG {
-    CP_NO3;
-    const int K = static_cast<int>(p.k);
-    assert(K >= 0);
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W);
-    std::vector<double> sx(W), sy(W), sxy(W), sxx(W), syy(W);
-    std::vector<float> lox(W), hix(W), loy(W), hiy(W);
-    for (int seg = 0; seg < T; seg += kSegLen) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(sx.begin(), sx.end(), 0.0);
-      std::fill(sy.begin(), sy.end(), 0.0);
-      std::fill(sxy.begin(), sxy.end(), 0.0);
-      std::fill(sxx.begin(), sxx.end(), 0.0);
-      std::fill(syy.begin(), syy.end(), 0.0);
-      std::fill(lox.begin(), lox.end(), detail::kInf);
-      std::fill(hix.begin(), hix.end(), -detail::kInf);
-      std::fill(loy.begin(), loy.end(), detail::kInf);
-      std::fill(hiy.begin(), hiy.end(), -detail::kInf);
-      const int e = std::min(seg + kSegLen, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        if (t - K >= seg) {
-          const size_t rl = static_cast<size_t>(t - K) * A;
-          for (int a = 0; a < A; ++a) {
-            const float x = xv[r + a], y = yv[rl + a];
-            const bool mm = xm[r + a] && ym[rl + a];
-            const double dx = mm ? static_cast<double>(x) : 0.0;
-            const double dy = mm ? static_cast<double>(y) : 0.0;
-            sx[a] += dx;
-            sy[a] += dy;
-            sxy[a] += dx * dy;
-            sxx[a] += dx * dx;
-            syy[a] += dy * dy;
-            lox[a] = mm ? std::fmin(lox[a], x) : lox[a];
-            hix[a] = mm ? std::fmax(hix[a], x) : hix[a];
-            loy[a] = mm ? std::fmin(loy[a], y) : loy[a];
-            hiy[a] = mm ? std::fmax(hiy[a], y) : hiy[a];
-            n[a] += mm;
-          }
-        }
-        for (int a = 0; a < A; ++a) {
-          const bool ok = n[a] >= 2 && hix[a] > lox[a] && hiy[a] > loy[a];
-          double v = 0.0;
-          if (ok) {
-            const double cxy = sxy[a] - sx[a] * sy[a] / n[a];
-            v = cxy / std::sqrt((sxx[a] - sx[a] * sx[a] / n[a]) * (syy[a] - sy[a] * sy[a] / n[a]));
-          }
-          detail::put(ov, om, r + a, v, ok);
-        }
-      }
-    }
-  }
-};
-
 // TsArgMaxCum / TsArgMinCum / TsMaxCum / TsMinCum 由 ExpExt 实例化 (见文件末尾)
 
 // =============================================================================
-// ROLL (26): 滑动加减 + van Herk 极值; 窗未满 (t < d−1) 一律无效
+// ROLL (23): 滑动加减 + van Herk 极值; 窗未满 (t < d−1) 一律无效
 // =============================================================================
 
 // ---- Delay / Delta: 纯移位取值, 窗实际跨 d+1 格 (t < d 无效) ----
@@ -1127,10 +862,9 @@ struct RollExt {
   }
 };
 
-// ---- Rank / Median / Mad (Roll): 环形窗缓存 + 直方图 (lo/hi 未变增量改桶, 变了整窗重建) ----
+// ---- Rank / Quantile (Roll): 环形窗缓存 + 直方图 (lo/hi 未变增量改桶, 变了整窗重建) ----
 enum class HistK { RANK,
-                   MEDIAN,
-                   MAD };
+                   QUANTILE };
 
 template <HistK K>
 struct RollHist {
@@ -1141,7 +875,6 @@ struct RollHist {
     std::vector<float> rv, plo, phi;
     std::vector<uint8_t> rm;
     std::vector<int> hist, n;
-    std::vector<float> ad(K == HistK::MAD ? static_cast<size_t>(d) : 0); // MAD: |x−med| 暂存
     for (int a0 = 0; a0 < A; a0 += detail::kBlockA) {
       const int W = std::min(detail::kBlockA, A - a0);
       detail::RollMinMax mm(d, W);
@@ -1197,35 +930,9 @@ struct RollHist {
               }
             }
             detail::put(ov, om, r + j, v, ok);
-          } else {
+          } else { // QUANTILE
             const bool ok = full && n[j] >= 1;
-            double v = 0.0;
-            if (ok) {
-              const float med = detail::hist_quantile(h, n[j], nl, nh, 0.5);
-              if constexpr (K == HistK::MEDIAN)
-                v = med;
-              else { // MAD: 对 |x − med| 这组值重新定桶再取中位
-                int cnt2 = 0;
-                float l2 = 0.f, u2 = 0.f;
-                for (int s = 0; s < d; ++s)
-                  if (rm[static_cast<size_t>(s) * W + j]) {
-                    const float w2 = std::fabs(rv[static_cast<size_t>(s) * W + j] - med);
-                    ad[cnt2] = w2;
-                    l2 = cnt2 == 0 ? w2 : std::fmin(l2, w2);
-                    u2 = cnt2 == 0 ? w2 : std::fmax(u2, w2);
-                    ++cnt2;
-                  }
-                if (!(u2 > l2))
-                  v = l2;
-                else {
-                  int h2[kBuckets];
-                  std::fill(h2, h2 + kBuckets, 0);
-                  for (int s = 0; s < cnt2; ++s)
-                    ++h2[bin_of(ad[s], l2, u2)];
-                  v = detail::hist_quantile(h2, cnt2, l2, u2, 0.5);
-                }
-              }
-            }
+            const double v = ok ? detail::hist_quantile(h, n[j], nl, nh, p.k) : 0.0;
             detail::put(ov, om, r + j, v, ok);
           }
         }
@@ -1320,35 +1027,6 @@ struct TsSlopeRoll {
   }
 };
 
-// ---- CountGtRoll ----
-struct TsCountGtRoll {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    std::vector<int> n(static_cast<size_t>(A), 0), c(static_cast<size_t>(A), 0);
-    for (int t = 0; t < T; ++t) {
-      if (t >= d) {
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool mo = xm[q + a] != 0;
-          c[a] -= mo && (xv[q + a] > p.k);
-          n[a] -= mo;
-        }
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
-      for (int a = 0; a < A; ++a) {
-        const bool m = xm[r + a] != 0;
-        c[a] += m && (xv[r + a] > p.k);
-        n[a] += m;
-        const bool ok = full && n[a] >= 1;
-        detail::put(ov, om, r + a, ok ? static_cast<double>(c[a]) : 0.0, ok);
-      }
-    }
-  }
-};
-
 // ---- ProductRoll: 滑动加减 Σlog1p (log1p 确定性 ⇒ 出窗减去的正是入窗加上的) ----
 struct TsProductRoll {
   CP_SIG {
@@ -1380,32 +1058,6 @@ struct TsProductRoll {
         n[a] += m;
         const bool ok = full && n[a] >= 1 && bad[a] == 0;
         detail::put(ov, om, r + a, ok ? std::expm1(sl[a]) : 0.0, ok);
-      }
-    }
-  }
-};
-
-// ---- AgeRoll: 变动位置单调递增 ⇒ 只需记"最近一次变动的全局行号", 与窗起点比较即可 ----
-struct TsAgeRoll {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    std::vector<int> last(static_cast<size_t>(A), -1); // 相邻两格都有效且值精确不等的最近行号
-    for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      if (t >= 1) {
-        const size_t q = r - A;
-        for (int a = 0; a < A; ++a) {
-          const bool chg = xm[r + a] && xm[q + a] && xv[r + a] != xv[q + a];
-          last[a] = chg ? t : last[a];
-        }
-      }
-      for (int a = 0; a < A; ++a) {
-        const bool ok = t >= d - 1 && xm[r + a];
-        const double v =
-            last[a] >= t - d + 2 ? static_cast<double>(t - last[a]) : static_cast<double>(d);
-        detail::put(ov, om, r + a, ok ? v : 0.0, ok);
       }
     }
   }
@@ -1556,8 +1208,7 @@ using TsArgMaxRoll = RollExt<true, true>;
 using TsArgMinCum = ExpExt<false, true>;
 using TsArgMinRoll = RollExt<false, true>;
 using TsRankRoll = RollHist<HistK::RANK>;
-using TsMedianRoll = RollHist<HistK::MEDIAN>;
-using TsMadRoll = RollHist<HistK::MAD>;
+using TsQuantileRoll = RollHist<HistK::QUANTILE>;
 using TsCovCum = ExpPair<detail::Pair::COV>;
 using TsCovRoll = RollPair<detail::Pair::COV>;
 using TsCorrCum = ExpPair<detail::Pair::CORR>;

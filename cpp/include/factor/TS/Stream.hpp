@@ -48,12 +48,6 @@ struct TsSign : Point {
 struct TsLog : Point { // 保号 log1p: 在 0 附近线性, 尾部对数, 不需要输入为正
   static Val apply(Val x, const Param &) { return mk(std::copysign(std::log1p(std::fabs(x.v)), x.v), x.m); }
 };
-struct TsAsinh : Point {
-  static Val apply(Val x, const Param &) { return mk(std::asinh(x.v), x.m); }
-};
-struct TsTanh : Point {
-  static Val apply(Val x, const Param &) { return mk(std::tanh(x.v), x.m); }
-};
 struct TsSqrt : Point {
   static Val apply(Val x, const Param &) { return mk(std::copysign(std::sqrt(std::fabs(x.v)), x.v), x.m); }
 };
@@ -63,14 +57,14 @@ struct TsRelu : Point {
 struct TsRecip : Point { // x = 0 退化; 溢出由 mk 转无效
   static Val apply(Val x, const Param &) { return mk(1.f / x.v, x.m && x.v != 0.f); }
 };
-struct TsSignedPow : Point {
-  static Val apply(Val x, const Param &p) { return mk(std::copysign(std::pow(std::fabs(x.v), p.k), x.v), x.m); }
-};
 struct TsClip : Point {
   static Val apply(Val x, const Param &p) {
     assert(p.k >= 0.f);
     return mk(std::clamp(x.v, -p.k, p.k), x.m);
   }
+};
+struct TsGt : Point { // 指示: 严格大于. 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
+  static Val apply(Val x, const Param &p) { return mk(x.v > p.k ? 1.f : 0.f, x.m); }
 };
 struct TsTodMask : Point { // 元数 0: 只看段内位置, 恒有效
   static Val apply(int t_seg, const Param &p) {
@@ -114,16 +108,14 @@ struct TsLogRatio : Point { // ln x − ln y: 两个正有限数各取对数再�
     return mk(std::log(x.v) - std::log(y.v), ok);
   }
 };
+struct TsMask : Point { // y 当掩码用, 不取值; y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
+  static Val apply(Val x, Val y, const Param &) { return mk(x.v, x.m && y.m && y.v > 0.f); }
+};
 
 struct TsWhere : Point { // x 只当条件用, 不取值; 未被选中的那支不要求有效
   static Val apply(Val x, Val y, Val z, const Param &) {
     const bool pick_y = x.v > 0.f;
     return mk(pick_y ? y.v : z.v, x.m && (pick_y ? y.m : z.m));
-  }
-};
-struct TsClip3 : Point { // 上下界颠倒 (y > z) → 无效 (fmin/fmax 组合对颠倒的界无 UB, std::clamp 有)
-  static Val apply(Val x, Val y, Val z, const Param &) {
-    return mk(std::fmin(std::fmax(x.v, y.v), z.v), x.m && y.m && z.m && y.v <= z.v);
   }
 };
 
@@ -241,37 +233,6 @@ struct Entropy { // 只对正值定义: ln S − Σ x ln x / S; 有正样本即�
   Val get(const Ctx &) const { return mk(std::log(s) - sxlnx / s, npos >= 1); }
 };
 
-struct CountGt {
-  int cnt = 0, n = 0;
-  Param p;
-  void reset(const Param &pp) { *this = {}, p = pp; }
-  void add(int, Val x, Val) {
-    if (!x.m)
-      return;
-    cnt += x.v > p.k, ++n;
-  }
-  Val get(const Ctx &) const { return mk(cnt, n >= 1); }
-};
-
-// ---- 局部峰计数: 峰在 s 处成立需三点相邻有效且 x_s > k·mean_{≤s}; 在 s+1 时刻确认计入 ----
-struct Peaks {
-  Val p2, p1;       // s−2, s−1 两点
-  double mean1 = 0; // p1 时刻的段内 expanding 均值
-  double s = 0;
-  int n = 0, cnt = 0;
-  Param p;
-  void reset(const Param &pp) { *this = {}, p = pp; }
-  void add(int, Val x, Val) {
-    if (x.m)
-      s += x.v, ++n;
-    const double mean_cur = n >= 1 ? s / n : 0.0;
-    if (p2.m && p1.m && x.m && p2.v < p1.v && p1.v > x.v && p1.v > p.k * mean1)
-      ++cnt;
-    p2 = p1, p1 = x, mean1 = mean_cur;
-  }
-  Val get(const Ctx &) const { return mk(cnt, n >= 1); }
-};
-
 struct Product { // Π(1+x) − 1, 走对数域避免连乘溢出; 任一 1+x ≤ 0 (x ≤ −1) → 无定义
   double sl = 0;
   int n = 0;
@@ -335,29 +296,14 @@ struct Diff { // 最新 − 最旧
   Val get(const Ctx &c) const { return mk(static_cast<double>(c.x.v) - v0.v, v0.m && c.x.m); }
 };
 
-struct Age { // 距上次变动 (相邻有效样本精确不等) 的期数; 窗内无变动 → d
-  Val prev;
-  int last = -1;
-  void reset(const Param &) { *this = {}; }
-  void add(int i, Val x, Val) {
-    if (i > 0 && prev.m && x.m && x.v != prev.v)
-      last = i;
-    prev = x;
-  }
-  Val get(const Ctx &c) const { return mk(last >= 0 ? c.d - 1 - last : c.d, c.x.m); }
-};
-
 // ---- 序统计族: 窗/段内样本缓存 + 分桶 (规则见 stream::Hist) ----
 using stream::Hist;
 
-// 样本缓存基类: 窗/段内所有有效值. scratch 是 get 用的第二缓存 (mutable: 复用容量, 不改语义)
+// 样本缓存基类: 窗/段内所有有效值
 struct SampleBase {
   std::vector<float> s;
-  mutable std::vector<float> scratch;
   Param p;
-  void reset(const Param &pp) {
-    s.clear(), p = pp;
-  }
+  void reset(const Param &pp) { s.clear(), p = pp; }
   void add(int, Val x, Val) {
     if (x.m)
       s.push_back(x.v);
@@ -371,71 +317,11 @@ struct Rank : SampleBase { // 相对型
     return mk(h.rank(c.x.v), !s.empty() && c.x.m);
   }
 };
-struct Median : SampleBase {
+struct Quantile : SampleBase { // k 分位 (k = 0.5 即中位)
   Val get(const Ctx &) const {
     Hist h;
     h.build(s);
-    return mk(h.quantile(0.5), !s.empty());
-  }
-};
-struct Mad : SampleBase { // median(|x − median|), 第二轮重新定桶
-  Val get(const Ctx &) const {
-    Hist h;
-    h.build(s);
-    const float med = h.quantile(0.5);
-    scratch.clear();
-    for (float v : s)
-      scratch.push_back(std::fabs(v - med));
-    Hist h2;
-    h2.build(scratch);
-    return mk(h2.quantile(0.5), !s.empty());
-  }
-};
-struct TopK : SampleBase { // 前 K 大之和占比
-  Val get(const Ctx &) const {
-    const int n = static_cast<int>(s.size()), K = static_cast<int>(p.k);
-    double tot = 0, atot = 0;
-    for (float v : s)
-      tot += v, atot += std::fabs(v);
-    const bool ok = n >= K && K >= 1 && den_ok(tot, atot);
-    Hist h;
-    h.build(s);
-    if (!h.ok)
-      return mk(n >= 1 ? static_cast<double>(std::min(K, n)) / n : 0.0, ok);
-    double sum = 0;
-    int taken = 0;
-    for (int b = kBuckets - 1; b >= 0 && taken < K; --b) {
-      const int take = std::min(h.cnt[b], K - taken);
-      sum += static_cast<double>(bin_center(b, h.lo, h.hi)) * take;
-      taken += take;
-    }
-    return mk(sum / tot, ok);
-  }
-};
-struct Gini : SampleBase { // Lorenz 曲线面积, 只对正值定义 (正样本 ⇒ 桶心 > 0 ⇒ tot > 0)
-  Val get(const Ctx &) const {
-    scratch.clear();
-    for (float v : s)
-      if (v > 0.f)
-        scratch.push_back(v);
-    const bool ok = scratch.size() >= 2;
-    Hist h;
-    h.build(scratch);
-    if (!h.ok)
-      return mk(0.0, ok);
-    double tot = 0;
-    for (int b = 0; b < kBuckets; ++b)
-      tot += static_cast<double>(bin_center(b, h.lo, h.hi)) * h.cnt[b];
-    double cp = 0, cl = 0, g = 1.0;
-    for (int b = 0; b < kBuckets; ++b) {
-      if (h.cnt[b] == 0)
-        continue;
-      const double np = cp + static_cast<double>(h.cnt[b]) / h.n;
-      const double nl = cl + static_cast<double>(bin_center(b, h.lo, h.hi)) * h.cnt[b] / tot;
-      g -= (np - cp) * (nl + cl);
-      cp = np, cl = nl;
-    }
-    return mk(g, ok);
+    return mk(h.quantile(p.k), !s.empty());
   }
 };
 
@@ -486,21 +372,6 @@ struct WMean { // y 为权
   Val get(const Ctx &) const { return mk(syx / sy, n >= 1 && den_ok(sy, say)); }
 };
 
-struct CorrLag { // corr(x_s, y_{s−K}): 缓存两列后配对
-  std::vector<Val> xs, ys;
-  Param p;
-  void reset(const Param &pp) { xs.clear(), ys.clear(), p = pp; }
-  void add(int, Val x, Val y) { xs.push_back(x), ys.push_back(y); }
-  Val get(const Ctx &) const {
-    const int K = static_cast<int>(p.k), n = static_cast<int>(xs.size());
-    CoAcc a;
-    a.reset(Param{});
-    for (int s = K; s < n; ++s)
-      a.add(0, xs[s], ys[s - K]);
-    return mk(a.cxy / std::sqrt(a.cxx * a.cyy), a.n >= 2 && a.dx_ok() && a.dy_ok());
-  }
-};
-
 } // namespace core
 
 // ---- 窗: EXPAND (段内 expanding; 推满 kSegLen 自动归零, 段首也可手动 reset) ----
@@ -527,6 +398,7 @@ private:
 };
 
 // ---- 窗: ROLL (最近 d+Extra 期, 跨段不重置 → 没有 reset; 满窗后整窗重放) ----
+//   Extra = 1 给 SHIFT 核 (Delay / Delta 要窗内最旧那格, 即 x_{t−d}, 所以窗多留一格)
 template <class C, int Extra = 0>
 class Roll {
 public:
@@ -606,25 +478,17 @@ using TsArgMinCum = Expand<core::Extreme<false, true>>;
 using TsArgMinRoll = Roll<core::Extreme<false, true>>;
 using TsRankCum = Expand<core::Rank>;
 using TsRankRoll = Roll<core::Rank>;
-using TsMedianRoll = Roll<core::Median>;
-using TsMadRoll = Roll<core::Mad>;
+using TsQuantileRoll = Roll<core::Quantile>;
 using TsZRoll = Roll<core::Z>;
 using TsWmaRoll = Roll<core::Wma>;
 using TsProductRoll = Roll<core::Product>;
 using TsSlopeRoll = Roll<core::Slope>;
-using TsCountGtCum = Expand<core::CountGt>;
-using TsCountGtRoll = Roll<core::CountGt>;
-using TsAgeRoll = Roll<core::Age>;
 using TsHhiCum = Expand<core::Hhi>;
 using TsEntropyCum = Expand<core::Entropy>;
-using TsTopKCum = Expand<core::TopK>;
-using TsGiniCum = Expand<core::Gini>;
-using TsPeaksCum = Expand<core::Peaks>;
 using TsCovCum = Expand<core::Cov>;
 using TsCovRoll = Roll<core::Cov>;
 using TsCorrCum = Expand<core::Corr>;
 using TsCorrRoll = Roll<core::Corr>;
-using TsCorrLagCum = Expand<core::CorrLag>;
 using TsBetaCum = Expand<core::Beta>;
 using TsBetaRoll = Roll<core::Beta>;
 using TsResidCum = Expand<core::Resid>;

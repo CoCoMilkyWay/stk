@@ -301,14 +301,14 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "  输入  x, y, z = 按元数取的序列 (每格 值 + 有效位); t_D = 段内分钟位置 (TodMask 无序列输入)\n"
         "  参数  Param 字段 (factor/Contract.hpp), 每算子自带默认值:\n"
         "    d   窗长 / 滞后 (期 = 分钟), 来自 Check.hpp kDParams; 参数列不含 d 的算子固定 1 (与 op_check 同)\n"
-        "    k   阈值 / 指数 / 桶数 / EMA 系数 / 分位 / topk (含义见该行 Note), 来自 Check.hpp kKParams\n"
+        "    k   阈值 / 桶数 / EMA 系数 / 分位 (含义见该行 Note), 来自 Check.hpp kKParams\n"
         "    k2  第二阈值 (仅 TodMask 上界)",
         "公式 (OpTable.hpp, LaTeX). 符号继承 features/FeaturesDefine.hpp (t 分钟, D 交易日, 1[·] 指示), 算子库补充:\n"
         "  x_t 本资产 t 分钟值; x_a 同一时刻资产 a 的值; t_D 段内位置\n"
         "  W_t 窗 (由 T 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
         "  n / N 窗内 / 截面有效样本数; μ_t σ_t 窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心总体矩\n"
-        "  Σ_{W_t} / Π_{W_t} 窗内求和 / 乘积 (求和变量恒是 s 或 b); max min med cov var corr 的下标 = 取值域\n"
-        "  pct(v; S) 并列均秩 pct rank ∈ [0,1]; Q_p 截面 p 分位; Φ⁻¹ 标准正态分位; G(a) 组 (整数 id 由 y / z 给)\n"
+        "  Σ_{W_t} / Π_{W_t} 窗内求和 / 乘积 (求和变量恒是 s 或 b); max min cov var corr 的下标 = 取值域\n"
+        "  pct(v; S) 并列均秩 pct rank ∈ [0,1]; Q_p(S) 样本集 S 的 p 分位; Φ⁻¹ 标准正态分位; G(a) 组 (整数 id 由 y / z 给)\n"
         "  所有 Σ / 计数 / 极值只计有效样本; 序统计族三后端同用 256 桶近似",
         "stream (实盘路径, 逐资产逐点 push) 的 wall time = golden: 正确性基准, 也是耗时上界",
         "cpu 整张量一次批算的 wall time (不含造数)\n"

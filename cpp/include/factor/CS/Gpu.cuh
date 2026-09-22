@@ -128,14 +128,13 @@ struct MaxOp {
   __device__ __forceinline__ float operator()(float a, float b) const { return fmaxf(a, b); }
 };
 
-// 每块的 shared 家当: 直方图 2 套 (4 KB) + 分组槽 (20 KB) + cub 暂存 ≈ 25 KB
-// (512 线程 × 2 块/SM = 50 KB ≤ 64 KB, 不构成占用率瓶颈)
+// 每块的 shared 家当: 直方图 (2 KB) + 分组槽 (20 KB) + cub 暂存 ≈ 23 KB
+// (512 线程 × 2 块/SM = 46 KB ≤ 64 KB, 不构成占用率瓶颈)
 struct Sh {
   typename BR::TempStorage red;
   typename BS::TempStorage scan;
-  int cb[kBuckets], pre[kBuckets];   // 主直方图 (桶计数 / 桶的 exclusive 前缀)
-  int cb2[kBuckets], pre2[kBuckets]; // 次直方图 (RankDiff 的 y / CondRank 的条件桶)
-  float gsx[kGrpCap], gsy[kGrpCap];  // 分组累加槽
+  int cb[kBuckets], pre[kBuckets];  // 直方图 (桶计数 / 桶的 exclusive 前缀)
+  float gsx[kGrpCap], gsy[kGrpCap]; // 分组累加槽
   int gcn[kGrpCap];
   int gmn[kGrpCap], gmx[kGrpCap]; // 分组 y 极值 (有序整数编码, 给 GroupResid 的逐组全并列判据)
   float bc;                       // 广播槽
@@ -184,26 +183,6 @@ struct GetX { // 原值
   int base;
   __device__ __forceinline__ bool get(int a, float &u) const {
     u = v[base + a];
-    return m[base + a] != 0;
-  }
-};
-struct GetY2 { // y 值, 但样本集要求 x、y **双有效** (CsCondRank 的条件桶边界)
-  const float *v;
-  const uint8_t *m;  // ym
-  const uint8_t *m2; // xm
-  int base;
-  __device__ __forceinline__ bool get(int a, float &u) const {
-    u = v[base + a];
-    return m[base + a] != 0 && m2[base + a] != 0;
-  }
-};
-struct GetWin { // 缩尾后的值 (winsor 族第二轮)
-  const float *v;
-  const uint8_t *m;
-  int base;
-  float lo, hi;
-  __device__ __forceinline__ bool get(int a, float &u) const {
-    u = fminf(fmaxf(v[base + a], lo), hi);
     return m[base + a] != 0;
   }
 };
@@ -436,7 +415,7 @@ FACTOR_CS_RED(CsCorr, 2, {
   m = s.cnt >= 2 && s.sx() && s.sy();
 })
 
-// ---- HIST (9): 片上 256 桶 ----
+// ---- HIST (5): 片上 256 桶 ----
 //   样本集 S = 本行有效值, lo/hi = min/max(S). 全并列 (!spread) 时按契约给中性值.
 
 // pct rank (并列均秩)
@@ -504,8 +483,7 @@ struct CsNormRank {
     }                                                                                                                                                                           \
     FACTOR_CS_RUN()                                                                                                                                                             \
   };
-FACTOR_CS_QUANT(CsMedian, 0.5)
-FACTOR_CS_QUANT(CsQuantile, p.k)
+FACTOR_CS_QUANT(CsQuantile, p.k) // k = 0.5 即中位
 
 // 分位缩尾: clamp 到 [q_k, q_{1−k}]
 struct CsWinsor {
@@ -522,84 +500,12 @@ struct CsWinsor {
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
       ql = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, p.k);
       // 上分位必须在 double 下算 1−k: 先 float 减再提升会与 cpu / stream 差一个桶
-      // (⌈q·cnt⌉ 的取整对 q 的末位极敏感, 见 CsWinsorRank 的 0.99f vs 0.99 之坑)
+      // (⌈q·cnt⌉ 的取整对 q 的末位极敏感, 0.99f 与 0.99 就能差一个桶)
       qh = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 1.0 - static_cast<double>(p.k));
     }
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a;
       dev::store(ov, om, i, fminf(fmaxf(xv[i], ql), qh), xm[i] && cnt >= 1);
-    }
-  }
-  FACTOR_CS_RUN()
-};
-// 先缩尾 (k = 0.01) 再 pct rank: 缩尾后值域变了, 必须按缩尾样本集重新定 lo/hi 与直方图
-struct CsWinsorRank {
-  using Self = CsWinsorRank;
-  __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int base, int A,
-                             const Param &) {
-    const k::GetX g{xv, xm, base};
-    int cnt;
-    float lo, hi;
-    k::span_row(sh, g, A, cnt, lo, hi);
-    bool rok = cnt >= 1 && dev::spread(lo, hi);
-    float ql = lo, qh = lo;
-    if (rok) {
-      k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
-      ql = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 0.01);
-      qh = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 0.99);
-    }
-    const k::GetWin w{xv, xm, base, ql, qh};
-    int c2;
-    float lo2, hi2;
-    k::span_row(sh, w, A, c2, lo2, hi2);
-    const bool rok2 = c2 >= 1 && dev::spread(lo2, hi2);
-    if (rok2)
-      k::hist_row(sh, w, A, lo2, hi2, sh.cb, sh.pre);
-    for (int a = threadIdx.x; a < A; a += kCB) {
-      const int i = base + a;
-      const float u = fminf(fmaxf(xv[i], ql), qh);
-      dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, c2, lo2, hi2, rok2, u), xm[i] && cnt >= 1);
-    }
-  }
-  FACTOR_CS_RUN()
-};
-// 先缩尾 (k = 0.01) 再 z: 均值/方差都在缩尾后的量上两遍求
-struct CsWinsorZ {
-  using Self = CsWinsorZ;
-  __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int base, int A,
-                             const Param &) {
-    const k::GetX g{xv, xm, base};
-    int cnt;
-    float lo, hi;
-    k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::spread(lo, hi);
-    float ql = lo, qh = lo;
-    if (rok) {
-      k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
-      ql = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 0.01);
-      qh = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 0.99);
-    }
-    // 缩尾后样本的极值 = clamp(lo/hi): 全并列判据直接在其上算, 不必再扫一遍
-    const bool sp = dev::spread(fminf(fmaxf(lo, ql), qh), fminf(fmaxf(hi, ql), qh));
-    float sw = 0.f;
-    for (int a = threadIdx.x; a < A; a += kCB) {
-      const int i = base + a;
-      sw += xm[i] ? fminf(fmaxf(xv[i], ql), qh) : 0.f;
-    }
-    const float mu = k::bsum(sh, sw) / static_cast<float>(max(cnt, 1));
-    float m2 = 0.f;
-    for (int a = threadIdx.x; a < A; a += kCB) {
-      const int i = base + a;
-      const float e = xm[i] ? (fminf(fmaxf(xv[i], ql), qh) - mu) : 0.f;
-      m2 += e * e;
-    }
-    const float M2 = k::bsum(sh, m2);
-    const float sd = sqrtf(fmaxf(M2, 0.f) / static_cast<float>(max(cnt - 1, 1)));
-    const bool ok = cnt >= 2 && sp;
-    for (int a = threadIdx.x; a < A; a += kCB) {
-      const int i = base + a;
-      const float u = fminf(fmaxf(xv[i], ql), qh);
-      dev::store(ov, om, i, (u - mu) / sd, xm[i] && ok);
     }
   }
   FACTOR_CS_RUN()
@@ -626,33 +532,7 @@ struct CsBucket {
   }
   FACTOR_CS_RUN()
 };
-// pct_rank(x) − pct_rank(y): 两套桶各自定 lo/hi (x 的样本集 = 有效 x, y 的 = 有效 y)
-struct CsRankDiff {
-  using Self = CsRankDiff;
-  __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, int base,
-                             int A, const Param &) {
-    const k::GetX gx{xv, xm, base}, gy{yv, ym, base};
-    int cx, cy;
-    float lox, hix, loy, hiy;
-    k::span_row(sh, gx, A, cx, lox, hix);
-    k::span_row(sh, gy, A, cy, loy, hiy);
-    const bool rx = cx >= 1 && dev::spread(lox, hix);
-    const bool ry = cy >= 1 && dev::spread(loy, hiy);
-    if (rx)
-      k::hist_row(sh, gx, A, lox, hix, sh.cb, sh.pre);
-    if (ry)
-      k::hist_row(sh, gy, A, loy, hiy, sh.cb2, sh.pre2);
-    for (int a = threadIdx.x; a < A; a += kCB) {
-      const int i = base + a;
-      const float px = k::row_pct(sh.cb, sh.pre, cx, lox, hix, rx, xv[i]);
-      const float py = k::row_pct(sh.cb2, sh.pre2, cy, loy, hiy, ry, yv[i]);
-      dev::store(ov, om, i, px - py, xm[i] && ym[i] && cx >= 1 && cy >= 1);
-    }
-  }
-  FACTOR_CS_RUN()
-};
-
-// ---- GROUP (4) ----
+// ---- GROUP (3) ----
 // 按 y 分组 (整数 id) 的组均值广播
 struct CsGroupMean {
   using Self = CsGroupMean;
@@ -722,40 +602,6 @@ struct CsGroupRank {
   __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, int base,
                              int A, const Param &) {
     const k::GidCol gi{yv, ym, base};
-    group_rank(sh, xv, xm, gi, ov, om, base, A);
-  }
-  FACTOR_CS_RUN()
-};
-// y 分 k 桶 (= CsBucket(k)) 当组 id, x 在桶内 pct rank
-struct CsCondRank {
-  using Self = CsCondRank;
-  struct GidBin { // 条件桶: 由 y 的次直方图现算, 不占额外存储
-    const float *v;
-    const uint8_t *m;
-    const int *cb, *pre;
-    int base, cnt, K;
-    float lo, hi;
-    bool rok;
-    __device__ __forceinline__ int gid(int a) const {
-      if (!m[base + a])
-        return -1;
-      const float pct = rok ? k::row_pct(cb, pre, cnt, lo, hi, true, v[base + a]) : 0.f;
-      return min(K - 1, max(0, static_cast<int>(floorf(pct * static_cast<float>(K)))));
-    }
-  };
-  __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, int base,
-                             int A, const Param &p) {
-    const int K = max(1, static_cast<int>(p.k));
-    assert(K <= kGrpCap);
-    // 桶边界只由 xm && ym 双有效的资产决定: y 有效但 x 缺失的资产对任何桶的 x 排名都没有贡献
-    const k::GetY2 gy{yv, ym, xm, base};
-    int cy;
-    float loy, hiy;
-    k::span_row(sh, gy, A, cy, loy, hiy);
-    const bool ry = cy >= 1 && dev::spread(loy, hiy);
-    if (ry)
-      k::hist_row(sh, gy, A, loy, hiy, sh.cb2, sh.pre2); // 条件桶用次直方图, 主直方图留给组内 rank
-    const GidBin gi{yv, ym, sh.cb2, sh.pre2, base, cy, K, loy, hiy, ry};
     group_rank(sh, xv, xm, gi, ov, om, base, A);
   }
   FACTOR_CS_RUN()

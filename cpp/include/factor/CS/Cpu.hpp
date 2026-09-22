@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS 全 20 个; 语义契约见 factor/Contract.hpp)
+// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS 全 15 个; 语义契约见 factor/Contract.hpp)
 // =============================================================================
 //   定位: 因子挖掘无 GPU 时的 fallback —— 整张量批量直算, 吞吐必须 ≥ stream.
 //   独立第二实现: 除 Contract.hpp (共享数学件: mk/spread/den_ok/pct_of/probit/分桶规则) 外
@@ -168,8 +168,6 @@ struct Hist {
   }
 };
 
-inline constexpr double kWinsorQ = 0.01; // CsWinsorRank / CsWinsorZ 的固定缩尾分位
-
 // ---- 组 id: 分组列无效 → −1 (不参与); 上限断言在 max_gid ----
 inline int gid(const float *v, const uint8_t *m, size_t i) {
   return m[i] ? static_cast<int>(std::floor(v[i])) : -1;
@@ -278,20 +276,7 @@ struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 �
   }
 };
 
-struct CsMedian {
-  CP_SIG {
-    CP_NO23;
-    (void)p;
-    detail::Hist h;
-    for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      h.build(xv + r, xm + r, A);
-      detail::bcast(ov, om, r, A, h.quantile(0.5), h.n >= 1);
-    }
-  }
-};
-
-struct CsQuantile {
+struct CsQuantile { // k 分位 (k = 0.5 即中位)
   CP_SIG {
     CP_NO23;
     detail::Hist h;
@@ -316,50 +301,6 @@ struct CsWinsor {
         detail::put(ov, om, r + a,
                     static_cast<double>(std::fmin(std::fmax(xv[r + a], w_lo), w_hi)),
                     xm[r + a] && h.n >= 1);
-    }
-  }
-};
-
-struct CsWinsorRank { // 固定分位缩尾后重建直方图再排名: 极端值不再独占秩尾
-  CP_SIG {
-    CP_NO23;
-    (void)p;
-    detail::Hist h0, h;
-    std::vector<float> w;
-    for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      h0.build(xv + r, xm + r, A);
-      const float qa = h0.quantile(detail::kWinsorQ), qb = h0.quantile(1.0 - detail::kWinsorQ);
-      const float w_lo = std::fmin(qa, qb), w_hi = std::fmax(qa, qb);
-      w.resize(static_cast<size_t>(A));
-      for (int a = 0; a < A; ++a)
-        w[a] = std::fmin(std::fmax(xv[r + a], w_lo), w_hi);
-      h.build(w.data(), xm + r, A);
-      for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a, h.rank(w[a]), xm[r + a] && h.n >= 1);
-    }
-  }
-};
-
-struct CsWinsorZ {
-  CP_SIG {
-    CP_NO23;
-    (void)p;
-    detail::Hist h0;
-    std::vector<float> w;
-    for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      h0.build(xv + r, xm + r, A);
-      const float qa = h0.quantile(detail::kWinsorQ), qb = h0.quantile(1.0 - detail::kWinsorQ);
-      const float w_lo = std::fmin(qa, qb), w_hi = std::fmax(qa, qb);
-      w.resize(static_cast<size_t>(A));
-      for (int a = 0; a < A; ++a)
-        w[a] = std::fmin(std::fmax(xv[r + a], w_lo), w_hi);
-      const detail::M1 s = detail::moments(w.data(), xm + r, A);
-      const bool ok = s.n >= 2 && s.disp();
-      const double sd = ok ? s.sd() : 1.0;
-      for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a, (static_cast<double>(w[a]) - s.mean) / sd, xm[r + a] && ok);
     }
   }
 };
@@ -425,24 +366,6 @@ struct CsCorr {
       const bool ok = s.n >= 2 && s.dx_ok() && s.dy_ok();
       // 非全并列 ⇒ cxx、cyy > 0; 柯西–施瓦茨保证 |r| ≤ 1 不会发散
       detail::bcast(ov, om, r, A, ok ? s.cxy / std::sqrt(s.cxx * s.cyy) : 0.0, ok);
-    }
-  }
-};
-
-struct CsRankDiff { // 两列各自独立建直方图
-  CP_SIG {
-    CP_NO3;
-    (void)p;
-    detail::Hist hx, hy;
-    for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      hx.build(xv + r, xm + r, A);
-      hy.build(yv + r, ym + r, A);
-      const bool ok = hx.n >= 1 && hy.n >= 1;
-      for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a,
-                    static_cast<double>(hx.rank(xv[r + a])) - hy.rank(yv[r + a]),
-                    xm[r + a] && ym[r + a] && ok);
     }
   }
 };
@@ -529,63 +452,6 @@ struct CsGroupRank { // 组内 pct rank (每组独立定 lo/hi 与直方图)
             const int b = bin_of(xv[r + a], glo[q], ghi[q]);
             v = pct_of(gpre[static_cast<size_t>(q) * (kBuckets + 1) + b],
                        gh[static_cast<size_t>(q) * kBuckets + b], gn[q]);
-          }
-        }
-        detail::put(ov, om, r + a, v, ok);
-      }
-    }
-  }
-};
-
-struct CsCondRank { // 先按 y 等频分 k 桶 (桶界只由双有效资产定), 再在桶内对 x 排名
-  CP_SIG {
-    CP_NO3;
-    const int k = static_cast<int>(p.k);
-    assert(k >= 1);
-    detail::Hist hy;
-    std::vector<uint8_t> both;
-    std::vector<int> bof, bn, bh, bpre;
-    std::vector<float> blo, bhi;
-    for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      both.resize(static_cast<size_t>(A));
-      for (int a = 0; a < A; ++a)
-        both[a] = (xm[r + a] && ym[r + a]) ? 1 : 0;
-      hy.build(yv + r, both.data(), A);
-      bof.assign(static_cast<size_t>(A), -1);
-      const size_t KS = static_cast<size_t>(k);
-      bn.assign(KS, 0);
-      blo.assign(KS, 0.f);
-      bhi.assign(KS, 0.f);
-      for (int a = 0; a < A; ++a) { // 分桶 + 桶内 lo/hi/计数
-        if (!both[a])
-          continue;
-        const int b =
-            hy.ok ? std::clamp(static_cast<int>(std::floor(hy.rank(yv[r + a]) * k)), 0, k - 1) : 0;
-        bof[a] = b;
-        blo[b] = bn[b] == 0 ? xv[r + a] : std::fmin(blo[b], xv[r + a]);
-        bhi[b] = bn[b] == 0 ? xv[r + a] : std::fmax(bhi[b], xv[r + a]);
-        ++bn[b];
-      }
-      bh.assign(KS * kBuckets, 0); // 桶内直方图 + exclusive 前缀
-      for (int a = 0; a < A; ++a)
-        if (bof[a] >= 0 && spread(blo[bof[a]], bhi[bof[a]]))
-          ++bh[static_cast<size_t>(bof[a]) * kBuckets + bin_of(xv[r + a], blo[bof[a]], bhi[bof[a]])];
-      bpre.assign(KS * (kBuckets + 1), 0);
-      for (size_t q = 0; q < KS; ++q)
-        for (int b = 0; b < kBuckets; ++b)
-          bpre[q * (kBuckets + 1) + b + 1] = bpre[q * (kBuckets + 1) + b] + bh[q * kBuckets + b];
-      for (int a = 0; a < A; ++a) {
-        const bool ok = bof[a] >= 0 && hy.n >= 1;
-        double v = 0.0;
-        if (ok) {
-          const int q = bof[a];
-          if (!spread(blo[q], bhi[q]))
-            v = 0.5;
-          else {
-            const int b = bin_of(xv[r + a], blo[q], bhi[q]);
-            v = pct_of(bpre[static_cast<size_t>(q) * (kBuckets + 1) + b],
-                       bh[static_cast<size_t>(q) * kBuckets + b], bn[q]);
           }
         }
         detail::put(ov, om, r + a, v, ok);

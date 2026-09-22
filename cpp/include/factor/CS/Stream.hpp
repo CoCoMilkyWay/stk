@@ -7,9 +7,9 @@
 //   未用到的输入传 nullptr. 输入输出不重叠.
 //   CS 没有"窗"这一属性 (截面本身就是全部样本), 所以行格式与 TS 不同, 见 OpTable.hpp.
 //
-//   广播型 (CsMean/CsStd/CsMedian/CsQuantile/CsBeta/CsCorr) 对全行写同一个值与同一个掩码,
+//   广播型 (CsMean/CsStd/CsQuantile/CsBeta/CsCorr) 对全行写同一个值与同一个掩码,
 //   哪怕该资产自己的 x 是缺失的 —— 它描述的是截面而不是资产.
-//   相对型 (Demean/Z/Rank/Winsor/Bucket/Resid/RankDiff/Group*) 描述资产自身, x 缺失即无效.
+//   相对型 (Demean/Z/Rank/NormRank/Winsor/Bucket/Resid/Group*) 描述资产自身, x 缺失即无效.
 //
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
 // =============================================================================
@@ -117,8 +117,6 @@ inline const std::vector<float> &winsorize(const float *v, int A, const stream::
   return w;
 }
 
-inline constexpr double kWinsorQ = 0.01; // CsWinsorRank / CsWinsorZ 的固定缩尾分位
-
 // 组 id: y 无效或为负 → 不参与
 inline int gid(const float *v, const uint8_t *m, int i) {
   return m[i] ? static_cast<int>(std::floor(v[i])) : -1;
@@ -223,15 +221,7 @@ struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 �
   }
 };
 
-struct CsMedian {
-  static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
-                    const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
-    const auto h = detail::hist_of(xv, xm, A);
-    detail::broadcast(ov, om, A, mk(h.quantile(0.5), h.n >= 1));
-  }
-};
-
-struct CsQuantile {
+struct CsQuantile { // k 分位 (k = 0.5 即中位)
   static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &p) {
     const auto h = detail::hist_of(xv, xm, A);
@@ -249,28 +239,6 @@ struct CsWinsor {
   }
 };
 
-struct CsWinsorRank { // 先固定分位缩尾再排名: 极端值不再独占秩尾
-  static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
-                    const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
-    const auto &w = detail::winsorize(xv, A, detail::hist_of(xv, xm, A), detail::kWinsorQ);
-    const auto h = detail::hist_of(w.data(), xm, A);
-    for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk(h.rank(w[i]), xm[i] && h.n >= 1));
-  }
-};
-
-struct CsWinsorZ {
-  static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
-                    const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
-    const auto &w = detail::winsorize(xv, A, detail::hist_of(xv, xm, A), detail::kWinsorQ);
-    const auto s = detail::moments(w.data(), xm, A);
-    const bool ok = s.n >= 2 && s.disp();
-    const double sd = ok ? std::sqrt(s.m2 / (s.n - 1)) : 1.0;
-    for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk((w[i] - s.mean) / sd, xm[i] && ok));
-  }
-};
-
 struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1
   static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &p) {
@@ -281,17 +249,6 @@ struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1
       const int b = std::clamp(static_cast<int>(std::floor(h.rank(xv[i]) * k)), 0, k - 1);
       detail::put(ov, om, i, mk(h.ok ? b : 0, xm[i] && h.n >= 1));
     }
-  }
-};
-
-struct CsRankDiff {
-  static void apply(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *,
-                    const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
-    const auto hx = detail::hist_of(xv, xm, A);
-    const auto hy = detail::hist_of(yv, ym, A);
-    for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i,
-                  mk(hx.rank(xv[i]) - hy.rank(yv[i]), xm[i] && ym[i] && hx.n >= 1 && hy.n >= 1));
   }
 };
 
@@ -333,35 +290,6 @@ struct CsGroupRank { // 组内 pct rank
       const int g = detail::gid(yv, ym, i);
       const bool ok = g >= 0 && xm[i];
       detail::put(ov, om, i, mk(ok ? h[g].rank(xv[i]) : 0.f, ok));
-    }
-  }
-};
-
-struct CsCondRank { // 先按 y 等频分 k 桶, 再在桶内对 x 排名 (条件排序, 去掉 y 的一阶影响)
-  static void apply(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *,
-                    const uint8_t *, float *ov, uint8_t *om, int A, const Param &p) {
-    const int k = static_cast<int>(p.k);
-    assert(k >= 1);
-    // 桶边界只由**双有效**的资产定: y 有效而 x 缺失的资产对任何桶的 x 排名都没有贡献,
-    // 让它参与决定 y 的分位边界只会引入与 x 无关的抖动
-    std::vector<uint8_t> both(static_cast<size_t>(A));
-    for (int i = 0; i < A; ++i)
-      both[i] = (xm[i] && ym[i]) ? 1 : 0;
-    const auto hy = detail::hist_of(yv, both.data(), A);
-    std::vector<std::vector<float>> bucket(static_cast<size_t>(k));
-    std::vector<int> bof(static_cast<size_t>(A), -1);
-    for (int i = 0; i < A; ++i) {
-      if (!both[i])
-        continue;
-      bof[i] = hy.ok ? std::clamp(static_cast<int>(std::floor(hy.rank(yv[i]) * k)), 0, k - 1) : 0;
-      bucket[bof[i]].push_back(xv[i]);
-    }
-    std::vector<stream::Hist> h(static_cast<size_t>(k));
-    for (int b = 0; b < k; ++b)
-      h[b].build(bucket[b]);
-    for (int i = 0; i < A; ++i) {
-      const bool ok = bof[i] >= 0 && hy.n >= 1;
-      detail::put(ov, om, i, mk(ok ? h[bof[i]].rank(xv[i]) : 0.f, ok));
     }
   }
 };

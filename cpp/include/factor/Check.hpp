@@ -68,7 +68,7 @@ inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
       case Gen::NORM:
         v = pr == Profile::HEAVY ? td(rng) : nd(rng);
         break;
-      case Gen::POS: // 对数正态: 保证 > 0, 给 Entropy / Gini / TopK / LogRatio
+      case Gen::POS: // 对数正态: 保证 > 0, 给 Entropy / Hhi / LogRatio
         v = std::exp(nd(rng) * 0.5f) + 0.05f;
         break;
       case Gen::SMALL: // |x| 小: 保证 1 + x > 0, 给 TsProductRoll
@@ -111,8 +111,6 @@ struct Recipe {
 inline constexpr Recipe kRecipes[] = {
     {"TsLogRatio", Gen::POS, Gen::POS, Gen::NORM},
     {"TsEntropyCum", Gen::POS, Gen::NORM, Gen::NORM},
-    {"TsGiniCum", Gen::POS, Gen::NORM, Gen::NORM},
-    {"TsTopKCum", Gen::POS, Gen::NORM, Gen::NORM},
     {"TsHhiCum", Gen::POS, Gen::NORM, Gen::NORM},
     {"TsWMeanCum", Gen::NORM, Gen::POS, Gen::NORM}, // 权为正, 否则 Σy 抵消
     {"TsWMeanRoll", Gen::NORM, Gen::POS, Gen::NORM},
@@ -140,8 +138,7 @@ inline constexpr DParam kDParams[] = {
     {"TsSkewRoll", 60}, // 高阶矩 / 序统计 / 二元统计: 样本量要足
     {"TsKurtRoll", 60},
     {"TsRankRoll", 60},
-    {"TsMedianRoll", 60},
-    {"TsMadRoll", 60},
+    {"TsQuantileRoll", 60},
     {"TsMaxRoll", 60},
     {"TsMinRoll", 60},
     {"TsArgMaxRoll", 60},
@@ -150,7 +147,6 @@ inline constexpr DParam kDParams[] = {
     {"TsCorrRoll", 60},
     {"TsBetaRoll", 60},
     {"TsResidRoll", 60},
-    {"TsAgeRoll", 60},
 };
 inline int default_d(const std::string &name) {
   for (const DParam &q : kDParams)
@@ -165,19 +161,14 @@ struct KParam {
   float k, k2;
 };
 inline constexpr KParam kKParams[] = {
-    {"TsSignedPow", 0.5f, 0.f},
     {"TsClip", 2.f, 0.f},
+    {"TsGt", 0.f, 0.f}, // 正态数据下约一半过阈
     {"TsTodMask", 30.f, 90.f},
-    {"TsTopKCum", 3.f, 0.f},
-    {"TsPeaksCum", 1.f, 0.f},
-    {"TsCountGtCum", 0.f, 0.f},
-    {"TsCorrLagCum", 2.f, 0.f},
-    {"TsCountGtRoll", 0.f, 0.f},
+    {"TsQuantileRoll", 0.25f, 0.f}, // 非 0.5: 打一般分位的取整边界
     {"TsMeanEma", 0.2f, 0.f},
     {"CsQuantile", 0.25f, 0.f},
     {"CsWinsor", 0.05f, 0.f},
     {"CsBucket", 5.f, 0.f},
-    {"CsCondRank", 4.f, 0.f},
 };
 inline void set_k(const std::string &name, Param &p) {
   p.k = 1.f, p.k2 = 0.f;

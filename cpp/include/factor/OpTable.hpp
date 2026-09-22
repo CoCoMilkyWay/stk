@@ -29,7 +29,7 @@
 //
 //   参数列 = 本算子读取的 Param 字段 (Contract.hpp struct Param), 逗号分隔, 空 = 无参数:
 //     d   窗长 / 滞后 (期 = 分钟)                         k2  第二阈值 (仅 TodMask 上界)
-//     k   阈值 / 指数 / 桶数 / EMA 系数 / 分位 / topk (含义见各行公式)
+//     k   阈值 / 桶数 / EMA 系数 / 分位 (含义见各行公式)
 //
 //   【公式写法】一律单行 (GUI 表格内联渲染, 行高须齐): 不用 \frac (除法写 A / B 加括号)、不用大号
 //   \sum \prod \sqrt \lfloor (求和写 \Sigma_下标, 乘积 \Pi_下标, 开方写 ^{1/2}, 取整写 \mathrm{floor}),
@@ -46,14 +46,30 @@
 //     n           W_t 内有效样本数 (二元: x, y 同格同时有效); N  截面有效资产数
 //     μ_t, σ_t    W_t 内均值 / 样本标准差 (ddof=1); 二元加上标 μ^x, μ^y; 截面去掉下标 t
 //     m_k         W_t 内 k 阶中心总体矩 (1/n)·Σ_{W_t}(x_s − μ_t)^k
-//     max, min, med, cov, var, corr, pct, Gini, floor, clamp  带下标者下标 = 取值域 (窗 W_t / 截面 a / 组 G(a))
+//     max, min, cov, var, corr, pct, floor, clamp  带下标者下标 = 取值域 (窗 W_t / 截面 a / 组 G(a))
 //     pct(v; S)   v 在样本集 S 的并列均秩 pct rank ∈ [0, 1] (Contract pct_of); 省略 S = 全截面
-//     Q_p         截面 p 分位;  Φ⁻¹  标准正态分位;  G(a)  a 所在组 (整数 id 由 y 或 z 给)
-//     序统计族 (rank / median / mad / quantile / topk / gini) 三后端同用 kBuckets 桶近似, 桶计数整数, 对拍逐位
+//     Q_p(S)      样本集 S 的 p 分位 (省略 S = 全截面);  Φ⁻¹  标准正态分位;  G(a)  a 所在组 (整数 id 由 y 或 z 给)
+//     序统计族 (rank / quantile / winsor / bucket) 三后端同用 kBuckets 桶近似, 桶计数整数, 对拍逐位
+//
+//   【核 × 窗 为什么不是满格】格子空不空按"这个统计量在这个时间尺度上有没有意义"定, 不为对称而补:
+//     Cum (段内 = 当日) 专收**日内分布形状**: Hhi / Entropy 只有 Cum —— 度量"当日成交怎么摊在各分钟上",
+//       跨日滚动窗算集中度没有对应的研报语义.
+//     Roll (最近 d 分钟, 跨段) 专收**时序动态**: Quantile / Z / Wma / Product / Slope 只有 Roll ——
+//       分位 / 标准分 / 衰减权 / 累乘收益 / 趋势斜率都要求窗长固定, 段内 expanding 的窗长随 t_D 变,
+//       出来的值前半段和后半段不可比 (自带一条 t_D 的伪趋势).
+//     Delay / Delta 是 SHIFT 核, 只看一格, 天生只有 Roll; MeanEma 是 RECUR 核, 与 EXPO 窗一一绑定.
+//     其余归约核 (Sum / Mean / Var / Std / Skew / Kurt / Max / Min / ArgMax / ArgMin / Rank /
+//     Cov / Corr / Beta / Resid / WMean) Cum 与 Roll **成对齐全**, 缺一即为 bug.
+//
+//   【不入表的组合】能由现有行拼出来的一律不给独立算子 (表只收不可约的核):
+//     计数   Σ1[x > k]     = TsGt + TsSum{Cum,Roll};  占比同理换 TsMean{Cum,Roll}
+//     中位   med           = TsQuantileRoll(k=0.5) / CsQuantile(k=0.5)
+//     子集统计  只在某时段/某条件上统计 = TsMask(x, 掩码) 再套窗 (掩码由 TsTodMask / TsGt 造)
+//     超前相关  corr(x_s, y_{s+k}) = TsCorr{Cum,Roll}(TsDelayRoll(x, k), y) —— 换边即换符号方向
+//     TsYoY    = TsDelayRoll + TsDiv, 且 d 需一年分钟数, 超出块 carry 上限
 //
 //   加算子 = 本表一行 + TS(或 CS) 的 Stream / Cpu / Gpu 各一个同名 struct; 缺任一侧 → op_check 编译错;
 //   流式 TS struct::kWin 与本表 T 窗列不符 → op_check static_assert 错 (A 域/核类是纯语义列, 无实现侧载荷).
-//   TsYoY 不入表: = TsDelayRoll + TsDiv 的组合, 且 d 需一年分钟数, 超出块 carry 上限.
 //   "退化" 一词的含义见 Contract.hpp: 全并列 (精确) / 相消 (相对 kRelEps) / y = 0 (逐点).
 // =============================================================================
 
@@ -61,24 +77,20 @@
 #define OP_TS0(X) \
   X(TsTodMask, 0, POINT, SELF, MAP, "k,k2", R"tex(\mathbf{1}[k \le t_D < k_2])tex", "无序列输入, 只看段内位置 t_D; k/k2 = 分钟界")
 
-// ---- 1 元 × SELF (49 = POINT 10 + EXPAND 17 + ROLL 21 + EXPO 1) ----
+// ---- 1 元 × SELF (40 = POINT 8 + EXPAND 13 + ROLL 18 + EXPO 1) ----
 #define OP_TS1(X)                                                                                                                                                                     \
   X(TsAbs, 1, POINT, SELF, MAP, "", R"tex(|x_t|)tex", "")                                                                                                                             \
-  X(TsAsinh, 1, POINT, SELF, MAP, "", R"tex(\operatorname{asinh}(x_t))tex", "")                                                                                                       \
   X(TsClip, 1, POINT, SELF, MAP, "k", R"tex(\operatorname{clamp}(x_t,\,-k,\,k))tex", "k ≥ 0 对称截断")                                                                                \
+  X(TsGt, 1, POINT, SELF, MAP, "k", R"tex(\mathbf{1}[x_t > k])tex", "k = 阈值 (严格大于); 套 Sum 窗 = 计数, 套 Mean 窗 = 占比")                                                       \
   X(TsLog, 1, POINT, SELF, MAP, "", R"tex(\operatorname{sign}(x_t)\,\ln(1+|x_t|))tex", "")                                                                                            \
   X(TsRecip, 1, POINT, SELF, MAP, "", R"tex(1/x_t)tex", "x = 0 退化")                                                                                                                 \
   X(TsRelu, 1, POINT, SELF, MAP, "", R"tex(\max(0,\,x_t))tex", "")                                                                                                                    \
   X(TsSign, 1, POINT, SELF, MAP, "", R"tex(\operatorname{sign}(x_t))tex", "")                                                                                                         \
-  X(TsSignedPow, 1, POINT, SELF, MAP, "k", R"tex(\operatorname{sign}(x_t)\,|x_t|^{k})tex", "k = 指数")                                                                                \
   X(TsSqrt, 1, POINT, SELF, MAP, "", R"tex(\operatorname{sign}(x_t)\,|x_t|^{1/2})tex", "")                                                                                            \
-  X(TsTanh, 1, POINT, SELF, MAP, "", R"tex(\tanh(x_t))tex", "")                                                                                                                       \
-  X(TsCountGtCum, 1, EXPAND, SELF, MOMENT, "k", R"tex(\Sigma_{W_t}\,\mathbf{1}[x_s > k])tex", "k = 阈值")                                                                             \
   X(TsEntropyCum, 1, EXPAND, SELF, MOMENT, "", R"tex(\ln(\Sigma_{W_t}\,x_s) - (\Sigma_{W_t}\,x_s \ln x_s) \;/\; (\Sigma_{W_t}\,x_s))tex", "只计 x > 0; 无正样本退化")                 \
   X(TsHhiCum, 1, EXPAND, SELF, MOMENT, "", R"tex(\Sigma_{W_t}\,x_s^2 \;/\; (\Sigma_{W_t}\,x_s)^2)tex", "Σx 相消退化")                                                                 \
   X(TsKurtCum, 1, EXPAND, SELF, MOMENT, "", R"tex(m_4 / m_2^{2} - 3)tex", "总体矩; n < 4 或全并列退化")                                                                               \
   X(TsMeanCum, 1, EXPAND, SELF, MOMENT, "", R"tex(\mu_t = (1/n)\,\Sigma_{W_t}\,x_s)tex", "")                                                                                          \
-  X(TsPeaksCum, 1, EXPAND, SELF, MOMENT, "k", R"tex(\Sigma_{W_t}\,\mathbf{1}[x_{s-1} < x_s > x_{s+1} \,\land\, x_s > k\,\mu_s])tex", "局部峰计数; k = 相对均值倍数")                  \
   X(TsSkewCum, 1, EXPAND, SELF, MOMENT, "", R"tex(m_3 / m_2^{3/2})tex", "总体矩; n < 3 或全并列退化")                                                                                 \
   X(TsStdCum, 1, EXPAND, SELF, MOMENT, "", R"tex(\sigma_t = (\sigma_t^2)^{1/2})tex", "同 VarCum")                                                                                     \
   X(TsSumCum, 1, EXPAND, SELF, MOMENT, "", R"tex(\Sigma_{W_t}\,x_s)tex", "")                                                                                                          \
@@ -87,12 +99,9 @@
   X(TsArgMinCum, 1, EXPAND, SELF, EXTREME, "", R"tex(t - \mathrm{min}\{s \in W_t : x_s = \mathrm{min}_{W_t}\,x\})tex", "首个 (最旧) 最小值距今期数")                                  \
   X(TsMaxCum, 1, EXPAND, SELF, EXTREME, "", R"tex(\mathrm{max}_{W_t}\,x_s)tex", "cummax")                                                                                             \
   X(TsMinCum, 1, EXPAND, SELF, EXTREME, "", R"tex(\mathrm{min}_{W_t}\,x_s)tex", "cummin")                                                                                             \
-  X(TsGiniCum, 1, EXPAND, SELF, ORDER, "", R"tex(\mathrm{Gini}_{W_t}(x_s))tex", "Lorenz 基尼; 只计 x > 0, 正样本 < 2 退化; 桶近似")                                                   \
   X(TsRankCum, 1, EXPAND, SELF, ORDER, "", R"tex(\mathrm{pct}(x_t;\,\{x_s : s \in W_t\}))tex", "桶近似")                                                                              \
-  X(TsTopKCum, 1, EXPAND, SELF, ORDER, "k", R"tex(\Sigma_{\text{top-}k}\,x_s \;/\; \Sigma_{W_t}\,x_s)tex", "k = 前 k 大; n < k 或 Σx 相消退化; 桶近似")                               \
   X(TsDelayRoll, 1, ROLL, SELF, SHIFT, "d", R"tex(x_{t-d})tex", "看 d 期前那一格, 实际跨 d+1 格: t < d 无效")                                                                         \
   X(TsDeltaRoll, 1, ROLL, SELF, SHIFT, "d", R"tex(x_t - x_{t-d})tex", "同 DelayRoll: t < d 无效")                                                                                     \
-  X(TsCountGtRoll, 1, ROLL, SELF, MOMENT, "d,k", R"tex(\Sigma_{W_t}\,\mathbf{1}[x_s > k])tex", "k = 阈值; 精确 (k 不免费)")                                                           \
   X(TsKurtRoll, 1, ROLL, SELF, MOMENT, "d", R"tex(m_4 / m_2^{2} - 3)tex", "总体矩; n < 4 或全并列退化")                                                                               \
   X(TsMeanRoll, 1, ROLL, SELF, MOMENT, "d", R"tex(\mu_t = (1/n)\,\Sigma_{W_t}\,x_s)tex", "")                                                                                          \
   X(TsProductRoll, 1, ROLL, SELF, MOMENT, "d", R"tex(\Pi_{W_t}(1 + x_s) - 1)tex", "任一 1 + x ≤ 0 退化")                                                                              \
@@ -103,37 +112,33 @@
   X(TsVarRoll, 1, ROLL, SELF, MOMENT, "d", R"tex(\sigma_t^2 = \Sigma_{W_t}(x_s - \mu_t)^2 / (n-1))tex", "n < 2 或全并列退化")                                                         \
   X(TsWmaRoll, 1, ROLL, SELF, MOMENT, "d", R"tex(\Sigma_{i=1..d}\,i\,x_{t-d+i} \;/\; \Sigma_{i=1..d}\,i)tex", "线性权: 最旧 = 1 … 最新 = d (只计有效格)")                             \
   X(TsZRoll, 1, ROLL, SELF, MOMENT, "d", R"tex((x_t - \mu_t) / \sigma_t)tex", "ddof=1; n < 2 或全并列退化")                                                                           \
-  X(TsAgeRoll, 1, ROLL, SELF, EXTREME, "d", R"tex(t - \mathrm{max}\{s \in W_t : x_s \ne x_{s-1}\})tex", "距上次 x 变动 (精确不等) 的期数; 窗内无变动则 d")                            \
   X(TsArgMaxRoll, 1, ROLL, SELF, EXTREME, "d", R"tex(t - \mathrm{min}\{s \in W_t : x_s = \mathrm{max}_{W_t}\,x\})tex", "首个 (最旧) 最大值距今期数 0..d−1")                           \
   X(TsArgMinRoll, 1, ROLL, SELF, EXTREME, "d", R"tex(t - \mathrm{min}\{s \in W_t : x_s = \mathrm{min}_{W_t}\,x\})tex", "首个 (最旧) 最小值距今期数")                                  \
   X(TsMaxRoll, 1, ROLL, SELF, EXTREME, "d", R"tex(\mathrm{max}_{W_t}\,x_s)tex", "")                                                                                                   \
   X(TsMinRoll, 1, ROLL, SELF, EXTREME, "d", R"tex(\mathrm{min}_{W_t}\,x_s)tex", "")                                                                                                   \
-  X(TsMadRoll, 1, ROLL, SELF, ORDER, "d", R"tex(\mathrm{med}_{W_t}\,|x_s - \mathrm{med}_{W_t}\,x|)tex", "桶近似")                                                                     \
-  X(TsMedianRoll, 1, ROLL, SELF, ORDER, "d", R"tex(\mathrm{med}_{W_t}\,x_s)tex", "桶近似, 偶数不平均")                                                                                \
+  X(TsQuantileRoll, 1, ROLL, SELF, ORDER, "d,k", R"tex(Q_k(\{x_s : s \in W_t\}))tex", "k = 分位 ∈ (0, 1), k = 0.5 即中位; 桶近似, 不插值")                                            \
   X(TsRankRoll, 1, ROLL, SELF, ORDER, "d", R"tex(\mathrm{pct}(x_t;\,\{x_s : s \in W_t\}))tex", "桶近似")                                                                              \
   X(TsMeanEma, 1, EXPO, SELF, RECUR, "k", R"tex(e_t = k\,x_t + (1-k)\,e_{t-1})tex", "0 < k ≤ 1; 首个有效值起, x 无效则保持 e_{t-1}; 全程不 reset")
 
-// ---- 1 元 × 截面 (12 = ALL 12) ----
+// ---- 1 元 × 截面 (9 = ALL 9) ----
 #define OP_CS1(X)                                                                                                                                                \
   X(CsDemean, 1, POINT, ALL, MOMENT, "", R"tex(x_a - \mu)tex", "")                                                                                               \
   X(CsMean, 1, POINT, ALL, MOMENT, "", R"tex(\mu = (1/N)\,\Sigma_a\,x_a)tex", "广播到每个资产")                                                                  \
   X(CsStd, 1, POINT, ALL, MOMENT, "", R"tex(\sigma = (\Sigma_a (x_a - \mu)^2 / (N-1))^{1/2})tex", "ddof=1, 广播; 全并列退化")                                    \
   X(CsZ, 1, POINT, ALL, MOMENT, "", R"tex((x_a - \mu) / \sigma)tex", "ddof=1; 全并列退化")                                                                       \
   X(CsBucket, 1, POINT, ALL, ORDER, "k", R"tex(\mathrm{floor}(k \cdot \mathrm{pct}(x_a)))tex", "k = 桶数, 输出 ∈ 0..k−1")                                        \
-  X(CsMedian, 1, POINT, ALL, ORDER, "", R"tex(\mathrm{med}_a\,x_a)tex", "广播; 桶近似")                                                                          \
   X(CsNormRank, 1, POINT, ALL, ORDER, "", R"tex(\Phi^{-1}(\operatorname{clamp}(\mathrm{pct}(x_a),\,1/(N+1),\,N/(N+1))))tex", "GPU 用 normcdfinvf, 对拍容差放宽") \
-  X(CsQuantile, 1, POINT, ALL, ORDER, "k", R"tex(Q_k(x))tex", "k = 分位 ∈ (0, 1); 广播; 桶近似")                                                                 \
+  X(CsQuantile, 1, POINT, ALL, ORDER, "k", R"tex(Q_k(\{x_b\}))tex", "k = 分位 ∈ (0, 1), k = 0.5 即中位; 广播; 桶近似")                                           \
   X(CsRank, 1, POINT, ALL, ORDER, "", R"tex(\mathrm{pct}(x_a))tex", "并列均秩, ∈ [0, 1]")                                                                        \
-  X(CsWinsor, 1, POINT, ALL, ORDER, "k", R"tex(\operatorname{clamp}(x_a,\,Q_k,\,Q_{1-k}))tex", "k = 缩尾分位; 桶近似")                                           \
-  X(CsWinsorRank, 1, POINT, ALL, ORDER, "", R"tex(\mathrm{pct}(\operatorname{clamp}(x_a,\,Q_{0.01},\,Q_{0.99})))tex", "缩尾分位固定 0.01")                       \
-  X(CsWinsorZ, 1, POINT, ALL, ORDER, "", R"tex(z(\operatorname{clamp}(x_a,\,Q_{0.01},\,Q_{0.99})))tex", "缩尾分位固定 0.01; 缩尾后全并列退化")
+  X(CsWinsor, 1, POINT, ALL, ORDER, "k", R"tex(\operatorname{clamp}(x_a,\,Q_k,\,Q_{1-k}))tex", "k = 缩尾分位; 桶近似")
 
-// ---- 2 元 × SELF (20 = POINT 9 + EXPAND 6 + ROLL 5) ----
+// ---- 2 元 × SELF (20 = POINT 10 + EXPAND 5 + ROLL 5) ----
 #define OP_TS2(X)                                                                                                                                          \
   X(TsAdd, 2, POINT, SELF, MAP, "", R"tex(x_t + y_t)tex", "")                                                                                              \
   X(TsDiv, 2, POINT, SELF, MAP, "", R"tex(x_t / y_t)tex", "y = 0 退化")                                                                                    \
   X(TsImb, 2, POINT, SELF, MAP, "", R"tex((x_t - y_t) / (x_t + y_t))tex", "x + y 相消退化")                                                                \
   X(TsLogRatio, 2, POINT, SELF, MAP, "", R"tex(\ln x_t - \ln y_t)tex", "任一 ≤ 0 退化")                                                                    \
+  X(TsMask, 2, POINT, SELF, MAP, "", R"tex(x_t \;\mathrm{where}\; y_t > 0)tex", "y ≤ 0 退化 (不是补 0): 把下游窗口限在子集上, 配 TodMask / Gt 用")         \
   X(TsMax, 2, POINT, SELF, MAP, "", R"tex(\max(x_t,\,y_t))tex", "")                                                                                        \
   X(TsMin, 2, POINT, SELF, MAP, "", R"tex(\min(x_t,\,y_t))tex", "")                                                                                        \
   X(TsMul, 2, POINT, SELF, MAP, "", R"tex(x_t \cdot y_t)tex", "")                                                                                          \
@@ -141,7 +146,6 @@
   X(TsSub, 2, POINT, SELF, MAP, "", R"tex(x_t - y_t)tex", "")                                                                                              \
   X(TsBetaCum, 2, EXPAND, SELF, MOMENT, "", R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "x 对 y 的 OLS 斜率; y 全并列退化") \
   X(TsCorrCum, 2, EXPAND, SELF, MOMENT, "", R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "Pearson; x 或 y 全并列退化")              \
-  X(TsCorrLagCum, 2, EXPAND, SELF, MOMENT, "k", R"tex(\mathrm{corr}_{W_t}(x_s,\, y_{s-k}))tex", "k = y 的滞后期")                                          \
   X(TsCovCum, 2, EXPAND, SELF, MOMENT, "", R"tex(\Sigma_{W_t}(x_s - \mu^x_t)(y_s - \mu^y_t) \;/\; (n-1))tex", "n < 2 退化")                                \
   X(TsResidCum, 2, EXPAND, SELF, MOMENT, "", R"tex((x_t - \mu^x_t) - \beta_t\,(y_t - \mu^y_t))tex", "当前格残差; 同 BetaCum 退化")                         \
   X(TsWMeanCum, 2, EXPAND, SELF, MOMENT, "", R"tex(\Sigma_{W_t}\,y_s x_s \;/\; \Sigma_{W_t}\,y_s)tex", "y 为权; Σy 相消退化")                              \
@@ -151,19 +155,16 @@
   X(TsResidRoll, 2, ROLL, SELF, MOMENT, "d", R"tex((x_t - \mu^x_t) - \beta_t\,(y_t - \mu^y_t))tex", "当前格残差; 同 BetaRoll 退化")                        \
   X(TsWMeanRoll, 2, ROLL, SELF, MOMENT, "d", R"tex(\Sigma_{W_t}\,y_s x_s \;/\; \Sigma_{W_t}\,y_s)tex", "y 为权; Σy 相消退化")
 
-// ---- 2 元 × 截面 (7 = ALL 4 + GROUP 3) ----
-#define OP_CS2(X)                                                                                                                                                                                               \
-  X(CsBeta, 2, POINT, ALL, MOMENT, "", R"tex(\hat\beta = \mathrm{cov}_a(x, y) \;/\; \mathrm{var}_a(y))tex", "广播; y 全并列退化")                                                                               \
-  X(CsCorr, 2, POINT, ALL, MOMENT, "", R"tex(\mathrm{corr}_a(x, y))tex", "Pearson 广播; x 或 y 全并列退化")                                                                                                     \
-  X(CsResid, 2, POINT, ALL, MOMENT, "", R"tex(x_a - \hat\alpha - \hat\beta\,y_a)tex", "x 对 y 截面 OLS (含截距) 残差; y 全并列退化")                                                                            \
-  X(CsRankDiff, 2, POINT, ALL, ORDER, "", R"tex(\mathrm{pct}(x_a) - \mathrm{pct}(y_a))tex", "")                                                                                                                 \
-  X(CsGroupMean, 2, POINT, GROUP, MOMENT, "", R"tex((1/|G(a)|)\,\Sigma_{G(a)}\,x_b,\; G(a) = \{b : y_b = y_a\})tex", "y = 整数组 id; 组均值广播")                                                               \
-  X(CsCondRank, 2, POINT, GROUP, ORDER, "k", R"tex(\mathrm{pct}(x_a;\,B(a)),\; B(a) = \{b : \mathrm{floor}(k\,\mathrm{pct}(y_b)) = \mathrm{floor}(k\,\mathrm{pct}(y_a))\})tex", "y 分 k 桶, x 在桶内 pct rank") \
+// ---- 2 元 × 截面 (5 = ALL 3 + GROUP 2) ----
+#define OP_CS2(X)                                                                                                                                 \
+  X(CsBeta, 2, POINT, ALL, MOMENT, "", R"tex(\hat\beta = \mathrm{cov}_a(x, y) \;/\; \mathrm{var}_a(y))tex", "广播; y 全并列退化")                 \
+  X(CsCorr, 2, POINT, ALL, MOMENT, "", R"tex(\mathrm{corr}_a(x, y))tex", "Pearson 广播; x 或 y 全并列退化")                                       \
+  X(CsResid, 2, POINT, ALL, MOMENT, "", R"tex(x_a - \hat\alpha - \hat\beta\,y_a)tex", "x 对 y 截面 OLS (含截距) 残差; y 全并列退化")              \
+  X(CsGroupMean, 2, POINT, GROUP, MOMENT, "", R"tex((1/|G(a)|)\,\Sigma_{G(a)}\,x_b,\; G(a) = \{b : y_b = y_a\})tex", "y = 整数组 id; 组均值广播") \
   X(CsGroupRank, 2, POINT, GROUP, ORDER, "", R"tex(\mathrm{pct}(x_a;\,\{x_b : b \in G(a)\}),\; G(a) = \{b : y_b = y_a\})tex", "y = 整数组 id; 组内 pct rank")
 
-// ---- 3 元 × SELF (2) ----
-#define OP_TS3(X)                                                                                     \
-  X(TsClip3, 3, POINT, SELF, MAP, "", R"tex(\operatorname{clamp}(x_t,\,y_t,\,z_t))tex", "y > z 退化") \
+// ---- 3 元 × SELF (1) ----
+#define OP_TS3(X) \
   X(TsWhere, 3, POINT, SELF, MAP, "", R"tex(\mathbf{1}[x_t > 0]\,y_t + \mathbf{1}[x_t \le 0]\,z_t)tex", "")
 
 // ---- 3 元 × 截面 (1) ----
