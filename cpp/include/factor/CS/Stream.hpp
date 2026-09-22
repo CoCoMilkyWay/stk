@@ -33,27 +33,32 @@ inline void broadcast(float *v, uint8_t *m, int A, Val a) {
     put(v, m, i, a);
 }
 
-inline std::vector<float> gather(const float *v, const uint8_t *m, int A) {
-  std::vector<float> s;
-  s.reserve(static_cast<size_t>(A));
+// 每分钟一次 apply, 中间量用 thread_local 缓存复用容量 (两个独立缓冲: gather 与 winsorize 会同时存活)
+inline const std::vector<float> &gather(const float *v, const uint8_t *m, int A) {
+  static thread_local std::vector<float> s;
+  s.clear();
   for (int i = 0; i < A; ++i)
     if (m[i])
       s.push_back(v[i]);
   return s;
 }
 
-// 一元矩 (两遍中心化, 不用 Σx²−nμ²)
+// 一元矩 (两遍中心化, 不用 Σx²−nμ²); lo/hi 给全并列判据
 struct M1 {
   int n = 0;
-  double mean = 0, m2 = 0, sx2 = 0;
-  bool disp() const { return disp_ok(m2, sx2); }
+  double mean = 0, m2 = 0;
+  float lo = 0, hi = 0;
+  bool disp() const { return spread(lo, hi); }
 };
 inline M1 moments(const float *v, const uint8_t *m, int A) {
   M1 r;
   double s = 0;
   for (int i = 0; i < A; ++i)
-    if (m[i])
-      s += v[i], r.sx2 += static_cast<double>(v[i]) * v[i], ++r.n;
+    if (m[i]) {
+      r.lo = r.n == 0 ? v[i] : std::fmin(r.lo, v[i]);
+      r.hi = r.n == 0 ? v[i] : std::fmax(r.hi, v[i]);
+      s += v[i], ++r.n;
+    }
   if (r.n == 0)
     return r;
   r.mean = s / r.n;
@@ -68,17 +73,20 @@ inline M1 moments(const float *v, const uint8_t *m, int A) {
 // 二元共矩 (两遍)
 struct M2 {
   int n = 0;
-  double mx = 0, my = 0, cxx = 0, cyy = 0, cxy = 0, sx2 = 0, sy2 = 0;
-  bool dx_ok() const { return disp_ok(cxx, sx2); }
-  bool dy_ok() const { return disp_ok(cyy, sy2); }
+  double mx = 0, my = 0, cxx = 0, cyy = 0, cxy = 0;
+  float lox = 0, hix = 0, loy = 0, hiy = 0;
+  bool dx_ok() const { return spread(lox, hix); }
+  bool dy_ok() const { return spread(loy, hiy); }
 };
 inline M2 comoments(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, int A) {
   M2 r;
   double sx = 0, sy = 0;
   for (int i = 0; i < A; ++i)
     if (xm[i] && ym[i]) {
+      const bool first = r.n == 0;
+      r.lox = first ? xv[i] : std::fmin(r.lox, xv[i]), r.hix = first ? xv[i] : std::fmax(r.hix, xv[i]);
+      r.loy = first ? yv[i] : std::fmin(r.loy, yv[i]), r.hiy = first ? yv[i] : std::fmax(r.hiy, yv[i]);
       sx += xv[i], sy += yv[i];
-      r.sx2 += static_cast<double>(xv[i]) * xv[i], r.sy2 += static_cast<double>(yv[i]) * yv[i];
       ++r.n;
     }
   if (r.n == 0)
@@ -99,11 +107,13 @@ inline stream::Hist hist_of(const float *v, const uint8_t *m, int A) {
 }
 
 // 分位缩尾: 返回逐资产 clamp 后的值 (无效位置原样, 由掩码屏蔽)
-inline std::vector<float> winsorize(const float *v, int A, const stream::Hist &h, double q) {
+inline const std::vector<float> &winsorize(const float *v, int A, const stream::Hist &h, double q) {
+  static thread_local std::vector<float> w;
   const float a = h.quantile(q), b = h.quantile(1.0 - q);
-  std::vector<float> w(static_cast<size_t>(A));
+  const float lo = std::fmin(a, b), hi = std::fmax(a, b);
+  w.resize(static_cast<size_t>(A));
   for (int i = 0; i < A; ++i)
-    w[i] = std::clamp(v[i], std::fmin(a, b), std::fmax(a, b));
+    w[i] = std::fmin(std::fmax(v[i], lo), hi);
   return w;
 }
 
@@ -117,7 +127,7 @@ inline int max_gid(const float *v, const uint8_t *m, int A) {
   int g = -1;
   for (int i = 0; i < A; ++i)
     g = std::max(g, gid(v, m, i));
-  assert(g < (1 << 16)); // 组 id 当下标用, 防止 y 传进来的不是分组列
+  assert(g < kMaxGroup); // 组 id 当下标用 (三后端同一上限), 防止 y 传进来的不是分组列
   return g;
 }
 
@@ -154,8 +164,8 @@ struct CsZ {
   static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
     const auto s = detail::moments(xv, xm, A);
-    const float sd = guard(static_cast<float>(std::sqrt(s.m2 / std::max(1, s.n - 1))));
     const bool ok = s.n >= 2 && s.disp();
+    const double sd = ok ? std::sqrt(s.m2 / (s.n - 1)) : 1.0;
     for (int i = 0; i < A; ++i)
       detail::put(ov, om, i, mk((xv[i] - s.mean) / sd, xm[i] && ok));
   }
@@ -165,8 +175,8 @@ struct CsResid { // x 对 y 的截面 OLS (含截距) 残差
   static void apply(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
     const auto s = detail::comoments(xv, xm, yv, ym, A);
-    const double b = s.cxy / guard(static_cast<float>(s.cyy));
     const bool ok = s.n >= 2 && s.dy_ok();
+    const double b = ok ? s.cxy / s.cyy : 0.0;
     for (int i = 0; i < A; ++i)
       detail::put(ov, om, i, mk((xv[i] - s.mx) - b * (yv[i] - s.my), xm[i] && ym[i] && ok));
   }
@@ -176,7 +186,7 @@ struct CsBeta {
   static void apply(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
     const auto s = detail::comoments(xv, xm, yv, ym, A);
-    detail::broadcast(ov, om, A, mk(s.cxy / guard(static_cast<float>(s.cyy)), s.n >= 2 && s.dy_ok()));
+    detail::broadcast(ov, om, A, mk(s.cxy / s.cyy, s.n >= 2 && s.dy_ok()));
   }
 };
 
@@ -233,7 +243,7 @@ struct CsWinsor {
   static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &p) {
     const auto h = detail::hist_of(xv, xm, A);
-    const auto w = detail::winsorize(xv, A, h, p.k);
+    const auto &w = detail::winsorize(xv, A, h, p.k);
     for (int i = 0; i < A; ++i)
       detail::put(ov, om, i, mk(w[i], xm[i] && h.n >= 1));
   }
@@ -242,7 +252,7 @@ struct CsWinsor {
 struct CsWinsorRank { // 先固定分位缩尾再排名: 极端值不再独占秩尾
   static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
-    const auto w = detail::winsorize(xv, A, detail::hist_of(xv, xm, A), detail::kWinsorQ);
+    const auto &w = detail::winsorize(xv, A, detail::hist_of(xv, xm, A), detail::kWinsorQ);
     const auto h = detail::hist_of(w.data(), xm, A);
     for (int i = 0; i < A; ++i)
       detail::put(ov, om, i, mk(h.rank(w[i]), xm[i] && h.n >= 1));
@@ -252,10 +262,10 @@ struct CsWinsorRank { // 先固定分位缩尾再排名: 极端值不再独占�
 struct CsWinsorZ {
   static void apply(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                     const uint8_t *, float *ov, uint8_t *om, int A, const Param &) {
-    const auto w = detail::winsorize(xv, A, detail::hist_of(xv, xm, A), detail::kWinsorQ);
+    const auto &w = detail::winsorize(xv, A, detail::hist_of(xv, xm, A), detail::kWinsorQ);
     const auto s = detail::moments(w.data(), xm, A);
-    const float sd = guard(static_cast<float>(std::sqrt(s.m2 / std::max(1, s.n - 1))));
     const bool ok = s.n >= 2 && s.disp();
+    const double sd = ok ? std::sqrt(s.m2 / (s.n - 1)) : 1.0;
     for (int i = 0; i < A; ++i)
       detail::put(ov, om, i, mk((w[i] - s.mean) / sd, xm[i] && ok));
   }
@@ -269,7 +279,7 @@ struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1
     assert(k >= 1);
     for (int i = 0; i < A; ++i) {
       const int b = std::clamp(static_cast<int>(std::floor(h.rank(xv[i]) * k)), 0, k - 1);
-      detail::put(ov, om, i, mk(h.spread ? b : 0, xm[i] && h.n >= 1));
+      detail::put(ov, om, i, mk(h.ok ? b : 0, xm[i] && h.n >= 1));
     }
   }
 };
@@ -343,7 +353,7 @@ struct CsCondRank { // 先按 y 等频分 k 桶, 再在桶内对 x 排名 (条�
     for (int i = 0; i < A; ++i) {
       if (!both[i])
         continue;
-      bof[i] = hy.spread ? std::clamp(static_cast<int>(std::floor(hy.rank(yv[i]) * k)), 0, k - 1) : 0;
+      bof[i] = hy.ok ? std::clamp(static_cast<int>(std::floor(hy.rank(yv[i]) * k)), 0, k - 1) : 0;
       bucket[bof[i]].push_back(xv[i]);
     }
     std::vector<stream::Hist> h(static_cast<size_t>(k));
@@ -357,29 +367,36 @@ struct CsCondRank { // 先按 y 等频分 k 桶, 再在桶内对 x 排名 (条�
 };
 
 struct CsGroupResid { // FWL: 组内去均值后再做一次全局回归, 等价于"组固定效应 + y" 的残差
+  // 退化 = 去均值后的 ỹ 全为 0 ⟺ 每组内 y 全并列 (逐组 lo/hi 精确判, 不看 Σỹ²)
   static void apply(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv,
                     const uint8_t *zm, float *ov, uint8_t *om, int A, const Param &) {
     const int G = detail::max_gid(zv, zm, A) + 1;
     const size_t GS = static_cast<size_t>(std::max(G, 1));
     std::vector<double> sx(GS, 0.0), sy(GS, 0.0);
+    std::vector<float> lo(GS, 0.f), hi(GS, 0.f);
     std::vector<int> c(GS, 0);
     std::vector<int> g(static_cast<size_t>(A), -1);
     for (int i = 0; i < A; ++i) {
       const int gi = detail::gid(zv, zm, i);
       if (gi < 0 || !xm[i] || !ym[i])
         continue;
+      lo[gi] = c[gi] == 0 ? yv[i] : std::fmin(lo[gi], yv[i]);
+      hi[gi] = c[gi] == 0 ? yv[i] : std::fmax(hi[gi], yv[i]);
       g[i] = gi, sx[gi] += xv[i], sy[gi] += yv[i], ++c[gi];
     }
-    double sxy = 0, syy = 0, sy2 = 0;
+    bool any_spread = false;
+    for (int gi = 0; gi < G; ++gi)
+      any_spread |= c[gi] >= 1 && spread(lo[gi], hi[gi]);
+    double sxy = 0, syy = 0;
     int n = 0;
     for (int i = 0; i < A; ++i) {
       if (g[i] < 0)
         continue;
       const double xt = xv[i] - sx[g[i]] / c[g[i]], yt = yv[i] - sy[g[i]] / c[g[i]];
-      sxy += xt * yt, syy += yt * yt, sy2 += static_cast<double>(yv[i]) * yv[i], ++n;
+      sxy += xt * yt, syy += yt * yt, ++n;
     }
-    const double b = sxy / guard(static_cast<float>(syy));
-    const bool ok = n >= 2 && disp_ok(syy, sy2);
+    const bool ok = n >= 2 && any_spread;
+    const double b = ok ? sxy / syy : 0.0;
     for (int i = 0; i < A; ++i) {
       if (g[i] < 0) {
         detail::put(ov, om, i, Val{});

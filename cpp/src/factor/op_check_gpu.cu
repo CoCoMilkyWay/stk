@@ -2,7 +2,8 @@
 // GpuRun 的 CUDA 实现: 收宿主指针 → 拷进显存 → 跑 Gpu.cuh 的算子 → 拷回
 // =============================================================================
 //   只服务 op_check 的正确性对拍, 不是挖掘的性能路径 (挖掘侧数据常驻显存, 不走这里).
-//   分派表由 OpTable.hpp 展开: 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错.
+//   分派表由 OpTable.hpp 展开: 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错;
+//   struct::kStrat 与表的 GPU 策略列不符 → static_assert 错.
 // =============================================================================
 
 #include "factor/CS/Gpu.cuh"
@@ -14,11 +15,11 @@
 #include <cstring>
 #include <string>
 
-#define CU(call)                                                                                   \
-  do {                                                                                             \
-    const cudaError_t e_ = (call);                                                                 \
-    assert(e_ == cudaSuccess && cudaGetErrorString(e_));                                           \
-    (void)e_;                                                                                      \
+#define CU(call)                                         \
+  do {                                                   \
+    const cudaError_t e_ = (call);                       \
+    assert(e_ == cudaSuccess && cudaGetErrorString(e_)); \
+    (void)e_;                                            \
   } while (0)
 
 namespace factor::gpu {
@@ -86,8 +87,9 @@ bool available() {
 
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p) {
-#define G_TS(Name, ar, win, prm, gpu, doc)                                                         \
-  if (std::strcmp(name, #Name) == 0)                                                               \
+#define G_TS(Name, ar, win, prm, gpu, doc)                                                   \
+  static_assert(ts::Name::kStrat == Strat::gpu, #Name ": GPU kStrat 与 OpTable 策略列不符"); \
+  if (std::strcmp(name, #Name) == 0)                                                         \
     return call<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p);
   OP_TS(G_TS)
 #undef G_TS
@@ -96,8 +98,9 @@ void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *y
 
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p) {
-#define G_CS(Name, ar, prm, gpu, doc)                                                              \
-  if (std::strcmp(name, #Name) == 0)                                                               \
+#define G_CS(Name, ar, prm, gpu, doc)                                                        \
+  static_assert(cs::Name::kStrat == Strat::gpu, #Name ": GPU kStrat 与 OpTable 策略列不符"); \
+  if (std::strcmp(name, #Name) == 0)                                                         \
     return call<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p);
   OP_CS(G_CS)
 #undef G_CS

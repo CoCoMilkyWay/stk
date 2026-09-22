@@ -1,8 +1,7 @@
 #pragma once
 
 // =============================================================================
-// TS 算子的**对拍参考实现** (factor::naive::ts, 72 个, 对应 OpTable 的
-// OP_TS_POINT / OP_TS_EXPAND / OP_TS_ROLL / OP_TS_EXPO)
+// TS 算子的**对拍参考实现** (factor::naive::ts, 72 个, 对应 OpTable 的 OP_TS_POINT / OP_TS_WIN)
 // =============================================================================
 //   定位: 按定义整段重算, double 累加, O(T·d) 双重循环, 不要任何性能.
 //   它的唯一价值是"独立第二实现", 所以这里**不得** include 任何 Stream/Gpu 头,
@@ -38,11 +37,13 @@ inline void put(float *ov, uint8_t *om, int i, double v, bool m) {
 
 // ---- 一元统计量: 幂和 + 中心矩和 + 极值 ----
 //   m2/m3/m4 是**中心矩和** Σ(x−μ)^k (未除 n); 方差取 ddof=1, 偏峰取总体矩 (再除 n).
+//   全并列判据 = 极值比较 (契约: 精确, 无阈值)
 struct S1 {
   int n = 0;
   double sum = 0, sumsq = 0, sumabs = 0; // Σx, Σx², Σ|x|
   double mean = 0, m2 = 0, m3 = 0, m4 = 0;
   double vmin = 0, vmax = 0;
+  bool spread() const { return vmax > vmin; }
   double var() const { return m2 / (n - 1); } // ddof=1
   double skew() const {
     const double p2 = m2 / n;
@@ -77,14 +78,17 @@ inline S1 stat1(const std::vector<double> &b) {
   return r;
 }
 
-// ---- 二元统计量: cxx/cyy/cxy 为中心化平方和 (未除 n) ----
+// ---- 二元统计量: cxx/cyy/cxy 为中心化平方和 (未除 n); 极值给全并列判据 ----
 struct S2 {
   int n = 0;
-  double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, syabs = 0; // Σx, Σy, Σx², Σy², Σxy, Σ|y|
+  double sx = 0, sy = 0, sxy = 0, syabs = 0; // Σx, Σy, Σxy, Σ|y|
   double ax = 0, ay = 0, cxx = 0, cyy = 0, cxy = 0;
+  double xmin = 0, xmax = 0, ymin = 0, ymax = 0;
+  bool spread_x() const { return xmax > xmin; }
+  bool spread_y() const { return ymax > ymin; }
   double cov() const { return cxy / (n - 1); } // ddof=1
   double corr() const { return cxy / std::sqrt(cxx * cyy); }
-  double beta() const { return cxy / static_cast<double>(guard(static_cast<float>(cyy))); }
+  double beta() const { return cxy / cyy; }
 };
 
 inline S2 stat2(const std::vector<double> &bx, const std::vector<double> &by) {
@@ -93,13 +97,17 @@ inline S2 stat2(const std::vector<double> &bx, const std::vector<double> &by) {
   r.n = static_cast<int>(bx.size());
   if (r.n == 0)
     return r;
+  r.xmin = r.xmax = bx[0];
+  r.ymin = r.ymax = by[0];
   for (int i = 0; i < r.n; ++i) {
     r.sx += bx[i];
     r.sy += by[i];
-    r.sxx += bx[i] * bx[i];
-    r.syy += by[i] * by[i];
     r.sxy += bx[i] * by[i];
     r.syabs += std::fabs(by[i]);
+    r.xmin = std::fmin(r.xmin, bx[i]);
+    r.xmax = std::fmax(r.xmax, bx[i]);
+    r.ymin = std::fmin(r.ymin, by[i]);
+    r.ymax = std::fmax(r.ymax, by[i]);
   }
   r.ax = r.sx / r.n;
   r.ay = r.sy / r.n;
@@ -156,7 +164,7 @@ inline void gather_roll2(const float *xv, const uint8_t *xm, const float *yv, co
   }
 }
 
-// CumCorrLag 专用: 样本对 (x_s, y_{s−K}), 要求 s−K 仍在**本段内**且两值都有效
+// TsCorrLagCum 专用: 样本对 (x_s, y_{s−K}), 要求 s−K 仍在**本段内**且两值都有效
 inline void gather_exp2_lag(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
                             int t, int A, int a, int K, std::vector<double> &bx,
                             std::vector<double> &by) {
@@ -205,14 +213,14 @@ inline double entropy_of(const std::vector<double> &b) {
       S += x;
       sxl += x * std::log(x);
     }
-  assert(S > 0.0); // 掩码已保证 S > kEps
+  assert(S > 0.0); // 掩码已保证有正样本
   return std::log(S) - sxl / S;
 }
 
-// ---- 复利: Π(1+x) − 1, 走 Σlog1p → expm1; 任一 1+x ≤ kEps 则退化 ----
+// ---- 复利: Π(1+x) − 1, 走 Σlog1p → expm1; 任一 x ≤ −1 (1+x ≤ 0) 则退化 ----
 inline bool prod_ok(const std::vector<double> &b) {
   for (const double x : b)
-    if (!(1.0 + x > static_cast<double>(kEps)))
+    if (!(x > -1.0))
       return false;
   return true;
 }
@@ -227,7 +235,7 @@ inline double prod_of(const std::vector<double> &b) {
 struct Hist {
   int cnt = 0;
   float lo = 0.f, hi = 0.f;
-  bool ok = false; // range_ok: false = 值域退化 (全并列)
+  bool ok = false; // spread(lo, hi): false = 全并列
   int c[kBuckets];
 };
 
@@ -245,7 +253,7 @@ inline Hist hist_of(const std::vector<double> &b) {
   }
   h.lo = static_cast<float>(lo);
   h.hi = static_cast<float>(hi);
-  h.ok = range_ok(h.lo, h.hi);
+  h.ok = spread(h.lo, h.hi);
   if (h.ok)
     for (const double x : b)
       ++h.c[bin_of(static_cast<float>(x), h.lo, h.hi)];
@@ -314,7 +322,7 @@ inline double topk_of(const std::vector<double> &b, int K) {
     acc += h.c[i];
     s += bin_center(i, h.lo, h.hi) * static_cast<double>(h.c[i]);
   }
-  return s / static_cast<double>(guard(static_cast<float>(tot)));
+  return s / tot; // 掩码已保证 Σx 未相消
 }
 
 // gini: 只用 x>0 的样本 (重新定 lo/hi/直方图), 按桶升序累计人口比 p 与价值比 L (价值 = ctr·cnt),
@@ -475,18 +483,18 @@ inline double gini_of(const std::vector<double> &b) {
 // =============================================================================
 // OP_TS_POINT (22): 逐点无状态. 表达式严格照写, 不改等价形式 (三后端要位级一致).
 // =============================================================================
-NV_P1(Abs, std::fabs(x), mx)
-NV_P1(Sign, x > 0.f ? 1.f : (x < 0.f ? -1.f : 0.f), mx)
-NV_P1(Log, std::copysign(std::log1p(std::fabs(x)), x), mx)
-NV_P1(Asinh, std::asinh(x), mx)
-NV_P1(Tanh, std::tanh(x), mx)
-NV_P1(Sqrt, std::copysign(std::sqrt(std::fabs(x)), x), mx)
-NV_P1(Relu, std::fmax(0.f, x), mx)
-NV_P1(Recip, 1.f / guard(x), mx &&abs_den_ok(x)) // |x| < kEps 退化
-NV_P1(SignedPow, std::copysign(std::pow(std::fabs(x), p.k), x), mx)
+NV_P1(TsAbs, std::fabs(x), mx)
+NV_P1(TsSign, x > 0.f ? 1.f : (x < 0.f ? -1.f : 0.f), mx)
+NV_P1(TsLog, std::copysign(std::log1p(std::fabs(x)), x), mx)
+NV_P1(TsAsinh, std::asinh(x), mx)
+NV_P1(TsTanh, std::tanh(x), mx)
+NV_P1(TsSqrt, std::copysign(std::sqrt(std::fabs(x)), x), mx)
+NV_P1(TsRelu, std::fmax(0.f, x), mx)
+NV_P1(TsRecip, 1.f / x, mx &&x != 0.f) // x = 0 退化, 溢出由 mk 转无效
+NV_P1(TsSignedPow, std::copysign(std::pow(std::fabs(x), p.k), x), mx)
 
-// Clip: clamp 要求 lo ≤ hi, 即 k ≥ 0 —— 参数级约束, 早死在 assert 上
-struct Clip {
+// TsClip: clamp 要求 lo ≤ hi, 即 k ≥ 0 —— 参数级约束, 早死在 assert 上
+struct TsClip {
   NV_SIG {
     NV_NO23;
     assert(p.k >= 0.f);
@@ -497,8 +505,8 @@ struct Clip {
   }
 };
 
-// TodMask: 元数 0, 完全不读输入指针 (调用方传 nullptr)
-struct TodMask {
+// TsTodMask: 元数 0, 完全不读输入指针 (调用方传 nullptr)
+struct TsTodMask {
   NV_SIG {
     (void)xv, (void)xm;
     NV_NO23;
@@ -511,45 +519,44 @@ struct TodMask {
   }
 };
 
-NV_P2(Add, x + y, mx &&my)
-NV_P2(Sub, x - y, mx &&my)
-NV_P2(Mul, x *y, mx &&my)
-NV_P2(Div, x / guard(y), mx && my && abs_den_ok(y))
-NV_P2(Max, std::fmax(x, y), mx &&my)
-NV_P2(Min, std::fmin(x, y), mx &&my)
-// Imb / Share: 和相对退化 (scale = |x| + |y|)
-NV_P2(Imb, (x - y) / guard(x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
-NV_P2(Share, x / guard(x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
-NV_P2(LogRatio, std::log(x / guard(y)), mx && my && x > 0.f && y > 0.f)
-// Where: 未被选中的那支不要求有效
-NV_P3(Where, x > 0.f ? y : z, mx && (x > 0.f ? my : mz))
-// Clip3: y > z 退化; 掩码含 y ≤ z, 故 clamp 只在前置条件成立时求值
-NV_P3(Clip3, std::clamp(x, y, z), mx && my && mz && (y <= z))
+NV_P2(TsAdd, x + y, mx &&my)
+NV_P2(TsSub, x - y, mx &&my)
+NV_P2(TsMul, x *y, mx &&my)
+NV_P2(TsDiv, x / y, mx && my && y != 0.f) // y = 0 退化, 溢出由 mk 转无效
+NV_P2(TsMax, std::fmax(x, y), mx &&my)
+NV_P2(TsMin, std::fmin(x, y), mx &&my)
+// TsImb / TsShare: 和相消退化 (scale = |x| + |y|), 分母不钳位
+NV_P2(TsImb, (x - y) / (x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
+NV_P2(TsShare, x / (x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
+NV_P2(TsLogRatio, std::log(x) - std::log(y), mx && my && x > 0.f && y > 0.f)
+// TsWhere: 未被选中的那支不要求有效
+NV_P3(TsWhere, x > 0.f ? y : z, mx && (x > 0.f ? my : mz))
+// TsClip3: y > z 退化; 掩码含 y ≤ z, 故 clamp 只在前置条件成立时求值
+NV_P3(TsClip3, std::clamp(x, y, z), mx && my && mz && (y <= z))
 
 // =============================================================================
-// OP_TS_EXPAND (23): 样本 = 本段内 s ≤ t_seg 的有效点
+// OP_TS_WIN / EXPAND (23): 样本 = 本段内 s ≤ t_seg 的有效点
 // =============================================================================
-NV_EXP1(CumSum, s.sum, s.n >= 1)
-NV_EXP1(CumMean, s.sum / s.n, s.n >= 1)
-NV_EXP1(CumVar, s.var(), s.n >= 2 && disp_ok(s.m2, s.sumsq))
-NV_EXP1(CumStd, std::sqrt(s.var()), s.n >= 2 && disp_ok(s.m2, s.sumsq))
-NV_EXP1(CumSkew, s.skew(), s.n >= 3 && disp_ok(s.m2, s.sumsq))
-NV_EXP1(CumKurt, s.kurt(), s.n >= 4 && disp_ok(s.m2, s.sumsq))
-NV_EXP1(CumMax, s.vmax, s.n >= 1)
-NV_EXP1(CumMin, s.vmin, s.n >= 1)
-// CumRank: 相对型, x_t 无效则无效
-NV_EXP1(CumRank, detail::rank_of(b, xv[t * A + a]), s.n >= 1 && xm[t * A + a])
-NV_EXP1(CumHhi, s.sumsq / static_cast<double>(guard(static_cast<float>(s.sum * s.sum))),
-        s.n >= 1 && den_ok(s.sum * s.sum, s.n *s.sumsq))
-NV_EXP1(CumEntropy, detail::entropy_of(b),
-        detail::pos_n(b) >= 1 && detail::pos_sum(b) > static_cast<double>(kEps))
-NV_EXP1(CumTopK, detail::topk_of(b, static_cast<int>(p.k)),
+NV_EXP1(TsSumCum, s.sum, s.n >= 1)
+NV_EXP1(TsMeanCum, s.sum / s.n, s.n >= 1)
+NV_EXP1(TsVarCum, s.var(), s.n >= 2 && s.spread())
+NV_EXP1(TsStdCum, std::sqrt(s.var()), s.n >= 2 && s.spread())
+NV_EXP1(TsSkewCum, s.skew(), s.n >= 3 && s.spread())
+NV_EXP1(TsKurtCum, s.kurt(), s.n >= 4 && s.spread())
+NV_EXP1(TsMaxCum, s.vmax, s.n >= 1)
+NV_EXP1(TsMinCum, s.vmin, s.n >= 1)
+// TsRankCum: 相对型, x_t 无效则无效
+NV_EXP1(TsRankCum, detail::rank_of(b, xv[t * A + a]), s.n >= 1 && xm[t * A + a])
+NV_EXP1(TsHhiCum, s.sumsq / (s.sum * s.sum), s.n >= 1 && den_ok(s.sum * s.sum, s.n *s.sumsq))
+NV_EXP1(TsEntropyCum, detail::entropy_of(b), detail::pos_n(b) >= 1)
+NV_EXP1(TsTopKCum, detail::topk_of(b, static_cast<int>(p.k)),
         s.n >= static_cast<int>(p.k) && static_cast<int>(p.k) >= 1 && den_ok(s.sum, s.sumabs))
-NV_EXP1(CumGini, detail::gini_of(b), detail::pos_n(b) >= 2)
-NV_EXP1(CumCountGt, static_cast<double>(detail::count_gt(b, p.k)), s.n >= 1)
+NV_EXP1(TsGiniCum, detail::gini_of(b), detail::pos_n(b) >= 2)
+NV_EXP1(TsCountGtCum, static_cast<double>(detail::count_gt(b, p.k)), s.n >= 1)
 
-// CumArgMax / CumArgMin: 首个 (最早) 极值的**段内位置 s**, 严格比较故取最早
-struct CumArgMax {
+// TsArgMaxCum / TsArgMinCum: 首个 (最早) 极值**距今的期数** t_seg − s, 严格比较故取最早
+//   与 Roll 版同口径 (0 = 极值就在当前格)
+struct TsArgMaxCum {
   NV_SIG {
     NV_NO23;
     (void)p;
@@ -567,12 +574,12 @@ struct CumArgMax {
               best = s - s0;
             }
           }
-        detail::put(ov, om, t * A + a, static_cast<double>(best), n >= 1);
+        detail::put(ov, om, t * A + a, static_cast<double>((t - s0) - best), n >= 1);
       }
   }
 };
 
-struct CumArgMin {
+struct TsArgMinCum {
   NV_SIG {
     NV_NO23;
     (void)p;
@@ -590,15 +597,15 @@ struct CumArgMin {
               best = s - s0;
             }
           }
-        detail::put(ov, om, t * A + a, static_cast<double>(best), n >= 1);
+        detail::put(ov, om, t * A + a, static_cast<double>((t - s0) - best), n >= 1);
       }
   }
 };
 
-// CumPeaks: 峰在段内位置 s 要求 s−1/s/s+1 三点同段且都有效, 且 x_{s−1} < x_s > x_{s+1}
-//           且 x_s > k·mean_{≤s} (含 s 的段内 expanding 均值). 峰在 s+1 时刻才确认,
-//           故输出 t 只统计 s ≤ t−1 的峰.
-struct CumPeaks {
+// TsPeaksCum: 峰在段内位置 s 要求 s−1/s/s+1 三点同段且都有效, 且 x_{s−1} < x_s > x_{s+1}
+//             且 x_s > k·mean_{≤s} (含 s 的段内 expanding 均值). 峰在 s+1 时刻才确认,
+//             故输出 t 只统计 s ≤ t−1 的峰.
+struct TsPeaksCum {
   NV_SIG {
     NV_NO23;
     for (int a = 0; a < A; ++a)
@@ -623,17 +630,16 @@ struct CumPeaks {
   }
 };
 
-NV_EXP2(CumCov, s.cov(), s.n >= 2)
-NV_EXP2(CumCorr, s.corr(), s.n >= 2 && disp_ok(s.cxx, s.sxx) && disp_ok(s.cyy, s.syy))
-NV_EXP2(CumBeta, s.beta(), s.n >= 2 && disp_ok(s.cyy, s.syy))
-// CumResid: 相对型, 需 x_t、y_t 都有效
-NV_EXP2(CumResid, (xv[t * A + a] - s.ax) - s.beta() * (yv[t * A + a] - s.ay),
-        s.n >= 2 && disp_ok(s.cyy, s.syy) && xm[t * A + a] && ym[t * A + a])
-NV_EXP2(CumWMean, s.sxy / static_cast<double>(guard(static_cast<float>(s.sy))),
-        s.n >= 1 && den_ok(s.sy, s.syabs))
+NV_EXP2(TsCovCum, s.cov(), s.n >= 2)
+NV_EXP2(TsCorrCum, s.corr(), s.n >= 2 && s.spread_x() && s.spread_y())
+NV_EXP2(TsBetaCum, s.beta(), s.n >= 2 && s.spread_y())
+// TsResidCum: 相对型, 需 x_t、y_t 都有效
+NV_EXP2(TsResidCum, (xv[t * A + a] - s.ax) - s.beta() * (yv[t * A + a] - s.ay),
+        s.n >= 2 && s.spread_y() && xm[t * A + a] && ym[t * A + a])
+NV_EXP2(TsWMeanCum, s.sxy / s.sy, s.n >= 1 && den_ok(s.sy, s.syabs))
 
-// CumCorrLag: 样本对 (x_s, y_{s−K}), 其余口径同 CumCorr
-struct CumCorrLag {
+// TsCorrLagCum: 样本对 (x_s, y_{s−K}), 其余口径同 TsCorrCum
+struct TsCorrLagCum {
   NV_SIG {
     NV_NO3;
     const int K = static_cast<int>(p.k);
@@ -643,18 +649,18 @@ struct CumCorrLag {
       for (int t = 0; t < T; ++t) {
         detail::gather_exp2_lag(xv, xm, yv, ym, t, A, a, K, bx, by);
         const detail::S2 s = detail::stat2(bx, by);
-        const bool m = s.n >= 2 && disp_ok(s.cxx, s.sxx) && disp_ok(s.cyy, s.syy);
+        const bool m = s.n >= 2 && s.spread_x() && s.spread_y();
         detail::put(ov, om, t * A + a, m ? s.corr() : 0.0, m);
       }
   }
 };
 
 // =============================================================================
-// OP_TS_ROLL (26): 样本 = 窗 [t−d+1, t] 内的有效点; 窗未满 (t < d−1) 一律无效
+// OP_TS_WIN / ROLL (26): 样本 = 窗 [t−d+1, t] 内的有效点; 窗未满 (t < d−1) 一律无效
 // =============================================================================
 
-// TsDelay / TsDelta: 窗实际跨 d+1 格, 前置条件是 t ≥ d (不是 t ≥ d−1)
-struct TsDelay {
+// TsDelayRoll / TsDeltaRoll: 窗实际跨 d+1 格, 前置条件是 t ≥ d (不是 t ≥ d−1)
+struct TsDelayRoll {
   NV_SIG {
     NV_NO23;
     assert(p.d >= 1);
@@ -667,7 +673,7 @@ struct TsDelay {
   }
 };
 
-struct TsDelta {
+struct TsDeltaRoll {
   NV_SIG {
     NV_NO23;
     assert(p.d >= 1);
@@ -680,24 +686,23 @@ struct TsDelta {
   }
 };
 
-NV_ROLL1(TsSum, s.sum, s.n >= 1)
-NV_ROLL1(TsMean, s.sum / s.n, s.n >= 1)
-NV_ROLL1(TsVar, s.var(), s.n >= 2 && disp_ok(s.m2, s.sumsq))
-NV_ROLL1(TsStd, std::sqrt(s.var()), s.n >= 2 && disp_ok(s.m2, s.sumsq))
-NV_ROLL1(TsSkew, s.skew(), s.n >= 3 && disp_ok(s.m2, s.sumsq))
-NV_ROLL1(TsKurt, s.kurt(), s.n >= 4 && disp_ok(s.m2, s.sumsq))
-NV_ROLL1(TsMax, s.vmax, s.n >= 1)
-NV_ROLL1(TsMin, s.vmin, s.n >= 1)
-NV_ROLL1(TsMed, detail::quantile_of(b, 0.5), s.n >= 1)
-NV_ROLL1(TsMad, detail::mad_of(b), s.n >= 1)
-NV_ROLL1(TsRank, detail::rank_of(b, xv[t * A + a]), s.n >= 1 && xm[t * A + a])
-NV_ROLL1(TsZ, (xv[t * A + a] - s.mean) / static_cast<double>(guard(static_cast<float>(std::sqrt(s.var())))),
-         s.n >= 2 && disp_ok(s.m2, s.sumsq) && xm[t * A + a])
-NV_ROLL1(TsProduct, detail::prod_of(b), s.n >= 1 && detail::prod_ok(b))
-NV_ROLL1(TsCountGt, static_cast<double>(detail::count_gt(b, p.k)), s.n >= 1)
+NV_ROLL1(TsSumRoll, s.sum, s.n >= 1)
+NV_ROLL1(TsMeanRoll, s.sum / s.n, s.n >= 1)
+NV_ROLL1(TsVarRoll, s.var(), s.n >= 2 && s.spread())
+NV_ROLL1(TsStdRoll, std::sqrt(s.var()), s.n >= 2 && s.spread())
+NV_ROLL1(TsSkewRoll, s.skew(), s.n >= 3 && s.spread())
+NV_ROLL1(TsKurtRoll, s.kurt(), s.n >= 4 && s.spread())
+NV_ROLL1(TsMaxRoll, s.vmax, s.n >= 1)
+NV_ROLL1(TsMinRoll, s.vmin, s.n >= 1)
+NV_ROLL1(TsMedianRoll, detail::quantile_of(b, 0.5), s.n >= 1)
+NV_ROLL1(TsMadRoll, detail::mad_of(b), s.n >= 1)
+NV_ROLL1(TsRankRoll, detail::rank_of(b, xv[t * A + a]), s.n >= 1 && xm[t * A + a])
+NV_ROLL1(TsZRoll, (xv[t * A + a] - s.mean) / std::sqrt(s.var()), s.n >= 2 && s.spread() && xm[t * A + a])
+NV_ROLL1(TsProductRoll, detail::prod_of(b), s.n >= 1 && detail::prod_ok(b))
+NV_ROLL1(TsCountGtRoll, static_cast<double>(detail::count_gt(b, p.k)), s.n >= 1)
 
-// TsArgMax / TsArgMin: 距今期数 (d−1) − i, i = 窗内首个 (最旧) 极值的窗内下标
-struct TsArgMax {
+// TsArgMaxRoll / TsArgMinRoll: 距今期数 (d−1) − i, i = 窗内首个 (最旧) 极值的窗内下标
+struct TsArgMaxRoll {
   NV_SIG {
     NV_NO23;
     assert(p.d >= 1);
@@ -722,7 +727,7 @@ struct TsArgMax {
   }
 };
 
-struct TsArgMin {
+struct TsArgMinRoll {
   NV_SIG {
     NV_NO23;
     assert(p.d >= 1);
@@ -747,8 +752,8 @@ struct TsArgMin {
   }
 };
 
-// TsWma: 权 w = i+1 (窗内下标 i, 最旧 = 0), 只对有效点累加权与乘积, 值 = Σ(w·x)/Σw
-struct TsWma {
+// TsWmaRoll: 权 w = i+1 (窗内下标 i, 最旧 = 0), 只对有效点累加权与乘积, 值 = Σ(w·x)/Σw
+struct TsWmaRoll {
   NV_SIG {
     NV_NO23;
     assert(p.d >= 1);
@@ -771,8 +776,8 @@ struct TsWma {
   }
 };
 
-// TsSlope: x 对窗内下标 i 的 OLS 斜率 (Σix − Σi·Σx/n)/(Σi² − (Σi)²/n), 只用有效点
-struct TsSlope {
+// TsSlopeRoll: x 对窗内下标 i 的 OLS 斜率 (Σix − Σi·Σx/n)/(Σi² − (Σi)²/n), 只用有效点; 下标两两不同 ⇒ n ≥ 2 时分母 > 0
+struct TsSlopeRoll {
   NV_SIG {
     NV_NO23;
     assert(p.d >= 1);
@@ -791,18 +796,17 @@ struct TsSlope {
           sx += x;
           six += fi * x;
         }
-        const double den = n >= 1 ? sii - si * si / n : 0.0;
-        const bool m = t >= p.d - 1 && n >= 2 && disp_ok(den, sii);
-        const double num = six - si * sx / (n >= 1 ? n : 1);
-        detail::put(ov, om, t * A + a,
-                    m ? num / static_cast<double>(guard(static_cast<float>(den))) : 0.0, m);
+        const bool m = t >= p.d - 1 && n >= 2;
+        const double den = m ? sii - si * si / n : 1.0;
+        const double num = m ? six - si * sx / n : 0.0;
+        detail::put(ov, om, t * A + a, m ? num / den : 0.0, m);
       }
   }
 };
 
-// EventAge: 窗内相邻 j−1/j (都在窗内且都有效) 若 |Δ| > kRelEps(|x_j| + |x_{j−1}|) 则 j 处变动;
-//           取最近一次变动的全局行号 j*, 输出 t − j*; 窗内无变动则输出 d
-struct EventAge {
+// TsAgeRoll: 窗内相邻 j−1/j (都在窗内且都有效) 若 x_j ≠ x_{j−1} (精确) 则 j 处变动;
+//            取最近一次变动的全局行号 j*, 输出 t − j*; 窗内无变动则输出 d
+struct TsAgeRoll {
   NV_SIG {
     NV_NO23;
     assert(p.d >= 1);
@@ -813,7 +817,7 @@ struct EventAge {
           if (!xm[j * A + a] || !xm[(j - 1) * A + a])
             continue;
           const double xj = xv[j * A + a], xp = xv[(j - 1) * A + a];
-          if (std::fabs(xj - xp) > static_cast<double>(kRelEps) * (std::fabs(xj) + std::fabs(xp)))
+          if (xj != xp)
             last = j;
         }
         const bool m = t >= p.d - 1 && xm[t * A + a];
@@ -824,19 +828,18 @@ struct EventAge {
   }
 };
 
-NV_ROLL2(TsCov, s.cov(), s.n >= 2)
-NV_ROLL2(TsCorr, s.corr(), s.n >= 2 && disp_ok(s.cxx, s.sxx) && disp_ok(s.cyy, s.syy))
-NV_ROLL2(TsBeta, s.beta(), s.n >= 2 && disp_ok(s.cyy, s.syy))
-NV_ROLL2(TsResid, (xv[t * A + a] - s.ax) - s.beta() * (yv[t * A + a] - s.ay),
-         s.n >= 2 && disp_ok(s.cyy, s.syy) && xm[t * A + a] && ym[t * A + a])
-NV_ROLL2(TsWMean, s.sxy / static_cast<double>(guard(static_cast<float>(s.sy))),
-         s.n >= 1 && den_ok(s.sy, s.syabs))
+NV_ROLL2(TsCovRoll, s.cov(), s.n >= 2)
+NV_ROLL2(TsCorrRoll, s.corr(), s.n >= 2 && s.spread_x() && s.spread_y())
+NV_ROLL2(TsBetaRoll, s.beta(), s.n >= 2 && s.spread_y())
+NV_ROLL2(TsResidRoll, (xv[t * A + a] - s.ax) - s.beta() * (yv[t * A + a] - s.ay),
+         s.n >= 2 && s.spread_y() && xm[t * A + a] && ym[t * A + a])
+NV_ROLL2(TsWMeanRoll, s.sxy / s.sy, s.n >= 1 && den_ok(s.sy, s.syabs))
 
 // =============================================================================
-// OP_TS_EXPO (1): 全程递推, 不按段重置
+// OP_TS_WIN / EXPO (1): 全程递推, 不按段重置
 // =============================================================================
-// TsEma: x 有效时 y = 已出现过有效值 ? k·x + (1−k)·y : x; x 无效时 y 与掩码都不动
-struct TsEma {
+// TsMeanEma: x 有效时 y = 已出现过有效值 ? k·x + (1−k)·y : x; x 无效时 y 与掩码都不动
+struct TsMeanEma {
   NV_SIG {
     NV_NO23;
     for (int a = 0; a < A; ++a) {

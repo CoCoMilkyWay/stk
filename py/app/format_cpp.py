@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CPP_DIR = PROJECT_ROOT / "cpp"
 
 # Extensions to format
-EXTENSIONS = {".hpp", ".cpp", ".h", ".cc", ".hh", ".ipp", ".cxx"}
+EXTENSIONS = {".hpp", ".cpp", ".h", ".cc", ".hh", ".ipp", ".cxx", ".cu", ".cuh"}
 
 # Directories to skip (build artifacts, vendored libs, generated code)
 SKIP_DIRS = {

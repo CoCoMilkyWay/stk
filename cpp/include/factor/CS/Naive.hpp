@@ -4,7 +4,7 @@
 // CS 算子对拍参考实现 (OP_CS 全 20 个; 语义契约见 factor/Contract.hpp)
 // =============================================================================
 //   按定义最直白地算, double 累加, 不求性能 —— 唯一价值是独立第二实现,
-//   故除 Contract.hpp (共享数学件: mk/guard/disp_ok/pct_of/probit/分桶规则) 外不依赖任何后端.
+//   故除 Contract.hpp (共享数学件: mk/spread/den_ok/pct_of/probit/分桶规则) 外不依赖任何后端.
 //
 //   CS = 每个时刻 t 一个截面, 沿资产 a 归约, 各 t 之间完全独立 (外层 for t, 内层一行 A 个资产).
 //   数组 SoA 行主序 [T][A], 下标 t*A + a. 未用到的输入指针调用方传 nullptr.
@@ -27,7 +27,7 @@ namespace factor::naive::cs {
 
 namespace detail {
 
-// ---- 输出: 一律经 mk (它 assert 有效位上不得出 NaN/inf), 无效位写 0 ----
+// ---- 输出: 一律经 mk (无效或非有限 → 0/false) ----
 inline void put(float *ov, uint8_t *om, int i, double v, bool m) {
   const Val r = mk(v, m);
   ov[i] = r.v;
@@ -38,7 +38,7 @@ inline void put(float *ov, uint8_t *om, int i, double v, bool m) {
 struct Hist {
   int cnt = 0;
   float lo = 0.f, hi = 0.f;
-  bool ok = false; // range_ok(lo, hi): false = 值域退化 (全并列)
+  bool ok = false; // spread(lo, hi): false = 全并列
   int cnt_b[kBuckets] = {};
 
   explicit Hist(const std::vector<float> &s) {
@@ -50,7 +50,7 @@ struct Hist {
       lo = std::min(lo, x);
       hi = std::max(hi, x);
     }
-    ok = range_ok(lo, hi);
+    ok = spread(lo, hi);
     if (!ok)
       return;
     for (const float x : s)
@@ -85,19 +85,22 @@ struct Hist {
   }
 };
 
-// ---- 一元矩 (两遍: 先 μ, 再 M2 = Σ(x−μ)²; sq = Σx² 供 disp_ok 作量级尺) ----
+// ---- 一元矩 (两遍: 先 μ, 再 M2 = Σ(x−μ)²; lo/hi 给全并列判据) ----
 struct Stat {
   int cnt = 0;
-  double mean = 0.0, m2 = 0.0, sq = 0.0;
+  double mean = 0.0, m2 = 0.0;
+  float lo = 0.f, hi = 0.f;
 
   explicit Stat(const std::vector<float> &s) {
     cnt = static_cast<int>(s.size());
     if (cnt == 0)
       return;
+    lo = hi = s[0];
     double sum = 0.0;
     for (const float x : s) {
       sum += x;
-      sq += static_cast<double>(x) * x;
+      lo = std::min(lo, x);
+      hi = std::max(hi, x);
     }
     mean = sum / cnt;
     for (const float x : s) {
@@ -105,6 +108,7 @@ struct Stat {
       m2 += d * d;
     }
   }
+  bool spread() const { return factor::spread(lo, hi); }
   // ddof=1 标准差; cnt < 2 时无定义, 给 0 (掩码此时必为 false)
   double sd() const { return cnt >= 2 ? std::sqrt(m2 / (cnt - 1)) : 0.0; }
 };
@@ -114,19 +118,23 @@ struct Stat2 {
   int cnt = 0;
   double mx = 0.0, my = 0.0;
   double cxx = 0.0, cyy = 0.0, cxy = 0.0; // 中心化平方和 / 交叉积和
-  double sqx = 0.0, sqy = 0.0;            // Σx², Σy²
+  float lox = 0.f, hix = 0.f, loy = 0.f, hiy = 0.f;
 
   Stat2(const std::vector<float> &xs, const std::vector<float> &ys) {
     assert(xs.size() == ys.size());
     cnt = static_cast<int>(xs.size());
     if (cnt == 0)
       return;
+    lox = hix = xs[0];
+    loy = hiy = ys[0];
     double sx = 0.0, sy = 0.0;
     for (int i = 0; i < cnt; ++i) {
       sx += xs[i];
       sy += ys[i];
-      sqx += static_cast<double>(xs[i]) * xs[i];
-      sqy += static_cast<double>(ys[i]) * ys[i];
+      lox = std::min(lox, xs[i]);
+      hix = std::max(hix, xs[i]);
+      loy = std::min(loy, ys[i]);
+      hiy = std::max(hiy, ys[i]);
     }
     mx = sx / cnt;
     my = sy / cnt;
@@ -137,7 +145,9 @@ struct Stat2 {
       cxy += dx * dy;
     }
   }
-  double beta() const { return cxy / guard(static_cast<float>(cyy)); } // OLS 斜率
+  bool spread_x() const { return factor::spread(lox, hix); }
+  bool spread_y() const { return factor::spread(loy, hiy); }
+  double beta() const { return cxy / cyy; } // OLS 斜率 (只在 spread_y 时求值)
 };
 
 // ---- 组 id: 分组列无效 → −1 (不参与); id 要当数组下标, 过大说明传进来的不是分组列 ----
@@ -145,7 +155,7 @@ inline int gid_of(const float *gv, const uint8_t *gm, int i) {
   if (!gm[i])
     return -1;
   const int g = static_cast<int>(std::floor(gv[i]));
-  assert(g < (1 << 16));
+  assert(g < kMaxGroup);
   return g;
 }
 
@@ -176,7 +186,7 @@ struct CsMean {
   }
 };
 
-// sqrt(M2/(cnt−1)) 广播; m = cnt ≥ 2 && disp_ok(M2, Σx²)
+// sqrt(M2/(cnt−1)) 广播; m = cnt ≥ 2 && 非全并列
 struct CsStd {
   static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                   const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &) {
@@ -187,7 +197,7 @@ struct CsStd {
         if (xm[t * A + a])
           s.push_back(xv[t * A + a]);
       const Stat st(s);
-      const bool m = st.cnt >= 2 && disp_ok(st.m2, st.sq);
+      const bool m = st.cnt >= 2 && st.spread();
       for (int a = 0; a < A; ++a)
         put(ov, om, t * A + a, st.sd(), m);
     }
@@ -213,7 +223,7 @@ struct CsDemean {
   }
 };
 
-// (x − μ)/guard(σ), σ ddof=1; m = xm && cnt ≥ 2 && disp_ok(M2, Σx²)
+// (x − μ)/σ, σ ddof=1; m = xm && cnt ≥ 2 && 非全并列
 struct CsZ {
   static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                   const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &) {
@@ -224,8 +234,8 @@ struct CsZ {
         if (xm[t * A + a])
           s.push_back(xv[t * A + a]);
       const Stat st(s);
-      const bool ok = st.cnt >= 2 && disp_ok(st.m2, st.sq);
-      const float den = guard(static_cast<float>(st.sd()));
+      const bool ok = st.cnt >= 2 && st.spread();
+      const double den = ok ? st.sd() : 1.0;
       for (int a = 0; a < A; ++a) {
         const int i = t * A + a;
         put(ov, om, i, (static_cast<double>(xv[i]) - st.mean) / den, xm[i] && ok);
@@ -362,7 +372,7 @@ struct CsWinsorRank {
   }
 };
 
-// 固定 q = 0.01 缩尾后**重算** μ/σ/M2/Σx² 再做 z; m = xm && cnt ≥ 2 && disp_ok(缩尾后 M2, 缩尾后 Σx²)
+// 固定 q = 0.01 缩尾后**重算** μ/σ/M2 再做 z; m = xm && cnt ≥ 2 && 缩尾后非全并列
 struct CsWinsorZ {
   static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *,
                   const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &) {
@@ -380,8 +390,8 @@ struct CsWinsorZ {
       for (const float x : s)
         w.push_back(std::clamp(x, w_lo, w_hi));
       const Stat st(w);
-      const bool ok = st.cnt >= 2 && disp_ok(st.m2, st.sq);
-      const float den = guard(static_cast<float>(st.sd()));
+      const bool ok = st.cnt >= 2 && st.spread();
+      const double den = ok ? st.sd() : 1.0;
       for (int a = 0; a < A; ++a) {
         const int i = t * A + a;
         const double x = std::clamp(xv[i], w_lo, w_hi);
@@ -416,7 +426,7 @@ struct CsBucket {
 
 // ===== 二元: 回归 / 相关 =====
 
-// 相对型 (x−x̄) − β(y−ȳ), β = cxy/guard(cyy); m = xm && ym && cnt ≥ 2 && disp_ok(cyy, Σy²)
+// 相对型 (x−x̄) − β(y−ȳ), β = cxy/cyy; m = xm && ym && cnt ≥ 2 && y 非全并列
 struct CsResid {
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
                   const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A,
@@ -433,8 +443,8 @@ struct CsResid {
         }
       }
       const Stat2 st(xs, ys);
-      const bool ok = st.cnt >= 2 && disp_ok(st.cyy, st.sqy);
-      const double b = st.beta();
+      const bool ok = st.cnt >= 2 && st.spread_y();
+      const double b = ok ? st.beta() : 0.0;
       for (int a = 0; a < A; ++a) {
         const int i = t * A + a;
         const double v = (static_cast<double>(xv[i]) - st.mx) - b * (static_cast<double>(yv[i]) - st.my);
@@ -444,7 +454,7 @@ struct CsResid {
   }
 };
 
-// β 广播; m = cnt ≥ 2 && disp_ok(cyy, Σy²)
+// β 广播; m = cnt ≥ 2 && y 非全并列
 struct CsBeta {
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
                   const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A,
@@ -461,14 +471,14 @@ struct CsBeta {
         }
       }
       const Stat2 st(xs, ys);
-      const bool m = st.cnt >= 2 && disp_ok(st.cyy, st.sqy);
+      const bool m = st.cnt >= 2 && st.spread_y();
       for (int a = 0; a < A; ++a)
-        put(ov, om, t * A + a, st.beta(), m);
+        put(ov, om, t * A + a, m ? st.beta() : 0.0, m);
     }
   }
 };
 
-// cxy/sqrt(cxx·cyy) 广播; m = cnt ≥ 2 && disp_ok(cxx, Σx²) && disp_ok(cyy, Σy²)
+// cxy/sqrt(cxx·cyy) 广播; m = cnt ≥ 2 && x、y 都非全并列
 struct CsCorr {
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
                   const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A,
@@ -485,11 +495,9 @@ struct CsCorr {
         }
       }
       const Stat2 st(xs, ys);
-      const bool m =
-          st.cnt >= 2 && disp_ok(st.cxx, st.sqx) && disp_ok(st.cyy, st.sqy);
-      // 分母不套 guard: kEps 是绝对阈值, 截面离散度小 (如 A 很小) 时会把正确的 |r|→1
-      // 硬压成 |r|<1; 退化已由 disp_ok 挡住, 且柯西–施瓦茨保证 |r| ≤ 1 不会发散
-      const double v = st.cxy / std::sqrt(st.cxx * st.cyy);
+      const bool m = st.cnt >= 2 && st.spread_x() && st.spread_y();
+      // 非全并列 ⇒ cxx、cyy > 0; 柯西–施瓦茨保证 |r| ≤ 1 不会发散
+      const double v = m ? st.cxy / std::sqrt(st.cxx * st.cyy) : 0.0;
       for (int a = 0; a < A; ++a)
         put(ov, om, t * A + a, v, m);
     }
@@ -629,14 +637,15 @@ struct CsCondRank {
 };
 
 // z 为分组列: g = zm ? floor(z) : −1, 参与 = xm && ym && g ≥ 0.
-// 组内 demean 得 x̃, ỹ, 再用**全体参与样本**算标量 β = Σ(x̃·ỹ)/guard(Σỹ²), 输出 x̃ − β·ỹ (FWL);
-// m = 参与 && 全体参与数 ≥ 2 && disp_ok(Σỹ², Σy²)
+// 组内 demean 得 x̃, ỹ, 再用**全体参与样本**算标量 β = Σ(x̃·ỹ)/Σỹ², 输出 x̃ − β·ỹ (FWL);
+// m = 参与 && 全体参与数 ≥ 2 && 至少一组内 y 非全并列 (⟺ ỹ 不全为 0, 逐组 lo/hi 精确判)
 struct CsGroupResid {
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
                   const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A,
                   const Param &) {
     std::vector<int> gid(A), gcnt;
     std::vector<double> gx, gy;
+    std::vector<float> glo, ghi;
     for (int t = 0; t < T; ++t) {
       int gmax = -1;
       for (int a = 0; a < A; ++a) {
@@ -646,31 +655,37 @@ struct CsGroupResid {
       gx.assign(gmax + 1, 0.0);
       gy.assign(gmax + 1, 0.0);
       gcnt.assign(gmax + 1, 0);
+      glo.assign(gmax + 1, 0.f);
+      ghi.assign(gmax + 1, 0.f);
       auto join = [&](int a) {
         const int i = t * A + a;
         return xm[i] && ym[i] && gid[a] >= 0;
       };
       for (int a = 0; a < A; ++a)
         if (join(a)) {
-          const int i = t * A + a;
-          gx[gid[a]] += xv[i];
-          gy[gid[a]] += yv[i];
-          ++gcnt[gid[a]];
+          const int i = t * A + a, g = gid[a];
+          glo[g] = gcnt[g] == 0 ? yv[i] : std::min(glo[g], yv[i]);
+          ghi[g] = gcnt[g] == 0 ? yv[i] : std::max(ghi[g], yv[i]);
+          gx[g] += xv[i];
+          gy[g] += yv[i];
+          ++gcnt[g];
         }
+      bool any_spread = false;
+      for (int g = 0; g <= gmax; ++g)
+        any_spread = any_spread || (gcnt[g] >= 1 && spread(glo[g], ghi[g]));
       // 组内均值 → 组内 demean 后的全体幂和
       int n = 0;
-      double syy_t = 0.0, sxy_t = 0.0, sqy = 0.0;
+      double syy_t = 0.0, sxy_t = 0.0;
       for (int a = 0; a < A; ++a)
         if (join(a)) {
           const int i = t * A + a, g = gid[a];
           const double dx = xv[i] - gx[g] / gcnt[g], dy = yv[i] - gy[g] / gcnt[g];
           syy_t += dy * dy;
           sxy_t += dx * dy;
-          sqy += static_cast<double>(yv[i]) * yv[i];
           ++n;
         }
-      const double b = sxy_t / guard(static_cast<float>(syy_t));
-      const bool ok = n >= 2 && disp_ok(syy_t, sqy);
+      const bool ok = n >= 2 && any_spread;
+      const double b = ok ? sxy_t / syy_t : 0.0;
       for (int a = 0; a < A; ++a) {
         const int i = t * A + a, g = gid[a];
         const bool m = join(a) && ok;

@@ -13,11 +13,7 @@ stk/
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 直接调用 CMake
 │   ├── mode_*.py          # 🐍 模式开关: tsan/debug/profile/assert/production
-│   ├── app/               # 🐍 build_universe (股票池) / FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
-│   └── factor/            # 🐍 因子算子向量式 (torch, GPU 挖掘) + 对拍
-│       ├── optable.py     # 🐍 解析 OpTable.hpp → 注册表
-│       ├── ops/           # 🐍 elem / cum / roll / cs (与 cpp factor/stream 同名同义), _util 公共件
-│       └── check/         # 🐍 流式 vs 向量式对拍: cases (输入+边界) / tol (容差) / run (主程序, 合入门槛)
+│   └── app/               # 🐍 build_universe (股票池) / FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                   # 📦 跨模块数据层
@@ -125,9 +121,17 @@ stk/
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
-│   │   ├── factor/                                         # 🧬 因子算子基建 (特征之上的 TS/CS 算子; 因子 = 特征的非线性算子组合, 表见 operator.md)
-│   │   │   ├── OpTable.hpp                                 # 🧬 真相表 X-macro: 轴 (ELEM/CUM/ROLL/CS) × 元数 分组, 三方 (流式/向量式/对拍) 同名展开
-│   │   │   └── stream/                                     # 🧬 流式 kernel (实盘, 单资产因果, precise-math TU): Kernel.hpp 契约+公共件 / Elem / Cum / Roll / Cs
+│   │   ├── factor/                                         # 🧬 因子算子基建 (特征之上的 TS/CS 算子; 因子 = 特征的非线性算子组合)
+│   │   │   ├── Contract.hpp                                # 🧬 语义契约 (三后端唯一共享件之一): 两轴 (TS/CS) 穷尽互斥, 窗形/GPU策略为属性列; SoA 布局 [T][A], branchless 数值, 退化判据
+│   │   │   ├── OpTable.hpp                                 # 🧬 真相表 X-macro (另一共享件): 命名 轴_核_窗 (TsMeanRoll/TsMeanCum/CsMean); TS 行 (元数/窗 POINT|EXPAND|ROLL|EXPO/GPU策略) + CS 行 (元数/GPU策略), 三后端同名展开
+│   │   │   ├── StreamHist.hpp                              # 🧬 流式后端专用分桶直方图 (序统计族 rank/quantile, 整数桶计数 → 三后端逐位一致)
+│   │   │   ├── GpuRun.hpp                                  # 🧬 GPU 对拍宿主接口 (POD 指针; 未开 CUDA 链 stub, 退化为两方对拍)
+│   │   │   ├── TS/                                         # 🧬 时序算子三后端 (同名 struct, 互不可见, 缺一 → op_check 编译错)
+│   │   │   │   ├── Stream.hpp                              # 🧬   实盘流式 (CPU, O(1) 状态, 单资产因果)
+│   │   │   │   ├── Naive.hpp                               # 🧬   对拍参考 (double, 按定义直白算)
+│   │   │   │   └── Gpu.cuh                                 # 🧬   挖掘 (CUDA 向量化, POINT/GATHER/SCAN/EXTREME/HIST/RECUR)
+│   │   │   └── CS/                                         # 🧬 截面算子三后端 (同名 struct, 同 TS 三份独立实现)
+│   │   │       ├── Stream.hpp / Naive.hpp / Gpu.cuh        # 🧬   GPU 策略: REDUCE / HIST / GROUP
 │   │   ├── math/                                           # 📐 distribution / normalize / sample / spectral / stationary / timeseries / autoencoder / model
 │   │   │   ├── Operator.hpp                                # 📐 算子元数据/定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
@@ -149,7 +153,9 @@ stk/
 │   │       └── VariableMonitor.hpp                         # 🔧 变量值监控
 │   ├── src/                                                # 💾 源文件实现 (多数对应include/, boost/math为header-only无实现)
 │   │   ├── main.cpp                                        # 💾 程序入口
-│   │   ├── factor/op_stream.cpp                            # 💾 流式算子对拍 CLI (独立 target op_stream: npy in → 逐 t push → npy out)
+│   │   ├── factor/op_check.cpp                             # 💾 三方对拍 CLI (独立 target op_check: naive 参考 / stream 流式 / gpu 向量; 造数+边界 profile, 掩码逐位相等+容差)
+│   │   ├── factor/op_check_gpu.cu                          # 💾 GPU 后端 CUDA 实现 (nvcc 编译, 仅 FACTOR_CUDA ON 时入链)
+│   │   ├── factor/op_check_gpu_stub.cpp                    # 💾 GPU stub (无 CUDA 时 available()=false, op_check 退化为 naive↔stream 两方对拍)
 │   │   ├── api/ codec/ shared/ misc/ worker/ features/     # 💾 对应模块实现
 │   │   ├── gui/Gui.cpp / Tasks.cpp                         # 💾 GUI主循环与任务注册实现
 │   │   ├── gui/Run_OpenGL.cpp                              # 💾 OpenGL后端入口

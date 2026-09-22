@@ -7,6 +7,7 @@
 //   rank / quantile 全由**整数桶计数**决定 → 三后端算法各异仍能逐位一致,
 //   近似只相对于"真序统计" (分辨率 = 桶宽).
 //   样本量 ≤ 段长 240 (EXPAND) / 窗长 d (ROLL) / 截面宽 A (CS), 直接缓存后建桶.
+//   build 时顺带算 exclusive 前缀 → rank 是 O(1) (截面 A 次查询不必每次扫 256 桶).
 // =============================================================================
 
 #include "factor/Contract.hpp"
@@ -19,9 +20,10 @@ namespace factor::stream {
 
 struct Hist {
   int cnt[kBuckets] = {};
+  int pre[kBuckets + 1] = {}; // pre[b] = Σ_{j<b} cnt[j]; pre[kBuckets] = n
   float lo = 0, hi = 0;
   int n = 0;
-  bool spread = false; // 值域非退化 (非全并列)
+  bool ok = false; // spread(lo, hi): 非全并列
 
   void build(const std::vector<float> &s) {
     n = static_cast<int>(s.size());
@@ -29,30 +31,28 @@ struct Hist {
       return;
     const auto [a, b] = std::minmax_element(s.begin(), s.end());
     lo = *a, hi = *b;
-    spread = range_ok(lo, hi);
-    if (!spread)
+    ok = spread(lo, hi);
+    if (!ok)
       return;
     for (float v : s)
       ++cnt[bin_of(v, lo, hi)];
+    for (int b2 = 0; b2 < kBuckets; ++b2)
+      pre[b2 + 1] = pre[b2] + cnt[b2];
   }
   float rank(float x) const { // 并列均秩的 pct rank
-    if (!spread)
+    if (!ok)
       return 0.5f;
     const int b = bin_of(x, lo, hi);
-    int less = 0;
-    for (int j = 0; j < b; ++j)
-      less += cnt[j];
-    return pct_of(less, cnt[b], n);
+    return pct_of(pre[b], cnt[b], n);
   }
   float quantile(double q) const { // 最小的桶使前缀累计 ≥ ⌈q·n⌉
-    if (!spread || q <= 0.0)
+    if (!ok || q <= 0.0)
       return lo;
     if (q >= 1.0)
       return hi;
     const int need = std::max(1, static_cast<int>(std::ceil(q * n)));
-    int cum = 0;
     for (int b = 0; b < kBuckets; ++b)
-      if ((cum += cnt[b]) >= need)
+      if (pre[b + 1] >= need)
         return bin_center(b, lo, hi);
     return hi;
   }

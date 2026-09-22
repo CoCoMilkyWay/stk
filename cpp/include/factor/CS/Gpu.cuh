@@ -25,6 +25,7 @@
 
 #include <cassert>
 #include <cfloat>
+#include <climits>
 #include <cstdint>
 #include <cub/cub.cuh>
 #include <cuda_runtime.h>
@@ -36,11 +37,11 @@
 #define FACTOR_GPU_COMMON_CUH
 
 // 无错误处理, 只断言: 越早炸越好
-#define FACTOR_CUDA_OK(call)                                  \
-  do {                                                        \
-    const cudaError_t e_ = (call);                            \
-    assert(e_ == cudaSuccess && "CUDA 调用失败");             \
-    (void)e_;                                                 \
+#define FACTOR_CUDA_OK(call)                      \
+  do {                                            \
+    const cudaError_t e_ = (call);                \
+    assert(e_ == cudaSuccess && "CUDA 调用失败"); \
+    (void)e_;                                     \
   } while (0)
 
 namespace factor::gpu {
@@ -58,17 +59,10 @@ namespace dev {
 // 有限性判据 (branchless): 有限 → v*0 == 0; inf/NaN → NaN != 0. 依赖 -fno-fast-math
 __device__ __forceinline__ bool fin(float v) { return v * 0.f == 0.f; }
 
-// 分母保护: 保号 clamp 到 ±kEps 之外
-__device__ __forceinline__ float guard(float den) {
-  const float a = fabsf(den) < kEps ? kEps : fabsf(den);
-  return den < 0.f ? -a : a;
-}
-// 离散度: m2 = Σ(x−μ)², s2 = Σx². 常值列 m2 ≈ 0 → 退化
-__device__ __forceinline__ bool disp_ok(double m2, double s2) { return m2 > static_cast<double>(kRelEps) * (s2 + 1e-30); }
-// 分母: den 相对于两侧量级 scale
+// 全并列: 有效样本极值 hi > lo (精确)
+__device__ __forceinline__ bool spread(float lo, float hi) { return hi > lo; }
+// 相消: den 相对于两侧量级 scale
 __device__ __forceinline__ bool den_ok(double den, double scale) { return fabs(den) > static_cast<double>(kRelEps) * (scale + 1e-30); }
-// 绝对分母 (逐点算子)
-__device__ __forceinline__ bool abs_den_ok(float den) { return fabsf(den) >= kEps; }
 // 并列均秩的 pct rank: (avg_rank − 1)/(m − 1), m ≤ 1 → 0.5
 __device__ __forceinline__ float pct_of(int less, int eq, int m) {
   if (m <= 1)
@@ -76,8 +70,6 @@ __device__ __forceinline__ float pct_of(int less, int eq, int m) {
   const double avg = static_cast<double>(less) + (static_cast<double>(eq) + 1.0) * 0.5;
   return static_cast<float>((avg - 1.0) / static_cast<double>(m - 1));
 }
-// 值域退化判据
-__device__ __forceinline__ bool range_ok(float lo, float hi) { return hi - lo > kRelEps * (fabsf(lo) + fabsf(hi) + 1e-30f); }
 // 分桶 (double 除法, 与 host 逐位一致)
 __device__ __forceinline__ int bin_of(float x, float lo, float hi) {
   const int b = static_cast<int>((static_cast<double>(x) - lo) / (static_cast<double>(hi) - lo) * kBuckets);
@@ -100,10 +92,8 @@ __device__ __forceinline__ int bin_of_fast(float x, float lo, float hi) {
   return b < 0 ? 0 : (b >= kBuckets ? kBuckets - 1 : b);
 }
 
-// 出口 = Contract::mk(): 无效写 0; 有效却非有限 = 漏了 guard, 按契约直接断言死.
-// NDEBUG 下断言消失, 此时降级为"判无效", 兜住"任何情况下不得产出 NaN/inf"这条硬要求
+// 出口 = Contract::mk(): 无效或非有限 (溢出) → {0, 0}
 __device__ __forceinline__ void store(float *ov, uint8_t *om, int i, float v, bool m) {
-  assert(!m || fin(v));
   const bool f = m && fin(v);
   ov[i] = f ? v : 0.f;
   om[i] = f ? 1 : 0;
@@ -114,23 +104,16 @@ __device__ __forceinline__ void store(float *ov, uint8_t *om, int i, float v, bo
 // 主机侧小工具 (避免依赖 <algorithm>)
 inline int hmin(int a, int b) { return a < b ? a : b; }
 inline int hmax(int a, int b) { return a > b ? a : b; }
-// ⌊log₂d⌋
-inline int hlog2(int d) {
-  int k = 0;
-  while ((1 << (k + 1)) <= d)
-    ++k;
-  return k;
-}
 
 } // namespace factor::gpu
 #endif // FACTOR_GPU_COMMON_CUH
 
 namespace factor::gpu::cs {
 
-inline constexpr int kCB = 512;      // 一行一 block 的线程数 (见头注释: 每 SM 驻 2 块)
-inline constexpr int kGrpCap = 1024; // shared 分组槽上限. 行业分组约 30, 这里留 30× 余量;
-                                     // 超过即 device assert 失败 —— 退化成 global atomic 需要
-                                     // T×G×8B 的 workspace (G=4096 时 629 MB), 不如早炸
+inline constexpr int kCB = 512;           // 一行一 block 的线程数 (见头注释: 每 SM 驻 2 块)
+inline constexpr int kGrpCap = kMaxGroup; // shared 分组槽上限 = 契约的组 id 上限 (三后端同一数). 行业分组约 30;
+                                          // 超过即 device assert 失败 —— 退化成 global atomic 需要
+                                          // T×G×8B 的 workspace (G=4096 时 629 MB), 不如早炸
 
 namespace k {
 
@@ -145,8 +128,8 @@ struct MaxOp {
   __device__ __forceinline__ float operator()(float a, float b) const { return fmaxf(a, b); }
 };
 
-// 每块的 shared 家当: 直方图 2 套 (4 KB) + 分组槽 (12 KB) + cub 暂存 ≈ 17 KB
-// (512 线程 × 2 块/SM = 34 KB ≤ 64 KB, 不构成占用率瓶颈)
+// 每块的 shared 家当: 直方图 2 套 (4 KB) + 分组槽 (20 KB) + cub 暂存 ≈ 25 KB
+// (512 线程 × 2 块/SM = 50 KB ≤ 64 KB, 不构成占用率瓶颈)
 struct Sh {
   typename BR::TempStorage red;
   typename BS::TempStorage scan;
@@ -154,9 +137,16 @@ struct Sh {
   int cb2[kBuckets], pre2[kBuckets]; // 次直方图 (RankDiff 的 y / CondRank 的条件桶)
   float gsx[kGrpCap], gsy[kGrpCap];  // 分组累加槽
   int gcn[kGrpCap];
-  float bc; // 广播槽
+  int gmn[kGrpCap], gmx[kGrpCap]; // 分组 y 极值 (有序整数编码, 给 GroupResid 的逐组全并列判据)
+  float bc;                       // 广播槽
   int ib;
 };
+
+// float → 保序 int 编码 (a < b ⟺ ord(a) < ord(b)); ±0 先归一为 +0, 与 host 的 fmin/fmax 判等一致
+__device__ __forceinline__ int ord(float f) {
+  const int i = __float_as_int(f + 0.f);
+  return i >= 0 ? i : i ^ 0x7fffffff;
+}
 
 // ---- 块级归约 + 广播 (归约后必须两次 sync: 一次等广播写入, 一次防下轮复用暂存) ----
 __device__ inline float bsum(Sh &sh, float v) {
@@ -288,15 +278,18 @@ __device__ inline float row_pct(const int *cb, const int *pre, int cnt, float lo
   return dev::pct_of(pre[b], cb[b], cnt);
 }
 
-// ---- 一/二元的截面矩 (两遍: 先 μ, 再在 (x−μ) 上求 M2 / Cxy) ----
+// ---- 一/二元的截面矩 (两遍: 先 μ 与极值, 再在 (x−μ) 上求 M2 / Cxy); 极值给全并列判据 ----
 struct RowStat {
   int cnt;
-  float mx, my, M2x, M2y, Cxy, Sx2, Sy2;
+  float mx, my, M2x, M2y, Cxy;
+  float lox, hix, loy, hiy;
+  __device__ bool sx() const { return dev::spread(lox, hix); }
+  __device__ bool sy() const { return dev::spread(loy, hiy); }
 };
 template <int NARY>
 __device__ inline void row_stats(Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, int base, int A, RowStat &st) {
   int c = 0;
-  float sx = 0.f, sy = 0.f, sx2 = 0.f, sy2 = 0.f;
+  float sx = 0.f, sy = 0.f, lx = FLT_MAX, hx = -FLT_MAX, ly = FLT_MAX, hy = -FLT_MAX;
   for (int a = threadIdx.x; a < A; a += kCB) {
     const int i = base + a;
     const bool g = (NARY >= 2) ? (xm[i] && ym[i]) : (xm[i] != 0); // 二元要两侧同时有效
@@ -304,20 +297,24 @@ __device__ inline void row_stats(Sh &sh, const float *xv, const uint8_t *xm, con
     const float y = (NARY >= 2 && g) ? yv[i] : 0.f;
     c += g ? 1 : 0;
     sx += x;
-    sx2 += x * x;
     sy += y;
-    sy2 += y * y;
+    lx = g ? fminf(lx, x) : lx;
+    hx = g ? fmaxf(hx, x) : hx;
+    ly = g ? fminf(ly, y) : ly;
+    hy = g ? fmaxf(hy, y) : hy;
   }
   st.cnt = static_cast<int>(bsum(sh, static_cast<float>(c)));
-  st.Sx2 = bsum(sh, sx2);
   const float tx = bsum(sh, sx);
   const float fn = static_cast<float>(max(st.cnt, 1));
   st.mx = tx / fn;
+  st.lox = bmin(sh, lx);
+  st.hix = bmax(sh, hx);
   st.my = 0.f;
-  st.Sy2 = 0.f;
+  st.loy = st.hiy = 0.f;
   if constexpr (NARY >= 2) {
-    st.Sy2 = bsum(sh, sy2);
     st.my = bsum(sh, sy) / fn;
+    st.loy = bmin(sh, ly);
+    st.hiy = bmax(sh, hy);
   }
   float m2x = 0.f, m2y = 0.f, cxy = 0.f;
   for (int a = threadIdx.x; a < A; a += kCB) { // 第二遍: 中心化后累幂和
@@ -351,6 +348,8 @@ __device__ inline void grp_clear(Sh &sh) {
     sh.gsx[g] = 0.f;
     sh.gsy[g] = 0.f;
     sh.gcn[g] = 0;
+    sh.gmn[g] = INT_MAX;
+    sh.gmx[g] = INT_MIN;
   }
   __syncthreads();
 }
@@ -367,35 +366,36 @@ __global__ void row(const float *xv, const uint8_t *xm, const float *yv, const u
 // =============================================================================
 // 算子: 统一签名 (未用到的指针传 nullptr, 全部设备指针)
 // =============================================================================
-#define FACTOR_CS_RUN                                                                                                                                                              \
-  static size_t workspace(int, int, const Param &) { return 0; } /* 全部在 shared 里做完, 不要临时显存 */                                                                          \
+#define FACTOR_CS_RUN(STRAT)                                                                                                                                                        \
+  static constexpr Strat kStrat = Strat::STRAT;                  /* 对表 OpTable 的 GPU 策略列 (op_check static_assert) */                                                          \
+  static size_t workspace(int, int, const Param &) { return 0; } /* 全部在 shared 里做完, 不要临时显存 */                                                                           \
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p, \
-                  void *, cudaStream_t stream) {                                                                                                                                   \
-    assert(A >= 1 && static_cast<long long>(T) * A < (1LL << 31));                                                                                                                 \
-    k::row<Self><<<T, kCB, 0, stream>>>(xv, xm, yv, ym, zv, zm, ov, om, A, p);                                                                                                     \
-    FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                            \
+                  void *, cudaStream_t stream) {                                                                                                                                    \
+    assert(A >= 1 && static_cast<long long>(T) * A < (1LL << 31));                                                                                                                  \
+    k::row<Self><<<T, kCB, 0, stream>>>(xv, xm, yv, ym, zv, zm, ov, om, A, p);                                                                                                      \
+    FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                             \
   }
 
 // ---- REDUCE (7): 沿资产归约, 广播型算子对全行写同一个值 ----
-#define FACTOR_CS_RED(Name, NARY, BODY)                                                                                                                                            \
-  struct Name {                                                                                                                                                                    \
-    using Self = Name;                                                                                                                                                             \
-    __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om,          \
-                               int base, int A, const Param &p) {                                                                                                                  \
-      k::RowStat s;                                                                                                                                                                \
-      k::row_stats<NARY>(sh, xv, xm, yv, ym, base, A, s);                                                                                                                          \
-      for (int a = threadIdx.x; a < A; a += kCB) {                                                                                                                                 \
-        const int i = base + a;                                                                                                                                                    \
-        const DVal x{xv[i], xm[i]};                                                                                                                                                \
-        const DVal y{(NARY >= 2) ? yv[i] : 0.f, static_cast<uint8_t>((NARY >= 2) ? ym[i] : 0)};                                                                                    \
-        float v = 0.f;                                                                                                                                                             \
-        bool m = false;                                                                                                                                                            \
-        (void)x, (void)y, (void)p;                                                                                                                                                 \
-        BODY                                                                                                                                                                       \
-        dev::store(ov, om, i, v, m);                                                                                                                                               \
-      }                                                                                                                                                                            \
-    }                                                                                                                                                                              \
-    FACTOR_CS_RUN                                                                                                                                                                  \
+#define FACTOR_CS_RED(Name, NARY, BODY)                                                                                                                                   \
+  struct Name {                                                                                                                                                           \
+    using Self = Name;                                                                                                                                                    \
+    __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, \
+                               int base, int A, const Param &p) {                                                                                                         \
+      k::RowStat s;                                                                                                                                                       \
+      k::row_stats<NARY>(sh, xv, xm, yv, ym, base, A, s);                                                                                                                 \
+      for (int a = threadIdx.x; a < A; a += kCB) {                                                                                                                        \
+        const int i = base + a;                                                                                                                                           \
+        const DVal x{xv[i], xm[i]};                                                                                                                                       \
+        const DVal y{(NARY >= 2) ? yv[i] : 0.f, static_cast<uint8_t>((NARY >= 2) ? ym[i] : 0)};                                                                           \
+        float v = 0.f;                                                                                                                                                    \
+        bool m = false;                                                                                                                                                   \
+        (void)x, (void)y, (void)p;                                                                                                                                        \
+        BODY                                                                                                                                                              \
+            dev::store(ov, om, i, v, m);                                                                                                                                  \
+      }                                                                                                                                                                   \
+    }                                                                                                                                                                     \
+    FACTOR_CS_RUN(REDUCE)                                                                                                                                                 \
   };
 
 // 截面均值广播
@@ -406,7 +406,7 @@ FACTOR_CS_RED(CsMean, 1, {
 // 截面样本标准差广播 (ddof=1)
 FACTOR_CS_RED(CsStd, 1, {
   v = sqrtf(fmaxf(s.M2x, 0.f) / static_cast<float>(max(s.cnt - 1, 1)));
-  m = s.cnt >= 2 && dev::disp_ok(s.M2x, s.Sx2);
+  m = s.cnt >= 2 && s.sx();
 })
 // x − 截面均值 (相对型)
 FACTOR_CS_RED(CsDemean, 1, {
@@ -416,29 +416,29 @@ FACTOR_CS_RED(CsDemean, 1, {
 // (x − μ)/σ (相对型)
 FACTOR_CS_RED(CsZ, 1, {
   const float sd = sqrtf(fmaxf(s.M2x, 0.f) / static_cast<float>(max(s.cnt - 1, 1)));
-  v = (x.v - s.mx) / dev::guard(sd);
-  m = x.m && s.cnt >= 2 && dev::disp_ok(s.M2x, s.Sx2);
+  v = (x.v - s.mx) / sd;
+  m = x.m && s.cnt >= 2 && s.sx();
 })
 // x 对 y 截面 OLS (含截距) 残差 (相对型)
 FACTOR_CS_RED(CsResid, 2, {
-  const float b = s.Cxy / dev::guard(s.M2y);
+  const float b = s.Cxy / s.M2y;
   v = (x.v - s.mx) - b * (y.v - s.my);
-  m = x.m && y.m && s.cnt >= 2 && dev::disp_ok(s.M2y, s.Sy2);
+  m = x.m && y.m && s.cnt >= 2 && s.sy();
 })
 // OLS 斜率广播
 FACTOR_CS_RED(CsBeta, 2, {
-  v = s.Cxy / dev::guard(s.M2y);
-  m = s.cnt >= 2 && dev::disp_ok(s.M2y, s.Sy2);
+  v = s.Cxy / s.M2y;
+  m = s.cnt >= 2 && s.sy();
 })
 // 截面 Pearson 广播 (按规格不 clamp |ρ| ≤ 1)
 FACTOR_CS_RED(CsCorr, 2, {
-  // 同 TS 侧: 不加 guard (disp_ok 保证两个方差为正, |ρ| 有柯西–施瓦茨上界), 乘积走 double 防下溢
+  // 非全并列 ⇒ 两个方差为正, |ρ| 有柯西–施瓦茨上界; 乘积走 double 防下溢
   v = static_cast<float>(static_cast<double>(s.Cxy) / sqrt(fmax(static_cast<double>(s.M2x) * s.M2y, 0.0)));
-  m = s.cnt >= 2 && dev::disp_ok(s.M2x, s.Sx2) && dev::disp_ok(s.M2y, s.Sy2);
+  m = s.cnt >= 2 && s.sx() && s.sy();
 })
 
 // ---- HIST (9): 片上 256 桶 ----
-//   样本集 S = 本行有效值, lo/hi = min/max(S). !range_ok 时按契约给中性值.
+//   样本集 S = 本行有效值, lo/hi = min/max(S). 全并列 (!spread) 时按契约给中性值.
 
 // pct rank (并列均秩)
 struct CsRank {
@@ -449,7 +449,7 @@ struct CsRank {
     int cnt;
     float lo, hi;
     k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::range_ok(lo, hi);
+    const bool rok = cnt >= 1 && dev::spread(lo, hi);
     if (rok)
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
     for (int a = threadIdx.x; a < A; a += kCB) {
@@ -457,7 +457,7 @@ struct CsRank {
       dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, cnt, lo, hi, rok, xv[i]), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(HIST)
 };
 // Φ⁻¹(clamp(pct, 1/(N+1), N/(N+1)))
 //   注: host 侧用 Contract::probit (Wichura AS241), 这里用 CUDA 自带 normcdfinvf, 两者差 ~1e-7
@@ -470,7 +470,7 @@ struct CsNormRank {
     int cnt;
     float lo, hi;
     k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::range_ok(lo, hi);
+    const bool rok = cnt >= 1 && dev::spread(lo, hi);
     if (rok)
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
     const float fn = static_cast<float>(max(cnt, 1));
@@ -481,29 +481,29 @@ struct CsNormRank {
       dev::store(ov, om, i, normcdfinvf(cl), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(HIST)
 };
 // 中位数 / k 分位 广播 (桶近似下不做偶数上下平均)
-#define FACTOR_CS_QUANT(Name, QEXPR)                                                                                                                                               \
-  struct Name {                                                                                                                                                                    \
-    using Self = Name;                                                                                                                                                             \
-    __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int base,    \
-                               int A, const Param &p) {                                                                                                                            \
-      const k::GetX g{xv, xm, base};                                                                                                                                               \
-      int cnt;                                                                                                                                                                     \
-      float lo, hi;                                                                                                                                                                \
-      k::span_row(sh, g, A, cnt, lo, hi);                                                                                                                                          \
-      const bool rok = cnt >= 1 && dev::range_ok(lo, hi);                                                                                                                          \
-      float q = lo; /* 值域退化 → 给 lo */                                                                                                                                         \
-      if (rok) {                                                                                                                                                                   \
-        k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);                                                                                                                              \
-        q = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, QEXPR);                                                                                                                   \
-      }                                                                                                                                                                            \
-      (void)p;                                                                                                                                                                     \
-      for (int a = threadIdx.x; a < A; a += kCB)                                                                                                                                   \
-        dev::store(ov, om, base + a, q, cnt >= 1);                                                                                                                                 \
-    }                                                                                                                                                                              \
-    FACTOR_CS_RUN                                                                                                                                                                  \
+#define FACTOR_CS_QUANT(Name, QEXPR)                                                                                                                                            \
+  struct Name {                                                                                                                                                                 \
+    using Self = Name;                                                                                                                                                          \
+    __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int base, \
+                               int A, const Param &p) {                                                                                                                         \
+      const k::GetX g{xv, xm, base};                                                                                                                                            \
+      int cnt;                                                                                                                                                                  \
+      float lo, hi;                                                                                                                                                             \
+      k::span_row(sh, g, A, cnt, lo, hi);                                                                                                                                       \
+      const bool rok = cnt >= 1 && dev::spread(lo, hi);                                                                                                                         \
+      float q = lo; /* 值域退化 → 给 lo */                                                                                                                                      \
+      if (rok) {                                                                                                                                                                \
+        k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);                                                                                                                           \
+        q = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, QEXPR);                                                                                                                \
+      }                                                                                                                                                                         \
+      (void)p;                                                                                                                                                                  \
+      for (int a = threadIdx.x; a < A; a += kCB)                                                                                                                                \
+        dev::store(ov, om, base + a, q, cnt >= 1);                                                                                                                              \
+    }                                                                                                                                                                           \
+    FACTOR_CS_RUN(HIST)                                                                                                                                                         \
   };
 FACTOR_CS_QUANT(CsMedian, 0.5)
 FACTOR_CS_QUANT(CsQuantile, p.k)
@@ -517,7 +517,7 @@ struct CsWinsor {
     int cnt;
     float lo, hi;
     k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::range_ok(lo, hi);
+    const bool rok = cnt >= 1 && dev::spread(lo, hi);
     float ql = lo, qh = lo;
     if (rok) {
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
@@ -531,7 +531,7 @@ struct CsWinsor {
       dev::store(ov, om, i, fminf(fmaxf(xv[i], ql), qh), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(HIST)
 };
 // 先缩尾 (k = 0.01) 再 pct rank: 缩尾后值域变了, 必须按缩尾样本集重新定 lo/hi 与直方图
 struct CsWinsorRank {
@@ -542,7 +542,7 @@ struct CsWinsorRank {
     int cnt;
     float lo, hi;
     k::span_row(sh, g, A, cnt, lo, hi);
-    bool rok = cnt >= 1 && dev::range_ok(lo, hi);
+    bool rok = cnt >= 1 && dev::spread(lo, hi);
     float ql = lo, qh = lo;
     if (rok) {
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
@@ -553,7 +553,7 @@ struct CsWinsorRank {
     int c2;
     float lo2, hi2;
     k::span_row(sh, w, A, c2, lo2, hi2);
-    const bool rok2 = c2 >= 1 && dev::range_ok(lo2, hi2);
+    const bool rok2 = c2 >= 1 && dev::spread(lo2, hi2);
     if (rok2)
       k::hist_row(sh, w, A, lo2, hi2, sh.cb, sh.pre);
     for (int a = threadIdx.x; a < A; a += kCB) {
@@ -562,7 +562,7 @@ struct CsWinsorRank {
       dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, c2, lo2, hi2, rok2, u), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(HIST)
 };
 // 先缩尾 (k = 0.01) 再 z: 均值/方差都在缩尾后的量上两遍求
 struct CsWinsorZ {
@@ -573,21 +573,20 @@ struct CsWinsorZ {
     int cnt;
     float lo, hi;
     k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::range_ok(lo, hi);
+    const bool rok = cnt >= 1 && dev::spread(lo, hi);
     float ql = lo, qh = lo;
     if (rok) {
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
       ql = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 0.01);
       qh = k::row_quant(sh, sh.cb, sh.pre, cnt, lo, hi, 0.99);
     }
-    float sw = 0.f, sw2 = 0.f;
+    // 缩尾后样本的极值 = clamp(lo/hi): 全并列判据直接在其上算, 不必再扫一遍
+    const bool sp = dev::spread(fminf(fmaxf(lo, ql), qh), fminf(fmaxf(hi, ql), qh));
+    float sw = 0.f;
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a;
-      const float u = xm[i] ? fminf(fmaxf(xv[i], ql), qh) : 0.f;
-      sw += u;
-      sw2 += u * u;
+      sw += xm[i] ? fminf(fmaxf(xv[i], ql), qh) : 0.f;
     }
-    const float S2 = k::bsum(sh, sw2);
     const float mu = k::bsum(sh, sw) / static_cast<float>(max(cnt, 1));
     float m2 = 0.f;
     for (int a = threadIdx.x; a < A; a += kCB) {
@@ -597,14 +596,14 @@ struct CsWinsorZ {
     }
     const float M2 = k::bsum(sh, m2);
     const float sd = sqrtf(fmaxf(M2, 0.f) / static_cast<float>(max(cnt - 1, 1)));
-    const bool ok = cnt >= 2 && dev::disp_ok(M2, S2);
+    const bool ok = cnt >= 2 && sp;
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a;
       const float u = fminf(fmaxf(xv[i], ql), qh);
-      dev::store(ov, om, i, (u - mu) / dev::guard(sd), xm[i] && ok);
+      dev::store(ov, om, i, (u - mu) / sd, xm[i] && ok);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(HIST)
 };
 // floor(pct·k) ∈ 0..k−1 (值域退化 → 0)
 struct CsBucket {
@@ -616,7 +615,7 @@ struct CsBucket {
     int cnt;
     float lo, hi;
     k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::range_ok(lo, hi);
+    const bool rok = cnt >= 1 && dev::spread(lo, hi);
     if (rok)
       k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
     for (int a = threadIdx.x; a < A; a += kCB) {
@@ -626,7 +625,7 @@ struct CsBucket {
       dev::store(ov, om, i, static_cast<float>(b), xm[i] && cnt >= 1);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(HIST)
 };
 // pct_rank(x) − pct_rank(y): 两套桶各自定 lo/hi (x 的样本集 = 有效 x, y 的 = 有效 y)
 struct CsRankDiff {
@@ -638,8 +637,8 @@ struct CsRankDiff {
     float lox, hix, loy, hiy;
     k::span_row(sh, gx, A, cx, lox, hix);
     k::span_row(sh, gy, A, cy, loy, hiy);
-    const bool rx = cx >= 1 && dev::range_ok(lox, hix);
-    const bool ry = cy >= 1 && dev::range_ok(loy, hiy);
+    const bool rx = cx >= 1 && dev::spread(lox, hix);
+    const bool ry = cy >= 1 && dev::spread(loy, hiy);
     if (rx)
       k::hist_row(sh, gx, A, lox, hix, sh.cb, sh.pre);
     if (ry)
@@ -651,7 +650,7 @@ struct CsRankDiff {
       dev::store(ov, om, i, px - py, xm[i] && ym[i] && cx >= 1 && cy >= 1);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(HIST)
 };
 
 // ---- GROUP (4) ----
@@ -677,7 +676,7 @@ struct CsGroupMean {
       dev::store(ov, om, i, (g >= 0) ? sh.gsx[g] / static_cast<float>(max(c, 1)) : 0.f, xm[i] && g >= 0 && c >= 1);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(GROUP)
 };
 
 // 组内 pct rank 的公共实现: 逐组重建直方图 (组数 G 约 30 → O(G·A) 每行)
@@ -706,7 +705,7 @@ __device__ inline void group_rank(k::Sh &sh, const float *xv, const uint8_t *xm,
     k::span_row(sh, sg, A, cnt, lo, hi);
     if (cnt < 1)
       continue;
-    const bool rok = dev::range_ok(lo, hi);
+    const bool rok = dev::spread(lo, hi);
     if (rok)
       k::hist_row(sh, sg, A, lo, hi, sh.cb, sh.pre);
     for (int a = threadIdx.x; a < A; a += kCB) {
@@ -726,7 +725,7 @@ struct CsGroupRank {
     const k::GidCol gi{yv, ym, base};
     group_rank(sh, xv, xm, gi, ov, om, base, A);
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(GROUP)
 };
 // y 分 k 桶 (= CsBucket(k)) 当组 id, x 在桶内 pct rank
 struct CsCondRank {
@@ -754,13 +753,13 @@ struct CsCondRank {
     int cy;
     float loy, hiy;
     k::span_row(sh, gy, A, cy, loy, hiy);
-    const bool ry = cy >= 1 && dev::range_ok(loy, hiy);
+    const bool ry = cy >= 1 && dev::spread(loy, hiy);
     if (ry)
       k::hist_row(sh, gy, A, loy, hiy, sh.cb2, sh.pre2); // 条件桶用次直方图, 主直方图留给组内 rank
     const GidBin gi{yv, ym, sh.cb2, sh.pre2, base, cy, K, loy, hiy, ry};
     group_rank(sh, xv, xm, gi, ov, om, base, A);
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(GROUP)
 };
 // 按 z 分组: x, y 组内 demean 后, 用**全体参与样本**做一个标量回归 (FWL)
 struct CsGroupResid {
@@ -776,11 +775,15 @@ struct CsGroupResid {
         atomicAdd(&sh.gsx[g], xv[i]);
         atomicAdd(&sh.gsy[g], yv[i]);
         atomicAdd(&sh.gcn[g], 1);
+        atomicMin(&sh.gmn[g], k::ord(yv[i]));
+        atomicMax(&sh.gmx[g], k::ord(yv[i]));
       }
     }
     __syncthreads();
-    float sxy = 0.f, syy = 0.f, sy2 = 0.f;
+    // 退化 = 去均值后 ỹ ≡ 0 ⟺ 每组内 y 全并列; 逐组 lo/hi 精确判 (同 host), 不看 Σỹ²
+    float sxy = 0.f, syy = 0.f;
     int c = 0;
+    bool sp = false;
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a, g = gi.gid(a);
       const bool ok = g >= 0 && xm[i] && ym[i];
@@ -789,15 +792,14 @@ struct CsGroupResid {
       const float dy = ok ? (yv[i] - sh.gsy[g] / fc) : 0.f;
       sxy += dx * dy;
       syy += dy * dy;
-      sy2 += ok ? yv[i] * yv[i] : 0.f;
       c += ok ? 1 : 0;
+      sp |= ok && sh.gmx[g] > sh.gmn[g]; // 每个非空组至少被一个参与资产代表 → 逐资产 OR = 逐组 OR
     }
     const int cnt = static_cast<int>(k::bsum(sh, static_cast<float>(c)));
     const float Sxy = k::bsum(sh, sxy);
     const float Syy = k::bsum(sh, syy);
-    const float Sy2 = k::bsum(sh, sy2);
-    const float b = Sxy / dev::guard(Syy); // 全体参与样本上的一个标量 β
-    const bool ok2 = cnt >= 2 && dev::disp_ok(Syy, Sy2);
+    const bool ok2 = cnt >= 2 && k::bmax(sh, sp ? 1.f : 0.f) > 0.f;
+    const float b = ok2 ? Sxy / Syy : 0.f; // 全体参与样本上的一个标量 β
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a, g = gi.gid(a);
       const bool ok = g >= 0 && xm[i] && ym[i];
@@ -807,7 +809,7 @@ struct CsGroupResid {
       dev::store(ov, om, i, dx - b * dy, ok && ok2);
     }
   }
-  FACTOR_CS_RUN
+  FACTOR_CS_RUN(GROUP)
 };
 
 } // namespace factor::gpu::cs

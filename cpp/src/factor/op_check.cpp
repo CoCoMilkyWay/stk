@@ -7,16 +7,19 @@
 //   分派表由 OpTable.hpp 展开: 表里有名字而某个后端没有同名 struct → 此处编译错.
 //
 //   比较口径 (契约): 掩码必须**逐位相等**; 有效位上 |Δ| ≤ atol + rtol·max(|a|,|b|).
+//   属性列也对拍: 流式 struct::kWin / GPU struct::kStrat 与 OpTable 不符 → static_assert 错.
 //   本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
 // =============================================================================
 
+#include "factor/TS/Naive.hpp"
+#include "factor/TS/Stream.hpp"
+
 #include "factor/CS/Naive.hpp"
 #include "factor/CS/Stream.hpp"
+
 #include "factor/Contract.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
-#include "factor/TS/Naive.hpp"
-#include "factor/TS/Stream.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -32,15 +35,17 @@ namespace {
 using factor::kSegLen;
 using factor::Param;
 using factor::Val;
-
-enum class Win { POINT,
-                 EXPAND,
-                 ROLL,
-                 EXPO };
+using factor::Win;
 
 // ---- 造数 ----
 //   每个算子按"输入配方"拿到合适的数据: 正值型算子给正值, 分组型给整数组 id, 其余给正态.
-//   profile 再叠一层边界: 空洞 (缺失)、常值列 (退化)、重尾 (极值/缩尾).
+//   profile 再叠一层边界, 每个专打一类契约分支:
+//     HOLES    15% 缺失 + 某资产整段缺失 (段内 n = 0) + 某时刻**整行缺失** (截面 n = 0)
+//     CONSTCOL 整列常值 (全并列退化, 全程)
+//     CONSTSEG 某资产只在第 1 段常值, 其余段正常 (滑窗跨段进出常值区: 打 GPU 的 Chg 精确追踪);
+//              另一资产全程常值只在一格跳变 (窗含该格才非退化)
+//     HEAVY    t(2.5) 重尾 (极值 / 缩尾 / 直方图桶宽)
+//     TINY     量级 ×1e−4 (契约无绝对 eps: 小量级下掩码与值都不得变)
 enum class Gen { NORM,
                  POS,
                  SMALL,
@@ -48,7 +53,12 @@ enum class Gen { NORM,
 enum class Profile { PLAIN,
                      HOLES,
                      CONSTCOL,
-                     HEAVY };
+                     CONSTSEG,
+                     HEAVY,
+                     TINY };
+constexpr int kProfiles = 6;
+constexpr const char *kProfName[kProfiles] = {"plain", "holes", "const", "cseg", "heavy", "tiny"};
+constexpr float kTinyScale = 1e-4f;
 
 struct Plane {
   std::vector<float> v;
@@ -77,20 +87,34 @@ void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
       case Gen::POS: // 对数正态: 保证 > 0, 给 Entropy / Gini / TopK / LogRatio
         v = std::exp(nd(rng) * 0.5f) + 0.05f;
         break;
-      case Gen::SMALL: // |x| 小: 保证 1 + x > 0, 给 TsProduct
+      case Gen::SMALL: // |x| 小: 保证 1 + x > 0, 给 TsProductRoll
         v = nd(rng) * 0.05f;
         break;
       case Gen::GROUP: // 整数组 id (行业), 每个资产固定不变
         v = static_cast<float>(a % 7);
         break;
       }
-      // 常值列: 第 0/1 号资产整列常值, 专打 disp_ok / range_ok 退化分支
-      if (pr == Profile::CONSTCOL && a < 2 && g != Gen::GROUP)
-        v = g == Gen::POS ? 1.5f : (a == 0 ? 0.f : 1.5f);
+      if (g != Gen::GROUP) {
+        // 常值 (NORM 的 0 号资产给 0: 打 Σ = 0 的相消分支; SMALL 保持 |x| 小, 免得 Π(1+x) 溢出)
+        const float c = g == Gen::SMALL ? 0.02f : g == Gen::POS ? 1.5f
+                                                                : (a == 0 ? 0.f : 1.5f);
+        // 常值列: 第 0/1 号资产整列常值 → 全并列退化 (spread 为假)
+        if (pr == Profile::CONSTCOL && a < 2)
+          v = c;
+        // 常值段: 0/1 号资产只在第 1 段常值; 2 号资产全程常值, 仅 t = kSegLen + 37 一格跳变
+        if (pr == Profile::CONSTSEG) {
+          if (a < 2 && t / kSegLen == 1)
+            v = c;
+          if (a == 2)
+            v = t == kSegLen + 37 ? c + 1.f : c;
+        }
+        if (pr == Profile::TINY)
+          v *= kTinyScale;
+      }
       p.v[i] = v;
       p.m[i] = 1;
-      // 空洞: 15% 缺失, 且整段缺失一次 (打"段内 n = 0")
-      if (pr == Profile::HOLES && (ud(rng) < 0.15f || (t / kSegLen == 1 && a == 2)))
+      // 空洞: 15% 缺失 + 2 号资产整段缺失 (段内 n = 0) + t = kSegLen + 5 整行缺失 (截面 n = 0)
+      if (pr == Profile::HOLES && (ud(rng) < 0.15f || (t / kSegLen == 1 && a == 2) || t == kSegLen + 5))
         p.v[i] = 0.f, p.m[i] = 0;
     }
 }
@@ -101,14 +125,14 @@ struct Recipe {
   Gen x, y, z;
 };
 constexpr Recipe kRecipes[] = {
-    {"LogRatio", Gen::POS, Gen::POS, Gen::NORM},
-    {"CumEntropy", Gen::POS, Gen::NORM, Gen::NORM},
-    {"CumGini", Gen::POS, Gen::NORM, Gen::NORM},
-    {"CumTopK", Gen::POS, Gen::NORM, Gen::NORM},
-    {"CumHhi", Gen::POS, Gen::NORM, Gen::NORM},
-    {"CumWMean", Gen::NORM, Gen::POS, Gen::NORM}, // 权为正, 否则 Σy 抵消
-    {"TsWMean", Gen::NORM, Gen::POS, Gen::NORM},
-    {"TsProduct", Gen::SMALL, Gen::NORM, Gen::NORM},
+    {"TsLogRatio", Gen::POS, Gen::POS, Gen::NORM},
+    {"TsEntropyCum", Gen::POS, Gen::NORM, Gen::NORM},
+    {"TsGiniCum", Gen::POS, Gen::NORM, Gen::NORM},
+    {"TsTopKCum", Gen::POS, Gen::NORM, Gen::NORM},
+    {"TsHhiCum", Gen::POS, Gen::NORM, Gen::NORM},
+    {"TsWMeanCum", Gen::NORM, Gen::POS, Gen::NORM}, // 权为正, 否则 Σy 抵消
+    {"TsWMeanRoll", Gen::NORM, Gen::POS, Gen::NORM},
+    {"TsProductRoll", Gen::SMALL, Gen::NORM, Gen::NORM},
     {"CsGroupMean", Gen::NORM, Gen::GROUP, Gen::NORM},
     {"CsGroupRank", Gen::NORM, Gen::GROUP, Gen::NORM},
     {"CsGroupResid", Gen::NORM, Gen::NORM, Gen::GROUP},
@@ -126,15 +150,15 @@ struct KParam {
   float k, k2;
 };
 constexpr KParam kKParams[] = {
-    {"SignedPow", 0.5f, 0.f},
-    {"Clip", 2.f, 0.f},
-    {"TodMask", 30.f, 90.f},
-    {"CumTopK", 3.f, 0.f},
-    {"CumPeaks", 1.f, 0.f},
-    {"CumCountGt", 0.f, 0.f},
-    {"CumCorrLag", 2.f, 0.f},
-    {"TsCountGt", 0.f, 0.f},
-    {"TsEma", 0.2f, 0.f},
+    {"TsSignedPow", 0.5f, 0.f},
+    {"TsClip", 2.f, 0.f},
+    {"TsTodMask", 30.f, 90.f},
+    {"TsTopKCum", 3.f, 0.f},
+    {"TsPeaksCum", 1.f, 0.f},
+    {"TsCountGtCum", 0.f, 0.f},
+    {"TsCorrLagCum", 2.f, 0.f},
+    {"TsCountGtRoll", 0.f, 0.f},
+    {"TsMeanEma", 0.2f, 0.f},
     {"CsQuantile", 0.25f, 0.f},
     {"CsWinsor", 0.05f, 0.f},
     {"CsBucket", 5.f, 0.f},
@@ -151,15 +175,19 @@ void set_k(const std::string &name, Param &p) {
 struct Tol {
   double atol, rtol;
 };
-// GPU 走 fp32 与完全不同的并行序, 容差比 CPU 两份宽; 个别算子再单独放宽
-Tol tol_of(const std::string &name, bool gpu) {
+// GPU 走 fp32 与完全不同的并行序, 容差比 CPU 两份宽; 个别算子再单独放宽.
+// TINY profile 把 atol 一起按量级缩 (否则 atol 比数据还大, 比较空转); rtol 本来就无量纲.
+Tol tol_of(const std::string &name, bool gpu, Profile pr) {
+  Tol t{1e-3, 1e-3};
   if (!gpu)
-    return {1e-5, 1e-4};
-  if (name == "CsNormRank") // 两侧用不同的正态分位实现 (boost erf_inv vs normcdfinvf)
-    return {1e-3, 1e-2};
-  if (name == "CumSkew" || name == "CumKurt" || name == "TsSkew" || name == "TsKurt")
-    return {1e-2, 1e-2}; // 三四阶矩在 fp32 上只剩两三位有效位, 这是已知代价
-  return {1e-3, 1e-3};
+    t = {1e-5, 1e-4};
+  else if (name == "CsNormRank") // 两侧用不同的正态分位实现 (Wichura AS241 vs normcdfinvf)
+    t = {1e-3, 1e-2};
+  else if (name == "TsSkewCum" || name == "TsKurtCum" || name == "TsSkewRoll" || name == "TsKurtRoll")
+    t = {1e-2, 1e-2}; // 三四阶矩在 fp32 上只剩两三位有效位, 这是已知代价
+  if (pr == Profile::TINY)
+    t.atol *= kTinyScale;
+  return t;
 }
 
 struct Diff {
@@ -203,7 +231,7 @@ void run_naive(const Data &d, const Param &p, int ar, Plane &o) {
          pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
 }
 
-// TS 流式: 逐资产建一个 kernel 沿 t 推进; EXPAND 在段界 reset, ROLL / EXPO 不 reset
+// TS 流式: 逐资产建一个 kernel 沿 t 推进 (与实盘同路: EXPAND 推满 kSegLen 自动归零, 不手动 reset)
 template <class S, int AR, Win W>
 void run_stream_ts(const Data &d, const Param &p, Plane &o) {
   o.resize(static_cast<size_t>(d.T) * d.A);
@@ -227,9 +255,6 @@ void run_stream_ts(const Data &d, const Param &p, Plane &o) {
     for (int a = 0; a < d.A; ++a) {
       S op(p);
       for (int t = 0; t < d.T; ++t) {
-        if constexpr (W == Win::EXPAND)
-          if (t % kSegLen == 0)
-            op.reset();
         const size_t i = static_cast<size_t>(t) * d.A + a;
         Val r;
         if constexpr (AR == 1)
@@ -276,26 +301,27 @@ void emit(Report &rep, const char *name, const Param &p, const char *prof, const
 }
 
 // 一个算子的全部用例: profile × d 扫描
+//   d 扫 {1, 5, 20, 240, 300}: 240 = 恰一段 (ROLL 窗界与段界重合), 300 > 段 (窗跨段, GPU 块界不对齐段界)
 template <class S, class N, int AR, Win W, bool IS_CS>
 void check(const char *name, const char *params, int T, int A, unsigned seed, Report &rep) {
   const std::string nm = name;
   const Recipe rc = recipe_of(nm);
   const bool sweep_d = std::strchr(params, 'd') != nullptr;
-  const int ds[] = {1, 5, 20};
-  const Profile profs[] = {Profile::PLAIN, Profile::HOLES, Profile::CONSTCOL, Profile::HEAVY};
-  const char *pnames[] = {"plain", "holes", "const", "heavy"};
+  const int ds[] = {1, 5, 20, kSegLen, kSegLen + 60};
+  constexpr int kNd = static_cast<int>(sizeof(ds) / sizeof(ds[0]));
 
   ++rep.ops;
   bool op_bad = false;
-  for (int pi = 0; pi < 4; ++pi) {
+  for (int pi = 0; pi < kProfiles; ++pi) {
+    const Profile pr = static_cast<Profile>(pi);
     std::mt19937 rng(seed + 1000u * pi);
     Data d;
     d.T = T, d.A = A;
-    fill(d.x, rc.x, profs[pi], T, A, rng);
-    fill(d.y, rc.y, profs[pi], T, A, rng);
-    fill(d.z, rc.z, profs[pi], T, A, rng);
+    fill(d.x, rc.x, pr, T, A, rng);
+    fill(d.y, rc.y, pr, T, A, rng);
+    fill(d.z, rc.z, pr, T, A, rng);
 
-    for (int di = 0; di < (sweep_d ? 3 : 1); ++di) {
+    for (int di = 0; di < (sweep_d ? kNd : 1); ++di) {
       Param p;
       p.d = sweep_d ? ds[di] : 1;
       set_k(nm, p);
@@ -307,10 +333,10 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
       else
         run_stream_ts<S, AR, W>(d, p, got);
       ++rep.cases;
-      Diff ds_ = compare(ref, got, tol_of(nm, false));
+      Diff ds_ = compare(ref, got, tol_of(nm, false, pr));
       if (!ds_.ok())
         ++rep.stream_bad;
-      emit(rep, name, p, pnames[pi], "stream", ds_, op_bad);
+      emit(rep, name, p, kProfName[pi], "stream", ds_, op_bad);
 
       if (factor::gpu::available()) {
         Plane g;
@@ -318,10 +344,10 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
         auto call = IS_CS ? factor::gpu::run_cs : factor::gpu::run_ts;
         call(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
              pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p);
-        Diff dg = compare(ref, g, tol_of(nm, true));
+        Diff dg = compare(ref, g, tol_of(nm, true, pr));
         if (!dg.ok())
           ++rep.gpu_bad;
-        emit(rep, name, p, pnames[pi], "gpu", dg, op_bad);
+        emit(rep, name, p, kProfName[pi], "gpu", dg, op_bad);
       }
     }
   }
@@ -360,9 +386,10 @@ int main(int argc, char **argv) {
   std::printf("op_check  T=%d (%d 段) A=%d seed=%u  gpu=%s\n", T, T / kSegLen, A, seed,
               factor::gpu::available() ? "on" : "off (未编译 CUDA 后端)");
 
-  // 分派: 表里每一行展开成一个用例组; 缺任一后端的同名 struct → 编译错
-#define CK_TS(Name, ar, win, prm, gpu, doc) \
-  if (only.empty() || only == #Name)        \
+  // 分派: 表里每一行展开成一个用例组; 缺任一后端的同名 struct → 编译错; 流式 kWin 与表不符 → 编译错
+#define CK_TS(Name, ar, win, prm, gpu, doc)                                                   \
+  static_assert(factor::ts::Name::kWin == Win::win, #Name ": 流式 kWin 与 OpTable 窗列不符"); \
+  if (only.empty() || only == #Name)                                                          \
     check<factor::ts::Name, factor::naive::ts::Name, ar, Win::win, false>(#Name, prm, T, A, seed, rep);
 #define CK_CS(Name, ar, prm, gpu, doc) \
   if (only.empty() || only == #Name)   \

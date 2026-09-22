@@ -10,32 +10,36 @@
 //   二者都只是 OpTable 的属性列, 不上升为分类.
 //
 //   【三后端】同名 struct, 三处**完全独立**实现, 不共享一行算法代码 (否则对拍空转):
-//     factor::ts::<Name>         factor::cs::<Name>         实盘流式 (CPU, O(1) 状态)   TS/Stream.hpp  CS/Stream.hpp
+//     factor::ts::<Name>         factor::cs::<Name>         实盘流式 (CPU, O(d) 状态)   TS/Stream.hpp  CS/Stream.hpp
 //     factor::naive::ts::<Name>  factor::naive::cs::<Name>  对拍参考 (double, 按定义)   TS/Naive.hpp   CS/Naive.hpp
 //     factor::gpu::ts::<Name>    factor::gpu::cs::<Name>    挖掘 (CUDA, 向量化)        TS/Gpu.cuh     CS/Gpu.cuh
 //   缺任一侧 → op_check 编译错 (分派由 OP_TS / OP_CS 宏展开).
+//   OpTable 的"窗"列与"GPU 策略"列都是**载荷**: 流式 struct 带 kWin, GPU struct 带 kStrat, op_check static_assert 对表.
 //
 //   【数据布局】
 //     数组一律 SoA 两平面: 值 float* + 有效位 uint8_t*, 行主序 [T][A] (t*A + a).
 //     标量用 Val {v, m}. GPU 侧同 SoA, 不用 AoS.
 //     段 = 一个交易日 = kSegLen 分钟. 段内位置 t_seg = t % kSegLen (块起点对齐段起点).
-//     Expand 窗按段 reset; Roll 窗**跨段**不 reset (窗口单位是分钟, 与日界无关);
+//     Expand 窗按段 reset (流式实现推满 kSegLen 自动归零); Roll 窗**跨段**不 reset (窗口单位是分钟, 与日界无关);
 //     Expo 窗全程递推, 不 reset.
-//     Roll 窗未满 (t < d−1) 一律输出无效; 例外: TsDelay / TsDelta 看的是 d 期之前那一格,
+//     Roll 窗未满 (t < d−1) 一律输出无效; 例外: TsDelayRoll / TsDeltaRoll 看的是 d 期之前那一格,
 //     实际跨 d+1 格, 故 t < d 才无效.
 //
 //   【数值 / 退化契约】全程 branchless, 任何后端都不产 NaN / inf:
 //     1. 入口: 落盘用 NaN 表缺失 → Val{0, false}. 之后 v 恒为有限值.
-//     2. 分母保护 guard(): 保号 clamp 到 ±kEps.
-//     3. valid 位只由 **整数计数** 与 **相对阈值** (disp_ok / den_ok) 决定, 不由浮点等值判断决定.
-//        三后端算法不同 (Welford 递推 / 直白两遍 / 幂和 scan) 仍能逐位一致: 常值列的 m2
-//        无论算成 0 还是 1e-7, 都远低于 kRelEps·Σx², 三方同判退化.
-//     4. valid = false 时 v 无意义 (是 eps 保护后的算术结果), 消费端只看 m.
-//     5. 累加: CPU 用 double; GPU 用 float 但按段/按块分块, 禁全局长 cumsum.
-//     6. 输出 float (挖掘侧量化到 fp16 前需 clamp 到 ±65504, 见 operator1.md).
+//     2. 退化 = **精确全并列** spread(lo, hi) = hi > lo 为假 (Var/Std/Skew/Kurt/Z/Corr/Beta/Resid/序统计族).
+//        比的是同一份 fp32 输入的极值, 无舍入 → 三后端逐位一致, 且与量级无关: 价格 50 元窗内一跳 0.01 有离散度;
+//        常值窗哪怕滑窗累加器残留 1e-14 也判退化 (GPU 侧用"最近变动位置 > 窗内首个有效位置"等价实现, 无需减法).
+//     3. 相消 den_ok(): 分母相对两侧量级 < kRelEps 为退化 (Imb/Share/Hhi/TopK/WMean 的 Σ ≈ 0 是数值无意义, 不是并列).
+//        这是唯一保留阈值的判据; 恰落在阈值带内的输入三后端可能不一致, 造数刻意避开.
+//     4. 逐点除法 (Div/Recip): 三后端同序 IEEE 运算, 直接判 y ≠ 0.
+//     5. **没有分母钳位**: 掩码已保证分母非零; 绝对 eps 钳位只会在小量级输入上把正确值改错而掩码仍真.
+//        有效位上的溢出 (inf) 由出口 mk() 转成无效 —— 溢出是数据属性, 不是 bug.
+//     6. valid = false 时 v = 0, 消费端只看 m.
+//     7. 累加: CPU 用 double; GPU 幂和用 double, 按段/按块分块, 禁全局长 cumsum.
+//     8. 输出 float (挖掘侧量化到 fp16 前需 clamp 到 ±65504, 见 operator1.md).
 //
 //   【对拍】掩码逐位相等, 且有效位上 |Δ| ≤ atol + rtol·max(|a|,|b|).
-//     唯一不保证一致的是"恰好落在 kRelEps 阈值带内"的输入, 造数刻意避开该带.
 //
 //   【precise-math】本模块依赖受控浮点语义, 必须编进 -fno-fast-math TU (CMake PRECISE_MATH_FLAG).
 // =============================================================================
@@ -53,10 +57,24 @@ struct Param {
 };
 
 // ---- 常量 ----
-inline constexpr float kEps = 1e-4f;    // 分母保护下限 (≥ fp16 最小正规数 6.1e-5)
-inline constexpr float kRelEps = 1e-6f; // 相对退化阈值
+inline constexpr float kRelEps = 1e-6f; // 相消退化阈值 (只给 den_ok)
 inline constexpr int kSegLen = 240;     // 段 (交易日) 的分钟数
 inline constexpr int kBuckets = 256;    // 序统计近似的直方图桶数
+inline constexpr int kMaxGroup = 1024;  // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
+
+// ---- OpTable 属性列的类型 (流式 struct::kWin / GPU struct::kStrat 对表) ----
+enum class Win { POINT,
+                 EXPAND,
+                 ROLL,
+                 EXPO };
+enum class Strat { POINT,
+                   GATHER,
+                   SCAN,
+                   EXTREME,
+                   HIST,
+                   RECUR,
+                   REDUCE,
+                   GROUP };
 
 // ---- 值 + 有效位 ----
 struct Val {
@@ -66,26 +84,18 @@ struct Val {
 
 // 入口: 非有限 → 无效. 落盘 NaN 在此转成 {0, false}, 之后全链路无 NaN
 inline Val in(float x) { return std::isfinite(x) ? Val{x, true} : Val{0.f, false}; }
-// 出口: 无效则值归零. 有效却非有限 = 漏了 guard, 直接断言死 (契约要求任何后端都不产 NaN/inf)
+// 出口: 无效或非有限 (溢出) → {0, false}
 inline Val mk(double v, bool m) {
   const float f = static_cast<float>(v);
-  assert(!m || std::isfinite(f)); // fp32 溢出也算违约
-  return Val{m ? f : 0.f, m};
-}
-
-// ---- 分母保护: 保号 clamp 到 ±kEps 之外 ----
-inline float guard(float den) {
-  const float a = std::fabs(den) < kEps ? kEps : std::fabs(den);
-  return den < 0.f ? -a : a;
+  const bool ok = m && std::isfinite(f);
+  return Val{ok ? f : 0.f, ok};
 }
 
 // ---- 退化判据 (三后端必须用同一式) ----
-// 离散度: m2 = Σ(x−μ)², s2 = Σx². 常值列 m2 ≈ 0 → 退化
-inline bool disp_ok(double m2, double s2) { return m2 > static_cast<double>(kRelEps) * (s2 + 1e-30); }
-// 分母: den 相对于两侧量级 scale
+// 全并列: lo/hi = 有效样本极值. 精确比较, 无阈值
+inline bool spread(float lo, float hi) { return hi > lo; }
+// 相消: den 相对于两侧量级 scale
 inline bool den_ok(double den, double scale) { return std::fabs(den) > static_cast<double>(kRelEps) * (scale + 1e-30); }
-// 绝对分母 (逐点算子: 三后端逐点同序运算, 位级一致, 可用绝对判据)
-inline bool abs_den_ok(float den) { return std::fabs(den) >= kEps; }
 
 // ---- 并列均秩的 pct rank: (avg_rank − 1)/(m − 1), m ≤ 1 → 0.5 ----
 inline float pct_of(int less, int eq, int m) {
@@ -190,9 +200,8 @@ inline float probit(double p) {
 }
 
 // ---- 分桶规则 (序统计族: 三后端共用同一规则, 故桶计数是整数, 对拍可严格逐位) ----
-//   lo/hi = 样本集的 min/max. 值域退化 (全并列) → range_ok = false, 由各算子给中性值.
+//   lo/hi = 样本集的 min/max. 全并列 (!spread) → 由各算子给中性值.
 //   误差相对于"真序统计"是桶宽量级 (kBuckets 分辨率), 但三后端之间**没有**误差.
-inline bool range_ok(float lo, float hi) { return hi - lo > kRelEps * (std::fabs(lo) + std::fabs(hi) + 1e-30f); }
 inline int bin_of(float x, float lo, float hi) {
   const int b = static_cast<int>((static_cast<double>(x) - lo) / (static_cast<double>(hi) - lo) * kBuckets);
   return b < 0 ? 0 : (b >= kBuckets ? kBuckets - 1 : b);
