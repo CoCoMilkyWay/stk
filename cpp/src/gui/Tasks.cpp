@@ -1,5 +1,6 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_database/TaskDatabase.hpp"
+#include "gui/task_factors/TaskFactors.hpp"
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/task_icon_bar/TaskIconBar.hpp"
 #include "gui/task_settings/TaskSettings.hpp"
@@ -52,12 +53,13 @@ void TaskTree::Select(int task_idx, int tab_idx) {
 
 TaskTree CreateAllTasks(SharedData &data) {
   TaskTree tree;
-  tree.tasks.reserve(5);
+  tree.tasks.reserve(6);
 
   tree.tasks.push_back(Tasks::CreateSettingsTask());
   tree.tasks.push_back(Tasks::CreateSystemInfoTask());
   tree.tasks.push_back(Tasks::CreateDatabaseTask());
   tree.tasks.push_back(Tasks::CreateFeaturesTask());
+  tree.tasks.push_back(Tasks::CreateFactorsTask());
   tree.tasks.push_back(Tasks::CreateToolsTask());
 
   // 按 push 顺序立即 Init 一遍 (与"选中才 Draw"解耦, 后台检查提前起):

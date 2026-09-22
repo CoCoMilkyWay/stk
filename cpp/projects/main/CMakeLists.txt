@@ -260,6 +260,10 @@ set(SOURCES
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/ui/TabTransform.cpp
+    # gui / task_factors (GPU 后端 .cu / stub 在下方 op_check 段按 FACTOR_CUDA 一并挂到 app_main)
+    ../../src/gui/task_factors/TaskFactors.cpp
+    ../../src/gui/task_factors/services/OperatorsService.cpp
+    ../../src/gui/task_factors/ui/TabOperators.cpp
     # gui / 其他 task
     ../../src/gui/task_settings/TaskSettings.cpp
     ../../src/gui/task_system_info/TaskSystemInfo.cpp
@@ -720,6 +724,12 @@ set_source_files_properties(
     ../../src/gui/task_features/ui/TabFeature.cpp
     ../../src/gui/task_features/ui/TabOrderFlow.cpp
     ../../src/gui/task_features/ui/TabTransform.cpp
+    # factor 契约头 (Contract.hpp: isfinite 入口/出口) 的所有消费者, 与 op_check 同待遇;
+    # stub 只在 FACTOR_CUDA=OFF 时挂给 app_main (.cu 走 -Xcompiler, 不在此列)
+    ../../src/factor/op_check_gpu_stub.cpp
+    ../../src/gui/task_factors/TaskFactors.cpp
+    ../../src/gui/task_factors/services/OperatorsService.cpp
+    ../../src/gui/task_factors/ui/TabOperators.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
     PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
@@ -730,10 +740,11 @@ set_source_files_properties(
 # ============================================================================
 # 只依赖 factor/*.hpp, 无 GUI / Arrow / Python. 整 target precise math:
 # 退化判据 (disp_ok / den_ok) 与 guard 依赖受控浮点, -ffast-math 下会失效.
+# GPU 后端 (op_check_gpu.cu 或 stub) 同时挂给 app_main: GUI Factors→Operators 页经同一 GpuRun.hpp 调 GPU.
 option(FACTOR_CUDA "编译 GPU 算子后端 (nvcc)" OFF)
 set(FACTOR_CUDA_ARCH "75" CACHE STRING "GPU 架构算力号 (RTX 2060 = 75)")
 
-set(OP_CHECK_SOURCES ../../src/factor/op_check.cpp)
+set(FACTOR_GPU_SOURCE ../../src/factor/op_check_gpu_stub.cpp)
 if(FACTOR_CUDA)
     # 必须走 nvcc: clang 21 最高只认到 CUDA 12.8, 本机是 13.x (13 删掉了 clang 依赖的
     # texture_fetch_functions.h 等旧头), -x cuda 直接编不过.
@@ -743,21 +754,33 @@ if(FACTOR_CUDA)
     set(CMAKE_CUDA_STANDARD 20)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     find_package(CUDAToolkit REQUIRED)
-    list(APPEND OP_CHECK_SOURCES ../../src/factor/op_check_gpu.cu)
-else()
-    list(APPEND OP_CHECK_SOURCES ../../src/factor/op_check_gpu_stub.cpp)
+    # CUB 头 (TS/CS Gpu.cuh 的 #include <cub/cub.cuh>): CUDA 13 起从 include/cub/ 挪到
+    # include/cccl/cub/, nvcc 自动把 include/cccl 加进搜索路径, 故源码里写法不变.
+    # 两种布局都认; 都找不到 = toolkit 装残了 (pip 的 nvidia-* 运行时包不含 CUB), 配置期就炸.
+    find_path(FACTOR_CUB_DIR cub/cub.cuh
+        PATHS ${CUDAToolkit_INCLUDE_DIRS} ${CUDAToolkit_TARGET_DIR}/include
+        PATH_SUFFIXES cccl
+        NO_DEFAULT_PATH)
+    if(NOT FACTOR_CUB_DIR)
+        message(FATAL_ERROR "sudo apt install cuda-toolkit-13-0\n")
+    endif()
+    set(FACTOR_GPU_SOURCE ../../src/factor/op_check_gpu.cu)
 endif()
 
-add_executable(op_check ${OP_CHECK_SOURCES})
+add_executable(op_check ../../src/factor/op_check.cpp ${FACTOR_GPU_SOURCE})
 target_compile_options(op_check PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${PRECISE_MATH_FLAG}>)
+target_sources(app_main PRIVATE ${FACTOR_GPU_SOURCE})
 
 if(FACTOR_CUDA)
-    set_target_properties(op_check PROPERTIES CUDA_ARCHITECTURES "${FACTOR_CUDA_ARCH}")
-    target_compile_options(op_check PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${PRECISE_MATH_FLAG}>)
-    target_link_libraries(op_check PRIVATE CUDA::cudart)
-    message(STATUS "op_check: GPU 后端 ON (sm_${FACTOR_CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION})")
+    # CUDA_STANDARD 显式给: app_main 在 set(CMAKE_CUDA_STANDARD) 之前就建了, 不会从变量初始化
+    foreach(tgt op_check app_main)
+        set_target_properties(${tgt} PROPERTIES CUDA_ARCHITECTURES "${FACTOR_CUDA_ARCH}" CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+        target_compile_options(${tgt} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${PRECISE_MATH_FLAG}>)
+        target_link_libraries(${tgt} PRIVATE CUDA::cudart)
+    endforeach()
+    message(STATUS "factor: GPU 后端 ON (sm_${FACTOR_CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION}, CUB ${FACTOR_CUB_DIR}) → op_check + app_main")
 else()
-    message(STATUS "op_check: GPU 后端 OFF (naive / stream 两方对拍)")
+    message(STATUS "factor: GPU 后端 OFF (op_check 两方对拍; GUI Operators 页 GPU 列 n/a)")
 endif()
 
 # ============================================================================
