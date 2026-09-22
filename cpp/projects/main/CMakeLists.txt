@@ -733,6 +733,8 @@ set_source_files_properties(
     ../../src/gui/task_factors/ui/TabOperators.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
+    # microtex 头 (nums.h: POS_INF = infinity()) 的消费者, -ffinite-math-only 下是 UB
+    ../../src/gui/util/Latex.cpp
     PROPERTIES COMPILE_OPTIONS "${PRECISE_MATH_FLAG}"
 )
 
@@ -751,9 +753,10 @@ if(FACTOR_CUDA)
     # texture_fetch_functions.h 等旧头), -x cuda 直接编不过.
     # 宿主侧仍是 clang++ -std=c++23, CUDA 侧是 nvcc+g++ -std=c++20;
     # 两边只通过 GpuRun.hpp 的 POD 接口相见, libstdc++ ABI 相同, 可直接链接.
-    # 先探再 enable: enable_language(CUDA) 自己找不到 nvcc 时只抛 CMake 内部错.
-    include(CheckLanguage)
-    check_language(CUDA)
+    # apt 的 cuda-toolkit-* 装到 /usr/local/cuda-<ver>/ 并挂 /usr/local/cuda 软链, 但不进 PATH;
+    # 这里显式给上, 省掉每个终端的 export. 先探再 enable: enable_language(CUDA) 只认 PATH,
+    # 且找不到 nvcc 时只抛 CMake 内部错.
+    find_program(CMAKE_CUDA_COMPILER nvcc PATHS /usr/local/cuda/bin)
     if(NOT CMAKE_CUDA_COMPILER)
         message(FATAL_ERROR "找不到 nvcc: sudo apt install cuda-toolkit-13-0 (NVIDIA apt 源)\n")
     endif()

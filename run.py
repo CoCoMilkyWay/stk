@@ -33,7 +33,7 @@ ENABLE_PRODUCTION = False  # Auto-enabled if all others are False
 
 # 因子 GPU 后端 (factor/*/Gpu.cuh, nvcc): 与上面的模式正交. ON 需要完整 CUDA Toolkit (nvcc + CCCL),
 # op_check 与 app_main (Factors→Operators 页 GPU 列) 一并链 cudart; OFF 链 stub, GPU 列显示 n/a.
-ENABLE_CUDA = False
+ENABLE_CUDA = True
 
 
 def _cleanup_processes():

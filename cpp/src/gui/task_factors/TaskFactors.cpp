@@ -4,6 +4,7 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
+#include "shared/SharedData.hpp" // config.factor_dir
 
 #include "imgui.h"
 
@@ -22,6 +23,8 @@ struct TaskFactorsState {
   std::unique_ptr<Factors::OperatorsService> operators_service;
   Factors::OperatorsUIState operators_ui;
   bool operators_started = false; // 首次 Draw 自动 Request 一次
+  // 一轮结束检测 (Running → Done / Cancelled 那一帧把算子表落地 operators.json)
+  Factors::OperatorsStatus prev_operators_status = Factors::OperatorsStatus::Idle;
 };
 
 TaskHandle CreateFactorsTask() {
@@ -33,6 +36,19 @@ TaskHandle CreateFactorsTask() {
   handle.tabs = {"Operators"};
 
   // 不设 OnCollapse: 切走任务 worker 继续跑完 (单线程 + ~90 行小结构, 左栏状态标签照常更新, 切回直接看表)
+
+  // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
+  // (与 universe 无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
+  handle.Update = [state](SharedData &data) {
+    if (!state->operators_service)
+      return;
+    auto &svc = *state->operators_service;
+    const auto st = svc.status();
+    const bool finished = st == Factors::OperatorsStatus::Done || st == Factors::OperatorsStatus::Cancelled;
+    if (finished && state->prev_operators_status == Factors::OperatorsStatus::Running)
+      Factors::SaveOperatorTableJson(data.config.factor_dir, svc);
+    state->prev_operators_status = st;
+  };
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx == -1 || idx < TAB_COUNT);

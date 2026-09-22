@@ -2,3 +2,12 @@ CompileFlags:
   Add:
     - -std=c++23
     - /std:c++latest
+
+---
+# .cu/.cuh 在 compile_commands 里是 nvcc 命令行, clangd 只认 clang flag:
+If:
+  PathMatch: .*\.cuh?
+CompileFlags:
+  Compiler: clang++
+  Remove: [/std:c++latest, -forward-unknown-to-host-compiler, --generate-code=*, -Xcompiler=*]
+  Add: [-xcuda, -isystem/usr/local/cuda/include/cccl]

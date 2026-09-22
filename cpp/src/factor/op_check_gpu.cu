@@ -6,14 +6,14 @@
 //   struct::kStrat 与表的 GPU 策略列不符 → static_assert 错.
 // =============================================================================
 
-#include "factor/CS/Gpu.cuh"
+#include "factor/CS/Gpu.cuh" // IWYU pragma: keep
+#include "factor/TS/Gpu.cuh" // IWYU pragma: keep
+
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
-#include "factor/TS/Gpu.cuh"
 
 #include <cassert>
 #include <cstring>
-#include <string>
 
 #define CU(call)                                         \
   do {                                                   \

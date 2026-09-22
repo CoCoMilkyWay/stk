@@ -5,11 +5,15 @@
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <numeric>
 #include <vector>
@@ -21,28 +25,40 @@ namespace {
 // 表内公式字号 (特征表悬停用 32, 表格行内要小一号)
 constexpr float kFormulaTextSize = 18.0f;
 
-// Args 列: "(输入; 参数=实际值)". 输入按元数 x / x, y / x, y, z; 0 元 = t_D. 参数按 OpTable 参数列逐个给值
-void format_args(const OperatorRow &r, char *out, size_t cap) {
+// 输入签名按元数: 0 元 = t_D (TodMask), 1..3 元 = x / x, y / x, y, z
+const char *inputs_of(const OperatorRow &r) {
   static const char *kInputs[4] = {"t_D", "x", "x, y", "x, y, z"};
   assert(r.arity >= 0 && r.arity <= 3);
-  int len = std::snprintf(out, cap, "(%s", kInputs[r.arity]);
+  return kInputs[r.arity];
+}
+
+// 逐个走 OpTable 参数列 ("d,k" 等) 的字段, 取本轮实际值: fn(name, value). 只允许 d / k / k2
+template <class Fn>
+void for_each_param(const OperatorRow &r, Fn &&fn) {
   const char *p = r.params;
-  bool first = true;
   while (*p) {
     const char *q = std::strchr(p, ',');
     const size_t tok_len = q ? static_cast<size_t>(q - p) : std::strlen(p);
-    const char *sep = first ? "; " : ", ";
     if (tok_len == 1 && p[0] == 'd')
-      len += std::snprintf(out + len, cap - len, "%sd=%d", sep, r.param.d);
+      fn("d", static_cast<double>(r.param.d));
     else if (tok_len == 1 && p[0] == 'k')
-      len += std::snprintf(out + len, cap - len, "%sk=%g", sep, r.param.k);
+      fn("k", static_cast<double>(r.param.k));
     else if (tok_len == 2 && p[0] == 'k' && p[1] == '2')
-      len += std::snprintf(out + len, cap - len, "%sk2=%g", sep, r.param.k2);
+      fn("k2", static_cast<double>(r.param.k2));
     else
       assert(false && "OpTable 参数列只允许 d / k / k2");
-    first = false;
     p = q ? q + 1 : p + tok_len;
   }
+}
+
+// Args 列: "(输入; 参数=实际值)"
+void format_args(const OperatorRow &r, char *out, size_t cap) {
+  int len = std::snprintf(out, cap, "(%s", inputs_of(r));
+  bool first = true;
+  for_each_param(r, [&](const char *name, double v) {
+    len += std::snprintf(out + len, cap - len, "%s%s=%g", first ? "; " : ", ", name, v);
+    first = false;
+  });
   std::snprintf(out + len, cap - len, ")");
 }
 
@@ -416,6 +432,114 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   }
   ImGui::PopStyleVar();
   return action;
+}
+
+// ============================================================================
+// 算子表落地 JSON (对仗 TabFeature::SaveFeatureTableJson: 手写外层, 一行一算子, ordered_json 保键序 = 列序)
+// ============================================================================
+
+namespace {
+
+// 4 位有效数字 (人读; 耗时 / 误差全精度只添噪)
+double sig4(double v) {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.4g", v);
+  return std::strtod(buf, nullptr);
+}
+
+const char *status_name(OperatorsStatus st) {
+  switch (st) {
+  case OperatorsStatus::Idle:
+    return "idle";
+  case OperatorsStatus::Running:
+    return "running";
+  case OperatorsStatus::Done:
+    return "done";
+  case OperatorsStatus::Cancelled:
+    return "cancelled";
+  }
+  return "?";
+}
+
+const char *row_status_name(RowStatus st) {
+  switch (st) {
+  case RowStatus::Pending:
+    return "pending";
+  case RowStatus::Running:
+    return "running";
+  case RowStatus::Done:
+    return "done";
+  }
+  return "?";
+}
+
+nlohmann::ordered_json diff_json(const factor::check::Diff &d) {
+  return {{"ok", d.ok()}, {"worst", sig4(d.worst)}, {"mask_bad", d.mask_bad}, {"val_bad", d.val_bad}, {"compared", d.compared}};
+}
+
+} // namespace
+
+void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc) {
+  using json = nlohmann::json;
+
+  const std::filesystem::path path = std::filesystem::path(factor_dir) / "operators.json";
+  std::filesystem::create_directories(path.parent_path());
+  const std::filesystem::path tmp = path.string() + ".tmp";
+  {
+    std::ofstream file(tmp);
+    assert(file.is_open() && "operators.json: 临时文件打不开");
+
+    std::lock_guard<std::mutex> lock(svc.mutex);
+    const OperatorsRequest &cur = svc.current;
+    file << "{\n";
+    file << " \"tensor\": {\"days\": " << cur.days << ", \"assets\": " << cur.A << ", \"T\": " << cur.T()
+         << ", \"d\": " << cur.d << ", \"seed\": " << cur.seed << "},\n";
+    file << " \"gpu\": " << (svc.gpu_available() ? "true" : "false") << ",\n";
+    file << " \"status\": " << json(status_name(svc.status())).dump() << ", \"done\": " << svc.done()
+         << ", \"total\": " << svc.total() << ", \"failed\": " << svc.failed() << ",\n";
+    file << " \"tol\": {\"stream\": \"|Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|), mask 逐位相等\","
+            " \"gpu\": \"|Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽)\"},\n";
+
+    file << " \"rows\": [\n";
+    const size_t n = svc.rows.size();
+    for (size_t i = 0; i < n; ++i) {
+      const OperatorRow &r = svc.rows[i];
+      // 键序 = 表格列序
+      nlohmann::ordered_json j;
+      j["idx"] = i;
+      j["name"] = r.name;
+      j["arity"] = r.arity;
+      j["axis"] = r.is_cs ? "CS" : "TS";
+      if (!r.is_cs)
+        j["win"] = win_name(r.win);
+      j["inputs"] = inputs_of(r);
+      nlohmann::ordered_json params = nlohmann::ordered_json::object();
+      for_each_param(r, [&](const char *name, double v) { params[name] = v; });
+      j["params"] = params;
+      j["gpu_strat"] = strat_name(r.strat);
+      j["formula"] = r.formula;
+      j["note"] = r.note;
+      j["status"] = row_status_name(r.status);
+      // 动态列只落跑完的行 (表格显示 "…" 的格子不落键)
+      if (r.status == RowStatus::Done) {
+        j["stream_vs_naive"] = diff_json(r.stream);
+        if (r.gpu_ms >= 0)
+          j["gpu_vs_naive"] = diff_json(r.gpu);
+        j["naive_ms"] = sig4(r.naive_ms);
+        j["stream_ms"] = sig4(r.stream_ms);
+        if (r.gpu_ms >= 0) {
+          j["gpu_ms"] = sig4(r.gpu_ms);
+          if (r.gpu_ms > 0)
+            j["stream_over_gpu"] = sig4(r.stream_ms / r.gpu_ms);
+        }
+      }
+      file << "  " << j.dump() << (i + 1 < n ? ",\n" : "\n");
+    }
+    file << " ]\n";
+    file << "}\n";
+    assert(file.good() && "operators.json: 写入失败");
+  }
+  std::filesystem::rename(tmp, path); // 原子替换: 崩在中途不留半截文件 (同 features.json)
 }
 
 } // namespace GUI::Factors
