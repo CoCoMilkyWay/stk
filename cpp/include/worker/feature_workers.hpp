@@ -71,7 +71,7 @@ struct TsSchedule {
 //   预取 [▆] 251/500 20230811 812MB/s (1.2TB)
 //   时序 [▆█▇█▅█▇█▂█▇█...] 前沿 242..248/500 (20230805) Σ14.2M/s (28.4G单) 持仓 69..75
 //   截面 [▃] 240/500 (20230801) 8.2k格/s
-//   落盘 [▅] 238/500 1.8s/天
+//   落盘 [▅] 238/500 20230801 95MB/s (0.9TB)
 //
 // 每类核心统一: 行首热力图, 每核 1 格 = 一个压力指标 t 的双重编码 ——
 // 块高 = 1−t (满 = 闲/健康, 空 = 压力大), 颜色 = t 白→红, 完全闲置 = 绿+满块.
@@ -92,16 +92,17 @@ struct TsSchedule {
 // ============================================================================
 struct ComputeStats {
   // 每核一槽, 四类统一: work = 单调工作量 (预取=字节, 时序=逐笔条,
-  // 截面=秒格, 落盘=天), idle_ms = 累计干等毫秒 (每次 sleep 后累加)
+  // 截面=秒格, 落盘=字节), idle_ms = 累计干等毫秒 (每次 sleep 后累加)
   struct alignas(64) Core {
     std::atomic<size_t> work{0};
     std::atomic<size_t> idle_ms{0};
   };
   Core prefetch;
   Core cs;
-  Core io; // work = 已落盘天数
+  Core io; // work = 已落盘字节
   std::vector<Core> ts;
   std::atomic<size_t> prefetch_days{0}; // 预取已完成天数 (work 是字节, 天数另计)
+  std::atomic<size_t> io_days{0};       // 已落盘天数 (work 是字节, 天数另计)
   explicit ComputeStats(size_t num_ts) : ts(num_ts) {}
 };
 

@@ -380,9 +380,9 @@ public:
 
   // ===== IO WORKER API =====
 
-  // 摘一个 DONE slot 落盘, reset 后归还 (FREE). 返回 false = 暂无可刷.
+  // 摘一个 DONE slot 落盘, reset 后归还 (FREE). 返回本日落盘字节数 (header + payload), 0 = 暂无可刷.
   // CAS 摘取 + reset 后 release 发布, 与 ts_open 的 acquire 配对 —— 全程无锁.
-  bool io_try_flush() {
+  size_t io_try_flush() {
     Slot *slot = nullptr;
     for (size_t i = 0; i < pool_size_ && !slot; ++i) {
       TensorState expected = TensorState::DONE;
@@ -390,15 +390,16 @@ public:
         slot = &pool_[i];
     }
     if (!slot)
-      return false;
+      return 0;
 
     const std::string date(slot->date);
-    disk_write(date, slot);
+    const size_t bytes = disk_write(date, slot);
+    assert(bytes > 0);
 
     slot->reset(num_assets_); // 清张量 + date + 计数: FREE 态不变量
     slot->state.store(TensorState::FREE, std::memory_order_release);
     Logger::log("store", "io_flush: " + date + " complete");
-    return true;
+    return bytes;
   }
 
   // ===== QUERY API =====
@@ -418,14 +419,16 @@ private:
   //
   // header[4] = 字段表指纹 (LEVELS[lvl].fingerprint): 字段表
   // 增删改列即变, 读旧文件断言失败而不是静默错位.
-  void write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
-                              uint64_t table_fp, const void *raw_data, size_t raw_size) {
+  // 返回文件字节数 (header + payload)
+  size_t write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
+                                uint64_t table_fp, const void *raw_data, size_t raw_size) {
     const size_t header[FEATURE_FILE_HEADER_WORDS] = {T, F, A, static_cast<size_t>(axis_hash_), static_cast<size_t>(table_fp)};
 
     // 原子发布: 写 .tmp 再同目录 rename (POSIX 原子) —— 半写文件不可能以正式名
     // 存在. disk_write 按层序落盘, 最后一层的最后一列文件因此兼任本日 commit 标记
     // (FeatureRead::has_date 的判据): 它在则全日齐备, 中断只留 .tmp 残片.
     const std::string tmp_path = filepath + ".tmp";
+    size_t payload = raw_size;
     {
       std::ofstream file(tmp_path, std::ios::binary);
       assert(file.is_open());
@@ -437,15 +440,17 @@ private:
       } else {
         const size_t cap = FeatureCodec::bound(raw_size);
         io_buf_.resize(cap); // 复用容量, 稳态零分配
-        const size_t payload = FeatureCodec::encode(raw_data, raw_size, io_buf_.data(), cap);
+        payload = FeatureCodec::encode(raw_data, raw_size, io_buf_.data(), cap);
         file.write(reinterpret_cast<const char *>(io_buf_.data()), payload);
       }
       assert(file.good());
     }
     std::filesystem::rename(tmp_path, filepath);
+    return sizeof(header) + payload;
   }
 
-  void disk_write(const std::string &date_str, Slot *slot) {
+  // 返回本日落盘总字节数
+  size_t disk_write(const std::string &date_str, Slot *slot) {
     assert(slot && date_str.size() == 8);
 
     auto t_start = std::chrono::high_resolution_clock::now();
@@ -458,6 +463,7 @@ private:
     auto t_after_mkdir = std::chrono::high_resolution_clock::now();
 
     const size_t A = num_assets_;
+    size_t bytes = 0;
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
       const auto &L = LEVELS[lvl];
       if (L.columnar) {
@@ -468,13 +474,13 @@ private:
             std::memcpy(&io_column_[t * A], &slot->data[lvl][(t * L.width + f) * A], A * sizeof(feature_storage_t));
           if (L.xor_delta)
             xor_delta_encode(io_column_.data(), L.rows, A);
-          write_file_with_header(feature_column_file(out_dir, lvl, f), L.rows, 1, A, L.fingerprint, io_column_.data(), io_column_.size() * sizeof(feature_storage_t));
+          bytes += write_file_with_header(feature_column_file(out_dir, lvl, f), L.rows, 1, A, L.fingerprint, io_column_.data(), io_column_.size() * sizeof(feature_storage_t));
         }
       } else {
         // 整层文件就地差分: slot 落盘后随即 reset (memset), 破坏张量无妨
         if (L.xor_delta)
           xor_delta_encode(slot->data[lvl], L.rows, L.width * A);
-        write_file_with_header(feature_file(out_dir, lvl), L.rows, L.width, A, L.fingerprint, slot->data[lvl], level_bytes(lvl, A));
+        bytes += write_file_with_header(feature_file(out_dir, lvl), L.rows, L.width, A, L.fingerprint, slot->data[lvl], level_bytes(lvl, A));
       }
     }
 
@@ -486,6 +492,7 @@ private:
     Logger::log("store",
                 "disk_write: END " + date_str + " [mkdir:" + std::to_string(mkdir_ms) +
                     "ms write:" + std::to_string(write_ms) + "ms total:" + std::to_string(total_ms) + "ms]");
+    return bytes;
   }
 };
 

@@ -15,8 +15,9 @@ void io_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 本核发布槽 (单写者): work = 已落盘天数, idle_ms = 累计等 CS_DONE 毫秒
+  // 本核发布槽 (单写者): work = 已落盘字节, idle_ms = 累计等 CS_DONE 毫秒; 天数另计 io_days
   ComputeStats::Core &stat = ctx.stats.io;
+  size_t cumulative_bytes = 0;
 
   TraceNS("IOWorker", 5);
   TraceValue(worker_id);
@@ -34,17 +35,19 @@ void io_worker(WorkerCtx ctx) {
     TraceValue(flush_count);
 
     // Flush oldest CS_DONE tensor (one at a time, maintains date order)
-    bool flushed = false;
+    size_t flushed_bytes = 0;
     {
       TraceN("TryFlush");
       TraceColor(C_Red);
-      flushed = store.io_try_flush();
+      flushed_bytes = store.io_try_flush();
     }
 
-    if (flushed) {
+    if (flushed_bytes > 0) {
       flush_count++;
       wait_count = 0;
-      stat.work.store(flush_count, std::memory_order_relaxed);
+      cumulative_bytes += flushed_bytes;
+      stat.work.store(cumulative_bytes, std::memory_order_relaxed);
+      ctx.stats.io_days.store(flush_count, std::memory_order_relaxed);
       Logger::log("worker_" + std::to_string(worker_id), "Flushed: " + std::to_string(flush_count) + "/" + std::to_string(total_dates));
 
       TraceFrame;

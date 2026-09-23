@@ -98,7 +98,7 @@ void FeatureProgress::render() {
   const long long now_ms = elapsed_ms();
 
   // ---- 采样 (原子读一轮快照; 各值间不要求一致, 展示用) ----
-  const size_t io_days = stats_.io.work.load(std::memory_order_relaxed);
+  const size_t io_days = stats_.io_days.load(std::memory_order_relaxed);
   const size_t cs_days = store_.query_cs_days_done();
   const size_t ts_days = store_.query_ts_days_done(); // 全员计满的日数 (最慢前沿)
   const size_t pf_days = stats_.prefetch_days.load(std::memory_order_relaxed);
@@ -237,7 +237,9 @@ void FeatureProgress::render() {
     out << "落盘 [";
     cell(out, busy[2 + num_ts], busy[2 + num_ts] < kIdleBusy || io_days >= total);
     out << "\033[0m] ";
-    snprintf(buf, sizeof(buf), "%zu/%zu", io_days, total);
+    snprintf(buf, sizeof(buf), "%zu/%zu %s %.0fMB/s (%.1fGB)",
+             io_days, total, io_days > 0 ? dates_[io_days - 1].c_str() : "--------",
+             rate[2 + num_ts] / 1e6, work[2 + num_ts] / 1e9);
     out << buf << "\033[K\n";
   }
 
