@@ -150,8 +150,19 @@ private:
   std::atomic<uint64_t> epoch_{0};
 };
 
-// 新因子文件: 表达式合法 (parse 过) → <factor_dir>/f_<fnv1a(canon) 8 hex>.json = {"expr": canon, "params": [...]}.
-// 返回文件名; 不合法 / 同名已存在 → 空串 + err. GUI 线程调 (随后 Request(evaluate=false) 重扫)
-std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view expr_src, std::string &err);
+// 因子名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]
+bool ValidFactorName(std::string_view name);
+
+// 新因子文件: 名字合法 (调用方保证, 断言) 且表达式合法 (parse 过) → <factor_dir>/<name>.json = {"expr": canon, "note"?, "params": [...]}.
+// 返回文件名; 表达式不合法 / 同名已存在 → 空串 + err. GUI 线程调 (随后 Request(evaluate=false) 重扫)
+std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view expr_src,
+                          std::string_view note, std::string &err);
+
+// 编辑已有文件 (file = 表格里的文件名, 含 .json): expr 换成 canon (规范串变了 → 丢 stat), note 覆盖 (空 = 删键), params 重建,
+// 其他键保留 (BROKEN 非对象文件从空重建); new_name ≠ 主干 → 改名. 返回新文件名; 表达式不合法 / 改名目标已存在 → "" + err.
+// 删除: 直接删文件. 两者只在服务空闲时调 (evaluate 会写回文件)
+std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
+                             std::string_view expr_src, std::string_view note, std::string &err);
+void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
 } // namespace GUI::Factors

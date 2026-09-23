@@ -115,10 +115,10 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (子页 Operators / Factors; Operators 进页优先载入 operators.json, 缺/校验不过才自动算一轮; Factors 进页只扫描, 手动 Run 评估)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表服务: 首行 Stat 评估算子 (factor/Stat, 不在 OpTable, 无流式后端, worker 每轮先跑 = 挖掘第一道闸) + OpTable 全算子一行一算子; worker 三后端对拍+计时 (stream 为 golden; d/k 每算子默认表, seed 取时间戳; gpu 计时 = 纯 kernel)
-│   │   │       │   └── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 标签 fp16) → Dag → EvalCpu (因子间并行) / EvalGpu (常驻显存 + Stat 会话) → HoldStat → 回写 params/stat 键 (expr 不动); AddFactorFile 给 Add 用
+│   │   │       │   └── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 标签 fp16) → Dag → EvalCpu (因子间并行) / EvalGpu (常驻显存 + Stat 会话) → HoldStat → 回写 params/stat 键 (expr 不动); AddFactorFile / UpdateFactorFile / DeleteFactorFile 给 UI 用
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab: 首行 Stat (静态列空, 只看 cpu/gpu eval 耗时 + 悬停 HoldStat) + OpTable 静态列 (idx/元数/窗/域/核/参数/公式/Note, 默认按全局 idx 排) + 动态列 (stream/cpu/gpu 耗时与对拍 Δ); operators.json 存/取 (取时逐行校验静态列, 不过即删)
-│   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 CPU|GPU / 金额档 / 持有期 + Run/Cancel/Rescan; Add 表达式 (即时校验) → 落文件; 表 一行一文件 (BROKEN 红+原因 / ok / file / file≠scope 黄 / dup, 规范串, ops/feats/slots, valid%, 选定持有期的 IC/ICIR/IC_t/LS/SR/β/mono/rAC/n, eval/stat ms, note; 悬停看全部持有期)
+│   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 CPU|GPU / 金额档 / 持有期 + Run/Cancel/Rescan; 构建器 (从外到内逐槽下拉选算子/特征, 参数手填, 即时校验) + 必填 name + note; 添加模式 Add 新文件 (查重弹窗) / 点表格行进编辑模式 (高光, Save 覆盖弹窗确认, 删除); 表 一行一文件 (BROKEN 红+原因 / ok / file / file≠scope 黄 / dup, 规范串, ops/feats/slots, valid%, 选定持有期的 IC/ICIR/IC_t/LS/SR/β/mono/rAC/n, eval/stat ms, note; 悬停看全部持有期)
 │   │   │           └── StatJson.hpp                  # 🖥️ HoldStat ↔ JSON (hold_json / load_hold, sig4, json_* 取值): operators.json 的 stat.holds 与因子文件的 stat.holds 同一格式
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐

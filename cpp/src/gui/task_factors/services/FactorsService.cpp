@@ -68,13 +68,6 @@ void parallel_for(size_t n_tasks, size_t n_threads, const std::atomic<bool> &can
     th.join();
 }
 
-uint32_t fnv1a(std::string_view s) {
-  uint32_t h = 2166136261u;
-  for (unsigned char c : s)
-    h = (h ^ c) * 16777619u;
-  return h;
-}
-
 std::string now_string() {
   const std::time_t t = std::time(nullptr);
   char buf[32];
@@ -459,22 +452,84 @@ bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, int amt
 // AddFactorFile
 // ============================================================================
 
-std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view expr_src, std::string &err) {
+bool ValidFactorName(std::string_view name) {
+  if (name.empty() || name.size() > 64)
+    return false;
+  for (char c : name)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+      return false;
+  return true;
+}
+
+std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view expr_src,
+                          std::string_view note, std::string &err) {
+  assert(ValidFactorName(name));
   factor::expr::Expr e;
   if (!factor::expr::parse(expr_src, feats.lookup(), e, err))
     return "";
-  char name[32];
-  std::snprintf(name, sizeof(name), "f_%08x.json", fnv1a(e.canon));
-  const std::filesystem::path path = std::filesystem::path(factor_dir) / name;
+  const std::string file = std::string(name) + ".json";
+  const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
   if (std::filesystem::exists(path)) {
-    err = std::string("已存在 ") + name + " (同一规范串)";
+    err = "已存在 " + file;
     return "";
   }
   ojson j;
   j["expr"] = e.canon;
+  if (!note.empty())
+    j["note"] = std::string(note);
   j["params"] = params_json(e);
   write_json(path, j);
-  return name;
+  return file;
+}
+
+std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
+                             std::string_view expr_src, std::string_view note, std::string &err) {
+  assert(ValidFactorName(new_name));
+  factor::expr::Expr e;
+  if (!factor::expr::parse(expr_src, feats.lookup(), e, err))
+    return "";
+  const std::filesystem::path from = std::filesystem::path(factor_dir) / file;
+  const std::string new_file = std::string(new_name) + ".json";
+  const std::filesystem::path to = std::filesystem::path(factor_dir) / new_file;
+  assert(std::filesystem::exists(from));
+  if (to != from && std::filesystem::exists(to)) {
+    err = "已存在 " + new_file;
+    return "";
+  }
+  // 原文件可能是 BROKEN (非 JSON / 非对象): 那就从空对象重建; 否则保留人加的其他键
+  ojson j(ojson::value_t::discarded);
+  {
+    std::ifstream f(from);
+    assert(f.is_open());
+    j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
+  }
+  if (!j.is_object())
+    j = ojson::object();
+  bool expr_changed = true; // 按规范串比 (文件原串可能是非规范写法)
+  if (const auto old_expr = j.find("expr"); old_expr != j.end() && old_expr->is_string()) {
+    factor::expr::Expr old_e;
+    std::string old_err;
+    if (factor::expr::parse(old_expr->get<std::string>(), feats.lookup(), old_e, old_err))
+      expr_changed = old_e.canon != e.canon;
+  }
+  j["expr"] = e.canon;
+  if (note.empty())
+    j.erase("note");
+  else
+    j["note"] = std::string(note);
+  j["params"] = params_json(e);
+  if (expr_changed)
+    j.erase("stat"); // 旧 stat 是别的表达式算的
+  write_json(from, j);
+  if (to != from)
+    std::filesystem::rename(from, to);
+  return new_file;
+}
+
+void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
+  const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
+  assert(std::filesystem::exists(path));
+  std::filesystem::remove(path);
 }
 
 // ============================================================================
