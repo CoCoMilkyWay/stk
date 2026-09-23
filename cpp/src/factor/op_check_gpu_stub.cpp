@@ -20,5 +20,9 @@ void run_cs(const char *, const float *, const uint8_t *, const float *, const u
             const uint8_t *, float *, uint8_t *, int, int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
+void run_stat(const float *, const uint8_t *, int, int, const factor::stat::Holds &, const StatLabelHost *,
+              factor::stat::Row *, double *, double *) {
+  assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
+}
 
 } // namespace factor::gpu

@@ -10,6 +10,7 @@
 
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
+#include "factor/Stat/Check.hpp"
 #include "misc/profiler.hpp"
 
 #include <cassert>
@@ -78,10 +79,70 @@ void run_op(const OperatorsRequest &rq, OperatorRow &row) {
   }
 }
 
+// Stat 评估算子: 造数 (PLAIN, 与 op_check 同口径) → cpu (全核) / gpu 各计时 → 一级 + 二级对拍.
+// 表列: cpu_ms / gpu_ms = eval (每因子一次), stream 列 n/a, gpu Diff = 一级 + 二级合并; prep 与二级汇总进 extra
+void run_stat(const OperatorsRequest &rq, OperatorRow &row, StatExtra &extra) {
+  using namespace factor::stat::check;
+  std::mt19937 rng(rq.seed);
+  Data d;
+  make(d, Profile::PLAIN, rq.times, rq.A, rng);
+  Result cpu;
+  run_cpu(d, cpu, cpu_threads());
+  row.cpu_ms = cpu.eval_ms;
+  row.stream_ms = -1;
+  row.stream = {};
+  extra.cpu_prep_ms = cpu.prep_ms;
+  extra.n_hold = d.hd.n;
+  for (int i = 0; i < d.hd.n; ++i)
+    extra.hold[i] = cpu.stat[static_cast<size_t>(i)];
+  if (!factor::gpu::available()) {
+    row.gpu_ms = -1;
+    row.gpu = {};
+    extra.gpu_prep_ms = -1;
+    return;
+  }
+  Result gpu;
+  gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
+  std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
+  for (int i = 0; i < d.hd.n; ++i)
+    lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
+                                   d.lab[static_cast<size_t>(i)].m.data()};
+  factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), d.T, d.A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
+  summarize_all(gpu, d);
+  const Tol tol = tol_of(Profile::PLAIN);
+  row.gpu_ms = gpu.eval_ms;
+  extra.gpu_prep_ms = gpu.prep_ms;
+  const Diff dr = compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
+  const Diff ds = compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
+  row.gpu = dr; // 两级合并成一个 Diff (表只有一格)
+  row.gpu.mask_bad += ds.mask_bad;
+  row.gpu.val_bad += ds.val_bad;
+  row.gpu.compared += ds.compared;
+  if (ds.worst > row.gpu.worst)
+    row.gpu.worst = ds.worst;
+  if (row.gpu.worst_at < 0)
+    row.gpu.worst_at = ds.worst_at;
+}
+
 } // namespace
 
 OperatorsService::OperatorsService() {
-  // 行序 = OpTable 表序 = 全局 idx (UI 默认序 / operators.json 的 idx 都按它);
+  // 行序 = 全局 idx (UI 默认序 / operators.json 的 idx 都按它): 首行 Stat, 之后 = OpTable 表序.
+  // 首行: Stat 评估算子 (不在 OpTable; T / A / Kernel 空; 二元 = 因子 x + 每持有期一组标签 y_h)
+  {
+    OperatorRow s;
+    s.e_name = "Stat";
+    s.c_name = "评估";
+    s.arity = 2;
+    s.params = "";
+    s.operand = R"tex(x, y_h \in \mathbb{R};\; h \in \{5,10,30\})tex";
+    s.op = R"tex(\mathrm{rIC},\,\mathrm{IR},\,t,\,G_{20},\,\mathrm{LS},\,\mathrm{SR},\,\beta,\,\mathrm{mono},\,\mathrm{rAC})tex";
+    s.note = "因子评估: 每 (h, t) 的 IC / 20 组均值 / 多空 / rank-AC, 再沿 t 汇总; 挖掘的第一道闸, 每轮先跑";
+    s.classified = false;
+    rows.push_back(s);
+    runners_.push_back(nullptr); // 另走 run_stat
+  }
+  assert(stat_index() == 0);
   // 静态列直接抄 OpTable 三维分类列, 跑手按 A 域 token 粘贴选后端命名空间
   // (SELF → ts, ALL/GROUP → cs; 缺任一后端同名 struct → 此处编译错)
 #define RUN_SELF(Name, ar, t) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>)
@@ -118,16 +179,18 @@ void OperatorsService::Request(const OperatorsRequest &req) {
   }
 }
 
-void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed) {
+void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, const StatExtra &extra,
+                                     int failed) {
   assert(!thread_.joinable() && status_.load() == OperatorsStatus::Idle && "载入只在 worker 未起时做");
   assert(snap.size() == rows.size());
   {
     std::lock_guard<std::mutex> lock(mutex);
     rows = std::move(snap);
+    stat = extra;
     current = req;
     from_json = true;
   }
-  done_.store(static_cast<int>(rows.size()), std::memory_order_relaxed);
+  done_.store(total(), std::memory_order_relaxed);
   failed_.store(failed, std::memory_order_relaxed);
   status_.store(OperatorsStatus::Done, std::memory_order_release);
   epoch_.fetch_add(1, std::memory_order_relaxed);
@@ -180,12 +243,14 @@ void OperatorsService::worker_loop() {
         r.stream = {}, r.gpu = {};
         r.cpu_ms = 0, r.stream_ms = 0, r.gpu_ms = -1;
       }
+      stat = StatExtra{};
     }
     done_.store(0, std::memory_order_relaxed);
     failed_.store(0, std::memory_order_relaxed);
     status_.store(OperatorsStatus::Running, std::memory_order_release);
     epoch_.fetch_add(1, std::memory_order_relaxed);
 
+    // 执行序 = 行序: 首行 Stat 先跑 (挖掘的第一道闸, 先验它), 然后按 OpTable 表序逐算子
     bool cancelled = false;
     for (size_t i = 0; i < rows.size(); ++i) {
       if (cancel_.load(std::memory_order_relaxed)) {
@@ -199,11 +264,17 @@ void OperatorsService::worker_loop() {
       epoch_.fetch_add(1, std::memory_order_relaxed);
 
       OperatorRow r = rows[i]; // 静态列 + Running; 只有本线程写 rows, 无锁读安全
-      runners_[i](req, r);
+      StatExtra extra;
+      if (i == stat_index())
+        run_stat(req, r, extra);
+      else
+        runners_[i](req, r);
       r.status = RowStatus::Done;
       {
         std::lock_guard<std::mutex> lock(mutex);
         rows[i] = r;
+        if (i == stat_index())
+          stat = extra;
       }
       done_.fetch_add(1, std::memory_order_relaxed);
       if (!r.stream.ok() || (r.gpu_ms >= 0 && !r.gpu.ok()))

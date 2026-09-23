@@ -8,6 +8,8 @@
 #include "factor/CS/Gpu.cuh" // IWYU pragma: keep
 #include "factor/TS/Gpu.cuh" // IWYU pragma: keep
 
+#include "factor/Stat/Gpu.cuh" // IWYU pragma: keep
+
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
 
@@ -133,6 +135,90 @@ void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *y
   OP_CS(G_CS)
 #undef G_CS
   assert(false && "算子不在 OpTable 的 CS 组");
+}
+
+namespace {
+
+// 设备缓冲 (任意元素类型): 拷入 / 分配 / 拷出 / 释放
+template <class E>
+struct DevBuf {
+  E *p = nullptr;
+  void up(const E *h, size_t n) {
+    CU(cudaMalloc(&p, n * sizeof(E)));
+    CU(cudaMemcpy(p, h, n * sizeof(E), cudaMemcpyHostToDevice));
+  }
+  void alloc(size_t n) {
+    CU(cudaMalloc(&p, n * sizeof(E)));
+    CU(cudaMemset(p, 0, n * sizeof(E)));
+  }
+  void down(E *h, size_t n) const { CU(cudaMemcpy(h, p, n * sizeof(E), cudaMemcpyDeviceToHost)); }
+  void free_() {
+    if (p)
+      CU(cudaFree(p));
+  }
+};
+
+struct Timer {
+  cudaEvent_t e0, e1;
+  Timer() {
+    CU(cudaEventCreate(&e0));
+    CU(cudaEventCreate(&e1));
+  }
+  ~Timer() {
+    CU(cudaEventDestroy(e0));
+    CU(cudaEventDestroy(e1));
+  }
+  void begin() { CU(cudaEventRecord(e0)); }
+  double end() { // ms
+    CU(cudaEventRecord(e1));
+    CU(cudaEventSynchronize(e1));
+    CU(cudaGetLastError());
+    float f = 0.f;
+    CU(cudaEventElapsedTime(&f, e0, e1));
+    return f;
+  }
+};
+
+} // namespace
+
+void run_stat(const float *xv, const uint8_t *xm, int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab,
+              factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
+  factor::stat::assert_holds(hd);
+  const size_t n = static_cast<size_t>(T) * A;
+  const int H = hd.n;
+  DevBuf<float> x;
+  DevBuf<uint8_t> m;
+  x.up(xv, n), m.up(xm, n);
+  DevBuf<uint16_t> lv[factor::stat::kMaxHold], sv[factor::stat::kMaxHold], ry[factor::stat::kMaxHold];
+  DevBuf<uint8_t> lm[factor::stat::kMaxHold];
+  stat::LabelSet L;
+  L.n = H;
+  for (int i = 0; i < H; ++i) {
+    lv[i].up(lab[i].lv, n), sv[i].up(lab[i].sv, n), lm[i].up(lab[i].m, n), ry[i].alloc(n);
+    L.l[i] = {lv[i].p, sv[i].p, lm[i].p, ry[i].p};
+  }
+  DevBuf<uint16_t> ws;
+  ws.alloc(n);
+  DevBuf<factor::stat::Row> out;
+  out.alloc(static_cast<size_t>(H) * T);
+
+  Timer tm;
+  tm.begin();
+  for (int i = 0; i < H; ++i)
+    stat::prep_label(lv[i].p, lm[i].p, T, A, ry[i].p, nullptr);
+  const double pms = tm.end();
+  tm.begin();
+  stat::eval(x.p, m.p, T, A, hd, L, ws.p, out.p, nullptr);
+  const double ems = tm.end();
+  if (prep_ms)
+    *prep_ms = pms;
+  if (eval_ms)
+    *eval_ms = ems;
+
+  out.down(rows, static_cast<size_t>(H) * T);
+  out.free_(), ws.free_(), x.free_(), m.free_();
+  for (int i = 0; i < H; ++i)
+    lv[i].free_(), sv[i].free_(), lm[i].free_(), ry[i].free_();
 }
 
 } // namespace factor::gpu

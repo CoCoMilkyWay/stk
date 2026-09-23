@@ -11,6 +11,7 @@
 //   属性列也对拍: 流式 TS struct::kT 与 OpTable 的 T 窗列不符 → static_assert 错.
 //   造数 / 配方 / 容差 / 比较 / 驱动在 factor/Check.hpp (与 GUI Factors→Operators 页共用同一口径);
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
+//   末尾另有一节 Stat (因子评估算子, factor/Stat; 不在 OpTable, 无流式后端, cpu ↔ gpu 两方 match): --op Stat 单跑.
 // =============================================================================
 
 #include "factor/TS/Cpu.hpp"    // IWYU pragma: keep
@@ -23,6 +24,7 @@
 #include "factor/Contract.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
+#include "factor/Stat/Check.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -115,6 +117,52 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
     std::printf("  ok   %-14s\n", name);
 }
 
+// Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
+//   profile 全扫 (无 d); 无 GPU 时只跑 cpu 并打印二级汇总 (-v), 不算失败
+void check_stat(int T, int A, unsigned seed, Report &rep) {
+  namespace sc = factor::stat::check; // 与 factor::check 同名的 Data / Tol 等, 全限定
+  ++rep.ops;
+  bool op_bad = false;
+  const int threads = sc::cpu_threads();
+  for (int pi = 0; pi < kProfiles; ++pi) {
+    const Profile pr = static_cast<Profile>(pi);
+    std::mt19937 rng(seed + 1000u * pi);
+    sc::Data d;
+    sc::make(d, pr, T, A, rng);
+    sc::Result cpu;
+    sc::run_cpu(d, cpu, threads);
+    if (rep.verbose)
+      for (const factor::stat::HoldStat &s : cpu.stat)
+        std::printf("       Stat   cpu    h=%-3d %-8s n=%d/%d  IC %+.4f std %.4f ICIR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f "
+                    "Sharpe %+.2f beta %+.3f  mono %+.3f  rankAC %+.3f\n",
+                    s.hold, kProfName[pi], s.n, s.n_ac, s.ic_mean, s.ic_std, s.icir, s.ic_t, s.ic_pos, s.ls_mean, s.ls_t, s.sharpe,
+                    s.beta, s.mono, s.rank_ac);
+    if (!factor::gpu::available())
+      continue;
+    sc::Result gpu;
+    gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
+    std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
+    for (int i = 0; i < d.hd.n; ++i)
+      lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
+                                     d.lab[static_cast<size_t>(i)].m.data()};
+    factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), T, A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
+    sc::summarize_all(gpu, d);
+    const Tol tol = sc::tol_of(pr);
+    const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
+    const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
+    ++rep.cases;
+    if (!dr.ok() || !ds.ok())
+      ++rep.gpu_bad;
+    Param p;
+    emit(rep, "Stat.rows", p, kProfName[pi], "gpu", dr, op_bad);
+    emit(rep, "Stat.stat", p, kProfName[pi], "gpu", ds, op_bad);
+  }
+  if (op_bad)
+    ++rep.ops_bad;
+  else if (!rep.verbose)
+    std::printf("  ok   %-14s\n", "Stat");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -161,6 +209,8 @@ int main(int argc, char **argv) {
 #undef CK_GROUP
 #undef CK_ALL
 #undef CK_SELF
+  if (only.empty() || only == "Stat") // 评估算子: 不在 OpTable, 单独一节
+    check_stat(T, A, seed, rep);
 
   std::printf("=== %d 算子 / %d 用例: stream 失败 %d, gpu 失败 %d; 算子级失败 %d ===\n", rep.ops,
               rep.cases, rep.stream_bad, rep.gpu_bad, rep.ops_bad);

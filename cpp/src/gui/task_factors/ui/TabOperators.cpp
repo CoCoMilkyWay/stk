@@ -1,8 +1,9 @@
 // Tab Operators — 见头文件
 #include "gui/task_factors/ui/TabOperators.hpp"
-#include "factor/GpuRun.hpp"  // device_name: GPU 型号显示
-#include "gui/Tasks.hpp"      // StatusColor: 全局色表, 行状态着色不自配颜色
-#include "gui/util/Latex.hpp" // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
+#include "factor/GpuRun.hpp"     // device_name: GPU 型号显示
+#include "factor/Stat/Check.hpp" // kHolds: Stat 行载入时校验持有期列表
+#include "gui/Tasks.hpp"         // StatusColor: 全局色表, 行状态着色不自配颜色
+#include "gui/util/Latex.hpp"    // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)
@@ -140,6 +141,36 @@ double sort_ms_chk(const OperatorRow &r, double ms, const factor::check::Diff &d
   return d.ok() ? ms : 1e300;
 }
 
+// 三维分类列的显示 / 落盘文本: 不在分类里的行 (Stat) 空着
+const char *cls_T(const OperatorRow &r) { return r.classified ? T_name(r.T) : ""; }
+const char *cls_A(const OperatorRow &r) { return r.classified ? A_name(r.A) : ""; }
+const char *cls_kern(const OperatorRow &r) { return r.classified ? kern_name(r.kern) : ""; }
+
+// Stat 行悬停 e_name: 表列放不下的附带信息 (prep 耗时 + 每持有期 cpu 侧二级汇总)
+void stat_tooltip(const OperatorRow &r, const StatExtra &x) {
+  ImGui::BeginTooltip();
+  ImGui::TextUnformatted("因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组均值 / 多空 / rank-AC, 再沿 t 汇总.\n"
+                         "无流式后端, cpu ↔ gpu 两方对拍 (无 golden; 表格 GPU 列的 Diff = 一级 rows + 二级 stat 合并).\n"
+                         "表列耗时 = eval (每因子一次: rank(x) 排序 + 逐持有期一遍 A 轴); prep = 标签 rank 预处理 (常驻期一次), 见下.\n"
+                         "造数: long = 0.3·x + 噪声 (IC ≈ 0.3). ic_t / ls_t 按 n/h 折算 (相邻 h 行标签重叠); Sharpe 以持有期为一期年化;\n"
+                         "rank-AC 的 lag = h; 段末 h+3 行 (持有到收盘) 不计标签统计.");
+  if (r.status == RowStatus::Done) {
+    ImGui::Separator();
+    if (x.gpu_prep_ms >= 0)
+      ImGui::Text("prep: cpu %.3f ms, gpu %.3f ms", x.cpu_prep_ms, x.gpu_prep_ms);
+    else
+      ImGui::Text("prep: cpu %.3f ms", x.cpu_prep_ms);
+    for (int i = 0; i < x.n_hold; ++i) {
+      const factor::stat::HoldStat &h = x.hold[i];
+      ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f SR %+.2f "
+                  "β %+.3f | mono %+.3f | rAC %+.3f",
+                  h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.sharpe,
+                  h.beta, h.mono, h.rank_ac);
+    }
+  }
+  ImGui::EndTooltip();
+}
+
 } // namespace
 
 int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
@@ -227,22 +258,24 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   // ==========================================================================
   // 短锁拷快照 (~90 行小结构, worker 只在行末短锁写)
   static std::vector<OperatorRow> s_rows;
+  StatExtra s_stat;
   OperatorsRequest cur;
   bool from_json = false;
   {
     std::lock_guard<std::mutex> lock(svc.mutex);
     s_rows = svc.rows;
+    s_stat = svc.stat;
     cur = svc.current;
     from_json = svc.from_json;
   }
   const int n = static_cast<int>(s_rows.size());
+  const auto count_A = [&](factor::A a) {
+    return (int)std::count_if(s_rows.begin(), s_rows.end(), [a](const OperatorRow &r) { return r.classified && r.A == a; });
+  };
 
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "2. Operators:");
   ImGui::SameLine();
-  ImGui::Text("%d (SELF %d / ALL %d / GROUP %d)", n,
-              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.A == factor::A::SELF; }),
-              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.A == factor::A::ALL; }),
-              (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return r.A == factor::A::GROUP; }));
+  ImGui::Text("%d (SELF %d / ALL %d / GROUP %d + Stat)", n, count_A(factor::A::SELF), count_A(factor::A::ALL), count_A(factor::A::GROUP));
   if (st != OperatorsStatus::Idle) {
     ImGui::SameLine();
     ImGui::TextDisabled(from_json ? "(from operators.json: %d × %d)" : "(last run: %d × %d)", cur.times, cur.A);
@@ -295,7 +328,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     const char *headers[kNumCols] = {"#", "e_name", "c_name", "Ar", "T", "A", "Kernel", "operand", "operator",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
-        "全局 idx = OpTable 表序 = operators.json 的 idx (code 与 UI 统一按它):\n"
+        "全局 idx = operators.json 的 idx (code 与 UI 统一按它): 0 = Stat 评估算子 (每轮先跑), 之后 = OpTable 表序:\n"
         "元数 → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL→GROUP → 核类 → 名字字母序\n"
         "默认排序即此列; 点表头按列排 (三态, 第三态回默认)",
         "英文名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点",
@@ -347,7 +380,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       }
       specs->SpecsDirty = false;
     }
-    // 默认序 = 全局 idx (行序即 OpTable 表序, 不另排); 用户选列时在此序上 stable_sort
+    // 默认序 = 全局 idx (行序: Stat 首行, 后接 OpTable 表序, 不另排); 用户选列时在此序上 stable_sort
     std::vector<int> order(n);
     std::iota(order.begin(), order.end(), 0);
     if (ui.sort_column >= 0) {
@@ -403,23 +436,25 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       const OperatorRow &r = s_rows[idx];
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextDisabled("%d", idx); // 全局 idx = 行在 OpTable 的表序 = operators.json 的 idx
+      ImGui::TextDisabled("%d", idx); // 全局 idx = operators.json 的 idx (0 = Stat, 之后 = OpTable 表序)
       ImGui::TableSetColumnIndex(1);
       ImGui::TextColored(StatusColor(r.status == RowStatus::Done
                                          ? ((r.stream.ok() && (r.gpu_ms < 0 || r.gpu.ok())) ? TaskStatus::Kind::Ready
                                                                                             : TaskStatus::Kind::Error)
                                          : (r.status == RowStatus::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted)),
                          "%s", r.e_name);
+      if (!r.classified && ImGui::IsItemHovered())
+        stat_tooltip(r, s_stat);
       ImGui::TableSetColumnIndex(2);
       ImGui::TextUnformatted(r.c_name);
       ImGui::TableSetColumnIndex(3);
       ImGui::Text("%d", r.arity);
       ImGui::TableSetColumnIndex(4);
-      ImGui::TextUnformatted(T_name(r.T));
+      ImGui::TextUnformatted(cls_T(r));
       ImGui::TableSetColumnIndex(5);
-      ImGui::TextUnformatted(A_name(r.A));
+      ImGui::TextUnformatted(cls_A(r));
       ImGui::TableSetColumnIndex(6);
-      ImGui::TextUnformatted(kern_name(r.kern));
+      ImGui::TextUnformatted(cls_kern(r));
       ImGui::TableSetColumnIndex(7);
       if (tex::TeXRender *render = Latex::Get(s_operand[idx].c_str(), kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
@@ -431,9 +466,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       else
         ImGui::TextUnformatted(r.op); // 解析失败回退原文
       ImGui::TableSetColumnIndex(9);
-      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据
+      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据 (Stat 无 stream → n/a)
       ImGui::TableSetColumnIndex(10);
-      render_time_cell(r, r.cpu_ms, &r.stream, r.cpu_ms > r.stream_ms);
+      render_time_cell(r, r.cpu_ms, r.stream_ms >= 0 ? &r.stream : nullptr, r.stream_ms >= 0 && r.cpu_ms > r.stream_ms);
       ImGui::TableSetColumnIndex(11);
       render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
       ImGui::TableSetColumnIndex(12);
@@ -491,6 +526,42 @@ nlohmann::ordered_json diff_json(const factor::check::Diff &d) {
   return {{"ok", d.ok()}, {"worst", sig4(d.worst)}, {"mask_bad", d.mask_bad}, {"val_bad", d.val_bad}, {"compared", d.compared}};
 }
 
+// Stat 行表列放不下的附带信息: prep 耗时 + 每持有期的 cpu 侧二级汇总 (耗时 / 对拍在 rows 里与其他行同列)
+nlohmann::ordered_json stat_json(const StatExtra &s) {
+  nlohmann::ordered_json j;
+  j["cpu_prep_ms"] = sig4(s.cpu_prep_ms);
+  if (s.gpu_prep_ms >= 0)
+    j["gpu_prep_ms"] = sig4(s.gpu_prep_ms);
+  nlohmann::ordered_json holds = nlohmann::ordered_json::array();
+  for (int i = 0; i < s.n_hold; ++i) {
+    const factor::stat::HoldStat &h = s.hold[i];
+    nlohmann::ordered_json o;
+    o["hold"] = h.hold;
+    o["n"] = h.n;
+    o["n_ac"] = h.n_ac;
+    o["ic_mean"] = sig4(h.ic_mean);
+    o["ic_std"] = sig4(h.ic_std);
+    o["icir"] = sig4(h.icir);
+    o["ic_t"] = sig4(h.ic_t);
+    o["ic_pos"] = sig4(h.ic_pos);
+    o["ic_skew"] = sig4(h.ic_skew);
+    o["ic_kurt"] = sig4(h.ic_kurt);
+    o["ls_mean"] = sig4(h.ls_mean);
+    o["ls_t"] = sig4(h.ls_t);
+    o["sharpe"] = sig4(h.sharpe);
+    o["beta"] = sig4(h.beta);
+    o["mono"] = sig4(h.mono);
+    o["rank_ac"] = sig4(h.rank_ac);
+    nlohmann::ordered_json g = nlohmann::ordered_json::array();
+    for (int k = 0; k < factor::stat::kGroups; ++k)
+      g.push_back(sig4(h.grp[k]));
+    o["grp"] = g;
+    holds.push_back(o);
+  }
+  j["holds"] = holds;
+  return j;
+}
+
 } // namespace
 
 void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc) {
@@ -512,7 +583,10 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
     file << " \"status\": " << json(status_name(svc.status())).dump() << ", \"done\": " << svc.done()
          << ", \"total\": " << svc.total() << ", \"failed\": " << svc.failed() << ",\n";
     file << " \"tol\": {\"stream\": \"|Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|), mask 逐位相等\","
-            " \"gpu\": \"|Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽)\"},\n";
+            " \"gpu\": \"|Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽)\","
+            " \"stat\": \"cpu ↔ gpu |Δ| ≤ 1e-5 + 1e-4·max, ok / n 逐位相等\"},\n";
+    if (svc.rows[svc.stat_index()].status == RowStatus::Done) // Stat 行的附带信息, 只落跑完的
+      file << " \"stat\": " << stat_json(svc.stat).dump() << ",\n";
 
     file << " \"rows\": [\n";
     const size_t n = svc.rows.size();
@@ -524,9 +598,9 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       j["e_name"] = r.e_name;
       j["c_name"] = r.c_name;
       j["arity"] = r.arity;
-      j["T"] = T_name(r.T);
-      j["A"] = A_name(r.A);
-      j["kernel"] = kern_name(r.kern);
+      j["T"] = cls_T(r);
+      j["A"] = cls_A(r);
+      j["kernel"] = cls_kern(r);
       j["operand"] = r.operand;
       nlohmann::ordered_json params = nlohmann::ordered_json::object();
       for_each_param(r, [&](const char *name, double v) { params[name] = v; });
@@ -534,16 +608,19 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       j["operator"] = r.op;
       j["note"] = r.note;
       j["status"] = row_status_name(r.status);
-      // 动态列只落跑完的行 (表格显示 "…" 的格子不落键)
+      // 动态列只落跑完的行 (表格显示 "…" 的格子不落键); 无 stream 后端的行 (Stat) 不落 stream_* 键
       if (r.status == RowStatus::Done) {
-        j["stream_vs_cpu"] = diff_json(r.stream);
+        const bool has_stream = r.stream_ms >= 0;
+        if (has_stream)
+          j["stream_vs_cpu"] = diff_json(r.stream);
         if (r.gpu_ms >= 0)
           j["gpu_vs_cpu"] = diff_json(r.gpu);
         j["cpu_ms"] = sig4(r.cpu_ms);
-        j["stream_ms"] = sig4(r.stream_ms);
+        if (has_stream)
+          j["stream_ms"] = sig4(r.stream_ms);
         if (r.gpu_ms >= 0) {
           j["gpu_ms"] = sig4(r.gpu_ms);
-          if (r.gpu_ms > 0)
+          if (has_stream && r.gpu_ms > 0)
             j["stream_over_gpu"] = sig4(r.stream_ms / r.gpu_ms);
         }
       }
@@ -603,8 +680,8 @@ bool load_diff(const nlohmann::json &j, factor::check::Diff &out) {
 bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   if (!j.is_object())
     return false;
-  if (!str_is(j, "e_name", dst.e_name) || !str_is(j, "T", T_name(dst.T)) || !str_is(j, "A", A_name(dst.A)) ||
-      !str_is(j, "kernel", kern_name(dst.kern)) || !str_is(j, "operand", dst.operand) || !str_is(j, "operator", dst.op))
+  if (!str_is(j, "e_name", dst.e_name) || !str_is(j, "T", cls_T(dst)) || !str_is(j, "A", cls_A(dst)) ||
+      !str_is(j, "kernel", cls_kern(dst)) || !str_is(j, "operand", dst.operand) || !str_is(j, "operator", dst.op))
     return false;
   int arity = -1;
   if (!get_int(j, "arity", arity) || arity != dst.arity)
@@ -624,10 +701,17 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   // 动态列: 只认跑完的行 (取消/半截留下的 pending 行 → 整份判废)
   if (!str_is(j, "status", "done"))
     return false;
-  const auto sit = j.find("stream_vs_cpu");
-  if (sit == j.end() || !load_diff(*sit, dst.stream) || !get_num(j, "cpu_ms", dst.cpu_ms) ||
-      !get_num(j, "stream_ms", dst.stream_ms))
+  if (!get_num(j, "cpu_ms", dst.cpu_ms))
     return false;
+  const auto sit = j.find("stream_vs_cpu"); // 有 stream 后端的行 (分类内) 必有; Stat 行无 → stream 列 n/a
+  if (dst.classified) {
+    if (sit == j.end() || !load_diff(*sit, dst.stream) || !get_num(j, "stream_ms", dst.stream_ms))
+      return false;
+  } else {
+    if (sit != j.end() || j.find("stream_ms") != j.end())
+      return false;
+    dst.stream = {}, dst.stream_ms = -1;
+  }
   const auto git = j.find("gpu_vs_cpu"); // 落盘那轮没 GPU 后端 → 无 gpu_* 键, 载入后 GPU 列显示 n/a
   if (git == j.end()) {
     dst.gpu = {}, dst.gpu_ms = -1;
@@ -635,6 +719,56 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
     return false;
   }
   dst.status = RowStatus::Done;
+  return true;
+}
+
+// Stat 行附带信息 (stat_json 的逆); 持有期列表须与当前 Stat/Check.hpp kHolds 一致 (改了 → 旧耗时作废).
+// has_gpu = 该行 rows 里有 gpu_ms (两处必须一致)
+bool load_stat(const nlohmann::json &j, bool has_gpu, StatExtra &dst) {
+  if (!j.is_object())
+    return false;
+  StatExtra s;
+  if (!get_num(j, "cpu_prep_ms", s.cpu_prep_ms))
+    return false;
+  if (has_gpu) {
+    if (!get_num(j, "gpu_prep_ms", s.gpu_prep_ms) || s.gpu_prep_ms < 0)
+      return false;
+  } else {
+    if (j.find("gpu_prep_ms") != j.end())
+      return false;
+    s.gpu_prep_ms = -1;
+  }
+  const auto hit = j.find("holds");
+  if (hit == j.end() || !hit->is_array() || hit->size() != static_cast<size_t>(factor::stat::check::kNumHolds))
+    return false;
+  s.n_hold = factor::stat::check::kNumHolds;
+  for (int i = 0; i < s.n_hold; ++i) {
+    const nlohmann::json &o = (*hit)[static_cast<size_t>(i)];
+    factor::stat::HoldStat &h = s.hold[i];
+    if (!o.is_object() || !get_int(o, "hold", h.hold) || h.hold != factor::stat::check::kHolds[i] || !get_int(o, "n", h.n) ||
+        !get_int(o, "n_ac", h.n_ac))
+      return false;
+    double v = 0;
+    const char *keys[] = {"ic_mean", "ic_std", "icir", "ic_t", "ic_pos", "ic_skew", "ic_kurt", "ls_mean", "ls_t", "sharpe", "beta",
+                          "mono", "rank_ac"};
+    float *dsts[] = {&h.ic_mean, &h.ic_std, &h.icir, &h.ic_t, &h.ic_pos, &h.ic_skew, &h.ic_kurt, &h.ls_mean, &h.ls_t, &h.sharpe,
+                     &h.beta, &h.mono, &h.rank_ac};
+    for (size_t q = 0; q < sizeof(keys) / sizeof(keys[0]); ++q) {
+      if (!get_num(o, keys[q], v))
+        return false;
+      *dsts[q] = static_cast<float>(v);
+    }
+    const auto git = o.find("grp");
+    if (git == o.end() || !git->is_array() || git->size() != static_cast<size_t>(factor::stat::kGroups))
+      return false;
+    for (int k = 0; k < factor::stat::kGroups; ++k) {
+      const nlohmann::json &e = (*git)[static_cast<size_t>(k)];
+      if (!e.is_number())
+        return false;
+      h.grp[k] = e.get<float>();
+    }
+  }
+  dst = s;
   return true;
 }
 
@@ -649,6 +783,7 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
 
   OperatorsRequest req;
   std::vector<OperatorRow> snap;
+  StatExtra extra;
   int failed = 0;
   const bool ok = [&] {
     const nlohmann::json j = nlohmann::json::parse(file, nullptr, /*allow_exceptions=*/false);
@@ -665,12 +800,15 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     if (req.times < factor::kSegLen || req.times % factor::kSegLen != 0 || req.A < 2) // Request 的前置条件
       return false;
     const auto rit = j.find("rows");
-    if (rit == j.end() || !rit->is_array() || rit->size() != static_cast<size_t>(svc.total()))
+    if (rit == j.end() || !rit->is_array() || rit->size() != svc.rows.size())
       return false;
     snap = svc.rows; // 静态列 + 构造期默认参数原样带过去, load_row 只改动态列
     for (size_t i = 0; i < snap.size(); ++i)
       if (!load_row((*rit)[i], snap[i]))
         return false;
+    const auto sit = j.find("stat"); // Stat 行的附带信息 (行都 done 了它必在, 缺 / 半截即整份判废)
+    if (sit == j.end() || !load_stat(*sit, snap[svc.stat_index()].gpu_ms >= 0, extra))
+      return false;
     for (const OperatorRow &r : snap) // 表头的 failed 不信, 按行现算
       if (!r.stream.ok() || (r.gpu_ms >= 0 && !r.gpu.ok()))
         failed++;
@@ -681,7 +819,7 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     std::filesystem::remove(path); // 不完整 / 与当前 OpTable 不一致: 删掉, 调用方重算后落新的
     return false;
   }
-  svc.AdoptSnapshot(req, std::move(snap), failed);
+  svc.AdoptSnapshot(req, std::move(snap), extra, failed);
   ui.req.times = req.times, ui.req.A = req.A; // 页面参数跟上快照 (Run 默认按同一形状重跑)
   return true;
 }

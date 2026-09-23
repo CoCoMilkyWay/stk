@@ -9,6 +9,7 @@
 // =============================================================================
 
 #include "factor/Contract.hpp"
+#include "factor/Stat/Contract.hpp"
 
 #include <cstdint>
 
@@ -27,5 +28,15 @@ void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *y
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms = nullptr);
+
+// Stat 评估算子 (factor/Stat/Gpu.cuh; 契约 factor/Stat/Contract.hpp): 宿主指针进, rows[hd.n][T] 宿主出.
+// lab = hd.n 组标签 (fp16 位 + 掩码), 内部拷进显存 → 每组 prep_label (rank_y) → eval → 拷回.
+// prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent): 预处理是常驻期一次的成本, 评估是每因子的成本, 分开记
+struct StatLabelHost {
+  const uint16_t *lv, *sv;
+  const uint8_t *m;
+};
+void run_stat(const float *xv, const uint8_t *xm, int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab,
+              factor::stat::Row *rows, double *prep_ms = nullptr, double *eval_ms = nullptr);
 
 } // namespace factor::gpu
