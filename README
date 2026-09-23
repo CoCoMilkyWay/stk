@@ -115,10 +115,10 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (子页 Operators / Factors; Operators 进页优先载入 operators.json, 缺/校验不过才自动算一轮; Factors 进页只扫描, 手动 Run 评估)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表服务: 首行 Stat 评估算子 (factor/Stat, 不在 OpTable, 无流式后端, worker 每轮先跑 = 挖掘第一道闸) + OpTable 全算子一行一算子; worker 三后端对拍+计时 (stream 为 golden; d/k 每算子默认表, seed 取时间戳; gpu 计时 = 纯 kernel)
-│   │   │       │   └── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 标签 fp16) → Dag → EvalCpu (因子间并行) / EvalGpu (常驻显存 + Stat 会话) → HoldStat → 回写 params/stat 键 (expr 不动); AddFactorFile / UpdateFactorFile / DeleteFactorFile 给 UI 用
+│   │   │       │   └── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 全部 amt×hold 标签 fp16) → 所有因子合成一张共享 DAG (build_forest, 公共子式只算一次) 顺序走节点 → CPU 每节点切满全核 (run_node_par) / GPU 常驻显存 → 根到即全核 Stat (amt×hold 展平, rank 只算一次) → HoldStat[amt][hold] → 回写 params/stat 键 (expr 不动); AddFactorFile / UpdateFactorFile / DeleteFactorFile 给 UI 用
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab: 首行 Stat (静态列空, 只看 cpu/gpu eval 耗时 + 悬停 HoldStat) + OpTable 静态列 (idx/元数/窗/域/核/参数/公式/Note, 默认按全局 idx 排) + 动态列 (stream/cpu/gpu 耗时与对拍 Δ); operators.json 存/取 (取时逐行校验静态列, 不过即删)
-│   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 CPU|GPU / 金额档 / 持有期 + Run/Cancel/Rescan; 构建器 (从外到内逐槽下拉选算子/特征, 参数手填, 即时校验) + 必填 name + note; 添加模式 Add 新文件 (查重弹窗) / 点表格行进编辑模式 (高光, Save 覆盖弹窗确认, 删除); 表 一行一文件 (BROKEN 红+原因 / ok / file / file≠scope 黄 / dup, 规范串, ops/feats/slots, valid%, 选定持有期的 IC/ICIR/IC_t/LS/SR/β/mono/rAC/n, eval/stat ms, note; 悬停看全部持有期)
+│   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 CPU|GPU + Run/Cancel/Rescan (Run 算全部 金额档×持有期; Amt/Hold 下拉只选显示); time 列 = 因子子树节点耗时之和; 构建器 (从外到内逐槽下拉选算子/特征, 参数手填, 即时校验) + 必填 name + note; 添加模式 Add 新文件 (查重弹窗) / 点表格行进编辑模式 (高光, Save 覆盖弹窗确认, 删除); 表 一行一文件 (BROKEN 红+原因 / ok / file / file≠scope 黄 / dup, 规范串, ops/feats/slots, valid%, 选定 amt×hold 的 IC/ICIR/IC_t/LS/SR/β/mono/rAC/n, note; 悬停 status 看全部组合)
 │   │   │           └── StatJson.hpp                  # 🖥️ HoldStat ↔ JSON (hold_json / load_hold, sig4, json_* 取值): operators.json 的 stat.holds 与因子文件的 stat.holds 同一格式
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
@@ -137,8 +137,8 @@ stk/
 │   │   │   ├── Contract.hpp                                # 🧬 TS/CS 语义契约 (三后端共享): 三维分类 T窗(POINT|EXPAND|ROLL|EXPO) × A域(SELF|ALL|GROUP) × 核类(MAP|SHIFT|MOMENT|EXTREME|ORDER|RECUR); SoA 布局 [T][A] (段 kSegLen = 255 = L1 每日分钟数, 含 09:15 起集合竞价), branchless 数值, 退化判据
 │   │   │   ├── OpTable.hpp                                 # 🧬 真相表 X-macro (TS/CS 共享): 命名 域_核_窗 (TsMeanRoll/TsMeanCum/CsMean); 统一行格式 (元数/T窗/A域/核类/参数/公式), 三后端同名展开; 行序 = 全局 idx (元数→Ts/Cs→窗/域→核→字母), code 与 UI 统一按它; 后端怎么算不进表; Stat 不入此表
 │   │   │   ├── Expr.hpp                                    # 🧬 因子表达式 codec: 前缀函数式 Op(arg, ..., d=, k=, k2=) ↔ 前序树 (parse / to_string 规范串) + 静态校验 (算子/元数/参数齐且在值域 kKRules/特征存在且非标签·_meta/GROUP 组 id 元整数列); apply_params 按算子节点前序覆盖字面值 (落盘 params); 不合法是正常输入 → false + "位置 N: 原因"
-│   │   │   ├── Dag.hpp                                     # 🧬 Expr → 去重拓扑 DAG (子树规范串去重, 特征叶也是节点) + 活性分析槽复用计划 (n_slots = 峰值存活中间量, 与树大小无关); CPU/GPU evaluator 共用同一份计划
-│   │   │   ├── EvalCpu.hpp                                 # 🧬 DAG 的 CPU evaluator: OP_ALL 展开 factor::cpu::{ts,cs}::Name::run 分派表 + Pool 预分配槽 (跨因子复用), 单线程整张量批算 (因子间并行由调用方起线程)
+│   │   │   ├── Dag.hpp                                     # 🧬 Expr → 去重拓扑 DAG (子树规范串去重, 特征叶也是节点) + 活性分析槽复用计划 (n_slots = 峰值存活中间量, 与树大小无关); build_forest 多 Expr 合一 (跨因子 tensor share, roots[] 根算完消费即释放); 只管结构与槽计划, 不含并行策略; CPU/GPU evaluator 共用
+│   │   │   ├── EvalCpu.hpp                                 # 🧬 DAG 的 CPU evaluator: OP_ALL 展开 factor::cpu::{ts,cs}::Name::run 分派表 + Pool 预分配槽; eval 单线程顺序跑一张 Dag (search 用, 因子间并行由调用方起线程); run_node_par 单节点切满全核 (Run 用: CS 按行 / Ts Point·Expand 按段 / Ts Roll·Ema 按资产列 gather-scatter; 与单线程逐位一致)
 │   │   │   ├── EvalGpu.hpp                                 # 🧬 DAG 的 GPU evaluator (宿主头, 无 CUDA 依赖): DevPool 常驻设备槽 + run_ts_dev/run_cs_dev 逐节点, 中间量不落宿主, 返回根设备平面 (交 stat_eval / download)
 │   │   │   ├── StreamHist.hpp                              # 🧬 流式后端专用分桶直方图 (序统计族 rank/quantile, 整数桶计数 → 三后端逐位一致)
 │   │   │   ├── Check.hpp                                   # 🧬 TS/CS 对拍公共件: recipe_of / kKParams (阈值) / kDParams·default_d (每算子默认窗长, GUI Operators 表用; op_check 不吃, 全扫 d) / tol_of 容差 / compare 掩码逐位+数值

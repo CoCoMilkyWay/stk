@@ -158,13 +158,13 @@ TaskHandle CreateFactorsTask() {
       if (state->factors_scanned_dir != ctx.factor_dir) {
         state->factors_scanned_dir = ctx.factor_dir;
         Factors::FactorsRequest req;
-        Factors::MakeFactorsRequest(data, /*evaluate=*/false, false, 0, req);
+        Factors::MakeFactorsRequest(data, /*evaluate=*/false, false, req);
         fs.Request(req);
       }
       const int action = Factors::RenderTabFactors(fs, state->factors_ui, ctx);
       if (action == 1 || action == 2) {
         Factors::FactorsRequest req;
-        if (Factors::MakeFactorsRequest(data, /*evaluate=*/action == 1, state->factors_ui.backend == 1, state->factors_ui.amt_idx, req))
+        if (Factors::MakeFactorsRequest(data, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
           fs.Request(req);
       } else if (action == -1) {
         fs.RequestCancel();

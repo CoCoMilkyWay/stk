@@ -197,19 +197,12 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
   ImGui::PopID();
 }
 
-// 该行选定持有期的汇总; 没有 → nullptr
-const factor::stat::HoldStat *hold_of(const FactorRow &r, int hold) {
-  if (!r.has_stat)
-    return nullptr;
-  for (int i = 0; i < r.n_hold; ++i)
-    if (r.hold[i].hold == hold)
-      return &r.hold[i];
-  return nullptr;
-}
+// 该行选定 (金额档, 持有期) 的汇总; 没有 → nullptr
+const factor::stat::HoldStat *hold_of(const FactorRow &r, int amt, int hold) { return r.has_stat ? r.find_hold(amt, hold) : nullptr; }
 
-// 文件里的 stat 与当前作用域是否一致 (universe / 区间 / 金额档)
-bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx, int amt) {
-  return r.scope.universe == ctx.universe && r.scope.start_date == ctx.start_date && r.scope.end_date == ctx.end_date && r.scope.amt == amt;
+// 文件里的 stat 与当前作用域是否一致 (universe / 区间)
+bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
+  return r.scope.universe == ctx.universe && r.scope.start_date == ctx.start_date && r.scope.end_date == ctx.end_date;
 }
 
 // 排序键: 无值的行排最前 (升序) / 最后 (降序)
@@ -222,7 +215,7 @@ void render_stat_cell(const factor::stat::HoldStat *h, float v, const char *fmt)
     ImGui::Text(fmt, v);
 }
 
-void status_cell(const FactorRow &r, const FactorsUIContext &ctx, int amt) {
+void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   if (!r.error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN");
     if (ImGui::IsItemHovered())
@@ -243,24 +236,27 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx, int amt) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "no stat");
   } else if (!r.stat_from_file) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "ok");
-  } else if (scope_matches(r, ctx, amt)) {
+  } else if (scope_matches(r, ctx)) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "file");
   } else {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "file≠scope");
   }
   if (ImGui::IsItemHovered() && r.has_stat) {
     ImGui::BeginTooltip();
-    ImGui::Text("stat 来自: %s | %s  %s..%s  %d 天 × %d 资产 (T=%d)  amt=%dw  %s  %s", r.stat_from_file ? "文件" : "本轮",
-                r.scope.universe.c_str(), r.scope.start_date.c_str(), r.scope.end_date.c_str(), r.scope.days, r.scope.A, r.scope.T,
-                r.scope.amt, r.scope.backend.c_str(), r.scope.time.c_str());
-    ImGui::Text("valid %.2f%%  eval %.3f ms  stat %.3f ms", r.valid_pct, r.eval_ms, r.stat_ms);
-    ImGui::Separator();
-    for (int i = 0; i < r.n_hold; ++i) {
-      const factor::stat::HoldStat &h = r.hold[i];
-      ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f SR %+.2f "
-                  "β %+.3f | mono %+.3f | rAC %+.3f",
-                  h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.sharpe,
-                  h.beta, h.mono, h.rank_ac);
+    ImGui::Text("stat 来自: %s | %s  %s..%s  %d 天 × %d 资产 (T=%d)  %s  %s", r.stat_from_file ? "文件" : "本轮", r.scope.universe.c_str(),
+                r.scope.start_date.c_str(), r.scope.end_date.c_str(), r.scope.days, r.scope.A, r.scope.T, r.scope.backend.c_str(),
+                r.scope.time.c_str());
+    ImGui::Text("valid %.2f%%  time %.3f ms (DAG 算一遍, 与 amt / hold 无关)", r.valid_pct, r.eval_ms);
+    for (int ai = 0; ai < r.n_amt; ++ai) {
+      ImGui::Separator();
+      ImGui::TextDisabled("amt = %dw", r.amt[ai]);
+      for (int k = 0; k < r.n_hold; ++k) {
+        const factor::stat::HoldStat &h = r.hold[ai][k];
+        ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f SR %+.2f "
+                    "β %+.3f | mono %+.3f | rAC %+.3f",
+                    h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.sharpe,
+                    h.beta, h.mono, h.rank_ac);
+      }
     }
     ImGui::EndTooltip();
   }
@@ -315,9 +311,12 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   }
   if (ImGui::IsItemHovered()) {
     if (const char *g = factor::gpu::device_name())
-      ImGui::SetTooltip("CPU: 因子间并行, 每因子单线程整张量批算 (factor::cpu)\nGPU (%s): 输入上传一次, 中间量常驻显存, Stat 走常驻会话", g);
+      ImGui::SetTooltip("两端都走一张共享 DAG (跨因子公共子式只算一次), 顺序走节点\nCPU: 每个节点切满所有核 (CS / Point / Expand 按 t 切, "
+                        "Roll / Ema 按资产列切块; 与单线程逐位一致), Stat 全核\nGPU (%s): 输入上传一次, 中间量常驻显存, Stat 走常驻会话",
+                        g);
     else
-      ImGui::SetTooltip("CPU: 因子间并行, 每因子单线程整张量批算 (factor::cpu)\nGPU: off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
+      ImGui::SetTooltip("共享 DAG (跨因子公共子式只算一次), 顺序走节点\nCPU: 每个节点切满所有核 (CS / Point / Expand 按 t 切, "
+                        "Roll / Ema 按资产列切块; 与单线程逐位一致), Stat 全核\nGPU: off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
@@ -328,7 +327,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("标签的下单金额档 (万元): 评估用 lb_long/short_<h>m_<amt>w 列 (LabelReturn), 全部持有期一起算");
+    ImGui::SetTooltip("表格 Stat 列显示哪个金额档 (万元; 只影响显示). Run 把全部 金额档 × 持有期 一起算 (lb_long/short_<h>m_<amt>w 列)");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
   if (ImGui::BeginCombo("Hold", ft.labels.empty() ? "-" : (std::to_string(cur_hold) + "m").c_str())) {
@@ -383,7 +382,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "loading %d/%d days", done, total);
     break;
   case FactorsStatus::Running:
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running %d/%d", done, total);
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running %d/%d nodes", done, total);
     break;
   case FactorsStatus::Done:
     ImGui::TextColored(StatusColor(broken ? TaskStatus::Kind::Warn : TaskStatus::Kind::Ready), "done, %d BROKEN", broken);
@@ -587,18 +586,19 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
-  constexpr int kNumCols = 20;
+  constexpr int kNumCols = 19;
   if (ImGui::BeginTable("FactorTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                             ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
                             ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 0))) {
-    const char *headers[kNumCols] = {"#", "file", "status", "expr", "ops", "feats", "slots", "valid%", "IC", "ICIR", "IC_t", "LS", "SR", "β",
-                                     "mono", "rAC", "n", "eval ms", "stat ms", "note"};
+    const char *headers[kNumCols] = {"#", "file", "status", "time", "expr", "ops", "feats", "slots", "valid%", "IC",
+                                     "ICIR", "IC_t", "LS", "SR", "β", "mono", "rAC", "n", "note"};
     const char *tooltips[kNumCols] = {
         "文件名序 (默认排序)",
         "<factor_dir>/<universe>/ 下的文件名 = <name>.json; 点行 → 编辑模式 (载入上方构建器, 可改 / 删)",
-        "BROKEN 红 = 文件 / 表达式 / params / 组 id 数据不合 (悬停看原因; 文件不动, 人手动处理)\nok 绿 = 本轮算的; file 灰 = stat 来自文件且作用域一致; file≠scope 黄 = 文件 stat 是别的 universe / 区间 / 金额档算的\nno stat = 从未评估; dup 黄 = 与另一文件同一规范串",
+        "BROKEN 红 = 文件 / 表达式 / params / 组 id 数据不合 (悬停看原因; 文件不动, 人手动处理)\nok 绿 = 本轮算的; file 灰 = stat 来自文件且作用域一致; file≠scope 黄 = 文件 stat 是别的 universe / 区间算的\nno stat = 从未评估; dup 黄 = 与另一文件同一规范串",
+        "该因子算一遍 DAG 的耗时 (ms) = 子树全部算子节点之和 (共享节点算给每个用它的因子): CPU 全核 wall / GPU 纯 kernel",
         "规范串 (解析后重新序列化: 算子 PascalCase, 参数 d/k/k2 显式, 含 params 覆盖后的当前值); BROKEN 行显示文件原串",
         "算子节点数 (= params 数组长度)",
         "去重特征数 (输入平面数)",
@@ -613,13 +613,11 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         "20 组均值对组号的 Spearman (单调性)",
         "rank 自相关 (lag = h)",
         "有效行数 (ok 行; < 3 时 Stat 列空)",
-        "因子 eval 耗时: CPU wall / GPU 纯 kernel 和 (ms)",
-        "Stat eval 耗时 (ms; 不含标签预处理)",
         "文件 note 键 (人 / agent 写的一句话)",
     };
     for (int c = 0; c < kNumCols; ++c) {
       ImGuiTableColumnFlags fl = ImGuiTableColumnFlags_WidthFixed;
-      if (c == 2 || c == 3 || c == 19)
+      if (c == 2 || c == 4 || c == 18)
         fl |= ImGuiTableColumnFlags_NoSort;
       ImGui::TableSetupColumn(headers[c], fl);
     }
@@ -653,38 +651,36 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       using HS = factor::stat::HoldStat;
       auto cmp3 = [](double x, double y) { return x < y ? -1 : (x > y ? 1 : 0); };
       auto key = [&](const FactorRow &r) -> double {
-        const HS *h = hold_of(r, cur_hold);
+        const HS *h = hold_of(r, cur_amt, cur_hold);
         switch (ui.sort_column) {
-        case 4:
-          return r.n_ops;
-        case 5:
-          return r.n_feats;
-        case 6:
-          return r.n_slots;
-        case 7:
-          return r.has_stat ? r.valid_pct : -1.0;
-        case 8:
-          return stat_key(h, &HS::ic_mean);
-        case 9:
-          return stat_key(h, &HS::icir);
-        case 10:
-          return stat_key(h, &HS::ic_t);
-        case 11:
-          return stat_key(h, &HS::ls_mean);
-        case 12:
-          return stat_key(h, &HS::sharpe);
-        case 13:
-          return stat_key(h, &HS::beta);
-        case 14:
-          return stat_key(h, &HS::mono);
-        case 15:
-          return stat_key(h, &HS::rank_ac);
-        case 16:
-          return h ? h->n : -1.0;
-        case 17:
+        case 3:
           return r.has_stat ? r.eval_ms : -1.0;
-        case 18:
-          return r.has_stat ? r.stat_ms : -1.0;
+        case 5:
+          return r.n_ops;
+        case 6:
+          return r.n_feats;
+        case 7:
+          return r.n_slots;
+        case 8:
+          return r.has_stat ? r.valid_pct : -1.0;
+        case 9:
+          return stat_key(h, &HS::ic_mean);
+        case 10:
+          return stat_key(h, &HS::icir);
+        case 11:
+          return stat_key(h, &HS::ic_t);
+        case 12:
+          return stat_key(h, &HS::ls_mean);
+        case 13:
+          return stat_key(h, &HS::sharpe);
+        case 14:
+          return stat_key(h, &HS::beta);
+        case 15:
+          return stat_key(h, &HS::mono);
+        case 16:
+          return stat_key(h, &HS::rank_ac);
+        case 17:
+          return h ? h->n : -1.0;
         default:
           return 0.0;
         }
@@ -704,7 +700,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
 
     for (int idx : order) {
       const FactorRow &r = s_rows[static_cast<size_t>(idx)];
-      const factor::stat::HoldStat *h = hold_of(r, cur_hold);
+      const factor::stat::HoldStat *h = hold_of(r, cur_amt, cur_hold);
       const bool selected = edit_row == &r;
       ImGui::TableNextRow();
       if (selected)
@@ -737,8 +733,13 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s/%s\n(点击: %s)", ctx.factor_dir.c_str(), r.file.c_str(), selected ? "取消选定" : "进入编辑模式");
       ImGui::TableSetColumnIndex(2);
-      status_cell(r, ctx, cur_amt);
+      status_cell(r, ctx);
       ImGui::TableSetColumnIndex(3);
+      if (r.has_stat)
+        ImGui::Text("%.1f", r.eval_ms);
+      else
+        ImGui::TextDisabled("-");
+      ImGui::TableSetColumnIndex(4);
       if (r.expr.empty()) {
         if (r.expr_raw.empty())
           ImGui::TextDisabled("-");
@@ -749,58 +750,48 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         if (ImGui::IsItemHovered() && r.expr_raw != r.expr)
           ImGui::SetTooltip("文件原串: %s", r.expr_raw.c_str());
       }
-      ImGui::TableSetColumnIndex(4);
-      if (r.expr.empty())
-        ImGui::TextDisabled("-");
-      else
-        ImGui::Text("%d", r.n_ops);
       ImGui::TableSetColumnIndex(5);
       if (r.expr.empty())
         ImGui::TextDisabled("-");
       else
-        ImGui::Text("%d", r.n_feats);
+        ImGui::Text("%d", r.n_ops);
       ImGui::TableSetColumnIndex(6);
       if (r.expr.empty())
         ImGui::TextDisabled("-");
       else
-        ImGui::Text("%d", r.n_slots);
+        ImGui::Text("%d", r.n_feats);
       ImGui::TableSetColumnIndex(7);
+      if (r.expr.empty())
+        ImGui::TextDisabled("-");
+      else
+        ImGui::Text("%d", r.n_slots);
+      ImGui::TableSetColumnIndex(8);
       if (r.has_stat)
         ImGui::Text("%.1f", r.valid_pct);
       else
         ImGui::TextDisabled("-");
-      ImGui::TableSetColumnIndex(8);
-      render_stat_cell(h, h ? h->ic_mean : 0.f, "%+.4f");
       ImGui::TableSetColumnIndex(9);
-      render_stat_cell(h, h ? h->icir : 0.f, "%+.3f");
+      render_stat_cell(h, h ? h->ic_mean : 0.f, "%+.4f");
       ImGui::TableSetColumnIndex(10);
-      render_stat_cell(h, h ? h->ic_t : 0.f, "%+.2f");
+      render_stat_cell(h, h ? h->icir : 0.f, "%+.3f");
       ImGui::TableSetColumnIndex(11);
-      render_stat_cell(h, h ? h->ls_mean : 0.f, "%+.5f");
+      render_stat_cell(h, h ? h->ic_t : 0.f, "%+.2f");
       ImGui::TableSetColumnIndex(12);
-      render_stat_cell(h, h ? h->sharpe : 0.f, "%+.2f");
+      render_stat_cell(h, h ? h->ls_mean : 0.f, "%+.5f");
       ImGui::TableSetColumnIndex(13);
-      render_stat_cell(h, h ? h->beta : 0.f, "%+.3f");
+      render_stat_cell(h, h ? h->sharpe : 0.f, "%+.2f");
       ImGui::TableSetColumnIndex(14);
-      render_stat_cell(h, h ? h->mono : 0.f, "%+.3f");
+      render_stat_cell(h, h ? h->beta : 0.f, "%+.3f");
       ImGui::TableSetColumnIndex(15);
-      render_stat_cell(h, h ? h->rank_ac : 0.f, "%+.3f");
+      render_stat_cell(h, h ? h->mono : 0.f, "%+.3f");
       ImGui::TableSetColumnIndex(16);
+      render_stat_cell(h, h ? h->rank_ac : 0.f, "%+.3f");
+      ImGui::TableSetColumnIndex(17);
       if (h)
         ImGui::Text("%d", h->n);
       else
         ImGui::TextDisabled("-");
-      ImGui::TableSetColumnIndex(17);
-      if (r.has_stat)
-        ImGui::Text("%.3f", r.eval_ms);
-      else
-        ImGui::TextDisabled("-");
       ImGui::TableSetColumnIndex(18);
-      if (r.has_stat)
-        ImGui::Text("%.3f", r.stat_ms);
-      else
-        ImGui::TextDisabled("-");
-      ImGui::TableSetColumnIndex(19);
       if (r.note.empty())
         ImGui::TextDisabled("-");
       else

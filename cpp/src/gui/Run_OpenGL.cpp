@@ -178,6 +178,11 @@ int RunGUI() {
     // Start frame
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
+    // 后端在有焦点时即使光标不在客户区 (拖标题栏) 也轮询 glfwGetCursorPos 喂给 ImGui,
+    // 快速拖窗时窗口位置滞后 → 坐标瞬间落进客户区误触 hover. 未按键时出客户区即视为鼠标离开
+    // (按着键放行: 窗内起手的拖拽拖出窗外仍要跟手)
+    if (!glfwGetWindowAttrib(window, GLFW_HOVERED) && !ImGui::IsAnyMouseDown())
+      ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     ImGui::NewFrame();
 
     // Draw GUI layout (shared business logic)

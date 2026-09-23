@@ -6,16 +6,21 @@
 //   { "expr":   "CsRank(TsMeanRoll(TsLog(amt), d=30))",      // 必有, 规范串或任意合法写法; 本服务永不改写它
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
 //     "params": [ {}, {"d": 30}, {} ],                        // 可选, 按算子节点前序逐节点覆盖 expr 字面值 (搜索结果落此)
-//     "stat":   { scope…, "valid_pct", "eval_ms", "stat_ms", "holds": [HoldStat…] } }   // 本服务写, 载入时显示
+//     "stat":   { scope…, "valid_pct", "eval_ms",
+//                 "amts": [ {"amt": 5, "holds": [HoldStat…]}, … ] } }   // 本服务写 (全部 金额档 × 持有期), 载入时显示
 //   有效 = expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入) 且 params (若有) 覆盖成功.
-//   同一规范串多文件 → 后者标 dup (黄), 仍算.
+//   同一规范串多文件 → 后者标 dup (黄), 仍算 (共享 DAG 里是同一个根, Stat 也只算一次).
 //
 // 线程模型 (对仗 OperatorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 rows;
 // 进度走原子. evaluate = false 只扫描 (进页 / Add / Rescan), = true 扫描 + 装载 + 评估.
 //
-// 装载: 一次把所有有效因子用到的特征 (去重) + _meta + 标签列读进宿主 (逐天并行 load_day_columns, 门控 fmeta::valid ∧
-// isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃). 之后 CPU: 因子间并行 (每线程独立槽池 + Stat 暂存,
-// 线程数按内存预算封顶); GPU: 输入上传一次, 中间量常驻显存 (EvalGpu DevPool), Stat 走常驻会话 (标签 rank 只预处理一次).
+// 装载: 一次把所有有效因子用到的特征 (去重) + _meta + 全部 (amt × hold) 标签列读进宿主 (逐天并行 load_day_columns, 门控
+// fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
+// 评估 (Run 的并行方案, 与 search 的解耦): 所有有效因子合成一张共享 DAG (factor::build_forest, 公共子式只算一次), 按拓扑序
+// 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node_par, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
+// 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
+// Stat 的"持有期"维展平为 (amt, hold) 对: hd.n = n_amt × n_hold ≤ kMaxHold, x 的 rank 只算一次.
+// time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
 #pragma once
 
@@ -69,16 +74,16 @@ struct FactorsRequest {
   // 以下 evaluate 时才用
   analysis::ReadScope scope;
   std::string universe, start_date, end_date;
-  int amt_idx = 0;
   bool gpu = false;
 };
 // evaluate 请求需要资产轴 (读特征库); 轴未就绪 (数据库未扫) → false
-bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, int amt_idx, FactorsRequest &req);
+bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req);
 
 // ---- 行 ----
+constexpr int kMaxAmt = 4; // 金额档数上限 (n_amt × n_hold ≤ factor::stat::kMaxHold 运行期断言)
 struct StatScope {
   std::string universe, start_date, end_date, backend, time;
-  int days = 0, T = 0, A = 0, amt = 0;
+  int days = 0, T = 0, A = 0;
 };
 struct FactorRow {
   std::string file;     // 文件名 (不含目录)
@@ -89,13 +94,22 @@ struct FactorRow {
   std::string dup_of; // 非空 = 与该文件同一规范串
   int n_ops = 0, n_feats = 0, n_slots = 0;
   RowStatus status = RowStatus::Pending; // Done = 本轮算过 (evaluate) 或本轮不算 (只扫描)
-  bool has_stat = false;                 // hold[] 有内容 (本轮算的或文件载入的)
+  bool has_stat = false;                 // hold[][] 有内容 (本轮算的或文件载入的)
   bool stat_from_file = false;           // stat 来自文件 (非本进程算的)
   StatScope scope;                       // stat 的作用域
-  double eval_ms = 0, stat_ms = 0;
+  double eval_ms = 0;                    // time 列: 子树算子节点 wall 之和 (与 amt / hold 无关: 因子平面只算一遍, Stat 按组合复用它)
   float valid_pct = 0.f;
-  int n_hold = 0;
-  factor::stat::HoldStat hold[factor::stat::kMaxHold];
+  int n_amt = 0, n_hold = 0;
+  int amt[kMaxAmt] = {};                                        // 金额档 (万), 升序
+  factor::stat::HoldStat hold[kMaxAmt][factor::stat::kMaxHold]; // [amt][hold]
+  const factor::stat::HoldStat *find_hold(int amt_w, int hold_m) const {
+    for (int i = 0; i < n_amt; ++i)
+      if (amt[i] == amt_w)
+        for (int j = 0; j < n_hold; ++j)
+          if (hold[i][j].hold == hold_m)
+            return &hold[i][j];
+    return nullptr;
+  }
 };
 
 enum class FactorsStatus : uint8_t { Idle,
