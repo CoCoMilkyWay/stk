@@ -21,6 +21,56 @@
 
 namespace GUI::Factors {
 
+// 一轮的常驻件 (worker 栈上, 轮末析构释放):
+//   输入  按 (槽位 x/y/z, Gen) 懒造一次 (并行 fill, 主 rng 派生) + 上传显存一次, 全表复用; 最多 8 张 ≈ 960MB 宿主
+//   输出  cpu 参考 / stream / gpu 三块, 开轮 resize 预触页, 跨算子只 ensure 不清 (契约: 后端写满每格)
+//   GPU   常驻 Session (输出平面 / 工作区在里面), gpu 输出宿主缓冲 pin 住走 DMA
+// 算子之间除一张输出的 D2H 与 compare 外不留 overhead, cpu_ms / stream_ms 里也不再混首次触页
+struct RoundCtx {
+  static constexpr int kSlots = 3, kGens = 4; // Gen: NORM / POS / SMALL / GROUP
+  const OperatorsRequest &rq;
+  std::mt19937 rng;
+  size_t n;
+  factor::check::Plane host[kSlots][kGens];
+  factor::gpu::DevPlane *dev[kSlots][kGens] = {};
+  factor::gpu::Session *gpu = nullptr;
+  factor::check::Plane ref, got, g;
+
+  RoundCtx(const OperatorsRequest &r, bool use_gpu) : rq(r), rng(r.seed), n(static_cast<size_t>(r.times) * r.A) {
+    ref.resize(n), got.resize(n), g.resize(n);
+    if (use_gpu) {
+      gpu = factor::gpu::session_open(n);
+      factor::gpu::pin(g.v.data(), n * sizeof(float));
+      factor::gpu::pin(g.m.data(), n);
+    }
+  }
+  ~RoundCtx() {
+    if (gpu) {
+      factor::gpu::unpin(g.v.data());
+      factor::gpu::unpin(g.m.data());
+      factor::gpu::session_close(gpu); // 上传过的输入平面随会话释放
+    }
+  }
+  RoundCtx(const RoundCtx &) = delete;
+  RoundCtx &operator=(const RoundCtx &) = delete;
+
+  // 槽位 slot 的 Gen 平面: 首次用到才造 (+ 上传), 之后整轮复用. PLAIN profile (与 op_check 的 GUI 口径同)
+  const factor::check::Plane &plane(int slot, factor::check::Gen gen) {
+    assert(slot >= 0 && slot < kSlots);
+    factor::check::Plane &p = host[slot][static_cast<int>(gen)];
+    if (p.v.empty()) {
+      factor::check::fill(p, gen, factor::check::Profile::PLAIN, rq.times, rq.A, rng);
+      if (gpu)
+        dev[slot][static_cast<int>(gen)] = factor::gpu::upload(gpu, p.v.data(), p.m.data());
+    }
+    return p;
+  }
+  const factor::gpu::DevPlane *dplane(int slot, factor::check::Gen gen) {
+    plane(slot, gen);
+    return dev[slot][static_cast<int>(gen)];
+  }
+};
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -36,43 +86,45 @@ factor::Param param_of(const OperatorRow &row) {
   return p;
 }
 
-// 一个算子: 造数 (PLAIN, 配方按算子, 与 op_check 同 seed 同张量) → cpu / stream / gpu 各计时 → 对拍
+// 一个算子: 从 RoundCtx 取输入 (配方按算子, 元数不到的槽位空) → cpu / stream / gpu 各计时 → 对拍
 template <class S, class C, int AR, factor::T W, bool IS_CS>
-void run_op(const OperatorsRequest &rq, OperatorRow &row) {
+void run_op(RoundCtx &R, OperatorRow &row) {
   using namespace factor::check;
   const std::string nm = row.e_name;
   const Recipe rc = recipe_of(nm);
-  std::mt19937 rng(rq.seed);
+  const Gen gens[3] = {rc.x, rc.y, rc.z};
+  const Plane *pl[3] = {};
+  const factor::gpu::DevPlane *dp[3] = {};
+  for (int s = 0; s < AR; ++s) {
+    pl[s] = &R.plane(s, gens[s]);
+    dp[s] = R.gpu ? R.dplane(s, gens[s]) : nullptr;
+  }
   Data d;
-  d.T = rq.times, d.A = rq.A;
-  fill(d.x, rc.x, Profile::PLAIN, d.T, d.A, rng);
-  fill(d.y, rc.y, Profile::PLAIN, d.T, d.A, rng);
-  fill(d.z, rc.z, Profile::PLAIN, d.T, d.A, rng);
+  d.T = R.rq.times, d.A = R.rq.A;
+  d.x = pl[0], d.y = pl[1], d.z = pl[2];
 
   const factor::Param &p = row.param; // 复位阶段已按请求填好 (见 param_of)
 
-  Plane ref, got;
   Clock::time_point t0 = Clock::now();
-  run_cpu<C>(d, p, AR, ref);
+  run_cpu<C>(d, p, AR, R.ref);
   row.cpu_ms = ms_since(t0);
 
   t0 = Clock::now();
   if constexpr (IS_CS)
-    run_stream_cs<S>(d, p, AR, got);
+    run_stream_cs<S>(d, p, AR, R.got);
   else
-    run_stream_ts<S, AR, W>(d, p, got);
+    run_stream_ts<S, AR, W>(d, p, R.got);
   row.stream_ms = ms_since(t0);
-  row.stream = compare(ref, got, tol_of(nm, false, Profile::PLAIN));
+  row.stream = compare(R.ref, R.got, tol_of(nm, false, Profile::PLAIN));
 
-  if (factor::gpu::available()) {
-    Plane g;
-    g.resize(static_cast<size_t>(d.T) * d.A);
-    auto call = IS_CS ? factor::gpu::run_cs : factor::gpu::run_ts;
-    double kms = -1; // 纯 kernel (cudaEvent): malloc / H2D / D2H 是对拍接口的成本, 不算算子
-    call(row.e_name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-         pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), d.T, d.A, p, &kms);
+  if (R.gpu) {
+    double kms = -1; // 纯 kernel (cudaEvent); 输入已常驻, 这里只剩 kernel + 一张输出 D2H
+    if constexpr (IS_CS)
+      factor::gpu::run_cs(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
+    else
+      factor::gpu::run_ts(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
     row.gpu_ms = kms;
-    row.gpu = compare(ref, g, tol_of(nm, true, Profile::PLAIN));
+    row.gpu = compare(R.ref, R.g, tol_of(nm, true, Profile::PLAIN));
   } else {
     row.gpu_ms = -1;
     row.gpu = {};
@@ -250,8 +302,10 @@ void OperatorsService::worker_loop() {
     status_.store(OperatorsStatus::Running, std::memory_order_release);
     epoch_.fetch_add(1, std::memory_order_relaxed);
 
-    // 执行序 = 行序: 首行 Stat 先跑 (挖掘的第一道闸, 先验它), 然后按 OpTable 表序逐算子
+    // 执行序 = 行序: 首行 Stat 先跑 (挖掘的第一道闸, 先验它), 然后按 OpTable 表序逐算子.
+    // 一轮的输入缓存 / 输出缓冲 / GPU 会话都在 R 里, 轮末 (含取消) 析构释放
     bool cancelled = false;
+    RoundCtx R(req, factor::gpu::available());
     for (size_t i = 0; i < rows.size(); ++i) {
       if (cancel_.load(std::memory_order_relaxed)) {
         cancelled = true;
@@ -268,7 +322,7 @@ void OperatorsService::worker_loop() {
       if (i == stat_index())
         run_stat(req, r, extra);
       else
-        runners_[i](req, r);
+        runners_[i](R, r);
       r.status = RowStatus::Done;
       {
         std::lock_guard<std::mutex> lock(mutex);

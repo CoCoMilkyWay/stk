@@ -75,11 +75,15 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
   for (int pi = 0; pi < kProfiles; ++pi) {
     const Profile pr = static_cast<Profile>(pi);
     std::mt19937 rng(seed + 1000u * pi);
+    Plane x, y, z; // 元数够到的槽位才造
     Data d;
     d.T = T, d.A = A;
-    fill(d.x, rc.x, pr, T, A, rng);
-    fill(d.y, rc.y, pr, T, A, rng);
-    fill(d.z, rc.z, pr, T, A, rng);
+    if (AR >= 1)
+      fill(x, rc.x, pr, T, A, rng), d.x = &x;
+    if (AR >= 2)
+      fill(y, rc.y, pr, T, A, rng), d.y = &y;
+    if (AR >= 3)
+      fill(z, rc.z, pr, T, A, rng), d.z = &z;
 
     for (int di = 0; di < (sweep_d ? kNd : 1); ++di) {
       Param p;
@@ -101,9 +105,13 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
       if (factor::gpu::available()) {
         Plane g;
         g.resize(static_cast<size_t>(T) * A);
-        auto call = IS_CS ? factor::gpu::run_cs : factor::gpu::run_ts;
-        call(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-             pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p, nullptr);
+        // 一次性宿主指针版本 (内部临时会话); run_ts / run_cs 有会话重载, 不能取三目
+        if constexpr (IS_CS)
+          factor::gpu::run_cs(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
+                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p);
+        else
+          factor::gpu::run_ts(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
+                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p);
         Diff dg = compare(ref, g, tol_of(nm, true, pr));
         if (!dg.ok())
           ++rep.gpu_bad;

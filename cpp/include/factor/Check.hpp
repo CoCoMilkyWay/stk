@@ -12,11 +12,15 @@
 
 #include "factor/Contract.hpp"
 
+#include <algorithm>
+#include <atomic>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace factor::check {
@@ -48,19 +52,27 @@ struct Plane {
   std::vector<float> v;
   std::vector<uint8_t> m;
   void resize(size_t n) { v.assign(n, 0.f), m.assign(n, 1); }
+  // 只保证尺寸, 不清 (输出缓冲跨算子复用: 契约是后端写满每格, 清零 + 首次触页不该混进算子计时)
+  void ensure(size_t n) {
+    if (v.size() != n)
+      resize(n);
+  }
 };
 
+// 输入张量: 非拥有 (三张平面由调用方持有 —— op_check 每 profile 造一次扫 d, GUI 一轮造一次全表复用);
+// 元数不到的槽位为空
 struct Data {
-  Plane x, y, z;
+  const Plane *x = nullptr, *y = nullptr, *z = nullptr;
   int T = 0, A = 0;
 };
 
-inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
+namespace detail {
+// 一段 [t0, t1) 的造数 (fill 的段级内核): 逐点逻辑与 profile 边界全在此
+inline void fill_seg(Plane &p, Gen g, Profile pr, int t0, int t1, int A, std::mt19937 &rng) {
   std::normal_distribution<float> nd(0.f, 1.f);
   std::student_t_distribution<float> td(2.5f); // 重尾
   std::uniform_real_distribution<float> ud(0.f, 1.f);
-  p.resize(static_cast<size_t>(T) * A);
-  for (int t = 0; t < T; ++t)
+  for (int t = t0; t < t1; ++t)
     for (int a = 0; a < A; ++a) {
       const size_t i = static_cast<size_t>(t) * A + a;
       float v = 0.f;
@@ -101,6 +113,38 @@ inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
       if (pr == Profile::HOLES && (ud(rng) < 0.15f || (t / kSegLen == 1 && a == 2) || t == kSegLen + 5))
         p.v[i] = 0.f, p.m[i] = 0;
     }
+}
+} // namespace detail
+
+// 并行按段造数: 每段从主 rng 派生一个种子再独立抽样, 结果只由 (seed, 段序) 决定, 与线程数无关.
+// 24000×1000 单线程 mt19937 + normal_distribution 要 ~1 s, 这是对拍里唯一算不上算子的大头
+inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
+  assert(T % kSegLen == 0 && "T 必须是整段数 (造数按段并行, 段界也是 EXPAND 的前提)");
+  p.resize(static_cast<size_t>(T) * A);
+  const int nseg = T / kSegLen;
+  std::vector<uint32_t> seeds(static_cast<size_t>(nseg));
+  for (uint32_t &s : seeds)
+    s = rng();
+  auto seg = [&](int s) {
+    std::mt19937 r(seeds[static_cast<size_t>(s)]);
+    detail::fill_seg(p, g, pr, s * kSegLen, (s + 1) * kSegLen, A, r);
+  };
+  const int threads = std::min<int>(nseg, static_cast<int>(std::max<unsigned>(1, std::thread::hardware_concurrency())));
+  if (threads <= 1) {
+    for (int s = 0; s < nseg; ++s)
+      seg(s);
+    return;
+  }
+  std::atomic<int> next{0};
+  std::vector<std::thread> th;
+  th.reserve(static_cast<size_t>(threads));
+  for (int i = 0; i < threads; ++i)
+    th.emplace_back([&] {
+      for (int s; (s = next.fetch_add(1, std::memory_order_relaxed)) < nseg;)
+        seg(s);
+    });
+  for (std::thread &t : th)
+    t.join();
 }
 
 // 输入配方: 默认全 NORM, 只列出需要特殊数据的算子 (e_name 索引, 与 OpTable 行名一致)
@@ -227,12 +271,19 @@ inline Diff compare(const Plane &ref, const Plane &got, Tol tol) {
 
 // ---- 驱动: cpu (整张量一次) / stream (逐点推进) / gpu 由消费者经 GpuRun.hpp 调 ----
 
-inline const float *pv(const Plane &p, bool use) { return use ? p.v.data() : nullptr; }
-inline const uint8_t *pm(const Plane &p, bool use) { return use ? p.m.data() : nullptr; }
+// 槽位取指针: use 为真时平面必须在 (元数够到的槽位调用方必填)
+inline const float *pv(const Plane *p, bool use) {
+  assert(!use || p);
+  return use ? p->v.data() : nullptr;
+}
+inline const uint8_t *pm(const Plane *p, bool use) {
+  assert(!use || p);
+  return use ? p->m.data() : nullptr;
+}
 
 template <class C>
 void run_cpu(const Data &d, const Param &p, int ar, Plane &o) {
-  o.resize(static_cast<size_t>(d.T) * d.A);
+  o.ensure(static_cast<size_t>(d.T) * d.A);
   C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
          pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
 }
@@ -240,7 +291,10 @@ void run_cpu(const Data &d, const Param &p, int ar, Plane &o) {
 // TS 流式: 逐资产建一个 kernel 沿 t 推进 (与实盘同路: EXPAND 推满 kSegLen 自动归零, 不手动 reset)
 template <class S, int AR, T W>
 void run_stream_ts(const Data &d, const Param &p, Plane &o) {
-  o.resize(static_cast<size_t>(d.T) * d.A);
+  o.ensure(static_cast<size_t>(d.T) * d.A);
+  assert(AR < 1 || d.x);
+  assert(AR < 2 || d.y);
+  assert(AR < 3 || d.z);
   if constexpr (W == T::POINT) {
     for (int t = 0; t < d.T; ++t)
       for (int a = 0; a < d.A; ++a) {
@@ -249,12 +303,12 @@ void run_stream_ts(const Data &d, const Param &p, Plane &o) {
         if constexpr (AR == 0)
           r = S::apply(t % kSegLen, p);
         else if constexpr (AR == 1)
-          r = S::apply(Val{d.x.v[i], d.x.m[i] != 0}, p);
+          r = S::apply(Val{d.x->v[i], d.x->m[i] != 0}, p);
         else if constexpr (AR == 2)
-          r = S::apply(Val{d.x.v[i], d.x.m[i] != 0}, Val{d.y.v[i], d.y.m[i] != 0}, p);
+          r = S::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0}, p);
         else
-          r = S::apply(Val{d.x.v[i], d.x.m[i] != 0}, Val{d.y.v[i], d.y.m[i] != 0},
-                       Val{d.z.v[i], d.z.m[i] != 0}, p);
+          r = S::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0},
+                       Val{d.z->v[i], d.z->m[i] != 0}, p);
         o.v[i] = r.v, o.m[i] = r.m;
       }
   } else {
@@ -264,9 +318,9 @@ void run_stream_ts(const Data &d, const Param &p, Plane &o) {
         const size_t i = static_cast<size_t>(t) * d.A + a;
         Val r;
         if constexpr (AR == 1)
-          r = op.push(Val{d.x.v[i], d.x.m[i] != 0});
+          r = op.push(Val{d.x->v[i], d.x->m[i] != 0});
         else
-          r = op.push(Val{d.x.v[i], d.x.m[i] != 0}, Val{d.y.v[i], d.y.m[i] != 0});
+          r = op.push(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0});
         o.v[i] = r.v, o.m[i] = r.m;
       }
     }
@@ -276,13 +330,13 @@ void run_stream_ts(const Data &d, const Param &p, Plane &o) {
 // CS 流式: 每个时刻一个截面
 template <class S>
 void run_stream_cs(const Data &d, const Param &p, int ar, Plane &o) {
-  o.resize(static_cast<size_t>(d.T) * d.A);
+  o.ensure(static_cast<size_t>(d.T) * d.A);
+  const float *xv = pv(d.x, ar >= 1), *yv = pv(d.y, ar >= 2), *zv = pv(d.z, ar >= 3);
+  const uint8_t *xm = pm(d.x, ar >= 1), *ym = pm(d.y, ar >= 2), *zm = pm(d.z, ar >= 3);
   for (int t = 0; t < d.T; ++t) {
     const size_t b = static_cast<size_t>(t) * d.A;
-    S::apply(ar >= 1 ? d.x.v.data() + b : nullptr, ar >= 1 ? d.x.m.data() + b : nullptr,
-             ar >= 2 ? d.y.v.data() + b : nullptr, ar >= 2 ? d.y.m.data() + b : nullptr,
-             ar >= 3 ? d.z.v.data() + b : nullptr, ar >= 3 ? d.z.m.data() + b : nullptr,
-             o.v.data() + b, o.m.data() + b, d.A, p);
+    S::apply(xv ? xv + b : nullptr, xm ? xm + b : nullptr, yv ? yv + b : nullptr, ym ? ym + b : nullptr,
+             zv ? zv + b : nullptr, zm ? zm + b : nullptr, o.v.data() + b, o.m.data() + b, d.A, p);
   }
 }
 

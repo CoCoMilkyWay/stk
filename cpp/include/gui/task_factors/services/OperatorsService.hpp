@@ -15,6 +15,8 @@
 // op_check 全扫 profile × d, 这里每算子只跑一组默认参数.
 // 计时: cpu / stream = 整段 wall time (steady_clock); gpu = 纯 kernel (cudaEvent, 不含
 // cudaMalloc + H2D/D2H —— 搬运是 GpuRun 对拍接口的成本, 不是算子的), 首次调用前做一次热身.
+// 计时之外不留 overhead: 输入张量一轮按 (槽位, Gen) 造一次 (并行 fill) 并上传显存一次, 输出缓冲
+// 预触页后跨算子复用, GPU 走常驻 Session; 算子之间只剩一张输出的 D2H (宿主 pin 过, DMA) 与 compare.
 #pragma once
 
 #include "factor/Check.hpp"
@@ -30,6 +32,8 @@
 #include <vector>
 
 namespace GUI::Factors {
+
+struct RoundCtx; // 一轮的常驻件 (输入缓存 / 输出缓冲 / GPU 会话), 定义在 .cpp
 
 // 页面参数: 张量形状 [times × A]. times = 时间轴长度 (期 = 分钟, 以后可选秒), 必须整段
 // (段 = 交易日 = kSegLen 分钟, 段界对齐是 EXPAND 的前提, UI 负责取整).
@@ -118,8 +122,9 @@ public:
   bool from_json = false; // 表内容来自本地 operators.json 载入 (非本进程算的), UI 标注用
 
 private:
-  // 每行一个跑手: 由 OpTable 宏实例化的模板, 只算动态列 (静态列 worker 不碰); Stat 行另走 run_stat
-  using RunFn = void (*)(const OperatorsRequest &, OperatorRow &);
+  // 每行一个跑手: 由 OpTable 宏实例化的模板, 只算动态列 (静态列 worker 不碰); Stat 行另走 run_stat.
+  // 输入 / 输出缓冲 / GPU 会话全从 RoundCtx 取 (一轮一份), 跑手内部不分配不造数: 计时外零 overhead
+  using RunFn = void (*)(RoundCtx &, OperatorRow &);
   std::vector<RunFn> runners_;
 
   void worker_loop();

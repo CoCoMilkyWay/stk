@@ -1,7 +1,7 @@
 // =============================================================================
-// GpuRun 的 CUDA 实现: 收宿主指针 → 拷进显存 → 跑 Gpu.cuh 的算子 → 拷回
+// GpuRun 的 CUDA 实现: 输入拷进显存 (会话内一次) → 跑 Gpu.cuh 的算子 → 输出拷回
 // =============================================================================
-//   只服务 op_check 的正确性对拍, 不是挖掘的性能路径 (挖掘侧数据常驻显存, 不走这里).
+//   只服务对拍的正确性 + 纯 kernel 计时, 不是挖掘的性能路径 (挖掘侧数据常驻显存, 不走这里).
 //   分派表由 OpTable.hpp 展开: 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错.
 // =============================================================================
 
@@ -16,6 +16,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #define CU(call)                                         \
   do {                                                   \
@@ -26,74 +27,111 @@
 
 namespace factor::gpu {
 
-namespace {
-
-// 一对 (值, 掩码) 平面的显存搬运; 宿主指针为空 → 设备指针也为空
+// 显存里一对 (值, 掩码) 平面 (GpuRun.hpp 只前置声明)
 struct DevPlane {
   float *v = nullptr;
   uint8_t *m = nullptr;
-  void up(const float *hv, const uint8_t *hm, size_t n) {
-    if (!hv)
-      return;
-    CU(cudaMalloc(&v, n * sizeof(float)));
-    CU(cudaMalloc(&m, n));
-    CU(cudaMemcpy(v, hv, n * sizeof(float), cudaMemcpyHostToDevice));
-    CU(cudaMemcpy(m, hm, n, cudaMemcpyHostToDevice));
-  }
-  void alloc(size_t n) {
-    CU(cudaMalloc(&v, n * sizeof(float)));
-    CU(cudaMalloc(&m, n));
-    CU(cudaMemset(v, 0, n * sizeof(float)));
-    CU(cudaMemset(m, 0, n));
-  }
-  void down(float *hv, uint8_t *hm, size_t n) const {
-    CU(cudaMemcpy(hv, v, n * sizeof(float), cudaMemcpyDeviceToHost));
-    CU(cudaMemcpy(hm, m, n, cudaMemcpyDeviceToHost));
-  }
-  void free_() {
-    if (v)
-      CU(cudaFree(v));
-    if (m)
-      CU(cudaFree(m));
-  }
 };
 
-template <class Op>
-void call(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv,
-          const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms) {
-  const size_t n = static_cast<size_t>(T) * A;
-  DevPlane x, y, z, o;
-  x.up(xv, xm, n), y.up(yv, ym, n), z.up(zv, zm, n), o.alloc(n);
-
+// 常驻会话: 输入平面 (归会话) / 输出平面 / 按需长大的工作区 / 计时事件. n 开会话时定死
+struct Session {
+  size_t n = 0;
+  std::vector<DevPlane *> in; // upload 出去的, close 时统一释放
+  DevPlane o;
   void *ws = nullptr;
-  const size_t wsn = Op::workspace(T, A, p);
-  if (wsn)
-    CU(cudaMalloc(&ws, wsn));
+  size_t ws_cap = 0;
+  cudaEvent_t e0 = nullptr, e1 = nullptr;
+};
 
-  // 纯 kernel 计时 (cudaEvent 夹 Op::run): malloc / 搬运是本接口的成本, 不算进算子
-  cudaEvent_t e0, e1;
-  CU(cudaEventCreate(&e0));
-  CU(cudaEventCreate(&e1));
-  CU(cudaEventRecord(e0));
-  Op::run(x.v, x.m, y.v, y.m, z.v, z.m, o.v, o.m, T, A, p, ws, nullptr);
-  CU(cudaEventRecord(e1));
-  CU(cudaEventSynchronize(e1));
+namespace {
+
+void plane_alloc(DevPlane &p, size_t n) {
+  CU(cudaMalloc(&p.v, n * sizeof(float)));
+  CU(cudaMalloc(&p.m, n));
+}
+void plane_free(DevPlane &p) {
+  CU(cudaFree(p.v));
+  CU(cudaFree(p.m));
+}
+
+// 会话内跑一个算子: 工作区不够才重分配; cudaEvent 夹 Op::run 计纯 kernel; 输出拷回宿主 (宿主 pin 过则走 DMA)
+template <class Op>
+void call(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om, int T, int A,
+          const Param &p, double *kernel_ms) {
+  assert(s && s->n == static_cast<size_t>(T) * A && "会话形状与本次调用不符");
+  const size_t wsn = Op::workspace(T, A, p);
+  if (wsn > s->ws_cap) {
+    if (s->ws)
+      CU(cudaFree(s->ws));
+    CU(cudaMalloc(&s->ws, wsn));
+    s->ws_cap = wsn;
+  }
+  const float *xv = x ? x->v : nullptr, *yv = y ? y->v : nullptr, *zv = z ? z->v : nullptr;
+  const uint8_t *xm = x ? x->m : nullptr, *ym = y ? y->m : nullptr, *zm = z ? z->m : nullptr;
+  CU(cudaEventRecord(s->e0));
+  Op::run(xv, xm, yv, ym, zv, zm, s->o.v, s->o.m, T, A, p, wsn ? s->ws : nullptr, nullptr);
+  CU(cudaEventRecord(s->e1));
+  CU(cudaEventSynchronize(s->e1));
   CU(cudaGetLastError());
   if (kernel_ms) {
     float f = 0.f;
-    CU(cudaEventElapsedTime(&f, e0, e1));
+    CU(cudaEventElapsedTime(&f, s->e0, s->e1));
     *kernel_ms = f;
   }
-  CU(cudaEventDestroy(e0));
-  CU(cudaEventDestroy(e1));
+  CU(cudaMemcpy(ov, s->o.v, s->n * sizeof(float), cudaMemcpyDeviceToHost));
+  CU(cudaMemcpy(om, s->o.m, s->n, cudaMemcpyDeviceToHost));
+}
 
-  o.down(ov, om, n);
-  if (ws)
-    CU(cudaFree(ws));
-  x.free_(), y.free_(), z.free_(), o.free_();
+// 一次性版本的公共体: 临时会话, 上传 → 跑 → 关
+template <class Op>
+void call_once(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm,
+               float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms) {
+  Session *s = session_open(static_cast<size_t>(T) * A);
+  const DevPlane *x = xv ? upload(s, xv, xm) : nullptr;
+  const DevPlane *y = yv ? upload(s, yv, ym) : nullptr;
+  const DevPlane *z = zv ? upload(s, zv, zm) : nullptr;
+  call<Op>(s, x, y, z, ov, om, T, A, p, kernel_ms);
+  session_close(s);
 }
 
 } // namespace
+
+Session *session_open(size_t n) {
+  assert(n > 0);
+  Session *s = new Session;
+  s->n = n;
+  plane_alloc(s->o, n); // 输出不清零: 契约是后端写满每格
+  CU(cudaEventCreate(&s->e0));
+  CU(cudaEventCreate(&s->e1));
+  return s;
+}
+
+void session_close(Session *s) {
+  assert(s);
+  for (DevPlane *p : s->in) {
+    plane_free(*p);
+    delete p;
+  }
+  plane_free(s->o);
+  if (s->ws)
+    CU(cudaFree(s->ws));
+  CU(cudaEventDestroy(s->e0));
+  CU(cudaEventDestroy(s->e1));
+  delete s;
+}
+
+DevPlane *upload(Session *s, const float *v, const uint8_t *m) {
+  assert(s && v && m);
+  DevPlane *p = new DevPlane;
+  plane_alloc(*p, s->n);
+  CU(cudaMemcpy(p->v, v, s->n * sizeof(float), cudaMemcpyHostToDevice));
+  CU(cudaMemcpy(p->m, m, s->n, cudaMemcpyHostToDevice));
+  s->in.push_back(p);
+  return p;
+}
+
+void pin(void *host, size_t bytes) { CU(cudaHostRegister(host, bytes, cudaHostRegisterDefault)); }
+void unpin(void *host) { CU(cudaHostUnregister(host)); }
 
 bool available() {
   int n = 0;
@@ -115,12 +153,33 @@ const char *device_name() {
   return buf[0] ? buf : nullptr;
 }
 
+// 分派: 四个入口 (ts / cs × 会话 / 一次性) 共用 OpTable 展开, 只差调哪个 call
+void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
+            int T, int A, const Param &p, double *kernel_ms) {
+#define G_TS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
+  if (std::strcmp(name, #Name) == 0)                               \
+    return call<ts::Name>(s, x, y, z, ov, om, T, A, p, kernel_ms);
+  OP_TS(G_TS)
+#undef G_TS
+  assert(false && "算子不在 OpTable 的 TS 组");
+}
+
+void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
+            int T, int A, const Param &p, double *kernel_ms) {
+#define G_CS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
+  if (std::strcmp(name, #Name) == 0)                               \
+    return call<cs::Name>(s, x, y, z, ov, om, T, A, p, kernel_ms);
+  OP_CS(G_CS)
+#undef G_CS
+  assert(false && "算子不在 OpTable 的 CS 组");
+}
+
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms) {
 #define G_TS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
   if (std::strcmp(name, #Name) == 0)                               \
-    return call<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
+    return call_once<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
   assert(false && "算子不在 OpTable 的 TS 组");
@@ -131,7 +190,7 @@ void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *y
             double *kernel_ms) {
 #define G_CS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
   if (std::strcmp(name, #Name) == 0)                               \
-    return call<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
+    return call_once<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
   assert(false && "算子不在 OpTable 的 CS 组");
