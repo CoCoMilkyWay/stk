@@ -1,9 +1,10 @@
 // Tab Operators — 见头文件
 #include "gui/task_factors/ui/TabOperators.hpp"
-#include "factor/GpuRun.hpp"     // device_name: GPU 型号显示
-#include "factor/Stat/Check.hpp" // kHolds: Stat 行载入时校验持有期列表
-#include "gui/Tasks.hpp"         // StatusColor: 全局色表, 行状态着色不自配颜色
-#include "gui/util/Latex.hpp"    // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
+#include "factor/GpuRun.hpp"                // device_name: GPU 型号显示
+#include "factor/Stat/Check.hpp"            // kHolds: Stat 行载入时校验持有期列表
+#include "gui/Tasks.hpp"                    // StatusColor: 全局色表, 行状态着色不自配颜色
+#include "gui/task_factors/ui/StatJson.hpp" // sig4 / hold_json / load_hold / json_* (与因子文件同一格式)
+#include "gui/util/Latex.hpp"               // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)
@@ -489,13 +490,6 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
 
 namespace {
 
-// 4 位有效数字 (人读; 耗时 / 误差全精度只添噪)
-double sig4(double v) {
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%.4g", v);
-  return std::strtod(buf, nullptr);
-}
-
 const char *status_name(OperatorsStatus st) {
   switch (st) {
   case OperatorsStatus::Idle:
@@ -533,31 +527,8 @@ nlohmann::ordered_json stat_json(const StatExtra &s) {
   if (s.gpu_prep_ms >= 0)
     j["gpu_prep_ms"] = sig4(s.gpu_prep_ms);
   nlohmann::ordered_json holds = nlohmann::ordered_json::array();
-  for (int i = 0; i < s.n_hold; ++i) {
-    const factor::stat::HoldStat &h = s.hold[i];
-    nlohmann::ordered_json o;
-    o["hold"] = h.hold;
-    o["n"] = h.n;
-    o["n_ac"] = h.n_ac;
-    o["ic_mean"] = sig4(h.ic_mean);
-    o["ic_std"] = sig4(h.ic_std);
-    o["icir"] = sig4(h.icir);
-    o["ic_t"] = sig4(h.ic_t);
-    o["ic_pos"] = sig4(h.ic_pos);
-    o["ic_skew"] = sig4(h.ic_skew);
-    o["ic_kurt"] = sig4(h.ic_kurt);
-    o["ls_mean"] = sig4(h.ls_mean);
-    o["ls_t"] = sig4(h.ls_t);
-    o["sharpe"] = sig4(h.sharpe);
-    o["beta"] = sig4(h.beta);
-    o["mono"] = sig4(h.mono);
-    o["rank_ac"] = sig4(h.rank_ac);
-    nlohmann::ordered_json g = nlohmann::ordered_json::array();
-    for (int k = 0; k < factor::stat::kGroups; ++k)
-      g.push_back(sig4(h.grp[k]));
-    o["grp"] = g;
-    holds.push_back(o);
-  }
+  for (int i = 0; i < s.n_hold; ++i)
+    holds.push_back(hold_json(s.hold[i]));
   j["holds"] = holds;
   return j;
 }
@@ -639,35 +610,15 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
 
 namespace {
 
-// 文件是上次运行留下的 (可能来自旧代码 / 半截崩的), 故 parse 关异常, 取值全走 find + 类型判定:
+// 文件是上次运行留下的 (可能来自旧代码 / 半截崩的), 故 parse 关异常, 取值全走 find + 类型判定 (StatJson.hpp json_*):
 // 任一环节不合就整份判废 (调用方删了重算), 不做部分接受
-bool get_num(const nlohmann::json &j, const char *key, double &out) {
-  const auto it = j.find(key);
-  if (it == j.end() || !it->is_number())
-    return false;
-  out = it->get<double>();
-  return true;
-}
-
-bool get_int(const nlohmann::json &j, const char *key, int &out) {
-  const auto it = j.find(key);
-  if (it == j.end() || !it->is_number_integer())
-    return false;
-  out = it->get<int>();
-  return true;
-}
-
-bool str_is(const nlohmann::json &j, const char *key, const char *want) {
-  const auto it = j.find(key);
-  return it != j.end() && it->is_string() && it->get_ref<const std::string &>() == want;
-}
 
 bool load_diff(const nlohmann::json &j, factor::check::Diff &out) {
   if (!j.is_object())
     return false;
   factor::check::Diff d;
-  if (!get_int(j, "mask_bad", d.mask_bad) || !get_int(j, "val_bad", d.val_bad) || !get_int(j, "compared", d.compared) ||
-      !get_num(j, "worst", d.worst))
+  if (!json_int(j, "mask_bad", d.mask_bad) || !json_int(j, "val_bad", d.val_bad) || !json_int(j, "compared", d.compared) ||
+      !json_num(j, "worst", d.worst))
     return false;
   d.worst_at = -1; // 落盘不记下标 (只 op_check 的 CLI 用), ok() 由 mask_bad / val_bad 现推
   out = d;
@@ -680,11 +631,11 @@ bool load_diff(const nlohmann::json &j, factor::check::Diff &out) {
 bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   if (!j.is_object())
     return false;
-  if (!str_is(j, "e_name", dst.e_name) || !str_is(j, "T", cls_T(dst)) || !str_is(j, "A", cls_A(dst)) ||
-      !str_is(j, "kernel", cls_kern(dst)) || !str_is(j, "operand", dst.operand) || !str_is(j, "operator", dst.op))
+  if (!json_str_is(j, "e_name", dst.e_name) || !json_str_is(j, "T", cls_T(dst)) || !json_str_is(j, "A", cls_A(dst)) ||
+      !json_str_is(j, "kernel", cls_kern(dst)) || !json_str_is(j, "operand", dst.operand) || !json_str_is(j, "operator", dst.op))
     return false;
   int arity = -1;
-  if (!get_int(j, "arity", arity) || arity != dst.arity)
+  if (!json_int(j, "arity", arity) || arity != dst.arity)
     return false;
   const auto pit = j.find("params");
   if (pit == j.end() || !pit->is_object())
@@ -693,19 +644,19 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   bool param_ok = true;
   for_each_param(dst, [&](const char *name, double v) { // dst.param = 构造期填的当轮默认
     double got = 0;
-    param_ok = param_ok && get_num(*pit, name, got) && got == v;
+    param_ok = param_ok && json_num(*pit, name, got) && got == v;
     np++;
   });
   if (!param_ok || pit->size() != np)
     return false;
   // 动态列: 只认跑完的行 (取消/半截留下的 pending 行 → 整份判废)
-  if (!str_is(j, "status", "done"))
+  if (!json_str_is(j, "status", "done"))
     return false;
-  if (!get_num(j, "cpu_ms", dst.cpu_ms))
+  if (!json_num(j, "cpu_ms", dst.cpu_ms))
     return false;
   const auto sit = j.find("stream_vs_cpu"); // 有 stream 后端的行 (分类内) 必有; Stat 行无 → stream 列 n/a
   if (dst.classified) {
-    if (sit == j.end() || !load_diff(*sit, dst.stream) || !get_num(j, "stream_ms", dst.stream_ms))
+    if (sit == j.end() || !load_diff(*sit, dst.stream) || !json_num(j, "stream_ms", dst.stream_ms))
       return false;
   } else {
     if (sit != j.end() || j.find("stream_ms") != j.end())
@@ -715,7 +666,7 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   const auto git = j.find("gpu_vs_cpu"); // 落盘那轮没 GPU 后端 → 无 gpu_* 键, 载入后 GPU 列显示 n/a
   if (git == j.end()) {
     dst.gpu = {}, dst.gpu_ms = -1;
-  } else if (!load_diff(*git, dst.gpu) || !get_num(j, "gpu_ms", dst.gpu_ms) || dst.gpu_ms < 0) {
+  } else if (!load_diff(*git, dst.gpu) || !json_num(j, "gpu_ms", dst.gpu_ms) || dst.gpu_ms < 0) {
     return false;
   }
   dst.status = RowStatus::Done;
@@ -728,10 +679,10 @@ bool load_stat(const nlohmann::json &j, bool has_gpu, StatExtra &dst) {
   if (!j.is_object())
     return false;
   StatExtra s;
-  if (!get_num(j, "cpu_prep_ms", s.cpu_prep_ms))
+  if (!json_num(j, "cpu_prep_ms", s.cpu_prep_ms))
     return false;
   if (has_gpu) {
-    if (!get_num(j, "gpu_prep_ms", s.gpu_prep_ms) || s.gpu_prep_ms < 0)
+    if (!json_num(j, "gpu_prep_ms", s.gpu_prep_ms) || s.gpu_prep_ms < 0)
       return false;
   } else {
     if (j.find("gpu_prep_ms") != j.end())
@@ -743,30 +694,8 @@ bool load_stat(const nlohmann::json &j, bool has_gpu, StatExtra &dst) {
     return false;
   s.n_hold = factor::stat::check::kNumHolds;
   for (int i = 0; i < s.n_hold; ++i) {
-    const nlohmann::json &o = (*hit)[static_cast<size_t>(i)];
-    factor::stat::HoldStat &h = s.hold[i];
-    if (!o.is_object() || !get_int(o, "hold", h.hold) || h.hold != factor::stat::check::kHolds[i] || !get_int(o, "n", h.n) ||
-        !get_int(o, "n_ac", h.n_ac))
+    if (!load_hold((*hit)[static_cast<size_t>(i)], s.hold[i]) || s.hold[i].hold != factor::stat::check::kHolds[i])
       return false;
-    double v = 0;
-    const char *keys[] = {"ic_mean", "ic_std", "icir", "ic_t", "ic_pos", "ic_skew", "ic_kurt", "ls_mean", "ls_t", "sharpe", "beta",
-                          "mono", "rank_ac"};
-    float *dsts[] = {&h.ic_mean, &h.ic_std, &h.icir, &h.ic_t, &h.ic_pos, &h.ic_skew, &h.ic_kurt, &h.ls_mean, &h.ls_t, &h.sharpe,
-                     &h.beta, &h.mono, &h.rank_ac};
-    for (size_t q = 0; q < sizeof(keys) / sizeof(keys[0]); ++q) {
-      if (!get_num(o, keys[q], v))
-        return false;
-      *dsts[q] = static_cast<float>(v);
-    }
-    const auto git = o.find("grp");
-    if (git == o.end() || !git->is_array() || git->size() != static_cast<size_t>(factor::stat::kGroups))
-      return false;
-    for (int k = 0; k < factor::stat::kGroups; ++k) {
-      const nlohmann::json &e = (*git)[static_cast<size_t>(k)];
-      if (!e.is_number())
-        return false;
-      h.grp[k] = e.get<float>();
-    }
   }
   dst = s;
   return true;
@@ -789,13 +718,13 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     const nlohmann::json j = nlohmann::json::parse(file, nullptr, /*allow_exceptions=*/false);
     if (j.is_discarded() || !j.is_object())
       return false;
-    if (!str_is(j, "status", "done")) // cancelled / running 的半截快照不吃
+    if (!json_str_is(j, "status", "done")) // cancelled / running 的半截快照不吃
       return false;
     int total = 0, done = 0;
-    if (!get_int(j, "total", total) || !get_int(j, "done", done) || total != svc.total() || done != total)
+    if (!json_int(j, "total", total) || !json_int(j, "done", done) || total != svc.total() || done != total)
       return false;
     const auto tit = j.find("tensor");
-    if (tit == j.end() || !tit->is_object() || !get_int(*tit, "times", req.times) || !get_int(*tit, "assets", req.A))
+    if (tit == j.end() || !tit->is_object() || !json_int(*tit, "times", req.times) || !json_int(*tit, "assets", req.A))
       return false;
     if (req.times < factor::kSegLen || req.times % factor::kSegLen != 0 || req.A < 2) // Request 的前置条件
       return false;

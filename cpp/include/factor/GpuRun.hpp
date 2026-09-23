@@ -40,6 +40,18 @@ void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, 
 void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
             int T, int A, const Param &p, double *kernel_ms = nullptr);
 
+// ---- 设备常驻中间量 (因子 DAG: 算子之间不落宿主, 见 factor/EvalGpu.hpp) ----
+//   plane_new / plane_del  会话形状的空平面 (不清零), 归调用方释放 (不在会话的 in 列表里)
+//   download               拷回宿主 (v / m 任一可空 = 只拷另一侧; 如只要掩码算有效率)
+//   run_*_dev              算子输出写进设备平面 out (不拷回); 其余同会话版
+DevPlane *plane_new(Session *s);
+void plane_del(Session *s, DevPlane *p);
+void download(Session *s, const DevPlane *p, float *v, uint8_t *m);
+void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
+                int A, const Param &p, double *kernel_ms = nullptr);
+void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
+                int A, const Param &p, double *kernel_ms = nullptr);
+
 // 一次性版本 (op_check 用): 宿主指针进出, 内部开临时会话 (上传 → 跑 → 关); kernel_ms 口径同上
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
@@ -57,5 +69,12 @@ struct StatLabelHost {
 };
 void run_stat(const float *xv, const uint8_t *xm, int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab,
               factor::stat::Row *rows, double *prep_ms = nullptr, double *eval_ms = nullptr);
+
+// Stat 常驻会话 (因子面板: 一个作用域多因子): 标签上传 + rank 预处理只做一次, 逐因子只跑 eval,
+// x 是设备常驻平面 (DAG 根槽), 只有 rows[hd.n][T] 拷回. run_stat 一次性版 = open + 上传 x + eval + close.
+struct StatSession;
+StatSession *stat_open(int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab, double *prep_ms = nullptr);
+void stat_eval(StatSession *s, const DevPlane *x, factor::stat::Row *rows, double *eval_ms = nullptr);
+void stat_close(StatSession *s);
 
 } // namespace factor::gpu

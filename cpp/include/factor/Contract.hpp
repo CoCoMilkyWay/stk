@@ -25,7 +25,8 @@
 //   【数据布局】
 //     数组一律 SoA 两平面: 值 float* + 有效位 uint8_t*, 行主序 [T][A] (t*A + a).
 //     标量用 Val {v, m}. GPU 侧同 SoA, 不用 AoS.
-//     段 = 一个交易日 = kSegLen 分钟. 段内位置 t_seg = t % kSegLen (块起点对齐段起点).
+//     段 = 一个交易日 = kSegLen 分钟 (L1 全部 255 行: 15 分钟集合竞价 + 240 分钟连续竞价, 竞价段也要有因子值).
+//     段内位置 t_seg = t % kSegLen (块起点对齐段起点).
 //     Expand 窗按段 reset (流式实现推满 kSegLen 自动归零); Roll 窗**跨段**不 reset (窗口单位是分钟, 与日界无关);
 //     Expo 窗全程递推, 不 reset.
 //     Roll 窗未满 (t < d−1) 一律输出无效; 例外: TsDelayRoll / TsDeltaRoll 看的是 d 期之前那一格,
@@ -64,7 +65,7 @@ struct Param {
 
 // ---- 常量 ----
 inline constexpr float kRelEps = 1e-6f; // 相消退化阈值 (只给 den_ok)
-inline constexpr int kSegLen = 240;     // 段 (交易日) 的分钟数
+inline constexpr int kSegLen = 255;     // 段 (交易日) 的分钟数 = L1 行数 (09:15 竞价起, 含 15 分钟集合竞价; == features/TimeIndex TRADE_MINUTES_PER_DAY, GUI 侧 static_assert 对账)
 inline constexpr int kBuckets = 256;    // 序统计近似的直方图桶数
 inline constexpr int kMaxGroup = 1024;  // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
 

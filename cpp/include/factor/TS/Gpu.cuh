@@ -13,7 +13,7 @@
 //   【核配置总则】
 //     POINT : 2D 网格逐格融合, grid(⌈A/256⌉, min(T,512)) × 256 线程, 纯带宽.
 //     SCAN  : 一线程一资产. EXPAND 按段 (240 步寄存器串行, 段天然独立);
-//             ROLL 按块 (块长 C = 240·⌈d/240⌉) 预热 d−1 步后滑窗 add/sub,
+//             ROLL 按块 (块长 C = kSegLen·⌈d/kSegLen⌉) 预热 d−1 步后滑窗 add/sub,
 //             每块重建累加器 = 契约要求的"分块", 误差不跨块累积.
 //             **不用全局前缀和平面**: 五和 (Σx,Σy,Σx²,Σy²,Σxy) 各需 384 MB,
 //             再加 pre/suf 两级就是 3.8 GB, 6 GB 卡上放不下 (详见回执). 滑窗差分等价且 ws = 0.
@@ -317,7 +317,7 @@ __global__ void expand(const float *xv, const uint8_t *xm, const float *yv, cons
   Chg ch;
   ch.init();
   int f = 0;                      // 段内首个有效位置 (只前进)
-  for (int s = 0; s < len; ++s) { // 段内 240 步寄存器串行, 段间完全独立
+  for (int s = 0; s < len; ++s) { // 段内 kSegLen 步寄存器串行, 段间完全独立
     const int i = (s0 + s) * A + a;
     DVal x{xv[i], xm[i]}, y{0.f, 0};
     if constexpr (Op::kArity >= 2)
@@ -343,7 +343,7 @@ __global__ void roll(const float *xv, const uint8_t *xm, const float *yv, const 
   const int a = blockIdx.x * blockDim.x + threadIdx.x;
   if (a >= A)
     return;
-  const int c0 = blockIdx.y * C; // 本块负责的输出行区间 [c0, cend), C = 240·⌈d/240⌉
+  const int c0 = blockIdx.y * C; // 本块负责的输出行区间 [c0, cend), C = kSegLen·⌈d/kSegLen⌉
   if (c0 >= T)
     return;
   const int cend = min(c0 + C, T);
