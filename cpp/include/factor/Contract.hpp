@@ -84,6 +84,166 @@ enum class Kern { MAP,
                   ORDER,
                   RECUR };
 
+// ---- 值域 (OpTable in / out 列 = 自变量 / 因变量值域; 机器可读, 表里不再手写值域 LaTeX) ----
+//   同一套枚举两头用: 子节点的 out 对父算子对应元的 in 逐元查 (parser, 不点算子名):
+//     严格域 (dom_strict: INT, 越界 = 算子内部 assert) → 子.out 须 ⊆ in (dom_sub), 特征叶按数据逐格查 (dom_holds);
+//     其余域是语义声明 (越界格按【退化】规则置无效, 如 LogRatio 的 x ≤ 0), 不能静态否决 (Σ 正量的 out 只能写 REAL),
+//     只用于渲染签名与算子看板.
+//   只表达能写成集合的约束 (y ≠ 0 / x > −1 之类写 REAL); out 只按算子自身声明, 不随输入推导
+//   (透传 Mask / Where / Delay 与取大取小写 REAL). 表格 / JSON 渲染用 dom_tex / dom_name.
+//   Expr 另用: 离散 (dom_discrete) 不能作因子归一算子的输入 (分位只有几档, 20 组填不满);
+//   BCAST 抹掉截面变异 (每 t 全资产同值), 沿 A 变异按结构推 (Expr.hpp varies_a).
+enum class Dom { REAL,    // ℝ (首项 = 0: in[] 数组未写的元默认 REAL)
+                 NONNEG,  // ℝ≥0 (含整数计数: ArgMax 等期数)
+                 POS,     // ℝ>0 (只作输入要求: 对数 / 熵; 无算子能保证输出 > 0, 只特征叶可满足)
+                 UNIT,    // [0,1] (分位 / 占比)
+                 SIGNED,  // [−1,1] (相关 / 失衡)
+                 BIN,     // {0,1} 指示
+                 SIGN3,   // {−1,0,1}
+                 INT,     // 非负小整数 [0, kMaxGroup) (桶号 / 组 id)
+                 BCAST }; // ℝ 且截面广播 (同一 t 全资产同值)
+inline constexpr bool dom_discrete(Dom d) { return d == Dom::BIN || d == Dom::SIGN3 || d == Dom::INT; }
+inline constexpr bool dom_strict(Dom d) { return d == Dom::INT; } // 作 in 时必须静态 / 按数据保证 (组 id 越界 = assert)
+// 集合包含 child ⊆ need
+inline constexpr bool dom_sub(Dom child, Dom need) {
+  if (child == need || need == Dom::REAL)
+    return true;
+  switch (need) {
+  case Dom::NONNEG:
+    return child == Dom::POS || child == Dom::UNIT || child == Dom::BIN || child == Dom::INT;
+  case Dom::UNIT:
+    return child == Dom::BIN;
+  case Dom::SIGNED:
+    return child == Dom::UNIT || child == Dom::BIN || child == Dom::SIGN3;
+  case Dom::INT:
+    return child == Dom::BIN;
+  case Dom::SIGN3:
+    return child == Dom::BIN;
+  case Dom::REAL:
+  case Dom::POS:
+  case Dom::BIN:
+  case Dom::BCAST:
+    return false;
+  }
+  return false;
+}
+inline constexpr const char *dom_name(Dom d) {
+  switch (d) {
+  case Dom::REAL:
+    return "REAL";
+  case Dom::NONNEG:
+    return "NONNEG";
+  case Dom::POS:
+    return "POS";
+  case Dom::UNIT:
+    return "UNIT";
+  case Dom::SIGNED:
+    return "SIGNED";
+  case Dom::BIN:
+    return "BIN";
+  case Dom::SIGN3:
+    return "SIGN3";
+  case Dom::INT:
+    return "INT";
+  case Dom::BCAST:
+    return "BCAST";
+  }
+  return "?";
+}
+static_assert(kMaxGroup == 1024 && kSegLen == 255, "dom_tex(INT) / kdom_tex(TOD) 的字面上限须随 kMaxGroup / kSegLen 改");
+inline constexpr const char *dom_tex(Dom d) {
+  switch (d) {
+  case Dom::REAL:
+    return R"tex(\mathbb{R})tex";
+  case Dom::NONNEG:
+    return R"tex(\mathbb{R}_{\ge 0})tex";
+  case Dom::POS:
+    return R"tex(\mathbb{R}_{>0})tex";
+  case Dom::UNIT:
+    return R"tex([0,1])tex";
+  case Dom::SIGNED:
+    return R"tex([-1,1])tex";
+  case Dom::BIN:
+    return R"tex(\{0,1\})tex";
+  case Dom::SIGN3:
+    return R"tex(\{-1,0,1\})tex";
+  case Dom::INT:
+    return R"tex(\{0..1023\})tex";
+  case Dom::BCAST:
+    return R"tex(\mathbb{R}\ (\mathrm{bcast}))tex";
+  }
+  return "?";
+}
+// OpTable in 列的写法: 按元数选 OP_IN0..3, 逐元给 Dom (展开成 Dom[3] 的聚合初始化, 未写的元 = REAL)
+#define OP_IN0() \
+  {              \
+  }
+#define OP_IN1(a) {factor::Dom::a}
+#define OP_IN2(a, b) {factor::Dom::a, factor::Dom::b}
+#define OP_IN3(a, b, c) {factor::Dom::a, factor::Dom::b, factor::Dom::c}
+
+// ---- 参数域 (OpTable k 列): k 的值域按算子声明; d 由 T 窗决定 (ROLL 必有且仅 ROLL 有), k2 只随 TOD ----
+//   参数集合因此完全由 (T, KDom) 推出 (params_str), 表里不再单列参数名
+enum class KDom { NONE,          // 无 k
+                  ANY,           // k ∈ ℝ
+                  GE0,           // k ≥ 0
+                  OPEN01,        // 0 < k < 1
+                  OPEN0_CLOSED1, // 0 < k ≤ 1
+                  OPEN0_HALF,    // 0 < k < 1/2
+                  POSINT_GROUP,  // 正整数 ≤ kMaxGroup (桶数, 输出可作组 id)
+                  TOD };         // 0 ≤ k < k2 ≤ kSegLen, 皆整数 (TsTodMask; 唯一带 k2 的域)
+inline constexpr bool has_d(T t) { return t == T::ROLL; }
+inline constexpr bool has_k(KDom k) { return k != KDom::NONE; }
+inline constexpr bool has_k2(KDom k) { return k == KDom::TOD; }
+inline constexpr const char *params_str(T t, KDom k) {
+  if (has_d(t))
+    return has_k(k) ? "d,k" : "d";
+  return has_k2(k) ? "k,k2" : (has_k(k) ? "k" : "");
+}
+inline constexpr const char *kdom_name(KDom k) {
+  switch (k) {
+  case KDom::NONE:
+    return "NONE";
+  case KDom::ANY:
+    return "ANY";
+  case KDom::GE0:
+    return "GE0";
+  case KDom::OPEN01:
+    return "OPEN01";
+  case KDom::OPEN0_CLOSED1:
+    return "OPEN0_CLOSED1";
+  case KDom::OPEN0_HALF:
+    return "OPEN0_HALF";
+  case KDom::POSINT_GROUP:
+    return "POSINT_GROUP";
+  case KDom::TOD:
+    return "TOD";
+  }
+  return "?";
+}
+// k 的值域 LaTeX (TOD 整段自带 k / k2 占位符, 见 Expr.hpp operand_tex)
+inline constexpr const char *kdom_tex(KDom k) {
+  switch (k) {
+  case KDom::NONE:
+    return "";
+  case KDom::ANY:
+    return R"tex(\mathbb{R})tex";
+  case KDom::GE0:
+    return R"tex(\mathbb{R}_{\ge 0})tex";
+  case KDom::OPEN01:
+    return R"tex((0,1))tex";
+  case KDom::OPEN0_CLOSED1:
+    return R"tex((0,1])tex";
+  case KDom::OPEN0_HALF:
+    return R"tex((0,\,1/2))tex";
+  case KDom::POSINT_GROUP:
+    return R"tex(\mathbb{Z}_{+})tex";
+  case KDom::TOD:
+    return R"tex(t_D \in \{0..254\};\; 0 \le k{=}⟨k⟩ < k_2{=}⟨k2⟩ \le 255)tex";
+  }
+  return "?";
+}
+
 // ---- 值 + 有效位 ----
 struct Val {
   float v = 0.f;

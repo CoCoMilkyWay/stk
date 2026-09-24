@@ -38,7 +38,7 @@ inline RunFn run_fn(int op) {
 #define FACTOR_CPU_SELF(Name) (&factor::cpu::ts::Name::run)
 #define FACTOR_CPU_ALL(Name) (&factor::cpu::cs::Name::run)
 #define FACTOR_CPU_GROUP FACTOR_CPU_ALL
-#define FACTOR_CPU_ROW(Name, c_name, ar, t, a, kern, prm, operand, opx, note) FACTOR_CPU_##a(Name),
+#define FACTOR_CPU_ROW(Name, c_name, ar, t, a, kern, kdom, in, out, opx, note) FACTOR_CPU_##a(Name),
   static const RunFn tbl[] = {OP_ALL(FACTOR_CPU_ROW)};
 #undef FACTOR_CPU_ROW
 #undef FACTOR_CPU_GROUP

@@ -126,44 +126,50 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
 }
 
 // Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
-//   profile 全扫 (无 d); 无 GPU 时只跑 cpu 并打印二级汇总 (-v), 不算失败
+//   两口径 (CS / TS) × profile 全扫 (无 d); 无 GPU 时只跑 cpu 并打印二级汇总 (-v), 不算失败
 void check_stat(int T, int A, unsigned seed, Report &rep) {
   namespace sc = factor::stat::check; // 与 factor::check 同名的 Data / Tol 等, 全限定
   ++rep.ops;
   bool op_bad = false;
   const int threads = sc::cpu_threads();
-  for (int pi = 0; pi < kProfiles; ++pi) {
-    const Profile pr = static_cast<Profile>(pi);
-    std::mt19937 rng(seed + 1000u * pi);
-    sc::Data d;
-    sc::make(d, pr, T, A, rng);
-    sc::Result cpu;
-    sc::run_cpu(d, cpu, threads);
-    if (rep.verbose)
-      for (const factor::stat::HoldStat &s : cpu.stat)
-        std::printf("       Stat   cpu    h=%-3d %-8s n=%d/%d  IC %+.4f std %.4f ICIR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f "
-                    "Sharpe %+.2f beta %+.3f  mono %+.3f  rankAC %+.3f\n",
-                    s.hold, kProfName[pi], s.n, s.n_ac, s.ic_mean, s.ic_std, s.icir, s.ic_t, s.ic_pos, s.ls_mean, s.ls_t, s.sharpe,
-                    s.beta, s.mono, s.rank_ac);
-    if (!factor::gpu::available())
-      continue;
-    sc::Result gpu;
-    gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
-    std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
-    for (int i = 0; i < d.hd.n; ++i)
-      lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
-                                     d.lab[static_cast<size_t>(i)].m.data()};
-    factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), T, A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
-    sc::summarize_all(gpu, d);
-    const Tol tol = sc::tol_of(pr);
-    const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
-    const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
-    ++rep.cases;
-    if (!dr.ok() || !ds.ok())
-      ++rep.gpu_bad;
-    Param p;
-    emit(rep, "Stat.rows", p, kProfName[pi], "gpu", dr, op_bad);
-    emit(rep, "Stat.stat", p, kProfName[pi], "gpu", ds, op_bad);
+  for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
+    const char *fname = factor::stat::frame_name(fr);
+    char tag_rows[32], tag_stat[32];
+    std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s.rows", fname);
+    std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s.stat", fname);
+    for (int pi = 0; pi < kProfiles; ++pi) {
+      const Profile pr = static_cast<Profile>(pi);
+      std::mt19937 rng(seed + 1000u * pi);
+      sc::Data d;
+      sc::make(d, fr, pr, T, A, rng);
+      sc::Result cpu;
+      sc::run_cpu(d, cpu, threads);
+      if (rep.verbose)
+        for (const factor::stat::HoldStat &s : cpu.stat)
+          std::printf("       Stat.%s cpu    h=%-3d %-8s n=%d/%d  IC %+.4f std %.4f ICIR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
+                      "Sharpe %+.2f beta %+.3f  mono %+.3f  rankAC %+.3f\n",
+                      fname, s.hold, kProfName[pi], s.n, s.n_ac, s.ic_mean, s.ic_std, s.icir, s.ic_t, s.ic_pos, s.ls_mean, s.ls_t, s.ls_pos,
+                      s.sharpe, s.beta, s.mono, s.rank_ac);
+      if (!factor::gpu::available())
+        continue;
+      sc::Result gpu;
+      gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
+      std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
+      for (int i = 0; i < d.hd.n; ++i)
+        lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
+                                       d.lab[static_cast<size_t>(i)].m.data()};
+      factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), fr, T, A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
+      sc::summarize_all(gpu, d);
+      const Tol tol = sc::tol_of(pr);
+      const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
+      const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
+      ++rep.cases;
+      if (!dr.ok() || !ds.ok())
+        ++rep.gpu_bad;
+      Param p;
+      emit(rep, tag_rows, p, kProfName[pi], "gpu", dr, op_bad);
+      emit(rep, tag_stat, p, kProfName[pi], "gpu", ds, op_bad);
+    }
   }
   if (op_bad)
     ++rep.ops_bad;
@@ -211,7 +217,7 @@ int main(int argc, char **argv) {
   if (only.empty() || only == #Name) \
     check<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>(#Name, prm, T, A, seed, rep);
 #define CK_GROUP CK_ALL
-#define CK(Name, c_name, ar, t, a, kern, prm, operand, op, note) CK_##a(Name, ar, t, prm)
+#define CK(Name, c_name, ar, t, a, kern, kdom, in, out, op, note) CK_##a(Name, ar, t, factor::params_str(factor::T::t, factor::KDom::kdom))
   OP_ALL(CK)
 #undef CK
 #undef CK_GROUP

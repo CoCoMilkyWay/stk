@@ -54,7 +54,8 @@
   X(60m, MIN, 60, __VA_ARGS__)    \
   X(close, CLOSE, 0, __VA_ARGS__) \
   X(t1, OPEN, 1, __VA_ARGS__)     \
-      X(t3, OPEN, 3, __VA_ARGS__) X(t5, OPEN, 5, __VA_ARGS__)
+  X(t3, OPEN, 3, __VA_ARGS__)     \
+  X(t5, OPEN, 5, __VA_ARGS__)
 #define LABEL_AMTS(X, ...) X(5, __VA_ARGS__) // 下单金额 (万元), 也是快照预计算的档
 #define LABEL_L0_HOLD 1                      // L0 秒级标签: 持仓分钟
 #define LABEL_L0_AMT 5                       // L0 秒级标签: 金额 (万元), 必须 ∈ LABEL_AMTS

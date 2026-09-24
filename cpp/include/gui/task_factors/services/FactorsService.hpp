@@ -3,12 +3,14 @@
 // CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行 + 回写该因子文件 (params / stat 键; expr 不动).
 //
 // 因子文件 (一因子一文件, 独立落盘, 格式破碎也**绝不删**: 表里标 BROKEN + 原因, 人手动处理):
-//   { "expr":   "CsRank(TsMeanRoll(TsLog(amt), d=30))",      // 必有, 规范串或任意合法写法; 本服务永不改写它
+//   { "type":   "alpha",                                      // 必有: alpha (选股 / 择时, 走 Stat) | beta (风险暴露, 未实现, 留位)
+//     "expr":   "CsRank(TsMeanRoll(TsLog(amt), d=30))",      // 必有, 规范串或任意合法写法; 本服务永不改写它
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
 //     "params": [ {}, {"d": 30}, {} ],                        // 可选, 按算子节点前序逐节点覆盖 expr 字面值 (搜索结果落此)
-//     "stat":   { scope…, "valid_pct", "eval_ms",
+//     "stat":   { scope…, "frame", "valid_pct", "eval_ms",
 //                 "amts": [ {"amt": 5, "holds": [HoldStat…]}, … ] } }   // 本服务写 (全部 金额档 × 持有期), 载入时显示
-//   有效 = expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入) 且 params (若有) 覆盖成功.
+//   有效 = type 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入) 且 params (若有) 覆盖成功
+//   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   同一规范串多文件 → 后者标 dup (黄), 仍算 (共享 DAG 里是同一个根, Stat 也只算一次).
 //
 // 线程模型 (对仗 OperatorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 rows;
@@ -81,14 +83,20 @@ bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, Factors
 
 // ---- 行 ----
 constexpr int kMaxAmt = 4; // 金额档数上限 (n_amt × n_hold ≤ factor::stat::kMaxHold 运行期断言)
+// 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 只留位, 扫描到即标 error
+enum class FactorKind : uint8_t { Alpha,
+                                  Beta };
+inline constexpr const char *kind_name(FactorKind k) { return k == FactorKind::Alpha ? "alpha" : "beta"; }
 struct StatScope {
   std::string universe, start_date, end_date, backend, time;
   int days = 0, T = 0, A = 0;
 };
 struct FactorRow {
-  std::string file;     // 文件名 (不含目录)
-  std::string expr_raw; // 文件里的原串 (可能不规范 / 不合法)
-  std::string expr;     // 规范串 (含当前参数); 空 = 解析失败
+  std::string file; // 文件名 (不含目录)
+  FactorKind kind = FactorKind::Alpha;
+  factor::stat::Frame frame = factor::stat::Frame::CS; // 有效 alpha 行的口径 (root_frame)
+  std::string expr_raw;                                // 文件里的原串 (可能不规范 / 不合法)
+  std::string expr;                                    // 规范串 (含当前参数); 空 = 解析失败
   std::string note;
   std::string error;  // 非空 = BROKEN (文件格式 / 表达式 / params / 组 id 数据), 文件原样留着
   std::string dup_of; // 非空 = 与该文件同一规范串
@@ -167,7 +175,8 @@ private:
 // 因子名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]
 bool ValidFactorName(std::string_view name);
 
-// 新因子文件: 名字合法 (调用方保证, 断言) 且表达式合法 (parse 过) → <factor_dir>/<name>.json = {"expr": canon, "note"?, "params": [...]}.
+// 新因子文件: 名字合法 (调用方保证, 断言) 且表达式合法 (parse 过 + root_frame 过) →
+// <factor_dir>/<name>.json = {"type": "alpha", "expr": canon, "note"?, "params": [...]}.
 // 返回文件名; 表达式不合法 / 同名已存在 → 空串 + err. GUI 线程调 (随后 Request(evaluate=false) 重扫)
 std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view expr_src,
                           std::string_view note, std::string &err);

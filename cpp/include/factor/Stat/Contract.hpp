@@ -3,7 +3,7 @@
 // =============================================================================
 // Stat: 因子评估算子的语义契约 (CPU / GPU 两后端唯一共享件; 无流式后端 —— 评估只在挖掘侧)
 // =============================================================================
-//   输入  因子平面 x [T][A] (SoA: float + 有效位) + H 组常驻标签 (每组一个持有期键 hold, 见下【持有期键】):
+//   输入  因子平面 x [T][A] (SoA: float + 有效位) + 口径 Frame (见下) + H 组常驻标签 (每组一个持有期键 hold, 见下【持有期键】):
 //           lv / sv  做多 / 做空吃单净收益 (features 层 LabelReturn, fp16 位, 与落盘同格式, 无精度损失)
 //           m        标签有效位 (long / short 同一快照, 共用一张)
 //           ry       预处理: 做多标签逐行截面 rank (r16), 与因子无关, 常驻期算一次 (prep_label)
@@ -11,17 +11,32 @@
 //     一级 Row[H][T]  每 (持有期, 时刻) 一行沿 A 轴归约的统计 (两后端各算, 对拍在此级)
 //     二级 HoldStat   每持有期 沿 T 轴汇总成十几个标量 (summarize, 主机 double, 两后端共用同一份代码)
 //
+//   【口径 Frame】alpha 因子分两种坐标系, 由因子表达式的根算子决定 (Expr.hpp root_frame). 标签**统一超额语义**:
+//     e = lv − mean_J lv (做空侧 sv − mean_J sv), 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的都是"相对市场";
+//     一套代码只在两处分叉:
+//     CS  截面: 根是截面归一算子 (CsRank / CsNormRank / CsZ). 每 t 沿 A 轴 rank x (排序) → 20 组 = 截面分位组;
+//         任一组空 → 行无效. 因子值 = 仓位 (每 t 居中 → 多空对冲, β 自然隔离; 超额对 rank 类统计是平移不变的).
+//     TS  时序: 根是 TsRankRoll(d = kTsNormD = kTsNormDays 个交易日), 输出已是每票对自身滚动历史的分位 ∈ [0,1]
+//         (整数天窗跨日 deseason). 不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组;
+//         评的是"个股处于自身高位时是否跑赢市场", β 由超额隔离, 样本间不再因共同分量相关;
+//         组允许空 (那一刻没票在该分位), ls 空项取 0 (= long/flat).
+//     两口径之后逐字共用: grp_of / IC / 超额 / ls / mkt / ac / 二级汇总.
+//
 //   【rank 口径】精确并列均秩 (排序, 不用桶近似 —— 原始因子重尾时一个离群点会把整截面压进同一桶, IC 归零):
 //     r16 = round(pct · kRankMax) ∈ [0, kRankMax], 全整数公式 (r16_of), 两后端逐位一致; kRankNone = 无效.
 //     行有效样本 n < 2 或全并列 (spread 为假) → 整行 kRankNone.
 //     rank(x) 只看 x 的有效集, rank(y) 只看 y 的有效集 (与因子无关才能常驻); 两者的联合集 J 上算统计.
+//     TS 的 r16_quant 走 double (float × 65534 在 double 内精确, 与 FMA 无关), 两后端逐位一致; x ∉ [0,1] 断言.
 //
-//   【一级 Row (每 h, t)】J = {a : rx ≠ None ∧ ry ≠ None}
+//   【一级 Row (每 h, t)】J = {a : rx ≠ None ∧ ry ≠ None}; e = 超额标签 (lv − mkt; 做空侧 sv − mean_J sv)
 //     ic     Spearman = Pearson(r16_x, r16_y) over J. 五个和都是整数 (pearson_int), 两后端逐位一致.
-//     grp[k] 第 k 组 (k = grp_of(r16_x), 等分 kGroups 组) 做多标签均值; 任一组空 → 行无效.
-//     ls     多空 = grp[K−1] (最高组做多) + 最低组做空标签均值 —— 两边都是实盘可成交的净收益.
-//     mkt    J 上做多标签均值 (二级回归 beta 用).
-//     ok     标签侧有效: 非段末尾部 (见下) ∧ ic 可算 (n ≥ 2, 两侧方差 > 0) ∧ 各组非空.
+//     grp[k] 第 k 组 (k = grp_of(r16_x), 等分 kGroups 组) 做多超额 e 的**和** (代数上 Σlv − cnt·mkt, 一遍 A 轴);
+//            cnt[k] = 组样本数. 二级沿 t 池化成均值 (Σ和 / Σ计数): TS 每 t 各组成员数剧变, 必须池化;
+//            CS 池化与"组均值再时间平均"只差按每 t 有效数加权.
+//     ls     多空 = 最高组做多超额均值 + 最低组做空超额均值 —— 两边都是实盘可成交口径, 相对市场 (TS: 组空 → 该项 0, 即 long/flat).
+//            无信号时 ≈ 0 (原值口径会 ≈ −市场往返成本).
+//     mkt    J 上做多标签原值均值 (超额减它; 二级回归 beta 用).
+//     ok     标签侧有效: 非段末尾部 (见下) ∧ ic 可算 (n ≥ 2, 两侧方差 > 0) ∧ (CS: 各组非空).
 //     ac     rank-AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 才对应"一个持有期换多少仓".
 //     ok_ac  t ≥ h ∧ n ≥ 2 ∧ 两侧方差 > 0. 与标签无关, 段末尾部也算.
 //     段末尾部 (仅分钟档): LabelReturn 的 exit 越过连续竞价末秒 (14:57, 段末 kCloseAuction 分钟) 就"持有到收盘",
@@ -38,9 +53,9 @@
 //   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_ac 行 (n_ac):
 //     ic_mean / ic_std (ddof=1) / icir = mean/std / ic_pos = IC>0 占比 / ic_skew, ic_kurt (总体矩, 超额峰度)
 //     ic_t = icir · √(n/h): 分钟行的标签持有期重叠 (相邻 h 行是同一段收益), 有效样本按 n/h 折算, 不然 t 虚高 √h 倍
-//     ls_mean / ls_t (同上折算) / sharpe = mean/std · √(kDaysPerYear · kSegLen / h) (按持有期为一期年化)
+//     ls_mean / ls_t (同上折算) / ls_pos = ls>0 占比 / sharpe = mean/std · √(kDaysPerYear · kSegLen / h) (按持有期为一期年化)
 //     beta   ls 对 mkt 的 OLS 斜率 (alpha 略: beta ≈ 0 时 alpha ≈ ls_mean)
-//     grp[k] 各组均值的时间平均; mono = Spearman(组号, grp[k])
+//     grp[k] 各组沿 t 池化均值 (Σ grp / Σ cnt; 全程无样本 → 0); mono = Spearman(组号, grp[k])
 //     rank_ac = ac 的时间平均
 //     n < 3 → 只填 n, 其余 0 (消费端先看 n)
 //
@@ -61,14 +76,21 @@
 namespace factor::stat {
 
 // ---- 常量 ----
-inline constexpr int kGroups = 20;              // 分组数 (等分 pct rank)
-inline constexpr int kMaxHold = 12;             // 同时评估的持有期数上限 (amt × hold 展平后的组数)
-inline constexpr int kMaxA = 5120;              // 资产轴上限 (GPU 一行一 block 的片上排序容量)
-inline constexpr int kCloseAuction = 3;         // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 不能越过
-inline constexpr int kDaysPerYear = 242;        // 年化用交易日数
-inline constexpr uint16_t kRankNone = 0xFFFF;   // r16 无效
-inline constexpr int kRankMax = 65534;          // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
-inline constexpr unsigned kNoKey = 0xFFFFFFFFu; // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
+inline constexpr int kGroups = 20;                     // 分组数 (等分 pct rank)
+inline constexpr int kMaxHold = 12;                    // 同时评估的持有期数上限 (amt × hold 展平后的组数)
+inline constexpr int kMaxA = 5120;                     // 资产轴上限 (GPU 一行一 block 的片上排序容量)
+inline constexpr int kCloseAuction = 3;                // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 不能越过
+inline constexpr int kDaysPerYear = 242;               // 年化用交易日数
+inline constexpr uint16_t kRankNone = 0xFFFF;          // r16 无效
+inline constexpr int kRankMax = 65534;                 // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
+inline constexpr unsigned kNoKey = 0xFFFFFFFFu;        // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
+inline constexpr int kTsNormDays = 5;                  // TS 口径根 TsRankRoll 的窗长 (整交易日, 跨日 deseason)
+inline constexpr int kTsNormD = kTsNormDays * kSegLen; // = 1275 分钟 (== Expr.hpp kMaxD, 在 Expr.hpp static_assert 对账)
+
+// ---- 口径 (见文件头【口径 Frame】) ----
+enum class Frame : uint8_t { CS,
+                             TS };
+inline constexpr const char *frame_name(Frame f) { return f == Frame::CS ? "CS" : "TS"; }
 
 // ---- 持有期键 (见文件头【持有期键】) ----
 inline constexpr int kHoldDayBase = 1000;                          // ≥ 此值为日级档
@@ -127,7 +149,8 @@ inline void assert_holds(const Holds &hd) {
 // ---- 一级输出: 每 (持有期, 时刻) 一行; 布局 rows[h_idx * T + t] ----
 struct Row {
   float ic = 0.f, mkt = 0.f, ls = 0.f, ac = 0.f;
-  float grp[kGroups] = {};
+  float grp[kGroups] = {};    // 组内做多标签 e 的和 (CS 原值 / TS 超额)
+  uint16_t cnt[kGroups] = {}; // 组样本数 (A ≤ kMaxA < 65536)
   uint8_t ok = 0, ok_ac = 0;
 };
 
@@ -135,8 +158,8 @@ struct Row {
 struct HoldStat {
   int hold = 0, n = 0, n_ac = 0;
   float ic_mean = 0.f, ic_std = 0.f, icir = 0.f, ic_t = 0.f, ic_pos = 0.f, ic_skew = 0.f, ic_kurt = 0.f;
-  float ls_mean = 0.f, ls_t = 0.f, sharpe = 0.f, beta = 0.f, mono = 0.f, rank_ac = 0.f;
-  float grp[kGroups] = {};
+  float ls_mean = 0.f, ls_t = 0.f, ls_pos = 0.f, sharpe = 0.f, beta = 0.f, mono = 0.f, rank_ac = 0.f;
+  float grp[kGroups] = {}; // 池化组均值
 };
 
 // ---- 共享整数公式 (GPU 侧有逐字一致的 __device__ 版) ----
@@ -157,6 +180,12 @@ inline uint16_t r16_of(int less, int eq, int n) {
   const long long num = (2LL * less + eq - 1) * kRankMax;
   const long long den = 2LL * (n - 1);
   return static_cast<uint16_t>((2 * num + den) / (2 * den));
+}
+
+// TS 口径: 分位 x ∈ [0,1] 直接量化 r16 = round(x · kRankMax). double 内 float × 65534 精确, 与 FMA / 求值序无关
+inline uint16_t r16_quant(float x) {
+  assert(x >= 0.f && x <= 1.f && "TS 口径的因子值须是分位 ∈ [0,1] (根 TsRankRoll)");
+  return static_cast<uint16_t>(static_cast<double>(x) * kRankMax + 0.5);
 }
 
 // 组号: r16 等分 kGroups 组
@@ -181,6 +210,33 @@ inline float pearson_int(unsigned long long n, unsigned long long sx, unsigned l
   const long long cxy = static_cast<long long>(n * sxy) - static_cast<long long>(sx * sy);
   ok = vx > 0 && vy > 0;
   return ok ? static_cast<float>(static_cast<double>(cxy) / std::sqrt(static_cast<double>(vx) * static_cast<double>(vy))) : 0.f;
+}
+
+// 一行标签侧的收尾 (两后端逐字一致; GPU 侧有 __device__ 版): J 上整数五和 → ic; 组和 / 组计数 → grp / cnt / ls; mkt.
+//   smk / ssv = J 上 Σ lv / Σ sv; gs[k] / gc[k] = 组 k 的 Σ lv / 计数; s0 = 组 0 的 Σ sv. 不 ok → r 标签侧字段保持 0
+inline void finish_row(Frame f, unsigned long long n, unsigned long long sx, unsigned long long sy, unsigned long long sxx,
+                       unsigned long long syy, unsigned long long sxy, double smk, double ssv, const double *gs, const int *gc, double s0,
+                       Row &r) {
+  bool icok = false;
+  const float ic = pearson_int(n, sx, sy, sxx, syy, sxy, icok);
+  bool gok = true;
+  if (f == Frame::CS)
+    for (int k = 0; k < kGroups; ++k)
+      gok = gok && gc[k] >= 1;
+  if (!(icok && gok))
+    return;
+  const double mkt = smk / static_cast<double>(n), mkt_s = ssv / static_cast<double>(n);
+  r.ok = 1;
+  r.ic = ic;
+  r.mkt = static_cast<float>(mkt);
+  for (int k = 0; k < kGroups; ++k) { // 超额和: Σ(lv − mkt) = Σlv − cnt·mkt
+    r.cnt[k] = static_cast<uint16_t>(gc[k]);
+    r.grp[k] = static_cast<float>(gs[k] - gc[k] * mkt);
+  }
+  const int kt = kGroups - 1;
+  const double top = gc[kt] ? (gs[kt] - gc[kt] * mkt) / gc[kt] : 0.0;
+  const double bot = gc[0] ? (s0 - gc[0] * mkt_s) / gc[0] : 0.0;
+  r.ls = static_cast<float>(top + bot);
 }
 
 // ---- 二级汇总 (主机, double; 两后端共用) ----
@@ -214,17 +270,21 @@ inline HoldStat summarize(const Row *r, int T, int hold) {
   HoldStat s;
   s.hold = hold;
   double sic = 0.0, sls = 0.0, smk = 0.0, sac = 0.0, sg[kGroups] = {};
-  int n = 0, npos = 0, nac = 0;
+  long long sc[kGroups] = {};
+  int n = 0, npos = 0, nlpos = 0, nac = 0;
   for (int t = 0; t < T; ++t) {
     const Row &w = r[t];
     if (w.ok) {
       ++n;
       npos += w.ic > 0.f;
+      nlpos += w.ls > 0.f;
       sic += w.ic;
       sls += w.ls;
       smk += w.mkt;
-      for (int k = 0; k < kGroups; ++k)
+      for (int k = 0; k < kGroups; ++k) {
         sg[k] += w.grp[k];
+        sc[k] += w.cnt[k];
+      }
     }
     if (w.ok_ac) {
       ++nac;
@@ -265,6 +325,7 @@ inline HoldStat summarize(const Row *r, int T, int hold) {
     s.ic_kurt = static_cast<float>((m4 / n) / (v * v) - 3.0);
   }
   s.ls_mean = static_cast<float>(mls);
+  s.ls_pos = static_cast<float>(static_cast<double>(nlpos) / n);
   if (ls_sd > 0.0) {
     s.ls_t = static_cast<float>(mls / ls_sd * std::sqrt(n_eff));
     s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(static_cast<double>(kDaysPerYear) * kSegLen / h));
@@ -273,7 +334,7 @@ inline HoldStat summarize(const Row *r, int T, int hold) {
     s.beta = static_cast<float>(cov / vmk);
   double g[kGroups];
   for (int k = 0; k < kGroups; ++k) {
-    g[k] = sg[k] / n;
+    g[k] = sc[k] > 0 ? sg[k] / static_cast<double>(sc[k]) : 0.0; // 沿 t 池化
     s.grp[k] = static_cast<float>(g[k]);
   }
   s.mono = static_cast<float>(mono_of(g, kGroups));

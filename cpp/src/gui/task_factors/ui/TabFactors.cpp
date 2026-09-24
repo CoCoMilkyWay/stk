@@ -113,8 +113,8 @@ void from_expr(const factor::expr::Expr &e, int i, BuildNode &n) {
     from_expr(e, x.args[a], n.args[a]);
 }
 
-// 一个槽的下拉: group_slot = GROUP 域算子的组 id 元 (只列整数列算子 + 特征叶)
-void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filter_cap, bool group_slot) {
+// 一个槽的下拉: need = 父算子该元的 in 域 (根 = REAL); 严格域 (组 id 的 INT) 只列 out ⊆ need 的算子 + 特征叶 (与 parse 同规则)
+void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filter_cap, factor::Dom need) {
   const char *preview = n.op >= 0 ? factor::expr::kOps[n.op].name : (n.feat.empty() ? "<选择>" : n.feat.c_str());
   ImGui::SetNextItemWidth(220);
   if (!ImGui::BeginCombo("##slot", preview, ImGuiComboFlags_HeightLargest))
@@ -132,12 +132,8 @@ void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filte
   ImGui::TextDisabled("算子");
   for (int i = 0; i < factor::expr::kOpCount; ++i) {
     const factor::expr::OpInfo &o = factor::expr::kOps[i];
-    if (group_slot) { // 组 id 元须是整数列
-      factor::expr::Node probe;
-      probe.op = i;
-      if (factor::expr::kind_of(probe) != factor::expr::Kind::INT)
-        continue;
-    }
+    if (factor::dom_strict(need) && !factor::dom_sub(o.out, need))
+      continue;
     if (!contains_ci(o.name, f) && !contains_ci(o.c_name, f))
       continue;
     char label[96];
@@ -158,12 +154,14 @@ void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filte
 }
 
 // 递归画一个节点: [槽名] [下拉] [参数...]; 算子的子槽缩进一层
-void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filter_cap, const char *slot_label, bool group_slot) {
+void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filter_cap, const char *slot_label, factor::Dom need) {
   ImGui::PushID(&n);
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("%s", slot_label);
+  if (need != factor::Dom::REAL && ImGui::IsItemHovered())
+    ImGui::SetTooltip("该元值域 %s%s", factor::dom_name(need), factor::dom_strict(need) ? " (严格: 组 id)" : " (语义声明, 越界格算子自置无效)");
   ImGui::SameLine();
-  slot_combo(n, ft, filter, filter_cap, group_slot);
+  slot_combo(n, ft, filter, filter_cap, need);
   if (n.op >= 0) {
     const factor::expr::OpInfo &o = factor::expr::kOps[n.op];
     if (factor::expr::declares(o.params, "d")) {
@@ -189,8 +187,8 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
       ImGui::SetTooltip("%s", o.note);
     ImGui::Indent(24.0f);
     for (size_t a = 0; a < n.args.size(); ++a) {
-      const bool is_group = o.a == factor::A::GROUP && static_cast<int>(a) == factor::expr::group_arg(o);
-      render_node(n.args[a], ft, filter, filter_cap, is_group ? "组 id" : kSlotNames[a], is_group);
+      const factor::Dom need = o.in[a];
+      render_node(n.args[a], ft, filter, filter_cap, need == factor::Dom::INT ? "组 id" : kSlotNames[a], need);
     }
     ImGui::Unindent(24.0f);
   }
@@ -243,19 +241,19 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   }
   if (ImGui::IsItemHovered() && r.has_stat) {
     ImGui::BeginTooltip();
-    ImGui::Text("stat 来自: %s | %s  %s..%s  %d 天 × %d 资产 (T=%d)  %s  %s", r.stat_from_file ? "文件" : "本轮", r.scope.universe.c_str(),
-                r.scope.start_date.c_str(), r.scope.end_date.c_str(), r.scope.days, r.scope.A, r.scope.T, r.scope.backend.c_str(),
-                r.scope.time.c_str());
+    ImGui::Text("stat 来自: %s | %s 口径 | %s  %s..%s  %d 天 × %d 资产 (T=%d)  %s  %s", r.stat_from_file ? "文件" : "本轮",
+                factor::stat::frame_name(r.frame), r.scope.universe.c_str(), r.scope.start_date.c_str(), r.scope.end_date.c_str(), r.scope.days,
+                r.scope.A, r.scope.T, r.scope.backend.c_str(), r.scope.time.c_str());
     ImGui::Text("valid %.2f%%  time %.3f ms (DAG 算一遍, 与 amt / hold 无关)", r.valid_pct, r.eval_ms);
     for (int ai = 0; ai < r.n_amt; ++ai) {
       ImGui::Separator();
       ImGui::TextDisabled("amt = %dw", r.amt[ai]);
       for (int k = 0; k < r.n_hold; ++k) {
         const factor::stat::HoldStat &h = r.hold[ai][k];
-        ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f SR %+.2f "
+        ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f "
                     "β %+.3f | mono %+.3f | rAC %+.3f",
-                    factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.sharpe,
-                    h.beta, h.mono, h.rank_ac);
+                    factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
+                    h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
       }
     }
     ImGui::EndTooltip();
@@ -432,7 +430,8 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   else
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "2. Add:");
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("从外到内: 先选根 (通常 CsRank / CsZ 等截面归一), 再在缩进的子槽里选算子或特征; 参数 (d / k / k2) 手填\n"
+    ImGui::SetTooltip("从外到内: 先选根 —— 必须是归一算子: CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=1275, 5 日) (时序口径);\n"
+                      "再在缩进的子槽里选算子或特征; 参数 (d / k / k2) 手填\n"
                       "下拉里可打字过滤 (算子名 / 中文名 / 特征 code); GROUP 域算子的组 id 槽只列整数列算子 + 特征\n"
                       "勾选表格首列 → 编辑模式 (载入到这里; Save 覆盖 / 删除); 取消勾选 → 添加模式, 内容留作模板");
   ImGui::SameLine();
@@ -449,16 +448,17 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     ui.note_buf[0] = '\0';
     ui.add_msg.clear();
   }
-  render_node(ui.build, ft, ui.filter_buf, sizeof(ui.filter_buf), "root", false);
+  render_node(ui.build, ft, ui.filter_buf, sizeof(ui.filter_buf), "root", factor::Dom::REAL);
 
   std::string src;
   bool complete = true;
   to_source(ui.build, src, complete);
   ui.add_err.clear();
   std::string canon;
+  factor::stat::Frame frame = factor::stat::Frame::CS;
   if (complete) {
     factor::expr::Expr e;
-    if (factor::expr::parse(src, ft.lookup(), e, ui.add_err))
+    if (factor::expr::parse(src, ft.lookup(), e, ui.add_err) && factor::expr::root_frame(e, frame, ui.add_err))
       canon = e.canon;
   }
   ImGui::AlignTextToFramePadding();
@@ -470,8 +470,14 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%s   (有未选的槽)", src.c_str());
   else if (!ui.add_err.empty())
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "%s   %s", src.c_str(), ui.add_err.c_str());
-  else
+  else {
     ImGui::TextUnformatted(canon.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%s]", factor::stat::frame_name(frame));
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", frame == factor::stat::Frame::CS ? "截面口径: 根是截面归一算子, 每 t 截面 rank → 20 组 (标签超额)"
+                                                               : "时序口径: 根 TsRankRoll(5 日) 自身分位直接分 20 组, 组可空 (标签超额)");
+  }
 
   const bool name_red = ui.name_buf[0] != '\0' && !ValidFactorName(ui.name_buf); // InputText 会改 buf, push/pop 必须用同一个判断结果
   if (name_red)
@@ -593,38 +599,40 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
-  constexpr int kNumCols = 19;
+  constexpr int kNumCols = 21;
   if (ImGui::BeginTable("FactorTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                             ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
                             ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 0))) {
-    const char *headers[kNumCols] = {"edit", "file", "status", "time", "expr", "ops", "feats", "slots", "valid%", "IC",
-                                     "ICIR", "IC_t", "LS", "SR", "β", "mono", "rAC", "n", "note"};
+    const char *headers[kNumCols] = {"edit", "type", "file", "frame", "status", "time", "expr", "ops", "feats", "slots", "valid%",
+                                     "IC", "ICIR", "IC_t", "LS", "SR", "β", "mono", "rAC", "n", "note"};
     const char *tooltips[kNumCols] = {
         "勾选 → 编辑模式 (载入上方构建器, 可改 / 删), 同时只勾一个; 排序 = 文件名序 (默认)",
+        "因子类型 (文件 type 键): alpha = 预测超额收益 (再分 CS / TS 口径, 见 frame 列); beta = 风险暴露 (未实现, 留位)",
         "<factor_dir>/<universe>/ 下的文件名 = <name>.json; 点行高光 → 单因子展示 (Inspect 页)",
-        "BROKEN 红 = 文件 / 表达式 / params / 组 id 数据不合 (悬停看原因; 文件不动, 人手动处理)\nok 绿 = 本轮算的; file 灰 = stat 来自文件且作用域一致; file≠scope 黄 = 文件 stat 是别的 universe / 区间算的\nno stat = 从未评估; dup 黄 = 与另一文件同一规范串",
+        "口径 (由根算子定); 标签两口径都取超额 (减截面均值), 组均值沿 t 池化\nCS = 截面 (根 CsRank / CsNormRank / CsZ; 每 t 截面 rank 分 20 组, 任一组空行无效, 多空对冲)\nTS = 时序 (根 TsRankRoll 5 日; 自身分位直接分 20 组, 组可空 → long/flat)",
+        "BROKEN 红 = 文件 / type / 表达式 / 根非归一 / params / 组 id 数据不合 (悬停看原因; 文件不动, 人手动处理)\nok 绿 = 本轮算的; file 灰 = stat 来自文件且作用域一致; file≠scope 黄 = 文件 stat 是别的 universe / 区间算的\nno stat = 从未评估; dup 黄 = 与另一文件同一规范串",
         "该因子算一遍 DAG 的耗时 (ms) = 子树全部算子节点之和 (共享节点算给每个用它的因子): CPU 全核 wall / GPU 纯 kernel",
-        "规范串 (解析后重新序列化: 算子 PascalCase, 参数 d/k/k2 显式, 含 params 覆盖后的当前值); BROKEN 行显示文件原串",
+        "规范串 (解析后重新序列化: 算子 PascalCase, 参数 d/k/k2 显式, 含 params 覆盖后的当前值); 解析不过的行显示文件原串",
         "算子节点数 (= params 数组长度)",
         "去重特征数 (输入平面数)",
         "DAG 缓冲槽数 (峰值同时存活的中间量; 内存 / 显存 = slots × T·A × 5B)",
         "根平面有效格占比",
-        "rank IC 均值 (Spearman, 每分钟截面, 沿 t 平均; 只计 ok 行)",
+        "rank IC 均值 (Pearson(r16_x, r16_y), 每分钟截面, 沿 t 平均; 只计 ok 行). CS: r16_x = 截面秩; TS: r16_x = 自身分位量化",
         "IC 均值 / IC 标准差",
         "IC t 值 = ICIR · √(n/h) (重叠持有期折算)",
-        "多空净收益均值 (最高组做多 + 最低组做空, 实盘可成交口径)",
+        "多空超额均值 (最高组做多超额 + 最低组做空超额, 实盘可成交口径, 相对市场; TS 空组项 0)",
         "多空 Sharpe (按持有期为一期年化)",
         "多空对市场 (截面标签均值) 的 OLS 斜率",
-        "20 组均值对组号的 Spearman (单调性)",
+        "20 组池化均值对组号的 Spearman (单调性)",
         "rank 自相关 (lag = h)",
         "有效行数 (ok 行; < 3 时 Stat 列空)",
         "文件 note 键 (人 / agent 写的一句话)",
     };
     for (int c = 0; c < kNumCols; ++c) {
       ImGuiTableColumnFlags fl = ImGuiTableColumnFlags_WidthFixed;
-      if (c == 2 || c == 4 || c == 18)
+      if (c == 4 || c == 6 || c == 20)
         fl |= ImGuiTableColumnFlags_NoSort;
       ImGui::TableSetupColumn(headers[c], fl);
     }
@@ -660,33 +668,37 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       auto key = [&](const FactorRow &r) -> double {
         const HS *h = hold_of(r, cur_amt, cur_hold);
         switch (ui.sort_column) {
+        case 1:
+          return static_cast<double>(r.kind);
         case 3:
-          return r.has_stat ? r.eval_ms : -1.0;
+          return r.error.empty() ? static_cast<double>(r.frame) : -1.0;
         case 5:
-          return r.n_ops;
-        case 6:
-          return r.n_feats;
+          return r.has_stat ? r.eval_ms : -1.0;
         case 7:
-          return r.n_slots;
+          return r.n_ops;
         case 8:
-          return r.has_stat ? r.valid_pct : -1.0;
+          return r.n_feats;
         case 9:
-          return stat_key(h, &HS::ic_mean);
+          return r.n_slots;
         case 10:
-          return stat_key(h, &HS::icir);
+          return r.has_stat ? r.valid_pct : -1.0;
         case 11:
-          return stat_key(h, &HS::ic_t);
+          return stat_key(h, &HS::ic_mean);
         case 12:
-          return stat_key(h, &HS::ls_mean);
+          return stat_key(h, &HS::icir);
         case 13:
-          return stat_key(h, &HS::sharpe);
+          return stat_key(h, &HS::ic_t);
         case 14:
-          return stat_key(h, &HS::beta);
+          return stat_key(h, &HS::ls_mean);
         case 15:
-          return stat_key(h, &HS::mono);
+          return stat_key(h, &HS::sharpe);
         case 16:
-          return stat_key(h, &HS::rank_ac);
+          return stat_key(h, &HS::beta);
         case 17:
+          return stat_key(h, &HS::mono);
+        case 18:
+          return stat_key(h, &HS::rank_ac);
+        case 19:
           return h ? h->n : -1.0;
         default:
           return 0.0;
@@ -730,7 +742,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         } else {
           ui.edit_file = r.file;
           ui.build = BuildNode{};
-          if (r.error.empty()) { // 规范串来自 scan 的 parse, 必可再解析; BROKEN 行构建器留空 (只能改名 / 删)
+          if (!r.expr.empty()) { // 规范串来自 scan 的 parse, 必可再解析 (根非归一的 BROKEN 行也有, 载入后套个根即可); 其他 BROKEN 行留空
             factor::expr::Expr e;
             std::string err;
             const bool ok = factor::expr::parse(r.expr, ft.lookup(), e, err);
@@ -748,18 +760,28 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         ImGui::SetTooltip("%s", editing ? "取消勾选 → 添加模式 (构建器内容留作模板)" : "勾选 → 编辑模式 (载入上方构建器)");
       ImGui::PopID();
       ImGui::TableSetColumnIndex(1);
+      if (r.kind == FactorKind::Beta)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "%s", kind_name(r.kind));
+      else
+        ImGui::TextUnformatted(kind_name(r.kind));
+      ImGui::TableSetColumnIndex(2);
       if (editing)
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", r.file.c_str());
       else
         ImGui::TextUnformatted(r.file.c_str());
-      ImGui::TableSetColumnIndex(2);
-      status_cell(r, ctx);
       ImGui::TableSetColumnIndex(3);
+      if (!r.error.empty())
+        ImGui::TextDisabled("-");
+      else
+        ImGui::TextUnformatted(factor::stat::frame_name(r.frame));
+      ImGui::TableSetColumnIndex(4);
+      status_cell(r, ctx);
+      ImGui::TableSetColumnIndex(5);
       if (r.has_stat)
         ImGui::Text("%.1f", r.eval_ms);
       else
         ImGui::TextDisabled("-");
-      ImGui::TableSetColumnIndex(4);
+      ImGui::TableSetColumnIndex(6);
       if (r.expr.empty()) {
         if (r.expr_raw.empty())
           ImGui::TextDisabled("-");
@@ -770,48 +792,48 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         if (ImGui::IsItemHovered() && r.expr_raw != r.expr)
           ImGui::SetTooltip("文件原串: %s", r.expr_raw.c_str());
       }
-      ImGui::TableSetColumnIndex(5);
-      if (r.expr.empty())
+      ImGui::TableSetColumnIndex(7);
+      if (!r.error.empty())
         ImGui::TextDisabled("-");
       else
         ImGui::Text("%d", r.n_ops);
-      ImGui::TableSetColumnIndex(6);
-      if (r.expr.empty())
+      ImGui::TableSetColumnIndex(8);
+      if (!r.error.empty())
         ImGui::TextDisabled("-");
       else
         ImGui::Text("%d", r.n_feats);
-      ImGui::TableSetColumnIndex(7);
-      if (r.expr.empty())
+      ImGui::TableSetColumnIndex(9);
+      if (!r.error.empty())
         ImGui::TextDisabled("-");
       else
         ImGui::Text("%d", r.n_slots);
-      ImGui::TableSetColumnIndex(8);
+      ImGui::TableSetColumnIndex(10);
       if (r.has_stat)
         ImGui::Text("%.1f", r.valid_pct);
       else
         ImGui::TextDisabled("-");
-      ImGui::TableSetColumnIndex(9);
-      render_stat_cell(h, h ? h->ic_mean : 0.f, "%+.4f");
-      ImGui::TableSetColumnIndex(10);
-      render_stat_cell(h, h ? h->icir : 0.f, "%+.3f");
       ImGui::TableSetColumnIndex(11);
-      render_stat_cell(h, h ? h->ic_t : 0.f, "%+.2f");
+      render_stat_cell(h, h ? h->ic_mean : 0.f, "%+.4f");
       ImGui::TableSetColumnIndex(12);
-      render_stat_cell(h, h ? h->ls_mean : 0.f, "%+.5f");
+      render_stat_cell(h, h ? h->icir : 0.f, "%+.3f");
       ImGui::TableSetColumnIndex(13);
-      render_stat_cell(h, h ? h->sharpe : 0.f, "%+.2f");
+      render_stat_cell(h, h ? h->ic_t : 0.f, "%+.2f");
       ImGui::TableSetColumnIndex(14);
-      render_stat_cell(h, h ? h->beta : 0.f, "%+.3f");
+      render_stat_cell(h, h ? h->ls_mean : 0.f, "%+.5f");
       ImGui::TableSetColumnIndex(15);
-      render_stat_cell(h, h ? h->mono : 0.f, "%+.3f");
+      render_stat_cell(h, h ? h->sharpe : 0.f, "%+.2f");
       ImGui::TableSetColumnIndex(16);
-      render_stat_cell(h, h ? h->rank_ac : 0.f, "%+.3f");
+      render_stat_cell(h, h ? h->beta : 0.f, "%+.3f");
       ImGui::TableSetColumnIndex(17);
+      render_stat_cell(h, h ? h->mono : 0.f, "%+.3f");
+      ImGui::TableSetColumnIndex(18);
+      render_stat_cell(h, h ? h->rank_ac : 0.f, "%+.3f");
+      ImGui::TableSetColumnIndex(19);
       if (h)
         ImGui::Text("%d", h->n);
       else
         ImGui::TextDisabled("-");
-      ImGui::TableSetColumnIndex(18);
+      ImGui::TableSetColumnIndex(20);
       if (r.note.empty())
         ImGui::TextDisabled("-");
       else

@@ -8,6 +8,7 @@
 #include "factor/CS/Cpu.hpp"    // IWYU pragma: keep
 #include "factor/CS/Stream.hpp" // IWYU pragma: keep
 
+#include "factor/Expr.hpp" // kOps / operand_tex (签名 LaTeX 由表列生成)
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
 #include "factor/Stat/Check.hpp"
@@ -131,49 +132,56 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   }
 }
 
-// Stat 评估算子: 造数 (PLAIN, 与 op_check 同口径) → cpu (全核) / gpu 各计时 → 一级 + 二级对拍.
-// 表列: cpu_ms / gpu_ms = eval (每因子一次), stream 列 n/a, gpu Diff = 一级 + 二级合并; prep 与二级汇总进 extra
+// Stat 评估算子: 两口径 (CS / TS) 各造数 (PLAIN, 与 op_check 同口径) → cpu (全核) / gpu 各计时 → 一级 + 二级对拍.
+// 表列: cpu_ms / gpu_ms = 两口径 eval 之和, stream 列 n/a, gpu Diff = 两口径 × 两级合并; prep (CS 那轮) 与二级汇总进 extra
 void run_stat(const OperatorsRequest &rq, OperatorRow &row, StatExtra &extra) {
   using namespace factor::stat::check;
-  std::mt19937 rng(rq.seed);
-  Data d;
-  make(d, Profile::PLAIN, rq.times, rq.A, rng);
-  Result cpu;
-  run_cpu(d, cpu, cpu_threads());
-  row.cpu_ms = cpu.eval_ms;
+  const bool has_gpu = factor::gpu::available();
+  row.cpu_ms = 0;
   row.stream_ms = -1;
   row.stream = {};
-  extra.cpu_prep_ms = cpu.prep_ms;
-  extra.n_hold = d.hd.n;
-  for (int i = 0; i < d.hd.n; ++i)
-    extra.hold[i] = cpu.stat[static_cast<size_t>(i)];
-  if (!factor::gpu::available()) {
-    row.gpu_ms = -1;
-    row.gpu = {};
-    extra.gpu_prep_ms = -1;
-    return;
+  row.gpu_ms = has_gpu ? 0 : -1;
+  row.gpu = {};
+  extra.gpu_prep_ms = -1;
+  const auto merge = [&](const Diff &d) {
+    row.gpu.mask_bad += d.mask_bad;
+    row.gpu.val_bad += d.val_bad;
+    row.gpu.compared += d.compared;
+    if (d.worst > row.gpu.worst)
+      row.gpu.worst = d.worst;
+    if (row.gpu.worst_at < 0)
+      row.gpu.worst_at = d.worst_at;
+  };
+  for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
+    const int fi = static_cast<int>(fr);
+    std::mt19937 rng(rq.seed);
+    Data d;
+    make(d, fr, Profile::PLAIN, rq.times, rq.A, rng);
+    Result cpu;
+    run_cpu(d, cpu, cpu_threads());
+    row.cpu_ms += cpu.eval_ms;
+    if (fr == factor::stat::Frame::CS)
+      extra.cpu_prep_ms = cpu.prep_ms;
+    extra.n_hold = d.hd.n;
+    for (int i = 0; i < d.hd.n; ++i)
+      extra.hold[fi][i] = cpu.stat[static_cast<size_t>(i)];
+    if (!has_gpu)
+      continue;
+    Result gpu;
+    gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
+    std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
+    for (int i = 0; i < d.hd.n; ++i)
+      lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
+                                     d.lab[static_cast<size_t>(i)].m.data()};
+    factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), fr, d.T, d.A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
+    summarize_all(gpu, d);
+    const Tol tol = tol_of(Profile::PLAIN);
+    row.gpu_ms += gpu.eval_ms;
+    if (fr == factor::stat::Frame::CS)
+      extra.gpu_prep_ms = gpu.prep_ms;
+    merge(compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol));
+    merge(compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol));
   }
-  Result gpu;
-  gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
-  std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
-  for (int i = 0; i < d.hd.n; ++i)
-    lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
-                                   d.lab[static_cast<size_t>(i)].m.data()};
-  factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), d.T, d.A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
-  summarize_all(gpu, d);
-  const Tol tol = tol_of(Profile::PLAIN);
-  row.gpu_ms = gpu.eval_ms;
-  extra.gpu_prep_ms = gpu.prep_ms;
-  const Diff dr = compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
-  const Diff ds = compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
-  row.gpu = dr; // 两级合并成一个 Diff (表只有一格)
-  row.gpu.mask_bad += ds.mask_bad;
-  row.gpu.val_bad += ds.val_bad;
-  row.gpu.compared += ds.compared;
-  if (ds.worst > row.gpu.worst)
-    row.gpu.worst = ds.worst;
-  if (row.gpu.worst_at < 0)
-    row.gpu.worst_at = ds.worst_at;
 }
 
 } // namespace
@@ -200,8 +208,9 @@ OperatorsService::OperatorsService() {
 #define RUN_SELF(Name, ar, t) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>)
 #define RUN_ALL(Name, ar, t) (&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>)
 #define RUN_GROUP RUN_ALL
-#define ROW(Name, c_name, ar, t, a, kern, prm, operand, op, note)                                              \
-  rows.push_back({#Name, c_name, ar, factor::T::t, factor::A::a, factor::Kern::kern, prm, operand, op, note}); \
+#define ROW(Name, c_name, ar, t, a, kern, kdom, in, out, op, note)                                                       \
+  rows.push_back({#Name, c_name, ar, factor::T::t, factor::A::a, factor::Kern::kern, factor::KDom::kdom,                 \
+                  factor::params_str(factor::T::t, factor::KDom::kdom), std::string{}, in, factor::Dom::out, op, note}); \
   runners_.push_back(RUN_##a(Name, ar, t));
   OP_ALL(ROW)
 #undef ROW
@@ -209,6 +218,12 @@ OperatorsService::OperatorsService() {
 #undef RUN_ALL
 #undef RUN_SELF
   assert(rows.size() == runners_.size());
+  // 签名 LaTeX 由表列生成 (与 Expr 的 kOps 同序: rows[i] ↔ kOps[i-1])
+  assert(rows.size() == static_cast<size_t>(factor::expr::kOpCount) + 1);
+  for (size_t i = 1; i < rows.size(); ++i) {
+    assert(std::strcmp(rows[i].e_name, factor::expr::kOps[i - 1].name) == 0);
+    rows[i].operand = factor::expr::operand_tex(factor::expr::kOps[i - 1]);
+  }
   // 未跑之前也显示每算子默认参数, 表一打开 Operands 列就有实际值
   for (OperatorRow &r : rows)
     r.param = param_of(r);

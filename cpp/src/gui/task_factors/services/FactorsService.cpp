@@ -132,7 +132,7 @@ bool parse_patches(const json &j, std::vector<factor::expr::ParamPatch> &out, st
   return true;
 }
 
-// 文件 stat → 行 (载入显示用); 任一处不合 → 整块忽略 (不算 BROKEN: stat 是本服务写的派生数据, 下次评估覆盖)
+// 文件 stat → 行 (载入显示用); 任一处不合 / 口径与当前根不符 → 整块忽略 (不算 BROKEN: stat 是本服务写的派生数据, 下次评估覆盖)
 void load_stat(const json &j, FactorRow &r) {
   if (!j.is_object())
     return;
@@ -144,6 +144,8 @@ void load_stat(const json &j, FactorRow &r) {
     dst = it->get<std::string>();
     return true;
   };
+  if (!json_str_is(j, "frame", factor::stat::frame_name(r.frame)))
+    return;
   if (!str("universe", t.scope.universe) || !str("start_date", t.scope.start_date) || !str("end_date", t.scope.end_date) ||
       !str("backend", t.scope.backend) || !str("time", t.scope.time))
     return;
@@ -197,6 +199,7 @@ ojson stat_json(const FactorRow &r) {
   j["A"] = r.scope.A;
   j["backend"] = r.scope.backend;
   j["time"] = r.scope.time;
+  j["frame"] = factor::stat::frame_name(r.frame);
   j["valid_pct"] = sig4(r.valid_pct);
   j["eval_ms"] = sig4(r.eval_ms);
   ojson amts = ojson::array();
@@ -331,23 +334,25 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   return !cancel.load(std::memory_order_relaxed) && !reader.stale();
 }
 
-// GROUP 域算子节点的组 id 元若是特征叶: 数据须全为 [0, kMaxGroup) 的整数 (CS 算子内部 max_gid 断言炸不得由数据触发)
-void check_group_leaf(const factor::Dag &d, int node, const Loaded &L, std::string &err) {
+// 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
+// (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判
+void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err) {
   const factor::DagNode &nd = d.nodes[static_cast<size_t>(node)];
-  if (nd.op < 0 || factor::expr::kOps[nd.op].a != factor::A::GROUP)
+  if (nd.op < 0)
     return;
-  const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[factor::expr::group_arg(factor::expr::kOps[nd.op])])];
-  if (g.op >= 0)
-    return;
-  const factor::check::Plane &p = L.planes[static_cast<size_t>(g.feat)];
-  for (size_t i = 0; i < p.v.size(); ++i) {
-    if (!p.m[i])
+  const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
+  for (int s = 0; s < o.arity; ++s) {
+    const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
+    if (g.op >= 0 || !factor::dom_strict(o.in[s]))
       continue;
-    const float v = p.v[i];
-    if (!(factor::expr::is_int(v) && v >= 0.f && v < static_cast<float>(factor::kMaxGroup))) {
+    const factor::check::Plane &p = L.planes[static_cast<size_t>(g.feat)];
+    for (size_t i = 0; i < p.v.size(); ++i) {
+      if (!p.m[i] || factor::expr::dom_holds(o.in[s], p.v[i]))
+        continue;
       char buf[64];
-      std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
-      err = "组 id 特征 " + L.feat_codes[static_cast<size_t>(g.feat)] + " 含非整数 / 越界值 " + buf + " (须为 0..1023 整数)";
+      std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(p.v[i]));
+      err = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " +
+            L.feat_codes[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
       return;
     }
   }
@@ -487,7 +492,8 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
                           std::string_view note, std::string &err) {
   assert(ValidFactorName(name));
   factor::expr::Expr e;
-  if (!factor::expr::parse(expr_src, feats.lookup(), e, err))
+  factor::stat::Frame fr;
+  if (!factor::expr::parse(expr_src, feats.lookup(), e, err) || !factor::expr::root_frame(e, fr, err))
     return "";
   const std::string file = std::string(name) + ".json";
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
@@ -496,6 +502,7 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
     return "";
   }
   ojson j;
+  j["type"] = kind_name(FactorKind::Alpha);
   j["expr"] = e.canon;
   if (!note.empty())
     j["note"] = std::string(note);
@@ -508,7 +515,8 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
                              std::string_view expr_src, std::string_view note, std::string &err) {
   assert(ValidFactorName(new_name));
   factor::expr::Expr e;
-  if (!factor::expr::parse(expr_src, feats.lookup(), e, err))
+  factor::stat::Frame fr;
+  if (!factor::expr::parse(expr_src, feats.lookup(), e, err) || !factor::expr::root_frame(e, fr, err))
     return "";
   const std::filesystem::path from = std::filesystem::path(factor_dir) / file;
   const std::string new_file = std::string(new_name) + ".json";
@@ -527,7 +535,8 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
   }
   if (!j.is_object())
     j = ojson::object();
-  bool expr_changed = true; // 按规范串比 (文件原串可能是非规范写法)
+  j["type"] = kind_name(FactorKind::Alpha); // 构建器只造 alpha
+  bool expr_changed = true;                 // 按规范串比 (文件原串可能是非规范写法)
   if (const auto old_expr = j.find("expr"); old_expr != j.end() && old_expr->is_string()) {
     factor::expr::Expr old_e;
     std::string old_err;
@@ -660,6 +669,18 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       continue;
     }
     r.expr_raw = eit->get<std::string>();
+    // type: 必填; beta 只留位
+    if (json_str_is(j, "type", kind_name(FactorKind::Beta))) {
+      r.kind = FactorKind::Beta;
+      r.error = "beta 类因子未实现 (留位)";
+      out.push_back(r);
+      continue;
+    }
+    if (!json_str_is(j, "type", kind_name(FactorKind::Alpha))) {
+      r.error = "缺 type 键或值不合 (alpha | beta)";
+      out.push_back(r);
+      continue;
+    }
     factor::expr::Expr e;
     if (!factor::expr::parse(r.expr_raw, fl, e, r.error)) {
       out.push_back(r);
@@ -671,6 +692,11 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         out.push_back(r);
         continue;
       }
+    }
+    if (!factor::expr::root_frame(e, r.frame, r.error)) {
+      r.expr = e.canon; // 表里仍显示规范串, 便于看根
+      out.push_back(r);
+      continue;
     }
     r.expr = e.canon;
     r.n_ops = e.n_ops;
@@ -696,6 +722,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   // 有效行 → Expr (scan 已校验过, 这里必成功) → 一张共享 DAG (F.roots[k] ↔ idx[k])
   std::vector<size_t> idx;
   std::vector<factor::expr::Expr> exprs;
+  std::vector<factor::stat::Frame> frames; // [k] 口径 (同根的因子规范串相同 → 口径相同)
   {
     std::lock_guard<std::mutex> lock(mutex);
     const factor::expr::FeatureLookup fl = feats_.lookup();
@@ -711,6 +738,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
       (void)ok;
       idx.push_back(i);
       exprs.push_back(std::move(e));
+      frames.push_back(rows[i].frame);
     }
   }
   const auto finish_all_pending = [&](const char *msg) {
@@ -779,10 +807,10 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
     return false;
   }
 
-  // ---- 组 id 特征叶的数据检查 (每 GROUP 节点一次; 子树含坏节点的因子 → BROKEN, 跳过) ----
+  // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
   for (int i = 0; i < N; ++i)
-    check_group_leaf(F, i, L, node_err[static_cast<size_t>(i)]);
+    check_leaf_domains(F, i, L, node_err[static_cast<size_t>(i)]);
   std::vector<uint8_t> runnable(idx.size(), 1), needed(static_cast<size_t>(N), 0);
   for (size_t k = 0; k < idx.size(); ++k) {
     for (int i : sub[k]) {
@@ -820,7 +848,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
   std::vector<factor::stat::Row> srows(H * static_cast<size_t>(L.T));
 
-  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, valid_pct) 填 srows → 发布该根的全部因子 (dup 共根)
+  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct) 填 srows → 发布该根的全部因子 (dup 共根)
   const auto walk = [&](const char *backend, auto &&run_node, auto &&stat_root) -> bool {
     for (int i = 0; i < N; ++i) {
       if (cancel_.load(std::memory_order_relaxed))
@@ -840,7 +868,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
         if (!runnable[k] || F.roots[k] != i)
           continue;
         if (!stat_done) {
-          stat_root(i, valid_pct);
+          stat_root(i, frames[k], valid_pct);
           stat_done = true;
         }
         FactorRow r;
@@ -892,10 +920,10 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
           factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc);
           return ms_since(t0);
         },
-        [&](int i, float &valid_pct) {
+        [&](int i, factor::stat::Frame fr, float &valid_pct) {
           const factor::check::Plane *root = plane_of(i);
           valid_pct = valid_pct_of(root->m.data(), n);
-          factor::cpu::stat::eval(root->v.data(), root->m.data(), L.T, L.A, L.hd, lab.data(), ws.data(), srows.data(), threads);
+          factor::cpu::stat::eval(root->v.data(), root->m.data(), fr, L.T, L.A, L.hd, lab.data(), ws.data(), srows.data(), threads);
         });
   }
 
@@ -931,11 +959,11 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
           factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], out, L.T, L.A, nd.p, &ms);
         return ms;
       },
-      [&](int i, float &valid_pct) {
+      [&](int i, factor::stat::Frame fr, float &valid_pct) {
         const factor::gpu::DevPlane *root = dplane_of(i);
         factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid%
         valid_pct = valid_pct_of(mask.data(), n);
-        factor::gpu::stat_eval(ss, root, srows.data());
+        factor::gpu::stat_eval(ss, root, fr, srows.data());
       });
   pool.release();
   factor::gpu::stat_close(ss);

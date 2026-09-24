@@ -41,7 +41,7 @@ inline bool json_str_is(const nlohmann::json &j, const char *key, const char *wa
 }
 
 inline constexpr const char *kHoldStatKeys[] = {"ic_mean", "ic_std", "icir", "ic_t", "ic_pos", "ic_skew", "ic_kurt",
-                                                "ls_mean", "ls_t", "sharpe", "beta", "mono", "rank_ac"};
+                                                "ls_mean", "ls_t", "ls_pos", "sharpe", "beta", "mono", "rank_ac"};
 inline constexpr int kHoldStatKeyCount = static_cast<int>(sizeof(kHoldStatKeys) / sizeof(kHoldStatKeys[0]));
 
 namespace detail {
@@ -49,7 +49,7 @@ namespace detail {
 template <class H>
 auto hold_stat_field(H &h, int q) -> decltype(&h.ic_mean) {
   decltype(&h.ic_mean) f[kHoldStatKeyCount] = {&h.ic_mean, &h.ic_std, &h.icir, &h.ic_t, &h.ic_pos, &h.ic_skew, &h.ic_kurt,
-                                               &h.ls_mean, &h.ls_t, &h.sharpe, &h.beta, &h.mono, &h.rank_ac};
+                                               &h.ls_mean, &h.ls_t, &h.ls_pos, &h.sharpe, &h.beta, &h.mono, &h.rank_ac};
   return f[q];
 }
 } // namespace detail

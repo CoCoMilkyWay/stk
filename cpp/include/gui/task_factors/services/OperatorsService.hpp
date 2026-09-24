@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -59,14 +60,17 @@ struct OperatorRow {
   const char *e_name = nullptr; // 英文名 (OpTable 行名, 域_核_窗)
   const char *c_name = nullptr; // 中文名: 域 (时/截/组) + 窗 (累/滚/指) + 核, 与 e_name 逐段对应
   int arity = 0;
-  factor::T T = factor::T::POINT;        // T 窗 (CS 组恒 POINT)
-  factor::A A = factor::A::SELF;         // A 域
-  factor::Kern kern = factor::Kern::MAP; // 核类
-  const char *params = nullptr;          // OpTable 参数列: 本算子读取的 Param 字段名, 如 "d,k"
-  const char *operand = nullptr;         // 签名与值域 (LaTeX 模板, 占位符 ⟨d⟩⟨k⟩⟨k2⟩ 由 UI 换成本轮实际值)
-  const char *op = nullptr;              // 算子定义 (LaTeX; JSON / UI 键叫 operator)
-  const char *note = nullptr;            // 用途与选型 (一句话: 量什么; 怎么用 / 配什么)
-  bool classified = true;                // false = 不在 OpTable 三维分类里 (Stat), T / A / Kernel 列空着
+  factor::T T = factor::T::POINT;         // T 窗 (CS 组恒 POINT)
+  factor::A A = factor::A::SELF;          // A 域
+  factor::Kern kern = factor::Kern::MAP;  // 核类
+  factor::KDom kdom = factor::KDom::NONE; // k 域 (OpTable k域 列)
+  const char *params = "";                // 本算子读取的 Param 字段名, 如 "d,k" (= params_str(T, kdom), 由表推出)
+  std::string operand;                    // 签名 LaTeX (Expr.hpp operand_tex 从 in / T / kdom 生成; 占位符 ⟨d⟩⟨k⟩⟨k2⟩ 由 UI 换成本轮实际值)
+  factor::Dom in[3] = {};                 // 逐元自变量值域 (OpTable in 列)
+  factor::Dom out = factor::Dom::REAL;    // 因变量值域 (OpTable out 列; Stat 行无意义, classified = false 时显示空)
+  const char *op = nullptr;               // 算子定义 (LaTeX; JSON / UI 键叫 operator)
+  const char *note = nullptr;             // 用途与选型 (一句话: 量什么; 怎么用 / 配什么)
+  bool classified = true;                 // false = 不在 OpTable 三维分类里 (Stat), T / A / Kernel 列空着
   // 动态
   factor::Param param; // 本轮实际喂的参数 (d/k/k2 来自 Check.hpp 每算子默认表); 复位时就填, 不等跑到
   RowStatus status = RowStatus::Pending;
@@ -76,12 +80,13 @@ struct OperatorRow {
 };
 
 // Stat 行放不进表列的附带信息 (悬停 e_name 看; 也落 operators.json 的 stat 键):
-// prep = 标签 rank 预处理 (常驻期一次, 不进耗时列), 每持有期的 cpu 侧二级汇总 (IC / LS / mono / rank-AC).
-// 造数与 op_check 同口径 (Stat/Check.hpp make: long = 0.3·x + 噪声, IC ≈ 0.3), 持有期 kHolds.
+// prep = 标签 rank 预处理 (常驻期一次, 不进耗时列), 两口径 (CS / TS, 下标 = Frame) 每持有期的 cpu 侧二级汇总.
+// 造数与 op_check 同口径 (Stat/Check.hpp make: long = 0.3·z + 噪声, IC ≈ 0.3; TS 的 x = Φ(z)), 持有期 kHolds.
+// 表列耗时 = 两口径 eval 之和; Diff = 两口径 × 两级合并.
 struct StatExtra {
   double cpu_prep_ms = 0, gpu_prep_ms = -1;
   int n_hold = 0;
-  factor::stat::HoldStat hold[factor::stat::kMaxHold];
+  factor::stat::HoldStat hold[2][factor::stat::kMaxHold]; // [Frame][hold]
 };
 
 enum class OperatorsStatus : uint8_t { Idle,

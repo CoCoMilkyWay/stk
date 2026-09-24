@@ -38,7 +38,7 @@ void RenderTabInspect(FactorsService &svc, const FactorsUIState &ui, const Facto
   if (!row.error.empty())
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN: %s", row.error.c_str());
   else
-    ImGui::TextUnformatted(row.expr.c_str());
+    ImGui::Text("[%s] %s", factor::stat::frame_name(row.frame), row.expr.c_str());
   if (!row.note.empty())
     ImGui::TextDisabled("%s", row.note.c_str());
   ImGui::Separator();

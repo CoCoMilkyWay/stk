@@ -6,12 +6,13 @@
 //   语义契约见 factor/Stat/Contract.hpp. 本文件与 Stat/Cpu.hpp **完全独立**, 只依赖 Contract + CUDA/CUB.
 //
 //   【布局】SoA 行主序 [T][A]; 一行 = 一个截面, 一行一 block (grid = T, blockDim = kCB = 512, 每 SM 驻 2 块).
-//   【两个核】
-//     rank_rows  精确并列均秩: 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上), 排好写回 shared,
+//   【三个核】
+//     rank_rows  (CS) 精确并列均秩: 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上), 排好写回 shared,
 //                每个元素二分查 less / eq → r16. 无效键 = kNoKey 排最后, n = 首个 kNoKey 的位置.
 //                ITEMS (每线程元素数) 按 A 分三档 2 / 6 / 10 (A ≤ 1024 / 3072 / 5120), shared 6 / 18 / 30 KB.
 //                同一个核给因子 (float 平面) 与标签 (fp16 平面) 用, 只换取键器 SrcF / SrcH.
-//     label_rows 每行先把 rx 拉进 shared (H 个持有期共用), 逐持有期一遍 A 轴累加:
+//     quant_rows (TS) 分位 x 直接量化 r16 (r16_quant), 逐格无关, grid-stride.
+//     label_rows 每行先把 rx 拉进 shared (H 个持有期共用), 逐持有期一遍 A 轴累加, 收尾 finish_row (按 Frame):
 //                  整数五和 (IC / rank-AC) 走 64 位整数 warp shuffle 归约 → 精确, 与 CPU 逐位一致;
 //                  标签浮点和 / 分组和 走 float 寄存器 select 累加 (20 组展开) + warp shuffle + 跨 warp double 收尾,
 //                  求和序固定 → GPU 自身逐次确定, 与 CPU 只差求和序 (对拍容差).
@@ -108,6 +109,7 @@ inline int hmax(int a, int b) { return a > b ? a : b; }
 
 namespace factor::gpu::stat {
 
+using factor::stat::Frame;
 using factor::stat::Holds;
 using factor::stat::kCloseAuction;
 using factor::stat::kGroups;
@@ -146,6 +148,10 @@ __device__ __forceinline__ unsigned short r16_of(int less, int eq, int n) {
   const long long den = 2LL * (n - 1);
   return static_cast<unsigned short>((2 * num + den) / (2 * den));
 }
+__device__ __forceinline__ unsigned short r16_quant(float x) {
+  assert(x >= 0.f && x <= 1.f && "TS 口径的因子值须是分位 ∈ [0,1] (根 TsRankRoll)");
+  return static_cast<unsigned short>(static_cast<double>(x) * kRankMax + 0.5);
+}
 __device__ __forceinline__ int grp_of(unsigned r16) {
   const int g = static_cast<int>(r16 * kGroups / (kRankMax + 1));
   return g < kGroups - 1 ? g : kGroups - 1;
@@ -171,6 +177,30 @@ __device__ __forceinline__ float pearson_int(unsigned long long n, unsigned long
   return ok ? static_cast<float>(static_cast<double>(cxy) / sqrt(static_cast<double>(vx) * static_cast<double>(vy))) : 0.f;
 }
 __device__ __forceinline__ float h2f(uint16_t b) { return __half2float(__ushort_as_half(b)); }
+__device__ __forceinline__ void finish_row(Frame f, unsigned long long n, unsigned long long sx, unsigned long long sy,
+                                           unsigned long long sxx, unsigned long long syy, unsigned long long sxy, double smk, double ssv,
+                                           const double *gs, const int *gc, double s0, Row &r) {
+  bool icok = false;
+  const float ic = pearson_int(n, sx, sy, sxx, syy, sxy, icok);
+  bool gok = true;
+  if (f == Frame::CS)
+    for (int k = 0; k < kGroups; ++k)
+      gok = gok && gc[k] >= 1;
+  if (!(icok && gok))
+    return;
+  const double mkt = smk / static_cast<double>(n), mkt_s = ssv / static_cast<double>(n);
+  r.ok = 1;
+  r.ic = ic;
+  r.mkt = static_cast<float>(mkt);
+  for (int k = 0; k < kGroups; ++k) {
+    r.cnt[k] = static_cast<uint16_t>(gc[k]);
+    r.grp[k] = static_cast<float>(gs[k] - gc[k] * mkt);
+  }
+  const int kt = kGroups - 1;
+  const double top = gc[kt] ? (gs[kt] - gc[kt] * mkt) / gc[kt] : 0.0;
+  const double bot = gc[0] ? (s0 - gc[0] * mkt_s) / gc[0] : 0.0;
+  r.ls = static_cast<float>(top + bot);
+}
 
 // shared 有序数组上的二分
 __device__ __forceinline__ int lower_bound(const unsigned *k, int n, unsigned key) {
@@ -263,6 +293,14 @@ __global__ void __launch_bounds__(kCB) rank_rows(Src src, uint16_t *out, int A) 
 }
 
 // =============================================================================
+// 1b. quant_rows (TS): 分位直接量化, 逐格
+// =============================================================================
+__global__ void __launch_bounds__(kCB) quant_rows(SrcF src, uint16_t *out, size_t n) {
+  for (size_t i = static_cast<size_t>(blockIdx.x) * kCB + threadIdx.x; i < n; i += static_cast<size_t>(gridDim.x) * kCB)
+    out[i] = src.m[i] ? dev::r16_quant(src.v[i]) : kRankNone;
+}
+
+// =============================================================================
 // 2. label_rows: 每 (t, h) 一行统计
 // =============================================================================
 
@@ -298,7 +336,7 @@ __device__ __forceinline__ void block_sum(T (&v)[D], T (*part)[kPart]) {
   __syncthreads(); // 全员读完, 下次调用的 lane0 才能改写 part
 }
 
-__global__ void __launch_bounds__(kCB) label_rows(const uint16_t *ws, LabelSet L, Holds hd, Row *rows, int T, int A) {
+__global__ void __launch_bounds__(kCB) label_rows(Frame f, const uint16_t *ws, LabelSet L, Holds hd, Row *rows, int T, int A) {
   using ull = unsigned long long;
   __shared__ unsigned short rxs[kMaxA];
   __shared__ ull pu[kWarps][kPart];
@@ -334,7 +372,7 @@ __global__ void __launch_bounds__(kCB) label_rows(const uint16_t *ws, LabelSet L
     // ---- 标签侧 ----
     const bool tail = dev::tail_masked(t, hold);
     ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (IC)
-    float f[2 + kGroups] = {};     // Σy_long (mkt), Σy_short|组0, 各组 Σy_long
+    float fs[3 + kGroups] = {};    // Σlv (mkt), Σsv, Σsv|组0, 各组 Σlv
     int c[kGroups] = {};           // 各组计数
     if (!tail) {
       const uint16_t *ry = lb.ry + base, *lv = lb.lv + base, *sv = lb.sv + base;
@@ -350,16 +388,17 @@ __global__ void __launch_bounds__(kCB) label_rows(const uint16_t *ws, LabelSet L
         s[5] += ok ? x * y : 0;
         const float yl = dev::h2f(lv[a]), ys = dev::h2f(sv[a]);
         const int g = ok ? dev::grp_of(xr) : -1;
-        f[0] += ok ? yl : 0.f;
-        f[1] += g == 0 ? ys : 0.f;
+        fs[0] += ok ? yl : 0.f;
+        fs[1] += ok ? ys : 0.f;
+        fs[2] += g == 0 ? ys : 0.f;
 #pragma unroll
         for (int q = 0; q < kGroups; ++q) { // 展开 select, 不做寄存器数组的运行期下标
-          f[2 + q] += g == q ? yl : 0.f;
+          fs[3 + q] += g == q ? yl : 0.f;
           c[q] += g == q;
         }
       }
       block_sum(s, pu);
-      block_sum(f, pf);
+      block_sum(fs, pf);
       block_sum(c, pi);
     }
     if (threadIdx.x == 0) {
@@ -370,21 +409,12 @@ __global__ void __launch_bounds__(kCB) label_rows(const uint16_t *ws, LabelSet L
         r.ok_ac = ok ? 1 : 0;
       }
       if (!tail) {
-        bool icok = false;
-        const float ic = dev::pearson_int(s[0], s[1], s[2], s[3], s[4], s[5], icok);
-        bool gok = true;
+        double gs[kGroups];
 #pragma unroll
         for (int q = 0; q < kGroups; ++q)
-          gok = gok && c[q] >= 1;
-        if (icok && gok) {
-          r.ok = 1;
-          r.ic = ic;
-          r.mkt = static_cast<float>(static_cast<double>(f[0]) / static_cast<double>(s[0]));
-#pragma unroll
-          for (int q = 0; q < kGroups; ++q)
-            r.grp[q] = static_cast<float>(static_cast<double>(f[2 + q]) / c[q]);
-          r.ls = r.grp[kGroups - 1] + static_cast<float>(static_cast<double>(f[1]) / c[0]);
-        }
+          gs[q] = static_cast<double>(fs[3 + q]);
+        dev::finish_row(f, s[0], s[1], s[2], s[3], s[4], s[5], static_cast<double>(fs[0]), static_cast<double>(fs[1]), gs, c,
+                        static_cast<double>(fs[2]), r);
       }
       rows[static_cast<size_t>(hi) * T + t] = r;
     }
@@ -418,15 +448,22 @@ inline void prep_label(const uint16_t *lv, const uint8_t *m, int T, int A, uint1
   rank_launch(k::SrcH{lv, m}, ry, T, A, stream);
 }
 
-// 评估: x + L.n 组预处理标签 → rows[L.n][T] (设备)
-inline void eval(const float *xv, const uint8_t *xm, int T, int A, const Holds &hd, const LabelSet &L, uint16_t *ws, Row *rows,
+// 评估: x (口径 f) + L.n 组预处理标签 → rows[L.n][T] (设备)
+inline void eval(const float *xv, const uint8_t *xm, Frame f, int T, int A, const Holds &hd, const LabelSet &L, uint16_t *ws, Row *rows,
                  cudaStream_t stream) {
   factor::stat::assert_holds(hd);
   assert(L.n == hd.n);
   for (int i = 0; i < L.n; ++i)
     assert(L.l[i].lv && L.l[i].sv && L.l[i].m && L.l[i].ry && "标签未预处理 (prep_label)");
-  rank_launch(k::SrcF{xv, xm}, ws, T, A, stream);
-  k::label_rows<<<T, kCB, 0, stream>>>(ws, L, hd, rows, T, A);
+  if (f == Frame::CS) {
+    rank_launch(k::SrcF{xv, xm}, ws, T, A, stream);
+  } else {
+    const size_t n = static_cast<size_t>(T) * A;
+    const int grid = static_cast<int>(hmin(static_cast<int>((n + kCB - 1) / kCB), 4096));
+    k::quant_rows<<<grid, kCB, 0, stream>>>(k::SrcF{xv, xm}, ws, n);
+    FACTOR_CUDA_OK(cudaGetLastError());
+  }
+  k::label_rows<<<T, kCB, 0, stream>>>(f, ws, L, hd, rows, T, A);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 

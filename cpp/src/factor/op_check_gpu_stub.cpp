@@ -41,7 +41,7 @@ void run_cs(const char *, const float *, const uint8_t *, const float *, const u
             const uint8_t *, float *, uint8_t *, int, int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
-void run_stat(const float *, const uint8_t *, int, int, const factor::stat::Holds &, const StatLabelHost *,
+void run_stat(const float *, const uint8_t *, factor::stat::Frame, int, int, const factor::stat::Holds &, const StatLabelHost *,
               factor::stat::Row *, double *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
@@ -64,7 +64,7 @@ StatSession *stat_open(int, int, const factor::stat::Holds &, const StatLabelHos
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
   return nullptr;
 }
-void stat_eval(StatSession *, const DevPlane *, factor::stat::Row *, double *) {
+void stat_eval(StatSession *, const DevPlane *, factor::stat::Frame, factor::stat::Row *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 void stat_close(StatSession *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }

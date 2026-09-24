@@ -142,18 +142,20 @@ double sort_ms_chk(const OperatorRow &r, double ms, const factor::check::Diff &d
   return d.ok() ? ms : 1e300;
 }
 
-// 三维分类列的显示 / 落盘文本: 不在分类里的行 (Stat) 空着
+// 三维分类列 + 输出域列的落盘文本: 不在分类里的行 (Stat) 空着 (out 列表格内按 dom_tex 渲染, JSON 落 dom_name)
 const char *cls_T(const OperatorRow &r) { return r.classified ? T_name(r.T) : ""; }
 const char *cls_A(const OperatorRow &r) { return r.classified ? A_name(r.A) : ""; }
 const char *cls_kern(const OperatorRow &r) { return r.classified ? kern_name(r.kern) : ""; }
+const char *cls_out(const OperatorRow &r) { return r.classified ? factor::dom_name(r.out) : ""; }
 
 // Stat 行悬停 e_name: 表列放不下的附带信息 (prep 耗时 + 每持有期 cpu 侧二级汇总)
 void stat_tooltip(const OperatorRow &r, const StatExtra &x) {
   ImGui::BeginTooltip();
-  ImGui::TextUnformatted("因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组均值 / 多空 / rank-AC, 再沿 t 汇总.\n"
-                         "无流式后端, cpu ↔ gpu 两方对拍 (无 golden; 表格 GPU 列的 Diff = 一级 rows + 二级 stat 合并).\n"
-                         "表列耗时 = eval (每因子一次: rank(x) 排序 + 逐持有期一遍 A 轴); prep = 标签 rank 预处理 (常驻期一次), 见下.\n"
-                         "造数: long = 0.3·x + 噪声 (IC ≈ 0.3). ic_t / ls_t 按 n/h 折算 (相邻 h 行标签重叠); Sharpe 以持有期为一期年化;\n"
+  ImGui::TextUnformatted("因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组和 / 多空 / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
+                         "标签统一超额 (减截面均值). 两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
+                         "无流式后端, cpu ↔ gpu 两方对拍 (无 golden; 表格 GPU 列的 Diff = 两口径 × (一级 rows + 二级 stat) 合并).\n"
+                         "表列耗时 = 两口径 eval 之和 (每因子一次: rank/量化 + 逐持有期一遍 A 轴); prep = 标签 rank 预处理 (常驻期一次), 见下.\n"
+                         "造数: long = 0.3·z + 噪声 (IC ≈ 0.3; TS 的 x = Φ(z)). ic_t / ls_t 按 n/h 折算 (相邻 h 行标签重叠); Sharpe 以持有期为一期年化;\n"
                          "rank-AC 的 lag = h; 段末 h+3 行 (持有到收盘) 不计标签统计.");
   if (r.status == RowStatus::Done) {
     ImGui::Separator();
@@ -161,12 +163,16 @@ void stat_tooltip(const OperatorRow &r, const StatExtra &x) {
       ImGui::Text("prep: cpu %.3f ms, gpu %.3f ms", x.cpu_prep_ms, x.gpu_prep_ms);
     else
       ImGui::Text("prep: cpu %.3f ms", x.cpu_prep_ms);
-    for (int i = 0; i < x.n_hold; ++i) {
-      const factor::stat::HoldStat &h = x.hold[i];
-      ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f SR %+.2f "
-                  "β %+.3f | mono %+.3f | rAC %+.3f",
-                  h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.sharpe,
-                  h.beta, h.mono, h.rank_ac);
+    for (int fi = 0; fi < 2; ++fi) {
+      ImGui::Separator();
+      ImGui::TextDisabled("%s", factor::stat::frame_name(static_cast<factor::stat::Frame>(fi)));
+      for (int i = 0; i < x.n_hold; ++i) {
+        const factor::stat::HoldStat &h = x.hold[fi][i];
+        ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f "
+                    "β %+.3f | mono %+.3f | rAC %+.3f",
+                    h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.ls_pos,
+                    h.sharpe, h.beta, h.mono, h.rank_ac);
+      }
     }
   }
   ImGui::EndTooltip();
@@ -297,7 +303,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
-  constexpr int kNumCols = 13;
+  constexpr int kNumCols = 14;
   if (ImGui::BeginTable("OperatorTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
@@ -311,11 +317,12 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthFixed);                                       // 5
     ImGui::TableSetupColumn("Kernel", ImGuiTableColumnFlags_WidthFixed);                                  // 6
     ImGui::TableSetupColumn("operand", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 7
-    ImGui::TableSetupColumn("operator", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 8
-    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                               // 9
-    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 10
-    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 11
-    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);     // 12
+    ImGui::TableSetupColumn("out", ImGuiTableColumnFlags_WidthFixed);                                     // 8
+    ImGui::TableSetupColumn("operator", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 9
+    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                               // 10
+    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 11
+    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 12
+    ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);     // 13
     ImGui::TableSetupScrollFreeze(0, 1);
 
     if (ui.fit_frames > 0) {
@@ -326,7 +333,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"#", "e_name", "c_name", "Ar", "T", "A", "Kernel", "operand", "operator",
+    const char *headers[kNumCols] = {"#", "e_name", "c_name", "Ar", "T", "A", "Kernel", "operand", "out", "operator",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
         "全局 idx = operators.json 的 idx (code 与 UI 统一按它): 0 = Stat 评估算子 (每轮先跑), 之后 = OpTable 表序:\n"
@@ -341,12 +348,17 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "A 域 (资产支撑): SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 由 y 或 z 给)",
         "核类 (统计核的代数类): MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /\n"
         "ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级. 三维分类见 factor/Contract.hpp【分类】",
-        "签名与值域 (OpTable.hpp, LaTeX): 自变量在前, 参数在后, 顺序恒 x, y, z → d → k → k2, 每项都带值域\n"
-        "  自变量  x, y, z = 按元数取的序列 (每格 值 + 有效位); t_D = 段内分钟位置 (TodMask 无序列输入)\n"
-        "  参数    = 号后是本轮实际值 (OpTable 里是占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩, 渲染前替换), 每算子自带默认值:\n"
-        "    d   窗长 / 滞后 (期 = 分钟), 来自 Check.hpp kDParams; 参数列不含 d 的算子固定 1 (与 op_check 同)\n"
-        "    k   阈值 / 桶数 / EMA 系数 / 分位, 来自 Check.hpp kKParams\n"
-        "    k2  第二阈值 (仅 TodMask 上界)",
+        "签名 (由 OpTable 的 in / T / k域 列生成, Expr.hpp operand_tex): 自变量在前, 参数在后, 顺序恒 x, y, z → d → k → k2\n"
+        "  自变量  x, y, z = 按元数取的序列 (每格 值 + 有效位), 值域 = in 列 (enum Dom, 与 out 列同一套);\n"
+        "          t_D = 段内分钟位置 (TodMask 无序列输入)\n"
+        "  参数    d ⇔ T = ROLL; k ⇔ k域 ≠ NONE; k2 ⇔ k域 = TOD. = 号后是本轮实际值 (占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ 渲染前替换):\n"
+        "    d   窗长 / 滞后 (期 = 分钟), 来自 Check.hpp kDParams; 无 d 的算子固定 1 (与 op_check 同)\n"
+        "    k   阈值 / 桶数 / EMA 系数 / 分位, 来自 Check.hpp kKParams; k2 第二阈值 (仅 TodMask 上界)\n"
+        "  in 为严格域 (INT = 组 id) 时 parser 要求子算子 out ⊆ in, 特征叶按数据查; 其余 in 是语义声明 (越界格算子自置无效)",
+        "因变量值域 (OpTable out 列, enum Dom; 与 in 列同一套, 前一算子的 out 就是后一算子的 in):\n"
+        "  ℝ REAL / ℝ≥0 NONNEG (含计数) / ℝ>0 POS / [0,1] UNIT / [−1,1] SIGNED / {0,1} BIN / {−1,0,1} SIGN3 / {0..1023} INT / ℝ(bcast) 截面广播\n"
+        "  因子根 (归一算子) 的输入不许离散 (BIN / SIGN3 / INT), 且沿资产轴要有变异 (BCAST 抹平); 组 id 元只收 ⊆ INT 的 (BIN / INT)\n"
+        "  只按算子自身声明: 透传 (Mask / Where / Delay) 与取大取小写 REAL, 不随输入推导",
         "算子定义 (OpTable.hpp, LaTeX). 符号继承 features/FeaturesDefine.hpp (t 分钟, D 交易日, 1[·] 指示), 算子库补充:\n"
         "  x_t 本资产 t 分钟值; x_a 同一时刻资产 a 的值; t_D 段内位置\n"
         "  W_t 窗 (由 T 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
@@ -408,13 +420,16 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         case 6:
           cmp = (int)ra.kern - (int)rb.kern;
           break;
-        case 9:
-          cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
+        case 8:
+          cmp = (int)ra.out - (int)rb.out;
           break;
         case 10:
-          cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.stream), sort_ms_chk(rb, rb.cpu_ms, rb.stream));
+          cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
           break;
         case 11:
+          cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.stream), sort_ms_chk(rb, rb.cpu_ms, rb.stream));
+          break;
+        case 12:
           cmp = cmp3(sort_ms_chk(ra, ra.gpu_ms, ra.gpu), sort_ms_chk(rb, rb.gpu_ms, rb.gpu));
           break;
         }
@@ -462,17 +477,26 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       else
         ImGui::TextUnformatted(s_operand[idx].c_str()); // 解析失败回退原文
       ImGui::TableSetColumnIndex(8);
+      if (r.classified) {
+        if (tex::TeXRender *render = Latex::Get(factor::dom_tex(r.out), kFormulaTextSize))
+          Latex::Draw(render, ImGui::GetTextLineHeight());
+        else
+          ImGui::TextUnformatted(factor::dom_name(r.out)); // 解析失败回退枚举名
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("%s", factor::dom_name(r.out));
+      }
+      ImGui::TableSetColumnIndex(9);
       if (tex::TeXRender *render = Latex::Get(r.op, kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
       else
         ImGui::TextUnformatted(r.op); // 解析失败回退原文
-      ImGui::TableSetColumnIndex(9);
-      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据 (Stat 无 stream → n/a)
       ImGui::TableSetColumnIndex(10);
-      render_time_cell(r, r.cpu_ms, r.stream_ms >= 0 ? &r.stream : nullptr, r.stream_ms >= 0 && r.cpu_ms > r.stream_ms);
+      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据 (Stat 无 stream → n/a)
       ImGui::TableSetColumnIndex(11);
-      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      render_time_cell(r, r.cpu_ms, r.stream_ms >= 0 ? &r.stream : nullptr, r.stream_ms >= 0 && r.cpu_ms > r.stream_ms);
       ImGui::TableSetColumnIndex(12);
+      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      ImGui::TableSetColumnIndex(13);
       if (r.note[0] == '\0')
         ImGui::TextDisabled("-");
       else
@@ -520,16 +544,19 @@ nlohmann::ordered_json diff_json(const factor::check::Diff &d) {
   return {{"ok", d.ok()}, {"worst", sig4(d.worst)}, {"mask_bad", d.mask_bad}, {"val_bad", d.val_bad}, {"compared", d.compared}};
 }
 
-// Stat 行表列放不下的附带信息: prep 耗时 + 每持有期的 cpu 侧二级汇总 (耗时 / 对拍在 rows 里与其他行同列)
+// Stat 行表列放不下的附带信息: prep 耗时 + 两口径每持有期的 cpu 侧二级汇总 (耗时 / 对拍在 rows 里与其他行同列).
+// 键 holds_CS / holds_TS (= "holds_" + frame_name)
 nlohmann::ordered_json stat_json(const StatExtra &s) {
   nlohmann::ordered_json j;
   j["cpu_prep_ms"] = sig4(s.cpu_prep_ms);
   if (s.gpu_prep_ms >= 0)
     j["gpu_prep_ms"] = sig4(s.gpu_prep_ms);
-  nlohmann::ordered_json holds = nlohmann::ordered_json::array();
-  for (int i = 0; i < s.n_hold; ++i)
-    holds.push_back(hold_json(s.hold[i]));
-  j["holds"] = holds;
+  for (int fi = 0; fi < 2; ++fi) {
+    nlohmann::ordered_json holds = nlohmann::ordered_json::array();
+    for (int i = 0; i < s.n_hold; ++i)
+      holds.push_back(hold_json(s.hold[fi][i]));
+    j[std::string("holds_") + factor::stat::frame_name(static_cast<factor::stat::Frame>(fi))] = holds;
+  }
   return j;
 }
 
@@ -576,6 +603,7 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       nlohmann::ordered_json params = nlohmann::ordered_json::object();
       for_each_param(r, [&](const char *name, double v) { params[name] = v; });
       j["params"] = params;
+      j["out"] = cls_out(r);
       j["operator"] = r.op;
       j["note"] = r.note;
       j["status"] = row_status_name(r.status);
@@ -632,7 +660,8 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   if (!j.is_object())
     return false;
   if (!json_str_is(j, "e_name", dst.e_name) || !json_str_is(j, "T", cls_T(dst)) || !json_str_is(j, "A", cls_A(dst)) ||
-      !json_str_is(j, "kernel", cls_kern(dst)) || !json_str_is(j, "operand", dst.operand) || !json_str_is(j, "operator", dst.op))
+      !json_str_is(j, "kernel", cls_kern(dst)) || !json_str_is(j, "operand", dst.operand.c_str()) || !json_str_is(j, "out", cls_out(dst)) ||
+      !json_str_is(j, "operator", dst.op))
     return false;
   int arity = -1;
   if (!json_int(j, "arity", arity) || arity != dst.arity)
@@ -689,13 +718,15 @@ bool load_stat(const nlohmann::json &j, bool has_gpu, StatExtra &dst) {
       return false;
     s.gpu_prep_ms = -1;
   }
-  const auto hit = j.find("holds");
-  if (hit == j.end() || !hit->is_array() || hit->size() != static_cast<size_t>(factor::stat::check::kNumHolds))
-    return false;
   s.n_hold = factor::stat::check::kNumHolds;
-  for (int i = 0; i < s.n_hold; ++i) {
-    if (!load_hold((*hit)[static_cast<size_t>(i)], s.hold[i]) || s.hold[i].hold != factor::stat::check::kHolds[i])
+  for (int fi = 0; fi < 2; ++fi) {
+    const auto hit = j.find(std::string("holds_") + factor::stat::frame_name(static_cast<factor::stat::Frame>(fi)));
+    if (hit == j.end() || !hit->is_array() || hit->size() != static_cast<size_t>(factor::stat::check::kNumHolds))
       return false;
+    for (int i = 0; i < s.n_hold; ++i) {
+      if (!load_hold((*hit)[static_cast<size_t>(i)], s.hold[fi][i]) || s.hold[fi][i].hold != factor::stat::check::kHolds[i])
+        return false;
+    }
   }
   dst = s;
   return true;

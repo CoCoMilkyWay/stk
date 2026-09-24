@@ -6,9 +6,9 @@
 //   两个消费者共用 (口径必须一致): src/factor/op_check.cpp 与 GUI OperatorsService.
 //   无 golden: cpu ↔ gpu 两方 match 即过. 一级 Row 逐 (h, t) 比 (ok / ok_ac 逐位相等, 有效字段容差内),
 //   二级 HoldStat 逐字段比 (n / n_ac 逐位相等).
-//   造数沿用 factor/Check.hpp 的 Profile (HOLES 打整行缺失 / CONSTCOL 打全并列 / TINY 打量级):
-//     x     NORM (按 profile)
-//     标签  每持有期 long = 0.3·x + NORM 噪声 (IC ≈ 0.3, 不是纯噪声, 二级统计有东西可比); short = −(0.3·x + 0.7·噪声);
+//   造数沿用 factor/Check.hpp 的 Profile (HOLES 打整行缺失 / CONSTCOL 打全并列 / TINY 打量级), 两口径各一份 (Data::frame):
+//     x     CS: NORM (按 profile); TS: 同一 NORM 经 Φ 映到 (0,1) 当分位 (TsRankRoll 的输出形状)
+//     标签  每持有期 long = 0.3·z + NORM 噪声 (z = 造数用的 NORM 平面; IC ≈ 0.3, 二级统计有东西可比); short = −(0.3·z + 0.7·噪声);
 //           掩码取噪声平面的空洞; 值经 fp16 往返 (与常驻格式同)
 //   本头只依赖 Contract / Check / Stat/Contract / Stat/Cpu; 消费者 TU 编进 -fno-fast-math.
 // =============================================================================
@@ -53,27 +53,34 @@ struct LabelHost {
 };
 
 struct Data {
+  Frame frame = Frame::CS;
   Plane x;
   std::vector<LabelHost> lab; // 按 hd 序
   Holds hd;
   int T = 0, A = 0;
 };
 
-inline void make(Data &d, Profile pr, int T, int A, std::mt19937 &rng) {
+inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) {
+  d.frame = f;
   d.T = T, d.A = A;
   d.hd.n = kNumHolds;
   for (int i = 0; i < kNumHolds; ++i)
     d.hd.h[i] = kHolds[i];
-  factor::check::fill(d.x, Gen::NORM, pr, T, A, rng);
+  Plane z;
+  factor::check::fill(z, Gen::NORM, pr, T, A, rng);
   const size_t n = static_cast<size_t>(T) * A;
+  d.x = z;
+  if (f == Frame::TS) // 标准正态 → 分位 Φ(z) ∈ (0,1); 无效格值本就是 0
+    for (size_t i = 0; i < n; ++i)
+      d.x.v[i] = d.x.m[i] ? static_cast<float>(0.5 * (1.0 + std::erf(static_cast<double>(z.v[i]) / std::sqrt(2.0)))) : 0.f;
   d.lab.assign(static_cast<size_t>(kNumHolds), LabelHost{});
   for (LabelHost &L : d.lab) {
     Plane e;
     factor::check::fill(e, Gen::NORM, pr, T, A, rng);
     L.lv.resize(n), L.sv.resize(n), L.m.resize(n);
     for (size_t i = 0; i < n; ++i) {
-      const float yl = 0.3f * d.x.v[i] + e.v[i];
-      const float ys = -(0.3f * d.x.v[i] + 0.7f * e.v[i]);
+      const float yl = 0.3f * z.v[i] + e.v[i];
+      const float ys = -(0.3f * z.v[i] + 0.7f * e.v[i]);
       L.lv[i] = f2h(yl);
       L.sv[i] = f2h(ys);
       L.m[i] = e.m[i];
@@ -113,6 +120,14 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
     }
     const int at = static_cast<int>(i);
     if (a.ok) {
+      bool cnt_ok = true;
+      for (int k = 0; k < kGroups; ++k)
+        cnt_ok = cnt_ok && a.cnt[k] == b.cnt[k];
+      if (!cnt_ok) { // 组计数是整数, 两后端必须逐位一致
+        if (d.mask_bad++ == 0)
+          d.worst_at = at;
+        continue;
+      }
       detail::cmp1(d, a.ic, b.ic, tol, at);
       detail::cmp1(d, a.mkt, b.mkt, tol, at);
       detail::cmp1(d, a.ls, b.ls, tol, at);
@@ -135,8 +150,8 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
         d.worst_at = i;
       continue;
     }
-    const float fa[] = {a.ic_mean, a.ic_std, a.icir, a.ic_t, a.ic_pos, a.ic_skew, a.ic_kurt, a.ls_mean, a.ls_t, a.sharpe, a.beta, a.mono, a.rank_ac};
-    const float fb[] = {b.ic_mean, b.ic_std, b.icir, b.ic_t, b.ic_pos, b.ic_skew, b.ic_kurt, b.ls_mean, b.ls_t, b.sharpe, b.beta, b.mono, b.rank_ac};
+    const float fa[] = {a.ic_mean, a.ic_std, a.icir, a.ic_t, a.ic_pos, a.ic_skew, a.ic_kurt, a.ls_mean, a.ls_t, a.ls_pos, a.sharpe, a.beta, a.mono, a.rank_ac};
+    const float fb[] = {b.ic_mean, b.ic_std, b.icir, b.ic_t, b.ic_pos, b.ic_skew, b.ic_kurt, b.ls_mean, b.ls_t, b.ls_pos, b.sharpe, b.beta, b.mono, b.rank_ac};
     for (size_t j = 0; j < sizeof(fa) / sizeof(fa[0]); ++j)
       detail::cmp1(d, fa[j], fb[j], tol, i);
     for (int k = 0; k < kGroups; ++k)
@@ -177,7 +192,7 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   std::vector<uint16_t> ws(n);
   r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
   t0 = Clock::now();
-  factor::cpu::stat::eval(d.x.v.data(), d.x.m.data(), d.T, d.A, d.hd, lab.data(), ws.data(), r.rows.data(), threads);
+  factor::cpu::stat::eval(d.x.v.data(), d.x.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), ws.data(), r.rows.data(), threads);
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   summarize_all(r, d);
 }

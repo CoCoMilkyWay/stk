@@ -7,8 +7,9 @@
 //
 //   【并行】行 (时刻) 之间完全独立 → 按 t 切块给 threads 个线程 (threads = 1 即单线程内联).
 //   两个阶段各自并行, 阶段间 join 一次: 阶段 2 的 rank-AC 要读 t−h 行的 rank, 可能落在别的线程的块里.
-//     阶段 1  每行: 有效 x → 保序键 → 3 趟 11 位 LSD 基数排序 (A ≤ 5120, 键 32 位) → 走一遍等值段给 r16 → ws[T][A]
-//     阶段 2  每 (t, h): 一遍 A 轴累加 (整数五和 / 标签浮点和 / 分组和), 全 branchless select, 自动向量化
+//     阶段 1  每行: CS 有效 x → 保序键 → 3 趟 11 位 LSD 基数排序 (A ≤ 5120, 键 32 位) → 走一遍等值段给 r16 → ws[T][A]
+//                   TS 有效 x (分位) → r16_quant 直接量化 → ws[T][A]
+//     阶段 2  每 (t, h): 一遍 A 轴累加 (整数五和 / 标签浮点和 / 分组和), 全 branchless select, 自动向量化; 收尾 finish_row (按 Frame)
 //   每线程一份排序暂存 (2 × A × 8B + 2048 计数), 跨行复用, 不逐行分配.
 //
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
@@ -26,6 +27,7 @@
 
 namespace factor::cpu::stat {
 
+using factor::stat::Frame;
 using factor::stat::Holds;
 using factor::stat::HoldStat;
 using factor::stat::kGroups;
@@ -131,7 +133,7 @@ inline void par_rows(int T, int threads, Fn &&fn) {
 }
 
 // 一 (t, hold) 行的统计. rx = 本行 r16, ws = 全部 r16 (取 t−h 行, h = hold_minutes(hold))
-inline Row row_stat(const uint16_t *rx, int t, int A, int hold, const Label &L, const uint16_t *ws) {
+inline Row row_stat(Frame f, const uint16_t *rx, int t, int A, int hold, const Label &L, const uint16_t *ws) {
   using ull = unsigned long long;
   Row r;
   const size_t base = static_cast<size_t>(t) * A;
@@ -159,7 +161,7 @@ inline Row row_stat(const uint16_t *rx, int t, int A, int hold, const Label &L, 
     return r;
   const uint16_t *ry = L.ry + base, *lv = L.lv + base, *sv = L.sv + base;
   ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-  double smk = 0.0, s0 = 0.0, gs[kGroups] = {};
+  double smk = 0.0, ssv = 0.0, s0 = 0.0, gs[kGroups] = {};
   int gc[kGroups] = {};
   for (int a = 0; a < A; ++a) {
     const ull x = rx[a], y = ry[a];
@@ -173,23 +175,12 @@ inline Row row_stat(const uint16_t *rx, int t, int A, int hold, const Label &L, 
     const float yl = h2f(lv[a]), ys = h2f(sv[a]);
     const int g = ok ? factor::stat::grp_of(rx[a]) : 0;
     smk += ok ? yl : 0.f;
+    ssv += ok ? ys : 0.f;
     s0 += (ok && g == 0) ? ys : 0.f;
     gs[g] += ok ? yl : 0.f;
     gc[g] += ok;
   }
-  bool icok = false;
-  const float ic = factor::stat::pearson_int(n, sx, sy, sxx, syy, sxy, icok);
-  bool gok = true;
-  for (int k = 0; k < kGroups; ++k)
-    gok = gok && gc[k] >= 1;
-  if (!(icok && gok))
-    return r;
-  r.ok = 1;
-  r.ic = ic;
-  r.mkt = static_cast<float>(smk / static_cast<double>(n));
-  for (int k = 0; k < kGroups; ++k)
-    r.grp[k] = static_cast<float>(gs[k] / gc[k]);
-  r.ls = r.grp[kGroups - 1] + static_cast<float>(s0 / gc[0]);
+  factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, s0, r);
   return r;
 }
 
@@ -210,15 +201,15 @@ inline void prep_label(const uint16_t *lv, const uint8_t *m, int T, int A, uint1
   });
 }
 
-// 评估: x + hd.n 组预处理标签 → rows[hd.n][T]. ws = 工作区 [T][A] uint16 (调用方分配, 跨因子复用)
-inline void eval(const float *xv, const uint8_t *xm, int T, int A, const Holds &hd, const Label *lab, uint16_t *ws,
-                 Row *rows, int threads) {
+// 评估: x (口径 f) + hd.n 组预处理标签 → rows[hd.n][T]. ws = 工作区 [T][A] uint16 (调用方分配, 跨因子复用)
+inline void eval(const float *xv, const uint8_t *xm, Frame f, int T, int A, const Holds &hd, const Label *lab, uint16_t *ws, Row *rows,
+                 int threads) {
   assert(T >= 1 && A >= 1 && A <= kMaxA && static_cast<long long>(T) * A < (1LL << 31));
   factor::stat::assert_holds(hd);
   for (int i = 0; i < hd.n; ++i)
     assert(lab[i].lv && lab[i].sv && lab[i].m && lab[i].ry && "标签未预处理 (prep_label)");
-  // 阶段 1: rank(x) → ws
-  {
+  // 阶段 1: r16(x) → ws. CS 排序; TS 量化
+  if (f == Frame::CS) {
     std::vector<detail::Scratch> sc(static_cast<size_t>(threads));
     for (detail::Scratch &s : sc)
       s.reserve(A);
@@ -229,13 +220,18 @@ inline void eval(const float *xv, const uint8_t *xm, int T, int A, const Holds &
                          sc[static_cast<size_t>(tid)]);
       }
     });
+  } else {
+    detail::par_rows(T, threads, [&](int t0, int t1, int) {
+      for (size_t i = static_cast<size_t>(t0) * A, e = static_cast<size_t>(t1) * A; i < e; ++i)
+        ws[i] = xm[i] ? factor::stat::r16_quant(xv[i]) : kRankNone;
+    });
   }
   // 阶段 2: 每 (t, h) 一行统计
   detail::par_rows(T, threads, [&](int t0, int t1, int) {
     for (int t = t0; t < t1; ++t) {
       const uint16_t *rx = ws + static_cast<size_t>(t) * A;
       for (int i = 0; i < hd.n; ++i)
-        rows[static_cast<size_t>(i) * T + t] = detail::row_stat(rx, t, A, hd.h[i], lab[i], ws);
+        rows[static_cast<size_t>(i) * T + t] = detail::row_stat(f, rx, t, A, hd.h[i], lab[i], ws);
     }
   });
 }

@@ -186,8 +186,8 @@ const char *device_name() {
 // 分派: 六个入口 (ts / cs × 会话 / 一次性 / 设备输出) 共用 OpTable 展开, 只差调哪个 call
 void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
                 int A, const Param &p, double *kernel_ms) {
-#define G_TS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
-  if (std::strcmp(name, #Name) == 0)                               \
+#define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
+  if (std::strcmp(name, #Name) == 0)                                \
     return call_dev<ts::Name>(s, x, y, z, out, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
@@ -196,8 +196,8 @@ void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane 
 
 void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
                 int A, const Param &p, double *kernel_ms) {
-#define G_CS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
-  if (std::strcmp(name, #Name) == 0)                               \
+#define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
+  if (std::strcmp(name, #Name) == 0)                                \
     return call_dev<cs::Name>(s, x, y, z, out, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
@@ -206,8 +206,8 @@ void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane 
 
 void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
             int T, int A, const Param &p, double *kernel_ms) {
-#define G_TS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
-  if (std::strcmp(name, #Name) == 0)                               \
+#define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
+  if (std::strcmp(name, #Name) == 0)                                \
     return call<ts::Name>(s, x, y, z, ov, om, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
@@ -216,8 +216,8 @@ void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, 
 
 void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
             int T, int A, const Param &p, double *kernel_ms) {
-#define G_CS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
-  if (std::strcmp(name, #Name) == 0)                               \
+#define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
+  if (std::strcmp(name, #Name) == 0)                                \
     return call<cs::Name>(s, x, y, z, ov, om, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
@@ -227,8 +227,8 @@ void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, 
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms) {
-#define G_TS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
-  if (std::strcmp(name, #Name) == 0)                               \
+#define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
+  if (std::strcmp(name, #Name) == 0)                                \
     return call_once<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
@@ -238,8 +238,8 @@ void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *y
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms) {
-#define G_CS(Name, c_name, ar, t, a, kern, prm, operand, op, note) \
-  if (std::strcmp(name, #Name) == 0)                               \
+#define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
+  if (std::strcmp(name, #Name) == 0)                                \
     return call_once<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
@@ -325,10 +325,10 @@ StatSession *stat_open(int T, int A, const factor::stat::Holds &hd, const StatLa
   return s;
 }
 
-void stat_eval(StatSession *s, const DevPlane *x, factor::stat::Row *rows, double *eval_ms) {
+void stat_eval(StatSession *s, const DevPlane *x, factor::stat::Frame f, factor::stat::Row *rows, double *eval_ms) {
   assert(s && x && x->v && x->m && rows);
   s->tm.begin();
-  stat::eval(x->v, x->m, s->T, s->A, s->hd, s->L, s->ws.p, s->out.p, nullptr);
+  stat::eval(x->v, x->m, f, s->T, s->A, s->hd, s->L, s->ws.p, s->out.p, nullptr);
   const double ems = s->tm.end();
   if (eval_ms)
     *eval_ms = ems;
@@ -344,15 +344,15 @@ void stat_close(StatSession *s) {
 }
 
 // 一次性版: 临时会话 + 上传 x
-void run_stat(const float *xv, const uint8_t *xm, int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab,
-              factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
+void run_stat(const float *xv, const uint8_t *xm, factor::stat::Frame f, int T, int A, const factor::stat::Holds &hd,
+              const StatLabelHost *lab, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
   const size_t n = static_cast<size_t>(T) * A;
   DevBuf<float> x;
   DevBuf<uint8_t> m;
   x.up(xv, n), m.up(xm, n);
   const DevPlane xp{x.p, m.p};
   StatSession *s = stat_open(T, A, hd, lab, prep_ms);
-  stat_eval(s, &xp, rows, eval_ms);
+  stat_eval(s, &xp, f, rows, eval_ms);
   stat_close(s);
   x.free_(), m.free_();
 }

@@ -67,14 +67,15 @@ struct StatLabelHost {
   const uint16_t *lv, *sv;
   const uint8_t *m;
 };
-void run_stat(const float *xv, const uint8_t *xm, int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab,
-              factor::stat::Row *rows, double *prep_ms = nullptr, double *eval_ms = nullptr);
+void run_stat(const float *xv, const uint8_t *xm, factor::stat::Frame f, int T, int A, const factor::stat::Holds &hd,
+              const StatLabelHost *lab, factor::stat::Row *rows, double *prep_ms = nullptr, double *eval_ms = nullptr);
 
 // Stat 常驻会话 (因子面板: 一个作用域多因子): 标签上传 + rank 预处理只做一次, 逐因子只跑 eval,
-// x 是设备常驻平面 (DAG 根槽), 只有 rows[hd.n][T] 拷回. run_stat 一次性版 = open + 上传 x + eval + close.
+// x 是设备常驻平面 (DAG 根槽), 口径 f 逐因子给 (会话与口径无关), 只有 rows[hd.n][T] 拷回.
+// run_stat 一次性版 = open + 上传 x + eval + close.
 struct StatSession;
 StatSession *stat_open(int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab, double *prep_ms = nullptr);
-void stat_eval(StatSession *s, const DevPlane *x, factor::stat::Row *rows, double *eval_ms = nullptr);
+void stat_eval(StatSession *s, const DevPlane *x, factor::stat::Frame f, factor::stat::Row *rows, double *eval_ms = nullptr);
 void stat_close(StatSession *s);
 
 } // namespace factor::gpu

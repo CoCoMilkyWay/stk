@@ -12,9 +12,10 @@
 //     无标量常量元 (OpTable 无常量输入; 阈值一律走 k)
 //     PascalCase 算子 / snake_case 特征, 大小写敏感, 词法上无歧义
 //   静态校验 (parse 内一次做完):
-//     算子在 OpTable / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 kKRules 逐算子) /
-//     特征存在且可作输入 (LB 标签 / META 门控列不许: 前视) / GROUP 域算子的组 id 元必须是整数列
-//     (CsBucket / TsTodMask / TsGt 的输出, 或特征叶 —— 特征叶的整数性与 [0, kMaxGroup) 值域在 eval 前按数据查)
+//     算子在 OpTable / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 OpTable k域 列) /
+//     特征存在且可作输入 (LB 标签 / META 门控列不许: 前视) / 逐元值域: 父算子该元 in 为严格域 (INT, 即组 id) 时
+//     子算子 out ⊆ in (OpTable in / out 列; 特征叶放行 —— 其整数性与 [0, kMaxGroup) 值域在 eval 前按数据查)
+//   类型信息只读 OpTable 的 (k域, in, out) 列, 本头不点任何算子名 (根归一算子集除外: 那是口径定义, 不是类型)
 //   节点序 = 前序 (根 = 0, 子树紧随, 左→右): 落盘 params 按 "算子节点前序" 逐节点覆盖字面值 (表达式不动, 参数可更新)
 //   本头只依赖 Contract / OpTable, 不依赖 features/: 特征查询由调用方经 FeatureLookup 注入.
 //   出错策略: 表达式来自人 / agent / 落盘文件, 不合法是**正常输入** → parse / apply_params 返回 false + err,
@@ -23,6 +24,7 @@
 
 #include "factor/Contract.hpp"
 #include "factor/OpTable.hpp"
+#include "factor/Stat/Contract.hpp" // Frame / kTsNormD (root_frame)
 
 #include <cassert>
 #include <cmath>
@@ -44,12 +46,15 @@ struct OpInfo {
   T t;
   A a;
   Kern kern;
-  const char *params; // "d,k" 等 (OpTable 参数列)
-  const char *operand;
+  KDom kdom;          // k 的值域 (NONE = 无 k); 参数集合 = params_str(t, kdom)
+  const char *params; // "d,k" 等 (由 (t, kdom) 推出, 与 OpTable 无独立列)
+  Dom in[3];          // 逐元自变量值域 (前 arity 个有效)
+  Dom out;            // 因变量值域
   const char *op;
   const char *note;
 };
-#define FACTOR_EXPR_OPINFO(Name, c_name, ar, t, a, kern, prm, operand, op, note) OpInfo{#Name, c_name, ar, T::t, A::a, Kern::kern, prm, operand, op, note},
+#define FACTOR_EXPR_OPINFO(Name, c_name, ar, t, a, kern, kdom, in, out, op, note) \
+  OpInfo{#Name, c_name, ar, T::t, A::a, Kern::kern, KDom::kdom, params_str(T::t, KDom::kdom), in, Dom::out, op, note},
 inline constexpr OpInfo kOps[] = {OP_ALL(FACTOR_EXPR_OPINFO)};
 #undef FACTOR_EXPR_OPINFO
 inline constexpr int kOpCount = static_cast<int>(sizeof(kOps) / sizeof(kOps[0]));
@@ -80,53 +85,60 @@ constexpr bool declares(const char *params, std::string_view key) {
 // ---- 参数值域 ----
 inline constexpr int kMaxD = 5 * kSegLen; // 窗长上限 (五个交易日; 再长 GPU ROLL 块 carry 不划算, 也不该在分钟级挖)
 
-// k 的值域按算子给 (OpTable operand 列的值域声明的机器可读版; 声明了 k 的算子必须在此有一行, 编译期核对)
-enum class KDom { ANY,
-                  GE0,           // k ≥ 0
-                  OPEN01,        // 0 < k < 1
-                  OPEN0_CLOSED1, // 0 < k ≤ 1
-                  OPEN0_HALF,    // 0 < k < 1/2
-                  POSINT_GROUP,  // 正整数 ≤ kMaxGroup (CsBucket 桶数, 输出可作组 id)
-                  TOD };         // 0 ≤ k < k2 ≤ kSegLen, 皆整数 (TsTodMask)
-struct KRule {
-  const char *name;
-  KDom dom;
-};
-inline constexpr KRule kKRules[] = {
-    {"TsClip", KDom::GE0},
-    {"TsGt", KDom::ANY},
-    {"TsTodMask", KDom::TOD},
-    {"TsQuantileRoll", KDom::OPEN01},
-    {"TsMeanEma", KDom::OPEN0_CLOSED1},
-    {"CsBucket", KDom::POSINT_GROUP},
-    {"CsQuantile", KDom::OPEN01},
-    {"CsWinsor", KDom::OPEN0_HALF},
-};
-constexpr const KRule *k_rule(std::string_view name) {
-  for (const KRule &r : kKRules)
-    if (std::string_view(r.name) == name)
-      return &r;
-  return nullptr;
-}
-constexpr bool k_rules_complete() {
-  for (int i = 0; i < kOpCount; ++i)
-    if (declares(kOps[i].params, "k") != (k_rule(kOps[i].name) != nullptr))
+// 表的静态一致性: TOD 只许 0 元 POINT (t_D 是隐含输入); GROUP 域的组 id 元 (末元) 必须要求 INT
+constexpr bool table_consistent() {
+  for (int i = 0; i < kOpCount; ++i) {
+    const OpInfo &o = kOps[i];
+    if (o.kdom == KDom::TOD && !(o.arity == 0 && o.t == T::POINT))
       return false;
+    if (o.a == A::GROUP && !(o.arity >= 2 && o.in[o.arity - 1] == Dom::INT))
+      return false;
+    if (o.a != A::GROUP)
+      for (int k = 0; k < o.arity; ++k)
+        if (o.in[k] == Dom::INT || o.in[k] == Dom::BCAST)
+          return false;
+  }
   return true;
 }
-static_assert(k_rules_complete(), "OpTable 声明 k 的算子与 kKRules 不一一对应");
+static_assert(table_consistent(), "OpTable in / k域 列与 A 域 / 元数不一致");
 
 inline bool is_int(float v) { return std::isfinite(v) && std::floor(v) == v; }
 
-// 参数值域校验: nullptr = 合法, 否则一句话原因 (只查该算子声明的字段)
+// 有效格的值是否落在值域内 (特征叶元按数据查 in 列; BCAST 不是逐值可判的集合, 特征叶不可能满足)
+inline bool dom_holds(Dom d, float v) {
+  switch (d) {
+  case Dom::REAL:
+    return true;
+  case Dom::NONNEG:
+    return v >= 0.f;
+  case Dom::POS:
+    return v > 0.f;
+  case Dom::UNIT:
+    return v >= 0.f && v <= 1.f;
+  case Dom::SIGNED:
+    return v >= -1.f && v <= 1.f;
+  case Dom::BIN:
+    return v == 0.f || v == 1.f;
+  case Dom::SIGN3:
+    return v == 0.f || v == 1.f || v == -1.f;
+  case Dom::INT:
+    return is_int(v) && v >= 0.f && v < static_cast<float>(kMaxGroup);
+  case Dom::BCAST:
+    return false;
+  }
+  return false;
+}
+
+// 参数值域校验: nullptr = 合法, 否则一句话原因 (只查该算子声明的字段; k 按 OpTable k域 列)
 inline const char *check_params(const OpInfo &o, const Param &p) {
-  if (declares(o.params, "d") && (p.d < 1 || p.d > kMaxD))
+  if (has_d(o.t) && (p.d < 1 || p.d > kMaxD))
     return "d 须为 1..kMaxD (5 个交易日) 的整数";
-  if (const KRule *r = k_rule(o.name)) {
+  if (has_k(o.kdom)) {
     const float k = p.k;
     if (!std::isfinite(k))
       return "k 须有限";
-    switch (r->dom) {
+    switch (o.kdom) {
+    case KDom::NONE:
     case KDom::ANY:
       break;
     case KDom::GE0:
@@ -158,6 +170,45 @@ inline const char *check_params(const OpInfo &o, const Param &p) {
   return nullptr;
 }
 
+// 签名 LaTeX (GUI Operators 表 operand 列 / operators.json operand 键), 从表列生成:
+//   序列元 x, y, z 按 in 值域, 相邻同域合并 ("x, y \in ℝ"); 再参数 d{=}⟨d⟩ ∈ ℤ₊ / k{=}⟨k⟩ ∈ k域 (TOD 整段自带 k, k2);
+//   元与参数间 ";\; ", 占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ 由 GUI 换成本轮实际值
+inline std::string operand_tex(const OpInfo &o) {
+  static constexpr const char *kVar[3] = {"x", "y", "z"};
+  std::string s;
+  for (int i = 0; i < o.arity;) {
+    int j = i + 1;
+    while (j < o.arity && o.in[j] == o.in[i])
+      ++j;
+    if (!s.empty())
+      s += ",\\; ";
+    for (int k = i; k < j; ++k)
+      s += (k > i ? ", " : "") + std::string(kVar[k]);
+    s += " \\in ";
+    s += dom_tex(o.in[i]);
+    i = j;
+  }
+  bool in_params = false; // 元 → 参数用 ";\;", 参数之间用 ",\;"
+  const auto sep = [&] {
+    if (!s.empty())
+      s += in_params ? ",\\; " : ";\\; ";
+    in_params = true;
+  };
+  if (has_d(o.t)) {
+    sep();
+    s += R"tex(d{=}⟨d⟩ \in \mathbb{Z}_{+})tex";
+  }
+  if (o.kdom == KDom::TOD) {
+    sep();
+    s += kdom_tex(o.kdom);
+  } else if (has_k(o.kdom)) {
+    sep();
+    s += R"tex(k{=}⟨k⟩ \in )tex";
+    s += kdom_tex(o.kdom);
+  }
+  return s;
+}
+
 // ---- 树 ----
 struct Node {
   int op = -1;                // kOps 下标; -1 = 特征叶
@@ -185,22 +236,11 @@ struct Expr {
   }
 };
 
-// 节点的静态"类型": 整数列 (0/1 掩码或桶号, 可作组 id) / 实数列 / 特征叶 (整数性只能查数据)
-enum class Kind : uint8_t { REAL,
-                            INT,
-                            FEAT };
-inline Kind kind_of(const Node &n) {
-  if (n.op < 0)
-    return Kind::FEAT;
-  const std::string_view nm = kOps[n.op].name;
-  return (nm == "TsTodMask" || nm == "TsGt" || nm == "CsBucket") ? Kind::INT : Kind::REAL;
+// 静态类型检查的唯一规则: 父算子该元的 in 是严格域 (dom_strict) 时, 子节点 (算子) 的 out 须 ⊆ in;
+// 特征叶放行 (值域只能在 eval 前按数据查 dom_holds); 非严格域是语义声明, 越界格由算子自身置无效, 不在此否决
+inline bool arg_ok(const Node &child, const OpInfo &parent, int slot) {
+  return child.op < 0 || !dom_strict(parent.in[slot]) || dom_sub(kOps[child.op].out, parent.in[slot]);
 }
-// GROUP 域算子的组 id 元 = 末元 (CsGroupMean / CsGroupRank 的 y, CsGroupResid 的 z)
-inline int group_arg(const OpInfo &o) {
-  assert(o.a == A::GROUP && o.arity >= 2);
-  return o.arity - 1;
-}
-
 // ---- 序列化 ----
 namespace detail {
 // 项之间 ", " 分隔: 序列参数 → d → k → k2 (与 OpTable operand 列同序)
@@ -451,10 +491,11 @@ private:
       return fail(pos0, std::string(o.name) + ": " + why);
     Node &n = e_.nodes[static_cast<size_t>(out)];
     n.p = p;
-    if (o.a == A::GROUP) {
-      const Node &g = e_.nodes[static_cast<size_t>(n.args[group_arg(o)])];
-      if (kind_of(g) == Kind::REAL)
-        return fail(pos0, std::string(o.name) + " 的组 id 元须是整数列 (CsBucket / TsTodMask / TsGt 的输出, 或特征叶)");
+    for (int s = 0; s < o.arity; ++s) { // 值域: 子.out ⊆ 本元.in (OpTable in / out 列, 逐元同一规则)
+      const Node &c = e_.nodes[static_cast<size_t>(n.args[s])];
+      if (!arg_ok(c, o, s))
+        return fail(pos0, std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + dom_name(o.in[s]) + ", 而 " + kOps[c.op].name +
+                              " 输出 " + dom_name(kOps[c.op].out));
     }
     return true;
   }
@@ -521,6 +562,61 @@ inline bool apply_params(Expr &e, const std::vector<ParamPatch> &patches, std::s
     ++j;
   }
   e.canon = to_string(e);
+  return true;
+}
+
+// ---- alpha 因子的口径 (Stat/Contract.hpp【口径 Frame】): 由根算子严格判定, 且根必须是归一算子 ----
+//   CS: 根 ∈ {CsRank, CsNormRank, CsZ} (截面居中 → 因子值 = 仓位, β 隔离)
+//   TS: 根 = TsRankRoll(d = kTsNormD) (自身 kTsNormDays 日滚动分位; 整数天窗跨日 deseason)
+//   其他根 (含 TS 包 CS: 截面不再居中, β 漏) → false + err.
+//   再拦根输入的两种静态可判退化 (Stat 里必然全并列 / 20 组填不满, 评出来永远是空), 只读 OpTable out 列 + 树结构:
+//     离散值域 (dom_discrete: 0/1 掩码 / 符号 / 桶号, 分位只有几档) / 沿资产轴不变异 (varies_a = false: 每 t 截面全相同)
+//   因子文件 / 构建器都走这一个判据; apply_params 后再判 (d 可能被覆盖)
+
+// 节点值是否沿资产轴 a 变异 (结构推导): 特征叶变异; 算子节点 = 非截面广播 (out ≠ BCAST) 且任一输入变异
+//   (无特征叶的纯参数树 → 恒 false; TsTodMask 只看 t_D, 每 t 全资产同值)
+inline bool varies_a(const Expr &e, int i) {
+  const Node &n = e.nodes[static_cast<size_t>(i)];
+  if (n.op < 0)
+    return true;
+  if (kOps[n.op].out == Dom::BCAST)
+    return false;
+  for (int k = 0; k < kOps[n.op].arity; ++k)
+    if (varies_a(e, n.args[k]))
+      return true;
+  return false;
+}
+
+static_assert(stat::kTsNormD == kMaxD, "TS 口径归一窗 (kTsNormDays 日) 须等于 d 上限 kMaxD");
+inline bool root_frame(const Expr &e, stat::Frame &out, std::string &err) {
+  const Node &r = e.root();
+  const std::string_view nm = r.op >= 0 ? std::string_view(kOps[r.op].name) : std::string_view();
+  stat::Frame f;
+  if (nm == "CsRank" || nm == "CsNormRank" || nm == "CsZ") {
+    f = stat::Frame::CS;
+  } else if (nm == "TsRankRoll") {
+    if (r.p.d != stat::kTsNormD) {
+      err = "TS 口径根 TsRankRoll 的 d 须为 " + std::to_string(stat::kTsNormD) + " (" + std::to_string(stat::kTsNormDays) + " 个交易日), 现为 " +
+            std::to_string(r.p.d);
+      return false;
+    }
+    f = stat::Frame::TS;
+  } else {
+    err = "根须是归一算子: CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=" + std::to_string(stat::kTsNormD) + ") (时序口径)";
+    return false;
+  }
+  assert(kOps[r.op].arity == 1); // 归一算子都是一元
+  const int in = r.args[0];
+  const Node &n = e.nodes[static_cast<size_t>(in)];
+  if (n.op >= 0 && dom_discrete(kOps[n.op].out)) {
+    err = std::string("根的输入 ") + kOps[n.op].name + " 是离散值域 (0/1 掩码 / 符号 / 桶号), 分位只有几档 (退化); 先套窗口统计 (如 TsMeanRoll) 再归一";
+    return false;
+  }
+  if (!varies_a(e, in)) {
+    err = std::string("根的输入 ") + (n.op >= 0 ? kOps[n.op].name : n.feat.c_str()) + " 沿资产轴不变异 (无特征叶或被截面广播量抹平), 每 t 截面全相同 (退化)";
+    return false;
+  }
+  out = f;
   return true;
 }
 
