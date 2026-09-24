@@ -412,13 +412,20 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   //    添加模式 (无选中行): Add 新文件 (名 / 规范串查重, 重了弹窗不加)
   //    编辑模式 (表格选中一行): Save 覆盖该文件 (弹窗确认) / 删除 (弹窗确认); 取消选定 → 回添加模式, 内容留作模板
   // ==========================================================================
-  const FactorRow *edit_row = nullptr; // 选中行; 重扫完还没了 (外部删了) → 自动退出编辑模式 (忙时 rows 可能还是旧的, 不判)
+  const FactorRow *edit_row = nullptr; // 勾选行; 重扫完还没了 (外部删了) → 自动退出编辑模式 (忙时 rows 可能还是旧的, 不判)
   if (!ui.edit_file.empty()) {
     for (const FactorRow &r : s_rows)
       if (r.file == ui.edit_file)
         edit_row = &r;
     if (!edit_row && !busy)
       ui.edit_file.clear();
+  }
+  if (!ui.view_file.empty() && !busy) { // 高光行同理
+    bool found = false;
+    for (const FactorRow &r : s_rows)
+      found = found || r.file == ui.view_file;
+    if (!found)
+      ui.view_file.clear();
   }
   if (edit_row)
     ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "2. Edit %s:", ui.edit_file.c_str());
@@ -427,10 +434,10 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("从外到内: 先选根 (通常 CsRank / CsZ 等截面归一), 再在缩进的子槽里选算子或特征; 参数 (d / k / k2) 手填\n"
                       "下拉里可打字过滤 (算子名 / 中文名 / 特征 code); GROUP 域算子的组 id 槽只列整数列算子 + 特征\n"
-                      "点表格一行 → 编辑模式 (该行高光, 载入到这里; Save 覆盖 / 删除); 取消选定 → 添加模式, 内容留作模板");
+                      "勾选表格首列 → 编辑模式 (载入到这里; Save 覆盖 / 删除); 取消勾选 → 添加模式, 内容留作模板");
   ImGui::SameLine();
   if (edit_row) {
-    if (ImGui::SmallButton("取消选定")) {
+    if (ImGui::SmallButton("取消勾选")) {
       ui.edit_file.clear();
       ui.add_msg.clear();
     }
@@ -592,11 +599,11 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
                             ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
                             ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 0))) {
-    const char *headers[kNumCols] = {"#", "file", "status", "time", "expr", "ops", "feats", "slots", "valid%", "IC",
+    const char *headers[kNumCols] = {"edit", "file", "status", "time", "expr", "ops", "feats", "slots", "valid%", "IC",
                                      "ICIR", "IC_t", "LS", "SR", "β", "mono", "rAC", "n", "note"};
     const char *tooltips[kNumCols] = {
-        "文件名序 (默认排序)",
-        "<factor_dir>/<universe>/ 下的文件名 = <name>.json; 点行 → 编辑模式 (载入上方构建器, 可改 / 删)",
+        "勾选 → 编辑模式 (载入上方构建器, 可改 / 删), 同时只勾一个; 排序 = 文件名序 (默认)",
+        "<factor_dir>/<universe>/ 下的文件名 = <name>.json; 点行高光 → 单因子展示 (Inspect 页)",
         "BROKEN 红 = 文件 / 表达式 / params / 组 id 数据不合 (悬停看原因; 文件不动, 人手动处理)\nok 绿 = 本轮算的; file 灰 = stat 来自文件且作用域一致; file≠scope 黄 = 文件 stat 是别的 universe / 区间算的\nno stat = 从未评估; dup 黄 = 与另一文件同一规范串",
         "该因子算一遍 DAG 的耗时 (ms) = 子树全部算子节点之和 (共享节点算给每个用它的因子): CPU 全核 wall / GPU 纯 kernel",
         "规范串 (解析后重新序列化: 算子 PascalCase, 参数 d/k/k2 显式, 含 params 覆盖后的当前值); BROKEN 行显示文件原串",
@@ -701,17 +708,24 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     for (int idx : order) {
       const FactorRow &r = s_rows[static_cast<size_t>(idx)];
       const factor::stat::HoldStat *h = hold_of(r, cur_amt, cur_hold);
-      const bool selected = edit_row == &r;
+      const bool editing = edit_row == &r;
+      const bool viewing = ui.view_file == r.file;
       ImGui::TableNextRow();
-      if (selected)
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(1.0f, 0.75f, 0.3f, 0.35f)));
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextDisabled("%d", idx);
-      ImGui::TableSetColumnIndex(1);
       ImGui::PushID(idx);
-      // 整行可点: 选中 → 编辑模式并载入构建器; 再点选中行 → 取消选定 (内容留作模板)
-      if (ImGui::Selectable(r.file.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
-        if (selected) {
+      // 整行可点 (先提交, AllowOverlap 让后面的勾选框盖在上面): 点行高光 → Inspect 页的对象; 再点 → 取消
+      const ImVec2 cell_pos = ImGui::GetCursorPos();
+      if (ImGui::Selectable("##row", viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+        ui.view_file = viewing ? std::string{} : r.file;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s/%s\n(点行: %s)", ctx.factor_dir.c_str(), r.file.c_str(), viewing ? "取消高光" : "高光 → Inspect 页展示");
+      // 勾选框 = 编辑模式 (同时只勾一个): 勾 → 载入构建器; 取消勾 → 回添加模式 (内容留作模板); 勾另一行 → 切换
+      // 无 FramePadding → 方框 = 字高, 行高不变; 回到格起点画 (Selectable 已占满整格宽)
+      ImGui::SetCursorPos(cell_pos);
+      bool check = editing;
+      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+      if (ImGui::Checkbox("##edit", &check)) {
+        if (!check) {
           ui.edit_file.clear();
         } else {
           ui.edit_file = r.file;
@@ -729,9 +743,15 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         }
         ui.add_msg.clear();
       }
-      ImGui::PopID();
+      ImGui::PopStyleVar();
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s/%s\n(点击: %s)", ctx.factor_dir.c_str(), r.file.c_str(), selected ? "取消选定" : "进入编辑模式");
+        ImGui::SetTooltip("%s", editing ? "取消勾选 → 添加模式 (构建器内容留作模板)" : "勾选 → 编辑模式 (载入上方构建器)");
+      ImGui::PopID();
+      ImGui::TableSetColumnIndex(1);
+      if (editing)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", r.file.c_str());
+      else
+        ImGui::TextUnformatted(r.file.c_str());
       ImGui::TableSetColumnIndex(2);
       status_cell(r, ctx);
       ImGui::TableSetColumnIndex(3);

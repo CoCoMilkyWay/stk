@@ -4,11 +4,13 @@
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
 //   Factors: <factor_dir>/<universe>/ 一因子一文件的整体面板. 进页只扫描解析 (任何时候可进); Run 才读特征库评估
 //     (要资产轴就绪), 结果回写各因子文件.
+//   Inspect: Factors 页点行高光的单因子展示 (分层图等). 与 Factors 共用同一个 FactorsService / UI 状态.
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/FactorsService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp"
+#include "gui/task_factors/ui/TabInspect.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
 #include "shared/SharedData.hpp" // config.factor_dir / universe / 日期区间, feature.metadata, asset.items
 
@@ -23,6 +25,7 @@ namespace GUI::Tasks {
 enum TabIdx {
   TAB_OPERATORS = 0,
   TAB_FACTORS,
+  TAB_INSPECT,
   TAB_COUNT
 };
 
@@ -79,7 +82,7 @@ TaskHandle CreateFactorsTask() {
   TaskHandle handle;
   handle.name = "Factors";
   handle.storage = state;
-  handle.tabs = {"Operators", "Factors"};
+  handle.tabs = {"Operators", "Factors", "Inspect"};
 
   // 不设 OnCollapse: 切走任务 worker 继续跑完 (单线程 + ~90 行小结构, 左栏状态标签照常更新, 切回直接看表)
 
@@ -98,7 +101,7 @@ TaskHandle CreateFactorsTask() {
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx == -1 || idx < TAB_COUNT);
-    if (idx == TAB_FACTORS)
+    if (idx == TAB_FACTORS || idx == TAB_INSPECT)
       return state->factors_service ? factors_status(*state->factors_service) : TaskStatus{};
     // 任务行与 Operators 行同一状态
     if (!state->operators_service)
@@ -147,7 +150,8 @@ TaskHandle CreateFactorsTask() {
         svc.RequestCancel();
       break;
     }
-    case TAB_FACTORS: {
+    case TAB_FACTORS:
+    case TAB_INSPECT: {
       // 首次进页: 字段表视图建一次 (编译期字段表, 不随运行变), 只扫描不算; universe 切换 → 目录变 → 自动重扫
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
@@ -160,6 +164,10 @@ TaskHandle CreateFactorsTask() {
         Factors::FactorsRequest req;
         Factors::MakeFactorsRequest(data, /*evaluate=*/false, false, req);
         fs.Request(req);
+      }
+      if (idx == TAB_INSPECT) {
+        Factors::RenderTabInspect(fs, state->factors_ui, ctx);
+        break;
       }
       const int action = Factors::RenderTabFactors(fs, state->factors_ui, ctx);
       if (action == 1 || action == 2) {

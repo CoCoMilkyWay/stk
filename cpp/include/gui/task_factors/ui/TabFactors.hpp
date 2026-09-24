@@ -1,6 +1,6 @@
 // Factors→Factors: <factor_dir>/<universe>/ 下一因子一文件的整体面板. 顶部 = 作用域 / 后端 / 金额档 / 持有期 + Run / Cancel /
 // Rescan + 状态; 中间 = 加因子构建器 (从根往里逐槽下拉选算子 / 特征, 参数手填, 即时校验); 下面 = 表 (一行一文件: BROKEN 红 +
-// 原因, 有效行显示规范串 / 结构规模 / 选定持有期的 Stat 列 / 耗时; 点规范串载入构建器). 单因子详情面板另做.
+// 原因, 有效行显示规范串 / 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 载入构建器编辑, 点行高光 → 给 Inspect 页).
 #pragma once
 
 #include "gui/task_factors/services/FactorsService.hpp"
@@ -29,9 +29,11 @@ struct FactorsUIState {
   char filter_buf[64] = ""; // 下拉里的过滤框 (打开时清空)
   std::string add_err;      // 即时校验结果 (空 = 合法 / 未填完)
   std::string add_msg;      // 上次 Add / Save / 删除 的结果
-  // 两种模式: edit_file 空 = 添加模式 (Add 新文件, 查重); 非空 = 编辑模式 (表格选中行高光, Save 覆盖 / 删除该文件).
-  // 选中行 → 载入构建器 + name + note; 取消选定 → 回添加模式但构建器内容保留 (当模板)
+  // 两种模式: edit_file 空 = 添加模式 (Add 新文件, 查重); 非空 = 编辑模式 (表格首列勾选的那一行, 同时只勾一个; Save 覆盖 / 删除该文件).
+  // 勾选 → 载入构建器 + name + note; 取消勾选 → 回添加模式但构建器内容保留 (当模板)
   std::string edit_file;
+  // 点行高光 = 单因子展示 (Inspect 页) 的对象, 与 edit_file 互不干涉; 再点同一行 → 取消
+  std::string view_file;
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
   // 表列宽贴合 (对仗 TabOperators)

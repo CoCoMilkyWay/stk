@@ -46,13 +46,14 @@
 //   MIN   持仓 n 分钟
 //   CLOSE 持有到当日收盘 (n 不用, 写 0)
 //   OPEN  T+n 开盘平仓 (跨日回填, 见文件头)
-#define LABEL_GROUPS(X, ...)                                  \
-  X(1m, MIN, 1, __VA_ARGS__)                                  \
-  X(5m, MIN, 5, __VA_ARGS__)                                  \
-  X(15m, MIN, 15, __VA_ARGS__)                                \
-  X(30m, MIN, 30, __VA_ARGS__)                                \
-  X(60m, MIN, 60, __VA_ARGS__)                                \
-  X(close, CLOSE, 0, __VA_ARGS__) X(t1, OPEN, 1, __VA_ARGS__) \
+#define LABEL_GROUPS(X, ...)      \
+  X(1m, MIN, 1, __VA_ARGS__)      \
+  X(5m, MIN, 5, __VA_ARGS__)      \
+  X(15m, MIN, 15, __VA_ARGS__)    \
+  X(30m, MIN, 30, __VA_ARGS__)    \
+  X(60m, MIN, 60, __VA_ARGS__)    \
+  X(close, CLOSE, 0, __VA_ARGS__) \
+  X(t1, OPEN, 1, __VA_ARGS__)     \
       X(t3, OPEN, 3, __VA_ARGS__) X(t5, OPEN, 5, __VA_ARGS__)
 #define LABEL_AMTS(X, ...) X(5, __VA_ARGS__) // 下单金额 (万元), 也是快照预计算的档
 #define LABEL_L0_HOLD 1                      // L0 秒级标签: 持仓分钟

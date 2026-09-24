@@ -266,6 +266,7 @@ set(SOURCES
     ../../src/gui/task_factors/services/FactorsService.cpp
     ../../src/gui/task_factors/services/OperatorsService.cpp
     ../../src/gui/task_factors/ui/TabFactors.cpp
+    ../../src/gui/task_factors/ui/TabInspect.cpp
     ../../src/gui/task_factors/ui/TabOperators.cpp
     # gui / 其他 task
     ../../src/gui/task_settings/TaskSettings.cpp
@@ -734,6 +735,7 @@ set_source_files_properties(
     ../../src/gui/task_factors/services/FactorsService.cpp
     ../../src/gui/task_factors/services/OperatorsService.cpp
     ../../src/gui/task_factors/ui/TabFactors.cpp
+    ../../src/gui/task_factors/ui/TabInspect.cpp
     ../../src/gui/task_factors/ui/TabOperators.cpp
     ../../src/gui/task_tools/TaskTools.cpp
     ../../src/gui/task_tools/ui/TabLatex.cpp
