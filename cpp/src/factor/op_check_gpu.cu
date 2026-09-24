@@ -187,7 +187,7 @@ const char *device_name() {
 void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
                 int A, const Param &p, double *kernel_ms) {
 #define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                \
+  if (std::strcmp(name, #Name) == 0)                                        \
     return call_dev<ts::Name>(s, x, y, z, out, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
@@ -197,7 +197,7 @@ void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane 
 void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
                 int A, const Param &p, double *kernel_ms) {
 #define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                \
+  if (std::strcmp(name, #Name) == 0)                                        \
     return call_dev<cs::Name>(s, x, y, z, out, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
@@ -207,7 +207,7 @@ void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane 
 void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
             int T, int A, const Param &p, double *kernel_ms) {
 #define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                \
+  if (std::strcmp(name, #Name) == 0)                                        \
     return call<ts::Name>(s, x, y, z, ov, om, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
@@ -217,7 +217,7 @@ void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, 
 void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
             int T, int A, const Param &p, double *kernel_ms) {
 #define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                \
+  if (std::strcmp(name, #Name) == 0)                                        \
     return call<cs::Name>(s, x, y, z, ov, om, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
@@ -228,7 +228,7 @@ void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *y
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms) {
 #define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                \
+  if (std::strcmp(name, #Name) == 0)                                        \
     return call_once<ts::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
@@ -239,7 +239,7 @@ void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *y
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms) {
 #define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                \
+  if (std::strcmp(name, #Name) == 0)                                        \
     return call_once<cs::Name>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
