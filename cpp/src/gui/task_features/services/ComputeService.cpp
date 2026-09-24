@@ -1,6 +1,7 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
 #include "features/Backend/FeatureStore.hpp"
+#include "features/Operator/TS/Label/LabelReturn.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
@@ -14,6 +15,8 @@
 
 namespace GUI::Features {
 
+static_assert(ComputeConfig::kMinPoolSlots == static_cast<int>(LabelReturn::MIN_POOL_SLOTS), "ComputeConfig::kMinPoolSlots 与 LabelReturn::MIN_POOL_SLOTS 不符");
+
 ComputeService::ComputeService(SharedData &data)
     : data_(data) {}
 
@@ -26,7 +29,7 @@ ComputeService::~ComputeService() {
 void ComputeService::start_compute(ComputeConfig config) {
   if (status_.load(std::memory_order_relaxed) == ComputeStatus::Running)
     return;
-  assert(config.pool_slots >= 2 && "pool slots must be at least 2");
+  assert(config.pool_slots >= ComputeConfig::kMinPoolSlots && "pool slots 低于 LabelReturn::MIN_POOL_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
   assert(config.adopt_pct >= 0 && config.adopt_pct <= 100 && "adopt pct must be in [0, 100]");
 
   status_.store(ComputeStatus::Running, std::memory_order_relaxed);
@@ -149,6 +152,7 @@ void ComputeService::start_compute(ComputeConfig config) {
     feature_store_ = std::make_unique<GlobalFeatureStore>(
         num_assets, num_ts_workers, uni.hash,
         feature_dir, static_cast<size_t>(config_.pool_slots));
+    assert(feature_store_->query_slots() >= LabelReturn::MIN_POOL_SLOTS && "内存上限把池砍到 LabelReturn::MIN_POOL_SLOTS 之下, 会死锁");
 
     // Clean up directories before compute
     namespace fs = std::filesystem;

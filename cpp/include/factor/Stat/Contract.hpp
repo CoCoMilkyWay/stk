@@ -3,7 +3,7 @@
 // =============================================================================
 // Stat: 因子评估算子的语义契约 (CPU / GPU 两后端唯一共享件; 无流式后端 —— 评估只在挖掘侧)
 // =============================================================================
-//   输入  因子平面 x [T][A] (SoA: float + 有效位) + H 组常驻标签 (每组一个持有期 h 分钟):
+//   输入  因子平面 x [T][A] (SoA: float + 有效位) + H 组常驻标签 (每组一个持有期键 hold, 见下【持有期键】):
 //           lv / sv  做多 / 做空吃单净收益 (features 层 LabelReturn, fp16 位, 与落盘同格式, 无精度损失)
 //           m        标签有效位 (long / short 同一快照, 共用一张)
 //           ry       预处理: 做多标签逐行截面 rank (r16), 与因子无关, 常驻期算一次 (prep_label)
@@ -24,11 +24,18 @@
 //     ok     标签侧有效: 非段末尾部 (见下) ∧ ic 可算 (n ≥ 2, 两侧方差 > 0) ∧ 各组非空.
 //     ac     rank-AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 才对应"一个持有期换多少仓".
 //     ok_ac  t ≥ h ∧ n ≥ 2 ∧ 两侧方差 > 0. 与标签无关, 段末尾部也算.
-//     段末尾部: LabelReturn 的 exit 越过连续竞价末秒 (14:57, 段末 kCloseAuction 分钟) 就"持有到收盘",
-//       持有期缩短 → 掩掉 t_seg ≥ kSegLen − h − kCloseAuction 的行 (tail_masked).
+//     段末尾部 (仅分钟档): LabelReturn 的 exit 越过连续竞价末秒 (14:57, 段末 kCloseAuction 分钟) 就"持有到收盘",
+//       持有期缩短 → 掩掉 t_seg ≥ kSegLen − h − kCloseAuction 的行 (tail_masked). 日级档全段 exit 同一时刻, 无尾部.
 //     ok / ok_ac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
 //
-//   【二级 HoldStat (每 h)】只用 ok 行 (n) / ok_ac 行 (n_ac):
+//   【持有期键 hold】int, 与 features 层 LabelReturn 的列名同源 (lb_<side>_<name>_<amt>w):
+//     分钟档 <n>m   hold = n (1 ≤ n, n + kCloseAuction < kSegLen), 持仓 n 分钟
+//     收盘档 close  hold = kHoldClose, 持有到当日收盘
+//     开盘档 t<N>   hold = hold_open(N), T+N 日开盘平仓
+//     折算 / lag / 年化用的有效分钟 h = hold_minutes(hold): 分钟档 = n; close 与 T+1 = kSegLen (同日各行共一个 exit →
+//     每日一个独立样本); T+N = N · kSegLen (相邻 N 日的窗口重叠).
+//
+//   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_ac 行 (n_ac):
 //     ic_mean / ic_std (ddof=1) / icir = mean/std / ic_pos = IC>0 占比 / ic_skew, ic_kurt (总体矩, 超额峰度)
 //     ic_t = icir · √(n/h): 分钟行的标签持有期重叠 (相邻 h 行是同一段收益), 有效样本按 n/h 折算, 不然 t 虚高 √h 倍
 //     ls_mean / ls_t (同上折算) / sharpe = mean/std · √(kDaysPerYear · kSegLen / h) (按持有期为一期年化)
@@ -48,12 +55,14 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <string_view>
 
 namespace factor::stat {
 
 // ---- 常量 ----
 inline constexpr int kGroups = 20;              // 分组数 (等分 pct rank)
-inline constexpr int kMaxHold = 8;              // 同时评估的持有期数上限
+inline constexpr int kMaxHold = 12;             // 同时评估的持有期数上限 (amt × hold 展平后的组数)
 inline constexpr int kMaxA = 5120;              // 资产轴上限 (GPU 一行一 block 的片上排序容量)
 inline constexpr int kCloseAuction = 3;         // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 不能越过
 inline constexpr int kDaysPerYear = 242;        // 年化用交易日数
@@ -61,7 +70,44 @@ inline constexpr uint16_t kRankNone = 0xFFFF;   // r16 无效
 inline constexpr int kRankMax = 65534;          // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
 inline constexpr unsigned kNoKey = 0xFFFFFFFFu; // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
 
-// ---- 参数: 持有期列表 (分钟). 每个 h 对应一组标签 ----
+// ---- 持有期键 (见文件头【持有期键】) ----
+inline constexpr int kHoldDayBase = 1000;                          // ≥ 此值为日级档
+inline constexpr int kHoldClose = kHoldDayBase;                    // 持有到当日收盘
+inline constexpr int kHoldOpenMax = 30;                            // T+N 的 N 上限 (键值域 / 断言用)
+inline constexpr int hold_open(int n) { return kHoldDayBase + n; } // T+n 开盘平仓
+inline constexpr bool hold_intraday(int hold) { return hold < kHoldDayBase; }
+// 折算用有效分钟: 分钟档 = n; close / T+1 = 一段; T+N = N 段
+inline constexpr int hold_minutes(int hold) {
+  if (hold_intraday(hold))
+    return hold;
+  const int n = hold - kHoldDayBase;
+  return kSegLen * (n < 1 ? 1 : n);
+}
+// 列名 token → 键: "<n>m" / "close" / "t<N>" (LabelReturn LABEL_GROUPS 的 name); 不识别 → 断言
+inline int hold_from_name(std::string_view name) {
+  assert(!name.empty());
+  if (name == "close")
+    return kHoldClose;
+  const bool is_open = name.front() == 't';
+  const std::string_view digits = is_open ? name.substr(1) : name.substr(0, name.size() - 1);
+  assert(!digits.empty() && (is_open || name.back() == 'm') && "持有期 token 不合 <n>m / close / t<N>");
+  int n = 0;
+  for (const char c : digits) {
+    assert(c >= '0' && c <= '9' && "持有期 token 数字部分非数字");
+    n = n * 10 + (c - '0');
+  }
+  return is_open ? hold_open(n) : n;
+}
+// 键 → 显示名: "5m" / "close" / "T+3"
+inline std::string hold_name(int hold) {
+  if (hold_intraday(hold))
+    return std::to_string(hold) + "m";
+  if (hold == kHoldClose)
+    return "close";
+  return "T+" + std::to_string(hold - kHoldDayBase);
+}
+
+// ---- 参数: 持有期键列表. 每个 h 对应一组标签 ----
 struct Holds {
   int n = 0;
   int h[kMaxHold] = {};
@@ -69,8 +115,13 @@ struct Holds {
 
 inline void assert_holds(const Holds &hd) {
   assert(hd.n >= 1 && hd.n <= kMaxHold);
-  for (int i = 0; i < hd.n; ++i)
-    assert(hd.h[i] >= 1 && hd.h[i] + kCloseAuction < kSegLen && "持有期须 ≥ 1 且尾部掩码不能吞掉整段");
+  for (int i = 0; i < hd.n; ++i) {
+    const int h = hd.h[i];
+    if (hold_intraday(h))
+      assert(h >= 1 && h + kCloseAuction < kSegLen && "分钟档持有期须 ≥ 1 且尾部掩码不能吞掉整段");
+    else
+      assert(h - kHoldDayBase >= 0 && h - kHoldDayBase <= kHoldOpenMax && "日级档键越界 (close = kHoldClose, T+N = hold_open(N))");
+  }
 }
 
 // ---- 一级输出: 每 (持有期, 时刻) 一行; 布局 rows[h_idx * T + t] ----
@@ -114,8 +165,8 @@ inline int grp_of(unsigned r16) {
   return g < kGroups - 1 ? g : kGroups - 1;
 }
 
-// 段末尾部 (标签持有到收盘, 持有期缩短) → 掩掉
-inline bool tail_masked(int t, int h) { return t % kSegLen >= kSegLen - h - kCloseAuction; }
+// 段末尾部 (分钟档标签持有到收盘, 持有期缩短) → 掩掉; 日级档无尾部
+inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen >= kSegLen - hold - kCloseAuction; }
 
 // 整数五和的 Pearson: vx = n·Σx² − (Σx)² 等全在 64 位整数内精确, 只有最后一步除法/开方是浮点 (IEEE 正确舍入,
 // 两后端逐位一致). ok = n ≥ 2 ∧ vx > 0 ∧ vy > 0
@@ -156,9 +207,10 @@ inline double mono_of(const double *g, int K) {
   return vy > 0.0 ? cxy / std::sqrt(vx * vy) : 0.0;
 }
 
-// rows = 该持有期的 T 行 (rows + h_idx * T)
+// rows = 该持有期的 T 行 (rows + h_idx * T); hold = 持有期键
 inline HoldStat summarize(const Row *r, int T, int hold) {
   assert(T >= 1 && hold >= 1);
+  const int h = hold_minutes(hold); // 折算 / 年化用有效分钟
   HoldStat s;
   s.hold = hold;
   double sic = 0.0, sls = 0.0, smk = 0.0, sac = 0.0, sg[kGroups] = {};
@@ -199,7 +251,7 @@ inline HoldStat summarize(const Row *r, int T, int hold) {
     vmk += dm * dm;
     cov += dl * dm;
   }
-  const double n_eff = static_cast<double>(n) / hold; // 重叠持有期折算
+  const double n_eff = static_cast<double>(n) / h; // 重叠持有期折算
   const double ic_sd = std::sqrt(m2 / (n - 1));
   const double ls_sd = std::sqrt(vls / (n - 1));
   s.ic_mean = static_cast<float>(mic);
@@ -215,7 +267,7 @@ inline HoldStat summarize(const Row *r, int T, int hold) {
   s.ls_mean = static_cast<float>(mls);
   if (ls_sd > 0.0) {
     s.ls_t = static_cast<float>(mls / ls_sd * std::sqrt(n_eff));
-    s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(static_cast<double>(kDaysPerYear) * kSegLen / hold));
+    s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(static_cast<double>(kDaysPerYear) * kSegLen / h));
   }
   if (vmk > 0.0)
     s.beta = static_cast<float>(cov / vmk);

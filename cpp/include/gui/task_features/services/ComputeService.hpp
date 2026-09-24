@@ -119,7 +119,9 @@ struct StageLayout {
 // ============================================================================
 
 struct ComputeConfig {
-  int pool_slots = 6;
+  // 池下限 = LabelReturn::MIN_POOL_SLOTS (开盘档标签 T+N 跨日回填, 旧日 slot 持到结清; 少于此死锁), ComputeService.cpp static_assert 对账
+  static constexpr int kMinPoolSlots = 12;
+  int pool_slots = kMinPoolSlots + 2;
   int adopt_pct = 50; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
   bool prefetch_share_io = false;
 };

@@ -423,10 +423,11 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
     c.allowed = f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS;
     t.cols.push_back(c);
     if (f.data_type == FeatureDataType::LB) {
-      char side[8] = {};
-      int h = 0, amt = 0;
-      const int got = std::sscanf(f.code, "lb_%7[a-z]_%dm_%dw", side, &h, &amt);
-      assert(got == 3 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<side>_<h>m_<amt>w");
+      char side[8] = {}, name[16] = {};
+      int amt = 0;
+      const int got = std::sscanf(f.code, "lb_%7[a-z]_%15[a-z0-9]_%dw", side, name, &amt);
+      assert(got == 3 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<side>_<name>_<amt>w");
+      const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N> → 持有期键 (Stat/Contract.hpp 【持有期键】)
       labs.push_back({std::string_view(side) == "long", h, amt, static_cast<uint32_t>(i)});
       holds.insert(h), amts.insert(amt);
     }

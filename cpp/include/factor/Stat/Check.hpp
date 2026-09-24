@@ -35,8 +35,8 @@ using factor::check::Plane;
 using factor::check::Profile;
 using factor::check::Tol;
 
-// 对拍用的持有期 (分钟): 与 features 层 LabelReturn 的 LABEL_HOLDS 同值, 但这里不 include 它 (factor/ 不依赖 features/)
-inline constexpr int kHolds[] = {5, 10, 30};
+// 对拍用的持有期键: 与 features 层 LabelReturn 的 LABEL_GROUPS 同值 (键定义见 Stat/Contract.hpp), 但这里不 include 它 (factor/ 不依赖 features/)
+inline constexpr int kHolds[] = {1, 5, 15, 30, 60, factor::stat::kHoldClose, factor::stat::hold_open(1), factor::stat::hold_open(3), factor::stat::hold_open(5)};
 inline constexpr int kNumHolds = static_cast<int>(sizeof(kHolds) / sizeof(kHolds[0]));
 
 inline uint16_t f2h(float f) {

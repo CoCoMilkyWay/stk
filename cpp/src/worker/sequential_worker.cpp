@@ -113,10 +113,14 @@ void sequential_worker(WorkerCtx ctx) {
   // 处理一个 asset-day (缺 binary 则空过, 张量保持默认值), 返回订单数.
   // 主循环与领养回填共用 —— 两者只差句柄来自哪一天.
   // asset_id = 子轴下标 (张量列/调度槽); items/bin 路径经 global_ids 映射
+  // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘档标签 (T+N) 跨日回填, 旧日句柄持到结清
+  // (见 CoreSequential::end_day / LabelReturn 文件头); 最后一日之后由 finish_all 全部结清.
   auto process_asset_day = [&](size_t asset_id, size_t didx, const std::string &date_str, const GlobalFeatureStore::Day &day) -> size_t {
     const auto &asset = data.asset.items[sched.global_ids[asset_id]];
-    if (!asset.date_at(didx).has_binaries())
-      return 0; // 缺二进制: 当天张量保持默认值, warm 状态不推进.
+    if (!asset.date_at(didx).has_binaries()) {
+      sched.cores[asset_id]->no_data_day(date_str, day, store); // 缺二进制: 当天张量保持默认值, warm 状态不推进; 只走标签日历
+      return 0;
+    }
 
     lob.bind(sched.cores[asset_id].get(), asset_id, asset.exchange_type); // 工作区换绑本资产 (簿此刻是干净的)
     lob.tick_data().core_id = static_cast<uint32_t>(worker_id);           // 追踪: 当前驱动核
@@ -164,12 +168,12 @@ void sequential_worker(WorkerCtx ctx) {
                         " depth_crossed=" + std::to_string(lob.get_depth_crossed_count()) + "/" + std::to_string(lob.get_depth_seen_count()));
       }
 
-      lob.end_day();
       date_assets_processed++;
     } else {
       Logger::log("worker_" + std::to_string(worker_id), "WARNING: " + date_str + " failed to decode " + orders_file);
       order_num = 0;
     }
+    lob.end_day(store); // 解码失败也要走: begin_day 已推日环, 收盘结算 / 归还句柄不能少
 
     // 归还工作区: 换绑下一个资产前簿必须干净 (bind 断言委托表为空).
     lob.clear();
@@ -293,8 +297,7 @@ void sequential_worker(WorkerCtx ctx) {
         cumulative_orders += process_asset_day(pick, data.asset.date_idx(bdate), bdate, bday);
         stat.work.store(cumulative_orders, std::memory_order_relaxed);
         sched.done[pick].store(d, std::memory_order_release);
-        store.ts_close(bday);
-        ++d;
+        ++d; // 回填日 ≤ 本 worker 前沿 − 1 < 最后一日, 不会走到 finish_all
       }
       my_asset_ids.push_back(pick);
       return; // 一次领养一个; 还在等 slot 的话下轮再来
@@ -344,10 +347,11 @@ void sequential_worker(WorkerCtx ctx) {
         continue;
       }
       const size_t order_num = process_asset_day(asset_id, didx, date_str, day);
+      if (date_idx + 1 == total_dates)
+        sched.cores[asset_id]->finish_all(store); // 区间末: 悬挂的开盘档按最后盘口结算, 旧日句柄全部归还
       date_orders += order_num;
       cumulative_orders += order_num;
       sched.done[asset_id].store(static_cast<int32_t>(date_idx), std::memory_order_release);
-      store.ts_close(day);
       ++i;
       stat.work.store(cumulative_orders, std::memory_order_relaxed);
     }

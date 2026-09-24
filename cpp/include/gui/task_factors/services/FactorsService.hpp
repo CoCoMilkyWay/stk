@@ -64,7 +64,7 @@ struct FeatureTable {
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };
-// 标签列按 code 命名 lb_long_<h>m_<amt>w / lb_short_<h>m_<amt>w 识别 (LabelReturn 生成的字段行)
+// 标签列按 code 命名 lb_<long|short>_<name>_<amt>w 识别 (LabelReturn 生成的字段行), name = <n>m / close / t<N> → 持有期键 (Stat/Contract.hpp)
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta);
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) ----

@@ -150,7 +150,14 @@ __device__ __forceinline__ int grp_of(unsigned r16) {
   const int g = static_cast<int>(r16 * kGroups / (kRankMax + 1));
   return g < kGroups - 1 ? g : kGroups - 1;
 }
-__device__ __forceinline__ bool tail_masked(int t, int h) { return t % kSegLen >= kSegLen - h - kCloseAuction; }
+__device__ __forceinline__ bool hold_intraday(int hold) { return hold < factor::stat::kHoldDayBase; }
+__device__ __forceinline__ int hold_minutes(int hold) {
+  if (hold_intraday(hold))
+    return hold;
+  const int n = hold - factor::stat::kHoldDayBase;
+  return kSegLen * (n < 1 ? 1 : n);
+}
+__device__ __forceinline__ bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen >= kSegLen - hold - kCloseAuction; }
 __device__ __forceinline__ float pearson_int(unsigned long long n, unsigned long long sx, unsigned long long sy,
                                              unsigned long long sxx, unsigned long long syy, unsigned long long sxy, bool &ok) {
   if (n < 2) {
@@ -304,7 +311,8 @@ __global__ void __launch_bounds__(kCB) label_rows(const uint16_t *ws, LabelSet L
   __syncthreads();
 
   for (int hi = 0; hi < hd.n; ++hi) { // 块内一致量, 不发散
-    const int h = hd.h[hi];
+    const int hold = hd.h[hi];
+    const int h = dev::hold_minutes(hold);
     const Label &lb = L.l[hi];
     // ---- rank-AC (lag = h) ----
     ull ac[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy
@@ -324,7 +332,7 @@ __global__ void __launch_bounds__(kCB) label_rows(const uint16_t *ws, LabelSet L
       block_sum(ac, pu);
     }
     // ---- 标签侧 ----
-    const bool tail = dev::tail_masked(t, h);
+    const bool tail = dev::tail_masked(t, hold);
     ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (IC)
     float f[2 + kGroups] = {};     // Σy_long (mkt), Σy_short|组0, 各组 Σy_long
     int c[kGroups] = {};           // 各组计数

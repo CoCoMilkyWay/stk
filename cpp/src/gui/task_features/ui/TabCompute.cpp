@@ -154,11 +154,11 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::SameLine();
   ImGui::SetNextItemWidth(150);
   if (ImGui::InputInt("##pool_slots", &state.config.pool_slots, 1, 1)) {
-    if (state.config.pool_slots < 2)
-      state.config.pool_slots = 2;
+    if (state.config.pool_slots < ComputeConfig::kMinPoolSlots)
+      state.config.pool_slots = ComputeConfig::kMinPoolSlots;
   }
   ImGui::SameLine();
-  ImGui::TextDisabled("(in-flight day tensors)");
+  ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open)", ComputeConfig::kMinPoolSlots);
 
   ImGui::Spacing();
   ImGui::Text("Adopt %%:");

@@ -124,8 +124,8 @@ public:
 #endif
   }
 
-  void end_day() {
-    core_->end_day();
+  void end_day(GlobalFeatureStore &store) {
+    core_->end_day(store);
   }
 
   // Get TOB invalid count

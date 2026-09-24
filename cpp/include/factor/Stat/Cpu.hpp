@@ -130,11 +130,12 @@ inline void par_rows(int T, int threads, Fn &&fn) {
     t.join();
 }
 
-// 一 (t, h) 行的统计. rx = 本行 r16, ws = 全部 r16 (取 t−h 行)
-inline Row row_stat(const uint16_t *rx, int t, int A, int h, const Label &L, const uint16_t *ws) {
+// 一 (t, hold) 行的统计. rx = 本行 r16, ws = 全部 r16 (取 t−h 行, h = hold_minutes(hold))
+inline Row row_stat(const uint16_t *rx, int t, int A, int hold, const Label &L, const uint16_t *ws) {
   using ull = unsigned long long;
   Row r;
   const size_t base = static_cast<size_t>(t) * A;
+  const int h = factor::stat::hold_minutes(hold);
   // ---- rank-AC (lag = h), 与标签无关 ----
   if (t >= h) {
     const uint16_t *rp = ws + static_cast<size_t>(t - h) * A;
@@ -153,8 +154,8 @@ inline Row row_stat(const uint16_t *rx, int t, int A, int h, const Label &L, con
     r.ac = factor::stat::pearson_int(n, sx, sy, sxx, syy, sxy, ok);
     r.ok_ac = ok ? 1u : 0u;
   }
-  // ---- 标签侧: 段末尾部掩掉 ----
-  if (factor::stat::tail_masked(t, h))
+  // ---- 标签侧: 段末尾部掩掉 (仅分钟档) ----
+  if (factor::stat::tail_masked(t, hold))
     return r;
   const uint16_t *ry = L.ry + base, *lv = L.lv + base, *sv = L.sv + base;
   ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;

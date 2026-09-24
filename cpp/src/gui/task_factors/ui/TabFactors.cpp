@@ -252,9 +252,9 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
       ImGui::TextDisabled("amt = %dw", r.amt[ai]);
       for (int k = 0; k < r.n_hold; ++k) {
         const factor::stat::HoldStat &h = r.hold[ai][k];
-        ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f SR %+.2f "
+        ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f SR %+.2f "
                     "β %+.3f | mono %+.3f | rAC %+.3f",
-                    h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.sharpe,
+                    factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.sharpe,
                     h.beta, h.mono, h.rank_ac);
       }
     }
@@ -330,9 +330,9 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     ImGui::SetTooltip("表格 Stat 列显示哪个金额档 (万元; 只影响显示). Run 把全部 金额档 × 持有期 一起算 (lb_long/short_<h>m_<amt>w 列)");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("Hold", ft.labels.empty() ? "-" : (std::to_string(cur_hold) + "m").c_str())) {
+  if (ImGui::BeginCombo("Hold", ft.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str())) {
     for (size_t i = 0; i < ft.labels.size(); ++i)
-      if (ImGui::Selectable((std::to_string(ft.labels[i].hold) + "m").c_str(), static_cast<int>(i) == ui.hold_idx))
+      if (ImGui::Selectable(factor::stat::hold_name(ft.labels[i].hold).c_str(), static_cast<int>(i) == ui.hold_idx))
         ui.hold_idx = static_cast<int>(i);
     ImGui::EndCombo();
   }
@@ -573,7 +573,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   ImGui::SameLine();
   ImGui::Text("%d (%d BROKEN)", n, broken);
   ImGui::SameLine();
-  ImGui::TextDisabled("Stat 列 = h %dm, amt %dw", cur_hold, cur_amt);
+  ImGui::TextDisabled("Stat 列 = h %s, amt %dw", factor::stat::hold_name(cur_hold).c_str(), cur_amt);
 
   {
     const uint64_t ep = svc.epoch();
