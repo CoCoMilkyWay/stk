@@ -122,6 +122,7 @@ bool Pool::in_pool(std::string_view code, std::string_view yyyymmdd) const {
     return true;
   const auto dit = std::lower_bound(dates_.begin(), dates_.end(), yyyymmdd);
   assert(dit != dates_.end() && *dit == yyyymmdd && "universe: 该日没出名单 (回测区间超出名单覆盖, 重跑 py/universe)");
+  assert(code.find('.') != std::string_view::npos && "universe: 键是 \"CODE.EX\", 裸 6 位码永远查不到 (cs_valid 会全 0)");
   const auto cit = code_idx_.find(std::string(code));
   if (cit == code_idx_.end())
     return false;

@@ -33,16 +33,17 @@ class CoreSequential {
   }
 
 public:
+  // code_ex = "CODE.EX" (universe::Pool / AssetAxis 的键; 6 位裸码查池查不到 → cs_valid 全 0)
   CoreSequential(const fund::Pool &fund_pool,
                  const universe::Pool &universe_pool,
-                 const std::string &asset_code,
+                 const std::string &code_ex,
                  size_t asset_id = 0,
                  size_t core_id = 0)
       : asset_id_(asset_id),
         core_id_(core_id),
-        asset_code_(asset_code),
+        code_ex_(code_ex),
         universe_pool_(universe_pool),
-        dag_(tick_data_, fund_pool, asset_code, asset_id),
+        dag_(tick_data_, fund_pool, code_ex, asset_id),
         tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id_);
@@ -63,7 +64,7 @@ public:
     push_day(day);
     meta_.reset();
     // 当日池成员位: 日频 PIT 名单 (universe::Pool, 盘后 python 产出, 第 D 日由 ≤ D−1 数据定), 与 Fund 吃 fund_pool 同形
-    meta_.begin_day(universe_pool_.in_pool(asset_code_, date_str));
+    meta_.begin_day(universe_pool_.in_pool(code_ex_, date_str));
     // cs_valid: 当日池成员位, 整日常量, 与事件无关 → 盘前一次写满两层全部行 (池外不写, slot 清零即 0)
     if (const float cs = meta_.cs(); cs != 0.0f) {
       for (size_t t = 0; t < LEVELS[0].rows; ++t)
@@ -208,8 +209,8 @@ private:
   size_t cur_ = kPendDays - 1;                            // 首个 push_day 推到 0
   size_t asset_id_;
   size_t core_id_;
-  std::string asset_code_;
-  const universe::Pool &universe_pool_; // 动态池逐日名单 (只读共享; begin_day 查 (asset_code_, date) → cs_valid)
+  std::string code_ex_;                 // "CODE.EX" (universe::Pool 的键)
+  const universe::Pool &universe_pool_; // 动态池逐日名单 (只读共享; begin_day 查 (code_ex_, date) → cs_valid)
 
   TickData tick_data_; // 本资产 L0 工作区 (dag_ 引用它, 须先于 dag_ 声明)
   DAG dag_;
