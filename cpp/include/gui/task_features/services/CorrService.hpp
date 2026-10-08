@@ -4,7 +4,7 @@
 // 三个独立 service: 矩阵重 (F² × 样本数), 单对 lead-lag 轻 (只读两列, 悬停即算), lag 矩阵更重
 // (只在勾选时算) —— 分开才互不打断.
 //
-// CorrRequest: 层 (跟随 UI 的 L0/L1) + 当前过滤后的行集 (去 META, 升序去重) + _meta 门控列.
+// CorrRequest: 层 (跟随 UI 的 L0/L1) + 当前过滤后的行集 (去 META, 升序去重) + ts_valid 门控列.
 // 触发: 进 Corr tab / 过滤行集变了 / 层变了 / universe / 日期区间变了 / Compute 落了新库.
 #pragma once
 

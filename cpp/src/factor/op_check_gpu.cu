@@ -160,6 +160,23 @@ void download(Session *s, const DevPlane *p, float *v, uint8_t *m) {
     CU(cudaMemcpy(m, p->m, s->n, cudaMemcpyDeviceToHost));
 }
 
+namespace {
+__global__ void gate_mask_kernel(uint8_t *__restrict out, const uint8_t *__restrict m, const uint8_t *__restrict g, size_t n) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < n)
+    out[i] = m[i] & g[i];
+}
+} // namespace
+
+void gate(Session *s, const DevPlane *x, const DevPlane *g, DevPlane *out) {
+  assert(s && x && g && out && x->v && x->m && g->m && out->v && out->m);
+  assert(out != x && out != g && "gate 不支持原地");
+  CU(cudaMemcpy(out->v, x->v, s->n * sizeof(float), cudaMemcpyDeviceToDevice));
+  const unsigned threads = 256, blocks = static_cast<unsigned>((s->n + threads - 1) / threads);
+  gate_mask_kernel<<<blocks, threads>>>(out->m, x->m, g->m, s->n);
+  CU(cudaGetLastError());
+}
+
 void pin(void *host, size_t bytes) { CU(cudaHostRegister(host, bytes, cudaHostRegisterDefault)); }
 void unpin(void *host) { CU(cudaHostUnregister(host)); }
 

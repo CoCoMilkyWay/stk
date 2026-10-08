@@ -20,7 +20,7 @@ class FeatureRead;
 // 与 Dist/Transform 维度反转 —— 那边单特征全数据, 这边全特征抽样数据:
 //
 //   轮 = 一个抽样日 (全区间日期固定种子洗牌取前 kPvRounds 个 → 无偏覆盖);
-//   轮首单线程读共享三列 lim_dn / lim_up / _meta (笼快照 + 门控列, 轮内各块共用);
+//   轮首单线程读共享三列 lim_dn / lim_up / ts_valid (笼快照 + 门控列, 轮内各块共用);
 //   轮内按特征分块 (每块 kPvBlockCols 列), 一波常驻线程抢块: 各自 load_day_columns →
 //     私有 DayBatchPlane 转置 (has_valid=false: 门控按各特征自己的 valid_type 在扫描侧判);
 //     每特征槽一轮只被一个线程写, 轮末栅栏隔开相邻轮 → 累积器无锁无归约;
@@ -41,7 +41,7 @@ class FeatureRead;
 
 static constexpr size_t kPvRounds = 64;                             // 抽样日上限 (轮数): 精度逐轮收敛
 static constexpr size_t kPvAssetsPerRound = 512;                    // 每 (轮, 特征) 抽样资产数 (轮间旋转覆盖)
-static constexpr size_t kPvBlockCols = 8;                           // 每次 load_day_columns 的特征列数 (+1 _meta)
+static constexpr size_t kPvBlockCols = 8;                           // 每次 load_day_columns 的特征列数 (+1 ts_valid)
 static constexpr size_t kPvKllCapacity = 128;                       // 每特征 sketch (迷你图, 精度换内存)
 static constexpr size_t kPvKllResolution = 256;                     // PDF 255 点 (±3sd 裁剪 + hover 放大图要吃分辨率)
 static constexpr size_t kPvMinSamples = 500;                        // 样本不足不画
@@ -77,7 +77,7 @@ struct FeaturePreview : analysis::StreamState {
   ~FeaturePreview();
 
   // 重置全部状态并进入 Building. feat_cols = 预览特征列 (metadata 下标, 升序,
-  // 不含 META 类), valid_types 与之平行; meta_col = "_meta" 门控列下标;
+  // 不含 META 类), valid_types 与之平行; meta_col = "ts_valid" 门控列下标;
   // lim_dn_col / lim_up_col = price 笼两列 (逐日笼内判定, 融合进主扫描);
   // n_features = 该层特征总数 (cells 尺寸); n_assets = universe 子轴大小
   void reset_for_build(std::vector<size_t> feat_cols, std::vector<L2::ValidType> valid_types,

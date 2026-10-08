@@ -50,7 +50,7 @@ class FeatureRead;
 //    这是这里唯一的近似, 缺失率低时无感.)
 //
 // 层: 跟随 UI 的 L0/L1 选择 (与 Dist/Transform 只跑 L1 不同, 这里没有 kLevel 硬编码).
-//   L0 目前只有 _meta 一列, 非 META 列不足 2 → UI 不提交请求.
+//   L0 目前只有 ts_valid / cs_valid 两列, 非 META 列不足 2 → UI 不提交请求.
 // 生命周期: 进 Corr tab 且过滤行集/层/universe/日期区间变了 → 新请求取消在跑重算;
 //   切走 tab → 只中断 (矩阵留在内存, 切回不重算); 切出 Features 任务 → clear() 释放.
 // ============================================================================
@@ -86,7 +86,7 @@ struct Correlation : analysis::StreamState {
   ~Correlation();
 
   // 重置全部状态并进入 Building. cols = 参与矩阵的列 (metadata 下标, 升序去重, ≥ 2),
-  // valid_types 与之平行; meta_col = "_meta" 门控列下标; n_assets = universe 子轴大小
+  // valid_types 与之平行; meta_col = "ts_valid" 门控列下标; n_assets = universe 子轴大小
   void reset_for_build(size_t lvl, std::vector<uint32_t> cols,
                        std::vector<L2::ValidType> valid_types, size_t meta_col,
                        std::vector<std::string> month_keys, size_t n_assets);

@@ -293,7 +293,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     if (status == analysis::Status::Building)
       ImGui::TextDisabled("构建中: 第一天算完即出图...");
     else
-      ImGui::TextDisabled("该层可算的特征不足 2 列 (L0 目前只有 _meta 一列); 或过滤后行集过窄.");
+      ImGui::TextDisabled("该层可算的特征不足 2 列 (L0 目前只有 ts_valid / cs_valid 两列); 或过滤后行集过窄.");
     return;
   }
   assert(corr.rho.size() == n * n);

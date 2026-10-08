@@ -85,7 +85,7 @@
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
 //       CS(lvl, src, Tf, Method)   截面: 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 宽 1; DATA
 //       LABEL                      标签回填 (CoreSequential 手工写). LB; 宽 1; DATA
-//       FLAG                       基建标志列 _meta (CoreSequential 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; 宽 1; ALL
+//       FLAG                       基建标志列 ts_valid / cs_valid (CoreSequential 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; 宽 1; ALL
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Operator/TS/Meta/Meta.hpp,
 //     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
 //     推荐频谱 (psd) 按层给 (ALL_LEVELS), 不逐列写.

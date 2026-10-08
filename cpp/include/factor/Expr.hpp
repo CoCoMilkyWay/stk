@@ -292,7 +292,7 @@ inline std::string to_string(const Expr &e, int i = 0) {
 
 // ---- 特征查询 (调用方注入; factor/ 不认识字段表) ----
 enum class FeatState : uint8_t { MISSING,   // 字段表里没有
-                                 FORBIDDEN, // 有, 但不许作因子输入 (标签 / _meta)
+                                 FORBIDDEN, // 有, 但不许作因子输入 (标签 / ts_valid)
                                  OK };
 using FeatureLookup = std::function<FeatState(std::string_view code)>;
 

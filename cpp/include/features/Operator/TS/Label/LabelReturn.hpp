@@ -208,7 +208,7 @@ public:
   //     −(税佣 + 冲击) —— 不赚钱还扣手续费, 连续无跳变.
   //   收盘档 全行 exit = 当日最后盘口.
   //   开盘档 到期日: 悬挂日 P (age = 今日 − P) 的 T+N 组, age ≥ N 且今日有开盘 → exit = 今日开盘快照; age ≥ 2N 仍无 → 最近一次可成交盘口.
-  //   全日无盘口: 分钟 / 收盘档无标签可写 (整日 _meta 皆无效), 当日不悬挂; 开盘档到期照常结算.
+  //   全日无盘口: 分钟 / 收盘档无标签可写 (整日 ts_valid 皆无效), 当日不悬挂; 开盘档到期照常结算.
   //   writer(h, l1, values, days_ago); release(days_ago) = 该日全部组已写完, 写句柄可归还.
   template <class Writer, class Release>
   inline void day_end(Writer &&writer, Release &&release) {
@@ -510,6 +510,6 @@ private:
 #define LABEL_ROW_SHORT(a, name, kind, n, X, CAT1) LABEL_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}^{B}_{entry}-\mathrm{VWAP}^{A}_{exit}}{\mathrm{VWAP}^{B}_{entry}})", name, kind, n, a)
 #define LABEL_GROUP(name, kind, n, X, CAT1) LABEL_AMTS(LABEL_ROW_LONG, name, kind, n, X, CAT1) LABEL_AMTS(LABEL_ROW_SHORT, name, kind, n, X, CAT1)
 
-// L0 秒级标签已停用 (L0 只落 _meta 一列, 秒频张量成本太高); 恢复 = 取消注释 + CoreSequential 加回 second() 回填
+// L0 秒级标签已停用 (L0 只落 ts_valid / cs_valid 两列, 秒频张量成本太高); 恢复 = 取消注释 + CoreSequential 加回 second() 回填
 // #define FIELDS_L0_LabelReturn(X, CAT1) LABEL_ROW_LONG(LABEL_L0_AMT, 1m, MIN, LABEL_L0_HOLD, X, CAT1)
 #define FIELDS_L1_LabelReturn(X, CAT1) LABEL_GROUPS(LABEL_GROUP, X, CAT1)

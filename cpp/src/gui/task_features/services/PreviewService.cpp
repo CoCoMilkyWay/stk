@@ -16,12 +16,12 @@ void PreviewService::RequestCompute(SharedData &data) {
   if (req.scope.months.empty())
     return;
   req.n_features = meta_list.size();
-  req.meta_col = meta.col_of(analysis::kLevel, "_meta");
+  req.meta_col = meta.col_of(analysis::kLevel, "ts_valid");
   req.lim_dn_col = meta.col_of(analysis::kLevel, "lim_dn");
   req.lim_up_col = meta.col_of(analysis::kLevel, "lim_up");
   for (size_t i = 0; i < meta_list.size(); ++i) {
     if (meta_list[i].data_type == FeatureDataType::META)
-      continue; // 元数据列不预览 (含 _meta 自身)
+      continue; // 元数据列不预览 (含 ts_valid 自身)
     req.feat_cols.push_back(i);
     req.valid_types.push_back(meta_list[i].valid_type);
   }

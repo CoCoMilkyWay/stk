@@ -47,6 +47,8 @@ void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, 
 DevPlane *plane_new(Session *s);
 void plane_del(Session *s, DevPlane *p);
 void download(Session *s, const DevPlane *p, float *v, uint8_t *m);
+// 截面门控 (因子 DAG 的 CS 节点输入 / Stat 的 x, 见 EvalGpu.hpp): out.v = x.v (D2D 拷), out.m = x.m ∧ gate.m; out 不得是 x / gate
+void gate(Session *s, const DevPlane *x, const DevPlane *gate, DevPlane *out);
 void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
                 int A, const Param &p, double *kernel_ms = nullptr);
 void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,

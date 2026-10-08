@@ -161,7 +161,7 @@ struct SlicePlane {
   struct RawBuf {
     std::vector<size_t> slice_t;                  // [S] 切片行号 (>= VR = 越界, 整片作废)
     std::vector<feature_storage_t> raw;           // [S][F][A] 门控后的原值 (无效 = 哨兵 NaN)
-    std::vector<float> gate;                      // [S][A] 当日 _meta 值 (逐特征按自己的 valid_type 判)
+    std::vector<float> gate;                      // [S][A] 当日 ts_valid 值 (逐特征按自己的 valid_type 判)
     std::vector<FeatureRead::DayColumns> staging; // [n_io] IO 暂存
     FeatureRead::DayColumns meta_day;
   };
@@ -205,7 +205,7 @@ struct SlicePlane {
   const float *R2s(size_t s) const { return R2.data() + s * F * A; }
   const uint8_t *ok(size_t s) const { return row_ok.data() + s * F; }
 
-  // 相 1: IO (并行抢特征块) —— 逐块读列文件, 就地按 _meta 门控抽出 b.slice_t 指定的 S 个切片.
+  // 相 1: IO (并行抢特征块) —— 逐块读列文件, 就地按 ts_valid 门控抽出 b.slice_t 指定的 S 个切片.
   // 只写 b 自己的内存, 可与另一缓冲上的 rank / 累加并发跑 (FeatureRead 并发只读)
   void load(RawBuf &b, FeatureRead &reader, const std::string &date,
             const std::vector<uint32_t> &cols, const std::vector<L2::ValidType> &vts,
@@ -489,7 +489,7 @@ struct CorrPair::Runtime {
   size_t A = 0, VR = 0;
 
   struct DayBuf {
-    FeatureRead::DayColumns day;                                         // [T][3][A]: a / b / _meta
+    FeatureRead::DayColumns day;                                         // [T][3][A]: a / b / ts_valid
     std::vector<feature_storage_t> raw_a, raw_b;                         // [VR][A] 门控后原值
     std::vector<float> Ra, Ma, R2a, Rb, Mb, R2b;                         // [VR][A]
     std::vector<uint8_t> ok_a, ok_b;                                     // [VR]

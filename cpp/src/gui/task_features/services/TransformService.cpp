@@ -29,9 +29,9 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
     req.columns.push_back(meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_MCAP)));
     req.columns.push_back(meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_INDUSTRY)));
   }
-  // valid 列: 按特征元数据的 valid_type 决定是否带 _meta 门控列 (恒为末列; L1 只有 DATA 门控)
+  // valid 列: 按特征元数据的 valid_type 决定是否带 ts_valid 门控列 (恒为末列; L1 只有 DATA 门控)
   if (meta_list[feat].valid_type != L2::ValidType::ALL) {
-    req.columns.push_back(meta.col_of(analysis::kLevel, "_meta"));
+    req.columns.push_back(meta.col_of(analysis::kLevel, "ts_valid"));
     req.has_valid = true;
   }
   // 焦点按新子轴 clamp: UI 槽位可能来自上一个 universe (切 universe 后子轴大小已变)

@@ -179,7 +179,7 @@ struct Transform : analysis::StreamState {
   Transform();
   ~Transform();
 
-  // 重置构建参数并进入 Building. cols = [特征列 (+ mcap, ind_l1 若 NeutralRank) (+ _meta 门控列)]
+  // 重置构建参数并进入 Building. cols = [特征列 (+ mcap, ind_l1 若 NeutralRank) (+ ts_valid 门控列)]
   // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids); series_focus = 序列快照焦点 (子轴下标).
   // 展示字段不清 (旧图留住), universe 变了才整体重建.
   void reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,

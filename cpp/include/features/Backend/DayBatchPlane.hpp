@@ -18,7 +18,7 @@
 //   data[c][a][j][t]   c = 值列, a = 资产, j = 批内天, t = 有效行 (level_valid_rows, 末哨兵行不进平面)
 // 每资产每列一段连续 days×VR (TS 扫描友好); 某 (j, t) 的截面列则按 asset_stride 跨步取 (CS gather).
 //
-// valid 门控 (可选 _meta 列, 恒为 columns 末列) 不过 与 真 NaN 一并折叠成统一哨兵 kInvalidBits (f16 qNaN):
+// valid 门控 (可选 ts_valid 列, 恒为 columns 末列) 不过 与 真 NaN 一并折叠成统一哨兵 kInvalidBits (f16 qNaN):
 // 二者的分账在 IO 就地做完 (这里还看得见 valid 列), 热扫描一次 v != v 就能跳过, 也不怕哨兵撞上数据里的 NaN.
 // 真 NaN 只记值列 0 (被分析的特征列); 附加列 (中性化上下文等) 同一门控, 不记账.
 //
@@ -63,7 +63,7 @@ struct DayBatchPlane {
   }
 
   // 一天: 读 columns (值列... [+ valid 列]) → 转置进批内第 j 天. tid 选 staging/nan_seen 槽 (每线程独占).
-  // has_valid: columns 末列是 _meta 门控列, 按 valid_type 判 (编码见 Meta.hpp); 否则全部视为有效.
+  // has_valid: columns 末列是 ts_valid 门控列, 按 valid_type 判 (编码见 Meta.hpp); 否则全部视为有效.
   void load_day(const FeatureRead &reader, const std::string &date, const std::vector<size_t> &columns,
                 bool has_valid, L2::ValidType valid_type, size_t j, size_t tid) {
     assert(j < days && tid < staging.size());

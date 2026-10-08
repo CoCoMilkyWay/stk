@@ -59,6 +59,16 @@ public:
   void begin_day(const std::string &date_str, const GlobalFeatureStore::Day &day) {
     push_day(day);
     meta_.reset();
+    // 动态池接入点 (池子数据结构待定型): 现恒为 true = 全轴皆在池 (旧语义).
+    // 定型后此处按 (asset_code_, date_str) 查日频 PIT 名单, 与 Fund 吃 fund_pool 同形.
+    meta_.begin_day(/*in_pool=*/true);
+    // cs_valid: 当日池成员位, 整日常量, 与事件无关 → 盘前一次写满两层全部行 (池外不写, slot 清零即 0)
+    if (const float cs = meta_.cs(); cs != 0.0f) {
+      for (size_t t = 0; t < LEVELS[0].rows; ++t)
+        fstore::ts_write<0>(day_, t, L0_Field::cs_valid, asset_id_, cs);
+      for (size_t t = 0; t < LEVELS[1].rows; ++t)
+        fstore::ts_write<1>(day_, t, L1_Field::cs_valid, asset_id_, cs);
+    }
     dag_.at_day_start(date_str);
     dag_.LabelReturn.day_begin();
   }
@@ -139,12 +149,12 @@ private:
 
     fstore::ts_write_row<0>(day_, t, asset_id_, dag_);
 
-    // _meta (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值.
+    // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, begin_day 已写)
     // 盘口价只在 depth_updated 时取 (Depth 序列每日清空, 首次更新前为空环)
     meta_.on_tick(t, depth_updated, dag_.MicroPrice.last(),
                   depth_updated ? dag_.Depth.bid_price[0].back() : 0.0f,
                   depth_updated ? dag_.Depth.ask_price[0].back() : 0.0f, lob.price);
-    fstore::ts_write<0>(day_, t, L0_Field::_meta, asset_id_, meta_.l0());
+    fstore::ts_write<0>(day_, t, L0_Field::ts_valid, asset_id_, meta_.l0());
   }
 
   // ---------------------------------------------------------------- 日句柄环 ----
@@ -183,7 +193,7 @@ private:
       dag_.run<Trigger::onMinute>();
       fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
     }
-    fstore::ts_write<1>(day_, t, L1_Field::_meta, asset_id_, meta_.l1(valid));
+    fstore::ts_write<1>(day_, t, L1_Field::ts_valid, asset_id_, meta_.l1(valid));
   }
 
   // 标签列定位: 按类型 (LB) 在字段表里找, 不依赖列名; 列数 / 连续性与 LabelReturn 配置对账
@@ -202,5 +212,5 @@ private:
   DAG dag_;
   ResamplerTick2Min tick2min_;
 
-  MetaTracker meta_; // _meta 基建列状态机 (编码/累积语义见 Meta.hpp; begin_day 重置)
+  MetaTracker meta_; // ts_valid / cs_valid 基建列状态机 (编码/累积语义见 Meta.hpp; begin_day 重置 + 给当日池成员位)
 };

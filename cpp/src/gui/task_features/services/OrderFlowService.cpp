@@ -52,8 +52,8 @@ struct OrderFlowService::Impl {
         decoder(L2::DEFAULT_ENCODER_ORDER_SIZE),
         lob(L2::LOB_ORDER_CAPACITY) {
     const size_t A = uni.size();
-    l1_cols.preallocate(A, 1, 5 + OrderFlowConst::MAX_FEATURES); // OHLC 4 + _meta + 特征
-    l0_cols.preallocate(A, 0, 1 + OrderFlowConst::MAX_FEATURES); // _meta + 特征
+    l1_cols.preallocate(A, 1, 5 + OrderFlowConst::MAX_FEATURES); // OHLC 4 + ts_valid + 特征
+    l0_cols.preallocate(A, 0, 1 + OrderFlowConst::MAX_FEATURES); // ts_valid + 特征
     uni_cols.preallocate(A, 1, UNIVERSE_COL_COUNT);              // 资产筛选状态列
   }
 };
@@ -250,10 +250,10 @@ bool OrderFlowService::kline_step() {
   const size_t d = kline_next_day_;
   assert(d < k.dates.size());
 
-  // 选列: [open, high, low, close, _meta, 特征...] — L1 逐列文件, 每日只碰 n 个小文件
+  // 选列: [open, high, low, close, ts_valid, 特征...] — L1 逐列文件, 每日只碰 n 个小文件
   auto &cols = impl_->columns;
   cols.assign({L1_Field::open, L1_Field::high, L1_Field::low,
-               L1_Field::close, L1_Field::_meta});
+               L1_Field::close, L1_Field::ts_valid});
   for (int f : kline_cur_.feats)
     cols.push_back(static_cast<size_t>(f));
   impl_->reader.load_day_columns(k.dates[d], cols, impl_->l1_cols);
@@ -313,7 +313,7 @@ bool OrderFlowService::kline_step() {
 // ============================================================================
 // Universe: 锚点日的 L1 filter 列 → 全资产 PIT 状态 → 背槽发布
 //   Fund 是 onDay 算一次 / onMinute 原样广播, 故当日任一有效分钟的值即当日状态;
-//   取首个 _meta 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
+//   取首个 ts_valid 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
 // ============================================================================
 
 void OrderFlowService::universe_build(const UniverseReq &req) {
@@ -332,7 +332,7 @@ void OrderFlowService::universe_build(const UniverseReq &req) {
   slot.meta.assign(data_->asset.items.size(), OrderFlow::Universe::Meta{});
 
   auto &cols = impl_->columns;
-  cols.assign({static_cast<size_t>(L1_Field::_meta), static_cast<size_t>(L1_Field::st_level),
+  cols.assign({static_cast<size_t>(L1_Field::ts_valid), static_cast<size_t>(L1_Field::st_level),
                static_cast<size_t>(L1_Field::list_age), static_cast<size_t>(L1_Field::delist_age),
                static_cast<size_t>(L1_Field::ind_l1)});
   assert(cols.size() == UNIVERSE_COL_COUNT);
@@ -504,7 +504,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
     }
   }
 
-  // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + _meta 选列读, 与图2 同源指标;
+  // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + ts_valid 选列读, 与图2 同源指标;
   //      L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒 → 只取当日日内段) ----
   // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
   // 可读, overlay 留空 (盘口重放走 .bin, 不受 universe 约束, 上面照常构建)
@@ -512,8 +512,8 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   if (!req.feats.empty() && depth_sub < impl_->uni.size()) {
     TraceN("OF_DepthFeats");
     assert(req.feat_level == 0 || req.feat_level == 1);
-    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(L0_Field::_meta)
-                                                : static_cast<size_t>(L1_Field::_meta);
+    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(L0_Field::ts_valid)
+                                                : static_cast<size_t>(L1_Field::ts_valid);
     auto &cols = impl_->columns;
     cols.assign({meta_col});
     for (int f : req.feats)
@@ -535,7 +535,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       for (size_t i = 0; i < req.feats.size(); ++i) {
         float v = static_cast<float>(day_cols.get(r, 1 + i, a));
         if (static_cast<size_t>(req.feats[i]) == meta_col)
-          v = fmeta::price(v); // _meta 被选中时展示幅值 = micro price
+          v = fmeta::price(v); // ts_valid 被选中时展示幅值 = micro price
         if (v != v)            // NaN
           continue;
         slot.feat[i].x.push_back(x);

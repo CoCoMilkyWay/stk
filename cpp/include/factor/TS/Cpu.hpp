@@ -22,7 +22,9 @@
 //   中心矩用 fmax(·, 0) 钳掉相消出负; 溢出由 mk 出口转无效 (契约: 溢出是数据属性, 不是 bug).
 //
 //   出错策略: 不做错误处理, 只 assert (参数非法立刻死在最早处).
-//   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
+//   【precise-math】依赖受控浮点, 编进 -fno-fast-math -fno-math-errno TU (后者让 sqrt 保持 intrinsic).
+//   【向量化红线】内层循环里不许出现不可内联的 libm 调用 (pow / 引用进出的 std::clamp 等): 一个调用就让整段
+//   退化为标量, 吞吐与 stream 持平. 躲不开的 (log 族) 是已知下限, 该循环显式关向量化器, 免得它标量化拼装反而更慢.
 // =============================================================================
 
 #include <algorithm>
@@ -234,9 +236,11 @@ inline double mom_val(double s1, double s2, double s3, double s4, int n, float x
     return std::sqrt(m2 / (n - 1));
   else if constexpr (K == Mom::Z)
     return (x - s1 / n) / std::sqrt(m2 / (n - 1));
-  else if constexpr (K == Mom::SKEW)
-    return (c3_of(s1, s2, s3, n) / n) / std::pow(m2 / n, 1.5);
-  else
+  else if constexpr (K == Mom::SKEW) {
+    // m2^{3/2} 写成 v·√v 而非 pow(v, 1.5): pow 是不可内联的 libm 调用, 一进内层循环整段向量化就没了
+    const double v2 = m2 / n;
+    return (c3_of(s1, s2, s3, n) / n) / (v2 * std::sqrt(v2));
+  } else
     return (c4_of(s1, s2, s3, s4, n) / n) / ((m2 / n) * (m2 / n)) - 3.0;
 }
 
@@ -334,8 +338,23 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, bool pre, int n, bool spx
 
 CP_P1(TsAbs, std::fabs(x), mx)
 CP_P1(TsSign, x > 0.f ? 1.f : (x < 0.f ? -1.f : 0.f), mx)
-CP_P1(TsLog, std::copysign(std::log1p(std::fabs(x)), x), mx)
 CP_P1(TsSqrt, std::copysign(std::sqrt(std::fabs(x)), x), mx)
+
+// TsLog: log1p 无向量版 (libm 标量调用是下限). 不禁向量化的话, 向量化器会把 log1pf 逐 lane 标量化再 insert
+// 拼回去, 比纯标量循环还慢 —— 故此处显式关掉向量化器, 走干净的标量循环.
+struct TsLog {
+  CP_SIG {
+    CP_NO23;
+    (void)p;
+    const size_t N = static_cast<size_t>(T) * A;
+#pragma clang loop vectorize(disable)
+    for (size_t i = 0; i < N; ++i) {
+      const float x = xv[i];
+      const bool m = xm[i] != 0;
+      detail::put(ov, om, i, m ? static_cast<double>(std::copysign(std::log1p(std::fabs(x)), x)) : 0.0, m);
+    }
+  }
+};
 CP_P1(TsRelu, std::fmax(0.f, x), mx)
 CP_P1(TsRecip, 1.f / x, mx &&x != 0.f) // x = 0 退化, 溢出由 mk 转无效
 // TsGt: 指示 (严格大于); 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
@@ -347,9 +366,14 @@ struct TsClip {
     CP_NO23;
     assert(p.k >= 0.f);
     const size_t N = static_cast<size_t>(T) * A;
+    const float lo = -p.k, hi = p.k;
     for (size_t i = 0; i < N; ++i) {
+      const float x = xv[i];
       const bool m = xm[i] != 0;
-      detail::put(ov, om, i, m ? static_cast<double>(std::clamp(xv[i], -p.k, p.k)) : 0.0, m);
+      // 与 std::clamp 同式 (v < lo ? lo : hi < v ? hi : v), 展开成值比较让它变成 cmp + blend;
+      // std::clamp 走 const& 进出, 向量化器对引用选择不认账
+      const float c = x < lo ? lo : (hi < x ? hi : x);
+      detail::put(ov, om, i, m ? static_cast<double>(c) : 0.0, m);
     }
   }
 };

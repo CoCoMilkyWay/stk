@@ -13,6 +13,12 @@
 //                   Ts ROLL / EXPO        沿 t 全程递推 (Roll 窗跨段, Ema 不 reset) → 按资产列切块:
 //                                         gather 成紧凑 [T][w] 子平面 → 原算子跑 (A = w) → scatter 回去. 多两趟拷贝,
 //                                         换来算子零改动 + 精确. 每线程一份块暂存 (ParScratch)
+//   cs_gate       截面门控 [T][A] (特征库 cs_valid 列 = 当日在池, 整日常量, 见 features/MetaFlag.hpp). CS 节点 (A 域 ALL / GROUP)
+//                 的输入掩码按来源处理, TS 节点不碰 (跨进出池的历史照常用):
+//                   特征叶    直接拿 cs_gate 当掩码 (零成本). 前提 = 叶掩码 ⊇ cs_gate: CS 只在平稳可比的信息上算, 不吃 PIT 事件 /
+//                             带缺失的列 (Fund 族 NaN) —— 调用方对每个喂 CS 的叶 assert 一次 (covers), 炸了就该 think again
+//                   算子中间量 自身掩码 ∧ cs_gate (Roll 暖机 / 退化格是算子语义, 合法无效) → 写线程暂存, 不改共享槽
+//                 算子本身零改动 (只看掩码). nullptr = 不门控
 //   依赖受控浮点: 消费者 TU 编进 -fno-fast-math (CMake PRECISE_MATH_FLAG).
 // =============================================================================
 
@@ -66,8 +72,38 @@ struct Pool {
   }
 };
 
+// ---- 截面门控 (文件头 cs_gate) ----
+
+// dst[i] = m[i] ∧ gate[i], i ∈ [0, n)
+inline void gate_mask(uint8_t *dst, const uint8_t *m, const uint8_t *gate, size_t n) {
+  for (size_t i = 0; i < n; ++i)
+    dst[i] = m[i] & gate[i];
+}
+// m ⊇ gate (gate 为真处 m 必真): 特征叶喂 CS 节点的前提, 调用方 assert 一次
+inline bool covers(const uint8_t *m, const uint8_t *gate, size_t n) {
+  for (size_t i = 0; i < n; ++i)
+    if (gate[i] & ~m[i])
+      return false;
+  return true;
+}
+// 节点 nd 的输入 a 是否特征叶 (位 a); 给 run_node_par 的 leaf_bits
+inline unsigned leaf_bits_of(const Dag &d, const DagNode &nd) {
+  unsigned b = 0;
+  for (int a = 0; nd.op >= 0 && a < expr::kOps[nd.op].arity; ++a)
+    b |= (d.nodes[static_cast<size_t>(nd.in[a])].op < 0 ? 1u : 0u) << a;
+  return b;
+}
+
+// A 块切法的每线程暂存: 0..2 输入块, 3 输出块 (紧凑 [T][w]); t 切法 CS 节点的门控掩码也放 m[0..2]
+struct ParScratch {
+  std::vector<float> v[4];
+  std::vector<uint8_t> m[4];
+};
+
 // inputs[k] = 特征 feats[k] 的平面 ([T][A] SoA). 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方)
-inline const check::Plane *eval(const Dag &d, const std::vector<const check::Plane *> &inputs, Pool &pool, int T, int A) {
+// cs_gate: 截面门控掩码 [T][A] (文件头), nullptr = 不门控; 喂 CS 节点的叶须 covers(叶.m, cs_gate) (此处 assert)
+inline const check::Plane *eval(const Dag &d, const std::vector<const check::Plane *> &inputs, Pool &pool, int T, int A,
+                                const uint8_t *cs_gate = nullptr) {
   assert(inputs.size() == d.feats.size());
   const size_t n = static_cast<size_t>(T) * A;
   for (const check::Plane *p : inputs)
@@ -77,28 +113,38 @@ inline const check::Plane *eval(const Dag &d, const std::vector<const check::Pla
     const DagNode &nd = d.nodes[static_cast<size_t>(node)];
     return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
   };
+  ParScratch gm; // CS 节点中间量的门控掩码暂存
   for (size_t i = 0; i < d.nodes.size(); ++i) {
     const DagNode &nd = d.nodes[i];
     if (nd.op < 0)
       continue;
-    const int ar = expr::kOps[nd.op].arity;
+    const expr::OpInfo &o = expr::kOps[nd.op];
+    const int ar = o.arity;
+    const bool gated = cs_gate && o.a != A::SELF;
     const check::Plane *in[3] = {};
-    for (int a = 0; a < ar; ++a)
+    const uint8_t *m[3] = {};
+    for (int a = 0; a < ar; ++a) {
       in[a] = plane_of(nd.in[a]);
+      m[a] = in[a]->m.data();
+      if (!gated)
+        continue;
+      if (d.nodes[static_cast<size_t>(nd.in[a])].op < 0) {
+        assert(covers(m[a], cs_gate, n) && "CS 算子的特征叶在 cs_valid 行上有缺失: CS 不吃 PIT 事件 / 带 NaN 的列 (Fund 族), 先包 TS 算子处理缺失");
+        m[a] = cs_gate;
+      } else {
+        gm.m[a].resize(n);
+        gate_mask(gm.m[a].data(), m[a], cs_gate, n);
+        m[a] = gm.m[a].data();
+      }
+    }
     check::Plane &out = pool.slots[static_cast<size_t>(nd.slot)];
-    run_fn(nd.op)(check::pv(in[0], ar >= 1), check::pm(in[0], ar >= 1), check::pv(in[1], ar >= 2), check::pm(in[1], ar >= 2),
-                  check::pv(in[2], ar >= 3), check::pm(in[2], ar >= 3), out.v.data(), out.m.data(), T, A, nd.p);
+    run_fn(nd.op)(check::pv(in[0], ar >= 1), m[0], check::pv(in[1], ar >= 2), m[1], check::pv(in[2], ar >= 3), m[2], out.v.data(),
+                  out.m.data(), T, A, nd.p);
   }
   return plane_of(d.root());
 }
 
 // ---- 节点内并行 ----
-
-// A 块切法的每线程暂存: 0..2 输入块, 3 输出块 (紧凑 [T][w])
-struct ParScratch {
-  std::vector<float> v[4];
-  std::vector<uint8_t> m[4];
-};
 
 namespace detail {
 
@@ -126,8 +172,10 @@ inline void par_tasks(int n_tasks, int threads, Fn &&fn) {
 } // namespace detail
 
 // in[a] (a < arity) 输入平面, out 输出平面 (已 ensure); sc.size() ≥ threads
+// cs_gate: 截面门控掩码 [T][A] (文件头), 只作用于 CS 节点; nullptr = 不门控.
+// leaf_bits: 位 a = 输入 a 是特征叶 (leaf_bits_of) → 直接拿 cs_gate 当掩码; covers 由调用方装载后 assert 一次, 这里不重扫
 inline void run_node_par(const DagNode &nd, const check::Plane *const in[3], check::Plane &out, int T, int A, int threads,
-                         std::vector<ParScratch> &sc) {
+                         std::vector<ParScratch> &sc, const uint8_t *cs_gate = nullptr, unsigned leaf_bits = 0) {
   assert(nd.op >= 0 && threads >= 1 && sc.size() >= static_cast<size_t>(threads));
   const expr::OpInfo &o = expr::kOps[nd.op];
   const int ar = o.arity;
@@ -146,12 +194,26 @@ inline void run_node_par(const DagNode &nd, const check::Plane *const in[3], che
     const int units = T / unit;
     const int nchunk = std::min(threads, units);
     const int per = (units + nchunk - 1) / nchunk;
-    detail::par_tasks(nchunk, threads, [&](int c, int) {
+    const bool gated = cs_gate && o.a != A::SELF; // CS 节点: 叶 → cs_gate 本身; 中间量 → 块内掩码 ∧ 门控写线程暂存, 值不拷
+    detail::par_tasks(nchunk, threads, [&](int c, int tid) {
       const int t0 = c * per * unit, t1 = std::min(T, (c + 1) * per * unit);
       if (t0 >= t1)
         return;
-      const size_t off = static_cast<size_t>(t0) * A;
-      fn(V(0, off), M(0, off), V(1, off), M(1, off), V(2, off), M(2, off), out.v.data() + off, out.m.data() + off, t1 - t0, A, nd.p);
+      const size_t off = static_cast<size_t>(t0) * A, len = static_cast<size_t>(t1 - t0) * A;
+      const uint8_t *m[3] = {M(0, off), M(1, off), M(2, off)};
+      if (gated) {
+        ParScratch &s = sc[static_cast<size_t>(tid)];
+        for (int a = 0; a < ar; ++a) {
+          if (leaf_bits >> a & 1u) {
+            m[a] = cs_gate + off;
+            continue;
+          }
+          s.m[a].resize(len);
+          gate_mask(s.m[a].data(), m[a], cs_gate + off, len);
+          m[a] = s.m[a].data();
+        }
+      }
+      fn(V(0, off), m[0], V(1, off), m[1], V(2, off), m[2], out.v.data() + off, out.m.data() + off, t1 - t0, A, nd.p);
     });
     return;
   }

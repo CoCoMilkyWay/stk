@@ -311,7 +311,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
       // ------------------------------------------------------------------
       // Phase IO: 抢单天载入 → 转置进批平面 (天与天写不同段, 无重叠; 门控/NaN 分账在 plane 内)
-      // L1 门控只有 DATA 语义 (_meta 非 0; 编码见 Meta.hpp)
+      // L1 门控只有 DATA 语义 (ts_valid 非 0; 编码见 Meta.hpp)
       // ------------------------------------------------------------------
       if (tid < n_io) {
         for (;;) {

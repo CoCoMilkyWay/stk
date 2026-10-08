@@ -16,8 +16,11 @@
 // 线程模型 (对仗 OperatorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 rows;
 // 进度走原子. evaluate = false 只扫描 (进页 / Add / Rescan), = true 扫描 + 装载 + 评估.
 //
-// 装载: 一次把所有有效因子用到的特征 (去重) + _meta + 全部 (amt × hold) 标签列读进宿主 (逐天并行 load_day_columns, 门控
-// fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
+// 装载: 一次把所有有效因子用到的特征 (去重) + ts_valid / cs_valid + 全部 (amt × hold) 标签列读进宿主 (逐天并行 load_day_columns,
+// 门控 fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
+// 两张门控列的分工 (features/MetaFlag.hpp): 特征输入按 ts_valid 门控 (TS 节点要跨进出池的历史); 标签按 cs_valid 门控 (只被 Stat 吃,
+// rank(y) 得在池内排); cs_valid 的有效位另成一张截面门控平面 → CS 节点输入 / Stat 的 x (EvalCpu.hpp cs_gate 契约: 喂 CS 的特征叶
+// 直接拿它当掩码, 装载后 assert 一次 叶掩码 ⊇ cs_gate —— Fund 族带 NaN 的 PIT 列直接喂 CS 在此炸; 中间量 ∧ 之).
 // 评估 (Run 的并行方案, 与 search 的解耦): 所有有效因子合成一张共享 DAG (factor::build_forest, 公共子式只算一次), 按拓扑序
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node_par, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
@@ -52,15 +55,16 @@ struct FeatCol {
   std::string code;
   uint32_t col = 0; // L1 列下标
   L2::ValidType vt = L2::ValidType::ALL;
-  bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / _meta 不许 (前视)
+  bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
 };
 struct LabelCol {
   int hold = 0;                              // 持有期 (分钟)
   std::vector<uint32_t> long_col, short_col; // [amt_idx] 列下标
 };
 struct FeatureTable {
-  std::vector<FeatCol> cols; // 下标 = L1 列
-  uint32_t meta_col = 0;
+  std::vector<FeatCol> cols;    // 下标 = L1 列
+  uint32_t ts_col = 0;          // ts_valid 门控列 (特征输入)
+  uint32_t cs_col = 0;          // cs_valid 门控列 (标签 + 截面门控平面)
   std::vector<int> amts;        // 标签金额档 (万), 文件序
   std::vector<LabelCol> labels; // 按 hold 升序; 每档金额都齐才收
   const FeatCol *find(std::string_view code) const;

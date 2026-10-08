@@ -15,13 +15,22 @@
 //     哪怕该资产自己的 x 缺失 —— 它描述的是截面, 不是资产.
 //   相对型 (其余): 描述资产自身, 该资产 x 缺失 (二元还要 ym) 即输出无效.
 //   统计口径: 方差 ddof=1; 有效样本 = 一元看 xm, 二元看 xm && ym.
-//   出错策略: 只 assert. 【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
+//   出错策略: 只 assert. 【precise-math】依赖受控浮点, 编进 -fno-fast-math -fno-math-errno TU.
+//
+//   【横向归约的向量化】CS 的热点是整行 Σ (A 个资产归一个数), 与 TS "跨资产状态数组" 不同, 是真归约:
+//     -fno-fast-math 下浮点加法不可重结合, 自动向量化必然失败 (逐元素 4 cycle 依赖链, 与 stream 同速).
+//     行内 Σ 用 `#pragma clang fp reassociate(on)` 只放开重结合 (NaN / inf / 除法语义不动, 不是 fast-math):
+//     求和顺序由编译器定, 同一构建下确定; GPU 本就是分块归约, 契约容差早已覆盖顺序差.
+//     极值 LLVM 不认 fmin/fmax 归约, 走单调整数键 (fkey) 的 min/max: 位级精确, 不是近似.
+//     每元素一次除法 (组均值 / 组内 demean) 一律先按组算好再 gather, 除法只做 G 次.
 // =============================================================================
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <vector>
 
 #include "factor/Contract.hpp"
@@ -47,7 +56,26 @@ inline void bcast(float *ov, uint8_t *om, size_t r, int A, double v, bool m) {
   }
 }
 
+// ---- 浮点极值的单调整数键: 位型按符号翻转后整数序 = 浮点序 (有限值; 契约保证无 NaN) ----
+//   fmin/fmax 归约 LLVM 不向量化, smin/smax 归约可以. 键与值互逆 (fval ∘ fkey = id), 位级精确;
+//   唯一差别 ±0 键不同 (−0 < +0), 但下游 spread / bin_of 只做算术比较, −0 与 +0 等价.
+//   无有效样本时哨兵解回来是 NaN 位型, 调用方按 n == 0 置 lo = hi = 0 (与原语义同).
+inline int32_t fkey(float x) {
+  int32_t u;
+  std::memcpy(&u, &x, sizeof u);
+  return u ^ ((u >> 31) & 0x7fffffff);
+}
+inline float fval(int32_t k) {
+  const int32_t u = k ^ ((k >> 31) & 0x7fffffff);
+  float x;
+  std::memcpy(&x, &u, sizeof x);
+  return x;
+}
+inline constexpr int32_t kKeyMax = std::numeric_limits<int32_t>::max(); // lo 哨兵 (min 单位元)
+inline constexpr int32_t kKeyMin = std::numeric_limits<int32_t>::min(); // hi 哨兵 (max 单位元)
+
 // ---- 一元矩 (两遍中心化, 不用 Σx²−nμ²; lo/hi 给全并列判据) ----
+//   need_m2 = false: 只要 n / mean / lo / hi (Mean / Demean), 省第二遍
 struct M1 {
   int n = 0;
   double mean = 0.0, m2 = 0.0;
@@ -55,28 +83,39 @@ struct M1 {
   bool disp() const { return spread(lo, hi); }
   double sd() const { return std::sqrt(m2 / (n - 1)); } // 调用方保证 n ≥ 2
 };
-inline M1 moments(const float *v, const uint8_t *m, int A) {
+inline M1 moments(const float *v, const uint8_t *m, int A, bool need_m2 = true) {
   M1 r;
   double s = 0.0;
-  float lo = 0.f, hi = 0.f;
+  int32_t klo = kKeyMax, khi = kKeyMin;
   int n = 0;
-  for (int i = 0; i < A; ++i) {
-    const bool b = m[i] != 0;
-    lo = b ? (n == 0 ? v[i] : std::fmin(lo, v[i])) : lo;
-    hi = b ? (n == 0 ? v[i] : std::fmax(hi, v[i])) : hi;
-    s += b ? static_cast<double>(v[i]) : 0.0;
-    n += b;
+  {
+#pragma clang fp reassociate(on)
+    for (int i = 0; i < A; ++i) {
+      const bool b = m[i] != 0;
+      const int32_t k = fkey(v[i]);
+      klo = std::min(klo, b ? k : kKeyMax);
+      khi = std::max(khi, b ? k : kKeyMin);
+      s += b ? static_cast<double>(v[i]) : 0.0;
+      n += b;
+    }
   }
   r.n = n;
-  r.lo = lo;
-  r.hi = hi;
   if (n == 0)
     return r;
+  r.lo = fval(klo);
+  r.hi = fval(khi);
   r.mean = s / n;
-  for (int i = 0; i < A; ++i) {
-    const double d = v[i] - r.mean;
-    r.m2 += m[i] ? d * d : 0.0;
+  if (!need_m2)
+    return r;
+  double m2 = 0.0;
+  {
+#pragma clang fp reassociate(on)
+    for (int i = 0; i < A; ++i) {
+      const double d = static_cast<double>(v[i]) - r.mean;
+      m2 += m[i] ? d * d : 0.0;
+    }
   }
+  r.m2 = m2;
   return r;
 }
 
@@ -92,29 +131,41 @@ struct M2 {
 inline M2 comoments(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, int A) {
   M2 r;
   double sx = 0.0, sy = 0.0;
+  int32_t klox = kKeyMax, khix = kKeyMin, kloy = kKeyMax, khiy = kKeyMin;
   int n = 0;
-  for (int i = 0; i < A; ++i) {
-    const bool b = xm[i] && ym[i];
-    r.lox = b ? (n == 0 ? xv[i] : std::fmin(r.lox, xv[i])) : r.lox;
-    r.hix = b ? (n == 0 ? xv[i] : std::fmax(r.hix, xv[i])) : r.hix;
-    r.loy = b ? (n == 0 ? yv[i] : std::fmin(r.loy, yv[i])) : r.loy;
-    r.hiy = b ? (n == 0 ? yv[i] : std::fmax(r.hiy, yv[i])) : r.hiy;
-    sx += b ? static_cast<double>(xv[i]) : 0.0;
-    sy += b ? static_cast<double>(yv[i]) : 0.0;
-    n += b;
+  {
+#pragma clang fp reassociate(on)
+    for (int i = 0; i < A; ++i) {
+      const bool b = xm[i] && ym[i];
+      const int32_t kx = fkey(xv[i]), ky = fkey(yv[i]);
+      klox = std::min(klox, b ? kx : kKeyMax);
+      khix = std::max(khix, b ? kx : kKeyMin);
+      kloy = std::min(kloy, b ? ky : kKeyMax);
+      khiy = std::max(khiy, b ? ky : kKeyMin);
+      sx += b ? static_cast<double>(xv[i]) : 0.0;
+      sy += b ? static_cast<double>(yv[i]) : 0.0;
+      n += b;
+    }
   }
   r.n = n;
   if (n == 0)
     return r;
+  r.lox = fval(klox), r.hix = fval(khix);
+  r.loy = fval(kloy), r.hiy = fval(khiy);
   r.mx = sx / n;
   r.my = sy / n;
-  for (int i = 0; i < A; ++i) {
-    const bool b = xm[i] && ym[i];
-    const double dx = xv[i] - r.mx, dy = yv[i] - r.my;
-    r.cxx += b ? dx * dx : 0.0;
-    r.cyy += b ? dy * dy : 0.0;
-    r.cxy += b ? dx * dy : 0.0;
+  double cxx = 0.0, cyy = 0.0, cxy = 0.0;
+  {
+#pragma clang fp reassociate(on)
+    for (int i = 0; i < A; ++i) {
+      const bool b = xm[i] && ym[i];
+      const double dx = static_cast<double>(xv[i]) - r.mx, dy = static_cast<double>(yv[i]) - r.my;
+      cxx += b ? dx * dx : 0.0;
+      cyy += b ? dy * dy : 0.0;
+      cxy += b ? dx * dy : 0.0;
+    }
   }
+  r.cxx = cxx, r.cyy = cyy, r.cxy = cxy;
   return r;
 }
 
@@ -129,15 +180,16 @@ struct Hist {
   void build(const float *v, const uint8_t *m, int A) {
     n = 0;
     ok = false;
-    float l = 0.f, h = 0.f;
+    int32_t klo = kKeyMax, khi = kKeyMin;
     for (int i = 0; i < A; ++i) {
       const bool b = m[i] != 0;
-      l = b ? (n == 0 ? v[i] : std::fmin(l, v[i])) : l;
-      h = b ? (n == 0 ? v[i] : std::fmax(h, v[i])) : h;
+      const int32_t k = fkey(v[i]);
+      klo = std::min(klo, b ? k : kKeyMax);
+      khi = std::max(khi, b ? k : kKeyMin);
       n += b;
     }
-    lo = l;
-    hi = h;
+    lo = n >= 1 ? fval(klo) : 0.f;
+    hi = n >= 1 ? fval(khi) : 0.f;
     ok = n >= 1 && spread(lo, hi);
     if (!ok)
       return;
@@ -194,7 +246,7 @@ struct CsMean {
     (void)p;
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      const detail::M1 s = detail::moments(xv + r, xm + r, A);
+      const detail::M1 s = detail::moments(xv + r, xm + r, A, /*need_m2=*/false);
       detail::bcast(ov, om, r, A, s.mean, s.n >= 1);
     }
   }
@@ -219,7 +271,7 @@ struct CsDemean {
     (void)p;
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      const detail::M1 s = detail::moments(xv + r, xm + r, A);
+      const detail::M1 s = detail::moments(xv + r, xm + r, A, /*need_m2=*/false);
       for (int a = 0; a < A; ++a)
         detail::put(ov, om, r + a, static_cast<double>(xv[r + a]) - s.mean, xm[r + a] && s.n >= 1);
     }
@@ -389,26 +441,37 @@ inline int scan_gid(const float *gv, const uint8_t *gm, int A, std::vector<int> 
 } // namespace detail
 
 struct CsGroupMean { // y = 组 id (行业等); 组均值广播到组员
+  // gather 回写遍单拎出来: 组表 g / mean 是本地缓冲, 与输出平面不同块, 标 __restrict 告诉编译器 ov/om 的存储
+  // 改不了它们 —— 否则 "任意下标 gather + 顺序存储" 做不了别名判定, 循环不向量化 (GROUP 族都这么写)
+  static void gather(const int *__restrict g, const double *__restrict mean, const uint8_t *xm, float *ov,
+                     uint8_t *om, int A) {
+    for (int a = 0; a < A; ++a) {
+      const bool ok = g[a] >= 0 && xm[a]; // 参与者所在组必有 c ≥ 1
+      const double v = mean[ok ? g[a] : 0];
+      detail::put(ov, om, a, ok ? v : 0.0, ok);
+    }
+  }
   CP_SIG {
     CP_NO3;
     (void)p;
     std::vector<int> g, c;
-    std::vector<double> s;
+    std::vector<double> s, mean;
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       const int G = detail::scan_gid(yv + r, ym + r, A, g);
       const size_t GS = static_cast<size_t>(std::max(G, 1));
-      s.assign(GS, 0.0);
-      c.assign(GS, 0);
-      for (int a = 0; a < A; ++a)
-        if (g[a] >= 0 && xm[r + a]) {
-          s[g[a]] += xv[r + a];
-          ++c[g[a]];
-        }
+      s.assign(GS + 1, 0.0); // 末位 = 不参与者的汇集槽, 让散加无分支 (散加本身天然标量)
+      c.assign(GS + 1, 0);
       for (int a = 0; a < A; ++a) {
-        const bool ok = g[a] >= 0 && xm[r + a] && c[g[a]] >= 1;
-        detail::put(ov, om, r + a, ok ? s[g[a]] / c[g[a]] : 0.0, ok);
+        const bool ok = g[a] >= 0 && xm[r + a];
+        const int q = ok ? g[a] : static_cast<int>(GS);
+        s[q] += ok ? static_cast<double>(xv[r + a]) : 0.0;
+        c[q] += ok;
       }
+      mean.resize(GS); // 除法按组做 G 次, 不按资产做 A 次
+      for (size_t q = 0; q < GS; ++q)
+        mean[q] = c[q] >= 1 ? s[q] / c[q] : 0.0;
+      gather(g.data(), mean.data(), xm + r, ov + r, om + r, A);
     }
   }
 };
@@ -462,10 +525,30 @@ struct CsGroupRank { // 组内 pct rank (每组独立定 lo/hi 与直方图)
 
 struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归残差
   // 退化 = 去均值后的 ỹ 全为 0 ⟺ 每组内 y 全并列 (逐组 lo/hi 精确判, 不看 Σỹ²)
+  // 组内 demean 遍: x̃ / ỹ 落到行缓冲 (gather 组均值只做这一次), 顺手归约 Σx̃ỹ / Σỹ² / n.
+  // 组表与行缓冲都是本地块, 标 __restrict 的理由同 CsGroupMean::gather
+  static void center(const int *__restrict g, const double *__restrict mx, const double *__restrict my,
+                     const float *xv, const float *yv, double *__restrict xt, double *__restrict yt, int A,
+                     double &sxy, double &syy, int &n) {
+#pragma clang fp reassociate(on) // 只准放在复合语句开头, 故作用于整个函数体
+    double axy = 0.0, ayy = 0.0;
+    int an = 0;
+    for (int a = 0; a < A; ++a) {
+      const bool in = g[a] >= 0;
+      const int q = in ? g[a] : 0;
+      const double x = in ? static_cast<double>(xv[a]) - mx[q] : 0.0;
+      const double y = in ? static_cast<double>(yv[a]) - my[q] : 0.0;
+      xt[a] = x, yt[a] = y;
+      axy += x * y;
+      ayy += y * y;
+      an += in;
+    }
+    sxy = axy, syy = ayy, n = an;
+  }
   CP_SIG {
     (void)p;
     std::vector<int> g, c;
-    std::vector<double> sx, sy;
+    std::vector<double> sx, sy, mx, my, xt, yt;
     std::vector<float> lo, hi;
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
@@ -476,7 +559,7 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
       c.assign(GS, 0);
       lo.assign(GS, 0.f);
       hi.assign(GS, 0.f);
-      for (int a = 0; a < A; ++a) { // 参与 = xm && ym && 组有效; 不参与的组 id 置 −1
+      for (int a = 0; a < A; ++a) { // 参与 = xm && ym && 组有效; 不参与的组 id 置 −1 (散加, 天然标量)
         if (g[a] < 0 || !xm[r + a] || !ym[r + a]) {
           g[a] = -1;
           continue;
@@ -489,29 +572,21 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
         ++c[q];
       }
       bool any_spread = false;
-      for (size_t q = 0; q < GS; ++q)
+      mx.resize(GS), my.resize(GS); // 组均值按组算 G 次, 每元素不再除
+      for (size_t q = 0; q < GS; ++q) {
         any_spread = any_spread || (c[q] >= 1 && spread(lo[q], hi[q]));
-      double sxy = 0.0, syy = 0.0;
-      int n = 0;
-      for (int a = 0; a < A; ++a) {
-        if (g[a] < 0)
-          continue;
-        const int q = g[a];
-        const double xt = xv[r + a] - sx[q] / c[q], yt = yv[r + a] - sy[q] / c[q];
-        sxy += xt * yt;
-        syy += yt * yt;
-        ++n;
+        mx[q] = c[q] >= 1 ? sx[q] / c[q] : 0.0;
+        my[q] = c[q] >= 1 ? sy[q] / c[q] : 0.0;
       }
+      xt.resize(static_cast<size_t>(A)), yt.resize(static_cast<size_t>(A));
+      double sxy, syy;
+      int n;
+      center(g.data(), mx.data(), my.data(), xv + r, yv + r, xt.data(), yt.data(), A, sxy, syy, n);
       const bool ok = n >= 2 && any_spread;
       const double b = ok ? sxy / syy : 0.0;
-      for (int a = 0; a < A; ++a) {
-        if (g[a] < 0) {
-          detail::put(ov, om, r + a, 0.0, false);
-          continue;
-        }
-        const int q = g[a];
-        const double xt = xv[r + a] - sx[q] / c[q], yt = yv[r + a] - sy[q] / c[q];
-        detail::put(ov, om, r + a, xt - b * yt, ok);
+      for (int a = 0; a < A; ++a) { // 回写: 行缓冲顺序读, 无 gather
+        const bool in = g[a] >= 0;
+        detail::put(ov, om, r + a, in ? xt[a] - b * yt[a] : 0.0, in && ok);
       }
     }
   }

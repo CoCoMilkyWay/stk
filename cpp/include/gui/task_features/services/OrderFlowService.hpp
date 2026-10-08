@@ -8,7 +8,7 @@
 //         plot/heatmap 构建 → 背槽整体发布 (pending 未 ack 时等 GUI 翻面)
 //       Universe 逐日状态 (延迟敏感): 锚点日的 L1 filter 列选读 → 全资产 PIT
 //         状态 (ST / 在市 / 行业) → 背槽整体发布 (供 GUI 资产筛选)
-//       Kline 流式 (吞吐型): 逐日选列读 (OHLC + _meta + 特征) → 抽选中资产 →
+//       Kline 流式 (吞吐型): 逐日选列读 (OHLC + ts_valid + 特征) → 抽选中资产 →
 //         追加 + 单调前缀发布; 每天之间轮询新请求, 随时被新代打断
 //
 // 生命周期: 进 OrderFlow tab Start (幂等); 切 tab 不停 (流式继续, 回来即全);

@@ -249,14 +249,15 @@ struct LabelPlane {
 struct Loaded {
   int T = 0, A = 0, days = 0;
   std::vector<std::string> feat_codes;      // 去重特征 (平面下标)
-  std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码
-  std::vector<LabelPlane> labels;           // [amt × hold] 展平: labels[ai * n_hold + hi]
+  std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码 (按 ts_valid 门控)
+  factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = data_valid(cs_valid) (= 当日在池, 整日常量)
+  std::vector<LabelPlane> labels;           // [amt × hold] 展平: labels[ai * n_hold + hi] (按 cs_valid 门控)
   factor::stat::Holds hd;                   // hd.h[ai * n_hold + hi] = hold
   int n_amt = 0, n_hold = 0;
   size_t n() const { return static_cast<size_t>(T) * A; }
 };
 
-// 逐天并行读: 特征列 + 全部标签列 + _meta 一次 load_day_columns, 门控后散进平面
+// 逐天并行读: 特征列 + 全部标签列 + ts_valid + cs_valid 一次 load_day_columns, 门控后散进平面
 bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, std::atomic<bool> &cancel,
                  std::atomic<int> &done) {
   TraceN("FactorsLoad");
@@ -265,7 +266,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   assert(VR == static_cast<size_t>(factor::kSegLen));
   const size_t H = static_cast<size_t>(L.n_amt) * L.n_hold;
   const size_t nf = L.feat_codes.size();
-  // 列表: [特征 nf][标签 long/short × (amt × hold)][_meta]
+  // 列表: [特征 nf][标签 long/short × (amt × hold)][ts_valid][cs_valid]
   std::vector<size_t> cols;
   std::vector<L2::ValidType> vts;
   for (const std::string &c : L.feat_codes) {
@@ -279,12 +280,14 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       cols.push_back(lcol), vts.push_back(ft.cols[lcol].vt);
       cols.push_back(scol), vts.push_back(ft.cols[scol].vt);
     }
-  cols.push_back(ft.meta_col);
-  const size_t meta_i = cols.size() - 1;
+  cols.push_back(ft.ts_col);
+  cols.push_back(ft.cs_col);
+  const size_t ts_i = cols.size() - 2, cs_i = cols.size() - 1;
 
   L.planes.resize(nf);
   for (factor::check::Plane &p : L.planes)
     p.resize(n);
+  L.cs.resize(n);
   L.labels.resize(H);
   for (LabelPlane &lb : L.labels)
     lb.lv.assign(n, 0), lb.sv.assign(n, 0), lb.m.assign(n, 0);
@@ -302,17 +305,23 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       return;
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      const feature_storage_t *gate = dc.data.data() + (t * nc + meta_i) * A;
+      const feature_storage_t *ts_gate = dc.data.data() + (t * nc + ts_i) * A;
+      const feature_storage_t *cs_gate = dc.data.data() + (t * nc + cs_i) * A;
       for (size_t i = 0; i < nf; ++i) {
         const feature_storage_t *src = dc.data.data() + (t * nc + i) * A;
         float *v = L.planes[i].v.data() + row;
         uint8_t *m = L.planes[i].m.data() + row;
         for (size_t a = 0; a < A; ++a) {
           const float x = static_cast<float>(src[a]);
-          const bool ok = fmeta::valid(static_cast<float>(gate[a]), vts[i]) && std::isfinite(x);
+          const bool ok = fmeta::valid(static_cast<float>(ts_gate[a]), vts[i]) && std::isfinite(x);
           v[a] = ok ? x : 0.f;
           m[a] = ok;
         }
+      }
+      for (size_t a = 0; a < A; ++a) {
+        const float g = static_cast<float>(cs_gate[a]);
+        L.cs.v[row + a] = g;
+        L.cs.m[row + a] = fmeta::data_valid(g);
       }
       for (size_t h = 0; h < H; ++h) {
         const size_t il = nf + 2 * h, is = il + 1;
@@ -321,8 +330,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         LabelPlane &lb = L.labels[h];
         for (size_t a = 0; a < A; ++a) {
           const float lv = static_cast<float>(sl[a]), sv = static_cast<float>(ss[a]);
-          const bool ok = fmeta::valid(static_cast<float>(gate[a]), vts[il]) && fmeta::valid(static_cast<float>(gate[a]), vts[is]) &&
-                          std::isfinite(lv) && std::isfinite(sv);
+          const bool ok = fmeta::data_valid(static_cast<float>(cs_gate[a])) && std::isfinite(lv) && std::isfinite(sv); // cs_valid 是 0/1
           lb.lv[row + a] = ok ? std::bit_cast<uint16_t>(sl[a]) : 0;
           lb.sv[row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           lb.m[row + a] = ok;
@@ -411,7 +419,8 @@ factor::expr::FeatureLookup FeatureTable::lookup() const {
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   FeatureTable t;
   const auto &L1 = meta.features[kLevel];
-  t.meta_col = static_cast<uint32_t>(meta.col_of(kLevel, "_meta"));
+  t.ts_col = static_cast<uint32_t>(meta.col_of(kLevel, "ts_valid"));
+  t.cs_col = static_cast<uint32_t>(meta.col_of(kLevel, "cs_valid"));
   struct Lab {
     bool is_long;
     int hold, amt;
@@ -807,6 +816,25 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
     return false;
   }
 
+  // ---- 喂 CS 节点的特征叶: 掩码 ⊇ 截面门控 (EvalCpu.hpp cs_gate 契约), 每叶只扫一次 ----
+  // CS 只在平稳可比的信息上算; Fund 族带 NaN 的 PIT 列直接套 CS 在此炸 → think again (先包 TS 算子处理缺失)
+  {
+    std::vector<uint8_t> checked(L.planes.size(), 0);
+    for (int i = 0; i < N; ++i) {
+      const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
+      if (nd.op < 0 || factor::expr::kOps[nd.op].a == factor::A::SELF)
+        continue;
+      for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a) {
+        const factor::DagNode &g = F.nodes[static_cast<size_t>(nd.in[a])];
+        if (g.op >= 0 || checked[static_cast<size_t>(g.feat)])
+          continue;
+        checked[static_cast<size_t>(g.feat)] = 1;
+        assert(factor::cpu::covers(L.planes[static_cast<size_t>(g.feat)].m.data(), L.cs.m.data(), L.n()) &&
+               "CS 算子的特征叶在 cs_valid 行上有缺失: CS 不吃 PIT 事件 / 带 NaN 的列 (Fund 族), 先包 TS 算子处理缺失");
+      }
+    }
+  }
+
   // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
   for (int i = 0; i < N; ++i)
@@ -905,6 +933,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
     pool.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
     std::vector<factor::cpu::ParScratch> sc(static_cast<size_t>(threads));
     std::vector<uint16_t> ws(n);
+    std::vector<uint8_t> xm(n); // TS 口径根的截面门控掩码 (CS 口径根 = CS 算子输出, 掩码已 ⊆ 门控, 直接用)
     const auto plane_of = [&](int i) -> const factor::check::Plane * {
       const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
       return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
@@ -917,13 +946,19 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
           for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
             in[a] = plane_of(nd.in[a]);
           const Clock::time_point t0 = Clock::now();
-          factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc);
+          factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc, L.cs.m.data(),
+                                    factor::cpu::leaf_bits_of(F, nd));
           return ms_since(t0);
         },
         [&](int i, factor::stat::Frame fr, float &valid_pct) {
           const factor::check::Plane *root = plane_of(i);
-          valid_pct = valid_pct_of(root->m.data(), n);
-          factor::cpu::stat::eval(root->v.data(), root->m.data(), fr, L.T, L.A, L.hd, lab.data(), ws.data(), srows.data(), threads);
+          const uint8_t *m = root->m.data();
+          if (fr == factor::stat::Frame::TS) { // 逐资产归一的根: 池外资产也有值, Stat 只看池内
+            factor::cpu::gate_mask(xm.data(), m, L.cs.m.data(), n);
+            m = xm.data();
+          }
+          valid_pct = valid_pct_of(m, n);
+          factor::cpu::stat::eval(root->v.data(), m, fr, L.T, L.A, L.hd, lab.data(), ws.data(), srows.data(), threads);
         });
   }
 
@@ -931,7 +966,8 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   factor::gpu::Session *sess = factor::gpu::session_open(n);
   std::vector<const factor::gpu::DevPlane *> dev(L.planes.size());
   for (size_t i = 0; i < L.planes.size(); ++i)
-    dev[i] = factor::gpu::upload(sess, L.planes[i].v.data(), L.planes[i].m.data()); // 输入只上传一次
+    dev[i] = factor::gpu::upload(sess, L.planes[i].v.data(), L.planes[i].m.data());               // 输入只上传一次
+  const factor::gpu::DevPlane *cs_gate = factor::gpu::upload(sess, L.cs.v.data(), L.cs.m.data()); // 截面门控平面 (随会话释放)
   std::vector<factor::gpu::StatLabelHost> lab(H);
   for (size_t h = 0; h < H; ++h)
     lab[h] = {L.labels[h].lv.data(), L.labels[h].sv.data(), L.labels[h].m.data()};
@@ -948,9 +984,13 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
       [&](int i) {
         const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
         const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
+        const bool gated = o.a != factor::A::SELF; // CS 节点输入经门控暂存 (EvalGpu.hpp)
         const factor::gpu::DevPlane *in[3] = {};
-        for (int a = 0; a < o.arity; ++a)
+        for (int a = 0; a < o.arity; ++a) {
           in[a] = dplane_of(nd.in[a]);
+          if (gated)
+            in[a] = pool.gate_in(a, in[a], cs_gate);
+        }
         factor::gpu::DevPlane *out = pool.slots[static_cast<size_t>(nd.slot)];
         double ms = 0.0; // 纯 kernel (与 Operators 页 GPU 列同口径)
         if (o.a == factor::A::SELF)
@@ -961,6 +1001,8 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
       },
       [&](int i, factor::stat::Frame fr, float &valid_pct) {
         const factor::gpu::DevPlane *root = dplane_of(i);
+        if (fr == factor::stat::Frame::TS) // 逐资产归一的根: 池外资产也有值, Stat 只看池内 (CS 口径根掩码已 ⊆ 门控)
+          root = pool.gate_in(0, root, cs_gate);
         factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid%
         valid_pct = valid_pct_of(mask.data(), n);
         factor::gpu::stat_eval(ss, root, fr, srows.data());

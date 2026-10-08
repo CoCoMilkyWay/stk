@@ -29,7 +29,7 @@ struct FeaturePreview::Runtime {
   std::vector<uint8_t> int_only;                            // [n_preview] flag 探测: 有效值至今全整数 (粘性)
   // ---- 轮共享只读 (轮末栅栏 completion 里为下一轮载入, 线程扫描期只读) ----
   std::vector<float> cage_dn, cage_up; // [n_draw][VR] 当轮抽样资产的笼快照 (NaN = 当日无值)
-  DayBatchPlane round_plane;           // [3][A][1][VR]: lim_dn / lim_up / _meta (轮内各块共用, 免每块重读 _meta)
+  DayBatchPlane round_plane;           // [3][A][1][VR]: lim_dn / lim_up / ts_valid (轮内各块共用, 免每块重读 ts_valid)
   std::vector<uint32_t> asset_order;   // [A] 固定种子洗牌 (轮间旋转取片)
   // ---- 线程私有 ----
   struct Shard {
@@ -148,9 +148,9 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
   const size_t n_blocks = (n_pv + kPvBlockCols - 1) / kPvBlockCols;
   const size_t n_threads = rt.prepare(n_pv, A_);
 
-  // 轮首共享 IO (单线程, 轮末栅栏 completion 里跑): lim_dn / lim_up / _meta 三列一次读 →
-  // 抽样资产当日笼快照 (price 逐日判定融合进块扫描); _meta 留在 round_plane 供各块门控
-  // (has_valid=false: plane 只把真 NaN 折成哨兵, _meta 值原样保留, 门控在扫描侧按各特征 valid_type 判)
+  // 轮首共享 IO (单线程, 轮末栅栏 completion 里跑): lim_dn / lim_up / ts_valid 三列一次读 →
+  // 抽样资产当日笼快照 (price 逐日判定融合进块扫描); ts_valid 留在 round_plane 供各块门控
+  // (has_valid=false: plane 只把真 NaN 折成哨兵, ts_valid 值原样保留, 门控在扫描侧按各特征 valid_type 判)
   std::vector<size_t> round_cols{lim_dn_col_, lim_up_col_, meta_col_};
   auto load_round = [&](size_t r) {
     TraceN("PreviewRoundIO");

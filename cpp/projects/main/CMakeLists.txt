@@ -674,11 +674,15 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/generated)
 add_executable(app_main ${SOURCES} ${HEADERS})
 
 # Disable fast-math for specific files to avoid infinity issues (Windows: /fp:precise, Unix: -fno-fast-math)
+# -fno-fast-math 会把 clang 在 Linux 上默认的 -fmath-errno 开回来: sqrt/log/pow 变成带 errno 旁路的 libm 调用,
+# 含它们的内层循环整段不能自动向量化 (factor CPU 后端吞吐掉一个量级). 没人读 errno, 单独关掉;
+# IEEE / NaN / inf 语义不受影响 (只影响 errno 写不写).
 if(IS_WINDOWS)
     set(PRECISE_MATH_FLAG "/fp:precise")
 else()
-    set(PRECISE_MATH_FLAG "-fno-fast-math")
+    set(PRECISE_MATH_FLAG "-fno-fast-math;-fno-math-errno")
 endif()
+string(REPLACE ";" "," PRECISE_MATH_FLAG_NVCC "${PRECISE_MATH_FLAG}") # nvcc -Xcompiler 用逗号分隔多个宿主参数
 
 # api / parquet 路径用 NaN 标记缺失值, 与 -ffast-math
 # (-ffinite-math-only) 冲突会出错, 必须 precise math.
@@ -784,14 +788,14 @@ if(FACTOR_CUDA)
 endif()
 
 add_executable(op_check ../../src/factor/op_check.cpp ${FACTOR_GPU_SOURCE})
-target_compile_options(op_check PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${PRECISE_MATH_FLAG}>)
+target_compile_options(op_check PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${PRECISE_MATH_FLAG}>") # 引号: 列表的 ; 不能在命令层被拆开
 target_sources(app_main PRIVATE ${FACTOR_GPU_SOURCE})
 
 if(FACTOR_CUDA)
     # CUDA_STANDARD 显式给: app_main 在 set(CMAKE_CUDA_STANDARD) 之前就建了, 不会从变量初始化
     foreach(tgt op_check app_main)
         set_target_properties(${tgt} PROPERTIES CUDA_ARCHITECTURES "${FACTOR_CUDA_ARCH}" CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
-        target_compile_options(${tgt} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${PRECISE_MATH_FLAG}>)
+        target_compile_options(${tgt} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${PRECISE_MATH_FLAG_NVCC}>)
         target_link_libraries(${tgt} PRIVATE CUDA::cudart)
     endforeach()
     message(STATUS "factor: GPU 后端 ON (arch=${FACTOR_CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION}, CUB ${FACTOR_CUB_DIR}) → op_check + app_main")

@@ -17,17 +17,17 @@ bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest
 
   req = CorrRequest{};
   req.level = lvl;
-  req.meta_col = meta.col_of(lvl, "_meta");
+  req.meta_col = meta.col_of(lvl, "ts_valid");
   for (int r : rows) {
     assert(r >= 0 && r < (int)meta_list.size());
     if (meta_list[r].data_type == FeatureDataType::META)
-      continue; // _meta 自身不进矩阵 (它是门控不是特征)
+      continue; // ts_valid 自身不进矩阵 (它是门控不是特征)
     req.cols.push_back(static_cast<uint32_t>(r));
   }
   std::sort(req.cols.begin(), req.cols.end());
   req.cols.erase(std::unique(req.cols.begin(), req.cols.end()), req.cols.end());
   if (req.cols.size() < 2)
-    return false; // 该层可算的列不足 (L0 现状: 只有 _meta)
+    return false; // 该层可算的列不足 (L0 现状: 只有 ts_valid / cs_valid)
   for (uint32_t c : req.cols)
     req.valid_types.push_back(meta_list[c].valid_type);
 
@@ -85,7 +85,7 @@ void CorrPairService::RequestCompute(SharedData &data, uint32_t col_a, uint32_t 
   req.col_b = col_b;
   req.vt_a = meta_list[col_a].valid_type;
   req.vt_b = meta_list[col_b].valid_type;
-  req.meta_col = meta.col_of(lvl, "_meta");
+  req.meta_col = meta.col_of(lvl, "ts_valid");
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
   if (req.scope.months.empty())
     return;

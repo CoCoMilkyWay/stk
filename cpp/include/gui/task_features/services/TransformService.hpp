@@ -1,6 +1,6 @@
 // TransformService — Transform 的单 worker 线程编排 (骨架见 StreamService.hpp)
 //
-// Request: UI 参数 + 列选择 (特征列 / NeutralRank 上下文列 / _meta 门控列) + 序列焦点 + ReadScope;
+// Request: UI 参数 + 列选择 (特征列 / NeutralRank 上下文列 / ts_valid 门控列) + 序列焦点 + ReadScope;
 //          非 L1 / 无选择 静默忽略. 换焦点也是一次新构建 (链末输出经过 CS 截面, 单资产无法离线重放)
 #pragma once
 
@@ -14,7 +14,7 @@ namespace GUI::Features {
 struct TransformRequest {
   analysis::ReadScope scope;
   Transform::Params params;
-  std::vector<size_t> columns; // [特征 (+ mcap, ind_l1) (+ _meta)]
+  std::vector<size_t> columns; // [特征 (+ mcap, ind_l1) (+ ts_valid)]
   bool has_valid = false;
   uint32_t focus = 0; // 序列快照焦点 (子轴下标, 已 clamp)
 };
