@@ -85,7 +85,7 @@ void sequential_worker(WorkerCtx ctx) {
     // 下标 (Pool::build 用同一子轴码表); items 查询才经 global_ids 映射.
     for (const size_t asset_id : my_asset_ids) {
       const auto &asset = data.asset.items[sched.global_ids[asset_id]];
-      sched.cores[asset_id] = std::make_unique<CoreSequential>(data.fund_pool, asset.asset_code, asset_id, worker_id);
+      sched.cores[asset_id] = std::make_unique<CoreSequential>(data.fund_pool, data.universe_pool, asset.asset_code, asset_id, worker_id);
     }
   }
 

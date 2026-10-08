@@ -812,7 +812,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   done_.store(0, std::memory_order_relaxed);
   if (!load_planes(feats_, reader, dates, L, cancel_, done_)) {
     if (reader.stale())
-      finish_all_pending("特征库判废 (字段表指纹不符), 需重算特征");
+      finish_all_pending("特征库判废 (子轴/字段表与当前不符), 需重算特征");
     return false;
   }
 

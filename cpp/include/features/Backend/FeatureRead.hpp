@@ -25,12 +25,11 @@
 // 校验, 不做"实际维度" —— 消费端时间轴一律 level_valid_rows(lvl).
 // A / axis_hash = universe 子轴大小 / 指纹 (UniverseAxis, 见 AssetAxis.hpp):
 //   列 → 资产的映射不在文件里, 靠子轴顺序 (名单 → 全局轴下标升序). 读端构造
-//   时带期望子轴 (A + hash), 逐文件精确比对 —— universe 名单/全局轴/特征库
-//   任何一方漂移都立刻断言炸 (需重算特征), 不做兼容展宽.
-// table_fingerprint = 写入时字段表指纹 (LEVELS[lvl].fingerprint):
-//   不符 = 旧字段表写的库, 已无法解释 → 就地判废: 删掉整个 base_dir_ + 置 stale()
-//   + 拉起构建的取消旗 (构造时可传), 在跑的构建在既有取消检查点收工, 等重算.
-//   (不断言: 改字段表是常规操作, 不该闪退; 特征库是纯派生数据, 删了重跑即可)
+//   时带期望子轴 (A + hash), 逐文件精确比对, 不做兼容展宽.
+// 头不符 (子轴 A / 指纹 / 字段表指纹) = 旧子轴或旧字段表写的库, 已无法解释 → 就地判废:
+//   删掉整个 base_dir_ + 置 stale() + 拉起构建的取消旗 (构造时可传), 在跑的构建在既有
+//   取消检查点收工, 等用户点 compute 重算. 不断言: 改字段表 / 动态池名单变了 / 改回测
+//   区间 (子轴 = 区间内并集) 都是常规操作, 不该闪退; 特征库是纯派生数据, 删了重跑即可.
 //
 // APIs (缓冲全部挂在张量结构里复用, 与写端 io_buf_/io_column_ 对仗, 稳态零分配):
 //   1. load_day(date, DayTensor)          - GUI: 单日整层 (L0/L1 同一套; 整层文件直读零中转)
@@ -87,11 +86,16 @@ private:
 
       assert(header[0] == T && "T mismatch: 落盘形状恒为满 (LEVELS[lvl].rows)");
       assert(header[1] == F && "F mismatch: 落盘形状恒为满");
-      assert(header[2] == A && header[2] == axis_A_ &&
-             "A 不符: 特征文件与当前 universe 子轴大小不一致 (需重算特征)");
-      assert(static_cast<std::uint64_t>(header[3]) == axis_hash_ &&
-             "子轴指纹不符: 特征文件与当前 universe 名单/asset_axis.json 列序不一致 (需重算特征)");
-      // 字段表指纹不符 = 旧字段表写的库: 不闪退, 删库判废等重算 (纯派生数据)
+      assert(A == axis_A_ && "调用方 A 与 reader 期望子轴不一致 (同一 universe_axis 推导, 不该发生)");
+      // 子轴 / 字段表与文件头不符 = 旧库: 不闪退, 删库判废, 等用户点 compute 重算 (纯派生数据)
+      if (header[2] != axis_A_) {
+        mark_stale("子轴大小不符 (特征库是旧 universe 名单/回测区间写的)", /*wipe=*/true);
+        return;
+      }
+      if (static_cast<std::uint64_t>(header[3]) != axis_hash_) {
+        mark_stale("子轴指纹不符 (特征库与当前 universe 名单/asset_axis.json 列序不一致)", /*wipe=*/true);
+        return;
+      }
       if (static_cast<std::uint64_t>(header[4]) != level_info(lvl).fingerprint) {
         mark_stale("字段表指纹不符 (特征文件是旧字段表写的)", /*wipe=*/true);
         return;

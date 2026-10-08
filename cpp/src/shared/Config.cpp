@@ -1,5 +1,7 @@
 #include "shared/Config.hpp"
 #include "nlohmann/json.hpp"
+#include "shared/Universe.hpp"
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 
@@ -81,23 +83,19 @@ void Config::AutoSync() {
   }
 }
 
-std::vector<std::string> Config::UniverseCodes() const {
+std::string Config::UniversePath() const {
   assert(universe != "all" && "universe == all 无名单文件");
-  const fs::path path = fs::path(config_dir) / "universe" / (universe + ".json");
-  std::ifstream file(path);
-  assert(file.is_open() && "universe 名单文件不存在: <config_dir>/universe/<name>.json");
+  return (fs::path(config_dir) / "universe" / (universe + ".json")).string();
+}
 
-  json j;
-  file >> j;
-  assert(j.is_array() && !j.empty() && "universe 名单必须是非空数组 [\"600000.SH\", ...]");
-
-  std::vector<std::string> codes;
-  codes.reserve(j.size());
-  for (const auto &code : j) {
-    assert(code.is_string() && "universe 名单元素必须是字符串 \"CODE.EX\"");
-    codes.push_back(code.get<std::string>());
-  }
-  return codes;
+std::vector<std::string> Config::UniverseCodes() const {
+  // 并集只看张量覆盖的回测区间 [start_date, end_date] ("YYYY-MM-DD" → "YYYYMMDD")
+  auto compact = [](std::string d) {
+    d.erase(std::remove(d.begin(), d.end(), '-'), d.end());
+    assert(d.size() == 8 && "日期须为 YYYY-MM-DD");
+    return d;
+  };
+  return universe::Pool::load(UniversePath()).codes(compact(start_date), compact(end_date));
 }
 
 bool Config::LoadFromFile() {

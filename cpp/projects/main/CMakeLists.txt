@@ -192,6 +192,7 @@ set(SOURCES
     ../../src/shared/FeaturePreview.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Transform.cpp
+    ../../src/shared/Universe.cpp
     # misc
     ../../src/misc/archive.cpp
     ../../src/misc/date.cpp
@@ -697,6 +698,7 @@ set_source_files_properties(
     ../../src/shared/FeaturePreview.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Transform.cpp
+    ../../src/shared/Universe.cpp
     # misc
     ../../src/misc/date.cpp
     ../../src/misc/format.cpp

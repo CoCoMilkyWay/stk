@@ -10,6 +10,7 @@
 #include "./OrderFlow.hpp"
 #include "./TaskState.hpp"
 #include "./Transform.hpp"
+#include "./Universe.hpp"
 #include "features/Method/Fundamental.hpp"
 #include "gui/coro/CoroManager.hpp"
 
@@ -18,7 +19,8 @@ struct SharedData {
   TaskState taskstate;
   Asset asset;
   AssetInfo assetinfo;
-  fund::Pool fund_pool; // 日频 PIT 基本面数据源 (Phase 2 前 build, TS worker 只读共享)
+  fund::Pool fund_pool;         // 日频 PIT 基本面数据源 (Phase 2 前 build, TS worker 只读共享)
+  universe::Pool universe_pool; // 动态股票池 (日频 PIT 名单; Phase 2 前 load, TS worker 只读共享 → Meta 的 cs_valid)
   Feature feature;
   FeaturePreview preview;
   OrderFlow orderflow;

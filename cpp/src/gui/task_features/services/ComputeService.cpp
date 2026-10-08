@@ -88,6 +88,12 @@ void ComputeService::start_compute(ComputeConfig config) {
               << " / " << data_.asset.items.size() << " assets\n"
               << std::endl;
 
+    // Phase 2 前置: 动态池逐日名单 (与 universe_axis 同一文件: 并集 = 子轴, 逐日成员位 → Meta cs_valid).
+    // 回测区间每一天都必须出过名单, 否则是名单没跑到这段 —— 启动即死, 不要静默算出半截 cs_valid.
+    data_.universe_pool = (data_.config.universe == "all") ? universe::Pool::all() : universe::Pool::load(data_.config.UniversePath());
+    assert(std::all_of(backtest_dates.begin(), backtest_dates.end(), [&](const std::string &d) { return data_.universe_pool.has_date(d); }) &&
+           "回测日不在动态池名单里: 重跑 py/universe/<name>.py 覆盖到 end_date");
+
     // Load balancing (初始形态): 按回测区间内的逐笔条数降序 + 轮询分配 ——
     // 标的数每核严格均匀 (±1), 权重也近似均衡. 贪心 LPT 会把大量小标的堆到
     // 少数核上 (标的数悬殊), 而每日固定开销 (decode 头/begin_day/分钟网格)

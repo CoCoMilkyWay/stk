@@ -13,8 +13,9 @@
 //     cs_valid  本资产今天在不在截面里 (CS 语义). 截面 (CoreCrosssection gather / 因子层 CS 节点 / Stat) 只看它, 不看 ts_valid:
 //               CS 本就该在平稳可比的信息上算, 池内资产在有效行上理应全部有值 (Fund 族 PIT 列除外) —— 因子层对喂 CS 的叶
 //               assert 掩码 ⊇ cs_valid, 不满足就是数据脏或用法错 (拿 CS 套 PIT 事件), 让人 think again
-//   池成员是日频 PIT 输入 (第 D 日名单由 ≤ D−1 数据定, 盘后产出), 对本算子只是一个 (资产, 日) 的 bool,
-//   与 Fund 吃 fund_pool 同形 —— TS 行仍只看本资产 + 日频 PIT, 不破一致性红线.
+//   池成员是日频 PIT 输入 (universe::Pool, 见 shared/Universe.hpp: py/universe/<name>.py 盘后产出逐日 diff json,
+//   第 D 日名单由 ≤ D−1 数据定), 对本算子只是一个 (资产, 日) 的 bool, 与 Fund 吃 fund_pool 同形 ——
+//   TS 行仍只看本资产 + 日频 PIT, 不破一致性红线. 选池不与本项目耦合: 选池可能要用特征而特征此刻还没算 (鸡生蛋).
 
 #include "features/MetaFlag.hpp"  // fmeta:: 编码/解码 (稳定头, 消费端直接用它, 不依赖本算子文件)
 #include "features/TimeIndex.hpp" // L0_to_L1
@@ -27,7 +28,7 @@
 // cs(): 当日 cs_valid 值 = 在池 ? 1 : 0 (池成员位 begin_day 给, 日内不变; CoreSequential 盘前写满整列).
 class MetaTracker {
 public:
-  // 盘前: 当日池成员位 (日频 PIT 输入, 日内恒定). 动态池接入点: 池子数据结构定型后在 CoreSequential::begin_day 查表传入
+  // 盘前: 当日池成员位 (日频 PIT 输入, 日内恒定; CoreSequential::begin_day 查 universe::Pool 传入)
   void begin_day(bool in_pool) { in_pool_ = in_pool; }
   float cs() const { return in_pool_ ? 1.0f : 0.0f; }
 

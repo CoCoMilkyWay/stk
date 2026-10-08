@@ -11,10 +11,11 @@ struct Config {
   std::string start_date = "2025-01-01";
   std::string end_date = "2025-02-01";
 
-  // 特征计算 universe: "all" = 全 A 轴; 其他 = <config_dir>/universe/<name>.json
-  // (["600000.SH", ...]). 特征管线的 A 轴 = universe 子轴 (见 AssetAxis.hpp 的
-  // UniverseAxis): 张量/落盘/读端全部只含名单内资产, 特征库按 universe 分目录
-  // (FeatureUniverseDir); encode 不受影响 (始终全市场).
+  // 特征计算 universe: "all" = 全 A 轴恒在池; 其他 = <config_dir>/universe/<name>.json
+  // (动态池逐日 diff, py/universe/<name>.py 产出, 见 shared/Universe.hpp). 特征管线的 A 轴 =
+  // 名单并集子轴 (见 AssetAxis.hpp 的 UniverseAxis): 张量/落盘/读端全部只含并集内资产, 当日
+  // 在不在池由 Meta 的 cs_valid 表达; 特征库按 universe 分目录 (FeatureUniverseDir);
+  // encode 不受影响 (始终全市场).
   std::string universe = "all";
 
   // Paths
@@ -74,8 +75,11 @@ struct Config {
   // Auto-sync: check file changes and debounced save
   void AutoSync();
 
-  // universe 名单: 读 <config_dir>/universe/<universe>.json → ["600000.SH", ...].
-  // universe == "all" 时不得调用 (无名单文件). 文件缺失/非非空字符串数组 → assert.
+  // 动态池名单文件: <config_dir>/universe/<universe>.json (逐日 diff, 格式/回放见 shared/Universe.hpp).
+  // universe == "all" 时不得调用 (无名单文件).
+  std::string UniversePath() const;
+  // 回测区间 [start_date, end_date] 内进过池的代码并集 (升序去重) = 静态 A 轴; 等价于
+  // universe::Pool::load(UniversePath()).codes(start, end). 文件缺失/格式错/区间无名单 → assert.
   std::vector<std::string> UniverseCodes() const;
 
   // 特征库目录按 universe 分片: <feature_dir>/<universe>. 不同 universe 的库

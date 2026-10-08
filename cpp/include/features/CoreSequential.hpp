@@ -4,6 +4,7 @@
 #include "features/ComputeGraph.hpp"
 #include "math/sample/ResamplerTick2Min.hpp"
 #include "misc/profiler.hpp"
+#include "shared/Universe.hpp"
 
 #include <array>
 
@@ -33,12 +34,14 @@ class CoreSequential {
 
 public:
   CoreSequential(const fund::Pool &fund_pool,
+                 const universe::Pool &universe_pool,
                  const std::string &asset_code,
                  size_t asset_id = 0,
                  size_t core_id = 0)
       : asset_id_(asset_id),
         core_id_(core_id),
         asset_code_(asset_code),
+        universe_pool_(universe_pool),
         dag_(tick_data_, fund_pool, asset_code, asset_id),
         tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
@@ -59,9 +62,8 @@ public:
   void begin_day(const std::string &date_str, const GlobalFeatureStore::Day &day) {
     push_day(day);
     meta_.reset();
-    // 动态池接入点 (池子数据结构待定型): 现恒为 true = 全轴皆在池 (旧语义).
-    // 定型后此处按 (asset_code_, date_str) 查日频 PIT 名单, 与 Fund 吃 fund_pool 同形.
-    meta_.begin_day(/*in_pool=*/true);
+    // 当日池成员位: 日频 PIT 名单 (universe::Pool, 盘后 python 产出, 第 D 日由 ≤ D−1 数据定), 与 Fund 吃 fund_pool 同形
+    meta_.begin_day(universe_pool_.in_pool(asset_code_, date_str));
     // cs_valid: 当日池成员位, 整日常量, 与事件无关 → 盘前一次写满两层全部行 (池外不写, slot 清零即 0)
     if (const float cs = meta_.cs(); cs != 0.0f) {
       for (size_t t = 0; t < LEVELS[0].rows; ++t)
@@ -207,6 +209,7 @@ private:
   size_t asset_id_;
   size_t core_id_;
   std::string asset_code_;
+  const universe::Pool &universe_pool_; // 动态池逐日名单 (只读共享; begin_day 查 (asset_code_, date) → cs_valid)
 
   TickData tick_data_; // 本资产 L0 工作区 (dag_ 引用它, 须先于 dag_ 声明)
   DAG dag_;
