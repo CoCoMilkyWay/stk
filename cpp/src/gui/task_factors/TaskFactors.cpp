@@ -4,10 +4,12 @@
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
 //   Factors: <factor_dir>/<universe>/ 一因子一文件的整体面板. 进页只扫描解析 (任何时候可进); Run 才读特征库评估
 //     (要资产轴就绪), 结果回写各因子文件.
-//   Inspect: Factors 页点行高光的单因子展示 (分层图等). 与 Factors 共用同一个 FactorsService / UI 状态.
+//   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 时序). 行信息来自 FactorsService; 一级 Row 由自己的
+//     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读).
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/FactorsService.hpp"
+#include "gui/task_factors/services/InspectService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "gui/task_factors/ui/TabInspect.hpp"
@@ -39,7 +41,30 @@ struct TaskFactorsState {
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir; // 上次扫描的目录 (universe 切换 → 自动重扫)
+
+  std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Inspect 页建; 缓存 (标签 + 特征平面) 随它活到任务 Destroy
+  Factors::InspectUIState inspect_ui;
 };
+
+static TaskStatus inspect_status(const Factors::InspectService &svc) {
+  switch (svc.status()) {
+  case Factors::InspectStatus::Loading: {
+    const int total = svc.total();
+    return {TaskStatus::Kind::Busy, "loading " + std::to_string(total > 0 ? 100 * svc.done() / total : 0) + "%"};
+  }
+  case Factors::InspectStatus::Running: {
+    const int total = svc.total();
+    return {TaskStatus::Kind::Busy, "running " + std::to_string(total > 0 ? 100 * svc.done() / total : 0) + "%"};
+  }
+  case Factors::InspectStatus::Done:
+    return {TaskStatus::Kind::Ready, "ok"};
+  case Factors::InspectStatus::Cancelled:
+    return {TaskStatus::Kind::Warn, "cancelled"};
+  case Factors::InspectStatus::Idle:
+    break;
+  }
+  return {};
+}
 
 // Factors 子页的作用域 (每帧从 config 取)
 static Factors::FactorsUIContext factors_context(const SharedData &data) {
@@ -101,8 +126,10 @@ TaskHandle CreateFactorsTask() {
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx == -1 || idx < TAB_COUNT);
-    if (idx == TAB_FACTORS || idx == TAB_INSPECT)
+    if (idx == TAB_FACTORS)
       return state->factors_service ? factors_status(*state->factors_service) : TaskStatus{};
+    if (idx == TAB_INSPECT)
+      return state->inspect_service ? inspect_status(*state->inspect_service) : TaskStatus{};
     // 任务行与 Operators 行同一状态
     if (!state->operators_service)
       return {};
@@ -166,7 +193,19 @@ TaskHandle CreateFactorsTask() {
         fs.Request(req);
       }
       if (idx == TAB_INSPECT) {
-        Factors::RenderTabInspect(fs, state->factors_ui, ctx);
+        if (!state->inspect_service) {
+          state->inspect_service = std::make_unique<Factors::InspectService>();
+          state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
+        }
+        auto &is = *state->inspect_service;
+        const int action = Factors::RenderTabInspect(fs, is, state->factors_ui, state->inspect_ui, ctx);
+        if (action == 1) {
+          Factors::InspectRequest req;
+          if (Factors::MakeInspectRequest(data, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
+            is.Request(req);
+        } else if (action == -1) {
+          is.RequestCancel();
+        }
         break;
       }
       const int action = Factors::RenderTabFactors(fs, state->factors_ui, ctx);
@@ -190,6 +229,8 @@ TaskHandle CreateFactorsTask() {
     state->operators_started = false;
     state->factors_service.reset();
     state->factors_scanned_dir.clear();
+    state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放
+    state->inspect_ui = Factors::InspectUIState{};
   };
 
   return handle;

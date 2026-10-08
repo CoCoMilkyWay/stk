@@ -264,7 +264,9 @@ set(SOURCES
     ../../src/gui/task_features/ui/TabTransform.cpp
     # gui / task_factors (GPU 后端 .cu / stub 在下方 op_check 段按 FACTOR_CUDA 一并挂到 app_main)
     ../../src/gui/task_factors/TaskFactors.cpp
+    ../../src/gui/task_factors/services/FactorsLoad.cpp
     ../../src/gui/task_factors/services/FactorsService.cpp
+    ../../src/gui/task_factors/services/InspectService.cpp
     ../../src/gui/task_factors/services/OperatorsService.cpp
     ../../src/gui/task_factors/ui/TabFactors.cpp
     ../../src/gui/task_factors/ui/TabInspect.cpp
@@ -738,7 +740,9 @@ set_source_files_properties(
     # stub 只在 FACTOR_CUDA=OFF 时挂给 app_main (.cu 走 -Xcompiler, 不在此列)
     ../../src/factor/op_check_gpu_stub.cpp
     ../../src/gui/task_factors/TaskFactors.cpp
+    ../../src/gui/task_factors/services/FactorsLoad.cpp
     ../../src/gui/task_factors/services/FactorsService.cpp
+    ../../src/gui/task_factors/services/InspectService.cpp
     ../../src/gui/task_factors/services/OperatorsService.cpp
     ../../src/gui/task_factors/ui/TabFactors.cpp
     ../../src/gui/task_factors/ui/TabInspect.cpp

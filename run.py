@@ -38,13 +38,13 @@ ENABLE_CUDA = True
 
 def _cleanup_processes():
     """Kill old processes."""
-    subprocess.run(
-        ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False
-    )
+    subprocess.run(["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
     time.sleep(0.3)
 
 
-def _build(app_name, enable_tsan, enable_debug, enable_profile, enable_assert, enable_cuda):
+def _build(
+    app_name, enable_tsan, enable_debug, enable_profile, enable_assert, enable_cuda
+):
     """Build project via py/{app_name}.py."""
     py_script = f"py/{app_name}.py"
 
@@ -92,8 +92,9 @@ def main():
     _cleanup_processes()
 
     print("Building...")
-    _build(APP_NAME, ENABLE_TSAN, ENABLE_DEBUG,
-           ENABLE_PROFILE, ENABLE_ASSERT, ENABLE_CUDA)
+    _build(
+        APP_NAME, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT, ENABLE_CUDA
+    )
 
     print("Running...")
     build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")

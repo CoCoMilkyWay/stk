@@ -7,8 +7,7 @@
 #include "factor/GpuRun.hpp"
 #include "factor/Stat/Cpu.hpp"
 #include "features/Backend/FeatureRead.hpp"
-#include "features/MetaFlag.hpp" // fmeta::valid
-#include "features/TimeIndex.hpp"
+#include "gui/task_factors/services/FactorsLoad.hpp" // Loaded / load_planes / check_leaf_domains (与 InspectService 共用)
 #include "gui/task_factors/ui/StatJson.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
@@ -16,21 +15,15 @@
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cassert>
 #include <chrono>
-#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <map>
 #include <set>
 #include <thread>
-
-// 因子契约的段 = 一个交易日的 L1 行数 (含 09:15 起的集合竞价 15 分钟); 特征库 L1 有效行数与之对账
-static_assert(factor::kSegLen == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegLen 必须等于 L1 每日分钟数");
 
 namespace GUI::Factors {
 
@@ -42,29 +35,6 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
 constexpr size_t kLevel = analysis::kLevel; // 因子只在 L1 算
-
-size_t hw_threads() { return std::max<size_t>(1, std::thread::hardware_concurrency()); }
-
-// 一波线程抢任务 (同 Correlation.cpp 的 parallel_for; fn(i, tid))
-void parallel_for(size_t n_tasks, size_t n_threads, const std::atomic<bool> &cancel, const std::function<void(size_t, size_t)> &fn) {
-  if (n_tasks == 0)
-    return;
-  const size_t n = std::min(n_threads, n_tasks);
-  std::atomic<size_t> next{0};
-  std::vector<std::thread> threads;
-  threads.reserve(n);
-  for (size_t t = 0; t < n; ++t)
-    threads.emplace_back([&, t] {
-      for (;;) {
-        const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-        if (i >= n_tasks || cancel.load(std::memory_order_relaxed))
-          return;
-        fn(i, t);
-      }
-    });
-  for (auto &th : threads)
-    th.join();
-}
 
 std::string now_string() {
   const std::time_t t = std::time(nullptr);
@@ -241,131 +211,6 @@ void write_back(const std::filesystem::path &path, const factor::expr::Expr &e, 
   write_json(path, j);
 }
 
-// ---- 装载好的一轮数据 (worker 栈上) ----
-struct LabelPlane {
-  std::vector<uint16_t> lv, sv; // 做多 / 做空净收益 fp16 位 (与落盘同格式, Stat 直接吃)
-  std::vector<uint8_t> m;
-};
-struct Loaded {
-  int T = 0, A = 0, days = 0;
-  std::vector<std::string> feat_codes;      // 去重特征 (平面下标)
-  std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码 (按 ts_valid 门控)
-  factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = data_valid(cs_valid) (= 当日在池, 整日常量)
-  std::vector<LabelPlane> labels;           // [amt × hold] 展平: labels[ai * n_hold + hi] (按 cs_valid 门控)
-  factor::stat::Holds hd;                   // hd.h[ai * n_hold + hi] = hold
-  int n_amt = 0, n_hold = 0;
-  size_t n() const { return static_cast<size_t>(T) * A; }
-};
-
-// 逐天并行读: 特征列 + 全部标签列 + ts_valid + cs_valid 一次 load_day_columns, 门控后散进平面
-bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, std::atomic<bool> &cancel,
-                 std::atomic<int> &done) {
-  TraceN("FactorsLoad");
-  const size_t A = static_cast<size_t>(L.A), n = L.n();
-  const size_t VR = level_valid_rows(kLevel);
-  assert(VR == static_cast<size_t>(factor::kSegLen));
-  const size_t H = static_cast<size_t>(L.n_amt) * L.n_hold;
-  const size_t nf = L.feat_codes.size();
-  // 列表: [特征 nf][标签 long/short × (amt × hold)][ts_valid][cs_valid]
-  std::vector<size_t> cols;
-  std::vector<L2::ValidType> vts;
-  for (const std::string &c : L.feat_codes) {
-    const FeatCol *fc = ft.find(c);
-    assert(fc && fc->allowed);
-    cols.push_back(fc->col), vts.push_back(fc->vt);
-  }
-  for (int ai = 0; ai < L.n_amt; ++ai)
-    for (const LabelCol &lc : ft.labels) {
-      const uint32_t lcol = lc.long_col[static_cast<size_t>(ai)], scol = lc.short_col[static_cast<size_t>(ai)];
-      cols.push_back(lcol), vts.push_back(ft.cols[lcol].vt);
-      cols.push_back(scol), vts.push_back(ft.cols[scol].vt);
-    }
-  cols.push_back(ft.ts_col);
-  cols.push_back(ft.cs_col);
-  const size_t ts_i = cols.size() - 2, cs_i = cols.size() - 1;
-
-  L.planes.resize(nf);
-  for (factor::check::Plane &p : L.planes)
-    p.resize(n);
-  L.cs.resize(n);
-  L.labels.resize(H);
-  for (LabelPlane &lb : L.labels)
-    lb.lv.assign(n, 0), lb.sv.assign(n, 0), lb.m.assign(n, 0);
-
-  const size_t n_threads = std::min(hw_threads(), dates.size());
-  std::vector<FeatureRead::DayColumns> staging(n_threads);
-  for (FeatureRead::DayColumns &dc : staging)
-    dc.preallocate(A, kLevel, cols.size());
-  const size_t nc = cols.size();
-
-  parallel_for(dates.size(), n_threads, cancel, [&](size_t d, size_t tid) {
-    FeatureRead::DayColumns &dc = staging[tid];
-    reader.load_day_columns(dates[d], cols, dc);
-    if (reader.stale())
-      return;
-    for (size_t t = 0; t < VR; ++t) {
-      const size_t row = (d * VR + t) * A;
-      const feature_storage_t *ts_gate = dc.data.data() + (t * nc + ts_i) * A;
-      const feature_storage_t *cs_gate = dc.data.data() + (t * nc + cs_i) * A;
-      for (size_t i = 0; i < nf; ++i) {
-        const feature_storage_t *src = dc.data.data() + (t * nc + i) * A;
-        float *v = L.planes[i].v.data() + row;
-        uint8_t *m = L.planes[i].m.data() + row;
-        for (size_t a = 0; a < A; ++a) {
-          const float x = static_cast<float>(src[a]);
-          const bool ok = fmeta::valid(static_cast<float>(ts_gate[a]), vts[i]) && std::isfinite(x);
-          v[a] = ok ? x : 0.f;
-          m[a] = ok;
-        }
-      }
-      for (size_t a = 0; a < A; ++a) {
-        const float g = static_cast<float>(cs_gate[a]);
-        L.cs.v[row + a] = g;
-        L.cs.m[row + a] = fmeta::data_valid(g);
-      }
-      for (size_t h = 0; h < H; ++h) {
-        const size_t il = nf + 2 * h, is = il + 1;
-        const feature_storage_t *sl = dc.data.data() + (t * nc + il) * A;
-        const feature_storage_t *ss = dc.data.data() + (t * nc + is) * A;
-        LabelPlane &lb = L.labels[h];
-        for (size_t a = 0; a < A; ++a) {
-          const float lv = static_cast<float>(sl[a]), sv = static_cast<float>(ss[a]);
-          const bool ok = fmeta::data_valid(static_cast<float>(cs_gate[a])) && std::isfinite(lv) && std::isfinite(sv); // cs_valid 是 0/1
-          lb.lv[row + a] = ok ? std::bit_cast<uint16_t>(sl[a]) : 0;
-          lb.sv[row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
-          lb.m[row + a] = ok;
-        }
-      }
-    }
-    done.fetch_add(1, std::memory_order_relaxed);
-  });
-  return !cancel.load(std::memory_order_relaxed) && !reader.stale();
-}
-
-// 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
-// (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判
-void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err) {
-  const factor::DagNode &nd = d.nodes[static_cast<size_t>(node)];
-  if (nd.op < 0)
-    return;
-  const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
-  for (int s = 0; s < o.arity; ++s) {
-    const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
-    if (g.op >= 0 || !factor::dom_strict(o.in[s]))
-      continue;
-    const factor::check::Plane &p = L.planes[static_cast<size_t>(g.feat)];
-    for (size_t i = 0; i < p.v.size(); ++i) {
-      if (!p.m[i] || factor::expr::dom_holds(o.in[s], p.v[i]))
-        continue;
-      char buf[64];
-      std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(p.v[i]));
-      err = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " +
-            L.feat_codes[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
-      return;
-    }
-  }
-}
-
 // 评估结果 → 行 (scope / 二级汇总); rows_out = [amt × hold][T]
 void fill_stat(FactorRow &r, const FactorsRequest &req, const FeatureTable &ft, const Loaded &L, const factor::stat::Row *rows_out,
                const char *backend) {
@@ -385,13 +230,6 @@ void fill_stat(FactorRow &r, const FactorsRequest &req, const FeatureTable &ft, 
   }
   r.has_stat = true;
   r.stat_from_file = false;
-}
-
-float valid_pct_of(const uint8_t *m, size_t n) {
-  size_t c = 0;
-  for (size_t i = 0; i < n; ++i)
-    c += m[i];
-  return n ? 100.f * static_cast<float>(c) / static_cast<float>(n) : 0.f;
 }
 
 } // namespace
@@ -792,21 +630,8 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
     return true;
   }
   Loaded L;
-  L.days = static_cast<int>(dates.size());
-  L.A = static_cast<int>(req.scope.uni.size());
-  L.T = L.days * factor::kSegLen;
-  assert(L.A >= 2 && L.A <= factor::stat::kMaxA && "资产轴超 Stat 容量 (kMaxA)");
-  assert(static_cast<long long>(L.T) * L.A < (1LL << 31));
+  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.uni.size()), L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
-  L.n_amt = static_cast<int>(feats_.amts.size());
-  L.n_hold = static_cast<int>(feats_.labels.size());
-  assert(L.n_amt >= 1 && L.n_amt <= kMaxAmt && "金额档数超 kMaxAmt");
-  assert(L.n_amt * L.n_hold <= factor::stat::kMaxHold && "amt × hold 超 Stat 标签组容量 (kMaxHold)");
-  L.hd.n = L.n_amt * L.n_hold;
-  for (int ai = 0; ai < L.n_amt; ++ai)
-    for (int hi = 0; hi < L.n_hold; ++hi)
-      L.hd.h[ai * L.n_hold + hi] = feats_.labels[static_cast<size_t>(hi)].hold;
-  factor::stat::assert_holds(L.hd);
 
   total_.store(L.days, std::memory_order_relaxed);
   done_.store(0, std::memory_order_relaxed);
@@ -817,23 +642,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   }
 
   // ---- 喂 CS 节点的特征叶: 掩码 ⊇ 截面门控 (EvalCpu.hpp cs_gate 契约), 每叶只扫一次 ----
-  // CS 只在平稳可比的信息上算; Fund 族带 NaN 的 PIT 列直接套 CS 在此炸 → think again (先包 TS 算子处理缺失)
-  {
-    std::vector<uint8_t> checked(L.planes.size(), 0);
-    for (int i = 0; i < N; ++i) {
-      const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-      if (nd.op < 0 || factor::expr::kOps[nd.op].a == factor::A::SELF)
-        continue;
-      for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a) {
-        const factor::DagNode &g = F.nodes[static_cast<size_t>(nd.in[a])];
-        if (g.op >= 0 || checked[static_cast<size_t>(g.feat)])
-          continue;
-        checked[static_cast<size_t>(g.feat)] = 1;
-        assert(factor::cpu::covers(L.planes[static_cast<size_t>(g.feat)].m.data(), L.cs.m.data(), L.n()) &&
-               "CS 算子的特征叶在 cs_valid 行上有缺失: CS 不吃 PIT 事件 / 带 NaN 的列 (Fund 族), 先包 TS 算子处理缺失");
-      }
-    }
-  }
+  assert_cs_leaves_covered(F, L);
 
   // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
