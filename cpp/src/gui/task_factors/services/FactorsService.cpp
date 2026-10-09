@@ -127,34 +127,19 @@ void load_stat(const json &j, FactorRow &r) {
   t.valid_pct = static_cast<float>(v);
   if (!json_num(j, "eval_ms", t.eval_ms))
     return;
-  const auto ait = j.find("amts");
-  if (ait == j.end() || !ait->is_array() || ait->empty() || ait->size() > static_cast<size_t>(kMaxAmt))
+  const auto hit = j.find("holds"); // 旧格式 ("amts": [{amt, holds}]) 无此键 → 整块忽略, 下次 Run 覆盖
+  if (hit == j.end() || !hit->is_array() || hit->empty() || hit->size() > static_cast<size_t>(factor::stat::kMaxHold))
     return;
-  t.n_amt = static_cast<int>(ait->size());
-  t.n_hold = -1;
-  for (int i = 0; i < t.n_amt; ++i) {
-    const json &a = (*ait)[static_cast<size_t>(i)];
-    if (!a.is_object() || !json_int(a, "amt", t.amt[i]))
+  t.n_hold = static_cast<int>(hit->size());
+  for (int k = 0; k < t.n_hold; ++k)
+    if (!load_hold((*hit)[static_cast<size_t>(k)], t.hold[k]))
       return;
-    const auto hit = a.find("holds");
-    if (hit == a.end() || !hit->is_array() || hit->empty() || hit->size() > static_cast<size_t>(factor::stat::kMaxHold))
-      return;
-    if (t.n_hold >= 0 && static_cast<size_t>(t.n_hold) != hit->size()) // 每档金额的持有期数须一致
-      return;
-    t.n_hold = static_cast<int>(hit->size());
-    for (int k = 0; k < t.n_hold; ++k)
-      if (!load_hold((*hit)[static_cast<size_t>(k)], t.hold[i][k]))
-        return;
-  }
   r.scope = t.scope;
   r.valid_pct = t.valid_pct;
   r.eval_ms = t.eval_ms;
-  r.n_amt = t.n_amt, r.n_hold = t.n_hold;
-  for (int i = 0; i < t.n_amt; ++i) {
-    r.amt[i] = t.amt[i];
-    for (int k = 0; k < t.n_hold; ++k)
-      r.hold[i][k] = t.hold[i][k];
-  }
+  r.n_hold = t.n_hold;
+  for (int k = 0; k < t.n_hold; ++k)
+    r.hold[k] = t.hold[k];
   r.has_stat = true;
   r.stat_from_file = true;
 }
@@ -172,17 +157,10 @@ ojson stat_json(const FactorRow &r) {
   j["frame"] = factor::stat::frame_name(r.frame);
   j["valid_pct"] = sig4(r.valid_pct);
   j["eval_ms"] = sig4(r.eval_ms);
-  ojson amts = ojson::array();
-  for (int i = 0; i < r.n_amt; ++i) {
-    ojson a;
-    a["amt"] = r.amt[i];
-    ojson holds = ojson::array();
-    for (int k = 0; k < r.n_hold; ++k)
-      holds.push_back(hold_json(r.hold[i][k]));
-    a["holds"] = holds;
-    amts.push_back(a);
-  }
-  j["amts"] = amts;
+  ojson holds = ojson::array();
+  for (int k = 0; k < r.n_hold; ++k)
+    holds.push_back(hold_json(r.hold[k]));
+  j["holds"] = holds;
   return j;
 }
 
@@ -211,23 +189,17 @@ void write_back(const std::filesystem::path &path, const factor::expr::Expr &e, 
   write_json(path, j);
 }
 
-// 评估结果 → 行 (scope / 二级汇总); rows_out = [amt × hold][T]
-void fill_stat(FactorRow &r, const FactorsRequest &req, const FeatureTable &ft, const Loaded &L, const factor::stat::Row *rows_out,
-               const char *backend) {
+// 评估结果 → 行 (scope / 二级汇总); rows_out = [hold][T]
+void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, const factor::stat::Row *rows_out, const char *backend) {
   r.scope.universe = req.universe;
   r.scope.start_date = req.start_date;
   r.scope.end_date = req.end_date;
   r.scope.days = L.days, r.scope.T = L.T, r.scope.A = L.A;
   r.scope.backend = backend;
   r.scope.time = now_string();
-  r.n_amt = L.n_amt, r.n_hold = L.n_hold;
-  for (int ai = 0; ai < L.n_amt; ++ai) {
-    r.amt[ai] = ft.amts[static_cast<size_t>(ai)];
-    for (int hi = 0; hi < L.n_hold; ++hi) {
-      const size_t i = static_cast<size_t>(ai) * L.n_hold + hi;
-      r.hold[ai][hi] = factor::stat::summarize(rows_out + i * L.T, L.T, L.hd.h[i]);
-    }
-  }
+  r.n_hold = L.n_hold;
+  for (int hi = 0; hi < L.n_hold; ++hi)
+    r.hold[hi] = factor::stat::summarize(rows_out + static_cast<size_t>(hi) * L.T, L.T, L.hd.h[hi]);
   r.has_stat = true;
   r.stat_from_file = false;
 }
@@ -261,10 +233,16 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   t.cs_col = static_cast<uint32_t>(meta.col_of(kLevel, "cs_valid"));
   struct Lab {
     bool is_long;
-    int hold, amt;
+    int hold;
+    uint32_t col;
+  };
+  struct Cost {
+    bool is_buy;
+    int amt;
     uint32_t col;
   };
   std::vector<Lab> labs;
+  std::vector<Cost> costs;
   std::set<int> holds, amts;
   for (size_t i = 0; i < L1.size(); ++i) {
     const FeatureMetadata &f = L1[i];
@@ -274,32 +252,42 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
     c.vt = f.valid_type;
     c.allowed = f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS;
     t.cols.push_back(c);
-    if (f.data_type == FeatureDataType::LB) {
-      char side[8] = {}, name[16] = {};
-      int amt = 0;
-      const int got = std::sscanf(f.code, "lb_%7[a-z]_%15[a-z0-9]_%dw", side, name, &amt);
-      assert(got == 3 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<side>_<name>_<amt>w");
-      const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N> → 持有期键 (Stat/Contract.hpp 【持有期键】)
-      labs.push_back({std::string_view(side) == "long", h, amt, static_cast<uint32_t>(i)});
-      holds.insert(h), amts.insert(amt);
+    if (f.data_type != FeatureDataType::LB)
+      continue;
+    char side[8] = {}, name[16] = {};
+    int amt = 0;
+    if (std::sscanf(f.code, "lb_cost_%7[a-z]_%dw", side, &amt) == 2) {
+      assert((std::string_view(side) == "buy" || std::string_view(side) == "sell") && amt > 0 && "冲击成本列命名不合 lb_cost_<buy|sell>_<amt>w");
+      costs.push_back({std::string_view(side) == "buy", amt, static_cast<uint32_t>(i)});
+      amts.insert(amt);
+      continue;
     }
+    const int got = std::sscanf(f.code, "lb_%7[a-z]_%15[a-z0-9]", side, name);
+    assert(got == 2 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<long|short>_<name>");
+    const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N> → 持有期键 (Stat/Contract.hpp 【持有期键】)
+    labs.push_back({std::string_view(side) == "long", h, static_cast<uint32_t>(i)});
+    holds.insert(h);
   }
   assert(!labs.empty() && "字段表无标签列");
-  t.amts.assign(amts.begin(), amts.end());
   for (int h : holds) {
     LabelCol lc;
     lc.hold = h;
-    lc.long_col.assign(t.amts.size(), UINT32_MAX);
-    lc.short_col.assign(t.amts.size(), UINT32_MAX);
-    for (const Lab &l : labs) {
-      if (l.hold != h)
-        continue;
-      const size_t ai = static_cast<size_t>(std::find(t.amts.begin(), t.amts.end(), l.amt) - t.amts.begin());
-      (l.is_long ? lc.long_col : lc.short_col)[ai] = l.col;
-    }
-    for (size_t ai = 0; ai < t.amts.size(); ++ai)
-      assert(lc.long_col[ai] != UINT32_MAX && lc.short_col[ai] != UINT32_MAX && "标签列不齐: 某 (hold, amt) 缺 long 或 short");
+    lc.long_col = lc.short_col = UINT32_MAX;
+    for (const Lab &l : labs)
+      if (l.hold == h)
+        (l.is_long ? lc.long_col : lc.short_col) = l.col;
+    assert(lc.long_col != UINT32_MAX && lc.short_col != UINT32_MAX && "标签列不齐: 某 hold 缺 long 或 short");
     t.labels.push_back(lc);
+  }
+  for (int a : amts) {
+    CostCol cc;
+    cc.amt = a;
+    cc.buy_col = cc.sell_col = UINT32_MAX;
+    for (const Cost &c : costs)
+      if (c.amt == a)
+        (c.is_buy ? cc.buy_col : cc.sell_col) = c.col;
+    assert(cc.buy_col != UINT32_MAX && cc.sell_col != UINT32_MAX && "冲击成本列不齐: 某金额档缺 buy 或 sell");
+    t.costs.push_back(cc);
   }
   return t;
 }
@@ -717,7 +705,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
         for (int j : sub[k])
           r.eval_ms += node_ms[static_cast<size_t>(j)];
         r.valid_pct = valid_pct;
-        fill_stat(r, req, feats_, L, srows.data(), backend);
+        fill_stat(r, req, L, srows.data(), backend);
         r.status = RowStatus::Done;
         {
           std::lock_guard<std::mutex> lock(mutex);

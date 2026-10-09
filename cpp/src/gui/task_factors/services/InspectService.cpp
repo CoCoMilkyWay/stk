@@ -29,21 +29,23 @@ std::string now_string() {
 
 } // namespace
 
-// 跨请求缓存 (worker 私有): 同作用域下标签 + 标签 rank 常驻, 特征平面只保留当前因子的
+// 跨请求缓存 (worker 私有): 同作用域下标签 + 冲击成本 + 毛标签 rank 常驻, 特征平面只保留当前因子的
 struct InspectService::Cache {
   std::string key; // features_dir | 子轴 hash | 月份表
   std::vector<std::string> dates;
-  Loaded L;                              // planes / feat_codes = 当前因子的特征 (Dag::feats 序); labels 常驻
-  std::vector<std::vector<uint16_t>> ry; // [H] 做多标签逐行截面 rank (prep_label, 与因子无关)
+  Loaded L;                              // planes / feat_codes = 当前因子的特征 (Dag::feats 序); labels / costs 常驻
+  std::vector<std::vector<uint16_t>> ry; // [H] 毛做多标签逐行截面 rank (prep_label, 与因子无关)
 };
 
-bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req) {
+bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, int impact_amt, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
   req.file = row.file;
   req.expr = row.expr;
   req.frame = row.frame;
   req.reload = reload;
+  req.impact_amt = impact_amt;
+  req.sell_impact = impact_amt > 0 ? data.config.sell_impact : 0.0;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
@@ -145,7 +147,7 @@ bool InspectService::evaluate(const InspectRequest &req, Cache &cache) {
     cache = Cache{};
     init_loaded(feats_, days, A, cache.L);
     cache.L.feat_codes = d.feats;
-    if (!load_planes(feats_, reader, dates, cache.L, cancel_, done_, /*with_labels=*/true)) {
+    if (!load_planes(feats_, reader, dates, cache.L, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true)) {
       cache = Cache{};
       if (reader.stale())
         publish_message("特征库判废 (子轴/字段表与当前不符), 需重算特征");
@@ -207,9 +209,8 @@ bool InspectService::evaluate(const InspectRequest &req, Cache &cache) {
   res.scope.days = L.days, res.scope.T = L.T, res.scope.A = L.A;
   res.scope.backend = "cpu";
   res.dates = dates;
-  res.n_amt = L.n_amt, res.n_hold = L.n_hold;
-  for (int ai = 0; ai < L.n_amt; ++ai)
-    res.amt[ai] = feats_.amts[static_cast<size_t>(ai)];
+  res.n_hold = L.n_hold;
+  res.impact_amt = req.impact_amt;
   res.hd = L.hd;
 
   // ---- 数据检查 (与 FactorsService 同一套) ----
@@ -228,9 +229,28 @@ bool InspectService::evaluate(const InspectRequest &req, Cache &cache) {
   status_.store(InspectStatus::Running, std::memory_order_release);
   total_.store(d.n_ops, std::memory_order_relaxed);
   done_.store(0, std::memory_order_relaxed);
+  // 标签口径: 毛 (缓存的平面 + rank) / 扣冲击 (即兴算净平面 + rank, 不缓存)
+  std::vector<LabelPlane> net;
+  std::vector<std::vector<uint16_t>> net_ry;
+  const std::vector<LabelPlane> *labels = &L.labels;
+  const std::vector<std::vector<uint16_t>> *ry = &cache.ry;
+  if (req.impact_amt > 0) {
+    const CostPlane *cost = nullptr;
+    for (size_t c = 0; c < feats_.costs.size(); ++c)
+      if (feats_.costs[c].amt == req.impact_amt)
+        cost = &L.costs[c];
+    assert(cost && "请求的冲击金额档不在字段表 (UI 只应给 FeatureTable::costs 里的档)");
+    net_labels(L, *cost, static_cast<float>(req.sell_impact), net);
+    net_ry.assign(H, std::vector<uint16_t>(n));
+    for (size_t h = 0; h < H; ++h)
+      factor::cpu::stat::prep_label(net[h].lv.data(), net[h].m.data(), L.T, L.A, net_ry[h].data(), threads);
+    labels = &net, ry = &net_ry;
+    if (cancel_.load(std::memory_order_relaxed))
+      return false;
+  }
   std::vector<factor::cpu::stat::Label> lab(H);
   for (size_t h = 0; h < H; ++h)
-    lab[h] = {L.labels[h].lv.data(), L.labels[h].sv.data(), L.labels[h].m.data(), cache.ry[h].data()};
+    lab[h] = {(*labels)[h].lv.data(), (*labels)[h].sv.data(), (*labels)[h].m.data(), (*ry)[h].data()};
   factor::cpu::Pool pool;
   pool.prepare(d.n_slots, n);
   std::vector<factor::cpu::ParScratch> sc(static_cast<size_t>(threads));
@@ -271,11 +291,8 @@ bool InspectService::evaluate(const InspectRequest &req, Cache &cache) {
     std::vector<uint16_t> ws(n);
     factor::cpu::stat::eval(rp->v.data(), m, req.frame, L.T, L.A, L.hd, lab.data(), ws.data(), res.rows.data(), threads);
   }
-  for (int ai = 0; ai < L.n_amt; ++ai)
-    for (int hi = 0; hi < L.n_hold; ++hi) {
-      const size_t i = static_cast<size_t>(ai) * L.n_hold + hi;
-      res.hold[ai][hi] = factor::stat::summarize(res.rows.data() + i * L.T, L.T, L.hd.h[i]);
-    }
+  for (int hi = 0; hi < L.n_hold; ++hi)
+    res.hold[hi] = factor::stat::summarize(res.rows.data() + static_cast<size_t>(hi) * L.T, L.T, L.hd.h[hi]);
   res.scope.time = now_string();
   {
     std::lock_guard<std::mutex> lock(mutex);

@@ -89,7 +89,7 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
   ys.push_back(y.back());
 }
 
-// 一级 Row[T] (选定 amt × hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
+// 一级 Row[T] (选定 hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
 // IC 分布 = ok 行的 ic 逐行进 KLL (与 summarize 的 ic_mean/std/skew/kurt 同一组样本)
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
@@ -134,7 +134,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   KLLcache kll(analysis::kAggKllCapacity, analysis::kAggKllResolution);
   kll.addBatch(ics);
   d.ic_pdf.fill(kll, 3); // n < 3 与 summarize 同口径: 无 stat 也无 PDF
-  d.hs = res.hold[sel / res.n_hold][sel % res.n_hold];
+  d.hs = res.hold[sel];
   d.valid = true;
 }
 
@@ -174,7 +174,8 @@ void plot_layers(const InspectDerived &d, bool &absolute, bool &net_cost, const 
     if (ImGui::SmallButton(lbl_cost))
       net_cost = !net_cost;
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("标签是毛收益 (含价差 + 冲击, 不含税佣); 净 = 每往返再扣 2×commission + stamp (Config), 分层线各 1 次, LS 2 次\n(尚未接线: 只切状态, 曲线不变)");
+      ImGui::SetTooltip("标签是价格收益 (entry 中间价 → exit 分钟 VWAP, 不含冲击 / 税佣; 冲击由控件行的 冲击 选项扣);\n"
+                        "净 = 每往返再扣 2×commission + stamp (Config), 分层线各 1 次, LS 2 次\n(尚未接线: 只切状态, 曲线不变)");
     ImGui::SameLine();
     if (ImGui::SmallButton(lbl))
       absolute = !absolute;
@@ -347,19 +348,16 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
   const FeatureTable &ft = isvc.feats();
   const InspectStatus st = isvc.status();
   const bool busy = st == InspectStatus::Loading || st == InspectStatus::Running;
-  const int n_amt = static_cast<int>(ft.amts.size()), n_hold = static_cast<int>(ft.labels.size());
-  ui.amt_idx = std::clamp(ui.amt_idx, 0, std::max(0, n_amt - 1));
+  const int n_hold = static_cast<int>(ft.labels.size());
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
-  const int cur_amt = n_amt ? ft.amts[static_cast<size_t>(ui.amt_idx)] : 0;
   const int cur_hold = n_hold ? ft.labels[static_cast<size_t>(ui.hold_idx)].hold : 0;
-  ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("Amt", n_amt ? (std::to_string(cur_amt) + "w").c_str() : "-")) {
-    for (int i = 0; i < n_amt; ++i)
-      if (ImGui::Selectable((std::to_string(ft.amts[static_cast<size_t>(i)]) + "w").c_str(), i == ui.amt_idx))
-        ui.amt_idx = i;
-    ImGui::EndCombo();
+  {
+    bool impact_ok = ui.impact_amt == 0; // 字段表没有该档 (特征库换过) → 回毛
+    for (const CostCol &cc : ft.costs)
+      impact_ok |= cc.amt == ui.impact_amt;
+    if (!impact_ok)
+      ui.impact_amt = 0;
   }
-  ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
   if (ImGui::BeginCombo("Hold", n_hold ? factor::stat::hold_name(cur_hold).c_str() : "-")) {
     for (int i = 0; i < n_hold; ++i)
@@ -368,7 +366,22 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("分层累计 / IC 分布 / 顶部 stat 看哪个持有期 (只影响显示; 一次算全部 amt × hold)");
+    ImGui::SetTooltip("分层累计 / IC 分布 / 顶部 stat 看哪个持有期 (只影响显示; 一次算全部持有期)");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(70);
+  if (ImGui::BeginCombo("冲击", ui.impact_amt ? (std::to_string(ui.impact_amt) + "w").c_str() : "无")) {
+    if (ImGui::Selectable("无", ui.impact_amt == 0))
+      ui.impact_amt = 0;
+    for (const CostCol &cc : ft.costs)
+      if (ImGui::Selectable((std::to_string(cc.amt) + "w").c_str(), cc.amt == ui.impact_amt))
+        ui.impact_amt = cc.amt;
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("标签口径. 无 = 价格收益 (entry 中间价 → exit 分钟 VWAP; 默认, 与 Factors Run 同);\n"
+                      "<amt>w = 再扣建仓冲击 (lb_cost_buy/sell_<amt>w: 同一盘口吃 amt 万的 VWAP 偏离中间价) + 平仓固定冲击 (Config 平仓冲击 %.4f)\n"
+                      "净标签即兴算不缓存 (换档只重算 Stat, 不重读库); 吃不到的格 (NaN) 无效",
+                      ctx.sell_impact);
   ImGui::SameLine();
   const bool can_run = !busy && ctx.axis_ready && n_hold > 0;
   if (!can_run)
@@ -413,14 +426,17 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
   }
 
   // ---- 结果快照 (持锁派生, 不拷 rows) ----
-  const InspectRequest probe{row.file, row.expr, row.frame, {}, ctx.universe, ctx.start_date, ctx.end_date, false};
+  InspectRequest probe;
+  probe.file = row.file, probe.expr = row.expr, probe.frame = row.frame;
+  probe.universe = ctx.universe, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
+  probe.impact_amt = ui.impact_amt, probe.sell_impact = ui.impact_amt > 0 ? ctx.sell_impact : 0.0;
   const std::string key = probe.key();
-  const int sel = ui.amt_idx * n_hold + ui.hold_idx;
+  const int sel = ui.hold_idx;
   std::string message, res_error, res_key;
   StatScope res_scope;
   float res_valid = 0.f;
   double res_ms = 0.0;
-  factor::stat::HoldStat res_holds[factor::stat::kMaxHold]; // 选定 amt 的全部持有期 (期限结构)
+  factor::stat::HoldStat res_holds[factor::stat::kMaxHold]; // 全部持有期 (期限结构)
   bool res_has = false;
   {
     std::lock_guard<std::mutex> lock(isvc.mutex);
@@ -429,13 +445,13 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     res_key = res.key;
     res_error = res.error;
     if (!res.key.empty() && res.error.empty()) {
-      assert(res.n_hold == n_hold && res.n_amt == n_amt && "Inspect 与 FeatureTable 的标签组不一致");
+      assert(res.n_hold == n_hold && "Inspect 与 FeatureTable 的标签组不一致");
       res_has = true;
       res_scope = res.scope;
       res_valid = res.valid_pct;
       res_ms = res.eval_ms;
       for (int i = 0; i < n_hold; ++i)
-        res_holds[i] = res.hold[ui.amt_idx][i];
+        res_holds[i] = res.hold[i];
     }
     const uint64_t ep = isvc.epoch();
     if (ep != ui.derived_epoch || sel != ui.derived_sel || ui.absolute != ui.derived_abs) {
@@ -466,9 +482,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (match) {
-    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms", res_scope.universe.c_str(),
+    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms | 标签 %s", res_scope.universe.c_str(),
                         res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T, res_scope.backend.c_str(),
-                        res_scope.time.c_str(), res_valid, res_ms);
+                        res_scope.time.c_str(), res_valid, res_ms,
+                        ui.impact_amt ? ("扣冲击 " + std::to_string(ui.impact_amt) + "w + 平仓 " + std::to_string(ctx.sell_impact)).c_str() : "毛 (价格收益)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)
       ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f "
@@ -495,9 +512,9 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
   ImGui::SameLine();
   // 期限结构: Inspect 结果优先, 否则文件 stat (Factors 表的 row.hold)
   if (match)
-    plot_term(res_holds, n_hold, ui.hold_idx, "Inspect", cell);
-  else if (row.has_stat && row.n_hold == n_hold && ui.amt_idx < row.n_amt)
-    plot_term(row.hold[ui.amt_idx], n_hold, ui.hold_idx, row.stat_from_file ? "文件 stat" : "Factors Run", cell);
+    plot_term(res_holds, n_hold, ui.hold_idx, ui.impact_amt ? "Inspect (扣冲击)" : "Inspect", cell);
+  else if (row.has_stat && row.n_hold == n_hold && ui.impact_amt == 0) // 文件 stat 只有毛口径
+    plot_term(row.hold, n_hold, ui.hold_idx, row.stat_from_file ? "文件 stat" : "Factors Run", cell);
   else
     empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Compute)");
 

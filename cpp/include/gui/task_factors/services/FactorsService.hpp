@@ -8,7 +8,7 @@
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
 //     "params": [ {}, {"d": 30}, {} ],                        // 可选, 按算子节点前序逐节点覆盖 expr 字面值 (搜索结果落此)
 //     "stat":   { scope…, "frame", "valid_pct", "eval_ms",
-//                 "amts": [ {"amt": 5, "holds": [HoldStat…]}, … ] } }   // 本服务写 (全部 金额档 × 持有期), 载入时显示
+//                 "holds": [HoldStat…] } }                            // 本服务写 (全部持有期, 毛收益口径), 载入时显示
 //   有效 = type 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入) 且 params (若有) 覆盖成功
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   同一规范串多文件 → 后者标 dup (黄), 仍算 (共享 DAG 里是同一个根, Stat 也只算一次).
@@ -16,7 +16,7 @@
 // 线程模型 (对仗 OperatorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 rows;
 // 进度走原子. evaluate = false 只扫描 (进页 / Add / Rescan), = true 扫描 + 装载 + 评估.
 //
-// 装载: 一次把所有有效因子用到的特征 (去重) + ts_valid / cs_valid + 全部 (amt × hold) 标签列读进宿主 (逐天并行 load_day_columns,
+// 装载: 一次把所有有效因子用到的特征 (去重) + ts_valid / cs_valid + 全部持有期标签列读进宿主 (逐天并行 load_day_columns,
 // 门控 fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
 // 两张门控列的分工 (features/MetaFlag.hpp): 特征输入按 ts_valid 门控 (TS 节点要跨进出池的历史); 标签按 cs_valid 门控 (只被 Stat 吃,
 // rank(y) 得在池内排); cs_valid 的有效位另成一张截面门控平面 → CS 节点输入 / Stat 的 x (EvalCpu.hpp cs_gate 契约: 喂 CS 的特征叶
@@ -24,7 +24,8 @@
 // 评估 (Run 的并行方案, 与 search 的解耦): 所有有效因子合成一张共享 DAG (factor::build_forest, 公共子式只算一次), 按拓扑序
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node_par, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
-// Stat 的"持有期"维展平为 (amt, hold) 对: hd.n = n_amt × n_hold ≤ kMaxHold, x 的 rank 只算一次.
+// Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), Run 只算毛口径;
+// 冲击 (lb_cost_* + Config::sell_impact) 由 Inspect 页即兴扣, 不落文件.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
 #pragma once
@@ -58,19 +59,24 @@ struct FeatCol {
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
 };
 struct LabelCol {
-  int hold = 0;                              // 持有期 (分钟)
-  std::vector<uint32_t> long_col, short_col; // [amt_idx] 列下标
+  int hold = 0;                         // 持有期键 (Stat/Contract.hpp)
+  uint32_t long_col = 0, short_col = 0; // 列下标
+};
+struct CostCol {
+  int amt = 0;                        // 下单金额档 (万)
+  uint32_t buy_col = 0, sell_col = 0; // lb_cost_buy_<amt>w / lb_cost_sell_<amt>w 列下标
 };
 struct FeatureTable {
   std::vector<FeatCol> cols;    // 下标 = L1 列
   uint32_t ts_col = 0;          // ts_valid 门控列 (特征输入)
   uint32_t cs_col = 0;          // cs_valid 门控列 (标签 + 截面门控平面)
-  std::vector<int> amts;        // 标签金额档 (万), 文件序
-  std::vector<LabelCol> labels; // 按 hold 升序; 每档金额都齐才收
+  std::vector<LabelCol> labels; // 按 hold 升序; long / short 都齐才收
+  std::vector<CostCol> costs;   // 建仓冲击成本特征, 按 amt 升序 (Inspect 即兴扣冲击用; Run 不读)
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };
-// 标签列按 code 命名 lb_<long|short>_<name>_<amt>w 识别 (LabelReturn 生成的字段行), name = <n>m / close / t<N> → 持有期键 (Stat/Contract.hpp)
+// LB 列按 code 识别 (LabelReturn 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N> → 持有期键, Stat/Contract.hpp);
+// lb_cost_<buy|sell>_<amt>w 建仓冲击成本
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta);
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) ----
@@ -86,7 +92,6 @@ struct FactorsRequest {
 bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req);
 
 // ---- 行 ----
-constexpr int kMaxAmt = 4; // 金额档数上限 (n_amt × n_hold ≤ factor::stat::kMaxHold 运行期断言)
 // 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 只留位, 扫描到即标 error
 enum class FactorKind : uint8_t { Alpha,
                                   Beta };
@@ -109,17 +114,14 @@ struct FactorRow {
   bool has_stat = false;                 // hold[][] 有内容 (本轮算的或文件载入的)
   bool stat_from_file = false;           // stat 来自文件 (非本进程算的)
   StatScope scope;                       // stat 的作用域
-  double eval_ms = 0;                    // time 列: 子树算子节点 wall 之和 (与 amt / hold 无关: 因子平面只算一遍, Stat 按组合复用它)
+  double eval_ms = 0;                    // time 列: 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
   float valid_pct = 0.f;
-  int n_amt = 0, n_hold = 0;
-  int amt[kMaxAmt] = {};                                        // 金额档 (万), 升序
-  factor::stat::HoldStat hold[kMaxAmt][factor::stat::kMaxHold]; // [amt][hold]
-  const factor::stat::HoldStat *find_hold(int amt_w, int hold_m) const {
-    for (int i = 0; i < n_amt; ++i)
-      if (amt[i] == amt_w)
-        for (int j = 0; j < n_hold; ++j)
-          if (hold[i][j].hold == hold_m)
-            return &hold[i][j];
+  int n_hold = 0;
+  factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
+  const factor::stat::HoldStat *find_hold(int hold_m) const {
+    for (int j = 0; j < n_hold; ++j)
+      if (hold[j].hold == hold_m)
+        return &hold[j];
     return nullptr;
   }
 };

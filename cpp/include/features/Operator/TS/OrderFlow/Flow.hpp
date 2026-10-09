@@ -11,7 +11,7 @@
 //     vol_maker_lim_{bid,ask}            以跌停价挂买 / 涨停价挂卖 的委托量 (彩票委托; 边界 = Fund 当日涨跌停, NaN → 0)
 //     vol_first30s                       分钟前 30 秒成交量 (后 30 秒 = vol_taker_bid + ask − 本口, 不单列)
 //   均价 (元, 不产 NaN):
-//     vwap  Σamt_taker / Σvol_taker (无成交沿用上一有效值, 首日无历史取当日涨跌停中值)
+//     vwap  Σamt_taker / Σvol_taker (无成交沿用上一有效值, 首日无历史取当日涨跌停中值); 也是标签分钟档 exit 价 (LabelReturn 引用 y[vwap]) 与 OrderFlow 图1 VWAP 线的来源
 //     twap  成交价时间加权 (末笔持有到分钟末; 无成交 → 退 vwap)
 //   不单列 (因子层做): 总额 / 量 / 笔 = 买 + 卖 按行求和; 开盘 / 收盘集合竞价成交 = 09:25 行 (l1=10) / 末行 (l1=254) 的 taker 口;
 //   K 线见 Basic/Bar.hpp.

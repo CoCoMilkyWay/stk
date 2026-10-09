@@ -525,9 +525,11 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
-      // 当日累计 VWAP (标准日内 VWAP: 开盘起 Σ额/Σ量, 含竞价撮合; 尚无成交段 NaN 不画)
-      ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
-      ImPlot::PlotLine("VWAP", dp.plot.x.data(), dp.plot.vwap.data(), n, ImPlotItemFlags_NoFit);
+      // 分钟 VWAP 阶梯 (L1 特征列 vwap, 标签 exit 同源; universe 外 / 未算特征的资产无此线)
+      if (!dp.plot.vwap_x.empty()) {
+        ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
+        ImPlot::PlotStairs("VWAP", dp.plot.vwap_x.data(), dp.plot.vwap_y.data(), static_cast<int>(dp.plot.vwap_x.size()), ImPlotItemFlags_NoFit);
+      }
 
       // 双击复位 = 新标的初始渲染的口径 (X 全天 + Y 带 margin); 否则 ImPlot 默认
       // fit 会贴紧数据边缘, 与初始视图不一致且难操作. 必须在有 item 之后 (SetupLock 已发生)

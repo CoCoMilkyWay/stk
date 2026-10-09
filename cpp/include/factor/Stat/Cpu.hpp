@@ -39,8 +39,8 @@ using factor::stat::Row;
 
 // 一组常驻标签 (宿主指针, 全部 [T][A]); ry 由 prep_label 填
 struct Label {
-  const uint16_t *lv = nullptr; // 做多净收益 fp16 位
-  const uint16_t *sv = nullptr; // 做空净收益 fp16 位
+  const uint16_t *lv = nullptr; // 做多收益 fp16 位 (毛 / 扣冲击后的净, 由调用方定)
+  const uint16_t *sv = nullptr; // 做空收益 fp16 位
   const uint8_t *m = nullptr;   // 有效位 (long / short 共用)
   const uint16_t *ry = nullptr; // 做多标签逐行 r16 (prep_label 输出)
 };

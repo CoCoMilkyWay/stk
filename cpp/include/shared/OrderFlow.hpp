@@ -152,7 +152,6 @@ struct OrderFlow {
     struct Tick {
       size_t tick_idx; // 交易秒下标 [0, 15300)
       float mid_price; // 竞价交叉秒 = 预撮合参考价, 其余 = (bid1+ask1)/2
-      float vwap;      // 当日累计成交 VWAP (Σ 成交额 / Σ 成交量, 全部 TAKER 事件含竞价撮合, 截至本秒末); 当日尚无成交 = 0
       // 集合竞价预撮合 (LOB update_depth 竞价分支): ref > 0 = 竞价且簿交叉, 其余恒 0
       float ref_price;                                                   // 元
       float matched_amount;                                              // 元, 参考价位虚拟匹配额
@@ -165,8 +164,10 @@ struct OrderFlow {
     // 线图: 与 ticks 1:1 (plot_idx == ticks 下标)
     struct Plot {
       std::vector<double> x, mid_price, best_bid, best_ask;
-      std::vector<double> vwap;         // 当日累计 VWAP (尚无成交 = NaN 断线)
       std::vector<size_t> tick_idx_map; // 秒下标 -> plot_idx (SIZE_MAX = 无), O(1) snap
+      // 分钟 VWAP 阶梯 (L1 特征列 vwap, 与标签 exit 同源; 只有 universe 内且当日已算特征的资产才有):
+      // 逐有效分钟一点, X = 分钟起始秒, 末尾补一点 (末分钟末秒) 收口; 与 ticks 无关
+      std::vector<double> vwap_x, vwap_y;
       double y_min = 0.0, y_max = 0.0;
       double y_min_with_margin = 0.0, y_max_with_margin = 0.0;
       void clear();

@@ -76,8 +76,9 @@ void OrderFlow::Depth::Plot::clear() {
   mid_price.clear();
   best_bid.clear();
   best_ask.clear();
-  vwap.clear();
   tick_idx_map.clear();
+  vwap_x.clear();
+  vwap_y.clear();
   y_min = y_max = 0.0;
   y_min_with_margin = y_max_with_margin = 0.0;
 }
@@ -141,7 +142,6 @@ void OrderFlow::Depth::build_plot() {
   plot.mid_price.reserve(ticks.size());
   plot.best_bid.reserve(ticks.size());
   plot.best_ask.reserve(ticks.size());
-  plot.vwap.reserve(ticks.size());
   plot.tick_idx_map.assign(OrderFlowConst::L0_CAPACITY, SIZE_MAX);
 
   constexpr double NAN_D = std::numeric_limits<double>::quiet_NaN();
@@ -161,7 +161,6 @@ void OrderFlow::Depth::build_plot() {
     plot.mid_price.push_back(static_cast<double>(tick.mid_price));
     plot.best_bid.push_back(crossed ? NAN_D : static_cast<double>(tick.bid_price[0]));
     plot.best_ask.push_back(crossed ? NAN_D : static_cast<double>(tick.ask_price[0]));
-    plot.vwap.push_back(tick.vwap > 0.0f ? static_cast<double>(tick.vwap) : NAN_D);
 
     // 范围: bid/ask 极值 (bid <= mid <= ask, 初始视图不切掉 spread 边缘, 与图1 双击 fit
     // 口径一致); 只统计连续竞价秒 —— 竞价预撮合价可能摸涨跌停, 不应撑大初始视野

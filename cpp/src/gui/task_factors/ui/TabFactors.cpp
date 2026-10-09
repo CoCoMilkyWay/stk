@@ -195,8 +195,8 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
   ImGui::PopID();
 }
 
-// 该行选定 (金额档, 持有期) 的汇总; 没有 → nullptr
-const factor::stat::HoldStat *hold_of(const FactorRow &r, int amt, int hold) { return r.has_stat ? r.find_hold(amt, hold) : nullptr; }
+// 该行选定持有期的汇总; 没有 → nullptr
+const factor::stat::HoldStat *hold_of(const FactorRow &r, int hold) { return r.has_stat ? r.find_hold(hold) : nullptr; }
 
 // 文件里的 stat 与当前作用域是否一致 (universe / 区间)
 bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
@@ -244,17 +244,15 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
     ImGui::Text("stat 来自: %s | %s 口径 | %s  %s..%s  %d 天 × %d 资产 (T=%d)  %s  %s", r.stat_from_file ? "文件" : "本轮",
                 factor::stat::frame_name(r.frame), r.scope.universe.c_str(), r.scope.start_date.c_str(), r.scope.end_date.c_str(), r.scope.days,
                 r.scope.A, r.scope.T, r.scope.backend.c_str(), r.scope.time.c_str());
-    ImGui::Text("valid %.2f%%  time %.3f ms (DAG 算一遍, 与 amt / hold 无关)", r.valid_pct, r.eval_ms);
-    for (int ai = 0; ai < r.n_amt; ++ai) {
-      ImGui::Separator();
-      ImGui::TextDisabled("amt = %dw", r.amt[ai]);
-      for (int k = 0; k < r.n_hold; ++k) {
-        const factor::stat::HoldStat &h = r.hold[ai][k];
-        ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f "
-                    "β %+.3f | mono %+.3f | rAC %+.3f",
-                    factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
-                    h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
-      }
+    ImGui::Text("valid %.2f%%  time %.3f ms (DAG 算一遍, 与 hold 无关)", r.valid_pct, r.eval_ms);
+    ImGui::Separator();
+    ImGui::TextDisabled("标签 = 毛价格收益 (不含冲击 / 税佣; 冲击在 Inspect 页可选扣)");
+    for (int k = 0; k < r.n_hold; ++k) {
+      const factor::stat::HoldStat &h = r.hold[k];
+      ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f "
+                  "β %+.3f | mono %+.3f | rAC %+.3f",
+                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
+                  h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
     }
     ImGui::EndTooltip();
   }
@@ -276,9 +274,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
     ui.backend = 0;
-  ui.amt_idx = std::clamp(ui.amt_idx, 0, std::max(0, static_cast<int>(ft.amts.size()) - 1));
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, static_cast<int>(ft.labels.size()) - 1));
-  const int cur_amt = ft.amts.empty() ? 0 : ft.amts[static_cast<size_t>(ui.amt_idx)];
   const int cur_hold = ft.labels.empty() ? 0 : ft.labels[static_cast<size_t>(ui.hold_idx)].hold;
 
   // ==========================================================================
@@ -316,16 +312,6 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       ImGui::SetTooltip("共享 DAG (跨因子公共子式只算一次), 顺序走节点\nCPU: 每个节点切满所有核 (CS / Point / Expand 按 t 切, "
                         "Roll / Ema 按资产列切块; 与单线程逐位一致), Stat 全核\nGPU: off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
   }
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("Amt", ft.amts.empty() ? "-" : (std::to_string(cur_amt) + "w").c_str())) {
-    for (size_t i = 0; i < ft.amts.size(); ++i)
-      if (ImGui::Selectable((std::to_string(ft.amts[i]) + "w").c_str(), static_cast<int>(i) == ui.amt_idx))
-        ui.amt_idx = static_cast<int>(i);
-    ImGui::EndCombo();
-  }
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("表格 Stat 列显示哪个金额档 (万元; 只影响显示). Run 把全部 金额档 × 持有期 一起算 (lb_long/short_<h>m_<amt>w 列)");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
   if (ImGui::BeginCombo("Hold", ft.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str())) {
@@ -586,7 +572,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   ImGui::SameLine();
   ImGui::Text("%d (%d BROKEN)", n, broken);
   ImGui::SameLine();
-  ImGui::TextDisabled("Stat 列 = h %s, amt %dw", factor::stat::hold_name(cur_hold).c_str(), cur_amt);
+  ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", factor::stat::hold_name(cur_hold).c_str());
 
   {
     const uint64_t ep = svc.epoch();
@@ -666,7 +652,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       using HS = factor::stat::HoldStat;
       auto cmp3 = [](double x, double y) { return x < y ? -1 : (x > y ? 1 : 0); };
       auto key = [&](const FactorRow &r) -> double {
-        const HS *h = hold_of(r, cur_amt, cur_hold);
+        const HS *h = hold_of(r, cur_hold);
         switch (ui.sort_column) {
         case 1:
           return static_cast<double>(r.kind);
@@ -719,7 +705,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
 
     for (int idx : order) {
       const FactorRow &r = s_rows[static_cast<size_t>(idx)];
-      const factor::stat::HoldStat *h = hold_of(r, cur_amt, cur_hold);
+      const factor::stat::HoldStat *h = hold_of(r, cur_hold);
       const bool editing = edit_row == &r;
       const bool viewing = ui.view_file == r.file;
       ImGui::TableNextRow();

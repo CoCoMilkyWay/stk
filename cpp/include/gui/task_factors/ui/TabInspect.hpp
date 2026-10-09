@@ -1,7 +1,9 @@
 // Factors→Inspect: 单因子展示页. 对象 = Factors 页表格里点行高光的那一个 (FactorsUIState::view_file); 数据 = InspectService
 // 对它算出的一级 Row[H][T] (沿时间) + 二级 HoldStat (每持有期).
 //
-// 布局: 顶部 头信息 (文件 / 口径 / 规范串 / note) + 控件 (Amt / Hold / Compute / Cancel / 状态) + 选定持有期的一行 stat;
+// 布局: 顶部 头信息 (文件 / 口径 / 规范串 / note) + 控件 (Hold / 冲击 / Compute / Cancel / 状态) + 选定持有期的一行 stat;
+//   冲击 = 标签口径: 无 (毛价格收益, 默认, 与 Factors Run 同) | <amt>w (扣建仓冲击 lb_cost_{buy,sell}_<amt>w + 平仓固定冲击 Config::sell_impact);
+//   换档 = 换请求 key → 服务即兴重算 Stat (净标签不缓存), 期限结构 / 分层 / IC 全部随之换口径
 // 下面 2×2 四图:
 //   左上 分层累计: 20 组沿交易日累计的组均收益 (图内右上角两个按钮: 毛|净 = 是否每往返扣税佣 (Config, 尚未接线) / 超额 e = lv − mkt | 绝对 lv;
 //        重叠持有期按 1/h 折算 = h 个相位非重叠链的平均)
@@ -34,21 +36,22 @@ struct InspectDerived {
   std::vector<float> grp_cum[factor::stat::kGroups]; // [days + 1]
   std::vector<float> ls_cum;                         // [days + 1]
   analysis::AggPdf ic_pdf;                           // 逐行 rank IC (ok 行) 的 KLL PDF 成品 (n_pts = 0 → 样本不足不画)
-  factor::stat::HoldStat hs;                         // 选定 (amt, hold) 的二级
+  factor::stat::HoldStat hs;                         // 选定 hold 的二级
   bool valid = false;
 };
 
 struct InspectUIState {
-  int amt_idx = 0, hold_idx = 0; // FeatureTable amts / labels 下标 (与 Factors 页独立)
-  bool absolute = false;         // 左上: 超额 (false) | 绝对 (true)
-  bool net_cost = false;         // 左上: 每往返扣税佣 (Config::commission × 2 + stamp; 分层线各 1 次, LS 2 次). 只有按钮, 扣减尚未接线
-  std::string last_req_key;      // 上次自动起算的 InspectRequest::key (取消后不反复重起)
+  int hold_idx = 0;         // FeatureTable labels 下标 (与 Factors 页独立)
+  int impact_amt = 0;       // 冲击口径: 0 = 无 (毛); 否则 FeatureTable::costs 里的金额档 (万). 进请求 key
+  bool absolute = false;    // 左上: 超额 (false) | 绝对 (true)
+  bool net_cost = false;    // 左上: 每往返扣税佣 (Config::commission × 2 + stamp; 分层线各 1 次, LS 2 次). 只有按钮, 扣减尚未接线
+  std::string last_req_key; // 上次自动起算的 InspectRequest::key (取消后不反复重起)
   // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效
   FactorRow req_row;
   bool req_reload = false;
   // 派生缓存
   uint64_t derived_epoch = ~0ull;
-  int derived_sel = -1; // amt_idx * n_hold + hold_idx
+  int derived_sel = -1; // hold_idx
   bool derived_abs = false;
   InspectDerived der;
 };

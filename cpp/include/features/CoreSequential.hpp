@@ -23,10 +23,10 @@
 //   重排立即失效. (算子输入面契约见 DataDefine.hpp)
 // ============================================================================
 class CoreSequential {
-  // 标签回调 (返回类型推导, 须定义在使用点之前): writer(h, l1, values, days_ago) 写 days_ago 天前那日的标签组;
+  // 标签回调 (返回类型推导, 须定义在使用点之前): writer(col, n, l1, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
   // releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行)
   inline auto label_writer() {
-    return [this](size_t h, size_t label_l1, const float *values, size_t days_ago) { write_label(h, label_l1, values, days_ago); };
+    return [this](size_t col, size_t n, size_t label_l1, const float *values, size_t days_ago) { write_label(col, n, label_l1, values, days_ago); };
   }
   inline auto day_releaser(GlobalFeatureStore &store) {
     return [this, &store](size_t days_ago) { store.ts_close(day_at(days_ago)); };
@@ -145,7 +145,7 @@ private:
     if (depth_updated) {
       dag_.run<Trigger::onDepth>();
 
-      // 标签: 共享快照, 然后 L1 分钟锚定回填 (组 h 占 GROUP_SIZE 个连续列)
+      // 标签: 盘口快照入环, 然后 L1 分钟锚定捕获 entry (+ 写该行冲击成本列); exit 走分钟 bar (run_minute → minute_closed)
       dag_.LabelReturn.snapshot(t);
       dag_.LabelReturn.minute_anchored(t, label_writer());
     }
@@ -177,10 +177,11 @@ private:
     return d;
   }
 
-  // 标签组 h 的 GROUP_SIZE 个连续列写到 days_ago 天前那日的 L1 行 label_l1
-  inline void write_label(size_t h, size_t label_l1, const float *values, size_t days_ago) {
-    const size_t f = kL1LabelBase + h * LabelReturn::GROUP_SIZE;
-    fstore::ts_write_range<1>(day_at(days_ago), label_l1, f, f + LabelReturn::GROUP_SIZE - 1, asset_id_, values);
+  // LB 块内偏移 col 起的 n 个连续列写到 days_ago 天前那日的 L1 行 label_l1 (hold 组 [long, short] / 冲击成本列)
+  inline void write_label(size_t col, size_t n, size_t label_l1, const float *values, size_t days_ago) {
+    assert(n >= 1 && col + n <= LabelReturn::L1_LABEL_COUNT);
+    const size_t f = kL1LabelBase + col;
+    fstore::ts_write_range<1>(day_at(days_ago), label_l1, f, f + n - 1, asset_id_, values);
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----
@@ -197,12 +198,15 @@ private:
       fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
     }
     fstore::ts_write<1>(day_, t, L1_Field::ts_valid, asset_id_, meta_.l1(valid));
+    // 标签 exit: 本分钟 Flow.vwap (onMinute 已 flush), 写分钟档到期的行 / 记开盘价
+    if (valid)
+      dag_.LabelReturn.minute_closed(t, label_writer());
   }
 
   // 标签列定位: 按类型 (LB) 在字段表里找, 不依赖列名; 列数 / 连续性与 LabelReturn 配置对账
   static constexpr size_t kL1LabelBase = first_of_kind(L1_FIELD_INFO, FeatureDataType::LB);
   static_assert(count_of_kind(L1_FIELD_INFO, FeatureDataType::LB) == LabelReturn::L1_LABEL_COUNT && kind_contiguous(L1_FIELD_INFO, FeatureDataType::LB),
-                "L1 label columns must be HOLD_COUNT × GROUP_SIZE contiguous");
+                "L1 label columns must be HOLD_COUNT × GROUP_SIZE + COST_COUNT contiguous");
 
   GlobalFeatureStore::Day day_{};                         // 本日写句柄 (= days_[cur_]), 热路径直接用
   std::array<GlobalFeatureStore::Day, kPendDays> days_{}; // 日句柄环 (开盘档跨日回填 / 延迟 ts_close)

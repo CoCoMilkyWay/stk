@@ -6,7 +6,7 @@
 stk/
 ├── run.py                 # 🚀 主入口 → py/main.py (模式选择: TSAN/DEBUG/PROFILE/ASSERT/PRODUCTION; ENABLE_CUDA 正交开关 = factor GPU 后端 nvcc 链/stub)
 ├── config/                # ⚙️ 全局配置
-│   ├── config.json        # ⚙️ 路径/日期范围/universe/基本面联网同步(network_sync)/税佣 等全局配置
+│   ├── config.json        # ⚙️ 路径/日期范围/universe/基本面联网同步(network_sync)/税佣/平仓冲击(sell_impact) 等全局配置
 │   ├── data_manager.json / stock_*.json  # ⚙️ 运行时缓存状态 (自动生成)
 │   ├── universe/          # ⚙️ 股票池定义 (smallcap400.json 等, 供 config.json 引用)
 │   └── sample/            # ⚙️ 样例数据 (L1/L2/财务报表样例)
@@ -118,13 +118,13 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (子页 Operators / Factors / Inspect; Operators 进页优先载入 operators.json, 缺/校验不过才自动算一轮; Factors 进页只扫描, 手动 Run 评估; Inspect 高光因子变了自动起算)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表服务: 首行 Stat 评估算子 (factor/Stat, 不在 OpTable, 无流式后端, worker 每轮先跑 = 挖掘第一道闸) + OpTable 全算子一行一算子; worker 三后端对拍+计时 (stream 为 golden; d/k 每算子默认表, seed 取时间戳; gpu 计时 = 纯 kernel)
-│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 全部 amt×hold 标签 fp16) → 所有因子合成一张共享 DAG (build_forest, 公共子式只算一次) 顺序走节点 → CPU 每节点切满全核 (run_node_par) / GPU 常驻显存 → 根到即全核 Stat (amt×hold 展平, rank 只算一次) → HoldStat[amt][hold] → 回写 params/stat 键 (expr 不动); AddFactorFile / UpdateFactorFile / DeleteFactorFile 给 UI 用
-│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 因子评估特征库装载层 (FactorsService 与 InspectService 共用): Loaded 宿主平面 (特征 + 截面门控 + 标签 amt×hold) 逐天并行读散入; check_leaf_domains 按 OpTable in 列查特征叶值域; valid_pct_of 根平面有效率
-│   │   │       │   └── InspectService.hpp            # 🖥️ 单因子深看服务 (单 worker, 只 CPU): 对高光因子读库 → 一棵 Dag → Stat, 保留一级 Row[H][T] (FactorsService 全表只留二级 HoldStat, 画不了沿时间的东西); 缓存同作用域标签/特征平面只装一次, 换作用域/reload 整体重读; 不写文件
+│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 全部持有期标签 fp16) → 所有因子合成一张共享 DAG (build_forest, 公共子式只算一次) 顺序走节点 → CPU 每节点切满全核 (run_node_par) / GPU 常驻显存 → 根到即全核 Stat (毛价格收益口径, rank 只算一次) → HoldStat[hold] → 回写 params/stat 键 (expr 不动); AddFactorFile / UpdateFactorFile / DeleteFactorFile 给 UI 用
+│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 因子评估特征库装载层 (FactorsService 与 InspectService 共用): Loaded 宿主平面 (特征 + 截面门控 + 标签 [hold] + 冲击成本 [amt]) 逐天并行读散入; net_labels 即兴扣冲击 (lb_cost_* + sell_impact) 出净标签平面; check_leaf_domains 按 OpTable in 列查特征叶值域; valid_pct_of 根平面有效率
+│   │   │       │   └── InspectService.hpp            # 🖥️ 单因子深看服务 (单 worker, 只 CPU): 对高光因子读库 → 一棵 Dag → Stat, 保留一级 Row[H][T] (FactorsService 全表只留二级 HoldStat, 画不了沿时间的东西); 缓存同作用域标签/成本/特征平面只装一次, 换作用域/reload 整体重读; 冲击口径 (无 | <amt>w) 进请求 key, 净标签即兴算不缓存; 不写文件
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab: 首行 Stat (静态列空, 只看 cpu/gpu eval 耗时 + 悬停 HoldStat) + OpTable 静态列 (idx/元数/窗/域/核/参数/公式/Note, 默认按全局 idx 排) + 动态列 (stream/cpu/gpu 耗时与对拍 Δ); operators.json 存/取 (取时逐行校验静态列, 不过即删)
-│   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 CPU|GPU + Run/Cancel/Rescan (Run 算全部 金额档×持有期; Amt/Hold 下拉只选显示); time 列 = 因子子树节点耗时之和; 构建器 (从外到内逐槽下拉选算子/特征, 参数手填, 即时校验) + 必填 name + note; 添加模式 Add 新文件 (查重弹窗) / 点表格行进编辑模式 (高光, Save 覆盖弹窗确认, 删除); 表 一行一文件 (BROKEN 红+原因 / ok / file / file≠scope 黄 / dup, 规范串, ops/feats/slots, valid%, 选定 amt×hold 的 IC/ICIR/IC_t/LS/SR/β/mono/rAC/n, note; 悬停 status 看全部组合)
-│   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 对象 = Factors 页高光行; 头信息 + 控件 (Amt/Hold/Compute/Cancel) + 选定持有期 stat; 2×2 四图 (左上分层累计+多空, 图内按钮切超额|绝对, 两色单调渐变 / 右上期限结构 L·S·LS 圆滑折线, 图例切, 默认 LS / 左下 IC 分布 (逐行 IC 进 KLL 画 PDF) / 右下留位); 高光因子变且服务空闲 → 自动起算, Compute = 弃缓存重读
+│   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 CPU|GPU + Run/Cancel/Rescan (Run 算全部持有期, 只毛口径; Hold 下拉只选显示); time 列 = 因子子树节点耗时之和; 构建器 (从外到内逐槽下拉选算子/特征, 参数手填, 即时校验) + 必填 name + note; 添加模式 Add 新文件 (查重弹窗) / 点表格行进编辑模式 (高光, Save 覆盖弹窗确认, 删除); 表 一行一文件 (BROKEN 红+原因 / ok / file / file≠scope 黄 / dup, 规范串, ops/feats/slots, valid%, 选定持有期的 IC/ICIR/IC_t/LS/SR/β/mono/rAC/n, note; 悬停 status 看全部持有期)
+│   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 对象 = Factors 页高光行; 头信息 + 控件 (Hold / 冲击 无|5w|30w (扣建仓冲击 lb_cost_* + 平仓 sell_impact, 默认无) / Compute/Cancel) + 选定持有期 stat; 2×2 四图 (左上分层累计+多空, 图内按钮切超额|绝对, 两色单调渐变 / 右上期限结构 L·S·LS 圆滑折线, 图例切, 默认 LS / 左下 IC 分布 (逐行 IC 进 KLL 画 PDF) / 右下留位); 高光因子变且服务空闲 → 自动起算, Compute = 弃缓存重读
 │   │   │           └── StatJson.hpp                  # 🖥️ HoldStat ↔ JSON (hold_json / load_hold, sig4, json_* 取值): operators.json 的 stat.holds 与因子文件的 stat.holds 同一格式
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐

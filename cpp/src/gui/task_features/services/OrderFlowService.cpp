@@ -428,14 +428,10 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       return idx <= OrderFlowConst::LOB_DEPTH || idx >= PRICE_RANGE_SIZE - 1 - OrderFlowConst::LOB_DEPTH;
     };
 
-    // 当日累计成交 (全部 TAKER 事件, 含竞价撮合): 秒末落到该秒快照的 vwap (与 Flow 的分钟 vwap 同源, 只是累计口径)
-    double cum_amt = 0.0, cum_vol = 0.0;
-
     // 秒末全簿快照 → 热力图 (只提交出过有效盘口快照的秒; 全档, 不限近端 30 档)
     auto commit_second = [&](size_t t) {
       if (sec_slot[t] < 0)
         return;
-      slot.ticks[static_cast<size_t>(sec_slot[t])].vwap = cum_vol > 0.0 ? static_cast<float>(cum_amt / cum_vol) : 0.0f;
       scratch.current_tick.clear();
       lob.for_each_visible_level([&](uint32_t idx, int32_t net_qty) {
         const float price = (base + static_cast<float>(idx)) * 0.01f;                        // 元
@@ -458,10 +454,6 @@ void OrderFlowService::depth_build(const DepthReq &req) {
         }
         lob.process(orders[i]);
         sec_data[t] = 1;
-        if (lf.order_type == L2::OrderType::TAKER && lf.price > 0.0f) {
-          cum_amt += static_cast<double>(lf.price) * lf.volume;
-          cum_vol += lf.volume;
-        }
         if (!lf.depth_updated)
           continue;
 
@@ -512,11 +504,32 @@ void OrderFlowService::depth_build(const DepthReq &req) {
     }
   }
 
+  // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
+  // 可读, VWAP / overlay 留空 (盘口重放走 .bin, 不受 universe 约束, 上面照常构建)
+  const size_t depth_sub = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
+
+  // ---- 分钟 VWAP 阶梯: L1 特征列 vwap (标签 exit 同源), 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----
+  if (depth_sub < impl_->uni.size()) {
+    TraceN("OF_DepthVwap");
+    auto &cols = impl_->columns;
+    cols.assign({static_cast<size_t>(L1_Field::ts_valid), static_cast<size_t>(L1_Field::vwap)});
+    impl_->reader.load_day_columns(req.date, cols, impl_->l1_cols);
+    auto &px = slot.plot.vwap_x;
+    auto &py = slot.plot.vwap_y;
+    for (size_t m = 0; m < level_valid_rows(1); ++m) {
+      if (!fmeta::data_valid(static_cast<float>(impl_->l1_cols.get(m, 0, depth_sub))))
+        continue;
+      px.push_back(static_cast<double>(L1_to_L0(m)));
+      py.push_back(static_cast<double>(impl_->l1_cols.get(m, 1, depth_sub)));
+    }
+    if (!px.empty()) {
+      px.push_back(px.back() + 60.0);
+      py.push_back(py.back());
+    }
+  }
+
   // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + ts_valid 选列读, 与图2 同源指标;
   //      L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒 → 只取当日日内段) ----
-  // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
-  // 可读, overlay 留空 (盘口重放走 .bin, 不受 universe 约束, 上面照常构建)
-  const size_t depth_sub = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
   if (!req.feats.empty() && depth_sub < impl_->uni.size()) {
     TraceN("OF_DepthFeats");
     assert(req.feat_level == 0 || req.feat_level == 1);

@@ -330,6 +330,18 @@ private:
         if (ImGui::InputDouble("##stamp", &cfg.stamp, 0.0, 0.0, "%.5f"))
           changed = true;
 
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("平仓冲击 (模拟)");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("比率, 20bp = 0.0020; 不按金额变. 标签 exit 是分钟 VWAP 不含冲击, 建仓冲击按深度精确算 (lb_cost_*);\n"
+                            "Inspect 选择扣冲击时平仓侧统一扣这一常数 (做多卖出 / 做空买回同用)");
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputDouble("##sell_impact", &cfg.sell_impact, 0.0, 0.0, "%.5f"))
+          changed = true;
+
         ImGui::EndTable();
       }
     }

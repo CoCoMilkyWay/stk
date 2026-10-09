@@ -73,6 +73,7 @@ static Factors::FactorsUIContext factors_context(const SharedData &data) {
   c.universe = data.config.universe;
   c.start_date = data.config.start_date;
   c.end_date = data.config.end_date;
+  c.sell_impact = data.config.sell_impact;
   c.axis_ready = !data.asset.items.empty();
   return c;
 }
@@ -201,7 +202,7 @@ TaskHandle CreateFactorsTask() {
         const int action = Factors::RenderTabInspect(fs, is, state->factors_ui, state->inspect_ui, ctx);
         if (action == 1) {
           Factors::InspectRequest req;
-          if (Factors::MakeInspectRequest(data, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
+          if (Factors::MakeInspectRequest(data, state->inspect_ui.req_row, state->inspect_ui.req_reload, state->inspect_ui.impact_amt, req))
             is.Request(req);
         } else if (action == -1) {
           is.RequestCancel();

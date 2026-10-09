@@ -4,8 +4,10 @@
 //
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
-// 缓存 (worker 私有, 跨请求存活): 同一作用域 (特征库目录 + 子轴 + 月份) 下标签平面 + 标签 rank (ry) 只装一次; 特征平面
-// 只补当前因子缺的, 不再用的释放 (内存 = 标签 + 本因子的特征). 换作用域 / reload = true → 整体重读.
+// 缓存 (worker 私有, 跨请求存活): 同一作用域 (特征库目录 + 子轴 + 月份) 下标签平面 + 冲击成本平面 + 标签 rank (ry) 只装一次; 特征平面
+// 只补当前因子缺的, 不再用的释放 (内存 = 标签 + 成本 + 本因子的特征). 换作用域 / reload = true → 整体重读.
+// 冲击 (impact_amt > 0): 净标签 lv − cost_buy(amt) − sell_impact / sv − cost_sell(amt) − sell_impact 每次请求即兴算 (FactorsLoad net_labels,
+// 不缓存, 换档只重算 Stat 不重读库), rank 随之重算; 默认 0 = 毛口径 (与 Factors Run 同).
 //
 // 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑即清旧 result (页面不显示
 // 别的因子的图); 结束一次性发布 result (UI 持 mutex 读; 一级 Row 大 (~140B × H × T), UI 不拷, 持锁派生成日级序列后放手).
@@ -14,7 +16,7 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope / kMaxAmt
+#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope
 #include "shared/Analysis.hpp"                          // ReadScope
 
 #include <atomic>
@@ -35,11 +37,16 @@ struct InspectRequest {
   factor::stat::Frame frame = factor::stat::Frame::CS;
   analysis::ReadScope scope;
   std::string universe, start_date, end_date;
-  bool reload = false; // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
-  std::string key() const { return file + "|" + expr + "|" + universe + "|" + start_date + "|" + end_date; }
+  int impact_amt = 0;       // 扣冲击的金额档 (万, FeatureTable::costs 之一); 0 = 不扣 (毛)
+  double sell_impact = 0.0; // 平仓固定冲击 (Config::sell_impact), impact_amt > 0 时用
+  bool reload = false;      // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
+  std::string key() const {
+    return file + "|" + expr + "|" + universe + "|" + start_date + "|" + end_date + "|" + std::to_string(impact_amt) + "|" +
+           (impact_amt > 0 ? std::to_string(sell_impact) : std::string{});
+  }
 };
-// 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
-bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
+// 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空); impact_amt 见 InspectRequest
+bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, int impact_amt, InspectRequest &req);
 
 struct InspectResult {
   std::string key; // = InspectRequest::key(); 空 = 无结果
@@ -47,11 +54,11 @@ struct InspectResult {
   factor::stat::Frame frame = factor::stat::Frame::CS;
   StatScope scope;
   std::vector<std::string> dates; // [days] YYYYMMDD
-  int n_amt = 0, n_hold = 0;
-  int amt[kMaxAmt] = {};
-  factor::stat::Holds hd;              // hd.h[ai * n_hold + hi]
+  int n_hold = 0;
+  int impact_amt = 0;                  // 本结果的冲击口径 (= 请求的; 0 = 毛)
+  factor::stat::Holds hd;              // hd.h[hi]
   std::vector<factor::stat::Row> rows; // 一级 [hd.n][T]
-  factor::stat::HoldStat hold[kMaxAmt][factor::stat::kMaxHold];
+  factor::stat::HoldStat hold[factor::stat::kMaxHold];
   float valid_pct = 0.f;
   double eval_ms = 0.0;
   std::string error; // 非空 = 没算成 (特征叶值域越界等), 其余字段空

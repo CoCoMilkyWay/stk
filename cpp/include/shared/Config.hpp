@@ -39,6 +39,9 @@ struct Config {
   //   一次往返 = 2 × commission + stamp (印花税只卖出单边)
   double commission = 0.0001; // 佣金 万 1, 双边各一次
   double stamp = 0.0005;      // 印花税 万 5, 卖出单边
+  // 平仓冲击 (比率, 模拟值, 不按金额变): 标签 exit 是分钟 VWAP (不含冲击), 建仓冲击按深度精确算成特征 (lb_cost_*),
+  //   平仓侧没有对应盘口, 选择扣冲击时统一扣这一常数 (做多卖出 / 做空买回同用). 默认 20bp
+  double sell_impact = 0.0020;
 
   // Config file path
   std::string filepath = "../../../../config/config.json";
