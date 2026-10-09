@@ -201,10 +201,11 @@ inline void prep_label(const uint16_t *lv, const uint8_t *m, int T, int A, uint1
   });
 }
 
-// 评估: x (口径 f) + hd.n 组预处理标签 → rows[hd.n][T]. ws = 工作区 [T][A] uint16 (调用方分配, 跨因子复用)
-inline void eval(const float *xv, const uint8_t *xm, Frame f, int T, int A, const Holds &hd, const Label *lab, uint16_t *ws, Row *rows,
-                 int threads) {
-  assert(T >= 1 && A >= 1 && A <= kMaxA && static_cast<long long>(T) * A < (1LL << 31));
+// 评估: x (口径 f, 只看池内 g ∧ xm 的格; 契约【截面池 g】) + hd.n 组预处理标签 → rows[hd.n][T].
+//   ws = 工作区 [T][A] uint16 (调用方分配, 跨因子复用)
+inline void eval(const float *xv, const uint8_t *xm, const uint8_t *g, Frame f, int T, int A, const Holds &hd, const Label *lab, uint16_t *ws,
+                 Row *rows, int threads) {
+  assert(g && T >= 1 && A >= 1 && A <= kMaxA && static_cast<long long>(T) * A < (1LL << 31));
   factor::stat::assert_holds(hd);
   for (int i = 0; i < hd.n; ++i)
     assert(lab[i].lv && lab[i].sv && lab[i].m && lab[i].ry && "标签未预处理 (prep_label)");
@@ -216,14 +217,14 @@ inline void eval(const float *xv, const uint8_t *xm, Frame f, int T, int A, cons
     detail::par_rows(T, threads, [&](int t0, int t1, int tid) {
       for (int t = t0; t < t1; ++t) {
         const size_t base = static_cast<size_t>(t) * A;
-        detail::rank_row([&](int a) { return xm[base + a] ? factor::stat::ord(xv[base + a]) : kNoKey; }, A, ws + base,
-                         sc[static_cast<size_t>(tid)]);
+        detail::rank_row([&](int a) { return (xm[base + a] & g[base + a]) ? factor::stat::ord(xv[base + a]) : kNoKey; }, A,
+                         ws + base, sc[static_cast<size_t>(tid)]);
       }
     });
   } else {
     detail::par_rows(T, threads, [&](int t0, int t1, int) {
       for (size_t i = static_cast<size_t>(t0) * A, e = static_cast<size_t>(t1) * A; i < e; ++i)
-        ws[i] = xm[i] ? factor::stat::r16_quant(xv[i]) : kRankNone;
+        ws[i] = (xm[i] & g[i]) ? factor::stat::r16_quant(xv[i]) : kRankNone;
     });
   }
   // 阶段 2: 每 (t, h) 一行统计

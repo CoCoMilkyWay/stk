@@ -30,15 +30,17 @@ struct DevPlane; // 显存里一对 (值, 掩码) 平面
 Session *session_open(size_t n);
 void session_close(Session *s);
 DevPlane *upload(Session *s, const float *v, const uint8_t *m); // n 取会话的
+DevPlane *upload_mask(Session *s, const uint8_t *m);            // 只有掩码的平面 (截面池 g; v = nullptr)
 void pin(void *host, size_t bytes);
 void unpin(void *host);
 
 // name 必须在 OpTable 里; 不在则断言死 (三后端同名是硬约束). 元数不到的槽位传 nullptr.
+// CS 算子多收池掩码 g (只用 g->m, 必填; 契约【截面池 g】).
 // kernel_ms 非空 → 回填纯 kernel 耗时 (cudaEvent), 不含工作区分配 / D2H
 void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
             int T, int A, const Param &p, double *kernel_ms = nullptr);
-void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
-            int T, int A, const Param &p, double *kernel_ms = nullptr);
+void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
+            float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms = nullptr);
 
 // ---- 设备常驻中间量 (因子 DAG: 算子之间不落宿主, 见 factor/EvalGpu.hpp) ----
 //   plane_new / plane_del  会话形状的空平面 (不清零), 归调用方释放 (不在会话的 in 列表里)
@@ -47,37 +49,36 @@ void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, 
 DevPlane *plane_new(Session *s);
 void plane_del(Session *s, DevPlane *p);
 void download(Session *s, const DevPlane *p, float *v, uint8_t *m);
-// 截面门控 (因子 DAG 的 CS 节点输入 / Stat 的 x, 见 EvalGpu.hpp): out.v = x.v (D2D 拷), out.m = x.m ∧ gate.m; out 不得是 x / gate
-void gate(Session *s, const DevPlane *x, const DevPlane *gate, DevPlane *out);
 void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
                 int A, const Param &p, double *kernel_ms = nullptr);
-void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
-                int A, const Param &p, double *kernel_ms = nullptr);
+void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
+                DevPlane *out, int T, int A, const Param &p, double *kernel_ms = nullptr);
 
 // 一次性版本 (op_check 用): 宿主指针进出, 内部开临时会话 (上传 → 跑 → 关); kernel_ms 口径同上
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms = nullptr);
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
+            const float *zv, const uint8_t *zm, const uint8_t *gm, float *ov, uint8_t *om, int T, int A, const Param &p,
             double *kernel_ms = nullptr);
 
 // Stat 评估算子 (factor/Stat/Gpu.cuh; 契约 factor/Stat/Contract.hpp): 宿主指针进, rows[hd.n][T] 宿主出.
-// lab = hd.n 组标签 (fp16 位 + 掩码), 内部拷进显存 → 每组 prep_label (rank_y) → eval → 拷回.
+// gm = 截面池掩码 [T][A] (只看 gm ∧ xm 的格). lab = hd.n 组标签 (fp16 位 + 掩码), 内部拷进显存 → 每组 prep_label (rank_y) → eval → 拷回.
 // prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent): 预处理是常驻期一次的成本, 评估是每因子的成本, 分开记
 struct StatLabelHost {
   const uint16_t *lv, *sv;
   const uint8_t *m;
 };
-void run_stat(const float *xv, const uint8_t *xm, factor::stat::Frame f, int T, int A, const factor::stat::Holds &hd,
+void run_stat(const float *xv, const uint8_t *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, const factor::stat::Holds &hd,
               const StatLabelHost *lab, factor::stat::Row *rows, double *prep_ms = nullptr, double *eval_ms = nullptr);
 
 // Stat 常驻会话 (因子面板: 一个作用域多因子): 标签上传 + rank 预处理只做一次, 逐因子只跑 eval,
-// x 是设备常驻平面 (DAG 根槽), 口径 f 逐因子给 (会话与口径无关), 只有 rows[hd.n][T] 拷回.
-// run_stat 一次性版 = open + 上传 x + eval + close.
+// x 是设备常驻平面 (DAG 根槽), g 是设备常驻池掩码平面 (只用 g->m), 口径 f 逐因子给 (会话与口径无关), 只有 rows[hd.n][T] 拷回.
+// run_stat 一次性版 = open + 上传 x / g + eval + close.
 struct StatSession;
 StatSession *stat_open(int T, int A, const factor::stat::Holds &hd, const StatLabelHost *lab, double *prep_ms = nullptr);
-void stat_eval(StatSession *s, const DevPlane *x, factor::stat::Frame f, factor::stat::Row *rows, double *eval_ms = nullptr);
+void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Row *rows,
+               double *eval_ms = nullptr);
 void stat_close(StatSession *s);
 
 } // namespace factor::gpu

@@ -1,7 +1,6 @@
 // FactorsLoad — 见头文件. include 因子 CPU 后端头 (covers), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/FactorsLoad.hpp"
 
-#include "factor/EvalCpu.hpp" // cpu::covers
 #include "features/Backend/FeatureRead.hpp"
 #include "features/MetaFlag.hpp" // fmeta::valid
 #include "features/TimeIndex.hpp"
@@ -213,28 +212,14 @@ void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::st
   }
 }
 
-// CS 只在平稳可比的信息上算; Fund 族带 NaN 的 PIT 列直接套 CS 在此炸 → think again (先包 TS 算子处理缺失)
-void assert_cs_leaves_covered(const factor::Dag &d, const Loaded &L) {
-  std::vector<uint8_t> checked(L.planes.size(), 0);
-  for (const factor::DagNode &nd : d.nodes) {
-    if (nd.op < 0 || factor::expr::kOps[nd.op].a == factor::A::SELF)
-      continue;
-    for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a) {
-      const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[a])];
-      if (g.op >= 0 || checked[static_cast<size_t>(g.feat)])
-        continue;
-      checked[static_cast<size_t>(g.feat)] = 1;
-      assert(factor::cpu::covers(L.planes[static_cast<size_t>(g.feat)].m.data(), L.cs.m.data(), L.n()) &&
-             "CS 算子的特征叶在 cs_valid 行上有缺失: CS 不吃 PIT 事件 / 带 NaN 的列 (Fund 族), 先包 TS 算子处理缺失");
-    }
+float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n) {
+  size_t c = 0, g = 0;
+  for (size_t i = 0; i < n; ++i) {
+    c += m[i] & gate[i];
+    g += gate[i];
   }
-}
-
-float valid_pct_of(const uint8_t *m, size_t n) {
-  size_t c = 0;
-  for (size_t i = 0; i < n; ++i)
-    c += m[i];
-  return n ? 100.f * static_cast<float>(c) / static_cast<float>(n) : 0.f;
+  assert(g > 0 && "截面池全空: 区间内无在池格");
+  return 100.f * static_cast<float>(c) / static_cast<float>(g);
 }
 
 } // namespace GUI::Factors

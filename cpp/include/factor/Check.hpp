@@ -60,9 +60,9 @@ struct Plane {
 };
 
 // 输入张量: 非拥有 (三张平面由调用方持有 —— op_check 每 profile 造一次扫 d, GUI 一轮造一次全表复用);
-// 元数不到的槽位为空
+// 元数不到的槽位为空. g = 截面池掩码 (只用 m; CS 算子与 Stat 必填, TS 不看; 契约【截面池 g】)
 struct Data {
-  const Plane *x = nullptr, *y = nullptr, *z = nullptr;
+  const Plane *x = nullptr, *y = nullptr, *z = nullptr, *g = nullptr;
   int T = 0, A = 0;
 };
 
@@ -145,6 +145,33 @@ inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
     });
   for (std::thread &t : th)
     t.join();
+}
+
+// 截面池掩码: 每 (段, 资产) 一个常量 (真实池按日增删), 约 60% 在池; v 恒 0 不用.
+//   HOLES 再叠: 3 号资产全程池外 (只做受体); t = kSegLen + 9 整行空池 (池内 n = 0, 输出全无效);
+//              第 1 段里组 id 6 (Gen::GROUP 的 a % 7 == 6) 整组池外 → 打 GROUP 族的全池回退
+inline void fill_gate(Plane &p, Profile pr, int T, int A, std::mt19937 &rng) {
+  assert(T % kSegLen == 0);
+  p.resize(static_cast<size_t>(T) * A);
+  std::fill(p.v.begin(), p.v.end(), 0.f);
+  std::uniform_real_distribution<float> ud(0.f, 1.f);
+  const int nseg = T / kSegLen;
+  std::vector<uint8_t> in(static_cast<size_t>(nseg) * A);
+  for (int s = 0; s < nseg; ++s)
+    for (int a = 0; a < A; ++a) {
+      bool g = ud(rng) < 0.6f;
+      if (pr == Profile::HOLES && (a == 3 || (s == 1 && a % 7 == 6)))
+        g = false;
+      in[static_cast<size_t>(s) * A + a] = g;
+    }
+  for (int t = 0; t < T; ++t) {
+    const uint8_t *row = in.data() + static_cast<size_t>(t / kSegLen) * A;
+    uint8_t *o = p.m.data() + static_cast<size_t>(t) * A;
+    if (pr == Profile::HOLES && t == kSegLen + 9)
+      std::fill(o, o + A, 0);
+    else
+      std::copy(row, row + A, o);
+  }
 }
 
 // 输入配方: 默认全 NORM, 只列出需要特殊数据的算子 (e_name 索引, 与 OpTable 行名一致)
@@ -287,6 +314,12 @@ void run_cpu(const Data &d, const Param &p, int ar, Plane &o) {
   C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
          pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
 }
+template <class C>
+void run_cpu_cs(const Data &d, const Param &p, int ar, Plane &o) {
+  o.ensure(static_cast<size_t>(d.T) * d.A);
+  C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
+         pm(d.z, ar >= 3), pm(d.g, true), o.v.data(), o.m.data(), d.T, d.A, p);
+}
 
 // TS 流式: 逐资产建一个 kernel 沿 t 推进 (与实盘同路: EXPAND 推满 kSegLen 自动归零, 不手动 reset)
 template <class S, int AR, T W>
@@ -332,11 +365,11 @@ template <class S>
 void run_stream_cs(const Data &d, const Param &p, int ar, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
   const float *xv = pv(d.x, ar >= 1), *yv = pv(d.y, ar >= 2), *zv = pv(d.z, ar >= 3);
-  const uint8_t *xm = pm(d.x, ar >= 1), *ym = pm(d.y, ar >= 2), *zm = pm(d.z, ar >= 3);
+  const uint8_t *xm = pm(d.x, ar >= 1), *ym = pm(d.y, ar >= 2), *zm = pm(d.z, ar >= 3), *gm = pm(d.g, true);
   for (int t = 0; t < d.T; ++t) {
     const size_t b = static_cast<size_t>(t) * d.A;
     S::apply(xv ? xv + b : nullptr, xm ? xm + b : nullptr, yv ? yv + b : nullptr, ym ? ym + b : nullptr,
-             zv ? zv + b : nullptr, zm ? zm + b : nullptr, o.v.data() + b, o.m.data() + b, d.A, p);
+             zv ? zv + b : nullptr, zm ? zm + b : nullptr, gm + b, o.v.data() + b, o.m.data() + b, d.A, p);
   }
 }
 

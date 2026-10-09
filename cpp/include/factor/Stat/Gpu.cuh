@@ -231,10 +231,12 @@ __device__ __forceinline__ int upper_bound(const unsigned *k, int n, unsigned ke
 namespace k {
 
 // ---- 取键器: 一格 → 保序键 / kNoKey ----
-struct SrcF { // 因子平面 (float)
+struct SrcF { // 因子平面 (float), 只看池内 g ∧ m 的格
   const float *v;
   const uint8_t *m;
-  __device__ __forceinline__ unsigned key(size_t i) const { return m[i] ? dev::ord(v[i]) : kNoKey; }
+  const uint8_t *g;
+  __device__ __forceinline__ bool on(size_t i) const { return (m[i] & g[i]) != 0; }
+  __device__ __forceinline__ unsigned key(size_t i) const { return on(i) ? dev::ord(v[i]) : kNoKey; }
 };
 struct SrcH { // 标签平面 (fp16 位)
   const uint16_t *v;
@@ -297,7 +299,7 @@ __global__ void __launch_bounds__(kCB) rank_rows(Src src, uint16_t *out, int A) 
 // =============================================================================
 __global__ void __launch_bounds__(kCB) quant_rows(SrcF src, uint16_t *out, size_t n) {
   for (size_t i = static_cast<size_t>(blockIdx.x) * kCB + threadIdx.x; i < n; i += static_cast<size_t>(gridDim.x) * kCB)
-    out[i] = src.m[i] ? dev::r16_quant(src.v[i]) : kRankNone;
+    out[i] = src.on(i) ? dev::r16_quant(src.v[i]) : kRankNone;
 }
 
 // =============================================================================
@@ -448,19 +450,19 @@ inline void prep_label(const uint16_t *lv, const uint8_t *m, int T, int A, uint1
   rank_launch(k::SrcH{lv, m}, ry, T, A, stream);
 }
 
-// 评估: x (口径 f) + L.n 组预处理标签 → rows[L.n][T] (设备)
-inline void eval(const float *xv, const uint8_t *xm, Frame f, int T, int A, const Holds &hd, const LabelSet &L, uint16_t *ws, Row *rows,
-                 cudaStream_t stream) {
+// 评估: x (口径 f, 只看池内 g ∧ xm 的格; 契约【截面池 g】) + L.n 组预处理标签 → rows[L.n][T] (设备)
+inline void eval(const float *xv, const uint8_t *xm, const uint8_t *g, Frame f, int T, int A, const Holds &hd, const LabelSet &L, uint16_t *ws,
+                 Row *rows, cudaStream_t stream) {
   factor::stat::assert_holds(hd);
-  assert(L.n == hd.n);
+  assert(g && L.n == hd.n);
   for (int i = 0; i < L.n; ++i)
     assert(L.l[i].lv && L.l[i].sv && L.l[i].m && L.l[i].ry && "标签未预处理 (prep_label)");
   if (f == Frame::CS) {
-    rank_launch(k::SrcF{xv, xm}, ws, T, A, stream);
+    rank_launch(k::SrcF{xv, xm, g}, ws, T, A, stream);
   } else {
     const size_t n = static_cast<size_t>(T) * A;
     const int grid = static_cast<int>(hmin(static_cast<int>((n + kCB - 1) / kCB), 4096));
-    k::quant_rows<<<grid, kCB, 0, stream>>>(k::SrcF{xv, xm}, ws, n);
+    k::quant_rows<<<grid, kCB, 0, stream>>>(k::SrcF{xv, xm, g}, ws, n);
     FACTOR_CUDA_OK(cudaGetLastError());
   }
   k::label_rows<<<T, kCB, 0, stream>>>(f, ws, L, hd, rows, T, A);

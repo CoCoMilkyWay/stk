@@ -59,9 +59,7 @@ void net_labels(const Loaded &L, const CostPlane &cost, float sell_impact, std::
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN)
 void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err);
 
-// CS 节点的特征叶: 掩码 ⊇ 截面门控 (EvalCpu.hpp cs_gate 契约) 断言, 每叶一次
-void assert_cs_leaves_covered(const factor::Dag &d, const Loaded &L);
-
-float valid_pct_of(const uint8_t *m, size_t n);
+// 池内有效率: Σ(m ∧ gate) / Σgate (gate = 截面池 cs_valid; 池外格不进分子分母)
+float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
 
 } // namespace GUI::Factors

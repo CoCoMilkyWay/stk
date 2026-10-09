@@ -214,7 +214,6 @@ bool InspectService::evaluate(const InspectRequest &req, Cache &cache) {
   res.hd = L.hd;
 
   // ---- 数据检查 (与 FactorsService 同一套) ----
-  assert_cs_leaves_covered(d, L);
   for (int i = 0; i < N; ++i) {
     check_leaf_domains(d, i, L, res.error);
     if (!res.error.empty()) {
@@ -268,8 +267,7 @@ bool InspectService::evaluate(const InspectRequest &req, Cache &cache) {
     for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
       in[a] = plane_of(nd.in[a]);
     const Clock::time_point t0 = Clock::now();
-    factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc, L.cs.m.data(),
-                              factor::cpu::leaf_bits_of(d, nd));
+    factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc, L.cs.m.data());
     res.eval_ms += ms_since(t0);
     done_.fetch_add(1, std::memory_order_relaxed);
   }
@@ -277,19 +275,13 @@ bool InspectService::evaluate(const InspectRequest &req, Cache &cache) {
     return false;
 
   // ---- Stat: 一级 Row[H][T] 留下, 二级 summarize ----
-  const factor::check::Plane *rp = plane_of(root);
-  const uint8_t *m = rp->m.data();
-  std::vector<uint8_t> xm;
-  if (req.frame == factor::stat::Frame::TS) { // 逐资产归一的根: 池外资产也有值, Stat 只看池内 (CS 口径根掩码已 ⊆ 门控)
-    xm.resize(n);
-    factor::cpu::gate_mask(xm.data(), m, L.cs.m.data(), n);
-    m = xm.data();
-  }
-  res.valid_pct = valid_pct_of(m, n);
+  const factor::check::Plane *rp = plane_of(root); // Stat 只看池内 (g 在算子内部)
+  res.valid_pct = valid_pct_of(rp->m.data(), L.cs.m.data(), n);
   res.rows.resize(H * static_cast<size_t>(L.T));
   {
     std::vector<uint16_t> ws(n);
-    factor::cpu::stat::eval(rp->v.data(), m, req.frame, L.T, L.A, L.hd, lab.data(), ws.data(), res.rows.data(), threads);
+    factor::cpu::stat::eval(rp->v.data(), rp->m.data(), L.cs.m.data(), req.frame, L.T, L.A, L.hd, lab.data(), ws.data(), res.rows.data(),
+                            threads);
   }
   for (int hi = 0; hi < L.n_hold; ++hi)
     res.hold[hi] = factor::stat::summarize(res.rows.data() + static_cast<size_t>(hi) * L.T, L.T, L.hd.h[hi]);

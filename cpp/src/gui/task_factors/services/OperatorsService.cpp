@@ -36,6 +36,8 @@ struct RoundCtx {
   factor::gpu::DevPlane *dev[kSlots][kGens] = {};
   factor::gpu::Session *gpu = nullptr;
   factor::check::Plane ref, got, g;
+  factor::check::Plane gate; // 截面池掩码 (CS 算子; fill_gate, 首次用到才造 + 上传)
+  const factor::gpu::DevPlane *dgate = nullptr;
 
   RoundCtx(const OperatorsRequest &r, bool use_gpu) : rq(r), rng(r.seed), n(static_cast<size_t>(r.times) * r.A) {
     ref.resize(n), got.resize(n), g.resize(n);
@@ -70,6 +72,14 @@ struct RoundCtx {
     plane(slot, gen);
     return dev[slot][static_cast<int>(gen)];
   }
+  const factor::check::Plane &gate_plane() {
+    if (gate.v.empty()) {
+      factor::check::fill_gate(gate, factor::check::Profile::PLAIN, rq.times, rq.A, rng);
+      if (gpu)
+        dgate = factor::gpu::upload_mask(gpu, gate.m.data());
+    }
+    return gate;
+  }
 };
 
 namespace {
@@ -103,11 +113,16 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   Data d;
   d.T = R.rq.times, d.A = R.rq.A;
   d.x = pl[0], d.y = pl[1], d.z = pl[2];
+  if constexpr (IS_CS)
+    d.g = &R.gate_plane();
 
   const factor::Param &p = row.param; // 复位阶段已按请求填好 (见 param_of)
 
   Clock::time_point t0 = Clock::now();
-  run_cpu<C>(d, p, AR, R.ref);
+  if constexpr (IS_CS)
+    run_cpu_cs<C>(d, p, AR, R.ref);
+  else
+    run_cpu<C>(d, p, AR, R.ref);
   row.cpu_ms = ms_since(t0);
 
   t0 = Clock::now();
@@ -121,7 +136,7 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   if (R.gpu) {
     double kms = -1; // 纯 kernel (cudaEvent); 输入已常驻, 这里只剩 kernel + 一张输出 D2H
     if constexpr (IS_CS)
-      factor::gpu::run_cs(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
+      factor::gpu::run_cs(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.dgate, R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
     else
       factor::gpu::run_ts(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
     row.gpu_ms = kms;
@@ -173,7 +188,8 @@ void run_stat(const OperatorsRequest &rq, OperatorRow &row, StatExtra &extra) {
     for (int i = 0; i < d.hd.n; ++i)
       lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
                                      d.lab[static_cast<size_t>(i)].m.data()};
-    factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), fr, d.T, d.A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
+    factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), d.g.m.data(), fr, d.T, d.A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms,
+                          &gpu.eval_ms);
     summarize_all(gpu, d);
     const Tol tol = tol_of(Profile::PLAIN);
     row.gpu_ms += gpu.eval_ms;

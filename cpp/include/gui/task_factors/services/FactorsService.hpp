@@ -19,8 +19,8 @@
 // 装载: 一次把所有有效因子用到的特征 (去重) + ts_valid / cs_valid + 全部持有期标签列读进宿主 (逐天并行 load_day_columns,
 // 门控 fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
 // 两张门控列的分工 (features/MetaFlag.hpp): 特征输入按 ts_valid 门控 (TS 节点要跨进出池的历史); 标签按 cs_valid 门控 (只被 Stat 吃,
-// rank(y) 得在池内排); cs_valid 的有效位另成一张截面门控平面 → CS 节点输入 / Stat 的 x (EvalCpu.hpp cs_gate 契约: 喂 CS 的特征叶
-// 直接拿它当掩码, 装载后 assert 一次 叶掩码 ⊇ cs_gate —— Fund 族带 NaN 的 PIT 列直接喂 CS 在此炸; 中间量 ∧ 之).
+// rank(y) 得在池内排); cs_valid 的有效位另成一张截面池掩码平面 g, 原样递给 CS 节点的算子与 Stat (factor/Contract.hpp【截面池 g】:
+// 池内统计 / 池外就近取值全在算子内部, 评估器不做二次门控).
 // 评估 (Run 的并行方案, 与 search 的解耦): 所有有效因子合成一张共享 DAG (factor::build_forest, 公共子式只算一次), 按拓扑序
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node_par, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.

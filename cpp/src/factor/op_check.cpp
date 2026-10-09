@@ -75,7 +75,7 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
   for (int pi = 0; pi < kProfiles; ++pi) {
     const Profile pr = static_cast<Profile>(pi);
     std::mt19937 rng(seed + 1000u * pi);
-    Plane x, y, z; // 元数够到的槽位才造
+    Plane x, y, z, gate; // 元数够到的槽位才造; CS 多一张池掩码
     Data d;
     d.T = T, d.A = A;
     if (AR >= 1)
@@ -84,6 +84,8 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
       fill(y, rc.y, pr, T, A, rng), d.y = &y;
     if (AR >= 3)
       fill(z, rc.z, pr, T, A, rng), d.z = &z;
+    if constexpr (IS_CS)
+      fill_gate(gate, pr, T, A, rng), d.g = &gate;
 
     for (int di = 0; di < (sweep_d ? kNd : 1); ++di) {
       Param p;
@@ -91,11 +93,13 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
       set_k(nm, p);
 
       Plane ref, got;
-      run_cpu<C>(d, p, AR, ref);
-      if constexpr (IS_CS)
+      if constexpr (IS_CS) {
+        run_cpu_cs<C>(d, p, AR, ref);
         run_stream_cs<S>(d, p, AR, got);
-      else
+      } else {
+        run_cpu<C>(d, p, AR, ref);
         run_stream_ts<S, AR, W>(d, p, got);
+      }
       ++rep.cases;
       Diff ds_ = compare(ref, got, tol_of(nm, false, pr));
       if (!ds_.ok())
@@ -108,7 +112,7 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
         // 一次性宿主指针版本 (内部临时会话); run_ts / run_cs 有会话重载, 不能取三目
         if constexpr (IS_CS)
           factor::gpu::run_cs(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p);
+                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), gate.m.data(), g.v.data(), g.m.data(), T, A, p);
         else
           factor::gpu::run_ts(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
                               pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p);
@@ -158,7 +162,8 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
       for (int i = 0; i < d.hd.n; ++i)
         lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
                                        d.lab[static_cast<size_t>(i)].m.data()};
-      factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), fr, T, A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms, &gpu.eval_ms);
+      factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), d.g.m.data(), fr, T, A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms,
+                            &gpu.eval_ms);
       sc::summarize_all(gpu, d);
       const Tol tol = sc::tol_of(pr);
       const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);

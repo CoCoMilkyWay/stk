@@ -55,6 +55,7 @@ struct LabelHost {
 struct Data {
   Frame frame = Frame::CS;
   Plane x;
+  Plane g;                    // 截面池掩码 (只用 m; factor::check::fill_gate)
   std::vector<LabelHost> lab; // 按 hd 序
   Holds hd;
   int T = 0, A = 0;
@@ -68,6 +69,7 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) 
     d.hd.h[i] = kHolds[i];
   Plane z;
   factor::check::fill(z, Gen::NORM, pr, T, A, rng);
+  factor::check::fill_gate(d.g, pr, T, A, rng);
   const size_t n = static_cast<size_t>(T) * A;
   d.x = z;
   if (f == Frame::TS) // 标准正态 → 分位 Φ(z) ∈ (0,1); 无效格值本就是 0
@@ -192,7 +194,8 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   std::vector<uint16_t> ws(n);
   r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
   t0 = Clock::now();
-  factor::cpu::stat::eval(d.x.v.data(), d.x.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), ws.data(), r.rows.data(), threads);
+  factor::cpu::stat::eval(d.x.v.data(), d.x.m.data(), d.g.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), ws.data(), r.rows.data(),
+                          threads);
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   summarize_all(r, d);
 }

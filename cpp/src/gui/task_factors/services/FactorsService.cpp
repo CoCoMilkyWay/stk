@@ -629,9 +629,6 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
     return false;
   }
 
-  // ---- 喂 CS 节点的特征叶: 掩码 ⊇ 截面门控 (EvalCpu.hpp cs_gate 契约), 每叶只扫一次 ----
-  assert_cs_leaves_covered(F, L);
-
   // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
   for (int i = 0; i < N; ++i)
@@ -730,7 +727,6 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
     pool.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
     std::vector<factor::cpu::ParScratch> sc(static_cast<size_t>(threads));
     std::vector<uint16_t> ws(n);
-    std::vector<uint8_t> xm(n); // TS 口径根的截面门控掩码 (CS 口径根 = CS 算子输出, 掩码已 ⊆ 门控, 直接用)
     const auto plane_of = [&](int i) -> const factor::check::Plane * {
       const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
       return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
@@ -743,19 +739,14 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
           for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
             in[a] = plane_of(nd.in[a]);
           const Clock::time_point t0 = Clock::now();
-          factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc, L.cs.m.data(),
-                                    factor::cpu::leaf_bits_of(F, nd));
+          factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc, L.cs.m.data());
           return ms_since(t0);
         },
         [&](int i, factor::stat::Frame fr, float &valid_pct) {
-          const factor::check::Plane *root = plane_of(i);
-          const uint8_t *m = root->m.data();
-          if (fr == factor::stat::Frame::TS) { // 逐资产归一的根: 池外资产也有值, Stat 只看池内
-            factor::cpu::gate_mask(xm.data(), m, L.cs.m.data(), n);
-            m = xm.data();
-          }
-          valid_pct = valid_pct_of(m, n);
-          factor::cpu::stat::eval(root->v.data(), m, fr, L.T, L.A, L.hd, lab.data(), ws.data(), srows.data(), threads);
+          const factor::check::Plane *root = plane_of(i); // Stat 只看池内 (g 在算子内部)
+          valid_pct = valid_pct_of(root->m.data(), L.cs.m.data(), n);
+          factor::cpu::stat::eval(root->v.data(), root->m.data(), L.cs.m.data(), fr, L.T, L.A, L.hd, lab.data(), ws.data(), srows.data(),
+                                  threads);
         });
   }
 
@@ -763,8 +754,8 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   factor::gpu::Session *sess = factor::gpu::session_open(n);
   std::vector<const factor::gpu::DevPlane *> dev(L.planes.size());
   for (size_t i = 0; i < L.planes.size(); ++i)
-    dev[i] = factor::gpu::upload(sess, L.planes[i].v.data(), L.planes[i].m.data());               // 输入只上传一次
-  const factor::gpu::DevPlane *cs_gate = factor::gpu::upload(sess, L.cs.v.data(), L.cs.m.data()); // 截面门控平面 (随会话释放)
+    dev[i] = factor::gpu::upload(sess, L.planes[i].v.data(), L.planes[i].m.data());     // 输入只上传一次
+  const factor::gpu::DevPlane *cs_gate = factor::gpu::upload_mask(sess, L.cs.m.data()); // 截面池掩码平面 (随会话释放)
   std::vector<factor::gpu::StatLabelHost> lab(H);
   for (size_t h = 0; h < H; ++h)
     lab[h] = {L.labels[h].lv.data(), L.labels[h].sv.data(), L.labels[h].m.data()};
@@ -781,28 +772,22 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
       [&](int i) {
         const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
         const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
-        const bool gated = o.a != factor::A::SELF; // CS 节点输入经门控暂存 (EvalGpu.hpp)
         const factor::gpu::DevPlane *in[3] = {};
-        for (int a = 0; a < o.arity; ++a) {
+        for (int a = 0; a < o.arity; ++a)
           in[a] = dplane_of(nd.in[a]);
-          if (gated)
-            in[a] = pool.gate_in(a, in[a], cs_gate);
-        }
         factor::gpu::DevPlane *out = pool.slots[static_cast<size_t>(nd.slot)];
         double ms = 0.0; // 纯 kernel (与 Operators 页 GPU 列同口径)
         if (o.a == factor::A::SELF)
           factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], out, L.T, L.A, nd.p, &ms);
         else
-          factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], out, L.T, L.A, nd.p, &ms);
+          factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], cs_gate, out, L.T, L.A, nd.p, &ms);
         return ms;
       },
       [&](int i, factor::stat::Frame fr, float &valid_pct) {
-        const factor::gpu::DevPlane *root = dplane_of(i);
-        if (fr == factor::stat::Frame::TS) // 逐资产归一的根: 池外资产也有值, Stat 只看池内 (CS 口径根掩码已 ⊆ 门控)
-          root = pool.gate_in(0, root, cs_gate);
+        const factor::gpu::DevPlane *root = dplane_of(i);        // Stat 只看池内 (g 在算子内部)
         factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid%
-        valid_pct = valid_pct_of(mask.data(), n);
-        factor::gpu::stat_eval(ss, root, fr, srows.data());
+        valid_pct = valid_pct_of(mask.data(), L.cs.m.data(), n);
+        factor::gpu::stat_eval(ss, root, cs_gate, fr, srows.data());
       });
   pool.release();
   factor::gpu::stat_close(ss);
