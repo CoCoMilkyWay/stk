@@ -1,34 +1,37 @@
 #pragma once
 
 // =============================================================================
-// LabelReturn - 吃单收益标签: "吃单做多/做空 a 分钟 b 万元" 的收益 (含冲击 + 税佣)
+// LabelReturn - 吃单收益标签: "吃单做多/做空 a 分钟 b 万元" 的毛收益 (含价差 + 深度冲击, 不含税佣)
 // =============================================================================
-//   做多: (exit_vwap·(1-fee_sell) - entry_vwap·(1+fee_buy)) / entry_vwap·(1+fee_buy)
-//   做空: (entry_vwap·(1-fee_sell) - exit_vwap·(1+fee_buy)) / entry_vwap·(1-fee_sell)
-//   费用: 双边万 1 佣金; 卖出另加印花税, 按日期取当时税率 (2023-08-28 起千 1 → 万 5), reset(date) 时定
+//   做多: (exit_vwap - entry_vwap) / entry_vwap        做空: (entry_vwap - exit_vwap) / entry_vwap
+//   税佣 (Config::commission / stamp) 是常数, 不进标签: 评估 (IC / 超额) 本就对常数平移不变, 留在标签里只会把 LS / Sharpe
+//   按每行一次往返压死 (1m 档一天 255 次); 要看净收益由消费端事后扣 (Inspect 图 1 按钮).
 //   【不产 NaN】标签一律取"实盘真能做到的那笔交易", 缺口用可成交时刻/价格顶上, 幅值都在收益量纲内, 多日拉取无跳变:
-//     分钟档 exit 越过连续竞价末秒 → 持有到收盘 (T0 当日平仓, 见 day_end)
-//     entry 锚点在非交易空窗 (09:25 撮合后到 09:30 开盘) → 顺延到最早可成交时刻 (见 get_snapshot_tradable)
-//     名义 exit 早于最早可成交时刻 (09:30 前的锚点) → 建仓即平, 只剩 −(税佣 + 冲击)
-//     entry 锚点在 14:57 后哨兵分钟 (已无盘口) → 收盘建仓: 分钟档 / 收盘档 即建即平, 开盘档 = 收盘买次日开盘卖 (真实可做)
+//     可成交簿 = 连续竞价时段的盘口 (LOB market_state). 集合竞价期 (09:15-09:25 / 14:57-15:00) 的簿只是堆单,
+//       可交叉 (买一 ≥ 卖一) 且撮合前一股不成交, 拿它算吃单 = 低买高卖的假收益 (盘尾标签整体上跳的根源), 一律不入环.
+//     名义 exit 时刻无可成交簿 (稀疏盘口 / 09:30 前的锚点) → 之后首个可成交簿 = 最早能平的时刻 (09:30 前退化为建仓即平, 只剩 −(价差 + 冲击))
+//     entry 锚点在非交易空窗 (09:25 撮合后到 09:30 开盘) → 同上顺延到最早可成交时刻 (见 get_snapshot_tradable)
+//     exit 落在连续竞价结束之后 (收盘竞价 / 哨兵分钟) → 持有到收盘 (T0 当日平仓): 按当日末笔成交价 (= 收盘竞价撮合价,
+//       无撮合则连续竞价末笔; 取 MinuteData 末 bar close) 全额成交, 单一价无价差无冲击 —— 用成交而非时钟判收盘 (见 day_end)
+//     entry 锚点后再无可成交簿 (14:57 起) → 收盘价建仓: 分钟档 / 收盘档 即建即平 = 0, 开盘档 = 收盘买次日开盘卖 (真实可做)
 //     全簿吃不完 / 涨跌停封板该侧全空 → 余量按涨跌停价成交 (与 Book 吃单成本同约, 见 calc_vwap)
 //     该侧全空且无涨跌停价可补 (无限制股) → 这笔交易成不了, 收益 0 (未建仓 = 无盈亏)
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node). 一份深度快照环 (各金额档吃单 VWAP) 供各路径共用:
 //   snapshot(t)                 每次 onDepth 先调: 只记账, VWAP 惰性结算 —— 同一秒内只有最后一次
-//                               盘口状态会被消费, 所以等下一个活跃秒的首次更新到来时才从 Depth 环
-//                               的上一格结算入环 (materialize offset=1); 查询目标恰为当前秒 (还没
-//                               结算) 时从环末现算 (offset=0). 与"每次更新都算"逐值一致, VWAP 计算
-//                               次数从每笔盘口更新降到每活跃秒一次. 顺带截首个 ≥ 09:30 活跃秒的簿为当日开盘快照.
+//                               盘口状态会被消费, 所以等下一次盘口更新到来时才从 Depth 环的上一格结算
+//                               入环 (materialize offset=1); 查询目标恰为当前秒 (还没结算) 时从环末现算
+//                               (offset=0). 与"每次更新都算"逐值一致, VWAP 计算次数从每笔盘口更新降到每活跃秒一次.
+//                               只有可成交簿记为活跃秒; 顺带截首个可成交秒的终簿为当日开盘快照.
 //   second(t, l0, v)            L0 秒级 (当前停用, 见文件末): LABEL_L0_HOLD 分钟 × LABEL_L0_AMT 万, 只落 long
-//   minute_anchored(t, writer)  L1 分钟锚定惰性回填 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐):
+//   minute_anchored(t, writer)  L1 分钟锚定惰性回填 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
 //                               先把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 再写分钟档已到 exit 的行.
 //   day_begin / day_end         日历: 日期轴每一日各调一次 (无数据日也调, 由 CoreSequential 保证).
-//                               day_end 结算 分钟档尾部 (exit 过收盘 → 当日最后盘口) + 收盘档 全行 + 开盘档 到期日 (见下), 并释放结清的日.
-//   finish_all                  回测区间末: 悬挂日全部按 最近一次可成交盘口 结算 (持有到最后一日收盘), 全部释放.
-// 开盘档 (T+N) 跨日回填: 日 D 的行 entry 存在悬挂槽里, 等到 D+N 日开盘 (09:30 起首个活跃秒的簿) 才写 D 的张量 →
+//                               day_end 结算 分钟档尾部 (exit 过收盘 → 收盘价) + 收盘档 全行 + 开盘档 到期日 (见下), 并释放结清的日.
+//   finish_all                  回测区间末: 悬挂日全部按 最近一次收盘价 结算 (持有到最后一日收盘), 全部释放.
+// 开盘档 (T+N) 跨日回填: 日 D 的行 entry 存在悬挂槽里, 等到 D+N 日开盘 (连续竞价首个可成交秒的簿) 才写 D 的张量 →
 //   D 的写句柄由 CoreSequential 持到该日结清 (writer 带 days_ago). D+N 无开盘 (停牌 / 一字板无盘口) → 顺延到之后首个有开盘的日,
-//   最多再等 N 日 (D+2N 仍无 → 最近一次可成交盘口). 悬挂日环长 PEND_DAYS = 2·N_max + 1, 顶掉的槽必已结清 (断言).
+//   最多再等 N 日 (D+2N 仍无 → 最近一次收盘价). 悬挂日环长 PEND_DAYS = 2·N_max + 1, 顶掉的槽必已结清 (断言).
 // 配置 (LABEL_GROUPS / LABEL_AMTS / LABEL_L0_*) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
 
@@ -39,7 +42,6 @@
 #include <cassert>
 #include <cstdint>
 #include <iterator>
-#include <string_view>
 
 // ---- 配置 ----
 // 持有期组 (name, KIND, n): name = 列名 token (lb_<side>_<name>_<amt>w; 也是 Stat 持有期键的来源, 见 factor/Stat/Contract.hpp 【持有期键】)
@@ -73,10 +75,6 @@ inline constexpr size_t LABEL_AMOUNT_WAN[] = {LABEL_AMTS(LABEL_LIST_ONE)};
 #undef LABEL_KIND_ONE
 #undef LABEL_N_ONE
 #undef LABEL_LIST_ONE
-
-// 交易费用
-constexpr float FEE_COMMISSION = 0.0001f; // 佣金 万1 (双边)
-constexpr float STAMP = 0.0010f;
 
 class LabelReturn {
 public:
@@ -112,25 +110,24 @@ public:
   }();
   static_assert(L0_AMT_IDX < AMT_COUNT, "LABEL_L0_AMT must be one of LABEL_AMTS");
 
-  LabelReturn(const DepthSeries &bid_price, const DepthSeries &ask_price,
+  LabelReturn(const TickData &td, const MinuteData &md,
+              const DepthSeries &bid_price, const DepthSeries &ask_price,
               const DepthSeries &bid_qty, const DepthSeries &ask_qty,
               const float &lim_up, const float &lim_dn)
-      : bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty),
+      : td_(td), md_(md), bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty),
         lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
-  // 换秒时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
-  // 一次更新的盘口 —— 与旧实现"每次更新覆盖写"的最终留存值逐位相同.
+  // 换秒 (或本次更新不可成交) 时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
+  // 一次更新的盘口 —— 与旧实现"每次更新覆盖写"的最终留存值逐位相同. Depth 每次 onDepth 必推一格
+  // (集合竞价的更新也推), 所以不管本次可不可成交都得立刻结算, 否则 offset 对不上.
+  // 可成交 = 连续竞价时段 (LOB 的 market_state); 集合竞价期的簿不入环, pending 清空 → minute_anchored 本次不推进.
   inline void snapshot(size_t t) {
-    if (pending_l0_ != kNoPending && pending_l0_ != t) {
-      Snapshot &s = ring_[pending_l0_ % RING_SIZE];
-      materialize(s, pending_l0_, 1);
-      if (!open_ok_ && pending_l0_ >= OPEN_L0) { // 当日开盘快照 = 首个 ≥ 09:30 活跃秒的簿 (该秒终值)
-        open_snap_ = s;
-        open_ok_ = true;
-      }
-    }
-    pending_l0_ = t;
+    const bool ok = tradable();
+    if (pending_l0_ != kNoPending && (pending_l0_ != t || !ok))
+      flush_pending(1);
+    if (ok)
+      pending_l0_ = t;
   }
 
   // L0 秒级: 以 t 为平仓时刻, 反推 label_l0 = t - DELAY - hold 的做多收益 (缺失 = NaN); 时间不足返回 false
@@ -149,13 +146,15 @@ public:
   // L1 分钟锚定惰性回填: 锚点 = 分钟 m 末 (= m+1 起始秒; 11:29 → 13:00:00), entry = 锚点+DELAY, exit = entry+hold.
   //   L1 行 m 的特征是分钟 m 结束时才可知的 (CoreSequential 顺序), 所以标签只能从 m 末起算, 锚到 m 起始秒会前视一分钟.
   //   entry 快照按行存进当日悬挂槽 (所有组共用): entry 秒完结 (entry_l0 < t) 且 [entry_l0 − 60, t − 1] 内有盘口才算捕获
-  //   (锚点后无盘口 = 顺延中, 等下一活跃秒; 一直没有 → day_end 用收盘簿).
-  //   分钟档: exit 已过线且 entry 已捕获的行逐个写出 (深度稀疏也不漏分钟, 快照缺口沿用 60s 回溯).
-  //   exit 越过连续竞价末秒的行不在此结算 —— 14:57 起全部 tick 钳到盘后哨兵, 中间那段 L0 无人占位,
-  //   回溯搭不回 14:56:59, 与"exit 过收盘"本质同类, 一并留给 day_end 按持有到收盘结算.
+  //   (锚点后无可成交簿 = 顺延中, 等下一活跃秒; 一直没有 → day_end 按收盘价建仓).
+  //   分钟档: exit 已过线且 entry 已捕获的行逐个写出 (深度稀疏也不漏分钟, 快照缺口沿用 60s 回溯, 再不够顺延到之后首个可成交簿).
+  //   只在可成交更新上推进 (snapshot 刚把 pending 设为 t): 集合竞价期的更新什么都不做 —— 连续竞价已结束,
+  //   悬着的行 (entry 未捕获 / exit 未到) 都是"持有到收盘", 留给 day_end 按收盘价结算. 不用时钟判 14:57.
   //   writer(h, label_l1, values[GROUP_SIZE], days_ago) 负责落盘 (此处 days_ago 恒 0).
   template <class Writer>
   inline void minute_anchored(size_t t, Writer &&writer) {
+    if (pending_l0_ != t)
+      return; // 本次更新不可成交 (集合竞价)
     Pend &p = pend_[cur_];
     while (p.n_entry < TRADE_MINUTES_PER_DAY) {
       const size_t entry_l0 = L1_to_L0(p.n_entry + 1) + LABEL_DELAY_SECONDS; // 末分钟 254 → 15303 (盘后), 永不捕获 → day_end
@@ -163,7 +162,7 @@ public:
         break; // entry 秒尚未完结: 同秒只消费最后一次盘口
       const Snapshot *e = get_snapshot_tradable(entry_l0, t - 1);
       if (!e)
-        break; // 锚点起至 t−1 无盘口 (09:25-09:30 空窗等), 顺延中
+        break; // 锚点起至 t−1 无可成交簿 (09:25-09:30 空窗等), 顺延中
       p.entry[p.n_entry] = *e;
       ++p.n_entry;
     }
@@ -177,12 +176,12 @@ public:
         if (m >= p.n_entry)
           break; // entry 未捕获 (含 m == 255 全部写完)
         const size_t exit_l0 = L1_to_L0(m + 1) + LABEL_DELAY_SECONDS + hold_sec;
-        if (exit_l0 > t || exit_l0 > LAST_CONTINUOUS_L0)
+        if (exit_l0 > t)
           break;
         const Snapshot *entry = &p.entry[m];
-        const Snapshot *exit = get_snapshot(exit_l0);
-        if (!exit)
-          exit = entry; // 名义平仓时刻早于最早可成交时刻 (09:30 前的锚点): 退化为建仓即平, 只剩成本
+        // 名义 exit 时刻的簿; 当时无簿 (稀疏 / 09:30 前) → 之后首个可成交簿 = 最早能平的时刻 (t 本身可成交, 必有)
+        const Snapshot *exit = get_snapshot_tradable(exit_l0, t);
+        assert(exit && "exit_l0 ≤ t 且 t 为可成交活跃秒, 顺延至少到 t");
         float values[GROUP_SIZE];
         fill_values(entry, exit, values);
         writer(h, m, static_cast<const float *>(values), size_t{0});
@@ -203,27 +202,27 @@ public:
   }
 
   // 收盘结算 (当日有无盘口皆调):
-  //   分钟档尾部 (exit 过收盘, 永不过线) —— T0 头寸必须当日平掉, exit 截到当日最后盘口 (收盘竞价; 14:57 起全部 tick 钳到
-  //     L0 15299, 见 TimeIndex), 标签 = "持有到收盘" 的真实可交易收益, 而非缺失. 持有窗口随行号递减, 缩到 0 时自然退化为
-  //     −(税佣 + 冲击) —— 不赚钱还扣手续费, 连续无跳变.
-  //   收盘档 全行 exit = 当日最后盘口.
-  //   开盘档 到期日: 悬挂日 P (age = 今日 − P) 的 T+N 组, age ≥ N 且今日有开盘 → exit = 今日开盘快照; age ≥ 2N 仍无 → 最近一次可成交盘口.
-  //   全日无盘口: 分钟 / 收盘档无标签可写 (整日 ts_valid 皆无效), 当日不悬挂; 开盘档到期照常结算.
+  //   收盘 = 当日末笔成交价全额成交 (收盘竞价是单一价撮合: 无价差无冲击). 不读收盘竞价期的簿 (堆单, 可交叉, 不可成交),
+  //     也不用时钟判 15:00 —— MinuteData 末 bar 的 close 就是末笔成交 (CoreSequential::end_day 先 finish 末分钟再调这里;
+  //     末分钟 254 含 14:57-15:00, 有撮合即撮合价, 无撮合即连续竞价末笔). 全日有可成交簿却无一笔成交 (极罕见) → 退到最后可成交簿.
+  //   分钟档尾部 (exit 落在连续竞价之后, 永不过线) —— T0 头寸必须当日平掉, 标签 = "持有到收盘" 的真实可交易收益, 而非缺失.
+  //     持有窗口随行号递减, 缩到 0 时自然退化为 0 (收盘价建仓即平), 连续无跳变.
+  //   收盘档 全行 exit = 收盘.
+  //   开盘档 到期日: 悬挂日 P (age = 今日 − P) 的 T+N 组, age ≥ N 且今日有开盘 → exit = 今日开盘快照; age ≥ 2N 仍无 → 最近一次收盘.
+  //   全日无可成交簿: 分钟 / 收盘档无标签可写 (整日 ts_valid 皆无效), 当日不悬挂; 开盘档到期照常结算.
   //   writer(h, l1, values, days_ago); release(days_ago) = 该日全部组已写完, 写句柄可归还.
   template <class Writer, class Release>
   inline void day_end(Writer &&writer, Release &&release) {
     Pend &p = pend_[cur_];
-    const Snapshot *last = pending_l0_ != kNoPending ? get_snapshot(pending_l0_) : nullptr;
-    if (last) {
-      const Snapshot close_snap = *last;         // get_snapshot 可能复用 scratch_, 先拷出
-      if (!open_ok_ && pending_l0_ >= OPEN_L0) { // 首个 ≥ 09:30 的活跃秒就是最后一个 (尚未入环): 开盘 = 收盘簿
-        open_snap_ = close_snap;
-        open_ok_ = true;
-      }
+    if (pending_l0_ != kNoPending)
+      flush_pending(0); // 最后一个可成交秒之后再无盘口更新: 环末就是它的终簿
+    if (last_l0_ != kNoPending) {
+      const float close_px = md_.close.empty() ? 0.0f : md_.close.back();
+      const Snapshot close_snap = close_px > 0.0f ? at_price(close_px) : ring_[last_l0_ % RING_SIZE];
       last_snap_ = close_snap;
       has_last_ = true;
       for (size_t m = p.n_entry; m < TRADE_MINUTES_PER_DAY; ++m)
-        p.entry[m] = close_snap; // 锚点已无盘口 (14:57 后的哨兵分钟 / 至收盘无盘口): 收盘建仓
+        p.entry[m] = close_snap; // 锚点后再无可成交簿 (14:57 起的锚点 / 至收盘无盘口): 收盘价建仓
       p.n_entry = TRADE_MINUTES_PER_DAY;
       float values[GROUP_SIZE];
       for (size_t h = 0; h < HOLD_COUNT; ++h) {
@@ -244,21 +243,20 @@ public:
     settle_open(writer, release, false);
   }
 
-  // 回测区间末: 悬挂日全部按最近一次可成交盘口结算 (持有到最后一日收盘), 全部释放
+  // 回测区间末: 悬挂日全部按最近一次收盘价结算 (持有到最后一日收盘), 全部释放
   template <class Writer, class Release>
   inline void finish_all(Writer &&writer, Release &&release) {
     settle_open(writer, release, true);
   }
 
-  // 每日重置: 快照环作废, 行游标归零, 按日期定卖出费率 (印花税)
-  inline void reset(std::string_view yyyymmdd) {
-    assert(yyyymmdd.size() == 8 && "reset: 日期须为 YYYYMMDD");
-    fee_sell_ = FEE_COMMISSION + STAMP;
+  // 每日重置: 快照环作废, 行游标归零
+  inline void reset() {
     for (auto &snap : ring_)
       snap.valid = false;
     for (size_t h = 0; h < HOLD_COUNT; ++h)
       next_label_l1_[h] = 0;
     pending_l0_ = kNoPending; // 昨日最后一个活跃秒不结算 (当日 ring 已整体作废)
+    last_l0_ = kNoPending;
     open_ok_ = false;
   }
 
@@ -273,10 +271,34 @@ private:
     bool valid = false;
   };
 
-  // 连续竞价末秒 (14:56:59 → 15119): AFTERNOON_END_MIN 之后的 tick 全钳到盘后哨兵 15299,
-  // 中间那段 L0 永无 tick 占位, 任何锚点落进去都查不到快照 (见 TimeIndex)
-  static constexpr size_t LAST_CONTINUOUS_L0 = MORNING_SECONDS + (AFTERNOON_END_MIN - AFTERNOON_START_MIN) * 60 - 1;
-  static constexpr size_t OPEN_L0 = Clock_to_L0(9, 30, 0); // 连续竞价开盘秒 (900): 开盘档 exit 取此起首个活跃秒的簿
+  // 当前盘口可成交 = 连续竞价时段. 集合竞价 (含撮合期) 的簿是撮合前的堆单, 不可成交; 其余状态 (CLOSED, 脏时间戳) 也不算
+  inline bool tradable() const {
+    const auto s = td_.lob.market_state;
+    return s == L2::MarketState::CONTINUOUS_TRADING_MORNING || s == L2::MarketState::CONTINUOUS_TRADING_AFTERNOON;
+  }
+
+  // 悬着的活跃秒结算入环: offset=1 在下一次盘口更新到来时 (Depth 环上一格 = 该秒终簿), offset=0 在收盘 (环末即该秒终簿)
+  inline void flush_pending(size_t offset) {
+    Snapshot &s = ring_[pending_l0_ % RING_SIZE];
+    materialize(s, pending_l0_, offset);
+    last_l0_ = pending_l0_;
+    if (!open_ok_) { // 当日开盘快照 = 首个可成交秒的终簿
+      open_snap_ = s;
+      open_ok_ = true;
+    }
+    pending_l0_ = kNoPending;
+  }
+
+  // 单一价全额成交 (收盘竞价撮合价): 各金额档 VWAP = px, 股数 = 金额 / px
+  static Snapshot at_price(float px) {
+    Snapshot s;
+    s.valid = true;
+    for (size_t a = 0; a < AMT_COUNT; ++a) {
+      s.buy_vwap[a] = s.sell_vwap[a] = px;
+      s.buy_shares[a] = s.sell_shares[a] = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f / px;
+    }
+    return s;
+  }
 
   static constexpr size_t MAX_HOLD = [] {
     size_t m = LABEL_L0_HOLD;
@@ -314,7 +336,7 @@ private:
   }
 
   // 开盘档到期结算 (day_end 尾 / finish_all): 遍历悬挂日 (老日先, 释放序随日序 —— FeatureStore 的"d+1 计满 ⇒ d 计满"),
-  //   到期组写出, 结清的日 release(age). final = 区间末: 不管到期, 全部按最近一次可成交盘口结算
+  //   到期组写出, 结清的日 release(age). final = 区间末: 不管到期, 全部按最近一次收盘价结算
   template <class Writer, class Release>
   inline void settle_open(Writer &&writer, Release &&release, bool final) {
     float values[GROUP_SIZE];
@@ -332,7 +354,7 @@ private:
         const size_t n = LABEL_N[h];
         const Snapshot *exit = nullptr;
         if (final || age >= 2 * n)
-          exit = &last_snap_; // 区间末 / 顺延到期仍无开盘: 最近一次可成交盘口
+          exit = &last_snap_; // 区间末 / 顺延到期仍无开盘: 最近一次收盘价
         else if (age >= n && open_ok_)
           exit = &open_snap_; // 到期 (或顺延中) 且今日有开盘
         if (!exit)
@@ -358,24 +380,20 @@ private:
       const float shares = entry->buy_shares[amt_idx];
       if (entry_vwap < 1e-6f || shares < 1e-6f)
         return 0.0f;
-      const float entry_cost = entry_vwap * (1.0f + FEE_COMMISSION);
       const float exit_vwap = interp_vwap(exit->sell_vwap, exit->sell_shares, shares); // 同股数卖出, 档间插值
       if (exit_vwap < 1e-6f)
         return 0.0f;
-      const float exit_income = exit_vwap * (1.0f - fee_sell_);
-      return (exit_income - entry_cost) / entry_cost;
+      return (exit_vwap - entry_vwap) / entry_vwap;
     } else {
       // 做空: entry 卖出 (吃 bid), exit 买入 (吃 ask)
       const float entry_vwap = entry->sell_vwap[amt_idx];
       const float shares = entry->sell_shares[amt_idx];
       if (entry_vwap < 1e-6f || shares < 1e-6f)
         return 0.0f;
-      const float entry_income = entry_vwap * (1.0f - fee_sell_);
       const float exit_vwap = interp_vwap(exit->buy_vwap, exit->buy_shares, shares);
       if (exit_vwap < 1e-6f)
         return 0.0f;
-      const float exit_cost = exit_vwap * (1.0f + FEE_COMMISSION);
-      return (entry_income - exit_cost) / entry_income;
+      return (entry_vwap - exit_vwap) / entry_vwap;
     }
   }
 
@@ -407,8 +425,8 @@ private:
     return nullptr;
   }
 
-  // 建仓侧快照: 锚点先按常规 60s 回溯; 落在非交易空窗 (09:25 撮合后到 09:30 开盘不受理委托, 全段无盘口更新)
-  // 时顺延到 limit 之前首个真实成交时刻 —— "最早能成交的时刻才是建仓点", 比留 NaN 贴近 T0 实盘.
+  // 可成交快照: 锚点先按常规 60s 回溯; 落在无可成交簿的时段 (09:25 撮合后到 09:30 开盘不受理委托 / 稀疏盘口)
+  // 时顺延到 limit 之前首个可成交时刻 —— "最早能成交的时刻才是成交点", 建仓 / 平仓同约, 比留 NaN 贴近 T0 实盘.
   // 取锚点之后的快照不引入前视: 标签本就是未来量, 行 m 的特征在分钟 m 末已定.
   const Snapshot *get_snapshot_tradable(size_t target, size_t limit) const {
     if (const auto *s = get_snapshot(target))
@@ -465,6 +483,8 @@ private:
     return vwaps[AMT_COUNT - 1]; // 超出范围用最大档
   }
 
+  const TickData &td_;   // market_state: 当前簿可成交与否
+  const MinuteData &md_; // 末 bar close = 当日末笔成交价 (收盘)
   const DepthSeries &bid_price_;
   const DepthSeries &ask_price_;
   const DepthSeries &bid_qty_;
@@ -473,18 +493,18 @@ private:
 
   static constexpr size_t kNoPending = SIZE_MAX;
 
-  std::array<Snapshot, RING_SIZE> ring_;    // 深度快照环
-  size_t next_label_l1_[HOLD_COUNT] = {};   // 分钟档: 各组下一个待写 L1 行 (收盘 / 开盘档不用)
-  size_t pending_l0_ = kNoPending;          // 当前活跃秒 (有盘口更新, 尚未结算入环)
-  mutable Snapshot scratch_;                // pending 秒被查询时的现算暂存
-  float fee_sell_ = FEE_COMMISSION + STAMP; // 当日卖出费率 (佣金 + 印花), reset(date) 设定
+  std::array<Snapshot, RING_SIZE> ring_;  // 深度快照环 (只收可成交簿)
+  size_t next_label_l1_[HOLD_COUNT] = {}; // 分钟档: 各组下一个待写 L1 行 (收盘 / 开盘档不用)
+  size_t pending_l0_ = kNoPending;        // 当前活跃秒 (有可成交盘口更新, 尚未结算入环)
+  size_t last_l0_ = kNoPending;           // 当日最近一个已入环的活跃秒 (kNoPending = 全日尚无可成交簿)
+  mutable Snapshot scratch_;              // pending 秒被查询时的现算暂存
 
   // 跨日状态 (reset 不清)
   std::array<Pend, PEND_DAYS> pend_; // 悬挂日环, pend_[cur_] = 当日; 日 D 的槽 = (cur_ − age) mod PEND_DAYS
   size_t cur_ = PEND_DAYS - 1;       // 首个 day_begin 推到 0
-  Snapshot open_snap_;               // 当日开盘快照 (首个 ≥ 09:30 活跃秒的簿), open_ok_ = 已截到 (reset 清)
+  Snapshot open_snap_;               // 当日开盘快照 (连续竞价首个可成交秒的终簿), open_ok_ = 已截到 (reset 清)
   bool open_ok_ = false;
-  Snapshot last_snap_; // 最近一次可成交盘口 (最近有盘口日的收盘簿), 停牌到期 / 区间末的 exit
+  Snapshot last_snap_; // 最近一次收盘 (最近有可成交簿日的末笔成交价), 停牌到期 / 区间末的 exit
   bool has_last_ = false;
 };
 
@@ -497,14 +517,14 @@ private:
 #define LABEL_CN_MIN(n) #n "分钟"
 #define LABEL_CN_CLOSE(n) "至收盘"
 #define LABEL_CN_OPEN(n) "至T+" #n "开盘"
-#define LABEL_NOTE_MIN(n) "; 尾部不足" #n "分钟则持有到收盘"
-#define LABEL_NOTE_CLOSE(n) "; exit=当日最后盘口"
-#define LABEL_NOTE_OPEN(n) "; exit=T+" #n "日09:30起首个盘口, 无开盘顺延≤" #n "日后取最近盘口, 区间末持有到最后一日收盘"
+#define LABEL_NOTE_MIN(n) "; 尾部不足" #n "分钟则持有到收盘(末笔成交价全额成交)"
+#define LABEL_NOTE_CLOSE(n) "; exit=当日末笔成交价(收盘竞价撮合价)全额成交"
+#define LABEL_NOTE_OPEN(n) "; exit=T+" #n "日连续竞价首个盘口, 无开盘顺延≤" #n "日后取最近收盘价, 区间末持有到最后一日收盘"
 #define LABEL_TEX_MIN(n) R"(, T=)" #n R"(\mathrm{min})"
 #define LABEL_TEX_CLOSE(n) R"(, T=\mathrm{close}_D)"
 #define LABEL_TEX_OPEN(n) R"(, T=\mathrm{open}_{D+)" #n "}"
-#define LABEL_ROW(X, CAT1, side, en, cn, formula, name, kind, n, a)                                                                                                                                                \
-  X(lb_##side##_##name##_##a##w, CAT1, ret, en " " LABEL_EN_##kind(n) " " #a "w Return", cn LABEL_CN_##kind(n) "收益(" #a "万)", "吃单" cn LABEL_CN_##kind(n) "收益(" #a "万元,含冲击+税佣)" LABEL_NOTE_##kind(n), \
+#define LABEL_ROW(X, CAT1, side, en, cn, formula, name, kind, n, a)                                                                                                                                                           \
+  X(lb_##side##_##name##_##a##w, CAT1, ret, en " " LABEL_EN_##kind(n) " " #a "w Return", cn LABEL_CN_##kind(n) "收益(" #a "万)", "吃单" cn LABEL_CN_##kind(n) "毛收益(" #a "万元,含价差+冲击,不含税佣)" LABEL_NOTE_##kind(n), \
     formula R"(, \quad A=)" #a R"(\mathrm{w})" LABEL_TEX_##kind(n), LABEL)
 #define LABEL_ROW_LONG(a, name, kind, n, X, CAT1) LABEL_ROW(X, CAT1, long, "Long", "做多", R"(\frac{\mathrm{VWAP}^{B}_{exit}-\mathrm{VWAP}^{A}_{entry}}{\mathrm{VWAP}^{A}_{entry}})", name, kind, n, a)
 #define LABEL_ROW_SHORT(a, name, kind, n, X, CAT1) LABEL_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}^{B}_{entry}-\mathrm{VWAP}^{A}_{exit}}{\mathrm{VWAP}^{B}_{entry}})", name, kind, n, a)

@@ -120,7 +120,7 @@ void sequential_worker(WorkerCtx ctx) {
   auto process_asset_day = [&](size_t asset_id, size_t didx, const std::string &date_str, const GlobalFeatureStore::Day &day) -> size_t {
     const auto &asset = data.asset.items[sched.global_ids[asset_id]];
     if (!asset.date_at(didx).has_binaries()) {
-      sched.cores[asset_id]->no_data_day(date_str, day, store); // 缺二进制: 当天张量保持默认值, warm 状态不推进; 只走标签日历
+      sched.cores[asset_id]->no_data_day(day, store); // 缺二进制: 当天张量保持默认值, warm 状态不推进; 只走标签日历
       return 0;
     }
 

@@ -87,9 +87,9 @@ public:
 
   // 无数据日 (缺 binary): 张量保持默认值, DAG / Fund 不推进 (warm 状态不动), 只走标签日历 ——
   // 悬挂的开盘档照常计龄 / 到期结算, 当日句柄立刻归还.
-  void no_data_day(const std::string &date_str, const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
+  void no_data_day(const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
     push_day(day);
-    dag_.LabelReturn.reset(date_str);
+    dag_.LabelReturn.reset();
     dag_.LabelReturn.day_begin();
     dag_.LabelReturn.day_end(label_writer(), day_releaser(store));
   }

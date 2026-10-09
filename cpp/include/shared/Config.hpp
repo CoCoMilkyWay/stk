@@ -35,6 +35,11 @@ struct Config {
   //   配额耗尽 / 离线时关掉即可绕过 bigquant::update 的 assert; 本地 parquet 仍照常消费.
   bool network_sync = true;
 
+  // 交易税佣 (比率, 不分日期, 统一按现行标准): 标签 (LabelReturn) 是毛收益不含它, 消费端事后扣 (Inspect 图 1 按钮).
+  //   一次往返 = 2 × commission + stamp (印花税只卖出单边)
+  double commission = 0.0001; // 佣金 万 1, 双边各一次
+  double stamp = 0.0005;      // 印花税 万 5, 卖出单边
+
   // Config file path
   std::string filepath = "../../../../config/config.json";
 

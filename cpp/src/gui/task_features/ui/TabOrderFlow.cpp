@@ -114,14 +114,17 @@ static const char *FeatName(const Feature &feature, const std::vector<const char
 //   rank/flag → Y2: 固定 = 值域两头各留 10% 余量 (贴边线不压轴框); rank 值域 [0,1] → [-0.1, 1.1],
 //                flag 值域 = 该特征预览抽样的全局 min/max (换标的/换日不跳; 无预览退回该线自身范围),
 //                整数跨度至少按 1 算; 多线同场取并集
-//   ratio*/raw/? → Y3: 同类共轴, 范围 = 各线 min/max 并集 (自动缩放)
+//   ratio/ret → Y3: 强制 0 轴居中, limit = max(|min|,|max|) → [-limit, +limit] (0 有语义: 差分/收益)
+//   ratio_pos/ratio_neg/raw/? → Y3: 同类共轴, 范围 = 各线 min/max 并集 (自动缩放)
+//   Y3 上 center 与 scale 混场 → 取并集后整体对称于 0 (center 主导)
 //   Y2 与 Y3 同时在场 → 右轴语义冲突, 两轴隐去刻度 (线照常画)
 // ============================================================================
 
 enum FeatAxisKind { FEAT_AXIS_PRICE = 0,
                     FEAT_AXIS_RANK,
                     FEAT_AXIS_FLAG,
-                    FEAT_AXIS_SCALE };
+                    FEAT_AXIS_SCALE,
+                    FEAT_AXIS_CENTER };
 
 static FeatAxisKind FeatAxisOf(const std::vector<const char *> &cat2, int idx) {
   const char *c = (idx >= 0 && static_cast<size_t>(idx) < cat2.size()) ? cat2[static_cast<size_t>(idx)] : "?";
@@ -131,11 +134,13 @@ static FeatAxisKind FeatAxisOf(const std::vector<const char *> &cat2, int idx) {
     return FEAT_AXIS_RANK;
   if (std::strcmp(c, "flag") == 0)
     return FEAT_AXIS_FLAG;
-  return FEAT_AXIS_SCALE; // ratio / ratio_pos / ratio_neg / raw / ?
+  if (std::strcmp(c, "ratio") == 0 || std::strcmp(c, "ret") == 0)
+    return FEAT_AXIS_CENTER;
+  return FEAT_AXIS_SCALE; // ratio_pos / ratio_neg / raw / ?
 }
 
 static ImAxis FeatYAxis(FeatAxisKind kind) {
-  return kind == FEAT_AXIS_PRICE ? ImAxis_Y1 : (kind == FEAT_AXIS_SCALE ? ImAxis_Y3 : ImAxis_Y2);
+  return kind == FEAT_AXIS_PRICE ? ImAxis_Y1 : ((kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) ? ImAxis_Y3 : ImAxis_Y2);
 }
 
 // Y2 (rank/flag) 值域并集累加: rank 固定 [0,1]; flag 取该特征全局 min/max (预览快照),
@@ -155,8 +160,9 @@ static void FeatFixedRange(FeatAxisKind kind, const Cat2Snapshot &snap, int idx,
 }
 
 // Setup 阶段: 按在场类别开右轴 (必须在任何绘制调用之前)
+// has_center: Y3 上有 ratio/ret (强制 0 轴居中); 与 scale 共轴时取并集后整体对称于 0
 static void SetupFeatAxes(bool has_fixed, float fixed_min, float fixed_max,
-                          bool has_scale, float scale_min, float scale_max) {
+                          bool has_scale, float scale_min, float scale_max, bool has_center) {
   const ImPlotAxisFlags flags = ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite |
                                 ((has_fixed && has_scale) ? ImPlotAxisFlags_NoDecorations : 0);
   if (has_fixed) {
@@ -167,9 +173,25 @@ static void SetupFeatAxes(bool has_fixed, float fixed_min, float fixed_max,
   }
   if (has_scale) {
     ImPlot::SetupAxis(ImAxis_Y3, nullptr, flags);
-    if (scale_min <= scale_max)
-      ImPlot::SetupAxisLimits(ImAxis_Y3, scale_min, scale_max, ImPlotCond_Always);
+    if (scale_min <= scale_max) {
+      if (has_center) {
+        // 0 轴居中: limit 取并集绝对值上确界, 两头对称
+        const float limit = std::max(std::fabs(scale_min), std::fabs(scale_max));
+        ImPlot::SetupAxisLimits(ImAxis_Y3, -limit, limit, ImPlotCond_Always);
+      } else {
+        ImPlot::SetupAxisLimits(ImAxis_Y3, scale_min, scale_max, ImPlotCond_Always);
+      }
+    }
   }
+}
+
+// Y3 居中时画 0 轴横线 (灰, 1px). 须在 BeginPlot 内、SetupFeatAxes 之后调用
+static void DrawFeatZeroLine() {
+  const double zero = 0.0;
+  ImPlot::SetAxes(ImAxis_X1, ImAxis_Y3);
+  ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+  ImPlot::PlotInfLines("##feat_zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+  ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
 }
 
 // ============================================================================
@@ -395,7 +417,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换标的不挪 plot 左边界
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
-    bool feat_fixed = false, feat_scale = false;
+    bool feat_fixed = false, feat_scale = false, feat_center = false;
     float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
     float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
     for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
@@ -405,13 +427,16 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
         feat_fixed = true;
         FeatFixedRange(kind, snap, ui.depth_feats[i], dp.feat_y_min[i], dp.feat_y_max[i], fixed_min, fixed_max);
-      } else if (kind == FEAT_AXIS_SCALE) {
+      } else if (kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) {
         feat_scale = true;
+        feat_center |= (kind == FEAT_AXIS_CENTER);
         scale_min = std::min(scale_min, dp.feat_y_min[i]);
         scale_max = std::max(scale_max, dp.feat_y_max[i]);
       }
     }
-    SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max);
+    SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max, feat_center);
+    if (feat_center)
+      DrawFeatZeroLine();
 
     // 当前 Y 视野快照 → 右侧深度面板每帧同步 (两图价格轴严格对齐)
     {
@@ -499,6 +524,10 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
+
+      // 当日累计 VWAP (标准日内 VWAP: 开盘起 Σ额/Σ量, 含竞价撮合; 尚无成交段 NaN 不画)
+      ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
+      ImPlot::PlotLine("VWAP", dp.plot.x.data(), dp.plot.vwap.data(), n, ImPlotItemFlags_NoFit);
 
       // 双击复位 = 新标的初始渲染的口径 (X 全天 + Y 带 margin); 否则 ImPlot 默认
       // fit 会贴紧数据边缘, 与初始视图不一致且难操作. 必须在有 item 之后 (SetupLock 已发生)
@@ -615,7 +644,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     const size_t nf = ready ? std::min(k.n_feat, ui.kline_feats.size()) : 0;
     std::array<size_t, OrderFlowConst::MAX_FEATURES> feat_counts{};
     {
-      bool feat_fixed = false, feat_scale = false;
+      bool feat_fixed = false, feat_scale = false, feat_center = false;
       float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
       float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
       for (size_t i = 0; i < nf; ++i) {
@@ -627,13 +656,16 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
           feat_fixed = true;
           FeatFixedRange(kind, snap, ui.kline_feats[i], k.feat_y_min[i].load(std::memory_order_relaxed),
                          k.feat_y_max[i].load(std::memory_order_relaxed), fixed_min, fixed_max);
-        } else if (kind == FEAT_AXIS_SCALE) {
+        } else if (kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) {
           feat_scale = true;
+          feat_center |= (kind == FEAT_AXIS_CENTER);
           scale_min = std::min(scale_min, k.feat_y_min[i].load(std::memory_order_relaxed));
           scale_max = std::max(scale_max, k.feat_y_max[i].load(std::memory_order_relaxed));
         }
       }
-      SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max);
+      SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max, feat_center);
+      if (feat_center)
+        DrawFeatZeroLine();
     }
 
     // ------------------------------------------------------------------

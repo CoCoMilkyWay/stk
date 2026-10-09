@@ -307,6 +307,29 @@ private:
           changed = true;
         }
 
+        // 税佣 (比率; 标签是毛收益, 这里只供消费端事后扣)
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("佣金 (双边)");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("比率, 万 1 = 0.0001; 买卖各扣一次. 标签 (LabelReturn) 不含税佣, Inspect 图 1 事后扣");
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputDouble("##commission", &cfg.commission, 0.0, 0.0, "%.5f"))
+          changed = true;
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("印花税 (卖出)");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("比率, 万 5 = 0.0005; 只卖出单边. 不分日期, 统一按现行标准");
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputDouble("##stamp", &cfg.stamp, 0.0, 0.0, "%.5f"))
+          changed = true;
+
         ImGui::EndTable();
       }
     }

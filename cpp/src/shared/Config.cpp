@@ -121,6 +121,9 @@ bool Config::LoadFromFile() {
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
   csv_market_order = j.value("csv_market_order", csv_market_order);
   network_sync = j.value("network_sync", network_sync);
+  commission = j.value("commission", commission);
+  stamp = j.value("stamp", stamp);
+  assert(commission >= 0.0 && commission < 0.01 && stamp >= 0.0 && stamp < 0.01 && "税佣比率越界 (万 1 = 0.0001)");
 
   return true;
 }
@@ -142,6 +145,8 @@ bool Config::SaveToFile() {
   j["csv_market_trade"] = csv_market_trade;
   j["csv_market_order"] = csv_market_order;
   j["network_sync"] = network_sync;
+  j["commission"] = commission;
+  j["stamp"] = stamp;
 
   std::ofstream file(filepath);
   if (!file.is_open()) {

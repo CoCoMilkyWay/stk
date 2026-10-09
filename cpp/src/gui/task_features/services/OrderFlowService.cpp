@@ -428,10 +428,14 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       return idx <= OrderFlowConst::LOB_DEPTH || idx >= PRICE_RANGE_SIZE - 1 - OrderFlowConst::LOB_DEPTH;
     };
 
+    // 当日累计成交 (全部 TAKER 事件, 含竞价撮合): 秒末落到该秒快照的 vwap (与 Flow 的分钟 vwap 同源, 只是累计口径)
+    double cum_amt = 0.0, cum_vol = 0.0;
+
     // 秒末全簿快照 → 热力图 (只提交出过有效盘口快照的秒; 全档, 不限近端 30 档)
     auto commit_second = [&](size_t t) {
       if (sec_slot[t] < 0)
         return;
+      slot.ticks[static_cast<size_t>(sec_slot[t])].vwap = cum_vol > 0.0 ? static_cast<float>(cum_amt / cum_vol) : 0.0f;
       scratch.current_tick.clear();
       lob.for_each_visible_level([&](uint32_t idx, int32_t net_qty) {
         const float price = (base + static_cast<float>(idx)) * 0.01f;                        // 元
@@ -454,6 +458,10 @@ void OrderFlowService::depth_build(const DepthReq &req) {
         }
         lob.process(orders[i]);
         sec_data[t] = 1;
+        if (lf.order_type == L2::OrderType::TAKER && lf.price > 0.0f) {
+          cum_amt += static_cast<double>(lf.price) * lf.volume;
+          cum_vol += lf.volume;
+        }
         if (!lf.depth_updated)
           continue;
 
