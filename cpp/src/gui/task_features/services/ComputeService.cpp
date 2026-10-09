@@ -1,5 +1,6 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include "features/Backend/FeatureStore.hpp"
 #include "features/Operator/TS/Label/LabelReturn.hpp"
 #include "misc/affinity.hpp"
@@ -150,9 +151,8 @@ void ComputeService::start_compute(ComputeConfig config) {
     // 回测全量重算: 显式清本 universe 的特征库 (清库是调用方的决定, 不是
     // store 构造的副作用; 别的 universe 的库不碰 —— 按目录分片, 见 Config)
     const std::string feature_dir = data_.config.FeatureUniverseDir();
-    if (std::filesystem::exists(feature_dir)) {
-      std::filesystem::remove_all(feature_dir);
-    }
+    FeatureRead::wipe_dir(feature_dir); // 可能与 reader 判废删库并发
+    FeatureRead::set_dir_stale(feature_dir, false);
 
     // Initialize global feature store
     feature_store_ = std::make_unique<GlobalFeatureStore>(

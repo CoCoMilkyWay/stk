@@ -4,7 +4,7 @@
 
 ```
 stk/
-├── run.py                 # 🚀 主入口 → py/main.py (模式选择: TSAN/DEBUG/PROFILE/ASSERT/PRODUCTION)
+├── run.py                 # 🚀 主入口 → py/main.py (模式选择: TSAN/DEBUG/PROFILE/ASSERT/PRODUCTION; ENABLE_CUDA 正交开关 = factor GPU 后端 nvcc 链/stub)
 ├── config/                # ⚙️ 全局配置
 │   ├── config.json        # ⚙️ 路径/日期范围/universe/基本面联网同步(network_sync) 等全局配置
 │   ├── data_manager.json / stock_*.json  # ⚙️ 运行时缓存状态 (自动生成)
@@ -13,7 +13,10 @@ stk/
 ├── py/                    # 🐍 Python工具链
 │   ├── main.py            # 🐍 构建脚本: 直接调用 CMake
 │   ├── mode_*.py          # 🐍 模式开关: tsan/debug/profile/assert/production
-│   └── app/               # 🐍 build_universe (股票池) / FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
+│   ├── app/               # 🐍 FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
+│   └── universe/          # 🐍 股票池生成 (一池一脚本, 输出 config/universe/<name>.json)
+│       ├── common/        # 🐍 共用骨架: data (基本面 parquet 读取) / grid (PIT 网格) / filters (退市风险排除位) / pipeline (骨架 + JSON 接口)
+│       └── smallcap400.py # 🐍 小市值 400 动态池脚本 (口径对齐 qmt strat_0 的 pool_b + filters)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                   # 📦 跨模块数据层
@@ -61,7 +64,7 @@ stk/
 │   │   │       ├── FeatureStoreConfig.hpp            # 🧮 写端: 由字段表 + ALL_LEVELS 展开编译期 LEVELS[] (定址折叠), width/valid/psd 全推导
 │   │   │       ├── FeatureLevels.hpp                 # 🧮 读端稳定层 (字段表无关): LevelInfo 结构 + 运行时层表 level_info(), 增删特征不触发读侧重编
 │   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 槽位, TS/CS/IO 三类 worker 并发协议, fstore:: 写入函数 (LEVELS 驱动)
-│   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块)
+│   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: Zstd解压/按列选读 (DayTensor 单日 / MonthTensor 多日常驻块); wipe_dir 并发安全删库 (rename 到唯一墓碑再删) + ec 守卫的目录遍历, 多 reader 与 ComputeService 清库不互踩
 │   │   │       ├── DayBatchPlane.hpp                 # 🧮 Dist/Transform 共用天批平面: 抢单天并行载入 → [列][A][批天][VR]
 │   │   │       ├── SparseCodec.hpp                   # 🧮 落盘编码之一: 位图+非零字面 (手搓, 内存带宽级, 默认)
 │   │   │       └── ZstdCodec.hpp                     # 🧮 落盘编码之二: zstd 熵压缩 (压得狠但单核慢; 同 API, 选型在 FeatureStoreConfig)
@@ -111,14 +114,17 @@ stk/
 │   │   │   │       ├── TabDist.hpp                   # 🖥️ 分布: 月/周/日内/资产 四维 PDF
 │   │   │   │       ├── TabTransform.hpp              # 🖥️ 变换链: 季节→平稳化→带通→TS归一→截面; 诊断: ADF/KPSS 热力条 / PSD / ACF/PACF
 │   │   │   │       └── TabCorr.hpp                   # 🖥️ 相关矩阵热图: 下三角 + hover lead-lag 曲线 + lag 矩阵 (聚类排序 O(n³))
-│   │   │   └── task_factors/                         # 🖥️ 因子库 (factor/ 的 GUI): Operators 合成张量对拍 (不依赖特征库) / Factors 因子文件面板 (Run 时读特征库评估)
-│   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (子页 Operators / Factors; Operators 进页优先载入 operators.json, 缺/校验不过才自动算一轮; Factors 进页只扫描, 手动 Run 评估)
+│   │   │   └── task_factors/                         # 🖥️ 因子库 (factor/ 的 GUI): Operators 合成张量对拍 (不依赖特征库) / Factors 因子文件面板 (Run 时读特征库评估) / Inspect 单因子深看 (分层累计·期限结构·IC 时序)
+│   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (子页 Operators / Factors / Inspect; Operators 进页优先载入 operators.json, 缺/校验不过才自动算一轮; Factors 进页只扫描, 手动 Run 评估; Inspect 高光因子变了自动起算)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表服务: 首行 Stat 评估算子 (factor/Stat, 不在 OpTable, 无流式后端, worker 每轮先跑 = 挖掘第一道闸) + OpTable 全算子一行一算子; worker 三后端对拍+计时 (stream 为 golden; d/k 每算子默认表, seed 取时间戳; gpu 计时 = 纯 kernel)
-│   │   │       │   └── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 全部 amt×hold 标签 fp16) → 所有因子合成一张共享 DAG (build_forest, 公共子式只算一次) 顺序走节点 → CPU 每节点切满全核 (run_node_par) / GPU 常驻显存 → 根到即全核 Stat (amt×hold 展平, rank 只算一次) → HoldStat[amt][hold] → 回写 params/stat 键 (expr 不动); AddFactorFile / UpdateFactorFile / DeleteFactorFile 给 UI 用
+│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板服务: 扫 <factor_dir>/<universe>/*.json (一因子一文件; 破碎不删只标 BROKEN) → Expr 解析校验 → Run 时特征库装载 [days·255][A] (门控 + 全部 amt×hold 标签 fp16) → 所有因子合成一张共享 DAG (build_forest, 公共子式只算一次) 顺序走节点 → CPU 每节点切满全核 (run_node_par) / GPU 常驻显存 → 根到即全核 Stat (amt×hold 展平, rank 只算一次) → HoldStat[amt][hold] → 回写 params/stat 键 (expr 不动); AddFactorFile / UpdateFactorFile / DeleteFactorFile 给 UI 用
+│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 因子评估特征库装载层 (FactorsService 与 InspectService 共用): Loaded 宿主平面 (特征 + 截面门控 + 标签 amt×hold) 逐天并行读散入; check_leaf_domains 按 OpTable in 列查特征叶值域; valid_pct_of 根平面有效率
+│   │   │       │   └── InspectService.hpp            # 🖥️ 单因子深看服务 (单 worker, 只 CPU): 对高光因子读库 → 一棵 Dag → Stat, 保留一级 Row[H][T] (FactorsService 全表只留二级 HoldStat, 画不了沿时间的东西); 缓存同作用域标签/特征平面只装一次, 换作用域/reload 整体重读; 不写文件
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab: 首行 Stat (静态列空, 只看 cpu/gpu eval 耗时 + 悬停 HoldStat) + OpTable 静态列 (idx/元数/窗/域/核/参数/公式/Note, 默认按全局 idx 排) + 动态列 (stream/cpu/gpu 耗时与对拍 Δ); operators.json 存/取 (取时逐行校验静态列, 不过即删)
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 CPU|GPU + Run/Cancel/Rescan (Run 算全部 金额档×持有期; Amt/Hold 下拉只选显示); time 列 = 因子子树节点耗时之和; 构建器 (从外到内逐槽下拉选算子/特征, 参数手填, 即时校验) + 必填 name + note; 添加模式 Add 新文件 (查重弹窗) / 点表格行进编辑模式 (高光, Save 覆盖弹窗确认, 删除); 表 一行一文件 (BROKEN 红+原因 / ok / file / file≠scope 黄 / dup, 规范串, ops/feats/slots, valid%, 选定 amt×hold 的 IC/ICIR/IC_t/LS/SR/β/mono/rAC/n, note; 悬停 status 看全部组合)
+│   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 对象 = Factors 页高光行; 头信息 + 控件 (Amt/Hold/超额|绝对/Compute/Cancel) + 选定持有期 stat; 2×2 四图 (左上分层累计+多空 / 右上期限结构 / 左下 IC 时序 / 右下留位); 高光因子变且服务空闲 → 自动起算, Compute = 弃缓存重读
 │   │   │           └── StatJson.hpp                  # 🖥️ HoldStat ↔ JSON (hold_json / load_hold, sig4, json_* 取值): operators.json 的 stat.holds 与因子文件的 stat.holds 同一格式
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
@@ -128,7 +134,7 @@ stk/
 │   │   │   │  > DataBase                          │ Overview / Encode / Table / Browser│
 │   │   │   │  > Features                          │ Feature / Compute / Transform /    │
 │   │   │   │                                      │ Dist / Corr / OrderFlow            │
-│   │   │   │  > Factors                           │ Operators / Factors                │
+│   │   │   │  > Factors                           │ Operators / Factors / Inspect      │
 │   │   │   │  > Tools                             │ LaTeX                              │
 │   │   │   │ Icon:                                │                                    │
 │   │   │   │  |Network|FPS│                       │                                    │

@@ -1,5 +1,6 @@
 // Task Features - Feature Engineering Task
 #include "gui/task_features/TaskFeatures.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
 #include "gui/task_features/services/CorrService.hpp"
@@ -265,7 +266,12 @@ TaskHandle CreateFeaturesTask() {
                  ? TaskStatus{TaskStatus::Kind::Ready, "selected"}
                  : TaskStatus{TaskStatus::Kind::Warn, "selecting"};
 
-    case TAB_COMPUTE: // 全量特征计算
+    case TAB_COMPUTE: { // 全量特征计算
+      const bool running = state->compute_service &&
+                           state->compute_service->get_status() == Features::ComputeStatus::Running;
+      // 任一 reader (含 Factors 页) 判废删了当前 universe 的库 → 提示重算 (compute 开跑即撤销登记)
+      if (!running && FeatureRead::dir_stale(data.config.FeatureUniverseDir()))
+        return {TaskStatus::Kind::Warn, "stale"};
       if (!state->compute_service)
         return {};
       switch (state->compute_service->get_status()) {
@@ -282,6 +288,7 @@ TaskHandle CreateFeaturesTask() {
         break;
       }
       return {};
+    }
 
     case TAB_TRANSFORM:
       return StreamTaskStatus(data.transform);

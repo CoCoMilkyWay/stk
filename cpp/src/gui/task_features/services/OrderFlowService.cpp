@@ -183,20 +183,20 @@ void OrderFlowService::worker_loop() {
 void OrderFlowService::scan_dates(std::vector<std::string> &out) const {
   TraceN("OF_ScanDates");
   const std::string dir = data_->config.FeatureUniverseDir();
-  if (!std::filesystem::exists(dir))
-    return;
 
-  for (const auto &year_entry : std::filesystem::directory_iterator(dir)) {
+  // 目录不在 / 遍历中途被并发删库 (FeatureRead::wipe_dir) → ec 置位, 该层迭代器即 end
+  std::error_code ec;
+  for (const auto &year_entry : std::filesystem::directory_iterator(dir, ec)) {
     if (!year_entry.is_directory() || year_entry.path().filename().string().size() != 4)
       continue;
     const std::string year = year_entry.path().filename().string();
 
-    for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path())) {
+    for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path(), ec)) {
       if (!month_entry.is_directory() || month_entry.path().filename().string().size() != 2)
         continue;
       const std::string month = month_entry.path().filename().string();
 
-      for (const auto &day_entry : std::filesystem::directory_iterator(month_entry.path())) {
+      for (const auto &day_entry : std::filesystem::directory_iterator(month_entry.path(), ec)) {
         if (!day_entry.is_directory() || day_entry.path().filename().string().size() != 2)
           continue;
         const std::string date = year + month + day_entry.path().filename().string();

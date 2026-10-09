@@ -5,11 +5,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -52,8 +55,10 @@ private:
       return;
     // 不用 Logger: 它未 init 时 std::exit(1), 而这里正是"进 Features 页" (compute 还没跑过) 的路径
     std::cout << "[features] " << why << " → 删除特征库待重算: " << base_dir_ << std::endl;
-    if (wipe)
-      std::filesystem::remove_all(base_dir_);
+    if (wipe) {
+      wipe_dir(base_dir_);
+      set_dir_stale(base_dir_, true);
+    }
     if (abort_)
       abort_->store(true, std::memory_order_relaxed); // 复用取消信号: 构建循环的既有检查点即刻收工
   }
@@ -210,6 +215,38 @@ public:
     assert(axis_A_ > 0 && "期望子轴为空");
   }
 
+  // 删库. 多个 reader (各 service 每请求各一份, stale_ 不互通) 与 ComputeService 清库可能
+  // 同时删同一目录, 并发 remove_all 会撞上对方刚删掉的文件而抛异常. 先原子 rename 到唯一
+  // 墓碑名 (只有一方抢得到), 再删墓碑; rename 时目录已不在 = 别人删了.
+  static void wipe_dir(const std::string &dir) {
+    static std::atomic<std::uint64_t> seq{0};
+    const auto ns = std::chrono::system_clock::now().time_since_epoch().count();
+    const std::string trash = dir + ".trash." + std::to_string(ns) + "." + std::to_string(seq.fetch_add(1));
+    std::error_code ec;
+    std::filesystem::rename(dir, trash, ec);
+    if (ec) {
+      assert(ec == std::errc::no_such_file_or_directory && "删库 rename 失败");
+      return;
+    }
+    std::filesystem::remove_all(trash);
+  }
+
+  // 进程级判废登记 (按库目录): reader 头不符删库时登记, ComputeService 开始重算时撤销;
+  // GUI 左栏 Compute 行据此提示 stale. reader 各自的 stale_ 随请求生灭, 不能给 UI 用.
+  static void set_dir_stale(const std::string &dir, bool stale) {
+    auto &r = stale_registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    if (stale)
+      r.dirs.insert(dir);
+    else
+      r.dirs.erase(dir);
+  }
+  static bool dir_stale(const std::string &dir) {
+    auto &r = stale_registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    return r.dirs.count(dir) != 0;
+  }
+
   // 字段表指纹不符 → 旧库已删, 本次构建产出无效 (调用方重算)
   bool stale() const { return stale_.load(std::memory_order_relaxed); }
 
@@ -352,10 +389,9 @@ public:
     std::vector<std::string> dates;
     std::string dir = base_dir_ + "/" + year + "/" + month;
 
-    if (!std::filesystem::exists(dir))
-      return dates;
-
-    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+    // 目录不在 / 遍历前被并发删库 (wipe_dir) → ec 置位, 迭代器即 end
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
       if (entry.is_directory()) {
         std::string day = entry.path().filename().string();
         if (day.size() == 2) {
@@ -369,6 +405,15 @@ public:
 
     std::sort(dates.begin(), dates.end());
     return dates;
+  }
+
+  struct StaleRegistry {
+    std::mutex mutex;
+    std::set<std::string> dirs;
+  };
+  static StaleRegistry &stale_registry() {
+    static StaleRegistry r;
+    return r;
   }
 
   std::string base_dir_;
