@@ -161,6 +161,11 @@ struct HoldStat {
   float ls_mean = 0.f, ls_t = 0.f, ls_pos = 0.f, sharpe = 0.f, beta = 0.f, mono = 0.f, rank_ac = 0.f;
   float grp[kGroups] = {}; // 池化组均值
 };
+// 年化换手 (倍/年) = 每持有期换手 (1 − rank_ac, 秩重排占比) × 每年持有期数 (kDaysPerYear · kSegLen / h).
+// rank_ac 的 lag = h 随持有期变, 本身不可跨期比; 折到同一时间轴后可比, 越低越好. 派生量, 不落 HoldStat / 文件
+inline double turnover_annual(const HoldStat &s) {
+  return (1.0 - s.rank_ac) * static_cast<double>(kDaysPerYear) * kSegLen / hold_minutes(s.hold);
+}
 
 // ---- 共享整数公式 (GPU 侧有逐字一致的 __device__ 版) ----
 

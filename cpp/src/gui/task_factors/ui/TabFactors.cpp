@@ -224,16 +224,17 @@ bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
 
 // ============================================================================
 // Stat 指标表: 主表 Stat 列 / 排序键 / 行悬停转置表 都从这一张表展开 (加指标 = 加一行)
-//   group  分组, 按重要性排: LS (能不能赚) → 形态 (赚得稳不稳 / 换手) → IC (整体相关, 参考) → 样本; 悬停表按组出标题行, 主表列同序
+//   group  分组, 按重要性排: 形态 (单调 / 换手) → LS (能不能赚) → IC (整体相关, 参考) → 样本; 悬停表按组出标题行, 主表列同序
 //   col    非空 = 进主表 (列名), 空 = 只在悬停表
-//   desc / range / best  说明 / 取值范围 / 最优是什么 (悬停表三列, 主表列提示也由它们拼)
+//   desc / range / best  说明 / 取值范围 / 最优 (悬停表三列, 主表列提示也由它们拼); 文案压短, 悬停表宽度由它们定
 //   get    HoldStat → double (整数计数也走这里, fmt 用 %.0f)
-//   cmp    跨持有期可比性 (渐变着色): None 不比; High 越大越好 (因子方向按根算子约定为正); AbsLow 越近 0 越好.
-//          不比的: n / n_ac (由持有期机制决定), std (尺度随 h 变), skew / kurt (形态诊断), rAC (lag = h 本身随 h 变)
+//   cmp    跨持有期可比性 (渐变着色): None 不比; High 越大越好 (因子方向按根算子约定为正); Low 越小越好; AbsLow 越近 0 越好.
+//          不比的: n / n_ac (由持有期机制决定), std (尺度随 h 变), skew / kurt (形态诊断), rAC (lag = h 随 h 变; 折成年化换手 turn 后才比)
+//   公式见 factor/Stat/Contract.hpp【二级 HoldStat】(t 值按 n/h 折算重叠持有期; Sharpe 以持有期为一期年化)
 // ============================================================================
 using HS = factor::stat::HoldStat;
-enum class Group : uint8_t { LS,
-                             Shape,
+enum class Group : uint8_t { Shape,
+                             LS,
                              IC,
                              Sample,
                              kCount };
@@ -241,13 +242,14 @@ struct GroupInfo {
   const char *name, *desc;
 };
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
-    {"LS", "多空超额 = 顶组做多超额 + 底组做空超额, 每 t 一个, 相对市场"},
-    {"形态", "分层单调性 / 持仓换手"},
-    {"IC", "rank IC = 每 t 截面 Pearson(秩 x, 秩 y), 整体相关, 只作参考"},
-    {"样本", "沿 t 的有效行数"},
+    {"形态", "分层单调 / 换手"},
+    {"LS", "顶组多 + 底组空 的超额"},
+    {"IC", "截面秩相关, 只作参考"},
+    {"样本", "有效 t 行数"},
 };
 enum class Cmp : uint8_t { None,
                            High,
+                           Low,
                            AbsLow };
 struct Metric {
   Group group;
@@ -259,38 +261,28 @@ struct Metric {
   Cmp cmp;
 };
 constexpr Metric kMetrics[] = {
-    {Group::LS, "mean", "LS", "多空超额 沿 t 均值", "(-∞, ∞)", "越大越好", "%+.5f", [](const HS &h) { return static_cast<double>(h.ls_mean); },
+    {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f", [](const HS &h) { return static_cast<double>(h.mono); },
      Cmp::High},
-    {Group::LS, "t", nullptr, "多空超额 t 值 = mean / std · √(n/h)", "(-∞, ∞)", "越大越好, |t| > 2 显著", "%+.2f",
-     [](const HS &h) { return static_cast<double>(h.ls_t); }, Cmp::High},
-    {Group::LS, "pos", nullptr, "多空超额 > 0 的 t 占比", "[0, 1]", "越大越好, 0.5 = 无信号", "%.2f",
-     [](const HS &h) { return static_cast<double>(h.ls_pos); }, Cmp::High},
-    {Group::LS, "SR", "SR", "多空超额 年化 Sharpe (持有期为一期)", "(-∞, ∞)", "越大越好", "%+.2f", [](const HS &h) { return static_cast<double>(h.sharpe); },
-     Cmp::High},
-    {Group::LS, "β", "β", "多空超额 对市场的 OLS 斜率", "(-∞, ∞)", "越近 0 越好 (市场中性)", "%+.3f",
-     [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
-    {Group::Shape, "mono", "mono", "20 组池化均值 对组号的 Spearman", "[-1, 1]", "越大越好, 1 = 严格单调", "%+.3f",
-     [](const HS &h) { return static_cast<double>(h.mono); }, Cmp::High},
-    {Group::Shape, "rAC", "rAC", "因子 rank 对 lag = h 的自相关", "[-1, 1]", "越大换手越低 (lag 随 h 变, 不跨期比)", "%+.3f",
+    {Group::Shape, "turn", "turn", "年化换手 = (1 − rAC) × 年持有期数", "[0, ∞)", "越小", "%.0f", [](const HS &h) { return factor::stat::turnover_annual(h); },
+     Cmp::Low},
+    {Group::Shape, "rAC", nullptr, "因子秩 lag=h 自相关", "[-1, 1]", "越大 (折成 turn 再比)", "%+.3f",
      [](const HS &h) { return static_cast<double>(h.rank_ac); }, Cmp::None},
-    {Group::IC, "mean", "IC", "rank IC 沿 t 均值", "[-1, 1]", "越大越好", "%+.4f", [](const HS &h) { return static_cast<double>(h.ic_mean); },
+    {Group::LS, "mean", "LS", "多空超额 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h) { return static_cast<double>(h.ls_mean); }, Cmp::High},
+    {Group::LS, "t", nullptr, "多空超额 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls_t); }, Cmp::High},
+    {Group::LS, "pos", nullptr, "多空超额 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ls_pos); },
      Cmp::High},
-    {Group::IC, "std", nullptr, "rank IC 沿 t 标准差", "[0, 1]", "越小越稳 (尺度随 h 变, 不跨期比)", "%.4f",
-     [](const HS &h) { return static_cast<double>(h.ic_std); }, Cmp::None},
-    {Group::IC, "IR", "ICIR", "rank IC 均值 / 标准差", "(-∞, ∞)", "越大越好", "%+.3f", [](const HS &h) { return static_cast<double>(h.icir); },
+    {Group::LS, "SR", "SR", "多空超额 年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return static_cast<double>(h.sharpe); }, Cmp::High},
+    {Group::LS, "β", "β", "多空超额 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
+    {Group::IC, "mean", "IC", "rank IC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h) { return static_cast<double>(h.ic_mean); }, Cmp::High},
+    {Group::IC, "std", nullptr, "rank IC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.ic_std); }, Cmp::None},
+    {Group::IC, "IR", "ICIR", "rank IC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.icir); }, Cmp::High},
+    {Group::IC, "t", "IC_t", "rank IC t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_t); }, Cmp::High},
+    {Group::IC, "pos", nullptr, "rank IC > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ic_pos); },
      Cmp::High},
-    {Group::IC, "t", "IC_t", "rank IC t 值 = IR · √(n/h)", "(-∞, ∞)", "越大越好, |t| > 2 显著", "%+.2f",
-     [](const HS &h) { return static_cast<double>(h.ic_t); }, Cmp::High},
-    {Group::IC, "pos", nullptr, "rank IC > 0 的 t 占比", "[0, 1]", "越大越好, 0.5 = 无信号", "%.2f",
-     [](const HS &h) { return static_cast<double>(h.ic_pos); }, Cmp::High},
-    {Group::IC, "skew", nullptr, "rank IC 沿 t 偏度", "(-∞, ∞)", "≈ 0 对称 (诊断, 不跨期比)", "%+.2f",
-     [](const HS &h) { return static_cast<double>(h.ic_skew); }, Cmp::None},
-    {Group::IC, "kurt", nullptr, "rank IC 沿 t 超额峰度", "[-2, ∞)", "≈ 0 正态 (诊断, 不跨期比)", "%+.2f",
-     [](const HS &h) { return static_cast<double>(h.ic_kurt); }, Cmp::None},
-    {Group::Sample, "n", "n", "标签侧 ok 的 t 行数", "[0, T]", "越大越可信, < 3 其余为空", "%.0f", [](const HS &h) { return static_cast<double>(h.n); },
-     Cmp::None},
-    {Group::Sample, "n_ac", nullptr, "rAC 可算的 t 行数", "[0, T]", "越大越可信", "%.0f", [](const HS &h) { return static_cast<double>(h.n_ac); },
-     Cmp::None},
+    {Group::IC, "skew", nullptr, "rank IC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_skew); }, Cmp::None},
+    {Group::IC, "kurt", nullptr, "rank IC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_kurt); }, Cmp::None},
+    {Group::Sample, "n", "n", "标签 ok 行数", "[0, T]", "越大, <3 其余空", "%.0f", [](const HS &h) { return static_cast<double>(h.n); }, Cmp::None},
+    {Group::Sample, "n_ac", nullptr, "rAC 可算行数", "[0, T]", "越大", "%.0f", [](const HS &h) { return static_cast<double>(h.n_ac); }, Cmp::None},
 };
 constexpr int kNumMetrics = static_cast<int>(std::size(kMetrics));
 constexpr int count_cols() {
@@ -401,7 +393,21 @@ constexpr int kTipFixedCols = 4; // 悬停表前置列: 指标 / 说明 / 范围
 std::optional<ImVec4> hold_color(const FactorRow &r, const Metric &m, int k) {
   if (m.cmp == Cmp::None || r.hold[k].n < 3)
     return std::nullopt;
-  const auto score = [&](const HS &h) { return m.cmp == Cmp::High ? m.get(h) : -std::fabs(m.get(h)); };
+  const auto score = [&](const HS &h) { // 统一成 "越大越好"
+    const double v = m.get(h);
+    switch (m.cmp) {
+    case Cmp::High:
+      return v;
+    case Cmp::Low:
+      return -v;
+    case Cmp::AbsLow:
+      return -std::fabs(v);
+    case Cmp::None:
+      break;
+    }
+    assert(false);
+    return 0.0;
+  };
   double lo = 1e300, hi = -1e300;
   int cnt = 0;
   for (int j = 0; j < r.n_hold; ++j) {
@@ -420,16 +426,13 @@ std::optional<ImVec4> hold_color(const FactorRow &r, const Metric &m, int k) {
 // 行悬停的 stat 部分 (调用方已 BeginTooltip): 头部对仗 bullet + 转置表 (行 = kMetrics 按组, 列 = 持有期), 可比指标跨持有期渐变着色
 void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   // 键列对齐到 8 格 (CJK 一字 = 2 格, 等宽字体)
-  ImGui::BulletText("来源    %s%s", r.stat_from_file ? "文件" : "本轮", r.stat_from_file && !scope_matches(r, ctx) ? "  (作用域 ≠ 当前)" : "");
-  ImGui::BulletText("口径    %s", factor::stat::frame_name(r.frame));
-  ImGui::BulletText("作用域  %s  %s .. %s", r.scope.universe.c_str(), r.scope.start_date.c_str(), r.scope.end_date.c_str());
-  ImGui::BulletText("规模    %d 天 × %d 资产  (T = %d)", r.scope.days, r.scope.A, r.scope.T);
-  ImGui::BulletText("后端    %s  @ %s", r.scope.backend.c_str(), r.scope.time.c_str());
-  ImGui::BulletText("valid   %.2f%%", r.valid_pct);
-  ImGui::BulletText("time    %.3f ms  (DAG 算一遍, 与 hold 无关)", r.eval_ms);
-  ImGui::Separator();
-  ImGui::TextDisabled("各持有期  (标签 = 毛价格收益, 不含冲击 / 税佣; 冲击在 Inspect 页可选扣)");
-  ImGui::TextDisabled("可比指标跨持有期渐变: ");
+  ImGui::BulletText("来源    %s%s | 口径 %s | 标签 = 毛价格收益 (不含冲击 / 税佣; Inspect 页可选扣)", r.stat_from_file ? "文件" : "本轮",
+                    r.stat_from_file && !scope_matches(r, ctx) ? " (作用域 ≠ 当前)" : "", factor::stat::frame_name(r.frame));
+  ImGui::BulletText("作用域  %s  %s .. %s  (%d 天 × %d 资产, T = %d)", r.scope.universe.c_str(), r.scope.start_date.c_str(), r.scope.end_date.c_str(),
+                    r.scope.days, r.scope.A, r.scope.T);
+  ImGui::BulletText("算得    %s @ %s | valid %.2f%% | time %.3f ms (DAG 一遍, 与 hold 无关)", r.scope.backend.c_str(), r.scope.time.c_str(),
+                    r.valid_pct, r.eval_ms);
+  ImGui::BulletText("着色    可比指标跨持有期渐变 ");
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "红 = 最差");
   ImGui::SameLine(0, 0);
@@ -437,7 +440,7 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "绿 = 最好");
   ImGui::SameLine(0, 0);
-  ImGui::TextDisabled("; 不着色 = 跨持有期无可比性");
+  ImGui::TextDisabled("; 不着色 = 不跨期比");
   if (!ImGui::BeginTable("HoldStatTip", kTipFixedCols + r.n_hold, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
     return;
   ImGui::TableSetupColumn("指标");
@@ -567,14 +570,20 @@ void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool edi
   assert(false);
 }
 
-// 整行悬停 (任一格, 含勾选框): 文件 / 名字 / 操作提示 / 原串 / BROKEN 原因 / dup / stat. 表格行只有这一个提示函数
+// 整行悬停 (任一格, 含勾选框): 文件 / 操作 / 原串 / BROKEN 原因 / dup / stat. 表格行只有这一个提示函数.
+// 位置自己定: ImGui 的 tooltip 定位在四个方向都放不下时退化为贴鼠标右下 (大半出屏, 看着像没触发); 这里用上一帧的窗口尺寸把左上角夹回视口
 void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx, bool viewing, bool editing) {
+  static ImVec2 s_size; // 上一帧尺寸 (首帧 0 → 不夹, ImGui 的 AlwaysAutoResize 首帧本就隐藏)
+  const ImGuiViewport *vp = ImGui::GetMainViewport();
+  const ImVec2 mouse = ImGui::GetMousePos();
+  ImVec2 pos(mouse.x + 16.f, mouse.y + 16.f);
+  pos.x = std::max(vp->WorkPos.x, std::min(pos.x, vp->WorkPos.x + vp->WorkSize.x - s_size.x));
+  pos.y = std::max(vp->WorkPos.y, std::min(pos.y, vp->WorkPos.y + vp->WorkSize.y - s_size.y));
+  ImGui::SetNextWindowPos(pos);
   ImGui::BeginTooltip();
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetFontSize() * kTipWrapEm);
-  ImGui::BulletText("文件    %s/%s", ctx.factor_dir.c_str(), r.file.c_str());
-  ImGui::BulletText("名字    %s  %s", r.name_en.c_str(), r.name_cn.empty() ? "(无 name_cn)" : r.name_cn.c_str());
-  ImGui::BulletText("点行    %s", viewing ? "取消高光" : "高光 → Inspect 页展示");
-  ImGui::BulletText("勾选    %s", editing ? "取消勾选 → 添加模式 (构建器内容留作模板)" : "勾选 → 编辑模式 (载入上方构建器)");
+  ImGui::BulletText("文件    %s/%s  (%s / %s)", ctx.factor_dir.c_str(), r.file.c_str(), r.name_en.c_str(), r.name_cn.empty() ? "无 name_cn" : r.name_cn.c_str());
+  ImGui::BulletText("操作    点行 → %s; 勾选 → %s", viewing ? "取消高光" : "高光给 Inspect 页", editing ? "取消编辑 (构建器内容留作模板)" : "编辑 (载入上方构建器)");
   if (!r.expr_raw.empty() && r.expr_raw != r.expr)
     ImGui::BulletText("原串    %s", r.expr_raw.c_str());
   if (!r.dup_of.empty())
@@ -589,6 +598,7 @@ void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx, bool viewing, 
     ImGui::Separator();
     stat_tooltip(r, ctx);
   }
+  s_size = ImGui::GetWindowSize();
   ImGui::EndTooltip();
 }
 
