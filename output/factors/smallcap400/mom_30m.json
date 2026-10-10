@@ -18,10 +18,10 @@
   "T": 31875,
   "A": 697,
   "backend": "cpu",
-  "time": "2026-10-10 19:41",
+  "time": "2026-10-10 20:13",
   "frame": "CS",
   "valid_pct": 100.0,
-  "eval_ms": 59.41,
+  "eval_ms": 55.1,
   "holds": [
    {
     "hold": 1,
