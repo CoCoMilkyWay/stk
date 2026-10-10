@@ -100,7 +100,8 @@ void RenderIntegrity(const analysis::Integrity &it) {
     ImGui::Text(")");
     ImGui::SameLine();
   };
-  const float zero_pct = it.zero_pct(), nan_pct = it.nan_pct(), inf_pct = it.inf_pct();
+  const float invalid_pct = it.invalid_pct(), zero_pct = it.zero_pct(), nan_pct = it.nan_pct(), inf_pct = it.inf_pct();
+  item("Invalid", it.n_invalid(), GetNanInfPctColor(invalid_pct), invalid_pct);
   item("Zero", it.n_zero, GetZeroPctColor(zero_pct), zero_pct);
   item("NaN", it.n_nan, GetNanInfPctColor(nan_pct), nan_pct);
   item("+Inf", it.n_pos_inf, GetNanInfPctColor(inf_pct), inf_pct);

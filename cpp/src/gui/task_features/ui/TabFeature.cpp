@@ -813,7 +813,8 @@ static void render_preview_psd(const FeaturePreview::Cell &cell, const char *cod
 
 // ============================================================================
 // 账目两列 (与 Distribution 完整性条同口径同着色, 抽样格子逐轮累积):
-//   Stat:  "nan,zero,-inf,+inf%"  四个占比, 每个恰 3 字符 (nan/inf 相对全部格子, zero 相对有效值)
+//   Stat:  "invalid,nan,zero,-inf,+inf%"  五个占比, 每个恰 3 字符 (invalid/nan/inf 相对全部格子, zero 相对有效值);
+//          invalid = ts_valid 门控不过 (特征应稠密, 排最前)
 //   Range: "min -1sd +1sd max"     四个数, 每个恰 4 字符 (sd 来自 sketch 矩)
 // ============================================================================
 
@@ -823,24 +824,24 @@ static void render_stat_cell(const analysis::Integrity &it) {
     return;
   }
   const float n_total = static_cast<float>(it.n_total);
-  const float pct[4] = {it.nan_pct(), it.zero_pct(),
+  const float pct[5] = {it.invalid_pct(), it.nan_pct(), it.zero_pct(),
                         100.0f * static_cast<float>(it.n_neg_inf) / n_total,
                         100.0f * static_cast<float>(it.n_pos_inf) / n_total};
   char s[8];
-  for (int k = 0; k < 4; ++k) {
+  for (int k = 0; k < 5; ++k) {
     if (k > 0) {
       ImGui::SameLine(0, 0);
       ImGui::TextUnformatted(",");
       ImGui::SameLine(0, 0);
     }
     misc::fmt_width(s, sizeof(s), pct[k], 3, /*fixed_zero_ok=*/true); // 百分比有界 [0,100]: 小量显示 "0.0", 不走 SI
-    ImGui::TextColored(k == 1 ? GetZeroPctColor(pct[k]) : GetNanInfPctColor(pct[k]), "%s", s);
+    ImGui::TextColored(k == 2 ? GetZeroPctColor(pct[k]) : GetNanInfPctColor(pct[k]), "%s", s);
   }
   ImGui::SameLine(0, 0);
   ImGui::TextUnformatted("%");
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("nan %zu, zero %zu, -inf %zu, +inf %zu  /  格子 %zu, 有效 %zu",
-                      it.n_nan, it.n_zero, it.n_neg_inf, it.n_pos_inf, it.n_total, it.n_valid);
+    ImGui::SetTooltip("invalid %zu, nan %zu, zero %zu, -inf %zu, +inf %zu  /  格子 %zu, 有效 %zu",
+                      it.n_invalid(), it.n_nan, it.n_zero, it.n_neg_inf, it.n_pos_inf, it.n_total, it.n_valid);
 }
 
 static void render_range_cell(const FeaturePreview::Cell &cell) {
@@ -1119,7 +1120,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
         "一级分类: 特征的类别 (同色同组相邻)",
         "二级分类: 值域自动探测 (price/flag/rank/ratio_pos/ratio_neg/ratio/raw); 绿字 = 字段表人工赋值覆盖",
-        "账目: nan,zero,-inf,+inf 占比%",
+        "账目: invalid,nan,zero,-inf,+inf 占比% (invalid = ts_valid 门控不过; 特征应稠密)",
         "值域: min -1sd +1sd max",
         "平均分布: 抽样 (日 × 资产) 的 PDF",
         "日内频谱: 单日 PSD 每 bin 能量占比均值 (x = 周期 2~256 min, 灰线 = 白噪声, 青刀 = 谱重心; 日频特征 = 地板线)",
@@ -1223,8 +1224,10 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               case 7:
                 cmp = std::strcmp(s_eff_cat2[a], s_eff_cat2[b]);
                 break;
-              case 8: // Stat: nan%
-                cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
+              case 8: // Stat: invalid% (次键 nan%)
+                cmp = cmp3(ca.integrity.invalid_pct(), cb.integrity.invalid_pct());
+                if (cmp == 0)
+                  cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
                 break;
               case 9: // Range: sd (var 单调等价)
                 cmp = cmp3(ca.var, cb.var);
@@ -1449,7 +1452,8 @@ void SaveFeatureTableJson(SharedData &data) {
           const analysis::Integrity &it = cell.integrity;
           if (it.n_total > 0) {
             const float n_total = static_cast<float>(it.n_total);
-            r["stat"] = {{"nan%", sig4(it.nan_pct())},
+            r["stat"] = {{"invalid%", sig4(it.invalid_pct())},
+                         {"nan%", sig4(it.nan_pct())},
                          {"zero%", sig4(it.zero_pct())},
                          {"-inf%", sig4(100.0f * static_cast<float>(it.n_neg_inf) / n_total)},
                          {"+inf%", sig4(100.0f * static_cast<float>(it.n_pos_inf) / n_total)},

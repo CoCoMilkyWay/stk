@@ -110,6 +110,13 @@ struct Integrity {
     val_max = std::max(val_max, v);
   }
 
+  // 门控不过的格子 (ts_valid 按 valid_type 判否): 两个账目源 (FeaturePreview / Dist) 都只把门控过的格子分到
+  // valid / nan / ±inf, 其余即门控不过, 推导得出不另设计数器. 特征应稠密: 这一项比 nan 更要紧
+  size_t n_invalid() const {
+    assert(n_total >= n_valid + n_nan + n_pos_inf + n_neg_inf);
+    return n_total - n_valid - n_nan - n_pos_inf - n_neg_inf;
+  }
+  float invalid_pct() const { return n_total > 0 ? 100.0f * n_invalid() / n_total : 0.0f; }
   float zero_pct() const { return n_valid > 0 ? 100.0f * n_zero / n_valid : 0.0f; }
   float nan_pct() const { return n_total > 0 ? 100.0f * n_nan / n_total : 0.0f; }
   float inf_pct() const { return n_total > 0 ? 100.0f * (n_pos_inf + n_neg_inf) / n_total : 0.0f; }
