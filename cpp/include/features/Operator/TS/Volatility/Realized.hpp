@@ -14,7 +14,7 @@
 //     path_len = Σ |1e4·Δln p| (基点, Δln p 复用 TakerRet 节点, 与 Flow dlogp_taker_* / TradeSize 共享一次 log)
 //   均价 (vwap / twap) 在 Flow; 盘口更新中间价的同族幂和在 RealizedMid.
 //   fp16 落盘: 幂和用 Log Tf (基点量纲下 Σr² ~ 1e2..1e6), 极值 / 路径长 原值.
-//   跨分钟状态: 网格 (p_prev / 滞后链 / last_cell); 未 flush 的无成交分钟并入下一有效分钟.
+//   跨分钟状态: 网格 (p_prev / 滞后链 / last_cell); 无成交分钟照常 flush = 整分钟零收益格 (幂和 0, 极值 0, 滞后链置零).
 // =============================================================================
 
 #include "features/DataDefine.hpp"

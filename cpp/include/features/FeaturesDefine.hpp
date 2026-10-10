@@ -81,10 +81,10 @@
 //       写别的 token = 人类强行赋值, 覆盖探测 (表格绿字). 不参与落盘指纹, 改了不用重算.
 //     同族列 (Flow 的 {amt,vol,n}_{taker,maker,cancel}_{bid,ask}, Book 的 qty_{bid,ask}_{1,5,10,all} …) 在文件内用 helper 宏生成行, ## 拼进名字, 字面串拼进 EN/CN/公式.
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 列宽 / 有效性标志 / 归一化 (GUI 两列 TS Norm / CS Norm) 全部由它推出:
-//       OP(Node[, port], Tf, Method)  节点输出口. TS; 宽 1; 层必须 == 节点 flush 域; 有效性: flush 域 onDepth → DEPTH, 其余 → DATA
+//       OP(Node[, port], Tf, Method)  节点输出口. TS; 宽 1; 层必须 == 节点 flush 域; 有效性: onMinute → ALL (L1 稠密), onDepth → DEPTH, 其余 → DATA
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
-//       CS(lvl, src, Tf, Method)   截面: 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 宽 1; DATA
-//       LABEL                      标签回填 (CoreSequential 手工写). LB; 宽 1; DATA
+//       CS(lvl, src, Tf, Method)   截面: 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 宽 1; 有效性随源层 (L1 ALL / L0 DATA)
+//       LABEL                      标签回填 (CoreSequential 手工写). LB; 宽 1; ALL (全行写, 不产 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreSequential 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; 宽 1; ALL
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Operator/TS/Meta/Meta.hpp,
 //     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
@@ -191,8 +191,13 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
 #define NODE_FLUSH_I(ft, ...) Trigger::ft
 
 // flush 域 → 该节点落盘列的层 / 有效性标志 (OP 列由此推出, 不逐列写)
+//   L1 (onMinute) 稠密: 每分钟都写行 (无成交分钟各节点归零 / 延续, 见 ResamplerTick2Min / CoreSequential) → ALL, 不受 ts_valid 门控;
+//   L0 事件稀疏: 只有事件秒有行 → DATA / DEPTH 按 ts_valid 门控
 constexpr int level_of(Trigger flush) { return flush == Trigger::onMinute ? 1 : 0; }
-constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDepth ? L2::ValidType::DEPTH : L2::ValidType::DATA; }
+constexpr L2::ValidType valid_of(Trigger flush) {
+  return flush == Trigger::onMinute ? L2::ValidType::ALL : flush == Trigger::onDepth ? L2::ValidType::DEPTH
+                                                                                     : L2::ValidType::DATA;
+}
 
 // ----------------------------------------------------------------------------
 // SRC 列解析 (字段表消费者共用)
@@ -215,8 +220,8 @@ constexpr L2::ValidType valid_of(Trigger flush) { return flush == Trigger::onDep
 #define SRC_WIDTH_FLAG 1
 
 #define SRC_VALID_OP(node, ...) valid_of(node_flush::node)
-#define SRC_VALID_CS(...) L2::ValidType::DATA
-#define SRC_VALID_LABEL L2::ValidType::DATA
+#define SRC_VALID_CS(l, ...) (l == 1 ? L2::ValidType::ALL : L2::ValidType::DATA) // 截面随源层: L1 稠密 (门控本就只看 cs_valid)
+#define SRC_VALID_LABEL L2::ValidType::ALL                                       // 标签全行写 (不产 NaN, 缺口用可成交时刻顶上, 见 LabelReturn 文件头), 与 L1 特征同稠密
 #define SRC_VALID_FLAG L2::ValidType::ALL
 
 // OP(node, Tf, Method) / OP(node, port, Tf, Method): 按参数个数取 Tf / Method (RowWriter 同法取 node/port)

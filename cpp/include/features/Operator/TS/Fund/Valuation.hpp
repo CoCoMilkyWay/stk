@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Valuation - 实时估值: 分钟最新价 × 当日基本面 (Fund 节点输出口, PIT 预计算, 缺失=NaN)
+// Valuation - 实时估值: 分钟最新价 (Bar.close) × 当日基本面 (Fund 节点输出口, PIT 预计算, 缺失=NaN)
 // =============================================================================
 //   mcap    = P_t × S_total   (亿元)       fmcap   = P_t × S_float   (亿元)
 //   pe_ttm  = mcap / NP_ttm                pb_mrq  = mcap / EQ_mrq
@@ -36,19 +36,19 @@ public:
   float y[kCount] = {};
 
   // 只接用到的 Fund 口 (不接 Fund.outs()): 依赖表按口解析, 这些口都不落盘 → 估值列无字段级依赖
-  Valuation(const MinuteData &md,
+  Valuation(const Series &close,
             const Series &total_shares, const Series &float_shares,
             const Series &net_profit_ttm, const Series &equity_mrq,
             const Series &revenue_ttm, const Series &cffoa_ttm,
             const Series &lim_up, const Series &lim_dn, const Series &low_mc_thr)
-      : md_(md),
+      : close_(close),
         total_shares_(total_shares), float_shares_(float_shares),
         net_profit_ttm_(net_profit_ttm), equity_mrq_(equity_mrq),
         revenue_ttm_(revenue_ttm), cffoa_ttm_(cffoa_ttm),
         lim_up_(lim_up), lim_dn_(lim_dn), low_mc_thr_(low_mc_thr) {}
 
   void compute() {
-    const float close = md_.close.back(); // [元]
+    const float close = close_.back(); // [元] Bar.close (无成交分钟的携带 / 前收兜底在 Bar)
 
     const float mc = close * total_shares_.back(); // [亿元]
     y[mcap] = sat(mc);
@@ -72,15 +72,15 @@ private:
                : std::numeric_limits<float>::quiet_NaN();
   }
 
-  const MinuteData &md_;
-  // Fund 节点输出口 (同域 onMinute, 拓扑序在前, back() 即本分钟值)
+  const Series &close_; // Bar.close (同域 onMinute, 拓扑序在前, back() 即本分钟值)
+  // Fund 节点输出口 (同上)
   const Series &total_shares_, &float_shares_;
   const Series &net_profit_ttm_, &equity_mrq_, &revenue_ttm_, &cffoa_ttm_;
   const Series &lim_up_, &lim_dn_, &low_mc_thr_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Valuation(N) N(Valuation, (Valuation), (minute_data, Fund.out(Fund.total_shares), Fund.out(Fund.float_shares), Fund.out(Fund.net_profit_ttm), Fund.out(Fund.equity_mrq), Fund.out(Fund.revenue_ttm), Fund.out(Fund.cffoa_ttm), Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn), Fund.out(Fund.low_mc_thr)), onMinute)
+#define NODE_Valuation(N) N(Valuation, (Valuation), (Bar.out(Bar.close), Fund.out(Fund.total_shares), Fund.out(Fund.float_shares), Fund.out(Fund.net_profit_ttm), Fund.out(Fund.equity_mrq), Fund.out(Fund.revenue_ttm), Fund.out(Fund.cffoa_ttm), Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn), Fund.out(Fund.low_mc_thr)), onMinute)
 
 #define FIELDS_L1_Valuation(X, CAT1)                                                                                                                                                          \
   X(mcap, CAT1, AUTO, "Market Cap RT", "实时总市值", "分钟最新价×总股本(亿元,不复权真市值)", R"(\frac{P_t \cdot S^{total}_{D}}{10^{8}})", OP(Valuation, mcap, None, None))                    \

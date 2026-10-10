@@ -3,7 +3,7 @@
 // =============================================================================
 // Book - 盘口状态量的分钟降频: 一次扫描出全部盘口特征 (compute=onDepth, flush=onMinute; feature_list.md 1.0 盘口部分 + 1.6)
 // =============================================================================
-//   全部状态列 = 时间加权均值 (状态量在两次盘口更新之间视为持有; 末状态持有到分钟末; 无盘口更新的分钟并入下一有效分钟).
+//   全部状态列 = 时间加权均值 (状态量在两次盘口更新之间视为持有; 末状态持有到分钟末; 无盘口更新的分钟 = 末状态整分钟持有).
 //   某快照某列无定义 (深度不足 / 分母 0) → 该列该段时长不计权 (ok_ 位图), 分钟内全程无定义 → 见下方兜底约定.
 //     spread_l{1,5,10}       第 N 档 (a_N − b_N) / mid                          (基点; 单档, 非前 N 档累计; N=1 即相对价差)
 //     spread_w_{5,10}        Σ_{i≤N}(a_i−b_i)(q^A_i+q^B_i) / Σ(q^A_i+q^B_i) / mid  (基点, 量加权价差)
@@ -19,8 +19,8 @@
 //   一档为空 (价 ≤ 0) 的快照跳过 (持有上一状态).
 //   【兜底约定】本节点不产 NaN: 下游多日拉取的序列要求无缺口、无跳变 (真实缺失由 ts_valid 列标注, 不靠 NaN).
 //     状态列 (价差 / 量额 / 失衡 / 占比 / 成本 / 价): 分钟内全程无定义 → 延续该列上一个有定义的分钟值 (last_, 跨日延续);
-//     价列 (micro / mid) 例外: 当日尚无有效盘口 → 用本分钟成交价 (flush 仅在有成交的分钟触发, 必 > 0; 09:25 即竞价撮合价).
-//       不沿用昨日盘口原值是因为除权会造成假跳变, 而成交价与 OHLC / vwap 同源同刻, 天然对齐;
+//     价列 (micro / mid) 例外: 当日尚无有效盘口 → 用本分钟 bar 收盘价 (有成交 = 成交价, 09:25 即竞价撮合价; 无成交 = 日内携带价; 尚无成交 → 前收).
+//       不沿用昨日盘口原值是因为除权会造成假跳变, 而 bar 价与 OHLC / vwap 同源同刻, 天然对齐;
 //     全历史第一次无定义时 last_ 尚无内容 → 落 0 (仅限非价列的首日空窗分钟, 无先验信息可用).
 //   fp16 落盘: 量 / 额 Log Tf; 基点 / 比率 / 价 原值.
 //   【fast-math 契约】不做 isnan; 无定义用 ok_ 位图显式表示, 不靠 NaN 传播.
@@ -93,9 +93,9 @@ public:
        const DepthSeries &bid_price, const DepthSeries &ask_price,
        const DepthSeries &bid_qty, const DepthSeries &ask_qty,
        const Series &mid_price, const Series &micro_price,
-       const float &lim_up, const float &lim_dn)
+       const float &lim_up, const float &lim_dn, const float &pre_close)
       : td_(td), md_(md), bp_(bid_price), ap_(ask_price), bq_(bid_qty), aq_(ask_qty), mid_(mid_price), micro_(micro_price),
-        lim_up_(lim_up), lim_dn_(lim_dn) {}
+        lim_up_(lim_up), lim_dn_(lim_dn), pre_close_(pre_close) {}
 
   inline void compute() {
     const float b1 = bp_[0].back(), a1 = ap_[0].back();
@@ -181,10 +181,11 @@ public:
       y[i] = last_[i];
       tw_[i] = tt_[i] = 0.0f;
     }
-    // 价列例外: 当日尚无有效盘口时用本分钟成交价做代理 (flush 只在有成交的分钟触发, 必 > 0; 09:25 即集合竞价撮合价).
-    // 不沿用昨日盘口原值 —— 除权会造成假跳变; 成交价与 OHLC / vwap 同源同刻, 天然对齐.
+    // 价列例外: 当日尚无有效盘口时用本分钟 bar 收盘价做代理 (有成交 = 成交价, 09:25 即集合竞价撮合价; 无成交 = 日内携带价;
+    // 日内尚无成交 (bar 价 0) → 前收). 不沿用昨日盘口原值 —— 除权会造成假跳变; bar 价与 OHLC / vwap 同源同刻, 天然对齐.
     if (!has_state_) {
-      const float px = md_.close.back();
+      const float bar = md_.close.back();
+      const float px = bar > 0.0f ? bar : pre_close_;
       y[micro] = last_[micro] = px;
       y[Out::mid] = last_[Out::mid] = px;
     }
@@ -233,6 +234,7 @@ private:
   const DepthSeries &bp_, &ap_, &bq_, &aq_;
   const Series &mid_, &micro_;
   const float &lim_up_, &lim_dn_; // Fund 当日涨跌停价 (盘前已知), 吃单成本吃不完时补齐余量用
+  const float &pre_close_;        // Fund 当日前收 (盘前已知), 当日无盘口无成交时的价代理
 
   bool has_state_ = false;
   uint32_t t_prev_ = 0;  // 当前状态起点 (ms)
@@ -244,7 +246,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Book(N) N(Book, (Book<L2::LOB_DEPTH>), (tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, MidPrice.out(), MicroPrice.out(), Fund.y[Fund.lim_up], Fund.y[Fund.lim_dn]), onDepth, onMinute)
+#define NODE_Book(N) N(Book, (Book<L2::LOB_DEPTH>), (tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, MidPrice.out(), MicroPrice.out(), Fund.y[Fund.lim_up], Fund.y[Fund.lim_dn], Fund.y[Fund.pre_close]), onDepth, onMinute)
 
 // 一侧 (side token, S 公式上标, CN) 的 量深度 4 + 金额深度 4 + 顶部占比 3 行
 #define BOOK_SIDE_ROWS(X, CAT1, side, S, CN)                                                                                                                                                                                                                            \

@@ -112,7 +112,7 @@ void sequential_worker(WorkerCtx ctx) {
     return sched.claimed[asset_id].compare_exchange_strong(expected, d, std::memory_order_acq_rel);
   };
 
-  // 处理一个 asset-day (缺 binary 则空过, 张量保持默认值), 返回订单数.
+  // 处理一个 asset-day (缺 binary 则按零事件日走同一路径), 返回订单数.
   // 主循环与领养回填共用 —— 两者只差句柄来自哪一天.
   // asset_id = 子轴下标 (张量列/调度槽); items/bin 路径经 global_ids 映射
   // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘档标签 (T+N) 跨日回填, 旧日句柄持到结清
@@ -120,7 +120,7 @@ void sequential_worker(WorkerCtx ctx) {
   auto process_asset_day = [&](size_t asset_id, size_t didx, const std::string &date_str, const GlobalFeatureStore::Day &day) -> size_t {
     const auto &asset = data.asset.items[sched.global_ids[asset_id]];
     if (!asset.date_at(didx).has_binaries()) {
-      sched.cores[asset_id]->no_data_day(day, store); // 缺二进制: 当天张量保持默认值, warm 状态不推进; 只走标签日历
+      sched.cores[asset_id]->empty_day(date_str, day, store); // 缺二进制 = 零事件日: 与正常日同路径, 不绑 LOB
       return 0;
     }
 

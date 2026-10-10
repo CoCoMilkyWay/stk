@@ -12,8 +12,11 @@
 // CoreSequential: 单资产时序计算. LOB → L0 (tick, 秒索引) → resample → L1 (minute)
 //   每笔: run_tick()  按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L0 行 + 标签回填
 //   分钟: run_minute() 调 onMinute 域, 写 L1 行 (末分钟由 end_day 结算, 收盘后再无 tick 触发 roll)
-//   顺序: 本笔若跨入新分钟, 先结算上一分钟 (roll → run_minute), 再让本笔进 DAG (run_tick → accumulate).
+//   顺序: 本笔若跨入新分钟, 先逐分钟结算之前尚未结算的分钟 (while roll → run_minute), 再让本笔进 DAG (run_tick → accumulate).
 //   所以 L1 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态".
+//   L1 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
+//   缺数据日 = 零事件日, 同一路径 (empty_day). 本类不读任何特征值, 不特判任何节点.
+//   ts_valid 只标"本分钟有成交", 标签分钟档 exit 仍只在有成交的分钟推进 (无成交无法平仓).
 //   节点调度全部由 NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的逐笔流 + 日频 PIT
@@ -73,28 +76,28 @@ public:
         fstore::ts_write<1>(day_, t, L1_Field::cs_valid, asset_id_, cs);
     }
     dag_.at_day_start(date_str);
+    tick2min_.begin_day();
     dag_.LabelReturn.day_begin();
   }
 
-  // 收盘: 末分钟 (收盘集合竞价 → L1 254) 没有后续 tick 触发 roll, 这里结算;
+  // 收盘: 末分钟 (收盘集合竞价 → L1 254) 没有后续 tick 触发 roll, 这里逐分钟补齐到 254 并结算;
   // 标签: 分钟档尾部 / 收盘档 / 到期的开盘档 (见 LabelReturn::day_end), 结清的日 ts_close.
   void end_day(GlobalFeatureStore &store) {
-    if (tick2min_.finish())
+    while (tick2min_.finish())
       run_minute();
     dag_.LabelReturn.day_end(label_writer(), day_releaser(store));
     dag_.at_day_end();
   }
 
-  // 无数据日 (缺 binary): 张量保持默认值, DAG / Fund 不推进 (warm 状态不动), 只走标签日历 ——
-  // 悬挂的开盘档照常计龄 / 到期结算, 当日句柄立刻归还.
-  void no_data_day(const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
-    push_day(day);
-    dag_.LabelReturn.reset();
-    dag_.LabelReturn.day_begin();
-    dag_.LabelReturn.day_end(label_writer(), day_releaser(store));
+  // 无数据日 (缺 binary) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟 onMinute / 标签日历),
+  // 各节点按自身的无成交约定给值 —— 本类不认识"缺数据"这个概念, 不特判任何特征.
+  void empty_day(const std::string &date_str, const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
+    begin_day(date_str, day);
+    end_day(store);
+    reset();
   }
 
-  // 回测区间末 (最后一日 end_day / no_data_day 之后): 悬挂日全部按最后盘口结算并归还句柄
+  // 回测区间末 (最后一日 end_day 之后): 悬挂日全部按最后盘口结算并归还句柄
   void finish_all(GlobalFeatureStore &store) {
     dag_.LabelReturn.finish_all(label_writer(), day_releaser(store));
   }
@@ -111,7 +114,9 @@ public:
     dag_.tick_data.l0_index = static_cast<uint32_t>(Clock_to_L0(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second));
     if (tick2min_.roll()) [[unlikely]] {
       TraceN("TS_Minute");
-      run_minute(); // 上一分钟结算: 本笔尚未进任何节点 / meta_
+      do // 逐分钟结算到本笔所在分钟之前 (事件空窗的分钟一并补齐): 本笔尚未进任何节点 / meta_
+        run_minute();
+      while (tick2min_.roll());
     }
     {
       TraceN("TS_Tick");
@@ -185,21 +190,18 @@ private:
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----
+  // 刚出 bar 的分钟 (roll / finish 返回 true 后): 每分钟都跑 onMinute 并写整行 (稠密); 有成交 = ts_valid 非零 + 标签分钟档 exit
   inline void run_minute() {
     const auto &md = dag_.minute_data;
-    if (md.close.empty()) [[unlikely]]
-      return;
-
+    assert(!md.close.empty() && "run_minute 只在 roll / finish 出 bar 后调");
     const size_t t = md.l1_index;
-    const bool valid = md.close.back() > 0 && (md.bid_volume.back() + md.ask_volume.back()) > 0; // 有成交的分钟才算
+    const bool traded = md.close.back() > 0 && (md.bid_volume.back() + md.ask_volume.back()) > 0;
 
-    if (valid) {
-      dag_.run<Trigger::onMinute>();
-      fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
-    }
-    fstore::ts_write<1>(day_, t, L1_Field::ts_valid, asset_id_, meta_.l1(valid));
-    // 标签 exit: 本分钟 Flow.vwap (onMinute 已 flush), 写分钟档到期的行 / 记开盘价
-    if (valid)
+    dag_.run<Trigger::onMinute>();
+    fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
+    fstore::ts_write<1>(day_, t, L1_Field::ts_valid, asset_id_, meta_.l1(traded));
+    // 标签 exit: 本分钟 Flow.vwap (onMinute 已 flush) 只在有成交的分钟可平, 写分钟档到期的行 / 记开盘价
+    if (traded)
       dag_.LabelReturn.minute_closed(t, label_writer());
   }
 

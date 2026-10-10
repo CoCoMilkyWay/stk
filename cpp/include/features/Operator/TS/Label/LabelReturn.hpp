@@ -34,7 +34,7 @@
 //                               只有可成交簿记为活跃秒.
 //   minute_anchored(t, writer)  L1 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
 //                               把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 同时写该行的冲击成本列.
-//   minute_closed(l1, w)        分钟 bar 结算后 (CoreSequential::run_minute, 有成交的分钟才有 bar): 连续竞价分钟的 Flow.vwap 作 exit,
+//   minute_closed(l1, w)        分钟 bar 结算后 (CoreSequential::run_minute, 只在有成交的分钟调: 无成交无法平仓): 连续竞价分钟的 Flow.vwap 作 exit,
 //                               写分钟档已到 exit 的行; 09:25 撮合 bar 的撮合价记为开盘价 (开盘档 T+N 的 exit),
 //                               无撮合则退首个连续竞价 bar 的首笔成交价 (交易所开盘价定义).
 //   day_begin / day_end         日历: 日期轴每一日各调一次 (无数据日也调, 由 CoreSequential 保证).
@@ -176,8 +176,8 @@ public:
     }
   }
 
-  // 分钟 bar 结算 (有成交的分钟; onMinute 域已 flush, Flow.vwap = 本分钟 Σ额/Σ量): 连续竞价分钟的 VWAP 作分钟档 exit 价.
-  //   分钟档: 行 m 的名义 exit 分钟 = m+1+n (锚点分钟末 + n 分钟所在的分钟); 该分钟无成交 (无 bar) → 自然落到之后首个有 bar 的
+  // 分钟 bar 结算 (CoreSequential 只在有成交的分钟调; onMinute 域已 flush, Flow.vwap = 本分钟 Σ额/Σ量): 连续竞价分钟的 VWAP 作分钟档 exit 价.
+  //   分钟档: 行 m 的名义 exit 分钟 = m+1+n (锚点分钟末 + n 分钟所在的分钟); 该分钟无成交 (不调本函数) → 自然落到之后首个有成交的
   //   分钟 = 最早能平的时刻. 只写 entry 已捕获的行 (未捕获的等 entry; 一直没有 → day_end).
   //   开盘价 (开盘档 exit): 09:25 撮合 bar 的撮合价 (单一价, bar 的 open = close); 无撮合 → 首个连续竞价 bar 的首笔成交价 (交易所定义).
   //   集合竞价分钟 (09:25 撮合 / 14:57 起) 的 bar 不作分钟档 exit: 开盘前名义 exit 的行等开盘首 bar; 盘尾的行持有到收盘 (day_end).
@@ -232,7 +232,8 @@ public:
   //     持有窗口随行号递减, 缩到 0 时自然退化为 0 (收盘价建仓即平), 连续无跳变.
   //   收盘档 全行 exit = 收盘.
   //   开盘档 到期日: 悬挂日 P (age = 今日 − P) 的 T+N 组, age ≥ N 且今日有开盘 → exit = 今日开盘价; age ≥ 2N 仍无 → 最近一次收盘.
-  //   全日无可成交簿: 分钟 / 收盘档无标签可写 (整日 ts_valid 皆无效), 当日不悬挂; 开盘档到期照常结算.
+  //   全日无可成交簿 (缺数据 / 停牌日): 分钟 / 收盘档无标签可写, 全行留 0, 当日不悬挂; 开盘档到期照常结算.
+  //     标签列 ALL 不受 ts_valid 门控 → 这些 0 会被当成收益 0; 在池停牌日靠 cs_valid / Fund.is_susp 在因子层剔 (待议).
   //   writer(col, n, l1, values, days_ago); release(days_ago) = 该日全部组已写完, 写句柄可归还.
   template <class Writer, class Release>
   inline void day_end(Writer &&writer, Release &&release) {

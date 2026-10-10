@@ -4,11 +4,13 @@
 // 判定函数, 不依赖算子文件 —— 算子改动不再牵连它们重编). 写入端状态机 MetaTracker
 // 与落盘列声明仍在 Meta.hpp.
 //
-//   ts_valid 单槽三态编码: 0 = 该行无事件; 非 0 = 有事件写入 (data 有效); 负 = 盘口有更新 (depth 有效)
+//   ts_valid 单槽三态编码: 0 = 该行无事件 (L0) / 无成交 (L1); 非 0 = 有 (data 有效); 负 = 盘口有更新 (depth 有效)
 //   幅值: L0 = 当时 micro price (量加权中间价, 元; 开盘竞价盘口未发布时退化为最近事件价); L1 = 1 (纯标志)
 //   依据: 盘口更新必来自事件 → depth ⟹ data, 三态刚好用 零/符号 编进一个 Float16 槽, 价格精度无损
-//   cs_valid = 当日在池 ? 1 : 0 (整日常量, 与事件无关; 判定用 data_valid). 分工: ts_valid 门控逐资产分析 / 因子 TS 输入;
-//   cs_valid 决定谁进截面 (CoreCrosssection gather / 因子层 CS 节点 / Stat), 不与 ts_valid 相与 (见 Meta.hpp)
+//   L0 事件稀疏, 行只在事件秒写, 特征列 DATA / DEPTH 按它门控; L1 稠密, 255 行每行都写 (无成交分钟各节点归零 / 延续),
+//   特征列 ALL 不门控, ts_valid 只是"本分钟有成交"的信息位 (标签分钟档 exit 只在这些分钟推进).
+//   cs_valid = 当日在池 ? 1 : 0 (整日常量, 与事件无关; 判定用 data_valid), 决定谁进截面
+//   (CoreCrosssection gather / 因子层 CS 节点 / Stat), 不与 ts_valid 相与 (见 Meta.hpp)
 
 #include "codec/L2_DataType.hpp" // L2::ValidType (fmeta::valid)
 
