@@ -90,6 +90,7 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
 }
 
 // 一级 Row[T] (选定 hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
+// 再按回测长度折成等效年化 (× kDaysPerYear / days, 单位 %): 末点 = 年化收益, 不同区间长度 / 持有期可比;
 // IC 分布 = ok 行的 ic 逐行进 KLL (与 summarize 的 ic_mean/std/skew/kurt 同一组样本)
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
@@ -97,9 +98,10 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     return;
   assert(sel >= 0 && sel < res.hd.n);
   const int T = res.scope.T, days = res.scope.days, S = factor::kSegLen;
-  assert(T == days * S);
+  assert(T == days * S && days >= 1);
   const int hold = res.hd.h[sel];
   const double h = factor::stat::hold_minutes(hold);
+  const double ann = 100.0 * factor::stat::kDaysPerYear / days;
   const factor::stat::Row *r = res.rows.data() + static_cast<size_t>(sel) * T;
   d.days = days;
   d.dates = res.dates;
@@ -126,11 +128,18 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     }
     for (int k = 0; k < K; ++k) {
       gc[k] += g[k] / h;
-      d.grp_cum[k][static_cast<size_t>(day) + 1] = static_cast<float>(gc[k]);
+      d.grp_cum[k][static_cast<size_t>(day) + 1] = static_cast<float>(gc[k] * ann);
     }
     lc += ls / h;
-    d.ls_cum[static_cast<size_t>(day) + 1] = static_cast<float>(lc);
+    d.ls_cum[static_cast<size_t>(day) + 1] = static_cast<float>(lc * ann);
   }
+  float lo = 0.f, hi = 0.f; // 含起点 0
+  for (int k = 0; k < K; ++k)
+    for (const float v : d.grp_cum[k])
+      lo = std::min(lo, v), hi = std::max(hi, v);
+  const float margin = (hi > lo ? hi - lo : 1.f) * 0.03f;
+  d.y_lo = lo - margin;
+  d.y_hi = hi + margin;
   KLLcache kll(analysis::kAggKllCapacity, analysis::kAggKllResolution);
   kll.addBatch(ics);
   d.ic_pdf.fill(kll, 3); // n < 3 与 summarize 同口径: 无 stat 也无 PDF
@@ -148,70 +157,82 @@ void empty_plot(const char *title, const ImVec2 &size, const char *hint) {
   }
 }
 
-// 左上: 分层累计 + LS. 超额|绝对 切换按钮叠在绘图区右上角 (只影响这张图): ImPlot 绘图区按 AllowOverlap 吃输入, 后提交的 ImGui 控件优先;
-// 整体包在 Group 里, 控件的 ItemSize 不打乱外层 SameLine 排版
-void plot_layers(const InspectDerived &d, bool &absolute, bool &net_cost, const ImVec2 &size) {
+// 左上: 1×2 子图 (LinkRows 共 y 轴, 横向 PlotPadding 置 0 → 两图无缝相接), 刻度单位 % (derive 已 ×100, 标在 y 轴 label)
+//   左 3/4 时序: 分层累计 + LS. y 范围只看分层线 (d.y_lo / y_hi); LS 平移 +y_lo 从左下角出发 —— LS ≈ G20 − G1 ≈ 范围跨度, 刚好填满
+//   右 1/4 期末截面: 各组末日累计的竖柱 (x = 组号, 同色), 柱顶与左侧线末端同高; 不标组号 (颜色即顺序)
+void plot_layers(const InspectDerived &d, bool absolute, const ImVec2 &size) {
   char title[128];
-  std::snprintf(title, sizeof(title), "分层累计 %s  h=%s  mono %+.3f###layers", absolute ? "(绝对 lv)" : "(超额 lv − mkt)",
+  std::snprintf(title, sizeof(title), "分层累计 (等效年化) %s  h=%s  mono %+.3f###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)",
                 factor::stat::hold_name(d.hs.hold).c_str(), d.hs.mono);
-  ImGui::BeginGroup();
-  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus)) {
-    ImGui::EndGroup();
-    return;
-  }
-  ImPlot::SetupAxes(nullptr, absolute ? "Σ ret / h" : "Σ excess / h", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
-  ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<std::string> *>(&d.dates));
-  ImPlot::SetupAxisLimits(ImAxis_X1, 0, std::max(1, d.days), ImPlotCond_Always);
-  ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
-  {
-    const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize(); // 锁 setup
-    const ImGuiStyle &st = ImGui::GetStyle();
-    const char *lbl = absolute ? "绝对 lv##abs" : "超额 lv−mkt##abs";
-    const char *lbl_cost = net_cost ? "净 (扣税佣)##cost" : "毛##cost";
-    const float w = ImGui::CalcTextSize(lbl, nullptr, true).x + 2.f * st.FramePadding.x;
-    const float wc = ImGui::CalcTextSize(lbl_cost, nullptr, true).x + 2.f * st.FramePadding.x;
-    ImGui::SetCursorScreenPos(ImVec2(pp.x + ps.x - w - wc - st.ItemSpacing.x - 6.f, pp.y + 6.f));
-    if (ImGui::SmallButton(lbl_cost))
-      net_cost = !net_cost;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("标签是价格收益 (entry 中间价 → exit 分钟 VWAP, 不含冲击 / 税佣; 冲击由控件行的 冲击 选项扣);\n"
-                        "净 = 每往返再扣 2×commission + stamp (Config), 分层线各 1 次, LS 2 次\n(尚未接线: 只切状态, 曲线不变)");
-    ImGui::SameLine();
-    if (ImGui::SmallButton(lbl))
-      absolute = !absolute;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("口径: 超额 = 组均 (lv − mkt), 围着 0 看形状; 绝对 = 组均 lv, 含市场\nLS = top(lv) + bottom(sv) 对市场本就中性, 两种口径同一条");
-  }
   const int n = d.days + 1;
-  ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.2f);
-  for (int k = 0; k < K; ++k) {
-    ImPlot::SetNextLineStyle(group_color(k));
-    char id[16];
-    std::snprintf(id, sizeof(id), "##g%d", k);
-    ImPlot::PlotLine(id, d.x_day.data(), d.grp_cum[k].data(), n);
+  float col_ratios[2] = {3.f, 1.f};
+  ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0.f, ImPlot::GetStyle().PlotPadding.y));
+  if (ImPlot::BeginSubplots("##layers", 1, 2, size, ImPlotSubplotFlags_NoTitle | ImPlotSubplotFlags_NoMenus | ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_LinkRows,
+                            nullptr, col_ratios)) {
+    if (ImPlot::BeginPlot(title, ImVec2(), ImPlotFlags_NoMenus)) {
+      ImPlot::SetupAxes(nullptr, absolute ? "年化 Σ ret / h  (%)" : "年化 Σ excess / h  (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+      ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<std::string> *>(&d.dates));
+      ImPlot::SetupAxisLimits(ImAxis_X1, 0, std::max(1, d.days), ImPlotCond_Always);
+      ImPlot::SetupAxisLimits(ImAxis_Y1, d.y_lo, d.y_hi, ImPlotCond_Always);
+      ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
+      ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.2f);
+      for (int k = 0; k < K; ++k) {
+        ImPlot::SetNextLineStyle(group_color(k));
+        char id[16];
+        std::snprintf(id, sizeof(id), "##g%d", k);
+        ImPlot::PlotLine(id, d.x_day.data(), d.grp_cum[k].data(), n);
+      }
+      ImPlot::PopStyleVar();
+      char ls[64];
+      std::snprintf(ls, sizeof(ls), "LS  SR %+.2f  t %+.2f###ls", d.hs.sharpe, d.hs.ls_t);
+      struct Shift {
+        const float *y;
+        double off;
+      } shift{d.ls_cum.data(), d.y_lo};
+      ImPlot::SetNextLineStyle(kColLS, 2.5f);
+      ImPlot::PlotLineG(
+          ls,
+          [](int i, void *ud) {
+            const Shift &s = *static_cast<const Shift *>(ud);
+            return ImPlotPoint(i, s.y[i] + s.off);
+          },
+          &shift, n);
+      if (ImPlot::IsPlotHovered()) { // 鼠标所在日: 各组 / LS 累计值 (LS 显示原值, 不含平移)
+        const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+        const int di = std::clamp(static_cast<int>(std::floor(mp.x)), 0, d.days - 1);
+        ImGui::BeginTooltip();
+        ImGui::Text("%s  (day %d)  年化 %%", d.dates[static_cast<size_t>(di)].c_str(), di + 1);
+        ImGui::Text("LS  %+.3f", d.ls_cum[static_cast<size_t>(di) + 1]);
+        ImGui::Separator();
+        for (int k = K - 1; k >= 0; --k)
+          ImGui::TextColored(group_color(k), "G%-2d %+.3f", k + 1, d.grp_cum[k][static_cast<size_t>(di) + 1]);
+        ImGui::EndTooltip();
+      }
+      ImPlot::EndPlot();
+    }
+    if (ImPlot::BeginPlot("##end", ImVec2(), ImPlotFlags_NoMenus | ImPlotFlags_NoLegend)) {
+      ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines,
+                        ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
+      ImPlot::SetupAxisLimits(ImAxis_X1, 0.5, K + 0.5, ImPlotCond_Always); // y 由 LinkRows 跟左图
+      const double zero = 0.0;
+      ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+      ImPlot::PlotInfLines("##zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+      for (int k = 0; k < K; ++k) { // 逐组一柱: PlotBars 一次只能一色
+        const double x = k + 1, v = d.grp_cum[k].back();
+        ImPlot::SetNextFillStyle(group_color(k));
+        char id[16];
+        std::snprintf(id, sizeof(id), "##b%d", k);
+        ImPlot::PlotBars(id, &x, &v, 1, 0.8);
+      }
+      if (ImPlot::IsPlotHovered()) {
+        const int k = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x)) - 1, 0, K - 1);
+        ImGui::SetTooltip("G%d  %+.3f  (年化 %%, 期末)", k + 1, d.grp_cum[k].back());
+      }
+      ImPlot::EndPlot();
+    }
+    ImPlot::EndSubplots();
   }
   ImPlot::PopStyleVar();
-  char ls[64];
-  std::snprintf(ls, sizeof(ls), "LS  SR %+.2f  t %+.2f###ls", d.hs.sharpe, d.hs.ls_t);
-  ImPlot::SetNextLineStyle(kColLS, 2.5f);
-  ImPlot::PlotLine(ls, d.x_day.data(), d.ls_cum.data(), n);
-  // 末端标 G20 (top) / G1 (bottom)
-  const float xe = static_cast<float>(d.days);
-  ImPlot::Annotation(xe, d.grp_cum[K - 1].back(), group_color(K - 1), ImVec2(-8, 0), true, "G%d", K);
-  ImPlot::Annotation(xe, d.grp_cum[0].back(), group_color(0), ImVec2(-8, 0), true, "G1");
-  if (ImPlot::IsPlotHovered()) { // 鼠标所在日: 各组 / LS 累计值
-    const ImPlotPoint mp = ImPlot::GetPlotMousePos();
-    const int di = std::clamp(static_cast<int>(std::floor(mp.x)), 0, d.days - 1);
-    ImGui::BeginTooltip();
-    ImGui::Text("%s  (day %d)", d.dates[static_cast<size_t>(di)].c_str(), di + 1);
-    ImGui::Text("LS  %+.5f", d.ls_cum[static_cast<size_t>(di) + 1]);
-    ImGui::Separator();
-    for (int k = K - 1; k >= 0; --k)
-      ImGui::TextColored(group_color(k), "G%-2d %+.5f", k + 1, d.grp_cum[k][static_cast<size_t>(di) + 1]);
-    ImGui::EndTooltip();
-  }
-  ImPlot::EndPlot();
-  ImGui::EndGroup();
 }
 
 // 右上: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS 均值, PCHIP 圆滑折线 + 节点圆点; L / S 默认隐藏, 点图例切.
@@ -219,7 +240,7 @@ void plot_layers(const InspectDerived &d, bool &absolute, bool &net_cost, const 
 // hs[n_hold] 来自 Inspect 结果或文件 stat; n < 3 的持有期不作节点
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, int sel_hold, const char *source, const ImVec2 &size) {
   char title[128];
-  std::snprintf(title, sizeof(title), "期限结构: 池化均值超额 / 持有期  (%s)###term", source);
+  std::snprintf(title, sizeof(title), "期限结构: 年化池化均值超额 / 持有期  (%s)###term", source);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
   std::vector<double> pos(static_cast<size_t>(n_hold));
@@ -233,11 +254,12 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, int sel_hold, const
     if (hs[i].n < 3)
       continue;
     xk.push_back(i);
-    yk[0].push_back(hs[i].grp[K - 1]);
-    yk[1].push_back(hs[i].grp[0]);
-    yk[2].push_back(hs[i].ls_mean);
+    const double ann = 100.0 * factor::stat::periods_per_year(hs[i].hold); // 每期均值 × 每年期数 → 年化 %, 跨持有期可比
+    yk[0].push_back(hs[i].grp[K - 1] * ann);
+    yk[1].push_back(hs[i].grp[0] * ann);
+    yk[2].push_back(hs[i].ls_mean * ann);
   }
-  ImPlot::SetupAxes("hold", "mean excess", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), n_hold, labels.data());
   ImPlot::SetupAxisLimits(ImAxis_X1, -0.6, n_hold - 0.4, ImPlotCond_Always);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
@@ -261,13 +283,14 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, int sel_hold, const
     if (i >= 0 && i < n_hold) {
       const factor::stat::HoldStat &h = hs[i];
       ImGui::BeginTooltip();
+      const double ann = 100.0 * factor::stat::periods_per_year(h.hold);
       if (h.n < 3)
         ImGui::TextDisabled("h=%s  n=%d (不足)", labels[static_cast<size_t>(i)], h.n);
       else
         ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f IR %+.3f t %+.2f pos %.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f\n"
-                    "L %+.5f  S %+.5f  LS %+.5f",
+                    "年化 %%:  L %+.2f  S %+.2f  LS %+.2f",
                     labels[static_cast<size_t>(i)], h.n, h.n_ac, h.ic_mean, h.icir, h.ic_t, h.ic_pos, h.ls_mean, h.ls_t, h.ls_pos, h.sharpe,
-                    h.beta, h.mono, h.rank_ac, h.grp[K - 1], h.grp[0], h.ls_mean);
+                    h.beta, h.mono, h.rank_ac, h.grp[K - 1] * ann, h.grp[0] * ann, h.ls_mean * ann);
       ImGui::EndTooltip();
     }
   }
@@ -366,7 +389,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("分层累计 / IC 分布 / 顶部 stat 看哪个持有期 (只影响显示; 一次算全部持有期)");
+    tip("分层累计 / IC 分布 / 顶部 stat 看哪个持有期\n"
+        "• 只影响显示, 一次算全部持有期");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
   if (ImGui::BeginCombo("冲击", ui.impact_amt ? (std::to_string(ui.impact_amt) + "w").c_str() : "无")) {
@@ -378,10 +402,25 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("标签口径. 无 = 价格收益 (entry 中间价 → exit 分钟 VWAP; 默认, 与 Factors Run 同);\n"
-                      "<amt>w = 再扣建仓冲击 (lb_cost_buy/sell_<amt>w: 同一盘口吃 amt 万的 VWAP 偏离中间价) + 平仓固定冲击 (Config 平仓冲击 %.4f)\n"
-                      "净标签即兴算不缓存 (换档只重算 Stat, 不重读库); 吃不到的格 (NaN) 无效",
-                      ctx.sell_impact);
+    tip("标签口径\n"
+        "• 无: 价格收益, entry 中间价 → exit 分钟 VWAP (默认, 与 Factors Run 同)\n"
+        "• <amt>w: 再扣建仓冲击 (lb_cost_buy/sell_<amt>w: 同一盘口吃 amt 万的 VWAP 偏离中间价) + 平仓固定冲击 (Config %.4f)\n"
+        "• 净标签即兴算不缓存: 换档只重算 Stat, 不重读库; 吃不到的格 (NaN) 无效",
+        ctx.sell_impact);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(70);
+  if (ImGui::BeginCombo("分层", ui.absolute ? "绝对" : "超额")) {
+    if (ImGui::Selectable("超额", !ui.absolute))
+      ui.absolute = false;
+    if (ImGui::Selectable("绝对", ui.absolute))
+      ui.absolute = true;
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered())
+    tip("分层累计图的口径 (只影响显示)\n"
+        "• 超额: 组均 (lv − mkt), 围着 0 看形状\n"
+        "• 绝对: 组均 lv, 含市场\n"
+        "• LS = top(lv) + bottom(sv), 本就市场中性, 两种口径同一条");
   ImGui::SameLine();
   const bool can_run = !busy && ctx.axis_ready && n_hold > 0;
   if (!can_run)
@@ -394,8 +433,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
   if (!can_run)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip(ctx.axis_ready ? "弃缓存整体重读特征库 + 算这一个因子 (CPU) + Stat 留一级 Row[H][T]; 换因子会自动起算 (只补缺的特征)"
-                                     : "资产轴未就绪 (先在 Database 页扫描), 读不了特征库");
+    tip(ctx.axis_ready ? "弃缓存整体重算这一个因子: 重读特征库 → eval (CPU) → Stat, 留一级 Row[H][T]\n"
+                         "• 换因子会自动起算, 只补缺的特征; 此按钮 = 强制全量"
+                       : "资产轴未就绪, 读不了特征库\n"
+                         "• 先在 Database 页扫描");
   ImGui::SameLine();
   if (!busy)
     ImGui::BeginDisabled();
@@ -432,7 +473,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
   probe.impact_amt = ui.impact_amt, probe.sell_impact = ui.impact_amt > 0 ? ctx.sell_impact : 0.0;
   const std::string key = probe.key();
   const int sel = ui.hold_idx;
-  std::string message, res_error, res_key;
+  std::string message, res_error, res_key, res_file, res_expr;
+  int res_impact = 0;
   StatScope res_scope;
   float res_valid = 0.f;
   double res_ms = 0.0;
@@ -447,6 +489,9 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     if (!res.key.empty() && res.error.empty()) {
       assert(res.n_hold == n_hold && "Inspect 与 FeatureTable 的标签组不一致");
       res_has = true;
+      res_file = res.file;
+      res_expr = res.expr;
+      res_impact = res.impact_amt;
       res_scope = res.scope;
       res_valid = res.valid_pct;
       res_ms = res.eval_ms;
@@ -478,14 +523,19 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     ui.last_req_key = key;
 
   // ---- 作用域 + 选定持有期的 stat 行 ----
+  // match = 结果就是当前请求; shown ⊇ match = 结果是同因子同作用域的 (只差冲击档, 服务不清旧 result) → 换档期间继续画旧图, 算完一次性换
   const bool match = res_has && res_key == key;
+  const bool shown = res_has && res_file == row.file && res_expr == row.expr && res_scope.universe == ctx.universe &&
+                     res_scope.start_date == ctx.start_date && res_scope.end_date == ctx.end_date;
+  assert(!match || shown);
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
-  } else if (match) {
-    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms | 标签 %s", res_scope.universe.c_str(),
+  } else if (shown) {
+    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms | 标签 %s%s", res_scope.universe.c_str(),
                         res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T, res_scope.backend.c_str(),
                         res_scope.time.c_str(), res_valid, res_ms,
-                        ui.impact_amt ? ("扣冲击 " + std::to_string(ui.impact_amt) + "w + 平仓 " + std::to_string(ctx.sell_impact)).c_str() : "毛 (价格收益)");
+                        res_impact ? ("扣冲击 " + std::to_string(res_impact) + "w + 平仓 " + std::to_string(ctx.sell_impact)).c_str() : "毛 (价格收益)",
+                        match ? "" : "  (旧口径, 新口径计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)
       ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f "
@@ -505,20 +555,20 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
   const ImVec2 cell(std::max(100.f, (avail.x - sp) * 0.5f), std::max(100.f, (avail.y - ImGui::GetStyle().ItemSpacing.y) * 0.5f));
   const char *wait_hint = busy ? "计算中…" : "Compute 后可见";
 
-  if (match && ui.der.valid)
-    plot_layers(ui.der, ui.absolute, ui.net_cost, cell);
+  if (shown && ui.der.valid)
+    plot_layers(ui.der, ui.absolute, cell);
   else
     empty_plot("分层累计###layers", cell, wait_hint);
   ImGui::SameLine();
   // 期限结构: Inspect 结果优先, 否则文件 stat (Factors 表的 row.hold)
-  if (match)
-    plot_term(res_holds, n_hold, ui.hold_idx, ui.impact_amt ? "Inspect (扣冲击)" : "Inspect", cell);
+  if (shown)
+    plot_term(res_holds, n_hold, ui.hold_idx, res_impact ? "Inspect (扣冲击)" : "Inspect", cell);
   else if (row.has_stat && row.n_hold == n_hold && ui.impact_amt == 0) // 文件 stat 只有毛口径
     plot_term(row.hold, n_hold, ui.hold_idx, row.stat_from_file ? "文件 stat" : "Factors Run", cell);
   else
     empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Compute)");
 
-  if (match && ui.der.valid)
+  if (shown && ui.der.valid)
     plot_ic(ui.der, cell);
   else
     empty_plot("IC 分布###ic", cell, wait_hint);

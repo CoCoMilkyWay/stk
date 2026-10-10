@@ -52,6 +52,10 @@ struct FactorsUIContext {
   bool axis_ready = false;  // 资产轴就绪 (数据库扫过) 才能读特征库评估
 };
 
+// Factors / Inspect 两页所有文字提示走这一个: 固定宽度处折行 (SetTooltip 不折行, 长句会被视口裁掉).
+// 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
+void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 // 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 0 = 无
 int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUIContext &ctx);
 

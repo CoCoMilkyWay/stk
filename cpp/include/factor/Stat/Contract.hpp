@@ -161,11 +161,11 @@ struct HoldStat {
   float ls_mean = 0.f, ls_t = 0.f, ls_pos = 0.f, sharpe = 0.f, beta = 0.f, mono = 0.f, rank_ac = 0.f;
   float grp[kGroups] = {}; // 池化组均值
 };
-// 年化换手 (倍/年) = 每持有期换手 (1 − rank_ac, 秩重排占比) × 每年持有期数 (kDaysPerYear · kSegLen / h).
+// 每年持有期数 = kDaysPerYear · kSegLen / h (一年 242 个交易日, 一天 kSegLen 分钟): 年化 (sharpe / 换手 / 均值超额) 统一走这一个
+inline constexpr double periods_per_year(int hold) { return static_cast<double>(kDaysPerYear) * kSegLen / hold_minutes(hold); }
+// 年化换手 (倍/年) = 每持有期换手 (1 − rank_ac, 秩重排占比) × 每年持有期数.
 // rank_ac 的 lag = h 随持有期变, 本身不可跨期比; 折到同一时间轴后可比, 越低越好. 派生量, 不落 HoldStat / 文件
-inline double turnover_annual(const HoldStat &s) {
-  return (1.0 - s.rank_ac) * static_cast<double>(kDaysPerYear) * kSegLen / hold_minutes(s.hold);
-}
+inline double turnover_annual(const HoldStat &s) { return (1.0 - s.rank_ac) * periods_per_year(s.hold); }
 
 // ---- 共享整数公式 (GPU 侧有逐字一致的 __device__ 版) ----
 
@@ -333,7 +333,7 @@ inline HoldStat summarize(const Row *r, int T, int hold) {
   s.ls_pos = static_cast<float>(static_cast<double>(nlpos) / n);
   if (ls_sd > 0.0) {
     s.ls_t = static_cast<float>(mls / ls_sd * std::sqrt(n_eff));
-    s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(static_cast<double>(kDaysPerYear) * kSegLen / h));
+    s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(periods_per_year(hold)));
   }
   if (vmk > 0.0)
     s.beta = static_cast<float>(cov / vmk);

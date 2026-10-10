@@ -23,17 +23,7 @@
 
 namespace GUI::Factors {
 
-namespace {
-
-// ============================================================================
-// 构建器 (从外到内): 每个槽一个下拉 (过滤框 + 算子段 + 特征段), 选了算子就在下面缩进画它的子槽 + 参数
-// ============================================================================
-
-const char *kSlotNames[3] = {"x", "y", "z"};
-
-// 本页所有文字提示走这一个: 固定宽度处折行 (SetTooltip 不折行, 长句会被视口裁掉)
 constexpr float kTipWrapEm = 48.0f;
-void tip(const char *fmt, ...) IM_FMTARGS(1);
 void tip(const char *fmt, ...) {
   ImGui::BeginTooltip();
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetFontSize() * kTipWrapEm);
@@ -44,6 +34,14 @@ void tip(const char *fmt, ...) {
   ImGui::PopTextWrapPos();
   ImGui::EndTooltip();
 }
+
+namespace {
+
+// ============================================================================
+// 构建器 (从外到内): 每个槽一个下拉 (过滤框 + 算子段 + 特征段), 选了算子就在下面缩进画它的子槽 + 参数
+// ============================================================================
+
+const char *kSlotNames[3] = {"x", "y", "z"};
 
 bool contains_ci(std::string_view hay, std::string_view needle) {
   if (needle.empty())
@@ -160,7 +158,7 @@ void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filte
     if (ImGui::Selectable(label, n.op == i))
       set_op(n, i);
     if (ImGui::IsItemHovered())
-      tip("%d 元 | %s | %s", o.arity, o.params[0] ? o.params : "无参数", o.note);
+      tip("%s\n• %d 元\n• 参数 %s", o.note, o.arity, o.params[0] ? o.params : "无");
   }
   ImGui::TextDisabled("特征");
   for (const FeatCol &c : ft.cols) {
@@ -229,7 +227,7 @@ bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
 //   desc / range / best  说明 / 取值范围 / 最优 (悬停表三列, 主表列提示也由它们拼); 文案压短, 悬停表宽度由它们定
 //   get    HoldStat → double (整数计数也走这里, fmt 用 %.0f)
 //   cmp    跨持有期可比性 (渐变着色): None 不比; High 越大越好 (因子方向按根算子约定为正); Low 越小越好; AbsLow 越近 0 越好.
-//          不比的: n / n_ac (由持有期机制决定), std (尺度随 h 变), skew / kurt (形态诊断), rAC (lag = h 随 h 变; 折成年化换手 turn 后才比)
+//          不比的: n / n_ac (由持有期机制决定), std (尺度随 h 变), skew / kurt (形态诊断). rAC 的 lag = h 随 h 变, 跨期比用 turn (年化换手)
 //   公式见 factor/Stat/Contract.hpp【二级 HoldStat】(t 值按 n/h 折算重叠持有期; Sharpe 以持有期为一期年化)
 // ============================================================================
 using HS = factor::stat::HoldStat;
@@ -263,10 +261,9 @@ struct Metric {
 constexpr Metric kMetrics[] = {
     {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f", [](const HS &h) { return static_cast<double>(h.mono); },
      Cmp::High},
-    {Group::Shape, "turn", "turn", "年化换手 = (1 − rAC) × 年持有期数", "[0, ∞)", "越小", "%.0f", [](const HS &h) { return factor::stat::turnover_annual(h); },
-     Cmp::Low},
-    {Group::Shape, "rAC", nullptr, "因子秩 lag=h 自相关", "[-1, 1]", "越大 (折成 turn 再比)", "%+.3f",
-     [](const HS &h) { return static_cast<double>(h.rank_ac); }, Cmp::None},
+    {Group::Shape, "rAC", nullptr, "因子秩 lag=h 自相关", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rank_ac); },
+     Cmp::High},
+    {Group::Shape, "turn", "turn", "年化换手 (倍/年)", "[0, ∞)", "越小", "%.0f", [](const HS &h) { return factor::stat::turnover_annual(h); }, Cmp::Low},
     {Group::LS, "mean", "LS", "多空超额 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h) { return static_cast<double>(h.ls_mean); }, Cmp::High},
     {Group::LS, "t", nullptr, "多空超额 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls_t); }, Cmp::High},
     {Group::LS, "pos", nullptr, "多空超额 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ls_pos); },
@@ -336,28 +333,61 @@ struct FixedCol {
   bool sortable;
 };
 constexpr FixedCol kFixedCols[kNumFixed] = {
-    {"edit", "勾选 → 编辑模式 (载入上方构建器, 可改 / 删), 同时只勾一个; 排序 = 文件名序 (默认)", true},
-    {"type", "因子类型 (文件 type 键): alpha = 预测超额收益 (再分 CS / TS 口径, 见 frame 列); beta = 风险暴露 (未实现, 留位)", true},
-    {"name_en", "英文名 = 文件名主干: <factor_dir>/<universe>/<name_en>.json; 点行高光 → 单因子展示 (Inspect 页)", true},
-    {"name_cn", "中文名 (文件 name_cn 键): 纯汉字, 1..10 字; 缺 / 不合 → BROKEN", true},
+    {"edit",
+     "勾选 → 编辑模式: 载入上方构建器, 可改 / 删\n"
+     "• 同时只勾一个\n"
+     "• 排序 = 文件名序 (默认)",
+     true},
+    {"type",
+     "因子类型 (文件 type 键)\n"
+     "• alpha: 预测超额收益, 再分 CS / TS 口径 (见 frame 列)\n"
+     "• beta: 风险暴露 (未实现, 留位)",
+     true},
+    {"name_en",
+     "英文名 = 文件名主干: <factor_dir>/<universe>/<name_en>.json\n"
+     "• 仅 [A-Za-z0-9_], ≤63 字符\n"
+     "• 点行高光 → Inspect 页单因子展示",
+     true},
+    {"name_cn",
+     "中文名 (文件 name_cn 键)\n"
+     "• 纯汉字, 1..10 字\n"
+     "• 缺 / 不合 → BROKEN",
+     true},
     {"frame",
-     "口径 (由根算子定); 标签两口径都取超额 (减截面均值), 组均值沿 t 池化\nCS = 截面 (根 CsRank / CsNormRank / CsZ; 每 t 截面 rank 分 20 组, "
-     "任一组空行无效, 多空对冲)\nTS = 时序 (根 TsRankRoll 5 日; 自身分位直接分 20 组, 组可空 → long/flat)",
+     "口径, 由根算子定; 两口径标签都取超额 (减截面均值), 组均值沿 t 池化\n"
+     "• CS = 截面: 根 CsRank / CsNormRank / CsZ; 每 t 截面 rank 分 20 组, 任一组空该行无效, 多空对冲\n"
+     "• TS = 时序: 根 TsRankRoll 5 日; 自身分位直接分 20 组, 组可空 → long / flat",
      true},
     {"status",
-     "BROKEN 红 = 文件 / type / name_cn / 表达式 / 根非归一 / params / 组 id 数据不合 (悬停看原因; 文件不动, 人手动处理)\nok 绿 = 本轮算的; "
-     "file 灰 = stat 来自文件且作用域一致; file≠scope 黄 = 文件 stat 是别的 universe / 区间算的\nno stat = 从未评估; dup 黄 = 与另一文件同一规范串",
+     "评估状态\n"
+     "• BROKEN 红: 文件 / type / name_cn / 表达式 / 根非归一 / params / 组 id 不合 (悬停看原因; 文件不动, 手动处理)\n"
+     "• ok 绿: 本轮算的\n"
+     "• file 灰: stat 来自文件, 作用域一致\n"
+     "• file≠scope 黄: 文件 stat 是别的 universe / 区间算的\n"
+     "• no stat: 从未评估\n"
+     "• dup 黄: 与另一文件同一规范串",
      false},
-    {"time", "该因子算一遍 DAG 的耗时 (ms) = 子树全部算子节点之和 (共享节点算给每个用它的因子): CPU 全核 wall / GPU 纯 kernel", true},
-    {"expr", "规范串 (解析后重新序列化: 算子 PascalCase, 参数 d/k/k2 显式, 含 params 覆盖后的当前值); 解析不过的行显示文件原串", false},
+    {"time",
+     "算一遍 DAG 的耗时 (ms)\n"
+     "• = 子树全部算子节点之和, 共享节点算给每个用它的因子\n"
+     "• CPU 全核 wall / GPU 纯 kernel",
+     true},
+    {"expr",
+     "规范串 = 解析后重新序列化\n"
+     "• 算子 PascalCase, 参数 d / k / k2 显式, 含 params 覆盖后的当前值\n"
+     "• 解析不过的行显示文件原串",
+     false},
     {"ops", "算子节点数 (= params 数组长度)", true},
     {"feats", "去重特征数 (输入平面数)", true},
-    {"slots", "DAG 缓冲槽数 (峰值同时存活的中间量; 内存 / 显存 = slots × T·A × 5B)", true},
+    {"slots",
+     "DAG 缓冲槽数 = 峰值同时存活的中间量\n"
+     "• 内存 / 显存 = slots × T·A × 5B",
+     true},
     {"valid%", "根平面有效格占比", true},
 };
 constexpr int kNoteCol = kNumFixed + kNumStatCols;
 constexpr int kNumCols = kNoteCol + 1;
-constexpr const char *kNoteTip = "文件 note 键 (人 / agent 写的一句话)";
+constexpr const char *kNoteTip = "文件 note 键: 人 / agent 写的一句话";
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
 const char *col_name(int c) {
@@ -377,8 +407,8 @@ const std::string &col_tip(int c) {
     for (int i = 0; i < kNumStatCols; ++i) {
       const Metric &m = kMetrics[kStatColMetric[static_cast<size_t>(i)]];
       const GroupInfo &g = kGroupInfo[static_cast<size_t>(m.group)];
-      a[static_cast<size_t>(kNumFixed + i)] = std::string(g.name) + " " + m.name + "\n说明  " + m.desc + "\n范围  " + m.range + "\n最优  " + m.best +
-                                              "\n组    " + g.desc + "\n\n选定持有期的值 (n < 3 为空); 悬停行看全部持有期";
+      a[static_cast<size_t>(kNumFixed + i)] = std::string(g.name) + " · " + m.name + "\n• 说明  " + m.desc + "\n• 范围  " + m.range + "\n• 最优  " + m.best +
+                                              "\n• 组    " + g.desc + "\n• 显示  选定持有期的值, n < 3 为空; 悬停行看全部持有期";
     }
     a[static_cast<size_t>(kNoteCol)] = kNoteTip;
     return a;
@@ -622,7 +652,10 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   ImGui::SameLine();
   ImGui::Text("%s  %s .. %s", ctx.universe.c_str(), ctx.start_date.c_str(), ctx.end_date.c_str());
   if (ImGui::IsItemHovered())
-    tip("因子目录: %s\n作用域 = config 的 universe + 日期区间 (与特征库同一推导); 一个时间只算一个作用域", ctx.factor_dir.c_str());
+    tip("因子目录 %s\n"
+        "• 作用域 = config 的 universe + 日期区间, 与特征库同一推导\n"
+        "• 一个时间只算一个作用域",
+        ctx.factor_dir.c_str());
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -642,13 +675,11 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     }
   }
   if (ImGui::IsItemHovered()) {
-    if (const char *g = factor::gpu::device_name())
-      tip("两端都走一张共享 DAG (跨因子公共子式只算一次), 顺序走节点\nCPU: 每个节点切满所有核 (CS / Point / Expand 按 t 切, "
-          "Roll / Ema 按资产列切块; 与单线程逐位一致), Stat 全核\nGPU (%s): 输入上传一次, 中间量常驻显存, Stat 走常驻会话",
-          g);
-    else
-      tip("共享 DAG (跨因子公共子式只算一次), 顺序走节点\nCPU: 每个节点切满所有核 (CS / Point / Expand 按 t 切, "
-          "Roll / Ema 按资产列切块; 与单线程逐位一致), Stat 全核\nGPU: off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
+    const char *g = factor::gpu::device_name();
+    tip("两端同走一张共享 DAG: 跨因子公共子式只算一次, 顺序走节点\n"
+        "• CPU: 每节点切满所有核 (CS / Point / Expand 按 t 切, Roll / Ema 按资产列切块), 与单线程逐位一致; Stat 全核\n"
+        "• GPU: %s",
+        g ? (std::string(g) + "; 输入上传一次, 中间量常驻显存, Stat 走常驻会话").c_str() : "off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
@@ -659,7 +690,9 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    tip("表格 Stat 列显示哪个持有期 (只影响显示; 悬停表格行看全部持有期)");
+    tip("表格 Stat 列显示哪个持有期\n"
+        "• 只影响显示, Run 一次算全部持有期\n"
+        "• 悬停表格行看全部持有期");
   ImGui::SameLine();
 
   const bool can_run = !busy && ctx.axis_ready && !ft.labels.empty();
@@ -670,8 +703,10 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   if (!can_run)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    tip(ctx.axis_ready ? "扫描 + 读特征库 + 逐因子 eval + Stat, 结果回写各因子文件 (params / stat 键)"
-                       : "资产轴未就绪 (先在 Database 页扫描), 读不了特征库");
+    tip(ctx.axis_ready ? "评估全目录: 扫描 → 读特征库 → 逐因子 eval → Stat\n"
+                         "• 结果回写各因子文件的 params / stat 键"
+                       : "资产轴未就绪, 读不了特征库\n"
+                         "• 先在 Database 页扫描");
   ImGui::SameLine();
   if (!busy)
     ImGui::BeginDisabled();
@@ -687,7 +722,8 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   if (busy)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    tip("重扫目录 (只解析校验, 不算); 文件里的 stat 照常显示");
+    tip("重扫目录: 只解析校验, 不算\n"
+        "• 文件里的 stat 照常显示");
 
   ImGui::SameLine();
   ImGui::Text("Status:");
@@ -754,10 +790,11 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   else
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "2. Add:");
   if (ImGui::IsItemHovered())
-    tip("从外到内: 先选根 —— 必须是归一算子: CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=1275, 5 日) (时序口径);\n"
-        "再在缩进的子槽里选算子或特征; 参数 (d / k / k2) 手填\n"
-        "下拉里可打字过滤 (算子名 / 中文名 / 特征 code); GROUP 域算子的组 id 槽只列整数列算子 + 特征\n"
-        "勾选表格首列 → 编辑模式 (载入到这里; Save 覆盖 / 删除); 取消勾选 → 添加模式, 内容留作模板");
+    tip("从外到内构建表达式\n"
+        "• 根: 必须是归一算子 —— CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=1275, 5 日) (时序口径)\n"
+        "• 子槽: 缩进里选算子或特征; 参数 d / k / k2 手填\n"
+        "• 下拉: 可打字过滤 (算子名 / 中文名 / 特征 code); GROUP 域的组 id 槽只列整数列算子 + 特征\n"
+        "• 模式: 勾选表格首列 → 编辑 (载入到这里, Save 覆盖 / 删除); 取消勾选 → 添加, 内容留作模板");
   ImGui::SameLine();
   if (edit_row) {
     if (ImGui::SmallButton("取消勾选")) {
@@ -800,8 +837,8 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     ImGui::SameLine();
     ImGui::TextDisabled("[%s]", factor::stat::frame_name(frame));
     if (ImGui::IsItemHovered())
-      tip("%s", frame == factor::stat::Frame::CS ? "截面口径: 根是截面归一算子, 每 t 截面 rank → 20 组 (标签超额)"
-                                                 : "时序口径: 根 TsRankRoll(5 日) 自身分位直接分 20 组, 组可空 (标签超额)");
+      tip("%s", frame == factor::stat::Frame::CS ? "截面口径: 根是截面归一算子\n• 每 t 截面 rank → 20 组, 标签超额"
+                                                 : "时序口径: 根 TsRankRoll(5 日)\n• 自身分位直接分 20 组, 组可空, 标签超额");
   }
 
   // 两个名字: 非空且不合法 → 红字 (InputText 会改 buf, push/pop 必须用同一个判断结果)
@@ -818,12 +855,14 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   name_input("##name", "name_en (必填, 文件名)", ui.name_buf, sizeof(ui.name_buf), ValidFactorName, 180, ImGuiInputTextFlags_CharsNoBlank);
   const bool name_ok = ValidFactorName(ui.name_buf);
   if (ImGui::IsItemHovered())
-    tip("name_en = 文件名主干: <factor_dir>/<name_en>.json; 仅 [A-Za-z0-9_], ≤63 字符");
+    tip("name_en = 文件名主干: <factor_dir>/<name_en>.json\n"
+        "• 仅 [A-Za-z0-9_], ≤63 字符");
   ImGui::SameLine();
   name_input("##name_cn", "name_cn (必填)", ui.name_cn_buf, sizeof(ui.name_cn_buf), ValidFactorNameCn, 150, ImGuiInputTextFlags_None);
   const bool name_cn_ok = ValidFactorNameCn(ui.name_cn_buf);
   if (ImGui::IsItemHovered())
-    tip("name_cn = 中文名 (落文件 name_cn 键): 纯汉字, 1..10 字");
+    tip("name_cn = 中文名, 落文件 name_cn 键\n"
+        "• 纯汉字, 1..10 字");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(std::max(200.0f, ImGui::GetContentRegionAvail().x - (edit_row ? 300.0f : 240.0f)));
   ImGui::InputTextWithHint("##note", "note (可选: 一句话说明, 落文件 note 键)", ui.note_buf, sizeof(ui.note_buf));
