@@ -11,7 +11,9 @@
 //   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日累计的组均收益 (控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
 //        重叠持有期按 1/h 折算 = h 个相位非重叠链的平均). y 范围按分层线定; 多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
 //        图例标注年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷 → G20 暖 两色线性渐变 (单调, 不交织)
-//        右 1/4 期末截面 = 各组末日累计的横柱, 按组号在 y 范围里均匀排 (G1 下 … G20 上), 长 = 末值, x 范围 = y 范围 (同尺);
+//        时序上一条可拖光标 (锚在交易日, 双击落点, 默认末日; 不做 hover 列表, 对仗 OrderFlow 的锚)
+//        右 1/4 光标日截面 = 各组到光标日的累计按已过天数折年化 (section_at, 唯一出口; 末日与曲线末点一致) 的横柱, 按组号在 y 范围里均匀排
+//        (G1 下 … G20 上), x 范围 = y 范围 (同尺);
 //        柱色按取值 (最负 = G1 色 … 最正 = G20 色), 与左图按组号的色对照, 非单调处一眼可见
 //   右上 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三条线图例可点切, 默认只显 LS. 口径 = 全 universe 全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产. 只用 HoldStat:
@@ -52,6 +54,7 @@ struct InspectUIState {
   int hold_idx = 0;         // FeatureTable labels 下标 (与 Factors 页独立)
   int impact_amt = 0;       // 冲击口径: 0 = 无 (毛); 否则 FeatureTable::costs 里的金额档 (万). 进请求 key
   bool absolute = false;    // 左上: 超额 (false) | 绝对 (true)
+  int cursor_day = -1;      // 左上时序的光标日 (0 = 起点 … days = 末日); -1 / 越界 → 末日. 右侧截面柱按它取值
   std::string last_req_key; // 上次自动起算的 InspectRequest::key (取消后不反复重起)
   // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效
   FactorRow req_row;

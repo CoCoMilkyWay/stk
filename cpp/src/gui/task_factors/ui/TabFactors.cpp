@@ -261,7 +261,7 @@ struct Metric {
 constexpr Metric kMetrics[] = {
     {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f", [](const HS &h) { return static_cast<double>(h.mono); },
      Cmp::High},
-    {Group::Shape, "rAC", nullptr, "因子秩 lag=h 自相关", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rank_ac); },
+    {Group::Shape, "rAC", "rAC", "因子秩 lag=h 自相关", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rank_ac); },
      Cmp::High},
     {Group::Shape, "turn", "turn", "年化换手 (倍/年)", "[0, ∞)", "越小", "%.0f", [](const HS &h) { return factor::stat::turnover_annual(h); }, Cmp::Low},
     {Group::LS, "mean", "LS", "多空超额 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h) { return static_cast<double>(h.ls_mean); }, Cmp::High},
@@ -269,16 +269,16 @@ constexpr Metric kMetrics[] = {
     {Group::LS, "pos", nullptr, "多空超额 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ls_pos); },
      Cmp::High},
     {Group::LS, "SR", "SR", "多空超额 年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return static_cast<double>(h.sharpe); }, Cmp::High},
-    {Group::LS, "β", "β", "多空超额 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
+    {Group::LS, "β", nullptr, "多空超额 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
     {Group::IC, "mean", "IC", "rank IC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h) { return static_cast<double>(h.ic_mean); }, Cmp::High},
     {Group::IC, "std", nullptr, "rank IC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.ic_std); }, Cmp::None},
     {Group::IC, "IR", "ICIR", "rank IC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.icir); }, Cmp::High},
-    {Group::IC, "t", "IC_t", "rank IC t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_t); }, Cmp::High},
+    {Group::IC, "t", nullptr, "rank IC t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_t); }, Cmp::High},
     {Group::IC, "pos", nullptr, "rank IC > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ic_pos); },
      Cmp::High},
     {Group::IC, "skew", nullptr, "rank IC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_skew); }, Cmp::None},
     {Group::IC, "kurt", nullptr, "rank IC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_kurt); }, Cmp::None},
-    {Group::Sample, "n", "n", "标签 ok 行数", "[0, T]", "越大, <3 其余空", "%.0f", [](const HS &h) { return static_cast<double>(h.n); }, Cmp::None},
+    {Group::Sample, "n", nullptr, "标签 ok 行数", "[0, T]", "越大, <3 其余空", "%.0f", [](const HS &h) { return static_cast<double>(h.n); }, Cmp::None},
     {Group::Sample, "n_ac", nullptr, "rAC 可算行数", "[0, T]", "越大", "%.0f", [](const HS &h) { return static_cast<double>(h.n_ac); }, Cmp::None},
 };
 constexpr int kNumMetrics = static_cast<int>(std::size(kMetrics));
@@ -313,7 +313,8 @@ void metric_cell(const HS *h, const Metric &m, const ImVec4 *color = nullptr) {
 double metric_key(const HS *h, const Metric &m) { return h ? m.get(*h) : -1e300; }
 
 // ============================================================================
-// 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) + Stat 列 (kMetrics 里 col 非空的, 同序) + note
+// 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
+//   edit type name_en name_cn frame status time valid | mono rAC turn LS SR IC ICIR | expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
@@ -322,11 +323,12 @@ enum Col : int { Edit,
                  Frame,
                  Status,
                  Time,
+                 Valid,
                  Expr,
                  Ops,
                  Feats,
                  Slots,
-                 Valid,
+                 Note,
                  kNumFixed };
 struct FixedCol {
   const char *name, *tip;
@@ -384,33 +386,63 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• 内存 / 显存 = slots × T·A × 5B",
      true},
     {"valid%", "根平面有效格占比", true},
+    {"note", "文件 note 键: 人 / agent 写的一句话", false},
 };
-constexpr int kNoteCol = kNumFixed + kNumStatCols;
-constexpr int kNumCols = kNoteCol + 1;
-constexpr const char *kNoteTip = "文件 note 键: 人 / agent 写的一句话";
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
-const char *col_name(int c) {
-  if (c < kNumFixed)
-    return kFixedCols[c].name;
-  if (c < kNoteCol)
-    return kMetrics[kStatColMetric[static_cast<size_t>(c - kNumFixed)]].col;
-  return "note";
+// 显示顺序: Stat 列夹在 Valid 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
+struct ColRef {
+  int fixed = -1, stat = -1;
+};
+constexpr int kStatInsertAfter = Valid;
+constexpr int kNumCols = kNumFixed + kNumStatCols;
+constexpr std::array<ColRef, kNumCols> col_layout() {
+  std::array<ColRef, kNumCols> a{};
+  int c = 0;
+  for (int f = 0; f <= kStatInsertAfter; ++f)
+    a[static_cast<size_t>(c++)].fixed = f;
+  for (int i = 0; i < kNumStatCols; ++i)
+    a[static_cast<size_t>(c++)].stat = i;
+  for (int f = kStatInsertAfter + 1; f < kNumFixed; ++f)
+    a[static_cast<size_t>(c++)].fixed = f;
+  return a;
 }
-bool col_sortable(int c) { return c < kNumFixed ? kFixedCols[c].sortable : c < kNoteCol; }
+constexpr std::array<ColRef, kNumCols> kColLayout = col_layout();
+static_assert(kColLayout[0].fixed == Edit, "edit 列须在第 0 列 (行循环里单独画)");
+// 表列号 ↔ 固定列 / 指标
+constexpr int col_of(Col f) {
+  for (int c = 0; c < kNumCols; ++c)
+    if (kColLayout[static_cast<size_t>(c)].fixed == f)
+      return c;
+  return -1;
+}
+const Metric *col_metric(int c) {
+  const int i = kColLayout[static_cast<size_t>(c)].stat;
+  return i >= 0 ? &kMetrics[kStatColMetric[static_cast<size_t>(i)]] : nullptr;
+}
+const char *col_name(int c) {
+  const ColRef &r = kColLayout[static_cast<size_t>(c)];
+  return r.fixed >= 0 ? kFixedCols[r.fixed].name : col_metric(c)->col;
+}
+bool col_sortable(int c) {
+  const ColRef &r = kColLayout[static_cast<size_t>(c)];
+  return r.fixed >= 0 ? kFixedCols[r.fixed].sortable : true;
+}
 // 列提示: Stat 列由指标表拼 (只拼一次)
 const std::string &col_tip(int c) {
   static const std::array<std::string, kNumCols> tips = [] {
     std::array<std::string, kNumCols> a;
-    for (int i = 0; i < kNumFixed; ++i)
-      a[static_cast<size_t>(i)] = kFixedCols[i].tip;
-    for (int i = 0; i < kNumStatCols; ++i) {
-      const Metric &m = kMetrics[kStatColMetric[static_cast<size_t>(i)]];
+    for (int i = 0; i < kNumCols; ++i) {
+      const ColRef &r = kColLayout[static_cast<size_t>(i)];
+      if (r.fixed >= 0) {
+        a[static_cast<size_t>(i)] = kFixedCols[r.fixed].tip;
+        continue;
+      }
+      const Metric &m = *col_metric(i);
       const GroupInfo &g = kGroupInfo[static_cast<size_t>(m.group)];
-      a[static_cast<size_t>(kNumFixed + i)] = std::string(g.name) + " · " + m.name + "\n• 说明  " + m.desc + "\n• 范围  " + m.range + "\n• 最优  " + m.best +
-                                              "\n• 组    " + g.desc + "\n• 显示  选定持有期的值, n < 3 为空; 悬停行看全部持有期";
+      a[static_cast<size_t>(i)] = std::string(g.name) + " · " + m.name + "\n• 说明  " + m.desc + "\n• 范围  " + m.range + "\n• 最优  " + m.best +
+                                  "\n• 组    " + g.desc + "\n• 显示  选定持有期的值, n < 3 为空; 着色 = 本列跨因子渐变 (红最差 → 绿最好); 悬停行看全部持有期";
     }
-    a[static_cast<size_t>(kNoteCol)] = kNoteTip;
     return a;
   }();
   return tips[static_cast<size_t>(c)];
@@ -418,39 +450,45 @@ const std::string &col_tip(int c) {
 
 constexpr int kTipFixedCols = 4; // 悬停表前置列: 指标 / 说明 / 范围 / 最优
 
-// 跨持有期渐变: 可比指标按 cmp 方向把各持有期的值线性映射到 [0, 1] (0 = 最差, 1 = 最好), 红 → 文字色 → 绿 三段插值;
-// 不可比 / 有效持有期 < 2 / 全等 → 不着色 (nullopt)
-std::optional<ImVec4> hold_color(const FactorRow &r, const Metric &m, int k) {
-  if (m.cmp == Cmp::None || r.hold[k].n < 3)
-    return std::nullopt;
-  const auto score = [&](const HS &h) { // 统一成 "越大越好"
-    const double v = m.get(h);
-    switch (m.cmp) {
-    case Cmp::High:
-      return v;
-    case Cmp::Low:
-      return -v;
-    case Cmp::AbsLow:
-      return -std::fabs(v);
-    case Cmp::None:
-      break;
-    }
-    assert(false);
-    return 0.0;
-  };
+// 渐变着色 (悬停表跨持有期 / 主表列跨因子 共用一套): 可比指标按 cmp 方向统一成 "越大越好" 的分值, 在一组样本的 [lo, hi] 内线性映射到 [0, 1]
+// (0 = 最差, 1 = 最好), 红 → 文字色 → 绿 三段插值; 不可比 / 样本 < 2 / 全等 → 不着色 (nullopt)
+double metric_score(const Metric &m, const HS &h) {
+  const double v = m.get(h);
+  switch (m.cmp) {
+  case Cmp::High:
+    return v;
+  case Cmp::Low:
+    return -v;
+  case Cmp::AbsLow:
+    return -std::fabs(v);
+  case Cmp::None:
+    break;
+  }
+  assert(false);
+  return 0.0;
+}
+struct ScoreRange { // 一组样本的分值范围, 逐个 add
   double lo = 1e300, hi = -1e300;
   int cnt = 0;
-  for (int j = 0; j < r.n_hold; ++j) {
-    if (r.hold[j].n < 3)
-      continue;
-    const double s = score(r.hold[j]);
-    lo = std::min(lo, s), hi = std::max(hi, s), ++cnt;
-  }
-  if (cnt < 2 || hi <= lo)
+  void add(double s) { lo = std::min(lo, s), hi = std::max(hi, s), ++cnt; }
+  bool usable() const { return cnt >= 2 && hi > lo; }
+};
+std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const ScoreRange &rg) {
+  if (m.cmp == Cmp::None || !h || h->n < 3 || !rg.usable())
     return std::nullopt;
-  const float t = static_cast<float>((score(r.hold[k]) - lo) / (hi - lo));
+  const float t = static_cast<float>((metric_score(m, *h) - rg.lo) / (rg.hi - rg.lo));
   const ImVec4 bad = StatusColor(TaskStatus::Kind::Error), mid = ImGui::GetStyleColorVec4(ImGuiCol_Text), good = StatusColor(TaskStatus::Kind::Ready);
   return t < 0.5f ? ImLerp(bad, mid, t * 2.f) : ImLerp(mid, good, (t - 0.5f) * 2.f);
+}
+// 跨持有期 (悬停表): 样本 = 该因子全部有效持有期
+std::optional<ImVec4> hold_color(const FactorRow &r, const Metric &m, int k) {
+  if (m.cmp == Cmp::None)
+    return std::nullopt;
+  ScoreRange rg;
+  for (int j = 0; j < r.n_hold; ++j)
+    if (r.hold[j].n >= 3)
+      rg.add(metric_score(m, r.hold[j]));
+  return grade_color(m, &r.hold[k], rg);
 }
 
 // 行悬停的 stat 部分 (调用方已 BeginTooltip): 头部对仗 bullet + 转置表 (行 = kMetrics 按组, 列 = 持有期), 可比指标跨持有期渐变着色
@@ -593,6 +631,8 @@ void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool edi
     return num(ok, "%d", r.n_slots);
   case Valid:
     return num(r.has_stat, "%.1f", r.valid_pct);
+  case Note:
+    return text(r.note);
   case Edit:
   case kNumFixed:
     break;
@@ -1013,17 +1053,18 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
     if (ui.sort_column >= 0) {
       const int sc = ui.sort_column;
       // 文本列按串比; 其余按数值键 (无值 → -1 / -1e300, 升序排最前)
+      const int sf = kColLayout[static_cast<size_t>(sc)].fixed; // 固定列号 (Stat 列 = -1)
       const auto text = [&](const FactorRow &r) -> const std::string * {
-        if (sc == NameEn)
+        if (sf == NameEn)
           return &r.name_en;
-        if (sc == NameCn)
+        if (sf == NameCn)
           return &r.name_cn;
         return nullptr;
       };
       const auto key = [&](const FactorRow &r) -> double {
-        if (sc >= kNumFixed)
-          return metric_key(hold_of(r, cur_hold), kMetrics[kStatColMetric[static_cast<size_t>(sc - kNumFixed)]]);
-        switch (sc) {
+        if (const Metric *m = col_metric(sc))
+          return metric_key(hold_of(r, cur_hold), *m);
+        switch (sf) {
         case Type:
           return static_cast<double>(r.kind);
         case Frame:
@@ -1045,7 +1086,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
         const FactorRow &ra = s_rows[static_cast<size_t>(a)], &rb = s_rows[static_cast<size_t>(b)];
         int cmp = 0;
-        if (sc == Edit)
+        if (sf == Edit)
           cmp = a - b;
         else if (const std::string *ta = text(ra))
           cmp = ta->compare(*text(rb));
@@ -1055,13 +1096,24 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       });
     }
 
+    // 主表 Stat 列着色: 样本 = 全部因子在选定持有期的值 (跨因子横向比; 悬停表是同因子跨持有期比)
+    ScoreRange col_rg[kNumStatCols];
+    for (int i = 0; i < kNumStatCols; ++i) {
+      const Metric &m = kMetrics[kStatColMetric[static_cast<size_t>(i)]];
+      if (m.cmp == Cmp::None)
+        continue;
+      for (const FactorRow &r : s_rows)
+        if (const HS *h = hold_of(r, cur_hold); h && h->n >= 3)
+          col_rg[i].add(metric_score(m, *h));
+    }
+
     for (int idx : order) {
       const FactorRow &r = s_rows[static_cast<size_t>(idx)];
       const HS *h = hold_of(r, cur_hold);
       const bool editing = edit_row == &r;
       const bool viewing = ui.view_file == r.file;
       ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(Edit);
+      ImGui::TableSetColumnIndex(col_of(Edit));
       ImGui::PushID(idx);
       // 整行可点 (先提交, AllowOverlap 让后面的勾选框盖在上面): 点行高光 → Inspect 页的对象; 再点 → 取消
       const ImVec2 cell_pos = ImGui::GetCursorPos();
@@ -1098,19 +1150,17 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
       if (ImGui::IsItemHovered()) // 勾选框盖住了 Selectable 的 hover, 同一个提示函数
         row_tooltip(r, ctx, viewing, editing);
       ImGui::PopID();
-      for (int c = Type; c < kNumFixed; ++c) {
+      for (int c = 1; c < kNumCols; ++c) { // 0 = edit 列 (上面画过)
         ImGui::TableSetColumnIndex(c);
-        fixed_cell(static_cast<Col>(c), r, ctx, editing);
+        const ColRef &cr = kColLayout[static_cast<size_t>(c)];
+        if (cr.fixed >= 0) {
+          fixed_cell(static_cast<Col>(cr.fixed), r, ctx, editing);
+        } else {
+          const Metric &m = *col_metric(c);
+          const std::optional<ImVec4> col = grade_color(m, h, col_rg[cr.stat]);
+          metric_cell(h, m, col ? &*col : nullptr);
+        }
       }
-      for (int i = 0; i < kNumStatCols; ++i) {
-        ImGui::TableSetColumnIndex(kNumFixed + i);
-        metric_cell(h, kMetrics[kStatColMetric[static_cast<size_t>(i)]]);
-      }
-      ImGui::TableSetColumnIndex(kNoteCol);
-      if (r.note.empty())
-        ImGui::TextDisabled("-");
-      else
-        ImGui::TextUnformatted(r.note.c_str());
     }
     ImGui::EndTable();
   }
