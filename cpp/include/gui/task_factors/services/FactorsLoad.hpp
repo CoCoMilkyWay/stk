@@ -36,8 +36,8 @@ struct Loaded {
   int T = 0, A = 0, days = 0;
   std::vector<std::string> feat_codes;      // 去重特征 (平面下标)
   std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码 (按 ts_valid 门控)
-  factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = data_valid(cs_valid) (= 当日在池, 整日常量)
-  std::vector<LabelPlane> labels;           // [hold] (按 cs_valid 门控), 下标 = FeatureTable::labels 下标
+  factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = 当日在池 ∧ 当日有成交 (ts_valid 任一分钟 ≠ 0; 整日常量)
+  std::vector<LabelPlane> labels;           // [hold] (按 cs.m 门控), 下标 = FeatureTable::labels 下标
   std::vector<CostPlane> costs;             // [amt] (with_costs 才装), 下标 = FeatureTable::costs 下标
   factor::stat::Holds hd;                   // hd.h[hi] = hold
   int n_hold = 0;

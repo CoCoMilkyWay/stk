@@ -107,6 +107,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   std::vector<FeatureRead::DayColumns> staging(n_threads);
   for (FeatureRead::DayColumns &dc : staging)
     dc.preallocate(A, kLevel, cols.size());
+  std::vector<std::vector<uint8_t>> has_data(n_threads, std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交
   const size_t nc = cols.size();
 
   parallel_for(dates.size(), n_threads, cancel, [&](size_t d, size_t tid) {
@@ -114,6 +115,15 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     reader.load_day_columns(dates[d], cols, dc);
     if (reader.stale())
       return;
+    // 当日有数据 = 该资产当日至少一分钟有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
+    // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的 universe 因此只看"真有行情"的格, 不与数据完整性耦合
+    std::vector<uint8_t> &has = has_data[tid];
+    std::fill(has.begin(), has.end(), uint8_t{0});
+    for (size_t t = 0; t < VR; ++t) {
+      const feature_storage_t *ts_gate = dc.data.data() + (t * nc + ts_i) * A;
+      for (size_t a = 0; a < A; ++a)
+        has[a] |= fmeta::data_valid(static_cast<float>(ts_gate[a]));
+    }
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       const feature_storage_t *ts_gate = dc.data.data() + (t * nc + ts_i) * A;
@@ -132,7 +142,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       for (size_t a = 0; a < A; ++a) {
         const float g = static_cast<float>(cs_gate[a]);
         L.cs.v[row + a] = g;
-        L.cs.m[row + a] = fmeta::data_valid(g);
+        L.cs.m[row + a] = fmeta::data_valid(g) && has[a];
       }
       for (size_t h = 0; h < H; ++h) {
         const size_t il = nf + 2 * h, is = il + 1;
@@ -141,7 +151,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         LabelPlane &lb = L.labels[h];
         for (size_t a = 0; a < A; ++a) {
           const float lv = static_cast<float>(sl[a]), sv = static_cast<float>(ss[a]);
-          const bool ok = fmeta::data_valid(static_cast<float>(cs_gate[a])) && std::isfinite(lv) && std::isfinite(sv); // cs_valid 是 0/1
+          const bool ok = L.cs.m[row + a] && std::isfinite(lv) && std::isfinite(sv); // 池内且当日有数据
           lb.lv[row + a] = ok ? std::bit_cast<uint16_t>(sl[a]) : 0;
           lb.sv[row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           lb.m[row + a] = ok;
@@ -154,7 +164,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         CostPlane &cp = L.costs[c];
         for (size_t a = 0; a < A; ++a) {
           const float b = static_cast<float>(sb[a]), s = static_cast<float>(ss[a]);
-          const bool ok = fmeta::data_valid(static_cast<float>(cs_gate[a])) && std::isfinite(b) && std::isfinite(s); // 吃不到 = NaN → 无效
+          const bool ok = L.cs.m[row + a] && std::isfinite(b) && std::isfinite(s); // 池内且当日有数据; 吃不到 = NaN → 无效
           cp.buy[row + a] = ok ? std::bit_cast<uint16_t>(sb[a]) : 0;
           cp.sell[row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           cp.m[row + a] = ok;

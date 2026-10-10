@@ -233,7 +233,7 @@ public:
   //   收盘档 全行 exit = 收盘.
   //   开盘档 到期日: 悬挂日 P (age = 今日 − P) 的 T+N 组, age ≥ N 且今日有开盘 → exit = 今日开盘价; age ≥ 2N 仍无 → 最近一次收盘.
   //   全日无可成交簿 (缺数据 / 停牌日): 分钟 / 收盘档无标签可写, 全行留 0, 当日不悬挂; 开盘档到期照常结算.
-  //     标签列 ALL 不受 ts_valid 门控 → 这些 0 会被当成收益 0; 在池停牌日靠 cs_valid / Fund.is_susp 在因子层剔 (待议).
+  //     标签列 ALL 不受 ts_valid 门控; 因子层 (FactorsLoad) 把"当日无任何成交"的 asset-day 剔出截面池门控, 这些 0 不进统计.
   //   writer(col, n, l1, values, days_ago); release(days_ago) = 该日全部组已写完, 写句柄可归还.
   template <class Writer, class Release>
   inline void day_end(Writer &&writer, Release &&release) {
