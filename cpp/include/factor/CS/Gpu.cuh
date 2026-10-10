@@ -66,6 +66,12 @@ __device__ __forceinline__ bool fin(float v) { return v * 0.f == 0.f; }
 __device__ __forceinline__ bool spread(float lo, float hi) { return hi > lo; }
 // 相消: den 相对于两侧量级 scale
 __device__ __forceinline__ bool den_ok(double den, double scale) { return fabs(den) > static_cast<double>(kRelEps) * (scale + 1e-30); }
+// 对数比 ln(clamp(x/y, ε, 1/ε)) (与 host 的 log_ratio 同式): 双正 → 夹到 ±kLogCap; x ≤ 0 → −kLogCap; y ≤ 0 → +kLogCap; 双非正 → 0
+__device__ __forceinline__ float log_ratio(float x, float y) {
+  const bool px = x > 0.f, py = y > 0.f;
+  const float l = logf(fmaxf(x, 1e-30f)) - logf(fmaxf(y, 1e-30f));
+  return px && py ? fminf(fmaxf(l, -kLogCap), kLogCap) : (py ? -kLogCap : (px ? kLogCap : 0.f));
+}
 // 并列均秩的 pct rank: (avg_rank − 1)/(m − 1), m ≤ 1 → 0.5
 __device__ __forceinline__ float pct_of(int less, int eq, int m) {
   if (m <= 1)
@@ -136,11 +142,11 @@ struct MaxOp {
 struct Sh {
   typename BR::TempStorage red;
   typename BS::TempStorage scan;
-  int cb[kBuckets], pre[kBuckets];  // 直方图 (桶计数 / 桶的 exclusive 前缀)
-  float gsx[kGrpCap], gsy[kGrpCap]; // 分组累加槽
-  int gcn[kGrpCap];
-  int gmn[kGrpCap], gmx[kGrpCap]; // 分组 y 极值 (有序整数编码, 给 GroupResid 的逐组全并列判据)
-  float bc;                       // 广播槽
+  int cb[kBuckets], pre[kBuckets];          // 直方图 (桶计数 / 桶的 exclusive 前缀)
+  float gsx[kGrpCap + 1], gsy[kGrpCap + 1]; // 分组累加槽; 末槽 kGrpCap = 无组 (组 id 有效但为负)
+  int gcn[kGrpCap + 1];
+  int gmn[kGrpCap + 1], gmx[kGrpCap + 1]; // 分组 y 极值 (有序整数编码, 给 GroupResid 的逐组全并列判据)
+  float bc;                               // 广播槽
   int ib;
 };
 
@@ -319,15 +325,23 @@ __device__ inline void row_stats(Sh &sh, const float *xv, const uint8_t *xm, con
 }
 
 // ---- 分组 id ----
-struct GidCol { // 组 id 直接来自某一列: g = m ? (int)floorf(v) : −1
+// 组 id: 格无效 → −1 (不参与); 有效但为负 (未知行业) → kNoGroup (无组, 以全池为组, 槽号 = kGrpCap); 与 host 的 gid / slot 同义
+inline constexpr int kNoGroup = -2;
+__device__ __forceinline__ int slot(int g) { return g >= 0 ? g : kGrpCap; } // 调用方保证 g != −1
+struct GidCol {
   const float *v;
   const uint8_t *m;
   int base;
-  __device__ __forceinline__ int gid(int a) const { return m[base + a] ? static_cast<int>(floorf(v[base + a])) : -1; }
+  __device__ __forceinline__ int gid(int a) const {
+    if (!m[base + a])
+      return -1;
+    const int q = static_cast<int>(floorf(v[base + a]));
+    return q < 0 ? kNoGroup : q;
+  }
 };
 // 组内累加 x (和 y) 到 shared 槽
 __device__ inline void grp_clear(Sh &sh) {
-  for (int g = threadIdx.x; g < kGrpCap; g += kCB) {
+  for (int g = threadIdx.x; g <= kGrpCap; g += kCB) {
     sh.gsx[g] = 0.f;
     sh.gsy[g] = 0.f;
     sh.gcn[g] = 0;
@@ -542,21 +556,21 @@ struct CsBucket {
   FACTOR_CS_RUN()
 };
 // ---- GROUP (3) ----
-// 按 y 分组 (整数 id) 的组均值广播 (组无池成员 → 全池均值)
+// 按 y 分组 (整数 id) 的组均值广播 (无组 / 组无池成员 → 全池均值; 组 id 格无效才无效)
 struct CsGroupMean {
   using Self = CsGroupMean;
   __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, const uint8_t *gm, float *ov,
                              uint8_t *om, int base, int A, const Param &) {
     const k::GidCol gi{yv, ym, base};
     k::grp_clear(sh);
-    float sa = 0.f; // 全池 (回退), 顺手归约
+    float sa = 0.f; // 全池 (回退; 含无组的池成员), 顺手归约
     int na = 0;
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a, g = gi.gid(a);
       assert(g < kGrpCap && "组 id 超出 shared 槽上限");
-      if (g >= 0 && xm[i] && gm[i]) {
-        atomicAdd(&sh.gsx[g], xv[i]); // shared 槽累加, 不碰 global atomic
-        atomicAdd(&sh.gcn[g], 1);
+      if (g != -1 && xm[i] && gm[i]) {
+        atomicAdd(&sh.gsx[k::slot(g)], xv[i]); // shared 槽累加, 不碰 global atomic (无组槽的和不用, 只为无分支)
+        atomicAdd(&sh.gcn[k::slot(g)], 1);
         sa += xv[i];
         ++na;
       }
@@ -566,17 +580,17 @@ struct CsGroupMean {
     const float ma = k::bsum(sh, sa) / static_cast<float>(max(cnta, 1)); // 全池也空 → 0
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a, g = gi.gid(a);
-      const int c = (g >= 0) ? sh.gcn[g] : 0;
-      dev::store(ov, om, i, c >= 1 ? sh.gsx[g] / static_cast<float>(c) : ma, xm[i] && g >= 0);
+      const int c = (g >= 0) ? sh.gcn[g] : 0; // 无组 → c = 0 → 全池
+      dev::store(ov, om, i, c >= 1 ? sh.gsx[g] / static_cast<float>(c) : ma, xm[i] && g != -1);
     }
   }
   FACTOR_CS_RUN()
 };
 
-// 组内 pct rank 的公共实现: 逐组重建直方图 (组数 G 约 30 → O(G·A) 每行); 组无池成员的资产末尾用全池直方图补
+// 组内 pct rank 的公共实现: 逐组重建直方图 (组数 G 约 30 → O(G·A) 每行); 无组 / 组无池成员的资产末尾用全池直方图补
 template <class Gid>
 __device__ inline void group_rank(k::Sh &sh, const float *xv, const uint8_t *xm, const uint8_t *gm, const Gid &gi, float *ov, uint8_t *om, int base, int A) {
-  for (int a = threadIdx.x; a < A; a += kCB) // 未归组 / x 无效的资产保持无效
+  for (int a = threadIdx.x; a < A; a += kCB) // 组 id 格无效 / x 无效的资产保持无效
     dev::store(ov, om, base + a, 0.f, false);
   int gmax = 0;
   for (int a = threadIdx.x; a < A; a += kCB)
@@ -613,10 +627,10 @@ __device__ inline void group_rank(k::Sh &sh, const float *xv, const uint8_t *xm,
     __syncthreads(); // 下一组要复用 sh.cb / 归约暂存
   }
   __syncthreads();   // 末组可能 continue 跳过了同步; 下面要读 gcn 并复用 sh.cb
-  bool need = false; // 有资产落在空组才建全池直方图 (正常日子行业全在池里, 这一支不走)
+  bool need = false; // 有资产无组 / 落在空组才建全池直方图 (正常日子行业全在池里, 这一支不走)
   for (int a = threadIdx.x; a < A; a += kCB) {
     const int i = base + a, g = gi.gid(a);
-    need |= g >= 0 && xm[i] && sh.gcn[g] < 1;
+    need |= g != -1 && xm[i] && (g < 0 || sh.gcn[g] < 1);
   }
   if (!(k::bmax(sh, need ? 1.f : 0.f) > 0.f))
     return;
@@ -629,7 +643,7 @@ __device__ inline void group_rank(k::Sh &sh, const float *xv, const uint8_t *xm,
     k::hist_row(sh, ga, A, loa, hia, sh.cb, sh.pre);
   for (int a = threadIdx.x; a < A; a += kCB) { // 全池也空 → row_pct 给 0.5
     const int i = base + a, g = gi.gid(a);
-    if (g >= 0 && xm[i] && sh.gcn[g] < 1)
+    if (g != -1 && xm[i] && (g < 0 || sh.gcn[g] < 1))
       dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, cnta, loa, hia, roka, xv[i]), true);
   }
 }
@@ -644,24 +658,26 @@ struct CsGroupRank {
   }
   FACTOR_CS_RUN()
 };
-// 按 z 分组: x, y 组内 demean 后, 用**池内参与样本**做一个标量回归 (FWL); 输出对象 = 全部参与者, 组无池成员 → 用全池均值去均值
+// 按 z 分组: x, y 组内 demean 后, 用**池内参与样本**做一个标量回归 (FWL); 输出对象 = 全部参与者,
+// 无组 (组 id 有效但为负, 占末槽) / 组无池成员 → 用全池均值去均值; 组 id 格无效才无效
 struct CsGroupResid {
   using Self = CsGroupResid;
   __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm, const uint8_t *gm, float *ov,
                              uint8_t *om, int base, int A, const Param &) {
     const k::GidCol gi{zv, zm, base};
     k::grp_clear(sh);
-    float sxa = 0.f, sya = 0.f; // 全池 (回退), 顺手归约
+    float sxa = 0.f, sya = 0.f; // 全池 (回退; 含无组槽), 顺手归约
     int na = 0;
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a, g = gi.gid(a);
       assert(g < kGrpCap && "组 id 超出 shared 槽上限");
-      if (g >= 0 && xm[i] && ym[i] && gm[i]) { // 拟合样本 = 参与 (xm && ym && zm && g ≥ 0) ∧ 池内
-        atomicAdd(&sh.gsx[g], xv[i]);
-        atomicAdd(&sh.gsy[g], yv[i]);
-        atomicAdd(&sh.gcn[g], 1);
-        atomicMin(&sh.gmn[g], k::ord(yv[i]));
-        atomicMax(&sh.gmx[g], k::ord(yv[i]));
+      if (g != -1 && xm[i] && ym[i] && gm[i]) { // 拟合样本 = 参与 (xm && ym && zm) ∧ 池内; 无组进末槽 (只用其 y 极值做并列判据)
+        const int s = k::slot(g);
+        atomicAdd(&sh.gsx[s], xv[i]);
+        atomicAdd(&sh.gsy[s], yv[i]);
+        atomicAdd(&sh.gcn[s], 1);
+        atomicMin(&sh.gmn[s], k::ord(yv[i]));
+        atomicMax(&sh.gmx[s], k::ord(yv[i]));
         sxa += xv[i];
         sya += yv[i];
         ++na;
@@ -670,22 +686,22 @@ struct CsGroupResid {
     __syncthreads();
     const float fna = static_cast<float>(max(static_cast<int>(k::bsum(sh, static_cast<float>(na))), 1));
     const float mxa = k::bsum(sh, sxa) / fna, mya = k::bsum(sh, sya) / fna;
-    // 退化 = 去均值后 ỹ ≡ 0 ⟺ 每组内 y 全并列; 逐组 lo/hi 精确判 (同 host), 不看 Σỹ²
+    // 退化 = 去均值后 ỹ ≡ 0 ⟺ 每组内 y 全并列; 逐组 lo/hi 精确判 (同 host, 无组槽同此判), 不看 Σỹ²
     float sxy = 0.f, syy = 0.f;
     int c = 0;
     bool sp = false;
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a, g = gi.gid(a);
-      const bool ok = g >= 0 && xm[i] && ym[i];
+      const bool ok = g != -1 && xm[i] && ym[i];
       const bool pl = ok && gm[i];
-      const int gc = ok ? sh.gcn[g] : 0;
+      const int gc = (ok && g >= 0) ? sh.gcn[g] : 0; // 无组 → gc = 0 → 全池均值
       const float fc = static_cast<float>(max(gc, 1));
-      const float dx = !ok ? 0.f : (gc >= 1 ? xv[i] - sh.gsx[g] / fc : xv[i] - mxa); // 组内去均值 (组空 → 全池)
+      const float dx = !ok ? 0.f : (gc >= 1 ? xv[i] - sh.gsx[g] / fc : xv[i] - mxa); // 组内去均值 (无组 / 组空 → 全池)
       const float dy = !ok ? 0.f : (gc >= 1 ? yv[i] - sh.gsy[g] / fc : yv[i] - mya);
       sxy += pl ? dx * dy : 0.f;
       syy += pl ? dy * dy : 0.f;
       c += pl ? 1 : 0;
-      sp |= pl && sh.gmx[g] > sh.gmn[g]; // 每个非空组至少被一个池内参与资产代表 → 逐资产 OR = 逐组 OR
+      sp |= pl && sh.gmx[k::slot(g)] > sh.gmn[k::slot(g)]; // 每个非空槽至少被一个池内参与资产代表 → 逐资产 OR = 逐槽 OR
     }
     const int cnt = static_cast<int>(k::bsum(sh, static_cast<float>(c)));
     const float Sxy = k::bsum(sh, sxy);
@@ -694,8 +710,8 @@ struct CsGroupResid {
     const float b = ok2 ? Sxy / Syy : 0.f; // 池内参与样本上的一个标量 β; 退化 → β = 0, 输出 x̃
     for (int a = threadIdx.x; a < A; a += kCB) {
       const int i = base + a, g = gi.gid(a);
-      const bool ok = g >= 0 && xm[i] && ym[i];
-      const int gc = ok ? sh.gcn[g] : 0;
+      const bool ok = g != -1 && xm[i] && ym[i];
+      const int gc = (ok && g >= 0) ? sh.gcn[g] : 0;
       const float fc = static_cast<float>(max(gc, 1));
       const float dx = !ok ? 0.f : (gc >= 1 ? xv[i] - sh.gsx[g] / fc : xv[i] - mxa);
       const float dy = !ok ? 0.f : (gc >= 1 ? yv[i] - sh.gsy[g] / fc : yv[i] - mya);

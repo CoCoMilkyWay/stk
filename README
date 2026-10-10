@@ -95,7 +95,7 @@ stk/
 │   │   │   ├── task_database/                        # 🖥️ 数据库管理
 │   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
-│   │   │   │   ├── services/                         # 🖥️ 业务服务层 (Asset/Encoding/Fundamental/L2Database/Scan/Classifier/StateManager)
+│   │   │   │   ├── services/                         # 🖥️ 业务服务层 (AssetLoader/Encoding/Fundamental/L2Database/Scan/ClassifierService/StateManager)
 │   │   │   │   ├── infrastructure/ScanThreadPool.hpp # 🖥️ 扫描线程池
 │   │   │   │   └── ui/                               # 🖥️ UI (TabOverview 基本面同步 ↓ /TabBrowser/TabTable/TabEncode/CrossSectionAnalysis)
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
@@ -142,7 +142,7 @@ stk/
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── factor/                                         # 🧬 因子算子基建 (特征之上的 TS/CS 算子; 因子 = 特征的非线性算子组合; Stat = 因子评估算子)
-│   │   │   ├── Contract.hpp                                # 🧬 TS/CS 语义契约 (三后端共享): 三维分类 T窗(POINT|EXPAND|ROLL|EXPO) × A域(SELF|ALL|GROUP) × 核类(MAP|SHIFT|MOMENT|EXTREME|ORDER|RECUR); SoA 布局 [T][A] (段 kSegLen = 255 = L1 每日分钟数, 含 09:15 起集合竞价), branchless 数值, 退化判据
+│   │   │   ├── Contract.hpp                                # 🧬 TS/CS 语义契约 (三后端共享): 三维分类 T窗(POINT|EXPAND|ROLL|EXPO) × A域(SELF|ALL|GROUP) × 核类(MAP|SHIFT|MOMENT|EXTREME|ORDER|RECUR); SoA 布局 [T][A] (段 kSegLen = 255 = L1 每日分钟数, 含 09:15 起集合竞价), branchless 数值, 退化给中性值 (掩码只表达输入有效性, 不表达统计量好坏; Roll 未满窗按已有前缀同公式算, 不置无效)
 │   │   │   ├── OpTable.hpp                                 # 🧬 真相表 X-macro (TS/CS 共享): 命名 域_核_窗 (TsMeanRoll/TsMeanCum/CsMean); 统一行格式 (元数/T窗/A域/核类/参数/公式), 三后端同名展开; 行序 = 全局 idx (元数→Ts/Cs→窗/域→核→字母), code 与 UI 统一按它; 后端怎么算不进表; Stat 不入此表
 │   │   │   ├── Expr.hpp                                    # 🧬 因子表达式 codec: 前缀函数式 Op(arg, ..., d=, k=, k2=) ↔ 前序树 (parse / to_string 规范串) + 静态校验 (算子/元数/参数齐且在值域 kKRules/特征存在且非标签·_meta/GROUP 组 id 元整数列); apply_params 按算子节点前序覆盖字面值 (落盘 params); 不合法是正常输入 → false + "位置 N: 原因"
 │   │   │   ├── Dag.hpp                                     # 🧬 Expr → 去重拓扑 DAG (子树规范串去重, 特征叶也是节点) + 活性分析槽复用计划 (n_slots = 峰值存活中间量, 与树大小无关); build_forest 多 Expr 合一 (跨因子 tensor share, roots[] 根算完消费即释放); 只管结构与槽计划, 不含并行策略; CPU/GPU evaluator 共用

@@ -58,14 +58,16 @@
 //          Hhi                  Σx 相消 → 1/n (均匀的极限)        Entropy 无正样本 → 0 (单样本熵 = 0 的极限)
 //          WMean                Σy 相消 → Σx/n (等权的极限)       Product 精确算 Π(1+x) − 1 (含 1+x ≤ 0: 零因子 → −1, 负因子计奇偶)
 //          Imb / Share          和相消 → 0 / 0.5                 Div / Recip  除数 0 → 0
-//          Ema                  尚无有效样本 → 0
+//          Ema                  尚无有效样本 → 0                  LogRatio 比值夹到 [ε, 1/ε] (ε = kRelEps): x ≤ 0 → −kLogCap, y ≤ 0 → +kLogCap, 双非正 → 0
 //          CS 同表: 空池行广播 0, Demean / Winsor → x 原值, Z → 0, Resid → x − μ^x, Rank / GroupRank → 0.5,
 //                   NormRank → Φ⁻¹(0.5) = 0, Bucket → floor(0.5·k), GroupMean 组空 → 全池, 全池空 → 0.
+//                   Group*: 组 id 格有效但 < 0 (未知行业) = 无组 → 以全池为组 (GroupMean 全池均值, GroupRank 全池分位, GroupResid 按全池去均值);
+//                           只有组 id 格**无效**才无效.
 //     7. 掩码为假**只剩**四种来源 (消费端只看 m; m = false 时 v = 0):
 //          a. 入口 NaN (第 1 条);
-//          b. 逐点算子的输入格无效 (含 TsMask y ≤ 0 —— 它的用途就是把点踢出下游窗; TsLogRatio x ≤ 0 / y ≤ 0 —— 域外);
+//          b. 逐点算子的输入格无效 (含 TsMask y ≤ 0 —— 它的用途就是把点踢出下游窗);
 //          c. 相对型算子 (Ts Z / Rank / Resid; Cs Demean / Z / Rank / NormRank / Winsor / Bucket / Resid / Group*) 描述的是
-//             资产自身这一格, 该格 x_t (二元还要 y_t, 分组还要组 id) 无效即无效; 窗内其余样本无效不影响;
+//             资产自身这一格, 该格 x_t (二元还要 y_t, 分组还要组 id 格) 无效即无效; 窗内其余样本无效不影响;
 //          d. 出口溢出 (inf) 由 mk() 转成无效 —— 溢出是数据属性, 不是 bug.
 //     8. 累加: CPU 用 double; GPU 幂和用 double, 按段/按块分块, 禁全局长 cumsum.
 //     9. 输出 float (挖掘侧量化到 fp16 前需 clamp 到 ±65504, 见 operator1.md).
@@ -75,6 +77,7 @@
 //   【precise-math】本模块依赖受控浮点语义, 必须编进 -fno-fast-math TU (CMake PRECISE_MATH_FLAG).
 // =============================================================================
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 
@@ -88,10 +91,11 @@ struct Param {
 };
 
 // ---- 常量 ----
-inline constexpr float kRelEps = 1e-6f; // 相消退化阈值 (只给 den_ok)
-inline constexpr int kSegLen = 255;     // 段 (交易日) 的分钟数 = L1 行数 (09:15 竞价起, 含 15 分钟集合竞价; == features/TimeIndex TRADE_MINUTES_PER_DAY, GUI 侧 static_assert 对账)
-inline constexpr int kBuckets = 256;    // 序统计近似的直方图桶数
-inline constexpr int kMaxGroup = 1024;  // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
+inline constexpr float kRelEps = 1e-6f;               // 相消退化阈值 (den_ok; LogRatio 的饱和比值 ε)
+inline constexpr float kLogCap = 13.815510557964274f; // −ln kRelEps: LogRatio 的饱和上界 (比值夹到 [ε, 1/ε])
+inline constexpr int kSegLen = 255;                   // 段 (交易日) 的分钟数 = L1 行数 (09:15 竞价起, 含 15 分钟集合竞价; == features/TimeIndex TRADE_MINUTES_PER_DAY, GUI 侧 static_assert 对账)
+inline constexpr int kBuckets = 256;                  // 序统计近似的直方图桶数
+inline constexpr int kMaxGroup = 1024;                // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
 
 // ---- 三维分类 (OpTable 三列; 列名 = 枚举名 = 行字段名, 全库统一叫 T / A; 流式 TS struct::kT 对表) ----
 enum class T { POINT,
@@ -111,7 +115,7 @@ enum class Kern { MAP,
 // ---- 值域 (OpTable in / out 列 = 自变量 / 因变量值域; 机器可读, 表里不再手写值域 LaTeX) ----
 //   同一套枚举两头用: 子节点的 out 对父算子对应元的 in 逐元查 (parser, 不点算子名):
 //     严格域 (dom_strict: INT, 越界 = 算子内部 assert) → 子.out 须 ⊆ in (dom_sub), 特征叶按数据逐格查 (dom_holds);
-//     其余域是语义声明 (越界格按【退化】规则处理: LogRatio 的 x ≤ 0 置无效, 其余给中性值), 不能静态否决 (Σ 正量的 out 只能写 REAL),
+//     其余域是语义声明 (越界格按【退化】规则给中性值 / 饱和值), 不能静态否决 (Σ 正量的 out 只能写 REAL),
 //     只用于渲染签名与算子看板.
 //   只表达能写成集合的约束 (y ≠ 0 / x > −1 之类写 REAL); out 只按算子自身声明, 不随输入推导
 //   (透传 Mask / Where / Delay 与取大取小写 REAL). 表格 / JSON 渲染用 dom_tex / dom_name.
@@ -288,6 +292,12 @@ inline Val mk(double v, bool m) {
 inline bool spread(float lo, float hi) { return hi > lo; }
 // 相消: den 相对于两侧量级 scale
 inline bool den_ok(double den, double scale) { return std::fabs(den) > static_cast<double>(kRelEps) * (scale + 1e-30); }
+// 对数比 ln(clamp(x/y, ε, 1/ε)): 两侧皆正 → 夹到 ±kLogCap; x ≤ 0 → −kLogCap (比值 → 0); y ≤ 0 → +kLogCap; 双非正 → 0
+inline float log_ratio(float x, float y) {
+  const bool px = x > 0.f, py = y > 0.f;
+  const float l = std::log(std::fmax(x, 1e-30f)) - std::log(std::fmax(y, 1e-30f)); // fmax 只为不算 log(≤0), 非正侧在下行被 select 掉
+  return px && py ? std::clamp(l, -kLogCap, kLogCap) : (py ? -kLogCap : (px ? kLogCap : 0.f));
+}
 
 // ---- 并列均秩的 pct rank: (avg_rank − 1)/(m − 1), m ≤ 1 → 0.5 ----
 inline float pct_of(int less, int eq, int m) {

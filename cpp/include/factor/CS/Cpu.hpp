@@ -222,10 +222,16 @@ struct Hist {
   }
 };
 
-// ---- 组 id: 分组列无效 → −1 (不参与); 上限断言在 max_gid ----
+// ---- 组 id: 格无效 → −1 (不参与); 有效但为负 (未知行业) → kNoGroup (无组, 以全池为组, 槽号 = G); 上限断言在 scan_gid ----
+inline constexpr int kNoGroup = -2;
 inline int gid(const float *v, const uint8_t *m, size_t i) {
-  return m[i] ? static_cast<int>(std::floor(v[i])) : -1;
+  if (!m[i])
+    return -1;
+  const int q = static_cast<int>(std::floor(v[i]));
+  return q < 0 ? kNoGroup : q;
 }
+// 槽号: 组 id ≥ 0 → 自身; 无组 → G (全池槽). 调用方保证 q != −1
+inline int slot(int q, int G) { return q >= 0 ? q : G; }
 
 } // namespace detail
 
@@ -439,14 +445,14 @@ inline int scan_gid(const float *gv, const uint8_t *gm, int A, std::vector<int> 
 
 } // namespace detail
 
-struct CsGroupMean { // y = 组 id (行业等); 组均值广播到组员 (组无池成员 → 全池均值)
+struct CsGroupMean { // y = 组 id (行业等); 组均值广播到组员 (无组 / 组无池成员 → 全池均值)
   // gather 回写遍单拎出来: 组表 gq / mean 是本地缓冲, 与输出平面不同块, 标 __restrict 告诉编译器 ov/om 的存储
   // 改不了它们 —— 否则 "任意下标 gather + 顺序存储" 做不了别名判定, 循环不向量化 (GROUP 族都这么写)
   static void gather(const int *__restrict gq, const double *__restrict mean, const uint8_t *xm, float *ov,
-                     uint8_t *om, int A) {
+                     uint8_t *om, int A, int G) {
     for (int a = 0; a < A; ++a) {
-      const bool ok = gq[a] >= 0 && xm[a];
-      const double v = mean[ok ? gq[a] : 0];
+      const bool ok = gq[a] != -1 && xm[a];
+      const double v = mean[ok ? detail::slot(gq[a], G) : 0];
       detail::put(ov, om, a, ok ? v : 0.0, ok);
     }
   }
@@ -458,24 +464,24 @@ struct CsGroupMean { // y = 组 id (行业等); 组均值广播到组员 (组无
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       const int G = detail::scan_gid(yv + r, ym + r, A, gq);
-      const size_t GS = static_cast<size_t>(std::max(G, 1));
-      s.assign(GS + 1, 0.0); // 末位 = 不参与者的汇集槽, 让散加无分支 (散加本身天然标量)
+      const size_t GS = static_cast<size_t>(G) + 1; // 槽 G = 无组
+      s.assign(GS + 1, 0.0);                        // 末位 = 不参与者的汇集槽, 让散加无分支 (散加本身天然标量)
       c.assign(GS + 1, 0);
       for (int a = 0; a < A; ++a) {
-        const bool ok = gq[a] >= 0 && xm[r + a] && g[r + a];
-        const int q = ok ? gq[a] : static_cast<int>(GS);
+        const bool ok = gq[a] != -1 && xm[r + a] && g[r + a];
+        const int q = ok ? detail::slot(gq[a], G) : static_cast<int>(GS);
         s[q] += ok ? static_cast<double>(xv[r + a]) : 0.0;
         c[q] += ok;
       }
-      double sa = 0.0; // 全池 (回退)
+      double sa = 0.0; // 全池 (回退; 含无组槽)
       int na = 0;
       for (size_t q = 0; q < GS; ++q)
         sa += s[q], na += c[q];
       const double ma = sa / std::max(na, 1); // 全池也空 → 0
-      mean.resize(GS);                        // 除法按组做 G 次, 不按资产做 A 次
+      mean.resize(GS);                        // 除法按组做 G 次, 不按资产做 A 次; 无组槽恒 = 全池
       for (size_t q = 0; q < GS; ++q)
-        mean[q] = c[q] >= 1 ? s[q] / c[q] : ma;
-      gather(gq.data(), mean.data(), xm + r, ov + r, om + r, A);
+        mean[q] = q < static_cast<size_t>(G) && c[q] >= 1 ? s[q] / c[q] : ma;
+      gather(gq.data(), mean.data(), xm + r, ov + r, om + r, A, G);
     }
   }
 };
@@ -501,11 +507,15 @@ struct CsGroupRank { // 组内 pct rank (每组独立定 lo/hi 与直方图; 组
           ghi[q] = gn[q] == 0 ? xv[r + a] : std::fmax(ghi[q], xv[r + a]);
           ++gn[q];
         }
-      gh.assign(GS * kBuckets, 0); // 逐组直方图 + exclusive 前缀; 顺手查有没有资产落在空组
+      gh.assign(GS * kBuckets, 0); // 逐组直方图 + exclusive 前缀; 顺手查有没有资产无组 / 落在空组
       bool need = false;
       for (int a = 0; a < A; ++a) {
-        if (gq[a] < 0 || !xm[r + a])
+        if (gq[a] == -1 || !xm[r + a])
           continue;
+        if (gq[a] < 0) { // 无组 → 要全池
+          need = true;
+          continue;
+        }
         need = need || gn[gq[a]] < 1;
         if (g[r + a] && spread(glo[gq[a]], ghi[gq[a]]))
           ++gh[static_cast<size_t>(gq[a]) * kBuckets + bin_of(xv[r + a], glo[gq[a]], ghi[gq[a]])];
@@ -514,15 +524,15 @@ struct CsGroupRank { // 组内 pct rank (每组独立定 lo/hi 与直方图; 组
       for (size_t q = 0; q < GS; ++q)
         for (int b = 0; b < kBuckets; ++b)
           gpre[q * (kBuckets + 1) + b + 1] = gpre[q * (kBuckets + 1) + b] + gh[q * kBuckets + b];
-      if (need) // 全池 (回退), 只在有资产落在空组时建 (正常日子行业全在池里, 不走)
+      if (need) // 全池 (回退; 含无组的池成员), 只在有资产无组 / 落在空组时建 (正常日子行业全在池里, 不走)
         ha.build(xv + r, xm + r, g + r, A);
       for (int a = 0; a < A; ++a) {
         const int q = gq[a];
-        const bool ok = q >= 0 && xm[r + a];
+        const bool ok = q != -1 && xm[r + a];
         double v = 0.0;
         if (ok) {
-          if (gn[q] < 1)
-            v = ha.rank(xv[r + a]); // 组无池成员 → 全池; 全池也空 → Hist 给 0.5
+          if (q < 0 || gn[q] < 1)
+            v = ha.rank(xv[r + a]); // 无组 / 组无池成员 → 全池; 全池也空 → Hist 给 0.5
           else if (!spread(glo[q], ghi[q]))
             v = 0.5; // 组内全并列
           else {
@@ -569,19 +579,20 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       const int G = detail::scan_gid(zv + r, zm + r, A, gq);
-      const size_t GS = static_cast<size_t>(std::max(G, 1));
+      const size_t GS = static_cast<size_t>(G) + 1; // 槽 G = 无组
       sx.assign(GS, 0.0);
       sy.assign(GS, 0.0);
       c.assign(GS, 0);
       lo.assign(GS, 0.f);
       hi.assign(GS, 0.f);
-      double sxa = 0.0, sya = 0.0; // 全池 (回退)
+      double sxa = 0.0, sya = 0.0; // 全池 (回退; 含无组槽)
       int na = 0;
-      for (int a = 0; a < A; ++a) { // 参与 = xm && ym && 组有效; 不参与的组 id 置 −1; 只有池内参与者进组统计 (散加, 天然标量)
-        if (gq[a] < 0 || !xm[r + a] || !ym[r + a]) {
+      for (int a = 0; a < A; ++a) { // 参与 = xm && ym && 组 id 格有效; gq 改写成槽号, 不参与者置 −1; 只有池内参与者进槽统计 (散加, 天然标量)
+        if (gq[a] == -1 || !xm[r + a] || !ym[r + a]) {
           gq[a] = -1;
           continue;
         }
+        gq[a] = detail::slot(gq[a], G);
         if (!g[r + a])
           continue;
         const int q = gq[a];
@@ -596,11 +607,12 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
       }
       bool any_spread = false;
       const double mxa = sxa / std::max(na, 1), mya = sya / std::max(na, 1);
-      mx.resize(GS), my.resize(GS); // 组均值按组算 G 次, 每元素不再除
+      mx.resize(GS), my.resize(GS); // 组均值按组算 G 次, 每元素不再除; 无组槽恒 = 全池
       for (size_t q = 0; q < GS; ++q) {
         any_spread = any_spread || (c[q] >= 1 && spread(lo[q], hi[q]));
-        mx[q] = c[q] >= 1 ? sx[q] / c[q] : mxa;
-        my[q] = c[q] >= 1 ? sy[q] / c[q] : mya;
+        const bool own = q < static_cast<size_t>(G) && c[q] >= 1;
+        mx[q] = own ? sx[q] / c[q] : mxa;
+        my[q] = own ? sy[q] / c[q] : mya;
       }
       xt.resize(static_cast<size_t>(A)), yt.resize(static_cast<size_t>(A));
       double sxy, syy;

@@ -122,9 +122,13 @@ inline const std::vector<float> &winsorize(const float *v, int A, const stream::
   return w;
 }
 
-// 组 id: y 无效或为负 → 不参与
+// 组 id: 格无效 → −1 (不参与); 有效但为负 (未知行业) → kNoGroup (无组, 以全池为组, 槽号 = G)
+inline constexpr int kNoGroup = -2;
 inline int gid(const float *v, const uint8_t *m, int i) {
-  return m[i] ? static_cast<int>(std::floor(v[i])) : -1;
+  if (!m[i])
+    return -1;
+  const int q = static_cast<int>(std::floor(v[i]));
+  return q < 0 ? kNoGroup : q;
 }
 inline int max_gid(const float *v, const uint8_t *m, int A) {
   int g = -1;
@@ -133,6 +137,8 @@ inline int max_gid(const float *v, const uint8_t *m, int A) {
   assert(g < kMaxGroup); // 组 id 当下标用 (三后端同一上限), 防止 y 传进来的不是分组列
   return g;
 }
+// 槽号: 组 id ≥ 0 → 自身; 无组 → G (全池槽). 调用方保证 q != −1
+inline int slot(int q, int G) { return q >= 0 ? q : G; }
 
 } // namespace detail
 
@@ -266,25 +272,26 @@ struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1; 值域退化 /
 
 // =========================== 分组族 (GROUP) ===========================
 
-// 分组族: 组统计量只由组内池成员算; 该组无池内成员的资产回退全池统计量 (契约【截面池 g】)
+// 分组族: 组统计量只由组内池成员算; 该组无池内成员的资产回退全池统计量 (契约【截面池 g】).
+//   组 id 有效但为负 (未知行业) = 无组, 占槽 G: 它的池成员只进全池统计, 读数恒取全池 (全池即组); 组 id 格无效才无效.
 
 struct CsGroupMean { // y = 组 id (行业等)
   CS_SIG {
     CS_NO3, (void)p;
     const int G = detail::max_gid(yv, ym, A) + 1;
-    std::vector<double> s(static_cast<size_t>(std::max(G, 1)), 0.0);
-    std::vector<int> c(static_cast<size_t>(std::max(G, 1)), 0);
-    double sa = 0.0; // 全池
+    std::vector<double> s(static_cast<size_t>(G) + 1, 0.0); // 槽 G = 无组
+    std::vector<int> c(static_cast<size_t>(G) + 1, 0);
+    double sa = 0.0; // 全池 (含无组的池成员)
     int na = 0;
     for (int i = 0; i < A; ++i) {
       const int q = detail::gid(yv, ym, i);
-      if (q >= 0 && xm[i] && g[i])
-        s[q] += xv[i], ++c[q], sa += xv[i], ++na;
+      if (q != -1 && xm[i] && g[i])
+        s[detail::slot(q, G)] += xv[i], ++c[detail::slot(q, G)], sa += xv[i], ++na;
     }
-    for (int i = 0; i < A; ++i) { // 组空 → 全池; 全池也空 → 0
+    for (int i = 0; i < A; ++i) { // 无组 / 组空 → 全池; 全池也空 → 0
       const int q = detail::gid(yv, ym, i);
-      const bool ok = q >= 0 && xm[i];
-      const double v = !ok ? 0.0 : (c[q] >= 1 ? s[q] / c[q] : (na >= 1 ? sa / na : 0.0));
+      const bool ok = q != -1 && xm[i];
+      const double v = !ok ? 0.0 : (q >= 0 && c[q] >= 1 ? s[q] / c[q] : (na >= 1 ? sa / na : 0.0));
       detail::put(ov, om, i, mk(v, ok));
     }
   }
@@ -303,48 +310,50 @@ struct CsGroupRank { // 组内 pct rank
     std::vector<stream::Hist> h(static_cast<size_t>(std::max(G, 1)));
     for (int q = 0; q < G; ++q)
       h[q].build(bucket[q]);
-    const auto ha = detail::hist_of<1>(xv, xm, g, A); // 全池 (回退)
-    for (int i = 0; i < A; ++i) {                     // 组空 → 全池直方图; 全池也空 → Hist 给 0.5
+    const auto ha = detail::hist_of<1>(xv, xm, g, A); // 全池 (回退; 含无组的池成员)
+    for (int i = 0; i < A; ++i) {                     // 无组 / 组空 → 全池直方图; 全池也空 → Hist 给 0.5
       const int q = detail::gid(yv, ym, i);
-      const bool ok = q >= 0 && xm[i];
-      const float v = !ok ? 0.f : (h[q].n >= 1 ? h[q].rank(xv[i]) : ha.rank(xv[i]));
+      const bool ok = q != -1 && xm[i];
+      const float v = !ok ? 0.f : (q >= 0 && h[q].n >= 1 ? h[q].rank(xv[i]) : ha.rank(xv[i]));
       detail::put(ov, om, i, mk(v, ok));
     }
   }
 };
 
 struct CsGroupResid { // FWL: 组内去均值后再做一次全局回归, 等价于"组固定效应 + y" 的残差
-  // 退化 = 去均值后的 ỹ 全为 0 ⟺ 每组内 y 全并列 (逐组 lo/hi 精确判, 不看 Σỹ²) → β = 0, 输出 x̃
-  // 拟合样本 = 池内参与者; 输出对象 = 全部参与者 (组无池成员 → 用全池均值去均值); 非参与者 (x/y/组 id 缺) 无效
+  // 退化 = 去均值后的 ỹ 全为 0 ⟺ 每组内 y 全并列 (逐组 lo/hi 精确判, 不看 Σỹ²; 无组槽同此判) → β = 0, 输出 x̃
+  // 拟合样本 = 池内参与者; 输出对象 = 全部参与者 (无组 / 组无池成员 → 用全池均值去均值); 非参与者 (x/y/组 id 格缺) 无效
   CS_SIG {
     (void)p;
     const int G = detail::max_gid(zv, zm, A) + 1;
-    const size_t GS = static_cast<size_t>(std::max(G, 1));
+    const size_t GS = static_cast<size_t>(G) + 1; // 槽 G = 无组
     std::vector<double> sx(GS, 0.0), sy(GS, 0.0);
     std::vector<float> lo(GS, 0.f), hi(GS, 0.f);
     std::vector<int> c(GS, 0);
-    std::vector<int> q(static_cast<size_t>(A), -1); // 参与者的组 id (xm ∧ ym ∧ 组有效), 否则 −1
+    std::vector<int> q(static_cast<size_t>(A), -1); // 参与者的槽号 (xm ∧ ym ∧ 组 id 格有效), 否则 −1
     double sxa = 0.0, sya = 0.0;
     int na = 0;
     for (int i = 0; i < A; ++i) {
       const int gi = detail::gid(zv, zm, i);
-      if (gi < 0 || !xm[i] || !ym[i])
+      if (gi == -1 || !xm[i] || !ym[i])
         continue;
-      q[i] = gi;
+      const int s = detail::slot(gi, G);
+      q[i] = s;
       if (!g[i])
         continue;
-      lo[gi] = c[gi] == 0 ? yv[i] : std::fmin(lo[gi], yv[i]);
-      hi[gi] = c[gi] == 0 ? yv[i] : std::fmax(hi[gi], yv[i]);
-      sx[gi] += xv[i], sy[gi] += yv[i], ++c[gi];
+      lo[s] = c[s] == 0 ? yv[i] : std::fmin(lo[s], yv[i]);
+      hi[s] = c[s] == 0 ? yv[i] : std::fmax(hi[s], yv[i]);
+      sx[s] += xv[i], sy[s] += yv[i], ++c[s];
       sxa += xv[i], sya += yv[i], ++na;
     }
     bool any_spread = false;
-    for (int gi = 0; gi < G; ++gi)
-      any_spread |= c[gi] >= 1 && spread(lo[gi], hi[gi]);
+    for (size_t s = 0; s < GS; ++s)
+      any_spread |= c[s] >= 1 && spread(lo[s], hi[s]);
     const auto center = [&](int i, double &xt, double &yt) {
-      const int gi = q[i];
-      const double mx = c[gi] >= 1 ? sx[gi] / c[gi] : sxa / std::max(na, 1);
-      const double my = c[gi] >= 1 ? sy[gi] / c[gi] : sya / std::max(na, 1);
+      const int s = q[i];
+      const bool own = s < G && c[s] >= 1; // 无组槽恒取全池均值
+      const double mx = own ? sx[s] / c[s] : sxa / std::max(na, 1);
+      const double my = own ? sy[s] / c[s] : sya / std::max(na, 1);
       xt = xv[i] - mx, yt = yv[i] - my;
     };
     double sxy = 0, syy = 0;

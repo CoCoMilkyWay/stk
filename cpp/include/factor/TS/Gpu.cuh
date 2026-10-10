@@ -75,6 +75,12 @@ __device__ __forceinline__ bool fin(float v) { return v * 0.f == 0.f; }
 __device__ __forceinline__ bool spread(float lo, float hi) { return hi > lo; }
 // 相消: den 相对于两侧量级 scale
 __device__ __forceinline__ bool den_ok(double den, double scale) { return fabs(den) > static_cast<double>(kRelEps) * (scale + 1e-30); }
+// 对数比 ln(clamp(x/y, ε, 1/ε)) (与 host 的 log_ratio 同式): 双正 → 夹到 ±kLogCap; x ≤ 0 → −kLogCap; y ≤ 0 → +kLogCap; 双非正 → 0
+__device__ __forceinline__ float log_ratio(float x, float y) {
+  const bool px = x > 0.f, py = y > 0.f;
+  const float l = logf(fmaxf(x, 1e-30f)) - logf(fmaxf(y, 1e-30f));
+  return px && py ? fminf(fmaxf(l, -kLogCap), kLogCap) : (py ? -kLogCap : (px ? kLogCap : 0.f));
+}
 // 并列均秩的 pct rank: (avg_rank − 1)/(m − 1), m ≤ 1 → 0.5
 __device__ __forceinline__ float pct_of(int less, int eq, int m) {
   if (m <= 1)
@@ -1123,7 +1129,7 @@ FACTOR_TS_POINT(TsMin, 2, { v = fminf(x.v, y.v); m = x.m && y.m; })
 // Imb / Share: 和相消 (双边皆 0 / x ≈ −y) → 0 / 0.5
 FACTOR_TS_POINT(TsImb, 2, { v = dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)) ? (x.v - y.v) / (x.v + y.v) : 0.f; m = x.m && y.m; })
 FACTOR_TS_POINT(TsShare, 2, { v = dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)) ? x.v / (x.v + y.v) : 0.5f; m = x.m && y.m; })
-FACTOR_TS_POINT(TsLogRatio, 2, { v = logf(x.v) - logf(y.v); m = x.m && y.m && x.v > 0.f && y.v > 0.f; }) // 两个正有限数各取对数, 不溢出
+FACTOR_TS_POINT(TsLogRatio, 2, { v = dev::log_ratio(x.v, y.v); m = x.m && y.m; }) // 非正侧饱和到 ∓kLogCap
 FACTOR_TS_POINT(TsMask, 2, { v = x.v; m = x.m && y.m && y.v > 0.f; })     // y 当掩码, y ≤ 0 → 无效 (不补 0)
 FACTOR_TS_POINT(TsWhere, 3, { v = x.v > 0.f ? y.v : z.v; m = x.m && (x.v > 0.f ? y.m : z.m); })
 

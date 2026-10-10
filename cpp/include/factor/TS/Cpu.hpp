@@ -402,7 +402,7 @@ CP_P2(TsMin, std::fmin(x, y), mx &&my)
 // TsImb / TsShare: 和相消 (scale = |x| + |y|) → 0 / 0.5, 分母不钳位
 CP_P2(TsImb, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? (x - y) / (x + y) : 0.f, mx &&my)
 CP_P2(TsShare, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? x / (x + y) : 0.5f, mx &&my)
-CP_P2(TsLogRatio, std::log(x) - std::log(y), mx && my && x > 0.f && y > 0.f)
+CP_P2(TsLogRatio, log_ratio(x, y), mx &&my) // 非正侧饱和到 ∓kLogCap (见 Contract::log_ratio)
 // TsMask: y 当掩码, y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
 CP_P2(TsMask, x, mx && my && y > 0.f)
 // TsWhere: 未被选中的那支不要求有效

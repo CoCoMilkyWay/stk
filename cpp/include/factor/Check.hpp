@@ -86,14 +86,13 @@ inline void fill_seg(Plane &p, Gen g, Profile pr, int t0, int t1, int A, std::mt
       case Gen::SMALL: // |x| 小: 保证 1 + x > 0, 给 TsProductRoll
         v = nd(rng) * 0.05f;
         break;
-      case Gen::GROUP: // 整数组 id (行业), 每个资产固定不变
-        v = static_cast<float>(a % 7);
+      case Gen::GROUP: // 整数组 id (行业), 每个资产固定不变; a % 11 == 5 的给 −1 (未知行业 → 以全池为组)
+        v = a % 11 == 5 ? -1.f : static_cast<float>(a % 7);
         break;
       }
       if (g != Gen::GROUP) {
-        // 常值 (NORM 的 0 号资产给 0: 打 Σ = 0 的相消分支; SMALL 保持 |x| 小, 免得 Π(1+x) 溢出)
-        const float c = g == Gen::SMALL ? 0.02f : g == Gen::POS ? 1.5f
-                                                                : (a == 0 ? 0.f : 1.5f);
+        // 常值 (0 号资产给 0: NORM 打 Σ = 0 的相消分支, POS 打 LogRatio 的非正饱和 / Entropy 无正样本; SMALL 保持 |x| 小, 免得 Π(1+x) 溢出)
+        const float c = g == Gen::SMALL ? 0.02f : (a == 0 ? 0.f : 1.5f);
         // 常值列: 第 0/1 号资产整列常值 → 全并列退化 (spread 为假)
         if (pr == Profile::CONSTCOL && a < 2)
           v = c;

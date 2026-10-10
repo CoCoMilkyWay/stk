@@ -102,11 +102,8 @@ struct TsShare : Point { // 同上 → 0.5 (对半)
     return mk(ok ? x.v / (x.v + y.v) : 0.5f, x.m && y.m);
   }
 };
-struct TsLogRatio : Point { // ln x − ln y: 两个正有限数各取对数再相减, 不会溢出
-  static Val apply(Val x, Val y, const Param &) {
-    const bool ok = x.m && y.m && x.v > 0.f && y.v > 0.f;
-    return mk(std::log(x.v) - std::log(y.v), ok);
-  }
+struct TsLogRatio : Point { // ln(clamp(x/y, ε, 1/ε)): 非正侧饱和到 ∓kLogCap (见 log_ratio)
+  static Val apply(Val x, Val y, const Param &) { return mk(log_ratio(x.v, y.v), x.m && y.m); }
 };
 struct TsMask : Point { // y 当掩码用, 不取值; y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
   static Val apply(Val x, Val y, const Param &) { return mk(x.v, x.m && y.m && y.v > 0.f); }

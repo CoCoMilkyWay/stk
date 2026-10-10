@@ -148,35 +148,35 @@
   X(CsWinsor, "截缩尾", 1, POINT, ALL, ORDER, OPEN0_HALF, OP_IN1(REAL), REAL, R"tex(\operatorname{clamp}(x_a,\,Q_k,\,Q_{1-k}))tex", "截面双侧缩尾; 去极值, 配 CsZ / CsRank 做预处理")
 
 // ---- 2 元 × SELF (20 = POINT 10 + EXPAND 5 + ROLL 5) ----
-#define OP_TS2(X)                                                                                                                                                                                      \
-  X(TsAdd, "时加", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t + y_t)tex", "逐点和; 合并信号")                                                                                      \
-  X(TsDiv, "时除", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t / y_t)tex", "逐点比; 造比率")                                                                                        \
-  X(TsImb, "时失衡", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), SIGNED, R"tex((x_t - y_t) / (x_t + y_t))tex", "双边失衡度 ∈ [−1,1]; 量买卖力量对比")                                           \
-  X(TsLogRatio, "时对数比", 2, POINT, SELF, MAP, NONE, OP_IN2(POS, POS), REAL, R"tex(\ln x_t - \ln y_t)tex", "对数比; 量正数间相对变化")                                                               \
-  X(TsMask, "时掩", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \;\mathrm{where}\; y_t > 0)tex", "按 y > 0 保留 x; 下游窗口只统计子集, 掩码由 TsTodMask / TsGt 造")                 \
-  X(TsMax, "时最大", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\max(x_t,\,y_t))tex", "逐点取大; 信号取强")                                                                            \
-  X(TsMin, "时最小", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\min(x_t,\,y_t))tex", "逐点取小; 信号取弱")                                                                            \
-  X(TsMul, "时乘", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \cdot y_t)tex", "逐点积; 信号交互")                                                                                  \
-  X(TsShare, "时占比", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), UNIT, R"tex(x_t / (x_t + y_t))tex", "占比 ∈ [0,1]; 量单边份额")                                                              \
-  X(TsSub, "时减", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t - y_t)tex", "逐点差; 量信号差距")                                                                                    \
-  X(TsBetaCum, "时累贝塔", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "当日至今 x 对 y 的回归斜率; 量敏感度") \
-  X(TsCorrCum, "时累相关", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), SIGNED, R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "当日至今的相关系数; 量联动强弱")            \
-  X(TsCovCum, "时累协方", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\Sigma_{W_t}(x_s - \mu^x_t)(y_s - \mu^y_t) \;/\; (n-1))tex", "当日至今的协方差; 量共变")                      \
-  X(TsResidCum, "时累残差", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex((x_t - \mu^x_t) - \beta_t\,(y_t - \mu^y_t))tex", "当日至今回归的当前残差; 剥离 y 后的特质部分")             \
-  X(TsWMeanCum, "时累权均", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, NONNEG), REAL, R"tex(\Sigma_{W_t}\,y_s x_s \;/\; \Sigma_{W_t}\,y_s)tex", "当日至今 y 加权的 x 均值; 如量加权价")               \
-  X(TsBetaRoll, "时滚贝塔", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "近 d 期 x 对 y 的回归斜率; 量敏感度")   \
-  X(TsCorrRoll, "时滚相关", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), SIGNED, R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "近 d 期的相关系数; 量联动强弱")              \
-  X(TsCovRoll, "时滚协方", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\Sigma_{W_t}(x_s - \mu^x_t)(y_s - \mu^y_t) \;/\; (n-1))tex", "近 d 期的协方差; 量共变")                        \
-  X(TsResidRoll, "时滚残差", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex((x_t - \mu^x_t) - \beta_t\,(y_t - \mu^y_t))tex", "近 d 期回归的当前残差; 剥离 y 后的特质部分")               \
+#define OP_TS2(X)                                                                                                                                                                                                \
+  X(TsAdd, "时加", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t + y_t)tex", "逐点和; 合并信号")                                                                                                \
+  X(TsDiv, "时除", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t / y_t)tex", "逐点比; 造比率")                                                                                                  \
+  X(TsImb, "时失衡", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), SIGNED, R"tex((x_t - y_t) / (x_t + y_t))tex", "双边失衡度 ∈ [−1,1]; 量买卖力量对比")                                                     \
+  X(TsLogRatio, "时对数比", 2, POINT, SELF, MAP, NONE, OP_IN2(POS, POS), REAL, R"tex(\ln\operatorname{clamp}(x_t / y_t,\,\epsilon,\,1/\epsilon))tex", "对数比 (ε = 1e-6, 非正侧饱和到 ∓ln ε); 量正数间相对变化") \
+  X(TsMask, "时掩", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \;\mathrm{where}\; y_t > 0)tex", "按 y > 0 保留 x; 下游窗口只统计子集, 掩码由 TsTodMask / TsGt 造")                           \
+  X(TsMax, "时最大", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\max(x_t,\,y_t))tex", "逐点取大; 信号取强")                                                                                      \
+  X(TsMin, "时最小", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\min(x_t,\,y_t))tex", "逐点取小; 信号取弱")                                                                                      \
+  X(TsMul, "时乘", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \cdot y_t)tex", "逐点积; 信号交互")                                                                                            \
+  X(TsShare, "时占比", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), UNIT, R"tex(x_t / (x_t + y_t))tex", "占比 ∈ [0,1]; 量单边份额")                                                                        \
+  X(TsSub, "时减", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t - y_t)tex", "逐点差; 量信号差距")                                                                                              \
+  X(TsBetaCum, "时累贝塔", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "当日至今 x 对 y 的回归斜率; 量敏感度")           \
+  X(TsCorrCum, "时累相关", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), SIGNED, R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "当日至今的相关系数; 量联动强弱")                      \
+  X(TsCovCum, "时累协方", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\Sigma_{W_t}(x_s - \mu^x_t)(y_s - \mu^y_t) \;/\; (n-1))tex", "当日至今的协方差; 量共变")                                \
+  X(TsResidCum, "时累残差", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex((x_t - \mu^x_t) - \beta_t\,(y_t - \mu^y_t))tex", "当日至今回归的当前残差; 剥离 y 后的特质部分")                       \
+  X(TsWMeanCum, "时累权均", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, NONNEG), REAL, R"tex(\Sigma_{W_t}\,y_s x_s \;/\; \Sigma_{W_t}\,y_s)tex", "当日至今 y 加权的 x 均值; 如量加权价")                         \
+  X(TsBetaRoll, "时滚贝塔", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "近 d 期 x 对 y 的回归斜率; 量敏感度")             \
+  X(TsCorrRoll, "时滚相关", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), SIGNED, R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "近 d 期的相关系数; 量联动强弱")                        \
+  X(TsCovRoll, "时滚协方", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\Sigma_{W_t}(x_s - \mu^x_t)(y_s - \mu^y_t) \;/\; (n-1))tex", "近 d 期的协方差; 量共变")                                  \
+  X(TsResidRoll, "时滚残差", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex((x_t - \mu^x_t) - \beta_t\,(y_t - \mu^y_t))tex", "近 d 期回归的当前残差; 剥离 y 后的特质部分")                         \
   X(TsWMeanRoll, "时滚权均", 2, ROLL, SELF, MOMENT, NONE, OP_IN2(REAL, NONNEG), REAL, R"tex(\Sigma_{W_t}\,y_s x_s \;/\; \Sigma_{W_t}\,y_s)tex", "近 d 期 y 加权的 x 均值; 如量加权价")
 
 // ---- 2 元 × 截面 (5 = ALL 3 + GROUP 2) ----
-#define OP_CS2(X)                                                                                                                                                                                \
-  X(CsBeta, "截贝塔", 2, POINT, ALL, MOMENT, NONE, OP_IN2(REAL, REAL), BCAST, R"tex(\hat\beta = \mathrm{cov}_a(x, y) \;/\; \mathrm{var}_a(y))tex", "截面 x 对 y 的回归斜率广播; 量整体敏感度")   \
-  X(CsCorr, "截相关", 2, POINT, ALL, MOMENT, NONE, OP_IN2(REAL, REAL), BCAST, R"tex(\mathrm{corr}_a(x, y))tex", "截面相关系数广播; 量因子联动")                                                  \
-  X(CsResid, "截残差", 2, POINT, ALL, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_a - \hat\alpha - \hat\beta\,y_a)tex", "截面回归残差; 对 y 中性化")                                         \
-  X(CsGroupMean, "组均值", 2, POINT, GROUP, MOMENT, NONE, OP_IN2(REAL, INT), REAL, R"tex((1/|G(a)|)\,\Sigma_{G(a)}\,x_b,\; G(a) = \{b : y_b = y_a\})tex", "组内均值广播; 造行业基准, y = 组 id") \
-  X(CsGroupRank, "组秩", 2, POINT, GROUP, ORDER, NONE, OP_IN2(REAL, INT), UNIT, R"tex(\mathrm{pct}(x_a;\,\{x_b : b \in G(a)\}),\; G(a) = \{b : y_b = y_a\})tex", "组内分位; 组内相对位置, y = 组 id")
+#define OP_CS2(X)                                                                                                                                                                                                   \
+  X(CsBeta, "截贝塔", 2, POINT, ALL, MOMENT, NONE, OP_IN2(REAL, REAL), BCAST, R"tex(\hat\beta = \mathrm{cov}_a(x, y) \;/\; \mathrm{var}_a(y))tex", "截面 x 对 y 的回归斜率广播; 量整体敏感度")                      \
+  X(CsCorr, "截相关", 2, POINT, ALL, MOMENT, NONE, OP_IN2(REAL, REAL), BCAST, R"tex(\mathrm{corr}_a(x, y))tex", "截面相关系数广播; 量因子联动")                                                                     \
+  X(CsResid, "截残差", 2, POINT, ALL, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_a - \hat\alpha - \hat\beta\,y_a)tex", "截面回归残差; 对 y 中性化")                                                            \
+  X(CsGroupMean, "组均值", 2, POINT, GROUP, MOMENT, NONE, OP_IN2(REAL, INT), REAL, R"tex((1/|G(a)|)\,\Sigma_{G(a)}\,x_b,\; G(a) = \{b : y_b = y_a\})tex", "组内均值广播; 造行业基准, y = 组 id (负 = 未知 → 全池)") \
+  X(CsGroupRank, "组秩", 2, POINT, GROUP, ORDER, NONE, OP_IN2(REAL, INT), UNIT, R"tex(\mathrm{pct}(x_a;\,\{x_b : b \in G(a)\}),\; G(a) = \{b : y_b = y_a\})tex", "组内分位; 组内相对位置, y = 组 id (负 = 未知 → 全池)")
 
 // ---- 3 元 × SELF (1) ----
 #define OP_TS3(X) \
@@ -184,7 +184,7 @@
 
 // ---- 3 元 × 截面 (1) ----
 #define OP_CS3(X) \
-  X(CsGroupResid, "组残差", 3, POINT, GROUP, MOMENT, NONE, OP_IN3(REAL, REAL, INT), REAL, R"tex(\tilde x_a - \hat\beta\,\tilde y_a,\; \tilde x_a = x_a - \bar x_{G(a)},\; G(a) = \{b : z_b = z_a\})tex", "组内 demean 后 x 对 y 的回归残差; 组与 y 双重中性化, z = 组 id")
+  X(CsGroupResid, "组残差", 3, POINT, GROUP, MOMENT, NONE, OP_IN3(REAL, REAL, INT), REAL, R"tex(\tilde x_a - \hat\beta\,\tilde y_a,\; \tilde x_a = x_a - \bar x_{G(a)},\; G(a) = \{b : z_b = z_a\})tex", "组内 demean 后 x 对 y 的回归残差; 组与 y 双重中性化, z = 组 id (负 = 未知 → 全池)")
 
 // ---- 拼装: OP_ALL 展开序 = 全局 idx 序; OP_TS / OP_CS 按域 (GpuRun 的 run_ts / run_cs 用);
 //      需要按 A 域分派时用 X_##域 token 粘贴 (见 op_check / OperatorsService) ----
