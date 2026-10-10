@@ -6,7 +6,7 @@
 //   整页 (头部文字 + 四图) 画的是**现结果**的因子 / 口径: 切因子 / 换冲击档后服务不清旧 result, 旧的继续画, 头部标 "→ 新因子 (计算中…)",
 //   新结果发布时一次性覆盖, 不闪
 //   冲击 = 标签口径: 无 (毛价格收益, 默认, 与 Factors Run 同) | <amt>w (扣建仓冲击 lb_cost_{buy,sell}_<amt>w + 平仓固定冲击 Config::sell_impact);
-//   换档 = 换请求 key → 服务即兴重算 Stat (净标签不缓存), 期限结构 / 分层 / IC 全部随之换口径
+//   服务一次算出全部冲击档的立方体 Row[c][H][T], 换档 / 换 Hold / 超额|绝对 都只是切片 (UI 持锁派生), 不发请求, 零延时
 // 下面 2×2 四图:
 //   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日累计的组均收益 (控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
 //        重叠持有期按 1/h 折算 = h 个相位非重叠链的平均). y 范围按分层线定; 多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
@@ -20,7 +20,7 @@
 //        Inspect 算过用算的, 没算过用 Factors 表里 (文件) 的, 所以进页即有
 //   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
 //   右下 留位 (Markowitz CDF 仓位映射)
-// 触发: 高光因子 (文件 / 规范串 / 作用域 / 冲击档) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
+// 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
 //   即开算, 不等切页; 缓存命中只补特征); Compute 按钮 = 弃缓存整体重读.
 #pragma once
 
@@ -52,21 +52,21 @@ struct InspectDerived {
 
 struct InspectUIState {
   int hold_idx = 0;         // FeatureTable labels 下标 (与 Factors 页独立)
-  int impact_amt = 0;       // 冲击口径: 0 = 无 (毛); 否则 FeatureTable::costs 里的金额档 (万). 进请求 key
+  int impact_amt = 0;       // 冲击口径: 0 = 无 (毛); 否则 FeatureTable::costs 里的金额档 (万). 只选显示切片
   bool absolute = false;    // 左上: 超额 (false) | 绝对 (true)
   int cursor_day = -1;      // 左上时序的光标日 (0 = 起点 … days = 末日); -1 / 越界 → 末日. 右侧截面柱按它取值
   std::string last_req_key; // 上次自动起算的 InspectRequest::key (取消后不反复重起)
   // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效
   FactorRow req_row;
   bool req_reload = false;
-  // 派生缓存
+  // 派生缓存 (切片三元组 (epoch, 冲击档, hold) + 口径)
   uint64_t derived_epoch = ~0ull;
-  int derived_sel = -1; // hold_idx
+  int derived_c = -1, derived_sel = -1;
   bool derived_abs = false;
   InspectDerived der;
 };
 
-// 自动起算 (Factors / Inspect 两页都每帧调, 不管哪页在前: Factors 页点行高光即起算): 高光因子有效 且 服务空闲 且 请求 key (因子 / 作用域 / 冲击)
+// 自动起算 (Factors / Inspect 两页都每帧调, 不管哪页在前: Factors 页点行高光即起算): 高光因子有效 且 服务空闲 且 请求 key (因子 / 作用域)
 // 与现结果和上次请求都不同 → 填 ui.req_row / req_reload = false, 返回 true (调用方 MakeInspectRequest + Request)
 bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 

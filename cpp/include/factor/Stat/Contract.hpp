@@ -9,7 +9,7 @@
 //           ry       预处理: 做多标签逐行截面 rank (r16), 与因子无关, 常驻期算一次 (prep_label)
 //   输出  两级:
 //     一级 Row[H][T]  每 (持有期, 时刻) 一行沿 A 轴归约的统计 (两后端各算, 对拍在此级)
-//     二级 HoldStat   每持有期 沿 T 轴汇总成十几个标量 (summarize, 主机 double, 两后端共用同一份代码)
+//     二级 HoldStat   每持有期 沿 T 轴汇总成十几个标量 (Accum 一遍可合并累加器 → finish; 主机 double, 两后端共用同一份代码)
 //
 //   【口径 Frame】alpha 因子分两种坐标系, 由因子表达式的根算子决定 (Expr.hpp root_frame). 标签**统一超额语义**:
 //     e = lv − mean_J lv (做空侧 sv − mean_J sv), 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的都是"相对市场";
@@ -58,6 +58,7 @@
 //     grp[k] 各组沿 t 池化均值 (Σ grp / Σ cnt; 全程无样本 → 0); mono = Spearman(组号, grp[k])
 //     rank_ac = ac 的时间平均
 //     n < 3 → 只填 n, 其余 0 (消费端先看 n)
+//     累加器 Accum 可合并: 行区间并行各攒一份 merge; 超大张量沿 T 分块流式时跨块续攒, 不必落 Row
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
@@ -268,24 +269,25 @@ inline double mono_of(const double *g, int K) {
   return vy > 0.0 ? cxy / std::sqrt(vx * vy) : 0.0;
 }
 
-// rows = 该持有期的 T 行 (rows + h_idx * T); hold = 持有期键
-inline HoldStat summarize(const Row *r, int T, int hold) {
-  assert(T >= 1 && hold >= 1);
-  const int h = hold_minutes(hold); // 折算 / 年化用有效分钟
-  HoldStat s;
-  s.hold = hold;
-  double sic = 0.0, sls = 0.0, smk = 0.0, sac = 0.0, sg[kGroups] = {};
-  long long sc[kGroups] = {};
+// 二级累加器: 一遍消费 Row, 可合并 (t 切块并行各攒一份再 merge; 沿 T 分块流式跨块续攒), 不留 Row.
+//   幂和 double, 原点 0: ic ∈ [−1,1] 均值 ~1e-2, 标签收益 ~1e-3 —— 相消损失 ≈ (μ/σ)^k 量级 (< 1e-2 相对), 远在 float 出口精度内;
+//   中心矩相消出负由 fmax 钳 0. 两后端共用同一份 (对拍一致性在 Row 级), POD 可直接搬上设备.
+struct Accum {
   int n = 0, npos = 0, nlpos = 0, nac = 0;
-  for (int t = 0; t < T; ++t) {
-    const Row &w = r[t];
+  double sic = 0.0, sic2 = 0.0, sic3 = 0.0, sic4 = 0.0;           // ic 幂和
+  double sls = 0.0, sls2 = 0.0, smk = 0.0, smk2 = 0.0, slm = 0.0; // ls / mkt 幂和 + 交叉 (beta)
+  double sac = 0.0;
+  double sg[kGroups] = {};
+  long long sc[kGroups] = {};
+
+  void add(const Row &w) {
     if (w.ok) {
       ++n;
       npos += w.ic > 0.f;
       nlpos += w.ls > 0.f;
-      sic += w.ic;
-      sls += w.ls;
-      smk += w.mkt;
+      const double ic = w.ic, ic2 = ic * ic, ls = w.ls, mk = w.mkt;
+      sic += ic, sic2 += ic2, sic3 += ic2 * ic, sic4 += ic2 * ic2;
+      sls += ls, sls2 += ls * ls, smk += mk, smk2 += mk * mk, slm += ls * mk;
       for (int k = 0; k < kGroups; ++k) {
         sg[k] += w.grp[k];
         sc[k] += w.cnt[k];
@@ -296,54 +298,67 @@ inline HoldStat summarize(const Row *r, int T, int hold) {
       sac += w.ac;
     }
   }
-  s.n = n;
-  s.n_ac = nac;
-  if (nac >= 1)
-    s.rank_ac = static_cast<float>(sac / nac);
-  if (n < 3)
+  void merge(const Accum &o) {
+    n += o.n, npos += o.npos, nlpos += o.nlpos, nac += o.nac;
+    sic += o.sic, sic2 += o.sic2, sic3 += o.sic3, sic4 += o.sic4;
+    sls += o.sls, sls2 += o.sls2, smk += o.smk, smk2 += o.smk2, slm += o.slm;
+    sac += o.sac;
+    for (int k = 0; k < kGroups; ++k)
+      sg[k] += o.sg[k], sc[k] += o.sc[k];
+  }
+  // hold = 持有期键 (折算 / 年化); n < 3 → 只填 n / n_ac / rank_ac
+  HoldStat finish(int hold) const {
+    assert(hold >= 1);
+    HoldStat s;
+    s.hold = hold;
+    s.n = n;
+    s.n_ac = nac;
+    if (nac >= 1)
+      s.rank_ac = static_cast<float>(sac / nac);
+    if (n < 3)
+      return s;
+    const double nn = n, mic = sic / nn, mls = sls / nn, mmk = smk / nn;
+    const double m2 = std::fmax(sic2 - nn * mic * mic, 0.0);
+    const double m3 = sic3 - 3.0 * mic * sic2 + 2.0 * nn * mic * mic * mic;
+    const double m4 = std::fmax(sic4 - 4.0 * mic * sic3 + 6.0 * mic * mic * sic2 - 3.0 * nn * mic * mic * mic * mic, 0.0);
+    const double vls = std::fmax(sls2 - nn * mls * mls, 0.0), vmk = std::fmax(smk2 - nn * mmk * mmk, 0.0), cov = slm - nn * mls * mmk;
+    const double n_eff = nn / hold_minutes(hold); // 重叠持有期折算
+    const double ic_sd = std::sqrt(m2 / (nn - 1)), ls_sd = std::sqrt(vls / (nn - 1));
+    s.ic_mean = static_cast<float>(mic);
+    s.ic_std = static_cast<float>(ic_sd);
+    s.ic_pos = static_cast<float>(npos / nn);
+    if (ic_sd > 0.0) {
+      s.icir = static_cast<float>(mic / ic_sd);
+      s.ic_t = static_cast<float>(mic / ic_sd * std::sqrt(n_eff));
+      const double v = m2 / nn;
+      s.ic_skew = static_cast<float>((m3 / nn) / (v * std::sqrt(v)));
+      s.ic_kurt = static_cast<float>((m4 / nn) / (v * v) - 3.0);
+    }
+    s.ls_mean = static_cast<float>(mls);
+    s.ls_pos = static_cast<float>(nlpos / nn);
+    if (ls_sd > 0.0) {
+      s.ls_t = static_cast<float>(mls / ls_sd * std::sqrt(n_eff));
+      s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(periods_per_year(hold)));
+    }
+    if (vmk > 0.0)
+      s.beta = static_cast<float>(cov / vmk);
+    double g[kGroups];
+    for (int k = 0; k < kGroups; ++k) {
+      g[k] = sc[k] > 0 ? sg[k] / static_cast<double>(sc[k]) : 0.0; // 沿 t 池化
+      s.grp[k] = static_cast<float>(g[k]);
+    }
+    s.mono = static_cast<float>(mono_of(g, kGroups));
     return s;
-  const double mic = sic / n, mls = sls / n, mmk = smk / n;
-  double m2 = 0.0, m3 = 0.0, m4 = 0.0, vls = 0.0, vmk = 0.0, cov = 0.0;
-  for (int t = 0; t < T; ++t) {
-    const Row &w = r[t];
-    if (!w.ok)
-      continue;
-    const double d = w.ic - mic, dl = w.ls - mls, dm = w.mkt - mmk;
-    m2 += d * d;
-    m3 += d * d * d;
-    m4 += d * d * d * d;
-    vls += dl * dl;
-    vmk += dm * dm;
-    cov += dl * dm;
   }
-  const double n_eff = static_cast<double>(n) / h; // 重叠持有期折算
-  const double ic_sd = std::sqrt(m2 / (n - 1));
-  const double ls_sd = std::sqrt(vls / (n - 1));
-  s.ic_mean = static_cast<float>(mic);
-  s.ic_std = static_cast<float>(ic_sd);
-  s.ic_pos = static_cast<float>(static_cast<double>(npos) / n);
-  if (ic_sd > 0.0) {
-    s.icir = static_cast<float>(mic / ic_sd);
-    s.ic_t = static_cast<float>(mic / ic_sd * std::sqrt(n_eff));
-    const double v = m2 / n;
-    s.ic_skew = static_cast<float>((m3 / n) / (v * std::sqrt(v)));
-    s.ic_kurt = static_cast<float>((m4 / n) / (v * v) - 3.0);
-  }
-  s.ls_mean = static_cast<float>(mls);
-  s.ls_pos = static_cast<float>(static_cast<double>(nlpos) / n);
-  if (ls_sd > 0.0) {
-    s.ls_t = static_cast<float>(mls / ls_sd * std::sqrt(n_eff));
-    s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(periods_per_year(hold)));
-  }
-  if (vmk > 0.0)
-    s.beta = static_cast<float>(cov / vmk);
-  double g[kGroups];
-  for (int k = 0; k < kGroups; ++k) {
-    g[k] = sc[k] > 0 ? sg[k] / static_cast<double>(sc[k]) : 0.0; // 沿 t 池化
-    s.grp[k] = static_cast<float>(g[k]);
-  }
-  s.mono = static_cast<float>(mono_of(g, kGroups));
-  return s;
+};
+
+// rows = 该持有期的 T 行 (rows + h_idx * T) 一次汇总 (已落地的 Row; 流式 / 并行走 Accum)
+inline HoldStat summarize(const Row *r, int T, int hold) {
+  assert(T >= 1);
+  Accum a;
+  for (int t = 0; t < T; ++t)
+    a.add(r[t]);
+  return a.finish(hold);
 }
 
 } // namespace factor::stat

@@ -4,15 +4,15 @@
 // 因子 DAG 的 CPU evaluator: 按 Dag 的槽计划跑 factor::cpu::{ts,cs} 算子 (整张量批算)
 // =============================================================================
 //   Pool          按 n_slots 预分配的宿主平面 (跨因子复用, 只 ensure 不清: 契约是后端写满每格)
-//   eval          单线程顺序跑一张 Dag; 输入平面按 Dag::feats 下标给; 返回根平面 (根是特征叶时直接返回该输入).
-//                 因子间并行由调用方起线程 (search 的并行方案)
-//   run_node_par  一个算子节点切满 threads 个线程 (Run 的并行方案: 共享 DAG 顺序走节点, 节点内并行). 与 Dag 计划解耦.
+//   run_node      一个算子节点, 并行由 Exec 定 (factor/Exec.hpp): Serial = 整平面一次调算子 (搜索: 因子间并行由上层起线程);
+//                 ForkJoin = 节点内切满核 (Run / Inspect: 共享 DAG 顺序走节点). 与 Dag 计划解耦.
 //                 切法按算子的 (T 窗, A 域) 选, 结果与单线程**逐位一致** (不是近似):
 //                   CS (ALL / GROUP)      行独立 → 按 t 任意切
 //                   Ts POINT / EXPAND     逐元素 / 段内递推 → 按 t 切且对齐 kSegLen (段界; TsTodMask 看 t % kSegLen)
 //                   Ts ROLL / EXPO        沿 t 全程递推 (Roll 窗跨段, Ema 不 reset) → 按资产列切块:
 //                                         gather 成紧凑 [T][w] 子平面 → 原算子跑 (A = w) → scatter 回去. 多两趟拷贝,
-//                                         换来算子零改动 + 精确. 每线程一份块暂存 (ParScratch)
+//                                         换来算子零改动 + 精确. 每线程一份块暂存 (ParScratch); 单线程不切不拷
+//   eval          顺序跑一张 Dag (每节点 run_node); 输入平面按 Dag::feats 下标给; 返回根平面 (根是特征叶时直接返回该输入)
 //   cs_gate       截面池掩码 [T][A] (特征库 cs_valid 列 = 当日在池, 整日常量, 见 features/MetaFlag.hpp), 原样递给 CS 节点
 //                 (A 域 ALL / GROUP) 的算子 —— 池内统计 / 池外就近取值全在算子内部 (契约【截面池 g】); TS 节点不收.
 //                 evaluator 不做任何二次门控 / 补值; 有 CS 节点时 cs_gate 必填
@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
-#include <thread>
 #include <vector>
 
 namespace factor::cpu {
@@ -85,73 +84,19 @@ inline const uint8_t *gate_of(const expr::OpInfo &o, const uint8_t *cs_gate, siz
   return cs_gate + off;
 }
 
-// inputs[k] = 特征 feats[k] 的平面 ([T][A] SoA). 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方)
-// cs_gate: 截面池掩码 [T][A] (文件头); DAG 含 CS 节点时必填
-inline const check::Plane *eval(const Dag &d, const std::vector<const check::Plane *> &inputs, Pool &pool, int T, int A,
-                                const uint8_t *cs_gate) {
-  assert(inputs.size() == d.feats.size());
-  const size_t n = static_cast<size_t>(T) * A;
-  for (const check::Plane *p : inputs)
-    assert(p && p->v.size() == n && p->m.size() == n);
-  pool.prepare(d.n_slots, n);
-  auto plane_of = [&](int node) -> const check::Plane * {
-    const DagNode &nd = d.nodes[static_cast<size_t>(node)];
-    return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
-  };
-  for (size_t i = 0; i < d.nodes.size(); ++i) {
-    const DagNode &nd = d.nodes[i];
-    if (nd.op < 0)
-      continue;
-    const expr::OpInfo &o = expr::kOps[nd.op];
-    const int ar = o.arity;
-    const check::Plane *in[3] = {};
-    for (int a = 0; a < ar; ++a)
-      in[a] = plane_of(nd.in[a]);
-    check::Plane &out = pool.slots[static_cast<size_t>(nd.slot)];
-    run_fn(nd.op)(check::pv(in[0], ar >= 1), check::pm(in[0], ar >= 1), check::pv(in[1], ar >= 2), check::pm(in[1], ar >= 2),
-                  check::pv(in[2], ar >= 3), check::pm(in[2], ar >= 3), gate_of(o, cs_gate, 0), out.v.data(), out.m.data(), T, A, nd.p);
-  }
-  return plane_of(d.root());
-}
-
-// ---- 节点内并行 ----
-
-namespace detail {
-
-// n_tasks 个任务静态条带分给 min(threads, n_tasks) 个线程: fn(task, tid)
-template <class Fn>
-inline void par_tasks(int n_tasks, int threads, Fn &&fn) {
-  assert(threads >= 1);
-  const int nt = std::min(threads, n_tasks);
-  if (nt <= 1) {
-    for (int i = 0; i < n_tasks; ++i)
-      fn(i, 0);
-    return;
-  }
-  std::vector<std::thread> th;
-  th.reserve(static_cast<size_t>(nt));
-  for (int tid = 0; tid < nt; ++tid)
-    th.emplace_back([&fn, tid, nt, n_tasks] {
-      for (int i = tid; i < n_tasks; i += nt)
-        fn(i, tid);
-    });
-  for (std::thread &t : th)
-    t.join();
-}
-
-} // namespace detail
-
-// A 块切法的每线程暂存: 0..2 输入块, 3 输出块 (紧凑 [T][w])
+// A 块切法的每线程暂存: 0..2 输入块, 3 输出块 (紧凑 [T][w]); 调用方按 ex.threads() 备, 跨节点 / 跨因子复用
 struct ParScratch {
   std::vector<float> v[4];
   std::vector<uint8_t> m[4];
 };
 
-// in[a] (a < arity) 输入平面, out 输出平面 (已 ensure); sc.size() ≥ threads
+// in[a] (a < arity) 输入平面, out 输出平面 (已 ensure); sc.size() ≥ ex.threads() (Serial 不用)
 // cs_gate: 截面池掩码 [T][A] (文件头), 原样递给 CS 节点的算子; CS 节点必填, TS 节点不看
-inline void run_node_par(const DagNode &nd, const check::Plane *const in[3], check::Plane &out, int T, int A, int threads,
-                         std::vector<ParScratch> &sc, const uint8_t *cs_gate) {
-  assert(nd.op >= 0 && threads >= 1 && sc.size() >= static_cast<size_t>(threads));
+template <class Exec>
+inline void run_node(Exec &ex, const DagNode &nd, const check::Plane *const in[3], check::Plane &out, int T, int A, std::vector<ParScratch> &sc,
+                     const uint8_t *cs_gate) {
+  const int threads = ex.threads();
+  assert(nd.op >= 0 && threads >= 1);
   const expr::OpInfo &o = expr::kOps[nd.op];
   const int ar = o.arity;
   for (int a = 0; a < ar; ++a)
@@ -162,27 +107,26 @@ inline void run_node_par(const DagNode &nd, const check::Plane *const in[3], che
   const auto M = [&](int a, size_t off) -> const uint8_t * { return a < ar ? in[a]->m.data() + off : nullptr; };
 
   const bool a_split = o.a == A::SELF && (o.t == T::ROLL || o.t == T::EXPO);
-  if (!a_split) {
-    // 按 t 切: CS 单位 = 行; Ts POINT / EXPAND 单位 = 段 (EXPAND 段内递推; POINT 里 TsTodMask 看 t % kSegLen, 也得对齐段界)
+  if (!a_split || threads == 1) {
+    // 按 t 切: CS 单位 = 行; Ts POINT / EXPAND 单位 = 段 (EXPAND 段内递推; POINT 里 TsTodMask 看 t % kSegLen, 也得对齐段界).
+    // 单线程一条带 = 整平面一次调, 零拷贝
     const int unit = o.a == A::SELF ? kSegLen : 1;
     assert(T % unit == 0 && "Ts 切块要求 T 是整段");
-    const int units = T / unit;
-    const int nchunk = std::min(threads, units);
-    const int per = (units + nchunk - 1) / nchunk;
-    detail::par_tasks(nchunk, threads, [&](int c, int) {
-      const int t0 = c * per * unit, t1 = std::min(T, (c + 1) * per * unit);
-      if (t0 >= t1)
-        return;
-      const size_t off = static_cast<size_t>(t0) * A;
-      fn(V(0, off), M(0, off), V(1, off), M(1, off), V(2, off), M(2, off), gate_of(o, cs_gate, off), out.v.data() + off,
-         out.m.data() + off, t1 - t0, A, nd.p);
-    });
+    ex.rows(
+        T,
+        [&](int t0, int t1, int) {
+          const size_t off = static_cast<size_t>(t0) * A;
+          fn(V(0, off), M(0, off), V(1, off), M(1, off), V(2, off), M(2, off), gate_of(o, cs_gate, off), out.v.data() + off,
+             out.m.data() + off, t1 - t0, A, nd.p);
+        },
+        unit);
     return;
   }
   // 按资产列切块 (宽度凑 8 的倍数, 便于向量化); 只有 TS 走这里, 不收 g
+  assert(sc.size() >= static_cast<size_t>(threads));
   const int w = std::max(8, ((A + threads - 1) / threads + 7) / 8 * 8);
   const int nb = (A + w - 1) / w;
-  detail::par_tasks(nb, threads, [&](int b, int tid) {
+  ex.tasks(nb, [&](int b, int tid) {
     const int a0 = b * w, wb = std::min(w, A - a0);
     ParScratch &s = sc[static_cast<size_t>(tid)];
     const size_t nblk = static_cast<size_t>(T) * wb;
@@ -204,6 +148,32 @@ inline void run_node_par(const DagNode &nd, const check::Plane *const in[3], che
       std::memcpy(out.m.data() + dst, s.m[3].data() + src, static_cast<size_t>(wb));
     }
   });
+}
+
+// inputs[k] = 特征 feats[k] 的平面 ([T][A] SoA). 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方)
+// cs_gate: 截面池掩码 [T][A] (文件头); DAG 含 CS 节点时必填. 进度 / 计时 / 取消要逐节点的调用方自己走 run_node
+template <class Exec>
+inline const check::Plane *eval(Exec &ex, const Dag &d, const std::vector<const check::Plane *> &inputs, Pool &pool, std::vector<ParScratch> &sc,
+                                int T, int A, const uint8_t *cs_gate) {
+  assert(inputs.size() == d.feats.size());
+  const size_t n = static_cast<size_t>(T) * A;
+  for (const check::Plane *p : inputs)
+    assert(p && p->v.size() == n && p->m.size() == n);
+  pool.prepare(d.n_slots, n);
+  auto plane_of = [&](int node) -> const check::Plane * {
+    const DagNode &nd = d.nodes[static_cast<size_t>(node)];
+    return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
+  };
+  for (size_t i = 0; i < d.nodes.size(); ++i) {
+    const DagNode &nd = d.nodes[i];
+    if (nd.op < 0)
+      continue;
+    const check::Plane *in[3] = {};
+    for (int a = 0; a < expr::kOps[nd.op].arity; ++a)
+      in[a] = plane_of(nd.in[a]);
+    run_node(ex, nd, in, pool.slots[static_cast<size_t>(nd.slot)], T, A, sc, cs_gate);
+  }
+  return plane_of(d.root());
 }
 
 } // namespace factor::cpu

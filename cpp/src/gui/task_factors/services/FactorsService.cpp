@@ -190,8 +190,8 @@ void write_back(const std::filesystem::path &path, const factor::expr::Expr &e, 
   write_json(path, j);
 }
 
-// 评估结果 → 行 (scope / 二级汇总); rows_out = [hold][T]
-void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, const factor::stat::Row *rows_out, const char *backend) {
+// 评估结果 → 行 (scope / 二级); hold = [n_hold]
+void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, const factor::stat::HoldStat *hold, const char *backend) {
   r.scope.universe = req.universe;
   r.scope.start_date = req.start_date;
   r.scope.end_date = req.end_date;
@@ -200,7 +200,7 @@ void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, const f
   r.scope.time = now_string();
   r.n_hold = L.n_hold;
   for (int hi = 0; hi < L.n_hold; ++hi)
-    r.hold[hi] = factor::stat::summarize(rows_out + static_cast<size_t>(hi) * L.T, L.T, L.hd.h[hi]);
+    r.hold[hi] = hold[hi];
   r.has_stat = true;
   r.stat_from_file = false;
 }
@@ -444,6 +444,7 @@ void FactorsService::Stop() {
 
 void FactorsService::worker_loop() {
   TraceThread("FactorsWorker");
+  factor::exec::ForkJoin ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))); // 常驻, 随 worker 活
   while (true) {
     FactorsRequest req;
     {
@@ -478,7 +479,7 @@ void FactorsService::worker_loop() {
       status_.store(FactorsStatus::Done, std::memory_order_release);
       continue;
     }
-    const bool ok = evaluate(req);
+    const bool ok = evaluate(req, ex);
     status_.store(ok ? FactorsStatus::Done : FactorsStatus::Cancelled, std::memory_order_release);
     epoch_.fetch_add(1, std::memory_order_relaxed);
   }
@@ -575,7 +576,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
 }
 
 // 装载 + 评估 (worker 线程; 返回 false = 取消)
-bool FactorsService::evaluate(const FactorsRequest &req) {
+bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin &ex) {
   TraceN("FactorsEvaluate");
   // 有效行 → Expr (scan 已校验过, 这里必成功) → 一张共享 DAG (F.roots[k] ↔ idx[k])
   std::vector<size_t> idx;
@@ -646,7 +647,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
 
   total_.store(L.days, std::memory_order_relaxed);
   done_.store(0, std::memory_order_relaxed);
-  if (!load_planes(feats_, reader, dates, L, cancel_, done_)) {
+  if (!load_planes(feats_, reader, dates, L, ex, cancel_, done_)) {
     if (reader.stale())
       finish_all_pending("特征库判废 (子轴/字段表与当前不符), 需重算特征");
     return false;
@@ -688,12 +689,11 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   }
   epoch_.fetch_add(1, std::memory_order_relaxed);
   const size_t n = L.n(), H = static_cast<size_t>(L.hd.n);
-  const int threads = static_cast<int>(hw_threads());
   const std::filesystem::path dir(req.factor_dir);
   std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
-  std::vector<factor::stat::Row> srows(H * static_cast<size_t>(L.T));
+  factor::stat::HoldStat hold[factor::stat::kMaxHold];
 
-  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct) 填 srows → 发布该根的全部因子 (dup 共根)
+  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct) 填 hold[] → 发布该根的全部因子 (dup 共根)
   const auto walk = [&](const char *backend, auto &&run_node, auto &&stat_root) -> bool {
     for (int i = 0; i < N; ++i) {
       if (cancel_.load(std::memory_order_relaxed))
@@ -725,7 +725,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
         for (int j : sub[k])
           r.eval_ms += node_ms[static_cast<size_t>(j)];
         r.valid_pct = valid_pct;
-        fill_stat(r, req, L, srows.data(), backend);
+        fill_stat(r, req, L, hold, backend);
         r.status = RowStatus::Done;
         {
           std::lock_guard<std::mutex> lock(mutex);
@@ -740,16 +740,17 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
 
   if (!req.gpu) {
     // 标签 rank 预处理 (全核, 一次)
+    factor::cpu::stat::Workspace w;
+    w.ensure(L.T, L.A, L.hd.n, ex.threads());
     std::vector<std::vector<uint16_t>> ry(H, std::vector<uint16_t>(n));
     std::vector<factor::cpu::stat::Label> lab(H);
     for (size_t h = 0; h < H; ++h) {
-      factor::cpu::stat::prep_label(L.labels[h].lv.data(), L.labels[h].m.data(), L.T, L.A, ry[h].data(), threads);
+      factor::cpu::stat::prep_label(ex, L.labels[h].lv.data(), L.labels[h].m.data(), L.T, L.A, ry[h].data(), w);
       lab[h] = {L.labels[h].lv.data(), L.labels[h].sv.data(), L.labels[h].m.data(), ry[h].data()};
     }
     factor::cpu::Pool pool;
     pool.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
-    std::vector<factor::cpu::ParScratch> sc(static_cast<size_t>(threads));
-    std::vector<uint16_t> ws(n);
+    std::vector<factor::cpu::ParScratch> sc(static_cast<size_t>(ex.threads()));
     const auto plane_of = [&](int i) -> const factor::check::Plane * {
       const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
       return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
@@ -762,14 +763,13 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
           for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
             in[a] = plane_of(nd.in[a]);
           const Clock::time_point t0 = Clock::now();
-          factor::cpu::run_node_par(nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, threads, sc, L.cs.m.data());
+          factor::cpu::run_node(ex, nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, sc, L.cs.m.data());
           return ms_since(t0);
         },
         [&](int i, factor::stat::Frame fr, float &valid_pct) {
           const factor::check::Plane *root = plane_of(i); // Stat 只看池内 (g 在算子内部)
           valid_pct = valid_pct_of(root->m.data(), L.cs.m.data(), n);
-          factor::cpu::stat::eval(root->v.data(), root->m.data(), L.cs.m.data(), fr, L.T, L.A, L.hd, lab.data(), ws.data(), srows.data(),
-                                  threads);
+          factor::cpu::stat::run(ex, root->v.data(), root->m.data(), L.cs.m.data(), fr, L.T, L.A, L.hd, lab.data(), w, nullptr, hold);
         });
   }
 
@@ -786,6 +786,7 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
   factor::gpu::DevPool pool;
   pool.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
   std::vector<uint8_t> mask(n);
+  std::vector<factor::stat::Row> srows(H * static_cast<size_t>(L.T)); // GPU 一级回宿主再二级
   const auto dplane_of = [&](int i) -> const factor::gpu::DevPlane * {
     const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
     return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : pool.slots[static_cast<size_t>(nd.slot)];
@@ -811,6 +812,8 @@ bool FactorsService::evaluate(const FactorsRequest &req) {
         factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid%
         valid_pct = valid_pct_of(mask.data(), L.cs.m.data(), n);
         factor::gpu::stat_eval(ss, root, cs_gate, fr, srows.data());
+        for (int hi = 0; hi < L.hd.n; ++hi)
+          hold[hi] = factor::stat::summarize(srows.data() + static_cast<size_t>(hi) * L.T, L.T, L.hd.h[hi]);
       });
   pool.release();
   factor::gpu::stat_close(ss);

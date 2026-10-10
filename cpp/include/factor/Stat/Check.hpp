@@ -10,10 +10,11 @@
 //     x     CS: NORM (按 profile); TS: 同一 NORM 经 Φ 映到 (0,1) 当分位 (TsRankRoll 的输出形状)
 //     标签  每持有期 long = 0.3·z + NORM 噪声 (z = 造数用的 NORM 平面; IC ≈ 0.3, 二级统计有东西可比); short = −(0.3·z + 0.7·噪声);
 //           掩码取噪声平面的空洞; 值经 fp16 往返 (与常驻格式同)
-//   本头只依赖 Contract / Check / Stat/Contract / Stat/Cpu; 消费者 TU 编进 -fno-fast-math.
+//   本头只依赖 Contract / Check / Exec / Stat/Contract / Stat/Cpu; 消费者 TU 编进 -fno-fast-math.
 // =============================================================================
 
 #include "factor/Check.hpp"
+#include "factor/Exec.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp"
 
@@ -177,27 +178,28 @@ inline void summarize_all(Result &r, const Data &d) {
 
 inline int cpu_threads() { return static_cast<int>(std::max<unsigned>(1, std::thread::hardware_concurrency())); }
 
-// CPU 驱动: 预处理 + 评估各计时 (wall), 再做二级汇总
+// CPU 驱动 (ForkJoin(threads) 切行): 预处理 + 评估 (含二级) 各计时 (wall)
 inline void run_cpu(const Data &d, Result &r, int threads) {
   using Clock = std::chrono::steady_clock;
   const size_t n = static_cast<size_t>(d.T) * d.A;
   const int H = d.hd.n;
+  factor::exec::ForkJoin ex(threads);
+  factor::cpu::stat::Workspace w;
+  w.ensure(d.T, d.A, H, ex.threads());
   std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(n));
   std::vector<factor::cpu::stat::Label> lab(static_cast<size_t>(H));
   Clock::time_point t0 = Clock::now();
   for (int i = 0; i < H; ++i) {
     const LabelHost &L = d.lab[static_cast<size_t>(i)];
-    factor::cpu::stat::prep_label(L.lv.data(), L.m.data(), d.T, d.A, ry[static_cast<size_t>(i)].data(), threads);
+    factor::cpu::stat::prep_label(ex, L.lv.data(), L.m.data(), d.T, d.A, ry[static_cast<size_t>(i)].data(), w);
     lab[static_cast<size_t>(i)] = {L.lv.data(), L.sv.data(), L.m.data(), ry[static_cast<size_t>(i)].data()};
   }
   r.prep_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-  std::vector<uint16_t> ws(n);
   r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
+  r.stat.resize(static_cast<size_t>(H));
   t0 = Clock::now();
-  factor::cpu::stat::eval(d.x.v.data(), d.x.m.data(), d.g.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), ws.data(), r.rows.data(),
-                          threads);
+  factor::cpu::stat::run(ex, d.x.v.data(), d.x.m.data(), d.g.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), w, r.rows.data(), r.stat.data());
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-  summarize_all(r, d);
 }
 
 } // namespace factor::stat::check

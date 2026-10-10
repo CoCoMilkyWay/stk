@@ -12,7 +12,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
-#include <thread>
 
 // 因子契约的段 = 一个交易日的 L1 行数 (含 09:15 起的集合竞价 15 分钟); 特征库 L1 有效行数与之对账
 static_assert(factor::kSegLen == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegLen 必须等于 L1 每日分钟数");
@@ -22,28 +21,6 @@ namespace GUI::Factors {
 namespace {
 constexpr size_t kLevel = analysis::kLevel; // 因子只在 L1 算
 } // namespace
-
-size_t hw_threads() { return std::max<size_t>(1, std::thread::hardware_concurrency()); }
-
-void parallel_for(size_t n_tasks, size_t n_threads, const std::atomic<bool> &cancel, const std::function<void(size_t, size_t)> &fn) {
-  if (n_tasks == 0)
-    return;
-  const size_t n = std::min(n_threads, n_tasks);
-  std::atomic<size_t> next{0};
-  std::vector<std::thread> threads;
-  threads.reserve(n);
-  for (size_t t = 0; t < n; ++t)
-    threads.emplace_back([&, t] {
-      for (;;) {
-        const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-        if (i >= n_tasks || cancel.load(std::memory_order_relaxed))
-          return;
-        fn(i, t);
-      }
-    });
-  for (auto &th : threads)
-    th.join();
-}
 
 void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L) {
   L.days = days;
@@ -59,8 +36,8 @@ void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L) {
   factor::stat::assert_holds(L.hd);
 }
 
-bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, std::atomic<bool> &cancel,
-                 std::atomic<int> &done, bool with_labels, bool with_costs) {
+bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, factor::exec::ForkJoin &ex,
+                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels, bool with_costs) {
   TraceN("FactorsLoad");
   assert(static_cast<int>(dates.size()) == L.days);
   assert(!with_costs || with_labels);
@@ -103,14 +80,17 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   for (CostPlane &cp : L.costs)
     cp.buy.assign(n, 0), cp.sell.assign(n, 0), cp.m.assign(n, 0);
 
-  const size_t n_threads = std::min(hw_threads(), dates.size());
+  const size_t n_threads = static_cast<size_t>(ex.threads());
   std::vector<FeatureRead::DayColumns> staging(n_threads);
   for (FeatureRead::DayColumns &dc : staging)
     dc.preallocate(A, kLevel, cols.size());
   std::vector<std::vector<uint8_t>> has_data(n_threads, std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交
   const size_t nc = cols.size();
 
-  parallel_for(dates.size(), n_threads, cancel, [&](size_t d, size_t tid) {
+  ex.tasks(static_cast<int>(dates.size()), [&](int di, int ti) {
+    if (cancel.load(std::memory_order_relaxed))
+      return;
+    const size_t d = static_cast<size_t>(di), tid = static_cast<size_t>(ti);
     FeatureRead::DayColumns &dc = staging[tid];
     reader.load_day_columns(dates[d], cols, dc);
     if (reader.stale())
@@ -176,24 +156,27 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   return !cancel.load(std::memory_order_relaxed) && !reader.stale();
 }
 
-void net_labels(const Loaded &L, const CostPlane &cost, float sell_impact, std::vector<LabelPlane> &out) {
+void net_labels(factor::exec::ForkJoin &ex, const Loaded &L, const CostPlane &cost, float sell_impact, std::vector<LabelPlane> &out) {
   TraceN("FactorsNetLabels");
   const size_t n = L.n(), H = L.labels.size();
   assert(cost.m.size() == n && sell_impact >= 0.f);
   out.resize(H);
-  std::atomic<bool> no_cancel{false};
-  parallel_for(H, hw_threads(), no_cancel, [&](size_t h, size_t) {
-    const LabelPlane &g = L.labels[h];
-    LabelPlane &o = out[h];
-    o.lv.assign(n, 0), o.sv.assign(n, 0), o.m.assign(n, 0);
-    for (size_t i = 0; i < n; ++i) {
-      if (!g.m[i] || !cost.m[i])
-        continue;
-      const float lv = static_cast<float>(std::bit_cast<_Float16>(g.lv[i])) - static_cast<float>(std::bit_cast<_Float16>(cost.buy[i])) - sell_impact;
-      const float sv = static_cast<float>(std::bit_cast<_Float16>(g.sv[i])) - static_cast<float>(std::bit_cast<_Float16>(cost.sell[i])) - sell_impact;
-      o.lv[i] = std::bit_cast<uint16_t>(static_cast<_Float16>(lv));
-      o.sv[i] = std::bit_cast<uint16_t>(static_cast<_Float16>(sv));
-      o.m[i] = 1;
+  for (LabelPlane &o : out)
+    if (o.m.size() != n)
+      o.lv.resize(n), o.sv.resize(n), o.m.resize(n);
+  ex.rows(L.T, [&](int t0, int t1, int) {
+    const size_t i0 = static_cast<size_t>(t0) * L.A, i1 = static_cast<size_t>(t1) * L.A;
+    for (size_t h = 0; h < H; ++h) {
+      const LabelPlane &g = L.labels[h];
+      LabelPlane &o = out[h];
+      for (size_t i = i0; i < i1; ++i) {
+        const bool ok = g.m[i] && cost.m[i];
+        const float lv = static_cast<float>(std::bit_cast<_Float16>(g.lv[i])) - static_cast<float>(std::bit_cast<_Float16>(cost.buy[i])) - sell_impact;
+        const float sv = static_cast<float>(std::bit_cast<_Float16>(g.sv[i])) - static_cast<float>(std::bit_cast<_Float16>(cost.sell[i])) - sell_impact;
+        o.lv[i] = ok ? std::bit_cast<uint16_t>(static_cast<_Float16>(lv)) : 0;
+        o.sv[i] = ok ? std::bit_cast<uint16_t>(static_cast<_Float16>(sv)) : 0;
+        o.m[i] = ok;
+      }
     }
   });
 }

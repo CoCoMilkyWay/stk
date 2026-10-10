@@ -126,20 +126,20 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
   ys.push_back(y.back());
 }
 
-// 一级 Row[T] (选定 hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
+// 一级 Row[T] (选定冲击档 c + hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
 // 再按回测长度折成等效年化 (× kDaysPerYear / days, 单位 %): 末点 = 年化收益, 不同区间长度 / 持有期可比;
-// IC 分布 = ok 行的 ic 逐行进 KLL (与 summarize 的 ic_mean/std/skew/kurt 同一组样本)
-void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
+// IC 分布 = ok 行的 ic 逐行进 KLL (与 Accum 的 ic_mean/std/skew/kurt 同一组样本)
+void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
   if (res.key.empty() || !res.error.empty() || res.rows.empty())
     return;
-  assert(sel >= 0 && sel < res.hd.n);
+  assert(sel >= 0 && sel < res.hd.n && c >= 0 && c < res.n_impact());
   const int T = res.scope.T, days = res.scope.days, S = factor::kSegLen;
   assert(T == days * S && days >= 1);
   const int hold = res.hd.h[sel];
   const double h = factor::stat::hold_minutes(hold);
   const double ann = 100.0 * factor::stat::kDaysPerYear / days;
-  const factor::stat::Row *r = res.rows.data() + static_cast<size_t>(sel) * T;
+  const factor::stat::Row *r = res.rows_at(c, sel);
   d.days = days;
   d.dates = res.dates;
   d.x_day.resize(static_cast<size_t>(days) + 1);
@@ -184,8 +184,8 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   d.y_hi = hi + margin;
   KLLcache kll(analysis::kAggKllCapacity, analysis::kAggKllResolution);
   kll.addBatch(ics);
-  d.ic_pdf.fill(kll, 3); // n < 3 与 summarize 同口径: 无 stat 也无 PDF
-  d.hs = res.hold[sel];
+  d.ic_pdf.fill(kll, 3); // n < 3 与 Accum::finish 同口径: 无 stat 也无 PDF
+  d.hs = res.hold_at(c)[sel];
   d.valid = true;
 }
 
@@ -436,6 +436,15 @@ bool view_row(FactorsService &fsvc, const std::string &file, FactorRow &row, std
   return true;
 }
 
+// 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致; 冲击档不进 key)
+std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
+  InspectRequest probe;
+  probe.file = row.file, probe.expr = row.expr, probe.frame = row.frame;
+  probe.universe = ctx.universe, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
+  probe.sell_impact = ctx.sell_impact;
+  return probe.key();
+}
+
 } // namespace
 
 bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
@@ -447,11 +456,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const Factor
   FactorRow row;
   if (!view_row(fsvc, fui.view_file, row) || !row.error.empty())
     return false;
-  InspectRequest probe;
-  probe.file = row.file, probe.expr = row.expr, probe.frame = row.frame;
-  probe.universe = ctx.universe, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
-  probe.impact_amt = ui.impact_amt, probe.sell_impact = ui.impact_amt > 0 ? ctx.sell_impact : 0.0;
-  const std::string key = probe.key();
+  const std::string key = probe_key(row, ctx);
   if (ui.last_req_key == key) // 取消过 / 已发过的 key 不反复起 (Compute 手动)
     return false;
   {
@@ -575,10 +580,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
       ui.impact_amt = imp_idx ? ft.costs[static_cast<size_t>(imp_idx) - 1].amt : 0;
   }
   if (ImGui::IsItemHovered())
-    tip("标签口径\n"
+    tip("标签口径 (只影响显示, 一次算全部档)\n"
         "• 无: 价格收益, entry 中间价 → exit 分钟 VWAP (默认, 与 Factors Run 同)\n"
         "• <amt>w: 再扣建仓冲击 (lb_cost_buy/sell_<amt>w: 同一盘口吃 amt 万的 VWAP 偏离中间价) + 平仓固定冲击 (Config %.4f)\n"
-        "• 净标签即兴算不缓存: 换档只重算 Stat, 不重读库; 吃不到的格 (NaN) 无效",
+        "• 吃不到的格 (NaN) 无效",
         ctx.sell_impact);
   ImGui::SameLine(0.f, kCtlGap);
   {
@@ -604,7 +609,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   if (!can_run)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    tip(ctx.axis_ready ? "弃缓存整体重算这一个因子: 重读特征库 → eval (CPU) → Stat, 留一级 Row[H][T]\n"
+    tip(ctx.axis_ready ? "弃缓存整体重算这一个因子: 重读特征库 → eval (CPU) → Stat, 留一级 Row[冲击档][H][T]\n"
                          "• 换因子会自动起算, 只补缺的特征; 此按钮 = 强制全量"
                        : "资产轴未就绪, 读不了特征库\n"
                          "• 先在 Database 页扫描");
@@ -637,19 +642,16 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
     break;
   }
 
-  // ---- 结果快照 (持锁派生, 不拷 rows) ----
-  InspectRequest probe;
-  probe.file = sel.file, probe.expr = sel.expr, probe.frame = sel.frame;
-  probe.universe = ctx.universe, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
-  probe.impact_amt = ui.impact_amt, probe.sell_impact = ui.impact_amt > 0 ? ctx.sell_impact : 0.0;
-  const std::string key = probe.key();
+  // ---- 结果快照 (持锁派生切片 (冲击档 c, hold), 不拷 rows) ----
+  const std::string key = probe_key(sel, ctx);
   const int sel_hold = ui.hold_idx;
   std::string message, res_error, res_key, res_file;
   int res_impact = 0;
+  double res_sell = 0.0;
   StatScope res_scope;
   float res_valid = 0.f;
   double res_ms = 0.0;
-  factor::stat::HoldStat res_holds[factor::stat::kMaxHold]; // 全部持有期 (期限结构)
+  factor::stat::HoldStat res_holds[factor::stat::kMaxHold]; // 选定冲击档的全部持有期 (期限结构)
   bool res_has = false;
   {
     std::lock_guard<std::mutex> lock(isvc.mutex);
@@ -657,24 +659,28 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
     const InspectResult &res = isvc.result;
     res_key = res.key;
     res_error = res.error;
+    int c = 0;
     if (!res.key.empty() && res.error.empty()) {
       assert(res.n_hold == n_hold && "Inspect 与 FeatureTable 的标签组不一致");
       res_has = true;
       res_file = res.file;
-      res_impact = res.impact_amt;
+      c = res.impact_index(ui.impact_amt);
+      res_impact = res.impacts[static_cast<size_t>(c)];
+      res_sell = res.sell_impact;
       res_scope = res.scope;
       res_valid = res.valid_pct;
       res_ms = res.eval_ms;
       for (int i = 0; i < n_hold; ++i)
-        res_holds[i] = res.hold[i];
+        res_holds[i] = res.hold_at(c)[i];
     }
     const uint64_t ep = isvc.epoch();
-    if (ep != ui.derived_epoch || sel_hold != ui.derived_sel || ui.absolute != ui.derived_abs) {
+    if (ep != ui.derived_epoch || c != ui.derived_c || sel_hold != ui.derived_sel || ui.absolute != ui.derived_abs) {
       ui.derived_epoch = ep;
+      ui.derived_c = c;
       ui.derived_sel = sel_hold;
       ui.derived_abs = ui.absolute;
       if (res_has && sel_hold < res.hd.n)
-        derive(res, sel_hold, ui.absolute, ui.der);
+        derive(res, c, sel_hold, ui.absolute, ui.der);
       else
         ui.der = InspectDerived{};
     }
@@ -687,7 +693,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
     ui.last_req_key = key;
 
   // ---- 作用域 + 选定持有期的 stat 行 ----
-  // match = 结果就是当前请求 (选中行 + 作用域 + 冲击档); 否则仍整页画旧结果 (服务不清旧 result), 新结果发布一次性换; 头部显示行 row 已随结果
+  // match = 结果就是当前请求 (选中行 + 作用域); 否则仍整页画旧结果 (服务不清旧 result), 新结果发布一次性换; 头部显示行 row 已随结果
   const bool match = res_has && res_key == key;
   const bool shown = res_has;
   assert(!shown || res_file == row.file || row.file == sel.file); // 显示行 = 结果因子 (结果因子已不在表里时退回选中行)
@@ -697,7 +703,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
     ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms | 标签 %s%s", res_scope.universe.c_str(),
                         res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T, res_scope.backend.c_str(),
                         res_scope.time.c_str(), res_valid, res_ms,
-                        res_impact ? ("扣冲击 " + std::to_string(res_impact) + "w + 平仓 " + std::to_string(ctx.sell_impact)).c_str() : "毛 (价格收益)",
+                        res_impact ? ("扣冲击 " + std::to_string(res_impact) + "w + 平仓 " + std::to_string(res_sell)).c_str() : "毛 (价格收益)",
                         match ? "" : "  (旧结果, 新请求计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)

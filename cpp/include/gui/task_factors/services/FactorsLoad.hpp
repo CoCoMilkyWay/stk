@@ -6,22 +6,18 @@
 
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Dag.hpp"
+#include "factor/Exec.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable
 
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <vector>
 
 class FeatureRead;
 
 namespace GUI::Factors {
-
-size_t hw_threads();
-// 一波线程抢任务 (同 Correlation.cpp 的 parallel_for; fn(i, tid))
-void parallel_for(size_t n_tasks, size_t n_threads, const std::atomic<bool> &cancel, const std::function<void(size_t, size_t)> &fn);
 
 // ---- 装载好的一轮数据 ----
 struct LabelPlane {
@@ -47,14 +43,14 @@ struct Loaded {
 // 维度 / 标签组: days × A → T; hd 由字段表的 hold 列 (容量断言在此)
 void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L);
 
-// 逐天并行读: 特征列 (L.feat_codes) + (with_labels) 全部标签列 (+ with_costs 冲击成本列) + ts_valid + cs_valid 一次 load_day_columns,
+// 逐天并行读 (ex 抢单): 特征列 (L.feat_codes) + (with_labels) 全部标签列 (+ with_costs 冲击成本列) + ts_valid + cs_valid 一次 load_day_columns,
 // 门控后散进平面. 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). done 每天 +1
-bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, std::atomic<bool> &cancel,
-                 std::atomic<int> &done, bool with_labels = true, bool with_costs = false);
+bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, factor::exec::ForkJoin &ex,
+                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels = true, bool with_costs = false);
 
-// 扣冲击的净标签 (Inspect 即兴算, 不缓存): lv' = lv − cost_buy − sell_impact, sv' = sv − cost_sell − sell_impact (fp16 位进出),
-// 有效 = 标签有效 ∧ 成本有效. out 按 L.labels 一一对应
-void net_labels(const Loaded &L, const CostPlane &cost, float sell_impact, std::vector<LabelPlane> &out);
+// 扣冲击的净标签: lv' = lv − cost_buy − sell_impact, sv' = sv − cost_sell − sell_impact (fp16 位进出), 有效 = 标签有效 ∧ 成本有效.
+// out 按 L.labels 一一对应 (已 resize 到 n 的平面原地覆盖, 稳态零分配)
+void net_labels(factor::exec::ForkJoin &ex, const Loaded &L, const CostPlane &cost, float sell_impact, std::vector<LabelPlane> &out);
 
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN)
 void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err);

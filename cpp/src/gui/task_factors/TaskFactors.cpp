@@ -211,12 +211,12 @@ TaskHandle CreateFactorsTask() {
           fs.RequestCancel();
         }
       }
-      // 自动起算两页都看: Factors 页点行高光 / 换冲击档 即起算, 不等切到 Inspect (左栏 Inspect 状态同步走)
+      // 自动起算两页都看: Factors 页点行高光即起算, 不等切到 Inspect (左栏 Inspect 状态同步走)
       if (iaction == 0 && Factors::InspectAutoRequest(fs, is, state->factors_ui, state->inspect_ui, ctx))
         iaction = 1;
       if (iaction == 1) {
         Factors::InspectRequest req;
-        if (Factors::MakeInspectRequest(data, state->inspect_ui.req_row, state->inspect_ui.req_reload, state->inspect_ui.impact_amt, req))
+        if (Factors::MakeInspectRequest(data, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
           is.Request(req);
       } else if (iaction == -1) {
         is.RequestCancel();

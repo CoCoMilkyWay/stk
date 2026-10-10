@@ -23,7 +23,7 @@
 // rank(y) 得在池内排); cs_valid 的有效位另成一张截面池掩码平面 g, 原样递给 CS 节点的算子与 Stat (factor/Contract.hpp【截面池 g】:
 // 池内统计 / 池外就近取值全在算子内部, 评估器不做二次门控).
 // 评估 (Run 的并行方案, 与 search 的解耦): 所有有效因子合成一张共享 DAG (factor::build_forest, 公共子式只算一次), 按拓扑序
-// 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node_par, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
+// 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node + 常驻 ForkJoin, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), Run 只算毛口径;
 // 冲击 (lb_cost_* + Config::sell_impact) 由 Inspect 页即兴扣, 不落文件.
@@ -32,6 +32,7 @@
 #pragma once
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
+#include "factor/Exec.hpp"
 #include "factor/Expr.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
@@ -167,7 +168,7 @@ public:
 private:
   void worker_loop();
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
-  bool evaluate(const FactorsRequest &req); // false = 取消
+  bool evaluate(const FactorsRequest &req, factor::exec::ForkJoin &ex); // false = 取消
 
   FeatureTable feats_;
   std::thread thread_;
