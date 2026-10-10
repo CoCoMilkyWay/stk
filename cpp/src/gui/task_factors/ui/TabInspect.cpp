@@ -3,6 +3,7 @@
 #include "gui/Tasks.hpp" // StatusColor
 
 #include "imgui.h"
+#include "imgui_internal.h" // ArrowButtonEx (窄箭头)
 #include "implot.h"
 
 #include <algorithm>
@@ -29,10 +30,41 @@ int date_formatter(double v, char *buf, int size, void *ud) {
 
 // 分层色: 两端两色 (G1 冷蓝 / G20 暖橙), 中间线性渐变 —— 单调, 一眼分出谁高谁低 (Jet 在中段来回翻色, 相邻组交织分不清)
 constexpr ImVec4 kColBottom(0.25f, 0.55f, 1.00f, 1.f), kColTop(1.00f, 0.45f, 0.20f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
-ImVec4 group_color(int k) {
-  const float t = static_cast<float>(k) / static_cast<float>(K - 1);
+ImVec4 lerp_color(float t) { // t ∈ [0, 1]: 0 = 冷蓝 (G1 / 最负), 1 = 暖橙 (G20 / 最正)
   return ImVec4(kColBottom.x + (kColTop.x - kColBottom.x) * t, kColBottom.y + (kColTop.y - kColBottom.y) * t,
                 kColBottom.z + (kColTop.z - kColBottom.z) * t, 1.f);
+}
+ImVec4 group_color(int k) { return lerp_color(static_cast<float>(k) / static_cast<float>(K - 1)); }
+
+// 小巧箭头: 窄 (0.6 字高) × 行高 (与同行 Button 对齐)
+bool arrow(const char *id, ImGuiDir dir) { return ImGui::ArrowButtonEx(id, dir, ImVec2(ImGui::GetFontSize() * 0.6f, ImGui::GetFrameHeight())); }
+
+// 紧凑切换控件 (替代下拉): "label ◂ value ▸", 两头箭头循环切; 只有两项时省掉箭头, 点值文字直接 toggle. 返回是否切了.
+// 整体一个 Group, 调用方紧接着 IsItemHovered() 对整个控件生效
+bool cycler(const char *label, int &idx, int n, const char *value) {
+  assert(n >= 2 && idx >= 0 && idx < n);
+  ImGui::PushID(label);
+  ImGui::BeginGroup();
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("%s", label);
+  ImGui::SameLine(0.f, 4.f);
+  int delta = 0;
+  if (n > 2) {
+    if (arrow("##prev", ImGuiDir_Left))
+      delta = -1;
+    ImGui::SameLine(0.f, 2.f);
+    ImGui::TextUnformatted(value);
+    ImGui::SameLine(0.f, 2.f);
+    if (arrow("##next", ImGuiDir_Right))
+      delta = 1;
+  } else if (ImGui::SmallButton(value)) {
+    delta = 1;
+  }
+  if (delta)
+    idx = (idx + delta + n) % n;
+  ImGui::EndGroup();
+  ImGui::PopID();
+  return delta != 0;
 }
 
 // 单调三次 Hermite (Fritsch–Carlson) 把节点 (x 严格升序) 稠密采样成折线: 圆滑且不过冲 (期限结构点少, 直连折线生硬)
@@ -133,10 +165,15 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     lc += ls / h;
     d.ls_cum[static_cast<size_t>(day) + 1] = static_cast<float>(lc * ann);
   }
-  float lo = 0.f, hi = 0.f; // 含起点 0
+  // y 范围: 分层线 min / max (含起点 0); LS 不参与定范围, 而是平移到最低点贴 lo (ls_off), 跨度若超过分层跨度则把 hi 抬到装下
+  float lo = 0.f, hi = 0.f, ls_lo = 0.f, ls_hi = 0.f;
   for (int k = 0; k < K; ++k)
     for (const float v : d.grp_cum[k])
       lo = std::min(lo, v), hi = std::max(hi, v);
+  for (const float v : d.ls_cum)
+    ls_lo = std::min(ls_lo, v), ls_hi = std::max(ls_hi, v);
+  hi = std::max(hi, lo + (ls_hi - ls_lo));
+  d.ls_off = lo - ls_lo;
   const float margin = (hi > lo ? hi - lo : 1.f) * 0.03f;
   d.y_lo = lo - margin;
   d.y_hi = hi + margin;
@@ -158,8 +195,9 @@ void empty_plot(const char *title, const ImVec2 &size, const char *hint) {
 }
 
 // 左上: 1×2 子图 (LinkRows 共 y 轴, 横向 PlotPadding 置 0 → 两图无缝相接), 刻度单位 % (derive 已 ×100, 标在 y 轴 label)
-//   左 3/4 时序: 分层累计 + LS. y 范围只看分层线 (d.y_lo / y_hi); LS 平移 +y_lo 从左下角出发 —— LS ≈ G20 − G1 ≈ 范围跨度, 刚好填满
-//   右 1/4 期末截面: 各组末日累计的竖柱 (x = 组号, 同色), 柱顶与左侧线末端同高; 不标组号 (颜色即顺序)
+//   左 3/4 时序: 分层累计 + LS. y 范围按分层线定 (d.y_lo / y_hi); LS 平移 +ls_off, 最低点贴到范围底 (跨度更大时范围已抬高装下), 刚好填满
+//   右 1/4 期末截面: 各组末日累计的横柱, 按组号在共享 y 范围里均匀排 (G1 下 … G20 上), 长 = 末值, x 范围 = y 范围 (只同步 range, 长度与左图同尺);
+//   同色, 不标组号 (颜色即顺序)
 void plot_layers(const InspectDerived &d, bool absolute, const ImVec2 &size) {
   char title[128];
   std::snprintf(title, sizeof(title), "分层累计 (等效年化) %s  h=%s  mono %+.3f###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)",
@@ -188,7 +226,7 @@ void plot_layers(const InspectDerived &d, bool absolute, const ImVec2 &size) {
       struct Shift {
         const float *y;
         double off;
-      } shift{d.ls_cum.data(), d.y_lo};
+      } shift{d.ls_cum.data(), d.ls_off};
       ImPlot::SetNextLineStyle(kColLS, 2.5f);
       ImPlot::PlotLineG(
           ls,
@@ -213,19 +251,23 @@ void plot_layers(const InspectDerived &d, bool absolute, const ImVec2 &size) {
     if (ImPlot::BeginPlot("##end", ImVec2(), ImPlotFlags_NoMenus | ImPlotFlags_NoLegend)) {
       ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines,
                         ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
-      ImPlot::SetupAxisLimits(ImAxis_X1, 0.5, K + 0.5, ImPlotCond_Always); // y 由 LinkRows 跟左图
+      ImPlot::SetupAxisLimits(ImAxis_X1, d.y_lo, d.y_hi, ImPlotCond_Always); // x 范围 = y 范围 (y 由 LinkRows 跟左图)
       const double zero = 0.0;
       ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
-      ImPlot::PlotInfLines("##zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+      ImPlot::PlotInfLines("##zero", &zero, 1);
+      const double slot = (d.y_hi - d.y_lo) / K;     // y 范围均分 K 槽, G1 最下 … G20 最上
+      float v_lo = d.grp_cum[0].back(), v_hi = v_lo; // 柱色按取值: 最负 = G1 色, 最正 = G20 色, 中间渐变 (左图按组号着色; 两边对照直接看单调性破绽)
+      for (int k = 1; k < K; ++k)
+        v_lo = std::min(v_lo, d.grp_cum[k].back()), v_hi = std::max(v_hi, d.grp_cum[k].back());
       for (int k = 0; k < K; ++k) { // 逐组一柱: PlotBars 一次只能一色
-        const double x = k + 1, v = d.grp_cum[k].back();
-        ImPlot::SetNextFillStyle(group_color(k));
+        const double v = d.grp_cum[k].back(), y = d.y_lo + (k + 0.5) * slot;
+        ImPlot::SetNextFillStyle(lerp_color(v_hi > v_lo ? (static_cast<float>(v) - v_lo) / (v_hi - v_lo) : 0.5f));
         char id[16];
         std::snprintf(id, sizeof(id), "##b%d", k);
-        ImPlot::PlotBars(id, &x, &v, 1, 0.8);
+        ImPlot::PlotBars(id, &v, &y, 1, slot * 0.8, ImPlotBarsFlags_Horizontal);
       }
       if (ImPlot::IsPlotHovered()) {
-        const int k = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x)) - 1, 0, K - 1);
+        const int k = std::clamp(static_cast<int>(std::floor((ImPlot::GetPlotMousePos().y - d.y_lo) / slot)), 0, K - 1);
         ImGui::SetTooltip("G%d  %+.3f  (年化 %%, 期末)", k + 1, d.grp_cum[k].back());
       }
       ImPlot::EndPlot();
@@ -304,7 +346,8 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
                 d.hs.ic_skew, d.hs.ic_kurt, d.hs.ic_pos, d.hs.n);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
-  ImPlot::SetupAxes("IC", "density", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes("IC", "density", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, 0.5, ImPlotCond_Always); // 固定 x 范围, 0 居中: 换持有期 / 因子时分布位置可直接比
   ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
   const analysis::AggPdf &p = d.ic_pdf;
   const int np = static_cast<int>(p.n_pts);
@@ -329,9 +372,67 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
   ImPlot::EndPlot();
 }
 
+// 高光行 (fui.view_file) 短锁拷出 (rows 由 worker 重扫时整体替换); 顺带给出下一个有效行的文件名 (箭头循环切因子用). 找不到 → false
+bool view_row(FactorsService &fsvc, const std::string &file, FactorRow &row, std::string *prev_file = nullptr, std::string *next_file = nullptr) {
+  std::lock_guard<std::mutex> lock(fsvc.mutex);
+  const auto &rows = fsvc.rows;
+  const int n = static_cast<int>(rows.size());
+  int cur = -1;
+  for (int i = 0; i < n; ++i)
+    if (rows[static_cast<size_t>(i)].file == file) {
+      cur = i;
+      break;
+    }
+  if (cur < 0)
+    return false;
+  row = rows[static_cast<size_t>(cur)];
+  const auto neighbor = [&](int dir, std::string &out) { // 从相邻行起按 dir 绕一圈找第一个有效 alpha 行; 没有 → 空
+    out.clear();
+    for (int step = 1; step < n; ++step) {
+      const FactorRow &r = rows[static_cast<size_t>(((cur + dir * step) % n + n) % n)];
+      if (r.error.empty()) {
+        out = r.file;
+        return;
+      }
+    }
+  };
+  if (prev_file)
+    neighbor(-1, *prev_file);
+  if (next_file)
+    neighbor(+1, *next_file);
+  return true;
+}
+
 } // namespace
 
-int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
+bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
+  if (fui.view_file.empty() || !ctx.axis_ready || isvc.feats().labels.empty())
+    return false;
+  const InspectStatus st = isvc.status();
+  if (st == InspectStatus::Loading || st == InspectStatus::Running)
+    return false;
+  FactorRow row;
+  if (!view_row(fsvc, fui.view_file, row) || !row.error.empty())
+    return false;
+  InspectRequest probe;
+  probe.file = row.file, probe.expr = row.expr, probe.frame = row.frame;
+  probe.universe = ctx.universe, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
+  probe.impact_amt = ui.impact_amt, probe.sell_impact = ui.impact_amt > 0 ? ctx.sell_impact : 0.0;
+  const std::string key = probe.key();
+  if (ui.last_req_key == key) // 取消过 / 已发过的 key 不反复起 (Compute 手动)
+    return false;
+  {
+    std::lock_guard<std::mutex> lock(isvc.mutex);
+    if (isvc.result.key == key)
+      return false;
+  }
+  ui.last_req_key = key;
+  ui.req_row = row;
+  ui.req_reload = false;
+  return true;
+}
+
+int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
   int action = 0;
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Factor:");
   ImGui::SameLine();
@@ -339,23 +440,51 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "(无) 在 Factors 页点一行高光");
     return 0;
   }
-  // 短锁拷该行 (rows 由 worker 重扫时整体替换)
-  FactorRow row;
-  bool found = false;
-  {
-    std::lock_guard<std::mutex> lock(fsvc.mutex);
-    for (const FactorRow &r : fsvc.rows)
-      if (r.file == fui.view_file) {
-        row = r;
-        found = true;
-        break;
-      }
-  }
-  if (!found) {
+  // sel = 选中行 (view_file; 箭头 / 自动起算 / Compute 的对象); row = 显示行 = 现结果的因子 (切因子期间整页继续画旧因子, 新结果到了一次性换),
+  // 无结果 (或结果因子已不在表里) 时 = sel
+  FactorRow sel;
+  std::string prev_file, next_file;
+  if (!view_row(fsvc, fui.view_file, sel, &prev_file, &next_file)) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%s (重扫中 / 已不在)", fui.view_file.c_str());
     return 0;
   }
-  ImGui::Text("%s/%s", ctx.factor_dir.c_str(), row.file.c_str());
+  FactorRow row = sel;
+  {
+    std::string res_file;
+    {
+      std::lock_guard<std::mutex> lock(isvc.mutex);
+      if (isvc.result.error.empty())
+        res_file = isvc.result.file;
+    }
+    FactorRow r;
+    if (!res_file.empty() && res_file != sel.file && view_row(fsvc, res_file, r))
+      row = r;
+  }
+  const bool switching = row.file != sel.file;
+  if (prev_file.empty())
+    ImGui::BeginDisabled();
+  if (arrow("##prev_factor", ImGuiDir_Left)) // 不切页换因子: 按表序循环到相邻有效行 (自动起算随之)
+    fui.view_file = prev_file;
+  if (prev_file.empty())
+    ImGui::EndDisabled();
+  ImGui::SameLine(0.f, 2.f);
+  if (next_file.empty())
+    ImGui::BeginDisabled();
+  if (arrow("##next_factor", ImGuiDir_Right))
+    fui.view_file = next_file;
+  if (next_file.empty())
+    ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::Text("%s  %s", row.name_cn.c_str(), row.name_en.c_str());
+  if (ImGui::IsItemHovered())
+    tip("%s/%s\n• ◂ ▸ 按 Factors 表序循环切相邻有效因子", ctx.factor_dir.c_str(), row.file.c_str());
+  if (switching) {
+    ImGui::SameLine();
+    if (sel.error.empty())
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "→ %s  %s (计算中…)", sel.name_cn.c_str(), sel.name_en.c_str());
+    else
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "→ %s BROKEN: %s", sel.name_en.c_str(), sel.error.c_str());
+  }
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -381,25 +510,24 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     if (!impact_ok)
       ui.impact_amt = 0;
   }
-  ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("Hold", n_hold ? factor::stat::hold_name(cur_hold).c_str() : "-")) {
-    for (int i = 0; i < n_hold; ++i)
-      if (ImGui::Selectable(factor::stat::hold_name(ft.labels[static_cast<size_t>(i)].hold).c_str(), i == ui.hold_idx))
-        ui.hold_idx = i;
-    ImGui::EndCombo();
-  }
+  if (n_hold >= 2)
+    cycler("Hold", ui.hold_idx, n_hold, factor::stat::hold_name(cur_hold).c_str());
+  else
+    ImGui::TextDisabled("Hold %s", n_hold ? factor::stat::hold_name(cur_hold).c_str() : "-");
   if (ImGui::IsItemHovered())
     tip("分层累计 / IC 分布 / 顶部 stat 看哪个持有期\n"
         "• 只影响显示, 一次算全部持有期");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("冲击", ui.impact_amt ? (std::to_string(ui.impact_amt) + "w").c_str() : "无")) {
-    if (ImGui::Selectable("无", ui.impact_amt == 0))
-      ui.impact_amt = 0;
-    for (const CostCol &cc : ft.costs)
-      if (ImGui::Selectable((std::to_string(cc.amt) + "w").c_str(), cc.amt == ui.impact_amt))
-        ui.impact_amt = cc.amt;
-    ImGui::EndCombo();
+  { // 档位 0 = 无, i ≥ 1 = costs[i − 1]
+    int imp_idx = 0;
+    for (int i = 0; i < static_cast<int>(ft.costs.size()); ++i)
+      if (ft.costs[static_cast<size_t>(i)].amt == ui.impact_amt)
+        imp_idx = i + 1;
+    const std::string cur = ui.impact_amt ? std::to_string(ui.impact_amt) + "w" : "无";
+    if (ft.costs.empty())
+      ImGui::TextDisabled("冲击 无");
+    else if (cycler("冲击", imp_idx, static_cast<int>(ft.costs.size()) + 1, cur.c_str()))
+      ui.impact_amt = imp_idx ? ft.costs[static_cast<size_t>(imp_idx) - 1].amt : 0;
   }
   if (ImGui::IsItemHovered())
     tip("标签口径\n"
@@ -408,13 +536,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
         "• 净标签即兴算不缓存: 换档只重算 Stat, 不重读库; 吃不到的格 (NaN) 无效",
         ctx.sell_impact);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("分层", ui.absolute ? "绝对" : "超额")) {
-    if (ImGui::Selectable("超额", !ui.absolute))
-      ui.absolute = false;
-    if (ImGui::Selectable("绝对", ui.absolute))
-      ui.absolute = true;
-    ImGui::EndCombo();
+  {
+    int abs_idx = ui.absolute ? 1 : 0;
+    if (cycler("分层", abs_idx, 2, ui.absolute ? "绝对" : "超额"))
+      ui.absolute = abs_idx == 1;
   }
   if (ImGui::IsItemHovered())
     tip("分层累计图的口径 (只影响显示)\n"
@@ -422,12 +547,12 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
         "• 绝对: 组均 lv, 含市场\n"
         "• LS = top(lv) + bottom(sv), 本就市场中性, 两种口径同一条");
   ImGui::SameLine();
-  const bool can_run = !busy && ctx.axis_ready && n_hold > 0;
+  const bool can_run = !busy && ctx.axis_ready && n_hold > 0 && sel.error.empty();
   if (!can_run)
     ImGui::BeginDisabled();
-  if (ImGui::Button("Compute", ImVec2(80, 0))) {
+  if (ImGui::Button("Compute", ImVec2(80, 0))) { // 算的是选中行
     action = 1;
-    ui.req_row = row;
+    ui.req_row = sel;
     ui.req_reload = true;
   }
   if (!can_run)
@@ -468,12 +593,12 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
 
   // ---- 结果快照 (持锁派生, 不拷 rows) ----
   InspectRequest probe;
-  probe.file = row.file, probe.expr = row.expr, probe.frame = row.frame;
+  probe.file = sel.file, probe.expr = sel.expr, probe.frame = sel.frame;
   probe.universe = ctx.universe, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
   probe.impact_amt = ui.impact_amt, probe.sell_impact = ui.impact_amt > 0 ? ctx.sell_impact : 0.0;
   const std::string key = probe.key();
-  const int sel = ui.hold_idx;
-  std::string message, res_error, res_key, res_file, res_expr;
+  const int sel_hold = ui.hold_idx;
+  std::string message, res_error, res_key, res_file;
   int res_impact = 0;
   StatScope res_scope;
   float res_valid = 0.f;
@@ -490,7 +615,6 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
       assert(res.n_hold == n_hold && "Inspect 与 FeatureTable 的标签组不一致");
       res_has = true;
       res_file = res.file;
-      res_expr = res.expr;
       res_impact = res.impact_amt;
       res_scope = res.scope;
       res_valid = res.valid_pct;
@@ -499,12 +623,12 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
         res_holds[i] = res.hold[i];
     }
     const uint64_t ep = isvc.epoch();
-    if (ep != ui.derived_epoch || sel != ui.derived_sel || ui.absolute != ui.derived_abs) {
+    if (ep != ui.derived_epoch || sel_hold != ui.derived_sel || ui.absolute != ui.derived_abs) {
       ui.derived_epoch = ep;
-      ui.derived_sel = sel;
+      ui.derived_sel = sel_hold;
       ui.derived_abs = ui.absolute;
-      if (res_has && sel < res.hd.n)
-        derive(res, sel, ui.absolute, ui.der);
+      if (res_has && sel_hold < res.hd.n)
+        derive(res, sel_hold, ui.absolute, ui.der);
       else
         ui.der = InspectDerived{};
     }
@@ -513,21 +637,14 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
-  // 自动起算: 高光因子 / 作用域变了 且 没在算 (取消过的 key 不反复起; Compute 手动)
-  if (action == 0 && !busy && can_run && res_key != key && ui.last_req_key != key) {
-    action = 1;
-    ui.req_row = row;
-    ui.req_reload = false;
-  }
-  if (action == 1)
+  if (action == 1) // 手动 Compute (自动起算在 InspectAutoRequest, 两页都每帧调)
     ui.last_req_key = key;
 
   // ---- 作用域 + 选定持有期的 stat 行 ----
-  // match = 结果就是当前请求; shown ⊇ match = 结果是同因子同作用域的 (只差冲击档, 服务不清旧 result) → 换档期间继续画旧图, 算完一次性换
+  // match = 结果就是当前请求 (选中行 + 作用域 + 冲击档); 否则仍整页画旧结果 (服务不清旧 result), 新结果发布一次性换; 头部显示行 row 已随结果
   const bool match = res_has && res_key == key;
-  const bool shown = res_has && res_file == row.file && res_expr == row.expr && res_scope.universe == ctx.universe &&
-                     res_scope.start_date == ctx.start_date && res_scope.end_date == ctx.end_date;
-  assert(!match || shown);
+  const bool shown = res_has;
+  assert(!shown || res_file == row.file || row.file == sel.file); // 显示行 = 结果因子 (结果因子已不在表里时退回选中行)
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {
@@ -535,7 +652,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, const FactorsUI
                         res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T, res_scope.backend.c_str(),
                         res_scope.time.c_str(), res_valid, res_ms,
                         res_impact ? ("扣冲击 " + std::to_string(res_impact) + "w + 平仓 " + std::to_string(ctx.sell_impact)).c_str() : "毛 (价格收益)",
-                        match ? "" : "  (旧口径, 新口径计算中…)");
+                        match ? "" : "  (旧结果, 新请求计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)
       ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f "

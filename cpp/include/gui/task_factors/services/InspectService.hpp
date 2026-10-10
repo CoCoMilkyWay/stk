@@ -9,9 +9,8 @@
 // 冲击 (impact_amt > 0): 净标签 lv − cost_buy(amt) − sell_impact / sv − cost_sell(amt) − sell_impact 每次请求即兴算 (FactorsLoad net_labels,
 // 不缓存, 换档只重算 Stat 不重读库), rank 随之重算; 默认 0 = 毛口径 (与 Factors Run 同).
 //
-// 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑时: 换因子 / 换作用域 → 清旧 result
-// (页面不显示别的因子的图); 同因子只换冲击档 → 旧 result 留着, 页面继续画旧图到新结果一次性发布 (UI 持 mutex 读; 一级 Row 大
-// (~140B × H × T), UI 不拷, 持锁派生成日级序列后放手).
+// 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑不清旧 result: 页面继续整页画旧结果
+// (旧因子 / 旧口径, 头部文字一并), 新结果发布时一次性覆盖 (UI 持 mutex 读; 一级 Row 大 (~140B × H × T), UI 不拷, 持锁派生成日级序列后放手).
 // 进度走原子: Loading 期 done/total = 天; Running 期 = 算子节点.
 // 后端: 只 CPU (单因子一棵 Dag, 全核 run_node_par 够快; GPU 留后).
 #pragma once

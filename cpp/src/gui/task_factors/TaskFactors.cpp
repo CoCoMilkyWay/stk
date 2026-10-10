@@ -42,7 +42,7 @@ struct TaskFactorsState {
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir; // 上次扫描的目录 (universe 切换 → 自动重扫)
 
-  std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Inspect 页建; 缓存 (标签 + 特征平面) 随它活到任务 Destroy
+  std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (worker 懒起); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
   Factors::InspectUIState inspect_ui;
 };
 
@@ -193,29 +193,33 @@ TaskHandle CreateFactorsTask() {
         Factors::MakeFactorsRequest(data, /*evaluate=*/false, false, req);
         fs.Request(req);
       }
-      if (idx == TAB_INSPECT) {
-        if (!state->inspect_service) {
-          state->inspect_service = std::make_unique<Factors::InspectService>();
-          state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
-        }
-        auto &is = *state->inspect_service;
-        const int action = Factors::RenderTabInspect(fs, is, state->factors_ui, state->inspect_ui, ctx);
-        if (action == 1) {
-          Factors::InspectRequest req;
-          if (Factors::MakeInspectRequest(data, state->inspect_ui.req_row, state->inspect_ui.req_reload, state->inspect_ui.impact_amt, req))
-            is.Request(req);
-        } else if (action == -1) {
-          is.RequestCancel();
-        }
-        break;
+      if (!state->inspect_service) {
+        state->inspect_service = std::make_unique<Factors::InspectService>();
+        state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
       }
-      const int action = Factors::RenderTabFactors(fs, state->factors_ui, ctx);
-      if (action == 1 || action == 2) {
-        Factors::FactorsRequest req;
-        if (Factors::MakeFactorsRequest(data, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
-          fs.Request(req);
-      } else if (action == -1) {
-        fs.RequestCancel();
+      auto &is = *state->inspect_service;
+      int iaction = 0; // Inspect 请求: 1 起算 / -1 取消
+      if (idx == TAB_INSPECT) {
+        iaction = Factors::RenderTabInspect(fs, is, state->factors_ui, state->inspect_ui, ctx);
+      } else {
+        const int action = Factors::RenderTabFactors(fs, state->factors_ui, ctx);
+        if (action == 1 || action == 2) {
+          Factors::FactorsRequest req;
+          if (Factors::MakeFactorsRequest(data, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
+            fs.Request(req);
+        } else if (action == -1) {
+          fs.RequestCancel();
+        }
+      }
+      // 自动起算两页都看: Factors 页点行高光 / 换冲击档 即起算, 不等切到 Inspect (左栏 Inspect 状态同步走)
+      if (iaction == 0 && Factors::InspectAutoRequest(fs, is, state->factors_ui, state->inspect_ui, ctx))
+        iaction = 1;
+      if (iaction == 1) {
+        Factors::InspectRequest req;
+        if (Factors::MakeInspectRequest(data, state->inspect_ui.req_row, state->inspect_ui.req_reload, state->inspect_ui.impact_amt, req))
+          is.Request(req);
+      } else if (iaction == -1) {
+        is.RequestCancel();
       }
       break;
     }

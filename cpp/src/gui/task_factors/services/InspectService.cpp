@@ -99,12 +99,7 @@ void InspectService::worker_loop() {
     done_.store(0, std::memory_order_relaxed);
     total_.store(0, std::memory_order_relaxed);
     {
-      std::lock_guard<std::mutex> lock(mutex);
-      // 同因子同作用域只换冲击档 → 旧 result 留着 (页面继续画旧图, 算完一次性换, 不闪); 换因子 / 换作用域 → 清 (别的因子的图不留, 释放旧 rows)
-      const bool same_factor = !result.key.empty() && result.error.empty() && result.file == req.file && result.expr == req.expr &&
-                               result.scope.universe == req.universe && result.scope.start_date == req.start_date && result.scope.end_date == req.end_date;
-      if (!same_factor)
-        result = InspectResult{};
+      std::lock_guard<std::mutex> lock(mutex); // 旧 result 不清: 页面继续整页画旧因子 / 旧口径, 新结果发布时一次性覆盖 (不闪)
       message.clear();
     }
     status_.store(InspectStatus::Loading, std::memory_order_release);
