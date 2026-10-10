@@ -1,5 +1,6 @@
 {
  "type": "alpha",
+ "name_cn": "时序半小时动量",
  "expr": "TsRankRoll(TsDeltaRoll(TsLog(close), d=30), d=1275)",
  "note": "30 分钟对数动量在自身近 5 日的分位 (时序口径: 择时, 高分位 = 近期动量强于自身常态)",
  "params": [
@@ -19,10 +20,10 @@
   "T": 31875,
   "A": 697,
   "backend": "cpu",
-  "time": "2026-10-10 16:49",
+  "time": "2026-10-10 18:19",
   "frame": "TS",
   "valid_pct": 100.0,
-  "eval_ms": 165.1,
+  "eval_ms": 165.2,
   "holds": [
    {
     "hold": 1,

@@ -4,12 +4,13 @@
 //
 // 因子文件 (一因子一文件, 独立落盘, 格式破碎也**绝不删**: 表里标 BROKEN + 原因, 人手动处理):
 //   { "type":   "alpha",                                      // 必有: alpha (选股 / 择时, 走 Stat) | beta (风险暴露, 未实现, 留位)
+//     "name_cn": "三十分钟动量",                                // 必有: 中文名, 纯汉字 1..10 字 (英文名 = 文件名主干 name_en)
 //     "expr":   "CsRank(TsMeanRoll(TsLog(amt), d=30))",      // 必有, 规范串或任意合法写法; 本服务永不改写它
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
 //     "params": [ {}, {"d": 30}, {} ],                        // 可选, 按算子节点前序逐节点覆盖 expr 字面值 (搜索结果落此)
 //     "stat":   { scope…, "frame", "valid_pct", "eval_ms",
 //                 "holds": [HoldStat…] } }                            // 本服务写 (全部持有期, 毛收益口径), 载入时显示
-//   有效 = type 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入) 且 params (若有) 覆盖成功
+//   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入) 且 params (若有) 覆盖成功
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   同一规范串多文件 → 后者标 dup (黄), 仍算 (共享 DAG 里是同一个根, Stat 也只算一次).
 //
@@ -101,7 +102,9 @@ struct StatScope {
   int days = 0, T = 0, A = 0;
 };
 struct FactorRow {
-  std::string file; // 文件名 (不含目录)
+  std::string file;    // 文件名 (不含目录) = 行的身份 (view_file / edit_file / dup_of 都用它)
+  std::string name_en; // = 文件名主干 (去 .json)
+  std::string name_cn; // 文件 name_cn 键 (BROKEN 行可能为空)
   FactorKind kind = FactorKind::Alpha;
   factor::stat::Frame frame = factor::stat::Frame::CS; // 有效 alpha 行的口径 (root_frame)
   std::string expr_raw;                                // 文件里的原串 (可能不规范 / 不合法)
@@ -178,20 +181,22 @@ private:
   std::atomic<uint64_t> epoch_{0};
 };
 
-// 因子名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]
+// 英文名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]
 bool ValidFactorName(std::string_view name);
+// 中文名 (文件 name_cn 键): 合法 UTF-8, 纯汉字 (CJK 统一表意文字 U+4E00..U+9FFF), 1..10 字
+bool ValidFactorNameCn(std::string_view name);
 
-// 新因子文件: 名字合法 (调用方保证, 断言) 且表达式合法 (parse 过 + root_frame 过) →
-// <factor_dir>/<name>.json = {"type": "alpha", "expr": canon, "note"?, "params": [...]}.
+// 新因子文件: 两个名字合法 (调用方保证, 断言) 且表达式合法 (parse 过 + root_frame 过) →
+// <factor_dir>/<name>.json = {"type": "alpha", "name_cn": …, "expr": canon, "note"?, "params": [...]}.
 // 返回文件名; 表达式不合法 / 同名已存在 → 空串 + err. GUI 线程调 (随后 Request(evaluate=false) 重扫)
-std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view expr_src,
-                          std::string_view note, std::string &err);
+std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view name_cn,
+                          std::string_view expr_src, std::string_view note, std::string &err);
 
-// 编辑已有文件 (file = 表格里的文件名, 含 .json): expr 换成 canon (规范串变了 → 丢 stat), note 覆盖 (空 = 删键), params 重建,
-// 其他键保留 (BROKEN 非对象文件从空重建); new_name ≠ 主干 → 改名. 返回新文件名; 表达式不合法 / 改名目标已存在 → "" + err.
+// 编辑已有文件 (file = 表格里的文件名, 含 .json): expr 换成 canon (规范串变了 → 丢 stat), name_cn / note 覆盖 (note 空 = 删键),
+// params 重建, 其他键保留 (BROKEN 非对象文件从空重建); new_name ≠ 主干 → 改名. 返回新文件名; 表达式不合法 / 改名目标已存在 → "" + err.
 // 删除: 直接删文件. 两者只在服务空闲时调 (evaluate 会写回文件)
 std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
-                             std::string_view expr_src, std::string_view note, std::string &err);
+                             std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err);
 void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
 } // namespace GUI::Factors

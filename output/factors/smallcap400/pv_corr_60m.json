@@ -1,5 +1,6 @@
 {
  "type": "alpha",
+ "name_cn": "一小时量价相关",
  "expr": "CsRank(TsCorrRoll(TsDeltaRoll(TsLog(close), d=1), vol_todz_5d, d=60))",
  "note": "量价相关: 1 分钟收益与成交量同分钟 z 值近 60 分钟的相关系数, 截面秩",
  "params": [
@@ -20,10 +21,10 @@
   "T": 31875,
   "A": 697,
   "backend": "cpu",
-  "time": "2026-10-10 16:49",
+  "time": "2026-10-10 18:19",
   "frame": "CS",
   "valid_pct": 100.0,
-  "eval_ms": 91.24,
+  "eval_ms": 83.83,
   "holds": [
    {
     "hold": 1,

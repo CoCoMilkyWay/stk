@@ -1,5 +1,6 @@
 {
  "type": "alpha",
+ "name_cn": "开盘量失衡累计",
  "expr": "CsRank(TsMeanCum(TsMask(TsImb(vol_taker_bid, vol_taker_ask), TsTodMask(k=15, k2=45))))",
  "note": "开盘半小时 (09:30-10:00, 段内分钟 15..44) 主动成交量失衡的当日累计均值 (演示时段掩码 + 段内 expanding), 截面秩",
  "params": [
@@ -20,10 +21,10 @@
   "T": 31875,
   "A": 697,
   "backend": "cpu",
-  "time": "2026-10-10 16:49",
+  "time": "2026-10-10 18:19",
   "frame": "CS",
   "valid_pct": 100.0,
-  "eval_ms": 34.63,
+  "eval_ms": 34.86,
   "holds": [
    {
     "hold": 1,

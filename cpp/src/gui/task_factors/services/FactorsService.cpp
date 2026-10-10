@@ -13,6 +13,7 @@
 #include "shared/SharedData.hpp"
 
 #include "nlohmann/json.hpp"
+#include "utfcpp/utf8.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -323,9 +324,21 @@ bool ValidFactorName(std::string_view name) {
   return true;
 }
 
-std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view expr_src,
-                          std::string_view note, std::string &err) {
-  assert(ValidFactorName(name));
+bool ValidFactorNameCn(std::string_view name) {
+  if (name.empty() || !utf8::is_valid(name.begin(), name.end()))
+    return false;
+  int n = 0;
+  for (auto it = name.begin(); it != name.end(); ++n) {
+    const utf8::utfchar32_t cp = utf8::next(it, name.end());
+    if (cp < 0x4E00 || cp > 0x9FFF)
+      return false;
+  }
+  return n <= 10;
+}
+
+std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view name_cn,
+                          std::string_view expr_src, std::string_view note, std::string &err) {
+  assert(ValidFactorName(name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   factor::stat::Frame fr;
   if (!factor::expr::parse(expr_src, feats.lookup(), e, err) || !factor::expr::root_frame(e, fr, err))
@@ -338,6 +351,7 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
   }
   ojson j;
   j["type"] = kind_name(FactorKind::Alpha);
+  j["name_cn"] = std::string(name_cn);
   j["expr"] = e.canon;
   if (!note.empty())
     j["note"] = std::string(note);
@@ -347,8 +361,8 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
 }
 
 std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
-                             std::string_view expr_src, std::string_view note, std::string &err) {
-  assert(ValidFactorName(new_name));
+                             std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err) {
+  assert(ValidFactorName(new_name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   factor::stat::Frame fr;
   if (!factor::expr::parse(expr_src, feats.lookup(), e, err) || !factor::expr::root_frame(e, fr, err))
@@ -371,7 +385,8 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
   if (!j.is_object())
     j = ojson::object();
   j["type"] = kind_name(FactorKind::Alpha); // 构建器只造 alpha
-  bool expr_changed = true;                 // 按规范串比 (文件原串可能是非规范写法)
+  j["name_cn"] = std::string(name_cn);
+  bool expr_changed = true; // 按规范串比 (文件原串可能是非规范写法)
   if (const auto old_expr = j.find("expr"); old_expr != j.end() && old_expr->is_string()) {
     factor::expr::Expr old_e;
     std::string old_err;
@@ -485,6 +500,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
   for (const std::filesystem::path &p : files) {
     FactorRow r;
     r.file = p.filename().string();
+    r.name_en = p.stem().string();
     r.status = RowStatus::Pending;
     std::ifstream f(p);
     json j(json::value_t::discarded);
@@ -497,6 +513,13 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
     }
     if (const auto it = j.find("note"); it != j.end() && it->is_string())
       r.note = it->get<std::string>();
+    if (const auto it = j.find("name_cn"); it != j.end() && it->is_string())
+      r.name_cn = it->get<std::string>();
+    if (!ValidFactorNameCn(r.name_cn)) {
+      r.error = "缺 name_cn 键或值不合 (纯汉字, 1..10 字)";
+      out.push_back(r);
+      continue;
+    }
     const auto eit = j.find("expr");
     if (eit == j.end() || !eit->is_string()) {
       r.error = "缺 expr 键或不是字串";

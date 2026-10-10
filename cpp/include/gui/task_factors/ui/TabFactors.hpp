@@ -20,16 +20,17 @@ struct BuildNode {
 };
 
 struct FactorsUIState {
-  int backend = 0;        // 0 = CPU, 1 = GPU
-  int hold_idx = 0;       // FeatureTable::labels 下标 (表列显示哪个持有期)
-  BuildNode build;        // 加因子构建器的根
-  char name_buf[64] = ""; // 因子名 = 文件名主干, 必填
+  int backend = 0;           // 0 = CPU, 1 = GPU
+  int hold_idx = 0;          // FeatureTable::labels 下标 (表列显示哪个持有期)
+  BuildNode build;           // 加因子构建器的根
+  char name_buf[64] = "";    // name_en = 文件名主干, 必填
+  char name_cn_buf[64] = ""; // name_cn, 必填, 纯汉字 ≤10 字 (≤30 字节)
   char note_buf[256] = "";
   char filter_buf[64] = ""; // 下拉里的过滤框 (打开时清空)
   std::string add_err;      // 即时校验结果 (空 = 合法 / 未填完)
   std::string add_msg;      // 上次 Add / Save / 删除 的结果
   // 两种模式: edit_file 空 = 添加模式 (Add 新文件, 查重); 非空 = 编辑模式 (表格首列勾选的那一行, 同时只勾一个; Save 覆盖 / 删除该文件).
-  // 勾选 → 载入构建器 + name + note; 取消勾选 → 回添加模式但构建器内容保留 (当模板)
+  // 勾选 → 载入构建器 + name_en + name_cn + note; 取消勾选 → 回添加模式但构建器内容保留 (当模板)
   std::string edit_file;
   // 点行高光 = 单因子展示 (Inspect 页) 的对象, 与 edit_file 互不干涉; 再点同一行 → 取消
   std::string view_file;

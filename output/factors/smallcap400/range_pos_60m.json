@@ -1,5 +1,6 @@
 {
  "type": "alpha",
+ "name_cn": "一小时区间位置",
  "expr": "CsRank(TsDiv(TsSub(close, TsMinRoll(low, d=60)), TsSub(TsMaxRoll(high, d=60), TsMinRoll(low, d=60))))",
  "note": "近 60 分钟价格区间位置 (close-low)/(high-low), 截面秩 (演示子树去重: TsMinRoll(low, d=60) 出现两次只算一次)",
  "params": [
@@ -25,10 +26,10 @@
   "T": 31875,
   "A": 697,
   "backend": "cpu",
-  "time": "2026-10-10 16:49",
+  "time": "2026-10-10 18:19",
   "frame": "CS",
   "valid_pct": 100.0,
-  "eval_ms": 74.94,
+  "eval_ms": 73.98,
   "holds": [
    {
     "hold": 1,

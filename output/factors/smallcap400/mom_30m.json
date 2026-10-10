@@ -1,5 +1,6 @@
 {
  "type": "alpha",
+ "name_cn": "三十分钟动量",
  "expr": "CsRank(TsDeltaRoll(TsLog(close), d=30))",
  "note": "30 分钟对数动量的截面秩",
  "params": [
@@ -17,10 +18,10 @@
   "T": 31875,
   "A": 697,
   "backend": "cpu",
-  "time": "2026-10-10 16:49",
+  "time": "2026-10-10 18:19",
   "frame": "CS",
   "valid_pct": 100.0,
-  "eval_ms": 58.03,
+  "eval_ms": 55.19,
   "holds": [
    {
     "hold": 1,

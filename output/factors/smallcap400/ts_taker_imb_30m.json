@@ -1,5 +1,6 @@
 {
  "type": "alpha",
+ "name_cn": "时序半小时买压",
  "expr": "TsRankRoll(TsMeanRoll(TsImb(amt_taker_bid, amt_taker_ask), d=30), d=1275)",
  "note": "主动买卖成交额失衡的 30 分钟均值在自身近 5 日的分位 (时序口径: 本标的买压相对自身常态的强弱)",
  "params": [
@@ -19,10 +20,10 @@
   "T": 31875,
   "A": 697,
   "backend": "cpu",
-  "time": "2026-10-10 16:49",
+  "time": "2026-10-10 18:19",
   "frame": "TS",
   "valid_pct": 100.0,
-  "eval_ms": 171.0,
+  "eval_ms": 173.5,
   "holds": [
    {
     "hold": 1,
