@@ -259,6 +259,8 @@ struct Metric {
   Cmp cmp;
 };
 constexpr Metric kMetrics[] = {
+    {Group::Shape, "sign", "sign", "自动符号: 原始 mono < −0.1 → −1, 本列其余指标已按 −x 镜像", "±1", "无 (方向是约定)", "%+.0f",
+     [](const HS &h) { return static_cast<double>(h.sign); }, Cmp::None},
     {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f", [](const HS &h) { return static_cast<double>(h.mono); },
      Cmp::High},
     {Group::Shape, "rAC", "rAC", "因子秩 lag=h 自相关", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rank_ac); },
@@ -314,7 +316,7 @@ double metric_key(const HS *h, const Metric &m) { return h ? m.get(*h) : -1e300;
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn frame status time valid | mono rAC turn LS SR IC ICIR | expr ops feats slots note
+//   edit type name_en name_cn frame status time valid | sign mono rAC turn LS SR IC ICIR | expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,

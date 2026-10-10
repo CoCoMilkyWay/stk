@@ -59,6 +59,7 @@ inline nlohmann::ordered_json hold_json(const factor::stat::HoldStat &h) {
   o["hold"] = h.hold;
   o["n"] = h.n;
   o["n_ac"] = h.n_ac;
+  o["sign"] = h.sign;
   for (int q = 0; q < kHoldStatKeyCount; ++q)
     o[kHoldStatKeys[q]] = sig4(*detail::hold_stat_field(h, q));
   nlohmann::ordered_json g = nlohmann::ordered_json::array();
@@ -72,7 +73,9 @@ inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
   if (!o.is_object())
     return false;
   factor::stat::HoldStat h;
-  if (!json_int(o, "hold", h.hold) || !json_int(o, "n", h.n) || !json_int(o, "n_ac", h.n_ac))
+  if (!json_int(o, "hold", h.hold) || !json_int(o, "n", h.n) || !json_int(o, "n_ac", h.n_ac) || !json_int(o, "sign", h.sign))
+    return false;
+  if (h.sign != 1 && h.sign != -1)
     return false;
   for (int q = 0; q < kHoldStatKeyCount; ++q) {
     double v = 0;

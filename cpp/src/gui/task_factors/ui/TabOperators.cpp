@@ -168,10 +168,10 @@ void stat_tooltip(const OperatorRow &r, const StatExtra &x) {
       ImGui::TextDisabled("%s", factor::stat::frame_name(static_cast<factor::stat::Frame>(fi)));
       for (int i = 0; i < x.n_hold; ++i) {
         const factor::stat::HoldStat &h = x.hold[fi][i];
-        ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f "
-                    "β %+.3f | mono %+.3f | rAC %+.3f",
-                    h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t, h.ls_pos,
-                    h.sharpe, h.beta, h.mono, h.rank_ac);
+        ImGui::Text("h=%-3d n=%d/%d sign %+d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
+                    "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f",
+                    h.hold, h.n, h.n_ac, h.sign, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t,
+                    h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
       }
     }
   }

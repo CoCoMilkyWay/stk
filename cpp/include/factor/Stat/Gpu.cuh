@@ -5,18 +5,21 @@
 // =============================================================================
 //   语义契约见 factor/Stat/Contract.hpp. 本文件与 Stat/Cpu.hpp **完全独立**, 只依赖 Contract + CUDA/CUB.
 //
-//   【布局】SoA 行主序 [T][A]; 一行 = 一个截面, 一行一 block (grid = T, blockDim = kCB = 512, 每 SM 驻 2 块).
+//   【布局】SoA 行主序 [T][A]; 一行 = 一个截面. rank_rows 一行一 block (grid = T, blockDim = kCB = 512, 每 SM 驻 2 块);
+//           label_rows 一行一 warp (grid = ⌈T/kLW⌉, blockDim = kLB = 256).
 //   【三个核】
 //     rank_rows  (CS) 精确并列均秩: 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上), 排好写回 shared,
 //                每个元素二分查 less / eq → r16. 无效键 = kNoKey 排最后, n = 首个 kNoKey 的位置.
 //                ITEMS (每线程元素数) 按 A 分三档 2 / 6 / 10 (A ≤ 1024 / 3072 / 5120), shared 6 / 18 / 30 KB.
 //                同一个核给因子 (float 平面) 与标签 (fp16 平面) 用, 只换取键器 SrcF / SrcH.
 //     quant_rows (TS) 分位 x 直接量化 r16 (r16_quant), 逐格无关, grid-stride.
-//     label_rows 每行先把 rx 拉进 shared (H 个持有期共用), 逐持有期一遍 A 轴累加, 收尾 finish_row (按 Frame):
-//                  整数五和 (IC / rank-AC) 走 64 位整数 warp shuffle 归约 → 精确, 与 CPU 逐位一致;
-//                  标签浮点和 / 分组和 走 float 寄存器 select 累加 (20 组展开) + warp shuffle + 跨 warp double 收尾,
-//                  求和序固定 → GPU 自身逐次确定, 与 CPU 只差求和序 (对拍容差).
-//                不用 shared atomic (分组落 20 个槽争用严重且不确定).
+//     label_rows **一 warp 一行** (kLW = 8 行/block, 核内没有块级同步): 一行只有 A ≤ 5120 格, 一个 512 线程 block
+//                  做 9 个持有期 × 4 次 BlockReduce 是 100 多道栅栏, 纯栅栏延迟瓶颈 (实测比 CPU 还慢一倍).
+//                  逐持有期一遍 A 轴 (lane 跨步 32), 累加器全在寄存器 + 每 lane **独占**的 smem 分组槽
+//                  ([组][lane] 布局, 32 lane 落 32 连续字, 无 bank 冲突; 每格 1 LDS + 1 STS, 不再 20 组展开 select):
+//                  整数五和 (IC / rank-AC) 64 位 warp shuffle 归约 → 精确, 与 CPU 逐位一致;
+//                  标签浮点和 走 float warp shuffle; 分组槽由 lane q 沿 32 lane 串行加 (旋转起点), 求和序固定 →
+//                  GPU 自身逐次确定, 与 CPU 只差求和序 (对拍容差). 没有 shared atomic (float 原子不确定).
 //   【禁用】--use_fast_math: pearson_int 的除法 / 开方要与 host 逐位一致.
 // =============================================================================
 
@@ -120,9 +123,9 @@ using factor::stat::kRankMax;
 using factor::stat::kRankNone;
 using factor::stat::Row;
 
-inline constexpr int kCB = 512; // 一行一 block 的线程数 (每 SM 驻 2 块)
-inline constexpr int kWarps = kCB / 32;
-inline constexpr int kPart = 24; // block_sum 每次最多归约的分量数
+inline constexpr int kCB = 512;      // rank_rows 一行一 block 的线程数 (每 SM 驻 2 块)
+inline constexpr int kLB = 256;      // label_rows 的 block 线程数: kLW 个 warp, 一 warp 一行
+inline constexpr int kLW = kLB / 32; // label_rows 每 block 的行数
 
 // 一组常驻标签 (全部设备指针, [T][A]); ry 由 prep_label 填
 struct Label {
@@ -179,7 +182,7 @@ __device__ __forceinline__ float pearson_int(unsigned long long n, unsigned long
 __device__ __forceinline__ float h2f(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 __device__ __forceinline__ void finish_row(Frame f, unsigned long long n, unsigned long long sx, unsigned long long sy,
                                            unsigned long long sxx, unsigned long long syy, unsigned long long sxy, double smk, double ssv,
-                                           const double *gs, const int *gc, double s0, Row &r) {
+                                           const double *gs, const int *gc, double s0, double st, Row &r) {
   bool icok = false;
   const float ic = pearson_int(n, sx, sy, sxx, syy, sxy, icok);
   bool gok = true;
@@ -200,6 +203,9 @@ __device__ __forceinline__ void finish_row(Frame f, unsigned long long n, unsign
   const double top = gc[kt] ? (gs[kt] - gc[kt] * mkt) / gc[kt] : 0.0;
   const double bot = gc[0] ? (s0 - gc[0] * mkt_s) / gc[0] : 0.0;
   r.ls = static_cast<float>(top + bot);
+  const double top_rev = gc[0] ? (gs[0] - gc[0] * mkt) / gc[0] : 0.0;
+  const double bot_rev = gc[kt] ? (st - gc[kt] * mkt_s) / gc[kt] : 0.0;
+  r.ls_rev = static_cast<float>(top_rev + bot_rev);
 }
 
 // shared 有序数组上的二分
@@ -306,51 +312,36 @@ __global__ void __launch_bounds__(kCB) quant_rows(SrcF src, uint16_t *out, size_
 // 2. label_rows: 每 (t, h) 一行统计
 // =============================================================================
 
-// 块内 D 路求和 (每线程一份 v[D]): warp shuffle → 各 warp 的 lane0 写 part → 前 D 个线程跨 warp 收尾 → 广播回 v.
-// 求和序固定 → 结果逐次确定. 进出各一次 sync, 连续调用可复用同一 part.
+// warp 内 D 路求和 (每 lane 一份 v[D]), xor 蝶形 → 全 lane 拿到总和; 求和序固定 → 逐次确定
 template <class T, int D>
-__device__ __forceinline__ void block_sum(T (&v)[D], T (*part)[kPart]) {
-  static_assert(D <= kPart);
-  const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+__device__ __forceinline__ void warp_sum(T (&v)[D]) {
 #pragma unroll
   for (int d = 0; d < D; ++d) {
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1)
-      v[d] += __shfl_down_sync(0xffffffffu, v[d], off);
+      v[d] += __shfl_xor_sync(0xffffffffu, v[d], off);
   }
-  if (lane == 0) {
-#pragma unroll
-    for (int d = 0; d < D; ++d)
-      part[warp][d] = v[d];
-  }
-  __syncthreads();
-  if (threadIdx.x < D) {
-    T s = part[0][threadIdx.x];
-#pragma unroll
-    for (int w = 1; w < kWarps; ++w)
-      s += part[w][threadIdx.x];
-    part[0][threadIdx.x] = s; // 只碰自己那一列, 与其余线程无交叠
-  }
-  __syncthreads();
-#pragma unroll
-  for (int d = 0; d < D; ++d)
-    v[d] = part[0][d];
-  __syncthreads(); // 全员读完, 下次调用的 lane0 才能改写 part
 }
 
-__global__ void __launch_bounds__(kCB) label_rows(Frame f, const uint16_t *ws, LabelSet L, Holds hd, Row *rows, int T, int A) {
-  using ull = unsigned long long;
-  __shared__ unsigned short rxs[kMaxA];
-  __shared__ ull pu[kWarps][kPart];
-  __shared__ float pf[kWarps][kPart];
-  __shared__ int pi[kWarps][kPart];
-  const int t = blockIdx.x;
-  const size_t base = static_cast<size_t>(t) * A;
-  for (int a = threadIdx.x; a < A; a += kCB)
-    rxs[a] = ws[base + a];
-  __syncthreads();
+// 每 lane 独占的分组槽: 组和 float / 组计数 uint16 (≤ kMaxA), 布局 [warp][组][lane]
+struct LabSh {
+  float gs[kLW][kGroups][32];
+  uint16_t gc[kLW][kGroups][32];
+};
 
-  for (int hi = 0; hi < hd.n; ++hi) { // 块内一致量, 不发散
+__global__ void __launch_bounds__(kLB, 2) label_rows(Frame f, const uint16_t *ws, LabelSet L, Holds hd, Row *rows, int T, int A) {
+  using ull = unsigned long long;
+  __shared__ LabSh sh;
+  const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+  const int t = blockIdx.x * kLW + warp;
+  if (t >= T) // warp 一致; 核内没有块级同步, 整 warp 直接退出安全
+    return;
+  const size_t base = static_cast<size_t>(t) * A;
+  const uint16_t *rx = ws + base; // 行 r16 (H 个持有期重读, 2B/格, 落 L1/L2)
+  float (*gs)[32] = sh.gs[warp];
+  uint16_t (*gc)[32] = sh.gc[warp];
+
+  for (int hi = 0; hi < hd.n; ++hi) { // warp 一致量, 不发散
     const int hold = hd.h[hi];
     const int h = dev::hold_minutes(hold);
     const Label &lb = L.l[hi];
@@ -358,52 +349,67 @@ __global__ void __launch_bounds__(kCB) label_rows(Frame f, const uint16_t *ws, L
     ull ac[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy
     if (t >= h) {
       const uint16_t *rp = ws + static_cast<size_t>(t - h) * A;
-      for (int a = threadIdx.x; a < A; a += kCB) {
-        const unsigned short xr = rxs[a], yr = rp[a];
+      for (int a = lane; a < A; a += 32) {
+        const unsigned xr = rx[a], yr = rp[a];
         const bool ok = xr != kRankNone && yr != kRankNone;
-        const ull x = xr, y = yr;
         ac[0] += ok;
-        ac[1] += ok ? x : 0;
-        ac[2] += ok ? y : 0;
-        ac[3] += ok ? x * x : 0;
-        ac[4] += ok ? y * y : 0;
-        ac[5] += ok ? x * y : 0;
+        ac[1] += ok ? xr : 0u;
+        ac[2] += ok ? yr : 0u;
+        ac[3] += ok ? xr * xr : 0u; // r16 ≤ 65534: 积 < 2³², 32 位乘后再加进 64 位
+        ac[4] += ok ? yr * yr : 0u;
+        ac[5] += ok ? xr * yr : 0u;
       }
-      block_sum(ac, pu);
+      warp_sum(ac);
     }
     // ---- 标签侧 ----
     const bool tail = dev::tail_masked(t, hold);
     ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (IC)
-    float fs[3 + kGroups] = {};    // Σlv (mkt), Σsv, Σsv|组0, 各组 Σlv
-    int c[kGroups] = {};           // 各组计数
+    float fs[4] = {};              // Σlv (mkt), Σsv, Σsv|组0, Σsv|顶组
     if (!tail) {
+#pragma unroll
+      for (int q = 0; q < kGroups; ++q) { // 清自己的槽
+        gs[q][lane] = 0.f;
+        gc[q][lane] = 0;
+      }
       const uint16_t *ry = lb.ry + base, *lv = lb.lv + base, *sv = lb.sv + base;
-      for (int a = threadIdx.x; a < A; a += kCB) {
-        const unsigned short xr = rxs[a], yr = ry[a];
+      for (int a = lane; a < A; a += 32) {
+        const unsigned xr = rx[a], yr = ry[a];
         const bool ok = xr != kRankNone && yr != kRankNone;
-        const ull x = xr, y = yr;
         s[0] += ok;
-        s[1] += ok ? x : 0;
-        s[2] += ok ? y : 0;
-        s[3] += ok ? x * x : 0;
-        s[4] += ok ? y * y : 0;
-        s[5] += ok ? x * y : 0;
+        s[1] += ok ? xr : 0u;
+        s[2] += ok ? yr : 0u;
+        s[3] += ok ? xr * xr : 0u;
+        s[4] += ok ? yr * yr : 0u;
+        s[5] += ok ? xr * yr : 0u;
         const float yl = dev::h2f(lv[a]), ys = dev::h2f(sv[a]);
         const int g = ok ? dev::grp_of(xr) : -1;
         fs[0] += ok ? yl : 0.f;
         fs[1] += ok ? ys : 0.f;
         fs[2] += g == 0 ? ys : 0.f;
-#pragma unroll
-        for (int q = 0; q < kGroups; ++q) { // 展开 select, 不做寄存器数组的运行期下标
-          fs[3 + q] += g == q ? yl : 0.f;
-          c[q] += g == q;
+        fs[3] += g == kGroups - 1 ? ys : 0.f;
+        if (ok) { // 自己的槽, 无竞争
+          gs[g][lane] += yl;
+          gc[g][lane] += 1;
         }
       }
-      block_sum(s, pu);
-      block_sum(fs, pf);
-      block_sum(c, pi);
+      warp_sum(s);
+      warp_sum(fs);
+      __syncwarp();         // 各 lane 的槽写完, 下面跨 lane 读
+      if (lane < kGroups) { // lane q 收组 q: 沿 32 lane 串行加, 起点旋转 → 32 个 lane 落 32 个 bank
+        float sg = 0.f;
+        int cg = 0;
+#pragma unroll
+        for (int l = 0; l < 32; ++l) {
+          const int j = (l + lane) & 31;
+          sg += gs[lane][j];
+          cg += gc[lane][j];
+        }
+        gs[lane][0] = sg; // 总和放回 0 号槽, 给 lane 0 收尾
+        gc[lane][0] = static_cast<uint16_t>(cg);
+      }
+      __syncwarp();
     }
-    if (threadIdx.x == 0) {
+    if (lane == 0) {
       Row r;
       if (t >= h) {
         bool ok = false;
@@ -411,16 +417,19 @@ __global__ void __launch_bounds__(kCB) label_rows(Frame f, const uint16_t *ws, L
         r.ok_ac = ok ? 1 : 0;
       }
       if (!tail) {
-        double gs[kGroups];
+        double gsd[kGroups];
+        int gci[kGroups];
 #pragma unroll
-        for (int q = 0; q < kGroups; ++q)
-          gs[q] = static_cast<double>(fs[3 + q]);
-        dev::finish_row(f, s[0], s[1], s[2], s[3], s[4], s[5], static_cast<double>(fs[0]), static_cast<double>(fs[1]), gs, c,
-                        static_cast<double>(fs[2]), r);
+        for (int q = 0; q < kGroups; ++q) {
+          gsd[q] = static_cast<double>(gs[q][0]);
+          gci[q] = gc[q][0];
+        }
+        dev::finish_row(f, s[0], s[1], s[2], s[3], s[4], s[5], static_cast<double>(fs[0]), static_cast<double>(fs[1]), gsd, gci,
+                        static_cast<double>(fs[2]), static_cast<double>(fs[3]), r);
       }
       rows[static_cast<size_t>(hi) * T + t] = r;
     }
-    __syncthreads(); // 下一持有期复用 pu / pf / pi 前, 线程 0 读完
+    __syncwarp(); // 下一持有期清槽前, lane 0 读完
   }
 }
 
@@ -465,7 +474,7 @@ inline void eval(const float *xv, const uint8_t *xm, const uint8_t *g, Frame f, 
     k::quant_rows<<<grid, kCB, 0, stream>>>(k::SrcF{xv, xm, g}, ws, n);
     FACTOR_CUDA_OK(cudaGetLastError());
   }
-  k::label_rows<<<T, kCB, 0, stream>>>(f, ws, L, hd, rows, T, A);
+  k::label_rows<<<(T + kLW - 1) / kLW, kLB, 0, stream>>>(f, ws, L, hd, rows, T, A);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 

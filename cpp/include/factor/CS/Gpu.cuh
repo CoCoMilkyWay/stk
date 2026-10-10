@@ -17,7 +17,8 @@
 //     计数用 float 归约: cnt ≤ 2²⁴ 内 float 表示精确, 省一套 TempStorage.
 //   【两遍】高阶矩一律两遍: 第一趟求 μ, 第二趟在 (x−μ) 上求 M2/Cxy (不用 Σx² 单遍式).
 //   【HIST】片上 256 桶直方图 (shared atomicAdd) + BlockScan 前缀, 一行两套桶 (x / y).
-//   【GROUP】shared 累加槽 kGrpCap = 1024 组 (行业约 30), 无 global atomic 争用.
+//   【GROUP】shared 累加槽 kGrpCap = 1024 组 (行业约 30), 无 global atomic 争用; 组极值用保序整数编码 atomicMin/Max.
+//     CsGroupRank 每批 kGB = 16 组一起建 uint16 打包的 256 桶直方图 (一 warp 一组原地前缀), 趟数与 G 无关 (每批 2 趟).
 //   【池 gm】样本集 = gm ∧ 有效 (契约【截面池 g】); 输出 = 池内统计量作用于每个有效 x, 不看 gm.
 //     GROUP: 组无池成员 → 全池统计量 (CsGroupMean 用 bsum 顺手得全池和; CsGroupRank 末尾补一遍全池直方图).
 //   退化 → 契约第 6 条中性值 (select 一支); 掩码: 广播型恒真, 相对型 = 该资产输入格有效.
@@ -137,15 +138,18 @@ struct MaxOp {
   __device__ __forceinline__ float operator()(float a, float b) const { return fmaxf(a, b); }
 };
 
-// 每块的 shared 家当: 直方图 (2 KB) + 分组槽 (20 KB) + cub 暂存 ≈ 23 KB
-// (512 线程 × 2 块/SM = 46 KB ≤ 64 KB, 不构成占用率瓶颈)
+inline constexpr int kGB = kCB / 32; // GroupRank 每批直方图的组数 = warp 数 (前缀时一 warp 管一组)
+
+// 每块的 shared 家当: 直方图 (2 KB) + 分组槽 (20 KB) + 分批组直方图 (8 KB) + cub 暂存 ≈ 31 KB
+// (512 线程 × 2 块/SM = 62 KB ≤ 64 KB, 不构成占用率瓶颈)
 struct Sh {
   typename BR::TempStorage red;
   typename BS::TempStorage scan;
   int cb[kBuckets], pre[kBuckets];          // 直方图 (桶计数 / 桶的 exclusive 前缀)
   float gsx[kGrpCap + 1], gsy[kGrpCap + 1]; // 分组累加槽; 末槽 kGrpCap = 无组 (组 id 有效但为负)
   int gcn[kGrpCap + 1];
-  int gmn[kGrpCap + 1], gmx[kGrpCap + 1]; // 分组 y 极值 (有序整数编码, 给 GroupResid 的逐组全并列判据)
+  int gmn[kGrpCap + 1], gmx[kGrpCap + 1]; // 分组极值 (有序整数编码: GroupResid 的 y, GroupRank 的 x)
+  uint32_t gh[kGB][kBuckets / 2];         // GroupRank: 一批 kGB 组 × 256 桶的 uint16 计数, 两桶打包一字 (shared 无 16 位原子)
   float bc;                               // 广播槽
   int ib;
 };
@@ -155,6 +159,8 @@ __device__ __forceinline__ int ord(float f) {
   const int i = __float_as_int(f + 0.f);
   return i >= 0 ? i : i ^ 0x7fffffff;
 }
+// 逆编码 (ord 是对合: 负数支的符号位不动, 再异或一次即还原)
+__device__ __forceinline__ float unord(int i) { return __int_as_float(i >= 0 ? i : i ^ 0x7fffffff); }
 
 // ---- 块级归约 + 广播 (归约后必须两次 sync: 一次等广播写入, 一次防下轮复用暂存) ----
 __device__ inline float bsum(Sh &sh, float v) {
@@ -587,50 +593,99 @@ struct CsGroupMean {
   FACTOR_CS_RUN()
 };
 
-// 组内 pct rank 的公共实现: 逐组重建直方图 (组数 G 约 30 → O(G·A) 每行); 无组 / 组无池成员的资产末尾用全池直方图补
+// ---- GroupRank 的分批组直方图 (uint16 打包: 桶计数 ≤ 组池内样本数 ≤ A < 65536) ----
+__device__ __forceinline__ uint32_t gh_get(const uint32_t *row, int b) { return (row[b >> 1] >> ((b & 1) * 16)) & 0xffffu; }
+__device__ __forceinline__ void gh_add(uint32_t *row, int b) { atomicAdd(&row[b >> 1], 1u << ((b & 1) * 16)); }
+// 每组由一个 warp 原地转成 inclusive 前缀: 每 lane 管 4 字 = 8 个连续桶, lane 总量做 warp 扫描
+__device__ inline void gh_prefix(k::Sh &sh) {
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  uint32_t *row = sh.gh[warp];
+  int c[8];
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    const uint32_t w = row[lane * 4 + k];
+    c[2 * k] = static_cast<int>(w & 0xffffu);
+    c[2 * k + 1] = static_cast<int>(w >> 16);
+  }
+  int run = 0;
+#pragma unroll
+  for (int j = 0; j < 8; ++j) {
+    run += c[j];
+    c[j] = run;
+  }
+  int incl = run;
+#pragma unroll
+  for (int off = 1; off < 32; off <<= 1) {
+    const int n = __shfl_up_sync(0xffffffffu, incl, off);
+    incl += lane >= off ? n : 0;
+  }
+  const int ex = incl - run;
+#pragma unroll
+  for (int k = 0; k < 4; ++k)
+    row[lane * 4 + k] = static_cast<uint32_t>(c[2 * k] + ex) | (static_cast<uint32_t>(c[2 * k + 1] + ex) << 16);
+}
+
+// 组内 pct rank 的公共实现 (单趟分组统计, 不再逐组重扫):
+//   趟 1: 组 cnt / lo / hi 一次 shared 原子算完 (极值走 ord 保序整数编码的 atomicMin/Max);
+//   然后每 kGB 组一批: 一趟建 kGB 张 256 桶直方图 → 一 warp 一组原地前缀 → 一趟输出该批的资产.
+//   G ≈ 30 → 2 批 ≈ 6 趟 + 几次同步, 旧法是 (G+1)·3 趟 + 3(G+1) 次块归约.
+//   无组 / 组无池成员的资产末尾用全池直方图补 (sh.cb / sh.pre).
 template <class Gid>
 __device__ inline void group_rank(k::Sh &sh, const float *xv, const uint8_t *xm, const uint8_t *gm, const Gid &gi, float *ov, uint8_t *om, int base, int A) {
-  for (int a = threadIdx.x; a < A; a += kCB) // 组 id 格无效 / x 无效的资产保持无效
-    dev::store(ov, om, base + a, 0.f, false);
+  assert(A < 65536 && "GroupRank 的 uint16 桶计数要求 A < 65536");
+  k::grp_clear(sh);
   int gmax = 0;
-  for (int a = threadIdx.x; a < A; a += kCB)
-    gmax = max(gmax, gi.gid(a));
-  gmax = static_cast<int>(k::bmax(sh, static_cast<float>(gmax)));
-  assert(gmax < kGrpCap && "组 id 超出 shared 槽上限");
-  for (int g = 0; g <= gmax; ++g) { // g 是块内一致量, 循环不发散
-    struct GetG {
-      const float *v;
-      const uint8_t *m;
-      const uint8_t *gm;
-      int base, g;
-      const Gid *gi;
-      __device__ __forceinline__ bool get(int a, float &u) const {
-        u = v[base + a];
-        return (m[base + a] & gm[base + a]) != 0 && gi->gid(a) == g;
-      }
-    } sg{xv, xm, gm, base, g, &gi};
-    int cnt;
-    float lo, hi;
-    k::span_row(sh, sg, A, cnt, lo, hi);
-    if (threadIdx.x == 0)
-      sh.gcn[g] = cnt; // 组的池内样本数, 给末尾回退遍查
-    if (cnt < 1)
-      continue;
-    const bool rok = dev::spread(lo, hi);
-    if (rok)
-      k::hist_row(sh, sg, A, lo, hi, sh.cb, sh.pre);
-    for (int a = threadIdx.x; a < A; a += kCB) {
-      const int i = base + a;
-      if (xm[i] && gi.gid(a) == g)
-        dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, cnt, lo, hi, rok, xv[i]), true);
-    }
-    __syncthreads(); // 下一组要复用 sh.cb / 归约暂存
-  }
-  __syncthreads();   // 末组可能 continue 跳过了同步; 下面要读 gcn 并复用 sh.cb
   bool need = false; // 有资产无组 / 落在空组才建全池直方图 (正常日子行业全在池里, 这一支不走)
   for (int a = threadIdx.x; a < A; a += kCB) {
     const int i = base + a, g = gi.gid(a);
-    need |= g != -1 && xm[i] && (g < 0 || sh.gcn[g] < 1);
+    assert(g < kGrpCap && "组 id 超出 shared 槽上限");
+    gmax = max(gmax, g);
+    const bool ok = g != -1 && xm[i];
+    if (!ok)
+      dev::store(ov, om, i, 0.f, false); // 组 id 格无效 / x 无效 → 无效; 其余资产下面各趟必写一次
+    need |= ok && g < 0;
+    if (ok && g >= 0 && gm[i]) {
+      const int o = k::ord(xv[i]);
+      atomicAdd(&sh.gcn[g], 1);
+      atomicMin(&sh.gmn[g], o);
+      atomicMax(&sh.gmx[g], o);
+    }
+  }
+  gmax = static_cast<int>(k::bmax(sh, static_cast<float>(gmax))); // 自带两次 sync: 槽统计对全块可见
+  for (int g0 = 0; g0 <= gmax; g0 += k::kGB) {                    // g0 是块内一致量, 循环不发散
+    for (int w = threadIdx.x; w < k::kGB * (kBuckets / 2); w += kCB)
+      (&sh.gh[0][0])[w] = 0u;
+    __syncthreads();
+    for (int a = threadIdx.x; a < A; a += kCB) { // 建该批各组直方图 (池内样本; 组值域退化的不建)
+      const int i = base + a, g = gi.gid(a);
+      if (g < g0 || g >= g0 + k::kGB || !xm[i] || !gm[i])
+        continue;
+      const float lo = k::unord(sh.gmn[g]), hi = k::unord(sh.gmx[g]);
+      if (dev::spread(lo, hi))
+        gh_add(sh.gh[g - g0], dev::bin_of_fast(xv[i], lo, hi));
+    }
+    __syncthreads();
+    gh_prefix(sh);
+    __syncthreads();
+    for (int a = threadIdx.x; a < A; a += kCB) { // 输出该批的资产 (含池外有效 x: 按组统计量定位)
+      const int i = base + a, g = gi.gid(a);
+      if (g < g0 || g >= g0 + k::kGB || !xm[i])
+        continue;
+      const int cnt = sh.gcn[g];
+      need |= cnt < 1;
+      if (cnt < 1)
+        continue; // 空组 → 末尾全池补
+      const float lo = k::unord(sh.gmn[g]), hi = k::unord(sh.gmx[g]);
+      float v = 0.5f; // 组内全并列
+      if (dev::spread(lo, hi)) {
+        const uint32_t *row = sh.gh[g - g0];
+        const int b = dev::bin_of_fast(xv[i], lo, hi);
+        const int less = b > 0 ? static_cast<int>(gh_get(row, b - 1)) : 0;
+        v = dev::pct_of(less, static_cast<int>(gh_get(row, b)) - less, cnt);
+      }
+      dev::store(ov, om, i, v, true);
+    }
+    __syncthreads(); // 下一批要清 gh
   }
   if (!(k::bmax(sh, need ? 1.f : 0.f) > 0.f))
     return;

@@ -128,7 +128,8 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
 
 // 一级 Row[T] (选定冲击档 c + hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
 // 再按回测长度折成等效年化 (× kDaysPerYear / days, 单位 %): 末点 = 年化收益, 不同区间长度 / 持有期可比;
-// IC 分布 = ok 行的 ic 逐行进 KLL (与 Accum 的 ic_mean/std/skew/kurt 同一组样本)
+// IC 分布 = ok 行的 ic 逐行进 KLL (与 Accum 的 ic_mean/std/skew/kurt 同一组样本).
+// 符号: 一级 Row 是原值, 这里按 HoldStat::sign 镜像 (与二级同一口径), 画出来的 G20 / LS / IC 与表里一致
 void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
   if (res.key.empty() || !res.error.empty() || res.rows.empty())
@@ -140,6 +141,8 @@ void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDeri
   const double h = factor::stat::hold_minutes(hold);
   const double ann = 100.0 * factor::stat::kDaysPerYear / days;
   const factor::stat::Row *r = res.rows_at(c, sel);
+  d.hs = res.hold_at(c)[sel];
+  const bool flip = d.hs.sign < 0; // 一级 Row 是原值, 按二级定下的符号镜像 (Contract【自动符号】): 组倒序 / ls 换 ls_rev / ic 取负
   d.days = days;
   d.dates = res.dates;
   d.x_day.resize(static_cast<size_t>(days) + 1);
@@ -157,11 +160,13 @@ void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDeri
       const factor::stat::Row &w = r[t];
       if (!w.ok)
         continue;
-      ics.push_back(w.ic);
-      ls += w.ls;
-      for (int k = 0; k < K; ++k)
-        if (w.cnt[k]) // TS 口径组可空: 该刻无仓, 贡献 0
-          g[k] += w.grp[k] / w.cnt[k] + (absolute ? w.mkt : 0.0);
+      ics.push_back(flip ? -w.ic : w.ic);
+      ls += flip ? w.ls_rev : w.ls;
+      for (int k = 0; k < K; ++k) {
+        const int q = flip ? K - 1 - k : k;
+        if (w.cnt[q]) // TS 口径组可空: 该刻无仓, 贡献 0
+          g[k] += w.grp[q] / w.cnt[q] + (absolute ? w.mkt : 0.0);
+      }
     }
     for (int k = 0; k < K; ++k) {
       gc[k] += g[k] / h;
@@ -185,7 +190,6 @@ void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDeri
   KLLcache kll(analysis::kAggKllCapacity, analysis::kAggKllResolution);
   kll.addBatch(ics);
   d.ic_pdf.fill(kll, 3); // n < 3 与 Accum::finish 同口径: 无 stat 也无 PDF
-  d.hs = res.hold_at(c)[sel];
   d.valid = true;
 }
 
@@ -244,8 +248,8 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   if (cursor_day < 0 || cursor_day > d.days)
     cursor_day = d.days;
   char title[128];
-  std::snprintf(title, sizeof(title), "分层累计 (等效年化) %s  h=%s  mono %+.3f###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)",
-                factor::stat::hold_name(d.hs.hold).c_str(), d.hs.mono);
+  std::snprintf(title, sizeof(title), "分层累计 (等效年化) %s  h=%s  sign %+d  mono %+.3f###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)",
+                factor::stat::hold_name(d.hs.hold).c_str(), d.hs.sign, d.hs.mono);
   const int n = d.days + 1;
   float col_ratios[2] = {3.f, 1.f};
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0.f, ImPlot::GetStyle().PlotPadding.y));
@@ -351,9 +355,9 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, int sel_hold, const
       if (h.n < 3)
         ImGui::TextDisabled("h=%s  n=%d (不足)", labels[static_cast<size_t>(i)], h.n);
       else
-        ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f IR %+.3f t %+.2f pos %.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f\n"
+        ImGui::Text("h=%-5s n=%d/%d sign %+d  rIC %+.4f IR %+.3f t %+.2f pos %.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f\n"
                     "年化 %%:  L %+.2f  S %+.2f  LS %+.2f",
-                    labels[static_cast<size_t>(i)], h.n, h.n_ac, h.ic_mean, h.icir, h.ic_t, h.ic_pos, h.ls_mean, h.ls_t, h.ls_pos, h.sharpe,
+                    labels[static_cast<size_t>(i)], h.n, h.n_ac, h.sign, h.ic_mean, h.icir, h.ic_t, h.ic_pos, h.ls_mean, h.ls_t, h.ls_pos, h.sharpe,
                     h.beta, h.mono, h.rank_ac, h.grp[K - 1] * ann, h.grp[0] * ann, h.ls_mean * ann);
       ImGui::EndTooltip();
     }
@@ -707,10 +711,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
                         match ? "" : "  (旧结果, 新请求计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)
-      ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f "
-                  "| mono %+.3f | rAC %+.3f",
-                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean,
-                  h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
+      ImGui::Text("h=%-5s n=%d/%d sign %+d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f "
+                  "β %+.3f | mono %+.3f | rAC %+.3f",
+                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.sign, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
+                  h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
     else
       ImGui::TextDisabled("h=%s  n=%d (有效行不足, 无 stat)", factor::stat::hold_name(cur_hold).c_str(), h.n);
   } else {

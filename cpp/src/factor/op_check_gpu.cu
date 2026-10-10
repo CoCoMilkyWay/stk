@@ -73,15 +73,18 @@ void call_dev(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *
   }
   const float *xv = x ? x->v : nullptr, *yv = y ? y->v : nullptr, *zv = z ? z->v : nullptr;
   const uint8_t *xm = x ? x->m : nullptr, *ym = y ? y->m : nullptr, *zm = z ? z->m : nullptr;
-  CU(cudaEventRecord(s->e0));
+  // 只有要计时才夹事件并同步: 搜索路径 (kernel_ms = nullptr) 整条 DAG 异步排队, 不逐算子做 CPU↔GPU 往返
+  if (kernel_ms)
+    CU(cudaEventRecord(s->e0));
   if constexpr (CS)
     Op::run(xv, xm, yv, ym, zv, zm, g->m, out->v, out->m, T, A, p, wsn ? s->ws : nullptr, nullptr);
   else
     Op::run(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, wsn ? s->ws : nullptr, nullptr);
-  CU(cudaEventRecord(s->e1));
-  CU(cudaEventSynchronize(s->e1));
   CU(cudaGetLastError());
   if (kernel_ms) {
+    CU(cudaEventRecord(s->e1));
+    CU(cudaEventSynchronize(s->e1));
+    CU(cudaGetLastError());
     float f = 0.f;
     CU(cudaEventElapsedTime(&f, s->e0, s->e1));
     *kernel_ms = f;
@@ -344,12 +347,12 @@ StatSession *stat_open(int T, int A, const factor::stat::Holds &hd, const StatLa
 
 void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Row *rows, double *eval_ms) {
   assert(s && x && x->v && x->m && g && g->m && rows);
-  s->tm.begin();
-  stat::eval(x->v, x->m, g->m, f, s->T, s->A, s->hd, s->L, s->ws.p, s->out.p, nullptr);
-  const double ems = s->tm.end();
   if (eval_ms)
-    *eval_ms = ems;
-  s->out.down(rows, static_cast<size_t>(s->hd.n) * s->T);
+    s->tm.begin();
+  stat::eval(x->v, x->m, g->m, f, s->T, s->A, s->hd, s->L, s->ws.p, s->out.p, nullptr);
+  if (eval_ms)
+    *eval_ms = s->tm.end();
+  s->out.down(rows, static_cast<size_t>(s->hd.n) * s->T); // D2H 自带同步
 }
 
 void stat_close(StatSession *s) {

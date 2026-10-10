@@ -134,6 +134,7 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
       detail::cmp1(d, a.ic, b.ic, tol, at);
       detail::cmp1(d, a.mkt, b.mkt, tol, at);
       detail::cmp1(d, a.ls, b.ls, tol, at);
+      detail::cmp1(d, a.ls_rev, b.ls_rev, tol, at);
       for (int k = 0; k < kGroups; ++k)
         detail::cmp1(d, a.grp[k], b.grp[k], tol, at);
     }
@@ -148,7 +149,7 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
   Diff d;
   for (int i = 0; i < H; ++i) {
     const HoldStat &a = ref[i], &b = got[i];
-    if (a.hold != b.hold || a.n != b.n || a.n_ac != b.n_ac) {
+    if (a.hold != b.hold || a.n != b.n || a.n_ac != b.n_ac || a.sign != b.sign) {
       if (d.mask_bad++ == 0)
         d.worst_at = i;
       continue;

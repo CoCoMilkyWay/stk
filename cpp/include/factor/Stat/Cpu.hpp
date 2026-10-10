@@ -166,13 +166,13 @@ inline void ac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_ac = ok ? 1u : 0u;
 }
 
-// 标签侧: rx = 本行 r16, t = 绝对行 (取标签行) → r 的 ic / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
+// 标签侧: rx = 本行 r16, t = 绝对行 (取标签行) → r 的 ic / mkt / grp / cnt / ls / ls_rev / ok. 调用方已排除段末尾部
 inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L, Row &r) {
   using ull = unsigned long long;
   const size_t base = static_cast<size_t>(t) * A;
   const uint16_t *ry = L.ry + base, *lv = L.lv + base, *sv = L.sv + base;
   ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-  double smk = 0.0, ssv = 0.0, s0 = 0.0, gs[kGroups] = {};
+  double smk = 0.0, ssv = 0.0, s0 = 0.0, st = 0.0, gs[kGroups] = {};
   int gc[kGroups] = {};
   for (int a = 0; a < A; ++a) {
     const ull x = rx[a], y = ry[a];
@@ -188,10 +188,11 @@ inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L,
     smk += ok ? yl : 0.f;
     ssv += ok ? ys : 0.f;
     s0 += (ok && g == 0) ? ys : 0.f;
+    st += (ok && g == kGroups - 1) ? ys : 0.f;
     gs[g] += ok ? yl : 0.f;
     gc[g] += ok;
   }
-  factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, s0, r);
+  factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, s0, st, r);
 }
 
 // 一 (t, hold) 完整行. ws = 全部 r16 [T][A] (ac 取 t−h 行, h = hold_minutes(hold))
