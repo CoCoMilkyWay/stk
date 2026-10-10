@@ -27,8 +27,8 @@ namespace factor::check {
 
 // ---- 造数 ----
 //   每个算子按"输入配方"拿到合适的数据: 正值型算子给正值, 分组型给整数组 id, 其余给正态.
-//   profile 再叠一层边界, 每个专打一类契约分支:
-//     HOLES    15% 缺失 + 某资产整段缺失 (段内 n = 0) + 某时刻**整行缺失** (截面 n = 0)
+//   profile 再叠一层边界, 每个专打一类契约分支 (退化分支现在产中性值而非无效, 对拍照样逐位比掩码 + 比值):
+//     HOLES    15% 缺失 + 某资产整段缺失 (段内 n = 0 → 中性值) + 某时刻**整行缺失** (截面 n = 0 → 中性值)
 //     CONSTCOL 整列常值 (全并列退化, 全程)
 //     CONSTSEG 某资产只在第 1 段常值, 其余段正常 (滑窗跨段进出常值区: 打 GPU 的 Chg 精确追踪);
 //              另一资产全程常值只在一格跳变 (窗含该格才非退化)
@@ -148,7 +148,7 @@ inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
 }
 
 // 截面池掩码: 每 (段, 资产) 一个常量 (真实池按日增删), 约 60% 在池; v 恒 0 不用.
-//   HOLES 再叠: 3 号资产全程池外 (只做受体); t = kSegLen + 9 整行空池 (池内 n = 0, 输出全无效);
+//   HOLES 再叠: 3 号资产全程池外 (只做受体); t = kSegLen + 9 整行空池 (池内 n = 0 → 广播中性值 / 相对型用空池统计量);
 //              第 1 段里组 id 6 (Gen::GROUP 的 a % 7 == 6) 整组池外 → 打 GROUP 族的全池回退
 inline void fill_gate(Plane &p, Profile pr, int T, int A, std::mt19937 &rng) {
   assert(T % kSegLen == 0);

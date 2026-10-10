@@ -17,9 +17,9 @@
 //     void reset(const Param &);        窗重置时调, 参数在此落到核里
 //     void add(int i, Val x, Val y);    喂入一个样本, i = 样本在窗/段内的位置 (0 = 最旧)
 //     Val  get(const Ctx &) const;      取当前输出
-//   ROLL 窗满后 **reset + 整窗重放**: d ≤ 240 且每分钟只走一次, 代价可忽略, 换来零递推漂移
-//   (Welford 在滑出样本时做减法会在长序列上失稳, 不值得).
-//   退化判据按契约: 全并列用核内追踪的 lo/hi (精确), 相消用 den_ok; 分母不钳位.
+//   ROLL 每步 **reset + 整窗重放** (未满窗时重放已有前缀, 位置锚定最新格 = d−1): d ≤ 240 且每分钟只走一次,
+//   代价可忽略, 换来零递推漂移 (Welford 在滑出样本时做减法会在长序列上失稳, 不值得).
+//   退化按契约第 6 条给中性值 (全并列用核内追踪的 lo/hi 精确判, 相消用 den_ok); 掩码只随输入格 (第 7 条).
 //
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
 // =============================================================================
@@ -54,8 +54,8 @@ struct TsSqrt : Point {
 struct TsRelu : Point {
   static Val apply(Val x, const Param &) { return mk(std::fmax(0.f, x.v), x.m); }
 };
-struct TsRecip : Point { // x = 0 退化; 溢出由 mk 转无效
-  static Val apply(Val x, const Param &) { return mk(1.f / x.v, x.m && x.v != 0.f); }
+struct TsRecip : Point { // x = 0 → 0; 溢出由 mk 转无效
+  static Val apply(Val x, const Param &) { return mk(x.v != 0.f ? 1.f / x.v : 0.f, x.m); }
 };
 struct TsClip : Point {
   static Val apply(Val x, const Param &p) {
@@ -81,8 +81,8 @@ struct TsSub : Point {
 struct TsMul : Point {
   static Val apply(Val x, Val y, const Param &) { return mk(x.v * y.v, x.m && y.m); }
 };
-struct TsDiv : Point { // y = 0 退化; 溢出由 mk 转无效
-  static Val apply(Val x, Val y, const Param &) { return mk(x.v / y.v, x.m && y.m && y.v != 0.f); }
+struct TsDiv : Point { // y = 0 → 0; 溢出由 mk 转无效
+  static Val apply(Val x, Val y, const Param &) { return mk(y.v != 0.f ? x.v / y.v : 0.f, x.m && y.m); }
 };
 struct TsMax : Point {
   static Val apply(Val x, Val y, const Param &) { return mk(std::fmax(x.v, y.v), x.m && y.m); }
@@ -90,16 +90,16 @@ struct TsMax : Point {
 struct TsMin : Point {
   static Val apply(Val x, Val y, const Param &) { return mk(std::fmin(x.v, y.v), x.m && y.m); }
 };
-struct TsImb : Point { // 和在两侧量级下相消 → 无效 (x ≈ −y 时比值无意义)
+struct TsImb : Point { // 和在两侧量级下相消 (双边皆 0 / x ≈ −y) → 0 (无失衡)
   static Val apply(Val x, Val y, const Param &) {
-    const bool ok = x.m && y.m && den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
-    return mk((x.v - y.v) / (x.v + y.v), ok);
+    const bool ok = den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
+    return mk(ok ? (x.v - y.v) / (x.v + y.v) : 0.f, x.m && y.m);
   }
 };
-struct TsShare : Point {
+struct TsShare : Point { // 同上 → 0.5 (对半)
   static Val apply(Val x, Val y, const Param &) {
-    const bool ok = x.m && y.m && den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
-    return mk(x.v / (x.v + y.v), ok);
+    const bool ok = den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
+    return mk(ok ? x.v / (x.v + y.v) : 0.5f, x.m && y.m);
   }
 };
 struct TsLogRatio : Point { // ln x − ln y: 两个正有限数各取对数再相减, 不会溢出
@@ -142,11 +142,11 @@ struct SumAcc {
   }
 };
 
-struct Sum : SumAcc {
-  Val get(const Ctx &) const { return mk(s, n >= 1); }
+struct Sum : SumAcc { // 空和 = 0
+  Val get(const Ctx &) const { return mk(s, true); }
 };
 struct Mean : SumAcc {
-  Val get(const Ctx &) const { return mk(s / n, n >= 1); }
+  Val get(const Ctx &) const { return mk(n >= 1 ? s / n : 0.0, true); }
 };
 
 // ---- 一元累加器: 四阶 (Welford / Terriberry 递推; lo/hi 只给全并列判据) ----
@@ -168,22 +168,23 @@ struct MomAcc {
     m2 += term;
   }
   bool disp() const { return spread(lo, hi); }
+  bool ok(int need) const { return n >= need && disp(); } // 退化 (样本不足 / 全并列) → 中性值 0
 };
 struct Var : MomAcc {
-  Val get(const Ctx &) const { return mk(m2 / (n - 1), n >= 2 && disp()); }
+  Val get(const Ctx &) const { return mk(ok(2) ? m2 / (n - 1) : 0.0, true); }
 };
 struct Std : MomAcc {
-  Val get(const Ctx &) const { return mk(std::sqrt(m2 / (n - 1)), n >= 2 && disp()); }
+  Val get(const Ctx &) const { return mk(ok(2) ? std::sqrt(m2 / (n - 1)) : 0.0, true); }
 };
 struct Skew : MomAcc { // 总体矩: m3/n / (m2/n)^1.5 = √n·m3/m2^1.5
-  Val get(const Ctx &) const { return mk(std::sqrt(n) * m3 / std::pow(m2, 1.5), n >= 3 && disp()); }
+  Val get(const Ctx &) const { return mk(ok(3) ? std::sqrt(n) * m3 / std::pow(m2, 1.5) : 0.0, true); }
 };
 struct Kurt : MomAcc { // 超额峰度
-  Val get(const Ctx &) const { return mk(n * m4 / (m2 * m2) - 3.0, n >= 4 && disp()); }
+  Val get(const Ctx &) const { return mk(ok(4) ? n * m4 / (m2 * m2) - 3.0 : 0.0, true); }
 };
-struct Z : MomAcc { // 相对型: 描述当前点
+struct Z : MomAcc { // 相对型: 描述当前点; σ 退化 → 0 (x = μ)
   Val get(const Ctx &c) const {
-    return mk((c.x.v - mean) / std::sqrt(m2 / (n - 1)), n >= 2 && disp() && c.x.m);
+    return mk(ok(2) ? (c.x.v - mean) / std::sqrt(m2 / (n - 1)) : 0.0, c.x.m);
   }
 };
 
@@ -204,7 +205,7 @@ struct Extreme {
   }
   Val get(const Ctx &c) const {
     const double v = IsArg ? c.d - 1 - bi : best; // Arg: 距今期数 (两个窗同口径)
-    return mk(v, n >= 1);
+    return mk(n >= 1 ? v : 0.0, true);
   }
 };
 
@@ -218,10 +219,11 @@ struct Hhi { // Σx²/(Σx)²: 值全集中在一点 → 1, 均匀摊在 n 点 �
       return;
     s += x.v, sx2 += static_cast<double>(x.v) * x.v, ++n;
   }
-  Val get(const Ctx &) const { return mk(sx2 / (s * s), n >= 1 && den_ok(s * s, n * sx2)); }
+  // Σx 相消 (非负域下即全 0) → 1/n: 全体相等时 Σx²/(Σx)² = 1/n, 取这个极限; 空窗 → 0
+  Val get(const Ctx &) const { return mk(n < 1 ? 0.0 : (den_ok(s * s, n * sx2) ? sx2 / (s * s) : 1.0 / n), true); }
 };
 
-struct Entropy { // 只对正值定义: ln S − Σ x ln x / S; 有正样本即有定义 (S > 0)
+struct Entropy { // 只对正值定义: ln S − Σ x ln x / S; 无正样本 → 0 (单样本熵 = 0 的极限)
   double s = 0, sxlnx = 0;
   int npos = 0;
   void reset(const Param &) { *this = {}; }
@@ -230,27 +232,27 @@ struct Entropy { // 只对正值定义: ln S − Σ x ln x / S; 有正样本即�
       return;
     s += x.v, sxlnx += static_cast<double>(x.v) * std::log(x.v), ++npos;
   }
-  Val get(const Ctx &) const { return mk(std::log(s) - sxlnx / s, npos >= 1); }
+  Val get(const Ctx &) const { return mk(npos >= 1 ? std::log(s) - sxlnx / s : 0.0, true); }
 };
 
-struct Product { // Π(1+x) − 1, 走对数域避免连乘溢出; 任一 1+x ≤ 0 (x ≤ −1) → 无定义
+struct Product { // Π(1+x) − 1 精确: 对数域累 ln|1+x|, 零因子 (x = −1) 计数, 负因子 (x < −1) 计奇偶; 空窗 = 空积 − 1 = 0
   double sl = 0;
-  int n = 0;
-  bool bad = false;
+  int zero = 0, neg = 0;
   void reset(const Param &) { *this = {}; }
   void add(int, Val x, Val) {
     if (!x.m)
       return;
     if (x.v > -1.f)
       sl += std::log1p(x.v);
+    else if (x.v < -1.f)
+      sl += std::log(-1.0 - x.v), ++neg;
     else
-      bad = true;
-    ++n;
+      ++zero;
   }
-  Val get(const Ctx &) const { return mk(std::expm1(sl), n >= 1 && !bad); }
+  Val get(const Ctx &) const { return mk(zero > 0 ? -1.0 : (neg & 1 ? -std::exp(sl) - 1.0 : std::expm1(sl)), true); }
 };
 
-struct Wma { // 线性权 w = i+1 (最旧 1 … 最新 d), 只在有效点上累权; n ≥ 1 ⇒ Σw ≥ 1
+struct Wma { // 线性权 w = i+1 (最旧 1 … 最新 d), 只在有效点上累权; n ≥ 1 ⇒ Σw ≥ 1; 空窗 → 0
   double sw = 0, swx = 0;
   int n = 0;
   void reset(const Param &) { *this = {}; }
@@ -260,10 +262,10 @@ struct Wma { // 线性权 w = i+1 (最旧 1 … 最新 d), 只在有效点上累
     const double w = i + 1;
     sw += w, swx += w * x.v, ++n;
   }
-  Val get(const Ctx &) const { return mk(swx / sw, n >= 1); }
+  Val get(const Ctx &) const { return mk(n >= 1 ? swx / sw : 0.0, true); }
 };
 
-struct Slope { // x 对窗内下标 i 的 OLS 斜率; 下标两两不同 ⇒ n ≥ 2 时 Σ(i−ī)² ≥ 1/2, 无需退化判据
+struct Slope { // x 对窗内下标 i 的 OLS 斜率; 下标两两不同 ⇒ n ≥ 2 时 Σ(i−ī)² ≥ 1/2; n < 2 → 0 (无趋势)
   double si = 0, sii = 0, sx = 0, six = 0;
   int n = 0;
   void reset(const Param &) { *this = {}; }
@@ -273,26 +275,21 @@ struct Slope { // x 对窗内下标 i 的 OLS 斜率; 下标两两不同 ⇒ n �
     const double t = i;
     si += t, sii += t * t, sx += x.v, six += t * x.v, ++n;
   }
-  Val get(const Ctx &) const { return mk((six - si * sx / n) / (sii - si * si / n), n >= 2); }
+  Val get(const Ctx &) const { return mk(n >= 2 ? (six - si * sx / n) / (sii - si * si / n) : 0.0, true); }
 };
 
-struct Oldest { // 窗最旧一格 (TsDelayRoll: 窗长 d+1 → 最旧格即 x_{t−d})
+struct Oldest { // 窗最旧一格 (TsDelayRoll: 窗长 d+1 → 最旧格即 x_{t−d}; 未满窗时即 x_0, 滞后夹到序列头)
   Val v0;
+  bool has = false;
   void reset(const Param &) { *this = {}; }
-  void add(int i, Val x, Val) {
-    if (i == 0)
-      v0 = x;
+  void add(int, Val x, Val) {
+    v0 = has ? v0 : x;
+    has = true;
   }
   Val get(const Ctx &) const { return mk(v0.v, v0.m); }
 };
 
-struct Diff { // 最新 − 最旧
-  Val v0;
-  void reset(const Param &) { *this = {}; }
-  void add(int i, Val x, Val) {
-    if (i == 0)
-      v0 = x;
-  }
+struct Diff : Oldest { // 最新 − 最旧
   Val get(const Ctx &c) const { return mk(static_cast<double>(c.x.v) - v0.v, v0.m && c.x.m); }
 };
 
@@ -310,18 +307,18 @@ struct SampleBase {
   }
 };
 
-struct Rank : SampleBase { // 相对型
+struct Rank : SampleBase { // 相对型: x_t 有效 ⇒ 样本非空; 全并列 → 0.5 (Hist 内)
   Val get(const Ctx &c) const {
     Hist h;
     h.build(s);
-    return mk(h.rank(c.x.v), !s.empty() && c.x.m);
+    return mk(h.rank(c.x.v), c.x.m);
   }
 };
-struct Quantile : SampleBase { // k 分位 (k = 0.5 即中位)
+struct Quantile : SampleBase { // k 分位 (k = 0.5 即中位); 空窗 → 0
   Val get(const Ctx &) const {
     Hist h;
     h.build(s);
-    return mk(h.quantile(p.k), !s.empty());
+    return mk(s.empty() ? 0.f : h.quantile(p.k), true);
   }
 };
 
@@ -345,31 +342,32 @@ struct CoAcc {
   bool dy_ok() const { return spread(loy, hiy); }
 };
 
-struct Cov : CoAcc {
-  Val get(const Ctx &) const { return mk(cxy / (n - 1), n >= 2); }
+struct Cov : CoAcc { // n < 2 → 0
+  Val get(const Ctx &) const { return mk(n >= 2 ? cxy / (n - 1) : 0.0, true); }
 };
-struct Corr : CoAcc {
-  Val get(const Ctx &) const { return mk(cxy / std::sqrt(cxx * cyy), n >= 2 && dx_ok() && dy_ok()); }
+struct Corr : CoAcc { // 任一侧无离散度 → 0 (无关)
+  Val get(const Ctx &) const { return mk(n >= 2 && dx_ok() && dy_ok() ? cxy / std::sqrt(cxx * cyy) : 0.0, true); }
 };
-struct Beta : CoAcc { // x 对 y 的 OLS 斜率
-  Val get(const Ctx &) const { return mk(cxy / cyy, n >= 2 && dy_ok()); }
+struct Beta : CoAcc { // x 对 y 的 OLS 斜率; y 无离散度 → 0
+  Val get(const Ctx &) const { return mk(n >= 2 && dy_ok() ? cxy / cyy : 0.0, true); }
 };
-struct Resid : CoAcc { // 相对型: 当前点对回归线的偏离
+struct Resid : CoAcc { // 相对型: 当前点对回归线的偏离; y 无离散度 → β = 0, 即 x − μ^x (当前点有效 ⇒ n ≥ 1)
   Val get(const Ctx &c) const {
-    return mk((c.x.v - mx) - cxy / cyy * (c.y.v - my), n >= 2 && dy_ok() && c.x.m && c.y.m);
+    const double b = n >= 2 && dy_ok() ? cxy / cyy : 0.0;
+    return mk((c.x.v - mx) - b * (c.y.v - my), c.x.m && c.y.m);
   }
 };
 
-struct WMean { // y 为权
-  double sy = 0, syx = 0, say = 0;
+struct WMean { // y 为权; Σy 相消 → 等权均值 Σx/n (权全相等的极限); 空窗 → 0
+  double sx = 0, sy = 0, syx = 0, say = 0;
   int n = 0;
   void reset(const Param &) { *this = {}; }
   void add(int, Val x, Val y) {
     if (!x.m || !y.m)
       return;
-    sy += y.v, syx += static_cast<double>(y.v) * x.v, say += std::fabs(y.v), ++n;
+    sx += x.v, sy += y.v, syx += static_cast<double>(y.v) * x.v, say += std::fabs(y.v), ++n;
   }
-  Val get(const Ctx &) const { return mk(syx / sy, n >= 1 && den_ok(sy, say)); }
+  Val get(const Ctx &) const { return mk(n < 1 ? 0.0 : (den_ok(sy, say) ? syx / sy : sx / n), true); }
 };
 
 } // namespace core
@@ -397,8 +395,9 @@ private:
   int i_ = 0;
 };
 
-// ---- 窗: ROLL (最近 d+Extra 期, 跨段不重置 → 没有 reset; 满窗后整窗重放) ----
+// ---- 窗: ROLL (最近 d+Extra 期, 跨段不重置 → 没有 reset; 每步整窗重放) ----
 //   Extra = 1 给 SHIFT 核 (Delay / Delta 要窗内最旧那格, 即 x_{t−d}, 所以窗多留一格)
+//   未满窗 (契约: 窗 = 已有前缀) 重放已有的 n_ 格, 位置 i 锚定最新格 = L_−1 (与 Cpu / Gpu 的 Wma 权、Arg 距今同口径)
 template <class C, int Extra = 0>
 class Roll {
 public:
@@ -415,11 +414,9 @@ private:
     if (++head_ == L_)
       head_ = 0;
     n_ = std::min(n_ + 1, L_);
-    if (n_ < L_)
-      return Val{}; // 窗未满
     c_.reset(p_);
-    int j = head_; // i = 0 最旧
-    for (int i = 0; i < L_; ++i) {
+    int j = n_ < L_ ? 0 : head_; // 未满: 槽 0 起即最旧; 满窗: head_ 处最旧
+    for (int i = L_ - n_; i < L_; ++i) {
       c_.add(i, bx_[j], by_[j]);
       if (++j == L_)
         j = 0;
@@ -437,10 +434,10 @@ class Ema {
 public:
   static constexpr T kT = T::EXPO;
   explicit Ema(const Param &p) : k_(p.k) { assert(k_ > 0.f && k_ <= 1.f); }
-  Val push(Val x) { // x 无效 → 状态与掩码都保持
+  Val push(Val x) { // x 无效 → 状态保持; 尚无有效样本 → 0
     if (x.m)
       y_ = on_ ? k_ * x.v + (1.0 - k_) * y_ : x.v, on_ = true;
-    return mk(y_, on_);
+    return mk(y_, true);
   }
 
 private:

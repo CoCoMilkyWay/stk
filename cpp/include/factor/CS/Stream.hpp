@@ -8,9 +8,9 @@
 //   CS 没有"窗"这一属性 (截面本身就是全部样本), 所以行格式与 TS 不同, 见 OpTable.hpp.
 //
 //   样本集 = 池内 ∧ 有效 (统计量只由池内算出); 输出对每个 x 有效的资产写 "池内统计量作用于自己的 x".
-//   广播型 (CsMean/CsStd/CsQuantile/CsBeta/CsCorr) 对全行写同一个值与同一个掩码,
+//   广播型 (CsMean/CsStd/CsQuantile/CsBeta/CsCorr) 对全行写同一个值, 掩码恒真 (空池行 → 中性值),
 //   哪怕该资产自己的 x 是缺失的 —— 它描述的是截面而不是资产.
-//   相对型 (Demean/Z/Rank/NormRank/Winsor/Bucket/Resid/Group*) 描述资产自身, x 缺失即无效.
+//   相对型 (Demean/Z/Rank/NormRank/Winsor/Bucket/Resid/Group*) 描述资产自身, x 缺失即无效; 统计量退化 → 契约第 6 条中性值.
 //   GROUP: 组内池成员统计量; 该组无池内成员 → 回退全池统计量.
 //
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
@@ -145,113 +145,113 @@ inline int max_gid(const float *v, const uint8_t *m, int A) {
 #define CS_NO23 (void)yv, (void)ym, (void)zv, (void)zm
 #define CS_NO3 (void)zv, (void)zm
 
-struct CsMean {
+struct CsMean { // 空池 → 0 (moments 的 mean 初值)
   CS_SIG {
     CS_NO23, (void)p;
     const auto s = detail::moments(xv, xm, g, A);
-    detail::broadcast(ov, om, A, mk(s.mean, s.n >= 1));
+    detail::broadcast(ov, om, A, mk(s.mean, true));
   }
 };
 
-struct CsStd {
+struct CsStd { // n < 2 / 全并列 → 0
   CS_SIG {
     CS_NO23, (void)p;
     const auto s = detail::moments(xv, xm, g, A);
-    detail::broadcast(ov, om, A, mk(std::sqrt(s.m2 / (s.n - 1)), s.n >= 2 && s.disp()));
+    detail::broadcast(ov, om, A, mk(s.n >= 2 && s.disp() ? std::sqrt(s.m2 / (s.n - 1)) : 0.0, true));
   }
 };
 
-struct CsDemean {
+struct CsDemean { // 空池 → μ = 0, 即 x 原值
   CS_SIG {
     CS_NO23, (void)p;
     const auto s = detail::moments(xv, xm, g, A);
     for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk(xv[i] - s.mean, xm[i] && s.n >= 1));
+      detail::put(ov, om, i, mk(xv[i] - s.mean, xm[i]));
   }
 };
 
-struct CsZ {
+struct CsZ { // σ 退化 → 0 (无尺度可比)
   CS_SIG {
     CS_NO23, (void)p;
     const auto s = detail::moments(xv, xm, g, A);
     const bool ok = s.n >= 2 && s.disp();
     const double sd = ok ? std::sqrt(s.m2 / (s.n - 1)) : 1.0;
     for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk((xv[i] - s.mean) / sd, xm[i] && ok));
+      detail::put(ov, om, i, mk(ok ? (xv[i] - s.mean) / sd : 0.0, xm[i]));
   }
 };
 
-struct CsResid { // x 对 y 的截面 OLS (含截距) 残差
+struct CsResid { // x 对 y 的截面 OLS (含截距) 残差; y 无离散度 → β = 0, 即 x − μ^x
   CS_SIG {
     CS_NO3, (void)p;
     const auto s = detail::comoments(xv, xm, yv, ym, g, A);
     const bool ok = s.n >= 2 && s.dy_ok();
     const double b = ok ? s.cxy / s.cyy : 0.0;
     for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk((xv[i] - s.mx) - b * (yv[i] - s.my), xm[i] && ym[i] && ok));
+      detail::put(ov, om, i, mk((xv[i] - s.mx) - b * (yv[i] - s.my), xm[i] && ym[i]));
   }
 };
 
-struct CsBeta {
+struct CsBeta { // y 无离散度 → 0
   CS_SIG {
     CS_NO3, (void)p;
     const auto s = detail::comoments(xv, xm, yv, ym, g, A);
-    detail::broadcast(ov, om, A, mk(s.cxy / s.cyy, s.n >= 2 && s.dy_ok()));
+    detail::broadcast(ov, om, A, mk(s.n >= 2 && s.dy_ok() ? s.cxy / s.cyy : 0.0, true));
   }
 };
 
-struct CsCorr {
+struct CsCorr { // 任一侧无离散度 → 0
   CS_SIG {
     CS_NO3, (void)p;
     const auto s = detail::comoments(xv, xm, yv, ym, g, A);
     detail::broadcast(ov, om, A,
-                      mk(s.cxy / std::sqrt(s.cxx * s.cyy), s.n >= 2 && s.dx_ok() && s.dy_ok()));
+                      mk(s.n >= 2 && s.dx_ok() && s.dy_ok() ? s.cxy / std::sqrt(s.cxx * s.cyy) : 0.0, true));
   }
 };
 
 // =========================== 序统计族 (HIST) ===========================
 
-struct CsRank {
+struct CsRank { // 空池 / 全并列 → 0.5 (Hist 内)
   CS_SIG {
     CS_NO23, (void)p;
     const auto h = detail::hist_of(xv, xm, g, A);
     for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk(h.rank(xv[i]), xm[i] && h.n >= 1));
+      detail::put(ov, om, i, mk(h.rank(xv[i]), xm[i]));
   }
 };
 
-struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 ±inf
+struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 ±inf; 空池 → Φ⁻¹(0.5) = 0
   CS_SIG {
     CS_NO23, (void)p;
     const auto h = detail::hist_of(xv, xm, g, A);
     const double lo = 1.0 / (h.n + 1.0), hi = static_cast<double>(h.n) / (h.n + 1.0);
     for (int i = 0; i < A; ++i) {
-      // probit 只在掩码成立时求值: 截面全缺失 (n = 0) 时 lo/hi 倒挂, clamp 的前置条件不成立
-      const bool ok = xm[i] && h.n >= 1;
-      detail::put(ov, om, i, mk(ok ? probit(std::clamp<double>(h.rank(xv[i]), lo, hi)) : 0.f, ok));
+      // probit 只在池非空时求值: n = 0 时 lo/hi 倒挂, clamp 的前置条件不成立
+      const double v = h.n >= 1 ? probit(std::clamp<double>(h.rank(xv[i]), lo, hi)) : 0.0;
+      detail::put(ov, om, i, mk(v, xm[i]));
     }
   }
 };
 
-struct CsQuantile { // k 分位 (k = 0.5 即中位)
+struct CsQuantile { // k 分位 (k = 0.5 即中位); 空池 → 0
   CS_SIG {
     CS_NO23;
     const auto h = detail::hist_of(xv, xm, g, A);
-    detail::broadcast(ov, om, A, mk(h.quantile(p.k), h.n >= 1));
+    detail::broadcast(ov, om, A, mk(h.n >= 1 ? h.quantile(p.k) : 0.f, true));
   }
 };
 
-struct CsWinsor {
+struct CsWinsor { // 空池 → 不缩尾, x 原值
   CS_SIG {
     CS_NO23;
     const auto h = detail::hist_of(xv, xm, g, A);
     const auto &w = detail::winsorize(xv, A, h, p.k);
     for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk(w[i], xm[i] && h.n >= 1));
+      detail::put(ov, om, i, mk(h.n >= 1 ? w[i] : xv[i], xm[i]));
   }
 };
 
-struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1
+struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1; 值域退化 / 空池 → pct = 0.5 → 中间桶
   CS_SIG {
     CS_NO23;
     const auto h = detail::hist_of(xv, xm, g, A);
@@ -259,7 +259,7 @@ struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1
     assert(k >= 1);
     for (int i = 0; i < A; ++i) {
       const int b = std::clamp(static_cast<int>(std::floor(h.rank(xv[i]) * k)), 0, k - 1);
-      detail::put(ov, om, i, mk(h.ok ? b : 0, xm[i] && h.n >= 1));
+      detail::put(ov, om, i, mk(b, xm[i]));
     }
   }
 };
@@ -281,10 +281,10 @@ struct CsGroupMean { // y = 组 id (行业等)
       if (q >= 0 && xm[i] && g[i])
         s[q] += xv[i], ++c[q], sa += xv[i], ++na;
     }
-    for (int i = 0; i < A; ++i) {
+    for (int i = 0; i < A; ++i) { // 组空 → 全池; 全池也空 → 0
       const int q = detail::gid(yv, ym, i);
-      const bool ok = q >= 0 && xm[i] && na >= 1;
-      const double v = !ok ? 0.0 : (c[q] >= 1 ? s[q] / c[q] : sa / na);
+      const bool ok = q >= 0 && xm[i];
+      const double v = !ok ? 0.0 : (c[q] >= 1 ? s[q] / c[q] : (na >= 1 ? sa / na : 0.0));
       detail::put(ov, om, i, mk(v, ok));
     }
   }
@@ -304,9 +304,9 @@ struct CsGroupRank { // 组内 pct rank
     for (int q = 0; q < G; ++q)
       h[q].build(bucket[q]);
     const auto ha = detail::hist_of<1>(xv, xm, g, A); // 全池 (回退)
-    for (int i = 0; i < A; ++i) {
+    for (int i = 0; i < A; ++i) {                     // 组空 → 全池直方图; 全池也空 → Hist 给 0.5
       const int q = detail::gid(yv, ym, i);
-      const bool ok = q >= 0 && xm[i] && ha.n >= 1;
+      const bool ok = q >= 0 && xm[i];
       const float v = !ok ? 0.f : (h[q].n >= 1 ? h[q].rank(xv[i]) : ha.rank(xv[i]));
       detail::put(ov, om, i, mk(v, ok));
     }
@@ -314,8 +314,8 @@ struct CsGroupRank { // 组内 pct rank
 };
 
 struct CsGroupResid { // FWL: 组内去均值后再做一次全局回归, 等价于"组固定效应 + y" 的残差
-  // 退化 = 去均值后的 ỹ 全为 0 ⟺ 每组内 y 全并列 (逐组 lo/hi 精确判, 不看 Σỹ²)
-  // 拟合样本 = 池内参与者; 输出对象 = 全部参与者 (组无池成员 → 用全池均值去均值)
+  // 退化 = 去均值后的 ỹ 全为 0 ⟺ 每组内 y 全并列 (逐组 lo/hi 精确判, 不看 Σỹ²) → β = 0, 输出 x̃
+  // 拟合样本 = 池内参与者; 输出对象 = 全部参与者 (组无池成员 → 用全池均值去均值); 非参与者 (x/y/组 id 缺) 无效
   CS_SIG {
     (void)p;
     const int G = detail::max_gid(zv, zm, A) + 1;
@@ -365,7 +365,7 @@ struct CsGroupResid { // FWL: 组内去均值后再做一次全局回归, 等价
       }
       double xt, yt;
       center(i, xt, yt);
-      detail::put(ov, om, i, mk(xt - b * yt, ok));
+      detail::put(ov, om, i, mk(xt - b * yt, true));
     }
   }
 };

@@ -25,10 +25,12 @@ stk/
 │   │   │   ├── TaskState.hpp                         # 📦 任务状态
 │   │   │   ├── Asset.hpp / AssetInfo.hpp             # 📦 资产定义与元数据
 │   │   │   ├── AssetAxis.hpp                         # 📦 A轴(资产轴)对齐
+│   │   │   ├── Universe.hpp                          # 📦 动态股票池 (日频 PIT 名单, JSON diff 回放) → cs_valid 数据源 + UniverseAxis 静态 A 轴; py/universe 产出, 这里只读
 │   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 选择 (多选 selected_features, 首个=主特征)
 │   │   │   ├── OrderFlow.hpp                         # 📦 订单流数据
 │   │   │   ├── Analysis.hpp                          # 📦 流式分析公共骨架: StreamState (进度/epoch/锁) / Integrity / PdfSnap (KLL 成品) / ReadScope / 常量
 │   │   │   ├── Dist.hpp                              # 📦 分布分析 (KLL, 分批流式, DayBatchPlane, 月/周/日内/资产四维)
+│   │   │   ├── Correlation.hpp                       # 📦 特征两两相关矩阵 (逐抽样日流式, Fama-Macbeth 式截面 Spearman 均值) + lead-lag 单对 / lag 全矩阵; 公共骨架见 Analysis.hpp
 │   │   │   ├── Transform.hpp                         # 📦 特征变换探索 (分批流式): season→stationary→IIR带通→ts_norm→CS, 与生产算子同一套; 全资产逐天 ADF/KPSS/PSD/ACF
 │   │   │   ├── FeaturePreview.hpp                    # 📦 特征表内联预览 (轮训抽样): 每特征 PDF + 单日 PSD 均值
 │   │   │   └── EncodeDayRecord.hpp                   # 📦 单日编码统计 (.stat): 定宽头 [齐备/资产数/错误原因] + 定长明细 [(A轴下标, 条数, 体积), 皆0=墓碑], 扫描免逐个 .bin 读头
@@ -77,7 +79,7 @@ stk/
 │   │   │   ├── Gui.hpp                               # 🖥️ GUI主循环: ImGui渲染 + 事件分发
 │   │   │   ├── Config.hpp                            # 🖥️ GUI配置: 颜色/字体/布局
 │   │   │   ├── Tasks.hpp                             # 🖥️ 任务树: 左栏选中/状态标签/生命周期 (idx==-1 任务行, idx>=0 子行)
-│   │   │   ├── util/Color.hpp / AssetFilter.hpp      # 🖥️ 颜色 / 资产过滤
+│   │   │   ├── util/Color.hpp / AssetFilter.hpp / Latex.hpp  # 🖥️ 颜色 / 资产过滤 / LaTeX 公式渲染公共件 (特征表 Name CN + Operators 表 Operands/Operator 列共用, 解析按 (串指针, 字号) 缓存)
 │   │   │   ├── coro/                                 # 🖥️ 协程基础设施
 │   │   │   │   └── CoroManager.hpp                   # 🖥️ 协程管理器: 调度/生命周期
 │   │   │   ├── task_settings/                        # 🖥️

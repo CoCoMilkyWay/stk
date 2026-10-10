@@ -18,8 +18,9 @@
 //     EXPO    沿 t 递推
 //
 //   【数值】滑动加减幂和相对整窗重算有 O(ε_double) 漂移; 近 ulp 简并窗 (真中心矩 ≈ double 舍入噪声)
-//   下值甚至掩码可能与流式不一致 —— 与 GPU SCAN 后端同一风险等级, 契约的造数与容差刻意避开该带.
+//   下值可能与流式不一致 —— 与 GPU SCAN 后端同一风险等级, 契约的造数与容差刻意避开该带.
 //   中心矩用 fmax(·, 0) 钳掉相消出负; 溢出由 mk 出口转无效 (契约: 溢出是数据属性, 不是 bug).
+//   退化按契约第 6 条给中性值 (select 一支, 掩码不动); 掩码只随输入格 (第 7 条). ROLL 未满窗 = 已有前缀, 无 full 判据.
 //
 //   出错策略: 不做错误处理, 只 assert (参数非法立刻死在最早处).
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math -fno-math-errno TU (后者让 sqrt 保持 intrinsic).
@@ -209,7 +210,7 @@ inline float hist_quantile(const int *h, int n, float lo, float hi, double q) {
   return hi;
 }
 
-// ---- 一元矩核的掩码与求值 (EXPAND 与 ROLL 共用公式, 窗形只是状态推进方式不同) ----
+// ---- 一元矩核的退化判据与求值 (EXPAND 与 ROLL 共用公式, 窗形只是状态推进方式不同); 退化 → 0 ----
 enum class Mom { VAR,
                  STD,
                  SKEW,
@@ -244,36 +245,35 @@ inline double mom_val(double s1, double s2, double s3, double s4, int n, float x
     return (c4_of(s1, s2, s3, s4, n) / n) / ((m2 / n) * (m2 / n)) - 3.0;
 }
 
-// ---- 二元核的掩码与求值 ----
+// ---- 二元核的求值: 退化 → 0 (Resid → β = 0 即 x − μ^x); 只有 Resid 是相对型 (掩码 = 当前对有效) ----
 enum class Pair { COV,
                   CORR,
                   BETA,
                   RESID };
 
 template <Pair K>
-inline void pair_put(float *ov, uint8_t *om, size_t i, bool pre, int n, bool spx, bool spy, double sx,
+inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy, double sx,
                      double sy, double sxy, double sxx, double syy, float x, float y, bool mxy) {
   (void)spx, (void)spy, (void)sxx, (void)x, (void)y, (void)mxy;
-  bool ok = pre && n >= 2;
+  bool ok = n >= 2;
   if constexpr (K == Pair::CORR)
     ok = ok && spx && spy;
-  else if constexpr (K == Pair::BETA)
+  else if constexpr (K != Pair::COV)
     ok = ok && spy;
-  else if constexpr (K == Pair::RESID)
-    ok = ok && spy && mxy;
+  const double cxy = ok ? sxy - sx * sy / n : 0.0;
   double v = 0.0;
-  if (ok) {
-    const double cxy = sxy - sx * sy / n;
+  if constexpr (K == Pair::RESID) { // 当前对有效 ⇒ n ≥ 1, 均值有定义
+    const double b = ok ? cxy / (syy - sy * sy / n) : 0.0;
+    v = mxy ? (x - sx / n) - b * (y - sy / n) : 0.0;
+  } else if (ok) {
     if constexpr (K == Pair::COV)
       v = cxy / (n - 1);
     else if constexpr (K == Pair::CORR)
       v = cxy / std::sqrt((sxx - sx * sx / n) * (syy - sy * sy / n));
-    else if constexpr (K == Pair::BETA)
-      v = cxy / (syy - sy * sy / n);
     else
-      v = (x - sx / n) - cxy / (syy - sy * sy / n) * (y - sy / n);
+      v = cxy / (syy - sy * sy / n);
   }
-  put(ov, om, i, v, ok);
+  put(ov, om, i, v, K == Pair::RESID ? mxy : true);
 }
 
 } // namespace detail
@@ -356,7 +356,7 @@ struct TsLog {
   }
 };
 CP_P1(TsRelu, std::fmax(0.f, x), mx)
-CP_P1(TsRecip, 1.f / x, mx &&x != 0.f) // x = 0 退化, 溢出由 mk 转无效
+CP_P1(TsRecip, x != 0.f ? 1.f / x : 0.f, mx) // x = 0 → 0, 溢出由 mk 转无效
 // TsGt: 指示 (严格大于); 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
 CP_P1(TsGt, x > p.k ? 1.f : 0.f, mx)
 
@@ -396,12 +396,12 @@ struct TsTodMask {
 CP_P2(TsAdd, x + y, mx &&my)
 CP_P2(TsSub, x - y, mx &&my)
 CP_P2(TsMul, x *y, mx &&my)
-CP_P2(TsDiv, x / y, mx && my && y != 0.f) // y = 0 退化, 溢出由 mk 转无效
+CP_P2(TsDiv, y != 0.f ? x / y : 0.f, mx &&my) // y = 0 → 0, 溢出由 mk 转无效
 CP_P2(TsMax, std::fmax(x, y), mx &&my)
 CP_P2(TsMin, std::fmin(x, y), mx &&my)
-// TsImb / TsShare: 和相消退化 (scale = |x| + |y|), 分母不钳位
-CP_P2(TsImb, (x - y) / (x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
-CP_P2(TsShare, x / (x + y), mx && my && den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)))
+// TsImb / TsShare: 和相消 (scale = |x| + |y|) → 0 / 0.5, 分母不钳位
+CP_P2(TsImb, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? (x - y) / (x + y) : 0.f, mx &&my)
+CP_P2(TsShare, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? x / (x + y) : 0.5f, mx &&my)
 CP_P2(TsLogRatio, std::log(x) - std::log(y), mx && my && x > 0.f && y > 0.f)
 // TsMask: y 当掩码, y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
 CP_P2(TsMask, x, mx && my && y > 0.f)
@@ -430,15 +430,14 @@ struct ExpSum {
           const bool m = xm[r + a] != 0;
           s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
           n[a] += m;
-          const bool ok = n[a] >= 1;
-          detail::put(ov, om, r + a, ok ? (Mean ? s[a] / n[a] : s[a]) : 0.0, ok);
+          detail::put(ov, om, r + a, Mean ? (n[a] >= 1 ? s[a] / n[a] : 0.0) : s[a], true); // 空: 和 0 / 均值 0
         }
       }
     }
   }
 };
 
-// ---- Var / Std / Skew / Kurt: 幂和递推, lo/hi 段内只扩不缩 (精确 spread) ----
+// ---- Var / Std / Skew / Kurt: 幂和递推, lo/hi 段内只扩不缩 (精确 spread); 退化 → 0 ----
 template <detail::Mom K>
 struct ExpMom {
   static constexpr bool kS3 = K == detail::Mom::SKEW || K == detail::Mom::KURT;
@@ -482,14 +481,14 @@ struct ExpMom {
                       ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
                                               n[a], x)
                          : 0.0,
-                      ok);
+                      true);
         }
       }
     }
   }
 };
 
-// ---- Max / Min / ArgMax / ArgMin: 递推极值 (严格比较 → 并列保留最旧) ----
+// ---- Max / Min / ArgMax / ArgMin: 递推极值 (严格比较 → 并列保留最旧); 空 → 0 ----
 template <bool IsMax, bool IsArg>
 struct ExpExt {
   CP_SIG {
@@ -512,16 +511,15 @@ struct ExpExt {
           best[a] = c ? x : best[a];
           bi[a] = c ? ts : bi[a];
           n[a] += m;
-          const bool ok = n[a] >= 1;
           const double v = IsArg ? static_cast<double>(ts - bi[a]) : static_cast<double>(best[a]);
-          detail::put(ov, om, r + a, ok ? v : 0.0, ok);
+          detail::put(ov, om, r + a, n[a] >= 1 ? v : 0.0, true);
         }
       }
     }
   }
 };
 
-// ---- RankCum: 增量直方图 (段内 lo/hi 只扩不缩; 扩时用段内样本缓存重建) ----
+// ---- RankCum: 增量直方图 (段内 lo/hi 只扩不缩; 扩时用段内样本缓存重建); 相对型, 全并列 → 0.5 ----
 struct TsRankCum {
   CP_SIG {
     CP_NO23;
@@ -564,9 +562,8 @@ struct TsRankCum {
                 }
               }
             }
-            const bool ok = cnt[j] >= 1 && m; // 相对型: x_t 无效则无效
-            double v = 0.0;
-            if (ok) {
+            double v = 0.0; // 相对型: x_t 无效则无效; x_t 有效 ⇒ cnt ≥ 1
+            if (m) {
               if (!(hi[j] > lo[j]))
                 v = 0.5;
               else {
@@ -577,7 +574,7 @@ struct TsRankCum {
                 v = pct_of(less, h[b], cnt[j]);
               }
             }
-            detail::put(ov, om, r + j, v, ok);
+            detail::put(ov, om, r + j, v, m);
           }
         }
       }
@@ -585,7 +582,7 @@ struct TsRankCum {
   }
 };
 
-// ---- HhiCum ----
+// ---- HhiCum: Σx 相消 (非负域下即全 0) → 1/n (全体相等的极限); 空 → 0 ----
 struct TsHhiCum {
   CP_SIG {
     CP_NO23;
@@ -605,15 +602,15 @@ struct TsHhiCum {
           s[a] += m ? static_cast<double>(x) : 0.0;
           s2[a] += m ? static_cast<double>(x) * x : 0.0;
           n[a] += m;
-          const bool ok = n[a] >= 1 && den_ok(s[a] * s[a], n[a] * s2[a]);
-          detail::put(ov, om, r + a, ok ? s2[a] / (s[a] * s[a]) : 0.0, ok);
+          const bool ok = den_ok(s[a] * s[a], n[a] * s2[a]);
+          detail::put(ov, om, r + a, n[a] < 1 ? 0.0 : (ok ? s2[a] / (s[a] * s[a]) : 1.0 / n[a]), true);
         }
       }
     }
   }
 };
 
-// ---- EntropyCum: 只计 x > 0 的样本 ----
+// ---- EntropyCum: 只计 x > 0 的样本; 无正样本 → 0 (单样本熵 = 0 的极限) ----
 struct TsEntropyCum {
   CP_SIG {
     CP_NO23;
@@ -633,8 +630,7 @@ struct TsEntropyCum {
           s[a] += pos ? static_cast<double>(x) : 0.0;
           sxl[a] += pos ? static_cast<double>(x) * std::log(static_cast<double>(x)) : 0.0;
           np[a] += pos;
-          const bool ok = np[a] >= 1;
-          detail::put(ov, om, r + a, ok ? std::log(s[a]) - sxl[a] / s[a] : 0.0, ok);
+          detail::put(ov, om, r + a, np[a] >= 1 ? std::log(s[a]) - sxl[a] / s[a] : 0.0, true);
         }
       }
     }
@@ -690,7 +686,7 @@ struct ExpPair {
             hiy[a] = mm ? std::fmax(hiy[a], y) : hiy[a];
           }
           n[a] += mm;
-          detail::pair_put<K>(ov, om, r + a, true, n[a], kSpx ? hix[a] > lox[a] : true,
+          detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? hix[a] > lox[a] : true,
                               kSpy ? hiy[a] > loy[a] : true, sx[a], sy[a], sxy[a],
                               kSpx ? sxx[a] : 0.0, kSpy ? syy[a] : 0.0, x, y, mm);
         }
@@ -699,6 +695,11 @@ struct ExpPair {
   }
 };
 
+// ---- WMean 的出口 (Cum / Roll 共用): Σy 相消 → 等权均值 Σx/n (权全相等的极限); 空 → 0 ----
+inline double wmean_val(double sx, double sy, double syx, double say, int n) {
+  return n < 1 ? 0.0 : (den_ok(sy, say) ? syx / sy : sx / n);
+}
+
 // ---- WMeanCum: y 为权 ----
 struct TsWMeanCum {
   CP_SIG {
@@ -706,9 +707,10 @@ struct TsWMeanCum {
     (void)p;
     const size_t W = static_cast<size_t>(A);
     std::vector<int> n(W);
-    std::vector<double> sy(W), syx(W), say(W);
+    std::vector<double> sx(W), sy(W), syx(W), say(W);
     for (int seg = 0; seg < T; seg += kSegLen) {
       std::fill(n.begin(), n.end(), 0);
+      std::fill(sx.begin(), sx.end(), 0.0);
       std::fill(sy.begin(), sy.end(), 0.0);
       std::fill(syx.begin(), syx.end(), 0.0);
       std::fill(say.begin(), say.end(), 0.0);
@@ -718,12 +720,12 @@ struct TsWMeanCum {
         for (int a = 0; a < A; ++a) {
           const float x = xv[r + a], y = yv[r + a];
           const bool mm = xm[r + a] && ym[r + a];
+          sx[a] += mm ? static_cast<double>(x) : 0.0;
           sy[a] += mm ? static_cast<double>(y) : 0.0;
           syx[a] += mm ? static_cast<double>(y) * x : 0.0;
           say[a] += mm ? static_cast<double>(std::fabs(y)) : 0.0;
           n[a] += mm;
-          const bool ok = n[a] >= 1 && den_ok(sy[a], say[a]);
-          detail::put(ov, om, r + a, ok ? syx[a] / sy[a] : 0.0, ok);
+          detail::put(ov, om, r + a, wmean_val(sx[a], sy[a], syx[a], say[a], n[a]), true);
         }
       }
     }
@@ -733,22 +735,20 @@ struct TsWMeanCum {
 // TsArgMaxCum / TsArgMinCum / TsMaxCum / TsMinCum 由 ExpExt 实例化 (见文件末尾)
 
 // =============================================================================
-// ROLL (23): 滑动加减 + van Herk 极值; 窗未满 (t < d−1) 一律无效
+// ROLL (23): 滑动加减 + van Herk 极值; 未满窗 (t < d−1) = 已有前缀, 累加器本来就只装了前缀, 无需判据
 // =============================================================================
 
-// ---- Delay / Delta: 纯移位取值, 窗实际跨 d+1 格 (t < d 无效) ----
+// ---- Delay / Delta: 纯移位取值, 滞后夹到序列头 (t < d 取第 0 行) ----
 struct TsDelayRoll {
   CP_SIG {
     CP_NO23;
     assert(p.d >= 1);
-    const size_t N = static_cast<size_t>(T) * A;
-    const size_t off = static_cast<size_t>(p.d) * A;
-    const size_t head = std::min(off, N);
-    for (size_t i = 0; i < head; ++i)
-      detail::put(ov, om, i, 0.0, false);
-    for (size_t i = head; i < N; ++i) {
-      const bool m = xm[i - off] != 0;
-      detail::put(ov, om, i, m ? static_cast<double>(xv[i - off]) : 0.0, m);
+    for (int t = 0; t < T; ++t) {
+      const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - p.d, 0)) * A;
+      for (int a = 0; a < A; ++a) {
+        const bool m = xm[q + a] != 0;
+        detail::put(ov, om, r + a, m ? static_cast<double>(xv[q + a]) : 0.0, m);
+      }
     }
   }
 };
@@ -757,14 +757,12 @@ struct TsDeltaRoll {
   CP_SIG {
     CP_NO23;
     assert(p.d >= 1);
-    const size_t N = static_cast<size_t>(T) * A;
-    const size_t off = static_cast<size_t>(p.d) * A;
-    const size_t head = std::min(off, N);
-    for (size_t i = 0; i < head; ++i)
-      detail::put(ov, om, i, 0.0, false);
-    for (size_t i = head; i < N; ++i) {
-      const bool m = xm[i] && xm[i - off];
-      detail::put(ov, om, i, m ? static_cast<double>(xv[i]) - xv[i - off] : 0.0, m);
+    for (int t = 0; t < T; ++t) {
+      const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - p.d, 0)) * A;
+      for (int a = 0; a < A; ++a) {
+        const bool m = xm[r + a] && xm[q + a];
+        detail::put(ov, om, r + a, m ? static_cast<double>(xv[r + a]) - xv[q + a] : 0.0, m);
+      }
     }
   }
 };
@@ -788,19 +786,17 @@ struct RollSum {
         }
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       for (int a = 0; a < A; ++a) {
         const bool m = xm[r + a] != 0;
         s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
         n[a] += m;
-        const bool ok = full && n[a] >= 1;
-        detail::put(ov, om, r + a, ok ? (Mean ? s[a] / n[a] : s[a]) : 0.0, ok);
+        detail::put(ov, om, r + a, Mean ? (n[a] >= 1 ? s[a] / n[a] : 0.0) : s[a], true);
       }
     }
   }
 };
 
-// ---- Var / Std / Skew / Kurt / Z (Roll): 滑动加减幂和 + van Herk 精确 lo/hi ----
+// ---- Var / Std / Skew / Kurt / Z (Roll): 滑动加减幂和 + van Herk 精确 lo/hi; 退化 → 0 ----
 template <detail::Mom K>
 struct RollMom {
   static constexpr bool kS3 = K == detail::Mom::SKEW || K == detail::Mom::KURT;
@@ -831,7 +827,6 @@ struct RollMom {
         }
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       for (int a = 0; a < A; ++a) {
         const float x = xv[r + a];
         const bool m = xm[r + a] != 0;
@@ -844,20 +839,18 @@ struct RollMom {
         if constexpr (kS4)
           s4[a] += q * q;
         n[a] += m;
-        bool ok = full && detail::mom_ok<K>(n[a], mm.hi[a] > mm.lo[a]);
-        if constexpr (K == detail::Mom::Z)
-          ok = ok && m; // 相对型: x_t 无效则无效
+        const bool ok = detail::mom_ok<K>(n[a], mm.hi[a] > mm.lo[a]);
         detail::put(ov, om, r + a,
                     ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
                                             n[a], x)
                        : 0.0,
-                    ok);
+                    K == detail::Mom::Z ? m : true); // Z 相对型: x_t 无效则无效
       }
     }
   }
 };
 
-// ---- Max / Min / ArgMax / ArgMin (Roll): van Herk 极值 + 最旧并列位置 ----
+// ---- Max / Min / ArgMax / ArgMin (Roll): van Herk 极值 + 最旧并列位置; 空 → 0 ----
 template <bool IsMax, bool IsArg>
 struct RollExt {
   CP_SIG {
@@ -874,13 +867,11 @@ struct RollExt {
           n[a] -= xm[q + a] != 0;
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       for (int a = 0; a < A; ++a) {
         n[a] += xm[r + a] != 0;
-        const bool ok = full && n[a] >= 1;
         const double v =
             IsArg ? static_cast<double>(t - mm.arg[a]) : static_cast<double>(mm.best[a]);
-        detail::put(ov, om, r + a, ok ? v : 0.0, ok);
+        detail::put(ov, om, r + a, n[a] >= 1 ? v : 0.0, true);
       }
     }
   }
@@ -912,7 +903,6 @@ struct RollHist {
         mm.step(xv, xm, nullptr, A, a0, t);
         const int slot = t % d;
         const size_t r = static_cast<size_t>(t) * A + a0;
-        const bool full = t >= d - 1;
         for (int j = 0; j < W; ++j) {
           const float x = xv[r + j];
           const bool m = xm[r + j] != 0;
@@ -940,9 +930,8 @@ struct RollHist {
           plo[j] = nl;
           phi[j] = nh;
           if constexpr (K == HistK::RANK) {
-            const bool ok = full && n[j] >= 1 && m; // 相对型
-            double v = 0.0;
-            if (ok) {
+            double v = 0.0; // 相对型: x_t 无效则无效; x_t 有效 ⇒ n ≥ 1; 全并列 → 0.5
+            if (m) {
               if (!(nh > nl))
                 v = 0.5;
               else {
@@ -953,11 +942,10 @@ struct RollHist {
                 v = pct_of(less, h[b], n[j]);
               }
             }
-            detail::put(ov, om, r + j, v, ok);
-          } else { // QUANTILE
-            const bool ok = full && n[j] >= 1;
-            const double v = ok ? detail::hist_quantile(h, n[j], nl, nh, p.k) : 0.0;
-            detail::put(ov, om, r + j, v, ok);
+            detail::put(ov, om, r + j, v, m);
+          } else { // QUANTILE: 空窗 → 0
+            const double v = n[j] >= 1 ? detail::hist_quantile(h, n[j], nl, nh, p.k) : 0.0;
+            detail::put(ov, om, r + j, v, true);
           }
         }
       }
@@ -988,7 +976,6 @@ struct TsWmaRoll {
         }
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       for (int a = 0; a < A; ++a) {
         const float x = xv[r + a];
         const bool m = xm[r + a] != 0;
@@ -996,8 +983,7 @@ struct TsWmaRoll {
         sx[a] += m ? static_cast<double>(x) : 0.0;
         sw[a] += m ? static_cast<double>(d) : 0.0;
         swx[a] += m ? static_cast<double>(d) * x : 0.0;
-        const bool ok = full && n[a] >= 1;
-        detail::put(ov, om, r + a, ok ? swx[a] / sw[a] : 0.0, ok); // n ≥ 1 ⇒ Σw ≥ 1
+        detail::put(ov, om, r + a, n[a] >= 1 ? swx[a] / sw[a] : 0.0, true); // n ≥ 1 ⇒ Σw ≥ 1; 空 → 0
       }
     }
   }
@@ -1031,7 +1017,6 @@ struct TsSlopeRoll {
         }
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       const double fi = d - 1; // 新样本的窗内下标
       for (int a = 0; a < A; ++a) {
         const bool m = xm[r + a] != 0;
@@ -1041,23 +1026,26 @@ struct TsSlopeRoll {
         sx[a] += dx;
         six[a] += fi * dx;
         n[a] += m;
-        const bool ok = full && n[a] >= 2;
+        const bool ok = n[a] >= 2; // n < 2 → 0 (无趋势)
         double v = 0.0;
         if (ok)
           v = (six[a] - si[a] * sx[a] / n[a]) / (sii[a] - si[a] * si[a] / n[a]);
-        detail::put(ov, om, r + a, v, ok);
+        detail::put(ov, om, r + a, v, true);
       }
     }
   }
 };
 
-// ---- ProductRoll: 滑动加减 Σlog1p (log1p 确定性 ⇒ 出窗减去的正是入窗加上的) ----
+// ---- ProductRoll: Π(1+x) − 1 精确. 滑动加减 Σ ln|1+x| (log 确定性 ⇒ 出窗减去的正是入窗加上的),
+//      零因子 (x = −1) 计数, 负因子 (x < −1) 计奇偶; 空窗 = 空积 − 1 = 0 ----
+//   ln|1+x| 的取值与 Stream 同式: x > −1 用 log1p(x), x < −1 用 log(−1 − x), x = −1 不进对数
+inline double log_abs1p(float x) { return x > -1.f ? std::log1p(static_cast<double>(x)) : (x < -1.f ? std::log(-1.0 - x) : 0.0); }
 struct TsProductRoll {
   CP_SIG {
     CP_NO23;
     assert(p.d >= 1);
     const int d = p.d;
-    std::vector<int> n(static_cast<size_t>(A), 0), bad(static_cast<size_t>(A), 0);
+    std::vector<int> zero(static_cast<size_t>(A), 0), neg(static_cast<size_t>(A), 0);
     std::vector<double> sl(static_cast<size_t>(A), 0.0);
     for (int t = 0; t < T; ++t) {
       if (t >= d) {
@@ -1065,23 +1053,20 @@ struct TsProductRoll {
         for (int a = 0; a < A; ++a) {
           const float xo = xv[q + a];
           const bool mo = xm[q + a] != 0;
-          const bool good = mo && xo > -1.f;
-          sl[a] -= good ? std::log1p(static_cast<double>(xo)) : 0.0;
-          bad[a] -= mo && !(xo > -1.f);
-          n[a] -= mo;
+          sl[a] -= mo ? log_abs1p(xo) : 0.0;
+          zero[a] -= mo && xo == -1.f;
+          neg[a] -= mo && xo < -1.f;
         }
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       for (int a = 0; a < A; ++a) {
         const float x = xv[r + a];
         const bool m = xm[r + a] != 0;
-        const bool good = m && x > -1.f;
-        sl[a] += good ? std::log1p(static_cast<double>(x)) : 0.0;
-        bad[a] += m && !(x > -1.f);
-        n[a] += m;
-        const bool ok = full && n[a] >= 1 && bad[a] == 0;
-        detail::put(ov, om, r + a, ok ? std::expm1(sl[a]) : 0.0, ok);
+        sl[a] += m ? log_abs1p(x) : 0.0;
+        zero[a] += m && x == -1.f;
+        neg[a] += m && x < -1.f;
+        const double v = zero[a] > 0 ? -1.0 : (neg[a] & 1 ? -std::exp(sl[a]) - 1.0 : std::expm1(sl[a]));
+        detail::put(ov, om, r + a, v, true);
       }
     }
   }
@@ -1124,7 +1109,6 @@ struct RollPair {
         }
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       for (int a = 0; a < A; ++a) {
         const float x = xv[r + a], y = yv[r + a];
         const bool mm = xm[r + a] && ym[r + a];
@@ -1138,7 +1122,7 @@ struct RollPair {
         if constexpr (kSpy)
           syy[a] += dy * dy;
         n[a] += mm;
-        detail::pair_put<K>(ov, om, r + a, full, n[a], kSpx ? mmx.hi[a] > mmx.lo[a] : true,
+        detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? mmx.hi[a] > mmx.lo[a] : true,
                             kSpy ? mmy.hi[a] > mmy.lo[a] : true, sx[a], sy[a], sxy[a],
                             kSpx ? sxx[a] : 0.0, kSpy ? syy[a] : 0.0, x, y, mm);
       }
@@ -1154,13 +1138,14 @@ struct TsWMeanRoll {
     const int d = p.d;
     const size_t W = static_cast<size_t>(A);
     std::vector<int> n(W, 0);
-    std::vector<double> sy(W, 0.0), syx(W, 0.0), say(W, 0.0);
+    std::vector<double> sx(W, 0.0), sy(W, 0.0), syx(W, 0.0), say(W, 0.0);
     for (int t = 0; t < T; ++t) {
       if (t >= d) {
         const size_t q = static_cast<size_t>(t - d) * A;
         for (int a = 0; a < A; ++a) {
           const float x = xv[q + a], y = yv[q + a];
           const bool mm = xm[q + a] && ym[q + a];
+          sx[a] -= mm ? static_cast<double>(x) : 0.0;
           sy[a] -= mm ? static_cast<double>(y) : 0.0;
           syx[a] -= mm ? static_cast<double>(y) * x : 0.0;
           say[a] -= mm ? static_cast<double>(std::fabs(y)) : 0.0;
@@ -1168,16 +1153,15 @@ struct TsWMeanRoll {
         }
       }
       const size_t r = static_cast<size_t>(t) * A;
-      const bool full = t >= d - 1;
       for (int a = 0; a < A; ++a) {
         const float x = xv[r + a], y = yv[r + a];
         const bool mm = xm[r + a] && ym[r + a];
+        sx[a] += mm ? static_cast<double>(x) : 0.0;
         sy[a] += mm ? static_cast<double>(y) : 0.0;
         syx[a] += mm ? static_cast<double>(y) * x : 0.0;
         say[a] += mm ? static_cast<double>(std::fabs(y)) : 0.0;
         n[a] += mm;
-        const bool ok = full && n[a] >= 1 && den_ok(sy[a], say[a]);
-        detail::put(ov, om, r + a, ok ? syx[a] / sy[a] : 0.0, ok);
+        detail::put(ov, om, r + a, wmean_val(sx[a], sy[a], syx[a], say[a], n[a]), true);
       }
     }
   }
@@ -1186,7 +1170,7 @@ struct TsWMeanRoll {
 // =============================================================================
 // EXPO (1): 全程递推, 不按段重置
 // =============================================================================
-// TsMeanEma: x 有效时 y = 已出现过有效值 ? k·x + (1−k)·y : x; x 无效时 y 与掩码都不动
+// TsMeanEma: x 有效时 y = 已出现过有效值 ? k·x + (1−k)·y : x; x 无效时 y 不动; 尚无有效样本 → 0
 struct TsMeanEma {
   CP_SIG {
     CP_NO23;
@@ -1201,7 +1185,7 @@ struct TsMeanEma {
           y[a] = on[a] ? k * xv[r + a] + (1.0 - k) * y[a] : static_cast<double>(xv[r + a]);
           on[a] = 1;
         }
-        detail::put(ov, om, r + a, y[a], on[a] != 0);
+        detail::put(ov, om, r + a, y[a], true);
       }
     }
   }

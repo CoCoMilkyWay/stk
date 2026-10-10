@@ -39,7 +39,7 @@
 //     REAL ℝ / NONNEG ℝ≥0 / POS ℝ>0 / UNIT [0,1] / SIGNED [−1,1] / BIN {0,1} / SIGN3 {−1,0,1} / INT [0,kMaxGroup) / BCAST 截面广播
 //     in  按元数写 OP_IN0..3(逐元 Dom), GROUP 域的组 id 元写 INT; 只写能静态判的约束 (y ≠ 0 / x > −1 判不了 → REAL)
 //     out 只按算子自身声明: 透传 (Mask / Where / Delay) 与取大取小写 REAL, 不随输入推导; 计数 (ArgMax 期数) 写 NONNEG
-//     parser 逐元查: in 为严格域 (INT) 时 子.out ⊆ in (dom_sub), 特征叶到 eval 前按数据查; 其余 in 是语义声明 (越界格算子自置无效)
+//     parser 逐元查: in 为严格域 (INT) 时 子.out ⊆ in (dom_sub), 特征叶到 eval 前按数据查; 其余 in 是语义声明 (越界格算子自按退化规则处理)
 //     因子根 (归一算子) 的输入不许离散 (BIN / SIGN3 / INT) / 不许被 BCAST 抹平 (Expr.hpp root_frame)
 //     签名 LaTeX (GUI operand 列 / operators.json) 由 Expr.hpp operand_tex 从 (元数, in, T, k域) 生成:
 //       x, y, z ∈ dom 在前, 参数 名{=}⟨名⟩ ∈ 值域 在后, ⟨d⟩ ⟨k⟩ ⟨k2⟩ 占位符 GUI 渲染前换成本轮实际值

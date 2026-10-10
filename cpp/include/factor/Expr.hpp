@@ -237,7 +237,7 @@ struct Expr {
 };
 
 // 静态类型检查的唯一规则: 父算子该元的 in 是严格域 (dom_strict) 时, 子节点 (算子) 的 out 须 ⊆ in;
-// 特征叶放行 (值域只能在 eval 前按数据查 dom_holds); 非严格域是语义声明, 越界格由算子自身置无效, 不在此否决
+// 特征叶放行 (值域只能在 eval 前按数据查 dom_holds); 非严格域是语义声明, 越界格由算子自身按退化规则处理, 不在此否决
 inline bool arg_ok(const Node &child, const OpInfo &parent, int slot) {
   return child.op < 0 || !dom_strict(parent.in[slot]) || dom_sub(kOps[child.op].out, parent.in[slot]);
 }

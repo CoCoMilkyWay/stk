@@ -28,6 +28,8 @@
 //     全并列判据 (契约第 2 条) 不看累加器: ROLL 的 add/sub 残留会让常值窗的 M2 ≠ 0, 阈值判据在这里必然与
 //     CPU 不一致. 改用 Chg 追踪 "最近一次相邻有效样本不等的位置" 与 "窗内首个有效位置" (都是整数, 无减法) → 精确.
 //     全程 branchless (select, 不用分支), 出口 dev::store 保证 ov/om 永不含 NaN/inf.
+//     退化按契约第 6 条给中性值 (select 一支, 掩码不动); 掩码只随输入格 (第 7 条).
+//     ROLL 未满窗 = 已有前缀: 预热区 [w0, c0) 本来就只装前缀, 不再有 "t ≥ d−1" 判据.
 //
 //   【禁用】--use_fast_math / __logf / __fdividef: 逐点算子要与 host 侧位级一致.
 // =============================================================================
@@ -152,7 +154,7 @@ __global__ void point(const float *xv, const uint8_t *xm, const float *yv, const
   }
 }
 
-// GATHER: 取 t−d 行 (d 只改地址, 不改算法)
+// GATHER: 取 max(t−d, 0) 行 (滞后夹到序列头; d 只改地址, 不改算法)
 template <bool DELTA>
 __global__ void gather(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int d) {
   const int a = blockIdx.x * blockDim.x + threadIdx.x;
@@ -160,10 +162,9 @@ __global__ void gather(const float *xv, const uint8_t *xm, float *ov, uint8_t *o
     return;
   for (int t = blockIdx.y; t < T; t += gridDim.y) {
     const int i = t * A + a;
-    const int j = (t - d) * A + a;
-    const bool ok = t >= d;
-    const float xo = ok ? xv[j] : 0.f; // 越界不读
-    const bool mo = ok && xm[j] != 0;
+    const int j = max(t - d, 0) * A + a;
+    const float xo = xv[j];
+    const bool mo = xm[j] != 0;
     dev::store(ov, om, i, DELTA ? (xv[i] - xo) : xo, DELTA ? (mo && xm[i] != 0) : mo);
   }
 }
@@ -333,7 +334,7 @@ __global__ void expand(const float *xv, const uint8_t *xm, const float *yv, cons
     }
     float v = 0.f;
     bool m = false;
-    Op::emit(st, x, y, s, true, sx, sy, r, p, v, m);
+    Op::emit(st, x, y, s, sx, sy, r, p, v, m);
     dev::store(ov, om, i, v, m);
   }
 }
@@ -391,7 +392,7 @@ __global__ void roll(const float *xv, const uint8_t *xm, const float *yv, const 
     }
     float v = 0.f;
     bool m = false;
-    Op::emit(st, x, y, li, t >= d - 1, sx, sy, r, p, v, m); // 窗未满 (t < d−1) 一律无效
+    Op::emit(st, x, y, li, sx, sy, r, p, v, m); // 未满窗: 累加器只装了前缀, 即契约的 "窗 = 已有前缀"
     dev::store(ov, om, i, v, m);
   }
 }
@@ -412,10 +413,11 @@ __global__ void roll(const float *xv, const uint8_t *xm, const float *yv, const 
   }
 
 // =============================================================================
-// 4. SCAN functor 集 (Ts<核>Cum 与 Ts<核>Roll 共用一个 functor: 只差"窗满"条件与所在窗形)
+// 4. SCAN functor 集 (Ts<核>Cum 与 Ts<核>Roll 共用一个 functor: 只差所在窗形)
+//    emit: 退化走 select 给契约第 6 条的中性值; m 只随输入格 (相对型 Z / Resid 看 x_t / y_t, 其余恒真)
 // =============================================================================
 
-// ---- Σx / 均值 (单遍, 段/块内 ≤ C 项, 无需标准化) ----
+// ---- Σx / 均值 (单遍, 段/块内 ≤ C 项, 无需标准化); 空 → 0 ----
 struct FnSum {
   static constexpr int kArity = 1;
   static constexpr bool kSpread = false;
@@ -429,19 +431,19 @@ struct FnSum {
     s.n += g;
     s.s1 += fg * x.v;
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
     v = static_cast<float>(s.s1);
-    m = full && s.n >= 1;
+    m = true;
   }
 };
 struct FnMean : FnSum {
-  __device__ static void emit(const StRaw &s, DVal, DVal, int, bool full, bool, bool, const RefNone &, const Param &, float &v, bool &m) {
-    v = static_cast<float>(s.s1 / static_cast<double>(max(s.n, 1))); // Σx / n
-    m = full && s.n >= 1;
+  __device__ static void emit(const StRaw &s, DVal, DVal, int, bool, bool, const RefNone &, const Param &, float &v, bool &m) {
+    v = static_cast<float>(s.s1 / static_cast<double>(max(s.n, 1))); // Σx / n; n = 0 时 Σx = 0 → 0
+    m = true;
   }
 };
 
-// ---- 方差族 (两遍: z = (x−μ)/σ 上累幂和; ddof=1; 全并列由核给的 sx 判) ----
+// ---- 方差族 (两遍: z = (x−μ)/σ 上累幂和; ddof=1; 全并列由核给的 sx 判); 样本不足 / 全并列 → 0 ----
 struct FnVar {
   static constexpr int kArity = 1;
   static constexpr bool kSpread = true;
@@ -450,49 +452,54 @@ struct FnVar {
   FACTOR_TS_PRE_X
   __device__ static void init(St &s, const Param &) { s = StZ{0, 0.0, 0.0, 0.0, 0.0}; }
   __device__ static void upd(St &s, DVal x, DVal, int, int w, const Ref &r, const Param &) { upd_z(s, x, w, r); }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool sx, bool, const Ref &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const St &s, DVal, DVal, int, bool sx, bool, const Ref &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
-    v = static_cast<float>(q.M2 / static_cast<double>(max(s.n - 1, 1))); // M2/(n−1)
-    m = full && s.n >= 2 && sx;
+    const bool ok = s.n >= 2 && sx;
+    v = ok ? static_cast<float>(q.M2 / static_cast<double>(max(s.n - 1, 1))) : 0.f; // M2/(n−1)
+    m = true;
   }
 };
 struct FnStd : FnVar {
-  __device__ static void emit(const StZ &s, DVal, DVal, int, bool full, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const StZ &s, DVal, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
-    v = static_cast<float>(sqrt(fmax(q.M2, 0.0) / static_cast<double>(max(s.n - 1, 1))));
-    m = full && s.n >= 2 && sx;
+    const bool ok = s.n >= 2 && sx;
+    v = ok ? static_cast<float>(sqrt(fmax(q.M2, 0.0) / static_cast<double>(max(s.n - 1, 1)))) : 0.f;
+    m = true;
   }
 };
 struct FnSkew : FnVar {
-  __device__ static void emit(const StZ &s, DVal, DVal, int, bool full, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const StZ &s, DVal, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
     // m3/m2^1.5: 非全并列 ⇒ m2 > 0; |m3|/m2^1.5 ≤ √n 有柯西–施瓦茨上界, 恒为有限值
     const double m2 = fmax(q.m2, 0.0);
-    v = static_cast<float>(q.m3 / pow(m2, 1.5));
-    m = full && s.n >= 3 && sx;
+    const bool ok = s.n >= 3 && sx;
+    v = ok ? static_cast<float>(q.m3 / pow(m2, 1.5)) : 0.f;
+    m = true;
   }
 };
 struct FnKurt : FnVar {
-  __device__ static void emit(const StZ &s, DVal, DVal, int, bool full, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const StZ &s, DVal, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
     // m4/m2² − 3: m4/m2² ≤ n 有界
     const double m2 = fmax(q.m2, 0.0);
-    v = static_cast<float>(q.m4 / (m2 * m2) - 3.0);
-    m = full && s.n >= 4 && sx;
+    const bool ok = s.n >= 4 && sx;
+    v = ok ? static_cast<float>(q.m4 / (m2 * m2) - 3.0) : 0.f;
+    m = true;
   }
 };
-// 相对型: 描述 x_t 自身, x_t 无效则无效
+// 相对型: 描述 x_t 自身, x_t 无效则无效; σ 退化 → 0 (x = μ)
 struct FnZ : FnVar {
-  __device__ static void emit(const StZ &s, DVal x, DVal, int, bool full, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const StZ &s, DVal x, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
     const double sd = sqrt(fmax(q.M2, 0.0) / static_cast<double>(max(s.n - 1, 1)));
-    v = static_cast<float>((static_cast<double>(x.v) - q.mean) / sd);
-    m = full && s.n >= 2 && sx && x.m;
+    const bool ok = s.n >= 2 && sx;
+    v = ok ? static_cast<float>((static_cast<double>(x.v) - q.mean) / sd) : 0.f;
+    m = x.m;
   }
 };
 
@@ -514,9 +521,9 @@ struct FnExtCum {
     s.best = hit ? x.v : s.best; // select, 无分支
     s.n += g ? 1 : 0;
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
-    v = s.best;
-    m = full && s.n >= 1; // n = 0 时 best = ±FLT_MAX (有限), 但掩码假 → 出口写 0
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+    v = s.n >= 1 ? s.best : 0.f; // n = 0 时 best = ±FLT_MAX 哨兵, 换成中性值 0
+    m = true;
   }
 };
 // 首个 (最早) 极值**距今的期数** li − pos: 严格比较 → 并列保留较早位置 (与 Roll 版同口径)
@@ -535,13 +542,13 @@ struct FnArgCum : FnExtCum<MAXOP> {
     s.pos = hit ? li : s.pos;
     s.n += g ? 1 : 0;
   }
-  __device__ static void emit(const St &s, DVal, DVal, int li, bool full, bool, bool, const RefNone &, const Param &, float &v, bool &m) {
-    v = static_cast<float>(li - s.pos);
-    m = full && s.n >= 1;
+  __device__ static void emit(const St &s, DVal, DVal, int li, bool, bool, const RefNone &, const Param &, float &v, bool &m) {
+    v = s.n >= 1 ? static_cast<float>(li - s.pos) : 0.f;
+    m = true;
   }
 };
 
-// ---- TsHhiCum: Σx²/(Σx)², Σx 相消退化 ----
+// ---- TsHhiCum: Σx²/(Σx)²; Σx 相消 (非负域下即全 0) → 1/n (全体相等的极限); 空 → 0 ----
 struct FnHhi {
   static constexpr int kArity = 1;
   static constexpr bool kSpread = false;
@@ -556,13 +563,14 @@ struct FnHhi {
     s.s1 += fg * x.v;
     s.s2 += fg * static_cast<double>(x.v) * x.v;
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
-    v = static_cast<float>(s.s2 / (s.s1 * s.s1));
-    m = full && s.n >= 1 && dev::den_ok(s.s1 * s.s1, static_cast<double>(s.n) * s.s2);
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+    const bool ok = dev::den_ok(s.s1 * s.s1, static_cast<double>(s.n) * s.s2);
+    v = s.n < 1 ? 0.f : static_cast<float>(ok ? s.s2 / (s.s1 * s.s1) : 1.0 / s.n);
+    m = true;
   }
 };
 
-// ---- TsEntropyCum: ln S − Σ(x·ln x)/S, 只计 x > 0; 有正样本 ⇒ S > 0 ----
+// ---- TsEntropyCum: ln S − Σ(x·ln x)/S, 只计 x > 0; 有正样本 ⇒ S > 0; 无正样本 → 0 (单样本熵 = 0 的极限) ----
 struct FnEntropy {
   static constexpr int kArity = 1;
   static constexpr bool kSpread = false;
@@ -580,13 +588,13 @@ struct FnEntropy {
     s.S += fg * x.v;
     s.sxlx += fg * x.v * log(static_cast<double>(g ? x.v : 1.f)); // x ≤ 0 的分支权 0, 参数换 1 防 log(≤0) 污染
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
-    v = static_cast<float>(log(s.S) - s.sxlx / s.S);
-    m = full && s.np >= 1;
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+    v = s.np >= 1 ? static_cast<float>(log(s.S) - s.sxlx / s.S) : 0.f;
+    m = true;
   }
 };
 
-// ---- 协方差族 (两遍; Corr/Beta/Resid 的全并列由核给的 sx/sy 判) ----
+// ---- 协方差族 (两遍; Corr/Beta/Resid 的全并列由核给的 sx/sy 判); 退化 → 0 (Resid → β = 0 即 x − μ^x) ----
 struct FnCov {
   static constexpr int kArity = 2;
   static constexpr bool kSpread = false;
@@ -595,63 +603,68 @@ struct FnCov {
   FACTOR_TS_PRE_XY
   __device__ static void init(St &s, const Param &) { s = StZ2{0, 0.0, 0.0, 0.0, 0.0, 0.0}; }
   __device__ static void upd(St &s, DVal x, DVal y, int, int w, const Ref &r, const Param &) { upd_z2(s, x, y, w, r); }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &r, const Param &, float &v, bool &m) {
     Mom2 q;
     mom2_of(s, r, q);
-    v = static_cast<float>(q.cxy / static_cast<double>(max(s.n - 1, 1)));
-    m = full && s.n >= 2;
+    v = s.n >= 2 ? static_cast<float>(q.cxy / static_cast<double>(max(s.n - 1, 1))) : 0.f;
+    m = true;
   }
 };
 struct FnCorr : FnCov {
   static constexpr bool kSpread = true;
-  __device__ static void emit(const StZ2 &s, DVal, DVal, int, bool full, bool sx, bool sy, const Ref2 &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const StZ2 &s, DVal, DVal, int, bool sx, bool sy, const Ref2 &r, const Param &, float &v, bool &m) {
     Mom2 q;
     mom2_of(s, r, q);
     // 按规格不 clamp |ρ| ≤ 1: 非全并列 ⇒ cxx、cyy > 0, 且 |cxy| ≤ √(cxx·cyy) → 比值有界. 乘积在 double 下算, 避免下溢成 0
-    v = static_cast<float>(q.cxy / sqrt(fmax(q.cxx * q.cyy, 0.0)));
-    m = full && s.n >= 2 && sx && sy;
+    const bool ok = s.n >= 2 && sx && sy;
+    v = ok ? static_cast<float>(q.cxy / sqrt(fmax(q.cxx * q.cyy, 0.0))) : 0.f;
+    m = true;
   }
 };
 struct FnBeta : FnCov {
   static constexpr bool kSpread = true;
-  __device__ static void emit(const StZ2 &s, DVal, DVal, int, bool full, bool, bool sy, const Ref2 &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const StZ2 &s, DVal, DVal, int, bool, bool sy, const Ref2 &r, const Param &, float &v, bool &m) {
     Mom2 q;
     mom2_of(s, r, q);
-    v = static_cast<float>(q.cxy / q.cyy);
-    m = full && s.n >= 2 && sy;
+    const bool ok = s.n >= 2 && sy;
+    v = ok ? static_cast<float>(q.cxy / q.cyy) : 0.f;
+    m = true;
   }
 };
-struct FnResid : FnCov { // 相对型
+struct FnResid : FnCov { // 相对型: 当前对有效 ⇒ n ≥ 1, 均值有定义
   static constexpr bool kSpread = true;
-  __device__ static void emit(const StZ2 &s, DVal x, DVal y, int, bool full, bool, bool sy, const Ref2 &r, const Param &, float &v, bool &m) {
+  __device__ static void emit(const StZ2 &s, DVal x, DVal y, int, bool, bool sy, const Ref2 &r, const Param &, float &v, bool &m) {
     Mom2 q;
     mom2_of(s, r, q);
-    v = static_cast<float>((static_cast<double>(x.v) - q.mx) - q.cxy / q.cyy * (static_cast<double>(y.v) - q.my));
-    m = full && s.n >= 2 && sy && x.m && y.m;
+    const double b = (s.n >= 2 && sy) ? q.cxy / q.cyy : 0.0;
+    v = static_cast<float>((static_cast<double>(x.v) - q.mx) - b * (static_cast<double>(y.v) - q.my));
+    m = x.m && y.m;
   }
 };
-// ---- 加权均值: Σ(y·x)/Σy, Σy 相消退化 ----
+// ---- 加权均值: Σ(y·x)/Σy; Σy 相消 → 等权均值 Σx/n (权全相等的极限); 空 → 0 ----
 struct FnWMean {
   static constexpr int kArity = 2;
   static constexpr bool kSpread = false;
   using Ref = RefNone;
   struct St {
     int n;
-    double swx, sw, saw;
+    double sx, swx, sw, saw;
   };
   FACTOR_TS_PRE_NONE
-  __device__ static void init(St &s, const Param &) { s = St{0, 0.0, 0.0, 0.0}; }
+  __device__ static void init(St &s, const Param &) { s = St{0, 0.0, 0.0, 0.0, 0.0}; }
   __device__ static void upd(St &s, DVal x, DVal y, int, int w, const Ref &, const Param &) {
     const int g = (x.m && y.m) ? w : 0;
     const double fg = static_cast<double>(g);
     s.n += g;
+    s.sx += fg * x.v;
     s.swx += fg * static_cast<double>(y.v) * x.v;
     s.sw += fg * y.v;
     s.saw += fg * fabsf(y.v);
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
-    v = static_cast<float>(s.swx / s.sw);
-    m = full && s.n >= 1 && dev::den_ok(s.sw, s.saw);
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+    const bool ok = dev::den_ok(s.sw, s.saw);
+    v = s.n < 1 ? 0.f : static_cast<float>(ok ? s.swx / s.sw : s.sx / static_cast<double>(s.n));
+    m = true;
   }
 };
 
@@ -687,11 +700,11 @@ struct FnWma {
     s.ss += fg * fi;
     s.ssx += fg * fi * x.v;
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
     const double wx = s.ssx + s.sx;                    // 权 w = i+1 → Σ(w·x) = Σ(i·x) + Σx
-    const double sw = s.ss + static_cast<double>(s.n); // Σw (w ≥ 1 → n ≥ 1 时 Σw ≥ 1, 无需退化判据)
-    v = static_cast<float>(wx / sw);
-    m = full && s.n >= 1;
+    const double sw = s.ss + static_cast<double>(s.n); // Σw (w ≥ 1 → n ≥ 1 时 Σw ≥ 1); 空 → 0
+    v = s.n >= 1 ? static_cast<float>(wx / sw) : 0.f;
+    m = true;
   }
 };
 
@@ -726,21 +739,22 @@ struct FnSlope {
     s.sss += fg * fi * fi;
     s.ssx += fg * fi * x.v;
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
     const double fn = static_cast<double>(max(s.n, 1));
-    const double sxx = s.sss - s.ss * s.ss / fn; // Σ(i−ī)²
-    v = static_cast<float>((s.ssx - s.ss * s.sx / fn) / sxx);
-    m = full && s.n >= 2;
+    const double sxx = s.sss - s.ss * s.ss / fn;                               // Σ(i−ī)²
+    v = s.n >= 2 ? static_cast<float>((s.ssx - s.ss * s.sx / fn) / sxx) : 0.f; // n < 2 → 0 (无趋势)
+    m = true;
   }
 };
 
-// ---- TsProductRoll: Π(1+x) − 1 = expm1(Σ log1p x); "任一 x ≤ −1" 用可加减的违例计数表达 ----
+// ---- TsProductRoll: Π(1+x) − 1 精确. 累 Σ ln|1+x| (x > −1 用 log1p, x < −1 用 log(−1−x), 与 host 同式),
+//      零因子 (x = −1) 与负因子 (x < −1) 用可加减的计数表达; 空窗 = 空积 − 1 = 0 ----
 struct FnProduct {
   static constexpr int kArity = 1;
   static constexpr bool kSpread = false;
   using Ref = RefNone;
   struct St {
-    int n, bad;
+    int zero, neg;
     double sl;
   };
   FACTOR_TS_PRE_NONE
@@ -748,14 +762,16 @@ struct FnProduct {
   __device__ static void upd(St &s, DVal x, DVal, int, int w, const Ref &, const Param &) {
     const int g = x.m ? w : 0;
     const double fg = static_cast<double>(g);
-    const bool ok = x.v > -1.f;
-    s.n += g;
-    s.bad += (x.m && !ok) ? w : 0;
-    s.sl += fg * log1p(static_cast<double>(ok ? x.v : 0.f)); // 违例点参数换 0 (log1p 0 = 0), 不让 −inf 进滑窗累加器
+    const bool gt = x.v > -1.f, lt = x.v < -1.f;
+    s.zero += (x.m && x.v == -1.f) ? w : 0;
+    s.neg += (x.m && lt) ? w : 0;
+    // 两支都算成有限值再 select (零因子参数换 0 → log1p 0 = 0), 不让 −inf / NaN 进滑窗累加器
+    const double l = gt ? log1p(static_cast<double>(x.v)) : (lt ? log(-1.0 - static_cast<double>(x.v)) : 0.0);
+    s.sl += fg * l;
   }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool full, bool, bool, const Ref &, const Param &, float &v, bool &m) {
-    v = static_cast<float>(expm1(s.sl));
-    m = full && s.n >= 1 && s.bad == 0;
+  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
+    v = s.zero > 0 ? -1.f : static_cast<float>((s.neg & 1) ? -exp(s.sl) - 1.0 : expm1(s.sl));
+    m = true;
   }
 };
 
@@ -829,11 +845,10 @@ __global__ void extreme(const float *xv, const uint8_t *xm, E *ws, float *ov, ui
       if (t - d >= w0)
         n -= xm[(t - d) * A + a] ? 1 : 0;
       P = cmb<MAXOP>(P, X::at(xv, xm, i, t));
-      const bool full = t >= d - 1;
-      const int l = t - d + 1;                                   // 窗左端
-      const bool cross = full && l < b0;                         // 窗跨前块 (l 在前块) ; 否则 t 为块末, 窗 = 整块 = P
+      const int l = t - d + 1;                                   // 窗左端; l < 0 = 未满窗, 窗 = 前缀 [0, t] ⊂ 首块 = P
+      const bool cross = l >= 0 && l < b0;                       // 窗跨前块 (l 在前块) ; 否则 t 为块末, 窗 = 整块 = P
       const E e = cross ? cmb<MAXOP>(S[(l % d) * A + a], P) : P; // S 更旧, 放前面 → 并列保留最旧
-      dev::store(ov, om, i, X::out(e, t), full && n >= 1);
+      dev::store(ov, om, i, n >= 1 ? X::out(e, t) : 0.f, true);  // 空窗 → 0 (e 是哨兵)
     }
     E run = X::ident();
     for (int t = bend - 1; t >= b0; --t) { // 后向: 块内后缀极值 → 环形区 (前向已用完前块的 S, 可覆盖)
@@ -916,7 +931,7 @@ __device__ inline int hier_lower(const Src &src, int s0, int t, float lo, float 
   return (g0 << 4) | b0;
 }
 
-// MODE 0 = EXPAND (样本 = 段内 s ≤ t_seg), 1 = ROLL (样本 = [t−d+1, t])
+// MODE 0 = EXPAND (样本 = 段内 s ≤ t_seg), 1 = ROLL (样本 = [max(0, t−d+1), t], 未满窗即前缀)
 template <int MODE, class Op>
 __global__ void hist(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int d, Param p) {
   const int a = blockIdx.x * blockDim.x + threadIdx.x;
@@ -926,11 +941,7 @@ __global__ void hist(const float *xv, const uint8_t *xm, float *ov, uint8_t *om,
   const int cend = min(c0 + kSegLen, T);
   for (int t = c0; t < cend; ++t) {
     const int i = t * A + a;
-    if (MODE == 1 && t < d - 1) { // ROLL 窗未满
-      dev::store(ov, om, i, 0.f, false);
-      continue;
-    }
-    const int s0 = (MODE == 0) ? c0 : (t - d + 1);
+    const int s0 = (MODE == 0) ? c0 : max(0, t - d + 1);
     Src src{xv, xm, a, A};
     float v = 0.f;
     bool m = false;
@@ -939,13 +950,13 @@ __global__ void hist(const float *xv, const uint8_t *xm, float *ov, uint8_t *om,
   }
 }
 
-// pct rank: less/eq 只要两个计数器, 一趟搞定
+// pct rank: less/eq 只要两个计数器, 一趟搞定. 相对型: x_t 无效则无效 (x_t 有效 ⇒ cnt ≥ 1); 全并列 → 0.5
 struct HRank {
   __device__ static void eval(const Src &src, int s0, int t, float xt, bool xtm, const Param &, float &v, bool &m) {
     int cnt;
     float lo, hi;
     span_stat(src, s0, t, cnt, lo, hi);
-    m = cnt >= 1 && xtm;
+    m = xtm;
     if (!m)
       return;
     if (!dev::spread(lo, hi)) { // 值域退化 → 全并列
@@ -964,15 +975,17 @@ struct HRank {
     v = dev::pct_of(less, eq, cnt);
   }
 };
-// k 分位 (k = 0.5 即中位): 前缀累计首次 ≥ ⌈k·cnt⌉ 的桶中心
+// k 分位 (k = 0.5 即中位): 前缀累计首次 ≥ ⌈k·cnt⌉ 的桶中心; 空窗 → 0
 struct HQuantile {
   __device__ static void eval(const Src &src, int s0, int t, float, bool, const Param &p, float &v, bool &m) {
     int cnt;
     float lo, hi;
     span_stat(src, s0, t, cnt, lo, hi);
-    m = cnt >= 1;
-    if (!m)
+    m = true;
+    if (cnt < 1) {
+      v = 0.f;
       return;
+    }
     if (!dev::spread(lo, hi) || p.k <= 0.f) {
       v = lo;
       return;
@@ -1054,9 +1067,9 @@ __global__ void ema_apply(const float *xv, const uint8_t *xm, const float *ca, c
     const int i = s * A + a;
     const bool g = xm[i] != 0;
     const float x = xv[i];
-    y = g ? (seen ? (k * x + (1.f - k) * y) : x) : y; // 首个有效点播种, 无效点保持
+    y = g ? (seen ? (k * x + (1.f - k) * y) : x) : y; // 首个有效点播种, 无效点保持; 尚无有效点 → y = 0
     seen = seen || g;
-    dev::store(ov, om, i, y, seen);
+    dev::store(ov, om, i, y, true);
   }
 }
 
@@ -1097,18 +1110,19 @@ FACTOR_TS_POINT(TsSign, 1, { v = x.v > 0.f ? 1.f : (x.v < 0.f ? -1.f : 0.f); m =
 FACTOR_TS_POINT(TsLog, 1, { v = copysignf(log1pf(fabsf(x.v)), x.v); m = x.m; })  // sign(x)·log1p(|x|)
 FACTOR_TS_POINT(TsSqrt, 1, { v = copysignf(sqrtf(fabsf(x.v)), x.v); m = x.m; })
 FACTOR_TS_POINT(TsRelu, 1, { v = fmaxf(0.f, x.v); m = x.m; })
-FACTOR_TS_POINT(TsRecip, 1, { v = 1.f / x.v; m = x.m && x.v != 0.f; }) // x = 0 退化; 溢出 → 出口转无效
+FACTOR_TS_POINT(TsRecip, 1, { v = x.v != 0.f ? 1.f / x.v : 0.f; m = x.m; }) // x = 0 → 0; 溢出 → 出口转无效
 FACTOR_TS_POINT(TsGt, 1, { v = x.v > p.k ? 1.f : 0.f; m = x.m; })    // 指示; 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
 FACTOR_TS_POINT(TsClip, 1, { assert(p.k >= 0.f); v = fminf(fmaxf(x.v, -p.k), p.k); m = x.m; })
 FACTOR_TS_POINT(TsTodMask, 0, { v = (t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f; m = true; }) // 元数 0: 不读输入, 纯 t 坐标
 FACTOR_TS_POINT(TsAdd, 2, { v = x.v + y.v; m = x.m && y.m; })
 FACTOR_TS_POINT(TsSub, 2, { v = x.v - y.v; m = x.m && y.m; })
 FACTOR_TS_POINT(TsMul, 2, { v = x.v * y.v; m = x.m && y.m; })
-FACTOR_TS_POINT(TsDiv, 2, { v = x.v / y.v; m = x.m && y.m && y.v != 0.f; }) // y = 0 退化; 溢出 → 出口转无效
+FACTOR_TS_POINT(TsDiv, 2, { v = y.v != 0.f ? x.v / y.v : 0.f; m = x.m && y.m; }) // y = 0 → 0; 溢出 → 出口转无效
 FACTOR_TS_POINT(TsMax, 2, { v = fmaxf(x.v, y.v); m = x.m && y.m; })
 FACTOR_TS_POINT(TsMin, 2, { v = fminf(x.v, y.v); m = x.m && y.m; })
-FACTOR_TS_POINT(TsImb, 2, { v = (x.v - y.v) / (x.v + y.v); m = x.m && y.m && dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)); })
-FACTOR_TS_POINT(TsShare, 2, { v = x.v / (x.v + y.v); m = x.m && y.m && dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)); })
+// Imb / Share: 和相消 (双边皆 0 / x ≈ −y) → 0 / 0.5
+FACTOR_TS_POINT(TsImb, 2, { v = dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)) ? (x.v - y.v) / (x.v + y.v) : 0.f; m = x.m && y.m; })
+FACTOR_TS_POINT(TsShare, 2, { v = dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)) ? x.v / (x.v + y.v) : 0.5f; m = x.m && y.m; })
 FACTOR_TS_POINT(TsLogRatio, 2, { v = logf(x.v) - logf(y.v); m = x.m && y.m && x.v > 0.f && y.v > 0.f; }) // 两个正有限数各取对数, 不溢出
 FACTOR_TS_POINT(TsMask, 2, { v = x.v; m = x.m && y.m && y.v > 0.f; })     // y 当掩码, y ≤ 0 → 无效 (不补 0)
 FACTOR_TS_POINT(TsWhere, 3, { v = x.v > 0.f ? y.v : z.v; m = x.m && (x.v > 0.f ? y.m : z.m); })
@@ -1124,8 +1138,8 @@ FACTOR_TS_POINT(TsWhere, 3, { v = x.v > 0.f ? y.v : z.v; m = x.m && (x.v > 0.f ?
       FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                             \
     }                                                                                                                                                                                 \
   };
-FACTOR_TS_GATHER(TsDelayRoll, false) // x_{t−d}, m = (t≥d) && xm[t−d]
-FACTOR_TS_GATHER(TsDeltaRoll, true)  // x_t − x_{t−d}
+FACTOR_TS_GATHER(TsDelayRoll, false) // x_{max(t−d,0)}, m = xm[max(t−d,0)]
+FACTOR_TS_GATHER(TsDeltaRoll, true)  // x_t − x_{max(t−d,0)}
 
 // ---- EXPAND (SCAN 族): 段内 expanding, 段界 reset ----
 #define FACTOR_TS_EXPAND(Name, Fn)                                                                                                                                                \

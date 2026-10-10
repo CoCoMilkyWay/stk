@@ -29,8 +29,9 @@
 //     段内位置 t_seg = t % kSegLen (块起点对齐段起点).
 //     Expand 窗按段 reset (流式实现推满 kSegLen 自动归零); Roll 窗**跨段**不 reset (窗口单位是分钟, 与日界无关);
 //     Expo 窗全程递推, 不 reset.
-//     Roll 窗未满 (t < d−1) 一律输出无效; 例外: TsDelayRoll / TsDeltaRoll 看的是 d 期之前那一格,
-//     实际跨 d+1 格, 故 t < d 才无效.
+//     Roll 窗未满 (t < d−1) **不是无效**: 窗 = 已有前缀 [max(0, t−d+1), t], 同公式 (expanding 直到满窗);
+//     TsDelayRoll / TsDeltaRoll 的滞后夹到序列头: 取 x_{max(t−d, 0)}, 满窗后与 x_{t−d} 无缝衔接.
+//     窗内位置 (Wma 权 / Arg 距今期数) 以**最新一格 = d−1** 锚定, 未满窗时最旧格的位置 = d−n, 三后端同口径.
 //
 //   【截面池 g】CS 算子 (A 域 ALL / GROUP) 与 Stat 多收一张池掩码 g (uint8 [T][A], 流式 = 一行 [A]; 特征库 cs_valid 列
 //     = 当日在池, 整日常量; 必填非空). TS 算子没有池概念 (只有张量并集), 签名不带 g, 跨进出池的历史照常算.
@@ -39,19 +40,35 @@
 //     (x−μ)/σ / x−α−βy 连续外推); 广播型整行同值. GROUP: 组内池成员的统计量, 该组当天无池内成员 → 回退全池统计量.
 //     池外格的掩码由算子自己给 (输入有效 ∧ 统计量存在), 评估器不再二次门控; Stat 只看 g 为真的格.
 //
-//   【数值 / 退化契约】全程 branchless, 任何后端都不产 NaN / inf:
+//   【数值 / 退化契约】全程 branchless, 任何后端都不产 NaN / inf. 退化**不置无效**, 给该统计量的连续极限 / 中性值
+//   (与 CS 池外资产"池内统计量连续外推"同一思路: 掩码只表达"这一格的输入有没有", 不表达"统计量好不好算"):
 //     1. 入口: 落盘用 NaN 表缺失 → Val{0, false}. 之后 v 恒为有限值.
-//     2. 退化 = **精确全并列** spread(lo, hi) = hi > lo 为假 (Var/Std/Skew/Kurt/Z/Corr/Beta/Resid/序统计族).
+//     2. 全并列判据 = **精确** spread(lo, hi) = hi > lo (Var/Std/Skew/Kurt/Z/Corr/Beta/Resid/序统计族).
 //        比的是同一份 fp32 输入的极值, 无舍入 → 三后端逐位一致, 且与量级无关: 价格 50 元窗内一跳 0.01 有离散度;
-//        常值窗哪怕滑窗累加器残留 1e-14 也判退化 (GPU 侧用"最近变动位置 > 窗内首个有效位置"等价实现, 无需减法).
-//     3. 相消 den_ok(): 分母相对两侧量级 < kRelEps 为退化 (Imb/Share/Hhi/WMean 的 Σ ≈ 0 是数值无意义, 不是并列).
+//        常值窗哪怕滑窗累加器残留 1e-14 也判全并列 (GPU 侧用"最近变动位置 > 窗内首个有效位置"等价实现, 无需减法).
+//     3. 相消判据 den_ok(): 分母相对两侧量级 < kRelEps (Imb/Share/Hhi/WMean 的 Σ ≈ 0 是数值无意义, 不是并列).
 //        这是唯一保留阈值的判据; 恰落在阈值带内的输入三后端可能不一致, 造数刻意避开.
 //     4. 逐点除法 (Div/Recip): 三后端同序 IEEE 运算, 直接判 y ≠ 0.
-//     5. **没有分母钳位**: 掩码已保证分母非零; 绝对 eps 钳位只会在小量级输入上把正确值改错而掩码仍真.
-//        有效位上的溢出 (inf) 由出口 mk() 转成无效 —— 溢出是数据属性, 不是 bug.
-//     6. valid = false 时 v = 0, 消费端只看 m.
-//     7. 累加: CPU 用 double; GPU 幂和用 double, 按段/按块分块, 禁全局长 cumsum.
-//     8. 输出 float (挖掘侧量化到 fp16 前需 clamp 到 ±65504, 见 operator1.md).
+//     5. **没有分母钳位**: 退化走 select 给中性值, 非退化分母原样; 绝对 eps 钳位只会在小量级输入上把正确值改错.
+//     6. 中性值表 (n = 窗/截面内有效样本数; "全并列" 指 spread 为假; 判据只决定 select 哪支, 掩码不动):
+//          Sum                  n = 0 → 0 (空和)                 Mean / Max / Min / ArgMax / ArgMin / Wma / Quantile   n = 0 → 0
+//          Var / Std            n < 2 或全并列 → 0                Skew (n < 3) / Kurt (n < 4) / 全并列 → 0
+//          Z                    σ 退化 → 0 (x = μ)               Cov (n < 2) / Corr (无离散度) / Beta (y 无离散度) / Slope (n < 2) → 0
+//          Resid                y 无离散度 → β = 0, 即 x − μ^x    Rank   全并列或 n = 0 → 0.5 (pct_of 的 m ≤ 1 同值)
+//          Hhi                  Σx 相消 → 1/n (均匀的极限)        Entropy 无正样本 → 0 (单样本熵 = 0 的极限)
+//          WMean                Σy 相消 → Σx/n (等权的极限)       Product 精确算 Π(1+x) − 1 (含 1+x ≤ 0: 零因子 → −1, 负因子计奇偶)
+//          Imb / Share          和相消 → 0 / 0.5                 Div / Recip  除数 0 → 0
+//          Ema                  尚无有效样本 → 0
+//          CS 同表: 空池行广播 0, Demean / Winsor → x 原值, Z → 0, Resid → x − μ^x, Rank / GroupRank → 0.5,
+//                   NormRank → Φ⁻¹(0.5) = 0, Bucket → floor(0.5·k), GroupMean 组空 → 全池, 全池空 → 0.
+//     7. 掩码为假**只剩**四种来源 (消费端只看 m; m = false 时 v = 0):
+//          a. 入口 NaN (第 1 条);
+//          b. 逐点算子的输入格无效 (含 TsMask y ≤ 0 —— 它的用途就是把点踢出下游窗; TsLogRatio x ≤ 0 / y ≤ 0 —— 域外);
+//          c. 相对型算子 (Ts Z / Rank / Resid; Cs Demean / Z / Rank / NormRank / Winsor / Bucket / Resid / Group*) 描述的是
+//             资产自身这一格, 该格 x_t (二元还要 y_t, 分组还要组 id) 无效即无效; 窗内其余样本无效不影响;
+//          d. 出口溢出 (inf) 由 mk() 转成无效 —— 溢出是数据属性, 不是 bug.
+//     8. 累加: CPU 用 double; GPU 幂和用 double, 按段/按块分块, 禁全局长 cumsum.
+//     9. 输出 float (挖掘侧量化到 fp16 前需 clamp 到 ±65504, 见 operator1.md).
 //
 //   【对拍】掩码逐位相等, 且有效位上 |Δ| ≤ atol + rtol·max(|a|,|b|).
 //
@@ -94,7 +111,7 @@ enum class Kern { MAP,
 // ---- 值域 (OpTable in / out 列 = 自变量 / 因变量值域; 机器可读, 表里不再手写值域 LaTeX) ----
 //   同一套枚举两头用: 子节点的 out 对父算子对应元的 in 逐元查 (parser, 不点算子名):
 //     严格域 (dom_strict: INT, 越界 = 算子内部 assert) → 子.out 须 ⊆ in (dom_sub), 特征叶按数据逐格查 (dom_holds);
-//     其余域是语义声明 (越界格按【退化】规则置无效, 如 LogRatio 的 x ≤ 0), 不能静态否决 (Σ 正量的 out 只能写 REAL),
+//     其余域是语义声明 (越界格按【退化】规则处理: LogRatio 的 x ≤ 0 置无效, 其余给中性值), 不能静态否决 (Σ 正量的 out 只能写 REAL),
 //     只用于渲染签名与算子看板.
 //   只表达能写成集合的约束 (y ≠ 0 / x > −1 之类写 REAL); out 只按算子自身声明, 不随输入推导
 //   (透传 Mask / Where / Delay 与取大取小写 REAL). 表格 / JSON 渲染用 dom_tex / dom_name.
