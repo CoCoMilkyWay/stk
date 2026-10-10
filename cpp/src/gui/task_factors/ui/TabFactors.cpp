@@ -241,7 +241,7 @@ struct GroupInfo {
 };
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
     {"形态", "分层单调 / 换手"},
-    {"LS", "顶组多 + 底组空 的超额"},
+    {"LS", "LS(lin): 仓位 ∝ 秩离中 (两端重, 中间轻) 的多空超额"},
     {"IC", "截面秩相关, 只作参考"},
     {"样本", "有效 t 行数"},
 };
@@ -266,12 +266,13 @@ constexpr Metric kMetrics[] = {
     {Group::Shape, "rAC", "rAC", "因子秩 lag=h 自相关", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rank_ac); },
      Cmp::High},
     {Group::Shape, "turn", "turn", "年化换手 (倍/年)", "[0, ∞)", "越小", "%.0f", [](const HS &h) { return factor::stat::turnover_annual(h); }, Cmp::Low},
-    {Group::LS, "mean", "LS", "多空超额 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h) { return static_cast<double>(h.ls_mean); }, Cmp::High},
-    {Group::LS, "t", nullptr, "多空超额 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls_t); }, Cmp::High},
-    {Group::LS, "pos", nullptr, "多空超额 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ls_pos); },
+    {Group::LS, "mean", "LS", "线性多空超额 均值 (全截面线性仓位, 噪声 ≈ 顶底多空的 1/7)", "(-∞, ∞)", "越大", "%+.5f",
+     [](const HS &h) { return static_cast<double>(h.ls_mean); }, Cmp::High},
+    {Group::LS, "t", nullptr, "线性多空超额 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls_t); }, Cmp::High},
+    {Group::LS, "pos", nullptr, "线性多空超额 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ls_pos); },
      Cmp::High},
-    {Group::LS, "SR", "SR", "多空超额 年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return static_cast<double>(h.sharpe); }, Cmp::High},
-    {Group::LS, "β", nullptr, "多空超额 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
+    {Group::LS, "SR", "SR", "线性多空超额 年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return static_cast<double>(h.sharpe); }, Cmp::High},
+    {Group::LS, "β", nullptr, "线性多空超额 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
     {Group::IC, "mean", "IC", "rank IC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h) { return static_cast<double>(h.ic_mean); }, Cmp::High},
     {Group::IC, "std", nullptr, "rank IC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.ic_std); }, Cmp::None},
     {Group::IC, "IR", "ICIR", "rank IC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.icir); }, Cmp::High},

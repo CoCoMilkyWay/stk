@@ -42,9 +42,10 @@ struct InspectDerived {
   std::vector<std::string> dates;                    // [days] 轴刻度用
   std::vector<float> x_day;                          // [days + 1] 0..days (累计线横轴, 日末)
   std::vector<float> grp_cum[factor::stat::kGroups]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)
-  std::vector<float> ls_cum;                         // [days + 1], 同上
+  std::vector<float> ls_cum;                         // [days + 1], 同上 (LS(tp-dn))
+  std::vector<float> ls_lin_cum;                     // [days + 1], 同上 (LS(lin))
   float y_lo = 0.f, y_hi = 0.f;                      // 左上 y 轴范围 = 分层线 min / max 加边 (LS 跨度更大时 hi 抬到装下)
-  float ls_off = 0.f;                                // LS 线平移量 = lo − min(ls_cum): 最低点贴范围底, 刚好放进去
+  float ls_off = 0.f, ls_lin_off = 0.f;              // 两条 LS 线各自平移量 = lo − min(cum): 最低点贴范围底, 刚好放进去
   analysis::AggPdf ic_pdf;                           // 逐行 rank IC (ok 行) 的 KLL PDF 成品 (n_pts = 0 → 样本不足不画)
   factor::stat::HoldStat hs;                         // 选定 hold 的二级
   bool valid = false;

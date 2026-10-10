@@ -91,7 +91,7 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) 
   }
 }
 
-// ---- 容差: 整数派生量 (ic / ac) 两后端本应逐位一致, 浮点和 (grp / ls / mkt) 只差求和序 ----
+// ---- 容差: 整数派生量 (ic / ac) 两后端本应逐位一致, 浮点和 (grp / ls / ls_lin / mkt) 只差求和序 ----
 inline Tol tol_of(Profile pr) {
   Tol t{1e-5, 1e-4};
   if (pr == Profile::TINY)
@@ -135,6 +135,8 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
       detail::cmp1(d, a.mkt, b.mkt, tol, at);
       detail::cmp1(d, a.ls, b.ls, tol, at);
       detail::cmp1(d, a.ls_rev, b.ls_rev, tol, at);
+      detail::cmp1(d, a.ls_lin, b.ls_lin, tol, at);
+      detail::cmp1(d, a.ls_lin_rev, b.ls_lin_rev, tol, at);
       for (int k = 0; k < kGroups; ++k)
         detail::cmp1(d, a.grp[k], b.grp[k], tol, at);
     }

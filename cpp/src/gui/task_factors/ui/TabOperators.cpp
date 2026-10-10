@@ -151,7 +151,7 @@ const char *cls_out(const OperatorRow &r) { return r.classified ? factor::dom_na
 // Stat 行悬停 e_name: 表列放不下的附带信息 (prep 耗时 + 每持有期 cpu 侧二级汇总)
 void stat_tooltip(const OperatorRow &r, const StatExtra &x) {
   ImGui::BeginTooltip();
-  ImGui::TextUnformatted("因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组和 / 多空 / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
+  ImGui::TextUnformatted("因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组和 / 多空 (lin 线性仓位进 stat; tp-dn 顶底只画图) / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
                          "标签统一超额 (减截面均值). 两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
                          "无流式后端, cpu ↔ gpu 两方对拍 (无 golden; 表格 GPU 列的 Diff = 两口径 × (一级 rows + 二级 stat) 合并).\n"
                          "表列耗时 = 两口径 eval 之和 (每因子一次: rank/量化 + 逐持有期一遍 A 轴); prep = 标签 rank 预处理 (常驻期一次), 见下.\n"
@@ -168,7 +168,7 @@ void stat_tooltip(const OperatorRow &r, const StatExtra &x) {
       ImGui::TextDisabled("%s", factor::stat::frame_name(static_cast<factor::stat::Frame>(fi)));
       for (int i = 0; i < x.n_hold; ++i) {
         const factor::stat::HoldStat &h = x.hold[fi][i];
-        ImGui::Text("h=%-3d n=%d/%d sign %+d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
+        ImGui::Text("h=%-3d n=%d/%d sign %+d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS(lin) %+.5f t %+.2f pos %.2f "
                     "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f",
                     h.hold, h.n, h.n_ac, h.sign, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t,
                     h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
