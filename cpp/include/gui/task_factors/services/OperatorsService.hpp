@@ -70,7 +70,7 @@ struct OperatorRow {
   const char *params = "";                // 本算子读取的 Param 字段名, 如 "d,k" (= params_str(T, kdom), 由表推出)
   std::string operand;                    // 签名 LaTeX (Expr.hpp operand_tex 从 in / T / kdom 生成; 占位符 ⟨d⟩⟨k⟩⟨k2⟩ 由 UI 换成本轮实际值)
   factor::Dom in[3] = {};                 // 逐元自变量值域 (OpTable in 列)
-  factor::Dom out = factor::Dom::REAL;    // 因变量值域 (OpTable out 列; Stat 行无意义, classified = false 时显示空)
+  factor::Dom out = factor::Dom::REAL;    // 因变量值域 (OpTable out 列; 评估算子 = REAL, 所有行都显示)
   const char *op = nullptr;               // 算子定义 (LaTeX; JSON / UI 键叫 operator)
   const char *note = nullptr;             // 用途与选型 (一句话: 量什么; 怎么用 / 配什么)
   const char *doc = "";                   // 悬停 e_name 的详述 (口径 / 对拍方式); 空 = 不弹

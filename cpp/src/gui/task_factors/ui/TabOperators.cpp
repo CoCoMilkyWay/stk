@@ -141,11 +141,10 @@ double sort_ms_chk(const OperatorRow &r, double ms, const factor::check::Diff &d
   return d.ok() ? ms : 1e300;
 }
 
-// 三维分类列 + 输出域列的落盘文本: 不在分类里的行 (Stat / Search) 空着 (out 列表格内按 dom_tex 渲染, JSON 落 dom_name)
+// 三维分类列的落盘文本: 不在分类里的行 (Stat / Search) 空着 (out 列所有行都有: 表格内按 dom_tex 渲染, JSON 落 dom_name)
 const char *cls_T(const OperatorRow &r) { return r.classified ? T_name(r.T) : ""; }
 const char *cls_A(const OperatorRow &r) { return r.classified ? A_name(r.A) : ""; }
 const char *cls_kern(const OperatorRow &r) { return r.classified ? kern_name(r.kern) : ""; }
-const char *cls_out(const OperatorRow &r) { return r.classified ? factor::dom_name(r.out) : ""; }
 
 // 悬停 e_name: 静态详述 (doc) + 跑完后跑手的附带文本 (detail); 两者都空 → 不弹
 void row_tooltip(const OperatorRow &r) {
@@ -504,14 +503,12 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       else
         ImGui::TextUnformatted(s_operand[idx].c_str()); // 解析失败回退原文
       ImGui::TableSetColumnIndex(8);
-      if (r.classified) {
-        if (tex::TeXRender *render = Latex::Get(factor::dom_tex(r.out), kFormulaTextSize))
-          Latex::Draw(render, ImGui::GetTextLineHeight());
-        else
-          ImGui::TextUnformatted(factor::dom_name(r.out)); // 解析失败回退枚举名
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("%s", factor::dom_name(r.out));
-      }
+      if (tex::TeXRender *render = Latex::Get(factor::dom_tex(r.out), kFormulaTextSize))
+        Latex::Draw(render, ImGui::GetTextLineHeight());
+      else
+        ImGui::TextUnformatted(factor::dom_name(r.out)); // 解析失败回退枚举名
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", factor::dom_name(r.out));
       ImGui::TableSetColumnIndex(9);
       if (tex::TeXRender *render = Latex::Get(r.op, kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
@@ -611,7 +608,7 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       nlohmann::ordered_json params = nlohmann::ordered_json::object();
       for_each_param(r, [&](const char *name, double v) { params[name] = v; });
       j["params"] = params;
-      j["out"] = cls_out(r);
+      j["out"] = factor::dom_name(r.out);
       j["operator"] = r.op;
       j["note"] = r.note;
       j["status"] = row_status_name(r.status);
@@ -669,7 +666,7 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   if (!j.is_object())
     return false;
   if (!json_str_is(j, "e_name", dst.e_name) || !json_str_is(j, "T", cls_T(dst)) || !json_str_is(j, "A", cls_A(dst)) ||
-      !json_str_is(j, "kernel", cls_kern(dst)) || !json_str_is(j, "operand", dst.operand.c_str()) || !json_str_is(j, "out", cls_out(dst)) ||
+      !json_str_is(j, "kernel", cls_kern(dst)) || !json_str_is(j, "operand", dst.operand.c_str()) || !json_str_is(j, "out", factor::dom_name(dst.out)) ||
       !json_str_is(j, "operator", dst.op))
     return false;
   int arity = -1;

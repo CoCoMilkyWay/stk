@@ -317,31 +317,25 @@ void run_search(RoundCtx &R, OperatorRow &row) {
   row.detail += '\n' + scores;
 }
 
-// 评估算子的持有期集合 (Stat/Check.hpp kHolds) → 签名里的 h 域 LaTeX; 列表改了 → operand 变 → 旧 operators.json 作废
-std::string holds_tex() {
-  std::string s = R"(h \in \{)";
-  for (int i = 0; i < factor::stat::check::kNumHolds; ++i)
-    s += (i ? R"(,\,\mathrm{)" : R"(\mathrm{)") + factor::stat::hold_name(factor::stat::check::kHolds[i]) + "}";
-  return s + R"(\})";
-}
-
 } // namespace
 
 OperatorsService::OperatorsService() {
   // 行序 = 全局 idx (UI 默认序 / operators.json 的 idx 都按它): 评估算子 Stat, Search 在前 (挖掘的第一道闸, 每轮先验; Search 的
-  // golden 是 Stat, 跟在后), 之后 = OpTable 表序. 评估算子不在 OpTable: T / A / Kernel 空, 无 stream 后端, 持有期集合 = Stat/Check.hpp kHolds
-  const std::string holds = holds_tex();
+  // golden 是 Stat, 跟在后), 之后 = OpTable 表序. 评估算子不在 OpTable: T / A / Kernel 空, 无 stream 后端.
+  // operand / operator 与 OpTable 同规格 (单行, 不比表内最长的长, 否则整表撑宽): 持有期集合等细节只进 doc
   {
-    OperatorRow s; // 二元 = 因子 x + 每持有期一组标签 y_h
+    OperatorRow s; // 二元 = 因子 x + 每持有期一组标签 y_h; 输出 = 每持有期一组实数汇总
     s.e_name = "Stat";
     s.c_name = "评估";
     s.arity = 2;
     s.params = "";
-    s.operand = R"tex(x, y_h \in \mathbb{R};\; )tex" + holds;
-    s.op = R"tex(\mathrm{rIC},\,\mathrm{IR},\,t,\,G_{20},\,\mathrm{LS},\,\mathrm{SR},\,\beta,\,\mathrm{mono},\,\mathrm{rAC})tex";
+    s.operand = R"tex(x, y_h \in \mathbb{R})tex";
+    s.out = factor::Dom::REAL;
+    s.op = R"tex(\mathrm{rIC},\,\mathrm{IR},\,G_{20},\,\mathrm{LS},\,\mathrm{SR},\,\beta,\,\mathrm{mono},\,\mathrm{rAC})tex";
     s.note = "因子评估: 每 (h, t) 的 IC / 20 组均值 / 多空 / rank-AC, 再沿 t 汇总; 挖掘的第一道闸, 每轮先跑";
-    s.doc = "因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组和 / 顶底多空 / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
-            "标签统一超额 (减截面均值). 两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
+    s.doc = "因子评估算子 (factor/Stat): 因子 x + 每持有期 h 一组 fp16 标签 y_h → 每 (h, t) 的 IC / 20 组和 / 顶底多空 / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
+            "持有期集合 = Stat/Check.hpp kHolds (分钟档 / close / T+N). 标签统一超额 (减截面均值).\n"
+            "两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
             "无流式后端, cpu 即 golden (CPU 列不对拍); GPU 列 Diff = 两口径 × (一级 rows + 二级 stat) gpu ↔ cpu 合并.\n"
             "表列耗时 = 两口径 eval 之和 (每因子一次: rank/量化 + 逐持有期一遍 A 轴), 不含 prep (标签 rank 预处理, 见下).\n"
             "造数: long = 0.3·z + 噪声 (IC ≈ 0.3; TS 的 x = Φ(z)). ic_t / ls_t 按 n/h 折算 (相邻 h 行标签重叠); Sharpe 以持有期为一期年化;\n"
@@ -351,16 +345,17 @@ OperatorsService::OperatorsService() {
     runners_.push_back(&run_stat);
   }
   {
-    OperatorRow s; // 三元 = 一批候选 x_c + 每持有期一组标签 y_h + 成本 κ (共用)
+    OperatorRow s; // 三元 = 一批候选 x_c + 每持有期一组标签 y_h + 成本 κ (共用); 输出 = 每候选每持有期的实数累加
     s.e_name = "Search";
     s.c_name = "批评估";
     s.arity = 3;
     s.params = "";
-    s.operand = R"tex(x_c, y_h, \kappa \in \mathbb{R};\; c < C,\; )tex" + holds;
-    s.op = R"tex(\sum_t \mathrm{Row}_{c,h,t},\; \overline{\kappa}_{\mathrm{top}},\, \overline{\kappa}_{\mathrm{bot}})tex";
+    s.operand = R"tex(x_c, y_h \in \mathbb{R},\; \kappa \in \mathbb{R}_{\ge 0})tex";
+    s.out = factor::Dom::REAL;
+    s.op = R"tex(\Sigma_t\,\mathrm{row}_t(x_c, y_h),\; \bar\kappa_{\mathrm{top}},\, \bar\kappa_{\mathrm{bot}})tex";
     s.note = "挖掘批评估: 每候选每持有期沿 t 累加 (分块带 carry 可合并) + 顶底组成本池化; golden = Stat";
-    s.doc = "挖掘批评估算子 (factor/Search): 一批候选平面 x_c 共用标签 y_h 与成本 κ, 每候选每持有期一份沿 t 可合并的 Accum (= Stat 的 Row 累加) + "
-            "顶组买入 / 底组卖出成本两格池化.\n"
+    s.doc = "挖掘批评估算子 (factor/Search): 一批候选平面 x_c (c < C) 共用标签 y_h 与成本 κ, 每候选每持有期一份沿 t 可合并的 Accum "
+            "(= Stat 的 Row 累加) + 顶组买入 / 底组卖出成本两格池化 (κ̄_top / κ̄_bot). 持有期集合同 Stat.\n"
             "分块流式: 块带 carry (≥ max_lag) 接上一块, 统计从 t_lo 起, 各块 Result merge ≡ 整块一次算.\n"
             "golden = Stat CPU 对每张候选的 HoldStat + 朴素成本池化 (Stat 自身已 gpu ↔ cpu 对拍过):\n"
             "  CPU 列 Diff = cpu 整块 vs golden + 两块 merge vs 整块; GPU 列 Diff = gpu 整块 vs cpu 整块 + 两块 merge vs 整块; 两口径 × 候选合并.\n"
