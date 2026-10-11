@@ -7,13 +7,16 @@
 //
 // 计算 flow (worker 私有 Flow, 分级缓存, 请求来了从第一个 key 不匹配的级重算, 上游全部复用; 缓冲常驻, 稳态零分配):
 //   S  作用域   key = 特征库目录 | 子轴 hash | 月份        → dates, 截面门控, 毛标签 [H], 成本 [C], universe 指数; 特征平面缓存 (作用域内读过的全留, 只增)
-//   Y  标签集   key = S + sell_impact                      → [c = 0..C] {lv, sv, m, ry[H]}: c = 0 毛, c ≥ 1 扣 costs[c−1] + sell_impact 的净
+//   Y  标签     key = S                                    → 毛 {lv, sv, m, ry[H]} (ry = prep_label 一次常驻); 没有净标签集
 //   X  因子     key = S + expr                             → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
 //   R  rank_x   key = X                                    → ws[T][A] (拷一份随结果发布 = InspectResult::rx, 右上标的轴 / K 线着色;
 //                                                            之前多跑一遍 g ≡ 1 的 rank_x → rx_all, 池外段也有秩可显)
-//   L  评估     key = R × Y                                → 一级 Row[H][T] (只毛, c = 0) + 二级 HoldStat[c][H] (eval_rows 每标签集一遍, ws 共用;
-//                                                            净集只留二级给期限结构, Row 不落地)
-// 结果一次发布: 页面的 Hold / 超额|绝对 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
+//   C  成本     key = R                                    → CostTier[C]: 每金额档按 grp_of(rx) 分组池化的平均建仓冲击 (Σ cost / cnt, 过 rx 有效 ∧
+//                                                            成本有效的格; 一遍 [T][A] × C, 无排序无标签, 与持有期无关). 期限结构的净线 =
+//                                                            毛二级 − 组平均成本 − Config::sell_impact, 全在 UI 现算 (成本不进标签, 不被截面去均值吃掉;
+//                                                            sell_impact 是纯显示平移, 不进请求)
+//   L  评估     key = R × Y                                → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, eval_rows 一遍)
+// 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
 // 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑不清旧 result: 页面继续整页画旧结果
 // (旧因子, 头部文字一并), 新结果发布时一次性覆盖 (UI 持 mutex 读; 一级 Row 大 (~130B × H × T), UI 不拷, 持锁派生成日级序列后放手;
@@ -43,12 +46,19 @@ struct InspectRequest {
   factor::stat::Frame frame = factor::stat::Frame::CS;
   analysis::ReadScope scope;
   std::string universe, start_date, end_date;
-  double sell_impact = 0.0; // 平仓固定冲击 (Config::sell_impact), 净标签集 (c ≥ 1) 用
-  bool reload = false;      // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
-  std::string key() const { return file + "|" + expr + "|" + universe + "|" + start_date + "|" + end_date + "|" + std::to_string(sell_impact); }
+  bool reload = false; // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
+  std::string key() const { return file + "|" + expr + "|" + universe + "|" + start_date + "|" + end_date; }
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
+
+// 一个金额档的组池化平均建仓冲击 (比例): 组 = grp_of(rx) (CS 截面分位 / TS 自身分位), 池化 = 全时刻全资产 Σ cost / cnt, 过 rx 有效 ∧ 成本有效的格.
+// 与持有期无关 (entry 同一盘口). 组无样本 → 0 (TS 组可空, 与 ls 空腿取 0 对齐). 吃不满深度的格 (成本 NaN) 不计入 → 高档均值偏低, cover 把它亮出来
+struct CostTier {
+  int amt = 0;                                                             // 万 (= FeatureTable::costs[c].amt)
+  float buy[factor::stat::kGroups] = {}, sell[factor::stat::kGroups] = {}; // lb_cost_buy / lb_cost_sell 组均
+  float cover = 0.f;                                                       // Σ 成本有效 / Σ rx 有效 (格数比)
+};
 
 struct InspectResult {
   std::string key; // = InspectRequest::key(); 空 = 无结果
@@ -58,21 +68,18 @@ struct InspectResult {
   std::vector<std::string> dates; // [days] YYYYMMDD
   int n_hold = 0;
   factor::stat::Holds hd;                   // hd.h[hi]
-  std::vector<int> impacts;                 // [C + 1] 冲击档 (万): [0] = 0 毛, 其后 = FeatureTable::costs 序
-  double sell_impact = 0.0;                 // 净档的平仓冲击
+  std::vector<CostTier> costs;              // [C] = FeatureTable::costs 序 (期限结构净线: 毛二级 − 组均成本 − sell_impact, UI 现算)
   analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 子轴 + 月份): 右下 K 线按它读库; uni 做子轴 ↔ 全局 id
   std::vector<uint16_t> rx;                 // r16(x) [T][A] (CS = 截面秩, TS = 自身分位; 只池内 g ∧ xm, kRankNone 无效): 右上标的轴排序 / K 线着色
   std::vector<uint16_t> rx_all;             // 同上但不看池 (g ≡ 1, 只要 xm): 池外段 (出 CS 池 / 当日无成交) 的秩, K 线淡色显示; 评估不用
   std::vector<float> uni_index;             // [T] universe 等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   std::vector<factor::stat::Row> rows;      // 一级 [hd.n][T], 只毛口径
-  std::vector<factor::stat::HoldStat> hold; // 二级 [C + 1][hd.n]
+  std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径
   float valid_pct = 0.f;
   double eval_ms = 0.0;
   std::string error; // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 
-  int n_impact() const { return static_cast<int>(impacts.size()); }
   const factor::stat::Row *rows_at(int hi) const { return rows.data() + static_cast<size_t>(hi) * scope.T; }
-  const factor::stat::HoldStat *hold_at(int c) const { return hold.data() + static_cast<size_t>(c) * hd.n; } // [hd.n]
 };
 
 enum class InspectStatus : uint8_t { Idle,

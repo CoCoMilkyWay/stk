@@ -10,6 +10,7 @@
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <ctime>
@@ -38,26 +39,29 @@ struct InspectService::Flow {
   std::string scope_key; // features_dir | 子轴 hash | 月份表; 空 = 未装载
   std::vector<std::string> dates;
   Loaded L; // planes / feat_codes = 作用域内读过的特征 (只增; 每次评估前把当前 Dag::feats 换到前排); labels (毛) / costs / cs 常驻
-  // Y 标签集 [c]: c = 0 毛 (L.labels), c ≥ 1 净 (net[c − 1]); ry / lab 按 c · H + h 排
-  double sell_impact = -1.0; // 净集的口径; 变了只重建 c ≥ 1
-  std::vector<std::vector<LabelPlane>> net;
+  // Y 毛标签 [H]: ry = prep_label 常驻, lab 指向 L.labels + ry
   std::vector<std::vector<uint16_t>> ry;
   std::vector<factor::cpu::stat::Label> lab;
-  // X / R / L 常驻缓冲
+  // X / R / C / L 常驻缓冲
   factor::cpu::Pool pool;
   std::vector<factor::cpu::ParScratch> nsc;
   factor::cpu::stat::Workspace w;
   std::vector<factor::stat::Row> rows; // 毛口径一级 [H][T], 发布时与 result.rows 交换
   std::vector<uint16_t> rx, rx_all;    // w.ws 的拷贝 [T][A] (池内 / 不看池), 发布时与 result.rx / rx_all 交换 (ws 自身下次评估还要用)
   std::vector<uint8_t> ones;           // 全 1 门控 [T][A], rx_all 那遍 rank_x 的 g
+  struct CostAcc {                     // 成本池化的线程私有累加器 (一档): 组 Σ / 计数
+    double buy[factor::stat::kGroups] = {}, sell[factor::stat::kGroups] = {};
+    long long cnt[factor::stat::kGroups] = {};
+  };
+  std::vector<CostAcc> cacc;  // [nt][C]
+  std::vector<long long> cnx; // [nt] rx 有效格数 (cover 分母)
 
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
   void reset_scope() {
     scope_key.clear();
     dates.clear();
     L = Loaded{};
-    sell_impact = -1.0;
-    net.clear(), ry.clear(), lab.clear();
+    ry.clear(), lab.clear();
   }
 };
 
@@ -68,7 +72,6 @@ bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reloa
   req.expr = row.expr;
   req.frame = row.frame;
   req.reload = reload;
-  req.sell_impact = data.config.sell_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
@@ -212,27 +215,17 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const int H = L.hd.n, T = L.T, C = static_cast<int>(feats_.costs.size());
   F.w.ensure(T, A, H, nt);
 
-  // ---- Y: 标签集 [c] (毛一次; 净随 sell_impact) ----
-  if (F.lab.empty() || F.sell_impact != req.sell_impact) {
-    const auto set_label = [&](int c, int h, const LabelPlane &p) {
-      const size_t k = static_cast<size_t>(c) * H + h;
-      F.ry[k].resize(n);
-      factor::cpu::stat::prep_label(F.ex, p.lv.data(), p.m.data(), T, A, F.ry[k].data(), F.w);
-      F.lab[k] = {p.lv.data(), p.sv.data(), p.m.data(), F.ry[k].data()};
-    };
-    if (F.lab.empty()) {
-      F.ry.resize(static_cast<size_t>(C + 1) * H);
-      F.lab.resize(static_cast<size_t>(C + 1) * H);
-      F.net.resize(static_cast<size_t>(C));
-      for (int h = 0; h < H; ++h)
-        set_label(0, h, L.labels[static_cast<size_t>(h)]);
+  // ---- Y: 毛标签 [H] (作用域内一次) ----
+  if (F.lab.empty()) {
+    F.ry.resize(static_cast<size_t>(H));
+    F.lab.resize(static_cast<size_t>(H));
+    for (int h = 0; h < H; ++h) {
+      const LabelPlane &p = L.labels[static_cast<size_t>(h)];
+      std::vector<uint16_t> &ry = F.ry[static_cast<size_t>(h)];
+      ry.resize(n);
+      factor::cpu::stat::prep_label(F.ex, p.lv.data(), p.m.data(), T, A, ry.data(), F.w);
+      F.lab[static_cast<size_t>(h)] = {p.lv.data(), p.sv.data(), p.m.data(), ry.data()};
     }
-    for (int c = 1; c <= C; ++c) {
-      net_labels(F.ex, L, L.costs[static_cast<size_t>(c) - 1], static_cast<float>(req.sell_impact), F.net[static_cast<size_t>(c) - 1]);
-      for (int h = 0; h < H; ++h)
-        set_label(c, h, F.net[static_cast<size_t>(c) - 1][static_cast<size_t>(h)]);
-    }
-    F.sell_impact = req.sell_impact;
     if (cancelled())
       return false;
   }
@@ -253,10 +246,6 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.uni_index = L.index;
   res.n_hold = H;
   res.hd = L.hd;
-  res.impacts.push_back(0);
-  for (const CostCol &cc : feats_.costs)
-    res.impacts.push_back(cc.amt);
-  res.sell_impact = req.sell_impact;
   const auto publish = [&] {
     res.scope.time = now_string();
     std::lock_guard<std::mutex> lock(mutex);
@@ -285,7 +274,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
 
   // ---- X: Dag 后序顺序走, 每节点全核 ----
   status_.store(InspectStatus::Running, std::memory_order_release);
-  total_.store(d.n_ops + C + 1, std::memory_order_relaxed);
+  total_.store(d.n_ops + 2, std::memory_order_relaxed); // 节点 + 成本池化 + 评估
   done_.store(0, std::memory_order_relaxed);
   F.pool.prepare(d.n_slots, n);
   if (F.nsc.size() < static_cast<size_t>(nt))
@@ -309,13 +298,13 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     done_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  // ---- R + L: rank_x 一次, 每标签集一遍 eval_rows; 一级 Row 只留毛 (c = 0), 净集只出二级 (期限结构) ----
+  // ---- R: rank_x 一次 ----
   const factor::check::Plane *rp = plane_of(root); // Stat 只看池内 (g 在算子内部)
   res.valid_pct = valid_pct_of(rp->m.data(), L.cs.m.data(), n);
   const size_t nrow = static_cast<size_t>(H) * T;
   if (F.rows.size() != nrow)
     F.rows.resize(nrow);
-  res.hold.resize(static_cast<size_t>(C + 1) * H);
+  res.hold.resize(static_cast<size_t>(H));
   // 先多跑一遍不看池的秩 (g ≡ 1) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 (ws 留给 eval_rows)
   if (F.ones.size() != n)
     F.ones.assign(n, uint8_t{1});
@@ -323,13 +312,64 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   F.rx_all.assign(F.w.ws.begin(), F.w.ws.begin() + static_cast<std::ptrdiff_t>(n));
   factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), L.cs.m.data(), req.frame, T, A, F.w);
   F.rx.assign(F.w.ws.begin(), F.w.ws.begin() + static_cast<std::ptrdiff_t>(n)); // ws 随结果发布 (右上标的轴 / K 线着色)
-  for (int c = 0; c <= C; ++c) {
-    if (cancelled())
-      return false;
-    factor::cpu::stat::eval_rows(F.ex, req.frame, T, A, L.hd, F.lab.data() + static_cast<size_t>(c) * H, F.w, c == 0 ? F.rows.data() : nullptr,
-                                 res.hold.data() + static_cast<size_t>(c) * H);
+  if (cancelled())
+    return false;
+
+  // ---- C: 成本按 grp_of(rx) 分组池化, 一遍 [T][A] × C (线程私有累加器 → merge) ----
+  {
+    constexpr int K = factor::stat::kGroups;
+    assert(L.costs.size() == static_cast<size_t>(C));
+    F.cacc.assign(static_cast<size_t>(nt) * C, Flow::CostAcc{});
+    F.cnx.assign(static_cast<size_t>(nt), 0);
+    const uint16_t *rx = F.rx.data();
+    F.ex.rows(T, [&](int t0, int t1, int tid) {
+      Flow::CostAcc *acc = F.cacc.data() + static_cast<size_t>(tid) * C;
+      long long nx = 0;
+      for (size_t i = static_cast<size_t>(t0) * A, i1 = static_cast<size_t>(t1) * A; i < i1; ++i) {
+        if (rx[i] == factor::stat::kRankNone)
+          continue;
+        ++nx;
+        const int k = factor::stat::grp_of(rx[i]);
+        for (int c = 0; c < C; ++c) {
+          const CostPlane &cp = L.costs[static_cast<size_t>(c)];
+          if (!cp.m[i])
+            continue;
+          acc[c].buy[k] += static_cast<double>(static_cast<float>(std::bit_cast<_Float16>(cp.buy[i])));
+          acc[c].sell[k] += static_cast<double>(static_cast<float>(std::bit_cast<_Float16>(cp.sell[i])));
+          ++acc[c].cnt[k];
+        }
+      }
+      F.cnx[static_cast<size_t>(tid)] += nx;
+    });
+    long long nx = 0;
+    for (int tid = 0; tid < nt; ++tid)
+      nx += F.cnx[static_cast<size_t>(tid)];
+    res.costs.resize(static_cast<size_t>(C));
+    for (int c = 0; c < C; ++c) {
+      Flow::CostAcc a;
+      for (int tid = 0; tid < nt; ++tid) {
+        const Flow::CostAcc &b = F.cacc[static_cast<size_t>(tid) * C + c];
+        for (int k = 0; k < K; ++k)
+          a.buy[k] += b.buy[k], a.sell[k] += b.sell[k], a.cnt[k] += b.cnt[k];
+      }
+      CostTier &tier = res.costs[static_cast<size_t>(c)];
+      tier.amt = feats_.costs[static_cast<size_t>(c)].amt;
+      long long covered = 0;
+      for (int k = 0; k < K; ++k) {
+        covered += a.cnt[k];
+        tier.buy[k] = a.cnt[k] ? static_cast<float>(a.buy[k] / static_cast<double>(a.cnt[k])) : 0.f;
+        tier.sell[k] = a.cnt[k] ? static_cast<float>(a.sell[k] / static_cast<double>(a.cnt[k])) : 0.f;
+      }
+      tier.cover = nx ? static_cast<float>(static_cast<double>(covered) / static_cast<double>(nx)) : 0.f;
+    }
     done_.fetch_add(1, std::memory_order_relaxed);
   }
+  if (cancelled())
+    return false;
+
+  // ---- L: 评估 (只毛): 一级 Row[H][T] + 二级 HoldStat[H] ----
+  factor::cpu::stat::eval_rows(F.ex, req.frame, T, A, L.hd, F.lab.data(), F.w, F.rows.data(), res.hold.data());
+  done_.fetch_add(1, std::memory_order_relaxed);
   publish();
   return true;
 }

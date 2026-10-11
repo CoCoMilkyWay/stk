@@ -10,7 +10,8 @@
 //             收盘档: 当日收盘价 (末笔成交价 = 收盘竞价撮合价); 开盘档: T+N 日开盘价 (09:25 集合竞价撮合价, 无撮合则连续竞价首笔成交价).
 //   冲击成本特征 (lb_cost_{buy,sell}_<a>w) = entry 同一盘口吃 a 万元的 VWAP 相对中间价的偏离 (比例, ≥0):
 //     cost_buy = VWAP^A(a)/mid − 1,  cost_sell = 1 − VWAP^B(a)/mid.  "mid − 成交价" 单拆出来, 标签 − 成本 = 精确的吃单成交收益;
-//     默认不扣 (Factors Run 只看毛), 消费端 (Inspect 冲击选择) 即兴扣: lv − cost_buy(a) − sell_impact, sv − cost_sell(a) − sell_impact,
+//     默认不扣 (Factors Run 只看毛), 消费端 (Inspect 期限结构) 在毛超额二级上按组池化扣: 组均 lv − 组均 cost_buy(a) − sell_impact
+//     (做空腿 cost_sell); 不进标签再算超额 —— 超额对每 t 去均值, 成本进标签只剩截面相对项, 扣不出绝对成本.
 //     平仓侧冲击 Config::sell_impact 为固定模拟值 (不按金额变). 税佣 (Config::commission / stamp) 同理事后扣.
 //     为什么不进标签: 评估 (IC / 超额) 对常数平移不变, 冲击 / 税佣留在标签里只会把 LS / Sharpe 按每行一次往返压死 (1m 档一天 255 次),
 //     高频因子没法研究; 拆成特征后其他阶段想加随时能加.

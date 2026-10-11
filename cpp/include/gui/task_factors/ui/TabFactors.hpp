@@ -50,7 +50,7 @@ struct FactorsUIState {
 struct FactorsUIContext {
   std::string factor_dir; // <factor_dir>/<universe>
   std::string universe, start_date, end_date;
-  double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净档的平仓侧常数; 进请求 key, 改了自动重算)
+  double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估
   const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右下按全局 id 显示代码 / 名称
 };

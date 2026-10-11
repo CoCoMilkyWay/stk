@@ -223,31 +223,6 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   return true;
 }
 
-void net_labels(factor::exec::ForkJoin &ex, const Loaded &L, const CostPlane &cost, float sell_impact, std::vector<LabelPlane> &out) {
-  TraceN("FactorsNetLabels");
-  const size_t n = L.n(), H = L.labels.size();
-  assert(cost.m.size() == n && sell_impact >= 0.f);
-  out.resize(H);
-  for (LabelPlane &o : out)
-    if (o.m.size() != n)
-      o.lv.resize(n), o.sv.resize(n), o.m.resize(n);
-  ex.rows(L.T, [&](int t0, int t1, int) {
-    const size_t i0 = static_cast<size_t>(t0) * L.A, i1 = static_cast<size_t>(t1) * L.A;
-    for (size_t h = 0; h < H; ++h) {
-      const LabelPlane &g = L.labels[h];
-      LabelPlane &o = out[h];
-      for (size_t i = i0; i < i1; ++i) {
-        const bool ok = g.m[i] && cost.m[i];
-        const float lv = static_cast<float>(std::bit_cast<_Float16>(g.lv[i])) - static_cast<float>(std::bit_cast<_Float16>(cost.buy[i])) - sell_impact;
-        const float sv = static_cast<float>(std::bit_cast<_Float16>(g.sv[i])) - static_cast<float>(std::bit_cast<_Float16>(cost.sell[i])) - sell_impact;
-        o.lv[i] = ok ? std::bit_cast<uint16_t>(static_cast<_Float16>(lv)) : 0;
-        o.sv[i] = ok ? std::bit_cast<uint16_t>(static_cast<_Float16>(sv)) : 0;
-        o.m[i] = ok;
-      }
-    }
-  });
-}
-
 // 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
 // (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判
 void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err) {

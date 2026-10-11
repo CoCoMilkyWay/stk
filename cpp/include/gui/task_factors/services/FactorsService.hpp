@@ -26,7 +26,7 @@
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node + 常驻 ForkJoin, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), Run 只算毛口径;
-// 冲击 (lb_cost_* + Config::sell_impact) 由 Inspect 页即兴扣, 不落文件.
+// 冲击 (lb_cost_* 按组池化 + Config::sell_impact) 由 Inspect 页期限结构在毛二级上现扣, 不落文件.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
 #pragma once
@@ -73,7 +73,7 @@ struct FeatureTable {
   uint32_t ts_col = 0;          // ts_valid 门控列 (特征输入)
   uint32_t cs_col = 0;          // cs_valid 门控列 (标签 + 截面门控平面)
   std::vector<LabelCol> labels; // 按 hold 升序; long / short 都齐才收
-  std::vector<CostCol> costs;   // 建仓冲击成本特征, 按 amt 升序 (Inspect 即兴扣冲击用; Run 不读)
+  std::vector<CostCol> costs;   // 建仓冲击成本特征, 按 amt 升序 (Inspect 按组池化给期限结构净线用; Run 不读)
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };
