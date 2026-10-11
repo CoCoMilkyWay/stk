@@ -22,6 +22,11 @@ bool available();
 // 0 号设备型号 (UI 显示用, 首次调用探测后缓存); 未编译 CUDA 或无设备 → nullptr
 const char *device_name();
 
+// 0 号设备显存 (空闲, 总量) 字节, 此刻 (cudaMemGetInfo); 搜索按它定块大小 / 批大小. 未编译 CUDA → 断言死
+void mem_info(size_t *free_bytes, size_t *total_bytes);
+// Search 一批候选上限 (= Stat/Dev.cuh kMaxBatch, 候选指针走 kernel 参数区); 未编译 CUDA → 0
+int search_max_batch();
+
 // ---- 常驻会话: 一轮对拍里输入只上传一次, 逐算子只跑 kernel + 拷回输出 ----
 //   Session 持有: 上传过的输入平面 (归会话, close 时统一释放) / 一块输出平面 / 按需长大的工作区 / 计时事件.
 //   n = T·A 开会话时定死 (整轮张量同形). 输出不清零 (契约: 后端写满每格).

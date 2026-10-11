@@ -783,10 +783,12 @@ void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx, bool viewing, 
 
 } // namespace
 
-int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUIContext &ctx) {
+int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, const FactorsUIContext &ctx) {
   int action = 0;
   const FactorsStatus st = svc.status();
   const bool busy = st == FactorsStatus::Scanning || st == FactorsStatus::Loading || st == FactorsStatus::Running;
+  const SearchStatus sst = ss.status();
+  const bool sbusy = sst == SearchStatus::Loading || sst == SearchStatus::Running; // Optimize 在跑: 它要写因子文件, Run 让路
   const FeatureTable &ft = svc.feats();
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
@@ -846,7 +848,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         "• 悬停表格行看全部持有期");
   ImGui::SameLine();
 
-  const bool can_run = !busy && ctx.axis_ready && !ft.labels.empty();
+  const bool can_run = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty();
   if (!can_run)
     ImGui::BeginDisabled();
   if (ImGui::Button("Run", ImVec2(60, 0)))
@@ -912,6 +914,132 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
   if (!message.empty()) {
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
+  }
+
+  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档下的 净 LS · IC; 最优回写 params 后 TaskFactors 自动 Run ----
+  {
+    const FactorRow *view_row = nullptr;
+    for (const FactorRow &r : s_rows)
+      if (r.file == ui.view_file)
+        view_row = &r;
+    if (ui.opt_cost_idx < 0) {
+      ui.opt_cost_idx = 0;
+      for (size_t i = 0; i < ft.costs.size(); ++i)
+        if (ft.costs[i].amt == 5)
+          ui.opt_cost_idx = static_cast<int>(i);
+    }
+    ui.opt_cost_idx = std::clamp(ui.opt_cost_idx, 0, std::max(0, static_cast<int>(ft.costs.size()) - 1));
+    const bool can_opt = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && !ft.costs.empty() && view_row && view_row->error.empty();
+    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Optimize:");
+    ImGui::SameLine();
+    if (!can_opt)
+      ImGui::BeginDisabled();
+    if (ImGui::Button("Optimize", ImVec2(70, 0))) {
+      ui.opt_row = *view_row;
+      action = 3;
+    }
+    if (!can_opt)
+      ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档建仓冲击下的 净 LS × IC (持有期自选最优)\n"
+                     "• 粗网格 (每参数一倍一格) → 分支 (互不相邻的 top-3) → 每支围 top-1 逐层减半细化, 一层增益 < 5%% 停\n"
+                     "• 数据按天分块流式过, 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
+                     "• 最优优于当前参数 → 回写该文件 params (stat 删掉) 并自动 Run 重算; 否则文件不动"
+                   : "先在表格里点一行高光 (与 Inspect 同一对象)",
+          view_row ? view_row->file.c_str() : "");
+    ImGui::SameLine();
+    if (!sbusy)
+      ImGui::BeginDisabled();
+    if (ImGui::Button("Cancel##opt", ImVec2(60, 0)))
+      action = -3;
+    if (!sbusy)
+      ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60);
+    const auto amt_label = [&](int i) { return ft.costs.empty() ? std::string("-") : std::to_string(ft.costs[static_cast<size_t>(i)].amt) + "w"; };
+    if (sbusy)
+      ImGui::BeginDisabled();
+    if (ImGui::BeginCombo("Amt", amt_label(ui.opt_cost_idx).c_str())) {
+      for (size_t i = 0; i < ft.costs.size(); ++i)
+        if (ImGui::Selectable(amt_label(static_cast<int>(i)).c_str(), static_cast<int>(i) == ui.opt_cost_idx))
+          ui.opt_cost_idx = static_cast<int>(i);
+      ImGui::EndCombo();
+    }
+    if (sbusy)
+      ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+      tip("建仓冲击的下单金额档 (万): 净 LS = 毛 LS − 顶组买入冲击 − 底组卖出冲击 − 2 × sell_impact (%.4f)", ctx.sell_impact);
+    ImGui::SameLine();
+    ImGui::Text("Status:");
+    ImGui::SameLine();
+    static SearchResult s_sr; // 短锁拷快照 (每趟结束才变)
+    {
+      std::lock_guard<std::mutex> lock(ss.mutex);
+      s_sr = ss.result;
+    }
+    const int sdone = ss.done(), stotal = ss.total();
+    switch (sst) {
+    case SearchStatus::Idle:
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
+      break;
+    case SearchStatus::Loading:
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "pass %d: loading chunk %d/%d (%d/%d days)", ss.pass(), ss.chunk() + 1, ss.chunks(), sdone,
+                         stotal);
+      break;
+    case SearchStatus::Running:
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "pass %d: %d/%d cand x chunk%s%s", ss.pass(), sdone, stotal, s_sr.best_expr.empty() ? "" : " | best ",
+                         s_sr.best_expr.c_str());
+      break;
+    case SearchStatus::Done:
+      ImGui::TextColored(StatusColor(s_sr.wrote ? TaskStatus::Kind::Ready : TaskStatus::Kind::Warn), "%s (%s, %d cand, %d pass, %.0fs)", s_sr.message.c_str(),
+                         s_sr.backend.c_str(), static_cast<int>(s_sr.cands.size()), s_sr.n_pass, s_sr.seconds);
+      break;
+    case SearchStatus::Cancelled:
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled (pass %d, %d cand)", ss.pass(), static_cast<int>(s_sr.cands.size()));
+      break;
+    }
+    // 悬停: 候选榜 (score 降序, 前 20) + 基线
+    if (ImGui::IsItemHovered() && !s_sr.cands.empty()) {
+      ImGui::BeginTooltip();
+      ImGui::Text("%s", s_sr.file.c_str());
+      ImGui::TextDisabled("base %s  score %.4g", s_sr.expr0.c_str(), s_sr.base_score);
+      if (!s_sr.best_expr.empty() && std::isfinite(s_sr.base_score) && s_sr.base_score > 0.0)
+        ImGui::TextDisabled("best gain %+.1f%%", 100.0 * (s_sr.cands.front().score / s_sr.base_score - 1.0));
+      ImGui::TextDisabled("%d chunk x %d days, batch %d", s_sr.n_chunk, s_sr.chunk_days, s_sr.batch);
+      if (ImGui::BeginTable("opt_cands", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("expr");
+        ImGui::TableSetupColumn("pass");
+        ImGui::TableSetupColumn("h*");
+        ImGui::TableSetupColumn("LS net");
+        ImGui::TableSetupColumn("IC");
+        ImGui::TableSetupColumn("score");
+        ImGui::TableHeadersRow();
+        const size_t n_show = std::min<size_t>(20, s_sr.cands.size());
+        for (size_t i = 0; i < n_show; ++i) {
+          const SearchCand &c = s_sr.cands[i];
+          const bool is_base = c.expr == s_sr.expr0;
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextColored(is_base ? StatusColor(TaskStatus::Kind::Warn) : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s%s", c.expr.c_str(),
+                             is_base ? " (base)" : "");
+          ImGui::TableNextColumn();
+          ImGui::Text("%d", c.pass);
+          ImGui::TableNextColumn();
+          ImGui::Text("%s", c.best_hi >= 0 ? factor::stat::hold_name(s_sr.hd.h[c.best_hi]).c_str() : "-");
+          ImGui::TableNextColumn();
+          ImGui::Text("%.5f", c.ls_net);
+          ImGui::TableNextColumn();
+          ImGui::Text("%.4f", c.ic);
+          ImGui::TableNextColumn();
+          if (std::isfinite(c.score))
+            ImGui::Text("%.4g", c.score);
+          else
+            ImGui::TextDisabled("-inf");
+        }
+        ImGui::EndTable();
+      }
+      ImGui::EndTooltip();
+    }
   }
 
   ImGui::Separator();

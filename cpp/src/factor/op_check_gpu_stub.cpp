@@ -12,6 +12,9 @@ bool available() { return false; }
 
 const char *device_name() { return nullptr; }
 
+void mem_info(size_t *, size_t *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }
+int search_max_batch() { return 0; }
+
 Session *session_open(size_t) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
   return nullptr;

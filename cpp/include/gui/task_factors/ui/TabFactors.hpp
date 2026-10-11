@@ -1,9 +1,10 @@
 // Factors→Factors: <factor_dir>/<universe>/ 下一因子一文件的整体面板. 顶部 = 作用域 / 后端 / 金额档 / 持有期 + Run / Cancel /
-// Rescan + 状态; 中间 = 加因子构建器 (从根往里逐槽下拉选算子 / 特征, 参数手填, 即时校验); 下面 = 表 (一行一文件: BROKEN 红 +
+// Rescan + 状态, 下一行 Optimize (高光行的参数搜索: 金额档 + 进度 / 结论); 中间 = 加因子构建器 (从根往里逐槽下拉选算子 / 特征, 参数手填, 即时校验); 下面 = 表 (一行一文件: BROKEN 红 +
 // 原因, 有效行显示规范串 / 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 载入构建器编辑, 点行高光 → 给 Inspect 页).
 #pragma once
 
 #include "gui/task_factors/services/FactorsService.hpp"
+#include "gui/task_factors/services/SearchService.hpp"
 
 #include <cstdint>
 #include <string>
@@ -36,6 +37,9 @@ struct FactorsUIState {
   std::string edit_file;
   // 点行高光 = 单因子展示 (Inspect 页) 的对象, 与 edit_file 互不干涉; 再点同一行 → 取消
   std::string view_file;
+  // Optimize (对象 = 高光行): 金额档 (FeatureTable::costs 下标; -1 = 未定, 首帧取 5w 档, 没有则 0); 点下时把行拷给 opt_row (TaskFactors 据此建请求)
+  int opt_cost_idx = -1;
+  FactorRow opt_row;
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
   // 表列宽贴合 (对仗 TabOperators)
@@ -59,7 +63,7 @@ struct FactorsUIContext {
 // 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
 void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
-// 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 0 = 无
-int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUIContext &ctx);
+// 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Optimize 高光行 (ui.opt_row), -3 = 取消 Optimize, 0 = 无
+int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors

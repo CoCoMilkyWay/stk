@@ -413,6 +413,18 @@ void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
   std::filesystem::remove(path);
 }
 
+void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e) {
+  const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
+  std::ifstream f(path);
+  assert(f.is_open() && "搜索落盘: 因子文件不存在");
+  ojson j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
+  f.close();
+  assert(j.is_object() && "搜索落盘: 因子文件扫描时已解析过, 不该变");
+  j["params"] = params_json(e);
+  j.erase("stat");
+  write_json(path, j);
+}
+
 // ============================================================================
 // Service
 // ============================================================================

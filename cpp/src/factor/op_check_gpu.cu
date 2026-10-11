@@ -203,6 +203,13 @@ const char *device_name() {
   return buf[0] ? buf : nullptr;
 }
 
+void mem_info(size_t *free_bytes, size_t *total_bytes) {
+  assert(free_bytes && total_bytes);
+  CU(cudaMemGetInfo(free_bytes, total_bytes));
+}
+
+int search_max_batch() { return stat::kMaxBatch; }
+
 // 分派: 六个入口 (ts / cs × 会话 / 一次性 / 设备输出) 共用 OpTable 展开, 只差调哪个 call
 void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
                 int A, const Param &p, double *kernel_ms) {

@@ -11,6 +11,7 @@
 //   (以后做增量: 只重算改动节点的下游, 计划不变).
 //   build_forest: 多个 Expr 合成一张 DAG (跨因子公共子式只算一次 = tensor share); roots[k] = 第 k 棵的根 (同规范串 → 同节点).
 //           根节点算完要先被调用方消费 (Stat), 再释放: plan 把根视作"自己消费自己", 无后续消费者时 free_after[根] 含自己的槽.
+//           keep_roots = true: 根的槽永不回收 (每根独占一槽, 全部根同时存活到走完), 调用方一批一起消费 (Search GPU 批评估要 C 张根平面同在).
 //   本头只管结构与槽计划, 不含任何后端, 也不含并行策略 (Run 与 search 的并行方案不同, 各在自己的 evaluator 里).
 // =============================================================================
 
@@ -92,8 +93,8 @@ struct DagBuilder {
 
 } // namespace detail
 
-// 活性分析 + 槽分配 (build 末尾调; 改参数不改结构则不必重做)
-inline void plan(Dag &d) {
+// 活性分析 + 槽分配 (build 末尾调; 改参数不改结构则不必重做). keep_roots 见文件头 build_forest
+inline void plan(Dag &d, bool keep_roots = false) {
   const int N = static_cast<int>(d.nodes.size());
   std::vector<int> last_use(static_cast<size_t>(N), -1);
   for (int i = 0; i < N; ++i) {
@@ -124,7 +125,7 @@ inline void plan(Dag &d) {
     for (int a = 0; a < expr::kOps[n.op].arity; ++a) {
       const int j = n.in[a];
       const DagNode &src = d.nodes[static_cast<size_t>(j)];
-      if (src.op < 0 || last_use[static_cast<size_t>(j)] != i)
+      if (src.op < 0 || last_use[static_cast<size_t>(j)] != i || (keep_roots && d.is_root(j)))
         continue;
       bool dup = false;
       for (int b = 0; b < a; ++b)
@@ -134,8 +135,8 @@ inline void plan(Dag &d) {
       free_slots.push_back(src.slot);
       d.free_after[static_cast<size_t>(i)].push_back(src.slot);
     }
-    // 森林的根且无后续消费者: 调用方消费完即释放
-    if (last_use[static_cast<size_t>(i)] == i && d.is_root(i)) {
+    // 森林的根且无后续消费者: 调用方消费完即释放 (keep_roots: 不回收, 根平面活到走完)
+    if (!keep_roots && last_use[static_cast<size_t>(i)] == i && d.is_root(i)) {
       free_slots.push_back(n.slot);
       d.free_after[static_cast<size_t>(i)].push_back(n.slot);
     }
@@ -154,7 +155,7 @@ inline Dag build(const expr::Expr &e) {
 }
 
 // 多 Expr 合一: 节点按各 Expr 的后序依次追加 (仍是拓扑序), 公共子式命中 memo 不重建
-inline Dag build_forest(const std::vector<const expr::Expr *> &es) {
+inline Dag build_forest(const std::vector<const expr::Expr *> &es, bool keep_roots = false) {
   assert(!es.empty());
   Dag d;
   std::map<std::string, int> memo, feat_idx;
@@ -163,7 +164,7 @@ inline Dag build_forest(const std::vector<const expr::Expr *> &es) {
     detail::DagBuilder b{*e, d, memo, feat_idx};
     d.roots.push_back(b.visit(0));
   }
-  plan(d);
+  plan(d, keep_roots);
   return d;
 }
 

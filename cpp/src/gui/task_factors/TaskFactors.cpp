@@ -12,6 +12,7 @@
 #include "gui/task_factors/services/InspectService.hpp"
 #include "gui/task_factors/services/KlineService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
+#include "gui/task_factors/services/SearchService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "gui/task_factors/ui/TabInspect.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
@@ -21,6 +22,7 @@
 
 #include <cassert>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace GUI::Tasks {
@@ -41,7 +43,9 @@ struct TaskFactorsState {
 
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
-  std::string factors_scanned_dir; // 上次扫描的目录 (universe 切换 → 自动重扫)
+  std::string factors_scanned_dir;                        // 上次扫描的目录 (universe 切换 → 自动重扫)
+  std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Optimize (与 factors_service 同建); 写了 params 的那一轮结束 → 自动 Run
+  Factors::SearchStatus prev_search_status = Factors::SearchStatus::Idle;
 
   std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (worker 懒起); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
   std::unique_ptr<Factors::KlineService> kline_service;     // Inspect 右下选中标的的分钟 K 线流 (与 inspect_service 同生灭)
@@ -118,6 +122,23 @@ TaskHandle CreateFactorsTask() {
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
   // (与 universe 无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
+    // Optimize 写了 params 的那一轮 (Running → Done) 结束: 重扫 + Run 重算全目录 stat (Search 跑时 Run 被禁, 不会撞)
+    if (state->search_service && state->factors_service) {
+      const auto sst = state->search_service->status();
+      if (sst == Factors::SearchStatus::Done && state->prev_search_status == Factors::SearchStatus::Running) {
+        bool wrote = false;
+        {
+          std::lock_guard<std::mutex> lock(state->search_service->mutex);
+          wrote = state->search_service->result.wrote;
+        }
+        if (wrote) {
+          Factors::FactorsRequest req;
+          if (Factors::MakeFactorsRequest(data, /*evaluate=*/true, state->factors_ui.backend == 1, req))
+            state->factors_service->Request(req);
+        }
+      }
+      state->prev_search_status = sst;
+    }
     if (!state->operators_service)
       return;
     auto &svc = *state->operators_service;
@@ -130,8 +151,17 @@ TaskHandle CreateFactorsTask() {
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx == -1 || idx < TAB_COUNT);
-    if (idx == TAB_FACTORS)
+    if (idx == TAB_FACTORS) {
+      if (state->search_service) { // Optimize 在跑时 Factors 行显示它的进度 (Run 此时被禁)
+        const auto &ss = *state->search_service;
+        const auto sst = ss.status();
+        if (sst == Factors::SearchStatus::Loading || sst == Factors::SearchStatus::Running) {
+          const int total = ss.total();
+          return {TaskStatus::Kind::Busy, "optimizing " + std::to_string(total > 0 ? 100 * ss.done() / total : 0) + "%"};
+        }
+      }
       return state->factors_service ? factors_status(*state->factors_service) : TaskStatus{};
+    }
     if (idx == TAB_INSPECT)
       return state->inspect_service ? inspect_status(*state->inspect_service) : TaskStatus{};
     // 任务行与 Operators 行同一状态
@@ -187,8 +217,11 @@ TaskHandle CreateFactorsTask() {
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
         state->factors_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
+        state->search_service = std::make_unique<Factors::SearchService>();
+        state->search_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
       }
       auto &fs = *state->factors_service;
+      auto &ss = *state->search_service;
       const Factors::FactorsUIContext ctx = factors_context(data);
       if (state->factors_scanned_dir != ctx.factor_dir) {
         state->factors_scanned_dir = ctx.factor_dir;
@@ -206,13 +239,19 @@ TaskHandle CreateFactorsTask() {
       if (idx == TAB_INSPECT) {
         iaction = Factors::RenderTabInspect(fs, is, *state->kline_service, state->factors_ui, state->inspect_ui, ctx);
       } else {
-        const int action = Factors::RenderTabFactors(fs, state->factors_ui, ctx);
+        const int action = Factors::RenderTabFactors(fs, ss, state->factors_ui, ctx);
         if (action == 1 || action == 2) {
           Factors::FactorsRequest req;
           if (Factors::MakeFactorsRequest(data, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
             fs.Request(req);
         } else if (action == -1) {
           fs.RequestCancel();
+        } else if (action == 3) {
+          Factors::SearchRequest req;
+          if (Factors::MakeSearchRequest(data, state->factors_ui.opt_row, state->factors_ui.backend == 1, state->factors_ui.opt_cost_idx, req))
+            ss.Request(req);
+        } else if (action == -3) {
+          ss.RequestCancel();
         }
       }
       // 自动起算两页都看: Factors 页点行高光即起算, 不等切到 Inspect (左栏 Inspect 状态同步走)
@@ -236,6 +275,8 @@ TaskHandle CreateFactorsTask() {
   handle.Destroy = [state]() {
     state->operators_service.reset(); // 析构 Stop() join worker
     state->operators_started = false;
+    state->search_service.reset(); // 析构 Stop() join worker
+    state->prev_search_status = Factors::SearchStatus::Idle;
     state->factors_service.reset();
     state->factors_scanned_dir.clear();
     state->kline_service.reset();   // 析构 Stop() join worker

@@ -200,4 +200,8 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
                              std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err);
 void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
+// 参数搜索落盘 (SearchService worker 调, 服务空闲时): params 换成 e 的 (expr 键不动, 规范串仍由 expr + params 还原), 旧 stat 删掉
+// (是别的参数算的; 调用方随后 Run 重算), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
+void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e);
+
 } // namespace GUI::Factors

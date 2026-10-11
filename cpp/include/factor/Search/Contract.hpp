@@ -114,4 +114,15 @@ inline Score score_of(const Result &r, const Holds &hd, const Objective &o) {
   return s;
 }
 
+// 固定持有期 hi 的分数 (细化阶段 h 定在粗阶段的 h*, 不逐候选重选): 同一式, n < 3 / 任一 ≤ 0 → −∞
+inline double score_at(const Score &s, int hi, const Objective &o) {
+  constexpr double kNeg = -std::numeric_limits<double>::infinity();
+  if (s.hs[hi].n < 3)
+    return kNeg;
+  const double ls = s.net[hi], ic = s.hs[hi].ic_mean;
+  if (!(ls > 0.0 && ic > 0.0))
+    return kNeg;
+  return ls * (o.ic_pow == 1.0 ? ic : std::pow(ic, o.ic_pow));
+}
+
 } // namespace factor::search
