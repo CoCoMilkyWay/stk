@@ -11,11 +11,15 @@
 #include "factor/Expr.hpp" // kOps / operand_tex (签名 LaTeX 由表列生成)
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
+#include "factor/Search/Check.hpp"
 #include "factor/Stat/Check.hpp"
 #include "misc/profiler.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <random>
 #include <string>
@@ -131,7 +135,7 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   else
     run_stream_ts<S, AR, W>(d, p, R.got);
   row.stream_ms = ms_since(t0);
-  row.stream = compare(R.ref, R.got, tol_of(nm, false, Profile::PLAIN));
+  row.cpu_chk = compare(R.ref, R.got, tol_of(nm, false, Profile::PLAIN));
 
   if (R.gpu) {
     double kms = -1; // 纯 kernel (cudaEvent); 输入已常驻, 这里只剩 kernel + 一张输出 D2H
@@ -140,51 +144,74 @@ void run_op(RoundCtx &R, OperatorRow &row) {
     else
       factor::gpu::run_ts(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
     row.gpu_ms = kms;
-    row.gpu = compare(R.ref, R.g, tol_of(nm, true, Profile::PLAIN));
-  } else {
-    row.gpu_ms = -1;
-    row.gpu = {};
+    row.gpu_chk = compare(R.ref, R.g, tol_of(nm, true, Profile::PLAIN));
   }
 }
 
-// Stat 评估算子: 两口径 (CS / TS) 各造数 (PLAIN, 与 op_check 同口径) → cpu (全核) / gpu 各计时 → 一级 + 二级对拍.
-// 表列: cpu_ms / gpu_ms = 两口径 eval 之和, stream 列 n/a, gpu Diff = 两口径 × 两级合并; prep (CS 那轮) 与二级汇总进 extra
-void run_stat(const OperatorsRequest &rq, OperatorRow &row, StatExtra &extra) {
+// ---- 评估算子跑手共用件 ----
+
+// 多项对拍并进一个表格 Diff (计数相加, worst 取大, worst_at 取首个坏项)
+void merge_diff(factor::check::Diff &into, const factor::check::Diff &d) {
+  into.mask_bad += d.mask_bad;
+  into.val_bad += d.val_bad;
+  into.compared += d.compared;
+  if (d.worst > into.worst)
+    into.worst = d.worst;
+  if (into.worst_at < 0)
+    into.worst_at = d.worst_at;
+}
+
+// detail 文本按行追加 (printf 风格)
+__attribute__((format(printf, 2, 3))) void detail_line(std::string &s, const char *fmt, ...) {
+  char buf[512];
+  va_list ap;
+  va_start(ap, fmt);
+  const int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  assert(n >= 0 && n < static_cast<int>(sizeof(buf)));
+  if (!s.empty())
+    s += '\n';
+  s.append(buf, static_cast<size_t>(n));
+}
+void detail_prep(std::string &s, double cpu_ms, double gpu_ms) {
+  if (gpu_ms >= 0)
+    detail_line(s, "prep (标签 rank 预处理, 常驻期一次, 不进耗时列): cpu %.3f ms, gpu %.3f ms", cpu_ms, gpu_ms);
+  else
+    detail_line(s, "prep (标签 rank 预处理, 常驻期一次, 不进耗时列): cpu %.3f ms", cpu_ms);
+}
+constexpr factor::stat::Frame kFrames[2] = {factor::stat::Frame::CS, factor::stat::Frame::TS};
+
+// Stat 评估算子: 两口径 (CS / TS) 各造数 (PLAIN, 与 op_check 同口径) → cpu (全核) / gpu 各计时 → gpu 对 cpu 一级 + 二级对拍.
+// cpu 即 golden (cpu_chk 空). 表列耗时 = 两口径 eval 之和; detail = prep 耗时 (CS 那轮) + 两口径每持有期的 cpu 侧二级汇总
+void run_stat(RoundCtx &R, OperatorRow &row) {
   using namespace factor::stat::check;
   const bool has_gpu = factor::gpu::available();
-  row.cpu_ms = 0;
-  row.stream_ms = -1;
-  row.stream = {};
   row.gpu_ms = has_gpu ? 0 : -1;
-  row.gpu = {};
-  extra.gpu_prep_ms = -1;
-  const auto merge = [&](const Diff &d) {
-    row.gpu.mask_bad += d.mask_bad;
-    row.gpu.val_bad += d.val_bad;
-    row.gpu.compared += d.compared;
-    if (d.worst > row.gpu.worst)
-      row.gpu.worst = d.worst;
-    if (row.gpu.worst_at < 0)
-      row.gpu.worst_at = d.worst_at;
-  };
-  for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
-    const int fi = static_cast<int>(fr);
-    std::mt19937 rng(rq.seed);
+  double prep_cpu = 0, prep_gpu = -1;
+  std::string holds;
+  for (const factor::stat::Frame fr : kFrames) {
+    std::mt19937 rng(R.rq.seed);
     Data d;
-    make(d, fr, Profile::PLAIN, rq.times, rq.A, rng);
+    make(d, fr, Profile::PLAIN, R.rq.times, R.rq.A, rng);
     Result cpu;
     run_cpu(d, cpu, cpu_threads());
     row.cpu_ms += cpu.eval_ms;
     if (fr == factor::stat::Frame::CS)
-      extra.cpu_prep_ms = cpu.prep_ms;
-    extra.n_hold = d.hd.n;
-    for (int i = 0; i < d.hd.n; ++i)
-      extra.hold[fi][i] = cpu.stat[static_cast<size_t>(i)];
+      prep_cpu = cpu.prep_ms;
+    detail_line(holds, "%s", factor::stat::frame_name(fr));
+    for (int i = 0; i < d.hd.n; ++i) {
+      const factor::stat::HoldStat &h = cpu.stat[static_cast<size_t>(i)];
+      detail_line(holds,
+                  "  h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
+                  "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f",
+                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
+                  h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
+    }
     if (!has_gpu)
       continue;
     Result gpu;
     gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
-    std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
+    std::vector<factor::stat::Label> lab(static_cast<size_t>(d.hd.n));
     for (int i = 0; i < d.hd.n; ++i)
       lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
                                      d.lab[static_cast<size_t>(i)].m.data()};
@@ -194,31 +221,155 @@ void run_stat(const OperatorsRequest &rq, OperatorRow &row, StatExtra &extra) {
     const Tol tol = tol_of(Profile::PLAIN);
     row.gpu_ms += gpu.eval_ms;
     if (fr == factor::stat::Frame::CS)
-      extra.gpu_prep_ms = gpu.prep_ms;
-    merge(compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol));
-    merge(compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol));
+      prep_gpu = gpu.prep_ms;
+    merge_diff(row.gpu_chk, compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol));
+    merge_diff(row.gpu_chk, compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol));
   }
+  detail_prep(row.detail, prep_cpu, prep_gpu);
+  row.detail += '\n' + holds;
+}
+
+// Search 批评估算子 (与 op_check check_search 同口径): 两口径各造数 (Stat 造数 + kCands 张派生候选 + 成本); golden = Stat CPU
+// 每候选 HoldStat + 朴素成本池化. cpu / gpu 各算 整块 + 两块 (带 carry): cpu_chk = cpu 整块 vs golden + 两块 merge vs 整块;
+// gpu_chk = gpu 整块 vs cpu 整块 + 两块 merge vs 整块. 表列耗时 = 两口径整块 eval 之和 (kCands 张候选一批; 分块两趟只对拍不计时);
+// detail = prep 耗时 (CS 那轮) + 两口径每候选的 cpu 侧得分 (Objective 默认: 净多空 = 毛 − 池化成本)
+void run_search(RoundCtx &R, OperatorRow &row) {
+  namespace sk = factor::search::check;
+  const bool has_gpu = factor::gpu::available();
+  const int threads = factor::stat::check::cpu_threads();
+  row.gpu_ms = has_gpu ? 0 : -1;
+  double prep_cpu = 0, prep_gpu = -1;
+  std::string scores;
+  for (const factor::stat::Frame fr : kFrames) {
+    std::mt19937 rng(R.rq.seed);
+    sk::Data d;
+    sk::make(d, fr, sk::Profile::PLAIN, R.rq.times, R.rq.A, rng);
+    const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
+    const factor::stat::Holds &hd = d.base.hd;
+    const sk::Tol tol = factor::stat::check::tol_of(sk::Profile::PLAIN);
+    const sk::Split sp = sk::split_of(T, hd);
+    // 一个后端: 整块 vs golden (ref), 两块 merge vs 整块
+    const auto judge = [&](factor::check::Diff &into, const sk::Ref *ref, const factor::search::Result *full,
+                           const factor::search::Result *c1, const factor::search::Result *c2) {
+      for (int c = 0; c < sk::kCands; ++c) {
+        merge_diff(into, sk::compare(ref[c], full[c], hd, tol));
+        factor::search::Result m = c1[c];
+        m.merge(c2[c], hd.n);
+        sk::Ref rf;
+        sk::to_ref(full[c], hd, rf);
+        merge_diff(into, sk::compare(rf, m, hd, tol));
+      }
+    };
+    sk::Ref ref[sk::kCands];
+    for (int c = 0; c < sk::kCands; ++c)
+      sk::reference(d, c, threads, ref[c]);
+    factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
+    {
+      double prep_ms = 0, eval_ms = 0;
+      sk::run_cpu(d, threads, 0, T, 0, full, &prep_ms, &eval_ms);
+      row.cpu_ms += eval_ms;
+      if (fr == factor::stat::Frame::CS)
+        prep_cpu = prep_ms;
+      sk::run_cpu(d, threads, 0, sp.T1, 0, c1);
+      sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, c2);
+      judge(row.cpu_chk, ref, full, c1, c2);
+    }
+    detail_line(scores, "%s", factor::stat::frame_name(fr));
+    for (int c = 0; c < sk::kCands; ++c) {
+      const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{});
+      detail_line(scores, "  c%d  best h=%-5s ls_net %+.5f ic %+.4f score %+.3g | cost buy_hi %.5f (%lld) sell_lo %.5f (%lld)", c,
+                  s.best >= 0 ? factor::stat::hold_name(hd.h[s.best]).c_str() : "-", s.ls_net, s.ic, s.score, full[c].cost.buy_mean(),
+                  full[c].cost.n_hi, full[c].cost.sell_mean(), full[c].cost.n_lo);
+    }
+    if (!has_gpu)
+      continue;
+    {
+      std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
+      const float *xv[sk::kCands];
+      const uint8_t *xm[sk::kCands];
+      const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out, double *prep_ms, double *eval_ms) {
+        const size_t off = static_cast<size_t>(row0) * A;
+        for (int i = 0; i < H; ++i) {
+          const factor::stat::check::LabelHost &L = d.base.lab[static_cast<size_t>(i)];
+          lab[static_cast<size_t>(i)] = {L.lv.data() + off, L.sv.data() + off, L.m.data() + off};
+        }
+        for (int c = 0; c < sk::kCands; ++c)
+          xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
+        const factor::search::Cost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
+        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), cost, out, prep_ms,
+                                eval_ms);
+      };
+      sk::Ref cpu_ref[sk::kCands]; // gpu 的 golden = cpu 整块
+      for (int c = 0; c < sk::kCands; ++c)
+        sk::to_ref(full[c], hd, cpu_ref[c]);
+      factor::search::Result gfull[sk::kCands], gc1[sk::kCands], gc2[sk::kCands];
+      double prep_ms = 0, eval_ms = 0;
+      run(0, T, 0, gfull, &prep_ms, &eval_ms);
+      row.gpu_ms += eval_ms;
+      if (fr == factor::stat::Frame::CS)
+        prep_gpu = prep_ms;
+      run(0, sp.T1, 0, gc1, nullptr, nullptr);
+      run(sp.s, T - sp.s, sp.t_lo, gc2, nullptr, nullptr);
+      judge(row.gpu_chk, cpu_ref, gfull, gc1, gc2);
+    }
+  }
+  detail_prep(row.detail, prep_cpu, prep_gpu);
+  row.detail += '\n' + scores;
+}
+
+// 评估算子的持有期集合 (Stat/Check.hpp kHolds) → 签名里的 h 域 LaTeX; 列表改了 → operand 变 → 旧 operators.json 作废
+std::string holds_tex() {
+  std::string s = R"(h \in \{)";
+  for (int i = 0; i < factor::stat::check::kNumHolds; ++i)
+    s += (i ? R"(,\,\mathrm{)" : R"(\mathrm{)") + factor::stat::hold_name(factor::stat::check::kHolds[i]) + "}";
+  return s + R"(\})";
 }
 
 } // namespace
 
 OperatorsService::OperatorsService() {
-  // 行序 = 全局 idx (UI 默认序 / operators.json 的 idx 都按它): 首行 Stat, 之后 = OpTable 表序.
-  // 首行: Stat 评估算子 (不在 OpTable; T / A / Kernel 空; 二元 = 因子 x + 每持有期一组标签 y_h)
+  // 行序 = 全局 idx (UI 默认序 / operators.json 的 idx 都按它): 评估算子 Stat, Search 在前 (挖掘的第一道闸, 每轮先验; Search 的
+  // golden 是 Stat, 跟在后), 之后 = OpTable 表序. 评估算子不在 OpTable: T / A / Kernel 空, 无 stream 后端, 持有期集合 = Stat/Check.hpp kHolds
+  const std::string holds = holds_tex();
   {
-    OperatorRow s;
+    OperatorRow s; // 二元 = 因子 x + 每持有期一组标签 y_h
     s.e_name = "Stat";
     s.c_name = "评估";
     s.arity = 2;
     s.params = "";
-    s.operand = R"tex(x, y_h \in \mathbb{R};\; h \in \{5,10,30\})tex";
+    s.operand = R"tex(x, y_h \in \mathbb{R};\; )tex" + holds;
     s.op = R"tex(\mathrm{rIC},\,\mathrm{IR},\,t,\,G_{20},\,\mathrm{LS},\,\mathrm{SR},\,\beta,\,\mathrm{mono},\,\mathrm{rAC})tex";
     s.note = "因子评估: 每 (h, t) 的 IC / 20 组均值 / 多空 / rank-AC, 再沿 t 汇总; 挖掘的第一道闸, 每轮先跑";
+    s.doc = "因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组和 / 顶底多空 / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
+            "标签统一超额 (减截面均值). 两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
+            "无流式后端, cpu 即 golden (CPU 列不对拍); GPU 列 Diff = 两口径 × (一级 rows + 二级 stat) gpu ↔ cpu 合并.\n"
+            "表列耗时 = 两口径 eval 之和 (每因子一次: rank/量化 + 逐持有期一遍 A 轴), 不含 prep (标签 rank 预处理, 见下).\n"
+            "造数: long = 0.3·z + 噪声 (IC ≈ 0.3; TS 的 x = Φ(z)). ic_t / ls_t 按 n/h 折算 (相邻 h 行标签重叠); Sharpe 以持有期为一期年化;\n"
+            "rank-AC 的 lag = h; 段末 h+3 行 (持有到收盘) 不计标签统计.";
     s.classified = false;
     rows.push_back(s);
-    runners_.push_back(nullptr); // 另走 run_stat
+    runners_.push_back(&run_stat);
   }
-  assert(stat_index() == 0);
+  {
+    OperatorRow s; // 三元 = 一批候选 x_c + 每持有期一组标签 y_h + 成本 κ (共用)
+    s.e_name = "Search";
+    s.c_name = "批评估";
+    s.arity = 3;
+    s.params = "";
+    s.operand = R"tex(x_c, y_h, \kappa \in \mathbb{R};\; c < C,\; )tex" + holds;
+    s.op = R"tex(\sum_t \mathrm{Row}_{c,h,t},\; \overline{\kappa}_{\mathrm{top}},\, \overline{\kappa}_{\mathrm{bot}})tex";
+    s.note = "挖掘批评估: 每候选每持有期沿 t 累加 (分块带 carry 可合并) + 顶底组成本池化; golden = Stat";
+    s.doc = "挖掘批评估算子 (factor/Search): 一批候选平面 x_c 共用标签 y_h 与成本 κ, 每候选每持有期一份沿 t 可合并的 Accum (= Stat 的 Row 累加) + "
+            "顶组买入 / 底组卖出成本两格池化.\n"
+            "分块流式: 块带 carry (≥ max_lag) 接上一块, 统计从 t_lo 起, 各块 Result merge ≡ 整块一次算.\n"
+            "golden = Stat CPU 对每张候选的 HoldStat + 朴素成本池化 (Stat 自身已 gpu ↔ cpu 对拍过):\n"
+            "  CPU 列 Diff = cpu 整块 vs golden + 两块 merge vs 整块; GPU 列 Diff = gpu 整块 vs cpu 整块 + 两块 merge vs 整块; 两口径 × 候选合并.\n"
+            "造数沿用 Stat (候选 = CS {x, −x, x²} / TS {x, 1−x, x²}; 成本 = POS 造数 × 1e-3 / 1.5e-3 经 fp16).\n"
+            "表列耗时 = 两口径整块 eval 之和 (全部候选一批; 分块两趟只对拍不计时), 不含 prep.";
+    s.classified = false;
+    rows.push_back(s);
+    runners_.push_back(&run_search);
+  }
   // 静态列直接抄 OpTable 三维分类列, 跑手按 A 域 token 粘贴选后端命名空间
   // (SELF → ts, ALL/GROUP → cs; 缺任一后端同名 struct → 此处编译错)
 #define RUN_SELF(Name, ar, t) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>)
@@ -234,11 +385,13 @@ OperatorsService::OperatorsService() {
 #undef RUN_ALL
 #undef RUN_SELF
   assert(rows.size() == runners_.size());
-  // 签名 LaTeX 由表列生成 (与 Expr 的 kOps 同序: rows[i] ↔ kOps[i-1])
-  assert(rows.size() == static_cast<size_t>(factor::expr::kOpCount) + 1);
-  for (size_t i = 1; i < rows.size(); ++i) {
-    assert(std::strcmp(rows[i].e_name, factor::expr::kOps[i - 1].name) == 0);
-    rows[i].operand = factor::expr::operand_tex(factor::expr::kOps[i - 1]);
+  // OpTable 行的签名 LaTeX 由表列生成 (与 Expr 的 kOps 同序: rows[i] ↔ kOps[i - n_eval], n_eval = 前置评估算子行数)
+  const size_t n_eval = static_cast<size_t>(std::count_if(rows.begin(), rows.end(), [](const OperatorRow &r) { return !r.classified; }));
+  assert(rows.size() == static_cast<size_t>(factor::expr::kOpCount) + n_eval);
+  for (size_t i = n_eval; i < rows.size(); ++i) {
+    assert(rows[i].classified);
+    assert(std::strcmp(rows[i].e_name, factor::expr::kOps[i - n_eval].name) == 0);
+    rows[i].operand = factor::expr::operand_tex(factor::expr::kOps[i - n_eval]);
   }
   // 未跑之前也显示每算子默认参数, 表一打开 Operands 列就有实际值
   for (OperatorRow &r : rows)
@@ -262,14 +415,12 @@ void OperatorsService::Request(const OperatorsRequest &req) {
   }
 }
 
-void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, const StatExtra &extra,
-                                     int failed) {
+void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed) {
   assert(!thread_.joinable() && status_.load() == OperatorsStatus::Idle && "载入只在 worker 未起时做");
   assert(snap.size() == rows.size());
   {
     std::lock_guard<std::mutex> lock(mutex);
     rows = std::move(snap);
-    stat = extra;
     current = req;
     from_json = true;
   }
@@ -323,17 +474,17 @@ void OperatorsService::worker_loop() {
       for (OperatorRow &r : rows) {
         r.param = param_of(r);
         r.status = RowStatus::Pending;
-        r.stream = {}, r.gpu = {};
-        r.cpu_ms = 0, r.stream_ms = 0, r.gpu_ms = -1;
+        r.cpu_chk = {}, r.gpu_chk = {};
+        r.cpu_ms = 0, r.stream_ms = -1, r.gpu_ms = -1;
+        r.detail.clear();
       }
-      stat = StatExtra{};
     }
     done_.store(0, std::memory_order_relaxed);
     failed_.store(0, std::memory_order_relaxed);
     status_.store(OperatorsStatus::Running, std::memory_order_release);
     epoch_.fetch_add(1, std::memory_order_relaxed);
 
-    // 执行序 = 行序: 首行 Stat 先跑 (挖掘的第一道闸, 先验它), 然后按 OpTable 表序逐算子.
+    // 执行序 = 行序 (评估算子在前, 然后 OpTable 表序), 每行一个跑手, 不分种类.
     // 一轮的输入缓存 / 输出缓冲 / GPU 会话都在 R 里, 轮末 (含取消) 析构释放
     bool cancelled = false;
     RoundCtx R(req, factor::gpu::available());
@@ -348,21 +499,15 @@ void OperatorsService::worker_loop() {
       }
       epoch_.fetch_add(1, std::memory_order_relaxed);
 
-      OperatorRow r = rows[i]; // 静态列 + Running; 只有本线程写 rows, 无锁读安全
-      StatExtra extra;
-      if (i == stat_index())
-        run_stat(req, r, extra);
-      else
-        runners_[i](R, r);
+      OperatorRow r = rows[i]; // 静态列 + Running + 已复位的动态列; 只有本线程写 rows, 无锁读安全
+      runners_[i](R, r);
       r.status = RowStatus::Done;
       {
         std::lock_guard<std::mutex> lock(mutex);
         rows[i] = r;
-        if (i == stat_index())
-          stat = extra;
       }
       done_.fetch_add(1, std::memory_order_relaxed);
-      if (!r.stream.ok() || (r.gpu_ms >= 0 && !r.gpu.ok()))
+      if (!r.cpu_chk.ok() || (r.gpu_ms >= 0 && !r.gpu_chk.ok()))
         failed_.fetch_add(1, std::memory_order_relaxed);
       epoch_.fetch_add(1, std::memory_order_relaxed);
     }

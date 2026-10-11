@@ -63,6 +63,8 @@
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
+//   【一份公式】契约公式 (ord / r16 / grp_of / tail / pearson_int / finish_row / Accum::add, merge) 标 FACTOR_HD: CUDA 编译器下是
+//   __host__ __device__, 纯 C++ 下为空 —— CPU / GPU 两后端直接调用这一份, 不再各自复刻; 后端只剩访存与并行.
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
 // =============================================================================
 
@@ -70,10 +72,18 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <string_view>
+
+#ifndef FACTOR_HD
+#if defined(__CUDACC__)
+#define FACTOR_HD __host__ __device__
+#else
+#define FACTOR_HD
+#endif
+#endif
 
 namespace factor::stat {
 
@@ -99,9 +109,9 @@ inline constexpr int kHoldDayBase = 1000;                          // ≥ 此值
 inline constexpr int kHoldClose = kHoldDayBase;                    // 持有到当日收盘
 inline constexpr int kHoldOpenMax = 30;                            // T+N 的 N 上限 (键值域 / 断言用)
 inline constexpr int hold_open(int n) { return kHoldDayBase + n; } // T+n 开盘平仓
-inline constexpr bool hold_intraday(int hold) { return hold < kHoldDayBase; }
+FACTOR_HD inline constexpr bool hold_intraday(int hold) { return hold < kHoldDayBase; }
 // 折算用有效分钟: 分钟档 = n; close / T+1 = 一段; T+N = N 段
-inline constexpr int hold_minutes(int hold) {
+FACTOR_HD inline constexpr int hold_minutes(int hold) {
   if (hold_intraday(hold))
     return hold;
   const int n = hold - kHoldDayBase;
@@ -148,6 +158,18 @@ inline void assert_holds(const Holds &hd) {
   }
 }
 
+// ---- 输入: 一组标签 = 四张 [T][A] 平面的指针 (宿主或设备, 由后端定; 每个 hold 一组, 与 Holds 同序) ----
+struct Label {
+  const uint16_t *lv = nullptr;        // 做多收益 fp16 位 (毛)
+  const uint16_t *sv = nullptr;        // 做空收益 fp16 位
+  const uint8_t *m = nullptr;          // 有效位 (long / short 共用)
+  const uint16_t *ry = nullptr;        // 做多标签逐行 r16 (后端 prep_label 填; 与因子无关, 常驻期一次)
+  FACTOR_HD Label at(size_t i) const { // 偏到第 i 格 (行首 = t·A)
+    assert(ry && "标签未预处理 (prep_label)");
+    return {lv + i, sv + i, m + i, ry + i};
+  }
+};
+
 // ---- 一级输出: 每 (持有期, 时刻) 一行; 布局 rows[h_idx * T + t] ----
 struct Row {
   float ic = 0.f, mkt = 0.f, ac = 0.f;
@@ -170,20 +192,17 @@ inline constexpr double periods_per_year(int hold) { return static_cast<double>(
 // rank_ac 的 lag = h 随持有期变, 本身不可跨期比; 折到同一时间轴后可比, 越低越好. 派生量, 不落 HoldStat / 文件
 inline double turnover_annual(const HoldStat &s) { return (1.0 - s.rank_ac) * periods_per_year(s.hold); }
 
-// ---- 共享整数公式 (GPU 侧有逐字一致的 __device__ 版) ----
+// ---- 共享公式 (FACTOR_HD: 两后端同一份) ----
 
 // float → 保序无符号键 (a < b ⟺ ord(a) < ord(b)); ±0 先归一为 +0
-inline unsigned ord(float f) {
-  const float g = f + 0.f;
-  unsigned u;
-  static_assert(sizeof(u) == sizeof(g));
-  std::memcpy(&u, &g, sizeof(u));
+FACTOR_HD inline unsigned ord(float f) {
+  const unsigned u = __builtin_bit_cast(unsigned, f + 0.f);
   return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
 }
 
 // 并列均秩 r16: pct = (avg_rank − 1)/(n − 1), avg_rank = less + (eq + 1)/2, r16 = round(pct · kRankMax)
 //   全整数: num = (2·less + eq − 1)·kRankMax, den = 2·(n − 1), r16 = ⌊(2·num + den) / (2·den)⌋
-inline uint16_t r16_of(int less, int eq, int n) {
+FACTOR_HD inline uint16_t r16_of(int less, int eq, int n) {
   assert(n >= 2 && eq >= 1 && less >= 0 && less + eq <= n);
   const long long num = (2LL * less + eq - 1) * kRankMax;
   const long long den = 2LL * (n - 1);
@@ -191,24 +210,24 @@ inline uint16_t r16_of(int less, int eq, int n) {
 }
 
 // TS 口径: 分位 x ∈ [0,1] 直接量化 r16 = round(x · kRankMax). double 内 float × 65534 精确, 与 FMA / 求值序无关
-inline uint16_t r16_quant(float x) {
+FACTOR_HD inline uint16_t r16_quant(float x) {
   assert(x >= 0.f && x <= 1.f && "TS 口径的因子值须是分位 ∈ [0,1] (根 TsRankRoll)");
   return static_cast<uint16_t>(static_cast<double>(x) * kRankMax + 0.5);
 }
 
 // 组号: r16 等分 kGroups 组
-inline int grp_of(unsigned r16) {
+FACTOR_HD inline int grp_of(unsigned r16) {
   const int g = static_cast<int>(r16 * kGroups / (kRankMax + 1));
   return g < kGroups - 1 ? g : kGroups - 1;
 }
 
 // 段末尾部 (分钟档标签持有到收盘, 持有期缩短) → 掩掉; 日级档无尾部
-inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen >= kSegLen - hold - kCloseAuction; }
+FACTOR_HD inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen >= kSegLen - hold - kCloseAuction; }
 
 // 整数五和的 Pearson: vx = n·Σx² − (Σx)² 等全在 64 位整数内精确, 只有最后一步除法/开方是浮点 (IEEE 正确舍入,
 // 两后端逐位一致). ok = n ≥ 2 ∧ vx > 0 ∧ vy > 0
-inline float pearson_int(unsigned long long n, unsigned long long sx, unsigned long long sy, unsigned long long sxx,
-                         unsigned long long syy, unsigned long long sxy, bool &ok) {
+FACTOR_HD inline float pearson_int(unsigned long long n, unsigned long long sx, unsigned long long sy, unsigned long long sxx,
+                                   unsigned long long syy, unsigned long long sxy, bool &ok) {
   if (n < 2) {
     ok = false;
     return 0.f;
@@ -225,15 +244,15 @@ struct Side {
   double w = 0.0, lv = 0.0, sv = 0.0;
 };
 // 多空 = hi 侧按 lv 做多 (均值 − mkt) + lo 侧按 sv 做空 (均值 − mkt_s); 侧空 → 该腿 0 (TS long/flat)
-inline double ls_of(const Side &hi, const Side &lo, double mkt, double mkt_s) {
+FACTOR_HD inline double ls_of(const Side &hi, const Side &lo, double mkt, double mkt_s) {
   return (hi.w > 0.0 ? hi.lv / hi.w - mkt : 0.0) + (lo.w > 0.0 ? lo.sv / lo.w - mkt_s : 0.0);
 }
 
-// 一行标签侧的收尾 (两后端逐字一致; GPU 侧有 __device__ 版): J 上整数五和 → ic; 组和 / 组计数 → grp / cnt; 顶 / 底侧 → ls; mkt.
+// 一行标签侧的收尾 (两后端同一份): J 上整数五和 → ic; 组和 / 组计数 → grp / cnt; 顶 / 底侧 → ls; mkt.
 //   smk / ssv = J 上 Σ lv / Σ sv; gs[k] / gc[k] = 组 k 的 Σ lv / 计数; top / bot = 顶 / 底组 (见 Side). 不 ok → r 标签侧字段保持 0
-inline void finish_row(Frame f, unsigned long long n, unsigned long long sx, unsigned long long sy, unsigned long long sxx,
-                       unsigned long long syy, unsigned long long sxy, double smk, double ssv, const double *gs, const int *gc, const Side &top,
-                       const Side &bot, Row &r) {
+FACTOR_HD inline void finish_row(Frame f, unsigned long long n, unsigned long long sx, unsigned long long sy, unsigned long long sxx,
+                                 unsigned long long syy, unsigned long long sxy, double smk, double ssv, const double *gs, const int *gc,
+                                 const Side &top, const Side &bot, Row &r) {
   bool icok = false;
   const float ic = pearson_int(n, sx, sy, sxx, syy, sxy, icok);
   bool gok = true;
@@ -279,7 +298,7 @@ inline double mono_of(const double *g, int K) {
 
 // 二级累加器: 一遍消费 Row, 可合并 (t 切块并行各攒一份再 merge; 沿 T 分块流式跨块续攒), 不留 Row.
 //   幂和 double, 原点 0: ic ∈ [−1,1] 均值 ~1e-2, 标签收益 ~1e-3 —— 相消损失 ≈ (μ/σ)^k 量级 (< 1e-2 相对), 远在 float 出口精度内;
-//   中心矩相消出负由 fmax 钳 0. 两后端共用同一份 (对拍一致性在 Row 级), POD 可直接搬上设备.
+//   中心矩相消出负由 fmax 钳 0. 两后端共用同一份 (对拍一致性在 Row 级); add / merge 是 FACTOR_HD, 设备侧也原样攒.
 struct Accum {
   int n = 0, npos = 0, nlpos = 0, nac = 0;                        // npos / nlpos = IC > 0 / ls > 0 行数
   double sic = 0.0, sic2 = 0.0, sic3 = 0.0, sic4 = 0.0;           // ic 幂和
@@ -288,7 +307,7 @@ struct Accum {
   double sg[kGroups] = {};
   long long sc[kGroups] = {};
 
-  void add(const Row &w) {
+  FACTOR_HD void add(const Row &w) {
     if (w.ok) {
       ++n;
       npos += w.ic > 0.f;
@@ -306,7 +325,7 @@ struct Accum {
       sac += w.ac;
     }
   }
-  void merge(const Accum &o) {
+  FACTOR_HD void merge(const Accum &o) {
     n += o.n, npos += o.npos, nlpos += o.nlpos, nac += o.nac;
     sic += o.sic, sic2 += o.sic2, sic3 += o.sic3, sic4 += o.sic4;
     sls += o.sls, sls2 += o.sls2, smk += o.smk, smk2 += o.smk2, slm += o.slm;

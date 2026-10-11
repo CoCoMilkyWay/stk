@@ -1,9 +1,8 @@
 // Tab Operators — 见头文件
 #include "gui/task_factors/ui/TabOperators.hpp"
 #include "factor/GpuRun.hpp"                // device_name: GPU 型号显示
-#include "factor/Stat/Check.hpp"            // kHolds: Stat 行载入时校验持有期列表
 #include "gui/Tasks.hpp"                    // StatusColor: 全局色表, 行状态着色不自配颜色
-#include "gui/task_factors/ui/StatJson.hpp" // sig4 / hold_json / load_hold / json_* (与因子文件同一格式)
+#include "gui/task_factors/ui/StatJson.hpp" // sig4 / json_* (与因子文件同一格式)
 #include "gui/util/Latex.hpp"               // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
 
 #include "imgui.h"
@@ -109,7 +108,7 @@ const char *kern_name(factor::Kern k) {
   return "?";
 }
 
-// 时间列 (stream 是 golden, cpu / gpu 各自带对拍结论):
+// 时间列 (cpu / gpu 各自带对拍结论 cpu_chk / gpu_chk; stream 列是 golden, 无对拍):
 //   未跑 "…" / 跑中 "running" / 无后端 "n/a" / 没过 check → 红色 error + Δ (不显示时间) / 过了 → ms
 //   slower = 该后端比上游慢 (要求 stream ≥ cpu ≥ gpu), 标红 ms
 // chk = nullptr 表示该列无对拍 (stream 列)
@@ -142,38 +141,24 @@ double sort_ms_chk(const OperatorRow &r, double ms, const factor::check::Diff &d
   return d.ok() ? ms : 1e300;
 }
 
-// 三维分类列 + 输出域列的落盘文本: 不在分类里的行 (Stat) 空着 (out 列表格内按 dom_tex 渲染, JSON 落 dom_name)
+// 三维分类列 + 输出域列的落盘文本: 不在分类里的行 (Stat / Search) 空着 (out 列表格内按 dom_tex 渲染, JSON 落 dom_name)
 const char *cls_T(const OperatorRow &r) { return r.classified ? T_name(r.T) : ""; }
 const char *cls_A(const OperatorRow &r) { return r.classified ? A_name(r.A) : ""; }
 const char *cls_kern(const OperatorRow &r) { return r.classified ? kern_name(r.kern) : ""; }
 const char *cls_out(const OperatorRow &r) { return r.classified ? factor::dom_name(r.out) : ""; }
 
-// Stat 行悬停 e_name: 表列放不下的附带信息 (prep 耗时 + 每持有期 cpu 侧二级汇总)
-void stat_tooltip(const OperatorRow &r, const StatExtra &x) {
+// 悬停 e_name: 静态详述 (doc) + 跑完后跑手的附带文本 (detail); 两者都空 → 不弹
+void row_tooltip(const OperatorRow &r) {
+  const bool has_detail = r.status == RowStatus::Done && !r.detail.empty();
+  if (r.doc[0] == '\0' && !has_detail)
+    return;
   ImGui::BeginTooltip();
-  ImGui::TextUnformatted("因子评估算子 (factor/Stat): 因子 x + 每持有期一组 fp16 标签 → 每 (h, t) 的 IC / 20 组和 / 顶底多空 / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
-                         "标签统一超额 (减截面均值). 两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
-                         "无流式后端, cpu ↔ gpu 两方对拍 (无 golden; 表格 GPU 列的 Diff = 两口径 × (一级 rows + 二级 stat) 合并).\n"
-                         "表列耗时 = 两口径 eval 之和 (每因子一次: rank/量化 + 逐持有期一遍 A 轴); prep = 标签 rank 预处理 (常驻期一次), 见下.\n"
-                         "造数: long = 0.3·z + 噪声 (IC ≈ 0.3; TS 的 x = Φ(z)). ic_t / ls_t 按 n/h 折算 (相邻 h 行标签重叠); Sharpe 以持有期为一期年化;\n"
-                         "rank-AC 的 lag = h; 段末 h+3 行 (持有到收盘) 不计标签统计.");
-  if (r.status == RowStatus::Done) {
-    ImGui::Separator();
-    if (x.gpu_prep_ms >= 0)
-      ImGui::Text("prep: cpu %.3f ms, gpu %.3f ms", x.cpu_prep_ms, x.gpu_prep_ms);
-    else
-      ImGui::Text("prep: cpu %.3f ms", x.cpu_prep_ms);
-    for (int fi = 0; fi < 2; ++fi) {
+  if (r.doc[0] != '\0')
+    ImGui::TextUnformatted(r.doc);
+  if (has_detail) {
+    if (r.doc[0] != '\0')
       ImGui::Separator();
-      ImGui::TextDisabled("%s", factor::stat::frame_name(static_cast<factor::stat::Frame>(fi)));
-      for (int i = 0; i < x.n_hold; ++i) {
-        const factor::stat::HoldStat &h = x.hold[fi][i];
-        ImGui::Text("h=%-3d n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
-                    "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f",
-                    h.hold, h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt, h.ls_mean, h.ls_t,
-                    h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
-      }
-    }
+    ImGui::TextUnformatted(r.detail.c_str());
   }
   ImGui::EndTooltip();
 }
@@ -265,13 +250,11 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   // ==========================================================================
   // 短锁拷快照 (~90 行小结构, worker 只在行末短锁写)
   static std::vector<OperatorRow> s_rows;
-  StatExtra s_stat;
   OperatorsRequest cur;
   bool from_json = false;
   {
     std::lock_guard<std::mutex> lock(svc.mutex);
     s_rows = svc.rows;
-    s_stat = svc.stat;
     cur = svc.current;
     from_json = svc.from_json;
   }
@@ -282,7 +265,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
 
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "2. Operators:");
   ImGui::SameLine();
-  ImGui::Text("%d (SELF %d / ALL %d / GROUP %d + Stat)", n, count_A(factor::A::SELF), count_A(factor::A::ALL), count_A(factor::A::GROUP));
+  const int n_eval = (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return !r.classified; });
+  ImGui::Text("%d (SELF %d / ALL %d / GROUP %d + 评估 %d)", n, count_A(factor::A::SELF), count_A(factor::A::ALL), count_A(factor::A::GROUP),
+              n_eval);
   if (st != OperatorsStatus::Idle) {
     ImGui::SameLine();
     ImGui::TextDisabled(from_json ? "(from operators.json: %d × %d)" : "(last run: %d × %d)", cur.times, cur.A);
@@ -336,45 +321,87 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     const char *headers[kNumCols] = {"#", "e_name", "c_name", "Ar", "T", "A", "Kernel", "operand", "out", "operator",
                                      "Stream ms", "CPU ms", "GPU ms", "Note"};
     const char *tooltips[kNumCols] = {
-        "全局 idx = operators.json 的 idx (code 与 UI 统一按它): 0 = Stat 评估算子 (每轮先跑), 之后 = OpTable 表序:\n"
-        "元数 → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL→GROUP → 核类 → 名字字母序\n"
-        "默认排序即此列; 点表头按列排 (三态, 第三态回默认)",
-        "英文名: 域_核_窗 (Ts = SELF, Cs = ALL/GROUP). Cum = 段内 expanding, Roll = 最近 d 期, Ema = 指数递推, 无后缀 = 逐点",
-        "中文名, 与 e_name 逐段对应 (固定规则, 无冗余字):\n"
-        "域 时 (Ts) / 截 (Cs·ALL) / 组 (Cs·GROUP) + 窗 累 (Cum) / 滚 (Roll) / 指 (Ema), 逐点无窗字 + 核",
-        "元数: 输入序列数 0..3 (operand 里分号前的部分); d / k 是参数不算元",
-        "T 窗 (时间支撑): POINT 当前点 / EXPAND 段内 expanding (段界 reset) / ROLL 最近 d 期 (跨段) / EXPO 指数加权全历史\n"
-        "截面算子恒 POINT (只看当前时刻)",
-        "A 域 (资产支撑): SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 由 y 或 z 给)",
-        "核类 (统计核的代数类): MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /\n"
-        "ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级. 三维分类见 factor/Contract.hpp【分类】",
-        "签名 (由 OpTable 的 in / T / k域 列生成, Expr.hpp operand_tex): 自变量在前, 参数在后, 顺序恒 x, y, z → d → k → k2\n"
-        "  自变量  x, y, z = 按元数取的序列 (每格 值 + 有效位), 值域 = in 列 (enum Dom, 与 out 列同一套);\n"
-        "          t_D = 段内分钟位置 (TodMask 无序列输入)\n"
-        "  参数    d ⇔ T = ROLL; k ⇔ k域 ≠ NONE; k2 ⇔ k域 = TOD. = 号后是本轮实际值 (占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ 渲染前替换):\n"
-        "    d   窗长 / 滞后 (期 = 分钟), 来自 Check.hpp kDParams; 无 d 的算子固定 1 (与 op_check 同)\n"
-        "    k   阈值 / 桶数 / EMA 系数 / 分位, 来自 Check.hpp kKParams; k2 第二阈值 (仅 TodMask 上界)\n"
-        "  in 为严格域 (INT = 组 id) 时 parser 要求子算子 out ⊆ in, 特征叶按数据查; 其余 in 是语义声明 (越界格算子自置无效)",
-        "因变量值域 (OpTable out 列, enum Dom; 与 in 列同一套, 前一算子的 out 就是后一算子的 in):\n"
-        "  ℝ REAL / ℝ≥0 NONNEG (含计数) / ℝ>0 POS / [0,1] UNIT / [−1,1] SIGNED / {0,1} BIN / {−1,0,1} SIGN3 / {0..1023} INT / ℝ(bcast) 截面广播\n"
-        "  因子根 (归一算子) 的输入不许离散 (BIN / SIGN3 / INT), 且沿资产轴要有变异 (BCAST 抹平); 组 id 元只收 ⊆ INT 的 (BIN / INT)\n"
-        "  只按算子自身声明: 透传 (Mask / Where / Delay) 与取大取小写 REAL, 不随输入推导",
-        "算子定义 (OpTable.hpp, LaTeX). 符号继承 features/FeaturesDefine.hpp (t 分钟, D 交易日, 1[·] 指示), 算子库补充:\n"
-        "  x_t 本资产 t 分钟值; x_a 同一时刻资产 a 的值; t_D 段内位置\n"
-        "  W_t 窗 (由 T 列定): EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
-        "  n / N 窗内 / 截面有效样本数; μ_t σ_t 窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心总体矩\n"
-        "  Σ_{W_t} / Π_{W_t} 窗内求和 / 乘积 (求和变量恒是 s 或 b); max min cov var corr 的下标 = 取值域\n"
-        "  pct(v; S) 并列均秩 pct rank ∈ [0,1]; Q_p(S) 样本集 S 的 p 分位; Φ⁻¹ 标准正态分位; G(a) 组 (整数 id 由 y / z 给)\n"
-        "  所有 Σ / 计数 / 极值只计有效样本; 序统计族三后端同用 256 桶近似",
-        "stream (实盘路径, 逐资产逐点 push) 的 wall time = golden: 正确性基准, 也是耗时上界",
-        "cpu 整张量一次批算的 wall time (不含造数)\n"
-        "  没过对拍 (掩码逐位相等且 |Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|)) → 红色 FAIL + Δ, 不显示时间\n"
-        "  过了但比 stream 慢 → ms 标红 (要求 stream ≥ cpu ≥ gpu)",
-        "GPU 纯 kernel 耗时 (cudaEvent): 不含 cudaMalloc / H2D / D2H (搬运是对拍接口的成本, 不是算子的), 首次调用前已热身\n"
-        "  没过对拍 (对 cpu: |Δ| ≤ 1e-3 + 1e-3·max, CsNormRank / 三四阶矩单独放宽) → 红色 FAIL + Δ, 不显示时间\n"
-        "  过了但比 cpu 慢 → ms 标红",
-        "用途与选型 (给 agent 检索的一句话, 统一 \"量什么; 怎么用 / 配什么\"): 不含实现 / 近似 / 退化细节\n"
-        "退化与数值契约见 factor/Contract.hpp, 成本与误差见 operator.md",
+        // #
+        "全局 idx (= operators.json 的 idx, code / UI 共用)\n"
+        "• 顺序: 评估算子 (Stat, Search) 在前, OpTable 算子在后\n"
+        "• OpTable 内: 元数 → A 域 (Ts 先 Cs 后) → T 窗 (Ts) / ALL→GROUP (Cs) → 核类 → 名字\n"
+        "• 默认按此列排; 点表头三态切换 (升 / 降 / 默认)",
+        // e_name
+        "英文名 = 域_核_窗\n"
+        "• 域: Ts (SELF) / Cs (ALL, GROUP)\n"
+        "• 窗: Cum 段内 expanding / Roll 最近 d 期 / Ema 指数递推 / 无后缀 逐点",
+        // c_name
+        "中文名, 与 e_name 逐段对应\n"
+        "• 域: 时 (Ts) / 截 (Cs·ALL) / 组 (Cs·GROUP)\n"
+        "• 窗: 累 (Cum) / 滚 (Roll) / 指 (Ema) / 逐点无窗字\n"
+        "• 核: 直译",
+        // Ar
+        "元数 = 输入序列数 (0..3)\n"
+        "• 即 operand 里分号前的 x, y, z\n"
+        "• d / k 是参数, 不算元",
+        // T
+        "T 窗 = 时间支撑\n"
+        "• POINT   当前点\n"
+        "• EXPAND  段内 expanding (段界 reset)\n"
+        "• ROLL    最近 d 期 (跨段)\n"
+        "• EXPO    指数加权全历史\n"
+        "截面算子恒 POINT",
+        // A
+        "A 域 = 资产支撑\n"
+        "• SELF   只看本资产\n"
+        "• ALL    同一时刻全截面\n"
+        "• GROUP  同一时刻组内 (组 id 由 y / z 给)",
+        // Kernel
+        "核类 = 统计核的代数类\n"
+        "• MAP      逐元素\n"
+        "• SHIFT    下标平移\n"
+        "• MOMENT   可和分解 (矩族)\n"
+        "• EXTREME  极值 / arg 族\n"
+        "• ORDER    序统计\n"
+        "• RECUR    递推\n"
+        "复合算子标最重一级; 详见 factor/Contract.hpp【分类】",
+        // operand
+        "签名: 自变量在前, 参数在后 (x, y, z → d → k → k2)\n"
+        "• x y z  输入序列 (值 + 有效位), 值域 = in 列\n"
+        "• t_D    段内分钟位置 (仅 TodMask)\n"
+        "• d      窗长 / 滞后 (分钟); 仅 T = ROLL; 值取 Check.hpp kDParams\n"
+        "• k      阈值 / 桶数 / EMA 系数 / 分位; 仅 k域 ≠ NONE; 值取 kKParams\n"
+        "• k2     第二阈值; 仅 k域 = TOD\n"
+        "= 号后是本轮实际值; in 为严格域 (INT) 时 parser 要求上游 out ⊆ in, 其余 in 只是语义声明",
+        // out
+        "因变量值域 (enum Dom, 与 in 同一套; 上游 out = 下游 in)\n"
+        "• REAL ℝ / NONNEG ℝ≥0 / POS ℝ>0\n"
+        "• UNIT [0,1] / SIGNED [−1,1]\n"
+        "• BIN {0,1} / SIGN3 {−1,0,1} / INT {0..1023}\n"
+        "• BCAST ℝ 截面广播\n"
+        "规则: 因子根不收离散 (BIN / SIGN3 / INT) 与 BCAST; 组 id 元只收 BIN / INT; 透传与取大取小一律写 REAL",
+        // operator
+        "算子定义 (OpTable.hpp, LaTeX); 符号沿用 features/FeaturesDefine.hpp\n"
+        "• x_t / x_a  本资产 t 分钟值 / 同时刻资产 a 的值; t_D 段内位置\n"
+        "• W_t        窗: EXPAND {s: 同日, s ≤ t}; ROLL {s: t−d < s ≤ t}\n"
+        "• n / N      窗内 / 截面有效样本数\n"
+        "• μ_t σ_t    窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心矩\n"
+        "• Σ Π        窗内求和 / 乘积 (变量 s 或 b); max min cov var corr 下标 = 取值域\n"
+        "• pct(v; S)  并列均秩 pct rank ∈ [0,1]; Q_p(S) p 分位; Φ⁻¹ 正态分位; G(a) 组\n"
+        "只计有效样本; 序统计族三后端同用 256 桶近似",
+        // Stream ms
+        "stream (实盘路径, 逐资产逐点 push) 的 wall time\n"
+        "• OpTable 算子的 golden: 正确性基准 + 耗时上界\n"
+        "• 评估算子无此后端 → n/a",
+        // CPU ms
+        "cpu 整张量批算的 wall time (不含造数)\n"
+        "• 对拍 cpu_chk: OpTable 对 stream (掩码相等, |Δ| ≤ 1e-5 + 1e-4·max); Search 对 Stat CPU (+ 分块 ≡ 整块); Stat 自身即 golden\n"
+        "• 没过 → 红 FAIL + Δ, 不显示时间\n"
+        "• 比 stream 慢 → ms 标红 (要求 stream ≥ cpu ≥ gpu)",
+        // GPU ms
+        "GPU 纯 kernel 耗时 (cudaEvent, 已热身; 不含 cudaMalloc / H2D / D2H)\n"
+        "• 对拍 gpu_chk: gpu 对 cpu. OpTable |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 高阶矩放宽); 评估算子 |Δ| ≤ 1e-5 + 1e-4·max\n"
+        "• 没过 → 红 FAIL + Δ, 不显示时间\n"
+        "• 比 cpu 慢 → ms 标红",
+        // Note
+        "用途与选型一句话 (给 agent 检索): 量什么; 怎么用 / 配什么\n"
+        "• 不含实现 / 近似 / 退化细节\n"
+        "• 退化与数值契约 → factor/Contract.hpp; 成本与误差 → operator.md",
     };
     for (int c = 0; c < kNumCols; c++) {
       ImGui::TableSetColumnIndex(c);
@@ -427,10 +454,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
           cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
           break;
         case 11:
-          cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.stream), sort_ms_chk(rb, rb.cpu_ms, rb.stream));
+          cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.cpu_chk), sort_ms_chk(rb, rb.cpu_ms, rb.cpu_chk));
           break;
         case 12:
-          cmp = cmp3(sort_ms_chk(ra, ra.gpu_ms, ra.gpu), sort_ms_chk(rb, rb.gpu_ms, rb.gpu));
+          cmp = cmp3(sort_ms_chk(ra, ra.gpu_ms, ra.gpu_chk), sort_ms_chk(rb, rb.gpu_ms, rb.gpu_chk));
           break;
         }
         return ui.sort_ascending ? cmp < 0 : cmp > 0;
@@ -452,15 +479,15 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       const OperatorRow &r = s_rows[idx];
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextDisabled("%d", idx); // 全局 idx = operators.json 的 idx (0 = Stat, 之后 = OpTable 表序)
+      ImGui::TextDisabled("%d", idx); // 全局 idx = operators.json 的 idx (评估算子在前, 之后 = OpTable 表序)
       ImGui::TableSetColumnIndex(1);
       ImGui::TextColored(StatusColor(r.status == RowStatus::Done
-                                         ? ((r.stream.ok() && (r.gpu_ms < 0 || r.gpu.ok())) ? TaskStatus::Kind::Ready
-                                                                                            : TaskStatus::Kind::Error)
+                                         ? ((r.cpu_chk.ok() && (r.gpu_ms < 0 || r.gpu_chk.ok())) ? TaskStatus::Kind::Ready
+                                                                                                 : TaskStatus::Kind::Error)
                                          : (r.status == RowStatus::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted)),
                          "%s", r.e_name);
-      if (!r.classified && ImGui::IsItemHovered())
-        stat_tooltip(r, s_stat);
+      if (ImGui::IsItemHovered())
+        row_tooltip(r);
       ImGui::TableSetColumnIndex(2);
       ImGui::TextUnformatted(r.c_name);
       ImGui::TableSetColumnIndex(3);
@@ -491,11 +518,11 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       else
         ImGui::TextUnformatted(r.op); // 解析失败回退原文
       ImGui::TableSetColumnIndex(10);
-      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据 (Stat 无 stream → n/a)
+      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据 (评估算子无 stream → n/a)
       ImGui::TableSetColumnIndex(11);
-      render_time_cell(r, r.cpu_ms, r.stream_ms >= 0 ? &r.stream : nullptr, r.stream_ms >= 0 && r.cpu_ms > r.stream_ms);
+      render_time_cell(r, r.cpu_ms, &r.cpu_chk, r.stream_ms >= 0 && r.cpu_ms > r.stream_ms);
       ImGui::TableSetColumnIndex(12);
-      render_time_cell(r, r.gpu_ms, &r.gpu, r.gpu_ms > r.cpu_ms);
+      render_time_cell(r, r.gpu_ms, &r.gpu_chk, r.gpu_ms > r.cpu_ms);
       ImGui::TableSetColumnIndex(13);
       if (r.note[0] == '\0')
         ImGui::TextDisabled("-");
@@ -544,22 +571,6 @@ nlohmann::ordered_json diff_json(const factor::check::Diff &d) {
   return {{"ok", d.ok()}, {"worst", sig4(d.worst)}, {"mask_bad", d.mask_bad}, {"val_bad", d.val_bad}, {"compared", d.compared}};
 }
 
-// Stat 行表列放不下的附带信息: prep 耗时 + 两口径每持有期的 cpu 侧二级汇总 (耗时 / 对拍在 rows 里与其他行同列).
-// 键 holds_CS / holds_TS (= "holds_" + frame_name)
-nlohmann::ordered_json stat_json(const StatExtra &s) {
-  nlohmann::ordered_json j;
-  j["cpu_prep_ms"] = sig4(s.cpu_prep_ms);
-  if (s.gpu_prep_ms >= 0)
-    j["gpu_prep_ms"] = sig4(s.gpu_prep_ms);
-  for (int fi = 0; fi < 2; ++fi) {
-    nlohmann::ordered_json holds = nlohmann::ordered_json::array();
-    for (int i = 0; i < s.n_hold; ++i)
-      holds.push_back(hold_json(s.hold[fi][i]));
-    j[std::string("holds_") + factor::stat::frame_name(static_cast<factor::stat::Frame>(fi))] = holds;
-  }
-  return j;
-}
-
 } // namespace
 
 void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc) {
@@ -580,11 +591,8 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
     file << " \"gpu\": " << (gname ? json(gname).dump() : "false") << ",\n";
     file << " \"status\": " << json(status_name(svc.status())).dump() << ", \"done\": " << svc.done()
          << ", \"total\": " << svc.total() << ", \"failed\": " << svc.failed() << ",\n";
-    file << " \"tol\": {\"stream\": \"|Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|), mask 逐位相等\","
-            " \"gpu\": \"|Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽)\","
-            " \"stat\": \"cpu ↔ gpu |Δ| ≤ 1e-5 + 1e-4·max, ok / n 逐位相等\"},\n";
-    if (svc.rows[svc.stat_index()].status == RowStatus::Done) // Stat 行的附带信息, 只落跑完的
-      file << " \"stat\": " << stat_json(svc.stat).dump() << ",\n";
+    file << " \"tol\": {\"cpu_chk\": \"cpu 对 golden (OpTable 行 = stream; Search = Stat CPU + 分块 ≡ 整块; Stat 无): |Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|), mask / 计数逐位相等\","
+            " \"gpu_chk\": \"gpu 对 cpu: OpTable 行 |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽); 评估算子 |Δ| ≤ 1e-5 + 1e-4·max\"},\n";
 
     file << " \"rows\": [\n";
     const size_t n = svc.rows.size();
@@ -607,21 +615,22 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       j["operator"] = r.op;
       j["note"] = r.note;
       j["status"] = row_status_name(r.status);
-      // 动态列只落跑完的行 (表格显示 "…" 的格子不落键); 无 stream 后端的行 (Stat) 不落 stream_* 键
+      // 动态列只落跑完的行 (表格显示 "…" 的格子不落键); 没有的后端 (ms < 0) 不落其耗时 / 对拍键; detail 非空才落
       if (r.status == RowStatus::Done) {
-        const bool has_stream = r.stream_ms >= 0;
-        if (has_stream)
-          j["stream_vs_cpu"] = diff_json(r.stream);
-        if (r.gpu_ms >= 0)
-          j["gpu_vs_cpu"] = diff_json(r.gpu);
+        const bool has_stream = r.stream_ms >= 0, has_gpu = r.gpu_ms >= 0;
+        j["cpu_chk"] = diff_json(r.cpu_chk);
+        if (has_gpu)
+          j["gpu_chk"] = diff_json(r.gpu_chk);
         j["cpu_ms"] = sig4(r.cpu_ms);
         if (has_stream)
           j["stream_ms"] = sig4(r.stream_ms);
-        if (r.gpu_ms >= 0) {
+        if (has_gpu) {
           j["gpu_ms"] = sig4(r.gpu_ms);
           if (has_stream && r.gpu_ms > 0)
             j["stream_over_gpu"] = sig4(r.stream_ms / r.gpu_ms);
         }
+        if (!r.detail.empty())
+          j["detail"] = r.detail;
       }
       file << "  " << j.dump() << (i + 1 < n ? ",\n" : "\n");
     }
@@ -683,52 +692,35 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
     return false;
   if (!json_num(j, "cpu_ms", dst.cpu_ms))
     return false;
-  const auto sit = j.find("stream_vs_cpu"); // 有 stream 后端的行 (分类内) 必有; Stat 行无 → stream 列 n/a
+  const auto cit = j.find("cpu_chk"); // 每行必有 (Stat 落的是空 Diff)
+  if (cit == j.end() || !load_diff(*cit, dst.cpu_chk))
+    return false;
+  // stream 后端是静态的: 分类内的行必有, 评估算子行必无
   if (dst.classified) {
-    if (sit == j.end() || !load_diff(*sit, dst.stream) || !json_num(j, "stream_ms", dst.stream_ms))
+    if (!json_num(j, "stream_ms", dst.stream_ms) || dst.stream_ms < 0)
       return false;
   } else {
-    if (sit != j.end() || j.find("stream_ms") != j.end())
+    if (j.find("stream_ms") != j.end())
       return false;
-    dst.stream = {}, dst.stream_ms = -1;
+    dst.stream_ms = -1;
   }
-  const auto git = j.find("gpu_vs_cpu"); // 落盘那轮没 GPU 后端 → 无 gpu_* 键, 载入后 GPU 列显示 n/a
+  const auto git = j.find("gpu_chk"); // 落盘那轮没 GPU 后端 → 无 gpu_* 键, 载入后 GPU 列显示 n/a
   if (git == j.end()) {
-    dst.gpu = {}, dst.gpu_ms = -1;
-  } else if (!load_diff(*git, dst.gpu) || !json_num(j, "gpu_ms", dst.gpu_ms) || dst.gpu_ms < 0) {
+    if (j.find("gpu_ms") != j.end())
+      return false;
+    dst.gpu_chk = {}, dst.gpu_ms = -1;
+  } else if (!load_diff(*git, dst.gpu_chk) || !json_num(j, "gpu_ms", dst.gpu_ms) || dst.gpu_ms < 0) {
     return false;
+  }
+  const auto dit = j.find("detail"); // 跑手的附带文本, 可无
+  if (dit == j.end()) {
+    dst.detail.clear();
+  } else if (!dit->is_string()) {
+    return false;
+  } else {
+    dst.detail = dit->get<std::string>();
   }
   dst.status = RowStatus::Done;
-  return true;
-}
-
-// Stat 行附带信息 (stat_json 的逆); 持有期列表须与当前 Stat/Check.hpp kHolds 一致 (改了 → 旧耗时作废).
-// has_gpu = 该行 rows 里有 gpu_ms (两处必须一致)
-bool load_stat(const nlohmann::json &j, bool has_gpu, StatExtra &dst) {
-  if (!j.is_object())
-    return false;
-  StatExtra s;
-  if (!json_num(j, "cpu_prep_ms", s.cpu_prep_ms))
-    return false;
-  if (has_gpu) {
-    if (!json_num(j, "gpu_prep_ms", s.gpu_prep_ms) || s.gpu_prep_ms < 0)
-      return false;
-  } else {
-    if (j.find("gpu_prep_ms") != j.end())
-      return false;
-    s.gpu_prep_ms = -1;
-  }
-  s.n_hold = factor::stat::check::kNumHolds;
-  for (int fi = 0; fi < 2; ++fi) {
-    const auto hit = j.find(std::string("holds_") + factor::stat::frame_name(static_cast<factor::stat::Frame>(fi)));
-    if (hit == j.end() || !hit->is_array() || hit->size() != static_cast<size_t>(factor::stat::check::kNumHolds))
-      return false;
-    for (int i = 0; i < s.n_hold; ++i) {
-      if (!load_hold((*hit)[static_cast<size_t>(i)], s.hold[fi][i]) || s.hold[fi][i].hold != factor::stat::check::kHolds[i])
-        return false;
-    }
-  }
-  dst = s;
   return true;
 }
 
@@ -743,7 +735,6 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
 
   OperatorsRequest req;
   std::vector<OperatorRow> snap;
-  StatExtra extra;
   int failed = 0;
   const bool ok = [&] {
     const nlohmann::json j = nlohmann::json::parse(file, nullptr, /*allow_exceptions=*/false);
@@ -766,11 +757,8 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     for (size_t i = 0; i < snap.size(); ++i)
       if (!load_row((*rit)[i], snap[i]))
         return false;
-    const auto sit = j.find("stat"); // Stat 行的附带信息 (行都 done 了它必在, 缺 / 半截即整份判废)
-    if (sit == j.end() || !load_stat(*sit, snap[svc.stat_index()].gpu_ms >= 0, extra))
-      return false;
     for (const OperatorRow &r : snap) // 表头的 failed 不信, 按行现算
-      if (!r.stream.ok() || (r.gpu_ms >= 0 && !r.gpu.ok()))
+      if (!r.cpu_chk.ok() || (r.gpu_ms >= 0 && !r.gpu_chk.ok()))
         failed++;
     return true;
   }();
@@ -779,7 +767,7 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     std::filesystem::remove(path); // 不完整 / 与当前 OpTable 不一致: 删掉, 调用方重算后落新的
     return false;
   }
-  svc.AdoptSnapshot(req, std::move(snap), extra, failed);
+  svc.AdoptSnapshot(req, std::move(snap), failed);
   ui.req.times = req.times, ui.req.A = req.A; // 页面参数跟上快照 (Run 默认按同一形状重跑)
   return true;
 }

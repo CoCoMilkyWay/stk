@@ -10,7 +10,7 @@
 // 与整轮完整性, 不过就删文件), 命中的话经 AdoptSnapshot 直接摆成 Done, worker 根本不起; 只有手动
 // Run (或本地无有效快照) 才真算, 一轮结束由 TaskFactors 落盘.
 //
-// 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp): PLAIN profile, 配方按算子,
+// 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp, Stat/Check.hpp, Search/Check.hpp): PLAIN profile, 配方按算子,
 // d/k 按每算子默认表 (kDParams / kKParams), 容差 tol_of(name, gpu, PLAIN). 差别只在
 // op_check 全扫 profile × d, 这里每算子只跑一组默认参数.
 // 计时: cpu / stream = 整段 wall time (steady_clock); gpu = 纯 kernel (cudaEvent, 不含
@@ -51,10 +51,13 @@ enum class RowStatus : uint8_t { Pending,
                                  Running,
                                  Done };
 
-// 一行 = OpTable 一个算子: 静态列直接来自表 (三维分类: T 窗 × A 域 × 核类), 动态列由 worker 发布.
+// 一行 = 一个算子: 静态列 + 一个跑手 (RunFn) + 跑手发布的动态列. 所有行同一套: OpTable 算子由宏实例化跑手,
+// 评估算子 Stat / Search (factor/Stat, factor/Search; 不在 OpTable, 前两行) 各自一个手写跑手, worker 一视同仁.
 // 字段名 = JSON 键 = UI 表头 (全库统一叫法); 唯一例外: operator 是 C++ 保留字, 字段退而叫 op
-// 首行是 Stat 评估算子 (factor/Stat, 不在 OpTable, 无流式后端): 同一张表同一套列, 没有的项空着
-// (classified = false → T / A / Kernel 显示空, stream 列 n/a); 主要看 cpu / gpu 耗时 (= eval, 每因子一次).
+// 对拍统一两格, 各挂在自己的时间列上:
+//   cpu_chk = cpu 对该行的 golden: OpTable 行 = stream (实盘路径); Search = Stat CPU 参考 (+ 分块 ≡ 整块); Stat 的 cpu 即 golden → 空 (恒 ok)
+//   gpu_chk = gpu 对 cpu (Search 另加 分块 ≡ 整块); gpu_ms < 0 (无后端) 时无意义
+// 没有的后端耗时 = -1 (stream: 评估算子无; gpu: 没编 / 没卡); classified = false → T / A / Kernel / out 列空着.
 struct OperatorRow {
   // 静态
   const char *e_name = nullptr; // 英文名 (OpTable 行名, 域_核_窗)
@@ -70,23 +73,14 @@ struct OperatorRow {
   factor::Dom out = factor::Dom::REAL;    // 因变量值域 (OpTable out 列; Stat 行无意义, classified = false 时显示空)
   const char *op = nullptr;               // 算子定义 (LaTeX; JSON / UI 键叫 operator)
   const char *note = nullptr;             // 用途与选型 (一句话: 量什么; 怎么用 / 配什么)
-  bool classified = true;                 // false = 不在 OpTable 三维分类里 (Stat), T / A / Kernel 列空着
-  // 动态
+  const char *doc = "";                   // 悬停 e_name 的详述 (口径 / 对拍方式); 空 = 不弹
+  bool classified = true;                 // false = 不在 OpTable 三维分类里 (Stat / Search), T / A / Kernel 列空着
+  // 动态 (跑手写满每项; 复位时清)
   factor::Param param; // 本轮实际喂的参数 (d/k/k2 来自 Check.hpp 每算子默认表); 复位时就填, 不等跑到
   RowStatus status = RowStatus::Pending;
-  factor::check::Diff stream;                    // stream vs cpu
-  factor::check::Diff gpu;                       // gpu vs cpu (gpu_ms < 0 时无意义)
-  double cpu_ms = 0, stream_ms = 0, gpu_ms = -1; // gpu_ms = 纯 kernel; < 0 = 无该后端
-};
-
-// Stat 行放不进表列的附带信息 (悬停 e_name 看; 也落 operators.json 的 stat 键):
-// prep = 标签 rank 预处理 (常驻期一次, 不进耗时列), 两口径 (CS / TS, 下标 = Frame) 每持有期的 cpu 侧二级汇总.
-// 造数与 op_check 同口径 (Stat/Check.hpp make: long = 0.3·z + 噪声, IC ≈ 0.3; TS 的 x = Φ(z)), 持有期 kHolds.
-// 表列耗时 = 两口径 eval 之和; Diff = 两口径 × 两级合并.
-struct StatExtra {
-  double cpu_prep_ms = 0, gpu_prep_ms = -1;
-  int n_hold = 0;
-  factor::stat::HoldStat hold[2][factor::stat::kMaxHold]; // [Frame][hold]
+  factor::check::Diff cpu_chk, gpu_chk;           // 见上
+  double cpu_ms = 0, stream_ms = -1, gpu_ms = -1; // wall / wall / 纯 kernel; < 0 = 无该后端
+  std::string detail;                             // 跑手的附带文本 (表列放不下的: prep 耗时 / 二级汇总 / 候选得分), 悬停 e_name 看, 落盘 detail 键
 };
 
 enum class OperatorsStatus : uint8_t { Idle,
@@ -107,8 +101,7 @@ public:
   void Stop(); // join (幂等)
   // 直接吃一份落盘快照当"已跑完"(进页载入 operators.json 用, 不起 worker, 不算不落盘):
   // snap 由调用方从 rows 拷出后只填动态列 (静态列原样), 校验过了才进来; 仅允许 worker 未起时调.
-  // extra = 快照里 Stat 行的附带信息 (旧文件没有 → 默认值)
-  void AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, const StatExtra &extra, int failed);
+  void AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed);
 
   // 进度 (原子, 免锁)
   OperatorsStatus status() const { return status_.load(std::memory_order_acquire); }
@@ -116,19 +109,16 @@ public:
   int total() const { return static_cast<int>(rows.size()); }
   int failed() const { return failed_.load(std::memory_order_relaxed); }
   uint64_t epoch() const { return epoch_.load(std::memory_order_relaxed); }
-  // Stat 行 = 首行 (OpTable 之前); worker 每轮先跑它 (挖掘的第一道闸)
-  size_t stat_index() const { return 0; }
 
   // UI 持锁读; current = 正在跑 / 上次跑完的参数快照
   std::mutex mutex;
   std::vector<OperatorRow> rows;
-  StatExtra stat;
   OperatorsRequest current;
   bool from_json = false; // 表内容来自本地 operators.json 载入 (非本进程算的), UI 标注用
 
 private:
-  // 每行一个跑手: 由 OpTable 宏实例化的模板, 只算动态列 (静态列 worker 不碰); Stat 行另走 run_stat.
-  // 输入 / 输出缓冲 / GPU 会话全从 RoundCtx 取 (一轮一份), 跑手内部不分配不造数: 计时外零 overhead
+  // 每行一个跑手 (rows[i] ↔ runners_[i]): 只算动态列 (静态列 worker 不碰). OpTable 行 = 宏实例化的模板, 输入 / 输出缓冲 /
+  // GPU 会话全从 RoundCtx 取 (一轮一份), 跑手内部不分配不造数: 计时外零 overhead; 评估算子行 = run_stat / run_search (自带造数, 只取 R.rq)
   using RunFn = void (*)(RoundCtx &, OperatorRow &);
   std::vector<RunFn> runners_;
 

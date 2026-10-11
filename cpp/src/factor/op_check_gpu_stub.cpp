@@ -46,7 +46,7 @@ void run_cs(const char *, const float *, const uint8_t *, const float *, const u
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 void run_stat(const float *, const uint8_t *, const uint8_t *, factor::stat::Frame, int, int, const factor::stat::Holds &,
-              const StatLabelHost *, factor::stat::Row *, double *, double *) {
+              const factor::stat::Label *, factor::stat::Row *, double *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 
@@ -64,7 +64,7 @@ void run_cs_dev(Session *, const char *, const DevPlane *, const DevPlane *, con
                 int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
-StatSession *stat_open(int, int, const factor::stat::Holds &, const StatLabelHost *, double *) {
+StatSession *stat_open(int, int, const factor::stat::Holds &, const factor::stat::Label *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
   return nullptr;
 }
@@ -77,7 +77,7 @@ SearchSession *search_open(int, int, int, const factor::stat::Holds &) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
   return nullptr;
 }
-void search_load(SearchSession *, const StatLabelHost *, const SearchCostHost &, double *) {
+void search_load(SearchSession *, const factor::stat::Label *, const factor::search::Cost &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 void search_eval(SearchSession *, const DevPlane *const *, int, const DevPlane *, factor::stat::Frame, int, int, factor::search::Result *,
@@ -86,7 +86,8 @@ void search_eval(SearchSession *, const DevPlane *const *, int, const DevPlane *
 }
 void search_close(SearchSession *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }
 void run_search(int, const float *const *, const uint8_t *const *, const uint8_t *, factor::stat::Frame, int, int, int, int,
-                const factor::stat::Holds &, const StatLabelHost *, const SearchCostHost &, factor::search::Result *, double *, double *) {
+                const factor::stat::Holds &, const factor::stat::Label *, const factor::search::Cost &, factor::search::Result *, double *,
+                double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 

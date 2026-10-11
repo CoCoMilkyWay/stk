@@ -675,6 +675,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   };
   ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
+  ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -100.0, INFINITY); // 年化 < −100% 无意义 (高冲击档净线会砸穿): 低于的点不参与 fit, 轴底最低到 −100, 线出界即裁
   ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), n_hold, labels.data());
   ImPlot::SetupAxisLimits(ImAxis_X1, -0.6, n_hold - 0.4, ImPlotCond_Always);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);

@@ -19,6 +19,7 @@
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -101,9 +102,9 @@ inline void reference(const Data &d, int c, int threads, Ref &r) {
       continue;
     const int g = factor::stat::grp_of(ws[i]);
     if (g == factor::stat::kGroups - 1)
-      r.cost.buy_hi += static_cast<double>(factor::cpu::stat::detail::h2f(d.buy[i])), ++r.cost.n_hi;
+      r.cost.buy_hi += static_cast<double>(factor::cpu::stat::h2f(d.buy[i])), ++r.cost.n_hi;
     if (g == 0)
-      r.cost.sell_lo += static_cast<double>(factor::cpu::stat::detail::h2f(d.sell[i])), ++r.cost.n_lo;
+      r.cost.sell_lo += static_cast<double>(factor::cpu::stat::h2f(d.sell[i])), ++r.cost.n_lo;
   }
 }
 // Search 的 Result → 同形 Ref (finish 各持有期), 给 分块 ≡ 整块 用
@@ -130,28 +131,38 @@ inline Diff compare(const Ref &ref, const Result &got, const factor::stat::Holds
 }
 
 // ---- CPU 驱动: 块 = 行 [row0, row0 + rows), 统计从 t_lo 起 (t0_abs = row0) → out[kCands] ----
-//   ry 整张量一次预处理 (按行独立, 块取子段指针即可); 候选间 ForkJoin(threads) 抢单
-inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, Result *out) {
+//   ry 整张量一次预处理 (按行独立, 块取子段指针即可); 候选内 ForkJoin(threads) 切行.
+//   prep_ms / eval_ms 非空 → 回填 预处理 (标签 rank) / 评估 (kCands 张候选) 的 wall 耗时 (与 Stat/Check.hpp run_cpu, gpu::run_search 同口径)
+inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, Result *out, double *prep_ms = nullptr,
+                    double *eval_ms = nullptr) {
+  using Clock = std::chrono::steady_clock;
   const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
   const size_t n = static_cast<size_t>(T) * A;
   assert(row0 >= 0 && rows >= 1 && row0 + rows <= T);
   factor::exec::ForkJoin ex(threads);
-  std::vector<factor::cpu::search::Worker> ws;
-  factor::cpu::search::ensure_workers(ws, ex.threads(), A, d.base.hd);
+  factor::cpu::search::Workspace w;
+  w.ensure(T, A, H, ex.threads()); // 整张量形状: ry 预处理用; 块评估前再 ensure 成块形状
   std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(n));
-  std::vector<factor::cpu::search::Label> lab(static_cast<size_t>(H));
+  std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
   const size_t off = static_cast<size_t>(row0) * A;
+  Clock::time_point t0 = Clock::now();
   for (int i = 0; i < H; ++i) {
     const factor::stat::check::LabelHost &L = d.base.lab[static_cast<size_t>(i)];
-    factor::cpu::search::prep_label(ex, L.lv.data(), L.m.data(), T, A, ry[static_cast<size_t>(i)].data(), ws);
+    factor::cpu::stat::prep_label(ex, L.lv.data(), L.m.data(), T, A, ry[static_cast<size_t>(i)].data(), w.st);
     lab[static_cast<size_t>(i)] = {L.lv.data() + off, L.sv.data() + off, L.m.data() + off, ry[static_cast<size_t>(i)].data() + off};
   }
-  const factor::cpu::search::Cost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
+  if (prep_ms)
+    *prep_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+  const Cost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
   const float *xv[kCands];
   const uint8_t *xm[kCands];
   for (int c = 0; c < kCands; ++c)
     xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-  factor::cpu::search::run(ex, kCands, xv, xm, d.base.g.m.data() + off, d.base.frame, rows, A, row0, t_lo, d.base.hd, lab.data(), cost, ws, out);
+  w.ensure(rows, A, H, ex.threads());
+  t0 = Clock::now();
+  factor::cpu::search::run(ex, kCands, xv, xm, d.base.g.m.data() + off, d.base.frame, rows, A, row0, t_lo, d.base.hd, lab.data(), cost, w, out);
+  if (eval_ms)
+    *eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
 } // namespace factor::search::check

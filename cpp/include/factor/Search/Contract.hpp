@@ -6,7 +6,7 @@
 //   定位  同一因子表达式的一批参数候选 (C 张因子平面, 同池 g / 同口径 Frame / 同标签集), 每候选每持有期直接攒二级累加器 Accum,
 //         不落一级 Row, 外加打分要的两格建仓冲击池化. 语义 = Stat: 候选 c 的 acc[h].finish(hold) 与 Stat 对同一平面算出的 HoldStat
 //         逐字段一致 (整数派生量逐位, 浮点和只差求和序; 对拍 Search/Check.hpp). Stat 服务交互 (一因子一次, 要 Row), Search 服务搜索
-//         (一因子上万次, 只要分数), 两边各自极致实现, 只经本头 + Stat/Contract.hpp 相见.
+//         (一因子上万次, 只要分数); 两者同一后端共用同一组行核 (Stat/Host.hpp / Stat/Dev.cuh), 只在"行怎么排 / 攒到哪"上分叉.
 //
 //   【分块流式】超大张量沿 T 切块: 一块 = 行 [0, T) 的平面 (因子 / 标签 / 成本 / 池 同块同形), 带两个绝对量:
 //         t0_abs  块首行的绝对下标 (tail_masked 看 (t0_abs + t) % kSegLen)
@@ -44,11 +44,19 @@ inline int max_lag(const Holds &hd) {
   return m;
 }
 
-// 两格成本池化累加器 (见【成本】); 可合并
+// 单一金额档的建仓冲击: 三张 [T][A] 平面的指针 (宿主或设备, 由后端定)
+struct Cost {
+  const uint16_t *buy = nullptr;                                           // 买入冲击 fp16 位
+  const uint16_t *sell = nullptr;                                          // 卖出冲击 fp16 位
+  const uint8_t *m = nullptr;                                              // 有效位
+  FACTOR_HD Cost at(size_t i) const { return {buy + i, sell + i, m + i}; } // 偏到第 i 格 (行首 = t·A)
+};
+
+// 两格成本池化累加器 (见【成本】); 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
 struct CostAcc {
   double buy_hi = 0.0, sell_lo = 0.0; // 顶组 Σ买入冲击 / 底组 Σ卖出冲击
   long long n_hi = 0, n_lo = 0;       // 对应格数 (rx 有效 ∧ 成本有效)
-  void merge(const CostAcc &o) {
+  FACTOR_HD void merge(const CostAcc &o) {
     buy_hi += o.buy_hi, sell_lo += o.sell_lo;
     n_hi += o.n_hi, n_lo += o.n_lo;
   }

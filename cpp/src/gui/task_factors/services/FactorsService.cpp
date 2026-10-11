@@ -779,7 +779,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   for (size_t i = 0; i < L.planes.size(); ++i)
     dev[i] = factor::gpu::upload(sess, L.planes[i].v.data(), L.planes[i].m.data());     // 输入只上传一次
   const factor::gpu::DevPlane *cs_gate = factor::gpu::upload_mask(sess, L.cs.m.data()); // 截面池掩码平面 (随会话释放)
-  std::vector<factor::gpu::StatLabelHost> lab(H);
+  std::vector<factor::stat::Label> lab(H);
   for (size_t h = 0; h < H; ++h)
     lab[h] = {L.labels[h].lv.data(), L.labels[h].sv.data(), L.labels[h].m.data()};
   factor::gpu::StatSession *ss = factor::gpu::stat_open(L.T, L.A, L.hd, lab.data(), nullptr);

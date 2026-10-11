@@ -160,7 +160,7 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
         continue;
       sc::Result gpu;
       gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
-      std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(d.hd.n));
+      std::vector<factor::stat::Label> lab(static_cast<size_t>(d.hd.n));
       for (int i = 0; i < d.hd.n; ++i)
         lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
                                        d.lab[static_cast<size_t>(i)].m.data()};
@@ -246,7 +246,7 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
         continue;
       {
         const int H = hd.n;
-        std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(H));
+        std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
         const float *xv[sk::kCands];
         const uint8_t *xm[sk::kCands];
         const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out) {
@@ -257,7 +257,7 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
           }
           for (int c = 0; c < sk::kCands; ++c)
             xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-          const factor::gpu::SearchCostHost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
+          const factor::search::Cost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
           factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), cost, out);
         };
         factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
