@@ -20,7 +20,7 @@ struct BuildNode {
 };
 
 struct FactorsUIState {
-  int backend = 0;           // 0 = CPU, 1 = GPU
+  int backend = -1;          // 0 = CPU, 1 = GPU; -1 = 未定, 首帧按 GPU 可用性定 (有 GPU 默认 GPU)
   int hold_idx = 0;          // FeatureTable::labels 下标 (表列显示哪个持有期)
   BuildNode build;           // 加因子构建器的根
   char name_buf[64] = "";    // name_en = 文件名主干, 必填
@@ -48,7 +48,7 @@ struct FactorsUIState {
 struct FactorsUIContext {
   std::string factor_dir; // <factor_dir>/<universe>
   std::string universe, start_date, end_date;
-  double sell_impact = 0.0; // Config::sell_impact (Inspect 冲击选项的平仓侧常数; 进请求 key, 改了自动重算)
+  double sell_impact = 0.0; // Config::sell_impact (Inspect 期限结构净档的平仓侧常数; 进请求 key, 改了自动重算)
   bool axis_ready = false;  // 资产轴就绪 (数据库扫过) 才能读特征库评估
 };
 

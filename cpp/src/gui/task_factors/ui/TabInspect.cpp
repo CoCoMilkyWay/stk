@@ -31,7 +31,7 @@ int date_formatter(double v, char *buf, int size, void *ud) {
 }
 
 // 分层色: 两端两色 (G1 冷蓝 / G20 暖橙), 中间线性渐变 —— 单调, 一眼分出谁高谁低 (Jet 在中段来回翻色, 相邻组交织分不清)
-constexpr ImVec4 kColBottom(0.25f, 0.55f, 1.00f, 1.f), kColTop(1.00f, 0.45f, 0.20f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f), kColLSLin(0.55f, 1.f, 0.55f, 1.f);
+constexpr ImVec4 kColBottom(0.25f, 0.55f, 1.00f, 1.f), kColTop(1.00f, 0.45f, 0.20f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
 ImVec4 lerp_color(float t) { // t ∈ [0, 1]: 0 = 冷蓝 (G1 / 最负), 1 = 暖橙 (G20 / 最正)
   return ImVec4(kColBottom.x + (kColTop.x - kColBottom.x) * t, kColBottom.y + (kColTop.y - kColBottom.y) * t,
                 kColBottom.z + (kColTop.z - kColBottom.z) * t, 1.f);
@@ -126,22 +126,22 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
   ys.push_back(y.back());
 }
 
-// 一级 Row[T] (选定冲击档 c + hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
+// 毛口径一级 Row[T] (选定 hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
 // 再按回测长度折成等效年化 (× kDaysPerYear / days, 单位 %): 末点 = 年化收益, 不同区间长度 / 持有期可比;
 // IC 分布 = ok 行的 ic 逐行进 KLL (与 Accum 的 ic_mean/std/skew/kurt 同一组样本).
 // 符号: 一级 Row 是原值, 这里按 HoldStat::sign 镜像 (与二级同一口径), 画出来的 G20 / LS / IC 与表里一致
-void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDerived &d) {
+void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
   if (res.key.empty() || !res.error.empty() || res.rows.empty())
     return;
-  assert(sel >= 0 && sel < res.hd.n && c >= 0 && c < res.n_impact());
+  assert(sel >= 0 && sel < res.hd.n);
   const int T = res.scope.T, days = res.scope.days, S = factor::kSegLen;
   assert(T == days * S && days >= 1);
   const int hold = res.hd.h[sel];
   const double h = factor::stat::hold_minutes(hold);
   const double ann = 100.0 * factor::stat::kDaysPerYear / days;
-  const factor::stat::Row *r = res.rows_at(c, sel);
-  d.hs = res.hold_at(c)[sel];
+  const factor::stat::Row *r = res.rows_at(sel);
+  d.hs = res.hold_at(0)[sel];
   const bool flip = d.hs.sign < 0; // 一级 Row 是原值, 按二级定下的符号镜像 (Contract【自动符号】): 组倒序 / ls 换 ls_rev / ic 取负
   d.days = days;
   d.dates = res.dates;
@@ -151,19 +151,17 @@ void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDeri
   for (int k = 0; k < K; ++k)
     d.grp_cum[k].assign(static_cast<size_t>(days) + 1, 0.f);
   d.ls_cum.assign(static_cast<size_t>(days) + 1, 0.f);
-  d.ls_lin_cum.assign(static_cast<size_t>(days) + 1, 0.f);
   std::vector<float> ics;
   ics.reserve(static_cast<size_t>(T));
-  double gc[K] = {}, lc = 0.0, llc = 0.0;
+  double gc[K] = {}, lc = 0.0;
   for (int day = 0; day < days; ++day) {
-    double g[K] = {}, ls = 0.0, ll = 0.0;
+    double g[K] = {}, ls = 0.0;
     for (int t = day * S; t < (day + 1) * S; ++t) {
       const factor::stat::Row &w = r[t];
       if (!w.ok)
         continue;
       ics.push_back(flip ? -w.ic : w.ic);
       ls += flip ? w.ls_rev : w.ls;
-      ll += flip ? w.ls_lin_rev : w.ls_lin;
       for (int k = 0; k < K; ++k) {
         const int q = flip ? K - 1 - k : k;
         if (w.cnt[q]) // TS 口径组可空: 该刻无仓, 贡献 0
@@ -175,22 +173,17 @@ void derive(const InspectResult &res, int c, int sel, bool absolute, InspectDeri
       d.grp_cum[k][static_cast<size_t>(day) + 1] = static_cast<float>(gc[k] * ann);
     }
     lc += ls / h;
-    llc += ll / h;
     d.ls_cum[static_cast<size_t>(day) + 1] = static_cast<float>(lc * ann);
-    d.ls_lin_cum[static_cast<size_t>(day) + 1] = static_cast<float>(llc * ann);
   }
-  // y 范围: 分层线 min / max (含起点 0); 两条 LS 不参与定范围, 而是各自平移到最低点贴 lo (*_off), 跨度若超过分层跨度则把 hi 抬到装下
-  float lo = 0.f, hi = 0.f, ls_lo = 0.f, ls_hi = 0.f, ll_lo = 0.f, ll_hi = 0.f;
+  // y 范围: 分层线 min / max (含起点 0); LS 不参与定范围, 而是平移到最低点贴 lo (ls_off), 跨度若超过分层跨度则把 hi 抬到装下
+  float lo = 0.f, hi = 0.f, ls_lo = 0.f, ls_hi = 0.f;
   for (int k = 0; k < K; ++k)
     for (const float v : d.grp_cum[k])
       lo = std::min(lo, v), hi = std::max(hi, v);
   for (const float v : d.ls_cum)
     ls_lo = std::min(ls_lo, v), ls_hi = std::max(ls_hi, v);
-  for (const float v : d.ls_lin_cum)
-    ll_lo = std::min(ll_lo, v), ll_hi = std::max(ll_hi, v);
-  hi = std::max({hi, lo + (ls_hi - ls_lo), lo + (ll_hi - ll_lo)});
+  hi = std::max(hi, lo + (ls_hi - ls_lo));
   d.ls_off = lo - ls_lo;
-  d.ls_lin_off = lo - ll_lo;
   const float margin = (hi > lo ? hi - lo : 1.f) * 0.03f;
   d.y_lo = lo - margin;
   d.y_hi = hi + margin;
@@ -285,24 +278,20 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         const Shift &s = *static_cast<const Shift *>(ud);
         return ImPlotPoint(i, s.y[i] + s.off);
       };
-      Shift shift{d.ls_cum.data(), d.ls_off}; // tp-dn 只画图, 二级无其统计
-      ImPlot::SetNextLineStyle(kColLS, 1.5f);
-      ImPlot::PlotLineG("LS(tp-dn)###ls", shifted, &shift, n);
       char ll[64];
-      std::snprintf(ll, sizeof(ll), "LS(lin)  SR %+.2f  t %+.2f###lslin", d.hs.sharpe, d.hs.ls_t);
-      Shift shift_lin{d.ls_lin_cum.data(), d.ls_lin_off};
-      ImPlot::SetNextLineStyle(kColLSLin, 2.5f);
-      ImPlot::PlotLineG(ll, shifted, &shift_lin, n);
-      { // 光标 (对仗 OrderFlow 的锚): 拖动跟手并吸附整日, 双击落点; 标注光标日期 + 到该日的两条 LS 年化 (section_at)
+      std::snprintf(ll, sizeof(ll), "LS  SR %+.2f  t %+.2f###ls", d.hs.sharpe, d.hs.ls_t);
+      Shift shift{d.ls_cum.data(), d.ls_off};
+      ImPlot::SetNextLineStyle(kColLS, 2.5f);
+      ImPlot::PlotLineG(ll, shifted, &shift, n);
+      { // 光标 (对仗 OrderFlow 的锚): 拖动跟手并吸附整日, 双击落点; 标注光标日期 + 到该日的 LS 年化 (section_at)
         double cx = cursor_day;
         constexpr ImVec4 kCursor(1.f, 0.5f, 0.f, 1.f);
         if (ImPlot::DragLineX(0, &cx, kCursor, 2.f))
           cursor_day = std::clamp(static_cast<int>(std::lround(cx)), 0, d.days);
         else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
           cursor_day = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x)), 0, d.days);
-        ImPlot::Annotation(static_cast<double>(cursor_day), d.ls_lin_cum[static_cast<size_t>(cursor_day)] + d.ls_lin_off, kCursor, ImVec2(5, -15), false,
-                           "%s  LS(lin) %+.2f  LS(tp-dn) %+.2f", cursor_day ? d.dates[static_cast<size_t>(cursor_day) - 1].c_str() : "起点",
-                           section_at(d, d.ls_lin_cum, cursor_day), section_at(d, d.ls_cum, cursor_day));
+        ImPlot::Annotation(static_cast<double>(cursor_day), d.ls_cum[static_cast<size_t>(cursor_day)] + d.ls_off, kCursor, ImVec2(5, -15), false,
+                           "%s  LS %+.2f", cursor_day ? d.dates[static_cast<size_t>(cursor_day) - 1].c_str() : "起点", section_at(d, d.ls_cum, cursor_day));
       }
       ImPlot::EndPlot();
     }
@@ -312,63 +301,86 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   ImPlot::PopStyleVar();
 }
 
-// 右上: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS(lin) 均值, PCHIP 圆滑折线 + 节点圆点; L / S 默认隐藏, 点图例切.
-// 口径 = 全 universe 全时刻池化 (HoldStat::grp = Σ 组内超额 / Σ 组样本数; ls_mean = 逐 t ls_lin 的时间均值), 不是逐资产信号平均.
-// hs[n_hold] 来自 Inspect 结果或文件 stat; n < 3 的持有期不作节点
-void plot_term(const factor::stat::HoldStat *hs, int n_hold, int sel_hold, const char *source, const ImVec2 &size) {
+// 期限结构的一档: 一个冲击口径下全部持有期的二级 (hs[n_hold]); impact = 冲击金额 (万), 0 = 毛
+struct TermTier {
+  const factor::stat::HoldStat *hs;
+  int impact;
+};
+
+// 右上: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
+// 三组 × 全部冲击档一次画全 (档越高线越细越淡), 成本只在这张图出现, 不换因子就是静态的; L / S 默认隐藏, 点图例切 (图例项 = 组 × 档).
+// 口径 = 全 universe 全时刻池化 (HoldStat::grp = Σ 组内超额 / Σ 组样本数; ls_mean = 逐 t ls 的时间均值), 不是逐资产信号平均.
+// n < 3 的持有期不作节点. 悬停: 该持有期逐档一行
+void plot_term(const TermTier *tiers, int n_tier, int n_hold, int sel_hold, const char *source, const ImVec2 &size) {
+  assert(n_tier >= 1);
   char title[128];
   std::snprintf(title, sizeof(title), "期限结构: 年化池化均值超额 / 持有期  (%s)###term", source);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
   std::vector<double> pos(static_cast<size_t>(n_hold));
-  std::vector<std::string> names(static_cast<size_t>(n_hold));
+  std::vector<std::string> names(static_cast<size_t>(n_hold)), tier_names(static_cast<size_t>(n_tier));
   std::vector<const char *> labels(static_cast<size_t>(n_hold));
-  std::vector<double> xk, yk[3]; // 节点: [L / S / LS(lin)]
   for (int i = 0; i < n_hold; ++i) {
     pos[static_cast<size_t>(i)] = i;
-    names[static_cast<size_t>(i)] = factor::stat::hold_name(hs[i].hold);
+    names[static_cast<size_t>(i)] = factor::stat::hold_name(tiers[0].hs[i].hold);
     labels[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
-    if (hs[i].n < 3)
-      continue;
-    xk.push_back(i);
-    const double ann = 100.0 * factor::stat::periods_per_year(hs[i].hold); // 每期均值 × 每年期数 → 年化 %, 跨持有期可比
-    yk[0].push_back(hs[i].grp[K - 1] * ann);
-    yk[1].push_back(hs[i].grp[0] * ann);
-    yk[2].push_back(hs[i].ls_mean * ann);
   }
+  for (int q = 0; q < n_tier; ++q)
+    tier_names[static_cast<size_t>(q)] = tiers[q].impact ? std::to_string(tiers[q].impact) + "w" : "毛";
   ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
   ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), n_hold, labels.data());
   ImPlot::SetupAxisLimits(ImAxis_X1, -0.6, n_hold - 0.4, ImPlotCond_Always);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
-  const char *items[3] = {"L (G20 long)", "S (G1 long)", "LS(lin)"};
-  const ImVec4 cols[3] = {kColTop, kColBottom, kColLSLin};
-  std::vector<double> xs, ys;
-  for (int c = 0; c < 3; ++c) {
-    pchip_dense(xk, yk[c], xs, ys);
-    if (c < 2)
-      ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认只显 LS, 图例可点开
-    ImPlot::SetNextLineStyle(cols[c], c == 2 ? 2.5f : 1.5f);
-    ImPlot::PlotLine(items[c], xs.data(), ys.data(), static_cast<int>(xs.size()));
-    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f, cols[c], IMPLOT_AUTO, cols[c]);
-    ImPlot::PlotScatter(items[c], xk.data(), yk[c].data(), static_cast<int>(xk.size())); // 同名 → 同一图例项, 一起显隐
-  }
+  const char *items[3] = {"L (G20 long)", "S (G1 long)", "LS"};
+  const ImVec4 cols[3] = {kColTop, kColBottom, kColLS};
+  std::vector<double> xk, yk, xs, ys;
+  for (int c = 0; c < 3; ++c)
+    for (int q = 0; q < n_tier; ++q) {
+      const factor::stat::HoldStat *hs = tiers[q].hs;
+      xk.clear();
+      yk.clear();
+      for (int i = 0; i < n_hold; ++i) {
+        if (hs[i].n < 3)
+          continue;
+        const double ann = 100.0 * factor::stat::periods_per_year(hs[i].hold); // 每期均值 × 每年期数 → 年化 %, 跨持有期可比
+        xk.push_back(i);
+        yk.push_back((c == 0 ? hs[i].grp[K - 1] : c == 1 ? hs[i].grp[0]
+                                                         : hs[i].ls_mean) *
+                     ann);
+      }
+      pchip_dense(xk, yk, xs, ys);
+      const float fade = n_tier > 1 ? 1.f - 0.6f * static_cast<float>(q) / static_cast<float>(n_tier - 1) : 1.f; // 档越高越淡
+      const ImVec4 col(cols[c].x, cols[c].y, cols[c].z, fade);
+      const float wt = (c == 2 ? 2.5f : 1.5f) * (0.5f + 0.5f * fade);
+      char name[64];
+      std::snprintf(name, sizeof(name), "%s %s", items[c], tier_names[static_cast<size_t>(q)].c_str());
+      if (c < 2)
+        ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认只显 LS (全部档), 图例可点开
+      ImPlot::SetNextLineStyle(col, wt);
+      ImPlot::PlotLine(name, xs.data(), ys.data(), static_cast<int>(xs.size()));
+      ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f, col, IMPLOT_AUTO, col);
+      ImPlot::PlotScatter(name, xk.data(), yk.data(), static_cast<int>(xk.size())); // 同名 → 同一图例项, 一起显隐
+    }
   if (sel_hold >= 0 && sel_hold < n_hold)
     ImPlot::TagX(static_cast<double>(sel_hold), ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "sel");
   if (ImPlot::IsPlotHovered()) {
     const ImPlotPoint mp = ImPlot::GetPlotMousePos();
     const int i = static_cast<int>(std::lround(mp.x));
     if (i >= 0 && i < n_hold) {
-      const factor::stat::HoldStat &h = hs[i];
       ImGui::BeginTooltip();
-      const double ann = 100.0 * factor::stat::periods_per_year(h.hold);
-      if (h.n < 3)
-        ImGui::TextDisabled("h=%s  n=%d (不足)", labels[static_cast<size_t>(i)], h.n);
-      else
-        ImGui::Text("h=%-5s n=%d/%d sign %+d  rIC %+.4f IR %+.3f t %+.2f pos %.2f | LS(lin) %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f\n"
-                    "年化 %%:  L %+.2f  S %+.2f  LS(lin) %+.2f",
-                    labels[static_cast<size_t>(i)], h.n, h.n_ac, h.sign, h.ic_mean, h.icir, h.ic_t, h.ic_pos, h.ls_mean, h.ls_t, h.ls_pos, h.sharpe,
-                    h.beta, h.mono, h.rank_ac, h.grp[K - 1] * ann, h.grp[0] * ann, h.ls_mean * ann);
+      ImGui::TextDisabled("h=%s  年化 %% 为池化均值超额 × 每年期数", labels[static_cast<size_t>(i)]);
+      for (int q = 0; q < n_tier; ++q) {
+        const factor::stat::HoldStat &h = tiers[q].hs[i];
+        const double ann = 100.0 * factor::stat::periods_per_year(h.hold);
+        if (h.n < 3)
+          ImGui::TextDisabled("%-4s n=%d (不足)", tier_names[static_cast<size_t>(q)].c_str(), h.n);
+        else
+          ImGui::Text("%-4s n=%d/%d sign %+d  rIC %+.4f IR %+.3f t %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f | "
+                      "年化 %%: L %+.2f  S %+.2f  LS %+.2f",
+                      tier_names[static_cast<size_t>(q)].c_str(), h.n, h.n_ac, h.sign, h.ic_mean, h.icir, h.ic_t, h.ls_mean, h.ls_t, h.ls_pos, h.sharpe,
+                      h.beta, h.mono, h.rank_ac, h.grp[K - 1] * ann, h.grp[0] * ann, h.ls_mean * ann);
+      }
       ImGui::EndTooltip();
     }
   }
@@ -450,7 +462,7 @@ bool view_row(FactorsService &fsvc, const std::string &file, FactorRow &row, std
   return true;
 }
 
-// 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致; 冲击档不进 key)
+// 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
 std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
   InspectRequest probe;
   probe.file = row.file, probe.expr = row.expr, probe.frame = row.frame;
@@ -548,7 +560,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   if (!row.note.empty())
     ImGui::TextDisabled("%s", row.note.c_str());
 
-  // ---- 控件行 (各切换控件之间留宽间隔, 不然 "▸ 冲击 ◂" 连成一片) ----
+  // ---- 控件行 (各切换控件之间留宽间隔, 不然 "▸ 分层 ◂" 连成一片) ----
   constexpr float kCtlGap = 24.f;
   const FeatureTable &ft = isvc.feats();
   const InspectStatus st = isvc.status();
@@ -556,13 +568,6 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   const int n_hold = static_cast<int>(ft.labels.size());
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
   const int cur_hold = n_hold ? ft.labels[static_cast<size_t>(ui.hold_idx)].hold : 0;
-  {
-    bool impact_ok = ui.impact_amt == 0; // 字段表没有该档 (特征库换过) → 回毛
-    for (const CostCol &cc : ft.costs)
-      impact_ok |= cc.amt == ui.impact_amt;
-    if (!impact_ok)
-      ui.impact_amt = 0;
-  }
   if (n_hold >= 2) {
     std::vector<std::string> names(static_cast<size_t>(n_hold));
     std::vector<const char *> cs(static_cast<size_t>(n_hold));
@@ -576,30 +581,6 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
     tip("分层累计 / IC 分布 / 顶部 stat 看哪个持有期\n"
         "• 只影响显示, 一次算全部持有期");
   ImGui::SameLine(0.f, kCtlGap);
-  { // 档位 0 = 无, i ≥ 1 = costs[i − 1]
-    const int nc = static_cast<int>(ft.costs.size());
-    int imp_idx = 0;
-    std::vector<std::string> names(static_cast<size_t>(nc) + 1, "无");
-    std::vector<const char *> cs(static_cast<size_t>(nc) + 1);
-    for (int i = 0; i < nc; ++i) {
-      names[static_cast<size_t>(i) + 1] = std::to_string(ft.costs[static_cast<size_t>(i)].amt) + "w";
-      if (ft.costs[static_cast<size_t>(i)].amt == ui.impact_amt)
-        imp_idx = i + 1;
-    }
-    for (int i = 0; i <= nc; ++i)
-      cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
-    if (nc == 0)
-      ImGui::TextDisabled("冲击 无");
-    else if (cycler("冲击", imp_idx, cs.data(), nc + 1))
-      ui.impact_amt = imp_idx ? ft.costs[static_cast<size_t>(imp_idx) - 1].amt : 0;
-  }
-  if (ImGui::IsItemHovered())
-    tip("标签口径 (只影响显示, 一次算全部档)\n"
-        "• 无: 价格收益, entry 中间价 → exit 分钟 VWAP (默认, 与 Factors Run 同)\n"
-        "• <amt>w: 再扣建仓冲击 (lb_cost_buy/sell_<amt>w: 同一盘口吃 amt 万的 VWAP 偏离中间价) + 平仓固定冲击 (Config %.4f)\n"
-        "• 吃不到的格 (NaN) 无效",
-        ctx.sell_impact);
-  ImGui::SameLine(0.f, kCtlGap);
   {
     static const char *const kModes[2] = {"超额", "绝对"};
     int abs_idx = ui.absolute ? 1 : 0;
@@ -607,10 +588,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
       ui.absolute = abs_idx == 1;
   }
   if (ImGui::IsItemHovered())
-    tip("分层累计图的口径 (只影响显示)\n"
+    tip("分层累计图的口径 (只影响显示; 标签一律毛价格收益, 成本只进期限结构)\n"
         "• 超额: 组均 (lv − mkt), 围着 0 看形状\n"
         "• 绝对: 组均 lv, 含市场\n"
-        "• LS(lin) = 仓位 ∝ 秩离中的两腿 (全截面, 二级 stat 的对象); LS(tp-dn) = top(lv) + bottom(sv) 只画图. 都市场中性, 两种口径同一条");
+        "• LS = top(lv) + bottom(sv) 顶底多空, 市场中性, 两种口径同一条");
   ImGui::SameLine(0.f, kCtlGap);
   const bool can_run = !busy && ctx.axis_ready && n_hold > 0 && sel.error.empty();
   if (!can_run)
@@ -623,7 +604,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   if (!can_run)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    tip(ctx.axis_ready ? "弃缓存整体重算这一个因子: 重读特征库 → eval (CPU) → Stat, 留一级 Row[冲击档][H][T]\n"
+    tip(ctx.axis_ready ? "弃缓存整体重算这一个因子: 重读特征库 → eval (CPU) → Stat, 留毛口径一级 Row[H][T] + 各冲击档二级 (期限结构)\n"
                          "• 换因子会自动起算, 只补缺的特征; 此按钮 = 强制全量"
                        : "资产轴未就绪, 读不了特征库\n"
                          "• 先在 Database 页扫描");
@@ -656,16 +637,15 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
     break;
   }
 
-  // ---- 结果快照 (持锁派生切片 (冲击档 c, hold), 不拷 rows) ----
+  // ---- 结果快照 (持锁派生切片 (hold), 不拷 rows) ----
   const std::string key = probe_key(sel, ctx);
   const int sel_hold = ui.hold_idx;
   std::string message, res_error, res_key, res_file;
-  int res_impact = 0;
-  double res_sell = 0.0;
   StatScope res_scope;
   float res_valid = 0.f;
   double res_ms = 0.0;
-  factor::stat::HoldStat res_holds[factor::stat::kMaxHold]; // 选定冲击档的全部持有期 (期限结构)
+  std::vector<factor::stat::HoldStat> res_holds; // 全部冲击档 × 全部持有期 [C + 1][n_hold] (期限结构一次画全)
+  std::vector<int> res_impacts;                  // [C + 1]
   bool res_has = false;
   {
     std::lock_guard<std::mutex> lock(isvc.mutex);
@@ -673,28 +653,24 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
     const InspectResult &res = isvc.result;
     res_key = res.key;
     res_error = res.error;
-    int c = 0;
     if (!res.key.empty() && res.error.empty()) {
       assert(res.n_hold == n_hold && "Inspect 与 FeatureTable 的标签组不一致");
       res_has = true;
       res_file = res.file;
-      c = res.impact_index(ui.impact_amt);
-      res_impact = res.impacts[static_cast<size_t>(c)];
-      res_sell = res.sell_impact;
       res_scope = res.scope;
       res_valid = res.valid_pct;
       res_ms = res.eval_ms;
-      for (int i = 0; i < n_hold; ++i)
-        res_holds[i] = res.hold_at(c)[i];
+      res_impacts = res.impacts;
+      res_holds.assign(res.hold.begin(), res.hold.end());
+      assert(res_holds.size() == res_impacts.size() * static_cast<size_t>(n_hold));
     }
     const uint64_t ep = isvc.epoch();
-    if (ep != ui.derived_epoch || c != ui.derived_c || sel_hold != ui.derived_sel || ui.absolute != ui.derived_abs) {
+    if (ep != ui.derived_epoch || sel_hold != ui.derived_sel || ui.absolute != ui.derived_abs) {
       ui.derived_epoch = ep;
-      ui.derived_c = c;
       ui.derived_sel = sel_hold;
       ui.derived_abs = ui.absolute;
       if (res_has && sel_hold < res.hd.n)
-        derive(res, c, sel_hold, ui.absolute, ui.der);
+        derive(res, sel_hold, ui.absolute, ui.der);
       else
         ui.der = InspectDerived{};
     }
@@ -714,14 +690,12 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {
-    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms | 标签 %s%s", res_scope.universe.c_str(),
-                        res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T, res_scope.backend.c_str(),
-                        res_scope.time.c_str(), res_valid, res_ms,
-                        res_impact ? ("扣冲击 " + std::to_string(res_impact) + "w + 平仓 " + std::to_string(res_sell)).c_str() : "毛 (价格收益)",
-                        match ? "" : "  (旧结果, 新请求计算中…)");
+    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms | 毛 (价格收益; 成本只进期限结构)%s",
+                        res_scope.universe.c_str(), res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T,
+                        res_scope.backend.c_str(), res_scope.time.c_str(), res_valid, res_ms, match ? "" : "  (旧结果, 新请求计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)
-      ImGui::Text("h=%-5s n=%d/%d sign %+d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS(lin) %+.5f t %+.2f pos %.2f "
+      ImGui::Text("h=%-5s n=%d/%d sign %+d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
                   "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f",
                   factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.sign, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
                   h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
@@ -743,13 +717,18 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   else
     empty_plot("分层累计###layers", cell, wait_hint);
   ImGui::SameLine();
-  // 期限结构: Inspect 结果优先, 否则文件 stat (Factors 表的 row.hold)
-  if (shown)
-    plot_term(res_holds, n_hold, ui.hold_idx, res_impact ? "Inspect (扣冲击)" : "Inspect", cell);
-  else if (row.has_stat && row.n_hold == n_hold && ui.impact_amt == 0) // 文件 stat 只有毛口径
-    plot_term(row.hold, n_hold, ui.hold_idx, row.stat_from_file ? "文件 stat" : "Factors Run", cell);
-  else
+  // 期限结构: Inspect 结果优先 (全部冲击档), 否则文件 stat (Factors 表的 row.hold, 只有毛口径一档)
+  if (shown) {
+    std::vector<TermTier> tiers(res_impacts.size());
+    for (size_t q = 0; q < tiers.size(); ++q)
+      tiers[q] = {res_holds.data() + q * static_cast<size_t>(n_hold), res_impacts[q]};
+    plot_term(tiers.data(), static_cast<int>(tiers.size()), n_hold, ui.hold_idx, "Inspect", cell);
+  } else if (row.has_stat && row.n_hold == n_hold) {
+    const TermTier tier{row.hold, 0};
+    plot_term(&tier, 1, n_hold, ui.hold_idx, row.stat_from_file ? "文件 stat" : "Factors Run", cell);
+  } else {
     empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Compute)");
+  }
 
   if (shown && ui.der.valid)
     plot_ic(ui.der, cell);

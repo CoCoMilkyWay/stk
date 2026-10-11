@@ -10,12 +10,13 @@
 //   Y  标签集   key = S + sell_impact                      → [c = 0..C] {lv, sv, m, ry[H]}: c = 0 毛, c ≥ 1 扣 costs[c−1] + sell_impact 的净
 //   X  因子     key = S + expr                             → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
 //   R  rank_x   key = X                                    → ws[T][A]
-//   L  立方体   key = R × Y                                → Row[c][H][T] + HoldStat[c][H] (eval_rows 每标签集一遍, ws 共用)
-// 结果一次发布整个立方体: 页面的 Hold / 冲击档 / 超额|绝对 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
+//   L  评估     key = R × Y                                → 一级 Row[H][T] (只毛, c = 0) + 二级 HoldStat[c][H] (eval_rows 每标签集一遍, ws 共用;
+//                                                            净集只留二级给期限结构, Row 不落地)
+// 结果一次发布: 页面的 Hold / 超额|绝对 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
 // 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑不清旧 result: 页面继续整页画旧结果
-// (旧因子, 头部文字一并), 新结果发布时一次性覆盖 (UI 持 mutex 读; 一级 Row 大 (~140B × (C+1) × H × T), UI 不拷, 持锁派生成日级序列后放手;
-// 发布 = 与 Flow 的立方体缓冲交换, 不分配). 进度走原子: Loading 期 done/total = 天; Running 期 = 算子节点 + 标签集.
+// (旧因子, 头部文字一并), 新结果发布时一次性覆盖 (UI 持 mutex 读; 一级 Row 大 (~130B × H × T), UI 不拷, 持锁派生成日级序列后放手;
+// 发布 = 与 Flow 的 Row 缓冲交换, 不分配). 进度走原子: Loading 期 done/total = 天; Running 期 = 算子节点 + 标签集.
 // 后端: 只 CPU (单因子一棵 Dag; GPU 留后).
 #pragma once
 
@@ -58,20 +59,14 @@ struct InspectResult {
   factor::stat::Holds hd;                   // hd.h[hi]
   std::vector<int> impacts;                 // [C + 1] 冲击档 (万): [0] = 0 毛, 其后 = FeatureTable::costs 序
   double sell_impact = 0.0;                 // 净档的平仓冲击
-  std::vector<factor::stat::Row> rows;      // 一级 [C + 1][hd.n][T]
+  std::vector<factor::stat::Row> rows;      // 一级 [hd.n][T], 只毛口径
   std::vector<factor::stat::HoldStat> hold; // 二级 [C + 1][hd.n]
   float valid_pct = 0.f;
   double eval_ms = 0.0;
   std::string error; // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 
   int n_impact() const { return static_cast<int>(impacts.size()); }
-  int impact_index(int amt) const { // 找不到 (字段表换过) → 0 毛
-    for (int c = 0; c < n_impact(); ++c)
-      if (impacts[static_cast<size_t>(c)] == amt)
-        return c;
-    return 0;
-  }
-  const factor::stat::Row *rows_at(int c, int hi) const { return rows.data() + (static_cast<size_t>(c) * hd.n + hi) * scope.T; }
+  const factor::stat::Row *rows_at(int hi) const { return rows.data() + static_cast<size_t>(hi) * scope.T; }
   const factor::stat::HoldStat *hold_at(int c) const { return hold.data() + static_cast<size_t>(c) * hd.n; } // [hd.n]
 };
 

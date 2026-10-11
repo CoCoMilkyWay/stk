@@ -160,7 +160,6 @@ __device__ __forceinline__ int grp_of(unsigned r16) {
   const int g = static_cast<int>(r16 * kGroups / (kRankMax + 1));
   return g < kGroups - 1 ? g : kGroups - 1;
 }
-__device__ __forceinline__ int lin_w(unsigned r16) { return 2 * static_cast<int>(r16) - kRankMax; }
 __device__ __forceinline__ double ls_of(const Side &hi, const Side &lo, double mkt, double mkt_s) {
   return (hi.w > 0.0 ? hi.lv / hi.w - mkt : 0.0) + (lo.w > 0.0 ? lo.sv / lo.w - mkt_s : 0.0);
 }
@@ -187,8 +186,7 @@ __device__ __forceinline__ float pearson_int(unsigned long long n, unsigned long
 __device__ __forceinline__ float h2f(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 __device__ __forceinline__ void finish_row(Frame f, unsigned long long n, unsigned long long sx, unsigned long long sy,
                                            unsigned long long sxx, unsigned long long syy, unsigned long long sxy, double smk, double ssv,
-                                           const double *gs, const int *gc, const Side &top, const Side &bot, const Side &pos, const Side &neg,
-                                           Row &r) {
+                                           const double *gs, const int *gc, const Side &top, const Side &bot, Row &r) {
   bool icok = false;
   const float ic = pearson_int(n, sx, sy, sxx, syy, sxy, icok);
   bool gok = true;
@@ -205,10 +203,8 @@ __device__ __forceinline__ void finish_row(Frame f, unsigned long long n, unsign
     r.cnt[k] = static_cast<uint16_t>(gc[k]);
     r.grp[k] = static_cast<float>(gs[k] - gc[k] * mkt);
   }
-  r.ls = static_cast<float>(ls_of(top, bot, mkt, mkt_s));
-  r.ls_rev = static_cast<float>(ls_of(bot, top, mkt, mkt_s));
-  r.ls_lin = static_cast<float>(ls_of(pos, neg, mkt, mkt_s));
-  r.ls_lin_rev = static_cast<float>(ls_of(neg, pos, mkt, mkt_s));
+  r.ls = static_cast<float>(dev::ls_of(top, bot, mkt, mkt_s)); // 显式限定: Side 在 factor::stat, ADL 会把主机版 ls_of 一起拉进来
+  r.ls_rev = static_cast<float>(dev::ls_of(bot, top, mkt, mkt_s));
 }
 
 // shared 有序数组上的二分
@@ -366,8 +362,8 @@ __global__ void __launch_bounds__(kLB, 2) label_rows(Frame f, const uint16_t *ws
     }
     // ---- 标签侧 ----
     const bool tail = dev::tail_masked(t, hold);
-    ull s[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (IC), Σw (w>0), Σ|w| (w<0)
-    float fs[8] = {};                    // Σlv (mkt), Σsv, Σsv|组0, Σsv|顶组, w>0: Σw·lv, Σw·sv, w<0: Σ|w|·lv, Σ|w|·sv
+    ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (IC)
+    float fs[4] = {};              // Σlv (mkt), Σsv, Σsv|组0, Σsv|顶组
     if (!tail) {
 #pragma unroll
       for (int q = 0; q < kGroups; ++q) { // 清自己的槽
@@ -387,22 +383,13 @@ __global__ void __launch_bounds__(kLB, 2) label_rows(Frame f, const uint16_t *ws
         const float yl = dev::h2f(lv[a]), ys = dev::h2f(sv[a]);
         fs[0] += ok ? yl : 0.f;
         fs[1] += ok ? ys : 0.f;
-        const int g = ok ? dev::grp_of(xr) : -1; // 20 组 (LS(tp-dn) 的顶 / 底侧: lv 与权和就是组槽, 另记两组的 Σ sv)
+        const int g = ok ? dev::grp_of(xr) : -1; // 20 组 (顶 / 底侧的 lv 与计数就是组槽, 另记两组的 Σ sv)
         if (ok) {                                // 自己的槽, 无竞争
           gs[g][lane] += yl;
           gc[g][lane] += 1;
         }
         fs[2] += g == 0 ? ys : 0.f;
         fs[3] += g == kGroups - 1 ? ys : 0.f;
-        const int w = ok ? dev::lin_w(xr) : 0; // LS(lin) 的 w>0 / w<0 侧: 无效 / 中位 → 0, 两侧都不进
-        const unsigned aw = static_cast<unsigned>(w < 0 ? -w : w);
-        const float fw = static_cast<float>(aw);
-        s[6] += w > 0 ? aw : 0u;
-        s[7] += w < 0 ? aw : 0u;
-        fs[4] += w > 0 ? fw * yl : 0.f;
-        fs[5] += w > 0 ? fw * ys : 0.f;
-        fs[6] += w < 0 ? fw * yl : 0.f;
-        fs[7] += w < 0 ? fw * ys : 0.f;
       }
       warp_sum(s);
       warp_sum(fs);
@@ -438,9 +425,7 @@ __global__ void __launch_bounds__(kLB, 2) label_rows(Frame f, const uint16_t *ws
         }
         constexpr int kt = kGroups - 1;
         const Side top{static_cast<double>(gci[kt]), gsd[kt], static_cast<double>(fs[3])}, bot{static_cast<double>(gci[0]), gsd[0], static_cast<double>(fs[2])};
-        const Side pos{static_cast<double>(s[6]), static_cast<double>(fs[4]), static_cast<double>(fs[5])};
-        const Side neg{static_cast<double>(s[7]), static_cast<double>(fs[6]), static_cast<double>(fs[7])};
-        dev::finish_row(f, s[0], s[1], s[2], s[3], s[4], s[5], static_cast<double>(fs[0]), static_cast<double>(fs[1]), gsd, gci, top, bot, pos, neg, r);
+        dev::finish_row(f, s[0], s[1], s[2], s[3], s[4], s[5], static_cast<double>(fs[0]), static_cast<double>(fs[1]), gsd, gci, top, bot, r);
       }
       rows[static_cast<size_t>(hi) * T + t] = r;
     }

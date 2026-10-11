@@ -150,7 +150,7 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
       sc::run_cpu(d, cpu, threads);
       if (rep.verbose)
         for (const factor::stat::HoldStat &s : cpu.stat)
-          std::printf("       Stat.%s cpu    h=%-3d %-8s n=%d/%d  IC %+.4f std %.4f ICIR %+.3f t %+.2f pos %.2f  LS(lin) %+.5f t %+.2f pos %.2f "
+          std::printf("       Stat.%s cpu    h=%-3d %-8s n=%d/%d  IC %+.4f std %.4f ICIR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
                       "Sharpe %+.2f beta %+.3f  mono %+.3f  rankAC %+.3f\n",
                       fname, s.hold, kProfName[pi], s.n, s.n_ac, s.ic_mean, s.ic_std, s.icir, s.ic_t, s.ic_pos, s.ls_mean, s.ls_t, s.ls_pos,
                       s.sharpe, s.beta, s.mono, s.rank_ac);

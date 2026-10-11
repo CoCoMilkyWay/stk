@@ -166,7 +166,7 @@ inline void ac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_ac = ok ? 1u : 0u;
 }
 
-// 标签侧: rx = 本行 r16, t = 绝对行 (取标签行) → r 的 ic / mkt / grp / cnt / ls / ls_rev / ls_lin / ok. 调用方已排除段末尾部
+// 标签侧: rx = 本行 r16, t = 绝对行 (取标签行) → r 的 ic / mkt / grp / cnt / ls / ls_rev / ok. 调用方已排除段末尾部
 inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L, Row &r) {
   using ull = unsigned long long;
   const size_t base = static_cast<size_t>(t) * A;
@@ -174,9 +174,7 @@ inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L,
   ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
   double smk = 0.0, ssv = 0.0, gs[kGroups] = {};
   int gc[kGroups] = {};
-  double sv_bot = 0.0, sv_top = 0.0;                             // LS(tp-dn): 底 / 顶组的 Σ sv (lv 侧与权和就是 gs / gc)
-  ull w_pos = 0, w_neg = 0;                                      // LS(lin): w>0 / w<0 侧的整数权和
-  double lv_pos = 0.0, sv_pos = 0.0, lv_neg = 0.0, sv_neg = 0.0; //          及其 Σ|w|·lv / Σ|w|·sv
+  double sv_bot = 0.0, sv_top = 0.0; // 底 / 顶组的 Σ sv (lv 侧与计数就是 gs / gc)
   for (int a = 0; a < A; ++a) {
     const ull x = rx[a], y = ry[a];
     const bool ok = rx[a] != kRankNone && ry[a] != kRankNone;
@@ -194,21 +192,11 @@ inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L,
     gc[g] += ok;
     sv_bot += (ok && g == 0) ? ys : 0.f;
     sv_top += (ok && g == kGroups - 1) ? ys : 0.f;
-    const int w = ok ? factor::stat::lin_w(rx[a]) : 0; // 无效 / 中位 → 0, 两侧都不进
-    const unsigned aw = static_cast<unsigned>(w < 0 ? -w : w);
-    const float fw = static_cast<float>(aw);
-    w_pos += w > 0 ? aw : 0u;
-    w_neg += w < 0 ? aw : 0u;
-    lv_pos += w > 0 ? fw * yl : 0.f;
-    sv_pos += w > 0 ? fw * ys : 0.f;
-    lv_neg += w < 0 ? fw * yl : 0.f;
-    sv_neg += w < 0 ? fw * ys : 0.f;
   }
   using factor::stat::Side;
   const int kt = kGroups - 1;
   const Side top{static_cast<double>(gc[kt]), gs[kt], sv_top}, bot{static_cast<double>(gc[0]), gs[0], sv_bot};
-  const Side pos{static_cast<double>(w_pos), lv_pos, sv_pos}, neg{static_cast<double>(w_neg), lv_neg, sv_neg};
-  factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, top, bot, pos, neg, r);
+  factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, top, bot, r);
 }
 
 // 一 (t, hold) 完整行. ws = 全部 r16 [T][A] (ac 取 t−h 行, h = hold_minutes(hold))

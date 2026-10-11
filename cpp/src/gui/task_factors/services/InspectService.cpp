@@ -47,7 +47,7 @@ struct InspectService::Flow {
   factor::cpu::Pool pool;
   std::vector<factor::cpu::ParScratch> nsc;
   factor::cpu::stat::Workspace w;
-  std::vector<factor::stat::Row> rows; // 立方体 [C + 1][H][T], 发布时与 result.rows 交换
+  std::vector<factor::stat::Row> rows; // 毛口径一级 [H][T], 发布时与 result.rows 交换
 
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
   void reset_scope() {
@@ -256,7 +256,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const auto publish = [&] {
     res.scope.time = now_string();
     std::lock_guard<std::mutex> lock(mutex);
-    std::vector<factor::stat::Row> spare = std::move(result.rows); // 旧立方体缓冲回收给 Flow, 下次原地写
+    std::vector<factor::stat::Row> spare = std::move(result.rows); // 旧 Row 缓冲回收给 Flow, 下次原地写
     result = std::move(res);
     result.rows.swap(F.rows);
     F.rows = std::move(spare);
@@ -266,7 +266,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   for (int i = 0; i < N; ++i) {
     check_leaf_domains(d, i, L, res.error);
     if (!res.error.empty()) {
-      F.rows.clear(); // 无立方体
+      F.rows.clear(); // 无一级
       publish();
       return true;
     }
@@ -298,19 +298,19 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     done_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  // ---- R + L: rank_x 一次, 每标签集一遍 eval_rows → 立方体 ----
+  // ---- R + L: rank_x 一次, 每标签集一遍 eval_rows; 一级 Row 只留毛 (c = 0), 净集只出二级 (期限结构) ----
   const factor::check::Plane *rp = plane_of(root); // Stat 只看池内 (g 在算子内部)
   res.valid_pct = valid_pct_of(rp->m.data(), L.cs.m.data(), n);
-  const size_t cube = static_cast<size_t>(C + 1) * H * T;
-  if (F.rows.size() != cube)
-    F.rows.resize(cube);
+  const size_t nrow = static_cast<size_t>(H) * T;
+  if (F.rows.size() != nrow)
+    F.rows.resize(nrow);
   res.hold.resize(static_cast<size_t>(C + 1) * H);
   factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), L.cs.m.data(), req.frame, T, A, F.w);
   for (int c = 0; c <= C; ++c) {
     if (cancelled())
       return false;
-    factor::cpu::stat::eval_rows(F.ex, req.frame, T, A, L.hd, F.lab.data() + static_cast<size_t>(c) * H, F.w,
-                                 F.rows.data() + static_cast<size_t>(c) * H * T, res.hold.data() + static_cast<size_t>(c) * H);
+    factor::cpu::stat::eval_rows(F.ex, req.frame, T, A, L.hd, F.lab.data() + static_cast<size_t>(c) * H, F.w, c == 0 ? F.rows.data() : nullptr,
+                                 res.hold.data() + static_cast<size_t>(c) * H);
     done_.fetch_add(1, std::memory_order_relaxed);
   }
   publish();
