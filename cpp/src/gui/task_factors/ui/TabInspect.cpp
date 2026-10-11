@@ -39,7 +39,7 @@ int date_formatter(double v, char *buf, int size, void *ud) {
 constexpr ImVec4 kColBottom(0.00f, 0.20f, 0.70f, 1.f), kColTop(0.85f, 0.15f, 0.10f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
 constexpr ImVec4 kColNeutral(0.50f, 0.50f, 0.52f, 1.f); // 中段
 constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);       // 光标 (左上图交易日 / 右上 K 线 / 标的轴), 对仗 OrderFlow 的锚
-constexpr ImVec4 kColIndex(0.85f, 0.85f, 0.85f, 0.75f); // 右上 K 线叠加的 universe 指数线
+constexpr ImVec4 kColIndex(1.00f, 0.85f, 0.10f, 0.85f); // 右上 K 线叠加的 universe 指数线
 ImVec4 lerp_color(float t) {                            // t ∈ [0, 1]: 0 = 深蓝 (G1 / 最负), 0.5 = 灰, 1 = 深红 (G20 / 最正)
   const float s = (t - 0.5f) * 2.f, w = 0.20f + 0.80f / (1.f + std::exp(50.f * (0.94f - std::abs(s))));
   const ImVec4 &c = s < 0.f ? kColBottom : kColTop;

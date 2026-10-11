@@ -54,6 +54,9 @@ struct TsSqrt : Point {
 struct TsRelu : Point {
   static Val apply(Val x, const Param &) { return mk(std::fmax(0.f, x.v), x.m); }
 };
+struct TsNeg : Point {
+  static Val apply(Val x, const Param &) { return mk(-x.v, x.m); }
+};
 struct TsRecip : Point { // x = 0 → 0; 溢出由 mk 转无效
   static Val apply(Val x, const Param &) { return mk(x.v != 0.f ? 1.f / x.v : 0.f, x.m); }
 };

@@ -79,6 +79,7 @@
 //
 //   【不入表的组合】能由现有行拼出来的一律不给独立算子 (表只收不可约的核):
 //     计数   Σ1[x > k]     = TsGt + TsSum{Cum,Roll};  占比同理换 TsMean{Cum,Roll}
+//     小于   1[x < k]      = TsGt(TsNeg(x), k=−k);  平方 = TsMul(x, x)
 //     中位   med           = TsQuantileRoll(k=0.5) / CsQuantile(k=0.5)
 //     子集统计  只在某时段/某条件上统计 = TsMask(x, 掩码) 再套窗 (掩码由 TsTodMask / TsGt 造)
 //     超前相关  corr(x_s, y_{s+k}) = TsCorr{Cum,Roll}(TsDelayRoll(x, k), y) —— 换边即换符号方向
@@ -92,12 +93,13 @@
 #define OP_TS0(X) \
   X(TsTodMask, "时段掩", 0, POINT, SELF, MAP, TOD, OP_IN0(), BIN, R"tex(\mathbf{1}[k \le t_D < k_2])tex", "选日内时段 (0 = 09:15 竞价首分钟, 15 = 09:30 开盘); 造 0/1 掩码, 配 TsMask 做分时段统计")
 
-// ---- 1 元 × SELF (40 = POINT 8 + EXPAND 13 + ROLL 18 + EXPO 1) ----
+// ---- 1 元 × SELF (41 = POINT 9 + EXPAND 13 + ROLL 18 + EXPO 1) ----
 #define OP_TS1(X)                                                                                                                                                                                                          \
   X(TsAbs, "时绝对值", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), NONNEG, R"tex(|x_t|)tex", "取幅度, 弃方向")                                                                                                                \
   X(TsClip, "时截断", 1, POINT, SELF, MAP, GE0, OP_IN1(REAL), REAL, R"tex(\operatorname{clamp}(x_t,\,-k,\,k))tex", "对称截到 ±k; 压极端值")                                                                                \
   X(TsGt, "时大于", 1, POINT, SELF, MAP, ANY, OP_IN1(REAL), BIN, R"tex(\mathbf{1}[x_t > k])tex", "过阈指示 0/1; 套 Sum 窗得计数, 套 Mean 窗得占比")                                                                        \
   X(TsLog, "时对数", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(\operatorname{sign}(x_t)\,\ln(1+|x_t|))tex", "保号对数压缩; 压长尾")                                                                             \
+  X(TsNeg, "时取负", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(-x_t)tex", "取负; 翻转因子方向")                                                                                                                 \
   X(TsRecip, "时倒数", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(1/x_t)tex", "取倒数; 比率换向")                                                                                                                \
   X(TsRelu, "时正部", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), NONNEG, R"tex(\max(0,\,x_t))tex", "取正部; 只留上行")                                                                                                       \
   X(TsSign, "时符号", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), SIGN3, R"tex(\operatorname{sign}(x_t))tex", "取方向, 弃幅度")                                                                                               \

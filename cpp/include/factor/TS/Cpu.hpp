@@ -279,7 +279,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
 } // namespace detail
 
 // -----------------------------------------------------------------------------
-// 统一签名 (62 个算子同形; 元数不足时调用方传 nullptr, 故未用到的指针一律不许读)
+// 统一签名 (63 个算子同形; 元数不足时调用方传 nullptr, 故未用到的指针一律不许读)
 // -----------------------------------------------------------------------------
 #define CP_SIG                                                                              \
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,   \
@@ -290,7 +290,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
 #define CP_NO3 (void)zv, (void)zm
 
 // =============================================================================
-// POINT (20): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
+// POINT (21): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
 // =============================================================================
 #define CP_P1(Name, V, M)                                            \
   struct Name {                                                      \
@@ -356,6 +356,7 @@ struct TsLog {
   }
 };
 CP_P1(TsRelu, std::fmax(0.f, x), mx)
+CP_P1(TsNeg, -x, mx)
 CP_P1(TsRecip, x != 0.f ? 1.f / x : 0.f, mx) // x = 0 → 0, 溢出由 mk 转无效
 // TsGt: 指示 (严格大于); 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
 CP_P1(TsGt, x > p.k ? 1.f : 0.f, mx)

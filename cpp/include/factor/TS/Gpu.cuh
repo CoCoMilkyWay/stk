@@ -1305,7 +1305,7 @@ inline dim3 g_roll(int T, int A, int C) { return dim3(static_cast<unsigned>((A +
 // 算子: 统一签名 (未用到的指针传 nullptr, 全部设备指针); 怎么算是本后端私事, 不进 OpTable
 // =============================================================================
 
-// ---- POINT (20) ----
+// ---- POINT (21) ----
 #define FACTOR_TS_POINT(Name, NARY, BODY)                                                                                                                                             \
   struct Name {                                                                                                                                                                       \
     struct F {                                                                                                                                                                        \
@@ -1328,6 +1328,7 @@ FACTOR_TS_POINT(TsSign, 1, { v = x.v > 0.f ? 1.f : (x.v < 0.f ? -1.f : 0.f); m =
 FACTOR_TS_POINT(TsLog, 1, { v = copysignf(log1pf(fabsf(x.v)), x.v); m = x.m; })  // sign(x)·log1p(|x|)
 FACTOR_TS_POINT(TsSqrt, 1, { v = copysignf(sqrtf(fabsf(x.v)), x.v); m = x.m; })
 FACTOR_TS_POINT(TsRelu, 1, { v = fmaxf(0.f, x.v); m = x.m; })
+FACTOR_TS_POINT(TsNeg, 1, { v = -x.v; m = x.m; })
 FACTOR_TS_POINT(TsRecip, 1, { v = x.v != 0.f ? 1.f / x.v : 0.f; m = x.m; }) // x = 0 → 0; 溢出 → 出口转无效
 FACTOR_TS_POINT(TsGt, 1, { v = x.v > p.k ? 1.f : 0.f; m = x.m; })    // 指示; 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
 FACTOR_TS_POINT(TsClip, 1, { assert(p.k >= 0.f); v = fminf(fmaxf(x.v, -p.k), p.k); m = x.m; })

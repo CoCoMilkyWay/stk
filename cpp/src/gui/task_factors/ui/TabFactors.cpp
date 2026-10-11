@@ -38,7 +38,8 @@ void tip(const char *fmt, ...) {
 namespace {
 
 // ============================================================================
-// 构建器 (从外到内): 每个槽一个下拉 (过滤框 + 算子段 + 特征段), 选了算子就在下面缩进画它的子槽 + 参数
+// 构建器 (从外到内): 每个槽一个下拉 (过滤框 + 算子段 + 特征段), 选了算子就在下面缩进画它的子槽 + 参数.
+// 结构编辑局部化: 换算子 / 套一层 / 拆一层 都只动本节点, 子树原样保留 (中间插删一个算子不必重选下面的)
 // ============================================================================
 
 const char *kSlotNames[3] = {"x", "y", "z"};
@@ -57,15 +58,41 @@ bool contains_ci(std::string_view hay, std::string_view needle) {
   return false;
 }
 
-// 选中算子: 子槽按元数清空重建, 参数取默认表
+// 换本层算子, 槽内原有内容保留: 原是算子 → 子槽逐位对应 (多出的截掉, 不够的补空); 原是叶 → 进第一元. 参数取默认表.
+// 子槽值域不在这里查 (下拉只按本槽 need 过滤), 交给每帧 parse 即时校验标红
 void set_op(BuildNode &n, int op) {
+  std::vector<BuildNode> args;
+  if (n.op >= 0) {
+    args = std::move(n.args);
+  } else if (!n.feat.empty()) {
+    BuildNode leaf;
+    leaf.feat = std::move(n.feat);
+    args.push_back(std::move(leaf));
+  }
+  args.resize(static_cast<size_t>(factor::expr::kOps[op].arity));
   n.op = op;
   n.feat.clear();
-  n.args.assign(static_cast<size_t>(factor::expr::kOps[op].arity), BuildNode{});
+  n.args = std::move(args);
   const std::string name = factor::expr::kOps[op].name;
   n.p = factor::Param{};
   n.p.d = factor::check::default_d(name);
   factor::check::set_k(name, n.p);
+}
+
+// 外面套一层: 本节点整体成为新算子的第一元 (新算子 arity ≥ 1, 列表已过滤)
+void wrap_op(BuildNode &n, int op) {
+  assert(factor::expr::kOps[op].arity >= 1);
+  BuildNode inner = std::move(n);
+  n = BuildNode{};
+  set_op(n, op);
+  n.args[0] = std::move(inner);
+}
+
+// 去掉本层: 第 a 元上提替换本节点 (空槽上提 = 清空)
+void unwrap_op(BuildNode &n, size_t a) {
+  assert(n.op >= 0 && a < n.args.size());
+  BuildNode keep = std::move(n.args[a]);
+  n = std::move(keep);
 }
 
 void set_feat(BuildNode &n, const std::string &code) {
@@ -130,47 +157,78 @@ void from_expr(const factor::expr::Expr &e, int i, BuildNode &n) {
     from_expr(e, x.args[a], n.args[a]);
 }
 
-// 一个槽的下拉: need = 父算子该元的 in 域 (根 = REAL); 严格域 (组 id 的 INT) 只列 out ⊆ need 的算子 + 特征叶 (与 parse 同规则)
-void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filter_cap, factor::Dom need) {
-  const char *preview = n.op >= 0 ? factor::expr::kOps[n.op].name : (n.feat.empty() ? "<选择>" : n.feat.c_str());
-  ImGui::SetNextItemWidth(220);
-  if (!ImGui::BeginCombo("##slot", preview, ImGuiComboFlags_HeightLargest))
-    return;
+// 候选列表 (槽下拉 / 套一层弹窗公用): 过滤框 + 算子段 (+ 槽模式: <清空> + 特征段).
+// need = 本槽值域 (父算子该元的 in 域, 根 = REAL); 严格域 (组 id 的 INT) 只列 out ⊆ need 的算子 (与 parse 同规则).
+// wrap 模式只列 arity ≥ 1 的算子 (要装得下当前节点), 无叶 / 无清空.
+// 选中 → 返回 true: op ≥ 0 算子; op < 0 且 feat 非空 = 叶; 都空 = 清空
+bool pick_list(const FeatureTable &ft, char *filter, size_t filter_cap, factor::Dom need, bool wrap, int cur_op, const std::string &cur_feat, int &op,
+               std::string &feat) {
   if (ImGui::IsWindowAppearing()) {
     filter[0] = '\0';
     ImGui::SetKeyboardFocusHere();
   }
   ImGui::SetNextItemWidth(-1);
-  ImGui::InputTextWithHint("##filter", "过滤: 算子名 / 中文名 / 特征 code", filter, filter_cap);
+  ImGui::InputTextWithHint("##filter", wrap ? "过滤: 算子名 / 中文名" : "过滤: 算子名 / 中文名 / 特征 code", filter, filter_cap);
   const std::string_view f(filter);
   ImGui::Separator();
-  if (ImGui::Selectable("<清空>", false))
-    n = BuildNode{};
+  bool picked = false;
+  op = -1;
+  feat.clear();
+  if (!wrap && ImGui::Selectable("<清空>", false))
+    picked = true;
   ImGui::TextDisabled("算子");
   for (int i = 0; i < factor::expr::kOpCount; ++i) {
     const factor::expr::OpInfo &o = factor::expr::kOps[i];
+    if (wrap && o.arity == 0)
+      continue;
     if (factor::dom_strict(need) && !factor::dom_sub(o.out, need))
       continue;
     if (!contains_ci(o.name, f) && !contains_ci(o.c_name, f))
       continue;
     char label[96];
     std::snprintf(label, sizeof(label), "%s  %s", o.name, o.c_name);
-    if (ImGui::Selectable(label, n.op == i))
-      set_op(n, i);
+    if (ImGui::Selectable(label, cur_op == i)) {
+      op = i;
+      picked = true;
+    }
     if (ImGui::IsItemHovered())
       tip("%s\n• %d 元\n• 参数 %s", o.note, o.arity, o.params[0] ? o.params : "无");
   }
-  ImGui::TextDisabled("特征");
-  for (const FeatCol &c : ft.cols) {
-    if (!c.allowed || !contains_ci(c.code, f))
-      continue;
-    if (ImGui::Selectable(c.code.c_str(), n.op < 0 && n.feat == c.code))
-      set_feat(n, c.code);
+  if (!wrap) {
+    ImGui::TextDisabled("特征");
+    for (const FeatCol &c : ft.cols) {
+      if (!c.allowed || !contains_ci(c.code, f))
+        continue;
+      if (ImGui::Selectable(c.code.c_str(), cur_op < 0 && cur_feat == c.code)) {
+        feat = c.code;
+        picked = true;
+      }
+    }
+  }
+  return picked;
+}
+
+// 一个槽的下拉: 换本层 (内容保留, 见 set_op) / 选叶 / 清空
+void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filter_cap, factor::Dom need) {
+  const char *preview = n.op >= 0 ? factor::expr::kOps[n.op].name : (n.feat.empty() ? "<选择>" : n.feat.c_str());
+  ImGui::SetNextItemWidth(220);
+  if (!ImGui::BeginCombo("##slot", preview, ImGuiComboFlags_HeightLargest))
+    return;
+  int op;
+  std::string feat;
+  if (pick_list(ft, filter, filter_cap, need, false, n.op, n.feat, op, feat)) {
+    if (op >= 0)
+      set_op(n, op);
+    else if (!feat.empty())
+      set_feat(n, feat);
+    else
+      n = BuildNode{};
   }
   ImGui::EndCombo();
 }
 
-// 递归画一个节点: [槽名] [下拉] [参数...]; 算子的子槽缩进一层
+// 递归画一个节点: [槽名] [下拉] [参数...] [中文名] [↑] [✕]; 算子的子槽缩进一层.
+// 三种结构操作各管一件事: 下拉 = 换本层 (子槽留着); ↑ = 外面加一层 (本节点进第一元); ✕ = 去掉本层 (选一元上提)
 void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filter_cap, const char *slot_label, factor::Dom need) {
   ImGui::PushID(&n);
   ImGui::AlignTextToFramePadding();
@@ -179,6 +237,48 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
     tip("该元值域 %s%s", factor::dom_name(need), factor::dom_strict(need) ? " (严格: 组 id)" : " (语义声明, 越界格算子自置无效)");
   ImGui::SameLine();
   slot_combo(n, ft, filter, filter_cap, need);
+  if (n.op >= 0 || !n.feat.empty()) { // 非空槽才有结构操作
+    ImGui::SameLine();
+    if (ImGui::SmallButton("↑"))
+      ImGui::OpenPopup("wrap");
+    if (ImGui::IsItemHovered())
+      tip("外面套一层: 本节点整体进新算子的第一元, 其余槽留空");
+    if (ImGui::BeginPopup("wrap")) {
+      int op;
+      std::string feat;
+      if (pick_list(ft, filter, filter_cap, need, true, -1, std::string(), op, feat))
+        wrap_op(n, op);
+      ImGui::EndPopup();
+    }
+  }
+  if (n.op >= 0 && !n.args.empty()) {
+    ImGui::SameLine();
+    const factor::expr::OpInfo &o = factor::expr::kOps[n.op];
+    if (ImGui::SmallButton("✕")) {
+      if (n.args.size() == 1)
+        unwrap_op(n, 0); // 一元: 直接上提
+      else
+        ImGui::OpenPopup("unwrap");
+    }
+    if (ImGui::IsItemHovered())
+      tip("去掉本层 %s: 一元直接上提; 多元弹窗选哪一元留下 (其余丢弃)", o.name);
+    if (ImGui::BeginPopup("unwrap")) {
+      ImGui::TextDisabled("留下哪一元");
+      ImGui::Separator();
+      for (size_t a = 0; a < n.args.size(); ++a) {
+        std::string src;
+        bool complete = true;
+        to_source(n.args[a], src, complete);
+        char label[320];
+        std::snprintf(label, sizeof(label), "%s: %s", o.in[a] == factor::Dom::INT ? "组 id" : kSlotNames[a], src.c_str());
+        if (ImGui::Selectable(label)) {
+          unwrap_op(n, a);
+          break; // n 已变, 不再迭代旧 args
+        }
+      }
+      ImGui::EndPopup();
+    }
+  }
   if (n.op >= 0) {
     const factor::expr::OpInfo &o = factor::expr::kOps[n.op];
     if (factor::expr::declares(o.params, "d")) {
@@ -845,6 +945,7 @@ int RenderTabFactors(FactorsService &svc, FactorsUIState &ui, const FactorsUICon
         "• 根: 必须是归一算子 —— CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=1275, 5 日) (时序口径)\n"
         "• 子槽: 缩进里选算子或特征; 参数 d / k / k2 手填\n"
         "• 下拉: 可打字过滤 (算子名 / 中文名 / 特征 code); GROUP 域的组 id 槽只列整数列算子 + 特征\n"
+        "• 改结构不动别处: 下拉换算子保留子槽 (叶自动进第一元); 行末 ↑ = 外面加一层, ✕ = 去掉本层留一元\n"
         "• 模式: 勾选表格首列 → 编辑 (载入到这里, Save 覆盖 / 删除); 取消勾选 → 添加, 内容留作模板");
   ImGui::SameLine();
   if (edit_row) {
