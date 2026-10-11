@@ -8,7 +8,8 @@
 #include "factor/CS/Gpu.cuh" // IWYU pragma: keep
 #include "factor/TS/Gpu.cuh" // IWYU pragma: keep
 
-#include "factor/Stat/Gpu.cuh" // IWYU pragma: keep
+#include "factor/Search/Gpu.cuh" // IWYU pragma: keep
+#include "factor/Stat/Gpu.cuh"   // IWYU pragma: keep
 
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
@@ -280,6 +281,7 @@ struct DevBuf {
     CU(cudaMalloc(&p, n * sizeof(E)));
     CU(cudaMemset(p, 0, n * sizeof(E)));
   }
+  void put(const E *h, size_t n) const { CU(cudaMemcpy(p, h, n * sizeof(E), cudaMemcpyHostToDevice)); } // 已分配, 只拷入
   void down(E *h, size_t n) const { CU(cudaMemcpy(h, p, n * sizeof(E), cudaMemcpyDeviceToHost)); }
   void free_() {
     if (p)
@@ -375,6 +377,115 @@ void run_stat(const float *xv, const uint8_t *xm, const uint8_t *gm, factor::sta
   stat_eval(s, &xp, &gp, f, rows, eval_ms);
   stat_close(s);
   x.free_(), m.free_(), g.free_();
+}
+
+// Search 会话: 一块的标签 / 成本 / ry + Cmax 候选的 rx 工作区 + 分片 / 归约输出, open 时全部分配; load 只拷入 + 预处理
+struct SearchSession {
+  int T = 0, A = 0, Cmax = 0;
+  factor::stat::Holds hd;
+  DevBuf<uint16_t> lv[factor::stat::kMaxHold], sv[factor::stat::kMaxHold], ry[factor::stat::kMaxHold];
+  DevBuf<uint8_t> lm[factor::stat::kMaxHold];
+  DevBuf<uint16_t> cb, cs;
+  DevBuf<uint8_t> cm;
+  search::LabelSet L;
+  search::Cost cost;
+  DevBuf<uint16_t> rx;
+  DevBuf<search::Part> part, out;
+  std::vector<search::Part> hout;
+  bool loaded = false;
+  Timer tm;
+};
+
+SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd) {
+  factor::stat::assert_holds(hd);
+  assert(T > 0 && A > 0 && A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= search::kMaxBatch);
+  const size_t n = static_cast<size_t>(T) * A;
+  const int H = hd.n;
+  SearchSession *s = new SearchSession;
+  s->T = T, s->A = A, s->Cmax = Cmax, s->hd = hd;
+  s->L.n = H;
+  for (int i = 0; i < H; ++i) {
+    s->lv[i].alloc(n), s->sv[i].alloc(n), s->lm[i].alloc(n), s->ry[i].alloc(n);
+    s->L.l[i] = {s->lv[i].p, s->sv[i].p, s->lm[i].p, s->ry[i].p};
+  }
+  s->cb.alloc(n), s->cs.alloc(n), s->cm.alloc(n);
+  s->cost = {s->cb.p, s->cs.p, s->cm.p};
+  const search::Work w = search::plan(Cmax, T, A, H, 0); // t_lo = 0 是分片数上界
+  s->rx.alloc(w.rx_elems());
+  s->part.alloc(w.part_elems());
+  s->out.alloc(w.out_elems());
+  s->hout.resize(w.out_elems());
+  return s;
+}
+
+void search_load(SearchSession *s, const StatLabelHost *lab, const SearchCostHost &cost, double *prep_ms) {
+  assert(s && lab && cost.buy && cost.sell && cost.m);
+  const size_t n = static_cast<size_t>(s->T) * s->A;
+  for (int i = 0; i < s->hd.n; ++i)
+    s->lv[i].put(lab[i].lv, n), s->sv[i].put(lab[i].sv, n), s->lm[i].put(lab[i].m, n);
+  s->cb.put(cost.buy, n), s->cs.put(cost.sell, n), s->cm.put(cost.m, n);
+  s->tm.begin();
+  for (int i = 0; i < s->hd.n; ++i)
+    search::prep_label(s->lv[i].p, s->lm[i].p, s->T, s->A, s->ry[i].p, nullptr);
+  const double pms = s->tm.end();
+  if (prep_ms)
+    *prep_ms = pms;
+  s->loaded = true;
+}
+
+void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo,
+                 factor::search::Result *out, double *eval_ms) {
+  assert(s && s->loaded && x && C >= 1 && C <= s->Cmax && g && g->m && out);
+  search::Batch B;
+  B.C = C;
+  for (int c = 0; c < C; ++c) {
+    assert(x[c] && x[c]->v && x[c]->m);
+    B.v[c] = x[c]->v, B.m[c] = x[c]->m;
+  }
+  const search::Work w = search::plan(C, s->T, s->A, s->hd.n, t_lo);
+  if (eval_ms)
+    s->tm.begin();
+  search::eval(B, g->m, f, w, t0_abs, s->hd, s->L, s->cost, s->rx.p, s->part.p, s->out.p, nullptr);
+  if (eval_ms)
+    *eval_ms = s->tm.end();
+  s->out.down(s->hout.data(), w.out_elems()); // D2H 自带同步
+  for (int c = 0; c < C; ++c)
+    search::to_result(s->hout.data() + static_cast<size_t>(c) * s->hd.n, s->hd.n, out[c]);
+}
+
+void search_close(SearchSession *s) {
+  assert(s);
+  s->out.free_(), s->part.free_(), s->rx.free_();
+  s->cb.free_(), s->cs.free_(), s->cm.free_();
+  for (int i = 0; i < s->hd.n; ++i)
+    s->lv[i].free_(), s->sv[i].free_(), s->lm[i].free_(), s->ry[i].free_();
+  delete s;
+}
+
+void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int t0_abs,
+                int t_lo, const factor::stat::Holds &hd, const StatLabelHost *lab, const SearchCostHost &cost, factor::search::Result *out,
+                double *prep_ms, double *eval_ms) {
+  assert(C >= 1 && C <= search::kMaxBatch && xv && xm && gm);
+  const size_t n = static_cast<size_t>(T) * A;
+  std::vector<DevBuf<float>> x(static_cast<size_t>(C));
+  std::vector<DevBuf<uint8_t>> m(static_cast<size_t>(C));
+  std::vector<DevPlane> xp(static_cast<size_t>(C));
+  std::vector<const DevPlane *> xpp(static_cast<size_t>(C));
+  for (int c = 0; c < C; ++c) {
+    x[static_cast<size_t>(c)].up(xv[c], n), m[static_cast<size_t>(c)].up(xm[c], n);
+    xp[static_cast<size_t>(c)] = {x[static_cast<size_t>(c)].p, m[static_cast<size_t>(c)].p};
+    xpp[static_cast<size_t>(c)] = &xp[static_cast<size_t>(c)];
+  }
+  DevBuf<uint8_t> g;
+  g.up(gm, n);
+  const DevPlane gp{nullptr, g.p};
+  SearchSession *s = search_open(T, A, C, hd);
+  search_load(s, lab, cost, prep_ms);
+  search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, out, eval_ms);
+  search_close(s);
+  for (int c = 0; c < C; ++c)
+    x[static_cast<size_t>(c)].free_(), m[static_cast<size_t>(c)].free_();
+  g.free_();
 }
 
 } // namespace factor::gpu

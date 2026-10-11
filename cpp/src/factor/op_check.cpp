@@ -12,6 +12,7 @@
 //   造数 / 配方 / 容差 / 比较 / 驱动在 factor/Check.hpp (与 GUI Factors→Operators 页共用同一口径);
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
 //   末尾另有一节 Stat (因子评估算子, factor/Stat; 不在 OpTable, 无流式后端, cpu ↔ gpu 两方 match): --op Stat 单跑.
+//   再一节 Search (参数搜索评估算子, factor/Search; 参考 = Stat CPU, Search cpu / gpu 各与它比 + 分块 ≡ 整块): --op Search 单跑.
 // =============================================================================
 
 #include "factor/TS/Cpu.hpp"    // IWYU pragma: keep
@@ -24,6 +25,7 @@
 #include "factor/Contract.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
+#include "factor/Search/Check.hpp"
 #include "factor/Stat/Check.hpp"
 
 #include <cassert>
@@ -182,6 +184,98 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
     std::printf("  ok   %-14s\n", "Stat");
 }
 
+// Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat + 朴素成本池化; Search cpu / gpu 各与它比,
+//   再比 分块 (两块带 carry, merge) ≡ 整块. 两口径 × profile 全扫; 无 GPU 时只跑 cpu 两项
+void check_search(int T, int A, unsigned seed, Report &rep) {
+  namespace sk = factor::search::check;
+  ++rep.ops;
+  bool op_bad = false;
+  const int threads = factor::stat::check::cpu_threads();
+  const Param p;
+  for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
+    const char *fname = factor::stat::frame_name(fr);
+    char tag[32];
+    for (int pi = 0; pi < kProfiles; ++pi) {
+      const Profile pr = static_cast<Profile>(pi);
+      std::mt19937 rng(seed + 1000u * pi);
+      sk::Data d;
+      sk::make(d, fr, pr, T, A, rng);
+      const factor::stat::Holds &hd = d.base.hd;
+      const Tol tol = factor::stat::check::tol_of(pr);
+      const sk::Split sp = sk::split_of(T, hd);
+      sk::Ref ref[sk::kCands];
+      for (int c = 0; c < sk::kCands; ++c)
+        sk::reference(d, c, threads, ref[c]);
+      // 一个后端的两项: 整块 vs 参考; 两块 merge vs 整块
+      const auto judge = [&](const char *side, const factor::search::Result *full, const factor::search::Result *c1,
+                             const factor::search::Result *c2) {
+        bool bad = false;
+        for (int c = 0; c < sk::kCands; ++c) {
+          std::snprintf(tag, sizeof(tag), "Search.%s.c%d", fname, c);
+          const Diff df = sk::compare(ref[c], full[c], hd, tol);
+          emit(rep, tag, p, kProfName[pi], side, df, op_bad);
+          bad = bad || !df.ok();
+          factor::search::Result m = c1[c];
+          m.merge(c2[c], hd.n);
+          sk::Ref rf;
+          sk::to_ref(full[c], hd, rf);
+          const Diff dm = sk::compare(rf, m, hd, tol);
+          std::snprintf(tag, sizeof(tag), "Search.%s.c%d.chunk", fname, c);
+          emit(rep, tag, p, kProfName[pi], side, dm, op_bad);
+          bad = bad || !dm.ok();
+        }
+        return bad;
+      };
+      {
+        factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
+        sk::run_cpu(d, threads, 0, T, 0, full);
+        sk::run_cpu(d, threads, 0, sp.T1, 0, c1);
+        sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, c2);
+        ++rep.cases;
+        if (judge("cpu", full, c1, c2))
+          ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
+        if (rep.verbose)
+          for (int c = 0; c < sk::kCands; ++c) {
+            const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{0.0005, 1.0});
+            std::printf("       Search.%s cpu c%d %-8s best h=%-4d ls_net %+.5f ic %+.4f score %+.3g  cost buy_hi %.5f (%lld) sell_lo %.5f (%lld)\n",
+                        fname, c, kProfName[pi], s.best >= 0 ? hd.h[s.best] : -1, s.ls_net, s.ic, s.score, full[c].cost.buy_mean(),
+                        full[c].cost.n_hi, full[c].cost.sell_mean(), full[c].cost.n_lo);
+          }
+      }
+      if (!factor::gpu::available())
+        continue;
+      {
+        const int H = hd.n;
+        std::vector<factor::gpu::StatLabelHost> lab(static_cast<size_t>(H));
+        const float *xv[sk::kCands];
+        const uint8_t *xm[sk::kCands];
+        const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out) {
+          const size_t off = static_cast<size_t>(row0) * A;
+          for (int i = 0; i < H; ++i) {
+            const factor::stat::check::LabelHost &L = d.base.lab[static_cast<size_t>(i)];
+            lab[static_cast<size_t>(i)] = {L.lv.data() + off, L.sv.data() + off, L.m.data() + off};
+          }
+          for (int c = 0; c < sk::kCands; ++c)
+            xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
+          const factor::gpu::SearchCostHost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
+          factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), cost, out);
+        };
+        factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
+        run(0, T, 0, full);
+        run(0, sp.T1, 0, c1);
+        run(sp.s, T - sp.s, sp.t_lo, c2);
+        ++rep.cases;
+        if (judge("gpu", full, c1, c2))
+          ++rep.gpu_bad;
+      }
+    }
+  }
+  if (op_bad)
+    ++rep.ops_bad;
+  else if (!rep.verbose)
+    std::printf("  ok   %-14s\n", "Search");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -230,6 +324,8 @@ int main(int argc, char **argv) {
 #undef CK_SELF
   if (only.empty() || only == "Stat") // 评估算子: 不在 OpTable, 单独一节
     check_stat(T, A, seed, rep);
+  if (only.empty() || only == "Search") // 搜索评估算子: 参考 = Stat CPU
+    check_search(T, A, seed, rep);
 
   std::printf("=== %d 算子 / %d 用例: stream 失败 %d, gpu 失败 %d; 算子级失败 %d ===\n", rep.ops,
               rep.cases, rep.stream_bad, rep.gpu_bad, rep.ops_bad);
