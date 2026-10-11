@@ -267,6 +267,7 @@ set(SOURCES
     ../../src/gui/task_factors/services/FactorsLoad.cpp
     ../../src/gui/task_factors/services/FactorsService.cpp
     ../../src/gui/task_factors/services/InspectService.cpp
+    ../../src/gui/task_factors/services/KlineService.cpp
     ../../src/gui/task_factors/services/OperatorsService.cpp
     ../../src/gui/task_factors/ui/TabFactors.cpp
     ../../src/gui/task_factors/ui/TabInspect.cpp
@@ -743,6 +744,7 @@ set_source_files_properties(
     ../../src/gui/task_factors/services/FactorsLoad.cpp
     ../../src/gui/task_factors/services/FactorsService.cpp
     ../../src/gui/task_factors/services/InspectService.cpp
+    ../../src/gui/task_factors/services/KlineService.cpp
     ../../src/gui/task_factors/services/OperatorsService.cpp
     ../../src/gui/task_factors/ui/TabFactors.cpp
     ../../src/gui/task_factors/ui/TabInspect.cpp

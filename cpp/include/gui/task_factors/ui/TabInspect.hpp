@@ -4,22 +4,29 @@
 // 布局: 顶部 头信息 (◂ ▸ 按表序切相邻有效因子 / 中文名 英文名 / 口径 / 规范串 / note) + 控件 (◂ Hold ▸ / 分层 toggle / Compute / Cancel /
 //   状态; 箭头循环切, 不用下拉) + 选定持有期的一行 stat.
 //   整页 (头部文字 + 四图) 画的是**现结果**的因子: 切因子后服务不清旧 result, 旧的继续画, 头部标 "→ 新因子 (计算中…)", 新结果发布时一次性覆盖, 不闪
-//   成本只进期限结构 (右上): 分层 / IC / 顶部 stat 全是毛价格收益 (与 Factors Run 同), 拿来看分层 / 拟合形状; 成本与仓位映射另做.
+//   成本只进期限结构 (右下): 分层 / IC / 顶部 stat 全是毛价格收益 (与 Factors Run 同), 拿来看分层 / 拟合形状; 成本与仓位映射另做.
 //   服务一次算出毛口径一级 Row[H][T] + 全部冲击档的二级 HoldStat[c][H], 换 Hold / 超额|绝对 都只是切片 (UI 持锁派生), 不发请求, 零延时
 // 下面 2×2 四图:
 //   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日累计的组均收益 (控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
 //        重叠持有期按 1/h 折算 = h 个相位非重叠链的平均). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
-//        图例标注年化 Sharpe / t; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷 → G20 暖 两色线性渐变 (单调, 不交织)
-//        时序上一条可拖光标 (锚在交易日, 双击落点, 默认末日; 不做 hover 列表, 对仗 OrderFlow 的锚)
+//        图例标注年化 Sharpe / t; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙 两端显色, 中段快速退成中性灰 (单调, 两端跳)
+//        时序上一条可拖光标 (cursor_day, 锚在交易日边界, 双击落点, 默认末日; 与右上 K 线共享, 拖哪边另一边同步; 不做 hover 列表)
 //        右 1/4 光标日截面 = 各组到光标日的累计按已过天数折年化 (section_at, 唯一出口; 末日与曲线末点一致) 的横柱, 按组号在 y 范围里均匀排
 //        (G1 下 … G20 上), x 范围 = y 范围 (同尺);
 //        柱色按取值 (最负 = G1 色 … 最正 = G20 色), 与左图按组号的色对照, 非单调处一眼可见
-//   右上 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
+//   右上 标的 K 线 (因子具体怎么交易的; 对仗 OrderFlow 的图 2): 上一条标的轴 + 下面选中标的的分钟 K 线.
+//        R(t) = r16(x) / kRankMax ∈ [0,1] (CS = 截面秩, TS = 自身分位; 按 HoldStat::sign 镜像, 与组号同向: 1 = G20 侧), 色 = lerp(G1 蓝 → G20 橙)
+//        标的轴: 光标日池内 (cs_valid ∧ 当日有成交) 标的的日内均 R 降序 (左 = G20 侧), 一标的一格, 格色 = R 组色; 光标 (拖 / 双击 / ◂ ▸ 步进)
+//        选标的, 选中沿全局 id 粘住 (拖光标只换序不换标的, K 线不重载); 未选 / 换 universe 子轴 → 光标日 R 最高者 (无池内标的 → 全区间有效刻
+//        最多者), 结果一到就有 K 线
+//        K 线: 选中标的沿全部交易日的分钟 OHLC (KlineService 逐日流式, 画已发布前缀, 不等全载), 每根色 = 该刻 R(t) 组色; 池外段 (出 CS 池 /
+//        当日无成交, 秩不入评估, valid% 也不计) 用不看池的秩 (rx_all) 淡色显示, 因子无输出 = 暗灰; 阴线实心 / 阳线空心.
+//        x 窗口换标的不动, y 按窗口内蜡烛重贴; 光标 = 与左上图同一个 cursor_day (同色, 锚在日边界), 光标日染淡色竖带
+//   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
+//   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × 全部冲击档 (毛 | <amt>w = 扣建仓冲击 lb_cost_{buy,sell}_<amt>w + 平仓固定冲击 Config::sell_impact) 一次画全, 图例可点切,
 //        默认只显 LS. 口径 = 全 universe 全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产. 只用 HoldStat:
 //        Inspect 算过用算的, 没算过用 Factors 表里 (文件, 只有毛) 的, 所以进页即有
-//   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
-//   右下 留位 (Markowitz CDF 仓位映射)
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
 //   即开算, 不等切页; 缓存命中只补特征); Compute 按钮 = 弃缓存整体重读.
 #pragma once
@@ -27,6 +34,7 @@
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp"
 #include "gui/task_factors/services/InspectService.hpp"
+#include "gui/task_factors/services/KlineService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp" // FactorsUIState / FactorsUIContext
 #include "shared/Analysis.hpp"                // AggPdf (KLL 成品快照)
 
@@ -63,13 +71,38 @@ struct InspectUIState {
   int derived_sel = -1;
   bool derived_abs = false;
   InspectDerived der;
+  // ---- 右上 标的 K 线 ----
+  uint32_t asset_gid = ~0u; // 选中标的 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.uni.sub_of 找回, 不在子轴内 → 重选
+  // 标的轴派生 (键: epoch / 光标日 / 镜像): 光标日各标的日内均 R 降序
+  uint64_t ax_epoch = ~0ull;
+  int ax_day = -1;
+  bool ax_flip = false;
+  std::vector<int> ax_order;    // [n] 子轴下标 (R 降序, 左 = G20 侧)
+  std::vector<uint32_t> ax_gid; // [n] 对应全局 id
+  std::vector<float> ax_r;      // [n] R ∈ [0,1] (镜像后)
+  int ax_n_applied = -1;        // 标的轴 x 域已应用的 n (变了才复位视野)
+  // 选中标的的 R(t) 列派生 (键: epoch / 子轴下标 / 镜像)
+  uint64_t col_epoch = ~0ull;
+  int col_sub = -1;
+  bool col_flip = false;
+  std::vector<float> col_r;     // [T] 池内秩 R ∈ [0,1], < 0 = 池外 / 无值
+  std::vector<float> col_r_all; // [T] 不看池的秩 (池外段靠它淡色显示), < 0 = 因子无输出
+  // K 线请求期望态 (结果 key + 子轴下标 变 → gen++ → KlineService::Request; 与 KlineStream::pub 配对)
+  uint32_t kline_gen = 0;
+  std::string kline_key;
+  int kline_sub = -1;
+  int kline_days = 0;                        // 本代日数 (x 域 = days × kSegLen)
+  int kline_days_applied = -1;               // x 域已应用的日数 (变了才复位视野)
+  size_t kline_last_pub_days = ~0ull;        // 上次 y 贴合时的已发布日数 (换代 / 前缀增长 → 按当前 x 窗口重贴)
+  double kline_x_lo = 0.0, kline_x_hi = 0.0; // 上帧 x 视野 (y 贴合只看窗口内的蜡烛)
 };
 
 // 自动起算 (Factors / Inspect 两页都每帧调, 不管哪页在前: Factors 页点行高光即起算): 高光因子有效 且 服务空闲 且 请求 key (因子 / 作用域)
 // 与现结果和上次请求都不同 → 填 ui.req_row / req_reload = false, 返回 true (调用方 MakeInspectRequest + Request)
 bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
-// 返回值: 1 = 手动 Compute (ui.req_row / ui.req_reload 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file
-int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
+// 返回值: 1 = 手动 Compute (ui.req_row / ui.req_reload 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
+// ksvc: 右上 K 线流 (页内按期望态直接 Request, 不经返回值)
+int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors

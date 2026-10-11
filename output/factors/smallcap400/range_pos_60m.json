@@ -25,11 +25,11 @@
   "days": 101,
   "T": 25755,
   "A": 612,
-  "backend": "cpu",
-  "time": "2026-10-11 12:33",
+  "backend": "gpu",
+  "time": "2026-10-11 13:33",
   "frame": "CS",
   "valid_pct": 100.0,
-  "eval_ms": 113.5,
+  "eval_ms": 18.97,
   "holds": [
    {
     "hold": 1,

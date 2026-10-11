@@ -334,36 +334,37 @@ enum Col : int { Edit,
                  Note,
                  kNumFixed };
 struct FixedCol {
+  Col id; // 须 = 数组下标 (下方 static_assert)
   const char *name, *tip;
   bool sortable;
 };
 constexpr FixedCol kFixedCols[kNumFixed] = {
-    {"edit",
+    {Edit, "edit",
      "勾选 → 编辑模式: 载入上方构建器, 可改 / 删\n"
      "• 同时只勾一个\n"
      "• 排序 = 文件名序 (默认)",
      true},
-    {"type",
+    {Type, "type",
      "因子类型 (文件 type 键)\n"
      "• alpha: 预测超额收益, 再分 CS / TS 口径 (见 frame 列)\n"
      "• beta: 风险暴露 (未实现, 留位)",
      true},
-    {"name_en",
+    {NameEn, "name_en",
      "英文名 = 文件名主干: <factor_dir>/<universe>/<name_en>.json\n"
      "• 仅 [A-Za-z0-9_], ≤63 字符\n"
      "• 点行高光 → Inspect 页单因子展示",
      true},
-    {"name_cn",
+    {NameCn, "name_cn",
      "中文名 (文件 name_cn 键)\n"
      "• 纯汉字, 1..10 字\n"
      "• 缺 / 不合 → BROKEN",
      true},
-    {"frame",
+    {Frame, "frame",
      "口径, 由根算子定; 两口径标签都取超额 (减截面均值), 组均值沿 t 池化\n"
      "• CS = 截面: 根 CsRank / CsNormRank / CsZ; 每 t 截面 rank 分 20 组, 任一组空该行无效, 多空对冲\n"
      "• TS = 时序: 根 TsRankRoll 5 日; 自身分位直接分 20 组, 组可空 → long / flat",
      true},
-    {"status",
+    {Status, "status",
      "评估状态\n"
      "• BROKEN 红: 文件 / type / name_cn / 表达式 / 根非归一 / params / 组 id 不合 (悬停看原因; 文件不动, 手动处理)\n"
      "• ok 绿: 本轮算的\n"
@@ -372,25 +373,32 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• no stat: 从未评估\n"
      "• dup 黄: 与另一文件同一规范串",
      false},
-    {"time",
+    {Time, "time",
      "算一遍 DAG 的耗时 (ms)\n"
      "• = 子树全部算子节点之和, 共享节点算给每个用它的因子\n"
      "• CPU 全核 wall / GPU 纯 kernel",
      true},
-    {"expr",
+    {Valid, "valid%", "根平面有效格占比", true},
+    {Expr, "expr",
      "规范串 = 解析后重新序列化\n"
      "• 算子 PascalCase, 参数 d / k / k2 显式, 含 params 覆盖后的当前值\n"
      "• 解析不过的行显示文件原串",
      false},
-    {"ops", "算子节点数 (= params 数组长度)", true},
-    {"feats", "去重特征数 (输入平面数)", true},
-    {"slots",
+    {Ops, "ops", "算子节点数 (= params 数组长度)", true},
+    {Feats, "feats", "去重特征数 (输入平面数)", true},
+    {Slots, "slots",
      "DAG 缓冲槽数 = 峰值同时存活的中间量\n"
      "• 内存 / 显存 = slots × T·A × 5B",
      true},
-    {"valid%", "根平面有效格占比", true},
-    {"note", "文件 note 键: 人 / agent 写的一句话", false},
+    {Note, "note", "文件 note 键: 人 / agent 写的一句话", false},
 };
+constexpr bool fixed_cols_ordered() {
+  for (int i = 0; i < kNumFixed; ++i)
+    if (kFixedCols[i].id != i)
+      return false;
+  return true;
+}
+static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Col 枚举一致");
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
 // 显示顺序: Stat 列夹在 Valid 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])

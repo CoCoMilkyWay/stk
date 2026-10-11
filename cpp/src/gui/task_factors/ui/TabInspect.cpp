@@ -1,15 +1,19 @@
 // Tab Inspect — 见头文件
 #include "gui/task_factors/ui/TabInspect.hpp"
-#include "gui/Tasks.hpp" // StatusColor
+#include "features/TimeIndex.hpp" // L1_to_Clock (K 线横轴刻度)
+#include "gui/Tasks.hpp"          // StatusColor
+#include "shared/Asset.hpp"       // AssetItem (标的代码 / 名称)
 
 #include "imgui.h"
 #include "implot.h"
+#include "implot_internal.h" // BeginItem / FitPoint (自绘蜡烛)
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace GUI::Factors {
@@ -30,11 +34,15 @@ int date_formatter(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%s", dates[static_cast<size_t>(i)].c_str() + 2);
 }
 
-// 分层色: 两端两色 (G1 冷蓝 / G20 暖橙), 中间线性渐变 —— 单调, 一眼分出谁高谁低 (Jet 在中段来回翻色, 相邻组交织分不清)
+// 分层色: 两端两色 (G1 冷蓝 / G20 暖橙), 中段快速退成中性灰 —— 只有最两边 2~3 组显色 (|s| ≥ 0.8 满色, ≤ 0.45 纯灰, 其间 smoothstep),
+// 单调, 一眼分出谁高谁低 (Jet 在中段来回翻色, 相邻组交织分不清; 整段线性渐变则两端不够跳)
 constexpr ImVec4 kColBottom(0.25f, 0.55f, 1.00f, 1.f), kColTop(1.00f, 0.45f, 0.20f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
-ImVec4 lerp_color(float t) { // t ∈ [0, 1]: 0 = 冷蓝 (G1 / 最负), 1 = 暖橙 (G20 / 最正)
-  return ImVec4(kColBottom.x + (kColTop.x - kColBottom.x) * t, kColBottom.y + (kColTop.y - kColBottom.y) * t,
-                kColBottom.z + (kColTop.z - kColBottom.z) * t, 1.f);
+constexpr ImVec4 kColNeutral(0.58f, 0.58f, 0.58f, 1.f); // 中段
+constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);       // 光标 (左上图交易日 / 右上 K 线 / 标的轴), 对仗 OrderFlow 的锚
+ImVec4 lerp_color(float t) {                            // t ∈ [0, 1]: 0 = 冷蓝 (G1 / 最负), 0.5 = 灰, 1 = 暖橙 (G20 / 最正)
+  const float s = (t - 0.5f) * 2.f, u = std::clamp((std::abs(s) - 0.45f) / (0.8f - 0.45f), 0.f, 1.f), w = u * u * (3.f - 2.f * u);
+  const ImVec4 &c = s < 0.f ? kColBottom : kColTop;
+  return ImVec4(kColNeutral.x + (c.x - kColNeutral.x) * w, kColNeutral.y + (c.y - kColNeutral.y) * w, kColNeutral.z + (c.z - kColNeutral.z) * w, 1.f);
 }
 ImVec4 group_color(int k) { return lerp_color(static_cast<float>(k) / static_cast<float>(K - 1)); }
 
@@ -285,12 +293,11 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       ImPlot::PlotLineG(ll, shifted, &shift, n);
       { // 光标 (对仗 OrderFlow 的锚): 拖动跟手并吸附整日, 双击落点; 标注光标日期 + 到该日的 LS 年化 (section_at)
         double cx = cursor_day;
-        constexpr ImVec4 kCursor(1.f, 0.5f, 0.f, 1.f);
-        if (ImPlot::DragLineX(0, &cx, kCursor, 2.f))
+        if (ImPlot::DragLineX(0, &cx, kColCursor, 2.f))
           cursor_day = std::clamp(static_cast<int>(std::lround(cx)), 0, d.days);
         else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
           cursor_day = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x)), 0, d.days);
-        ImPlot::Annotation(static_cast<double>(cursor_day), d.ls_cum[static_cast<size_t>(cursor_day)] + d.ls_off, kCursor, ImVec2(5, -15), false,
+        ImPlot::Annotation(static_cast<double>(cursor_day), d.ls_cum[static_cast<size_t>(cursor_day)] + d.ls_off, kColCursor, ImVec2(5, -15), false,
                            "%s  LS %+.2f", cursor_day ? d.dates[static_cast<size_t>(cursor_day) - 1].c_str() : "起点", section_at(d, d.ls_cum, cursor_day));
       }
       ImPlot::EndPlot();
@@ -301,13 +308,318 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   ImPlot::PopStyleVar();
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// 右上: 标的轴 + 选中标的的分钟 K 线 (因子具体怎么交易的)
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+// r16 → R ∈ [0,1] (flip = HoldStat::sign < 0 时镜像 1 − R, 与组号同向: 1 = G20 侧); 无效 → −1
+float r_of(uint16_t r16, bool flip) {
+  if (r16 == factor::stat::kRankNone)
+    return -1.f;
+  const float r = static_cast<float>(r16) / static_cast<float>(factor::stat::kRankMax);
+  return flip ? 1.f - r : r;
+}
+// R → 组色; 池外 (pooled = false, 秩来自 rx_all) 半透明淡化; 无值 → 暗灰 (比中段灰暗, 分得开)
+ImU32 r_color(float r, bool pooled = true) {
+  if (r < 0.f)
+    return IM_COL32(70, 70, 70, 255);
+  ImVec4 c = lerp_color(r);
+  c.w = pooled ? 1.f : 0.45f;
+  return ImGui::ColorConvertFloat4ToU32(c);
+}
+int r_group(float r) { return factor::stat::grp_of(static_cast<unsigned>(std::lround(static_cast<double>(r) * factor::stat::kRankMax))); }
+
+// "代码-市场 名称"; 全局 id 不在资产轴内 → "#id"
+void asset_label(const FactorsUIContext &ctx, uint32_t gid, char *buf, size_t n) {
+  if (ctx.assets && gid < ctx.assets->size()) {
+    const AssetItem &it = (*ctx.assets)[gid];
+    std::snprintf(buf, n, "%s-%s %s", it.asset_code.c_str(), it.exchange.c_str(), it.asset_name.c_str());
+  } else {
+    std::snprintf(buf, n, "#%u", gid);
+  }
+}
+
+// 标的轴派生: 光标日 (day = 交易日下标) 各标的的日内均 R (有效刻平均) → 降序 (左 = G20 侧; 并列按子轴序); 当日无一有效刻的标的不列
+void derive_axis(const InspectResult &res, int day, bool flip, std::vector<int> &order, std::vector<uint32_t> &gid, std::vector<float> &r) {
+  const int A = res.scope.A, S = factor::kSegLen;
+  assert(day >= 0 && day < res.scope.days && res.rx.size() == static_cast<size_t>(res.scope.T) * A);
+  std::vector<float> mean(static_cast<size_t>(A), 0.f);
+  std::vector<int> cnt(static_cast<size_t>(A), 0);
+  for (int t = day * S; t < (day + 1) * S; ++t) {
+    const uint16_t *row = res.rx.data() + static_cast<size_t>(t) * A;
+    for (int a = 0; a < A; ++a) {
+      const float v = r_of(row[a], flip);
+      mean[static_cast<size_t>(a)] += v < 0.f ? 0.f : v;
+      cnt[static_cast<size_t>(a)] += v >= 0.f;
+    }
+  }
+  order.clear();
+  for (int a = 0; a < A; ++a)
+    if (cnt[static_cast<size_t>(a)]) {
+      mean[static_cast<size_t>(a)] /= static_cast<float>(cnt[static_cast<size_t>(a)]);
+      order.push_back(a);
+    }
+  std::stable_sort(order.begin(), order.end(), [&](int x, int y) { return mean[static_cast<size_t>(x)] > mean[static_cast<size_t>(y)]; });
+  gid.resize(order.size());
+  r.resize(order.size());
+  for (size_t i = 0; i < order.size(); ++i) {
+    gid[i] = res.read_scope.uni.global(static_cast<size_t>(order[i]));
+    r[i] = mean[static_cast<size_t>(order[i])];
+  }
+}
+
+// 选中标的 (子轴 sub) 的 R(t) [T]: col = 池内秩 (rx), col_all = 不看池的秩 (rx_all; 池外段靠它显示)
+void derive_col(const InspectResult &res, int sub, bool flip, std::vector<float> &col, std::vector<float> &col_all) {
+  const int A = res.scope.A, T = res.scope.T;
+  assert(sub >= 0 && sub < A && res.rx.size() == static_cast<size_t>(T) * A && res.rx_all.size() == res.rx.size());
+  col.resize(static_cast<size_t>(T));
+  col_all.resize(static_cast<size_t>(T));
+  for (int t = 0; t < T; ++t) {
+    const size_t i = static_cast<size_t>(t) * A + static_cast<size_t>(sub);
+    col[static_cast<size_t>(t)] = r_of(res.rx[i], flip);
+    col_all[static_cast<size_t>(t)] = r_of(res.rx_all[i], flip);
+  }
+}
+
+// 默认标的的兜底: 光标日无池内标的时, 取全区间池内有效刻最多的那个 (-1 = 整个结果无一有效格)
+int fallback_asset(const InspectResult &res) {
+  const int A = res.scope.A, T = res.scope.T;
+  std::vector<int> cnt(static_cast<size_t>(A), 0);
+  for (int t = 0; t < T; ++t) {
+    const uint16_t *row = res.rx.data() + static_cast<size_t>(t) * A;
+    for (int a = 0; a < A; ++a)
+      cnt[static_cast<size_t>(a)] += row[a] != factor::stat::kRankNone;
+  }
+  const auto it = std::max_element(cnt.begin(), cnt.end());
+  return *it > 0 ? static_cast<int>(it - cnt.begin()) : -1;
+}
+
+// 标的轴 (右上的上条): 一标的一格 x ∈ [i, i+1), 格色 = R 组色 (视野裁剪, 不足 1px 补到 1px); x 可缩放 (标的多时放大选), y 锁.
+// 光标 DragLineX 吸附整格 (pos < 0 = 选中标的当日无值, 不画光标), 双击落点; 悬停报该格标的. 返回 pos 是否变 (调用方按 ax_gid[pos] 换标的)
+bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, const ImVec2 &size) {
+  const int n = static_cast<int>(ui.ax_order.size());
+  bool changed = false;
+  if (!ImPlot::BeginPlot("##assets", size, ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText))
+    return false;
+  ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks,
+                    ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_Lock);
+  ImPlot::SetupAxisLimits(ImAxis_X1, 0, std::max(1, n), ui.ax_n_applied != n ? ImPlotCond_Always : ImPlotCond_Once);
+  ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, std::max(1, n));
+  ui.ax_n_applied = n;
+  ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 1, ImPlotCond_Always);
+  ImPlot::SetupFinish();
+  {
+    ImPlot::PushPlotClipRect();
+    ImDrawList *dl = ImPlot::GetPlotDrawList();
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const int i0 = std::clamp(static_cast<int>(std::floor(lim.X.Min)), 0, n), i1 = std::clamp(static_cast<int>(std::ceil(lim.X.Max)), 0, n);
+    const float y0 = ImPlot::PlotToPixels(0.0, 1.0).y, y1 = ImPlot::PlotToPixels(0.0, 0.0).y;
+    for (int i = i0; i < i1; ++i) {
+      const float xa = ImPlot::PlotToPixels(static_cast<double>(i), 0.0).x, xb = ImPlot::PlotToPixels(static_cast<double>(i) + 1.0, 0.0).x;
+      dl->AddRectFilled(ImVec2(xa, y0), ImVec2(std::max(xb, xa + 1.f), y1), r_color(ui.ax_r[static_cast<size_t>(i)]));
+    }
+    ImPlot::PopPlotClipRect();
+  }
+  if (pos >= 0 && pos < n) {
+    double cx = pos + 0.5;
+    if (ImPlot::DragLineX(0, &cx, kColCursor, 2.f, ImPlotDragToolFlags_NoFit)) {
+      const int p = std::clamp(static_cast<int>(std::floor(cx)), 0, n - 1);
+      changed = p != pos;
+      pos = p;
+    }
+  }
+  if (n > 0 && ImPlot::IsPlotHovered()) {
+    const int i = std::clamp(static_cast<int>(std::floor(ImPlot::GetPlotMousePos().x)), 0, n - 1);
+    char name[96];
+    asset_label(ctx, ui.ax_gid[static_cast<size_t>(i)], name, sizeof(name));
+    ImGui::SetTooltip("#%d/%d  %s  R %.3f (G%d)\n双击选中", i + 1, n, name, ui.ax_r[static_cast<size_t>(i)], r_group(ui.ax_r[static_cast<size_t>(i)]) + 1);
+    if (ImGui::IsMouseDoubleClicked(0)) {
+      changed = i != pos;
+      pos = i;
+    }
+  }
+  ImPlot::EndPlot();
+  return changed;
+}
+
+// K 线横轴: 全局分钟 (日下标 × kSegLen + 分钟) → "YYMMDD HH:MM" (user_data = dates)
+int minute_formatter(double v, char *buf, int size, void *ud) {
+  const auto &dates = *static_cast<const std::vector<std::string> *>(ud);
+  if (dates.empty())
+    return std::snprintf(buf, size, "%g", v);
+  const int S = factor::kSegLen, days = static_cast<int>(dates.size());
+  const long long g = std::clamp(static_cast<long long>(std::floor(v)), 0LL, static_cast<long long>(days) * S - 1);
+  const int d = static_cast<int>(g / S), m = static_cast<int>(g % S);
+  const ClockTime ct = L1_to_Clock(static_cast<size_t>(m));
+  return std::snprintf(buf, size, "%s %02d:%02d", dates[static_cast<size_t>(d)].c_str() + 2, ct.hour, ct.minute);
+}
+
+// K 线 (右上的下图): 选中标的沿全部交易日的分钟 OHLC, 画 KlineService 已发布前缀 (gen 配对; 换代在途照画空图, 轴不撤). 每根色 = 该刻 R(t)
+// 组色 (ui.col_r; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
+// 视野: x 域 = 日数 × kSegLen, 只在日数变时复位 (换标的不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长时按**当前 x 窗口内**的已发布蜡烛重定
+// (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 换标的后窗口里的新价位自然贴合, 之后不打扰.
+// 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × kSegLen): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
+// 染淡色竖带. 悬停报最近一根的时刻 / OHLC / R
+void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std::string> &dates, int &cursor_day, const char *title, const ImVec2 &size) {
+  uint32_t pub_gen;
+  size_t pub_days = 0, pub_pts = 0;
+  KlineStream::unpack(ks.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_pts);
+  const bool ready = pub_gen == (ui.kline_gen & 0xFFFF);
+  if (!ready)
+    pub_days = pub_pts = 0; // 旧代计数不可用 (数组正在重建)
+  const int S = factor::kSegLen, days = ui.kline_days;
+  assert(static_cast<size_t>(days) == dates.size() && "K 线代与派生日期表不同源");
+  const double x_dom = std::max(1, days) * static_cast<double>(S);
+  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus | ImPlotFlags_NoLegend))
+    return;
+  ImPlot::SetupAxes(nullptr, "价格", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+  ImPlot::SetupAxisFormat(ImAxis_X1, minute_formatter, const_cast<std::vector<std::string> *>(&dates));
+  ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
+  if (ui.kline_days_applied != days) { // x 域变 (换结果日数) → 复位 x 视野
+    ui.kline_days_applied = days;
+    ui.kline_x_lo = 0.0, ui.kline_x_hi = x_dom;
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0, x_dom, ImPlotCond_Always);
+  } else {
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0, x_dom, ImPlotCond_Once);
+  }
+  const double *xs = ks.x.data();
+  const int n = static_cast<int>(pub_pts);
+  if (n > 0 && ui.kline_last_pub_days != pub_days) { // y 贴合当前 x 窗口内的已发布蜡烛
+    const int w0 = static_cast<int>(std::lower_bound(xs, xs + n, ui.kline_x_lo) - xs), w1 = static_cast<int>(std::upper_bound(xs, xs + n, ui.kline_x_hi) - xs);
+    if (w1 > w0) {
+      double lo = ks.low[static_cast<size_t>(w0)], hi = ks.high[static_cast<size_t>(w0)];
+      for (int i = w0 + 1; i < w1; ++i)
+        lo = std::min(lo, ks.low[static_cast<size_t>(i)]), hi = std::max(hi, ks.high[static_cast<size_t>(i)]);
+      const double m = (hi > lo ? hi - lo : 1.0) * 0.05;
+      ImPlot::SetupAxisLimits(ImAxis_Y1, lo - m, hi + m, ImPlotCond_Always);
+      ui.kline_last_pub_days = pub_days;
+    }
+  }
+  ImPlot::SetupFinish();
+  ImDrawList *dl = ImPlot::GetPlotDrawList();
+  {
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    ui.kline_x_lo = lim.X.Min, ui.kline_x_hi = lim.X.Max; // 本帧视野 → 下次 y 贴合用
+    if (cursor_day >= 1 && cursor_day <= days) {          // 光标日竖带 (先画, 不遮蜡烛)
+      ImPlot::PushPlotClipRect();
+      const ImVec2 p0 = ImPlot::PlotToPixels(static_cast<double>(cursor_day - 1) * S, lim.Y.Max), p1 = ImPlot::PlotToPixels(static_cast<double>(cursor_day) * S, lim.Y.Min);
+      dl->AddRectFilled(p0, p1, IM_COL32(255, 128, 0, 28));
+      ImPlot::PopPlotClipRect();
+    }
+  }
+  if (n > 0 && ImPlot::BeginItem("##ohlc", ImPlotItemFlags_NoLegend)) {
+    if (ImPlot::FitThisFrame())
+      for (int i = 0; i < n; ++i) {
+        ImPlot::FitPoint(ImPlotPoint(xs[i], ks.low[static_cast<size_t>(i)]));
+        ImPlot::FitPoint(ImPlotPoint(xs[i], ks.high[static_cast<size_t>(i)]));
+      }
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const int i0 = static_cast<int>(std::lower_bound(xs, xs + n, lim.X.Min - 1.0) - xs), i1 = static_cast<int>(std::upper_bound(xs, xs + n, lim.X.Max + 1.0) - xs);
+    for (int i = i0; i < i1; ++i) {
+      const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
+      const double o = ks.open[u], h = ks.high[u], l = ks.low[u], c = ks.close[u];
+      const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f; // 池内秩优先, 池外段用不看池的秩 (淡)
+      const ImU32 col = rp >= 0.f ? r_color(rp) : r_color(t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f, false);
+      dl->AddLine(ImPlot::PlotToPixels(xs[i], l), ImPlot::PlotToPixels(xs[i], h), col);
+      ImVec2 a = ImPlot::PlotToPixels(xs[i] - 0.5, o), b = ImPlot::PlotToPixels(xs[i] + 0.5, c);
+      if (std::abs(b.y - a.y) < 1.f) { // 身体至少 1px
+        const float mid = (a.y + b.y) * 0.5f;
+        a.y = mid - 0.5f, b.y = mid + 0.5f;
+      }
+      if (c >= o)
+        dl->AddRect(a, b, col); // 阳线空心
+      else
+        dl->AddRectFilled(a, b, col); // 阴线实心
+    }
+    ImPlot::EndItem();
+  }
+  { // 共享光标 (与左上图同一个 cursor_day, 同色同交互): 锚在日边界, 拖动吸附整日, 双击落点; x 轴标光标日期
+    double cx = static_cast<double>(cursor_day) * S;
+    if (ImPlot::DragLineX(0, &cx, kColCursor, 2.f, ImPlotDragToolFlags_NoFit))
+      cursor_day = std::clamp(static_cast<int>(std::lround(cx / S)), 0, days);
+    else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
+      cursor_day = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x / S)), 0, days);
+    ImPlot::TagX(static_cast<double>(cursor_day) * S, kColCursor, "%s", cursor_day ? dates[static_cast<size_t>(cursor_day) - 1].c_str() : "起点");
+  }
+  if (ImPlot::IsPlotHovered()) {
+    const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+    if (n > 0) { // 最近一根
+      int i = static_cast<int>(std::lower_bound(xs, xs + n, mp.x) - xs);
+      if (i > 0 && (i == n || xs[i] - mp.x > mp.x - xs[i - 1]))
+        --i;
+      const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
+      const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f, ra = t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f;
+      char when[32];
+      minute_formatter(xs[i], when, sizeof(when), const_cast<std::vector<std::string> *>(&dates));
+      if (rp >= 0.f)
+        ImGui::SetTooltip("%s  O %.2f H %.2f L %.2f C %.2f\nR %.3f (G%d)", when, ks.open[u], ks.high[u], ks.low[u], ks.close[u], rp, r_group(rp) + 1);
+      else if (ra >= 0.f)
+        ImGui::SetTooltip("%s  O %.2f H %.2f L %.2f C %.2f\n池外 (出 CS 池 / 当日无成交): 不看池的秩 R' %.3f (G%d)", when, ks.open[u], ks.high[u], ks.low[u],
+                          ks.close[u], ra, r_group(ra) + 1);
+      else
+        ImGui::SetTooltip("%s  O %.2f H %.2f L %.2f C %.2f\nR 无值 (因子在此刻无输出)", when, ks.open[u], ks.high[u], ks.low[u], ks.close[u]);
+    }
+  }
+  if (!ready || static_cast<int>(pub_days) < days) { // 流式进度 (图内左上角)
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "K 线 %zu/%d 天", ready ? pub_days : size_t{0}, days);
+    const ImVec2 p = ImPlot::GetPlotPos();
+    dl->AddText(ImVec2(p.x + 6.f, p.y + 4.f), ImGui::ColorConvertFloat4ToU32(StatusColor(TaskStatus::Kind::Busy)), buf);
+  }
+  ImPlot::EndPlot();
+}
+
+// 左下: IC 分布 — 逐行 rank IC 当随机变量, KLL 导出的 PDF (阴影 + 线) + 0 线 + 均值线 + mean ± std (竖线, 其间阴影换色); 标题的矩与顶部 stat 行同一组样本
+void plot_ic(const InspectDerived &d, const ImVec2 &size) {
+  char title[160];
+  std::snprintf(title, sizeof(title), "IC 分布 (逐行 rank IC)  mean %+.4f  std %.4f  skew %+.2f  kurt %+.2f  pos %.2f  n=%d###ic", d.hs.ic_mean, d.hs.ic_std,
+                d.hs.ic_skew, d.hs.ic_kurt, d.hs.ic_pos, d.hs.n);
+  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
+    return;
+  ImPlot::SetupAxes("IC", "density", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
+  ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, 0.5, ImPlotCond_Always); // 固定 x 范围, 0 居中: 换持有期 / 因子时分布位置可直接比
+  ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
+  const analysis::AggPdf &p = d.ic_pdf;
+  const int np = static_cast<int>(p.n_pts);
+  const double zero = 0.0, mean = d.hs.ic_mean, sd[2] = {mean - d.hs.ic_std, mean + d.hs.ic_std};
+  const ImVec4 col_mean(1.0f, 0.75f, 0.3f, 1.0f);
+  if (np >= 2) {
+    const ImVec4 col(0.4f, 0.7f, 1.0f, 1.0f);
+    ImPlot::SetNextFillStyle(col, 0.35f);
+    ImPlot::PlotShaded("PDF", p.x.data(), p.y.data(), np, 0.0);
+    // mean ± std 之间的阴影换成均值线的色 (x 升序, 取落在区间内的点段)
+    const int i0 = static_cast<int>(std::lower_bound(p.x.data(), p.x.data() + np, static_cast<float>(sd[0])) - p.x.data());
+    const int i1 = static_cast<int>(std::upper_bound(p.x.data(), p.x.data() + np, static_cast<float>(sd[1])) - p.x.data());
+    if (i1 - i0 >= 2) {
+      ImPlot::SetNextFillStyle(col_mean, 0.35f);
+      ImPlot::PlotShaded("±std", p.x.data() + i0, p.y.data() + i0, i1 - i0, 0.0);
+    }
+    ImPlot::SetNextLineStyle(col, 2.0f);
+    ImPlot::PlotLine("PDF", p.x.data(), p.y.data(), np);
+  }
+  ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+  ImPlot::PlotInfLines("##zero", &zero, 1);
+  ImPlot::SetNextLineStyle(col_mean, 1.5f);
+  ImPlot::PlotInfLines("mean", &mean, 1);
+  ImPlot::SetNextLineStyle(ImVec4(col_mean.x, col_mean.y, col_mean.z, 0.6f), 1.0f);
+  ImPlot::PlotInfLines("±std", sd, 2);
+  if (np >= 2 && ImPlot::IsPlotHovered()) {
+    const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+    const float *lo = std::lower_bound(p.x.data(), p.x.data() + np, static_cast<float>(mp.x));
+    const int i = std::clamp(static_cast<int>(lo - p.x.data()), 0, np - 1);
+    ImGui::SetTooltip("IC %+.4f  density %.3f", p.x[static_cast<size_t>(i)], p.y[static_cast<size_t>(i)]);
+  }
+  ImPlot::EndPlot();
+}
+
 // 期限结构的一档: 一个冲击口径下全部持有期的二级 (hs[n_hold]); impact = 冲击金额 (万), 0 = 毛
 struct TermTier {
   const factor::stat::HoldStat *hs;
   int impact;
 };
 
-// 右上: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
+// 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
 // 三组 × 全部冲击档一次画全 (档越高线越细越淡), 成本只在这张图出现, 不换因子就是静态的; L / S 默认隐藏, 点图例切 (图例项 = 组 × 档).
 // 口径 = 全 universe 全时刻池化 (HoldStat::grp = Σ 组内超额 / Σ 组样本数; ls_mean = 逐 t ls 的时间均值), 不是逐资产信号平均.
 // n < 3 的持有期不作节点. 悬停: 该持有期逐档一行
@@ -387,50 +699,6 @@ void plot_term(const TermTier *tiers, int n_tier, int n_hold, int sel_hold, cons
   ImPlot::EndPlot();
 }
 
-// 左下: IC 分布 — 逐行 rank IC 当随机变量, KLL 导出的 PDF (阴影 + 线) + 0 线 + 均值线 + mean ± std (竖线, 其间阴影换色); 标题的矩与顶部 stat 行同一组样本
-void plot_ic(const InspectDerived &d, const ImVec2 &size) {
-  char title[160];
-  std::snprintf(title, sizeof(title), "IC 分布 (逐行 rank IC)  mean %+.4f  std %.4f  skew %+.2f  kurt %+.2f  pos %.2f  n=%d###ic", d.hs.ic_mean, d.hs.ic_std,
-                d.hs.ic_skew, d.hs.ic_kurt, d.hs.ic_pos, d.hs.n);
-  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
-    return;
-  ImPlot::SetupAxes("IC", "density", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
-  ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
-  ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, 0.5, ImPlotCond_Always); // 固定 x 范围, 0 居中: 换持有期 / 因子时分布位置可直接比
-  ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
-  const analysis::AggPdf &p = d.ic_pdf;
-  const int np = static_cast<int>(p.n_pts);
-  const double zero = 0.0, mean = d.hs.ic_mean, sd[2] = {mean - d.hs.ic_std, mean + d.hs.ic_std};
-  const ImVec4 col_mean(1.0f, 0.75f, 0.3f, 1.0f);
-  if (np >= 2) {
-    const ImVec4 col(0.4f, 0.7f, 1.0f, 1.0f);
-    ImPlot::SetNextFillStyle(col, 0.35f);
-    ImPlot::PlotShaded("PDF", p.x.data(), p.y.data(), np, 0.0);
-    // mean ± std 之间的阴影换成均值线的色 (x 升序, 取落在区间内的点段)
-    const int i0 = static_cast<int>(std::lower_bound(p.x.data(), p.x.data() + np, static_cast<float>(sd[0])) - p.x.data());
-    const int i1 = static_cast<int>(std::upper_bound(p.x.data(), p.x.data() + np, static_cast<float>(sd[1])) - p.x.data());
-    if (i1 - i0 >= 2) {
-      ImPlot::SetNextFillStyle(col_mean, 0.35f);
-      ImPlot::PlotShaded("±std", p.x.data() + i0, p.y.data() + i0, i1 - i0, 0.0);
-    }
-    ImPlot::SetNextLineStyle(col, 2.0f);
-    ImPlot::PlotLine("PDF", p.x.data(), p.y.data(), np);
-  }
-  ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
-  ImPlot::PlotInfLines("##zero", &zero, 1);
-  ImPlot::SetNextLineStyle(col_mean, 1.5f);
-  ImPlot::PlotInfLines("mean", &mean, 1);
-  ImPlot::SetNextLineStyle(ImVec4(col_mean.x, col_mean.y, col_mean.z, 0.6f), 1.0f);
-  ImPlot::PlotInfLines("±std", sd, 2);
-  if (np >= 2 && ImPlot::IsPlotHovered()) {
-    const ImPlotPoint mp = ImPlot::GetPlotMousePos();
-    const float *lo = std::lower_bound(p.x.data(), p.x.data() + np, static_cast<float>(mp.x));
-    const int i = std::clamp(static_cast<int>(lo - p.x.data()), 0, np - 1);
-    ImGui::SetTooltip("IC %+.4f  density %.3f", p.x[static_cast<size_t>(i)], p.y[static_cast<size_t>(i)]);
-  }
-  ImPlot::EndPlot();
-}
-
 // 高光行 (fui.view_file) 短锁拷出 (rows 由 worker 重扫时整体替换); 顺带给出下一个有效行的文件名 (箭头循环切因子用). 找不到 → false
 bool view_row(FactorsService &fsvc, const std::string &file, FactorRow &row, std::string *prev_file = nullptr, std::string *next_file = nullptr) {
   std::lock_guard<std::mutex> lock(fsvc.mutex);
@@ -496,7 +764,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const Factor
   return true;
 }
 
-int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
+int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
   int action = 0;
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Factor:");
   ImGui::SameLine();
@@ -647,6 +915,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   std::vector<factor::stat::HoldStat> res_holds; // 全部冲击档 × 全部持有期 [C + 1][n_hold] (期限结构一次画全)
   std::vector<int> res_impacts;                  // [C + 1]
   bool res_has = false;
+  int k_sub = -1;                   // 右上选中标的 (结果子轴下标); -1 = 无
+  std::optional<KlineRequest> kreq; // 本帧要发的 K 线请求 (锁内填, 出锁发)
   {
     std::lock_guard<std::mutex> lock(isvc.mutex);
     message = isvc.message;
@@ -674,7 +944,49 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
       else
         ui.der = InspectDerived{};
     }
+    // 右上: 标的轴 (光标日序) / 选中标的 R(t) 列 / K 线请求期望态 —— 都要读 res.rx / read_scope, 在锁内派生, 出锁只留派生
+    if (res_has && ui.der.valid) {
+      if (ui.cursor_day < 0 || ui.cursor_day > ui.der.days)
+        ui.cursor_day = ui.der.days;
+      const int day = std::max(ui.cursor_day, 1) - 1; // 起点 (0) 也按首日排
+      const bool flip = ui.der.hs.sign < 0;
+      if (ep != ui.ax_epoch || day != ui.ax_day || flip != ui.ax_flip) {
+        ui.ax_epoch = ep, ui.ax_day = day, ui.ax_flip = flip;
+        derive_axis(res, day, flip, ui.ax_order, ui.ax_gid, ui.ax_r);
+      }
+      const UniverseAxis &uni = res.read_scope.uni;
+      size_t sub = uni.sub_of(ui.asset_gid); // 未选 / 不在本子轴内 → 光标日 R 最高者 (光标日无池内标的 → 全区间有效刻最多者), 结果一到就有 K 线
+      if (sub >= uni.size()) {
+        const int pick = !ui.ax_order.empty() ? ui.ax_order.front() : fallback_asset(res);
+        if (pick >= 0) {
+          sub = static_cast<size_t>(pick);
+          ui.asset_gid = uni.global(sub);
+        }
+      }
+      if (sub < uni.size()) {
+        k_sub = static_cast<int>(sub);
+        if (ep != ui.col_epoch || k_sub != ui.col_sub || flip != ui.col_flip) {
+          ui.col_epoch = ep, ui.col_sub = k_sub, ui.col_flip = flip;
+          derive_col(res, k_sub, flip, ui.col_r, ui.col_r_all);
+        }
+        if (ui.kline_key != res.key || ui.kline_sub != k_sub) { // 换结果 / 换标的 → 新代从头流
+          ++ui.kline_gen;
+          ui.kline_key = res.key, ui.kline_sub = k_sub, ui.kline_days = res.scope.days, ui.kline_last_pub_days = ~0ull;
+          kreq.emplace();
+          kreq->gen = ui.kline_gen, kreq->scope = res.read_scope, kreq->dates = res.dates, kreq->sub = k_sub;
+          const char *codes[4] = {"open", "high", "low", "close"};
+          for (int i = 0; i < 4; ++i) {
+            const FeatCol *fc = ft.find(codes[i]);
+            assert(fc && "字段表缺 OHLC 列");
+            kreq->col[i] = fc->col;
+          }
+          kreq->col[4] = ft.ts_col;
+        }
+      }
+    }
   }
+  if (kreq)
+    ksvc.Request(std::move(*kreq));
   if (!message.empty()) {
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
@@ -717,7 +1029,66 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   else
     empty_plot("分层累计###layers", cell, wait_hint);
   ImGui::SameLine();
-  // 期限结构: Inspect 结果优先 (全部冲击档), 否则文件 stat (Factors 表的 row.hold, 只有毛口径一档)
+  // 右上: 头行 (◂ ▸ 步进 / 标的 / 光标日序位 + R / K 线进度) + 标的轴条 + K 线
+  if (shown && ui.der.valid && k_sub >= 0) {
+    ImGui::BeginGroup();
+    const int n = static_cast<int>(ui.ax_order.size());
+    int pos = -1; // 选中标的在光标日序里的位置 (-1 = 当日无值)
+    for (int i = 0; i < n; ++i)
+      if (ui.ax_order[static_cast<size_t>(i)] == k_sub) {
+        pos = i;
+        break;
+      }
+    char name[96];
+    asset_label(ctx, ui.asset_gid, name, sizeof(name));
+    bool moved = false;
+    const bool can_prev = pos > 0, can_next = pos >= 0 && pos + 1 < n;
+    if (!can_prev)
+      ImGui::BeginDisabled();
+    if (ImGui::ArrowButton("##prev_asset", ImGuiDir_Left)) // 沿光标日序步进 (#1 = G20 侧)
+      --pos, moved = true;
+    if (!can_prev)
+      ImGui::EndDisabled();
+    ImGui::SameLine(0.f, 2.f);
+    if (!can_next)
+      ImGui::BeginDisabled();
+    if (ImGui::ArrowButton("##next_asset", ImGuiDir_Right))
+      ++pos, moved = true;
+    if (!can_next)
+      ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (pos >= 0)
+      ImGui::Text("%s  #%d/%d  R %.3f (G%d)", name, pos + 1, n, ui.ax_r[static_cast<size_t>(pos)], r_group(ui.ax_r[static_cast<size_t>(pos)]) + 1);
+    else
+      ImGui::Text("%s  (光标日池外)  池内 n=%d", name, n);
+    if (ImGui::IsItemHovered())
+      tip("选中标的 + 它在光标日序里的位置 (#1 = 日内均 R 最高 = G20 侧) 与均 R\n"
+          "• R(t) = r16(x) / kRankMax (CS 截面秩 / TS 自身分位), 已按 sign 镜像, 与组号同向\n"
+          "• 下条 = 光标日全部池内标的按均 R 降序一标的一格 (格色 = 组色), 拖光标 / 双击 / ◂ ▸ 换标的; 滚轮缩放\n"
+          "• 池 = cs_valid ∧ 当日有成交; 出池段 (valid%% 不计它) 秩不入评估, K 线用不看池的秩淡色显示\n"
+          "• 选中沿标的粘住: 拖光标只换序, K 线不重载; 换 universe 子轴才重选");
+    ImGui::SameLine();
+    ImGui::TextDisabled("| 色 = R(t) 组色 (G1 蓝 → 中段灰 → G20 橙; 淡 = 池外, 暗灰 = 无值), 阳线空心 / 阴线实心");
+    const float strip_h = ImGui::GetTextLineHeight() * 2.f, sp_y = ImGui::GetStyle().ItemSpacing.y;
+    if (plot_asset_axis(ui, ctx, pos, ImVec2(cell.x, strip_h)))
+      moved = true;
+    if (moved && pos >= 0 && pos < n)
+      ui.asset_gid = ui.ax_gid[static_cast<size_t>(pos)];
+    char title[160];
+    std::snprintf(title, sizeof(title), "分钟 K 线  %s###kline", name);
+    const float kh = std::max(60.f, cell.y - ImGui::GetFrameHeight() - strip_h - 2.f * sp_y);
+    plot_kline(ui, ksvc.stream(), ui.der.dates, ui.cursor_day, title, ImVec2(cell.x, kh));
+    ImGui::EndGroup();
+  } else {
+    empty_plot("标的 K 线###kline", cell, wait_hint);
+  }
+
+  if (shown && ui.der.valid)
+    plot_ic(ui.der, cell);
+  else
+    empty_plot("IC 分布###ic", cell, wait_hint);
+  ImGui::SameLine();
+  // 右下 期限结构: Inspect 结果优先 (全部冲击档), 否则文件 stat (Factors 表的 row.hold, 只有毛口径一档)
   if (shown) {
     std::vector<TermTier> tiers(res_impacts.size());
     for (size_t q = 0; q < tiers.size(); ++q)
@@ -729,13 +1100,6 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, FactorsUIState 
   } else {
     empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Compute)");
   }
-
-  if (shown && ui.der.valid)
-    plot_ic(ui.der, cell);
-  else
-    empty_plot("IC 分布###ic", cell, wait_hint);
-  ImGui::SameLine();
-  empty_plot("留位###reserved", cell, "Markowitz CDF 仓位映射 (待做)");
   return action;
 }
 

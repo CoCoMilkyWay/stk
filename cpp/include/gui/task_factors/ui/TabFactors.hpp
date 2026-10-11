@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+struct AssetItem;
+
 namespace GUI::Factors {
 
 // 构建器的一个槽: 未选 / 特征叶 / 算子 (带 arity 个子槽 + 参数). 从外到内填: 先选根算子, 再逐槽往里选
@@ -48,8 +50,9 @@ struct FactorsUIState {
 struct FactorsUIContext {
   std::string factor_dir; // <factor_dir>/<universe>
   std::string universe, start_date, end_date;
-  double sell_impact = 0.0; // Config::sell_impact (Inspect 期限结构净档的平仓侧常数; 进请求 key, 改了自动重算)
-  bool axis_ready = false;  // 资产轴就绪 (数据库扫过) 才能读特征库评估
+  double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净档的平仓侧常数; 进请求 key, 改了自动重算)
+  bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估
+  const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右下按全局 id 显示代码 / 名称
 };
 
 // Factors / Inspect 两页所有文字提示走这一个: 固定宽度处折行 (SetTooltip 不折行, 长句会被视口裁掉).

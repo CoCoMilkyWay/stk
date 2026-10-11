@@ -48,6 +48,8 @@ struct InspectService::Flow {
   std::vector<factor::cpu::ParScratch> nsc;
   factor::cpu::stat::Workspace w;
   std::vector<factor::stat::Row> rows; // 毛口径一级 [H][T], 发布时与 result.rows 交换
+  std::vector<uint16_t> rx, rx_all;    // w.ws 的拷贝 [T][A] (池内 / 不看池), 发布时与 result.rx / rx_all 交换 (ws 自身下次评估还要用)
+  std::vector<uint8_t> ones;           // 全 1 门控 [T][A], rx_all 那遍 rank_x 的 g
 
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
   void reset_scope() {
@@ -247,6 +249,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.scope.days = L.days, res.scope.T = T, res.scope.A = A;
   res.scope.backend = "cpu";
   res.dates = dates;
+  res.read_scope = req.scope;
   res.n_hold = H;
   res.hd = L.hd;
   res.impacts.push_back(0);
@@ -256,17 +259,24 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const auto publish = [&] {
     res.scope.time = now_string();
     std::lock_guard<std::mutex> lock(mutex);
-    std::vector<factor::stat::Row> spare = std::move(result.rows); // 旧 Row 缓冲回收给 Flow, 下次原地写
+    std::vector<factor::stat::Row> spare = std::move(result.rows); // 旧 Row / rx 缓冲回收给 Flow, 下次原地写
+    std::vector<uint16_t> spare_rx = std::move(result.rx), spare_rx_all = std::move(result.rx_all);
     result = std::move(res);
     result.rows.swap(F.rows);
+    result.rx.swap(F.rx);
+    result.rx_all.swap(F.rx_all);
     F.rows = std::move(spare);
+    F.rx = std::move(spare_rx);
+    F.rx_all = std::move(spare_rx_all);
   };
 
   // ---- 数据检查 (与 FactorsService 同一套) ----
   for (int i = 0; i < N; ++i) {
     check_leaf_domains(d, i, L, res.error);
     if (!res.error.empty()) {
-      F.rows.clear(); // 无一级
+      F.rows.clear(); // 无一级 / 无 rx
+      F.rx.clear();
+      F.rx_all.clear();
       publish();
       return true;
     }
@@ -305,7 +315,13 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   if (F.rows.size() != nrow)
     F.rows.resize(nrow);
   res.hold.resize(static_cast<size_t>(C + 1) * H);
+  // 先多跑一遍不看池的秩 (g ≡ 1) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 (ws 留给 eval_rows)
+  if (F.ones.size() != n)
+    F.ones.assign(n, uint8_t{1});
+  factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), F.ones.data(), req.frame, T, A, F.w);
+  F.rx_all.assign(F.w.ws.begin(), F.w.ws.begin() + static_cast<std::ptrdiff_t>(n));
   factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), L.cs.m.data(), req.frame, T, A, F.w);
+  F.rx.assign(F.w.ws.begin(), F.w.ws.begin() + static_cast<std::ptrdiff_t>(n)); // ws 随结果发布 (右上标的轴 / K 线着色)
   for (int c = 0; c <= C; ++c) {
     if (cancelled())
       return false;

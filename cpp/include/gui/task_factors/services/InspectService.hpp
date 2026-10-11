@@ -9,7 +9,8 @@
 //   S  作用域   key = 特征库目录 | 子轴 hash | 月份        → dates, 截面门控, 毛标签 [H], 成本 [C]; 特征平面缓存 (作用域内读过的全留, 只增)
 //   Y  标签集   key = S + sell_impact                      → [c = 0..C] {lv, sv, m, ry[H]}: c = 0 毛, c ≥ 1 扣 costs[c−1] + sell_impact 的净
 //   X  因子     key = S + expr                             → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
-//   R  rank_x   key = X                                    → ws[T][A]
+//   R  rank_x   key = X                                    → ws[T][A] (拷一份随结果发布 = InspectResult::rx, 右上标的轴 / K 线着色;
+//                                                            之前多跑一遍 g ≡ 1 的 rank_x → rx_all, 池外段也有秩可显)
 //   L  评估     key = R × Y                                → 一级 Row[H][T] (只毛, c = 0) + 二级 HoldStat[c][H] (eval_rows 每标签集一遍, ws 共用;
 //                                                            净集只留二级给期限结构, Row 不落地)
 // 结果一次发布: 页面的 Hold / 超额|绝对 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
@@ -59,6 +60,9 @@ struct InspectResult {
   factor::stat::Holds hd;                   // hd.h[hi]
   std::vector<int> impacts;                 // [C + 1] 冲击档 (万): [0] = 0 毛, 其后 = FeatureTable::costs 序
   double sell_impact = 0.0;                 // 净档的平仓冲击
+  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 子轴 + 月份): 右下 K 线按它读库; uni 做子轴 ↔ 全局 id
+  std::vector<uint16_t> rx;                 // r16(x) [T][A] (CS = 截面秩, TS = 自身分位; 只池内 g ∧ xm, kRankNone 无效): 右上标的轴排序 / K 线着色
+  std::vector<uint16_t> rx_all;             // 同上但不看池 (g ≡ 1, 只要 xm): 池外段 (出 CS 池 / 当日无成交) 的秩, K 线淡色显示; 评估不用
   std::vector<factor::stat::Row> rows;      // 一级 [hd.n][T], 只毛口径
   std::vector<factor::stat::HoldStat> hold; // 二级 [C + 1][hd.n]
   float valid_pct = 0.f;

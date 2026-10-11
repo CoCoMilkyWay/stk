@@ -4,12 +4,13 @@
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
 //   Factors: <factor_dir>/<universe>/ 一因子一文件的整体面板. 进页只扫描解析 (任何时候可进); Run 才读特征库评估
 //     (要资产轴就绪), 结果回写各因子文件.
-//   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 时序). 行信息来自 FactorsService; 一级 Row 由自己的
-//     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读).
+//   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 标的 K 线). 行信息来自 FactorsService; 一级 Row 由自己的
+//     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中标的的分钟 K 线由 KlineService 逐日流式读.
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/FactorsService.hpp"
 #include "gui/task_factors/services/InspectService.hpp"
+#include "gui/task_factors/services/KlineService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "gui/task_factors/ui/TabInspect.hpp"
@@ -43,6 +44,7 @@ struct TaskFactorsState {
   std::string factors_scanned_dir; // 上次扫描的目录 (universe 切换 → 自动重扫)
 
   std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (worker 懒起); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
+  std::unique_ptr<Factors::KlineService> kline_service;     // Inspect 右下选中标的的分钟 K 线流 (与 inspect_service 同生灭)
   Factors::InspectUIState inspect_ui;
 };
 
@@ -75,6 +77,7 @@ static Factors::FactorsUIContext factors_context(const SharedData &data) {
   c.end_date = data.config.end_date;
   c.sell_impact = data.config.sell_impact;
   c.axis_ready = !data.asset.items.empty();
+  c.assets = &data.asset.items;
   return c;
 }
 
@@ -196,11 +199,12 @@ TaskHandle CreateFactorsTask() {
       if (!state->inspect_service) {
         state->inspect_service = std::make_unique<Factors::InspectService>();
         state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
+        state->kline_service = std::make_unique<Factors::KlineService>();
       }
       auto &is = *state->inspect_service;
       int iaction = 0; // Inspect 请求: 1 起算 / -1 取消
       if (idx == TAB_INSPECT) {
-        iaction = Factors::RenderTabInspect(fs, is, state->factors_ui, state->inspect_ui, ctx);
+        iaction = Factors::RenderTabInspect(fs, is, *state->kline_service, state->factors_ui, state->inspect_ui, ctx);
       } else {
         const int action = Factors::RenderTabFactors(fs, state->factors_ui, ctx);
         if (action == 1 || action == 2) {
@@ -234,6 +238,7 @@ TaskHandle CreateFactorsTask() {
     state->operators_started = false;
     state->factors_service.reset();
     state->factors_scanned_dir.clear();
+    state->kline_service.reset();   // 析构 Stop() join worker
     state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放
     state->inspect_ui = Factors::InspectUIState{};
   };
