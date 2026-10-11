@@ -41,6 +41,8 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   TraceN("FactorsLoad");
   assert(static_cast<int>(dates.size()) == L.days);
   assert(!with_costs || with_labels);
+  assert(!with_costs || L.max_impact > 0.f && "装成本前先设 Loaded::max_impact (Config::max_impact)");
+  const feature_storage_t cap = static_cast<feature_storage_t>(L.max_impact); // 买入冲击封顶 (fp16 位直接替换, 与原值同格式)
   const size_t A = static_cast<size_t>(L.A), n = L.n();
   const size_t VR = level_valid_rows(kLevel);
   assert(VR == static_cast<size_t>(factor::kSegLen));
@@ -190,7 +192,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         for (size_t a = 0; a < A; ++a) {
           const float b = static_cast<float>(sb[a]), s = static_cast<float>(ss[a]);
           const bool ok = L.cs.m[row + a] && std::isfinite(b) && std::isfinite(s); // 池内且当日有数据; 吃不到 = NaN → 无效
-          cp.buy[row + a] = ok ? std::bit_cast<uint16_t>(sb[a]) : 0;
+          cp.buy[row + a] = ok ? std::bit_cast<uint16_t>(b > L.max_impact ? cap : sb[a]) : 0;
           cp.sell[row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           cp.m[row + a] = ok;
         }

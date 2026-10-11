@@ -42,6 +42,9 @@ struct Config {
   // 平仓冲击 (比率, 模拟值, 不按金额变): 标签 exit 是分钟 VWAP (不含冲击), 建仓冲击按深度精确算成特征 (lb_cost_*),
   //   平仓侧没有对应盘口, 选择扣冲击时统一扣这一常数 (做多卖出 / 做空买回同用). 默认 20bp
   double sell_impact = 0.0020;
+  // 建仓买入冲击封顶 (比率): lb_cost_buy_* 装载时 min(·, max_impact) 再进组均 (FactorsLoad). 深度吃穿 / 涨停成交的格冲击可到百分之几,
+  //   原值进均值把期限结构净线整体砸穿 (过罚); 封顶后那些格最多扣这么多, 可执行性另议. 卖出侧不封. 默认 1%
+  double max_impact = 0.01;
 
   // Config file path
   std::string filepath = "../../../../config/config.json";

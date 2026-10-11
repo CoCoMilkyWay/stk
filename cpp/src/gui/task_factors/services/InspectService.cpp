@@ -72,6 +72,7 @@ bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reloa
   req.expr = row.expr;
   req.frame = row.frame;
   req.reload = reload;
+  req.max_impact = data.config.max_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
@@ -162,7 +163,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;
   }
-  std::string ckey = req.scope.features_dir + "|" + std::to_string(req.scope.uni.hash);
+  std::string ckey = req.scope.features_dir + "|" + std::to_string(req.scope.uni.hash) + "|cap" + std::to_string(req.max_impact);
   for (const std::string &m : req.scope.months)
     ckey += "|" + m;
   const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.uni.size());
@@ -178,6 +179,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   if (req.reload || F.scope_key != ckey || F.dates != dates) {
     F.reset_scope();
     init_loaded(feats_, days, A, F.L);
+    F.L.max_impact = static_cast<float>(req.max_impact);
     F.L.feat_codes = d.feats;
     if (!load_planes(feats_, reader, dates, F.L, F.ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/true))
       return stale_out();

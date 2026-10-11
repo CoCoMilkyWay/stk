@@ -50,6 +50,7 @@ struct SearchRequest {
   bool gpu = false;
   int cost_idx = 0;         // FeatureTable::costs 下标 (单一金额档)
   double sell_impact = 0.0; // Config::sell_impact
+  double max_impact = 0.0;  // Config::max_impact (买入冲击封顶, 装载时生效)
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
 bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, int cost_idx, SearchRequest &req);

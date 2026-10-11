@@ -46,14 +46,15 @@ struct InspectRequest {
   factor::stat::Frame frame = factor::stat::Frame::CS;
   analysis::ReadScope scope;
   std::string universe, start_date, end_date;
-  bool reload = false; // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
+  bool reload = false;     // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
+  double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 装载时生效 → 进作用域缓存键)
   std::string key() const { return file + "|" + expr + "|" + universe + "|" + start_date + "|" + end_date; }
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
 
 // 一个金额档的组池化平均建仓冲击 (比例): 组 = grp_of(rx) (CS 截面分位 / TS 自身分位), 池化 = 全时刻全资产 Σ cost / cnt, 过 rx 有效 ∧ 成本有效的格.
-// 与持有期无关 (entry 同一盘口). 组无样本 → 0 (TS 组可空, 与 ls 空腿取 0 对齐). 吃不满深度的格 (成本 NaN) 不计入 → 高档均值偏低, cover 把它亮出来
+// 与持有期无关 (entry 同一盘口). 买入冲击按 Config::max_impact 封顶后进均 (装载时). 组无样本 → 0 (TS 组可空, 与 ls 空腿取 0 对齐). 吃不满深度的格 (成本 NaN) 不计入 → 高档均值偏低, cover 把它亮出来
 struct CostTier {
   int amt = 0;                                                             // 万 (= FeatureTable::costs[c].amt)
   float buy[factor::stat::kGroups] = {}, sell[factor::stat::kGroups] = {}; // lb_cost_buy / lb_cost_sell 组均

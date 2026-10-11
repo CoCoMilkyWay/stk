@@ -16,7 +16,7 @@
 //
 //   【成本】打分只要两格: 顶组 (做多腿) 的买入冲击均值 与 底组 (做空腿) 的卖出冲击均值; 池化 = 全时刻 Σ cost / 格数, 过 rx 有效 ∧ 成本有效
 //         (与 Inspect CostTier 的 buy[K−1] / sell[0] 同口径: 不看 ok / 尾部 / t ≥ h —— 建仓冲击与持有期无关; 组无样本 → 0).
-//         单一金额档 (如 5W) 由调用方选定.
+//         单一金额档 (如 5W) 由调用方选定; 买入冲击由调用方装载时按 Config::max_impact 封顶 (本算子只看到封顶后的值).
 //
 //   【目标】期限结构 = 各 hold 的净多空 ls_net(h) = ls_mean(h) − buy_hi − sell_lo − 2·sell_impact (= Inspect plot_term 的 LS 净线);
 //         h* = argmax_h ls_net(h); score = ls_net(h*) · ic_mean(h*)^ic_pow; 任一 ≤ 0 → −∞ (方向反 / 无效, 直接出局). 别的指标不进目标.

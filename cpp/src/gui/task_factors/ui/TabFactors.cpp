@@ -968,7 +968,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     if (sbusy)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-      tip("建仓冲击的下单金额档 (万): 净 LS = 毛 LS − 顶组买入冲击 − 底组卖出冲击 − 2 × sell_impact (%.4f)", ctx.sell_impact);
+      tip("建仓冲击的下单金额档 (万): 净 LS = 毛 LS − 顶组买入冲击 (按 Config::max_impact 封顶) − 底组卖出冲击 − 2 × sell_impact (%.4f)",
+          ctx.sell_impact);
     ImGui::SameLine();
     ImGui::Text("Status:");
     ImGui::SameLine();

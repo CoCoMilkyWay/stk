@@ -91,6 +91,7 @@ bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, i
   req.gpu = gpu;
   req.cost_idx = cost_idx;
   req.sell_impact = data.config.sell_impact;
+  req.max_impact = data.config.max_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
@@ -301,6 +302,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     cd.ry.clear();
     cd.L = Loaded{};
     init_loaded(feats_, day1 - load0, A, cd.L);
+    cd.L.max_impact = static_cast<float>(req.max_impact);
     cd.L.feat_codes = d0.feats;
     status_.store(SearchStatus::Loading, std::memory_order_release);
     total_.store(day1 - load0, std::memory_order_relaxed);

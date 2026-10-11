@@ -124,8 +124,10 @@ bool Config::LoadFromFile() {
   commission = j.value("commission", commission);
   stamp = j.value("stamp", stamp);
   sell_impact = j.value("sell_impact", sell_impact);
+  max_impact = j.value("max_impact", max_impact);
   assert(commission >= 0.0 && commission < 0.01 && stamp >= 0.0 && stamp < 0.01 && "税佣比率越界 (万 1 = 0.0001)");
   assert(sell_impact >= 0.0 && sell_impact < 0.05 && "平仓冲击比率越界 (20bp = 0.0020)");
+  assert(max_impact > 0.0 && max_impact <= 0.2 && "买入冲击封顶越界 (1% = 0.01)");
 
   return true;
 }
@@ -150,6 +152,7 @@ bool Config::SaveToFile() {
   j["commission"] = commission;
   j["stamp"] = stamp;
   j["sell_impact"] = sell_impact;
+  j["max_impact"] = max_impact;
 
   std::ofstream file(filepath);
   if (!file.is_open()) {

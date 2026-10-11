@@ -25,11 +25,12 @@ struct LabelPlane {
   std::vector<uint8_t> m;
 };
 struct CostPlane {
-  std::vector<uint16_t> buy, sell; // 建仓冲击 (比例) fp16 位: lb_cost_buy_<amt>w / lb_cost_sell_<amt>w
+  std::vector<uint16_t> buy, sell; // 建仓冲击 (比例) fp16 位: lb_cost_buy_<amt>w (按 Loaded::max_impact 封顶) / lb_cost_sell_<amt>w (原值)
   std::vector<uint8_t> m;          // 有效位 (两列皆有限; 吃不到 = NaN → 无效)
 };
 struct Loaded {
   int T = 0, A = 0, days = 0;
+  float max_impact = 0.f;                   // 买入冲击封顶 (Config::max_impact): with_costs 装载前由调用方设 (> 0), buy = min(原值, 封顶)
   std::vector<std::string> feat_codes;      // 去重特征 (平面下标)
   std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码 (按 ts_valid 门控)
   factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = 当日在池 ∧ 当日有成交 (ts_valid 任一分钟 ≠ 0; 整日常量)

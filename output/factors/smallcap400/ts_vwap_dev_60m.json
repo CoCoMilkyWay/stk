@@ -21,10 +21,10 @@
   "T": 25755,
   "A": 612,
   "backend": "gpu",
-  "time": "2026-10-12 05:05",
+  "time": "2026-10-12 05:50",
   "frame": "TS",
   "valid_pct": 100.0,
-  "eval_ms": 33.7,
+  "eval_ms": 31.48,
   "holds": [
    {
     "hold": 1,

@@ -342,6 +342,18 @@ private:
         if (ImGui::InputDouble("##sell_impact", &cfg.sell_impact, 0.0, 0.0, "%.5f"))
           changed = true;
 
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("买入冲击封顶");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("比率, 1%% = 0.01. 建仓买入冲击 (lb_cost_buy_*) 装载时按此封顶再进组均: 深度吃穿 / 涨停成交的格原值可达百分之几,\n"
+                            "会把期限结构净线整体砸穿 (过罚); 封顶后最多扣这么多, 可执行性另议. 卖出侧不封. Inspect / Optimize 下次计算生效");
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputDouble("##max_impact", &cfg.max_impact, 0.0, 0.0, "%.4f"))
+          changed = true;
+
         ImGui::EndTable();
       }
     }
