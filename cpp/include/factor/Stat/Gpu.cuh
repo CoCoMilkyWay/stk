@@ -204,7 +204,6 @@ __device__ __forceinline__ void finish_row(Frame f, unsigned long long n, unsign
     r.grp[k] = static_cast<float>(gs[k] - gc[k] * mkt);
   }
   r.ls = static_cast<float>(dev::ls_of(top, bot, mkt, mkt_s)); // 显式限定: Side 在 factor::stat, ADL 会把主机版 ls_of 一起拉进来
-  r.ls_rev = static_cast<float>(dev::ls_of(bot, top, mkt, mkt_s));
 }
 
 // shared 有序数组上的二分
@@ -363,7 +362,7 @@ __global__ void __launch_bounds__(kLB, 2) label_rows(Frame f, const uint16_t *ws
     // ---- 标签侧 ----
     const bool tail = dev::tail_masked(t, hold);
     ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (IC)
-    float fs[4] = {};              // Σlv (mkt), Σsv, Σsv|组0, Σsv|顶组
+    float fs[3] = {};              // Σlv (mkt), Σsv, Σsv|组0
     if (!tail) {
 #pragma unroll
       for (int q = 0; q < kGroups; ++q) { // 清自己的槽
@@ -383,13 +382,12 @@ __global__ void __launch_bounds__(kLB, 2) label_rows(Frame f, const uint16_t *ws
         const float yl = dev::h2f(lv[a]), ys = dev::h2f(sv[a]);
         fs[0] += ok ? yl : 0.f;
         fs[1] += ok ? ys : 0.f;
-        const int g = ok ? dev::grp_of(xr) : -1; // 20 组 (顶 / 底侧的 lv 与计数就是组槽, 另记两组的 Σ sv)
+        const int g = ok ? dev::grp_of(xr) : -1; // 20 组 (顶 / 底侧的 lv 与计数就是组槽, 另记底组的 Σ sv)
         if (ok) {                                // 自己的槽, 无竞争
           gs[g][lane] += yl;
           gc[g][lane] += 1;
         }
         fs[2] += g == 0 ? ys : 0.f;
-        fs[3] += g == kGroups - 1 ? ys : 0.f;
       }
       warp_sum(s);
       warp_sum(fs);
@@ -424,7 +422,7 @@ __global__ void __launch_bounds__(kLB, 2) label_rows(Frame f, const uint16_t *ws
           gci[q] = gc[q][0];
         }
         constexpr int kt = kGroups - 1;
-        const Side top{static_cast<double>(gci[kt]), gsd[kt], static_cast<double>(fs[3])}, bot{static_cast<double>(gci[0]), gsd[0], static_cast<double>(fs[2])};
+        const Side top{static_cast<double>(gci[kt]), gsd[kt], 0.0}, bot{static_cast<double>(gci[0]), gsd[0], static_cast<double>(fs[2])};
         dev::finish_row(f, s[0], s[1], s[2], s[3], s[4], s[5], static_cast<double>(fs[0]), static_cast<double>(fs[1]), gsd, gci, top, bot, r);
       }
       rows[static_cast<size_t>(hi) * T + t] = r;

@@ -6,7 +6,7 @@
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 Flow, 分级缓存, 请求来了从第一个 key 不匹配的级重算, 上游全部复用; 缓冲常驻, 稳态零分配):
-//   S  作用域   key = 特征库目录 | 子轴 hash | 月份        → dates, 截面门控, 毛标签 [H], 成本 [C]; 特征平面缓存 (作用域内读过的全留, 只增)
+//   S  作用域   key = 特征库目录 | 子轴 hash | 月份        → dates, 截面门控, 毛标签 [H], 成本 [C], universe 指数; 特征平面缓存 (作用域内读过的全留, 只增)
 //   Y  标签集   key = S + sell_impact                      → [c = 0..C] {lv, sv, m, ry[H]}: c = 0 毛, c ≥ 1 扣 costs[c−1] + sell_impact 的净
 //   X  因子     key = S + expr                             → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
 //   R  rank_x   key = X                                    → ws[T][A] (拷一份随结果发布 = InspectResult::rx, 右上标的轴 / K 线着色;
@@ -63,6 +63,7 @@ struct InspectResult {
   analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 子轴 + 月份): 右下 K 线按它读库; uni 做子轴 ↔ 全局 id
   std::vector<uint16_t> rx;                 // r16(x) [T][A] (CS = 截面秩, TS = 自身分位; 只池内 g ∧ xm, kRankNone 无效): 右上标的轴排序 / K 线着色
   std::vector<uint16_t> rx_all;             // 同上但不看池 (g ≡ 1, 只要 xm): 池外段 (出 CS 池 / 当日无成交) 的秩, K 线淡色显示; 评估不用
+  std::vector<float> uni_index;             // [T] universe 等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   std::vector<factor::stat::Row> rows;      // 一级 [hd.n][T], 只毛口径
   std::vector<factor::stat::HoldStat> hold; // 二级 [C + 1][hd.n]
   float valid_pct = 0.f;

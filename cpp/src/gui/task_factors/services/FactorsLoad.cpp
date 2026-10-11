@@ -37,7 +37,7 @@ void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L) {
 }
 
 bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, factor::exec::ForkJoin &ex,
-                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels, bool with_costs) {
+                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels, bool with_costs, bool with_index) {
   TraceN("FactorsLoad");
   assert(static_cast<int>(dates.size()) == L.days);
   assert(!with_costs || with_labels);
@@ -47,7 +47,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   const size_t H = with_labels ? static_cast<size_t>(L.n_hold) : 0;
   const size_t C = with_costs ? ft.costs.size() : 0;
   const size_t nf = L.feat_codes.size();
-  // 列表: [特征 nf][标签 long/short × hold][成本 buy/sell × amt][ts_valid][cs_valid]
+  // 列表: [特征 nf][标签 long/short × hold][成本 buy/sell × amt][close (with_index)][ts_valid][cs_valid]
   std::vector<size_t> cols;
   std::vector<L2::ValidType> vts;
   for (const std::string &c : L.feat_codes) {
@@ -65,9 +65,14 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       cols.push_back(cc.buy_col), vts.push_back(ft.cols[cc.buy_col].vt);
       cols.push_back(cc.sell_col), vts.push_back(ft.cols[cc.sell_col].vt);
     }
+  if (with_index) {
+    const FeatCol *fc = ft.find("close");
+    assert(fc && "字段表缺 close 列 (universe 指数)");
+    cols.push_back(fc->col), vts.push_back(fc->vt);
+  }
   cols.push_back(ft.ts_col);
   cols.push_back(ft.cs_col);
-  const size_t ts_i = cols.size() - 2, cs_i = cols.size() - 1, cost_i = nf + 2 * H;
+  const size_t ts_i = cols.size() - 2, cs_i = cols.size() - 1, cost_i = nf + 2 * H, close_i = ts_i - 1;
 
   L.planes.resize(nf);
   for (factor::check::Plane &p : L.planes)
@@ -86,6 +91,20 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     dc.preallocate(A, kLevel, cols.size());
   std::vector<std::vector<uint8_t>> has_data(n_threads, std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交
   const size_t nc = cols.size();
+  // 指数: 逐天并行攒日内项 (isum / icnt [T]); 当日首笔的前价在前一天 (跨日), 记下首笔 / 末笔 [days][A] (0 = 无) 收尾串行补
+  std::vector<double> isum;
+  std::vector<int> icnt;
+  std::vector<float> first_c, last_c;
+  std::vector<uint16_t> first_m;
+  std::vector<std::vector<float>> px; // 每线程: 当日各资产上一有效 close (0 = 当日尚无成交)
+  if (with_index) {
+    isum.assign(static_cast<size_t>(L.T), 0.0);
+    icnt.assign(static_cast<size_t>(L.T), 0);
+    first_c.assign(dates.size() * A, 0.f);
+    last_c.assign(dates.size() * A, 0.f);
+    first_m.assign(dates.size() * A, 0);
+    px.assign(n_threads, std::vector<float>(A));
+  }
 
   ex.tasks(static_cast<int>(dates.size()), [&](int di, int ti) {
     if (cancel.load(std::memory_order_relaxed))
@@ -124,6 +143,32 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         L.cs.v[row + a] = g;
         L.cs.m[row + a] = fmeta::data_valid(g) && has[a];
       }
+      if (with_index) {
+        if (t == 0)
+          std::fill(px[tid].begin(), px[tid].end(), 0.f);
+        const feature_storage_t *cl = dc.data.data() + (t * nc + close_i) * A;
+        double s = 0.0;
+        int k = 0;
+        for (size_t a = 0; a < A; ++a) {
+          const float c = static_cast<float>(cl[a]);
+          if (!fmeta::data_valid(static_cast<float>(ts_gate[a])) || !(c > 0.f))
+            continue;
+          const bool in = fmeta::data_valid(static_cast<float>(cs_gate[a]));
+          float &p = px[tid][a];
+          if (p > 0.f) {
+            s += in ? c / p - 1.0 : 0.0;
+            k += in;
+          } else { // 当日首笔: 前价在前一天, 收尾补 (首笔时不在池 → 不补)
+            first_c[d * A + a] = in ? c : 0.f;
+            first_m[d * A + a] = static_cast<uint16_t>(t);
+          }
+          p = c;
+        }
+        isum[d * VR + t] = s;
+        icnt[d * VR + t] = k;
+        if (t + 1 == VR)
+          std::copy(px[tid].begin(), px[tid].end(), last_c.begin() + static_cast<std::ptrdiff_t>(d * A));
+      }
       for (size_t h = 0; h < H; ++h) {
         const size_t il = nf + 2 * h, is = il + 1;
         const feature_storage_t *sl = dc.data.data() + (t * nc + il) * A;
@@ -153,7 +198,29 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     }
     done.fetch_add(1, std::memory_order_relaxed);
   });
-  return !cancel.load(std::memory_order_relaxed) && !reader.stale();
+  if (cancel.load(std::memory_order_relaxed) || reader.stale())
+    return false;
+  if (with_index) {
+    std::vector<float> prev(A, 0.f); // 各资产最近一个有成交日的末笔 close
+    for (size_t d = 0; d < dates.size(); ++d)
+      for (size_t a = 0; a < A; ++a) {
+        const size_t i = d * A + a;
+        if (first_c[i] > 0.f && prev[a] > 0.f) {
+          isum[d * VR + first_m[i]] += first_c[i] / prev[a] - 1.0;
+          ++icnt[d * VR + first_m[i]];
+        }
+        if (last_c[i] > 0.f)
+          prev[a] = last_c[i];
+      }
+    L.index.resize(static_cast<size_t>(L.T));
+    double lv = 1.0;
+    for (size_t t = 0; t < L.index.size(); ++t) {
+      if (icnt[t])
+        lv *= 1.0 + isum[t] / icnt[t];
+      L.index[t] = static_cast<float>(lv);
+    }
+  }
+  return true;
 }
 
 void net_labels(factor::exec::ForkJoin &ex, const Loaded &L, const CostPlane &cost, float sell_impact, std::vector<LabelPlane> &out) {

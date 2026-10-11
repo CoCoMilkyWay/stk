@@ -176,7 +176,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     F.reset_scope();
     init_loaded(feats_, days, A, F.L);
     F.L.feat_codes = d.feats;
-    if (!load_planes(feats_, reader, dates, F.L, F.ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true))
+    if (!load_planes(feats_, reader, dates, F.L, F.ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/true))
       return stale_out();
     F.scope_key = ckey;
     F.dates = dates;
@@ -250,6 +250,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.scope.backend = "cpu";
   res.dates = dates;
   res.read_scope = req.scope;
+  res.uni_index = L.index;
   res.n_hold = H;
   res.hd = L.hd;
   res.impacts.push_back(0);

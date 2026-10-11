@@ -35,8 +35,6 @@
 //            CS 池化与"组均值再时间平均"只差按每 t 有效数加权.
 //     ls     顶底多空 LS(tp-dn) = 最高组做多超额均值 + 最低组做空超额均值 —— 相对市场 (TS: 组空 → 该项 0, 即 long/flat).
 //            二级 HoldStat 的 LS 系 (ls_mean / ls_t / ls_pos / sharpe / beta) 全部基于它. 无信号时 ≈ 0 (原值口径会 ≈ −市场往返成本).
-//     ls_rev 镜像顶底多空 = 最低组做多 + 最高组做空 (因子取反后的 ls). 多空两腿价格不同 (lv / sv), −ls 代替不了, 同一遍顺手多累一个 Σsv|顶组;
-//            给二级自动符号用 (见【自动符号】), 一级不翻.
 //     mkt    J 上做多标签原值均值 (超额减它; 二级回归 beta 用).
 //     ok     标签侧有效: 非段末尾部 (见下) ∧ ic 可算 (n ≥ 2, 两侧方差 > 0) ∧ (CS: 各组非空).
 //     ac     rank-AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 才对应"一个持有期换多少仓".
@@ -61,12 +59,6 @@
 //     rank_ac = ac 的时间平均
 //     n < 3 → 只填 n, 其余 0 (消费端先看 n)
 //     累加器 Accum 可合并: 行区间并行各攒一份 merge; 超大张量沿 T 分块流式时跨块续攒, 不必落 Row
-//
-//   【自动符号 sign】因子方向是约定, 不是信息: 反向有效的因子不该在表里显示成"最差". 每个 (因子, hold) 各自判:
-//     原始 mono < −kSignMonoMin → sign = −1, HoldStat 全部按 x → −x 镜像输出 (|mono| 小于阈值不翻, 防抖); 否则 sign = +1 原样.
-//     镜像 = 单遍算完在 finish 里做, 不重跑: grp 倒序 / ic 系取负 (ic_pos 换成 IC<0 占比, Accum 另计 nneg) / LS 系取 ls_rev 的幂和
-//     / β 用 ls_rev 对 mkt 的回归 / mono 取负 / rank_ac 不变. 全部严格 (r16 → kRankMax − r16 是仿射, Pearson 精确取反; 组倒序 Spearman
-//     精确取负), 唯一不是现成数据的量就是 ls_rev. 一级 Row 不翻 (唯一真相), 消费端画 Row 时按 HoldStat::sign 自己镜像 (ls 换 ls_rev).
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
@@ -95,7 +87,6 @@ inline constexpr int kRankMax = 65534;                 // r16 = round(pct · kRa
 inline constexpr unsigned kNoKey = 0xFFFFFFFFu;        // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
 inline constexpr int kTsNormDays = 5;                  // TS 口径根 TsRankRoll 的窗长 (整交易日, 跨日 deseason)
 inline constexpr int kTsNormD = kTsNormDays * kSegLen; // = 1275 分钟 (== Expr.hpp kMaxD, 在 Expr.hpp static_assert 对账)
-inline constexpr double kSignMonoMin = 0.1;            // 自动符号阈值: 原始 mono < −此值才翻 (见文件头【自动符号】)
 
 // ---- 口径 (见文件头【口径 Frame】) ----
 enum class Frame : uint8_t { CS,
@@ -159,16 +150,15 @@ inline void assert_holds(const Holds &hd) {
 // ---- 一级输出: 每 (持有期, 时刻) 一行; 布局 rows[h_idx * T + t] ----
 struct Row {
   float ic = 0.f, mkt = 0.f, ac = 0.f;
-  float ls = 0.f, ls_rev = 0.f; // LS(tp-dn) 及其镜像 (顶组 ↔ 底组, 二级自动符号用)
-  float grp[kGroups] = {};      // 组内做多标签 e 的和 (CS 原值 / TS 超额)
-  uint16_t cnt[kGroups] = {};   // 组样本数 (A ≤ kMaxA < 65536)
+  float ls = 0.f;             // LS(tp-dn)
+  float grp[kGroups] = {};    // 组内做多标签 e 的和 (CS 原值 / TS 超额)
+  uint16_t cnt[kGroups] = {}; // 组样本数 (A ≤ kMaxA < 65536)
   uint8_t ok = 0, ok_ac = 0;
 };
 
-// ---- 二级输出: 每持有期一份 (sign = −1 时以下全部已按 x → −x 镜像, 见文件头【自动符号】) ----
+// ---- 二级输出: 每持有期一份 ----
 struct HoldStat {
   int hold = 0, n = 0, n_ac = 0;
-  int sign = 1; // +1 原样 / −1 已镜像
   float ic_mean = 0.f, ic_std = 0.f, icir = 0.f, ic_t = 0.f, ic_pos = 0.f, ic_skew = 0.f, ic_kurt = 0.f;
   float ls_mean = 0.f, ls_t = 0.f, ls_pos = 0.f, sharpe = 0.f, beta = 0.f, mono = 0.f, rank_ac = 0.f;
   float grp[kGroups] = {}; // 池化组均值
@@ -229,17 +219,16 @@ inline float pearson_int(unsigned long long n, unsigned long long sx, unsigned l
   return ok ? static_cast<float>(static_cast<double>(cxy) / std::sqrt(static_cast<double>(vx) * static_cast<double>(vy))) : 0.f;
 }
 
-// 多空的一侧 (一个组): 样本数 w + 标签和 Σlv / Σsv (lv 侧与计数就是组槽 gs / gc, sv 另累)
+// 多空的一侧 (一个组): 样本数 w + 标签和 Σlv / Σsv (lv 侧与计数就是组槽 gs / gc, sv 另累; hi 侧只用 lv, lo 侧只用 sv)
 struct Side {
   double w = 0.0, lv = 0.0, sv = 0.0;
 };
-// 多空 = hi 侧按 lv 做多 (均值 − mkt) + lo 侧按 sv 做空 (均值 − mkt_s); 侧空 → 该腿 0 (TS long/flat).
-// 镜像 = 调换 hi / lo (两腿价格不同, −ls 代替不了)
+// 多空 = hi 侧按 lv 做多 (均值 − mkt) + lo 侧按 sv 做空 (均值 − mkt_s); 侧空 → 该腿 0 (TS long/flat)
 inline double ls_of(const Side &hi, const Side &lo, double mkt, double mkt_s) {
   return (hi.w > 0.0 ? hi.lv / hi.w - mkt : 0.0) + (lo.w > 0.0 ? lo.sv / lo.w - mkt_s : 0.0);
 }
 
-// 一行标签侧的收尾 (两后端逐字一致; GPU 侧有 __device__ 版): J 上整数五和 → ic; 组和 / 组计数 → grp / cnt; 顶 / 底侧 → ls / ls_rev; mkt.
+// 一行标签侧的收尾 (两后端逐字一致; GPU 侧有 __device__ 版): J 上整数五和 → ic; 组和 / 组计数 → grp / cnt; 顶 / 底侧 → ls; mkt.
 //   smk / ssv = J 上 Σ lv / Σ sv; gs[k] / gc[k] = 组 k 的 Σ lv / 计数; top / bot = 顶 / 底组 (见 Side). 不 ok → r 标签侧字段保持 0
 inline void finish_row(Frame f, unsigned long long n, unsigned long long sx, unsigned long long sy, unsigned long long sxx,
                        unsigned long long syy, unsigned long long sxy, double smk, double ssv, const double *gs, const int *gc, const Side &top,
@@ -261,7 +250,6 @@ inline void finish_row(Frame f, unsigned long long n, unsigned long long sx, uns
     r.grp[k] = static_cast<float>(gs[k] - gc[k] * mkt);
   }
   r.ls = static_cast<float>(ls_of(top, bot, mkt, mkt_s));
-  r.ls_rev = static_cast<float>(ls_of(bot, top, mkt, mkt_s));
 }
 
 // ---- 二级汇总 (主机, double; 两后端共用) ----
@@ -292,10 +280,9 @@ inline double mono_of(const double *g, int K) {
 //   幂和 double, 原点 0: ic ∈ [−1,1] 均值 ~1e-2, 标签收益 ~1e-3 —— 相消损失 ≈ (μ/σ)^k 量级 (< 1e-2 相对), 远在 float 出口精度内;
 //   中心矩相消出负由 fmax 钳 0. 两后端共用同一份 (对拍一致性在 Row 级), POD 可直接搬上设备.
 struct Accum {
-  int n = 0, npos = 0, nneg = 0, nlpos = 0, nlrpos = 0, nac = 0;  // npos / nneg = IC > 0 / < 0 行数 (镜像后 ic_pos 用 nneg); nlpos / nlrpos 同理 ls / ls_rev
+  int n = 0, npos = 0, nlpos = 0, nac = 0;                        // npos / nlpos = IC > 0 / ls > 0 行数
   double sic = 0.0, sic2 = 0.0, sic3 = 0.0, sic4 = 0.0;           // ic 幂和
   double sls = 0.0, sls2 = 0.0, smk = 0.0, smk2 = 0.0, slm = 0.0; // ls / mkt 幂和 + 交叉 (beta)
-  double slr = 0.0, slr2 = 0.0, slmr = 0.0;                       // ls_rev 幂和 + 交叉 (镜像时顶替 ls 的)
   double sac = 0.0;
   double sg[kGroups] = {};
   long long sc[kGroups] = {};
@@ -304,13 +291,10 @@ struct Accum {
     if (w.ok) {
       ++n;
       npos += w.ic > 0.f;
-      nneg += w.ic < 0.f;
       nlpos += w.ls > 0.f;
-      nlrpos += w.ls_rev > 0.f;
-      const double ic = w.ic, ic2 = ic * ic, ls = w.ls, lr = w.ls_rev, mk = w.mkt;
+      const double ic = w.ic, ic2 = ic * ic, ls = w.ls, mk = w.mkt;
       sic += ic, sic2 += ic2, sic3 += ic2 * ic, sic4 += ic2 * ic2;
       sls += ls, sls2 += ls * ls, smk += mk, smk2 += mk * mk, slm += ls * mk;
-      slr += lr, slr2 += lr * lr, slmr += lr * mk;
       for (int k = 0; k < kGroups; ++k) {
         sg[k] += w.grp[k];
         sc[k] += w.cnt[k];
@@ -322,16 +306,14 @@ struct Accum {
     }
   }
   void merge(const Accum &o) {
-    n += o.n, npos += o.npos, nneg += o.nneg, nlpos += o.nlpos, nlrpos += o.nlrpos, nac += o.nac;
+    n += o.n, npos += o.npos, nlpos += o.nlpos, nac += o.nac;
     sic += o.sic, sic2 += o.sic2, sic3 += o.sic3, sic4 += o.sic4;
     sls += o.sls, sls2 += o.sls2, smk += o.smk, smk2 += o.smk2, slm += o.slm;
-    slr += o.slr, slr2 += o.slr2, slmr += o.slmr;
     sac += o.sac;
     for (int k = 0; k < kGroups; ++k)
       sg[k] += o.sg[k], sc[k] += o.sc[k];
   }
-  // hold = 持有期键 (折算 / 年化); n < 3 → 只填 n / n_ac / rank_ac. 自动符号见文件头【自动符号】: 先按原始组均值算 mono 定 sign,
-  // sign = −1 时所有量按 x → −x 镜像输出 (ic 系取负 / LS 系换 ls_rev 的和 / grp 倒序)
+  // hold = 持有期键 (折算 / 年化); n < 3 → 只填 n / n_ac / rank_ac
   HoldStat finish(int hold) const {
     assert(hold >= 1);
     HoldStat s;
@@ -345,21 +327,16 @@ struct Accum {
     double g[kGroups];
     for (int k = 0; k < kGroups; ++k)
       g[k] = sc[k] > 0 ? sg[k] / static_cast<double>(sc[k]) : 0.0; // 沿 t 池化
-    const double mono = mono_of(g, kGroups);
-    const bool flip = mono < -kSignMonoMin;
-    const double sgn = flip ? -1.0 : 1.0;
-    s.sign = flip ? -1 : 1;
-    const double nn = n, mic0 = sic / nn, mic = sgn * mic0, mmk = smk / nn;
-    const double mls = (flip ? slr : sls) / nn, sls2_ = flip ? slr2 : sls2, slm_ = flip ? slmr : slm;
-    const double m2 = std::fmax(sic2 - nn * mic0 * mic0, 0.0); // 原始 ic 的中心矩; x → −x 下偶阶不变, 奇阶取负
-    const double m3 = sgn * (sic3 - 3.0 * mic0 * sic2 + 2.0 * nn * mic0 * mic0 * mic0);
-    const double m4 = std::fmax(sic4 - 4.0 * mic0 * sic3 + 6.0 * mic0 * mic0 * sic2 - 3.0 * nn * mic0 * mic0 * mic0 * mic0, 0.0);
-    const double vls = std::fmax(sls2_ - nn * mls * mls, 0.0), vmk = std::fmax(smk2 - nn * mmk * mmk, 0.0), cov = slm_ - nn * mls * mmk;
+    const double nn = n, mic = sic / nn, mmk = smk / nn, mls = sls / nn;
+    const double m2 = std::fmax(sic2 - nn * mic * mic, 0.0); // ic 的中心矩
+    const double m3 = sic3 - 3.0 * mic * sic2 + 2.0 * nn * mic * mic * mic;
+    const double m4 = std::fmax(sic4 - 4.0 * mic * sic3 + 6.0 * mic * mic * sic2 - 3.0 * nn * mic * mic * mic * mic, 0.0);
+    const double vls = std::fmax(sls2 - nn * mls * mls, 0.0), vmk = std::fmax(smk2 - nn * mmk * mmk, 0.0), cov = slm - nn * mls * mmk;
     const double n_eff = nn / hold_minutes(hold); // 重叠持有期折算
     const double ic_sd = std::sqrt(m2 / (nn - 1)), ls_sd = std::sqrt(vls / (nn - 1));
     s.ic_mean = static_cast<float>(mic);
     s.ic_std = static_cast<float>(ic_sd);
-    s.ic_pos = static_cast<float>((flip ? nneg : npos) / nn);
+    s.ic_pos = static_cast<float>(npos / nn);
     if (ic_sd > 0.0) {
       s.icir = static_cast<float>(mic / ic_sd);
       s.ic_t = static_cast<float>(mic / ic_sd * std::sqrt(n_eff));
@@ -368,7 +345,7 @@ struct Accum {
       s.ic_kurt = static_cast<float>((m4 / nn) / (v * v) - 3.0);
     }
     s.ls_mean = static_cast<float>(mls);
-    s.ls_pos = static_cast<float>((flip ? nlrpos : nlpos) / nn);
+    s.ls_pos = static_cast<float>(nlpos / nn);
     if (ls_sd > 0.0) {
       s.ls_t = static_cast<float>(mls / ls_sd * std::sqrt(n_eff));
       s.sharpe = static_cast<float>(mls / ls_sd * std::sqrt(periods_per_year(hold)));
@@ -376,8 +353,8 @@ struct Accum {
     if (vmk > 0.0)
       s.beta = static_cast<float>(cov / vmk);
     for (int k = 0; k < kGroups; ++k)
-      s.grp[k] = static_cast<float>(g[flip ? kGroups - 1 - k : k]);
-    s.mono = static_cast<float>(sgn * mono);
+      s.grp[k] = static_cast<float>(g[k]);
+    s.mono = static_cast<float>(mono_of(g, kGroups));
     return s;
   }
 };

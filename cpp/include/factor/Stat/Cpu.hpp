@@ -166,7 +166,7 @@ inline void ac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_ac = ok ? 1u : 0u;
 }
 
-// 标签侧: rx = 本行 r16, t = 绝对行 (取标签行) → r 的 ic / mkt / grp / cnt / ls / ls_rev / ok. 调用方已排除段末尾部
+// 标签侧: rx = 本行 r16, t = 绝对行 (取标签行) → r 的 ic / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
 inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L, Row &r) {
   using ull = unsigned long long;
   const size_t base = static_cast<size_t>(t) * A;
@@ -174,7 +174,7 @@ inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L,
   ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
   double smk = 0.0, ssv = 0.0, gs[kGroups] = {};
   int gc[kGroups] = {};
-  double sv_bot = 0.0, sv_top = 0.0; // 底 / 顶组的 Σ sv (lv 侧与计数就是 gs / gc)
+  double sv_bot = 0.0; // 底组的 Σ sv (lv 侧与计数就是 gs / gc)
   for (int a = 0; a < A; ++a) {
     const ull x = rx[a], y = ry[a];
     const bool ok = rx[a] != kRankNone && ry[a] != kRankNone;
@@ -191,11 +191,10 @@ inline void label_row(Frame f, const uint16_t *rx, int t, int A, const Label &L,
     gs[g] += ok ? yl : 0.f;
     gc[g] += ok;
     sv_bot += (ok && g == 0) ? ys : 0.f;
-    sv_top += (ok && g == kGroups - 1) ? ys : 0.f;
   }
   using factor::stat::Side;
   const int kt = kGroups - 1;
-  const Side top{static_cast<double>(gc[kt]), gs[kt], sv_top}, bot{static_cast<double>(gc[0]), gs[0], sv_bot};
+  const Side top{static_cast<double>(gc[kt]), gs[kt], 0.0}, bot{static_cast<double>(gc[0]), gs[0], sv_bot};
   factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, top, bot, r);
 }
 

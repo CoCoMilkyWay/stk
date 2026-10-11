@@ -35,6 +35,8 @@ struct Loaded {
   factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = 当日在池 ∧ 当日有成交 (ts_valid 任一分钟 ≠ 0; 整日常量)
   std::vector<LabelPlane> labels;           // [hold] (按 cs.m 门控), 下标 = FeatureTable::labels 下标
   std::vector<CostPlane> costs;             // [amt] (with_costs 才装), 下标 = FeatureTable::costs 下标
+  std::vector<float> index;                 // [T] universe 等权指数 (with_index 才算; 起点 1): 逐分钟 Σ_成分 (close / 上一有效 close − 1) / n 连乘,
+                                            //   成分 = 该刻 cs_valid; 上一有效 close 跨日 (隔夜跳空进当日首笔); 无成分可算的分钟持平
   factor::stat::Holds hd;                   // hd.h[hi] = hold
   int n_hold = 0;
   size_t n() const { return static_cast<size_t>(T) * A; }
@@ -44,9 +46,10 @@ struct Loaded {
 void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L);
 
 // 逐天并行读 (ex 抢单): 特征列 (L.feat_codes) + (with_labels) 全部标签列 (+ with_costs 冲击成本列) + ts_valid + cs_valid 一次 load_day_columns,
-// 门控后散进平面. 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). done 每天 +1
+// 门控后散进平面; with_index 再加读 close 列, 顺带出 L.index (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘).
+// 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). done 每天 +1
 bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, factor::exec::ForkJoin &ex,
-                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels = true, bool with_costs = false);
+                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels = true, bool with_costs = false, bool with_index = false);
 
 // 扣冲击的净标签: lv' = lv − cost_buy − sell_impact, sv' = sv − cost_sell − sell_impact (fp16 位进出), 有效 = 标签有效 ∧ 成本有效.
 // out 按 L.labels 一一对应 (已 resize 到 n 的平面原地覆盖, 稳态零分配)

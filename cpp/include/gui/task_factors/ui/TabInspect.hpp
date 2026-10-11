@@ -15,13 +15,14 @@
 //        (G1 下 … G20 上), x 范围 = y 范围 (同尺);
 //        柱色按取值 (最负 = G1 色 … 最正 = G20 色), 与左图按组号的色对照, 非单调处一眼可见
 //   右上 标的 K 线 (因子具体怎么交易的; 对仗 OrderFlow 的图 2): 上一条标的轴 + 下面选中标的的分钟 K 线.
-//        R(t) = r16(x) / kRankMax ∈ [0,1] (CS = 截面秩, TS = 自身分位; 按 HoldStat::sign 镜像, 与组号同向: 1 = G20 侧), 色 = lerp(G1 蓝 → G20 橙)
+//        R(t) = r16(x) / kRankMax ∈ [0,1] (CS = 截面秩, TS = 自身分位; 与组号同向: 1 = G20 侧), 色 = lerp(G1 蓝 → G20 橙)
 //        标的轴: 光标日池内 (cs_valid ∧ 当日有成交) 标的的日内均 R 降序 (左 = G20 侧), 一标的一格, 格色 = R 组色; 光标 (拖 / 双击 / ◂ ▸ 步进)
 //        选标的, 选中沿全局 id 粘住 (拖光标只换序不换标的, K 线不重载); 未选 / 换 universe 子轴 → 光标日 R 最高者 (无池内标的 → 全区间有效刻
 //        最多者), 结果一到就有 K 线
 //        K 线: 选中标的沿全部交易日的分钟 OHLC (KlineService 逐日流式, 画已发布前缀, 不等全载), 每根色 = 该刻 R(t) 组色; 池外段 (出 CS 池 /
 //        当日无成交, 秩不入评估, valid% 也不计) 用不看池的秩 (rx_all) 淡色显示, 因子无输出 = 暗灰; 阴线实心 / 阳线空心.
 //        x 窗口换标的不动, y 按窗口内蜡烛重贴; 光标 = 与左上图同一个 cursor_day (同色, 锚在日边界), 光标日染淡色竖带
+//        叠加 universe 等权指数线 (InspectResult::uni_index): 每帧按视野内个股首根蜡烛重锚 (该刻指数 = 该根 close), zoom / 平移跟着对齐; 不参与 y 贴合
 //   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
 //   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × 全部冲击档 (毛 | <amt>w = 扣建仓冲击 lb_cost_{buy,sell}_<amt>w + 平仓固定冲击 Config::sell_impact) 一次画全, 图例可点切,
@@ -48,6 +49,7 @@ namespace GUI::Factors {
 struct InspectDerived {
   int days = 0;
   std::vector<std::string> dates;                    // [days] 轴刻度用
+  std::vector<float> uni_index;                      // [T] = InspectResult::uni_index (右上 K 线叠加)
   std::vector<float> x_day;                          // [days + 1] 0..days (累计线横轴, 日末)
   std::vector<float> grp_cum[factor::stat::kGroups]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)
   std::vector<float> ls_cum;                         // [days + 1], 同上 (顶底多空)
@@ -73,18 +75,16 @@ struct InspectUIState {
   InspectDerived der;
   // ---- 右上 标的 K 线 ----
   uint32_t asset_gid = ~0u; // 选中标的 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.uni.sub_of 找回, 不在子轴内 → 重选
-  // 标的轴派生 (键: epoch / 光标日 / 镜像): 光标日各标的日内均 R 降序
+  // 标的轴派生 (键: epoch / 光标日): 光标日各标的日内均 R 降序
   uint64_t ax_epoch = ~0ull;
   int ax_day = -1;
-  bool ax_flip = false;
   std::vector<int> ax_order;    // [n] 子轴下标 (R 降序, 左 = G20 侧)
   std::vector<uint32_t> ax_gid; // [n] 对应全局 id
-  std::vector<float> ax_r;      // [n] R ∈ [0,1] (镜像后)
+  std::vector<float> ax_r;      // [n] R ∈ [0,1]
   int ax_n_applied = -1;        // 标的轴 x 域已应用的 n (变了才复位视野)
-  // 选中标的的 R(t) 列派生 (键: epoch / 子轴下标 / 镜像)
+  // 选中标的的 R(t) 列派生 (键: epoch / 子轴下标)
   uint64_t col_epoch = ~0ull;
   int col_sub = -1;
-  bool col_flip = false;
   std::vector<float> col_r;     // [T] 池内秩 R ∈ [0,1], < 0 = 池外 / 无值
   std::vector<float> col_r_all; // [T] 不看池的秩 (池外段靠它淡色显示), < 0 = 因子无输出
   // K 线请求期望态 (结果 key + 子轴下标 变 → gen++ → KlineService::Request; 与 KlineStream::pub 配对)
