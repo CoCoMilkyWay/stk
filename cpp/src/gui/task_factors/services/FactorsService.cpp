@@ -28,6 +28,13 @@
 
 namespace GUI::Factors {
 
+std::string now_string() {
+  const std::time_t t = std::time(nullptr);
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
+  return buf;
+}
+
 namespace {
 
 using json = nlohmann::json;
@@ -36,13 +43,6 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
 constexpr size_t kLevel = analysis::kLevel; // 因子只在 L1 算
-
-std::string now_string() {
-  const std::time_t t = std::time(nullptr);
-  char buf[32];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
-  return buf;
-}
 
 // 算子节点前序 → params 数组 (只落该算子声明的字段)
 ojson params_json(const factor::expr::Expr &e) {
@@ -143,6 +143,28 @@ void load_stat(const json &j, FactorRow &r) {
     r.hold[k] = t.hold[k];
   r.has_stat = true;
   r.stat_from_file = true;
+}
+
+// 文件 search → 行 (WriteFactorParams 的逆); 任一处不合 → 忽略 (派生数据, 下次 Optimize 覆盖). expr 是否仍匹配由 SearchMark::valid 看
+void load_search(const json &j, SearchMark &m) {
+  if (!j.is_object())
+    return;
+  SearchMark t;
+  const auto str = [&](const char *key, std::string &dst) {
+    const auto it = j.find(key);
+    if (it == j.end() || !it->is_string())
+      return false;
+    dst = it->get<std::string>();
+    return true;
+  };
+  if (!str("expr", t.expr) || !str("time", t.time))
+    return;
+  if (!json_int(j, "hold", t.hold) || !json_int(j, "amt", t.amt) || t.hold <= 0)
+    return;
+  if (!json_num(j, "sell_impact", t.sell_impact) || !json_num(j, "ls_net", t.ls_net) || !json_num(j, "util", t.util) || !json_num(j, "ric", t.ric) ||
+      !json_num(j, "score", t.score) || !json_num(j, "base_score", t.base_score))
+    return;
+  m = t;
 }
 
 ojson stat_json(const FactorRow &r) {
@@ -413,7 +435,8 @@ void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
   std::filesystem::remove(path);
 }
 
-void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e) {
+void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e, const SearchMark &mark) {
+  assert(mark.expr == e.canon && mark.hold > 0);
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
   std::ifstream f(path);
   assert(f.is_open() && "搜索落盘: 因子文件不存在");
@@ -421,6 +444,19 @@ void WriteFactorParams(const std::string &factor_dir, std::string_view file, con
   f.close();
   assert(j.is_object() && "搜索落盘: 因子文件扫描时已解析过, 不该变");
   j["params"] = params_json(e);
+  ojson s;
+  s["expr"] = mark.expr;
+  s["hold"] = mark.hold; // 持有期键 (同 stat.holds[].hold); hold_name 只为人读
+  s["hold_name"] = factor::stat::hold_name(mark.hold);
+  s["amt"] = mark.amt;
+  s["sell_impact"] = mark.sell_impact;
+  s["ls_net"] = sig4(mark.ls_net);
+  s["util"] = sig4(mark.util);
+  s["ric"] = sig4(mark.ric);
+  s["score"] = sig4(mark.score);
+  s["base_score"] = std::isfinite(mark.base_score) ? sig4(mark.base_score) : 0.0;
+  s["time"] = mark.time;
+  j["search"] = s;
   j.erase("stat");
   write_json(path, j);
 }
@@ -580,6 +616,8 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       seen.emplace(e.canon, r.file);
     if (const auto sit = j.find("stat"); sit != j.end())
       load_stat(*sit, r);
+    if (const auto sit = j.find("search"); sit != j.end())
+      load_search(*sit, r.search);
     out.push_back(r);
   }
   if (!req.evaluate) // 只扫描: BROKEN 行也算"处理完"

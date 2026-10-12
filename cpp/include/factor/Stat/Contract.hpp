@@ -67,6 +67,7 @@
 //     + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc 沿 t 池化 → 每期每成员均摊成本 (long_cost / short_cost) =
 //     (Σ新进者冲击 + 新进者数 · sell_impact) / 组内样本数. 只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关).
 //     净多空 net_ls_period = ls_mean − long_cost − short_cost; 年化 net_ls = × periods_per_year(h) (跨 h 比单位资金年收益).
+//     资金利用率 util = 平均每行一腿成员数 / 满仓只数 (CostAcc::rows 计行): 净多空是"每期每成员"口径, 乘 util 才是固定资金上的钱.
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
@@ -264,10 +265,22 @@ struct CostAcc {
   double buy_hi = 0.0, sell_lo = 0.0; // 顶组新进者 Σ买入冲击 / 底组新进者 Σ卖出冲击
   long long n_hi = 0, n_lo = 0;       // 组内样本数 (rx 有效 ∧ 成本有效; 分母)
   long long e_hi = 0, e_lo = 0;       // 其中新进者数 (t−h 时不在该组)
+  long long rows = 0;                 // 攒过的行数 (有 lag 的行各计一次; 资金利用率 util 的分母)
   FACTOR_HD void merge(const CostAcc &o) {
     buy_hi += o.buy_hi, sell_lo += o.sell_lo;
     n_hi += o.n_hi, n_lo += o.n_lo;
     e_hi += o.e_hi, e_lo += o.e_lo;
+    rows += o.rows;
+  }
+  // 资金利用率 ∈ [0,1]: 平均每行一腿的可交易成员数 / 满仓一腿只数 n_full, 封顶 1. 目标函数量的是固定资金上的钱, 闲置资金记 0:
+  //   稀疏触发 (TS 门控 / 极端阈值) 的候选 util → 0 自然出局, 不需要样本数 / 显著性硬阈值. n_full 由调用方按池宽定 (Search: 池内平均有效票数 / kGroups)
+  double util(double n_full) const {
+    assert(n_full > 0.0);
+    if (rows <= 0)
+      return 0.0;
+    const double per_leg = static_cast<double>(n_hi + n_lo) / (2.0 * static_cast<double>(rows));
+    const double u = per_leg / n_full;
+    return u < 1.0 ? u : 1.0;
   }
   // 每期每成员均摊成本 (一腿): (Σ建仓冲击 + 新进者数 · 平仓冲击) / 组内样本数; 组无样本 → 0
   double long_cost(double sell_impact) const { return n_hi > 0 ? (buy_hi + e_hi * sell_impact) / static_cast<double>(n_hi) : 0.0; }

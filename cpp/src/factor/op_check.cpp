@@ -236,10 +236,10 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
           ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
         if (rep.verbose)
           for (int c = 0; c < sk::kCands; ++c) {
-            const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{0.0005, 1.0});
+            const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{.sell_impact = 0.0005});
             const factor::search::CostAcc &ca = full[c].cost[s.best >= 0 ? s.best : 0];
-            std::printf("       Search.%s cpu c%d %-8s best h=%-4d ls_net/yr %+.4f rIC %+.4f score %+.3g  turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)\n",
-                        fname, c, kProfName[pi], s.best >= 0 ? hd.h[s.best] : -1, s.ls_net, s.ric, s.score, ca.turn_hi(), ca.turn_lo(), ca.buy_mean(),
+            std::printf("       Search.%s cpu c%d %-8s best h=%-4d ls_net/yr %+.4f util %.2f rIC %+.4f score %+.3g  turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)\n",
+                        fname, c, kProfName[pi], s.best >= 0 ? hd.h[s.best] : -1, s.ls_net, s.util, s.ric, s.score, ca.turn_hi(), ca.turn_lo(), ca.buy_mean(),
                         ca.e_hi, ca.sell_mean(), ca.e_lo);
           }
       }

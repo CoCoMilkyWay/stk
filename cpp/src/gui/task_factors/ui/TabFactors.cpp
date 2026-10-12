@@ -435,7 +435,7 @@ double metric_key(const HS *h, const Metric &m) { return h ? m.get(*h) : -1e300;
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn frame status time valid | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
+//   edit type name_en name_cn frame status time valid h* | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
@@ -445,6 +445,7 @@ enum Col : int { Edit,
                  Status,
                  Time,
                  Valid,
+                 Opt,
                  Expr,
                  Ops,
                  Feats,
@@ -497,6 +498,12 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• CPU 全核 wall / GPU 纯 kernel",
      true},
     {Valid, "valid%", "根平面有效格占比", true},
+    {Opt, "h*",
+     "Optimize 搜出的最优持有期 (文件 search 键; 窗 30m ~ T+1 内 argmax 年化净 LS · 资金利用率)\n"
+     "• 灰: 搜索时的规范串 ≠ 当前 (之后手改过参数 / 表达式), 结论失效\n"
+     "• 悬停行看 search 详情 (金额档 / 净年化 / util / rIC / score / 时间)\n"
+     "• 空: 从未 Optimize 成功回写",
+     true},
     {Expr, "expr",
      "规范串 = 解析后重新序列化\n"
      "• 算子 PascalCase, 参数 d / k / k2 显式, 含 params 覆盖后的当前值\n"
@@ -519,11 +526,11 @@ constexpr bool fixed_cols_ordered() {
 static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Col 枚举一致");
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
-// 显示顺序: Stat 列夹在 Valid 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
+// 显示顺序: Stat 列夹在 h* 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
 struct ColRef {
   int fixed = -1, stat = -1;
 };
-constexpr int kStatInsertAfter = Valid;
+constexpr int kStatInsertAfter = Opt;
 constexpr int kNumCols = kNumFixed + kNumStatCols;
 constexpr std::array<ColRef, kNumCols> col_layout() {
   std::array<ColRef, kNumCols> a{};
@@ -762,6 +769,14 @@ void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool edi
     return num(ok, "%d", r.n_slots);
   case Valid:
     return num(r.has_stat, "%.1f", r.valid_pct);
+  case Opt:
+    if (r.search.hold <= 0)
+      ImGui::TextDisabled("-");
+    else if (r.search.valid(r.expr))
+      ImGui::TextUnformatted(factor::stat::hold_name(r.search.hold).c_str());
+    else
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "%s?", factor::stat::hold_name(r.search.hold).c_str());
+    return;
   case Note:
     return text(r.note);
   case Edit:
@@ -789,6 +804,13 @@ void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx, bool viewing, 
     ImGui::BulletText("原串    %s", r.expr_raw.c_str());
   if (!r.dup_of.empty())
     ImGui::BulletText("dup     与 %s 同一规范串", r.dup_of.c_str());
+  if (r.search.hold > 0) {
+    const SearchMark &m = r.search;
+    ImGui::BulletText("search  h* %s @ %dw  净年化 %+.1f%%  util %.2f  rIC %.4f  score %.4g (基线 %.4g)  %s", factor::stat::hold_name(m.hold).c_str(), m.amt,
+                      100.0 * m.ls_net, m.util, m.ric, m.score, m.base_score, m.time.c_str());
+    if (!m.valid(r.expr))
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "        失效: 搜索时规范串 %s", m.expr.c_str());
+  }
   if (!r.error.empty()) {
     ImGui::Separator();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN: %s", r.error.c_str());
@@ -938,7 +960,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
 
-  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档真实换手成本下的 年化净 LS · rIC (只看这两个); 最优回写 params 后 TaskFactors 自动 Run ----
+  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档真实换手成本下的 年化净 LS · 资金利用率 · rIC, h* 限 30m ~ T+1
+  //      (Search/Contract.hpp【目标】); 严格好于基线才回写 params + search 块, 随后 TaskFactors 自动 Run ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
@@ -963,10 +986,11 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     if (!can_opt)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档真实换手成本下的 年化净 LS × rIC (持有期自选最优); 只看这两个\n"
+      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档真实换手成本下的 年化净 LS × 资金利用率 util × rIC, 持有期在 30m ~ T+1 内自选 (两边的期限只作延伸)\n"
+                     "• util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1: 净 LS 是每成员口径, 乘 util 才是固定资金上的钱; 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
                      "• 粗网格 (步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 分支 (互不相邻的 top-%d) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
                      "• 数据按天分块流式过, 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
-                     "• 最优优于当前参数 → 回写该文件 params (stat 删掉) 并自动 Run 重算; 否则文件不动"
+                     "• 最优 score 严格高于基线 → 回写该文件 params + search 块 (h* 等, 看板 h* 列; stat 删掉) 并自动 Run 重算; 否则文件不动"
                    : "先在表格里点一行高光 (与 Inspect 同一对象)",
           view_row ? view_row->file.c_str() : "", factor::search::grid::kLayerMax, factor::search::grid::kBranches,
           100.0 * factor::search::grid::kMinGain);
@@ -992,7 +1016,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
       tip("建仓冲击的下单金额档 (万): 净 LS = 毛 LS − 顶 / 底组新进者 (t−h 不在该组) 均摊的 建仓冲击 (买入按 Config::max_impact 封顶) + 平仓 sell_impact (%.4f); "
-          "留仓成员不付. 年化后跨持有期比",
+          "留仓成员不付. 年化后乘 util 跨持有期比",
           ctx.sell_impact);
     ImGui::SameLine();
     ImGui::Text("Status:");
@@ -1030,12 +1054,13 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       ImGui::TextDisabled("base %s  score %.4g", s_sr.expr0.c_str(), s_sr.base_score);
       if (!s_sr.best_expr.empty() && std::isfinite(s_sr.base_score) && s_sr.base_score > 0.0)
         ImGui::TextDisabled("best gain %+.1f%%", 100.0 * (s_sr.cands.front().score / s_sr.base_score - 1.0));
-      ImGui::TextDisabled("%d chunk x %d days, batch %d", s_sr.n_chunk, s_sr.chunk_days, s_sr.batch);
-      if (ImGui::BeginTable("opt_cands", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+      ImGui::TextDisabled("%d chunk x %d days, batch %d, n_full %.1f", s_sr.n_chunk, s_sr.chunk_days, s_sr.batch, s_sr.n_full);
+      if (ImGui::BeginTable("opt_cands", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("expr");
         ImGui::TableSetupColumn("pass");
         ImGui::TableSetupColumn("h*");
         ImGui::TableSetupColumn("LS net/yr");
+        ImGui::TableSetupColumn("util");
         ImGui::TableSetupColumn("rIC");
         ImGui::TableSetupColumn("score");
         ImGui::TableHeadersRow();
@@ -1056,6 +1081,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             ImGui::Text("%+.1f%%", 100.0 * c.ls_net);
           else
             ImGui::TextDisabled("-");
+          ImGui::TableNextColumn();
+          ImGui::Text("%.2f", c.util);
           ImGui::TableNextColumn();
           ImGui::Text("%.4f", c.ric);
           ImGui::TableNextColumn();
@@ -1349,6 +1376,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           return r.n_slots;
         case Valid:
           return r.has_stat ? r.valid_pct : -1.0;
+        case Opt: // 按持有分钟 (失效的排在有效的后面: 同分钟减半权重不好读, 直接当无值)
+          return r.search.valid(r.expr) ? static_cast<double>(factor::stat::hold_minutes(r.search.hold)) : -1.0;
         default:
           return 0.0;
         }

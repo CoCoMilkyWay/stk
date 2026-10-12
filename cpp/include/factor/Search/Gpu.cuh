@@ -74,7 +74,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   double asg = 0.0;
   long long asc = 0;
   double abuy = 0.0, asell = 0.0;
-  long long anh = 0, anl = 0, aeh = 0, ael = 0;
+  long long anh = 0, anl = 0, aeh = 0, ael = 0, arows = 0;
 
   for (int t = t_beg; t < t_end; ++t) {
     const size_t base = static_cast<size_t>(t) * A;
@@ -123,6 +123,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
       if (lane == 0) {
         abuy += static_cast<double>(cv[0]), asell += static_cast<double>(cv[1]);
         anh += cn[0], anl += cn[1], aeh += cn[2], ael += cn[3];
+        ++arows;
       }
     }
   }
@@ -136,7 +137,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   if (lane == 0) {
     P.acc.ric = aric, P.acc.rac = arac, P.acc.nlpos = anlpos;
     P.acc.sls = asls, P.acc.sls2 = asls2, P.acc.smk = asmk, P.acc.smk2 = asmk2, P.acc.slm = aslm;
-    P.cost.buy_hi = abuy, P.cost.sell_lo = asell, P.cost.n_hi = anh, P.cost.n_lo = anl, P.cost.e_hi = aeh, P.cost.e_lo = ael;
+    P.cost.buy_hi = abuy, P.cost.sell_lo = asell, P.cost.n_hi = anh, P.cost.n_lo = anl, P.cost.e_hi = aeh, P.cost.e_lo = ael, P.cost.rows = arows;
   }
 }
 

@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-#include <ctime>
 #include <thread>
 #include <vector>
 
@@ -22,13 +21,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
-
-std::string now_string() {
-  const std::time_t t = std::time(nullptr);
-  char buf[32];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
-  return buf;
-}
 
 } // namespace
 

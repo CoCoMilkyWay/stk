@@ -278,8 +278,8 @@ void run_search(RoundCtx &R, OperatorRow &row) {
     for (int c = 0; c < sk::kCands; ++c) {
       const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{});
       const factor::search::CostAcc &ca = full[c].cost[s.best >= 0 ? s.best : 0];
-      detail_line(scores, "  c%d  best h=%-5s ls_net/yr %+.4f rIC %+.4f score %+.3g | turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)", c,
-                  s.best >= 0 ? factor::stat::hold_name(hd.h[s.best]).c_str() : "-", s.ls_net, s.ric, s.score, ca.turn_hi(), ca.turn_lo(),
+      detail_line(scores, "  c%d  best h=%-5s ls_net/yr %+.4f util %.2f rIC %+.4f score %+.3g | turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)", c,
+                  s.best >= 0 ? factor::stat::hold_name(hd.h[s.best]).c_str() : "-", s.ls_net, s.util, s.ric, s.score, ca.turn_hi(), ca.turn_lo(),
                   ca.buy_mean(), ca.e_hi, ca.sell_mean(), ca.e_lo);
     }
     if (!has_gpu)

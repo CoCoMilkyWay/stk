@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <string>
 #include <thread>
 
 namespace GUI::Factors {
@@ -177,7 +178,8 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     hd.h[hi] = feats_.labels[static_cast<size_t>(hi)].hold;
   fs::assert_holds(hd);
   assert(factor::search::max_lag(hd) <= kCarryDays * factor::kSegLen && "carry 不够 rAC 的 lag");
-  const factor::search::Objective obj{req.sell_impact, 1.0};
+  factor::search::Objective obj; // n_full 装了块 0 后按池宽填 (见下【尺度】前); hold 窗 / ric_pow 取契约默认
+  obj.sell_impact = req.sell_impact;
 
   SearchResult res;
   res.file = req.file;
@@ -229,6 +231,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       c.best_hi = en.sc.best;
       c.score = en.sc.score;
       c.ls_net = en.sc.ls_net;
+      c.util = en.sc.util;
       c.ric = en.sc.ric;
       res.cands.push_back(std::move(c));
     }
@@ -521,6 +524,17 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   // ---- 尺度: 先装块 0 (趟 0 反正要), 阈值槽 (ANY / GE0) 的坐标单位 = 基线 DAG 里该节点输入的池内有效格标准差 (CPU 走到该节点即止) ----
   if (handle(load_chunk(0, chunks[0]), ret))
     return ret;
+  // ---- 满仓只数 n_full (目标的 util 分母; 契约【目标】): 块 0 池内 (cs_valid) 平均每行有效票数 / kGroups —— 与因子无关, 池宽决定 ----
+  {
+    const Loaded &L = chunks[0].L;
+    const uint8_t *g = L.cs.m.data();
+    long long on = 0;
+    for (size_t k = 0, n = L.n(); k < n; ++k)
+      on += g[k] != 0;
+    obj.n_full = static_cast<double>(on) / static_cast<double>(L.T) / fs::kGroups;
+    assert(obj.n_full > 0.0 && "块 0 池内无有效票");
+    res.n_full = obj.n_full;
+  }
   {
     std::vector<size_t> need; // 要尺度的槽
     std::vector<int> want;    // 对应输入节点在 d0 的下标
@@ -672,18 +686,31 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       break;
   }
 
-  // ---- 终: 全部候选按自选 h* 的 score 取最优 ----
+  // ---- 终: 全部候选按自选 h* 的 score 取最优; 严格好于基线才落盘 (基线在粗网格里评过, 它的 score 就是门槛; 基线 −∞ 时任一有限分即过) ----
   int best_id = -1;
   for (size_t i = 0; i < ents.size(); ++i)
     if (ents[i].pass >= 0 && std::isfinite(ents[i].sc.score) && (best_id < 0 || ents[i].sc.score > ents[static_cast<size_t>(best_id)].sc.score))
       best_id = static_cast<int>(i);
   assert(best_id >= 0); // 分支非空 ⇒ 至少一个有限分
   const Entry &best = ents[static_cast<size_t>(best_id)];
-  if (best.e.canon == e0.canon)
-    return abort_with("当前参数已是最优 (基线 score 最高), 文件不动");
-  WriteFactorParams(req.factor_dir, req.file, best.e);
+  const Entry &base = ents[static_cast<size_t>(seen.at(e0.canon))];
+  assert(base.pass >= 0 && "基线在粗网格 (趟 0) 必评过");
+  if (!(best.sc.score > base.sc.score))
+    return abort_with("当前参数已是最优 (无候选 score 严格高于基线), 文件不动");
+  SearchMark mark;
+  mark.expr = best.e.canon;
+  mark.hold = hd.h[best.sc.best];
+  mark.amt = feats_.costs[static_cast<size_t>(req.cost_idx)].amt;
+  mark.sell_impact = req.sell_impact;
+  mark.ls_net = best.sc.ls_net;
+  mark.util = best.sc.util;
+  mark.ric = best.sc.ric;
+  mark.score = best.sc.score;
+  mark.base_score = base.sc.score;
+  mark.time = now_string();
+  WriteFactorParams(req.factor_dir, req.file, best.e, mark);
   res.wrote = true;
-  res.message = "params 已写入, 自动 Run 重算 stat";
+  res.message = "params 已写入 (h* = " + fs::hold_name(mark.hold) + "), 自动 Run 重算 stat";
   publish();
   return true;
 }

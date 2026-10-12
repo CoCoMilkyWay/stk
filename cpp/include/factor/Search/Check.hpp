@@ -6,7 +6,7 @@
 //   口径: Search 的语义 = Stat (契约 Search/Contract.hpp), 所以参考不是另一份 Search 实现, 而是 **Stat CPU** 对同一张平面算出的 HoldStat
 //   (Stat 自身已 cpu ↔ gpu 对拍过) + 朴素顺序算的每持有期换手成本 (整张量 rank 行, t ≥ h 逐行 cost_row; 逐格规则是契约 cost_cell 唯一一份,
 //   验的是块语义 / 并行 / GPU 归约). Search CPU / Search GPU 各自与它比
-//   (二级 compare_stat 容差 + 成本: 四个计数逐位, 两个冲击均值容差), 再比 分块 (两块带 carry, merge) ≡ 整块.
+//   (二级 compare_stat 容差 + 成本: 五个计数 (含行数) 逐位, 两个冲击均值容差), 再比 分块 (两块带 carry, merge) ≡ 整块.
 //   造数沿用 Stat/Check.hpp 的 make (x / g / 标签), 候选 = 从 x 派生的 kCands 张平面 (CS {x, −x, x²}; TS {x, 1−x, x²}: 都在 [0,1]),
 //   成本 = POS 造数 × 1e-3 (买) / × 1.5e-3 (卖) 经 fp16, 掩码取造数的空洞.
 //   本头只依赖 Contract / Check / Exec / Stat/{Contract,Check,Cpu} / Search/{Contract,Cpu}; 消费者 TU 编进 -fno-fast-math.
@@ -117,14 +117,14 @@ inline void to_ref(const Result &res, const factor::stat::Holds &hd, Ref &r) {
   }
 }
 
-// ---- 比较: 二级逐字段 (compare_stat) + 每持有期成本 (四个计数逐位, 两个新进者冲击均值容差; 位置 hd.n + i) ----
+// ---- 比较: 二级逐字段 (compare_stat) + 每持有期成本 (五个计数 (含行数) 逐位, 两个新进者冲击均值容差; 位置 hd.n + i) ----
 inline Diff compare(const Ref &ref, const Result &got, const factor::stat::Holds &hd, Tol tol) {
   Ref g;
   to_ref(got, hd, g);
   Diff d = factor::stat::check::compare_stat(ref.stat.data(), g.stat.data(), hd.n, tol);
   for (int i = 0; i < hd.n; ++i) {
     const CostAcc &a = ref.cost[static_cast<size_t>(i)], &b = g.cost[static_cast<size_t>(i)];
-    if (a.n_hi != b.n_hi || a.n_lo != b.n_lo || a.e_hi != b.e_hi || a.e_lo != b.e_lo) {
+    if (a.n_hi != b.n_hi || a.n_lo != b.n_lo || a.e_hi != b.e_hi || a.e_lo != b.e_lo || a.rows != b.rows) {
       if (d.mask_bad++ == 0)
         d.worst_at = hd.n + i;
       return d;

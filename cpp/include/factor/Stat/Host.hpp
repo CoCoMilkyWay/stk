@@ -135,6 +135,7 @@ inline void rac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
 
 // 换手成本 (契约【换手成本】): rx = 本行 r16, rlag = t−h 行 r16 (必有), c 已偏到行首 → 攒进 acc (顶 / 底组计数, 新进者累建仓冲击)
 inline void cost_row(const uint16_t *rx, const uint16_t *rlag, const Cost &c, int A, CostAcc &acc) {
+  ++acc.rows;
   for (int a = 0; a < A; ++a) {
     bool ent = false;
     const int leg = factor::stat::cost_cell(rx[a], rlag[a], c.m[a] != 0, ent);

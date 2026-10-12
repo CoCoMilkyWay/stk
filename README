@@ -121,7 +121,7 @@ stk/
 │   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫因子文件 → 合成共享 DAG 评估 → 只回写 params / stat (expr 不动, 破碎标 BROKEN 不删)
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (三服务共用): 特征 / 门控 / 标签 / 成本 宿主平面
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件; 期限结构净线的换手成本与 Search 同一份 (Stat cost_row)
-│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 粗网格 (含基线) → 多支逐层细化; 目标 = 年化净 LS · IC (含真实换手成本)
+│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 粗网格 (含基线) → 多支逐层细化; 目标 = 年化净 LS · 资金利用率 · rIC, h* 限 30m~T+1; 严格好于基线才回写 params + search 块
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 构建器 + 因子表
@@ -166,7 +166,7 @@ stk/
 │   │   │       ├── Cpu.hpp                                 # 🧬   CPU 后端: 行区间核 + 流程
 │   │   │       └── Gpu.cuh                                 # 🧬   GPU 后端: 一行一 block
 │   │   │   └── Search/                                     # 🧬 参数搜索评估 (建在 Stat 上): 一批同形候选直接攒累加器, 不落 Row
-│   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 + 目标 (年化净 LS · IC, 任一 ≤ 0 → −∞; 细化阶段不重选 h); 成本定义在 Stat 契约
+│   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 + 目标 (年化净 LS · util · rIC, 任一 ≤ 0 → −∞; util = 一腿均成员 / 满仓只数, 唯一活跃度项; h 窗 30m~T+1; 细化阶段不重选 h); 成本定义在 Stat 契约
 │   │   │       ├── Grid.hpp                                # 🧬   参数网格 (纯逻辑): 可搜槽 → 单调坐标 (阈值按输入 σ 定尺度) → 粗网格 / 细化 / 分支挑选
 │   │   │       ├── Cpu.hpp                                 # 🧬   CPU 后端: 复用 Stat 行核 (row_stat / cost_row), 只加块语义与累加
 │   │   │       ├── Gpu.cuh                                 # 🧬   GPU 后端: 一 warp 一候选

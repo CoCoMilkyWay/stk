@@ -81,6 +81,9 @@ struct FeatureTable {
 // lb_cost_<buy|sell>_<amt>w 建仓冲击成本
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta);
 
+// 本地时间 "YYYY-MM-DD HH:MM" (stat.time / search.time 落盘用)
+std::string now_string();
+
 // ---- 请求 (GUI 线程解析 config, worker 不碰) ----
 struct FactorsRequest {
   std::string factor_dir; // <config.factor_dir>/<universe>
@@ -102,6 +105,16 @@ struct StatScope {
   std::string universe, start_date, end_date, backend, time;
   int days = 0, T = 0, A = 0;
 };
+// 参数搜索的结论 (因子文件 search 键; SearchService 落盘时写, 扫描时读): 最优持有期 h* 与该点的目标分量 (Search/Contract.hpp【目标】).
+// expr = 搜出的规范串: 与行当前规范串不同 (之后手改过参数 / 表达式) → 结论失效, 看板灰显
+struct SearchMark {
+  std::string expr, time;
+  int hold = 0; // h* (持有期键, 窗 30m ~ T+1 内)
+  int amt = 0;  // 成本金额档 (万)
+  double sell_impact = 0.0;
+  double ls_net = 0.0, util = 0.0, ric = 0.0, score = 0.0, base_score = 0.0; // h* 处: 年化净多空 / 资金利用率 / rIC / score / 基线 score
+  bool valid(const std::string &row_expr) const { return hold > 0 && expr == row_expr; }
+};
 struct FactorRow {
   std::string file;    // 文件名 (不含目录) = 行的身份 (view_file / edit_file / dup_of 都用它)
   std::string name_en; // = 文件名主干 (去 .json)
@@ -122,6 +135,7 @@ struct FactorRow {
   float valid_pct = 0.f;
   int n_hold = 0;
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
+  SearchMark search;                                   // 文件 search 键 (hold = 0 即无)
   const factor::stat::HoldStat *find_hold(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)
@@ -200,8 +214,8 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
                              std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err);
 void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
-// 参数搜索落盘 (SearchService worker 调, 服务空闲时): params 换成 e 的 (expr 键不动, 规范串仍由 expr + params 还原), 旧 stat 删掉
-// (是别的参数算的; 调用方随后 Run 重算), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
-void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e);
+// 参数搜索落盘 (SearchService worker 调, 服务空闲时): params 换成 e 的 (expr 键不动, 规范串仍由 expr + params 还原), search 换成 mark,
+// 旧 stat 删掉 (是别的参数算的; 调用方随后 Run 重算), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
+void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e, const SearchMark &mark);
 
 } // namespace GUI::Factors
