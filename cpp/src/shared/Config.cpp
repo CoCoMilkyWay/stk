@@ -121,13 +121,26 @@ bool Config::LoadFromFile() {
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
   csv_market_order = j.value("csv_market_order", csv_market_order);
   network_sync = j.value("network_sync", network_sync);
-  commission = j.value("commission", commission);
-  stamp = j.value("stamp", stamp);
-  sell_impact = j.value("sell_impact", sell_impact);
-  max_impact = j.value("max_impact", max_impact);
-  assert(commission >= 0.0 && commission < 0.01 && stamp >= 0.0 && stamp < 0.01 && "税佣比率越界 (万 1 = 0.0001)");
-  assert(sell_impact >= 0.0 && sell_impact < 0.05 && "平仓冲击比率越界 (20bp = 0.0020)");
-  assert(max_impact > 0.0 && max_impact <= 0.2 && "买入冲击封顶越界 (1% = 0.01)");
+  // 数值配置: 越界则警告并保留旧值 (不读入越界值), 避免手动编辑文件导致 assert 退出
+  auto try_assign = [&](double &dst, double src, bool ok, const char *msg) {
+    if (ok) {
+      dst = src;
+    } else if (log_callback) {
+      log_callback(std::string("警告: ") + msg + ", 保留旧值");
+    }
+  };
+  double new_commission = j.value("commission", commission);
+  double new_stamp = j.value("stamp", stamp);
+  double new_sell_impact = j.value("sell_impact", sell_impact);
+  double new_max_impact = j.value("max_impact", max_impact);
+  try_assign(commission, new_commission,
+             new_commission >= 0.0 && new_commission < 0.01, "佣金比率越界 (万 1 = 0.0001)");
+  try_assign(stamp, new_stamp,
+             new_stamp >= 0.0 && new_stamp < 0.01, "印花税比率越界 (万 5 = 0.0005)");
+  try_assign(sell_impact, new_sell_impact,
+             new_sell_impact >= 0.0 && new_sell_impact < 0.05, "平仓冲击比率越界 (20bp = 0.0020)");
+  try_assign(max_impact, new_max_impact,
+             new_max_impact > 0.0 && new_max_impact <= 0.2, "买入冲击封顶越界 (1% = 0.01)");
 
   return true;
 }

@@ -24,6 +24,9 @@ static std::string GetCWD() {
 // Settings task - config management with auto-sync
 class SettingsTask {
 private:
+  // 数值配置上次合法值: 失焦校验越界时回退用 (避免越界值进 cfg/落盘)
+  double last_commission = 0, last_stamp = 0, last_sell_impact = 0, last_max_impact = 0;
+
   // Date picker state
   struct DatePickerState {
     int year = 2025;
@@ -40,7 +43,8 @@ private:
 
     // Input field with button
     ImGui::PushItemWidth(-100);
-    if (ImGui::InputText(label, date_buf, buf_size, ImGuiInputTextFlags_CharsDecimal)) {
+    ImGui::InputText(label, date_buf, buf_size, ImGuiInputTextFlags_CharsDecimal);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
       changed = true;
     }
     ImGui::PopItemWidth();
@@ -191,6 +195,10 @@ private:
     };
     data.config.Initialize();
     ts.initialized = true;
+    last_commission = data.config.commission;
+    last_stamp = data.config.stamp;
+    last_sell_impact = data.config.sell_impact;
+    last_max_impact = data.config.max_impact;
   }
 
   // 每帧维护 (无论选中): 状态标签 + 自动落盘 —— 切走 Settings 后 dirty 配置照样落盘
@@ -316,8 +324,16 @@ private:
           ImGui::SetTooltip("比率, 万 1 = 0.0001; 买卖各扣一次. 标签 (LabelReturn) 不含税佣, Inspect 图 1 事后扣");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        if (ImGui::InputDouble("##commission", &cfg.commission, 0.0, 0.0, "%.5f"))
-          changed = true;
+        ImGui::InputDouble("##commission", &cfg.commission, 0.0, 0.0, "%.5f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          if (cfg.commission >= 0.0 && cfg.commission < 0.01) {
+            last_commission = cfg.commission;
+            changed = true;
+          } else {
+            std::cout << "警告: 佣金比率越界 (万 1 = 0.0001), 保留旧值" << std::endl;
+            cfg.commission = last_commission;
+          }
+        }
 
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
@@ -327,8 +343,16 @@ private:
           ImGui::SetTooltip("比率, 万 5 = 0.0005; 只卖出单边. 不分日期, 统一按现行标准");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        if (ImGui::InputDouble("##stamp", &cfg.stamp, 0.0, 0.0, "%.5f"))
-          changed = true;
+        ImGui::InputDouble("##stamp", &cfg.stamp, 0.0, 0.0, "%.5f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          if (cfg.stamp >= 0.0 && cfg.stamp < 0.01) {
+            last_stamp = cfg.stamp;
+            changed = true;
+          } else {
+            std::cout << "警告: 印花税比率越界 (万 5 = 0.0005), 保留旧值" << std::endl;
+            cfg.stamp = last_stamp;
+          }
+        }
 
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
@@ -339,8 +363,16 @@ private:
                             "Inspect 选择扣冲击时平仓侧统一扣这一常数 (做多卖出 / 做空买回同用)");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        if (ImGui::InputDouble("##sell_impact", &cfg.sell_impact, 0.0, 0.0, "%.5f"))
-          changed = true;
+        ImGui::InputDouble("##sell_impact", &cfg.sell_impact, 0.0, 0.0, "%.5f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          if (cfg.sell_impact >= 0.0 && cfg.sell_impact < 0.05) {
+            last_sell_impact = cfg.sell_impact;
+            changed = true;
+          } else {
+            std::cout << "警告: 平仓冲击比率越界 (20bp = 0.0020), 保留旧值" << std::endl;
+            cfg.sell_impact = last_sell_impact;
+          }
+        }
 
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
@@ -351,8 +383,16 @@ private:
                             "会把期限结构净线整体砸穿 (过罚); 封顶后最多扣这么多, 可执行性另议. 卖出侧不封. Inspect / Optimize 下次计算生效");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        if (ImGui::InputDouble("##max_impact", &cfg.max_impact, 0.0, 0.0, "%.4f"))
-          changed = true;
+        ImGui::InputDouble("##max_impact", &cfg.max_impact, 0.0, 0.0, "%.4f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          if (cfg.max_impact > 0.0 && cfg.max_impact <= 0.2) {
+            last_max_impact = cfg.max_impact;
+            changed = true;
+          } else {
+            std::cout << "警告: 买入冲击封顶越界 (1% = 0.01), 保留旧值" << std::endl;
+            cfg.max_impact = last_max_impact;
+          }
+        }
 
         ImGui::EndTable();
       }
@@ -395,7 +435,8 @@ private:
           }
           ImGui::TableNextColumn();
           ImGui::SetNextItemWidth(-1);
-          if (ImGui::InputText(input_id, buffer, size)) {
+          ImGui::InputText(input_id, buffer, size);
+          if (ImGui::IsItemDeactivatedAfterEdit()) {
             target = buffer;
             changed = true;
           }
@@ -463,7 +504,8 @@ private:
           }
           ImGui::TableNextColumn();
           ImGui::SetNextItemWidth(-1);
-          if (ImGui::InputText(input_id, buffer, size)) {
+          ImGui::InputText(input_id, buffer, size);
+          if (ImGui::IsItemDeactivatedAfterEdit()) {
             target = buffer;
             changed = true;
           }
