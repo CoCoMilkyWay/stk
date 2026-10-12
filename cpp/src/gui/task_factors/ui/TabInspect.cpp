@@ -49,7 +49,8 @@ int date_formatter(double v, char *buf, int size, void *ud) {
 constexpr ImVec4 kColBottom(0.00f, 0.20f, 0.70f, 1.f), kColTop(0.85f, 0.15f, 0.10f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
 constexpr ImVec4 kColNeutral(0.50f, 0.50f, 0.52f, 1.f); // 中段
 constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);       // 光标 (左上图交易日 / 右上 K 线 / 标的轴), 对仗 OrderFlow 的锚
-constexpr ImVec4 kColIndex(1.00f, 0.85f, 0.10f, 0.85f); // 右上 K 线叠加的 universe 指数线
+constexpr ImVec4 kColIndex(1.00f, 0.85f, 0.10f, 0.85f); // 右上 K 线叠加的 universe 指数线 (视野首根重锚)
+constexpr ImVec4 kColRef(0.20f, 0.90f, 0.90f, 0.75f);   // 右上 K 线叠加的滚动重锚指数线
 ImVec4 lerp_color(float t) {                            // t ∈ [0, 1]: 0 = 深蓝 (G1 / 最负), 0.5 = 灰, 1 = 深红 (G20 / 最正)
   const float s = (t - 0.5f) * 2.f, w = 0.20f + 0.80f / (1.f + std::exp(50.f * (0.94f - std::abs(s))));
   const ImVec4 &c = s < 0.f ? kColBottom : kColTop;
@@ -463,12 +464,55 @@ int minute_formatter(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%s %02d:%02d", dates[static_cast<size_t>(d)].c_str() + 2, ct.hour, ct.minute);
 }
 
+// 滚动重锚指数线: line[t] = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))). P = 选中标的 close 前值填充到逐分钟格 (无成交分钟持平), I = universe
+// 等权指数 [T]. 基准取 L 分钟前的 EMA_L: 当前价不进基准 (近期偏移不被吸收), 基准本身平滑 (过去的高频波动不干扰当前); 指数偏移再 EMA_S 压指数自身
+// 的分钟噪声 (个股侧 EMA_L(P) 已平滑, 不再压). 线 = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移.
+// 跨日连续算 (EMA 不按日重置); pandas ewm(span, adjust=False) 口径: α = 2/(span+1), 首个样本起算. 只用已发布前缀 [0, pub_pts), 个股在
+// [首根有效蜡烛, pub_days·S) 有值; 线定义域 [t0, t1) = [首根 + L, pub_days·S) (基准要 L 分钟前有值). 全量重算 (T ≤ 几万, 微秒级)
+constexpr int kRefLag = factor::kSegLen; // L (分钟) = 1 交易日
+constexpr int kRefSmooth = 10;           // S (分钟)
+void derive_ref(const KlineStream &ks, size_t pub_days, size_t pub_pts, const std::vector<float> &uni, int &t0, int &t1, std::vector<float> &line) {
+  const size_t T = uni.size(), seg = static_cast<size_t>(factor::kSegLen), L = static_cast<size_t>(kRefLag);
+  assert(pub_days * seg <= T); // 只按 pub word 读前缀, 不碰 vector 元数据 (worker 在 push_back)
+  line.assign(T, 0.f);
+  t0 = t1 = 0;
+  if (pub_pts == 0)
+    return;
+  const size_t tf = static_cast<size_t>(ks.x[0]), te = pub_days * seg;
+  assert(tf < te);
+  if (tf + L >= te)
+    return; // 已发布前缀还不够 L 分钟
+  t0 = static_cast<int>(tf + L), t1 = static_cast<int>(te);
+  const double aL = 2.0 / (static_cast<double>(L) + 1), aS = 2.0 / (kRefSmooth + 1);
+  std::vector<double> ema_i(te), ema_p(te);
+  ema_i[0] = static_cast<double>(uni[0]);
+  for (size_t t = 1; t < te; ++t) {
+    assert(uni[t] > 0.f);
+    ema_i[t] = aL * uni[t] + (1.0 - aL) * ema_i[t - 1];
+  }
+  size_t k = 0;
+  double p = ks.close[0];
+  for (size_t t = tf; t < te; ++t) { // 个股 close 前值填充 + EMA_L
+    while (k < pub_pts && static_cast<size_t>(ks.x[k]) <= t)
+      p = ks.close[k++];
+    ema_p[t] = t == tf ? p : aL * p + (1.0 - aL) * ema_p[t - 1];
+  }
+  double sd = 0.0;
+  for (size_t t = L; t < te; ++t) { // 指数偏移从 t = L 起平滑 (不依赖个股), 线从 t0 起
+    const double dev = std::log(static_cast<double>(uni[t]) / ema_i[t - L]);
+    sd = t == L ? dev : aS * dev + (1.0 - aS) * sd;
+    if (t >= tf + L)
+      line[t] = static_cast<float>(ema_p[t - L] * std::exp(sd));
+  }
+}
+
 // K 线 (右上的下图): 选中标的沿全部交易日的分钟 OHLC, 画 KlineService 已发布前缀 (gen 配对; 换代在途照画空图, 轴不撤). 每根色 = 该刻 R(t)
 // 组色 (ui.col_r; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
 // 视野: x 域 = 日数 × kSegLen, 只在日数变时复位 (换标的不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长时按**当前 x 窗口内**的已发布蜡烛重定
 // (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 换标的后窗口里的新价位自然贴合, 之后不打扰.
 // 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × kSegLen): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
-// 染淡色竖带. 叠加 universe 指数 uni [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚, 不参与 fit. 悬停报最近一根的时刻 / OHLC / R / 指数
+// 染淡色竖带. 叠加 universe 指数 uni [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚, 不参与 fit; 再叠加滚动重锚指数线 (derive_ref, 键变才重算,
+// 不参与 fit). 悬停报最近一根的时刻 / OHLC / R / 两条指数线 / 个股相对滚动重锚线的偏移
 void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std::string> &dates, const std::vector<float> &uni, int &cursor_day,
                 const char *title, const ImVec2 &size) {
   uint32_t pub_gen;
@@ -566,8 +610,22 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
         return ImPlotPoint(static_cast<double>(t), r.v[t] * r.k);
       };
       ImPlot::SetNextLineStyle(kColIndex, 1.5f);
+      ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认隐藏 (带全区间历史), 点图例显; 重锚系数 uk 照算 (悬停仍报)
       ImPlot::PlotLineG("universe 指数", rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
     }
+  }
+  // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (uni 已换)
+  if (ready && (ui.ref_gen != ui.kline_gen || ui.ref_pts != pub_pts || ui.ref_epoch != ui.derived_epoch)) {
+    ui.ref_gen = ui.kline_gen, ui.ref_pts = pub_pts, ui.ref_epoch = ui.derived_epoch;
+    derive_ref(ks, pub_days, pub_pts, uni, ui.ref_t0, ui.ref_t1, ui.ref_line);
+  }
+  const bool ref_ok = ready && ui.ref_gen == ui.kline_gen && ui.ref_t1 > ui.ref_t0;
+  if (ref_ok) {
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const int ta = std::clamp(static_cast<int>(std::floor(lim.X.Min)), ui.ref_t0, ui.ref_t1);
+    const int tb = std::clamp(static_cast<int>(std::ceil(lim.X.Max)) + 1, ta, ui.ref_t1);
+    ImPlot::SetNextLineStyle(kColRef, 1.5f);
+    ImPlot::PlotLine("指数 滚动重锚 (1d)", ui.ref_line.data() + ta, tb - ta, 1.0, static_cast<double>(ta), ImPlotItemFlags_NoFit);
   }
   { // 共享光标 (与左上图同一个 cursor_day, 同色同交互): 锚在日边界, 拖动吸附整日, 双击落点; x 轴标光标日期
     double cx = static_cast<double>(cursor_day) * S;
@@ -585,10 +643,15 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
         --i;
       const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
       const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f, ra = t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f;
-      char when[32], ux[64] = "";
+      char when[32], ux[160] = "";
       minute_formatter(xs[i], when, sizeof(when), const_cast<std::vector<std::string> *>(&dates));
+      int ul = 0;
       if (uk > 0.0)
-        std::snprintf(ux, sizeof(ux), "\nuniverse 指数 %.2f (按视野首根重锚)", uni[t] * uk);
+        ul += std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\nuniverse 指数 %.2f (按视野首根重锚)", uni[t] * uk);
+      if (ref_ok && static_cast<int>(t) >= ui.ref_t0 && static_cast<int>(t) < ui.ref_t1) {
+        const double ref = ui.ref_line[t];
+        std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n指数 滚动重锚 %.2f  个股相对偏移 %+.2f%%", ref, (ks.close[u] / ref - 1.0) * 100.0);
+      }
       if (rp >= 0.f)
         ImGui::SetTooltip("%s  O %.2f H %.2f L %.2f C %.2f\nR %.3f (G%d)%s", when, ks.open[u], ks.high[u], ks.low[u], ks.close[u], rp, r_group(rp) + 1, ux);
       else if (ra >= 0.f)
@@ -658,7 +721,7 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
 // 净档 = 毛二级 − 该持有期两腿均摊换手成本 (Stat 契约【换手成本】CostAcc::long_cost / short_cost, 含 sell_impact; LS = net_ls_period, 与 Search
 //   打分同一式): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (档, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是 t ≥ h 的 rx ∧ 成本有效格, 两者不完全重合 —— entry 成本与标签无关
-// hs[n_hold] 毛二级; costs[n_cost] 可空 (文件 stat 只有毛). n < 3 的持有期不作节点. 悬停: 该持有期毛一行全 stat + 逐档换手 / 冲击 / 净年化
+// hs[n_hold] 毛二级; costs[n_cost] 可空 (旧文件 stat 无 costs). n < 3 的持有期不作节点. 悬停: 该持有期毛一行全 stat + 逐档换手 / 冲击 / 净年化
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, double sell_impact, int sel_hold,
                const char *source, const ImVec2 &size) {
   assert(n_hold >= 1 && n_cost >= 0 && sell_impact >= 0.0);
@@ -797,7 +860,16 @@ std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
 
 } // namespace
 
-bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
+bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
+  if (!fui.view_defaulted && fui.view_file.empty()) { // 默认高光表序第一个有效因子 (表还没扫出 → 下帧再试)
+    std::lock_guard<std::mutex> lock(fsvc.mutex);
+    for (const FactorRow &r : fsvc.rows)
+      if (r.error.empty()) {
+        fui.view_file = r.file;
+        fui.view_defaulted = true;
+        break;
+      }
+  }
   if (fui.view_file.empty() || !ctx.axis_ready || isvc.feats().labels.empty())
     return false;
   const InspectStatus st = isvc.status();
@@ -1125,7 +1197,14 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           "• 池 = cs_valid ∧ 当日有成交; 出池段 (valid%% 不计它) 秩不入评估, K 线用不看池的秩淡色显示\n"
           "• 选中沿标的粘住: 拖光标只换序, K 线不重载; 换 universe 子轴才重选");
     ImGui::SameLine();
-    ImGui::TextDisabled("| 色 = R(t) 组色 (G1 蓝 → 中段灰 → G20 橙; 淡 = 池外, 暗灰 = 无值), 阳线空心 / 阴线实心; 浅灰线 = universe 等权指数 (视野首根重锚)");
+    ImGui::TextDisabled("| 色 = R(t) 组色, 阳线空心 / 阴线实心; 青 = 指数 滚动重锚 (1d); 黄 = 指数 首根重锚 (默认隐藏, 点图例)");
+    if (ImGui::IsItemHovered())
+      tip("蜡烛色 = 该刻 R(t) 组色 (G1 蓝 → 中段灰 → G20 橙; 淡 = 池外, 暗灰 = 无值)\n"
+          "• 青线 = 滚动重锚指数 line_t = EMA_L(个股)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))): 个股若跟着指数近期走应在的价,\n"
+          "  自发贴住蜡烛, 蜡烛 − 青线 = 个股相对指数的近期偏移 (悬停报 %%). L = %d 分钟 (1 交易日), S = %d 分钟\n"
+          "  基准 = L 分钟前的 EMA_L (当前价不进基准, 基准平滑), 指数偏移再 EMA_S 压分钟噪声. 个股 close 无成交分钟前值填充, 跨日连续算; 线从首根蜡烛 + L 起有值\n"
+          "• 黄线 = universe 等权指数, 每帧按视野内首根蜡烛重锚: 带着全区间历史, 长视野下与个股渐行渐远, 默认隐藏",
+          kRefLag, kRefSmooth);
     const float strip_h = ImGui::GetTextLineHeight() * 2.f, sp_y = ImGui::GetStyle().ItemSpacing.y;
     if (plot_asset_axis(ui, ctx, pos, ImVec2(cell.x, strip_h)))
       moved = true;
@@ -1145,11 +1224,12 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   else
     empty_plot("IC 分布###ic", cell, wait_hint);
   ImGui::SameLine();
-  // 右下 期限结构: Inspect 结果优先 (毛 + 全部冲击档), 否则文件 stat (Factors 表的 row.hold, 只有毛)
+  // 右下 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.costs; 两者都是毛 + 全部冲击档, 同一份 CostTier)
   if (shown) {
     plot_term(res_holds.data(), n_hold, res_costs.data(), static_cast<int>(res_costs.size()), ctx.sell_impact, ui.hold_idx, "Inspect", cell);
   } else if (row.has_stat && row.n_hold == n_hold) {
-    plot_term(row.hold, n_hold, nullptr, 0, ctx.sell_impact, ui.hold_idx, row.stat_from_file ? "文件 stat" : "Factors Run", cell);
+    plot_term(row.hold, n_hold, row.costs.data(), static_cast<int>(row.costs.size()), ctx.sell_impact, ui.hold_idx,
+              row.stat_from_file ? "文件 stat" : "Factors Run", cell);
   } else {
     empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Compute)");
   }

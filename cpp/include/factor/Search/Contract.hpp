@@ -27,6 +27,8 @@
 //           噪声 rIC 赢不了; 同时保住"分钟频 rIC 是上万行均值、本身显著"的前提. n_full 按池宽定 (池内平均有效票数 / kGroups), CS 因子恒 1.
 //         · h* 只在 [h_lo, h_hi] (默认 30m ~ T+1) 里选: 更短的持有期每笔 bp 盖不过往返成本, 更长的不是日内范畴; 窗外照算只画期限结构.
 //         有意不进目标的: mono / 换手 / 显著性 (ls_t, ric.ir) / 样本外 / 活跃度硬阈值 —— 搜索要快; 换手由成本定价, 活跃度由 util 定价.
+//         同一份 score_of 两个入口: Search 吃 Result (Accum 先 finish), Stat 服务 / 因子看板吃 HoldStat[] + CostAcc[] (Run 每因子每金额档
+//         都攒了 CostAcc 落 stat) —— 看板的 h* / util 列是 stat 算的, Search 只在内部用分数挑候选, 不往文件写结论.
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
@@ -100,15 +102,18 @@ inline double score_pt(const Score &s, int hi, const Objective &o) {
   return ls * s.u[hi] * (o.ric_pow == 1.0 ? ric : std::pow(ric, o.ric_pow));
 }
 
-inline Score score_of(const Result &r, const Holds &hd, const Objective &o) {
+// 二级入口 (Stat 服务 / 看板用: HoldStat 已 finish, CostAcc 与 hd 同序); Search 的 Result 入口在下面, 先 finish 再走这一份
+inline Score score_of(const HoldStat *hs, const CostAcc *cost, const Holds &hd, const Objective &o) {
   factor::stat::assert_holds(hd);
+  assert(hs && cost);
   assert(factor::stat::hold_minutes(o.h_lo) <= factor::stat::hold_minutes(o.h_hi));
   Score s;
   constexpr double kNeg = -std::numeric_limits<double>::infinity();
   for (int i = 0; i < hd.n; ++i) {
-    s.hs[i] = r.acc[i].finish(hd.h[i]);
-    s.net[i] = s.hs[i].n >= 3 ? net_ls(s.hs[i], r.cost[i], o.sell_impact) : kNeg;
-    s.u[i] = r.cost[i].util(o.n_full);
+    assert(hs[i].hold == hd.h[i] && "HoldStat 与 hd 不同序");
+    s.hs[i] = hs[i];
+    s.net[i] = s.hs[i].n >= 3 ? net_ls(s.hs[i], cost[i], o.sell_impact) : kNeg;
+    s.u[i] = cost[i].util(o.n_full);
   }
   // h* = 窗内 ls_net · util 最大者 (固定资金上的钱, 不看 rIC); 全是 −∞ 也取一个 (best ≥ 0 只要窗内有持有期), score 由 score_pt 判
   double vbest = kNeg;
@@ -126,6 +131,13 @@ inline Score score_of(const Result &r, const Holds &hd, const Objective &o) {
   s.ric = s.hs[s.best].ric.mean;
   s.score = score_pt(s, s.best, o);
   return s;
+}
+inline Score score_of(const Result &r, const Holds &hd, const Objective &o) {
+  factor::stat::assert_holds(hd);
+  HoldStat hs[kMaxHold];
+  for (int i = 0; i < hd.n; ++i)
+    hs[i] = r.acc[i].finish(hd.h[i]);
+  return score_of(hs, r.cost, hd, o);
 }
 
 // 固定持有期 hi 的分数 (细化阶段 h 定在粗阶段的 h*, 不逐候选重选)

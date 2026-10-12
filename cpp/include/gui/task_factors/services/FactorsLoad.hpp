@@ -1,6 +1,6 @@
 // FactorsLoad — 因子评估的特征库装载层, FactorsService (全表 Run) 与 InspectService (单因子深看) 共用:
-//   Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 标签 [hold] (+ 冲击成本 [amt], Inspect 按组池化用)), load_planes 逐天并行读特征库散进去;
-//   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of 根平面有效率.
+//   Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 标签 [hold] + 冲击成本 [amt]), load_planes 逐天并行读特征库散进去;
+//   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of 根平面有效率; n_full_of 满仓只数; cost_tiers 换手成本 (两服务同一份).
 // 两个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat; InspectService 一棵 DAG 留一级 Row[H][T].
 #pragma once
 
@@ -57,5 +57,13 @@ void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::st
 
 // 池内有效率: Σ(m ∧ gate) / Σgate (gate = 截面池 cs_valid; 池外格不进分子分母)
 float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
+
+// 满仓一腿只数 (Search 契约【目标】util 的分母) = 池内 (cs.m) 平均每行有效票数 / kGroups: 池宽决定, 与因子无关. Run / Search 同一份
+double n_full_of(const Loaded &L);
+
+// 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份; Search 后端在核内攒同一份 cost_cell): rx = r16(x) [T][A] (池内秩, kRankNone 无效),
+// 每 (t ≥ h, h, c) 一行 cost_row → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), 顺带 cover = Σ(rx ∧ 成本有效) / Σ rx 有效.
+// 行区间并行 (ex), 线程私有累加器末尾 merge. 须 with_costs 装过 (L.costs.size() == ft.costs.size())
+void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L, const FeatureTable &ft, std::vector<CostTier> &out);
 
 } // namespace GUI::Factors

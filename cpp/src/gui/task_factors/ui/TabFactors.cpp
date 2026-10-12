@@ -435,7 +435,7 @@ double metric_key(const HS *h, const Metric &m) { return h ? m.get(*h) : -1e300;
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn frame status time valid h* | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
+//   edit type name_en name_cn frame status time valid h* util | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
@@ -446,6 +446,7 @@ enum Col : int { Edit,
                  Time,
                  Valid,
                  Opt,
+                 Util,
                  Expr,
                  Ops,
                  Feats,
@@ -499,10 +500,15 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      true},
     {Valid, "valid%", "根平面有效格占比", true},
     {Opt, "h*",
-     "Optimize 搜出的最优持有期 (文件 search 键; 窗 30m ~ T+1 内 argmax 年化净 LS · 资金利用率)\n"
-     "• 灰: 搜索时的规范串 ≠ 当前 (之后手改过参数 / 表达式), 结论失效\n"
-     "• 悬停行看 search 详情 (金额档 / 净年化 / util / rIC / score / 时间)\n"
-     "• 空: 从未 Optimize 成功回写",
+     "最优持有期 = 窗 30m ~ T+1 内 argmax 年化净 LS · 资金利用率 (Search 契约【目标】, 与 Optimize 打分同一份 score_of)\n"
+     "• 由 stat 现算: 毛 HoldStat + stat.costs 里选定金额档 (Optimize 的 Amt) 的换手成本 + Config::sell_impact\n"
+     "• 悬停行看 h* 处分量 (净年化 / util / rIC / score)\n"
+     "• 空: 无 stat, 或旧 stat 没有 costs (重新 Run)",
+     true},
+    {Util, "util",
+     "h* 处资金利用率 = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1\n"
+     "• 目标 = 年化净 LS × util × rIC: 净 LS 是每成员口径, 乘 util 才是固定资金上的钱; TS 因子触发稀疏时此值小\n"
+     "• 同 h* 列, 由 stat 现算",
      true},
     {Expr, "expr",
      "规范串 = 解析后重新序列化\n"
@@ -526,11 +532,11 @@ constexpr bool fixed_cols_ordered() {
 static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Col 枚举一致");
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
-// 显示顺序: Stat 列夹在 h* 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
+// 显示顺序: Stat 列夹在 util 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
 struct ColRef {
   int fixed = -1, stat = -1;
 };
-constexpr int kStatInsertAfter = Opt;
+constexpr int kStatInsertAfter = Util;
 constexpr int kNumCols = kNumFixed + kNumStatCols;
 constexpr std::array<ColRef, kNumCols> col_layout() {
   std::array<ColRef, kNumCols> a{};
@@ -719,8 +725,14 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   }
 }
 
+// h* / util 列的一格 (RowScore 的压缩: 只留看板要显示的; hold = 0 即无)
+struct OptCell {
+  int hold = 0, amt = 0;
+  double ls_net = 0.0, util = 0.0, ric = 0.0, score = 0.0;
+};
+
 // 固定列一格 (edit 列是勾选框, 在表循环里单独画)
-void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool editing) {
+void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUIContext &ctx, bool editing) {
   const bool ok = r.error.empty();
   const auto text = [&](const std::string &s, bool hi = false) {
     if (s.empty())
@@ -770,13 +782,13 @@ void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool edi
   case Valid:
     return num(r.has_stat, "%.1f", r.valid_pct);
   case Opt:
-    if (r.search.hold <= 0)
+    if (oc.hold <= 0)
       ImGui::TextDisabled("-");
-    else if (r.search.valid(r.expr))
-      ImGui::TextUnformatted(factor::stat::hold_name(r.search.hold).c_str());
     else
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "%s?", factor::stat::hold_name(r.search.hold).c_str());
+      ImGui::TextUnformatted(factor::stat::hold_name(oc.hold).c_str());
     return;
+  case Util:
+    return num(oc.hold > 0, "%.2f", oc.util);
   case Note:
     return text(r.note);
   case Edit:
@@ -788,7 +800,7 @@ void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool edi
 
 // 整行悬停 (任一格, 含勾选框): 文件 / 操作 / 原串 / BROKEN 原因 / dup / stat. 表格行只有这一个提示函数.
 // 位置自己定: ImGui 的 tooltip 定位在四个方向都放不下时退化为贴鼠标右下 (大半出屏, 看着像没触发); 这里用上一帧的窗口尺寸把左上角夹回视口
-void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx, bool viewing, bool editing) {
+void row_tooltip(const FactorRow &r, const OptCell &oc, const FactorsUIContext &ctx, bool viewing, bool editing) {
   static ImVec2 s_size; // 上一帧尺寸 (首帧 0 → 不夹, ImGui 的 AlwaysAutoResize 首帧本就隐藏)
   const ImGuiViewport *vp = ImGui::GetMainViewport();
   const ImVec2 mouse = ImGui::GetMousePos();
@@ -804,13 +816,11 @@ void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx, bool viewing, 
     ImGui::BulletText("原串    %s", r.expr_raw.c_str());
   if (!r.dup_of.empty())
     ImGui::BulletText("dup     与 %s 同一规范串", r.dup_of.c_str());
-  if (r.search.hold > 0) {
-    const SearchMark &m = r.search;
-    ImGui::BulletText("search  h* %s @ %dw  净年化 %+.1f%%  util %.2f  rIC %.4f  score %.4g (基线 %.4g)  %s", factor::stat::hold_name(m.hold).c_str(), m.amt,
-                      100.0 * m.ls_net, m.util, m.ric, m.score, m.base_score, m.time.c_str());
-    if (!m.valid(r.expr))
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "        失效: 搜索时规范串 %s", m.expr.c_str());
-  }
+  if (oc.hold > 0)
+    ImGui::BulletText("目标    @ %dw  h* %s  净年化 %+.1f%%  util %.2f  rIC %.4f  score %.4g  (n_full %.1f; 窗 30m ~ T+1, 与 Optimize 同一份打分)", oc.amt,
+                      factor::stat::hold_name(oc.hold).c_str(), 100.0 * oc.ls_net, oc.util, oc.ric, oc.score, r.scope.n_full);
+  else if (r.has_stat && r.costs.empty())
+    ImGui::BulletText("目标    stat 无 costs (旧文件), 重新 Run 才有 h* / util");
   if (!r.error.empty()) {
     ImGui::Separator();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN: %s", r.error.c_str());
@@ -961,7 +971,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   }
 
   // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档真实换手成本下的 年化净 LS · 资金利用率 · rIC, h* 限 30m ~ T+1
-  //      (Search/Contract.hpp【目标】); 严格好于基线才回写 params + search 块, 随后 TaskFactors 自动 Run ----
+  //      (Search/Contract.hpp【目标】); 严格好于基线才回写 params, 随后 TaskFactors 自动 Run (看板 h* / util 从新 stat 算) ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
@@ -990,7 +1000,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
                      "• util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1: 净 LS 是每成员口径, 乘 util 才是固定资金上的钱; 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
                      "• 粗网格 (步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 分支 (互不相邻的 top-%d) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
                      "• 数据按天分块流式过, 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
-                     "• 最优 score 严格高于基线 → 回写该文件 params + search 块 (h* 等, 看板 h* 列; stat 删掉) 并自动 Run 重算; 否则文件不动"
+                     "• 最优 score 严格高于基线 → 回写该文件 params (stat 删掉) 并自动 Run 重算 (h* / util 列由新 stat 现算); 否则文件不动"
                    : "先在表格里点一行高光 (与 Inspect 同一对象)",
           view_row ? view_row->file.c_str() : "", factor::search::grid::kLayerMax, factor::search::grid::kBranches,
           100.0 * factor::search::grid::kMinGain);
@@ -1015,8 +1025,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     if (sbusy)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-      tip("建仓冲击的下单金额档 (万): 净 LS = 毛 LS − 顶 / 底组新进者 (t−h 不在该组) 均摊的 建仓冲击 (买入按 Config::max_impact 封顶) + 平仓 sell_impact (%.4f); "
-          "留仓成员不付. 年化后乘 util 跨持有期比",
+      tip("建仓冲击的下单金额档 (万), Optimize 打分与表格 h* / util 列共用: 净 LS = 毛 LS − 顶 / 底组新进者 (t−h 不在该组) 均摊的 建仓冲击 "
+          "(买入按 Config::max_impact 封顶) + 平仓 sell_impact (%.4f); 留仓成员不付. 年化后乘 util 跨持有期比",
           ctx.sell_impact);
     ImGui::SameLine();
     ImGui::Text("Status:");
@@ -1295,6 +1305,21 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // 3. 表
   // ==========================================================================
   const int n = static_cast<int>(s_rows.size());
+  // h* / util 列: 每行按选定金额档 (Optimize 的 Amt) 从 stat 现算 (RowScore, 与 Optimize 同一份目标); 无 stat / 无该档 → hold = 0
+  static std::vector<OptCell> s_opt;
+  s_opt.assign(s_rows.size(), OptCell{});
+  if (!ft.costs.empty()) {
+    const int opt_amt = ft.costs[static_cast<size_t>(ui.opt_cost_idx)].amt;
+    for (size_t i = 0; i < s_rows.size(); ++i) {
+      const factor::search::Score sc = RowScore(s_rows[i], opt_amt, ctx.sell_impact);
+      if (sc.best < 0 || sc.hs[sc.best].n < 3)
+        continue;
+      OptCell &oc = s_opt[i];
+      oc.hold = sc.hs[sc.best].hold;
+      oc.amt = opt_amt;
+      oc.ls_net = sc.ls_net, oc.util = sc.util, oc.ric = sc.ric, oc.score = sc.score;
+    }
+  }
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "3. Factors:");
   ImGui::SameLine();
   ImGui::Text("%d (%d BROKEN)", n, broken);
@@ -1376,8 +1401,14 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           return r.n_slots;
         case Valid:
           return r.has_stat ? r.valid_pct : -1.0;
-        case Opt: // 按持有分钟 (失效的排在有效的后面: 同分钟减半权重不好读, 直接当无值)
-          return r.search.valid(r.expr) ? static_cast<double>(factor::stat::hold_minutes(r.search.hold)) : -1.0;
+        case Opt: { // 按持有分钟
+          const OptCell &oc = s_opt[static_cast<size_t>(&r - s_rows.data())];
+          return oc.hold > 0 ? static_cast<double>(factor::stat::hold_minutes(oc.hold)) : -1.0;
+        }
+        case Util: {
+          const OptCell &oc = s_opt[static_cast<size_t>(&r - s_rows.data())];
+          return oc.hold > 0 ? oc.util : -1.0;
+        }
         default:
           return 0.0;
         }
@@ -1408,6 +1439,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
 
     for (int idx : order) {
       const FactorRow &r = s_rows[static_cast<size_t>(idx)];
+      const OptCell &oc = s_opt[static_cast<size_t>(idx)];
       const HS *h = hold_of(r, cur_hold);
       const bool editing = edit_row == &r;
       const bool viewing = ui.view_file == r.file;
@@ -1419,7 +1451,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       if (ImGui::Selectable("##row", viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
         ui.view_file = viewing ? std::string{} : r.file;
       if (ImGui::IsItemHovered())
-        row_tooltip(r, ctx, viewing, editing);
+        row_tooltip(r, oc, ctx, viewing, editing);
       // 勾选框 = 编辑模式 (同时只勾一个): 勾 → 载入构建器; 取消勾 → 回添加模式 (内容留作模板); 勾另一行 → 切换
       // 无 FramePadding → 方框 = 字高, 行高不变; 回到格起点画 (Selectable 已占满整格宽)
       ImGui::SetCursorPos(cell_pos);
@@ -1447,13 +1479,13 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       }
       ImGui::PopStyleVar();
       if (ImGui::IsItemHovered()) // 勾选框盖住了 Selectable 的 hover, 同一个提示函数
-        row_tooltip(r, ctx, viewing, editing);
+        row_tooltip(r, oc, ctx, viewing, editing);
       ImGui::PopID();
       for (int c = 1; c < kNumCols; ++c) { // 0 = edit 列 (上面画过)
         ImGui::TableSetColumnIndex(c);
         const ColRef &cr = kColLayout[static_cast<size_t>(c)];
         if (cr.fixed >= 0) {
-          fixed_cell(static_cast<Col>(cr.fixed), r, ctx, editing);
+          fixed_cell(static_cast<Col>(cr.fixed), r, oc, ctx, editing);
         } else {
           const Metric &m = *col_metric(c);
           ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, group_bg(m.group));

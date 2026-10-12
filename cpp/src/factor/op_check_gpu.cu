@@ -375,7 +375,7 @@ StatSession *stat_open(int T, int A, const factor::stat::Holds &hd, const factor
   return s;
 }
 
-void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Row *rows, double *eval_ms) {
+void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Row *rows, double *eval_ms, uint16_t *rx) {
   assert(s && x && x->v && x->m && g && g->m && rows);
   if (eval_ms)
     s->tm.begin();
@@ -383,6 +383,8 @@ void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::sta
   if (eval_ms)
     *eval_ms = s->tm.end();
   s->out.down(rows, static_cast<size_t>(s->hd.n) * s->T); // D2H 自带同步
+  if (rx)
+    s->ws.down(rx, static_cast<size_t>(s->T) * s->A);
 }
 
 void stat_close(StatSession *s) {

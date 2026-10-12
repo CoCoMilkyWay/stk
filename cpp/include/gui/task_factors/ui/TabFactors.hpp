@@ -36,7 +36,9 @@ struct FactorsUIState {
   // 勾选 → 载入构建器 + name_en + name_cn + note; 取消勾选 → 回添加模式但构建器内容保留 (当模板)
   std::string edit_file;
   // 点行高光 = 单因子展示 (Inspect 页) 的对象, 与 edit_file 互不干涉; 再点同一行 → 取消
+  // 首次扫出表后默认高光第一个有效因子 (InspectAutoRequest 置, 只一次: 之后用户取消高光不再自动补)
   std::string view_file;
+  bool view_defaulted = false;
   // Optimize (对象 = 高光行): 金额档 (FeatureTable::costs 下标; -1 = 未定, 首帧取 5w 档, 没有则 0); 点下时把行拷给 opt_row (TaskFactors 据此建请求)
   int opt_cost_idx = -1;
   FactorRow opt_row;

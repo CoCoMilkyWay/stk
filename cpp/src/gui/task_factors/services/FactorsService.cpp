@@ -103,6 +103,35 @@ bool parse_patches(const json &j, std::vector<factor::expr::ParamPatch> &out, st
   return true;
 }
 
+// 一个金额档的换手成本 ↔ JSON {amt, cover, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
+ojson cost_json(const CostTier &c, int n_hold) {
+  ojson o;
+  o["amt"] = c.amt;
+  o["cover"] = sig4(c.cover);
+  ojson acc = ojson::array();
+  for (int k = 0; k < n_hold; ++k)
+    acc.push_back(cost_acc_json(c.acc[k]));
+  o["acc"] = acc;
+  return o;
+}
+bool load_cost(const json &o, int n_hold, CostTier &dst) {
+  if (!o.is_object())
+    return false;
+  CostTier t;
+  double cover = 0.0;
+  if (!json_int(o, "amt", t.amt) || !json_num(o, "cover", cover))
+    return false;
+  t.cover = static_cast<float>(cover);
+  const auto ait = o.find("acc");
+  if (ait == o.end() || !ait->is_array() || ait->size() != static_cast<size_t>(n_hold))
+    return false;
+  for (int k = 0; k < n_hold; ++k)
+    if (!load_cost_acc((*ait)[static_cast<size_t>(k)], t.acc[k]))
+      return false;
+  dst = t;
+  return true;
+}
+
 // 文件 stat → 行 (载入显示用); 任一处不合 / 口径与当前根不符 → 整块忽略 (不算 BROKEN: stat 是本服务写的派生数据, 下次评估覆盖)
 void load_stat(const json &j, FactorRow &r) {
   if (!j.is_object())
@@ -128,6 +157,8 @@ void load_stat(const json &j, FactorRow &r) {
   t.valid_pct = static_cast<float>(v);
   if (!json_num(j, "eval_ms", t.eval_ms))
     return;
+  if (!json_num(j, "max_impact", t.scope.max_impact) || !json_num(j, "n_full", t.scope.n_full) || !(t.scope.n_full > 0.0))
+    return;
   const auto hit = j.find("holds"); // 旧格式 ("amts": [{amt, holds}]) 无此键 → 整块忽略, 下次 Run 覆盖
   if (hit == j.end() || !hit->is_array() || hit->empty() || hit->size() > static_cast<size_t>(factor::stat::kMaxHold))
     return;
@@ -135,36 +166,22 @@ void load_stat(const json &j, FactorRow &r) {
   for (int k = 0; k < t.n_hold; ++k)
     if (!load_hold((*hit)[static_cast<size_t>(k)], t.hold[k]))
       return;
+  const auto cit = j.find("costs"); // [amt] 每档 cover + [n_hold] CostAcc (cost_json 的逆)
+  if (cit == j.end() || !cit->is_array())
+    return;
+  t.costs.resize(cit->size());
+  for (size_t c = 0; c < cit->size(); ++c)
+    if (!load_cost((*cit)[c], t.n_hold, t.costs[c]))
+      return;
   r.scope = t.scope;
   r.valid_pct = t.valid_pct;
   r.eval_ms = t.eval_ms;
   r.n_hold = t.n_hold;
   for (int k = 0; k < t.n_hold; ++k)
     r.hold[k] = t.hold[k];
+  r.costs = std::move(t.costs);
   r.has_stat = true;
   r.stat_from_file = true;
-}
-
-// 文件 search → 行 (WriteFactorParams 的逆); 任一处不合 → 忽略 (派生数据, 下次 Optimize 覆盖). expr 是否仍匹配由 SearchMark::valid 看
-void load_search(const json &j, SearchMark &m) {
-  if (!j.is_object())
-    return;
-  SearchMark t;
-  const auto str = [&](const char *key, std::string &dst) {
-    const auto it = j.find(key);
-    if (it == j.end() || !it->is_string())
-      return false;
-    dst = it->get<std::string>();
-    return true;
-  };
-  if (!str("expr", t.expr) || !str("time", t.time))
-    return;
-  if (!json_int(j, "hold", t.hold) || !json_int(j, "amt", t.amt) || t.hold <= 0)
-    return;
-  if (!json_num(j, "sell_impact", t.sell_impact) || !json_num(j, "ls_net", t.ls_net) || !json_num(j, "util", t.util) || !json_num(j, "ric", t.ric) ||
-      !json_num(j, "score", t.score) || !json_num(j, "base_score", t.base_score))
-    return;
-  m = t;
 }
 
 ojson stat_json(const FactorRow &r) {
@@ -180,10 +197,16 @@ ojson stat_json(const FactorRow &r) {
   j["frame"] = factor::stat::frame_name(r.frame);
   j["valid_pct"] = sig4(r.valid_pct);
   j["eval_ms"] = sig4(r.eval_ms);
+  j["max_impact"] = r.scope.max_impact;
+  j["n_full"] = sig4(r.scope.n_full);
   ojson holds = ojson::array();
   for (int k = 0; k < r.n_hold; ++k)
     holds.push_back(hold_json(r.hold[k]));
   j["holds"] = holds;
+  ojson costs = ojson::array();
+  for (const CostTier &c : r.costs)
+    costs.push_back(cost_json(c, r.n_hold));
+  j["costs"] = costs;
   return j;
 }
 
@@ -213,16 +236,20 @@ void write_back(const std::filesystem::path &path, const factor::expr::Expr &e, 
 }
 
 // 评估结果 → 行 (scope / 二级); hold = [n_hold]
-void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, const factor::stat::HoldStat *hold, const char *backend) {
+void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, double n_full, const factor::stat::HoldStat *hold,
+               const std::vector<CostTier> &costs, const char *backend) {
   r.scope.universe = req.universe;
   r.scope.start_date = req.start_date;
   r.scope.end_date = req.end_date;
   r.scope.days = L.days, r.scope.T = L.T, r.scope.A = L.A;
+  r.scope.max_impact = req.max_impact;
+  r.scope.n_full = n_full;
   r.scope.backend = backend;
   r.scope.time = now_string();
   r.n_hold = L.n_hold;
   for (int hi = 0; hi < L.n_hold; ++hi)
     r.hold[hi] = hold[hi];
+  r.costs = costs;
   r.has_stat = true;
   r.stat_from_file = false;
 }
@@ -330,6 +357,7 @@ bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, Factors
   req.universe = data.config.universe;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
+  req.max_impact = data.config.max_impact;
   return true;
 }
 
@@ -435,8 +463,21 @@ void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
   std::filesystem::remove(path);
 }
 
-void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e, const SearchMark &mark) {
-  assert(mark.expr == e.canon && mark.hold > 0);
+factor::search::Score RowScore(const FactorRow &r, int amt, double sell_impact) {
+  const CostTier *c = r.has_stat ? r.find_cost(amt) : nullptr;
+  if (!c)
+    return {};
+  factor::stat::Holds hd;
+  hd.n = r.n_hold;
+  for (int i = 0; i < r.n_hold; ++i)
+    hd.h[i] = r.hold[i].hold;
+  factor::search::Objective o;
+  o.sell_impact = sell_impact;
+  o.n_full = r.scope.n_full;
+  return factor::search::score_of(r.hold, c->acc, hd, o);
+}
+
+void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e) {
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
   std::ifstream f(path);
   assert(f.is_open() && "搜索落盘: 因子文件不存在");
@@ -444,19 +485,6 @@ void WriteFactorParams(const std::string &factor_dir, std::string_view file, con
   f.close();
   assert(j.is_object() && "搜索落盘: 因子文件扫描时已解析过, 不该变");
   j["params"] = params_json(e);
-  ojson s;
-  s["expr"] = mark.expr;
-  s["hold"] = mark.hold; // 持有期键 (同 stat.holds[].hold); hold_name 只为人读
-  s["hold_name"] = factor::stat::hold_name(mark.hold);
-  s["amt"] = mark.amt;
-  s["sell_impact"] = mark.sell_impact;
-  s["ls_net"] = sig4(mark.ls_net);
-  s["util"] = sig4(mark.util);
-  s["ric"] = sig4(mark.ric);
-  s["score"] = sig4(mark.score);
-  s["base_score"] = std::isfinite(mark.base_score) ? sig4(mark.base_score) : 0.0;
-  s["time"] = mark.time;
-  j["search"] = s;
   j.erase("stat");
   write_json(path, j);
 }
@@ -616,8 +644,6 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       seen.emplace(e.canon, r.file);
     if (const auto sit = j.find("stat"); sit != j.end())
       load_stat(*sit, r);
-    if (const auto sit = j.find("search"); sit != j.end())
-      load_search(*sit, r.search);
     out.push_back(r);
   }
   if (!req.evaluate) // 只扫描: BROKEN 行也算"处理完"
@@ -694,14 +720,16 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   Loaded L;
   init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.uni.size()), L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
+  L.max_impact = static_cast<float>(req.max_impact);
 
   total_.store(L.days, std::memory_order_relaxed);
   done_.store(0, std::memory_order_relaxed);
-  if (!load_planes(feats_, reader, dates, L, ex, cancel_, done_)) {
+  if (!load_planes(feats_, reader, dates, L, ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true)) {
     if (reader.stale())
       finish_all_pending("特征库判废 (子轴/字段表与当前不符), 需重算特征");
     return false;
   }
+  const double n_full = n_full_of(L); // util 分母 (池宽), 全部因子共用
 
   // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
@@ -742,8 +770,9 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   const std::filesystem::path dir(req.factor_dir);
   std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
   factor::stat::HoldStat hold[factor::stat::kMaxHold];
+  std::vector<CostTier> costs; // [amt] 该根的换手成本 (cost_tiers, 两后端同一份宿主代码, 秩由后端给)
 
-  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct) 填 hold[] → 发布该根的全部因子 (dup 共根)
+  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct) 填 hold[] + costs → 发布该根的全部因子 (dup 共根)
   const auto walk = [&](const char *backend, auto &&run_node, auto &&stat_root) -> bool {
     for (int i = 0; i < N; ++i) {
       if (cancel_.load(std::memory_order_relaxed))
@@ -775,7 +804,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
         for (int j : sub[k])
           r.eval_ms += node_ms[static_cast<size_t>(j)];
         r.valid_pct = valid_pct;
-        fill_stat(r, req, L, hold, backend);
+        fill_stat(r, req, L, n_full, hold, costs, backend);
         r.status = RowStatus::Done;
         {
           std::lock_guard<std::mutex> lock(mutex);
@@ -820,6 +849,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
           const factor::check::Plane *root = plane_of(i); // Stat 只看池内 (g 在算子内部)
           valid_pct = valid_pct_of(root->m.data(), L.cs.m.data(), n);
           factor::cpu::stat::run(ex, root->v.data(), root->m.data(), L.cs.m.data(), fr, L.T, L.A, L.hd, lab.data(), w, nullptr, hold);
+          cost_tiers(ex, w.ws.data(), L, feats_, costs); // w.ws = 刚算的 r16(x)
         });
   }
 
@@ -836,6 +866,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   factor::gpu::DevPool pool;
   pool.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
   std::vector<uint8_t> mask(n);
+  std::vector<uint16_t> rx(n);                                        // r16(x) 回宿主给 cost_tiers (与 CPU 后端同一份成本代码)
   std::vector<factor::stat::Row> srows(H * static_cast<size_t>(L.T)); // GPU 一级回宿主再二级
   const auto dplane_of = [&](int i) -> const factor::gpu::DevPlane * {
     const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
@@ -861,9 +892,10 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
         const factor::gpu::DevPlane *root = dplane_of(i);        // Stat 只看池内 (g 在算子内部)
         factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid%
         valid_pct = valid_pct_of(mask.data(), L.cs.m.data(), n);
-        factor::gpu::stat_eval(ss, root, cs_gate, fr, srows.data());
+        factor::gpu::stat_eval(ss, root, cs_gate, fr, srows.data(), nullptr, rx.data());
         for (int hi = 0; hi < L.hd.n; ++hi)
           hold[hi] = factor::stat::summarize(srows.data() + static_cast<size_t>(hi) * L.T, L.T, L.hd.h[hi]);
+        cost_tiers(ex, rx.data(), L, feats_, costs);
       });
   pool.release();
   factor::gpu::stat_close(ss);

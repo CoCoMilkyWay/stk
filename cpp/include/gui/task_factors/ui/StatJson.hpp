@@ -1,6 +1,6 @@
 // Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: operators.json 的 stat.holds[] 与因子文件的 stat.holds[]
 // 同一格式 (键名 = HoldStat 字段名, 嵌套 Moments 展平为 ric_* / rac_*, 数值 4 位有效). load_hold 是 Save 的逆: 键缺 / 类型不对 → false (不 assert:
-// 文件是上次运行留下的, 可能来自旧代码 / 半截崩的).
+// 文件是上次运行留下的, 可能来自旧代码 / 半截崩的). 换手成本累加器 (CostAcc, 因子文件 stat.costs[].acc[]) 同款 cost_acc_json / load_cost_acc.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
@@ -94,6 +94,42 @@ inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
     h.grp[k] = e.get<float>();
   }
   dst = h;
+  return true;
+}
+
+// 换手成本累加器 (契约 CostAcc; 因子文件 stat.costs[].acc[]): 计数整数精确 (util / 换手占比的分子分母), 两个冲击和 4 位有效
+inline constexpr const char *kCostAccKeys[] = {"n_hi", "n_lo", "e_hi", "e_lo", "rows"};
+inline constexpr int kCostAccKeyCount = static_cast<int>(sizeof(kCostAccKeys) / sizeof(kCostAccKeys[0]));
+namespace detail {
+template <class C>
+auto cost_acc_field(C &c, int q) -> decltype(&c.rows) {
+  decltype(&c.rows) f[kCostAccKeyCount] = {&c.n_hi, &c.n_lo, &c.e_hi, &c.e_lo, &c.rows};
+  return f[q];
+}
+} // namespace detail
+
+inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
+  nlohmann::ordered_json o;
+  o["buy_hi"] = sig4(c.buy_hi);
+  o["sell_lo"] = sig4(c.sell_lo);
+  for (int q = 0; q < kCostAccKeyCount; ++q)
+    o[kCostAccKeys[q]] = *detail::cost_acc_field(c, q);
+  return o;
+}
+
+inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
+  if (!o.is_object())
+    return false;
+  factor::stat::CostAcc c;
+  if (!json_num(o, "buy_hi", c.buy_hi) || !json_num(o, "sell_lo", c.sell_lo))
+    return false;
+  for (int q = 0; q < kCostAccKeyCount; ++q) {
+    const auto it = o.find(kCostAccKeys[q]);
+    if (it == o.end() || !it->is_number_integer())
+      return false;
+    *detail::cost_acc_field(c, q) = it->get<long long>();
+  }
+  dst = c;
   return true;
 }
 

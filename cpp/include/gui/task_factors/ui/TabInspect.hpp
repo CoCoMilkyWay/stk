@@ -24,12 +24,15 @@
 //        当日无成交, 秩不入评估, valid% 也不计) 用不看池的秩 (rx_all) 淡色显示, 因子无输出 = 暗灰; 阴线实心 / 阳线空心.
 //        x 窗口换标的不动, y 按窗口内蜡烛重贴; 光标 = 与左上图同一个 cursor_day (同色, 锚在日边界), 光标日染淡色竖带
 //        叠加 universe 等权指数线 (InspectResult::uni_index): 每帧按视野内个股首根蜡烛重锚 (该刻指数 = 该根 close), zoom / 平移跟着对齐; 不参与 y 贴合
+//        (默认隐藏, 点图例显; 带着全区间历史, 看不出近期)
+//        再叠加滚动重锚指数线 (青, 默认显), L = 1 天: line_t = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))),
+//        P = 个股 close 前值填充到分钟格, I = 指数, S = 10 分钟; = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移. UI 现算, 不发请求
 //   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
 //   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部冲击档) 一次画全, 图例可点切, 默认只显 LS. 口径 = 全 universe 全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
 //        净档 <amt>w = 毛 − 该腿该持有期的均摊换手成本 (CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Search 打分同一份 cost_row: 只有顶 / 底组
 //        新进者 (t−h 不在该组) 付 lb_cost_{buy,sell}_<amt>w + Config::sell_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
-//        Inspect 算过用算的, 没算过用 Factors 表里 (文件, 只有毛, 无净档) 的, 所以进页即有
+//        Inspect 算过用算的, 没算过用 Factors 表里 (stat: 毛 + 各档成本, 同一份 CostTier) 的, 所以进页即有
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
 //   即开算, 不等切页; 缓存命中只补特征); Compute 按钮 = 弃缓存整体重读.
 #pragma once
@@ -97,11 +100,18 @@ struct InspectUIState {
   int kline_days_applied = -1;               // x 域已应用的日数 (变了才复位视野)
   size_t kline_last_pub_days = ~0ull;        // 上次 y 贴合时的已发布日数 (换代 / 前缀增长 → 按当前 x 窗口重贴)
   double kline_x_lo = 0.0, kline_x_hi = 0.0; // 上帧 x 视野 (y 贴合只看窗口内的蜡烛)
+  // 滚动重锚指数线 (键: 代 / 已发布点数 / 派生 epoch 变才重算; 只用已发布前缀)
+  uint32_t ref_gen = ~0u;
+  size_t ref_pts = ~0ull;
+  uint64_t ref_epoch = ~0ull;
+  int ref_t0 = 0, ref_t1 = 0;  // 定义域 [t0, t1): t0 = 首根有效蜡烛 + L, t1 = 已发布日数 × kSegLen
+  std::vector<float> ref_line; // [T], 定义域外无意义
 };
 
 // 自动起算 (Factors / Inspect 两页都每帧调, 不管哪页在前: Factors 页点行高光即起算): 高光因子有效 且 服务空闲 且 请求 key (因子 / 作用域)
 // 与现结果和上次请求都不同 → 填 ui.req_row / req_reload = false, 返回 true (调用方 MakeInspectRequest + Request)
-bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, const FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
+// 顺带默认高光: 还没高光过 (fui.view_defaulted = false) 且表已扫出 → 高光表序第一个有效因子 (只一次), 进 Inspect 即有东西看
+bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
 // 返回值: 1 = 手动 Compute (ui.req_row / ui.req_reload 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
 // ksvc: 右上 K 线流 (页内按期望态直接 Request, 不经返回值)

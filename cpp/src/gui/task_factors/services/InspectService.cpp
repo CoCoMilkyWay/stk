@@ -38,11 +38,9 @@ struct InspectService::Flow {
   factor::cpu::Pool pool;
   std::vector<factor::cpu::ParScratch> nsc;
   factor::cpu::stat::Workspace w;
-  std::vector<factor::stat::Row> rows;     // 毛口径一级 [H][T], 发布时与 result.rows 交换
-  std::vector<uint16_t> rx, rx_all;        // w.ws 的拷贝 [T][A] (池内 / 不看池), 发布时与 result.rx / rx_all 交换 (ws 自身下次评估还要用)
-  std::vector<uint8_t> ones;               // 全 1 门控 [T][A], rx_all 那遍 rank_x 的 g
-  std::vector<factor::stat::CostAcc> cacc; // [nt][C][H] 换手成本的线程私有累加器 (契约 CostAcc, 与 Search 同一份)
-  std::vector<long long> cnx;              // [nt][1 + C] rx 有效格数 (cover 分母) + 每档 rx ∧ 成本有效格数
+  std::vector<factor::stat::Row> rows; // 毛口径一级 [H][T], 发布时与 result.rows 交换
+  std::vector<uint16_t> rx, rx_all;    // w.ws 的拷贝 [T][A] (池内 / 不看池), 发布时与 result.rx / rx_all 交换 (ws 自身下次评估还要用)
+  std::vector<uint8_t> ones;           // 全 1 门控 [T][A], rx_all 那遍 rank_x 的 g
 
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
   void reset_scope() {
@@ -202,7 +200,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     std::swap(L.planes[i], L.planes[j]);
   }
   const size_t n = L.n();
-  const int H = L.hd.n, T = L.T, C = static_cast<int>(feats_.costs.size());
+  const int H = L.hd.n, T = L.T;
   F.w.ensure(T, A, H, nt);
 
   // ---- Y: 毛标签 [H] (作用域内一次) ----
@@ -305,47 +303,9 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   if (cancelled())
     return false;
 
-  // ---- C: 换手成本 (契约【换手成本】, 与 Search 同一份 cost_row): 每 (t ≥ h, h, c) 一行 → CostAcc[tid][c][h], 末尾 merge; 顺带 cover ----
-  {
-    assert(L.costs.size() == static_cast<size_t>(C));
-    F.cacc.assign(static_cast<size_t>(nt) * C * H, factor::stat::CostAcc{});
-    F.cnx.assign(static_cast<size_t>(nt) * (1 + C), 0);
-    const uint16_t *rx = F.rx.data();
-    F.ex.rows(T, [&](int t0, int t1, int tid) {
-      factor::stat::CostAcc *acc = F.cacc.data() + static_cast<size_t>(tid) * C * H;
-      long long *nx = F.cnx.data() + static_cast<size_t>(tid) * (1 + C);
-      for (int t = t0; t < t1; ++t) {
-        const size_t base = static_cast<size_t>(t) * A;
-        for (int c = 0; c < C; ++c) {
-          const CostPlane &cp = L.costs[static_cast<size_t>(c)];
-          const factor::stat::Cost cost{cp.buy.data() + base, cp.sell.data() + base, cp.m.data() + base};
-          for (int i = 0; i < H; ++i) {
-            const int h = factor::stat::hold_minutes(L.hd.h[i]);
-            if (t >= h)
-              factor::cpu::stat::cost_row(rx + base, rx + base - static_cast<size_t>(h) * A, cost, A, acc[c * H + i]);
-          }
-          for (int a = 0; a < A; ++a)
-            nx[1 + c] += rx[base + a] != factor::stat::kRankNone && cp.m[base + a] != 0;
-        }
-        for (int a = 0; a < A; ++a)
-          nx[0] += rx[base + a] != factor::stat::kRankNone;
-      }
-    });
-    std::vector<long long> nx(static_cast<size_t>(1 + C), 0);
-    for (int tid = 0; tid < nt; ++tid)
-      for (int c = 0; c <= C; ++c)
-        nx[static_cast<size_t>(c)] += F.cnx[static_cast<size_t>(tid) * (1 + C) + c];
-    res.costs.resize(static_cast<size_t>(C));
-    for (int c = 0; c < C; ++c) {
-      CostTier &tier = res.costs[static_cast<size_t>(c)];
-      tier.amt = feats_.costs[static_cast<size_t>(c)].amt;
-      for (int i = 0; i < H; ++i)
-        for (int tid = 0; tid < nt; ++tid)
-          tier.acc[i].merge(F.cacc[(static_cast<size_t>(tid) * C + c) * H + i]);
-      tier.cover = nx[0] ? static_cast<float>(static_cast<double>(nx[static_cast<size_t>(1 + c)]) / static_cast<double>(nx[0])) : 0.f;
-    }
-    done_.fetch_add(1, std::memory_order_relaxed);
-  }
+  // ---- C: 换手成本 (FactorsLoad cost_tiers, 与 Run 同一份; 契约【换手成本】) ----
+  cost_tiers(F.ex, F.rx.data(), L, feats_, res.costs);
+  done_.fetch_add(1, std::memory_order_relaxed);
   if (cancelled())
     return false;
 

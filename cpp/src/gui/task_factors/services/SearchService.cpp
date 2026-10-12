@@ -524,17 +524,8 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   // ---- 尺度: 先装块 0 (趟 0 反正要), 阈值槽 (ANY / GE0) 的坐标单位 = 基线 DAG 里该节点输入的池内有效格标准差 (CPU 走到该节点即止) ----
   if (handle(load_chunk(0, chunks[0]), ret))
     return ret;
-  // ---- 满仓只数 n_full (目标的 util 分母; 契约【目标】): 块 0 池内 (cs_valid) 平均每行有效票数 / kGroups —— 与因子无关, 池宽决定 ----
-  {
-    const Loaded &L = chunks[0].L;
-    const uint8_t *g = L.cs.m.data();
-    long long on = 0;
-    for (size_t k = 0, n = L.n(); k < n; ++k)
-      on += g[k] != 0;
-    obj.n_full = static_cast<double>(on) / static_cast<double>(L.T) / fs::kGroups;
-    assert(obj.n_full > 0.0 && "块 0 池内无有效票");
-    res.n_full = obj.n_full;
-  }
+  // ---- 满仓只数 n_full (目标的 util 分母; 契约【目标】): 块 0 池宽 (FactorsLoad n_full_of, 与 Run 同一份) ----
+  obj.n_full = res.n_full = n_full_of(chunks[0].L);
   {
     std::vector<size_t> need; // 要尺度的槽
     std::vector<int> want;    // 对应输入节点在 d0 的下标
@@ -697,20 +688,9 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   assert(base.pass >= 0 && "基线在粗网格 (趟 0) 必评过");
   if (!(best.sc.score > base.sc.score))
     return abort_with("当前参数已是最优 (无候选 score 严格高于基线), 文件不动");
-  SearchMark mark;
-  mark.expr = best.e.canon;
-  mark.hold = hd.h[best.sc.best];
-  mark.amt = feats_.costs[static_cast<size_t>(req.cost_idx)].amt;
-  mark.sell_impact = req.sell_impact;
-  mark.ls_net = best.sc.ls_net;
-  mark.util = best.sc.util;
-  mark.ric = best.sc.ric;
-  mark.score = best.sc.score;
-  mark.base_score = base.sc.score;
-  mark.time = now_string();
-  WriteFactorParams(req.factor_dir, req.file, best.e, mark);
+  WriteFactorParams(req.factor_dir, req.file, best.e); // 只写参数; h* / util 等看板数据由随后的 Run 用同一份目标从 stat 算
   res.wrote = true;
-  res.message = "params 已写入 (h* = " + fs::hold_name(mark.hold) + "), 自动 Run 重算 stat";
+  res.message = "params 已写入 (h* = " + fs::hold_name(hd.h[best.sc.best]) + "), 自动 Run 重算 stat";
   publish();
   return true;
 }

@@ -118,10 +118,10 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (三子页)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
-│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫因子文件 → 合成共享 DAG 评估 → 只回写 params / stat (expr 不动, 破碎标 BROKEN 不删)
-│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (三服务共用): 特征 / 门控 / 标签 / 成本 宿主平面
+│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫因子文件 → 合成共享 DAG 评估 (毛 HoldStat + 每档换手成本 CostAcc) → 只回写 params / stat (expr 不动, 破碎标 BROKEN 不删); 看板 h* / util 由 stat 现算
+│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (三服务共用): 特征 / 门控 / 标签 / 成本 宿主平面; n_full_of 满仓只数; cost_tiers 换手成本 (Run / Inspect 同一份)
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件; 期限结构净线的换手成本与 Search 同一份 (Stat cost_row)
-│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 粗网格 (含基线) → 多支逐层细化; 目标 = 年化净 LS · 资金利用率 · rIC, h* 限 30m~T+1; 严格好于基线才回写 params + search 块
+│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 粗网格 (含基线) → 多支逐层细化; 目标 = 年化净 LS · 资金利用率 · rIC, h* 限 30m~T+1; 严格好于基线才回写 params (分数只内部用)
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 构建器 + 因子表

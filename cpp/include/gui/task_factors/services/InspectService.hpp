@@ -11,9 +11,9 @@
 //   X  因子     key = S + expr                             → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
 //   R  rank_x   key = X                                    → ws[T][A] (拷一份随结果发布 = InspectResult::rx, 右上标的轴 / K 线着色;
 //                                                            之前多跑一遍 g ≡ 1 的 rank_x → rx_all, 池外段也有秩可显)
-//   C  成本     key = R                                    → CostTier[C]: 每金额档 × 每持有期一份换手成本 CostAcc (Stat 契约【换手成本】, 与 Search
-//                                                            同一份 cost_row: t ≥ h 的行逐格比 t−h 组别, 顶 / 底组新进者累建仓冲击; 一遍 [T][A] × H × C,
-//                                                            无排序无标签). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::sell_impact), 全在 UI 现算
+//   C  成本     key = R                                    → CostTier[C] (FactorsService.hpp): 每金额档 × 每持有期一份换手成本 CostAcc (FactorsLoad
+//                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: t ≥ h 的行逐格比 t−h 组别, 顶 / 底组新进者
+//                                                            累建仓冲击; 一遍 [T][A] × H × C, 无排序无标签). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::sell_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; sell_impact 只进均摊公式, 不进请求)
 //   L  评估     key = R × Y                                → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, eval_rows 一遍)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
@@ -52,15 +52,6 @@ struct InspectRequest {
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
-
-// 一个金额档的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (与 Search 打分完全同一份代码: Stat/Host.hpp cost_row):
-// 顶 / 底组按真实换手扣, 每 (t, h) 行只有新进者 (t−h 不在该组) 付建仓冲击 + sell_impact; 均摊成本 long_cost / short_cost 随 h 变 (h 越长留仓越多).
-// 买入冲击按 Config::max_impact 封顶后进 (装载时). 吃不满深度的格 (成本 NaN) 不计入 → 高档均值偏低, cover 把它亮出来
-struct CostTier {
-  int amt = 0;                                            // 万 (= FeatureTable::costs[c].amt)
-  factor::stat::CostAcc acc[factor::stat::kMaxHold] = {}; // [hd.n], 与 hold 同序
-  float cover = 0.f;                                      // Σ 成本有效 / Σ rx 有效 (格数比, 不分组不分 h)
-};
 
 struct InspectResult {
   std::string key; // = InspectRequest::key(); 空 = 无结果

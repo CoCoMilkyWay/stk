@@ -1,16 +1,17 @@
 // SearchService — Factors 页 Optimize 的单 worker: 对表格高光的那一个因子 (view_file) 搜它表达式的**全部参数项** (d / k / k2;
 // factor/Search/Grid.hpp 定槽与坐标), 目标 = 单一金额档真实换手成本下的 年化净 LS · 资金利用率 · rIC, h* 只在 30m ~ T+1 里选
 // (factor/Search/Contract.hpp【目标】: mono / 换手 / 显著性 / 样本外 / 活跃度硬阈值有意不进, 搜索要快), 严格好于基线才回写该因子文件的
-// params 键 + search 块 (h* / 净年化 / util / rIC, FactorsService WriteFactorParams; stat 删掉, UI 随后自动 Run 重算; 看板 h* 列读 search 块).
+// params 键 (FactorsService WriteFactorParams; stat 删掉, UI 随后自动 Run 重算). 分数只在搜索内部用: 看板的 h* / util 列由 Run 落的 stat
+// (每档 CostAcc) 用同一份 score_of 现算, 文件里不留搜索结论.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍; 趟与趟之间才有依赖):
-//   尺度          先装块 0: 满仓只数 n_full = 池内平均有效票数 / kGroups (util 分母); 基线 DAG 在 CPU 上走到各阈值槽 (ANY / GE0) 的输入节点,
+//   尺度          先装块 0: 满仓只数 n_full = 池内平均有效票数 / kGroups (util 分母, FactorsLoad n_full_of); 基线 DAG 在 CPU 上走到各阈值槽 (ANY / GE0) 的输入节点,
 //                 取池内有效格标准差 σ 作该槽坐标单位 (Grid set_scale); σ 不是正有限数的槽剔除 (输入常量, 阈值无意义)
 //   趟 0 粗网格   全部槽的格点笛卡尔积 (步长由 kLayerMax 预算反推, 含基线 = 当前参数), 每候选自选 h* (窗内 argmax 年化净 LS · util)
 //   分支          粗网格 score 最高的 kBranches 个互不相邻格点各开一支, 支内 h 固定为该格点的 h*
 //   趟 1..        每支围自己的 top-1 开细化网格 (步长从粗步长一半起逐层减半, 点数 ≤ kLayerMax), 全部活支的新点拼成一趟;
 //                 一支一层相对增益 < kMinGain 即停
-//   终            全部评过的候选按 score (自选 h*) 取最优: 不严格高于基线 score → 文件不动; 否则写 params + search 块
+//   终            全部评过的候选按 score (自选 h*) 取最优: 不严格高于基线 score → 文件不动; 否则写 params
 //
 // 评估 (Search 算子, 两后端语义同 Stat):
 //   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 kCarryDays = 5 日 (= kMaxD = max_lag 的行数), 统计从 t_lo 起
