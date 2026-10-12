@@ -16,13 +16,12 @@
 //   【warp_row】一 warp 算一 (t, hold) 行 → Row, **全 lane 同值** (收尾 finish_row 在 32 lane 冗余算: SIMT 下与 lane 0 独算同耗时,
 //     省掉 lane 间搬运; 消费端 lane 0 落 Row 或 lane k 取 grp[k] 都直接从寄存器拿). 一行只有 A ≤ 5120 格, 块级归约是纯栅栏延迟瓶颈,
 //     所以一遍 A 轴 lane 跨步 32, 累加器全在寄存器 + 每 lane **独占**的 smem 分组槽 (Slots, [warp][组][lane] 布局, 32 lane 落 32 连续字,
-//     无 bank 冲突; 每格 1 LDS + 1 STS, 不展开 20 组 select): 整数五和 (IC / rank-AC) 64 位 warp 蝶形归约 → 精确, 与 CPU 逐位一致;
+//     无 bank 冲突; 每格 1 LDS + 1 STS, 不展开 20 组 select): 整数五和 (rIC / rAC) 64 位 warp 蝶形归约 → 精确, 与 CPU 逐位一致;
 //     标签浮点和 float 蝶形; 分组槽由 lane q 沿 32 lane 串行加 (旋转起点), 求和序固定 → GPU 自身逐次确定, 与 CPU 只差求和序 (对拍容差).
 //     无 shared atomic, 无块级同步 (block 内各 warp 互不相干, 消费核可整 warp 提前退出).
 //   【禁用】--use_fast_math: pearson_int 的除法 / 开方要与 host 逐位一致.
 // =============================================================================
 
-#include "factor/Contract.hpp"
 #include "factor/Stat/Contract.hpp"
 
 #include <cassert>
@@ -115,13 +114,13 @@ __device__ __forceinline__ void warp_sum(T (&v)[D]) {
   }
 }
 
-// 一 warp 算一 (t, hold) 行 → Row (全 lane 同值). xr = 本行 r16; xl = t−h 行 r16 (没有 → nullptr, 无 AC); lb 已偏到行首;
+// 一 warp 算一 (t, hold) 行 → Row (全 lane 同值). xr = 本行 r16; xl = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首;
 // tail = 段末尾部 (tail_masked); gs / gc = 本 warp 的分组槽. 连续调用间的槽复用由函数内首个 __syncwarp 保护.
 __device__ __forceinline__ Row warp_row(Frame f, const uint16_t *xr, const uint16_t *xl, const Label &lb, int A, bool tail, float (*gs)[32],
                                         uint16_t (*gc)[32], int lane) {
   using ull = unsigned long long;
   Row r;
-  if (xl) {                        // ---- rank-AC (lag = h): 整数五和 ----
+  if (xl) {                        // ---- rAC (lag = h): 整数五和 ----
     ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy
     for (int a = lane; a < A; a += 32) {
       const unsigned x = xr[a], y = xl[a];
@@ -135,8 +134,8 @@ __device__ __forceinline__ Row warp_row(Frame f, const uint16_t *xr, const uint1
     }
     warp_sum(s);
     bool ok = false;
-    r.ac = factor::stat::pearson_int(s[0], s[1], s[2], s[3], s[4], s[5], ok);
-    r.ok_ac = ok ? 1 : 0;
+    r.rac = factor::stat::pearson_int(s[0], s[1], s[2], s[3], s[4], s[5], ok);
+    r.ok_rac = ok ? 1 : 0;
   }
   if (tail)
     return r;
@@ -147,7 +146,7 @@ __device__ __forceinline__ Row warp_row(Frame f, const uint16_t *xr, const uint1
     gs[q][lane] = 0.f;
     gc[q][lane] = 0;
   }
-  ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (IC)
+  ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (rIC)
   float fs[3] = {};              // Σlv (mkt), Σsv, Σsv|组0
   for (int a = lane; a < A; a += 32) {
     const unsigned x = xr[a], y = lb.ry[a];

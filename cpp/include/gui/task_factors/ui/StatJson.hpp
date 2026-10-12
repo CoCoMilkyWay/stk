@@ -1,5 +1,5 @@
 // Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: operators.json 的 stat.holds[] 与因子文件的 stat.holds[]
-// 同一格式 (键名 = HoldStat 字段名, 数值 4 位有效). load_hold 是 Save 的逆: 键缺 / 类型不对 → false (不 assert:
+// 同一格式 (键名 = HoldStat 字段名, 嵌套 Moments 展平为 ric_* / rac_*, 数值 4 位有效). load_hold 是 Save 的逆: 键缺 / 类型不对 → false (不 assert:
 // 文件是上次运行留下的, 可能来自旧代码 / 半截崩的).
 #pragma once
 
@@ -40,16 +40,18 @@ inline bool json_str_is(const nlohmann::json &j, const char *key, const char *wa
   return it != j.end() && it->is_string() && it->get_ref<const std::string &>() == want;
 }
 
-inline constexpr const char *kHoldStatKeys[] = {"ic_mean", "ic_std", "icir", "ic_t", "ic_pos", "ic_skew", "ic_kurt",
-                                                "ls_mean", "ls_t", "ls_pos", "sharpe", "beta", "mono", "rank_ac"};
+inline constexpr const char *kHoldStatKeys[] = {"ric_mean", "ric_sd", "ric_ir", "ric_t", "ric_pos", "ric_skew", "ric_kurt",
+                                                "rac_mean", "rac_sd", "rac_ir", "rac_t", "rac_pos", "rac_skew", "rac_kurt",
+                                                "ls_mean", "ls_t", "ls_pos", "sharpe", "beta", "mono"};
 inline constexpr int kHoldStatKeyCount = static_cast<int>(sizeof(kHoldStatKeys) / sizeof(kHoldStatKeys[0]));
 
 namespace detail {
-// 键 ↔ 字段 (与 kHoldStatKeys 同序)
+// 键 ↔ 字段 (与 kHoldStatKeys 同序; 嵌套 Moments 的键 = <ric|rac>_<字段>)
 template <class H>
-auto hold_stat_field(H &h, int q) -> decltype(&h.ic_mean) {
-  decltype(&h.ic_mean) f[kHoldStatKeyCount] = {&h.ic_mean, &h.ic_std, &h.icir, &h.ic_t, &h.ic_pos, &h.ic_skew, &h.ic_kurt,
-                                               &h.ls_mean, &h.ls_t, &h.ls_pos, &h.sharpe, &h.beta, &h.mono, &h.rank_ac};
+auto hold_stat_field(H &h, int q) -> decltype(&h.mono) {
+  decltype(&h.mono) f[kHoldStatKeyCount] = {&h.ric.mean, &h.ric.sd, &h.ric.ir, &h.ric.t, &h.ric.pos, &h.ric.skew, &h.ric.kurt,
+                                            &h.rac.mean, &h.rac.sd, &h.rac.ir, &h.rac.t, &h.rac.pos, &h.rac.skew, &h.rac.kurt,
+                                            &h.ls_mean, &h.ls_t, &h.ls_pos, &h.sharpe, &h.beta, &h.mono};
   return f[q];
 }
 } // namespace detail
@@ -58,7 +60,7 @@ inline nlohmann::ordered_json hold_json(const factor::stat::HoldStat &h) {
   nlohmann::ordered_json o;
   o["hold"] = h.hold;
   o["n"] = h.n;
-  o["n_ac"] = h.n_ac;
+  o["n_rac"] = h.n_rac;
   for (int q = 0; q < kHoldStatKeyCount; ++q)
     o[kHoldStatKeys[q]] = sig4(*detail::hold_stat_field(h, q));
   nlohmann::ordered_json g = nlohmann::ordered_json::array();
@@ -72,7 +74,7 @@ inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
   if (!o.is_object())
     return false;
   factor::stat::HoldStat h;
-  if (!json_int(o, "hold", h.hold) || !json_int(o, "n", h.n) || !json_int(o, "n_ac", h.n_ac))
+  if (!json_int(o, "hold", h.hold) || !json_int(o, "n", h.n) || !json_int(o, "n_rac", h.n_rac))
     return false;
   if (o.contains("sign")) // 旧格式: 值按自动符号镜像过, 作废重算
     return false;

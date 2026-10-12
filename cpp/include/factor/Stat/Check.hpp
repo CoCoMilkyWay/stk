@@ -4,8 +4,8 @@
 // Stat 评估算子对拍的公共件: 造数 / 容差 / 比较 / CPU 驱动 (GPU 经 GpuRun.hpp)
 // =============================================================================
 //   两个消费者共用 (口径必须一致): src/factor/op_check.cpp 与 GUI OperatorsService.
-//   无 golden: cpu ↔ gpu 两方 match 即过. 一级 Row 逐 (h, t) 比 (ok / ok_ac 逐位相等, 有效字段容差内),
-//   二级 HoldStat 逐字段比 (n / n_ac 逐位相等).
+//   无 golden: cpu ↔ gpu 两方 match 即过. 一级 Row 逐 (h, t) 比 (ok / ok_rac 逐位相等, 有效字段容差内),
+//   二级 HoldStat 逐字段比 (n / n_rac 逐位相等).
 //   造数沿用 factor/Check.hpp 的 Profile (HOLES 打整行缺失 / CONSTCOL 打全并列 / TINY 打量级), 两口径各一份 (Data::frame):
 //     x     CS: NORM (按 profile); TS: 同一 NORM 经 Φ 映到 (0,1) 当分位 (TsRankRoll 的输出形状)
 //     标签  每持有期 long = 0.3·z + NORM 噪声 (z = 造数用的 NORM 平面; IC ≈ 0.3, 二级统计有东西可比); short = −(0.3·z + 0.7·噪声);
@@ -91,7 +91,7 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) 
   }
 }
 
-// ---- 容差: 整数派生量 (ic / ac) 两后端本应逐位一致, 浮点和 (grp / ls / mkt) 只差求和序 ----
+// ---- 容差: 整数派生量 (ric / rac) 两后端本应逐位一致, 浮点和 (grp / ls / mkt) 只差求和序 ----
 inline Tol tol_of(Profile pr) {
   Tol t{1e-5, 1e-4};
   if (pr == Profile::TINY)
@@ -116,7 +116,7 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
   Diff d;
   for (size_t i = 0; i < n; ++i) {
     const Row &a = ref[i], &b = got[i];
-    if ((a.ok != 0) != (b.ok != 0) || (a.ok_ac != 0) != (b.ok_ac != 0)) {
+    if ((a.ok != 0) != (b.ok != 0) || (a.ok_rac != 0) != (b.ok_rac != 0)) {
       if (d.mask_bad++ == 0)
         d.worst_at = static_cast<int>(i);
       continue;
@@ -131,14 +131,14 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
           d.worst_at = at;
         continue;
       }
-      detail::cmp1(d, a.ic, b.ic, tol, at);
+      detail::cmp1(d, a.ric, b.ric, tol, at);
       detail::cmp1(d, a.mkt, b.mkt, tol, at);
       detail::cmp1(d, a.ls, b.ls, tol, at);
       for (int k = 0; k < kGroups; ++k)
         detail::cmp1(d, a.grp[k], b.grp[k], tol, at);
     }
-    if (a.ok_ac)
-      detail::cmp1(d, a.ac, b.ac, tol, at);
+    if (a.ok_rac)
+      detail::cmp1(d, a.rac, b.rac, tol, at);
   }
   return d;
 }
@@ -148,13 +148,20 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
   Diff d;
   for (int i = 0; i < H; ++i) {
     const HoldStat &a = ref[i], &b = got[i];
-    if (a.hold != b.hold || a.n != b.n || a.n_ac != b.n_ac) {
+    if (a.hold != b.hold || a.n != b.n || a.n_rac != b.n_rac) {
       if (d.mask_bad++ == 0)
         d.worst_at = i;
       continue;
     }
-    const float fa[] = {a.ic_mean, a.ic_std, a.icir, a.ic_t, a.ic_pos, a.ic_skew, a.ic_kurt, a.ls_mean, a.ls_t, a.ls_pos, a.sharpe, a.beta, a.mono, a.rank_ac};
-    const float fb[] = {b.ic_mean, b.ic_std, b.icir, b.ic_t, b.ic_pos, b.ic_skew, b.ic_kurt, b.ls_mean, b.ls_t, b.ls_pos, b.sharpe, b.beta, b.mono, b.rank_ac};
+    const auto cmp_mom = [&](const Moments &x, const Moments &y) {
+      const float fx[] = {x.mean, x.sd, x.ir, x.t, x.pos, x.skew, x.kurt}, fy[] = {y.mean, y.sd, y.ir, y.t, y.pos, y.skew, y.kurt};
+      for (size_t j = 0; j < sizeof(fx) / sizeof(fx[0]); ++j)
+        detail::cmp1(d, fx[j], fy[j], tol, i);
+    };
+    cmp_mom(a.ric, b.ric);
+    cmp_mom(a.rac, b.rac);
+    const float fa[] = {a.ls_mean, a.ls_t, a.ls_pos, a.sharpe, a.beta, a.mono};
+    const float fb[] = {b.ls_mean, b.ls_t, b.ls_pos, b.sharpe, b.beta, b.mono};
     for (size_t j = 0; j < sizeof(fa) / sizeof(fa[0]); ++j)
       detail::cmp1(d, fa[j], fb[j], tol, i);
     for (int k = 0; k < kGroups; ++k)

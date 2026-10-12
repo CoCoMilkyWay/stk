@@ -152,10 +152,10 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
       sc::run_cpu(d, cpu, threads);
       if (rep.verbose)
         for (const factor::stat::HoldStat &s : cpu.stat)
-          std::printf("       Stat.%s cpu    h=%-3d %-8s n=%d/%d  IC %+.4f std %.4f ICIR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
-                      "Sharpe %+.2f beta %+.3f  mono %+.3f  rankAC %+.3f\n",
-                      fname, s.hold, kProfName[pi], s.n, s.n_ac, s.ic_mean, s.ic_std, s.icir, s.ic_t, s.ic_pos, s.ls_mean, s.ls_t, s.ls_pos,
-                      s.sharpe, s.beta, s.mono, s.rank_ac);
+          std::printf("       Stat.%s cpu    h=%-3d %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
+                      "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
+                      fname, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls_mean, s.ls_t, s.ls_pos,
+                      s.sharpe, s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
       if (!factor::gpu::available())
         continue;
       sc::Result gpu;
@@ -238,8 +238,8 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
           for (int c = 0; c < sk::kCands; ++c) {
             const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{0.0005, 1.0});
             const factor::search::CostAcc &ca = full[c].cost[s.best >= 0 ? s.best : 0];
-            std::printf("       Search.%s cpu c%d %-8s best h=%-4d ls_net/yr %+.4f ic %+.4f score %+.3g  turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)\n",
-                        fname, c, kProfName[pi], s.best >= 0 ? hd.h[s.best] : -1, s.ls_net, s.ic, s.score, ca.turn_hi(), ca.turn_lo(), ca.buy_mean(),
+            std::printf("       Search.%s cpu c%d %-8s best h=%-4d ls_net/yr %+.4f rIC %+.4f score %+.3g  turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)\n",
+                        fname, c, kProfName[pi], s.best >= 0 ? hd.h[s.best] : -1, s.ls_net, s.ric, s.score, ca.turn_hi(), ca.turn_lo(), ca.buy_mean(),
                         ca.e_hi, ca.sell_mean(), ca.e_lo);
           }
       }

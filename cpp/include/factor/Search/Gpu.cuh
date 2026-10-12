@@ -41,8 +41,8 @@ using factor::stat::Holds;
 using factor::stat::kGroups;
 using factor::stat::kMaxA;
 using factor::stat::kMaxHold;
-using factor::stat::kRankNone;
 using factor::stat::Label;
+using factor::stat::MomAcc;
 using factor::stat::Row;
 
 inline constexpr int kRows = 128; // stat_batch 每 block 的行数 (分片粒度; NB = ⌈(T − t_lo)/kRows⌉)
@@ -68,8 +68,9 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;
 
   // warp 私有分片 (= Accum::add 的字段拆到 lane: lane 0 标量 + 成本, lane q < kGroups 组 q)
-  int an = 0, anpos = 0, anlpos = 0, anac = 0;
-  double asic = 0.0, asic2 = 0.0, asic3 = 0.0, asic4 = 0.0, asls = 0.0, asls2 = 0.0, asmk = 0.0, asmk2 = 0.0, aslm = 0.0, asac = 0.0;
+  MomAcc aric, arac;
+  int anlpos = 0;
+  double asls = 0.0, asls2 = 0.0, asmk = 0.0, asmk2 = 0.0, aslm = 0.0;
   double asg = 0.0;
   long long asc = 0;
   double abuy = 0.0, asell = 0.0;
@@ -91,18 +92,14 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
       asg += gq;
       asc += cq;
       if (lane == 0) {
-        ++an;
-        anpos += r.ic > 0.f;
+        aric.add(r.ric);
         anlpos += r.ls > 0.f;
-        const double ic = r.ic, ic2 = ic * ic, ls = r.ls, mk = r.mkt;
-        asic += ic, asic2 += ic2, asic3 += ic2 * ic, asic4 += ic2 * ic2;
+        const double ls = r.ls, mk = r.mkt;
         asls += ls, asls2 += ls * ls, asmk += mk, asmk2 += mk * mk, aslm += ls * mk;
       }
     }
-    if (r.ok_ac && lane == 0) {
-      ++anac;
-      asac += r.ac;
-    }
+    if (r.ok_rac && lane == 0)
+      arac.add(r.rac);
     // ---- 换手成本 (有 lag 行才算; 逐格规则 = 契约 cost_cell, 与 Stat/Host.hpp cost_row 同一份; 只有顶 / 底组成员才碰冲击平面) ----
     if (xl) {
       const Cost cr = cost.at(base);
@@ -137,9 +134,8 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
     P.acc.sc[lane] = asc;
   }
   if (lane == 0) {
-    P.acc.n = an, P.acc.npos = anpos, P.acc.nlpos = anlpos, P.acc.nac = anac;
-    P.acc.sic = asic, P.acc.sic2 = asic2, P.acc.sic3 = asic3, P.acc.sic4 = asic4;
-    P.acc.sls = asls, P.acc.sls2 = asls2, P.acc.smk = asmk, P.acc.smk2 = asmk2, P.acc.slm = aslm, P.acc.sac = asac;
+    P.acc.ric = aric, P.acc.rac = arac, P.acc.nlpos = anlpos;
+    P.acc.sls = asls, P.acc.sls2 = asls2, P.acc.smk = asmk, P.acc.smk2 = asmk2, P.acc.slm = aslm;
     P.cost.buy_hi = abuy, P.cost.sell_lo = asell, P.cost.n_hi = anh, P.cost.n_lo = anl, P.cost.e_hi = aeh, P.cost.e_lo = ael;
   }
 }

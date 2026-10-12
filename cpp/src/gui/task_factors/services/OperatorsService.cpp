@@ -202,10 +202,10 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
     for (int i = 0; i < d.hd.n; ++i) {
       const factor::stat::HoldStat &h = cpu.stat[static_cast<size_t>(i)];
       detail_line(holds,
-                  "  h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
-                  "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f",
-                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
-                  h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
+                  "  h=%-5s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
+                  "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f",
+                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_rac, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew, h.ric.kurt,
+                  h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
     }
     if (!has_gpu)
       continue;
@@ -278,8 +278,8 @@ void run_search(RoundCtx &R, OperatorRow &row) {
     for (int c = 0; c < sk::kCands; ++c) {
       const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{});
       const factor::search::CostAcc &ca = full[c].cost[s.best >= 0 ? s.best : 0];
-      detail_line(scores, "  c%d  best h=%-5s ls_net/yr %+.4f ic %+.4f score %+.3g | turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)", c,
-                  s.best >= 0 ? factor::stat::hold_name(hd.h[s.best]).c_str() : "-", s.ls_net, s.ic, s.score, ca.turn_hi(), ca.turn_lo(),
+      detail_line(scores, "  c%d  best h=%-5s ls_net/yr %+.4f rIC %+.4f score %+.3g | turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)", c,
+                  s.best >= 0 ? factor::stat::hold_name(hd.h[s.best]).c_str() : "-", s.ls_net, s.ric, s.score, ca.turn_hi(), ca.turn_lo(),
                   ca.buy_mean(), ca.e_hi, ca.sell_mean(), ca.e_lo);
     }
     if (!has_gpu)
@@ -333,14 +333,14 @@ OperatorsService::OperatorsService() {
     s.operand = R"tex(x, y_h \in \mathbb{R})tex";
     s.out = factor::Dom::REAL;
     s.op = R"tex(\mathrm{rIC},\,\mathrm{IR},\,G_{20},\,\mathrm{LS},\,\mathrm{SR},\,\beta,\,\mathrm{mono},\,\mathrm{rAC})tex";
-    s.note = "因子评估: 每 (h, t) 的 IC / 20 组均值 / 多空 / rank-AC, 再沿 t 汇总; 挖掘的第一道闸, 每轮先跑";
-    s.doc = "因子评估算子 (factor/Stat): 因子 x + 每持有期 h 一组 fp16 标签 y_h → 每 (h, t) 的 IC / 20 组和 / 顶底多空 / rank-AC, 再沿 t 汇总 (组沿 t 池化).\n"
+    s.note = "因子评估: 每 (h, t) 的 rIC / 20 组均值 / 多空 / rAC, 再沿 t 汇总; 挖掘的第一道闸, 每轮先跑";
+    s.doc = "因子评估算子 (factor/Stat): 因子 x + 每持有期 h 一组 fp16 标签 y_h → 每 (h, t) 的 rIC / 20 组和 / 顶底多空 / rAC, 再沿 t 汇总 (组沿 t 池化).\n"
             "持有期集合 = Stat/Check.hpp kHolds (分钟档 / close / T+N). 标签统一超额 (减截面均值).\n"
             "两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
             "无流式后端, cpu 即 golden (CPU 列不对拍); GPU 列 Diff = 两口径 × (一级 rows + 二级 stat) gpu ↔ cpu 合并.\n"
             "表列耗时 = 两口径 eval 之和 (每因子一次: rank/量化 + 逐持有期一遍 A 轴), 不含 prep (标签 rank 预处理, 见下).\n"
-            "造数: long = 0.3·z + 噪声 (IC ≈ 0.3; TS 的 x = Φ(z)). ic_t / ls_t 按 n/h 折算 (相邻 h 行标签重叠); Sharpe 以持有期为一期年化;\n"
-            "rank-AC 的 lag = h; 段末 h+3 行 (持有到收盘) 不计标签统计.";
+            "造数: long = 0.3·z + 噪声 (rIC ≈ 0.3; TS 的 x = Φ(z)). rIC / rAC / LS 的 t 按 n/h 折算 (相邻 h 行重叠); Sharpe 以持有期为一期年化;\n"
+            "rAC 的 lag = h; 段末 h+3 行 (持有到收盘) 不计标签统计.";
     s.classified = false;
     rows.push_back(s);
     runners_.push_back(&run_stat);

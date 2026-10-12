@@ -8,7 +8,7 @@
 //                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone
 //     rank_x_row  因子一行 (只看池内 g ∧ xm 的格): CS 排序 / TS 直接量化 —— 口径分叉只在这里
 //     rank_y_row  做多标签一行 (fp16 位) → ry. 与因子无关, 常驻期算一次
-//     row_stat    一 (t, hold) 完整行 = ac_row (给了 lag 行才算) + label_row (非段末尾部才算); 公式收尾走契约的 finish_row.
+//     row_stat    一 (t, hold) 完整行 = rac_row (给了 lag 行才算) + label_row (非段末尾部才算); 公式收尾走契约的 finish_row.
 //                 label_row 一遍 A 轴: 整数五和 / 标签浮点和 / 分组和, branchless select
 //     cost_row    一 (t, hold) 行的换手成本 (契约 cost_cell 逐格) → CostAcc. Search 打分 / Inspect 期限结构净线共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
@@ -114,8 +114,8 @@ inline void rank_y_row(const uint16_t *lv, const uint8_t *m, int A, uint16_t *ou
   rank_row([&](int a) { return m[a] ? factor::stat::ord(h2f(lv[a])) : kNoKey; }, A, out, sc);
 }
 
-// rank-AC: rx = 本行 r16, rlag = t−h 行 r16 → r.ac / r.ok_ac
-inline void ac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
+// rAC: rx = 本行 r16, rlag = t−h 行 r16 → r.rac / r.ok_rac
+inline void rac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   using ull = unsigned long long;
   ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
   for (int a = 0; a < A; ++a) {
@@ -129,8 +129,8 @@ inline void ac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
     sxy += ok ? x * y : 0;
   }
   bool ok = false;
-  r.ac = factor::stat::pearson_int(n, sx, sy, sxx, syy, sxy, ok);
-  r.ok_ac = ok ? 1u : 0u;
+  r.rac = factor::stat::pearson_int(n, sx, sy, sxx, syy, sxy, ok);
+  r.ok_rac = ok ? 1u : 0u;
 }
 
 // 换手成本 (契约【换手成本】): rx = 本行 r16, rlag = t−h 行 r16 (必有), c 已偏到行首 → 攒进 acc (顶 / 底组计数, 新进者累建仓冲击)
@@ -150,7 +150,7 @@ inline void cost_row(const uint16_t *rx, const uint16_t *rlag, const Cost &c, in
   }
 }
 
-// 标签侧: rx = 本行 r16, lb 已偏到行首 → r 的 ic / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
+// 标签侧: rx = 本行 r16, lb 已偏到行首 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
 inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &r) {
   using ull = unsigned long long;
   ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
@@ -179,11 +179,11 @@ inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &
   factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, top, bot, r);
 }
 
-// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 AC); lb 已偏到行首; tail = 段末尾部 (tail_masked)
+// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; tail = 段末尾部 (tail_masked)
 inline Row row_stat(Frame f, const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, bool tail) {
   Row r;
   if (rlag)
-    ac_row(rx, rlag, A, r);
+    rac_row(rx, rlag, A, r);
   if (!tail)
     label_row(f, rx, lb, A, r);
   return r;

@@ -147,7 +147,7 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
 
 // 毛口径一级 Row[T] (选定 hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
 // 再按回测长度折成等效年化 (× kDaysPerYear / days, 单位 %): 末点 = 年化收益, 不同区间长度 / 持有期可比;
-// IC 分布 = ok 行的 ic 逐行进 KLL (与 Accum 的 ic_mean/std/skew/kurt 同一组样本).
+// rIC 分布 = ok 行的 ric 逐行进 KLL (与 HoldStat::ric 的 mean/sd/skew/kurt 同一组样本).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
   if (res.key.empty() || !res.error.empty() || res.rows.empty())
@@ -179,7 +179,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
       const factor::stat::Row &w = r[t];
       if (!w.ok)
         continue;
-      ics.push_back(w.ic);
+      ics.push_back(w.ric);
       ls += w.ls;
       for (int k = 0; k < K; ++k)
         if (w.cnt[k]) // TS 口径组可空: 该刻无仓, 贡献 0
@@ -610,8 +610,8 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
 // 左下: IC 分布 — 逐行 rank IC 当随机变量, KLL 导出的 PDF (阴影 + 线) + 0 线 + 均值线 + mean ± std (竖线, 其间阴影换色); 标题的矩与顶部 stat 行同一组样本
 void plot_ic(const InspectDerived &d, const ImVec2 &size) {
   char title[160];
-  std::snprintf(title, sizeof(title), "IC 分布 (逐行 rank IC)  mean %+.4f  std %.4f  skew %+.2f  kurt %+.2f  pos %.2f  n=%d###ic", d.hs.ic_mean, d.hs.ic_std,
-                d.hs.ic_skew, d.hs.ic_kurt, d.hs.ic_pos, d.hs.n);
+  std::snprintf(title, sizeof(title), "rIC 分布 (逐行 rank IC)  mean %+.4f  sd %.4f  skew %+.2f  kurt %+.2f  pos %.2f  n=%d###ic", d.hs.ric.mean,
+                d.hs.ric.sd, d.hs.ric.skew, d.hs.ric.kurt, d.hs.ric.pos, d.hs.n);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
   CompactLegend cl;
@@ -621,7 +621,7 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
   ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
   const analysis::AggPdf &p = d.ic_pdf;
   const int np = static_cast<int>(p.n_pts);
-  const double zero = 0.0, mean = d.hs.ic_mean, sd[2] = {mean - d.hs.ic_std, mean + d.hs.ic_std};
+  const double zero = 0.0, mean = d.hs.ric.mean, sd[2] = {mean - d.hs.ric.sd, mean + d.hs.ric.sd};
   const ImVec4 col_mean(1.0f, 0.75f, 0.3f, 1.0f);
   if (np >= 2) {
     const ImVec4 col(0.4f, 0.7f, 1.0f, 1.0f);
@@ -737,10 +737,10 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
         ImGui::TextDisabled("毛   n=%d (不足)", h.n);
       } else {
         const double ann = 100.0 * factor::stat::periods_per_year(h.hold);
-        ImGui::Text("毛   n=%d/%d  rIC %+.4f IR %+.3f t %+.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f | "
-                    "年化 %%: L %+.2f  S %+.2f  LS %+.2f",
-                    h.n, h.n_ac, h.ic_mean, h.icir, h.ic_t, h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac, h.grp[K - 1] * ann,
-                    h.grp[0] * ann, h.ls_mean * ann);
+        ImGui::Text("毛   n=%d/%d  rIC %+.4f IR %+.3f t %+.2f pos %.2f | LS %+.5f t %+.2f pos %.2f SR %+.2f β %+.3f | mono %+.3f | "
+                    "rAC %+.3f | 年化 %%: L %+.2f  S %+.2f  LS %+.2f",
+                    h.n, h.n_rac, h.ric.mean, h.ric.ir, h.ric.t, h.ric.pos, h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rac.mean,
+                    h.grp[K - 1] * ann, h.grp[0] * ann, h.ls_mean * ann);
         for (int q = 1; q < n_tier; ++q) {
           const CostTier &ct = costs[q - 1];
           const factor::stat::CostAcc &ca = ct.acc[i];
@@ -1064,10 +1064,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
                         res_scope.backend.c_str(), res_scope.time.c_str(), res_valid, res_ms, match ? "" : "  (旧结果, 新请求计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)
-      ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f std %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
-                  "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f",
-                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_ac, h.ic_mean, h.ic_std, h.icir, h.ic_t, h.ic_pos, h.ic_skew, h.ic_kurt,
-                  h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rank_ac);
+      ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
+                  "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f",
+                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_rac, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew, h.ric.kurt,
+                  h.ls_mean, h.ls_t, h.ls_pos, h.sharpe, h.beta, h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
     else
       ImGui::TextDisabled("h=%s  n=%d (有效行不足, 无 stat)", factor::stat::hold_name(cur_hold).c_str(), h.n);
   } else {

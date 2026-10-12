@@ -323,29 +323,36 @@ bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
 
 // ============================================================================
 // Stat 指标表: 主表 Stat 列 / 排序键 / 行悬停转置表 都从这一张表展开 (加指标 = 加一行)
-//   group  分组, 按重要性排: 形态 (单调 / 换手) → LS (能不能赚) → IC (整体相关, 参考) → 样本; 悬停表按组出标题行, 主表列同序
+//   group  分组, 按重要性排: 形态 (单调 / 换手) → LS (能不能赚) → rIC (整体相关) → rAC (留仓程度) → 样本; 悬停表按组出标题行, 主表列同序;
+//          组底色 (bg) 主表列 / 悬停表行共用
 //   col    非空 = 进主表 (列名), 空 = 只在悬停表
 //   desc / range / best  说明 / 取值范围 / 最优 (悬停表三列, 主表列提示也由它们拼); 文案压短, 悬停表宽度由它们定
 //   get    HoldStat → double (整数计数也走这里, fmt 用 %.0f)
 //   cmp    跨持有期可比性 (渐变着色): None 不比; High 越大越好 (因子方向按根算子约定为正); Low 越小越好; AbsLow 越近 0 越好.
-//          不比的: n / n_ac (由持有期机制决定), std (尺度随 h 变), skew / kurt (形态诊断). rAC 的 lag = h 随 h 变, 跨期比用 turn (年化换手)
-//   公式见 factor/Stat/Contract.hpp【二级 HoldStat】(t 值按 n/h 折算重叠持有期; Sharpe 以持有期为一期年化)
+//          不比的: n / n_rac (由持有期机制决定), sd (尺度随 h 变), skew / kurt (形态诊断), rAC 除均值外的矩.
+//          rAC 的 lag = h 随 h 变, 跨期比用 turn (年化换手)
+//   lag    样本 = ok_rac 行 (n_rac; rAC 系 / turn), 否则 ok 行 (n); 对应行数 < 3 → 空
+//   公式见 factor/Stat/Contract.hpp【二级 HoldStat】(rIC / rAC 同一套矩; t 值按 n/h 折算重叠持有期; Sharpe 以持有期为一期年化)
 // ============================================================================
 using HS = factor::stat::HoldStat;
 enum class Group : uint8_t { Shape,
                              LS,
-                             IC,
+                             RIC,
+                             RAC,
                              Sample,
                              kCount };
 struct GroupInfo {
   const char *name, *desc;
+  ImVec4 bg; // 组底色 (淡)
 };
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
-    {"形态", "分层单调 / 换手"},
-    {"LS", "顶底多空超额 (G20 做多 + G1 做空)"},
-    {"IC", "截面秩相关, 只作参考"},
-    {"样本", "有效 t 行数"},
+    {"形态", "分层单调 / 换手", ImVec4(0.70f, 0.45f, 0.95f, 0.10f)},
+    {"LS", "顶底多空超额 (G20 做多 + G1 做空)", ImVec4(0.35f, 0.85f, 0.45f, 0.10f)},
+    {"rIC", "因子秩 × 标签秩 截面相关 (rank IC)", ImVec4(0.35f, 0.65f, 1.00f, 0.10f)},
+    {"rAC", "因子秩 lag=h 截面自相关 (rank AC)", ImVec4(1.00f, 0.65f, 0.25f, 0.10f)},
+    {"样本", "有效 t 行数", ImVec4(0.60f, 0.60f, 0.60f, 0.08f)},
 };
+ImU32 group_bg(Group g) { return ImGui::GetColorU32(kGroupInfo[static_cast<size_t>(g)].bg); }
 enum class Cmp : uint8_t { None,
                            High,
                            Low,
@@ -358,13 +365,13 @@ struct Metric {
   const char *fmt;
   double (*get)(const HS &);
   Cmp cmp;
+  bool lag = false;
 };
 constexpr Metric kMetrics[] = {
     {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f", [](const HS &h) { return static_cast<double>(h.mono); },
      Cmp::High},
-    {Group::Shape, "rAC", "rAC", "因子秩 lag=h 自相关", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rank_ac); },
-     Cmp::High},
-    {Group::Shape, "turn", "turn", "年化换手 (倍/年)", "[0, ∞)", "越小", "%.0f", [](const HS &h) { return factor::stat::turnover_annual(h); }, Cmp::Low},
+    {Group::Shape, "turn", "turn", "年化换手 (倍/年) = (1 − rAC) × 每年期数", "[0, ∞)", "越小", "%.0f",
+     [](const HS &h) { return factor::stat::turnover_annual(h); }, Cmp::Low, true},
     {Group::LS, "mean", "LS", "顶底多空超额 均值", "(-∞, ∞)", "越大", "%+.5f",
      [](const HS &h) { return static_cast<double>(h.ls_mean); }, Cmp::High},
     {Group::LS, "t", nullptr, "顶底多空超额 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls_t); }, Cmp::High},
@@ -372,16 +379,25 @@ constexpr Metric kMetrics[] = {
      Cmp::High},
     {Group::LS, "SR", "SR", "顶底多空超额 年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return static_cast<double>(h.sharpe); }, Cmp::High},
     {Group::LS, "β", nullptr, "顶底多空超额 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
-    {Group::IC, "mean", "IC", "rank IC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h) { return static_cast<double>(h.ic_mean); }, Cmp::High},
-    {Group::IC, "std", nullptr, "rank IC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.ic_std); }, Cmp::None},
-    {Group::IC, "IR", "ICIR", "rank IC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.icir); }, Cmp::High},
-    {Group::IC, "t", nullptr, "rank IC t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_t); }, Cmp::High},
-    {Group::IC, "pos", nullptr, "rank IC > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ic_pos); },
+    {Group::RIC, "mean", "rIC", "rIC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h) { return static_cast<double>(h.ric.mean); }, Cmp::High},
+    {Group::RIC, "sd", nullptr, "rIC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.ric.sd); }, Cmp::None},
+    {Group::RIC, "IR", "rICIR", "rIC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.ric.ir); }, Cmp::High},
+    {Group::RIC, "t", nullptr, "rIC t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ric.t); }, Cmp::High},
+    {Group::RIC, "pos", "rIC>0", "rIC > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ric.pos); },
      Cmp::High},
-    {Group::IC, "skew", nullptr, "rank IC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_skew); }, Cmp::None},
-    {Group::IC, "kurt", nullptr, "rank IC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ic_kurt); }, Cmp::None},
-    {Group::Sample, "n", nullptr, "标签 ok 行数", "[0, T]", "越大, <3 其余空", "%.0f", [](const HS &h) { return static_cast<double>(h.n); }, Cmp::None},
-    {Group::Sample, "n_ac", nullptr, "rAC 可算行数", "[0, T]", "越大", "%.0f", [](const HS &h) { return static_cast<double>(h.n_ac); }, Cmp::None},
+    {Group::RIC, "skew", nullptr, "rIC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ric.skew); }, Cmp::None},
+    {Group::RIC, "kurt", nullptr, "rIC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ric.kurt); }, Cmp::None},
+    {Group::RAC, "mean", "rAC", "rAC 均值", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rac.mean); }, Cmp::High, true},
+    {Group::RAC, "sd", nullptr, "rAC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.rac.sd); }, Cmp::None, true},
+    {Group::RAC, "IR", nullptr, "rAC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rac.ir); }, Cmp::None,
+     true},
+    {Group::RAC, "t", nullptr, "rAC t 值", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return static_cast<double>(h.rac.t); }, Cmp::None, true},
+    {Group::RAC, "pos", nullptr, "rAC > 0 占比", "[0, 1]", "越大", "%.2f", [](const HS &h) { return static_cast<double>(h.rac.pos); }, Cmp::None, true},
+    {Group::RAC, "skew", nullptr, "rAC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.rac.skew); }, Cmp::None, true},
+    {Group::RAC, "kurt", nullptr, "rAC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.rac.kurt); }, Cmp::None, true},
+    {Group::Sample, "n", nullptr, "标签 ok 行数", "[0, T]", "越大, <3 标签侧空", "%.0f", [](const HS &h) { return static_cast<double>(h.n); }, Cmp::None},
+    {Group::Sample, "n_rac", nullptr, "rAC 可算行数", "[0, T]", "越大, <3 rAC / turn 空", "%.0f", [](const HS &h) { return static_cast<double>(h.n_rac); },
+     Cmp::None},
 };
 constexpr int kNumMetrics = static_cast<int>(std::size(kMetrics));
 constexpr int count_cols() {
@@ -402,9 +418,12 @@ constexpr std::array<int, kNumStatCols> stat_col_metric() {
 }
 constexpr std::array<int, kNumStatCols> kStatColMetric = stat_col_metric();
 
-// 一格: 无值 → "-"; n < 3 时统计量为空 (样本组照显); 否则按 fmt 打印, 可带色
+// 有值: 样本组照显; 其余看对应行数 ≥ 3 (lag 指标看 n_rac, 其余看 n)
+bool has_value(const HS &h, const Metric &m) { return m.group == Group::Sample || (m.lag ? h.n_rac : h.n) >= 3; }
+
+// 一格: 无值 → "-"; 否则按 fmt 打印, 可带色
 void metric_cell(const HS *h, const Metric &m, const ImVec4 *color = nullptr) {
-  if (!h || (h->n < 3 && m.group != Group::Sample))
+  if (!h || !has_value(*h, m))
     ImGui::TextDisabled("-");
   else if (color)
     ImGui::TextColored(*color, m.fmt, m.get(*h));
@@ -416,7 +435,7 @@ double metric_key(const HS *h, const Metric &m) { return h ? m.get(*h) : -1e300;
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn frame status time valid | mono rAC turn LS SR IC ICIR | expr ops feats slots note
+//   edit type name_en name_cn frame status time valid | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
@@ -551,7 +570,7 @@ const std::string &col_tip(int c) {
       const Metric &m = *col_metric(i);
       const GroupInfo &g = kGroupInfo[static_cast<size_t>(m.group)];
       a[static_cast<size_t>(i)] = std::string(g.name) + " · " + m.name + "\n• 说明  " + m.desc + "\n• 范围  " + m.range + "\n• 最优  " + m.best +
-                                  "\n• 组    " + g.desc + "\n• 显示  选定持有期的值, n < 3 为空; 着色 = 本列跨因子渐变 (红最差 → 绿最好); 悬停行看全部持有期";
+                                  "\n• 组    " + g.desc + "\n• 显示  选定持有期的值, 样本 < 3 为空; 字色 = 本列跨因子渐变 (红最差 → 绿最好); 底色 = 组; 悬停行看全部持有期";
     }
     return a;
   }();
@@ -584,7 +603,7 @@ struct ScoreRange { // 一组样本的分值范围, 逐个 add
   bool usable() const { return cnt >= 2 && hi > lo; }
 };
 std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const ScoreRange &rg) {
-  if (m.cmp == Cmp::None || !h || h->n < 3 || !rg.usable())
+  if (m.cmp == Cmp::None || !h || !has_value(*h, m) || !rg.usable())
     return std::nullopt;
   const float t = static_cast<float>((metric_score(m, *h) - rg.lo) / (rg.hi - rg.lo));
   const ImVec4 bad = StatusColor(TaskStatus::Kind::Error), mid = ImGui::GetStyleColorVec4(ImGuiCol_Text), good = StatusColor(TaskStatus::Kind::Ready);
@@ -596,7 +615,7 @@ std::optional<ImVec4> hold_color(const FactorRow &r, const Metric &m, int k) {
     return std::nullopt;
   ScoreRange rg;
   for (int j = 0; j < r.n_hold; ++j)
-    if (r.hold[j].n >= 3)
+    if (has_value(r.hold[j], m))
       rg.add(metric_score(m, r.hold[j]));
   return grade_color(m, &r.hold[k], rg);
 }
@@ -637,12 +656,14 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
       cur = m.group;
       const GroupInfo &g = kGroupInfo[static_cast<size_t>(cur)];
       ImGui::TableNextRow();
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, group_bg(cur));
       ImGui::TableNextColumn();
       ImGui::TextDisabled("%s", g.name);
       ImGui::TableNextColumn();
       ImGui::TextDisabled("%s", g.desc);
     }
     ImGui::TableNextRow();
+    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, group_bg(cur));
     ImGui::TableNextColumn();
     ImGui::Text("  %s", m.name);
     ImGui::TableNextColumn();
@@ -917,7 +938,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
 
-  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档真实换手成本下的 年化净 LS · IC (只看这两个); 最优回写 params 后 TaskFactors 自动 Run ----
+  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档真实换手成本下的 年化净 LS · rIC (只看这两个); 最优回写 params 后 TaskFactors 自动 Run ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
@@ -942,7 +963,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     if (!can_opt)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档真实换手成本下的 年化净 LS × IC (持有期自选最优); 只看这两个\n"
+      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档真实换手成本下的 年化净 LS × rIC (持有期自选最优); 只看这两个\n"
                      "• 粗网格 (步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 分支 (互不相邻的 top-%d) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
                      "• 数据按天分块流式过, 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
                      "• 最优优于当前参数 → 回写该文件 params (stat 删掉) 并自动 Run 重算; 否则文件不动"
@@ -1015,7 +1036,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         ImGui::TableSetupColumn("pass");
         ImGui::TableSetupColumn("h*");
         ImGui::TableSetupColumn("LS net/yr");
-        ImGui::TableSetupColumn("IC");
+        ImGui::TableSetupColumn("rIC");
         ImGui::TableSetupColumn("score");
         ImGui::TableHeadersRow();
         const size_t n_show = std::min<size_t>(20, s_sr.cands.size());
@@ -1036,7 +1057,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           else
             ImGui::TextDisabled("-");
           ImGui::TableNextColumn();
-          ImGui::Text("%.4f", c.ic);
+          ImGui::Text("%.4f", c.ric);
           ImGui::TableNextColumn();
           if (std::isfinite(c.score))
             ImGui::Text("%.4g", c.score);
@@ -1281,6 +1302,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
     for (int c = 0; c < kNumCols; ++c) {
       ImGui::TableSetColumnIndex(c);
+      if (const Metric *m = col_metric(c))
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, group_bg(m->group));
       ImGui::TableHeader(col_name(c));
       if (ImGui::IsItemHovered())
         tip("%s", col_tip(c).c_str());
@@ -1350,7 +1373,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       if (m.cmp == Cmp::None)
         continue;
       for (const FactorRow &r : s_rows)
-        if (const HS *h = hold_of(r, cur_hold); h && h->n >= 3)
+        if (const HS *h = hold_of(r, cur_hold); h && has_value(*h, m))
           col_rg[i].add(metric_score(m, *h));
     }
 
@@ -1404,6 +1427,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           fixed_cell(static_cast<Col>(cr.fixed), r, ctx, editing);
         } else {
           const Metric &m = *col_metric(c);
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, group_bg(m.group));
           const std::optional<ImVec4> col = grade_color(m, h, col_rg[cr.stat]);
           metric_cell(h, m, col ? &*col : nullptr);
         }

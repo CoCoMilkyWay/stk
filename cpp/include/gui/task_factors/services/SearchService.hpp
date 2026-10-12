@@ -66,7 +66,7 @@ struct SearchCand {
   int pass = 0;          // 第几趟评的 (0 = 粗)
   int best_hi = -1;      // 自选 h* (hd 下标); < 0 = 无一持有期 n ≥ 3
   double score = -std::numeric_limits<double>::infinity();
-  double ls_net = 0.0, ic = 0.0; // h* 处 (ls_net 年化)
+  double ls_net = 0.0, ric = 0.0; // h* 处 (ls_net 年化)
 };
 
 struct SearchResult {

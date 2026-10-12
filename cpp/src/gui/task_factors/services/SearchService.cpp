@@ -32,7 +32,7 @@ using factor::search::Result;
 using factor::search::Score;
 using Clock = std::chrono::steady_clock;
 
-constexpr int kCarryDays = 5;      // 块首多带的交易日 (ROLL 预热 + rank-AC lag): 行数 = kMaxD = TS 归一窗 ≥ max_lag
+constexpr int kCarryDays = 5;      // 块首多带的交易日 (ROLL 预热 + rAC lag): 行数 = kMaxD = TS 归一窗 ≥ max_lag
 constexpr int kCpuForest = 64;     // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
 constexpr int kGpuMinBatch = 8;    // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
 constexpr double kHostFrac = 0.6;  // 宿主可用内存的使用比例
@@ -176,7 +176,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   for (int hi = 0; hi < H; ++hi)
     hd.h[hi] = feats_.labels[static_cast<size_t>(hi)].hold;
   fs::assert_holds(hd);
-  assert(factor::search::max_lag(hd) <= kCarryDays * factor::kSegLen && "carry 不够 rank-AC 的 lag");
+  assert(factor::search::max_lag(hd) <= kCarryDays * factor::kSegLen && "carry 不够 rAC 的 lag");
   const factor::search::Objective obj{req.sell_impact, 1.0};
 
   SearchResult res;
@@ -229,7 +229,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       c.best_hi = en.sc.best;
       c.score = en.sc.score;
       c.ls_net = en.sc.ls_net;
-      c.ic = en.sc.ic;
+      c.ric = en.sc.ric;
       res.cands.push_back(std::move(c));
     }
     std::stable_sort(res.cands.begin(), res.cands.end(), [](const SearchCand &a, const SearchCand &b) { return a.score > b.score; });
