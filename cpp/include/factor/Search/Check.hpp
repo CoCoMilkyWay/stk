@@ -4,8 +4,8 @@
 // Search 评估算子对拍的公共件: 候选造数 / 参考 (Stat CPU) / 比较 / CPU 驱动 / 分块切法
 // =============================================================================
 //   口径: Search 的语义 = Stat (契约 Search/Contract.hpp), 所以参考不是另一份 Search 实现, 而是 **Stat CPU** 对同一张平面算出的 HoldStat
-//   (Stat 自身已 cpu ↔ gpu 对拍过) + 朴素池化的成本两格. Search CPU / Search GPU 各自与它比 (二级 compare_stat 容差 + 成本两格容差 +
-//   计数逐位), 再比 分块 (两块带 carry, merge) ≡ 整块.
+//   (Stat 自身已 cpu ↔ gpu 对拍过) + 朴素逐行算的每持有期换手成本 (整张量 rank 行, t ≥ h 逐格比 t−h 组别). Search CPU / Search GPU 各自与它比
+//   (二级 compare_stat 容差 + 成本: 四个计数逐位, 两个冲击均值容差), 再比 分块 (两块带 carry, merge) ≡ 整块.
 //   造数沿用 Stat/Check.hpp 的 make (x / g / 标签), 候选 = 从 x 派生的 kCands 张平面 (CS {x, −x, x²}; TS {x, 1−x, x²}: 都在 [0,1]),
 //   成本 = POS 造数 × 1e-3 (买) / × 1.5e-3 (卖) 经 fp16, 掩码取造数的空洞.
 //   本头只依赖 Contract / Check / Exec / Stat/{Contract,Check,Cpu} / Search/{Contract,Cpu}; 消费者 TU 编进 -fno-fast-math.
@@ -79,10 +79,10 @@ inline Split split_of(int T, const factor::stat::Holds &hd) {
   return sp;
 }
 
-// ---- 参考: 候选 c 走 Stat CPU (HoldStat[H]) + 成本两格朴素池化 (grp_of(rank_x_rows)) ----
+// ---- 参考: 候选 c 走 Stat CPU (HoldStat[H]) + 每持有期换手成本朴素逐行 (整张量 rank_x_rows, t ≥ h 逐格比 t−h 组别) ----
 struct Ref {
   std::vector<HoldStat> stat; // [H]
-  CostAcc cost;
+  std::vector<CostAcc> cost;  // [H]
 };
 inline void reference(const Data &d, int c, int threads, Ref &r) {
   factor::stat::check::Data b = d.base;
@@ -90,43 +90,60 @@ inline void reference(const Data &d, int c, int threads, Ref &r) {
   factor::stat::check::Result res;
   factor::stat::check::run_cpu(b, res, threads);
   r.stat = res.stat;
-  const int T = d.base.T, A = d.base.A;
+  const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
   const size_t n = static_cast<size_t>(T) * A;
   std::vector<uint16_t> ws(n);
   factor::cpu::stat::Scratch sc;
   sc.reserve(A);
   factor::cpu::stat::rank_x_rows(b.x.v.data(), b.x.m.data(), d.base.g.m.data(), d.base.frame, 0, T, A, ws.data(), sc);
-  r.cost = CostAcc{};
-  for (size_t i = 0; i < n; ++i) {
-    if (ws[i] == factor::stat::kRankNone || !d.cm[i])
-      continue;
-    const int g = factor::stat::grp_of(ws[i]);
-    if (g == factor::stat::kGroups - 1)
-      r.cost.buy_hi += static_cast<double>(factor::cpu::stat::h2f(d.buy[i])), ++r.cost.n_hi;
-    if (g == 0)
-      r.cost.sell_lo += static_cast<double>(factor::cpu::stat::h2f(d.sell[i])), ++r.cost.n_lo;
+  constexpr int kt = factor::stat::kGroups - 1;
+  r.cost.assign(static_cast<size_t>(H), CostAcc{});
+  for (int i = 0; i < H; ++i) {
+    const int h = factor::stat::hold_minutes(d.base.hd.h[i]);
+    CostAcc &ca = r.cost[static_cast<size_t>(i)];
+    for (int t = h; t < T; ++t)
+      for (int a = 0; a < A; ++a) {
+        const size_t p = static_cast<size_t>(t) * A + a, q = p - static_cast<size_t>(h) * A;
+        if (ws[p] == factor::stat::kRankNone || !d.cm[p])
+          continue;
+        const int g = factor::stat::grp_of(ws[p]), gl = ws[q] != factor::stat::kRankNone ? factor::stat::grp_of(ws[q]) : -1;
+        if (g == kt) {
+          ++ca.n_hi;
+          if (gl != kt)
+            ++ca.e_hi, ca.buy_hi += static_cast<double>(factor::cpu::stat::h2f(d.buy[p]));
+        } else if (g == 0) {
+          ++ca.n_lo;
+          if (gl != 0)
+            ++ca.e_lo, ca.sell_lo += static_cast<double>(factor::cpu::stat::h2f(d.sell[p]));
+        }
+      }
   }
 }
 // Search 的 Result → 同形 Ref (finish 各持有期), 给 分块 ≡ 整块 用
 inline void to_ref(const Result &res, const factor::stat::Holds &hd, Ref &r) {
   r.stat.resize(static_cast<size_t>(hd.n));
-  for (int i = 0; i < hd.n; ++i)
+  r.cost.resize(static_cast<size_t>(hd.n));
+  for (int i = 0; i < hd.n; ++i) {
     r.stat[static_cast<size_t>(i)] = res.acc[i].finish(hd.h[i]);
-  r.cost = res.cost;
+    r.cost[static_cast<size_t>(i)] = res.cost[i];
+  }
 }
 
-// ---- 比较: 二级逐字段 (compare_stat) + 成本两格 (格数逐位, 均值容差) ----
+// ---- 比较: 二级逐字段 (compare_stat) + 每持有期成本 (四个计数逐位, 两个新进者冲击均值容差; 位置 hd.n + i) ----
 inline Diff compare(const Ref &ref, const Result &got, const factor::stat::Holds &hd, Tol tol) {
   Ref g;
   to_ref(got, hd, g);
   Diff d = factor::stat::check::compare_stat(ref.stat.data(), g.stat.data(), hd.n, tol);
-  if (ref.cost.n_hi != g.cost.n_hi || ref.cost.n_lo != g.cost.n_lo) {
-    if (d.mask_bad++ == 0)
-      d.worst_at = hd.n;
-    return d;
+  for (int i = 0; i < hd.n; ++i) {
+    const CostAcc &a = ref.cost[static_cast<size_t>(i)], &b = g.cost[static_cast<size_t>(i)];
+    if (a.n_hi != b.n_hi || a.n_lo != b.n_lo || a.e_hi != b.e_hi || a.e_lo != b.e_lo) {
+      if (d.mask_bad++ == 0)
+        d.worst_at = hd.n + i;
+      return d;
+    }
+    factor::stat::check::detail::cmp1(d, a.buy_mean(), b.buy_mean(), tol, hd.n + i);
+    factor::stat::check::detail::cmp1(d, a.sell_mean(), b.sell_mean(), tol, hd.n + i);
   }
-  factor::stat::check::detail::cmp1(d, ref.cost.buy_mean(), g.cost.buy_mean(), tol, hd.n);
-  factor::stat::check::detail::cmp1(d, ref.cost.sell_mean(), g.cost.sell_mean(), tol, hd.n);
   return d;
 }
 

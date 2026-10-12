@@ -1,8 +1,9 @@
 // Tab Factors — 见头文件
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "factor/Check.hpp"  // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
-#include "factor/GpuRun.hpp" // available / device_name
-#include "gui/Tasks.hpp"     // StatusColor
+#include "factor/GpuRun.hpp"      // available / device_name
+#include "factor/Search/Grid.hpp" // kLayerMax / kBranches / kMinGain: Optimize 提示
+#include "gui/Tasks.hpp"          // StatusColor
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
@@ -916,7 +917,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
 
-  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档下的 净 LS · IC; 最优回写 params 后 TaskFactors 自动 Run ----
+  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档真实换手成本下的 年化净 LS · IC (只看这两个); 最优回写 params 后 TaskFactors 自动 Run ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
@@ -941,12 +942,13 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     if (!can_opt)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档建仓冲击下的 净 LS × IC (持有期自选最优)\n"
-                     "• 粗网格 (每参数一倍一格) → 分支 (互不相邻的 top-3) → 每支围 top-1 逐层减半细化, 一层增益 < 5%% 停\n"
+      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档真实换手成本下的 年化净 LS × IC (持有期自选最优); 只看这两个\n"
+                     "• 粗网格 (步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 分支 (互不相邻的 top-%d) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
                      "• 数据按天分块流式过, 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
                      "• 最优优于当前参数 → 回写该文件 params (stat 删掉) 并自动 Run 重算; 否则文件不动"
                    : "先在表格里点一行高光 (与 Inspect 同一对象)",
-          view_row ? view_row->file.c_str() : "");
+          view_row ? view_row->file.c_str() : "", factor::search::grid::kLayerMax, factor::search::grid::kBranches,
+          100.0 * factor::search::grid::kMinGain);
     ImGui::SameLine();
     if (!sbusy)
       ImGui::BeginDisabled();
@@ -968,7 +970,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     if (sbusy)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-      tip("建仓冲击的下单金额档 (万): 净 LS = 毛 LS − 顶组买入冲击 (按 Config::max_impact 封顶) − 底组卖出冲击 − 2 × sell_impact (%.4f)",
+      tip("建仓冲击的下单金额档 (万): 净 LS = 毛 LS − 顶 / 底组新进者 (t−h 不在该组) 均摊的 建仓冲击 (买入按 Config::max_impact 封顶) + 平仓 sell_impact (%.4f); "
+          "留仓成员不付. 年化后跨持有期比",
           ctx.sell_impact);
     ImGui::SameLine();
     ImGui::Text("Status:");
@@ -1011,7 +1014,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         ImGui::TableSetupColumn("expr");
         ImGui::TableSetupColumn("pass");
         ImGui::TableSetupColumn("h*");
-        ImGui::TableSetupColumn("LS net");
+        ImGui::TableSetupColumn("LS net/yr");
         ImGui::TableSetupColumn("IC");
         ImGui::TableSetupColumn("score");
         ImGui::TableHeadersRow();
@@ -1028,7 +1031,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           ImGui::TableNextColumn();
           ImGui::Text("%s", c.best_hi >= 0 ? factor::stat::hold_name(s_sr.hd.h[c.best_hi]).c_str() : "-");
           ImGui::TableNextColumn();
-          ImGui::Text("%.5f", c.ls_net);
+          if (std::isfinite(c.ls_net))
+            ImGui::Text("%+.1f%%", 100.0 * c.ls_net);
+          else
+            ImGui::TextDisabled("-");
           ImGui::TableNextColumn();
           ImGui::Text("%.4f", c.ic);
           ImGui::TableNextColumn();

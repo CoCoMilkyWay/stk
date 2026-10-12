@@ -25,6 +25,16 @@ constexpr int K = factor::stat::kGroups;
 // 竖轴刻度统一定宽 (字体是等宽的 Maple Mono, 7 字符 = 定像素): 切因子 / 持有期 / 光标时数字位数变也不改绘图区左边界, 图不震
 constexpr const char *kYTickFmt = "%7.2f";
 
+// 紧凑图例: 几张图的 legend box 等大 (统一 padding / spacing), 字体沿用默认; RAII, 构造时 push, 析构时 pop, 包住 BeginPlot/EndPlot 即生效
+struct CompactLegend {
+  CompactLegend() {
+    ImPlot::PushStyleVar(ImPlotStyleVar_LegendPadding, ImVec2(4.f, 2.f));
+    ImPlot::PushStyleVar(ImPlotStyleVar_LegendInnerPadding, ImVec2(2.f, 2.f));
+    ImPlot::PushStyleVar(ImPlotStyleVar_LegendSpacing, ImVec2(2.f, 0.f));
+  }
+  ~CompactLegend() { ImPlot::PopStyleVar(3); }
+};
+
 // 横轴刻度: 交易日下标 → YYMMDD (user_data = InspectDerived::dates)
 int date_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<std::string> *>(ud);
@@ -263,6 +273,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   if (ImPlot::BeginSubplots("##layers", 1, 2, size, ImPlotSubplotFlags_NoTitle | ImPlotSubplotFlags_NoMenus | ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_LinkRows,
                             nullptr, col_ratios)) {
     if (ImPlot::BeginPlot(title, ImVec2(), ImPlotFlags_NoMenus)) {
+      CompactLegend cl;
       ImPlot::SetupAxes(nullptr, absolute ? "年化 Σ ret / h  (%)" : "年化 Σ excess / h  (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
       ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
       ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<std::string> *>(&d.dates));
@@ -470,8 +481,10 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
   assert(static_cast<size_t>(days) == dates.size() && "K 线代与派生日期表不同源");
   assert(uni.size() == static_cast<size_t>(days) * S);
   const double x_dom = std::max(1, days) * static_cast<double>(S);
-  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus | ImPlotFlags_NoLegend))
+  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
+  CompactLegend cl;
+  ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
   ImPlot::SetupAxes(nullptr, "价格", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_X1, minute_formatter, const_cast<std::vector<std::string> *>(&dates));
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
@@ -553,7 +566,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
         return ImPlotPoint(static_cast<double>(t), r.v[t] * r.k);
       };
       ImPlot::SetNextLineStyle(kColIndex, 1.5f);
-      ImPlot::PlotLineG("##uni", rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
+      ImPlot::PlotLineG("universe 指数", rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
     }
   }
   { // 共享光标 (与左上图同一个 cursor_day, 同色同交互): 锚在日边界, 拖动吸附整日, 双击落点; x 轴标光标日期
@@ -601,6 +614,7 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
                 d.hs.ic_skew, d.hs.ic_kurt, d.hs.ic_pos, d.hs.n);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
+  CompactLegend cl;
   ImPlot::SetupAxes("IC", "density", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
   ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, 0.5, ImPlotCond_Always); // 固定 x 范围, 0 居中: 换持有期 / 因子时分布位置可直接比
@@ -651,6 +665,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   std::snprintf(title, sizeof(title), "期限结构: 年化池化均值超额 / 持有期  (%s)###term", source);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
+  CompactLegend cl;
   const int n_tier = n_cost + 1; // q = 0 毛, q ≥ 1 = costs[q − 1]
   std::vector<double> pos(static_cast<size_t>(n_hold));
   std::vector<std::string> names(static_cast<size_t>(n_hold)), tier_names(static_cast<size_t>(n_tier));
@@ -678,7 +693,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -100.0, INFINITY); // 年化 < −100% 无意义 (高冲击档净线会砸穿): 低于的点不参与 fit, 轴底最低到 −100, 线出界即裁
   ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), n_hold, labels.data());
   ImPlot::SetupAxisLimits(ImAxis_X1, -0.6, n_hold - 0.4, ImPlotCond_Always);
-  ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
+  ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
   const char *items[3] = {"L (G20 long)", "S (G1 long)", "LS"};
   const ImVec4 cols[3] = {kColTop, kColBottom, kColLS};
   std::vector<double> xk, yk, xs, ys;

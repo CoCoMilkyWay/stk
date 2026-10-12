@@ -4,14 +4,17 @@
 // Search 的参数网格 (纯逻辑, 无后端, 无 IO): 表达式 → 可搜参数槽 → 统一坐标 → 粗网格 / 细化网格 / 分支挑选
 // =============================================================================
 //   【槽】表达式每个算子节点声明的每个参数 (d / k / k2) 各一槽; TS 口径根 TsRankRoll 的 d 是口径定义 (kTsNormD), 不搜.
-//   【坐标】每槽一维坐标 u, 单调, **粗网格步长 = 1 个单位**, 细化每层步长减半. 变换按参数含义选 (见 to_u / to_v):
-//       d / EMA 系数 / 缩尾 / 对称截断 / 桶数   log2        (窗长 / 尺度参数的效应是对数的)
+//   【坐标】每槽一维坐标 u, 单调, **1 个单位 = 该参数的自然刻度**; 粗网格步长 / 细化步长都以单位计. 变换按参数含义选 (见 to_u / to_v):
+//       d / EMA 系数 / 缩尾 / 桶数              log2        (窗长 / 尺度参数的效应是对数的)
 //       分位 (0,1)                             logit       (两端都有界, 向两端等比加密)
-//       阈值 ℝ                                 asinh       (0 附近线性, 远端对数; 无尺度先验下唯一无奇点的选择)
+//       阈值 ℝ / 对称截断 ≥ 0 (原始量纲)        / σ          (σ = 该节点输入的标准差, 调用方装载后 set_scale; 1 单位 = 1σ. 没有它阈值搜不动)
 //       日内时段分钟                            / 32        (半小时量级为一单位)
 //     整数参数 (d / 桶数 / 分钟) 取整回去; 坐标正好是当前值 (u == u0) 时原样保留原值 (float 往返有舍入, 规范串得与基线一致).
-//   【粗网格】每槽 u0 + ℤ: 有界侧枚举到出界为止, 无界侧各 kCoarseSpan 步; 槽间笛卡尔积. 基线 (全 0 偏移) 必在其中, 搜索结果不会劣于当前.
-//   【细化】中心 c, 步长 s: 每槽 c + {−kRefineHalf..kRefineHalf}·s, 笛卡尔积 (5^P); 越界 / 参数值域不合 (expr::check_params) 的点丢弃.
+//   【预算】一层 (粗网格一趟 / 一支细化一层) 的格点数 ≤ kLayerMax, 网格精度由它反推, 不随槽数爆炸:
+//     粗网格  每槽 u0 + ℤ·s: 有界侧枚举到出界为止, 无界侧覆盖 kSpan 单位; 步长 s 从 1 起按 √2 放大到笛卡尔积 ≤ kLayerMax.
+//            基线 (全 0 偏移) 必在其中, 搜索结果不会劣于当前.
+//     细化    中心 c, 步长 s (每层减半): 每槽 c + {−r..r}·s 笛卡尔积, r ≤ kRefineHalfMax 且 (2r+1)^P ≤ kLayerMax; 3^P 都超则退化为
+//            坐标轴方向 ±1 (2P+1 点). 越界 / 参数值域不合 (expr::check_params) 的点丢弃.
 //   【分支】粗网格后取 score 最高的 kBranches 个**互不相邻** (粗格点 Chebyshev 距离 ≥ 2) 的候选各开一支; 一支只围自己的 top-1 细化,
 //     一层相对增益 < kMinGain 即停 (停机规则在调用方, 本头只给常量 / 格点).
 //   出错策略: 只 assert (表达式来自已校验的因子行).
@@ -31,8 +34,9 @@
 
 namespace factor::search::grid {
 
-inline constexpr int kCoarseSpan = 4;    // 无界侧粗网格每侧步数
-inline constexpr int kRefineHalf = 2;    // 细化网格每槽每侧点数 (5 点)
+inline constexpr int kLayerMax = 256;    // 一层 (粗网格一趟 / 一支细化一层) 的格点上限; 粗步长 / 细化半径由它反推
+inline constexpr double kSpan = 4.0;     // 无界侧粗网格覆盖的坐标范围 (单位)
+inline constexpr int kRefineHalfMax = 2; // 细化网格每槽每侧点数上限 (预算够也最多 5 点)
 inline constexpr int kBranches = 3;      // 粗网格后开的分支数
 inline constexpr double kMinGain = 0.05; // 分支一层的相对增益低于此即停
 inline constexpr int kMaxLevels = 8;     // 细化层数上限 (步长 2^-8 单位, 低于任何参数的分辨率)
@@ -50,9 +54,13 @@ struct Slot {
   bool integer = false;   // 值取整
   bool lo_bounded = false, hi_bounded = false;
   double u_lo = 0.0, u_hi = 0.0; // 有界侧范围 (闭; 开端点由 check_params 否决)
-  double u0 = 0.0;               // 当前值坐标
+  double v0 = 0.0, u0 = 0.0;     // 当前值 / 其坐标
+  double scale = 1.0;            // ANY / GE0: 输入节点标准差 (set_scale 后有效); 其他 1
   std::string name;              // "<Op>.<key>" (显示)
 };
+
+// ANY / GE0 槽的坐标要数据尺度 (调用方装载后 set_scale)
+inline bool needs_scale(const Slot &s) { return s.key != Key::D && (s.kdom == KDom::ANY || s.kdom == KDom::GE0); }
 
 // ---- 坐标变换 ----
 inline double to_u(const Slot &s, double v) {
@@ -66,9 +74,8 @@ inline double to_u(const Slot &s, double v) {
   case KDom::POSINT_GROUP:
     return std::log2(v);
   case KDom::GE0:
-    return std::log2(v > 0.0 ? v : std::ldexp(1.0, -10)); // k = 0 (截成全 0) 当作极小尺度起搜
   case KDom::ANY:
-    return std::asinh(v);
+    return v / s.scale;
   case KDom::TOD:
     return v / kTodUnit;
   case KDom::NONE:
@@ -89,11 +96,11 @@ inline double to_v(const Slot &s, double u) {
     case KDom::OPEN0_CLOSED1:
     case KDom::OPEN0_HALF:
     case KDom::POSINT_GROUP:
-    case KDom::GE0:
       v = std::exp2(u);
       break;
+    case KDom::GE0:
     case KDom::ANY:
-      v = std::sinh(u);
+      v = u * s.scale;
       break;
     case KDom::TOD:
       v = u * kTodUnit;
@@ -129,9 +136,11 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, bool ts_root) {
       } else {
         switch (o.kdom) {
         case KDom::OPEN01:
-        case KDom::GE0:
         case KDom::ANY:
           break; // 两侧无界
+        case KDom::GE0:
+          s.lo_bounded = true, s.u_lo = 0.0;
+          break;
         case KDom::OPEN0_CLOSED1:
           s.hi_bounded = true, s.u_hi = 0.0;
           break;
@@ -152,7 +161,8 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, bool ts_root) {
           assert(false);
         }
       }
-      s.u0 = to_u(s, value_of(n, key));
+      s.v0 = value_of(n, key);
+      s.u0 = to_u(s, s.v0);
       assert(std::isfinite(s.u0) && "当前参数值不在坐标定义域内");
       out.push_back(std::move(s));
     };
@@ -164,6 +174,14 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, bool ts_root) {
       add(Key::K2);
   }
   return out;
+}
+
+// ANY / GE0 槽装上数据尺度 σ (> 0 有限), 坐标重算
+inline void set_scale(Slot &s, double sigma) {
+  assert(needs_scale(s) && std::isfinite(sigma) && sigma > 0.0);
+  s.scale = sigma;
+  s.u0 = to_u(s, s.v0);
+  assert(std::isfinite(s.u0));
 }
 
 inline bool in_range(const Slot &s, double u) { return (!s.lo_bounded || u >= s.u_lo - 1e-9) && (!s.hi_bounded || u <= s.u_hi + 1e-9); }
@@ -212,45 +230,75 @@ inline void product(const std::vector<std::vector<int>> &axes, size_t j, std::ve
 }
 } // namespace detail
 
-// 粗网格: 每槽 u0 + i (i ∈ ℤ, 有界侧到出界为止, 无界侧 ±kCoarseSpan); 返回每点的整数偏移 (下标与 slots 对齐)
-inline std::vector<std::vector<int>> coarse_lattice(const std::vector<Slot> &slots) {
+// 粗网格 (见【预算】): 每槽 u0 + i·step (有界侧到出界为止, 无界侧覆盖 kSpan), step 从 1 按 √2 放大到笛卡尔积 ≤ kLayerMax;
+// offs = 每点的整数偏移 (下标与 slots 对齐)
+struct Coarse {
+  double step = 1.0;
+  std::vector<std::vector<int>> offs;
+};
+inline Coarse coarse_lattice(const std::vector<Slot> &slots) {
+  assert(!slots.empty());
+  Coarse out;
   std::vector<std::vector<int>> axes(slots.size());
-  for (size_t j = 0; j < slots.size(); ++j) {
-    const Slot &s = slots[j];
-    std::vector<int> &ax = axes[j];
-    for (int i = 0; in_range(s, s.u0 - i) && (s.lo_bounded || i <= kCoarseSpan); ++i)
-      ax.push_back(-i);
-    for (int i = 1; in_range(s, s.u0 + i) && (s.hi_bounded || i <= kCoarseSpan); ++i)
-      ax.push_back(i);
-    std::sort(ax.begin(), ax.end());
+  for (double step = 1.0;; step *= std::sqrt(2.0)) {
+    double total = 1.0;
+    for (size_t j = 0; j < slots.size(); ++j) {
+      const Slot &s = slots[j];
+      std::vector<int> &ax = axes[j];
+      ax.clear();
+      for (int i = 0; in_range(s, s.u0 - i * step) && (s.lo_bounded || i * step <= kSpan + 1e-9); ++i)
+        ax.push_back(-i);
+      for (int i = 1; in_range(s, s.u0 + i * step) && (s.hi_bounded || i * step <= kSpan + 1e-9); ++i)
+        ax.push_back(i);
+      std::sort(ax.begin(), ax.end());
+      total *= static_cast<double>(ax.size());
+    }
+    if (total <= kLayerMax) { // step 够大时每槽只剩基线一点 (total = 1), 必停
+      out.step = step;
+      break;
+    }
   }
-  std::vector<std::vector<int>> out;
   std::vector<int> cur(slots.size());
-  detail::product(axes, 0, cur, out);
+  detail::product(axes, 0, cur, out.offs);
   return out;
 }
-inline std::vector<double> coarse_u(const std::vector<Slot> &slots, const std::vector<int> &offs) {
+inline std::vector<double> coarse_u(const std::vector<Slot> &slots, const std::vector<int> &offs, double step) {
   std::vector<double> u(slots.size());
   for (size_t j = 0; j < slots.size(); ++j)
-    u[j] = slots[j].u0 + offs[j];
+    u[j] = slots[j].u0 + offs[j] * step;
   return u;
 }
 
-// 细化网格: 中心 c, 步长 step → 每槽 c + {−kRefineHalf..kRefineHalf}·step 的笛卡尔积 (含中心; 出界点由 apply 丢)
+// 细化网格 (见【预算】): 中心 c, 步长 step → 每槽 c + {−r..r}·step 的笛卡尔积 (含中心; 出界点由 apply 丢);
+// r = 满足 (2r+1)^P ≤ kLayerMax 的最大值 (≤ kRefineHalfMax); 3^P > kLayerMax → 坐标轴方向 ±1
 inline std::vector<std::vector<double>> refine_lattice(const std::vector<Slot> &slots, const std::vector<double> &c, double step) {
   assert(c.size() == slots.size() && step > 0.0);
-  std::vector<std::vector<int>> axes(slots.size());
-  for (std::vector<int> &ax : axes)
-    for (int i = -kRefineHalf; i <= kRefineHalf; ++i)
-      ax.push_back(i);
+  const size_t P = slots.size();
+  int r = kRefineHalfMax;
+  while (r >= 1 && std::pow(2.0 * r + 1.0, static_cast<double>(P)) > kLayerMax)
+    --r;
   std::vector<std::vector<int>> offs;
-  std::vector<int> cur(slots.size());
-  detail::product(axes, 0, cur, offs);
+  if (r >= 1) {
+    std::vector<std::vector<int>> axes(P);
+    for (std::vector<int> &ax : axes)
+      for (int i = -r; i <= r; ++i)
+        ax.push_back(i);
+    std::vector<int> cur(P);
+    detail::product(axes, 0, cur, offs);
+  } else {
+    offs.emplace_back(P, 0);
+    for (size_t j = 0; j < P; ++j)
+      for (int sgn : {-1, 1}) {
+        std::vector<int> o(P, 0);
+        o[j] = sgn;
+        offs.push_back(std::move(o));
+      }
+  }
   std::vector<std::vector<double>> out;
   out.reserve(offs.size());
   for (const std::vector<int> &o : offs) {
-    std::vector<double> u(slots.size());
-    for (size_t j = 0; j < slots.size(); ++j)
+    std::vector<double> u(P);
+    for (size_t j = 0; j < P; ++j)
       u[j] = c[j] + o[j] * step;
     out.push_back(std::move(u));
   }

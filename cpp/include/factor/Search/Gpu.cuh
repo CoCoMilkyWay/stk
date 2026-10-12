@@ -7,15 +7,14 @@
 //   【stat_batch】grid (⌈C/kWarps⌉, NB, H) × kWB, **一 warp 一候选**, 一块管 kRows 行 × 一个持有期 (grid.z):
 //     每行一次 warp_row (全 lane 拿到 Row) → **直接折进 warp 私有的分片累加器** (lane 0 攒 Accum 的标量, lane k < 20 攒组 k 的
 //     Σgrp / Σcnt; 运算与 Accum::add 逐字同) → 块末写分片 Slice[c][h][tb] (= 契约的 Accum + CostAcc 原样). 不落 Row.
-//     同 block 的 kWarps 个候选同一 (t, h): ry / lv / sv 行一次进 L1 共用, 标签流量被候选数摊薄. 成本两格 (与持有期无关) 只在
-//     h 序 0 的块里攒. 核内没有块级同步, 没有原子.
+//     同 block 的 kWarps 个候选同一 (t, h): ry / lv / sv 行一次进 L1 共用, 标签流量被候选数摊薄. 换手成本 (契约【成本】, 随 h 变) 紧跟
+//     warp_row 在同一行上攒: 有 lag 行才算, 只有顶 / 底组成员才碰成本平面 (lane 分支跳过读). 核内没有块级同步, 没有原子.
 //   【reduce_slices】每 (c, h) 一线程, 沿 tb 升序 merge (契约 merge 原样; 固定序 → GPU 自身逐次确定) → 直接写 Result[c] (设备),
 //     主机整块拷回, 无转换.
-//   【与 CPU 的差别】整数派生量逐位一致; 浮点和只差求和序 (对拍容差). 成本两格: 行内 float 归约, 跨行 double.
+//   【与 CPU 的差别】整数派生量逐位一致; 浮点和只差求和序 (对拍容差). 成本冲击和: 行内 float 归约, 跨行 double.
 //   【禁用】--use_fast_math.
 // =============================================================================
 
-#include "factor/Contract.hpp"
 #include "factor/Search/Contract.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Dev.cuh"
@@ -48,7 +47,7 @@ using factor::stat::Row;
 
 inline constexpr int kRows = 128; // stat_batch 每 block 的行数 (分片粒度; NB = ⌈(T − t_lo)/kRows⌉)
 
-// 一个 (候选, 持有期, 行块) 的分片 = 契约累加器原样; 成本只在 h 序 0 的分片有意义
+// 一个 (候选, 持有期, 行块) 的分片 = 契约累加器原样
 struct Slice {
   Accum acc;
   CostAcc cost;
@@ -65,7 +64,6 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
     return;
   const int hi = blockIdx.z, hold = hd.h[hi], h = factor::stat::hold_minutes(hold);
   const Label lb = L.l[hi];
-  const bool with_cost = hi == 0;
   const int tb = blockIdx.y, t_beg = t_lo + tb * kRows, t_end = min(T, t_beg + kRows);
   const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;
   constexpr int kt = kGroups - 1;
@@ -76,13 +74,13 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   double asg = 0.0;
   long long asc = 0;
   double abuy = 0.0, asell = 0.0;
-  long long anh = 0, anl = 0;
+  long long anh = 0, anl = 0, aeh = 0, ael = 0;
 
   for (int t = t_beg; t < t_end; ++t) {
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
-    const Row r = dev::warp_row(f, xr, t >= h ? xr - static_cast<size_t>(h) * A : nullptr, lb.at(base), A,
-                                factor::stat::tail_masked(t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
+    const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
+    const Row r = dev::warp_row(f, xr, xl, lb.at(base), A, factor::stat::tail_masked(t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
     // ---- 折进分片 (与 Accum::add 逐字同) ----
     if (r.ok) {
       float gq = 0.f; // lane q 取 grp[q] / cnt[q] (编译期展开的 select, Row 留在寄存器)
@@ -106,25 +104,31 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
       ++anac;
       asac += r.ac;
     }
-    // ---- 成本两格 (只 h 序 0; rx 有效 ∧ 成本有效, 不看 ok / 尾部) ----
-    if (with_cost) {
+    // ---- 换手成本 (有 lag 行才算; 与 Search/Cpu.hpp cost_row 同式: 顶 / 底组成员 (rx 有效 ∧ 成本有效) 计数, t−h 不在该组 = 新进者累冲击) ----
+    if (xl) {
       const Cost cr = cost.at(base);
-      float cv[2] = {0.f, 0.f}; // Σ买|顶组, Σ卖|底组
-      int cn[2] = {0, 0};
+      float cv[2] = {0.f, 0.f}; // Σ买|顶组新进, Σ卖|底组新进
+      int cn[4] = {0, 0, 0, 0}; // 顶组数, 底组数, 顶组新进数, 底组新进数
       for (int a = lane; a < A; a += 32) {
         const unsigned x = xr[a];
-        const bool okc = x != kRankNone && cr.m[a] != 0;
-        const int g = okc ? factor::stat::grp_of(x) : -1;
-        cv[0] += g == kt ? dev::h2f(cr.buy[a]) : 0.f;
-        cv[1] += g == 0 ? dev::h2f(cr.sell[a]) : 0.f;
-        cn[0] += g == kt;
-        cn[1] += g == 0;
+        const int g = x != kRankNone ? factor::stat::grp_of(x) : -1;
+        if ((g == kt || g == 0) && cr.m[a] != 0) { // 只有顶 / 底组成员才读 lag / 成本 (稀疏, 分支跳过读)
+          const unsigned y = xl[a];
+          const int gl = y != kRankNone ? factor::stat::grp_of(y) : -1;
+          const bool hi = g == kt, ent = gl != g;
+          cn[0] += hi;
+          cn[1] += !hi;
+          cn[2] += hi && ent;
+          cn[3] += !hi && ent;
+          cv[0] += hi && ent ? dev::h2f(cr.buy[a]) : 0.f;
+          cv[1] += !hi && ent ? dev::h2f(cr.sell[a]) : 0.f;
+        }
       }
       dev::warp_sum(cv);
       dev::warp_sum(cn);
       if (lane == 0) {
         abuy += static_cast<double>(cv[0]), asell += static_cast<double>(cv[1]);
-        anh += cn[0], anl += cn[1];
+        anh += cn[0], anl += cn[1], aeh += cn[2], ael += cn[3];
       }
     }
   }
@@ -139,11 +143,11 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
     P.acc.n = an, P.acc.npos = anpos, P.acc.nlpos = anlpos, P.acc.nac = anac;
     P.acc.sic = asic, P.acc.sic2 = asic2, P.acc.sic3 = asic3, P.acc.sic4 = asic4;
     P.acc.sls = asls, P.acc.sls2 = asls2, P.acc.smk = asmk, P.acc.smk2 = asmk2, P.acc.slm = aslm, P.acc.sac = asac;
-    P.cost.buy_hi = abuy, P.cost.sell_lo = asell, P.cost.n_hi = anh, P.cost.n_lo = anl;
+    P.cost.buy_hi = abuy, P.cost.sell_lo = asell, P.cost.n_hi = anh, P.cost.n_lo = anl, P.cost.e_hi = aeh, P.cost.e_lo = ael;
   }
 }
 
-// reduce_slices: 每 (c, h) 一线程, 沿 tb 升序 merge → out[c].acc[h] (+ h 序 0 的成本)
+// reduce_slices: 每 (c, h) 一线程, 沿 tb 升序 merge → out[c].acc[h] / cost[h]
 __global__ void __launch_bounds__(kWB) reduce_slices(const Slice *part, int NB, int C, int H, Result *out) {
   const int p = blockIdx.x * kWB + threadIdx.x;
   if (p >= C * H)
@@ -153,12 +157,10 @@ __global__ void __launch_bounds__(kWB) reduce_slices(const Slice *part, int NB, 
   Slice s;
   for (int tb = 0; tb < NB; ++tb) {
     s.acc.merge(src[tb].acc);
-    if (hi == 0)
-      s.cost.merge(src[tb].cost);
+    s.cost.merge(src[tb].cost);
   }
   out[c].acc[hi] = s.acc;
-  if (hi == 0)
-    out[c].cost = s.cost;
+  out[c].cost[hi] = s.cost;
 }
 
 } // namespace k

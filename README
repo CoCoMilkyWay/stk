@@ -123,7 +123,7 @@ stk/
 │   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫 <factor_dir>/<universe>/*.json (一因子一文件, 破碎只标 BROKEN 不删) → Run 时装载 → 全部因子合成一张共享 DAG (公共子式只算一次) → 每根 Stat → 回写 params / stat 键 (expr 不动); WriteFactorParams 给 Search 落盘新 params (删旧 stat)
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (三服务共用): Loaded 宿主平面 (特征 + 截面门控 + 标签 [hold] + 冲击成本 [amt]) 逐天并行读; net_labels 净标签; check_leaf_domains 特征叶值域; valid_pct_of
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 五级缓存 flow (作用域 → 标签集 [冲击档] → 因子 Dag 根 → rank_x → 立方体 Row[c][H][T] + HoldStat[c][H]), 请求从第一个 key 不匹配的级起算, 缓冲常驻; 不写文件
-│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Factors 页 Optimize, 单 worker): 高光因子表达式全部参数项 (Grid 定槽 / 坐标) → 粗网格 (含基线) → kBranches 支 → 每支 5^P 细化逐层减半, 增益 < kMinGain 即停;
+│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Factors 页 Optimize, 单 worker): 高光因子表达式全部参数项 (Grid 定槽 / 坐标; 阈值槽先装块 0 取输入 σ 定尺度) → 粗网格 (含基线, 每层 ≤ kLayerMax 点) → kBranches 支 → 每支细化逐层减半, 增益 < kMinGain 即停; 目标 = 年化净 LS · IC (真实换手成本), 只看这两个
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab: 静态列 (元数 / 窗 / 域 / 核 / 参数 / 公式) + 动态列 (三后端耗时与对拍 Δ); operators.json 存取
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 作用域 / 后端 / Run / Optimize; 构建器 (逐槽下拉选算子 / 特征, 即时校验) + 表 (一行一文件: 状态 / 规范串 / valid% / 选定持有期的 IC · ICIR · LS · SR · β · mono · rAC)
@@ -167,11 +167,11 @@ stk/
 │   │   │       ├── Cpu.hpp                                 # 🧬   CPU 后端: 行区间核 (rank_x_rows / rank_y_rows / ac_row / label_row; 绝对 t, 调用方给 Scratch) + 流程 (Workspace; prep_label / rank_x / eval_rows / run <Exec>)
 │   │   │       └── Gpu.cuh                                 # 🧬   GPU 后端: 一行一 block (BlockRadixSort → r16; label_rows 整数 warp shuffle + 浮点 select 累加)
 │   │   │   └── Search/                                     # 🧬 参数搜索评估算子 (建在 Stat 之上, 无流式后端): 一批候选 (C 张同形因子平面, 同池 / 同口径 / 同标签集) 每持有期直接攒二级 Accum, 不落一级 Row; 语义 = Stat (对拍 Search/Check.hpp 参考 = Stat CPU)
-│   │   │       ├── Contract.hpp                            # 🧬   语义契约 (CPU/GPU 共享): Cost / CostAcc / Result / Score + 分块流式 (t0_abs / t_lo / carry, Accum 可合并) + 目标 (净 LS · IC^ic_pow, 任一 ≤ 0 → −∞); score_at 固定 h 的分数 (细化阶段不重选 h)
-│   │   │       ├── Grid.hpp                                # 🧬   参数网格 (纯逻辑): 表达式 → 可搜槽 (d/k/k2, TS 口径根 d 不搜) → 单调坐标 (log2/logit/asinh/÷32) → 粗网格 (含基线) / 细化网格 (5^P) / 分支挑选 (top-k 互不相邻)
-│   │   │       ├── Cpu.hpp                                 # 🧬   CPU 后端: 行核复用 Stat CPU, 加 cost_rows (顶组买入 / 底组卖出池化); 候选内 ForkJoin 切行 (C 小也跑满核, 只留一张 r16)
-│   │   │       ├── Gpu.cuh                                 # 🧬   GPU 后端: 一 warp 一候选, 块管 kRows × 一个持有期; warp_row 直接折进私有分片累加器, 块末写 Slice, reduce_slices 合并写 Result
-│   │   │       └── Check.hpp                               # 🧬   对拍公共件: 候选造数 / 参考 (Stat CPU + 朴素成本池化) / compare (二级 compare_stat + 成本两格) / CPU 驱动 / 分块切法
+│   │   │       ├── Contract.hpp                            # 🧬   语义契约 (CPU/GPU 共享): Cost / CostAcc (每 h 换手成本: 顶/底组新进者付建仓 + 平仓) / Result / Score + 分块流式 (t0_abs / t_lo / carry, Accum 可合并) + 目标 (年化净 LS · IC, 只看这两个, 任一 ≤ 0 → −∞); score_at 固定 h 的分数 (细化阶段不重选 h)
+│   │   │       ├── Grid.hpp                                # 🧬   参数网格 (纯逻辑): 表达式 → 可搜槽 (d/k/k2, TS 口径根 d 不搜) → 单调坐标 (log2/logit/÷σ/÷32; σ = 阈值输入的标准差, 调用方 set_scale) → 粗网格 (含基线, 步长按 kLayerMax 预算反推) / 细化网格 (半径按预算) / 分支挑选 (top-k 互不相邻)
+│   │   │       ├── Cpu.hpp                                 # 🧬   CPU 后端: 行核复用 Stat CPU, 加 cost_row (新进者换手成本) 与 eval_rows (行统计 + 成本一遍); 候选内 ForkJoin 切行 (C 小也跑满核, 只留一张 r16)
+│   │   │       ├── Gpu.cuh                                 # 🧬   GPU 后端: 一 warp 一候选, 块管 kRows × 一个持有期; warp_row + 换手成本直接折进私有分片累加器, 块末写 Slice, reduce_slices 合并写 Result
+│   │   │       └── Check.hpp                               # 🧬   对拍公共件: 候选造数 / 参考 (Stat CPU + 朴素逐行换手成本) / compare (二级 compare_stat + 每 h 成本计数逐位 / 均值容差) / CPU 驱动 / 分块切法
 │   │   ├── math/                                           # 📐 distribution / normalize / sample / spectral / stationary / timeseries / autoencoder / model
 │   │   │   ├── Operator.hpp                                # 📐 算子元数据 / 定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)

@@ -194,7 +194,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     assert(ok && "Factors 表的规范串必可再解析");
     (void)ok;
   }
-  const std::vector<grid::Slot> slots = grid::slots_of(e0, req.frame == fs::Frame::TS);
+  std::vector<grid::Slot> slots = grid::slots_of(e0, req.frame == fs::Frame::TS);
   for (const grid::Slot &s : slots)
     res.slots.push_back(s.name);
   const factor::Dag d0 = factor::build(e0);
@@ -518,12 +518,87 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   };
   bool ret = false;
 
-  // ---- 趟 0: 粗网格 (含基线) ----
-  const std::vector<std::vector<int>> lattice = grid::coarse_lattice(slots);
+  // ---- 尺度: 先装块 0 (趟 0 反正要), 阈值槽 (ANY / GE0) 的坐标单位 = 基线 DAG 里该节点输入的池内有效格标准差 (CPU 走到该节点即止) ----
+  if (handle(load_chunk(0, chunks[0]), ret))
+    return ret;
+  {
+    std::vector<size_t> need; // 要尺度的槽
+    std::vector<int> want;    // 对应输入节点在 d0 的下标
+    for (size_t j = 0; j < slots.size(); ++j) {
+      if (!grid::needs_scale(slots[j]))
+        continue;
+      const factor::expr::Node &nd = e0.nodes[static_cast<size_t>(slots[j].node)];
+      assert(factor::expr::kOps[nd.op].arity >= 1);
+      const std::string key = factor::expr::to_string(e0, nd.args[0]);
+      const auto it = std::find(d0.keys.begin(), d0.keys.end(), key);
+      assert(it != d0.keys.end() && "Expr 子树必在同一 Expr 的 Dag 里");
+      need.push_back(j);
+      want.push_back(static_cast<int>(it - d0.keys.begin()));
+    }
+    if (!need.empty()) {
+      ChunkData &cd = chunks[0];
+      Loaded &L = cd.L;
+      const int T = L.T;
+      const size_t n = L.n();
+      const int last = *std::max_element(want.begin(), want.end());
+      F.pool.prepare(d0.n_slots, n);
+      if (F.sc.size() < static_cast<size_t>(nt))
+        F.sc.resize(static_cast<size_t>(nt));
+      const auto plane_of = [&](int i) -> const factor::check::Plane * {
+        const factor::DagNode &nd = d0.nodes[static_cast<size_t>(i)];
+        return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.pool.slots[static_cast<size_t>(nd.slot)];
+      };
+      std::vector<double> sigma(need.size(), 0.0);
+      for (int i = 0; i <= last; ++i) {
+        if (cancelled())
+          return false;
+        const factor::DagNode &nd = d0.nodes[static_cast<size_t>(i)];
+        if (nd.op >= 0) {
+          const factor::check::Plane *in[3] = {};
+          for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
+            in[a] = plane_of(nd.in[a]);
+          factor::cpu::run_node(F.ex, nd, in, F.pool.slots[static_cast<size_t>(nd.slot)], T, A, F.sc, L.cs.m.data());
+        }
+        for (size_t q = 0; q < need.size(); ++q) {
+          if (want[q] != i)
+            continue;
+          const factor::check::Plane *p = plane_of(i);
+          const uint8_t *gate = L.cs.m.data();
+          double s1 = 0.0, s2 = 0.0;
+          long long cnt = 0;
+          for (size_t k = 0; k < n; ++k) {
+            const bool on = p->m[k] && gate[k];
+            const double v = on ? static_cast<double>(p->v[k]) : 0.0;
+            s1 += v, s2 += v * v, cnt += on;
+          }
+          sigma[q] = cnt >= 2 ? std::sqrt(std::max(0.0, (s2 - s1 * s1 / static_cast<double>(cnt)) / static_cast<double>(cnt - 1))) : 0.0;
+        }
+      }
+      std::vector<grid::Slot> kept;
+      res.slots.clear();
+      for (size_t j = 0, q = 0; j < slots.size(); ++j) {
+        if (grid::needs_scale(slots[j])) {
+          const double sd = sigma[q++];
+          if (!(std::isfinite(sd) && sd > 0.0))
+            continue; // 输入常量 → 阈值无意义, 不搜
+          grid::set_scale(slots[j], sd);
+        }
+        res.slots.push_back(slots[j].name);
+        kept.push_back(slots[j]);
+      }
+      slots = std::move(kept);
+      if (slots.empty())
+        return abort_with("可搜参数项只有阈值, 而其输入在块 0 上是常量 (σ = 0), 不搜");
+    }
+  }
+
+  // ---- 趟 0: 粗网格 (含基线; 步长由预算反推) ----
+  const grid::Coarse coarse = grid::coarse_lattice(slots);
+  const std::vector<std::vector<int>> &lattice = coarse.offs;
   std::vector<int> lattice_id(lattice.size(), -1); // 粗格点 → 候选 (−1 = 该点参数不合法)
   std::vector<int> ids;
   for (size_t li = 0; li < lattice.size(); ++li) {
-    const int id = add_cand(grid::coarse_u(slots, lattice[li]), lattice[li]);
+    const int id = add_cand(grid::coarse_u(slots, lattice[li], coarse.step), lattice[li]);
     lattice_id[li] = id;
     if (id >= 0 && std::find(ids.begin(), ids.end(), id) == ids.end())
       ids.push_back(id);
@@ -544,12 +619,13 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     b.center = en.u;
     b.hi = en.sc.best;
     b.best = en.sc.score;
+    b.step = coarse.step * 0.5;
     branches.push_back(std::move(b));
   }
   if (branches.empty())
     return abort_with("粗网格无一候选有正分 (净 LS ≤ 0 或 IC ≤ 0), 文件不动");
 
-  // ---- 趟 1..: 每支围 top-1 细化, 步长减半, 增益 < kMinGain 停 ----
+  // ---- 趟 1..: 每支围 top-1 细化 (点数 ≤ kLayerMax), 步长减半, 增益 < kMinGain 停 ----
   for (int level = 1; level <= grid::kMaxLevels; ++level) {
     std::vector<std::vector<int>> pts(branches.size()); // 每支本层的格点候选
     ids.clear();

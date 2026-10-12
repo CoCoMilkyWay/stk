@@ -14,12 +14,16 @@
 //         块内 t − h < 0 → ok_ac = 0. 调用方保证 carry ≥ max_lag(hd) (首块除外: 整张量里 t < h 本就无 AC) 则分块 ≡ 整张量;
 //         跨块 Result::merge 续攒 (Accum 可合并). 一块内候选之间互不相干, 后端怎么并行由后端定.
 //
-//   【成本】打分只要两格: 顶组 (做多腿) 的买入冲击均值 与 底组 (做空腿) 的卖出冲击均值; 池化 = 全时刻 Σ cost / 格数, 过 rx 有效 ∧ 成本有效
-//         (与 Inspect CostTier 的 buy[K−1] / sell[0] 同口径: 不看 ok / 尾部 / t ≥ h —— 建仓冲击与持有期无关; 组无样本 → 0).
-//         单一金额档 (如 5W) 由调用方选定; 买入冲击由调用方装载时按 Config::max_impact 封顶 (本算子只看到封顶后的值).
+//   【成本】按真实换手扣: 交易的只是顶组 (做多腿) 与底组 (做空腿), 每 (t, h) 行把 t−h 时不在该组 (含当时 rank 无效) 的成员记作**新进者**,
+//         只有新进者付一次往返 = 建仓冲击 (顶组 buy[a] / 底组 sell[a]) + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc:
+//         Σ新进者冲击 / 新进者数 / 组内样本数 (格过 rx 有效 ∧ 成本有效), 沿 t 池化 → 每期每成员均摊成本 = (Σ冲击 + 新进者数·sell_impact) / 组内样本数.
+//         只在有 lag 行 (块内 t ≥ h; carry 保证非首块全有) 的行上攒, 不看 ok / 尾部. 单一金额档 (如 5W) 由调用方选定; 买入冲击由调用方装载时
+//         按 Config::max_impact 封顶 (本算子只看到封顶后的值).
 //
-//   【目标】期限结构 = 各 hold 的净多空 ls_net(h) = ls_mean(h) − buy_hi − sell_lo − 2·sell_impact (= Inspect plot_term 的 LS 净线);
-//         h* = argmax_h ls_net(h); score = ls_net(h*) · ic_mean(h*)^ic_pow; 任一 ≤ 0 → −∞ (方向反 / 无效, 直接出局). 别的指标不进目标.
+//   【目标】只看 LS 与 IC, 两者都要高: 期限结构 = 各 hold 的**年化**净多空 ls_net(h) = (ls_mean(h) − 顶组均摊成本 − 底组均摊成本) · periods_per_year(h)
+//         (年化系数随 h 变 1000 倍, 跨 h 比的是单位资金年收益, 短持有期靠周转补回; 与 Inspect plot_term 的净线同轴);
+//         h* = argmax_h ls_net(h); score = ls_net(h*) · ic_mean(h*)^ic_pow; 任一 ≤ 0 → −∞ (方向反 / 无效, 直接出局).
+//         有意不进目标的: mono / 换手 / 显著性 (ls_t, icir) / 样本外 —— 分钟频 IC 是上万行的均值, 本身就有显著性; 搜索要快, 不做 holdout.
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
@@ -52,27 +56,36 @@ struct Cost {
   FACTOR_HD Cost at(size_t i) const { return {buy + i, sell + i, m + i}; } // 偏到第 i 格 (行首 = t·A)
 };
 
-// 两格成本池化累加器 (见【成本】); 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
+// 一个持有期的换手成本累加器 (见【成本】); 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
 struct CostAcc {
-  double buy_hi = 0.0, sell_lo = 0.0; // 顶组 Σ买入冲击 / 底组 Σ卖出冲击
-  long long n_hi = 0, n_lo = 0;       // 对应格数 (rx 有效 ∧ 成本有效)
+  double buy_hi = 0.0, sell_lo = 0.0; // 顶组新进者 Σ买入冲击 / 底组新进者 Σ卖出冲击
+  long long n_hi = 0, n_lo = 0;       // 组内样本数 (rx 有效 ∧ 成本有效; 分母)
+  long long e_hi = 0, e_lo = 0;       // 其中新进者数 (t−h 时不在该组)
   FACTOR_HD void merge(const CostAcc &o) {
     buy_hi += o.buy_hi, sell_lo += o.sell_lo;
     n_hi += o.n_hi, n_lo += o.n_lo;
+    e_hi += o.e_hi, e_lo += o.e_lo;
   }
-  double buy_mean() const { return n_hi > 0 ? buy_hi / static_cast<double>(n_hi) : 0.0; }
-  double sell_mean() const { return n_lo > 0 ? sell_lo / static_cast<double>(n_lo) : 0.0; }
+  // 每期每成员均摊成本 (一腿): (Σ建仓冲击 + 新进者数 · 平仓冲击) / 组内样本数; 组无样本 → 0
+  double long_cost(double sell_impact) const { return n_hi > 0 ? (buy_hi + e_hi * sell_impact) / static_cast<double>(n_hi) : 0.0; }
+  double short_cost(double sell_impact) const { return n_lo > 0 ? (sell_lo + e_lo * sell_impact) / static_cast<double>(n_lo) : 0.0; }
+  // 换手 (新进者占比) / 新进者平均建仓冲击 (显示 / 对拍用)
+  double turn_hi() const { return n_hi > 0 ? static_cast<double>(e_hi) / static_cast<double>(n_hi) : 0.0; }
+  double turn_lo() const { return n_lo > 0 ? static_cast<double>(e_lo) / static_cast<double>(n_lo) : 0.0; }
+  double buy_mean() const { return e_hi > 0 ? buy_hi / static_cast<double>(e_hi) : 0.0; }
+  double sell_mean() const { return e_lo > 0 ? sell_lo / static_cast<double>(e_lo) : 0.0; }
 };
 
-// 一个候选的全部输出: 每持有期一份 Accum + 成本两格. 跨块 merge
+// 一个候选的全部输出: 每持有期一份 Accum + 一份 CostAcc. 跨块 merge
 struct Result {
   Accum acc[kMaxHold];
-  CostAcc cost;
+  CostAcc cost[kMaxHold];
   void merge(const Result &o, int H) {
     assert(H >= 1 && H <= kMaxHold);
-    for (int i = 0; i < H; ++i)
+    for (int i = 0; i < H; ++i) {
       acc[i].merge(o.acc[i]);
-    cost.merge(o.cost);
+      cost[i].merge(o.cost[i]);
+    }
   }
 };
 
@@ -82,9 +95,9 @@ struct Objective {
   double ic_pow = 1.0;      // score = ls_net · ic^ic_pow
 };
 
-// 净多空 (Inspect plot_term 的 LS 净线同式)
+// 年化净多空 (见【目标】; s.hold 由 finish 填)
 inline double net_ls(const HoldStat &s, const CostAcc &c, double sell_impact) {
-  return static_cast<double>(s.ls_mean) - c.buy_mean() - c.sell_mean() - 2.0 * sell_impact;
+  return (static_cast<double>(s.ls_mean) - c.long_cost(sell_impact) - c.short_cost(sell_impact)) * factor::stat::periods_per_year(s.hold);
 }
 
 struct Score {
@@ -92,7 +105,7 @@ struct Score {
   double ls_net = 0.0, ic = 0.0;
   double score = -std::numeric_limits<double>::infinity();
   HoldStat hs[kMaxHold];  // 期限结构 (毛二级)
-  double net[kMaxHold]{}; // 期限结构 (净多空; n < 3 → −∞)
+  double net[kMaxHold]{}; // 期限结构 (年化净多空; n < 3 → −∞)
 };
 
 inline Score score_of(const Result &r, const Holds &hd, const Objective &o) {
@@ -101,7 +114,7 @@ inline Score score_of(const Result &r, const Holds &hd, const Objective &o) {
   constexpr double kNeg = -std::numeric_limits<double>::infinity();
   for (int i = 0; i < hd.n; ++i) {
     s.hs[i] = r.acc[i].finish(hd.h[i]);
-    s.net[i] = s.hs[i].n >= 3 ? net_ls(s.hs[i], r.cost, o.sell_impact) : kNeg;
+    s.net[i] = s.hs[i].n >= 3 ? net_ls(s.hs[i], r.cost[i], o.sell_impact) : kNeg;
     if (s.best < 0 || s.net[i] > s.net[s.best])
       s.best = i;
   }

@@ -1,11 +1,15 @@
 // SearchService — Factors 页 Optimize 的单 worker: 对表格高光的那一个因子 (view_file) 搜它表达式的**全部参数项** (d / k / k2;
-// factor/Search/Grid.hpp 定槽与坐标), 目标 = 单一金额档建仓冲击下的 净 LS · IC (factor/Search/Contract.hpp【目标】), 找到最优参数后
-// 回写该因子文件的 params 键 (FactorsService WriteFactorParams; stat 删掉, UI 随后自动 Run 重算).
+// factor/Search/Grid.hpp 定槽与坐标), 目标 = 单一金额档真实换手成本下的 年化净 LS · IC, **只看这两个** (factor/Search/Contract.hpp【目标】:
+// mono / 换手 / 显著性 / 样本外有意不进, 搜索要快), 找到最优参数后回写该因子文件的 params 键 (FactorsService WriteFactorParams;
+// stat 删掉, UI 随后自动 Run 重算).
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍; 趟与趟之间才有依赖):
-//   趟 0 粗网格   全部槽的整单位格点笛卡尔积 (含基线 = 当前参数), 每候选自选 h* (期限结构 argmax 净 LS)
+//   尺度          先装块 0, 基线 DAG 在 CPU 上走到各阈值槽 (ANY / GE0) 的输入节点, 取池内有效格标准差 σ 作该槽坐标单位 (Grid set_scale);
+//                 σ 不是正有限数的槽剔除 (输入常量, 阈值无意义)
+//   趟 0 粗网格   全部槽的格点笛卡尔积 (步长由 kLayerMax 预算反推, 含基线 = 当前参数), 每候选自选 h* (期限结构 argmax 年化净 LS)
 //   分支          粗网格 score 最高的 kBranches 个互不相邻格点各开一支, 支内 h 固定为该格点的 h*
-//   趟 1..        每支围自己的 top-1 开 5^P 细化网格 (步长逐层减半), 全部活支的新点拼成一趟; 一支一层相对增益 < kMinGain 即停
+//   趟 1..        每支围自己的 top-1 开细化网格 (步长从粗步长一半起逐层减半, 点数 ≤ kLayerMax), 全部活支的新点拼成一趟;
+//                 一支一层相对增益 < kMinGain 即停
 //   终            全部评过的候选按 score (自选 h*) 取最优: 与基线同规范串 → 文件不动; 否则写 params
 //
 // 评估 (Search 算子, 两后端语义同 Stat):
@@ -13,9 +17,10 @@
 //             (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同 (ROLL 窗 ≤ kMaxD, EXPAND 段界 reset;
 //             唯 TsMeanEma 全历史递推在块首重启, carry 5 日后差 (1−k)^1275, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
 //   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次).
-//             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + accum_rows + 成本), 不留根平面;
+//             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + eval_rows: 行统计 + 换手成本), 不留根平面;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
-//   成本      Cost 取 FeatureTable::costs[cost_idx] 一档 (如 5w) 的 buy / sell 平面; 平仓侧常数 = Config::sell_impact
+//   成本      Cost 取 FeatureTable::costs[cost_idx] 一档 (如 5w) 的 buy / sell 平面, 只有顶 / 底组的新进者 (t−h 不在该组) 付建仓冲击 +
+//             平仓常数 Config::sell_impact (契约【成本】)
 //
 // 线程模型 (对仗 InspectService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
 // 进度走原子: Loading 期 done/total = 块内天; Running 期 = 候选 × 块. 服务间互斥由 UI 保证 (Factors Run 与 Optimize 不同时跑: 都写因子文件).
@@ -62,7 +67,7 @@ struct SearchCand {
   int pass = 0;          // 第几趟评的 (0 = 粗)
   int best_hi = -1;      // 自选 h* (hd 下标); < 0 = 无一持有期 n ≥ 3
   double score = -std::numeric_limits<double>::infinity();
-  double ls_net = 0.0, ic = 0.0; // h* 处
+  double ls_net = 0.0, ic = 0.0; // h* 处 (ls_net 年化)
 };
 
 struct SearchResult {

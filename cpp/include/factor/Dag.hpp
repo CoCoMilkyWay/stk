@@ -35,6 +35,7 @@ struct DagNode {
 
 struct Dag {
   std::vector<DagNode> nodes;               // 后序拓扑, 根 = 末节点
+  std::vector<std::string> keys;            // 节点子树规范串 (下标同 nodes): 外部按 Expr 子树 (expr::to_string(e, ei)) 找节点
   std::vector<std::string> feats;           // 去重特征 code (首见序), 下标 = 输入平面下标
   std::vector<std::vector<int>> free_after; // free_after[i] = 节点 i 执行完 (含消费根) 可释放的槽
   std::vector<int> roots;                   // build_forest: roots[k] = 第 k 个 Expr 的根节点 (可重复); build: 空
@@ -86,6 +87,7 @@ struct DagBuilder {
     }
     const int id = static_cast<int>(d.nodes.size());
     d.nodes.push_back(dn);
+    d.keys.push_back(key);
     memo.emplace(key, id);
     return id;
   }
