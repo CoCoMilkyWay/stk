@@ -21,7 +21,6 @@
 
 #include "factor/Check.hpp"
 #include "factor/Contract.hpp"
-#include "factor/Stat/Contract.hpp"
 
 #include <atomic>
 #include <condition_variable>

@@ -22,13 +22,11 @@
 
 #include "factor/Contract.hpp"
 #include "factor/Expr.hpp"
-#include "factor/Stat/Contract.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <vector>
 

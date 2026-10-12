@@ -27,7 +27,6 @@
 // 出错策略: 因子行 / 作用域不合是正常输入 → result.message; 契约不一致 → assert.
 #pragma once
 
-#include "factor/Search/Contract.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow
 #include "shared/Analysis.hpp"                          // ReadScope

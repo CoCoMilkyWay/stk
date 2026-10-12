@@ -1,6 +1,6 @@
 // Tab Factors — 见头文件
 #include "gui/task_factors/ui/TabFactors.hpp"
-#include "factor/Check.hpp"  // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
+#include "factor/Check.hpp"       // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
 #include "factor/GpuRun.hpp"      // available / device_name
 #include "factor/Search/Grid.hpp" // kLayerMax / kBranches / kMinGain: Optimize 提示
 #include "gui/Tasks.hpp"          // StatusColor
