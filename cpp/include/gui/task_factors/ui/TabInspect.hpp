@@ -5,7 +5,7 @@
 //   状态; 箭头循环切, 不用下拉) + 选定持有期的一行 stat.
 //   整页 (头部文字 + 四图) 画的是**现结果**的因子: 切因子后服务不清旧 result, 旧的继续画, 头部标 "→ 新因子 (计算中…)", 新结果发布时一次性覆盖, 不闪
 //   成本只进期限结构 (右下): 分层 / IC / 顶部 stat 全是毛价格收益 (与 Factors Run 同), 拿来看分层 / 拟合形状; 成本与仓位映射另做.
-//   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各冲击档的组均建仓成本 CostTier[C], 换 Hold / 超额|绝对 / 改 sell_impact 都只是切片
+//   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各冲击档 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改 sell_impact 都只是切片
 //   (UI 持锁派生 / 现算), 不发请求, 零延时
 // 下面 2×2 四图:
 //   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日累计的组均收益 (控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
@@ -27,9 +27,9 @@
 //   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
 //   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部冲击档) 一次画全, 图例可点切, 默认只显 LS. 口径 = 全 universe 全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
-//        净档 <amt>w = 毛 − 该腿组均建仓冲击 (CostTier: lb_cost_{buy,sell}_<amt>w 按 grp_of(rx) 池化, 原值扣, 不被截面去均值吃掉) −
-//        平仓固定冲击 Config::sell_impact (L / S 一次, LS 两次), UI 现算. 毛用 HoldStat: Inspect 算过用算的, 没算过用 Factors 表里 (文件,
-//        只有毛, 无净档) 的, 所以进页即有
+//        净档 <amt>w = 毛 − 该腿该持有期的均摊换手成本 (CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Search 打分同一份 cost_row: 只有顶 / 底组
+//        新进者 (t−h 不在该组) 付 lb_cost_{buy,sell}_<amt>w + Config::sell_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
+//        Inspect 算过用算的, 没算过用 Factors 表里 (文件, 只有毛, 无净档) 的, 所以进页即有
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
 //   即开算, 不等切页; 缓存命中只补特征); Compute 按钮 = 弃缓存整体重读.
 #pragma once

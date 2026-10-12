@@ -4,7 +4,8 @@
 // Search 评估算子对拍的公共件: 候选造数 / 参考 (Stat CPU) / 比较 / CPU 驱动 / 分块切法
 // =============================================================================
 //   口径: Search 的语义 = Stat (契约 Search/Contract.hpp), 所以参考不是另一份 Search 实现, 而是 **Stat CPU** 对同一张平面算出的 HoldStat
-//   (Stat 自身已 cpu ↔ gpu 对拍过) + 朴素逐行算的每持有期换手成本 (整张量 rank 行, t ≥ h 逐格比 t−h 组别). Search CPU / Search GPU 各自与它比
+//   (Stat 自身已 cpu ↔ gpu 对拍过) + 朴素顺序算的每持有期换手成本 (整张量 rank 行, t ≥ h 逐行 cost_row; 逐格规则是契约 cost_cell 唯一一份,
+//   验的是块语义 / 并行 / GPU 归约). Search CPU / Search GPU 各自与它比
 //   (二级 compare_stat 容差 + 成本: 四个计数逐位, 两个冲击均值容差), 再比 分块 (两块带 carry, merge) ≡ 整块.
 //   造数沿用 Stat/Check.hpp 的 make (x / g / 标签), 候选 = 从 x 派生的 kCands 张平面 (CS {x, −x, x²}; TS {x, 1−x, x²}: 都在 [0,1]),
 //   成本 = POS 造数 × 1e-3 (买) / × 1.5e-3 (卖) 经 fp16, 掩码取造数的空洞.
@@ -96,27 +97,14 @@ inline void reference(const Data &d, int c, int threads, Ref &r) {
   factor::cpu::stat::Scratch sc;
   sc.reserve(A);
   factor::cpu::stat::rank_x_rows(b.x.v.data(), b.x.m.data(), d.base.g.m.data(), d.base.frame, 0, T, A, ws.data(), sc);
-  constexpr int kt = factor::stat::kGroups - 1;
+  const Cost cost{d.buy.data(), d.sell.data(), d.cm.data()};
   r.cost.assign(static_cast<size_t>(H), CostAcc{});
   for (int i = 0; i < H; ++i) {
     const int h = factor::stat::hold_minutes(d.base.hd.h[i]);
-    CostAcc &ca = r.cost[static_cast<size_t>(i)];
-    for (int t = h; t < T; ++t)
-      for (int a = 0; a < A; ++a) {
-        const size_t p = static_cast<size_t>(t) * A + a, q = p - static_cast<size_t>(h) * A;
-        if (ws[p] == factor::stat::kRankNone || !d.cm[p])
-          continue;
-        const int g = factor::stat::grp_of(ws[p]), gl = ws[q] != factor::stat::kRankNone ? factor::stat::grp_of(ws[q]) : -1;
-        if (g == kt) {
-          ++ca.n_hi;
-          if (gl != kt)
-            ++ca.e_hi, ca.buy_hi += static_cast<double>(factor::cpu::stat::h2f(d.buy[p]));
-        } else if (g == 0) {
-          ++ca.n_lo;
-          if (gl != 0)
-            ++ca.e_lo, ca.sell_lo += static_cast<double>(factor::cpu::stat::h2f(d.sell[p]));
-        }
-      }
+    for (int t = h; t < T; ++t) { // 整张量单线程顺序攒: 验的是块语义 / 并行 / 归约, 逐格规则 = 契约 cost_cell 同一份
+      const size_t p = static_cast<size_t>(t) * A;
+      factor::cpu::stat::cost_row(ws.data() + p, ws.data() + p - static_cast<size_t>(h) * A, cost.at(p), A, r.cost[static_cast<size_t>(i)]);
+    }
   }
 }
 // Search 的 Result → 同形 Ref (finish 各持有期), 给 分块 ≡ 整块 用

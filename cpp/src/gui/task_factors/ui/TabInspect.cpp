@@ -655,9 +655,10 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
 // 三组 × (毛 + 全部冲击档) 一次画全 (档越高线越细越淡), 成本只在这张图出现; L / S 默认隐藏, 点图例切 (图例项 = 组 × 档).
 // 口径 = 全 universe 全时刻池化 (HoldStat::grp = Σ 组内超额 / Σ 组样本数; ls_mean = 逐 t ls 的时间均值), 不是逐资产信号平均.
-// 净档 = 毛二级 − 组池化平均建仓冲击 (CostTier, 按原值扣, 与持有期无关) − 平仓固定冲击 sell_impact (L / S 一腿一次, LS 两腿两次): 纯派生, 现算.
-//   毛 L / S / LS 的样本是 J ∧ ok 行 (随持有期), 组均成本的样本是 rx 有效格 (不随持有期), 两者不完全重合 —— entry 成本本就与持有期无关
-// hs[n_hold] 毛二级; costs[n_cost] 可空 (文件 stat 只有毛). n < 3 的持有期不作节点. 悬停: 该持有期毛一行全 stat + 逐档净年化
+// 净档 = 毛二级 − 该持有期两腿均摊换手成本 (Stat 契约【换手成本】CostAcc::long_cost / short_cost, 含 sell_impact; LS = net_ls_period, 与 Search
+//   打分同一式): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (档, h) 一份 CostAcc.
+//   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是 t ≥ h 的 rx ∧ 成本有效格, 两者不完全重合 —— entry 成本与标签无关
+// hs[n_hold] 毛二级; costs[n_cost] 可空 (文件 stat 只有毛). n < 3 的持有期不作节点. 悬停: 该持有期毛一行全 stat + 逐档换手 / 冲击 / 净年化
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, double sell_impact, int sel_hold,
                const char *source, const ImVec2 &size) {
   assert(n_hold >= 1 && n_cost >= 0 && sell_impact >= 0.0);
@@ -678,15 +679,16 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   tier_names[0] = "毛";
   for (int q = 1; q < n_tier; ++q)
     tier_names[static_cast<size_t>(q)] = std::to_string(costs[q - 1].amt) + "w";
-  // 组 c (0 = L, 1 = S, 2 = LS) 在档 q 下每期均值 (未年化): 毛原值; 净 = 毛 − 该腿组均成本 − 平仓冲击
-  const auto value = [&](int c, int q, const factor::stat::HoldStat &h) {
+  // 组 c (0 = L, 1 = S, 2 = LS) 在档 q 下每期均值 (未年化): 毛原值; 净 = 毛 − 该腿该持有期均摊换手成本 (LS 走契约 net_ls_period)
+  const auto value = [&](int c, int q, int i) {
+    const factor::stat::HoldStat &h = hs[i];
     const double gross = c == 0 ? h.grp[K - 1] : c == 1 ? h.grp[0]
                                                         : h.ls_mean;
     if (q == 0)
       return gross;
-    const CostTier &ct = costs[q - 1];
-    return c == 0 ? gross - ct.buy[K - 1] - sell_impact : c == 1 ? gross - ct.buy[0] - sell_impact
-                                                                 : gross - ct.buy[K - 1] - ct.sell[0] - 2.0 * sell_impact;
+    const factor::stat::CostAcc &ca = costs[q - 1].acc[i];
+    return c == 0 ? gross - ca.long_cost(sell_impact) : c == 1 ? gross - ca.short_cost(sell_impact)
+                                                               : factor::stat::net_ls_period(h, ca, sell_impact);
   };
   ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
@@ -706,7 +708,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
           continue;
         const double ann = 100.0 * factor::stat::periods_per_year(hs[i].hold); // 每期均值 × 每年期数 → 年化 %, 跨持有期可比
         xk.push_back(i);
-        yk.push_back(value(c, q, hs[i]) * ann);
+        yk.push_back(value(c, q, i) * ann);
       }
       pchip_dense(xk, yk, xs, ys);
       const float fade = n_tier > 1 ? 1.f - 0.6f * static_cast<float>(q) / static_cast<float>(n_tier - 1) : 1.f; // 档越高越淡
@@ -729,7 +731,8 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     if (i >= 0 && i < n_hold) {
       const factor::stat::HoldStat &h = hs[i];
       ImGui::BeginTooltip();
-      ImGui::TextDisabled("h=%s  年化 %% 为池化均值超额 × 每年期数; 净 = 毛 − 组均建仓冲击 − 平仓冲击 %.4f (LS 两腿)", labels[static_cast<size_t>(i)], sell_impact);
+      ImGui::TextDisabled("h=%s  年化 %% 为池化均值超额 × 每年期数; 净 = 毛 − 腿内均摊 (新进者建仓冲击 + 平仓冲击 %.4f) (LS 两腿; 与 Search 同式)",
+                          labels[static_cast<size_t>(i)], sell_impact);
       if (h.n < 3) {
         ImGui::TextDisabled("毛   n=%d (不足)", h.n);
       } else {
@@ -740,9 +743,11 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
                     h.grp[0] * ann, h.ls_mean * ann);
         for (int q = 1; q < n_tier; ++q) {
           const CostTier &ct = costs[q - 1];
-          ImGui::Text("%-4s cover %.0f%%  组均冲击: buy G20 %.4f  G1 %.4f  sell G1 %.4f | 年化 %%: L %+.2f  S %+.2f  LS %+.2f",
-                      tier_names[static_cast<size_t>(q)].c_str(), ct.cover * 100.f, ct.buy[K - 1], ct.buy[0], ct.sell[0], value(0, q, h) * ann,
-                      value(1, q, h) * ann, value(2, q, h) * ann);
+          const factor::stat::CostAcc &ca = ct.acc[i];
+          ImGui::Text("%-4s cover %.0f%%  换手 L %.0f%% S %.0f%%  新进者冲击 buy %.4f sell %.4f  均摊 L %.5f S %.5f | 年化 %%: L %+.2f  S %+.2f  LS %+.2f",
+                      tier_names[static_cast<size_t>(q)].c_str(), ct.cover * 100.f, ca.turn_hi() * 100.0, ca.turn_lo() * 100.0, ca.buy_mean(),
+                      ca.sell_mean(), ca.long_cost(sell_impact), ca.short_cost(sell_impact), value(0, q, i) * ann, value(1, q, i) * ann,
+                      value(2, q, i) * ann);
         }
       }
       ImGui::EndTooltip();

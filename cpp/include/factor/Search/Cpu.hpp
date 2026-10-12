@@ -3,8 +3,7 @@
 // =============================================================================
 // Search 评估算子的 CPU 后端 (factor::cpu::search; 契约 factor/Search/Contract.hpp + Stat/Contract.hpp)
 // =============================================================================
-//   定位: 无 GPU 时的参数搜索路径. 行核全部复用 Stat CPU (Stat/Host.hpp: rank_x_row / row_stat), 本文件只加:
-//     cost_row    一 (t, h) 行的换手成本 (契约【成本】): 顶 / 底组成员 (rx 有效 ∧ 成本有效) 计数, t−h 不在该组的记新进者并累其建仓冲击
+//   定位: 无 GPU 时的参数搜索路径. 行核全部复用 Stat CPU (Stat/Host.hpp: rank_x_row / row_stat / cost_row), 本文件只加:
 //     eval_rows   行 [t_lo,T) × H 一遍: row_stat → Accum[tid][h], cost_row → CostAcc[tid][h] (同一行的 rx / rlag 只取一次), 末尾 merge.
 //                 块语义 t0_abs / t_lo 同 Stat accum_rows; 块内 t − h < 0 → 无 AC 也无成本
 //     run         一批候选: 候选串行, 候选内全核切行 (rank_x → eval_rows). 候选内并行而不是候选间: C 小 (局部网格几个点) 也能跑满核,
@@ -46,30 +45,6 @@ struct Workspace {
   }
 };
 
-// 一 (t, h) 行的换手成本: rx = 本行 r16, rlag = t−h 行 r16 (必有), c 已偏到行首
-inline void cost_row(const uint16_t *rx, const uint16_t *rlag, const Cost &c, int A, CostAcc &acc) {
-  constexpr int kt = kGroups - 1;
-  for (int a = 0; a < A; ++a) {
-    const unsigned x = rx[a];
-    if (x == kRankNone || c.m[a] == 0)
-      continue;
-    const int g = factor::stat::grp_of(x);
-    if (g != kt && g != 0)
-      continue;
-    const unsigned y = rlag[a];
-    const int gl = y != kRankNone ? factor::stat::grp_of(y) : -1;
-    if (g == kt) {
-      ++acc.n_hi;
-      if (gl != kt)
-        ++acc.e_hi, acc.buy_hi += static_cast<double>(factor::cpu::stat::h2f(c.buy[a]));
-    } else {
-      ++acc.n_lo;
-      if (gl != 0)
-        ++acc.e_lo, acc.sell_lo += static_cast<double>(factor::cpu::stat::h2f(c.sell[a]));
-    }
-  }
-}
-
 // 行 [t_lo,T) × hd.n: w.st.ws (本候选 r16) × 标签集 × 成本 → out (覆盖)
 template <class Exec>
 inline void eval_rows(Exec &ex, Frame f, int T, int A, int t0_abs, int t_lo, const Holds &hd, const Label *lab, const Cost &cost, Workspace &w,
@@ -96,7 +71,7 @@ inline void eval_rows(Exec &ex, Frame f, int T, int A, int t0_abs, int t_lo, con
         const uint16_t *rlag = t >= h ? ws + static_cast<size_t>(t - h) * A : nullptr;
         a[i].add(factor::cpu::stat::row_stat(f, rx, rlag, lab[i].at(base), A, factor::stat::tail_masked(t0_abs + t, hold)));
         if (rlag)
-          cost_row(rx, rlag, cost.at(base), A, ca[i]);
+          factor::cpu::stat::cost_row(rx, rlag, cost.at(base), A, ca[i]);
       }
     }
   });

@@ -61,6 +61,13 @@
 //     n < 3 → 只填 n, 其余 0 (消费端先看 n)
 //     累加器 Accum 可合并: 行区间并行各攒一份 merge; 超大张量沿 T 分块流式时跨块续攒, 不必落 Row
 //
+//   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Search 打分 / Inspect 期限结构净线) 在二级上扣, 两处**同一份**定义:
+//     交易的只是顶组 (做多腿) 与底组 (做空腿). 每 (t, h) 行, 组内成员 = rx 有效 ∧ 成本有效的格; 其中 t−h 时不在该组 (含当时 rank 无效) 的
+//     记作**新进者** (cost_cell), 只有新进者付一次往返 = 建仓冲击 (顶组 buy[a] / 底组 sell[a], 单一金额档, 买入已按 Config::max_impact 封顶)
+//     + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc 沿 t 池化 → 每期每成员均摊成本 (long_cost / short_cost) =
+//     (Σ新进者冲击 + 新进者数 · sell_impact) / 组内样本数. 只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关).
+//     净多空 net_ls_period = ls_mean − long_cost − short_cost; 年化 net_ls = × periods_per_year(h) (跨 h 比单位资金年收益).
+//
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
 //   【一份公式】契约公式 (ord / r16 / grp_of / tail / pearson_int / finish_row / Accum::add, merge) 标 FACTOR_HD: CUDA 编译器下是
@@ -223,6 +230,56 @@ FACTOR_HD inline int grp_of(unsigned r16) {
 
 // 段末尾部 (分钟档标签持有到收盘, 持有期缩短) → 掩掉; 日级档无尾部
 FACTOR_HD inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen >= kSegLen - hold - kCloseAuction; }
+
+// ---- 换手成本 (见文件头【换手成本】; Search 打分 / Inspect 期限结构净线共用) ----
+
+// 单一金额档的建仓冲击: 三张 [T][A] 平面的指针 (宿主或设备, 由后端定)
+struct Cost {
+  const uint16_t *buy = nullptr;                                           // 买入冲击 fp16 位
+  const uint16_t *sell = nullptr;                                          // 卖出冲击 fp16 位
+  const uint8_t *m = nullptr;                                              // 有效位
+  FACTOR_HD Cost at(size_t i) const { return {buy + i, sell + i, m + i}; } // 偏到第 i 格 (行首 = t·A)
+};
+
+// 一格的腿归属 (两后端 / 对拍参考 / Inspect 同一份): x = 本行 r16, y = t−h 行 r16, cm = 成本有效.
+//   返回 +1 顶组 (做多腿) / −1 底组 (做空腿) / 0 不交易 (其他组 / rx 无效 / 成本无效); ent = 新进者 (t−h 时不在该组, 含当时 rank 无效)
+FACTOR_HD inline int cost_cell(unsigned x, unsigned y, bool cm, bool &ent) {
+  constexpr int kt = kGroups - 1;
+  const int g = x != kRankNone ? grp_of(x) : -1;
+  if (!cm || (g != kt && g != 0)) {
+    ent = false;
+    return 0;
+  }
+  const int gl = y != kRankNone ? grp_of(y) : -1;
+  ent = gl != g;
+  return g == kt ? 1 : -1;
+}
+
+// 一个持有期的换手成本累加器; 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
+struct CostAcc {
+  double buy_hi = 0.0, sell_lo = 0.0; // 顶组新进者 Σ买入冲击 / 底组新进者 Σ卖出冲击
+  long long n_hi = 0, n_lo = 0;       // 组内样本数 (rx 有效 ∧ 成本有效; 分母)
+  long long e_hi = 0, e_lo = 0;       // 其中新进者数 (t−h 时不在该组)
+  FACTOR_HD void merge(const CostAcc &o) {
+    buy_hi += o.buy_hi, sell_lo += o.sell_lo;
+    n_hi += o.n_hi, n_lo += o.n_lo;
+    e_hi += o.e_hi, e_lo += o.e_lo;
+  }
+  // 每期每成员均摊成本 (一腿): (Σ建仓冲击 + 新进者数 · 平仓冲击) / 组内样本数; 组无样本 → 0
+  double long_cost(double sell_impact) const { return n_hi > 0 ? (buy_hi + e_hi * sell_impact) / static_cast<double>(n_hi) : 0.0; }
+  double short_cost(double sell_impact) const { return n_lo > 0 ? (sell_lo + e_lo * sell_impact) / static_cast<double>(n_lo) : 0.0; }
+  // 换手 (新进者占比) / 新进者平均建仓冲击 (显示 / 对拍用)
+  double turn_hi() const { return n_hi > 0 ? static_cast<double>(e_hi) / static_cast<double>(n_hi) : 0.0; }
+  double turn_lo() const { return n_lo > 0 ? static_cast<double>(e_lo) / static_cast<double>(n_lo) : 0.0; }
+  double buy_mean() const { return e_hi > 0 ? buy_hi / static_cast<double>(e_hi) : 0.0; }
+  double sell_mean() const { return e_lo > 0 ? sell_lo / static_cast<double>(e_lo) : 0.0; }
+};
+
+// 每期净多空 = 毛 ls_mean − 两腿均摊成本; 年化 = × periods_per_year (s.hold 由 finish 填)
+inline double net_ls_period(const HoldStat &s, const CostAcc &c, double sell_impact) {
+  return static_cast<double>(s.ls_mean) - c.long_cost(sell_impact) - c.short_cost(sell_impact);
+}
+inline double net_ls(const HoldStat &s, const CostAcc &c, double sell_impact) { return net_ls_period(s, c, sell_impact) * periods_per_year(s.hold); }
 
 // 整数五和的 Pearson: vx = n·Σx² − (Σx)² 等全在 64 位整数内精确, 只有最后一步除法/开方是浮点 (IEEE 正确舍入,
 // 两后端逐位一致). ok = n ≥ 2 ∧ vx > 0 ∧ vy > 0

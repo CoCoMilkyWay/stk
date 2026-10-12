@@ -10,6 +10,7 @@
 //     rank_y_row  做多标签一行 (fp16 位) → ry. 与因子无关, 常驻期算一次
 //     row_stat    一 (t, hold) 完整行 = ac_row (给了 lag 行才算) + label_row (非段末尾部才算); 公式收尾走契约的 finish_row.
 //                 label_row 一遍 A 轴: 整数五和 / 标签浮点和 / 分组和, branchless select
+//     cost_row    一 (t, hold) 行的换手成本 (契约 cost_cell 逐格) → CostAcc. Search 打分 / Inspect 期限结构净线共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
@@ -24,6 +25,8 @@
 
 namespace factor::cpu::stat {
 
+using factor::stat::Cost;
+using factor::stat::CostAcc;
 using factor::stat::Frame;
 using factor::stat::kGroups;
 using factor::stat::kMaxA;
@@ -128,6 +131,23 @@ inline void ac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   bool ok = false;
   r.ac = factor::stat::pearson_int(n, sx, sy, sxx, syy, sxy, ok);
   r.ok_ac = ok ? 1u : 0u;
+}
+
+// 换手成本 (契约【换手成本】): rx = 本行 r16, rlag = t−h 行 r16 (必有), c 已偏到行首 → 攒进 acc (顶 / 底组计数, 新进者累建仓冲击)
+inline void cost_row(const uint16_t *rx, const uint16_t *rlag, const Cost &c, int A, CostAcc &acc) {
+  for (int a = 0; a < A; ++a) {
+    bool ent = false;
+    const int leg = factor::stat::cost_cell(rx[a], rlag[a], c.m[a] != 0, ent);
+    if (leg > 0) {
+      ++acc.n_hi;
+      if (ent)
+        ++acc.e_hi, acc.buy_hi += static_cast<double>(h2f(c.buy[a]));
+    } else if (leg < 0) {
+      ++acc.n_lo;
+      if (ent)
+        ++acc.e_lo, acc.sell_lo += static_cast<double>(h2f(c.sell[a]));
+    }
+  }
 }
 
 // 标签侧: rx = 本行 r16, lb 已偏到行首 → r 的 ic / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部

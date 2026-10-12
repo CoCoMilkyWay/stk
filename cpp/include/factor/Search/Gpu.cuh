@@ -66,7 +66,6 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   const Label lb = L.l[hi];
   const int tb = blockIdx.y, t_beg = t_lo + tb * kRows, t_end = min(T, t_beg + kRows);
   const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;
-  constexpr int kt = kGroups - 1;
 
   // warp 私有分片 (= Accum::add 的字段拆到 lane: lane 0 标量 + 成本, lane q < kGroups 组 q)
   int an = 0, anpos = 0, anlpos = 0, anac = 0;
@@ -104,18 +103,16 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
       ++anac;
       asac += r.ac;
     }
-    // ---- 换手成本 (有 lag 行才算; 与 Search/Cpu.hpp cost_row 同式: 顶 / 底组成员 (rx 有效 ∧ 成本有效) 计数, t−h 不在该组 = 新进者累冲击) ----
+    // ---- 换手成本 (有 lag 行才算; 逐格规则 = 契约 cost_cell, 与 Stat/Host.hpp cost_row 同一份; 只有顶 / 底组成员才碰冲击平面) ----
     if (xl) {
       const Cost cr = cost.at(base);
       float cv[2] = {0.f, 0.f}; // Σ买|顶组新进, Σ卖|底组新进
       int cn[4] = {0, 0, 0, 0}; // 顶组数, 底组数, 顶组新进数, 底组新进数
       for (int a = lane; a < A; a += 32) {
-        const unsigned x = xr[a];
-        const int g = x != kRankNone ? factor::stat::grp_of(x) : -1;
-        if ((g == kt || g == 0) && cr.m[a] != 0) { // 只有顶 / 底组成员才读 lag / 成本 (稀疏, 分支跳过读)
-          const unsigned y = xl[a];
-          const int gl = y != kRankNone ? factor::stat::grp_of(y) : -1;
-          const bool hi = g == kt, ent = gl != g;
+        bool ent = false;
+        const int leg = factor::stat::cost_cell(xr[a], xl[a], cr.m[a] != 0, ent);
+        if (leg != 0) {
+          const bool hi = leg > 0;
           cn[0] += hi;
           cn[1] += !hi;
           cn[2] += hi && ent;
