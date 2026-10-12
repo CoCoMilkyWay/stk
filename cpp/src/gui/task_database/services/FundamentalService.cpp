@@ -188,6 +188,10 @@ struct Job {
   std::atomic<bool> done = false;
   std::atomic<std::size_t> files_done{0};  // 并行扫描已完成的月分片数
   std::atomic<std::size_t> files_total{0}; // 0 = 当前不在扫描阶段
+  // BigQuant 周配额 preflight: quota 先写, confirm_needed 后置 (release) ⇒ io 线程
+  // 看到 confirm_needed 即可读 quota; 工作线程随后挂起等 decision
+  bigquant::Quota quota;
+  std::atomic<bool> confirm_needed = false;
   std::mutex mu;
   std::string message; // 阶段说明 (worker 写, io 线程轮询读)
   bool ok = false;     // 构建是否成功 (false = 本地 parquet 缺失)
@@ -1157,25 +1161,43 @@ awaitable<void> FundamentalService::run(bool with_network) {
     co_return; // 已有一轮在跑
 
   auto job = std::make_shared<Job>();
+  decision_ = std::make_shared<std::atomic<int>>(0);
+  auto decision = decision_;
   state_.status =
       with_network ? FundamentalStatus::Updating : FundamentalStatus::Building;
 
   // 阻塞网络 + parquet IO 全在工作线程; 协程只轮询. 异常不捕获 (fail fast).
-  std::thread([job, with_network]() {
+  std::thread([job, decision, with_network]() {
     if (with_network) {
       const std::string today = misc::today_yyyymmdd();
       // pending 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 零网络
       job->set_message("pending 判定 (水位/dedup 窗口)");
-      bool need = bigquant::pending(config::PIPELINE_START_DATE, today,
-                                    bigquant::SPECS,
-                                    config::PIPELINE_LOOKBACK_DAYS) ||
-                  tushare::pending(config::PIPELINE_START_DATE, today,
-                                   tushare::SPECS,
-                                   config::PIPELINE_LOOKBACK_DAYS);
-      if (need) {
+      bool need_bq = bigquant::pending(config::PIPELINE_START_DATE, today,
+                                       bigquant::SPECS,
+                                       config::PIPELINE_LOOKBACK_DAYS);
+      const bool need_ts = tushare::pending(config::PIPELINE_START_DATE, today,
+                                            tushare::SPECS,
+                                            config::PIPELINE_LOOKBACK_DAYS);
+      if (need_bq) {
+        // 真要联网拉 BigQuant 才探配额; 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)
+        job->set_message("preflight: BigQuant 周配额");
+        job->quota = bigquant::preflight();
+        const double left = 1.0 - static_cast<double>(job->quota.used) /
+                                      static_cast<double>(job->quota.weekly);
+        if (left < config::BIGQUANT_QUOTA_CONFIRM_RATIO) {
+          job->set_message("等待确认: BigQuant 周配额不足");
+          job->confirm_needed.store(true, std::memory_order_release);
+          while (decision->load(std::memory_order_acquire) == 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          need_bq = decision->load(std::memory_order_acquire) == 1;
+        }
+      }
+      if (need_bq) {
         job->set_message("同步 BigQuant DAI (月度 parquet 水位增量)");
         bigquant::update(config::PIPELINE_START_DATE, today, bigquant::SPECS,
                          config::PIPELINE_LOOKBACK_DAYS);
+      }
+      if (need_ts) {
         job->set_message("同步 Tushare (forecast/express/disclosure)");
         tushare::update(config::PIPELINE_START_DATE, today, tushare::SPECS,
                         config::PIPELINE_LOOKBACK_DAYS);
@@ -1191,6 +1213,16 @@ awaitable<void> FundamentalService::run(bool with_network) {
   while (!job->done) {
     // 构建中实时把工作线程的阶段说明透给 UI
     std::string msg = job->get_message();
+    // 配额确认: 工作线程挂起 ⇒ Confirm (弹窗); 回答后回到 Updating
+    if (job->confirm_needed.load(std::memory_order_acquire)) {
+      if (decision->load(std::memory_order_acquire) == 0) {
+        state_.status = FundamentalStatus::Confirm;
+        state_.quota_weekly = job->quota.weekly;
+        state_.quota_used = job->quota.used;
+      } else if (state_.status == FundamentalStatus::Confirm) {
+        state_.status = FundamentalStatus::Updating;
+      }
+    }
     if (with_network && state_.status == FundamentalStatus::Updating &&
         msg.starts_with("构建"))
       state_.status = FundamentalStatus::Building;
@@ -1219,7 +1251,16 @@ awaitable<void> FundamentalService::run(bool with_network) {
     state_.status = FundamentalStatus::Error;
     state_.message = "本地 parquet 缺失 — 点击 Update 联网同步";
   }
+  decision_.reset();
   busy_ = false;
+}
+
+void FundamentalService::confirm(bool proceed) {
+  assert(state_.status == FundamentalStatus::Confirm && "confirm: 不在 Confirm 态");
+  assert(decision_ && decision_->load() == 0 && "confirm: 本轮已回答");
+  decision_->store(proceed ? 1 : 2, std::memory_order_release);
+  // 同帧退出 Confirm (io 线程 = GUI 线程), 不等协程下一次 100ms 轮询 — 否则弹窗会重开
+  state_.status = FundamentalStatus::Updating;
 }
 
 } // namespace GUI::Database

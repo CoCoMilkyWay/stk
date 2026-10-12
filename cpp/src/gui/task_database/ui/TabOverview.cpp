@@ -27,6 +27,8 @@ ImVec4 status_color(FundamentalStatus s) {
   case FundamentalStatus::Updating:
   case FundamentalStatus::Building:
     return ImVec4(1.0f, 0.95f, 0.3f, 1.0f);
+  case FundamentalStatus::Confirm:
+    return ImVec4(1.0f, 0.6f, 0.2f, 1.0f);
   case FundamentalStatus::Error:
     return ImVec4(1.0f, 0.3f, 0.2f, 1.0f);
   case FundamentalStatus::Idle:

@@ -162,6 +162,8 @@ inline constexpr const char *TUSHARE_TOKEN = "6b5ea435a4626b1eeedefb2115bcf9e84f
 //   超时 = 单次连接+读写整体时长; 重试 = RETRY_MAX 次额外重试, 线性间隔
 inline constexpr const char *BIGQUANT_FLIGHT_URI = "grpc+tcp://bigquant.com:17010";
 inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
+// 周配额 preflight: 剩余比例 < 该值时同步前弹窗确认 (bigquant::update 不自己判, 由 GUI 决定)
+inline constexpr double BIGQUANT_QUOTA_CONFIRM_RATIO = 0.3;
 
 inline constexpr const char *TUSHARE_HTTP_HOST = "api.tushare.pro";
 inline constexpr const char *TUSHARE_HTTP_PORT = "80";  // 走 80, 省掉 SSL 依赖

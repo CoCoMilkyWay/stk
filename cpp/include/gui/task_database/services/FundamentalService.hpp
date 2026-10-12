@@ -9,6 +9,7 @@
 #include <boost/asio/io_context.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,7 @@ using boost::asio::awaitable;
 enum class FundamentalStatus {
   Idle,     // 未加载
   Updating, // 联网同步 parquet 中 (bigquant + tushare)
+  Confirm,  // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, 工作线程挂起等弹窗决定
   Building, // parquet → AssetInfo 构建中
   Ready,    // AssetInfo 就绪
   Error     // 本地 parquet 缺失 (需先联网同步)
@@ -32,6 +34,8 @@ inline const char *GetFundamentalStatusName(FundamentalStatus s) {
     return "Idle";
   case FundamentalStatus::Updating:
     return "Updating";
+  case FundamentalStatus::Confirm:
+    return "Confirm";
   case FundamentalStatus::Building:
     return "Building";
   case FundamentalStatus::Ready:
@@ -57,6 +61,10 @@ struct FundamentalState {
   FundamentalStatus status = FundamentalStatus::Idle;
   std::string message;     // 当前阶段说明 (工作线程实时更新)
   std::string last_update; // 最近一次构建完成时刻
+
+  // BigQuant 周配额 (preflight 结果, 单位 cell; Confirm 态弹窗展示用)
+  std::int64_t quota_weekly = 0;
+  std::int64_t quota_used = 0;
 
   // 构建结果统计 (Ready 后有效)
   std::size_t stock_count = 0;        // stock_info 条数
@@ -85,6 +93,10 @@ public:
   // (pending 全 fresh ⇒ 零网络直接本地构建; 启动与手动 Update 共用)
   awaitable<void> update_all();
 
+  // Confirm 态的弹窗回答: proceed=true 照常 bigquant::update, false 跳过 BigQuant
+  // (Tushare / 本地构建照常). 只在 Confirm 态可调, 每轮只回答一次.
+  void confirm(bool proceed);
+
   const FundamentalState &get_state() const { return state_; }
   bool is_ready() const { return state_.status == FundamentalStatus::Ready; }
   bool is_busy() const { return busy_; }
@@ -96,6 +108,9 @@ private:
   SharedData &data_;
   FundamentalState state_;
   std::atomic<bool> busy_ = false;
+  // 弹窗决定 → 工作线程: 0 = 未答, 1 = 继续, 2 = 跳过 BigQuant.
+  // shared_ptr 随 detached 线程存活 (与 Job 同理), 每轮 run 新建.
+  std::shared_ptr<std::atomic<int>> decision_;
 };
 
 } // namespace GUI::Database

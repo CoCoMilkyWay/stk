@@ -11,6 +11,7 @@
 #include "gui/task_database/ui/TabOverview.hpp"
 #include "gui/task_database/ui/TabTable.hpp"
 #include "imgui.h"
+#include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -79,6 +80,51 @@ public:
     if (state_mgr_)
       state_mgr_->refresh_state();
     UpdateTaskState();
+    // 配额确认弹窗放这里而非 Draw: 启动即后台同步, 用户可能根本没点开 Database,
+    // 模态必须每帧都在 (工作线程此刻挂起, 不答就一直等)
+    DrawQuotaConfirm();
+  }
+
+  // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO ⇒ 模态二选一, 答案回给
+  // FundamentalService::confirm (工作线程据此走 / 跳过 bigquant::update)
+  void DrawQuotaConfirm() {
+    if (!fundamental_svc_)
+      return;
+    const auto &fs = fundamental_svc_->get_state();
+    if (fs.status != FundamentalStatus::Confirm)
+      return;
+    static constexpr const char *kId = "BigQuant 周配额不足##QuotaConfirm";
+    if (!ImGui::IsPopupOpen(kId)) {
+      ImGui::OpenPopup(kId);
+      ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                              ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+    if (!ImGui::BeginPopupModal(kId, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+      return;
+    const double left = 1.0 - static_cast<double>(fs.quota_used) /
+                                  static_cast<double>(fs.quota_weekly);
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "本周剩余 %.1f%%  (阈值 %.0f%%)",
+                       left * 100.0, config::BIGQUANT_QUOTA_CONFIRM_RATIO * 100.0);
+    ImGui::TextDisabled("used %lld / weekly %lld cells  (每周重置, 服务端不给重置时刻)",
+                        static_cast<long long>(fs.quota_used),
+                        static_cast<long long>(fs.quota_weekly));
+    ImGui::Spacing();
+    ImGui::TextWrapped("有待拉的 BigQuant 月度分片. 继续会消耗配额; "
+                       "跳过则本轮不碰 BigQuant (Tushare / 本地构建照常), "
+                       "下次 Update 再问.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    if (ImGui::Button("继续同步", ImVec2(160.0f, 0.0f))) {
+      fundamental_svc_->confirm(true);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("跳过 BigQuant", ImVec2(160.0f, 0.0f))) {
+      fundamental_svc_->confirm(false);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
   }
 
   // Enabled: 左栏叶子是否可点, 直读 StateManager 的解锁进度 (Update 同帧已刷新)
@@ -267,6 +313,8 @@ private:
       return {TaskStatus::Kind::Muted, "idle"};
     case FundamentalStatus::Updating:
       return {TaskStatus::Kind::Busy, "updating"};
+    case FundamentalStatus::Confirm:
+      return {TaskStatus::Kind::Warn, "confirm quota"};
     case FundamentalStatus::Building:
       return {TaskStatus::Kind::Busy, "building"};
     case FundamentalStatus::Ready:
@@ -344,6 +392,11 @@ private:
     case FundamentalStatus::Building:
       ImGui::TextColored(ImVec4(1.0f, 0.95f, 0.3f, 1.0f), "[%s]",
                          GetFundamentalStatusName(fstate.status));
+      break;
+    case FundamentalStatus::Confirm:
+      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "[Confirm]");
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", fstate.message.c_str());
       break;
     case FundamentalStatus::Error:
       ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.0f, 1.0f), "[Error]");
