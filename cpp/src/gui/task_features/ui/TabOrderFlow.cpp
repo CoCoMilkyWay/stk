@@ -525,7 +525,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
-      // 分钟 VWAP 阶梯 (L1 特征列 vwap, 标签 exit 同源; universe 外 / 未算特征的资产无此线)
+      // 分钟 VWAP 阶梯 (L1 特征列 vwap; universe 外 / 未算特征的资产无此线)
       if (!dp.plot.vwap_x.empty()) {
         ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
         ImPlot::PlotStairs("VWAP", dp.plot.vwap_x.data(), dp.plot.vwap_y.data(), static_cast<int>(dp.plot.vwap_x.size()), ImPlotItemFlags_NoFit);

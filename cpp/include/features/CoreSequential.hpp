@@ -150,7 +150,7 @@ private:
     if (depth_updated) {
       dag_.run<Trigger::onDepth>();
 
-      // 标签: 盘口快照入环, 然后 L1 分钟锚定捕获 entry (+ 写该行冲击成本列); exit 走分钟 bar (run_minute → minute_closed)
+      // 标签: 盘口快照入环, 然后 L1 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟档行); 开盘价走分钟 bar (run_minute → minute_closed)
       dag_.LabelReturn.snapshot(t);
       dag_.LabelReturn.minute_anchored(t, label_writer());
     }
@@ -190,7 +190,7 @@ private:
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----
-  // 刚出 bar 的分钟 (roll / finish 返回 true 后): 每分钟都跑 onMinute 并写整行 (稠密); 有成交 = ts_valid 非零 + 标签分钟档 exit
+  // 刚出 bar 的分钟 (roll / finish 返回 true 后): 每分钟都跑 onMinute 并写整行 (稠密); 有成交 = ts_valid 非零 + 标签开盘价截取
   inline void run_minute() {
     const auto &md = dag_.minute_data;
     assert(!md.close.empty() && "run_minute 只在 roll / finish 出 bar 后调");
@@ -200,9 +200,9 @@ private:
     dag_.run<Trigger::onMinute>();
     fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
     fstore::ts_write<1>(day_, t, L1_Field::ts_valid, asset_id_, meta_.l1(traded));
-    // 标签 exit: 本分钟 Flow.vwap (onMinute 已 flush) 只在有成交的分钟可平, 写分钟档到期的行 / 记开盘价
+    // 标签开盘价 (开盘档 exit): 只在有成交的分钟截 (09:25 撮合价 / 首个连续竞价 bar 首笔)
     if (traded)
-      dag_.LabelReturn.minute_closed(t, label_writer());
+      dag_.LabelReturn.minute_closed(t);
   }
 
   // 标签列定位: 按类型 (LB) 在字段表里找, 不依赖列名; 列数 / 连续性与 LabelReturn 配置对账

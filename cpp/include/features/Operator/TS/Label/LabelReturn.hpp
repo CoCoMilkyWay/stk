@@ -6,7 +6,9 @@
 //   标签 (lb_long_<h> / lb_short_<h>) = 纯价格收益, 不含深度冲击、不含税佣:
 //     做多: (exit − mid_entry) / mid_entry        做空: (mid_entry − exit) / mid_entry
 //     entry = 锚点 (分钟末) + LABEL_DELAY_SECONDS 的可成交盘口 **中间价** (精确到秒的建仓时刻, 对 entry 敏感);
-//     exit  = 分钟档: 名义平仓时刻所在分钟的 **成交 VWAP** (= Flow.vwap 特征, Σ成交额/Σ成交量, 买卖主动单都算; 对 exit 的高频噪声不敏感);
+//     exit  = 分钟档: 行 m 持有 n 分钟的 exit = **行 m+n 的 entry 快照中间价** (同一条快照, 同一基准). entry / exit 同为 mid ⇒
+//             相邻行标签精确伸缩 (Σ 连续 n 个 1m = 一个 nm), 与 Stat 换手成本"留仓不付, 只有新进者付"自洽; 价差 / 冲击全部在成本列,
+//             标签里不残留 (exit 用成交 VWAP 会把 taker 侧半价差记进标签: 被主动买的票 VWAP 贴 ask, 失衡类因子每期白捡一个水平项);
 //             收盘档: 当日收盘价 (末笔成交价 = 收盘竞价撮合价); 开盘档: T+N 日开盘价 (09:25 集合竞价撮合价, 无撮合则连续竞价首笔成交价).
 //   冲击成本特征 (lb_cost_{buy,sell}_<a>w) = entry 同一盘口吃 a 万元的 VWAP 相对中间价的偏离 (比例, ≥0):
 //     cost_buy = VWAP^A(a)/mid − 1,  cost_sell = 1 − VWAP^B(a)/mid.  "mid − 成交价" 单拆出来, 标签 − 成本 = 精确的吃单成交收益;
@@ -19,25 +21,25 @@
 //     可成交簿 = 连续竞价时段的盘口 (LOB market_state). 集合竞价期 (09:15-09:25 / 14:57-15:00) 的簿只是堆单,
 //       可交叉 (买一 ≥ 卖一) 且撮合前一股不成交, 拿它定建仓价 = 假价格, 一律不入环.
 //     entry 锚点在非交易空窗 (09:25 撮合后到 09:30 开盘) / 稀疏盘口 → 顺延到之后首个可成交簿 = 最早能建仓的时刻 (见 get_snapshot_tradable)
-//     名义 exit 分钟无成交 → 之后首个有成交的连续竞价分钟的 VWAP = 最早能平的时刻 (09:30 前的名义 exit 退化为开盘首分钟 VWAP)
-//     exit 落在连续竞价结束之后 (14:57 起的分钟) → 持有到收盘 (T0 当日平仓): 按当日末笔成交价 (= 收盘竞价撮合价,
-//       无撮合则连续竞价末笔; 取 MinuteData 末 bar close) 平仓 —— 用成交而非时钟判收盘 (见 day_end)
+//     分钟档 exit 同一规则 (就是行 m+n 的 entry): 锚点无簿 → 顺延 = 最早能平的时刻 (09:30 前的名义 exit 退化为开盘首个可成交簿)
+//     exit 锚点落在连续竞价结束之后 (行 m+n 的锚点 ≥ 14:57, 即 m+n ≥ kSegLen − kCloseAuction − 1; 永不捕获) → 持有到收盘 (T0 当日平仓):
+//       按当日末笔成交价 (= 收盘竞价撮合价, 无撮合则连续竞价末笔; 取 MinuteData 末 bar close) 平仓 —— 用成交而非时钟判收盘 (见 day_end)
 //     entry 锚点后再无可成交簿 (14:57 起) → 收盘价建仓 (mid = close, 冲击 0): 分钟档 / 收盘档 即建即平 = 0, 开盘档 = 收盘买次日开盘卖
 //     中间价: 买一 / 卖一 皆在取均值; 一侧全空 (涨跌停封板) 取另一侧 (= 涨跌停价); 双侧全空 → 无价, 这笔交易成不了, 收益 0 (未建仓)
 //     冲击成本: 全簿吃不完 / 封板该侧全空 → 余量按涨跌停价成交 (与 Book 吃单成本同约, 见 calc_vwap); 该侧全空且无涨跌停价可补
 //       (无限制股) → 吃不到, 成本 NaN (消费端扣减时该格无效) —— 这是成本特征唯一的 NaN 来源
 //
-// 非 DAG 节点 (未来标签需回填, 不走 Node). 一份盘口快照环 (中间价 + 各金额档冲击) 只给 entry 用; exit 走分钟 bar:
+// 非 DAG 节点 (未来标签需回填, 不走 Node). 一份盘口快照环 (中间价 + 各金额档冲击) 给 entry 用, 分钟档 exit 复用后续行的 entry:
 //   snapshot(t)                 每次 onDepth 先调: 只记账, 快照惰性结算 —— 同一秒内只有最后一次
 //                               盘口状态会被消费, 所以等下一次盘口更新到来时才从 Depth 环的上一格结算
 //                               入环 (materialize offset=1); 查询目标恰为当前秒 (还没结算) 时从环末现算
 //                               (offset=0). 与"每次更新都算"逐值一致, 计算次数从每笔盘口更新降到每活跃秒一次.
 //                               只有可成交簿记为活跃秒.
 //   minute_anchored(t, writer)  L1 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
-//                               把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 同时写该行的冲击成本列.
-//   minute_closed(l1, w)        分钟 bar 结算后 (CoreSequential::run_minute, 只在有成交的分钟调: 无成交无法平仓): 连续竞价分钟的 Flow.vwap 作 exit,
-//                               写分钟档已到 exit 的行; 09:25 撮合 bar 的撮合价记为开盘价 (开盘档 T+N 的 exit),
-//                               无撮合则退首个连续竞价 bar 的首笔成交价 (交易所开盘价定义).
+//                               把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 同时写该行的冲击成本列;
+//                               行 e 捕获即是行 e−n 的分钟档 exit 到位, 顺带写分钟档 (e−n, n) 的标签.
+//   minute_closed(l1)           分钟 bar 结算后 (CoreSequential::run_minute, 只在有成交的分钟调): 只记开盘价 (开盘档 T+N 的 exit):
+//                               09:25 撮合 bar 的撮合价, 无撮合则退首个连续竞价 bar 的首笔成交价 (交易所开盘价定义).
 //   day_begin / day_end         日历: 日期轴每一日各调一次 (无数据日也调, 由 CoreSequential 保证).
 //                               day_end 结算 分钟档尾部 (exit 过收盘 → 收盘价) + 收盘档 全行 + 开盘档 到期日 (见下), 并释放结清的日.
 //   finish_all                  回测区间末: 悬挂日全部按 最近一次收盘价 结算 (持有到最后一日收盘), 全部释放.
@@ -58,7 +60,7 @@
 
 // ---- 配置 ----
 // 持有期组 (name, KIND, n): name = 列名 token (lb_<side>_<name>; 也是 Stat 持有期键的来源, 见 factor/Stat/Contract.hpp 【持有期键】)
-//   MIN   持仓 n 分钟 (exit = 分钟 m+1+n 的 VWAP, 即名义平仓时刻所在分钟)
+//   MIN   持仓 n 分钟 (exit = 行 m+n 的 entry 快照中间价, 即锚点后整 n 分钟 + DELAY 的可成交盘口)
 //   CLOSE 持有到当日收盘 (n 不用, 写 0)
 //   OPEN  T+n 开盘平仓 (跨日回填, 见文件头)
 #define LABEL_GROUPS(X, ...)      \
@@ -124,9 +126,10 @@ public:
   // FeatureStore 池下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进 (CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
   static constexpr size_t MIN_POOL_SLOTS = PEND_DAYS + 1;
 
-  // 连续竞价分钟区间 [kContOpenL1, kContCloseL1) = [09:30, 14:57): 只有这些分钟的 bar VWAP 可作分钟档 exit.
-  // 09:25 撮合 (L1 kAuctionL1) / 收盘竞价 (L1 252..254) 的 bar 是集合竞价成交, 不是能主动平仓的价:
+  // 连续竞价分钟区间 [kContOpenL1, kContCloseL1) = [09:30, 14:57): 开盘价只认这些分钟的 bar (无 09:25 撮合时).
+  // 09:25 撮合 (L1 kAuctionL1) / 收盘竞价 (L1 252..254) 的 bar 是集合竞价成交:
   // 开盘撮合价 = 开盘档 exit (开盘价), 收盘用末笔成交价走 day_end.
+  // 分钟档 exit 不看 bar: 行 m+n 的 entry 锚点 ≥ 14:57 (m+n ≥ kContCloseL1 − 1) 永不捕获 → 持有到收盘 (与 Stat tail_masked 同一条界).
   static constexpr size_t kAuctionL1 = (L2::MORNING_MATCHING_START_HOUR * 60 + L2::MORNING_MATCHING_START_MINUTE) - MORNING_START_MIN;
   static constexpr size_t kContOpenL1 = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_START_MINUTE) - MORNING_START_MIN;
   static constexpr size_t kContCloseL1 = MORNING_MINUTES + (AFTERNOON_END_MIN - AFTERNOON_START_MIN);
@@ -135,9 +138,9 @@ public:
   LabelReturn(const TickData &td, const MinuteData &md,
               const DepthSeries &bid_price, const DepthSeries &ask_price,
               const DepthSeries &bid_qty, const DepthSeries &ask_qty,
-              const float &lim_up, const float &lim_dn, const float &vwap)
+              const float &lim_up, const float &lim_dn)
       : td_(td), md_(md), bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty),
-        lim_up_(lim_up), lim_dn_(lim_dn), vwap_(vwap) {}
+        lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
   // 换秒 (或本次更新不可成交) 时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
@@ -158,6 +161,7 @@ public:
   //   (锚点后无可成交簿 = 顺延中, 等下一活跃秒; 一直没有 → day_end 按收盘价建仓). 捕获即写该行的冲击成本列 (只依赖 entry 盘口).
   //   只在可成交更新上推进 (snapshot 刚把 pending 设为 t): 集合竞价期的更新什么都不做 —— 连续竞价已结束,
   //   悬着的行都是"持有到收盘", 留给 day_end 按收盘价结算. 不用时钟判 14:57.
+  //   分钟档标签: 行 e 的 entry 捕获 = 行 e−n 的 exit 到位 (同一条快照), 立即写 (e−n, n); 行按锚点单调, 每组游标 next_label_l1_ 顺序推进.
   //   writer(col, n, label_l1, values, days_ago) 负责落盘 (此处 days_ago 恒 0).
   template <class Writer>
   inline void minute_anchored(size_t t, Writer &&writer) {
@@ -175,43 +179,30 @@ public:
       write_cost(p.n_entry, *e, writer);
       ++p.n_entry;
     }
+    float values[GROUP_SIZE];
+    for (size_t h = 0; h < HOLD_COUNT; ++h) {
+      if (LABEL_KIND[h] != HoldKind::MIN)
+        continue;
+      for (size_t m = next_label_l1_[h]; m + LABEL_N[h] < p.n_entry; m = ++next_label_l1_[h]) {
+        fill_values(p.entry[m], p.entry[m + LABEL_N[h]].mid, values);
+        writer(hold_col(h), GROUP_SIZE, m, static_cast<const float *>(values), size_t{0});
+      }
+    }
   }
 
-  // 分钟 bar 结算 (CoreSequential 只在有成交的分钟调; onMinute 域已 flush, Flow.vwap = 本分钟 Σ额/Σ量): 连续竞价分钟的 VWAP 作分钟档 exit 价.
-  //   分钟档: 行 m 的名义 exit 分钟 = m+1+n (锚点分钟末 + n 分钟所在的分钟); 该分钟无成交 (不调本函数) → 自然落到之后首个有成交的
-  //   分钟 = 最早能平的时刻. 只写 entry 已捕获的行 (未捕获的等 entry; 一直没有 → day_end).
-  //   开盘价 (开盘档 exit): 09:25 撮合 bar 的撮合价 (单一价, bar 的 open = close); 无撮合 → 首个连续竞价 bar 的首笔成交价 (交易所定义).
-  //   集合竞价分钟 (09:25 撮合 / 14:57 起) 的 bar 不作分钟档 exit: 开盘前名义 exit 的行等开盘首 bar; 盘尾的行持有到收盘 (day_end).
-  template <class Writer>
-  inline void minute_closed(size_t l1, Writer &&writer) {
+  // 分钟 bar 结算 (CoreSequential 只在有成交的分钟调): 只截开盘价 (开盘档 exit).
+  //   09:25 撮合 bar 的撮合价 (单一价, bar 的 open = close); 无撮合 → 首个连续竞价 bar 的首笔成交价 (交易所定义).
+  inline void minute_closed(size_t l1) {
     if (l1 == kAuctionL1) {
       assert(!open_ok_ && "09:25 撮合 bar 之前不该有开盘价");
       open_px_ = md_.close.back();
       open_ok_ = true;
       return;
     }
-    if (l1 < kContOpenL1 || l1 >= kContCloseL1)
+    if (open_ok_ || l1 < kContOpenL1 || l1 >= kContCloseL1)
       return;
-    const float vwap = vwap_;
-    assert(vwap > 0.0f && "有成交的分钟 Flow.vwap 必 > 0");
-    if (!open_ok_) {
-      open_px_ = md_.open.back();
-      open_ok_ = true;
-    }
-    const Pend &p = pend_[cur_];
-    float values[GROUP_SIZE];
-    for (size_t h = 0; h < HOLD_COUNT; ++h) {
-      if (LABEL_KIND[h] != HoldKind::MIN)
-        continue;
-      for (;;) {
-        const size_t m = next_label_l1_[h];
-        if (m >= p.n_entry || m + 1 + LABEL_N[h] > l1)
-          break; // entry 未捕获 (含 m == 255 全部写完) / 名义 exit 分钟未到
-        fill_values(p.entry[m], vwap, values);
-        writer(hold_col(h), GROUP_SIZE, m, static_cast<const float *>(values), size_t{0});
-        ++next_label_l1_[h];
-      }
-    }
+    open_px_ = md_.open.back();
+    open_ok_ = true;
   }
 
   // ---- 日历 (日期轴每一日各调一次, 无数据日也调) ----
@@ -229,7 +220,8 @@ public:
   //   收盘 = 当日末笔成交价全额成交 (收盘竞价是单一价撮合: 无价差无冲击). 不读收盘竞价期的簿 (堆单, 可交叉, 不可成交),
   //     也不用时钟判 15:00 —— MinuteData 末 bar 的 close 就是末笔成交 (CoreSequential::end_day 先 finish 末分钟再调这里;
   //     末分钟 254 含 14:57-15:00, 有撮合即撮合价, 无撮合即连续竞价末笔). 全日有可成交簿却无一笔成交 (极罕见) → 退到最后可成交簿.
-  //   分钟档尾部 (exit 落在连续竞价之后, 永不过线) —— T0 头寸必须当日平掉, 标签 = "持有到收盘" 的真实可交易收益, 而非缺失.
+  //   分钟档尾部 (行 m+n 的 entry 锚点落在连续竞价之后, 永不捕获 ⇒ 行 m 的 exit 永不到位) —— T0 头寸必须当日平掉,
+  //     标签 = "持有到收盘" 的真实可交易收益, 而非缺失. 等价于 exit = entry[m+n] = close_snap (上面刚补齐), 直接用 close_px.
   //     持有窗口随行号递减, 缩到 0 时自然退化为 0 (收盘价建仓即平), 连续无跳变.
   //   收盘档 全行 exit = 收盘.
   //   开盘档 到期日: 悬挂日 P (age = 今日 − P) 的 T+N 组, age ≥ N 且今日有开盘 → exit = 今日开盘价; age ≥ 2N 仍无 → 最近一次收盘.
@@ -340,7 +332,7 @@ private:
     Snapshot entry[TRADE_MINUTES_PER_DAY]; // 各行 entry 快照
   };
 
-  // [long, short]: 建仓中间价 vs 平仓价 exit_px (分钟 VWAP / 收盘价 / 开盘撮合价)
+  // [long, short]: 建仓中间价 vs 平仓价 exit_px (行 m+n 的 entry 中间价 / 收盘价 / 开盘撮合价)
   static inline void fill_values(const Snapshot &entry, float exit_px, float *values) {
     values[0] = calc_return(entry, exit_px, true);
     values[1] = calc_return(entry, exit_px, false);
@@ -490,7 +482,6 @@ private:
   const DepthSeries &bid_qty_;
   const DepthSeries &ask_qty_;
   const float &lim_up_, &lim_dn_; // Fund 当日涨跌停价 (盘前已知), 簿子吃不完时补齐余量用
-  const float &vwap_;             // Flow.y[vwap]: 本分钟成交 VWAP (onMinute flush 后有效), 分钟档 exit 价
 
   static constexpr size_t kNoPending = SIZE_MAX;
 
@@ -520,10 +511,10 @@ private:
 #define LABEL_CN_MIN(n) #n "分钟"
 #define LABEL_CN_CLOSE(n) "至收盘"
 #define LABEL_CN_OPEN(n) "至T+" #n "开盘"
-#define LABEL_NOTE_MIN(n) "锚点后第" #n "分钟所在分钟的成交VWAP(Σ额/Σ量); 该分钟无成交则顺延至之后首个有成交的连续竞价分钟; 越过14:57则持有到当日收盘(末笔成交价)"
+#define LABEL_NOTE_MIN(n) "锚点后整" #n "分钟+3s的可成交盘口中间价(= 行m+" #n "的entry快照, 与entry同基准, 相邻行精确伸缩); 空窗则顺延至首个可成交簿; 该锚点落入14:57起则持有到当日收盘(末笔成交价)"
 #define LABEL_NOTE_CLOSE(n) "当日收盘价(末笔成交价=收盘竞价撮合价)"
 #define LABEL_NOTE_OPEN(n) "T+" #n "日开盘价(09:25集合竞价撮合价, 无撮合则连续竞价首笔成交价); 当日无开盘则顺延至之后首个有开盘日(最多再等" #n "日, 仍无则取最近收盘价); 越过区间末则持有到最后一日收盘"
-#define LABEL_TEX_MIN(n) R"(, \quad P_{exit}=\mathrm{VWAP}^{1\mathrm{min}}_{t_{entry}+)" #n R"(\,\mathrm{min}})"
+#define LABEL_TEX_MIN(n) R"(, \quad P_{exit}=P^{mid}_{t_{entry}+)" #n R"(\,\mathrm{min}})"
 #define LABEL_TEX_CLOSE(n) R"(, \quad P_{exit}=P^{close}_{D})"
 #define LABEL_TEX_OPEN(n) R"(, \quad P_{exit}=P^{open}_{D+)" #n "}"
 // 描述统一四段: 口径 | entry | exit | 净收益换算. entry 三档共用, exit 按 KIND, 净收益按 side (做多扣买入冲击, 做空扣卖出冲击)

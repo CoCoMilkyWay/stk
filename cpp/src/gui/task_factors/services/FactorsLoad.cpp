@@ -3,7 +3,8 @@
 
 #include "factor/Stat/Host.hpp" // cost_row
 #include "features/Backend/FeatureRead.hpp"
-#include "features/MetaFlag.hpp" // fmeta::valid
+#include "features/MetaFlag.hpp"                      // fmeta::valid
+#include "features/Operator/TS/Label/LabelReturn.hpp" // 只取 kContCloseL1 对账尾部界 (不含字段表)
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Analysis.hpp" // analysis::kLevel
@@ -16,6 +17,8 @@
 
 // 因子契约的段 = 一个交易日的 L1 行数 (含 09:15 起的集合竞价 15 分钟); 特征库 L1 有效行数与之对账
 static_assert(factor::kSegLen == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegLen 必须等于 L1 每日分钟数");
+// 尾部界对账: 标签层最后一个可成交 entry 锚点 = 连续竞价末分钟 (kContCloseL1 − 1) 的起始 = 行 kContCloseL1 − 2; Stat tail_masked 用同一条界
+static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelReturn::kContCloseL1, "Stat 尾部界与 LabelReturn 的收盘竞价起点不一致");
 
 namespace GUI::Factors {
 

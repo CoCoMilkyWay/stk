@@ -139,7 +139,9 @@ ALL_LEVELS(GENERATE_CHECK_LEVEL)
 // ============================================================================
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
 //   FNV-1a 64 over "code:width:kind" 逐字段拼接 (顺序敏感)
+//   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelReturn 的 entry / exit 定义) 时 +1, 旧库读取即判废而非静默错义
 // ============================================================================
+constexpr uint64_t kLabelSemver = 2; // 1: 分钟档 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准)
 constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
   for (; *s; ++s)
     h = (h ^ static_cast<uint8_t>(*s)) * 0x100000001b3ULL;
@@ -157,6 +159,8 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
     h = fnv1a_u64(fnv1a_u64(fnv1a_str(h, f[i].code), f[i].width), static_cast<uint64_t>(f[i].kind));
     if (f[i].ts_tf != ts::TfId::None) // Tf 改变落盘值; None 不折入, 旧文件 (无 Tf 时代) 指纹不变
       h = fnv1a_u64(h, static_cast<uint64_t>(f[i].ts_tf));
+    if (f[i].kind == FeatureDataType::LB)
+      h = fnv1a_u64(h, kLabelSemver);
   }
   return h;
 }

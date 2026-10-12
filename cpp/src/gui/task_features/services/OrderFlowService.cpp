@@ -508,7 +508,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   // 可读, VWAP / overlay 留空 (盘口重放走 .bin, 不受 universe 约束, 上面照常构建)
   const size_t depth_sub = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
 
-  // ---- 分钟 VWAP 阶梯: L1 特征列 vwap (标签 exit 同源), 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----
+  // ---- 分钟 VWAP 阶梯: L1 特征列 vwap, 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----
   if (depth_sub < impl_->uni.size()) {
     TraceN("OF_DepthVwap");
     auto &cols = impl_->columns;

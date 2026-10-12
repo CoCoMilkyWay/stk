@@ -5,7 +5,8 @@
 // =============================================================================
 //   输入  因子平面 x [T][A] (SoA: float + 有效位) + 口径 Frame (见下) + H 组常驻标签 (每组一个持有期键 hold, 见下【持有期键】):
 //           lv / sv  做多 / 做空价格收益 (features 层 LabelReturn, 毛口径; fp16 位, 与落盘同格式, 无精度损失. 冲击不进标签: 超额对每 t 去均值,
-//                    成本进来只剩截面相对项 —— 消费端在二级上按组池化成本扣)
+//                    成本进来只剩截面相对项 —— 消费端在二级上按组池化成本扣). 分钟档 entry / exit 同为盘口中间价 (行 m 的 exit = 行 m+h 的
+//                    entry), 相邻行精确伸缩: 留仓成员逐期标签之和 = 连续持有收益, 【换手成本】的"留仓不付"才成立; 价差只在成本列
 //           m        标签有效位 (long / short 同一快照, 共用一张)
 //           ry       预处理: 做多标签逐行截面 rank (r16), 与因子无关, 常驻期算一次 (prep_label)
 //   输出  两级:
@@ -40,12 +41,13 @@
 //     ok     标签侧有效: 非段末尾部 (见下) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0) ∧ (CS: 各组非空).
 //     rac    rank AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 才对应"一个持有期换多少仓".
 //     ok_rac t ≥ h ∧ n ≥ 2 ∧ 两侧方差 > 0. 与标签无关, 段末尾部也算.
-//     段末尾部 (仅分钟档): LabelReturn 的 exit 分钟落进收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 就"持有到收盘",
-//       持有期缩短 → 掩掉 t_seg ≥ kSegLen − h − kCloseAuction 的行 (tail_masked). 日级档全段 exit 同一时刻, 无尾部.
+//     段末尾部 (仅分钟档): 行 t 的 entry 锚点 = 分钟 t+1 起始; 最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前
+//       一分钟的起始 = 行 kSegLen − kCloseAuction − 2 的锚点. 行 t 的 exit = 行 t+h 的锚点, t + h 越过它就"持有到收盘", 持有期缩短 →
+//       掩掉 t_seg + h > kSegLen − kCloseAuction − 2 的行 (tail_masked). 日级档全段 exit 同一时刻, 无尾部.
 //     ok / ok_rac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
 //
 //   【持有期键 hold】int, 与 features 层 LabelReturn 的列名同源 (lb_<side>_<name>):
-//     分钟档 <n>m   hold = n (1 ≤ n, n + kCloseAuction < kSegLen), 持仓 n 分钟
+//     分钟档 <n>m   hold = n (1 ≤ n, n + kCloseAuction + 2 ≤ kSegLen), 持仓 n 分钟
 //     收盘档 close  hold = kHoldClose, 持有到当日收盘
 //     开盘档 t<N>   hold = hold_open(N), T+N 日开盘平仓
 //     折算 / lag / 年化用的有效分钟 h = hold_minutes(hold): 分钟档 = n; close 与 T+1 = kSegLen (同日各行共一个 exit →
@@ -96,16 +98,17 @@
 namespace factor::stat {
 
 // ---- 常量 ----
-inline constexpr int kGroups = 20;                     // 分组数 (等分 pct rank)
-inline constexpr int kMaxHold = 12;                    // 同时评估的持有期数上限
-inline constexpr int kMaxA = 5120;                     // 资产轴上限 (GPU 一行一 block 的片上排序容量)
-inline constexpr int kCloseAuction = 3;                // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 不能越过
-inline constexpr int kDaysPerYear = 242;               // 年化用交易日数
-inline constexpr uint16_t kRankNone = 0xFFFF;          // r16 无效
-inline constexpr int kRankMax = 65534;                 // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
-inline constexpr unsigned kNoKey = 0xFFFFFFFFu;        // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
-inline constexpr int kTsNormDays = 5;                  // TS 口径根 TsRankRoll 的窗长 (整交易日, 跨日 deseason)
-inline constexpr int kTsNormD = kTsNormDays * kSegLen; // = 1275 分钟 (== Expr.hpp kMaxD, 在 Expr.hpp static_assert 对账)
+inline constexpr int kGroups = 20;                                 // 分组数 (等分 pct rank)
+inline constexpr int kMaxHold = 12;                                // 同时评估的持有期数上限
+inline constexpr int kMaxA = 5120;                                 // 资产轴上限 (GPU 一行一 block 的片上排序容量)
+inline constexpr int kCloseAuction = 3;                            // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 锚点不能落入
+inline constexpr int kLastAnchorRow = kSegLen - kCloseAuction - 2; // 最后一个 entry 锚点可成交的行 (锚点 = 下一分钟起始, 须在 14:57 前)
+inline constexpr int kDaysPerYear = 242;                           // 年化用交易日数
+inline constexpr uint16_t kRankNone = 0xFFFF;                      // r16 无效
+inline constexpr int kRankMax = 65534;                             // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
+inline constexpr unsigned kNoKey = 0xFFFFFFFFu;                    // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
+inline constexpr int kTsNormDays = 5;                              // TS 口径根 TsRankRoll 的窗长 (整交易日, 跨日 deseason)
+inline constexpr int kTsNormD = kTsNormDays * kSegLen;             // = 1275 分钟 (== Expr.hpp kMaxD, 在 Expr.hpp static_assert 对账)
 
 // ---- 口径 (见文件头【口径 Frame】) ----
 enum class Frame : uint8_t { CS,
@@ -160,7 +163,7 @@ inline void assert_holds(const Holds &hd) {
   for (int i = 0; i < hd.n; ++i) {
     const int h = hd.h[i];
     if (hold_intraday(h))
-      assert(h >= 1 && h + kCloseAuction < kSegLen && "分钟档持有期须 ≥ 1 且尾部掩码不能吞掉整段");
+      assert(h >= 1 && h <= kLastAnchorRow && "分钟档持有期须 ≥ 1 且尾部掩码不能吞掉整段");
     else
       assert(h - kHoldDayBase >= 0 && h - kHoldDayBase <= kHoldOpenMax && "日级档键越界 (close = kHoldClose, T+N = hold_open(N))");
   }
@@ -233,8 +236,8 @@ FACTOR_HD inline int grp_of(unsigned r16) {
   return g < kGroups - 1 ? g : kGroups - 1;
 }
 
-// 段末尾部 (分钟档标签持有到收盘, 持有期缩短) → 掩掉; 日级档无尾部
-FACTOR_HD inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen >= kSegLen - hold - kCloseAuction; }
+// 段末尾部 (exit 锚点 = 行 t+h 的锚点越过最后可成交锚点 → 标签持有到收盘, 持有期缩短) → 掩掉; 日级档无尾部
+FACTOR_HD inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen + hold > kLastAnchorRow; }
 
 // ---- 换手成本 (见文件头【换手成本】; Search 打分 / Inspect 期限结构净线共用) ----
 
