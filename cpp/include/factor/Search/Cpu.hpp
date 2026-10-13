@@ -20,20 +20,21 @@
 namespace factor::cpu::search {
 
 using factor::search::Result;
+using factor::stat::Batch;
 using factor::stat::Frame;
-using factor::stat::Holds;
-using factor::stat::Label;
+using factor::stat::Labels;
+using factor::stat::Span;
 
-// 一批候选: xv[c] / xm[c] 各一张 [T][A] (块形), 统计 [t_lo,T), 绝对首行 t0_abs (契约【分块流式】) → out[c] (覆盖).
+// 一批候选: B.x[c] 各一张 [T][A] (块形), 统计 [s.t_lo,T), 绝对首行 s.t0_abs (契约【分块流式】) → out[c] (覆盖).
 // rx = r16 工作平面 [T][A] (候选间复用, 调用方持有; 跑完是最后一个候选的秩), w = Stat 的工作区
 template <class Exec>
-inline void run(Exec &ex, int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *g, Frame f, int T, int A, int t0_abs,
-                int t_lo, const Holds &hd, const Label *lab, uint16_t *rx, factor::cpu::stat::Workspace &w, Result *out) {
-  assert(C >= 1 && xv && xm && g && lab && rx && out);
-  for (int c = 0; c < C; ++c) {
-    factor::cpu::stat::rank_x(ex, xv[c], xm[c], g, f, T, A, rx, w);
+inline void run(Exec &ex, const Batch &B, const uint8_t *g, Frame f, const Span &s, const Labels &L, uint16_t *rx,
+                factor::cpu::stat::Workspace &w, Result *out) {
+  assert(B.C >= 1 && g && rx && out);
+  for (int c = 0; c < B.C; ++c) {
+    factor::cpu::stat::rank_x(ex, B.x[c], g, f, s, rx, w);
     out[c] = Result{};
-    factor::cpu::stat::accum_rows(ex, f, T, A, t0_abs, t_lo, rx, hd, lab, w, out[c].acc, factor::cpu::stat::drop_rows());
+    factor::cpu::stat::accum_rows(ex, f, s, rx, L, w, out[c].acc, factor::cpu::stat::DropRows{});
   }
 }
 

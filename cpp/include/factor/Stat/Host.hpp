@@ -3,14 +3,15 @@
 // =============================================================================
 // Stat 行核的宿主版 (CPU; 契约 factor/Stat/Contract.hpp): 一行的 rank / 一 (t, hold) 的 Row
 // =============================================================================
-//   Stat/Cpu.hpp 与 Search/Cpu.hpp 两个 CPU 算子共用, 与 Stat/Dev.cuh 对仗 (同一组行核, 一边宿主一边设备). 单线程, 无流程 / 无分配.
-//     KeyX / KeyY 取键器 (与 Dev.cuh 同名): 因子一行 (只看池内 g ∧ m 的格) / 做多标签一行 (fp16 位) → 保序键 / kNoKey
+//   Stat/Cpu.hpp 与 Search/Cpu.hpp 两个 CPU 算子共用, 与 Stat/Dev.cuh 对仗 (同一组行核同名同参序, 一边宿主一边设备). 单线程, 无流程 / 无分配.
+//     KeyX / KeyY 取键器 (行视图, 与 Dev.cuh 同名同形): 因子一行 (只看池内 g ∧ m 的格; g = m 即不看池) / 做多标签一行 (fp16 位) → 保序键 / kNoKey
 //     rank_row    精确并列均秩: key(a) → LSD 基数排序 (位宽按 n 自适应: n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟;
 //                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone. 标签行 = rank_row(KeyY)
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里
-//     row_stat    一 (t, hold) 完整行 = rac_row (给了 lag 行才算) + label_row (非段末尾部才算); 整数五和走契约 pair_add, 收尾 finish_row.
-//                 label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和, branchless select
-//     cost_row    一行 t 的换手成本, H 个持有期 × C 个金额档一遍 A 轴 (契约 cost_leg / cost_entrant 逐格) → CostAcc[C][H].
+//     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算);
+//                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和, branchless select;
+//                 逐格扩展 Ext (调用方专属的附加统计, 同一遍同一个 J; NoExt 编译期消掉, Inspect 尾部分层用)
+//     cost_row    一行 t 的换手成本 + cover, H 个持有期 × C 个金额档一遍 A 轴 (契约腿码 lc 逐格) → CostAcc[C][H] + cover[1 + C].
 //                 Run (stat.costs) / Inspect 期限结构净线共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
@@ -31,6 +32,8 @@ using factor::stat::CostAcc;
 using factor::stat::CostLeg;
 using factor::stat::Frame;
 using factor::stat::kGroups;
+using factor::stat::kLcMid;
+using factor::stat::kLcVoid;
 using factor::stat::kLegs;
 using factor::stat::kLong;
 using factor::stat::kMaxA;
@@ -49,7 +52,7 @@ inline float h2f(uint16_t b) {
 }
 
 // ---- 取键器: 格 a (指针已偏到行首) → 保序键 / kNoKey ----
-struct KeyX { // 因子一行, 只看池内 g ∧ m 的格 (契约【截面池 g】)
+struct KeyX { // 因子一行, 只看池内 g ∧ m 的格 (契约【截面池 g】); g = m 即不看池
   const float *v;
   const uint8_t *m, *g;
   bool on(int a) const { return (m[a] & g[a]) != 0; }
@@ -128,8 +131,8 @@ inline void rank_x_row(const KeyX &key, Frame f, int A, uint16_t *out, Scratch &
     out[a] = key.on(a) ? factor::stat::r16_quant(key.v[a]) : kRankNone;
 }
 
-// rAC: rx = 本行 r16, rlag = t−h 行 r16 → r.rac / r.ok_rac
-inline void rac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
+// 换手侧 (t−h → t): rx = 本行 r16, rlag = t−h 行 r16 → r.rac / r.ok_rac. 也是两候选同行截面相关的核 (rlag 换成另一候选)
+inline void lag_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   unsigned long long s[kSums] = {};
   for (int a = 0; a < A; ++a)
     factor::stat::pair_add(s, rx[a], rlag[a], rx[a] != kRankNone && rlag[a] != kRankNone);
@@ -138,21 +141,26 @@ inline void rac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_rac = ok ? 1u : 0u;
 }
 
-// 换手成本 (契约【换手成本】): rx = 本行 r16; rlag[i] = t−h_i 行 r16 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首
-//   → acc[k·H + i] (腿计数, 新进者累建仓冲击). 腿归属只看 rx, 一格算一次; 新进与否只看 (rlag[i], 腿), 每 h 算一次
-inline void cost_row(const uint16_t *rx, const uint16_t *const *rlag, int H, const Cost *c, int C, int A, CostAcc *acc) {
+// 换手成本 + cover (契约【换手成本】): lc = 本行腿码; lag[i] = t−h_i 行腿码 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首
+//   → acc[k·H + i] (腿计数, 新进者累建仓冲击); cov[0] += 有秩格数, cov[1 + k] += 其中成本 k 有效 (与 h 无关, 每行一次)
+inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const Cost *c, int C, int A, CostAcc *acc, long long *cov) {
   for (int i = 0; i < H; ++i)
-    if (rlag[i])
+    if (lag[i])
       for (int k = 0; k < C; ++k)
         ++acc[k * H + i].rows;
   for (int a = 0; a < A; ++a) {
-    const int l = factor::stat::cost_leg(rx[a]);
-    if (l < 0)
+    const int l = lc[a];
+    if (l == kLcVoid)
+      continue;
+    ++cov[0];
+    for (int k = 0; k < C; ++k)
+      cov[1 + k] += c[k].m[a] != 0;
+    if (l == kLcMid)
       continue;
     for (int i = 0; i < H; ++i) {
-      if (!rlag[i])
+      if (!lag[i])
         continue;
-      const bool ent = factor::stat::cost_entrant(rlag[i][a], l);
+      const bool ent = lag[i][a] != l;
       for (int k = 0; k < C; ++k) {
         if (!c[k].m[a])
           continue;
@@ -165,8 +173,14 @@ inline void cost_row(const uint16_t *rx, const uint16_t *const *rlag, int H, con
   }
 }
 
-// 标签侧: rx = 本行 r16, lb 已偏到行首 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
-inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &r) {
+// label_row 的逐格扩展 (见文件头 row_stat): cell(x, ok, y) 每格一次, x = 本格 r16, ok = 格在 J, y[kLegs] = 两腿标签值
+struct NoExt {
+  void cell(unsigned, bool, const float *) {}
+};
+
+// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
+template <class Ext>
+inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &r, Ext &ext) {
   unsigned long long s[kSums] = {};
   double sm[kLegs] = {}, gs[kGroups] = {};
   int gc[kGroups] = {};
@@ -181,19 +195,21 @@ inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &
     gs[g] += ok ? y[kLong] : 0.f;
     gc[g] += ok;
     sv_bot += (ok && g == factor::stat::leg_group(kShort)) ? y[kShort] : 0.f;
+    ext.cell(rx[a], ok, y);
   }
   constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
   const LegSum leg[kLegs] = {{static_cast<double>(gc[gl]), gs[gl]}, {static_cast<double>(gc[gb]), sv_bot}};
   factor::stat::finish_row(f, s, sm, gs, gc, leg, r);
 }
 
-// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; tail = 段末尾部 (tail_masked)
-inline Row row_stat(Frame f, const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, bool tail) {
+// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; tail = 段末尾部 (tail_masked, 为真则 ext 不动)
+template <class Ext>
+inline Row row_stat(Frame f, const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, bool tail, Ext &ext) {
   Row r;
   if (rlag)
-    rac_row(rx, rlag, A, r);
+    lag_row(rx, rlag, A, r);
   if (!tail)
-    label_row(f, rx, lb, A, r);
+    label_row(f, rx, lb, A, r, ext);
   return r;
 }
 

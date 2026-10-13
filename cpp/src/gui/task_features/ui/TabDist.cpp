@@ -500,16 +500,24 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(350.0f);
     ImGui::TextUnformatted(
-        "分位数一致性尤为重要:\n"
-        "不同资产的分位数取值(ICDF)应该尽量靠近, 以保证因子组合阶段分位数的截面一致性\n\n"
-        "F_i: CDF; Q_i: 逆CDF; X_i: Feature i\n\n"
-        "偏移散点(强调全局差异): 均值校准(最优中心化)的 Wasserstein-L2 偏移距离(积分),\n"
-        "相对上一批末的全局分位在发布侧算好, 随构建逐批收敛");
+        "资产截面: 分布密度 + 分位数偏移\n"
+        "• 分位数一致性尤为重要\n"
+        "    ◦ 不同资产的分位数取值 (ICDF) 应尽量靠近\n"
+        "    ◦ 以保证因子组合阶段分位数的截面一致性\n"
+        "• 符号: F_i = CDF; Q_i = 逆 CDF; X_i = Feature i\n"
+        "• 偏移散点 (强调全局差异)\n"
+        "    ◦ 均值校准 (最优中心化) 的 Wasserstein-L2 偏移距离 (积分)\n"
+        "    ◦ 相对上一批末的全局分位, 在发布侧算好, 随构建逐批收敛");
     ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
-                       "    W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
-    ImGui::Text("\n颜色 = 左栏 [染色] 选项 (行业/市值/估值/股息率); W2 散点/hover 为全资产,\n"
-                "PDF 细线只画固定随机子集 (纯顶点预算, 即全市场无偏抽样)\n"
-                "按住顶部滑条 / hover 时高亮该资产, 其余压暗; 松手即恢复");
+                       "        W2(F_i, F_μ) = || (Q_i - E[X_i]) - (Q_μ - E[X_μ]) ||_2 = || ΔW2_i ||_2");
+    ImGui::TextUnformatted(
+        "• 颜色 = 左栏 [染色] 选项 (行业 / 市值 / 估值 / 股息率)\n"
+        "• 覆盖\n"
+        "    ◦ W2 散点 / hover: 全资产\n"
+        "    ◦ PDF 细线: 只画固定随机子集 (纯顶点预算, 即全市场无偏抽样)\n"
+        "• 高亮\n"
+        "    ◦ 按住顶部滑条 / hover 时高亮该资产, 其余压暗\n"
+        "    ◦ 松手即恢复");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }

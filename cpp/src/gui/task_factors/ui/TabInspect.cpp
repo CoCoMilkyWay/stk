@@ -1316,11 +1316,16 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
       ui.absolute = abs_idx == 1;
   }
   if (ImGui::IsItemHovered())
-    tip("分层累计图的口径 (只影响显示; 标签一律毛价格收益, 成本只进期限结构)\n"
+    tip("分层累计图的口径 (只影响显示)\n"
+        "• 标签一律毛价格收益, 成本只进期限结构\n"
         "• 超额: 组均 (lv − mkt), 围着 0 看形状\n"
         "• 绝对: 组均 lv, 含市场\n"
-        "• LS = top(lv) + bottom(sv) 顶底多空, 市场中性, 两种口径同一条\n"
-        "• 尾部: G20 / G1 内更极端的 50%% / 20%% / 5%% (= 整截面 2.5%% / 1%% / 0.25%%) 再各一条分层线 (饱和顶 / 底色) 与一条 LS (白, 同一起点), 越极端越细; 默认隐藏, 点图例 \"LS 50%%\" 等开一级");
+        "• LS = top(lv) + bottom(sv) 顶底多空\n"
+        "    ◦ 市场中性, 两种口径同一条\n"
+        "• 尾部: 默认隐藏, 点图例 \"LS 50%%\" 等开一级\n"
+        "    ◦ G20 / G1 内更极端的 50%% / 20%% / 5%% (= 整截面 2.5%% / 1%% / 0.25%%)\n"
+        "    ◦ 每级一条分层线 (饱和顶 / 底色) + 一条 LS (白, 同一起点)\n"
+        "    ◦ 越极端越细");
   ImGui::SameLine(0.f, kCtlGap);
   const bool can_run = !busy && ctx.axis_ready && n_hold > 0 && sel.error.empty();
   if (!can_run)
@@ -1333,7 +1338,11 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   if (!can_run)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    tip(ctx.axis_ready ? "弃缓存整体重算这一个因子: 重读特征库 → eval (CPU) → Stat, 留毛口径一级 Row[H][T] + 二级 + 各档组均冲击 (期限结构净线)\n"
+    tip(ctx.axis_ready ? "弃缓存整体重算这一个因子\n"
+                         "• 流程: 重读特征库 → eval (CPU) → Stat\n"
+                         "• 留下\n"
+                         "    ◦ 毛口径一级 Row[H][T] + 二级\n"
+                         "    ◦ 各档组均冲击 (期限结构净线)\n"
                          "• 换因子会自动起算, 只补缺的特征; 此按钮 = 强制全量"
                        : "资产轴未就绪, 读不了特征库\n"
                          "• 先在 Database 页扫描");
@@ -1523,19 +1532,36 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     else
       ImGui::Text("%s  (光标日池外)  池内 n=%d", name, n);
     if (ImGui::IsItemHovered())
-      tip("选中标的 + 它在光标日序里的位置 (#1 = 日内均 R 最高 = G20 侧) 与均 R\n"
+      tip("选中标的 + 它在光标日序里的位置与均 R\n"
+          "• #1 = 日内均 R 最高 = G20 侧\n"
           "• R(t) = r16(x) / kRankMax (CS 截面秩 / TS 自身分位), 与组号同向\n"
-          "• 下条 = 光标日全部池内标的按均 R 降序一标的一格 (格色 = 组色), 拖光标 / 双击 / ◂ ▸ 换标的; 滚轮缩放\n"
-          "• 池 = cs_valid ∧ 当日有成交; 出池段 (valid%% 不计它) 秩不入评估, K 线用不看池的秩淡色显示\n"
-          "• 选中沿标的粘住: 拖光标只换序, K 线不重载; 换 universe 子轴才重选");
+          "• 下条 = 光标日全部池内标的, 按均 R 降序一标的一格\n"
+          "    ◦ 格色 = 组色\n"
+          "    ◦ 拖光标 / 双击 / ◂ ▸ 换标的; 滚轮缩放\n"
+          "• 池 = cs_valid ∧ 当日有成交\n"
+          "    ◦ 出池段秩不入评估 (valid%% 不计它)\n"
+          "    ◦ K 线用不看池的秩淡色显示\n"
+          "• 选中沿标的粘住\n"
+          "    ◦ 拖光标只换序, K 线不重载\n"
+          "    ◦ 换 universe 子轴才重选");
     ImGui::SameLine();
     ImGui::TextDisabled("| 色 = R(t) 组色, 阳线空心 / 阴线实心; 青 = 指数 滚动重锚 (1d); 黄 = 指数 首根重锚 (默认隐藏, 点图例)");
     if (ImGui::IsItemHovered())
-      tip("蜡烛色 = 该刻 R(t) 组色 (G1 蓝 → 中段灰 → G20 橙; 淡 = 池外, 暗灰 = 无值)\n"
-          "• 青线 = 滚动重锚指数 line_t = EMA_L(个股)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))): 个股若跟着指数近期走应在的价,\n"
-          "  自发贴住蜡烛, 蜡烛 − 青线 = 个股相对指数的近期偏移 (悬停报 %%). L = %d 分钟 (1 交易日), S = %d 分钟\n"
-          "  基准 = L 分钟前的 EMA_L (当前价不进基准, 基准平滑), 指数偏移再 EMA_S 压分钟噪声. 个股 close 无成交分钟前值填充, 跨日连续算; 线从首根蜡烛 + L 起有值\n"
-          "• 黄线 = universe 等权指数, 每帧按视野内首根蜡烛重锚: 带着全区间历史, 长视野下与个股渐行渐远, 默认隐藏",
+      tip("K 线图例\n"
+          "• 蜡烛色 = 该刻 R(t) 组色\n"
+          "    ◦ G1 蓝 → 中段灰 → G20 橙\n"
+          "    ◦ 淡 = 池外, 暗灰 = 无值\n"
+          "• 青线 = 滚动重锚指数: 个股若跟着指数近期走应在的价\n"
+          "    ◦ line_t = EMA_L(个股)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L})))\n"
+          "    ◦ L = %d 分钟 (1 交易日), S = %d 分钟\n"
+          "    ◦ 基准 = L 分钟前的 EMA_L: 当前价不进基准, 基准平滑\n"
+          "    ◦ 指数偏移再 EMA_S 压分钟噪声\n"
+          "    ◦ 自发贴住蜡烛; 蜡烛 − 青线 = 个股相对指数的近期偏移 (悬停报 %%)\n"
+          "    ◦ 个股 close 无成交分钟前值填充, 跨日连续算\n"
+          "    ◦ 线从首根蜡烛 + L 起有值\n"
+          "• 黄线 = universe 等权指数 (默认隐藏)\n"
+          "    ◦ 每帧按视野内首根蜡烛重锚\n"
+          "    ◦ 带着全区间历史, 长视野下与个股渐行渐远",
           kRefLag, kRefSmooth);
     const float strip_h = ImGui::GetTextLineHeight() * 2.f, sp_y = ImGui::GetStyle().ItemSpacing.y;
     if (plot_asset_axis(ui, ctx, pos, ImVec2(cell.x, strip_h)))

@@ -304,18 +304,23 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   // ---- 2. 选项行 ----
   ImGui::Checkbox("|rho|", &ui.abs_mode);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("只看强度 (单极色标); 关掉则带符号 (红正蓝负)");
+    ImGui::SetTooltip("色标\n"
+                      "• 勾上: 只看强度 (单极色标)\n"
+                      "• 关掉: 带符号 (红正蓝负)");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(160);
   ImGui::SliderFloat("阈值", &ui.threshold, 0.0f, 0.95f, "%.2f");
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("|rho| 低于此值的格子按 0 画 (压掉噪声, 露出块结构)");
+    ImGui::SetTooltip("|rho| 低于此值的格子按 0 画\n"
+                      "• 压掉噪声, 露出块结构");
   ImGui::SameLine();
   ImGui::RadioButton("表格序", &ui.order_mode, 0);
   ImGui::SameLine();
   ImGui::RadioButton("聚类序", &ui.order_mode, 1);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("按 1-|rho| 做平均链接聚类重排, 热图出块对角");
+    ImGui::SetTooltip("聚类序\n"
+                      "• 按 1-|rho| 做平均链接聚类重排\n"
+                      "• 热图出块对角");
   if (ui.order_mode == 1) {
     // 自动聚类: 边长变了立刻算; 构建中基于早期快照先画 (不跟着每天发布重算 O(n³)),
     // Done 后按终版补算一次
@@ -344,8 +349,11 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     }
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("每对在 ±%zu 行内 |rho| 最大的 lag 着色: 0 = 中性, 正 = 行特征领先列特征.\n"
-                      "非 0 的格子 = 平移关系, 值得去右侧曲线细看. 成本 ≈ 矩阵 2~3 倍, 勾上才算",
+    ImGui::SetTooltip("按每对在 ±%zu 行内 |rho| 最大的 lag 着色\n"
+                      "• 0 = 中性\n"
+                      "• 正 = 行特征领先列特征\n"
+                      "• 非 0 的格子 = 平移关系, 值得去右侧曲线细看\n"
+                      "• 成本 ≈ 矩阵 2~3 倍, 勾上才算",
                       kCorrMaxLag);
   const CorrLag *lag = nullptr;
   std::unique_lock<std::mutex> lag_lock(data.corr_lag.mutex, std::defer_lock);

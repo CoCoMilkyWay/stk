@@ -1112,18 +1112,36 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     const char *headers[kNumCols] = {"Multi", "Code", "W", "Valid", "Name CN", "Type", "Cat1", "Cat2",
                                      "Stat", "Range", "Dist", "PSD (intraday)", "TS Norm", "CS Norm", "Deps"};
     const char *tooltips[kNumCols] = {
-        "多选: 选择多个特征进行对比 (首个作为主特征)",
+        "多选: 选择多个特征进行对比\n"
+        "• 首个作为主特征",
         "代码: 特征的唯一标识符",
         "宽度: 特征的维度数量",
-        "有效粒度: ALL=全部, DATA=数据, DEPTH=深度(仅L0)",
+        "有效粒度\n"
+        "• ALL = 全部\n"
+        "• DATA = 数据\n"
+        "• DEPTH = 深度 (仅 L0)",
         "中文名称: 特征的描述性名称",
-        "数据类型: TS=时序, CS=截面, LB=标签, SH=共享, META=元数据",
-        "一级分类: 特征的类别 (同色同组相邻)",
-        "二级分类: 值域自动探测 (price/flag/rank/ratio_pos/ratio_neg/ratio/raw); 绿字 = 字段表人工赋值覆盖",
-        "账目: invalid,nan,zero,-inf,+inf 占比% (invalid = ts_valid 门控不过; 特征应稠密)",
+        "数据类型\n"
+        "• TS = 时序\n"
+        "• CS = 截面\n"
+        "• LB = 标签\n"
+        "• SH = 共享\n"
+        "• META = 元数据",
+        "一级分类: 特征的类别\n"
+        "• 同色同组相邻",
+        "二级分类: 值域自动探测\n"
+        "• 取值: price / flag / rank / ratio_pos / ratio_neg / ratio / raw\n"
+        "• 绿字 = 字段表人工赋值覆盖",
+        "账目: invalid / nan / zero / -inf / +inf 占比%\n"
+        "• invalid = ts_valid 门控不过\n"
+        "• 特征应稠密",
         "值域: min -1sd +1sd max",
         "平均分布: 抽样 (日 × 资产) 的 PDF",
-        "日内频谱: 单日 PSD 每 bin 能量占比均值 (x = 周期 2~256 min, 灰线 = 白噪声, 青刀 = 谱重心; 日频特征 = 地板线)",
+        "日内频谱: 单日 PSD 每 bin 能量占比均值\n"
+        "• x = 周期 2~256 min\n"
+        "• 灰线 = 白噪声\n"
+        "• 青刀 = 谱重心\n"
+        "• 日频特征 = 地板线",
         "时序归一化: SRC 列 OP(..., Tf, Method) 推出",
         "截面归一化: SRC 列 CS(..., Tf, Method) 推出",
         "直接依赖: 该特征计算所依赖的其他特征 code",

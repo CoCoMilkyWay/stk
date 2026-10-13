@@ -39,33 +39,49 @@ void tail_thresholds(int (*thr)[kTails]) {
 }
 inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : r16 < thr; }
 
-// 尾部分层一行 (TailRow, 见头文件): rx = 本行 r16, lb 已偏到行首, r = 本行 Row (基准 mkt[kLegs] 直接用). J = rx ∧ ry 有效 (与 label_row 同集).
-// 调用方只在 Row::ok 行上调
-void tail_row(const uint16_t *rx, const factor::stat::Label &lb, int A, const int (*thr)[kTails], const factor::stat::Row &r, TailRow &o) {
-  using factor::cpu::stat::h2f;
-  assert(r.ok && "尾部只在 Row::ok 行上算");
+// 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
+struct TailExt {
+  const int (*thr)[kTails];
   factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (样本数, 本腿标签和): ls 用
   double slv[kLegs][kTails] = {};               // 尾部 Σlv: 分层用
-  for (int a = 0; a < A; ++a) {
-    const bool ok = rx[a] != factor::stat::kRankNone && lb.ry[a] != factor::stat::kRankNone;
-    const float y[kLegs] = {h2f(lb.v[kLong][a]), h2f(lb.v[kShort][a])};
+  void cell(unsigned x, bool ok, const float *y) {
     for (int l = 0; l < kLegs; ++l)
       for (int j = 0; j < kTails; ++j) {
-        const bool in = ok && in_tail(l, rx[a], thr[l][j]);
+        const bool in = ok && in_tail(l, static_cast<int>(x), thr[l][j]);
         leg[j][l].n += in;
         leg[j][l].s += in ? y[l] : 0.f;
         slv[l][j] += in ? y[kLong] : 0.f;
       }
   }
-  const double mkt[kLegs] = {r.mkt[kLong], r.mkt[kShort]};
-  for (int j = 0; j < kTails; ++j) {
-    for (int l = 0; l < kLegs; ++l) {
-      o.cnt[l][j] = static_cast<uint16_t>(leg[j][l].n);
-      o.sum[l][j] = static_cast<float>(slv[l][j] - leg[j][l].n * mkt[kLong]);
+  // r = 本行 Row (基准 mkt[kLegs] 直接用); 只在 Row::ok 行有值, 其余全 0
+  void finish(const factor::stat::Row &r, TailRow &o) const {
+    o = TailRow{};
+    if (!r.ok)
+      return;
+    const double mkt[kLegs] = {r.mkt[kLong], r.mkt[kShort]};
+    for (int j = 0; j < kTails; ++j) {
+      for (int l = 0; l < kLegs; ++l) {
+        o.cnt[l][j] = static_cast<uint16_t>(leg[j][l].n);
+        o.sum[l][j] = static_cast<float>(slv[l][j] - leg[j][l].n * mkt[kLong]);
+      }
+      o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt));
     }
-    o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt));
   }
-}
+};
+// accum_rows 的 sink: 一级 Row 与尾部同布局落地 [i·T + t]
+struct TailSink {
+  factor::stat::Row *rows;
+  TailRow *tails;
+  int T;
+  const int (*thr)[kTails];
+  using Ext = TailExt;
+  Ext ext() const { return {thr}; }
+  void row(int i, int t, const factor::stat::Row &r, const Ext &e) const {
+    const size_t k = static_cast<size_t>(i) * T + t;
+    rows[k] = r;
+    e.finish(r, tails[k]);
+  }
+};
 
 // 根输入值分布 (XDist, 见头文件). 两趟, 每趟条带并行: 每线程一份 KLL + 缓冲批量 addBatch, 末尾合并进线程 0 那份.
 //   趟 1: 全体样本 → 矩 + 截尾范围 [lo, hi]; 同趟逐行: 截面均值 (series) + 各组 min / max → 相邻组边界中点, 各组和 / 数
@@ -196,22 +212,21 @@ struct InspectService::Flow {
   std::string scope_key; // features_dir | 子轴 hash | 月份表; 空 = 未装载
   std::vector<std::string> dates;
   Loaded L; // planes / feat_codes = 作用域内读过的特征 (只增; 每次评估前把当前 Dag::feats 换到前排); labels (毛) / costs / cs 常驻
-  // Y 毛标签 [H]: ry = prep_label 常驻, lab 指向 L.labels + ry
-  std::vector<std::vector<uint16_t>> ry;
-  std::vector<factor::stat::Label> lab;
+  // Y 毛标签 [H]: ry = prep_label 常驻, lab.L 指向 L.labels + ry
+  LabelsHost lab;
   // X / R / C / L 常驻缓冲
   factor::cpu::Pool pool;
   std::vector<factor::cpu::ParScratch> nsc;
   factor::cpu::stat::Workspace w;
-  InspectPlanes pl;          // 一级平面, 发布时与 result.pl 交换
-  std::vector<uint8_t> ones; // 全 1 门控 [T][A], rx_all 那遍 rank_x 的 g
+  InspectPlanes pl;        // 一级平面, 发布时与 result.pl 交换
+  std::vector<uint8_t> lc; // 腿码 [T][A] (C 用)
 
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
   void reset_scope() {
     scope_key.clear();
     dates.clear();
     L = Loaded{};
-    ry.clear(), lab.clear();
+    lab = LabelsHost{};
   }
 };
 
@@ -368,16 +383,8 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   F.w.ensure(A, H, static_cast<int>(feats_.costs.size()), nt);
 
   // ---- Y: 毛标签 [H] (作用域内一次) ----
-  if (F.lab.empty()) {
-    F.ry.resize(static_cast<size_t>(H));
-    F.lab.resize(static_cast<size_t>(H));
-    for (int h = 0; h < H; ++h) {
-      const LabelPlane &p = L.labels[static_cast<size_t>(h)];
-      std::vector<uint16_t> &ry = F.ry[static_cast<size_t>(h)];
-      ry.resize(n);
-      factor::cpu::stat::prep_label(F.ex, p.v[kLong].data(), p.m.data(), T, A, ry.data(), F.w);
-      F.lab[static_cast<size_t>(h)] = label_of(p, ry.data());
-    }
+  if (F.lab.ry.empty()) {
+    prep_labels(F.ex, L, F.w, F.lab);
     if (cancelled())
       return false;
   }
@@ -453,12 +460,13 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   pl.tails.resize(nrow);
   pl.rx.resize(n);
   pl.rx_all.resize(n);
+  F.lc.resize(n);
   res.hold.resize(static_cast<size_t>(H));
-  // 先多跑一遍不看池的秩 (g ≡ 1) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 → rx
-  if (F.ones.size() != n)
-    F.ones.assign(n, uint8_t{1});
-  factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), F.ones.data(), req.frame, T, A, pl.rx_all.data(), F.w);
-  factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), L.cs.m.data(), req.frame, T, A, pl.rx.data(), F.w);
+  const factor::stat::Span s = L.span();
+  const factor::stat::Plane x{rp->v.data(), rp->m.data()};
+  // 先多跑一遍不看池的秩 (g = xm) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 → rx
+  factor::cpu::stat::rank_x(F.ex, x, x.m, req.frame, s, pl.rx_all.data(), F.w);
+  factor::cpu::stat::rank_x(F.ex, x, L.cs.m.data(), req.frame, s, pl.rx.data(), F.w);
   const uint16_t *rx = pl.rx.data();
   {
     const int xi = d.nodes[static_cast<size_t>(root)].in[0];
@@ -470,21 +478,18 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     return false;
 
   // ---- C: 换手成本 (FactorsLoad cost_tiers, 与 Run 同一份; 契约【换手成本】) ----
-  cost_tiers(F.ex, rx, L, feats_, F.w, res.costs);
+  factor::cpu::stat::leg_codes(F.ex, rx, s, F.lc.data());
+  cost_tiers(F.ex, F.lc.data(), L, feats_, F.w, res.costs);
   done_.fetch_add(1, std::memory_order_relaxed);
   if (cancelled())
     return false;
 
-  // ---- L: 评估 (只毛): 一级 Row[H][T] + 二级 HoldStat[H]; 同遍尾部分层 (Inspect 专属: 只在 Row::ok 行, 两腿组内更极端的 kTailOfGroup 截) ----
+  // ---- L: 评估 (只毛): 一级 Row[H][T] + 二级 HoldStat[H]; 同遍尾部分层 (TailExt, Inspect 专属: 只在 Row::ok 行, 两腿组内更极端的 kTailOfGroup 截) ----
   int thr[kLegs][kTails];
   tail_thresholds(thr);
-  factor::cpu::stat::eval_rows(F.ex, req.frame, T, A, rx, L.hd, F.lab.data(), F.w, res.hold.data(), [&](int i, int t, const factor::stat::Row &r) {
-    const size_t k = static_cast<size_t>(i) * T + t, base = static_cast<size_t>(t) * A;
-    pl.rows[k] = r;
-    pl.tails[k] = TailRow{};
-    if (r.ok)
-      tail_row(rx + base, F.lab[static_cast<size_t>(i)].at(base), A, thr, r, pl.tails[k]);
-  });
+  factor::stat::Accum acc[factor::stat::kMaxHold];
+  factor::cpu::stat::accum_rows(F.ex, req.frame, s, rx, F.lab.L, F.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, thr});
+  factor::stat::finish_all(acc, L.hd, res.hold.data());
   done_.fetch_add(1, std::memory_order_relaxed);
   if (cancelled())
     return false;

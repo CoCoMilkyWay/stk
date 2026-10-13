@@ -42,12 +42,13 @@ constexpr double kHostFrac = 0.6;  // 宿主可用内存的使用比例
 constexpr double kVramFrac = 0.85; // 显存空闲量的使用比例
 static_assert(kCarryDays * factor::kSegLen == factor::expr::kMaxD, "carry 行数须等于窗长上限 kMaxD");
 
-// 一块的装载数据 (+ CPU 的 ry); 整轮缓存或单块复用
+// 一块的装载数据 (+ CPU 的预处理标签); 整轮缓存或单块复用
 struct ChunkData {
   int idx = -1; // 块号; -1 = 空
   int t_lo = 0, t0_abs = 0;
   Loaded L;
-  std::vector<std::vector<uint16_t>> ry; // [H][n] (CPU; 装载后清空, 首次评估时算)
+  LabelsHost lab; // CPU; 装载后清空, 首次评估时算 (指 L 的标签, 随块同生)
+  factor::stat::Span span() const { return {L.T, L.A, t0_abs, t_lo}; }
 };
 
 // 一个候选 (评过 / 待评); 分数每 h 一份
@@ -310,7 +311,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - kCarryDays);
     const std::vector<std::string> cdates(dates.begin() + load0, dates.begin() + day1);
     cd.idx = -1;
-    cd.ry.clear();
+    cd.lab.ry.clear();
     cd.L = Loaded{};
     init_loaded(feats_, day1 - load0, A, cd.L);
     select_holds(feats_, holds, cd.L);
@@ -377,7 +378,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     for (int i = 0; i < sink->n_rows; ++i)
       std::copy_n(rx + static_cast<size_t>(sink->t_first + i * stride) * A, A, dst + static_cast<size_t>(i) * A);
   };
-  const auto sink_end = [&] { // 本块的抽样行两两 Pearson (Stat/Host rac_row, lag 行换成另一候选) 攒进 sum / cnt
+  const auto sink_end = [&] { // 本块的抽样行两两 Pearson (Stat/Host lag_row, lag 行换成另一候选) 攒进 sum / cnt
     if (!sink || sink->n_rows == 0)
       return;
     const int P = static_cast<int>(sink->pairs.size());
@@ -387,7 +388,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         const uint16_t *rb = sink->rows[static_cast<size_t>(sink->pairs[static_cast<size_t>(p)].second)].data();
         for (int i = 0; i < sink->n_rows; ++i) {
           fs::Row row;
-          factor::cpu::stat::rac_row(ra + static_cast<size_t>(i) * A, rb + static_cast<size_t>(i) * A, A, row);
+          factor::cpu::stat::lag_row(ra + static_cast<size_t>(i) * A, rb + static_cast<size_t>(i) * A, A, row);
           if (row.ok_rac)
             sink->sum[static_cast<size_t>(p)] += row.rac, sink->cnt[static_cast<size_t>(p)]++;
         }
@@ -403,16 +404,8 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     const size_t n = L.n();
     F.w.ensure(A, H, 0, nt);
     F.rx.resize(n);
-    if (cd.ry.size() != static_cast<size_t>(H)) {
-      cd.ry.assign(static_cast<size_t>(H), std::vector<uint16_t>(n));
-      for (int hi = 0; hi < H; ++hi) {
-        const LabelPlane &p = L.labels[static_cast<size_t>(hi)];
-        factor::cpu::stat::prep_label(F.ex, p.v[fs::kLong].data(), p.m.data(), T, A, cd.ry[static_cast<size_t>(hi)].data(), F.w);
-      }
-    }
-    fs::Label lab[fs::kMaxHold];
-    for (int hi = 0; hi < H; ++hi)
-      lab[hi] = label_of(L.labels[static_cast<size_t>(hi)], cd.ry[static_cast<size_t>(hi)].data());
+    if (cd.lab.ry.empty())
+      prep_labels(F.ex, L, F.w, cd.lab);
     if (F.sc.size() < static_cast<size_t>(nt))
       F.sc.resize(static_cast<size_t>(nt));
     for (size_t b0 = 0; b0 < ids.size(); b0 += kCpuForest) {
@@ -441,13 +434,13 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         if (!Fd.is_root(i))
           continue;
         const factor::check::Plane *rp = plane_of(i);
-        const float *xv = rp->v.data();
-        const uint8_t *xm = rp->m.data();
+        fs::Batch B;
+        B.C = 1, B.x[0] = {rp->v.data(), rp->m.data()};
         for (size_t k = b0; k < b1; ++k) {
           if (Fd.roots[k - b0] != i)
             continue;
           Result out;
-          factor::cpu::search::run(F.ex, 1, &xv, &xm, L.cs.m.data(), req.frame, T, A, cd.t0_abs, cd.t_lo, hd, lab, F.rx.data(), F.w, &out);
+          factor::cpu::search::run(F.ex, B, L.cs.m.data(), req.frame, cd.span(), cd.lab.L, F.rx.data(), F.w, &out);
           ents[static_cast<size_t>(ids[k])].r.merge(out, H);
           sink_rows_cpu(ids[k], F.rx.data());
           done_.fetch_add(1, std::memory_order_relaxed);

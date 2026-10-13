@@ -177,7 +177,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   ImGui::SetNextItemWidth(80);
   ImGui::InputInt("Times", &ui.req.times, 0);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("时间轴长度 (无单位), 自动取整到 %d 的倍数 (段界对齐是 EXPAND 的前提)",
+    ImGui::SetTooltip("时间轴长度 (无单位)\n"
+                      "• 自动取整到 %d 的倍数\n"
+                      "• 段界对齐是 EXPAND 的前提",
                       factor::kSegLen);
   ImGui::SameLine();
   ImGui::Text("×");
@@ -185,7 +187,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   ImGui::SetNextItemWidth(70);
   ImGui::InputInt("Assets", &ui.req.A, 0);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("资产轴宽度. GPU 后端一线程一资产, 设计点 5000: 太小喂不满卡, 吞吐不公允");
+    ImGui::SetTooltip("资产轴宽度\n"
+                      "• GPU 后端一线程一资产, 设计点 5000\n"
+                      "• 太小喂不满卡, 吞吐不公允");
   ui.req.times = std::max(ui.req.times, factor::kSegLen);
   ui.req.times -= ui.req.times % factor::kSegLen;
   ui.req.A = std::max(ui.req.A, 2);
@@ -199,8 +203,12 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::TextDisabled("= %.1f %s", bytes, units[u]);
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("PLAIN 造数, 配方按算子 (正值型给对数正态, 分组型给整数 id); seed 取时间戳 (不做复现)\n"
-                      "d / k 每算子自带默认值 (见 Args 列; Check.hpp kDParams / kKParams)");
+    ImGui::SetTooltip("PLAIN 造数\n"
+                      "• 配方按算子\n"
+                      "    ◦ 正值型给对数正态\n"
+                      "    ◦ 分组型给整数 id\n"
+                      "• seed 取时间戳 (不做复现)\n"
+                      "• d / k 每算子自带默认值 (见 operand 列; Check.hpp kDParams / kKParams)");
   ImGui::SameLine();
 
   if (running)
@@ -271,8 +279,9 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::SameLine();
     ImGui::TextDisabled(from_json ? "(from operators.json: %d × %d)" : "(last run: %d × %d)", cur.times, cur.A);
     if (from_json && ImGui::IsItemHovered())
-      ImGui::SetTooltip("表内容是上次跑完落盘的 operators.json (静态列已逐行校验过), 本进程没算;\n"
-                        "按 Run 才重算, 跑完覆盖该文件");
+      ImGui::SetTooltip("表内容来自上次跑完落盘的 operators.json\n"
+                        "• 本进程没算; 静态列已逐行校验过\n"
+                        "• 按 Run 才重算, 跑完覆盖该文件");
   }
 
   // 列宽贴合: 发布代变了 (限速 0.5s) → 连发 2 帧 AutoAll (全行每帧都提交, 测量完整, 不必像 TabFeature 那样等 clipper)
@@ -344,7 +353,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• EXPAND  段内 expanding (段界 reset)\n"
         "• ROLL    最近 d 期 (跨段)\n"
         "• EXPO    指数加权全历史\n"
-        "截面算子恒 POINT",
+        "• 截面算子恒 POINT",
         // A
         "A 域 = 资产支撑\n"
         "• SELF   只看本资产\n"
@@ -358,22 +367,30 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• EXTREME  极值 / arg 族\n"
         "• ORDER    序统计\n"
         "• RECUR    递推\n"
-        "复合算子标最重一级; 详见 factor/Contract.hpp【分类】",
+        "• 复合算子标最重一级\n"
+        "• 详见 factor/Contract.hpp【分类】",
         // operand
         "签名: 自变量在前, 参数在后 (x, y, z → d → k → k2)\n"
         "• x y z  输入序列 (值 + 有效位), 值域 = in 列\n"
         "• t_D    段内分钟位置 (仅 TodMask)\n"
-        "• d      窗长 / 滞后 (分钟); 仅 T = ROLL; 值取 Check.hpp kDParams\n"
-        "• k      阈值 / 桶数 / EMA 系数 / 分位; 仅 k域 ≠ NONE; 值取 kKParams\n"
-        "• k2     第二阈值; 仅 k域 = TOD\n"
-        "= 号后是本轮实际值; in 为严格域 (INT) 时 parser 要求上游 out ⊆ in, 其余 in 只是语义声明",
+        "• d      窗长 / 滞后 (分钟)\n"
+        "    ◦ 仅 T = ROLL; 值取 Check.hpp kDParams\n"
+        "• k      阈值 / 桶数 / EMA 系数 / 分位\n"
+        "    ◦ 仅 k域 ≠ NONE; 值取 kKParams\n"
+        "• k2     第二阈值\n"
+        "    ◦ 仅 k域 = TOD\n"
+        "• = 号后是本轮实际值\n"
+        "• in 为严格域 (INT) 时 parser 要求上游 out ⊆ in; 其余 in 只是语义声明",
         // out
         "因变量值域 (enum Dom, 与 in 同一套; 上游 out = 下游 in)\n"
         "• REAL ℝ / NONNEG ℝ≥0 / POS ℝ>0\n"
         "• UNIT [0,1] / SIGNED [−1,1]\n"
         "• BIN {0,1} / SIGN3 {−1,0,1} / INT {0..1023}\n"
         "• BCAST ℝ 截面广播\n"
-        "规则: 因子根不收离散 (BIN / SIGN3 / INT) 与 BCAST; 组 id 元只收 BIN / INT; 透传与取大取小一律写 REAL",
+        "• 规则\n"
+        "    ◦ 因子根不收离散 (BIN / SIGN3 / INT) 与 BCAST\n"
+        "    ◦ 组 id 元只收 BIN / INT\n"
+        "    ◦ 透传与取大取小一律写 REAL",
         // operator
         "算子定义 (OpTable.hpp, LaTeX); 符号沿用 features/FeaturesDefine.hpp\n"
         "• x_t / x_a  本资产 t 分钟值 / 同时刻资产 a 的值; t_D 段内位置\n"
@@ -382,23 +399,30 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• μ_t σ_t    窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心矩\n"
         "• Σ Π        窗内求和 / 乘积 (变量 s 或 b); max min cov var corr 下标 = 取值域\n"
         "• pct(v; S)  并列均秩 pct rank ∈ [0,1]; Q_p(S) p 分位; Φ⁻¹ 正态分位; G(a) 组\n"
-        "只计有效样本; 序统计族三后端同用 256 桶近似",
+        "• 只计有效样本\n"
+        "• 序统计族三后端同用 256 桶近似",
         // Stream ms
         "stream (实盘路径, 逐资产逐点 push) 的 wall time\n"
         "• OpTable 算子的 golden: 正确性基准 + 耗时上界\n"
         "• 评估算子无此后端 → n/a",
         // CPU ms
         "cpu 整张量批算的 wall time (不含造数)\n"
-        "• 对拍 cpu_chk: OpTable 对 stream (掩码相等, |Δ| ≤ 1e-5 + 1e-4·max); Search 对 Stat CPU (+ 分块 ≡ 整块); Stat 自身即 golden\n"
+        "• 对拍 cpu_chk\n"
+        "    ◦ OpTable 对 stream: 掩码相等, |Δ| ≤ 1e-5 + 1e-4·max\n"
+        "    ◦ Search 对 Stat CPU (+ 分块 ≡ 整块)\n"
+        "    ◦ Stat 自身即 golden\n"
         "• 没过 → 红 FAIL + Δ, 不显示时间\n"
         "• 比 stream 慢 → ms 标红 (要求 stream ≥ cpu ≥ gpu)",
         // GPU ms
         "GPU 纯 kernel 耗时 (cudaEvent, 已热身; 不含 cudaMalloc / H2D / D2H)\n"
-        "• 对拍 gpu_chk: gpu 对 cpu. OpTable |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 高阶矩放宽); 评估算子 |Δ| ≤ 1e-5 + 1e-4·max\n"
+        "• 对拍 gpu_chk: gpu 对 cpu\n"
+        "    ◦ OpTable: |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 高阶矩放宽)\n"
+        "    ◦ 评估算子: |Δ| ≤ 1e-5 + 1e-4·max\n"
         "• 没过 → 红 FAIL + Δ, 不显示时间\n"
         "• 比 cpu 慢 → ms 标红",
         // Note
-        "用途与选型一句话 (给 agent 检索): 量什么; 怎么用 / 配什么\n"
+        "用途与选型一句话 (给 agent 检索)\n"
+        "• 写: 量什么; 怎么用 / 配什么\n"
         "• 不含实现 / 近似 / 退化细节\n"
         "• 退化与数值契约 → factor/Contract.hpp; 成本与误差 → operator.md",
     };

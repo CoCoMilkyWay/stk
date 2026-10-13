@@ -1,6 +1,7 @@
 // FactorsLoad — 因子评估的特征库装载层, FactorsService (全表 Run) 与 InspectService (单因子深看) 共用:
 //   Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 标签 [hold] + 冲击成本 [amt]), load_planes 逐天并行读特征库散进去;
-//   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of 根平面有效率; n_full_of 满仓只数; cost_tiers 换手成本 (两服务同一份).
+//   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of 根平面有效率; n_full_of 满仓只数; cost_tiers 换手成本 (两服务同一份);
+//   prep_labels / labels_raw 标签的契约视图 (CPU 预处理过 / GPU 会话自己预处理).
 // 两个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat; InspectService 一棵 DAG 留一级 Row[H][T].
 #pragma once
 
@@ -50,7 +51,17 @@ struct Loaded {
   int n_hold = 0;
   std::vector<int> label_idx; // [hi] → FeatureTable::labels 下标 (init_loaded 全部持有期; select_holds 收窄到子集)
   size_t n() const { return static_cast<size_t>(T) * A; }
+  factor::stat::Span span() const { return {T, A}; } // 整张量 (t0_abs = t_lo = 0)
 };
+
+// CPU 后端的标签: ry[hi] = r16(做多标签) 一次预处理 (全核), L = 契约视图 (指 Loaded::labels / ry; Loaded 须活过它)
+struct LabelsHost {
+  std::vector<std::vector<uint16_t>> ry; // [hi][T·A]
+  factor::stat::Labels L;
+};
+void prep_labels(factor::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::Workspace &w, LabelsHost &out);
+// 未预处理的契约视图 (ry 空; GPU 会话自己预处理)
+factor::stat::Labels labels_raw(const Loaded &L);
 
 // 维度 / 标签组: days × A → T; hd = 字段表的全部持有期 (容量断言在此)
 void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L);
@@ -72,10 +83,10 @@ float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
 // 满仓一腿只数 (Search 契约【目标】util 的分母) = 池内 (cs.m) 平均每行有效票数 / kGroups: 池宽决定, 与因子无关. Run / Search 同一份
 double n_full_of(const Loaded &L);
 
-// 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): rx = r16(x) [T][A] (池内秩, kRankNone 无效),
-// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), 顺带 cover = Σ(rx ∧ 成本有效) / Σ rx 有效.
+// 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份),
+// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c) + cover) → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), cover = Σ(有秩 ∧ 成本有效) / Σ 有秩.
 // w = Stat CPU 工作区 (ensure 过 C = ft.costs.size()). 须 with_costs 装过 (L.costs.size() == ft.costs.size()); 无金额档 → out 空
-void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
+void cost_tiers(factor::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
                 std::vector<CostTier> &out);
 
 } // namespace GUI::Factors

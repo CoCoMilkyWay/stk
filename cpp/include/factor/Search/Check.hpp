@@ -99,30 +99,26 @@ inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, Re
                     double *eval_ms = nullptr) {
   using Clock = std::chrono::steady_clock;
   const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
-  const size_t n = static_cast<size_t>(T) * A;
   assert(row0 >= 0 && rows >= 1 && row0 + rows <= T);
+  const factor::stat::Span all{T, A}, s{rows, A, row0, t_lo};
   factor::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
   w.ensure(A, H, 0, ex.threads());
-  std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(n));
-  std::vector<uint16_t> rx(static_cast<size_t>(rows) * A); // 块形
-  std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
+  std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(all.n()));
+  std::vector<uint16_t> rx(s.n()); // 块形
   const size_t off = static_cast<size_t>(row0) * A;
   Clock::time_point t0 = Clock::now();
-  for (int i = 0; i < H; ++i) {
-    const factor::stat::check::LabelHost &L = d.base.lab[static_cast<size_t>(i)];
-    factor::cpu::stat::prep_label(ex, L.v[factor::stat::kLong].data(), L.m.data(), T, A, ry[static_cast<size_t>(i)].data(), w);
-    lab[static_cast<size_t>(i)] = factor::stat::check::label_of(L, ry[static_cast<size_t>(i)].data(), off);
-  }
+  for (int i = 0; i < H; ++i)
+    factor::cpu::stat::prep_label(ex, factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr), all, ry[static_cast<size_t>(i)].data(),
+                                  w);
   if (prep_ms)
     *prep_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-  const float *xv[kCands];
-  const uint8_t *xm[kCands];
+  factor::stat::Batch B;
+  B.C = kCands;
   for (int c = 0; c < kCands; ++c)
-    xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
+    B.x[c] = {d.cand[c].v.data() + off, d.cand[c].m.data() + off};
   t0 = Clock::now();
-  factor::cpu::search::run(ex, kCands, xv, xm, d.base.g.m.data() + off, d.base.frame, rows, A, row0, t_lo, d.base.hd, lab.data(), rx.data(), w,
-                           out);
+  factor::cpu::search::run(ex, B, d.base.g.m.data() + off, d.base.frame, s, factor::stat::check::labels_of(d.base, ry, off), rx.data(), w, out);
   if (eval_ms)
     *eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }

@@ -7,16 +7,17 @@
 //
 // 计算 flow (worker 私有 Flow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算:
 //   S  作用域   key = 特征库目录 | 子轴 hash | 月份 | 封顶  → dates, 截面门控, 毛标签 [H], 成本 [C], universe 指数; 特征平面缓存 (作用域内读过的全留, 只增)
-//   Y  标签     随 S                                       → 毛 {v[kLegs], m, ry[H]} (ry = prep_label 一次常驻); 没有净标签集
+//   Y  标签     随 S                                       → 毛 LabelsHost {ry[H], Labels} (FactorsLoad prep_labels, 一次常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
 //   R  rank_x                                              → 直接秩进 InspectPlanes::rx (随结果发布: 右上标的轴 / K 线着色);
-//                                                            之前多跑一遍 g ≡ 1 的 rank_x → rx_all, 池外段也有秩可显
-//   C  成本                                                → CostTier[C] (FactorsService.hpp): 每金额档 × 每持有期一份换手成本 CostAcc (FactorsLoad
-//                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: t ≥ h 的行逐格比 t−h 组别, 两腿新进者
+//                                                            之前多跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
+//   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsService.hpp): 每金额档 × 每持有期一份换手成本 CostAcc (FactorsLoad
+//                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: t ≥ h 的行逐格比 t−h 腿码, 两腿新进者
 //                                                            累建仓冲击; 一遍 [T][A], 无排序无标签). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::sell_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; sell_impact 只进均摊公式, 不进请求)
-//   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, eval_rows 一遍) + TailRow[H][T] (本文件: 两腿组内更极端的
-//                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search), 尾部走 eval_rows 的 on_row 同遍
+//   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all) + TailRow[H][T] (两腿组内更极端的
+//                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search),
+//                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
 // 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑不清旧 result: 页面继续整页画旧结果
@@ -70,7 +71,7 @@ struct InspectPlanes {
   std::vector<factor::stat::Row> rows; // 一级 [hd.n][T], 只毛口径
   std::vector<TailRow> tails;          // 一级尾部 [hd.n][T], 与 rows 同布局, 只毛口径
   std::vector<uint16_t> rx;            // r16(x) [T][A] (CS = 截面秩, TS = 自身分位; 只池内 g ∧ xm, kRankNone 无效): 右上标的轴排序 / K 线着色
-  std::vector<uint16_t> rx_all;        // 同上但不看池 (g ≡ 1, 只要 xm): 池外段 (出 CS 池 / 当日无成交) 的秩, K 线淡色显示; 评估不用
+  std::vector<uint16_t> rx_all;        // 同上但不看池 (g = xm): 池外段 (出 CS 池 / 当日无成交) 的秩, K 线淡色显示; 评估不用
   void clear() { rows.clear(), tails.clear(), rx.clear(), rx_all.clear(); }
 };
 

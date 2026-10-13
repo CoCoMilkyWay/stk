@@ -29,17 +29,17 @@ using factor::gpu::stat::Batch;
 using factor::gpu::stat::kMaxBatch;
 using factor::gpu::stat::kWarps;
 using factor::gpu::stat::kWB;
-using factor::gpu::stat::LabelSet;
 using factor::gpu::stat::Slots;
 using factor::search::Result;
 using factor::stat::Accum;
 using factor::stat::Frame;
-using factor::stat::Holds;
 using factor::stat::kGroups;
 using factor::stat::kMaxA;
 using factor::stat::kMaxHold;
 using factor::stat::Label;
+using factor::stat::Labels;
 using factor::stat::Row;
+using factor::stat::Span;
 
 inline constexpr int kRows = 128; // stat_batch 每 block 的行数 (分片粒度; NB = ⌈(T − t_lo)/kRows⌉)
 
@@ -50,8 +50,9 @@ struct Slice {
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx, int C, int T, int A, int t0_abs, int t_lo, Holds hd, LabelSet L,
-                                                     int NB, Slice *part) {
+__global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx, int C, int T, int A, int t0_abs, int t_lo, Labels L, int NB,
+                                                     Slice *part) {
+  const auto &hd = L.hd;
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const int c = blockIdx.x * kWarps + warp;
@@ -127,14 +128,14 @@ inline Work plan(int C, int T, int A, int H, int t_lo) {
   return w;
 }
 
-// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + hd.n 组预处理标签 → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo
-inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t0_abs, const Holds &hd, const Label *lab, uint16_t *rx, Slice *part,
-                 Result *out, cudaStream_t stream) {
-  factor::stat::assert_holds(hd);
-  assert(B.C == w.C && hd.n == w.H && g && rx && part && out && t0_abs >= 0);
-  factor::gpu::stat::rank_x(B, g, f, w.T, w.A, rx, stream);
+// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + L (L.hd.n 组预处理标签, 设备指针) → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo
+inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t0_abs, const Labels &L, uint16_t *rx, Slice *part, Result *out,
+                 cudaStream_t stream) {
+  factor::stat::assert_labels(L, true);
+  assert(B.C == w.C && L.hd.n == w.H && g && rx && part && out && t0_abs >= 0);
+  factor::gpu::stat::rank_x(B, g, f, Span{w.T, w.A, t0_abs, w.t_lo}, rx, stream);
   const dim3 grid(static_cast<unsigned>((w.C + kWarps - 1) / kWarps), static_cast<unsigned>(w.NB), static_cast<unsigned>(w.H));
-  k::stat_batch<<<grid, kWB, 0, stream>>>(f, rx, w.C, w.T, w.A, t0_abs, w.t_lo, hd, factor::gpu::stat::label_set(hd, lab), w.NB, part);
+  k::stat_batch<<<grid, kWB, 0, stream>>>(f, rx, w.C, w.T, w.A, t0_abs, w.t_lo, L, w.NB, part);
   FACTOR_CUDA_OK(cudaGetLastError());
   const int P = w.C * w.H;
   k::reduce_slices<<<(P + kWB - 1) / kWB, kWB, 0, stream>>>(part, w.NB, w.C, w.H, out);

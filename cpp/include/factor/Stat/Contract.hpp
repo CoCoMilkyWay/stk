@@ -70,11 +70,17 @@
 //     分块流式时跨块续攒, 不必落 Row. 拆两半是给 GPU 一 warp 一候选: lane 0 攒 Head, lane k 攒 Grp[k]; CPU 整行 add = 两半串起来
 //
 //   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Inspect 期限结构净线) 在二级上扣 (Search 不看成本, 只评排序):
-//     交易的只是两腿的组 (多腿 = 顶组, 空腿 = 底组). 每 (t, h) 行, 腿成员 = cost_leg(rx) ≥ 0 ∧ 成本有效的格; 其中 t−h 时不在该组 (含当时
-//     rank 无效) 的记作**新进者** (cost_entrant), 只有新进者付一次往返 = 建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额档, 买入已按
+//     交易的只是两腿的组 (多腿 = 顶组, 空腿 = 底组). 成本只看**腿码** lc = leg_code(r16) ∈ {kLcLong, kLcShort, kLcMid, kLcVoid} (u8 平面,
+//     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx). 每 (t, h) 行, 腿成员 = lc(t) = 腿 ∧ 成本有效的格; 其中 lc(t−h) ≠ 该腿 (含当时
+//     rank 无效) 的记作**新进者**, 只有新进者付一次往返 = 建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额档, 买入已按
 //     Config::max_impact 封顶) + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc 沿 t 池化 → 每期每成员均摊成本 cost(腿) =
 //     (Σ新进者冲击 + 新进者数 · sell_impact) / 腿样本数. 只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关).
+//     同一遍顺带 cover 计数 (lc ≠ kLcVoid 的格 / 其中成本有效的格, 与 h 无关).
 //     净多空 net_ls_period = ls.mean − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
+//
+//   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
+//     Labels (持有期键 hd 与其标签 l[] 同处) · Span (块形 T × A + 分块流式 t0_abs / t_lo; 整张量两者为 0).
+//     流程出口统一是二级累加器 Accum[H] (两后端同), HoldStat 由 finish_all 现算; 一级 Row 是可选的 sink.
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
@@ -193,6 +199,37 @@ struct Label {
   }
 };
 
+// ---- 视图 (见文件头【视图】) ----
+inline constexpr int kMaxBatch = 128; // 一批候选上限 (GPU 走 kernel 参数区: 128 × 16 B = 2 KB)
+struct Plane {                        // 因子平面 [T][A]: 值 + 有效位
+  const float *v = nullptr;
+  const uint8_t *m = nullptr;
+};
+struct Batch { // C 个同形候选 (同池 g / 同口径 / 同标签集); Stat = 1
+  int C = 0;
+  Plane x[kMaxBatch];
+};
+struct Labels { // l[i] ↔ hd.h[i]
+  Holds hd;
+  Label l[kMaxHold];
+};
+struct Span { // 块形 + 分块流式 (Search 契约【分块流式】); 整张量 t0_abs = t_lo = 0
+  int T = 0, A = 0;
+  int t0_abs = 0, t_lo = 0;
+  FACTOR_HD size_t n() const { return static_cast<size_t>(T) * A; }
+};
+
+inline void assert_span(const Span &s) {
+  assert(s.T >= 1 && s.A >= 1 && s.A <= kMaxA && static_cast<long long>(s.T) * s.A < (1LL << 31));
+  assert(s.t0_abs >= 0 && s.t_lo >= 0 && s.t_lo < s.T);
+}
+// prepped = ry 已由 prep_label 填 (评估入口); 假 = 只要两腿 + 掩码 (GPU 会话的宿主输入)
+inline void assert_labels(const Labels &L, bool prepped) {
+  assert_holds(L.hd);
+  for (int i = 0; i < L.hd.n; ++i)
+    assert(L.l[i].v[kLong] && L.l[i].v[kShort] && L.l[i].m && (!prepped || L.l[i].ry) && "标签不全 / 未预处理 (prep_label)");
+}
+
 // ---- 一级输出: 每 (持有期, 时刻) 一行; 布局 rows[h_idx * T + t] ----
 struct Row {
   float ric = 0.f, rac = 0.f, ls = 0.f; // ls = LS(tp-dn)
@@ -269,20 +306,23 @@ struct Cost {
   FACTOR_HD Cost at(size_t i) const { return {{imp[kLong] + i, imp[kShort] + i}, m + i}; } // 偏到第 i 格 (行首 = t·A)
 };
 
-// 一格的腿归属 (两后端 / 对拍参考 / Inspect 同一份): x = 本行 r16 → kLong 顶组 / kShort 底组 / −1 不交易 (其他组 / rx 无效).
-// 腿成员还须成本有效 (调用方查 Cost::m)
-FACTOR_HD inline int cost_leg(unsigned x) {
+// 腿码 (两后端 / Inspect 同一份): r16 → 顶组 kLcLong / 底组 kLcShort / 其他组 kLcMid / rank 无效 kLcVoid. 前两个与 Leg 同值:
+// 腿成员 = lc ∈ {kLong, kShort} (还须成本有效, 调用方查 Cost::m); 腿 l 的新进者 = lc(t−h) ≠ l (含当时 rank 无效)
+enum LegCode : uint8_t { kLcLong = kLong,
+                         kLcShort = kShort,
+                         kLcMid,
+                         kLcVoid };
+FACTOR_HD inline uint8_t leg_code(unsigned x) {
   const int g = x != kRankNone ? grp_of(x) : -1;
-  return g == leg_group(kLong) ? kLong : g == leg_group(kShort) ? kShort
-                                                                : -1;
+  return g < 0 ? kLcVoid : g == leg_group(kLong) ? kLcLong
+                       : g == leg_group(kShort)  ? kLcShort
+                                                 : kLcMid;
 }
-// 新进者: y = t−h 行 r16, t−h 时不在腿 l 的组 (含当时 rank 无效)
-FACTOR_HD inline bool cost_entrant(unsigned y, int l) { return y == kRankNone || grp_of(y) != leg_group(l); }
 
 // 一腿的换手成本和
 struct CostLeg {
   double imp = 0.0; // 新进者 Σ建仓冲击
-  long long n = 0;  // 腿样本数 (cost_leg ≥ 0 ∧ 成本有效; 分母)
+  long long n = 0;  // 腿样本数 (lc = 该腿 ∧ 成本有效; 分母)
   long long e = 0;  // 其中新进者数 (t−h 时不在该组)
 };
 // 一个持有期的换手成本累加器 (两腿); 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
@@ -509,13 +549,11 @@ struct Accum {
   }
 };
 
-// rows = 该持有期的 T 行 (rows + h_idx * T) 一次汇总 (已落地的 Row; 流式 / 并行走 Accum)
-inline HoldStat summarize(const Row *r, int T, int hold) {
-  assert(T >= 1);
-  Accum a;
-  for (int t = 0; t < T; ++t)
-    a.add(r[t]);
-  return a.finish(hold);
+// 流程出口 Accum[hd.n] → HoldStat[hd.n] (两后端同一份; 见文件头【视图】)
+inline void finish_all(const Accum *acc, const Holds &hd, HoldStat *out) {
+  assert(acc && out);
+  for (int i = 0; i < hd.n; ++i)
+    out[i] = acc[i].finish(hd.h[i]);
 }
 
 } // namespace factor::stat

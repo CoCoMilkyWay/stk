@@ -1,20 +1,21 @@
 #pragma once
 
 // =============================================================================
-// Stat 评估算子对拍的公共件: 造数 / 容差 / 比较 / CPU 驱动 (GPU 经 GpuRun.hpp)
+// Stat 评估算子对拍的公共件: 造数 / 容差 / 比较 / 两后端驱动 (run_cpu / run_gpu; GPU 经 GpuRun.hpp)
 // =============================================================================
-//   两个消费者共用 (口径必须一致): src/factor/op_check.cpp 与 GUI OperatorsService.
+//   两个消费者共用 (口径必须一致): src/factor/op_check.cpp 与 GUI OperatorsService (都链 GpuRun 的实现或桩).
 //   无 golden: cpu ↔ gpu 两方 match 即过. 一级 Row 逐 (h, t) 比 (ok / ok_rac 逐位相等, 有效字段容差内),
 //   二级 HoldStat 逐字段比 (n / n_rac 逐位相等).
 //   造数沿用 factor/Check.hpp 的 Profile (HOLES 打整行缺失 / CONSTCOL 打全并列 / TINY 打量级), 两口径各一份 (Data::frame):
 //     x     CS: NORM (按 profile); TS: 同一 NORM 经 Φ 映到 (0,1) 当分位 (TsRankRoll 的输出形状)
 //     标签  每持有期 long = 0.3·z + NORM 噪声 (z = 造数用的 NORM 平面; IC ≈ 0.3, 二级统计有东西可比); short = −(0.3·z + 0.7·噪声);
 //           掩码取噪声平面的空洞; 值经 fp16 往返 (与常驻格式同)
-//   本头只依赖 Contract / Check / Exec / Stat/Contract / Stat/Cpu; 消费者 TU 编进 -fno-fast-math.
+//   本头只依赖 Contract / Check / Exec / GpuRun / Stat/Contract / Stat/Cpu; 消费者 TU 编进 -fno-fast-math.
 // =============================================================================
 
 #include "factor/Check.hpp"
 #include "factor/Exec.hpp"
+#include "factor/GpuRun.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp"
 
@@ -65,6 +66,15 @@ struct Data {
   Holds hd;
   int T = 0, A = 0;
 };
+// d 的全部标签 + 各组预处理 ry → 契约 Labels (偏 off 格; ry 为空 = 未预处理)
+inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> &ry, size_t off = 0) {
+  assert(ry.empty() || ry.size() == static_cast<size_t>(d.hd.n));
+  Labels L;
+  L.hd = d.hd;
+  for (int i = 0; i < d.hd.n; ++i)
+    L.l[i] = label_of(d.lab[static_cast<size_t>(i)], ry.empty() ? nullptr : ry[static_cast<size_t>(i)].data(), off);
+  return L;
+}
 
 inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) {
   d.frame = f;
@@ -183,38 +193,41 @@ struct Result {
   double prep_ms = 0.0, eval_ms = 0.0; // 预处理 (标签 rank, 常驻期一次) / 评估 (每因子一次)
 };
 
-inline void summarize_all(Result &r, const Data &d) {
-  r.stat.resize(static_cast<size_t>(d.hd.n));
-  for (int i = 0; i < d.hd.n; ++i)
-    r.stat[static_cast<size_t>(i)] = summarize(r.rows.data() + static_cast<size_t>(i) * d.T, d.T, d.hd.h[i]);
-}
-
 inline int cpu_threads() { return static_cast<int>(std::max<unsigned>(1, std::thread::hardware_concurrency())); }
 
 // CPU 驱动 (ForkJoin(threads) 切行): 预处理 + 评估 (含二级) 各计时 (wall)
 inline void run_cpu(const Data &d, Result &r, int threads) {
   using Clock = std::chrono::steady_clock;
-  const size_t n = static_cast<size_t>(d.T) * d.A;
+  const Span s{d.T, d.A};
   const int H = d.hd.n;
   factor::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
   w.ensure(d.A, H, 0, ex.threads());
-  std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(n));
-  std::vector<uint16_t> rx(n);
-  std::vector<Label> lab(static_cast<size_t>(H));
+  std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(s.n()));
+  std::vector<uint16_t> rx(s.n());
+  std::vector<Accum> acc(static_cast<size_t>(H));
   Clock::time_point t0 = Clock::now();
-  for (int i = 0; i < H; ++i) {
-    const LabelHost &L = d.lab[static_cast<size_t>(i)];
-    factor::cpu::stat::prep_label(ex, L.v[kLong].data(), L.m.data(), d.T, d.A, ry[static_cast<size_t>(i)].data(), w);
-    lab[static_cast<size_t>(i)] = label_of(L, ry[static_cast<size_t>(i)].data());
-  }
+  for (int i = 0; i < H; ++i)
+    factor::cpu::stat::prep_label(ex, label_of(d.lab[static_cast<size_t>(i)], nullptr), s, ry[static_cast<size_t>(i)].data(), w);
   r.prep_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
   r.stat.resize(static_cast<size_t>(H));
   t0 = Clock::now();
-  factor::cpu::stat::run(ex, d.x.v.data(), d.x.m.data(), d.g.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), rx.data(), w, r.stat.data(),
-                         factor::cpu::stat::land_rows(r.rows.data(), d.T));
+  factor::cpu::stat::run(ex, factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.frame, s, labels_of(d, ry), rx.data(), w, acc.data(),
+                         factor::cpu::stat::LandRows{r.rows.data(), d.T});
+  finish_all(acc.data(), d.hd, r.stat.data());
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+}
+
+// GPU 驱动 (一次性会话; 须 gpu::available()): rows 拷回对拍一级, acc 拷回宿主 finish_all; 计时为纯 kernel (cudaEvent)
+inline void run_gpu(const Data &d, Result &r) {
+  const int H = d.hd.n;
+  std::vector<Accum> acc(static_cast<size_t>(H));
+  r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
+  r.stat.resize(static_cast<size_t>(H));
+  factor::gpu::run_stat(factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.frame, d.T, d.A, labels_of(d, {}), acc.data(),
+                        r.rows.data(), &r.prep_ms, &r.eval_ms);
+  finish_all(acc.data(), d.hd, r.stat.data());
 }
 
 } // namespace factor::stat::check

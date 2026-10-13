@@ -13,7 +13,7 @@
 //   趟 1..        每 h 每支围自己的 top-1 开细化网格 (步长从粗步长一半起逐层减半, 点数 ≤ kLayerMax), 全部 h 全部活支的新点去重拼成一趟;
 //                 一支一层相对增益 < kMinGain 即停
 //   趟 corr       每 h 的高原集 (各支最优里 score ≥ (1 − kPlateau)·max) 取并集再评一趟, 顺带抽样 kCorrRows 行的 r16 回宿主, 同 h 两两算
-//                 截面相关 (Stat/Host rac_row) 沿抽样行取均值
+//                 截面相关 (Stat/Host lag_row) 沿抽样行取均值
 //   终            每 h pick_uncorrelated → ≤ kPicks 权重; 一个 h 都没有正分候选 → 文件不动; 否则 weights = 全部 h 的 picks
 //
 // 评估 (Search 算子, 两后端语义同 Stat; 装 / 评搜索窗内全部标签组):

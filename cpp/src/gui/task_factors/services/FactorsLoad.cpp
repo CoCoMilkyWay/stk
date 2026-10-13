@@ -301,10 +301,30 @@ double n_full_of(const Loaded &L) {
   return nf;
 }
 
-void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
+void prep_labels(factor::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::Workspace &w, LabelsHost &out) {
+  const size_t H = static_cast<size_t>(L.hd.n);
+  assert(L.labels.size() == H && "标签未装 (with_labels)");
+  out.ry.assign(H, std::vector<uint16_t>(L.n()));
+  out.L = labels_raw(L);
+  for (size_t h = 0; h < H; ++h) {
+    factor::cpu::stat::prep_label(ex, out.L.l[h], L.span(), out.ry[h].data(), w);
+    out.L.l[h].ry = out.ry[h].data();
+  }
+}
+
+factor::stat::Labels labels_raw(const Loaded &L) {
+  assert(L.labels.size() == static_cast<size_t>(L.hd.n) && "标签未装 (with_labels)");
+  factor::stat::Labels out;
+  out.hd = L.hd;
+  for (int h = 0; h < L.hd.n; ++h)
+    out.l[h] = label_of(L.labels[static_cast<size_t>(h)], nullptr);
+  return out;
+}
+
+void cost_tiers(factor::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
                 std::vector<CostTier> &out) {
-  const int C = static_cast<int>(ft.costs.size()), H = L.hd.n, A = L.A, T = L.T, nt = ex.threads();
-  assert(rx && L.costs.size() == static_cast<size_t>(C) && "成本平面未装 (with_costs)");
+  const int C = static_cast<int>(ft.costs.size()), H = L.hd.n;
+  assert(lc && L.costs.size() == static_cast<size_t>(C) && "成本平面未装 (with_costs)");
   out.assign(static_cast<size_t>(C), CostTier{});
   if (C == 0)
     return;
@@ -312,24 +332,8 @@ void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L,
   for (int c = 0; c < C; ++c)
     cost[static_cast<size_t>(c)] = cost_of(L.costs[static_cast<size_t>(c)]);
   std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [c][hi]
-  factor::cpu::stat::cost_rows(ex, T, A, rx, L.hd, cost.data(), C, w, acc.data());
-  // cover: 每 t 一遍 A 轴, 全部金额档一起数
-  std::vector<long long> cnx(static_cast<size_t>(nt) * (1 + C), 0); // [tid][0 = rx 有效格数, 1 + c = rx ∧ 成本有效]
-  ex.rows(T, [&](int t0, int t1, int tid) {
-    long long *nx = cnx.data() + static_cast<size_t>(tid) * (1 + C);
-    for (int t = t0; t < t1; ++t)
-      for (size_t i = static_cast<size_t>(t) * A, e = i + A; i < e; ++i) {
-        if (rx[i] == factor::stat::kRankNone)
-          continue;
-        ++nx[0];
-        for (int c = 0; c < C; ++c)
-          nx[1 + c] += cost[static_cast<size_t>(c)].m[i] != 0;
-      }
-  });
-  std::vector<long long> nx(static_cast<size_t>(1 + C), 0);
-  for (int tid = 0; tid < nt; ++tid)
-    for (int c = 0; c <= C; ++c)
-      nx[static_cast<size_t>(c)] += cnx[static_cast<size_t>(tid) * (1 + C) + c];
+  std::vector<long long> nx(static_cast<size_t>(1 + C));              // [0 = 有秩格数, 1 + c = 有秩 ∧ 成本 c 有效]
+  factor::cpu::stat::cost_rows(ex, lc, L.span(), L.hd, cost.data(), C, w, acc.data(), nx.data());
   for (int c = 0; c < C; ++c) {
     CostTier &tier = out[static_cast<size_t>(c)];
     tier.amt = ft.costs[static_cast<size_t>(c)].amt;

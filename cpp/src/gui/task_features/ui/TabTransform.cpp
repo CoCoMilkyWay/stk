@@ -89,7 +89,10 @@ static void RenderChainIntegrity(const Transform::Integrity &it) {
   ImGui::TextColored(nan_pct > 0.0f ? ImVec4(1.0f, 0.9f, 0.3f, 1.0f) : ImVec4(0.2f, 0.8f, 0.4f, 1.0f),
                      "NaN %.2f%%", nan_pct);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("输出有效 < 输入有效 的差 = 差分预热 / TOD 轮廓未成形 / 常数槽");
+    ImGui::SetTooltip("输出有效 < 输入有效 的差, 来源:\n"
+                      "• 差分预热\n"
+                      "• TOD 轮廓未成形\n"
+                      "• 常数槽");
 }
 
 // ============================================================================
@@ -122,8 +125,11 @@ static bool RenderPipeline(Transform::Params &p) {
   ImGui::SameLine();
   changed |= EnumCombo("##season", p.season, math::stationary::TodProfile::MODE_NAMES, 110);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("日内轮廓去季节: 每资产每分钟槽的 expanding 均值/标准差 (截至昨日, 因果).\n"
-                      "日内 U 形是确定性周期, 不是单位根 —— 差分/MA 不对症, 先减轮廓.");
+    ImGui::SetTooltip("日内轮廓去季节\n"
+                      "• 每资产每分钟槽的 expanding 均值 / 标准差 (截至昨日, 因果)\n"
+                      "• 为什么先做\n"
+                      "    ◦ 日内 U 形是确定性周期, 不是单位根\n"
+                      "    ◦ 差分 / MA 不对症, 先减轮廓");
 
   // 2. 平稳化
   ImGui::SameLine(0, 16);
@@ -142,14 +148,18 @@ static bool RenderPipeline(Transform::Params &p) {
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("按天分段, 天首从零起 (隔夜跳空不进差分/滤波); 差分预热段输出 NaN");
+    ImGui::SetTooltip("平稳化\n"
+                      "• 按天分段, 天首从零起 (隔夜跳空不进差分 / 滤波)\n"
+                      "• 差分预热段输出 NaN");
   changed |= RenderOperatorParams(p.st, "st");
 
   // 3. 带通
   ImGui::SameLine(0, 16);
   changed |= ImGui::Checkbox("带通", &p.bandpass);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("IIR 因果前向滤波 (天首复位), 通带 = PSD 图上两根光标之间的周期 [%.1f, %.1f] 分钟",
+    ImGui::SetTooltip("带通: IIR 因果前向滤波\n"
+                      "• 天首复位\n"
+                      "• 通带 = PSD 图上两根光标之间的周期 [%.1f, %.1f] 分钟",
                       p.bp_lo_period, p.bp_hi_period);
   if (p.bandpass) {
     ImGui::SameLine();
@@ -178,7 +188,9 @@ static bool RenderPipeline(Transform::Params &p) {
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("天内 expanding 统计 (只用历史), 每天从零起");
+    ImGui::SetTooltip("TS 归一\n"
+                      "• 天内 expanding 统计 (只用历史)\n"
+                      "• 每天从零起");
   changed |= RenderOperatorParams(p.ts, "ts");
 
   // 5. 截面 (生产同一套 cs::{Tf, Method})
@@ -189,8 +201,10 @@ static bool RenderPipeline(Transform::Params &p) {
   ImGui::SameLine();
   changed |= EnumCombo("##csm", p.cs_method, cs::METHOD_NAMES, 110);
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("每 (天, 分钟) 一个截面: Tf 元素预变换 → Method. 与回测/实盘 features/Method/CS.hpp 同一份代码.\n"
-                      "NeutralRank 需 mcap + ind_l1 上下文列 (行业 + log 市值中性化)");
+    ImGui::SetTooltip("截面: 每 (天, 分钟) 一个截面\n"
+                      "• 流程: Tf 元素预变换 → Method\n"
+                      "• 与回测 / 实盘 features/Method/CS.hpp 同一份代码\n"
+                      "• NeutralRank 需 mcap + ind_l1 上下文列 (行业 + log 市值中性化)");
 
   // 6. 构建天数档位: 只算区间头 N 天 (快速迭代), 不往后算
   ImGui::SameLine(0, 16);
@@ -213,7 +227,10 @@ static bool RenderPipeline(Transform::Params &p) {
       ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("重算只算区间头 N 天, 不往后算 (统计/分布/序列都只覆盖头 N 天); 全部 = 全区间");
+      ImGui::SetTooltip("构建天数\n"
+                        "• N: 重算只算区间头 N 天, 不往后算\n"
+                        "    ◦ 统计 / 分布 / 序列都只覆盖头 N 天\n"
+                        "• 全部 = 全区间");
   }
 
   return changed;

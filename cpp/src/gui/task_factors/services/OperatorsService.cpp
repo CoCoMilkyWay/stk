@@ -211,13 +211,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
     if (!has_gpu)
       continue;
     Result gpu;
-    gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
-    std::vector<factor::stat::Label> lab(static_cast<size_t>(d.hd.n));
-    for (int i = 0; i < d.hd.n; ++i)
-      lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.lab[static_cast<size_t>(i)], nullptr);
-    factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), d.g.m.data(), fr, d.T, d.A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms,
-                          &gpu.eval_ms);
-    summarize_all(gpu, d);
+    run_gpu(d, gpu);
     const Tol tol = tol_of(Profile::PLAIN);
     row.gpu_ms += gpu.eval_ms;
     if (fr == factor::stat::Frame::CS)
@@ -329,13 +323,27 @@ OperatorsService::OperatorsService() {
     s.out = factor::Dom::REAL;
     s.op = R"tex(\mathrm{rIC},\,\mathrm{IR},\,G_{20},\,\mathrm{LS},\,\mathrm{SR},\,\beta,\,\mathrm{mono},\,\mathrm{rAC})tex";
     s.note = "因子评估: 每 (h, t) 的 rIC / 20 组均值 / 多空 / rAC, 再沿 t 汇总; 挖掘的第一道闸, 每轮先跑";
-    s.doc = "因子评估算子 (factor/Stat): 因子 x + 每持有期 h 一组 fp16 标签 y_h → 每 (h, t) 的 rIC / 20 组和 / 顶底多空 / rAC, 再沿 t 汇总 (组沿 t 池化).\n"
-            "持有期集合 = Stat/Check.hpp kHolds (分钟档 / close / T+N). 标签统一超额 (减截面均值).\n"
-            "两口径: CS 每 t 截面 rank x, 任一组空行无效; TS x 已是自身 5 日分位, 直接量化, 组可空.\n"
-            "无流式后端, cpu 即 golden (CPU 列不对拍); GPU 列 Diff = 两口径 × (一级 rows + 二级 stat) gpu ↔ cpu 合并.\n"
-            "表列耗时 = 两口径 eval 之和 (每因子一次: rank/量化 + 逐持有期一遍 A 轴), 不含 prep (标签 rank 预处理, 见下).\n"
-            "造数: long = 0.3·z + 噪声 (rIC ≈ 0.3; TS 的 x = Φ(z)). rIC / rAC / LS 的 t 按 n/h 折算 (相邻 h 行重叠); Sharpe 以持有期为一期年化;\n"
-            "rAC 的 lag = h; 段末 h+3 行 (持有到收盘) 不计标签统计.";
+    s.doc = "因子评估算子 (factor/Stat)\n"
+            "• 流程: 因子 x + 每持有期 h 一组 fp16 标签 y_h\n"
+            "    ◦ → 每 (h, t) 的 rIC / 20 组和 / 顶底多空 / rAC\n"
+            "    ◦ → 沿 t 汇总 (组沿 t 池化)\n"
+            "• 持有期集合 = Stat/Check.hpp kHolds (分钟档 / close / T+N)\n"
+            "• 标签统一超额 (减截面均值)\n"
+            "• 两口径\n"
+            "    ◦ CS: 每 t 截面 rank x, 任一组空行无效\n"
+            "    ◦ TS: x 已是自身 5 日分位, 直接量化, 组可空\n"
+            "• 对拍\n"
+            "    ◦ 无流式后端, cpu 即 golden (CPU 列不对拍)\n"
+            "    ◦ GPU 列 Diff = 两口径 × (一级 rows + 二级 stat) gpu ↔ cpu 合并\n"
+            "• 表列耗时 = 两口径 eval 之和\n"
+            "    ◦ 每因子一次: rank/量化 + 逐持有期一遍 A 轴\n"
+            "    ◦ 不含 prep (标签 rank 预处理, 见下)\n"
+            "• 造数: long = 0.3·z + 噪声 (rIC ≈ 0.3; TS 的 x = Φ(z))\n"
+            "• 统计口径\n"
+            "    ◦ rIC / rAC / LS 的 t 按 n/h 折算 (相邻 h 行重叠)\n"
+            "    ◦ Sharpe 以持有期为一期年化\n"
+            "    ◦ rAC 的 lag = h\n"
+            "    ◦ 段末 h+3 行 (持有到收盘) 不计标签统计";
     s.classified = false;
     rows.push_back(s);
     runners_.push_back(&run_stat);
@@ -350,13 +358,22 @@ OperatorsService::OperatorsService() {
     s.out = factor::Dom::REAL;
     s.op = R"tex(\Sigma_t\,\mathrm{row}_t(x_c, y_h))tex";
     s.note = "挖掘批评估: 每候选每持有期沿 t 累加 (分块带 carry 可合并); golden = Stat";
-    s.doc = "挖掘批评估算子 (factor/Search): 一批候选平面 x_c (c < C) 共用标签 y_h, 每候选每持有期一份沿 t 可合并的 Accum "
-            "(= Stat 的 Row 累加), 不落 Row. 持有期集合同 Stat (Search 服务只传一个).\n"
-            "分块流式: 块带 carry (≥ max_lag) 接上一块, 统计从 t_lo 起, 各块 Result merge ≡ 整块一次算.\n"
-            "golden = Stat CPU 对每张候选的 HoldStat (Stat 自身已 gpu ↔ cpu 对拍过):\n"
-            "  CPU 列 Diff = cpu 整块 vs golden + 两块 merge vs 整块; GPU 列 Diff = gpu 整块 vs cpu 整块 + 两块 merge vs 整块; 两口径 × 候选合并.\n"
-            "造数沿用 Stat (候选 = CS {x, −x, x²} / TS {x, 1−x, x²}).\n"
-            "表列耗时 = 两口径整块 eval 之和 (全部候选一批; 分块两趟只对拍不计时), 不含 prep.";
+    s.doc = "挖掘批评估算子 (factor/Search)\n"
+            "• 一批候选平面 x_c (c < C) 共用标签 y_h\n"
+            "    ◦ 每候选每持有期一份沿 t 可合并的 Accum (= Stat 的 Row 累加)\n"
+            "    ◦ 不落 Row\n"
+            "• 持有期集合同 Stat (Search 服务只传一个)\n"
+            "• 分块流式\n"
+            "    ◦ 块带 carry (≥ max_lag) 接上一块, 统计从 t_lo 起\n"
+            "    ◦ 各块 Result merge ≡ 整块一次算\n"
+            "• 对拍: golden = Stat CPU 对每张候选的 HoldStat (Stat 自身已 gpu ↔ cpu 对拍过)\n"
+            "    ◦ CPU 列 Diff = cpu 整块 vs golden + 两块 merge vs 整块\n"
+            "    ◦ GPU 列 Diff = gpu 整块 vs cpu 整块 + 两块 merge vs 整块\n"
+            "    ◦ 两口径 × 候选合并\n"
+            "• 造数沿用 Stat (候选 = CS {x, −x, x²} / TS {x, 1−x, x²})\n"
+            "• 表列耗时 = 两口径整块 eval 之和\n"
+            "    ◦ 全部候选一批; 分块两趟只对拍不计时\n"
+            "    ◦ 不含 prep";
     s.classified = false;
     rows.push_back(s);
     runners_.push_back(&run_search);

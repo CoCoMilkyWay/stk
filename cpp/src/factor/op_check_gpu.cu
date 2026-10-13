@@ -317,34 +317,37 @@ struct Timer {
   }
 };
 
-// 一组设备常驻标签 (两腿 v / m 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图
+// 一组设备常驻标签 (两腿 v / m 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图 (契约 Labels)
 struct DevLabels {
   static constexpr int kLegs = factor::stat::kLegs, kLong = factor::stat::kLong, kShort = factor::stat::kShort;
   int H = 0;
   DevBuf<uint16_t> v[kLegs][factor::stat::kMaxHold], ry[factor::stat::kMaxHold];
   DevBuf<uint8_t> m[factor::stat::kMaxHold];
-  factor::stat::Label L[factor::stat::kMaxHold];
-  void alloc(int H_, size_t n) {
-    H = H_;
+  factor::stat::Labels L;
+  void alloc(const factor::stat::Holds &hd, size_t n) {
+    factor::stat::assert_holds(hd);
+    H = hd.n, L.hd = hd;
     for (int i = 0; i < H; ++i) {
       for (int l = 0; l < kLegs; ++l)
         v[l][i].alloc(n);
       m[i].alloc(n), ry[i].alloc(n);
-      L[i] = {{v[kLong][i].p, v[kShort][i].p}, m[i].p, ry[i].p};
+      L.l[i] = {{v[kLong][i].p, v[kShort][i].p}, m[i].p, ry[i].p};
     }
   }
-  // 宿主标签拷入 + ry 预处理 (纯 kernel 计时)
-  double load(const factor::stat::Label *lab, int T, int A, Timer &tm) {
-    const size_t n = static_cast<size_t>(T) * A;
+  // 宿主标签 (持有期须与 alloc 同) 拷入 + ry 预处理 (纯 kernel 计时)
+  double load(const factor::stat::Labels &host, const factor::stat::Span &s, Timer &tm) {
+    factor::stat::assert_labels(host, false);
+    assert(host.hd.n == H);
+    for (int i = 0; i < H; ++i)
+      assert(host.hd.h[i] == L.hd.h[i] && "标签持有期与会话不符");
     for (int i = 0; i < H; ++i) {
-      assert(lab[i].v[kLong] && lab[i].v[kShort] && lab[i].m);
       for (int l = 0; l < kLegs; ++l)
-        v[l][i].put(lab[i].v[l], n);
-      m[i].put(lab[i].m, n);
+        v[l][i].put(host.l[i].v[l], s.n());
+      m[i].put(host.l[i].m, s.n());
     }
     tm.begin();
     for (int i = 0; i < H; ++i)
-      stat::prep_label(v[kLong][i].p, m[i].p, T, A, ry[i].p, nullptr);
+      stat::prep_label(L.l[i], s, ry[i].p, nullptr);
     return tm.end();
   }
   void free_() {
@@ -358,61 +361,72 @@ struct DevLabels {
 
 } // namespace
 
-// Stat 常驻会话: 标签 + 工作区 + 行输出, open 时全部就位
+// Stat 常驻会话: 标签 + rx / lc 工作区 + 一级 / 分片 / 出口, open 时全部就位
 struct StatSession {
-  int T = 0, A = 0;
-  factor::stat::Holds hd;
+  factor::stat::Span s;
   DevLabels lab;
-  DevBuf<uint16_t> ws;
-  DevBuf<factor::stat::Row> out;
+  DevBuf<uint16_t> rx;
+  DevBuf<uint8_t> lc;
+  DevBuf<factor::stat::Row> rows;
+  DevBuf<factor::stat::Accum> part, acc;
+  stat::Workspace w;
   Timer tm;
 };
 
-StatSession *stat_open(int T, int A, const factor::stat::Holds &hd, const factor::stat::Label *lab, double *prep_ms) {
-  factor::stat::assert_holds(hd);
-  assert(lab && T > 0 && A > 0);
-  const size_t n = static_cast<size_t>(T) * A;
+StatSession *stat_open(int T, int A, const factor::stat::Labels &L, double *prep_ms) {
   StatSession *s = new StatSession;
-  s->T = T, s->A = A, s->hd = hd;
-  s->lab.alloc(hd.n, n);
-  s->ws.alloc(n);
-  s->out.alloc(static_cast<size_t>(hd.n) * T);
-  const double pms = s->lab.load(lab, T, A, s->tm);
+  s->s = {T, A};
+  factor::stat::assert_span(s->s);
+  const size_t n = s->s.n();
+  const int H = L.hd.n, NB = stat::n_parts(s->s);
+  s->lab.alloc(L.hd, n);
+  s->rx.alloc(n), s->lc.alloc(n);
+  s->rows.alloc(static_cast<size_t>(H) * T);
+  s->part.alloc(static_cast<size_t>(H) * NB), s->acc.alloc(static_cast<size_t>(H));
+  s->w = {s->rows.p, s->part.p, s->acc.p, H, NB};
+  const double pms = s->lab.load(L, s->s, s->tm);
   if (prep_ms)
     *prep_ms = pms;
   return s;
 }
 
-void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Row *rows, double *eval_ms, uint16_t *rx) {
-  assert(s && x && x->v && x->m && g && g->m && rows);
+void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Accum *acc, factor::stat::Row *rows,
+               uint8_t *lc, double *eval_ms) {
+  assert(s && x && x->v && x->m && g && g->m && acc);
   if (eval_ms)
     s->tm.begin();
-  stat::eval(x->v, x->m, g->m, f, s->T, s->A, s->hd, s->lab.L, s->ws.p, s->out.p, nullptr);
+  stat::run(factor::stat::Plane{x->v, x->m}, g->m, f, s->s, s->lab.L, s->rx.p, s->w, nullptr);
   if (eval_ms)
     *eval_ms = s->tm.end();
-  s->out.down(rows, static_cast<size_t>(s->hd.n) * s->T); // D2H 自带同步
-  if (rx)
-    s->ws.down(rx, static_cast<size_t>(s->T) * s->A);
+  const int H = s->lab.L.hd.n;
+  s->acc.down(acc, static_cast<size_t>(H)); // D2H 自带同步
+  if (rows)
+    s->rows.down(rows, static_cast<size_t>(H) * s->s.T);
+  if (lc) {
+    stat::leg_codes(s->rx.p, s->s, s->lc.p, nullptr);
+    s->lc.down(lc, s->s.n());
+  }
 }
 
 void stat_close(StatSession *s) {
   assert(s);
-  s->out.free_(), s->ws.free_(), s->lab.free_();
+  s->acc.free_(), s->part.free_(), s->rows.free_(), s->lc.free_(), s->rx.free_(), s->lab.free_();
   delete s;
 }
 
 // 一次性版: 临时会话 + 上传 x / g
-void run_stat(const float *xv, const uint8_t *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, const factor::stat::Holds &hd,
-              const factor::stat::Label *lab, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
+void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, int T, int A, const factor::stat::Labels &L, factor::stat::Accum *acc,
+              factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
+  assert(x.v && x.m && gm);
   const size_t n = static_cast<size_t>(T) * A;
-  DevBuf<float> x;
-  DevBuf<uint8_t> m, g;
-  x.up(xv, n), m.up(xm, n), g.up(gm, n);
-  const DevPlane xp{x.p, m.p}, gp{nullptr, g.p};
-  StatSession *s = stat_open(T, A, hd, lab, prep_ms);
-  stat_eval(s, &xp, &gp, f, rows, eval_ms);
+  DevBuf<float> xv;
+  DevBuf<uint8_t> xm, g;
+  xv.up(x.v, n), xm.up(x.m, n), g.up(gm, n);
+  const DevPlane xp{xv.p, xm.p}, gp{nullptr, g.p};
+  StatSession *s = stat_open(T, A, L, prep_ms);
+  stat_eval(s, &xp, &gp, f, acc, rows, nullptr, eval_ms);
   stat_close(s);
-  x.free_(), m.free_(), g.free_();
+  xv.free_(), xm.free_(), g.free_();
 }
 
 // Search 会话: 一块的标签 + Cmax 候选的 rx 工作区 + 分片 / 结果, open 时全部分配; load 只拷入 + 预处理
@@ -433,7 +447,7 @@ SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd
   const size_t n = static_cast<size_t>(T) * A;
   SearchSession *s = new SearchSession;
   s->T = T, s->A = A, s->Cmax = Cmax, s->hd = hd;
-  s->lab.alloc(hd.n, n);
+  s->lab.alloc(hd, n);
   const search::Work w = search::plan(Cmax, T, A, hd.n, 0); // t_lo = 0 是分片数上界
   s->rx.alloc(w.rx_elems());
   s->part.alloc(w.part_elems());
@@ -443,7 +457,11 @@ SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd
 
 void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_ms) {
   assert(s && lab);
-  const double pms = s->lab.load(lab, s->T, s->A, s->tm);
+  factor::stat::Labels L;
+  L.hd = s->hd;
+  for (int i = 0; i < s->hd.n; ++i)
+    L.l[i] = lab[i];
+  const double pms = s->lab.load(L, factor::stat::Span{s->T, s->A}, s->tm);
   if (prep_ms)
     *prep_ms = pms;
   s->loaded = true;
@@ -456,12 +474,12 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
   B.C = C;
   for (int c = 0; c < C; ++c) {
     assert(x[c] && x[c]->v && x[c]->m);
-    B.v[c] = x[c]->v, B.m[c] = x[c]->m;
+    B.x[c] = {x[c]->v, x[c]->m};
   }
   const search::Work w = search::plan(C, s->T, s->A, s->hd.n, t_lo);
   if (eval_ms)
     s->tm.begin();
-  search::eval(B, g->m, f, w, t0_abs, s->hd, s->lab.L, s->rx.p, s->part.p, s->out.p, nullptr);
+  search::eval(B, g->m, f, w, t0_abs, s->lab.L, s->rx.p, s->part.p, s->out.p, nullptr);
   if (eval_ms)
     *eval_ms = s->tm.end();
   s->out.down(out, w.out_elems()); // D2H 自带同步; Result 是 POD, 设备格式 = 宿主格式

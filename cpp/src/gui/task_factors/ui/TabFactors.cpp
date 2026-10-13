@@ -251,7 +251,9 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
     if (ImGui::SmallButton("↑"))
       ImGui::OpenPopup("wrap");
     if (ImGui::IsItemHovered())
-      tip("外面套一层: 本节点整体进新算子的第一元, 其余槽留空");
+      tip("外面套一层\n"
+          "• 本节点整体进新算子的第一元\n"
+          "• 其余槽留空");
     if (ImGui::BeginPopup("wrap")) {
       int op;
       std::string feat;
@@ -270,7 +272,10 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
         ImGui::OpenPopup("unwrap");
     }
     if (ImGui::IsItemHovered())
-      tip("去掉本层 %s: 一元直接上提; 多元弹窗选哪一元留下 (其余丢弃)", o.name);
+      tip("去掉本层 %s\n"
+          "• 一元: 直接上提\n"
+          "• 多元: 弹窗选哪一元留下, 其余丢弃",
+          o.name);
     if (ImGui::BeginPopup("unwrap")) {
       ImGui::TextDisabled("留下哪一元");
       ImGui::Separator();
@@ -299,7 +304,11 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
         n.free = static_cast<uint8_t>(f ? (n.free | bit) : (n.free & ~bit));
       ImGui::PopStyleVar();
       if (ImGui::IsItemHovered())
-        tip("勾上 = 自由参数: 表达式里写裸键名, 值由 Optimize 在搜索窗内每个持有期搜出 (写进 weights)\n• 不勾 = 固定, 按右边的值");
+        tip("自由参数开关\n"
+            "• 勾上 = 自由参数\n"
+            "    ◦ 表达式里写裸键名\n"
+            "    ◦ 值由 Optimize 在搜索窗内每个持有期搜出, 写进 weights\n"
+            "• 不勾 = 固定, 按右边的值");
       return f;
     };
     if (factor::expr::declares(o.params, "d")) {
@@ -513,14 +522,26 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• 缺 / 不合 → BROKEN",
      true},
     {Frame, "frame",
-     "口径, 由根算子定; 两口径标签都取超额 (减截面均值), 组均值沿 t 池化\n"
-     "• CS = 截面: 根 CsRank / CsNormRank / CsZ; 每 t 截面 rank 分 20 组, 任一组空该行无效, 多空对冲\n"
-     "• TS = 时序: 根 TsRankRoll 5 日; 自身分位直接分 20 组, 组可空 → long / flat",
+     "口径 (由根算子定)\n"
+     "• 共同: 标签取超额 (减截面均值), 组均值沿 t 池化\n"
+     "• CS = 截面\n"
+     "    ◦ 根 CsRank / CsNormRank / CsZ\n"
+     "    ◦ 每 t 截面 rank 分 20 组, 任一组空该行无效\n"
+     "    ◦ 多空对冲\n"
+     "• TS = 时序\n"
+     "    ◦ 根 TsRankRoll 5 日\n"
+     "    ◦ 自身分位直接分 20 组\n"
+     "    ◦ 组可空 → long / flat",
      true},
     {Status, "status",
      "评估状态\n"
-     "• BROKEN 红: 文件 / type / name_cn / 表达式 / 根非归一 / 权重不是模板的实例 / 组 id 不合 (悬停看原因; 文件不动, 手动处理)\n"
-     "• 未搜索 灰: 模板含自由参数但还没 weights (不评; 高光它点 Optimize)\n"
+     "• BROKEN 红: 悬停行看原因; 文件不动, 手动处理\n"
+     "    ◦ 文件 / type / name_cn / 表达式 不合\n"
+     "    ◦ 根非归一\n"
+     "    ◦ 权重不是模板的实例\n"
+     "    ◦ 组 id 不合\n"
+     "• 未搜索 灰: 模板含自由参数但还没 weights\n"
+     "    ◦ 不评; 高光它点 Optimize\n"
      "• ok 绿: 本轮算的\n"
      "• file 灰: stat 来自文件, 作用域一致\n"
      "• file≠scope 黄: 文件 stat 是别的 universe / 区间算的\n"
@@ -534,20 +555,29 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      true},
     {Valid, "valid%", "根平面有效格占比", true},
     {Opt, "score",
-     "选定持有期 (Hold) 的目标分数 = 毛 LS × 资金利用率 util × rIC (Search 契约【目标】, 与 Optimize 打分同一份 score_of)\n"
-     "• 只评排序能力: 不看成本, 不跨持有期比\n"
-     "• 由 stat 现算 (该 h 的 HoldStat); 悬停行看分量 (LS / util / rIC)\n"
+     "选定持有期 (Hold) 的目标分数\n"
+     "• score = 毛 LS × 资金利用率 util × rIC\n"
+     "    ◦ 与 Optimize 打分同一份 score_of (Search 契约【目标】)\n"
+     "    ◦ 只评排序能力: 不看成本, 不跨持有期比\n"
+     "• 由该 h 的 HoldStat 现算; 悬停行看分量 (LS / util / rIC)\n"
      "• 空: 无 stat / LS ≤ 0 / rIC ≤ 0",
      true},
     {Util, "util",
-     "选定持有期的资金利用率 = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1\n"
-     "• 目标 = 毛 LS × util × rIC: LS 是每成员口径, 乘 util 才是固定资金上的钱; TS 因子触发稀疏时此值小\n"
+     "选定持有期的资金利用率\n"
+     "• util = 平均每行一腿成员数 / 满仓只数, 封顶 1\n"
+     "    ◦ 满仓只数 = 池内平均有效票数 / 20\n"
+     "• 目标 = 毛 LS × util × rIC\n"
+     "    ◦ LS 是每成员口径, 乘 util 才是固定资金上的钱\n"
+     "    ◦ TS 因子触发稀疏时此值小\n"
      "• 同 score 列, 由 stat 现算",
      true},
     {Expr, "expr",
-     "规范串 = 解析后重新序列化 (算子 PascalCase, 参数 d / k / k2 显式)\n"
-     "• 多权重因子的父行 / 未搜索行 = 模板 (自由参数打裸键名); 子行 / 单权重行 = 该权重的具体串\n"
-     "• 解析不过的行显示文件原串",
+     "规范串 = 解析后重新序列化\n"
+     "• 格式: 算子 PascalCase, 参数 d / k / k2 显式\n"
+     "• 显示哪个串\n"
+     "    ◦ 多权重因子的父行 / 未搜索行: 模板 (自由参数打裸键名)\n"
+     "    ◦ 子行 / 单权重行: 该权重的具体串\n"
+     "    ◦ 解析不过的行: 文件原串",
      false},
     {Ops, "ops", "算子节点数", true},
     {Feats, "feats", "去重特征数 (输入平面数)", true},
@@ -617,7 +647,7 @@ const std::string &col_tip(int c) {
       const Metric &m = *col_metric(i);
       const GroupInfo &g = kGroupInfo[static_cast<size_t>(m.group)];
       a[static_cast<size_t>(i)] = std::string(g.name) + " · " + m.name + "\n• 说明  " + m.desc + "\n• 范围  " + m.range + "\n• 最优  " + m.best +
-                                  "\n• 组    " + g.desc + "\n• 显示  选定持有期的值, 样本 < 3 为空; 字色 = 本列跨因子渐变 (红最差 → 绿最好); 底色 = 组; 悬停行看全部持有期";
+                                  "\n• 组    " + g.desc + "\n• 显示  选定持有期的值, 样本 < 3 为空\n• 字色  本列跨因子渐变 (红最差 → 绿最好)\n• 底色  组\n• 悬停  Stat 列格子看全部持有期";
     }
     return a;
   }();
@@ -670,12 +700,14 @@ std::optional<ImVec4> hold_color(const FactorRow &r, const Metric &m, int k) {
 // 行悬停的 stat 部分 (调用方已 BeginTooltip): 头部对仗 bullet + 转置表 (行 = kMetrics 按组, 列 = 持有期), 可比指标跨持有期渐变着色
 void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   // 键列对齐到 8 格 (CJK 一字 = 2 格, 等宽字体)
-  ImGui::BulletText("来源    %s%s | 口径 %s | 标签 = 毛价格收益 (不含冲击 / 税佣; Inspect 页可选扣)", r.stat_from_file ? "文件" : "本轮",
-                    r.stat_from_file && !scope_matches(r, ctx) ? " (作用域 ≠ 当前)" : "", factor::stat::frame_name(r.frame));
+  ImGui::BulletText("来源    %s%s", r.stat_from_file ? "文件" : "本轮", r.stat_from_file && !scope_matches(r, ctx) ? " (作用域 ≠ 当前)" : "");
+  ImGui::BulletText("口径    %s", factor::stat::frame_name(r.frame));
+  ImGui::BulletText("标签    毛价格收益 (不含冲击 / 税佣; Inspect 页可选扣)");
   ImGui::BulletText("作用域  %s  %s .. %s  (%d 天 × %d 资产, T = %d)", r.scope.universe.c_str(), r.scope.start_date.c_str(), r.scope.end_date.c_str(),
                     r.scope.days, r.scope.A, r.scope.T);
-  ImGui::BulletText("算得    %s @ %s | valid %.2f%% | time %.3f ms (DAG 一遍, 与 hold 无关)", r.scope.backend.c_str(), r.scope.time.c_str(),
-                    r.valid_pct, r.eval_ms);
+  ImGui::BulletText("算得    %s @ %s", r.scope.backend.c_str(), r.scope.time.c_str());
+  ImGui::BulletText("valid   %.2f%%", r.valid_pct);
+  ImGui::BulletText("耗时    %.3f ms (DAG 一遍, 与 hold 无关)", r.eval_ms);
   ImGui::BulletText("着色    可比指标跨持有期渐变 ");
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "红 = 最差");
@@ -843,10 +875,12 @@ void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUICon
   assert(false);
 }
 
-// 整行悬停 (任一格, 含勾选框): 文件 / 操作 / 原串 / BROKEN 原因 / dup / stat. 表格行只有这一个提示函数.
+// 整行悬停 (任一格, 含勾选框): 文件 / 操作 / 原串 / BROKEN 原因 / dup; stat 对比表只在悬停 Stat 列 (mono … rAC) 时出. 表格行只有这一个提示函数.
 // 位置自己定: ImGui 的 tooltip 定位在四个方向都放不下时退化为贴鼠标右下 (大半出屏, 看着像没触发); 这里用上一帧的窗口尺寸把左上角夹回视口
 void row_tooltip(const FactorRow &r, const OptCell &oc, const FactorsUIContext &ctx, bool viewing, bool editing) {
-  static ImVec2 s_size; // 上一帧尺寸 (首帧 0 → 不夹, ImGui 的 AlwaysAutoResize 首帧本就隐藏)
+  static ImVec2 s_size;                          // 上一帧尺寸 (首帧 0 → 不夹, ImGui 的 AlwaysAutoResize 首帧本就隐藏)
+  const int hc = ImGui::TableGetHoveredColumn(); // 须在 BeginTooltip 前取 (tooltip 窗口里没有当前表)
+  const bool on_stat = hc >= 0 && hc < kNumCols && kColLayout[static_cast<size_t>(hc)].stat >= 0;
   const ImGuiViewport *vp = ImGui::GetMainViewport();
   const ImVec2 mouse = ImGui::GetMousePos();
   ImVec2 pos(mouse.x + 16.f, mouse.y + 16.f);
@@ -859,21 +893,27 @@ void row_tooltip(const FactorRow &r, const OptCell &oc, const FactorsUIContext &
   if (r.widx >= 0)
     ImGui::BulletText("权重    #%d  搜自 h %s%s", r.widx, r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "- (手填)",
                       r.tmpl == r.expr ? "" : ("  模板 " + r.tmpl).c_str());
-  ImGui::BulletText("操作    点行 → %s; 勾选 → %s", viewing ? "取消高光" : "高光给 Inspect 页", editing ? "取消编辑 (构建器内容留作模板)" : "编辑模板 (载入上方构建器)");
+  ImGui::BulletText("点行    %s", viewing ? "取消高光" : "高光给 Inspect 页");
+  ImGui::BulletText("勾选    %s", editing ? "取消编辑 (构建器内容留作模板)" : "编辑模板 (载入上方构建器)");
   if (!r.expr_raw.empty() && r.expr_raw != r.tmpl)
     ImGui::BulletText("原串    %s", r.expr_raw.c_str());
   if (!r.dup_of.empty())
     ImGui::BulletText("dup     与 %s 同一规范串", r.dup_of.c_str());
-  if (oc.hold > 0)
-    ImGui::BulletText("目标    h %s  LS %+.2f bp  util %.2f  rIC %.4f  score %.4g  (n_full %.1f; 毛 LS × util × rIC, 与 Optimize 同一份打分)",
-                      factor::stat::hold_name(oc.hold).c_str(), 1e4 * oc.ls, oc.util, oc.ric, oc.score, r.scope.n_full);
+  if (oc.hold > 0) {
+    ImGui::BulletText("目标    h %s  LS %+.2f bp  util %.2f  rIC %.4f  score %.4g", factor::stat::hold_name(oc.hold).c_str(), 1e4 * oc.ls, oc.util, oc.ric,
+                      oc.score);
+    ImGui::Indent();
+    ImGui::BulletText("score = 毛 LS × util × rIC, 与 Optimize 同一份打分");
+    ImGui::BulletText("n_full %.1f (满仓只数)", r.scope.n_full);
+    ImGui::Unindent();
+  }
   if (!r.error.empty()) {
     ImGui::Separator();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN: %s", r.error.c_str());
     ImGui::TextDisabled("文件保留, 请手动修复或删除");
   }
   ImGui::PopTextWrapPos(); // 表格格子不能带折行位 (绝对 x, 右侧列会被折成零宽)
-  if (r.has_stat) {
+  if (r.has_stat && on_stat) {
     ImGui::Separator();
     stat_tooltip(r, ctx);
   }
@@ -929,10 +969,16 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   }
   if (ImGui::IsItemHovered()) {
     const char *g = factor::gpu::device_name();
-    tip("两端同走一张共享 DAG: 跨因子公共子式只算一次, 顺序走节点\n"
-        "• CPU: 每节点切满所有核 (CS / Point / Expand 按 t 切, Roll / Ema 按资产列切块), 与单线程逐位一致; Stat 全核\n"
+    tip("评估后端\n"
+        "• 两端同走一张共享 DAG\n"
+        "    ◦ 跨因子公共子式只算一次\n"
+        "    ◦ 顺序走节点\n"
+        "• CPU\n"
+        "    ◦ 每节点切满所有核: CS / Point / Expand 按 t 切, Roll / Ema 按资产列切块\n"
+        "    ◦ 与单线程逐位一致\n"
+        "    ◦ Stat 全核\n"
         "• GPU: %s",
-        g ? (std::string(g) + "; 输入上传一次, 中间量常驻显存, Stat 走常驻会话").c_str() : "off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
+        g ? (std::string(g) + "\n    ◦ 输入上传一次\n    ◦ 中间量常驻显存\n    ◦ Stat 走常驻会话").c_str() : "off\n    ◦ 无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON");
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
@@ -943,9 +989,12 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    tip("表格 Stat / score / util 列显示哪个持有期; 多权重因子的父行 = 该持有期下 score 最高的权重\n"
-        "• 不影响 Run (一次算全部持有期) 和 Optimize (搜索窗 %s ~ T+%d 内每个持有期各搜一遍)\n"
-        "• 悬停表格行看全部持有期",
+    tip("表格 Stat / score / util 列显示哪个持有期\n"
+        "• 多权重因子的父行 = 该持有期下 score 最高的权重\n"
+        "• 不影响\n"
+        "    ◦ Run: 一次算全部持有期\n"
+        "    ◦ Optimize: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
+        "• 悬停 Stat 列格子看全部持有期",
         factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen);
   ImGui::SameLine();
 
@@ -957,8 +1006,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   if (!can_run)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip(ctx.axis_ready ? "评估全目录: 扫描 → 读特征库 → 逐权重 eval → Stat\n"
-                         "• 结果回写各因子文件 weights[i].stat; 模板含自由参数而无 weights 的 (未搜索) 不评, 先 Optimize"
+    tip(ctx.axis_ready ? "评估全目录\n"
+                         "• 流程: 扫描 → 读特征库 → 逐权重 eval → Stat\n"
+                         "• 结果回写各因子文件 weights[i].stat\n"
+                         "• 未搜索 (模板含自由参数而无 weights) 不评, 先 Optimize"
                        : "资产轴未就绪, 读不了特征库\n"
                          "• 先在 Database 页扫描");
   ImGui::SameLine();
@@ -1040,14 +1091,32 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       if (!view_row)
         tip("先在表格里点一行高光 (与 Inspect 同一对象)");
       else if (!tmpl_ok)
-        tip("%s 的模板没有自由参数: 勾选编辑, 把要搜的参数勾成自由 (裸键名) 再 Save", view_row->file.c_str());
+        tip("%s 的模板没有自由参数\n"
+            "• 做法: 勾选编辑 → 把要搜的参数勾成自由 (裸键名) → Save",
+            view_row->file.c_str());
       else
-        tip("搜 %s 模板里的自由参数 (裸键名 d / k / k2), 搜索窗 %s ~ T+%d 内每个持有期各搜一遍, 目标 = 毛 LS × 资金利用率 util × rIC (只评排序能力: 不看成本, 不跨持有期比)\n"
-            "• util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1: LS 是每成员口径, 乘 util 才是固定资金上的钱; 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
-            "• 粗网格 (中心 = 有界槽中点 / 0; 步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 每个互不相邻的局部峰各开一支 (不限支数) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
-            "• 各支最优里 score ≥ %.0f%%·max 为高原集, 再按两两截面相关 (抽 %d 行) 挑 ≤ %d 个持仓重合最少的 (不保证含 max)\n"
-            "• 数据按天分块流式过 (窗内标签一次装全, 因子平面只算一遍), 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
-            "• 全部持有期的终选整体替换该文件 weights (旧的全丢) 并自动 Run 重算",
+        tip("搜 %s 模板里的自由参数 (裸键名 d / k / k2)\n"
+            "• 范围: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
+            "• 目标 = 毛 LS × 资金利用率 util × rIC\n"
+            "    ◦ 只评排序能力: 不看成本, 不跨持有期比\n"
+            "    ◦ util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1\n"
+            "    ◦ LS 是每成员口径, 乘 util 才是固定资金上的钱\n"
+            "    ◦ 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
+            "• 搜索\n"
+            "    ◦ 粗网格\n"
+            "        ▪ 中心 = 有界槽中点 / 0\n"
+            "        ▪ 步长按每层 ≤ %d 点的预算反推\n"
+            "        ▪ 阈值类参数以其输入的 σ 为单位\n"
+            "    ◦ 分支: 每个互不相邻的局部峰各开一支 (不限支数)\n"
+            "    ◦ 细化: 每支围 top-1 逐层减半, 一层增益 < %.0f%% 停\n"
+            "• 终选\n"
+            "    ◦ 高原集 = 各支最优里 score ≥ %.0f%%·max\n"
+            "    ◦ 按两两截面相关 (抽 %d 行) 挑 ≤ %d 个持仓重合最少的 (不保证含 max)\n"
+            "• 计算\n"
+            "    ◦ 数据按天分块流式过, 块大小按内存 / 显存定\n"
+            "    ◦ 窗内标签一次装全, 因子平面只算一遍\n"
+            "    ◦ 候选合成共享 DAG, 公共前缀只算一次\n"
+            "• 写回: 全部持有期的终选整体替换该文件 weights (旧的全丢), 并自动 Run 重算",
             view_row->file.c_str(), factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen,
             factor::search::grid::kLayerMax, 100.0 * factor::search::grid::kMinGain, 100.0 * (1.0 - factor::search::kPlateau), factor::search::kCorrRows,
             factor::search::kPicks);
@@ -1186,11 +1255,24 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "2. Add:");
   if (ImGui::IsItemHovered())
     tip("从外到内构建表达式\n"
-        "• 根: 必须是归一算子 —— CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=1275, 5 日) (时序口径)\n"
-        "• 子槽: 缩进里选算子或特征; 参数 d / k / k2 手填, 或勾前面的小框 = 自由参数 (表达式里写裸键名, 由 Optimize 搜)\n"
-        "• 下拉: 可打字过滤 (算子名 / 中文名 / 特征 code); GROUP 域的组 id 槽只列整数列算子 + 特征\n"
-        "• 改结构不动别处: 下拉换算子保留子槽 (叶自动进第一元); 行末 ↑ = 外面加一层, ✕ = 去掉本层留一元\n"
-        "• 模式: 勾选表格首列 → 编辑 (模板载入到这里, Save 覆盖 / 删除; 改了模板该文件的 weights 全丢); 取消勾选 → 添加, 内容留作模板");
+        "• 根: 必须是归一算子\n"
+        "    ◦ 截面口径: CsRank / CsNormRank / CsZ\n"
+        "    ◦ 时序口径: TsRankRoll(d=1275, 5 日)\n"
+        "• 子槽: 缩进里选算子或特征\n"
+        "    ◦ 参数 d / k / k2 手填\n"
+        "    ◦ 或勾前面的小框 = 自由参数 (表达式里写裸键名, 由 Optimize 搜)\n"
+        "• 下拉\n"
+        "    ◦ 可打字过滤: 算子名 / 中文名 / 特征 code\n"
+        "    ◦ GROUP 域的组 id 槽只列整数列算子 + 特征\n"
+        "• 改结构不动别处\n"
+        "    ◦ 下拉换算子: 保留子槽 (叶自动进第一元)\n"
+        "    ◦ 行末 ↑: 外面加一层\n"
+        "    ◦ 行末 ✕: 去掉本层, 留一元\n"
+        "• 模式\n"
+        "    ◦ 编辑: 勾选表格首列\n"
+        "        ▪ 模板载入到这里, Save 覆盖 / 删除\n"
+        "        ▪ 改了模板, 该文件的 weights 全丢\n"
+        "    ◦ 添加: 取消勾选, 内容留作模板");
   ImGui::SameLine();
   if (edit_row) {
     if (ImGui::SmallButton("取消勾选")) {
@@ -1237,7 +1319,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextDisabled("[%s%s]", factor::stat::frame_name(frame), is_tmpl ? ", 模板" : "");
     if (ImGui::IsItemHovered())
       tip("%s%s", frame == factor::stat::Frame::CS ? "截面口径: 根是截面归一算子\n• 每 t 截面 rank → 20 组, 标签超额" : "时序口径: 根 TsRankRoll(5 日)\n• 自身分位直接分 20 组, 组可空, 标签超额",
-          is_tmpl ? "\n• 模板: 含自由参数, 写入后是\"未搜索\", 高光它点 Optimize 搜出 weights" : "");
+          is_tmpl ? "\n• 模板: 含自由参数\n    ◦ 写入后是\"未搜索\"\n    ◦ 高光它点 Optimize 搜出 weights" : "");
   }
 
   // 两个名字: 非空且不合法 → 红字 (InputText 会改 buf, push/pop 必须用同一个判断结果)
@@ -1403,9 +1485,17 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::SameLine();
   ImGui::Text("%d 因子 / %d 权重 (%d BROKEN)", static_cast<int>(groups.size()), n_weights, broken);
   if (ImGui::IsItemHovered())
-    tip("一行一权重; 有权重的因子折成一行 (= Hold 下 score 最高的权重, 名字前 ▸ 展开看全部权重, 子行标搜索时的持有期)\n"
-        "• 父行 / 未搜索行: 勾选编辑模板, 点行高光 → Optimize / Inspect; 子行: 点行高光 → Inspect, 悬停看该权重全部持有期\n"
-        "• 排序按父行 (代表权重) 的值; 展开的子行在父行下按同一键排");
+    tip("因子表: 一行一权重\n"
+        "• 有权重的因子折成一行\n"
+        "    ◦ 折叠行 = Hold 下 score 最高的权重\n"
+        "    ◦ 名字前 ▸ 展开看全部权重, 子行标搜索时的持有期\n"
+        "• 父行 / 未搜索行\n"
+        "    ◦ 勾选: 编辑模板\n"
+        "    ◦ 点行: 高光 → Optimize / Inspect\n"
+        "• 子行\n"
+        "    ◦ 点行: 高光 → Inspect\n"
+        "    ◦ 悬停 Stat 列: 看该权重全部持有期\n"
+        "• 排序: 按父行 (代表权重) 的值; 展开的子行在父行下按同一键排");
   ImGui::SameLine();
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", factor::stat::hold_name(cur_hold).c_str());
 
@@ -1611,7 +1701,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             }
             ImGui::PopStyleVar();
             if (ImGui::IsItemHovered())
-              tip("%s 有 %d 个权重; 这行 = h %s 下 score 最高的 #%d (%s)", r.file.c_str(), n_kids, factor::stat::hold_name(cur_hold).c_str(), r.widx,
+              tip("%s 有 %d 个权重\n"
+                  "• 这行 = h %s 下 score 最高的 #%d (%s)\n"
+                  "• 点箭头展开 / 折叠",
+                  r.file.c_str(), n_kids, factor::stat::hold_name(cur_hold).c_str(), r.widx,
                   r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "手填");
             ImGui::SameLine(0, 2);
           }

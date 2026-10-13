@@ -159,13 +159,7 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
       if (!factor::gpu::available())
         continue;
       sc::Result gpu;
-      gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
-      std::vector<factor::stat::Label> lab(static_cast<size_t>(d.hd.n));
-      for (int i = 0; i < d.hd.n; ++i)
-        lab[static_cast<size_t>(i)] = sc::label_of(d.lab[static_cast<size_t>(i)], nullptr);
-      factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), d.g.m.data(), fr, T, A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms,
-                            &gpu.eval_ms);
-      sc::summarize_all(gpu, d);
+      sc::run_gpu(d, gpu);
       const Tol tol = sc::tol_of(pr);
       const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
       const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);

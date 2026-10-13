@@ -48,8 +48,8 @@ void run_cs(const char *, const float *, const uint8_t *, const float *, const u
             const uint8_t *, const uint8_t *, float *, uint8_t *, int, int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
-void run_stat(const float *, const uint8_t *, const uint8_t *, factor::stat::Frame, int, int, const factor::stat::Holds &,
-              const factor::stat::Label *, factor::stat::Row *, double *, double *) {
+void run_stat(factor::stat::Plane, const uint8_t *, factor::stat::Frame, int, int, const factor::stat::Labels &, factor::stat::Accum *,
+              factor::stat::Row *, double *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 
@@ -67,11 +67,12 @@ void run_cs_dev(Session *, const char *, const DevPlane *, const DevPlane *, con
                 int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
-StatSession *stat_open(int, int, const factor::stat::Holds &, const factor::stat::Label *, double *) {
+StatSession *stat_open(int, int, const factor::stat::Labels &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
   return nullptr;
 }
-void stat_eval(StatSession *, const DevPlane *, const DevPlane *, factor::stat::Frame, factor::stat::Row *, double *, uint16_t *) {
+void stat_eval(StatSession *, const DevPlane *, const DevPlane *, factor::stat::Frame, factor::stat::Accum *, factor::stat::Row *, uint8_t *,
+               double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 void stat_close(StatSession *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }

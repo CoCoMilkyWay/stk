@@ -802,8 +802,8 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
                        uni.candidates.size(), data.asset.items.size());
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s 通过筛选的标的数 / 总数\n"
-                        "状态取自当日 L1 落盘列 (ST / 上市 / 行业);\n"
-                        "当日无有效分钟的标的不列入 (无盘口可看)",
+                        "• 状态取自当日 L1 落盘列 (ST / 上市 / 行业)\n"
+                        "• 当日无有效分钟的标的不列入 (无盘口可看)",
                         slot.date.c_str());
   } else {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "loading...");
@@ -854,7 +854,9 @@ static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
       pos = std::clamp(pos + (wheel > 0.0f ? 1 : -1), 0, n - 1);
       changed = true;
     }
-    ImGui::SetTooltip("拖动切标的 (候选序: 市场 → 代码), 滚轮 ±1");
+    ImGui::SetTooltip("切标的\n"
+                      "• 拖动: 按候选序 (市场 → 代码)\n"
+                      "• 滚轮: ±1");
   }
   if (changed)
     ui.selected_asset_idx = static_cast<int>(uni.candidates[static_cast<size_t>(pos)]);
@@ -879,7 +881,9 @@ static void RenderStatusBar(const OrderFlow &of) {
     ImGui::TextColored(streaming ? ImVec4(1.0f, 0.8f, 0.0f, 1.0f) : ImVec4(0.3f, 0.8f, 0.3f, 1.0f),
                        "[L1: %zu/%zu days, %zu pts]", pub_days, k.dates.size(), pub_points);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("K线流式加载 (从前往后逐日): 已发布日数 / 总日数, 有效分钟数");
+      ImGui::SetTooltip("K线流式加载 (从前往后逐日)\n"
+                        "• 已发布日数 / 总日数\n"
+                        "• 有效分钟数");
   } else {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L1: rebuilding]");
   }
@@ -900,7 +904,10 @@ static void RenderStatusBar(const OrderFlow &of) {
     ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu snaps / %zu rects / %zu orders]",
                        dp.ticks.size(), dp.merged.rect_count, dp.order_count);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("秒级盘口快照数 (LOB 逐笔重放) / 热力图合并矩形数 / 当日逐笔条数");
+      ImGui::SetTooltip("L0 当日盘口重放\n"
+                        "• 秒级盘口快照数 (LOB 逐笔重放)\n"
+                        "• 热力图合并矩形数\n"
+                        "• 当日逐笔条数");
   } else if (dp.asset_idx != SIZE_MAX) {
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "[L0: no data]");
   }
@@ -924,17 +931,18 @@ static void RenderHeatmapControls(OrderFlow &of) {
     if (ImGui::IsItemHovered()) {
       ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Always);
       ImGui::BeginTooltip();
-      ImGui::Text("Log10(金额) 下限阈值 (换日/换标的自动取当日初值)");
+      ImGui::Text("Log10(金额) 下限阈值");
       ImGui::Separator();
-      ImGui::Text("3.0 = 1千元 (显示所有 >= 1千的档位)");
-      ImGui::Text("4.0 = 1万元");
-      ImGui::Text("5.0 = 10万元");
-      ImGui::Text("6.0 = 100万元");
-      ImGui::Text("7.0 = 1000万元 (仅显示大额档位)");
+      ImGui::Text("• 3.0 = 1千元 (显示所有 >= 1千的档位)");
+      ImGui::Text("• 4.0 = 1万元");
+      ImGui::Text("• 5.0 = 10万元");
+      ImGui::Text("• 6.0 = 100万元");
+      ImGui::Text("• 7.0 = 1000万元 (仅显示大额档位)");
       ImGui::Separator();
-      ImGui::TextWrapped("范围: [阈值, 1000万] 映射到 [透明, 完全实色]");
-      ImGui::TextWrapped("自动初值: 按当日全簿 (档·秒) 加权金额分位取, "
-                         "使着色面积占有量面积恒定 → 各日色块浓度观感一致");
+      ImGui::TextWrapped("• 着色: [阈值, 1000万] 映射到 [透明, 完全实色]");
+      ImGui::TextWrapped("• 自动初值: 换日 / 换标的自动取当日初值");
+      ImGui::TextWrapped("    ◦ 按当日全簿 (档·秒) 加权金额分位取");
+      ImGui::TextWrapped("    ◦ 使着色面积占有量面积恒定 → 各日色块浓度观感一致");
       ImGui::EndTooltip();
     }
   }
