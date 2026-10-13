@@ -952,7 +952,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     action = 1;
   if (!can_run)
     ImGui::EndDisabled();
-  if (ImGui::IsItemHovered())
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     tip(ctx.axis_ready ? "评估全目录: 扫描 → 读特征库 → 逐权重 eval → Stat\n"
                          "• 结果回写各因子文件 weights[i].stat; 模板含自由参数而无 weights 的 (未搜索) 不评, 先 Optimize"
                        : "资产轴未就绪, 读不了特征库\n"
@@ -1032,7 +1032,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     }
     if (!can_opt)
       ImGui::EndDisabled();
-    if (ImGui::IsItemHovered()) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       if (!view_row)
         tip("先在表格里点一行高光 (与 Inspect 同一对象)");
       else if (!tmpl_ok)
@@ -1366,7 +1366,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       oc.hold = cur_hold;
       oc.ls = sc.ls, oc.util = sc.util, oc.ric = sc.ric, oc.score = sc.score;
     }
-  // 按文件分组 (rows 同文件连续): 代表行 = 当前 h 下 score 最高的有效权重 (无分 → 首个有效 → 首行); ≥ 2 权重的文件可展开
+  // 按文件分组 (rows 同文件连续): 代表行 = 当前 h 下 score 最高的有效权重 (无分 → 首个有效 → 首行); 有权重的文件可展开 (文件级行 widx −1 不可)
   struct Group {
     std::vector<int> kids; // s_rows 下标, 文件内按 widx
     int rep = -1;
@@ -1399,8 +1399,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::SameLine();
   ImGui::Text("%d 因子 / %d 权重 (%d BROKEN)", static_cast<int>(groups.size()), n_weights, broken);
   if (ImGui::IsItemHovered())
-    tip("一行一权重; 多权重因子折成一行 (= Hold 下 score 最高的权重, 名字前 ▸ 展开看全部权重, 子行标搜索时的持有期)\n"
-        "• 父行 / 单权重行: 勾选编辑模板, 点行高光 → Optimize / Inspect; 子行: 点行高光 → Inspect, 悬停看该权重全部持有期\n"
+    tip("一行一权重; 有权重的因子折成一行 (= Hold 下 score 最高的权重, 名字前 ▸ 展开看全部权重, 子行标搜索时的持有期)\n"
+        "• 父行 / 未搜索行: 勾选编辑模板, 点行高光 → Optimize / Inspect; 子行: 点行高光 → Inspect, 悬停看该权重全部持有期\n"
         "• 排序按父行 (代表权重) 的值; 展开的子行在父行下按同一键排");
   ImGui::SameLine();
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", factor::stat::hold_name(cur_hold).c_str());
@@ -1452,8 +1452,9 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     // 显示序: 组按代表行排, 展开组的子行紧随其后按同一键排
     std::vector<int> gorder(groups.size());
     std::iota(gorder.begin(), gorder.end(), 0);
+    const auto expandable = [&](const Group &g) { return s_rows[static_cast<size_t>(g.kids.front())].widx >= 0; };
     const auto is_expanded = [&](const Group &g) {
-      return g.kids.size() >= 2 && std::find(ui.expanded.begin(), ui.expanded.end(), s_rows[static_cast<size_t>(g.kids.front())].file) != ui.expanded.end();
+      return expandable(g) && std::find(ui.expanded.begin(), ui.expanded.end(), s_rows[static_cast<size_t>(g.kids.front())].file) != ui.expanded.end();
     };
     std::vector<std::vector<int>> korder(groups.size());
     for (size_t gi = 0; gi < groups.size(); ++gi)
@@ -1524,7 +1525,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     for (int gi : gorder) {
       const Group &g = groups[static_cast<size_t>(gi)];
       const int nk = static_cast<int>(g.kids.size());
-      order.push_back({g.rep, nk >= 2 ? RowKind::Parent : RowKind::Flat, nk});
+      order.push_back({g.rep, expandable(g) ? RowKind::Parent : RowKind::Flat, nk});
       for (int k : korder[static_cast<size_t>(gi)])
         order.push_back({k, RowKind::Child, nk});
     }

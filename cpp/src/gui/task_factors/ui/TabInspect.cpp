@@ -9,12 +9,14 @@
 #include "implot_internal.h" // BeginItem / FitPoint (自绘蜡烛)
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace GUI::Factors {
 
@@ -35,6 +37,27 @@ struct CompactLegend {
   ~CompactLegend() { ImPlot::PopStyleVar(3); }
 };
 
+// 可手动缩放的视野: 目标 [lo, hi] (数据 / 图例决定) 变了才强设一次, 否则留着用户的缩放 / 平移. 每 (图, 轴) 记上次目标; BeginPlot 后 Setup 阶段调
+void follow_limits(ImAxis ax, double lo, double hi) {
+  static std::unordered_map<ImGuiID, ImPlotRange> last;
+  assert(GImPlot->CurrentPlot);
+  ImPlotRange &r = last[ImHashData(&ax, sizeof(ax), GImPlot->CurrentPlot->ID)];
+  const bool changed = r.Min != lo || r.Max != hi;
+  r = ImPlotRange(lo, hi);
+  ImPlot::SetupAxisLimits(ax, lo, hi, changed ? ImPlotCond_Always : ImPlotCond_Once);
+}
+
+// AutoFit 的可缩放替身: 数据键 key 变了才让下一张图 (title) 对 axes 各 fit 一次; BeginPlot 前调
+void fit_on_change(const char *title, ImGuiID key, std::initializer_list<ImAxis> axes) {
+  static std::unordered_map<ImGuiID, ImGuiID> last;
+  const auto [it, fresh] = last.try_emplace(ImGui::GetID(title), key);
+  if (!fresh && it->second == key)
+    return;
+  it->second = key;
+  for (const ImAxis ax : axes)
+    ImPlot::SetNextAxisToFit(ax);
+}
+
 // 横轴刻度: 交易日下标 → YYMMDD (user_data = InspectDerived::dates)
 int date_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<std::string> *>(ud);
@@ -50,8 +73,8 @@ int date_formatter(double v, char *buf, int size, void *ud) {
 constexpr ImVec4 kColBottom(0.00f, 0.20f, 0.70f, 1.f), kColTop(0.85f, 0.15f, 0.10f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
 constexpr ImVec4 kColNeutral(0.50f, 0.50f, 0.52f, 1.f);                   // 中段
 constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);                         // 光标 (左上图交易日 / 右上 K 线 / 标的轴), 对仗 OrderFlow 的锚
-constexpr ImVec4 kColIndex(1.00f, 0.85f, 0.10f, 0.85f);                   // 右上 K 线叠加的 universe 指数线 (视野首根重锚)
-constexpr ImVec4 kColRef(0.20f, 0.90f, 0.90f, 0.75f);                     // 右上 K 线叠加的滚动重锚指数线
+constexpr ImVec4 kColIndex(0.55f, 0.47f, 0.15f, 0.40f);                   // 右上 K 线叠加的 universe 指数线 (视野首根重锚; 背景, 深淡)
+constexpr ImVec4 kColRef(0.15f, 0.45f, 0.48f, 0.40f);                     // 右上 K 线叠加的滚动重锚指数线 (背景, 深淡)
 constexpr float kTailLayerWeight[kTails] = {1.0f, 0.75f, 0.5f};           // 尾部分层线宽 (组线 1.2): 越极端越细
 constexpr float kTailLsWeight[kTails] = {2.0f, 1.5f, 1.0f};               // 尾部 LS 线宽 (LS 2.5): 同上
 constexpr float kTailFillAlpha[kTails] = {0.08f, 0.15f, 0.24f};           // 相邻尾部分层线间色带 alpha: 越极端越重, 但不盖线
@@ -154,7 +177,7 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
   ys.push_back(y.back());
 }
 
-// 毛口径一级 Row[T] (选定 hold) → 日级序列 + IC 分布. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
+// 毛口径一级 Row[T] (选定 hold) → 日级序列 + IC 分布 / 时序. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
 // 再按回测长度折成等效年化 (× kDaysPerYear / days, 单位 %): 末点 = 年化收益, 不同区间长度 / 持有期可比;
 // rIC 分布 = ok 行的 ric 逐行进 KLL (与 HoldStat::ric 的 mean/sd/skew/kurt 同一组样本).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
@@ -171,6 +194,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   assert(res.tails.size() == res.rows.size());
   const TailRow *tr = res.tails_at(sel);
   d.hs = res.hold[static_cast<size_t>(sel)];
+  d.xd = res.xdist;
   d.days = days;
   d.dates = res.dates;
   assert(res.uni_index.size() == static_cast<size_t>(T));
@@ -186,7 +210,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     d.tail_bot_cum[j].assign(static_cast<size_t>(days) + 1, 0.f);
     d.tail_ls_cum[j].assign(static_cast<size_t>(days) + 1, 0.f);
   }
-  std::vector<float> ics;
+  std::vector<float> &ics = d.ic_series;
   ics.reserve(static_cast<size_t>(T));
   double gc[K] = {}, lc = 0.0, ttc[kTails] = {}, tbc[kTails] = {}, tlc[kTails] = {};
   factor::stat::MomAcc tls[kTails]; // 尾部 LS 沿 ok 行的矩 → Sharpe (与 Accum::finish 的 LS 同式)
@@ -288,7 +312,7 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, int cursor_day)
     return;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines,
                     ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
-  ImPlot::SetupAxisLimits(ImAxis_X1, yr.y_lo, yr.y_hi, ImPlotCond_Always);
+  follow_limits(ImAxis_X1, yr.y_lo, yr.y_hi);
   const double zero = 0.0;
   ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
   ImPlot::PlotInfLines("##zero", &zero, 1);
@@ -349,8 +373,8 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       ImPlot::SetupAxes(nullptr, absolute ? "年化 Σ ret / h  (%)" : "年化 Σ excess / h  (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
       ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
       ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<std::string> *>(&d.dates));
-      ImPlot::SetupAxisLimits(ImAxis_X1, 0, std::max(1, d.days), ImPlotCond_Always);
-      ImPlot::SetupAxisLimits(ImAxis_Y1, yr.y_lo, yr.y_hi, ImPlotCond_Always);
+      follow_limits(ImAxis_X1, 0, std::max(1, d.days));
+      follow_limits(ImAxis_Y1, yr.y_lo, yr.y_hi);
       ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
       ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.2f);
       for (int k = 0; k < K; ++k) {
@@ -658,32 +682,6 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
       ImPlot::PopPlotClipRect();
     }
   }
-  if (n > 0 && ImPlot::BeginItem("##ohlc", ImPlotItemFlags_NoLegend)) {
-    if (ImPlot::FitThisFrame())
-      for (int i = 0; i < n; ++i) {
-        ImPlot::FitPoint(ImPlotPoint(xs[i], ks.low[static_cast<size_t>(i)]));
-        ImPlot::FitPoint(ImPlotPoint(xs[i], ks.high[static_cast<size_t>(i)]));
-      }
-    const ImPlotRect lim = ImPlot::GetPlotLimits();
-    const int i0 = static_cast<int>(std::lower_bound(xs, xs + n, lim.X.Min - 1.0) - xs), i1 = static_cast<int>(std::upper_bound(xs, xs + n, lim.X.Max + 1.0) - xs);
-    for (int i = i0; i < i1; ++i) {
-      const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
-      const double o = ks.open[u], h = ks.high[u], l = ks.low[u], c = ks.close[u];
-      const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f; // 池内秩优先, 池外段用不看池的秩 (淡)
-      const ImU32 col = rp >= 0.f ? r_color(rp) : r_color(t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f, false);
-      dl->AddLine(ImPlot::PlotToPixels(xs[i], l), ImPlot::PlotToPixels(xs[i], h), col);
-      ImVec2 a = ImPlot::PlotToPixels(xs[i] - 0.5, o), b = ImPlot::PlotToPixels(xs[i] + 0.5, c);
-      if (std::abs(b.y - a.y) < 1.f) { // 身体至少 1px
-        const float mid = (a.y + b.y) * 0.5f;
-        a.y = mid - 0.5f, b.y = mid + 0.5f;
-      }
-      if (c >= o)
-        dl->AddRect(a, b, col); // 阳线空心
-      else
-        dl->AddRectFilled(a, b, col); // 阴线实心
-    }
-    ImPlot::EndItem();
-  }
   double uk = 0.0; // 指数重锚系数 (价格 / 指数点); 0 = 视野内无蜡烛, 不画
   if (n > 0) {
     const ImPlotRect lim = ImPlot::GetPlotLimits();
@@ -720,6 +718,32 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
     const int tb = std::clamp(static_cast<int>(std::ceil(lim.X.Max)) + 1, ta, ui.ref_t1);
     ImPlot::SetNextLineStyle(kColRef, 1.5f);
     ImPlot::PlotLine("指数 滚动重锚 (1d)", ui.ref_line.data() + ta, tb - ta, 1.0, static_cast<double>(ta), ImPlotItemFlags_NoFit);
+  }
+  if (n > 0 && ImPlot::BeginItem("##ohlc", ImPlotItemFlags_NoLegend)) { // 指数线之后画, 蜡烛压在指数线上
+    if (ImPlot::FitThisFrame())
+      for (int i = 0; i < n; ++i) {
+        ImPlot::FitPoint(ImPlotPoint(xs[i], ks.low[static_cast<size_t>(i)]));
+        ImPlot::FitPoint(ImPlotPoint(xs[i], ks.high[static_cast<size_t>(i)]));
+      }
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const int i0 = static_cast<int>(std::lower_bound(xs, xs + n, lim.X.Min - 1.0) - xs), i1 = static_cast<int>(std::upper_bound(xs, xs + n, lim.X.Max + 1.0) - xs);
+    for (int i = i0; i < i1; ++i) {
+      const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
+      const double o = ks.open[u], h = ks.high[u], l = ks.low[u], c = ks.close[u];
+      const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f; // 池内秩优先, 池外段用不看池的秩 (淡)
+      const ImU32 col = rp >= 0.f ? r_color(rp) : r_color(t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f, false);
+      dl->AddLine(ImPlot::PlotToPixels(xs[i], l), ImPlot::PlotToPixels(xs[i], h), col);
+      ImVec2 a = ImPlot::PlotToPixels(xs[i] - 0.5, o), b = ImPlot::PlotToPixels(xs[i] + 0.5, c);
+      if (std::abs(b.y - a.y) < 1.f) { // 身体至少 1px
+        const float mid = (a.y + b.y) * 0.5f;
+        a.y = mid - 0.5f, b.y = mid + 0.5f;
+      }
+      if (c >= o)
+        dl->AddRect(a, b, col); // 阳线空心
+      else
+        dl->AddRectFilled(a, b, col); // 阴线实心
+    }
+    ImPlot::EndItem();
   }
   { // 共享光标 (与左上图同一个 cursor_day, 同色同交互): 锚在日边界, 拖动吸附整日, 双击落点; x 轴标光标日期
     double cx = static_cast<double>(cursor_day) * S;
@@ -764,49 +788,191 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
   ImPlot::EndPlot();
 }
 
-// 左下: IC 分布 — 逐行 rank IC 当随机变量, KLL 导出的 PDF (阴影 + 线) + 0 线 + 均值线 + mean ± std (竖线, 其间阴影换色); 标题的矩与顶部 stat 行同一组样本
-void plot_ic(const InspectDerived &d, const ImVec2 &size) {
-  char title[160];
-  std::snprintf(title, sizeof(title), "rIC 分布 (逐行 rank IC)  mean %+.4f  sd %.4f  skew %+.2f  kurt %+.2f  pos %.2f  n=%d###ic", d.hs.ric.mean,
-                d.hs.ric.sd, d.hs.ric.skew, d.hs.ric.kurt, d.hs.ric.pos, d.hs.n);
-  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
+// PDF 的光滑类高斯重拟合 (惩罚对数密度): 等距格上 min_z Σ w_i (ln f_i − z_i)² + λ Σ (Δ³z)², w_i = f_i (密度加权; f = 0 的格不进数据项),
+// g = exp(z), 按 f 的面积归一. Δ³ 的零空间 = 二次多项式 → λ → ∞ 即高斯 (对数二次); 有限 λ 保留偏度 / 峰度, 只抹锯齿.
+// λ 自适应分布尺度: 等效平滑宽 ≈ (λ / f)^(1/6) 格, 峰处取 kFitWidthSd · sd → λ = f_pk · (kFitWidthSd · sd / dx)^6 (与单位 / 格距无关).
+// 法方程 diag(w) + λ DᵀD 是半带宽 3 的对称正定带状阵; double (大 λ 时 float 条件数不够) 带状 Cholesky, O(n)
+constexpr double kFitWidthSd = 0.35;
+void smooth_fit(const analysis::AggPdf &p, std::vector<float> &g) {
+  constexpr int P = 3;
+  constexpr double c[P + 1] = {-1.0, 3.0, -3.0, 1.0};
+  const int n = static_cast<int>(p.n_pts);
+  const float *f = p.y.data();
+  assert(n > P);
+  const double dx = static_cast<double>(p.x[1]) - p.x[0], f_pk = *std::max_element(f, f + n), sd = p.sd();
+  assert(dx > 0.0 && f_pk > 0.0 && sd > 0.0);
+  const double lambda = f_pk * std::pow(kFitWidthSd * sd / dx, 6.0);
+  static std::vector<std::array<double, P + 1>> L; // L[i][k] = A(i, i − k) → 原地分解为 L(i, i − k)
+  static std::vector<double> z;
+  L.assign(static_cast<size_t>(n), {});
+  z.assign(static_cast<size_t>(n), 0.0);
+  double area = 0.0;
+  for (int i = 0; i < n; ++i) {
+    const double w = f[i];
+    L[static_cast<size_t>(i)][0] = w;
+    z[static_cast<size_t>(i)] = w > 0.0 ? w * std::log(w) : 0.0;
+    area += w;
+  }
+  for (int r = 0; r + P < n; ++r) // D 第 r 行 = c 落在列 r..r+P: (DᵀD)(r+a, r+e) += c_a c_e
+    for (int a = 0; a <= P; ++a)
+      for (int e = 0; e <= a; ++e)
+        L[static_cast<size_t>(r + a)][static_cast<size_t>(a - e)] += lambda * c[a] * c[e];
+  const auto at = [&](int i, int j) -> double & { return L[static_cast<size_t>(i)][static_cast<size_t>(i - j)]; }; // L(i, j), 0 ≤ i − j ≤ P
+  for (int i = 0; i < n; ++i)
+    for (int j = std::max(0, i - P); j <= i; ++j) {
+      double s = at(i, j);
+      for (int m = std::max(0, i - P); m < j; ++m)
+        s -= at(i, m) * at(j, m);
+      if (j < i) {
+        at(i, j) = s / at(j, j);
+      } else {
+        assert(s > 0.0);
+        at(i, i) = std::sqrt(s);
+      }
+    }
+  for (int i = 0; i < n; ++i) { // L y = b
+    double s = z[static_cast<size_t>(i)];
+    for (int m = std::max(0, i - P); m < i; ++m)
+      s -= at(i, m) * z[static_cast<size_t>(m)];
+    z[static_cast<size_t>(i)] = s / at(i, i);
+  }
+  for (int i = n - 1; i >= 0; --i) { // Lᵀ z = y
+    double s = z[static_cast<size_t>(i)];
+    for (int m = i + 1; m <= std::min(n - 1, i + P); ++m)
+      s -= at(m, i) * z[static_cast<size_t>(m)];
+    z[static_cast<size_t>(i)] = s / at(i, i);
+  }
+  double sum = 0.0;
+  for (double &v : z)
+    sum += (v = std::exp(v));
+  assert(sum > 0.0);
+  g.resize(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i)
+    g[static_cast<size_t>(i)] = static_cast<float>(z[static_cast<size_t>(i)] * area / sum);
+}
+
+// 左下两半 (rIC | 根输入) 同一张分布图, 元素与图例序对仗: PDF (KLL, 阴影 + 线) / PDF 光滑拟合 (smooth_fit) / mean / 时序 (背景) / 分档 (仅根输入).
+//   时序: x = 时间铺满当前 x 轴, y = 值 [min, max] → [0, PDF 峰高], 淡灰压在最底, NoFit (不动坐标自适应)
+//   分档: 组边界竖切 PDF, 每段组色填充 (决策边界); 图例一项, 一键开关
+//   图例序 = ImPlot 本帧首次登记序, 与画序解耦: 先 PlotDummy 按图例序登记, 再按画序 (时序 → 填充 → 线) 真画
+//   x: 给 x_fixed 则固定, 否则贴 PDF
+struct DistView {
+  const char *title, *x_label, *series_label;
+  const analysis::AggPdf &pdf;
+  const std::vector<float> &series; // 时序 (行序)
+  double mean;
+  const ImPlotRange *x_fixed = nullptr;
+  const XDist *bands = nullptr; // 非空 = 分档 (边界 / 组占比 / 组均)
+};
+void plot_dist(const DistView &v, const ImVec2 &size) {
+  const ImGuiID key = ImHashData(v.pdf.y.data(), v.pdf.y.size() * sizeof(float), ImHashStr(v.title)); // 标题带矩 + PDF 本身
+  if (v.x_fixed)
+    fit_on_change(v.title, key, {ImAxis_Y1});
+  else
+    fit_on_change(v.title, key, {ImAxis_X1, ImAxis_Y1});
+  if (!ImPlot::BeginPlot(v.title, size, ImPlotFlags_NoMenus))
     return;
   CompactLegend cl;
-  ImPlot::SetupAxes("IC", "density", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes(v.x_label, "density", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
-  ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, 0.5, ImPlotCond_Always); // 固定 x 范围, 0 居中: 换持有期 / 因子时分布位置可直接比
+  if (v.x_fixed)
+    follow_limits(ImAxis_X1, v.x_fixed->Min, v.x_fixed->Max);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
-  const analysis::AggPdf &p = d.ic_pdf;
+  const analysis::AggPdf &p = v.pdf;
   const int np = static_cast<int>(p.n_pts);
-  const double zero = 0.0, mean = d.hs.ric.mean, sd[2] = {mean - d.hs.ric.sd, mean + d.hs.ric.sd};
-  const ImVec4 col_mean(1.0f, 0.75f, 0.3f, 1.0f);
-  if (np >= 2) {
-    const ImVec4 col(0.4f, 0.7f, 1.0f, 1.0f);
-    ImPlot::SetNextFillStyle(col, 0.35f);
-    ImPlot::PlotShaded("PDF", p.x.data(), p.y.data(), np, 0.0);
-    // mean ± std 之间的阴影换成均值线的色 (x 升序, 取落在区间内的点段)
-    const int i0 = static_cast<int>(std::lower_bound(p.x.data(), p.x.data() + np, static_cast<float>(sd[0])) - p.x.data());
-    const int i1 = static_cast<int>(std::upper_bound(p.x.data(), p.x.data() + np, static_cast<float>(sd[1])) - p.x.data());
-    if (i1 - i0 >= 2) {
-      ImPlot::SetNextFillStyle(col_mean, 0.35f);
-      ImPlot::PlotShaded("±std", p.x.data() + i0, p.y.data() + i0, i1 - i0, 0.0);
+  const char *const kPdf = "PDF", *const kFit = "PDF 光滑拟合", *const kMean = "mean", *const kBands = "分档 G1~G20";
+  const ImVec4 col_pdf(0.4f, 0.7f, 1.0f, 1.0f), col_fit(1.0f, 0.4f, 0.7f, 0.9f), col_mean(1.0f, 0.75f, 0.3f, 1.0f), col_ser(0.6f, 0.6f, 0.6f, 0.3f);
+  const auto legend = [](const char *id, const ImVec4 &c) {
+    ImPlot::SetNextLineStyle(c);
+    ImPlot::PlotDummy(id);
+  };
+  legend(kPdf, col_pdf);
+  legend(kFit, col_fit);
+  legend(kMean, col_mean);
+  legend(v.series_label, col_ser);
+  if (v.bands)
+    legend(kBands, group_color(K - 1));
+  if (np > 3) {
+    const float *px = p.x.data(), *py = p.y.data();
+    const float y_pk = *std::max_element(py, py + np);
+    const int ns = static_cast<int>(v.series.size());
+    const auto [s_lo, s_hi] = std::minmax_element(v.series.begin(), v.series.end());
+    if (ns >= 2 && *s_hi > *s_lo) {
+      const ImPlotRange xr = ImPlot::GetPlotLimits().X;
+      static std::vector<float> tx, ty;
+      tx.resize(static_cast<size_t>(ns)), ty.resize(static_cast<size_t>(ns));
+      for (int i = 0; i < ns; ++i) {
+        tx[static_cast<size_t>(i)] = static_cast<float>(xr.Min + (xr.Max - xr.Min) * i / (ns - 1));
+        ty[static_cast<size_t>(i)] = y_pk * (v.series[static_cast<size_t>(i)] - *s_lo) / (*s_hi - *s_lo);
+      }
+      ImPlot::SetNextLineStyle(col_ser, 1.0f);
+      ImPlot::PlotLine(v.series_label, tx.data(), ty.data(), ns, ImPlotItemFlags_NoFit);
     }
-    ImPlot::SetNextLineStyle(col, 2.0f);
-    ImPlot::PlotLine("PDF", p.x.data(), p.y.data(), np);
+    ImPlot::SetNextFillStyle(col_pdf, 0.35f);
+    ImPlot::PlotShaded(kPdf, px, py, np, 0.0);
+    if (v.bands) {
+      const auto y_at = [&](float x) { // PDF 线性插值
+        const int j = std::clamp(static_cast<int>(std::lower_bound(px, px + np, x) - px), 1, np - 1);
+        const float t = std::clamp((x - px[j - 1]) / (px[j] - px[j - 1]), 0.f, 1.f);
+        return py[j - 1] + t * (py[j] - py[j - 1]);
+      };
+      static std::vector<float> sx, sy;
+      for (int k = 0; k < K; ++k) {
+        const float lo = std::max(px[0], k ? v.bands->bound[k - 1] : px[0]), hi = std::min(px[np - 1], k + 1 < K ? v.bands->bound[k] : px[np - 1]);
+        if (!(hi > lo))
+          continue;
+        sx.assign(1, lo), sy.assign(1, y_at(lo));
+        for (int i = 0; i < np; ++i)
+          if (px[i] > lo && px[i] < hi)
+            sx.push_back(px[i]), sy.push_back(py[i]);
+        sx.push_back(hi), sy.push_back(y_at(hi));
+        ImPlot::SetNextFillStyle(group_color(k), 0.6f);
+        ImPlot::PlotShaded(kBands, sx.data(), sy.data(), static_cast<int>(sx.size()), 0.0);
+      }
+    }
+    ImPlot::SetNextLineStyle(col_pdf, 2.0f);
+    ImPlot::PlotLine(kPdf, px, py, np);
+    static std::vector<float> fit;
+    smooth_fit(p, fit);
+    ImPlot::SetNextLineStyle(col_fit, 1.5f);
+    ImPlot::PlotLine(kFit, px, fit.data(), np);
   }
+  const double zero = 0.0;
   ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
   ImPlot::PlotInfLines("##zero", &zero, 1);
   ImPlot::SetNextLineStyle(col_mean, 1.5f);
-  ImPlot::PlotInfLines("mean", &mean, 1);
-  ImPlot::SetNextLineStyle(ImVec4(col_mean.x, col_mean.y, col_mean.z, 0.6f), 1.0f);
-  ImPlot::PlotInfLines("±std", sd, 2);
-  if (np >= 2 && ImPlot::IsPlotHovered()) {
-    const ImPlotPoint mp = ImPlot::GetPlotMousePos();
-    const float *lo = std::lower_bound(p.x.data(), p.x.data() + np, static_cast<float>(mp.x));
-    const int i = std::clamp(static_cast<int>(lo - p.x.data()), 0, np - 1);
-    ImGui::SetTooltip("IC %+.4f  density %.3f", p.x[static_cast<size_t>(i)], p.y[static_cast<size_t>(i)]);
+  ImPlot::PlotInfLines(kMean, &v.mean, 1);
+  if (np > 3 && ImPlot::IsPlotHovered()) {
+    const float x = static_cast<float>(ImPlot::GetPlotMousePos().x);
+    const int i = std::clamp(static_cast<int>(std::lower_bound(p.x.data(), p.x.data() + np, x) - p.x.data()), 0, np - 1);
+    if (!v.bands) {
+      ImGui::SetTooltip("%s %+.4g  density %.3f", v.x_label, x, p.y[static_cast<size_t>(i)]);
+    } else {
+      const XDist &b = *v.bands;
+      const int k = static_cast<int>(std::upper_bound(b.bound, b.bound + K - 1, x) - b.bound);
+      ImGui::SetTooltip("%s %+.4g  density %.3f\nG%d  [%+.4g, %+.4g]  占全体 %.1f%%  组均 %+.4g", v.x_label, x, p.y[static_cast<size_t>(i)], k + 1,
+                        k ? b.bound[k - 1] : b.lo, k + 1 < K ? b.bound[k] : b.hi, 100.f * b.share[k], b.gmean[k]);
+    }
   }
   ImPlot::EndPlot();
+}
+
+// 左下左半: rIC 分布 — 逐行 rank IC 当随机变量 (标题的矩与顶部 stat 行同一组样本); x 固定 ±0.5, 0 居中: 换持有期 / 因子时分布位置可直接比
+void plot_ic(const InspectDerived &d, const ImVec2 &size) {
+  static const ImPlotRange kX(-0.5, 0.5);
+  char title[160];
+  std::snprintf(title, sizeof(title), "rIC 分布 (逐行 rank IC)  mean %+.4f  sd %.4f  skew %+.2f  kurt %+.2f  pos %.2f  n=%d###ic", d.hs.ric.mean,
+                d.hs.ric.sd, d.hs.ric.skew, d.hs.ric.kurt, d.hs.ric.pos, d.hs.n);
+  plot_dist({title, "IC", "rIC(t)", d.ic_pdf, d.ic_series, d.hs.ric.mean, &kX, nullptr}, size);
+}
+
+// 左下右半: 根输入分布 — 池内有效格的根输入值 (标题的矩 = 全体, 不截尾); PDF 已截尾 → x 贴 PDF 即按主体缩放; 时序 = 逐行截面均值; 组边界竖切分档
+void plot_xdist(const InspectDerived &d, const ImVec2 &size) {
+  const XDist &x = d.xd;
+  char title[160];
+  std::snprintf(title, sizeof(title), "根输入分布 (PDF 截 0.4%%~99.6%%)  mean %+.4g  sd %.4g  skew %+.2f  kurt %+.2f  n=%llu###xdist", x.mean, x.sd,
+                x.skew, x.kurt, static_cast<unsigned long long>(x.n));
+  plot_dist({title, "x", "X(t)", x.pdf, x.series, x.mean, nullptr, &x}, size);
 }
 
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
@@ -821,6 +987,11 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   assert(n_hold >= 1 && n_cost >= 0 && sell_impact >= 0.0);
   char title[128];
   std::snprintf(title, sizeof(title), "期限结构: 年化池化均值超额 / 持有期  (%s)###term", source);
+  {
+    ImGuiID key = ImHashData(hs, static_cast<size_t>(n_hold) * sizeof(*hs), ImHashStr(source)); // 毛二级 + 档数 + 冲击口径
+    key = ImHashData(&n_cost, sizeof(n_cost), key);
+    fit_on_change(title, ImHashData(&sell_impact, sizeof(sell_impact), key), {ImAxis_Y1});
+  }
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
   CompactLegend cl;
@@ -847,11 +1018,11 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     return c == 0 ? gross - ca.long_cost(sell_impact) : c == 1 ? gross - ca.short_cost(sell_impact)
                                                                : factor::stat::net_ls_period(h, ca, sell_impact);
   };
-  ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
-  ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -100.0, INFINITY); // 年化 < −100% 无意义 (高冲击档净线会砸穿): 低于的点不参与 fit, 轴底最低到 −100, 线出界即裁
+  ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -100.0, 200.0); // 年化 < −100% (高冲击档净线会砸穿) / > 200% 无意义: 轴夹在 [−100, 200], 线出界即裁
   ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), n_hold, labels.data());
-  ImPlot::SetupAxisLimits(ImAxis_X1, -0.6, n_hold - 0.4, ImPlotCond_Always);
+  follow_limits(ImAxis_X1, -0.6, n_hold - 0.4);
   ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
   const char *items[3] = {"L (G20 long)", "S (G1 long)", "LS"};
   const ImVec4 cols[3] = {kColTop, kColBottom, kColLS};
@@ -1385,9 +1556,12 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     empty_plot("标的 K 线###kline", cell, wait_hint);
   }
 
-  if (shown && ui.der.valid)
-    plot_ic(ui.der, cell);
-  else
+  if (shown && ui.der.valid) { // 左下一格分两半: rIC 分布 | 根输入分布
+    const ImVec2 half(std::max(50.f, (cell.x - sp) * 0.5f), cell.y);
+    plot_ic(ui.der, half);
+    ImGui::SameLine();
+    plot_xdist(ui.der, half);
+  } else
     empty_plot("IC 分布###ic", cell, wait_hint);
   ImGui::SameLine();
   // 右下 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.costs; 两者都是毛 + 全部冲击档, 同一份 CostTier)

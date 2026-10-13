@@ -91,6 +91,11 @@ def main():
     print("Cleanup...")
     _cleanup_processes()
 
+    print("Formatting...")
+    result = subprocess.run(["python", "py/app/format_cpp.py"])
+    if result.returncode != 0:
+        sys.exit(1)
+
     print("Building...")
     _build(
         APP_NAME, ENABLE_TSAN, ENABLE_DEBUG, ENABLE_PROFILE, ENABLE_ASSERT, ENABLE_CUDA

@@ -28,7 +28,7 @@
 
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope
-#include "shared/Analysis.hpp"                          // ReadScope
+#include "shared/Analysis.hpp"                          // ReadScope / AggPdf
 
 #include <atomic>
 #include <condition_variable>
@@ -66,6 +66,19 @@ struct TailRow {
   uint16_t top_cnt[kTails] = {}, bot_cnt[kTails] = {}; // 尾部样本数
 };
 
+// 根输入值分布 (Inspect 专属, 左下右半图; 与左半 rIC 分布对仗, 同一套 KLL → AggPdf): 样本 = 池内有效格 (rx 有效 ∧ 根输入有效), 组号 = grp_of(rx)
+// (与 Stat 同一组). 与持有期无关
+struct XDist {
+  analysis::AggPdf pdf;                               // 截尾 [lo, hi] 内样本的 PDF (255 点全落在主体上, 重尾不压扁); 只画图, 矩不用它
+  uint64_t n = 0;                                     // 全体样本数 (不截尾, 下同)
+  float mean = 0.f, sd = 0.f, skew = 0.f, kurt = 0.f; // 全体矩
+  float lo = 0.f, hi = 0.f;                           // 截尾范围 = 全体 ICDF 首末内点 (≈ 0.4% / 99.6% 分位)
+  float bound[factor::stat::kGroups - 1] = {};        // G_k | G_{k+1} 边界 = 逐行 (G_k 最大值 + G_{k+1} 最小值) / 2 的行平均 (TS 口径组间交叠, 仅示意)
+  float share[factor::stat::kGroups] = {};            // 组占全体比例
+  float gmean[factor::stat::kGroups] = {};            // 组均值
+  std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
+};
+
 struct InspectResult {
   std::string key; // = InspectRequest::key(); 空 = 无结果
   std::string file, expr;
@@ -82,6 +95,7 @@ struct InspectResult {
   std::vector<factor::stat::Row> rows;      // 一级 [hd.n][T], 只毛口径
   std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径
   std::vector<TailRow> tails;               // 一级尾部 [hd.n][T], 与 rows 同布局, 只毛口径
+  XDist xdist;                              // 根输入值分布 (全体 + 各组, 左下右半图)
   float valid_pct = 0.f;
   double eval_ms = 0.0;
   std::string error; // 非空 = 没算成 (特征叶值域越界等), 其余字段空

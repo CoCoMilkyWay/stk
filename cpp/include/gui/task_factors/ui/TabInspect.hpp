@@ -30,7 +30,8 @@
 //        (默认隐藏, 点图例显; 带着全区间历史, 看不出近期)
 //        再叠加滚动重锚指数线 (青, 默认显), L = 1 天: line_t = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))),
 //        P = 个股 close 前值填充到分钟格, I = 指数, S = 10 分钟; = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移. UI 现算, 不发请求
-//   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
+//   左下 两半对仗 (同一张 plot_dist): 左 rIC 分布 = 逐行 rank IC (ok 行) → KLL → PDF (与顶部 stat 同一组样本); 右 根输入分布 = 池内有效格的根输入值
+//        → KLL → 截尾 PDF. 各带 PDF 光滑拟合 (λ 自适应 sd) / mean / 时序背景 (rIC(t) | 截面均值 X(t)); 右半另按组边界竖切分档 (G1~G20 组色)
 //   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部冲击档) 一次画全, 图例可点切, 默认只显 LS. 口径 = 全 universe 全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
 //        净档 <amt>w = 毛 − 该腿该持有期的均摊换手成本 (CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_row: 只有顶 / 底组
@@ -71,6 +72,8 @@ struct InspectDerived {
   float ls_lo = 0.f, ls_hi = 0.f;                         // 顶底 LS
   float tail_ls_lo[kTails] = {}, tail_ls_hi[kTails] = {}; // 每级尾部 LS
   analysis::AggPdf ic_pdf;                                // 逐行 rank IC (ok 行) 的 KLL PDF 成品 (n_pts = 0 → 样本不足不画)
+  std::vector<float> ic_series;                           // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
+  XDist xd;                                               // = InspectResult::xdist (左下右半, 与持有期无关)
   factor::stat::HoldStat hs;                              // 选定 hold 的二级
   bool valid = false;
 };
