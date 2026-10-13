@@ -3,10 +3,10 @@
 // =============================================================================
 // Search 评估算子的 GPU 后端 (CUDA, sm_75 / RTX 2060 6GB / 336 GB·s⁻¹; nvcc)
 // =============================================================================
-//   契约 factor/Search/Contract.hpp + Stat/Contract.hpp; 行核 Stat/Dev.cuh (rank_x / warp_row, 与 Stat GPU 同一组). 本文件只加:
+//   契约 factor/Search/Contract.hpp + Stat/Contract.hpp; 行核 Stat/Dev.cuh (rank_x / row_stat, 与 Stat GPU 同一组). 本文件只加:
 //   【stat_batch】grid (⌈C/kWarps⌉, NB, H) × kWB, **一 warp 一候选**, 一块管 kRows 行 × 一个持有期 (grid.z):
-//     每行一次 warp_row (全 lane 拿到 Row) → **直接折进 warp 私有的分片累加器** (lane 0 攒 Accum 的标量, lane k < 20 攒组 k 的
-//     Σgrp / Σcnt; 运算与 Accum::add 逐字同) → 块末写分片 Slice[c][h][tb] (= 契约的 Accum 原样). 不落 Row.
+//     每行一次 row_stat (全 lane 拿到 Row) → **直接折进 warp 私有的分片累加器** (契约 Accum 的两半: lane 0 攒 Accum::Head,
+//     lane k < 20 攒 Accum::Grp[k]; 调的就是契约的 add) → 块末写分片 Slice[c][h][tb] (= 契约的 Accum 原样). 不落 Row.
 //     同 block 的 kWarps 个候选同一 (t, h): ry / lv / sv 行一次进 L1 共用, 标签流量被候选数摊薄. 核内没有块级同步, 没有原子.
 //   【reduce_slices】每 (c, h) 一线程, 沿 tb 升序 merge (契约 merge 原样; 固定序 → GPU 自身逐次确定) → 直接写 Result[c] (设备),
 //     主机整块拷回, 无转换.
@@ -39,7 +39,6 @@ using factor::stat::kGroups;
 using factor::stat::kMaxA;
 using factor::stat::kMaxHold;
 using factor::stat::Label;
-using factor::stat::MomAcc;
 using factor::stat::Row;
 
 inline constexpr int kRows = 128; // stat_batch 每 block 的行数 (分片粒度; NB = ⌈(T − t_lo)/kRows⌉)
@@ -63,49 +62,34 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   const int tb = blockIdx.y, t_beg = t_lo + tb * kRows, t_end = min(T, t_beg + kRows);
   const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;
 
-  // warp 私有分片 (= Accum::add 的字段拆到 lane: lane 0 标量, lane q < kGroups 组 q)
-  MomAcc aric, arac;
-  int anlpos = 0;
-  double asls = 0.0, asls2 = 0.0, asmk = 0.0, asmk2 = 0.0, aslm = 0.0;
-  double asg = 0.0;
-  long long asc = 0;
+  // warp 私有分片 (= 契约 Accum 的两半: lane 0 攒 head, lane q < kGroups 攒 grp = 组 q)
+  Accum::Head head;
+  Accum::Grp grp;
 
   for (int t = t_beg; t < t_end; ++t) {
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
-    const Row r = dev::warp_row(f, xr, xl, lb.at(base), A, factor::stat::tail_masked(t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
-    // ---- 折进分片 (与 Accum::add 逐字同) ----
+    const Row r = dev::row_stat(f, xr, xl, lb.at(base), A, factor::stat::tail_masked(t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
+    if (lane == 0)
+      head.add(r);
     if (r.ok) {
       float gq = 0.f; // lane q 取 grp[q] / cnt[q] (编译期展开的 select, Row 留在寄存器)
-      int cq = 0;
+      unsigned cq = 0;
 #pragma unroll
       for (int q = 0; q < kGroups; ++q)
         if (q == lane)
           gq = r.grp[q], cq = r.cnt[q];
-      asg += gq;
-      asc += cq;
-      if (lane == 0) {
-        aric.add(r.ric);
-        anlpos += r.ls > 0.f;
-        const double ls = r.ls, mk = r.mkt;
-        asls += ls, asls2 += ls * ls, asmk += mk, asmk2 += mk * mk, aslm += ls * mk;
-      }
+      grp.add(gq, cq);
     }
-    if (r.ok_rac && lane == 0)
-      arac.add(r.rac);
   }
 
   // ---- 写分片 (每字段恰由一个 lane 写) ----
   Slice &P = part[(static_cast<size_t>(c) * hd.n + hi) * NB + tb];
-  if (lane < kGroups) {
-    P.acc.sg[lane] = asg;
-    P.acc.sc[lane] = asc;
-  }
-  if (lane == 0) {
-    P.acc.ric = aric, P.acc.rac = arac, P.acc.nlpos = anlpos;
-    P.acc.sls = asls, P.acc.sls2 = asls2, P.acc.smk = asmk, P.acc.smk2 = asmk2, P.acc.slm = aslm;
-  }
+  if (lane < kGroups)
+    P.acc.grp[lane] = grp;
+  if (lane == 0)
+    P.acc.head = head;
 }
 
 // reduce_slices: 每 (c, h) 一线程, 沿 tb 升序 merge → out[c].acc[h]

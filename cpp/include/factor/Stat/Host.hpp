@@ -4,13 +4,14 @@
 // Stat 行核的宿主版 (CPU; 契约 factor/Stat/Contract.hpp): 一行的 rank / 一 (t, hold) 的 Row
 // =============================================================================
 //   Stat/Cpu.hpp 与 Search/Cpu.hpp 两个 CPU 算子共用, 与 Stat/Dev.cuh 对仗 (同一组行核, 一边宿主一边设备). 单线程, 无流程 / 无分配.
-//     rank_row    精确并列均秩: 有效格 → 保序键 → LSD 基数排序 (位宽按 n 自适应: n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟;
-//                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone
-//     rank_x_row  因子一行 (只看池内 g ∧ xm 的格): CS 排序 / TS 直接量化 —— 口径分叉只在这里
-//     rank_y_row  做多标签一行 (fp16 位) → ry. 与因子无关, 常驻期算一次
-//     row_stat    一 (t, hold) 完整行 = rac_row (给了 lag 行才算) + label_row (非段末尾部才算); 公式收尾走契约的 finish_row.
-//                 label_row 一遍 A 轴: 整数五和 / 标签浮点和 / 分组和, branchless select
-//     cost_row    一 (t, hold) 行的换手成本 (契约 cost_cell 逐格) → CostAcc. Run (stat.costs) / Inspect 期限结构净线共用, 不进 Row
+//     KeyX / KeyY 取键器 (与 Dev.cuh 同名): 因子一行 (只看池内 g ∧ m 的格) / 做多标签一行 (fp16 位) → 保序键 / kNoKey
+//     rank_row    精确并列均秩: key(a) → LSD 基数排序 (位宽按 n 自适应: n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟;
+//                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone. 标签行 = rank_row(KeyY)
+//     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里
+//     row_stat    一 (t, hold) 完整行 = rac_row (给了 lag 行才算) + label_row (非段末尾部才算); 整数五和走契约 pair_add, 收尾 finish_row.
+//                 label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和, branchless select
+//     cost_row    一行 t 的换手成本, H 个持有期 × C 个金额档一遍 A 轴 (契约 cost_leg / cost_entrant 逐格) → CostAcc[C][H].
+//                 Run (stat.costs) / Inspect 期限结构净线共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
@@ -27,20 +28,38 @@ namespace factor::cpu::stat {
 
 using factor::stat::Cost;
 using factor::stat::CostAcc;
+using factor::stat::CostLeg;
 using factor::stat::Frame;
 using factor::stat::kGroups;
+using factor::stat::kLegs;
+using factor::stat::kLong;
 using factor::stat::kMaxA;
 using factor::stat::kNoKey;
 using factor::stat::kRankNone;
+using factor::stat::kShort;
+using factor::stat::kSums;
 using factor::stat::Label;
+using factor::stat::LegSum;
 using factor::stat::Row;
-using factor::stat::Side;
 
 inline float h2f(uint16_t b) {
   _Float16 h;
   std::memcpy(&h, &b, sizeof(h));
   return static_cast<float>(h);
 }
+
+// ---- 取键器: 格 a (指针已偏到行首) → 保序键 / kNoKey ----
+struct KeyX { // 因子一行, 只看池内 g ∧ m 的格 (契约【截面池 g】)
+  const float *v;
+  const uint8_t *m, *g;
+  bool on(int a) const { return (m[a] & g[a]) != 0; }
+  unsigned key(int a) const { return on(a) ? factor::stat::ord(v[a]) : kNoKey; }
+};
+struct KeyY { // 做多标签一行 (fp16 位)
+  const uint16_t *v;
+  const uint8_t *m;
+  unsigned key(int a) const { return m[a] ? factor::stat::ord(h2f(v[a])) : kNoKey; }
+};
 
 // 每线程排序暂存 (2 × A × 8B + 桶计数), 跨行 / 跨因子复用
 inline constexpr int kRadixMaxBits = 11;
@@ -54,13 +73,13 @@ struct Scratch {
   }
 };
 
-// 一行的精确并列均秩: key(a) 给保序键或 kNoKey; out[a] = r16 / kRankNone
+// 一行的精确并列均秩: key.key(a) 给保序键或 kNoKey; out[a] = r16 / kRankNone
 template <class Key>
 inline void rank_row(const Key &key, int A, uint16_t *out, Scratch &sc) {
   assert(sc.a.size() >= static_cast<size_t>(A));
   int n = 0;
   for (int a = 0; a < A; ++a) {
-    const unsigned k = key(a);
+    const unsigned k = key.key(a);
     sc.a[static_cast<size_t>(n)] = (static_cast<uint64_t>(k) << 16) | static_cast<uint64_t>(a);
     n += k != kNoKey;
   }
@@ -99,85 +118,73 @@ inline void rank_row(const Key &key, int A, uint16_t *out, Scratch &sc) {
   }
 }
 
-// 因子一行 (口径 f, 只看池内 g ∧ xm 的格; 契约【截面池 g】) → r16
-inline void rank_x_row(const float *xv, const uint8_t *xm, const uint8_t *g, Frame f, int A, uint16_t *out, Scratch &sc) {
+// 因子一行 (口径 f) → r16
+inline void rank_x_row(const KeyX &key, Frame f, int A, uint16_t *out, Scratch &sc) {
   if (f == Frame::CS) {
-    rank_row([&](int a) { return (xm[a] & g[a]) ? factor::stat::ord(xv[a]) : kNoKey; }, A, out, sc);
+    rank_row(key, A, out, sc);
     return;
   }
   for (int a = 0; a < A; ++a)
-    out[a] = (xm[a] & g[a]) ? factor::stat::r16_quant(xv[a]) : kRankNone;
-}
-
-// 做多标签一行 (fp16 位 + 有效位) → r16
-inline void rank_y_row(const uint16_t *lv, const uint8_t *m, int A, uint16_t *out, Scratch &sc) {
-  rank_row([&](int a) { return m[a] ? factor::stat::ord(h2f(lv[a])) : kNoKey; }, A, out, sc);
+    out[a] = key.on(a) ? factor::stat::r16_quant(key.v[a]) : kRankNone;
 }
 
 // rAC: rx = 本行 r16, rlag = t−h 行 r16 → r.rac / r.ok_rac
 inline void rac_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
-  using ull = unsigned long long;
-  ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-  for (int a = 0; a < A; ++a) {
-    const ull x = rx[a], y = rlag[a];
-    const bool ok = rx[a] != kRankNone && rlag[a] != kRankNone;
-    n += ok;
-    sx += ok ? x : 0;
-    sy += ok ? y : 0;
-    sxx += ok ? x * x : 0;
-    syy += ok ? y * y : 0;
-    sxy += ok ? x * y : 0;
-  }
+  unsigned long long s[kSums] = {};
+  for (int a = 0; a < A; ++a)
+    factor::stat::pair_add(s, rx[a], rlag[a], rx[a] != kRankNone && rlag[a] != kRankNone);
   bool ok = false;
-  r.rac = factor::stat::pearson_int(n, sx, sy, sxx, syy, sxy, ok);
+  r.rac = factor::stat::pearson_int(s, ok);
   r.ok_rac = ok ? 1u : 0u;
 }
 
-// 换手成本 (契约【换手成本】): rx = 本行 r16, rlag = t−h 行 r16 (必有), c 已偏到行首 → 攒进 acc (顶 / 底组计数, 新进者累建仓冲击)
-inline void cost_row(const uint16_t *rx, const uint16_t *rlag, const Cost &c, int A, CostAcc &acc) {
-  ++acc.rows;
+// 换手成本 (契约【换手成本】): rx = 本行 r16; rlag[i] = t−h_i 行 r16 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首
+//   → acc[k·H + i] (腿计数, 新进者累建仓冲击). 腿归属只看 rx, 一格算一次; 新进与否只看 (rlag[i], 腿), 每 h 算一次
+inline void cost_row(const uint16_t *rx, const uint16_t *const *rlag, int H, const Cost *c, int C, int A, CostAcc *acc) {
+  for (int i = 0; i < H; ++i)
+    if (rlag[i])
+      for (int k = 0; k < C; ++k)
+        ++acc[k * H + i].rows;
   for (int a = 0; a < A; ++a) {
-    bool ent = false;
-    const int leg = factor::stat::cost_cell(rx[a], rlag[a], c.m[a] != 0, ent);
-    if (leg > 0) {
-      ++acc.n_hi;
-      if (ent)
-        ++acc.e_hi, acc.buy_hi += static_cast<double>(h2f(c.buy[a]));
-    } else if (leg < 0) {
-      ++acc.n_lo;
-      if (ent)
-        ++acc.e_lo, acc.sell_lo += static_cast<double>(h2f(c.sell[a]));
+    const int l = factor::stat::cost_leg(rx[a]);
+    if (l < 0)
+      continue;
+    for (int i = 0; i < H; ++i) {
+      if (!rlag[i])
+        continue;
+      const bool ent = factor::stat::cost_entrant(rlag[i][a], l);
+      for (int k = 0; k < C; ++k) {
+        if (!c[k].m[a])
+          continue;
+        CostLeg &g = acc[k * H + i].leg[l];
+        ++g.n;
+        if (ent)
+          ++g.e, g.imp += static_cast<double>(h2f(c[k].imp[l][a]));
+      }
     }
   }
 }
 
 // 标签侧: rx = 本行 r16, lb 已偏到行首 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
 inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &r) {
-  using ull = unsigned long long;
-  ull n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-  double smk = 0.0, ssv = 0.0, gs[kGroups] = {};
+  unsigned long long s[kSums] = {};
+  double sm[kLegs] = {}, gs[kGroups] = {};
   int gc[kGroups] = {};
-  double sv_bot = 0.0; // 底组的 Σ sv (lv 侧与计数就是 gs / gc)
+  double sv_bot = 0.0; // 空腿 (底组) 的 Σsv (多腿的 Σlv 与两腿计数就是 gs / gc)
   for (int a = 0; a < A; ++a) {
-    const ull x = rx[a], y = lb.ry[a];
     const bool ok = rx[a] != kRankNone && lb.ry[a] != kRankNone;
-    n += ok;
-    sx += ok ? x : 0;
-    sy += ok ? y : 0;
-    sxx += ok ? x * x : 0;
-    syy += ok ? y * y : 0;
-    sxy += ok ? x * y : 0;
-    const float yl = h2f(lb.lv[a]), ys = h2f(lb.sv[a]);
-    smk += ok ? yl : 0.f;
-    ssv += ok ? ys : 0.f;
+    factor::stat::pair_add(s, rx[a], lb.ry[a], ok);
+    const float y[kLegs] = {h2f(lb.v[kLong][a]), h2f(lb.v[kShort][a])};
+    for (int l = 0; l < kLegs; ++l)
+      sm[l] += ok ? y[l] : 0.f;
     const int g = ok ? factor::stat::grp_of(rx[a]) : 0;
-    gs[g] += ok ? yl : 0.f;
+    gs[g] += ok ? y[kLong] : 0.f;
     gc[g] += ok;
-    sv_bot += (ok && g == 0) ? ys : 0.f;
+    sv_bot += (ok && g == factor::stat::leg_group(kShort)) ? y[kShort] : 0.f;
   }
-  constexpr int kt = kGroups - 1;
-  const Side top{static_cast<double>(gc[kt]), gs[kt], 0.0}, bot{static_cast<double>(gc[0]), gs[0], sv_bot};
-  factor::stat::finish_row(f, n, sx, sy, sxx, syy, sxy, smk, ssv, gs, gc, top, bot, r);
+  constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
+  const LegSum leg[kLegs] = {{static_cast<double>(gc[gl]), gs[gl]}, {static_cast<double>(gc[gb]), sv_bot}};
+  factor::stat::finish_row(f, s, sm, gs, gc, leg, r);
 }
 
 // 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; tail = 段末尾部 (tail_masked)

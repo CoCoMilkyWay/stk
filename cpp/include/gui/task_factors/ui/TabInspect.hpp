@@ -34,8 +34,9 @@
 //        → KLL → 截尾 PDF. 各带 PDF 光滑拟合 (λ 自适应 sd) / mean / 时序背景 (rIC(t) | 截面均值 X(t)); 右半另按组边界竖切分档 (G1~G20 组色)
 //   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部冲击档) 一次画全, 图例可点切, 默认只显 LS. 口径 = 全 universe 全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
-//        净档 <amt>w = 毛 − 该腿该持有期的均摊换手成本 (CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_row: 只有顶 / 底组
-//        新进者 (t−h 不在该组) 付 lb_cost_{buy,sell}_<amt>w + Config::sell_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
+//        净档 <amt>w = 毛 − leg_sign(腿) · 该腿该持有期的均摊换手成本 (L 线下移 / S 线按做多超额画, 空腿付成本 → 上移; LS = net_ls_period.
+//        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_rows: 只有两腿的组的新进者 (t−h 不在该组) 付 lb_cost_{buy,sell}_<amt>w
+//        + Config::sell_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
 //        Inspect 算过用算的, 没算过用 Factors 表里 (stat: 毛 + 各档成本, 同一份 CostTier) 的, 所以进页即有
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
 //   即开算, 不等切页; 缓存命中只补特征); Compute 按钮 = 弃缓存整体重读.
@@ -54,27 +55,28 @@
 
 namespace GUI::Factors {
 
+// 左上的线表. 分层线: [0, kGroups) = 20 组 (Row::grp), layer_tail(腿, j) = 该腿组内第 j 级尾部 (TailRow::sum[腿][j]).
+// LS 线: [0] = 顶底 LS (Row::ls), 1 + j = 第 j 级尾部 LS (TailRow::ls[j]). 簇 i 与 LS 线 i 同号: 簇 0 = 20 组, 簇 1 + j = 第 j 级尾部 (两腿)
+inline constexpr int kLayerLines = factor::stat::kGroups + factor::stat::kLegs * kTails;
+inline constexpr int kLsLines = 1 + kTails;
+inline constexpr int layer_tail(int l, int j) { return factor::stat::kGroups + l * kTails + j; }
+
 // 从 result 派生的日级序列 (UI 线程持锁算一次, 选项变才重算)
 struct InspectDerived {
   int days = 0;
-  std::vector<std::string> dates;                    // [days] 轴刻度用
-  std::vector<float> uni_index;                      // [T] = InspectResult::uni_index (右上 K 线叠加)
-  std::vector<float> x_day;                          // [days + 1] 0..days (累计线横轴, 日末)
-  std::vector<float> grp_cum[factor::stat::kGroups]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)
-  std::vector<float> ls_cum;                         // [days + 1], 同上 (顶底多空)
-  std::vector<float> tail_top_cum[kTails];           // [days + 1], 同 grp_cum: 顶组内更极端的 kTailOfGroup 截 (TailRow::top)
-  std::vector<float> tail_bot_cum[kTails];           // 同上, 底组 (TailRow::bot)
-  std::vector<float> tail_ls_cum[kTails];            // 同 ls_cum: 尾部多空 (TailRow::ls)
-  float tail_sharpe[kTails] = {};                    // 尾部 LS 的年化 Sharpe (与 HoldStat::sharpe 同式, MomAcc)
-  // 各线簇的 min / max (含起点 0); 左上 y 范围 / LS 平移量按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
-  float lay_lo = 0.f, lay_hi = 0.f;                       // 20 组分层线
-  float tail_lo[kTails] = {}, tail_hi[kTails] = {};       // 每级尾部分层 (顶 + 底)
-  float ls_lo = 0.f, ls_hi = 0.f;                         // 顶底 LS
-  float tail_ls_lo[kTails] = {}, tail_ls_hi[kTails] = {}; // 每级尾部 LS
-  analysis::AggPdf ic_pdf;                                // 逐行 rank IC (ok 行) 的 KLL PDF 成品 (n_pts = 0 → 样本不足不画)
-  std::vector<float> ic_series;                           // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
-  XDist xd;                                               // = InspectResult::xdist (左下右半, 与持有期无关)
-  factor::stat::HoldStat hs;                              // 选定 hold 的二级
+  std::vector<std::string> dates;          // [days] 轴刻度用
+  std::vector<float> uni_index;            // [T] = InspectResult::uni_index (右上 K 线叠加)
+  std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
+  std::vector<float> lay_cum[kLayerLines]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)
+  std::vector<float> ls_cum[kLsLines];     // [days + 1], 同上
+  float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe (与 sharpe_of 同式, MomAcc)
+  // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围 / LS 平移量按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
+  float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
+  float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};
+  analysis::AggPdf ic_pdf;      // 逐行 rank IC (ok 行) 的 KLL PDF 成品 (n_pts = 0 → 样本不足不画)
+  std::vector<float> ic_series; // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
+  XDist xd;                     // = InspectResult::xdist (左下右半, 与持有期无关)
+  factor::stat::HoldStat hs;    // 选定 hold 的二级
   bool valid = false;
 };
 

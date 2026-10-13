@@ -16,18 +16,26 @@
 #include <vector>
 
 class FeatureRead;
+namespace factor::cpu::stat {
+struct Workspace;
+}
 
 namespace GUI::Factors {
 
 // ---- 装载好的一轮数据 ----
 struct LabelPlane {
-  std::vector<uint16_t> lv, sv; // 做多 / 做空毛收益 fp16 位 (与落盘同格式, Stat 直接吃)
+  std::vector<uint16_t> v[factor::stat::kLegs]; // 两腿毛收益 fp16 位: 做多 / 做空 (与落盘同格式, Stat 直接吃)
   std::vector<uint8_t> m;
 };
 struct CostPlane {
-  std::vector<uint16_t> buy, sell; // 建仓冲击 (比例) fp16 位: lb_cost_buy_<amt>w (按 Loaded::max_impact 封顶) / lb_cost_sell_<amt>w (原值)
-  std::vector<uint8_t> m;          // 有效位 (两列皆有限; 吃不到 = NaN → 无效)
+  std::vector<uint16_t> imp[factor::stat::kLegs]; // 两腿建仓冲击 (比例) fp16 位: lb_cost_buy_<amt>w (按 Loaded::max_impact 封顶) / lb_cost_sell_<amt>w (原值)
+  std::vector<uint8_t> m;                         // 有效位 (两列皆有限; 吃不到 = NaN → 无效)
 };
+// 宿主平面 → 契约视图 (整张量, 未偏). ry = 预处理的做多标签 r16 (nullptr = 未预处理, GPU 会话自己做)
+inline factor::stat::Label label_of(const LabelPlane &p, const uint16_t *ry) {
+  return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data(), ry};
+}
+inline factor::stat::Cost cost_of(const CostPlane &p) { return {{p.imp[factor::stat::kLong].data(), p.imp[factor::stat::kShort].data()}, p.m.data()}; }
 struct Loaded {
   int T = 0, A = 0, days = 0;
   float max_impact = 0.f;                   // 买入冲击封顶 (Config::max_impact): with_costs 装载前由调用方设 (> 0), buy = min(原值, 封顶)
@@ -64,9 +72,10 @@ float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
 // 满仓一腿只数 (Search 契约【目标】util 的分母) = 池内 (cs.m) 平均每行有效票数 / kGroups: 池宽决定, 与因子无关. Run / Search 同一份
 double n_full_of(const Loaded &L);
 
-// 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份; Search 后端在核内攒同一份 cost_cell): rx = r16(x) [T][A] (池内秩, kRankNone 无效),
-// 每 (t ≥ h, h, c) 一行 cost_row → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), 顺带 cover = Σ(rx ∧ 成本有效) / Σ rx 有效.
-// 行区间并行 (ex), 线程私有累加器末尾 merge. 须 with_costs 装过 (L.costs.size() == ft.costs.size())
-void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L, const FeatureTable &ft, std::vector<CostTier> &out);
+// 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): rx = r16(x) [T][A] (池内秩, kRankNone 无效),
+// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), 顺带 cover = Σ(rx ∧ 成本有效) / Σ rx 有效.
+// w = Stat CPU 工作区 (ensure 过 C = ft.costs.size()). 须 with_costs 装过 (L.costs.size() == ft.costs.size()); 无金额档 → out 空
+void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
+                std::vector<CostTier> &out);
 
 } // namespace GUI::Factors

@@ -47,11 +47,15 @@ inline uint16_t f2h(float f) {
   return b;
 }
 
-// 一组宿主标签 (fp16 位 + 掩码); ry 由各后端自己预处理, 不在此
+// 一组宿主标签 (两腿 fp16 位 + 掩码); ry 由各后端自己预处理, 不在此
 struct LabelHost {
-  std::vector<uint16_t> lv, sv;
+  std::vector<uint16_t> v[kLegs];
   std::vector<uint8_t> m;
 };
+// 宿主标签 + 预处理 ry → 契约 Label (偏 off 格; ry 为空 = 未预处理)
+inline Label label_of(const LabelHost &L, const uint16_t *ry, size_t off = 0) {
+  return {{L.v[kLong].data() + off, L.v[kShort].data() + off}, L.m.data() + off, ry ? ry + off : nullptr};
+}
 
 struct Data {
   Frame frame = Frame::CS;
@@ -80,18 +84,18 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) 
   for (LabelHost &L : d.lab) {
     Plane e;
     factor::check::fill(e, Gen::NORM, pr, T, A, rng);
-    L.lv.resize(n), L.sv.resize(n), L.m.resize(n);
+    L.v[kLong].resize(n), L.v[kShort].resize(n), L.m.resize(n);
     for (size_t i = 0; i < n; ++i) {
       const float yl = 0.3f * z.v[i] + e.v[i];
       const float ys = -(0.3f * z.v[i] + 0.7f * e.v[i]);
-      L.lv[i] = f2h(yl);
-      L.sv[i] = f2h(ys);
+      L.v[kLong][i] = f2h(yl);
+      L.v[kShort][i] = f2h(ys);
       L.m[i] = e.m[i];
     }
   }
 }
 
-// ---- 容差: 整数派生量 (ric / rac) 两后端本应逐位一致, 浮点和 (grp / ls / mkt) 只差求和序 ----
+// ---- 容差: 整数派生量 (ric / rac) 两后端本应逐位一致, 浮点和 (grp / ls / mkt[腿]) 只差求和序 ----
 inline Tol tol_of(Profile pr) {
   Tol t{1e-5, 1e-4};
   if (pr == Profile::TINY)
@@ -132,7 +136,8 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
         continue;
       }
       detail::cmp1(d, a.ric, b.ric, tol, at);
-      detail::cmp1(d, a.mkt, b.mkt, tol, at);
+      for (int l = 0; l < kLegs; ++l)
+        detail::cmp1(d, a.mkt[l], b.mkt[l], tol, at);
       detail::cmp1(d, a.ls, b.ls, tol, at);
       for (int k = 0; k < kGroups; ++k)
         detail::cmp1(d, a.grp[k], b.grp[k], tol, at);
@@ -160,8 +165,9 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
     };
     cmp_mom(a.ric, b.ric);
     cmp_mom(a.rac, b.rac);
-    const float fa[] = {a.ls_mean, a.ls_t, a.ls_pos, a.sharpe, a.beta, a.mono, a.leg};
-    const float fb[] = {b.ls_mean, b.ls_t, b.ls_pos, b.sharpe, b.beta, b.mono, b.leg};
+    cmp_mom(a.ls, b.ls);
+    const float fa[] = {a.beta, a.mono, a.leg_n};
+    const float fb[] = {b.beta, b.mono, b.leg_n};
     for (size_t j = 0; j < sizeof(fa) / sizeof(fa[0]); ++j)
       detail::cmp1(d, fa[j], fb[j], tol, i);
     for (int k = 0; k < kGroups; ++k)
@@ -192,20 +198,22 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   const int H = d.hd.n;
   factor::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
-  w.ensure(d.T, d.A, H, ex.threads());
+  w.ensure(d.A, H, 0, ex.threads());
   std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(n));
-  std::vector<factor::cpu::stat::Label> lab(static_cast<size_t>(H));
+  std::vector<uint16_t> rx(n);
+  std::vector<Label> lab(static_cast<size_t>(H));
   Clock::time_point t0 = Clock::now();
   for (int i = 0; i < H; ++i) {
     const LabelHost &L = d.lab[static_cast<size_t>(i)];
-    factor::cpu::stat::prep_label(ex, L.lv.data(), L.m.data(), d.T, d.A, ry[static_cast<size_t>(i)].data(), w);
-    lab[static_cast<size_t>(i)] = {L.lv.data(), L.sv.data(), L.m.data(), ry[static_cast<size_t>(i)].data()};
+    factor::cpu::stat::prep_label(ex, L.v[kLong].data(), L.m.data(), d.T, d.A, ry[static_cast<size_t>(i)].data(), w);
+    lab[static_cast<size_t>(i)] = label_of(L, ry[static_cast<size_t>(i)].data());
   }
   r.prep_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
   r.stat.resize(static_cast<size_t>(H));
   t0 = Clock::now();
-  factor::cpu::stat::run(ex, d.x.v.data(), d.x.m.data(), d.g.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), w, r.rows.data(), r.stat.data());
+  factor::cpu::stat::run(ex, d.x.v.data(), d.x.m.data(), d.g.m.data(), d.frame, d.T, d.A, d.hd, lab.data(), rx.data(), w, r.stat.data(),
+                         factor::cpu::stat::land_rows(r.rows.data(), d.T));
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 

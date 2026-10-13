@@ -80,7 +80,8 @@ struct SearchService::Flow {
   factor::exec::ForkJoin ex;
   factor::cpu::Pool pool;
   std::vector<factor::cpu::ParScratch> sc;
-  factor::cpu::search::Workspace w;
+  factor::cpu::stat::Workspace w;
+  std::vector<uint16_t> rx; // 候选的 r16 [T][A] (块形, 候选间复用)
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
 };
 
@@ -369,12 +370,12 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     sink->n_rows = t < cd.L.T ? (cd.L.T - 1 - t) / stride + 1 : 0;
     sink->rows.assign(sink->ids.size(), std::vector<uint16_t>(static_cast<size_t>(sink->n_rows) * A));
   };
-  const auto sink_rows_cpu = [&](int id, const uint16_t *ws) { // ws = 该候选的 r16 [T][A]
+  const auto sink_rows_cpu = [&](int id, const uint16_t *rx) { // rx = 该候选的 r16 [T][A]
     if (!sink)
       return;
     uint16_t *dst = sink->rows[static_cast<size_t>(sink->pos(id))].data();
     for (int i = 0; i < sink->n_rows; ++i)
-      std::copy_n(ws + static_cast<size_t>(sink->t_first + i * stride) * A, A, dst + static_cast<size_t>(i) * A);
+      std::copy_n(rx + static_cast<size_t>(sink->t_first + i * stride) * A, A, dst + static_cast<size_t>(i) * A);
   };
   const auto sink_end = [&] { // 本块的抽样行两两 Pearson (Stat/Host rac_row, lag 行换成另一候选) 攒进 sum / cnt
     if (!sink || sink->n_rows == 0)
@@ -400,19 +401,18 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     Loaded &L = cd.L;
     const int T = L.T;
     const size_t n = L.n();
-    F.w.ensure(T, A, H, nt);
+    F.w.ensure(A, H, 0, nt);
+    F.rx.resize(n);
     if (cd.ry.size() != static_cast<size_t>(H)) {
       cd.ry.assign(static_cast<size_t>(H), std::vector<uint16_t>(n));
       for (int hi = 0; hi < H; ++hi) {
         const LabelPlane &p = L.labels[static_cast<size_t>(hi)];
-        factor::cpu::stat::prep_label(F.ex, p.lv.data(), p.m.data(), T, A, cd.ry[static_cast<size_t>(hi)].data(), F.w.st);
+        factor::cpu::stat::prep_label(F.ex, p.v[fs::kLong].data(), p.m.data(), T, A, cd.ry[static_cast<size_t>(hi)].data(), F.w);
       }
     }
     fs::Label lab[fs::kMaxHold];
-    for (int hi = 0; hi < H; ++hi) {
-      const LabelPlane &p = L.labels[static_cast<size_t>(hi)];
-      lab[hi] = {p.lv.data(), p.sv.data(), p.m.data(), cd.ry[static_cast<size_t>(hi)].data()};
-    }
+    for (int hi = 0; hi < H; ++hi)
+      lab[hi] = label_of(L.labels[static_cast<size_t>(hi)], cd.ry[static_cast<size_t>(hi)].data());
     if (F.sc.size() < static_cast<size_t>(nt))
       F.sc.resize(static_cast<size_t>(nt));
     for (size_t b0 = 0; b0 < ids.size(); b0 += kCpuForest) {
@@ -447,9 +447,9 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
           if (Fd.roots[k - b0] != i)
             continue;
           Result out;
-          factor::cpu::search::run(F.ex, 1, &xv, &xm, L.cs.m.data(), req.frame, T, A, cd.t0_abs, cd.t_lo, hd, lab, F.w, &out);
+          factor::cpu::search::run(F.ex, 1, &xv, &xm, L.cs.m.data(), req.frame, T, A, cd.t0_abs, cd.t_lo, hd, lab, F.rx.data(), F.w, &out);
           ents[static_cast<size_t>(ids[k])].r.merge(out, H);
-          sink_rows_cpu(ids[k], F.w.st.ws.data());
+          sink_rows_cpu(ids[k], F.rx.data());
           done_.fetch_add(1, std::memory_order_relaxed);
         }
       }
@@ -468,10 +468,8 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       dev[static_cast<size_t>(i)] = factor::gpu::upload(sess, L.planes[static_cast<size_t>(i)].v.data(), L.planes[static_cast<size_t>(i)].m.data());
     const factor::gpu::DevPlane *cs_gate = factor::gpu::upload_mask(sess, L.cs.m.data());
     fs::Label lab[fs::kMaxHold];
-    for (int hi = 0; hi < H; ++hi) {
-      const LabelPlane &p = L.labels[static_cast<size_t>(hi)];
-      lab[hi] = {p.lv.data(), p.sv.data(), p.m.data(), nullptr};
-    }
+    for (int hi = 0; hi < H; ++hi)
+      lab[hi] = label_of(L.labels[static_cast<size_t>(hi)], nullptr);
     factor::gpu::SearchSession *ss = factor::gpu::search_open(T, A, batch, hd);
     factor::gpu::search_load(ss, lab);
     factor::gpu::DevPool pool;

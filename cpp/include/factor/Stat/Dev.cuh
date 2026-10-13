@@ -4,16 +4,16 @@
 // Stat 行核的设备版 (CUDA, sm_75; 契约 factor/Stat/Contract.hpp): 一行的 rank 核 / 一 warp 一 (t, hold) 的 Row
 // =============================================================================
 //   Stat/Gpu.cuh 与 Search/Gpu.cuh 两个 GPU 算子共用, 与 Stat/Host.hpp 对仗 (同一组行核, 一边宿主一边设备).
-//   契约公式 (ord / r16 / grp_of / tail / pearson_int / finish_row) 是 FACTOR_HD, 设备直接调主机那一份, 这里不复刻.
+//   契约公式 (ord / r16 / grp_of / tail / pair_add / pearson_int / finish_row) 是 FACTOR_HD, 设备直接调主机那一份, 这里不复刻.
 //
 //   【布局】SoA 行主序 [T][A]; 一行 = 一个截面. 候选批 Batch = C 张 (值, 掩码) 平面指针 (kernel 参数区, 128 × 16 B = 2 KB);
 //           r16 工作区 rx[c][T][A] (u16). Stat 是 C = 1 的特例.
 //   【rank_rows】grid (T, C) 一行一 block (kRB = 512 线程, 每 SM 驻 2 块): 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上),
 //     排好写回 shared, 每个元素二分查 less / eq → r16. 无效键 = kNoKey 排最后, n = 首个 kNoKey 的位置.
 //     ITEMS (每线程元素数) 按 A 分三档 2 / 6 / 10 (A ≤ 1024 / 3072 / 5120), shared 6 / 18 / 30 KB.
-//     同一个核给因子批 (SrcB: 池内 g ∧ m) 与标签 (SrcH: fp16 平面, C = 1) 用, 只换取键器.
+//     同一个核给因子批 (KeyX: 池内 g ∧ m) 与标签 (KeyY: fp16 平面, C = 1) 用, 只换取键器 (与 Host.hpp 同名).
 //   【quant_rows】TS: 分位直接量化 (r16_quant), 逐格无关, grid (·, C).
-//   【warp_row】一 warp 算一 (t, hold) 行 → Row, **全 lane 同值** (收尾 finish_row 在 32 lane 冗余算: SIMT 下与 lane 0 独算同耗时,
+//   【row_stat】一 warp 算一 (t, hold) 行 → Row, **全 lane 同值** (收尾 finish_row 在 32 lane 冗余算: SIMT 下与 lane 0 独算同耗时,
 //     省掉 lane 间搬运; 消费端 lane 0 落 Row 或 lane k 取 grp[k] 都直接从寄存器拿). 一行只有 A ≤ 5120 格, 块级归约是纯栅栏延迟瓶颈,
 //     所以一遍 A 轴 lane 跨步 32, 累加器全在寄存器 + 每 lane **独占**的 smem 分组槽 (Slots, [warp][组][lane] 布局, 32 lane 落 32 连续字,
 //     无 bank 冲突; 每格 1 LDS + 1 STS, 不展开 20 组 select): 整数五和 (rIC / rAC) 64 位 warp 蝶形归约 → 精确, 与 CPU 逐位一致;
@@ -45,13 +45,17 @@ namespace factor::gpu::stat {
 using factor::stat::Frame;
 using factor::stat::Holds;
 using factor::stat::kGroups;
+using factor::stat::kLegs;
+using factor::stat::kLong;
 using factor::stat::kMaxA;
 using factor::stat::kMaxHold;
 using factor::stat::kNoKey;
 using factor::stat::kRankNone;
+using factor::stat::kShort;
+using factor::stat::kSums;
 using factor::stat::Label;
+using factor::stat::LegSum;
 using factor::stat::Row;
-using factor::stat::Side;
 
 inline constexpr int kMaxBatch = 128; // 一批候选上限 (Batch 走 kernel 参数区)
 inline constexpr int kRB = 512;       // rank_rows 一行一 block 的线程数 (每 SM 驻 2 块)
@@ -116,25 +120,18 @@ __device__ __forceinline__ void warp_sum(T (&v)[D]) {
 
 // 一 warp 算一 (t, hold) 行 → Row (全 lane 同值). xr = 本行 r16; xl = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首;
 // tail = 段末尾部 (tail_masked); gs / gc = 本 warp 的分组槽. 连续调用间的槽复用由函数内首个 __syncwarp 保护.
-__device__ __forceinline__ Row warp_row(Frame f, const uint16_t *xr, const uint16_t *xl, const Label &lb, int A, bool tail, float (*gs)[32],
+__device__ __forceinline__ Row row_stat(Frame f, const uint16_t *xr, const uint16_t *xl, const Label &lb, int A, bool tail, float (*gs)[32],
                                         uint16_t (*gc)[32], int lane) {
-  using ull = unsigned long long;
   Row r;
-  if (xl) {                        // ---- rAC (lag = h): 整数五和 ----
-    ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy
+  if (xl) { // ---- rAC (lag = h): 整数五和 ----
+    unsigned long long s[kSums] = {};
     for (int a = lane; a < A; a += 32) {
       const unsigned x = xr[a], y = xl[a];
-      const bool ok = x != kRankNone && y != kRankNone;
-      s[0] += ok;
-      s[1] += ok ? x : 0u;
-      s[2] += ok ? y : 0u;
-      s[3] += ok ? x * x : 0u; // r16 ≤ 65534: 积 < 2³², 32 位乘后再加进 64 位
-      s[4] += ok ? y * y : 0u;
-      s[5] += ok ? x * y : 0u;
+      factor::stat::pair_add(s, x, y, x != kRankNone && y != kRankNone);
     }
     warp_sum(s);
     bool ok = false;
-    r.rac = factor::stat::pearson_int(s[0], s[1], s[2], s[3], s[4], s[5], ok);
+    r.rac = factor::stat::pearson_int(s, ok);
     r.ok_rac = ok ? 1 : 0;
   }
   if (tail)
@@ -146,26 +143,22 @@ __device__ __forceinline__ Row warp_row(Frame f, const uint16_t *xr, const uint1
     gs[q][lane] = 0.f;
     gc[q][lane] = 0;
   }
-  ull s[6] = {0, 0, 0, 0, 0, 0}; // n, Σx, Σy, Σx², Σy², Σxy (rIC)
-  float fs[3] = {};              // Σlv (mkt), Σsv, Σsv|组0
+  unsigned long long s[kSums] = {}; // rIC
+  float fs[kLegs + 1] = {};         // [kLegs] J 上 Σlv / Σsv (两腿基准) + [kLegs] 空腿 (底组) 的 Σsv
   for (int a = lane; a < A; a += 32) {
     const unsigned x = xr[a], y = lb.ry[a];
     const bool ok = x != kRankNone && y != kRankNone;
-    s[0] += ok;
-    s[1] += ok ? x : 0u;
-    s[2] += ok ? y : 0u;
-    s[3] += ok ? x * x : 0u;
-    s[4] += ok ? y * y : 0u;
-    s[5] += ok ? x * y : 0u;
-    const float yl = h2f(lb.lv[a]), ys = h2f(lb.sv[a]);
-    fs[0] += ok ? yl : 0.f;
-    fs[1] += ok ? ys : 0.f;
-    const int g = ok ? factor::stat::grp_of(x) : -1; // 20 组 (顶 / 底侧的 lv 与计数就是组槽, 另记底组的 Σ sv)
+    factor::stat::pair_add(s, x, y, ok);
+    const float yv[kLegs] = {h2f(lb.v[kLong][a]), h2f(lb.v[kShort][a])};
+#pragma unroll
+    for (int l = 0; l < kLegs; ++l)
+      fs[l] += ok ? yv[l] : 0.f;
+    const int g = ok ? factor::stat::grp_of(x) : -1; // 20 组 (多腿的 Σlv 与两腿计数就是组槽, 另记空腿的 Σsv)
     if (ok) {                                        // 自己的槽, 无竞争
-      gs[g][lane] += yl;
+      gs[g][lane] += yv[kLong];
       gc[g][lane] += 1;
     }
-    fs[2] += g == 0 ? ys : 0.f;
+    fs[kLegs] += g == factor::stat::leg_group(kShort) ? yv[kShort] : 0.f;
   }
   warp_sum(s);
   warp_sum(fs);
@@ -190,9 +183,10 @@ __device__ __forceinline__ Row warp_row(Frame f, const uint16_t *xr, const uint1
     gsd[q] = static_cast<double>(gs[q][0]);
     gci[q] = gc[q][0];
   }
-  constexpr int kt = kGroups - 1;
-  const Side top{static_cast<double>(gci[kt]), gsd[kt], 0.0}, bot{static_cast<double>(gci[0]), gsd[0], static_cast<double>(fs[2])};
-  factor::stat::finish_row(f, s[0], s[1], s[2], s[3], s[4], s[5], static_cast<double>(fs[0]), static_cast<double>(fs[1]), gsd, gci, top, bot, r);
+  constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
+  const double sm[kLegs] = {static_cast<double>(fs[kLong]), static_cast<double>(fs[kShort])};
+  const LegSum leg[kLegs] = {{static_cast<double>(gci[gl]), gsd[gl]}, {static_cast<double>(gci[gb]), static_cast<double>(fs[kLegs])}};
+  factor::stat::finish_row(f, s, sm, gsd, gci, leg, r);
   return r;
 }
 
@@ -201,21 +195,21 @@ __device__ __forceinline__ Row warp_row(Frame f, const uint16_t *xr, const uint1
 namespace k {
 
 // ---- 取键器: (候选, 格) → 保序键 / kNoKey ----
-struct SrcB { // 候选批, 只看池内 g ∧ m 的格 (契约【截面池 g】)
+struct KeyX { // 候选批, 只看池内 g ∧ m 的格 (契约【截面池 g】)
   Batch B;
   const uint8_t *g;
   __device__ __forceinline__ bool on(int c, size_t i) const { return (B.m[c][i] & g[i]) != 0; }
   __device__ __forceinline__ unsigned key(int c, size_t i) const { return on(c, i) ? factor::stat::ord(B.v[c][i]) : kNoKey; }
 };
-struct SrcH { // 标签平面 (fp16 位), 单张
+struct KeyY { // 做多标签平面 (fp16 位), 单张
   const uint16_t *v;
   const uint8_t *m;
   __device__ __forceinline__ unsigned key(int, size_t i) const { return m[i] ? factor::stat::ord(dev::h2f(v[i])) : kNoKey; }
 };
 
 // rank_rows: grid (T, C) 一行一 block, 片上基数排序 → 二分 less/eq → r16 → out[c][t][·]
-template <int ITEMS, class Src>
-__global__ void __launch_bounds__(kRB) rank_rows(Src src, uint16_t *out, int T, int A) {
+template <int ITEMS, class Key>
+__global__ void __launch_bounds__(kRB) rank_rows(Key key, uint16_t *out, int T, int A) {
   constexpr int N = kRB * ITEMS;
   using Sort = cub::BlockRadixSort<unsigned, kRB, ITEMS, unsigned short>;
   union Sh { // 排序暂存与排好序的数组分时复用同一块 shared
@@ -234,7 +228,7 @@ __global__ void __launch_bounds__(kRB) rank_rows(Src src, uint16_t *out, int T, 
 #pragma unroll
   for (int j = 0; j < ITEMS; ++j) {
     const int a = threadIdx.x * ITEMS + j; // blocked 排布 (cub 要求)
-    keys[j] = a < A ? src.key(c, base + a) : kNoKey;
+    keys[j] = a < A ? key.key(c, base + a) : kNoKey;
     idx[j] = static_cast<unsigned short>(a);
   }
   Sort(sh.sort).Sort(keys, idx);
@@ -264,12 +258,12 @@ __global__ void __launch_bounds__(kRB) rank_rows(Src src, uint16_t *out, int T, 
 }
 
 // quant_rows (TS): 分位直接量化, 逐格; grid.y = 候选
-__global__ void __launch_bounds__(kRB) quant_rows(SrcB src, uint16_t *out, size_t plane) {
+__global__ void __launch_bounds__(kRB) quant_rows(KeyX key, uint16_t *out, size_t plane) {
   const int c = blockIdx.y;
   uint16_t *o = out + static_cast<size_t>(c) * plane;
-  const float *v = src.B.v[c];
+  const float *v = key.B.v[c];
   for (size_t i = static_cast<size_t>(blockIdx.x) * kRB + threadIdx.x; i < plane; i += static_cast<size_t>(gridDim.x) * kRB)
-    o[i] = src.on(c, i) ? factor::stat::r16_quant(v[i]) : kRankNone;
+    o[i] = key.on(c, i) ? factor::stat::r16_quant(v[i]) : kRankNone;
 }
 
 } // namespace k
@@ -278,16 +272,16 @@ __global__ void __launch_bounds__(kRB) quant_rows(SrcB src, uint16_t *out, size_
 // 宿主侧发射 (全部设备指针)
 // -----------------------------------------------------------------------------
 
-template <class Src>
-inline void rank_launch(const Src &src, uint16_t *out, int T, int A, int C, cudaStream_t stream) {
+template <class Key>
+inline void rank_launch(const Key &key, uint16_t *out, int T, int A, int C, cudaStream_t stream) {
   assert(T >= 1 && A >= 1 && A <= kMaxA && C >= 1 && C <= kMaxBatch && static_cast<long long>(T) * A < (1LL << 31));
   const dim3 grid(static_cast<unsigned>(T), static_cast<unsigned>(C));
   if (A <= kRB * 2)
-    k::rank_rows<2, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+    k::rank_rows<2, Key><<<grid, kRB, 0, stream>>>(key, out, T, A);
   else if (A <= kRB * 6)
-    k::rank_rows<6, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+    k::rank_rows<6, Key><<<grid, kRB, 0, stream>>>(key, out, T, A);
   else
-    k::rank_rows<10, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+    k::rank_rows<10, Key><<<grid, kRB, 0, stream>>>(key, out, T, A);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
@@ -296,21 +290,21 @@ inline void rank_x(const Batch &B, const uint8_t *g, Frame f, int T, int A, uint
   assert(B.C >= 1 && B.C <= kMaxBatch && g && rx);
   for (int c = 0; c < B.C; ++c)
     assert(B.v[c] && B.m[c]);
-  const k::SrcB src{B, g};
+  const k::KeyX key{B, g};
   if (f == Frame::CS) {
-    rank_launch(src, rx, T, A, B.C, stream);
+    rank_launch(key, rx, T, A, B.C, stream);
     return;
   }
   const size_t plane = static_cast<size_t>(T) * A;
   const size_t nb = (plane + kRB - 1) / kRB;
   const dim3 grid(static_cast<unsigned>(nb < 4096 ? nb : 4096), static_cast<unsigned>(B.C));
-  k::quant_rows<<<grid, kRB, 0, stream>>>(src, rx, plane);
+  k::quant_rows<<<grid, kRB, 0, stream>>>(key, rx, plane);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
 // 标签预处理: 做多标签逐行 r16 → ry. 常驻期 (块内) 算一次, 因子 / 候选共用
 inline void prep_label(const uint16_t *lv, const uint8_t *m, int T, int A, uint16_t *ry, cudaStream_t stream) {
-  rank_launch(k::SrcH{lv, m}, ry, T, A, 1, stream);
+  rank_launch(k::KeyY{lv, m}, ry, T, A, 1, stream);
 }
 
 // hd.n 组标签 (设备指针, 已 prep_label) → kernel 参数
@@ -319,7 +313,7 @@ inline LabelSet label_set(const Holds &hd, const Label *lab) {
   LabelSet L;
   L.n = hd.n;
   for (int i = 0; i < hd.n; ++i) {
-    assert(lab[i].lv && lab[i].sv && lab[i].m && lab[i].ry && "标签未预处理 (prep_label)");
+    assert(lab[i].v[kLong] && lab[i].v[kShort] && lab[i].m && lab[i].ry && "标签未预处理 (prep_label)");
     L.l[i] = lab[i];
   }
   return L;

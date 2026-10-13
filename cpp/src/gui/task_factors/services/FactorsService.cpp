@@ -283,21 +283,21 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   for (int h : holds) {
     LabelCol lc;
     lc.hold = h;
-    lc.long_col = lc.short_col = UINT32_MAX;
+    lc.col[factor::stat::kLong] = lc.col[factor::stat::kShort] = UINT32_MAX;
     for (const Lab &l : labs)
       if (l.hold == h)
-        (l.is_long ? lc.long_col : lc.short_col) = l.col;
-    assert(lc.long_col != UINT32_MAX && lc.short_col != UINT32_MAX && "标签列不齐: 某 hold 缺 long 或 short");
+        lc.col[l.is_long ? factor::stat::kLong : factor::stat::kShort] = l.col;
+    assert(lc.col[factor::stat::kLong] != UINT32_MAX && lc.col[factor::stat::kShort] != UINT32_MAX && "标签列不齐: 某 hold 缺 long 或 short");
     t.labels.push_back(lc);
   }
   for (int a : amts) {
     CostCol cc;
     cc.amt = a;
-    cc.buy_col = cc.sell_col = UINT32_MAX;
+    cc.col[factor::stat::kLong] = cc.col[factor::stat::kShort] = UINT32_MAX;
     for (const Cost &c : costs)
       if (c.amt == a)
-        (c.is_buy ? cc.buy_col : cc.sell_col) = c.col;
-    assert(cc.buy_col != UINT32_MAX && cc.sell_col != UINT32_MAX && "冲击成本列不齐: 某金额档缺 buy 或 sell");
+        cc.col[c.is_buy ? factor::stat::kLong : factor::stat::kShort] = c.col;
+    assert(cc.col[factor::stat::kLong] != UINT32_MAX && cc.col[factor::stat::kShort] != UINT32_MAX && "冲击成本列不齐: 某金额档缺 buy 或 sell");
     t.costs.push_back(cc);
   }
   return t;
@@ -837,12 +837,13 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   if (!req.gpu) {
     // 标签 rank 预处理 (全核, 一次)
     factor::cpu::stat::Workspace w;
-    w.ensure(L.T, L.A, L.hd.n, ex.threads());
+    w.ensure(L.A, L.hd.n, static_cast<int>(feats_.costs.size()), ex.threads());
     std::vector<std::vector<uint16_t>> ry(H, std::vector<uint16_t>(n));
-    std::vector<factor::cpu::stat::Label> lab(H);
+    std::vector<uint16_t> rx(n); // r16(x), 评估与成本共用
+    std::vector<factor::stat::Label> lab(H);
     for (size_t h = 0; h < H; ++h) {
-      factor::cpu::stat::prep_label(ex, L.labels[h].lv.data(), L.labels[h].m.data(), L.T, L.A, ry[h].data(), w);
-      lab[h] = {L.labels[h].lv.data(), L.labels[h].sv.data(), L.labels[h].m.data(), ry[h].data()};
+      factor::cpu::stat::prep_label(ex, L.labels[h].v[factor::stat::kLong].data(), L.labels[h].m.data(), L.T, L.A, ry[h].data(), w);
+      lab[h] = label_of(L.labels[h], ry[h].data());
     }
     factor::cpu::Pool pool;
     pool.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
@@ -865,8 +866,9 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
         [&](int i, factor::stat::Frame fr, float &valid_pct) {
           const factor::check::Plane *root = plane_of(i); // Stat 只看池内 (g 在算子内部)
           valid_pct = valid_pct_of(root->m.data(), L.cs.m.data(), n);
-          factor::cpu::stat::run(ex, root->v.data(), root->m.data(), L.cs.m.data(), fr, L.T, L.A, L.hd, lab.data(), w, nullptr, hold);
-          cost_tiers(ex, w.ws.data(), L, feats_, costs); // w.ws = 刚算的 r16(x)
+          factor::cpu::stat::run(ex, root->v.data(), root->m.data(), L.cs.m.data(), fr, L.T, L.A, L.hd, lab.data(), rx.data(), w, hold,
+                                 factor::cpu::stat::drop_rows());
+          cost_tiers(ex, rx.data(), L, feats_, w, costs);
         });
   }
 
@@ -878,8 +880,10 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   const factor::gpu::DevPlane *cs_gate = factor::gpu::upload_mask(sess, L.cs.m.data()); // 截面池掩码平面 (随会话释放)
   std::vector<factor::stat::Label> lab(H);
   for (size_t h = 0; h < H; ++h)
-    lab[h] = {L.labels[h].lv.data(), L.labels[h].sv.data(), L.labels[h].m.data()};
+    lab[h] = label_of(L.labels[h], nullptr);
   factor::gpu::StatSession *ss = factor::gpu::stat_open(L.T, L.A, L.hd, lab.data(), nullptr);
+  factor::cpu::stat::Workspace w; // 只给 cost_tiers (宿主成本代码与 CPU 后端同一份)
+  w.ensure(L.A, L.hd.n, static_cast<int>(feats_.costs.size()), ex.threads());
   factor::gpu::DevPool pool;
   pool.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
   std::vector<uint8_t> mask(n);
@@ -912,7 +916,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
         factor::gpu::stat_eval(ss, root, cs_gate, fr, srows.data(), nullptr, rx.data());
         for (int hi = 0; hi < L.hd.n; ++hi)
           hold[hi] = factor::stat::summarize(srows.data() + static_cast<size_t>(hi) * L.T, L.T, L.hd.h[hi]);
-        cost_tiers(ex, rx.data(), L, feats_, costs);
+        cost_tiers(ex, rx.data(), L, feats_, w, costs);
       });
   pool.release();
   factor::gpu::stat_close(ss);

@@ -31,7 +31,7 @@
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), HoldStat 是毛口径;
 // 换手成本 (lb_cost_* 每档, 买入按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (FactorsLoad cost_tiers, 两后端同一份宿主代码:
-// CPU 用 Workspace::ws, GPU 把 r16(x) 拷回), 落 stat.costs; 净线由 Inspect plot_term 在二级上现算, 看板 score / util 由 RowScore 从该 h 的 HoldStat 算,
+// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 净线由 Inspect plot_term 在二级上现算, 看板 score / util 由 RowScore 从该 h 的 HoldStat 算,
 // Config::sell_impact 只进公式不进文件. 看板的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
@@ -68,12 +68,12 @@ struct FeatCol {
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
 };
 struct LabelCol {
-  int hold = 0;                         // 持有期键 (Stat/Contract.hpp)
-  uint32_t long_col = 0, short_col = 0; // 列下标
+  int hold = 0;                           // 持有期键 (Stat/Contract.hpp)
+  uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_long_<name> / lb_short_<name>
 };
 struct CostCol {
-  int amt = 0;                        // 下单金额档 (万)
-  uint32_t buy_col = 0, sell_col = 0; // lb_cost_buy_<amt>w / lb_cost_sell_<amt>w 列下标
+  int amt = 0;                            // 下单金额档 (万)
+  uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_cost_buy_<amt>w / lb_cost_sell_<amt>w
 };
 struct FeatureTable {
   std::vector<FeatCol> cols;    // 下标 = L1 列
@@ -115,8 +115,8 @@ struct StatScope {
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
   double n_full = 0.0;     // 满仓一腿只数 = 池内平均有效票数 / kGroups (util 分母; 池宽决定, 与因子无关)
 };
-// 一个金额档的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect / Search 同一份代码: Stat/Host.hpp cost_row):
-// 顶 / 底组按真实换手扣, 每 (t, h) 行只有新进者 (t−h 不在该组) 付建仓冲击 + sell_impact; 均摊成本 long_cost / short_cost 随 h 变 (h 越长留仓越多).
+// 一个金额档的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
+// 两腿按真实换手扣, 每 (t, h) 行只有新进者 (t−h 不在该组) 付建仓冲击 + sell_impact; 均摊成本 cost(腿) 随 h 变 (h 越长留仓越多).
 // 买入冲击按 Config::max_impact 封顶后进 (装载时). 吃不满深度的格 (成本 NaN) 不计入 → 高档均值偏低, cover 把它亮出来.
 // Run 每因子每档都攒 (落 stat.costs), Inspect 期限结构净线从它算
 struct CostTier {

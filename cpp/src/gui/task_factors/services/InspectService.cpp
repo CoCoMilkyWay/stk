@@ -23,47 +23,47 @@ namespace {
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-// 尾部阈值 (r16): 顶尾 = r16 ≥ thr_top, 底尾 = r16 < thr_bot, 尾占整截面 q = kTailOfGroup / kGroups. 与 grp_of 同一条边界公式
-// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时 thr_top / thr_bot 正好是 G20 / G1 的组边界
-void tail_thresholds(int *thr_top, int *thr_bot) {
+using factor::stat::kLegs;
+using factor::stat::kLong;
+using factor::stat::kShort;
+
+// 尾部阈值 (r16): 多腿尾 = r16 ≥ thr[kLong], 空腿尾 = r16 < thr[kShort], 尾占整截面 q = kTailOfGroup / kGroups. 与 grp_of 同一条边界公式
+// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时两条阈值正好是 G20 / G1 的组边界
+void tail_thresholds(int (*thr)[kTails]) {
   for (int j = 0; j < kTails; ++j) {
     const double q = static_cast<double>(kTailOfGroup[j]) / factor::stat::kGroups, span = factor::stat::kRankMax + 1;
-    thr_bot[j] = static_cast<int>(std::ceil(q * span));
-    thr_top[j] = static_cast<int>(std::ceil((1.0 - q) * span));
-    assert(thr_bot[j] >= 1 && thr_top[j] <= factor::stat::kRankMax && thr_bot[j] < thr_top[j]);
+    thr[kLong][j] = static_cast<int>(std::ceil((1.0 - q) * span));
+    thr[kShort][j] = static_cast<int>(std::ceil(q * span));
+    assert(thr[kShort][j] >= 1 && thr[kLong][j] <= factor::stat::kRankMax && thr[kShort][j] < thr[kLong][j]);
   }
 }
+inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : r16 < thr; }
 
-// 尾部分层一行 (TailRow, 见头文件): rx = 本行 r16, lb 已偏到行首. J = rx ∧ ry 有效 (与 label_row 同集), mkt / mkt_s 在 J 上重算 (Row 没留 mkt_s).
-// 调用方只在 Row::ok 行上调 (n ≥ 2 已成立)
-void tail_row(const uint16_t *rx, const factor::cpu::stat::Label &lb, int A, const int *thr_top, const int *thr_bot, TailRow &o) {
+// 尾部分层一行 (TailRow, 见头文件): rx = 本行 r16, lb 已偏到行首, r = 本行 Row (基准 mkt[kLegs] 直接用). J = rx ∧ ry 有效 (与 label_row 同集).
+// 调用方只在 Row::ok 行上调
+void tail_row(const uint16_t *rx, const factor::stat::Label &lb, int A, const int (*thr)[kTails], const factor::stat::Row &r, TailRow &o) {
   using factor::cpu::stat::h2f;
-  int n = 0, tc[kTails] = {}, bc[kTails] = {};
-  double smk = 0.0, ssv = 0.0, tl[kTails] = {}, bl[kTails] = {}, bs[kTails] = {};
+  assert(r.ok && "尾部只在 Row::ok 行上算");
+  factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (样本数, 本腿标签和): ls 用
+  double slv[kLegs][kTails] = {};               // 尾部 Σlv: 分层用
   for (int a = 0; a < A; ++a) {
     const bool ok = rx[a] != factor::stat::kRankNone && lb.ry[a] != factor::stat::kRankNone;
-    const float yl = h2f(lb.lv[a]), ys = h2f(lb.sv[a]);
-    const int r = rx[a];
-    n += ok;
-    smk += ok ? yl : 0.f;
-    ssv += ok ? ys : 0.f;
-    for (int j = 0; j < kTails; ++j) {
-      const bool top = ok && r >= thr_top[j], bot = ok && r < thr_bot[j];
-      tc[j] += top;
-      tl[j] += top ? yl : 0.f;
-      bc[j] += bot;
-      bl[j] += bot ? yl : 0.f;
-      bs[j] += bot ? ys : 0.f;
-    }
+    const float y[kLegs] = {h2f(lb.v[kLong][a]), h2f(lb.v[kShort][a])};
+    for (int l = 0; l < kLegs; ++l)
+      for (int j = 0; j < kTails; ++j) {
+        const bool in = ok && in_tail(l, rx[a], thr[l][j]);
+        leg[j][l].n += in;
+        leg[j][l].s += in ? y[l] : 0.f;
+        slv[l][j] += in ? y[kLong] : 0.f;
+      }
   }
-  assert(n >= 2 && "尾部只在 Row::ok 行上算");
-  const double mkt = smk / n, mkt_s = ssv / n;
+  const double mkt[kLegs] = {r.mkt[kLong], r.mkt[kShort]};
   for (int j = 0; j < kTails; ++j) {
-    o.top_cnt[j] = static_cast<uint16_t>(tc[j]);
-    o.bot_cnt[j] = static_cast<uint16_t>(bc[j]);
-    o.top[j] = static_cast<float>(tl[j] - tc[j] * mkt);
-    o.bot[j] = static_cast<float>(bl[j] - bc[j] * mkt);
-    o.ls[j] = static_cast<float>((tc[j] ? tl[j] / tc[j] - mkt : 0.0) + (bc[j] ? bs[j] / bc[j] - mkt_s : 0.0));
+    for (int l = 0; l < kLegs; ++l) {
+      o.cnt[l][j] = static_cast<uint16_t>(leg[j][l].n);
+      o.sum[l][j] = static_cast<float>(slv[l][j] - leg[j][l].n * mkt[kLong]);
+    }
+    o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt));
   }
 }
 
@@ -198,15 +198,13 @@ struct InspectService::Flow {
   Loaded L; // planes / feat_codes = 作用域内读过的特征 (只增; 每次评估前把当前 Dag::feats 换到前排); labels (毛) / costs / cs 常驻
   // Y 毛标签 [H]: ry = prep_label 常驻, lab 指向 L.labels + ry
   std::vector<std::vector<uint16_t>> ry;
-  std::vector<factor::cpu::stat::Label> lab;
+  std::vector<factor::stat::Label> lab;
   // X / R / C / L 常驻缓冲
   factor::cpu::Pool pool;
   std::vector<factor::cpu::ParScratch> nsc;
   factor::cpu::stat::Workspace w;
-  std::vector<factor::stat::Row> rows; // 毛口径一级 [H][T], 发布时与 result.rows 交换
-  std::vector<TailRow> tails;          // 尾部一级 [H][T], 同上
-  std::vector<uint16_t> rx, rx_all;    // w.ws 的拷贝 [T][A] (池内 / 不看池), 发布时与 result.rx / rx_all 交换 (ws 自身下次评估还要用)
-  std::vector<uint8_t> ones;           // 全 1 门控 [T][A], rx_all 那遍 rank_x 的 g
+  InspectPlanes pl;          // 一级平面, 发布时与 result.pl 交换
+  std::vector<uint8_t> ones; // 全 1 门控 [T][A], rx_all 那遍 rank_x 的 g
 
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
   void reset_scope() {
@@ -367,7 +365,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   }
   const size_t n = L.n();
   const int H = L.hd.n, T = L.T;
-  F.w.ensure(T, A, H, nt);
+  F.w.ensure(A, H, static_cast<int>(feats_.costs.size()), nt);
 
   // ---- Y: 毛标签 [H] (作用域内一次) ----
   if (F.lab.empty()) {
@@ -377,8 +375,8 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
       const LabelPlane &p = L.labels[static_cast<size_t>(h)];
       std::vector<uint16_t> &ry = F.ry[static_cast<size_t>(h)];
       ry.resize(n);
-      factor::cpu::stat::prep_label(F.ex, p.lv.data(), p.m.data(), T, A, ry.data(), F.w);
-      F.lab[static_cast<size_t>(h)] = {p.lv.data(), p.sv.data(), p.m.data(), ry.data()};
+      factor::cpu::stat::prep_label(F.ex, p.v[kLong].data(), p.m.data(), T, A, ry.data(), F.w);
+      F.lab[static_cast<size_t>(h)] = label_of(p, ry.data());
     }
     if (cancelled())
       return false;
@@ -400,31 +398,21 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.uni_index = L.index;
   res.n_hold = H;
   res.hd = L.hd;
-  const auto publish = [&] {
+  const auto publish = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
     res.scope.time = now_string();
-    std::lock_guard<std::mutex> lock(mutex);
-    std::vector<factor::stat::Row> spare = std::move(result.rows); // 旧 Row / 尾部 / rx 缓冲回收给 Flow, 下次原地写
-    std::vector<TailRow> spare_tails = std::move(result.tails);
-    std::vector<uint16_t> spare_rx = std::move(result.rx), spare_rx_all = std::move(result.rx_all);
-    result = std::move(res);
-    result.rows.swap(F.rows);
-    result.tails.swap(F.tails);
-    result.rx.swap(F.rx);
-    result.rx_all.swap(F.rx_all);
-    F.rows = std::move(spare);
-    F.tails = std::move(spare_tails);
-    F.rx = std::move(spare_rx);
-    F.rx_all = std::move(spare_rx_all);
+    std::swap(res.pl, F.pl);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      std::swap(result, res);
+    }
+    F.pl = std::move(res.pl);
   };
 
   // ---- 数据检查 (与 FactorsService 同一套) ----
   for (int i = 0; i < N; ++i) {
     check_leaf_domains(d, i, L, res.error);
     if (!res.error.empty()) {
-      F.rows.clear(); // 无一级 / 无 rx
-      F.tails.clear();
-      F.rx.clear();
-      F.rx_all.clear();
+      F.pl.clear(); // 无一级 / 无 rx
       publish();
       return true;
     }
@@ -459,54 +447,47 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   // ---- R: rank_x 一次 ----
   const factor::check::Plane *rp = plane_of(root); // Stat 只看池内 (g 在算子内部)
   res.valid_pct = valid_pct_of(rp->m.data(), L.cs.m.data(), n);
+  InspectPlanes &pl = F.pl;
   const size_t nrow = static_cast<size_t>(H) * T;
-  if (F.rows.size() != nrow)
-    F.rows.resize(nrow);
+  pl.rows.resize(nrow);
+  pl.tails.resize(nrow);
+  pl.rx.resize(n);
+  pl.rx_all.resize(n);
   res.hold.resize(static_cast<size_t>(H));
-  // 先多跑一遍不看池的秩 (g ≡ 1) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 (ws 留给 eval_rows)
+  // 先多跑一遍不看池的秩 (g ≡ 1) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 → rx
   if (F.ones.size() != n)
     F.ones.assign(n, uint8_t{1});
-  factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), F.ones.data(), req.frame, T, A, F.w);
-  F.rx_all.assign(F.w.ws.begin(), F.w.ws.begin() + static_cast<std::ptrdiff_t>(n));
-  factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), L.cs.m.data(), req.frame, T, A, F.w);
-  F.rx.assign(F.w.ws.begin(), F.w.ws.begin() + static_cast<std::ptrdiff_t>(n)); // ws 随结果发布 (右上标的轴 / K 线着色)
+  factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), F.ones.data(), req.frame, T, A, pl.rx_all.data(), F.w);
+  factor::cpu::stat::rank_x(F.ex, rp->v.data(), rp->m.data(), L.cs.m.data(), req.frame, T, A, pl.rx.data(), F.w);
+  const uint16_t *rx = pl.rx.data();
   {
     const int xi = d.nodes[static_cast<size_t>(root)].in[0];
     assert(xi >= 0 && "根是归一算子, 至少一元");
     const factor::check::Plane *xp = plane_of(xi);
-    x_dist(F.ex, xp->v.data(), xp->m.data(), F.rx.data(), T, A, res.xdist);
+    x_dist(F.ex, xp->v.data(), xp->m.data(), rx, T, A, res.xdist);
   }
   if (cancelled())
     return false;
 
   // ---- C: 换手成本 (FactorsLoad cost_tiers, 与 Run 同一份; 契约【换手成本】) ----
-  cost_tiers(F.ex, F.rx.data(), L, feats_, res.costs);
+  cost_tiers(F.ex, rx, L, feats_, F.w, res.costs);
   done_.fetch_add(1, std::memory_order_relaxed);
   if (cancelled())
     return false;
 
-  // ---- L: 评估 (只毛): 一级 Row[H][T] + 二级 HoldStat[H] ----
-  factor::cpu::stat::eval_rows(F.ex, req.frame, T, A, L.hd, F.lab.data(), F.w, F.rows.data(), res.hold.data());
-  done_.fetch_add(1, std::memory_order_relaxed);
-  if (cancelled())
-    return false;
-
-  // ---- Z: 尾部分层 (Inspect 专属): 只在 Row::ok 行, 顶 / 底组内更极端的 kTailOfGroup 截 ----
-  if (F.tails.size() != nrow)
-    F.tails.resize(nrow);
-  int thr_top[kTails], thr_bot[kTails];
-  tail_thresholds(thr_top, thr_bot);
-  F.ex.rows(T, [&](int t0, int t1, int) {
-    for (int t = t0; t < t1; ++t) {
-      const size_t base = static_cast<size_t>(t) * A;
-      for (int i = 0; i < H; ++i) {
-        const size_t k = static_cast<size_t>(i) * T + t;
-        F.tails[k] = TailRow{};
-        if (F.rows[k].ok)
-          tail_row(F.rx.data() + base, F.lab[static_cast<size_t>(i)].at(base), A, thr_top, thr_bot, F.tails[k]);
-      }
-    }
+  // ---- L: 评估 (只毛): 一级 Row[H][T] + 二级 HoldStat[H]; 同遍尾部分层 (Inspect 专属: 只在 Row::ok 行, 两腿组内更极端的 kTailOfGroup 截) ----
+  int thr[kLegs][kTails];
+  tail_thresholds(thr);
+  factor::cpu::stat::eval_rows(F.ex, req.frame, T, A, rx, L.hd, F.lab.data(), F.w, res.hold.data(), [&](int i, int t, const factor::stat::Row &r) {
+    const size_t k = static_cast<size_t>(i) * T + t, base = static_cast<size_t>(t) * A;
+    pl.rows[k] = r;
+    pl.tails[k] = TailRow{};
+    if (r.ok)
+      tail_row(rx + base, F.lab[static_cast<size_t>(i)].at(base), A, thr, r, pl.tails[k]);
   });
+  done_.fetch_add(1, std::memory_order_relaxed);
+  if (cancelled())
+    return false;
   publish();
   return true;
 }

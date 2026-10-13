@@ -154,16 +154,15 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
         for (const factor::stat::HoldStat &s : cpu.stat)
           std::printf("       Stat.%s cpu    h=%-3d %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
                       "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
-                      fname, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls_mean, s.ls_t, s.ls_pos,
-                      s.sharpe, s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
+                      fname, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t, s.ls.pos,
+                      factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
       if (!factor::gpu::available())
         continue;
       sc::Result gpu;
       gpu.rows.assign(cpu.rows.size(), factor::stat::Row{});
       std::vector<factor::stat::Label> lab(static_cast<size_t>(d.hd.n));
       for (int i = 0; i < d.hd.n; ++i)
-        lab[static_cast<size_t>(i)] = {d.lab[static_cast<size_t>(i)].lv.data(), d.lab[static_cast<size_t>(i)].sv.data(),
-                                       d.lab[static_cast<size_t>(i)].m.data()};
+        lab[static_cast<size_t>(i)] = sc::label_of(d.lab[static_cast<size_t>(i)], nullptr);
       factor::gpu::run_stat(d.x.v.data(), d.x.m.data(), d.g.m.data(), fr, T, A, d.hd, lab.data(), gpu.rows.data(), &gpu.prep_ms,
                             &gpu.eval_ms);
       sc::summarize_all(gpu, d);
@@ -251,10 +250,8 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
         const uint8_t *xm[sk::kCands];
         const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out) {
           const size_t off = static_cast<size_t>(row0) * A;
-          for (int i = 0; i < H; ++i) {
-            const factor::stat::check::LabelHost &L = d.base.lab[static_cast<size_t>(i)];
-            lab[static_cast<size_t>(i)] = {L.lv.data() + off, L.sv.data() + off, L.m.data() + off};
-          }
+          for (int i = 0; i < H; ++i)
+            lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr, off);
           for (int c = 0; c < sk::kCands; ++c)
             xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
           factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), out);

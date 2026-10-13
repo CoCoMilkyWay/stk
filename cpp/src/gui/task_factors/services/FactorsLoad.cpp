@@ -1,7 +1,7 @@
-// FactorsLoad — 见头文件. include 因子契约 / Stat 行核头 (cost_row), 依赖受控浮点: CMake PRECISE_MATH 源.
+// FactorsLoad — 见头文件. include 因子契约 / Stat CPU 流程头 (cost_rows), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/FactorsLoad.hpp"
 
-#include "factor/Stat/Host.hpp" // cost_row
+#include "factor/Stat/Cpu.hpp" // cost_rows
 #include "features/Backend/FeatureRead.hpp"
 #include "features/MetaFlag.hpp"                      // fmeta::valid
 #include "features/Operator/TS/Label/LabelReturn.hpp" // 只取 kContCloseL1 对账尾部界 (不含字段表)
@@ -85,15 +85,14 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     for (size_t h = 0; h < H; ++h) {
       const LabelCol &lc = ft.labels[static_cast<size_t>(L.label_idx[h])];
       assert(lc.hold == L.hd.h[h]);
-      cols.push_back(lc.long_col), vts.push_back(ft.cols[lc.long_col].vt);
-      cols.push_back(lc.short_col), vts.push_back(ft.cols[lc.short_col].vt);
+      for (const uint32_t c : lc.col)
+        cols.push_back(c), vts.push_back(ft.cols[c].vt);
     }
   }
   if (with_costs)
-    for (const CostCol &cc : ft.costs) {
-      cols.push_back(cc.buy_col), vts.push_back(ft.cols[cc.buy_col].vt);
-      cols.push_back(cc.sell_col), vts.push_back(ft.cols[cc.sell_col].vt);
-    }
+    for (const CostCol &cc : ft.costs)
+      for (const uint32_t c : cc.col)
+        cols.push_back(c), vts.push_back(ft.cols[c].vt);
   if (with_index) {
     const FeatCol *fc = ft.find("close");
     assert(fc && "字段表缺 close 列 (universe 指数)");
@@ -108,11 +107,17 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     p.resize(n);
   L.cs.resize(n);
   L.labels.resize(H);
-  for (LabelPlane &lb : L.labels)
-    lb.lv.assign(n, 0), lb.sv.assign(n, 0), lb.m.assign(n, 0);
+  for (LabelPlane &lb : L.labels) {
+    for (std::vector<uint16_t> &v : lb.v)
+      v.assign(n, 0);
+    lb.m.assign(n, 0);
+  }
   L.costs.resize(C);
-  for (CostPlane &cp : L.costs)
-    cp.buy.assign(n, 0), cp.sell.assign(n, 0), cp.m.assign(n, 0);
+  for (CostPlane &cp : L.costs) {
+    for (std::vector<uint16_t> &v : cp.imp)
+      v.assign(n, 0);
+    cp.m.assign(n, 0);
+  }
 
   const size_t n_threads = static_cast<size_t>(ex.threads());
   std::vector<FeatureRead::DayColumns> staging(n_threads);
@@ -206,8 +211,8 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         for (size_t a = 0; a < A; ++a) {
           const float lv = static_cast<float>(sl[a]), sv = static_cast<float>(ss[a]);
           const bool ok = L.cs.m[row + a] && std::isfinite(lv) && std::isfinite(sv); // 池内且当日有数据
-          lb.lv[row + a] = ok ? std::bit_cast<uint16_t>(sl[a]) : 0;
-          lb.sv[row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
+          lb.v[factor::stat::kLong][row + a] = ok ? std::bit_cast<uint16_t>(sl[a]) : 0;
+          lb.v[factor::stat::kShort][row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           lb.m[row + a] = ok;
         }
       }
@@ -219,8 +224,8 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         for (size_t a = 0; a < A; ++a) {
           const float b = static_cast<float>(sb[a]), s = static_cast<float>(ss[a]);
           const bool ok = L.cs.m[row + a] && std::isfinite(b) && std::isfinite(s); // 池内且当日有数据; 吃不到 = NaN → 无效
-          cp.buy[row + a] = ok ? std::bit_cast<uint16_t>(b > L.max_impact ? cap : sb[a]) : 0;
-          cp.sell[row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
+          cp.imp[factor::stat::kLong][row + a] = ok ? std::bit_cast<uint16_t>(b > L.max_impact ? cap : sb[a]) : 0;
+          cp.imp[factor::stat::kShort][row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           cp.m[row + a] = ok;
         }
       }
@@ -296,42 +301,40 @@ double n_full_of(const Loaded &L) {
   return nf;
 }
 
-void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L, const FeatureTable &ft, std::vector<CostTier> &out) {
+void cost_tiers(factor::exec::ForkJoin &ex, const uint16_t *rx, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
+                std::vector<CostTier> &out) {
   const int C = static_cast<int>(ft.costs.size()), H = L.hd.n, A = L.A, T = L.T, nt = ex.threads();
   assert(rx && L.costs.size() == static_cast<size_t>(C) && "成本平面未装 (with_costs)");
-  std::vector<factor::stat::CostAcc> cacc(static_cast<size_t>(nt) * C * H); // [tid][c][hi]
-  std::vector<long long> cnx(static_cast<size_t>(nt) * (1 + C), 0);         // [tid][0 = rx 有效格数, 1 + c = rx ∧ 成本有效]
+  out.assign(static_cast<size_t>(C), CostTier{});
+  if (C == 0)
+    return;
+  std::vector<factor::stat::Cost> cost(static_cast<size_t>(C));
+  for (int c = 0; c < C; ++c)
+    cost[static_cast<size_t>(c)] = cost_of(L.costs[static_cast<size_t>(c)]);
+  std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [c][hi]
+  factor::cpu::stat::cost_rows(ex, T, A, rx, L.hd, cost.data(), C, w, acc.data());
+  // cover: 每 t 一遍 A 轴, 全部金额档一起数
+  std::vector<long long> cnx(static_cast<size_t>(nt) * (1 + C), 0); // [tid][0 = rx 有效格数, 1 + c = rx ∧ 成本有效]
   ex.rows(T, [&](int t0, int t1, int tid) {
-    factor::stat::CostAcc *acc = cacc.data() + static_cast<size_t>(tid) * C * H;
     long long *nx = cnx.data() + static_cast<size_t>(tid) * (1 + C);
-    for (int t = t0; t < t1; ++t) {
-      const size_t base = static_cast<size_t>(t) * A;
-      for (int c = 0; c < C; ++c) {
-        const CostPlane &cp = L.costs[static_cast<size_t>(c)];
-        const factor::stat::Cost cost{cp.buy.data() + base, cp.sell.data() + base, cp.m.data() + base};
-        for (int i = 0; i < H; ++i) {
-          const int h = factor::stat::hold_minutes(L.hd.h[i]);
-          if (t >= h)
-            factor::cpu::stat::cost_row(rx + base, rx + base - static_cast<size_t>(h) * A, cost, A, acc[c * H + i]);
-        }
-        for (int a = 0; a < A; ++a)
-          nx[1 + c] += rx[base + a] != factor::stat::kRankNone && cp.m[base + a] != 0;
+    for (int t = t0; t < t1; ++t)
+      for (size_t i = static_cast<size_t>(t) * A, e = i + A; i < e; ++i) {
+        if (rx[i] == factor::stat::kRankNone)
+          continue;
+        ++nx[0];
+        for (int c = 0; c < C; ++c)
+          nx[1 + c] += cost[static_cast<size_t>(c)].m[i] != 0;
       }
-      for (int a = 0; a < A; ++a)
-        nx[0] += rx[base + a] != factor::stat::kRankNone;
-    }
   });
   std::vector<long long> nx(static_cast<size_t>(1 + C), 0);
   for (int tid = 0; tid < nt; ++tid)
     for (int c = 0; c <= C; ++c)
       nx[static_cast<size_t>(c)] += cnx[static_cast<size_t>(tid) * (1 + C) + c];
-  out.assign(static_cast<size_t>(C), CostTier{});
   for (int c = 0; c < C; ++c) {
     CostTier &tier = out[static_cast<size_t>(c)];
     tier.amt = ft.costs[static_cast<size_t>(c)].amt;
     for (int i = 0; i < H; ++i)
-      for (int tid = 0; tid < nt; ++tid)
-        tier.acc[i].merge(cacc[(static_cast<size_t>(tid) * C + c) * H + i]);
+      tier.acc[i] = acc[static_cast<size_t>(c) * H + i];
     tier.cover = nx[0] ? static_cast<float>(static_cast<double>(nx[static_cast<size_t>(1 + c)]) / static_cast<double>(nx[0])) : 0.f;
   }
 }

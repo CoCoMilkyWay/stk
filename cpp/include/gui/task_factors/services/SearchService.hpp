@@ -21,7 +21,7 @@
 //             (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同 (ROLL 窗 ≤ kMaxD, EXPAND 段界 reset;
 //             唯 TsMeanEma 全历史递推在块首重启, carry 5 日后差 (1−k)^1275, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
 //   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次).
-//             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + eval_rows), 不留根平面;
+//             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + accum_rows), 不留根平面;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
 //
 // 线程模型 (对仗 InspectService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);

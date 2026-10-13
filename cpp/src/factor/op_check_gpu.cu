@@ -317,34 +317,42 @@ struct Timer {
   }
 };
 
-// 一组设备常驻标签 (lv / sv / m 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图
+// 一组设备常驻标签 (两腿 v / m 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图
 struct DevLabels {
+  static constexpr int kLegs = factor::stat::kLegs, kLong = factor::stat::kLong, kShort = factor::stat::kShort;
   int H = 0;
-  DevBuf<uint16_t> lv[factor::stat::kMaxHold], sv[factor::stat::kMaxHold], ry[factor::stat::kMaxHold];
+  DevBuf<uint16_t> v[kLegs][factor::stat::kMaxHold], ry[factor::stat::kMaxHold];
   DevBuf<uint8_t> m[factor::stat::kMaxHold];
   factor::stat::Label L[factor::stat::kMaxHold];
   void alloc(int H_, size_t n) {
     H = H_;
     for (int i = 0; i < H; ++i) {
-      lv[i].alloc(n), sv[i].alloc(n), m[i].alloc(n), ry[i].alloc(n);
-      L[i] = {lv[i].p, sv[i].p, m[i].p, ry[i].p};
+      for (int l = 0; l < kLegs; ++l)
+        v[l][i].alloc(n);
+      m[i].alloc(n), ry[i].alloc(n);
+      L[i] = {{v[kLong][i].p, v[kShort][i].p}, m[i].p, ry[i].p};
     }
   }
   // 宿主标签拷入 + ry 预处理 (纯 kernel 计时)
   double load(const factor::stat::Label *lab, int T, int A, Timer &tm) {
     const size_t n = static_cast<size_t>(T) * A;
     for (int i = 0; i < H; ++i) {
-      assert(lab[i].lv && lab[i].sv && lab[i].m);
-      lv[i].put(lab[i].lv, n), sv[i].put(lab[i].sv, n), m[i].put(lab[i].m, n);
+      assert(lab[i].v[kLong] && lab[i].v[kShort] && lab[i].m);
+      for (int l = 0; l < kLegs; ++l)
+        v[l][i].put(lab[i].v[l], n);
+      m[i].put(lab[i].m, n);
     }
     tm.begin();
     for (int i = 0; i < H; ++i)
-      stat::prep_label(lv[i].p, m[i].p, T, A, ry[i].p, nullptr);
+      stat::prep_label(v[kLong][i].p, m[i].p, T, A, ry[i].p, nullptr);
     return tm.end();
   }
   void free_() {
-    for (int i = 0; i < H; ++i)
-      lv[i].free_(), sv[i].free_(), m[i].free_(), ry[i].free_();
+    for (int i = 0; i < H; ++i) {
+      for (int l = 0; l < kLegs; ++l)
+        v[l][i].free_();
+      m[i].free_(), ry[i].free_();
+    }
   }
 };
 
