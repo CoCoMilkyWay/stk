@@ -33,7 +33,7 @@
 //   左下 IC 分布: 逐行 rank IC (ok 行) 当随机变量 → KLL → PDF (与顶部 stat 的 mean/std/skew/kurt 同一组样本), 标 0 线 + 均值线
 //   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部冲击档) 一次画全, 图例可点切, 默认只显 LS. 口径 = 全 universe 全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
-//        净档 <amt>w = 毛 − 该腿该持有期的均摊换手成本 (CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Search 打分同一份 cost_row: 只有顶 / 底组
+//        净档 <amt>w = 毛 − 该腿该持有期的均摊换手成本 (CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_row: 只有顶 / 底组
 //        新进者 (t−h 不在该组) 付 lb_cost_{buy,sell}_<amt>w + Config::sell_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
 //        Inspect 算过用算的, 没算过用 Factors 表里 (stat: 毛 + 各档成本, 同一份 CostTier) 的, 所以进页即有
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行

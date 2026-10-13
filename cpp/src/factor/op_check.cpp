@@ -184,7 +184,7 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
     std::printf("  ok   %-14s\n", "Stat");
 }
 
-// Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat + 朴素成本池化; Search cpu / gpu 各与它比,
+// Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat; Search cpu / gpu 各与它比,
 //   再比 分块 (两块带 carry, merge) ≡ 整块. 两口径 × profile 全扫; 无 GPU 时只跑 cpu 两项
 void check_search(int T, int A, unsigned seed, Report &rep) {
   namespace sk = factor::search::check;
@@ -235,13 +235,12 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
         if (judge("cpu", full, c1, c2))
           ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
         if (rep.verbose)
-          for (int c = 0; c < sk::kCands; ++c) {
-            const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{.sell_impact = 0.0005});
-            const factor::search::CostAcc &ca = full[c].cost[s.best >= 0 ? s.best : 0];
-            std::printf("       Search.%s cpu c%d %-8s best h=%-4d ls_net/yr %+.4f util %.2f rIC %+.4f score %+.3g  turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)\n",
-                        fname, c, kProfName[pi], s.best >= 0 ? hd.h[s.best] : -1, s.ls_net, s.util, s.ric, s.score, ca.turn_hi(), ca.turn_lo(), ca.buy_mean(),
-                        ca.e_hi, ca.sell_mean(), ca.e_lo);
-          }
+          for (int c = 0; c < sk::kCands; ++c)
+            for (int hi = 0; hi < hd.n; ++hi) {
+              const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{.n_full = A / 20.0});
+              std::printf("       Search.%s cpu c%d %-8s h=%-4d ls %+.5f util %.2f rIC %+.4f score %+.3g\n", fname, c, kProfName[pi], hd.h[hi], s.ls,
+                          s.util, s.ric, s.score);
+            }
       }
       if (!factor::gpu::available())
         continue;
@@ -258,8 +257,7 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
           }
           for (int c = 0; c < sk::kCands; ++c)
             xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-          const factor::search::Cost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
-          factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), cost, out);
+          factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), out);
         };
         factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
         run(0, T, 0, full);

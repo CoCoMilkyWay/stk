@@ -463,18 +463,13 @@ void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
   std::filesystem::remove(path);
 }
 
-factor::search::Score RowScore(const FactorRow &r, int amt, double sell_impact) {
-  const CostTier *c = r.has_stat ? r.find_cost(amt) : nullptr;
-  if (!c)
+factor::search::Score RowScore(const FactorRow &r, int hold) {
+  const factor::stat::HoldStat *h = r.has_stat ? r.find_hold(hold) : nullptr;
+  if (!h)
     return {};
-  factor::stat::Holds hd;
-  hd.n = r.n_hold;
-  for (int i = 0; i < r.n_hold; ++i)
-    hd.h[i] = r.hold[i].hold;
   factor::search::Objective o;
-  o.sell_impact = sell_impact;
   o.n_full = r.scope.n_full;
-  return factor::search::score_of(r.hold, c->acc, hd, o);
+  return factor::search::score_of(*h, o);
 }
 
 void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e) {

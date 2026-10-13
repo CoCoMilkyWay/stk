@@ -6,12 +6,11 @@
 //   契约 factor/Search/Contract.hpp + Stat/Contract.hpp; 行核 Stat/Dev.cuh (rank_x / warp_row, 与 Stat GPU 同一组). 本文件只加:
 //   【stat_batch】grid (⌈C/kWarps⌉, NB, H) × kWB, **一 warp 一候选**, 一块管 kRows 行 × 一个持有期 (grid.z):
 //     每行一次 warp_row (全 lane 拿到 Row) → **直接折进 warp 私有的分片累加器** (lane 0 攒 Accum 的标量, lane k < 20 攒组 k 的
-//     Σgrp / Σcnt; 运算与 Accum::add 逐字同) → 块末写分片 Slice[c][h][tb] (= 契约的 Accum + CostAcc 原样). 不落 Row.
-//     同 block 的 kWarps 个候选同一 (t, h): ry / lv / sv 行一次进 L1 共用, 标签流量被候选数摊薄. 换手成本 (契约【成本】, 随 h 变) 紧跟
-//     warp_row 在同一行上攒: 有 lag 行才算, 只有顶 / 底组成员才碰成本平面 (lane 分支跳过读). 核内没有块级同步, 没有原子.
+//     Σgrp / Σcnt; 运算与 Accum::add 逐字同) → 块末写分片 Slice[c][h][tb] (= 契约的 Accum 原样). 不落 Row.
+//     同 block 的 kWarps 个候选同一 (t, h): ry / lv / sv 行一次进 L1 共用, 标签流量被候选数摊薄. 核内没有块级同步, 没有原子.
 //   【reduce_slices】每 (c, h) 一线程, 沿 tb 升序 merge (契约 merge 原样; 固定序 → GPU 自身逐次确定) → 直接写 Result[c] (设备),
 //     主机整块拷回, 无转换.
-//   【与 CPU 的差别】整数派生量逐位一致; 浮点和只差求和序 (对拍容差). 成本冲击和: 行内 float 归约, 跨行 double.
+//   【与 CPU 的差别】整数派生量逐位一致; 浮点和只差求和序 (对拍容差).
 //   【禁用】--use_fast_math.
 // =============================================================================
 
@@ -32,8 +31,6 @@ using factor::gpu::stat::kWarps;
 using factor::gpu::stat::kWB;
 using factor::gpu::stat::LabelSet;
 using factor::gpu::stat::Slots;
-using factor::search::Cost;
-using factor::search::CostAcc;
 using factor::search::Result;
 using factor::stat::Accum;
 using factor::stat::Frame;
@@ -50,13 +47,12 @@ inline constexpr int kRows = 128; // stat_batch 每 block 的行数 (分片粒�
 // 一个 (候选, 持有期, 行块) 的分片 = 契约累加器原样
 struct Slice {
   Accum acc;
-  CostAcc cost;
 };
 
 namespace k {
 
 __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx, int C, int T, int A, int t0_abs, int t_lo, Holds hd, LabelSet L,
-                                                     Cost cost, int NB, Slice *part) {
+                                                     int NB, Slice *part) {
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const int c = blockIdx.x * kWarps + warp;
@@ -67,14 +63,12 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   const int tb = blockIdx.y, t_beg = t_lo + tb * kRows, t_end = min(T, t_beg + kRows);
   const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;
 
-  // warp 私有分片 (= Accum::add 的字段拆到 lane: lane 0 标量 + 成本, lane q < kGroups 组 q)
+  // warp 私有分片 (= Accum::add 的字段拆到 lane: lane 0 标量, lane q < kGroups 组 q)
   MomAcc aric, arac;
   int anlpos = 0;
   double asls = 0.0, asls2 = 0.0, asmk = 0.0, asmk2 = 0.0, aslm = 0.0;
   double asg = 0.0;
   long long asc = 0;
-  double abuy = 0.0, asell = 0.0;
-  long long anh = 0, anl = 0, aeh = 0, ael = 0, arows = 0;
 
   for (int t = t_beg; t < t_end; ++t) {
     const size_t base = static_cast<size_t>(t) * A;
@@ -100,32 +94,6 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
     }
     if (r.ok_rac && lane == 0)
       arac.add(r.rac);
-    // ---- 换手成本 (有 lag 行才算; 逐格规则 = 契约 cost_cell, 与 Stat/Host.hpp cost_row 同一份; 只有顶 / 底组成员才碰冲击平面) ----
-    if (xl) {
-      const Cost cr = cost.at(base);
-      float cv[2] = {0.f, 0.f}; // Σ买|顶组新进, Σ卖|底组新进
-      int cn[4] = {0, 0, 0, 0}; // 顶组数, 底组数, 顶组新进数, 底组新进数
-      for (int a = lane; a < A; a += 32) {
-        bool ent = false;
-        const int leg = factor::stat::cost_cell(xr[a], xl[a], cr.m[a] != 0, ent);
-        if (leg != 0) {
-          const bool hi = leg > 0;
-          cn[0] += hi;
-          cn[1] += !hi;
-          cn[2] += hi && ent;
-          cn[3] += !hi && ent;
-          cv[0] += hi && ent ? dev::h2f(cr.buy[a]) : 0.f;
-          cv[1] += !hi && ent ? dev::h2f(cr.sell[a]) : 0.f;
-        }
-      }
-      dev::warp_sum(cv);
-      dev::warp_sum(cn);
-      if (lane == 0) {
-        abuy += static_cast<double>(cv[0]), asell += static_cast<double>(cv[1]);
-        anh += cn[0], anl += cn[1], aeh += cn[2], ael += cn[3];
-        ++arows;
-      }
-    }
   }
 
   // ---- 写分片 (每字段恰由一个 lane 写) ----
@@ -137,11 +105,10 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
   if (lane == 0) {
     P.acc.ric = aric, P.acc.rac = arac, P.acc.nlpos = anlpos;
     P.acc.sls = asls, P.acc.sls2 = asls2, P.acc.smk = asmk, P.acc.smk2 = asmk2, P.acc.slm = aslm;
-    P.cost.buy_hi = abuy, P.cost.sell_lo = asell, P.cost.n_hi = anh, P.cost.n_lo = anl, P.cost.e_hi = aeh, P.cost.e_lo = ael, P.cost.rows = arows;
   }
 }
 
-// reduce_slices: 每 (c, h) 一线程, 沿 tb 升序 merge → out[c].acc[h] / cost[h]
+// reduce_slices: 每 (c, h) 一线程, 沿 tb 升序 merge → out[c].acc[h]
 __global__ void __launch_bounds__(kWB) reduce_slices(const Slice *part, int NB, int C, int H, Result *out) {
   const int p = blockIdx.x * kWB + threadIdx.x;
   if (p >= C * H)
@@ -149,12 +116,9 @@ __global__ void __launch_bounds__(kWB) reduce_slices(const Slice *part, int NB, 
   const int c = p / H, hi = p - c * H;
   const Slice *src = part + static_cast<size_t>(p) * NB;
   Slice s;
-  for (int tb = 0; tb < NB; ++tb) {
+  for (int tb = 0; tb < NB; ++tb)
     s.acc.merge(src[tb].acc);
-    s.cost.merge(src[tb].cost);
-  }
   out[c].acc[hi] = s.acc;
-  out[c].cost[hi] = s.cost;
 }
 
 } // namespace k
@@ -179,15 +143,14 @@ inline Work plan(int C, int T, int A, int H, int t_lo) {
   return w;
 }
 
-// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + hd.n 组预处理标签 + 成本 → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo
-inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t0_abs, const Holds &hd, const Label *lab, const Cost &cost,
-                 uint16_t *rx, Slice *part, Result *out, cudaStream_t stream) {
+// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + hd.n 组预处理标签 → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo
+inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t0_abs, const Holds &hd, const Label *lab, uint16_t *rx, Slice *part,
+                 Result *out, cudaStream_t stream) {
   factor::stat::assert_holds(hd);
   assert(B.C == w.C && hd.n == w.H && g && rx && part && out && t0_abs >= 0);
-  assert(cost.buy && cost.sell && cost.m);
   factor::gpu::stat::rank_x(B, g, f, w.T, w.A, rx, stream);
   const dim3 grid(static_cast<unsigned>((w.C + kWarps - 1) / kWarps), static_cast<unsigned>(w.NB), static_cast<unsigned>(w.H));
-  k::stat_batch<<<grid, kWB, 0, stream>>>(f, rx, w.C, w.T, w.A, t0_abs, w.t_lo, hd, factor::gpu::stat::label_set(hd, lab), cost, w.NB, part);
+  k::stat_batch<<<grid, kWB, 0, stream>>>(f, rx, w.C, w.T, w.A, t0_abs, w.t_lo, hd, factor::gpu::stat::label_set(hd, lab), w.NB, part);
   FACTOR_CUDA_OK(cudaGetLastError());
   const int P = w.C * w.H;
   k::reduce_slices<<<(P + kWB - 1) / kWB, kWB, 0, stream>>>(part, w.NB, w.C, w.H, out);

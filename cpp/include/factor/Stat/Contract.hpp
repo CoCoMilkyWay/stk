@@ -60,16 +60,17 @@
 //     ls_mean / ls_t (同上折算) / ls_pos = ls>0 占比 / sharpe = mean/std · √(kDaysPerYear · kSegLen / h) (按持有期为一期年化)
 //     beta   ls 对 mkt 的 OLS 斜率 (alpha 略: beta ≈ 0 时 alpha ≈ ls_mean)
 //     grp[k] 各组沿 t 池化均值 (Σ grp / Σ cnt; 全程无样本 → 0); mono = Spearman(组号, grp[k])
-//     n < 3 → 标签侧 (ric / ls / grp / mono) 全 0; n_rac < 3 → rac 全 0 (消费端先看对应计数)
+//     leg    平均每 ok 行一腿成员数 = (Σ cnt[0] + Σ cnt[K−1]) / (2n). 资金利用率 util_of = min(leg / n_full, 1), n_full = 满仓一腿只数
+//            (调用方按池宽定: 池内平均有效票数 / kGroups; CS 因子恒 ≈ 1): 稀疏触发 (TS 门控 / 极端阈值) 的因子 util → 0, 不需样本数硬阈值
+//     n < 3 → 标签侧 (ric / ls / grp / mono / leg) 全 0; n_rac < 3 → rac 全 0 (消费端先看对应计数)
 //     累加器 Accum 可合并: 行区间并行各攒一份 merge; 超大张量沿 T 分块流式时跨块续攒, 不必落 Row
 //
-//   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Search 打分 / Inspect 期限结构净线) 在二级上扣, 两处**同一份**定义:
+//   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Inspect 期限结构净线) 在二级上扣 (Search 不看成本, 只评排序):
 //     交易的只是顶组 (做多腿) 与底组 (做空腿). 每 (t, h) 行, 组内成员 = rx 有效 ∧ 成本有效的格; 其中 t−h 时不在该组 (含当时 rank 无效) 的
 //     记作**新进者** (cost_cell), 只有新进者付一次往返 = 建仓冲击 (顶组 buy[a] / 底组 sell[a], 单一金额档, 买入已按 Config::max_impact 封顶)
 //     + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc 沿 t 池化 → 每期每成员均摊成本 (long_cost / short_cost) =
 //     (Σ新进者冲击 + 新进者数 · sell_impact) / 组内样本数. 只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关).
-//     净多空 net_ls_period = ls_mean − long_cost − short_cost; 年化 net_ls = × periods_per_year(h) (跨 h 比单位资金年收益).
-//     资金利用率 util = 平均每行一腿成员数 / 满仓只数 (CostAcc::rows 计行): 净多空是"每期每成员"口径, 乘 util 才是固定资金上的钱.
+//     净多空 net_ls_period = ls_mean − long_cost − short_cost; 年化 net_ls = × periods_per_year(h).
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
@@ -199,10 +200,17 @@ struct HoldStat {
   int hold = 0, n = 0, n_rac = 0;
   Moments ric, rac;
   float ls_mean = 0.f, ls_t = 0.f, ls_pos = 0.f, sharpe = 0.f, beta = 0.f, mono = 0.f;
+  float leg = 0.f;         // 平均每 ok 行一腿成员数 (顶 / 底组计数的平均; util_of 的分子)
   float grp[kGroups] = {}; // 池化组均值
 };
 // 每年持有期数 = kDaysPerYear · kSegLen / h (一年 242 个交易日, 一天 kSegLen 分钟): 年化 (sharpe / 换手 / 均值超额) 统一走这一个
 inline constexpr double periods_per_year(int hold) { return static_cast<double>(kDaysPerYear) * kSegLen / hold_minutes(hold); }
+// 资金利用率 ∈ [0,1] = 平均每行一腿成员数 / 满仓一腿只数 n_full, 封顶 1 (见文件头【二级 HoldStat】leg); n < 3 → 0
+inline double util_of(const HoldStat &s, double n_full) {
+  assert(n_full > 0.0);
+  const double u = static_cast<double>(s.leg) / n_full;
+  return u < 1.0 ? u : 1.0;
+}
 // 年化换手 (倍/年) = 每持有期换手 (1 − rAC 均值, 秩重排占比) × 每年持有期数.
 // rAC 的 lag = h 随持有期变, 本身不可跨期比; 折到同一时间轴后可比, 越低越好. 派生量, 不落 HoldStat / 文件
 inline double turnover_annual(const HoldStat &s) { return (1.0 - s.rac.mean) * periods_per_year(s.hold); }
@@ -239,7 +247,7 @@ FACTOR_HD inline int grp_of(unsigned r16) {
 // 段末尾部 (exit 锚点 = 行 t+h 的锚点越过最后可成交锚点 → 标签持有到收盘, 持有期缩短) → 掩掉; 日级档无尾部
 FACTOR_HD inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen + hold > kLastAnchorRow; }
 
-// ---- 换手成本 (见文件头【换手成本】; Search 打分 / Inspect 期限结构净线共用) ----
+// ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线共用) ----
 
 // 单一金额档的建仓冲击: 三张 [T][A] 平面的指针 (宿主或设备, 由后端定)
 struct Cost {
@@ -268,22 +276,12 @@ struct CostAcc {
   double buy_hi = 0.0, sell_lo = 0.0; // 顶组新进者 Σ买入冲击 / 底组新进者 Σ卖出冲击
   long long n_hi = 0, n_lo = 0;       // 组内样本数 (rx 有效 ∧ 成本有效; 分母)
   long long e_hi = 0, e_lo = 0;       // 其中新进者数 (t−h 时不在该组)
-  long long rows = 0;                 // 攒过的行数 (有 lag 的行各计一次; 资金利用率 util 的分母)
+  long long rows = 0;                 // 攒过的行数 (有 lag 的行各计一次)
   FACTOR_HD void merge(const CostAcc &o) {
     buy_hi += o.buy_hi, sell_lo += o.sell_lo;
     n_hi += o.n_hi, n_lo += o.n_lo;
     e_hi += o.e_hi, e_lo += o.e_lo;
     rows += o.rows;
-  }
-  // 资金利用率 ∈ [0,1]: 平均每行一腿的可交易成员数 / 满仓一腿只数 n_full, 封顶 1. 目标函数量的是固定资金上的钱, 闲置资金记 0:
-  //   稀疏触发 (TS 门控 / 极端阈值) 的候选 util → 0 自然出局, 不需要样本数 / 显著性硬阈值. n_full 由调用方按池宽定 (Search: 池内平均有效票数 / kGroups)
-  double util(double n_full) const {
-    assert(n_full > 0.0);
-    if (rows <= 0)
-      return 0.0;
-    const double per_leg = static_cast<double>(n_hi + n_lo) / (2.0 * static_cast<double>(rows));
-    const double u = per_leg / n_full;
-    return u < 1.0 ? u : 1.0;
   }
   // 每期每成员均摊成本 (一腿): (Σ建仓冲击 + 新进者数 · 平仓冲击) / 组内样本数; 组无样本 → 0
   double long_cost(double sell_impact) const { return n_hi > 0 ? (buy_hi + e_hi * sell_impact) / static_cast<double>(n_hi) : 0.0; }
@@ -472,6 +470,7 @@ struct Accum {
     for (int k = 0; k < kGroups; ++k)
       s.grp[k] = static_cast<float>(g[k]);
     s.mono = static_cast<float>(mono_of(g, kGroups));
+    s.leg = static_cast<float>(static_cast<double>(sc[0] + sc[kGroups - 1]) / (2.0 * nn));
     return s;
   }
 };

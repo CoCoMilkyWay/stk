@@ -248,7 +248,7 @@ TaskHandle CreateFactorsTask() {
           fs.RequestCancel();
         } else if (action == 3) {
           Factors::SearchRequest req;
-          if (Factors::MakeSearchRequest(data, state->factors_ui.opt_row, state->factors_ui.backend == 1, state->factors_ui.opt_cost_idx, req))
+          if (Factors::MakeSearchRequest(data, state->factors_ui.opt_row, state->factors_ui.backend == 1, state->factors_ui.opt_hold, req))
             ss.Request(req);
         } else if (action == -3) {
           ss.RequestCancel();

@@ -160,8 +160,8 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
     };
     cmp_mom(a.ric, b.ric);
     cmp_mom(a.rac, b.rac);
-    const float fa[] = {a.ls_mean, a.ls_t, a.ls_pos, a.sharpe, a.beta, a.mono};
-    const float fb[] = {b.ls_mean, b.ls_t, b.ls_pos, b.sharpe, b.beta, b.mono};
+    const float fa[] = {a.ls_mean, a.ls_t, a.ls_pos, a.sharpe, a.beta, a.mono, a.leg};
+    const float fb[] = {b.ls_mean, b.ls_t, b.ls_pos, b.sharpe, b.beta, b.mono, b.leg};
     for (size_t j = 0; j < sizeof(fa) / sizeof(fa[0]); ++j)
       detail::cmp1(d, fa[j], fb[j], tol, i);
     for (int k = 0; k < kGroups; ++k)

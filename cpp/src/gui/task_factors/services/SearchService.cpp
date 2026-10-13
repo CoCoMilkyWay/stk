@@ -58,10 +58,9 @@ struct Entry {
   int pass = -1; // 评过的趟; -1 = 待评
 };
 
-// 分支 (粗网格后): 支内 h 固定
+// 分支 (粗网格后)
 struct Branch {
   std::vector<double> center;
-  int hi = -1;
   double best = 0.0, step = 0.5;
   bool alive = true;
 };
@@ -82,7 +81,7 @@ struct SearchService::Flow {
   Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
 };
 
-bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, int cost_idx, SearchRequest &req) {
+bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, int hold, SearchRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Optimize 只接有效 alpha 行");
   req = SearchRequest{};
   req.factor_dir = data.config.factor_dir + "/" + data.config.universe;
@@ -90,9 +89,7 @@ bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, i
   req.expr = row.expr;
   req.frame = row.frame;
   req.gpu = gpu;
-  req.cost_idx = cost_idx;
-  req.sell_impact = data.config.sell_impact;
-  req.max_impact = data.config.max_impact;
+  req.hold = hold;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
@@ -169,23 +166,19 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
   const int A = static_cast<int>(req.scope.uni.size());
-  const int H = static_cast<int>(feats_.labels.size());
-  assert(H >= 1 && H <= fs::kMaxHold);
-  assert(req.cost_idx >= 0 && req.cost_idx < static_cast<int>(feats_.costs.size()) && "金额档下标越界");
+  constexpr int H = 1; // 一次搜索一个固定持有期 (契约【目标】)
   fs::Holds hd;
   hd.n = H;
-  for (int hi = 0; hi < H; ++hi)
-    hd.h[hi] = feats_.labels[static_cast<size_t>(hi)].hold;
+  hd.h[0] = req.hold;
   fs::assert_holds(hd);
   assert(factor::search::max_lag(hd) <= kCarryDays * factor::kSegLen && "carry 不够 rAC 的 lag");
-  factor::search::Objective obj; // n_full 装了块 0 后按池宽填 (见下【尺度】前); hold 窗 / ric_pow 取契约默认
-  obj.sell_impact = req.sell_impact;
+  factor::search::Objective obj; // n_full 装了块 0 后按池宽填 (见下【尺度】前); ric_pow 取契约默认
 
   SearchResult res;
   res.file = req.file;
   res.expr0 = req.expr;
   res.backend = req.gpu ? "gpu" : "cpu";
-  res.hd = hd;
+  res.hold = req.hold;
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
   // ---- 表达式 + 可搜槽 ----
@@ -228,9 +221,9 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       c.expr = en.e.canon;
       c.u = en.u;
       c.pass = en.pass;
-      c.best_hi = en.sc.best;
+      c.ok = en.sc.ok;
       c.score = en.sc.score;
-      c.ls_net = en.sc.ls_net;
+      c.ls = en.sc.ls;
       c.util = en.sc.util;
       c.ric = en.sc.ric;
       res.cands.push_back(std::move(c));
@@ -258,14 +251,13 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   const int days = static_cast<int>(dates.size());
 
   // ---- 分块与预算 (字节 / 格; 见头文件【分块流式】) ----
-  //   L0  宿主 Loaded: 特征 (v+m) 5·nf + 截面门控 5 + 标签 (lv,sv,m) 5·H + 成本 (全部金额档) 5·Cc
+  //   L0  宿主 Loaded: 特征 (v+m) 5·nf + 截面门控 5 + 标签 (lv,sv,m) 5·H
   //   Wc  CPU 工作区: ry 2·H + ws 2 + 池 (s0+2)·5
-  //   F0  设备常驻: 特征 5·nf + 门控 1 + 搜索会话标签 (lv,sv,m,ry) 7·H + 一档成本 5; 每候选 7 (根平面 5 + rx 2); 中间量 2·s0 槽
-  const int Cc = static_cast<int>(feats_.costs.size());
+  //   F0  设备常驻: 特征 5·nf + 门控 1 + 搜索会话标签 (lv,sv,m,ry) 7·H; 每候选 7 (根平面 5 + rx 2); 中间量 2·s0 槽
   const double per_day = static_cast<double>(factor::kSegLen) * A;
-  const double L0 = 5.0 * nf + 5.0 + 5.0 * H + 5.0 * Cc;
+  const double L0 = 5.0 * nf + 5.0 + 5.0 * H;
   const double Wc = 2.0 * H + 2.0 + 5.0 * (s0 + 2);
-  const double F0 = 5.0 * nf + 1.0 + 7.0 * H + 5.0;
+  const double F0 = 5.0 * nf + 1.0 + 7.0 * H;
   const MemoryUsage mu = memory_usage();
   const double host_budget = kHostFrac * static_cast<double>(mu.total_bytes - mu.used_bytes);
   int D = std::clamp(static_cast<int>(host_budget / (per_day * (L0 + (req.gpu ? 0.0 : Wc)))) - kCarryDays, 1, days);
@@ -305,12 +297,12 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     cd.ry.clear();
     cd.L = Loaded{};
     init_loaded(feats_, day1 - load0, A, cd.L);
-    cd.L.max_impact = static_cast<float>(req.max_impact);
+    select_hold(feats_, req.hold, cd.L);
     cd.L.feat_codes = d0.feats;
     status_.store(SearchStatus::Loading, std::memory_order_release);
     total_.store(day1 - load0, std::memory_order_relaxed);
     done_.store(0, std::memory_order_relaxed);
-    if (!load_planes(feats_, reader, cdates, cd.L, F.ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/false)) {
+    if (!load_planes(feats_, reader, cdates, cd.L, F.ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/false, /*with_index=*/false)) {
       if (reader.stale()) {
         res.message = "特征库判废 (子轴/字段表与当前不符), 需重算特征";
         publish();
@@ -354,8 +346,6 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       const LabelPlane &p = L.labels[static_cast<size_t>(hi)];
       lab[hi] = {p.lv.data(), p.sv.data(), p.m.data(), cd.ry[static_cast<size_t>(hi)].data()};
     }
-    const CostPlane &cp = L.costs[static_cast<size_t>(req.cost_idx)];
-    const factor::search::Cost cost{cp.buy.data(), cp.sell.data(), cp.m.data()};
     if (F.sc.size() < static_cast<size_t>(nt))
       F.sc.resize(static_cast<size_t>(nt));
     for (size_t b0 = 0; b0 < ids.size(); b0 += kCpuForest) {
@@ -390,7 +380,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
           if (Fd.roots[k - b0] != i)
             continue;
           Result out;
-          factor::cpu::search::run(F.ex, 1, &xv, &xm, L.cs.m.data(), req.frame, T, A, cd.t0_abs, cd.t_lo, hd, lab, cost, F.w, &out);
+          factor::cpu::search::run(F.ex, 1, &xv, &xm, L.cs.m.data(), req.frame, T, A, cd.t0_abs, cd.t_lo, hd, lab, F.w, &out);
           ents[static_cast<size_t>(ids[k])].r.merge(out, H);
           done_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -414,10 +404,8 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       const LabelPlane &p = L.labels[static_cast<size_t>(hi)];
       lab[hi] = {p.lv.data(), p.sv.data(), p.m.data(), nullptr};
     }
-    const CostPlane &cp = L.costs[static_cast<size_t>(req.cost_idx)];
-    const factor::search::Cost cost{cp.buy.data(), cp.sell.data(), cp.m.data()};
     factor::gpu::SearchSession *ss = factor::gpu::search_open(T, A, batch, hd);
-    factor::gpu::search_load(ss, lab, cost);
+    factor::gpu::search_load(ss, lab);
     factor::gpu::DevPool pool;
     std::vector<Result> out(static_cast<size_t>(batch));
     std::vector<const factor::gpu::DevPlane *> roots(static_cast<size_t>(batch));
@@ -507,7 +495,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     }
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
-      en.sc = factor::search::score_of(en.r, hd, obj);
+      en.sc = factor::search::score_of(en.r, hd, 0, obj);
       en.pass = pass;
     }
     res.n_pass = pass + 1;
@@ -612,7 +600,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   if (handle(run_pass(ids, 0), ret))
     return ret;
 
-  // ---- 分支: 互不相邻的 top-kBranches, 支内 h 固定 ----
+  // ---- 分支: 互不相邻的 top-kBranches ----
   std::vector<double> lscore(lattice.size(), -std::numeric_limits<double>::infinity());
   for (size_t li = 0; li < lattice.size(); ++li)
     if (lattice_id[li] >= 0)
@@ -622,13 +610,12 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     const Entry &en = ents[static_cast<size_t>(lattice_id[static_cast<size_t>(li)])];
     Branch b;
     b.center = en.u;
-    b.hi = en.sc.best;
     b.best = en.sc.score;
     b.step = coarse.step * 0.5;
     branches.push_back(std::move(b));
   }
   if (branches.empty())
-    return abort_with("粗网格无一候选有正分 (净 LS ≤ 0 或 IC ≤ 0), 文件不动");
+    return abort_with("粗网格无一候选有正分 (LS ≤ 0 或 IC ≤ 0), 文件不动");
 
   // ---- 趟 1..: 每支围 top-1 细化 (点数 ≤ kLayerMax), 步长减半, 增益 < kMinGain 停 ----
   for (int level = 1; level <= grid::kMaxLevels; ++level) {
@@ -657,7 +644,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       int best_id = -1;
       double best = -std::numeric_limits<double>::infinity();
       for (int id : pts[bi]) {
-        const double sc = factor::search::score_at(ents[static_cast<size_t>(id)].sc, b.hi, obj);
+        const double sc = ents[static_cast<size_t>(id)].sc.score;
         if (sc > best)
           best = sc, best_id = id;
       }
@@ -677,7 +664,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       break;
   }
 
-  // ---- 终: 全部候选按自选 h* 的 score 取最优; 严格好于基线才落盘 (基线在粗网格里评过, 它的 score 就是门槛; 基线 −∞ 时任一有限分即过) ----
+  // ---- 终: 全部候选按 score 取最优; 严格好于基线才落盘 (基线在粗网格里评过, 它的 score 就是门槛; 基线 −∞ 时任一有限分即过) ----
   int best_id = -1;
   for (size_t i = 0; i < ents.size(); ++i)
     if (ents[i].pass >= 0 && std::isfinite(ents[i].sc.score) && (best_id < 0 || ents[i].sc.score > ents[static_cast<size_t>(best_id)].sc.score))
@@ -688,9 +675,9 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   assert(base.pass >= 0 && "基线在粗网格 (趟 0) 必评过");
   if (!(best.sc.score > base.sc.score))
     return abort_with("当前参数已是最优 (无候选 score 严格高于基线), 文件不动");
-  WriteFactorParams(req.factor_dir, req.file, best.e); // 只写参数; h* / util 等看板数据由随后的 Run 用同一份目标从 stat 算
+  WriteFactorParams(req.factor_dir, req.file, best.e); // 只写参数; score / util 等看板数据由随后的 Run 用同一份目标从 stat 算
   res.wrote = true;
-  res.message = "params 已写入 (h* = " + fs::hold_name(hd.h[best.sc.best]) + "), 自动 Run 重算 stat";
+  res.message = "params 已写入 (h = " + fs::hold_name(req.hold) + "), 自动 Run 重算 stat";
   publish();
   return true;
 }

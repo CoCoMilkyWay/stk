@@ -86,18 +86,18 @@ void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::sta
 void stat_close(StatSession *s);
 
 // Search 批评估算子 (factor/Search/Gpu.cuh; 契约 factor/Search/Contract.hpp): 一个会话 = 一块 (chunk) 的形状 (T, A) + 候选上限 Cmax + 持有期,
-// 显存 open 时一次分配 (标签 / 成本 / ry / rx[Cmax] / 分片 / 结果). 流程: open → 每块 load (上传宿主标签 hd.n 组 + 宿主成本单一金额档,
-// ry 预处理, 候选共用) → 每批 eval (C ≤ Cmax 张设备常驻候选平面 (DAG 根槽) + 池掩码 g → out[C] 宿主 Result; t0_abs / t_lo 见契约
-// 【分块流式】) → close. prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
+// 显存 open 时一次分配 (标签 / ry / rx[Cmax] / 分片 / 结果). 流程: open → 每块 load (上传宿主标签 hd.n 组, ry 预处理, 候选共用) →
+// 每批 eval (C ≤ Cmax 张设备常驻候选平面 (DAG 根槽) + 池掩码 g → out[C] 宿主 Result; t0_abs / t_lo 见契约【分块流式】) → close.
+// prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
 struct SearchSession;
 SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd);
-void search_load(SearchSession *s, const factor::stat::Label *lab, const factor::search::Cost &cost, double *prep_ms = nullptr);
+void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_ms = nullptr);
 void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo,
                  factor::search::Result *out, double *eval_ms = nullptr);
 void search_close(SearchSession *s);
 // 一次性版 (op_check 用): 宿主指针进出 (xv[c] / xm[c] 各一张 [T][A]), 内部 open + 上传 + load + eval + close
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int t0_abs,
-                int t_lo, const factor::stat::Holds &hd, const factor::stat::Label *lab, const factor::search::Cost &cost,
-                factor::search::Result *out, double *prep_ms = nullptr, double *eval_ms = nullptr);
+                int t_lo, const factor::stat::Holds &hd, const factor::stat::Label *lab, factor::search::Result *out, double *prep_ms = nullptr,
+                double *eval_ms = nullptr);
 
 } // namespace factor::gpu

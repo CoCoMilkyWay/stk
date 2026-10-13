@@ -407,14 +407,11 @@ void run_stat(const float *xv, const uint8_t *xm, const uint8_t *gm, factor::sta
   x.free_(), m.free_(), g.free_();
 }
 
-// Search 会话: 一块的标签 / 成本 + Cmax 候选的 rx 工作区 + 分片 / 结果, open 时全部分配; load 只拷入 + 预处理
+// Search 会话: 一块的标签 + Cmax 候选的 rx 工作区 + 分片 / 结果, open 时全部分配; load 只拷入 + 预处理
 struct SearchSession {
   int T = 0, A = 0, Cmax = 0;
   factor::stat::Holds hd;
   DevLabels lab;
-  DevBuf<uint16_t> cb, cs;
-  DevBuf<uint8_t> cm;
-  factor::search::Cost cost;
   DevBuf<uint16_t> rx;
   DevBuf<search::Slice> part;
   DevBuf<factor::search::Result> out;
@@ -429,8 +426,6 @@ SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd
   SearchSession *s = new SearchSession;
   s->T = T, s->A = A, s->Cmax = Cmax, s->hd = hd;
   s->lab.alloc(hd.n, n);
-  s->cb.alloc(n), s->cs.alloc(n), s->cm.alloc(n);
-  s->cost = {s->cb.p, s->cs.p, s->cm.p};
   const search::Work w = search::plan(Cmax, T, A, hd.n, 0); // t_lo = 0 是分片数上界
   s->rx.alloc(w.rx_elems());
   s->part.alloc(w.part_elems());
@@ -438,10 +433,8 @@ SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd
   return s;
 }
 
-void search_load(SearchSession *s, const factor::stat::Label *lab, const factor::search::Cost &cost, double *prep_ms) {
-  assert(s && lab && cost.buy && cost.sell && cost.m);
-  const size_t n = static_cast<size_t>(s->T) * s->A;
-  s->cb.put(cost.buy, n), s->cs.put(cost.sell, n), s->cm.put(cost.m, n);
+void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_ms) {
+  assert(s && lab);
   const double pms = s->lab.load(lab, s->T, s->A, s->tm);
   if (prep_ms)
     *prep_ms = pms;
@@ -460,7 +453,7 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
   const search::Work w = search::plan(C, s->T, s->A, s->hd.n, t_lo);
   if (eval_ms)
     s->tm.begin();
-  search::eval(B, g->m, f, w, t0_abs, s->hd, s->lab.L, s->cost, s->rx.p, s->part.p, s->out.p, nullptr);
+  search::eval(B, g->m, f, w, t0_abs, s->hd, s->lab.L, s->rx.p, s->part.p, s->out.p, nullptr);
   if (eval_ms)
     *eval_ms = s->tm.end();
   s->out.down(out, w.out_elems()); // D2H 自带同步; Result 是 POD, 设备格式 = 宿主格式
@@ -469,14 +462,13 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
 void search_close(SearchSession *s) {
   assert(s);
   s->out.free_(), s->part.free_(), s->rx.free_();
-  s->cb.free_(), s->cs.free_(), s->cm.free_();
   s->lab.free_();
   delete s;
 }
 
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int t0_abs,
-                int t_lo, const factor::stat::Holds &hd, const factor::stat::Label *lab, const factor::search::Cost &cost,
-                factor::search::Result *out, double *prep_ms, double *eval_ms) {
+                int t_lo, const factor::stat::Holds &hd, const factor::stat::Label *lab, factor::search::Result *out, double *prep_ms,
+                double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = static_cast<size_t>(T) * A;
   std::vector<DevBuf<float>> x(static_cast<size_t>(C));
@@ -492,7 +484,7 @@ void run_search(int C, const float *const *xv, const uint8_t *const *xm, const u
   g.up(gm, n);
   const DevPlane gp{nullptr, g.p};
   SearchSession *s = search_open(T, A, C, hd);
-  search_load(s, lab, cost, prep_ms);
+  search_load(s, lab, prep_ms);
   search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, out, eval_ms);
   search_close(s);
   for (int c = 0; c < C; ++c)

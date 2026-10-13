@@ -812,8 +812,7 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
 // 三组 × (毛 + 全部冲击档) 一次画全 (档越高线越细越淡), 成本只在这张图出现; L / S 默认隐藏, 点图例切 (图例项 = 组 × 档).
 // 口径 = 全 universe 全时刻池化 (HoldStat::grp = Σ 组内超额 / Σ 组样本数; ls_mean = 逐 t ls 的时间均值), 不是逐资产信号平均.
-// 净档 = 毛二级 − 该持有期两腿均摊换手成本 (Stat 契约【换手成本】CostAcc::long_cost / short_cost, 含 sell_impact; LS = net_ls_period, 与 Search
-//   打分同一式): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (档, h) 一份 CostAcc.
+// 净档 = 毛二级 − 该持有期两腿均摊换手成本 (Stat 契约【换手成本】CostAcc::long_cost / short_cost, 含 sell_impact; LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (档, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是 t ≥ h 的 rx ∧ 成本有效格, 两者不完全重合 —— entry 成本与标签无关
 // hs[n_hold] 毛二级; costs[n_cost] 可空 (旧文件 stat 无 costs). n < 3 的持有期不作节点.
 // 悬停: 就近命中一个可见节点 (组 × 档 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的单边账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 (LS × 2 腿) = 画的年化

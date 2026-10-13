@@ -229,10 +229,10 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
   row.detail += '\n' + holds;
 }
 
-// Search 批评估算子 (与 op_check check_search 同口径): 两口径各造数 (Stat 造数 + kCands 张派生候选 + 成本); golden = Stat CPU
-// 每候选 HoldStat + 朴素成本池化. cpu / gpu 各算 整块 + 两块 (带 carry): cpu_chk = cpu 整块 vs golden + 两块 merge vs 整块;
+// Search 批评估算子 (与 op_check check_search 同口径): 两口径各造数 (Stat 造数 + kCands 张派生候选); golden = Stat CPU
+// 每候选 HoldStat. cpu / gpu 各算 整块 + 两块 (带 carry): cpu_chk = cpu 整块 vs golden + 两块 merge vs 整块;
 // gpu_chk = gpu 整块 vs cpu 整块 + 两块 merge vs 整块. 表列耗时 = 两口径整块 eval 之和 (kCands 张候选一批; 分块两趟只对拍不计时);
-// detail = prep 耗时 (CS 那轮) + 两口径每候选的 cpu 侧得分 (Objective 默认: 净多空 = 毛 − 池化成本)
+// detail = prep 耗时 (CS 那轮) + 两口径每候选每持有期的 cpu 侧得分 (毛 LS · util · rIC; n_full = A / kGroups)
 void run_search(RoundCtx &R, OperatorRow &row) {
   namespace sk = factor::search::check;
   const bool has_gpu = factor::gpu::available();
@@ -275,13 +275,12 @@ void run_search(RoundCtx &R, OperatorRow &row) {
       judge(row.cpu_chk, ref, full, c1, c2);
     }
     detail_line(scores, "%s", factor::stat::frame_name(fr));
-    for (int c = 0; c < sk::kCands; ++c) {
-      const factor::search::Score s = factor::search::score_of(full[c], hd, factor::search::Objective{});
-      const factor::search::CostAcc &ca = full[c].cost[s.best >= 0 ? s.best : 0];
-      detail_line(scores, "  c%d  best h=%-5s ls_net/yr %+.4f util %.2f rIC %+.4f score %+.3g | turn hi %.3f lo %.3f  buy %.5f (%lld) sell %.5f (%lld)", c,
-                  s.best >= 0 ? factor::stat::hold_name(hd.h[s.best]).c_str() : "-", s.ls_net, s.util, s.ric, s.score, ca.turn_hi(), ca.turn_lo(),
-                  ca.buy_mean(), ca.e_hi, ca.sell_mean(), ca.e_lo);
-    }
+    for (int c = 0; c < sk::kCands; ++c)
+      for (int hi = 0; hi < hd.n; ++hi) {
+        const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{.n_full = A / 20.0});
+        detail_line(scores, "  c%d  h=%-5s ls %+.5f util %.2f rIC %+.4f score %+.3g", c, factor::stat::hold_name(hd.h[hi]).c_str(), s.ls, s.util, s.ric,
+                    s.score);
+      }
     if (!has_gpu)
       continue;
     {
@@ -296,9 +295,7 @@ void run_search(RoundCtx &R, OperatorRow &row) {
         }
         for (int c = 0; c < sk::kCands; ++c)
           xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-        const factor::search::Cost cost{d.buy.data() + off, d.sell.data() + off, d.cm.data() + off};
-        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), cost, out, prep_ms,
-                                eval_ms);
+        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), out, prep_ms, eval_ms);
       };
       sk::Ref cpu_ref[sk::kCands]; // gpu 的 golden = cpu 整块
       for (int c = 0; c < sk::kCands; ++c)
@@ -346,21 +343,21 @@ OperatorsService::OperatorsService() {
     runners_.push_back(&run_stat);
   }
   {
-    OperatorRow s; // 三元 = 一批候选 x_c + 每持有期一组标签 y_h + 成本 κ (共用); 输出 = 每候选每持有期的实数累加
+    OperatorRow s; // 二元 = 一批候选 x_c + 每持有期一组标签 y_h (共用); 输出 = 每候选每持有期的实数累加
     s.e_name = "Search";
     s.c_name = "批评估";
-    s.arity = 3;
+    s.arity = 2;
     s.params = "";
-    s.operand = R"tex(x_c, y_h \in \mathbb{R},\; \kappa \in \mathbb{R}_{\ge 0})tex";
+    s.operand = R"tex(x_c, y_h \in \mathbb{R})tex";
     s.out = factor::Dom::REAL;
-    s.op = R"tex(\Sigma_t\,\mathrm{row}_t(x_c, y_h),\; \bar\kappa_{\mathrm{top}},\, \bar\kappa_{\mathrm{bot}})tex";
-    s.note = "挖掘批评估: 每候选每持有期沿 t 累加 (分块带 carry 可合并) + 顶底组成本池化; golden = Stat";
-    s.doc = "挖掘批评估算子 (factor/Search): 一批候选平面 x_c (c < C) 共用标签 y_h 与成本 κ, 每候选每持有期一份沿 t 可合并的 Accum "
-            "(= Stat 的 Row 累加) + 顶组买入 / 底组卖出成本两格池化 (κ̄_top / κ̄_bot). 持有期集合同 Stat.\n"
+    s.op = R"tex(\Sigma_t\,\mathrm{row}_t(x_c, y_h))tex";
+    s.note = "挖掘批评估: 每候选每持有期沿 t 累加 (分块带 carry 可合并); golden = Stat";
+    s.doc = "挖掘批评估算子 (factor/Search): 一批候选平面 x_c (c < C) 共用标签 y_h, 每候选每持有期一份沿 t 可合并的 Accum "
+            "(= Stat 的 Row 累加), 不落 Row. 持有期集合同 Stat (Search 服务只传一个).\n"
             "分块流式: 块带 carry (≥ max_lag) 接上一块, 统计从 t_lo 起, 各块 Result merge ≡ 整块一次算.\n"
-            "golden = Stat CPU 对每张候选的 HoldStat + 朴素成本池化 (Stat 自身已 gpu ↔ cpu 对拍过):\n"
+            "golden = Stat CPU 对每张候选的 HoldStat (Stat 自身已 gpu ↔ cpu 对拍过):\n"
             "  CPU 列 Diff = cpu 整块 vs golden + 两块 merge vs 整块; GPU 列 Diff = gpu 整块 vs cpu 整块 + 两块 merge vs 整块; 两口径 × 候选合并.\n"
-            "造数沿用 Stat (候选 = CS {x, −x, x²} / TS {x, 1−x, x²}; 成本 = POS 造数 × 1e-3 / 1.5e-3 经 fp16).\n"
+            "造数沿用 Stat (候选 = CS {x, −x, x²} / TS {x, 1−x, x²}).\n"
             "表列耗时 = 两口径整块 eval 之和 (全部候选一批; 分块两趟只对拍不计时), 不含 prep.";
     s.classified = false;
     rows.push_back(s);

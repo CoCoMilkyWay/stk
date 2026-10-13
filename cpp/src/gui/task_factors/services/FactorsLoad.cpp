@@ -35,8 +35,25 @@ void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L) {
   L.n_hold = static_cast<int>(ft.labels.size());
   assert(L.n_hold >= 1 && L.n_hold <= factor::stat::kMaxHold && "持有期数超 Stat 标签组容量 (kMaxHold)");
   L.hd.n = L.n_hold;
-  for (int hi = 0; hi < L.n_hold; ++hi)
+  L.label_idx.resize(static_cast<size_t>(L.n_hold));
+  for (int hi = 0; hi < L.n_hold; ++hi) {
     L.hd.h[hi] = ft.labels[static_cast<size_t>(hi)].hold;
+    L.label_idx[static_cast<size_t>(hi)] = hi;
+  }
+  factor::stat::assert_holds(L.hd);
+}
+
+void select_hold(const FeatureTable &ft, int hold, Loaded &L) {
+  assert(L.labels.empty() && "装载后不能再收窄");
+  int idx = -1;
+  for (size_t i = 0; i < ft.labels.size(); ++i)
+    if (ft.labels[i].hold == hold)
+      idx = static_cast<int>(i);
+  assert(idx >= 0 && "持有期不在字段表里");
+  L.n_hold = 1;
+  L.hd.n = 1;
+  L.hd.h[0] = hold;
+  L.label_idx.assign(1, idx);
   factor::stat::assert_holds(L.hd);
 }
 
@@ -61,11 +78,15 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     assert(fc && fc->allowed);
     cols.push_back(fc->col), vts.push_back(fc->vt);
   }
-  if (with_labels)
-    for (const LabelCol &lc : ft.labels) {
+  if (with_labels) {
+    assert(L.label_idx.size() == H);
+    for (size_t h = 0; h < H; ++h) {
+      const LabelCol &lc = ft.labels[static_cast<size_t>(L.label_idx[h])];
+      assert(lc.hold == L.hd.h[h]);
       cols.push_back(lc.long_col), vts.push_back(ft.cols[lc.long_col].vt);
       cols.push_back(lc.short_col), vts.push_back(ft.cols[lc.short_col].vt);
     }
+  }
   if (with_costs)
     for (const CostCol &cc : ft.costs) {
       cols.push_back(cc.buy_col), vts.push_back(ft.cols[cc.buy_col].vt);

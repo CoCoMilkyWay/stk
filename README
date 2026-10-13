@@ -118,10 +118,10 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (三子页)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
-│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫因子文件 → 合成共享 DAG 评估 (毛 HoldStat + 每档换手成本 CostAcc) → 只回写 params / stat (expr 不动, 破碎标 BROKEN 不删); 看板 h* / util 由 stat 现算
+│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫因子文件 → 合成共享 DAG 评估 (毛 HoldStat + 每档换手成本 CostAcc) → 只回写 params / stat (expr 不动, 破碎标 BROKEN 不删); 看板 score / util 由 stat 现算
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (三服务共用): 特征 / 门控 / 标签 / 成本 宿主平面; n_full_of 满仓只数; cost_tiers 换手成本 (Run / Inspect 同一份)
-│   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件; 期限结构净线的换手成本与 Search 同一份 (Stat cost_row)
-│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 粗网格 (含基线) → 多支逐层细化; 目标 = 年化净 LS · 资金利用率 · rIC, h* 限 30m~T+1; 严格好于基线才回写 params (分数只内部用)
+│   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件; 期限结构净线的换手成本 (Stat cost_row, 与 Run 同一份)
+│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 粗网格 (含基线) → 多支逐层细化; 一次一个固定持有期 (UI Hold), 目标 = 毛 LS · 资金利用率 · rIC (不看成本, 不跨 h 比); 严格好于基线才回写 params (分数只内部用)
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 构建器 + 因子表
@@ -161,12 +161,12 @@ stk/
 │   │   │   ├── CS/                                         # 🧬 截面算子三后端 (同 TS 三份独立实现)
 │   │   │   │   ├── Stream.hpp / Cpu.hpp / Gpu.cuh          # 🧬   同上
 │   │   │   └── Stat/                                       # 🧬 因子评估算子 (无流式后端): 因子 + 标签 → Row[H][T] (IC / 分组 / 多空) → HoldStat; 并列均秩 + 整数 Pearson, cpu↔gpu 逐位一致
-│   │   │       ├── Contract.hpp                            # 🧬   语义契约: Row / HoldStat + 可合并累加器 + 换手成本 (Cost / CostAcc / cost_cell / net_ls: 顶底腿只有新进者付冲击; Search 打分 / Inspect 净线同一份)
+│   │   │       ├── Contract.hpp                            # 🧬   语义契约: Row / HoldStat + 可合并累加器 + 换手成本 (Cost / CostAcc / cost_cell / net_ls: 顶底腿只有新进者付冲击; Run / Inspect 净线同一份, Search 不看)
 │   │   │       ├── Check.hpp                               # 🧬   对拍公共件
 │   │   │       ├── Cpu.hpp                                 # 🧬   CPU 后端: 行区间核 + 流程
 │   │   │       └── Gpu.cuh                                 # 🧬   GPU 后端: 一行一 block
 │   │   │   └── Search/                                     # 🧬 参数搜索评估 (建在 Stat 上): 一批同形候选直接攒累加器, 不落 Row
-│   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 + 目标 (年化净 LS · util · rIC, 任一 ≤ 0 → −∞; util = 一腿均成员 / 满仓只数, 唯一活跃度项; h 窗 30m~T+1; 细化阶段不重选 h); 成本定义在 Stat 契约
+│   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 + 目标 (固定 h 的 毛 LS · util · rIC, 任一 ≤ 0 → −∞; util = 一腿均成员 / 满仓只数, 唯一活跃度项; 不看成本, 不跨 h 比)
 │   │   │       ├── Grid.hpp                                # 🧬   参数网格 (纯逻辑): 可搜槽 → 单调坐标 (阈值按输入 σ 定尺度) → 粗网格 / 细化 / 分支挑选
 │   │   │       ├── Cpu.hpp                                 # 🧬   CPU 后端: 复用 Stat 行核 (row_stat / cost_row), 只加块语义与累加
 │   │   │       ├── Gpu.cuh                                 # 🧬   GPU 后端: 一 warp 一候选

@@ -435,7 +435,7 @@ double metric_key(const HS *h, const Metric &m) { return h ? m.get(*h) : -1e300;
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn frame status time valid h* util | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
+//   edit type name_en name_cn frame status time valid score util | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
@@ -499,16 +499,16 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• CPU 全核 wall / GPU 纯 kernel",
      true},
     {Valid, "valid%", "根平面有效格占比", true},
-    {Opt, "h*",
-     "最优持有期 = 窗 30m ~ T+1 内 argmax 年化净 LS · 资金利用率 (Search 契约【目标】, 与 Optimize 打分同一份 score_of)\n"
-     "• 由 stat 现算: 毛 HoldStat + stat.costs 里选定金额档 (Optimize 的 Amt) 的换手成本 + Config::sell_impact\n"
-     "• 悬停行看 h* 处分量 (净年化 / util / rIC / score)\n"
-     "• 空: 无 stat, 或旧 stat 没有 costs (重新 Run)",
+    {Opt, "score",
+     "选定持有期 (Hold) 的目标分数 = 毛 LS × 资金利用率 util × rIC (Search 契约【目标】, 与 Optimize 打分同一份 score_of)\n"
+     "• 只评排序能力: 不看成本, 不跨持有期比\n"
+     "• 由 stat 现算 (该 h 的 HoldStat); 悬停行看分量 (LS / util / rIC)\n"
+     "• 空: 无 stat / LS ≤ 0 / rIC ≤ 0",
      true},
     {Util, "util",
-     "h* 处资金利用率 = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1\n"
-     "• 目标 = 年化净 LS × util × rIC: 净 LS 是每成员口径, 乘 util 才是固定资金上的钱; TS 因子触发稀疏时此值小\n"
-     "• 同 h* 列, 由 stat 现算",
+     "选定持有期的资金利用率 = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1\n"
+     "• 目标 = 毛 LS × util × rIC: LS 是每成员口径, 乘 util 才是固定资金上的钱; TS 因子触发稀疏时此值小\n"
+     "• 同 score 列, 由 stat 现算",
      true},
     {Expr, "expr",
      "规范串 = 解析后重新序列化\n"
@@ -725,10 +725,10 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   }
 }
 
-// h* / util 列的一格 (RowScore 的压缩: 只留看板要显示的; hold = 0 即无)
+// score / util 列的一格 (RowScore 的压缩: 只留看板要显示的; hold = 0 即无)
 struct OptCell {
-  int hold = 0, amt = 0;
-  double ls_net = 0.0, util = 0.0, ric = 0.0, score = 0.0;
+  int hold = 0;
+  double ls = 0.0, util = 0.0, ric = 0.0, score = 0.0; // score −∞ = LS / rIC ≤ 0
 };
 
 // 固定列一格 (edit 列是勾选框, 在表循环里单独画)
@@ -782,11 +782,7 @@ void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUICon
   case Valid:
     return num(r.has_stat, "%.1f", r.valid_pct);
   case Opt:
-    if (oc.hold <= 0)
-      ImGui::TextDisabled("-");
-    else
-      ImGui::TextUnformatted(factor::stat::hold_name(oc.hold).c_str());
-    return;
+    return num(oc.hold > 0 && std::isfinite(oc.score), "%.4g", oc.score);
   case Util:
     return num(oc.hold > 0, "%.2f", oc.util);
   case Note:
@@ -817,10 +813,8 @@ void row_tooltip(const FactorRow &r, const OptCell &oc, const FactorsUIContext &
   if (!r.dup_of.empty())
     ImGui::BulletText("dup     与 %s 同一规范串", r.dup_of.c_str());
   if (oc.hold > 0)
-    ImGui::BulletText("目标    @ %dw  h* %s  净年化 %+.1f%%  util %.2f  rIC %.4f  score %.4g  (n_full %.1f; 窗 30m ~ T+1, 与 Optimize 同一份打分)", oc.amt,
-                      factor::stat::hold_name(oc.hold).c_str(), 100.0 * oc.ls_net, oc.util, oc.ric, oc.score, r.scope.n_full);
-  else if (r.has_stat && r.costs.empty())
-    ImGui::BulletText("目标    stat 无 costs (旧文件), 重新 Run 才有 h* / util");
+    ImGui::BulletText("目标    h %s  LS %+.2f bp  util %.2f  rIC %.4f  score %.4g  (n_full %.1f; 毛 LS × util × rIC, 与 Optimize 同一份打分)",
+                      factor::stat::hold_name(oc.hold).c_str(), 1e4 * oc.ls, oc.util, oc.ric, oc.score, r.scope.n_full);
   if (!r.error.empty()) {
     ImGui::Separator();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN: %s", r.error.c_str());
@@ -897,8 +891,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    tip("表格 Stat 列显示哪个持有期\n"
-        "• 只影响显示, Run 一次算全部持有期\n"
+    tip("表格 Stat / score / util 列显示哪个持有期; 也是 Optimize 的固定持有期\n"
+        "• 不影响 Run (一次算全部持有期); Optimize 只装 / 只评这一组标签\n"
         "• 悬停表格行看全部持有期");
   ImGui::SameLine();
 
@@ -970,40 +964,34 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
 
-  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 目标 = 选定金额档真实换手成本下的 年化净 LS · 资金利用率 · rIC, h* 限 30m ~ T+1
-  //      (Search/Contract.hpp【目标】); 严格好于基线才回写 params, 随后 TaskFactors 自动 Run (看板 h* / util 从新 stat 算) ----
+  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 持有期 = Hold 选择 (固定, 不跨 h 比), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
+  //      (Search/Contract.hpp【目标】); 严格好于基线才回写 params, 随后 TaskFactors 自动 Run (看板 score / util 从新 stat 算) ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
       if (r.file == ui.view_file)
         view_row = &r;
-    if (ui.opt_cost_idx < 0) {
-      ui.opt_cost_idx = 0;
-      for (size_t i = 0; i < ft.costs.size(); ++i)
-        if (ft.costs[i].amt == 5)
-          ui.opt_cost_idx = static_cast<int>(i);
-    }
-    ui.opt_cost_idx = std::clamp(ui.opt_cost_idx, 0, std::max(0, static_cast<int>(ft.costs.size()) - 1));
-    const bool can_opt = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && !ft.costs.empty() && view_row && view_row->error.empty();
+    const bool can_opt = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && view_row && view_row->error.empty();
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Optimize:");
     ImGui::SameLine();
     if (!can_opt)
       ImGui::BeginDisabled();
     if (ImGui::Button("Optimize", ImVec2(70, 0))) {
       ui.opt_row = *view_row;
+      ui.opt_hold = cur_hold;
       action = 3;
     }
     if (!can_opt)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 目标 = 选定金额档真实换手成本下的 年化净 LS × 资金利用率 util × rIC, 持有期在 30m ~ T+1 内自选 (两边的期限只作延伸)\n"
-                     "• util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1: 净 LS 是每成员口径, 乘 util 才是固定资金上的钱; 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
+      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 持有期固定 = Hold 选择 (%s), 目标 = 毛 LS × 资金利用率 util × rIC (只评排序能力: 不看成本, 不跨持有期比)\n"
+                     "• util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1: LS 是每成员口径, 乘 util 才是固定资金上的钱; 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
                      "• 粗网格 (步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 分支 (互不相邻的 top-%d) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
-                     "• 数据按天分块流式过, 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
-                     "• 最优 score 严格高于基线 → 回写该文件 params (stat 删掉) 并自动 Run 重算 (h* / util 列由新 stat 现算); 否则文件不动"
+                     "• 数据按天分块流式过 (只装这一组标签), 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
+                     "• 最优 score 严格高于基线 → 回写该文件 params (stat 删掉) 并自动 Run 重算 (score / util 列由新 stat 现算); 否则文件不动"
                    : "先在表格里点一行高光 (与 Inspect 同一对象)",
-          view_row ? view_row->file.c_str() : "", factor::search::grid::kLayerMax, factor::search::grid::kBranches,
-          100.0 * factor::search::grid::kMinGain);
+          view_row ? view_row->file.c_str() : "", factor::stat::hold_name(cur_hold).c_str(), factor::search::grid::kLayerMax,
+          factor::search::grid::kBranches, 100.0 * factor::search::grid::kMinGain);
     ImGui::SameLine();
     if (!sbusy)
       ImGui::BeginDisabled();
@@ -1011,23 +999,6 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       action = -3;
     if (!sbusy)
       ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(60);
-    const auto amt_label = [&](int i) { return ft.costs.empty() ? std::string("-") : std::to_string(ft.costs[static_cast<size_t>(i)].amt) + "w"; };
-    if (sbusy)
-      ImGui::BeginDisabled();
-    if (ImGui::BeginCombo("Amt", amt_label(ui.opt_cost_idx).c_str())) {
-      for (size_t i = 0; i < ft.costs.size(); ++i)
-        if (ImGui::Selectable(amt_label(static_cast<int>(i)).c_str(), static_cast<int>(i) == ui.opt_cost_idx))
-          ui.opt_cost_idx = static_cast<int>(i);
-      ImGui::EndCombo();
-    }
-    if (sbusy)
-      ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-      tip("建仓冲击的下单金额档 (万), Optimize 打分与表格 h* / util 列共用: 净 LS = 毛 LS − 顶 / 底组新进者 (t−h 不在该组) 均摊的 建仓冲击 "
-          "(买入按 Config::max_impact 封顶) + 平仓 sell_impact (%.4f); 留仓成员不付. 年化后乘 util 跨持有期比",
-          ctx.sell_impact);
     ImGui::SameLine();
     ImGui::Text("Status:");
     ImGui::SameLine();
@@ -1064,12 +1035,12 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       ImGui::TextDisabled("base %s  score %.4g", s_sr.expr0.c_str(), s_sr.base_score);
       if (!s_sr.best_expr.empty() && std::isfinite(s_sr.base_score) && s_sr.base_score > 0.0)
         ImGui::TextDisabled("best gain %+.1f%%", 100.0 * (s_sr.cands.front().score / s_sr.base_score - 1.0));
-      ImGui::TextDisabled("%d chunk x %d days, batch %d, n_full %.1f", s_sr.n_chunk, s_sr.chunk_days, s_sr.batch, s_sr.n_full);
-      if (ImGui::BeginTable("opt_cands", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+      ImGui::TextDisabled("h %s, %d chunk x %d days, batch %d, n_full %.1f", factor::stat::hold_name(s_sr.hold).c_str(), s_sr.n_chunk, s_sr.chunk_days,
+                          s_sr.batch, s_sr.n_full);
+      if (ImGui::BeginTable("opt_cands", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("expr");
         ImGui::TableSetupColumn("pass");
-        ImGui::TableSetupColumn("h*");
-        ImGui::TableSetupColumn("LS net/yr");
+        ImGui::TableSetupColumn("LS bp");
         ImGui::TableSetupColumn("util");
         ImGui::TableSetupColumn("rIC");
         ImGui::TableSetupColumn("score");
@@ -1085,10 +1056,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           ImGui::TableNextColumn();
           ImGui::Text("%d", c.pass);
           ImGui::TableNextColumn();
-          ImGui::Text("%s", c.best_hi >= 0 ? factor::stat::hold_name(s_sr.hd.h[c.best_hi]).c_str() : "-");
-          ImGui::TableNextColumn();
-          if (std::isfinite(c.ls_net))
-            ImGui::Text("%+.1f%%", 100.0 * c.ls_net);
+          if (c.ok)
+            ImGui::Text("%+.2f", 1e4 * c.ls);
           else
             ImGui::TextDisabled("-");
           ImGui::TableNextColumn();
@@ -1305,21 +1274,18 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // 3. 表
   // ==========================================================================
   const int n = static_cast<int>(s_rows.size());
-  // h* / util 列: 每行按选定金额档 (Optimize 的 Amt) 从 stat 现算 (RowScore, 与 Optimize 同一份目标); 无 stat / 无该档 → hold = 0
+  // score / util 列: 每行按选定持有期 (Hold) 从 stat 现算 (RowScore, 与 Optimize 同一份目标); 无 stat / 无该持有期 / n < 3 → hold = 0
   static std::vector<OptCell> s_opt;
   s_opt.assign(s_rows.size(), OptCell{});
-  if (!ft.costs.empty()) {
-    const int opt_amt = ft.costs[static_cast<size_t>(ui.opt_cost_idx)].amt;
+  if (cur_hold > 0)
     for (size_t i = 0; i < s_rows.size(); ++i) {
-      const factor::search::Score sc = RowScore(s_rows[i], opt_amt, ctx.sell_impact);
-      if (sc.best < 0 || sc.hs[sc.best].n < 3)
+      const factor::search::Score sc = RowScore(s_rows[i], cur_hold);
+      if (!sc.ok)
         continue;
       OptCell &oc = s_opt[i];
-      oc.hold = sc.hs[sc.best].hold;
-      oc.amt = opt_amt;
-      oc.ls_net = sc.ls_net, oc.util = sc.util, oc.ric = sc.ric, oc.score = sc.score;
+      oc.hold = cur_hold;
+      oc.ls = sc.ls, oc.util = sc.util, oc.ric = sc.ric, oc.score = sc.score;
     }
-  }
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "3. Factors:");
   ImGui::SameLine();
   ImGui::Text("%d (%d BROKEN)", n, broken);
@@ -1401,9 +1367,9 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           return r.n_slots;
         case Valid:
           return r.has_stat ? r.valid_pct : -1.0;
-        case Opt: { // 按持有分钟
+        case Opt: { // 无分 (−∞ / 无 stat) 排最后
           const OptCell &oc = s_opt[static_cast<size_t>(&r - s_rows.data())];
-          return oc.hold > 0 ? static_cast<double>(factor::stat::hold_minutes(oc.hold)) : -1.0;
+          return oc.hold > 0 && std::isfinite(oc.score) ? oc.score : -1.0;
         }
         case Util: {
           const OptCell &oc = s_opt[static_cast<size_t>(&r - s_rows.data())];

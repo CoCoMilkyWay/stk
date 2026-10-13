@@ -24,7 +24,7 @@ struct BuildNode {
 
 struct FactorsUIState {
   int backend = -1;          // 0 = CPU, 1 = GPU; -1 = 未定, 首帧按 GPU 可用性定 (有 GPU 默认 GPU)
-  int hold_idx = 0;          // FeatureTable::labels 下标 (表列显示哪个持有期)
+  int hold_idx = 0;          // FeatureTable::labels 下标 (表列显示哪个持有期; 也是 Optimize 的固定持有期)
   BuildNode build;           // 加因子构建器的根
   char name_buf[64] = "";    // name_en = 文件名主干, 必填
   char name_cn_buf[64] = ""; // name_cn, 必填, 纯汉字 ≤10 字 (≤30 字节)
@@ -39,9 +39,9 @@ struct FactorsUIState {
   // 首次扫出表后默认高光第一个有效因子 (InspectAutoRequest 置, 只一次: 之后用户取消高光不再自动补)
   std::string view_file;
   bool view_defaulted = false;
-  // Optimize (对象 = 高光行): 金额档 (FeatureTable::costs 下标; -1 = 未定, 首帧取 5w 档, 没有则 0); 点下时把行拷给 opt_row (TaskFactors 据此建请求)
-  int opt_cost_idx = -1;
+  // Optimize (对象 = 高光行, 持有期 = Hold 选择 hold_idx): 点下时把行 / 持有期拷给 opt_row / opt_hold (TaskFactors 据此建请求)
   FactorRow opt_row;
+  int opt_hold = 0;
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
   // 表列宽贴合 (对仗 TabOperators)

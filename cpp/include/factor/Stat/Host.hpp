@@ -10,7 +10,7 @@
 //     rank_y_row  做多标签一行 (fp16 位) → ry. 与因子无关, 常驻期算一次
 //     row_stat    一 (t, hold) 完整行 = rac_row (给了 lag 行才算) + label_row (非段末尾部才算); 公式收尾走契约的 finish_row.
 //                 label_row 一遍 A 轴: 整数五和 / 标签浮点和 / 分组和, branchless select
-//     cost_row    一 (t, hold) 行的换手成本 (契约 cost_cell 逐格) → CostAcc. Search 打分 / Inspect 期限结构净线共用, 不进 Row
+//     cost_row    一 (t, hold) 行的换手成本 (契约 cost_cell 逐格) → CostAcc. Run (stat.costs) / Inspect 期限结构净线共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
