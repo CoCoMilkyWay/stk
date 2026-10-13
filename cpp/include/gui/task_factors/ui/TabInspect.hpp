@@ -10,11 +10,14 @@
 // 下面 2×2 四图:
 //   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日累计的组均收益 (控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
 //        重叠持有期按 1/h 折算 = h 个相位非重叠链的平均). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
-//        图例标注年化 Sharpe / t; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙 两端显色, 中段快速退成中性灰 (单调, 两端跳)
+//        图例标注末点等效年化收益 + 年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中段中性灰, 两侧各一条反向 tanh 台阶: 边上 2 档近全色, 第 3 档半色, 再往里灰 (单调)
+//        尾部 (InspectService TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
+//        (白, 越极端越细, 与 LS 同一平移量 → 同一起点); 相邻尾部分层线之间填淡色带 (G20↔50% / 50%↔20% / 20%↔5%, 越极端越重), 底侧同;
+//        一级一个图例项 ("LS 50%" + 年化收益 + Sharpe, 列与 LS 对齐) 管该级分层 + 色带 + LS, 默认隐藏; y 范围 / LS 平移量只按显示的簇合成, 开关图例即重贴
 //        时序上一条可拖光标 (cursor_day, 锚在交易日边界, 双击落点, 默认末日; 与右上 K 线共享, 拖哪边另一边同步; 不做 hover 列表)
 //        右 1/4 光标日截面 = 各组到光标日的累计按已过天数折年化 (section_at, 唯一出口; 末日与曲线末点一致) 的横柱, 按组号在 y 范围里均匀排
 //        (G1 下 … G20 上), x 范围 = y 范围 (同尺);
-//        柱色按取值 (最负 = G1 色 … 最正 = G20 色), 与左图按组号的色对照, 非单调处一眼可见
+//        柱色按组号 (与左图同一组色, 两边对得上), 柱长非单调处一眼可见
 //   右上 标的 K 线 (因子具体怎么交易的; 对仗 OrderFlow 的图 2): 上一条标的轴 + 下面选中标的的分钟 K 线.
 //        R(t) = r16(x) / kRankMax ∈ [0,1] (CS = 截面秩, TS = 自身分位; 与组号同向: 1 = G20 侧), 色 = lerp(G1 蓝 → G20 橙)
 //        标的轴: 光标日池内 (cs_valid ∧ 当日有成交) 标的的日内均 R 降序 (左 = G20 侧), 一标的一格, 格色 = R 组色; 光标 (拖 / 双击 / ◂ ▸ 步进)
@@ -58,10 +61,17 @@ struct InspectDerived {
   std::vector<float> x_day;                          // [days + 1] 0..days (累计线横轴, 日末)
   std::vector<float> grp_cum[factor::stat::kGroups]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)
   std::vector<float> ls_cum;                         // [days + 1], 同上 (顶底多空)
-  float y_lo = 0.f, y_hi = 0.f;                      // 左上 y 轴范围 = 分层线 min / max 加边 (LS 跨度更大时 hi 抬到装下)
-  float ls_off = 0.f;                                // LS 线平移量 = lo − min(ls_cum): 最低点贴范围底, 刚好放进去
-  analysis::AggPdf ic_pdf;                           // 逐行 rank IC (ok 行) 的 KLL PDF 成品 (n_pts = 0 → 样本不足不画)
-  factor::stat::HoldStat hs;                         // 选定 hold 的二级
+  std::vector<float> tail_top_cum[kTails];           // [days + 1], 同 grp_cum: 顶组内更极端的 kTailOfGroup 截 (TailRow::top)
+  std::vector<float> tail_bot_cum[kTails];           // 同上, 底组 (TailRow::bot)
+  std::vector<float> tail_ls_cum[kTails];            // 同 ls_cum: 尾部多空 (TailRow::ls)
+  float tail_sharpe[kTails] = {};                    // 尾部 LS 的年化 Sharpe (与 HoldStat::sharpe 同式, MomAcc)
+  // 各线簇的 min / max (含起点 0); 左上 y 范围 / LS 平移量按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
+  float lay_lo = 0.f, lay_hi = 0.f;                       // 20 组分层线
+  float tail_lo[kTails] = {}, tail_hi[kTails] = {};       // 每级尾部分层 (顶 + 底)
+  float ls_lo = 0.f, ls_hi = 0.f;                         // 顶底 LS
+  float tail_ls_lo[kTails] = {}, tail_ls_hi[kTails] = {}; // 每级尾部 LS
+  analysis::AggPdf ic_pdf;                                // 逐行 rank IC (ok 行) 的 KLL PDF 成品 (n_pts = 0 → 样本不足不画)
+  factor::stat::HoldStat hs;                              // 选定 hold 的二级
   bool valid = false;
 };
 

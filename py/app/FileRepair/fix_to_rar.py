@@ -6,42 +6,54 @@ Scans a directory (recursively) for *.zip / *.7z / *.rar, detects the REAL
 format by magic bytes (a .rar may be 7z in disguise), and converts anything
 that is not already a true RAR. Files of other names are never touched.
 
-Pipeline (per-file atomic replacement, nothing waits for the whole batch):
+Pipeline, strictly one archive at a time (parallel files only fight over
+the same USB bandwidth / CPU and multiply local disk usage):
 
-  worker processes (CPU-bound, local disk):
-      7z x <source> -> extract dir -> rar a -> local temp .rar
-  replacer thread (destination-disk I/O, serialized so the disk never
-  sees concurrent writes):
-      copy local .rar -> <source dir>/.tmp_<stem>.rar
-      os.replace() -> <stem>.rar        (atomic: same-filesystem rename)
+      7z x <source> -> output/fix_temp/<stem>/        (local disk)
+      rar a         -> <source dir>/.tmp_<stem>.rar   (written straight to
+                                                        the destination disk)
+      fsync, os.replace() -> <stem>.rar               (atomic rename)
       delete source (skip if source IS the final path, i.e. disguised .rar)
+      rmtree extract dir
 
-Interruption safety (Ctrl+C or any death of this python process):
-  - workers are killed via pool.terminate(); their 7z/rar children carry
-    PR_SET_PDEATHSIG=SIGKILL so they die with their worker, no orphans
-  - the replacer is a daemon thread, it dies with the process; a half-copied
-    .tmp_*.rar is swept on the next run, the final name only ever appears
-    via atomic rename so it is never half-written
-  - per-run temp dir output/fix_temp/run_<pid> is unique, concurrent runs
-    cannot stomp on each other; dead runs' leftovers are swept at startup
+7z/rar inherit the terminal so their own in-place percentage is the live
+progress; their chatter is suppressed (7z -bso0, rar -idcdn).
+
+State machine per archive, as seen by a re-run (package-level resume):
+  - source only                     -> convert
+  - source + .tmp_<stem>.rar        -> sweep tmp, convert
+  - source + complete <stem>.rar    -> `rar t` the rar; ok: delete source,
+                                       skip; broken: convert (overwrites)
+  - <stem>.rar only                 -> done, skip
+  The final name only ever appears via fsync + atomic rename, so it is
+  never half-written, even across power loss.
+
+Interruption patterns:
+  - Ctrl+C (SIGINT): tty delivers it to 7z/rar too; subprocess.run
+    reaps/kills the child, KeyboardInterrupt unwinds, finally-blocks remove
+    .tmp_ and the extract dir.
+  - SIGTERM / SIGHUP (kill, closed terminal): handler raises SystemExit so
+    the same unwinding happens; subprocess.run kills the child.
+  - SIGKILL / OOM / power loss: nothing can run; the child carries
+    PR_SET_PDEATHSIG=SIGKILL so it dies with us. Leftovers (.tmp_ on the
+    destination, output/fix_temp/ locally) are swept at the next start.
+  - Concurrent runs: output/fix_temp/ is flock'ed, second instance refuses
+    to start.
 
 Usage:
     python fix_to_rar.py <dir>
 """
 
 import ctypes
-import multiprocessing as mp
+import fcntl
 import os
-import queue
 import shutil
 import signal
 import subprocess
 import sys
-import threading
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-NUM_WORKERS = 4
 SOURCE_EXTENSIONS = {".zip", ".7z", ".rar"}
 
 MAGIC_TO_FORMAT = {
@@ -51,22 +63,27 @@ MAGIC_TO_FORMAT = {
 }
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-TEMP_BASE = PROJECT_ROOT / "output" / "fix_temp"
-RUN_DIR = TEMP_BASE / f"run_{os.getpid()}"
-WORK_DIR = RUN_DIR / "work"
-LOG_DIR = RUN_DIR / "logs"
+WORK_DIR = PROJECT_ROOT / "output" / "fix_temp"
 
 PR_SET_PDEATHSIG = 1
 
 
 def _die_with_parent():
-    """SIGKILL this process when its parent dies (Linux PDEATHSIG).
-
-    Used both as pool worker initializer (worker dies with main) and as
-    preexec_fn for 7z/rar children (tool dies with its worker), so no
-    orphan ever survives this script, however it gets stopped.
-    """
+    """preexec_fn for 7z/rar: SIGKILL the child when this python dies
+    (Linux PDEATHSIG), so no orphan survives even a SIGKILL of the script."""
     ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+
+
+def _exit_on_signal(signum, _frame):
+    # Turn SIGTERM/SIGHUP into a normal unwind so finally-blocks run and
+    # subprocess.run kills the active child.
+    raise SystemExit(128 + signum)
+
+
+def run_tool(args: List[str], cwd: Optional[Path] = None) -> int:
+    """Run 7z/rar attached to the terminal (their in-place percentage is the
+    live progress). Returns the exit code."""
+    return subprocess.run(args, cwd=cwd, preexec_fn=_die_with_parent).returncode
 
 
 def detect_format(path: Path) -> Optional[str]:
@@ -78,68 +95,82 @@ def detect_format(path: Path) -> Optional[str]:
     return None
 
 
-def log(stem: str, message: str):
-    with open(LOG_DIR / f"{stem}.log", "a") as f:
-        f.write(message + "\n")
+def convert_one(tag: str, source: Path) -> Optional[str]:
+    """Extract to local disk, rar straight to the destination dir as a hidden
+    temp, fsync + atomic rename over <stem>.rar, delete source.
 
-
-def convert_one(task: Tuple[int, Path]) -> Tuple[Path, Optional[Path], str]:
-    """Extract + recompress one archive on local disk.
-
-    Returns (source, local_rar or None, error). Runs in a worker process;
-    the atomic in-place replacement is done by the replacer thread in the
-    main process.
+    Returns None on success, else a short error string. Any exception or
+    early return leaves the source untouched and removes the temp files.
     """
-    idx, source = task
     stem = source.stem
-    extract_dir = WORK_DIR / f"{stem}_{idx}"
-    local_rar = WORK_DIR / f"{stem}_{idx}.rar"
+    final = source.with_suffix(".rar")
+    dest_tmp = final.parent / f".tmp_{final.name}"
+    extract_dir = WORK_DIR / stem
 
     try:
         extract_dir.mkdir(parents=True)
-        log(stem, f"Extracting {source.name}...")
-        result = subprocess.run(
-            ["7z", "x", str(source), f"-o{extract_dir}/", "-y"],
-            capture_output=True,
-            text=True,
-            preexec_fn=_die_with_parent,
-        )
-        if result.returncode != 0:
-            log(stem, f"Extract failed: {result.stderr}")
-            return (source, None, "extract failed")
-
+        print(f"{tag} {source.name}: extract")
+        if (
+            run_tool(
+                ["7z", "x", str(source), f"-o{extract_dir}/", "-y", "-bso0", "-bsp1"]
+            )
+            != 0
+        ):
+            return "extract failed"
         if not (extract_dir / stem).is_dir():
-            log(stem, f"Warning: extracted content has no {stem}/ directory")
+            print(
+                f"{tag} {source.name}: warning, extracted content has no {stem}/ directory"
+            )
 
-        log(stem, "Creating non-solid RAR...")
-        result = subprocess.run(
-            ["rar", "a", "-m3", "-ma5", "-r", str(local_rar), "."],
-            cwd=extract_dir,
-            capture_output=True,
-            text=True,
-            preexec_fn=_die_with_parent,
-        )
-        if result.returncode != 0:
-            log(stem, f"RAR creation failed: {result.stderr}")
-            return (source, None, "rar creation failed")
+        print(f"{tag} {source.name}: rar -> {final.name}")
+        if (
+            run_tool(
+                ["rar", "a", "-m3", "-ma5", "-r", "-idcdn", str(dest_tmp), "."],
+                cwd=extract_dir,
+            )
+            != 0
+        ):
+            return "rar creation failed"
 
-        log(stem, "Converted, queued for replacement")
-        return (source, local_rar, "")
-
-    except Exception as e:
-        log(stem, f"Exception: {e}")
-        return (source, None, str(e))
+        # Durable content before the name appears: a final .rar that exists
+        # after a crash is always complete.
+        with open(dest_tmp, "rb") as f:
+            os.fsync(f.fileno())
+        os.replace(dest_tmp, final)  # atomic same-fs rename
+        if source != final:
+            source.unlink()
+        print(f"{tag} {source.name}: done")
+        return None
     finally:
+        dest_tmp.unlink(missing_ok=True)  # no-op after a successful rename
         shutil.rmtree(extract_dir, ignore_errors=True)
 
 
-def sweep_stale():
-    """Remove leftovers of previous interrupted runs."""
-    for run_dir in TEMP_BASE.glob("run_*"):
-        pid = run_dir.name.split("_", 1)[1]
-        if not Path(f"/proc/{pid}").exists():
-            shutil.rmtree(run_dir, ignore_errors=True)
-            print(f"Swept stale run dir: {run_dir}")
+def verify_existing(tag: str, source: Path, final: Path) -> bool:
+    """A previous run renamed <stem>.rar into place but died before deleting
+    the source. Test the rar; if intact, finish the job by deleting source."""
+    print(f"{tag} {source.name}: {final.name} already exists, testing it")
+    if run_tool(["rar", "t", "-idcdn", str(final)]) != 0:
+        print(f"{tag} {source.name}: {final.name} is broken, reconverting")
+        return False
+    source.unlink()
+    print(f"{tag} {source.name}: {final.name} intact, source removed")
+    return True
+
+
+def lock_work_dir() -> int:
+    """flock the local work dir (refuse concurrent runs), then sweep whatever
+    a dead run left in it. Returns the fd; keep it open for the whole run."""
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(WORK_DIR, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"Another fix_to_rar.py is running (lock on {WORK_DIR})")
+    for leftover in WORK_DIR.iterdir():
+        shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink()
+        print(f"Swept stale leftover: {leftover}")
+    return fd
 
 
 def collect_tasks(scan_dir: Path):
@@ -160,7 +191,11 @@ def collect_tasks(scan_dir: Path):
         if fmt is None:
             print(f"✗ Skip (unknown format): {path}")
             continue
-        tasks.append((path, fmt))
+        final = path.with_suffix(".rar")
+        has_final = final != path and final.exists()
+        if has_final:
+            assert detect_format(final) == "rar", f"{final} exists but is not a RAR"
+        tasks.append((path, fmt, has_final))
     return tasks
 
 
@@ -173,92 +208,58 @@ def main():
     scan_dir = Path(sys.argv[1])
     assert scan_dir.is_dir(), f"Not a directory: {scan_dir}"
 
-    sweep_stale()
+    signal.signal(signal.SIGTERM, _exit_on_signal)
+    signal.signal(signal.SIGHUP, _exit_on_signal)
+    lock_fd = lock_work_dir()  # held until exit
+
     tasks = collect_tasks(scan_dir)
     if not tasks:
         print("Nothing to convert.")
         return
 
     print(f"\nFound {len(tasks)} archive(s) to convert:")
-    for path, fmt in tasks:
-        print(f"  [{fmt}] {path}")
-    print("\nEach file is replaced IN PLACE (atomic rename) as soon as it converts;")
-    print("its source is then deleted. Failed files keep their source untouched.")
-    print(f"Logs: {LOG_DIR}/")
+    for path, fmt, has_final in tasks:
+        note = (
+            "  (final .rar already present, will be tested first)" if has_final else ""
+        )
+        print(f"  [{fmt}] {path}{note}")
+    print("\nOne at a time. Each file is replaced IN PLACE (atomic rename) as soon")
+    print("as it converts; its source is then deleted. Failed or interrupted files")
+    print("keep their source untouched; re-run to resume.")
     print()
 
     if input("Continue? (yes/no): ").lower() != "yes":
         print("Cancelled.")
         return
 
-    WORK_DIR.mkdir(parents=True)
-    LOG_DIR.mkdir(parents=True)
-
     total = len(tasks)
-    convert_failed = []  # (source, error)
-    replace_failed = []  # (source, error)
-    replaced = []  # final paths
-
-    replace_q: "queue.Queue" = queue.Queue()
-
-    def replace_loop():
-        while True:
-            item = replace_q.get()
-            if item is None:
-                return
-            source, local_rar = item
-            final = source.with_suffix(".rar")
-            dest_tmp = final.parent / f".tmp_{final.name}"
-            try:
-                shutil.copyfile(local_rar, dest_tmp)
-                os.replace(dest_tmp, final)  # atomic same-fs rename
-                if source != final:
-                    source.unlink()
-                local_rar.unlink()
-                replaced.append(final)
-                print(f"[replaced {len(replaced)}/{total}] {final.name}")
-            except Exception as e:
-                replace_failed.append((source, str(e)))
-                dest_tmp.unlink(missing_ok=True)
-                print(f"[replace FAILED] {source.name}: {e}")
-
-    # Pool before thread: fork the workers from a thread-free process.
-    pool = mp.Pool(processes=NUM_WORKERS, initializer=_die_with_parent)
-    replacer = threading.Thread(target=replace_loop, daemon=True)
-    replacer.start()
-
-    print(f"\nConverting {total} file(s) with {NUM_WORKERS} workers...\n")
+    done = 0
+    failed: List[Tuple[Path, str]] = []
     try:
-        work = [(idx, path) for idx, (path, _fmt) in enumerate(tasks)]
-        converted = 0
-        for source, local_rar, err in pool.imap_unordered(convert_one, work):
-            converted += 1
+        for idx, (source, _fmt, has_final) in enumerate(tasks, 1):
+            tag = f"[{idx}/{total}]"
+            if has_final and verify_existing(tag, source, source.with_suffix(".rar")):
+                done += 1
+                continue
+            err = convert_one(tag, source)
             if err:
-                convert_failed.append((source, err))
-                print(f"[converted {converted}/{total}] ✗ {source.name}: {err}")
+                failed.append((source, err))
+                print(f"{tag} {source.name}: ✗ {err}")
             else:
-                print(f"[converted {converted}/{total}] ✓ {source.name}")
-                replace_q.put((source, local_rar))
-        pool.close()
-        pool.join()
-        replace_q.put(None)  # sentinel: replacer exits after draining the queue
-        replacer.join()
+                done += 1
     except KeyboardInterrupt:
-        pool.terminate()  # kills workers; their 7z/rar children die via PDEATHSIG
-        pool.join()
         print(
             "\nInterrupted. Unfinished files keep their original source; re-run to resume."
         )
         sys.exit(130)
     finally:
-        shutil.rmtree(RUN_DIR, ignore_errors=True)
+        shutil.rmtree(WORK_DIR, ignore_errors=True)
+        os.close(lock_fd)
 
     print(f"\nSummary:")
-    print(f"  Replaced in place: {len(replaced)}/{total}")
-    for source, err in convert_failed:
-        print(f"  ✗ convert failed: {source.name}: {err}")
-    for source, err in replace_failed:
-        print(f"  ✗ replace failed: {source.name}: {err}")
+    print(f"  Done: {done}/{total}")
+    for source, err in failed:
+        print(f"  ✗ {source.name}: {err}")
 
 
 if __name__ == "__main__":

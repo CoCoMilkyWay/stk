@@ -16,6 +16,8 @@
 //                                                            累建仓冲击; 一遍 [T][A] × H × C, 无排序无标签). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::sell_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; sell_impact 只进均摊公式, 不进请求)
 //   L  评估     key = R × Y                                → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, eval_rows 一遍)
+//   Z  尾部     key = L                                    → TailRow[H][T] (本文件): 顶 / 底组内更极端的 kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行;
+//                                                            Inspect 专属 (不进 Stat 契约 / Search), 一遍 [T][A] × H
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
 // 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑不清旧 result: 页面继续整页画旧结果
@@ -53,6 +55,17 @@ struct InspectRequest {
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
 
+// 尾部分层 (Inspect 专属, 不进 Stat 契约): 顶 / 底组内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
+// j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径 (q = 1 即整组). 一级 [H][T], 只在 Row::ok 行有值, 其余全 0
+inline constexpr int kTails = 3;
+inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
+static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
+struct TailRow {
+  float top[kTails] = {}, bot[kTails] = {};            // 顶 / 底尾部做多超额 e 的和 (Σlv − cnt·mkt, 与 Row::grp 同口径)
+  float ls[kTails] = {};                               // 尾部多空 = 顶尾 lv 均值 − mkt + 底尾 sv 均值 − mkt_s (与 Row::ls 同式; 尾空 → 该腿 0)
+  uint16_t top_cnt[kTails] = {}, bot_cnt[kTails] = {}; // 尾部样本数
+};
+
 struct InspectResult {
   std::string key; // = InspectRequest::key(); 空 = 无结果
   std::string file, expr;
@@ -68,11 +81,13 @@ struct InspectResult {
   std::vector<float> uni_index;             // [T] universe 等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   std::vector<factor::stat::Row> rows;      // 一级 [hd.n][T], 只毛口径
   std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径
+  std::vector<TailRow> tails;               // 一级尾部 [hd.n][T], 与 rows 同布局, 只毛口径
   float valid_pct = 0.f;
   double eval_ms = 0.0;
   std::string error; // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 
   const factor::stat::Row *rows_at(int hi) const { return rows.data() + static_cast<size_t>(hi) * scope.T; }
+  const TailRow *tails_at(int hi) const { return tails.data() + static_cast<size_t>(hi) * scope.T; }
 };
 
 enum class InspectStatus : uint8_t { Idle,
