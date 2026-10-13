@@ -1,7 +1,7 @@
 // Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: operators.json 的 stat.holds[] 与因子文件的 stat.holds[]
 // 同一格式 (键名 = HoldStat 字段名: 三个逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / leg_n, 数值 4 位有效).
 // load_hold 是 Save 的逆: 键缺 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能来自旧代码 / 半截崩的; 旧键名的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stat.costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 两腿各一个对象 {imp, n, e} + rows.
+// 换手成本累加器 (CostAcc, 因子文件 stat.costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 两腿各一个对象 {imp, n, e, wimp, we} + rows.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
@@ -92,6 +92,8 @@ inline nlohmann::ordered_json hold_json(const factor::stat::HoldStat &h) {
   o["hold"] = h.hold;
   o["n"] = h.n;
   o["n_rac"] = h.n_rac;
+  o["n_all"] = h.n_all;
+  o["n_trig"] = h.n_trig;
   detail::for_each_field(h, [&](const std::string &k, const float &v) { o[k] = sig4(v); });
   nlohmann::ordered_json g = nlohmann::ordered_json::array();
   for (int k = 0; k < factor::stat::kGroups; ++k)
@@ -104,7 +106,8 @@ inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
   if (!o.is_object())
     return false;
   factor::stat::HoldStat h;
-  if (!json_int(o, "hold", h.hold) || !json_int(o, "n", h.n) || !json_int(o, "n_rac", h.n_rac))
+  if (!json_int(o, "hold", h.hold) || !json_int(o, "n", h.n) || !json_int(o, "n_rac", h.n_rac) || !json_int(o, "n_all", h.n_all) ||
+      !json_int(o, "n_trig", h.n_trig))
     return false;
   bool ok = true;
   detail::for_each_field(h, [&](const std::string &k, float &v) {
@@ -135,6 +138,8 @@ inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
     g["imp"] = sig4(c.leg[l].imp);
     g["n"] = c.leg[l].n;
     g["e"] = c.leg[l].e;
+    g["wimp"] = sig4(c.leg[l].wimp);
+    g["we"] = sig4(c.leg[l].we);
     o[kLegKeys[l]] = g;
   }
   o["rows"] = c.rows;
@@ -150,7 +155,8 @@ inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
     if (it == o.end() || !it->is_object())
       return false;
     factor::stat::CostLeg &g = c.leg[l];
-    if (!json_num(*it, "imp", g.imp) || !json_ll(*it, "n", g.n) || !json_ll(*it, "e", g.e))
+    if (!json_num(*it, "imp", g.imp) || !json_ll(*it, "n", g.n) || !json_ll(*it, "e", g.e) || !json_num(*it, "wimp", g.wimp) ||
+        !json_num(*it, "we", g.we))
       return false;
   }
   if (!json_ll(o, "rows", c.rows))

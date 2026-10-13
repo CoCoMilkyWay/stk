@@ -41,7 +41,7 @@ inline int n_parts(const Span &s) { return (s.T - s.t_lo + kRows - 1) / kRows; }
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) label_rows(Frame f, Span s, const uint16_t *rx, Labels L, Row *rows) {
+__global__ void __launch_bounds__(kWB, 2) label_rows(Span s, const uint16_t *rx, Labels L, Row *rows) {
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const int t = s.t_lo + blockIdx.x * kWarps + warp;
@@ -51,7 +51,7 @@ __global__ void __launch_bounds__(kWB, 2) label_rows(Frame f, Span s, const uint
   const uint16_t *xr = rx + base;
   for (int hi = 0; hi < L.hd.n; ++hi) { // warp 一致量, 不发散
     const int hold = L.hd.h[hi], h = factor::stat::hold_minutes(hold);
-    const Row r = dev::row_stat(f, xr, t >= h ? xr - static_cast<size_t>(h) * s.A : nullptr, L.l[hi].at(base), s.A,
+    const Row r = dev::row_stat(xr, t >= h ? xr - static_cast<size_t>(h) * s.A : nullptr, L.l[hi].at(base), s.A, L.cap,
                                 factor::stat::tail_masked(s.t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       rows[static_cast<size_t>(hi) * s.T + t] = r;
@@ -98,12 +98,12 @@ __global__ void __launch_bounds__(kRB) leg_codes(const uint16_t *rx, uint8_t *lc
 } // namespace k
 
 // 阶段 2: rx × L 组预处理标签 (设备) → 行 [t_lo,T) 落 w.rows[h][t] → w.acc[hd.n] (设备, 覆盖)
-inline void accum_rows(Frame f, const Span &s, const uint16_t *rx, const Labels &L, const Workspace &w, cudaStream_t stream) {
+inline void accum_rows(const Span &s, const uint16_t *rx, const Labels &L, const Workspace &w, cudaStream_t stream) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, true);
   const int H = L.hd.n, NB = n_parts(s);
   assert(rx && w.rows && w.part && w.acc && H <= w.H && NB <= w.NB);
-  k::label_rows<<<(s.T - s.t_lo + kWarps - 1) / kWarps, kWB, 0, stream>>>(f, s, rx, L, w.rows);
+  k::label_rows<<<(s.T - s.t_lo + kWarps - 1) / kWarps, kWB, 0, stream>>>(s, rx, L, w.rows);
   FACTOR_CUDA_OK(cudaGetLastError());
   k::fold_rows<<<(H * NB + kWarps - 1) / kWarps, kWB, 0, stream>>>(s, w.rows, H, NB, w.part);
   FACTOR_CUDA_OK(cudaGetLastError());
@@ -116,7 +116,7 @@ inline void run(Plane x, const uint8_t *g, Frame f, const Span &s, const Labels 
   Batch B;
   B.C = 1, B.x[0] = x;
   rank_x(B, g, f, s, rx, stream);
-  accum_rows(f, s, rx, L, w, stream);
+  accum_rows(s, rx, L, w, stream);
 }
 
 // 腿码: rx → lc [T][A] (设备)

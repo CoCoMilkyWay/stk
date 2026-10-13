@@ -34,7 +34,7 @@ inline void run(Exec &ex, const Batch &B, const uint8_t *g, Frame f, const Span 
   for (int c = 0; c < B.C; ++c) {
     factor::cpu::stat::rank_x(ex, B.x[c], g, f, s, rx, w);
     out[c] = Result{};
-    factor::cpu::stat::accum_rows(ex, f, s, rx, L, w, out[c].acc, factor::cpu::stat::DropRows{});
+    factor::cpu::stat::accum_rows(ex, s, rx, L, w, out[c].acc, factor::cpu::stat::DropRows{});
   }
 }
 

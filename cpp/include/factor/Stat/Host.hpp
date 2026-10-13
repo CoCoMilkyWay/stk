@@ -8,7 +8,7 @@
 //     rank_row    精确并列均秩: key(a) → LSD 基数排序 (位宽按 n 自适应: n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟;
 //                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone. 标签行 = rank_row(KeyY)
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里
-//     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算);
+//     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算; 满档 cap 进持仓口径);
 //                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和, branchless select;
 //                 逐格扩展 Ext (调用方专属的附加统计, 同一遍同一个 J; NoExt 编译期消掉, Inspect 尾部分层用)
 //     cost_row    一行 t 的换手成本 + cover, H 个持有期 × C 个金额档一遍 A 轴 (契约腿码 lc 逐格) → CostAcc[C][H] + cover[1 + C].
@@ -141,9 +141,11 @@ inline void lag_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_rac = ok ? 1u : 0u;
 }
 
-// 换手成本 + cover (契约【换手成本】): lc = 本行腿码; lag[i] = t−h_i 行腿码 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首
-//   → acc[k·H + i] (腿计数, 新进者累建仓冲击); cov[0] += 有秩格数, cov[1 + k] += 其中成本 k 有效 (与 h 无关, 每行一次)
-inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const Cost *c, int C, int A, CostAcc *acc, long long *cov) {
+// 换手成本 + cover (契约【换手成本】): lc = 本行腿码; lag[i] = t−h_i 行腿码 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首; cap = 满档
+//   → acc[k·H + i] (腿计数, 新进者累建仓冲击; 本行先攒进 row 再按 max(腿样本数, cap) 折进加权和); cov[0] += 有秩格数, cov[1 + k] += 其中成本 k 有效
+//   (与 h 无关, 每行一次)
+inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const Cost *c, int C, int A, double cap, CostAcc *acc, long long *cov) {
+  CostLeg row[factor::stat::kMaxCost * factor::stat::kMaxHold][kLegs] = {};
   for (int i = 0; i < H; ++i)
     if (lag[i])
       for (int k = 0; k < C; ++k)
@@ -164,13 +166,21 @@ inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const 
       for (int k = 0; k < C; ++k) {
         if (!c[k].m[a])
           continue;
-        CostLeg &g = acc[k * H + i].leg[l];
+        CostLeg &g = row[k * H + i][l];
         ++g.n;
         if (ent)
           ++g.e, g.imp += static_cast<double>(h2f(c[k].imp[l][a]));
       }
     }
   }
+  for (int j = 0; j < C * H; ++j)
+    for (int l = 0; l < kLegs; ++l) {
+      const CostLeg &r = row[j][l];
+      CostLeg &g = acc[j].leg[l];
+      const double den = factor::stat::book_den(static_cast<double>(r.n), cap);
+      g.n += r.n, g.e += r.e, g.imp += r.imp;
+      g.wimp += r.imp / den, g.we += static_cast<double>(r.e) / den;
+    }
 }
 
 // label_row 的逐格扩展 (见文件头 row_stat): cell(x, ok, y) 每格一次, x = 本格 r16, ok = 格在 J, y[kLegs] = 两腿标签值
@@ -178,9 +188,9 @@ struct NoExt {
   void cell(unsigned, bool, const float *) {}
 };
 
-// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
+// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首, cap = 满档 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
 template <class Ext>
-inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &r, Ext &ext) {
+inline void label_row(const uint16_t *rx, const Label &lb, int A, double cap, Row &r, Ext &ext) {
   unsigned long long s[kSums] = {};
   double sm[kLegs] = {}, gs[kGroups] = {};
   int gc[kGroups] = {};
@@ -199,17 +209,17 @@ inline void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &
   }
   constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
   const LegSum leg[kLegs] = {{static_cast<double>(gc[gl]), gs[gl]}, {static_cast<double>(gc[gb]), sv_bot}};
-  factor::stat::finish_row(f, s, sm, gs, gc, leg, r);
+  factor::stat::finish_row(s, sm, gs, gc, leg, cap, r);
 }
 
 // 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; tail = 段末尾部 (tail_masked, 为真则 ext 不动)
 template <class Ext>
-inline Row row_stat(Frame f, const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, bool tail, Ext &ext) {
+inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, double cap, bool tail, Ext &ext) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, A, r);
   if (!tail)
-    label_row(f, rx, lb, A, r, ext);
+    label_row(rx, lb, A, cap, r, ext);
   return r;
 }
 

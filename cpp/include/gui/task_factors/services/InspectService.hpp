@@ -61,9 +61,9 @@ inline constexpr int kTails = 3;
 inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
 static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
 struct TailRow {
-  float sum[factor::stat::kLegs][kTails] = {};    // 两腿尾部做多超额 e 的和 (Σlv − cnt·mkt[kLong], 与 Row::grp 同口径)
+  float sum[factor::stat::kLegs][kTails] = {};    // 两腿尾部做多超额 e 的持仓收益 Σe / max(cnt, cap_j) (cap_j = 满档 · kTailOfGroup[j]; 与 Row::grp 同口径)
   uint16_t cnt[factor::stat::kLegs][kTails] = {}; // 两腿尾部样本数
-  float ls[kTails] = {};                          // 尾部多空 = ls_of(两腿尾部, Row::mkt) (与 Row::ls 同式; 尾空 → 该腿 0)
+  float ls[kTails] = {};                          // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 Row::ls 同式; 尾空 → 该腿 0)
 };
 
 // Inspect 的一级平面: worker 写进 Flow 那份, 发布时与结果整体交换 (旧缓冲回收给 Flow, 下次原地写)
@@ -102,7 +102,7 @@ struct InspectResult {
   InspectPlanes pl;                         // 一级平面 (Row / 尾部 / 秩)
   std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径
   XDist xdist;                              // 根输入值分布 (全体 + 各组, 左下右半图)
-  float valid_pct = 0.f;
+  float valid_pct = 0.f, rank_pct = 0.f;    // 池内有效率 / 可秩率 (FactorsLoad valid_pct_of / rank_pct_of)
   double eval_ms = 0.0;
   std::string error; // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 

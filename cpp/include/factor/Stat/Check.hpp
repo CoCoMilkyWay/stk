@@ -65,12 +65,14 @@ struct Data {
   std::vector<LabelHost> lab; // 按 hd 序
   Holds hd;
   int T = 0, A = 0;
+  double cap = 0.0; // 满档 = 池内平均每行格数 / kGroups (与 GUI n_full_of 同式)
 };
 // d 的全部标签 + 各组预处理 ry → 契约 Labels (偏 off 格; ry 为空 = 未预处理)
 inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> &ry, size_t off = 0) {
   assert(ry.empty() || ry.size() == static_cast<size_t>(d.hd.n));
   Labels L;
   L.hd = d.hd;
+  L.cap = d.cap;
   for (int i = 0; i < d.hd.n; ++i)
     L.l[i] = label_of(d.lab[static_cast<size_t>(i)], ry.empty() ? nullptr : ry[static_cast<size_t>(i)].data(), off);
   return L;
@@ -86,6 +88,11 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) 
   factor::check::fill(z, Gen::NORM, pr, T, A, rng);
   factor::check::fill_gate(d.g, pr, T, A, rng);
   const size_t n = static_cast<size_t>(T) * A;
+  long long on = 0;
+  for (size_t i = 0; i < n; ++i)
+    on += d.g.m[i] != 0;
+  d.cap = static_cast<double>(on) / T / kGroups;
+  assert(d.cap > 0.0 && "截面池全空");
   d.x = z;
   if (f == Frame::TS) // 标准正态 → 分位 Φ(z) ∈ (0,1); 无效格值本就是 0
     for (size_t i = 0; i < n; ++i)
@@ -163,7 +170,7 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
   Diff d;
   for (int i = 0; i < H; ++i) {
     const HoldStat &a = ref[i], &b = got[i];
-    if (a.hold != b.hold || a.n != b.n || a.n_rac != b.n_rac) {
+    if (a.hold != b.hold || a.n != b.n || a.n_rac != b.n_rac || a.n_all != b.n_all || a.n_trig != b.n_trig) {
       if (d.mask_bad++ == 0)
         d.worst_at = i;
       continue;

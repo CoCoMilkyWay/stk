@@ -365,12 +365,13 @@ bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
 //          组底色 (bg) 主表列 / 悬停表行共用
 //   col    非空 = 进主表 (列名), 空 = 只在悬停表
 //   desc / range / best  说明 / 取值范围 / 最优 (悬停表三列, 主表列提示也由它们拼); 文案压短, 悬停表宽度由它们定
-//   get    HoldStat → double (整数计数也走这里, fmt 用 %.0f)
+//   get    (HoldStat, 满档 cap = StatScope::n_full) → double (整数计数也走这里, fmt 用 %.0f)
 //   cmp    跨持有期可比性 (渐变着色): None 不比; High 越大越好 (因子方向按根算子约定为正); Low 越小越好; AbsLow 越近 0 越好.
 //          不比的: n / n_rac (由持有期机制决定), sd (尺度随 h 变), skew / kurt (形态诊断), rAC 除均值外的矩.
 //          rAC 的 lag = h 随 h 变, 跨期比用 turn (年化换手)
 //   lag    样本 = ok_rac 行 (n_rac; rAC 系 / turn), 否则 ok 行 (n); 对应行数 < 3 → 空
-//   公式见 factor/Stat/Contract.hpp【二级 HoldStat】(rIC / rAC 同一套矩; t 值按 n/h 折算重叠持有期; Sharpe 以持有期为一期年化)
+//   公式见 factor/Stat/Contract.hpp【持仓口径】【二级 HoldStat】(rIC / rAC 同一套矩; t 值按 n/h 折算重叠持有期; LS% / SR 是不触发记 0 的真实收益,
+//   与 Inspect 累计线 / 图例同一份 ls_annual / ann_sharpe)
 // ============================================================================
 using HS = factor::stat::HoldStat;
 enum class Group : uint8_t { Shape,
@@ -401,45 +402,57 @@ struct Metric {
   const char *col;  // 主表列名; nullptr = 不进主表
   const char *desc, *range, *best;
   const char *fmt;
-  double (*get)(const HS &);
+  double (*get)(const HS &, double cap);
   Cmp cmp;
   bool lag = false;
 };
 constexpr Metric kMetrics[] = {
-    {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f", [](const HS &h) { return static_cast<double>(h.mono); },
-     Cmp::High},
+    {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
+     [](const HS &h, double) { return static_cast<double>(h.mono); }, Cmp::High},
     {Group::Shape, "turn", "turn", "年化换手 (倍/年) = (1 − rAC) × 每年期数", "[0, ∞)", "越小", "%.0f",
-     [](const HS &h) { return factor::stat::turnover_annual(h); }, Cmp::Low, true},
-    {Group::LS, "mean", "LS", "顶底多空超额 均值", "(-∞, ∞)", "越大", "%+.5f",
-     [](const HS &h) { return static_cast<double>(h.ls.mean); }, Cmp::High},
-    {Group::LS, "sd", nullptr, "顶底多空超额 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h) { return static_cast<double>(h.ls.sd); }, Cmp::None},
-    {Group::LS, "IR", nullptr, "顶底多空超额 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.ls.ir); }, Cmp::High},
-    {Group::LS, "t", nullptr, "顶底多空超额 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls.t); }, Cmp::High},
-    {Group::LS, "pos", nullptr, "顶底多空超额 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ls.pos); },
+     [](const HS &h, double) { return factor::stat::turnover_annual(h); }, Cmp::Low, true},
+    {Group::LS, "LS%", "LS%", "年化真实收益 % (满档 cap 只, 不足按只数/cap 建仓, 不触发记 0; = Inspect 累计末点)", "(-∞, ∞)", "越大", "%+.1f",
+     [](const HS &h, double) { return 100.0 * factor::stat::ls_annual(h); }, Cmp::High},
+    {Group::LS, "SR", "SR", "年化 Sharpe (不触发行记 0 进矩; = Inspect 图例)", "(-∞, ∞)", "越大", "%+.2f",
+     [](const HS &h, double) { return factor::stat::sharpe_of(h); }, Cmp::High},
+    {Group::LS, "trig", "trig%", "触发率 % = 至少一腿非空的行 / ok 行", "[0, 100]", "越大", "%.0f",
+     [](const HS &h, double) { return 100.0 * factor::stat::trigger_of(h); }, Cmp::High},
+    {Group::LS, "util", "util", "利用率 = 触发行平均每腿只数 / 满档 cap (不封顶, > 1 超满档均分)", "[0, ∞)", "≈ 1", "%.2f",
+     [](const HS &h, double cap) { return factor::stat::util_of(h, cap); }, Cmp::None},
+    {Group::LS, "mean", nullptr, "ok 行每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, double) { return static_cast<double>(h.ls.mean); },
      Cmp::High},
-    {Group::LS, "skew", nullptr, "顶底多空超额 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls.skew); }, Cmp::None},
-    {Group::LS, "kurt", nullptr, "顶底多空超额 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ls.kurt); }, Cmp::None},
-    {Group::LS, "SR", "SR", "顶底多空超额 年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return factor::stat::sharpe_of(h); }, Cmp::High},
-    {Group::LS, "β", nullptr, "顶底多空超额 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h) { return static_cast<double>(h.beta); }, Cmp::AbsLow},
-    {Group::RIC, "mean", "rIC", "rIC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h) { return static_cast<double>(h.ric.mean); }, Cmp::High},
-    {Group::RIC, "sd", nullptr, "rIC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.ric.sd); }, Cmp::None},
-    {Group::RIC, "IR", "rICIR", "rIC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.ric.ir); }, Cmp::High},
-    {Group::RIC, "t", nullptr, "rIC t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h) { return static_cast<double>(h.ric.t); }, Cmp::High},
-    {Group::RIC, "pos", "rIC>0", "rIC > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h) { return static_cast<double>(h.ric.pos); },
+    {Group::LS, "sd", nullptr, "ok 行每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, double) { return static_cast<double>(h.ls.sd); }, Cmp::None},
+    {Group::LS, "IR", nullptr, "ok 行每期多空 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h, double) { return static_cast<double>(h.ls.ir); },
      Cmp::High},
-    {Group::RIC, "skew", nullptr, "rIC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ric.skew); }, Cmp::None},
-    {Group::RIC, "kurt", nullptr, "rIC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.ric.kurt); }, Cmp::None},
-    {Group::RAC, "mean", "rAC", "rAC 均值", "[-1, 1]", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rac.mean); }, Cmp::High, true},
-    {Group::RAC, "sd", nullptr, "rAC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h) { return static_cast<double>(h.rac.sd); }, Cmp::None, true},
-    {Group::RAC, "IR", nullptr, "rAC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h) { return static_cast<double>(h.rac.ir); }, Cmp::None,
-     true},
-    {Group::RAC, "t", nullptr, "rAC t 值", "(-∞, ∞)", "越大", "%+.2f", [](const HS &h) { return static_cast<double>(h.rac.t); }, Cmp::None, true},
-    {Group::RAC, "pos", nullptr, "rAC > 0 占比", "[0, 1]", "越大", "%.2f", [](const HS &h) { return static_cast<double>(h.rac.pos); }, Cmp::None, true},
-    {Group::RAC, "skew", nullptr, "rAC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.rac.skew); }, Cmp::None, true},
-    {Group::RAC, "kurt", nullptr, "rAC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h) { return static_cast<double>(h.rac.kurt); }, Cmp::None, true},
-    {Group::Sample, "n", nullptr, "标签 ok 行数", "[0, T]", "越大, <3 标签侧空", "%.0f", [](const HS &h) { return static_cast<double>(h.n); }, Cmp::None},
-    {Group::Sample, "n_rac", nullptr, "rAC 可算行数", "[0, T]", "越大, <3 rAC / turn 空", "%.0f", [](const HS &h) { return static_cast<double>(h.n_rac); },
+    {Group::LS, "t", nullptr, "ok 行每期多空 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h, double) { return static_cast<double>(h.ls.t); },
+     Cmp::High},
+    {Group::LS, "pos", nullptr, "ok 行每期多空 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f",
+     [](const HS &h, double) { return static_cast<double>(h.ls.pos); }, Cmp::High},
+    {Group::LS, "skew", nullptr, "ok 行每期多空 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h, double) { return static_cast<double>(h.ls.skew); },
      Cmp::None},
+    {Group::LS, "kurt", nullptr, "ok 行每期多空 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h, double) { return static_cast<double>(h.ls.kurt); },
+     Cmp::None},
+    {Group::LS, "β", nullptr, "ok 行每期多空 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h, double) { return static_cast<double>(h.beta); },
+     Cmp::AbsLow},
+    {Group::RIC, "mean", "rIC", "rIC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h, double) { return static_cast<double>(h.ric.mean); }, Cmp::High},
+    {Group::RIC, "sd", nullptr, "rIC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h, double) { return static_cast<double>(h.ric.sd); }, Cmp::None},
+    {Group::RIC, "IR", "rICIR", "rIC 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h, double) { return static_cast<double>(h.ric.ir); },
+     Cmp::High},
+    {Group::RIC, "t", nullptr, "rIC t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h, double) { return static_cast<double>(h.ric.t); },
+     Cmp::High},
+    {Group::RIC, "pos", "rIC>0", "rIC > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f", [](const HS &h, double) { return static_cast<double>(h.ric.pos); },
+     Cmp::High},
+    {Group::RIC, "skew", nullptr, "rIC 偏度", "(-∞, ∞)", "≈ 0", "%+.2f", [](const HS &h, double) { return static_cast<double>(h.ric.skew); }, Cmp::None},
+    {Group::RIC, "kurt", nullptr, "rIC 超额峰度", "[-2, ∞)", "≈ 0", "%+.2f", [](const HS &h, double) { return static_cast<double>(h.ric.kurt); },
+     Cmp::None},
+    {Group::RAC, "mean", "rAC", "rAC 均值", "[-1, 1]", "越大", "%+.3f", [](const HS &h, double) { return static_cast<double>(h.rac.mean); }, Cmp::High,
+     true},
+    {Group::RAC, "sd", nullptr, "rAC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h, double) { return static_cast<double>(h.rac.sd); }, Cmp::None,
+     true},
+    {Group::Sample, "n", nullptr, "标签 ok 行数", "[0, T]", "越大, <3 标签侧空", "%.0f", [](const HS &h, double) { return static_cast<double>(h.n); },
+     Cmp::None},
+    {Group::Sample, "n_rac", nullptr, "rAC 可算行数", "[0, T]", "越大, <3 rAC / turn 空", "%.0f",
+     [](const HS &h, double) { return static_cast<double>(h.n_rac); }, Cmp::None},
 };
 constexpr int kNumMetrics = static_cast<int>(std::size(kMetrics));
 constexpr int count_cols() {
@@ -463,21 +476,21 @@ constexpr std::array<int, kNumStatCols> kStatColMetric = stat_col_metric();
 // 有值: 样本组照显; 其余看对应行数 ≥ 3 (lag 指标看 n_rac, 其余看 n)
 bool has_value(const HS &h, const Metric &m) { return m.group == Group::Sample || (m.lag ? h.n_rac : h.n) >= 3; }
 
-// 一格: 无值 → "-"; 否则按 fmt 打印, 可带色
-void metric_cell(const HS *h, const Metric &m, const ImVec4 *color = nullptr) {
+// 一格: 无值 → "-"; 否则按 fmt 打印, 可带色. cap = 该行满档 (scope.n_full)
+void metric_cell(const HS *h, const Metric &m, double cap, const ImVec4 *color = nullptr) {
   if (!h || !has_value(*h, m))
     ImGui::TextDisabled("-");
   else if (color)
-    ImGui::TextColored(*color, m.fmt, m.get(*h));
+    ImGui::TextColored(*color, m.fmt, m.get(*h, cap));
   else
-    ImGui::Text(m.fmt, m.get(*h));
+    ImGui::Text(m.fmt, m.get(*h, cap));
 }
 // 排序键: 无值的行排最前 (升序) / 最后 (降序)
-double metric_key(const HS *h, const Metric &m) { return h ? m.get(*h) : -1e300; }
+double metric_key(const HS *h, const Metric &m, double cap) { return h ? m.get(*h, cap) : -1e300; }
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn frame status time valid score util | mono turn LS SR rIC rICIR rIC>0 rAC | expr ops feats slots note
+//   edit type name_en name_cn frame status time val% rank% | mono turn LS% SR trig% util rIC rICIR rIC>0 rAC | expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
@@ -487,8 +500,7 @@ enum Col : int { Edit,
                  Status,
                  Time,
                  Valid,
-                 Opt,
-                 Util,
+                 Rank,
                  Expr,
                  Ops,
                  Feats,
@@ -523,10 +535,10 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      true},
     {Frame, "frame",
      "口径 (由根算子定)\n"
-     "• 共同: 标签取超额 (减截面均值), 组均值沿 t 池化\n"
+     "• 共同: 标签取超额 (减截面均值); 持仓口径: 一腿满档 cap 只, 不足按只数/cap 建仓, 超出均分, 空组 / 空腿记 0\n"
      "• CS = 截面\n"
      "    ◦ 根 CsRank / CsNormRank / CsZ\n"
-     "    ◦ 每 t 截面 rank 分 20 组, 任一组空该行无效\n"
+     "    ◦ 每 t 截面 rank 分 20 组\n"
      "    ◦ 多空对冲\n"
      "• TS = 时序\n"
      "    ◦ 根 TsRankRoll 5 日\n"
@@ -553,23 +565,10 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• = 子树全部算子节点之和, 共享节点算给每个用它的因子\n"
      "• CPU 全核 wall / GPU 纯 kernel",
      true},
-    {Valid, "valid%", "根平面有效格占比", true},
-    {Opt, "score",
-     "选定持有期 (Hold) 的目标分数\n"
-     "• score = 毛 LS × 资金利用率 util × rIC\n"
-     "    ◦ 与 Optimize 打分同一份 score_of (Search 契约【目标】)\n"
-     "    ◦ 只评排序能力: 不看成本, 不跨持有期比\n"
-     "• 由该 h 的 HoldStat 现算; 悬停行看分量 (LS / util / rIC)\n"
-     "• 空: 无 stat / LS ≤ 0 / rIC ≤ 0",
-     true},
-    {Util, "util",
-     "选定持有期的资金利用率\n"
-     "• util = 平均每行一腿成员数 / 满仓只数, 封顶 1\n"
-     "    ◦ 满仓只数 = 池内平均有效票数 / 20\n"
-     "• 目标 = 毛 LS × util × rIC\n"
-     "    ◦ LS 是每成员口径, 乘 util 才是固定资金上的钱\n"
-     "    ◦ TS 因子触发稀疏时此值小\n"
-     "• 同 score 列, 由 stat 现算",
+    {Valid, "val%", "可用因子值: 池内格中根平面有效的占比", true},
+    {Rank, "rank%",
+     "可秩: 逐行 所在并列块 (同秩) ≤ ⌈有效数 / 20⌉ 只的格 / 池内有效格, 沿行平均\n"
+     "• 整行常数 / 大块并列 → 低 (该行分不出组)",
      true},
     {Expr, "expr",
      "规范串 = 解析后重新序列化\n"
@@ -596,11 +595,11 @@ constexpr bool fixed_cols_ordered() {
 static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Col 枚举一致");
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
-// 显示顺序: Stat 列夹在 util 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
+// 显示顺序: Stat 列夹在 rank% 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
 struct ColRef {
   int fixed = -1, stat = -1;
 };
-constexpr int kStatInsertAfter = Util;
+constexpr int kStatInsertAfter = Rank;
 constexpr int kNumCols = kNumFixed + kNumStatCols;
 constexpr std::array<ColRef, kNumCols> col_layout() {
   std::array<ColRef, kNumCols> a{};
@@ -658,8 +657,8 @@ constexpr int kTipFixedCols = 4; // 悬停表前置列: 指标 / 说明 / 范围
 
 // 渐变着色 (悬停表跨持有期 / 主表列跨因子 共用一套): 可比指标按 cmp 方向统一成 "越大越好" 的分值, 在一组样本的 [lo, hi] 内线性映射到 [0, 1]
 // (0 = 最差, 1 = 最好), 红 → 文字色 → 绿 三段插值; 不可比 / 样本 < 2 / 全等 → 不着色 (nullopt)
-double metric_score(const Metric &m, const HS &h) {
-  const double v = m.get(h);
+double metric_score(const Metric &m, const HS &h, double cap) {
+  const double v = m.get(h, cap);
   switch (m.cmp) {
   case Cmp::High:
     return v;
@@ -679,10 +678,10 @@ struct ScoreRange { // 一组样本的分值范围, 逐个 add
   void add(double s) { lo = std::min(lo, s), hi = std::max(hi, s), ++cnt; }
   bool usable() const { return cnt >= 2 && hi > lo; }
 };
-std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const ScoreRange &rg) {
+std::optional<ImVec4> grade_color(const Metric &m, const HS *h, double cap, const ScoreRange &rg) {
   if (m.cmp == Cmp::None || !h || !has_value(*h, m) || !rg.usable())
     return std::nullopt;
-  const float t = static_cast<float>((metric_score(m, *h) - rg.lo) / (rg.hi - rg.lo));
+  const float t = static_cast<float>((metric_score(m, *h, cap) - rg.lo) / (rg.hi - rg.lo));
   const ImVec4 bad = StatusColor(TaskStatus::Kind::Error), mid = ImGui::GetStyleColorVec4(ImGuiCol_Text), good = StatusColor(TaskStatus::Kind::Ready);
   return t < 0.5f ? ImLerp(bad, mid, t * 2.f) : ImLerp(mid, good, (t - 0.5f) * 2.f);
 }
@@ -693,22 +692,16 @@ std::optional<ImVec4> hold_color(const FactorRow &r, const Metric &m, int k) {
   ScoreRange rg;
   for (int j = 0; j < r.n_hold; ++j)
     if (has_value(r.hold[j], m))
-      rg.add(metric_score(m, r.hold[j]));
-  return grade_color(m, &r.hold[k], rg);
+      rg.add(metric_score(m, r.hold[j], r.scope.n_full));
+  return grade_color(m, &r.hold[k], r.scope.n_full, rg);
 }
 
-// 行悬停的 stat 部分 (调用方已 BeginTooltip): 头部对仗 bullet + 转置表 (行 = kMetrics 按组, 列 = 持有期), 可比指标跨持有期渐变着色
+// Stat 列悬停: 精简头部 + 转置表 (行 = kMetrics 按组, 列 = 持有期), 可比指标跨持有期渐变着色
 void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
-  // 键列对齐到 8 格 (CJK 一字 = 2 格, 等宽字体)
-  ImGui::BulletText("来源    %s%s", r.stat_from_file ? "文件" : "本轮", r.stat_from_file && !scope_matches(r, ctx) ? " (作用域 ≠ 当前)" : "");
-  ImGui::BulletText("口径    %s", factor::stat::frame_name(r.frame));
-  ImGui::BulletText("标签    毛价格收益 (不含冲击 / 税佣; Inspect 页可选扣)");
-  ImGui::BulletText("作用域  %s  %s .. %s  (%d 天 × %d 资产, T = %d)", r.scope.universe.c_str(), r.scope.start_date.c_str(), r.scope.end_date.c_str(),
-                    r.scope.days, r.scope.A, r.scope.T);
-  ImGui::BulletText("算得    %s @ %s", r.scope.backend.c_str(), r.scope.time.c_str());
-  ImGui::BulletText("valid   %.2f%%", r.valid_pct);
-  ImGui::BulletText("耗时    %.3f ms (DAG 一遍, 与 hold 无关)", r.eval_ms);
-  ImGui::BulletText("着色    可比指标跨持有期渐变 ");
+  ImGui::TextDisabled("%s%s | %s | %s %s..%s | val %.2f%% rank %.2f%% 满档 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
+                      r.stat_from_file && !scope_matches(r, ctx) ? " (作用域≠当前)" : "", factor::stat::frame_name(r.frame), r.scope.universe.c_str(),
+                      r.scope.start_date.c_str(), r.scope.end_date.c_str(), r.valid_pct, r.rank_pct, r.scope.n_full, r.eval_ms);
+  ImGui::TextDisabled("标签: 毛价格收益; 着色: ");
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "红 = 最差");
   ImGui::SameLine(0, 0);
@@ -716,7 +709,7 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "绿 = 最好");
   ImGui::SameLine(0, 0);
-  ImGui::TextDisabled("; 不着色 = 不跨期比");
+  ImGui::TextDisabled("; 空 = 不跨期比");
   if (!ImGui::BeginTable("HoldStatTip", kTipFixedCols + r.n_hold, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
     return;
   ImGui::TableSetupColumn("指标");
@@ -754,7 +747,7 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
     for (int k = 0; k < r.n_hold; ++k) {
       ImGui::TableNextColumn();
       const std::optional<ImVec4> c = hold_color(r, m, k);
-      metric_cell(&r.hold[k], m, c ? &*c : nullptr);
+      metric_cell(&r.hold[k], m, r.scope.n_full, c ? &*c : nullptr);
     }
   }
   ImGui::EndTable();
@@ -795,10 +788,10 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   }
 }
 
-// score / util 列的一格 (RowScore 的压缩: 只留看板要显示的; hold = 0 即无)
+// 一行在选定持有期的目标分 (RowScore 的压缩; 不显示, 只挑父行代表权重; hold = 0 即无)
 struct OptCell {
   int hold = 0;
-  double ls = 0.0, util = 0.0, ric = 0.0, score = 0.0; // score −∞ = LS / rIC ≤ 0
+  double score = 0.0; // −∞ = LS / rIC ≤ 0
 };
 
 // 表的一行怎么画: 平铺 (单权重 / 文件级行) / 父 (多权重因子的代表权重, 表达式列显示模板) / 子 (展开后的一个权重, 名字列显示搜索持有期)
@@ -807,7 +800,7 @@ enum class RowKind : uint8_t { Flat,
                                Child };
 
 // 固定列一格 (edit 列是勾选框, 在表循环里单独画)
-void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUIContext &ctx, bool editing, RowKind kind) {
+void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool editing, RowKind kind) {
   const bool ok = r.error.empty();
   const auto text = [&](const std::string &s, bool hi = false) {
     if (s.empty())
@@ -862,10 +855,8 @@ void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUICon
     return num(ok && !r.expr.empty(), "%d", r.n_slots);
   case Valid:
     return num(r.has_stat, "%.1f", r.valid_pct);
-  case Opt:
-    return num(oc.hold > 0 && std::isfinite(oc.score), "%.4g", oc.score);
-  case Util:
-    return num(oc.hold > 0, "%.2f", oc.util);
+  case Rank:
+    return num(r.has_stat, "%.1f", r.rank_pct);
   case Note:
     return text(r.note);
   case Edit:
@@ -875,12 +866,14 @@ void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUICon
   assert(false);
 }
 
-// 整行悬停 (任一格, 含勾选框): 文件 / 操作 / 原串 / BROKEN 原因 / dup; stat 对比表只在悬停 Stat 列 (mono … rAC) 时出. 表格行只有这一个提示函数.
+// 表格行只保留 Stat 列 (mono … rAC) 的期限对比 hover; 其它格子不弹冗余提示.
 // 位置自己定: ImGui 的 tooltip 定位在四个方向都放不下时退化为贴鼠标右下 (大半出屏, 看着像没触发); 这里用上一帧的窗口尺寸把左上角夹回视口
-void row_tooltip(const FactorRow &r, const OptCell &oc, const FactorsUIContext &ctx, bool viewing, bool editing) {
+void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   static ImVec2 s_size;                          // 上一帧尺寸 (首帧 0 → 不夹, ImGui 的 AlwaysAutoResize 首帧本就隐藏)
   const int hc = ImGui::TableGetHoveredColumn(); // 须在 BeginTooltip 前取 (tooltip 窗口里没有当前表)
   const bool on_stat = hc >= 0 && hc < kNumCols && kColLayout[static_cast<size_t>(hc)].stat >= 0;
+  if (!r.has_stat || !on_stat)
+    return;
   const ImGuiViewport *vp = ImGui::GetMainViewport();
   const ImVec2 mouse = ImGui::GetMousePos();
   ImVec2 pos(mouse.x + 16.f, mouse.y + 16.f);
@@ -888,35 +881,7 @@ void row_tooltip(const FactorRow &r, const OptCell &oc, const FactorsUIContext &
   pos.y = std::max(vp->WorkPos.y, std::min(pos.y, vp->WorkPos.y + vp->WorkSize.y - s_size.y));
   ImGui::SetNextWindowPos(pos);
   ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetFontSize() * kTipWrapEm);
-  ImGui::BulletText("文件    %s/%s  (%s / %s)", ctx.factor_dir.c_str(), r.file.c_str(), r.name_en.c_str(), r.name_cn.empty() ? "无 name_cn" : r.name_cn.c_str());
-  if (r.widx >= 0)
-    ImGui::BulletText("权重    #%d  搜自 h %s%s", r.widx, r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "- (手填)",
-                      r.tmpl == r.expr ? "" : ("  模板 " + r.tmpl).c_str());
-  ImGui::BulletText("点行    %s", viewing ? "取消高光" : "高光给 Inspect 页");
-  ImGui::BulletText("勾选    %s", editing ? "取消编辑 (构建器内容留作模板)" : "编辑模板 (载入上方构建器)");
-  if (!r.expr_raw.empty() && r.expr_raw != r.tmpl)
-    ImGui::BulletText("原串    %s", r.expr_raw.c_str());
-  if (!r.dup_of.empty())
-    ImGui::BulletText("dup     与 %s 同一规范串", r.dup_of.c_str());
-  if (oc.hold > 0) {
-    ImGui::BulletText("目标    h %s  LS %+.2f bp  util %.2f  rIC %.4f  score %.4g", factor::stat::hold_name(oc.hold).c_str(), 1e4 * oc.ls, oc.util, oc.ric,
-                      oc.score);
-    ImGui::Indent();
-    ImGui::BulletText("score = 毛 LS × util × rIC, 与 Optimize 同一份打分");
-    ImGui::BulletText("n_full %.1f (满仓只数)", r.scope.n_full);
-    ImGui::Unindent();
-  }
-  if (!r.error.empty()) {
-    ImGui::Separator();
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN: %s", r.error.c_str());
-    ImGui::TextDisabled("文件保留, 请手动修复或删除");
-  }
-  ImGui::PopTextWrapPos(); // 表格格子不能带折行位 (绝对 x, 右侧列会被折成零宽)
-  if (r.has_stat && on_stat) {
-    ImGui::Separator();
-    stat_tooltip(r, ctx);
-  }
+  stat_tooltip(r, ctx);
   s_size = ImGui::GetWindowSize();
   ImGui::EndTooltip();
 }
@@ -989,8 +954,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    tip("表格 Stat / score / util 列显示哪个持有期\n"
-        "• 多权重因子的父行 = 该持有期下 score 最高的权重\n"
+    tip("表格 Stat 列显示哪个持有期\n"
+        "• 多权重因子的父行 = 该持有期下 score (每期真实 LS × rIC, 同 Optimize) 最高的权重\n"
         "• 不影响\n"
         "    ◦ Run: 一次算全部持有期\n"
         "    ◦ Optimize: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
@@ -1069,7 +1034,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   }
 
   // ---- Optimize: 对高光行所在文件的模板搜全部自由参数, 搜索窗内每个持有期各搜 (不跨 h 比), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
-  //      (Search/Contract.hpp【目标】【多权重】); 结果整体替换文件 weights, 随后 TaskFactors 自动 Run (看板 score / util 从新 stat 算) ----
+  //      (Search/Contract.hpp【目标】【多权重】); 结果整体替换文件 weights, 随后 TaskFactors 自动 Run (看板从新 stat 算) ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
@@ -1097,11 +1062,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       else
         tip("搜 %s 模板里的自由参数 (裸键名 d / k / k2)\n"
             "• 范围: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
-            "• 目标 = 毛 LS × 资金利用率 util × rIC\n"
+            "• 目标 = 每期真实毛 LS × rIC\n"
             "    ◦ 只评排序能力: 不看成本, 不跨持有期比\n"
-            "    ◦ util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1\n"
-            "    ◦ LS 是每成员口径, 乘 util 才是固定资金上的钱\n"
-            "    ◦ 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
+            "    ◦ 真实 LS: 一腿满档 cap 只 (池内平均有效票数 / 20), 不足按只数/cap 建仓, 超出均分, 不触发记 0\n"
+            "    ◦ 触发率 / 利用率已在 LS 里, 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
             "• 搜索\n"
             "    ◦ 粗网格\n"
             "        ▪ 中心 = 有界槽中点 / 0\n"
@@ -1174,22 +1138,19 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         ImGui::TextDisabled("%d branch, %d plateau, max score %.4g, %d pick", sh.n_branch, sh.n_plateau, sh.max_score, static_cast<int>(sh.picks.size()));
         const bool final = !sh.picks.empty();
         ImGui::PushID(sh.hold);
-        if (ImGui::BeginTable("opt_h", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        if (ImGui::BeginTable("opt_h", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
           ImGui::TableSetupColumn("expr");
           ImGui::TableSetupColumn(final ? "corr" : "pass");
-          ImGui::TableSetupColumn("LS bp");
-          ImGui::TableSetupColumn("util");
+          ImGui::TableSetupColumn("LS bp/期");
           ImGui::TableSetupColumn("rIC");
           ImGui::TableSetupColumn("score");
           ImGui::TableHeadersRow();
-          const auto stat_cells = [](bool ok, double ls, double util, double ric, double score) {
+          const auto stat_cells = [](bool ok, double ls, double ric, double score) {
             ImGui::TableNextColumn();
             if (ok)
               ImGui::Text("%+.2f", 1e4 * ls);
             else
               ImGui::TextDisabled("-");
-            ImGui::TableNextColumn();
-            ImGui::Text("%.2f", util);
             ImGui::TableNextColumn();
             ImGui::Text("%.4f", ric);
             ImGui::TableNextColumn();
@@ -1205,7 +1166,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
               ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "%s", p.expr.c_str());
               ImGui::TableNextColumn();
               ImGui::Text("%.2f", p.corr);
-              stat_cells(true, p.ls, p.util, p.ric, p.score);
+              stat_cells(true, p.ls, p.ric, p.score);
             }
           } else {
             const size_t n_show = std::min<size_t>(10, sh.cands.size());
@@ -1216,7 +1177,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
               ImGui::TextUnformatted(c.expr.c_str());
               ImGui::TableNextColumn();
               ImGui::Text("%d", c.pass);
-              stat_cells(c.ok, c.ls, c.util, c.ric, c.score);
+              stat_cells(c.ok, c.ls, c.ric, c.score);
             }
           }
           ImGui::EndTable();
@@ -1440,7 +1401,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // ==========================================================================
   // 3. 表
   // ==========================================================================
-  // score / util 列: 每行按选定持有期 (Hold) 从 stat 现算 (RowScore, 与 Optimize 同一份目标); 无 stat / 无该持有期 / n < 3 → hold = 0
+  // 目标分 (不显示, 挑代表权重): 每行按选定持有期 (Hold) 从 stat 现算 (RowScore, 与 Optimize 同一份目标); 无 stat / 无该持有期 / n < 3 → hold = 0
   static std::vector<OptCell> s_opt;
   s_opt.assign(s_rows.size(), OptCell{});
   if (cur_hold > 0)
@@ -1450,7 +1411,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         continue;
       OptCell &oc = s_opt[i];
       oc.hold = cur_hold;
-      oc.ls = sc.ls, oc.util = sc.util, oc.ric = sc.ric, oc.score = sc.score;
+      oc.score = sc.score;
     }
   // 按文件分组 (rows 同文件连续): 代表行 = 当前 h 下 score 最高的有效权重 (无分 → 首个有效 → 首行); 有权重的文件可展开 (文件级行 widx −1 不可)
   struct Group {
@@ -1567,7 +1528,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       };
       const auto key = [&](const FactorRow &r) -> double {
         if (const Metric *m = col_metric(sc))
-          return metric_key(hold_of(r, cur_hold), *m);
+          return metric_key(hold_of(r, cur_hold), *m, r.scope.n_full);
         switch (sf) {
         case Type:
           return static_cast<double>(r.kind);
@@ -1583,14 +1544,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           return r.n_slots;
         case Valid:
           return r.has_stat ? r.valid_pct : -1.0;
-        case Opt: { // 无分 (−∞ / 无 stat) 排最后
-          const OptCell &oc = s_opt[static_cast<size_t>(&r - s_rows.data())];
-          return oc.hold > 0 && std::isfinite(oc.score) ? oc.score : -1.0;
-        }
-        case Util: {
-          const OptCell &oc = s_opt[static_cast<size_t>(&r - s_rows.data())];
-          return oc.hold > 0 ? oc.util : -1.0;
-        }
+        case Rank:
+          return r.has_stat ? r.rank_pct : -1.0;
         default:
           return 0.0;
         }
@@ -1632,13 +1587,12 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         continue;
       for (const FactorRow &r : s_rows)
         if (const HS *h = hold_of(r, cur_hold); h && has_value(*h, m))
-          col_rg[i].add(metric_score(m, *h));
+          col_rg[i].add(metric_score(m, *h, r.scope.n_full));
     }
 
     for (size_t oi = 0; oi < order.size(); ++oi) {
       const auto [idx, kind, n_kids] = order[oi];
       const FactorRow &r = s_rows[static_cast<size_t>(idx)];
-      const OptCell &oc = s_opt[static_cast<size_t>(idx)];
       const HS *h = hold_of(r, cur_hold);
       const bool editing = kind != RowKind::Child && ui.edit_file == r.file;
       const bool viewing = ui.view_file == r.key;
@@ -1655,7 +1609,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       if (ImGui::Selectable("##row", group_viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
         ui.view_file = viewing ? std::string{} : r.key;
       if (ImGui::IsItemHovered())
-        row_tooltip(r, oc, ctx, viewing, editing);
+        row_tooltip(r, ctx);
       if (kind != RowKind::Child) {
         // 勾选框 = 编辑模式 (同时只勾一个文件): 勾 → 模板载入构建器; 取消勾 → 回添加模式 (内容留作模板); 勾另一行 → 切换
         // 无 FramePadding → 方框 = 字高, 行高不变; 回到格起点画 (Selectable 已占满整格宽)
@@ -1683,8 +1637,6 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           ui.add_msg.clear();
         }
         ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered()) // 勾选框盖住了 Selectable 的 hover, 同一个提示函数
-          row_tooltip(r, oc, ctx, viewing, editing);
       }
       for (int c = 1; c < kNumCols; ++c) { // 0 = edit 列 (上面画过)
         ImGui::TableSetColumnIndex(c);
@@ -1700,20 +1652,14 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
                 ui.expanded.push_back(r.file);
             }
             ImGui::PopStyleVar();
-            if (ImGui::IsItemHovered())
-              tip("%s 有 %d 个权重\n"
-                  "• 这行 = h %s 下 score 最高的 #%d (%s)\n"
-                  "• 点箭头展开 / 折叠",
-                  r.file.c_str(), n_kids, factor::stat::hold_name(cur_hold).c_str(), r.widx,
-                  r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "手填");
             ImGui::SameLine(0, 2);
           }
-          fixed_cell(static_cast<Col>(cr.fixed), r, oc, ctx, editing, kind);
+          fixed_cell(static_cast<Col>(cr.fixed), r, ctx, editing, kind);
         } else {
           const Metric &m = *col_metric(c);
           ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, group_bg(m.group));
-          const std::optional<ImVec4> col = grade_color(m, h, col_rg[cr.stat]);
-          metric_cell(h, m, col ? &*col : nullptr);
+          const std::optional<ImVec4> col = grade_color(m, h, r.scope.n_full, col_rg[cr.stat]);
+          metric_cell(h, m, r.scope.n_full, col ? &*col : nullptr);
         }
       }
       ImGui::PopID();

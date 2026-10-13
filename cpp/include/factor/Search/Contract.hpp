@@ -18,13 +18,12 @@
 //
 //   【目标】只评**排序能力**, 一次搜索针对一个固定持有期 h (调用方选), 不跨 h 比 (不同周期的每笔收益 / 执行方式不可公平折算), 不看成本
 //         (h ≥ 30m 时换手 ≈ 100%, 建仓冲击对参数几乎是常数, 减常数不改变 argmax; 成本 / 执行在选出因子之后独立处理):
-//         score = ls.mean · util · ric.mean^ric_pow;  ls.mean / rIC 任一 ≤ 0 或 n < 3 → −∞
-//         · ls.mean  每期每成员毛多空 (HoldStat; 固定 h 下年化系数是常数, 不乘)
-//         · util     = util_of(HoldStat, n_full) = 平均每行一腿成员数 / 满仓只数, 封顶 1. 唯一的"活跃度"项, 不设样本数 / 显著性硬阈值:
-//                    稀疏触发 (TS 门控 / 极端阈值) 的候选 util → 0, 分数自然 → 0, 10 行里挑出来的噪声 rIC 赢不了; 同时保住"分钟频 rIC
-//                    是上万行均值、本身显著"的前提. n_full 按池宽定 (池内平均有效票数 / kGroups), CS 因子恒 ≈ 1.
-//         · rIC      正则项: 要求全截面排序也成立, 不只尾部
-//         有意不进目标的: 成本 / 换手 / mono / 显著性 (ls.t, ric.ir) / 样本外 —— 搜索要快, 活跃度由 util 定价.
+//         score = ls_period · ric.mean^ric_pow;  ls_period / rIC 任一 ≤ 0 或 n < 3 → −∞
+//         · ls_period  每期真实毛多空 (Stat 契约【持仓口径】: 不触发行记 0, 不足满档按只数 / cap 建仓; 固定 h 下年化系数是常数, 不乘).
+//                      触发率 / 资金利用率已在持仓口径里定价, 不另设活跃度项 / 样本数 / 显著性硬阈值: 稀疏触发的候选 ls_period → 0,
+//                      10 行里挑出来的噪声赢不了; 超满档均分, 不奖励超出.
+//         · rIC        正则项: 要求全截面排序也成立, 不只尾部
+//         有意不进目标的: 成本 / 换手 / mono / 显著性 (ls.t, ric.ir) / 样本外 —— 搜索要快.
 //         同一份 score_of 两个入口: Search 吃 Result (Accum 先 finish), 因子看板吃 stat 里该 h 的 HoldStat —— Search 只在内部用分数挑候选,
 //         不往文件写结论.
 //
@@ -106,13 +105,12 @@ struct Result {
 
 // ---- 目标 (主机, double; 见【目标】) ----
 struct Objective {
-  double n_full = 1.0;  // 满仓一腿只数 (util 的分母; Search = 池内平均有效票数 / kGroups)
-  double ric_pow = 1.0; // score = ls.mean · util · ric^ric_pow
+  double ric_pow = 1.0; // score = ls_period · ric^ric_pow
 };
 
 struct Score {
-  bool ok = false;                        // n ≥ 3 (假 → 其余字段 0, score −∞)
-  double ls = 0.0, util = 0.0, ric = 0.0; // 毛多空 (每期每成员) / 资金利用率 / rIC 均值
+  bool ok = false;            // n ≥ 3 (假 → 其余字段 0, score −∞)
+  double ls = 0.0, ric = 0.0; // 每期真实毛多空 (ls_period) / rIC 均值
   double score = -std::numeric_limits<double>::infinity();
 };
 
@@ -122,11 +120,10 @@ inline Score score_of(const HoldStat &hs, const Objective &o) {
   if (hs.n < 3)
     return s;
   s.ok = true;
-  s.ls = hs.ls.mean;
-  s.util = factor::stat::util_of(hs, o.n_full);
+  s.ls = factor::stat::ls_period(hs);
   s.ric = hs.ric.mean;
   if (s.ls > 0.0 && s.ric > 0.0)
-    s.score = s.ls * s.util * (o.ric_pow == 1.0 ? s.ric : std::pow(s.ric, o.ric_pow));
+    s.score = s.ls * (o.ric_pow == 1.0 ? s.ric : std::pow(s.ric, o.ric_pow));
   return s;
 }
 // hi = hd 下标

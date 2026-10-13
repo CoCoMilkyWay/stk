@@ -72,12 +72,12 @@ StatSession *stat_open(int, int, const factor::stat::Labels &, double *) {
   return nullptr;
 }
 void stat_eval(StatSession *, const DevPlane *, const DevPlane *, factor::stat::Frame, factor::stat::Accum *, factor::stat::Row *, uint8_t *,
-               double *) {
+               uint16_t *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 void stat_close(StatSession *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }
 
-SearchSession *search_open(int, int, int, const factor::stat::Holds &) {
+SearchSession *search_open(int, int, int, const factor::stat::Holds &, double) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
   return nullptr;
 }
@@ -89,7 +89,7 @@ void search_eval(SearchSession *, const DevPlane *const *, int, const DevPlane *
 void search_ranks(SearchSession *, int, int, int, int, uint16_t *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }
 void search_close(SearchSession *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }
 void run_search(int, const float *const *, const uint8_t *const *, const uint8_t *, factor::stat::Frame, int, int, int, int,
-                const factor::stat::Holds &, const factor::stat::Label *, factor::search::Result *, double *, double *) {
+                const factor::stat::Holds &, double, const factor::stat::Label *, factor::search::Result *, double *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
 

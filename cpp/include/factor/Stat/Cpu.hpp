@@ -119,7 +119,7 @@ inline void rank_x(Exec &ex, Plane x, const uint8_t *g, Frame f, const Span &s, 
 
 // 阶段 2: rx × L 组标签 → 行 [t_lo,T) 的 Row, 每行先 sink.row 再折进 acc[hd.n] (覆盖)
 template <class Exec, class Sink>
-inline void accum_rows(Exec &ex, Frame f, const Span &s, const uint16_t *rx, const Labels &L, Workspace &w, Accum *acc, const Sink &sink) {
+inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels &L, Workspace &w, Accum *acc, const Sink &sink) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, true);
   const int H = L.hd.n, A = s.A, nt = ex.threads();
@@ -132,7 +132,7 @@ inline void accum_rows(Exec &ex, Frame f, const Span &s, const uint16_t *rx, con
       for (int i = 0; i < H; ++i) {
         const int hold = L.hd.h[i], h = factor::stat::hold_minutes(hold);
         typename Sink::Ext e = sink.ext();
-        const Row r = row_stat(f, rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base), A,
+        const Row r = row_stat(rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base), A, L.cap,
                                factor::stat::tail_masked(s.t0_abs + t, hold), e);
         sink.row(i, t, r, e);
         a[i].add(r);
@@ -151,7 +151,7 @@ template <class Exec, class Sink>
 inline void run(Exec &ex, Plane x, const uint8_t *g, Frame f, const Span &s, const Labels &L, uint16_t *rx, Workspace &w, Accum *acc,
                 const Sink &sink) {
   rank_x(ex, x, g, f, s, rx, w);
-  accum_rows(ex, f, s, rx, L, w, acc, sink);
+  accum_rows(ex, s, rx, L, w, acc, sink);
 }
 
 // 腿码: rx → lc [T][A] (契约 leg_code 逐格)
@@ -166,14 +166,14 @@ inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *lc) 
 }
 
 // 换手成本 + cover (契约【换手成本】): lc × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖) + cov[1 + C] (覆盖; cov[0] = 有秩格数,
-// cov[1 + k] = 其中成本 k 有效). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次 cost_row (H × C 一遍 A 轴)
+// cov[1 + k] = 其中成本 k 有效). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次 cost_row (H × C 一遍 A 轴); cap = 满档 (持仓加权)
 template <class Exec>
-inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &hd, const Cost *c, int C, Workspace &w, CostAcc *out,
+inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &hd, const Cost *c, int C, double cap, Workspace &w, CostAcc *out,
                       long long *cov) {
   factor::stat::assert_span(s);
   factor::stat::assert_holds(hd);
   const int H = hd.n, A = s.A, nt = ex.threads();
-  assert(lc && c && out && cov && C >= 1 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
+  assert(lc && c && out && cov && C >= 1 && C <= kMaxCost && cap > 0.0 && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
   const size_t per = static_cast<size_t>(C) * H, pc = static_cast<size_t>(1 + C);
   std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
   std::fill(w.ccov.begin(), w.ccov.begin() + static_cast<size_t>(nt) * pc, 0LL);
@@ -190,7 +190,7 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &h
       Cost cr[kMaxCost];
       for (int k = 0; k < C; ++k)
         cr[k] = c[k].at(base);
-      cost_row(lc + base, lag, H, cr, C, A, acc, cv);
+      cost_row(lc + base, lag, H, cr, C, A, cap, acc, cv);
     }
   });
   for (size_t j = 0; j < per; ++j) {

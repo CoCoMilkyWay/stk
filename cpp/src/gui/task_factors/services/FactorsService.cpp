@@ -102,6 +102,9 @@ void load_stat(const json &j, FactorRow &r) {
   if (!json_num(j, "valid_pct", v))
     return;
   t.valid_pct = static_cast<float>(v);
+  if (!json_num(j, "rank_pct", v))
+    return;
+  t.rank_pct = static_cast<float>(v);
   if (!json_num(j, "eval_ms", t.eval_ms))
     return;
   if (!json_num(j, "max_impact", t.scope.max_impact) || !json_num(j, "n_full", t.scope.n_full) || !(t.scope.n_full > 0.0))
@@ -122,6 +125,7 @@ void load_stat(const json &j, FactorRow &r) {
       return;
   r.scope = t.scope;
   r.valid_pct = t.valid_pct;
+  r.rank_pct = t.rank_pct;
   r.eval_ms = t.eval_ms;
   r.n_hold = t.n_hold;
   for (int k = 0; k < t.n_hold; ++k)
@@ -143,6 +147,7 @@ ojson stat_json(const FactorRow &r) {
   j["time"] = r.scope.time;
   j["frame"] = factor::stat::frame_name(r.frame);
   j["valid_pct"] = sig4(r.valid_pct);
+  j["rank_pct"] = sig4(r.rank_pct);
   j["eval_ms"] = sig4(r.eval_ms);
   j["max_impact"] = r.scope.max_impact;
   j["n_full"] = sig4(r.scope.n_full);
@@ -427,9 +432,7 @@ factor::search::Score RowScore(const FactorRow &r, int hold) {
   const factor::stat::HoldStat *h = r.has_stat ? r.find_hold(hold) : nullptr;
   if (!h)
     return {};
-  factor::search::Objective o;
-  o.n_full = r.scope.n_full;
-  return factor::search::score_of(*h, o);
+  return factor::search::score_of(*h, factor::search::Objective{});
 }
 
 void WriteFactorWeights(const std::string &factor_dir, std::string_view file, const std::vector<SearchWeight> &ws) {
@@ -746,7 +749,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
       finish_all_pending("特征库判废 (子轴/字段表与当前不符), 需重算特征");
     return false;
   }
-  const double n_full = n_full_of(L); // util 分母 (池宽), 全部因子共用
+  const double n_full = n_full_of(L); // 满档 cap (池宽), 全部因子共用
 
   // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
@@ -791,7 +794,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   std::vector<uint8_t> lc(n);                      // 该根的腿码 (后端出), 评估与成本共用
   std::vector<CostTier> costs;                     // [amt] 该根的换手成本 (cost_tiers, 两后端同一份宿主代码, 腿码由后端给)
 
-  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct) 填 hold[] + costs → 发布该根的全部因子 (dup 共根)
+  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct, rank_pct) 填 hold[] + costs → 发布该根的全部因子 (dup 共根)
   const auto walk = [&](const char *backend, auto &&run_node, auto &&stat_root) -> bool {
     for (int i = 0; i < N; ++i) {
       if (cancel_.load(std::memory_order_relaxed))
@@ -805,13 +808,13 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
       }
       if (!F.is_root(i))
         continue;
-      float valid_pct = 0.f;
+      float valid_pct = 0.f, rank_pct = 0.f;
       bool stat_done = false;
       for (size_t k = 0; k < idx.size(); ++k) {
         if (!runnable[k] || F.roots[k] != i)
           continue;
         if (!stat_done) {
-          stat_root(i, frames[k], valid_pct);
+          stat_root(i, frames[k], valid_pct, rank_pct);
           stat_done = true;
         }
         FactorRow r;
@@ -823,6 +826,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
         for (int j : sub[k])
           r.eval_ms += node_ms[static_cast<size_t>(j)];
         r.valid_pct = valid_pct;
+        r.rank_pct = rank_pct;
         fill_stat(r, req, L, n_full, hold, costs, backend);
         r.status = RowStatus::Done;
         {
@@ -861,11 +865,12 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
           factor::cpu::run_node(ex, nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, sc, L.cs.m.data());
           return ms_since(t0);
         },
-        [&](int i, factor::stat::Frame fr, float &valid_pct) {
+        [&](int i, factor::stat::Frame fr, float &valid_pct, float &rank_pct) {
           const factor::check::Plane *root = plane_of(i); // Stat 只看池内 (g 在算子内部)
           valid_pct = valid_pct_of(root->m.data(), L.cs.m.data(), n);
           factor::cpu::stat::run(ex, factor::stat::Plane{root->v.data(), root->m.data()}, L.cs.m.data(), fr, L.span(), lab.L, rx.data(), w, acc,
                                  factor::cpu::stat::DropRows{});
+          rank_pct = rank_pct_of(ex, rx.data(), root->m.data(), L.cs.m.data(), L.T, L.A);
           factor::stat::finish_all(acc, L.hd, hold);
           factor::cpu::stat::leg_codes(ex, rx.data(), L.span(), lc.data());
           cost_tiers(ex, lc.data(), L, feats_, w, costs);
@@ -884,6 +889,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   factor::gpu::DevPool pool;
   pool.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
   std::vector<uint8_t> mask(n);
+  std::vector<uint16_t> rx(n); // r16(x) 拷回 (rank%)
   const auto dplane_of = [&](int i) -> const factor::gpu::DevPlane * {
     const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
     return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : pool.slots[static_cast<size_t>(nd.slot)];
@@ -904,11 +910,12 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
           factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], cs_gate, out, L.T, L.A, nd.p, &ms);
         return ms;
       },
-      [&](int i, factor::stat::Frame fr, float &valid_pct) {
+      [&](int i, factor::stat::Frame fr, float &valid_pct, float &rank_pct) {
         const factor::gpu::DevPlane *root = dplane_of(i);        // Stat 只看池内 (g 在算子内部)
-        factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid%
+        factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid% / rank%
         valid_pct = valid_pct_of(mask.data(), L.cs.m.data(), n);
-        factor::gpu::stat_eval(ss, root, cs_gate, fr, acc, nullptr, lc.data());
+        factor::gpu::stat_eval(ss, root, cs_gate, fr, acc, nullptr, lc.data(), rx.data());
+        rank_pct = rank_pct_of(ex, rx.data(), mask.data(), L.cs.m.data(), L.T, L.A);
         factor::stat::finish_all(acc, L.hd, hold);
         cost_tiers(ex, lc.data(), L, feats_, w, costs);
       });

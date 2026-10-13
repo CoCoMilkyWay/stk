@@ -195,10 +195,13 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   const int hold = res.hd.h[sel];
   const double h = factor::stat::hold_minutes(hold);
   const double ann = 100.0 * factor::stat::kDaysPerYear / days;
+  const double cap = res.scope.n_full;
+  assert(cap > 0.0);
   const factor::stat::Row *r = res.rows_at(sel);
   assert(res.pl.tails.size() == res.pl.rows.size());
   const TailRow *tr = res.tails_at(sel);
   d.hs = res.hold[static_cast<size_t>(sel)];
+  assert(d.hs.n_all == T && "累计线 / Sharpe 的分母 = 全部行, 须与二级 n_all 同");
   d.xd = res.xdist;
   d.days = days;
   d.dates = res.dates;
@@ -214,7 +217,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   std::vector<float> &ics = d.ic_series;
   ics.reserve(static_cast<size_t>(T));
   double lay_c[kLayerLines] = {}, ls_c[kLsLines] = {};
-  factor::stat::MomAcc ls_m[kLsLines]; // LS 线沿 ok 行的矩 → Sharpe (与 Accum::finish 的 LS 同式)
+  factor::stat::MomAcc ls_m[kLsLines]; // LS 线沿 ok 行的矩 → Sharpe (与 Accum::finish 的 LS 同式, 不 ok 行按 0 补进 T 行: ann_sharpe)
   for (int day = 0; day < days; ++day) {
     double g[kLayerLines] = {}, s[kLsLines] = {};
     for (int t = day * S; t < (day + 1) * S; ++t) {
@@ -223,16 +226,14 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
         continue;
       ics.push_back(w.ric);
       const double base = absolute ? w.mkt[kLong] : 0.0;
-      const auto layer = [&](int i, float sum, unsigned cnt) { // 组 / 尾可空 (TS 口径该刻无仓): 贡献 0
-        if (cnt)
-          g[i] += sum / cnt + base;
-      };
+      // ret = 持仓超额收益 (契约【持仓口径】); 绝对口径再加基准 × 仓位 cnt / max(cnt, cap_i). 组 / 尾空 → 贡献 0
+      const auto layer = [&](int i, float ret, unsigned cnt, double cap_i) { g[i] += ret + base * cnt / factor::stat::book_den(cnt, cap_i); };
       const TailRow &x = tr[t];
       for (int k = 0; k < K; ++k)
-        layer(k, w.grp[k], w.cnt[k]);
+        layer(k, w.grp[k], w.cnt[k], cap);
       for (int l = 0; l < kLegs; ++l)
         for (int j = 0; j < kTails; ++j)
-          layer(layer_tail(l, j), x.sum[l][j], x.cnt[l][j]);
+          layer(layer_tail(l, j), x.sum[l][j], x.cnt[l][j], cap * kTailOfGroup[j]);
       for (int i = 0; i < kLsLines; ++i) {
         const float v = i ? x.ls[i - 1] : w.ls;
         s[i] += v;
@@ -249,7 +250,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     }
   }
   for (int i = 0; i < kLsLines; ++i)
-    d.ls_sharpe[i] = static_cast<float>(ls_m[i].finish(hold).ir * std::sqrt(factor::stat::periods_per_year(hold)));
+    d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(ls_m[i].finish(hold), ls_m[i].n, T, hold));
   // 各簇 / 各 LS 线的 min / max (含起点 0): y 范围 / LS 平移量按显示的簇每帧合成 (layer_range)
   const auto span = [](const std::vector<float> &v, float &a, float &b) {
     for (const float x : v)
@@ -976,7 +977,7 @@ void plot_xdist(const InspectDerived &d, const ImVec2 &size) {
 
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
 // 三组 × (毛 + 全部冲击档) 一次画全 (档越高线越细越淡), 成本只在这张图出现; L / S 默认隐藏, 点图例切 (图例项 = 组 × 档).
-// 口径 = 全 universe 全时刻池化 (HoldStat::grp = Σ 组内超额 / Σ 组样本数; ls.mean = 逐 t ls 的时间均值), 不是逐资产信号平均.
+// 口径 = Stat 契约【持仓口径】的每期真实收益 (HoldStat::grp = Σ 组持仓收益 / 全部行; ls_period = Σ ls / 全部行, 不触发行记 0).
 // 净档 = 毛二级 − leg_sign(腿) · 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 sell_impact; L / S 按做多超额画, 空腿付成本 = 线上移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (档, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是 t ≥ h 的 rx ∧ 成本有效格, 两者不完全重合 —— entry 成本与标签无关
@@ -1011,9 +1012,9 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   const auto value = [&](int c, int q, int i) {
     const factor::stat::HoldStat &h = hs[i];
     if (c == kLegs)
-      return q == 0 ? static_cast<double>(h.ls.mean) : factor::stat::net_ls_period(h, costs[q - 1].acc[i], sell_impact);
+      return q == 0 ? factor::stat::ls_period(h) : factor::stat::net_ls_period(h, costs[q - 1].acc[i], sell_impact);
     const double gross = h.grp[leg_group(c)];
-    return q == 0 ? gross : gross - leg_sign(c) * costs[q - 1].acc[i].cost(c, sell_impact);
+    return q == 0 ? gross : gross - leg_sign(c) * costs[q - 1].acc[i].cost(c, sell_impact, h.n_all);
   };
   ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
@@ -1072,11 +1073,11 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     ImPlot::PushPlotClipRect();
     ImPlot::GetPlotDrawList()->AddCircle(ppx, 6.f, ImGui::ColorConvertFloat4ToU32(pcol), 0, 2.f);
     ImPlot::PopPlotClipRect();
-    // 单边账 (bp/期): L = G20 做多 / S = G1 做多 (与线同号, 净 = 毛 − leg_sign · 成本) / LS = 两腿平均 (毛 ls.mean/2, 成本 Σ cost(腿)/2); 净 × 腿数 × 期数 = 画的 y
+    // 单边账 (bp/期): L = G20 做多 / S = G1 做多 (与线同号, 净 = 毛 − leg_sign · 成本) / LS = 两腿平均 (毛 ls_period/2, 成本 Σ cost(腿)/2); 净 × 腿数 × 期数 = 画的 y
     constexpr double bp = 1e4;
     const factor::stat::HoldStat &h = hs[pi];
     const bool ls = pc == kLegs;
-    const double gross = ls ? 0.5 * h.ls.mean : h.grp[leg_group(pc)];
+    const double gross = ls ? 0.5 * factor::stat::ls_period(h) : h.grp[leg_group(pc)];
     const double legs = ls ? 2.0 : 1.0, sign = ls ? 1.0 : leg_sign(pc), ppy = factor::stat::periods_per_year(h.hold);
     const char *tier = tier_names[static_cast<size_t>(pq)].c_str();
     // 一行一项, 三列定位 (SameLine 绝对 x, 不靠 printf 补空格 —— 中文字节宽 ≠ 字形宽): 名目 | 数值 | 注
@@ -1104,7 +1105,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       const auto avg = [&](auto f) { return ls ? 0.5 * (f(kLong) + f(kShort)) : f(pc); }; // LS = 两腿平均, 否则该腿
       const auto entry = [&](int l) { return ca.entry(l); };
       const auto turn = [&](int l) { return ca.turn(l); };
-      const auto cost = [&](int l) { return ca.cost(l, sell_impact); };
+      const auto cost = [&](int l) { return ca.cost(l, sell_impact, h.n_all); };
       amort = avg(cost);
       ImGui::Spacing();
       std::snprintf(v, sizeof(v), "%.2f bp", avg(entry) * bp);
@@ -1123,9 +1124,10 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       row("换手", v, note);
       std::snprintf(v, sizeof(v), "%.2f bp/期", amort * bp);
       if (ls)
-        std::snprintf(note, sizeof(note), "= 换手 × (开仓 + 关仓), 两腿各算再平均 (L %.2f / S %.2f)", cost(kLong) * bp, cost(kShort) * bp);
+        std::snprintf(note, sizeof(note), "= 逐行 新进者 (开仓 + 关仓) / max(腿只数, 满档) 的全部行均值, 两腿各算再平均 (L %.2f / S %.2f)", cost(kLong) * bp,
+                      cost(kShort) * bp);
       else
-        std::snprintf(note, sizeof(note), "= 换手 × (开仓 + 关仓)");
+        std::snprintf(note, sizeof(note), "= 逐行 新进者 (开仓 + 关仓) / max(腿只数, 满档) 的全部行均值");
       row("均摊成本", v, note);
     }
     const double net = gross - sign * amort;
@@ -1380,7 +1382,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   const int sel_hold = ui.hold_idx;
   std::string message, res_error, res_key, res_file;
   StatScope res_scope;
-  float res_valid = 0.f;
+  float res_valid = 0.f, res_rank = 0.f;
   double res_ms = 0.0;
   std::vector<factor::stat::HoldStat> res_holds; // 毛二级 [n_hold]
   std::vector<CostTier> res_costs;               // [C] 组均冲击 (期限结构净线现算)
@@ -1399,6 +1401,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
       res_file = res.file;
       res_scope = res.scope;
       res_valid = res.valid_pct;
+      res_rank = res.rank_pct;
       res_ms = res.eval_ms;
       res_holds = res.hold;
       res_costs = res.costs;
@@ -1471,16 +1474,19 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {
-    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | valid %.2f%%  eval %.1f ms | 毛 (价格收益; 成本只进期限结构)%s",
+    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | value %.2f%%  rank %.2f%%  满档 %.1f  eval %.1f ms | 毛 (价格收益; 成本只进期限结构)%s",
                         res_scope.universe.c_str(), res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T,
-                        res_scope.backend.c_str(), res_scope.time.c_str(), res_valid, res_ms, match ? "" : "  (旧结果, 新请求计算中…)");
+                        res_scope.backend.c_str(), res_scope.time.c_str(), res_valid, res_rank, res_scope.n_full, res_ms,
+                        match ? "" : "  (旧结果, 新请求计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;
     if (ui.der.valid && h.n >= 3)
-      ImGui::Text("h=%-5s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f sd %.5f IR %+.3f t %+.2f pos %.2f "
-                  "skew %+.2f kurt %+.2f SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f",
-                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_rac, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew, h.ric.kurt,
-                  h.ls.mean, h.ls.sd, h.ls.ir, h.ls.t, h.ls.pos, h.ls.skew, h.ls.kurt, factor::stat::sharpe_of(h), h.beta, h.mono, h.rac.mean, h.rac.sd,
-                  h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
+      ImGui::Text("h=%-5s n=%d/%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.2f%% SR %+.2f trig %.1f%% util %.2f "
+                  "(ok 行 %+.5f sd %.5f t %+.2f pos %.2f skew %+.2f kurt %+.2f) β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f "
+                  "skew %+.2f kurt %+.2f",
+                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_rac, h.n_all, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew,
+                  h.ric.kurt, 100.0 * factor::stat::ls_annual(h), factor::stat::sharpe_of(h), 100.0 * factor::stat::trigger_of(h),
+                  factor::stat::util_of(h, res_scope.n_full), h.ls.mean, h.ls.sd, h.ls.t, h.ls.pos, h.ls.skew, h.ls.kurt, h.beta, h.mono, h.rac.mean,
+                  h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
     else
       ImGui::TextDisabled("h=%s  n=%d (有效行不足, 无 stat)", factor::stat::hold_name(cur_hold).c_str(), h.n);
   } else {

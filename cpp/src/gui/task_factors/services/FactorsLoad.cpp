@@ -291,6 +291,49 @@ float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n) {
   return 100.f * static_cast<float>(c) / static_cast<float>(g);
 }
 
+float rank_pct_of(factor::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A) {
+  const int nt = ex.threads();
+  std::vector<double> sum(static_cast<size_t>(nt), 0.0);
+  std::vector<long long> rows(static_cast<size_t>(nt), 0);
+  ex.rows(T, [&](int t0, int t1, int tid) {
+    std::vector<uint16_t> buf(static_cast<size_t>(A));
+    double s = 0.0;
+    long long nr = 0;
+    for (int t = t0; t < t1; ++t) {
+      const size_t base = static_cast<size_t>(t) * A;
+      int nv = 0, nb = 0;
+      for (int a = 0; a < A; ++a) {
+        nv += m[base + a] & gate[base + a];
+        if (rx[base + a] != factor::stat::kRankNone)
+          buf[static_cast<size_t>(nb++)] = rx[base + a];
+      }
+      if (nv == 0)
+        continue;
+      assert(nb <= nv && "有秩格须在池内有效格里");
+      ++nr;
+      std::sort(buf.begin(), buf.begin() + nb);
+      const int wmax = (nv + factor::stat::kGroups - 1) / factor::stat::kGroups;
+      int good = 0;
+      for (int i = 0; i < nb;) {
+        int j = i + 1;
+        while (j < nb && buf[static_cast<size_t>(j)] == buf[static_cast<size_t>(i)])
+          ++j;
+        good += j - i <= wmax ? j - i : 0;
+        i = j;
+      }
+      s += static_cast<double>(good) / nv;
+    }
+    sum[static_cast<size_t>(tid)] += s;
+    rows[static_cast<size_t>(tid)] += nr;
+  });
+  double s = 0.0;
+  long long nr = 0;
+  for (int k = 0; k < nt; ++k)
+    s += sum[static_cast<size_t>(k)], nr += rows[static_cast<size_t>(k)];
+  assert(nr > 0 && "截面池全空: 区间内无在池格");
+  return static_cast<float>(100.0 * s / static_cast<double>(nr));
+}
+
 double n_full_of(const Loaded &L) {
   const uint8_t *g = L.cs.m.data();
   long long on = 0;
@@ -316,6 +359,7 @@ factor::stat::Labels labels_raw(const Loaded &L) {
   assert(L.labels.size() == static_cast<size_t>(L.hd.n) && "标签未装 (with_labels)");
   factor::stat::Labels out;
   out.hd = L.hd;
+  out.cap = n_full_of(L);
   for (int h = 0; h < L.hd.n; ++h)
     out.l[h] = label_of(L.labels[static_cast<size_t>(h)], nullptr);
   return out;
@@ -333,7 +377,7 @@ void cost_tiers(factor::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, 
     cost[static_cast<size_t>(c)] = cost_of(L.costs[static_cast<size_t>(c)]);
   std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [c][hi]
   std::vector<long long> nx(static_cast<size_t>(1 + C));              // [0 = 有秩格数, 1 + c = 有秩 ∧ 成本 c 有效]
-  factor::cpu::stat::cost_rows(ex, lc, L.span(), L.hd, cost.data(), C, w, acc.data(), nx.data());
+  factor::cpu::stat::cost_rows(ex, lc, L.span(), L.hd, cost.data(), C, n_full_of(L), w, acc.data(), nx.data());
   for (int c = 0; c < C; ++c) {
     CostTier &tier = out[static_cast<size_t>(c)];
     tier.amt = ft.costs[static_cast<size_t>(c)].amt;

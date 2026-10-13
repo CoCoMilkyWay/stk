@@ -230,9 +230,9 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
         if (rep.verbose)
           for (int c = 0; c < sk::kCands; ++c)
             for (int hi = 0; hi < hd.n; ++hi) {
-              const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{.n_full = A / 20.0});
-              std::printf("       Search.%s cpu c%d %-8s h=%-4d ls %+.5f util %.2f rIC %+.4f score %+.3g\n", fname, c, kProfName[pi], hd.h[hi], s.ls,
-                          s.util, s.ric, s.score);
+              const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{});
+              std::printf("       Search.%s cpu c%d %-8s h=%-4d ls %+.5f rIC %+.4f score %+.3g\n", fname, c, kProfName[pi], hd.h[hi], s.ls, s.ric,
+                          s.score);
             }
       }
       if (!factor::gpu::available())
@@ -248,7 +248,7 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
             lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr, off);
           for (int c = 0; c < sk::kCands; ++c)
             xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-          factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), out);
+          factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, d.base.cap, lab.data(), out);
         };
         factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
         run(0, T, 0, full);

@@ -226,7 +226,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
 // Search 批评估算子 (与 op_check check_search 同口径): 两口径各造数 (Stat 造数 + kCands 张派生候选); golden = Stat CPU
 // 每候选 HoldStat. cpu / gpu 各算 整块 + 两块 (带 carry): cpu_chk = cpu 整块 vs golden + 两块 merge vs 整块;
 // gpu_chk = gpu 整块 vs cpu 整块 + 两块 merge vs 整块. 表列耗时 = 两口径整块 eval 之和 (kCands 张候选一批; 分块两趟只对拍不计时);
-// detail = prep 耗时 (CS 那轮) + 两口径每候选每持有期的 cpu 侧得分 (毛 LS · util · rIC; n_full = A / kGroups)
+// detail = prep 耗时 (CS 那轮) + 两口径每候选每持有期的 cpu 侧得分 (每期真实毛 LS · rIC)
 void run_search(RoundCtx &R, OperatorRow &row) {
   namespace sk = factor::search::check;
   const bool has_gpu = factor::gpu::available();
@@ -271,9 +271,8 @@ void run_search(RoundCtx &R, OperatorRow &row) {
     detail_line(scores, "%s", factor::stat::frame_name(fr));
     for (int c = 0; c < sk::kCands; ++c)
       for (int hi = 0; hi < hd.n; ++hi) {
-        const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{.n_full = A / 20.0});
-        detail_line(scores, "  c%d  h=%-5s ls %+.5f util %.2f rIC %+.4f score %+.3g", c, factor::stat::hold_name(hd.h[hi]).c_str(), s.ls, s.util, s.ric,
-                    s.score);
+        const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{});
+        detail_line(scores, "  c%d  h=%-5s ls %+.5f rIC %+.4f score %+.3g", c, factor::stat::hold_name(hd.h[hi]).c_str(), s.ls, s.ric, s.score);
       }
     if (!has_gpu)
       continue;
@@ -287,7 +286,7 @@ void run_search(RoundCtx &R, OperatorRow &row) {
           lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr, off);
         for (int c = 0; c < sk::kCands; ++c)
           xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, lab.data(), out, prep_ms, eval_ms);
+        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, d.base.cap, lab.data(), out, prep_ms, eval_ms);
       };
       sk::Ref cpu_ref[sk::kCands]; // gpu 的 golden = cpu 整块
       for (int c = 0; c < sk::kCands; ++c)

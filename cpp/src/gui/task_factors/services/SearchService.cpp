@@ -199,7 +199,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   }
   fs::assert_holds(hd);
   assert(factor::search::max_lag(hd) <= kCarryDays * factor::kSegLen && "carry 不够 rAC 的 lag");
-  factor::search::Objective obj; // n_full 装了块 0 后按池宽填 (见下【尺度】前); ric_pow 取契约默认
+  const factor::search::Objective obj; // ric_pow 取契约默认
 
   // ---- 模板 + 可搜槽 ----
   factor::expr::Expr e0;
@@ -250,7 +250,6 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         c.ok = sc.ok;
         c.score = sc.score;
         c.ls = sc.ls;
-        c.util = sc.util;
         c.ric = sc.ric;
         cands.push_back(std::move(c));
       }
@@ -463,7 +462,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     fs::Label lab[fs::kMaxHold];
     for (int hi = 0; hi < H; ++hi)
       lab[hi] = label_of(L.labels[static_cast<size_t>(hi)], nullptr);
-    factor::gpu::SearchSession *ss = factor::gpu::search_open(T, A, batch, hd);
+    factor::gpu::SearchSession *ss = factor::gpu::search_open(T, A, batch, hd, n_full_of(L));
     factor::gpu::search_load(ss, lab);
     factor::gpu::DevPool pool;
     std::vector<Result> out(static_cast<size_t>(batch));
@@ -579,8 +578,8 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   //      上游自由参数取占位值, σ 只是坐标刻度, 粗网格 ±kSpan 单位 + 细化兜得住) ----
   if (handle(load_chunk(0, chunks[0]), ret))
     return ret;
-  // ---- 满仓只数 n_full (目标的 util 分母; 契约【目标】): 块 0 池宽 (FactorsLoad n_full_of, 与 Run 同一份) ----
-  obj.n_full = res.n_full = n_full_of(chunks[0].L);
+  // ---- 满档只数 n_full (显示用): 块 0 池宽. 评估的 cap 逐块取该块的 n_full_of (CPU labels_raw / GPU search_open 同一份) ----
+  res.n_full = n_full_of(chunks[0].L);
   {
     std::vector<size_t> need; // 要尺度的槽
     std::vector<int> want;    // 对应输入节点在 d0 的下标
@@ -806,7 +805,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       const Entry &en = ents[static_cast<size_t>(pl[static_cast<size_t>(a)])];
       SearchPick pk;
       pk.expr = en.e.canon;
-      pk.score = en.sc[hi].score, pk.ls = en.sc[hi].ls, pk.util = en.sc[hi].util, pk.ric = en.sc[hi].ric;
+      pk.score = en.sc[hi].score, pk.ls = en.sc[hi].ls, pk.ric = en.sc[hi].ric;
       for (int b : picked)
         if (b != a)
           pk.corr = std::max(pk.corr, corr[static_cast<size_t>(a)][static_cast<size_t>(b)]);
@@ -815,7 +814,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     }
   }
   assert(!ws.empty());                              // n_branch > 0 ⇒ 至少一个 h 有高原集
-  WriteFactorWeights(req.factor_dir, req.file, ws); // 只写权重; score / util 等看板数据由随后的 Run 用同一份目标从 stat 算
+  WriteFactorWeights(req.factor_dir, req.file, ws); // 只写权重; 看板数据由随后的 Run 用同一份目标从 stat 算
   res.wrote = true;
   res.n_weights = static_cast<int>(ws.size());
   res.message = "weights 已写入 (" + std::to_string(ws.size()) + " 个权重, " + std::to_string(H) + " 个持有期), 自动 Run 重算 stat";

@@ -50,7 +50,7 @@ struct Slice {
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx, int C, int T, int A, int t0_abs, int t_lo, Labels L, int NB,
+__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, int T, int A, int t0_abs, int t_lo, Labels L, int NB,
                                                      Slice *part) {
   const auto &hd = L.hd;
   __shared__ Slots sh;
@@ -71,7 +71,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(Frame f, const uint16_t *rx
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
-    const Row r = dev::row_stat(f, xr, xl, lb.at(base), A, factor::stat::tail_masked(t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
+    const Row r = dev::row_stat(xr, xl, lb.at(base), A, L.cap, factor::stat::tail_masked(t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       head.add(r);
     if (r.ok) {
@@ -135,7 +135,7 @@ inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t
   assert(B.C == w.C && L.hd.n == w.H && g && rx && part && out && t0_abs >= 0);
   factor::gpu::stat::rank_x(B, g, f, Span{w.T, w.A, t0_abs, w.t_lo}, rx, stream);
   const dim3 grid(static_cast<unsigned>((w.C + kWarps - 1) / kWarps), static_cast<unsigned>(w.NB), static_cast<unsigned>(w.H));
-  k::stat_batch<<<grid, kWB, 0, stream>>>(f, rx, w.C, w.T, w.A, t0_abs, w.t_lo, L, w.NB, part);
+  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, w.C, w.T, w.A, t0_abs, w.t_lo, L, w.NB, part);
   FACTOR_CUDA_OK(cudaGetLastError());
   const int P = w.C * w.H;
   k::reduce_slices<<<(P + kWB - 1) / kWB, kWB, 0, stream>>>(part, w.NB, w.C, w.H, out);

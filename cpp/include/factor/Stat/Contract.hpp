@@ -20,12 +20,15 @@
 //     e = lv − mean_J lv (做空侧 sv − mean_J sv), 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的都是"相对市场";
 //     一套代码只在两处分叉:
 //     CS  截面: 根是截面归一算子 (CsRank / CsNormRank / CsZ). 每 t 沿 A 轴 rank x (排序) → 20 组 = 截面分位组;
-//         任一组空 → 行无效. 因子值 = 仓位 (每 t 居中 → 多空对冲, β 自然隔离; 超额对 rank 类统计是平移不变的).
+//         因子值 = 仓位 (每 t 居中 → 多空对冲, β 自然隔离; 超额对 rank 类统计是平移不变的). 大块并列会把相邻组挤空.
 //     TS  时序: 根是 TsRankRoll(d = kTsNormD = kTsNormDays 个交易日), 输出已是每票对自身滚动历史的分位 ∈ [0,1]
 //         (整数天窗跨日 deseason). 不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组;
-//         评的是"个股处于自身高位时是否跑赢市场", β 由超额隔离, 样本间不再因共同分量相关;
-//         组允许空 (那一刻没票在该分位), ls 空项取 0 (= long/flat).
-//     两口径之后逐字共用: grp_of / rIC / 超额 / ls / mkt / rAC / 二级汇总.
+//         评的是"个股处于自身高位时是否跑赢市场", β 由超额隔离, 样本间不再因共同分量相关.
+//     两口径之后逐字共用: grp_of / rIC / 超额 / 持仓口径 / ls / mkt / rAC / 二级汇总. 组允许空 (那一刻没票在该组), 空组 / 空腿收益 0.
+//
+//   【持仓口径】每组 (含两腿) 资金固定为 1, 满档 cap = Labels::cap 只 (调用方给 n_full = 池内平均有效票数 / kGroups, 与因子无关), 每只 1/cap:
+//     触发 n 只 → 持仓 min(n, cap) / cap, 超过 cap 满仓在 n 只里均分 → 组 / 腿收益 = Σe / max(n, cap) (book_den); 未触发 → 0.
+//     触发不足 (稀疏 / 并列挤空) 与集中度直接进收益, 不另设活跃度项.
 //
 //   【rank 口径】精确并列均秩 (排序, 不用桶近似 —— 原始因子重尾时一个离群点会把整截面压进同一桶, IC 归零):
 //     r16 = round(pct · kRankMax) ∈ [0, kRankMax], 全整数公式 (r16_of), 两后端逐位一致; kRankNone = 无效.
@@ -35,13 +38,12 @@
 //
 //   【一级 Row (每 h, t)】J = {a : rx ≠ None ∧ ry ≠ None}; e = 超额标签 (lv − mkt[kLong]; 空腿 sv − mkt[kShort])
 //     ric    rank IC = Spearman = Pearson(r16_x, r16_y) over J. 五个和都是整数 (pair_add → pearson_int), 两后端逐位一致.
-//     grp[k] 第 k 组 (k = grp_of(r16_x), 等分 kGroups 组) 做多超额 e 的**和** (代数上 Σlv − cnt·mkt, 一遍 A 轴);
-//            cnt[k] = 组样本数. 二级沿 t 池化成均值 (Σ和 / Σ计数): TS 每 t 各组成员数剧变, 必须池化;
-//            CS 池化与"组均值再时间平均"只差按每 t 有效数加权.
-//     ls     顶底多空 LS(tp-dn) = 两腿超额之和 = 多腿 (顶组) 做多超额均值 + 空腿 (底组) 做空超额均值 —— 相对市场 (TS: 腿空 → 该项 0, 即 long/flat).
-//            二级 HoldStat 的 LS 系 (Moments ls / sharpe_of / beta) 全部基于它. 无信号时 ≈ 0 (原值口径会 ≈ −市场往返成本).
+//     grp[k] 第 k 组 (k = grp_of(r16_x), 等分 kGroups 组) 做多超额 e 的**持仓收益** (Σe / max(cnt, cap), 代数上 Σlv − cnt·mkt 再除, 一遍 A 轴);
+//            cnt[k] = 组样本数. 二级沿 t 取均值 (Σ / n_all, 见【二级】).
+//     ls     顶底多空 LS(tp-dn) = 两腿持仓收益之和 = 多腿 (顶组) 做多超额 + 空腿 (底组) 做空超额, 各按【持仓口径】—— 相对市场; 腿空 → 该项 0.
+//            二级 HoldStat 的 LS 系 (Moments ls / ls_annual / sharpe_of / beta) 全部基于它. 无信号时 ≈ 0 (原值口径会 ≈ −市场往返成本).
 //     mkt    [kLegs] J 上做多 / 做空标签原值均值 = 两腿的超额基准 (grp 与二级回归 beta 用 mkt[kLong]).
-//     ok     标签侧有效: 非段末尾部 (见下) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0) ∧ (CS: 各组非空).
+//     ok     标签侧有效: 非段末尾部 (见下) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0). 组可空 (不再整行作废).
 //     rac    rank AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 才对应"一个持有期换多少仓".
 //     ok_rac t ≥ h ∧ n ≥ 2 ∧ 两侧方差 > 0. 与标签无关, 段末尾部也算.
 //     段末尾部 (仅分钟档): 行 t 的 entry 锚点 = 分钟 t+1 起始; 最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前
@@ -56,30 +58,32 @@
 //     折算 / lag / 年化用的有效分钟 h = hold_minutes(hold): 分钟档 = n; close 与 T+1 = kSegLen (同日各行共一个 exit →
 //     每日一个独立样本); T+N = N · kSegLen (相邻 N 日的窗口重叠).
 //
-//   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac):
+//   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行 (含尾部 / 不 ok, 整张量 = T):
 //     ric / rac / ls  三个逐行量沿 t 的同一套矩 (Moments, 同一个累加器 MomAcc; ric / ls 用 ok 行, rac 用 ok_rac 行):
 //       mean / sd (ddof=1) / ir = mean/sd / pos = >0 占比 / skew, kurt (总体矩, 超额峰度)
 //       t = ir · √(n/h): 分钟行的持有期重叠 (相邻 h 行是同一段收益 / 同一段 lag), 有效样本按 n/h 折算, 不然 t 虚高 √h 倍
-//     sharpe_of = ls.ir · √(kDaysPerYear · kSegLen / h) (按持有期为一期年化; 派生, 不落 HoldStat)
+//     真实收益 (派生, 不落 HoldStat): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all, ls_annual = × 每年期数 (= Inspect 累计曲线末点),
+//       sharpe_of = 补 0 后的 mean / sd × √每年期数 (由 n / ls.mean / ls.sd 还原 Σ / Σ², ann_sharpe). 看板 / Inspect / Search 同一份
 //     beta   ls 对 mkt[kLong] 的 OLS 斜率 (alpha 略: beta ≈ 0 时 alpha ≈ ls.mean)
-//     grp[k] 各组沿 t 池化均值 (Σ grp / Σ cnt; 全程无样本 → 0); mono = Spearman(组号, grp[k])
-//     leg_n  平均每 ok 行一腿成员数 = (Σ cnt[0] + Σ cnt[K−1]) / (2n). 资金利用率 util_of = min(leg_n / n_full, 1), n_full = 满仓一腿只数
-//            (调用方按池宽定: 池内平均有效票数 / kGroups; CS 因子恒 ≈ 1): 稀疏触发 (TS 门控 / 极端阈值) 的因子 util → 0, 不需样本数硬阈值
+//     grp[k] 各组每行持仓收益沿 t 的均值 (Σ grp / n_all, 不 ok 行记 0); mono = Spearman(组号, grp[k])
+//     n_trig 触发行数 = ok 行里至少一腿非空; trigger_of = n_trig / n (诊断)
+//     leg_n  平均每触发行一腿成员数 = (Σ cnt[0] + Σ cnt[K−1]) / (2 n_trig); util_of = leg_n / cap, 不封顶 (> 1 = 并列把腿塞过满档; 诊断)
 //     n < 3 → 标签侧 (ric / ls / grp / mono / leg_n) 全 0; n_rac < 3 → rac 全 0 (消费端先看对应计数)
-//     累加器 Accum = Head (三个 MomAcc + beta 幂和) + Grp[kGroups] (组和 / 组计数), 可合并: 行区间并行各攒一份 merge; 超大张量沿 T
+//     累加器 Accum = Head (三个 MomAcc + beta 幂和 + n_all / n_trig) + Grp[kGroups] (组收益和 / 组计数), 可合并: 行区间并行各攒一份 merge; 超大张量沿 T
 //     分块流式时跨块续攒, 不必落 Row. 拆两半是给 GPU 一 warp 一候选: lane 0 攒 Head, lane k 攒 Grp[k]; CPU 整行 add = 两半串起来
 //
 //   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Inspect 期限结构净线) 在二级上扣 (Search 不看成本, 只评排序):
 //     交易的只是两腿的组 (多腿 = 顶组, 空腿 = 底组). 成本只看**腿码** lc = leg_code(r16) ∈ {kLcLong, kLcShort, kLcMid, kLcVoid} (u8 平面,
 //     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx). 每 (t, h) 行, 腿成员 = lc(t) = 腿 ∧ 成本有效的格; 其中 lc(t−h) ≠ 该腿 (含当时
 //     rank 无效) 的记作**新进者**, 只有新进者付一次往返 = 建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额档, 买入已按
-//     Config::max_impact 封顶) + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc 沿 t 池化 → 每期每成员均摊成本 cost(腿) =
-//     (Σ新进者冲击 + 新进者数 · sell_impact) / 腿样本数. 只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关).
+//     Config::max_impact 封顶) + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc, 按【持仓口径】逐行加权:
+//     每行一腿成本 = (Σ新进者冲击 + 新进者数 · sell_impact) / max(腿样本数, cap), 沿 t 求和; 每期成本 cost(腿) = 该和 / n_all (与 ls_period 同分母).
+//     只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关). 未加权的计数 (腿样本 / 新进者 / 冲击和) 只给换手占比 / 均冲击显示.
 //     同一遍顺带 cover 计数 (lc ≠ kLcVoid 的格 / 其中成本有效的格, 与 h 无关).
-//     净多空 net_ls_period = ls.mean − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
+//     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
-//     Labels (持有期键 hd 与其标签 l[] 同处) · Span (块形 T × A + 分块流式 t0_abs / t_lo; 整张量两者为 0).
+//     Labels (持有期键 hd 与其标签 l[] 同处, 带满档 cap) · Span (块形 T × A + 分块流式 t0_abs / t_lo; 整张量两者为 0).
 //     流程出口统一是二级累加器 Accum[H] (两后端同), HoldStat 由 finish_all 现算; 一级 Row 是可选的 sink.
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
@@ -212,6 +216,7 @@ struct Batch { // C 个同形候选 (同池 g / 同口径 / 同标签集); Stat 
 struct Labels { // l[i] ↔ hd.h[i]
   Holds hd;
   Label l[kMaxHold];
+  double cap = 0.0; // 满档一腿只数 (【持仓口径】; 调用方给 n_full)
 };
 struct Span { // 块形 + 分块流式 (Search 契约【分块流式】); 整张量 t0_abs = t_lo = 0
   int T = 0, A = 0;
@@ -228,13 +233,14 @@ inline void assert_labels(const Labels &L, bool prepped) {
   assert_holds(L.hd);
   for (int i = 0; i < L.hd.n; ++i)
     assert(L.l[i].v[kLong] && L.l[i].v[kShort] && L.l[i].m && (!prepped || L.l[i].ry) && "标签不全 / 未预处理 (prep_label)");
+  assert(L.cap > 0.0 && "满档 cap 未给 (Labels::cap = n_full)");
 }
 
 // ---- 一级输出: 每 (持有期, 时刻) 一行; 布局 rows[h_idx * T + t] ----
 struct Row {
   float ric = 0.f, rac = 0.f, ls = 0.f; // ls = LS(tp-dn)
   float mkt[kLegs] = {};                // J 上做多 / 做空标签原值均值 (两腿的超额基准)
-  float grp[kGroups] = {};              // 组内做多超额 e 的和
+  float grp[kGroups] = {};              // 组内做多超额 e 的持仓收益 Σe / max(cnt, cap)
   uint16_t cnt[kGroups] = {};           // 组样本数 (A ≤ kMaxA < 65536)
   uint8_t ok = 0, ok_rac = 0;
 };
@@ -246,20 +252,37 @@ struct Moments {
 };
 struct HoldStat {
   int hold = 0, n = 0, n_rac = 0;
-  Moments ric, rac, ls; // 三个逐行量 (ric / ls: ok 行; rac: ok_rac 行)
+  int n_all = 0, n_trig = 0; // 攒过的全部行 (真实收益的分母) / 触发行 (ok 且至少一腿非空)
+  Moments ric, rac, ls;      // 三个逐行量 (ric / ls: ok 行; rac: ok_rac 行)
   float beta = 0.f, mono = 0.f;
-  float leg_n = 0.f;       // 平均每 ok 行一腿成员数 (两腿组计数的平均; util_of 的分子)
-  float grp[kGroups] = {}; // 池化组均值
+  float leg_n = 0.f;       // 平均每触发行一腿成员数 (两腿组计数的平均; util_of 的分子)
+  float grp[kGroups] = {}; // 组每行持仓收益的均值 (Σ / n_all)
 };
 // 每年持有期数 = kDaysPerYear · kSegLen / h (一年 242 个交易日, 一天 kSegLen 分钟): 年化 (sharpe / 换手 / 均值超额) 统一走这一个
 inline constexpr double periods_per_year(int hold) { return static_cast<double>(kDaysPerYear) * kSegLen / hold_minutes(hold); }
-// 年化 Sharpe = LS 的 ir × √每年持有期数. 派生量, 不落 HoldStat / 文件
-inline double sharpe_of(const HoldStat &s) { return static_cast<double>(s.ls.ir) * std::sqrt(periods_per_year(s.hold)); }
-// 资金利用率 ∈ [0,1] = 平均每行一腿成员数 / 满仓一腿只数 n_full, 封顶 1 (见文件头【二级 HoldStat】leg_n); n < 3 → 0
-inline double util_of(const HoldStat &s, double n_full) {
-  assert(n_full > 0.0);
-  const double u = static_cast<double>(s.leg_n) / n_full;
-  return u < 1.0 ? u : 1.0;
+// 真实收益 (见文件头【二级 HoldStat】): m = n 个 ok 行的矩, 其余 n_all − n 行记 0. 年化均值 = Σ / n_all × 每年期数
+inline double ann_mean(const Moments &m, int n, int n_all, int hold) {
+  return n_all > 0 ? static_cast<double>(m.mean) * n / n_all * periods_per_year(hold) : 0.0;
+}
+// 补 0 后的年化 Sharpe: 由 (n, mean, sd) 还原 Σ = n·mean, Σ² = (n−1)·sd² + n·mean², 在 n_all 行上重算 mean / sd (ddof=1)
+inline double ann_sharpe(const Moments &m, int n, int n_all, int hold) {
+  if (n < 3 || n_all < 2)
+    return 0.0;
+  const double nn = n, N = n_all, mu = m.mean, sd = m.sd;
+  const double s1 = nn * mu, s2 = (nn - 1.0) * sd * sd + nn * mu * mu;
+  const double M = s1 / N, v = (s2 - N * M * M) / (N - 1.0);
+  return v > 0.0 ? M / std::sqrt(v) * std::sqrt(periods_per_year(hold)) : 0.0;
+}
+// LS 每期真实收益 / 年化 / 年化 Sharpe. 派生量, 不落 HoldStat / 文件
+inline double ls_period(const HoldStat &s) { return s.n_all > 0 ? static_cast<double>(s.ls.mean) * s.n / s.n_all : 0.0; }
+inline double ls_annual(const HoldStat &s) { return ann_mean(s.ls, s.n, s.n_all, s.hold); }
+inline double sharpe_of(const HoldStat &s) { return ann_sharpe(s.ls, s.n, s.n_all, s.hold); }
+// 触发率 = 触发行 / ok 行; n = 0 → 0 (诊断)
+inline double trigger_of(const HoldStat &s) { return s.n > 0 ? static_cast<double>(s.n_trig) / s.n : 0.0; }
+// 两腿利用率 = 平均每触发行一腿成员数 / 满档 cap, 不封顶 (> 1 = 腿塞过满档; 诊断)
+inline double util_of(const HoldStat &s, double cap) {
+  assert(cap > 0.0);
+  return static_cast<double>(s.leg_n) / cap;
 }
 // 年化换手 (倍/年) = 每持有期换手 (1 − rAC 均值, 秩重排占比) × 每年持有期数.
 // rAC 的 lag = h 随持有期变, 本身不可跨期比; 折到同一时间轴后可比, 越低越好. 派生量, 不落 HoldStat / 文件
@@ -321,32 +344,36 @@ FACTOR_HD inline uint8_t leg_code(unsigned x) {
 
 // 一腿的换手成本和
 struct CostLeg {
-  double imp = 0.0; // 新进者 Σ建仓冲击
-  long long n = 0;  // 腿样本数 (lc = 该腿 ∧ 成本有效; 分母)
-  long long e = 0;  // 其中新进者数 (t−h 时不在该组)
+  double imp = 0.0;  // 新进者 Σ建仓冲击
+  long long n = 0;   // 腿样本数 (lc = 该腿 ∧ 成本有效)
+  long long e = 0;   // 其中新进者数 (t−h 时不在该组)
+  double wimp = 0.0; // 按持仓加权: Σ_行 (该行新进者冲击和 / max(该行腿样本数, cap))
+  double we = 0.0;   // 按持仓加权: Σ_行 (该行新进者数 / max(该行腿样本数, cap))
 };
 // 一个持有期的换手成本累加器 (两腿); 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
 struct CostAcc {
   CostLeg leg[kLegs];
   long long rows = 0; // 攒过的行数 (有 lag 的行各计一次)
   FACTOR_HD void merge(const CostAcc &o) {
-    for (int l = 0; l < kLegs; ++l)
+    for (int l = 0; l < kLegs; ++l) {
       leg[l].imp += o.leg[l].imp, leg[l].n += o.leg[l].n, leg[l].e += o.leg[l].e;
+      leg[l].wimp += o.leg[l].wimp, leg[l].we += o.leg[l].we;
+    }
     rows += o.rows;
   }
-  // 每期每成员均摊成本 (腿 l): (Σ建仓冲击 + 新进者数 · 平仓冲击) / 腿样本数; 腿无样本 → 0
-  double cost(int l, double sell_impact) const {
+  // 每期真实成本 (腿 l, 【持仓口径】): Σ_行 (建仓冲击 + 新进者数 · 平仓冲击) / max(腿样本数, cap) / n_all (与 ls_period 同分母)
+  double cost(int l, double sell_impact, int n_all) const {
     const CostLeg &c = leg[l];
-    return c.n > 0 ? (c.imp + static_cast<double>(c.e) * sell_impact) / static_cast<double>(c.n) : 0.0;
+    return n_all > 0 ? (c.wimp + c.we * sell_impact) / static_cast<double>(n_all) : 0.0;
   }
   // 换手 (新进者占比) / 新进者平均建仓冲击 (显示 / 对拍用)
   double turn(int l) const { return leg[l].n > 0 ? static_cast<double>(leg[l].e) / static_cast<double>(leg[l].n) : 0.0; }
   double entry(int l) const { return leg[l].e > 0 ? leg[l].imp / static_cast<double>(leg[l].e) : 0.0; }
 };
 
-// 每期净多空 = 毛 ls.mean − 两腿均摊成本; 年化 = × periods_per_year (s.hold 由 finish 填)
+// 每期净多空 = ls_period − 两腿每期成本; 年化 = × periods_per_year (s.hold 由 finish 填)
 inline double net_ls_period(const HoldStat &s, const CostAcc &c, double sell_impact) {
-  return static_cast<double>(s.ls.mean) - c.cost(kLong, sell_impact) - c.cost(kShort, sell_impact);
+  return ls_period(s) - c.cost(kLong, sell_impact, s.n_all) - c.cost(kShort, sell_impact, s.n_all);
 }
 inline double net_ls(const HoldStat &s, const CostAcc &c, double sell_impact) { return net_ls_period(s, c, sell_impact) * periods_per_year(s.hold); }
 
@@ -386,21 +413,21 @@ FACTOR_HD inline float pearson_int(const unsigned long long *s, bool &ok) {
 struct LegSum {
   double n = 0.0, s = 0.0;
 };
-// 一腿超额均值 = 标签均值 − 该腿基准; 腿空 → 0 (TS long/flat)
-FACTOR_HD inline double leg_excess(const LegSum &l, double base) { return l.n > 0.0 ? l.s / l.n - base : 0.0; }
-// 多空 = 两腿超额之和 (leg / mkt 按 [kLegs])
-FACTOR_HD inline double ls_of(const LegSum *leg, const double *mkt) { return leg_excess(leg[kLong], mkt[kLong]) + leg_excess(leg[kShort], mkt[kShort]); }
+// 持仓分母 (【持仓口径】) = max(只数, cap): 收益 = Σe / book_den, 不足满档按只数 / cap 建仓, 超过满档均分
+FACTOR_HD inline double book_den(double n, double cap) { return n > cap ? n : cap; }
+// 一腿持仓收益 = Σ(标签 − 该腿基准) / max(只数, cap); 腿空 → 0
+FACTOR_HD inline double leg_excess(const LegSum &l, double base, double cap) { return (l.s - l.n * base) / book_den(l.n, cap); }
+// 多空 = 两腿持仓收益之和 (leg / mkt 按 [kLegs])
+FACTOR_HD inline double ls_of(const LegSum *leg, const double *mkt, double cap) {
+  return leg_excess(leg[kLong], mkt[kLong], cap) + leg_excess(leg[kShort], mkt[kShort], cap);
+}
 
-// 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 / 组计数 → grp / cnt; 两腿 → ls; 两腿基准 → mkt.
-//   sm[kLegs] = J 上 Σlv / Σsv; gs[k] / gc[k] = 组 k 的 Σlv / 计数; leg[kLegs] = 两腿的组 (见 LegSum). 不 ok → r 标签侧字段保持 0
-FACTOR_HD inline void finish_row(Frame f, const unsigned long long *s, const double *sm, const double *gs, const int *gc, const LegSum *leg, Row &r) {
+// 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 / 组计数 → grp (持仓收益) / cnt; 两腿 → ls; 两腿基准 → mkt.
+//   sm[kLegs] = J 上 Σlv / Σsv; gs[k] / gc[k] = 组 k 的 Σlv / 计数; leg[kLegs] = 两腿的组 (见 LegSum); cap = 满档. 不 ok → r 标签侧字段保持 0
+FACTOR_HD inline void finish_row(const unsigned long long *s, const double *sm, const double *gs, const int *gc, const LegSum *leg, double cap, Row &r) {
   bool icok = false;
   const float ric = pearson_int(s, icok);
-  bool gok = true;
-  if (f == Frame::CS)
-    for (int k = 0; k < kGroups; ++k)
-      gok = gok && gc[k] >= 1;
-  if (!(icok && gok))
+  if (!icok)
     return;
   const double n = static_cast<double>(s[kSn]);
   const double mkt[kLegs] = {sm[kLong] / n, sm[kShort] / n};
@@ -408,11 +435,11 @@ FACTOR_HD inline void finish_row(Frame f, const unsigned long long *s, const dou
   r.ric = ric;
   for (int l = 0; l < kLegs; ++l)
     r.mkt[l] = static_cast<float>(mkt[l]);
-  for (int k = 0; k < kGroups; ++k) { // 超额和: Σ(lv − mkt) = Σlv − cnt·mkt
+  for (int k = 0; k < kGroups; ++k) { // 超额和 Σ(lv − mkt) = Σlv − cnt·mkt, 按持仓分母折成收益
     r.cnt[k] = static_cast<uint16_t>(gc[k]);
-    r.grp[k] = static_cast<float>(gs[k] - gc[k] * mkt[kLong]);
+    r.grp[k] = static_cast<float>((gs[k] - gc[k] * mkt[kLong]) / book_den(gc[k], cap));
   }
-  r.ls = static_cast<float>(ls_of(leg, mkt));
+  r.ls = static_cast<float>(ls_of(leg, mkt, cap));
 }
 
 // ---- 二级汇总 (主机, double; 两后端共用) ----
@@ -482,11 +509,14 @@ struct MomAcc {
 };
 
 struct Accum {
-  // 标量头: 三个逐行量的矩 + beta 的幂和 (GPU 上 lane 0 攒)
+  // 标量头: 三个逐行量的矩 + beta 的幂和 + 行计数 (GPU 上 lane 0 攒)
   struct Head {
     MomAcc ric, rac, ls;                     // ric.n = ls.n = ok 行数 (标签侧全部统计的样本), rac.n = ok_rac 行数
     double smk = 0.0, smk2 = 0.0, slm = 0.0; // mkt[kLong] 幂和 + ls·mkt 交叉 (beta)
+    int n_all = 0, n_trig = 0;               // 全部行 / 触发行 (ok 且至少一腿非空)
     FACTOR_HD void add(const Row &w) {
+      ++n_all;
+      n_trig += w.ok && (w.cnt[leg_group(kLong)] || w.cnt[leg_group(kShort)]);
       if (w.ok) {
         ric.add(w.ric);
         ls.add(w.ls);
@@ -499,9 +529,10 @@ struct Accum {
     FACTOR_HD void merge(const Head &o) {
       ric.merge(o.ric), rac.merge(o.rac), ls.merge(o.ls);
       smk += o.smk, smk2 += o.smk2, slm += o.slm;
+      n_all += o.n_all, n_trig += o.n_trig;
     }
   };
-  // 一个组: 组内超额和 / 组样本数 沿 t 的和 (GPU 上 lane k 攒组 k; 只收 ok 行, 由调用方判)
+  // 一个组: 组持仓收益 / 组样本数 沿 t 的和 (GPU 上 lane k 攒组 k; 只收 ok 行, 由调用方判)
   struct Grp {
     double s = 0.0;
     long long c = 0;
@@ -529,6 +560,8 @@ struct Accum {
     s.hold = hold;
     s.n = head.ric.n;
     s.n_rac = head.rac.n;
+    s.n_all = head.n_all;
+    s.n_trig = head.n_trig;
     s.ric = head.ric.finish(hold);
     s.rac = head.rac.finish(hold);
     s.ls = head.ls.finish(hold);
@@ -536,7 +569,7 @@ struct Accum {
       return s;
     double g[kGroups];
     for (int k = 0; k < kGroups; ++k)
-      g[k] = grp[k].c > 0 ? grp[k].s / static_cast<double>(grp[k].c) : 0.0; // 沿 t 池化
+      g[k] = grp[k].s / static_cast<double>(s.n_all); // 不 ok 行记 0 (n_all ≥ n ≥ 3)
     const double nn = s.n, mmk = head.smk / nn, mls = head.ls.s1 / nn;
     const double vmk = std::fmax(head.smk2 - nn * mmk * mmk, 0.0), cov = head.slm - nn * mls * mmk;
     if (vmk > 0.0)
@@ -544,7 +577,7 @@ struct Accum {
     for (int k = 0; k < kGroups; ++k)
       s.grp[k] = static_cast<float>(g[k]);
     s.mono = static_cast<float>(mono_of(g, kGroups));
-    s.leg_n = static_cast<float>(static_cast<double>(grp[leg_group(kLong)].c + grp[leg_group(kShort)].c) / (2.0 * nn));
+    s.leg_n = s.n_trig > 0 ? static_cast<float>(static_cast<double>(grp[leg_group(kLong)].c + grp[leg_group(kShort)].c) / (2.0 * s.n_trig)) : 0.f;
     return s;
   }
 };

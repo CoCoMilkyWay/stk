@@ -126,9 +126,9 @@ __device__ __forceinline__ void lag_row(const uint16_t *rx, const uint16_t *rlag
   r.ok_rac = ok ? 1 : 0;
 }
 
-// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 → r 的 ric / mkt / grp / cnt / ls / ok (全 lane 同值). gs / gc = 本 warp 的分组槽,
+// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首, cap = 满档 → r 的 ric / mkt / grp / cnt / ls / ok (全 lane 同值). gs / gc = 本 warp 的分组槽,
 // 连续调用间的槽复用由函数内首个 __syncwarp 保护. 调用方已排除段末尾部
-__device__ __forceinline__ void label_row(Frame f, const uint16_t *rx, const Label &lb, int A, Row &r, float (*gs)[32], uint16_t (*gc)[32],
+__device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, int A, double cap, Row &r, float (*gs)[32], uint16_t (*gc)[32],
                                           int lane) {
   __syncwarp(); // 上一行的广播读 (gs[q][0]) 全部结束, 才能清槽
 #pragma unroll
@@ -179,17 +179,17 @@ __device__ __forceinline__ void label_row(Frame f, const uint16_t *rx, const Lab
   constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
   const double sm[kLegs] = {static_cast<double>(fs[kLong]), static_cast<double>(fs[kShort])};
   const LegSum leg[kLegs] = {{static_cast<double>(gci[gl]), gsd[gl]}, {static_cast<double>(gci[gb]), static_cast<double>(fs[kLegs])}};
-  factor::stat::finish_row(f, s, sm, gsd, gci, leg, r);
+  factor::stat::finish_row(s, sm, gsd, gci, leg, cap, r);
 }
 
-// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; tail = 段末尾部 (tail_masked)
-__device__ __forceinline__ Row row_stat(Frame f, const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, bool tail, float (*gs)[32],
+// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; cap = 满档; tail = 段末尾部 (tail_masked)
+__device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, double cap, bool tail, float (*gs)[32],
                                         uint16_t (*gc)[32], int lane) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, A, r, lane);
   if (!tail)
-    label_row(f, rx, lb, A, r, gs, gc, lane);
+    label_row(rx, lb, A, cap, r, gs, gc, lane);
   return r;
 }
 

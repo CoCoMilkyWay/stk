@@ -1,11 +1,11 @@
 // SearchService — Factors 页 Optimize 的单 worker: 对表格高光的那一个因子文件 (模板 expr, Expr.hpp 自由参数) 搜它的**全部自由参数**
 // (factor/Search/Grid.hpp 定槽与坐标), 搜索窗内每个持有期 h (Search/Contract.hpp hold_in_window: 30m ~ T+1) 各自独立搜, 目标 = 该 h 的
-// 毛 LS · 资金利用率 · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本), 每 h 终选 ≤ kPicks 个持仓重合最少的优质权重 (Contract【多权重】),
-// 全部 h 的 picks 整个替换该因子文件的 weights (FactorsService WriteFactorWeights; UI 随后自动 Run 重算每权重的 stat). 分数只在搜索内部用:
-// 看板的 score / util 列由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
+// 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本), 每 h 终选 ≤ kPicks 个持仓重合最少的
+// 优质权重 (Contract【多权重】), 全部 h 的 picks 整个替换该因子文件的 weights (FactorsService WriteFactorWeights; UI 随后自动 Run 重算每权重的 stat).
+// 分数只在搜索内部用: 看板排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 全部 h 的标签同在 (hd.n = H), 因子平面只算一遍; 趟与趟之间才有依赖):
-//   尺度          先装块 0: 满仓只数 n_full = 池内平均有效票数 / kGroups (util 分母, FactorsLoad n_full_of); 模板按占位值 (Expr::placeholder)
+//   尺度          先装块 0: 满档只数 n_full = 池内平均有效票数 / kGroups (Labels::cap, FactorsLoad n_full_of); 模板按占位值 (Expr::placeholder)
 //                 建 DAG 在 CPU 上走到各阈值槽 (ANY / GE0) 的输入节点, 取池内有效格标准差 σ 作该槽坐标单位 (Grid set_scale);
 //                 σ 不是正有限数的槽 → 整个搜索放弃 (自由参数没法落值)
 //   趟 0 粗网格   全部槽的格点笛卡尔积 (围 Grid 的中心铺, 步长由 kLayerMax 预算反推), 评一次得全部 h 的分
@@ -65,12 +65,12 @@ struct SearchCand {
   int pass = 0;          // 第几趟评的 (0 = 粗)
   bool ok = false;       // n ≥ 3
   double score = -std::numeric_limits<double>::infinity();
-  double ls = 0.0, util = 0.0, ric = 0.0; // 毛 LS (每期每成员) / 资金利用率 / rIC
+  double ls = 0.0, ric = 0.0; // 每期真实毛 LS (ls_period) / rIC
 };
 // 一个 h 的终选权重
 struct SearchPick {
   std::string expr;
-  double score = 0.0, ls = 0.0, util = 0.0, ric = 0.0;
+  double score = 0.0, ls = 0.0, ric = 0.0;
   double corr = 0.0; // 与同 h 其他 pick 的最大截面相关 (单个 pick 时 0)
 };
 // 一个持有期的搜索状态 / 结果
@@ -90,7 +90,7 @@ struct SearchResult {
   int n_chunk = 0, chunk_days = 0, batch = 0;
   std::string backend;
   double seconds = 0.0;
-  double n_full = 0.0; // 满仓一腿只数 (util 分母; 块 0 池内平均有效票数 / kGroups)
+  double n_full = 0.0; // 满档一腿只数 (Labels::cap; 块 0 池内平均有效票数 / kGroups)
   int n_weights = 0;   // 写入的权重数
   bool wrote = false;  // 已写 weights (UI 据此重扫 + Run)
   std::string message; // 结论 / 没算成的原因

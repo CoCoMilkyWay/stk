@@ -42,6 +42,7 @@ inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : 
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
 struct TailExt {
   const int (*thr)[kTails];
+  double cap;                                   // 满档 (Labels::cap); 尾 j 的满档 = cap · kTailOfGroup[j]
   factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (样本数, 本腿标签和): ls 用
   double slv[kLegs][kTails] = {};               // 尾部 Σlv: 分层用
   void cell(unsigned x, bool ok, const float *y) {
@@ -60,11 +61,12 @@ struct TailExt {
       return;
     const double mkt[kLegs] = {r.mkt[kLong], r.mkt[kShort]};
     for (int j = 0; j < kTails; ++j) {
+      const double cj = cap * kTailOfGroup[j];
       for (int l = 0; l < kLegs; ++l) {
         o.cnt[l][j] = static_cast<uint16_t>(leg[j][l].n);
-        o.sum[l][j] = static_cast<float>(slv[l][j] - leg[j][l].n * mkt[kLong]);
+        o.sum[l][j] = static_cast<float>((slv[l][j] - leg[j][l].n * mkt[kLong]) / factor::stat::book_den(leg[j][l].n, cj));
       }
-      o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt));
+      o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt, cj));
     }
   }
 };
@@ -74,8 +76,9 @@ struct TailSink {
   TailRow *tails;
   int T;
   const int (*thr)[kTails];
+  double cap;
   using Ext = TailExt;
-  Ext ext() const { return {thr}; }
+  Ext ext() const { return {thr, cap}; }
   void row(int i, int t, const factor::stat::Row &r, const Ext &e) const {
     const size_t k = static_cast<size_t>(i) * T + t;
     rows[k] = r;
@@ -400,6 +403,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.scope.end_date = req.end_date;
   res.scope.days = L.days, res.scope.T = T, res.scope.A = A;
   res.scope.backend = "cpu";
+  res.scope.n_full = F.lab.L.cap;
   res.dates = dates;
   res.read_scope = req.scope;
   res.uni_index = L.index;
@@ -468,6 +472,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   factor::cpu::stat::rank_x(F.ex, x, x.m, req.frame, s, pl.rx_all.data(), F.w);
   factor::cpu::stat::rank_x(F.ex, x, L.cs.m.data(), req.frame, s, pl.rx.data(), F.w);
   const uint16_t *rx = pl.rx.data();
+  res.rank_pct = rank_pct_of(F.ex, rx, rp->m.data(), L.cs.m.data(), T, A);
   {
     const int xi = d.nodes[static_cast<size_t>(root)].in[0];
     assert(xi >= 0 && "根是归一算子, 至少一元");
@@ -488,7 +493,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   int thr[kLegs][kTails];
   tail_thresholds(thr);
   factor::stat::Accum acc[factor::stat::kMaxHold];
-  factor::cpu::stat::accum_rows(F.ex, req.frame, s, rx, F.lab.L, F.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, thr});
+  factor::cpu::stat::accum_rows(F.ex, s, rx, F.lab.L, F.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, thr, F.lab.L.cap});
   factor::stat::finish_all(acc, L.hd, res.hold.data());
   done_.fetch_add(1, std::memory_order_relaxed);
   if (cancelled())

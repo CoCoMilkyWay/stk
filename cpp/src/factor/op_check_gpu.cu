@@ -340,6 +340,7 @@ struct DevLabels {
     assert(host.hd.n == H);
     for (int i = 0; i < H; ++i)
       assert(host.hd.h[i] == L.hd.h[i] && "标签持有期与会话不符");
+    L.cap = host.cap;
     for (int i = 0; i < H; ++i) {
       for (int l = 0; l < kLegs; ++l)
         v[l][i].put(host.l[i].v[l], s.n());
@@ -391,7 +392,7 @@ StatSession *stat_open(int T, int A, const factor::stat::Labels &L, double *prep
 }
 
 void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Accum *acc, factor::stat::Row *rows,
-               uint8_t *lc, double *eval_ms) {
+               uint8_t *lc, uint16_t *rx, double *eval_ms) {
   assert(s && x && x->v && x->m && g && g->m && acc);
   if (eval_ms)
     s->tm.begin();
@@ -406,6 +407,8 @@ void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::sta
     stat::leg_codes(s->rx.p, s->s, s->lc.p, nullptr);
     s->lc.down(lc, s->s.n());
   }
+  if (rx)
+    s->rx.down(rx, s->s.n());
 }
 
 void stat_close(StatSession *s) {
@@ -424,7 +427,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
   xv.up(x.v, n), xm.up(x.m, n), g.up(gm, n);
   const DevPlane xp{xv.p, xm.p}, gp{nullptr, g.p};
   StatSession *s = stat_open(T, A, L, prep_ms);
-  stat_eval(s, &xp, &gp, f, acc, rows, nullptr, eval_ms);
+  stat_eval(s, &xp, &gp, f, acc, rows, nullptr, nullptr, eval_ms);
   stat_close(s);
   xv.free_(), xm.free_(), g.free_();
 }
@@ -433,6 +436,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
 struct SearchSession {
   int T = 0, A = 0, Cmax = 0;
   factor::stat::Holds hd;
+  double cap = 0.0;
   DevLabels lab;
   DevBuf<uint16_t> rx;
   DevBuf<search::Slice> part;
@@ -441,12 +445,12 @@ struct SearchSession {
   Timer tm;
 };
 
-SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd) {
+SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd, double cap) {
   factor::stat::assert_holds(hd);
-  assert(T > 0 && A > 0 && A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch);
+  assert(T > 0 && A > 0 && A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch && cap > 0.0);
   const size_t n = static_cast<size_t>(T) * A;
   SearchSession *s = new SearchSession;
-  s->T = T, s->A = A, s->Cmax = Cmax, s->hd = hd;
+  s->T = T, s->A = A, s->Cmax = Cmax, s->hd = hd, s->cap = cap;
   s->lab.alloc(hd, n);
   const search::Work w = search::plan(Cmax, T, A, hd.n, 0); // t_lo = 0 是分片数上界
   s->rx.alloc(w.rx_elems());
@@ -459,6 +463,7 @@ void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_
   assert(s && lab);
   factor::stat::Labels L;
   L.hd = s->hd;
+  L.cap = s->cap;
   for (int i = 0; i < s->hd.n; ++i)
     L.l[i] = lab[i];
   const double pms = s->lab.load(L, factor::stat::Span{s->T, s->A}, s->tm);
@@ -502,7 +507,7 @@ void search_close(SearchSession *s) {
 }
 
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int t0_abs,
-                int t_lo, const factor::stat::Holds &hd, const factor::stat::Label *lab, factor::search::Result *out, double *prep_ms,
+                int t_lo, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out, double *prep_ms,
                 double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = static_cast<size_t>(T) * A;
@@ -518,7 +523,7 @@ void run_search(int C, const float *const *xv, const uint8_t *const *xm, const u
   DevBuf<uint8_t> g;
   g.up(gm, n);
   const DevPlane gp{nullptr, g.p};
-  SearchSession *s = search_open(T, A, C, hd);
+  SearchSession *s = search_open(T, A, C, hd, cap);
   search_load(s, lab, prep_ms);
   search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, out, eval_ms);
   search_close(s);

@@ -10,7 +10,7 @@
 //     "weights": [                                            // 可选: 参数搜索 (SearchService) 写的全部权重, 每项一个具体表达式
 //       { "hold": 30,                                         //   搜索时的持有期 (0 = 手填)
 //         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))",     //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
-//         "stat": { scope…, "frame", "valid_pct", "eval_ms", "max_impact", "n_full",
+//         "stat": { scope…, "frame", "valid_pct", "rank_pct", "eval_ms", "max_impact", "n_full",
 //                   "holds": [HoldStat…],                             // 本服务写 (全部持有期, 毛收益口径), 载入时显示
 //                   "costs": [{amt, cover, acc: [CostAcc…]}…] } }, … ] } // 每金额档 × 每持有期换手成本累加器 (Inspect 净线从它算)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
@@ -31,7 +31,7 @@
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), HoldStat 是毛口径;
 // 换手成本 (lb_cost_* 每档, 买入按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (FactorsLoad cost_tiers, 两后端同一份宿主代码:
-// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 净线由 Inspect plot_term 在二级上现算, 看板 score / util 由 RowScore 从该 h 的 HoldStat 算,
+// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 净线由 Inspect plot_term 在二级上现算, 看板 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
 // Config::sell_impact 只进公式不进文件. 看板的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
@@ -113,7 +113,7 @@ struct StatScope {
   std::string universe, start_date, end_date, backend, time;
   int days = 0, T = 0, A = 0;
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
-  double n_full = 0.0;     // 满仓一腿只数 = 池内平均有效票数 / kGroups (util 分母; 池宽决定, 与因子无关)
+  double n_full = 0.0;     // 满档一腿只数 = 池内平均有效票数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
 // 一个金额档的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
 // 两腿按真实换手扣, 每 (t, h) 行只有新进者 (t−h 不在该组) 付建仓冲击 + sell_impact; 均摊成本 cost(腿) 随 h 变 (h 越长留仓越多).
@@ -149,7 +149,7 @@ struct FactorRow {
   bool stat_from_file = false;           // stat 来自文件 (非本进程算的)
   StatScope scope;                       // stat 的作用域
   double eval_ms = 0;                    // time 列: 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
-  float valid_pct = 0.f;
+  float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsLoad valid_pct_of / rank_pct_of)
   int n_hold = 0;
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::costs 序, 每档 [n_hold] CostAcc (Inspect 净线从它算)
@@ -167,8 +167,8 @@ struct FactorRow {
   }
 };
 
-// 看板的目标分量 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的 毛 LS / util / rIC / score.
-// 无 stat / stat 无该持有期 / n < 3 → ok = false. ric_pow 取契约默认; n_full 来自 stat 作用域
+// 看板的目标分量 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的 每期真实毛 LS / rIC / score.
+// 无 stat / stat 无该持有期 / n < 3 → ok = false. ric_pow 取契约默认
 factor::search::Score RowScore(const FactorRow &r, int hold);
 
 enum class FactorsStatus : uint8_t { Idle,
