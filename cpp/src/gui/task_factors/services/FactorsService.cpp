@@ -44,63 +44,10 @@ double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std
 
 constexpr size_t kLevel = analysis::kLevel; // 因子只在 L1 算
 
-// 算子节点前序 → params 数组 (只落该算子声明的字段)
-ojson params_json(const factor::expr::Expr &e) {
-  ojson arr = ojson::array();
-  for (const factor::expr::Node &n : e.nodes) {
-    if (n.op < 0)
-      continue;
-    const factor::expr::OpInfo &o = factor::expr::kOps[n.op];
-    ojson p = ojson::object();
-    if (factor::expr::declares(o.params, "d"))
-      p["d"] = n.p.d;
-    if (factor::expr::declares(o.params, "k"))
-      p["k"] = n.p.k;
-    if (factor::expr::declares(o.params, "k2"))
-      p["k2"] = n.p.k2;
-    arr.push_back(p);
-  }
-  return arr;
-}
-
-// 文件 params → 补丁; 格式不合 → false + err
-bool parse_patches(const json &j, std::vector<factor::expr::ParamPatch> &out, std::string &err) {
-  if (!j.is_array()) {
-    err = "params 须是数组 (每算子节点一项, 前序)";
-    return false;
-  }
-  out.clear();
-  for (size_t i = 0; i < j.size(); ++i) {
-    const json &o = j[i];
-    if (!o.is_object()) {
-      err = "params[" + std::to_string(i) + "] 须是对象";
-      return false;
-    }
-    factor::expr::ParamPatch p;
-    for (auto it = o.begin(); it != o.end(); ++it) {
-      if (!it.value().is_number()) {
-        err = "params[" + std::to_string(i) + "]." + it.key() + " 须是数";
-        return false;
-      }
-      const double v = it.value().get<double>();
-      if (it.key() == "d") {
-        if (!it.value().is_number_integer()) {
-          err = "params[" + std::to_string(i) + "].d 须是整数";
-          return false;
-        }
-        p.has_d = true, p.d = it.value().get<int>();
-      } else if (it.key() == "k") {
-        p.has_k = true, p.k = static_cast<float>(v);
-      } else if (it.key() == "k2") {
-        p.has_k2 = true, p.k2 = static_cast<float>(v);
-      } else {
-        err = "params[" + std::to_string(i) + "] 未知键 " + it.key() + " (只许 d / k / k2)";
-        return false;
-      }
-    }
-    out.push_back(p);
-  }
-  return true;
+// 旧格式残留键 (params / 顶层 stat): 任何回写都顺手删
+void erase_legacy(ojson &j) {
+  j.erase("params");
+  j.erase("stat");
 }
 
 // 一个金额档的换手成本 ↔ JSON {amt, cover, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
@@ -223,15 +170,29 @@ void write_json(const std::filesystem::path &path, const ojson &j) {
   std::filesystem::rename(tmp, path);
 }
 
-// 评估后回写: 只动 params / stat 两键, 其他键 (expr / note / 人加的任何东西) 原样保留
-void write_back(const std::filesystem::path &path, const factor::expr::Expr &e, const FactorRow &r) {
+// 评估后回写: 只动 weights[widx].stat, 其他键 (expr / note / 人加的任何东西) 原样保留.
+// 手填权重 (文件无 weights, hold_src = 0) 首次回写时补出 weights = [{hold 0, expr}]
+void write_back(const std::filesystem::path &path, const FactorRow &r) {
+  assert(r.widx >= 0 && !r.expr.empty());
   std::ifstream f(path);
   assert(f.is_open());
   ojson j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
   f.close();
   assert(j.is_object() && "回写的文件扫描时已解析过, 不该变");
-  j["params"] = params_json(e);
-  j["stat"] = stat_json(r);
+  erase_legacy(j);
+  auto wit = j.find("weights");
+  if (wit == j.end() || !wit->is_array() || wit->empty()) {
+    assert(r.widx == 0 && r.hold_src == 0 && "无 weights 的文件只可能有手填权重 (widx 0)");
+    ojson w = ojson::object();
+    w["hold"] = 0;
+    w["expr"] = r.expr;
+    j["weights"] = ojson::array({w});
+    wit = j.find("weights");
+  }
+  assert(static_cast<size_t>(r.widx) < wit->size());
+  ojson &w = (*wit)[static_cast<size_t>(r.widx)];
+  assert(w.is_object() && "权重项与扫描时不符");
+  w["stat"] = stat_json(r);
   write_json(path, j);
 }
 
@@ -405,7 +366,6 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
   j["expr"] = e.canon;
   if (!note.empty())
     j["note"] = std::string(note);
-  j["params"] = params_json(e);
   write_json(path, j);
   return file;
 }
@@ -448,9 +408,9 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
     j.erase("note");
   else
     j["note"] = std::string(note);
-  j["params"] = params_json(e);
+  erase_legacy(j);
   if (expr_changed)
-    j.erase("stat"); // 旧 stat 是别的表达式算的
+    j.erase("weights"); // 旧权重是别的模板的实例
   write_json(from, j);
   if (to != from)
     std::filesystem::rename(from, to);
@@ -472,15 +432,23 @@ factor::search::Score RowScore(const FactorRow &r, int hold) {
   return factor::search::score_of(*h, o);
 }
 
-void WriteFactorParams(const std::string &factor_dir, std::string_view file, const factor::expr::Expr &e) {
+void WriteFactorWeights(const std::string &factor_dir, std::string_view file, const std::vector<SearchWeight> &ws) {
+  assert(!ws.empty());
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
   std::ifstream f(path);
   assert(f.is_open() && "搜索落盘: 因子文件不存在");
   ojson j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
   f.close();
   assert(j.is_object() && "搜索落盘: 因子文件扫描时已解析过, 不该变");
-  j["params"] = params_json(e);
-  j.erase("stat");
+  erase_legacy(j);
+  ojson arr = ojson::array();
+  for (const SearchWeight &w : ws) {
+    ojson o = ojson::object();
+    o["hold"] = w.hold;
+    o["expr"] = w.expr;
+    arr.push_back(std::move(o));
+  }
+  j["weights"] = std::move(arr);
   write_json(path, j);
 }
 
@@ -556,7 +524,7 @@ void FactorsService::worker_loop() {
   }
 }
 
-// 扫目录: 每个 *.json 一行; 解析 / 校验失败 → error (文件不动)
+// 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)
 void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out) {
   TraceN("FactorsScan");
   out.clear();
@@ -568,7 +536,11 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
   std::sort(files.begin(), files.end());
 
   const factor::expr::FeatureLookup fl = feats_.lookup();
-  std::map<std::string, std::string> seen; // canon → 首个文件
+  std::map<std::string, std::string> seen; // 具体规范串 → 首行 key
+  const auto emit = [&](FactorRow &r) {
+    r.key = row_key(r.file, r.widx);
+    out.push_back(r);
+  };
   for (const std::filesystem::path &p : files) {
     FactorRow r;
     r.file = p.filename().string();
@@ -580,7 +552,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       j = json::parse(f, nullptr, /*allow_exceptions=*/false);
     if (j.is_discarded() || !j.is_object()) {
       r.error = "JSON 解析失败 / 顶层不是对象";
-      out.push_back(r);
+      emit(r);
       continue;
     }
     if (const auto it = j.find("note"); it != j.end() && it->is_string())
@@ -589,13 +561,13 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       r.name_cn = it->get<std::string>();
     if (!ValidFactorNameCn(r.name_cn)) {
       r.error = "缺 name_cn 键或值不合 (纯汉字, 1..10 字)";
-      out.push_back(r);
+      emit(r);
       continue;
     }
     const auto eit = j.find("expr");
     if (eit == j.end() || !eit->is_string()) {
       r.error = "缺 expr 键或不是字串";
-      out.push_back(r);
+      emit(r);
       continue;
     }
     r.expr_raw = eit->get<std::string>();
@@ -603,43 +575,93 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
     if (json_str_is(j, "type", kind_name(FactorKind::Beta))) {
       r.kind = FactorKind::Beta;
       r.error = "beta 类因子未实现 (留位)";
-      out.push_back(r);
+      emit(r);
       continue;
     }
     if (!json_str_is(j, "type", kind_name(FactorKind::Alpha))) {
       r.error = "缺 type 键或值不合 (alpha | beta)";
-      out.push_back(r);
+      emit(r);
       continue;
     }
-    factor::expr::Expr e;
-    if (!factor::expr::parse(r.expr_raw, fl, e, r.error)) {
-      out.push_back(r);
+    factor::expr::Expr t; // 模板
+    if (!factor::expr::parse(r.expr_raw, fl, t, r.error)) {
+      emit(r);
       continue;
     }
-    if (const auto pit = j.find("params"); pit != j.end()) {
-      std::vector<factor::expr::ParamPatch> patches;
-      if (!parse_patches(*pit, patches, r.error) || !factor::expr::apply_params(e, patches, r.error)) {
-        out.push_back(r);
+    r.tmpl = t.canon; // 表里显示规范串, 便于看根
+    if (!factor::expr::root_frame(t, r.frame, r.error)) {
+      emit(r);
+      continue;
+    }
+    // 权重: weights 数组每项一行; 无 weights 时, 模板具体 → 手填唯一权重, 否则 "未搜索" 一行
+    struct W {
+      int hold = 0;
+      std::string expr, err;
+      const json *stat = nullptr;
+    };
+    std::vector<W> ws;
+    if (const auto wit = j.find("weights"); wit != j.end() && !(wit->is_array() && wit->empty())) {
+      if (!wit->is_array()) {
+        r.error = "weights 须是数组";
+        emit(r);
         continue;
       }
+      for (size_t i = 0; i < wit->size(); ++i) {
+        const json &o = (*wit)[i];
+        W w;
+        if (!o.is_object() || !json_int(o, "hold", w.hold)) {
+          w.err = "weights[" + std::to_string(i) + "] 须是对象且有整数 hold";
+        } else if (const auto xit = o.find("expr"); xit == o.end() || !xit->is_string()) {
+          w.err = "weights[" + std::to_string(i) + "] 缺 expr 键或不是字串";
+        } else {
+          w.expr = xit->get<std::string>();
+          if (const auto sit = o.find("stat"); sit != o.end())
+            w.stat = &*sit;
+        }
+        ws.push_back(std::move(w));
+      }
+    } else if (!t.is_template()) {
+      ws.push_back(W{0, t.canon, {}, nullptr});
     }
-    if (!factor::expr::root_frame(e, r.frame, r.error)) {
-      r.expr = e.canon; // 表里仍显示规范串, 便于看根
-      out.push_back(r);
+    if (ws.empty()) { // 模板未搜索
+      r.status = RowStatus::Done;
+      emit(r);
       continue;
     }
-    r.expr = e.canon;
-    r.n_ops = e.n_ops;
-    const factor::Dag d = factor::build(e);
-    r.n_feats = static_cast<int>(d.feats.size());
-    r.n_slots = d.n_slots;
-    if (const auto it = seen.find(e.canon); it != seen.end())
-      r.dup_of = it->second;
-    else
-      seen.emplace(e.canon, r.file);
-    if (const auto sit = j.find("stat"); sit != j.end())
-      load_stat(*sit, r);
-    out.push_back(r);
+    for (size_t i = 0; i < ws.size(); ++i) {
+      FactorRow w = r;
+      w.widx = static_cast<int>(i);
+      w.hold_src = ws[i].hold;
+      if (!ws[i].err.empty()) {
+        w.error = ws[i].err;
+        emit(w);
+        continue;
+      }
+      factor::expr::Expr e;
+      if (!factor::expr::parse(ws[i].expr, fl, e, w.error)) {
+        w.error = "weights[" + std::to_string(i) + "]: " + w.error;
+        emit(w);
+        continue;
+      }
+      if (!factor::expr::instance_of(t, e)) {
+        w.error = "weights[" + std::to_string(i) + "] 不是模板的实例 (结构 / 固定参数须同模板, 自由参数须落值)";
+        emit(w);
+        continue;
+      }
+      w.expr = e.canon;
+      w.n_ops = e.n_ops;
+      const factor::Dag d = factor::build(e);
+      w.n_feats = static_cast<int>(d.feats.size());
+      w.n_slots = d.n_slots;
+      w.key = row_key(w.file, w.widx);
+      if (const auto it = seen.find(e.canon); it != seen.end())
+        w.dup_of = it->second;
+      else
+        seen.emplace(e.canon, w.key);
+      if (ws[i].stat)
+        load_stat(*ws[i].stat, w);
+      emit(w);
+    }
   }
   if (!req.evaluate) // 只扫描: BROKEN 行也算"处理完"
     for (FactorRow &r : out)
@@ -649,7 +671,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
 // 装载 + 评估 (worker 线程; 返回 false = 取消)
 bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin &ex) {
   TraceN("FactorsEvaluate");
-  // 有效行 → Expr (scan 已校验过, 这里必成功) → 一张共享 DAG (F.roots[k] ↔ idx[k])
+  // 有效权重行 → Expr (scan 已校验过, 这里必成功) → 一张共享 DAG (F.roots[k] ↔ idx[k])
   std::vector<size_t> idx;
   std::vector<factor::expr::Expr> exprs;
   std::vector<factor::stat::Frame> frames; // [k] 口径 (同根的因子规范串相同 → 口径相同)
@@ -657,8 +679,8 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
     std::lock_guard<std::mutex> lock(mutex);
     const factor::expr::FeatureLookup fl = feats_.lookup();
     for (size_t i = 0; i < rows.size(); ++i) {
-      if (!rows[i].error.empty()) {
-        rows[i].status = RowStatus::Done; // BROKEN 行本轮不算
+      if (!rows[i].error.empty() || rows[i].expr.empty()) {
+        rows[i].status = RowStatus::Done; // BROKEN / 未搜索 行本轮不算
         continue;
       }
       factor::expr::Expr e;
@@ -805,7 +827,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
           std::lock_guard<std::mutex> lock(mutex);
           rows[idx[k]] = r;
         }
-        write_back(dir / r.file, exprs[k], r);
+        write_back(dir / r.file, r);
         epoch_.fetch_add(1, std::memory_order_relaxed);
       }
     }

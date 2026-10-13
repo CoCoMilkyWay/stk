@@ -43,17 +43,19 @@ void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L) {
   factor::stat::assert_holds(L.hd);
 }
 
-void select_hold(const FeatureTable &ft, int hold, Loaded &L) {
+void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded &L) {
   assert(L.labels.empty() && "装载后不能再收窄");
-  int idx = -1;
-  for (size_t i = 0; i < ft.labels.size(); ++i)
-    if (ft.labels[i].hold == hold)
-      idx = static_cast<int>(i);
-  assert(idx >= 0 && "持有期不在字段表里");
-  L.n_hold = 1;
-  L.hd.n = 1;
-  L.hd.h[0] = hold;
-  L.label_idx.assign(1, idx);
+  assert(!holds.empty() && holds.size() <= static_cast<size_t>(factor::stat::kMaxHold));
+  L.n_hold = static_cast<int>(holds.size());
+  L.hd.n = L.n_hold;
+  L.label_idx.assign(holds.size(), -1);
+  for (size_t h = 0; h < holds.size(); ++h) {
+    for (size_t i = 0; i < ft.labels.size(); ++i)
+      if (ft.labels[i].hold == holds[h])
+        L.label_idx[h] = static_cast<int>(i);
+    assert(L.label_idx[h] >= 0 && "持有期不在字段表里");
+    L.hd.h[h] = holds[h];
+  }
   factor::stat::assert_holds(L.hd);
 }
 

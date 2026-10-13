@@ -44,7 +44,7 @@ struct SharedData;
 namespace GUI::Factors {
 
 struct InspectRequest {
-  std::string file, expr; // 因子文件名 + 规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
+  std::string file, expr; // 权重行 key (FactorRow::key = 文件#权重号) + 具体规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
   factor::stat::Frame frame = factor::stat::Frame::CS;
   analysis::ReadScope scope;
   std::string universe, start_date, end_date;

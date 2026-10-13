@@ -7,7 +7,8 @@
 //         不落一级 Row. 语义 = Stat: 候选 c 的 acc[h].finish(hold) 与 Stat 对同一平面算出的 HoldStat 逐字段一致 (整数派生量逐位,
 //         浮点和只差求和序; 对拍 Search/Check.hpp). Stat 服务交互 (一因子一次, 要 Row), Search 服务搜索 (一因子上万次, 只要分数);
 //         两者同一后端共用同一组行核 (Stat/Host.hpp / Stat/Dev.cuh), 只在"行怎么排 / 攒到哪"上分叉.
-//         算子对持有期数 H 不设限 (hd.n ≤ kMaxHold, 对拍多 h 同跑); Search 服务只传一个 (见【目标】), 标签 / 核都只走一组.
+//         算子对持有期数 H 不设限 (hd.n ≤ kMaxHold); Search 服务传搜索窗内全部持有期 (hold_in_window: 30m ~ T+1), 每 h 各自打分 /
+//         各自搜 (见【目标】: 不跨 h 比), 因子平面只算一遍, 多 h 只多行统计.
 //
 //   【分块流式】超大张量沿 T 切块: 一块 = 行 [0, T) 的平面 (因子 / 标签 / 池 同块同形), 带两个绝对量:
 //         t0_abs  块首行的绝对下标 (tail_masked 看 (t0_abs + t) % kSegLen)
@@ -26,13 +27,20 @@
 //         有意不进目标的: 成本 / 换手 / mono / 显著性 (ls_t, ric.ir) / 样本外 —— 搜索要快, 活跃度由 util 定价.
 //         同一份 score_of 两个入口: Search 吃 Result (Accum 先 finish), 因子看板吃 stat 里该 h 的 HoldStat —— Search 只在内部用分数挑候选,
 //         不往文件写结论.
+//
+//   【多权重】一个模板在一个 h 下不止一个好参数 (粗网格的各局部峰各自细化到一个最优). 终选: 各峰最优里 score ≥ (1 − kPlateau)·max 的
+//         为**高原集**; 其中按两两**截面相关**挑 ≤ kPicks 个 (pick_uncorrelated: 组内两两最大相关最小的组合, 不保证含 max) —— 要的是
+//         持仓重合最少的几组优质权重, 不是分数最高的几个. 截面相关 = 同 t 两候选 r16 行的 Pearson (与 rAC 同一行核 rac_row, lag 换成另一候选),
+//         沿抽样行取均值 (kCorrRows 行够估; 两两全量算不值). 每 h 独立做, 全部 h 的 picks 合为该模板的 weights.
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 namespace factor::search {
 
@@ -41,6 +49,42 @@ using factor::stat::Holds;
 using factor::stat::HoldStat;
 using factor::stat::kGroups;
 using factor::stat::kMaxHold;
+
+// ---- 搜索窗 / 终选常量 (见【目标】【多权重】) ----
+inline constexpr int kHoldMinMinutes = 30; // 窗下沿: 30 分钟
+inline constexpr int kHoldMaxOpen = 1;     // 窗上沿: T+1 开盘
+inline constexpr double kPlateau = 0.20;   // 高原: score ≥ (1 − kPlateau)·max
+inline constexpr int kPicks = 3;           // 每 h 最多留的权重数
+inline constexpr int kCorrRows = 1024;     // 截面相关的抽样行数 (整个作用域上均匀)
+inline bool hold_in_window(int hold) {
+  return factor::stat::hold_intraday(hold) ? hold >= kHoldMinMinutes : hold <= factor::stat::hold_open(kHoldMaxOpen);
+}
+
+// 终选: corr[M][M] 对称 (对角不看), 在 ≤ kPicks 的组合里取两两最大相关最小者 (并列取 score 和大的); M ≤ kPicks → 全要. 返回下标
+inline std::vector<int> pick_uncorrelated(const std::vector<std::vector<double>> &corr, const std::vector<double> &score) {
+  const int M = static_cast<int>(score.size());
+  assert(static_cast<int>(corr.size()) == M);
+  std::vector<int> best;
+  if (M <= kPicks) {
+    for (int i = 0; i < M; ++i)
+      best.push_back(i);
+    return best;
+  }
+  static_assert(kPicks == 3, "下面枚举写死三元组");
+  double best_c = std::numeric_limits<double>::infinity(), best_s = -std::numeric_limits<double>::infinity();
+  for (int i = 0; i < M; ++i)
+    for (int j = i + 1; j < M; ++j)
+      for (int k = j + 1; k < M; ++k) {
+        const double c = std::max({corr[i][j], corr[i][k], corr[j][k]});
+        const double s = score[i] + score[j] + score[k];
+        if (c < best_c || (c == best_c && s > best_s)) {
+          best_c = c, best_s = s;
+          best = {i, j, k};
+        }
+      }
+  assert(best.size() == static_cast<size_t>(kPicks));
+  return best;
+}
 
 // rAC 需要的最大 lag 行数 (= carry 下限)
 inline int max_lag(const Holds &hd) {
@@ -85,7 +129,7 @@ inline Score score_of(const HoldStat &hs, const Objective &o) {
     s.score = s.ls * s.util * (o.ric_pow == 1.0 ? s.ric : std::pow(s.ric, o.ric_pow));
   return s;
 }
-// hi = hd 下标 (Search 服务 hd.n == 1, hi = 0)
+// hi = hd 下标
 inline Score score_of(const Result &r, const Holds &hd, int hi, const Objective &o) {
   factor::stat::assert_holds(hd);
   assert(hi >= 0 && hi < hd.n);

@@ -40,14 +40,14 @@ struct Loaded {
                                             //   成分 = 该刻 cs_valid; 上一有效 close 跨日 (隔夜跳空进当日首笔); 无成分可算的分钟持平
   factor::stat::Holds hd;                   // hd.h[hi] = hold
   int n_hold = 0;
-  std::vector<int> label_idx; // [hi] → FeatureTable::labels 下标 (init_loaded 全部持有期; select_hold 收窄到一个)
+  std::vector<int> label_idx; // [hi] → FeatureTable::labels 下标 (init_loaded 全部持有期; select_holds 收窄到子集)
   size_t n() const { return static_cast<size_t>(T) * A; }
 };
 
 // 维度 / 标签组: days × A → T; hd = 字段表的全部持有期 (容量断言在此)
 void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L);
-// 标签组收窄到一个持有期 (Search: 一次搜索一个固定 h, 只装 / 只评这一组标签); hold 须在字段表里. 装载前调
-void select_hold(const FeatureTable &ft, int hold, Loaded &L);
+// 标签组收窄到 holds (Search: 搜索窗内的持有期, 只装 / 只评这些标签); 每个 hold 须在字段表里, 非空. 装载前调
+void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded &L);
 
 // 逐天并行读 (ex 抢单): 特征列 (L.feat_codes) + (with_labels) L.hd 的标签列 (+ with_costs 冲击成本列) + ts_valid + cs_valid 一次 load_day_columns,
 // 门控后散进平面; with_index 再加读 close 列, 顺带出 L.index (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘).

@@ -118,10 +118,10 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (三子页)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
-│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫因子文件 → 合成共享 DAG 评估 (毛 HoldStat + 每档换手成本 CostAcc) → 只回写 params / stat (expr 不动, 破碎标 BROKEN 不删); 看板 score / util 由 stat 现算
+│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子面板: 扫因子文件 (expr 模板 + weights 一权重一行) → 合成共享 DAG 评估 (毛 HoldStat + 每档换手成本 CostAcc) → 只回写 weights[i].stat (expr 不动, 破碎标 BROKEN 不删); 看板 score / util 由 stat 现算
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (三服务共用): 特征 / 门控 / 标签 / 成本 宿主平面; n_full_of 满仓只数; cost_tiers 换手成本 (Run / Inspect 同一份)
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件; 期限结构净线的换手成本 (Stat cost_row, 与 Run 同一份)
-│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 粗网格 (含基线) → 多支逐层细化; 一次一个固定持有期 (UI Hold), 目标 = 毛 LS · 资金利用率 · rIC (不看成本, 不跨 h 比); 严格好于基线才回写 params (分数只内部用)
+│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Optimize, 单 worker): 模板自由参数粗网格 → 每局部峰一支逐层细化; 搜索窗 30m~T+1 每 h 各搜 (标签一次装全, 因子平面只算一遍), 目标 = 毛 LS · 资金利用率 · rIC (不看成本, 不跨 h 比); 高原集按截面相关挑 ≤3 → 整体替换 weights
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子面板 tab: 构建器 + 因子表
@@ -146,7 +146,7 @@ stk/
 │   │   │   │                                               #    stream 后端为 golden (对拍带容差); 序统计 / Stat 用整数计数求逐位一致
 │   │   │   ├── Contract.hpp                                # 🧬 TS/CS 语义契约 (三后端共享): T 窗 × A 域 × 核类, SoA [T][A], 段 = L1 一日; branchless, 退化给中性值, 掩码只表输入有效性
 │   │   │   ├── OpTable.hpp                                 # 🧬 算子真相表 X-macro (命名 域_核_窗), 三后端同名展开; 行序 = 全局 idx; Stat 不入表
-│   │   │   ├── Expr.hpp                                    # 🧬 因子表达式 codec: 前缀式 ↔ 树 + 静态校验 + 参数覆盖; 不合法是正常输入 → false + 原因 (不断言)
+│   │   │   ├── Expr.hpp                                    # 🧬 因子表达式 codec: 前缀式 ↔ 树 + 静态校验; 裸键名 d / k / k2 = 自由参数 (模板 vs 具体实例 instance_of); 不合法是正常输入 → false + 原因 (不断言)
 │   │   │   ├── Dag.hpp                                     # 🧬 Expr → 去重 DAG + 槽复用计划; 多 Expr 合一 (跨因子共享); 只管结构, 不含并行
 │   │   │   ├── Exec.hpp                                    # 🧬 执行器 (CPU 唯一并行抽象): Serial / ForkJoin, 核只写 fn(t0, t1, tid), 两者逐位一致
 │   │   │   ├── EvalCpu.hpp                                 # 🧬 DAG 的 CPU evaluator + 宿主槽池
@@ -230,7 +230,7 @@ stk/
     ├── factors/                                            # 因子算子库 (factor/ 的落地)
     │   ├── operators.json                                  # 算子表快照 (对拍 + 耗时), 与当前 OpTable 不符则重算
     │   └── <universe>/                                     # 因子文件 (一因子一文件, 可手写)
-    │       └── *.json                                      # {expr (永不改写), note?, params? (搜索结果落此, 写入即删旧 stat), stat?}
+    │       └── *.json                                      # {type, name_cn, expr (模板, 自由参数裸键名), note?, weights?: [{hold, expr (具体), stat?}] (Optimize 整体替换; 改 expr 即清)}
     └── log/                                                # 运行日志
 ```
 

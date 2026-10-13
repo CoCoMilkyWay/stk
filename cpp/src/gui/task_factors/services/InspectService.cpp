@@ -100,7 +100,7 @@ struct InspectService::Flow {
 bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
-  req.file = row.file;
+  req.file = row.key;
   req.expr = row.expr;
   req.frame = row.frame;
   req.reload = reload;

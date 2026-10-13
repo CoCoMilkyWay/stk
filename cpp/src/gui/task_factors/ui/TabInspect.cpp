@@ -980,41 +980,44 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   ImPlot::EndPlot();
 }
 
-// 高光行 (fui.view_file) 短锁拷出 (rows 由 worker 重扫时整体替换); 顺带给出下一个有效行的文件名 (箭头循环切因子用). 找不到 → false
-bool view_row(FactorsService &fsvc, const std::string &file, FactorRow &row, std::string *prev_file = nullptr, std::string *next_file = nullptr) {
+// 有效权重行 = 可 Inspect (有具体串且解析通过; 文件级"未搜索"行不算)
+bool inspectable(const FactorRow &r) { return r.error.empty() && !r.expr.empty(); }
+
+// 高光行 (fui.view_file = FactorRow::key) 短锁拷出 (rows 由 worker 重扫时整体替换); 顺带给出相邻有效权重行的 key (箭头循环切权重用). 找不到 → false
+bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std::string *prev_key = nullptr, std::string *next_key = nullptr) {
   std::lock_guard<std::mutex> lock(fsvc.mutex);
   const auto &rows = fsvc.rows;
   const int n = static_cast<int>(rows.size());
   int cur = -1;
   for (int i = 0; i < n; ++i)
-    if (rows[static_cast<size_t>(i)].file == file) {
+    if (rows[static_cast<size_t>(i)].key == key) {
       cur = i;
       break;
     }
   if (cur < 0)
     return false;
   row = rows[static_cast<size_t>(cur)];
-  const auto neighbor = [&](int dir, std::string &out) { // 从相邻行起按 dir 绕一圈找第一个有效 alpha 行; 没有 → 空
+  const auto neighbor = [&](int dir, std::string &out) { // 从相邻行起按 dir 绕一圈找第一个有效权重行; 没有 → 空
     out.clear();
     for (int step = 1; step < n; ++step) {
       const FactorRow &r = rows[static_cast<size_t>(((cur + dir * step) % n + n) % n)];
-      if (r.error.empty()) {
-        out = r.file;
+      if (inspectable(r)) {
+        out = r.key;
         return;
       }
     }
   };
-  if (prev_file)
-    neighbor(-1, *prev_file);
-  if (next_file)
-    neighbor(+1, *next_file);
+  if (prev_key)
+    neighbor(-1, *prev_key);
+  if (next_key)
+    neighbor(+1, *next_key);
   return true;
 }
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
 std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
   InspectRequest probe;
-  probe.file = row.file, probe.expr = row.expr, probe.frame = row.frame;
+  probe.file = row.key, probe.expr = row.expr, probe.frame = row.frame;
   probe.universe = ctx.universe, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
   return probe.key();
 }
@@ -1022,11 +1025,11 @@ std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
 } // namespace
 
 bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
-  if (!fui.view_defaulted && fui.view_file.empty()) { // 默认高光表序第一个有效因子 (表还没扫出 → 下帧再试)
+  if (!fui.view_defaulted && fui.view_file.empty()) { // 默认高光表序第一个有效权重 (表还没扫出 → 下帧再试)
     std::lock_guard<std::mutex> lock(fsvc.mutex);
     for (const FactorRow &r : fsvc.rows)
-      if (r.error.empty()) {
-        fui.view_file = r.file;
+      if (inspectable(r)) {
+        fui.view_file = r.key;
         fui.view_defaulted = true;
         break;
       }
@@ -1037,7 +1040,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUISta
   if (st == InspectStatus::Loading || st == InspectStatus::Running)
     return false;
   FactorRow row;
-  if (!view_row(fsvc, fui.view_file, row) || !row.error.empty())
+  if (!view_row(fsvc, fui.view_file, row) || !inspectable(row))
     return false;
   const std::string key = probe_key(row, ctx);
   if (ui.last_req_key == key) // 取消过 / 已发过的 key 不反复起 (Compute 手动)
@@ -1063,44 +1066,45 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "(无) 在 Factors 页点一行高光");
     return 0;
   }
-  // sel = 选中行 (view_file; 箭头 / 自动起算 / Compute 的对象); row = 显示行 = 现结果的因子 (切因子期间整页继续画旧因子, 新结果到了一次性换),
-  // 无结果 (或结果因子已不在表里) 时 = sel
+  // sel = 选中行 (view_file = 权重行 key; 箭头 / 自动起算 / Compute 的对象); row = 显示行 = 现结果的权重 (切换期间整页继续画旧的, 新结果到了一次性换),
+  // 无结果 (或结果权重已不在表里) 时 = sel
   FactorRow sel;
-  std::string prev_file, next_file;
-  if (!view_row(fsvc, fui.view_file, sel, &prev_file, &next_file)) {
+  std::string prev_key, next_key;
+  if (!view_row(fsvc, fui.view_file, sel, &prev_key, &next_key)) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%s (重扫中 / 已不在)", fui.view_file.c_str());
     return 0;
   }
   FactorRow row = sel;
   {
-    std::string res_file;
+    std::string res_key;
     {
       std::lock_guard<std::mutex> lock(isvc.mutex);
       if (isvc.result.error.empty())
-        res_file = isvc.result.file;
+        res_key = isvc.result.file;
     }
     FactorRow r;
-    if (!res_file.empty() && res_file != sel.file && view_row(fsvc, res_file, r))
+    if (!res_key.empty() && res_key != sel.key && view_row(fsvc, res_key, r))
       row = r;
   }
-  const bool switching = row.file != sel.file;
-  if (prev_file.empty())
+  const bool switching = row.key != sel.key;
+  if (prev_key.empty())
     ImGui::BeginDisabled();
-  if (ImGui::ArrowButton("##prev_factor", ImGuiDir_Left)) // 不切页换因子: 按表序循环到相邻有效行 (自动起算随之)
-    fui.view_file = prev_file;
-  if (prev_file.empty())
+  if (ImGui::ArrowButton("##prev_factor", ImGuiDir_Left)) // 不切页换权重: 按表序循环到相邻有效权重行 (自动起算随之)
+    fui.view_file = prev_key;
+  if (prev_key.empty())
     ImGui::EndDisabled();
   ImGui::SameLine(0.f, 2.f);
-  if (next_file.empty())
+  if (next_key.empty())
     ImGui::BeginDisabled();
   if (ImGui::ArrowButton("##next_factor", ImGuiDir_Right))
-    fui.view_file = next_file;
-  if (next_file.empty())
+    fui.view_file = next_key;
+  if (next_key.empty())
     ImGui::EndDisabled();
   ImGui::SameLine();
-  ImGui::Text("%s  %s", row.name_cn.c_str(), row.name_en.c_str());
+  ImGui::Text("%s  %s  #%d", row.name_cn.c_str(), row.name_en.c_str(), row.widx);
   if (ImGui::IsItemHovered())
-    tip("%s/%s\n• ◂ ▸ 按 Factors 表序循环切相邻有效因子", ctx.factor_dir.c_str(), row.file.c_str());
+    tip("%s/%s  权重 #%d (搜自 h %s)\n• ◂ ▸ 按 Factors 表序循环切相邻有效权重 (同一因子的各权重也依次过)", ctx.factor_dir.c_str(), row.file.c_str(), row.widx,
+        row.hold_src > 0 ? factor::stat::hold_name(row.hold_src).c_str() : "- (手填)");
   if (switching) {
     ImGui::SameLine();
     if (sel.error.empty())
@@ -1289,7 +1293,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   // match = 结果就是当前请求 (选中行 + 作用域); 否则仍整页画旧结果 (服务不清旧 result), 新结果发布一次性换; 头部显示行 row 已随结果
   const bool match = res_has && res_key == key;
   const bool shown = res_has;
-  assert(!shown || res_file == row.file || row.file == sel.file); // 显示行 = 结果因子 (结果因子已不在表里时退回选中行)
+  assert(!shown || res_file == row.key || row.key == sel.key); // 显示行 = 结果权重 (结果权重已不在表里时退回选中行)
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {

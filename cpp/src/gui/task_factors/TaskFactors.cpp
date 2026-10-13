@@ -44,7 +44,7 @@ struct TaskFactorsState {
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                        // 上次扫描的目录 (universe 切换 → 自动重扫)
-  std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Optimize (与 factors_service 同建); 写了 params 的那一轮结束 → 自动 Run
+  std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Optimize (与 factors_service 同建); 写了 weights 的那一轮结束 → 自动 Run
   Factors::SearchStatus prev_search_status = Factors::SearchStatus::Idle;
 
   std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (worker 懒起); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
@@ -122,7 +122,7 @@ TaskHandle CreateFactorsTask() {
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
   // (与 universe 无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
-    // Optimize 写了 params 的那一轮 (Running → Done) 结束: 重扫 + Run 重算全目录 stat (Search 跑时 Run 被禁, 不会撞)
+    // Optimize 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + Run 重算全目录 stat (Search 跑时 Run 被禁, 不会撞)
     if (state->search_service && state->factors_service) {
       const auto sst = state->search_service->status();
       if (sst == Factors::SearchStatus::Done && state->prev_search_status == Factors::SearchStatus::Running) {
@@ -248,7 +248,7 @@ TaskHandle CreateFactorsTask() {
           fs.RequestCancel();
         } else if (action == 3) {
           Factors::SearchRequest req;
-          if (Factors::MakeSearchRequest(data, state->factors_ui.opt_row, state->factors_ui.backend == 1, state->factors_ui.opt_hold, req))
+          if (Factors::MakeSearchRequest(data, state->factors_ui.opt_row, state->factors_ui.backend == 1, req))
             ss.Request(req);
         } else if (action == -3) {
           ss.RequestCancel();

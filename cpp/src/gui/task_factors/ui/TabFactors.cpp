@@ -1,9 +1,10 @@
 // Tab Factors — 见头文件
 #include "gui/task_factors/ui/TabFactors.hpp"
-#include "factor/Check.hpp"       // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
-#include "factor/GpuRun.hpp"      // available / device_name
-#include "factor/Search/Grid.hpp" // kLayerMax / kBranches / kMinGain: Optimize 提示
-#include "gui/Tasks.hpp"          // StatusColor
+#include "factor/Check.hpp"           // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
+#include "factor/GpuRun.hpp"          // available / device_name
+#include "factor/Search/Contract.hpp" // 搜索窗 / 高原 / 终选常量: Optimize 提示
+#include "factor/Search/Grid.hpp"     // kLayerMax / kMinGain: Optimize 提示
+#include "gui/Tasks.hpp"              // StatusColor
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
@@ -76,6 +77,7 @@ void set_op(BuildNode &n, int op) {
   n.args = std::move(args);
   const std::string name = factor::expr::kOps[op].name;
   n.p = factor::Param{};
+  n.free = 0;
   n.p.d = factor::check::default_d(name);
   factor::check::set_k(name, n.p);
 }
@@ -102,7 +104,7 @@ void set_feat(BuildNode &n, const std::string &code) {
   n.args.clear();
 }
 
-// 树 → 表达式源串 (与规范串同格式); 有未选槽 → complete = false (源串里留 "?")
+// 树 → 表达式源串 (与规范串同格式, 自由参数打裸键名); 有未选槽 → complete = false (源串里留 "?")
 void to_source(const BuildNode &n, std::string &s, bool &complete) {
   if (n.op < 0) {
     if (n.feat.empty()) {
@@ -130,30 +132,36 @@ void to_source(const BuildNode &n, std::string &s, bool &complete) {
   if (factor::expr::declares(o.params, "d")) {
     sep();
     std::snprintf(buf, sizeof(buf), "d=%d", n.p.d);
-    s += buf;
+    s += (n.free & factor::expr::kFreeD) ? "d" : buf;
   }
   if (factor::expr::declares(o.params, "k")) {
     sep();
     std::snprintf(buf, sizeof(buf), "k=%g", static_cast<double>(n.p.k));
-    s += buf;
+    s += (n.free & factor::expr::kFreeK) ? "k" : buf;
   }
   if (factor::expr::declares(o.params, "k2")) {
     sep();
     std::snprintf(buf, sizeof(buf), "k2=%g", static_cast<double>(n.p.k2));
-    s += buf;
+    s += (n.free & factor::expr::kFreeK2) ? "k2" : buf;
   }
   s += ')';
 }
 
-// Expr 树 → 构建器 (表格行点规范串载入)
+// Expr 树 → 构建器 (表格行勾选载入模板); 自由参数处的占位值换成默认表值 (取消自由时有个像样的起点)
 void from_expr(const factor::expr::Expr &e, int i, BuildNode &n) {
   const factor::expr::Node &x = e.nodes[static_cast<size_t>(i)];
   if (x.op < 0) {
     set_feat(n, x.feat);
     return;
   }
-  set_op(n, x.op);
-  n.p = x.p;
+  set_op(n, x.op); // 参数 = 默认表
+  if (!(x.free & factor::expr::kFreeD))
+    n.p.d = x.p.d;
+  if (!(x.free & factor::expr::kFreeK))
+    n.p.k = x.p.k;
+  if (!(x.free & factor::expr::kFreeK2))
+    n.p.k2 = x.p.k2;
+  n.free = x.free;
   for (size_t a = 0; a < n.args.size(); ++a)
     from_expr(e, x.args[a], n.args[a]);
 }
@@ -282,22 +290,43 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
   }
   if (n.op >= 0) {
     const factor::expr::OpInfo &o = factor::expr::kOps[n.op];
-    if (factor::expr::declares(o.params, "d")) {
+    // 每个参数: [☐ 搜] [输入]; 勾上 = 自由参数 (源串打裸键名, 输入禁用, 由 Optimize 搜)
+    const auto free_box = [&](const char *id, uint8_t bit) {
       ImGui::SameLine();
+      bool f = (n.free & bit) != 0;
+      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, ImGui::GetStyle().FramePadding.y));
+      if (ImGui::Checkbox(id, &f))
+        n.free = static_cast<uint8_t>(f ? (n.free | bit) : (n.free & ~bit));
+      ImGui::PopStyleVar();
+      if (ImGui::IsItemHovered())
+        tip("勾上 = 自由参数: 表达式里写裸键名, 值由 Optimize 在搜索窗内每个持有期搜出 (写进 weights)\n• 不勾 = 固定, 按右边的值");
+      return f;
+    };
+    if (factor::expr::declares(o.params, "d")) {
+      const bool f = free_box("##fd", factor::expr::kFreeD);
+      ImGui::SameLine(0, 2);
       ImGui::SetNextItemWidth(70);
+      ImGui::BeginDisabled(f);
       ImGui::InputInt("d", &n.p.d, 0);
+      ImGui::EndDisabled();
       if (ImGui::IsItemHovered())
         tip("窗长 / 滞后 (分钟), 1..%d", factor::expr::kMaxD);
     }
     if (factor::expr::declares(o.params, "k")) {
-      ImGui::SameLine();
+      const bool f = free_box("##fk", factor::expr::kFreeK);
+      ImGui::SameLine(0, 2);
       ImGui::SetNextItemWidth(70);
+      ImGui::BeginDisabled(f);
       ImGui::InputFloat("k", &n.p.k, 0.f, 0.f, "%g");
+      ImGui::EndDisabled();
     }
     if (factor::expr::declares(o.params, "k2")) {
-      ImGui::SameLine();
+      const bool f = free_box("##fk2", factor::expr::kFreeK2);
+      ImGui::SameLine(0, 2);
       ImGui::SetNextItemWidth(70);
+      ImGui::BeginDisabled(f);
       ImGui::InputFloat("k2", &n.p.k2, 0.f, 0.f, "%g");
+      ImGui::EndDisabled();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("%s", o.c_name);
@@ -486,7 +515,8 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      true},
     {Status, "status",
      "评估状态\n"
-     "• BROKEN 红: 文件 / type / name_cn / 表达式 / 根非归一 / params / 组 id 不合 (悬停看原因; 文件不动, 手动处理)\n"
+     "• BROKEN 红: 文件 / type / name_cn / 表达式 / 根非归一 / 权重不是模板的实例 / 组 id 不合 (悬停看原因; 文件不动, 手动处理)\n"
+     "• 未搜索 灰: 模板含自由参数但还没 weights (不评; 高光它点 Optimize)\n"
      "• ok 绿: 本轮算的\n"
      "• file 灰: stat 来自文件, 作用域一致\n"
      "• file≠scope 黄: 文件 stat 是别的 universe / 区间算的\n"
@@ -511,11 +541,11 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• 同 score 列, 由 stat 现算",
      true},
     {Expr, "expr",
-     "规范串 = 解析后重新序列化\n"
-     "• 算子 PascalCase, 参数 d / k / k2 显式, 含 params 覆盖后的当前值\n"
+     "规范串 = 解析后重新序列化 (算子 PascalCase, 参数 d / k / k2 显式)\n"
+     "• 多权重因子的父行 / 未搜索行 = 模板 (自由参数打裸键名); 子行 / 单权重行 = 该权重的具体串\n"
      "• 解析不过的行显示文件原串",
      false},
-    {Ops, "ops", "算子节点数 (= params 数组长度)", true},
+    {Ops, "ops", "算子节点数", true},
     {Feats, "feats", "去重特征数 (输入平面数)", true},
     {Slots, "slots",
      "DAG 缓冲槽数 = 峰值同时存活的中间量\n"
@@ -694,10 +724,14 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::EndTable();
 }
 
-// status 列: BROKEN / … / running / no stat / ok / file / file≠scope (+ dup)
+// status 列: BROKEN / 未搜索 / … / running / no stat / ok / file / file≠scope (+ dup)
 void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   if (!r.error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN");
+    return;
+  }
+  if (r.widx < 0) { // 模板含自由参数而无 weights
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "未搜索");
     return;
   }
   switch (r.status) {
@@ -731,8 +765,13 @@ struct OptCell {
   double ls = 0.0, util = 0.0, ric = 0.0, score = 0.0; // score −∞ = LS / rIC ≤ 0
 };
 
+// 表的一行怎么画: 平铺 (单权重 / 文件级行) / 父 (多权重因子的代表权重, 表达式列显示模板) / 子 (展开后的一个权重, 名字列显示搜索持有期)
+enum class RowKind : uint8_t { Flat,
+                               Parent,
+                               Child };
+
 // 固定列一格 (edit 列是勾选框, 在表循环里单独画)
-void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUIContext &ctx, bool editing) {
+void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUIContext &ctx, bool editing, RowKind kind) {
   const bool ok = r.error.empty();
   const auto text = [&](const std::string &s, bool hi = false) {
     if (s.empty())
@@ -756,29 +795,35 @@ void fixed_cell(Col c, const FactorRow &r, const OptCell &oc, const FactorsUICon
       ImGui::TextUnformatted(kind_name(r.kind));
     return;
   case NameEn:
+    if (kind == RowKind::Child) { // 子行: 权重号 + 搜索时的持有期
+      ImGui::TextDisabled("  #%d %s", r.widx, r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "手填");
+      return;
+    }
     return text(r.name_en, editing);
   case NameCn:
-    return text(r.name_cn, editing);
+    return kind == RowKind::Child ? ImGui::TextDisabled("") : text(r.name_cn, editing);
   case Frame:
     return ok ? ImGui::TextUnformatted(factor::stat::frame_name(r.frame)) : ImGui::TextDisabled("-");
   case Status:
     return status_cell(r, ctx);
   case Time:
     return num(r.has_stat, "%.1f", r.eval_ms);
-  case Expr:
-    if (!r.expr.empty())
+  case Expr: // 父 / 文件级行 = 模板 (自由参数裸键名); 子 / 平铺权重 = 具体串; 模板解析不过 → 文件原串 (红)
+    if (kind != RowKind::Parent && !r.expr.empty())
       ImGui::TextUnformatted(r.expr.c_str());
+    else if (!r.tmpl.empty())
+      ImGui::TextUnformatted(r.tmpl.c_str());
     else if (!r.expr_raw.empty())
       ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "%s", r.expr_raw.c_str());
     else
       ImGui::TextDisabled("-");
     return;
   case Ops:
-    return num(ok, "%d", r.n_ops);
+    return num(ok && !r.expr.empty(), "%d", r.n_ops);
   case Feats:
-    return num(ok, "%d", r.n_feats);
+    return num(ok && !r.expr.empty(), "%d", r.n_feats);
   case Slots:
-    return num(ok, "%d", r.n_slots);
+    return num(ok && !r.expr.empty(), "%d", r.n_slots);
   case Valid:
     return num(r.has_stat, "%.1f", r.valid_pct);
   case Opt:
@@ -807,8 +852,11 @@ void row_tooltip(const FactorRow &r, const OptCell &oc, const FactorsUIContext &
   ImGui::BeginTooltip();
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetFontSize() * kTipWrapEm);
   ImGui::BulletText("文件    %s/%s  (%s / %s)", ctx.factor_dir.c_str(), r.file.c_str(), r.name_en.c_str(), r.name_cn.empty() ? "无 name_cn" : r.name_cn.c_str());
-  ImGui::BulletText("操作    点行 → %s; 勾选 → %s", viewing ? "取消高光" : "高光给 Inspect 页", editing ? "取消编辑 (构建器内容留作模板)" : "编辑 (载入上方构建器)");
-  if (!r.expr_raw.empty() && r.expr_raw != r.expr)
+  if (r.widx >= 0)
+    ImGui::BulletText("权重    #%d  搜自 h %s%s", r.widx, r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "- (手填)",
+                      r.tmpl == r.expr ? "" : ("  模板 " + r.tmpl).c_str());
+  ImGui::BulletText("操作    点行 → %s; 勾选 → %s", viewing ? "取消高光" : "高光给 Inspect 页", editing ? "取消编辑 (构建器内容留作模板)" : "编辑模板 (载入上方构建器)");
+  if (!r.expr_raw.empty() && r.expr_raw != r.tmpl)
     ImGui::BulletText("原串    %s", r.expr_raw.c_str());
   if (!r.dup_of.empty())
     ImGui::BulletText("dup     与 %s 同一规范串", r.dup_of.c_str());
@@ -891,9 +939,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    tip("表格 Stat / score / util 列显示哪个持有期; 也是 Optimize 的固定持有期\n"
-        "• 不影响 Run (一次算全部持有期); Optimize 只装 / 只评这一组标签\n"
-        "• 悬停表格行看全部持有期");
+    tip("表格 Stat / score / util 列显示哪个持有期; 多权重因子的父行 = 该持有期下 score 最高的权重\n"
+        "• 不影响 Run (一次算全部持有期) 和 Optimize (搜索窗 %s ~ T+%d 内每个持有期各搜一遍)\n"
+        "• 悬停表格行看全部持有期",
+        factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen);
   ImGui::SameLine();
 
   const bool can_run = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty();
@@ -904,8 +953,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   if (!can_run)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    tip(ctx.axis_ready ? "评估全目录: 扫描 → 读特征库 → 逐因子 eval → Stat\n"
-                         "• 结果回写各因子文件的 params / stat 键"
+    tip(ctx.axis_ready ? "评估全目录: 扫描 → 读特征库 → 逐权重 eval → Stat\n"
+                         "• 结果回写各因子文件 weights[i].stat; 模板含自由参数而无 weights 的 (未搜索) 不评, 先 Optimize"
                        : "资产轴未就绪, 读不了特征库\n"
                          "• 先在 Database 页扫描");
   ImGui::SameLine();
@@ -964,34 +1013,41 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
 
-  // ---- Optimize: 对高光行 (view_file) 搜全部参数, 持有期 = Hold 选择 (固定, 不跨 h 比), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
-  //      (Search/Contract.hpp【目标】); 严格好于基线才回写 params, 随后 TaskFactors 自动 Run (看板 score / util 从新 stat 算) ----
+  // ---- Optimize: 对高光行所在文件的模板搜全部自由参数, 搜索窗内每个持有期各搜 (不跨 h 比), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
+  //      (Search/Contract.hpp【目标】【多权重】); 结果整体替换文件 weights, 随后 TaskFactors 自动 Run (看板 score / util 从新 stat 算) ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
-      if (r.file == ui.view_file)
+      if (r.key == ui.view_file)
         view_row = &r;
-    const bool can_opt = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && view_row && view_row->error.empty();
+    const bool tmpl_ok = view_row && view_row->error.empty() && !view_row->tmpl.empty() && view_row->tmpl != view_row->expr; // 模板有自由参数
+    const bool can_opt = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && tmpl_ok;
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Optimize:");
     ImGui::SameLine();
     if (!can_opt)
       ImGui::BeginDisabled();
     if (ImGui::Button("Optimize", ImVec2(70, 0))) {
       ui.opt_row = *view_row;
-      ui.opt_hold = cur_hold;
       action = 3;
     }
     if (!can_opt)
       ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-      tip(view_row ? "搜高光行 %s 的全部参数 (d / k / k2), 持有期固定 = Hold 选择 (%s), 目标 = 毛 LS × 资金利用率 util × rIC (只评排序能力: 不看成本, 不跨持有期比)\n"
-                     "• util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1: LS 是每成员口径, 乘 util 才是固定资金上的钱; 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
-                     "• 粗网格 (步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 分支 (互不相邻的 top-%d) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
-                     "• 数据按天分块流式过 (只装这一组标签), 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
-                     "• 最优 score 严格高于基线 → 回写该文件 params (stat 删掉) 并自动 Run 重算 (score / util 列由新 stat 现算); 否则文件不动"
-                   : "先在表格里点一行高光 (与 Inspect 同一对象)",
-          view_row ? view_row->file.c_str() : "", factor::stat::hold_name(cur_hold).c_str(), factor::search::grid::kLayerMax,
-          factor::search::grid::kBranches, 100.0 * factor::search::grid::kMinGain);
+    if (ImGui::IsItemHovered()) {
+      if (!view_row)
+        tip("先在表格里点一行高光 (与 Inspect 同一对象)");
+      else if (!tmpl_ok)
+        tip("%s 的模板没有自由参数: 勾选编辑, 把要搜的参数勾成自由 (裸键名) 再 Save", view_row->file.c_str());
+      else
+        tip("搜 %s 模板里的自由参数 (裸键名 d / k / k2), 搜索窗 %s ~ T+%d 内每个持有期各搜一遍, 目标 = 毛 LS × 资金利用率 util × rIC (只评排序能力: 不看成本, 不跨持有期比)\n"
+            "• util = 平均每行一腿成员数 / 满仓只数 (池内平均有效票数 / 20), 封顶 1: LS 是每成员口径, 乘 util 才是固定资金上的钱; 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
+            "• 粗网格 (中心 = 有界槽中点 / 0; 步长按每层 ≤ %d 点的预算反推; 阈值类参数以其输入的 σ 为单位) → 每个互不相邻的局部峰各开一支 (不限支数) → 每支围 top-1 逐层减半细化, 一层增益 < %.0f%% 停\n"
+            "• 各支最优里 score ≥ %.0f%%·max 为高原集, 再按两两截面相关 (抽 %d 行) 挑 ≤ %d 个持仓重合最少的 (不保证含 max)\n"
+            "• 数据按天分块流式过 (窗内标签一次装全, 因子平面只算一遍), 块大小按内存 / 显存定; 候选合成共享 DAG, 公共前缀只算一次\n"
+            "• 全部持有期的终选整体替换该文件 weights (旧的全丢) 并自动 Run 重算",
+            view_row->file.c_str(), factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen,
+            factor::search::grid::kLayerMax, 100.0 * factor::search::grid::kMinGain, 100.0 * (1.0 - factor::search::kPlateau), factor::search::kCorrRows,
+            factor::search::kPicks);
+    }
     ImGui::SameLine();
     if (!sbusy)
       ImGui::BeginDisabled();
@@ -1008,6 +1064,11 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       s_sr = ss.result;
     }
     const int sdone = ss.done(), stotal = ss.total();
+    int n_cand = 0, n_branch = 0;
+    for (const SearchHold &sh : s_sr.holds) {
+      n_cand += static_cast<int>(sh.cands.size());
+      n_branch += sh.n_branch;
+    }
     switch (sst) {
     case SearchStatus::Idle:
       ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
@@ -1017,60 +1078,77 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
                          stotal);
       break;
     case SearchStatus::Running:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "pass %d: %d/%d cand x chunk%s%s", ss.pass(), sdone, stotal, s_sr.best_expr.empty() ? "" : " | best ",
-                         s_sr.best_expr.c_str());
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "pass %d: %d/%d cand x chunk | %d h, %d branch", ss.pass(), sdone, stotal,
+                         static_cast<int>(s_sr.holds.size()), n_branch);
       break;
     case SearchStatus::Done:
-      ImGui::TextColored(StatusColor(s_sr.wrote ? TaskStatus::Kind::Ready : TaskStatus::Kind::Warn), "%s (%s, %d cand, %d pass, %.0fs)", s_sr.message.c_str(),
-                         s_sr.backend.c_str(), static_cast<int>(s_sr.cands.size()), s_sr.n_pass, s_sr.seconds);
+      ImGui::TextColored(StatusColor(s_sr.wrote ? TaskStatus::Kind::Ready : TaskStatus::Kind::Warn), "%s (%s, %d h, %d cand, %d pass, %.0fs)",
+                         s_sr.message.c_str(), s_sr.backend.c_str(), static_cast<int>(s_sr.holds.size()), n_cand, s_sr.n_pass, s_sr.seconds);
       break;
     case SearchStatus::Cancelled:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled (pass %d, %d cand)", ss.pass(), static_cast<int>(s_sr.cands.size()));
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled (pass %d, %d cand)", ss.pass(), n_cand);
       break;
     }
-    // 悬停: 候选榜 (score 降序, 前 20) + 基线
-    if (ImGui::IsItemHovered() && !s_sr.cands.empty()) {
+    // 悬停: 每个持有期一段: 分支 / 高原 / max, 终选表 (有 picks) 或候选榜前 10 (还没终选)
+    if (ImGui::IsItemHovered() && n_cand > 0) {
       ImGui::BeginTooltip();
-      ImGui::Text("%s", s_sr.file.c_str());
-      ImGui::TextDisabled("base %s  score %.4g", s_sr.expr0.c_str(), s_sr.base_score);
-      if (!s_sr.best_expr.empty() && std::isfinite(s_sr.base_score) && s_sr.base_score > 0.0)
-        ImGui::TextDisabled("best gain %+.1f%%", 100.0 * (s_sr.cands.front().score / s_sr.base_score - 1.0));
-      ImGui::TextDisabled("h %s, %d chunk x %d days, batch %d, n_full %.1f", factor::stat::hold_name(s_sr.hold).c_str(), s_sr.n_chunk, s_sr.chunk_days,
-                          s_sr.batch, s_sr.n_full);
-      if (ImGui::BeginTable("opt_cands", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("expr");
-        ImGui::TableSetupColumn("pass");
-        ImGui::TableSetupColumn("LS bp");
-        ImGui::TableSetupColumn("util");
-        ImGui::TableSetupColumn("rIC");
-        ImGui::TableSetupColumn("score");
-        ImGui::TableHeadersRow();
-        const size_t n_show = std::min<size_t>(20, s_sr.cands.size());
-        for (size_t i = 0; i < n_show; ++i) {
-          const SearchCand &c = s_sr.cands[i];
-          const bool is_base = c.expr == s_sr.expr0;
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::TextColored(is_base ? StatusColor(TaskStatus::Kind::Warn) : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s%s", c.expr.c_str(),
-                             is_base ? " (base)" : "");
-          ImGui::TableNextColumn();
-          ImGui::Text("%d", c.pass);
-          ImGui::TableNextColumn();
-          if (c.ok)
-            ImGui::Text("%+.2f", 1e4 * c.ls);
-          else
-            ImGui::TextDisabled("-");
-          ImGui::TableNextColumn();
-          ImGui::Text("%.2f", c.util);
-          ImGui::TableNextColumn();
-          ImGui::Text("%.4f", c.ric);
-          ImGui::TableNextColumn();
-          if (std::isfinite(c.score))
-            ImGui::Text("%.4g", c.score);
-          else
-            ImGui::TextDisabled("-inf");
+      ImGui::Text("%s  %s", s_sr.file.c_str(), s_sr.tmpl.c_str());
+      ImGui::TextDisabled("%d chunk x %d days, batch %d, n_full %.1f", s_sr.n_chunk, s_sr.chunk_days, s_sr.batch, s_sr.n_full);
+      for (const SearchHold &sh : s_sr.holds) {
+        ImGui::Separator();
+        ImGui::Text("h %s:", factor::stat::hold_name(sh.hold).c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d branch, %d plateau, max score %.4g, %d pick", sh.n_branch, sh.n_plateau, sh.max_score, static_cast<int>(sh.picks.size()));
+        const bool final = !sh.picks.empty();
+        ImGui::PushID(sh.hold);
+        if (ImGui::BeginTable("opt_h", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+          ImGui::TableSetupColumn("expr");
+          ImGui::TableSetupColumn(final ? "corr" : "pass");
+          ImGui::TableSetupColumn("LS bp");
+          ImGui::TableSetupColumn("util");
+          ImGui::TableSetupColumn("rIC");
+          ImGui::TableSetupColumn("score");
+          ImGui::TableHeadersRow();
+          const auto stat_cells = [](bool ok, double ls, double util, double ric, double score) {
+            ImGui::TableNextColumn();
+            if (ok)
+              ImGui::Text("%+.2f", 1e4 * ls);
+            else
+              ImGui::TextDisabled("-");
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", util);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.4f", ric);
+            ImGui::TableNextColumn();
+            if (std::isfinite(score))
+              ImGui::Text("%.4g", score);
+            else
+              ImGui::TextDisabled("-inf");
+          };
+          if (final) {
+            for (const SearchPick &p : sh.picks) {
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "%s", p.expr.c_str());
+              ImGui::TableNextColumn();
+              ImGui::Text("%.2f", p.corr);
+              stat_cells(true, p.ls, p.util, p.ric, p.score);
+            }
+          } else {
+            const size_t n_show = std::min<size_t>(10, sh.cands.size());
+            for (size_t i = 0; i < n_show; ++i) {
+              const SearchCand &c = sh.cands[i];
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              ImGui::TextUnformatted(c.expr.c_str());
+              ImGui::TableNextColumn();
+              ImGui::Text("%d", c.pass);
+              stat_cells(c.ok, c.ls, c.util, c.ric, c.score);
+            }
+          }
+          ImGui::EndTable();
         }
-        ImGui::EndTable();
+        ImGui::PopID();
       }
       ImGui::EndTooltip();
     }
@@ -1083,18 +1161,18 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   //    添加模式 (无选中行): Add 新文件 (名 / 规范串查重, 重了弹窗不加)
   //    编辑模式 (表格选中一行): Save 覆盖该文件 (弹窗确认) / 删除 (弹窗确认); 取消选定 → 回添加模式, 内容留作模板
   // ==========================================================================
-  const FactorRow *edit_row = nullptr; // 勾选行; 重扫完还没了 (外部删了) → 自动退出编辑模式 (忙时 rows 可能还是旧的, 不判)
+  const FactorRow *edit_row = nullptr; // 勾选文件的首行 (模板 / 名字 / note 文件级, 任一行都一样); 重扫完没了 (外部删了) → 自动退出编辑模式 (忙时 rows 可能还是旧的, 不判)
   if (!ui.edit_file.empty()) {
     for (const FactorRow &r : s_rows)
-      if (r.file == ui.edit_file)
+      if (r.file == ui.edit_file && !edit_row)
         edit_row = &r;
     if (!edit_row && !busy)
       ui.edit_file.clear();
   }
-  if (!ui.view_file.empty() && !busy) { // 高光行同理
+  if (!ui.view_file.empty() && !busy) { // 高光行同理 (按 key: 权重没了也退)
     bool found = false;
     for (const FactorRow &r : s_rows)
-      found = found || r.file == ui.view_file;
+      found = found || r.key == ui.view_file;
     if (!found)
       ui.view_file.clear();
   }
@@ -1105,10 +1183,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   if (ImGui::IsItemHovered())
     tip("从外到内构建表达式\n"
         "• 根: 必须是归一算子 —— CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=1275, 5 日) (时序口径)\n"
-        "• 子槽: 缩进里选算子或特征; 参数 d / k / k2 手填\n"
+        "• 子槽: 缩进里选算子或特征; 参数 d / k / k2 手填, 或勾前面的小框 = 自由参数 (表达式里写裸键名, 由 Optimize 搜)\n"
         "• 下拉: 可打字过滤 (算子名 / 中文名 / 特征 code); GROUP 域的组 id 槽只列整数列算子 + 特征\n"
         "• 改结构不动别处: 下拉换算子保留子槽 (叶自动进第一元); 行末 ↑ = 外面加一层, ✕ = 去掉本层留一元\n"
-        "• 模式: 勾选表格首列 → 编辑 (载入到这里, Save 覆盖 / 删除); 取消勾选 → 添加, 内容留作模板");
+        "• 模式: 勾选表格首列 → 编辑 (模板载入到这里, Save 覆盖 / 删除; 改了模板该文件的 weights 全丢); 取消勾选 → 添加, 内容留作模板");
   ImGui::SameLine();
   if (edit_row) {
     if (ImGui::SmallButton("取消勾选")) {
@@ -1132,10 +1210,13 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ui.add_err.clear();
   std::string canon;
   factor::stat::Frame frame = factor::stat::Frame::CS;
+  bool is_tmpl = false; // 有自由参数 (Add / Save 后是"未搜索", 要 Optimize)
   if (complete) {
     factor::expr::Expr e;
-    if (factor::expr::parse(src, ft.lookup(), e, ui.add_err) && factor::expr::root_frame(e, frame, ui.add_err))
+    if (factor::expr::parse(src, ft.lookup(), e, ui.add_err) && factor::expr::root_frame(e, frame, ui.add_err)) {
       canon = e.canon;
+      is_tmpl = e.is_template();
+    }
   }
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("expr:");
@@ -1149,10 +1230,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   else {
     ImGui::TextUnformatted(canon.c_str());
     ImGui::SameLine();
-    ImGui::TextDisabled("[%s]", factor::stat::frame_name(frame));
+    ImGui::TextDisabled("[%s%s]", factor::stat::frame_name(frame), is_tmpl ? ", 模板" : "");
     if (ImGui::IsItemHovered())
-      tip("%s", frame == factor::stat::Frame::CS ? "截面口径: 根是截面归一算子\n• 每 t 截面 rank → 20 组, 标签超额"
-                                                 : "时序口径: 根 TsRankRoll(5 日)\n• 自身分位直接分 20 组, 组可空, 标签超额");
+      tip("%s%s", frame == factor::stat::Frame::CS ? "截面口径: 根是截面归一算子\n• 每 t 截面 rank → 20 组, 标签超额" : "时序口径: 根 TsRankRoll(5 日)\n• 自身分位直接分 20 组, 组可空, 标签超额",
+          is_tmpl ? "\n• 模板: 含自由参数, 写入后是\"未搜索\", 高光它点 Optimize 搜出 weights" : "");
   }
 
   // 两个名字: 非空且不合法 → 红字 (InputText 会改 buf, push/pop 必须用同一个判断结果)
@@ -1182,7 +1263,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::InputTextWithHint("##note", "note (可选: 一句话说明, 落文件 note 键)", ui.note_buf, sizeof(ui.note_buf));
   ImGui::SameLine();
   const std::string new_file = std::string(ui.name_buf) + ".json";
-  // 查重: 同名文件 / 同规范串的另一文件 (编辑模式下排除自己)
+  // 查重: 同名文件 / 同模板规范串的另一文件 (编辑模式下排除自己); 同一文件多行只报一次
   const auto conflict = [&](std::string &msg) {
     for (const FactorRow &r : s_rows) {
       if (edit_row && r.file == edit_row->file)
@@ -1191,8 +1272,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         msg = "已存在同名文件 " + r.file;
         return true;
       }
-      if (r.error.empty() && r.expr == canon) {
-        msg = "与 " + r.file + " 同一规范串:\n" + canon;
+      if (!r.tmpl.empty() && r.tmpl == canon) {
+        msg = "与 " + r.file + " 同一模板规范串:\n" + canon;
         return true;
       }
     }
@@ -1209,7 +1290,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         ui.popup_msg = msg;
       } else {
         // 确认弹窗正文: 列出改动
-        const bool expr_changed = edit_row->error.empty() ? edit_row->expr != canon : true;
+        const bool expr_changed = edit_row->tmpl.empty() || edit_row->tmpl != canon;
         const bool name_changed = edit_row->file != new_file;
         const bool name_cn_changed = edit_row->name_cn != ui.name_cn_buf;
         const bool note_changed = edit_row->note != ui.note_buf;
@@ -1218,8 +1299,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         } else {
           ui.popup_msg.clear();
           if (expr_changed)
-            ui.popup_msg += "expr: " + (edit_row->error.empty() ? edit_row->expr : edit_row->expr_raw) + "\n   → " + canon +
-                            (edit_row->has_stat ? "\n   (文件里的 stat 会被丢掉)" : "") + "\n";
+            ui.popup_msg += "expr: " + (!edit_row->tmpl.empty() ? edit_row->tmpl : edit_row->expr_raw) + "\n   → " + canon +
+                            (edit_row->widx >= 0 ? "\n   (文件里的 weights / stat 会被丢掉)" : "") + "\n";
           if (name_changed)
             ui.popup_msg += "name_en: " + edit_row->name_en + " → " + ui.name_buf + "\n";
           if (name_cn_changed)
@@ -1273,7 +1354,6 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // ==========================================================================
   // 3. 表
   // ==========================================================================
-  const int n = static_cast<int>(s_rows.size());
   // score / util 列: 每行按选定持有期 (Hold) 从 stat 现算 (RowScore, 与 Optimize 同一份目标); 无 stat / 无该持有期 / n < 3 → hold = 0
   static std::vector<OptCell> s_opt;
   s_opt.assign(s_rows.size(), OptCell{});
@@ -1286,9 +1366,42 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       oc.hold = cur_hold;
       oc.ls = sc.ls, oc.util = sc.util, oc.ric = sc.ric, oc.score = sc.score;
     }
+  // 按文件分组 (rows 同文件连续): 代表行 = 当前 h 下 score 最高的有效权重 (无分 → 首个有效 → 首行); ≥ 2 权重的文件可展开
+  struct Group {
+    std::vector<int> kids; // s_rows 下标, 文件内按 widx
+    int rep = -1;
+  };
+  std::vector<Group> groups;
+  for (int i = 0; i < static_cast<int>(s_rows.size()); ++i) {
+    if (groups.empty() || s_rows[static_cast<size_t>(groups.back().kids.front())].file != s_rows[static_cast<size_t>(i)].file)
+      groups.emplace_back();
+    groups.back().kids.push_back(i);
+  }
+  for (Group &g : groups) {
+    int first_ok = -1;
+    for (int i : g.kids) {
+      const FactorRow &r = s_rows[static_cast<size_t>(i)];
+      if (!r.error.empty() || r.expr.empty())
+        continue;
+      if (first_ok < 0)
+        first_ok = i;
+      const OptCell &oc = s_opt[static_cast<size_t>(i)];
+      if (oc.hold > 0 && std::isfinite(oc.score) && (g.rep < 0 || oc.score > s_opt[static_cast<size_t>(g.rep)].score))
+        g.rep = i;
+    }
+    if (g.rep < 0)
+      g.rep = first_ok >= 0 ? first_ok : g.kids.front();
+  }
+  int n_weights = 0;
+  for (const FactorRow &r : s_rows)
+    n_weights += r.widx >= 0;
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "3. Factors:");
   ImGui::SameLine();
-  ImGui::Text("%d (%d BROKEN)", n, broken);
+  ImGui::Text("%d 因子 / %d 权重 (%d BROKEN)", static_cast<int>(groups.size()), n_weights, broken);
+  if (ImGui::IsItemHovered())
+    tip("一行一权重; 多权重因子折成一行 (= Hold 下 score 最高的权重, 名字前 ▸ 展开看全部权重, 子行标搜索时的持有期)\n"
+        "• 父行 / 单权重行: 勾选编辑模板, 点行高光 → Optimize / Inspect; 子行: 点行高光 → Inspect, 悬停看该权重全部持有期\n"
+        "• 排序按父行 (代表权重) 的值; 展开的子行在父行下按同一键排");
   ImGui::SameLine();
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", factor::stat::hold_name(cur_hold).c_str());
 
@@ -1336,8 +1449,16 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       }
       specs->SpecsDirty = false;
     }
-    std::vector<int> order(static_cast<size_t>(n));
-    std::iota(order.begin(), order.end(), 0);
+    // 显示序: 组按代表行排, 展开组的子行紧随其后按同一键排
+    std::vector<int> gorder(groups.size());
+    std::iota(gorder.begin(), gorder.end(), 0);
+    const auto is_expanded = [&](const Group &g) {
+      return g.kids.size() >= 2 && std::find(ui.expanded.begin(), ui.expanded.end(), s_rows[static_cast<size_t>(g.kids.front())].file) != ui.expanded.end();
+    };
+    std::vector<std::vector<int>> korder(groups.size());
+    for (size_t gi = 0; gi < groups.size(); ++gi)
+      if (is_expanded(groups[gi]))
+        korder[gi] = groups[gi].kids;
     if (ui.sort_column >= 0) {
       const int sc = ui.sort_column;
       // 文本列按串比; 其余按数值键 (无值 → -1 / -1e300, 升序排最前)
@@ -1379,7 +1500,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           return 0.0;
         }
       };
-      std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+      const auto less = [&](int a, int b) {
         const FactorRow &ra = s_rows[static_cast<size_t>(a)], &rb = s_rows[static_cast<size_t>(b)];
         int cmp = 0;
         if (sf == Edit)
@@ -1389,7 +1510,23 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         else
           cmp = (key(ra) > key(rb)) - (key(ra) < key(rb));
         return ui.sort_ascending ? cmp < 0 : cmp > 0;
-      });
+      };
+      std::stable_sort(gorder.begin(), gorder.end(), [&](int a, int b) { return less(groups[static_cast<size_t>(a)].rep, groups[static_cast<size_t>(b)].rep); });
+      for (std::vector<int> &ks : korder)
+        std::stable_sort(ks.begin(), ks.end(), less);
+    }
+    struct Shown {
+      int idx; // s_rows 下标
+      RowKind kind;
+      int n_kids; // 所在文件的权重数
+    };
+    std::vector<Shown> order;
+    for (int gi : gorder) {
+      const Group &g = groups[static_cast<size_t>(gi)];
+      const int nk = static_cast<int>(g.kids.size());
+      order.push_back({g.rep, nk >= 2 ? RowKind::Parent : RowKind::Flat, nk});
+      for (int k : korder[static_cast<size_t>(gi)])
+        order.push_back({k, RowKind::Child, nk});
     }
 
     // 主表 Stat 列着色: 样本 = 全部因子在选定持有期的值 (跨因子横向比; 悬停表是同因子跨持有期比)
@@ -1403,55 +1540,77 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           col_rg[i].add(metric_score(m, *h));
     }
 
-    for (int idx : order) {
+    for (size_t oi = 0; oi < order.size(); ++oi) {
+      const auto [idx, kind, n_kids] = order[oi];
       const FactorRow &r = s_rows[static_cast<size_t>(idx)];
       const OptCell &oc = s_opt[static_cast<size_t>(idx)];
       const HS *h = hold_of(r, cur_hold);
-      const bool editing = edit_row == &r;
-      const bool viewing = ui.view_file == r.file;
+      const bool editing = kind != RowKind::Child && ui.edit_file == r.file;
+      const bool viewing = ui.view_file == r.key;
+      // 折叠的父行: 高光的权重藏在里面 → 父行也亮 (点它 = 换成高光代表权重)
+      bool group_viewing = viewing;
+      if (kind == RowKind::Parent && !viewing && !ui.view_file.empty())
+        for (const FactorRow &k : s_rows)
+          group_viewing = group_viewing || (k.file == r.file && k.key == ui.view_file);
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(col_of(Edit));
-      ImGui::PushID(idx);
+      ImGui::PushID(static_cast<int>(oi));
       // 整行可点 (先提交, AllowOverlap 让后面的勾选框盖在上面): 点行高光 → Inspect 页的对象; 再点 → 取消
       const ImVec2 cell_pos = ImGui::GetCursorPos();
-      if (ImGui::Selectable("##row", viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
-        ui.view_file = viewing ? std::string{} : r.file;
+      if (ImGui::Selectable("##row", group_viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+        ui.view_file = viewing ? std::string{} : r.key;
       if (ImGui::IsItemHovered())
         row_tooltip(r, oc, ctx, viewing, editing);
-      // 勾选框 = 编辑模式 (同时只勾一个): 勾 → 载入构建器; 取消勾 → 回添加模式 (内容留作模板); 勾另一行 → 切换
-      // 无 FramePadding → 方框 = 字高, 行高不变; 回到格起点画 (Selectable 已占满整格宽)
-      ImGui::SetCursorPos(cell_pos);
-      bool check = editing;
-      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
-      if (ImGui::Checkbox("##edit", &check)) {
-        if (!check) {
-          ui.edit_file.clear();
-        } else {
-          ui.edit_file = r.file;
-          ui.build = BuildNode{};
-          if (!r.expr.empty()) { // 规范串来自 scan 的 parse, 必可再解析 (根非归一的 BROKEN 行也有, 载入后套个根即可); 其他 BROKEN 行留空
-            factor::expr::Expr e;
-            std::string err;
-            const bool ok = factor::expr::parse(r.expr, ft.lookup(), e, err);
-            assert(ok);
-            (void)ok;
-            from_expr(e, 0, ui.build);
+      if (kind != RowKind::Child) {
+        // 勾选框 = 编辑模式 (同时只勾一个文件): 勾 → 模板载入构建器; 取消勾 → 回添加模式 (内容留作模板); 勾另一行 → 切换
+        // 无 FramePadding → 方框 = 字高, 行高不变; 回到格起点画 (Selectable 已占满整格宽)
+        ImGui::SetCursorPos(cell_pos);
+        bool check = editing;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+        if (ImGui::Checkbox("##edit", &check)) {
+          if (!check) {
+            ui.edit_file.clear();
+          } else {
+            ui.edit_file = r.file;
+            ui.build = BuildNode{};
+            if (!r.tmpl.empty()) { // 模板规范串来自 scan 的 parse, 必可再解析 (根非归一的 BROKEN 行也有, 载入后套个根即可); 其他 BROKEN 行留空
+              factor::expr::Expr e;
+              std::string err;
+              const bool ok = factor::expr::parse(r.tmpl, ft.lookup(), e, err);
+              assert(ok);
+              (void)ok;
+              from_expr(e, 0, ui.build);
+            }
+            std::snprintf(ui.name_buf, sizeof(ui.name_buf), "%s", r.name_en.c_str());
+            std::snprintf(ui.name_cn_buf, sizeof(ui.name_cn_buf), "%s", r.name_cn.c_str());
+            std::snprintf(ui.note_buf, sizeof(ui.note_buf), "%s", r.note.c_str());
           }
-          std::snprintf(ui.name_buf, sizeof(ui.name_buf), "%s", r.name_en.c_str());
-          std::snprintf(ui.name_cn_buf, sizeof(ui.name_cn_buf), "%s", r.name_cn.c_str());
-          std::snprintf(ui.note_buf, sizeof(ui.note_buf), "%s", r.note.c_str());
+          ui.add_msg.clear();
         }
-        ui.add_msg.clear();
+        ImGui::PopStyleVar();
+        if (ImGui::IsItemHovered()) // 勾选框盖住了 Selectable 的 hover, 同一个提示函数
+          row_tooltip(r, oc, ctx, viewing, editing);
       }
-      ImGui::PopStyleVar();
-      if (ImGui::IsItemHovered()) // 勾选框盖住了 Selectable 的 hover, 同一个提示函数
-        row_tooltip(r, oc, ctx, viewing, editing);
-      ImGui::PopID();
       for (int c = 1; c < kNumCols; ++c) { // 0 = edit 列 (上面画过)
         ImGui::TableSetColumnIndex(c);
         const ColRef &cr = kColLayout[static_cast<size_t>(c)];
         if (cr.fixed >= 0) {
-          fixed_cell(static_cast<Col>(cr.fixed), r, oc, ctx, editing);
+          if (cr.fixed == NameEn && kind == RowKind::Parent) { // 展开 / 折叠箭头 (多权重文件)
+            const bool open = std::find(ui.expanded.begin(), ui.expanded.end(), r.file) != ui.expanded.end();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+            if (ImGui::ArrowButton("##exp", open ? ImGuiDir_Down : ImGuiDir_Right)) {
+              if (open)
+                ui.expanded.erase(std::find(ui.expanded.begin(), ui.expanded.end(), r.file));
+              else
+                ui.expanded.push_back(r.file);
+            }
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+              tip("%s 有 %d 个权重; 这行 = h %s 下 score 最高的 #%d (%s)", r.file.c_str(), n_kids, factor::stat::hold_name(cur_hold).c_str(), r.widx,
+                  r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "手填");
+            ImGui::SameLine(0, 2);
+          }
+          fixed_cell(static_cast<Col>(cr.fixed), r, oc, ctx, editing, kind);
         } else {
           const Metric &m = *col_metric(c);
           ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, group_bg(m.group));
@@ -1459,6 +1618,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           metric_cell(h, m, col ? &*col : nullptr);
         }
       }
+      ImGui::PopID();
     }
     ImGui::EndTable();
   }

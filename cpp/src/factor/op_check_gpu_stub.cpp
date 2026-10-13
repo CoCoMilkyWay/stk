@@ -85,6 +85,7 @@ void search_eval(SearchSession *, const DevPlane *const *, int, const DevPlane *
                  double *) {
   assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)");
 }
+void search_ranks(SearchSession *, int, int, int, int, uint16_t *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }
 void search_close(SearchSession *) { assert(false && "GPU 后端未编译 (cmake -DFACTOR_CUDA=ON)"); }
 void run_search(int, const float *const *, const uint8_t *const *, const uint8_t *, factor::stat::Frame, int, int, int, int,
                 const factor::stat::Holds &, const factor::stat::Label *, factor::search::Result *, double *, double *) {

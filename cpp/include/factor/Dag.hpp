@@ -147,7 +147,7 @@ inline void plan(Dag &d, bool keep_roots = false) {
 }
 
 inline Dag build(const expr::Expr &e) {
-  assert(!e.nodes.empty());
+  assert(!e.nodes.empty() && !e.is_template() && "模板 (含自由参数) 不能评估");
   Dag d;
   std::map<std::string, int> memo, feat_idx;
   detail::DagBuilder b{e, d, memo, feat_idx};
@@ -162,7 +162,7 @@ inline Dag build_forest(const std::vector<const expr::Expr *> &es, bool keep_roo
   Dag d;
   std::map<std::string, int> memo, feat_idx;
   for (const expr::Expr *e : es) {
-    assert(e && !e->nodes.empty());
+    assert(e && !e->nodes.empty() && !e->is_template());
     detail::DagBuilder b{*e, d, memo, feat_idx};
     d.roots.push_back(b.visit(0));
   }

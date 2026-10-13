@@ -5,21 +5,23 @@
 // =============================================================================
 //   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = L1 字段 code 裸写, 参数命名):
 //     expr  := Op '(' [expr {',' expr}] {',' param} ')' | feature
-//     param := ('d' | 'k' | 'k2') '=' number
-//   例:  CsRank(TsMeanRoll(TsLog(amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)
+//     param := key '=' number | key          key := 'd' | 'k' | 'k2'
+//   例:  CsRank(TsMeanRoll(TsLog(amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(amt), d))
 //   规矩:
 //     序列参数在前 (个数 = 元数), 命名参数在后 (= OpTable 参数列声明的全部字段, 不多不少, 无隐含默认)
+//     裸键名 (无 '=') = **自由参数** (Node::free 位): 值待参数搜索定, 同名裸键各节点独立, 不编号.
+//       含自由参数的树是**模板** (is_template), 只能进 Search (Search/Grid.hpp 的槽 = 自由参数, 写数字的不搜); 评估 / Dag 只接具体树.
+//       自由参数在树里带一个合法占位值 (free_value), 只为 check_params / 规范串往返, 无业务含义; 规范串里仍打裸键名.
 //     无标量常量元 (OpTable 无常量输入; 阈值一律走 k)
-//     PascalCase 算子 / snake_case 特征, 大小写敏感, 词法上无歧义
+//     PascalCase 算子 / snake_case 特征, 大小写敏感, 词法上无歧义 (裸 d / k / k2 是参数关键字, 不作特征名)
 //   静态校验 (parse 内一次做完):
 //     算子在 OpTable / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 OpTable k域 列) /
 //     特征存在且可作输入 (LB 标签 / META 门控列不许: 前视) / 逐元值域: 父算子该元 in 为严格域 (INT, 即组 id) 时
 //     子算子 out ⊆ in (OpTable in / out 列; 特征叶放行 —— 其整数性与 [0, kMaxGroup) 值域在 eval 前按数据查)
 //   类型信息只读 OpTable 的 (k域, in, out) 列, 本头不点任何算子名 (根归一算子集除外: 那是口径定义, 不是类型)
-//   节点序 = 前序 (根 = 0, 子树紧随, 左→右): 落盘 params 按 "算子节点前序" 逐节点覆盖字面值 (表达式不动, 参数可更新)
+//   节点序 = 前序 (根 = 0, 子树紧随, 左→右)
 //   本头只依赖 Contract / OpTable, 不依赖 features/: 特征查询由调用方经 FeatureLookup 注入.
-//   出错策略: 表达式来自人 / agent / 落盘文件, 不合法是**正常输入** → parse / apply_params 返回 false + err,
-//   不 assert; 内部不变量照旧 assert.
+//   出错策略: 表达式来自人 / agent / 落盘文件, 不合法是**正常输入** → parse 返回 false + err, 不 assert; 内部不变量照旧 assert.
 // =============================================================================
 
 #include "factor/Contract.hpp"
@@ -170,6 +172,41 @@ inline const char *check_params(const OpInfo &o, const Param &p) {
   return nullptr;
 }
 
+// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = kSegLen, 只动该键)
+inline void free_value(const OpInfo &o, std::string_view key, Param &p) {
+  if (key == "d") {
+    p.d = 1;
+    return;
+  }
+  if (key == "k2") {
+    assert(o.kdom == KDom::TOD);
+    p.k2 = static_cast<float>(kSegLen);
+    return;
+  }
+  switch (o.kdom) {
+  case KDom::TOD:
+    p.k = 0.f;
+    return;
+  case KDom::OPEN01:
+    p.k = 0.5f;
+    return;
+  case KDom::OPEN0_HALF:
+    p.k = 0.25f;
+    return;
+  case KDom::OPEN0_CLOSED1:
+  case KDom::POSINT_GROUP:
+    p.k = 1.f;
+    return;
+  case KDom::GE0:
+  case KDom::ANY:
+    p.k = 0.f;
+    return;
+  case KDom::NONE:
+    break;
+  }
+  assert(false && "无 k 的算子没有 k 参数");
+}
+
 // 签名 LaTeX (GUI Operators 表 operand 列 / operators.json operand 键), 从表列生成:
 //   序列元 x, y, z 按 in 值域, 相邻同域合并 ("x, y \in ℝ"); 再参数 d{=}⟨d⟩ ∈ ℤ₊ / k{=}⟨k⟩ ∈ k域 (TOD 整段自带 k, k2);
 //   元与参数间 ";\; ", 占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ 由 GUI 换成本轮实际值
@@ -210,22 +247,35 @@ inline std::string operand_tex(const OpInfo &o) {
 }
 
 // ---- 树 ----
+inline constexpr uint8_t kFreeD = 1, kFreeK = 2, kFreeK2 = 4; // Node::free 位
+inline constexpr uint8_t free_bit(std::string_view key) { return key == "d" ? kFreeD : (key == "k" ? kFreeK : kFreeK2); }
+
 struct Node {
   int op = -1;                // kOps 下标; -1 = 特征叶
   std::string feat;           // 叶: 特征 code
   int args[3] = {-1, -1, -1}; // 子节点下标 (前 arity 个有效)
-  Param p;                    // 本节点参数 (只有 OpTable 声明的字段有意义)
+  Param p;                    // 本节点参数 (只有 OpTable 声明的字段有意义; 自由参数处是占位值)
+  uint8_t free = 0;           // 自由参数位 (kFreeD / kFreeK / kFreeK2); 非 0 ⇒ 模板
 };
 
 struct Expr {
   std::vector<Node> nodes; // 前序, 根 = 0
-  int n_ops = 0;           // 算子节点数 (= 落盘 params 数组长度)
-  std::string canon;       // 规范串 (含当前参数; parse / apply_params 末尾刷新)
+  int n_ops = 0;           // 算子节点数
+  std::string canon;       // 规范串 (含当前参数, 自由参数打裸键名; parse 末尾刷新)
 
   const Node &root() const {
     assert(!nodes.empty());
     return nodes[0];
   }
+  // 含自由参数 (只能进 Search, 不能评估)
+  bool is_template() const {
+    for (const Node &n : nodes)
+      if (n.free)
+        return true;
+    return false;
+  }
+  // 模板按占位值落成具体树 (结构 / 特征叶 / 槽数与任一具体化相同; 只给 Search 做结构性准备, 不是候选)
+  Expr placeholder() const;
   // 第 j 个算子节点 (前序) 的下标
   int op_node(int j) const {
     for (size_t i = 0; i < nodes.size(); ++i)
@@ -267,17 +317,17 @@ inline void to_string_rec(const Expr &e, int i, std::string &s) {
   if (declares(o.params, "d")) {
     sep(s, first);
     std::snprintf(buf, sizeof(buf), "d=%d", n.p.d);
-    s += buf;
+    s += (n.free & kFreeD) ? "d" : buf;
   }
   if (declares(o.params, "k")) {
     sep(s, first);
     std::snprintf(buf, sizeof(buf), "k=%g", static_cast<double>(n.p.k));
-    s += buf;
+    s += (n.free & kFreeK) ? "k" : buf;
   }
   if (declares(o.params, "k2")) {
     sep(s, first);
     std::snprintf(buf, sizeof(buf), "k2=%g", static_cast<double>(n.p.k2));
-    s += buf;
+    s += (n.free & kFreeK2) ? "k2" : buf;
   }
   s += ')';
 }
@@ -288,6 +338,38 @@ inline std::string to_string(const Expr &e, int i = 0) {
   std::string s;
   detail::to_string_rec(e, i, s);
   return s;
+}
+
+inline Expr Expr::placeholder() const {
+  Expr out = *this;
+  for (Node &n : out.nodes)
+    n.free = 0;
+  out.canon = to_string(out);
+  return out;
+}
+
+// x 是模板 t 的实例: 结构 (算子 / 特征叶 / 子序) 相同, t 的固定参数在 x 里同值, t 的自由参数在 x 里已落值 (x 具体)
+inline bool instance_of(const Expr &t, const Expr &x) {
+  if (t.nodes.size() != x.nodes.size() || x.is_template())
+    return false;
+  for (size_t i = 0; i < t.nodes.size(); ++i) { // 前序一一对应
+    const Node &a = t.nodes[i], &b = x.nodes[i];
+    if (a.op != b.op || a.feat != b.feat)
+      return false;
+    for (int s = 0; s < 3; ++s)
+      if (a.args[s] != b.args[s])
+        return false;
+    if (a.op < 0)
+      continue;
+    const OpInfo &o = kOps[a.op];
+    if (declares(o.params, "d") && !(a.free & kFreeD) && a.p.d != b.p.d)
+      return false;
+    if (declares(o.params, "k") && !(a.free & kFreeK) && a.p.k != b.p.k)
+      return false;
+    if (declares(o.params, "k2") && !(a.free & kFreeK2) && a.p.k2 != b.p.k2)
+      return false;
+  }
+  return true;
 }
 
 // ---- 特征查询 (调用方注入; factor/ 不认识字段表) ----
@@ -388,14 +470,15 @@ private:
     i_ = j;
     return true;
   }
-  // 前视: 下一个项是 "ident ws '='" (命名参数) 吗
+  // 前视: 下一个项是命名参数吗 = "ident ws '='" 或裸参数关键字 d / k / k2 (后面不是 '(')
   bool lookahead_param() {
     const size_t save = i_;
     std::string_view id;
-    const bool r = ident(id) && peek('=');
+    const bool r = ident(id) && (peek('=') || (is_param_key(id) && !peek('(')));
     i_ = save;
     return r;
   }
+  static bool is_param_key(std::string_view id) { return id == "d" || id == "k" || id == "k2"; }
 
   // 解析一个表达式项, out = 新节点下标
   bool parse_expr(int &out) {
@@ -436,6 +519,7 @@ private:
     int n_args = 0;
     bool got_d = false, got_k = false, got_k2 = false, seen_param = false;
     Param p;
+    uint8_t free = 0;
     if (!eat(')')) {
       while (true) {
         skip_ws();
@@ -444,17 +528,18 @@ private:
           seen_param = true;
           std::string_view key;
           ident(key);
-          eat('=');
-          double v = 0;
-          if (!number(v))
-            return fail(i_, "参数 " + std::string(key) + " 须为数字");
           if (!declares(o.params, key))
             return fail(pos, std::string(o.name) + " 不声明参数 " + std::string(key) + (o.params[0] ? " (声明: " + std::string(o.params) + ")" : " (无参数)"));
           bool &got = key == "d" ? got_d : (key == "k" ? got_k : got_k2);
           if (got)
             return fail(pos, "参数 " + std::string(key) + " 重复");
           got = true;
-          if (key == "d") {
+          if (!eat('=')) { // 裸键名 = 自由参数
+            free |= free_bit(key);
+            free_value(o, key, p);
+          } else if (double v = 0; !number(v)) {
+            return fail(i_, "参数 " + std::string(key) + " 须为数字");
+          } else if (key == "d") {
             if (std::floor(v) != v || v < -2e9 || v > 2e9)
               return fail(pos, "d 须为整数");
             p.d = static_cast<int>(v);
@@ -491,6 +576,7 @@ private:
       return fail(pos0, std::string(o.name) + ": " + why);
     Node &n = e_.nodes[static_cast<size_t>(out)];
     n.p = p;
+    n.free = free;
     for (int s = 0; s < o.arity; ++s) { // 值域: 子.out ⊆ 本元.in (OpTable in / out 列, 逐元同一规则)
       const Node &c = e_.nodes[static_cast<size_t>(n.args[s])];
       if (!arg_ok(c, o, s))
@@ -513,65 +599,13 @@ inline bool parse(std::string_view src, const FeatureLookup &fl, Expr &out, std:
   return ok;
 }
 
-// ---- 参数覆盖 (落盘 params → 树): 第 j 项对应第 j 个算子节点 (前序); 只给出的键生效, 未声明的键 / 值域不合 → false ----
-struct ParamPatch {
-  bool has_d = false, has_k = false, has_k2 = false;
-  int d = 0;
-  float k = 0.f, k2 = 0.f;
-};
-inline bool apply_params(Expr &e, const std::vector<ParamPatch> &patches, std::string &err) {
-  err.clear();
-  if (static_cast<int>(patches.size()) != e.n_ops) {
-    err = "params 有 " + std::to_string(patches.size()) + " 项, 表达式有 " + std::to_string(e.n_ops) + " 个算子节点";
-    return false;
-  }
-  std::vector<Param> saved;
-  saved.reserve(e.nodes.size());
-  for (const Node &n : e.nodes)
-    saved.push_back(n.p);
-  int j = 0;
-  for (Node &n : e.nodes) {
-    if (n.op < 0)
-      continue;
-    const OpInfo &o = kOps[n.op];
-    const ParamPatch &q = patches[static_cast<size_t>(j)];
-    const char *bad = nullptr;
-    if (q.has_d && !declares(o.params, "d"))
-      bad = "d";
-    if (q.has_k && !declares(o.params, "k"))
-      bad = "k";
-    if (q.has_k2 && !declares(o.params, "k2"))
-      bad = "k2";
-    if (bad) {
-      err = "params[" + std::to_string(j) + "] (" + o.name + ") 不声明参数 " + bad;
-    } else {
-      if (q.has_d)
-        n.p.d = q.d;
-      if (q.has_k)
-        n.p.k = q.k;
-      if (q.has_k2)
-        n.p.k2 = q.k2;
-      if (const char *why = check_params(o, n.p))
-        err = "params[" + std::to_string(j) + "] (" + o.name + "): " + why;
-    }
-    if (!err.empty()) {
-      for (size_t i = 0; i < e.nodes.size(); ++i)
-        e.nodes[i].p = saved[i];
-      return false;
-    }
-    ++j;
-  }
-  e.canon = to_string(e);
-  return true;
-}
-
 // ---- alpha 因子的口径 (Stat/Contract.hpp【口径 Frame】): 由根算子严格判定, 且根必须是归一算子 ----
 //   CS: 根 ∈ {CsRank, CsNormRank, CsZ} (截面居中 → 因子值 = 仓位, β 隔离)
 //   TS: 根 = TsRankRoll(d = kTsNormD) (自身 kTsNormDays 日滚动分位; 整数天窗跨日 deseason)
 //   其他根 (含 TS 包 CS: 截面不再居中, β 漏) → false + err.
 //   再拦根输入的两种静态可判退化 (Stat 里必然全并列 / 20 组填不满, 评出来永远是空), 只读 OpTable out 列 + 树结构:
 //     离散值域 (dom_discrete: 0/1 掩码 / 符号 / 桶号, 分位只有几档) / 沿资产轴不变异 (varies_a = false: 每 t 截面全相同)
-//   因子文件 / 构建器都走这一个判据; apply_params 后再判 (d 可能被覆盖)
+//   因子文件 / 构建器都走这一个判据 (模板也判: TS 根的 d 须写死 kTsNormD, 裸 d 的占位值 1 过不了)
 
 // 节点值是否沿资产轴 a 变异 (结构推导): 特征叶变异; 算子节点 = 非截面广播 (out ≠ BCAST) 且任一输入变异
 //   (无特征叶的纯参数树 → 恒 false; TsTodMask 只看 t_D, 每 t 全资产同值)
@@ -595,6 +629,10 @@ inline bool root_frame(const Expr &e, stat::Frame &out, std::string &err) {
   if (nm == "CsRank" || nm == "CsNormRank" || nm == "CsZ") {
     f = stat::Frame::CS;
   } else if (nm == "TsRankRoll") {
+    if (r.free & kFreeD) {
+      err = "TS 口径根 TsRankRoll 的 d 是口径定义, 须写死 " + std::to_string(stat::kTsNormD) + ", 不能是自由参数";
+      return false;
+    }
     if (r.p.d != stat::kTsNormD) {
       err = "TS 口径根 TsRankRoll 的 d 须为 " + std::to_string(stat::kTsNormD) + " (" + std::to_string(stat::kTsNormDays) + " 个交易日), 现为 " +
             std::to_string(r.p.d);

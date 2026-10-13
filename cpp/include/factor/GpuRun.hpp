@@ -94,6 +94,8 @@ SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd
 void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_ms = nullptr);
 void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo,
                  factor::search::Result *out, double *eval_ms = nullptr);
+// 刚 eval 过的候选 c 的 r16(x) 抽样行: 行 t0 + i·stride (i < n_rows) 各 A 格 → out[n_rows][A] (调用方给候选间截面相关用)
+void search_ranks(SearchSession *s, int c, int t0, int stride, int n_rows, uint16_t *out);
 void search_close(SearchSession *s);
 // 一次性版 (op_check 用): 宿主指针进出 (xv[c] / xm[c] 各一张 [T][A]), 内部 open + 上传 + load + eval + close
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int t0_abs,

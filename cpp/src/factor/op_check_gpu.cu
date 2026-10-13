@@ -459,6 +459,15 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
   s->out.down(out, w.out_elems()); // D2H 自带同步; Result 是 POD, 设备格式 = 宿主格式
 }
 
+void search_ranks(SearchSession *s, int c, int t0, int stride, int n_rows, uint16_t *out) {
+  assert(s && s->loaded && c >= 0 && c < s->Cmax && t0 >= 0 && stride >= 1 && n_rows >= 1 && out);
+  assert(t0 + static_cast<long long>(n_rows - 1) * stride < s->T && "抽样行越界");
+  const size_t A = static_cast<size_t>(s->A);
+  const uint16_t *src = s->rx.p + (static_cast<size_t>(c) * s->T + static_cast<size_t>(t0)) * A;
+  CU(cudaMemcpy2D(out, A * sizeof(uint16_t), src, static_cast<size_t>(stride) * A * sizeof(uint16_t), A * sizeof(uint16_t),
+                  static_cast<size_t>(n_rows), cudaMemcpyDeviceToHost));
+}
+
 void search_close(SearchSession *s) {
   assert(s);
   s->out.free_(), s->part.free_(), s->rx.free_();
