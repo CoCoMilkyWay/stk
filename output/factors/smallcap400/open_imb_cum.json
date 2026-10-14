@@ -15,11 +15,11 @@
     "T": 46155,
     "A": 785,
     "backend": "cpu",
-    "time": "2026-10-14 13:10",
+    "time": "2026-10-14 13:28",
     "frame": "CS",
     "valid_pct": 100.0,
     "rank_pct": 36.74,
-    "eval_ms": 52.58,
+    "eval_ms": 56.41,
     "max_impact": 0.001,
     "n_full": 16.59,
     "holds": [

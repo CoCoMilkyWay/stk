@@ -539,7 +539,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
   std::sort(files.begin(), files.end());
 
   const factor::expr::FeatureLookup fl = feats_.lookup();
-  std::map<std::string, std::string> seen; // 具体规范串 → 首行 key
+  std::map<std::pair<int, std::string>, std::string> seen; // (hold, 具体规范串) → 首行 key
   const auto emit = [&](FactorRow &r) {
     r.key = row_key(r.file, r.widx);
     out.push_back(r);
@@ -657,10 +657,10 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       w.n_feats = static_cast<int>(d.feats.size());
       w.n_slots = d.n_slots;
       w.key = row_key(w.file, w.widx);
-      if (const auto it = seen.find(e.canon); it != seen.end())
+      if (const auto it = seen.find({w.hold_src, e.canon}); it != seen.end())
         w.dup_of = it->second;
       else
-        seen.emplace(e.canon, w.key);
+        seen.emplace(std::pair{w.hold_src, e.canon}, w.key);
       if (ws[i].stat)
         load_stat(*ws[i].stat, w);
       emit(w);

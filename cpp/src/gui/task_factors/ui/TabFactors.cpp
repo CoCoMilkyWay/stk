@@ -425,11 +425,11 @@ constexpr Metric kMetrics[] = {
      [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
-    {Group::Shape, "turn", "turn", "年化换手 (倍/年) = (1 − rAC) × 每年期数", "[0, ∞)", "越小", "%.0f",
+    {Group::Shape, "turn", "turn", "年化换手 = (1 − rAC) × 每年期数", "[0, ∞)", "越小", "%.0f",
      [](const HS &h, const FR &) { return factor::stat::turnover_annual(h); }, line(1000, 100), true},
-    {Group::LS, "LS%", "LS%", "年化真实收益 % (满档 cap 只, 不足按只数/cap 建仓, 不触发记 0; = Inspect 累计末点)", "(-∞, ∞)", "越大", "%+.1f",
+    {Group::LS, "LS%", "LS%", "年化真实收益 % (不触发记 0)", "(-∞, ∞)", "越大", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
-    {Group::LS, "SR", "SR", "年化 Sharpe (不触发行记 0 进矩; = Inspect 图例)", "(-∞, ∞)", "越大", "%+.2f",
+    {Group::LS, "SR", "SR", "年化真实 Sharpe (不触发记 0)", "(-∞, ∞)", "越大", "%+.2f",
      [](const HS &h, const FR &) { return factor::stat::sharpe_of(h); }, line(5, 10)},
     {Group::LS, "mean", nullptr, "ok 行每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.mean); }},
     {Group::LS, "sd", nullptr, "ok 行每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.sd); }},
@@ -563,7 +563,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• file 灰: stat 来自文件, 作用域一致\n"
      "• file≠scope 黄: 文件 stat 是别的 universe / 区间算的\n"
      "• no stat: 从未评估\n"
-     "• dup 黄: 与另一文件同一规范串",
+     "• dup 黄: 与另一行同 hold 同一规范串",
      false},
     {Time, "time",
      "算一遍 DAG 的耗时 (ms)\n"

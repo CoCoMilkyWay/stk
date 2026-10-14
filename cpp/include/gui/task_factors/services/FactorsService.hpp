@@ -142,7 +142,7 @@ struct FactorRow {
   std::string expr;                                    // 该权重的具体规范串 (评估对象); 空 = 无 (文件级行)
   std::string note;
   std::string error;  // 非空 = BROKEN (文件格式 / 表达式 / 该权重 / 组 id 数据), 文件原样留着
-  std::string dup_of; // 非空 = 与该行 (key) 同一具体规范串
+  std::string dup_of; // 非空 = 与该行 (key) 同 hold 同一具体规范串
   int n_ops = 0, n_feats = 0, n_slots = 0;
   RowStatus status = RowStatus::Pending; // Done = 本轮算过 (evaluate) 或本轮不算 (只扫描)
   bool has_stat = false;                 // hold[][] 有内容 (本轮算的或文件载入的)
