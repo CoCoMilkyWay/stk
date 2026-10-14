@@ -122,19 +122,23 @@ TaskHandle CreateFactorsTask() {
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
   // (与 universe 无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
-    // Optimize 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + Run 重算全目录 stat (Search 跑时 Run 被禁, 不会撞)
+    // Optimize 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
     if (state->search_service && state->factors_service) {
       const auto sst = state->search_service->status();
       if (sst == Factors::SearchStatus::Done && state->prev_search_status == Factors::SearchStatus::Running) {
         bool wrote = false;
+        std::string file;
         {
           std::lock_guard<std::mutex> lock(state->search_service->mutex);
           wrote = state->search_service->result.wrote;
+          file = state->search_service->result.file;
         }
         if (wrote) {
           Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, /*evaluate=*/true, state->factors_ui.backend == 1, req))
+          if (Factors::MakeFactorsRequest(data, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
+            req.only_file = file;
             state->factors_service->Request(req);
+          }
         }
       }
       state->prev_search_status = sst;

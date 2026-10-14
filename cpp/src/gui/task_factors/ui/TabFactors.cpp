@@ -559,8 +559,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "    ◦ 组 id 不合\n"
      "• 未搜索 灰: 模板含自由参数但还没 weights\n"
      "    ◦ 不评; 高光它点 Optimize\n"
-     "• ok 绿: 本轮算的\n"
-     "• file 灰: stat 来自文件, 作用域一致\n"
+     "• ok 绿: 有 stat 且作用域一致 (本轮算的或文件读的)\n"
      "• file≠scope 黄: 文件 stat 是别的 universe / 区间算的\n"
      "• no stat: 从未评估\n"
      "• dup 黄: 与另一行同 hold 同一规范串",
@@ -773,10 +772,8 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   }
   if (!r.has_stat) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "no stat");
-  } else if (!r.stat_from_file) {
+  } else if (!r.stat_from_file || scope_matches(r, ctx)) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "ok");
-  } else if (scope_matches(r, ctx)) {
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "file");
   } else {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "file≠scope");
   }
@@ -968,7 +965,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     tip(ctx.axis_ready ? "评估全目录\n"
                          "• 流程: 扫描 → 读特征库 → 逐权重 eval → Stat\n"
-                         "• 结果回写各因子文件 weights[i].stat\n"
+                         "• 结果回写各因子文件 stats[i]\n"
                          "• 未搜索 (模板含自由参数而无 weights) 不评, 先 Optimize"
                        : "资产轴未就绪, 读不了特征库\n"
                          "• 先在 Database 页扫描");
@@ -1088,98 +1085,64 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     if (!sbusy)
       ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::Text("Status:");
+    ImGui::Text("状态:");
     ImGui::SameLine();
     static SearchResult s_sr; // 短锁拷快照 (每趟结束才变)
     {
       std::lock_guard<std::mutex> lock(ss.mutex);
       s_sr = ss.result;
     }
-    const int sdone = ss.done(), stotal = ss.total();
-    int n_cand = 0, n_branch = 0;
-    for (const SearchHold &sh : s_sr.holds) {
-      n_cand += static_cast<int>(sh.cands.size());
-      n_branch += sh.n_branch;
-    }
+    const int sdone = ss.done(), stotal = ss.total(), nc = ss.chunks();
+    const int n_cand = s_sr.holds.empty() ? 0 : static_cast<int>(s_sr.holds[0].cands.size()); // 每 h 列的是同一批候选
+    const ImVec4 busy = StatusColor(TaskStatus::Kind::Busy);
+    // 评估行: "<阶段>: N 候选 × C 块 (done/total)" (单块不写块数)
+    const auto eval_line = [&](const std::string &phase) {
+      const int cands = nc > 0 ? stotal / nc : 0;
+      if (nc > 1)
+        ImGui::TextColored(busy, "%s: %d 候选 × %d 块 (%d/%d)", phase.c_str(), cands, nc, sdone, stotal);
+      else
+        ImGui::TextColored(busy, "%s: %d 候选 (%d/%d)", phase.c_str(), cands, sdone, stotal);
+    };
     switch (sst) {
     case SearchStatus::Idle:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "空闲");
       break;
-    case SearchStatus::Loading:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "pass %d: loading chunk %d/%d (%d/%d days)", ss.pass(), ss.chunk() + 1, ss.chunks(), sdone,
-                         stotal);
-      break;
-    case SearchStatus::Running:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "pass %d: %d/%d cand x chunk | %d h, %d branch", ss.pass(), sdone, stotal,
-                         static_cast<int>(s_sr.holds.size()), n_branch);
-      break;
-    case SearchStatus::Done:
-      ImGui::TextColored(StatusColor(s_sr.wrote ? TaskStatus::Kind::Ready : TaskStatus::Kind::Warn), "%s (%s, %d h, %d cand, %d pass, %.0fs)",
-                         s_sr.message.c_str(), s_sr.backend.c_str(), static_cast<int>(s_sr.holds.size()), n_cand, s_sr.n_pass, s_sr.seconds);
-      break;
-    case SearchStatus::Cancelled:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled (pass %d, %d cand)", ss.pass(), n_cand);
+    case SearchStatus::Loading: {
+      const int ci = ss.chunk();
+      if (ss.stage() == SearchStage::Scale && stotal > 0 && sdone >= stotal) {
+        ImGui::TextColored(busy, "准备: 计算阈值尺度 σ");
+      } else if (ci < static_cast<int>(s_sr.chunk_plan.size())) {
+        const SearchChunk &c = s_sr.chunk_plan[static_cast<size_t>(ci)];
+        const double got = stotal > 0 ? c.mb * sdone / stotal : 0.0;
+        ImGui::TextColored(busy, "装载: %d/%d (每块 %d asset × %d days) (%.0f/%.0fMB)", ci + 1, nc, s_sr.n_assets, c.days, got, c.mb);
+      } else {
+        ImGui::TextColored(busy, "准备: 定分块");
+      }
       break;
     }
-    // 悬停: 每个持有期一段: 分支 / 高原 / max, 终选表 (有 picks) 或候选榜前 10 (还没终选)
-    if (ImGui::IsItemHovered() && n_cand > 0) {
-      ImGui::BeginTooltip();
-      ImGui::Text("%s  %s", s_sr.file.c_str(), s_sr.tmpl.c_str());
-      ImGui::TextDisabled("%d chunk x %d days, batch %d, n_full %.1f", s_sr.n_chunk, s_sr.chunk_days, s_sr.batch, s_sr.n_full);
-      for (const SearchHold &sh : s_sr.holds) {
-        ImGui::Separator();
-        ImGui::Text("h %s:", factor::stat::hold_name(sh.hold).c_str());
-        ImGui::SameLine();
-        ImGui::TextDisabled("%d branch, %d plateau, max score %.4g, %d pick", sh.n_branch, sh.n_plateau, sh.max_score, static_cast<int>(sh.picks.size()));
-        const bool final = !sh.picks.empty();
-        ImGui::PushID(sh.hold);
-        if (ImGui::BeginTable("opt_h", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-          ImGui::TableSetupColumn("expr");
-          ImGui::TableSetupColumn(final ? "corr" : "pass");
-          ImGui::TableSetupColumn("LS bp/期");
-          ImGui::TableSetupColumn("rIC");
-          ImGui::TableSetupColumn("score");
-          ImGui::TableHeadersRow();
-          const auto stat_cells = [](bool ok, double ls, double ric, double score) {
-            ImGui::TableNextColumn();
-            if (ok)
-              ImGui::Text("%+.2f", 1e4 * ls);
-            else
-              ImGui::TextDisabled("-");
-            ImGui::TableNextColumn();
-            ImGui::Text("%.4f", ric);
-            ImGui::TableNextColumn();
-            if (std::isfinite(score))
-              ImGui::Text("%.4g", score);
-            else
-              ImGui::TextDisabled("-inf");
-          };
-          if (final) {
-            for (const SearchPick &p : sh.picks) {
-              ImGui::TableNextRow();
-              ImGui::TableNextColumn();
-              ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "%s", p.expr.c_str());
-              ImGui::TableNextColumn();
-              ImGui::Text("%.2f", p.corr);
-              stat_cells(true, p.ls, p.ric, p.score);
-            }
-          } else {
-            const size_t n_show = std::min<size_t>(10, sh.cands.size());
-            for (size_t i = 0; i < n_show; ++i) {
-              const SearchCand &c = sh.cands[i];
-              ImGui::TableNextRow();
-              ImGui::TableNextColumn();
-              ImGui::TextUnformatted(c.expr.c_str());
-              ImGui::TableNextColumn();
-              ImGui::Text("%d", c.pass);
-              stat_cells(c.ok, c.ls, c.ric, c.score);
-            }
-          }
-          ImGui::EndTable();
-        }
-        ImGui::PopID();
+    case SearchStatus::Running:
+      switch (ss.stage()) {
+      case SearchStage::Scale:
+      case SearchStage::Coarse:
+        eval_line("粗网格");
+        break;
+      case SearchStage::Refine:
+        eval_line("细化 第 " + std::to_string(ss.level()) + " 层, 存活 " + std::to_string(ss.alive()) + " 支");
+        break;
+      case SearchStage::Corr:
+        eval_line("截面相关");
+        break;
       }
-      ImGui::EndTooltip();
+      break;
+    case SearchStatus::Done:
+      if (s_sr.wrote)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "完成: 写入 %d 个权重 (%d 候选, %d 趟, %.0fs)", s_sr.n_weights, n_cand, s_sr.n_pass, s_sr.seconds);
+      else
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "未写入: %s", s_sr.message.c_str());
+      break;
+    case SearchStatus::Cancelled:
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "已取消");
+      break;
     }
   }
 

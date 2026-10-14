@@ -24,6 +24,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <string_view>
 #include <thread>
 
 namespace GUI::Factors {
@@ -44,10 +45,12 @@ double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std
 
 constexpr size_t kLevel = analysis::kLevel; // 因子只在 L1 算
 
-// 旧格式残留键 (params / 顶层 stat): 任何回写都顺手删
-void erase_legacy(ojson &j) {
-  j.erase("params");
-  j.erase("stat");
+// 评估派生数据 (run + 表头 + stats): 只描述当前 weights, 权重整体换掉 / 清空时一起删
+void erase_stats(ojson &j) {
+  j.erase("run");
+  j.erase("hold_cols");
+  j.erase("acc_cols");
+  j.erase("stats");
 }
 
 // 一个金额档的换手成本 ↔ JSON {amt, cover, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
@@ -79,24 +82,27 @@ bool load_cost(const json &o, int n_hold, CostTier &dst) {
   return true;
 }
 
-// 文件 stat → 行 (载入显示用); 任一处不合 / 口径与当前根不符 → 整块忽略 (不算 BROKEN: stat 是本服务写的派生数据, 下次评估覆盖)
-void load_stat(const json &j, FactorRow &r) {
-  if (!j.is_object())
+// 文件顶层 run (全部权重共用的口径) + 权重 stat → 行 (载入显示用); 任一处不合 / 口径与当前根不符 → 整块忽略
+// (不算 BROKEN: stat 是本服务写的派生数据, 下次评估覆盖)
+void load_stat(const json &run, const json &j, FactorRow &r) {
+  if (!run.is_object() || !j.is_object())
     return;
   FactorRow t;
-  const auto str = [&](const char *key, std::string &dst) {
-    const auto it = j.find(key);
-    if (it == j.end() || !it->is_string())
+  const auto str = [](const json &o, const char *key, std::string &dst) {
+    const auto it = o.find(key);
+    if (it == o.end() || !it->is_string())
       return false;
     dst = it->get<std::string>();
     return true;
   };
-  if (!json_str_is(j, "frame", factor::stat::frame_name(r.frame)))
+  if (!json_str_is(run, "frame", factor::stat::frame_name(r.frame)))
     return;
-  if (!str("universe", t.scope.universe) || !str("start_date", t.scope.start_date) || !str("end_date", t.scope.end_date) ||
-      !str("backend", t.scope.backend) || !str("time", t.scope.time))
+  if (!str(run, "universe", t.scope.universe) || !str(run, "start_date", t.scope.start_date) || !str(run, "end_date", t.scope.end_date) ||
+      !str(run, "backend", t.scope.backend) || !str(j, "time", t.scope.time))
     return;
-  if (!json_int(j, "days", t.scope.days) || !json_int(j, "T", t.scope.T) || !json_int(j, "A", t.scope.A))
+  if (!json_int(run, "days", t.scope.days) || !json_int(run, "T", t.scope.T) || !json_int(run, "A", t.scope.A))
+    return;
+  if (!json_num(run, "max_impact", t.scope.max_impact) || !json_num(run, "n_full", t.scope.n_full) || !(t.scope.n_full > 0.0))
     return;
   double v = 0;
   if (!json_num(j, "valid_pct", v))
@@ -107,9 +113,7 @@ void load_stat(const json &j, FactorRow &r) {
   t.rank_pct = static_cast<float>(v);
   if (!json_num(j, "eval_ms", t.eval_ms))
     return;
-  if (!json_num(j, "max_impact", t.scope.max_impact) || !json_num(j, "n_full", t.scope.n_full) || !(t.scope.n_full > 0.0))
-    return;
-  const auto hit = j.find("holds"); // 旧格式 ("amts": [{amt, holds}]) 无此键 → 整块忽略, 下次 Run 覆盖
+  const auto hit = j.find("holds");
   if (hit == j.end() || !hit->is_array() || hit->empty() || hit->size() > static_cast<size_t>(factor::stat::kMaxHold))
     return;
   t.n_hold = static_cast<int>(hit->size());
@@ -135,7 +139,8 @@ void load_stat(const json &j, FactorRow &r) {
   r.stat_from_file = true;
 }
 
-ojson stat_json(const FactorRow &r) {
+// 顶层 run: 一轮评估内全部权重相同的口径 (time 每权重各自回写时取, 不进 run)
+ojson run_json(const FactorRow &r) {
   ojson j;
   j["universe"] = r.scope.universe;
   j["start_date"] = r.scope.start_date;
@@ -144,13 +149,18 @@ ojson stat_json(const FactorRow &r) {
   j["T"] = r.scope.T;
   j["A"] = r.scope.A;
   j["backend"] = r.scope.backend;
-  j["time"] = r.scope.time;
   j["frame"] = factor::stat::frame_name(r.frame);
+  j["max_impact"] = r.scope.max_impact;
+  j["n_full"] = sig4(r.scope.n_full);
+  return j;
+}
+
+ojson stat_json(const FactorRow &r) {
+  ojson j;
+  j["time"] = r.scope.time;
   j["valid_pct"] = sig4(r.valid_pct);
   j["rank_pct"] = sig4(r.rank_pct);
   j["eval_ms"] = sig4(r.eval_ms);
-  j["max_impact"] = r.scope.max_impact;
-  j["n_full"] = sig4(r.scope.n_full);
   ojson holds = ojson::array();
   for (int k = 0; k < r.n_hold; ++k)
     holds.push_back(hold_json(r.hold[k]));
@@ -162,6 +172,60 @@ ojson stat_json(const FactorRow &r) {
   return j;
 }
 
+// 一个 stat: 标量 (time / valid_pct / …) 首行, 其余结构值各一行 (holds 一行), costs 每金额档一行
+std::string stat_block(const ojson &st) {
+  if (!st.is_object())
+    return st.dump();
+  std::string head, body;
+  for (auto it = st.begin(); it != st.end(); ++it) {
+    const ojson &v = it.value();
+    const std::string kv = ojson(it.key()).dump() + ":";
+    if (it.key() == "costs" && v.is_array() && !v.empty()) {
+      body += ",\n   " + kv + "[";
+      for (size_t c = 0; c < v.size(); ++c)
+        body += "\n    " + v[c].dump() + (c + 1 < v.size() ? "," : "");
+      body += "]";
+    } else if (v.is_structured()) {
+      body += ",\n   " + kv + v.dump();
+    } else {
+      head += (head.empty() ? "" : ",") + kv + v.dump();
+    }
+  }
+  if (head.empty() && !body.empty())
+    body.erase(0, 1); // 无标量: 去掉首段前的逗号
+  return "{" + head + body + "}";
+}
+
+// 因子文件排版 (给人看, 合法 JSON): 顶层一键一行, 人写的键 (type / name_cn / expr / note / …) 在前, 之后 weights → 评估派生
+// (run / hold_cols / acc_cols / stats); weights 一元素一行, stats 一元素一块 (stat_block; stats[i] ↔ weights[i]), 数值表密排不展开
+std::string format_factor(const ojson &j) {
+  assert(j.is_object());
+  static constexpr std::string_view kTail[] = {"weights", "run", "hold_cols", "acc_cols", "stats"};
+  std::vector<std::string> top; // 顶层一键一段 (段间 ",\n")
+  const auto add = [&](const std::string &k, const ojson &v) {
+    std::string s = " " + ojson(k).dump() + ": ";
+    if ((k == "weights" || k == "stats") && v.is_array() && !v.empty()) {
+      s += "[\n";
+      for (size_t i = 0; i < v.size(); ++i)
+        s += "  " + (k == "stats" ? stat_block(v[i]) : v[i].dump()) + (i + 1 < v.size() ? ",\n" : "\n");
+      s += " ]";
+    } else {
+      s += v.dump();
+    }
+    top.push_back(s);
+  };
+  for (auto it = j.begin(); it != j.end(); ++it)
+    if (std::find(std::begin(kTail), std::end(kTail), it.key()) == std::end(kTail))
+      add(it.key(), it.value());
+  for (std::string_view k : kTail)
+    if (const auto it = j.find(std::string(k)); it != j.end())
+      add(it.key(), it.value());
+  std::string out = "{\n";
+  for (size_t i = 0; i < top.size(); ++i)
+    out += top[i] + (i + 1 < top.size() ? ",\n" : "\n");
+  return out + "}\n";
+}
+
 // tmp + rename 原子落盘 (同 operators.json / features.json)
 void write_json(const std::filesystem::path &path, const ojson &j) {
   std::filesystem::create_directories(path.parent_path());
@@ -169,14 +233,15 @@ void write_json(const std::filesystem::path &path, const ojson &j) {
   {
     std::ofstream f(tmp);
     assert(f.is_open() && "因子文件: 临时文件打不开");
-    f << j.dump(1) << "\n";
+    f << format_factor(j);
     assert(f.good() && "因子文件: 写入失败");
   }
   std::filesystem::rename(tmp, path);
 }
 
-// 评估后回写: 只动 weights[widx].stat, 其他键 (expr / note / 人加的任何东西) 原样保留.
-// 手填权重 (文件无 weights, hold_src = 0) 首次回写时补出 weights = [{hold 0, expr}]
+// 评估后回写: 只动 stats[widx] + 顶层 run / 表头, 其他键 (expr / note / 人加的任何东西) 原样保留.
+// stats 与 weights 同长同序 (没评的位置 null); run / 表头与已有的不同 (换了区间 / universe / 后端…) → 别的权重的 stat 不再
+// 对应 run, 一并清成 null (下次 Run 重算). 手填权重 (文件无 weights, hold_src = 0) 首次回写时补出 weights = [{hold 0, expr}]
 void write_back(const std::filesystem::path &path, const FactorRow &r) {
   assert(r.widx >= 0 && !r.expr.empty());
   std::ifstream f(path);
@@ -184,20 +249,28 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
   ojson j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
   f.close();
   assert(j.is_object() && "回写的文件扫描时已解析过, 不该变");
-  erase_legacy(j);
-  auto wit = j.find("weights");
-  if (wit == j.end() || !wit->is_array() || wit->empty()) {
+  if (const auto wit = j.find("weights"); wit == j.end() || !wit->is_array() || wit->empty()) {
     assert(r.widx == 0 && r.hold_src == 0 && "无 weights 的文件只可能有手填权重 (widx 0)");
     ojson w = ojson::object();
     w["hold"] = 0;
     w["expr"] = r.expr;
     j["weights"] = ojson::array({w});
-    wit = j.find("weights");
   }
-  assert(static_cast<size_t>(r.widx) < wit->size());
-  ojson &w = (*wit)[static_cast<size_t>(r.widx)];
-  assert(w.is_object() && "权重项与扫描时不符");
-  w["stat"] = stat_json(r);
+  const size_t nw = j["weights"].size();
+  assert(static_cast<size_t>(r.widx) < nw && j["weights"][static_cast<size_t>(r.widx)].is_object() && "权重项与扫描时不符");
+  const ojson run = run_json(r);
+  const auto old_run = j.find("run");
+  const auto old_stats = j.find("stats");
+  const bool keep = old_run != j.end() && *old_run == run && json_cols_are(j, "hold_cols", hold_cols()) && json_cols_are(j, "acc_cols", acc_cols()) &&
+                    old_stats != j.end() && old_stats->is_array() && old_stats->size() == nw;
+  ojson stats = keep ? *old_stats : ojson::array();
+  while (stats.size() < nw)
+    stats.push_back(nullptr);
+  stats[static_cast<size_t>(r.widx)] = stat_json(r);
+  j["run"] = run;
+  j["hold_cols"] = cols_json(hold_cols());
+  j["acc_cols"] = cols_json(acc_cols());
+  j["stats"] = std::move(stats);
   write_json(path, j);
 }
 
@@ -413,9 +486,10 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
     j.erase("note");
   else
     j["note"] = std::string(note);
-  erase_legacy(j);
-  if (expr_changed)
+  if (expr_changed) {
     j.erase("weights"); // 旧权重是别的模板的实例
+    erase_stats(j);
+  }
   write_json(from, j);
   if (to != from)
     std::filesystem::rename(from, to);
@@ -443,7 +517,7 @@ void WriteFactorWeights(const std::string &factor_dir, std::string_view file, co
   ojson j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
   f.close();
   assert(j.is_object() && "搜索落盘: 因子文件扫描时已解析过, 不该变");
-  erase_legacy(j);
+  erase_stats(j);
   ojson arr = ojson::array();
   for (const SearchWeight &w : ws) {
     ojson o = ojson::object();
@@ -600,7 +674,6 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
     struct W {
       int hold = 0;
       std::string expr, err;
-      const json *stat = nullptr;
     };
     std::vector<W> ws;
     if (const auto wit = j.find("weights"); wit != j.end() && !(wit->is_array() && wit->empty())) {
@@ -618,19 +691,22 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
           w.err = "weights[" + std::to_string(i) + "] 缺 expr 键或不是字串";
         } else {
           w.expr = xit->get<std::string>();
-          if (const auto sit = o.find("stat"); sit != o.end())
-            w.stat = &*sit;
         }
         ws.push_back(std::move(w));
       }
     } else if (!t.is_template()) {
-      ws.push_back(W{0, t.canon, {}, nullptr});
+      ws.push_back(W{0, t.canon, {}});
     }
     if (ws.empty()) { // 模板未搜索
       r.status = RowStatus::Done;
       emit(r);
       continue;
     }
+    // run + 表头对得上当前代码且 stats 与 weights 同长才吃 stats[i] (否则全部忽略, 下次 Run 覆盖)
+    const json *run = nullptr, *stats = nullptr;
+    if (const auto rit = j.find("run"), sit = j.find("stats"); rit != j.end() && sit != j.end() && sit->is_array() && sit->size() == ws.size() &&
+                                                               json_cols_are(j, "hold_cols", hold_cols()) && json_cols_are(j, "acc_cols", acc_cols()))
+      run = &*rit, stats = &*sit;
     for (size_t i = 0; i < ws.size(); ++i) {
       FactorRow w = r;
       w.widx = static_cast<int>(i);
@@ -661,8 +737,8 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         w.dup_of = it->second;
       else
         seen.emplace(std::pair{w.hold_src, e.canon}, w.key);
-      if (ws[i].stat)
-        load_stat(*ws[i].stat, w);
+      if (stats)
+        load_stat(*run, (*stats)[i], w);
       emit(w);
     }
   }
@@ -682,8 +758,8 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
     std::lock_guard<std::mutex> lock(mutex);
     const factor::expr::FeatureLookup fl = feats_.lookup();
     for (size_t i = 0; i < rows.size(); ++i) {
-      if (!rows[i].error.empty() || rows[i].expr.empty()) {
-        rows[i].status = RowStatus::Done; // BROKEN / 未搜索 行本轮不算
+      if (!rows[i].error.empty() || rows[i].expr.empty() || (!req.only_file.empty() && rows[i].file != req.only_file)) {
+        rows[i].status = RowStatus::Done; // BROKEN / 未搜索 / 不在 only_file 的行本轮不算
         continue;
       }
       factor::expr::Expr e;

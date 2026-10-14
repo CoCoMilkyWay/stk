@@ -230,7 +230,7 @@ stk/
     ├── factors/                                            # 因子算子库 (factor/ 的落地)
     │   ├── operators.json                                  # 算子表快照 (对拍 + 耗时), 与当前 OpTable 不符则重算
     │   └── <universe>/                                     # 因子文件 (一因子一文件, 可手写)
-    │       └── *.json                                      # {type, name_cn, expr (模板, 自由参数裸键名), note?, weights?: [{hold, expr (具体), stat?}] (Optimize 整体替换; 改 expr 即清)}
+    │       └── *.json                                      # {type, name_cn, expr (模板, 自由参数裸键名), note?, weights?: [{hold, expr (具体)}] (Optimize 整体替换; 改 expr 即清), run?, hold_cols?, acc_cols?, stats?: [stat | null] (与 weights 同序)
     └── log/                                                # 运行日志
 ```
 

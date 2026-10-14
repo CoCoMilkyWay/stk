@@ -82,12 +82,20 @@ struct SearchHold {
   std::vector<SearchPick> picks;                               // 终选 (空 = 该 h 无正分候选)
 };
 
+// 一块的装载量
+struct SearchChunk {
+  int days = 0;    // 装载天数 (含前带 carry)
+  double mb = 0.0; // 宿主装载量 (特征 + 门控 + 标签; CPU 另含预处理标签)
+};
+
 struct SearchResult {
   std::string file, tmpl;         // 对象 + 模板规范串
   std::vector<std::string> slots; // 可搜槽名 ("TsDeltaRoll.d" …)
   std::vector<SearchHold> holds;  // 搜索窗内持有期, 升序
   int n_pass = 0;                 // 跑完的趟数 (含 corr 趟)
   int n_chunk = 0, chunk_days = 0, batch = 0;
+  int n_assets = 0;                    // 标的数
+  std::vector<SearchChunk> chunk_plan; // 分块计划 (装载前发布)
   std::string backend;
   double seconds = 0.0;
   double n_full = 0.0; // 满档一腿只数 (Labels::cap; 块 0 池内平均有效票数 / kGroups)
@@ -101,6 +109,11 @@ enum class SearchStatus : uint8_t { Idle,
                                     Running,
                                     Done,
                                     Cancelled };
+// 搜索阶段 (UI 显示): 定尺度 (装块 0 + 阈值槽 σ) → 粗网格 → 细化 → 相关性
+enum class SearchStage : uint8_t { Scale,
+                                   Coarse,
+                                   Refine,
+                                   Corr };
 
 class SearchService {
 public:
@@ -118,8 +131,11 @@ public:
   void Stop();
 
   SearchStatus status() const { return status_.load(std::memory_order_acquire); }
-  int pass() const { return pass_.load(std::memory_order_relaxed); } // 当前趟 (0 = 粗)
-  int done() const { return done_.load(std::memory_order_relaxed); } // Loading: 块内天; Running: 候选 × 块
+  SearchStage stage() const { return stage_.load(std::memory_order_relaxed); }
+  int level() const { return level_.load(std::memory_order_relaxed); } // 细化层 (Refine 期)
+  int alive() const { return alive_.load(std::memory_order_relaxed); } // 存活分支数 (Refine 期)
+  int pass() const { return pass_.load(std::memory_order_relaxed); }   // 当前趟 (0 = 粗)
+  int done() const { return done_.load(std::memory_order_relaxed); }   // Loading: 块内天; Running: 候选 × 块
   int total() const { return total_.load(std::memory_order_relaxed); }
   int chunk() const { return chunk_.load(std::memory_order_relaxed); }   // 本趟已过的块
   int chunks() const { return chunks_.load(std::memory_order_relaxed); } // 块数
@@ -142,6 +158,8 @@ private:
   std::atomic<bool> cancel_{false};
   std::atomic<bool> stop_{false};
   std::atomic<SearchStatus> status_{SearchStatus::Idle};
+  std::atomic<SearchStage> stage_{SearchStage::Scale};
+  std::atomic<int> level_{0}, alive_{0};
   std::atomic<int> pass_{0}, done_{0}, total_{0}, chunk_{0}, chunks_{0};
   std::atomic<uint64_t> epoch_{0};
 };

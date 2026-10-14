@@ -1,18 +1,22 @@
 // FactorsService — Factors→Factors 表的单 worker: 扫 <factor_dir>/<universe>/*.json 因子文件 → 解析 / 校验模板与权重表达式
 // (factor/Expr.hpp) → (Run 时) 读特征库把因子输入 + 标签装成 [T = days·kSegLen][A] 平面 → 每权重 Expr → Dag →
-// CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行 + 回写该权重的 stat (weights[i].stat 键; expr / weights[i].expr 不动).
+// CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行 + 回写该权重的 stat (stats[i]; expr / weights 不动).
 //
 // 因子文件 (一因子一文件, 独立落盘, 格式破碎也**绝不删**: 表里标 BROKEN + 原因, 人手动处理):
 //   { "type":   "alpha",                                      // 必有: alpha (选股 / 择时, 走 Stat) | beta (风险暴露, 未实现, 留位)
 //     "name_cn": "三十分钟动量",                                // 必有: 中文名, 纯汉字 1..10 字 (英文名 = 文件名主干 name_en)
 //     "expr":   "CsRank(TsMeanRoll(TsLog(amt), d))",         // 必有: **模板**, 裸键名 d / k / k2 = 待搜参数 (Expr.hpp 自由参数), 数字 = 固定
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
-//     "weights": [                                            // 可选: 参数搜索 (SearchService) 写的全部权重, 每项一个具体表达式
+//     "weights": [                                            // 可选: 参数搜索 (SearchService) 写的全部权重, 每项一个具体表达式, 一行一个
 //       { "hold": 30,                                         //   搜索时的持有期 (0 = 手填)
-//         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))",     //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
-//         "stat": { scope…, "frame", "valid_pct", "rank_pct", "eval_ms", "max_impact", "n_full",
-//                   "holds": [HoldStat…],                             // 本服务写 (全部持有期, 毛收益口径), 载入时显示
-//                   "costs": [{amt, cover, acc: [CostAcc…]}…] } }, … ] } // 每金额档 × 每持有期换手成本累加器 (Inspect 净线从它算)
+//         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))" }, … ], //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
+//     —— 以下本服务写 (评估派生, 换掉 / 清空 weights 时一起删) ——
+//     "run": { scope…, "frame", "max_impact", "n_full" },     // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
+//     "hold_cols": [...], "acc_cols": [...],                  // holds / acc 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
+//     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
+//       { "time", "valid_pct", "rank_pct", "eval_ms",
+//         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
+//         "costs": [{amt, cover, acc: [[CostAcc]…]}…] }, … ] } //   每金额档 × 每持有期换手成本累加器 (Inspect 净线从它算)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 视作唯一权重 (hold 0).
@@ -100,6 +104,7 @@ struct FactorsRequest {
   std::string universe, start_date, end_date;
   bool gpu = false;
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 成本装载时生效)
+  std::string only_file;   // 非空 = 只评这个因子文件的权重 (Optimize 写完后), 其余行保留文件里的 stat
 };
 // evaluate 请求需要资产轴 (读特征库); 轴未就绪 (数据库未扫) → false
 bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req);

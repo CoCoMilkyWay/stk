@@ -1,7 +1,8 @@
-// Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: operators.json 的 stat.holds[] 与因子文件的 stat.holds[]
-// 同一格式 (键名 = HoldStat 字段名: 三个逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / leg_n, 数值 4 位有效).
-// load_hold 是 Save 的逆: 键缺 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能来自旧代码 / 半截崩的; 旧键名的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stat.costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 两腿各一个对象 {imp, n, e, wimp, we} + rows.
+// Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: 因子文件 stats[i].holds[] 每档 = 按 hold_cols() 列序的数组
+// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 三个逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / leg_n,
+// 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
+// load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
+// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, n, e, wimp, we + rows).
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
@@ -11,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace GUI::Factors {
 
@@ -54,8 +56,9 @@ inline bool json_ll(const nlohmann::json &j, const char *key, long long &out) {
 inline constexpr const char *kSeriesKeys[] = {"ric", "rac", "ls"};
 inline constexpr const char *kMomentKeys[] = {"mean", "sd", "ir", "t", "pos", "skew", "kurt"};
 inline constexpr const char *kScalarKeys[] = {"beta", "mono", "leg_n"};
-// CostAcc 的两腿 (与 factor::stat::Leg 同序)
+// CostAcc 的两腿 (与 factor::stat::Leg 同序) × 每腿字段 (与 CostLeg 同序)
 inline constexpr const char *kLegKeys[factor::stat::kLegs] = {"long", "short"};
+inline constexpr const char *kCostLegKeys[] = {"imp", "n", "e", "wimp", "we"};
 
 namespace detail {
 template <class M>
@@ -87,41 +90,76 @@ void for_each_field(H &h, F &&f) {
 }
 } // namespace detail
 
+// 行式表的列名 (因子文件顶层 hold_cols / acc_cols): 与 hold_json / cost_acc_json 的元素一一对应
+inline std::vector<std::string> hold_cols() {
+  std::vector<std::string> c = {"hold", "n", "n_rac", "n_all", "n_trig"};
+  factor::stat::HoldStat h{};
+  detail::for_each_field(h, [&](const std::string &k, const float &) { c.push_back(k); });
+  c.push_back("grp");
+  return c;
+}
+inline std::vector<std::string> acc_cols() {
+  std::vector<std::string> c;
+  for (const char *l : kLegKeys)
+    for (const char *k : kCostLegKeys)
+      c.push_back(std::string(l) + "." + k);
+  c.push_back("rows");
+  return c;
+}
+inline nlohmann::ordered_json cols_json(const std::vector<std::string> &cols) {
+  nlohmann::ordered_json a = nlohmann::ordered_json::array();
+  for (const std::string &c : cols)
+    a.push_back(c);
+  return a;
+}
+// j[key] 是否恰为当前代码的列名表 (J = json / ordered_json: 扫描读 / 回写比)
+template <class J>
+bool json_cols_are(const J &j, const char *key, const std::vector<std::string> &want) {
+  const auto it = j.find(key);
+  if (it == j.end() || !it->is_array() || it->size() != want.size())
+    return false;
+  for (size_t i = 0; i < want.size(); ++i)
+    if (!(*it)[i].is_string() || (*it)[i].template get_ref<const std::string &>() != want[i])
+      return false;
+  return true;
+}
+
 inline nlohmann::ordered_json hold_json(const factor::stat::HoldStat &h) {
-  nlohmann::ordered_json o;
-  o["hold"] = h.hold;
-  o["n"] = h.n;
-  o["n_rac"] = h.n_rac;
-  o["n_all"] = h.n_all;
-  o["n_trig"] = h.n_trig;
-  detail::for_each_field(h, [&](const std::string &k, const float &v) { o[k] = sig4(v); });
+  nlohmann::ordered_json o = nlohmann::ordered_json::array();
+  for (int v : {h.hold, h.n, h.n_rac, h.n_all, h.n_trig})
+    o.push_back(v);
+  detail::for_each_field(h, [&](const std::string &, const float &v) { o.push_back(sig4(v)); });
   nlohmann::ordered_json g = nlohmann::ordered_json::array();
   for (int k = 0; k < factor::stat::kGroups; ++k)
     g.push_back(sig4(h.grp[k]));
-  o["grp"] = g;
+  o.push_back(g);
   return o;
 }
 
 inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
-  if (!o.is_object())
+  if (!o.is_array() || o.size() != hold_cols().size())
     return false;
   factor::stat::HoldStat h;
-  if (!json_int(o, "hold", h.hold) || !json_int(o, "n", h.n) || !json_int(o, "n_rac", h.n_rac) || !json_int(o, "n_all", h.n_all) ||
-      !json_int(o, "n_trig", h.n_trig))
-    return false;
+  size_t c = 0;
+  for (int *p : {&h.hold, &h.n, &h.n_rac, &h.n_all, &h.n_trig}) {
+    const nlohmann::json &e = o[c++];
+    if (!e.is_number_integer())
+      return false;
+    *p = e.get<int>();
+  }
   bool ok = true;
-  detail::for_each_field(h, [&](const std::string &k, float &v) {
-    double d = 0;
-    ok = ok && json_num(o, k.c_str(), d);
-    v = static_cast<float>(d);
+  detail::for_each_field(h, [&](const std::string &, float &v) {
+    const nlohmann::json &e = o[c++];
+    ok = ok && e.is_number();
+    v = ok ? e.get<float>() : 0.f;
   });
   if (!ok)
     return false;
-  const auto git = o.find("grp");
-  if (git == o.end() || !git->is_array() || git->size() != static_cast<size_t>(factor::stat::kGroups))
+  const nlohmann::json &g = o[c];
+  if (!g.is_array() || g.size() != static_cast<size_t>(factor::stat::kGroups))
     return false;
   for (int k = 0; k < factor::stat::kGroups; ++k) {
-    const nlohmann::json &e = (*git)[static_cast<size_t>(k)];
+    const nlohmann::json &e = g[static_cast<size_t>(k)];
     if (!e.is_number())
       return false;
     h.grp[k] = e.get<float>();
@@ -132,34 +170,37 @@ inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
 
 // 换手成本累加器 (契约 CostAcc; 因子文件 stat.costs[].acc[]): 计数整数精确 (util / 换手占比的分子分母), 冲击和 4 位有效
 inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
-  nlohmann::ordered_json o;
-  for (int l = 0; l < factor::stat::kLegs; ++l) {
-    nlohmann::ordered_json g;
-    g["imp"] = sig4(c.leg[l].imp);
-    g["n"] = c.leg[l].n;
-    g["e"] = c.leg[l].e;
-    g["wimp"] = sig4(c.leg[l].wimp);
-    g["we"] = sig4(c.leg[l].we);
-    o[kLegKeys[l]] = g;
+  nlohmann::ordered_json o = nlohmann::ordered_json::array();
+  for (const factor::stat::CostLeg &g : c.leg) {
+    o.push_back(sig4(g.imp));
+    o.push_back(g.n);
+    o.push_back(g.e);
+    o.push_back(sig4(g.wimp));
+    o.push_back(sig4(g.we));
   }
-  o["rows"] = c.rows;
+  o.push_back(c.rows);
   return o;
 }
 
 inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
-  if (!o.is_object())
+  if (!o.is_array() || o.size() != acc_cols().size())
     return false;
   factor::stat::CostAcc c;
-  for (int l = 0; l < factor::stat::kLegs; ++l) {
-    const auto it = o.find(kLegKeys[l]);
-    if (it == o.end() || !it->is_object())
+  size_t i = 0;
+  const auto num = [&](double &v) {
+    const nlohmann::json &e = o[i++];
+    v = e.is_number() ? e.get<double>() : 0.0;
+    return e.is_number();
+  };
+  const auto ll = [&](long long &v) {
+    const nlohmann::json &e = o[i++];
+    v = e.is_number_integer() ? e.get<long long>() : 0;
+    return e.is_number_integer();
+  };
+  for (factor::stat::CostLeg &g : c.leg)
+    if (!num(g.imp) || !ll(g.n) || !ll(g.e) || !num(g.wimp) || !num(g.we))
       return false;
-    factor::stat::CostLeg &g = c.leg[l];
-    if (!json_num(*it, "imp", g.imp) || !json_ll(*it, "n", g.n) || !json_ll(*it, "e", g.e) || !json_num(*it, "wimp", g.wimp) ||
-        !json_num(*it, "we", g.we))
-      return false;
-  }
-  if (!json_ll(o, "rows", c.rows))
+  if (!ll(c.rows))
     return false;
   dst = c;
   return true;
