@@ -340,6 +340,15 @@ inline std::string to_string(const Expr &e, int i = 0) {
   return s;
 }
 
+// 取反的规范串: 一元根 R(x, 参数…) → R(TsNeg(x), 参数…) (归一根下取反 = 秩 / z 精确翻转; weights 的 sign = −1 时评它)
+inline std::string negated_canon(const Expr &e) {
+  const Node &r = e.root();
+  assert(r.op >= 0 && kOps[r.op].arity == 1 && "取反只给一元归一根");
+  const std::string head = std::string(kOps[r.op].name) + "(" + to_string(e, r.args[0]);
+  assert(e.canon.compare(0, head.size(), head) == 0 && "canon 须与树同步");
+  return std::string(kOps[r.op].name) + "(TsNeg(" + to_string(e, r.args[0]) + ")" + e.canon.substr(head.size());
+}
+
 inline Expr Expr::placeholder() const {
   Expr out = *this;
   for (Node &n : out.nodes)

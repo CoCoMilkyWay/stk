@@ -349,6 +349,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         c.score = sc.score;
         c.ls = sc.ls;
         c.ric = sc.ric;
+        c.sign = sc.sign;
         cands.push_back(std::move(c));
       }
       std::stable_sort(cands.begin(), cands.end(), [](const SearchCand &a, const SearchCand &b) { return a.score > b.score; });
@@ -681,7 +682,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
       for (int hi = 0; hi < H; ++hi)
-        en.sc[hi] = factor::search::score_of(en.r, hd, hi, obj);
+        en.sc[hi] = factor::search::score_signed(en.r, hd, hi, obj);
       if (en.pass < 0) // corr 趟重评不改首评趟号
         en.pass = pass;
     }
@@ -713,7 +714,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   bool ret = false;
 
   // ---- 尺度: 先装块 0 (趟 0 反正要), 阈值槽 (ANY / GE0) 的坐标单位 = 占位 DAG 里该节点输入的池内有效格标准差 (CPU 走到该节点即止;
-  //      上游自由参数取占位值, σ 只是坐标刻度, 粗网格 ±kSpan 单位 + 细化兜得住) ----
+  //      上游自由参数取占位值, σ 只是坐标刻度, 粗网格 ±kSpan 单位 + 局部搜索兜得住) ----
   if (handle(load_chunk(0, chunks[0]), ret))
     return ret;
   // ---- 满档只数 n_full (显示用): 块 0 池宽. 评估的 cap 逐块取该块的 n_full_of (CPU labels_raw / GPU search_open 同一份) ----
@@ -815,7 +816,13 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   if (handle(run_pass(ids, 0), ret))
     return ret;
 
-  // ---- 分支: 每 h 各自取粗网格的全部互不相邻局部峰 ----
+  // 候选 id 在 h 下的方向 + 参数 (日志)
+  const auto at = [&](int id, int hi) {
+    const Entry &en = ents[static_cast<size_t>(id)];
+    return (en.sc[hi].sign < 0 ? std::string("取反 ") : std::string()) + params_of(slots, en.u);
+  };
+
+  // ---- 分支: 每 h 各自取粗网格的全部局部峰 ----
   std::vector<std::vector<Branch>> branches(static_cast<size_t>(H));
   int n_branch = 0;
   for (int hi = 0; hi < H; ++hi) {
@@ -837,19 +844,24 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     const std::vector<Branch> &bs = branches[static_cast<size_t>(hi)];
     lg("分支 %s: %d 支", hold_of(hi).c_str(), static_cast<int>(bs.size()));
     for (size_t bi = 0; bi < bs.size(); ++bi)
-      lg("  #%d %.4g @ %s", static_cast<int>(bi), bs[bi].best, params_of(slots, bs[bi].center).c_str());
+      lg("  #%d %.4g @ %s", static_cast<int>(bi), bs[bi].best, at(bs[bi].best_id, hi).c_str());
   }
   if (n_branch == 0) {
     publish();
-    return abort_with("粗网格在任一持有期都无正分候选 (LS ≤ 0 或 IC ≤ 0), 文件不动");
+    return abort_with("粗网格在任一持有期都无可用候选 (LS 与 IC 异号), 文件不动");
   }
 
-  // ---- 趟 1..: 每 h 每支围 top-1 细化 (点数 ≤ kLayerMax), 步长减半, 增益 < kMinGain 停; 全部 h 全部活支的新点拼成一趟 ----
+  // ---- 趟 1..: 每 h 每支坐标模式搜索 (Grid【模式搜索】), 一轮 = 全部 h 全部活支的邻点去重拼成一趟. 一支一轮的结局:
+  //      移   邻点有更优 → 中心移过去, 步长不变
+  //      并   移到的点已是同 h 更靠前一支的最优 → 停 (同一个峰)
+  //      停   没移, 邻点全与中心同 (取整分辨率) 或减半后 < kMinStep
+  //      剪   没移, 且低于 (1 − kPlateau)·该 h 当前最高 (进不了高原集)
+  //      减半 其余 ----
   int pass = 1;
-  for (int level = 1; level <= grid::kMaxLevels; ++level) {
-    std::vector<std::vector<std::vector<int>>> pts(static_cast<size_t>(H)); // [hi][bi] 本层格点候选
+  for (int round = 1;; ++round) {
+    std::vector<std::vector<std::vector<int>>> pts(static_cast<size_t>(H)); // [hi][bi] 本轮邻点候选 (合法的)
     ids.clear();
-    int n_alive = 0, n_pts = 0, n_bad = 0, n_old = 0; // 铺的点 / 参数不合法 / 已评过或本层重复
+    int n_alive = 0, n_pts = 0, n_bad = 0, n_old = 0; // 铺的点 / 参数不合法 / 已评过或本轮重复
     for (int hi = 0; hi < H; ++hi) {
       std::vector<Branch> &bs = branches[static_cast<size_t>(hi)];
       pts[static_cast<size_t>(hi)].resize(bs.size());
@@ -857,7 +869,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         if (!bs[bi].alive)
           continue;
         ++n_alive;
-        for (const std::vector<double> &u : grid::refine_lattice(slots, bs[bi].center, bs[bi].step)) {
+        for (const std::vector<double> &u : grid::compass(slots, bs[bi].center, bs[bi].step)) {
           ++n_pts;
           const int id = add_cand(u, {});
           if (id < 0) {
@@ -872,53 +884,67 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         }
       }
     }
-    lg("细化第 %d 层: 存活 %d 支, 铺 %d 点 → 不合法 %d, 已评/重复 %d, 新点 %d%s", level, n_alive, n_pts, n_bad, n_old, static_cast<int>(ids.size()),
+    if (n_alive == 0) {
+      lg("局部搜索结束: 全部分支停");
+      break;
+    }
+    lg("局部第 %d 轮: 存活 %d 支, 铺 %d 点 → 不合法 %d, 已评/重复 %d, 新点 %d%s", round, n_alive, n_pts, n_bad, n_old, static_cast<int>(ids.size()),
        ids.empty() ? " (不另占一趟)" : "");
     if (!ids.empty()) { // 新点全已评过 → 不占趟号
-      level_.store(level, std::memory_order_relaxed);
+      level_.store(round, std::memory_order_relaxed);
       alive_.store(n_alive, std::memory_order_relaxed);
       stage_.store(SearchStage::Refine, std::memory_order_relaxed);
       if (handle(run_pass(ids, pass), ret))
         return ret;
       ++pass;
     }
-    bool any = false;
     for (int hi = 0; hi < H; ++hi) {
       std::vector<Branch> &bs = branches[static_cast<size_t>(hi)];
+      std::vector<uint8_t> moved(bs.size(), 0);
+      std::vector<double> before(bs.size(), 0.0), step(bs.size(), 0.0);
+      for (size_t bi = 0; bi < bs.size(); ++bi) { // 先移 (剪枝要看本轮移完后的最高)
+        Branch &b = bs[bi];
+        if (!b.alive)
+          continue;
+        before[bi] = b.best, step[bi] = b.step;
+        for (int id : pts[static_cast<size_t>(hi)][bi]) {
+          const double sc = ents[static_cast<size_t>(id)].sc[hi].score;
+          if (sc > b.best)
+            b.best = sc, b.best_id = id, moved[bi] = 1;
+        }
+        if (moved[bi])
+          b.center = ents[static_cast<size_t>(b.best_id)].u;
+      }
+      double top = -std::numeric_limits<double>::infinity();
+      for (const Branch &b : bs)
+        top = std::max(top, b.best);
       for (size_t bi = 0; bi < bs.size(); ++bi) {
         Branch &b = bs[bi];
         if (!b.alive)
           continue;
-        int best_id = -1;
-        double best = -std::numeric_limits<double>::infinity();
-        for (int id : pts[static_cast<size_t>(hi)][bi]) {
-          const double sc = ents[static_cast<size_t>(id)].sc[hi].score;
-          if (sc > best)
-            best = sc, best_id = id;
-        }
-        const bool gained = best_id >= 0 && best > b.best * (1.0 + grid::kMinGain);
-        const double before = b.best, step = b.step;
-        if (best_id >= 0 && best > b.best) {
-          b.center = ents[static_cast<size_t>(best_id)].u;
-          b.best_id = best_id;
-          b.best = best;
-        }
-        if (gained) {
-          b.step *= 0.5;
-          any = true;
+        std::string act;
+        int dup = -1;
+        for (size_t bj = 0; dup < 0 && bj < bi; ++bj)
+          if (bs[bj].best_id == b.best_id)
+            dup = static_cast<int>(bj);
+        bool same = true; // 邻点全取整回中心 (或全不合法)
+        for (int id : pts[static_cast<size_t>(hi)][bi])
+          same = same && id == b.best_id;
+        if (dup >= 0) {
+          b.alive = false, act = strf("并入 #%d", dup);
+        } else if (moved[bi]) {
+          act = "移";
+        } else if (same || b.step * 0.5 < grid::kMinStep) {
+          b.alive = false, act = "停";
+        } else if (b.best < (1.0 - factor::search::kPlateau) * top) {
+          b.alive = false, act = "剪";
         } else {
-          b.alive = false;
+          b.step *= 0.5, act = "减半";
         }
-        lg("  %s #%d 步长 %.3g: %.4g → %.4g (%+.1f%%) %s @ %s", hold_of(hi).c_str(), static_cast<int>(bi), step, before, best, 100.0 * (best / before - 1.0),
-           gained ? "继续" : "停", params_of(slots, b.center).c_str());
+        lg("  %s #%d 步长 %.3g: %.4g → %.4g (%+.1f%%) %s @ %s", hold_of(hi).c_str(), static_cast<int>(bi), step[bi], before[bi], b.best,
+           100.0 * (b.best / before[bi] - 1.0), act.c_str(), at(b.best_id, hi).c_str());
       }
     }
-    if (!any) {
-      lg("细化结束: 全部分支停");
-      break;
-    }
-    if (level == grid::kMaxLevels)
-      lg("细化结束: 到层数上限 %d", grid::kMaxLevels);
   }
 
   // ---- 高原集: 每 h 各支最优里 score ≥ (1 − kPlateau)·max; 并集再评一趟抽样 r16, 同 h 两两截面相关 ----
@@ -955,8 +981,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     lg("高原 %s: 阈值 %.4g (= %.0f%% × 最高 %.4g), %d 个", hold_of(hi).c_str(), (1.0 - factor::search::kPlateau) * sh.max_score,
        100.0 * (1.0 - factor::search::kPlateau), sh.max_score, static_cast<int>(pl.size()));
     for (size_t a = 0; a < pl.size(); ++a) {
-      const Entry &en = ents[static_cast<size_t>(pl[a])];
-      lg("  [%d] %.4g @ %s", static_cast<int>(a), en.sc[hi].score, params_of(slots, en.u).c_str());
+      lg("  [%d] %.4g @ %s", static_cast<int>(a), ents[static_cast<size_t>(pl[a])].sc[hi].score, at(pl[a], hi).c_str());
     }
   }
   if (sk.pairs.empty())
@@ -979,9 +1004,10 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     assert(it != sk.pairs.end());
     return static_cast<size_t>(it - sk.pairs.begin());
   };
-  const auto corr_of = [&](int id_a, int id_b) -> double {
+  const auto corr_of = [&](int hi, int id_a, int id_b) -> double { // 定向后的持仓相关 (h 下两者方向相反 → 原值相关取负)
     const size_t p = pair_of(id_a, id_b);
-    return sk.cnt[p] > 0 ? sk.sum[p] / static_cast<double>(sk.cnt[p]) : 0.0; // 无一有效行 (两候选从不同时有秩) → 视作不相关
+    const int sg = ents[static_cast<size_t>(id_a)].sc[hi].sign * ents[static_cast<size_t>(id_b)].sc[hi].sign;
+    return sk.cnt[p] > 0 ? sg * sk.sum[p] / static_cast<double>(sk.cnt[p]) : 0.0; // 无一有效行 (两候选从不同时有秩) → 视作不相关
   };
 
   // ---- 终选: 每 h pick_uncorrelated → ≤ kPicks 权重; 全部 h 的 picks 整个替换文件 weights ----
@@ -997,7 +1023,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       score[static_cast<size_t>(a)] = ents[static_cast<size_t>(pl[static_cast<size_t>(a)])].sc[hi].score;
       for (int b = a + 1; b < M; ++b)
         corr[static_cast<size_t>(a)][static_cast<size_t>(b)] = corr[static_cast<size_t>(b)][static_cast<size_t>(a)] =
-            corr_of(pl[static_cast<size_t>(a)], pl[static_cast<size_t>(b)]);
+            corr_of(hi, pl[static_cast<size_t>(a)], pl[static_cast<size_t>(b)]);
     }
     for (int a = 0; a < M; ++a)
       for (int b = a + 1; b < M; ++b)
@@ -1015,12 +1041,12 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       const Entry &en = ents[static_cast<size_t>(pl[static_cast<size_t>(a)])];
       SearchPick pk;
       pk.expr = en.e.canon;
-      pk.score = en.sc[hi].score, pk.ls = en.sc[hi].ls, pk.ric = en.sc[hi].ric;
+      pk.score = en.sc[hi].score, pk.ls = en.sc[hi].ls, pk.ric = en.sc[hi].ric, pk.sign = en.sc[hi].sign;
       for (int b : picked)
         if (b != a)
           pk.corr = std::max(pk.corr, corr[static_cast<size_t>(a)][static_cast<size_t>(b)]);
       sh.picks.push_back(std::move(pk));
-      ws.push_back(SearchWeight{sh.hold, en.e.canon});
+      ws.push_back(SearchWeight{sh.hold, en.sc[hi].sign, en.e.canon});
     }
   }
   assert(!ws.empty());                              // n_branch > 0 ⇒ 至少一个 h 有高原集

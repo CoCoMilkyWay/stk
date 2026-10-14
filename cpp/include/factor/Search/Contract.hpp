@@ -26,8 +26,11 @@
 //         有意不进目标的: 成本 / 换手 / mono / 显著性 (ls.t, ric.ir) / 样本外 —— 搜索要快.
 //         同一份 score_of 两个入口: Search 吃 Result (Accum 先 finish), 因子看板吃 stat 里该 h 的 HoldStat —— Search 只在内部用分数挑候选,
 //         不往文件写结论.
+//   【方向】Search 自动定向 (score_signed): 因子取反 ⇒ rIC 精确变号, LS 两腿互换近似变号 (多腿吃 lv、空腿吃 sv, 两列不严格对称).
+//         ls / rIC 同号即可用: score = |ls|·|rIC|^ric_pow, sign = rIC 的号; 异号 → −∞. sign 落进 weights, 看板 / Inspect 评估
+//         根下插 TsNeg 的表达式 (Expr negated), 精确统计由 Run 在它上算. 看板 / 算子页仍用 score_of (只认正向).
 //
-//   【多权重】一个模板在一个 h 下不止一个好参数 (粗网格的各局部峰各自细化到一个最优). 终选: 各峰最优里 score ≥ (1 − kPlateau)·max 的
+//   【多权重】一个模板在一个 h 下不止一个好参数 (粗网格的各局部峰各自模式搜索到一个最优). 终选: 各峰最优里 score ≥ (1 − kPlateau)·max 的
 //         为**高原集**; 其中按两两**截面相关**挑 ≤ kPicks 个 (pick_uncorrelated: 组内两两最大相关最小的组合, 不保证含 max) —— 要的是
 //         持仓重合最少的几组优质权重, 不是分数最高的几个. 截面相关 = 同 t 两候选 r16 行的 Pearson (与 rAC 同一行核 lag_row, lag 换成另一候选),
 //         沿抽样行取均值 (kCorrRows 行够估; 两两全量算不值). 每 h 独立做, 全部 h 的 picks 合为该模板的 weights.
@@ -110,8 +113,9 @@ struct Objective {
 
 struct Score {
   bool ok = false;            // n ≥ 3 (假 → 其余字段 0, score −∞)
-  double ls = 0.0, ric = 0.0; // 每期真实毛多空 (ls_period) / rIC 均值
+  double ls = 0.0, ric = 0.0; // 每期真实毛多空 (ls_period) / rIC 均值 (score_signed: 已按 sign 定向, 可用时都 > 0)
   double score = -std::numeric_limits<double>::infinity();
+  int sign = 1; // score_signed 定的方向 (+1 原样 / −1 取反); score_of 恒 +1
 };
 
 // 二级入口 (看板用: 该 h 的 HoldStat 已 finish); Search 的 Result 入口在下面, 先 finish 再走这一份
@@ -131,6 +135,22 @@ inline Score score_of(const Result &r, const Holds &hd, int hi, const Objective 
   factor::stat::assert_holds(hd);
   assert(hi >= 0 && hi < hd.n);
   return score_of(r.acc[hi].finish(hd.h[hi]), o);
+}
+
+// 自动定向 (见【方向】): ls / rIC 同负 → 按取反计 (sign −1, ls / ric 翻成正)
+inline Score score_signed(const HoldStat &hs, const Objective &o) {
+  Score s = score_of(hs, o);
+  if (!s.ok || !(s.ls < 0.0 && s.ric < 0.0))
+    return s;
+  s.sign = -1;
+  s.ls = -s.ls, s.ric = -s.ric;
+  s.score = s.ls * (o.ric_pow == 1.0 ? s.ric : std::pow(s.ric, o.ric_pow));
+  return s;
+}
+inline Score score_signed(const Result &r, const Holds &hd, int hi, const Objective &o) {
+  factor::stat::assert_holds(hd);
+  assert(hi >= 0 && hi < hd.n);
+  return score_signed(r.acc[hi].finish(hd.h[hi]), o);
 }
 
 } // namespace factor::search

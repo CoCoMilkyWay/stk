@@ -9,6 +9,7 @@
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
 //     "weights": [                                            // 可选: 参数搜索 (SearchService) 写的全部权重, 每项一个具体表达式, 一行一个
 //       { "hold": 30,                                         //   搜索时的持有期 (0 = 手填)
+//         "sign": -1,                                         //   可选, ±1 (缺 = +1): −1 = 取反才是好因子, 评估根下插 TsNeg (Expr negated_canon)
 //         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))" }, … ], //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
 //     —— 以下本服务写 (评估派生, 换掉 / 清空 weights 时一起删) ——
 //     "run": { scope…, "frame", "max_impact", "n_full" },     // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
@@ -137,6 +138,7 @@ struct FactorRow {
   std::string file;    // 文件名 (不含目录) = 因子 (父) 身份 (edit_file / Optimize / 删除)
   int widx = -1;       // weights 下标; −1 = 文件级行
   int hold_src = 0;    // 该权重搜索时的持有期 (0 = 手填: 文件 expr 本身具体且无 weights, 视作唯一权重)
+  int sign = 1;        // 该权重的方向 (weights[].sign); −1 → expr 是根下插了 TsNeg 的
   std::string key;     // row_key(file, widx)
   std::string name_en; // = 文件名主干 (去 .json)
   std::string name_cn; // 文件 name_cn 键 (BROKEN 行可能为空)
@@ -144,7 +146,7 @@ struct FactorRow {
   factor::stat::Frame frame = factor::stat::Frame::CS; // 有效 alpha 行的口径 (root_frame, 模板与权重同根)
   std::string expr_raw;                                // 文件 expr 原串 (可能不规范 / 不合法)
   std::string tmpl;                                    // 文件 expr 规范串 (模板, 自由参数打裸键名); 空 = 解析失败
-  std::string expr;                                    // 该权重的具体规范串 (评估对象); 空 = 无 (文件级行)
+  std::string expr;                                    // 该权重的具体规范串 (评估对象, 已含 sign); 空 = 无 (文件级行)
   std::string note;
   std::string error;  // 非空 = BROKEN (文件格式 / 表达式 / 该权重 / 组 id 数据), 文件原样留着
   std::string dup_of; // 非空 = 与该行 (key) 同 hold 同一具体规范串
@@ -246,11 +248,12 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
                              std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err);
 void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
-// 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 整个换成 ws (每项 {hold, expr}, 无 stat; 调用方随后 Run 重算,
+// 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 整个换成 ws (每项 {hold, sign, expr}, 无 stat; 调用方随后 Run 重算,
 // 看板 score / util 等全部由 stat 来), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
 struct SearchWeight {
   int hold = 0;
-  std::string expr; // 具体规范串
+  int sign = 1;     // ±1
+  std::string expr; // 具体规范串 (模板实例, 不含 sign)
 };
 void WriteFactorWeights(const std::string &factor_dir, std::string_view file, const std::vector<SearchWeight> &ws);
 

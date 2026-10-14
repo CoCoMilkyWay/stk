@@ -250,7 +250,7 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
   f.close();
   assert(j.is_object() && "回写的文件扫描时已解析过, 不该变");
   if (const auto wit = j.find("weights"); wit == j.end() || !wit->is_array() || wit->empty()) {
-    assert(r.widx == 0 && r.hold_src == 0 && "无 weights 的文件只可能有手填权重 (widx 0)");
+    assert(r.widx == 0 && r.hold_src == 0 && r.sign == 1 && "无 weights 的文件只可能有手填权重 (widx 0, 正向)");
     ojson w = ojson::object();
     w["hold"] = 0;
     w["expr"] = r.expr;
@@ -520,8 +520,10 @@ void WriteFactorWeights(const std::string &factor_dir, std::string_view file, co
   erase_stats(j);
   ojson arr = ojson::array();
   for (const SearchWeight &w : ws) {
+    assert(w.sign == 1 || w.sign == -1);
     ojson o = ojson::object();
     o["hold"] = w.hold;
+    o["sign"] = w.sign;
     o["expr"] = w.expr;
     arr.push_back(std::move(o));
   }
@@ -672,7 +674,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
     }
     // 权重: weights 数组每项一行; 无 weights 时, 模板具体 → 手填唯一权重, 否则 "未搜索" 一行
     struct W {
-      int hold = 0;
+      int hold = 0, sign = 1;
       std::string expr, err;
     };
     std::vector<W> ws;
@@ -687,6 +689,8 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         W w;
         if (!o.is_object() || !json_int(o, "hold", w.hold)) {
           w.err = "weights[" + std::to_string(i) + "] 须是对象且有整数 hold";
+        } else if (o.find("sign") != o.end() && !(json_int(o, "sign", w.sign) && (w.sign == 1 || w.sign == -1))) {
+          w.err = "weights[" + std::to_string(i) + "] 的 sign 须是 1 或 -1";
         } else if (const auto xit = o.find("expr"); xit == o.end() || !xit->is_string()) {
           w.err = "weights[" + std::to_string(i) + "] 缺 expr 键或不是字串";
         } else {
@@ -695,7 +699,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         ws.push_back(std::move(w));
       }
     } else if (!t.is_template()) {
-      ws.push_back(W{0, t.canon, {}});
+      ws.push_back(W{0, 1, t.canon, {}});
     }
     if (ws.empty()) { // 模板未搜索
       r.status = RowStatus::Done;
@@ -726,6 +730,13 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         w.error = "weights[" + std::to_string(i) + "] 不是模板的实例 (结构 / 固定参数须同模板, 自由参数须落值)";
         emit(w);
         continue;
+      }
+      w.sign = ws[i].sign;
+      if (w.sign < 0) { // 评估对象 = 根下插 TsNeg
+        std::string err;
+        const bool ok = factor::expr::parse(factor::expr::negated_canon(e), fl, e, err);
+        assert(ok && "合法实例的取反串必可解析");
+        (void)ok;
       }
       w.expr = e.canon;
       w.n_ops = e.n_ops;

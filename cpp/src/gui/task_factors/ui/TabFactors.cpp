@@ -3,7 +3,7 @@
 #include "factor/Check.hpp"           // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
 #include "factor/GpuRun.hpp"          // available / device_name
 #include "factor/Search/Contract.hpp" // 搜索窗 / 高原 / 终选常量: Optimize 提示
-#include "factor/Search/Grid.hpp"     // kLayerMax / kMinGain: Optimize 提示
+#include "factor/Search/Grid.hpp"     // kLayerMax: Optimize 提示
 #include "gui/Tasks.hpp"              // StatusColor
 
 #include "imgui.h"
@@ -1058,13 +1058,15 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             "    ◦ 只评排序能力: 不看成本, 不跨持有期比\n"
             "    ◦ 真实 LS: 一腿满档 cap 只 (池内平均有效票数 / 20), 不足按只数/cap 建仓, 超出均分, 不触发记 0\n"
             "    ◦ 触发率 / 利用率已在 LS 里, 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
+            "    ◦ 自动定向: LS 与 rIC 同负 → 取反计 (权重带 sign = -1)\n"
             "• 搜索\n"
             "    ◦ 粗网格\n"
             "        ▪ 中心 = 有界槽中点 / 0\n"
-            "        ▪ 步长按每层 ≤ %d 点的预算反推\n"
+            "        ▪ 步长按 ≤ %d 点的预算反推\n"
             "        ▪ 阈值类参数以其输入的 σ 为单位\n"
-            "    ◦ 分支: 每个互不相邻的局部峰各开一支 (不限支数)\n"
-            "    ◦ 细化: 每支围 top-1 逐层减半, 一层增益 < %.0f%% 停\n"
+            "    ◦ 分支: 粗网格的每个局部峰各开一支 (不限支数)\n"
+            "    ◦ 局部: 每支坐标模式搜索 (每轮每参数 ±步长), 有更优就移, 否则步长减半, 到取整分辨率停\n"
+            "        ▪ 走到别支的点并入; 不升且低于高原线的剪掉\n"
             "• 终选\n"
             "    ◦ 高原集 = 各支最优里 score ≥ %.0f%%·max\n"
             "    ◦ 按两两截面相关 (抽 %d 行) 挑 ≤ %d 个持仓重合最少的 (不保证含 max)\n"
@@ -1074,7 +1076,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             "    ◦ 候选合成共享 DAG, 公共前缀只算一次\n"
             "• 写回: 全部持有期的终选整体替换该文件 weights (旧的全丢), 并自动 Run 重算",
             view_row->file.c_str(), factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen,
-            factor::search::grid::kLayerMax, 100.0 * factor::search::grid::kMinGain, 100.0 * (1.0 - factor::search::kPlateau), factor::search::kCorrRows,
+            factor::search::grid::kLayerMax, 100.0 * (1.0 - factor::search::kPlateau), factor::search::kCorrRows,
             factor::search::kPicks);
     }
     ImGui::SameLine();
@@ -1127,7 +1129,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         eval_line("粗网格");
         break;
       case SearchStage::Refine:
-        eval_line("细化 第 " + std::to_string(ss.level()) + " 层, 存活 " + std::to_string(ss.alive()) + " 支");
+        eval_line("局部 第 " + std::to_string(ss.level()) + " 轮, 存活 " + std::to_string(ss.alive()) + " 支");
         break;
       case SearchStage::Corr:
         eval_line("截面相关");

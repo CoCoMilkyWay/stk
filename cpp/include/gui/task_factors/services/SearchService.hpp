@@ -8,10 +8,10 @@
 //   尺度          先装块 0: 满档只数 n_full = 池内平均有效票数 / kGroups (Labels::cap, FactorsLoad n_full_of); 模板按占位值 (Expr::placeholder)
 //                 建 DAG 在 CPU 上走到各阈值槽 (ANY / GE0) 的输入节点, 取池内有效格标准差 σ 作该槽坐标单位 (Grid set_scale);
 //                 σ 不是正有限数的槽 → 整个搜索放弃 (自由参数没法落值)
-//   趟 0 粗网格   全部槽的格点笛卡尔积 (围 Grid 的中心铺, 步长由 kLayerMax 预算反推), 评一次得全部 h 的分
-//   分支          每 h: 粗网格 score 降序贪心取全部互不相邻格点各开一支 (= 该 h 的全部局部峰)
-//   趟 1..        每 h 每支围自己的 top-1 开细化网格 (步长从粗步长一半起逐层减半, 点数 ≤ kLayerMax), 全部 h 全部活支的新点去重拼成一趟;
-//                 一支一层相对增益 < kMinGain 即停
+//   趟 0 粗网格   全部槽的格点笛卡尔积 (围 Grid 的中心铺, 步长由 kLayerMax 预算反推), 评一次得全部 h 的分 (自动定向: Contract【方向】)
+//   分支          每 h: 粗网格的全部局部峰各开一支 (Grid pick_branches)
+//   趟 1..        每 h 每支坐标模式搜索 (Grid【模式搜索】, 步长从粗步长一半起; 每轮 2P 邻点), 全部 h 全部活支的新点去重拼成一趟;
+//                 走到同 h 别支的点 → 并; 不升且低于 (1 − kPlateau)·当前最高 → 剪
 //   趟 corr       每 h 的高原集 (各支最优里 score ≥ (1 − kPlateau)·max) 取并集再评一趟, 顺带抽样 kCorrRows 行的 r16 回宿主, 同 h 两两算
 //                 截面相关 (Stat/Host lag_row) 沿抽样行取均值
 //   终            每 h pick_uncorrelated → ≤ kPicks 权重; 一个 h 都没有正分候选 → 文件不动; 否则 weights = 全部 h 的 picks
@@ -65,11 +65,13 @@ struct SearchCand {
   int pass = 0;          // 第几趟评的 (0 = 粗)
   bool ok = false;       // n ≥ 3
   double score = -std::numeric_limits<double>::infinity();
-  double ls = 0.0, ric = 0.0; // 每期真实毛 LS (ls_period) / rIC
+  double ls = 0.0, ric = 0.0; // 每期真实毛 LS (ls_period) / rIC (已按 sign 定向)
+  int sign = 1;               // 方向 (Contract score_signed)
 };
 // 一个 h 的终选权重
 struct SearchPick {
   std::string expr;
+  int sign = 1;
   double score = 0.0, ls = 0.0, ric = 0.0;
   double corr = 0.0; // 与同 h 其他 pick 的最大截面相关 (单个 pick 时 0)
 };
@@ -109,7 +111,7 @@ enum class SearchStatus : uint8_t { Idle,
                                     Running,
                                     Done,
                                     Cancelled };
-// 搜索阶段 (UI 显示): 定尺度 (装块 0 + 阈值槽 σ) → 粗网格 → 细化 → 相关性
+// 搜索阶段 (UI 显示): 定尺度 (装块 0 + 阈值槽 σ) → 粗网格 → 局部模式搜索 → 相关性
 enum class SearchStage : uint8_t { Scale,
                                    Coarse,
                                    Refine,
@@ -132,7 +134,7 @@ public:
 
   SearchStatus status() const { return status_.load(std::memory_order_acquire); }
   SearchStage stage() const { return stage_.load(std::memory_order_relaxed); }
-  int level() const { return level_.load(std::memory_order_relaxed); } // 细化层 (Refine 期)
+  int level() const { return level_.load(std::memory_order_relaxed); } // 局部搜索轮 (Refine 期)
   int alive() const { return alive_.load(std::memory_order_relaxed); } // 存活分支数 (Refine 期)
   int pass() const { return pass_.load(std::memory_order_relaxed); }   // 当前趟 (0 = 粗)
   int done() const { return done_.load(std::memory_order_relaxed); }   // Loading: 块内天; Running: 候选 × 块
