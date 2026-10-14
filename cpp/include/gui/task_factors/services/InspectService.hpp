@@ -27,6 +27,7 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
+#include "gui/task_factors/services/FactorsLoad.hpp"    // XDist
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope
 #include "shared/Analysis.hpp"                          // ReadScope / AggPdf
 
@@ -73,19 +74,6 @@ struct InspectPlanes {
   std::vector<uint16_t> rx;            // r16(x) [T][A] (CS = 截面秩, TS = 自身分位; 只池内 g ∧ xm, kRankNone 无效): 右上标的轴排序 / K 线着色
   std::vector<uint16_t> rx_all;        // 同上但不看池 (g = xm): 池外段 (出 CS 池 / 当日无成交) 的秩, K 线淡色显示; 评估不用
   void clear() { rows.clear(), tails.clear(), rx.clear(), rx_all.clear(); }
-};
-
-// 根输入值分布 (Inspect 专属, 左下右半图; 与左半 rIC 分布对仗, 同一套 KLL → AggPdf): 样本 = 池内有效格 (rx 有效 ∧ 根输入有效), 组号 = grp_of(rx)
-// (与 Stat 同一组). 与持有期无关
-struct XDist {
-  analysis::AggPdf pdf;                               // 截尾 [lo, hi] 内样本的 PDF (255 点全落在主体上, 重尾不压扁); 只画图, 矩不用它
-  uint64_t n = 0;                                     // 全体样本数 (不截尾, 下同)
-  float mean = 0.f, sd = 0.f, skew = 0.f, kurt = 0.f; // 全体矩
-  float lo = 0.f, hi = 0.f;                           // 截尾范围 = 全体 ICDF 首末内点 (≈ 0.4% / 99.6% 分位)
-  float bound[factor::stat::kGroups - 1] = {};        // G_k | G_{k+1} 边界 = 逐行 (G_k 最大值 + G_{k+1} 最小值) / 2 的行平均 (TS 口径组间交叠, 仅示意)
-  float share[factor::stat::kGroups] = {};            // 组占全体比例
-  float gmean[factor::stat::kGroups] = {};            // 组均值
-  std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
 };
 
 struct InspectResult {

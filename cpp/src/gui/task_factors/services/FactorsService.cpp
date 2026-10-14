@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -82,6 +83,38 @@ bool load_cost(const json &o, int n_hold, CostTier &dst) {
   return true;
 }
 
+// 看板迷你 PDF ↔ JSON {lo, hi, y: [kMiniPdfPts]} (y 已归一到 [0, 1], 3 位小数够画)
+ojson mini_pdf_json(const MiniPdf &p) {
+  ojson o;
+  o["lo"] = sig4(p.lo);
+  o["hi"] = sig4(p.hi);
+  ojson y = ojson::array();
+  for (const float v : p.y)
+    y.push_back(std::round(v * 1000.f) / 1000.0);
+  o["y"] = y;
+  return o;
+}
+bool load_mini_pdf(const json &o, MiniPdf &dst) {
+  if (!o.is_object())
+    return false;
+  MiniPdf t;
+  double lo = 0.0, hi = 0.0;
+  if (!json_num(o, "lo", lo) || !json_num(o, "hi", hi))
+    return false;
+  t.lo = static_cast<float>(lo), t.hi = static_cast<float>(hi);
+  const auto yit = o.find("y");
+  if (yit == o.end() || !yit->is_array() || yit->size() != static_cast<size_t>(kMiniPdfPts))
+    return false;
+  for (int i = 0; i < kMiniPdfPts; ++i) {
+    const json &v = (*yit)[static_cast<size_t>(i)];
+    if (!v.is_number())
+      return false;
+    t.y[i] = v.get<float>();
+  }
+  dst = t;
+  return true;
+}
+
 // 文件顶层 run (全部权重共用的口径) + 权重 stat → 行 (载入显示用); 任一处不合 / 口径与当前根不符 → 整块忽略
 // (不算 BROKEN: stat 是本服务写的派生数据, 下次评估覆盖)
 void load_stat(const json &run, const json &j, FactorRow &r) {
@@ -127,13 +160,25 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
   for (size_t c = 0; c < cit->size(); ++c)
     if (!load_cost((*cit)[c], t.n_hold, t.costs[c]))
       return;
+  if (const auto pit = j.find("ic_pdf"); pit != j.end()) { // 小图可选 (老文件没有 → 空)
+    if (!pit->is_array() || pit->size() != static_cast<size_t>(t.n_hold))
+      return;
+    for (int k = 0; k < t.n_hold; ++k)
+      if (!load_mini_pdf((*pit)[static_cast<size_t>(k)], t.ic_pdf[k]))
+        return;
+  }
+  if (const auto pit = j.find("x_pdf"); pit != j.end() && !load_mini_pdf(*pit, t.x_pdf))
+    return;
   r.scope = t.scope;
   r.valid_pct = t.valid_pct;
   r.rank_pct = t.rank_pct;
   r.eval_ms = t.eval_ms;
   r.n_hold = t.n_hold;
-  for (int k = 0; k < t.n_hold; ++k)
+  for (int k = 0; k < t.n_hold; ++k) {
     r.hold[k] = t.hold[k];
+    r.ic_pdf[k] = t.ic_pdf[k];
+  }
+  r.x_pdf = t.x_pdf;
   r.costs = std::move(t.costs);
   r.has_stat = true;
   r.stat_from_file = true;
@@ -169,6 +214,11 @@ ojson stat_json(const FactorRow &r) {
   for (const CostTier &c : r.costs)
     costs.push_back(cost_json(c, r.n_hold));
   j["costs"] = costs;
+  ojson ic = ojson::array();
+  for (int k = 0; k < r.n_hold; ++k)
+    ic.push_back(mini_pdf_json(r.ic_pdf[k]));
+  j["ic_pdf"] = ic;
+  j["x_pdf"] = mini_pdf_json(r.x_pdf);
   return j;
 }
 
@@ -276,7 +326,7 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
 
 // 评估结果 → 行 (scope / 二级); hold = [n_hold]
 void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, double n_full, const factor::stat::HoldStat *hold,
-               const std::vector<CostTier> &costs, const char *backend) {
+               const std::vector<CostTier> &costs, const MiniPdf *ic_pdf, const MiniPdf &x_pdf, const char *backend) {
   r.scope.universe = req.universe;
   r.scope.start_date = req.start_date;
   r.scope.end_date = req.end_date;
@@ -286,8 +336,11 @@ void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, double 
   r.scope.backend = backend;
   r.scope.time = now_string();
   r.n_hold = L.n_hold;
-  for (int hi = 0; hi < L.n_hold; ++hi)
+  for (int hi = 0; hi < L.n_hold; ++hi) {
     r.hold[hi] = hold[hi];
+    r.ic_pdf[hi] = ic_pdf[hi];
+  }
+  r.x_pdf = x_pdf;
   r.costs = costs;
   r.has_stat = true;
   r.stat_from_file = false;
@@ -877,11 +930,14 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   const std::filesystem::path dir(req.factor_dir);
   std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
   factor::stat::HoldStat hold[factor::stat::kMaxHold];
-  factor::stat::Accum acc[factor::stat::kMaxHold]; // 该根的一级累加 (后端出), 二级 finish_all → hold
-  std::vector<uint8_t> lc(n);                      // 该根的腿码 (后端出), 评估与成本共用
-  std::vector<CostTier> costs;                     // [amt] 该根的换手成本 (cost_tiers, 两后端同一份宿主代码, 腿码由后端给)
+  factor::stat::Accum acc[factor::stat::kMaxHold];                         // 该根的一级累加 (后端出), 二级 finish_all → hold
+  std::vector<uint8_t> lc(n);                                              // 该根的腿码 (后端出), 评估与成本共用
+  std::vector<CostTier> costs;                                             // [amt] 该根的换手成本 (cost_tiers, 两后端同一份宿主代码, 腿码由后端给)
+  std::vector<factor::stat::Row> lrows(static_cast<size_t>(L.hd.n) * L.T); // 该根的一级 Row[H][T] (后端落地), 只给 ic_pdf
+  MiniPdf ic_pdf[factor::stat::kMaxHold], x_pdf;                           // 该根的看板小图 (ic_mini_pdfs / x_dist, 与 Inspect 同一组样本)
+  XDist xd;
 
-  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct, rank_pct) 填 hold[] + costs → 发布该根的全部因子 (dup 共根)
+  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct, rank_pct) 填 hold[] + costs + 小图 → 发布该根的全部因子 (dup 共根)
   const auto walk = [&](const char *backend, auto &&run_node, auto &&stat_root) -> bool {
     for (int i = 0; i < N; ++i) {
       if (cancel_.load(std::memory_order_relaxed))
@@ -914,7 +970,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
           r.eval_ms += node_ms[static_cast<size_t>(j)];
         r.valid_pct = valid_pct;
         r.rank_pct = rank_pct;
-        fill_stat(r, req, L, n_full, hold, costs, backend);
+        fill_stat(r, req, L, n_full, hold, costs, ic_pdf, x_pdf, backend);
         r.status = RowStatus::Done;
         {
           std::lock_guard<std::mutex> lock(mutex);
@@ -956,9 +1012,13 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
           const factor::check::Plane *root = plane_of(i); // Stat 只看池内 (g 在算子内部)
           valid_pct = valid_pct_of(root->m.data(), L.cs.m.data(), n);
           factor::cpu::stat::run(ex, factor::stat::Plane{root->v.data(), root->m.data()}, L.cs.m.data(), fr, L.span(), lab.L, rx.data(), w, acc,
-                                 factor::cpu::stat::DropRows{});
+                                 factor::cpu::stat::LandRows{lrows.data(), L.T});
           rank_pct = rank_pct_of(ex, rx.data(), root->m.data(), L.cs.m.data(), L.T, L.A);
           factor::stat::finish_all(acc, L.hd, hold);
+          ic_mini_pdfs(lrows.data(), L.hd.n, L.T, ic_pdf);
+          const factor::check::Plane *xp = plane_of(F.nodes[static_cast<size_t>(i)].in[0]); // 根输入: 根的槽先于输入释放分配, 此刻仍在
+          x_dist(ex, xp->v.data(), xp->m.data(), rx.data(), L.T, L.A, xd);
+          x_pdf = mini_pdf_of(xd.pdf);
           factor::cpu::stat::leg_codes(ex, rx.data(), L.span(), lc.data());
           cost_tiers(ex, lc.data(), L, feats_, w, costs);
         });
@@ -976,7 +1036,9 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   factor::gpu::DevPool pool;
   pool.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
   std::vector<uint8_t> mask(n);
-  std::vector<uint16_t> rx(n); // r16(x) 拷回 (rank%)
+  std::vector<uint16_t> rx(n); // r16(x) 拷回 (rank% / x_dist)
+  std::vector<float> xv(n);    // 根输入值拷回 (x_dist; 叶直接用宿主平面)
+  std::vector<uint8_t> xm(n);
   const auto dplane_of = [&](int i) -> const factor::gpu::DevPlane * {
     const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
     return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : pool.slots[static_cast<size_t>(nd.slot)];
@@ -1001,9 +1063,19 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
         const factor::gpu::DevPlane *root = dplane_of(i);        // Stat 只看池内 (g 在算子内部)
         factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid% / rank%
         valid_pct = valid_pct_of(mask.data(), L.cs.m.data(), n);
-        factor::gpu::stat_eval(ss, root, cs_gate, fr, acc, nullptr, lc.data(), rx.data());
+        factor::gpu::stat_eval(ss, root, cs_gate, fr, acc, lrows.data(), lc.data(), rx.data());
         rank_pct = rank_pct_of(ex, rx.data(), mask.data(), L.cs.m.data(), L.T, L.A);
         factor::stat::finish_all(acc, L.hd, hold);
+        ic_mini_pdfs(lrows.data(), L.hd.n, L.T, ic_pdf);
+        const factor::DagNode &xn = F.nodes[static_cast<size_t>(F.nodes[static_cast<size_t>(i)].in[0])];
+        if (xn.op < 0) {
+          const factor::check::Plane &xp = L.planes[static_cast<size_t>(xn.feat)];
+          x_dist(ex, xp.v.data(), xp.m.data(), rx.data(), L.T, L.A, xd);
+        } else {
+          factor::gpu::download(sess, pool.slots[static_cast<size_t>(xn.slot)], xv.data(), xm.data());
+          x_dist(ex, xv.data(), xm.data(), rx.data(), L.T, L.A, xd);
+        }
+        x_pdf = mini_pdf_of(xd.pdf);
         cost_tiers(ex, lc.data(), L, feats_, w, costs);
       });
   pool.release();

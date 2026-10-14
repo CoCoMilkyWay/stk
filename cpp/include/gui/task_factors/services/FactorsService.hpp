@@ -17,7 +17,8 @@
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
-//         "costs": [{amt, cover, acc: [[CostAcc]…]}…] }, … ] } //   每金额档 × 每持有期换手成本累加器 (Inspect 净线从它算)
+//         "costs": [{amt, cover, acc: [[CostAcc]…]}…],          //   每金额档 × 每持有期换手成本累加器 (Inspect 净线从它算)
+//         "ic_pdf": [{lo, hi, y}…], "x_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 看板小图空): 每持有期逐行 rIC 分布 / 根输入值分布 (MiniPdf)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 视作唯一权重 (hold 0).
@@ -130,6 +131,13 @@ struct CostTier {
   factor::stat::CostAcc acc[factor::stat::kMaxHold] = {}; // [hd.n], 与 hold 同序
   float cover = 0.f;                                      // Σ 成本有效 / Σ rx 有效 (格数比, 不分组不分 h)
 };
+// 看板迷你 PDF: Inspect 同款 KLL PDF (AggPdf) 线性插值到 [lo, hi] 上等距 kMiniPdfPts 点, y 按峰值归一到 [0, 1]; lo == hi → 无 (不画)
+inline constexpr int kMiniPdfPts = 32;
+struct MiniPdf {
+  float lo = 0.f, hi = 0.f;
+  float y[kMiniPdfPts] = {};
+  bool has() const { return hi > lo; }
+};
 // 行身份 (view_file / dup_of): "<file>#<widx>"
 inline std::string row_key(std::string_view file, int widx) { return std::string(file) + "#" + std::to_string(widx); }
 // 一行 = 一个因子文件的一个权重 (weights[widx]); 文件级问题 (BROKEN / 模板未搜索) 的文件只出一行 widx = −1, 无可评估表达式.
@@ -160,10 +168,18 @@ struct FactorRow {
   int n_hold = 0;
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::costs 序, 每档 [n_hold] CostAcc (Inspect 净线从它算)
+  MiniPdf ic_pdf[factor::stat::kMaxHold];              // [hold] 逐行 rIC (ok 行) 分布, 与 Inspect 左下左半同一组样本
+  MiniPdf x_pdf;                                       // 根输入值分布 (截尾, 与 Inspect 左下右半同一份 x_dist; 与持有期无关)
   const factor::stat::HoldStat *find_hold(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)
         return &hold[j];
+    return nullptr;
+  }
+  const MiniPdf *find_ic_pdf(int hold_m) const {
+    for (int j = 0; j < n_hold; ++j)
+      if (hold[j].hold == hold_m)
+        return &ic_pdf[j];
     return nullptr;
   }
   const CostTier *find_cost(int amt) const {

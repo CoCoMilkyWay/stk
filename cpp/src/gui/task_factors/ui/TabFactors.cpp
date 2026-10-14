@@ -5,9 +5,11 @@
 #include "factor/Search/Contract.hpp" // 搜索窗 / 高原 / 终选常量: Optimize 提示
 #include "factor/Search/Grid.hpp"     // kLayerMax: Optimize 提示
 #include "gui/Tasks.hpp"              // StatusColor
+#include "gui/util/Sparkline.hpp"     // ic~ / x~ 列迷你图
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
+#include "implot.h"
 
 #include <algorithm>
 #include <array>
@@ -497,15 +499,18 @@ double metric_key(const HS *h, const Metric &m, const FR &r) { return h ? m.get(
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn frame status time | val% rank% trig% util% mono turn LS% SR rIC rICIR rIC>0 rAC | expr ops feats slots note
+//   edit type name_en name_cn *h frame status time | val% rank% trig% util% mono turn LS% SR rIC rICIR rIC>0 rAC | ic~ x~ expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
                  NameEn,
                  NameCn,
+                 HoldSrc,
                  Frame,
                  Status,
                  Time,
+                 IcPdf,
+                 XPdf,
                  Expr,
                  Ops,
                  Feats,
@@ -538,6 +543,11 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• 纯汉字, 1..10 字\n"
      "• 缺 / 不合 → BROKEN",
      true},
+    {HoldSrc, "*h",
+     "该权重搜出来时的持有期 (它最优的 horizon)\n"
+     "• 点行 → Inspect 自动切到这个 Hold\n"
+     "• 父行 = 其代表权重的; 手填权重 = -",
+     true},
     {Frame, "frame",
      "口径 (由根算子定)\n"
      "• 共同: 标签取超额 (减截面均值); 持仓口径: 一腿满档 cap 只, 不足按只数/cap 建仓, 超出均分, 空组 / 空腿记 0\n"
@@ -569,6 +579,18 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• = 子树全部算子节点之和, 共享节点算给每个用它的因子\n"
      "• CPU 全核 wall / GPU 纯 kernel",
      true},
+    {IcPdf, "ic~",
+     "逐行 rank IC 分布 (选定持有期, ok 行; 与 Inspect 左下左半同一组样本)\n"
+     "• KLL PDF, 峰值归一; x 域 = 数据范围并含 0\n"
+     "• 绿 = rIC < 0 段, 红 = rIC > 0 段\n"
+     "• 悬停放大; Run 时算, 落文件 stat",
+     false},
+    {XPdf, "x~",
+     "根输入值分布 (归一前的因子值; 与 Inspect 左下右半同一份)\n"
+     "• 池内有效格, 截尾 ≈ [P0.4, P99.6]; KLL PDF, 峰值归一; x 域含 0\n"
+     "• 绿 = x < 0 段, 红 = x > 0 段; 与持有期无关\n"
+     "• 悬停放大; Run 时算, 落文件 stat",
+     false},
     {Expr, "expr",
      "规范串 = 解析后重新序列化\n"
      "• 格式: 算子 PascalCase, 参数 d / k / k2 显式\n"
@@ -789,13 +811,63 @@ struct OptCell {
   double score = 0.0; // −∞ = LS / rIC ≤ 0
 };
 
-// 表的一行怎么画: 平铺 (单权重 / 文件级行) / 父 (多权重因子的代表权重, 表达式列显示模板) / 子 (展开后的一个权重, 名字列显示搜索持有期)
+// 表的一行怎么画: 平铺 (单权重 / 文件级行) / 父 (多权重因子的代表权重, 表达式列显示模板) / 子 (展开后的一个权重, 名字列显示权重号)
 enum class RowKind : uint8_t { Flat,
                                Parent,
                                Child };
 
-// 固定列一格 (edit 列是勾选框, 在表循环里单独画)
-void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool editing, RowKind kind) {
+// 分布小图一格 (ic~ / x~ 列): 点列两端补到含 0 (全表同口径), 以 0 为界红绿; 悬停 ImPlot 放大 (同 Features Dist 列)
+void mini_pdf_cell(const MiniPdf *p, const char *id, const char *title) {
+  if (!p || !p->has()) {
+    ImGui::TextDisabled("-");
+    return;
+  }
+  const ImVec2 size(kSparkWidth, ImGui::GetTextLineHeight());
+  if (!ImGui::IsRectVisible(size)) {
+    ImGui::Dummy(size);
+    return;
+  }
+  static std::vector<float> xs, ys; // GUI 单线程, 帧内复用
+  xs.clear();
+  ys.clear();
+  if (p->lo > 0.f) {
+    xs.push_back(0.f);
+    ys.push_back(0.f);
+  }
+  for (int i = 0; i < kMiniPdfPts; ++i) {
+    xs.push_back(p->lo + (p->hi - p->lo) * static_cast<float>(i) / (kMiniPdfPts - 1));
+    ys.push_back(p->y[i]);
+  }
+  if (p->hi < 0.f) {
+    xs.push_back(0.f);
+    ys.push_back(0.f);
+  }
+  const int n = static_cast<int>(xs.size());
+  if (!sparkline(id, xs.data(), ys.data(), n, size, kSparkPosColor, &kSparkNegColor))
+    return;
+  ImGui::BeginTooltip();
+  ImGui::TextUnformatted(title);
+  if (ImPlot::BeginPlot("##mini_pdf", ImVec2(360, 200), ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxes(nullptr, "pdf / 峰", 0, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetupAxisLimits(ImAxis_X1, xs.front(), xs.back(), ImPlotCond_Always);
+    int k = 0;
+    while (k < n && xs[static_cast<size_t>(k)] < 0.f)
+      ++k;
+    if (k > 0) {
+      ImPlot::SetNextLineStyle(kSparkNegColor, 2.0f);
+      ImPlot::PlotLine("##neg", xs.data(), ys.data(), std::min(k + 1, n));
+    }
+    if (k < n) {
+      ImPlot::SetNextLineStyle(kSparkPosColor, 2.0f);
+      ImPlot::PlotLine("##pos", xs.data() + k, ys.data() + k, n - k);
+    }
+    ImPlot::EndPlot();
+  }
+  ImGui::EndTooltip();
+}
+
+// 固定列一格 (edit 列是勾选框, 在表循环里单独画); hold = 看板选定持有期 (ic~ 列)
+void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool editing, RowKind kind, int hold) {
   const bool ok = r.error.empty();
   const auto text = [&](const std::string &s, bool hi = false) {
     if (s.empty())
@@ -819,19 +891,27 @@ void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool edi
       ImGui::TextUnformatted(kind_name(r.kind));
     return;
   case NameEn:
-    if (kind == RowKind::Child) { // 子行: 权重号 + 搜索时的持有期
-      ImGui::TextDisabled("  #%d %s", r.widx, r.hold_src > 0 ? factor::stat::hold_name(r.hold_src).c_str() : "手填");
+    if (kind == RowKind::Child) { // 子行: 权重号 (持有期见 *h 列)
+      ImGui::TextDisabled("  #%d", r.widx);
       return;
     }
     return text(r.name_en, editing);
   case NameCn:
     return kind == RowKind::Child ? ImGui::TextDisabled("") : text(r.name_cn, editing);
+  case HoldSrc:
+    return r.widx >= 0 && r.hold_src > 0 ? ImGui::TextUnformatted(factor::stat::hold_name(r.hold_src).c_str()) : ImGui::TextDisabled("-");
   case Frame:
     return ok ? ImGui::TextUnformatted(factor::stat::frame_name(r.frame)) : ImGui::TextDisabled("-");
   case Status:
     return status_cell(r, ctx);
   case Time:
     return num(r.has_stat, "%.1f", r.eval_ms);
+  case IcPdf: {
+    const std::string title = "rIC 分布 (" + factor::stat::hold_name(hold) + ", 峰值归一)";
+    return mini_pdf_cell(r.has_stat ? r.find_ic_pdf(hold) : nullptr, "##ic_pdf", title.c_str());
+  }
+  case XPdf:
+    return mini_pdf_cell(r.has_stat ? &r.x_pdf : nullptr, "##x_pdf", "根输入值分布 (截尾, 峰值归一)");
   case Expr: // 父 / 文件级行 = 模板 (自由参数裸键名); 子 / 平铺权重 = 具体串; 模板解析不过 → 文件原串 (红)
     if (kind != RowKind::Parent && !r.expr.empty())
       ImGui::TextUnformatted(r.expr.c_str());
@@ -1492,6 +1572,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         switch (sf) {
         case Type:
           return static_cast<double>(r.kind);
+        case HoldSrc:
+          return r.widx >= 0 ? r.hold_src : -1.0;
         case Frame:
           return r.error.empty() ? static_cast<double>(r.frame) : -1.0;
         case Time:
@@ -1599,7 +1681,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             ImGui::PopStyleVar();
             ImGui::SameLine(0, 2);
           }
-          fixed_cell(static_cast<Col>(cr.fixed), r, ctx, editing, kind);
+          fixed_cell(static_cast<Col>(cr.fixed), r, ctx, editing, kind, cur_hold);
         } else {
           const Metric &m = *col_metric(c);
           if (group_tip(m.group))

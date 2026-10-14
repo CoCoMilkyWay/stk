@@ -1296,6 +1296,12 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   const InspectStatus st = isvc.status();
   const bool busy = st == InspectStatus::Loading || st == InspectStatus::Running;
   const int n_hold = static_cast<int>(ft.labels.size());
+  if (ui.hold_for != sel.key) { // 换了权重 → Hold 切到它搜出来的持有期 (手填权重无, 不动)
+    ui.hold_for = sel.key;
+    for (int i = 0; i < n_hold; ++i)
+      if (ft.labels[static_cast<size_t>(i)].hold == sel.hold_src)
+        ui.hold_idx = i;
+  }
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
   const int cur_hold = n_hold ? ft.labels[static_cast<size_t>(ui.hold_idx)].hold : 0;
   if (n_hold >= 2) {
