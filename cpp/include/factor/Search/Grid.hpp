@@ -32,10 +32,10 @@
 
 namespace factor::search::grid {
 
-inline constexpr int kLayerMax = 256;         // 粗网格的格点上限; 粗步长由它反推
-inline constexpr double kSpan = 4.0;          // 无界侧粗网格覆盖的坐标范围 (单位)
+inline constexpr int kLayerMax = 64;         // 粗网格的格点上限; 粗步长由它反推 (只为找峰, 精度交给模式搜索)
+inline constexpr double kSpan = 4.0;         // 无界侧粗网格覆盖的坐标范围 (单位)
 inline constexpr double kMinStep = 1.0 / 16; // 模式搜索最小步长 (单位; 只对连续槽起作用, 整数槽先到取整分辨率)
-inline constexpr double kTodUnit = 32.0;      // 时段参数一单位 = 32 分钟
+inline constexpr double kTodUnit = 32.0;     // 时段参数一单位 = 32 分钟
 
 enum class Key : uint8_t { D,
                            K,
