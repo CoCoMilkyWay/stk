@@ -255,14 +255,14 @@ AuditTableStat stat_of(const std::string &name, const TableBook &t, std::size_t 
     a.st.content_months += !m.content_at.empty();
     a.st.updated = std::max({a.st.updated, m.rows_at, m.content_at});
   }
-  // 修复粒度与 repair 同口径: 能定位到日 → 只重拉那几天; 组键只到月 / Snap::Day 表 → 整月
-  const bool snap_day = fundamental::spec(name).snap == fundamental::Snap::Day;
+  // 修复粒度 = audit::fix_day (与 repair 同一来源): 能定位到日 → 只重拉那几天; 否则整月
+  const fundamental::Spec &spec = fundamental::spec(name);
   std::set<std::string> whole;
   std::map<std::string, std::int64_t> day_n; // 日 → 远端行数
   for (const LogRow &r : t.rows) {
     a.bad.insert(r.group);
     a.months.insert(r.group.substr(0, 7));
-    if (snap_day || misc::parse_ymd(r.group) == 0)
+    if (fundamental::audit::fix_day(spec, r.group) == 0)
       whole.insert(r.group.substr(0, 7));
     else
       day_n[r.group] = r.remote_n;
@@ -534,53 +534,38 @@ boost::asio::awaitable<void> AuditService::repair(std::string table) {
 
   std::thread([job, table]() {
     const fundamental::Spec &s = fundamental::spec(table);
-    // 差异定位: 月 → 有差异的日; 组键只到月 (下钻对不上日) 或 Snap::Day 表 → 该月整月重拉
-    std::set<std::string> keys; // 有差异的月 "YYYY-MM"
-    std::set<std::string> whole;
-    std::map<std::string, std::set<misc::Ymd>> days;
-    std::set<int> years;
-    for (const LogRow &r : job->book.at(table).rows) {
-      const std::string ym = r.group.substr(0, 7);
-      keys.insert(ym);
-      years.insert(misc::parse_ym(ym) / 100);
-      const misc::Ymd d = misc::parse_ymd(r.group);
-      if (d == 0 || s.snap == fundamental::Snap::Day)
-        whole.insert(ym);
-      else
-        days[ym].insert(d);
-    }
-    assert(!keys.empty() && "repair: 该表无差异月");
+    std::vector<std::string> groups;
+    for (const LogRow &r : job->book.at(table).rows)
+      groups.push_back(r.group);
+    assert(!groups.empty() && "repair: 该表无差异月");
 
     bigquant::Client client;
     job->start_quota(client);
-    // 重拉月 + 复核单元 (一表 × 一年 × 一轮)
-    job->start(keys.size() + 2 * years.size());
 
+    std::set<std::string> keys; // 有差异的月 "YYYY-MM"
+    std::set<int> years;
     {
+      // 差异 → 修复任务 (整月 Replace / 按日 Splice, 见 audit::repair)
       const fundamental::Catalog cat;
-      std::size_t fetched = 0;
-      for (const fundamental::Slot &sl : fundamental::frozen(s, cat, fundamental::now())) {
-        const std::string key = misc::dash_ym(sl.ym);
-        if (!keys.contains(key))
-          continue;
-        const bool month = whole.contains(key);
-        const std::vector<misc::Ymd> ds = month ? std::vector<misc::Ymd>{}
-                                                : std::vector<misc::Ymd>(days[key].begin(), days[key].end());
-        const fundamental::sync::Task t{&s, sl.ym, sl.w, fundamental::Write::Replace};
-        const std::string label = month ? "整月 " + fundamental::sync::label(t)
-                                        : "按日 " + table + " " + key + " (" + std::to_string(ds.size()) + " 天)";
+      const std::vector<fundamental::Task> tasks =
+          fundamental::audit::repair(s, fundamental::frozen(s, cat, fundamental::now()), groups);
+      for (const fundamental::Task &t : tasks) {
+        keys.insert(misc::dash_ym(t.ym));
+        years.insert(t.ym / 100);
+      }
+      // 重拉月 + 复核单元 (一表 × 一年 × 一轮)
+      job->start(tasks.size() + 2 * years.size());
+      for (const fundamental::Task &t : tasks) {
+        const std::string label = fundamental::sync::label(t);
         {
           std::lock_guard lk(job->mu);
           job->current = "重拉 " + label;
         }
         std::cout << "[bigquant.repair] " << label << " ... " << std::flush;
-        const std::int64_t rows = month ? fundamental::sync::run<fundamental::Bq>(client, t)
-                                        : fundamental::sync::patch(client, s, *sl.sh, ds);
+        const std::int64_t rows = fundamental::sync::run<fundamental::Bq>(client, t);
         std::cout << rows << " rows" << std::endl;
         job->step_done(client);
-        ++fetched;
       }
-      assert(fetched == keys.size() && "repair: 差异月不全在冻结月里");
     }
     forget(job->book.at(table), keys);
     job->commit(table);

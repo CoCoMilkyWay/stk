@@ -2,7 +2,6 @@
 
 #include "api/tushare/client.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <string>
 #include <vector>
@@ -13,17 +12,26 @@ namespace {
 
 std::string quoted(Ymd d) { return "'" + misc::dash(d) + "'"; }
 
-std::vector<bigquant::Query> queries(const Spec &s, const Bq &, Window w) {
-  return {select(s, "*", w)};
+// Splice 的按日谓词 (日键与 audit 指纹组键同形)
+std::string in_days(const Spec &s, const std::vector<Ymd> &days) {
+  std::string in;
+  for (Ymd d : days)
+    in += (in.empty() ? "" : ", ") + quoted(d);
+  return " AND strftime(" + ident(s.vd) + ", '%Y-%m-%d') IN (" + in + ")";
 }
 
-std::vector<tushare::Query> queries(const Spec &, const Tu &src, Window w) {
+std::vector<bigquant::Query> queries(const Spec &s, const Bq &, const Task &t) {
+  return {select(s, "*", t.w, t.how == Write::Splice ? in_days(s, t.days) : "")};
+}
+
+std::vector<tushare::Query> queries(const Spec &, const Tu &src, const Task &t) {
+  assert(t.how != Write::Splice && "fetch: Tushare 无按日修补");
   std::vector<tushare::Query> out;
   if (src.day_params.empty()) {
-    out.push_back({src.api, {{"start_date", misc::dense(w.lo)}, {"end_date", misc::dense(w.hi)}}, src.num});
+    out.push_back({src.api, {{"start_date", misc::dense(t.w.lo)}, {"end_date", misc::dense(t.w.hi)}}, src.num});
     return out;
   }
-  for (Ymd d = w.lo; d <= w.hi; d = misc::add_days(d, 1))
+  for (Ymd d = t.w.lo; d <= t.w.hi; d = misc::add_days(d, 1))
     for (const std::string &p : src.day_params)
       out.push_back({src.api, {{p, misc::dense(d)}}, src.num});
   return out;
@@ -44,10 +52,15 @@ std::shared_ptr<arrow::Table> strip(const Spec &s, std::shared_ptr<arrow::Table>
 } // namespace
 
 template <class Src>
-std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Spec &s, Window w) {
+std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Task &t) {
+  const Spec &s = *t.spec;
   assert(from<Src>(s) && "fetch: 表与 client 的数据源不符");
+  assert((t.how == Write::Replace || s.snap == Snap::All) && "fetch: Snap::Day 表只整段 Replace (MIN / MAX 须看整窗)");
+  assert((t.how != Write::Splice ||
+          (!t.days.empty() && t.w.lo == t.days.front() && t.w.hi == t.days.back())) &&
+         "fetch: Splice 的窗口须 = [首日, 末日]");
   std::vector<std::shared_ptr<arrow::Table>> parts;
-  for (const auto &q : queries(s, std::get<Src>(s.src), w))
+  for (const auto &q : queries(s, std::get<Src>(s.src), t))
     parts.push_back(client.query(q));
   assert(!parts.empty());
   auto joined = arrow::ConcatenateTables(parts);
@@ -55,19 +68,8 @@ std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Spec &s,
   return strip(s, std::move(joined).ValueUnsafe());
 }
 
-std::shared_ptr<arrow::Table> fetch_days(bigquant::Client &client, const Spec &s, const std::vector<Ymd> &days) {
-  assert(s.snap == Snap::All && "fetch_days: Snap::Day 表只能整段 fetch");
-  assert(!days.empty() && std::is_sorted(days.begin(), days.end()) && "fetch_days: days 须升序非空");
-  assert(misc::ym_of(days.front()) == misc::ym_of(days.back()) && "fetch_days: days 须同一月");
-  std::string in;
-  for (Ymd d : days)
-    in += (in.empty() ? "" : ", ") + quoted(d);
-  const std::string tail = " AND strftime(" + ident(s.vd) + ", '%Y-%m-%d') IN (" + in + ")";
-  return strip(s, client.query(select(s, "*", {days.front(), days.back()}, tail)));
-}
-
-template std::shared_ptr<arrow::Table> fetch<Bq>(bigquant::Client &, const Spec &, Window);
-template std::shared_ptr<arrow::Table> fetch<Tu>(tushare::Client &, const Spec &, Window);
+template std::shared_ptr<arrow::Table> fetch<Bq>(bigquant::Client &, const Task &);
+template std::shared_ptr<arrow::Table> fetch<Tu>(tushare::Client &, const Task &);
 
 std::string ident(std::string_view c) { return "\"" + std::string(c) + "\""; }
 

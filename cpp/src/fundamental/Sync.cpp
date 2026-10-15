@@ -5,6 +5,8 @@
 
 #include <cassert>
 #include <chrono>
+#include <string>
+#include <utility>
 
 namespace fundamental::sync {
 
@@ -23,19 +25,11 @@ std::vector<Task> plan(const Catalog &cat, const Now &now) {
     if (!from<Src>(s))
       continue;
     for (const Slot &sl : ledger(s, cat, now)) {
-      // 已冻结 / 已存在的分片刚写过 → 本轮不动
-      if (sl.st == State::Frozen || (sl.sh && age_seconds(*sl.sh, now) < ::config::PIPELINE_DEDUP_WINDOW_SECONDS))
+      // 已存在的分片刚写过 → 本轮不动
+      if (sl.sh && age_seconds(*sl.sh, now) < ::config::PIPELINE_DEDUP_WINDOW_SECONDS)
         continue;
-      Task t{&s, sl.ym, sl.w, Write::Replace};
-      const Ymd w = sl.st == State::Open ? mark(s, *sl.sh) : 0; // 水位; 0 = 整段覆盖 (Missing / Stale / 0 行文件)
-      if (w != 0) {
-        if (s.snap == Snap::Day)
-          continue; // 快照已入盘
-        t.w.lo = misc::add_days(w, 1);
-        t.how = Write::Append;
-      }
-      if (t.w.lo <= t.w.hi) // {0, 0} (vd 空) 亦过
-        out.push_back(t);
+      if (auto t = todo(s, sl))
+        out.push_back(std::move(*t));
     }
   }
   return out;
@@ -43,22 +37,23 @@ std::vector<Task> plan(const Catalog &cat, const Now &now) {
 
 template <class Src>
 std::int64_t run(typename Src::Client &client, const Task &t) {
-  const Spec &s = *t.spec;
-  assert(!(t.how == Write::Append && s.snap == Snap::Day) && "sync::run: Snap::Day 表只整段覆盖");
-  const auto tbl = fetch<Src>(client, s, t.w);
-  put(s, t.ym, t.how, tbl);
-  return tbl->num_rows();
-}
-
-std::int64_t patch(bigquant::Client &client, const Spec &s, const Shard &sh, const std::vector<Ymd> &days) {
-  const auto tbl = fetch_days(client, s, days);
-  splice(s, sh, days, tbl);
+  const auto tbl = fetch<Src>(client, t);
+  put(t, tbl);
   return tbl->num_rows();
 }
 
 std::string label(const Task &t) {
-  return t.spec->name + " " + (t.ym == 0 ? "_meta" : misc::dash_ym(t.ym)) +
-         (t.how == Write::Append ? " +[" + misc::dense(t.w.lo) + "..]" : "");
+  const std::string at = t.spec->name + " " + (t.ym == 0 ? "_meta" : misc::dash_ym(t.ym));
+  switch (t.how) {
+  case Write::Replace:
+    return at;
+  case Write::Append:
+    return at + " +[" + misc::dense(t.w.lo) + "..]";
+  case Write::Splice:
+    return at + " ~[" + std::to_string(t.days.size()) + " 天]";
+  }
+  assert(false && "sync::label: 未知写法");
+  return at;
 }
 
 template std::vector<Task> plan<Bq>(const Catalog &, const Now &);

@@ -167,13 +167,13 @@ struct Job {
 // (在飞的查询不可中断)
 template <class Src>
 void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &client,
-              const std::vector<fundamental::sync::Task> &tasks, const char *tag) {
+              const std::vector<fundamental::Task> &tasks, const char *tag) {
   std::cout << "[" << tag << ".sync] " << tasks.size() << " task(s) from " << config::PIPELINE_START_DATE
             << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
             << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
   job.steps_done = 0;
   job.steps_total = tasks.size();
-  for (const fundamental::sync::Task &t : tasks) {
+  for (const fundamental::Task &t : tasks) {
     if (cancel.load(std::memory_order_relaxed))
       break;
     const std::string label = fundamental::sync::label(t);
@@ -308,32 +308,26 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   job.set_message("构建股票元数据 (cn_stock_basic_info)");
   auto &stock_info = job.assetinfo.mutable_stock_info();
   stock_info.clear();
-  Ids ids(Ids::Miss::Assert);
-  std::vector<std::string> codes; // id → "sz.000001"
-  std::vector<StockInfo *> infos; // id → &stock_info[code]
-  {
-    const pq::TableView bi = fundamental::meta(cat, "cn_stock_basic_info", {"instrument", "name", "list_date", "delist_date"});
-    assert(bi.rows() > 0);
-    pq::Col ins = bi.col("instrument");
-    pq::Col name = bi.col("name");
-    pq::Col ld = bi.col("list_date");
-    pq::Col dd = bi.col("delist_date");
-    for (std::int64_t i = 0, n = bi.rows(); i < n; ++i) {
-      std::string_view s = ins.str(i);
-      if (s.empty())
-        continue;
-      std::string code = to_asset_code(s);
-      StockInfo &info = stock_info[code];
+  using fundamental::spec;
+  const fundamental::Spec &basic = spec("cn_stock_basic_info");
+  const Ids ids(cat, basic);
+  const std::uint32_t nid = ids.size();
+  assert(nid > 0 && "cn_stock_basic_info 无有效 instrument");
+  std::vector<std::string> codes(nid); // id → "sz.000001"
+  std::vector<StockInfo *> infos(nid); // id → &stock_info[code]
+  for (std::uint32_t id = 0; id < nid; ++id) {
+    codes[id] = to_asset_code(ids.code(id));
+    infos[id] = &stock_info[codes[id]];
+  }
+  fundamental::meta(cat, ids, basic, {"name", "list_date", "delist_date"}, [&](const Rows &r) {
+    const pq::Col name = r.col("name"), ld = r.col("list_date"), dd = r.col("delist_date");
+    r.each([&](std::int64_t i, std::uint32_t id, Ymd) {
+      StockInfo &info = *infos[id];
       info.name = halfwidth_ascii(name.str(i));
       info.ipo_date = ld.yyyymmdd(i);
       info.out_date = dd.yyyymmdd(i);
-      ids.add(s);
-      codes.push_back(std::move(code));
-      infos.push_back(&info);
-    }
-  }
-  const std::uint32_t nid = ids.size();
-  assert(nid > 0 && "cn_stock_basic_info 无有效 instrument");
+    });
+  });
 
   // ---- 交易日历 ← all_trading_days → 全日历展开 (含周末/节假日 trading=false 行) ----
   // Browser 日历的节假日标注依赖非交易日行
@@ -354,31 +348,26 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   // basic_info.name 是过期快照 (ST 摘牌/更名后不回填), 与 status.st_status
   // 当日口径对不上; instruments 的逐日 name 与 st_status 严格一致 (ST/*ST
   // 前缀 ↔ 1/2). 退市股不在 instruments 里, 保留 basic_info 的最后简称.
-  fundamental::snapshot(cat, "cn_stock_instruments", {"date", "instrument", "name"},
-                        [&](const pq::TableView &v, const std::vector<std::int64_t> &rows) {
-                          const pq::Col ins = v.col("instrument"), name = v.col("name");
-                          for (std::int64_t i : rows)
-                            infos[ids.find(ins.str(i))]->name = halfwidth_ascii(name.str(i));
-                        });
+  fundamental::snapshot(cat, ids, spec("cn_stock_instruments"), {"name"}, [&](const Rows &r) {
+    const pq::Col name = r.col("name");
+    r.each([&](std::int64_t i, std::uint32_t id, Ymd) { infos[id]->name = halfwidth_ascii(name.str(i)); });
+  });
 
   // ---- 行业 ← cn_stock_industry_component 最新快照 (申万一级) ----
-  fundamental::snapshot(cat, "cn_stock_industry_component",
-                        {"date", "instrument", "industry_level1_code", "industry_level1_name"},
-                        [&](const pq::TableView &v, const std::vector<std::int64_t> &rows) {
-                          const pq::Col ins = v.col("instrument"), code = v.col("industry_level1_code"),
-                                        name = v.col("industry_level1_name");
-                          for (std::int64_t i : rows) {
-                            StockInfo &info = *infos[ids.find(ins.str(i))];
+  fundamental::snapshot(cat, ids, spec("cn_stock_industry_component"), {"industry_level1_code", "industry_level1_name"},
+                        [&](const Rows &r) {
+                          const pq::Col code = r.col("industry_level1_code"), name = r.col("industry_level1_name");
+                          r.each([&](std::int64_t i, std::uint32_t id, Ymd) {
+                            StockInfo &info = *infos[id];
                             info.ind_code = code.str(i);
                             info.ind_name = name.str(i);
-                          }
+                          });
                         });
 
   // ======================== 并行扫描阶段 ========================
   // 留 2 核给 io 线程 + GUI 渲染 (实测 8 线程已拿到 96% 的并行收益)
   const unsigned hw = std::thread::hardware_concurrency();
   fundamental::Scan scan(cat, ids, hw > 3 ? hw - 2 : 1);
-  using fundamental::spec;
 
   // 分红窗口: publish_date ∈ (today-N日, today] (锚定公告日, 非除权日 —
   // 与 L1 dy_raw 同口径)
@@ -393,7 +382,6 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   Part<BarAcc> bar_p;
   scan.add(bar_p, spec("cn_stock_real_bar1d"), {"adjust_factor", "volume", "amount", "turn", "close"}, BarAcc(nid),
            [nid](const Rows &r, BarAcc &a) {
-             const std::int64_t n = r.size();
              const pq::Col af = r.col("adjust_factor");
              const pq::Col vol = r.col("volume");
              const pq::Col amt = r.col("amount");
@@ -404,14 +392,13 @@ bool build_asset_info(Job &job, const Catalog &cat) {
              // 块首做一次线性查重 ⇒ 全文件只走 K 次 find.
              a.days.clear();
              Ymd seen_d = -1;
-             for (std::int64_t i = 0; i < n; ++i) {
-               const Ymd d = r.date(i);
+             r.each([&](std::int64_t, std::uint32_t, Ymd d) {
                if (d == seen_d)
-                 continue;
+                 return;
                seen_d = d;
                if (std::find(a.days.begin(), a.days.end(), d) == a.days.end())
                  a.days.push_back(d);
-             }
+             });
              std::sort(a.days.begin(), a.days.end());
              const std::size_t K = a.days.size();
              assert(K > 0 && K <= 64 && "月分片内不同 date 数异常");
@@ -424,9 +411,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
 
              Ymd prev_d = -1;
              std::size_t rank = 0;
-             for (std::int64_t i = 0; i < n; ++i) {
-               const std::uint32_t id = r.id(i);
-               const Ymd d = r.date(i);
+             r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                if (d != prev_d) {
                  prev_d = d;
                  rank = static_cast<std::size_t>(
@@ -447,7 +432,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
                  a.grid[c] = f;
                  a.filled[c] = 1;
                }
-             }
+             });
 
              // 文件内变点压缩. 这里只 drop "与前一保留值精确相等" 的点, 而全局那步的
              // 判据是 |f/prev-1| < 1e-5 —— 精确相等必然满足它, 所以两级压缩与单级的
@@ -479,22 +464,19 @@ bool build_asset_info(Job &job, const Catalog &cat) {
            [](const Rows &r, StatusAcc &a) {
              const pq::Col st = r.col("st_status");
              const pq::Col sp = r.col("suspended");
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const std::uint32_t id = r.id(i);
-               const Ymd d = r.date(i);
+             r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                const bool halted = sp.i32(i, 0) != 0;
                a.latest[id].offer(d, {st.i32(i, 0), halted});
                if (halted && d > 0)
                  a.halts.push({d, id});
-             }
+             });
            });
 
   // ---- 股本 ← cn_stock_shares 每股最新行 ----
   Part<SharesAcc> shares_p;
   scan.add(shares_p, spec("cn_stock_shares"), {"total_shares"}, SharesAcc(nid), [](const Rows &r, SharesAcc &a) {
     const pq::Col ts = r.col("total_shares");
-    for (std::int64_t i = 0; i < r.size(); ++i)
-      a[r.id(i)].offer(r.date(i), ts.null(i) ? 0.0f : ts.f32(i));
+    r.each([&](std::int64_t i, std::uint32_t id, Ymd d) { a[id].offer(d, ts.null(i) ? 0.0f : ts.f32(i)); });
   });
 
   // ---- TTM 财务 ← cn_stock_financial_ttm_shift, shift==0 每股最新行 ----
@@ -506,11 +488,10 @@ bool build_asset_info(Job &job, const Catalog &cat) {
              const pq::Col np = r.col("net_profit_to_parent_shareholders_ttm");
              const pq::Col rev = r.col("total_operating_revenue_ttm");
              const pq::Col cf = r.col("net_cffoa_ttm");
-             for (std::int64_t i = 0; i < r.size(); ++i) {
+             r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                if (shift.i32(i, -1) != 0)
-                 continue;
-               Ttm &c = a[r.id(i)];
-               const Ymd d = r.date(i);
+                 return;
+               Ttm &c = a[id];
                // 三个分母各自推进: 源里这三列 null 各约 10 万行, 且停止披露的公司最后几期
                // 是空的. 整行取 max(date) 会让 PE/PS/PCF 成片留空 (窗口内退市股 pe 缺 15、
                // ps 31、pcf 26); 各自回退到最后一个有效期次后, 三项一起收敛到 8 只 —— 那
@@ -521,7 +502,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
                  c.rev.offer(d, rev.f32(i));
                if (!cf.null(i) && cf.f32(i) != 0.0f)
                  c.cf.offer(d, cf.f32(i));
-             }
+             });
            });
 
   // ---- 权益 MRQ ← cn_stock_financial_balance_general_pit ----
@@ -531,14 +512,14 @@ bool build_asset_info(Job &job, const Catalog &cat) {
            {"report_date", "total_equity_to_parent_shareholders"}, BalAcc(nid), [](const Rows &r, BalAcc &a) {
              const pq::Col rd = r.col("report_date");
              const pq::Col eq = r.col("total_equity_to_parent_shareholders");
-             for (std::int64_t i = 0; i < r.size(); ++i) {
+             r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                // 先筛有效再定位: 无效行不参与 (report_date, date) 竞争, 否则停止披露公司
                // 最新那份空权益会盖掉上一期的真实值 —— 同 TTM 三列的处理.
                if (eq.null(i) || eq.f32(i) == 0.0f)
-                 continue;
-               const std::int64_t key = static_cast<std::int64_t>(rd.yyyymmdd(i)) << 32 | r.date(i);
-               a[r.id(i)].offer(key, eq.f32(i));
-             }
+                 return;
+               const std::int64_t key = static_cast<std::int64_t>(rd.yyyymmdd(i)) << 32 | d;
+               a[id].offer(key, eq.f32(i));
+             });
            });
 
   // ---- 分红 ← cn_stock_dividend, 最长窗口内的税前每股分红行 (vd = publish_date) ----
@@ -546,16 +527,15 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   scan.add(div_p, spec("cn_stock_dividend"), {"cash_before_tax"}, DivAcc{},
            [div_lo_min, today](const Rows &r, DivAcc &a) {
              const pq::Col cash = r.col("cash_before_tax");
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const Ymd d = r.date(i);
+             r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                if (d <= div_lo_min || d > today)
-                 continue; // 最长窗口都不覆盖 → 三档都用不上
+                 return; // 最长窗口都不覆盖 → 三档都用不上
                // 源里 625 行 cash_before_tax 是 null, 漏一个进求和就把该股 dy1y/3y/5y 全
                // 打成 NaN —— 判空统一走 bitmap (见文件上方约定 1).
                if (cash.null(i) || cash.f32(i) <= 0.0f)
-                 continue;
-               a.push({r.id(i), d, cash.f32(i)});
-             }
+                 return;
+               a.push({id, d, cash.f32(i)});
+             });
            });
 
   job.steps_done = 0;
@@ -757,8 +737,8 @@ awaitable<void> FundamentalService::run(bool with_network) {
       take_quota();
       // plan 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 空计划, 不拉数据
       job->set_message("plan 判定 (水位/dedup 窗口)");
-      const std::vector<fundamental::sync::Task> bq_tasks = fundamental::sync::plan<fundamental::Bq>(cat, now);
-      const std::vector<fundamental::sync::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(cat, now);
+      const std::vector<fundamental::Task> bq_tasks = fundamental::sync::plan<fundamental::Bq>(cat, now);
+      const std::vector<fundamental::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(cat, now);
       bool need_bq = !bq_tasks.empty();
       if (need_bq) {
         // 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)

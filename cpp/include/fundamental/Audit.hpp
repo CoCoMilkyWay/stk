@@ -6,11 +6,13 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // ============================================================================
 // audit — 核对侧 (与 sync 逐项对仗: Unit ↔ Task, plan ↔ plan, run ↔ run, label ↔ label)
 //   调用方循环: for u ∈ plan(cat, now, seed): run(client, u)
+//   修复: for t ∈ repair(s, frozen, groups): sync::run(client, t) —— audit → sync 的唯一桥 (Diff → Task)
 //
 // 远端 vs 本地已冻结月分片的一致性核对 (只读, 不改盘)
 //   抓关月冻结之后服务端的晚到回填 (如分红一个月后批量入库) 与静默改历史.
@@ -75,5 +77,13 @@ std::vector<Diff> run(bigquant::Client &client, const Unit &u);
 
 // "cn_stock_dividend 2019 rows" (进度展示)
 std::string label(const Unit &u);
+
+// 修复粒度 (repair 与修复流量预估同一来源): 组键定位到日且非 Snap::Day 表 → 该日; 否则 → 0 (整月)
+Ymd fix_day(const Spec &s, std::string_view group);
+
+// 差异组键 (Diff::group) → 修复任务, 每差异月一条, ym 升序:
+//   月内任一组 fix_day = 0 → Replace 整月 (槽窗口); 否则 Splice 有差异的日.
+//   frozen = s 的 frozen() 槽; 差异月须全在其中 (assert)
+std::vector<Task> repair(const Spec &s, const std::vector<Slot> &frozen, const std::vector<std::string> &groups);
 
 } // namespace fundamental::audit

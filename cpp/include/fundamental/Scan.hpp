@@ -17,9 +17,11 @@
 #include <vector>
 
 // ============================================================================
-// Scan — 读侧原语: 月度表的分段并行 map-reduce (与 sync 的 plan → fetch → put 对仗);
-//   Meta 表单文件由 meta() 直读, Month 表最新一天由 snapshot() 给出, D 轴由 calendar() 给出 (文件末尾).
-//   读盘一律经 Store::read.
+// Scan — 读侧原语, 与写侧 Shape × Snap 对仗; 三个入口同一签名骨架 (…, Spec, cols, …fn(const Rows &)):
+//   Month·全行   Scan::add  : 分段并行 map-reduce (与 sync 的 plan → fetch → put 对仗)
+//   Month·最新日 snapshot() : 写侧 Snap::Day 的读侧
+//   Meta         meta()     : _meta 单文件
+//   D 轴由 calendar() 给出 (文件末尾, 无资产键). 读盘一律经 Store::read, 行一律经 Rows::each.
 //
 //   split: 一张表的分片按 ym 升序均分成 ≤ threads 段 (段 = 连续 ym 区间), 段 s 独占累加器 segs[s]
 //   fold : fold(rows, acc) 逐分片累加; 行的资产 id 与 vd 日期已整列预转
@@ -78,8 +80,8 @@ struct Sink {
 };
 
 // ---------------------------------------------------------------------------
-// 资产 id 空间: 代码 ("000001.SZ") → [0, size)
-//   Miss::Assert: 空间外代码 = 数据错误 → assert;  Miss::Skip: 空间外代码 → kNone (fold 跳过)
+// 资产 id 空间: 代码 ("000001.SZ") ↔ [0, size)
+//   Miss::Assert: 空间外代码 = 数据错误 → assert;  Miss::Skip: 空间外代码 → kNone (Rows::each 跳过)
 // ---------------------------------------------------------------------------
 class Ids {
 public:
@@ -88,9 +90,15 @@ public:
   static constexpr std::uint32_t kNone = ~0u;
 
   explicit Ids(Miss miss) : miss_(miss) {}
-  std::uint32_t add(std::string_view code); // 重复 → assert
-  std::uint32_t size() const { return static_cast<std::uint32_t>(ids_.size()); }
+  // 空间 = Meta 表 s 的键列 (文件行序), Miss::Assert; 分片缺失 → assert
+  Ids(const Catalog &cat, const Spec &s);
+  Ids(const Ids &) = delete; // codes_ 指向 ids_ 的节点
+  Ids &operator=(const Ids &) = delete;
+
+  std::uint32_t add(std::string_view code); // 空 / 重复 → assert
+  std::uint32_t size() const { return static_cast<std::uint32_t>(codes_.size()); }
   std::uint32_t find(std::string_view code) const;
+  std::string_view code(std::uint32_t id) const { return *codes_[id]; }
 
 private:
   struct Hash {
@@ -103,25 +111,52 @@ private:
   };
   Miss miss_;
   std::unordered_map<std::string, std::uint32_t, Hash, Eq> ids_;
+  std::vector<const std::string *> codes_; // id → ids_ 的键 (unordered_map 节点地址稳定)
 };
 
 // ---------------------------------------------------------------------------
-// 一个分片的行视图
+// 一个分片的行视图 (Scratch::open 产出, 活到该 Scratch 下一次 open)
 // ---------------------------------------------------------------------------
 class Rows {
 public:
-  std::int64_t size() const { return n_; }
-  std::uint32_t id(std::int64_t i) const { return dict_ids_[key_[i]]; } // Miss::Skip 下可为 Ids::kNone
-  Ymd date(std::int64_t i) const { return dates_[i]; }                  // vd; null → 0
+  std::int64_t size() const { return n_; } // 分片行数 (含 each 跳过的行)
   misc::pq::Col col(std::string_view c) const { return t_->col(c); }
 
+  // 逐行 fn(i, id, d): i = col(..) 的行下标, id ∈ Ids, d = vd (null / vd 空 → 0).
+  //   跳过空间外代码 (Miss::Skip 下的 Ids::kNone) 与 day 之外的行 (snapshot)
+  template <class Fn>
+  void each(Fn &&fn) const {
+    for (std::int64_t i = 0; i < n_; ++i) {
+      const std::uint32_t id = dict_ids_[key_[i]];
+      const Ymd d = dates_[i];
+      if (id != Ids::kNone && (day_ == 0 || d == day_))
+        fn(i, id, d);
+    }
+  }
+
 private:
-  friend class Scan;
+  friend class Scratch;
   const misc::pq::TableView *t_ = nullptr;
   std::int64_t n_ = 0;
   const std::int32_t *key_ = nullptr;
   const std::uint32_t *dict_ids_ = nullptr;
   const Ymd *dates_ = nullptr;
+  Ymd day_ = 0; // 0 = 全部日
+};
+
+// 读侧暂存 (每线程一份): 当前分片的表 + 键字典映射 + 日期列
+//   open: 读分片 (只解 cols + vd + 资产键列; 键列以字典落地, 每文件只对字典项查一次 Ids) → 其上的 Rows
+//   snap = Snap::Day: 只留分片内最晚一天 (snapshot); 与写侧 Snap 同义 "每个分片只留一天"
+class Scratch {
+public:
+  Rows open(const Shard &sh, const Spec &s, const std::vector<std::string> &cols, const Ids &ids,
+            Snap snap = Snap::All);
+
+private:
+  std::unique_ptr<misc::pq::TableView> t_;
+  misc::pq::DictCol key_;
+  std::vector<std::uint32_t> dict_ids_;
+  std::vector<Ymd> dates_;
 };
 
 // 一张表的分段累加器; run() 之后 take() 按段序归约
@@ -158,15 +193,10 @@ public:
   void run(std::atomic<std::size_t> &done);
 
 private:
-  struct Scratch; // 每线程: 当前分片的表 + 键字典映射 + 日期列
-
   struct Job {
     std::uint64_t bytes;
     std::function<void(Scratch &, std::atomic<std::size_t> &)> body;
   };
-
-  // 读分片 → 行视图 (vd / 键列整列预转进 x)
-  Rows open(const Shard &sh, const Spec &s, const std::vector<std::string> &cols, Scratch &x) const;
 
   const Catalog &cat_;
   const Ids &ids_;
@@ -178,9 +208,6 @@ private:
 template <class Acc, class Fold>
 void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, const Acc &proto, Fold fold) {
   assert(s.shape == Shape::Month && !s.vd.empty() && "Scan: 只扫 Month 表");
-  for (std::string_view c : {std::string_view(s.vd), key_col(s)})
-    if (std::find(cols.begin(), cols.end(), c) == cols.end())
-      cols.emplace_back(c);
   const std::vector<Shard> &all = cat_.shards(s.name);
   const std::size_t n = all.size();
   const std::size_t nseg = std::clamp<std::size_t>(n, 1, threads_);
@@ -196,7 +223,7 @@ void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, con
       bytes += all[i].bytes;
     jobs_.push_back({bytes, [this, &out, &s, &all, shared_cols, fold, seg, lo, hi](Scratch &x, std::atomic<std::size_t> &done) {
                        for (std::size_t i = lo; i < hi; ++i) {
-                         const Rows r = open(all[i], s, *shared_cols, x);
+                         const Rows r = x.open(all[i], s, *shared_cols, ids_);
                          if (r.size() > 0)
                            fold(r, out.segs_[seg]);
                          done.fetch_add(1, std::memory_order_relaxed);
@@ -205,31 +232,14 @@ void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, con
   }
 }
 
-// Meta 表 name 的 _meta 单文件, 只解 cols (分片缺失 / 非 Meta 表 → assert) —— Scan (Month) 的对偶
-misc::pq::TableView meta(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols);
+// Month 表 s 最新一天 → fn(rows); 全表无行则不调 —— 写侧 Snap::Day 的读侧
+//   自最新分片往前找首个非空片, 只留其 max(vd) 那天
+void snapshot(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
+              const std::function<void(const Rows &)> &fn);
 
-// Month 表 name 最新那天的快照行 → fn(view, rows); 全表无行则不调 —— meta() 的对偶 (写侧 Snap::Day 的读侧)
-//   自最新分片往前找首个非空片, 取其 max(vd) 那天的行. cols 须含 vd
-template <class Fn>
-void snapshot(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols, Fn fn) {
-  const Spec &s = spec(name);
-  assert(s.shape == Shape::Month && "snapshot: 只读 Month 表");
-  const std::vector<Shard> &shards = cat.shards(name);
-  std::vector<Ymd> dates;
-  for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
-    const misc::pq::TableView v(read(*it, cols));
-    if (v.rows() == 0)
-      continue; // 0 行月 (拉过为空) → 往前找
-    v.col(s.vd).yyyymmdd_all(dates);
-    const Ymd max_d = *std::max_element(dates.begin(), dates.end());
-    std::vector<std::int64_t> rows;
-    for (std::int64_t i = 0; i < v.rows(); ++i)
-      if (dates[static_cast<std::size_t>(i)] == max_d)
-        rows.push_back(i);
-    fn(v, rows);
-    return;
-  }
-}
+// Meta 表 s 的 _meta 单文件 → fn(rows) (分片缺失 → assert) —— 写侧 Shape::Meta 的读侧
+void meta(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
+          const std::function<void(const Rows &)> &fn);
 
 // all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (AssetInfo 与 fund::Pool 共用)
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today);

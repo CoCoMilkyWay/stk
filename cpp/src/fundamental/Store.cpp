@@ -85,6 +85,49 @@ State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
                                                                                                 : State::Stale;
 }
 
+// p 里 vd ∈ days 的行删掉, tbl 追加在末尾, 其余天原样; 原子重写 (见 put)
+void splice(const Spec &s, const fs::path &p, const std::vector<Ymd> &days, const std::shared_ptr<arrow::Table> &tbl) {
+  assert(s.shape == Shape::Month && "put: Splice 只用于月分片");
+  assert(fs::exists(p) && "put: Splice 的分片须已存在");
+  assert(std::is_sorted(days.begin(), days.end()) && "put: Splice 的 days 须升序");
+  auto in_days = [&](Ymd d) { return std::binary_search(days.begin(), days.end(), d); };
+  auto vds = [&](const arrow::Table &t) {
+    const auto c = t.GetColumnByName(s.vd);
+    assert(c && "put: Splice 缺 vd 列");
+    std::vector<Ymd> out, d;
+    for (const auto &chunk : c->chunks()) {
+      pq::Col(chunk).yyyymmdd_all(d);
+      out.insert(out.end(), d.begin(), d.end());
+    }
+    return out;
+  };
+  for ([[maybe_unused]] Ymd d : vds(*tbl))
+    assert(in_days(d) && "put: Splice 新行的 vd 不在替换日内");
+
+  // 保留段 = 旧分片里 vd ∉ days 的连续行 (零拷贝 Slice)
+  const auto old = pq::read_table(p);
+  const std::vector<Ymd> od = vds(*old);
+  std::vector<std::shared_ptr<arrow::Table>> parts;
+  const std::int64_t n = static_cast<std::int64_t>(od.size());
+  for (std::int64_t i = 0; i < n;) {
+    if (in_days(od[i])) {
+      ++i;
+      continue;
+    }
+    std::int64_t j = i;
+    while (j < n && !in_days(od[j]))
+      ++j;
+    parts.push_back(old->Slice(i, j - i));
+    i = j;
+  }
+  parts.push_back(tbl);
+  arrow::ConcatenateTablesOptions opt;
+  opt.unify_schemas = true;
+  auto joined = arrow::ConcatenateTables(parts, opt);
+  assert(joined.ok() && "put: Splice 新旧 schema 无法合并");
+  pq::write_table_atomic(p, std::move(joined).ValueUnsafe());
+}
+
 } // namespace
 
 Now now() {
@@ -145,6 +188,22 @@ std::vector<Slot> frozen(const Spec &s, const Catalog &cat, const Now &now) {
   return out;
 }
 
+std::optional<Task> todo(const Spec &s, const Slot &sl) {
+  if (sl.st == State::Frozen)
+    return std::nullopt;
+  Task t{&s, sl.ym, sl.w};
+  const Ymd w = sl.st == State::Open ? mark(s, *sl.sh) : 0; // 水位; 0 = 整段覆盖 (Missing / Stale / 0 行文件)
+  if (w != 0) {
+    if (s.snap == Snap::Day)
+      return std::nullopt; // 快照已入盘
+    t.w.lo = misc::add_days(w, 1);
+    t.how = Write::Append;
+  }
+  if (t.w.lo > t.w.hi)
+    return std::nullopt; // 已到水位; {0, 0} (vd 空) 照拉
+  return t;
+}
+
 Ymd mark(const Spec &s, const Shard &sh) {
   assert(!s.vd.empty() && "mark: vd 空的表无水位");
   return pq::max_yyyymmdd(sh.path, s.vd);
@@ -155,54 +214,24 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
   return pq::read_table(sh.path, cols, dict);
 }
 
-void put(const Spec &s, Ym ym, Write how, const std::shared_ptr<arrow::Table> &tbl) {
-  assert((ym == 0) == (s.shape == Shape::Meta) && "put: 分片与表形态不符");
-  const fs::path p = path(s.name, ym);
-  if (how == Write::Append)
-    pq::append_table_atomic(p, tbl);
-  else
+void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
+  const Spec &s = *t.spec;
+  assert((t.ym == 0) == (s.shape == Shape::Meta) && "put: 分片与表形态不符");
+  const fs::path p = path(s.name, t.ym);
+  switch (t.how) {
+  case Write::Replace:
     pq::write_table_atomic(p, tbl);
-}
-
-void splice(const Spec &s, const Shard &sh, const std::vector<Ymd> &days, const std::shared_ptr<arrow::Table> &tbl) {
-  assert(s.shape == Shape::Month && sh.ym != 0 && "splice: 只用于月分片");
-  assert(!days.empty() && std::is_sorted(days.begin(), days.end()) && "splice: days 须升序非空");
-  auto in_days = [&](Ymd d) { return std::binary_search(days.begin(), days.end(), d); };
-  auto vds = [&](const arrow::Table &t) {
-    const auto c = t.GetColumnByName(s.vd);
-    assert(c && "splice: 缺 vd 列");
-    std::vector<Ymd> out, d;
-    for (const auto &chunk : c->chunks()) {
-      pq::Col(chunk).yyyymmdd_all(d);
-      out.insert(out.end(), d.begin(), d.end());
-    }
-    return out;
-  };
-  for ([[maybe_unused]] Ymd d : vds(*tbl))
-    assert(in_days(d) && "splice: 新行的 vd 不在替换日内");
-
-  // 保留段 = 旧分片里 vd ∉ days 的连续行 (零拷贝 Slice)
-  const auto old = read(sh);
-  const std::vector<Ymd> od = vds(*old);
-  std::vector<std::shared_ptr<arrow::Table>> parts;
-  const std::int64_t n = static_cast<std::int64_t>(od.size());
-  for (std::int64_t i = 0; i < n;) {
-    if (in_days(od[i])) {
-      ++i;
-      continue;
-    }
-    std::int64_t j = i;
-    while (j < n && !in_days(od[j]))
-      ++j;
-    parts.push_back(old->Slice(i, j - i));
-    i = j;
+    return;
+  case Write::Append:
+    pq::append_table_atomic(p, tbl);
+    return;
+  case Write::Splice:
+    assert(!t.days.empty() && misc::ym_of(t.days.front()) == t.ym && misc::ym_of(t.days.back()) == t.ym &&
+           "put: Splice 的 days 须非空且同属 ym");
+    splice(s, p, t.days, tbl);
+    return;
   }
-  parts.push_back(tbl);
-  arrow::ConcatenateTablesOptions opt;
-  opt.unify_schemas = true;
-  auto joined = arrow::ConcatenateTables(parts, opt);
-  assert(joined.ok() && "splice: 新旧 schema 无法合并");
-  pq::write_table_atomic(sh.path, std::move(joined).ValueUnsafe());
+  assert(false && "put: 未知写法");
 }
 
 } // namespace fundamental

@@ -491,4 +491,30 @@ std::string label(const Unit &u) {
          (u.pass == Pass::Rows ? " rows" : " content");
 }
 
+Ymd fix_day(const Spec &s, std::string_view group) {
+  return s.snap == Snap::Day ? 0 : misc::parse_ymd(group);
+}
+
+std::vector<Task> repair(const Spec &s, const std::vector<Slot> &frozen, const std::vector<std::string> &groups) {
+  std::map<Ym, std::set<Ymd>> by_month; // 差异月 → fix_day 集 (含 0 = 整月)
+  for (const std::string &g : groups) {
+    const Ym m = misc::parse_ym(std::string_view(g).substr(0, 7));
+    assert(m > 0 && "repair: 组键不是 YYYY-MM[-DD]");
+    by_month[m].insert(fix_day(s, g));
+  }
+  std::vector<Task> out;
+  for (const Slot &sl : frozen) {
+    const auto it = by_month.find(sl.ym);
+    if (it == by_month.end())
+      continue;
+    const std::set<Ymd> &ds = it->second;
+    if (ds.contains(0))
+      out.push_back({&s, sl.ym, sl.w, Write::Replace});
+    else
+      out.push_back({&s, sl.ym, {*ds.begin(), *ds.rbegin()}, Write::Splice, {ds.begin(), ds.end()}});
+  }
+  assert(out.size() == by_month.size() && "repair: 差异月不全在冻结月里");
+  return out;
+}
+
 } // namespace fundamental::audit

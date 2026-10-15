@@ -13,23 +13,20 @@
 namespace fundamental {
 
 // ============================================================================
-// Remote — Spec × Window → 远端查询 → Table (Store::put 的对偶上游). 两源同骨架, 按 Src 分派:
-//   queries(s, src, w)       : Spec × Window → Query 列表 (纯函数, .cpp 内)
-//                              Bq 恒 1 条 (= select(s, "*", w)); Tu 区间接口 1 条 / 逐日接口窗口内逐日 × day_params
-//   fetch<Src>(client, s, w) : 逐条 query → 按序拼接 → 剥 Spec::drop
-//   sync::run 因而只有一句 put(s, ym, how, fetch<Src>(client, s, w)).
+// Remote — Task → 远端查询 → Table (Store::put 的对偶上游). 两源同骨架, 按 Src 分派:
+//   queries(s, src, t)    : Task → Query 列表 (纯函数, .cpp 内)
+//                           Bq 恒 1 条 (= select(s, "*", t.w); Splice 另接 " AND strftime(vd) IN (days)",
+//                              日键与 audit 指纹组键同形); Tu 区间接口 1 条 / 逐日接口窗口内逐日 × day_params
+//   fetch<Src>(client, t) : 逐条 query → 按序拼接 → 剥 Spec::drop
+//   sync::run 因而只有一句 put(t, fetch<Src>(client, t)).
 // ============================================================================
 template <class Src>
-std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Spec &s, Window w);
-
-// 只取 days 这几天 (升序非空, 同一月分片): 1 条 select(s, "*", [front, back], " AND strftime(vd) IN (..)")
-// (日键与 audit 指纹组键同形) → 剥 Spec::drop. 仅 Bq · Snap::All (Snap::Day 的 MIN / MAX 须看整窗)
-std::shared_ptr<arrow::Table> fetch_days(bigquant::Client &client, const Spec &s, const std::vector<Ymd> &days);
+std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Task &t);
 
 // ============================================================================
 // DAI SQL 唯一构造点 — fetch 与 Audit 只差 SELECT 什么、尾部接什么:
-//   fetch  = select(s, "*", w)
-//   按日   = select(s, "*", [首日, 末日], " AND strftime(vd) IN (..)")
+//   fetch  = select(s, "*", t.w)
+//   Splice = select(s, "*", [首日, 末日], " AND strftime(vd) IN (..)")
 //   schema = select(s, "*", w, " LIMIT 0")
 //   指纹   = select(s, "strftime(..) AS g, ..", w, " GROUP BY 1")
 //

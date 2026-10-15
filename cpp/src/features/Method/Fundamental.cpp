@@ -306,12 +306,12 @@ namespace {
 //   Exact: 须是交易日 (网格);  Floor: 落到 ≤ 它的最近交易日 (事件)
 //   再按 cutoff 平移 (row = idx − cutoff), 越界 / 缺失 → -1. 行按日成块, 只在换日时查一次.
 // ============================================================================
-enum class Snap { Exact,
-                  Floor };
+enum class Align { Exact,
+                   Floor };
 
 class RowOf {
 public:
-  RowOf(const Axes &axes, Snap snap, int cutoff) : axes_(axes), snap_(snap), cutoff_(cutoff) {}
+  RowOf(const Axes &axes, Align align, int cutoff) : axes_(axes), align_(align), cutoff_(cutoff) {}
   int operator()(Ymd d) {
     if (d != last_) {
       last_ = d;
@@ -324,12 +324,12 @@ private:
   int resolve(Ymd d) const {
     if (d <= 0)
       return -1;
-    const int i = snap_ == Snap::Exact ? axes_.exact(d) : axes_.floor(d);
+    const int i = align_ == Align::Exact ? axes_.exact(d) : axes_.floor(d);
     const int r = i - cutoff_;
     return (i >= 0 && r >= 0 && r < axes_.n_d()) ? r : -1;
   }
   const Axes &axes_;
-  Snap snap_;
+  Align align_;
   int cutoff_;
   Ymd last_ = -1;
   int row_ = -1;
@@ -416,21 +416,18 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
   scan.add(bar, spec("cn_stock_real_bar1d"), {"close", "pre_close", "adjust_factor"}, Sink{},
            [&axes, &p, n_d](const Rows &r, Sink &) {
              const pq::Col close = r.col("close"), pre = r.col("pre_close"), adj = r.col("adjust_factor");
-             RowOf row_of(axes, Snap::Exact, -1), row0_of(axes, Snap::Exact, 0);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const std::uint32_t a = r.id(i);
-               if (a == fundamental::Ids::kNone)
-                 continue;
+             RowOf row_of(axes, Align::Exact, -1), row0_of(axes, Align::Exact, 0);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
                const std::size_t base = static_cast<std::size_t>(a) * n_d;
-               const int row = row_of(r.date(i));
+               const int row = row_of(d);
                if (row >= 0)
                  p.close[base + static_cast<std::size_t>(row)] = positive_or_inf(close.f32(i));
-               const int row0 = row0_of(r.date(i));
+               const int row0 = row0_of(d);
                if (row0 >= 0) {
                  p.pre_close[base + static_cast<std::size_t>(row0)] = positive_or_inf(pre.f32(i));
                  p.adj_factor[base + static_cast<std::size_t>(row0)] = positive_or_inf(adj.f32(i));
                }
-             }
+             });
            });
 
   // ---- cn_stock_shares (CUTOFF=0: 按生效日记账, 除权日与 adj_factor 同日变动, 盘前公告可知;
@@ -438,16 +435,15 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
   scan.add(shares, spec("cn_stock_shares"), {"total_shares", "a_float_shares"}, Sink{},
            [&axes, &p, n_d](const Rows &r, Sink &) {
              const pq::Col ts = r.col("total_shares"), fs = r.col("a_float_shares");
-             RowOf row_of(axes, Snap::Exact, 0);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == fundamental::Ids::kNone)
-                 continue;
+             RowOf row_of(axes, Align::Exact, 0);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
                p.total_shares[off] = positive_or_inf(ts.f32(i));
                p.a_float_shares[off] = positive_or_inf(fs.f32(i));
-             }
+             });
            });
 
   // ---- cn_stock_limit_price (CUTOFF=0: date=T 行即 T 当日适用涨跌停, 由 pre_close(T) 推出,
@@ -455,16 +451,15 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
   scan.add(limit, spec("cn_stock_limit_price"), {"upper_limit", "lower_limit"}, Sink{},
            [&axes, &p, n_d](const Rows &r, Sink &) {
              const pq::Col up = r.col("upper_limit"), dn = r.col("lower_limit");
-             RowOf row_of(axes, Snap::Exact, 0);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == fundamental::Ids::kNone)
-                 continue;
+             RowOf row_of(axes, Align::Exact, 0);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
                p.lim_up[off] = positive_or_inf(up.f32(i));
                p.lim_dn[off] = positive_or_inf(dn.f32(i));
-             }
+             });
            });
 
   // ---- cn_stock_status (CUTOFF=0, 4 态派生; 不 ffill) ----
@@ -472,12 +467,11 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
            [&axes, &p, n_d](const Rows &r, Sink &) {
              const pq::Col st_c = r.col("st_status"), rw_c = r.col("is_risk_warning");
              const pq::Col sp_c = r.col("suspended");
-             RowOf row_of(axes, Snap::Exact, 0);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == fundamental::Ids::kNone)
-                 continue;
+             RowOf row_of(axes, Align::Exact, 0);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
                const int st = st_c.i32(i, 0), rw = rw_c.i32(i, 0), sp = sp_c.i32(i, 0);
                // 4 态派生: st 1/2 优先; 否则 risk_warning=1 → 3 (退市整理期)
@@ -486,7 +480,7 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
                                   : (rw != 0) ? std::int8_t{3}
                                               : std::int8_t{0};
                p.suspended[off] = (sp != 0) ? std::uint8_t{1} : std::uint8_t{0};
-             }
+             });
            });
 
   // ---- cn_stock_margin_trading_detail (CUTOFF=-1; 不 ffill): date=T 行是 T 日盘后余额/流量
@@ -501,12 +495,11 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
              const pq::Col fp = r.col("financing_purchase"), fr = r.col("financing_repayment");
              const pq::Col ss = r.col("securities_lending_sales_quantity");
              const pq::Col sr = r.col("securities_lending_repayment_quantity");
-             RowOf row_of(axes, Snap::Exact, -1);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == fundamental::Ids::kNone)
-                 continue;
+             RowOf row_of(axes, Align::Exact, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
                p.is_margin[off] = 1;
                p.fin_balance[off] = non_negative_or_inf(fb.f32(i));
@@ -515,7 +508,7 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
                p.fin_repayment[off] = non_negative_or_inf(fr.f32(i));
                p.sec_sales_qty[off] = non_negative_or_inf(ss.f32(i));
                p.sec_repay_qty[off] = non_negative_or_inf(sr.f32(i));
-             }
+             });
            });
 }
 
@@ -555,7 +548,6 @@ struct EventScan {
 
 void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
   using fundamental::spec;
-  constexpr std::uint32_t kNone = fundamental::Ids::kNone;
 
   // ---- cn_stock_financial_ttm_shift (CUTOFF=-1; shift=0 主记录 + shift=4 配对) ----
   scan.add(ttm, spec("cn_stock_financial_ttm_shift"),
@@ -567,28 +559,24 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
              const pq::Col np = r.col("net_profit_to_parent_shareholders_ttm");
              const pq::Col npa = r.col("net_profit_ttm");
              const pq::Col cf = r.col("net_cffoa_ttm");
-             const std::int64_t nr = r.size();
-             auto key_of = [&](std::int64_t i, std::uint32_t a) {
-               return static_cast<std::int64_t>(r.date(i)) * (axes.n_a() + 1) + a;
+             auto key_of = [&](Ymd d, std::uint32_t a) {
+               return static_cast<std::int64_t>(d) * (axes.n_a() + 1) + a;
              };
 
              std::unordered_map<std::int64_t, float> shift4_cf;
-             shift4_cf.reserve(static_cast<std::size_t>(nr) / 32 + 1);
-             for (std::int64_t i = 0; i < nr; ++i) {
-               const std::uint32_t a = r.id(i);
-               if (shift.i32(i, -1) != 4 || a == kNone)
-                 continue;
-               shift4_cf[key_of(i, a)] = cf.f32(i);
-             }
+             shift4_cf.reserve(static_cast<std::size_t>(r.size()) / 32 + 1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               if (shift.i32(i, -1) == 4)
+                 shift4_cf[key_of(d, a)] = cf.f32(i);
+             });
 
-             RowOf row_of(axes, Snap::Floor, -1);
-             for (std::int64_t i = 0; i < nr; ++i) {
+             RowOf row_of(axes, Align::Floor, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
                if (shift.i32(i, -1) != 0)
-                 continue;
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == kNone)
-                 continue;
+                 return;
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                FinancialTtmEv ev;
                ev.v = row;
                ev.report_date = rd.yyyymmdd(i);
@@ -596,10 +584,10 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
                ev.net_profit_to_parent_shareholders_ttm = np.f32(i);
                ev.net_profit_ttm = npa.f32(i);
                ev.net_cffoa_ttm = cf.f32(i);
-               auto it = shift4_cf.find(key_of(i, a));
+               auto it = shift4_cf.find(key_of(d, a));
                ev.net_cffoa_ttm_shift4 = (it != shift4_cf.end()) ? it->second : NaNF;
                h.push({a, ev});
-             }
+             });
            });
 
   // ---- cn_stock_financial_balance_general_pit (CUTOFF=-1; 全报告期入) ----
@@ -626,12 +614,11 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
         const pq::Col cip = r.col("construction_in_progress"), cip_sum = r.col("construction_in_progress_sum");
         const pq::Col ia = r.col("intangible_assets"), gw = r.col("goodwill");
         const pq::Col mi = r.col("minority_interests");
-        RowOf row_of(axes, Snap::Floor, -1);
-        for (std::int64_t i = 0; i < r.size(); ++i) {
-          const int row = row_of(r.date(i));
-          const std::uint32_t a = r.id(i);
-          if (row < 0 || a == kNone)
-            continue;
+        RowOf row_of(axes, Align::Floor, -1);
+        r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+          const int row = row_of(d);
+          if (row < 0)
+            return;
           FinancialBalanceEv ev;
           ev.v = row;
           ev.report_date = rd.yyyymmdd(i);
@@ -650,7 +637,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
           ev.intang_gw = sum_nan0({ia.f32(i), gw.f32(i)});
           ev.minority_interests = mi.f32(i);
           h.push({a, ev});
-        }
+        });
       });
 
   // ---- cn_stock_financial_income_general_pit (CUTOFF=-1; 年报链 ni_raw + 全报告期 YTD 链) ----
@@ -666,12 +653,11 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
         const pq::Col cost = r.col("total_operating_costs"), op = r.col("operating_profit");
         const pq::Col tp = r.col("total_profit"), fie = r.col("fin_interest_expense"), fe = r.col("finance_expense");
         const pq::Col tax = r.col("income_tax_expense"), npa = r.col("net_profit"), eps = r.col("eps_basic");
-        RowOf row_of(axes, Snap::Floor, -1);
-        for (std::int64_t i = 0; i < r.size(); ++i) {
-          const int row = row_of(r.date(i));
-          const std::uint32_t a = r.id(i);
-          if (row < 0 || a == kNone)
-            continue;
+        RowOf row_of(axes, Align::Floor, -1);
+        r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+          const int row = row_of(d);
+          if (row < 0)
+            return;
           YtdEv<INC_COUNT> ev;
           ev.v = row;
           ev.report_date = rd.yyyymmdd(i);
@@ -689,7 +675,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
           h.ytd.push({a, ev});
           if (fqi.i32(i, -1) == 4)
             h.annual.push({a, {ev.v, ev.report_date, ev.x[inc_np_parent]}});
-        }
+        });
       });
 
   // ---- cn_stock_financial_cashflow_general_pit (CUTOFF=-1; 全报告期 YTD 链) ----
@@ -705,12 +691,11 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
         const pq::Col div = r.col("cash_paid_for_dividends_profits_interests");
         const pq::Col dep = r.col("depreciation_of_fa_oga_pba"), am_ia = r.col("amorization_of_intangible_assets");
         const pq::Col am_ld = r.col("amortization_of_longterm_deferred_expenses");
-        RowOf row_of(axes, Snap::Floor, -1);
-        for (std::int64_t i = 0; i < r.size(); ++i) {
-          const int row = row_of(r.date(i));
-          const std::uint32_t a = r.id(i);
-          if (row < 0 || a == kNone)
-            continue;
+        RowOf row_of(axes, Align::Floor, -1);
+        r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+          const int row = row_of(d);
+          if (row < 0)
+            return;
           YtdEv<CF_COUNT> ev;
           ev.v = row;
           ev.report_date = rd.yyyymmdd(i);
@@ -722,7 +707,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
           ev.x[cf_div] = div.f32(i);
           ev.x[cf_da] = sum_nan0({dep.f32(i), am_ia.f32(i), am_ld.f32(i)});
           h.push({a, ev});
-        }
+        });
       });
 
   // ---- cn_stock_financial_notes_shift (CUTOFF=-1; shift=0 非经常性损益 TTM) ----
@@ -731,16 +716,15 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
            [&axes](const Rows &r, Hits<NonrecurEv> &h) {
              const pq::Col shift = r.col("shift"), rd = r.col("report_date");
              const pq::Col nr_owner = r.col("nonrecurring_income_to_owner_ttm");
-             RowOf row_of(axes, Snap::Floor, -1);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
+             RowOf row_of(axes, Align::Floor, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
                if (shift.i32(i, -1) != 0)
-                 continue;
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == kNone)
-                 continue;
+                 return;
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                h.push({a, {row, rd.yyyymmdd(i), nr_owner.f32(i)}});
-             }
+             });
            });
 
   // ---- cn_stock_dividend (CUTOFF=-1; v ← publish_date = vd) ----
@@ -749,12 +733,11 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
              const pq::Col rd = r.col("report_date");
              const pq::Col cash_b = r.col("cash_before_tax");
              const pq::Col cash = r.col("cash_after_tax");
-             RowOf row_of(axes, Snap::Floor, -1);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == kNone)
-                 continue;
+             RowOf row_of(axes, Align::Floor, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                DividendEv ev;
                ev.v = row;
                ev.report_date = rd.yyyymmdd(i);
@@ -763,7 +746,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
                ev.amt_pre = 0.0f; // build 末尾标注
                ev.amt_after = NaNF;
                h.push({a, ev});
-             }
+             });
            });
 
   // ---- forecast (Tushare, CUTOFF=-1; vd = ann_date, 键 = ts_code, "YYYYMMDD" string 列) ----
@@ -771,12 +754,11 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
            [&axes](const Rows &r, Hits<ForecastEv> &h) {
              const pq::Col ed = r.col("end_date"), type = r.col("type");
              const pq::Col lpn = r.col("last_parent_net");
-             RowOf row_of(axes, Snap::Floor, -1);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == kNone)
-                 continue;
+             RowOf row_of(axes, Align::Floor, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                ForecastEv ev;
                ev.v = row;
                ev.end_date = ed.yyyymmdd(i);
@@ -786,38 +768,36 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
                                          : ForecastType::Other;
                ev.last_parent_net = lpn.f32(i);
                h.push({a, ev});
-             }
+             });
            });
 
   // ---- cn_stock_industry_component / change (CUTOFF=-1, sw2021 L1) ----
   scan.add(component, spec("cn_stock_industry_component"), {"industry", "industry_level1_name"},
            Hits<IndustryEv>{}, [&axes](const Rows &r, Hits<IndustryEv> &h) {
              const pq::Col ind = r.col("industry"), l1 = r.col("industry_level1_name");
-             RowOf row_of(axes, Snap::Floor, -1);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
+             RowOf row_of(axes, Align::Floor, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
                if (ind.str(i) != "sw2021")
-                 continue;
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == kNone)
-                 continue;
+                 return;
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                h.push({a, {row, sw2021_l1_name_to_id(l1.str(i))}});
-             }
+             });
            });
   scan.add(change, spec("cn_stock_industry_change"), {"industry", "industry_level", "change_flag", "industry_name"},
            Hits<IndustryEv>{}, [&axes](const Rows &r, Hits<IndustryEv> &h) {
              const pq::Col ind = r.col("industry"), lvl = r.col("industry_level");
              const pq::Col flag = r.col("change_flag"), name = r.col("industry_name");
-             RowOf row_of(axes, Snap::Floor, -1);
-             for (std::int64_t i = 0; i < r.size(); ++i) {
+             RowOf row_of(axes, Align::Floor, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
                if (ind.str(i) != "sw2021" || lvl.i32(i, 0) != 1 || flag.i32(i, -1) != 1)
-                 continue;
-               const int row = row_of(r.date(i));
-               const std::uint32_t a = r.id(i);
-               if (row < 0 || a == kNone)
-                 continue;
+                 return;
+               const int row = row_of(d);
+               if (row < 0)
+                 return;
                h.push({a, {row, sw2021_l1_name_to_id(name.str(i))}});
-             }
+             });
            });
 }
 
@@ -1031,26 +1011,20 @@ void Pool::build(const std::vector<std::string> &codes,
   meta.list_day.assign(static_cast<std::size_t>(n_a), {});
   meta.delist_day.assign(static_cast<std::size_t>(n_a), {});
   meta.main_board.assign(static_cast<std::size_t>(n_a), 0);
-  {
-    const pq::TableView bi = fundamental::meta(cat, "cn_stock_basic_info", {"instrument", "list_date", "delist_date", "list_sector"});
-    pq::Col ins = bi.col("instrument");
-    pq::Col ld = bi.col("list_date");
-    pq::Col dd = bi.col("delist_date");
-    pq::Col ls = bi.col("list_sector");
-    for (std::int64_t i = 0, n = bi.rows(); i < n; ++i) {
-      const std::uint32_t a = ids.find(ins.str(i));
-      if (a == fundamental::Ids::kNone)
-        continue;
-      const Ymd l = std::max(ld.yyyymmdd(i), 0), dl = std::max(dd.yyyymmdd(i), 0);
-      meta.list[a] = l;
-      meta.delist[a] = dl;
-      if (l)
-        meta.list_day[a] = misc::to_days(l);
-      if (dl)
-        meta.delist_day[a] = misc::to_days(dl);
-      meta.main_board[a] = (ls.i32(i, 0) == 1) ? 1 : 0;
-    }
-  }
+  fundamental::meta(cat, ids, fundamental::spec("cn_stock_basic_info"), {"list_date", "delist_date", "list_sector"},
+                    [&](const Rows &r) {
+                      const pq::Col ld = r.col("list_date"), dd = r.col("delist_date"), ls = r.col("list_sector");
+                      r.each([&](std::int64_t i, std::uint32_t a, Ymd) {
+                        const Ymd l = std::max(ld.yyyymmdd(i), 0), dl = std::max(dd.yyyymmdd(i), 0);
+                        meta.list[a] = l;
+                        meta.delist[a] = dl;
+                        if (l)
+                          meta.list_day[a] = misc::to_days(l);
+                        if (dl)
+                          meta.delist_day[a] = misc::to_days(dl);
+                        meta.main_board[a] = (ls.i32(i, 0) == 1) ? 1 : 0;
+                      });
+                    });
 
   // ---- PIT 池: 15 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
   {

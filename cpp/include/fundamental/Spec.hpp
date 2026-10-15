@@ -2,11 +2,12 @@
 //
 //   Spec   元描述 (本文件): 落盘形态 Shape × 快照 Snap × 数据源 src, 写读两侧共用
 //          因果安全 (vd / drop) 在 Spec 层; 传输细节 (表名 / 键列 / 参数 / 列型) 在 src 层
-//   Store  本地: 清单 + 槽位账本 + 唯一读点 read / 唯一写点 put (Store.hpp)
-//   Remote 远端: Spec × Window → Query → Table, 两源同骨架 (Remote.hpp)
-//   sync   写侧: plan → run (fetch → put) (Sync.hpp)
-//   audit  核对: plan → run (远端指纹 ↔ 本地指纹, 仅 DAI) (Audit.hpp)
-//   Scan   读侧: split → fold → merge (Scan.hpp)
+//   Task   一次抓取 (本文件): 表 × 分片 × 窗口 × 写法 —— Remote::fetch 与 Store::put 的共同输入
+//   Store  本地: 清单 + 槽位账本 (状态 ledger / 动作 todo) + 唯一读点 read / 唯一写点 put (Store.hpp)
+//   Remote 远端: Task → Query → Table, 两源同骨架 (Remote.hpp)
+//   sync   写侧: plan → run = put(t, fetch(client, t)) (Sync.hpp)
+//   audit  核对: plan → run (远端指纹 ↔ 本地指纹, 仅 DAI) → repair (差异 → Task) (Audit.hpp)
+//   Scan   读侧: split → fold → merge; meta / snapshot 同一 Rows 视图 (Scan.hpp)
 //
 // 依赖单向: fundamental → api/{bigquant, tushare}::Client (纯传输, 不知 Spec)
 // 分派键唯一 = 数据源 Src (Bq / Tu); 客户端类型由 Src::Client 给出
@@ -95,6 +96,26 @@ bool from(const Spec &s) { return std::holds_alternative<Src>(s.src); }
 // 一次抓取的 vd 闭区间 [lo, hi]; {0, 0} = 无日期维度 (vd 空)
 struct Window {
   Ymd lo = 0, hi = 0;
+};
+
+// 落盘方式 (单文件 tmp+rename 原子; 0 行也落文件 = 拉过)
+//   Replace: 覆盖整个分片
+//   Append : 追加在末尾 (水位增量)
+//   Splice : 分片里 vd ∈ days 的行换成新行, 其余天原样 (按日修补)
+enum class Write { Replace,
+                   Append,
+                   Splice };
+
+// 一次抓取 = 表 × 分片 × 窗口 × 写法; sync::run = put(t, fetch(client, t))
+//   Append: w.lo 已抬到水位 + 1
+//   Splice: days 升序非空, w = [首日, 末日], 同属 ym 分片; 仅 Bq
+//   Snap::Day 表只 Replace (MIN / MAX 须看整窗)
+struct Task {
+  const Spec *spec = nullptr; // 指向 SPECS 的一行
+  Ym ym = 0;                  // 0 = _meta
+  Window w;
+  Write how = Write::Replace;
+  std::vector<Ymd> days = {}; // 仅 Splice
 };
 
 extern const std::vector<Spec> SPECS;

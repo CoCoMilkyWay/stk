@@ -1,7 +1,7 @@
 // Audit Service - BigQuant 远端 vs 本地冻结月分片一致性核对 + 逐表修复
 // 口径见 fundamental/Audit.hpp; 网络 + parquet IO 全在独立工作线程, 协程轮询进度.
 //   run    : 一表 / 全部表核对, 只报告不改盘
-//   repair : 一表的差异只重拉有差异的日 (sync::patch; Snap::Day / 只定位到月 → 整月 Replace) → 只复核这些月
+//   repair : 一表的差异 → audit::repair 任务 (按日 Splice; Snap::Day / 只定位到月 → 整月 Replace) → sync::run → 只复核这些月
 // 结果是逐表的 "当前状态" (不是变更日志) output/log/audit/<表>.tsv:
 //   每个 (月, 轮) 只留最近一次核对的结论; 每单元后只整写该表一个文件 (tmp + rename).
 #pragma once
@@ -22,7 +22,7 @@ namespace GUI::Database {
 //   问题天数占比 = bad_days / (local_days + remote_only_days)
 //   行差占比     = (added + removed) / local_rows
 //   流量 (cell = 行 × 列, 与 fetch 整月 SELECT * 同口径; 远端行 = 本地行 + 行差):
-//     repair_cells = repair 同口径: 有差异的日 Σ 远端行 × 列 (只定位到月 / Snap::Day 表 → 整月);
+//     repair_cells = repair 同口径 (audit::fix_day): 有差异的日 Σ 远端行 × 列 (只定位到月 / Snap::Day 表 → 整月);
 //     full_cells   = 重拉全部已核月
 struct AuditTableStat {
   std::string table;
@@ -85,7 +85,7 @@ public:
   // audit::plan (table 空 = 全部表, 否则只该表; incremental = 跳过状态里已核的 (月, 轮))
   //   → 逐单元 audit::run, 每单元覆盖该 (表, 月, 轮); 忙则直接返回
   boost::asio::awaitable<void> run(std::string table, bool incremental);
-  // table 的差异: 按日修补 (sync::patch) / 整月重拉 (sync::run, Replace) → 这些月旧结论作废 → plan(keep = 这些月) 两轮复核.
+  // table 的差异: audit::repair → 逐任务 sync::run (Splice 按日 / Replace 整月) → 这些月旧结论作废 → plan(keep = 这些月) 两轮复核.
   // 不可取消; 忙则直接返回. 改了盘, 调用方随后须重建 AssetInfo
   boost::asio::awaitable<void> repair(std::string table);
   // 核对 (一表 / 全部): 当前单元的查询跑完即停 (在飞的 DoGet 不可中断)

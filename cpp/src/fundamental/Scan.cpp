@@ -6,10 +6,23 @@ namespace fundamental {
 
 namespace pq = misc::pq;
 
+Ids::Ids(const Catalog &cat, const Spec &s) : miss_(Miss::Assert) {
+  assert(s.shape == Shape::Meta && "Ids: id 空间只取自 Meta 表");
+  const Shard *sh = cat.find(s.name, 0);
+  assert(sh && "Ids: _meta 分片缺失 (基本面未同步?)");
+  const std::string key(key_col(s));
+  const pq::TableView v(read(*sh, {key}));
+  const pq::Col k = v.col(key);
+  for (std::int64_t i = 0; i < v.rows(); ++i)
+    add(k.str(i));
+}
+
 std::uint32_t Ids::add(std::string_view code) {
+  assert(!code.empty() && "Ids: 代码为空");
   const auto id = size();
-  const bool inserted = ids_.try_emplace(std::string(code), id).second;
+  const auto [it, inserted] = ids_.try_emplace(std::string(code), id);
   assert(inserted && "Ids: 代码重复");
+  codes_.push_back(&it->first);
   return id;
 }
 
@@ -21,34 +34,39 @@ std::uint32_t Ids::find(std::string_view code) const {
   return kNone;
 }
 
-struct Scan::Scratch {
-  std::unique_ptr<pq::TableView> t;
-  pq::DictCol key;
-  std::vector<std::uint32_t> dict_ids;
-  std::vector<Ymd> dates;
-};
+Rows Scratch::open(const Shard &sh, const Spec &s, const std::vector<std::string> &cols, const Ids &ids,
+                   Snap snap) {
+  const std::string key(key_col(s));
+  std::vector<std::string> need = cols;
+  for (const std::string &c : {key, s.vd})
+    if (!c.empty() && std::find(need.begin(), need.end(), c) == need.end())
+      need.push_back(c);
+  t_ = std::make_unique<pq::TableView>(read(sh, need, {key}));
+  Rows r;
+  r.t_ = t_.get();
+  r.n_ = t_->rows();
+  if (r.n_ == 0)
+    return r;
+  key_ = t_->dict_col(key);
+  dict_ids_.resize(static_cast<std::size_t>(key_.dict_size()));
+  for (std::int32_t k = 0; k < key_.dict_size(); ++k)
+    dict_ids_[static_cast<std::size_t>(k)] = ids.find(key_.dict_value(k));
+  if (s.vd.empty())
+    dates_.assign(static_cast<std::size_t>(r.n_), 0);
+  else
+    t_->col(s.vd).yyyymmdd_all(dates_);
+  r.key_ = key_.indices();
+  r.dict_ids_ = dict_ids_.data();
+  r.dates_ = dates_.data();
+  if (snap == Snap::Day) {
+    r.day_ = *std::max_element(dates_.begin(), dates_.end());
+    assert(r.day_ > 0 && "Scratch: Snap::Day 的分片 vd 全 null");
+  }
+  return r;
+}
 
 Scan::Scan(const Catalog &cat, const Ids &ids, std::size_t threads) : cat_(cat), ids_(ids), threads_(threads) {
   assert(threads_ > 0);
-}
-
-Rows Scan::open(const Shard &sh, const Spec &s, const std::vector<std::string> &cols, Scratch &x) const {
-  const std::string_view key = key_col(s);
-  x.t = std::make_unique<pq::TableView>(read(sh, cols, {std::string(key)}));
-  Rows r;
-  r.t_ = x.t.get();
-  r.n_ = x.t->rows();
-  if (r.n_ == 0)
-    return r;
-  x.key = x.t->dict_col(key);
-  x.dict_ids.resize(static_cast<std::size_t>(x.key.dict_size()));
-  for (std::int32_t k = 0; k < x.key.dict_size(); ++k)
-    x.dict_ids[static_cast<std::size_t>(k)] = ids_.find(x.key.dict_value(k));
-  x.t->col(s.vd).yyyymmdd_all(x.dates);
-  r.key_ = x.key.indices();
-  r.dict_ids_ = x.dict_ids.data();
-  r.dates_ = x.dates.data();
-  return r;
 }
 
 void Scan::run(std::atomic<std::size_t> &done) {
@@ -67,11 +85,27 @@ void Scan::run(std::atomic<std::size_t> &done) {
   jobs_.clear();
 }
 
-pq::TableView meta(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols) {
-  assert(spec(name).shape == Shape::Meta && "meta: 只读 Meta 表");
-  const Shard *sh = cat.find(name, 0);
+void snapshot(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
+              const std::function<void(const Rows &)> &fn) {
+  assert(s.shape == Shape::Month && "snapshot: 只读 Month 表");
+  const std::vector<Shard> &shards = cat.shards(s.name);
+  Scratch x;
+  for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
+    const Rows r = x.open(*it, s, cols, ids, Snap::Day);
+    if (r.size() == 0)
+      continue; // 0 行月 (拉过为空) → 往前找
+    fn(r);
+    return;
+  }
+}
+
+void meta(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
+          const std::function<void(const Rows &)> &fn) {
+  assert(s.shape == Shape::Meta && "meta: 只读 Meta 表");
+  const Shard *sh = cat.find(s.name, 0);
   assert(sh && "meta: _meta 分片缺失 (基本面未同步?)");
-  return pq::TableView(read(*sh, cols));
+  Scratch x;
+  fn(x.open(*sh, s, cols, ids));
 }
 
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today) {

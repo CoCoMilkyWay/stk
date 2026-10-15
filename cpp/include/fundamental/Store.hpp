@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,7 +21,8 @@
 // read / put: 本地唯一读点 / 唯一写点 (路径只在 Store 内拼).
 //
 // ledger: 一张表全部槽位在 now 视角下的状态 —— "冻结" 只在这里定义一次, 每槽只判一次;
-//   sync::plan 与 frozen 都只是它的过滤. 时间只经 Now 传入 ⇒ ledger 是纯函数.
+//   todo: 一个槽的动作 (右列) —— "拉什么 / 怎么写" 只在这里定义一次.
+//   sync::plan = ledger 过 dedup 后逐槽 todo; frozen = ledger 的过滤. 时间只经 Now 传入 ⇒ 两者是纯函数.
 //   horizon = 当前时刻已完整的最晚数据日 (now.hour >= avail_hour ? today : 昨天)
 //   Month 关月 (月末 < today − lookback):
 //     Missing  无文件                                        → 整月拉, 覆盖
@@ -34,7 +36,7 @@
 //   Meta:
 //     Missing  无文件 / Stale 不新鲜 → 整刷; Frozen 新鲜 → 不动
 //     新鲜 = vd 空: 写盘日 == today; 否则: mark ≥ horizon
-//   (右列动作由 sync::plan 执行; dedup 节流亦在 sync::plan)
+//   (右列动作 = todo; dedup 节流在 sync::plan)
 //
 // 配额按返回 cell 数计 ⇒ 增量稳态下每表每天只为新增的一天数据付费一次;
 // 月内漏掉的服务端回填由关月整月重拉兜回 (完整性月内降一级, 关月恢复).
@@ -93,6 +95,10 @@ std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now);
 // ledger 中 Frozen 的 Month 槽 (ym 升序) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
 std::vector<Slot> frozen(const Spec &s, const Catalog &cat, const Now &now);
 
+// 槽 sl 的动作 (见文件头右列); 无事 (Frozen / 已到水位 / Snap::Day 快照已入盘) → nullopt.
+//   Open 槽在这里读水位 (唯一一处), 其余零 IO
+std::optional<Task> todo(const Spec &s, const Slot &sl);
+
 // 水位 = 分片内 max(vd); 0 行 / 全 null → 0. 只读 footer 列统计 (vd 空 → assert)
 Ymd mark(const Spec &s, const Shard &sh);
 
@@ -100,13 +106,9 @@ Ymd mark(const Spec &s, const Shard &sh);
 std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::string> &cols = {},
                                    const std::vector<std::string> &dict = {});
 
-// 本地唯一写点: Replace 覆盖 / Append 追加 (单文件 tmp+rename 原子; 0 行也落文件 = 拉过)
-enum class Write { Replace,
-                   Append };
-void put(const Spec &s, Ym ym, Write how, const std::shared_ptr<arrow::Table> &tbl);
-
-// 按日替换 (同属唯一写点): sh 里 vd ∈ days (升序) 的行删掉, tbl 追加在末尾, 其余天原样; 原子重写.
-//   tbl 的 vd 须全在 days 里; 列按名合并 (某侧全 null 的 NA 列 / 缺列提升为另一侧类型)
-void splice(const Spec &s, const Shard &sh, const std::vector<Ymd> &days, const std::shared_ptr<arrow::Table> &tbl);
+// 本地唯一写点: 按 t.how 落 t.ym 分片 (见 Write)
+//   Splice: 分片须已存在; tbl 的 vd 须全在 t.days 里, 追加在保留段之后;
+//           列按名合并 (某侧全 null 的 NA 列 / 缺列提升为另一侧类型)
+void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
 
 } // namespace fundamental
