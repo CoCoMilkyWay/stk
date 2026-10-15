@@ -103,7 +103,7 @@ void CleanupAllTasks(TaskTree &tree) {
 void ReinitAllTasks(TaskTree &tree, SharedData &data) {
   // Asset 不保留: 重建后 binary.scanned == false, StateManager 会走 RescanStorage
   // 重扫一遍 —— 一次扫描是几百次读日文件头 + 目录 (见 Asset::coro_scan_binary_database),
-  // 百毫秒量级, 不值得为省它把七个字段搬出来再搬回去 (轴与 date_info 必须同生
+  // 百毫秒量级, 不值得为省它把七个字段搬出来再搬回去 (帧目录与 items 必须同生
   // 同死, 漏一个就是无主下标).
 
   // Step 1: Cleanup existing tasks

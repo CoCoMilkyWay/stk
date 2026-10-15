@@ -1,7 +1,7 @@
 // OrderFlowService Implementation — 线程模型与发布协议见头文件 / shared/OrderFlow.hpp
 #include "gui/task_features/services/OrderFlowService.hpp"
 
-#include "codec/binary_decoder_L2.hpp"
+#include "codec/OrderFrame.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
@@ -37,11 +37,10 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 struct OrderFlowService::Impl {
   UniverseAxis uni; // 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
   FeatureRead reader;
-  L2::BinaryDecoder_L2 decoder;
-  EncodeDayRecord day_rec;                     // 日文件账目 (读目录的副产品, 不用)
-  std::vector<EncodeDayIndexEntry> day_index;  // 当天日文件目录 (重放请求现读)
-  LimitOrderBook lob; // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
-  TickData tick_data; // 无特征侧绑定的盘口写出口
+  DayReader day;            // 当天日文件 (重放请求现读目录)
+  L2::FrameDecoder decoder; // 对仗 sequential_worker 的 reader + decoder
+  LimitOrderBook lob;       // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
+  TickData tick_data;       // 无特征侧绑定的盘口写出口
   FeatureRead::DayColumns l1_cols, l0_cols, uni_cols;
   OrderFlow::Depth::HeatmapScratch scratch;
   std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
@@ -51,7 +50,6 @@ struct OrderFlowService::Impl {
   Impl(const std::string &features_dir, UniverseAxis uni_)
       : uni(std::move(uni_)),
         reader(features_dir, uni.size(), uni.hash),
-        decoder(L2::DEFAULT_ENCODER_ORDER_SIZE),
         lob(L2::LOB_ORDER_CAPACITY) {
     const size_t A = uni.size();
     l1_cols.preallocate(A, 1, 5 + OrderFlowConst::MAX_FEATURES); // OHLC 4 + ts_valid + 特征
@@ -392,31 +390,27 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   slot.asset_idx = req.asset;
 
   // ---- 重放当天日文件里这个资产的帧 (缺日文件 / 无帧 = 停牌/未编码, 发布空槽) ----
-  // 目录现读而不是查 Asset::date_info: 本服务跑在自己的线程上, 与重扫描
-  // (整体重建 date_info) 并发, 现读一次 (头 + 120KB 目录) 免去与它同步.
+  // 目录现读而不是查 Asset::orders: 本服务跑在自己的线程上, 与重扫描
+  // (整体重建帧目录) 并发, 现读一次 (头 + 120KB 目录) 免去与它同步.
   const AssetItem &asset = data_->asset.items[req.asset];
-  const std::string day_path =
-      Utils::generate_orders_path(data_->config.orders_dir, req.date, config::BINARY_EXTENSION);
-
-  const EncodeDayIndexEntry *entry = nullptr;
-  if (read_day_file(day_path, impl_->day_rec, impl_->day_index))
-    entry = find_day_entry(impl_->day_index, req.asset);
-
-  if (entry && !entry->is_tombstone()) {
-    const size_t order_num = entry->order_count;
-    const L2::Order *orders = nullptr;
-    {
+  DayReader &day = impl_->day;
+  L2::FrameView view;
+  if (day.open(Utils::generate_orders_path(data_->config.orders_dir, req.date, config::BINARY_EXTENSION))) {
+    const FrameRef *ref = day.index().find(req.asset);
+    if (ref && !ref->empty()) {
       TraceN("OF_Decode");
-      impl_->decoder.open_day(day_path);
-      orders = impl_->decoder.decode(entry->offset, entry->compressed_size, entry->order_count);
-      impl_->decoder.close_day(); // 解出来的在 decoder 缓冲里, fd 已无用
+      view = impl_->decoder.decode(day.read(*ref));
     }
+  }
+  day.close(); // 解出来的在 decoder 缓冲里, fd 已无用; 下个请求重读 (日文件可能已被重编)
+
+  if (view.count > 0) {
+    const size_t order_num = view.count;
     slot.order_count = order_num;
 
     LimitOrderBook &lob = impl_->lob;
     lob.bind(&impl_->tick_data, req.asset, asset.exchange_type); // 无特征侧绑定
-    lob.set_price_base(entry->price_base);
-    lob.reserve_orders(order_num); // 委托表按当日事件数定长
+    lob.begin_frame(view);
 
     auto &sec_slot = impl_->sec_slot;
     auto &sec_data = impl_->sec_data;
@@ -430,10 +424,10 @@ void OrderFlowService::depth_build(const DepthReq &req) {
     constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
     constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手
     const LOB_Feature &lf = impl_->tick_data.lob;
-    const float base = static_cast<float>(entry->price_base);
+    const float base = static_cast<float>(view.price_base);
 
     // 档位下标空间的哨兵判据: 低端 [1, N] 与高端 [RANGE-1-N, RANGE-1] 是构造期哨兵档
-    // + 编码期停靠档 (离盘口无穷远), 见 init_sentinel_levels / BinaryEncoder_L2::park_price
+    // + 编码期停靠档 (离盘口无穷远), 见 init_sentinel_levels / OrderEncoder::park_price
     auto is_sentinel = [](uint32_t idx) {
       return idx <= OrderFlowConst::LOB_DEPTH || idx >= PRICE_RANGE_SIZE - 1 - OrderFlowConst::LOB_DEPTH;
     };
@@ -456,13 +450,14 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       TraceN("OF_Replay");
       size_t cur_sec = SIZE_MAX;
       for (size_t i = 0; i < order_num; ++i) {
-        const size_t t = Clock_to_L0(orders[i].hour, orders[i].minute, orders[i].second); // 钳在 [0, 15300)
+        const L2::Order &order = view.orders[i];
+        const size_t t = Clock_to_L0(order.hour, order.minute, order.second); // 钳在 [0, 15300)
         if (t != cur_sec) {
           if (cur_sec != SIZE_MAX)
             commit_second(cur_sec); // 上一秒结束: 秒末终值全簿入热力图
           cur_sec = t;
         }
-        lob.process(orders[i]);
+        lob.process(order);
         sec_data[t] = 1;
         if (!lf.depth_updated)
           continue;

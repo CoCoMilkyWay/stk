@@ -3,7 +3,7 @@
 #include "boost/asio/awaitable.hpp"
 #include "codec/L2_DataType.hpp"
 #include "misc/date.hpp"
-#include "shared/EncodeDayRecord.hpp"
+#include "shared/OrdersDay.hpp"
 
 #include <atomic>
 #include <map>
@@ -18,26 +18,6 @@ namespace GUI::Database {
 class ScanThreadPool;
 }
 struct AssetInfo;
-
-// ============================================================================
-// 单日状态
-// ============================================================================
-
-// 一个 (资产, 日期). 只有 orders 一种产物 —— 快照不编码 (全项目无人读取,
-// 特征计算只吃 orders 并靠 LimitOrderBook 重建盘口).
-// 就是当天日文件目录里这个资产的那一项 (见 shared/EncodeDayRecord.hpp), 扫描
-// 时灌入; 解码凭它直接 pread 一帧. 日文件路径不存字段 —— 由日期经
-// Utils::generate_orders_path 现算.
-struct DateInfo {
-  uint64_t offset = 0;          // 帧在日文件中的字节偏移
-  uint32_t order_count = 0;     // 帧内逐笔条数
-  uint32_t compressed_size = 0; // 帧字节数; 0 = 无数据 (没编过或墓碑)
-  uint32_t price_base = 0;      // LOB 档位窗口基准 (分)
-
-  bool has_binaries() const {
-    return compressed_size != 0;
-  }
-};
 
 // ============================================================================
 // 单资产
@@ -55,27 +35,11 @@ struct AssetItem {
   misc::Ymd start_date = 0;
   misc::Ymd end_date = 0;
 
-  // 按日状态: 按全局日期轴 (Asset::date_axis) 下标密集存储.
-  //
-  // 密集向量 = 资产数 × 日期数 × 24B ≈ 400MB, 定址 O(1). 每次扫描整体重建
-  // (轴与全部 date_info 一起), "无数据"就是零值元素 (compressed_size == 0).
-  // 扫描之后新上市的资产 (AssetLoader 追加) 向量为空, date_at 对越界返回零值.
-  std::vector<DateInfo> date_info;
-
-  static constexpr DateInfo kEmptyDateInfo{};
-
-  // 读: 越界 (含 Asset::kNoDate) = 该日无数据
-  const DateInfo &date_at(size_t date_idx) const {
-    return date_idx < date_info.size() ? date_info[date_idx] : kEmptyDateInfo;
-  }
+  // 按日的帧不在这里, 在 Asset::orders (日主序, 见 shared/OrdersDay.hpp).
 
   // 构造
   AssetItem() = default;
   AssetItem(size_t id, std::string code, std::string name, std::string exch, misc::Ymd start, misc::Ymd end);
-
-  // 这里不提供"缺失天数"一类的统计: date_info 只对有文件的日子有非零值,
-  // 拿它当全集去做减法恒得 0. 缺口的唯一真相是交易日历 —— 按天看
-  // Asset::backtest.missing_dates, 按全市场完整性看 Asset::date_stats.
 };
 
 // ============================================================================
@@ -90,20 +54,11 @@ struct Asset {
   std::vector<misc::Ymd> all_dates; // 扫描得到的所有已知交易日
 
   // ========================================
-  // 日期轴: AssetItem::date_info 的下标空间
+  // 全库帧目录: [日][资产] 一格一个 FrameRef + 每天的编码账目
   // ========================================
-  // 有日文件的天, 升序. 每次二进制扫描与全部 date_info 一起整体重建,
-  // 中间不做增量修补 —— 一次重建是 800 次读日文件头 + 目录, 百毫秒量级,
-  // 不值得为它维护脏日/基线那套状态.
-  std::vector<misc::Ymd> date_axis; // idx -> date, 升序
-
-  static constexpr size_t kNoDate = SIZE_MAX;
-
-  // 查, 不存在返回 kNoDate (date_at(kNoDate) 自然给零值)
-  size_t date_idx(misc::Ymd date) const {
-    auto it = std::lower_bound(date_axis.begin(), date_axis.end(), date);
-    return it != date_axis.end() && *it == date ? static_cast<size_t>(it - date_axis.begin()) : kNoDate;
-  }
+  // 由二进制扫描整体重建 (见 shared/OrdersDay.hpp). 账目里有缺口的"原因" ——
+  // 只有编码器知道, date_gaps 只知道"缺了几个", 两者在 By Date 表里按日期对齐.
+  OrdersCatalog orders;
 
   // ========================================
   // 按日统计 (Browser 用, 加载 stock_info 后算一次)
@@ -127,24 +82,20 @@ struct Asset {
   };
   std::map<misc::Ymd, DateGap> date_gaps; // date -> 缺口; 只含回测区间内的天
 
-  // 每天的编码账目, 由扫描从日文件头读入 (见 shared/EncodeDayRecord.hpp); 有日文件的天都有.
-  // 缺口的"原因"只有编码器知道, 而 date_gaps只知道"缺了几个" —— 两者在 By Date 表里按日期对齐.
-  std::unordered_map<misc::Ymd, EncodeDayRecord> day_records;
-
   // ========================================
   // 按资产统计 (Encode 缺失表 / Table 的 Days·Orders·Orders%)
   // ========================================
-  // 全库编完之后 date_info 是满的 (资产数 × 交易日数, 五百万量级), 在 GUI
+  // 全库编完之后帧目录是满的 (资产数 × 交易日数, 五百万量级), 在 GUI
   // 里逐帧重算这些计数会把帧时间拖到几百毫秒. 与 date_stats 同样的惰性缓存:
   // 扫描时清空, 首次渲染时算一次.
   //
   // 缺口口径与 date_stats 完全一致 (同一次遍历产出): 分母是"本该有逐笔"的
-  // 交易日 —— 已上市未退市, 排除北交所与当日停牌. 不能拿 date_info 当分母,
-  // 它是"有文件才插入"的稀疏表, 减出来的缺失恒为 0.
+  // 交易日 —— 已上市未退市, 排除北交所与当日停牌. 不能拿帧目录当分母,
+  // 它只有有日文件的天, 减出来的缺失恒为 0.
   static constexpr size_t kMissingSample = 10; // 每资产留几个缺失日期给 UI
 
   struct AssetStats {
-    // 全库口径 (date_info)
+    // 全库口径 (帧目录)
     size_t total_days = 0;
     size_t total_orders = 0;
 
@@ -254,7 +205,7 @@ struct Asset {
 
   // 覆盖分析 (扫描完成或配置变更后调用): 回测区间内哪些交易日有/缺/可编/
   // 需下载. required_dates 的基准 = 基本面交易日历 (assetinfo.stock_days).
-  // 纯集合运算, 几百个日期, 同步跑完. 区间内的条数/体积 (要遍历 date_info)
+  // 纯集合运算, 几百个日期, 同步跑完. 区间内的条数/体积 (要遍历帧目录)
   // 归 coro_compute_coverage_statistics 那趟一起算.
   void compute_backtest_coverage(misc::Ymd start, misc::Ymd end,
                                  const AssetInfo &assetinfo);
@@ -267,7 +218,7 @@ struct Asset {
   //   - 当日全天停牌 (suspended, 无逐笔可编码)
   // 这两项不剔掉的话全市场完整性会被压到 ~94%, 掩盖真实缺口.
   //
-  // 全库 date_info 只在这里遍历一趟 (按资产段并行): 每资产 total_days /
+  // 全库帧目录只在这里遍历一趟 (按天段并行): 每资产 total_days /
   // total_orders, 全库与回测区间的条数/体积, encoded_assets.
   //
   // 交易日 × 资产的双重遍历 (885 × 5800 量级) 切成连续的交易日段扔进线程池,
@@ -291,7 +242,7 @@ inline std::string generate_archive_path(const std::string &base_dir, misc::Ymd 
   return base_dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + extension;
 }
 
-// orders/YYYY/MM/YYYYMMDD<ext> — 当天全市场一个日文件 (见 shared/EncodeDayRecord.hpp)
+// orders/YYYY/MM/YYYYMMDD<ext> — 当天全市场一个日文件 (见 shared/OrdersDay.hpp)
 inline std::string generate_orders_path(const std::string &orders_dir, misc::Ymd date,
                                         const std::string &binary_extension) {
   const std::string d = misc::dense(date);

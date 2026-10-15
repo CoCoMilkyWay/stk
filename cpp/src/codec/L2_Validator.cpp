@@ -1,5 +1,5 @@
 #include "codec/L2_Validator.hpp"
-#include "codec/binary_encoder_L2.hpp"
+#include "codec/OrderEncoder.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -283,7 +283,7 @@ void Validator::run(const std::vector<CSVOrder> &orders,
   if (out.lob_unusable != 0)
     out.flags |= Check::LobUnusable;
   // PriceScientific 不在此处置位: 计数来自 feed 阶段对原始缓冲的独立扫描
-  // (见 BinaryEncoder_L2::finish_asset), run() 拿到的 CSVOrder 已无原始字符串.
+  // (见 OrderEncoder::finish), run() 拿到的 CSVOrder 已无原始字符串.
   if (out.dup_maker != 0)
     out.flags |= Check::DupMakerId;
   if (out.cancel_unresolved != 0)

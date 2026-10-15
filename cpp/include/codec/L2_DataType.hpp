@@ -1,9 +1,9 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <string>
-#include <string_view>
 
 // https://github.com/fpga2u/AXOrderBook FPGA-real-time-parser
 // https://zhuanlan.zhihu.com/p/649040063 深交所orderbook重建
@@ -20,7 +20,7 @@
 
 namespace L2 {
 
-inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交), encoder/decoder 缓冲上限
+inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交), OrderEncoder 中间缓冲初始预留
 
 // LimitOrderBook 委托表 (OrderTable) 初始预留: 槽数 = next_pow2(2 × 本值), 32 B/槽.
 //
@@ -116,26 +116,6 @@ enum ValidType : uint8_t {
   DEPTH = 2, // depth valid ⊆ data valid
 };
 
-// 三秒快照(tick) (可能低于3秒更新)
-struct Snapshot {
-  uint8_t hour;                 // 5bit
-  uint8_t minute;               // 6bit
-  uint8_t second;               // 6bit
-  uint8_t trade_count;          // 8bit
-  uint32_t volume;              // 22bit - in shares (expanded to support up to 4M shares)
-  uint32_t turnover;            // 32bit - RMB
-  uint16_t close;               // 14bit - price in 0.01 RMB units
-  uint16_t bid_price_ticks[10]; // 14bits * 10 - prices in 0.01 RMB units
-  uint32_t bid_volumes[10];     // 22bits * 10 - in shares (expanded to support up to 4M shares per level)
-  uint16_t ask_price_ticks[10]; // 14bits * 10 - prices in 0.01 RMB units
-  uint32_t ask_volumes[10];     // 22bits * 10 - in shares (expanded to support up to 4M shares per level)
-  bool direction;               // 1bit - 0: buy, 1: sell (vwap_last > vwap_now)
-  uint16_t all_bid_vwap;        // 15bit - vwap in 0.001 RMB units of all bid orders
-  uint16_t all_ask_vwap;        // 15bit - vwap in 0.001 RMB units of all ask orders
-  uint32_t all_bid_volume;      // 22bit - volume of all bid orders in shares
-  uint32_t all_ask_volume;      // 22bit - volume of all bid orders in shares
-};
-
 // 逐笔合并(增删改成交)
 //
 // 定长 20 字节. 字段按"热路径直接寻址"排: volume、两个 id、四个时间字段都是
@@ -147,7 +127,7 @@ struct Snapshot {
 // 富余都是位域凑数凑出来的, 不占额外空间.
 //
 // price 是绝对价 (分), 但已折进 LOB 的档位窗口: 窗口外的报价在落盘时就停靠到
-// 边缘, 见 BinaryEncoder_L2::park_price 与 kPriceIndexRange.
+// 边缘, 见 OrderEncoder::park_price 与 kPriceIndexRange.
 struct Order {
   uint32_t volume;       // 股
   uint32_t bid_order_id; // 32bit
@@ -184,69 +164,14 @@ inline constexpr uint32_t kPriceIndexRange = 65536;
 // price_base 的对齐粒度 (分). 只为让基准取整可读, 不参与任何判据.
 inline constexpr uint32_t kPriceIndexGuard = 4096;
 
-// 一个 (资产, 当天) 一个 zstd 帧, 解开是 [u64 count][Order × count]. 帧装在当天
-// 全市场的日文件里, 位置 / 条数 / price_base 记在日文件目录 (见
-// shared/EncodeDayRecord.hpp). price_base 是该资产当天全部非零价格的下界 (分),
-// 向下对齐; LOB 用它把绝对价折进 65536 档的直接索引数组: index = price -
-// price_base. 低价股恒为 0, 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
+// 一个 (资产, 当天) 一个 zstd 帧, 解开是 [u64 count][Order × count] (见
+// codec/OrderFrame.hpp). 帧装在当天全市场的日文件里, 位置 / 条数 / price_base
+// 记在日文件目录 (见 shared/OrdersDay.hpp). price_base 是该资产当天全部非零价格
+// 的下界 (分), 向下对齐; LOB 用它把绝对价折进 65536 档的直接索引数组: index =
+// price - price_base. 低价股恒为 0, 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
 inline constexpr size_t frame_raw_size(size_t order_count) {
   return sizeof(uint64_t) + order_count * sizeof(Order);
 }
-
-struct ColumnMeta {
-  std::string_view column_name; // 列名
-  uint8_t bit_width;            // 实际存储 bit 宽度
-};
-
-// clang-format off
-constexpr ColumnMeta Snapshot_Schema[] = {
-    // snapshot
-    {"hour",               5  },// "取值范围 0-23,5bit 足够"},
-    {"minute",             6  },// "取值范围 0-59,6bit 足够"},
-    {"second",             6  },// "取值范围 0-59,6bit 足够"},
-    {"trade_count",        8  },// "波动较大, 多数时候为0或小值"},
-    {"volume",             22 },// "成交量(股), expanded to 22bit to support up to 4M shares"},
-    {"turnover",           32 },// "波动较大,但也有大量0"},
-    {"close",              14 },// "价格(0.01 RMB units)"},
-    {"bid_price_ticks[10]",14 },// "订单价(0.01 RMB units)"},
-    {"bid_volumes[10]",    22 },// "订单量(股), expanded to 22bit to support up to 4M shares per level"},
-    {"ask_price_ticks[10]",14 },// "订单价(0.01 RMB units)"},
-    {"ask_volumes[10]",    22 },// "订单量(股), expanded to 22bit to support up to 4M shares per level"},
-    {"direction",         1   },// "仅买/卖两种值"},
-    {"all_bid_vwap",      15  },// "VWAP价格(0.001 RMB units)"},
-    {"all_ask_vwap",      15  },// "VWAP价格(0.001 RMB units)"},
-    {"all_bid_volume",    22  },// "总量(股)"},
-    {"all_ask_volume",    22  },// "总量(股)"},
-
-    // order
-    {"millisecond",       7   },// "取值范围 0-127,7bit 足够"},
-    {"order_type",        2   },// "仅增删改成交四种值"},
-    {"order_dir",         1   },// "仅bid ask 两种值"},
-    {"price",             29  },// "逐笔价格(0.01 RMB units), 绝对价, 上限 536 万元"},
-    {"volume",            32  },// "逐笔量(股), 满宽"},
-    {"bid_order_id",      32  },// "订单id"},
-    {"ask_order_id",      32  },// "订单id"},
-  };
-// clang-format on
-
-// 按列名查位宽 — 编解码两侧都要用. 放在表自己身边而不是各自的头里: 从前
-// encoder / decoder 的头各存了一份一模一样的定义, 于是任何 TU 只要同时
-// include 这两个头就是重定义错误.
-constexpr size_t find_column_index(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
-  for (size_t i = 0; i < schema_size; ++i) {
-    if (schema[i].column_name == column_name) {
-      return i;
-    }
-  }
-  return schema_size; // Return invalid index if not found
-}
-
-constexpr uint8_t get_column_bitwidth(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
-  size_t index = find_column_index(schema, schema_size, column_name);
-  return (index < schema_size) ? schema[index].bit_width : 0;
-}
-
-constexpr size_t SCHEMA_SIZE = sizeof(Snapshot_Schema) / sizeof(Snapshot_Schema[0]);
 
 //========================================================================================
 // MARKET CLASSIFICATION AND EXCHANGE TYPES

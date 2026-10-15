@@ -1,7 +1,7 @@
 """orders 迁移: orders/YYYY/MM/DD/<CODE>.<EX>.bin (+ .stat) → orders/YYYY/MM/YYYYMMDD.bin.
 
-日文件布局与 cpp/src/shared/EncodeDayRecord.cpp 一致:
-    [DayFileHeader 92B][zstd 帧 ...][EncodeDayIndexEntry 24B × n, 按 asset_id 升序]
+日文件布局与 cpp/src/shared/OrdersDay.cpp 一致:
+    [DayFileHeader 92B][zstd 帧 ...][FrameRef 24B × n, 按 asset_id 升序]
 帧原样搬 (旧 .bin 偏移 32 起就是那个帧), 不解压不重编.
 
 每天: 写 YYYYMMDD.bin.tmp → fsync → 回读校验 → rename → fsync 目录 → 删旧日目录.

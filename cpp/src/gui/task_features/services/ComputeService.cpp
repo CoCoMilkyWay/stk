@@ -99,23 +99,18 @@ void ComputeService::start_compute(ComputeConfig config) {
     //
     // 条数是扫描时随日文件目录一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
+    // 帧目录日主序: 按天推进, 天内扫子轴 (内层 资产 × 日期 是百万量级)
+    std::vector<size_t> weights(num_assets, 0);
+    for (const misc::Ymd date : backtest_dates) {
+      const size_t didx = data_.asset.orders.day_idx(date);
+      for (size_t sub = 0; sub < num_assets; ++sub)
+        weights[sub] += data_.asset.orders.at(didx, uni.global(sub)).order_count;
+    }
+
     std::vector<std::pair<size_t, size_t>> asset_workloads; // (sub, weight)
     asset_workloads.reserve(num_assets);
-
-    // 回测日期 → 日期轴下标, 只查一次 (内层 资产 × 日期 是百万量级)
-    std::vector<size_t> backtest_didx(backtest_dates.size());
-    for (size_t d = 0; d < backtest_dates.size(); ++d)
-      backtest_didx[d] = data_.asset.date_idx(backtest_dates[d]);
-
-    for (size_t sub = 0; sub < num_assets; ++sub) {
-      const AssetItem &item = data_.asset.items[uni.global(sub)];
-
-      size_t weight = 0;
-      for (const size_t didx : backtest_didx)
-        weight += item.date_at(didx).order_count;
-
-      asset_workloads.push_back({sub, weight});
-    }
+    for (size_t sub = 0; sub < num_assets; ++sub)
+      asset_workloads.push_back({sub, weights[sub]});
 
     std::sort(asset_workloads.begin(), asset_workloads.end(),
               [](const auto &a, const auto &b) { return a.second > b.second; });

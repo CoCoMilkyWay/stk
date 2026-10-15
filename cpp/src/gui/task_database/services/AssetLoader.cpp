@@ -10,13 +10,8 @@
 namespace GUI::Database {
 
 void AssetLoader::load(SharedData &data) {
-  // date_info 按资产下标原样保留 (轴 append-only, items[i].asset_id == i 不变);
-  // 日期轴在 Asset 上, 不随 items 重建
-  std::vector<std::vector<DateInfo>> old_date_info;
-  old_date_info.reserve(data.asset.items.size());
-  for (auto &item : data.asset.items)
-    old_date_info.push_back(std::move(item.date_info));
-
+  // 帧目录 (Asset::orders) 按资产下标定址, 不随 items 重建: 轴 append-only,
+  // items[i].asset_id == i 不变
   data.asset.items.clear();
 
   const auto &stock_info_map = data.assetinfo.get_stock_info();
@@ -61,10 +56,7 @@ void AssetLoader::load(SharedData &data) {
         end_date = info.out_date;
     }
 
-    AssetItem item(i, code, asset_name, exchange, start_date, end_date);
-    if (i < old_date_info.size())
-      item.date_info = std::move(old_date_info[i]);
-    data.asset.items.push_back(std::move(item));
+    data.asset.items.emplace_back(i, code, asset_name, exchange, start_date, end_date);
   }
 }
 

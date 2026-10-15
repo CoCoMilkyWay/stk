@@ -187,10 +187,10 @@ set(SOURCES
     ../../src/shared/Config.cpp
     ../../src/shared/Correlation.cpp
     ../../src/shared/Dist.cpp
-    ../../src/shared/EncodeDayRecord.cpp
     ../../src/shared/Feature.cpp
     ../../src/shared/FeaturePreview.cpp
     ../../src/shared/OrderFlow.cpp
+    ../../src/shared/OrdersDay.cpp
     ../../src/shared/Transform.cpp
     ../../src/shared/Universe.cpp
     # misc
@@ -213,10 +213,10 @@ set(SOURCES
     ../../src/fundamental/Store.cpp
     ../../src/fundamental/Sync.cpp
     # codec
-    ../../src/codec/binary_decoder_L2.cpp
-    ../../src/codec/binary_encoder_L2.cpp
     ../../src/codec/json_config.cpp
     ../../src/codec/L2_Validator.cpp
+    ../../src/codec/OrderEncoder.cpp
+    ../../src/codec/OrderFrame.cpp
     # features
     ../../src/features/FeatureMeta.cpp
     ../../src/features/Method/CS.cpp
@@ -304,6 +304,7 @@ set(HEADERS
     ../../include/shared/Feature.hpp
     ../../include/shared/FeaturePreview.hpp
     ../../include/shared/OrderFlow.hpp
+    ../../include/shared/OrdersDay.hpp
     ../../include/shared/SharedData.hpp
     ../../include/shared/TaskState.hpp
     ../../include/shared/Transform.hpp
@@ -333,11 +334,11 @@ set(HEADERS
     ../../include/fundamental/Store.hpp
     ../../include/fundamental/Sync.hpp
     # codec
-    ../../include/codec/binary_decoder_L2.hpp
-    ../../include/codec/binary_encoder_L2.hpp
     ../../include/codec/json_config.hpp
     ../../include/codec/L2_DataType.hpp
     ../../include/codec/L2_Validator.hpp
+    ../../include/codec/OrderEncoder.hpp
+    ../../include/codec/OrderFrame.hpp
     # define / lob
     ../../include/define/CBuffer.hpp
     ../../include/lob/LimitOrderBook.hpp

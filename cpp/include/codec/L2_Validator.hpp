@@ -147,7 +147,7 @@ enum Check : uint32_t {
 
 // 判据位的元信息 — 下标即 Check 的移位量.
 //
-// 整天记录文件 (见 shared/EncodeDayRecord.hpp) 按位存命中标的数, Encode 页
+// 日文件账目 (见 shared/OrdersDay.hpp 的 DayRecord) 按位存命中标的数, Encode 页
 // 的按日分析表按位出列, 两边都要给这些位起名字. 名字集中在这一张表里, 加一
 // 条判据只改这一处. bit 7 原是枚举里的空洞, 现已被 PriceScientific 占用.
 //

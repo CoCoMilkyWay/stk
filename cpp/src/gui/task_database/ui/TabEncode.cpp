@@ -254,8 +254,8 @@ struct DateRow {
   size_t corrupt = 0;
   size_t invalid = 0;
   size_t failed = 0;
-  size_t todo = 0;                      // 缺口里账目解释不掉的部分 = 还没编到
-  const EncodeDayRecord *rec = nullptr; // 判据明细; 没编过这天就是 null
+  size_t todo = 0;                // 缺口里账目解释不掉的部分 = 还没编到
+  const DayRecord *rec = nullptr; // 判据明细; 没编过这天就是 null
 };
 
 DateRow make_date_row(const Asset &asset, misc::Ymd date,
@@ -271,12 +271,13 @@ DateRow make_date_row(const Asset &asset, misc::Ymd date,
 
   row.missing = gap.orders_missing;
   row.no_archive = gap.archive_missing;
-  if (auto it = asset.day_records.find(date); it != asset.day_records.end()) {
-    row.rec = &it->second;
-    row.skipped = it->second.assets_skipped;
-    row.corrupt = it->second.assets_corrupt;
-    row.invalid = it->second.assets_invalid;
-    row.failed = it->second.assets_failed;
+  if (const size_t didx = asset.orders.day_idx(date); didx != OrdersCatalog::kNoDay) {
+    const DayRecord &rec = asset.orders.records[didx];
+    row.rec = &rec;
+    row.skipped = rec.count(L2::Outcome::Tombstone);
+    row.corrupt = rec.count(L2::Outcome::Corrupt);
+    row.invalid = rec.count(L2::Outcome::Invalid);
+    row.failed = rec.count(L2::Outcome::Failed);
   }
 
   // 账目的分母是归档里有委托文件的资产, 缺口的分母是"已上市未退市未停牌"的
@@ -900,7 +901,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       ImGui::Spacing();
 
       // Statistics
-      // 条数只有跑过明细扫描才有值 (见 Asset::DateInfo), 没有就不占一行
+      // 条数只有跑过明细扫描才有值 (见 Asset::orders), 没有就不占一行
       if (progress.total_orders > 0) {
         ImGui::SetCursorPosX(center_x - 150);
         ImGui::Text("Total Orders: %zu", progress.total_orders);

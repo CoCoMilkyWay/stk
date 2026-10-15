@@ -2,7 +2,7 @@
 #include "worker/feature_workers.hpp"
 
 #include "codec/L2_DataType.hpp"
-#include "codec/binary_decoder_L2.hpp"
+#include "codec/OrderFrame.hpp"
 #include "features/Backend/FeatureStore.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/logging.hpp"
@@ -91,11 +91,13 @@ void sequential_worker(WorkerCtx ctx) {
     }
   }
 
-  // 每 worker 一个 decoder (非每资产): decode 是按 (asset, date) 一帧的无状态操作,
-  // 且 worker 内资产串行 —— 解码结果在下一次 decode 前已被 process_batch 消费完,
-  // 零拷贝契约天然满足. 缓冲跨资产/跨日复用, 自动长到本 worker 最忙资产的单日
-  // 条数后稳定 (零分配稳态); 当天日文件的 fd 也由它持有, 一天只 open 一次.
-  L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_ORDER_SIZE);
+  // 每 worker 一对 reader + decoder (非每资产): read / decode 是按 (asset, date)
+  // 一帧的无状态操作, 且 worker 内资产串行 —— 解码结果在下一次 decode 前已被
+  // process_batch 消费完, 零拷贝契约天然满足. 缓冲跨资产/跨日复用, 自动长到本
+  // worker 最忙资产的单日条数后稳定 (零分配稳态); 当天日文件的 fd 由 reader
+  // 持有, 一天只 open 一次.
+  DayReader reader;
+  L2::FrameDecoder decoder;
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
                                                          std::to_string(data.asset.all_dates.size()) + " dates");
@@ -118,9 +120,10 @@ void sequential_worker(WorkerCtx ctx) {
   // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘档标签 (T+N) 跨日回填, 旧日句柄持到结清
   // (见 CoreSequential::end_day / LabelReturn 文件头); 最后一日之后由 finish_all 全部结清.
   auto process_asset_day = [&](size_t asset_id, size_t didx, misc::Ymd date, const GlobalFeatureStore::Day &day) -> size_t {
-    const auto &asset = data.asset.items[sched.global_ids[asset_id]];
-    const DateInfo &di = asset.date_at(didx);
-    if (!di.has_binaries()) {
+    const size_t global_id = sched.global_ids[asset_id];
+    const auto &asset = data.asset.items[global_id];
+    const FrameRef &ref = data.asset.orders.at(didx, global_id);
+    if (ref.empty()) {
       sched.cores[asset_id]->empty_day(date, day, store); // 缺二进制 = 零事件日: 与正常日同路径, 不绑 LOB
       return 0;
     }
@@ -129,27 +132,26 @@ void sequential_worker(WorkerCtx ctx) {
     lob.tick_data().core_id = static_cast<uint32_t>(worker_id);           // 追踪: 当前驱动核
     lob.begin_day(date, day);                                             // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
 
-    // 帧的位置/条数/档位基准都在扫描灌好的 DateInfo 里, 不再读任何头; 日文件
-    // 路径由日期现算, 同一天的资产共用 decoder 里那一个 fd.
-    const size_t order_num = di.order_count;
-    const L2::Order *orders = nullptr;
+    // 帧的位置/条数/档位基准都在扫描灌好的帧目录里, 不再读任何头; 日文件
+    // 路径由日期现算, 同一天的资产共用 reader 里那一个 fd.
+    L2::FrameView view;
     {
       TraceN("DecodeOrders");
-      decoder.open_day(Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION));
-      orders = decoder.decode(di.offset, di.compressed_size, di.order_count);
+      const bool found = reader.open(Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION));
+      assert(found && "sequential_worker: 扫描登记过的日文件打不开");
+      (void)found;
+      view = decoder.decode(reader.read(ref));
     }
+    const size_t order_num = view.count;
 
-    // 档位索引基准必须先于第一条订单设进去 —— 绝对价要减去它才是档位下标
-    // (见 L2_DataType.hpp 的 kPriceIndexRange).
-    lob.set_price_base(di.price_base);
-    lob.reserve_orders(order_num); // 委托表按当日事件数定长
+    lob.begin_frame(view);
 
     // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
     size_t order_invalid_cnt = 0;
     {
       TraceN("ProcessLobs");
       TraceValue(order_num);
-      order_invalid_cnt = lob.process_batch(orders, order_num);
+      order_invalid_cnt = lob.process_batch(view.orders, order_num);
     }
 
     if (order_invalid_cnt > 100) {
@@ -287,7 +289,7 @@ void sequential_worker(WorkerCtx ctx) {
         const auto bday = store.ts_open(bdate, worker_id, cancel_requested);
         if (!bday)
           return;
-        cumulative_orders += process_asset_day(pick, data.asset.date_idx(bdate), bdate, bday);
+        cumulative_orders += process_asset_day(pick, data.asset.orders.day_idx(bdate), bdate, bday);
         stat.work.store(cumulative_orders, std::memory_order_relaxed);
         sched.done[pick].store(d, std::memory_order_release);
         ++d; // 回填日 ≤ 本 worker 前沿 − 1 < 最后一日, 不会走到 finish_all
@@ -311,8 +313,8 @@ void sequential_worker(WorkerCtx ctx) {
     date_assets_processed = 0;
     adopted_today = 0; // leader 侧领养预算按日重置
 
-    // 日期 → 日期轴下标, 一天查一次; 资产内循环 O(1) 定址
-    const size_t didx = data.asset.date_idx(date);
+    // 日期 → 帧目录行下标, 一天查一次; 资产内循环 O(1) 定址
+    const size_t didx = data.asset.orders.day_idx(date);
 
     // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术.
     // 池满 = 本 worker 领先到把池子吃满 —— 干等的时间拿去领养最慢者的资产

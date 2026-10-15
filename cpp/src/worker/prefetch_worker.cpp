@@ -2,11 +2,9 @@
 #include "worker/feature_workers.hpp"
 
 #include "features/Backend/FeatureStore.hpp"
-#include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <string>
@@ -33,11 +31,11 @@ void prefetch_worker(WorkerCtx ctx) {
 
   Logger::log("worker_" + std::to_string(worker_id), "Prefetch started: " + std::to_string(total_dates) + " dates, window " + std::to_string(window_days));
 
-  // 读缓冲: 只为把帧拖进 page cache, 内容即弃 (decode 在 TS worker 内联)
-  std::vector<char> scratch(1 << 20);
+  // 只为把帧拖进 page cache, 内容即弃 (decode 在 TS worker 内联)
+  DayReader reader;
 
-  // 当天要读的帧 (偏移, 帧长), 跨日复用容量
-  std::vector<std::pair<uint64_t, uint64_t>> spans;
+  // 当天要读的帧, 跨日复用容量
+  std::vector<FrameRef> refs;
 
   size_t cumulative_bytes = 0;
   size_t completed_dates = 0;
@@ -64,45 +62,28 @@ void prefetch_worker(WorkerCtx ctx) {
         break;
     }
 
-    // 日期 → 日期轴下标, 一天查一次 (与 sequential_worker 同姿态)
-    const size_t didx = data.asset.date_idx(date);
+    // 日期 → 帧目录行下标, 一天查一次 (与 sequential_worker 同姿态)
+    const size_t didx = data.asset.orders.day_idx(date);
 
     {
       TraceN("ReadFiles");
-      // 资产集 = universe 子轴 (sched.global_ids): TS 只 decode 这些. 按偏移排序,
-      // 首尾相接的帧并成一段顺序读 —— universe 覆盖全市场时就是整个数据区一口气读完.
-      spans.clear();
+      // 资产集 = universe 子轴 (sched.global_ids): TS 只 decode 这些. reader 按偏移
+      // 排序、首尾相接的帧并成一段顺序读 —— universe 覆盖全市场时就是整个数据区
+      // 一段段读完.
+      refs.clear();
       for (const uint32_t global_id : ctx.sched.global_ids) {
-        const DateInfo &di = data.asset.items[global_id].date_at(didx);
-        if (di.has_binaries())
-          spans.emplace_back(di.offset, di.compressed_size);
+        const FrameRef &ref = data.asset.orders.at(didx, global_id);
+        if (!ref.empty())
+          refs.push_back(ref);
       }
-      std::sort(spans.begin(), spans.end());
-      size_t merged = 0;
-      for (size_t i = 0; i < spans.size(); ++i) {
-        if (merged > 0 && spans[merged - 1].first + spans[merged - 1].second == spans[i].first)
-          spans[merged - 1].second += spans[i].second;
-        else
-          spans[merged++] = spans[i];
-      }
-      spans.resize(merged);
 
-      if (!spans.empty()) {
-        const std::string day_path =
-            Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION);
-        const int fd = file_open_read(day_path.c_str());
-        assert(fd >= 0 && "prefetch: 扫描登记过的日文件打不开");
-        for (const auto &[offset, size] : spans) {
-          for (uint64_t done = 0; done < size;) {
-            const size_t want = static_cast<size_t>(std::min<uint64_t>(scratch.size(), size - done));
-            const size_t got = file_pread(fd, scratch.data(), want, offset + done);
-            assert(got == want && "prefetch: 帧越过日文件末尾 (目录与文件不符)");
-            done += got;
-            cumulative_bytes += got;
-          }
-          stat.work.store(cumulative_bytes, std::memory_order_relaxed);
-        }
-        file_close(fd);
+      if (!refs.empty()) {
+        const bool found = reader.open(Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION));
+        assert(found && "prefetch: 扫描登记过的日文件打不开");
+        (void)found;
+        cumulative_bytes += reader.prefetch(refs);
+        reader.close();
+        stat.work.store(cumulative_bytes, std::memory_order_relaxed);
       }
     }
 

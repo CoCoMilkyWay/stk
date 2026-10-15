@@ -11,6 +11,7 @@
 #include <vector>
 
 // #include "codec/L2_DataType.hpp"
+#include "codec/OrderFrame.hpp"
 #include "define/FastBitmap.hpp"
 #include "features/CoreSequential.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
@@ -172,7 +173,7 @@ public:
   // PUBLIC API: Utilities
   //======================================================================================
 
-  // 设置当日档位索引基准 (分), 取自日文件目录项. 必须在 clear() 之后、喂第一条
+  // 设置当日档位索引基准 (分), 随帧而来 (见 begin_frame). 必须在 clear() 之后、喂第一条
   // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的档位下标会指向别的价格.
   HOT_NOINLINE void set_price_base(uint32_t price_base) {
     price_base_ = price_base;
@@ -183,6 +184,13 @@ public:
   // 小到进 L2, 换日只清这一段. 不调用 (实盘, 事件数未知) 则用整张预留表.
   HOT_NOINLINE void reserve_orders(size_t events) {
     order_table_.reserve(events);
+  }
+
+  // 一帧 (解码产物) 的前置: 档位基准 + 委托表定长. 帧里的逐笔随后经
+  // process_batch / process 喂入 —— FrameDecoder::decode 的对端.
+  void begin_frame(const L2::FrameView &view) {
+    set_price_base(view.price_base);
+    reserve_orders(view.count);
   }
 
   // Complete reset

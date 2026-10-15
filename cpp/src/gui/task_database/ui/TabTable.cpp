@@ -618,7 +618,7 @@ void RenderDataTable(
 
       "总市值 (Market Cap)\n= 收盘价 x 总股本 / 1亿\n= close x total_shares (不复权真价)\n\n说明:\n- 单位: 亿元\n- 与 PE/PB/PS/PCF/DY 的分子同源\n- 数据来自 cn_stock_real_bar1d.close + cn_stock_shares.total_shares",
 
-      "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info 中已编码的天数\n可用于判断数据完整性",
+      "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= 帧目录中已编码的天数\n可用于判断数据完整性",
 
       "日均逐笔数 (Average Orders per Trading Day)\n所有已有逐笔数据交易日的平均记录数量 (委托+成交合并后)\n= Σ order_count / 有逐笔数据的交易日数\n\n说明:\n- 单位:条记录/日\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数取自日文件目录, 扫描时一并读到",
 
@@ -846,7 +846,7 @@ void RenderDataTable(
     handle_column_click(15);
 
     // Col 16: Trading Days
-    // 以下三列的统计都取自 Asset::asset_stats — 逐帧遍历 date_info 会把
+    // 以下三列的统计都取自 Asset::asset_stats — 逐帧遍历帧目录会把
     // 帧时间拖到几百毫秒 (见 TableView 处的说明)
     ImGui::TableSetColumnIndex(16);
     if (hovered_col == 16) {
