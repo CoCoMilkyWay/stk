@@ -119,15 +119,14 @@ void encoding_producer(SharedData &data,
     // 增量新鲜度规则: 日文件存在且不老于归档 → 它的结局可信.
     //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读帧;
     //   - 归档被重下/修复过 → mtime 变新 → 日文件判过期, 整天重编覆盖.
-    const std::string day_path =
-        Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION);
+    const std::string &orders_dir = data.config.orders_dir;
     bool prev_fresh = false;
     if (skip_existing) {
       std::error_code ec;
       std::filesystem::file_time_type archive_mtime = std::filesystem::last_write_time(archive_path, ec);
       if (ec)
         archive_mtime = {};
-      const auto day_mtime = std::filesystem::last_write_time(day_path, ec);
+      const auto day_mtime = std::filesystem::last_write_time(orders_day_path(orders_dir, date), ec);
       prev_fresh = !ec && day_mtime >= archive_mtime;
     }
 
@@ -135,7 +134,7 @@ void encoding_producer(SharedData &data,
     // complete, 下面的逐资产过滤看目录里的帧与墓碑, 新日文件从它 adopt 旧帧.
     DayReader prev;
     if (prev_fresh)
-      prev_fresh = prev.open(day_path);
+      prev_fresh = prev.open(orders_dir, date);
 
     // 整天快路径 — 必须在列举之前: 下面那次 unrar l 要在机械盘上走完整条包头
     // 链 (实测 0.2~2.5s), 光"确认无事可做"就是几秒一天.
@@ -234,8 +233,7 @@ void encoding_producer(SharedData &data,
       if (prev_fresh) {
         if (const FrameRef *old = prev.index().find(asset_id)) {
           stats.pairs_skipped.fetch_add(1);
-          day.rec.tally(old->empty() ? L2::Outcome::Tombstone : L2::Outcome::Ok, 0);
-          day.refs.push_back(*old);
+          day.settle(old->empty() ? L2::Outcome::Tombstone : L2::Outcome::Ok, 0, *old);
           continue;
         }
       }
@@ -266,7 +264,7 @@ void encoding_producer(SharedData &data,
 
     // 新日文件: 先把旧日文件里搬得过来的帧整段拷进去 (就地改写目录项的
     // 偏移), worker 再往后追加新编的帧.
-    auto job = std::make_shared<DayJob>(day_path);
+    auto job = std::make_shared<DayJob>(orders_dir, date);
     job->index = std::move(day);
     job->writer.adopt(prev, job->index.refs);
     prev.close();
@@ -276,7 +274,7 @@ void encoding_producer(SharedData &data,
       // 走到这里说明每个资产都有了结局, 一个错误都没剩 (出错的对既没有帧也
       // 没有墓碑, 必然被上面重新列成任务). 换上标了 complete 的日文件, 下次
       // 连列举都省了.
-      job->index.rec.complete = true;
+      job->index.rec.complete = 1;
       job->writer.commit(std::move(job->index));
       if (progress)
         progress->bump_summary(1, false); // 只列举没真编, 不参与 ETA 速率
@@ -325,7 +323,7 @@ void encoding_producer(SharedData &data,
 // ENCODING WORKER — 每批自己 unrar + 解码 + 往当天日文件追加帧
 // ============================================================================
 //
-// worker 只写日文件, 不回填 data.asset.orders.
+// worker 只写日文件, 不回填帧目录 (Asset::orders()).
 //
 // 同一天的不同资产落在不同批上, 由不同 worker 并发处理 —— 再去写同一行帧
 // 目录就要加锁. 编码产物的真相由编码后的重新扫描统一读取 (ScanService).
@@ -470,14 +468,11 @@ void encoding_worker(SharedData &data,
     // 的天在附注里永远排不到前面.
     std::vector<char> retired(batch.tasks.size(), 0);
 
-    // 天粒度账本: 本天记一笔结局, 清零则整天收工 (汇总 days +1) 并 commit 日文件.
-    //
-    // 有结局 (Ok 的帧 / Tombstone 的墓碑) 才进当天目录; 其余是"没留下任何东西"
-    // ⇒ rec.complete = false, 下次增量必须重新列举补齐.
-    // check_flags 只在 Invalid 时有意义 (L2::Check 的位).
+    // 天粒度账本: 本天记一笔结局 (DayIndex::settle), 清零则整天收工 (汇总
+    // days +1) 并 commit 日文件. 没留下结局的 ⇒ rec.complete = 0, 下次增量
+    // 必须重新列举补齐.
     auto retire_task = [&](size_t task_idx, L2::Outcome outcome, uint32_t check_flags, const FrameRef &ref) {
       assert(!retired[task_idx] && "retire_task: 同一任务销账两次");
-      assert((outcome == L2::Outcome::Ok) == !ref.empty() && "retire_task: 只有 Ok 带帧");
       retired[task_idx] = 1;
       ++done_in_batch;
       progress_handle.update(done_in_batch, batch.tasks.size(), std::to_string(batch.date));
@@ -487,12 +482,10 @@ void encoding_worker(SharedData &data,
       {
         std::lock_guard<std::mutex> lock(stats.days_mutex);
         DayJob &job = *batch.day;
-        job.index.rec.tally(outcome, check_flags);
-        if (L2::settled(outcome))
-          job.index.refs.push_back(ref);
+        job.index.settle(outcome, check_flags, ref);
 
         if (++job.done == job.total) {
-          job.index.rec.complete = job.index.rec.errors() == 0;
+          job.index.rec.complete = job.index.rec.errors() == 0 ? 1 : 0;
           const size_t erased = stats.days_inflight.erase(batch.date);
           assert(erased == 1 && "retire_task: 本天未在账本注册");
           (void)erased;
@@ -526,7 +519,7 @@ void encoding_worker(SharedData &data,
           encoder.finish(std::to_string(batch.date) + " " + asset.asset_code + "." + asset.exchange);
       switch (outcome) {
       case L2::Outcome::Ok:
-        ref = batch.day->writer.append(task.asset_id, framer.encode(encoder.orders()));
+        ref = batch.day->writer.put(task.asset_id, framer, encoder.orders());
         break;
       case L2::Outcome::Tombstone:
         // 持久否定缓存: 目录里记一条墓碑 (其余字段皆 0), 增量重跑不再碰它.
@@ -544,9 +537,6 @@ void encoding_worker(SharedData &data,
         // 什么都不写, 详情已由 finish 记入日志, 等人核查数据. 命中的判据同时
         // 进当天账目, 供 Encode 页按日拆解原因.
         check_flags = encoder.report().flags;
-        break;
-      case L2::Outcome::Failed:
-        assert(false && "OrderEncoder::finish 不产出 Failed");
         break;
       }
       retire_task(task_idx, outcome, check_flags, ref);

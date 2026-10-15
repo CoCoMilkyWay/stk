@@ -191,7 +191,7 @@ void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &c
 }
 
 // 外来写者的 parquet 以本库原样重写 (每轮开头, 先于 sync / 构建; 见 misc::pq::renative):
-//   基本面分片经 fundamental::renative; 分钟线 output/cn_stock_bar1m/YYYY-MM/YYYY-MM-DD.parquet
+//   基本面分片经 fundamental::renative; 分钟线 output/cn_stock_bar1m_c/YYYY-MM/YYYY-MM-DD.parquet
 //   (fetch.py 打包落地, 无 Store 归属) 直走 misc::pq. 判定只读 footer; 并行, 重的先跑, 取消在文件间生效
 void renative_all(Job &job, const std::atomic<bool> &cancel) {
   struct File {
@@ -203,7 +203,7 @@ void renative_all(Job &job, const std::atomic<bool> &cancel) {
   for (const auto &[name, shards] : cat.all())
     for (const fundamental::Shard &sh : shards)
       files.push_back({sh.bytes, [&sh] { return fundamental::renative(sh); }});
-  const std::filesystem::path m1 = misc::git_root() / "output" / "cn_stock_bar1m";
+  const std::filesystem::path m1 = misc::git_root() / "output" / "cn_stock_bar1m_c";
   if (std::filesystem::exists(m1))
     for (const std::filesystem::directory_entry &e : std::filesystem::recursive_directory_iterator(m1))
       if (e.is_regular_file() && e.path().extension() == ".parquet")

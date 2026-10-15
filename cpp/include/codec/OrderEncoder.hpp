@@ -12,35 +12,6 @@
 namespace L2 {
 
 // ============================================================================
-// 结局 — 一个 (资产, 当天) 编完落在哪个桶
-// ============================================================================
-//
-// 下标即日文件账目的桶 (DayRecord::outcome, 见 shared/OrdersDay.hpp), 顺序即
-// 盘上顺序, 不能动.
-//   Ok:        落了帧
-//   Tombstone: 源数据为空 (停牌日的纯表头文件), 确定性结论 → 写墓碑, 别再重试;
-//              低流动性但非空的照常编码, 不在存储层做策略过滤
-//   Corrupt:   源 CSV 有坏行 (字段错位/代码非法) 或归档流断, 多半是归档成员
-//              CRC 损坏. 不产出任何东西也不写墓碑 —— 跳过并留日志, 等人把源
-//              文件修好, 下次增量自动重来. 绝不能 abort: 这是几小时的批处理,
-//              一个坏标的不该让整轮白跑.
-//   Invalid:   行能解析, 但逐笔流本身不自洽或与快照对不上 (见 L2_Validator.hpp).
-//              处置与 Corrupt 完全相同 —— 缺片的逐笔编成帧会让 LOB 沉默地重建出
-//              错误盘口, 不如不落.
-//   Failed:    环境错误. 压缩失败现已直接断言, 这个桶只在旧日文件里可能非零.
-enum class Outcome : uint8_t { Ok,
-                               Tombstone,
-                               Corrupt,
-                               Invalid,
-                               Failed };
-inline constexpr size_t kOutcomeCount = 5;
-
-// 有结局 (帧或墓碑) 才进当天目录; 其余什么都不留, 下次增量重来
-constexpr bool settled(Outcome o) {
-  return o == Outcome::Ok || o == Outcome::Tombstone;
-}
-
-// ============================================================================
 // 归档成员 — 一个 (资产, 当天) 在归档里的三个 CSV
 // ============================================================================
 //
@@ -97,11 +68,12 @@ constexpr T clamp_to_bound(uint64_t value, T bound_val) {
 
 // Order 各字段的上界.
 //
-// 直接写死成 Order 位域的宽度 —— 位宽的真相只应该有一处, 就是 Order 的定义本身.
-constexpr uint32_t HOUR_BOUND = 31;              // 5bit
-constexpr uint32_t MINUTE_BOUND = 63;            // 6bit
-constexpr uint32_t SECOND_BOUND = 63;            // 6bit
-constexpr uint32_t MILLISECOND_BOUND = 127;      // 7bit (10ms 单位)
+// 价格 / 类型 / 方向直接写死成 Order 位域的宽度 —— 位宽的真相只应该有一处, 就是
+// Order 的定义本身. tick 的各段钳在一个字节以内, 整数序 = 时间序 (见 make_tick).
+constexpr uint32_t HOUR_BOUND = 31;
+constexpr uint32_t MINUTE_BOUND = 63;
+constexpr uint32_t SECOND_BOUND = 63;
+constexpr uint32_t MILLISECOND_BOUND = 127;      // 10ms 单位
 constexpr uint32_t ORDER_TYPE_BOUND = 3;         // 2bit
 constexpr uint32_t ORDER_DIR_BOUND = 1;          // 1bit
 constexpr uint32_t PRICE_BOUND = (1u << 29) - 1; // 29bit, 上限 536 万元
@@ -186,7 +158,8 @@ public:
   static constexpr size_t kCsvFields = 16;
   static size_t split_csv_line(std::string_view line, std::string_view (&fields)[kCsvFields]);
 
-  static uint32_t parse_time_to_ms(uint32_t time_int);
+  // HHMMSSmmm → tick (见 make_tick), 各段钳到上界
+  static uint32_t parse_tick(uint32_t time_int);
   static inline uint32_t parse_price_to_fen(std::string_view str);
   static inline uint32_t parse_volume(std::string_view str);
 

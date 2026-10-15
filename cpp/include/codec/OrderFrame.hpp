@@ -15,24 +15,29 @@ namespace L2 {
 // ============================================================================
 //
 //   FrameView  解开的: Order × count, 已按 (时刻, 优先级, 源序) 排好, 直接喂 LOB
-//   Frame      压好的: 一个 zstd 帧, 解开是 [u64 count][Order × count]
+//   Frame      压好的: 一个 zstd 帧, 解开就是 Order × count
 //
 //   FrameEncoder::encode(FrameView) → Frame        FrameDecoder::decode(Frame) → FrameView
 //
 // 两侧都只碰内存, 不碰 fd —— 帧进出日文件归 DayWriter / DayReader (见
-// shared/OrdersDay.hpp). price_base 随帧走: 编码侧来自准入校验, 解码侧来自日文件
+// shared/OrdersDay.hpp). FrameHead 随帧走: 编码侧来自准入校验, 解码侧来自日文件
 // 目录, 交给 LOB 把绝对价折成档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
+
+// 帧的两项元数据, FrameView / Frame / FrameRef 共用同一份.
+struct FrameHead {
+  uint32_t count = 0;      // 逐笔条数
+  uint32_t price_base = 0; // LOB 档位窗口基准 (分)
+};
+
 struct FrameView {
   const Order *orders = nullptr;
-  uint32_t count = 0;
-  uint32_t price_base = 0;
+  FrameHead head;
 };
 
 struct Frame {
   const char *data = nullptr;
-  uint32_t size = 0;        // 压缩字节数
-  uint32_t order_count = 0; // 解开后的条数, 与帧内 count 对账
-  uint32_t price_base = 0;
+  uint32_t size = 0; // 压缩字节数
+  FrameHead head;
 };
 
 // Zstandard 压缩级别 (离线编码): 6 在体积与编码速度之间取平衡
@@ -52,13 +57,12 @@ public:
 
 private:
   // 只增不缩: 一个 worker 顺序编成千上万个 (资产, 日期), 容量涨到峰值后不再 malloc
-  std::vector<char> raw_;   // [u64 count][Order × count]
   std::vector<char> frame_; // 压好的帧
   ZSTD_CCtx_s *ctx_ = nullptr;
 };
 
-// 解码侧. 跳过帧内容校验: 日文件原子落盘 (tmp + rename), 目录自洽 + 解压尺寸 +
-// count 对账已能挡住结构性损坏; 特征 / 因子计算高频解码, 每次再算 xxh64 是白花的.
+// 解码侧. 跳过帧内容校验: 日文件原子落盘 (tmp + rename), 目录自洽 + 解压尺寸与
+// 目录条数对账已能挡住结构性损坏; 特征 / 因子计算高频解码, 每次再算 xxh64 是白花的.
 class FrameDecoder {
 public:
   FrameDecoder();
@@ -72,7 +76,7 @@ public:
 
 private:
   // 只增不缩, 同 FrameEncoder
-  std::vector<char> raw_; // [u64 count][Order × count]
+  std::vector<Order> orders_;
   ZSTD_DCtx_s *ctx_ = nullptr;
 };
 

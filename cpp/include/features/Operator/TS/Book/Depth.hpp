@@ -25,8 +25,7 @@
 template <size_t N_LEVELS = L2::LOB_DEPTH>
 class Depth {
 public:
-  static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
-  static constexpr float LIMIT_QTY = 1.0f;    // 超限档位数量: 1股
+  static constexpr float LIMIT_QTY = 1.0f; // 超限档位数量: 1股
 
   // 源层节点: 无标量输出口 (kCount = 0), 自持 4 组 N 档 CBuffer, 下游按 Depth.bid_qty 等直接引用
   enum Out : size_t { kCount = 0 };
@@ -41,9 +40,8 @@ public:
 
   // compute 与 flush 同域 (onDepth) 且相邻, 直接推入 CBuffer
   inline void compute() {
-    const auto &depth = tick_data_.lob.depth_buffer;
-    // Level::price 是档位下标, 加上基准才是绝对价 (分). 低价股基准为 0.
-    const float base = static_cast<float>(tick_data_.lob.price_base);
+    const LOB_Feature &lob = tick_data_.lob;
+    const auto &depth = lob.depth_buffer;
     const float limit_up = lim_up_ + kPxEps;
     const float limit_down = lim_dn_ - kPxEps;
 
@@ -51,8 +49,8 @@ public:
       const Level *bid_level = depth[L2::LOB_DEPTH + i];     // 买i+1档
       const Level *ask_level = depth[L2::LOB_DEPTH - 1 - i]; // 卖i+1档
 
-      float bp = (base + static_cast<float>(bid_level->price)) * PRICE_SCALE;
-      float ap = (base + static_cast<float>(ask_level->price)) * PRICE_SCALE;
+      float bp = lob.price_of(bid_level);
+      float ap = lob.price_of(ask_level);
       float bq = std::max(static_cast<float>(bid_level->net_quantity), 0.0f);
       float aq = std::min(static_cast<float>(ask_level->net_quantity), 0.0f); // 负值
 

@@ -81,23 +81,6 @@ static inline bool price_is_scientific(std::string_view str) {
   return false;
 }
 
-// Time decomposition helpers
-static inline uint8_t extract_hour(uint32_t time_ms) {
-  return static_cast<uint8_t>(time_ms / 3600000);
-}
-
-static inline uint8_t extract_minute(uint32_t time_ms) {
-  return static_cast<uint8_t>((time_ms % 3600000) / 60000);
-}
-
-static inline uint8_t extract_second(uint32_t time_ms) {
-  return static_cast<uint8_t>((time_ms % 60000) / 1000);
-}
-
-static inline uint8_t extract_millisecond_10ms(uint32_t time_ms) {
-  return static_cast<uint8_t>((time_ms % 1000) / 10);
-}
-
 // Market detection: 1 = 深, 0 = 沪, -1 = 代码字段非法.
 //
 // -1 只可能来自损坏的源数据: unrar 对成员报 CRC 失败时仍会吐出字节, 解出来的
@@ -160,16 +143,16 @@ size_t OrderEncoder::split_csv_line(std::string_view line, std::string_view (&fi
   }
 }
 
-// Convert time from HHMMSSMMM format to milliseconds
-uint32_t OrderEncoder::parse_time_to_ms(uint32_t time_int) {
-  uint32_t ms = time_int % 1000;
+uint32_t OrderEncoder::parse_tick(uint32_t time_int) {
+  const uint32_t ms = time_int % 1000;
   time_int /= 1000;
-  uint32_t sec = time_int % 100;
+  const uint32_t sec = time_int % 100;
   time_int /= 100;
-  uint32_t min = time_int % 100;
-  uint32_t hour = time_int / 100;
+  const uint32_t min = time_int % 100;
+  const uint32_t hour = time_int / 100;
 
-  return hour * 3600000 + min * 60000 + sec * 1000 + ms;
+  return make_tick(clamp_to_bound(hour, HOUR_BOUND), clamp_to_bound(min, MINUTE_BOUND),
+                   clamp_to_bound(sec, SECOND_BOUND), clamp_to_bound(ms / 10, MILLISECOND_BOUND));
 }
 
 // Parse price fields (CSV value in 0.0001 RMB → 0.01 RMB units)
@@ -410,13 +393,7 @@ bool OrderEncoder::parse_market_tail(const char *data, size_t len, MarketSummary
 
 Order OrderEncoder::csv_to_order(const CSVOrder &csv, uint32_t price_base, bool szse) {
   Order order = {};
-
-  // Time fields
-  uint32_t time_ms = parse_time_to_ms(csv.time);
-  order.hour = clamp_to_bound(extract_hour(time_ms), HOUR_BOUND);
-  order.minute = clamp_to_bound(extract_minute(time_ms), MINUTE_BOUND);
-  order.second = clamp_to_bound(extract_second(time_ms), SECOND_BOUND);
-  order.millisecond = clamp_to_bound(extract_millisecond_10ms(time_ms), MILLISECOND_BOUND);
+  order.tick = parse_tick(csv.time);
 
   // Order attributes
   order.order_type = determine_order_type(csv.order_type, '0', false, szse);
@@ -438,13 +415,7 @@ Order OrderEncoder::csv_to_order(const CSVOrder &csv, uint32_t price_base, bool 
 
 Order OrderEncoder::csv_to_trade(const CSVTrade &csv, uint32_t price_base, bool szse) {
   Order order = {};
-
-  // Time fields
-  uint32_t time_ms = parse_time_to_ms(csv.time);
-  order.hour = clamp_to_bound(extract_hour(time_ms), HOUR_BOUND);
-  order.minute = clamp_to_bound(extract_minute(time_ms), MINUTE_BOUND);
-  order.second = clamp_to_bound(extract_second(time_ms), SECOND_BOUND);
-  order.millisecond = clamp_to_bound(extract_millisecond_10ms(time_ms), MILLISECOND_BOUND);
+  order.tick = parse_tick(csv.time);
 
   // Trade attributes
   order.order_type = determine_order_type('0', csv.trade_code, true, szse);
@@ -471,18 +442,16 @@ Order OrderEncoder::csv_to_trade(const CSVTrade &csv, uint32_t price_base, bool 
 // Section 4: Frame Order (时刻 → 优先级 → 源序)
 // ============================================================================
 
-// 帧序键: [时刻 (10ms) 24bit][优先级 2bit][orders_ 下标 32bit]. 下标兜底使键两两
-// 不等, 排序结果与 std::sort 的实现无关 —— 同一份输入永远编出同一个帧.
-// 优先级 maker → taker → cancel.
-static_assert(((HOUR_BOUND * 60 + MINUTE_BOUND) * 60 + SECOND_BOUND) * 100 + MILLISECOND_BOUND < (1u << 24),
-              "帧序键: 时刻段装不进 24bit");
+// 帧序键: [tick 32bit][优先级 2bit][orders_ 下标 30bit]. tick 的整数序即时间序
+// (见 make_tick). 下标兜底使键两两不等, 排序结果与 std::sort 的实现无关 —— 同一
+// 份输入永远编出同一个帧. 优先级 maker → taker → cancel.
+constexpr size_t kFrameKeyIndexBits = 30;
 
 static inline uint64_t frame_key(const Order &o, size_t idx) {
-  const uint64_t time = ((uint64_t(o.hour) * 60 + o.minute) * 60 + o.second) * 100 + o.millisecond;
   const uint64_t priority = o.order_type == MAKER ? 0 : o.order_type == TAKER ? 1
                                                     : o.order_type == CANCEL  ? 2
                                                                               : 3;
-  return (time << 34) | (priority << 32) | idx;
+  return (uint64_t(o.tick) << 32) | (priority << kFrameKeyIndexBits) | idx;
 }
 
 // ============================================================================
@@ -538,7 +507,7 @@ void OrderEncoder::feed(Member member, const char *data, size_t len) {
 }
 
 FrameView OrderEncoder::orders() const {
-  return {sorted_.data(), static_cast<uint32_t>(sorted_.size()), report_.price_base};
+  return {sorted_.data(), {static_cast<uint32_t>(sorted_.size()), report_.price_base}};
 }
 
 Outcome OrderEncoder::finish(const std::string &tag) {
@@ -594,15 +563,16 @@ Outcome OrderEncoder::finish(const std::string &tag) {
     orders_.push_back(csv_to_trade(csv, report_.price_base, szse_));
 
   const size_t n = orders_.size();
-  assert(n <= UINT32_MAX && "finish: 单日逐笔条数溢出 32 位");
+  assert(n < (size_t(1) << kFrameKeyIndexBits) && "finish: 单日逐笔条数装不进帧序键的下标段");
   keys_.resize(n);
   for (size_t i = 0; i < n; ++i)
     keys_[i] = frame_key(orders_[i], i);
   std::sort(keys_.begin(), keys_.end());
 
+  constexpr uint64_t kIndexMask = (uint64_t(1) << kFrameKeyIndexBits) - 1;
   sorted_.resize(n);
   for (size_t i = 0; i < n; ++i)
-    sorted_[i] = orders_[static_cast<uint32_t>(keys_[i])];
+    sorted_[i] = orders_[keys_[i] & kIndexMask];
 
   return Outcome::Ok;
 }

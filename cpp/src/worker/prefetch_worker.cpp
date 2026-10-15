@@ -9,7 +9,6 @@
 #include <chrono>
 #include <string>
 #include <thread>
-#include <utility>
 #include <vector>
 
 void prefetch_worker(WorkerCtx ctx) {
@@ -63,7 +62,7 @@ void prefetch_worker(WorkerCtx ctx) {
     }
 
     // 日期 → 帧目录行下标, 一天查一次 (与 sequential_worker 同姿态)
-    const size_t didx = data.asset.orders.day_idx(date);
+    const size_t didx = ctx.orders.day_idx(date);
 
     {
       TraceN("ReadFiles");
@@ -72,13 +71,13 @@ void prefetch_worker(WorkerCtx ctx) {
       // 一段段读完.
       refs.clear();
       for (const uint32_t global_id : ctx.sched.global_ids) {
-        const FrameRef &ref = data.asset.orders.at(didx, global_id);
+        const FrameRef &ref = ctx.orders.at(didx, global_id);
         if (!ref.empty())
           refs.push_back(ref);
       }
 
       if (!refs.empty()) {
-        const bool found = reader.open(Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION));
+        const bool found = reader.open(data.config.orders_dir, date);
         assert(found && "prefetch: 扫描登记过的日文件打不开");
         (void)found;
         cumulative_bytes += reader.prefetch(refs);

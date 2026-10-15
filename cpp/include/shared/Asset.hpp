@@ -8,6 +8,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -35,7 +36,7 @@ struct AssetItem {
   misc::Ymd start_date = 0;
   misc::Ymd end_date = 0;
 
-  // 按日的帧不在这里, 在 Asset::orders (日主序, 见 shared/OrdersDay.hpp).
+  // 按日的帧不在这里, 在 Asset::orders() (日主序, 见 shared/OrdersDay.hpp).
 
   // 构造
   AssetItem() = default;
@@ -56,9 +57,12 @@ struct Asset {
   // ========================================
   // 全库帧目录: [日][资产] 一格一个 FrameRef + 每天的编码账目
   // ========================================
-  // 由二进制扫描整体重建 (见 shared/OrdersDay.hpp). 账目里有缺口的"原因" ——
-  // 只有编码器知道, date_gaps 只知道"缺了几个", 两者在 By Date 表里按日期对齐.
-  OrdersCatalog orders;
+  // 由二进制扫描整体重建 (见 shared/OrdersDay.hpp), 建好即只读, 以快照发布:
+  // 读者 orders() 取一份, 持有期间内容不变, 与重扫描 / 重编码并发安全. 账目里有
+  // 缺口的"原因" —— 只有编码器知道, date_gaps 只知道"缺了几个", 两者在 By Date
+  // 表里按日期对齐.
+  std::shared_ptr<const OrdersCatalog> orders() const;
+  void publish_orders(std::shared_ptr<const OrdersCatalog> catalog);
 
   // ========================================
   // 按日统计 (Browser 用, 加载 stock_info 后算一次)
@@ -229,6 +233,10 @@ struct Asset {
       boost::asio::io_context &io,
       const AssetInfo &assetinfo,
       std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
+
+private:
+  mutable std::mutex orders_mutex_;
+  std::shared_ptr<const OrdersCatalog> orders_ = std::make_shared<const OrdersCatalog>();
 };
 
 // ============================================================================
@@ -240,13 +248,6 @@ namespace Utils {
 inline std::string generate_archive_path(const std::string &base_dir, misc::Ymd date, const std::string &extension) {
   const std::string d = misc::dense(date);
   return base_dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + extension;
-}
-
-// orders/YYYY/MM/YYYYMMDD<ext> — 当天全市场一个日文件 (见 shared/OrdersDay.hpp)
-inline std::string generate_orders_path(const std::string &orders_dir, misc::Ymd date,
-                                        const std::string &binary_extension) {
-  const std::string d = misc::dense(date);
-  return orders_dir + "/" + d.substr(0, 4) + "/" + d.substr(4, 2) + "/" + d + binary_extension;
 }
 
 } // namespace Utils

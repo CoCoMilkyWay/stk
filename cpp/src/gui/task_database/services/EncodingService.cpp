@@ -40,6 +40,10 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   assert(physical_ram_bytes() >= (size_t(16) << 30) &&
          "encoding 需要 ≥16GB 物理内存");
 
+  // 编码会 rename 换掉日文件, 帧目录快照里的偏移随之作废: 先撤下, 收尾的重扫描
+  // (scan_callback_) 再发布新的.
+  data_.asset.publish_orders(std::make_shared<const OrdersCatalog>());
+
   // 容量即流水深度: ~85 批/天, 256 ≈ 领先 2-3 天. 批是纯元数据, 队列本身
   // 不占什么内存.
   queue_ = std::make_unique<BatchQueue>(256);

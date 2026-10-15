@@ -116,11 +116,24 @@ enum ValidType : uint8_t {
   DEPTH = 2, // depth valid ⊆ data valid
 };
 
+// 时刻 tick: hour << 24 | minute << 16 | second << 8 | millisecond (10ms 单位).
+//
+// 逐笔全程只有这一种时间表示: 编码期 CSV 直接解析成 tick, 帧序键直接拿它当
+// 时刻段, LOB 直接拿它当节流/时段的游标. 每段一个字节且各段都远小于 256, 所以
+// 整数序 = 时间序; (tick >> 16) = hour * 256 + minute, (tick >> 8) = 秒级游标.
+constexpr uint32_t make_tick(uint32_t hour, uint32_t minute, uint32_t second, uint32_t millisecond) {
+  return hour << 24 | minute << 16 | second << 8 | millisecond;
+}
+constexpr uint8_t tick_hour(uint32_t tick) { return static_cast<uint8_t>(tick >> 24); }
+constexpr uint8_t tick_minute(uint32_t tick) { return static_cast<uint8_t>(tick >> 16); }
+constexpr uint8_t tick_second(uint32_t tick) { return static_cast<uint8_t>(tick >> 8); }
+constexpr uint8_t tick_millisecond(uint32_t tick) { return static_cast<uint8_t>(tick); } // 10ms 单位
+
 // 逐笔合并(增删改成交)
 //
-// 定长 20 字节. 字段按"热路径直接寻址"排: volume、两个 id、四个时间字段都是
-// 平凡成员, 取值零开销; 只有价格与类型/方向共用最后 4 字节的位域 —— 29+2+1
-// 正好填满一个 uint32, 既不浪费也不让结构变大, 读价格只多一次 AND.
+// 定长 20 字节. 字段按"热路径直接寻址"排: volume、两个 id、tick 都是平凡成员,
+// 取值零开销; 只有价格与类型/方向共用最后 4 字节的位域 —— 29+2+1 正好填满一个
+// uint32, 既不浪费也不让结构变大, 读价格只多一次 AND.
 //
 // price 29bit 覆盖到 536 万元. A 股最高价在千元量级, 位宽窄于 18bit 就会把高价
 // 股的价格钳平; volume 给满 32bit, 交易所单笔申报上限是 100 万股. 这两个字段的
@@ -132,11 +145,7 @@ struct Order {
   uint32_t volume;       // 股
   uint32_t bid_order_id; // 32bit
   uint32_t ask_order_id; // 32bit
-
-  uint8_t hour;        // 5bit
-  uint8_t minute;      // 6bit
-  uint8_t second;      // 6bit
-  uint8_t millisecond; // 7bit (in 10ms)
+  uint32_t tick;         // 时刻, 见 make_tick
 
   uint32_t price : 29;          // 绝对价, 0.01 RMB 单位 (分), 上限 536 万元
   OrderType order_type : 2;     // 0:maker(order) 1:cancel 3:taker(trade)
@@ -145,7 +154,7 @@ struct Order {
   // bid_order_id:             |buy_maker_id |0             |buy_cancel_id |0              |0     |0     |buy_taker_id  |buy_maker_id
   // ask_order_id:             |0            |sell_maker_id |0             |sell_cancel_id |0     |0     |sell_maker_id |sell_taker_id
 };
-// 位域必须与前面三个 uint32 和四个 uint8 严丝合缝地凑满 20 字节 —— 一旦编译器
+// 位域必须与前面四个 uint32 严丝合缝地凑满 20 字节 —— 一旦编译器
 // 给位域另起了存储单元, 落盘格式就悄悄变了.
 static_assert(sizeof(Order) == 20, "Order 必须定宽 20 字节");
 
@@ -164,14 +173,11 @@ inline constexpr uint32_t kPriceIndexRange = 65536;
 // price_base 的对齐粒度 (分). 只为让基准取整可读, 不参与任何判据.
 inline constexpr uint32_t kPriceIndexGuard = 4096;
 
-// 一个 (资产, 当天) 一个 zstd 帧, 解开是 [u64 count][Order × count] (见
-// codec/OrderFrame.hpp). 帧装在当天全市场的日文件里, 位置 / 条数 / price_base
-// 记在日文件目录 (见 shared/OrdersDay.hpp). price_base 是该资产当天全部非零价格
-// 的下界 (分), 向下对齐; LOB 用它把绝对价折进 65536 档的直接索引数组: index =
-// price - price_base. 低价股恒为 0, 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
-inline constexpr size_t frame_raw_size(size_t order_count) {
-  return sizeof(uint64_t) + order_count * sizeof(Order);
-}
+// 一个 (资产, 当天) 一个 zstd 帧, 解开就是 Order × count (见 codec/OrderFrame.hpp).
+// 帧装在当天全市场的日文件里, 位置 / 条数 / price_base 记在日文件目录 (见
+// shared/OrdersDay.hpp). price_base 是该资产当天全部非零价格的下界 (分), 向下
+// 对齐; LOB 用它把绝对价折进 65536 档的直接索引数组: index = price - price_base.
+// 低价股恒为 0, 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
 
 //========================================================================================
 // MARKET CLASSIFICATION AND EXCHANGE TYPES

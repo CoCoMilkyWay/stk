@@ -112,9 +112,9 @@ public:
         px_prev_ = px_ = ref;
         match_ = static_cast<float>(lob.auction_matched_qty);
         imb_ = static_cast<float>(lob.auction_imbalance);
-      } else { // 双边未交叉: 中间价 (depth_buffer [N-1]=卖1 [N]=买1, 档位下标 + 基准 = 分)
+      } else { // 双边未交叉: 中间价 (depth_buffer [N-1]=卖1 [N]=买1)
         const auto &d = lob.depth_buffer;
-        px_ = (2.0f * static_cast<float>(lob.price_base) + static_cast<float>(d[L2::LOB_DEPTH - 1]->price) + static_cast<float>(d[L2::LOB_DEPTH]->price)) * 0.005f;
+        px_ = (lob.price_of(d[L2::LOB_DEPTH - 1]) + lob.price_of(d[L2::LOB_DEPTH])) * 0.5f;
       }
       book_px_ = true;
     } else if (!book_px_ && lob.price > 0.0f) { // 单边簿 / 首个重建前 (LOB 不出 depth): 最近事件价 (深市撤单 price=0 不取)

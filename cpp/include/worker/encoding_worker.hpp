@@ -1,5 +1,6 @@
 #pragma once
 
+#include "codec/OrderEncoder.hpp" // L2::Member
 #include "misc/date.hpp"
 #include "misc/progress_parallel.hpp"
 #include "shared/OrdersDay.hpp"
@@ -13,7 +14,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 // Forward declarations
@@ -62,10 +62,10 @@ struct EncodeTask {
 // 一天在飞的编码: 日文件写端 + 当天的账目与目录 + 销账进度.
 //
 // producer 先填上分母与"旧日文件里已有结局"的那部分 (帧已 adopt 进 writer),
-// worker 每销一个账就记一笔结局; 有结局的 (帧 / 墓碑) 同时进目录. 最后一个
+// worker 每销一个账就记一笔结局 —— 两边同一个 DayIndex::settle. 最后一个
 // 销账的 worker commit.
 struct DayJob {
-  explicit DayJob(std::string path) : writer(std::move(path)) {}
+  DayJob(const std::string &dir, misc::Ymd date) : writer(dir, date) {}
 
   DayWriter writer;
   DayIndex index;

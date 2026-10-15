@@ -5,7 +5,6 @@
 #include "codec/OrderFrame.hpp"
 #include "misc/profiler.hpp"
 #include <cassert>
-#include <cstring>
 
 #include <zstd.h>
 
@@ -27,14 +26,8 @@ FrameEncoder::~FrameEncoder() {
 }
 
 Frame FrameEncoder::encode(const FrameView &view) {
-  assert(view.count > 0 && "encode: 空资产走墓碑, 没有帧");
-  const uint64_t count = view.count;
-  const size_t raw_size = frame_raw_size(view.count);
-
-  if (raw_.size() < raw_size)
-    raw_.resize(raw_size);
-  std::memcpy(raw_.data(), &count, sizeof(count));
-  std::memcpy(raw_.data() + sizeof(count), view.orders, view.count * sizeof(Order));
+  assert(view.head.count > 0 && "encode: 空资产走墓碑, 没有帧");
+  const size_t raw_size = size_t(view.head.count) * sizeof(Order);
 
   const size_t bound = ZSTD_compressBound(raw_size);
   if (frame_.size() < bound)
@@ -43,12 +36,12 @@ Frame FrameEncoder::encode(const FrameView &view) {
   size_t size;
   {
     TraceN("ZstdCompress");
-    size = ZSTD_compress2(ctx_, frame_.data(), bound, raw_.data(), raw_size);
+    size = ZSTD_compress2(ctx_, frame_.data(), bound, view.orders, raw_size);
   }
   assert(!ZSTD_isError(size) && "encode: 帧压缩失败");
   assert(size <= UINT32_MAX && "encode: 帧长溢出 32 位");
 
-  return {frame_.data(), static_cast<uint32_t>(size), view.count, view.price_base};
+  return {frame_.data(), static_cast<uint32_t>(size), view.head};
 }
 
 // ============================================================================
@@ -66,26 +59,21 @@ FrameDecoder::~FrameDecoder() {
 }
 
 FrameView FrameDecoder::decode(const Frame &frame) {
-  assert(frame.size > 0 && frame.order_count > 0 && "decode: 墓碑没有帧");
-  const size_t raw_size = frame_raw_size(frame.order_count);
+  assert(frame.size > 0 && frame.head.count > 0 && "decode: 墓碑没有帧");
+  const size_t raw_size = size_t(frame.head.count) * sizeof(Order);
 
-  if (raw_.size() < raw_size)
-    raw_.resize(raw_size);
+  if (orders_.size() < frame.head.count)
+    orders_.resize(frame.head.count);
 
   size_t size;
   {
     TraceN("ZstdDecompress");
-    size = ZSTD_decompressDCtx(ctx_, raw_.data(), raw_size, frame.data, frame.size);
+    size = ZSTD_decompressDCtx(ctx_, orders_.data(), raw_size, frame.data, frame.size);
   }
-  assert(!ZSTD_isError(size) && size == raw_size && "decode: 帧解压失败或尺寸与目录不符");
+  assert(!ZSTD_isError(size) && size == raw_size && "decode: 帧解压失败或条数与目录不符");
   (void)size;
 
-  uint64_t count;
-  std::memcpy(&count, raw_.data(), sizeof(count));
-  assert(count == frame.order_count && "decode: 帧内条数与目录不符");
-  (void)count;
-
-  return {reinterpret_cast<const Order *>(raw_.data() + sizeof(uint64_t)), frame.order_count, frame.price_base};
+  return {orders_.data(), frame.head};
 }
 
 } // namespace L2

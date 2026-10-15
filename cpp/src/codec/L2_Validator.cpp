@@ -357,15 +357,6 @@ std::string ValidationReport::describe() const {
     text += std::to_string(value);
   };
 
-  if (flags & Check::FieldOverflow)
-    append("field_overflow", static_cast<int64_t>(field_overflow));
-  if (flags & Check::LobUnusable)
-    append("lob_unusable", static_cast<int64_t>(lob_unusable));
-  if (flags & Check::TradeBandUnfit) {
-    append("price_min", price_min);
-    append("price_max", price_max);
-    append("price_base", price_base);
-  }
   if (flags & Check::DupMakerId)
     append("dup_maker", static_cast<int64_t>(dup_maker));
   if (flags & Check::CancelUnresolved)
@@ -383,6 +374,17 @@ std::string ValidationReport::describe() const {
   }
   if (flags & Check::VolumeMismatch)
     append("volume_delta", volume_delta);
+  if (flags & Check::PriceScientific)
+    append("price_scientific", static_cast<int64_t>(price_scientific));
+  if (flags & Check::FieldOverflow)
+    append("field_overflow", static_cast<int64_t>(field_overflow));
+  if (flags & Check::LobUnusable)
+    append("lob_unusable", static_cast<int64_t>(lob_unusable));
+  if (flags & Check::TradeBandUnfit) {
+    append("price_min", price_min);
+    append("price_max", price_max);
+    append("price_base", price_base);
+  }
   if (flags & Check::TurnoverMismatch)
     append("turnover_delta_fen", turnover_delta);
   if (flags & Check::PriceMismatch) {
@@ -390,8 +392,6 @@ std::string ValidationReport::describe() const {
       text += ' ';
     text += "price_mismatch";
   }
-  if (flags & Check::PriceScientific)
-    append("price_scientific", static_cast<int64_t>(price_scientific));
   return text;
 }
 

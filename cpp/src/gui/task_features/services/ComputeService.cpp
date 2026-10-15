@@ -100,11 +100,13 @@ void ComputeService::start_compute(ComputeConfig config) {
     // 条数是扫描时随日文件目录一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
     // 帧目录日主序: 按天推进, 天内扫子轴 (内层 资产 × 日期 是百万量级)
+    // 快照取一次, 持有到全部 worker 退出 (随 WorkerCtx 下发)
+    const std::shared_ptr<const OrdersCatalog> orders = data_.asset.orders();
     std::vector<size_t> weights(num_assets, 0);
     for (const misc::Ymd date : backtest_dates) {
-      const size_t didx = data_.asset.orders.day_idx(date);
+      const size_t didx = orders->day_idx(date);
       for (size_t sub = 0; sub < num_assets; ++sub)
-        weights[sub] += data_.asset.orders.at(didx, uni.global(sub)).order_count;
+        weights[sub] += orders->at(didx, uni.global(sub)).head.count;
     }
 
     std::vector<std::pair<size_t, size_t>> asset_workloads; // (sub, weight)
@@ -191,12 +193,12 @@ void ComputeService::start_compute(ComputeConfig config) {
       return nullptr;
     };
 
-    auto launch = [this](int core, WorkerFn fn) {
-      workers_.push_back(std::async(std::launch::async, [this, core, fn]() {
+    auto launch = [this, cat = orders.get()](int core, WorkerFn fn) {
+      workers_.push_back(std::async(std::launch::async, [this, cat, core, fn]() {
         if (misc::Affinity::supported()) {
           misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
         }
-        fn({core, data_, *feature_store_, *ts_schedule_, cancel_flag_, *stats_});
+        fn({core, data_, *cat, *feature_store_, *ts_schedule_, cancel_flag_, *stats_});
       }));
     };
 

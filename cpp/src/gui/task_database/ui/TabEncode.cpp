@@ -253,12 +253,11 @@ struct DateRow {
   size_t skipped = 0;
   size_t corrupt = 0;
   size_t invalid = 0;
-  size_t failed = 0;
   size_t todo = 0;                // 缺口里账目解释不掉的部分 = 还没编到
-  const DayRecord *rec = nullptr; // 判据明细; 没编过这天就是 null
+  const DayRecord *rec = nullptr; // 判据明细 (指进调用方持有的帧目录快照); 没编过这天就是 null
 };
 
-DateRow make_date_row(const Asset &asset, misc::Ymd date,
+DateRow make_date_row(const OrdersCatalog &orders, misc::Ymd date,
                       const Asset::DateGap &gap, DateDim dim) {
   DateRow row;
   row.date = date;
@@ -271,20 +270,19 @@ DateRow make_date_row(const Asset &asset, misc::Ymd date,
 
   row.missing = gap.orders_missing;
   row.no_archive = gap.archive_missing;
-  if (const size_t didx = asset.orders.day_idx(date); didx != OrdersCatalog::kNoDay) {
-    const DayRecord &rec = asset.orders.records[didx];
+  if (const size_t didx = orders.day_idx(date); didx != OrdersCatalog::kNoDay) {
+    const DayRecord &rec = orders.records[didx];
     row.rec = &rec;
     row.skipped = rec.count(L2::Outcome::Tombstone);
     row.corrupt = rec.count(L2::Outcome::Corrupt);
     row.invalid = rec.count(L2::Outcome::Invalid);
-    row.failed = rec.count(L2::Outcome::Failed);
   }
 
   // 账目的分母是归档里有委托文件的资产, 缺口的分母是"已上市未退市未停牌"的
   // 日历口径 — 两者不严格相等, 所以这里是相减兜底而不是精确配平. 减不掉的
   // 那部分就是"有源、没出错、只是还没编到".
   const size_t explained =
-      row.no_archive + row.skipped + row.corrupt + row.invalid + row.failed;
+      row.no_archive + row.skipped + row.corrupt + row.invalid;
   row.todo = row.missing > explained ? row.missing - explained : 0;
   return row;
 }
@@ -323,8 +321,6 @@ std::vector<DateColumnSpec> build_date_columns(const DateTableView &view) {
       &DateRow::corrupt);
   add(view.has_invalid, "invalid", "准入校验未过的标的数\n右边各列是它按判据的拆解 (一个标的可命中多条)",
       &DateRow::invalid);
-  add(view.has_failed, "fail", "环境错误 (压缩失败)\n重跑增量即可重试",
-      &DateRow::failed);
 
   for (const size_t bit : view.check_columns) {
     const L2::CheckMeta &meta = L2::check_meta(bit);
@@ -333,7 +329,7 @@ std::vector<DateColumnSpec> build_date_columns(const DateTableView &view) {
   return columns;
 }
 
-void rebuild_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
+void rebuild_date_view(DateTableView &view, const Asset &asset, const OrdersCatalog &orders, DateDim dim) {
   view.rows.clear();
   view.check_columns.clear();
   view.has_no_archive = false;
@@ -341,13 +337,12 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
   view.has_skipped = false;
   view.has_corrupt = false;
   view.has_invalid = false;
-  view.has_failed = false;
 
   size_t check_totals[L2::kCheckBitCount] = {};
   std::vector<std::pair<misc::Ymd, size_t>> ranked; // (日期, 缺口)
 
   for (const auto &[date, gap] : asset.date_gaps) {
-    const DateRow row = make_date_row(asset, date, gap, dim);
+    const DateRow row = make_date_row(orders, date, gap, dim);
     if (row.missing == 0)
       continue;
     ranked.emplace_back(date, row.missing);
@@ -360,7 +355,6 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
     view.has_skipped |= row.skipped > 0;
     view.has_corrupt |= row.corrupt > 0;
     view.has_invalid |= row.invalid > 0;
-    view.has_failed |= row.failed > 0;
     if (row.rec)
       for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
         check_totals[bit] += row.rec->checks[bit];
@@ -387,21 +381,23 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
   view.generation = asset.asset_stats_generation;
 }
 
-void sync_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
+void sync_date_view(DateTableView &view, const Asset &asset, const OrdersCatalog &orders, DateDim dim) {
   if (!view.built || view.generation != asset.asset_stats_generation)
-    rebuild_date_view(view, asset, dim);
+    rebuild_date_view(view, asset, orders, dim);
 }
 
 void render_date_table(const char *table_id, const Asset &asset, DateTableView &view,
                        DateDim dim, const char *what) {
+  const std::shared_ptr<const OrdersCatalog> orders = asset.orders(); // 本帧同一份快照
+
   // 必须先于 BeginTable —— 列数是构造参数, 而哪些原因列存在要等视图建完才知道
-  sync_date_view(view, asset, dim);
+  sync_date_view(view, asset, *orders, dim);
 
   size_t asset_days = 0;
   for (const misc::Ymd date : view.rows) {
     auto it = asset.date_gaps.find(date);
     assert(it != asset.date_gaps.end() && "By Date: 行里的日期不在 date_gaps 中");
-    asset_days += make_date_row(asset, date, it->second, dim).missing;
+    asset_days += make_date_row(*orders, date, it->second, dim).missing;
   }
 
   ImGui::Text("Days with gaps:");
@@ -461,7 +457,7 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
   for (const misc::Ymd date : view.rows) {
     auto gap_it = asset.date_gaps.find(date);
     assert(gap_it != asset.date_gaps.end() && "By Date: 行里的日期不在 date_gaps 中");
-    const DateRow row = make_date_row(asset, date, gap_it->second, dim);
+    const DateRow row = make_date_row(*orders, date, gap_it->second, dim);
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();

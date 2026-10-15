@@ -58,6 +58,12 @@ using OrderId = uint32_t;
 
 static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) + 1; // 0-65535
 
+// 档位下标空间的两端: 低端 [1, LOB_DEPTH] 与高端 [kHighSentinelBegin, PRICE_RANGE_SIZE-1] 是
+// 构造期哨兵档 (垫满盘口, 见 init_sentinel_levels) + 编码期停靠档 (离盘口无穷远的报价, 见
+// OrderEncoder::park_price); 下标 0 是市价单 / 占位档. 三者都不是真实档.
+static constexpr Price kHighSentinelBegin = static_cast<Price>(PRICE_RANGE_SIZE - 1 - L2::LOB_DEPTH);
+constexpr bool is_real_level(Price index) { return index > L2::LOB_DEPTH && index < kHighSentinelBegin; }
+
 // 设计理念: 抵扣模型 + Order迁移机制 + 增量depth维护
 // --------------------------------------------------------------------------------
 // - TAKER成交价是最终真相, MAKER挂价可能不准确
@@ -456,9 +462,6 @@ private:
 // LOB FEATURE STRUCTURE
 //========================================================================================
 
-// Forward declaration
-struct Level;
-
 // 订单簿逐笔特征流(用于高频因子计算)
 struct LOB_Feature {
   // =================================================================================================
@@ -482,6 +485,12 @@ struct LOB_Feature {
   // depth_buffer 里 Level::price 是档位下标而非绝对价, 还原成分要加上这个基准.
   // 低价股恒为 0. 来源是日文件目录项, 见 L2_DataType.hpp 的 kPriceIndexRange.
   uint32_t price_base = 0;
+
+  // 档位下标 → 绝对价 (元); 下标 0 (市价单 / 占位档) 无价 → 0. 下标空间只在这里还原,
+  // 消费方 (算子 / GUI / LOB 自身) 一律经它, 不自己拿 price_base 拼.
+  float price_of(Price index) const { return index == 0 ? 0.0f : static_cast<float>(price_base + index) * 0.01f; }
+  float price_of(const Level *level) const { return price_of(level->price); }
+  static bool is_real(const Level *level) { return is_real_level(level->price); }
 
   // 全市场挂单量
   uint32_t all_bid_volume = 0; // 22bit - volume of all bid orders in shares

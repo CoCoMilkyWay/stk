@@ -15,8 +15,7 @@
 #include <cmath>
 
 class Behav {
-  static constexpr size_t AGG_WINDOW = 20;    // 侵略性趋势窗口 (秒)
-  static constexpr float PRICE_SCALE = 0.01f; // Level->price 是0.01元(分)单位 → 转为元
+  static constexpr size_t AGG_WINDOW = 20; // 侵略性趋势窗口 (秒)
 
 public:
   enum Out : size_t { agg_bid,
@@ -52,12 +51,9 @@ public:
       const Level *bid1 = lob.depth_buffer[L2::LOB_DEPTH];     // 买一
       const Level *ask1 = lob.depth_buffer[L2::LOB_DEPTH - 1]; // 卖一
 
-      const float order_price = lob.price * PRICE_SCALE;
+      const float order_price = lob.price;
       const bool is_bid = (lob.order_dir == L2::OrderDirection::BID);
-
-      // Level::price 是档位下标, 加上基准才是绝对价 (分). 低价股基准为 0.
-      const float base = static_cast<float>(lob.price_base);
-      const float best_price = (base + (is_bid ? bid1->price : ask1->price)) * PRICE_SCALE;
+      const float best_price = lob.price_of(is_bid ? bid1 : ask1);
 
       if (best_price > 1e-6f && order_price > 1e-6f) {
         if (is_bid) {

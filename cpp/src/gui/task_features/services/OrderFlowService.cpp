@@ -37,7 +37,7 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 struct OrderFlowService::Impl {
   UniverseAxis uni; // 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
   FeatureRead reader;
-  DayReader day;            // 当天日文件 (重放请求现读目录)
+  DayReader day;            // 当天日文件 (重放请求凭帧目录快照定位)
   L2::FrameDecoder decoder; // 对仗 sequential_worker 的 reader + decoder
   LimitOrderBook lob;       // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
   TickData tick_data;       // 无特征侧绑定的盘口写出口
@@ -389,23 +389,24 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   slot.date = req.date;
   slot.asset_idx = req.asset;
 
-  // ---- 重放当天日文件里这个资产的帧 (缺日文件 / 无帧 = 停牌/未编码, 发布空槽) ----
-  // 目录现读而不是查 Asset::orders: 本服务跑在自己的线程上, 与重扫描
-  // (整体重建帧目录) 并发, 现读一次 (头 + 120KB 目录) 免去与它同步.
+  // ---- 重放当天日文件里这个资产的帧 (无帧 = 停牌/未编码, 发布空槽) ----
+  // 帧目录快照定位 (与 TS worker 同一条路); 快照与重扫描并发安全, 本请求期间持有.
   const AssetItem &asset = data_->asset.items[req.asset];
-  DayReader &day = impl_->day;
+  const std::shared_ptr<const OrdersCatalog> orders = data_->asset.orders();
+  const FrameRef &ref = orders->at(orders->day_idx(req.date), req.asset);
   L2::FrameView view;
-  if (day.open(Utils::generate_orders_path(data_->config.orders_dir, req.date, config::BINARY_EXTENSION))) {
-    const FrameRef *ref = day.index().find(req.asset);
-    if (ref && !ref->empty()) {
-      TraceN("OF_Decode");
-      view = impl_->decoder.decode(day.read(*ref));
-    }
+  if (!ref.empty()) {
+    TraceN("OF_Decode");
+    DayReader &day = impl_->day;
+    const bool found = day.open(data_->config.orders_dir, req.date);
+    assert(found && "OrderFlow: 帧目录登记过的日文件打不开");
+    (void)found;
+    view = day.get(ref, impl_->decoder);
+    day.close(); // 解出来的在 decoder 缓冲里, fd 已无用
   }
-  day.close(); // 解出来的在 decoder 缓冲里, fd 已无用; 下个请求重读 (日文件可能已被重编)
 
-  if (view.count > 0) {
-    const size_t order_num = view.count;
+  if (view.head.count > 0) {
+    const size_t order_num = view.head.count;
     slot.order_count = order_num;
 
     LimitOrderBook &lob = impl_->lob;
@@ -424,21 +425,13 @@ void OrderFlowService::depth_build(const DepthReq &req) {
     constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
     constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手
     const LOB_Feature &lf = impl_->tick_data.lob;
-    const float base = static_cast<float>(view.price_base);
-
-    // 档位下标空间的哨兵判据: 低端 [1, N] 与高端 [RANGE-1-N, RANGE-1] 是构造期哨兵档
-    // + 编码期停靠档 (离盘口无穷远), 见 init_sentinel_levels / OrderEncoder::park_price
-    auto is_sentinel = [](uint32_t idx) {
-      return idx <= OrderFlowConst::LOB_DEPTH || idx >= PRICE_RANGE_SIZE - 1 - OrderFlowConst::LOB_DEPTH;
-    };
 
     // 秒末全簿快照 → 热力图 (只提交出过有效盘口快照的秒; 全档, 不限近端 30 档)
     auto commit_second = [&](size_t t) {
       if (sec_slot[t] < 0)
         return;
       scratch.current_tick.clear();
-      lob.for_each_visible_level([&](uint32_t idx, int32_t net_qty) {
-        const float price = (base + static_cast<float>(idx)) * 0.01f;                        // 元
+      lob.for_each_visible_level([&](float price, int32_t net_qty) {
         const int32_t amount_rmb = round_amount_to_rmb(static_cast<float>(net_qty) * price); // 股 × 元, SIGNED
         if (amount_rmb != 0)
           scratch.current_tick.emplace_back(price_to_key(price), amount_rmb); // 位图升序 → key 升序
@@ -451,7 +444,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       size_t cur_sec = SIZE_MAX;
       for (size_t i = 0; i < order_num; ++i) {
         const L2::Order &order = view.orders[i];
-        const size_t t = Clock_to_L0(order.hour, order.minute, order.second); // 钳在 [0, 15300)
+        const size_t t = Clock_to_L0(L2::tick_hour(order.tick), L2::tick_minute(order.tick), L2::tick_second(order.tick)); // 钳在 [0, 15300)
         if (t != cur_sec) {
           if (cur_sec != SIZE_MAX)
             commit_second(cur_sec); // 上一秒结束: 秒末终值全簿入热力图
@@ -463,9 +456,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
           continue;
 
         // 盘口顶无真实档 (纯哨兵): 本秒不出快照
-        const Level *bid1 = lf.depth_buffer[N];
-        const Level *ask1 = lf.depth_buffer[N - 1];
-        if (is_sentinel(bid1->price) || is_sentinel(ask1->price))
+        if (!LOB_Feature::is_real(lf.depth_buffer[N]) || !LOB_Feature::is_real(lf.depth_buffer[N - 1]))
           continue;
 
         // 秒内覆盖写: 终值 = 秒末盘口 (分钟语义, 粒度换成秒)
@@ -484,11 +475,11 @@ void OrderFlowService::depth_build(const DepthReq &req) {
         for (size_t k = 0; k < N; ++k) {
           const Level *bl = lf.depth_buffer[N + k];     // 买 k+1 档
           const Level *al = lf.depth_buffer[N - 1 - k]; // 卖 k+1 档
-          const bool bs = is_sentinel(bl->price), as = is_sentinel(al->price);
-          tk.bid_price[k] = bs ? NAN_F : (base + static_cast<float>(bl->price)) * 0.01f;
-          tk.bid_volume[k] = bs ? 0.0f : static_cast<float>(bl->net_quantity) * VOLUME_TO_LOT; // > 0
-          tk.ask_price[k] = as ? NAN_F : (base + static_cast<float>(al->price)) * 0.01f;
-          tk.ask_volume[k] = as ? 0.0f : static_cast<float>(al->net_quantity) * VOLUME_TO_LOT; // < 0
+          const bool br = LOB_Feature::is_real(bl), ar = LOB_Feature::is_real(al);
+          tk.bid_price[k] = br ? lf.price_of(bl) : NAN_F;
+          tk.bid_volume[k] = br ? static_cast<float>(bl->net_quantity) * VOLUME_TO_LOT : 0.0f; // > 0
+          tk.ask_price[k] = ar ? lf.price_of(al) : NAN_F;
+          tk.ask_volume[k] = ar ? static_cast<float>(al->net_quantity) * VOLUME_TO_LOT : 0.0f; // < 0
         }
         // 竞价交叉秒: mid = 预撮合参考价 (图1 mid 线在竞价段即预撮合曲线)
         tk.mid_price = tk.ref_price > 0.0f ? tk.ref_price

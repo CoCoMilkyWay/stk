@@ -48,7 +48,6 @@ struct DateTableView {
   bool has_skipped = false;
   bool has_corrupt = false;
   bool has_invalid = false;
-  bool has_failed = false;
   bool has_no_archive = false;
   bool has_unaccounted = false;
 

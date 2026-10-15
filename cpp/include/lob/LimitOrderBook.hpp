@@ -157,12 +157,11 @@ public:
     return process_impl(order);
   }
 
-  // Process batch of orders (backtesting optimized - zero-overhead inlined loop)
-  // Returns count of invalid orders
-  HOT_INLINE size_t process_batch(const L2::Order *orders, size_t count) {
+  // 整帧喂入 (回测: process_impl 内联进循环), 返回无效条数. begin_frame 的后半.
+  HOT_INLINE size_t process_batch(const L2::FrameView &view) {
     size_t invalid_count = 0;
-    for (size_t i = 0; i < count; ++i) {
-      if (!process_impl(orders[i])) [[unlikely]] {
+    for (size_t i = 0; i < view.head.count; ++i) {
+      if (!process_impl(view.orders[i])) [[unlikely]] {
         ++invalid_count;
       }
     }
@@ -187,10 +186,10 @@ public:
   }
 
   // 一帧 (解码产物) 的前置: 档位基准 + 委托表定长. 帧里的逐笔随后经
-  // process_batch / process 喂入 —— FrameDecoder::decode 的对端.
+  // process_batch(view) 整帧或 process 逐条喂入 —— FrameDecoder::decode 的对端.
   void begin_frame(const L2::FrameView &view) {
-    set_price_base(view.price_base);
-    reserve_orders(view.count);
+    set_price_base(view.head.price_base);
+    reserve_orders(view.head.count);
   }
 
   // Complete reset
@@ -240,18 +239,15 @@ public:
     init_sentinel_levels();
   }
 
-  // 全簿可见档位枚举 (GUI OrderFlow 重放用): 按价升序回调 f(price_idx, net_qty).
-  // 跳过特殊档 0 与两端哨兵/停靠档 (判据同 init_sentinel_levels / park_price:
-  // 低端 [1, LOB_DEPTH], 高端 [PRICE_RANGE_SIZE-1-LOB_DEPTH, PRICE_RANGE_SIZE-1]).
-  // net_qty 为股数, SIGNED: 买压 > 0, 卖压 < 0.
+  // 全簿真实档位枚举 (GUI OrderFlow 重放用): 按价升序回调 f(price, net_qty).
+  // price 为绝对价 (元); 只给真实档 (见 is_real_level). net_qty 为股数, SIGNED: 买压 > 0, 卖压 < 0.
   template <typename F>
   void for_each_visible_level(F &&f) const {
-    constexpr size_t HIGH_SENTINEL_BEGIN = PRICE_RANGE_SIZE - 1 - L2::LOB_DEPTH;
-    for (size_t p = visible_price_bitmap_.find_next(L2::LOB_DEPTH); p < HIGH_SENTINEL_BEGIN;
+    for (size_t p = visible_price_bitmap_.find_next(L2::LOB_DEPTH); p < kHighSentinelBegin;
          p = visible_price_bitmap_.find_next(p)) {
       const Level *level = price_levels_[p];
       assert(level && "for_each_visible_level: visible price without level");
-      f(static_cast<uint32_t>(p), level->net_quantity);
+      f(LOB_feature_ref().price_of(level), level->net_quantity);
     }
   }
 
@@ -269,8 +265,8 @@ private:
       visibility_mark_visible(p);
     }
 
-    // High price end (ask side): price (PRICE_RANGE_SIZE - L2::LOB_DEPTH) to (PRICE_RANGE_SIZE - 1), net_quantity = -1
-    for (Price p = (PRICE_RANGE_SIZE - L2::LOB_DEPTH - 1); p <= (PRICE_RANGE_SIZE - 1 - 1); ++p) {
+    // High price end (ask side): price kHighSentinelBegin to (PRICE_RANGE_SIZE - 2), net_quantity = -1
+    for (Price p = kHighSentinelBegin; p <= (PRICE_RANGE_SIZE - 1 - 1); ++p) {
       Level *level = level_create(p);
       level->net_quantity = -1;
       visibility_mark_visible(p);
@@ -413,11 +409,6 @@ private:
       return 1;
     const uint32_t index = price - price_base_;
     return static_cast<Price>(index < PRICE_RANGE_SIZE ? index : PRICE_RANGE_SIZE - 1);
-  }
-
-  // 逆映射: 档位下标 → 绝对价 (元). 下标 0 (市价单 / 占位档) 无价 → 0, 与 LOB_feature_ref().price 的口径一致
-  HOT_INLINE float index_to_price(Price index) const {
-    return index == 0 ? 0.0f : static_cast<float>(price_base_ + index) * 0.01f;
   }
 
   HOT_INLINE Level *level_get_or_create(Price price) {
@@ -896,18 +887,17 @@ private:
       return true;
     }
 
-    // Parse timestamp
-    curr_tick_ = (order.hour << 24) | (order.minute << 16) | (order.second << 8) | order.millisecond;
+    curr_tick_ = order.tick;
     new_tick_ = curr_tick_ != prev_tick_;
     curr_sec_ = (curr_tick_ >> 8);
     new_sec_ = curr_sec_ != prev_sec_;
 
     // Update feature timestamp (only on new tick)
     if (new_tick_) {
-      LOB_feature_ref().hour = order.hour;
-      LOB_feature_ref().minute = order.minute;
-      LOB_feature_ref().second = order.second;
-      LOB_feature_ref().millisecond = order.millisecond;
+      LOB_feature_ref().hour = L2::tick_hour(curr_tick_);
+      LOB_feature_ref().minute = L2::tick_minute(curr_tick_);
+      LOB_feature_ref().second = L2::tick_second(curr_tick_);
+      LOB_feature_ref().millisecond = L2::tick_millisecond(curr_tick_);
       update_trading_session_state();
     }
 
@@ -1014,7 +1004,7 @@ private:
         lf.ord_rest[s] = static_cast<uint32_t>(q < 0 ? -q : q);
         lf.ord_tick[s] = o->timestamp;
         lf.ord_flag[s] = o->flags;
-        lf.ord_price[s] = index_to_price(o->level->price);
+        lf.ord_price[s] = lf.price_of(o->level);
       }
     }
 
@@ -1362,12 +1352,11 @@ private:
   // 随手完成预撮合 (最大成交量价位, 平局取失衡最小); 真实档不足 N 由两端哨兵垫满
   // (与连续路径口径一致). O(可见档数), 每秒至多一次, 成本可忽略.
   HOT_NOINLINE bool update_depth_auction() {
-    constexpr size_t HIGH_SENTINEL_BEGIN = PRICE_RANGE_SIZE - 1 - L2::LOB_DEPTH;
     LOB_Feature &lf = LOB_feature_ref();
 
     auction_bids_.clear();
     auction_asks_.clear();
-    for (size_t p = visible_price_bitmap_.find_next(L2::LOB_DEPTH); p < HIGH_SENTINEL_BEGIN;
+    for (size_t p = visible_price_bitmap_.find_next(L2::LOB_DEPTH); p < kHighSentinelBegin;
          p = visible_price_bitmap_.find_next(p)) {
       Level *lv = price_levels_[p];
       assert(lv && "auction scan: visible price without level");
@@ -1394,7 +1383,7 @@ private:
       const size_t n_ask = std::min(auction_asks_.size(), L2::LOB_DEPTH);
       for (size_t i = 0; i < n_ask; ++i)
         buf.push_front(auction_asks_[i]);
-      for (size_t i = n_ask, p = HIGH_SENTINEL_BEGIN; i < L2::LOB_DEPTH; ++i, ++p)
+      for (size_t i = n_ask, p = kHighSentinelBegin; i < L2::LOB_DEPTH; ++i, ++p)
         buf.push_front(price_levels_[p]);
 
       // 买侧降序 push_back → [N]=买1 ... [2N-1]=买N
@@ -1448,7 +1437,7 @@ private:
           B -= auction_bids_[bi++]->net_quantity;
       }
 
-      lf.auction_ref_price = static_cast<float>(price_base_ + best_p) * 0.01f;
+      lf.auction_ref_price = lf.price_of(static_cast<Price>(best_p));
       lf.auction_matched_qty = static_cast<int32_t>(best_v);
       lf.auction_imbalance = static_cast<int32_t>(best_imb);
     }

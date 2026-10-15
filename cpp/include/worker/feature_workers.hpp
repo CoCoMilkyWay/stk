@@ -11,6 +11,7 @@
 
 // Forward declarations
 struct SharedData;
+struct OrdersCatalog;
 class GlobalFeatureStore;
 class CoreSequential;
 
@@ -147,11 +148,14 @@ private:
 //
 // sched 主要 TS 用 (预取只读 global_ids 定位帧), 其余角色不碰 ——
 // 统一签名换来统一 launch (见 ComputeService).
+// orders = 开算时取的帧目录快照 (ComputeService 持有到全部 worker 退出), 预取与
+// TS 凭它定位帧, 不碰 Asset 上随重扫描换代的那一份.
 // worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做日志/stats 下标.
 // ============================================================================
 struct WorkerCtx {
   int worker_id;
   SharedData &data;
+  const OrdersCatalog &orders;
   GlobalFeatureStore &store;
   TsSchedule &sched;
   const std::atomic<bool> &cancel;
