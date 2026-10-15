@@ -15,8 +15,11 @@ stk/
 │   ├── mode_*.py          # 🐍 模式开关: tsan / debug / profile / assert / production
 │   ├── app/               # 🐍 FileRepair / pdf2txt / format_cpp (clang-format) / lint_cpp (clangd 诊断)
 │   └── universe/          # 🐍 股票池生成: 一池一脚本 → config/universe/<name>.json
-│       ├── common/        # 🐍 共用骨架: 基本面读取 / PIT 网格 / 过滤 / pipeline
-│       └── smallcap400.py # 🐍 小市值 400 动态池
+│       ├── common/        # 🐍 共用骨架: 基本面读取 / PIT 网格 / 过滤 / 排序键 / pipeline
+│       ├── micro.py / mega.py       # 🐍 市值 低 / 高 400 (逐日)
+│       ├── pe_low.py / pe_high.py   # 🐍 PE(TTM) 低 / 高 400 (周频)
+│       ├── pb_low.py / pb_high.py   # 🐍 PB(MRQ) 低 / 高 400 (周频)
+│       └── dy_high.py               # 🐍 股息率 高 400 (逐日)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                   # 📦 跨模块数据层 (GUI 任务与 worker 共享的状态)

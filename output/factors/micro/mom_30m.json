@@ -12,7 +12,7 @@
   {"hold":1000,"sign":1,"expr":"CsRank(TsNeg(TsDeltaRoll(TsLog(close), d=55)))"},
   {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsDeltaRoll(TsLog(close), d=36)))"}
  ],
- "run": {"universe":"smallcap400","start_date":"2026-01-01","end_date":"2026-10-13","days":185,"T":47175,"A":787,"backend":"cpu","frame":"CS","max_impact":0.001,"n_full":18.69},
+ "run": {"universe":"micro","start_date":"2026-01-01","end_date":"2026-10-13","days":185,"T":47175,"A":787,"backend":"cpu","frame":"CS","max_impact":0.001,"n_full":18.69},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],
  "acc_cols": ["long.imp","long.n","long.e","long.wimp","long.we","short.imp","short.n","short.e","short.wimp","short.we","rows"],
  "stats": [

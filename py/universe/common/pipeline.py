@@ -8,8 +8,21 @@ cpp 读端 (universe::Pool) 从空集按日回放: 回测区间 [start_date, end
 CS 算子 / 因子评估只看它.
 
 PIT: 交易日 D 的池子只用 D 的前一交易日 P 收盘后可见的数据决定 —— D 盘中算特征时池子已定.
-区间 = 基本面数据全史: 从首个有截面数据的交易日 (作首个 P) 的下一交易日起, 到最后一个有 P 数据的交易日止.
+区间 = 基本面数据全史: 从首个有截面数据的交易日 (作首个 P) 的下一交易日起, 到最后一个有 P 数据的交易日止;
+排序键有暖机 (Key.warmup) 的, 起点推到 P ≥ 数据起点 + warmup.
 python 不看 config.json 的回测区间 —— 回测/特征的时间段只由 cpp 管, 这里只负责把名单铺满全部可用数据.
+
+调仓: freq = DAILY 逐日; WEEKLY 每周最后一个交易日 P 收盘后定池, 下周各交易日沿用.
+
+选股口径 (所有池子同一套, 均在 P 上判定; 池子之间只差 排序键 / 高低端 / 调仓频率 / 行业白名单):
+  母集
+  - 板块 ∈ LIST_SECTORS; 申万 2021 一级行业 ∈ 白名单 (未知行业不入)
+  - 未退市 (delist_date 为空或 > D; 静态表, 不能用 isna 否则未来退市被追溯剔除); 非停牌
+  - 非 ST: st_status == 0 ∧ is_risk_warning == 0 (退市整理期摘 *ST 后 st_status 翻 0, 靠 is_risk_warning 兜住)
+  - 上市满 NEW_LIST_DAYS 日历日; 市值 > 0
+  filters (common/filters.py, 命中任一即剔除, 对齐 ~/work/qmt strat_0): trading_st / profit_st / revenue_st / dividend_st
+  排序
+  - 排序键有限值 (common/keys.py), LOW 取升序前 N, HIGH 取降序前 N
 """
 
 import json
@@ -19,15 +32,25 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from . import filters
 from .data import (
-    UNIVERSE_DIR,
+    GEM,
     MAIN_BOARD,
+    STAR,
+    UNIVERSE_DIR,
     load_basic,
     load_panel,
     load_trading_days,
     month_range,
 )
 from .grid import Grid
+
+# qmt strat_0 只要主板; 这里沪深三板都要, 北交所 (交易制度/流动性不同) 不要
+LIST_SECTORS = {MAIN_BOARD, GEM, STAR}
+NEW_LIST_DAYS = 60
+
+DAILY, WEEKLY = "D", "W"  # 调仓频率 = pandas Period 频率: D 与 P 不同期即调仓
+LOW, HIGH = "low", "high"  # 取排序键的低端 / 高端
 
 
 @dataclass
@@ -43,12 +66,57 @@ class Ctx:
     shares: np.ndarray  # 总股本网格 (ffill)
 
 
-# select(day, excl_row, ctx, asof=P, target=D) -> 升序代码列表
-SelectFn = Callable[
-    [pd.DataFrame, np.ndarray, Ctx, pd.Timestamp, pd.Timestamp], list[str]
-]
-# build_excl(ctx) -> {filter 名: bool 网格}, 命中任一即剔除
-ExclFn = Callable[[Ctx], dict[str, np.ndarray]]
+@dataclass(frozen=True)
+class Key:
+    """排序键: build(ctx) -> float64 网格 (P 日 × 标的), 升序 = 指标由低到高, NaN = 不参与排序."""
+
+    warmup: pd.Timedelta  # 数据起点后多久键才完整 (事件流无期初快照)
+    build: Callable[[Ctx], np.ndarray]
+
+
+def build_excl(ctx: Ctx, industry_wl: set[str]) -> dict[str, np.ndarray]:
+    """{filter 名: bool 网格}, 命中任一即剔除."""
+    g, months = ctx.g, ctx.months
+    fc = filters.forecast_intervals(g, months)
+    return {
+        "trading_st": filters.trading_st(g, ctx.panel),
+        "profit_st": filters.profit_st(g, fc),
+        "revenue_st": filters.revenue_st(g, fc, months, ctx.main_board),
+        "dividend_st": filters.dividend_st(
+            g, months, ctx.shares, ctx.basic, ctx.main_board
+        ),
+        "industry": filters.industry_bad(g, months, industry_wl),
+    }
+
+
+def select(
+    day: pd.DataFrame,
+    excl_row: np.ndarray,
+    key_row: np.ndarray,
+    ctx: Ctx,
+    asof: pd.Timestamp,
+    target: pd.Timestamp,
+    n: int,
+    side: str,
+) -> list[str]:
+    """用 P=asof 收盘后的截面 day + 当行 TS 排除位 / 排序键 选 D=target 的池子; 返回升序代码列表."""
+    cols = ctx.g.cols(day["instrument"])
+    key = key_row[cols]
+    ok = (
+        day["list_sector"].isin(LIST_SECTORS)
+        & (day["delist_date"].isna() | (day["delist_date"] > target))
+        & (day["suspended"] == 0)
+        & (day["st_status"] == 0)
+        & (day["is_risk_warning"] == 0)
+        & (day["list_date"] <= asof - pd.Timedelta(days=NEW_LIST_DAYS))
+        & ~excl_row[cols]
+        & (day["market_cap"] > 0)
+        & np.isfinite(key)
+    )
+    k = pd.Series(key, index=day["instrument"].to_numpy())[ok.to_numpy()]
+    assert len(k) >= n, f"{asof.date()}: 候选池只有 {len(k)} 只, 不足 {n} 只"
+    top = k.nsmallest(n, keep="first") if side == LOW else k.nlargest(n, keep="first")
+    return sorted(top.index.tolist())
 
 
 def write_diff_json(name: str, daily: dict[str, list[str]]) -> None:
@@ -66,7 +134,11 @@ def write_diff_json(name: str, daily: dict[str, list[str]]) -> None:
     print(f"已写入 (逐日 PIT diff): {out_path}")
 
 
-def run(name: str, n: int, build_excl: ExclFn, select: SelectFn) -> None:
+def run(
+    name: str, n: int, freq: str, key: Key, side: str, industry_wl: set[str]
+) -> None:
+    assert freq in (DAILY, WEEKLY), f"freq 只能是 DAILY / WEEKLY: {freq}"
+    assert side in (LOW, HIGH), f"side 只能是 LOW / HIGH: {side}"
     months = month_range()
     print(f"[{name}] 读取月份: {months[0]} ~ {months[-1]} ({len(months)} 个)")
 
@@ -79,11 +151,12 @@ def run(name: str, n: int, build_excl: ExclFn, select: SelectFn) -> None:
     )
     print(f"截面数据: {len(panel)} 行, {g.n_d} 个交易日, {g.n_a} 只标的")
 
-    # 目标日 D = 前一交易日 P 有截面数据的交易日 (首个数据日只能当 P; 日历尾部超出数据的日子自然不出)
+    # 目标日 D = 前一交易日 P 有截面数据且 P 过了键暖机的交易日 (首个数据日只能当 P; 日历尾部超出数据的日子自然不出)
     trading_days = load_trading_days(months)
     has_prev = np.isin(trading_days[:-1].values, g.dates.values)
-    targets = trading_days[1:][has_prev]
-    assert len(targets) > 0, "没有任何交易日有前一日截面数据"
+    warm = trading_days[:-1] >= g.dates[0] + key.warmup
+    targets = trading_days[1:][has_prev & warm]
+    assert len(targets) > 0, "没有任何交易日有前一日截面数据 (或全在键暖机内)"
     print(
         f"池子区间: {targets[0].date()} ~ {targets[-1].date()} ({len(targets)} 个交易日)"
     )
@@ -102,7 +175,7 @@ def run(name: str, n: int, build_excl: ExclFn, select: SelectFn) -> None:
     # 命中统计只数当日在册的标的 (网格列含全部历史标的, 未上市/已退市列的 NaN 也会被 filter 判中)
     present = g.pivot(panel.assign(one=True), "one", bool, False)
     excl = g.empty(bool, False)
-    for fname, f in build_excl(ctx).items():
+    for fname, f in build_excl(ctx, industry_wl).items():
         assert (
             f.shape == excl.shape and f.dtype == bool
         ), f"filter {fname} 网格形状/类型不对"
@@ -110,21 +183,33 @@ def run(name: str, n: int, build_excl: ExclFn, select: SelectFn) -> None:
         excl |= f
     print(f"  (当日在册平均 {present.sum(axis=1).mean():.0f} 只)")
 
+    key_grid = key.build(ctx)
+    assert (
+        key_grid.shape == excl.shape and key_grid.dtype == np.float64
+    ), "排序键网格形状/类型不对"
+
     daily: dict[str, list[str]] = {}
+    codes: list[str] = []
     prev: set[str] = set()
     union: set[str] = (
         set()
     )  # 全史并集 (仅统计; 回测区间内的并集由 cpp 自己按 config 算)
     turnover: list[int] = []
+    n_rebal = 0
     for target in targets:
         asof = trading_days[trading_days.get_loc(target) - 1]
         assert (
             asof in by_date
         ), f"{target.date()} 的前一交易日 {asof.date()} 无截面数据, 需重新同步基本面"
-        codes = select(by_date[asof], excl[g.row_of(asof)], ctx, asof, target)
-        assert len(codes) == n and codes == sorted(
-            set(codes)
-        ), f"{target.date()}: select 须返回 {n} 个去重升序代码"
+        if not codes or target.to_period(freq) != asof.to_period(freq):
+            r = g.row_of(asof)
+            codes = select(
+                by_date[asof], excl[r], key_grid[r], ctx, asof, target, n, side
+            )
+            assert len(codes) == n and codes == sorted(
+                set(codes)
+            ), f"{target.date()}: select 须返回 {n} 个去重升序代码"
+            n_rebal += 1
         daily[target.strftime("%Y%m%d")] = codes
         cur = set(codes)
         if prev:
@@ -133,7 +218,7 @@ def run(name: str, n: int, build_excl: ExclFn, select: SelectFn) -> None:
         union |= cur
 
     print(
-        f"逐日池: {len(daily)} 天 x {n} 只, 全史并集 {len(union)} 只, "
+        f"逐日池: {len(daily)} 天 x {n} 只, 调仓 {n_rebal} 次, 全史并集 {len(union)} 只, "
         f"日均换手 {sum(turnover) / max(len(turnover), 1):.1f} 只 (最大 {max(turnover, default=0)})"
     )
     write_diff_json(name, daily)
