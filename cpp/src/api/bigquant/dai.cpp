@@ -13,6 +13,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -147,6 +148,19 @@ Quota DaiClient::quota() {
   yyjson_doc_free(doc);
 
   assert(q.weekly > 0 && "DAI quota: weekly_quota 非正");
+  return q;
+}
+
+Quota preflight(DaiClient &client) {
+  const Quota q = client.quota();
+  assert(q.used >= 0 && q.used <= q.weekly && "DAI quota: used 越界");
+  const double left = 1.0 - static_cast<double>(q.used) / static_cast<double>(q.weekly);
+  // ANSI: 绿 ≥ 50% / 黄 ≥ 20% / 红 < 20%; 阈值只管配色, 放行判定在调用方
+  const char *color = left >= 0.5 ? "\033[32m" : left >= 0.2 ? "\033[33m"
+                                                             : "\033[31m";
+  std::cout << "[bigquant.quota] 本周剩余 " << color << std::fixed
+            << std::setprecision(1) << left * 100.0 << "%\033[0m  (used "
+            << q.used << " / weekly " << q.weekly << " cells)" << std::endl;
   return q;
 }
 

@@ -101,20 +101,12 @@ std::map<std::string, DailyStats> BuildDailyStats(
   std::string backtest_end_dense = DateToDense(backtest_end);
 
   // Step 1: Initialize from stock_days (trading calendar)
-  for (const auto &day_info : stock_days) {
-    if (day_info.size() < 2)
-      continue;
-
-    const std::string &date_dashed = day_info[0]; // YYYY-MM-DD
-    const std::string &is_trading = day_info[1];
-    std::string date_dense = DateToDense(date_dashed);
-
-    if (date_dense.empty())
-      continue;
+  for (const CalendarDay &day : stock_days) {
+    std::string date_dense = misc::dense(day.date);
 
     DailyStats &stats = stats_map[date_dense];
     stats.date_str = date_dense;
-    stats.is_trading_day = (is_trading == "1");
+    stats.is_trading_day = day.trading;
 
     // Detect holidays: non-trading weekdays (Mon-Fri)
     int dow = GetDayOfWeek(date_dense);
@@ -139,26 +131,12 @@ std::map<std::string, DailyStats> BuildDailyStats(
 
   // Step 3: Detect dividend/split events from stock_factors
   // Compare factor[i] / factor[i-1], if ratio != 1.0, event occurred
-  for (const auto &[code, factor_data] : stock_factors) {
-    const auto &data = factor_data.data;
-    for (size_t i = 1; i < data.size(); ++i) {
-      if (data[i].size() < 2 || data[i - 1].size() < 2)
-        continue;
-
-      // Convert date from YYYY-MM-DD to YYYYMMDD
-      const std::string &date_dashed = data[i][0];
-      std::string date_dense = DateToDense(date_dashed);
-
-      if (date_dense.empty())
-        continue;
-
-      float factor_curr = std::stod(data[i][1]);
-      float factor_prev = std::stod(data[i - 1][1]);
-
+  for (const auto &[code, points] : stock_factors) {
+    for (size_t i = 1; i < points.size(); ++i) {
       // Check if there's a significant factor change (dividend/split)
-      float ratio = factor_curr / factor_prev;
+      const float ratio = points[i].factor / points[i - 1].factor;
       if (std::abs(ratio - 1.0) > 0.0001) { // Threshold for detecting events
-        auto it = stats_map.find(date_dense);
+        auto it = stats_map.find(misc::dense(points[i].date));
         if (it != stats_map.end()) {
           auto info_it = stock_info.find(code);
           it->second.dividend_events.push_back(
@@ -174,34 +152,6 @@ std::map<std::string, DailyStats> BuildDailyStats(
 }
 
 // ============================================================================
-// Helper: Parse date string YYYY-MM-DD
-// ============================================================================
-
-struct ParsedDate {
-  int year = 0;
-  int month = 0;
-  int day = 0;
-
-  static ParsedDate Parse(const std::string &date_str) {
-    ParsedDate info;
-    if (date_str.length() >= 10) {
-      info.year = std::stoi(date_str.substr(0, 4));
-      info.month = std::stoi(date_str.substr(5, 2));
-      info.day = std::stoi(date_str.substr(8, 2));
-    }
-    return info;
-  }
-
-  bool operator<(const ParsedDate &other) const {
-    if (year != other.year)
-      return year < other.year;
-    if (month != other.month)
-      return month < other.month;
-    return day < other.day;
-  }
-};
-
-// ============================================================================
 // Helper: Build calendar structure from stock_days data
 // ============================================================================
 
@@ -210,27 +160,12 @@ struct CalendarData {
   int start_year = 0;
   int end_year = 0;
 
-  void Build(const std::vector<std::vector<std::string>> &stock_days) {
+  void Build(const StockDaysVec &stock_days) {
     trading_days.clear();
 
-    if (stock_days.empty())
-      return;
-
-    // Process all dates
-    for (const auto &day_info : stock_days) {
-      if (day_info.size() < 2)
-        continue;
-
-      const std::string &date = day_info[0];
-      const std::string &is_trading = day_info[1];
-
-      if (is_trading == "1") { // Only trading days
-        ParsedDate info = ParsedDate::Parse(date);
-        if (info.year > 0) {
-          trading_days[info.year][info.month].insert(info.day);
-        }
-      }
-    }
+    for (const CalendarDay &day : stock_days)
+      if (day.trading)
+        trading_days[day.date / 10000][day.date / 100 % 100].insert(day.date % 100);
 
     // Get year range
     if (!trading_days.empty()) {

@@ -2,11 +2,9 @@
 
 #include "api/bigquant/audit.hpp"
 #include "api/bigquant/dai.hpp"
-#include "api/bigquant/spec.hpp"
-#include "misc/date.hpp"
+#include "fundamental/Store.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
-#include "shared/Config.hpp"
 
 #include <parquet/file_reader.h>
 #include <parquet/metadata.h>
@@ -97,11 +95,13 @@ std::filesystem::path latest_log() {
   return best;
 }
 
-// "audit_20261015_114548.tsv" → "20261015"
-std::string log_date(const std::filesystem::path &p) {
+// "audit_20261015_114548.tsv" → 20261015
+misc::Ymd log_date(const std::filesystem::path &p) {
   const std::string f = p.filename().string();
   assert(f.size() >= 21 && f.starts_with("audit_") && "audit: 日志文件名不符");
-  return f.substr(6, 8);
+  const misc::Ymd d = misc::parse_ymd(std::string_view(f).substr(6, 8));
+  assert(d > 0 && "audit: 日志文件名日期不符");
+  return d;
 }
 
 // "audit_20261015_114548.tsv" → "2026-10-15 11:45"
@@ -146,30 +146,25 @@ std::string parse_log(const std::filesystem::path &p, std::vector<LogRow> &rows)
   return status;
 }
 
-// 本地冻结月清点 (分母 + 流量): as_of 当天视角下的关月 (月末 < as_of − lookback)
+// 本地冻结月清点 (分母 + 流量): as_of 当天视角下 fundamental::frozen 的月 (与 audit_plan 同一来源)
 struct MonthInv {
   std::int64_t rows = 0;
   std::int64_t days = 0;
   std::int64_t cols = 0;
 };
-using Inventory = std::map<std::string, std::map<std::string, MonthInv>>; // 表 → ym → 清点
+using Inventory = std::map<std::string, std::map<std::string, MonthInv>>; // 表 → "YYYY-MM" (日志组键同形) → 清点
 
-Inventory build_inventory(std::string_view as_of) {
-  const std::string frozen_before = misc::add_days(as_of, -config::PIPELINE_LOOKBACK_DAYS);
-  const std::string start(config::PIPELINE_START_DATE);
-  const std::string start_ym = start.substr(0, 4) + "-" + start.substr(4, 2);
+Inventory build_inventory(const fundamental::Catalog &cat, misc::Ymd as_of) {
   Inventory inv;
-  for (const bigquant::TableSpec &s : bigquant::SPECS) {
-    if (s.kind == bigquant::FetchKind::Static || s.kind == bigquant::FetchKind::Snapshot)
+  for (const fundamental::Spec &s : fundamental::SPECS) {
+    if (!fundamental::from<fundamental::Dai>(s) || s.shape != fundamental::Shape::Month)
       continue;
     auto &months = inv[s.name];
-    for (const auto &[ym, path] : misc::pq::list_month_files(s.name)) {
-      const std::string yyyymm = ym.substr(0, 4) + ym.substr(5, 2);
-      if (ym < start_ym || yyyymm + misc::month_last_dd(yyyymm) >= frozen_before)
-        continue;
-      MonthInv &m = months[ym];
+    for (const misc::Ym ym : fundamental::frozen(s, cat, as_of)) {
+      const std::filesystem::path &path = cat.find(s.name, ym)->path;
+      MonthInv &m = months[misc::dash_ym(ym)];
       m.cols = parquet::ParquetFileReader::OpenFile(path.string())->metadata()->num_columns();
-      auto t = misc::pq::read_table(path, {s.visible_date});
+      auto t = misc::pq::read_table(path, {s.vd});
       m.rows = t->num_rows();
       std::set<std::int32_t> days;
       std::vector<std::int32_t> d;
@@ -331,7 +326,7 @@ boost::asio::awaitable<void> AuditService::load_last() {
     if (!p.empty()) {
       std::vector<LogRow> rows;
       std::string status = parse_log(p, rows);
-      Inventory inv = build_inventory(log_date(p));
+      Inventory inv = build_inventory(fundamental::Catalog{}, log_date(p));
       std::lock_guard lk(job->mu);
       job->rows = std::move(rows);
       job->inv = std::move(inv);
@@ -363,7 +358,9 @@ boost::asio::awaitable<void> AuditService::run() {
     log << "table\tgroup\tpass\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
     log.flush();
     std::cout << "[bigquant.audit] log -> " << log_path.string() << std::endl;
-    Inventory inv = build_inventory(misc::today_yyyymmdd());
+    const misc::Ymd today = misc::today_ymd();
+    const fundamental::Catalog cat;
+    Inventory inv = build_inventory(cat, today);
     {
       std::lock_guard lk(job->mu);
       job->log_path = log_path.string();
@@ -379,9 +376,7 @@ boost::asio::awaitable<void> AuditService::run() {
       job->quota_used = q0.used;
       job->quota_weekly = q0.weekly;
     }
-    const auto units = bigquant::audit_plan(
-        bigquant::SPECS, config::PIPELINE_START_DATE, misc::today_yyyymmdd(),
-        config::PIPELINE_LOOKBACK_DAYS, static_cast<unsigned>(std::time(nullptr)));
+    const auto units = bigquant::audit_plan(cat, today, static_cast<unsigned>(std::time(nullptr)));
     {
       std::lock_guard lk(job->mu);
       job->total = units.size();

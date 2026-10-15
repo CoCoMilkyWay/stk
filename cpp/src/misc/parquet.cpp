@@ -1,7 +1,5 @@
 #include "misc/parquet.hpp"
 
-#include "misc/fs.hpp"
-
 #include <arrow/array.h>
 #include <arrow/io/file.h>
 #include <arrow/result.h>
@@ -23,41 +21,6 @@
 namespace misc::pq {
 
 namespace fs = std::filesystem;
-
-// ----------------------------------------------------------------------------
-// 路径
-// ----------------------------------------------------------------------------
-fs::path month_path(std::string_view ym, std::string_view name) {
-  assert(ym.size() == 7 && ym[4] == '-');
-  return git_root() / "output" / "fundamental" / ym /
-         (std::string(name) + ".parquet");
-}
-
-fs::path meta_path(std::string_view name) {
-  return git_root() / "output" / "fundamental" / "_meta" /
-         (std::string(name) + ".parquet");
-}
-
-std::vector<std::pair<std::string, fs::path>>
-list_month_files(std::string_view name) {
-  std::vector<std::pair<std::string, fs::path>> out;
-  fs::path data_root = git_root() / "output" / "fundamental";
-  assert(fs::exists(data_root));
-  std::string fname = std::string(name) + ".parquet";
-
-  for (auto &ent : fs::directory_iterator(data_root)) {
-    if (!ent.is_directory())
-      continue;
-    std::string ym = ent.path().filename().string();
-    if (ym.size() != 7 || ym[4] != '-')
-      continue;
-    fs::path p = ent.path() / fname;
-    if (fs::exists(p))
-      out.emplace_back(std::move(ym), std::move(p));
-  }
-  std::sort(out.begin(), out.end());
-  return out;
-}
 
 // ----------------------------------------------------------------------------
 // 读写

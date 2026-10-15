@@ -1,8 +1,7 @@
 #include "api/bigquant/audit.hpp"
 
-#include "misc/date.hpp"
+#include "api/bigquant/fetch.hpp"
 #include "misc/parquet.hpp"
-#include "misc/schedule.hpp"
 #include "shared/Config.hpp"
 
 #include <arrow/array.h>
@@ -27,6 +26,9 @@ namespace bigquant {
 namespace {
 
 namespace pq = misc::pq;
+using fundamental::Spec;
+using fundamental::Ym;
+using fundamental::Ymd;
 using i128 = __int128;
 
 enum class Kind { Real,
@@ -82,15 +84,8 @@ struct Layout {
   std::vector<int> s_at;   // 列 → cells 下标; -1 = Null 列无 s
 };
 
-// 组键 → 指纹格 (十进制字符串, 与 Layout::cells 同序)
+// 组键 ("YYYY-MM" / "YYYY-MM-DD", 与服务端 strftime 同形) → 指纹格 (十进制字符串, 与 Layout::cells 同序)
 using Fps = std::map<std::string, std::vector<std::string>>;
-
-// "YYYYMMDD" → "YYYY-MM-DD"
-std::string dashed(std::string_view d) {
-  assert(d.size() == 8);
-  return std::string(d.substr(0, 4)) + "-" + std::string(d.substr(4, 2)) + "-" +
-         std::string(d.substr(6, 2));
-}
 
 std::string ident(std::string_view c) { return "\"" + std::string(c) + "\""; }
 
@@ -111,27 +106,10 @@ std::string i128_str(i128 v) {
   return s;
 }
 
-// 窗口谓词; MonthFirst 表只留窗口内每月最早一天 (与 fetch 同语义)
-std::string where_of(const TableSpec &s, std::string_view from,
-                     std::string_view to) {
-  const std::string vd = ident(s.visible_date);
-  const std::string rng = vd + " >= '" + dashed(from) + "' AND " + vd +
-                          " <= '" + dashed(to) + "'";
-  std::string w = " WHERE " + rng;
-  if (s.freq == FetchFreq::MonthFirst)
-    w += " AND " + vd + " IN (SELECT MIN(" + vd + ") FROM " + s.name +
-         " WHERE " + rng + " GROUP BY strftime(" + vd + ", '%Y-%m'))";
-  return w;
-}
-
-// Partition 表必须带分区裁剪 filters, DAI 才放行 (与 fetch 一致)
-std::shared_ptr<arrow::Table> run(DaiClient &client, const TableSpec &s,
-                                  const std::string &sql, std::string_view from,
-                                  std::string_view to) {
-  DaiFilters f;
-  if (s.kind == FetchKind::Partition)
-    f = {{"date", {dashed(from), dashed(to)}}};
-  return client.query(sql, f);
+// 窗口谓词 / 分区裁剪与 fetch 同一份 (bigquant::where / prune)
+std::shared_ptr<arrow::Table> run(DaiClient &client, const Spec &s, const std::string &select,
+                                  Ymd from, Ymd to, const std::string &tail = {}) {
+  return client.query(select + " FROM " + s.name + where(s, from, to) + tail, prune(s, from, to));
 }
 
 Layout layout_of(DaiClient &client, const AuditUnit &u) {
@@ -139,10 +117,9 @@ Layout layout_of(DaiClient &client, const AuditUnit &u) {
   L.cells.push_back({-1, false});
   if (u.pass == AuditPass::Rows)
     return L;
-  const TableSpec &s = *u.spec;
+  const Spec &s = *u.spec;
   // LIMIT 0: 只要 schema, 0 cell
-  auto t = run(client, s, "SELECT * FROM " + s.name + where_of(s, u.from, u.to) + " LIMIT 0",
-               u.from, u.to);
+  auto t = run(client, s, "SELECT *", u.from, u.to, " LIMIT 0");
   for (const auto &f : t->schema()->fields()) {
     const int c = static_cast<int>(L.names.size());
     L.names.push_back(f->name());
@@ -178,9 +155,8 @@ std::string sum_expr(Kind k, const std::string &col) {
   return {};
 }
 
-Fps remote_fps(DaiClient &client, const TableSpec &s, const Layout &L, Grain g,
-               std::string_view from, std::string_view to) {
-  const std::string vd = ident(s.visible_date);
+Fps remote_fps(DaiClient &client, const Spec &s, const Layout &L, Grain g, Ymd from, Ymd to) {
+  const std::string vd = ident(s.vd);
   std::string sql = "SELECT strftime(" + vd + ", '" +
                     (g == Grain::Month ? "%Y-%m" : "%Y-%m-%d") + "') AS g";
   for (std::size_t k = 0; k < L.cells.size(); ++k) {
@@ -194,9 +170,8 @@ Fps remote_fps(DaiClient &client, const TableSpec &s, const Layout &L, Grain g,
       e = sum_expr(L.kinds[c.col], ident(L.names[c.col]));
     sql += ", CAST(COALESCE(" + e + ", 0) AS VARCHAR) AS f" + std::to_string(k);
   }
-  sql += " FROM " + s.name + where_of(s, from, to) + " GROUP BY 1";
 
-  pq::TableView tv(run(client, s, sql, from, to));
+  pq::TableView tv(run(client, s, sql, from, to, " GROUP BY 1"));
   const pq::Col gc = tv.col("g");
   std::vector<pq::Col> fc;
   for (std::size_t k = 0; k < L.cells.size(); ++k)
@@ -312,35 +287,29 @@ void accumulate(const arrow::Array &a, Kind k, int nn_at, int s_at,
 }
 
 // 本地: months 各分片逐行累加, 与 remote_fps 同组键同口径
-Fps local_fps(const TableSpec &s, const Layout &L, Grain g,
-              const std::vector<std::string> &months) {
+Fps local_fps(const Spec &s, const Layout &L, Grain g, const std::vector<Ym> &months) {
   const bool content = L.cells.size() > 1;
   std::map<std::string, std::vector<i128>> acc;
-  for (const std::string &ym : months) {
-    auto t = pq::read_table(pq::month_path(ym, s.name),
+  for (const Ym ym : months) {
+    auto t = pq::read_table(fundamental::month_path(ym, s.name),
                             content ? std::vector<std::string>{}
-                                    : std::vector<std::string>{s.visible_date});
+                                    : std::vector<std::string>{s.vd});
     // 行 → 所属组的累加槽 (同日短路: 分片内 vd 按日成块)
     std::vector<std::vector<i128> *> slot(static_cast<std::size_t>(t->num_rows()));
     {
-      auto vd = t->GetColumnByName(s.visible_date);
-      assert(vd && "audit: 本地分片缺 visible_date 列");
+      auto vd = t->GetColumnByName(s.vd);
+      assert(vd && "audit: 本地分片缺 vd 列");
       std::int64_t base = 0;
-      std::vector<std::int32_t> d;
-      std::int32_t prev = 0;
+      std::vector<Ymd> d;
+      Ymd prev = 0;
       std::vector<i128> *prev_slot = nullptr;
       for (const auto &chunk : vd->chunks()) {
         pq::Col(chunk).yyyymmdd_all(d);
         for (std::size_t i = 0; i < d.size(); ++i) {
           if (d[i] != prev) {
-            assert(d[i] > 0 && "audit: 本地 visible_date 为 null");
-            const int y = d[i] / 10000, m = d[i] / 100 % 100, dd = d[i] % 100;
-            char key[16];
-            std::snprintf(key, sizeof(key), "%04d-%02d", y, m);
-            assert(ym == key && "audit: 行的 visible_date 不在所属月分片");
-            if (g == Grain::Day)
-              std::snprintf(key, sizeof(key), "%04d-%02d-%02d", y, m, dd);
-            auto &v = acc[key];
+            assert(d[i] > 0 && "audit: 本地 vd 为 null");
+            assert(misc::ym_of(d[i]) == ym && "audit: 行的 vd 不在所属月分片");
+            auto &v = acc[g == Grain::Month ? misc::dash_ym(ym) : misc::dash(d[i])];
             if (v.empty())
               v.assign(L.cells.size(), 0);
             prev = d[i];
@@ -422,35 +391,19 @@ AuditDiff make_diff(const AuditUnit &u, const Layout &L, const std::string &grou
 
 } // namespace
 
-std::vector<AuditUnit> audit_plan(const std::vector<TableSpec> &specs,
-                                  std::string_view start, std::string_view today,
-                                  int lookback_days, unsigned seed) {
-  assert(start.size() == 8 && today.size() == 8 && start <= today);
-  const std::string frozen_before = misc::add_days(today, -lookback_days);
-  const std::string start_ym =
-      std::string(start.substr(0, 4)) + "-" + std::string(start.substr(4, 2));
-
+std::vector<AuditUnit> audit_plan(const fundamental::Catalog &cat, Ymd today, unsigned seed) {
+  const Ymd start = misc::parse_ymd(::config::PIPELINE_START_DATE);
   std::vector<std::vector<AuditUnit>> per_table;
-  for (const TableSpec &s : specs) {
-    if (s.kind == FetchKind::Static || s.kind == FetchKind::Snapshot)
+  for (const Spec &s : fundamental::SPECS) {
+    if (!fundamental::from<fundamental::Dai>(s) || s.shape != fundamental::Shape::Month)
       continue;
-    // plan_months 仍要拉的关月 = 未冻结 (缺失 / 写盘早于月末 + lookback), 不核
-    std::set<std::string> pending;
-    for (const auto &m : misc::plan_months(s.name, s.visible_date, s.avail_hour,
-                                           start, today, lookback_days,
-                                           ::config::PIPELINE_DEDUP_WINDOW_SECONDS))
-      pending.insert(m.ym);
     std::map<int, AuditUnit> by_year;
-    for (const auto &[ym, path] : pq::list_month_files(s.name)) {
-      const std::string yyyymm = ym.substr(0, 4) + ym.substr(5, 2);
-      const std::string m_last = yyyymm + misc::month_last_dd(yyyymm);
-      if (ym < start_ym || m_last >= frozen_before || pending.contains(ym))
-        continue;
-      AuditUnit &u = by_year[std::stoi(ym.substr(0, 4))];
+    for (const Ym ym : fundamental::frozen(s, cat, today)) {
+      AuditUnit &u = by_year[ym / 100];
       if (u.months.empty())
-        u.from = std::max(yyyymm + "01", std::string(start));
+        u.from = std::max(misc::first_day(ym), start);
       u.months.push_back(ym);
-      u.to = m_last;
+      u.to = misc::last_day(ym);
     }
     std::vector<AuditUnit> units;
     for (auto &[y, u] : by_year) {
@@ -485,7 +438,7 @@ std::vector<AuditUnit> audit_plan(const std::vector<TableSpec> &specs,
 
 std::vector<AuditDiff> audit_unit(DaiClient &client, const AuditUnit &u) {
   assert(u.spec && !u.months.empty());
-  const TableSpec &s = *u.spec;
+  const Spec &s = *u.spec;
   const Layout L = layout_of(client, u);
   const std::vector<std::string> zeros(L.cells.size(), "0");
 
@@ -512,20 +465,18 @@ std::vector<AuditDiff> audit_unit(DaiClient &client, const AuditUnit &u) {
   }
 
   std::vector<AuditDiff> out;
-  for (const std::string &ym : u.months) {
-    const auto &l = find_or_zero(lm, ym, zeros);
-    const auto &r = find_or_zero(rm, ym, zeros);
+  for (const Ym ym : u.months) {
+    const std::string key = misc::dash_ym(ym);
+    const auto &l = find_or_zero(lm, key, zeros);
+    const auto &r = find_or_zero(rm, key, zeros);
     if (!flagged(l, r))
       continue;
 
     // 日级下钻: 同月内任何不一致都报 (Content 轮里 n 跨日挪动也算)
-    const std::string yyyymm = ym.substr(0, 4) + ym.substr(5, 2);
-    const std::string from = std::max(yyyymm + "01", u.from);
-    const std::string to = yyyymm + misc::month_last_dd(yyyymm);
-    const Fps rd = remote_fps(client, s, L, Grain::Day, from, to);
+    const Fps rd = remote_fps(client, s, L, Grain::Day, std::max(misc::first_day(ym), u.from), misc::last_day(ym));
     Fps ld;
     if (u.pass == AuditPass::Rows) {
-      for (auto it = ld_all.lower_bound(ym); it != ld_all.end() && it->first.starts_with(ym); ++it)
+      for (auto it = ld_all.lower_bound(key); it != ld_all.end() && it->first.starts_with(key); ++it)
         ld.insert(*it);
     } else {
       ld = local_fps(s, L, Grain::Day, {ym});
@@ -544,7 +495,7 @@ std::vector<AuditDiff> audit_unit(DaiClient &client, const AuditUnit &u) {
         out.push_back(make_diff(u, L, day, dl, dr));
     }
     if (out.size() == before)
-      out.push_back(make_diff(u, L, ym, l, r));
+      out.push_back(make_diff(u, L, key, l, r));
   }
   return out;
 }

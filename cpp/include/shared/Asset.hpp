@@ -4,7 +4,6 @@
 #include "codec/L2_DataType.hpp"
 #include "shared/EncodeDayRecord.hpp"
 
-#include <algorithm>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -262,42 +261,6 @@ struct Asset {
   // 归 coro_compute_coverage_statistics 那趟一起算.
   void compute_backtest_coverage(const std::string &start, const std::string &end,
                                  const AssetInfo &assetinfo);
-
-  // 用 AssetInfo 同步 AssetItem 字段 (AssetInfo 更新后调用)
-  template <typename StockInfoMap>
-  void sync_from_asset_info(const StockInfoMap &stock_info) {
-    for (auto &asset : items) {
-      // 拼 stock key: "exchange.code" (exchange 小写)
-      std::string exchange_lower = asset.exchange;
-      std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-      std::string stock_key = exchange_lower + "." + asset.asset_code;
-
-      // 查 stock info
-      auto info_it = stock_info.find(stock_key);
-      if (info_it != stock_info.end()) {
-        const auto &info = info_it->second;
-
-        // 更新 name
-        asset.asset_name = info.name;
-
-        // 更新 start_date (ipoDate: YYYY-MM-DD -> YYYYMMDD)
-        if (!info.ipoDate.empty()) {
-          std::string ipo_date = info.ipoDate;
-          ipo_date.erase(std::remove(ipo_date.begin(), ipo_date.end(), '-'), ipo_date.end());
-          asset.start_date = ipo_date;
-        }
-
-        // 更新 end_date (outDate: YYYY-MM-DD -> YYYYMMDD)
-        if (!info.outDate.empty()) {
-          std::string out_date = info.outDate;
-          out_date.erase(std::remove(out_date.begin(), out_date.end(), '-'), out_date.end());
-          asset.end_date = out_date;
-        } else {
-          asset.end_date = "20991231"; // 未退市
-        }
-      }
-    }
-  }
 
   // 按日统计 (Browser 完整性 / Table 的 Orders% / Encode 的缺失表,
   // 同一份统计一次算完)

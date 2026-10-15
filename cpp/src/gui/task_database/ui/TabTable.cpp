@@ -15,7 +15,6 @@
 #include <limits>
 #include <numeric>
 #include <set>
-#include <stdexcept>
 #include <string>
 
 namespace GUI::Database {
@@ -28,7 +27,7 @@ constexpr ImVec4 COLOR_RED = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
 constexpr ImVec4 COLOR_GRAY = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
 
 // ============================================================================
-// Helper: 在市时长 (ipoDate → outDate 或今天), 分解成 年/月/日
+// Helper: 在市时长 (ipo_date → out_date 或今天), 分解成 年/月/日
 // ============================================================================
 
 struct ListedSpan {
@@ -41,22 +40,15 @@ struct ListedSpan {
 
 ListedSpan CalculateListedSpan(const StockInfo &info) {
   ListedSpan span;
-  if (info.ipoDate.length() != 10)
+  if (!info.ipo_date)
     return span;
 
   using namespace std::chrono;
 
-  auto parse = [](const std::string &s) {
-    return year_month_day{year{std::stoi(s.substr(0, 4))},
-                          month{static_cast<unsigned>(std::stoi(s.substr(5, 2)))},
-                          day{static_cast<unsigned>(std::stoi(s.substr(8, 2)))}};
-  };
-
-  const year_month_day ipo = parse(info.ipoDate);
+  const year_month_day ipo{misc::to_days(info.ipo_date)};
   // 退市股的在市时长截到退市日, 不跟着今天一起涨
-  const year_month_day end = info.outDate.length() == 10
-                                 ? parse(info.outDate)
-                                 : year_month_day{floor<days>(system_clock::now())};
+  const year_month_day end{info.out_date ? misc::to_days(info.out_date)
+                                         : floor<days>(system_clock::now())};
   if (!ipo.ok() || !end.ok() || sys_days(end) < sys_days(ipo))
     return span;
 
@@ -90,9 +82,7 @@ ListedSpan CalculateListedSpan(const StockInfo &info) {
 // ============================================================================
 
 float CalculateMarketCap(const StockInfo &info) {
-  if (info.mcap.empty())
-    return 0.0;
-  return std::stod(info.mcap);
+  return std::isnan(info.mcap) ? 0.0f : info.mcap;
 }
 
 double AverageOrdersPerDay(const Asset::AssetStats &stats) {
@@ -102,18 +92,12 @@ double AverageOrdersPerDay(const Asset::AssetStats &stats) {
 }
 
 // ============================================================================
-// Helper: ST level from StockInfo (isST = cn_stock_status.st_status 原值)
+// Helper: ST level from StockInfo (st = cn_stock_status.st_status 原值)
 // ============================================================================
 
 // 0 = 正常 (含无基本面), 1 = ST, 2 = *ST (退市风险警示)
 int GetStLevel(const StockInfo *info) {
-  if (!info)
-    return 0;
-  if (info->isST == "2")
-    return 2;
-  if (info->isST == "1")
-    return 1;
-  return 0;
+  return info ? info->st : 0;
 }
 
 const char *GetStLabel(int level) {
@@ -159,7 +143,7 @@ bool ShouldShowAsset(
 
   // Filter: listed/delisted (0=在市 1=退市, 未知基本面按"不确定"排除), 多选
   if (!state.listed_filter.empty()) {
-    const int listed_state = !info ? -1 : (info->outDate.empty() ? 0 : 1);
+    const int listed_state = !info ? -1 : (info->out_date ? 1 : 0);
     if (listed_state < 0 || !state.listed_filter.count(listed_state)) {
       return false;
     }
@@ -210,25 +194,9 @@ bool ValuationLess(float va, float vb) {
   return (ta != tb) ? (ta < tb) : (va < vb);
 }
 
-// 基本面字段是 parquet 里的字符串, 可能是空/NaN/超范围 — 转不出来就归到
-// 排序的最低档 (default_val), 不是错误处理
-float SafeStod(const std::string &s, float default_val = -1e9) {
-  if (s.empty())
-    return default_val;
-  try {
-    float val = std::stod(s);
-    if (val != val) // NaN
-      return default_val;
-    if (!std::isfinite(val))
-      return default_val;
-    return val;
-  } catch (const std::invalid_argument &) {
-    return default_val;
-  } catch (const std::out_of_range &) {
-    return default_val;
-  } catch (...) {
-    return default_val;
-  }
+// 无效值 (NaN) 归到排序的最低档 (default_val)
+float SortVal(float v, float default_val = -1e9) {
+  return std::isfinite(v) ? v : default_val;
 }
 
 // ============================================================================
@@ -240,20 +208,13 @@ bool GetCrossSectionValue(int col, const StockInfo *info, float &out) {
   if (!info)
     return false;
 
-  // 与 SafeStod 同样的判据, 只是把"转不出来"报成 false 而不是垫底值 ——
+  // 与 SortVal 同样的判据, 只是把无效值报成 false 而不是垫底值 ——
   // 缺值的行不参与截面, 不能挤占最差那一档
-  auto parse_finite = [&out](const std::string &s) {
-    if (s.empty())
+  auto finite = [&out](float v) {
+    if (!std::isfinite(v))
       return false;
-    try {
-      const float v = std::stof(s);
-      if (!std::isfinite(v))
-        return false;
-      out = v;
-      return true;
-    } catch (...) {
-      return false;
-    }
+    out = v;
+    return true;
   };
 
   switch (col) {
@@ -263,19 +224,19 @@ bool GetCrossSectionValue(int col, const StockInfo *info, float &out) {
     return span.valid;
   }
   case 8:
-    return parse_finite(info->peTTM);
+    return finite(info->pe_ttm);
   case 9:
-    return parse_finite(info->pbMRQ);
+    return finite(info->pb_mrq);
   case 10:
-    return parse_finite(info->psTTM);
+    return finite(info->ps_ttm);
   case 11:
-    return parse_finite(info->pcfNcfTTM);
+    return finite(info->pcf_ttm);
   case 12:
-    return parse_finite(info->dy1y);
+    return finite(info->dy1y);
   case 13:
-    return parse_finite(info->dy3y);
+    return finite(info->dy3y);
   case 14:
-    return parse_finite(info->dy5y);
+    return finite(info->dy5y);
   case 15: // Cap: 0 = 缺收盘价或股本, 不是"市值为零"
     out = CalculateMarketCap(*info);
     return out > 0;
@@ -417,8 +378,8 @@ void RebuildView(TableView &view, const Asset &asset,
       case 4: // ST: 正常 < ST < *ST
         return GetStLevel(na) < GetStLevel(nb);
       case 5: { // DL (Delisted)
-        const bool a_dl = na && na->outDate != "" && na->outDate != "0";
-        const bool b_dl = nb && nb->outDate != "" && nb->outDate != "0";
+        const bool a_dl = na && na->out_date;
+        const bool b_dl = nb && nb->out_date;
         return a_dl < b_dl;
       }
       case 6: { // Listed: 在市总天数
@@ -433,26 +394,26 @@ void RebuildView(TableView &view, const Asset &asset,
         return a_ind < b_ind;
       }
       case 8: // PE
-        return ValuationLess(na ? SafeStod(na->peTTM) : -1e9,
-                             nb ? SafeStod(nb->peTTM) : -1e9);
+        return ValuationLess(na ? SortVal(na->pe_ttm) : -1e9,
+                             nb ? SortVal(nb->pe_ttm) : -1e9);
       case 9: // PB
-        return ValuationLess(na ? SafeStod(na->pbMRQ) : -1e9,
-                             nb ? SafeStod(nb->pbMRQ) : -1e9);
+        return ValuationLess(na ? SortVal(na->pb_mrq) : -1e9,
+                             nb ? SortVal(nb->pb_mrq) : -1e9);
       case 10: // PS
-        return ValuationLess(na ? SafeStod(na->psTTM) : -1e9,
-                             nb ? SafeStod(nb->psTTM) : -1e9);
+        return ValuationLess(na ? SortVal(na->ps_ttm) : -1e9,
+                             nb ? SortVal(nb->ps_ttm) : -1e9);
       case 11: // PCF
-        return ValuationLess(na ? SafeStod(na->pcfNcfTTM) : -1e9,
-                             nb ? SafeStod(nb->pcfNcfTTM) : -1e9);
+        return ValuationLess(na ? SortVal(na->pcf_ttm) : -1e9,
+                             nb ? SortVal(nb->pcf_ttm) : -1e9);
       case 12:   // DY1
       case 13:   // DY3
       case 14: { // DY5
         // 无分红 = 0 排在最低; 缺基本面 / 上市不足一季 = -1 更低
-        std::string StockInfo::*field =
+        float StockInfo::*field =
             col == 12 ? &StockInfo::dy1y
                       : (col == 13 ? &StockInfo::dy3y : &StockInfo::dy5y);
-        return (na ? SafeStod(na->*field, -1.0f) : -1.0f) <
-               (nb ? SafeStod(nb->*field, -1.0f) : -1.0f);
+        return (na ? SortVal(na->*field, -1.0f) : -1.0f) <
+               (nb ? SortVal(nb->*field, -1.0f) : -1.0f);
       }
       case 15: // Market Cap
         return (na ? CalculateMarketCap(*na) : 0) < (nb ? CalculateMarketCap(*nb) : 0);
@@ -517,7 +478,7 @@ void RenderFilterBar(
   }
 
   // ST/Listed/Board: 与 FEATURES/ORDERFLOW 共用控件 (gui/util/AssetFilter.hpp).
-  // ST 只有 0..2 (GetStLevel 口径, 无退市整理期档); Listed 看 outDate 是否为空
+  // ST 只有 0..2 (GetStLevel 口径, 无退市整理期档); Listed 看 out_date 是否为 0
   ImGui::SameLine();
   GUI::Filter::CommonFilters<BoardType>("Table", false, state.st_filter,
                                         state.listed_filter, state.board_filter);
@@ -635,9 +596,9 @@ void RenderDataTable(
 
       "ST股 (Special Treatment)\n来源: cn_stock_status.st_status (逐日)\n\nST  = 特别处理 (连续两年亏损等), 涨跌幅限制 ±5%\n*ST = 退市风险警示 (风险更高一档)\n-   = 正常\n\n与 Name 列同源同日 (简称前缀 ↔ 本列取值 严格一致)",
 
-      "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\noutDate字段记录退市日期",
+      "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\nhover 单元格可看退市日期",
 
-      "在市时间 (Listed Duration)\n紧凑格式 年/月/日 — 如 11/02/06 = 11年2个月6天\n\n区间: ipoDate → outDate (退市股截到退市日) 或今天\nhover 单元格可看起止日期与在市总天数\n排序与横截面分析口径为在市总天数",
+      "在市时间 (Listed Duration)\n紧凑格式 年/月/日 — 如 11/02/06 = 11年2个月6天\n\n区间: 上市日 → 退市日 (退市股截到退市日) 或今天\nhover 单元格可看起止日期与在市总天数\n排序与横截面分析口径为在市总天数",
 
       "行业 (Industry)\n申万一级行业名称 (industry_level1_name)\n来源: cn_stock_industry_component 最新月度快照\n\nhover 单元格可看行业代码 (ind_code)",
 
@@ -791,10 +752,10 @@ void RenderDataTable(
     if (hovered_col == 5) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
     }
-    if (info && !info->outDate.empty() && info->outDate != "0") {
+    if (info && info->out_date) {
       ImGui::TextColored(COLOR_GRAY, "DL");
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Delisted: %s", info->outDate.c_str());
+        ImGui::SetTooltip("Delisted: %s", misc::dash(info->out_date).c_str());
       }
     } else {
       ImGui::Text("-");
@@ -814,8 +775,8 @@ void RenderDataTable(
         ImGui::PopStyleColor();
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("上市 %s → %s\n在市 %d 年 %d 月 %d 天 (共 %d 天)",
-                          info->ipoDate.c_str(),
-                          info->outDate.empty() ? "至今" : info->outDate.c_str(),
+                          misc::dash(info->ipo_date).c_str(),
+                          info->out_date ? misc::dash(info->out_date).c_str() : "至今",
                           span.years, span.months, span.days, span.total_days);
       }
     } else {
@@ -838,112 +799,16 @@ void RenderDataTable(
     }
     handle_column_click(7);
 
-    // Col 8: PE(TTM)
-    ImGui::TableSetColumnIndex(8);
-    if (hovered_col == 8) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    if (info && !info->peTTM.empty()) {
-      try {
-        float pe = std::stod(info->peTTM);
-        if (std::isfinite(pe)) {
-          const bool cs = push_cs_color(8, row_idx);
-          ImGui::Text("%.1f", pe);
-          if (cs)
-            ImGui::PopStyleColor();
-        } else {
-          ImGui::TextColored(COLOR_GRAY, "-");
-        }
-      } catch (...) {
-        ImGui::TextColored(COLOR_GRAY, "-");
-      }
-    } else {
-      ImGui::TextColored(COLOR_GRAY, "-");
-    }
-    handle_column_click(8);
-
-    // Col 9: PB(MRQ)
-    ImGui::TableSetColumnIndex(9);
-    if (hovered_col == 9) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    if (info && !info->pbMRQ.empty()) {
-      try {
-        float pb = std::stod(info->pbMRQ);
-        if (std::isfinite(pb)) {
-          const bool cs = push_cs_color(9, row_idx);
-          ImGui::Text("%.2f", pb);
-          if (cs)
-            ImGui::PopStyleColor();
-        } else {
-          ImGui::TextColored(COLOR_GRAY, "-");
-        }
-      } catch (...) {
-        ImGui::TextColored(COLOR_GRAY, "-");
-      }
-    } else {
-      ImGui::TextColored(COLOR_GRAY, "-");
-    }
-    handle_column_click(9);
-
-    // Col 10: PS(TTM)
-    ImGui::TableSetColumnIndex(10);
-    if (hovered_col == 10) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    if (info && !info->psTTM.empty()) {
-      try {
-        float ps = std::stod(info->psTTM);
-        if (std::isfinite(ps)) {
-          const bool cs = push_cs_color(10, row_idx);
-          ImGui::Text("%.2f", ps);
-          if (cs)
-            ImGui::PopStyleColor();
-        } else {
-          ImGui::TextColored(COLOR_GRAY, "-");
-        }
-      } catch (...) {
-        ImGui::TextColored(COLOR_GRAY, "-");
-      }
-    } else {
-      ImGui::TextColored(COLOR_GRAY, "-");
-    }
-    handle_column_click(10);
-
-    // Col 11: PCF
-    ImGui::TableSetColumnIndex(11);
-    if (hovered_col == 11) {
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
-    }
-    if (info && !info->pcfNcfTTM.empty()) {
-      try {
-        float pcf = std::stod(info->pcfNcfTTM);
-        if (std::isfinite(pcf)) {
-          const bool cs = push_cs_color(11, row_idx);
-          ImGui::Text("%.1f", pcf);
-          if (cs)
-            ImGui::PopStyleColor();
-        } else {
-          ImGui::TextColored(COLOR_GRAY, "-");
-        }
-      } catch (...) {
-        ImGui::TextColored(COLOR_GRAY, "-");
-      }
-    } else {
-      ImGui::TextColored(COLOR_GRAY, "-");
-    }
-    handle_column_click(11);
-
-    // Col 12/13/14: DY 1y/3y/5y (%), 三列同构 — 颜色走截面分位 (分红越多越绿)
-    auto render_dy = [&](int col, const std::string *val) {
+    // Col 8..14: PE(TTM) / PB(MRQ) / PS(TTM) / PCF / DY 1y/3y/5y (%), 七列同构 —
+    // 颜色走截面分位; NaN (无效 / 无基本面) → "-"
+    auto render_num = [&](int col, const char *fmt, float v) {
       ImGui::TableSetColumnIndex(col);
       if (hovered_col == col) {
         ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
       }
-      if (val && !val->empty()) {
-        float dy = std::stod(*val);
+      if (std::isfinite(v)) {
         const bool cs = push_cs_color(col, row_idx);
-        ImGui::Text("%.2f", dy);
+        ImGui::Text(fmt, v);
         if (cs)
           ImGui::PopStyleColor();
       } else {
@@ -951,9 +816,14 @@ void RenderDataTable(
       }
       handle_column_click(col);
     };
-    render_dy(12, info ? &info->dy1y : nullptr);
-    render_dy(13, info ? &info->dy3y : nullptr);
-    render_dy(14, info ? &info->dy5y : nullptr);
+    constexpr float kNaN = StockInfo::kNaN;
+    render_num(8, "%.1f", info ? info->pe_ttm : kNaN);
+    render_num(9, "%.2f", info ? info->pb_mrq : kNaN);
+    render_num(10, "%.2f", info ? info->ps_ttm : kNaN);
+    render_num(11, "%.1f", info ? info->pcf_ttm : kNaN);
+    render_num(12, "%.2f", info ? info->dy1y : kNaN);
+    render_num(13, "%.2f", info ? info->dy3y : kNaN);
+    render_num(14, "%.2f", info ? info->dy5y : kNaN);
 
     // Col 15: Market Cap (亿元)
     ImGui::TableSetColumnIndex(15);
@@ -1134,67 +1004,16 @@ static void RenderNumericAnalysis(
     bool is_valid = false;
 
     switch (col_idx) {
-    case 6: // Listed (在市总天数)
-      if (info) {
-        ListedSpan span = CalculateListedSpan(*info);
-        value = span.total_days;
-        is_valid = span.valid;
-      }
-      break;
-    case 8: // PE
-      if (info && !info->peTTM.empty()) {
-        try {
-          value = std::stod(info->peTTM);
-          is_valid = std::isfinite(value);
-        } catch (...) {
-        }
-      }
-      break;
-    case 9: // PB
-      if (info && !info->pbMRQ.empty()) {
-        try {
-          value = std::stod(info->pbMRQ);
-          is_valid = std::isfinite(value);
-        } catch (...) {
-        }
-      }
-      break;
+    case 6:  // Listed (在市总天数)
+    case 8:  // PE
+    case 9:  // PB
     case 10: // PS
-      if (info && !info->psTTM.empty()) {
-        try {
-          value = std::stod(info->psTTM);
-          is_valid = std::isfinite(value);
-        } catch (...) {
-        }
-      }
-      break;
     case 11: // PCF
-      if (info && !info->pcfNcfTTM.empty()) {
-        try {
-          value = std::stod(info->pcfNcfTTM);
-          is_valid = std::isfinite(value);
-        } catch (...) {
-        }
-      }
-      break;
-    case 12:   // DY1
-    case 13:   // DY3
-    case 14: { // DY5
-      const std::string *dy =
-          !info ? nullptr
-                : (col_idx == 12 ? &info->dy1y
-                                 : (col_idx == 13 ? &info->dy3y : &info->dy5y));
-      if (dy && !dy->empty()) {
-        value = std::stod(*dy);
-        is_valid = true;
-      }
-      break;
-    }
+    case 12: // DY1
+    case 13: // DY3
+    case 14: // DY5
     case 15: // Market Cap
-      if (info) {
-        value = CalculateMarketCap(*info);
-        is_valid = (value > 0);
-      }
+      is_valid = GetCrossSectionValue(col_idx, info, value);
       break;
     case 16: // Trading Days
       value = stats.total_days;
@@ -1416,7 +1235,7 @@ static void RenderCategoricalAnalysis(
       break;
     }
     case 5: // DL
-      category = (info && !info->outDate.empty()) ? "Delisted" : "Active";
+      category = (info && info->out_date) ? "Delisted" : "Active";
       break;
     case 7: // Industry
       category = (info && !GetIndustryDisplay(*info).empty())

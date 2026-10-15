@@ -7,15 +7,10 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 // ============================================================================
-// 统一 parquet 存储层 — 数据集唯一落地形态 (bigquant / tushare / feature 共用).
-//
-// 布局 (git_root 相对):
-//   data/YYYY-MM/<name>.parquet   月度分片 (0 行月也落 0 行文件 = "拉过")
-//   data/_meta/<name>.parquet     Static / Snapshot 单文件 (整刷覆盖)
+// parquet 读写 (纯 IO, 不含任何数据集布局; 基本面布局见 fundamental/Store.hpp).
 //
 // 读: read_table → arrow::Table (CombineChunks 后单 chunk, 行级随机访问).
 //     columns 非空 = 只解这几列. 宽表全列解是纯浪费 —— financial_ttm_shift
@@ -34,14 +29,6 @@
 // 列名缺失 / 类型不符 → assert (fail fast).
 // ============================================================================
 namespace misc::pq {
-
-std::filesystem::path month_path(std::string_view ym /*"YYYY-MM"*/,
-                                 std::string_view name);
-std::filesystem::path meta_path(std::string_view name);
-
-// data/ 下所有 "YYYY-MM" 目录中存在 <name>.parquet 的 (ym, path), ym 升序.
-std::vector<std::pair<std::string, std::filesystem::path>>
-list_month_files(std::string_view name);
 
 // columns 空 = 全列; 非空 = 只读这些列 (列名缺失 → assert).
 // dict_columns 里的列以 dictionary<string,int32> 落地 (须是 BYTE_ARRAY 物理类型).

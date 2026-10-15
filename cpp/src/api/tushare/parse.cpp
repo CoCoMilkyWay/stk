@@ -1,7 +1,5 @@
 #include "api/tushare/parse.hpp"
 
-#include "api/tushare/spec.hpp"
-
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/type.h>
@@ -49,7 +47,7 @@ std::vector<std::string> field_names(yyjson_val *fields) {
 
 std::shared_ptr<arrow::Table>
 docs_to_table(const std::vector<yyjson_doc *> &docs,
-              const InterfaceSpec &spec) {
+              const fundamental::Tu &src) {
   assert(!docs.empty());
 
   std::vector<Envelope> envs;
@@ -62,20 +60,20 @@ docs_to_table(const std::vector<yyjson_doc *> &docs,
   for (size_t k = 1; k < envs.size(); ++k)
     assert(field_names(envs[k].fields) == names && "tushare fields 跨响应不一致");
 
-  std::unordered_set<std::string> drop(spec.drop_fields.begin(),
-                                       spec.drop_fields.end());
+  std::unordered_set<std::string> drop(src.drop_fields.begin(),
+                                       src.drop_fields.end());
 
-  // 列类型 = spec.num_fields 声明 (double), 其余 string. 不按数据推断:
+  // 列类型 = src.num_fields 声明 (double), 其余 string. 不按数据推断:
   // 全 null 列无从推断, 会让同一列跨月漂移 → append schema 不一致.
-  std::unordered_set<std::string> num(spec.num_fields.begin(),
-                                      spec.num_fields.end());
+  std::unordered_set<std::string> num(src.num_fields.begin(),
+                                      src.num_fields.end());
   size_t n_col = names.size();
   std::vector<bool> is_num(n_col, false);
   for (size_t c = 0; c < n_col; ++c)
     is_num[c] = num.count(names[c]) > 0;
 
   // 声明的数值列必须都在响应 fields 里 (拼错 / API 改名 → 立刻暴露)
-  for (const auto &f : spec.num_fields)
+  for (const auto &f : src.num_fields)
     assert(std::find(names.begin(), names.end(), f) != names.end() &&
            "tushare num_fields 声明的列不在响应里");
 

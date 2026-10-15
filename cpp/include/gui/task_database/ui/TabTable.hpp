@@ -75,7 +75,7 @@ struct TableState {
   //
   // 下面四个都是多选下拉, 空集合 = 不过滤 (全选):
   //   st_filter:      0=正常 1=ST 2=*ST (GetStLevel 口径)
-  //   listed_filter:  0=在市 1=退市 (outDate 是否为空)
+  //   listed_filter:  0=在市 1=退市 (out_date 是否为 0)
   //   board_filter:   BoardType (Unknown ~ BSE, 不含 All 哨兵)
   //   industry_filter: 申万一级行业代码 (ind_code)
   std::set<int> st_filter;

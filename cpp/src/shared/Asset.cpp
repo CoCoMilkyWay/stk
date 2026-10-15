@@ -432,15 +432,13 @@ void Asset::compute_backtest_coverage(const std::string &start, const std::strin
   backtest.need_download.clear();
 
   // Step 1: Ground truth = 基本面交易日历 (权威, archive 自身缺日也能发现)
-  // stock_days 行格式 ["YYYY-MM-DD", "0"/"1"], 此处转 compact "YYYYMMDD" 与
-  // binary/archive dates 对齐; 调用方保证基本面 Ready (ScanService assert)
+  // 转 compact "YYYYMMDD" 与 binary/archive dates 对齐; 调用方保证基本面 Ready (ScanService assert)
   const auto &stock_days = assetinfo.get_stock_days();
   assert(!stock_days.empty() && "基本面交易日历未就绪");
-  for (const auto &day : stock_days) {
-    if (day.size() < 2 || day[1] != "1")
-      continue; // 非交易日
-    const std::string &dashed = day[0];
-    std::string date = dashed.substr(0, 4) + dashed.substr(5, 2) + dashed.substr(8, 2);
+  for (const CalendarDay &day : stock_days) {
+    if (!day.trading)
+      continue;
+    std::string date = misc::dense(day.date);
     if (date >= start && date <= end) {
       backtest.required_dates.insert(std::move(date));
     }
@@ -490,13 +488,6 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   const auto &stock_info = assetinfo.get_stock_info();
   const auto &stock_days = assetinfo.get_stock_days();
   const auto &suspended = assetinfo.get_suspended();
-
-  auto date_to_dense = [](const std::string &date_dashed) -> std::string {
-    if (date_dashed.size() == 10 && date_dashed[4] == '-' && date_dashed[7] == '-') {
-      return date_dashed.substr(0, 4) + date_dashed.substr(5, 2) + date_dashed.substr(8, 2);
-    }
-    return "";
-  };
 
   // 全程算在局部, 最后一次性换进成员 —— 中途 UI 读到的是上一版完整结果
   std::unordered_map<std::string, DateStats> local_date_stats;
@@ -570,10 +561,10 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
 
     auto info_it = stock_info.find(k.full_code);
     if (info_it != stock_info.end()) {
-      if (!info_it->second.ipoDate.empty())
-        k.list_date = date_to_dense(info_it->second.ipoDate);
-      if (!info_it->second.outDate.empty())
-        k.delist_date = date_to_dense(info_it->second.outDate);
+      if (info_it->second.ipo_date)
+        k.list_date = misc::dense(info_it->second.ipo_date);
+      if (info_it->second.out_date)
+        k.delist_date = misc::dense(info_it->second.out_date);
     }
   }
 
@@ -585,6 +576,7 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   // 码不算缺, 那不是要跑的行情.
   struct DayJob {
     std::string date; // YYYYMMDD
+    misc::Ymd ymd;    // 同一天, 查停牌名单用
     size_t didx;      // 日期轴下标, 内循环 O(1) 定址 (原先是 资产数 次 hash find)
     bool in_db_range;
     bool in_backtest;
@@ -592,21 +584,18 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   };
   std::vector<DayJob> jobs;
   jobs.reserve(stock_days.size());
-  for (const auto &day_info : stock_days) {
-    if (day_info.size() < 2)
-      continue;
-    std::string date_dense = date_to_dense(day_info[0]);
-    if (date_dense.empty())
-      continue;
+  for (const CalendarDay &day : stock_days) {
+    std::string date_dense = misc::dense(day.date);
 
     const bool in_db_range =
         !has_db_range || (date_dense >= binary.min_date && date_dense <= binary.max_date);
-    const bool in_backtest = has_bt_range && day_info[1] == "1" &&
+    const bool in_backtest = has_bt_range && day.trading &&
                              date_dense >= backtest.start && date_dense <= backtest.end;
     if (!in_db_range && !in_backtest)
       continue;
 
     DayJob job;
+    job.ymd = day.date;
     job.didx = date_idx(date_dense);
     job.in_db_range = in_db_range;
     job.in_backtest = in_backtest;
@@ -642,7 +631,7 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
 
       // 当日停牌名单 (无条目 = 该日无人停牌) → 位图, 内循环免字符串 hash
       std::fill(susp.begin(), susp.end(), 0);
-      auto susp_it = suspended.find(job.date);
+      auto susp_it = suspended.find(job.ymd);
       if (susp_it != suspended.end()) {
         for (const auto &code : susp_it->second) {
           auto kit = key_to_idx.find(code);

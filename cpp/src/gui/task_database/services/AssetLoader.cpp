@@ -55,18 +55,10 @@ void AssetLoader::load(SharedData &data) {
     if (it != stock_info_map.end()) {
       const auto &info = it->second;
       asset_name = info.name;
-
-      std::string ipo_date = info.ipoDate;
-      if (!ipo_date.empty()) {
-        ipo_date.erase(std::remove(ipo_date.begin(), ipo_date.end(), '-'), ipo_date.end());
-        start_date = ipo_date;
-      }
-
-      std::string out_date = info.outDate;
-      if (!out_date.empty()) {
-        out_date.erase(std::remove(out_date.begin(), out_date.end(), '-'), out_date.end());
-        end_date = out_date;
-      }
+      if (info.ipo_date)
+        start_date = misc::dense(info.ipo_date);
+      if (info.out_date)
+        end_date = misc::dense(info.out_date);
     }
 
     AssetItem item(i, code, asset_name, exchange, start_date, end_date);

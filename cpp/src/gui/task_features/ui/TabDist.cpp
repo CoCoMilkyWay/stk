@@ -261,36 +261,22 @@ static bool FocusHighlighting(const DistUIState &ui, int dim) {
 // 连续值按 5/95 分位 winsorize 后线性映射到 colormap, 离群值饱和
 // ============================================================================
 
-// 取连续值字段的字符串 → float; 缺失/解析失败 → NaN
+// 取连续值字段; 缺失 → NaN
 static float AssetColorValue(const StockInfo &si, int mode) {
-  const std::string *field = nullptr;
   switch (mode) {
   case 1:
-    field = &si.mcap;
-    break;
+    return si.mcap;
   case 2:
-    field = &si.peTTM;
-    break;
+    return si.pe_ttm;
   case 3:
-    field = &si.pbMRQ;
-    break;
+    return si.pb_mrq;
   case 4:
-    field = &si.psTTM;
-    break;
+    return si.ps_ttm;
   case 5:
-    field = &si.pcfNcfTTM;
-    break;
+    return si.pcf_ttm;
   case 6:
-    field = &si.dy1y;
-    break;
+    return si.dy1y;
   default:
-    return std::nanf("");
-  }
-  if (field->empty())
-    return std::nanf("");
-  try {
-    return std::stof(*field);
-  } catch (...) {
     return std::nanf("");
   }
 }
@@ -753,33 +739,28 @@ static void RenderAssetInfo(const Dist &dist, const Asset &asset,
   }
 
   // Date range + market cap on same line
-  auto format_date = [](const std::string &date) -> std::string {
-    if (date.size() == 8)
-      return date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
-    return "--";
+  auto format_date = [](misc::Ymd d) -> std::string {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d/%02d/%02d", d / 10000, d / 100 % 100, d % 100);
+    return buf;
   };
-  float market_cap = assetinfo.calculate_market_cap(stock_key);
-  if (stock_info && !stock_info->ipoDate.empty()) {
-    std::string end_str = stock_info->outDate.empty() ? "now" : format_date(stock_info->outDate);
-    ImGui::Text("%s-%s  %.1f亿", format_date(stock_info->ipoDate).c_str(), end_str.c_str(),
-                market_cap > 0 ? market_cap : 0.0f);
+  const float market_cap = stock_info && std::isfinite(stock_info->mcap) ? stock_info->mcap : 0.0f;
+  if (stock_info && stock_info->ipo_date) {
+    std::string end_str = stock_info->out_date ? format_date(stock_info->out_date) : "now";
+    ImGui::Text("%s-%s  %.1f亿", format_date(stock_info->ipo_date).c_str(), end_str.c_str(), market_cap);
   } else {
-    ImGui::Text("市值: %.1f亿", market_cap > 0 ? market_cap : 0.0f);
+    ImGui::Text("市值: %.1f亿", market_cap);
   }
 
   ImGui::Separator();
 
   // Two-column compact layout: Valuation | Statistics
-  auto fmt_val = [](const std::string &s) -> std::string {
-    if (s.empty())
+  auto fmt_val = [](float v) -> std::string {
+    if (!std::isfinite(v))
       return "--";
-    try {
-      char buf[12];
-      std::snprintf(buf, sizeof(buf), "%+.1f", std::stof(s));
-      return buf;
-    } catch (...) {
-      return "--";
-    }
+    char buf[12];
+    std::snprintf(buf, sizeof(buf), "%+.1f", v);
+    return buf;
   };
 
   if (ImGui::BeginTable("StatsTable", 2,
@@ -793,28 +774,28 @@ static void RenderAssetInfo(const Dist &dist, const Asset &asset,
     ImGui::TableSetColumnIndex(0);
     ImGui::Text("样本数 = %llu", static_cast<unsigned long long>(ln.n));
     ImGui::TableSetColumnIndex(1);
-    ImGui::Text("PE = %s", stock_info ? fmt_val(stock_info->peTTM).c_str() : "--");
+    ImGui::Text("PE = %s", stock_info ? fmt_val(stock_info->pe_ttm).c_str() : "--");
 
     // Row 2: Mean | PB
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::Text("均值 = %.4f", ln.mean);
     ImGui::TableSetColumnIndex(1);
-    ImGui::Text("PB = %s", stock_info ? fmt_val(stock_info->pbMRQ).c_str() : "--");
+    ImGui::Text("PB = %s", stock_info ? fmt_val(stock_info->pb_mrq).c_str() : "--");
 
     // Row 3: Var | PS
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::Text("方差 = %.4f", ln.var);
     ImGui::TableSetColumnIndex(1);
-    ImGui::Text("PS = %s", stock_info ? fmt_val(stock_info->psTTM).c_str() : "--");
+    ImGui::Text("PS = %s", stock_info ? fmt_val(stock_info->ps_ttm).c_str() : "--");
 
     // Row 4: Skew | PCF
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::Text("偏度 = %.3f", ln.skew);
     ImGui::TableSetColumnIndex(1);
-    ImGui::Text("PCF = %s", stock_info ? fmt_val(stock_info->pcfNcfTTM).c_str() : "--");
+    ImGui::Text("PCF = %s", stock_info ? fmt_val(stock_info->pcf_ttm).c_str() : "--");
 
     // Row 5: Kurt | 行业
     ImGui::TableNextRow();

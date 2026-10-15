@@ -60,9 +60,9 @@ public:
   // ST Status Check
   // ============================================================================
 
-  // Check if a stock is ST from StockInfo (isST: "1"=ST, "2"=*ST)
+  // Check if a stock is ST from StockInfo (st: 1=ST, 2=*ST)
   static bool is_st(const StockInfo &info) {
-    return info.isST == "1" || info.isST == "2";
+    return info.st != 0;
   }
 
   // Check if a stock is ST from map lookup
