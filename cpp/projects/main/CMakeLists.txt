@@ -203,13 +203,11 @@ set(SOURCES
     ../../src/misc/parquet.cpp
     ../../src/misc/system_metrics.cpp
     # api
-    ../../src/api/bigquant/audit.cpp
-    ../../src/api/bigquant/dai.cpp
-    ../../src/api/bigquant/fetch.cpp
-    ../../src/api/tushare/fetch.cpp
-    ../../src/api/tushare/http.cpp
-    ../../src/api/tushare/parse.cpp
+    ../../src/api/bigquant/client.cpp
+    ../../src/api/tushare/client.cpp
     # fundamental
+    ../../src/fundamental/Audit.cpp
+    ../../src/fundamental/Remote.cpp
     ../../src/fundamental/Scan.cpp
     ../../src/fundamental/Spec.cpp
     ../../src/fundamental/Store.cpp
@@ -325,13 +323,11 @@ set(HEADERS
     ../../include/misc/system_metrics.hpp
     ../../include/misc/timer.hpp
     # api
-    ../../include/api/bigquant/audit.hpp
-    ../../include/api/bigquant/dai.hpp
-    ../../include/api/bigquant/fetch.hpp
-    ../../include/api/tushare/fetch.hpp
-    ../../include/api/tushare/http.hpp
-    ../../include/api/tushare/parse.hpp
+    ../../include/api/bigquant/client.hpp
+    ../../include/api/tushare/client.hpp
     # fundamental
+    ../../include/fundamental/Audit.hpp
+    ../../include/fundamental/Remote.hpp
     ../../include/fundamental/Scan.hpp
     ../../include/fundamental/Spec.hpp
     ../../include/fundamental/Store.hpp
@@ -716,13 +712,11 @@ set_source_files_properties(
     ../../src/misc/fs.cpp
     ../../src/misc/parquet.cpp
     # api
-    ../../src/api/bigquant/audit.cpp
-    ../../src/api/bigquant/dai.cpp
-    ../../src/api/bigquant/fetch.cpp
-    ../../src/api/tushare/fetch.cpp
-    ../../src/api/tushare/http.cpp
-    ../../src/api/tushare/parse.cpp
+    ../../src/api/bigquant/client.cpp
+    ../../src/api/tushare/client.cpp
     # fundamental
+    ../../src/fundamental/Audit.cpp
+    ../../src/fundamental/Remote.cpp
     ../../src/fundamental/Scan.cpp
     ../../src/fundamental/Spec.cpp
     ../../src/fundamental/Store.cpp

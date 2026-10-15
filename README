@@ -175,14 +175,16 @@ stk/
 │   │   │   ├── Operator.hpp                                # 📐 算子元数据 / 定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
 │   │   │   └── spectral/IIRBandpass.hpp                    # 📐 因果 IIR 带通
-│   │   ├── api/                                            # 🌐 数据源 API (只管传输 + 单窗口 fetch)
-│   │   │   ├── bigquant/                                   # 🌐 BigQuant (dai / fetch / audit)
-│   │   │   └── tushare/                                    # 🌐 Tushare (http / parse / fetch)
-│   │   ├── fundamental/                                    # 📊 日频基本面数据集 (两数据源同一套)
-│   │   │   ├── Spec.hpp                                    # 📊   SPECS: Shape × Pick × src (Dai / Tu)
-│   │   │   ├── Store.hpp                                   # 📊   Catalog (一次目录遍历) + 分片状态 + 拉取计划
-│   │   │   ├── Sync.hpp                                    # 📊   写侧 pending / sync<Src>: plan → fetch → put
-│   │   │   └── Scan.hpp                                    # 📊   读侧分段并行 map-reduce (AssetInfo / fund::Pool 共用)
+│   │   ├── api/                                            # 🌐 数据源 API (纯传输, 不知 Spec; 两客户端对仗: query → arrow::Table)
+│   │   │   ├── bigquant/client.hpp                         # 🌐 BigQuant DAI: query(Query{sql, filters}) / quota
+│   │   │   └── tushare/client.hpp                          # 🌐 Tushare HTTP: query(Query{api, params, num})
+│   │   ├── fundamental/                                    # 📊 日频基本面数据集 (两数据源同一套; 依赖单向 → api)
+│   │   │   ├── Spec.hpp                                    # 📊   SPECS: Shape × snap × src (Bq / Tu), 静态初始化期全表断言
+│   │   │   ├── Store.hpp                                   # 📊   本地: Catalog (一次目录遍历) + 分片状态 + 拉取计划 + put (时间只经 Now)
+│   │   │   ├── Remote.hpp                                  # 📊   远端: fetch(client, task) 两源同骨架 (queries → query → concat → drop) + DAI 唯一 SQL 构造 select
+│   │   │   ├── Sync.hpp                                    # 📊   写侧 plan<Src> → sync(client, tasks): put(t, fetch(client, t))
+│   │   │   ├── Scan.hpp                                    # 📊   读侧分段并行 map-reduce + meta / calendar (AssetInfo / fund::Pool 共用)
+│   │   │   └── Audit.hpp                                   # 📊   核对: 远端指纹 ↔ 本地指纹 (仅 DAI 冻结月)
 │   │   ├── mining/                                         # ⛏️ 数据挖掘 (特征 → 因子) 设计文档
 │   │   └── misc/                                           # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                     # 🔧 日志 / STL 容器格式化打印

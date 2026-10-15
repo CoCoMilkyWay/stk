@@ -1,4 +1,4 @@
-#include "api/bigquant/dai.hpp"
+#include "api/bigquant/client.hpp"
 
 #include "shared/Config.hpp"
 #include "yyjson/yyjson.h"
@@ -28,7 +28,7 @@ namespace flight = arrow::flight;
 namespace {
 
 // 构造 DAI Flight ticket JSON. yyjson 比手拼字符串安全 (escape 自动处理).
-std::string build_ticket_json(std::string_view sql, const DaiFilters &filters) {
+std::string build_ticket_json(std::string_view sql, const Filters &filters) {
   yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
   yyjson_mut_val *root = yyjson_mut_obj(doc);
   yyjson_mut_doc_set_root(doc, root);
@@ -68,14 +68,14 @@ T unwrap(arrow::Result<T> &&r, const char *what) {
 
 } // namespace
 
-DaiClient::DaiClient(std::string ak, std::string sk)
+Client::Client(std::string ak, std::string sk)
     : ak_(std::move(ak)), sk_(std::move(sk)) {
   assert(!ak_.empty() && !sk_.empty());
 }
 
-DaiClient::DaiClient() : DaiClient(::config::BIGQUANT_AK, ::config::BIGQUANT_SK) {}
+Client::Client() : Client(::config::BIGQUANT_AK, ::config::BIGQUANT_SK) {}
 
-void DaiClient::ensure_flight() {
+void Client::ensure_flight() {
   if (flight_)
     return;
 
@@ -100,11 +100,10 @@ void DaiClient::ensure_flight() {
   assert(!flight_auth_.first.empty() && !flight_auth_.second.empty());
 }
 
-std::shared_ptr<arrow::Table>
-DaiClient::query(std::string_view sql, const DaiFilters &filters) {
+std::shared_ptr<arrow::Table> Client::query(const Query &q) {
   ensure_flight();
 
-  std::string ticket_json = build_ticket_json(sql, filters);
+  std::string ticket_json = build_ticket_json(q.sql, q.filters);
 
   flight::FlightCallOptions opts;
   opts.headers.emplace_back(flight_auth_.first, flight_auth_.second);
@@ -120,7 +119,7 @@ DaiClient::query(std::string_view sql, const DaiFilters &filters) {
   return table;
 }
 
-Quota DaiClient::quota() {
+Quota Client::quota() {
   ensure_flight();
 
   flight::FlightCallOptions opts;
@@ -151,7 +150,7 @@ Quota DaiClient::quota() {
   return q;
 }
 
-Quota preflight(DaiClient &client) {
+Quota preflight(Client &client) {
   const Quota q = client.quota();
   assert(q.used >= 0 && q.used <= q.weekly && "DAI quota: used 越界");
   const double left = 1.0 - static_cast<double>(q.used) / static_cast<double>(q.weekly);

@@ -93,11 +93,11 @@ public:
   FundamentalService(boost::asio::io_context &io, SharedData &data)
       : io_(io), data_(data) {}
 
-  // pending 判定 → [sync<Dai> → sync<Tu>] → 重建 AssetInfo
-  // (pending 全 fresh ⇒ 零网络直接本地构建; 启动与手动 Update 共用)
+  // plan<Bq> / plan<Tu> → [sync(bq) → sync(ts)] → 重建 AssetInfo
+  // (两份计划皆空 ⇒ 零网络直接本地构建; 启动与手动 Update 共用)
   awaitable<void> update_all();
 
-  // Confirm 态的弹窗回答: proceed=true 照常 sync<Dai>, false 跳过 BigQuant
+  // Confirm 态的弹窗回答: proceed=true 照常 sync(bq), false 跳过 BigQuant
   // (Tushare / 本地构建照常). 只在 Confirm 态可调, 每轮只回答一次.
   void confirm(bool proceed);
 

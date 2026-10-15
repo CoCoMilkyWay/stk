@@ -7,7 +7,6 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -16,7 +15,15 @@ namespace bigquant {
 // filters 与 SDK 一致: {column -> [v1, v2, ...]}. server-side 列裁剪 + 谓词下推关键入口.
 //   - 用 std::string 而非具体 type: 所有 filter 值最终都序列化为 JSON 字符串数组.
 //   - 例: {{"date", {"2024-12-31", "2024-12-31"}}} == python {"date": ["2024-12-31","2024-12-31"]}
-using DaiFilters = std::map<std::string, std::vector<std::string>>;
+using Filters = std::map<std::string, std::vector<std::string>>;
+
+// 一次查询 (值类型) — 与 tushare::Query 对仗
+//   sql:     标准 DuckDB-flavored SQL (DAI 底层用 DuckDB)
+//   filters: 服务端列过滤 / 分区下推
+struct Query {
+  std::string sql;
+  Filters filters;
+};
 
 // 账户周配额 (Flight DoAction("quota") 响应的 weekly_quota / used_quota).
 //   计量单位 = 查询返回结果的 cell 数 (rows × cols), 与服务端扫描窗口无关
@@ -27,7 +34,7 @@ struct Quota {
   std::int64_t used = 0;
 };
 
-// BigQuant DAI 客户端 — 纯数据面 (Arrow Flight) 等价实现.
+// BigQuant DAI 客户端 — 纯数据面 (Arrow Flight) 等价实现. 与 tushare::Client 对仗: 纯传输, 不知 Spec.
 //
 // 协议:
 //   grpc+tcp://bigquant.com:17010 (明文 gRPC, 无 TLS)
@@ -36,21 +43,18 @@ struct Quota {
 //
 // 生命周期:
 //   - 构造即可用; Flight 客户端 + JWT 在首次 query() 时 lazy 建立.
-//   - JWT TTL 约 12h, 过期由调用方重建 DaiClient.
+//   - JWT TTL 约 12h, 过期由调用方重建 Client.
 //   - 所有错误一律 assert; gRPC 自带 backoff, 这里不再做应用层重试.
-class DaiClient {
+class Client {
 public:
   // 缺省构造: ak/sk 取 config.hpp::BIGQUANT_AK/SK
-  DaiClient();
+  Client();
   // 显式指定 (测试 / 多账号切换)
-  DaiClient(std::string ak, std::string sk);
+  Client(std::string ak, std::string sk);
 
-  // 执行 SQL, 走 Arrow Flight DoGet.
-  //   sql:     标准 DuckDB-flavored SQL (DAI 底层用 DuckDB)
-  //   filters: 服务端列过滤 / 分区下推
+  // 执行一次查询, 走 Arrow Flight DoGet.
   // 返回 arrow::Table (整张读完一次性返); server-side 配额耗尽 / 权限缺失 / SQL 错误均 assert.
-  std::shared_ptr<arrow::Table>
-  query(std::string_view sql, const DaiFilters &filters = {});
+  std::shared_ptr<arrow::Table> query(const Query &q);
 
   // 取账户周配额, 走 Flight DoAction("quota") (与 query 共用同一条认证连接).
   // preflight 展示用; 不消耗配额本身.
@@ -68,6 +72,6 @@ private:
 
 // preflight 探针 — 取本周配额 (不消耗配额), 终端彩色打印一行剩余比例 (绿 ≥ 50% / 黄 ≥ 20% / 红),
 // 返回原值. 是否放行由调用方按 config::BIGQUANT_QUOTA_CONFIRM_RATIO 决定 (GUI 弹窗), 这里只报不判.
-Quota preflight(DaiClient &client);
+Quota preflight(Client &client);
 
 } // namespace bigquant

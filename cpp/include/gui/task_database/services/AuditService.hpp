@@ -1,5 +1,5 @@
 // Audit Service - BigQuant 远端 vs 本地冻结月分片一致性核对 (只报告, 不改盘)
-// 口径见 api/bigquant/audit.hpp; 网络 + parquet IO 全在独立工作线程, 协程轮询进度.
+// 口径见 fundamental/Audit.hpp; 网络 + parquet IO 全在独立工作线程, 协程轮询进度.
 #pragma once
 
 #include <boost/asio/awaitable.hpp>

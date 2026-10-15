@@ -88,7 +88,7 @@ public:
   }
 
   // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO ⇒ 模态二选一, 答案回给
-  // FundamentalService::confirm (工作线程据此走 / 跳过 sync<Dai>)
+  // FundamentalService::confirm (工作线程据此走 / 跳过 sync(bq))
   void DrawQuotaConfirm() {
     if (!fundamental_svc_)
       return;

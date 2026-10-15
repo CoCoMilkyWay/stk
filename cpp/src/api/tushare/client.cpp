@@ -1,13 +1,19 @@
-#include "api/tushare/http.hpp"
+#include "api/tushare/client.hpp"
 #include "shared/Config.hpp"
+#include "yyjson/yyjson.h"
 
+#include <arrow/array/builder_binary.h>
+#include <arrow/array/builder_primitive.h>
+#include <arrow/type.h>
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -19,13 +25,10 @@ namespace http = boost::beast::http;
 namespace net = boost::asio;
 using tcp = boost::asio::ip::tcp;
 
-Http::Http(std::string token) : token_(std::move(token)) {
-  assert(!token_.empty());
-}
+namespace {
 
-yyjson_doc *
-Http::call(std::string_view api_name,
-           const std::vector<std::pair<std::string, std::string>> &params) {
+// 返回的 yyjson_doc* 由 caller 用 yyjson_doc_free 释放
+yyjson_doc *call(const std::string &token, std::string_view api_name, const Params &params) {
   // ---- Build request body ----
   yyjson_mut_doc *body_doc = yyjson_mut_doc_new(nullptr);
   yyjson_mut_val *root = yyjson_mut_obj(body_doc);
@@ -34,8 +37,8 @@ Http::call(std::string_view api_name,
   std::string api_str(api_name);
   yyjson_mut_obj_add_strncpy(body_doc, root, "api_name", api_str.data(),
                              api_str.size());
-  yyjson_mut_obj_add_strncpy(body_doc, root, "token", token_.data(),
-                             token_.size());
+  yyjson_mut_obj_add_strncpy(body_doc, root, "token", token.data(),
+                             token.size());
   yyjson_mut_obj_add_str(body_doc, root, "fields", "");
 
   yyjson_mut_val *params_obj = yyjson_mut_obj(body_doc);
@@ -133,6 +136,86 @@ Http::call(std::string_view api_name,
   }
 
   return doc;
+}
+
+// 两种列型逐项对仗: Arrow 类型 / builder / JSON 判型 / 取值
+struct Num {
+  using Builder = arrow::DoubleBuilder;
+  static std::shared_ptr<arrow::DataType> type() { return arrow::float64(); }
+  static bool is(yyjson_val *v) { return yyjson_is_num(v); }
+  static arrow::Status put(Builder &b, yyjson_val *v) { return b.Append(yyjson_get_num(v)); }
+};
+struct Str {
+  using Builder = arrow::StringBuilder;
+  static std::shared_ptr<arrow::DataType> type() { return arrow::utf8(); }
+  static bool is(yyjson_val *v) { return yyjson_is_str(v); }
+  static arrow::Status put(Builder &b, yyjson_val *v) {
+    return b.Append(yyjson_get_str(v), static_cast<int32_t>(yyjson_get_len(v)));
+  }
+};
+
+// items 第 c 列 → Array. builder 调用不包在 assert 里 (NDEBUG 下 assert 整句被编译掉).
+template <class K>
+std::shared_ptr<arrow::Array> column(yyjson_val *items, std::size_t c) {
+  typename K::Builder b;
+  size_t i, n;
+  yyjson_val *item;
+  yyjson_arr_foreach(items, i, n, item) {
+    yyjson_val *v = yyjson_arr_get(item, c);
+    const bool null = !v || yyjson_is_null(v);
+    assert((null || K::is(v)) && "tushare 列类型行间不一致");
+    const arrow::Status st = null ? b.AppendNull() : K::put(b, v);
+    assert(st.ok());
+  }
+  std::shared_ptr<arrow::Array> arr;
+  const arrow::Status st = b.Finish(&arr);
+  assert(st.ok());
+  return arr;
+}
+
+// envelope root.data.{fields, items} → Table; 结构不符 → assert
+std::shared_ptr<arrow::Table> to_table(yyjson_doc *doc, const std::vector<std::string> &num) {
+  yyjson_val *data = yyjson_obj_get(yyjson_doc_get_root(doc), "data");
+  assert(data && "tushare response missing 'data'");
+  yyjson_val *fields = yyjson_obj_get(data, "fields");
+  yyjson_val *items = yyjson_obj_get(data, "items");
+  assert(fields && items && yyjson_is_arr(fields) && yyjson_is_arr(items));
+
+  std::vector<std::string> names;
+  names.reserve(yyjson_arr_size(fields));
+  size_t i, n;
+  yyjson_val *v;
+  yyjson_arr_foreach(fields, i, n, v) {
+    assert(yyjson_is_str(v));
+    names.emplace_back(yyjson_get_str(v));
+  }
+  for (const std::string &f : num)
+    assert(std::find(names.begin(), names.end(), f) != names.end() &&
+           "tushare num 声明的列不在响应里");
+
+  std::vector<std::shared_ptr<arrow::Field>> out_fields;
+  std::vector<std::shared_ptr<arrow::Array>> out_arrays;
+  for (std::size_t c = 0; c < names.size(); ++c) {
+    const bool is_num = std::find(num.begin(), num.end(), names[c]) != num.end();
+    out_fields.push_back(arrow::field(names[c], is_num ? Num::type() : Str::type()));
+    out_arrays.push_back(is_num ? column<Num>(items, c) : column<Str>(items, c));
+  }
+  return arrow::Table::Make(arrow::schema(out_fields), out_arrays);
+}
+
+} // namespace
+
+Client::Client(std::string token) : token_(std::move(token)) {
+  assert(!token_.empty());
+}
+
+Client::Client() : Client(::config::TUSHARE_TOKEN) {}
+
+std::shared_ptr<arrow::Table> Client::query(const Query &q) {
+  yyjson_doc *doc = call(token_, q.api, q.params);
+  auto t = to_table(doc, q.num);
+  yyjson_doc_free(doc);
+  return t;
 }
 
 } // namespace tushare

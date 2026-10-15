@@ -1,13 +1,13 @@
 #pragma once
 
-#include "api/bigquant/dai.hpp"
+#include "api/bigquant/client.hpp"
 #include "fundamental/Store.hpp"
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace bigquant {
+namespace fundamental {
 
 // ============================================================================
 // audit — 远端 vs 本地已冻结月分片的一致性核对 (只读, 不改盘)
@@ -24,8 +24,9 @@ namespace bigquant {
 //   列清单 / 类型取服务端 LIMIT 0 schema (0 cell); 本地分片缺列 = 全 null.
 //   配额按返回 cell 计: 一单元 ≈ 12 行 × (1 + 2·列数), 与服务端扫描量无关.
 //
-// 只核 fundamental::frozen 的月 (State::Frozen): 开放月 / 待重拉月本地本就落后.
-// Meta (_meta 日级整刷) 不核. 窗口谓词与 fetch 同一个 bigquant::where.
+// 只核 frozen 的月 (State::Frozen): 开放月 / 待重拉月本地本就落后.
+// Meta (_meta 日级整刷) 不核. SQL 与 fetch 同一个 select (Remote.hpp).
+// 远端指纹 (SQL GROUP BY) 与本地指纹 (arrow 逐行累加) 在 .cpp 里相邻成对.
 // ============================================================================
 
 //   Rows    : 只比 n — 补录 / 删除, 最便宜, 先全扫一轮
@@ -35,11 +36,11 @@ enum class AuditPass { Rows,
 
 // 一单元 = 一表 × 一年 × 一轮 = 一次月级查询 (+ 不一致月的日级下钻)
 struct AuditUnit {
-  const fundamental::Spec *spec = nullptr;
+  const Spec *spec = nullptr;
   int year = 0;
   AuditPass pass = AuditPass::Rows;
-  std::vector<fundamental::Ym> months; // 该年已冻结的月, 升序非空
-  fundamental::Ymd from = 0, to = 0;   // SQL 窗口闭区间 (= months 首月初 ∨ start .. 末月末)
+  std::vector<Ym> months; // 该年已冻结的月, 升序非空
+  Window w;               // SQL 窗口闭区间 (= months 首月初 ∨ start .. 末月末)
 };
 
 // 一个不一致的指纹格 (十进制原值, 看差的量级: 舍入级 vs 真改)
@@ -61,12 +62,12 @@ struct AuditDiff {
 
 // SPECS 里的 DAI·Month 表, 两轮 (Rows 全部在前, Content 在后). 轮内表间轮转 —— 表序与各表年序均按
 // seed 打乱, 相邻单元几乎总是不同表, 问题尽早暴露而不是盯着一张表扫完.
-std::vector<AuditUnit> audit_plan(const fundamental::Catalog &cat, fundamental::Ymd today, unsigned seed);
+std::vector<AuditUnit> audit_plan(const Catalog &cat, const Now &now, unsigned seed);
 
 // 跑一单元: 月级比对 → 不一致的月按日下钻 (每月再一次查询). 返回差异 (空 = 一致).
-std::vector<AuditDiff> audit_unit(DaiClient &client, const AuditUnit &u);
+std::vector<AuditDiff> audit_unit(bigquant::Client &client, const AuditUnit &u);
 
 // "cn_stock_dividend 2019 rows" (进度展示)
 std::string audit_label(const AuditUnit &u);
 
-} // namespace bigquant
+} // namespace fundamental

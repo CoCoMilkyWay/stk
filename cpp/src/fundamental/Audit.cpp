@@ -1,6 +1,6 @@
-#include "api/bigquant/audit.hpp"
+#include "fundamental/Audit.hpp"
 
-#include "api/bigquant/fetch.hpp"
+#include "fundamental/Remote.hpp"
 #include "misc/parquet.hpp"
 #include "shared/Config.hpp"
 
@@ -21,14 +21,11 @@
 #include <string_view>
 #include <vector>
 
-namespace bigquant {
+namespace fundamental {
 
 namespace {
 
 namespace pq = misc::pq;
-using fundamental::Spec;
-using fundamental::Ym;
-using fundamental::Ymd;
 using i128 = __int128;
 
 enum class Kind { Real,
@@ -87,8 +84,6 @@ struct Layout {
 // 组键 ("YYYY-MM" / "YYYY-MM-DD", 与服务端 strftime 同形) → 指纹格 (十进制字符串, 与 Layout::cells 同序)
 using Fps = std::map<std::string, std::vector<std::string>>;
 
-std::string ident(std::string_view c) { return "\"" + std::string(c) + "\""; }
-
 std::string i128_str(i128 v) {
   if (v == 0)
     return "0";
@@ -106,20 +101,13 @@ std::string i128_str(i128 v) {
   return s;
 }
 
-// 窗口谓词 / 分区裁剪与 fetch 同一份 (bigquant::where / prune)
-std::shared_ptr<arrow::Table> run(DaiClient &client, const Spec &s, const std::string &select,
-                                  Ymd from, Ymd to, const std::string &tail = {}) {
-  return client.query(select + " FROM " + s.name + where(s, from, to) + tail, prune(s, from, to));
-}
-
-Layout layout_of(DaiClient &client, const AuditUnit &u) {
+Layout layout_of(bigquant::Client &client, const AuditUnit &u) {
   Layout L;
   L.cells.push_back({-1, false});
   if (u.pass == AuditPass::Rows)
     return L;
-  const Spec &s = *u.spec;
   // LIMIT 0: 只要 schema, 0 cell
-  auto t = run(client, s, "SELECT *", u.from, u.to, " LIMIT 0");
+  auto t = client.query(select(*u.spec, "*", u.w, " LIMIT 0"));
   for (const auto &f : t->schema()->fields()) {
     const int c = static_cast<int>(L.names.size());
     L.names.push_back(f->name());
@@ -155,10 +143,10 @@ std::string sum_expr(Kind k, const std::string &col) {
   return {};
 }
 
-Fps remote_fps(DaiClient &client, const Spec &s, const Layout &L, Grain g, Ymd from, Ymd to) {
+Fps remote_fps(bigquant::Client &client, const Spec &s, const Layout &L, Grain g, Window w) {
   const std::string vd = ident(s.vd);
-  std::string sql = "SELECT strftime(" + vd + ", '" +
-                    (g == Grain::Month ? "%Y-%m" : "%Y-%m-%d") + "') AS g";
+  std::string cols = "strftime(" + vd + ", '" +
+                     (g == Grain::Month ? "%Y-%m" : "%Y-%m-%d") + "') AS g";
   for (std::size_t k = 0; k < L.cells.size(); ++k) {
     const Cell &c = L.cells[k];
     std::string e;
@@ -168,10 +156,10 @@ Fps remote_fps(DaiClient &client, const Spec &s, const Layout &L, Grain g, Ymd f
       e = "COUNT(" + ident(L.names[c.col]) + ")";
     else
       e = sum_expr(L.kinds[c.col], ident(L.names[c.col]));
-    sql += ", CAST(COALESCE(" + e + ", 0) AS VARCHAR) AS f" + std::to_string(k);
+    cols += ", CAST(COALESCE(" + e + ", 0) AS VARCHAR) AS f" + std::to_string(k);
   }
 
-  pq::TableView tv(run(client, s, sql, from, to, " GROUP BY 1"));
+  pq::TableView tv(client.query(select(s, cols, w, " GROUP BY 1")));
   const pq::Col gc = tv.col("g");
   std::vector<pq::Col> fc;
   for (std::size_t k = 0; k < L.cells.size(); ++k)
@@ -291,7 +279,7 @@ Fps local_fps(const Spec &s, const Layout &L, Grain g, const std::vector<Ym> &mo
   const bool content = L.cells.size() > 1;
   std::map<std::string, std::vector<i128>> acc;
   for (const Ym ym : months) {
-    auto t = pq::read_table(fundamental::month_path(ym, s.name),
+    auto t = pq::read_table(path(s.name, ym),
                             content ? std::vector<std::string>{}
                                     : std::vector<std::string>{s.vd});
     // 行 → 所属组的累加槽 (同日短路: 分片内 vd 按日成块)
@@ -391,19 +379,19 @@ AuditDiff make_diff(const AuditUnit &u, const Layout &L, const std::string &grou
 
 } // namespace
 
-std::vector<AuditUnit> audit_plan(const fundamental::Catalog &cat, Ymd today, unsigned seed) {
+std::vector<AuditUnit> audit_plan(const Catalog &cat, const Now &now, unsigned seed) {
   const Ymd start = ::config::PIPELINE_START_DATE;
   std::vector<std::vector<AuditUnit>> per_table;
-  for (const Spec &s : fundamental::SPECS) {
-    if (!fundamental::from<fundamental::Dai>(s) || s.shape != fundamental::Shape::Month)
+  for (const Spec &s : SPECS) {
+    if (!from<Bq>(s) || s.shape != Shape::Month)
       continue;
     std::map<int, AuditUnit> by_year;
-    for (const Ym ym : fundamental::frozen(s, cat, today)) {
+    for (const Ym ym : frozen(s, cat, now)) {
       AuditUnit &u = by_year[ym / 100];
       if (u.months.empty())
-        u.from = std::max(misc::first_day(ym), start);
+        u.w.lo = std::max(misc::first_day(ym), start);
       u.months.push_back(ym);
-      u.to = misc::last_day(ym);
+      u.w.hi = misc::last_day(ym);
     }
     std::vector<AuditUnit> units;
     for (auto &[y, u] : by_year) {
@@ -436,7 +424,7 @@ std::vector<AuditUnit> audit_plan(const fundamental::Catalog &cat, Ymd today, un
   return out;
 }
 
-std::vector<AuditDiff> audit_unit(DaiClient &client, const AuditUnit &u) {
+std::vector<AuditDiff> audit_unit(bigquant::Client &client, const AuditUnit &u) {
   assert(u.spec && !u.months.empty());
   const Spec &s = *u.spec;
   const Layout L = layout_of(client, u);
@@ -450,7 +438,7 @@ std::vector<AuditDiff> audit_unit(DaiClient &client, const AuditUnit &u) {
     return u.pass == AuditPass::Content && l != r;
   };
 
-  const Fps rm = remote_fps(client, s, L, Grain::Month, u.from, u.to);
+  const Fps rm = remote_fps(client, s, L, Grain::Month, u.w);
   // Rows 轮只有 n 一格: 本地直接按日累加, 月级由日级求和 —— 下钻时不必重读分片
   Fps ld_all, lm;
   if (u.pass == AuditPass::Rows) {
@@ -473,7 +461,7 @@ std::vector<AuditDiff> audit_unit(DaiClient &client, const AuditUnit &u) {
       continue;
 
     // 日级下钻: 同月内任何不一致都报 (Content 轮里 n 跨日挪动也算)
-    const Fps rd = remote_fps(client, s, L, Grain::Day, std::max(misc::first_day(ym), u.from), misc::last_day(ym));
+    const Fps rd = remote_fps(client, s, L, Grain::Day, {std::max(misc::first_day(ym), u.w.lo), misc::last_day(ym)});
     Fps ld;
     if (u.pass == AuditPass::Rows) {
       for (auto it = ld_all.lower_bound(key); it != ld_all.end() && it->first.starts_with(key); ++it)
@@ -505,4 +493,4 @@ std::string audit_label(const AuditUnit &u) {
          (u.pass == AuditPass::Rows ? " rows" : " content");
 }
 
-} // namespace bigquant
+} // namespace fundamental

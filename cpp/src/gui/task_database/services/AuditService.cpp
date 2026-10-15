@@ -1,7 +1,7 @@
 #include "gui/task_database/services/AuditService.hpp"
 
-#include "api/bigquant/audit.hpp"
-#include "api/bigquant/dai.hpp"
+#include "api/bigquant/client.hpp"
+#include "fundamental/Audit.hpp"
 #include "fundamental/Store.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
@@ -43,8 +43,8 @@ std::filesystem::path new_log_path() {
 }
 
 // Rows 差异一行 (column/cell 为 "-"); Content 每个不一致格一行
-void write_diff(std::ofstream &out, const bigquant::AuditDiff &d) {
-  const char *pass = d.pass == bigquant::AuditPass::Rows ? "rows" : "content";
+void write_diff(std::ofstream &out, const fundamental::AuditDiff &d) {
+  const char *pass = d.pass == fundamental::AuditPass::Rows ? "rows" : "content";
   auto head = [&]() -> std::ofstream & {
     out << d.table << '\t' << d.group << '\t' << pass << '\t' << d.local_n
         << '\t' << d.remote_n << '\t';
@@ -54,7 +54,7 @@ void write_diff(std::ofstream &out, const bigquant::AuditDiff &d) {
     head() << "-\t-\t-\t-\n";
     return;
   }
-  for (const bigquant::AuditCell &c : d.cells)
+  for (const fundamental::AuditCell &c : d.cells)
     head() << c.column << '\t' << (c.sum ? "s" : "nn") << '\t' << c.local
            << '\t' << c.remote << '\n';
 }
@@ -70,13 +70,13 @@ struct LogRow {
 };
 
 // 与 write_diff 一行对一行
-void append_rows(std::vector<LogRow> &out, const bigquant::AuditDiff &d) {
-  const bool rows = d.pass == bigquant::AuditPass::Rows;
+void append_rows(std::vector<LogRow> &out, const fundamental::AuditDiff &d) {
+  const bool rows = d.pass == fundamental::AuditPass::Rows;
   if (d.cells.empty()) {
     out.push_back({d.table, d.group, rows, d.local_n, d.remote_n, "-"});
     return;
   }
-  for (const bigquant::AuditCell &c : d.cells)
+  for (const fundamental::AuditCell &c : d.cells)
     out.push_back({d.table, d.group, rows, d.local_n, d.remote_n, c.column});
 }
 
@@ -154,10 +154,10 @@ struct MonthInv {
 };
 using Inventory = std::map<std::string, std::map<std::string, MonthInv>>; // 表 → "YYYY-MM" (日志组键同形) → 清点
 
-Inventory build_inventory(const fundamental::Catalog &cat, misc::Ymd as_of) {
+Inventory build_inventory(const fundamental::Catalog &cat, const fundamental::Now &as_of) {
   Inventory inv;
   for (const fundamental::Spec &s : fundamental::SPECS) {
-    if (!fundamental::from<fundamental::Dai>(s) || s.shape != fundamental::Shape::Month)
+    if (!fundamental::from<fundamental::Bq>(s) || s.shape != fundamental::Shape::Month)
       continue;
     auto &months = inv[s.name];
     for (const misc::Ym ym : fundamental::frozen(s, cat, as_of)) {
@@ -326,7 +326,7 @@ boost::asio::awaitable<void> AuditService::load_last() {
     if (!p.empty()) {
       std::vector<LogRow> rows;
       std::string status = parse_log(p, rows);
-      Inventory inv = build_inventory(fundamental::Catalog{}, log_date(p));
+      Inventory inv = build_inventory(fundamental::Catalog{}, {.today = log_date(p)});
       std::lock_guard lk(job->mu);
       job->rows = std::move(rows);
       job->inv = std::move(inv);
@@ -358,9 +358,9 @@ boost::asio::awaitable<void> AuditService::run() {
     log << "table\tgroup\tpass\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
     log.flush();
     std::cout << "[bigquant.audit] log -> " << log_path.string() << std::endl;
-    const misc::Ymd today = misc::today_ymd();
+    const fundamental::Now now = fundamental::now();
     const fundamental::Catalog cat;
-    Inventory inv = build_inventory(cat, today);
+    Inventory inv = build_inventory(cat, now);
     {
       std::lock_guard lk(job->mu);
       job->log_path = log_path.string();
@@ -368,7 +368,7 @@ boost::asio::awaitable<void> AuditService::run() {
       job->inv = std::move(inv);
       job->publish();
     }
-    bigquant::DaiClient client;
+    bigquant::Client client;
     const bigquant::Quota q0 = client.quota();
     {
       std::lock_guard lk(job->mu);
@@ -376,22 +376,22 @@ boost::asio::awaitable<void> AuditService::run() {
       job->quota_used = q0.used;
       job->quota_weekly = q0.weekly;
     }
-    const auto units = bigquant::audit_plan(cat, today, static_cast<unsigned>(std::time(nullptr)));
+    const auto units = fundamental::audit_plan(cat, now, static_cast<unsigned>(std::time(nullptr)));
     {
       std::lock_guard lk(job->mu);
       job->total = units.size();
     }
     std::cout << "[bigquant.audit] " << units.size() << " units" << std::endl;
-    for (const bigquant::AuditUnit &u : units) {
+    for (const fundamental::AuditUnit &u : units) {
       if (job->cancel.load(std::memory_order_relaxed))
         break;
       {
         std::lock_guard lk(job->mu);
-        job->current = bigquant::audit_label(u);
+        job->current = fundamental::audit_label(u);
       }
-      const auto diffs = bigquant::audit_unit(client, u);
+      const auto diffs = fundamental::audit_unit(client, u);
       if (!diffs.empty())
-        std::cout << "[bigquant.audit] " << bigquant::audit_label(u) << ": "
+        std::cout << "[bigquant.audit] " << fundamental::audit_label(u) << ": "
                   << diffs.size() << " 处不一致" << std::endl;
       for (const auto &d : diffs)
         write_diff(log, d);

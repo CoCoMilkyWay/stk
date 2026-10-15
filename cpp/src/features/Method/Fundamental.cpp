@@ -1032,9 +1032,7 @@ void Pool::build(const std::vector<std::string> &codes,
   meta.delist_day.assign(static_cast<std::size_t>(n_a), {});
   meta.main_board.assign(static_cast<std::size_t>(n_a), 0);
   {
-    const fundamental::Shard *bi_shard = cat.find("cn_stock_basic_info", 0);
-    assert(bi_shard && "cn_stock_basic_info 缺失");
-    pq::TableView bi(pq::read_table(bi_shard->path, {"instrument", "list_date", "delist_date", "list_sector"}));
+    const pq::TableView bi = fundamental::meta(cat, "cn_stock_basic_info", {"instrument", "list_date", "delist_date", "list_sector"});
     pq::Col ins = bi.col("instrument");
     pq::Col ld = bi.col("list_date");
     pq::Col dd = bi.col("delist_date");

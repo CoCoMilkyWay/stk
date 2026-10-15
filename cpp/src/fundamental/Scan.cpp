@@ -67,6 +67,13 @@ void Scan::run(std::atomic<std::size_t> &done) {
   jobs_.clear();
 }
 
+pq::TableView meta(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols) {
+  assert(spec(name).shape == Shape::Meta && "meta: 只读 Meta 表");
+  const Shard *sh = cat.find(name, 0);
+  assert(sh && "meta: _meta 分片缺失 (基本面未同步?)");
+  return pq::TableView(pq::read_table(sh->path, cols));
+}
+
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today) {
   std::vector<Ymd> out, d;
   for (const Shard &sh : cat.shards("all_trading_days")) {

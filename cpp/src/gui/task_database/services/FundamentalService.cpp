@@ -1,5 +1,5 @@
 // Fundamental Service - 基本面数据 sync + AssetInfo 构建
-// 抓取: fundamental::sync<Dai> / sync<Tu> (月度 parquet, 水位增量, 调度见 fundamental/Store.hpp)
+// 抓取: fundamental::plan<Bq> / plan<Tu> → sync (月度 parquet, 水位增量, 调度见 fundamental/Store.hpp)
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days}
 //   stock_days   ← all_trading_days (fundamental::calendar)
 //   stock_info   ← cn_stock_basic_info (_meta) + cn_stock_instruments (PIT 简称)
@@ -17,7 +17,8 @@
 //   (Scan 整列预转键与 vd), 千万级的因子排序也在文件内预压缩后消失.
 #include "gui/task_database/services/FundamentalService.hpp"
 
-#include "api/bigquant/dai.hpp"
+#include "api/bigquant/client.hpp"
+#include "api/tushare/client.hpp"
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
 #include "misc/date.hpp"
@@ -293,8 +294,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   const Ymd today = misc::today_ymd();
 
   // ---- 首跑本地无数据 → 直接退 ----
-  const fundamental::Shard *bi_shard = cat.find("cn_stock_basic_info", 0);
-  if (cat.shards("all_trading_days").empty() || !bi_shard)
+  if (cat.shards("all_trading_days").empty() || !cat.find("cn_stock_basic_info", 0))
     return false;
 
   // ---- 元数据 + id 空间 ← cn_stock_basic_info (_meta 单文件, 全市场含退市) ----
@@ -308,8 +308,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   std::vector<std::string> codes; // id → "sz.000001"
   std::vector<StockInfo *> infos; // id → &stock_info[code]
   {
-    pq::TableView bi(pq::read_table(
-        bi_shard->path, {"instrument", "name", "list_date", "delist_date"}));
+    const pq::TableView bi = fundamental::meta(cat, "cn_stock_basic_info", {"instrument", "name", "list_date", "delist_date"});
     assert(bi.rows() > 0);
     pq::Col ins = bi.col("instrument");
     pq::Col name = bi.col("name");
@@ -738,22 +737,23 @@ awaitable<void> FundamentalService::run(bool with_network) {
   // 阻塞网络 + parquet IO 全在工作线程; 协程只轮询. 异常不捕获 (fail fast).
   std::thread([job, decision, with_network]() {
     if (with_network) {
-      const Ymd today = misc::today_ymd();
-      const Catalog cat; // 本轮开头的清单 (pending 与 sync 同一份)
-      bigquant::DaiClient dai;
+      const fundamental::Now now = fundamental::now();
+      const Catalog cat; // 本轮开头的清单 (plan 只算这一次, sync 照单执行)
+      bigquant::Client bq;
       // 配额探针不耗配额: 每轮都取, Overview 常显本周余额
-      auto take_quota = [&job, &dai]() {
-        job->quota = bigquant::preflight(dai);
+      auto take_quota = [&job, &bq]() {
+        job->quota = bigquant::preflight(bq);
         job->st.quota_weekly = job->quota.weekly;
         job->st.quota_used = job->quota.used;
         job->st.quota_time = now_str();
       };
       job->set_message("preflight: BigQuant 周配额");
       take_quota();
-      // pending 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 不拉数据
-      job->set_message("pending 判定 (水位/dedup 窗口)");
-      bool need_bq = fundamental::pending<fundamental::Dai>(cat, today);
-      const bool need_ts = fundamental::pending<fundamental::Tu>(cat, today);
+      // plan 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 空计划, 不拉数据
+      job->set_message("plan 判定 (水位/dedup 窗口)");
+      const std::vector<fundamental::Task> bq_tasks = fundamental::plan<fundamental::Bq>(cat, now);
+      const std::vector<fundamental::Task> ts_tasks = fundamental::plan<fundamental::Tu>(cat, now);
+      bool need_bq = !bq_tasks.empty();
       if (need_bq) {
         // 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)
         const double left = 1.0 - static_cast<double>(job->quota.used) /
@@ -768,12 +768,13 @@ awaitable<void> FundamentalService::run(bool with_network) {
       }
       if (need_bq) {
         job->set_message("同步 BigQuant DAI (月度 parquet 水位增量)");
-        fundamental::sync<fundamental::Dai>(cat, today);
+        fundamental::sync(bq, bq_tasks);
         take_quota();
       }
-      if (need_ts) {
+      if (!ts_tasks.empty()) {
         job->set_message("同步 Tushare (forecast/express/disclosure)");
-        fundamental::sync<fundamental::Tu>(cat, today);
+        tushare::Client ts;
+        fundamental::sync(ts, ts_tasks);
       }
     }
     // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)

@@ -38,17 +38,15 @@ ImVec4 status_color(FundamentalStatus s) {
   return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
 }
 
-// Shape × Pick × src → 抓法一词 (与 fetch 的取行方式一一对应)
+// Shape × snap × src → 抓法一词 (与 fetch 的取行方式一一对应)
 const char *fetch_name(const fundamental::Spec &s) {
-  using fundamental::Pick;
-  if (s.pick == Pick::First)
-    return "月初";
-  if (s.pick == Pick::Last)
-    return "快照";
-  if (s.shape == fundamental::Shape::Meta)
+  const bool month = s.shape == fundamental::Shape::Month;
+  if (s.snap)
+    return month ? "月初" : "快照";
+  if (!month)
     return "整刷";
-  const auto *dai = std::get_if<fundamental::Dai>(&s.src);
-  return dai && dai->partition ? "分区" : "条件";
+  const auto *bq = std::get_if<fundamental::Bq>(&s.src);
+  return bq && bq->partition ? "分区" : "条件";
 }
 
 void text_bytes(std::uint64_t b) {
@@ -451,7 +449,7 @@ void RenderTabOverview(
   if (ImGui::BeginTable("FundBigQuantTables", kTableColumns, kTableFlags)) {
     setup_columns();
     for (const fundamental::Spec &spec : fundamental::SPECS)
-      if (fundamental::from<fundamental::Dai>(spec))
+      if (fundamental::from<fundamental::Bq>(spec))
         table_row(spec, scanned, state.find_table(spec.name), audit.find_table(spec.name), weekly);
     ImGui::EndTable();
   }

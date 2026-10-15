@@ -17,7 +17,8 @@
 #include <vector>
 
 // ============================================================================
-// Scan — 读侧唯一原语: 月度表的分段并行 map-reduce (与 Sync 的 plan → fetch → put 对仗)
+// Scan — 读侧原语: 月度表的分段并行 map-reduce (与 Sync 的 plan → fetch → put 对仗);
+//   Meta 表单文件由 meta() 直读, D 轴由 calendar() 给出 (文件末尾).
 //
 //   split: 一张表的分片按 ym 升序均分成 ≤ threads 段 (段 = 连续 ym 区间), 段 s 独占累加器 segs[s]
 //   fold : fold(rows, acc) 逐分片累加; 行的资产 id 与 vd 日期已整列预转
@@ -202,6 +203,9 @@ void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, con
                      }});
   }
 }
+
+// Meta 表 name 的 _meta 单文件, 只解 cols (分片缺失 / 非 Meta 表 → assert) —— Scan (Month) 的对偶
+misc::pq::TableView meta(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols);
 
 // all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (AssetInfo 与 fund::Pool 共用)
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today);
