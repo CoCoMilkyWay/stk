@@ -114,9 +114,9 @@ const std::vector<Spec> SPECS = checked({
      "业绩预告: 类型(预增/预亏/续亏) / 净利上下限 / 变动幅度上下限 / 上年同期归母"},
     {"express",                                 "ann_date",     Month, All, 24, Tu{"express_vip",     {},           {"revenue", "operate_profit", "total_profit", "n_income", "total_assets", "total_hldr_eqy_exc_min_int", "diluted_eps", "diluted_roe", "yoy_net_profit", "bps", "open_net_assets", "open_bps"}},
      "业绩快报: 营收/营业利润/净利/总资产/归母权益/摊薄 EPS·ROE/BPS"},
-    // disclosure: 逐日接口; actual_date / modify_date 在 ann_date 之后回填 = 未来信息, 不落盘.
+    // disclosure: 逐日接口; actual_date 在 ann_date 之后回填 = 未来信息, 不落盘 (modify_date 默认不返回).
     {"disclosure",                              "ann_date",     Month, All, 24, Tu{"disclosure_date", {"ann_date"}, {}},
-     "财报披露计划: 预约披露日 pre_date", {"actual_date", "modify_date"}},
+     "财报披露计划: 预约披露日 pre_date", {"actual_date"}},
 });
 // clang-format on
 
