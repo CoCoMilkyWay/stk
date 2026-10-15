@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fundamental {
 
@@ -21,9 +22,14 @@ namespace fundamental {
 template <class Src>
 std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Spec &s, Window w);
 
+// 只取 days 这几天 (升序非空, 同一月分片): 1 条 select(s, "*", [front, back], " AND strftime(vd) IN (..)")
+// (日键与 audit 指纹组键同形) → 剥 Spec::drop. 仅 Bq · Snap::All (Snap::Day 的 MIN / MAX 须看整窗)
+std::shared_ptr<arrow::Table> fetch_days(bigquant::Client &client, const Spec &s, const std::vector<Ymd> &days);
+
 // ============================================================================
 // DAI SQL 唯一构造点 — fetch 与 Audit 只差 SELECT 什么、尾部接什么:
 //   fetch  = select(s, "*", w)
+//   按日   = select(s, "*", [首日, 末日], " AND strftime(vd) IN (..)")
 //   schema = select(s, "*", w, " LIMIT 0")
 //   指纹   = select(s, "strftime(..) AS g, ..", w, " GROUP BY 1")
 //

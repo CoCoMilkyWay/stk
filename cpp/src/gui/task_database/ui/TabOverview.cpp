@@ -191,14 +191,15 @@ void audit_cells(const std::string &name, const AuditTableStat *a, const AuditSt
       *repair_table = name;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("整月重拉 %zu 个有差异的月 → 只复核这些月 → 重建 AssetInfo\n"
+      ImGui::SetTooltip("只重拉有差异的 %zu 天 (涉及 %zu 月, 其中 %zu 月须整月: 月初快照表 / 只定位到月)\n"
+                        "→ 只复核这些月 → 重建 AssetInfo\n"
                         "不可取消; 同步 / 核对 / 修复进行中或未开联网不可用",
-                        a->bad_months);
+                        a->bad_days, a->bad_months, a->whole_months);
     ImGui::SameLine();
   }
   text_cells(a->repair_cells, weekly);
   if (a->repair_cells > 0 && ImGui::IsItemHovered())
-    ImGui::SetTooltip("重拉 %zu 个有差异的月 (整月 SELECT *, 远端行 × 列)", a->bad_months);
+    ImGui::SetTooltip("有差异的日: 远端行 × 列; 整月 %zu 月: 整月远端行 × 列", a->whole_months);
 
   ImGui::TableNextColumn();
   text_cells(a->full_cells, weekly);
@@ -381,9 +382,9 @@ void audit_section(const AuditState &a, bool *audit_clicked,
   text_wrapped_disabled(
       "问题天数 = 任一不一致的日 / (本地天数 + 远端独有天数)  |  "
       "行差 = 远端比本地多 (+, 晚到回填) / 少 (−, 删除), 占比按本地总行数  |  "
-      "修复 / 全表流量 = 重拉有差异的月 / 全部已核月 的 cells (行 × 列), 括号内占周配额  |  "
+      "修复 / 全表流量 = 重拉有差异的日 / 全部已核月 的 cells (行 × 列), 括号内占周配额  |  "
       "核对 = audit 只核该表全部冻结月, 右侧 已核 / 冻结 月  |  "
-      "sync = 只重拉该表有差异的月并复核这些月, 完成后重建 AssetInfo");
+      "sync = 只重拉该表有差异的日 (月初快照表 / 只定位到月的整月), 复核这些月, 完成后重建 AssetInfo");
 }
 
 } // namespace

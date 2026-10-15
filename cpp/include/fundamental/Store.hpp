@@ -105,4 +105,8 @@ enum class Write { Replace,
                    Append };
 void put(const Spec &s, Ym ym, Write how, const std::shared_ptr<arrow::Table> &tbl);
 
+// 按日替换 (同属唯一写点): sh 里 vd ∈ days (升序) 的行删掉, tbl 追加在末尾, 其余天原样; 原子重写.
+//   tbl 的 vd 须全在 days 里; 列按名合并 (某侧全 null 的 NA 列 / 缺列提升为另一侧类型)
+void splice(const Spec &s, const Shard &sh, const std::vector<Ymd> &days, const std::shared_ptr<arrow::Table> &tbl);
+
 } // namespace fundamental

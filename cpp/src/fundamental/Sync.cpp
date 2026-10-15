@@ -50,6 +50,12 @@ std::int64_t run(typename Src::Client &client, const Task &t) {
   return tbl->num_rows();
 }
 
+std::int64_t patch(bigquant::Client &client, const Spec &s, const Shard &sh, const std::vector<Ymd> &days) {
+  const auto tbl = fetch_days(client, s, days);
+  splice(s, sh, days, tbl);
+  return tbl->num_rows();
+}
+
 std::string label(const Task &t) {
   return t.spec->name + " " + (t.ym == 0 ? "_meta" : misc::dash_ym(t.ym)) +
          (t.how == Write::Append ? " +[" + misc::dense(t.w.lo) + "..]" : "");

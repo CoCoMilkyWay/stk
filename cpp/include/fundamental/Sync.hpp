@@ -36,6 +36,10 @@ std::vector<Task> plan(const Catalog &cat, const Now &now);
 template <class Src>
 std::int64_t run(typename Src::Client &client, const Task &t);
 
+// 按日修补 (audit 已定位到日): splice(sh, days, fetch_days(days)), 月内其余天不动; 返回远端行数.
+//   仅 Bq · Snap::All; Snap::Day 表 / 只定位到月的差异须整月 run (Replace)
+std::int64_t patch(bigquant::Client &client, const Spec &s, const Shard &sh, const std::vector<Ymd> &days);
+
 // "cn_stock_status 2024-05 +[20240510..]" (进度展示)
 std::string label(const Task &t);
 
