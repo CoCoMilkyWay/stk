@@ -852,7 +852,7 @@ void smooth_fit(const analysis::AggPdf &p, std::vector<float> &g) {
 }
 
 // 左下两半 (rIC | 根输入) 同一张分布图, 元素与图例序对仗: PDF (KLL, 阴影 + 线) / PDF 光滑拟合 (smooth_fit) / mean / 时序 (背景) / 分档 (仅根输入).
-//   时序: x = 时间铺满当前 x 轴, y = 值 [min, max] → [0, PDF 峰高], 淡灰压在最底, NoFit (不动坐标自适应)
+//   时序: x = 时间铺满当前 x 轴, y = 值 [−max|s|, max|s|] → 当前 y 视野 (0 钉在纵向正中), 淡灰压在最底, NoFit (不动坐标自适应)
 //   分档: 组边界竖切 PDF, 每段组色填充 (决策边界); 图例一项, 一键开关
 //   图例序 = ImPlot 本帧首次登记序, 与画序解耦: 先 PlotDummy 按图例序登记, 再按画序 (时序 → 填充 → 线) 真画
 //   x: 给 x_fixed 则固定, 否则贴 PDF
@@ -894,16 +894,17 @@ void plot_dist(const DistView &v, const ImVec2 &size) {
     legend(kBands, group_color(K - 1));
   if (np > 3) {
     const float *px = p.x.data(), *py = p.y.data();
-    const float y_pk = *std::max_element(py, py + np);
     const int ns = static_cast<int>(v.series.size());
     const auto [s_lo, s_hi] = std::minmax_element(v.series.begin(), v.series.end());
-    if (ns >= 2 && *s_hi > *s_lo) {
-      const ImPlotRange xr = ImPlot::GetPlotLimits().X;
+    const float amp = ns >= 2 ? std::max(std::abs(*s_lo), std::abs(*s_hi)) : 0.f;
+    if (amp > 0.f) {
+      const ImPlotRect lim = ImPlot::GetPlotLimits();
+      const double y_mid = 0.5 * (lim.Y.Min + lim.Y.Max), y_half = 0.5 * lim.Y.Size();
       static std::vector<float> tx, ty;
       tx.resize(static_cast<size_t>(ns)), ty.resize(static_cast<size_t>(ns));
       for (int i = 0; i < ns; ++i) {
-        tx[static_cast<size_t>(i)] = static_cast<float>(xr.Min + (xr.Max - xr.Min) * i / (ns - 1));
-        ty[static_cast<size_t>(i)] = y_pk * (v.series[static_cast<size_t>(i)] - *s_lo) / (*s_hi - *s_lo);
+        tx[static_cast<size_t>(i)] = static_cast<float>(lim.X.Min + lim.X.Size() * i / (ns - 1));
+        ty[static_cast<size_t>(i)] = static_cast<float>(y_mid + y_half * v.series[static_cast<size_t>(i)] / amp);
       }
       ImPlot::SetNextLineStyle(col_ser, 1.0f);
       ImPlot::PlotLine(v.series_label, tx.data(), ty.data(), ns, ImPlotItemFlags_NoFit);
