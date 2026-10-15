@@ -813,7 +813,8 @@ awaitable<void> FundamentalService::run(bool with_network) {
         tushare::Client ts;
         sync_all<fundamental::Tu>(*job, *cancel, ts, ts_tasks, "tushare");
       }
-      if (!daily_tasks.empty() && !declined && !cancel->load(std::memory_order_relaxed)) {
+      if (config::BIGQUANT_SYNC_DAILY && !daily_tasks.empty() && !declined &&
+          !cancel->load(std::memory_order_relaxed)) {
         // 一天约 1200 万 cell: 每天开拉前重取配额 (探针不耗配额), 剩余 < 阈值即跳过余下各天
         sync_all<fundamental::Bq>(*job, *cancel, bq, daily_tasks, "bigquant.daily", [&job, &take_quota]() {
           take_quota();

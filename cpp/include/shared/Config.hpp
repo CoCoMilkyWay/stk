@@ -168,6 +168,8 @@ inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; 
 inline constexpr double BIGQUANT_QUOTA_CONFIRM_RATIO = 0.3;
 // Daily 表 (分钟线, 单日 ~1200 万 cell): 每天开拉前重取配额, 剩余比例 < 该值即跳过余下各天 (不弹窗)
 inline constexpr double BIGQUANT_QUOTA_DAILY_RATIO = 0.2;
+// Daily 表是否联网同步. false: 只留本地清点 / renative, 不拉 (本地 AK/SK 无 cn_stock_bar1m_c 读权限)
+inline constexpr bool BIGQUANT_SYNC_DAILY = false;
 
 inline constexpr const char *TUSHARE_HTTP_HOST = "api.tushare.pro";
 inline constexpr const char *TUSHARE_HTTP_PORT = "80";  // 走 80, 省掉 SSL 依赖
