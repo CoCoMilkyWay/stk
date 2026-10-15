@@ -15,6 +15,7 @@
 #include "codec/L2_DataType.hpp"       // L2::ValidType (FieldInfo.valid)
 #include "features/FeaturesDefine.hpp" // FeatureDataType / ALL_LEVELS (层数)
 #include "features/Method/TS.hpp"      // ts::TfId (FieldInfo.ts_tf)
+#include "misc/date.hpp"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -61,8 +62,8 @@ inline size_t level_valid_rows(size_t lvl) { return level_info(lvl).rows - 1; }
 // 特征文件: <base>/YYYY/MM/DD/features_<LVL>.zst (整层) 或 features_<LVL>_f<i>.zst (逐列)
 // 头 = size_t × {T, F, A, axis_hash, table_fingerprint}
 constexpr size_t FEATURE_FILE_HEADER_WORDS = 5;
-inline std::string feature_day_dir(const std::string &base, const std::string &date) {
-  return base + "/" + date.substr(0, 4) + "/" + date.substr(4, 2) + "/" + date.substr(6, 2);
+inline std::string feature_day_dir(const std::string &base, misc::Ymd date) {
+  return base + "/" + misc::slash(date);
 }
 inline std::string feature_file(const std::string &day_dir, size_t lvl) {
   return day_dir + "/features_" + level_info(lvl).level_name + ".zst";

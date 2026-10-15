@@ -6,7 +6,6 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 
 class FeatureRead;
@@ -112,7 +111,7 @@ struct Dist : analysis::StreamState {
 
   // 重置构建参数并进入 Building. cols = [值列 (+ valid 列)]; global_ids = 子轴 → 全局轴映射
   // (UniverseAxis::ids). 展示字段不清 (旧图留住), universe 变了才整体重建.
-  void reset_for_build(std::vector<size_t> cols, std::vector<std::string> month_keys,
+  void reset_for_build(std::vector<size_t> cols, std::vector<misc::Ym> month_keys,
                        std::vector<uint32_t> global_ids);
 
   // 全区间构建: 分批流式 (每批 IO → 扫描 → 归约 → 发布); 被取消返回 false
@@ -125,6 +124,6 @@ private:
   std::unique_ptr<Runtime> rt_;
   // 构建参数 (UI 不看): reset 时定好, build 全程只读
   std::vector<size_t> columns_;
-  std::vector<std::string> months_;
+  std::vector<misc::Ym> months_;
   std::vector<uint32_t> global_ids_;
 };

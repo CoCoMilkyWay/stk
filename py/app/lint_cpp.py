@@ -50,6 +50,9 @@ SKIP_DIRS = {
 # clangd binary: prefer PATH, fall back to the bundled LLVM install.
 CLANGD_FALLBACK = Path("/home/chuyin/work/bin/LLVM-22.1.5-Linux-X64/bin/clangd")
 
+# Concurrent preamble/AST builds inside clangd. Lower if memory runs out.
+CLANGD_JOBS = os.cpu_count()
+
 # LSP severity values
 SEV_ERROR = 1
 SEV_WARNING = 2
@@ -100,7 +103,7 @@ class LspClient:
                 "--background-index=false",
                 "--pch-storage=memory",
                 "--log=error",
-                "-j=4",
+                f"-j={CLANGD_JOBS}",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -291,12 +294,13 @@ def lint_all(client: LspClient, paths: list, include_errors: bool) -> int:
         rel = uri_to_rel[uri]
         total += print_diags(rel, diags, include_errors)
         pending.discard(uri)
+        client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
         reported += 1
         last_recv = time.time()
         status(f"{reported}/{total_files} files checked, {len(pending)} pending ...")
 
     clear_status()
-    for uri in uri_to_rel:
+    for uri in pending:
         client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
     return total
 

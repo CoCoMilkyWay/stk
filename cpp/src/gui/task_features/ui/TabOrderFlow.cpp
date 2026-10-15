@@ -44,11 +44,9 @@ static int L1TimeFormatter(double value, char *buff, int size, void *user_data) 
   const size_t d = std::min(k.day_idx_from_x(value), k.dates.size() - 1);
   const size_t m = std::min(static_cast<size_t>(value) % OrderFlowConst::L1_CAPACITY, TRADE_MINUTES_PER_DAY);
   const ClockTime ct = L1_to_Clock(m); // 255 → 15:00 (日右边界)
-  const std::string &date = k.dates[d];
-  if (date.size() != 8)
-    return std::snprintf(buff, size, "%s %02d:%02d", date.c_str(), ct.hour, ct.minute);
-  return std::snprintf(buff, size, "%s/%s/%s %02d:%02d", date.substr(2, 2).c_str(),
-                       date.substr(4, 2).c_str(), date.substr(6, 2).c_str(), ct.hour, ct.minute);
+  const misc::Ymd date = k.dates[d];
+  return std::snprintf(buff, size, "%02d/%02d/%02d %02d:%02d", date / 10000 % 100, date / 100 % 100, date % 100,
+                       ct.hour, ct.minute);
 }
 
 // 图1/图2 Y (价格) → 定宽 (右对齐补空格, 等宽字体下宽度恒定): 刻度文字宽度决定
@@ -67,22 +65,12 @@ static void FormatTimeHMS(char *buf, size_t size, uint8_t hour, uint8_t minute, 
   std::snprintf(buf, size, "%02d:%02d:%02d", hour, minute, second);
 }
 
-static void FormatDateFull(char *buf, size_t size, const std::string &date) {
-  if (date.size() == 8) {
-    std::snprintf(buf, size, "%s-%s-%s",
-                  date.substr(0, 4).c_str(), date.substr(4, 2).c_str(), date.substr(6, 2).c_str());
-  } else {
-    std::snprintf(buf, size, "%s", date.c_str());
-  }
+static void FormatDateFull(char *buf, size_t size, misc::Ymd date) {
+  std::snprintf(buf, size, "%s", misc::dash(date).c_str());
 }
 
-static void FormatDateShort(char *buf, size_t size, const std::string &date) {
-  if (date.size() == 8) {
-    std::snprintf(buf, size, "%s/%s/%s",
-                  date.substr(2, 2).c_str(), date.substr(4, 2).c_str(), date.substr(6, 2).c_str());
-  } else {
-    std::snprintf(buf, size, "%s", date.c_str());
-  }
+static void FormatDateShort(char *buf, size_t size, misc::Ymd date) {
+  std::snprintf(buf, size, "%02d/%02d/%02d", date / 10000 % 100, date / 100 % 100, date % 100);
 }
 
 // 选中特征列 (当前层): 多选集合, 截断 MAX_FEATURES
@@ -750,7 +738,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
         ui.l1_anchor_date = k.date_from_x(ui.l1_anchor_x);
       }
 
-      if (!ui.l1_anchor_date.empty() && pub_points > 0) {
+      if (ui.l1_anchor_date && pub_points > 0) {
         const auto it = std::lower_bound(k.x.begin(), k.x.begin() + static_cast<long>(pub_points), ui.l1_anchor_x);
         double anchor_y = 0;
         if (it != k.x.begin() + static_cast<long>(pub_points))
@@ -804,7 +792,7 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
       ImGui::SetTooltip("%s 通过筛选的标的数 / 总数\n"
                         "• 状态取自当日 L1 落盘列 (ST / 上市 / 行业)\n"
                         "• 当日无有效分钟的标的不列入 (无盘口可看)",
-                        slot.date.c_str());
+                        misc::dash(slot.date).c_str());
   } else {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "loading...");
   }
@@ -889,7 +877,7 @@ static void RenderStatusBar(const OrderFlow &of) {
   }
 
   ImGui::SameLine();
-  if (!ui.l1_anchor_date.empty()) {
+  if (ui.l1_anchor_date) {
     char date_buf[16];
     FormatDateShort(date_buf, sizeof(date_buf), ui.l1_anchor_date);
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Anchor: %s", date_buf);
@@ -1012,14 +1000,14 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   if (kline_ready)
     ui.kline_rescan_pending = false; // dates 已随新代落定
 
-  if (ui.l1_anchor_date.empty() && kline_ready && !of.kline.dates.empty()) {
+  if (!ui.l1_anchor_date && kline_ready && !of.kline.dates.empty()) {
     ui.l1_anchor_x = 0;
     ui.l1_anchor_date = of.kline.dates.front();
   }
 
   // 图1 特征 = 当前选中层的指标集 (L0/L1 皆可): 选 L1 时与图2 同源, 只取锚点日的日内段
   std::vector<int> depth_feats = CollectFeats(sel, sel.selected_level);
-  if (!ui.l1_anchor_date.empty() &&
+  if (ui.l1_anchor_date &&
       (rescan || ui.depth_date != ui.l1_anchor_date || ui.depth_asset != asset_idx ||
        ui.depth_feats != depth_feats || ui.depth_feat_level != sel.selected_level)) {
     ui.depth_date = ui.l1_anchor_date;
@@ -1048,7 +1036,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     uni.cached_gen = UINT32_MAX; // 强制重建候选
   }
 
-  if (!ui.l1_anchor_date.empty() && (rescan || uni.req_date != ui.l1_anchor_date)) {
+  if (ui.l1_anchor_date && (rescan || uni.req_date != ui.l1_anchor_date)) {
     uni.req_date = ui.l1_anchor_date;
     ++uni.gen;
     service->RequestUniverse(uni.gen, ui.l1_anchor_date);

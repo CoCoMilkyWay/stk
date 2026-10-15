@@ -988,12 +988,10 @@ inline int first_d_of_year(const Axes &axes, int y) { return axes.lower(y * 1000
 Pool::Pool() = default;
 Pool::~Pool() = default;
 
-int Pool::date_index(const std::string &yyyymmdd) const {
-  return data().axes.exact(misc::parse_ymd(yyyymmdd));
-}
+int Pool::date_index(Ymd d) const { return data().axes.exact(d); }
 
 void Pool::build(const std::vector<std::string> &codes,
-                 const std::vector<std::string> &dates) {
+                 const std::vector<Ymd> &dates) {
   assert(!codes.empty() && "AssetAxis 为空");
   assert(!dates.empty() && "回测日为空");
 
@@ -1021,8 +1019,8 @@ void Pool::build(const std::vector<std::string> &codes,
 
   // ---- 回测日必须全部命中交易日历; 首回测日决定网格切片起点 ----
   int first_d = n_d;
-  for (const auto &s : dates) {
-    const int d = axes.exact(misc::parse_ymd(s));
+  for (const Ymd s : dates) {
+    const int d = axes.exact(s);
     assert(d >= 0 && "回测日不在交易日历里");
     first_d = std::min(first_d, d);
   }

@@ -23,7 +23,7 @@ struct DividendEvent {
 // 早先这里按"快照 / 逐笔 / 两者都有"分三种视角看覆盖率. 快照不再编码后, L2
 // 覆盖率只剩一个口径 (逐笔), 三种视角合成一种, 视图模式的枚举也就没了.
 struct DailyStats {
-  std::string date_str; // YYYYMMDD format
+  misc::Ymd date = 0;
   bool is_trading_day = false;
   bool is_holiday = false; // Non-weekend non-trading day
   bool is_in_backtest_range = false;
@@ -64,8 +64,8 @@ struct BrowserState {
   int selected_year = -1;
   int selected_month = -1;
   int selected_day = -1;
-  std::string hover_date;
-  std::map<std::string, DailyStats> daily_stats_cache; // date -> stats
+  misc::Ymd hover_date = 0;
+  std::map<misc::Ymd, DailyStats> daily_stats_cache; // date -> stats
   LayerVisibility layers;
 };
 
@@ -75,8 +75,8 @@ void RenderTabBrowser(
     const StockFactorMap &stock_factors,
     const StockInfoMap &stock_info,
     const Asset &asset_data,
-    const std::string &backtest_start,
-    const std::string &backtest_end,
+    misc::Ymd backtest_start,
+    misc::Ymd backtest_end,
     BrowserState &browser_state);
 
 } // namespace GUI::Database

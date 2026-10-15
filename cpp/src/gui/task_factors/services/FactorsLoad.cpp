@@ -59,7 +59,7 @@ void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded 
   factor::stat::assert_holds(L.hd);
 }
 
-bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<std::string> &dates, Loaded &L, factor::exec::ForkJoin &ex,
+bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, factor::exec::ForkJoin &ex,
                  std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels, bool with_costs, bool with_index) {
   TraceN("FactorsLoad");
   assert(static_cast<int>(dates.size()) == L.days);

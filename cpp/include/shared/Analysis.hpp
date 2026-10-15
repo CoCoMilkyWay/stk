@@ -3,6 +3,7 @@
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/spectral/DayPSD.hpp"
+#include "misc/date.hpp"
 #include "shared/AssetAxis.hpp" // UniverseAxis
 
 #include <algorithm>
@@ -179,18 +180,18 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 
 // ---- 读取范围 (Request 公共头): GUI 线程从 config 解析, worker 只消费 ----
 struct ReadScope {
-  std::vector<std::string> months; // "YYYYMM" 升序 (config 区间)
-  UniverseAxis uni;                // universe 子轴 (A 轴/文件列序/目录都由它定)
-  std::string features_dir;        // 该 universe 的特征库目录 (Config::FeatureUniverseDir)
+  std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月)
+  UniverseAxis uni;             // universe 子轴 (A 轴/文件列序/目录都由它定)
+  std::string features_dir;     // 该 universe 的特征库目录 (Config::FeatureUniverseDir)
 };
 ReadScope read_scope(const Config &cfg, size_t num_assets);
 
 // 库里实际存在的日期 (升序) + 每日所属月下标 (months 下标)
 struct DateList {
-  std::vector<std::string> dates;
+  std::vector<misc::Ymd> dates;
   std::vector<uint16_t> month;
 };
-DateList enumerate_dates(const FeatureRead &reader, const std::vector<std::string> &months);
+DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months);
 
 // ---- 容量准备 / 线程布局 (幂等, 尺寸对得上零分配) ----
 // 槽数对得上就只 clear (KLL 保留 buffer 容量), 对不上才重建

@@ -306,7 +306,7 @@ void OrderFlow::Depth::heatmap_commit_tick(HeatmapScratch &scratch, size_t tick_
 
 void OrderFlow::Depth::clear() {
   gen = 0;
-  date.clear();
+  date = 0;
   asset_idx = SIZE_MAX;
   has_data = false;
   order_count = 0;
@@ -329,7 +329,7 @@ void OrderFlow::Depth::clear() {
 
 void OrderFlow::Universe::Slot::clear() {
   gen = 0;
-  date.clear();
+  date = 0;
   meta.clear();
 }
 
@@ -394,7 +394,7 @@ void OrderFlow::Universe::clear() {
   filter_epoch = 0;
   cached_epoch = UINT64_MAX;
   gen = 0;
-  req_date.clear();
+  req_date = 0;
 }
 
 // ============================================================================

@@ -40,9 +40,9 @@ size_t corr_slice_stride(size_t level) {
 
 // 与矩阵一致的抽样日集合: 固定种子洗牌取前 kCorrDays 个.
 // 洗牌而非"每隔 k 天取一天" —— 等间隔抽天会锁死星期几, 把星期效应变成系统偏差.
-static std::vector<std::string> sample_days(const FeatureRead &reader,
-                                            const std::vector<std::string> &months) {
-  std::vector<std::string> dates = enumerate_dates(reader, months).dates;
+static std::vector<misc::Ymd> sample_days(const FeatureRead &reader,
+                                          const std::vector<misc::Ym> &months) {
+  std::vector<misc::Ymd> dates = enumerate_dates(reader, months).dates;
   if (dates.empty())
     return dates;
   std::shuffle(dates.begin(), dates.end(), std::mt19937{0x5eed});
@@ -207,7 +207,7 @@ struct SlicePlane {
 
   // 相 1: IO (并行抢特征块) —— 逐块读列文件, 就地按 ts_valid 门控抽出 b.slice_t 指定的 S 个切片.
   // 只写 b 自己的内存, 可与另一缓冲上的 rank / 累加并发跑 (FeatureRead 并发只读)
-  void load(RawBuf &b, FeatureRead &reader, const std::string &date,
+  void load(RawBuf &b, FeatureRead &reader, misc::Ymd date,
             const std::vector<uint32_t> &cols, const std::vector<L2::ValidType> &vts,
             size_t meta_col, const std::atomic<bool> &cancel) {
     TraceN("CorrIO");
@@ -311,7 +311,7 @@ Correlation::~Correlation() = default;
 
 void Correlation::reset_for_build(size_t lvl, std::vector<uint32_t> col_list,
                                   std::vector<L2::ValidType> valid_types, size_t meta_col,
-                                  std::vector<std::string> month_keys, size_t n_assets) {
+                                  std::vector<misc::Ym> month_keys, size_t n_assets) {
   TraceN("CorrReset");
   assert(col_list.size() >= 2 && col_list.size() == valid_types.size());
   assert(std::is_sorted(col_list.begin(), col_list.end()));
@@ -346,7 +346,7 @@ bool Correlation::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   assert(rt_ && A_ > 0 && cols.size() >= 2 && "reset_for_build 先于 build");
   Runtime &rt = *rt_;
 
-  const std::vector<std::string> dates = sample_days(reader, months_);
+  const std::vector<misc::Ymd> dates = sample_days(reader, months_);
   if (dates.empty())
     return true; // 库为空: 直接 Done, 热图全空格
   total.store(dates.size(), std::memory_order_release);
@@ -530,7 +530,7 @@ CorrPair::~CorrPair() = default;
 
 void CorrPair::reset_for_build(size_t lvl, uint32_t a, uint32_t b, L2::ValidType vt_a,
                                L2::ValidType vt_b, size_t meta_col,
-                               std::vector<std::string> month_keys, size_t n_assets) {
+                               std::vector<misc::Ym> month_keys, size_t n_assets) {
   assert(a != b && lvl < LEVEL_COUNT && n_assets > 0 && !month_keys.empty());
   std::lock_guard<std::mutex> lock(mutex);
   level = lvl;
@@ -553,7 +553,7 @@ bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   assert(rt_ && A_ > 0 && "reset_for_build 先于 build");
   Runtime &rt = *rt_;
 
-  const std::vector<std::string> dates = sample_days(reader, months_); // 与矩阵同一套抽样日
+  const std::vector<misc::Ymd> dates = sample_days(reader, months_); // 与矩阵同一套抽样日
   if (dates.empty())
     return true;
   total.store(dates.size(), std::memory_order_release);
@@ -702,7 +702,7 @@ CorrLag::~CorrLag() = default;
 
 void CorrLag::reset_for_build(size_t lvl, std::vector<uint32_t> col_list,
                               std::vector<L2::ValidType> valid_types, size_t meta_col,
-                              std::vector<std::string> month_keys, size_t n_assets) {
+                              std::vector<misc::Ym> month_keys, size_t n_assets) {
   TraceN("CorrLagReset");
   assert(col_list.size() >= 2 && col_list.size() == valid_types.size());
   assert(std::is_sorted(col_list.begin(), col_list.end()));
@@ -728,7 +728,7 @@ bool CorrLag::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   assert(rt_ && A_ > 0 && cols.size() >= 2 && "reset_for_build 先于 build");
   Runtime &rt = *rt_;
 
-  const std::vector<std::string> dates = sample_days(reader, months_); // 与矩阵同一套抽样日
+  const std::vector<misc::Ymd> dates = sample_days(reader, months_); // 与矩阵同一套抽样日
   if (dates.empty())
     return true;
   total.store(dates.size(), std::memory_order_release);

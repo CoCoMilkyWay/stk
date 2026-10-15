@@ -124,12 +124,8 @@ static const char *kDimTitles[DistUIState::kDims] = {"PDF密度(月度漂移)", 
                                                      "PDF密度(日内偏移)", "资产截面(分布密度 + 分位数偏移)"};
 static const char *kWeekdayNames[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 
-// Format month key "YYYYMM" -> "YYYY/MM"
-static std::string format_month(const std::string &m) {
-  if (m.size() >= 6)
-    return m.substr(0, 4) + "/" + m.substr(4, 2);
-  return m;
-}
+// Format month YYYYMM -> "YYYY/MM"
+static std::string format_month(misc::Ym m) { return misc::slash(misc::first_day(m)).substr(0, 7); }
 
 // 槽数 (滑条范围). 月取 config 区间月份表 (构建前也有), 资产取 universe 子轴
 // (dist.lines, reset 时定; 首次构建前为空 → 滑条不显示)
@@ -225,10 +221,10 @@ static void RenderWindowControl(DistService *service, SharedData &data,
     service->RequestCancel();
 
   // Row 2: 焦点滑条 (月份表来自 config 区间, 缓存; 枚举与 ReadScope 同一函数)
-  const std::string months_key = data.config.start_date + "|" + data.config.end_date;
-  if (ui.months_key != months_key) {
-    ui.months_key = months_key;
-    ui.months = misc::iter_months(data.config.start_date, data.config.end_date);
+  if (ui.months_lo != data.config.start_date || ui.months_hi != data.config.end_date) {
+    ui.months_lo = data.config.start_date;
+    ui.months_hi = data.config.end_date;
+    ui.months = misc::months_between(data.config.start_date, data.config.end_date);
   }
   const int dim = ui.selected_dimension;
   const int n = DimCount(dist, ui, dim);

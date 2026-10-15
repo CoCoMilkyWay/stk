@@ -7,7 +7,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
-#include <ctime>
 #include <map>
 #include <set>
 
@@ -34,35 +33,8 @@ constexpr float MONTH_SPACING = 15.0f;   // Space between months
 // Helper: Date conversion utilities
 // ============================================================================
 
-// Convert YYYY-MM-DD to YYYYMMDD
-std::string DateToDense(const std::string &date_dashed) {
-  if (date_dashed.length() < 10)
-    return "";
-  return date_dashed.substr(0, 4) + date_dashed.substr(5, 2) + date_dashed.substr(8, 2);
-}
-
-// Convert YYYYMMDD to YYYY-MM-DD
-std::string DateToDashed(const std::string &date_dense) {
-  if (date_dense.length() < 8)
-    return "";
-  return date_dense.substr(0, 4) + "-" + date_dense.substr(4, 2) + "-" + date_dense.substr(6, 2);
-}
-
-// Get day of week (0=Sun, 1=Mon, ..., 6=Sat) from YYYYMMDD
-int GetDayOfWeek(const std::string &date_dense) {
-  if (date_dense.length() < 8)
-    return -1;
-  int year = std::stoi(date_dense.substr(0, 4));
-  int month = std::stoi(date_dense.substr(4, 2));
-  int day = std::stoi(date_dense.substr(6, 2));
-
-  std::tm time_in = {};
-  time_in.tm_year = year - 1900;
-  time_in.tm_mon = month - 1;
-  time_in.tm_mday = day;
-  std::mktime(&time_in);
-  return time_in.tm_wday;
-}
+// Get day of week (0=Sun, 1=Mon, ..., 6=Sat)
+int GetDayOfWeek(misc::Ymd date) { return (misc::weekday_of(date) + 1) % 7; }
 
 bool IsLeapYear(int year) {
   return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
@@ -86,43 +58,39 @@ int DaysInMonth(int year, int month) {
 // Build Daily Statistics from all data sources
 // ============================================================================
 
-std::map<std::string, DailyStats> BuildDailyStats(
+std::map<misc::Ymd, DailyStats> BuildDailyStats(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
     const StockInfoMap &stock_info,
     const Asset &asset_data,
-    const std::string &backtest_start,
-    const std::string &backtest_end) {
+    misc::Ymd backtest_start,
+    misc::Ymd backtest_end) {
 
-  std::map<std::string, DailyStats> stats_map;
-
-  // Convert backtest dates from YYYY-MM-DD to YYYYMMDD for comparison
-  std::string backtest_start_dense = DateToDense(backtest_start);
-  std::string backtest_end_dense = DateToDense(backtest_end);
+  std::map<misc::Ymd, DailyStats> stats_map;
 
   // Step 1: Initialize from stock_days (trading calendar)
   for (const CalendarDay &day : stock_days) {
-    std::string date_dense = misc::dense(day.date);
+    const misc::Ymd date = day.date;
 
-    DailyStats &stats = stats_map[date_dense];
-    stats.date_str = date_dense;
+    DailyStats &stats = stats_map[date];
+    stats.date = date;
     stats.is_trading_day = day.trading;
 
     // Detect holidays: non-trading weekdays (Mon-Fri)
-    int dow = GetDayOfWeek(date_dense);
+    int dow = GetDayOfWeek(date);
     if (!stats.is_trading_day && dow >= 1 && dow <= 5) {
       stats.is_holiday = true;
     }
 
     // Mark backtest range
-    if (date_dense >= backtest_start_dense && date_dense <= backtest_end_dense) {
+    if (date >= backtest_start && date <= backtest_end) {
       stats.is_in_backtest_range = true;
     }
   }
 
   // Step 2: Copy L2 data statistics from precomputed Asset::date_stats
-  for (const auto &[date_dense, date_stat] : asset_data.date_stats) {
-    auto it = stats_map.find(date_dense);
+  for (const auto &[date, date_stat] : asset_data.date_stats) {
+    auto it = stats_map.find(date);
     if (it != stats_map.end()) {
       it->second.total_assets = date_stat.total_assets;
       it->second.assets_with_orders = date_stat.assets_with_orders;
@@ -136,7 +104,7 @@ std::map<std::string, DailyStats> BuildDailyStats(
       // Check if there's a significant factor change (dividend/split)
       const float ratio = points[i].factor / points[i - 1].factor;
       if (std::abs(ratio - 1.0) > 0.0001) { // Threshold for detecting events
-        auto it = stats_map.find(misc::dense(points[i].date));
+        auto it = stats_map.find(points[i].date);
         if (it != stats_map.end()) {
           auto info_it = stock_info.find(code);
           it->second.dividend_events.push_back(
@@ -194,7 +162,7 @@ struct CalendarData {
 void RenderMonthGrid(
     int year,
     int month,
-    const std::map<std::string, DailyStats> &daily_stats,
+    const std::map<misc::Ymd, DailyStats> &daily_stats,
     BrowserState &state) {
   const char *month_names[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
@@ -205,9 +173,7 @@ void RenderMonthGrid(
   ImGui::Text("%s 一...日", month_names[month - 1]);
 
   // Get the day of week for the 1st day of this month
-  char first_date[16];
-  snprintf(first_date, sizeof(first_date), "%04d%02d%02d", year, month, 1);
-  int first_dow = GetDayOfWeek(std::string(first_date)); // 0=Sunday, 1=Monday, ..., 6=Saturday
+  int first_dow = GetDayOfWeek(year * 10000 + month * 100 + 1); // 0=Sunday, 1=Monday, ..., 6=Saturday
 
   // Convert first_dow to Mon=0 format: Sunday=6, Monday=0
   int first_col = (first_dow + 6) % 7;
@@ -237,13 +203,9 @@ void RenderMonthGrid(
 
   // Day grid (only valid days in month, arranged in rows of 7, aligned by day of week)
   for (int day = 1; day <= days_in_month; ++day) {
-    // Build date string YYYYMMDD (only once)
-    char date_dense[16];
-    snprintf(date_dense, sizeof(date_dense), "%04d%02d%02d", year, month, day);
-    std::string date_key(date_dense);
+    const misc::Ymd date_key = year * 10000 + month * 100 + day;
 
     int dow = GetDayOfWeek(date_key);
-    assert(dow >= 0);
 
     // Calculate grid position
     int total_offset = first_col + day - 1;
@@ -324,7 +286,7 @@ void RenderMonthGrid(
     // Step 6: Hover detection and tooltip
     const ImVec2 cell_max(x1, y1);
     if (ImGui::IsMouseHoveringRect(cell_pos, cell_max)) {
-      state.hover_date = DateToDashed(date_key);
+      state.hover_date = date_key;
       draw_list->AddRect(cell_pos, cell_max, color_hover, 0.0f, 0, 2.0f);
 
       // Tooltip
@@ -335,7 +297,7 @@ void RenderMonthGrid(
         const float completeness = stats->completeness_orders() * 100.0f;
 
         ImGui::BeginTooltip();
-        ImGui::Text("Date: %s (%s)%s", state.hover_date.c_str(), dow_name,
+        ImGui::Text("Date: %s (%s)%s", misc::dash(state.hover_date).c_str(), dow_name,
                     stats->is_trading_day ? " [Trading Day]" : "");
         ImGui::Separator();
         ImGui::Text("Backtest Range: %s", stats->is_in_backtest_range ? "YES" : "NO");
@@ -378,7 +340,7 @@ void RenderMonthGrid(
         }
         ImGui::EndTooltip();
       } else {
-        ImGui::SetTooltip("%s (No data)", state.hover_date.c_str());
+        ImGui::SetTooltip("%s (No data)", misc::dash(state.hover_date).c_str());
       }
 
       // Handle click
@@ -404,7 +366,7 @@ void RenderMonthGrid(
 
 void RenderYearRow(
     int year,
-    const std::map<std::string, DailyStats> &daily_stats,
+    const std::map<misc::Ymd, DailyStats> &daily_stats,
     BrowserState &state) {
   ImGui::Text("%d", year);
   ImGui::SameLine(0, 20);
@@ -428,8 +390,8 @@ void RenderTabBrowser(
     const StockFactorMap &stock_factors,
     const StockInfoMap &stock_info,
     const Asset &asset_data,
-    const std::string &backtest_start,
-    const std::string &backtest_end,
+    misc::Ymd backtest_start,
+    misc::Ymd backtest_end,
     BrowserState &browser_state) {
 
   // Build calendar from stock_days data
@@ -527,7 +489,7 @@ void RenderTabBrowser(
   // Summary Bar
   ImGui::Text("[%d-%d] %d trading days | Backtest: [%s to %s] %d days",
               calendar.start_year, calendar.end_year, total_trading_days,
-              DateToDashed(backtest_start).c_str(), DateToDashed(backtest_end).c_str(),
+              misc::dash(backtest_start).c_str(), misc::dash(backtest_end).c_str(),
               backtest_days);
   ImGui::SameLine();
   ImGui::TextColored(ImVec4(0.3f, 0.95f, 1.0f, 1.0f),

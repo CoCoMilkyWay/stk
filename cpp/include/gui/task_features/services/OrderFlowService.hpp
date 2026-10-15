@@ -15,13 +15,14 @@
 //           切出 Features 任务 Destroy → Stop (join).
 #pragma once
 
+#include "misc/date.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -40,8 +41,8 @@ public:
 
   // GUI 线程: 期望态快照 (最新覆盖旧请求; gen 调用方递增自持, 与发布面配对)
   void RequestKline(uint32_t gen, size_t asset_idx, std::vector<int> feats, bool rescan_dates);
-  void RequestDepth(uint32_t gen, std::string date, size_t asset_idx, int feat_level, std::vector<int> feats);
-  void RequestUniverse(uint32_t gen, std::string date);
+  void RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, int feat_level, std::vector<int> feats);
+  void RequestUniverse(uint32_t gen, misc::Ymd date);
 
   bool is_running() const { return thread_.joinable(); }
 
@@ -54,20 +55,20 @@ private:
   };
   struct DepthReq {
     uint32_t gen;
-    std::string date;
+    misc::Ymd date;
     size_t asset;
     int feat_level;         // 特征所属层 (0=L0, 1=L1)
     std::vector<int> feats; // feat_level 层字段下标
   };
   struct UniverseReq {
     uint32_t gen;
-    std::string date;
+    misc::Ymd date;
   };
 
   struct Impl; // worker 线程私有常驻资源 (reader / decoder / LOB / 缓冲)
 
   void worker_loop();
-  void scan_dates(std::vector<std::string> &out) const;
+  void scan_dates(std::vector<misc::Ymd> &out) const;
   void kline_begin(const KlineReq &req);
   bool kline_step();                           // 装一天并发布; 返回是否还有下一天
   void depth_build(const DepthReq &req);       // 重放 + 构建 + 背槽发布

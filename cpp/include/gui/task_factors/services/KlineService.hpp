@@ -13,7 +13,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -21,10 +20,10 @@ namespace GUI::Factors {
 
 struct KlineRequest {
   uint32_t gen = 0;
-  analysis::ReadScope scope;      // features_dir + uni (reader 的期望子轴)
-  std::vector<std::string> dates; // = InspectResult::dates; x = 日下标 × kSegLen + 分钟
-  int sub = -1;                   // 子轴资产下标
-  uint32_t col[5] = {};           // L1 列号: open high low close ts_valid (FeatureTable 解析)
+  analysis::ReadScope scope;    // features_dir + uni (reader 的期望子轴)
+  std::vector<misc::Ymd> dates; // = InspectResult::dates; x = 日下标 × kSegLen + 分钟
+  int sub = -1;                 // 子轴资产下标
+  uint32_t col[5] = {};         // L1 列号: open high low close ts_valid (FeatureTable 解析)
 };
 
 // worker 写 / GUI 前缀读 (免锁 SPSC)

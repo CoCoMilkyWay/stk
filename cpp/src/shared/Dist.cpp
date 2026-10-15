@@ -153,7 +153,7 @@ Dist::~Dist() = default;
 // Reset
 // ============================================================================
 
-void Dist::reset_for_build(std::vector<size_t> cols, std::vector<std::string> month_keys,
+void Dist::reset_for_build(std::vector<size_t> cols, std::vector<misc::Ym> month_keys,
                            std::vector<uint32_t> global_ids) {
   TraceN("DistReset");
   assert(!cols.empty() && cols.size() <= 2 && "Dist 只接受值列 + 可选 valid 列");
@@ -216,13 +216,13 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   if (stride % 5 == 0)
     ++stride; // 与交易周互质, 避免星期偏置
 
-  std::vector<std::string> dates;
+  std::vector<misc::Ymd> dates;
   std::vector<uint8_t> weekdays;
   std::vector<uint16_t> day_month;
   for (size_t i = 0; i < all.dates.size(); i += stride) {
     weekdays.push_back(static_cast<uint8_t>(misc::weekday_of(all.dates[i])));
     day_month.push_back(all.month[i]);
-    dates.push_back(std::move(all.dates[i]));
+    dates.push_back(all.dates[i]);
   }
   const size_t n_sel = dates.size();
   total.store(n_sel, std::memory_order_release);

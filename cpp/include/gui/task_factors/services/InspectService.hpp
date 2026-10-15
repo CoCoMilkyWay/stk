@@ -48,10 +48,11 @@ struct InspectRequest {
   std::string file, expr; // 权重行 key (FactorRow::key = 文件#权重号) + 具体规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
   factor::stat::Frame frame = factor::stat::Frame::CS;
   analysis::ReadScope scope;
-  std::string universe, start_date, end_date;
+  std::string universe;
+  misc::Ymd start_date = 0, end_date = 0;
   bool reload = false;     // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 装载时生效 → 进作用域缓存键)
-  std::string key() const { return file + "|" + expr + "|" + universe + "|" + start_date + "|" + end_date; }
+  std::string key() const { return file + "|" + expr + "|" + universe + "|" + std::to_string(start_date) + "|" + std::to_string(end_date); }
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
@@ -81,7 +82,7 @@ struct InspectResult {
   std::string file, expr;
   factor::stat::Frame frame = factor::stat::Frame::CS;
   StatScope scope;
-  std::vector<std::string> dates; // [days] YYYYMMDD
+  std::vector<misc::Ymd> dates; // [days]
   int n_hold = 0;
   factor::stat::Holds hd;                   // hd.h[hi]
   std::vector<CostTier> costs;              // [C] = FeatureTable::costs 序 (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)

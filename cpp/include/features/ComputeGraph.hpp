@@ -84,7 +84,7 @@ struct DAG_Root {
   const fund::Pool &fund_pool; // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
   std::string asset_code_;     // 股票代码 (用于涨跌幅判断)
   size_t asset_id_;            // AssetAxis 下标
-  std::string date_;           // 当日 "YYYYMMDD" (at_day_start 设置)
+  misc::Ymd date_ = 0;         // 当日 (at_day_start 设置)
   DAG_Root(TickData &td, const fund::Pool &pool, const std::string &code, size_t asset_id)
       : tick_data(td), fund_pool(pool), asset_code_(code), asset_id_(asset_id) {}
 };
@@ -120,7 +120,7 @@ public:
   }
 
   // 盘前: 设日期 → 全部节点 reset → onDay 域 (日频算子 compute)
-  void at_day_start(const std::string &date) {
+  void at_day_start(misc::Ymd date) {
     date_ = date;
 #define DAG_RESET_NODE(name, type, args, ...) name.reset();
     NODES(DAG_RESET_NODE)

@@ -48,7 +48,7 @@ void cell(std::ostringstream &os, float t, bool idle) {
 } // namespace
 
 FeatureProgress::FeatureProgress(const GlobalFeatureStore &store, const TsSchedule &sched,
-                                 const ComputeStats &stats, const std::vector<std::string> &dates)
+                                 const ComputeStats &stats, const std::vector<misc::Ymd> &dates)
     : store_(store), sched_(sched), stats_(stats), dates_(dates),
       start_time_(std::chrono::steady_clock::now()) {
   assert(!dates_.empty() && "日期轴为空, 不应启动进度渲染");
@@ -198,7 +198,7 @@ void FeatureProgress::render() {
     cell(out, busy[0], busy[0] < kIdleBusy || pf_days >= total);
     out << "\033[0m] ";
     snprintf(buf, sizeof(buf), "%zu/%zu %s %.0fMB/s (%.1fGB)",
-             pf_days, total, pf_days > 0 ? dates_[pf_days - 1].c_str() : "--------",
+             pf_days, total, pf_days > 0 ? misc::dense(dates_[pf_days - 1]).c_str() : "--------",
              rate[0] / 1e6, work[0] / 1e9);
     out << buf << "\033[K\n";
   }
@@ -214,7 +214,7 @@ void FeatureProgress::render() {
     out << "\033[0m] ";
     const auto [hmin, hmax] = std::minmax_element(holding.begin(), holding.end());
     snprintf(buf, sizeof(buf), "前沿 %zu..%zu/%zu (%s) %.2fG单 持仓 %zu..%zu",
-             lag, lead, total, dates_[std::min(lead, total - 1)].c_str(),
+             lag, lead, total, misc::dense(dates_[std::min(lead, total - 1)]).c_str(),
              static_cast<double>(sum_orders) / 1e9, *hmin, *hmax);
     out << buf << "\033[K\n";
   }
@@ -227,7 +227,7 @@ void FeatureProgress::render() {
          backlog == 0 || busy[1 + num_ts] < kIdleBusy);
     out << "\033[0m] ";
     snprintf(buf, sizeof(buf), "%zu/%zu (%s) %.1fk格/s",
-             cs_days, total, dates_[std::min(cs_days, total - 1)].c_str(),
+             cs_days, total, misc::dense(dates_[std::min(cs_days, total - 1)]).c_str(),
              rate[1 + num_ts] / 1e3);
     out << buf << "\033[K\n";
   }
@@ -238,7 +238,7 @@ void FeatureProgress::render() {
     cell(out, busy[2 + num_ts], busy[2 + num_ts] < kIdleBusy || io_days >= total);
     out << "\033[0m] ";
     snprintf(buf, sizeof(buf), "%zu/%zu %s %.0fMB/s (%.1fGB)",
-             io_days, total, io_days > 0 ? dates_[io_days - 1].c_str() : "--------",
+             io_days, total, io_days > 0 ? misc::dense(dates_[io_days - 1]).c_str() : "--------",
              rate[2 + num_ts] / 1e6, work[2 + num_ts] / 1e9);
     out << buf << "\033[K\n";
   }

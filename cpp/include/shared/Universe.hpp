@@ -15,6 +15,8 @@
 //   PIT: 第 D 日名单由 ≤ D−1 数据定 (python 侧保证), 对本类只是 (资产, 日) 的 bool.
 //
 //   "all" (无名单文件): 全 A 轴恒在池, 不读文件 —— 旧语义.
+#include "misc/date.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -32,17 +34,17 @@ public:
   static Pool all();
 
   bool is_all() const { return all_; }
-  // [first, last] ("YYYYMMDD", 闭区间) 内进过池的代码并集, 升序去重; 区间内没有任何名单日 / 并集为空 → assert
-  std::vector<std::string> codes(std::string_view first, std::string_view last) const;
-  const std::vector<std::string> &dates() const; // 出过名单的日 "YYYYMMDD", 升序
-  bool has_date(std::string_view yyyymmdd) const;
+  // [first, last] (闭区间) 内进过池的代码并集, 升序去重; 区间内没有任何名单日 / 并集为空 → assert
+  std::vector<std::string> codes(misc::Ymd first, misc::Ymd last) const;
+  const std::vector<misc::Ymd> &dates() const; // 出过名单的日, 升序
+  bool has_date(misc::Ymd d) const;
   // 第 D 日成员位. D 不在 dates() → assert (回测区间必须被名单覆盖, 见 ComputeService 的前置检查);
   // code 不在并集 → false (轴上但从未进过池)
-  bool in_pool(std::string_view code, std::string_view yyyymmdd) const;
+  bool in_pool(std::string_view code, misc::Ymd d) const;
 
 private:
   bool all_ = false;
-  std::vector<std::string> dates_;
+  std::vector<misc::Ymd> dates_;
   std::vector<std::string> codes_;
   std::unordered_map<std::string, uint32_t> code_idx_;
   std::vector<uint8_t> member_; // [date_i * codes_.size() + code_i]

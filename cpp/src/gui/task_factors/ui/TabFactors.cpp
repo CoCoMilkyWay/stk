@@ -717,7 +717,7 @@ std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const FR &r) {
 void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::TextDisabled("%s%s | %s | %s %s..%s | 满档 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
                       r.stat_from_file && !scope_matches(r, ctx) ? " (作用域≠当前)" : "", factor::stat::frame_name(r.frame), r.scope.universe.c_str(),
-                      r.scope.start_date.c_str(), r.scope.end_date.c_str(), r.scope.n_full, r.eval_ms);
+                      misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.scope.n_full, r.eval_ms);
   ImGui::TextDisabled("标签: 毛价格收益; 着色 (固定区间, 见列头): ");
   ImGui::SameLine(0, 0);
   ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "红 = 差端");
@@ -980,7 +980,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // ==========================================================================
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
-  ImGui::Text("%s  %s .. %s", ctx.universe.c_str(), ctx.start_date.c_str(), ctx.end_date.c_str());
+  ImGui::Text("%s  %s .. %s", ctx.universe.c_str(), misc::dash(ctx.start_date).c_str(), misc::dash(ctx.end_date).c_str());
   if (ImGui::IsItemHovered())
     tip("因子目录 %s\n"
         "• 作用域 = config 的 universe + 日期区间, 与特征库同一推导\n"

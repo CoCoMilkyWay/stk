@@ -48,17 +48,17 @@ void AssetLoader::load(SharedData &data) {
     std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
 
     std::string asset_name;
-    std::string start_date = "19900101";
-    std::string end_date = "20991231";
+    misc::Ymd start_date = 19900101;
+    misc::Ymd end_date = 20991231;
 
     auto it = stock_info_map.find(exchange_lower + "." + code);
     if (it != stock_info_map.end()) {
       const auto &info = it->second;
       asset_name = info.name;
       if (info.ipo_date)
-        start_date = misc::dense(info.ipo_date);
+        start_date = info.ipo_date;
       if (info.out_date)
-        end_date = misc::dense(info.out_date);
+        end_date = info.out_date;
     }
 
     AssetItem item(i, code, asset_name, exchange, start_date, end_date);

@@ -1,4 +1,6 @@
 #pragma once
+#include "misc/date.hpp"
+
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -7,9 +9,9 @@
 
 struct Config {
 
-  // Backtest/Analysis Period
-  std::string start_date = "2025-01-01";
-  std::string end_date = "2025-02-01";
+  // Backtest/Analysis Period [start_date, end_date] (config.json 里存 "YYYY-MM-DD")
+  misc::Ymd start_date = 20250101;
+  misc::Ymd end_date = 20250201;
 
   // 特征计算 universe: "all" = 全 A 轴恒在池; 其他 = <config_dir>/universe/<name>.json
   // (动态池逐日 diff, py/universe/<name>.py 产出, 见 shared/Universe.hpp). 特征管线的 A 轴 =
@@ -124,15 +126,15 @@ inline constexpr const char *BINARY_EXTENSION = ".bin";  // L2 二进制产物�
 struct CodeChange {
   const char *code;   // 现行代码 (资产轴上的那个)
   const char *former; // 变更前代码 (归档目录名)
-  const char *until;  // YYYYMMDD, 新代码生效日; 早于这天的归档里叫 former
+  misc::Ymd until;    // 新代码生效日; 早于这天的归档里叫 former
 };
 
 inline constexpr CodeChange CODE_CHANGES[] = {
-    {"302132.SZ", "300114.SZ", "20250217"}, // 中航电测 → 中航成飞
+    {"302132.SZ", "300114.SZ", 20250217}, // 中航电测 → 中航成飞
 };
 
 // 现行代码 → 归档里的目录名. 无变更记录时原样返回.
-inline std::string archive_code(const std::string &code, const std::string &date) {
+inline std::string archive_code(const std::string &code, misc::Ymd date) {
   for (const auto &c : CODE_CHANGES) {
     if (code == c.code && date < c.until)
       return c.former;
@@ -141,7 +143,7 @@ inline std::string archive_code(const std::string &code, const std::string &date
 }
 
 // archive_code 的逆向: 归档里读到的目录名 → 现行代码.
-inline std::string current_code(const std::string &archived, const std::string &date) {
+inline std::string current_code(const std::string &archived, misc::Ymd date) {
   for (const auto &c : CODE_CHANGES) {
     if (archived == c.former && date < c.until)
       return c.code;
@@ -171,13 +173,13 @@ inline constexpr int TUSHARE_HTTP_TIMEOUT_SECONDS = 60; // range 接口序列化
 inline constexpr int TUSHARE_HTTP_RETRY_MAX = 4;        // 共 5 次尝试
 inline constexpr int TUSHARE_HTTP_RETRY_INTERVAL_SECONDS = 30;
 
-// ---- 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet, 调度 misc::plan_months) ----
+// ---- 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet, 调度 fundamental::plan) ----
 //   PIPELINE_START_DATE: 数据同步起点 (A 股财报电子化从 2015 起逐渐完整).
 //     与 Config::start_date (回测/分析窗口) 语义不同, 不合并 — 基本面历史
 //     要为后续特征表全周期服务, 不随回测窗口收窄.
 //   LOOKBACK_DAYS: 月末仍在该窗口内的月视为开放月 (兜服务端回填修订)
 //   DEDUP_WINDOW_SECONDS: parquet mtime 距今 < 该值则本表跳过 (连跑零网络)
-inline constexpr const char *PIPELINE_START_DATE = "20150101";
+inline constexpr misc::Ymd PIPELINE_START_DATE = 20150101;
 inline constexpr int PIPELINE_LOOKBACK_DAYS = 7;
 inline constexpr int PIPELINE_DEDUP_WINDOW_SECONDS = 60 * 60;
 

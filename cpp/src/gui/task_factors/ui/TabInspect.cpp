@@ -65,11 +65,11 @@ void fit_on_change(const char *title, ImGuiID key, std::initializer_list<ImAxis>
 
 // 横轴刻度: 交易日下标 → YYMMDD (user_data = InspectDerived::dates)
 int date_formatter(double v, char *buf, int size, void *ud) {
-  const auto &dates = *static_cast<const std::vector<std::string> *>(ud);
+  const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   if (dates.empty())
     return std::snprintf(buf, size, "%g", v);
   const int i = std::clamp(static_cast<int>(std::floor(v)), 0, static_cast<int>(dates.size()) - 1);
-  return std::snprintf(buf, size, "%s", dates[static_cast<size_t>(i)].c_str() + 2);
+  return std::snprintf(buf, size, "%06d", dates[static_cast<size_t>(i)] % 1000000);
 }
 
 // 分层色: 两端两色 (G1 深蓝 / G20 深红), 中段中性灰, 两侧各一条反向 tanh 台阶: 色度 w = ½(1 + tanh(kColGain·(|s| − c))) 归一到 [0, 1],
@@ -372,7 +372,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       }
       ImPlot::SetupAxes(nullptr, absolute ? "年化 Σ ret / h  (%)" : "年化 Σ excess / h  (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
       ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
-      ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<std::string> *>(&d.dates));
+      ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<misc::Ymd> *>(&d.dates));
       follow_limits(ImAxis_X1, 0, std::max(1, d.days));
       follow_limits(ImAxis_Y1, yr.y_lo, yr.y_hi);
       ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
@@ -427,7 +427,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
           cursor_day = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x)), 0, d.days);
         ImPlot::Annotation(static_cast<double>(cursor_day), d.ls_cum[0][static_cast<size_t>(cursor_day)] + yr.ls_off, kColCursor, ImVec2(5, -15), false,
-                           "%s  LS %+.2f", cursor_day ? d.dates[static_cast<size_t>(cursor_day) - 1].c_str() : "起点", section_at(d, d.ls_cum[0], cursor_day));
+                           "%s  LS %+.2f", cursor_day ? misc::dense(d.dates[static_cast<size_t>(cursor_day) - 1]).c_str() : "起点", section_at(d, d.ls_cum[0], cursor_day));
       }
       ImPlot::EndPlot();
     }
@@ -572,14 +572,14 @@ bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, 
 
 // K 线横轴: 全局分钟 (日下标 × kSegLen + 分钟) → "YYMMDD HH:MM" (user_data = dates)
 int minute_formatter(double v, char *buf, int size, void *ud) {
-  const auto &dates = *static_cast<const std::vector<std::string> *>(ud);
+  const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   if (dates.empty())
     return std::snprintf(buf, size, "%g", v);
   const int S = factor::kSegLen, days = static_cast<int>(dates.size());
   const long long g = std::clamp(static_cast<long long>(std::floor(v)), 0LL, static_cast<long long>(days) * S - 1);
   const int d = static_cast<int>(g / S), m = static_cast<int>(g % S);
   const ClockTime ct = L1_to_Clock(static_cast<size_t>(m));
-  return std::snprintf(buf, size, "%s %02d:%02d", dates[static_cast<size_t>(d)].c_str() + 2, ct.hour, ct.minute);
+  return std::snprintf(buf, size, "%06d %02d:%02d", dates[static_cast<size_t>(d)] % 1000000, ct.hour, ct.minute);
 }
 
 // 滚动重锚指数线: line[t] = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))). P = 选中标的 close 前值填充到逐分钟格 (无成交分钟持平), I = universe
@@ -631,7 +631,7 @@ void derive_ref(const KlineStream &ks, size_t pub_days, size_t pub_pts, const st
 // 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × kSegLen): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
 // 染淡色竖带. 叠加 universe 指数 uni [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚, 不参与 fit; 再叠加滚动重锚指数线 (derive_ref, 键变才重算,
 // 不参与 fit). 悬停报最近一根的时刻 / OHLC / R / 两条指数线 / 个股相对滚动重锚线的偏移
-void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std::string> &dates, const std::vector<float> &uni, int &cursor_day,
+void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<misc::Ymd> &dates, const std::vector<float> &uni, int &cursor_day,
                 const char *title, const ImVec2 &size) {
   uint32_t pub_gen;
   size_t pub_days = 0, pub_pts = 0;
@@ -648,7 +648,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
   CompactLegend cl;
   ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
   ImPlot::SetupAxes(nullptr, "价格", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-  ImPlot::SetupAxisFormat(ImAxis_X1, minute_formatter, const_cast<std::vector<std::string> *>(&dates));
+  ImPlot::SetupAxisFormat(ImAxis_X1, minute_formatter, const_cast<std::vector<misc::Ymd> *>(&dates));
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
   if (ui.kline_days_applied != days) { // x 域变 (换结果日数) → 复位 x 视野
     ui.kline_days_applied = days;
@@ -751,7 +751,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
       cursor_day = std::clamp(static_cast<int>(std::lround(cx / S)), 0, days);
     else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
       cursor_day = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x / S)), 0, days);
-    ImPlot::TagX(static_cast<double>(cursor_day) * S, kColCursor, "%s", cursor_day ? dates[static_cast<size_t>(cursor_day) - 1].c_str() : "起点");
+    ImPlot::TagX(static_cast<double>(cursor_day) * S, kColCursor, "%s", cursor_day ? misc::dense(dates[static_cast<size_t>(cursor_day) - 1]).c_str() : "起点");
   }
   if (ImPlot::IsPlotHovered()) {
     const ImPlotPoint mp = ImPlot::GetPlotMousePos();
@@ -762,7 +762,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<std
       const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
       const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f, ra = t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f;
       char when[32], ux[160] = "";
-      minute_formatter(xs[i], when, sizeof(when), const_cast<std::vector<std::string> *>(&dates));
+      minute_formatter(xs[i], when, sizeof(when), const_cast<std::vector<misc::Ymd> *>(&dates));
       int ul = 0;
       if (uk > 0.0)
         ul += std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\nuniverse 指数 %.2f (按视野首根重锚)", uni[t] * uk);
@@ -1481,7 +1481,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {
     ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | value %.2f%%  rank %.2f%%  满档 %.1f  eval %.1f ms | 毛 (价格收益; 成本只进期限结构)%s",
-                        res_scope.universe.c_str(), res_scope.start_date.c_str(), res_scope.end_date.c_str(), res_scope.days, res_scope.A, res_scope.T,
+                        res_scope.universe.c_str(), misc::dash(res_scope.start_date).c_str(), misc::dash(res_scope.end_date).c_str(), res_scope.days, res_scope.A, res_scope.T,
                         res_scope.backend.c_str(), res_scope.time.c_str(), res_valid, res_rank, res_scope.n_full, res_ms,
                         match ? "" : "  (旧结果, 新请求计算中…)");
     const factor::stat::HoldStat &h = ui.der.hs;

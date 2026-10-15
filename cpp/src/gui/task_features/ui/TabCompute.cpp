@@ -415,8 +415,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
 
     ImGui::Text("Backtest Period:");
     ImGui::Indent();
-    ImGui::BulletText("Start: %s", config.start_date.c_str());
-    ImGui::BulletText("End: %s", config.end_date.c_str());
+    ImGui::BulletText("Start: %s", misc::dash(config.start_date).c_str());
+    ImGui::BulletText("End: %s", misc::dash(config.end_date).c_str());
     ImGui::Unindent();
 
     ImGui::Spacing();

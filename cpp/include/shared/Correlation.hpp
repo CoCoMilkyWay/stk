@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 
 class FeatureRead;
@@ -89,7 +88,7 @@ struct Correlation : analysis::StreamState {
   // valid_types 与之平行; meta_col = "ts_valid" 门控列下标; n_assets = universe 子轴大小
   void reset_for_build(size_t lvl, std::vector<uint32_t> cols,
                        std::vector<L2::ValidType> valid_types, size_t meta_col,
-                       std::vector<std::string> month_keys, size_t n_assets);
+                       std::vector<misc::Ym> month_keys, size_t n_assets);
 
   // 逐抽样日构建 (日内切片累加, 日末发布); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
@@ -102,8 +101,8 @@ private:
   // 构建参数 (reset 时定, build 全程只读)
   std::vector<L2::ValidType> valid_types_;
   size_t meta_col_ = 0;
-  std::vector<std::string> months_; // "YYYYMM" 升序
-  size_t A_ = 0;                    // universe 子轴大小
+  std::vector<misc::Ym> months_; // 升序
+  size_t A_ = 0;                 // universe 子轴大小
 };
 
 // ============================================================================
@@ -129,7 +128,7 @@ struct CorrPair : analysis::StreamState {
   ~CorrPair();
 
   void reset_for_build(size_t lvl, uint32_t a, uint32_t b, L2::ValidType vt_a, L2::ValidType vt_b,
-                       size_t meta_col, std::vector<std::string> month_keys, size_t n_assets);
+                       size_t meta_col, std::vector<misc::Ym> month_keys, size_t n_assets);
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
   void clear();
 
@@ -138,7 +137,7 @@ private:
   std::unique_ptr<Runtime> rt_;
   L2::ValidType vt_a_ = L2::ValidType::ALL, vt_b_ = L2::ValidType::ALL;
   size_t meta_col_ = 0;
-  std::vector<std::string> months_;
+  std::vector<misc::Ym> months_;
   size_t A_ = 0;
 };
 
@@ -171,7 +170,7 @@ struct CorrLag : analysis::StreamState {
 
   void reset_for_build(size_t lvl, std::vector<uint32_t> cols,
                        std::vector<L2::ValidType> valid_types, size_t meta_col,
-                       std::vector<std::string> month_keys, size_t n_assets);
+                       std::vector<misc::Ym> month_keys, size_t n_assets);
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
   void clear();
 
@@ -180,6 +179,6 @@ private:
   std::unique_ptr<Runtime> rt_;
   std::vector<L2::ValidType> valid_types_;
   size_t meta_col_ = 0;
-  std::vector<std::string> months_;
+  std::vector<misc::Ym> months_;
   size_t A_ = 0;
 };

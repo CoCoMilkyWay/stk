@@ -12,19 +12,18 @@ namespace analysis {
 
 ReadScope read_scope(const Config &cfg, size_t num_assets) {
   ReadScope s;
-  s.months = misc::iter_months(cfg.start_date, cfg.end_date);
+  s.months = misc::months_between(cfg.start_date, cfg.end_date);
   s.uni = universe_axis(cfg, num_assets); // 与特征计算同一推导 (A 轴/文件列序/目录都由它定)
   s.features_dir = cfg.FeatureUniverseDir();
   return s;
 }
 
-DateList enumerate_dates(const FeatureRead &reader, const std::vector<std::string> &months) {
+DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months) {
   TraceN("EnumDates"); // 首帧账目: 每月一次目录迭代 + 每天一次 stat
   DateList out;
   for (size_t m = 0; m < months.size(); ++m) {
-    auto ds = reader.list_dates(months[m].substr(0, 4), months[m].substr(4, 2));
-    for (auto &d : ds) {
-      out.dates.push_back(std::move(d));
+    for (const misc::Ymd d : reader.list_dates(months[m])) {
+      out.dates.push_back(d);
       out.month.push_back(static_cast<uint16_t>(m));
     }
   }

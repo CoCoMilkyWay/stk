@@ -14,7 +14,6 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 
 class FeatureRead;
@@ -140,12 +139,12 @@ struct Transform : analysis::StreamState {
   // 只存一个资产 → 内存 O(总天数 × VR), 与 universe 大小无关; 换焦点 = 重跑构建
   // (与改参数同流程 —— 链末输出经过 CS 截面, 单资产无法离线重放).
   struct SeriesSnap {
-    uint32_t asset = 0;                  // 焦点资产全局轴下标 (UI 查 items; 构建起手定)
-    size_t n_days = 0;                   // 已处理天数 (逐批递增至全程)
-    std::string date_begin, date_end;    // 已处理区间首末日 "YYYYMMDD"
-    std::vector<float> raw;              // [总天数 * VR] (f16 → float, NaN = 缺/未到批)
-    std::vector<float> out;              // [总天数 * VR] 链末输出 (NaN = 缺/预热/未到批)
-    std::vector<float> tod_mean, tod_sd; // [VR] 截至末批的 TOD 轮廓 (season 关时不填)
+    uint32_t asset = 0;                     // 焦点资产全局轴下标 (UI 查 items; 构建起手定)
+    size_t n_days = 0;                      // 已处理天数 (逐批递增至全程)
+    misc::Ymd date_begin = 0, date_end = 0; // 已处理区间首末日
+    std::vector<float> raw;                 // [总天数 * VR] (f16 → float, NaN = 缺/未到批)
+    std::vector<float> out;                 // [总天数 * VR] 链末输出 (NaN = 缺/预热/未到批)
+    std::vector<float> tod_mean, tod_sd;    // [VR] 截至末批的 TOD 轮廓 (season 关时不填)
   };
 
   // 链路账目 (输入 → 链末输出; 与 analysis::Integrity 的值账目语义不同, 不共用)
@@ -183,7 +182,7 @@ struct Transform : analysis::StreamState {
   // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids); series_focus = 序列快照焦点 (子轴下标).
   // 展示字段不清 (旧图留住), universe 变了才整体重建.
   void reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                       std::vector<std::string> month_keys,
+                       std::vector<misc::Ym> month_keys,
                        std::vector<uint32_t> global_ids, uint32_t series_focus);
 
   // 全区间构建: 分批流式; 被取消返回 false
@@ -197,7 +196,7 @@ private:
   // 构建参数 (UI 不看): reset 时定好, build 全程只读
   std::vector<size_t> columns_;
   bool has_valid_ = false;
-  std::vector<std::string> months_;
+  std::vector<misc::Ym> months_;
   std::vector<uint32_t> global_ids_; // 子轴 → 全局轴映射
   uint32_t series_focus_ = 0;        // 序列快照焦点 (子轴下标)
 };

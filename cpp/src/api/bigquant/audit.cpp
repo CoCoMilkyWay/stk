@@ -392,7 +392,7 @@ AuditDiff make_diff(const AuditUnit &u, const Layout &L, const std::string &grou
 } // namespace
 
 std::vector<AuditUnit> audit_plan(const fundamental::Catalog &cat, Ymd today, unsigned seed) {
-  const Ymd start = misc::parse_ymd(::config::PIPELINE_START_DATE);
+  const Ymd start = ::config::PIPELINE_START_DATE;
   std::vector<std::vector<AuditUnit>> per_table;
   for (const Spec &s : fundamental::SPECS) {
     if (!fundamental::from<fundamental::Dai>(s) || s.shape != fundamental::Shape::Month)

@@ -8,7 +8,6 @@
 #include <bit>
 #include <cassert>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 // ============================================================================
@@ -64,7 +63,7 @@ struct DayBatchPlane {
 
   // 一天: 读 columns (值列... [+ valid 列]) → 转置进批内第 j 天. tid 选 staging/nan_seen 槽 (每线程独占).
   // has_valid: columns 末列是 ts_valid 门控列, 按 valid_type 判 (编码见 Meta.hpp); 否则全部视为有效.
-  void load_day(const FeatureRead &reader, const std::string &date, const std::vector<size_t> &columns,
+  void load_day(const FeatureRead &reader, misc::Ymd date, const std::vector<size_t> &columns,
                 bool has_valid, L2::ValidType valid_type, size_t j, size_t tid) {
     assert(j < days && tid < staging.size());
     assert(columns.size() == n_cols + (has_valid ? 1 : 0));

@@ -41,8 +41,8 @@ void prefetch_worker(WorkerCtx ctx) {
       break;
 
     TraceN("DateLoop");
-    const std::string &date_str = data.asset.all_dates[date_idx];
-    TraceTextS(date_str.c_str());
+    const misc::Ymd date = data.asset.all_dates[date_idx];
+    TraceTextS(misc::dense(date).c_str());
 
     // 门控: 领先最慢 TS 不超过窗口
     {
@@ -59,7 +59,7 @@ void prefetch_worker(WorkerCtx ctx) {
     }
 
     // 日期 → 日期轴下标, 一天查一次 (与 sequential_worker 同姿态)
-    const size_t didx = data.asset.date_idx(date_str);
+    const size_t didx = data.asset.date_idx(date);
 
     {
       TraceN("ReadFiles");
@@ -70,7 +70,7 @@ void prefetch_worker(WorkerCtx ctx) {
           continue;
 
         const std::string orders_file = Utils::generate_orders_path(
-            data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
+            data.config.orders_dir, date, asset.asset_code, asset.exchange,
             config::BINARY_EXTENSION);
 
         // 缺文件不在这里报: TS worker decode 失败时记 WARNING, 预取只是暖缓存

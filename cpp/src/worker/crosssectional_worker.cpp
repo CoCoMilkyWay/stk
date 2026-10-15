@@ -37,8 +37,8 @@ void crosssectional_worker(WorkerCtx ctx) {
     if (cancel_requested.load(std::memory_order_relaxed))
       break;
     TraceN("DateLoop");
-    const std::string &date_str = data.asset.all_dates[date_idx];
-    TraceTextS(date_str.c_str());
+    const misc::Ymd date = data.asset.all_dates[date_idx];
+    TraceTextS(misc::dense(date).c_str());
 
     // 按日门控: 阻塞至全部 TS 写完本日, 返回后两层张量整体可读.
     // 数值一致性由输入契约锚定 (CS 只读秒网格张量行, 见 CoreCrosssection.hpp),
@@ -49,7 +49,7 @@ void crosssectional_worker(WorkerCtx ctx) {
       TraceColor(C_Orange);
       // Cancel 即退 (不等 ts_days_done 追平): 取消后的截面是弃子, 多算是
       // 浪费, 更不能拿退出条件去赌 TS 侧计数的时序.
-      while (!(day = store.cs_try_open(date_str))) {
+      while (!(day = store.cs_try_open(date))) {
         if (cancel_requested.load(std::memory_order_relaxed)) {
           Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(completed_dates) + " dates");
           return;
@@ -74,7 +74,7 @@ void crosssectional_worker(WorkerCtx ctx) {
     // 本日截面完成, slot 交给 IO 落盘
     store.cs_close(day);
 
-    Logger::log("worker_" + std::to_string(worker_id), date_str + " completed: " + std::to_string(T) + " timeslots");
+    Logger::log("worker_" + std::to_string(worker_id), std::to_string(date) + " completed: " + std::to_string(T) + " timeslots");
 
     TraceFrame;
   }

@@ -95,7 +95,7 @@ public:
   struct Slot {
     std::atomic<TensorState> state{TensorState::FREE};
     std::atomic<uint32_t> assets_done{0};             // == num_assets ⇒ 本日 TS 全部写完 (CS 放行)
-    char date[16] = {0};                              // "YYYYMMDD"
+    misc::Ymd date = 0;                               // 0 = 未分配
     feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]
 
     void allocate(size_t num_assets) {
@@ -120,7 +120,7 @@ public:
     void reset(size_t num_assets) {
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
         std::memset(data[lvl], 0, level_bytes(lvl, num_assets));
-      std::memset(date, 0, sizeof(date));
+      date = 0;
       assets_done.store(0, std::memory_order_relaxed);
     }
 
@@ -277,7 +277,7 @@ public:
   // 直接命中. 回填旧日期也走这里: 未计满的日子必为 BUSY, 直接命中, 不会重
   // 分配. slot 在 flush 时已 reset (FREE 态不变量: 张量清零), 拿来即写.
   // 池满返回空句柄 —— 调用方拿等待时间去干别的 (领跑者在池边领养回填).
-  Day ts_try_open(const std::string &date, int worker_id) {
+  Day ts_try_open(misc::Ymd date, int worker_id) {
     assert(worker_id >= 0 && worker_id < static_cast<int>(num_ts_workers_));
     std::unique_lock<std::mutex> lock(pool_mutex_);
     // 本日已被其他 worker 打开 (领养回填的旧日期也从这里命中). 只匹配
@@ -285,15 +285,15 @@ public:
     // FLUSH 中的 slot date 正被 reset, 不可读.
     for (size_t i = 0; i < pool_size_; ++i) {
       Slot &s = pool_[i];
-      if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date)
+      if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && s.date == date)
         return {&s, num_assets_};
     }
     for (size_t i = 0; i < pool_size_; ++i) {
       Slot &s = pool_[i];
       if (s.state.load(std::memory_order_acquire) == TensorState::FREE) {
-        snprintf(s.date, sizeof(s.date), "%s", date.c_str());
+        s.date = date;
         s.state.store(TensorState::BUSY, std::memory_order_release);
-        Logger::log("worker_" + std::to_string(worker_id), "ts_open: " + date + " → pool[" + std::to_string(i) + "]");
+        Logger::log("worker_" + std::to_string(worker_id), "ts_open: " + std::to_string(date) + " → pool[" + std::to_string(i) + "]");
         return {&s, num_assets_};
       }
     }
@@ -303,7 +303,7 @@ public:
   // 阻塞版: 池满则等 IO 释放 —— TS 超前于 CS/IO 的唯一背压点.
   // (主循环不用它 —— 等待时间要拿去领养, 见 sequential_worker; 回填与
   // 不需要边等边干活的调用方用这里.)
-  Day ts_open(const std::string &date, int worker_id, const std::atomic<bool> &cancel_requested) {
+  Day ts_open(misc::Ymd date, int worker_id, const std::atomic<bool> &cancel_requested) {
     for (int waited = 0;; ++waited) {
       if (cancel_requested.load(std::memory_order_relaxed))
         return {};
@@ -325,7 +325,7 @@ public:
     assert(prev < num_assets_ && "ts_close: 计数超过派活资产数 (重复计?)");
     if (prev + 1 == num_assets_) {
       ts_days_done_.fetch_add(1, std::memory_order_relaxed);
-      Logger::log("store", "ts_day_done: " + std::string(day.slot->date));
+      Logger::log("store", "ts_day_done: " + std::to_string(day.slot->date));
     }
   }
 
@@ -348,17 +348,17 @@ public:
   // 无锁 (与 io_try_flush 同姿态; 锁只属于 ts_open 的分配互斥):
   //   date 在 ts_open 的 release store(BUSY) 之前写完, acquire 观察到 BUSY 即可读;
   //   BUSY→DONE 只由本 CS 线程自己做 (cs_close), 不存在读期状态漂移.
-  Day cs_try_open(const std::string &date) {
+  Day cs_try_open(misc::Ymd date) {
     for (size_t i = 0; i < pool_size_; ++i) {
       Slot &s = pool_[i];
-      if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && date == s.date &&
+      if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && s.date == date &&
           s.assets_done.load(std::memory_order_acquire) == num_assets_)
         return {&s, num_assets_};
     }
     return {};
   }
 
-  Day cs_open(const std::string &date) {
+  Day cs_open(misc::Ymd date) {
     size_t backoff_us = 100;
     Day day = cs_try_open(date);
     while (!day) {
@@ -372,7 +372,7 @@ public:
   // CS 写完本日全部截面列, slot 交给 IO (BUSY→DONE)
   void cs_close(const Day &day) {
     assert(day.slot);
-    Logger::log("store", "cs_close: " + std::string(day.slot->date));
+    Logger::log("store", "cs_close: " + std::to_string(day.slot->date));
     [[maybe_unused]] const TensorState prev = day.slot->state.exchange(TensorState::DONE, std::memory_order_acq_rel);
     assert(prev == TensorState::BUSY && "cs_close: 状态机乱序");
     cs_days_done_.fetch_add(1, std::memory_order_relaxed);
@@ -392,13 +392,13 @@ public:
     if (!slot)
       return 0;
 
-    const std::string date(slot->date);
+    const misc::Ymd date = slot->date;
     const size_t bytes = disk_write(date, slot);
     assert(bytes > 0);
 
     slot->reset(num_assets_); // 清张量 + date + 计数: FREE 态不变量
     slot->state.store(TensorState::FREE, std::memory_order_release);
-    Logger::log("store", "io_flush: " + date + " complete");
+    Logger::log("store", "io_flush: " + std::to_string(date) + " complete");
     return bytes;
   }
 
@@ -450,13 +450,14 @@ private:
   }
 
   // 返回本日落盘总字节数
-  size_t disk_write(const std::string &date_str, Slot *slot) {
-    assert(slot && date_str.size() == 8);
+  size_t disk_write(misc::Ymd date, Slot *slot) {
+    assert(slot && date > 0);
+    const std::string date_str = std::to_string(date);
 
     auto t_start = std::chrono::high_resolution_clock::now();
     Logger::log("store", "disk_write: START " + date_str);
 
-    const std::string out_dir = feature_day_dir(output_dir_, date_str);
+    const std::string out_dir = feature_day_dir(output_dir_, date);
 
     auto t_before_mkdir = std::chrono::high_resolution_clock::now();
     std::filesystem::create_directories(out_dir);

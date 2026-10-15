@@ -18,6 +18,7 @@
 
 #include "codec/L2_DataType.hpp"  // L2::LOB_DEPTH
 #include "features/TimeIndex.hpp" // L0_ROWS / L1_ROWS (稳定形状常量, 不依赖字段表)
+#include "misc/date.hpp"
 
 #include <array>
 #include <atomic>
@@ -109,7 +110,7 @@ struct OrderFlow {
     }
 
     // ---- worker 写 / GUI 前缀读 ----
-    std::vector<std::string> dates; // 回测区间全部特征日 (换代时随 rescan 重扫; gen 匹配期间稳定)
+    std::vector<misc::Ymd> dates; // 回测区间全部特征日 (换代时随 rescan 重扫; gen 匹配期间稳定)
     size_t asset_idx = SIZE_MAX;
 
     // K线点集: data_valid 分钟, x = day_idx * L1_CAPACITY + minute
@@ -130,10 +131,9 @@ struct OrderFlow {
     double snap_to_day_start(double global_x) const {
       return static_cast<double>(day_idx_from_x(global_x) * OrderFlowConst::L1_CAPACITY);
     }
-    const std::string &date_from_x(double global_x) const {
-      static const std::string empty;
+    misc::Ymd date_from_x(double global_x) const {
       const size_t d = day_idx_from_x(global_x);
-      return d < dates.size() ? dates[d] : empty;
+      return d < dates.size() ? dates[d] : 0;
     }
 
     // worker: 换代 — 先零计数再置 gen (GUI 见到新 gen 时旧计数必已归零)
@@ -208,7 +208,7 @@ struct OrderFlow {
 
     // ---- 数据 (worker 写背槽, 发布后只读) ----
     uint32_t gen = 0; // 请求代 (GUI 配对; 兼作 HeatmapColored 失效键)
-    std::string date;
+    misc::Ymd date = 0;
     size_t asset_idx = SIZE_MAX;
     bool has_data = false; // .bin 存在且重放出至少一个有效快照
     size_t order_count = 0;
@@ -270,7 +270,7 @@ struct OrderFlow {
     // ---- 逐日状态槽 (双槽 ping-pong, 对仗 Depth) ----
     struct Slot {
       uint32_t gen = 0;
-      std::string date;
+      misc::Ymd date = 0;
       std::vector<Meta> meta; // [A] 与 AssetAxis 同序 (asset_idx 直接下标)
       void clear();
     };
@@ -295,7 +295,7 @@ struct OrderFlow {
 
     // 请求快照 (GUI; 锚点日变 → gen++ → RequestUniverse)
     uint32_t gen = 0;
-    std::string req_date;
+    misc::Ymd req_date = 0;
 
     // GUI: 单资产是否通过筛选 (has_data 是前置条件)
     bool passes(const Meta &m, int board) const;
@@ -361,7 +361,7 @@ struct OrderFlow {
     int selected_asset_idx = 0;
     bool asset_initialized = false; // 首个候选就绪时自动选一次 (之后尊重用户选择)
     double l1_anchor_x = 0;
-    std::string l1_anchor_date;       // GUI 自持副本 (dates 重建期间仍可用)
+    misc::Ymd l1_anchor_date = 0;     // GUI 自持副本 (dates 重建期间仍可用; 0 = 未设)
     size_t l0_anchor_tick = SIZE_MAX; // 图1 锚点 = 秒下标 (跨日/换资产稳定; SIZE_MAX = 未设)
 
     // Rendering parameters
@@ -374,7 +374,7 @@ struct OrderFlow {
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
     std::vector<int> kline_feats, depth_feats; // 选中特征列 (图2 = L1; 图1 = 当前选中层)
     int depth_feat_level = -1;                 // 图1 特征所属层 (期望态; -1 = 未设)
-    std::string depth_date;
+    misc::Ymd depth_date = 0;
 
     // 图2 X 域 (= 特征日数 × L1_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
     // 只在域本身变了 (重扫日期) 才复位视野 —— 换标的不动 X

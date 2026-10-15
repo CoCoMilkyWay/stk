@@ -4,7 +4,6 @@
 #include "gui/task_database/infrastructure/ScanThreadPool.hpp"
 #include "shared/SharedData.hpp"
 
-#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <cassert>
@@ -81,20 +80,9 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
   // ========================================
 
   // Input: backtest_start, backtest_end
-  std::string backtest_start = data_.config.start_date;
-  std::string backtest_end = data_.config.end_date;
-
-  // Convert YYYY-MM-DD to YYYYMMDD
-  backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
-  backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
-
-  if (backtest_start.empty() || backtest_end.empty()) {
-    result.status = DatabaseStatus::Error;
-    result.error_message = "Backtest period not configured";
-    last_check_ = result;
-    status_ = ScanStatus::Error;
-    co_return;
-  }
+  const misc::Ymd backtest_start = data_.config.start_date;
+  const misc::Ymd backtest_end = data_.config.end_date;
+  assert(backtest_start && backtest_end && "回测区间未配置 (Config::Load 已校验)");
 
   // ========================================
   // Phase 2: Check file system - update status, yield, then check

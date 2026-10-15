@@ -140,7 +140,7 @@ Transform::~Transform() = default;
 // ============================================================================
 
 void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                                std::vector<std::string> month_keys,
+                                std::vector<misc::Ym> month_keys,
                                 std::vector<uint32_t> global_ids, uint32_t series_focus) {
   TraceN("TransformReset");
   assert(cols.size() == 1u + (p.cs_neutral() ? 2u : 0u) + (has_valid ? 1u : 0u));
@@ -188,7 +188,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   const size_t stride = kDaysPerBatch * VR; // out 每资产步长 (按满批)
 
   // 日期枚举 (全区间, 不抽样, 从前往后)
-  std::vector<std::string> dates = enumerate_dates(reader, months_).dates;
+  std::vector<misc::Ymd> dates = enumerate_dates(reader, months_).dates;
   if (dates.empty())
     return true;
   if (p.max_days > 0 && dates.size() > p.max_days)

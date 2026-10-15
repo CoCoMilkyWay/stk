@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 
 class FeatureRead;
@@ -82,7 +81,7 @@ struct FeaturePreview : analysis::StreamState {
   // n_features = 该层特征总数 (cells 尺寸); n_assets = universe 子轴大小
   void reset_for_build(std::vector<size_t> feat_cols, std::vector<L2::ValidType> valid_types,
                        size_t meta_col, size_t lim_dn_col, size_t lim_up_col,
-                       std::vector<std::string> month_keys,
+                       std::vector<misc::Ym> month_keys,
                        size_t n_features, size_t n_assets);
 
   // 轮训构建 (轮内多线程抢特征块: IO + 扫描 + 块末发布; 轮末栅栏); 被取消返回 false
@@ -98,6 +97,6 @@ private:
   std::vector<L2::ValidType> valid_types_;
   size_t meta_col_ = 0;
   size_t lim_dn_col_ = 0, lim_up_col_ = 0; // price 笼两列
-  std::vector<std::string> months_;        // "YYYYMM" 升序
+  std::vector<misc::Ym> months_;           // 升序
   size_t A_ = 0;                           // universe 子轴大小
 };

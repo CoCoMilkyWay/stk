@@ -2,8 +2,9 @@
 // Controls CSV→Binary conversion with worker management
 #pragma once
 
+#include "misc/date.hpp"
+
 #include <cstdint>
-#include <string>
 #include <vector>
 
 // Forward declarations
@@ -38,7 +39,7 @@ struct AssetTableView {
 // 条, 一次扫描下来通常只命中三四条, 全列出来会让表宽得没法看 —— 所以只给
 // "这批日期里真出现过"的原因出列 (见 columns), 列集合与行一起缓存.
 struct DateTableView {
-  std::vector<std::string> rows; // 日期, 已过滤已排序
+  std::vector<misc::Ymd> rows; // 日期, 已过滤已排序
 
   // 出列的判据位 (L2::Check 的移位量). 固定的处置分类列不在此列.
   std::vector<size_t> check_columns;

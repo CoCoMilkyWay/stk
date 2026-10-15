@@ -27,8 +27,8 @@
 
 inline constexpr size_t DEBUG_ASSET_IDS[] = {3};
 
-inline constexpr size_t DEBUG_PRINT_DAYS = 0;                    // print first N consecutive days: 0
-inline constexpr const char *DEBUG_PRINT_DATES[] = {"20240124"}; // print on specific dates
+inline constexpr size_t DEBUG_PRINT_DAYS = 0;                // print first N consecutive days: 0
+inline constexpr misc::Ymd DEBUG_PRINT_DATES[] = {20240124}; // print on specific dates
 
 inline constexpr size_t DEBUG_ASSET_IDS_COUNT = sizeof(DEBUG_ASSET_IDS) / sizeof(DEBUG_ASSET_IDS[0]);
 inline constexpr size_t DEBUG_PRINT_DATES_COUNT = sizeof(DEBUG_PRINT_DATES) / sizeof(DEBUG_PRINT_DATES[0]);
@@ -93,9 +93,9 @@ public:
     return *tick_data_;
   }
 
-  void begin_day(const std::string &date_str, const GlobalFeatureStore::Day &day) {
+  void begin_day(misc::Ymd date, const GlobalFeatureStore::Day &day) {
     assert(core_ && "begin_day: LOB not bound");
-    core_->begin_day(date_str, day);
+    core_->begin_day(date, day);
 
 #if DEBUG_BOOK_PRINT
     should_log_this_day_ = false;
@@ -113,7 +113,7 @@ public:
 
         // Condition 2: Specific dates (both conditions can trigger)
         for (size_t j = 0; j < DEBUG_PRINT_DATES_COUNT; ++j) {
-          if (date_str == DEBUG_PRINT_DATES[j]) {
+          if (date == DEBUG_PRINT_DATES[j]) {
             should_log_this_day_ = true;
             break;
           }

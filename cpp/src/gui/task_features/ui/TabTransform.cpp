@@ -367,7 +367,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   if (has) {
     const char *name = sn.asset < asset.items.size() ? asset.items[sn.asset].asset_name.c_str() : "?";
-    ImGui::Text("原始 %u.%s  %s ~ %s (%zu 天)", sn.asset, name, sn.date_begin.c_str(), sn.date_end.c_str(), sn.n_days);
+    ImGui::Text("原始 %u.%s  %s ~ %s (%zu 天)", sn.asset, name, misc::dense(sn.date_begin).c_str(), misc::dense(sn.date_end).c_str(), sn.n_days);
   } else {
     ImGui::TextDisabled("原始");
   }

@@ -2,6 +2,7 @@
 
 #include "boost/asio/awaitable.hpp"
 #include "codec/L2_DataType.hpp"
+#include "misc/date.hpp"
 #include "shared/EncodeDayRecord.hpp"
 
 #include <atomic>
@@ -54,8 +55,8 @@ struct AssetItem {
   L2::ExchangeType exchange_type = L2::ExchangeType::UNKNOWN; // 由 exchange 派生
 
   // 上市区间
-  std::string start_date; // YYYYMMDD
-  std::string end_date;   // YYYYMMDD
+  misc::Ymd start_date = 0;
+  misc::Ymd end_date = 0;
 
   // 按日状态: 按全局日期轴 (Asset::date_axis) 下标密集存储.
   //
@@ -73,7 +74,7 @@ struct AssetItem {
 
   // 构造
   AssetItem() = default;
-  AssetItem(size_t id, std::string code, std::string name, std::string exch, std::string start, std::string end);
+  AssetItem(size_t id, std::string code, std::string name, std::string exch, misc::Ymd start, misc::Ymd end);
 
   // 这里不提供"缺失天数"一类的统计: date_info 只对有文件的日子有非零值,
   // 拿它当全集去做减法恒得 0. 缺口的唯一真相是交易日历 —— 按天看
@@ -89,7 +90,7 @@ struct Asset {
   // 核心数据
   // ========================================
   std::vector<AssetItem> items;
-  std::vector<std::string> all_dates; // 扫描得到的所有已知交易日
+  std::vector<misc::Ymd> all_dates; // 扫描得到的所有已知交易日
 
   // ========================================
   // 日期轴: AssetItem::date_info 的下标空间
@@ -97,15 +98,14 @@ struct Asset {
   // 有 .bin 目录的天, 升序. 每次二进制扫描与全部 date_info 一起整体重建,
   // 中间不做增量修补 —— 一次重建是 800 次 stat + 读 .stat, 百毫秒量级,
   // 不值得为它维护脏日/基线那套状态.
-  std::vector<std::string> date_axis;                      // idx -> "YYYYMMDD"
-  std::unordered_map<std::string, uint32_t> date_axis_idx; // date -> idx
+  std::vector<misc::Ymd> date_axis; // idx -> date, 升序
 
   static constexpr size_t kNoDate = SIZE_MAX;
 
   // 查, 不存在返回 kNoDate (date_at(kNoDate) 自然给零值)
-  size_t date_idx(const std::string &date) const {
-    auto it = date_axis_idx.find(date);
-    return it != date_axis_idx.end() ? it->second : kNoDate;
+  size_t date_idx(misc::Ymd date) const {
+    auto it = std::lower_bound(date_axis.begin(), date_axis.end(), date);
+    return it != date_axis.end() && *it == date ? static_cast<size_t>(it - date_axis.begin()) : kNoDate;
   }
 
   // ========================================
@@ -115,7 +115,7 @@ struct Asset {
     size_t total_assets = 0;       // 当日已上市未退市的标的数
     size_t assets_with_orders = 0; // 其中有逐笔数据的标的数
   };
-  std::unordered_map<std::string, DateStats> date_stats; // date -> 统计 (算一次后缓存)
+  std::unordered_map<misc::Ymd, DateStats> date_stats; // date -> 统计 (算一次后缓存)
 
   // ========================================
   // 按日缺口 (Encode 页的 By Date 分析表)
@@ -128,11 +128,11 @@ struct Asset {
     size_t orders_missing = 0;  // 其中没有 .bin 的
     size_t archive_missing = 0; // 其中归档也没有的 (归档按天存, 要么全缺要么不缺)
   };
-  std::map<std::string, DateGap> date_gaps; // date -> 缺口; 只含回测区间内的天
+  std::map<misc::Ymd, DateGap> date_gaps; // date -> 缺口; 只含回测区间内的天
 
   // 每天的编码账目, 由扫描从 orders/YYYY/MM/DD/.stat 读入 (见shared/EncodeDayRecord.hpp).
   // 缺口的"原因"只有编码器知道, 而 date_gaps只知道"缺了几个" —— 两者在 By Date 表里按日期对齐.
-  std::unordered_map<std::string, EncodeDayRecord> day_records;
+  std::unordered_map<misc::Ymd, EncodeDayRecord> day_records;
 
   // ========================================
   // 按资产统计 (Encode 缺失表 / Table 的 Days·Orders·Orders%)
@@ -157,8 +157,8 @@ struct Asset {
     size_t archive_missing = 0; // 其中归档源也没有的
 
     // 前 kMissingSample 个缺失日期; 全存的话是几百万条字符串
-    std::vector<std::string> orders_missing_sample;
-    std::vector<std::string> archive_missing_sample;
+    std::vector<misc::Ymd> orders_missing_sample;
+    std::vector<misc::Ymd> archive_missing_sample;
 
     float orders_coverage_percent() const {
       return expected_days > 0
@@ -184,9 +184,9 @@ struct Asset {
     std::string path;     // 二进制库根目录
 
     // 日期覆盖
-    std::string min_date;        // YYYYMMDD, 已编码日期的最早
-    std::string max_date;        // YYYYMMDD, 已编码日期的最晚
-    std::set<std::string> dates; // 所有已完整编码的日期
+    misc::Ymd min_date = 0;    // 已编码日期的最早
+    misc::Ymd max_date = 0;    // 已编码日期的最晚
+    std::set<misc::Ymd> dates; // 所有已完整编码的日期
 
     // 统计 (由 coro_compute_coverage_statistics 的逐资产遍历算出)
     size_t encoded_assets = 0; // 至少有一天有编码数据的资产数
@@ -210,9 +210,9 @@ struct Asset {
     std::string path;     // 归档根目录
 
     // 日期覆盖
-    std::string min_date;        // YYYYMMDD, 归档日期的最早
-    std::string max_date;        // YYYYMMDD, 归档日期的最晚
-    std::set<std::string> dates; // 所有可用归档日期
+    misc::Ymd min_date = 0;    // 归档日期的最早
+    misc::Ymd max_date = 0;    // 归档日期的最晚
+    std::set<misc::Ymd> dates; // 所有可用归档日期
 
     // 统计 (由文件扫描算出)
     size_t total_files = 0;    // 归档文件总数
@@ -223,19 +223,19 @@ struct Asset {
   // 回测覆盖 (按需计算)
   // ========================================
   struct {
-    std::string start; // 回测起始日 (来自配置)
-    std::string end;   // 回测结束日 (来自配置)
+    misc::Ymd start = 0; // 回测起始日 (来自配置)
+    misc::Ymd end = 0;   // 回测结束日 (来自配置)
 
     // 基准: 回测区间内应有的交易日 (归档存在时取归档, 否则取二进制库)
-    std::set<std::string> required_dates;
+    std::set<misc::Ymd> required_dates;
 
     // 二进制库覆盖情况
-    std::set<std::string> covered_dates; // 已编码
-    std::set<std::string> missing_dates; // 缺失
+    std::set<misc::Ymd> covered_dates; // 已编码
+    std::set<misc::Ymd> missing_dates; // 缺失
 
     // 缺失日对应的归档可用性
-    std::set<std::string> can_encode;    // 归档有, 可直接编码
-    std::set<std::string> need_download; // 归档也没有, 需下载
+    std::set<misc::Ymd> can_encode;    // 归档有, 可直接编码
+    std::set<misc::Ymd> need_download; // 归档也没有, 需下载
   } backtest;
 
   // ========================================
@@ -259,7 +259,7 @@ struct Asset {
   // 需下载. required_dates 的基准 = 基本面交易日历 (assetinfo.stock_days).
   // 纯集合运算, 几百个日期, 同步跑完. 区间内的条数/体积 (要遍历 date_info)
   // 归 coro_compute_coverage_statistics 那趟一起算.
-  void compute_backtest_coverage(const std::string &start, const std::string &end,
+  void compute_backtest_coverage(misc::Ymd start, misc::Ymd end,
                                  const AssetInfo &assetinfo);
 
   // 按日统计 (Browser 完整性 / Table 的 Orders% / Encode 的缺失表,
@@ -294,20 +294,22 @@ namespace Utils {
 // 条数 —— 条数由文件头的 original_size 精确推出 (见 BinaryDecoder_L2), 写在
 // 名字里纯属冗余, 还会让"这天编过了吗"退化成通配符匹配而不是一次 exists.
 
-inline std::string generate_archive_path(const std::string &base_dir, const std::string &date_str, const std::string &extension) {
-  return base_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(0, 6) + "/" + date_str + extension;
+// archive/YYYY/YYYYMM/YYYYMMDD<ext>
+inline std::string generate_archive_path(const std::string &base_dir, misc::Ymd date, const std::string &extension) {
+  const std::string d = misc::dense(date);
+  return base_dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + extension;
 }
 
 // orders/YYYY/MM/DD
-inline std::string generate_date_dir(const std::string &orders_dir, const std::string &date_str) {
-  return orders_dir + "/" + date_str.substr(0, 4) + "/" + date_str.substr(4, 2) + "/" + date_str.substr(6, 2);
+inline std::string generate_date_dir(const std::string &orders_dir, misc::Ymd date) {
+  return orders_dir + "/" + misc::slash(date);
 }
 
 // orders/YYYY/MM/DD/<CODE>.<EX>.bin
-inline std::string generate_orders_path(const std::string &orders_dir, const std::string &date_str,
+inline std::string generate_orders_path(const std::string &orders_dir, misc::Ymd date,
                                         const std::string &asset_code, const std::string &exchange,
                                         const std::string &binary_extension) {
-  return generate_date_dir(orders_dir, date_str) + "/" + asset_code + "." + exchange + binary_extension;
+  return generate_date_dir(orders_dir, date) + "/" + asset_code + "." + exchange + binary_extension;
 }
 
 } // namespace Utils

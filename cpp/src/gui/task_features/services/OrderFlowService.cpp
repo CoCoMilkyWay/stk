@@ -100,20 +100,20 @@ void OrderFlowService::RequestKline(uint32_t gen, size_t asset_idx, std::vector<
   req_cv_.notify_all();
 }
 
-void OrderFlowService::RequestDepth(uint32_t gen, std::string date, size_t asset_idx, int feat_level, std::vector<int> feats) {
+void OrderFlowService::RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, int feat_level, std::vector<int> feats) {
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
   assert(feat_level == 0 || feat_level == 1);
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_depth_ = DepthReq{gen, std::move(date), asset_idx, feat_level, std::move(feats)};
+    pending_depth_ = DepthReq{gen, date, asset_idx, feat_level, std::move(feats)};
   }
   req_cv_.notify_all();
 }
 
-void OrderFlowService::RequestUniverse(uint32_t gen, std::string date) {
+void OrderFlowService::RequestUniverse(uint32_t gen, misc::Ymd date) {
   {
     std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_universe_ = UniverseReq{gen, std::move(date)};
+    pending_universe_ = UniverseReq{gen, date};
   }
   req_cv_.notify_all();
 }
@@ -180,7 +180,7 @@ void OrderFlowService::worker_loop() {
 // 日期扫描: features/<universe>/YYYY/MM/DD 有整层文件的日, 升序
 // ============================================================================
 
-void OrderFlowService::scan_dates(std::vector<std::string> &out) const {
+void OrderFlowService::scan_dates(std::vector<misc::Ymd> &out) const {
   TraceN("OF_ScanDates");
   const std::string dir = data_->config.FeatureUniverseDir();
 
@@ -199,7 +199,8 @@ void OrderFlowService::scan_dates(std::vector<std::string> &out) const {
       for (const auto &day_entry : std::filesystem::directory_iterator(month_entry.path(), ec)) {
         if (!day_entry.is_directory() || day_entry.path().filename().string().size() != 2)
           continue;
-        const std::string date = year + month + day_entry.path().filename().string();
+        const misc::Ymd date = misc::parse_ymd(year + month + day_entry.path().filename().string());
+        assert(date && "特征目录 YYYY/MM/DD 非日期");
         if (FeatureRead::has_date(dir, date))
           out.push_back(date);
       }

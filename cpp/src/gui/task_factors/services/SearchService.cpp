@@ -262,7 +262,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     lg("Optimize %s  @ %s", req.file.c_str(), ts);
     lg("模板: %s", req.tmpl.c_str());
-    lg("后端 %s, 股票池 %s, 区间 %s ~ %s", res.backend.c_str(), req.universe.c_str(), req.start_date.c_str(), req.end_date.c_str());
+    lg("后端 %s, 股票池 %s, 区间 %s ~ %s", res.backend.c_str(), req.universe.c_str(), misc::dash(req.start_date).c_str(), misc::dash(req.end_date).c_str());
   }
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
   const auto abort_with = [&](std::string msg) {
@@ -359,7 +359,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   };
   // ---- 作用域 / 日期 ----
   FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
-  const std::vector<std::string> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
+  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty())
     return abort_with("特征库在该区间无数据 (先算特征)");
   const int days = static_cast<int>(dates.size());
@@ -413,7 +413,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
      req.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
   for (int ci = 0; ci < n_chunks; ++ci) {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - kCarryDays);
-    lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, dates[static_cast<size_t>(day0)].c_str(), dates[static_cast<size_t>(day1 - 1)].c_str(), day1 - day0,
+    lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, misc::dense(dates[static_cast<size_t>(day0)]).c_str(), misc::dense(dates[static_cast<size_t>(day1 - 1)]).c_str(), day1 - day0,
        day1 - load0, res.chunk_plan[static_cast<size_t>(ci)].mb);
   }
 
@@ -422,7 +422,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
   // 装一块: 交易日 [day0, day1), 前带 carry; 首块顺带查特征叶值域
   const auto load_chunk = [&](int ci, ChunkData &cd) -> Rc {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - kCarryDays);
-    const std::vector<std::string> cdates(dates.begin() + load0, dates.begin() + day1);
+    const std::vector<misc::Ymd> cdates(dates.begin() + load0, dates.begin() + day1);
     const Clock::time_point t_load = Clock::now();
     cd.idx = -1;
     cd.lab.ry.clear();

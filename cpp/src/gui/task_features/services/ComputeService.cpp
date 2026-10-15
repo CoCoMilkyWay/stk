@@ -47,17 +47,13 @@ void ComputeService::start_compute(ComputeConfig config) {
   // Launch compute in background thread
   compute_thread_ = std::async(std::launch::async, [this]() {
     // Filter dates to backtest period only
-    std::string backtest_start = data_.config.start_date;
-    std::string backtest_end = data_.config.end_date;
-
-    // Convert YYYY-MM-DD to YYYYMMDD
-    backtest_start.erase(std::remove(backtest_start.begin(), backtest_start.end(), '-'), backtest_start.end());
-    backtest_end.erase(std::remove(backtest_end.begin(), backtest_end.end(), '-'), backtest_end.end());
+    const misc::Ymd backtest_start = data_.config.start_date;
+    const misc::Ymd backtest_end = data_.config.end_date;
 
     // 计算日期轴以交易日历为准: binary/archive 缺日也要落一份默认张量.
-    std::vector<std::string> backtest_dates;
+    std::vector<misc::Ymd> backtest_dates;
     backtest_dates.reserve(data_.asset.backtest.required_dates.size());
-    for (const auto &date : data_.asset.backtest.required_dates) {
+    for (const misc::Ymd date : data_.asset.backtest.required_dates) {
       if (date >= backtest_start && date <= backtest_end) {
         backtest_dates.push_back(date);
       }
@@ -92,7 +88,7 @@ void ComputeService::start_compute(ComputeConfig config) {
     // Phase 2 前置: 动态池逐日名单 (与 universe_axis 同一文件: 并集 = 子轴, 逐日成员位 → Meta cs_valid).
     // 回测区间每一天都必须出过名单, 否则是名单没跑到这段 —— 启动即死, 不要静默算出半截 cs_valid.
     data_.universe_pool = (data_.config.universe == "all") ? universe::Pool::all() : universe::Pool::load(data_.config.UniversePath());
-    assert(std::all_of(backtest_dates.begin(), backtest_dates.end(), [&](const std::string &d) { return data_.universe_pool.has_date(d); }) &&
+    assert(std::all_of(backtest_dates.begin(), backtest_dates.end(), [&](misc::Ymd d) { return data_.universe_pool.has_date(d); }) &&
            "回测日不在动态池名单里: 重跑 py/universe/<name>.py 覆盖到 end_date");
 
     // Load balancing (初始形态): 按回测区间内的逐笔条数降序 + 轮询分配 ——
@@ -145,7 +141,7 @@ void ComputeService::start_compute(ComputeConfig config) {
 
     // Temporarily replace all_dates with backtest_dates for workers
     // Save original dates and restore after computation
-    std::vector<std::string> original_dates = std::move(data_.asset.all_dates);
+    std::vector<misc::Ymd> original_dates = std::move(data_.asset.all_dates);
     data_.asset.all_dates = backtest_dates;
 
     // 回测全量重算: 显式清本 universe 的特征库 (清库是调用方的决定, 不是

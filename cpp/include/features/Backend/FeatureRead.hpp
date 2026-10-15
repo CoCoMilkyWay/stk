@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -142,7 +143,7 @@ private:
 
   // 装载原语: 某日某层的字段集合 → dst [T][n][A]. fields == nullptr 取全部列
   // (n == field_count); 整层文件 + 全列时直读 dst, 零中转.
-  void load_fields(const std::string &date, size_t lvl, const size_t *fields, size_t n,
+  void load_fields(misc::Ymd date, size_t lvl, const size_t *fields, size_t n,
                    feature_storage_t *dst, size_t A, Scratch &s) const {
     const auto &L = level_info(lvl);
     const std::string day_dir = feature_day_dir(base_dir_, date);
@@ -179,7 +180,7 @@ public:
   // 选列区间张量 (Dist 任意日期集 / TimeSeries 整月), 布局 [N_days × T][F_selected][A];
   // 日步长恒为 LEVELS[level].rows (含末尾哨兵行), 时间轴消费用 level_valid_rows(level)
   struct MonthTensor {
-    std::vector<std::string> dates;      // [N_days]
+    std::vector<misc::Ymd> dates;        // [N_days]
     std::vector<feature_storage_t> data; // [N_days*T × F_selected × A]
     size_t A = 0;
     size_t level = 0;
@@ -259,7 +260,7 @@ public:
 
   // 单日单层张量 [T][F_total][A]: 一个实例 = 一层, 形状是 level_info(level) 层表常量
   struct DayTensor {
-    std::string date;
+    misc::Ymd date = 0;
     size_t level = 0;
     size_t A = 0;
     std::vector<feature_storage_t> data;
@@ -283,9 +284,9 @@ public:
   };
 
   // Load single day, all features of out.level (for GUI)
-  void load_day(const std::string &date, DayTensor &out) const {
+  void load_day(misc::Ymd date, DayTensor &out) const {
     Trace;
-    assert(date.size() == 8);
+    assert(date > 0);
     assert(out.A > 0 && "Must preallocate() before load_day()");
     out.date = date;
     load_fields(date, out.level, nullptr, level_info(out.level).field_count, out.data.data(), out.A, out.scratch);
@@ -299,7 +300,7 @@ public:
   // 列宽必须为 1 (与 load_month_columns 同约束); L0/L1 逐列文件下只读 n 个列文件,
   // dst 内存都只有 [T][n][A].
   struct DayColumns {
-    std::string date;
+    misc::Ymd date = 0;
     size_t level = 0;
     size_t A = 0;
     size_t max_features = 0;
@@ -321,9 +322,9 @@ public:
   };
 
   // Load single day, selected width-1 fields
-  void load_day_columns(const std::string &date, const std::vector<size_t> &feature_indices, DayColumns &out) const {
+  void load_day_columns(misc::Ymd date, const std::vector<size_t> &feature_indices, DayColumns &out) const {
     Trace;
-    assert(date.size() == 8);
+    assert(date > 0);
     assert(out.A > 0 && "Must preallocate() before load_day_columns()");
     assert(!feature_indices.empty() && feature_indices.size() <= out.max_features);
     out.date = date;
@@ -337,7 +338,7 @@ public:
 
   // 单日选列载入到区间张量的第 day_idx 槽 (Dist 抽样流式: 逐日 IO, 进度/取消粒度归调用方)
   // dates/feature_indices 由调用方维护
-  void load_date_columns_into(const std::string &date, const std::vector<size_t> &feature_indices,
+  void load_date_columns_into(misc::Ymd date, const std::vector<size_t> &feature_indices,
                               MonthTensor &out, size_t day_idx) const {
     assert(out.A > 0 && "Must preallocate() before load_date_columns_into()");
     const size_t n = feature_indices.size();
@@ -347,8 +348,7 @@ public:
   }
 
   void load_month_columns(
-      const std::string &year,
-      const std::string &month,
+      misc::Ym month,
       const std::vector<size_t> &feature_indices,
       MonthTensor &out) const {
     Trace;
@@ -361,14 +361,14 @@ public:
 
     {
       TraceN("ListDates");
-      out.dates = list_dates(year, month);
+      out.dates = list_dates(month);
       assert(!out.dates.empty() && "No dates found");
       assert(out.dates.size() <= out.max_days && "Day count exceeds preallocated");
     }
 
     for (size_t day_idx = 0; day_idx < out.dates.size(); ++day_idx) {
       TraceN("LoadDay");
-      TraceTextS(out.dates[day_idx].c_str());
+      TraceTextS(misc::dense(out.dates[day_idx]).c_str());
       load_date_columns_into(out.dates[day_idx], feature_indices, out, day_idx);
     }
   }
@@ -378,28 +378,27 @@ public:
   // ========================================================================
 
   // 该日是否有特征文件 (以最后一层最后一列文件为准: IO worker 按层序落盘, 它在则全在)
-  static bool has_date(const std::string &base_dir, const std::string &date) {
-    assert(date.size() == 8);
+  static bool has_date(const std::string &base_dir, misc::Ymd date) {
+    assert(date > 0);
     const auto &L = level_info(LEVEL_COUNT - 1);
     return std::filesystem::exists(feature_column_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1, L.width - 1));
   }
-  bool has_date(const std::string &date) const { return has_date(base_dir_, date); }
+  bool has_date(misc::Ymd date) const { return has_date(base_dir_, date); }
 
-  std::vector<std::string> list_dates(const std::string &year, const std::string &month) const {
-    std::vector<std::string> dates;
-    std::string dir = base_dir_ + "/" + year + "/" + month;
+  // 月 m 内已齐备落盘的日, 升序
+  std::vector<misc::Ymd> list_dates(misc::Ym m) const {
+    std::vector<misc::Ymd> dates;
+    const std::string dir = base_dir_ + "/" + misc::slash(misc::first_day(m)).substr(0, 7);
 
     // 目录不在 / 遍历前被并发删库 (wipe_dir) → ec 置位, 迭代器即 end
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
       if (entry.is_directory()) {
-        std::string day = entry.path().filename().string();
-        if (day.size() == 2) {
-          std::string date = year + month + day;
-          if (has_date(date)) {
-            dates.push_back(date);
-          }
-        }
+        const std::string day = entry.path().filename().string();
+        const int dd = day.size() == 2 && std::isdigit(day[0]) && std::isdigit(day[1]) ? std::stoi(day) : 0;
+        const misc::Ymd date = dd ? m * 100 + dd : 0;
+        if (date && has_date(date))
+          dates.push_back(date);
       }
     }
 

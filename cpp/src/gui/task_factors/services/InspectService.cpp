@@ -93,7 +93,7 @@ struct InspectService::Flow {
   factor::exec::ForkJoin ex;
   // S 作用域
   std::string scope_key; // features_dir | 子轴 hash | 月份表; 空 = 未装载
-  std::vector<std::string> dates;
+  std::vector<misc::Ymd> dates;
   Loaded L; // planes / feat_codes = 作用域内读过的特征 (只增; 每次评估前把当前 Dag::feats 换到前排); labels (毛) / costs / cs 常驻
   // Y 毛标签 [H]: ry = prep_label 常驻, lab.L 指向 L.labels + ry
   LabelsHost lab;
@@ -206,7 +206,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
 
   // ---- S: 作用域 (标签 / 成本 / 门控 + 特征缓存) ----
   FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
-  const std::vector<std::string> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
+  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty()) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;

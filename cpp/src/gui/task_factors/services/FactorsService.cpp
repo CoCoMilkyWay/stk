@@ -128,9 +128,17 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
     dst = it->get<std::string>();
     return true;
   };
+  const auto ymd = [&](const json &o, const char *key, misc::Ymd &dst) {
+    std::string s;
+    if (!str(o, key, s))
+      return false;
+    dst = misc::parse_ymd(s);
+    assert(dst && "因子文件 run 日期非 YYYY-MM-DD");
+    return true;
+  };
   if (!json_str_is(run, "frame", factor::stat::frame_name(r.frame)))
     return;
-  if (!str(run, "universe", t.scope.universe) || !str(run, "start_date", t.scope.start_date) || !str(run, "end_date", t.scope.end_date) ||
+  if (!str(run, "universe", t.scope.universe) || !ymd(run, "start_date", t.scope.start_date) || !ymd(run, "end_date", t.scope.end_date) ||
       !str(run, "backend", t.scope.backend) || !str(j, "time", t.scope.time))
     return;
   if (!json_int(run, "days", t.scope.days) || !json_int(run, "T", t.scope.T) || !json_int(run, "A", t.scope.A))
@@ -188,8 +196,8 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
 ojson run_json(const FactorRow &r) {
   ojson j;
   j["universe"] = r.scope.universe;
-  j["start_date"] = r.scope.start_date;
-  j["end_date"] = r.scope.end_date;
+  j["start_date"] = misc::dash(r.scope.start_date);
+  j["end_date"] = misc::dash(r.scope.end_date);
   j["days"] = r.scope.days;
   j["T"] = r.scope.T;
   j["A"] = r.scope.A;
@@ -872,7 +880,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   // ---- 装载 ----
   status_.store(FactorsStatus::Loading, std::memory_order_release);
   FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
-  const std::vector<std::string> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
+  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty()) {
     finish_all_pending("特征库在该区间无数据 (先算特征)");
     return true;

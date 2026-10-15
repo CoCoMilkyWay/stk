@@ -64,7 +64,7 @@ inline constexpr int layer_tail(int l, int j) { return factor::stat::kGroups + l
 // 从 result 派生的日级序列 (UI 线程持锁算一次, 选项变才重算)
 struct InspectDerived {
   int days = 0;
-  std::vector<std::string> dates;          // [days] 轴刻度用
+  std::vector<misc::Ymd> dates;            // [days] 轴刻度用
   std::vector<float> uni_index;            // [T] = InspectResult::uni_index (右上 K 线叠加)
   std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
   std::vector<float> lay_cum[kLayerLines]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)

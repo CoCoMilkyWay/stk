@@ -57,8 +57,6 @@ bool closed(Ym m, Ymd today) {
   return misc::last_day(m) < misc::add_days(today, -::config::PIPELINE_LOOKBACK_DAYS);
 }
 
-Ymd start_date() { return misc::parse_ymd(::config::PIPELINE_START_DATE); }
-
 } // namespace
 
 fs::path root() { return misc::git_root() / "output" / "fundamental"; }
@@ -120,7 +118,7 @@ State state(const Spec &s, const Shard *sh, Ym m, Ymd today) {
 }
 
 std::vector<Task> plan(const Spec &s, const Catalog &cat, Ymd today) {
-  const Ymd start = start_date();
+  const Ymd start = ::config::PIPELINE_START_DATE;
   assert(start > 0 && start <= today);
   const Ymd hz = horizon(s.avail_hour, today);
   // 已存在的分片刚写过 → 本轮不动
@@ -159,7 +157,7 @@ std::vector<Ym> frozen(const Spec &s, const Catalog &cat, Ymd today) {
   std::vector<Ym> out;
   if (s.shape != Shape::Month)
     return out;
-  const Ym start = misc::ym_of(start_date());
+  const Ym start = misc::ym_of(::config::PIPELINE_START_DATE);
   for (const Shard &sh : cat.shards(s.name))
     if (sh.ym >= start && state(s, &sh, sh.ym, today) == State::Frozen)
       out.push_back(sh.ym);

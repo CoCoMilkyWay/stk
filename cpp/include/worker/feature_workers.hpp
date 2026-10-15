@@ -1,10 +1,11 @@
 #pragma once
 
+#include "misc/date.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -110,7 +111,7 @@ class FeatureProgress {
 public:
   // dates = 回测日期轴 (渲染期内调用方保证存活); 构造即预留 5 行并启动采样线程
   FeatureProgress(const GlobalFeatureStore &store, const TsSchedule &sched,
-                  const ComputeStats &stats, const std::vector<std::string> &dates);
+                  const ComputeStats &stats, const std::vector<misc::Ymd> &dates);
   ~FeatureProgress();
 
   void stop(); // 终画一帧并换行 (幂等)
@@ -122,7 +123,7 @@ private:
   const GlobalFeatureStore &store_;
   const TsSchedule &sched_;
   const ComputeStats &stats_;
-  const std::vector<std::string> &dates_;
+  const std::vector<misc::Ymd> &dates_;
   std::chrono::steady_clock::time_point start_time_;
 
   // 滑窗历史 (仅渲染线程触碰): work → 当前速率 (速度展示),

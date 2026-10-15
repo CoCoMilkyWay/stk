@@ -1,5 +1,6 @@
 #pragma once
 
+#include "misc/date.hpp"
 #include "misc/progress_parallel.hpp"
 #include "shared/EncodeDayRecord.hpp"
 
@@ -58,7 +59,7 @@ struct EncodeTask {
 // 一批共享同一个归档的任务 (纯元数据, 很小) — worker 的调度粒度,
 // 也是一次 unrar p 调用的粒度 (摊薄进程启动 + 包头扫描的固定开销).
 struct EncodeBatch {
-  std::string date; // "20260803"
+  misc::Ymd date = 0;
   std::string archive_path;
   std::vector<EncodeTask> tasks;
 };
@@ -118,7 +119,7 @@ struct EncodeStats {
     std::vector<EncodeDayIndexEntry> index;
   };
   std::mutex days_mutex;
-  std::map<std::string, DayProgress> days_inflight;
+  std::map<misc::Ymd, DayProgress> days_inflight;
 };
 
 // producer: 逐天 [列举 → 增量过滤 → 切批 → 推批].

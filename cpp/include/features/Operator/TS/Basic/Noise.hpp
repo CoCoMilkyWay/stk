@@ -9,10 +9,10 @@
 // =============================================================================
 
 #include "features/DataDefine.hpp"
+#include "misc/date.hpp"
 #include <cmath>
 #include <cstdint>
 #include <numbers>
-#include <string>
 
 class Noise {
 public:
@@ -20,7 +20,7 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  Noise(const MinuteData &md, const std::string &date) : md_(md), date_(date) {}
+  Noise(const MinuteData &md, const misc::Ymd &date) : md_(md), date_(date) {}
 
   inline void compute() {
     const uint64_t h1 = mix(day_seed_ + md_.l1_index);
@@ -32,7 +32,7 @@ public:
 
   // 跨日: 日种子 = (asset_id, date) 混合; at_day_start 先设 date_ 再 reset, 此处读到的是当天
   void reset() {
-    day_seed_ = mix((static_cast<uint64_t>(md_.asset_id) << 32) ^ static_cast<uint64_t>(std::stoul(date_)));
+    day_seed_ = mix((static_cast<uint64_t>(md_.asset_id) << 32) ^ static_cast<uint64_t>(date_));
   }
 
 private:
@@ -45,7 +45,7 @@ private:
   }
 
   const MinuteData &md_;
-  const std::string &date_; // DAG_Root::date_
+  const misc::Ymd &date_; // DAG_Root::date_
   uint64_t day_seed_ = 0;
 };
 

@@ -46,7 +46,7 @@ void render_prereq_row(const char *name, bool ok, const char *status_label, bool
 // Archives / Orders 两个页签走同一段渲染, 差别只在取哪一组计数.
 struct MissingDim {
   size_t Asset::AssetStats::*count;
-  std::vector<std::string> Asset::AssetStats::*sample;
+  std::vector<misc::Ymd> Asset::AssetStats::*sample;
 };
 constexpr MissingDim kArchiveDim{&Asset::AssetStats::archive_missing, &Asset::AssetStats::archive_missing_sample};
 constexpr MissingDim kOrderDim{&Asset::AssetStats::orders_missing, &Asset::AssetStats::orders_missing_sample};
@@ -199,7 +199,7 @@ void render_missing_table(const char *table_id, const Asset &asset, AssetTableVi
       const AssetItem &item = asset.items[id];
       const Asset::AssetStats &stats = asset.asset_stats[id];
       const size_t missing = stats.*(dim.count);
-      const std::vector<std::string> &sample = stats.*(dim.sample);
+      const std::vector<misc::Ymd> &sample = stats.*(dim.sample);
 
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
@@ -219,10 +219,10 @@ void render_missing_table(const char *table_id, const Asset &asset, AssetTableVi
 
       ImGui::TableNextColumn();
       std::string dates;
-      for (const auto &d : sample) {
+      for (const misc::Ymd d : sample) {
         if (!dates.empty())
           dates += "  ";
-        dates += d;
+        dates += misc::dense(d);
       }
       if (missing > sample.size())
         dates += "  +" + std::to_string(missing - sample.size()) + " more";
@@ -246,7 +246,7 @@ enum class DateDim { Archive,
                      Orders };
 
 struct DateRow {
-  std::string date;
+  misc::Ymd date = 0;
   size_t expected = 0; // 当天本该有产物的标的数
   size_t missing = 0;  // 其中没有的 — 排序键
   size_t no_archive = 0;
@@ -258,7 +258,7 @@ struct DateRow {
   const EncodeDayRecord *rec = nullptr; // 判据明细; 没编过这天就是 null
 };
 
-DateRow make_date_row(const Asset &asset, const std::string &date,
+DateRow make_date_row(const Asset &asset, misc::Ymd date,
                       const Asset::DateGap &gap, DateDim dim) {
   DateRow row;
   row.date = date;
@@ -343,7 +343,7 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
   view.has_failed = false;
 
   size_t check_totals[L2::kCheckBitCount] = {};
-  std::vector<std::pair<std::string, size_t>> ranked; // (日期, 缺口)
+  std::vector<std::pair<misc::Ymd, size_t>> ranked; // (日期, 缺口)
 
   for (const auto &[date, gap] : asset.date_gaps) {
     const DateRow row = make_date_row(asset, date, gap, dim);
@@ -371,7 +371,7 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
 
   // 只有日期与缺口两列可排 —— 原因列是动态的, 列号跟判据对不上号
   std::sort(ranked.begin(), ranked.end(), [&](const auto &a, const auto &b) {
-    const int delta = view.sort_column == 0 ? a.first.compare(b.first)
+    const int delta = view.sort_column == 0 ? (a.first > b.first) - (a.first < b.first)
                                             : cmp_size(a.second, b.second);
     if (delta != 0)
       return view.sort_ascending ? delta < 0 : delta > 0;
@@ -380,7 +380,7 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, DateDim dim) {
 
   view.rows.reserve(ranked.size());
   for (auto &entry : ranked)
-    view.rows.push_back(std::move(entry.first));
+    view.rows.push_back(entry.first);
 
   view.built = true;
   view.generation = asset.asset_stats_generation;
@@ -397,7 +397,7 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
   sync_date_view(view, asset, dim);
 
   size_t asset_days = 0;
-  for (const auto &date : view.rows) {
+  for (const misc::Ymd date : view.rows) {
     auto it = asset.date_gaps.find(date);
     assert(it != asset.date_gaps.end() && "By Date: 行里的日期不在 date_gaps 中");
     asset_days += make_date_row(asset, date, it->second, dim).missing;
@@ -457,14 +457,14 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
     specs->SpecsDirty = false;
   }
 
-  for (const auto &date : view.rows) {
+  for (const misc::Ymd date : view.rows) {
     auto gap_it = asset.date_gaps.find(date);
     assert(gap_it != asset.date_gaps.end() && "By Date: 行里的日期不在 date_gaps 中");
     const DateRow row = make_date_row(asset, date, gap_it->second, dim);
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(date.c_str());
+    ImGui::TextUnformatted(misc::dense(date).c_str());
 
     ImGui::TableNextColumn();
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu / %zu", row.missing, row.expected);
@@ -641,10 +641,10 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
         if (state.show_missing_details) {
           ImGui::BeginChild("MissingDates", ImVec2(0, 100), true);
           for (const auto &date : check_result.missing_no_archive) {
-            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%s  (no archive)", date.c_str());
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%s  (no archive)", misc::dense(date).c_str());
           }
           for (const auto &date : check_result.missing_can_encode) {
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s  (can encode)", date.c_str());
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s  (can encode)", misc::dense(date).c_str());
           }
           ImGui::EndChild();
         }
@@ -815,14 +815,14 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     ImGui::Text("Date Ranges:");
     ImGui::Spacing();
     ImGui::BulletText("Backtest Range: %s ~ %s",
-                      asset.backtest.start.c_str(), asset.backtest.end.c_str());
+                      misc::dense(asset.backtest.start).c_str(), misc::dense(asset.backtest.end).c_str());
     if (asset.archive.exists) {
       ImGui::BulletText("Archive Range: %s ~ %s",
-                        asset.archive.min_date.c_str(), asset.archive.max_date.c_str());
+                        misc::dense(asset.archive.min_date).c_str(), misc::dense(asset.archive.max_date).c_str());
     }
     if (asset.binary.exists) {
       ImGui::BulletText("Binary Range: %s ~ %s",
-                        asset.binary.min_date.c_str(), asset.binary.max_date.c_str());
+                        misc::dense(asset.binary.min_date).c_str(), misc::dense(asset.binary.max_date).c_str());
     }
 
     ImGui::Spacing();
@@ -988,7 +988,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
             ImGui::Text("Range (Scanned):");
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu files, %.2f GB)",
-                               asset.archive.min_date.c_str(), asset.archive.max_date.c_str(),
+                               misc::dense(asset.archive.min_date).c_str(), misc::dense(asset.archive.max_date).c_str(),
                                asset.archive.total_files, asset.archive.total_size_gb);
 
             ImGui::Spacing();
@@ -1034,7 +1034,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
             ImGui::Text("Range (Scanned):");
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu assets, %.2f GB)",
-                               asset.binary.min_date.c_str(), asset.binary.max_date.c_str(),
+                               misc::dense(asset.binary.min_date).c_str(), misc::dense(asset.binary.max_date).c_str(),
                                asset.binary.encoded_assets, asset.binary.orders_size_gb);
 
             ImGui::Spacing();

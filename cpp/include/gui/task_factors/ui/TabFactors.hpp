@@ -58,7 +58,8 @@ struct FactorsUIState {
 // 当前 config 决定的作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域对比着色
 struct FactorsUIContext {
   std::string factor_dir; // <factor_dir>/<universe>
-  std::string universe, start_date, end_date;
+  std::string universe;
+  misc::Ymd start_date = 0, end_date = 0;
   double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估
   const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右下按全局 id 显示代码 / 名称

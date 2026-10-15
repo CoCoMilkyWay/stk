@@ -1376,8 +1376,8 @@ void SaveFeatureTableJson(SharedData &data) {
     assert(file.is_open() && "features.json: 临时文件打不开");
     file << "{\n";
     file << " \"universe\": " << json(data.config.universe).dump() << ",\n";
-    file << " \"start_date\": " << json(data.config.start_date).dump() << ",\n";
-    file << " \"end_date\": " << json(data.config.end_date).dump() << ",\n";
+    file << " \"start_date\": " << json(misc::dash(data.config.start_date)).dump() << ",\n";
+    file << " \"end_date\": " << json(misc::dash(data.config.end_date)).dump() << ",\n";
     file << " \"preview\": {\"level\": " << json(level_info(analysis::kLevel).level_name).dump()
          << ", \"rounds\": " << data.preview.done.load(std::memory_order_relaxed)
          << ", \"assets_per_round\": " << kPvAssetsPerRound << "},\n";

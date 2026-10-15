@@ -1,6 +1,8 @@
 // Scan Service - Manages database scanning and coverage checking
 #pragma once
 
+#include "misc/date.hpp"
+
 #include <atomic>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
@@ -59,14 +61,14 @@ struct BinaryDatabaseInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
-  std::vector<std::string> available_dates;
+  std::vector<misc::Ymd> available_dates;
 };
 
 struct ArchiveDatabaseInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
-  std::vector<std::string> available_dates;
+  std::vector<misc::Ymd> available_dates;
 };
 
 struct DatabaseCheckResult {
@@ -84,9 +86,9 @@ struct DatabaseCheckResult {
   size_t binary_coverage = 0; // Binary covered dates
 
   // Missing details
-  std::vector<std::string> missing_dates;      // All missing dates
-  std::vector<std::string> missing_can_encode; // Missing but has archive
-  std::vector<std::string> missing_no_archive; // Missing without archive
+  std::vector<misc::Ymd> missing_dates;      // All missing dates
+  std::vector<misc::Ymd> missing_can_encode; // Missing but has archive
+  std::vector<misc::Ymd> missing_no_archive; // Missing without archive
 
   // Helper: L2 覆盖检查通过 (binary 覆盖回测区间内全部交易日)
   bool is_pass() const {

@@ -39,8 +39,9 @@ Pool Pool::load(const std::filesystem::path &json_path) {
   Pool p;
   // nlohmann::json 对象按键排序 (std::map), "YYYYMMDD" 字典序 = 时间序
   p.dates_.reserve(j.size());
-  for (const auto &[date, day] : j.items()) {
-    assert(date.size() == 8 && std::all_of(date.begin(), date.end(), [](char ch) { return ch >= '0' && ch <= '9'; }) && "universe json: 日期键必须是 YYYYMMDD");
+  for (const auto &[key, day] : j.items()) {
+    const misc::Ymd date = key.size() == 8 ? misc::parse_ymd(key) : 0;
+    assert(date && "universe json: 日期键必须是 YYYYMMDD");
     assert(day.is_object() && day.contains("add") && day.contains("del") && "universe json: 每日必须是 {\"add\": [...], \"del\": [...]}");
     check_code_array(day["add"]);
     check_code_array(day["del"]);
@@ -84,7 +85,7 @@ Pool Pool::load(const std::filesystem::path &json_path) {
   return p;
 }
 
-std::vector<std::string> Pool::codes(std::string_view first, std::string_view last) const {
+std::vector<std::string> Pool::codes(misc::Ymd first, misc::Ymd last) const {
   assert(!all_ && "universe == all 无名单");
   assert(first <= last && "universe::codes: 区间颠倒");
   const auto lo = std::lower_bound(dates_.begin(), dates_.end(), first);
@@ -106,22 +107,22 @@ std::vector<std::string> Pool::codes(std::string_view first, std::string_view la
   return out;
 }
 
-const std::vector<std::string> &Pool::dates() const {
+const std::vector<misc::Ymd> &Pool::dates() const {
   assert(!all_ && "universe == all 无名单");
   return dates_;
 }
 
-bool Pool::has_date(std::string_view yyyymmdd) const {
+bool Pool::has_date(misc::Ymd d) const {
   if (all_)
     return true;
-  return std::binary_search(dates_.begin(), dates_.end(), yyyymmdd);
+  return std::binary_search(dates_.begin(), dates_.end(), d);
 }
 
-bool Pool::in_pool(std::string_view code, std::string_view yyyymmdd) const {
+bool Pool::in_pool(std::string_view code, misc::Ymd d) const {
   if (all_)
     return true;
-  const auto dit = std::lower_bound(dates_.begin(), dates_.end(), yyyymmdd);
-  assert(dit != dates_.end() && *dit == yyyymmdd && "universe: 该日没出名单 (回测区间超出名单覆盖, 重跑 py/universe)");
+  const auto dit = std::lower_bound(dates_.begin(), dates_.end(), d);
+  assert(dit != dates_.end() && *dit == d && "universe: 该日没出名单 (回测区间超出名单覆盖, 重跑 py/universe)");
   assert(code.find('.') != std::string_view::npos && "universe: 键是 \"CODE.EX\", 裸 6 位码永远查不到 (cs_valid 会全 0)");
   const auto cit = code_idx_.find(std::string(code));
   if (cit == code_idx_.end())

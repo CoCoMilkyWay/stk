@@ -78,7 +78,8 @@ struct TaskFeaturesState {
   int prev_primary_feature_idx = -1;
   int prev_selected_level = 0;
   // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; universe / 日期区间变了自动重算 (快照做变更检测)
-  std::string preview_universe, preview_start, preview_end;
+  std::string preview_universe;
+  misc::Ymd preview_start = 0, preview_end = 0;
   // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
   analysis::Status prev_preview_status = analysis::Status::Idle;
   size_t prev_preview_done = 0;

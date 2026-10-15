@@ -95,7 +95,7 @@ static void ffill_day(float *s, size_t n) {
 void FeaturePreview::reset_for_build(std::vector<size_t> feat_cols,
                                      std::vector<L2::ValidType> valid_types,
                                      size_t meta_col, size_t lim_dn_col, size_t lim_up_col,
-                                     std::vector<std::string> month_keys,
+                                     std::vector<misc::Ym> month_keys,
                                      size_t n_features, size_t n_assets) {
   TraceN("PreviewReset");
   assert(!feat_cols.empty() && feat_cols.size() == valid_types.size());
@@ -135,7 +135,7 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
   assert(level_valid_rows(kLevel) == VR);
 
   // 日期枚举 → 固定种子洗牌取前 kPvRounds 个 (无偏覆盖全区间, 轮序即收敛序)
-  std::vector<std::string> dates = enumerate_dates(reader, months_).dates;
+  std::vector<misc::Ymd> dates = enumerate_dates(reader, months_).dates;
   if (dates.empty())
     return true; // 库为空: 直接 Done, 表格全 "—"
   std::shuffle(dates.begin(), dates.end(), std::mt19937{0x5eed});

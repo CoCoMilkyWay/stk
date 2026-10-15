@@ -16,7 +16,6 @@
 #include "features/Method/Fundamental.hpp"
 #include <cassert>
 #include <cstddef>
-#include <string>
 
 class Fund {
 public:
@@ -131,7 +130,7 @@ public:
   };
   float y[kCount] = {};
 
-  Fund(const fund::Pool &pool, size_t asset_id, const std::string &date)
+  Fund(const fund::Pool &pool, size_t asset_id, const misc::Ymd &date)
       : pool_(pool), date_(date), stream_(pool, asset_id) {}
 
   // onDay (盘前): 状态机推进到当日, 写 y; 之后每分钟 flush 原样广播
@@ -142,9 +141,9 @@ public:
   }
 
 private:
-  const fund::Pool &pool_;  // DAG_Root::fund_pool (只读共享数据源)
-  const std::string &date_; // DAG_Root::date_ (begin_day 设置)
-  fund::Stream stream_;     // 本资产的日频状态机
+  const fund::Pool &pool_; // DAG_Root::fund_pool (只读共享数据源)
+  const misc::Ymd &date_;  // DAG_Root::date_ (begin_day 设置)
+  fund::Stream stream_;    // 本资产的日频状态机
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

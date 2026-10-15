@@ -86,17 +86,12 @@ void encoding_producer(SharedData &data,
 
   // 编码范围 = 回测区间 (config.start_date / end_date), 与特征计算一致.
   // all_dates 是 binary ∪ archive 的全集, 不收窄会去编回测区间外的天
-  // (见 ComputeService 对 all_dates 的同类过滤). config 日期是 "YYYY-MM-DD",
-  // all_dates 是 "YYYYMMDD", 去掉 '-' 后按字典序比较.
-  auto yyyymmdd = [](std::string s) {
-    s.erase(std::remove(s.begin(), s.end(), '-'), s.end());
-    return s;
-  };
-  const std::string bt_start = yyyymmdd(data.config.start_date);
-  const std::string bt_end = yyyymmdd(data.config.end_date);
-  std::vector<std::string> dates;
+  // (见 ComputeService 对 all_dates 的同类过滤).
+  const misc::Ymd bt_start = data.config.start_date;
+  const misc::Ymd bt_end = data.config.end_date;
+  std::vector<misc::Ymd> dates;
   dates.reserve(data.asset.all_dates.size());
-  for (const auto &d : data.asset.all_dates)
+  for (const misc::Ymd d : data.asset.all_dates)
     if (d >= bt_start && d <= bt_end)
       dates.push_back(d);
 
@@ -108,12 +103,12 @@ void encoding_producer(SharedData &data,
   const size_t total_days = dates.size();
 
   for (size_t idx = 0; idx < total_days && !cancel_flag->load(); ++idx) {
-    const std::string &date_str = dates[idx];
+    const misc::Ymd date = dates[idx];
     TraceN("ProducerDay");
-    TraceTextS(date_str.c_str());
+    TraceTextS(misc::dense(date).c_str());
 
     const std::string archive_path = Utils::generate_archive_path(
-        data.config.archive_dir, date_str, config::ARCHIVE_EXTENSION);
+        data.config.archive_dir, date, config::ARCHIVE_EXTENSION);
 
     // 增量新鲜度规则: 产物 (.bin / 当天统计 .stat) 存在且不老于归档 → 跳过.
     //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读内容;
@@ -132,7 +127,7 @@ void encoding_producer(SharedData &data,
 
     // 上一轮留下的当天统计 (见 shared/EncodeDayRecord.hpp). 两处用它:
     // 整天快路径看 complete, 下面的逐资产过滤看明细里的墓碑与计量.
-    const std::string day_dir = Utils::generate_date_dir(data.config.orders_dir, date_str);
+    const std::string day_dir = Utils::generate_date_dir(data.config.orders_dir, date);
     EncodeDayRecord prev;
     const bool prev_fresh = skip_existing && fresh(day_dir + "/" + kEncodeStatName) &&
                             read_encode_day_stat(day_dir, prev);
@@ -230,7 +225,7 @@ void encoding_producer(SharedData &data,
 
       // 代码变更前的日子, 归档里是老代码, 轴上只有新代码 — 换回来才认得出
       // (见 config::CODE_CHANGES). 无变更记录时 current_code 原样返回.
-      const size_t asset_id = axis.find(config::current_code(code_ex, date_str));
+      const size_t asset_id = axis.find(config::current_code(code_ex, date));
       if (asset_id == axis.size())
         continue; // 非股票 (ETF/基金) 或轴外代码
 
@@ -265,7 +260,7 @@ void encoding_producer(SharedData &data,
       const AssetItem &asset = data.asset.items[asset_id];
       if (skip_existing) {
         const std::string bin_path = Utils::generate_orders_path(
-            data.config.orders_dir, date_str, asset.asset_code, asset.exchange,
+            data.config.orders_dir, date, asset.asset_code, asset.exchange,
             config::BINARY_EXTENSION);
         const bool has_bin = fresh(bin_path);
 
@@ -351,11 +346,11 @@ void encoding_producer(SharedData &data,
     {
       std::lock_guard<std::mutex> lock(stats.days_mutex);
       const bool oldest = stats.days_inflight.empty();
-      stats.days_inflight.emplace(date_str,
+      stats.days_inflight.emplace(date,
                                   EncodeStats::DayProgress{0, tasks.size(), 0, day_rec,
                                                            std::move(day_index)});
       if (oldest && progress)
-        progress->set_summary_note(date_str + ": 0/" + std::to_string(tasks.size()) +
+        progress->set_summary_note(std::to_string(date) + ": 0/" + std::to_string(tasks.size()) +
                                    " assets");
     }
 
@@ -368,7 +363,7 @@ void encoding_producer(SharedData &data,
 
     for (size_t i = 0; i < tasks.size() && !cancel_flag->load(); i += batch_size) {
       EncodeBatch batch;
-      batch.date = date_str;
+      batch.date = date;
       batch.archive_path = archive_path;
       batch.tasks.assign(tasks.begin() + static_cast<long>(i), tasks.begin() + static_cast<long>(std::min(i + batch_size, tasks.size())));
       if (!queue.push(std::move(batch)))
@@ -476,7 +471,7 @@ void encoding_worker(SharedData &data,
   EncodeBatch batch;
   while (!cancel_flag->load() && queue.pop(batch)) {
     TraceN("BatchLoop");
-    TraceTextS(batch.date.c_str());
+    TraceTextS(misc::dense(batch.date).c_str());
 
     if (batch.tasks.empty())
       continue;
@@ -547,7 +542,7 @@ void encoding_worker(SharedData &data,
         // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
         const std::string asset_full =
             config::archive_code(asset.asset_code + "." + asset.exchange, batch.date);
-        paths.push_back(batch.date + "/" + asset_full + "/" + slot_filename(data.config, slot.kind));
+        paths.push_back(misc::dense(batch.date) + "/" + asset_full + "/" + slot_filename(data.config, slot.kind));
         sizes.push_back(slot_size(batch.tasks[slot.task_idx], slot.kind));
         slots.push_back(slot);
       }
@@ -590,7 +585,7 @@ void encoding_worker(SharedData &data,
       assert(!retired[task_idx] && "retire_task: 同一任务销账两次");
       retired[task_idx] = 1;
       ++done_in_batch;
-      progress_handle.update(done_in_batch, batch.tasks.size(), batch.date);
+      progress_handle.update(done_in_batch, batch.tasks.size(), std::to_string(batch.date));
 
       bool day_done = false;
       EncodeDayRecord finished_rec;
@@ -642,7 +637,7 @@ void encoding_worker(SharedData &data,
         // 附注跟着最老的在编天走 (多天在飞时以它为准)
         if (!stats.days_inflight.empty()) {
           const auto &[day, counts] = *stats.days_inflight.begin();
-          progress_handle.set_summary_note(day + ": " + std::to_string(counts.done) + "/" +
+          progress_handle.set_summary_note(std::to_string(day) + ": " + std::to_string(counts.done) + "/" +
                                            std::to_string(counts.total) + " assets");
         }
       }
@@ -670,7 +665,7 @@ void encoding_worker(SharedData &data,
       std::error_code ec;
       uint32_t check_flags = 0;
       EncodeDayIndexEntry entry{};
-      const L2::EncodeResult outcome = encoder.finish_asset(out_path, batch.date + " " + asset_full);
+      const L2::EncodeResult outcome = encoder.finish_asset(out_path, std::to_string(batch.date) + " " + asset_full);
       switch (outcome) {
       case L2::EncodeResult::Ok: {
         // 当天明细要的条数与体积就在刚写下的那 32 字节头里. 走扫描端同一个
@@ -707,7 +702,7 @@ void encoding_worker(SharedData &data,
       case L2::EncodeResult::Error:
         // 环境错误 (磁盘满/压缩失败): 不留任何产物, 下次增量重试
         Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] [FAILED] " +
-                                    batch.date + " " + asset_full);
+                                    std::to_string(batch.date) + " " + asset_full);
         break;
       }
       fed_any = false;
@@ -752,7 +747,7 @@ void encoding_worker(SharedData &data,
     if (!stream_ok) {
       fed_any = false;
       Logger::log("encoding", "[CORRUPT ARCHIVE] " + batch.archive_path + " — stream broke at " +
-                                  batch.date + " (worker " + std::to_string(worker_id) +
+                                  std::to_string(batch.date) + " (worker " + std::to_string(worker_id) +
                                   "), remaining assets in batch skipped");
     }
 
@@ -767,7 +762,7 @@ void encoding_worker(SharedData &data,
       const EncodeTask &task = batch.tasks[t];
       const AssetItem &asset = data.asset.items[task.asset_id];
       const std::string base =
-          batch.date + "/" +
+          misc::dense(batch.date) + "/" +
           config::archive_code(asset.asset_code + "." + asset.exchange, batch.date) + "/";
 
       // 这几块仍要按归档序请求 (unrar p 按归档序输出)

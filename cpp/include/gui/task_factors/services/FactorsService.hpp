@@ -103,7 +103,8 @@ struct FactorsRequest {
   bool evaluate = false;  // false = 只扫描解析
   // 以下 evaluate 时才用
   analysis::ReadScope scope;
-  std::string universe, start_date, end_date;
+  std::string universe;
+  misc::Ymd start_date = 0, end_date = 0;
   bool gpu = false;
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 成本装载时生效)
   std::string only_file;   // 非空 = 只评这个因子文件的权重 (Optimize 写完后), 其余行保留文件里的 stat
@@ -117,7 +118,8 @@ enum class FactorKind : uint8_t { Alpha,
                                   Beta };
 inline constexpr const char *kind_name(FactorKind k) { return k == FactorKind::Alpha ? "alpha" : "beta"; }
 struct StatScope {
-  std::string universe, start_date, end_date, backend, time;
+  std::string universe, backend, time;
+  misc::Ymd start_date = 0, end_date = 0;
   int days = 0, T = 0, A = 0;
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
   double n_full = 0.0;     // 满档一腿只数 = 池内平均有效票数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)

@@ -4,6 +4,7 @@
 #include "misc/cross_platform.hpp"
 #include "shared/SharedData.hpp"
 #include <algorithm>
+#include <cassert>
 #include <charconv>
 #include <chrono>
 #include <ctime>
@@ -244,7 +245,8 @@ private:
         }
         ImGui::TableNextColumn();
         if (DrawDatePicker("##start", "start_date_picker", cfg.start_date_buf, sizeof(cfg.start_date_buf), start_picker)) {
-          cfg.start_date = cfg.start_date_buf;
+          cfg.start_date = misc::parse_ymd(cfg.start_date_buf);
+          assert(cfg.start_date);
           changed = true;
         }
 
@@ -257,7 +259,8 @@ private:
         }
         ImGui::TableNextColumn();
         if (DrawDatePicker("##end", "end_date_picker", cfg.end_date_buf, sizeof(cfg.end_date_buf), end_picker)) {
-          cfg.end_date = cfg.end_date_buf;
+          cfg.end_date = misc::parse_ymd(cfg.end_date_buf);
+          assert(cfg.end_date);
           changed = true;
         }
 
@@ -589,7 +592,7 @@ private:
       // 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet)
       ImGui::SeparatorText("抓取流水线");
       readonly_table("db_pipeline_table", [] {
-        draw_readonly_row("Pipeline Start", "数据同步起点, 与回测窗口语义不同, 不随其收窄", config::PIPELINE_START_DATE);
+        draw_readonly_row("Pipeline Start", "数据同步起点, 与回测窗口语义不同, 不随其收窄", misc::dash(config::PIPELINE_START_DATE));
         draw_readonly_row("Lookback Days", "月末仍在窗口内视为开放月 (兜服务端回填修订)", std::to_string(config::PIPELINE_LOOKBACK_DAYS));
         draw_readonly_row("Dedup Window", "parquet mtime 距今 < 该值则本表跳过 [s]", std::to_string(config::PIPELINE_DEDUP_WINDOW_SECONDS));
       });

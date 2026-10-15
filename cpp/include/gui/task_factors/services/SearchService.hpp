@@ -52,7 +52,8 @@ struct SearchRequest {
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
   analysis::ReadScope scope;
-  std::string universe, start_date, end_date;
+  std::string universe;
+  misc::Ymd start_date = 0, end_date = 0;
   bool gpu = false;
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error)

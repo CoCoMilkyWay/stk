@@ -63,11 +63,11 @@ public:
   // 本类的全部写回都是纯指针算术 —— 热路径不再携带 date / worker_id.
   // 句柄进日环 (与 LabelReturn 的悬挂日环同步前进): 开盘档标签 (T+N) 要回填旧日张量,
   // 旧日句柄持到该日标签结清才 ts_close (见 end_day / LabelReturn 文件头).
-  void begin_day(const std::string &date_str, const GlobalFeatureStore::Day &day) {
+  void begin_day(misc::Ymd date, const GlobalFeatureStore::Day &day) {
     push_day(day);
     meta_.reset();
     // 当日池成员位: 日频 PIT 名单 (universe::Pool, 盘后 python 产出, 第 D 日由 ≤ D−1 数据定), 与 Fund 吃 fund_pool 同形
-    meta_.begin_day(universe_pool_.in_pool(code_ex_, date_str));
+    meta_.begin_day(universe_pool_.in_pool(code_ex_, date));
     // cs_valid: 当日池成员位, 整日常量, 与事件无关 → 盘前一次写满两层全部行 (池外不写, slot 清零即 0)
     if (const float cs = meta_.cs(); cs != 0.0f) {
       for (size_t t = 0; t < LEVELS[0].rows; ++t)
@@ -75,7 +75,7 @@ public:
       for (size_t t = 0; t < LEVELS[1].rows; ++t)
         fstore::ts_write<1>(day_, t, L1_Field::cs_valid, asset_id_, cs);
     }
-    dag_.at_day_start(date_str);
+    dag_.at_day_start(date);
     tick2min_.begin_day();
     dag_.LabelReturn.day_begin();
   }
@@ -91,8 +91,8 @@ public:
 
   // 无数据日 (缺 binary) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟 onMinute / 标签日历),
   // 各节点按自身的无成交约定给值 —— 本类不认识"缺数据"这个概念, 不特判任何特征.
-  void empty_day(const std::string &date_str, const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
-    begin_day(date_str, day);
+  void empty_day(misc::Ymd date, const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
+    begin_day(date, day);
     end_day(store);
     reset();
   }

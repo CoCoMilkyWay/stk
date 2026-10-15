@@ -17,6 +17,8 @@
 //   "NaN 恒 false" 语义的比较, 不做 isnan/isfinite. 本文件 .cpp 在 precise-math 列表里, 类型细节全在 .cpp.
 #pragma once
 
+#include "misc/date.hpp"
+
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -56,12 +58,12 @@ public:
   Pool(const Pool &) = delete;
   Pool &operator=(const Pool &) = delete;
 
-  // codes: AssetAxis 顺序的 "000001.SZ"; dates: 回测日 "YYYYMMDD" 升序 (决定网格切片起点, 必须全部命中交易日历).
+  // codes: AssetAxis 顺序的 "000001.SZ"; dates: 回测日升序 (决定网格切片起点, 必须全部命中交易日历).
   // 本地 parquet 缺失 → assert (Phase 2 前置条件: 基本面 sync 已完成).
-  void build(const std::vector<std::string> &codes, const std::vector<std::string> &dates);
+  void build(const std::vector<std::string> &codes, const std::vector<misc::Ymd> &dates);
 
   bool built() const { return d_ != nullptr; }
-  int date_index(const std::string &yyyymmdd) const; // D 轴下标; 不是交易日 → -1
+  int date_index(misc::Ymd d) const; // D 轴下标; 不是交易日 → -1
 
   const Data &data() const {
     assert(d_ != nullptr && "fund::Pool 未 build");
