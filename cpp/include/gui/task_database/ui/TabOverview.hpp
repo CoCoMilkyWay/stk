@@ -16,7 +16,8 @@ void RenderTabOverview(
     bool *update_cancel_clicked,
     bool disable_update_controls,
     const AuditState &audit,
-    bool *audit_clicked,
+    bool *audit_clicked,      // Audit all
+    bool *audit_incr_clicked, // Audit incre (跳过已核的 (月, 轮))
     bool *audit_cancel_clicked,
     bool disable_audit,
     std::string *audit_table,

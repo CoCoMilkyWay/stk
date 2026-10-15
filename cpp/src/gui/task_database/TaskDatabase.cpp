@@ -506,6 +506,7 @@ private:
     bool update_clicked = false;
     bool update_cancel_clicked = false;
     bool audit_clicked = false;
+    bool audit_incr_clicked = false;
     bool audit_cancel_clicked = false;
     std::string audit_table;
     std::string repair_table;
@@ -524,6 +525,7 @@ private:
         busy || auditing,
         audit_svc_->get_state(),
         &audit_clicked,
+        &audit_incr_clicked,
         &audit_cancel_clicked,
         disable_audit,
         &audit_table,
@@ -535,12 +537,12 @@ private:
     }
     if (update_cancel_clicked)
       fundamental_svc_->cancel();
-    if (audit_clicked && !disable_audit) {
-      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run({}),
+    if ((audit_clicked || audit_incr_clicked) && !disable_audit) {
+      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run({}, audit_incr_clicked),
                             boost::asio::detached);
     }
     if (!audit_table.empty() && !disable_audit) {
-      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run(audit_table),
+      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run(audit_table, false),
                             boost::asio::detached);
     }
     if (audit_cancel_clicked)

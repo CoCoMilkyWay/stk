@@ -64,10 +64,11 @@ struct Diff {
 
 // SPECS 里的 DAI·Month 表, 两轮 (Rows 全部在前, Content 在后). 轮内表间轮转 —— 表序与各表年序均按
 // seed 打乱, 相邻单元几乎总是不同表, 问题尽早暴露而不是盯着一张表扫完.
-// keep: 只核 keep(spec, ym) 为真的冻结月 (空 = 全部); 单元仍按 表 × 年 × 轮 切.
+// keep: 只核 keep(spec, ym, pass) 为真的 (冻结月, 轮) (空 = 全部); 单元仍按 表 × 年 × 轮 切,
+//   年内被滤掉的月夹在 w 里只多一组远端指纹行, 不参与比对.
 // 单元里的槽指向 cat: cat 须活到最后一个 run 结束.
-std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed,
-                       const std::function<bool(const Spec &, Ym)> &keep = {});
+using Keep = std::function<bool(const Spec &, Ym, Pass)>;
+std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed, const Keep &keep = {});
 
 // 跑一单元: 月级比对 → 不一致的月按日下钻 (每月再一次查询). 返回差异 (空 = 一致).
 std::vector<Diff> run(bigquant::Client &client, const Unit &u);

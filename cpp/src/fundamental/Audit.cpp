@@ -378,36 +378,33 @@ Diff make_diff(const Unit &u, const Layout &L, const std::string &group,
 
 } // namespace
 
-std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed,
-                       const std::function<bool(const Spec &, Ym)> &keep) {
-  std::vector<std::vector<Unit>> per_table;
-  for (const Spec &s : SPECS) {
-    if (!from<Bq>(s) || s.shape != Shape::Month)
-      continue;
-    std::map<int, Unit> by_year;
-    for (const Slot &sl : frozen(s, cat, now)) {
-      if (keep && !keep(s, sl.ym))
-        continue;
-      Unit &u = by_year[sl.ym / 100];
-      if (u.months.empty())
-        u.w.lo = sl.w.lo;
-      u.months.push_back(sl);
-      u.w.hi = sl.w.hi;
-    }
-    std::vector<Unit> units;
-    for (auto &[y, u] : by_year) {
-      u.spec = &s;
-      u.year = y;
-      units.push_back(std::move(u));
-    }
-    if (!units.empty())
-      per_table.push_back(std::move(units));
-  }
-
+std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed, const Keep &keep) {
   std::mt19937 rng(seed);
   std::vector<Unit> out;
   for (Pass pass : {Pass::Rows, Pass::Content}) {
-    auto tables = per_table;
+    std::vector<std::vector<Unit>> tables;
+    for (const Spec &s : SPECS) {
+      if (!from<Bq>(s) || s.shape != Shape::Month)
+        continue;
+      std::map<int, Unit> by_year;
+      for (const Slot &sl : frozen(s, cat, now)) {
+        if (keep && !keep(s, sl.ym, pass))
+          continue;
+        Unit &u = by_year[sl.ym / 100];
+        if (u.months.empty())
+          u.w.lo = sl.w.lo;
+        u.months.push_back(sl);
+        u.w.hi = sl.w.hi;
+      }
+      std::vector<Unit> units;
+      for (auto &[y, u] : by_year) {
+        u.spec = &s;
+        u.year = y;
+        units.push_back(std::move(u));
+      }
+      if (!units.empty())
+        tables.push_back(std::move(units));
+    }
     std::shuffle(tables.begin(), tables.end(), rng);
     std::size_t depth = 0;
     for (auto &t : tables) {

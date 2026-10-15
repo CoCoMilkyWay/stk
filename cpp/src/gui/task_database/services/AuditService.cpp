@@ -479,24 +479,35 @@ boost::asio::awaitable<void> AuditService::load() {
   state_.loading = false;
 }
 
-boost::asio::awaitable<void> AuditService::run(std::string table) {
+boost::asio::awaitable<void> AuditService::run(std::string table, bool incremental) {
   if (is_busy())
     co_return;
   auto job = next_job();
   state_.op = AuditOp::Audit;
   state_.table = table;
+  state_.incremental = incremental;
 
   // 异常不捕获 (fail fast)
-  std::thread([job, table]() {
+  std::thread([job, table, incremental]() {
     const fundamental::Now now = fundamental::now();
     const fundamental::Catalog cat;
     bigquant::Client client;
     job->start_quota(client);
+    // 已核 = 状态里该 (月, 轮) 有核对时刻 (plan 在开跑前算完, 之后 book 的改动不影响)
+    auto done = [&](const std::string &name, misc::Ym ym, Pass pass) {
+      const auto t = job->book.find(name);
+      if (t == job->book.end())
+        return false;
+      const auto m = t->second.months.find(misc::dash_ym(ym));
+      return m != t->second.months.end() && !(pass == Pass::Rows ? m->second.rows_at : m->second.content_at).empty();
+    };
     const auto units = fundamental::audit::plan(
         cat, now, static_cast<unsigned>(std::time(nullptr)),
-        [&](const fundamental::Spec &sp, misc::Ym) { return table.empty() || sp.name == table; });
+        [&](const fundamental::Spec &sp, misc::Ym ym, Pass pass) {
+          return (table.empty() || sp.name == table) && !(incremental && done(sp.name, ym, pass));
+        });
     job->start(units.size());
-    const std::string scope = table.empty() ? "全部表" : table;
+    const std::string scope = (table.empty() ? "全部表" : table) + (incremental ? " (增量)" : "");
     std::cout << "[bigquant.audit] " << scope << ": " << units.size() << " units" << std::endl;
     for (const fundamental::audit::Unit &u : units) {
       if (job->cancel.load(std::memory_order_relaxed))
@@ -511,6 +522,7 @@ boost::asio::awaitable<void> AuditService::run(std::string table) {
   co_await follow(job);
   state_.op = AuditOp::None;
   state_.table.clear();
+  state_.incremental = false;
 }
 
 boost::asio::awaitable<void> AuditService::repair(std::string table) {
@@ -577,7 +589,7 @@ boost::asio::awaitable<void> AuditService::repair(std::string table) {
     const fundamental::Catalog cat;
     const auto units = fundamental::audit::plan(
         cat, fundamental::now(), static_cast<unsigned>(std::time(nullptr)),
-        [&](const fundamental::Spec &sp, misc::Ym ym) { return &sp == &s && keys.contains(misc::dash_ym(ym)); });
+        [&](const fundamental::Spec &sp, misc::Ym ym, Pass) { return &sp == &s && keys.contains(misc::dash_ym(ym)); });
     assert(units.size() == 2 * years.size() && "repair: 复核单元数不符");
     for (const fundamental::audit::Unit &u : units)
       job->audit_unit(client, u);

@@ -292,25 +292,43 @@ constexpr ImGuiTableFlags kTableFlags =
     ImGuiTableFlags_NoSavedSettings;
 
 // Audit 区: 按钮 / 进度 / 配额消耗 / 总账 (逐表结果并入 Tables 清单)
-void audit_section(const AuditState &a, bool *audit_clicked,
+void audit_section(const AuditState &a, bool *audit_clicked, bool *audit_incr_clicked,
                    bool *audit_cancel_clicked, bool disable_audit,
                    std::int64_t weekly) {
   ImGui::Spacing();
   ImGui::SeparatorText("Audit (BigQuant 远端 vs 本地冻结月)");
+
+  std::size_t pend_rows = 0, pend_content = 0; // 未核的 (表·月) 逐轮
+  for (const AuditTableStat &t : a.tables) {
+    pend_rows += t.frozen_months - std::min(t.rows_months, t.frozen_months);
+    pend_content += t.frozen_months - std::min(t.content_months, t.frozen_months);
+  }
 
   if (a.op == AuditOp::Audit) {
     if (ImGui::Button("Cancel audit", ImVec2(220.0f, 0.0f)))
       *audit_cancel_clicked = true;
   } else {
     ImGui::BeginDisabled(disable_audit);
-    if (ImGui::Button("Audit 全部表", ImVec2(220.0f, 0.0f)))
+    if (ImGui::Button("Audit all", ImVec2(160.0f, 0.0f)))
       *audit_clicked = true;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("两轮: 先逐月行数 (补录 / 删除), 再逐列内容指纹 (改值)\n"
+      ImGui::SetTooltip("全部表全部冻结月, 两轮全部重核\n"
+                        "两轮: 先逐月行数 (补录 / 删除), 再逐列内容指纹 (改值)\n"
                         "表间轮转乱序; 不一致的月自动按日下钻\n"
                         "只报告不改盘; 每单元覆盖该表状态文件里的 (月, 轮), 只留最新状态\n"
                         "单表核对见清单 \"核对\" 列; 同步 / 修复进行中 / 未开联网不可用");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(disable_audit || pend_rows + pend_content == 0);
+    if (ImGui::Button("Audit incre", ImVec2(160.0f, 0.0f)))
+      *audit_incr_clicked = true;
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("增量: 跳过状态里已核的 (月, 轮), 只核新冻结 / 上次没跑完的\n"
+                        "待核 rows %zu / content %zu 表·月\n"
+                        "已核月的远端晚到回填测不出, 需要时用 Audit all 或单表 audit",
+                        pend_rows, pend_content);
     }
   }
 
@@ -319,8 +337,9 @@ void audit_section(const AuditState &a, bool *audit_clicked,
   if (active && a.total == 0)
     ImGui::TextDisabled("规划中 ...");
   else if (active)
-    ImGui::Text("%s %s  %zu / %zu", a.op == AuditOp::Repair ? "修复" : "核对",
-                a.table.empty() ? "全部表" : a.table.c_str(), a.done, a.total);
+    ImGui::Text("%s %s%s  %zu / %zu", a.op == AuditOp::Repair ? "修复" : "核对",
+                a.table.empty() ? "全部表" : a.table.c_str(), a.incremental ? " (增量)" : "", a.done,
+                a.total);
 
   if (a.quota_start >= 0) {
     ImGui::SameLine(0.0f, 24.0f);
@@ -396,6 +415,7 @@ void RenderTabOverview(
     bool disable_update_controls,
     const AuditState &audit,
     bool *audit_clicked,
+    bool *audit_incr_clicked,
     bool *audit_cancel_clicked,
     bool disable_audit,
     std::string *audit_table,
@@ -481,7 +501,7 @@ void RenderTabOverview(
 
   // 周配额: Update 的 preflight 读数优先, 没有则用 Audit 自己取的
   const std::int64_t weekly = state.quota_weekly > 0 ? state.quota_weekly : audit.quota_weekly;
-  audit_section(audit, audit_clicked, audit_cancel_clicked, disable_audit, weekly);
+  audit_section(audit, audit_clicked, audit_incr_clicked, audit_cancel_clicked, disable_audit, weekly);
 
   // ==========================================================================
   // 逐表清单 — 数据集里到底有什么, 各自落到哪一步

@@ -61,10 +61,11 @@ enum class AuditOp { None,
 struct AuditState {
   bool loading = true; // 构造即 true: load 读完状态前不可核对 / 修复
   AuditOp op = AuditOp::None;
-  std::string table;     // op 的对象表; 空 = 全部表 (仅 Audit)
-  std::size_t done = 0;  // 已跑步数 (核对单元; 修复 = 重拉月 + 复核单元)
-  std::size_t total = 0; // 0 = 尚未规划完
-  std::string current;   // 当前步 (audit::label / sync::label)
+  std::string table;        // op 的对象表; 空 = 全部表 (仅 Audit)
+  bool incremental = false; // Audit: 跳过已核的 (月, 轮)
+  std::size_t done = 0;     // 已跑步数 (核对单元; 修复 = 重拉月 + 复核单元)
+  std::size_t total = 0;    // 0 = 尚未规划完
+  std::string current;      // 当前步 (audit::label / sync::label)
   // BigQuant 周配额 (单位 cell): 开跑时 / 最近一步后的 used; -1 = 未取
   std::int64_t quota_start = -1;
   std::int64_t quota_used = -1;
@@ -81,8 +82,9 @@ public:
 
   // 启动调一次: 读逐表状态 → 统计 (零网络, 零 parquet IO)
   boost::asio::awaitable<void> load();
-  // audit::plan (table 空 = 全部表, 否则只该表) → 逐单元 audit::run, 每单元覆盖该 (表, 月, 轮); 忙则直接返回
-  boost::asio::awaitable<void> run(std::string table);
+  // audit::plan (table 空 = 全部表, 否则只该表; incremental = 跳过状态里已核的 (月, 轮))
+  //   → 逐单元 audit::run, 每单元覆盖该 (表, 月, 轮); 忙则直接返回
+  boost::asio::awaitable<void> run(std::string table, bool incremental);
   // table 的差异: 按日修补 (sync::patch) / 整月重拉 (sync::run, Replace) → 这些月旧结论作废 → plan(keep = 这些月) 两轮复核.
   // 不可取消; 忙则直接返回. 改了盘, 调用方随后须重建 AssetInfo
   boost::asio::awaitable<void> repair(std::string table);
