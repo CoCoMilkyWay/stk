@@ -1,8 +1,9 @@
 // Audit Service - BigQuant 远端 vs 本地冻结月分片一致性核对 + 逐表修复
 // 口径见 fundamental/Audit.hpp; 网络 + parquet IO 全在独立工作线程, 协程轮询进度.
-//   run    : 全量核对, 只报告不改盘
+//   run    : 一表 / 全部表核对, 只报告不改盘
 //   repair : 一表的差异月整月重拉 (Replace) → 只复核这些月
-// 结果是一份 "当前状态" 缓存 (不是变更日志): 每个 (表, 月, 轮) 只留最近一次核对的结论.
+// 结果是逐表的 "当前状态" (不是变更日志) output/log/audit/<表>.tsv:
+//   每个 (月, 轮) 只留最近一次核对的结论; 每单元后只整写该表一个文件 (tmp + rename).
 #pragma once
 
 #include <boost/asio/awaitable.hpp>
@@ -15,8 +16,9 @@
 
 namespace GUI::Database {
 
-// 每表汇总 = f(缓存里的差异格, 已核月的本地清点); 启动读缓存与在跑时实时刷新同一条路径.
-// 逐格明细只在 AuditState::log_path. 分母只含已核月 (清点取自核对当时的分片).
+// 每表汇总 = f(该表状态文件里的差异格, 已核月的本地清点); 启动读状态与在跑时实时刷新同一条路径.
+// 逐格明细只在状态文件 (AuditState::log_dir). 分母只含已核月 (清点取自核对当时的分片).
+// SPECS 里每张 DAI·Month 表恒有一条 (从未核对 = 已核月数 0).
 //   问题天数占比 = bad_days / (local_days + remote_only_days)
 //   行差占比     = (added + removed) / local_rows
 //   流量 (cell = 行 × 列, 与 fetch 整月 SELECT * 同口径; 远端行 = 本地行 + 行差):
@@ -35,7 +37,12 @@ struct AuditTableStat {
   std::size_t bad_months = 0;
   std::int64_t repair_cells = 0;
   std::int64_t full_cells = 0;
+  std::size_t rows_months = 0;    // 已跑 Rows 轮的月
+  std::size_t content_months = 0; // 已跑 Content 轮的月
+  std::size_t frozen_months = 0;  // 当前冻结的月 (覆盖率分母)
+  std::string updated;            // 最近一次核对时刻 "YYYY-MM-DD HH:MM"; 空 = 从未核对
 
+  bool audited() const { return rows_months > 0 || content_months > 0; }
   double bad_pct() const {
     const std::int64_t den = local_days + remote_only_days;
     return den > 0 ? 100.0 * static_cast<double>(bad_days) / static_cast<double>(den) : 0.0;
@@ -45,10 +52,14 @@ struct AuditTableStat {
   }
 };
 
+enum class AuditOp { None,
+                     Audit,
+                     Repair };
+
 struct AuditState {
-  bool running = false;  // 全量核对中
-  bool loading = true;   // 构造即 true: load 读完缓存前不可核对 / 修复
-  std::string repairing; // 修复中的表; 空 = 无
+  bool loading = true; // 构造即 true: load 读完状态前不可核对 / 修复
+  AuditOp op = AuditOp::None;
+  std::string table;     // op 的对象表; 空 = 全部表 (仅 Audit)
   std::size_t done = 0;  // 已跑步数 (核对单元; 修复 = 重拉月 + 复核单元)
   std::size_t total = 0; // 0 = 尚未规划完
   std::string current;   // 当前步 (audit::label / sync::label)
@@ -56,13 +67,8 @@ struct AuditState {
   std::int64_t quota_start = -1;
   std::int64_t quota_used = -1;
   std::int64_t quota_weekly = 0;
-  std::vector<AuditTableStat> tables; // 表名升序; 空 = 从未核对过
-  // 核对缓存 output/log/audit.tsv (每步后整写, tmp + rename): 已核月清点 + 不一致格 (含本地 / 远端原值)
-  std::string log_path;
-  std::string updated;            // 缓存最后写入 "YYYY-MM-DD HH:MM"; 空 = 无缓存
-  std::size_t rows_months = 0;    // 已跑 Rows 轮的 (表, 月)
-  std::size_t content_months = 0; // 已跑 Content 轮的 (表, 月)
-  std::size_t frozen_months = 0;  // 当前冻结的 (表, 月), 覆盖率分母
+  std::vector<AuditTableStat> tables; // 表名升序; 空 = 尚未 load
+  std::string log_dir;                // output/log/audit/ (逐表状态, 含本地 / 远端原值)
 
   const AuditTableStat *find_table(const std::string &name) const;
 };
@@ -71,20 +77,20 @@ class AuditService {
 public:
   explicit AuditService(boost::asio::io_context &io) : io_(io) {}
 
-  // 启动调一次: 读缓存 → 统计 (零网络, 零 parquet IO); 无缓存则 tables 留空
+  // 启动调一次: 读逐表状态 → 统计 (零网络, 零 parquet IO)
   boost::asio::awaitable<void> load();
-  // audit::plan → 逐单元 audit::run, 每单元覆盖缓存里该 (表, 月, 轮); 忙则直接返回
-  boost::asio::awaitable<void> run();
+  // audit::plan (table 空 = 全部表, 否则只该表) → 逐单元 audit::run, 每单元覆盖该 (表, 月, 轮); 忙则直接返回
+  boost::asio::awaitable<void> run(std::string table);
   // table 的差异月: 整月重拉 (sync::run, Replace) → 旧结论作废 → plan(keep = 这些月) 两轮复核.
   // 不可取消; 忙则直接返回. 改了盘, 调用方随后须重建 AssetInfo
   boost::asio::awaitable<void> repair(std::string table);
-  // 全量核对: 当前单元的查询跑完即停 (在飞的 DoGet 不可中断)
+  // 核对 (一表 / 全部): 当前单元的查询跑完即停 (在飞的 DoGet 不可中断)
   void cancel();
 
   const AuditState &get_state() const { return state_; }
-  bool is_running() const { return state_.running; }
-  bool is_repairing() const { return !state_.repairing.empty(); }
-  bool is_busy() const { return state_.running || state_.loading || is_repairing(); }
+  bool is_running() const { return state_.op == AuditOp::Audit; }
+  bool is_repairing() const { return state_.op == AuditOp::Repair; }
+  bool is_busy() const { return state_.loading || state_.op != AuditOp::None; }
 
 private:
   struct Job;

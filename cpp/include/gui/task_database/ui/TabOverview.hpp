@@ -9,7 +9,7 @@
 namespace GUI::Database {
 
 // 渲染 Overview: 基本面数据状态卡 + Update 按钮 + Audit (远端核对) 区
-// repair_table: 点了某表的 sync 小按钮 → 写入表名 (与 Audit 同一使能 disable_audit)
+// audit_table / repair_table: 点了某表的 audit / sync 小按钮 → 写入表名 (与 Audit 同一使能 disable_audit)
 void RenderTabOverview(
     const FundamentalState &state,
     bool *update_clicked,
@@ -19,6 +19,7 @@ void RenderTabOverview(
     bool *audit_clicked,
     bool *audit_cancel_clicked,
     bool disable_audit,
+    std::string *audit_table,
     std::string *repair_table);
 
 } // namespace GUI::Database

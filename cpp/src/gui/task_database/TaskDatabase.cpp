@@ -507,6 +507,7 @@ private:
     bool update_cancel_clicked = false;
     bool audit_clicked = false;
     bool audit_cancel_clicked = false;
+    std::string audit_table;
     std::string repair_table;
 
     auto &ts = data_->taskstate.database;
@@ -525,6 +526,7 @@ private:
         &audit_clicked,
         &audit_cancel_clicked,
         disable_audit,
+        &audit_table,
         &repair_table);
 
     // Handle button events
@@ -534,7 +536,11 @@ private:
     if (update_cancel_clicked)
       fundamental_svc_->cancel();
     if (audit_clicked && !disable_audit) {
-      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run(),
+      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run({}),
+                            boost::asio::detached);
+    }
+    if (!audit_table.empty() && !disable_audit) {
+      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run(audit_table),
                             boost::asio::detached);
     }
     if (audit_cancel_clicked)
