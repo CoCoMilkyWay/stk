@@ -88,7 +88,7 @@ public:
   }
 
   // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO ⇒ 模态二选一, 答案回给
-  // FundamentalService::confirm (工作线程据此走 / 跳过 sync(bq))
+  // FundamentalService::confirm (工作线程据此走 / 跳过 BigQuant 同步)
   void DrawQuotaConfirm() {
     if (!fundamental_svc_)
       return;
@@ -502,6 +502,7 @@ private:
     }
 
     bool update_clicked = false;
+    bool update_cancel_clicked = false;
     bool audit_clicked = false;
     bool audit_cancel_clicked = false;
 
@@ -515,6 +516,7 @@ private:
     RenderTabOverview(
         fundamental_svc_->get_state(),
         &update_clicked,
+        &update_cancel_clicked,
         busy || auditing,
         audit_svc_->get_state(),
         &audit_clicked,
@@ -525,6 +527,8 @@ private:
     if (update_clicked && !busy && !auditing) {
       TriggerRefreshFlow();
     }
+    if (update_cancel_clicked)
+      fundamental_svc_->cancel();
     if (audit_clicked && !disable_audit) {
       boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run(),
                             boost::asio::detached);

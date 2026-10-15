@@ -34,7 +34,7 @@ Scan::Scan(const Catalog &cat, const Ids &ids, std::size_t threads) : cat_(cat),
 
 Rows Scan::open(const Shard &sh, const Spec &s, const std::vector<std::string> &cols, Scratch &x) const {
   const std::string_view key = key_col(s);
-  x.t = std::make_unique<pq::TableView>(pq::read_table(sh.path, cols, {std::string(key)}));
+  x.t = std::make_unique<pq::TableView>(read(sh, cols, {std::string(key)}));
   Rows r;
   r.t_ = x.t.get();
   r.n_ = x.t->rows();
@@ -71,13 +71,13 @@ pq::TableView meta(const Catalog &cat, std::string_view name, const std::vector<
   assert(spec(name).shape == Shape::Meta && "meta: 只读 Meta 表");
   const Shard *sh = cat.find(name, 0);
   assert(sh && "meta: _meta 分片缺失 (基本面未同步?)");
-  return pq::TableView(pq::read_table(sh->path, cols));
+  return pq::TableView(read(*sh, cols));
 }
 
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today) {
   std::vector<Ymd> out, d;
   for (const Shard &sh : cat.shards("all_trading_days")) {
-    pq::TableView v(pq::read_table(sh.path, {"date", "market_code"}));
+    pq::TableView v(read(sh, {"date", "market_code"}));
     if (v.rows() == 0)
       continue;
     v.col("date").yyyymmdd_all(d);

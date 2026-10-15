@@ -43,8 +43,8 @@ std::filesystem::path new_log_path() {
 }
 
 // Rows 差异一行 (column/cell 为 "-"); Content 每个不一致格一行
-void write_diff(std::ofstream &out, const fundamental::AuditDiff &d) {
-  const char *pass = d.pass == fundamental::AuditPass::Rows ? "rows" : "content";
+void write_diff(std::ofstream &out, const fundamental::audit::Diff &d) {
+  const char *pass = d.pass == fundamental::audit::Pass::Rows ? "rows" : "content";
   auto head = [&]() -> std::ofstream & {
     out << d.table << '\t' << d.group << '\t' << pass << '\t' << d.local_n
         << '\t' << d.remote_n << '\t';
@@ -54,7 +54,7 @@ void write_diff(std::ofstream &out, const fundamental::AuditDiff &d) {
     head() << "-\t-\t-\t-\n";
     return;
   }
-  for (const fundamental::AuditCell &c : d.cells)
+  for (const fundamental::audit::Diff::Cell &c : d.cells)
     head() << c.column << '\t' << (c.sum ? "s" : "nn") << '\t' << c.local
            << '\t' << c.remote << '\n';
 }
@@ -70,13 +70,13 @@ struct LogRow {
 };
 
 // 与 write_diff 一行对一行
-void append_rows(std::vector<LogRow> &out, const fundamental::AuditDiff &d) {
-  const bool rows = d.pass == fundamental::AuditPass::Rows;
+void append_rows(std::vector<LogRow> &out, const fundamental::audit::Diff &d) {
+  const bool rows = d.pass == fundamental::audit::Pass::Rows;
   if (d.cells.empty()) {
     out.push_back({d.table, d.group, rows, d.local_n, d.remote_n, "-"});
     return;
   }
-  for (const fundamental::AuditCell &c : d.cells)
+  for (const fundamental::audit::Diff::Cell &c : d.cells)
     out.push_back({d.table, d.group, rows, d.local_n, d.remote_n, c.column});
 }
 
@@ -146,7 +146,7 @@ std::string parse_log(const std::filesystem::path &p, std::vector<LogRow> &rows)
   return status;
 }
 
-// 本地冻结月清点 (分母 + 流量): as_of 当天视角下 fundamental::frozen 的月 (与 audit_plan 同一来源)
+// 本地冻结月清点 (分母 + 流量): as_of 当天视角下 fundamental::frozen 的月 (与 audit::plan 同一来源)
 struct MonthInv {
   std::int64_t rows = 0;
   std::int64_t days = 0;
@@ -160,11 +160,10 @@ Inventory build_inventory(const fundamental::Catalog &cat, const fundamental::No
     if (!fundamental::from<fundamental::Bq>(s) || s.shape != fundamental::Shape::Month)
       continue;
     auto &months = inv[s.name];
-    for (const misc::Ym ym : fundamental::frozen(s, cat, as_of)) {
-      const std::filesystem::path &path = cat.find(s.name, ym)->path;
-      MonthInv &m = months[misc::dash_ym(ym)];
-      m.cols = parquet::ParquetFileReader::OpenFile(path.string())->metadata()->num_columns();
-      auto t = misc::pq::read_table(path, {s.vd});
+    for (const fundamental::Slot &sl : fundamental::frozen(s, cat, as_of)) {
+      MonthInv &m = months[misc::dash_ym(sl.ym)];
+      m.cols = parquet::ParquetFileReader::OpenFile(sl.sh->path.string())->metadata()->num_columns();
+      auto t = fundamental::read(*sl.sh, {s.vd});
       m.rows = t->num_rows();
       std::set<std::int32_t> days;
       std::vector<std::int32_t> d;
@@ -376,22 +375,22 @@ boost::asio::awaitable<void> AuditService::run() {
       job->quota_used = q0.used;
       job->quota_weekly = q0.weekly;
     }
-    const auto units = fundamental::audit_plan(cat, now, static_cast<unsigned>(std::time(nullptr)));
+    const auto units = fundamental::audit::plan(cat, now, static_cast<unsigned>(std::time(nullptr)));
     {
       std::lock_guard lk(job->mu);
       job->total = units.size();
     }
     std::cout << "[bigquant.audit] " << units.size() << " units" << std::endl;
-    for (const fundamental::AuditUnit &u : units) {
+    for (const fundamental::audit::Unit &u : units) {
       if (job->cancel.load(std::memory_order_relaxed))
         break;
       {
         std::lock_guard lk(job->mu);
-        job->current = fundamental::audit_label(u);
+        job->current = fundamental::audit::label(u);
       }
-      const auto diffs = fundamental::audit_unit(client, u);
+      const auto diffs = fundamental::audit::run(client, u);
       if (!diffs.empty())
-        std::cout << "[bigquant.audit] " << fundamental::audit_label(u) << ": "
+        std::cout << "[bigquant.audit] " << fundamental::audit::label(u) << ": "
                   << diffs.size() << " 处不一致" << std::endl;
       for (const auto &d : diffs)
         write_diff(log, d);

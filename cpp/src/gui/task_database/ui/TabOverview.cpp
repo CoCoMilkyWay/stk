@@ -38,15 +38,15 @@ ImVec4 status_color(FundamentalStatus s) {
   return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
 }
 
-// Shape × snap × src → 抓法一词 (与 fetch 的取行方式一一对应)
+// Shape × Snap × src → 抓法一词 (与 fetch 的取行方式一一对应)
 const char *fetch_name(const fundamental::Spec &s) {
   const bool month = s.shape == fundamental::Shape::Month;
-  if (s.snap)
+  if (s.snap == fundamental::Snap::Day)
     return month ? "月初" : "快照";
   if (!month)
     return "整刷";
   const auto *bq = std::get_if<fundamental::Bq>(&s.src);
-  return bq && bq->partition ? "分区" : "条件";
+  return bq && bq->prune == fundamental::Prune::Partition ? "分区" : "条件";
 }
 
 void text_bytes(std::uint64_t b) {
@@ -333,6 +333,7 @@ void audit_section(const AuditState &a, bool *audit_clicked,
 void RenderTabOverview(
     const FundamentalState &state,
     bool *update_clicked,
+    bool *update_cancel_clicked,
     bool disable_update_controls,
     const AuditState &audit,
     bool *audit_clicked,
@@ -400,15 +401,21 @@ void RenderTabOverview(
   ImGui::Separator();
   ImGui::Spacing();
 
-  // 操作区
-  ImGui::BeginDisabled(disable_update_controls);
-  if (ImGui::Button("Update (sync + rebuild)", ImVec2(220.0f, 0.0f))) {
-    *update_clicked = true;
-  }
-  ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-    ImGui::SetTooltip("pending 判定 → BigQuant/Tushare 水位增量同步 → 重建 AssetInfo\n"
-                      "已到水位时零网络, 秒级完成");
+  // 操作区 (与 audit_section 同形: 跑时按钮换成 Cancel)
+  if (state.status == FundamentalStatus::Updating) {
+    if (ImGui::Button("Cancel sync", ImVec2(220.0f, 0.0f)))
+      *update_cancel_clicked = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("当前任务的查询跑完即停, 余下同步任务跳过, 照常重建 AssetInfo");
+  } else {
+    ImGui::BeginDisabled(disable_update_controls);
+    if (ImGui::Button("Update (sync + rebuild)", ImVec2(220.0f, 0.0f)))
+      *update_clicked = true;
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("pending 判定 → BigQuant/Tushare 水位增量同步 → 重建 AssetInfo\n"
+                        "已到水位时零网络, 秒级完成");
+    }
   }
 
   // 周配额: Update 的 preflight 读数优先, 没有则用 Audit 自己取的

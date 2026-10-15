@@ -3,30 +3,15 @@
 #include "fundamental/Remote.hpp"
 #include "shared/Config.hpp"
 
-#include <iostream>
+#include <cassert>
+#include <chrono>
 
-namespace fundamental {
+namespace fundamental::sync {
 
 namespace {
 
-template <class Client>
-void run(Client &client, const std::vector<Task> &tasks, const char *tag) {
-  std::cout << "[" << tag << ".sync] " << tasks.size() << " task(s) from " << ::config::PIPELINE_START_DATE
-            << " (lookback=" << ::config::PIPELINE_LOOKBACK_DAYS
-            << "d, dedup=" << ::config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
-  const Spec *cur = nullptr;
-  for (const Task &t : tasks) {
-    if (t.spec != cur) {
-      cur = t.spec;
-      std::cout << "\n[" << cur->name << "]" << std::endl;
-    }
-    std::cout << "  " << (t.ym == 0 ? "_meta" : misc::dash_ym(t.ym))
-              << (t.append ? " +[" + misc::dense(t.w.lo) + "..] ... " : " ... ") << std::flush;
-    const auto tbl = fetch(client, t);
-    put(t, tbl);
-    std::cout << tbl->num_rows() << " rows" << std::endl;
-  }
-  std::cout << "\n[" << tag << ".sync] done" << std::endl;
+long age_seconds(const Shard &sh, const Now &now) {
+  return std::chrono::duration_cast<std::chrono::seconds>(now.at - sh.mtime).count();
 }
 
 } // namespace
@@ -37,16 +22,42 @@ std::vector<Task> plan(const Catalog &cat, const Now &now) {
   for (const Spec &s : SPECS) {
     if (!from<Src>(s))
       continue;
-    const std::vector<Task> v = plan(s, cat, now);
-    out.insert(out.end(), v.begin(), v.end());
+    for (const Slot &sl : ledger(s, cat, now)) {
+      // 已冻结 / 已存在的分片刚写过 → 本轮不动
+      if (sl.st == State::Frozen || (sl.sh && age_seconds(*sl.sh, now) < ::config::PIPELINE_DEDUP_WINDOW_SECONDS))
+        continue;
+      Task t{&s, sl.ym, sl.w, Write::Replace};
+      const Ymd w = sl.st == State::Open ? mark(s, *sl.sh) : 0; // 水位; 0 = 整段覆盖 (Missing / Stale / 0 行文件)
+      if (w != 0) {
+        if (s.snap == Snap::Day)
+          continue; // 快照已入盘
+        t.w.lo = misc::add_days(w, 1);
+        t.how = Write::Append;
+      }
+      if (t.w.lo <= t.w.hi) // {0, 0} (vd 空) 亦过
+        out.push_back(t);
+    }
   }
   return out;
 }
 
-void sync(bigquant::Client &client, const std::vector<Task> &tasks) { run(client, tasks, "bigquant"); }
-void sync(tushare::Client &client, const std::vector<Task> &tasks) { run(client, tasks, "tushare"); }
+template <class Src>
+std::int64_t run(typename Src::Client &client, const Task &t) {
+  const Spec &s = *t.spec;
+  assert(!(t.how == Write::Append && s.snap == Snap::Day) && "sync::run: Snap::Day 表只整段覆盖");
+  const auto tbl = fetch<Src>(client, s, t.w);
+  put(s, t.ym, t.how, tbl);
+  return tbl->num_rows();
+}
+
+std::string label(const Task &t) {
+  return t.spec->name + " " + (t.ym == 0 ? "_meta" : misc::dash_ym(t.ym)) +
+         (t.how == Write::Append ? " +[" + misc::dense(t.w.lo) + "..]" : "");
+}
 
 template std::vector<Task> plan<Bq>(const Catalog &, const Now &);
 template std::vector<Task> plan<Tu>(const Catalog &, const Now &);
+template std::int64_t run<Bq>(bigquant::Client &, const Task &);
+template std::int64_t run<Tu>(tushare::Client &, const Task &);
 
-} // namespace fundamental
+} // namespace fundamental::sync

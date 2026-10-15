@@ -1,14 +1,15 @@
 // fundamental — 日频基本面数据集: 一张表 = SPECS 一行, 两个数据源同一类型
 //
-//   Spec   元描述 (本文件): 落盘形态 Shape × 快照 snap × 数据源 src, 写读两侧共用
+//   Spec   元描述 (本文件): 落盘形态 Shape × 快照 Snap × 数据源 src, 写读两侧共用
 //          因果安全 (vd / drop) 在 Spec 层; 传输细节 (表名 / 键列 / 参数 / 列型) 在 src 层
-//   Store  本地: 清单 + 分片状态 + 拉取计划 + 落盘 (Store.hpp)
+//   Store  本地: 清单 + 槽位账本 + 唯一读点 read / 唯一写点 put (Store.hpp)
 //   Remote 远端: Spec × Window → Query → Table, 两源同骨架 (Remote.hpp)
-//   Sync   写侧: plan → fetch → put (Sync.hpp)
+//   sync   写侧: plan → run (fetch → put) (Sync.hpp)
+//   audit  核对: plan → run (远端指纹 ↔ 本地指纹, 仅 DAI) (Audit.hpp)
 //   Scan   读侧: split → fold → merge (Scan.hpp)
-//   Audit  核对: 远端指纹 ↔ 本地指纹 (Audit.hpp, 仅 DAI)
 //
 // 依赖单向: fundamental → api/{bigquant, tushare}::Client (纯传输, 不知 Spec)
+// 分派键唯一 = 数据源 Src (Bq / Tu); 客户端类型由 Src::Client 给出
 #pragma once
 
 #include "misc/date.hpp"
@@ -17,6 +18,13 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+
+namespace bigquant {
+class Client;
+}
+namespace tushare {
+class Client;
+}
 
 namespace fundamental {
 
@@ -30,17 +38,25 @@ enum class Shape { Month,
                    Meta };
 
 // 每个分片窗口内取哪些行 (以 vd 为准)
-//   snap = false: 全部
-//   snap = true : 只留一天 —— Month 取最早 (MIN, 月初快照), Meta 取最晚 (MAX, 真盘前快照); 方向由 Shape 定
+//   All: 全部
+//   Day: 只留一天 —— Month 取最早 (MIN, 月初快照), Meta 取最晚 (MAX, 真盘前快照); 方向由 Shape 定
 //
-// Shape × snap 四种皆合法; 另有 (SPECS 静态初始化期逐行断言):
-//   vd 空 ⇒ Meta·!snap;  Tu ⇒ Month·!snap;  Bq{partition} ⇒ vd == "date" (服务端分区列)
+// Shape × Snap 四种皆合法; 另有 (SPECS 静态初始化期逐行断言):
+//   vd 空 ⇒ Meta·All;  Tu ⇒ Month·All;  Bq{Partition} ⇒ vd == "date" (服务端分区列)
+enum class Snap { All,
+                  Day };
+
+// BigQuant 窗口谓词的裁剪方式
+//   Where    : 纯 SQL WHERE
+//   Partition: vd 是分区列 → 另附 filters 服务端裁剪
+enum class Prune { Where,
+                   Partition };
 
 // BigQuant DAI. 远端表名 = Spec::name (FROM 子句)
-//   partition: vd 是分区列 → filters 服务端裁剪; 否则纯 SQL WHERE
 struct Bq {
+  using Client = bigquant::Client;
   static constexpr std::string_view key = "instrument"; // 资产键列
-  bool partition;
+  Prune prune;
 };
 
 // Tushare HTTP
@@ -49,6 +65,7 @@ struct Bq {
 //              非空 → 逐日接口, 窗口内逐日 × 每参数各 1 次
 //   num        → 声明为 double 的列, 其余一律 string (全 null 列无从推断, 不声明会跨月漂移)
 struct Tu {
+  using Client = tushare::Client;
   static constexpr std::string_view key = "ts_code"; // 资产键列
   std::string api;
   std::vector<std::string> day_params;
@@ -57,9 +74,9 @@ struct Tu {
 
 struct Spec {
   std::string name; // 表名 = parquet 文件名
-  std::string vd;   // 因果安全可见日列; 空 = 无日期维度 (仅 Meta·!snap)
+  std::string vd;   // 因果安全可见日列; 空 = 无日期维度 (仅 Meta·All)
   Shape shape;
-  bool snap;
+  Snap snap;
   int avail_hour; // day X 数据于 X 日该小时后完整:
                   //   0 = 排程提前入库; 9/10 = 真盘前; 20 = 盘后批; 24 = 全天涓流, 次日才完整
   std::variant<Bq, Tu> src;

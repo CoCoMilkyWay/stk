@@ -33,20 +33,14 @@ Ymd horizon(int avail_hour, const Now &now) {
   return now.hour >= avail_hour ? now.today : misc::add_days(now.today, -1);
 }
 
-long age_seconds(const Shard &sh, const Now &now) {
-  return std::chrono::duration_cast<std::chrono::seconds>(now.at - sh.mtime).count();
-}
-
 Ymd write_date(const Shard &sh) { return ymd_of(local_tm(sh.mtime)); }
 
-// 文件内 max(vd); 0 行 / 全 null → 0. 只解 vd 一列 (宽表全列解是纯浪费).
-Ymd max_vd(const Shard &sh, const std::string &vd) {
-  pq::TableView tv(pq::read_table(sh.path, {vd}));
-  if (tv.rows() == 0)
-    return 0;
-  std::vector<Ymd> d;
-  tv.col(vd).yyyymmdd_all(d);
-  return *std::max_element(d.begin(), d.end());
+fs::path root() { return misc::git_root() / "output" / "fundamental"; }
+
+// name 的分片路径: ym > 0 → YYYY-MM/<name>.parquet; ym = 0 → _meta/<name>.parquet
+fs::path path(std::string_view name, Ym ym) {
+  assert(ym >= 0);
+  return root() / (ym == 0 ? std::string("_meta") : misc::dash_ym(ym)) / (std::string(name) + ".parquet");
 }
 
 bool closed(Ym m, Ymd today) {
@@ -66,8 +60,7 @@ std::vector<Ym> slots(const Spec &s, const Now &now) {
   return out;
 }
 
-// 分片槽 m 的整段窗口: Meta = [start, horizon] (vd 空 → {0, 0});
-//                     Month = [max(月初, start), 关月 ? 月末 : min(月末, horizon)]
+// 分片槽 m 的整段窗口 (见 Slot::w)
 Window window(const Spec &s, Ym m, const Now &now) {
   const Ymd start = ::config::PIPELINE_START_DATE;
   const Ymd hz = horizon(s.avail_hour, now);
@@ -76,19 +69,28 @@ Window window(const Spec &s, Ym m, const Now &now) {
   return {std::max(misc::first_day(m), start), closed(m, now.today) ? misc::last_day(m) : std::min(misc::last_day(m), hz)};
 }
 
+// sh = 该分片 (nullptr = 盘上没有); Month: m = 分片月, Meta: m = 0
+State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
+  if (!sh)
+    return State::Missing;
+  if (s.shape == Shape::Meta) {
+    const bool fresh = s.vd.empty() ? write_date(*sh) == now.today
+                                    : mark(s, *sh) >= horizon(s.avail_hour, now);
+    return fresh ? State::Frozen : State::Stale;
+  }
+  if (!closed(m, now.today))
+    return State::Open;
+  // 冻结 = 写盘日 ≥ 月末 + lookback: 写盘时该月已出 lookback 窗口, "整月行 + 全部回填" 才都已入盘
+  return write_date(*sh) >= misc::add_days(misc::last_day(m), ::config::PIPELINE_LOOKBACK_DAYS) ? State::Frozen
+                                                                                                : State::Stale;
+}
+
 } // namespace
 
 Now now() {
   const fs::file_time_type at = fs::file_time_type::clock::now();
   const std::tm tm = local_tm(at);
   return {at, ymd_of(tm), tm.tm_hour};
-}
-
-fs::path root() { return misc::git_root() / "output" / "fundamental"; }
-
-fs::path path(std::string_view name, Ym ym) {
-  assert(ym >= 0);
-  return root() / (ym == 0 ? std::string("_meta") : misc::dash_ym(ym)) / (std::string(name) + ".parquet");
 }
 
 Catalog::Catalog() {
@@ -123,59 +125,40 @@ const Shard *Catalog::find(std::string_view name, Ym m) const {
   return (it != v.end() && it->ym == m) ? &*it : nullptr;
 }
 
-State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
-  if (!sh)
-    return State::Missing;
-  if (s.shape == Shape::Meta) {
-    const bool fresh = s.vd.empty() ? write_date(*sh) == now.today
-                                    : max_vd(*sh, s.vd) >= horizon(s.avail_hour, now);
-    return fresh ? State::Frozen : State::Stale;
-  }
-  if (!closed(m, now.today))
-    return State::Open;
-  // 冻结 = 写盘日 ≥ 月末 + lookback: 写盘时该月已出 lookback 窗口, "整月行 + 全部回填" 才都已入盘
-  return write_date(*sh) >= misc::add_days(misc::last_day(m), ::config::PIPELINE_LOOKBACK_DAYS) ? State::Frozen
-                                                                                                : State::Stale;
-}
-
-std::vector<Task> plan(const Spec &s, const Catalog &cat, const Now &now) {
+std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now) {
   assert(::config::PIPELINE_START_DATE > 0 && ::config::PIPELINE_START_DATE <= now.today);
-  std::vector<Task> out;
+  std::vector<Slot> out;
   for (const Ym m : slots(s, now)) {
     const Shard *sh = cat.find(s.name, m);
-    const State st = state(s, sh, m, now);
-    // 已冻结 / 已存在的分片刚写过 → 本轮不动
-    if (st == State::Frozen || (sh && age_seconds(*sh, now) < ::config::PIPELINE_DEDUP_WINDOW_SECONDS))
-      continue;
-    Task t{&s, m, window(s, m, now), false};
-    const Ymd w = st == State::Open ? max_vd(*sh, s.vd) : 0; // 水位; 0 = 整段覆盖 (Missing / Stale / 0 行文件)
-    if (w != 0) {
-      if (s.snap)
-        continue; // 快照已入盘
-      t.w.lo = misc::add_days(w, 1);
-      t.append = true;
-    }
-    if (t.w.lo <= t.w.hi) // {0, 0} (vd 空) 亦过
-      out.push_back(t);
+    out.push_back({m, sh, state(s, sh, m, now), window(s, m, now)});
   }
   return out;
 }
 
-std::vector<Ym> frozen(const Spec &s, const Catalog &cat, const Now &now) {
-  std::vector<Ym> out;
+std::vector<Slot> frozen(const Spec &s, const Catalog &cat, const Now &now) {
+  std::vector<Slot> out;
   if (s.shape != Shape::Month)
     return out;
-  const Ym start = misc::ym_of(::config::PIPELINE_START_DATE);
-  for (const Shard &sh : cat.shards(s.name))
-    if (sh.ym >= start && state(s, &sh, sh.ym, now) == State::Frozen)
-      out.push_back(sh.ym);
+  for (const Slot &sl : ledger(s, cat, now))
+    if (sl.st == State::Frozen)
+      out.push_back(sl);
   return out;
 }
 
-void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
-  assert(t.spec && (t.ym == 0) == (t.spec->shape == Shape::Meta) && "put: 任务与表形态不符");
-  const fs::path p = path(t.spec->name, t.ym);
-  if (t.append)
+Ymd mark(const Spec &s, const Shard &sh) {
+  assert(!s.vd.empty() && "mark: vd 空的表无水位");
+  return pq::max_yyyymmdd(sh.path, s.vd);
+}
+
+std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::string> &cols,
+                                   const std::vector<std::string> &dict) {
+  return pq::read_table(sh.path, cols, dict);
+}
+
+void put(const Spec &s, Ym ym, Write how, const std::shared_ptr<arrow::Table> &tbl) {
+  assert((ym == 0) == (s.shape == Shape::Meta) && "put: 分片与表形态不符");
+  const fs::path p = path(s.name, ym);
+  if (how == Write::Append)
     pq::append_table_atomic(p, tbl);
   else
     pq::write_table_atomic(p, tbl);

@@ -93,13 +93,16 @@ public:
   FundamentalService(boost::asio::io_context &io, SharedData &data)
       : io_(io), data_(data) {}
 
-  // plan<Bq> / plan<Tu> → [sync(bq) → sync(ts)] → 重建 AssetInfo
+  // sync::plan<Bq> / plan<Tu> → [逐任务 sync::run (bq) → (ts)] → 重建 AssetInfo
   // (两份计划皆空 ⇒ 零网络直接本地构建; 启动与手动 Update 共用)
   awaitable<void> update_all();
 
-  // Confirm 态的弹窗回答: proceed=true 照常 sync(bq), false 跳过 BigQuant
+  // Confirm 态的弹窗回答: proceed=true 照常同步 BigQuant, false 跳过 BigQuant
   // (Tushare / 本地构建照常). 只在 Confirm 态可调, 每轮只回答一次.
   void confirm(bool proceed);
+
+  // 当前任务的查询跑完即停, 余下同步任务全部跳过 (本地构建照常); 与 AuditService::cancel 同义
+  void cancel();
 
   const FundamentalState &get_state() const { return state_; }
   bool is_ready() const { return state_.status == FundamentalStatus::Ready; }
@@ -115,6 +118,7 @@ private:
   // 弹窗决定 → 工作线程: 0 = 未答, 1 = 继续, 2 = 跳过 BigQuant.
   // shared_ptr 随 detached 线程存活 (与 Job 同理), 每轮 run 新建.
   std::shared_ptr<std::atomic<int>> decision_;
+  std::shared_ptr<std::atomic<bool>> cancel_; // 同上, 每轮 run 新建
 };
 
 } // namespace GUI::Database

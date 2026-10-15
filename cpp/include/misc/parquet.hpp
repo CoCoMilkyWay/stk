@@ -36,6 +36,10 @@ std::shared_ptr<arrow::Table>
 read_table(const std::filesystem::path &path, const std::vector<std::string> &columns = {},
            const std::vector<std::string> &dict_columns = {});
 
+// 日期列 max → YYYYMMDD, 只读 footer 列统计 (零解码); 0 行 / 全 null → 0.
+//   列须为 timestamp[ns] 或 "YYYYMMDD" string (与 Col::yyyymmdd 同口径); 有值却缺统计 → assert.
+std::int32_t max_yyyymmdd(const std::filesystem::path &path, const std::string &column);
+
 void write_table_atomic(const std::filesystem::path &path,
                         const std::shared_ptr<arrow::Table> &t);
 

@@ -7,9 +7,12 @@
 #include <arrow/util/compression.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
+#include <parquet/file_reader.h>
 #include <parquet/metadata.h>
 #include <parquet/properties.h>
 #include <parquet/schema.h>
+#include <parquet/statistics.h>
+#include <parquet/types.h>
 
 #include <algorithm>
 #include <cassert>
@@ -146,6 +149,43 @@ inline std::int32_t sv_to_yyyymmdd(std::string_view s) {
 }
 
 } // namespace
+
+std::int32_t max_yyyymmdd(const fs::path &path, const std::string &column) {
+  const std::unique_ptr<parquet::ParquetFileReader> r =
+      parquet::ParquetFileReader::OpenFile(path.string(), /*memory_map=*/true);
+  const std::shared_ptr<parquet::FileMetaData> md = r->metadata();
+  const int c = md->schema()->ColumnIndex(column);
+  assert(c >= 0 && "pq::max_yyyymmdd: 列不存在");
+  const parquet::ColumnDescriptor *d = md->schema()->Column(c);
+  const bool ts = d->physical_type() == parquet::Type::INT64 && d->logical_type()->is_timestamp();
+  assert((ts || (d->physical_type() == parquet::Type::BYTE_ARRAY && d->logical_type()->is_string())) &&
+         "pq::max_yyyymmdd: 列类型须为 timestamp / string");
+  assert((!ts || static_cast<const parquet::TimestampLogicalType &>(*d->logical_type()).time_unit() ==
+                     parquet::LogicalType::TimeUnit::NANOS) &&
+         "pq::max_yyyymmdd: timestamp 须为 ns");
+  std::int32_t out = 0;
+  for (int g = 0; g < md->num_row_groups(); ++g) {
+    const std::unique_ptr<parquet::ColumnChunkMetaData> cc = md->RowGroup(g)->ColumnChunk(c);
+    if (cc->num_values() == 0)
+      continue;
+    assert(cc->is_stats_set() && "pq::max_yyyymmdd: 缺列统计");
+    const std::shared_ptr<parquet::Statistics> st = cc->statistics();
+    if (!st->HasMinMax()) {
+      assert(st->null_count() == cc->num_values() && "pq::max_yyyymmdd: 有值却无 min/max");
+      continue;
+    }
+    std::int32_t m = 0;
+    if (ts) {
+      m = ns_to_yyyymmdd(std::static_pointer_cast<parquet::Int64Statistics>(st)->max());
+    } else {
+      const parquet::ByteArray &b = std::static_pointer_cast<parquet::ByteArrayStatistics>(st)->max();
+      m = sv_to_yyyymmdd(std::string_view(reinterpret_cast<const char *>(b.ptr), b.len));
+    }
+    assert(m > 0 && "pq::max_yyyymmdd: 统计 max 非 YYYYMMDD");
+    out = std::max(out, m);
+  }
+  return out;
+}
 
 std::int32_t Col::yyyymmdd(std::int64_t i) const {
   if (arr_->IsNull(i))

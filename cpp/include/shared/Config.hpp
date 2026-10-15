@@ -173,7 +173,7 @@ inline constexpr int TUSHARE_HTTP_TIMEOUT_SECONDS = 60; // range 接口序列化
 inline constexpr int TUSHARE_HTTP_RETRY_MAX = 4;        // 共 5 次尝试
 inline constexpr int TUSHARE_HTTP_RETRY_INTERVAL_SECONDS = 30;
 
-// ---- 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet, 调度 fundamental::plan) ----
+// ---- 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet, 调度 fundamental::sync::plan) ----
 //   PIPELINE_START_DATE: 数据同步起点 (A 股财报电子化从 2015 起逐渐完整).
 //     与 Config::start_date (回测/分析窗口) 语义不同, 不合并 — 基本面历史
 //     要为后续特征表全周期服务, 不随回测窗口收窄.

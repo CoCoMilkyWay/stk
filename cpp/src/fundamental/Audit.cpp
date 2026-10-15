@@ -2,7 +2,6 @@
 
 #include "fundamental/Remote.hpp"
 #include "misc/parquet.hpp"
-#include "shared/Config.hpp"
 
 #include <arrow/array.h>
 #include <arrow/table.h>
@@ -21,7 +20,7 @@
 #include <string_view>
 #include <vector>
 
-namespace fundamental {
+namespace fundamental::audit {
 
 namespace {
 
@@ -101,10 +100,10 @@ std::string i128_str(i128 v) {
   return s;
 }
 
-Layout layout_of(bigquant::Client &client, const AuditUnit &u) {
+Layout layout_of(bigquant::Client &client, const Unit &u) {
   Layout L;
   L.cells.push_back({-1, false});
-  if (u.pass == AuditPass::Rows)
+  if (u.pass == Pass::Rows)
     return L;
   // LIMIT 0: 只要 schema, 0 cell
   auto t = client.query(select(*u.spec, "*", u.w, " LIMIT 0"));
@@ -275,13 +274,13 @@ void accumulate(const arrow::Array &a, Kind k, int nn_at, int s_at,
 }
 
 // 本地: months 各分片逐行累加, 与 remote_fps 同组键同口径
-Fps local_fps(const Spec &s, const Layout &L, Grain g, const std::vector<Ym> &months) {
+Fps local_fps(const Spec &s, const Layout &L, Grain g, const std::vector<Slot> &months) {
   const bool content = L.cells.size() > 1;
   std::map<std::string, std::vector<i128>> acc;
-  for (const Ym ym : months) {
-    auto t = pq::read_table(path(s.name, ym),
-                            content ? std::vector<std::string>{}
-                                    : std::vector<std::string>{s.vd});
+  for (const Slot &sl : months) {
+    const Ym ym = sl.ym;
+    auto t = read(*sl.sh, content ? std::vector<std::string>{}
+                                  : std::vector<std::string>{s.vd});
     // 行 → 所属组的累加槽 (同日短路: 分片内 vd 按日成块)
     std::vector<std::vector<i128> *> slot(static_cast<std::size_t>(t->num_rows()));
     {
@@ -359,16 +358,16 @@ std::string diff_detail(const Layout &L, const std::vector<std::string> &a,
   return out;
 }
 
-AuditDiff make_diff(const AuditUnit &u, const Layout &L, const std::string &group,
-                    const std::vector<std::string> &l,
-                    const std::vector<std::string> &r) {
-  AuditDiff d;
+Diff make_diff(const Unit &u, const Layout &L, const std::string &group,
+               const std::vector<std::string> &l,
+               const std::vector<std::string> &r) {
+  Diff d;
   d.table = u.spec->name;
   d.group = group;
   d.pass = u.pass;
   d.local_n = std::stoll(l[0]);
   d.remote_n = std::stoll(r[0]);
-  if (u.pass == AuditPass::Content) {
+  if (u.pass == Pass::Content) {
     d.detail = diff_detail(L, l, r);
     for (std::size_t k = 1; k < L.cells.size(); ++k)
       if (l[k] != r[k])
@@ -379,21 +378,20 @@ AuditDiff make_diff(const AuditUnit &u, const Layout &L, const std::string &grou
 
 } // namespace
 
-std::vector<AuditUnit> audit_plan(const Catalog &cat, const Now &now, unsigned seed) {
-  const Ymd start = ::config::PIPELINE_START_DATE;
-  std::vector<std::vector<AuditUnit>> per_table;
+std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed) {
+  std::vector<std::vector<Unit>> per_table;
   for (const Spec &s : SPECS) {
     if (!from<Bq>(s) || s.shape != Shape::Month)
       continue;
-    std::map<int, AuditUnit> by_year;
-    for (const Ym ym : frozen(s, cat, now)) {
-      AuditUnit &u = by_year[ym / 100];
+    std::map<int, Unit> by_year;
+    for (const Slot &sl : frozen(s, cat, now)) {
+      Unit &u = by_year[sl.ym / 100];
       if (u.months.empty())
-        u.w.lo = std::max(misc::first_day(ym), start);
-      u.months.push_back(ym);
-      u.w.hi = misc::last_day(ym);
+        u.w.lo = sl.w.lo;
+      u.months.push_back(sl);
+      u.w.hi = sl.w.hi;
     }
-    std::vector<AuditUnit> units;
+    std::vector<Unit> units;
     for (auto &[y, u] : by_year) {
       u.spec = &s;
       u.year = y;
@@ -404,8 +402,8 @@ std::vector<AuditUnit> audit_plan(const Catalog &cat, const Now &now, unsigned s
   }
 
   std::mt19937 rng(seed);
-  std::vector<AuditUnit> out;
-  for (AuditPass pass : {AuditPass::Rows, AuditPass::Content}) {
+  std::vector<Unit> out;
+  for (Pass pass : {Pass::Rows, Pass::Content}) {
     auto tables = per_table;
     std::shuffle(tables.begin(), tables.end(), rng);
     std::size_t depth = 0;
@@ -416,7 +414,7 @@ std::vector<AuditUnit> audit_plan(const Catalog &cat, const Now &now, unsigned s
     for (std::size_t k = 0; k < depth; ++k)
       for (const auto &t : tables)
         if (k < t.size()) {
-          AuditUnit u = t[k];
+          Unit u = t[k];
           u.pass = pass;
           out.push_back(std::move(u));
         }
@@ -424,7 +422,7 @@ std::vector<AuditUnit> audit_plan(const Catalog &cat, const Now &now, unsigned s
   return out;
 }
 
-std::vector<AuditDiff> audit_unit(bigquant::Client &client, const AuditUnit &u) {
+std::vector<Diff> run(bigquant::Client &client, const Unit &u) {
   assert(u.spec && !u.months.empty());
   const Spec &s = *u.spec;
   const Layout L = layout_of(client, u);
@@ -434,14 +432,14 @@ std::vector<AuditDiff> audit_unit(bigquant::Client &client, const AuditUnit &u) 
   auto flagged = [&](const std::vector<std::string> &l,
                      const std::vector<std::string> &r) {
     if (l[0] != r[0])
-      return u.pass == AuditPass::Rows;
-    return u.pass == AuditPass::Content && l != r;
+      return u.pass == Pass::Rows;
+    return u.pass == Pass::Content && l != r;
   };
 
   const Fps rm = remote_fps(client, s, L, Grain::Month, u.w);
   // Rows 轮只有 n 一格: 本地直接按日累加, 月级由日级求和 —— 下钻时不必重读分片
   Fps ld_all, lm;
-  if (u.pass == AuditPass::Rows) {
+  if (u.pass == Pass::Rows) {
     ld_all = local_fps(s, L, Grain::Day, u.months);
     std::map<std::string, std::int64_t> month_n;
     for (const auto &[day, v] : ld_all)
@@ -452,22 +450,22 @@ std::vector<AuditDiff> audit_unit(bigquant::Client &client, const AuditUnit &u) 
     lm = local_fps(s, L, Grain::Month, u.months);
   }
 
-  std::vector<AuditDiff> out;
-  for (const Ym ym : u.months) {
-    const std::string key = misc::dash_ym(ym);
+  std::vector<Diff> out;
+  for (const Slot &sl : u.months) {
+    const std::string key = misc::dash_ym(sl.ym);
     const auto &l = find_or_zero(lm, key, zeros);
     const auto &r = find_or_zero(rm, key, zeros);
     if (!flagged(l, r))
       continue;
 
     // 日级下钻: 同月内任何不一致都报 (Content 轮里 n 跨日挪动也算)
-    const Fps rd = remote_fps(client, s, L, Grain::Day, {std::max(misc::first_day(ym), u.w.lo), misc::last_day(ym)});
+    const Fps rd = remote_fps(client, s, L, Grain::Day, sl.w);
     Fps ld;
-    if (u.pass == AuditPass::Rows) {
+    if (u.pass == Pass::Rows) {
       for (auto it = ld_all.lower_bound(key); it != ld_all.end() && it->first.starts_with(key); ++it)
         ld.insert(*it);
     } else {
-      ld = local_fps(s, L, Grain::Day, {ym});
+      ld = local_fps(s, L, Grain::Day, {sl});
     }
     std::set<std::string> days;
     for (const auto &[k, v] : rd)
@@ -478,7 +476,7 @@ std::vector<AuditDiff> audit_unit(bigquant::Client &client, const AuditUnit &u) 
     for (const std::string &day : days) {
       const auto &dl = find_or_zero(ld, day, zeros);
       const auto &dr = find_or_zero(rd, day, zeros);
-      const bool diff = u.pass == AuditPass::Rows ? dl[0] != dr[0] : dl != dr;
+      const bool diff = u.pass == Pass::Rows ? dl[0] != dr[0] : dl != dr;
       if (diff)
         out.push_back(make_diff(u, L, day, dl, dr));
     }
@@ -488,9 +486,9 @@ std::vector<AuditDiff> audit_unit(bigquant::Client &client, const AuditUnit &u) 
   return out;
 }
 
-std::string audit_label(const AuditUnit &u) {
+std::string label(const Unit &u) {
   return u.spec->name + " " + std::to_string(u.year) +
-         (u.pass == AuditPass::Rows ? " rows" : " content");
+         (u.pass == Pass::Rows ? " rows" : " content");
 }
 
-} // namespace fundamental
+} // namespace fundamental::audit

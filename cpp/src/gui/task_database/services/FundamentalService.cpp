@@ -1,5 +1,6 @@
 // Fundamental Service - 基本面数据 sync + AssetInfo 构建
-// 抓取: fundamental::plan<Bq> / plan<Tu> → sync (月度 parquet, 水位增量, 调度见 fundamental/Store.hpp)
+// 抓取: fundamental::sync::plan<Src> → 逐任务 sync::run<Src> (月度 parquet, 水位增量, 槽位状态见 fundamental/Store.hpp)
+//   与 AuditService 的 audit::plan → 逐单元 audit::run 同形: 循环 / 进度 / 取消都在本层
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days}
 //   stock_days   ← all_trading_days (fundamental::calendar)
 //   stock_info   ← cn_stock_basic_info (_meta) + cn_stock_instruments (PIT 简称)
@@ -38,6 +39,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <iostream>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -139,8 +141,8 @@ std::vector<TableFileStat> collect_table_stats(const Catalog &cat) {
 // 工作线程 → 协程的进度/结果通道 (shared_ptr 持有, detached 线程安全退出)
 struct Job {
   std::atomic<bool> done = false;
-  std::atomic<std::size_t> files_done{0};  // 并行扫描已完成的月分片数
-  std::atomic<std::size_t> files_total{0}; // 0 = 当前不在扫描阶段
+  std::atomic<std::size_t> steps_done{0};  // 同步: 已跑任务数; 构建: 并行扫描已完成的月分片数
+  std::atomic<std::size_t> steps_total{0}; // 0 = 当前不在计步阶段
   // BigQuant 周配额 preflight: quota 先写, confirm_needed 后置 (release) ⇒ io 线程
   // 看到 confirm_needed 即可读 quota; 工作线程随后挂起等 decision
   bigquant::Quota quota;
@@ -161,26 +163,28 @@ struct Job {
   }
 };
 
-// name 最新非空月分片里 max(vd) 那天的快照行 → fn(view, rows); 全表无行则不调.
-// 名称 / 行业两张 "最新快照" 表共用 (各读一个分片, 串行即可)
-template <class Fn>
-void last_snapshot(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols, Fn fn) {
-  const fundamental::Spec &s = fundamental::spec(name);
-  const std::vector<fundamental::Shard> &shards = cat.shards(name);
-  std::vector<Ymd> dates;
-  for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
-    pq::TableView v(pq::read_table(it->path, cols));
-    if (v.rows() == 0)
-      continue; // 0 行月 (拉过为空) → 往前找
-    v.col(s.vd).yyyymmdd_all(dates);
-    const Ymd max_d = *std::max_element(dates.begin(), dates.end());
-    std::vector<std::int64_t> rows;
-    for (std::int64_t i = 0; i < v.rows(); ++i)
-      if (dates[static_cast<std::size_t>(i)] == max_d)
-        rows.push_back(i);
-    fn(v, rows);
-    return;
+// 逐任务 sync::run (与 AuditService 逐单元 audit::run 同形): 计步进 job.steps_*, 取消在任务间生效
+// (在飞的查询不可中断)
+template <class Src>
+void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &client,
+              const std::vector<fundamental::sync::Task> &tasks, const char *tag) {
+  std::cout << "[" << tag << ".sync] " << tasks.size() << " task(s) from " << config::PIPELINE_START_DATE
+            << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
+            << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
+  job.steps_done = 0;
+  job.steps_total = tasks.size();
+  for (const fundamental::sync::Task &t : tasks) {
+    if (cancel.load(std::memory_order_relaxed))
+      break;
+    const std::string label = fundamental::sync::label(t);
+    job.set_message(std::string("同步 ") + tag + ": " + label);
+    std::cout << "[" << tag << ".sync] " << label << " ... " << std::flush;
+    const std::int64_t rows = fundamental::sync::run<Src>(client, t);
+    std::cout << rows << " rows" << std::endl;
+    job.steps_done.fetch_add(1, std::memory_order_relaxed);
   }
+  job.steps_total = 0;
+  std::cout << "[" << tag << ".sync] " << (cancel.load(std::memory_order_relaxed) ? "cancelled" : "done") << std::endl;
 }
 
 // 三档股息率的窗口长度 [日历日] 与年化除数 [年]
@@ -350,25 +354,25 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   // basic_info.name 是过期快照 (ST 摘牌/更名后不回填), 与 status.st_status
   // 当日口径对不上; instruments 的逐日 name 与 st_status 严格一致 (ST/*ST
   // 前缀 ↔ 1/2). 退市股不在 instruments 里, 保留 basic_info 的最后简称.
-  last_snapshot(cat, "cn_stock_instruments", {"date", "instrument", "name"},
-                [&](const pq::TableView &v, const std::vector<std::int64_t> &rows) {
-                  const pq::Col ins = v.col("instrument"), name = v.col("name");
-                  for (std::int64_t i : rows)
-                    infos[ids.find(ins.str(i))]->name = halfwidth_ascii(name.str(i));
-                });
+  fundamental::snapshot(cat, "cn_stock_instruments", {"date", "instrument", "name"},
+                        [&](const pq::TableView &v, const std::vector<std::int64_t> &rows) {
+                          const pq::Col ins = v.col("instrument"), name = v.col("name");
+                          for (std::int64_t i : rows)
+                            infos[ids.find(ins.str(i))]->name = halfwidth_ascii(name.str(i));
+                        });
 
   // ---- 行业 ← cn_stock_industry_component 最新快照 (申万一级) ----
-  last_snapshot(cat, "cn_stock_industry_component",
-                {"date", "instrument", "industry_level1_code", "industry_level1_name"},
-                [&](const pq::TableView &v, const std::vector<std::int64_t> &rows) {
-                  const pq::Col ins = v.col("instrument"), code = v.col("industry_level1_code"),
-                                name = v.col("industry_level1_name");
-                  for (std::int64_t i : rows) {
-                    StockInfo &info = *infos[ids.find(ins.str(i))];
-                    info.ind_code = code.str(i);
-                    info.ind_name = name.str(i);
-                  }
-                });
+  fundamental::snapshot(cat, "cn_stock_industry_component",
+                        {"date", "instrument", "industry_level1_code", "industry_level1_name"},
+                        [&](const pq::TableView &v, const std::vector<std::int64_t> &rows) {
+                          const pq::Col ins = v.col("instrument"), code = v.col("industry_level1_code"),
+                                        name = v.col("industry_level1_name");
+                          for (std::int64_t i : rows) {
+                            StockInfo &info = *infos[ids.find(ins.str(i))];
+                            info.ind_code = code.str(i);
+                            info.ind_name = name.str(i);
+                          }
+                        });
 
   // ======================== 并行扫描阶段 ========================
   // 留 2 核给 io 线程 + GUI 渲染 (实测 8 线程已拿到 96% 的并行收益)
@@ -554,11 +558,11 @@ bool build_asset_info(Job &job, const Catalog &cat) {
              }
            });
 
-  job.files_done = 0;
-  job.files_total = scan.files();
+  job.steps_done = 0;
+  job.steps_total = scan.files();
   job.set_message("构建 AssetInfo (并行扫描月度分片)");
-  scan.run(job.files_done);
-  job.files_total = 0;
+  scan.run(job.steps_done);
+  job.steps_total = 0;
   job.set_message("构建 AssetInfo (归约 / 估值 / 因子)");
 
   // ======================== 归约阶段 (单线程) ========================
@@ -730,12 +734,14 @@ awaitable<void> FundamentalService::run(bool with_network) {
 
   auto job = std::make_shared<Job>();
   decision_ = std::make_shared<std::atomic<int>>(0);
+  cancel_ = std::make_shared<std::atomic<bool>>(false);
   auto decision = decision_;
+  auto cancel = cancel_;
   state_.status =
       with_network ? FundamentalStatus::Updating : FundamentalStatus::Building;
 
   // 阻塞网络 + parquet IO 全在工作线程; 协程只轮询. 异常不捕获 (fail fast).
-  std::thread([job, decision, with_network]() {
+  std::thread([job, decision, cancel, with_network]() {
     if (with_network) {
       const fundamental::Now now = fundamental::now();
       const Catalog cat; // 本轮开头的清单 (plan 只算这一次, sync 照单执行)
@@ -751,8 +757,8 @@ awaitable<void> FundamentalService::run(bool with_network) {
       take_quota();
       // plan 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 空计划, 不拉数据
       job->set_message("plan 判定 (水位/dedup 窗口)");
-      const std::vector<fundamental::Task> bq_tasks = fundamental::plan<fundamental::Bq>(cat, now);
-      const std::vector<fundamental::Task> ts_tasks = fundamental::plan<fundamental::Tu>(cat, now);
+      const std::vector<fundamental::sync::Task> bq_tasks = fundamental::sync::plan<fundamental::Bq>(cat, now);
+      const std::vector<fundamental::sync::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(cat, now);
       bool need_bq = !bq_tasks.empty();
       if (need_bq) {
         // 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)
@@ -767,14 +773,12 @@ awaitable<void> FundamentalService::run(bool with_network) {
         }
       }
       if (need_bq) {
-        job->set_message("同步 BigQuant DAI (月度 parquet 水位增量)");
-        fundamental::sync(bq, bq_tasks);
+        sync_all<fundamental::Bq>(*job, *cancel, bq, bq_tasks, "bigquant");
         take_quota();
       }
-      if (!ts_tasks.empty()) {
-        job->set_message("同步 Tushare (forecast/express/disclosure)");
+      if (!ts_tasks.empty() && !cancel->load(std::memory_order_relaxed)) {
         tushare::Client ts;
-        fundamental::sync(ts, ts_tasks);
+        sync_all<fundamental::Tu>(*job, *cancel, ts, ts_tasks, "tushare");
       }
     }
     // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)
@@ -801,11 +805,11 @@ awaitable<void> FundamentalService::run(bool with_network) {
     if (with_network && state_.status == FundamentalStatus::Updating &&
         msg.starts_with("构建"))
       state_.status = FundamentalStatus::Building;
-    // 并行扫描阶段: 分片进度由 worker 的原子计数器给出 (逐文件不再抢 message 锁)
-    const std::size_t total = job->files_total.load(std::memory_order_relaxed);
+    // 计步阶段 (同步任务 / 并行扫描分片): 进度由 worker 的原子计数器给出 (逐步不再抢 message 锁)
+    const std::size_t total = job->steps_total.load(std::memory_order_relaxed);
     if (total != 0) {
       const std::size_t n =
-          std::min(job->files_done.load(std::memory_order_relaxed), total);
+          std::min(job->steps_done.load(std::memory_order_relaxed), total);
       msg += " " + std::to_string(n) + "/" + std::to_string(total);
     }
     state_.message = std::move(msg);
@@ -835,7 +839,13 @@ awaitable<void> FundamentalService::run(bool with_network) {
     state_.message = "本地 parquet 缺失 — 点击 Update 联网同步";
   }
   decision_.reset();
+  cancel_.reset();
   busy_ = false;
+}
+
+void FundamentalService::cancel() {
+  if (cancel_)
+    cancel_->store(true, std::memory_order_relaxed);
 }
 
 void FundamentalService::confirm(bool proceed) {

@@ -17,8 +17,9 @@
 #include <vector>
 
 // ============================================================================
-// Scan — 读侧原语: 月度表的分段并行 map-reduce (与 Sync 的 plan → fetch → put 对仗);
-//   Meta 表单文件由 meta() 直读, D 轴由 calendar() 给出 (文件末尾).
+// Scan — 读侧原语: 月度表的分段并行 map-reduce (与 sync 的 plan → fetch → put 对仗);
+//   Meta 表单文件由 meta() 直读, Month 表最新一天由 snapshot() 给出, D 轴由 calendar() 给出 (文件末尾).
+//   读盘一律经 Store::read.
 //
 //   split: 一张表的分片按 ym 升序均分成 ≤ threads 段 (段 = 连续 ym 区间), 段 s 独占累加器 segs[s]
 //   fold : fold(rows, acc) 逐分片累加; 行的资产 id 与 vd 日期已整列预转
@@ -206,6 +207,29 @@ void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, con
 
 // Meta 表 name 的 _meta 单文件, 只解 cols (分片缺失 / 非 Meta 表 → assert) —— Scan (Month) 的对偶
 misc::pq::TableView meta(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols);
+
+// Month 表 name 最新那天的快照行 → fn(view, rows); 全表无行则不调 —— meta() 的对偶 (写侧 Snap::Day 的读侧)
+//   自最新分片往前找首个非空片, 取其 max(vd) 那天的行. cols 须含 vd
+template <class Fn>
+void snapshot(const Catalog &cat, std::string_view name, const std::vector<std::string> &cols, Fn fn) {
+  const Spec &s = spec(name);
+  assert(s.shape == Shape::Month && "snapshot: 只读 Month 表");
+  const std::vector<Shard> &shards = cat.shards(name);
+  std::vector<Ymd> dates;
+  for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
+    const misc::pq::TableView v(read(*it, cols));
+    if (v.rows() == 0)
+      continue; // 0 行月 (拉过为空) → 往前找
+    v.col(s.vd).yyyymmdd_all(dates);
+    const Ymd max_d = *std::max_element(dates.begin(), dates.end());
+    std::vector<std::int64_t> rows;
+    for (std::int64_t i = 0; i < v.rows(); ++i)
+      if (dates[static_cast<std::size_t>(i)] == max_d)
+        rows.push_back(i);
+    fn(v, rows);
+    return;
+  }
+}
 
 // all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (AssetInfo 与 fund::Pool 共用)
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today);

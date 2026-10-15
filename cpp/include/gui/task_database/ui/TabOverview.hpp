@@ -10,6 +10,7 @@ namespace GUI::Database {
 void RenderTabOverview(
     const FundamentalState &state,
     bool *update_clicked,
+    bool *update_cancel_clicked,
     bool disable_update_controls,
     const AuditState &audit,
     bool *audit_clicked,

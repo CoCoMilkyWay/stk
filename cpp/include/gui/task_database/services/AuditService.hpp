@@ -48,7 +48,7 @@ struct AuditState {
   bool cancelled = false; // 上一轮被取消 (统计只覆盖已跑单元)
   std::size_t done = 0;   // 已跑单元数
   std::size_t total = 0;  // 0 = 尚未规划完
-  std::string current;    // 当前单元 (audit_label)
+  std::string current;    // 当前单元 (audit::label)
   // BigQuant 周配额 (单位 cell): 开跑时 / 最近一单元后的 used; -1 = 未取
   std::int64_t quota_start = -1;
   std::int64_t quota_used = -1;
@@ -68,7 +68,7 @@ public:
 
   // 启动调一次: 最新日志 + 本地清点 → 统计 (零网络); 无日志则 tables 留空
   boost::asio::awaitable<void> load_last();
-  // audit_plan → 逐单元 audit_unit; 忙则直接返回
+  // audit::plan → 逐单元 audit::run; 忙则直接返回
   boost::asio::awaitable<void> run();
   // 当前单元的查询跑完即停 (在飞的 DoGet 不可中断)
   void cancel();

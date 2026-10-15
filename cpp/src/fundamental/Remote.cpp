@@ -1,5 +1,7 @@
 #include "fundamental/Remote.hpp"
 
+#include "api/tushare/client.hpp"
+
 #include <cassert>
 #include <string>
 #include <vector>
@@ -26,13 +28,13 @@ std::vector<tushare::Query> queries(const Spec &, const Tu &src, Window w) {
   return out;
 }
 
-template <class Src, class Client>
-std::shared_ptr<arrow::Table> run(Client &client, const Task &t) {
-  const Spec &s = *t.spec;
+} // namespace
+
+template <class Src>
+std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Spec &s, Window w) {
   assert(from<Src>(s) && "fetch: 表与 client 的数据源不符");
-  assert(!(t.append && s.snap) && "fetch: snap 表只整段覆盖");
   std::vector<std::shared_ptr<arrow::Table>> parts;
-  for (const auto &q : queries(s, std::get<Src>(s.src), t.w))
+  for (const auto &q : queries(s, std::get<Src>(s.src), w))
     parts.push_back(client.query(q));
   assert(!parts.empty());
   auto joined = arrow::ConcatenateTables(parts);
@@ -48,7 +50,8 @@ std::shared_ptr<arrow::Table> run(Client &client, const Task &t) {
   return tbl;
 }
 
-} // namespace
+template std::shared_ptr<arrow::Table> fetch<Bq>(bigquant::Client &, const Spec &, Window);
+template std::shared_ptr<arrow::Table> fetch<Tu>(tushare::Client &, const Spec &, Window);
 
 std::string ident(std::string_view c) { return "\"" + std::string(c) + "\""; }
 
@@ -63,18 +66,15 @@ bigquant::Query select(const Spec &s, std::string_view cols, Window w, std::stri
   const std::string vd = ident(s.vd);
   const std::string rng = vd + " >= " + quoted(w.lo) + " AND " + vd + " <= " + quoted(w.hi);
   sql += " WHERE " + rng;
-  if (s.snap) {
+  if (s.snap == Snap::Day) {
     const bool month = s.shape == Shape::Month;
     const std::string group = month ? " GROUP BY strftime(" + vd + ", '%Y-%m')" : "";
     sql += " AND " + vd + " IN (SELECT " + (month ? "MIN" : "MAX") + "(" + vd + ") FROM " + s.name + " WHERE " + rng + group + ")";
   }
   bigquant::Filters f;
-  if (std::get<Bq>(s.src).partition)
+  if (std::get<Bq>(s.src).prune == Prune::Partition)
     f = {{"date", {misc::dash(w.lo), misc::dash(w.hi)}}};
   return {sql + std::string(tail), std::move(f)};
 }
-
-std::shared_ptr<arrow::Table> fetch(bigquant::Client &client, const Task &t) { return run<Bq>(client, t); }
-std::shared_ptr<arrow::Table> fetch(tushare::Client &client, const Task &t) { return run<Tu>(client, t); }
 
 } // namespace fundamental
