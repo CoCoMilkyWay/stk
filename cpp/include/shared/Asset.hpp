@@ -14,9 +14,6 @@
 #include <vector>
 
 // 前向声明
-namespace L2 {
-class BinaryDecoder_L2;
-}
 namespace GUI::Database {
 class ScanThreadPool;
 }
@@ -28,17 +25,17 @@ struct AssetInfo;
 
 // 一个 (资产, 日期). 只有 orders 一种产物 —— 快照不编码 (全项目无人读取,
 // 特征计算只吃 orders 并靠 LimitOrderBook 重建盘口).
-// 路径不存字段 —— 由 (date, code, exchange) 经 Utils::generate_orders_path
-// 现算. 全库五百万条 DateInfo, 每条存一份 35 字节路径就是几百 MB 堆分配.
+// 就是当天日文件目录里这个资产的那一项 (见 shared/EncodeDayRecord.hpp), 扫描
+// 时灌入; 解码凭它直接 pread 一帧. 日文件路径不存字段 —— 由日期经
+// Utils::generate_orders_path 现算.
 struct DateInfo {
-  // 两者都来自同一次 32 字节读头 (见 BinaryDecoder_L2::read_file_stats)
-  size_t order_count = 0;
-  size_t orders_file_size = 0;
-
-  uint8_t orders_encoded = 0; // 0=无二进制, 1=已编码
+  uint64_t offset = 0;          // 帧在日文件中的字节偏移
+  uint32_t order_count = 0;     // 帧内逐笔条数
+  uint32_t compressed_size = 0; // 帧字节数; 0 = 无数据 (没编过或墓碑)
+  uint32_t price_base = 0;      // LOB 档位窗口基准 (分)
 
   bool has_binaries() const {
-    return orders_encoded != 0;
+    return compressed_size != 0;
   }
 };
 
@@ -61,7 +58,7 @@ struct AssetItem {
   // 按日状态: 按全局日期轴 (Asset::date_axis) 下标密集存储.
   //
   // 密集向量 = 资产数 × 日期数 × 24B ≈ 400MB, 定址 O(1). 每次扫描整体重建
-  // (轴与全部 date_info 一起), "无数据"就是零值元素 (orders_encoded == 0).
+  // (轴与全部 date_info 一起), "无数据"就是零值元素 (compressed_size == 0).
   // 扫描之后新上市的资产 (AssetLoader 追加) 向量为空, date_at 对越界返回零值.
   std::vector<DateInfo> date_info;
 
@@ -95,8 +92,8 @@ struct Asset {
   // ========================================
   // 日期轴: AssetItem::date_info 的下标空间
   // ========================================
-  // 有 .bin 目录的天, 升序. 每次二进制扫描与全部 date_info 一起整体重建,
-  // 中间不做增量修补 —— 一次重建是 800 次 stat + 读 .stat, 百毫秒量级,
+  // 有日文件的天, 升序. 每次二进制扫描与全部 date_info 一起整体重建,
+  // 中间不做增量修补 —— 一次重建是 800 次读日文件头 + 目录, 百毫秒量级,
   // 不值得为它维护脏日/基线那套状态.
   std::vector<misc::Ymd> date_axis; // idx -> date, 升序
 
@@ -125,12 +122,12 @@ struct Asset {
   // 反而会摊成几百行各缺一天, 看不出来.
   struct DateGap {
     size_t expected = 0;        // 当天本该有逐笔的标的数
-    size_t orders_missing = 0;  // 其中没有 .bin 的
+    size_t orders_missing = 0;  // 其中没有帧的
     size_t archive_missing = 0; // 其中归档也没有的 (归档按天存, 要么全缺要么不缺)
   };
   std::map<misc::Ymd, DateGap> date_gaps; // date -> 缺口; 只含回测区间内的天
 
-  // 每天的编码账目, 由扫描从 orders/YYYY/MM/DD/.stat 读入 (见shared/EncodeDayRecord.hpp).
+  // 每天的编码账目, 由扫描从日文件头读入 (见 shared/EncodeDayRecord.hpp); 有日文件的天都有.
   // 缺口的"原因"只有编码器知道, 而 date_gaps只知道"缺了几个" —— 两者在 By Date 表里按日期对齐.
   std::unordered_map<misc::Ymd, EncodeDayRecord> day_records;
 
@@ -153,7 +150,7 @@ struct Asset {
 
     // 回测区间口径
     size_t expected_days = 0;   // 本该有数据的交易日
-    size_t orders_missing = 0;  // 其中没有 .bin 的
+    size_t orders_missing = 0;  // 其中没有帧的
     size_t archive_missing = 0; // 其中归档源也没有的
 
     // 前 kMissingSample 个缺失日期; 全存的话是几百万条字符串
@@ -193,11 +190,11 @@ struct Asset {
 
     // 全库统计
     size_t total_orders = 0;    // 全库逐笔条数
-    float orders_size_gb = 0.0; // 全库 .bin 体积
+    float orders_size_gb = 0.0; // 全库帧体积
 
     // 回测区间统计 (仅回测期内)
     size_t backtest_orders = 0;          // 回测区间内逐笔条数
-    float backtest_orders_size_gb = 0.0; // 回测区间内 .bin 体积
+    float backtest_orders_size_gb = 0.0; // 回测区间内帧体积
     size_t backtest_order_days = 0;      // 回测区间内有逐笔的 (资产, 日期) 对数
   } binary;
 
@@ -288,28 +285,17 @@ struct Asset {
 // ============================================================================
 
 namespace Utils {
-// orders/2023/01/03/000023.SZ.bin
-//
-// 一个 (资产, 日期) 就一个文件, 所以没有"每资产目录"这一层. 文件名里也不带
-// 条数 —— 条数由文件头的 original_size 精确推出 (见 BinaryDecoder_L2), 写在
-// 名字里纯属冗余, 还会让"这天编过了吗"退化成通配符匹配而不是一次 exists.
-
 // archive/YYYY/YYYYMM/YYYYMMDD<ext>
 inline std::string generate_archive_path(const std::string &base_dir, misc::Ymd date, const std::string &extension) {
   const std::string d = misc::dense(date);
   return base_dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + extension;
 }
 
-// orders/YYYY/MM/DD
-inline std::string generate_date_dir(const std::string &orders_dir, misc::Ymd date) {
-  return orders_dir + "/" + misc::slash(date);
-}
-
-// orders/YYYY/MM/DD/<CODE>.<EX>.bin
+// orders/YYYY/MM/YYYYMMDD<ext> — 当天全市场一个日文件 (见 shared/EncodeDayRecord.hpp)
 inline std::string generate_orders_path(const std::string &orders_dir, misc::Ymd date,
-                                        const std::string &asset_code, const std::string &exchange,
                                         const std::string &binary_extension) {
-  return generate_date_dir(orders_dir, date) + "/" + asset_code + "." + exchange + binary_extension;
+  const std::string d = misc::dense(date);
+  return orders_dir + "/" + d.substr(0, 4) + "/" + d.substr(4, 2) + "/" + d + binary_extension;
 }
 
 } // namespace Utils

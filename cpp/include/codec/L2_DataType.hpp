@@ -184,47 +184,14 @@ inline constexpr uint32_t kPriceIndexRange = 65536;
 // price_base 的对齐粒度 (分). 只为让基准取整可读, 不参与任何判据.
 inline constexpr uint32_t kPriceIndexGuard = 4096;
 
-// ============================================================================
-// L2 二进制文件格式 (v2) — 数据完整性的统一方案: "存在即完整"
-// ============================================================================
-//
-// 三道防线, 热读路径零成本:
-//   1. 原子落盘 (tmp + rename): 最终路径上的文件不可能是半截 — 进程被杀/
-//      崩溃只会留下 .tmp 垃圾, 由下次增量编码覆盖消化.
-//   2. 定宽自描述头 (本结构): magic/version 挡住"不是 L2 文件/旧格式",
-//      尺寸字段自洽性挡住截断 — 读侧只花几次整数比较.
-//   3. zstd 帧内容校验 (xxh64, 压缩时写入): 热路径显式跳过 (不花解压之外
-//      的一分钱), 离线 Verify 强制校验 → 位腐烂/历史遗留损坏被查出并删除,
-//      下次增量编码自动补齐. 修复回路 = Verify(删坏) + 增量(补齐).
-//
-// 布局: [L2FileHeader 32B][zstd 帧], 帧解开后是 [u64 count][Order × count].
-struct L2FileHeader {
-  static constexpr uint32_t kL2Magic = 0x004F324C; // 'L','2','O','\0' 小端
-  // Order 的布局一改就必须递增: 版本对不上的文件在 sane() 处被当成缺失, 由增量
-  // 编码重写, 于是不存在按旧布局误读的可能.
-  static constexpr uint32_t kL2FormatVersion = 2;
-
-  uint32_t magic;           // kL2Magic
-  uint32_t version;         // kL2FormatVersion
-  uint64_t raw_size;        // 解压后字节数 = 8 + count * sizeof(Order)
-  uint64_t compressed_size; // zstd 帧字节数; 文件总长 = 32 + compressed_size
-  // 本文件内全部非零价格的下界 (分), 向下对齐. LOB 用它把绝对价折进 65536 档的
-  // 直接索引数组: index = price - price_base. 低价股恒为 0 (即退化成原来的直接
-  // 索引), 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
-  uint32_t price_base;
-  uint32_t reserved; // 置 0; 凑定宽 32B
-
-  // 头部自洽 (不含内容校验): magic/version 对, 且尺寸恰好装得下整数条 Order
-  bool sane() const {
-    return magic == kL2Magic && version == kL2FormatVersion &&
-           raw_size >= sizeof(uint64_t) &&
-           (raw_size - sizeof(uint64_t)) % sizeof(Order) == 0 &&
-           compressed_size > 0;
-  }
-
-  uint64_t order_count() const { return (raw_size - sizeof(uint64_t)) / sizeof(Order); }
-};
-static_assert(sizeof(L2FileHeader) == 32, "L2FileHeader 必须定宽 32 字节");
+// 一个 (资产, 当天) 一个 zstd 帧, 解开是 [u64 count][Order × count]. 帧装在当天
+// 全市场的日文件里, 位置 / 条数 / price_base 记在日文件目录 (见
+// shared/EncodeDayRecord.hpp). price_base 是该资产当天全部非零价格的下界 (分),
+// 向下对齐; LOB 用它把绝对价折进 65536 档的直接索引数组: index = price -
+// price_base. 低价股恒为 0, 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
+inline constexpr size_t frame_raw_size(size_t order_count) {
+  return sizeof(uint64_t) + order_count * sizeof(Order);
+}
 
 struct ColumnMeta {
   std::string_view column_name; // 列名
@@ -264,7 +231,7 @@ constexpr ColumnMeta Snapshot_Schema[] = {
 
 // 按列名查位宽 — 编解码两侧都要用. 放在表自己身边而不是各自的头里: 从前
 // encoder / decoder 的头各存了一份一模一样的定义, 于是任何 TU 只要同时
-// include 这两个头就是重定义错误 (编码流水线要读回自己刚写的 .bin 时撞上).
+// include 这两个头就是重定义错误.
 constexpr size_t find_column_index(const ColumnMeta *schema, size_t schema_size, std::string_view column_name) {
   for (size_t i = 0; i < schema_size; ++i) {
     if (schema[i].column_name == column_name) {

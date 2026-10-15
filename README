@@ -36,7 +36,7 @@ stk/
 │   │   │   ├── Correlation.hpp                       # 📦 相关分析: 截面 Spearman 矩阵 + lead-lag
 │   │   │   ├── Transform.hpp                         # 📦 变换探索: 变换链 (与生产算子同源) + 平稳性诊断
 │   │   │   ├── FeaturePreview.hpp                    # 📦 特征表内联预览: 每特征 PDF + 单日 PSD
-│   │   │   └── EncodeDayRecord.hpp                   # 📦 单日编码账目 (.stat), 扫描免读 .bin
+│   │   │   └── EncodeDayRecord.hpp                   # 📦 orders 日文件: 帧 + 账目 + 尾部目录, 读写端
 │   │   ├── define/                                   # 🔷 底层数据结构
 │   │   │   ├── CBuffer.hpp                           # 🔷 循环缓冲区
 │   │   │   ├── FastBitmap.hpp                        # 🔷 位图
@@ -222,8 +222,8 @@ stk/
 │       ├── CMakeLists.txt                                  # 🏗️ CMake (C++23, Clang)
 │       └── build/bin/app_main                              # 🎯 可执行文件
 └── output/                                                 # 📁 运行时输出 (与 cpp/ 同级)
-    ├── orders/                                             # L2 编码 .bin (逐笔委托 + 成交合并)
-    │   └── YYYY/MM/DD/<CODE>.<EX>.bin                      # 单资产单日一个 .bin; 同目录 .stat = 当天账目
+    ├── orders/                                             # L2 编码 (逐笔委托 + 成交合并)
+    │   └── YYYY/MM/YYYYMMDD.bin                            # 一天全市场一个: 每资产一个 zstd 帧 + 账目 + 尾部目录
     ├── features/                                           # 特征张量库 (Float16, 按交易日全市场, 逐特征列)
     │   └── YYYY/MM/DD/
     │       ├── features_L0_f<f>.zst                        # L0 逐特征列 [T×A] (秒频)

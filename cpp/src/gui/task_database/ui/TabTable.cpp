@@ -620,7 +620,7 @@ void RenderDataTable(
 
       "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= date_info 中已编码的天数\n可用于判断数据完整性",
 
-      "日均逐笔数 (Average Orders per Trading Day)\n所有已有逐笔数据交易日的平均记录数量 (委托+成交合并后)\n= Σ order_count / 有逐笔数据的交易日数\n\n说明:\n- 单位:条记录/日\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数由文件头 raw_size 推出, 扫描时一并读到",
+      "日均逐笔数 (Average Orders per Trading Day)\n所有已有逐笔数据交易日的平均记录数量 (委托+成交合并后)\n= Σ order_count / 有逐笔数据的交易日数\n\n说明:\n- 单位:条记录/日\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数取自日文件目录, 扫描时一并读到",
 
       "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该标的\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Browser 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数"};
 

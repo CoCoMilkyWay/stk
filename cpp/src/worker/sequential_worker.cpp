@@ -91,10 +91,10 @@ void sequential_worker(WorkerCtx ctx) {
     }
   }
 
-  // 每 worker 一个 decoder (非每资产): decode 是按 (asset, date) 文件的无状态操作,
+  // 每 worker 一个 decoder (非每资产): decode 是按 (asset, date) 一帧的无状态操作,
   // 且 worker 内资产串行 —— 解码结果在下一次 decode 前已被 process_batch 消费完,
   // 零拷贝契约天然满足. 缓冲跨资产/跨日复用, 自动长到本 worker 最忙资产的单日
-  // 条数后稳定 (零分配稳态);
+  // 条数后稳定 (零分配稳态); 当天日文件的 fd 也由它持有, 一天只 open 一次.
   L2::BinaryDecoder_L2 decoder(L2::DEFAULT_ENCODER_ORDER_SIZE);
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
@@ -114,12 +114,13 @@ void sequential_worker(WorkerCtx ctx) {
 
   // 处理一个 asset-day (缺 binary 则按零事件日走同一路径), 返回订单数.
   // 主循环与领养回填共用 —— 两者只差句柄来自哪一天.
-  // asset_id = 子轴下标 (张量列/调度槽); items/bin 路径经 global_ids 映射
+  // asset_id = 子轴下标 (张量列/调度槽); items 经 global_ids 映射
   // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘档标签 (T+N) 跨日回填, 旧日句柄持到结清
   // (见 CoreSequential::end_day / LabelReturn 文件头); 最后一日之后由 finish_all 全部结清.
   auto process_asset_day = [&](size_t asset_id, size_t didx, misc::Ymd date, const GlobalFeatureStore::Day &day) -> size_t {
     const auto &asset = data.asset.items[sched.global_ids[asset_id]];
-    if (!asset.date_at(didx).has_binaries()) {
+    const DateInfo &di = asset.date_at(didx);
+    if (!di.has_binaries()) {
       sched.cores[asset_id]->empty_day(date, day, store); // 缺二进制 = 零事件日: 与正常日同路径, 不绑 LOB
       return 0;
     }
@@ -128,54 +129,44 @@ void sequential_worker(WorkerCtx ctx) {
     lob.tick_data().core_id = static_cast<uint32_t>(worker_id);           // 追踪: 当前驱动核
     lob.begin_day(date, day);                                             // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
 
-    // 路径由 (date, code, exchange) 现算 — DateInfo 不再为五百万条记录
-    // 各存一份字符串
-    const std::string orders_file = Utils::generate_orders_path(
-        data.config.orders_dir, date, asset.asset_code, asset.exchange,
-        config::BINARY_EXTENSION);
-
-    size_t order_num = 0;
+    // 帧的位置/条数/档位基准都在扫描灌好的 DateInfo 里, 不再读任何头; 日文件
+    // 路径由日期现算, 同一天的资产共用 decoder 里那一个 fd.
+    const size_t order_num = di.order_count;
     const L2::Order *orders = nullptr;
     {
       TraceN("DecodeOrders");
-      orders = decoder.decode_orders_stream(orders_file, order_num);
+      decoder.open_day(Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION));
+      orders = decoder.decode(di.offset, di.compressed_size, di.order_count);
     }
 
-    if (orders != nullptr) [[likely]] {
-      // 档位索引基准来自这一天的文件头, 必须先于第一条订单设进去 —— 绝对价
-      // 要减去它才是档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
-      lob.set_price_base(decoder.last_price_base());
-      lob.reserve_orders(order_num); // 委托表按当日事件数定长
+    // 档位索引基准必须先于第一条订单设进去 —— 绝对价要减去它才是档位下标
+    // (见 L2_DataType.hpp 的 kPriceIndexRange).
+    lob.set_price_base(di.price_base);
+    lob.reserve_orders(order_num); // 委托表按当日事件数定长
 
-      // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
-      size_t order_invalid_cnt = 0;
-      {
-        TraceN("ProcessLobs");
-        TraceValue(order_num);
-        order_invalid_cnt = lob.process_batch(orders, order_num);
-      }
-
-      if (order_invalid_cnt > 100) {
-        Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + std::to_string(date) + " asset_id=" + std::to_string(asset_id) + " order_invalid=" + std::to_string(order_invalid_cnt));
-        std::exit(1);
-      }
-
-      if (order_num > 0) {
-        Logger::log("worker_" + std::to_string(worker_id),
-                    std::to_string(date) + " asset:" + std::to_string(asset_id) + " " + asset.asset_code + "." + asset.exchange + " " + asset.asset_name +
-                        " decoded=" + std::to_string(order_num) +
-                        " order_invalid=" + std::to_string(order_invalid_cnt) +
-                        " tob_invalid=" + std::to_string(lob.get_tob_invalid_count()) +
-                        " tob_refresh=" + std::to_string(lob.get_tob_refresh_count()) +
-                        " depth_crossed=" + std::to_string(lob.get_depth_crossed_count()) + "/" + std::to_string(lob.get_depth_seen_count()));
-      }
-
-      date_assets_processed++;
-    } else {
-      Logger::log("worker_" + std::to_string(worker_id), "WARNING: " + std::to_string(date) + " failed to decode " + orders_file);
-      order_num = 0;
+    // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
+    size_t order_invalid_cnt = 0;
+    {
+      TraceN("ProcessLobs");
+      TraceValue(order_num);
+      order_invalid_cnt = lob.process_batch(orders, order_num);
     }
-    lob.end_day(store); // 解码失败也要走: begin_day 已推日环, 收盘结算 / 归还句柄不能少
+
+    if (order_invalid_cnt > 100) {
+      Logger::log("worker_" + std::to_string(worker_id), "ERROR: " + std::to_string(date) + " asset_id=" + std::to_string(asset_id) + " order_invalid=" + std::to_string(order_invalid_cnt));
+      std::exit(1);
+    }
+
+    Logger::log("worker_" + std::to_string(worker_id),
+                std::to_string(date) + " asset:" + std::to_string(asset_id) + " " + asset.asset_code + "." + asset.exchange + " " + asset.asset_name +
+                    " decoded=" + std::to_string(order_num) +
+                    " order_invalid=" + std::to_string(order_invalid_cnt) +
+                    " tob_invalid=" + std::to_string(lob.get_tob_invalid_count()) +
+                    " tob_refresh=" + std::to_string(lob.get_tob_refresh_count()) +
+                    " depth_crossed=" + std::to_string(lob.get_depth_crossed_count()) + "/" + std::to_string(lob.get_depth_seen_count()));
+
+    date_assets_processed++;
+    lob.end_day(store); // begin_day 已推日环, 收盘结算 / 归还句柄不能少
 
     // 归还工作区: 换绑下一个资产前簿必须干净 (bind 断言委托表为空).
     lob.clear();

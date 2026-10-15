@@ -145,7 +145,7 @@ private:
 // ============================================================================
 // PHASE 2 WORKERS —— 四角色统一签名: void xxx_worker(WorkerCtx)
 //
-// sched 主要 TS 用 (预取只读 global_ids 定位 .bin), 其余角色不碰 ——
+// sched 主要 TS 用 (预取只读 global_ids 定位帧), 其余角色不碰 ——
 // 统一签名换来统一 launch (见 ComputeService).
 // worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做日志/stats 下标.
 // ============================================================================
@@ -158,7 +158,7 @@ struct WorkerCtx {
   ComputeStats &stats;
 };
 
-// 预取: 顺日期把 .bin 读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
+// 预取: 顺日期把当天日文件里 universe 的帧读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
 //       门控 = 领先最慢 TS (query_ts_days_done) 不超过 pool slots + 余量.
 //       资产集 = universe 子轴 (sched.global_ids).
 void prefetch_worker(WorkerCtx ctx);

@@ -3,7 +3,7 @@
 // OrderFlow
 // ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (L1 分钟频)
 // │            worker 逐日流式 (从前往后, 每日一次选列读), GUI 画已发布前缀
-// ├── Depth  (图1) 单 (day, asset) 秒级盘口: orders/*.bin 逐笔重放 LOB
+// ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放 LOB
 // │            + 多特征 overlay (当前选中层逐列选读, L1 分钟映射到秒); 双槽 ping-pong 整体发布
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
@@ -210,7 +210,7 @@ struct OrderFlow {
     uint32_t gen = 0; // 请求代 (GUI 配对; 兼作 HeatmapColored 失效键)
     misc::Ymd date = 0;
     size_t asset_idx = SIZE_MAX;
-    bool has_data = false; // .bin 存在且重放出至少一个有效快照
+    bool has_data = false; // 帧存在且重放出至少一个有效快照
     size_t order_count = 0;
     size_t data_valid_count = 0; // 有逐笔的秒数
 

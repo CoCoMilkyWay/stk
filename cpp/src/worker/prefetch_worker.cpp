@@ -2,13 +2,16 @@
 #include "worker/feature_workers.hpp"
 
 #include "features/Backend/FeatureStore.hpp"
+#include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
+#include <algorithm>
+#include <cassert>
 #include <chrono>
-#include <cstdio>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 void prefetch_worker(WorkerCtx ctx) {
@@ -30,8 +33,11 @@ void prefetch_worker(WorkerCtx ctx) {
 
   Logger::log("worker_" + std::to_string(worker_id), "Prefetch started: " + std::to_string(total_dates) + " dates, window " + std::to_string(window_days));
 
-  // 读缓冲: 只为把文件拖进 page cache, 内容即弃 (decode 在 TS worker 内联)
+  // 读缓冲: 只为把帧拖进 page cache, 内容即弃 (decode 在 TS worker 内联)
   std::vector<char> scratch(1 << 20);
+
+  // 当天要读的帧 (偏移, 帧长), 跨日复用容量
+  std::vector<std::pair<uint64_t, uint64_t>> spans;
 
   size_t cumulative_bytes = 0;
   size_t completed_dates = 0;
@@ -63,25 +69,40 @@ void prefetch_worker(WorkerCtx ctx) {
 
     {
       TraceN("ReadFiles");
-      // 资产集 = universe 子轴 (sched.global_ids): TS 只 decode 这些
+      // 资产集 = universe 子轴 (sched.global_ids): TS 只 decode 这些. 按偏移排序,
+      // 首尾相接的帧并成一段顺序读 —— universe 覆盖全市场时就是整个数据区一口气读完.
+      spans.clear();
       for (const uint32_t global_id : ctx.sched.global_ids) {
-        const AssetItem &asset = data.asset.items[global_id];
-        if (!asset.date_at(didx).has_binaries())
-          continue;
+        const DateInfo &di = data.asset.items[global_id].date_at(didx);
+        if (di.has_binaries())
+          spans.emplace_back(di.offset, di.compressed_size);
+      }
+      std::sort(spans.begin(), spans.end());
+      size_t merged = 0;
+      for (size_t i = 0; i < spans.size(); ++i) {
+        if (merged > 0 && spans[merged - 1].first + spans[merged - 1].second == spans[i].first)
+          spans[merged - 1].second += spans[i].second;
+        else
+          spans[merged++] = spans[i];
+      }
+      spans.resize(merged);
 
-        const std::string orders_file = Utils::generate_orders_path(
-            data.config.orders_dir, date, asset.asset_code, asset.exchange,
-            config::BINARY_EXTENSION);
-
-        // 缺文件不在这里报: TS worker decode 失败时记 WARNING, 预取只是暖缓存
-        FILE *f = std::fopen(orders_file.c_str(), "rb");
-        if (!f)
-          continue;
-        size_t n;
-        while ((n = std::fread(scratch.data(), 1, scratch.size(), f)) > 0)
-          cumulative_bytes += n;
-        std::fclose(f);
-        stat.work.store(cumulative_bytes, std::memory_order_relaxed);
+      if (!spans.empty()) {
+        const std::string day_path =
+            Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION);
+        const int fd = file_open_read(day_path.c_str());
+        assert(fd >= 0 && "prefetch: 扫描登记过的日文件打不开");
+        for (const auto &[offset, size] : spans) {
+          for (uint64_t done = 0; done < size;) {
+            const size_t want = static_cast<size_t>(std::min<uint64_t>(scratch.size(), size - done));
+            const size_t got = file_pread(fd, scratch.data(), want, offset + done);
+            assert(got == want && "prefetch: 帧越过日文件末尾 (目录与文件不符)");
+            done += got;
+            cumulative_bytes += got;
+          }
+          stat.work.store(cumulative_bytes, std::memory_order_relaxed);
+        }
+        file_close(fd);
       }
     }
 

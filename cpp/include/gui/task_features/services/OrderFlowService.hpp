@@ -4,7 +4,7 @@
 //   - GUI 线程: 每帧把期望态快照 (asset / anchor date / 选中特征) 交给 Request*;
 //     变化检测与 gen 递增在 GUI 侧, 服务侧只管"照单执行最新一代" (新请求覆盖旧的)
 //   - worker 线程: 两类工作交错 —
-//       Depth 重放 (延迟敏感, 优先): decode .bin → LOB 逐笔重放 → 秒级快照 →
+//       Depth 重放 (延迟敏感, 优先): decode 帧 → LOB 逐笔重放 → 秒级快照 →
 //         plot/heatmap 构建 → 背槽整体发布 (pending 未 ack 时等 GUI 翻面)
 //       Universe 逐日状态 (延迟敏感): 锚点日的 L1 filter 列选读 → 全资产 PIT
 //         状态 (ST / 在市 / 行业) → 背槽整体发布 (供 GUI 资产筛选)

@@ -119,7 +119,7 @@ void Validator::run(const std::vector<CSVOrder> &orders,
   // 委托表里夹着撤单时 (委托类型 D), 必须等挂单全部入表后再处理 —— 撤单在
   // 时间上总是晚于它的挂单, 但判定不该依赖文件内的行序.
   // 档位窗口要覆盖所有会落盘的价格, 所以委托和成交两张表都统计, 且在任何
-  // continue 之前 —— 被判为 lob_unusable 的记录照样会写进 .bin.
+  // continue 之前 —— 被判为 lob_unusable 的记录照样会写进帧.
   uint32_t price_min = UINT32_MAX;
   uint32_t price_max = 0;
 

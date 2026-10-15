@@ -5,11 +5,10 @@
 #include "codec/binary_decoder_L2.hpp"
 #include "misc/cross_platform.hpp"
 #include "misc/profiler.hpp"
+#include <cassert>
 #include <cstring>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <memory>
 #include <sstream>
 
 namespace L2 {
@@ -26,33 +25,72 @@ BinaryDecoder_L2::BinaryDecoder_L2(size_t estimated_orders) {
   temp_ask_order_ids.reserve(estimated_orders);
 
   dctx_ = ZSTD_createDCtx();
-  // 跳过帧内容校验: 落盘是原子的 (tmp+rename), 头部自洽 + count 对账已能
-  // 挡住结构性损坏; 每次解码再算 xxh64 是白花的 (特征/因子计算会高频跑
-  // 成千上万遍).
+  assert(dctx_ && "Failed to create ZSTD DCtx");
+  // 跳过帧内容校验: 日文件落盘是原子的 (tmp+rename), 目录自洽 + 解压尺寸 +
+  // count 对账已能挡住结构性损坏; 每次解码再算 xxh64 是白花的 (特征/因子
+  // 计算会高频跑成千上万遍).
   ZSTD_DCtx_setParameter(dctx_, ZSTD_d_forceIgnoreChecksum, ZSTD_d_ignoreChecksum);
 }
 
 BinaryDecoder_L2::~BinaryDecoder_L2() {
-  if (dctx_)
-    ZSTD_freeDCtx(dctx_);
+  if (day_fd_ >= 0)
+    file_close(day_fd_);
+  ZSTD_freeDCtx(dctx_);
 }
 
-// 读 + 校验定宽头. 失败返回 false (文件不存在/太短/magic 或尺寸不自洽).
-static bool read_l2_header(std::ifstream &file, L2FileHeader &header) {
-  file.read(reinterpret_cast<char *>(&header), sizeof(header));
-  return !file.fail() && header.sane();
+void BinaryDecoder_L2::open_day(const std::string &day_path) {
+  if (day_fd_ >= 0 && day_path == day_path_)
+    return;
+  if (day_fd_ >= 0)
+    file_close(day_fd_);
+  day_fd_ = file_open_read(day_path.c_str());
+  assert(day_fd_ >= 0 && "open_day: 日文件打不开 (扫描之后被删/挪走?)");
+  day_path_ = day_path;
 }
 
-bool BinaryDecoder_L2::read_file_stats(const std::string &filepath, size_t &order_count, size_t &file_size) {
-  L2FileHeader header;
-  if (read_file_head(filepath.c_str(), &header, sizeof(header)) != sizeof(header))
-    return false;
-  if (!header.sane())
-    return false;
+void BinaryDecoder_L2::close_day() {
+  if (day_fd_ >= 0)
+    file_close(day_fd_);
+  day_fd_ = -1;
+  day_path_.clear();
+}
 
-  order_count = header.order_count();
-  file_size = sizeof(header) + header.compressed_size;
-  return true;
+const Order *BinaryDecoder_L2::decode(uint64_t offset, uint32_t compressed_size, uint32_t order_count) {
+  assert(day_fd_ >= 0 && "decode: 先 open_day");
+  assert(compressed_size > 0 && order_count > 0 && "decode: 墓碑没有帧");
+  const size_t raw_size = frame_raw_size(order_count);
+
+  if (stream_compressed_buffer_.size() < compressed_size)
+    stream_compressed_buffer_.resize(compressed_size);
+  if (stream_decompression_buffer_.size() < raw_size)
+    stream_decompression_buffer_.resize(raw_size);
+
+  {
+    TraceN("FileIO");
+    const size_t got = file_pread(day_fd_, stream_compressed_buffer_.data(), compressed_size, offset);
+    assert(got == compressed_size && "decode: 帧越过日文件末尾 (目录与文件不符)");
+    (void)got;
+  }
+
+  size_t decompressed_bytes;
+  {
+    TraceN("ZstdDecompress");
+    // 复用 DCtx (已配置跳过帧内容校验), 直接解到复用缓冲 — 热路径零分配
+    decompressed_bytes = ZSTD_decompressDCtx(
+        dctx_,
+        stream_decompression_buffer_.data(), raw_size,
+        stream_compressed_buffer_.data(), compressed_size);
+  }
+  assert(!ZSTD_isError(decompressed_bytes) && decompressed_bytes == raw_size &&
+         "decode: 帧解压失败或尺寸与目录不符");
+  (void)decompressed_bytes;
+
+  uint64_t count;
+  std::memcpy(&count, stream_decompression_buffer_.data(), sizeof(count));
+  assert(count == order_count && "decode: 帧内条数与目录不符");
+  (void)count;
+
+  return reinterpret_cast<const Order *>(stream_decompression_buffer_.data() + sizeof(uint64_t));
 }
 
 std::string BinaryDecoder_L2::time_to_string(uint8_t hour, uint8_t minute, uint8_t second, uint8_t millisecond_10ms) {
@@ -155,135 +193,6 @@ void BinaryDecoder_L2::print_all_orders(const std::vector<Order> &orders) {
               << std::setw(ORDER_ID_WIDTH) << std::right << order.bid_order_id << " "
               << std::setw(ORDER_ID_WIDTH) << std::right << order.ask_order_id << std::endl;
   }
-}
-
-// decoder functions
-const Order *BinaryDecoder_L2::decode_orders_stream(const std::string &filepath, size_t &order_num) {
-  // 缓冲尺寸直接由文件头的 raw_size 决定 —— 它已经精确等于
-  // [u64 count][Order × count] 的长度, 头就是唯一来源 (见 L2FileHeader).
-  constexpr size_t count_size = sizeof(uint64_t); // u64 count
-
-  L2FileHeader header;
-  {
-    TraceN("FileIO");
-    // Open file and read compression metadata
-    std::ifstream file(filepath, std::ios::binary);
-    if (!file.is_open()) [[unlikely]] {
-      std::cerr << "L2 Decoder: Failed to open file: " << filepath << std::endl;
-      return nullptr;
-    }
-
-    if (!read_l2_header(file, header)) [[unlikely]] {
-      std::cerr << "L2 Decoder: Corrupt/legacy header (magic/version/sizes), re-encode: "
-                << filepath << std::endl;
-      return nullptr;
-    }
-
-    last_price_base_ = header.price_base;
-
-    // Resize reusable buffers if needed (only grows, never shrinks - amortized O(1))
-    if (stream_compressed_buffer_.size() < header.compressed_size) {
-      stream_compressed_buffer_.resize(header.compressed_size);
-    }
-    if (stream_decompression_buffer_.size() < header.raw_size) {
-      stream_decompression_buffer_.resize(header.raw_size);
-    }
-
-    // Read compressed data into reusable buffer
-    file.read(stream_compressed_buffer_.data(), static_cast<std::streamsize>(header.compressed_size));
-    if (file.fail()) [[unlikely]] {
-      std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
-      return nullptr;
-    }
-  }
-
-  {
-    TraceN("ZstdDecompress");
-    // 复用 DCtx (已配置跳过帧内容校验), 直接解到复用缓冲 — 热路径零分配
-    size_t decompressed_bytes = ZSTD_decompressDCtx(
-        dctx_,
-        stream_decompression_buffer_.data(), header.raw_size,
-        stream_compressed_buffer_.data(), header.compressed_size);
-
-    if (ZSTD_isError(decompressed_bytes) || decompressed_bytes != header.raw_size) [[unlikely]] {
-      std::cerr << "L2 Decoder: Decompression failed: "
-                << (ZSTD_isError(decompressed_bytes) ? ZSTD_getErrorName(decompressed_bytes) : "size mismatch")
-                << ": " << filepath << std::endl;
-      return nullptr;
-    }
-  }
-
-  // 解压后头部的 count 与外层 raw_size 推出的条数必须一致
-  uint64_t count;
-  std::memcpy(&count, stream_decompression_buffer_.data(), count_size);
-
-  if (count != header.order_count()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Count mismatch - header implies " << header.order_count()
-              << " but data says " << count << ": " << filepath << std::endl;
-    return nullptr;
-  }
-
-  // Return pointer to Order array (skip header) - ZERO COPY
-  order_num = count;
-  return reinterpret_cast<const Order *>(stream_decompression_buffer_.data() + count_size);
-}
-
-// Zstandard decompression helper function (pure standard decompression)
-bool BinaryDecoder_L2::read_and_decompress_data(const std::string &filepath, void *data, size_t expected_size, size_t &actual_size) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to open file for decompression: " << filepath << std::endl;
-    std::exit(1);
-  }
-
-  // Read fixed-width self-describing header
-  L2FileHeader header;
-  if (!read_l2_header(file, header)) [[unlikely]] {
-    std::cerr << "L2 Decoder: Corrupt/legacy header: " << filepath << std::endl;
-    std::exit(1);
-  }
-
-  // Verify expected size matches
-  if (header.raw_size != expected_size) [[unlikely]] {
-    std::cerr << "L2 Decoder: Size mismatch - expected " << expected_size
-              << " but header says " << header.raw_size << std::endl;
-    std::exit(1);
-  }
-  const size_t compressed_size = header.compressed_size;
-
-  // Read compressed data
-  auto compressed_buffer = std::make_unique<char[]>(compressed_size);
-  file.read(compressed_buffer.get(), static_cast<std::streamsize>(compressed_size));
-
-  if (file.fail()) [[unlikely]] {
-    std::cerr << "L2 Decoder: Failed to read compressed data: " << filepath << std::endl;
-    std::exit(1);
-  }
-
-  // Standard Zstandard decompression
-  size_t decompressed_size = ZSTD_decompress(
-      data, expected_size,
-      compressed_buffer.get(), compressed_size);
-
-  if (ZSTD_isError(decompressed_size)) [[unlikely]] {
-    std::cerr << "L2 Decoder: Decompression failed: " << ZSTD_getErrorName(decompressed_size) << std::endl;
-    std::exit(1);
-  }
-
-  if (decompressed_size != expected_size) [[unlikely]] {
-    std::cerr << "L2 Decoder: Decompressed size mismatch - expected " << expected_size
-              << " but got " << decompressed_size << std::endl;
-    std::exit(1);
-  }
-
-  actual_size = decompressed_size;
-
-  // Print decompression statistics
-  // float compression_ratio = static_cast<float>(original_size) / static_cast<float>(compressed_size);
-  // std::cout << "L2 Decoder: Decompressed " << compressed_size << " bytes to " << original_size
-  //           << " bytes (ratio: " << std::fixed << std::setprecision(2) << compression_ratio << "x)" << std::endl;
-
-  return true;
 }
 
 } // namespace L2

@@ -2,11 +2,13 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -22,13 +24,8 @@
 
 // 读文件开头 n 字节, 返回实际读到的字节数 (0 = 打不开或读不到).
 //
-// 走裸 open/pread 而不是 std::ifstream: 全库扫描要给五百万个 .bin 各读一次
-// 32 字节头, 每个文件构造一次 ifstream (含 streambuf 分配) 实测把这一步从
-// 4.2s 拖到 15s. 451 万文件 / 72 线程的实测:
-//   readdir only          0.11s
-//   ifstream + file_size 17.65s
-//   ifstream (无 stat)   14.94s
-//   pread    (无 stat)    4.25s
+// 走裸 open/pread 而不是 std::ifstream / fopen: 每次打开省掉一份 streambuf /
+// stdio 缓冲的分配, 高频小读 (如 /proc/meminfo) 用它.
 inline std::size_t read_file_head(const char *path, void *buf, std::size_t n) {
 #ifdef _WIN32
   int fd = _open(path, _O_RDONLY | _O_BINARY);
@@ -44,6 +41,106 @@ inline std::size_t read_file_head(const char *path, void *buf, std::size_t n) {
   const ssize_t got = ::pread(fd, buf, n, 0);
   ::close(fd);
   return got > 0 ? static_cast<std::size_t>(got) : 0;
+#endif
+}
+
+// 定位读写 (pread / pwrite 语义): 不动文件游标, 多个线程共用同一 fd 互不干扰.
+// orders 日文件 (一天全市场一个) 的读写全走这一组: 读端每线程每天一个 fd,
+// 按目录项 pread 帧; 写端多个 worker 各占一段偏移并发 pwrite.
+//
+// 读写都循环到满 (信号 / 大块会被内核拆成短读写), 返回实际字节数, 是否读满
+// 由调用方断言.
+
+// 只读打开, 打不开返回 -1
+inline int file_open_read(const char *path) {
+#ifdef _WIN32
+  return _open(path, _O_RDONLY | _O_BINARY);
+#else
+  return ::open(path, O_RDONLY | O_CLOEXEC);
+#endif
+}
+
+// 写端打开: 不存在则建, 存在则截断
+inline int file_open_trunc(const char *path) {
+#ifdef _WIN32
+  return _open(path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, 0644);
+#else
+  return ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+#endif
+}
+
+inline void file_close(int fd) {
+#ifdef _WIN32
+  _close(fd);
+#else
+  ::close(fd);
+#endif
+}
+
+inline std::size_t file_pread(int fd, void *buf, std::size_t n, std::uint64_t off) {
+  std::size_t done = 0;
+  while (done < n) {
+#ifdef _WIN32
+    OVERLAPPED ov{};
+    const std::uint64_t at = off + done;
+    ov.Offset = static_cast<DWORD>(at & 0xFFFFFFFFu);
+    ov.OffsetHigh = static_cast<DWORD>(at >> 32);
+    const DWORD want = static_cast<DWORD>(n - done < (1u << 30) ? n - done : (1u << 30));
+    DWORD got = 0;
+    if (!ReadFile(reinterpret_cast<HANDLE>(_get_osfhandle(fd)), static_cast<char *>(buf) + done, want, &got, &ov) || got == 0)
+      break;
+#else
+    const ssize_t got = ::pread(fd, static_cast<char *>(buf) + done, n - done, static_cast<off_t>(off + done));
+    if (got <= 0)
+      break;
+#endif
+    done += static_cast<std::size_t>(got);
+  }
+  return done;
+}
+
+inline std::size_t file_pwrite(int fd, const void *buf, std::size_t n, std::uint64_t off) {
+  std::size_t done = 0;
+  while (done < n) {
+#ifdef _WIN32
+    OVERLAPPED ov{};
+    const std::uint64_t at = off + done;
+    ov.Offset = static_cast<DWORD>(at & 0xFFFFFFFFu);
+    ov.OffsetHigh = static_cast<DWORD>(at >> 32);
+    const DWORD want = static_cast<DWORD>(n - done < (1u << 30) ? n - done : (1u << 30));
+    DWORD got = 0;
+    if (!WriteFile(reinterpret_cast<HANDLE>(_get_osfhandle(fd)), static_cast<const char *>(buf) + done, want, &got, &ov) || got == 0)
+      break;
+#else
+    const ssize_t got = ::pwrite(fd, static_cast<const char *>(buf) + done, n - done, static_cast<off_t>(off + done));
+    if (got <= 0)
+      break;
+#endif
+    done += static_cast<std::size_t>(got);
+  }
+  return done;
+}
+
+inline std::uint64_t file_size(int fd) {
+#ifdef _WIN32
+  return static_cast<std::uint64_t>(_filelengthi64(fd));
+#else
+  struct stat st{};
+  const int rc = ::fstat(fd, &st);
+  assert(rc == 0 && "fstat 失败");
+  (void)rc;
+  return static_cast<std::uint64_t>(st.st_size);
+#endif
+}
+
+// 数据落到盘上 (rename 之前调用, 断电后最终路径上不会是空洞文件)
+inline void file_sync(int fd) {
+#ifdef _WIN32
+  _commit(fd);
+#elif defined(__APPLE__)
+  ::fsync(fd);
+#else
+  ::fdatasync(fd);
 #endif
 }
 
@@ -108,7 +205,7 @@ inline std::size_t physical_ram_bytes() {
 //
 // Linux 下"已用"必须按 MemTotal - MemAvailable 算, 不能用 sysinfo().freeram:
 // freeram 不含可回收的 page cache, 而全库扫描/编码会把几乎全部空闲内存变成
-// 归档与 .bin 的页缓存 (本机 131GB 里 75GB 是 Cached, MemFree 只剩 0.8GB),
+// 归档与 orders 日文件的页缓存 (本机 131GB 里 75GB 是 Cached, MemFree 只剩 0.8GB),
 // freeram 口径于是长期误报 ~99%, 而内核估算的真实可用量 MemAvailable 还有
 // 82GB. MemAvailable 需要 Linux 3.14+.
 struct MemoryUsage {

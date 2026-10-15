@@ -172,7 +172,7 @@ public:
   // PUBLIC API: Utilities
   //======================================================================================
 
-  // 设置当日档位索引基准 (分), 取自 .bin 文件头. 必须在 clear() 之后、喂第一条
+  // 设置当日档位索引基准 (分), 取自日文件目录项. 必须在 clear() 之后、喂第一条
   // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的档位下标会指向别的价格.
   HOT_NOINLINE void set_price_base(uint32_t price_base) {
     price_base_ = price_base;
@@ -877,7 +877,7 @@ private:
 
   // Core order processing implementation (shared by single/batch interfaces)
   HOT_INLINE bool process_impl(const L2::Order &order_abs) {
-    // .bin 里存的是绝对价 (分), 而档位数组只开了 kPriceIndexRange 档并按下标直接
+    // 帧里存的是绝对价 (分), 而档位数组只开了 kPriceIndexRange 档并按下标直接
     // 寻址. 在入口一次性折算, 函数体内此后所有价格比较与寻址都留在下标空间; 只有
     // 对外暴露的 LOB_feature_ref().price 用回绝对价.
     L2::Order order = order_abs;

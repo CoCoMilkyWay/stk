@@ -132,7 +132,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
     }
 
     // Trigger scan callback after encoding completion
-    // (扫描整体重建, 动过的天由目录 mtime 与 .stat 自己对账, 不用在这里告诉它)
+    // (扫描整体重建, 每天重读一遍日文件目录, 不用在这里告诉它动过哪些天)
     if (scan_callback_) {
       scan_callback_();
     }

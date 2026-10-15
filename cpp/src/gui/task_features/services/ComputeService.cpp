@@ -93,11 +93,11 @@ void ComputeService::start_compute(ComputeConfig config) {
 
     // Load balancing (初始形态): 按回测区间内的逐笔条数降序 + 轮询分配 ——
     // 标的数每核严格均匀 (±1), 权重也近似均衡. 贪心 LPT 会把大量小标的堆到
-    // 少数核上 (标的数悬殊), 而每日固定开销 (decode 头/begin_day/分钟网格)
+    // 少数核上 (标的数悬殊), 而每日固定开销 (decode/begin_day/分钟网格)
     // 随标的数走, 反而更歪. 运行期差距由 worker 间的处置权转移收敛
     // (见 sequential_worker 的 try_adopt), 这里只求起点均衡.
     //
-    // 条数是扫描时随文件头一并读好的 (见 Asset::coro_scan_binary_database),
+    // 条数是扫描时随日文件目录一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
     std::vector<std::pair<size_t, size_t>> asset_workloads; // (sub, weight)
     asset_workloads.reserve(num_assets);

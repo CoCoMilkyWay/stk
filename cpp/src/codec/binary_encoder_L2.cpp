@@ -1,11 +1,8 @@
 #include "codec/binary_encoder_L2.hpp"
 #include "misc/logging.hpp"
 #include <algorithm>
+#include <cassert>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <memory>
 
 // Data format reference: config/sample/L2/README
 
@@ -540,87 +537,30 @@ BinaryEncoder_L2::~BinaryEncoder_L2() {
   }
 }
 
-bool BinaryEncoder_L2::encode_orders(const std::vector<Order> &orders, const std::string &filepath, uint32_t price_base) {
-  if (orders.empty()) {
-    Logger::log("encoding", "No orders to encode: " + filepath);
+bool BinaryEncoder_L2::compress_frame() {
+  assert(!orders_.empty() && "compress_frame: 空资产应在 finish_asset 里走墓碑");
+
+  const uint64_t count = orders_.size();
+  const size_t raw_size = frame_raw_size(orders_.size());
+  if (raw_.size() < raw_size)
+    raw_.resize(raw_size);
+  std::memcpy(raw_.data(), &count, sizeof(count));
+  std::memcpy(raw_.data() + sizeof(count), orders_.data(), orders_.size() * sizeof(Order));
+
+  const size_t bound = ZSTD_compressBound(raw_size);
+  if (frame_.size() < bound)
+    frame_.resize(bound);
+  frame_size_ = ZSTD_compress2(zstd_ctx_, frame_.data(), bound, raw_.data(), raw_size);
+
+  if (ZSTD_isError(frame_size_)) [[unlikely]] {
+    Logger::log("encoding", "Compression failed: " + std::string(ZSTD_getErrorName(frame_size_)));
+    frame_size_ = 0;
     return false;
   }
 
-  const size_t count = orders.size();
-
-  // Prepare buffer: header + data
-  const size_t header_size = sizeof(count);
-  const size_t data_size = orders.size() * sizeof(Order);
-  const size_t total_size = header_size + data_size;
-
-  auto buffer = std::make_unique<char[]>(total_size);
-  std::memcpy(buffer.get(), &count, header_size);
-  std::memcpy(buffer.get() + header_size, orders.data(), data_size);
-
-  return compress_and_write_data(filepath, buffer.get(), total_size, price_base);
-}
-
-// Compression helper
-size_t BinaryEncoder_L2::calculate_compression_bound(size_t data_size) {
-  return ZSTD_compressBound(data_size);
-}
-
-bool BinaryEncoder_L2::compress_and_write_data(const std::string &filepath, const void *data, size_t data_size, uint32_t price_base) {
-  // 原子落盘: 写 tmp, 全部成功后 rename 到最终路径. rename 是原子的 —
-  // 最终路径上的文件不可能是半截, "存在即完整"由此成立 (进程被杀/崩溃只会
-  // 留下 tmp 垃圾, 由下次增量编码覆盖).
-  const std::string tmp_path = filepath + ".tmp";
-
-  // Compress using reusable context
-  const size_t bound = calculate_compression_bound(data_size);
-  auto compressed = std::make_unique<char[]>(bound);
-  const size_t compressed_size = ZSTD_compress2(
-      zstd_ctx_, compressed.get(), bound, data, data_size);
-
-  if (ZSTD_isError(compressed_size)) [[unlikely]] {
-    Logger::log("encoding", "Compression failed: " + std::string(ZSTD_getErrorName(compressed_size)));
-    return false;
-  }
-
-  {
-    std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
-    if (!file.is_open()) [[unlikely]] {
-      Logger::log("encoding", "Cannot open file for writing: " + tmp_path);
-      return false;
-    }
-
-    L2FileHeader header{};
-    header.magic = L2FileHeader::kL2Magic;
-    header.version = L2FileHeader::kL2FormatVersion;
-    header.raw_size = data_size;
-    header.compressed_size = compressed_size;
-    header.price_base = price_base;
-
-    file.write(reinterpret_cast<const char *>(&header), sizeof(header));
-    file.write(compressed.get(), compressed_size);
-    file.close(); // close 才把缓冲刷给 OS, fail 位在此之后才完整
-
-    if (file.fail()) [[unlikely]] {
-      Logger::log("encoding", "Failed to write data: " + tmp_path);
-      std::error_code ec;
-      std::filesystem::remove(tmp_path, ec);
-      return false;
-    }
-  }
-
-  std::error_code ec;
-  std::filesystem::rename(tmp_path, filepath, ec);
-  if (ec) [[unlikely]] {
-    Logger::log("encoding", "Failed to rename into place: " + filepath + " (" + ec.message() + ")");
-    std::filesystem::remove(tmp_path, ec);
-    return false;
-  }
-
-  // Store stats
-  compression_stats.original_size = data_size;
-  compression_stats.compressed_size = compressed_size;
-  compression_stats.ratio = static_cast<float>(data_size) / compressed_size;
-
+  compression_stats.original_size = raw_size;
+  compression_stats.compressed_size = frame_size_;
+  compression_stats.ratio = static_cast<float>(raw_size) / frame_size_;
   return true;
 }
 
@@ -658,10 +598,12 @@ bool BinaryEncoder_L2::feed_market_csv(const char *data, size_t len) {
   return parse_market_tail(data, len, market_);
 }
 
-EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, const std::string &tag) {
+EncodeResult BinaryEncoder_L2::finish_asset(const std::string &tag) {
+  frame_size_ = 0;
+
   // 源损坏优先于一切: 有坏行就整个 (资产, 日期) 作废, 不产出半真半假的
   // 产物 —— 部分数据会静默污染下游特征. 日志带上标的与坏行数, 人工修好源
-  // 文件后, 下次增量因为既无 .bin 也无墓碑而自动重来.
+  // 文件后, 下次增量因为既无帧也无墓碑而自动重来.
   if (bad_line_count_ > 0) {
     Logger::log("encoding", "[CORRUPT SOURCE] " + tag + " has " +
                                 std::to_string(bad_line_count_) +
@@ -669,7 +611,7 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
     return EncodeResult::CorruptSource;
   }
 
-  // 只拦"全空" (停牌日的纯表头文件) — 空 .bin 会让下游把停牌日当有数据,
+  // 只拦"全空" (停牌日的纯表头文件) — 空帧会让下游把停牌日当有数据,
   // 缺席 (墓碑) 才是正确语义. 低流动性但真实交易的标的 (如 ST 股单日几百笔)
   // 是真实市场数据, 照常编码, 要不要用是特征/因子层的策略决定, 不在存储层砍.
   //
@@ -734,7 +676,7 @@ EncodeResult BinaryEncoder_L2::finish_asset(const std::string &output_file, cons
     return priority(a.order_type) < priority(b.order_type);
   });
 
-  return encode_orders(all_orders, output_file, report_.price_base) ? EncodeResult::Ok : EncodeResult::Error;
+  return compress_frame() ? EncodeResult::Ok : EncodeResult::Error;
 }
 
 } // namespace L2

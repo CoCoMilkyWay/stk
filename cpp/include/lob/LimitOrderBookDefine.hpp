@@ -480,7 +480,7 @@ struct LOB_Feature {
   uint32_t volume = 0; // 股
 
   // depth_buffer 里 Level::price 是档位下标而非绝对价, 还原成分要加上这个基准.
-  // 低价股恒为 0. 来源是 .bin 的文件头, 见 L2_DataType.hpp 的 kPriceIndexRange.
+  // 低价股恒为 0. 来源是日文件目录项, 见 L2_DataType.hpp 的 kPriceIndexRange.
   uint32_t price_base = 0;
 
   // 全市场挂单量

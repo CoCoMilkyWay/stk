@@ -38,6 +38,8 @@ struct OrderFlowService::Impl {
   UniverseAxis uni; // 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
   FeatureRead reader;
   L2::BinaryDecoder_L2 decoder;
+  EncodeDayRecord day_rec;                     // 日文件账目 (读目录的副产品, 不用)
+  std::vector<EncodeDayIndexEntry> day_index;  // 当天日文件目录 (重放请求现读)
   LimitOrderBook lob; // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
   TickData tick_data; // 无特征侧绑定的盘口写出口
   FeatureRead::DayColumns l1_cols, l0_cols, uni_cols;
@@ -375,7 +377,7 @@ void OrderFlowService::universe_build(const UniverseReq &req) {
 }
 
 // ============================================================================
-// Depth: orders/*.bin 逐笔重放 → 秒级快照 → plot/heatmap → 背槽发布
+// Depth: 日文件逐笔重放 → 秒级快照 → plot/heatmap → 背槽发布
 // ============================================================================
 
 void OrderFlowService::depth_build(const DepthReq &req) {
@@ -389,24 +391,31 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   slot.date = req.date;
   slot.asset_idx = req.asset;
 
-  // ---- 重放 .bin (单资产单日一文件; 缺文件 = 停牌/未编码, 发布空槽) ----
+  // ---- 重放当天日文件里这个资产的帧 (缺日文件 / 无帧 = 停牌/未编码, 发布空槽) ----
+  // 目录现读而不是查 Asset::date_info: 本服务跑在自己的线程上, 与重扫描
+  // (整体重建 date_info) 并发, 现读一次 (头 + 120KB 目录) 免去与它同步.
   const AssetItem &asset = data_->asset.items[req.asset];
-  const std::string orders_file = Utils::generate_orders_path(
-      data_->config.orders_dir, req.date, asset.asset_code, asset.exchange, config::BINARY_EXTENSION);
+  const std::string day_path =
+      Utils::generate_orders_path(data_->config.orders_dir, req.date, config::BINARY_EXTENSION);
 
-  size_t order_num = 0;
-  const L2::Order *orders = nullptr;
-  {
-    TraceN("OF_Decode");
-    orders = impl_->decoder.decode_orders_stream(orders_file, order_num);
-  }
+  const EncodeDayIndexEntry *entry = nullptr;
+  if (read_day_file(day_path, impl_->day_rec, impl_->day_index))
+    entry = find_day_entry(impl_->day_index, req.asset);
 
-  if (orders != nullptr) {
+  if (entry && !entry->is_tombstone()) {
+    const size_t order_num = entry->order_count;
+    const L2::Order *orders = nullptr;
+    {
+      TraceN("OF_Decode");
+      impl_->decoder.open_day(day_path);
+      orders = impl_->decoder.decode(entry->offset, entry->compressed_size, entry->order_count);
+      impl_->decoder.close_day(); // 解出来的在 decoder 缓冲里, fd 已无用
+    }
     slot.order_count = order_num;
 
     LimitOrderBook &lob = impl_->lob;
     lob.bind(&impl_->tick_data, req.asset, asset.exchange_type); // 无特征侧绑定
-    lob.set_price_base(impl_->decoder.last_price_base());
+    lob.set_price_base(entry->price_base);
     lob.reserve_orders(order_num); // 委托表按当日事件数定长
 
     auto &sec_slot = impl_->sec_slot;
@@ -421,7 +430,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
     constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
     constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手
     const LOB_Feature &lf = impl_->tick_data.lob;
-    const float base = static_cast<float>(impl_->decoder.last_price_base());
+    const float base = static_cast<float>(entry->price_base);
 
     // 档位下标空间的哨兵判据: 低端 [1, N] 与高端 [RANGE-1-N, RANGE-1] 是构造期哨兵档
     // + 编码期停靠档 (离盘口无穷远), 见 init_sentinel_levels / BinaryEncoder_L2::park_price
@@ -506,7 +515,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   }
 
   // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
-  // 可读, VWAP / overlay 留空 (盘口重放走 .bin, 不受 universe 约束, 上面照常构建)
+  // 可读, VWAP / overlay 留空 (盘口重放走日文件, 不受 universe 约束, 上面照常构建)
   const size_t depth_sub = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
 
   // ---- 分钟 VWAP 阶梯: L1 特征列 vwap, 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----

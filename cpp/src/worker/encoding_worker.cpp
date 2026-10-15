@@ -2,7 +2,6 @@
 #include "shared/SharedData.hpp"
 
 #include "codec/L2_DataType.hpp"
-#include "codec/binary_decoder_L2.hpp"
 #include "codec/binary_encoder_L2.hpp"
 #include "misc/affinity.hpp"
 #include "misc/archive.hpp"
@@ -110,58 +109,38 @@ void encoding_producer(SharedData &data,
     const std::string archive_path = Utils::generate_archive_path(
         data.config.archive_dir, date, config::ARCHIVE_EXTENSION);
 
-    // 增量新鲜度规则: 产物 (.bin / 当天统计 .stat) 存在且不老于归档 → 跳过.
-    //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读内容;
-    //   - 归档被重下/修复过 → mtime 变新 → 产物判过期, 重编覆盖.
-    //     "修复受损数据"由此不需要单独的通道 (盘上位腐烂走离线 Verify).
-    std::filesystem::file_time_type archive_mtime{};
-    {
+    // 增量新鲜度规则: 日文件存在且不老于归档 → 它的结局可信.
+    //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读帧;
+    //   - 归档被重下/修复过 → mtime 变新 → 日文件判过期, 整天重编覆盖.
+    const std::string day_path =
+        Utils::generate_orders_path(data.config.orders_dir, date, config::BINARY_EXTENSION);
+    bool prev_fresh = false;
+    if (skip_existing) {
       std::error_code ec;
-      archive_mtime = std::filesystem::last_write_time(archive_path, ec);
+      std::filesystem::file_time_type archive_mtime = std::filesystem::last_write_time(archive_path, ec);
+      if (ec)
+        archive_mtime = {};
+      const auto day_mtime = std::filesystem::last_write_time(day_path, ec);
+      prev_fresh = !ec && day_mtime >= archive_mtime;
     }
-    auto fresh = [&archive_mtime](const std::string &p) {
-      std::error_code ec;
-      const auto t = std::filesystem::last_write_time(p, ec);
-      return !ec && t >= archive_mtime;
-    };
 
-    // 上一轮留下的当天统计 (见 shared/EncodeDayRecord.hpp). 两处用它:
-    // 整天快路径看 complete, 下面的逐资产过滤看明细里的墓碑与计量.
-    const std::string day_dir = Utils::generate_date_dir(data.config.orders_dir, date);
+    // 上一轮的日文件 (见 shared/EncodeDayRecord.hpp). 两处用它: 整天快路径
+    // 看 complete, 下面的逐资产过滤看目录里的帧与墓碑.
     EncodeDayRecord prev;
-    const bool prev_fresh = skip_existing && fresh(day_dir + "/" + kEncodeStatName) &&
-                            read_encode_day_stat(day_dir, prev);
+    std::vector<EncodeDayIndexEntry> prev_index;
+    if (prev_fresh)
+      prev_fresh = read_day_file(day_path, prev, prev_index);
 
     // 整天快路径 — 必须在列举之前: 下面那次 unrar l 要在机械盘上走完整条包头
-    // 链 (实测 0.2~2.5s), 加上当天几千次产物 stat, 光"确认无事可做"就是几秒
-    // 一天.
+    // 链 (实测 0.2~2.5s), 光"确认无事可做"就是几秒一天.
     //
-    // 出错的天同样会留下统计 (供界面按日拆解原因), 所以判据是 complete 项而
-    // 不是文件在不在 —— 只有整天齐备才能跳过.
-    //
-    // 但 complete 说的是"上一轮收工时齐备", 不是"现在还齐备": 有人手工删掉
-    // 损坏的 .bin 之后, 光看这一项会整天跳过, 刚删掉的永远补不回来. 所以再
-    // 核一遍明细是否仍与盘上一致 (目录 mtime 没变就一次 stat, 变了才 readdir,
-    // 见 day_index_current) —— 换掉的是"手删 .bin 必须同时手删 .stat"这条
-    // 只能靠人记住的纪律.
+    // 出错的天同样会留下日文件 (供界面按日拆解原因), 所以判据是 complete 项
+    // 而不是文件在不在 —— 只有整天齐备才能跳过.
     if (prev_fresh && prev.complete) {
-      if (day_index_current(day_dir, prev, axis)) {
-        stats.days_skipped.fetch_add(1);
-        if (progress)
-          progress->bump_summary(1, false); // 秒回的一天, 不参与 ETA 速率
-        continue;
-      }
-      Logger::log("encoding", "[STALE STAT] " + day_dir +
-                                  " — 盘上的 .bin 与 .stat 明细不符 (产物被删过?), "
-                                  "重新列举这一天");
-    }
-
-    // 明细按 A 轴下标索引, 供逐资产过滤查上一轮的结局
-    std::unordered_map<uint32_t, EncodeDayIndexEntry> prev_assets;
-    if (prev_fresh) {
-      prev_assets.reserve(prev.assets.size());
-      for (const auto &entry : prev.assets)
-        prev_assets.emplace(entry.asset_id, entry);
+      stats.days_skipped.fetch_add(1);
+      if (progress)
+        progress->bump_summary(1, false); // 秒回的一天, 不参与 ETA 速率
+      continue;
     }
 
     // ------------------------------------------------------------------
@@ -242,11 +221,12 @@ void encoding_producer(SharedData &data,
       }
     }
 
-    // 断点续跑: 产物新鲜就跳过 (见上方 fresh 规则).
+    // 断点续跑: 旧日文件 (新鲜的话) 里已有结局的资产不重编 —— 帧或墓碑原样
+    // 搬进新日文件.
     //
-    // 顺带填当天账目: 分母是这里认下的资产数, 已新鲜的按产物种类归到
-    // ok / skipped —— 增量跑只重编缺产物的那些, 光靠 worker 的销账凑不齐
-    // 全天的分类.
+    // 顺带填当天账目: 分母是这里认下的资产数, 搬过来的按结局归到 ok /
+    // skipped —— 增量跑只重编缺结局的那些, 光靠 worker 的销账凑不齐全天的
+    // 分类. 不在当天包里的旧结局不搬 (分母里没有它).
     EncodeDayRecord day_rec;
     std::vector<EncodeDayIndexEntry> day_index;
     std::vector<EncodeTask> tasks;
@@ -257,41 +237,14 @@ void encoding_producer(SharedData &data,
 
       ++day_rec.assets_total;
 
-      const AssetItem &asset = data.asset.items[asset_id];
-      if (skip_existing) {
-        const std::string bin_path = Utils::generate_orders_path(
-            data.config.orders_dir, date, asset.asset_code, asset.exchange,
-            config::BINARY_EXTENSION);
-        const bool has_bin = fresh(bin_path);
-
-        // 墓碑现在是明细里的一条 (order_count/体积皆 0), 不再是一个 .skip 文件.
-        // 它的新鲜度随整份 .stat 走 —— 归档一旦重下, prev_fresh 就为假, 那些
-        // 资产照样重解一遍.
-        auto prev_it = prev_assets.find(static_cast<uint32_t>(asset_id));
-        const bool has_prev = prev_it != prev_assets.end();
-        const bool has_tomb = !has_bin && has_prev && prev_it->second.is_tombstone();
-
-        if (has_bin || has_tomb) {
+      if (prev_fresh) {
+        if (const EncodeDayIndexEntry *prev_entry = find_day_entry(prev_index, asset_id)) {
           stats.pairs_skipped.fetch_add(1);
-          if (has_bin) {
-            ++day_rec.assets_ok;
-            // 这一对不重编, 但它的计量仍要进新的明细 —— 明细里的 .bin 集合
-            // 必须与当天 readdir 的名单严格一致, 否则扫描端不采信
-            // (见 EncodeDayRecord.hpp).
-            //
-            // 上一轮的明细里有就直接搬 (增量跑的常态); 没有才读一次头 —— 从
-            // 旧格式迁过来的第一趟全靠它.
-            if (has_prev && !prev_it->second.is_tombstone()) {
-              day_index.push_back(prev_it->second);
-            } else {
-              size_t order_count = 0, file_size = 0;
-              if (L2::BinaryDecoder_L2::read_file_stats(bin_path, order_count, file_size))
-                day_index.push_back(make_day_index_entry(asset_id, order_count, file_size));
-            }
-          } else {
+          if (prev_entry->is_tombstone())
             ++day_rec.assets_skipped;
-            day_index.push_back(make_day_tombstone(asset_id)); // 墓碑续期
-          }
+          else
+            ++day_rec.assets_ok;
+          day_index.push_back(*prev_entry);
           continue;
         }
       }
@@ -307,29 +260,32 @@ void encoding_producer(SharedData &data,
     }
     stats.pairs_listed.fetch_add(tasks.size());
 
+    // 零分母不算"齐备": assets_total == 0 意味着包里一个 A 轴资产都没认出来
+    // (包内结构不符 / 轴与归档口径错位), 那是"什么都没看见"而不是"什么都齐
+    // 了". 真齐备的天分母是几千. 标了 complete 增量就再也不来, 半成品会被
+    // 永久冻在盘上 — 所以这种天留日志跳过, 不写日文件.
+    if (day_rec.assets_total == 0) {
+      Logger::log("encoding", "[NO ASSETS] " + archive_path + " — " +
+                                  std::to_string(entries.size()) +
+                                  " entries listed but none on the asset axis, day skipped, "
+                                  "no day file written");
+      if (progress)
+        progress->bump_summary(1, false);
+      continue;
+    }
+
+    // 新日文件: 先把旧日文件里搬得过来的帧整段拷进去 (就地改写 day_index 的
+    // 偏移), worker 再往后追加新编的帧.
+    auto writer = std::make_shared<DayFileWriter>(day_path);
+    writer->copy_frames(day_path, day_index);
+
     if (tasks.empty()) {
-      // 整天跳过 (产物全部新鲜/包里没活) 也是完成了一天 — 补上账目, 下次连
-      // 列举都省了. 目录不存在说明这天从来没有产物 (退化情况), 不留文件,
-      // 免得凭空造出空日目录 (扫描会把它当成"有这天").
-      //
-      // 走到这里说明每个资产都有了结局, 一个错误都没剩 —— 出错的对既没有
-      // .bin 也没有墓碑, 必然被上面重新列成任务.
-      //
-      // 但零分母不算"齐备": assets_total == 0 意味着包里一个 A 轴资产都没
-      // 认出来 (包内结构不符 / 轴与归档口径错位), 那是"什么都没看见"而不是
-      // "什么都齐了". 真齐备的天分母是几千. 标了 complete 增量就再也不来,
-      // 半成品会被永久冻在盘上 — 所以这种天留日志跳过, 不落标记.
-      if (day_rec.assets_total == 0) {
-        Logger::log("encoding", "[NO ASSETS] " + archive_path + " — " +
-                                    std::to_string(entries.size()) +
-                                    " entries listed but none on the asset axis, day skipped, "
-                                    "no completion marker written");
-      } else if (std::filesystem::exists(day_dir)) {
-        day_rec.accounted = true;
-        day_rec.complete = true;
-        day_rec.assets = std::move(day_index);
-        write_encode_day_stat(day_dir, std::move(day_rec));
-      }
+      // 包里没活 (旧日文件不齐备, 但缺的那些这回不在包里了) 也是完成了一天 —
+      // 走到这里说明每个资产都有了结局, 一个错误都没剩 (出错的对既没有帧也
+      // 没有墓碑, 必然被上面重新列成任务). 换上标了 complete 的日文件, 下次
+      // 连列举都省了.
+      day_rec.complete = true;
+      writer->commit(day_rec, std::move(day_index));
       if (progress)
         progress->bump_summary(1, false); // 只列举没真编, 不参与 ETA 速率
       continue;
@@ -348,14 +304,11 @@ void encoding_producer(SharedData &data,
       const bool oldest = stats.days_inflight.empty();
       stats.days_inflight.emplace(date,
                                   EncodeStats::DayProgress{0, tasks.size(), 0, day_rec,
-                                                           std::move(day_index)});
+                                                           std::move(day_index), writer});
       if (oldest && progress)
         progress->set_summary_note(std::to_string(date) + ": 0/" + std::to_string(tasks.size()) +
                                    " assets");
     }
-
-    // 目标目录建一次即可 (一天一个目录), 必须在推批之前
-    std::filesystem::create_directories(day_dir);
 
     const size_t even_batch_size = (tasks.size() + worker_count - 1) / worker_count;
     const size_t batch_size = std::min(kAssetsPerBatch, even_batch_size);
@@ -366,6 +319,7 @@ void encoding_producer(SharedData &data,
       batch.date = date;
       batch.archive_path = archive_path;
       batch.tasks.assign(tasks.begin() + static_cast<long>(i), tasks.begin() + static_cast<long>(std::min(i + batch_size, tasks.size())));
+      batch.writer = writer;
       if (!queue.push(std::move(batch)))
         return; // 队列已关 = 取消
     }
@@ -375,10 +329,10 @@ void encoding_producer(SharedData &data,
 }
 
 // ============================================================================
-// ENCODING WORKER — 每批自己 unrar + 解码 + 原子写 .bin
+// ENCODING WORKER — 每批自己 unrar + 解码 + 往当天日文件追加帧
 // ============================================================================
 //
-// worker 只写文件, 不回填 data.asset.items 的 date_info.
+// worker 只写日文件, 不回填 data.asset.items 的 date_info.
 //
 // 同一个资产的不同日期会落在不同批上, 由不同 worker 并发处理 —— 再去写同一个
 // asset 的 date_info (std::map) 就是数据竞争. 编码产物的真相由编码后的重新
@@ -573,13 +527,13 @@ void encoding_worker(SharedData &data,
     // 的天在附注里永远排不到前面.
     std::vector<char> retired(batch.tasks.size(), 0);
 
-    // 天粒度账本: 本天 +1, 清零则整天收工 (汇总 days +1) 并落下账目文件.
+    // 天粒度账本: 本天 +1, 清零则整天收工 (汇总 days +1) 并 commit 日文件.
     //
     // outcome 决定这一对进哪个桶; Ok / TooFewOrders 之外都算错 —— 没留下正确
     // 产物 ⇒ rec.complete = false, 下次增量必须重新列举补齐.
     // check_flags 只在 InvalidData 时有意义 (L2::Check 的位).
-    // entry 在 Ok (计量) 与 TooFewOrders (墓碑) 时非空 —— 这两种是"有结局",
-    // 要进当天明细; 其余是"没留下任何东西", 下次重来 (见 EncodeDayRecord.hpp).
+    // entry 在 Ok (帧) 与 TooFewOrders (墓碑) 时非空 —— 这两种是"有结局",
+    // 要进当天目录; 其余是"没留下任何东西", 下次重来 (见 EncodeDayRecord.hpp).
     auto retire_task = [&](size_t task_idx, L2::EncodeResult outcome, uint32_t check_flags,
                            const EncodeDayIndexEntry *entry = nullptr) {
       assert(!retired[task_idx] && "retire_task: 同一任务销账两次");
@@ -587,9 +541,9 @@ void encoding_worker(SharedData &data,
       ++done_in_batch;
       progress_handle.update(done_in_batch, batch.tasks.size(), std::to_string(batch.date));
 
-      bool day_done = false;
       EncodeDayRecord finished_rec;
       std::vector<EncodeDayIndexEntry> finished_index;
+      std::shared_ptr<DayFileWriter> finished_writer;
       {
         std::lock_guard<std::mutex> lock(stats.days_mutex);
         auto it = stats.days_inflight.find(batch.date);
@@ -599,7 +553,7 @@ void encoding_worker(SharedData &data,
         switch (outcome) {
         case L2::EncodeResult::Ok:
           ++rec.assets_ok;
-          assert(entry && !entry->is_tombstone() && "Ok 必须带上刚落盘那个 .bin 的计量");
+          assert(entry && !entry->is_tombstone() && "Ok 必须带上刚追加那一帧的目录项");
           it->second.index.push_back(*entry);
           break;
         case L2::EncodeResult::TooFewOrders:
@@ -630,7 +584,7 @@ void encoding_worker(SharedData &data,
           rec.complete = it->second.errors == 0;
           finished_rec = rec;
           finished_index = std::move(it->second.index);
-          day_done = true;
+          finished_writer = std::move(it->second.writer);
           stats.days_inflight.erase(it);
           progress_handle.bump_summary();
         }
@@ -641,15 +595,11 @@ void encoding_worker(SharedData &data,
                                            std::to_string(counts.total) + " assets");
         }
       }
-      // 出错的天照样落统计 —— complete=0 让增量重来, 但界面在重跑之前就能
-      // 说清楚那天错在哪. 明细同样无条件落下: 它记的是"盘上这些 .bin 各有
-      // 多少条", 与这天齐不齐备无关.
-      if (day_done) {
-        finished_rec.accounted = true;
-        finished_rec.assets = std::move(finished_index);
-        write_encode_day_stat(Utils::generate_date_dir(data.config.orders_dir, batch.date),
-                              std::move(finished_rec));
-      }
+      // 出错的天照样 commit —— complete=0 让增量重来 (已有结局的帧那时原样
+      // 搬过去), 而界面在重跑之前就能说清楚那天错在哪. fdatasync 几 GB 不该
+      // 压在锁里: 此刻当天全部任务已销账, 不会再有人往这个 writer 追加.
+      if (finished_writer)
+        finished_writer->commit(finished_rec, std::move(finished_index));
     };
 
     auto flush_task = [&](size_t task_idx) {
@@ -658,38 +608,27 @@ void encoding_worker(SharedData &data,
       const EncodeTask &task = batch.tasks[task_idx];
       const AssetItem &asset = data.asset.items[task.asset_id];
       const std::string asset_full = asset.asset_code + "." + asset.exchange;
-      const std::string out_path = Utils::generate_orders_path(
-          data.config.orders_dir, batch.date, asset.asset_code, asset.exchange,
-          config::BINARY_EXTENSION);
 
-      std::error_code ec;
       uint32_t check_flags = 0;
       EncodeDayIndexEntry entry{};
-      const L2::EncodeResult outcome = encoder.finish_asset(out_path, std::to_string(batch.date) + " " + asset_full);
+      const L2::EncodeResult outcome = encoder.finish_asset(std::to_string(batch.date) + " " + asset_full);
       switch (outcome) {
       case L2::EncodeResult::Ok: {
-        // 当天明细要的条数与体积就在刚写下的那 32 字节头里. 走扫描端同一个
-        // read_file_stats 而不是照 CompressionStats 自己算一遍 —— 两处口径
-        // 一旦分叉, 明细会静默地与盘上的文件对不上. 页刚写过, 必在缓存里.
-        size_t order_count = 0, file_size = 0;
-        const bool head_ok = L2::BinaryDecoder_L2::read_file_stats(out_path, order_count, file_size);
-        assert(head_ok && "刚落盘的 .bin 读不出自洽的头");
-        (void)head_ok;
-        entry = make_day_index_entry(task.asset_id, order_count, file_size);
+        const uint64_t offset = batch.writer->append(encoder.frame_data(), encoder.frame_size());
+        entry = make_day_entry(task.asset_id, offset, encoder.frame_order_count(),
+                               encoder.frame_size(), encoder.frame_price_base());
         break;
       }
       case L2::EncodeResult::TooFewOrders:
-        // 持久否定缓存: 明细里记一条墓碑 (条数/体积皆 0), 增量重跑不再碰它.
-        // 墓碑随整份 .stat 一起收工落盘, 新鲜度也随它 —— 归档重下后 .stat
-        // 判过期, 这些资产照样重解一遍.
-        // 旧归档编出的陈旧产物一并清掉 (新归档判定它不可编).
+        // 持久否定缓存: 目录里记一条墓碑 (其余字段皆 0), 增量重跑不再碰它.
+        // 墓碑的新鲜度随整个日文件走 —— 归档重下后日文件判过期, 这些资产
+        // 照样重解一遍.
         entry = make_day_tombstone(task.asset_id);
-        std::filesystem::remove(out_path, ec);
         break;
       case L2::EncodeResult::CorruptSource:
-        // 源 CSV 坏行 (归档成员位腐烂). 什么都不写 — 不落 .bin (半真半假会
-        // 静默污染下游), 也不落墓碑 (那是"确实无数据"的语义). 已有的旧产物
-        // 保持原样, 由离线 Verify 定夺. 修好源文件后增量自动重来.
+        // 源 CSV 坏行 (归档成员位腐烂). 什么都不写 — 不落帧 (半真半假会
+        // 静默污染下游), 也不落墓碑 (那是"确实无数据"的语义). 修好源文件后
+        // 增量自动重来.
         stats.pairs_corrupt.fetch_add(1);
         break;
       case L2::EncodeResult::InvalidData:
@@ -700,7 +639,7 @@ void encoding_worker(SharedData &data,
         stats.pairs_invalid.fetch_add(1);
         break;
       case L2::EncodeResult::Error:
-        // 环境错误 (磁盘满/压缩失败): 不留任何产物, 下次增量重试
+        // 环境错误 (压缩失败): 不留任何产物, 下次增量重试
         Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] [FAILED] " +
                                     std::to_string(batch.date) + " " + asset_full);
         break;
@@ -736,8 +675,8 @@ void encoding_worker(SharedData &data,
           cancel_flag);
     }
 
-    // 取消时流是中途断的, 手上可能只喂了半个资产 — 直接丢弃, 不落盘
-    // (落了会写出半截 .bin, 且续跑时被新鲜度规则跳过).
+    // 取消时流是中途断的, 手上可能只喂了半个资产 — 直接丢弃, 不落帧. 当天
+    // 凑不齐销账, 日文件不会 commit, .tmp 随最后一个持有者析构删掉.
     if (cancel_flag->load())
       break;
 

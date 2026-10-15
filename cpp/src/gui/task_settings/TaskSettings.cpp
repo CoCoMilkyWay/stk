@@ -452,7 +452,7 @@ private:
                       sizeof(cfg.archive_dir_buf),
                       cfg.archive_dir);
         draw_path_row("Orders Dir",
-                      "L2逐笔二进制目录: YYYY/MM/DD/ASSET_CODE.SH|SZ.bin (委托+成交合并, 快照不落盘)",
+                      "L2逐笔二进制目录: YYYY/MM/YYYYMMDD.bin (一天全市场一个文件, 委托+成交合并, 快照不落盘)",
                       "##orders_dir",
                       cfg.orders_dir_buf,
                       sizeof(cfg.orders_dir_buf),

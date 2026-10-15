@@ -30,8 +30,8 @@ inline constexpr int ZSTD_COMPRESSION_LEVEL = 6;
 //                  的批处理, 一个坏标的不该让整轮白跑.
 //   InvalidData:   行能解析, 但逐笔流本身不自洽或与快照对不上 (见
 //                  L2_Validator.hpp). 处置与 CorruptSource 完全相同 —— 缺片
-//                  的逐笔编成 .bin 会让 LOB 沉默地重建出错误盘口, 不如不落.
-//   Error:         环境错误 (磁盘满/压缩失败), 下次增量重跑时重试
+//                  的逐笔编成帧会让 LOB 沉默地重建出错误盘口, 不如不落.
+//   Error:         环境错误 (压缩失败), 下次增量重跑时重试
 enum class EncodeResult : uint8_t { Ok,
                                     TooFewOrders,
                                     CorruptSource,
@@ -153,7 +153,7 @@ public:
   // 窗口宽 655.35 元, 而单只标的一天的成交带受涨跌停约束远窄于此, 所以被停靠的
   // 只有那些离盘口极远、根本不可能成交的报价. 对它们而言"具体是 9999 元还是
   // 999999 元"没有信息量, 只有"在买/卖方向上无穷远"这一件事是真的, 而这正是
-  // 边缘档位表达的含义. 统一在落盘时折算, 使 .bin 与簿内档位一一对应, 挂单与
+  // 边缘档位表达的含义. 统一在落盘时折算, 使帧与簿内档位一一对应, 挂单与
   // 它后续的撤单也必然落到同一个价格上.
   static uint32_t park_price(uint32_t price, uint32_t price_base) {
     if (price == 0)
@@ -163,14 +163,6 @@ public:
     const uint32_t top = price_base + kPriceIndexRange - 1;
     return price < top ? price : top;
   }
-
-  // ------------------------------------------------------------
-  // Binary Encoding API
-  // ------------------------------------------------------------
-
-  // Encode and compress binary structures to file.
-  // price_base 随头落盘, 解码后交给 LOB 还原档位下标 (见 L2_DataType.hpp).
-  bool encode_orders(const std::vector<Order> &orders, const std::string &filepath, uint32_t price_base);
 
   // ------------------------------------------------------------
   // High-Level Interface (流式: begin → feed... → finish)
@@ -191,9 +183,18 @@ public:
   bool feed_trade_csv(const char *data, size_t len);
   bool feed_market_csv(const char *data, size_t len);
 
-  // 合并 → 按时间/优先级排序 → 压缩落盘 (tmp + rename 原子).
+  // 合并 → 按时间/优先级排序 → 压成一个 zstd 帧 (留在内存, 由调用方追加进
+  // 当天的日文件, 见 shared/EncodeDayRecord.hpp 的 DayFileWriter).
   // tag 仅用于日志定位 (形如 "20260803 600519.SH").
-  EncodeResult finish_asset(const std::string &output_file, const std::string &tag);
+  EncodeResult finish_asset(const std::string &tag);
+
+  // 上一次 finish_asset 返回 Ok 时压好的帧, 在下一次 finish_asset 前有效.
+  // 帧解开是 [u64 count][Order × count]; price_base 进日文件目录, 解码后交给
+  // LOB 还原档位下标 (见 L2_DataType.hpp).
+  const char *frame_data() const { return frame_.data(); }
+  size_t frame_size() const { return frame_size_; }
+  size_t frame_order_count() const { return orders_.size(); }
+  uint32_t frame_price_base() const { return report_.price_base; }
 
   // 上一次 finish_asset 的准入校验结果 — 返回 InvalidData 时,
   // 调用方靠 flags 把这一对记进当天的账目 (见 shared/EncodeDayRecord.hpp)
@@ -216,8 +217,8 @@ private:
   // Compression Helpers
   // ------------------------------------------------------------
 
-  bool compress_and_write_data(const std::string &filepath, const void *data, size_t data_size, uint32_t price_base);
-  static size_t calculate_compression_bound(size_t data_size);
+  // orders_ → raw_ ([u64 count][Order × count]) → frame_. 失败返回 false.
+  bool compress_frame();
 
   // ------------------------------------------------------------
   // Reusable Buffers (avoid reallocation)
@@ -228,6 +229,11 @@ private:
   std::vector<CSVOrder> csv_orders_;
   std::vector<CSVTrade> csv_trades_;
   std::vector<Order> orders_;
+
+  // 帧的未压缩字节与压好的帧, 同样只增不缩
+  std::vector<char> raw_;
+  std::vector<char> frame_;
+  size_t frame_size_ = 0;
 
   // 当前资产累计的坏行数 (字段数不足 / 代码字段不是 .SZ|.SH). 非零即判定
   // 源损坏, finish_asset 报 CorruptSource 并带上行数, 方便定位到具体标的.

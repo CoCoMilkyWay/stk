@@ -63,7 +63,7 @@ struct StageLayout {
   Stage stage(ComputeStage kind) const {
     switch (kind) {
     case ComputeStage::Prefetch:
-      return {kind, "预取 Prefetch", "顺日期把 .bin 读进 page cache, 领先最慢时序核不超过 pool slots + 2 天",
+      return {kind, "预取 Prefetch", "顺日期把逐笔帧读进 page cache, 领先最慢时序核不超过 pool slots + 2 天",
               1, prefetch_shared ? 0 : 1, prefetch_shared ? num_ts + 1 : num_ts + 2, prefetch_shared ? num_ts + 1 : num_ts + 2, prefetch_shared};
     case ComputeStage::TS:
       return {kind, "时序 TS", "逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量; 领跑核自动接手落后核的资产 (处置权转移)",

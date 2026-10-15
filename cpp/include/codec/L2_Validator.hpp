@@ -141,7 +141,7 @@ enum Check : uint32_t {
   // 只读 '.' 之前的整数位再 /divisor, 静默得到 0 或错误值 —— 高价股 (≥100 元,
   // 即 0.0001 RMB 单位下 ≥1e6) 整天的逐笔价格会被解析成 0, 盘口与特征全部失真.
   // 实测 20240206 沪深逐笔委托命中, 相邻日期均为普通整数. 这种源数据不该入库.
-  // 占用枚举里 bit 7 这个空洞 (见 kCheckMeta), 不动 kCheckBitCount 以免破坏 .stat 格式.
+  // 占用枚举里 bit 7 这个空洞 (见 kCheckMeta), 不动 kCheckBitCount 以免日文件头变长.
   PriceScientific = 1u << 7,
 };
 
@@ -165,7 +165,7 @@ inline constexpr size_t kCheckBitCount = 13;
 const CheckMeta &check_meta(size_t bit);
 
 // 竞价交易的收盘时刻 (HHMMSSmmm). 这个时刻之后的逐笔记录属于盘后固定价格
-// 交易, 解析阶段就丢弃, 不进 .bin 也不进校验.
+// 交易, 解析阶段就丢弃, 不进帧也不进校验.
 //
 // 阈值取 15:01:00: 收盘集合竞价的成交实测最晚打到 15:00:01.350, 盘后最早
 // 15:05:00.210, 两边各留约 4 分钟余量.
@@ -212,7 +212,7 @@ struct ValidationReport {
   bool strict_ledger = false;
 
   // 当日非零价格的上下界 (分) 与由此定出的 LOB 索引基准. price_base 要跟着
-  // .bin 一起落进 L2FileHeader, 解码后交给 LOB 还原档位下标.
+  // 帧一起记进日文件目录, 解码后交给 LOB 还原档位下标.
   uint32_t price_min = 0;
   uint32_t price_max = 0;
   uint32_t price_base = 0;

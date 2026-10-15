@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_set>
@@ -31,17 +32,16 @@ struct SharedData;
 // 批内内存不随批大小增长: 一次只持有一个文件的字节 (见 misc/archive.hpp 的
 // stream_archive_files), 到达即解析成中间结构.
 
-// 一天的元数据全在 orders/YYYY/MM/DD/.stat 里 (齐备标记 + 处置分类 + 每个
-// 资产的条数/体积 + 墓碑), 定义见 shared/EncodeDayRecord.hpp.
+// 一天的产物就是一个日文件 orders/YYYY/MM/YYYYMMDD.bin (帧 + 齐备标记 + 处置
+// 分类 + 目录), 定义见 shared/EncodeDayRecord.hpp.
 //
-// 它的 complete 项不老于当天归档 ⇒ 这一天的全部 (资产, 日期) 都有了结局.
-// 增量重跑靠它整天跳过, 省掉一次 unrar l (机械盘上 0.2~2.5s) 与当天几千次
-// 产物 stat —— 没有它, "确认无事可做"本身就要几秒一天.
-// 扫描端按 .bin 后缀过滤, 天然忽略它.
+// 它不老于当天归档且 complete ⇒ 这一天的全部 (资产, 日期) 都有了结局.
+// 增量重跑靠它整天跳过, 省掉一次 unrar l (机械盘上 0.2~2.5s) —— 没有它,
+// "确认无事可做"本身就要几秒一天.
 //
-// 手工删掉损坏的 .bin 不需要连带删 .stat: 快路径在信 complete 之前会核一遍
-// 明细是否仍与盘上一致 (目录 mtime / readdir, 见 day_index_current), 不符就
-// 重新列举这一天. 账目 (含 complete) 只有编码器写, 扫描只回填明细.
+// 不齐备的天增量补编: 旧日文件里已有结局的帧原样搬进新日文件 (免解压免重编),
+// 只编缺的; 整天写完一次 rename 换掉旧文件. 取消则丢掉写了一半的 .tmp, 旧
+// 文件原样不动.
 
 // 一个 (资产, 日期) 的待编码任务.
 //
@@ -62,6 +62,7 @@ struct EncodeBatch {
   misc::Ymd date = 0;
   std::string archive_path;
   std::vector<EncodeTask> tasks;
+  std::shared_ptr<DayFileWriter> writer; // 当天日文件, 压好的帧往这里追加
 };
 
 // 有界批队列 — producer (列举) 与 worker (解压+解码) 之间的交接.
@@ -100,23 +101,23 @@ struct EncodeStats {
   std::unordered_set<size_t> assets_with_work;
 
   // 天粒度进度账本: date → 该天的完成情况.
-  // producer 列举完一天就注册, worker 每落盘一对就推进; 一天清零即从账本
-  // 移除、把汇总行 (单位: days) +1, 并把 rec 落成整天账目文件 (见
+  // producer 列举完一天就注册, worker 每销账一对就推进; 一天清零即从账本
+  // 移除、把汇总行 (单位: days) +1, 并 commit 当天日文件 (见
   // shared/EncodeDayRecord.hpp). 汇总附注始终显示最老在编天的资产进度.
   struct DayProgress {
     size_t done = 0;
     size_t total = 0;
     size_t errors = 0; // 没留下产物的对数; 非零则 rec.complete = false
 
-    // 本天的处置分类账. producer 先填上分母与"产物已新鲜"的那部分,
+    // 本天的处置分类账. producer 先填上分母与"旧日文件里已有结局"的那部分,
     // worker 每销一个账就往对应的桶里加一笔.
     EncodeDayRecord rec;
 
-    // 本天逐资产的计量与墓碑 (见 shared/EncodeDayRecord.hpp). 与 rec 同步
-    // 积累: producer 先放进"产物已新鲜"的那些 (增量跑里那是绝大多数, 少了它们
-    // 明细就配不上当天 readdir 的名单), worker 每落一个结局追加一条.
-    // 收工时搬进 rec.assets 一起落盘.
+    // 本天的目录 (帧 + 墓碑). 与 rec 同步积累: producer 先放进从旧日文件搬过来
+    // 的那些 (增量跑里那是绝大多数), worker 每落一个结局追加一条.
     std::vector<EncodeDayIndexEntry> index;
+
+    std::shared_ptr<DayFileWriter> writer;
   };
   std::mutex days_mutex;
   std::map<misc::Ymd, DayProgress> days_inflight;

@@ -118,10 +118,8 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
     status_ = ScanStatus::ScanningBinary;
     co_await Coro::Yield(io_);
 
-    // 线程数是按逐个读头那条路 (明细缺失/对不上的天, 见 EncodeDayRecord.hpp)
-    // 定的: 成本压在内核的路径解析上, 加线程并不摊薄. 451 万文件实测
-    // 8/24/72 线程分别是 4.50 / 3.27 / 4.09 秒 —— 超过二十几个之后争用反而
-    // 吃掉收益.
+    // 一天一个任务, 每个只是一次 open + 两次 pread (头 + 尾部目录), 冷缓存下
+    // 是几百个随机读, 有几个线程把盘的队列喂满就够了.
     auto scan_pool = std::make_shared<ScanThreadPool>(scan_threads());
     co_await data_.asset.coro_scan_binary_database(io_, data_.config.orders_dir, scan_pool);
   }

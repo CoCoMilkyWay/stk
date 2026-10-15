@@ -13,8 +13,8 @@
 //   资产不改变历史文件的校验值; 读文件时 O(1) 比对即可确认"这个文件的列序与
 //   当前轴的前缀一致". asset_id 仍是纯数组下标, 计算路径不受任何影响.
 //
-// 注: L2 二进制库 (encode cache) 按 <CODE>.<EX> 目录名寻址, 自描述, 不需要
-//   轴锁定; 只有按下标寻址的特征库需要.
+// 注: L2 二进制库 (orders 日文件) 的目录同样按 A 轴下标寻址 (见
+//   shared/EncodeDayRecord.hpp), 与特征库一起依赖 append-only.
 #pragma once
 
 #include <algorithm>

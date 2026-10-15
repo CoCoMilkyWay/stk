@@ -1,35 +1,21 @@
 #include "shared/EncodeDayRecord.hpp"
-#include "shared/AssetAxis.hpp"
-#include "shared/Config.hpp"
+#include "misc/cross_platform.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <ios>
-#include <unordered_set>
 
 namespace {
 
-// 盘上布局: [StatHeader][EncodeDayIndexEntry × entry_count]
-//
-// 全 uint32 排列 (dir_mtime 拆成低/高两半, 免得 int64 引入对齐洞), 没有填充,
-// 于是结构体可以整块读写. 判据位的列数 (kCheckBitCount) 一改就是格式变更 ——
-// 长度自洽性检查会让旧文件读不出来, 那天重新列举一遍即可, 所以不需要单独
-// 递增 version.
-struct StatHeader {
-  static constexpr uint32_t kMagic = 0x54415453; // 'S','T','A','T' 小端
-  static constexpr uint32_t kVersion = 2;        // v2: + dir_mtime
+// 全 uint32 排列, 没有填充, 结构体整块读写. 字段顺序即盘上顺序 (merge_orders.py
+// 按同一布局写).
+struct DayFileHeader {
+  static constexpr uint32_t kMagic = 0x444F324C; // 'L','2','O','D' 小端
 
   uint32_t magic;
-  uint32_t version;
+  uint32_t header_size; // = sizeof(DayFileHeader)
   uint32_t entry_count;
-  uint8_t accounted;
-  uint8_t complete;
-  uint16_t reserved; // 置 0
-  uint32_t dir_mtime_lo;
-  uint32_t dir_mtime_hi;
+  uint32_t complete; // 0 / 1
   uint32_t assets_total;
   uint32_t assets_ok;
   uint32_t assets_skipped;
@@ -38,158 +24,188 @@ struct StatHeader {
   uint32_t assets_failed;
   uint32_t checks[L2::kCheckBitCount];
 };
-static_assert(sizeof(StatHeader) == 16 + 8 + 6 * 4 + 4 * L2::kCheckBitCount,
-              "整天统计的头必须定宽无填充");
+static_assert(sizeof(DayFileHeader) == 4 * (10 + L2::kCheckBitCount), "日文件头必须定宽无填充");
+
+// 增量补编搬旧帧时, 偏移首尾相接的一串帧并成一段整块读写, 一段最多这么大
+constexpr size_t kCopyChunk = size_t(16) << 20;
+
+uint32_t narrow(size_t v) {
+  assert(v <= UINT32_MAX && "日文件账目: 计数溢出 32 位");
+  return static_cast<uint32_t>(v);
+}
+
+// 目录的结构自洽 + 与账目对账. 读写两端共用: 写端在落盘前过一遍, 读端在
+// 采信前再过一遍.
+void check_index(const std::vector<EncodeDayIndexEntry> &index, uint64_t data_end,
+                 const EncodeDayRecord &rec) {
+  size_t frames = 0;
+  for (size_t i = 0; i < index.size(); ++i) {
+    const EncodeDayIndexEntry &e = index[i];
+    assert((i == 0 || index[i - 1].asset_id < e.asset_id) && "日文件目录: 未按 asset_id 严格升序 (同一资产两条?)");
+    if (e.is_tombstone()) {
+      assert(e.offset == 0 && e.order_count == 0 && e.price_base == 0 && "日文件目录: 墓碑带了数据");
+      continue;
+    }
+    assert(e.order_count > 0 && "日文件目录: 帧的条数为 0");
+    assert(e.offset >= sizeof(DayFileHeader) && e.offset + e.compressed_size <= data_end &&
+           "日文件目录: 帧越出数据区");
+    ++frames;
+  }
+  assert(rec.assets_ok == frames && rec.assets_skipped == index.size() - frames &&
+         "日文件账目: ok / skipped 与目录里的帧 / 墓碑条数不符");
+  assert(rec.assets_ok + rec.assets_skipped + rec.assets_error() <= rec.assets_total &&
+         "日文件账目: 处置分类之和超过分母");
+  (void)frames;
+  (void)data_end;
+  (void)rec;
+}
 
 } // namespace
 
-int64_t day_dir_mtime(const std::string &day_dir) {
-  std::error_code ec;
-  const auto wt = std::filesystem::last_write_time(day_dir, ec);
-  return ec ? 0 : wt.time_since_epoch().count();
+const EncodeDayIndexEntry *find_day_entry(const std::vector<EncodeDayIndexEntry> &index, size_t asset_id) {
+  const auto it = std::lower_bound(index.begin(), index.end(), asset_id,
+                                   [](const EncodeDayIndexEntry &e, size_t id) { return e.asset_id < id; });
+  return it != index.end() && it->asset_id == asset_id ? &*it : nullptr;
 }
 
-void write_encode_day_stat(const std::string &day_dir, EncodeDayRecord rec) {
-  std::sort(rec.assets.begin(), rec.assets.end(),
-            [](const EncodeDayIndexEntry &a, const EncodeDayIndexEntry &b) {
-              return a.asset_id < b.asset_id;
-            });
+bool read_day_file(const std::string &path, EncodeDayRecord &rec, std::vector<EncodeDayIndexEntry> &index) {
+  rec = EncodeDayRecord{};
+  index.clear();
 
-  for (size_t i = 1; i < rec.assets.size(); ++i) {
-    assert(rec.assets[i - 1].asset_id != rec.assets[i].asset_id &&
-           "整天统计: 同一资产两条明细 (销账重复?)");
+  const int fd = file_open_read(path.c_str());
+  if (fd < 0)
+    return false;
+
+  const uint64_t size = file_size(fd);
+  DayFileHeader head{};
+  assert(size >= sizeof(head) && "日文件短于头 (损坏)");
+  const size_t head_got = file_pread(fd, &head, sizeof(head), 0);
+  assert(head_got == sizeof(head) && "日文件头读不全");
+  (void)head_got;
+  assert(head.magic == DayFileHeader::kMagic && "不是 orders 日文件 (magic 不符)");
+  assert(head.header_size == sizeof(DayFileHeader) && "日文件头长不符 (判据列数 kCheckBitCount 变了?)");
+  assert(head.complete <= 1 && "日文件头: complete 非 0/1");
+
+  const uint64_t index_bytes = uint64_t(head.entry_count) * sizeof(EncodeDayIndexEntry);
+  assert(size >= sizeof(head) + index_bytes && "日文件目录越界 (截断?)");
+  const uint64_t index_offset = size - index_bytes;
+
+  index.resize(head.entry_count);
+  const size_t index_got = file_pread(fd, index.data(), index_bytes, index_offset);
+  assert(index_got == index_bytes && "日文件目录读不全");
+  (void)index_got;
+  file_close(fd);
+
+  rec.complete = head.complete != 0;
+  rec.assets_total = head.assets_total;
+  rec.assets_ok = head.assets_ok;
+  rec.assets_skipped = head.assets_skipped;
+  rec.assets_corrupt = head.assets_corrupt;
+  rec.assets_invalid = head.assets_invalid;
+  rec.assets_failed = head.assets_failed;
+  for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
+    rec.checks[bit] = head.checks[bit];
+
+  check_index(index, index_offset, rec);
+  return true;
+}
+
+DayFileWriter::DayFileWriter(std::string path)
+    : path_(std::move(path)), tmp_path_(path_ + ".tmp"), end_(sizeof(DayFileHeader)) {
+  std::filesystem::create_directories(std::filesystem::path(path_).parent_path());
+  fd_ = file_open_trunc(tmp_path_.c_str());
+  assert(fd_ >= 0 && "日文件 .tmp 建不出来");
+}
+
+DayFileWriter::~DayFileWriter() {
+  if (fd_ < 0)
+    return; // 已 commit
+  file_close(fd_);
+  std::error_code ec;
+  std::filesystem::remove(tmp_path_, ec);
+}
+
+uint64_t DayFileWriter::append(const void *data, size_t size) {
+  assert(fd_ >= 0 && "日文件已 commit, 不能再追加");
+  const uint64_t off = end_.fetch_add(size, std::memory_order_relaxed);
+  const size_t written = file_pwrite(fd_, data, size, off);
+  assert(written == size && "日文件写入失败 (磁盘满?)");
+  (void)written;
+  return off;
+}
+
+void DayFileWriter::copy_frames(const std::string &src_path, std::vector<EncodeDayIndexEntry> &entries) {
+  std::vector<size_t> order;
+  order.reserve(entries.size());
+  for (size_t i = 0; i < entries.size(); ++i)
+    if (!entries[i].is_tombstone())
+      order.push_back(i);
+  if (order.empty())
+    return;
+  std::sort(order.begin(), order.end(),
+            [&entries](size_t a, size_t b) { return entries[a].offset < entries[b].offset; });
+
+  const int src = file_open_read(src_path.c_str());
+  assert(src >= 0 && "增量补编: 旧日文件打不开");
+
+  std::vector<char> buf;
+  for (size_t i = 0; i < order.size();) {
+    const uint64_t run_begin = entries[order[i]].offset;
+    uint64_t run_end = run_begin + entries[order[i]].compressed_size;
+    size_t j = i + 1;
+    while (j < order.size() && entries[order[j]].offset == run_end &&
+           run_end - run_begin + entries[order[j]].compressed_size <= kCopyChunk)
+      run_end += entries[order[j++]].compressed_size;
+
+    const size_t len = static_cast<size_t>(run_end - run_begin);
+    if (buf.size() < len)
+      buf.resize(len);
+    const size_t got = file_pread(src, buf.data(), len, run_begin);
+    assert(got == len && "增量补编: 旧日文件的帧读不全");
+    (void)got;
+    const uint64_t base = append(buf.data(), len);
+    for (size_t k = i; k < j; ++k)
+      entries[order[k]].offset = base + (entries[order[k]].offset - run_begin);
+    i = j;
   }
+  file_close(src);
+}
 
-  // 原地 trunc 而不是 tmp + rename: rename 会改日目录的 mtime, 而明细正是
-  // 拿目录 mtime 当"仍然一致"的凭证 —— 每写一次就让当天判"动过", 那条快路径
-  // 再也稳不下来. 写到一半的风险由读端的长度自洽检查兜住.
-  std::ofstream out(day_dir + "/" + kEncodeStatName, std::ios::binary | std::ios::trunc);
-  assert(out.is_open() && "整天统计写不出去");
+void DayFileWriter::commit(const EncodeDayRecord &rec, std::vector<EncodeDayIndexEntry> index) {
+  assert(fd_ >= 0 && "日文件 commit 两次");
+  std::sort(index.begin(), index.end(),
+            [](const EncodeDayIndexEntry &a, const EncodeDayIndexEntry &b) { return a.asset_id < b.asset_id; });
 
-  // 文件已打开 (首次创建改过目录 mtime 了), 此刻取的 mtime 才是之后能对上的
-  rec.dir_mtime = day_dir_mtime(day_dir);
+  const uint64_t index_offset = end_.load(std::memory_order_relaxed);
+  check_index(index, index_offset, rec);
 
-  StatHeader head{};
-  head.magic = StatHeader::kMagic;
-  head.version = StatHeader::kVersion;
-  head.entry_count = static_cast<uint32_t>(rec.assets.size());
-  const uint64_t mtime_bits = static_cast<uint64_t>(rec.dir_mtime);
-  head.dir_mtime_lo = static_cast<uint32_t>(mtime_bits & 0xFFFFFFFFu);
-  head.dir_mtime_hi = static_cast<uint32_t>(mtime_bits >> 32);
-  head.accounted = rec.accounted ? 1 : 0;
+  const size_t index_bytes = index.size() * sizeof(EncodeDayIndexEntry);
+  const size_t index_written = file_pwrite(fd_, index.data(), index_bytes, index_offset);
+  assert(index_written == index_bytes && "日文件目录写入失败 (磁盘满?)");
+  (void)index_written;
+
+  DayFileHeader head{};
+  head.magic = DayFileHeader::kMagic;
+  head.header_size = sizeof(DayFileHeader);
+  head.entry_count = narrow(index.size());
   head.complete = rec.complete ? 1 : 0;
-  head.assets_total = static_cast<uint32_t>(rec.assets_total);
-  head.assets_ok = static_cast<uint32_t>(rec.assets_ok);
-  head.assets_skipped = static_cast<uint32_t>(rec.assets_skipped);
-  head.assets_corrupt = static_cast<uint32_t>(rec.assets_corrupt);
-  head.assets_invalid = static_cast<uint32_t>(rec.assets_invalid);
-  head.assets_failed = static_cast<uint32_t>(rec.assets_failed);
+  head.assets_total = narrow(rec.assets_total);
+  head.assets_ok = narrow(rec.assets_ok);
+  head.assets_skipped = narrow(rec.assets_skipped);
+  head.assets_corrupt = narrow(rec.assets_corrupt);
+  head.assets_invalid = narrow(rec.assets_invalid);
+  head.assets_failed = narrow(rec.assets_failed);
   for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
-    head.checks[bit] = static_cast<uint32_t>(rec.checks[bit]);
+    head.checks[bit] = narrow(rec.checks[bit]);
+  const size_t head_written = file_pwrite(fd_, &head, sizeof(head), 0);
+  assert(head_written == sizeof(head) && "日文件头写入失败");
+  (void)head_written;
 
-  out.write(reinterpret_cast<const char *>(&head), sizeof(head));
-  if (!rec.assets.empty()) {
-    out.write(reinterpret_cast<const char *>(rec.assets.data()),
-              static_cast<std::streamsize>(rec.assets.size() * sizeof(EncodeDayIndexEntry)));
-  }
+  file_sync(fd_);
+  file_close(fd_);
+  fd_ = -1;
 
-  out.flush();
-  assert(out.good() && "整天统计写到一半失败");
-}
-
-bool read_encode_day_stat(const std::string &day_dir, EncodeDayRecord &out) {
-  out = EncodeDayRecord{};
-
-  std::ifstream in(day_dir + "/" + kEncodeStatName, std::ios::binary | std::ios::ate);
-  if (!in.is_open())
-    return false;
-
-  const std::streamoff bytes = in.tellg();
-  if (bytes < static_cast<std::streamoff>(sizeof(StatHeader)))
-    return false;
-
-  in.seekg(0);
-  StatHeader head{};
-  in.read(reinterpret_cast<char *>(&head), sizeof(head));
-  if (!in.good() || head.magic != StatHeader::kMagic || head.version != StatHeader::kVersion)
-    return false;
-
-  // 长度必须恰好装下声明的条数 —— 少了是写到一半被打断, 多了是格式对不上
-  const std::streamoff expected =
-      static_cast<std::streamoff>(sizeof(StatHeader)) +
-      static_cast<std::streamoff>(head.entry_count) *
-          static_cast<std::streamoff>(sizeof(EncodeDayIndexEntry));
-  if (bytes != expected)
-    return false;
-
-  out.dir_mtime = static_cast<int64_t>((static_cast<uint64_t>(head.dir_mtime_hi) << 32) | head.dir_mtime_lo);
-  out.accounted = head.accounted != 0;
-  out.complete = head.complete != 0;
-  out.assets_total = head.assets_total;
-  out.assets_ok = head.assets_ok;
-  out.assets_skipped = head.assets_skipped;
-  out.assets_corrupt = head.assets_corrupt;
-  out.assets_invalid = head.assets_invalid;
-  out.assets_failed = head.assets_failed;
-  for (size_t bit = 0; bit < L2::kCheckBitCount; ++bit)
-    out.checks[bit] = head.checks[bit];
-
-  if (head.entry_count > 0) {
-    out.assets.resize(head.entry_count);
-    in.read(reinterpret_cast<char *>(out.assets.data()),
-            static_cast<std::streamsize>(head.entry_count * sizeof(EncodeDayIndexEntry)));
-    if (!in.good()) {
-      out = EncodeDayRecord{};
-      return false;
-    }
-  }
-
-  return true;
-}
-
-std::vector<DayBin> list_day_bins(const std::string &day_dir, const AssetAxis &axis) {
-  const std::string bin_ext = config::BINARY_EXTENSION;
-
-  std::vector<DayBin> bins;
   std::error_code ec;
-  auto dir = std::filesystem::directory_iterator(day_dir, ec);
-  if (ec)
-    return bins; // 目录读不动 (被整个删了?)
-
-  for (const auto &file_entry : dir) {
-    const std::string filename = file_entry.path().filename().string();
-    if (!filename.ends_with(bin_ext))
-      continue;
-
-    // "000023.SZ.bin" → "000023.SZ". .bin 是按当前代码落盘的 (归档里的老代码
-    // 只出现在包内路径上), 直接查轴.
-    const size_t asset_id = axis.find(filename.substr(0, filename.size() - bin_ext.size()));
-    if (asset_id == axis.size())
-      continue; // 轴外文件
-
-    bins.push_back({asset_id, file_entry.path().string()});
-  }
-  return bins;
-}
-
-bool day_index_matches(const EncodeDayRecord &rec, const std::vector<DayBin> &bins) {
-  std::unordered_set<uint32_t> declared;
-  declared.reserve(rec.assets.size());
-  for (const auto &entry : rec.assets)
-    if (!entry.is_tombstone())
-      declared.insert(entry.asset_id);
-
-  if (declared.size() != bins.size())
-    return false;
-  for (const auto &bin : bins)
-    if (declared.count(static_cast<uint32_t>(bin.asset_id)) == 0)
-      return false; // 盘上多了一个明细没声明的
-  return true;
-}
-
-bool day_index_current(const std::string &day_dir, const EncodeDayRecord &rec, const AssetAxis &axis) {
-  const int64_t now = day_dir_mtime(day_dir);
-  if (now != 0 && now == rec.dir_mtime)
-    return true;
-  return day_index_matches(rec, list_day_bins(day_dir, axis));
+  std::filesystem::rename(tmp_path_, path_, ec);
+  assert(!ec && "日文件 rename 到最终路径失败");
 }
