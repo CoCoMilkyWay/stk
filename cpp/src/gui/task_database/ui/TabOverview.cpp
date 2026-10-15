@@ -127,7 +127,9 @@ void text_cells(std::int64_t cells, std::int64_t weekly) {
 }
 
 // Audit 四列. a == nullptr: 未核对 (Tushare / _meta 表 / 从未跑过)
-void audit_cells(const AuditTableStat *a, std::int64_t weekly) {
+// 修复流量列: 有差异月则前置 sync 小按钮 (修复中的表换成进度)
+void audit_cells(const std::string &name, const AuditTableStat *a, const AuditState &audit,
+                 bool disable_repair, std::string *repair_table, std::int64_t weekly) {
   if (!a) {
     for (int i = 0; i < 4; ++i) {
       ImGui::TableNextColumn();
@@ -151,6 +153,21 @@ void audit_cells(const AuditTableStat *a, std::int64_t weekly) {
     ImGui::TextDisabled("%.2f%%", a->row_pct());
   }
   ImGui::TableNextColumn();
+  if (a->bad_months > 0) {
+    if (audit.repairing == name) {
+      ImGui::TextColored(kWarn, "修复中 %zu/%zu", audit.done, audit.total);
+    } else {
+      ImGui::BeginDisabled(disable_repair);
+      if (ImGui::SmallButton(("sync##" + name).c_str()))
+        *repair_table = name;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("整月重拉 %zu 个有差异的月 → 只复核这些月 → 重建 AssetInfo\n"
+                          "不可取消; 同步 / 核对 / 修复进行中或未开联网不可用",
+                          a->bad_months);
+    }
+    ImGui::SameLine();
+  }
   text_cells(a->repair_cells, weekly);
   if (a->repair_cells > 0 && ImGui::IsItemHovered())
     ImGui::SetTooltip("重拉 %zu 个有差异的月 (整月 SELECT *, 远端行 × 列)", a->bad_months);
@@ -171,7 +188,8 @@ void text_wrapped_disabled(const char *s) {
 //   stat == nullptr (scanned=true): 本地确实一个文件都没有.
 //   Shape::Meta: 落 _meta/ 单文件, 没有"分片/最新月"的概念.
 void table_row(const fundamental::Spec &spec, bool scanned, const TableFileStat *stat,
-               const AuditTableStat *audit, std::int64_t weekly) {
+               const AuditTableStat *audit, const AuditState &audit_state, bool disable_repair,
+               std::string *repair_table, std::int64_t weekly) {
   const std::string &name = spec.name;
   const bool meta_single = spec.shape == fundamental::Shape::Meta;
   ImGui::TableNextRow();
@@ -214,7 +232,7 @@ void table_row(const fundamental::Spec &spec, bool scanned, const TableFileStat 
   ImGui::TextUnformatted(stat && !stat->mtime.empty() ? stat->mtime.c_str()
                                                       : "-");
 
-  audit_cells(audit, weekly);
+  audit_cells(name, audit, audit_state, disable_repair, repair_table, weekly);
 
   ImGui::TableNextColumn();
   ImGui::TextUnformatted(spec.desc.c_str());
@@ -262,18 +280,19 @@ void audit_section(const AuditState &a, bool *audit_clicked,
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       ImGui::SetTooltip("两轮: 先逐月行数 (补录 / 删除), 再逐列内容指纹 (改值)\n"
                         "表间轮转乱序; 不一致的月自动按日下钻\n"
-                        "只报告不改盘; 同步进行中 / 未开联网不可用");
+                        "只报告不改盘; 每单元覆盖缓存里该 (表, 月, 轮), 只留最新状态\n"
+                        "同步 / 修复进行中 / 未开联网不可用");
     }
   }
 
+  const bool active = a.running || !a.repairing.empty();
   ImGui::SameLine(0.0f, 24.0f);
-  if (a.running && a.total == 0)
+  if (active && a.total == 0)
     ImGui::TextDisabled("规划中 ...");
+  else if (!a.repairing.empty())
+    ImGui::Text("修复 %s  %zu / %zu", a.repairing.c_str(), a.done, a.total);
   else if (a.running)
     ImGui::Text("%zu / %zu", a.done, a.total);
-  else if (a.total > 0)
-    ImGui::Text("%s %zu / %zu", a.cancelled ? "[cancelled]" : "[done]", a.done,
-                a.total);
 
   if (a.quota_start >= 0) {
     ImGui::SameLine(0.0f, 24.0f);
@@ -285,16 +304,16 @@ void audit_section(const AuditState &a, bool *audit_clicked,
   }
 
   if (!a.log_path.empty())
-    ImGui::TextDisabled("差异日志 (含本地 / 远端原值): %s", a.log_path.c_str());
+    ImGui::TextDisabled("核对缓存 (含本地 / 远端原值): %s", a.log_path.c_str());
 
-  if (a.running && a.total > 0) {
+  if (active && a.total > 0) {
     const float frac = static_cast<float>(a.done) / static_cast<float>(a.total);
     ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), a.current.c_str());
   }
 
   // 逐表结果在下方 Tables 清单的 Audit 列; 这里只给总账
   if (a.loading) {
-    ImGui::TextDisabled("读取上次核对日志 + 清点本地分片 ...");
+    ImGui::TextDisabled("读取核对缓存 ...");
     return;
   }
   if (a.tables.empty()) {
@@ -308,7 +327,11 @@ void audit_section(const AuditState &a, bool *audit_clicked,
     repair += t.repair_cells;
     full += t.full_cells;
   }
-  ImGui::Text("核对: %s", a.log_status.c_str());
+  const bool covered = a.rows_months >= a.frozen_months && a.content_months >= a.frozen_months;
+  ImGui::TextColored(covered ? kOk : kWarn, "已核 rows %zu / content %zu / 冻结 %zu 月",
+                     a.rows_months, a.content_months, a.frozen_months);
+  ImGui::SameLine(0.0f, 12.0f);
+  ImGui::TextDisabled("(更新于 %s)", a.updated.c_str());
   ImGui::SameLine(0.0f, 24.0f);
   if (bad_tables == 0)
     ImGui::TextColored(kOk, "全部一致");
@@ -325,7 +348,8 @@ void audit_section(const AuditState &a, bool *audit_clicked,
   text_wrapped_disabled(
       "问题天数 = 任一不一致的日 / (本地天数 + 远端独有天数)  |  "
       "行差 = 远端比本地多 (+, 晚到回填) / 少 (−, 删除), 占比按本地总行数  |  "
-      "修复 / 全表流量 = 重拉有差异的月 / 全部冻结月 的 cells (行 × 列), 括号内占周配额");
+      "修复 / 全表流量 = 重拉有差异的月 / 全部已核月 的 cells (行 × 列), 括号内占周配额  |  "
+      "sync = 只重拉该表有差异的月并复核这些月, 完成后重建 AssetInfo");
 }
 
 } // namespace
@@ -338,7 +362,8 @@ void RenderTabOverview(
     const AuditState &audit,
     bool *audit_clicked,
     bool *audit_cancel_clicked,
-    bool disable_audit) {
+    bool disable_audit,
+    std::string *repair_table) {
 
   ImGui::Spacing();
   ImGui::SeparatorText("Fundamental Data (BigQuant DAI + Tushare)");
@@ -457,7 +482,8 @@ void RenderTabOverview(
     setup_columns();
     for (const fundamental::Spec &spec : fundamental::SPECS)
       if (fundamental::from<fundamental::Bq>(spec))
-        table_row(spec, scanned, state.find_table(spec.name), audit.find_table(spec.name), weekly);
+        table_row(spec, scanned, state.find_table(spec.name), audit.find_table(spec.name), audit,
+                  disable_audit, repair_table, weekly);
     ImGui::EndTable();
   }
 
@@ -468,7 +494,8 @@ void RenderTabOverview(
     setup_columns();
     for (const fundamental::Spec &spec : fundamental::SPECS)
       if (fundamental::from<fundamental::Tu>(spec))
-        table_row(spec, scanned, state.find_table(spec.name), nullptr, weekly);
+        table_row(spec, scanned, state.find_table(spec.name), nullptr, audit, disable_audit,
+                  repair_table, weekly);
     ImGui::EndTable();
   }
 }

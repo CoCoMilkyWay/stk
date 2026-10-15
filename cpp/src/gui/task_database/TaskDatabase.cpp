@@ -220,8 +220,8 @@ private:
     // Create services (in dependency order)
     fundamental_svc_ = std::make_unique<FundamentalService>(io, data);
     audit_svc_ = std::make_unique<AuditService>(io);
-    // 上次核对结果: 读最新日志 + 清点本地分片 (零网络)
-    boost::asio::co_spawn(io, audit_svc_->load_last(), boost::asio::detached);
+    // 上次核对结果: 读核对缓存 (零网络)
+    boost::asio::co_spawn(io, audit_svc_->load(), boost::asio::detached);
     scan_svc_ = std::make_unique<ScanService>(data, io);
     encoding_svc_ = std::make_unique<EncodingService>(data);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
@@ -315,6 +315,8 @@ private:
       return {TaskStatus::Kind::Muted, "initializing"};
     if (audit_svc_ && audit_svc_->is_running())
       return {TaskStatus::Kind::Busy, "auditing"};
+    if (audit_svc_ && audit_svc_->is_repairing())
+      return {TaskStatus::Kind::Busy, "repairing"};
     switch (fundamental_svc_->get_state().status) {
     case FundamentalStatus::Idle:
       return {TaskStatus::Kind::Muted, "idle"};
@@ -505,12 +507,13 @@ private:
     bool update_cancel_clicked = false;
     bool audit_clicked = false;
     bool audit_cancel_clicked = false;
+    std::string repair_table;
 
     auto &ts = data_->taskstate.database;
     bool busy = ts.json_update_inflight || ts.l2_scan_inflight ||
                 fundamental_svc_->is_busy() || scan_svc_->is_scanning();
-    // 同步改写的正是被核对的分片: 两者互斥
-    const bool auditing = audit_svc_->is_running();
+    // 同步改写的正是被核对 / 修复的分片: 三者互斥
+    const bool auditing = audit_svc_->is_running() || audit_svc_->is_repairing();
     const bool disable_audit = busy || audit_svc_->is_busy() || !data_->config.network_sync;
 
     RenderTabOverview(
@@ -521,7 +524,8 @@ private:
         audit_svc_->get_state(),
         &audit_clicked,
         &audit_cancel_clicked,
-        disable_audit);
+        disable_audit,
+        &repair_table);
 
     // Handle button events
     if (update_clicked && !busy && !auditing) {
@@ -535,6 +539,16 @@ private:
     }
     if (audit_cancel_clicked)
       audit_svc_->cancel();
+    // 修复改了分片: 跑完走一遍 Update (重建 AssetInfo → 补扫 L2)
+    if (!repair_table.empty() && !disable_audit) {
+      boost::asio::co_spawn(
+          coro_mgr_->GetIoContext(),
+          [this, repair_table]() -> boost::asio::awaitable<void> {
+            co_await audit_svc_->repair(repair_table);
+            TriggerRefreshFlow();
+          },
+          boost::asio::detached);
+    }
   }
 
   void DrawTabTable() {

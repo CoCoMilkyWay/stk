@@ -378,13 +378,16 @@ Diff make_diff(const Unit &u, const Layout &L, const std::string &group,
 
 } // namespace
 
-std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed) {
+std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed,
+                       const std::function<bool(const Spec &, Ym)> &keep) {
   std::vector<std::vector<Unit>> per_table;
   for (const Spec &s : SPECS) {
     if (!from<Bq>(s) || s.shape != Shape::Month)
       continue;
     std::map<int, Unit> by_year;
     for (const Slot &sl : frozen(s, cat, now)) {
+      if (keep && !keep(s, sl.ym))
+        continue;
       Unit &u = by_year[sl.ym / 100];
       if (u.months.empty())
         u.w.lo = sl.w.lo;

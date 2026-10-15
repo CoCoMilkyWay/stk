@@ -3,6 +3,8 @@
 #include "api/bigquant/client.hpp"
 #include "fundamental/Audit.hpp"
 #include "fundamental/Store.hpp"
+#include "fundamental/Sync.hpp"
+#include "misc/date.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 
@@ -10,11 +12,11 @@
 #include <parquet/metadata.h>
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <cassert>
 #include <chrono>
-#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -22,7 +24,7 @@
 #include <map>
 #include <mutex>
 #include <set>
-#include <string_view>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -30,108 +32,148 @@ namespace GUI::Database {
 
 namespace {
 
-// output/log/audit_YYYYMMDD_HHMMSS.tsv
-std::filesystem::path new_log_path() {
-  std::time_t t = std::time(nullptr);
+namespace fs = std::filesystem;
+using fundamental::audit::Pass;
+
+// output/log/audit.tsv
+fs::path cache_path() {
+  const auto dir = misc::git_root() / "output" / "log";
+  fs::create_directories(dir);
+  return dir / "audit.tsv";
+}
+
+// "YYYY-MM-DD HH:MM" (本地时区)
+std::string stamp(std::time_t t) {
   std::tm tm_buf{};
   localtime_r(&t, &tm_buf);
-  char buf[32];
-  std::strftime(buf, sizeof(buf), "audit_%Y%m%d_%H%M%S.tsv", &tm_buf);
-  const auto dir = misc::git_root() / "output" / "log";
-  std::filesystem::create_directories(dir);
-  return dir / buf;
+  char buf[20];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
+  return buf;
 }
 
-// Rows 差异一行 (column/cell 为 "-"); Content 每个不一致格一行
-void write_diff(std::ofstream &out, const fundamental::audit::Diff &d) {
-  const char *pass = d.pass == fundamental::audit::Pass::Rows ? "rows" : "content";
-  auto head = [&]() -> std::ofstream & {
-    out << d.table << '\t' << d.group << '\t' << pass << '\t' << d.local_n
-        << '\t' << d.remote_n << '\t';
-    return out;
-  };
-  if (d.cells.empty()) {
-    head() << "-\t-\t-\t-\n";
-    return;
-  }
-  for (const fundamental::audit::Diff::Cell &c : d.cells)
-    head() << c.column << '\t' << (c.sum ? "s" : "nn") << '\t' << c.local
-           << '\t' << c.remote << '\n';
-}
-
-// 日志一行 (统计只用到这几列; 本地 / 远端原值留给人看)
+// 一个不一致格 (Rows 轮: column / cell / local / remote 为 "-"; 统计只用到前几列, 原值留给人看)
 struct LogRow {
   std::string table;
-  std::string group; // "YYYY-MM-DD" / 回落 "YYYY-MM"
+  std::string group; // "YYYY-MM-DD" / 回落 "YYYY-MM"; 前 7 位 = 所属月
   bool rows = false; // pass == rows
   std::int64_t local_n = 0;
   std::int64_t remote_n = 0;
-  std::string column; // rows 轮为 "-"
+  std::string column = "-";
+  std::string cell = "-"; // "nn" / "s"
+  std::string local = "-";
+  std::string remote = "-";
 };
 
-// 与 write_diff 一行对一行
+// Diff → 缓存行: Rows 一行; Content 每个不一致格一行
 void append_rows(std::vector<LogRow> &out, const fundamental::audit::Diff &d) {
-  const bool rows = d.pass == fundamental::audit::Pass::Rows;
+  const bool rows = d.pass == Pass::Rows;
   if (d.cells.empty()) {
-    out.push_back({d.table, d.group, rows, d.local_n, d.remote_n, "-"});
+    out.push_back({d.table, d.group, rows, d.local_n, d.remote_n});
     return;
   }
   for (const fundamental::audit::Diff::Cell &c : d.cells)
-    out.push_back({d.table, d.group, rows, d.local_n, d.remote_n, c.column});
+    out.push_back({d.table, d.group, rows, d.local_n, d.remote_n, c.column, c.sum ? "s" : "nn", c.local, c.remote});
 }
 
-// output/log 下最新的 audit_*.tsv (文件名含时间戳, 字典序 = 时间序); 无则空
-std::filesystem::path latest_log() {
-  const auto dir = misc::git_root() / "output" / "log";
-  std::filesystem::path best;
-  if (!std::filesystem::exists(dir))
-    return best;
-  for (const auto &e : std::filesystem::directory_iterator(dir)) {
-    const std::string f = e.path().filename().string();
-    if (f.starts_with("audit_") && f.ends_with(".tsv") &&
-        (best.empty() || f > best.filename().string()))
-      best = e.path();
+// 已核月的本地清点 (分母 + 流量), 取自核对当时的分片
+struct MonthInv {
+  std::int64_t rows = 0;
+  std::int64_t days = 0;
+  std::int64_t cols = 0;
+};
+
+MonthInv count_month(const fundamental::Spec &s, const fundamental::Shard &sh) {
+  MonthInv m;
+  m.cols = parquet::ParquetFileReader::OpenFile(sh.path.string())->metadata()->num_columns();
+  auto t = fundamental::read(sh, {s.vd});
+  m.rows = t->num_rows();
+  std::set<std::int32_t> days;
+  std::vector<std::int32_t> d;
+  for (const auto &chunk : t->column(0)->chunks()) {
+    misc::pq::Col(chunk).yyyymmdd_all(d);
+    days.insert(d.begin(), d.end());
   }
-  return best;
+  m.days = static_cast<std::int64_t>(days.size());
+  return m;
 }
 
-// "audit_20261015_114548.tsv" → 20261015
-misc::Ymd log_date(const std::filesystem::path &p) {
-  const std::string f = p.filename().string();
-  assert(f.size() >= 21 && f.starts_with("audit_") && "audit: 日志文件名不符");
-  const misc::Ymd d = misc::parse_ymd(std::string_view(f).substr(6, 8));
-  assert(d > 0 && "audit: 日志文件名日期不符");
-  return d;
+struct MonthRec {
+  MonthInv inv;
+  bool rows = false;    // 已跑 Rows 轮
+  bool content = false; // 已跑 Content 轮
+};
+
+// 核对缓存 = 当前状态: 每个 (表, 月, 轮) 只留最近一次核对的结论
+struct Book {
+  std::map<std::string, std::map<std::string, MonthRec>> months; // 表 → "YYYY-MM" (组键前 7 位同形)
+  std::vector<LogRow> rows;
+};
+
+// 一单元跑完: 覆盖该 (表, 单元各月, 轮) 的清点 / 轮标记 / 差异格
+void apply(Book &b, const fundamental::audit::Unit &u, const std::vector<fundamental::audit::Diff> &diffs) {
+  const std::string &name = u.spec->name;
+  const bool rows = u.pass == Pass::Rows;
+  std::set<std::string> keys;
+  for (const fundamental::Slot &sl : u.months) {
+    const std::string key = misc::dash_ym(sl.ym);
+    MonthRec &m = b.months[name][key];
+    m.inv = count_month(*u.spec, *sl.sh);
+    (rows ? m.rows : m.content) = true;
+    keys.insert(key);
+  }
+  std::erase_if(b.rows, [&](const LogRow &r) {
+    return r.table == name && r.rows == rows && keys.contains(r.group.substr(0, 7));
+  });
+  for (const auto &d : diffs)
+    append_rows(b.rows, d);
 }
 
-// "audit_20261015_114548.tsv" → "2026-10-15 11:45"
-std::string log_time(const std::filesystem::path &p) {
-  const std::string f = p.filename().string();
-  return f.substr(6, 4) + "-" + f.substr(10, 2) + "-" + f.substr(12, 2) + " " +
-         f.substr(15, 2) + ":" + f.substr(17, 2);
+// 分片重拉过: 这些月两轮的旧结论一并作废 (待复核)
+void forget(Book &b, const std::string &name, const std::set<std::string> &keys) {
+  auto &months = b.months[name];
+  for (const std::string &k : keys)
+    months.erase(k);
+  std::erase_if(b.rows, [&](const LogRow &r) { return r.table == name && keys.contains(r.group.substr(0, 7)); });
 }
 
-std::string footer_status(std::string_view kind, std::size_t done, std::size_t total) {
-  return std::string(kind == "done" ? "完成" : "已取消") + " " + std::to_string(done) +
-         "/" + std::to_string(total);
+// 缓存格式 (tsv, # 起头为注释):
+//   month \t 表 \t YYYY-MM \t rows(0/1) \t content(0/1) \t 本地行 \t 本地天数 \t 列数
+//   diff  \t 表 \t 组 \t rows|content \t local_n \t remote_n \t 列 \t nn|s \t 本地 \t 远端
+void save(const Book &b, const fs::path &p) {
+  const fs::path tmp = p.string() + ".tmp";
+  {
+    std::ofstream out(tmp);
+    assert(out && "audit: 缓存无法写入");
+    out << "# month\ttable\tym\trows\tcontent\tlocal_rows\tlocal_days\tcols\n"
+        << "# diff\ttable\tgroup\tpass\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
+    for (const auto &[name, months] : b.months)
+      for (const auto &[ym, m] : months)
+        out << "month\t" << name << '\t' << ym << '\t' << m.rows << '\t' << m.content << '\t'
+            << m.inv.rows << '\t' << m.inv.days << '\t' << m.inv.cols << '\n';
+    std::vector<const LogRow *> rows;
+    for (const LogRow &r : b.rows)
+      rows.push_back(&r);
+    std::stable_sort(rows.begin(), rows.end(), [](const LogRow *x, const LogRow *y) {
+      return x->table != y->table ? x->table < y->table : x->group < y->group;
+    });
+    for (const LogRow *r : rows)
+      out << "diff\t" << r->table << '\t' << r->group << '\t' << (r->rows ? "rows" : "content") << '\t'
+          << r->local_n << '\t' << r->remote_n << '\t' << r->column << '\t' << r->cell << '\t'
+          << r->local << '\t' << r->remote << '\n';
+    out.flush();
+    assert(out && "audit: 缓存写入失败");
+  }
+  fs::rename(tmp, p);
 }
 
-// 解析日志 → rows; 返回状态 ("完成 k/n" / "已取消 k/n" / 无末行标记)
-std::string parse_log(const std::filesystem::path &p, std::vector<LogRow> &rows) {
+Book load_book(const fs::path &p) {
   std::ifstream in(p);
-  assert(in && "audit: 日志无法打开");
-  std::string line, status = "无完成标记 (旧格式或中途退出)";
+  assert(in && "audit: 缓存无法打开");
+  Book b;
+  std::string line;
   while (std::getline(in, line)) {
-    if (line.empty() || line.starts_with("table\t"))
+    if (line.empty() || line.starts_with("#"))
       continue;
-    if (line.starts_with("# ")) {
-      char kind[16] = {};
-      std::size_t done = 0, total = 0;
-      const int n = std::sscanf(line.c_str(), "# %15s %zu/%zu", kind, &done, &total);
-      assert(n == 3 && "audit: 日志末行格式不符");
-      status = footer_status(kind, done, total);
-      continue;
-    }
     std::vector<std::string> f;
     std::size_t s = 0;
     for (std::size_t i = 0; i <= line.size(); ++i)
@@ -139,46 +181,35 @@ std::string parse_log(const std::filesystem::path &p, std::vector<LogRow> &rows)
         f.push_back(line.substr(s, i - s));
         s = i + 1;
       }
-    assert(f.size() == 9 && "audit: 日志行列数不符");
-    assert((f[2] == "rows" || f[2] == "content") && "audit: 日志 pass 列不符");
-    rows.push_back({f[0], f[1], f[2] == "rows", std::stoll(f[3]), std::stoll(f[4]), f[5]});
-  }
-  return status;
-}
-
-// 本地冻结月清点 (分母 + 流量): as_of 当天视角下 fundamental::frozen 的月 (与 audit::plan 同一来源)
-struct MonthInv {
-  std::int64_t rows = 0;
-  std::int64_t days = 0;
-  std::int64_t cols = 0;
-};
-using Inventory = std::map<std::string, std::map<std::string, MonthInv>>; // 表 → "YYYY-MM" (日志组键同形) → 清点
-
-Inventory build_inventory(const fundamental::Catalog &cat, const fundamental::Now &as_of) {
-  Inventory inv;
-  for (const fundamental::Spec &s : fundamental::SPECS) {
-    if (!fundamental::from<fundamental::Bq>(s) || s.shape != fundamental::Shape::Month)
+    if (f[0] == "month") {
+      assert(f.size() == 8 && "audit: 缓存 month 行列数不符");
+      assert(misc::parse_ym(f[2]) > 0 && "audit: 缓存 month 行月份不符");
+      MonthRec &m = b.months[f[1]][f[2]];
+      m.rows = f[3] == "1";
+      m.content = f[4] == "1";
+      m.inv = {std::stoll(f[5]), std::stoll(f[6]), std::stoll(f[7])};
       continue;
-    auto &months = inv[s.name];
-    for (const fundamental::Slot &sl : fundamental::frozen(s, cat, as_of)) {
-      MonthInv &m = months[misc::dash_ym(sl.ym)];
-      m.cols = parquet::ParquetFileReader::OpenFile(sl.sh->path.string())->metadata()->num_columns();
-      auto t = fundamental::read(*sl.sh, {s.vd});
-      m.rows = t->num_rows();
-      std::set<std::int32_t> days;
-      std::vector<std::int32_t> d;
-      for (const auto &chunk : t->column(0)->chunks()) {
-        misc::pq::Col(chunk).yyyymmdd_all(d);
-        days.insert(d.begin(), d.end());
-      }
-      m.days = static_cast<std::int64_t>(days.size());
     }
+    assert(f[0] == "diff" && f.size() == 10 && "audit: 缓存行格式不符");
+    assert((f[3] == "rows" || f[3] == "content") && "audit: 缓存 pass 列不符");
+    b.rows.push_back({f[1], f[2], f[3] == "rows", std::stoll(f[4]), std::stoll(f[5]), f[6], f[7], f[8], f[9]});
   }
-  return inv;
+  return b;
 }
 
-// 日志行 + 清点 → 每表统计 (表名升序)
-std::vector<AuditTableStat> aggregate(const std::vector<LogRow> &rows, const Inventory &inv) {
+// 当前冻结的 (表, 月) 数 (与 audit::plan 同一来源; 只看目录与 mtime)
+std::size_t count_frozen() {
+  const fundamental::Catalog cat;
+  const fundamental::Now now = fundamental::now();
+  std::size_t n = 0;
+  for (const fundamental::Spec &s : fundamental::SPECS)
+    if (fundamental::from<fundamental::Bq>(s) && s.shape == fundamental::Shape::Month)
+      n += fundamental::frozen(s, cat, now).size();
+  return n;
+}
+
+// 缓存 → 每表统计 (表名升序)
+std::vector<AuditTableStat> aggregate(const Book &b) {
   struct Acc {
     AuditTableStat st;
     std::set<std::string> bad, row_bad, content_bad, months;
@@ -186,14 +217,14 @@ std::vector<AuditTableStat> aggregate(const std::vector<LogRow> &rows, const Inv
     std::map<std::string, std::int64_t> delta;             // ym → 远端 − 本地行数
   };
   std::map<std::string, Acc> acc;
-  for (const auto &[name, months] : inv) {
+  for (const auto &[name, months] : b.months) {
     Acc &a = acc[name];
     for (const auto &[ym, m] : months) {
-      a.st.local_days += m.days;
-      a.st.local_rows += m.rows;
+      a.st.local_days += m.inv.days;
+      a.st.local_rows += m.inv.rows;
     }
   }
-  for (const LogRow &r : rows) {
+  for (const LogRow &r : b.rows) {
     Acc &a = acc[r.table];
     a.bad.insert(r.group);
     a.months.insert(r.group.substr(0, 7));
@@ -219,20 +250,17 @@ std::vector<AuditTableStat> aggregate(const std::vector<LogRow> &rows, const Inv
     st.content_days = a.content_bad.size();
     st.bad_months = a.months.size();
 
-    const auto it = inv.find(name);
-    const std::map<std::string, MonthInv> empty;
-    const auto &months = it == inv.end() ? empty : it->second;
-    const std::int64_t any_cols = months.empty() ? 0 : months.begin()->second.cols;
+    // 差异行的月必有清点 (apply 同步写入, forget 同步删除)
+    const auto &months = b.months.at(name);
     for (const auto &[ym, m] : months) {
       const auto d = a.delta.find(ym);
-      st.full_cells += (m.rows + (d == a.delta.end() ? 0 : d->second)) * m.cols;
+      st.full_cells += (m.inv.rows + (d == a.delta.end() ? 0 : d->second)) * m.inv.cols;
     }
     for (const std::string &ym : a.months) {
       const auto m = months.find(ym);
+      assert(m != months.end() && "audit: 差异月无清点");
       const auto d = a.delta.find(ym);
-      const std::int64_t rows_m = (m == months.end() ? 0 : m->second.rows) +
-                                  (d == a.delta.end() ? 0 : d->second);
-      st.repair_cells += rows_m * (m == months.end() ? any_cols : m->second.cols);
+      st.repair_cells += (m->second.inv.rows + (d == a.delta.end() ? 0 : d->second)) * m->second.inv.cols;
     }
 
     constexpr std::size_t kTop = 3;
@@ -266,23 +294,88 @@ const AuditTableStat *AuditState::find_table(const std::string &name) const {
 struct AuditService::Job {
   std::atomic<bool> done = false;
   std::atomic<bool> cancel = false;
-  std::mutex mu; // 以下字段 worker 写, io 线程轮询读
-  std::size_t units_done = 0;
+  Book book;                  // worker 独占 (开跑前由 next_job 承接上一轮; done 后只读)
+  std::mutex mu;              // 以下字段 worker 写, io 线程轮询读
+  std::size_t units_done = 0; // 已跑步数
   std::size_t total = 0;
   std::string current;
   std::int64_t quota_start = -1;
   std::int64_t quota_used = -1;
   std::int64_t quota_weekly = 0;
-  Inventory inv;
-  std::vector<LogRow> rows;
-  std::vector<AuditTableStat> snapshot; // aggregate(rows, inv)
-  std::size_t version = 0;              // snapshot 每更新一次 +1
+  std::vector<AuditTableStat> snapshot; // aggregate(book)
+  std::size_t rows_months = 0;
+  std::size_t content_months = 0;
+  std::size_t frozen_months = 0;
+  std::size_t version = 0; // snapshot 每更新一次 +1
   std::string log_path;
-  std::string log_status;
+  std::string updated;
 
+  // 持 mu 调
   void publish() {
-    snapshot = aggregate(rows, inv);
+    snapshot = aggregate(book);
+    rows_months = content_months = 0;
+    for (const auto &[name, months] : book.months)
+      for (const auto &[ym, m] : months) {
+        rows_months += m.rows;
+        content_months += m.content;
+      }
     ++version;
+  }
+
+  // 整写缓存 + 发布 (写盘不持锁: book 只 worker 碰)
+  void commit() {
+    save(book, cache_path());
+    std::lock_guard lk(mu);
+    updated = stamp(std::time(nullptr));
+    publish();
+  }
+
+  void start_quota(bigquant::Client &client) {
+    const bigquant::Quota q = client.quota();
+    std::lock_guard lk(mu);
+    quota_start = q.used;
+    quota_used = q.used;
+    quota_weekly = q.weekly;
+  }
+
+  // 一步跑完: 计步 + 配额
+  void step_done(bigquant::Client &client) {
+    const bigquant::Quota q = client.quota();
+    std::lock_guard lk(mu);
+    ++units_done;
+    quota_used = q.used;
+  }
+
+  // 核一单元 → 覆盖缓存
+  void audit_unit(bigquant::Client &client, const fundamental::audit::Unit &u) {
+    const std::string label = fundamental::audit::label(u);
+    {
+      std::lock_guard lk(mu);
+      current = label;
+    }
+    const auto diffs = fundamental::audit::run(client, u);
+    if (!diffs.empty())
+      std::cout << "[bigquant.audit] " << label << ": " << diffs.size() << " 处不一致" << std::endl;
+    apply(book, u, diffs);
+    step_done(client);
+    commit();
+  }
+
+  // 开跑: 计划步数 + 覆盖率分母
+  void start(std::size_t steps) {
+    const std::size_t fz = count_frozen();
+    std::lock_guard lk(mu);
+    total = steps;
+    frozen_months = fz;
+    log_path = cache_path().string();
+  }
+
+  void finish() {
+    {
+      std::lock_guard lk(mu);
+      current.clear();
+    }
+    done = true;
   }
 };
 
@@ -297,7 +390,10 @@ boost::asio::awaitable<void> AuditService::follow(std::shared_ptr<Job> job) {
     state_.quota_used = job->quota_used;
     state_.quota_weekly = job->quota_weekly;
     state_.log_path = job->log_path;
-    state_.log_status = job->log_status;
+    state_.updated = job->updated;
+    state_.rows_months = job->rows_months;
+    state_.content_months = job->content_months;
+    state_.frozen_months = job->frozen_months;
     if (job->version != seen_version) {
       state_.tables = job->snapshot;
       seen_version = job->version;
@@ -313,24 +409,36 @@ boost::asio::awaitable<void> AuditService::follow(std::shared_ptr<Job> job) {
   sync();
 }
 
-boost::asio::awaitable<void> AuditService::load_last() {
-  if (is_busy())
-    co_return;
+std::shared_ptr<AuditService::Job> AuditService::next_job() {
+  assert(job_ && job_->done && "audit: 上一轮未结束");
+  auto job = std::make_shared<Job>();
+  job->book = job_->book;
+  job->rows_months = job_->rows_months;
+  job->content_months = job_->content_months;
+  job->frozen_months = job_->frozen_months;
+  job->log_path = job_->log_path;
+  job->updated = job_->updated;
+  job_ = job;
+  return job;
+}
+
+boost::asio::awaitable<void> AuditService::load() {
+  assert(state_.loading && !job_ && "audit: load 只在启动调一次");
   auto job = std::make_shared<Job>();
   job_ = job;
-  state_.loading = true;
 
   std::thread([job]() {
-    const auto p = latest_log();
-    if (!p.empty()) {
-      std::vector<LogRow> rows;
-      std::string status = parse_log(p, rows);
-      Inventory inv = build_inventory(fundamental::Catalog{}, {.today = log_date(p)});
+    const fs::path p = cache_path();
+    if (fs::exists(p)) {
+      Book b = load_book(p);
+      const std::size_t fz = count_frozen();
+      const std::time_t t = std::chrono::system_clock::to_time_t(
+          std::chrono::clock_cast<std::chrono::system_clock>(fs::last_write_time(p)));
       std::lock_guard lk(job->mu);
-      job->rows = std::move(rows);
-      job->inv = std::move(inv);
+      job->book = std::move(b);
+      job->frozen_months = fz;
       job->log_path = p.string();
-      job->log_status = log_time(p) + "  " + status;
+      job->updated = stamp(t);
       job->publish();
     }
     job->done = true;
@@ -338,94 +446,100 @@ boost::asio::awaitable<void> AuditService::load_last() {
 
   co_await follow(job);
   state_.loading = false;
-  job_.reset();
 }
 
 boost::asio::awaitable<void> AuditService::run() {
   if (is_busy())
     co_return;
-  auto job = std::make_shared<Job>();
-  job_ = job;
-  state_ = AuditState{};
+  auto job = next_job();
   state_.running = true;
 
   // 异常不捕获 (fail fast)
   std::thread([job]() {
-    const auto log_path = new_log_path();
-    std::ofstream log(log_path);
-    assert(log && "audit: 日志文件无法打开");
-    log << "table\tgroup\tpass\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
-    log.flush();
-    std::cout << "[bigquant.audit] log -> " << log_path.string() << std::endl;
     const fundamental::Now now = fundamental::now();
     const fundamental::Catalog cat;
-    Inventory inv = build_inventory(cat, now);
-    {
-      std::lock_guard lk(job->mu);
-      job->log_path = log_path.string();
-      job->log_status = log_time(log_path) + "  进行中";
-      job->inv = std::move(inv);
-      job->publish();
-    }
     bigquant::Client client;
-    const bigquant::Quota q0 = client.quota();
-    {
-      std::lock_guard lk(job->mu);
-      job->quota_start = q0.used;
-      job->quota_used = q0.used;
-      job->quota_weekly = q0.weekly;
-    }
+    job->start_quota(client);
     const auto units = fundamental::audit::plan(cat, now, static_cast<unsigned>(std::time(nullptr)));
-    {
-      std::lock_guard lk(job->mu);
-      job->total = units.size();
-    }
-    std::cout << "[bigquant.audit] " << units.size() << " units" << std::endl;
+    job->start(units.size());
+    std::cout << "[bigquant.audit] " << units.size() << " units -> " << cache_path().string() << std::endl;
     for (const fundamental::audit::Unit &u : units) {
       if (job->cancel.load(std::memory_order_relaxed))
         break;
-      {
-        std::lock_guard lk(job->mu);
-        job->current = fundamental::audit::label(u);
-      }
-      const auto diffs = fundamental::audit::run(client, u);
-      if (!diffs.empty())
-        std::cout << "[bigquant.audit] " << fundamental::audit::label(u) << ": "
-                  << diffs.size() << " 处不一致" << std::endl;
-      for (const auto &d : diffs)
-        write_diff(log, d);
-      log.flush();
-      const bigquant::Quota q = client.quota();
-      std::lock_guard lk(job->mu);
-      for (const auto &d : diffs)
-        append_rows(job->rows, d);
-      if (!diffs.empty())
-        job->publish();
-      ++job->units_done;
-      job->quota_used = q.used;
+      job->audit_unit(client, u);
     }
-    const bool cancelled = job->cancel.load(std::memory_order_relaxed);
-    {
-      std::lock_guard lk(job->mu);
-      const std::string_view kind = cancelled ? "cancelled" : "done";
-      log << "# " << kind << " " << job->units_done << "/" << job->total << "\n";
-      log.flush();
-      job->current.clear();
-      job->log_status = log_time(log_path) + "  " + footer_status(kind, job->units_done, job->total);
-    }
-    std::cout << "[bigquant.audit] done" << std::endl;
-    job->done = true;
+    std::cout << "[bigquant.audit] "
+              << (job->cancel.load(std::memory_order_relaxed) ? "cancelled" : "done") << std::endl;
+    job->finish();
   }).detach();
 
   co_await follow(job);
-  state_.cancelled = job->cancel.load(std::memory_order_relaxed);
   state_.running = false;
-  job_.reset();
+}
+
+boost::asio::awaitable<void> AuditService::repair(std::string table) {
+  if (is_busy())
+    co_return;
+  auto job = next_job();
+  state_.repairing = table;
+
+  std::thread([job, table]() {
+    const fundamental::Spec &s = fundamental::spec(table);
+    std::set<std::string> keys; // 有差异的月 "YYYY-MM"
+    std::set<int> years;
+    for (const LogRow &r : job->book.rows)
+      if (r.table == table) {
+        keys.insert(r.group.substr(0, 7));
+        years.insert(misc::parse_ym(r.group.substr(0, 7)) / 100);
+      }
+    assert(!keys.empty() && "repair: 该表无差异月");
+
+    bigquant::Client client;
+    job->start_quota(client);
+    // 重拉月 + 复核单元 (一表 × 一年 × 一轮)
+    job->start(keys.size() + 2 * years.size());
+
+    {
+      const fundamental::Catalog cat;
+      std::size_t fetched = 0;
+      for (const fundamental::Slot &sl : fundamental::frozen(s, cat, fundamental::now())) {
+        if (!keys.contains(misc::dash_ym(sl.ym)))
+          continue;
+        const fundamental::sync::Task t{&s, sl.ym, sl.w, fundamental::Write::Replace};
+        const std::string label = fundamental::sync::label(t);
+        {
+          std::lock_guard lk(job->mu);
+          job->current = "重拉 " + label;
+        }
+        std::cout << "[bigquant.repair] " << label << " ... " << std::flush;
+        std::cout << fundamental::sync::run<fundamental::Bq>(client, t) << " rows" << std::endl;
+        job->step_done(client);
+        ++fetched;
+      }
+      assert(fetched == keys.size() && "repair: 差异月不全在冻结月里");
+    }
+    forget(job->book, table, keys);
+    job->commit();
+
+    // 重拉换了分片: 新清单
+    const fundamental::Catalog cat;
+    const auto units = fundamental::audit::plan(
+        cat, fundamental::now(), static_cast<unsigned>(std::time(nullptr)),
+        [&](const fundamental::Spec &sp, misc::Ym ym) { return &sp == &s && keys.contains(misc::dash_ym(ym)); });
+    assert(units.size() == 2 * years.size() && "repair: 复核单元数不符");
+    for (const fundamental::audit::Unit &u : units)
+      job->audit_unit(client, u);
+    std::cout << "[bigquant.repair] " << table << " done" << std::endl;
+    job->finish();
+  }).detach();
+
+  co_await follow(job);
+  state_.repairing.clear();
 }
 
 void AuditService::cancel() {
-  if (job_)
-    job_->cancel.store(true, std::memory_order_relaxed);
+  assert(state_.running && job_ && "audit: 只有全量核对可取消");
+  job_->cancel.store(true, std::memory_order_relaxed);
 }
 
 } // namespace GUI::Database
