@@ -194,11 +194,8 @@ def dividend_st(
     )
 
 
-def industry_bad(g: Grid, months: list[str], whitelist: set[str]) -> np.ndarray:
-    """申万 2021 一级行业 ∉ whitelist (含未知)."""
-    assert (
-        whitelist <= SW2021_L1_ALL
-    ), f"行业白名单拼写不在申万 2021 一级表内: {whitelist - SW2021_L1_ALL}"
+def industry_id(g: Grid, months: list[str]) -> tuple[np.ndarray, list[str]]:
+    """申万 2021 一级行业 id 网格 (float32, 未知 = NaN) + id → 行业名."""
     comp = load_table(
         "cn_stock_industry_component",
         months,
@@ -221,7 +218,14 @@ def industry_bad(g: Grid, months: list[str], whitelist: set[str]) -> np.ndarray:
         set(names) <= SW2021_L1_ALL
     ), f"数据里有申万 2021 一级表外的行业名: {set(names) - SW2021_L1_ALL}"
     ev["id"] = ev["name"].map({n: i for i, n in enumerate(names)})  # 事件前 NaN = 未知
-    ind = g.event_ffill(ev, "date", "id")
+    return g.event_ffill(ev, "date", "id"), names
+
+
+def industry_bad(ind: np.ndarray, names: list[str], whitelist: set[str]) -> np.ndarray:
+    """申万 2021 一级行业 ∉ whitelist (含未知); ind / names 见 industry_id."""
+    assert (
+        whitelist <= SW2021_L1_ALL
+    ), f"行业白名单拼写不在申万 2021 一级表内: {whitelist - SW2021_L1_ALL}"
     ok_ids = np.array(
         [i for i, n in enumerate(names) if n in whitelist], dtype=np.float32
     )

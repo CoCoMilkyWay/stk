@@ -21,10 +21,14 @@ DY_WINDOW = pd.Timedelta(days=365)
 
 
 def _mcap(ctx: Ctx) -> np.ndarray:
-    """市值网格; ≤ 0 置 NaN (作分母)."""
-    mcap = ctx.g.pivot(ctx.panel, "market_cap", np.float64, np.nan)
-    mcap[~(mcap > 0)] = np.nan
-    return mcap
+    """市值网格; ≤ 0 置 NaN (作分母). 各键共用."""
+
+    def build() -> np.ndarray:
+        mcap = ctx.g.pivot(ctx.panel, "market_cap", np.float64, np.nan)
+        mcap[~(mcap > 0)] = np.nan
+        return mcap
+
+    return ctx.memo("mcap", build)
 
 
 def _np_ttm(ctx: Ctx) -> np.ndarray:

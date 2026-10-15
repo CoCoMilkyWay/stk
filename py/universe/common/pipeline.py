@@ -26,8 +26,8 @@ python 不看 config.json 的回测区间 —— 回测/特征的时间段只由
 """
 
 import json
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable, Hashable
 
 import numpy as np
 import pandas as pd
@@ -61,9 +61,18 @@ class Ctx:
     by_date: dict  # P → panel 切片
     g: Grid  # P 日 × 标的 网格
     trading_days: pd.DatetimeIndex
-    targets: pd.DatetimeIndex  # 要出池子的交易日 D
     main_board: np.ndarray  # 按 g.insts 的主板位
     shares: np.ndarray  # 总股本网格 (ffill)
+    cache: dict = field(default_factory=dict)  # 池子间共享的中间结果, 见 memo
+
+    def memo(self, name: Hashable, build: Callable[[], Any]) -> Any:
+        """首次 build 后缓存, 各池子共用; ndarray 置只读, 共享网格不得被某个池子原地改写."""
+        if name not in self.cache:
+            v = build()
+            if isinstance(v, np.ndarray):
+                v.flags.writeable = False
+            self.cache[name] = v
+        return self.cache[name]
 
 
 @dataclass(frozen=True)
@@ -75,17 +84,26 @@ class Key:
 
 
 def build_excl(ctx: Ctx, industry_wl: set[str]) -> dict[str, np.ndarray]:
-    """{filter 名: bool 网格}, 命中任一即剔除."""
+    """{filter 名: bool 网格}, 命中任一即剔除. 只有 industry 随白名单变, 其余池子间共享."""
     g, months = ctx.g, ctx.months
-    fc = filters.forecast_intervals(g, months)
+    fc = ctx.memo("forecast_intervals", lambda: filters.forecast_intervals(g, months))
     return {
-        "trading_st": filters.trading_st(g, ctx.panel),
-        "profit_st": filters.profit_st(g, fc),
-        "revenue_st": filters.revenue_st(g, fc, months, ctx.main_board),
-        "dividend_st": filters.dividend_st(
-            g, months, ctx.shares, ctx.basic, ctx.main_board
+        "trading_st": ctx.memo("trading_st", lambda: filters.trading_st(g, ctx.panel)),
+        "profit_st": ctx.memo("profit_st", lambda: filters.profit_st(g, fc)),
+        "revenue_st": ctx.memo(
+            "revenue_st",
+            lambda: filters.revenue_st(g, fc, months, ctx.main_board),
         ),
-        "industry": filters.industry_bad(g, months, industry_wl),
+        "dividend_st": ctx.memo(
+            "dividend_st",
+            lambda: filters.dividend_st(
+                g, months, ctx.shares, ctx.basic, ctx.main_board
+            ),
+        ),
+        "industry": filters.industry_bad(
+            *ctx.memo("industry_id", lambda: filters.industry_id(g, months)),
+            industry_wl,
+        ),
     }
 
 
@@ -134,13 +152,10 @@ def write_diff_json(name: str, daily: dict[str, list[str]]) -> None:
     print(f"已写入 (逐日 PIT diff): {out_path}")
 
 
-def run(
-    name: str, n: int, freq: str, key: Key, side: str, industry_wl: set[str]
-) -> None:
-    assert freq in (DAILY, WEEKLY), f"freq 只能是 DAILY / WEEKLY: {freq}"
-    assert side in (LOW, HIGH), f"side 只能是 LOW / HIGH: {side}"
+def load_ctx() -> Ctx:
+    """所有池子共用的截面 / 网格; 各池子在其上 run."""
     months = month_range()
-    print(f"[{name}] 读取月份: {months[0]} ~ {months[-1]} ({len(months)} 个)")
+    print(f"读取月份: {months[0]} ~ {months[-1]} ({len(months)} 个)")
 
     basic = load_basic()
     panel = load_panel(months, basic)
@@ -151,8 +166,40 @@ def run(
     )
     print(f"截面数据: {len(panel)} 行, {g.n_d} 个交易日, {g.n_a} 只标的")
 
+    main_board = (
+        basic.set_index("instrument")["list_sector"]
+        .reindex(g.insts)
+        .eq(MAIN_BOARD)
+        .to_numpy()
+    )
+    shares = g.pivot_ffill(panel, "total_shares")
+    return Ctx(
+        months,
+        basic,
+        panel,
+        by_date,
+        g,
+        load_trading_days(months),
+        main_board,
+        shares,
+    )
+
+
+def run(
+    ctx: Ctx,
+    name: str,
+    n: int,
+    freq: str,
+    key: Key,
+    side: str,
+    industry_wl: set[str],
+) -> None:
+    assert freq in (DAILY, WEEKLY), f"freq 只能是 DAILY / WEEKLY: {freq}"
+    assert side in (LOW, HIGH), f"side 只能是 LOW / HIGH: {side}"
+    g, by_date, trading_days = ctx.g, ctx.by_date, ctx.trading_days
+    print(f"[{name}]")
+
     # 目标日 D = 前一交易日 P 有截面数据且 P 过了键暖机的交易日 (首个数据日只能当 P; 日历尾部超出数据的日子自然不出)
-    trading_days = load_trading_days(months)
     has_prev = np.isin(trading_days[:-1].values, g.dates.values)
     warm = trading_days[:-1] >= g.dates[0] + key.warmup
     targets = trading_days[1:][has_prev & warm]
@@ -161,19 +208,10 @@ def run(
         f"池子区间: {targets[0].date()} ~ {targets[-1].date()} ({len(targets)} 个交易日)"
     )
 
-    main_board = (
-        basic.set_index("instrument")["list_sector"]
-        .reindex(g.insts)
-        .eq(MAIN_BOARD)
-        .to_numpy()
-    )
-    shares = g.pivot_ffill(panel, "total_shares")
-    ctx = Ctx(
-        months, basic, panel, by_date, g, trading_days, targets, main_board, shares
-    )
-
     # 命中统计只数当日在册的标的 (网格列含全部历史标的, 未上市/已退市列的 NaN 也会被 filter 判中)
-    present = g.pivot(panel.assign(one=True), "one", bool, False)
+    present = ctx.memo(
+        "present", lambda: g.pivot(ctx.panel.assign(one=True), "one", bool, False)
+    )
     excl = g.empty(bool, False)
     for fname, f in build_excl(ctx, industry_wl).items():
         assert (
@@ -183,7 +221,7 @@ def run(
         excl |= f
     print(f"  (当日在册平均 {present.sum(axis=1).mean():.0f} 只)")
 
-    key_grid = key.build(ctx)
+    key_grid = ctx.memo(key, lambda: key.build(ctx))
     assert (
         key_grid.shape == excl.shape and key_grid.dtype == np.float64
     ), "排序键网格形状/类型不对"
