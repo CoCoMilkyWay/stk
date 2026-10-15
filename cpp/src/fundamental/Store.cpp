@@ -234,4 +234,6 @@ void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
   assert(false && "put: 未知写法");
 }
 
+bool renative(const Shard &sh) { return pq::renative(sh.path); }
+
 } // namespace fundamental

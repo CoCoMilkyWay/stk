@@ -1,10 +1,12 @@
 #include "misc/parquet.hpp"
 
 #include <arrow/array.h>
+#include <arrow/compare.h>
 #include <arrow/io/file.h>
 #include <arrow/result.h>
 #include <arrow/type.h>
 #include <arrow/util/compression.h>
+#include <arrow/util/key_value_metadata.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
 #include <parquet/file_reader.h>
@@ -113,6 +115,28 @@ void append_table_atomic(const fs::path &path,
   auto res = arrow::ConcatenateTables({old, t});
   assert(res.ok() && "pq::append_table_atomic: schema 不一致");
   write_table_atomic(path, res.ValueOrDie());
+}
+
+bool foreign_writer(const fs::path &path) {
+  const std::unique_ptr<parquet::ParquetFileReader> r =
+      parquet::ParquetFileReader::OpenFile(path.string(), /*memory_map=*/true);
+  const std::shared_ptr<parquet::FileMetaData> md = r->metadata();
+  const std::shared_ptr<const arrow::KeyValueMetadata> &kv = md->key_value_metadata();
+  return md->created_by() != parquet::DEFAULT_CREATED_BY || (kv && kv->size() > 0);
+}
+
+bool renative(const fs::path &path) {
+  if (!foreign_writer(path))
+    return false;
+  const fs::file_time_type mtime = fs::last_write_time(path);
+  // schema 元数据 (pandas 等) 会被写进 footer 键值区, 须先去掉; 旧 inode 的 mmap 在 rename 后仍有效
+  const std::shared_ptr<arrow::Table> t = read_table(path)->ReplaceSchemaMetadata(nullptr);
+  write_table_atomic(path, t);
+  assert(!foreign_writer(path) && "pq::renative: 重写后仍带外来写者痕迹");
+  assert(t->Equals(*read_table(path), arrow::EqualOptions::Defaults().nans_equal(true)) &&
+         "pq::renative: 重写前后内容不一致");
+  fs::last_write_time(path, mtime);
+  return true;
 }
 
 // ----------------------------------------------------------------------------

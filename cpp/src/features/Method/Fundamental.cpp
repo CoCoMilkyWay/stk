@@ -711,6 +711,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
       });
 
   // ---- cn_stock_financial_notes_shift (CUTOFF=-1; shift=0 非经常性损益 TTM) ----
+  //   事件与 ttm_shift 一一对齐, 无附注数据的事件该列为 null: 丢弃, 否则顶掉同报告期的有效值
   scan.add(nonrecur, spec("cn_stock_financial_notes_shift"),
            {"shift", "report_date", "nonrecurring_income_to_owner_ttm"}, Hits<NonrecurEv>{},
            [&axes](const Rows &r, Hits<NonrecurEv> &h) {
@@ -718,7 +719,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
              const pq::Col nr_owner = r.col("nonrecurring_income_to_owner_ttm");
              RowOf row_of(axes, Align::Floor, -1);
              r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
-               if (shift.i32(i, -1) != 0)
+               if (shift.i32(i, -1) != 0 || nr_owner.null(i))
                  return;
                const int row = row_of(d);
                if (row < 0)

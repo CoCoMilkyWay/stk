@@ -23,6 +23,7 @@
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
 #include "misc/date.hpp"
+#include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
 #include "shared/Config.hpp"
@@ -39,6 +40,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -185,6 +188,47 @@ void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &c
   }
   job.steps_total = 0;
   std::cout << "[" << tag << ".sync] " << (cancel.load(std::memory_order_relaxed) ? "cancelled" : "done") << std::endl;
+}
+
+// 外来写者的 parquet 以本库原样重写 (每轮开头, 先于 sync / 构建; 见 misc::pq::renative):
+//   基本面分片经 fundamental::renative; 分钟线 output/cn_stock_bar1m/YYYY-MM/YYYY-MM-DD.parquet
+//   (fetch.py 打包落地, 无 Store 归属) 直走 misc::pq. 判定只读 footer; 并行, 重的先跑, 取消在文件间生效
+void renative_all(Job &job, const std::atomic<bool> &cancel) {
+  struct File {
+    std::uint64_t bytes;
+    std::function<bool()> renative;
+  };
+  std::vector<File> files;
+  const Catalog cat;
+  for (const auto &[name, shards] : cat.all())
+    for (const fundamental::Shard &sh : shards)
+      files.push_back({sh.bytes, [&sh] { return fundamental::renative(sh); }});
+  const std::filesystem::path m1 = misc::git_root() / "output" / "cn_stock_bar1m";
+  if (std::filesystem::exists(m1))
+    for (const std::filesystem::directory_entry &e : std::filesystem::recursive_directory_iterator(m1))
+      if (e.is_regular_file() && e.path().extension() == ".parquet")
+        files.push_back({e.file_size(), [p = e.path()] { return pq::renative(p); }});
+  std::sort(files.begin(), files.end(), [](const File &a, const File &b) { return a.bytes > b.bytes; });
+
+  job.steps_done = 0;
+  job.steps_total = files.size();
+  job.set_message("重写外来写者的 parquet");
+  std::atomic<std::size_t> next{0}, rewritten{0};
+  auto worker = [&] {
+    for (std::size_t i; !cancel.load(std::memory_order_relaxed) &&
+                        (i = next.fetch_add(1, std::memory_order_relaxed)) < files.size();) {
+      if (files[i].renative())
+        rewritten.fetch_add(1, std::memory_order_relaxed);
+      job.steps_done.fetch_add(1, std::memory_order_relaxed);
+    }
+  };
+  std::vector<std::thread> ts;
+  for (unsigned t = 0; t < std::max(1u, std::thread::hardware_concurrency()); ++t)
+    ts.emplace_back(worker);
+  for (std::thread &t : ts)
+    t.join();
+  job.steps_total = 0;
+  std::cout << "[renative] " << rewritten << "/" << files.size() << " file(s) rewritten" << std::endl;
 }
 
 // 三档股息率的窗口长度 [日历日] 与年化除数 [年]
@@ -722,6 +766,7 @@ awaitable<void> FundamentalService::run(bool with_network) {
 
   // 阻塞网络 + parquet IO 全在工作线程; 协程只轮询. 异常不捕获 (fail fast).
   std::thread([job, decision, cancel, with_network]() {
+    renative_all(*job, *cancel);
     if (with_network) {
       const fundamental::Now now = fundamental::now();
       const Catalog cat; // 本轮开头的清单 (plan 只算这一次, sync 照单执行)

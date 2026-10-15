@@ -111,4 +111,8 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
 //           列按名合并 (某侧全 null 的 NA 列 / 缺列提升为另一侧类型)
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
 
+// 外来写者的分片 (远端 pyarrow / 换版前的本库, 见 misc::pq::foreign_writer) 以本库原样重写; 本库写的 → 不动.
+//   内容与 mtime 不变 ⇒ 槽位状态 / 水位 / dedup 皆不变. 返回是否重写
+bool renative(const Shard &sh);
+
 } // namespace fundamental

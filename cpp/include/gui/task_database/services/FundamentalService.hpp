@@ -93,7 +93,7 @@ public:
   FundamentalService(boost::asio::io_context &io, SharedData &data)
       : io_(io), data_(data) {}
 
-  // sync::plan<Bq> / plan<Tu> → [逐任务 sync::run (bq) → (ts)] → 重建 AssetInfo
+  // 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> → [逐任务 sync::run (bq) → (ts)] → 重建 AssetInfo
   // (两份计划皆空 ⇒ 零网络直接本地构建; 启动与手动 Update 共用)
   awaitable<void> update_all();
 
