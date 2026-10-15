@@ -62,9 +62,11 @@ struct FundamentalState {
   std::string message;     // 当前阶段说明 (工作线程实时更新)
   std::string last_update; // 最近一次构建完成时刻
 
-  // BigQuant 周配额 (preflight 结果, 单位 cell; Confirm 态弹窗展示用)
+  // BigQuant 周配额 (preflight 结果, 单位 cell; Overview 常显 + Confirm 态弹窗)
+  //   每轮联网同步开头取一次, BigQuant 同步后再取一次; 未联网的轮次沿用上次
   std::int64_t quota_weekly = 0;
   std::int64_t quota_used = 0;
+  std::string quota_time; // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
 
   // 构建结果统计 (Ready 后有效)
   std::size_t stock_count = 0;        // stock_info 条数

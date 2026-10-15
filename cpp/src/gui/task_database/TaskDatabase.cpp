@@ -1,6 +1,7 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/coro/CoroManager.hpp"
+#include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
 #include "gui/task_database/services/L2DatabaseService.hpp"
@@ -29,6 +30,7 @@ class DatabaseTask {
 private:
   // Service layer
   std::unique_ptr<FundamentalService> fundamental_svc_;
+  std::unique_ptr<AuditService> audit_svc_;
   std::unique_ptr<ScanService> scan_svc_;
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<L2DatabaseService> l2_svc_;
@@ -217,6 +219,9 @@ private:
 
     // Create services (in dependency order)
     fundamental_svc_ = std::make_unique<FundamentalService>(io, data);
+    audit_svc_ = std::make_unique<AuditService>(io);
+    // 上次核对结果: 读最新日志 + 清点本地分片 (零网络)
+    boost::asio::co_spawn(io, audit_svc_->load_last(), boost::asio::detached);
     scan_svc_ = std::make_unique<ScanService>(data, io);
     encoding_svc_ = std::make_unique<EncodingService>(data);
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
@@ -308,6 +313,8 @@ private:
   TaskStatus OverviewStatus() const {
     if (!fundamental_svc_)
       return {TaskStatus::Kind::Muted, "initializing"};
+    if (audit_svc_ && audit_svc_->is_running())
+      return {TaskStatus::Kind::Busy, "auditing"};
     switch (fundamental_svc_->get_state().status) {
     case FundamentalStatus::Idle:
       return {TaskStatus::Kind::Muted, "idle"};
@@ -495,20 +502,35 @@ private:
     }
 
     bool update_clicked = false;
+    bool audit_clicked = false;
+    bool audit_cancel_clicked = false;
 
     auto &ts = data_->taskstate.database;
     bool busy = ts.json_update_inflight || ts.l2_scan_inflight ||
                 fundamental_svc_->is_busy() || scan_svc_->is_scanning();
+    // 同步改写的正是被核对的分片: 两者互斥
+    const bool auditing = audit_svc_->is_running();
+    const bool disable_audit = busy || audit_svc_->is_busy() || !data_->config.network_sync;
 
     RenderTabOverview(
         fundamental_svc_->get_state(),
         &update_clicked,
-        busy);
+        busy || auditing,
+        audit_svc_->get_state(),
+        &audit_clicked,
+        &audit_cancel_clicked,
+        disable_audit);
 
     // Handle button events
-    if (update_clicked && !busy) {
+    if (update_clicked && !busy && !auditing) {
       TriggerRefreshFlow();
     }
+    if (audit_clicked && !disable_audit) {
+      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run(),
+                            boost::asio::detached);
+    }
+    if (audit_cancel_clicked)
+      audit_svc_->cancel();
   }
 
   void DrawTabTable() {

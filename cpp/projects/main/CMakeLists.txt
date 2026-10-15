@@ -204,6 +204,7 @@ set(SOURCES
     ../../src/misc/schedule.cpp
     ../../src/misc/system_metrics.cpp
     # api
+    ../../src/api/bigquant/audit.cpp
     ../../src/api/bigquant/dai.cpp
     ../../src/api/bigquant/pipeline.cpp
     ../../src/api/bigquant/spec.cpp
@@ -237,6 +238,7 @@ set(SOURCES
     # gui / task_database
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
+    ../../src/gui/task_database/services/AuditService.cpp
     ../../src/gui/task_database/services/EncodingService.cpp
     ../../src/gui/task_database/services/FundamentalService.cpp
     ../../src/gui/task_database/services/L2DatabaseService.cpp
@@ -710,6 +712,7 @@ set_source_files_properties(
     ../../src/misc/parquet.cpp
     ../../src/misc/schedule.cpp
     # api
+    ../../src/api/bigquant/audit.cpp
     ../../src/api/bigquant/dai.cpp
     ../../src/api/bigquant/pipeline.cpp
     ../../src/api/bigquant/spec.cpp

@@ -1170,7 +1170,16 @@ awaitable<void> FundamentalService::run(bool with_network) {
   std::thread([job, decision, with_network]() {
     if (with_network) {
       const std::string today = misc::today_yyyymmdd();
-      // pending 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 零网络
+      // 配额探针不耗配额: 每轮都取, Overview 常显本周余额
+      auto take_quota = [&job]() {
+        job->quota = bigquant::preflight();
+        job->st.quota_weekly = job->quota.weekly;
+        job->st.quota_used = job->quota.used;
+        job->st.quota_time = now_str();
+      };
+      job->set_message("preflight: BigQuant 周配额");
+      take_quota();
+      // pending 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 不拉数据
       job->set_message("pending 判定 (水位/dedup 窗口)");
       bool need_bq = bigquant::pending(config::PIPELINE_START_DATE, today,
                                        bigquant::SPECS,
@@ -1179,9 +1188,7 @@ awaitable<void> FundamentalService::run(bool with_network) {
                                             tushare::SPECS,
                                             config::PIPELINE_LOOKBACK_DAYS);
       if (need_bq) {
-        // 真要联网拉 BigQuant 才探配额; 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)
-        job->set_message("preflight: BigQuant 周配额");
-        job->quota = bigquant::preflight();
+        // 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)
         const double left = 1.0 - static_cast<double>(job->quota.used) /
                                       static_cast<double>(job->quota.weekly);
         if (left < config::BIGQUANT_QUOTA_CONFIRM_RATIO) {
@@ -1196,6 +1203,7 @@ awaitable<void> FundamentalService::run(bool with_network) {
         job->set_message("同步 BigQuant DAI (月度 parquet 水位增量)");
         bigquant::update(config::PIPELINE_START_DATE, today, bigquant::SPECS,
                          config::PIPELINE_LOOKBACK_DAYS);
+        take_quota();
       }
       if (need_ts) {
         job->set_message("同步 Tushare (forecast/express/disclosure)");
@@ -1238,6 +1246,12 @@ awaitable<void> FundamentalService::run(bool with_network) {
     co_await timer.async_wait(boost::asio::use_awaitable);
   }
 
+  // 本轮未联网 (quota_time 空) ⇒ 保留上次配额读数
+  if (job->st.quota_time.empty()) {
+    job->st.quota_weekly = state_.quota_weekly;
+    job->st.quota_used = state_.quota_used;
+    job->st.quota_time = state_.quota_time;
+  }
   if (job->ok) {
     // AssetInfo 替换只发生在 io 线程 (GUI 消费与此同线程, 无竞争)
     data_.assetinfo = std::move(job->assetinfo);
@@ -1248,6 +1262,9 @@ awaitable<void> FundamentalService::run(bool with_network) {
     state_.last_update = now_str();
   } else {
     state_.tables = std::move(job->st.tables);
+    state_.quota_weekly = job->st.quota_weekly;
+    state_.quota_used = job->st.quota_used;
+    state_.quota_time = job->st.quota_time;
     state_.status = FundamentalStatus::Error;
     state_.message = "本地 parquet 缺失 — 点击 Update 联网同步";
   }
