@@ -35,9 +35,9 @@ namespace {
 namespace fs = std::filesystem;
 using fundamental::audit::Pass;
 
-// output/log/audit/ (逐表状态 <表>.tsv)
+// output/fundamental/_audit/ (逐表状态 <表>.tsv); 不放 output/log: 特征计算开跑会整删 log_dir
 fs::path log_dir() {
-  const auto dir = misc::git_root() / "output" / "log" / "audit";
+  const auto dir = misc::git_root() / "output" / "fundamental" / "_audit";
   fs::create_directories(dir);
   return dir;
 }

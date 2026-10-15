@@ -2,7 +2,7 @@
 // 口径见 fundamental/Audit.hpp; 网络 + parquet IO 全在独立工作线程, 协程轮询进度.
 //   run    : 一表 / 全部表核对, 只报告不改盘
 //   repair : 一表的差异 → audit::repair 任务 (按日 Splice; Snap::Day / 只定位到月 → 整月 Replace) → sync::run → 只复核这些月
-// 结果是逐表的 "当前状态" (不是变更日志) output/log/audit/<表>.tsv:
+// 结果是逐表的 "当前状态" (不是变更日志) output/fundamental/_audit/<表>.tsv:
 //   每个 (月, 轮) 只留最近一次核对的结论; 每单元后只整写该表一个文件 (tmp + rename).
 #pragma once
 
@@ -71,7 +71,7 @@ struct AuditState {
   std::int64_t quota_used = -1;
   std::int64_t quota_weekly = 0;
   std::vector<AuditTableStat> tables; // 表名升序; 空 = 尚未 load
-  std::string log_dir;                // output/log/audit/ (逐表状态, 含本地 / 远端原值)
+  std::string log_dir;                // output/fundamental/_audit/ (逐表状态, 含本地 / 远端原值)
 
   const AuditTableStat *find_table(const std::string &name) const;
 };
